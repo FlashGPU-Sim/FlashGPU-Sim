@@ -691,6 +691,7 @@ struct gpgpu_ptx_sim_info {
   int cmem;
   int gmem;
   int regs;
+  int barriers;
   unsigned maxthreads;
   unsigned ptx_version;
   unsigned sm_target;

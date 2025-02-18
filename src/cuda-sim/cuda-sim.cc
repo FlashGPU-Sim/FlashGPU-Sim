@@ -2799,6 +2799,8 @@ void ptxinfo_function(const char *fname) {
 
 void ptxinfo_regs(unsigned nregs) { g_ptxinfo.regs = nregs; }
 
+void ptxinfo_barriers(unsigned barriers) { g_ptxinfo.barriers = barriers; }
+
 void ptxinfo_lmem(unsigned declared, unsigned system) {
   g_ptxinfo.lmem = declared + system;
 }
