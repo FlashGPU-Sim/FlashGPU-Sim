@@ -64,7 +64,7 @@ else()
     message(CHECK_START "Checking CUDA compiler version")
     message(CHECK_PASS "${CUDAToolkit_VERSION}")
     if((CUDAToolkit_VERSION VERSION_LESS 2.0.3) OR (CUDAToolkit_VERSION VERSION_GREATER 13.0.0))
-        message(FATAL_ERROR "CMake ${CMAKE_PROJECT_VERSION} not tested with CUDA version ${CUDAToolkit_VERSION} (please see README)")
+        message(WARNING "GPGPU-Sim not tested with CUDA version ${CUDAToolkit_VERSION} (please see README)")
     endif()
 endif()
 
