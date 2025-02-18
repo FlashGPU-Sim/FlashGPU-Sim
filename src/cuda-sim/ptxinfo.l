@@ -41,7 +41,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <string.h>
 #include "../../libcuda/gpgpu_context.h"
 
-#define YYDEBUG 1
 #define LINEBUF_SIZE 1024
 #define TC if( (yylineno == 1) && (ptxinfo->col + strlen(yytext) < LINEBUF_SIZE) ) { \
 		strncpy(ptxinfo->linebuf+ptxinfo->col,yytext,strlen(yytext)); \
