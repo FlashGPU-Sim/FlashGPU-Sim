@@ -45,6 +45,11 @@
 #include <string.h>
 #include <map>
 #include <string>
+#include <memory>
+
+#ifdef FLASH_GPGPU_SIM_OMP
+#include <shared_mutex>
+#endif
 
 typedef address_type mem_addr_t;
 
@@ -122,8 +127,13 @@ class memory_space_impl : public memory_space {
                          void *data) const;
   std::string m_name;
   unsigned m_log2_block_size;
-  typedef mem_map<mem_addr_t, mem_storage<BSIZE> > map_t;
+  using map_t = mem_map<mem_addr_t, std::unique_ptr<mem_storage<BSIZE>>>;
   map_t m_data;
+  mutable std::shared_mutex m_data_mutex;
+
+  mem_storage<BSIZE> &get_or_init_block(mem_addr_t blk_idx);
+  mem_storage<BSIZE> *try_get_block(mem_addr_t blk_idx) const;
+
   std::map<unsigned, mem_addr_t> m_watchpoints;
 };
 

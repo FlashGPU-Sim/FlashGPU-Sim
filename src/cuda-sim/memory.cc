@@ -31,6 +31,10 @@
 #include "../../libcuda/gpgpu_context.h"
 #include "../debug.h"
 
+#ifdef FLASH_GPGPU_SIM_OMP
+#include <mutex>
+#endif
+
 template <unsigned BSIZE>
 memory_space_impl<BSIZE>::memory_space_impl(std::string name,
                                             unsigned hash_size) {
@@ -48,9 +52,42 @@ memory_space_impl<BSIZE>::memory_space_impl(std::string name,
 }
 
 template <unsigned BSIZE>
+mem_storage<BSIZE> &memory_space_impl<BSIZE>::get_or_init_block(mem_addr_t blk_idx) {
+  #ifdef FLASH_GPGPU_SIM_OMP
+  {
+    std::shared_lock lock(m_data_mutex);
+    auto it = m_data.find(blk_idx);
+    if (it != m_data.end()) {
+      return *(it->second);
+    }
+  }
+  std::unique_lock lock(m_data_mutex);
+  #endif
+  auto it = m_data.find(blk_idx);
+  if (it != m_data.end()) {
+    return *(it->second);
+  }
+  auto new_block = std::make_unique<mem_storage<BSIZE>>();
+  it = m_data.emplace(blk_idx, std::move(new_block)).first;
+  return *(it->second);
+}
+
+template <unsigned BSIZE>
+mem_storage<BSIZE> *memory_space_impl<BSIZE>::try_get_block(mem_addr_t blk_idx) const {
+  #ifdef FLASH_GPGPU_SIM_OMP
+  std::shared_lock lock(m_data_mutex);
+  #endif
+  auto it = m_data.find(blk_idx);
+  if (it != m_data.end()) {
+    return it->second.get();
+  }
+  return nullptr;
+}
+
+template <unsigned BSIZE>
 void memory_space_impl<BSIZE>::write_only(mem_addr_t offset, mem_addr_t index,
                                           size_t length, const void *data) {
-  m_data[index].write(offset, length, (const unsigned char *)data);
+  get_or_init_block(index).write(offset, length, (const unsigned char *)data);
 }
 
 template <unsigned BSIZE>
@@ -64,7 +101,7 @@ void memory_space_impl<BSIZE>::write(mem_addr_t addr, size_t length,
     // fast route for intra-block access
     unsigned offset = addr & (BSIZE - 1);
     unsigned nbytes = length;
-    m_data[index].write(offset, nbytes, (const unsigned char *)data);
+    get_or_init_block(index).write(offset, nbytes, (const unsigned char *)data);
   } else {
     // slow route for inter-block access
     unsigned nbytes_remain = length;
@@ -80,7 +117,7 @@ void memory_space_impl<BSIZE>::write(mem_addr_t addr, size_t length,
       }
 
       size_t tx_bytes = access_limit - offset;
-      m_data[page].write(offset, tx_bytes,
+      get_or_init_block(page).write(offset, tx_bytes,
                          &((const unsigned char *)data)[src_offset]);
 
       // advance pointers
@@ -117,16 +154,15 @@ void memory_space_impl<BSIZE>::read_single_block(mem_addr_t blk_idx,
         (addr + length), (blk_idx + 1) * BSIZE, blk_idx, BSIZE);
     throw 1;
   }
-  typename map_t::const_iterator i = m_data.find(blk_idx);
-  if (i == m_data.end()) {
+  if (auto storage = try_get_block(blk_idx)) {
+    unsigned offset = addr & (BSIZE - 1);
+    unsigned nbytes = length;
+    storage->read(offset, nbytes, (unsigned char *)data);
+  } else {
     for (size_t n = 0; n < length; n++)
       ((unsigned char *)data)[n] = (unsigned char)0;
     // printf("GPGPU-Sim PTX:  WARNING reading %zu bytes from unititialized
     // memory at address 0x%x in space %s\n", length, addr, m_name.c_str() );
-  } else {
-    unsigned offset = addr & (BSIZE - 1);
-    unsigned nbytes = length;
-    i->second.read(offset, nbytes, (unsigned char *)data);
   }
 }
 
@@ -170,7 +206,7 @@ void memory_space_impl<BSIZE>::print(const char *format, FILE *fout) const {
 
   for (i_page = m_data.begin(); i_page != m_data.end(); ++i_page) {
     fprintf(fout, "%s %08llx:", m_name.c_str(), i_page->first);
-    i_page->second.print(format, fout);
+    i_page->second->print(format, fout);
   }
 }
 
