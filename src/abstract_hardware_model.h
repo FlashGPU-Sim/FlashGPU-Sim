@@ -96,6 +96,7 @@ enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 
 #define FLASH_GPGPU_SIM
 #define FLASH_GPGPU_SIM_OMP
+#define FLASH_GPGPU_SIM_OMP_MAX_THREADS 32
 #ifdef FLASH_GPGPU_SIM_OMP
 #include <omp.h>
 #endif

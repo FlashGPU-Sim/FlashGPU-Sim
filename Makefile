@@ -150,7 +150,7 @@ $(SIM_LIB_DIR)/libcudart.so: makedirs $(LIBS) cudalib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
 			$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
-			$(SIM_OBJ_FILES_DIR)/*.o -lm -lz -lGL -pthread \
+			$(SIM_OBJ_FILES_DIR)/*.o -lm -lz -lGL -pthread -fopenmp \
 			$(MCPAT) \
 			-o $(SIM_LIB_DIR)/libcudart.so
 	if [ ! -f $(SIM_LIB_DIR)/libcudart.so.2 ]; then ln -s libcudart.so $(SIM_LIB_DIR)/libcudart.so.2; fi
@@ -210,7 +210,7 @@ cuda-sim: makedirs
 	$(MAKE) -C ./src/cuda-sim/ depend
 	$(MAKE) -C ./src/cuda-sim/
 
-TFLAGS = -std=c++0x -I$(CUDA_INSTALL_PATH)/include
+TFLAGS = -std=c++17 -I$(CUDA_INSTALL_PATH)/include
 ifneq ($(DEBUG),1)
 	TFLAGS += -O3
 endif

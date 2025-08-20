@@ -35,6 +35,10 @@
 #include "ptx_ir.h"
 #include "ptx_sim.h"
 
+#ifdef FLASH_GPGPU_SIM_OMP
+#include <array>
+#endif
+
 void ptx_stats::ptx_file_line_stats_options(option_parser_t opp) {
   option_parser_register(
       opp, "-enable_ptx_file_line_stats", OPT_BOOL, &enable_ptx_file_line_stats,
@@ -105,6 +109,19 @@ class ptx_file_line_stats {
                                        // (attributed to this instruction)
   unsigned long long
       warp_divergence;  // number of warp divergence occured at this instruction
+
+  ptx_file_line_stats &operator+=(const ptx_file_line_stats &other) {
+    exec_count += other.exec_count;
+    latency += other.latency;
+    dram_traffic += other.dram_traffic;
+    smem_n_way_bank_conflict_total += other.smem_n_way_bank_conflict_total;
+    smem_warp_count += other.smem_warp_count;
+    gmem_n_access_total += other.gmem_n_access_total;
+    gmem_warp_count += other.gmem_warp_count;
+    exposed_latency += other.exposed_latency;
+    warp_divergence += other.warp_divergence;
+    return *this;
+  }
 };
 
 #if (tr1_hash_map_ismap == 1)
@@ -123,10 +140,40 @@ typedef tr1_hash_map<ptx_file_line, ptx_file_line_stats, hash_ptx_file_line>
 
 static ptx_file_line_stats_map_t ptx_file_line_stats_tracker;
 
+#ifdef FLASH_GPGPU_SIM_OMP
+static std::array<ptx_file_line_stats_map_t, FLASH_GPGPU_SIM_OMP_MAX_THREADS>
+    ptx_file_line_stats_thread_tracker;
+#endif
+
+ptx_file_line_stats_map_t &get_tracker() {
+
+#ifdef FLASH_GPGPU_SIM_OMP
+  auto tid = omp_get_thread_num();
+  assert(tid < ptx_file_line_stats_thread_tracker.size());
+  return ptx_file_line_stats_thread_tracker[tid];
+#else
+  return ptx_file_line_stats_tracker;
+#endif
+}
+
+void aggregate_ptx_file_line_stats(
+    ptx_file_line_stats_map_t &aggr_tracker,
+    const ptx_file_line_stats_map_t &src_tracker) {
+  for (const auto &entry : src_tracker) {
+    aggr_tracker[entry.first] += entry.second;
+  }
+}
+
 // output statistics to a file
 void ptx_stats::ptx_file_line_stats_write_file() {
   // check if stat collection is turned on
   if (enable_ptx_file_line_stats == 0) return;
+
+#ifdef FLASH_GPGPU_SIM_OMP
+  for (auto &tracker : ptx_file_line_stats_thread_tracker) {
+    aggregate_ptx_file_line_stats(ptx_file_line_stats_tracker, tracker);
+  }
+#endif
 
   ptx_file_line_stats_map_t::iterator it;
   FILE *pfile;
@@ -157,7 +204,7 @@ void ptx_stats::ptx_file_line_stats_write_file() {
 // attribute one more execution count to this ptx instruction
 // counting the number of threads (not warps) executing this instruction
 void ptx_file_line_stats_add_exec_count(const ptx_instruction *pInsn) {
-  ptx_file_line_stats_tracker[ptx_file_line(pInsn->source_file(),
+  get_tracker()[ptx_file_line(pInsn->source_file(),
                                             pInsn->source_line())]
       .exec_count += 1;
 }
@@ -169,7 +216,7 @@ void ptx_stats::ptx_file_line_stats_add_latency(unsigned pc, unsigned latency) {
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
 
   if (pInsn != NULL)
-    ptx_file_line_stats_tracker[ptx_file_line(pInsn->source_file(),
+    get_tracker()[ptx_file_line(pInsn->source_file(),
                                               pInsn->source_line())]
         .latency += latency;
 }
@@ -181,7 +228,7 @@ void ptx_stats::ptx_file_line_stats_add_dram_traffic(unsigned pc,
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
 
   if (pInsn != NULL)
-    ptx_file_line_stats_tracker[ptx_file_line(pInsn->source_file(),
+    get_tracker()[ptx_file_line(pInsn->source_file(),
                                               pInsn->source_line())]
         .dram_traffic += dram_traffic;
 }
@@ -194,7 +241,7 @@ void ptx_stats::ptx_file_line_stats_add_smem_bank_conflict(
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
 
   if (pInsn != NULL) {
-    ptx_file_line_stats &line_stats = ptx_file_line_stats_tracker[ptx_file_line(
+    ptx_file_line_stats &line_stats = get_tracker()[ptx_file_line(
         pInsn->source_file(), pInsn->source_line())];
     line_stats.smem_n_way_bank_conflict_total += n_way_bkconflict;
     line_stats.smem_warp_count += 1;
@@ -209,7 +256,7 @@ void ptx_stats::ptx_file_line_stats_add_uncoalesced_gmem(unsigned pc,
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
 
   if (pInsn != NULL) {
-    ptx_file_line_stats &line_stats = ptx_file_line_stats_tracker[ptx_file_line(
+    ptx_file_line_stats &line_stats = get_tracker()[ptx_file_line(
         pInsn->source_file(), pInsn->source_line())];
     line_stats.gmem_n_access_total += n_access;
     line_stats.gmem_warp_count += 1;
@@ -247,7 +294,7 @@ class ptx_inflight_memory_insn_tracker {
     for (; i_exlatinsn != exlat_insnmap.end(); ++i_exlatinsn) {
       const ptx_instruction *pInsn = i_exlatinsn->first;
       ptx_file_line_stats &line_stats =
-          ptx_file_line_stats_tracker[ptx_file_line(pInsn->source_file(),
+          get_tracker()[ptx_file_line(pInsn->source_file(),
                                                     pInsn->source_line())];
       line_stats.exposed_latency += count;
     }
@@ -291,7 +338,7 @@ void ptx_stats::ptx_file_line_stats_add_warp_divergence(
     unsigned pc, unsigned n_way_divergence) {
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
 
-  ptx_file_line_stats &line_stats = ptx_file_line_stats_tracker[ptx_file_line(
+  ptx_file_line_stats &line_stats = get_tracker()[ptx_file_line(
       pInsn->source_file(), pInsn->source_line())];
   line_stats.warp_divergence += n_way_divergence;
 }

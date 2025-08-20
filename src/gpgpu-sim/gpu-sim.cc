@@ -2061,6 +2061,32 @@ void gpgpu_sim::cycle() {
   if (clock_mask & CORE) {
     // L1 cache + shader core pipeline stages
     m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].clear();
+
+ #ifdef FLASH_GPGPU_SIM_OMP
+ 
+    unsigned int active_sms_local = 0;
+    #pragma omp parallel for reduction(+:active_sms_local) 
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+      if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
+        m_cluster[i]->core_cycle();
+        active_sms_local += m_cluster[i]->get_n_active_sms();
+      }
+    }
+    *active_sms += active_sms_local;
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+      // Update core icnt/cache stats for AccelWattch
+      if (m_config.g_power_simulation_enabled) {
+        m_cluster[i]->get_icnt_stats(
+            m_power_stats->pwr_mem_stat->n_simt_to_mem[CURRENT_STAT_IDX][i],
+            m_power_stats->pwr_mem_stat->n_mem_to_simt[CURRENT_STAT_IDX][i]);
+        m_cluster[i]->get_cache_stats(
+            m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX]);
+      }
+      m_cluster[i]->get_current_occupancy(
+          gpu_occupancy.aggregate_warp_slot_filled,
+          gpu_occupancy.aggregate_theoretical_warp_slots);
+    }
+ #else
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
@@ -2078,6 +2104,7 @@ void gpgpu_sim::cycle() {
           gpu_occupancy.aggregate_warp_slot_filled,
           gpu_occupancy.aggregate_theoretical_warp_slots);
     }
+#endif
     float temp = 0;
     for (unsigned i = 0; i < m_shader_config->num_shader(); i++) {
       temp += m_shader_stats->m_pipeline_duty_cycle[i];

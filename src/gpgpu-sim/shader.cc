@@ -4469,7 +4469,12 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
                           1;  // this causes first launch to use hw cta 0
   m_cluster_id = cluster_id;
   m_gpu = gpu;
+#ifdef FLASH_GPGPU_SIM_OMP
+  m_stats = new shader_core_stats(config);
+  m_aggregate_stats = stats;
+#else
   m_stats = stats;
+#endif
   m_memory_stats = mstats;
   m_mem_config = mem_config;
 }

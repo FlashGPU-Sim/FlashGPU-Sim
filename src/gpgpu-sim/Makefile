@@ -32,9 +32,9 @@ DEBUG?=0
 TRACE?=0
 
 ifeq ($(DEBUG),1)
-	CXXFLAGS = -Wall -DDEBUG
+	CXXFLAGS = -Wall -DDEBUG -fopenmp
 else
-	CXXFLAGS = -Wall
+	CXXFLAGS = -Wall -fopenmp
 endif
 
 ifeq ($(TRACE),1)
@@ -44,7 +44,7 @@ endif
 include ../../version_detection.mk
 
 ifeq ($(GNUC_CPP0X), 1)
-    CXXFLAGS += -std=c++0x
+    CXXFLAGS += -std=c++17
 endif
 
 ifneq ($(DEBUG),1)

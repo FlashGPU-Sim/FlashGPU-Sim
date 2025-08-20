@@ -2662,6 +2662,7 @@ class simt_core_cluster {
   gpgpu_sim *m_gpu;
   const shader_core_config *m_config;
   shader_core_stats *m_stats;
+  shader_core_stats *m_aggregate_stats;
   memory_stats_t *m_memory_stats;
   shader_core_ctx **m_core;
   const memory_config *m_mem_config;
