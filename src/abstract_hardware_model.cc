@@ -112,6 +112,7 @@ void checkpoint::store_global_mem(class memory_space *mem, char *fname,
   fclose(fp3);
 }
 
+#ifndef FLASH_GPGPU_SIM
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src) {
   assert(dst->empty());
   warp_inst_t *temp = dst;
@@ -119,6 +120,7 @@ void move_warp(warp_inst_t *&dst, warp_inst_t *&src) {
   src = temp;
   src->clear();
 }
+#endif
 
 void gpgpu_functional_sim_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_ptx_use_cuobjdump", OPT_BOOL,

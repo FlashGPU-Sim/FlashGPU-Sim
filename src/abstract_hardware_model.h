@@ -94,6 +94,12 @@ enum FuncCache {
 
 enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 
+#define FLASH_GPGPU_SIM
+#define FLASH_GPGPU_SIM_OMP
+#ifdef FLASH_GPGPU_SIM_OMP
+#include <omp.h>
+#endif
+
 #ifdef __cplusplus
 
 #include <stdio.h>
@@ -1279,7 +1285,17 @@ class warp_inst_t : public inst_t {
   unsigned int m_depbar_group_no;
 };
 
+#ifdef FLASH_GPGPU_SIM
+inline void move_warp(warp_inst_t *&dst, warp_inst_t *&src) {
+  // assert(dst->empty());
+  warp_inst_t *temp = dst;
+  dst = src;
+  src = temp;
+  // src->clear();
+}
+#else
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);
+#endif
 
 size_t get_kernel_code_size(class function_info *entry);
 class checkpoint {
