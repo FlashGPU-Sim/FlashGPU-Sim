@@ -781,6 +781,8 @@ class gpgpu_sim : public gpgpu_t {
   void change_cache_config(FuncCache cache_config);
   void set_cache_config(std::string kernel_name);
 
+  void aggregate_cluster_stats();
+
   // Jin: functional simulation for CDP
  protected:
   // set by stream operation every time a functoinal simulation is done

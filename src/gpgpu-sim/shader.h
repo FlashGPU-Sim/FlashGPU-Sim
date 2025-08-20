@@ -1727,8 +1727,7 @@ struct shader_core_stats_pod {
                               // shader core
   unsigned *m_last_num_sim_insn;
   unsigned *m_last_num_sim_winsn;
-  unsigned *
-      m_num_decoded_insn;  // number of instructions decoded by this shader core
+  unsigned *m_num_decoded_insn;  // number of instructions decoded by this shader core
   float *m_pipeline_duty_cycle;
   unsigned *m_num_FPdecoded_insn;
   unsigned *m_num_INTdecoded_insn;
@@ -1979,6 +1978,9 @@ class shader_core_stats : public shader_core_stats_pod {
     free(shader_cycle_distro);
     free(last_shader_cycle_distro);
   }
+
+  void aggregate(const shader_core_stats &other, int sm_lhs, int sm_rhs);
+  void clear_accumulator();
 
   void new_grid() {}
 
@@ -2656,6 +2658,8 @@ class simt_core_cluster {
   float get_current_occupancy(unsigned long long &active,
                               unsigned long long &total) const;
   virtual void create_shader_core_ctx() = 0;
+
+  void aggregate_stats();
 
  protected:
   unsigned m_cluster_id;

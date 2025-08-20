@@ -614,6 +614,197 @@ float shader_core_ctx::get_current_occupancy(unsigned long long &active,
   }
 }
 
+namespace {
+template <typename T>
+void merge_stat(T *dst, const T *src, int lhs, int rhs) {
+  for (int i = lhs; i < rhs; ++i) {
+    dst[i] = src[i];
+  }
+}
+}
+
+void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, int sm_rhs) {
+
+#define merge(name) \
+  merge_stat(name, other.name, sm_lhs, sm_rhs)
+
+  merge(shader_cycles);
+  merge(m_num_sim_insn);
+  merge(m_num_sim_winsn);
+
+  merge(m_last_num_sim_insn);
+  merge(m_last_num_sim_winsn);
+  merge(m_num_decoded_insn);
+  merge(m_pipeline_duty_cycle);
+  merge(m_num_FPdecoded_insn);
+  merge(m_num_INTdecoded_insn);
+  merge(m_num_storequeued_insn);
+  merge(m_num_loadqueued_insn);
+  merge(m_num_tex_inst);
+  merge(m_num_ialu_acesses);
+  merge(m_num_fp_acesses);
+  merge(m_num_imul_acesses);
+  merge(m_num_fpmul_acesses);
+  merge(m_num_idiv_acesses);
+  merge(m_num_fpdiv_acesses);
+  merge(m_num_sp_acesses);
+  merge(m_num_sfu_acesses);
+  merge(m_num_tensor_core_acesses);
+  merge(m_num_tex_acesses);
+  merge(m_num_const_acesses);
+  merge(m_num_dp_acesses);
+  merge(m_num_dpmul_acesses);
+  merge(m_num_dpdiv_acesses);
+  merge(m_num_sqrt_acesses);
+  merge(m_num_log_acesses);
+  merge(m_num_sin_acesses);
+  merge(m_num_exp_acesses);
+  merge(m_num_mem_acesses);
+  merge(m_num_sp_committed);
+  merge(m_num_tlb_hits);
+  merge(m_num_tlb_accesses);
+  merge(m_num_sfu_committed);
+  merge(m_num_tensor_core_committed);
+  merge(m_num_mem_committed);
+  merge(m_read_regfile_acesses);
+  merge(m_write_regfile_acesses);
+  merge(m_non_rf_operands);
+  merge(m_num_imul24_acesses);
+  merge(m_num_imul32_acesses);
+  merge(m_active_sp_lanes);
+  merge(m_active_sfu_lanes);
+  merge(m_active_tensor_core_lanes);
+  merge(m_active_fu_lanes);
+  merge(m_active_fu_mem_lanes);
+  merge(m_active_exu_threads);  // For power model
+  merge(m_active_exu_warps);   // For power model
+  merge(m_n_diverge);  // number of divergence occurring in this shader
+  
+#define accumulate(name) \
+  name += other.name
+
+  accumulate(gpgpu_n_load_insn);
+  accumulate(gpgpu_n_store_insn);
+  accumulate(gpgpu_n_shmem_insn);
+  accumulate(gpgpu_n_sstarr_insn);
+  accumulate(gpgpu_n_tex_insn);
+  accumulate(gpgpu_n_const_insn);
+  accumulate(gpgpu_n_param_insn);
+  accumulate(gpgpu_n_shmem_bkconflict);
+  accumulate(gpgpu_n_l1cache_bkconflict);
+  accumulate(gpgpu_n_intrawarp_mshr_merge);
+  accumulate(gpgpu_n_cmem_portconflict);
+
+  for (int i = 0; i < N_MEM_STAGE_ACCESS_TYPE; ++i) {
+    for (int j = 0; j < N_MEM_STAGE_STALL_TYPE; ++j) {
+      gpu_stall_shd_mem_breakdown[i][j] +=
+          other.gpu_stall_shd_mem_breakdown[i][j];
+    }
+  }
+
+  accumulate(gpu_reg_bank_conflict_stalls);
+
+  for (int i = 0; i < m_config->warp_size + 3; ++i) {
+    accumulate(shader_cycle_distro[i]);
+  }
+  // no need to handle -- unsigned *last_shader_cycle_distro;
+  // not used at all -- unsigned *num_warps_issuable;
+
+  accumulate(gpgpu_n_stall_shd_mem);
+  for (int i = 0; i < m_config->gpgpu_num_sched_per_core; ++i) {
+    accumulate(single_issue_nums[i]);
+    accumulate(dual_issue_nums[i]);
+  }
+
+  accumulate(ctas_completed);
+  accumulate(gpgpu_n_mem_read_local);
+  accumulate(gpgpu_n_mem_write_local);
+  accumulate(gpgpu_n_mem_texture);
+  accumulate(gpgpu_n_mem_const);
+  accumulate(gpgpu_n_mem_read_global);
+  accumulate(gpgpu_n_mem_write_global);
+  accumulate(gpgpu_n_mem_read_inst);
+  accumulate(gpgpu_n_mem_l2_writeback);
+  accumulate(gpgpu_n_mem_l1_write_allocate);
+  accumulate(gpgpu_n_mem_l2_write_allocate);
+
+  accumulate(made_write_mfs);
+  accumulate(made_read_mfs);
+
+  merge(gpgpu_n_shmem_bank_access);
+  merge(n_simt_to_mem);
+  merge(n_mem_to_simt);
+
+  m_outgoing_traffic_stats->aggregate(
+      *other.m_outgoing_traffic_stats);
+  m_incoming_traffic_stats->aggregate(
+      *other.m_incoming_traffic_stats);
+
+  // Counts the instructions issued for each dynamic warp.
+  // No need to handle last_* as they are updated by visualizer
+  merge(m_shader_dynamic_warp_issue_distro.data());
+  merge(m_shader_warp_slot_issue_distro.data());
+
+#undef merge
+#undef accumulate
+}
+
+void shader_core_stats::clear_accumulator() {
+#define accumulate(name) name = 0
+
+  accumulate(gpgpu_n_store_insn);
+  accumulate(gpgpu_n_shmem_insn);
+  accumulate(gpgpu_n_sstarr_insn);
+  accumulate(gpgpu_n_tex_insn);
+  accumulate(gpgpu_n_const_insn);
+  accumulate(gpgpu_n_param_insn);
+  accumulate(gpgpu_n_shmem_bkconflict);
+  accumulate(gpgpu_n_l1cache_bkconflict);
+  accumulate(gpgpu_n_intrawarp_mshr_merge);
+  accumulate(gpgpu_n_cmem_portconflict);
+
+  for (int i = 0; i < N_MEM_STAGE_ACCESS_TYPE; ++i) {
+    for (int j = 0; j < N_MEM_STAGE_STALL_TYPE; ++j) {
+      gpu_stall_shd_mem_breakdown[i][j] = 0;
+    }
+  }
+
+  accumulate(gpu_reg_bank_conflict_stalls);
+
+  for (int i = 0; i < m_config->warp_size + 3; ++i) {
+    accumulate(shader_cycle_distro[i]);
+  }
+  // no need to handle -- unsigned *last_shader_cycle_distro;
+  // not used at all -- unsigned *num_warps_issuable;
+
+  accumulate(gpgpu_n_stall_shd_mem);
+  for (int i = 0; i < m_config->gpgpu_num_sched_per_core; ++i) {
+    accumulate(single_issue_nums[i]);
+    accumulate(dual_issue_nums[i]);
+  }
+
+  accumulate(ctas_completed);
+  accumulate(gpgpu_n_mem_read_local);
+  accumulate(gpgpu_n_mem_write_local);
+  accumulate(gpgpu_n_mem_texture);
+  accumulate(gpgpu_n_mem_const);
+  accumulate(gpgpu_n_mem_read_global);
+  accumulate(gpgpu_n_mem_write_global);
+  accumulate(gpgpu_n_mem_read_inst);
+  accumulate(gpgpu_n_mem_l2_writeback);
+  accumulate(gpgpu_n_mem_l1_write_allocate);
+  accumulate(gpgpu_n_mem_l2_write_allocate);
+
+  accumulate(made_write_mfs);
+  accumulate(made_read_mfs);
+
+  m_outgoing_traffic_stats->clear();
+  m_incoming_traffic_stats->clear();
+
+#undef accumulate
+}
+
+
 void shader_core_stats::print(FILE *fout) const {
   unsigned long long thread_icount_uarch = 0;
   unsigned long long warp_icount_uarch = 0;
@@ -1923,7 +2114,12 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
     m_stats->m_num_sim_insn[m_sid] += inst.active_count();
 
   m_stats->m_num_sim_winsn[m_sid]++;
+#ifdef FLASH_GPGPU_SIM_OMP
+  __atomic_fetch_add(&m_gpu->gpu_sim_insn, inst.active_count(),
+                     __ATOMIC_RELAXED);
+#else
   m_gpu->gpu_sim_insn += inst.active_count();
+#endif
   inst.completed(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
 }
 
@@ -4477,6 +4673,15 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
 #endif
   m_memory_stats = mstats;
   m_mem_config = mem_config;
+}
+
+void simt_core_cluster::aggregate_stats() {
+#ifdef FLASH_GPGPU_SIM_OMP
+  auto sm_lhs = m_config->cid_to_sid(0, m_cluster_id);
+  auto sm_rhs = m_config->cid_to_sid(m_config->n_simt_cores_per_cluster,
+                                      m_cluster_id);
+  m_aggregate_stats->aggregate(*m_stats, sm_lhs, sm_rhs);
+#endif
 }
 
 void simt_core_cluster::core_cycle() {

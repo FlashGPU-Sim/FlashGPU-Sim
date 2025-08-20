@@ -16,6 +16,18 @@ class traffic_breakdown {
   // record the amount and type of traffic introduced by this mem_fetch object
   void record_traffic(class mem_fetch* mf, unsigned int size);
 
+  void aggregate(const traffic_breakdown& other) {
+    for (const auto& type_pair : other.m_stats) {
+      const auto& type = type_pair.first;
+      const auto& size_map = type_pair.second;
+      for (const auto& size_pair : size_map) {
+        m_stats[type][size_pair.first] += size_pair.second;
+      }
+    }
+  }
+
+  void clear() { m_stats.clear(); }
+
  protected:
   std::string m_network_name;
 

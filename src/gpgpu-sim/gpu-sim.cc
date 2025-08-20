@@ -1970,6 +1970,13 @@ void gpgpu_sim::issue_block2core() {
 unsigned long long g_single_step =
     0;  // set this in gdb to single step the pipeline
 
+void gpgpu_sim::aggregate_cluster_stats() {
+  m_shader_stats->clear_accumulator();
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+    m_cluster[i]->aggregate_stats();
+  }
+}
+
 void gpgpu_sim::cycle() {
   int clock_mask = next_clock_domain();
 
@@ -2202,6 +2209,8 @@ void gpgpu_sim::cycle() {
         fflush(stdout);
         last_liveness_message_time = elapsed_time;
       }
+      // Need to aggregate before we can print visualizer stats
+      aggregate_cluster_stats();
       visualizer_printstat();
       m_memory_stats->memlatstat_lat_pw();
       if (m_config.gpgpu_runtime_stat &&

@@ -159,6 +159,7 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
       fflush(stdout);
     }
     if (sim_cycles) {
+      ctx->the_gpgpusim->g_the_gpu->aggregate_cluster_stats();
       ctx->the_gpgpusim->g_the_gpu->print_stats(
           ctx->the_gpgpusim->g_the_gpu->last_streamID);
       ctx->the_gpgpusim->g_the_gpu->update_stats();
