@@ -43,6 +43,7 @@ include ../../version_detection.mk
 OUTPUT_DIR=$(SIM_OBJ_FILES_DIR)/cuda-sim
 
 OPT	:=  -O3 -g3 -Wall -Wno-unused-function -Wno-sign-compare
+OPT += $(EXTRA_FLAGS)
 ifeq ($(DEBUG),1)
 	OPT := -g3 -Wall  -Wno-unused-function -Wno-sign-compare
 endif

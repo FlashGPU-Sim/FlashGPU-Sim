@@ -34,7 +34,9 @@ TRACE?=1
 
 include ../version_detection.mk
 
-CXXFLAGS = -Wall -DDEBUG -fopenmp
+
+# Add extra flags from top-level Makefile
+CXXFLAGS = -Wall -DDEBUG -fopenmp $(EXTRA_FLAGS)
 CXXFLAGS += -DCUDART_VERSION=$(CUDART_VERSION)
 
 ifeq ($(GNUC_CPP0X), 1)

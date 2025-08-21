@@ -67,7 +67,9 @@ ifeq ($(OPENGL_SUPPORT),1)
 endif
 
 ifeq ($(GNUC_CPP0X), 1)
-    CXXFLAGS = -std=c++17
+	CXXFLAGS = -std=c++17 $(EXTRA_FLAGS)
+else
+	CXXFLAGS += $(EXTRA_FLAGS)
 endif
 
 

@@ -129,7 +129,9 @@ class memory_space_impl : public memory_space {
   unsigned m_log2_block_size;
   using map_t = mem_map<mem_addr_t, std::unique_ptr<mem_storage<BSIZE>>>;
   map_t m_data;
+#ifdef FLASH_GPGPU_SIM_OMP
   mutable std::shared_mutex m_data_mutex;
+#endif
 
   mem_storage<BSIZE> &get_or_init_block(mem_addr_t blk_idx);
   mem_storage<BSIZE> *try_get_block(mem_addr_t blk_idx) const;

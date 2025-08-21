@@ -25,6 +25,15 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+# Define EXTRA_FLAGS for propagating extra macros/flags to sub-makefiles
+EXTRA_FLAGS ?=
+ifeq ($(FLASH), 1)
+EXTRA_FLAGS += -DFLASH_GPGPU_SIM -DFLASH_GPGPU_SIM_OMP
+endif
+
+# # Print the value of EXTRA_FLAGS
+# print-flags:
+# 	@echo 'EXTRA_FLAGS=$(EXTRA_FLAGS)'
 
 # comment out next line to disable OpenGL support
 # export OPENGL_SUPPORT=1
@@ -196,19 +205,19 @@ $(SIM_LIB_DIR)/libOpenCL.so: makedirs $(LIBS) opencllib
 	if [ ! -f $(SIM_LIB_DIR)/libOpenCL.so.1 ]; then ln -s libOpenCL.so $(SIM_LIB_DIR)/libOpenCL.so.1; fi
 	if [ ! -f $(SIM_LIB_DIR)/libOpenCL.so.1.1 ]; then ln -s libOpenCL.so $(SIM_LIB_DIR)/libOpenCL.so.1.1; fi
 
+cuda-sim: makedirs
+	$(MAKE) -C ./src/cuda-sim/ depend EXTRA_FLAGS='$(EXTRA_FLAGS)'
+	$(MAKE) -C ./src/cuda-sim/ EXTRA_FLAGS='$(EXTRA_FLAGS)'
+
 cudalib: makedirs cuda-sim
-	$(MAKE) -C ./libcuda/ depend
-	$(MAKE) -C ./libcuda/
+	$(MAKE) -C ./libcuda/ depend EXTRA_FLAGS='$(EXTRA_FLAGS)'
+	$(MAKE) -C ./libcuda/ EXTRA_FLAGS='$(EXTRA_FLAGS)'
 
 ifneq ($(GPGPUSIM_POWER_MODEL),)
 mcpat: makedirs
 	$(MAKE) -C $(GPGPUSIM_POWER_MODEL) depend
 	$(MAKE) -C $(GPGPUSIM_POWER_MODEL) $(MCPAT_DBG_FLAG)
 endif
-
-cuda-sim: makedirs
-	$(MAKE) -C ./src/cuda-sim/ depend
-	$(MAKE) -C ./src/cuda-sim/
 
 TFLAGS = -std=c++17 -I$(CUDA_INSTALL_PATH)/include
 ifneq ($(DEBUG),1)
@@ -217,24 +226,24 @@ endif
 TFLAGS += -g3 -fPIC
 
 gpgpu-sim_uarch: makedirs cuda-sim
-	$(MAKE) -C ./src/gpgpu-sim/ depend
-	$(MAKE) -C ./src/gpgpu-sim/
+	$(MAKE) -C ./src/gpgpu-sim/ depend EXTRA_FLAGS='$(EXTRA_FLAGS)'
+	$(MAKE) -C ./src/gpgpu-sim/ EXTRA_FLAGS='$(EXTRA_FLAGS)'
 
 $(INTERSIM): makedirs cuda-sim gpgpu-sim_uarch
-	$(MAKE) "CREATE_LIBRARY=1" "DEBUG=$(DEBUG)" -C ./src/$(INTERSIM)
+	$(MAKE) "CREATE_LIBRARY=1" "DEBUG=$(DEBUG)" -C ./src/$(INTERSIM) EXTRA_FLAGS='$(EXTRA_FLAGS)'
 
 gpgpusimlib: makedirs cuda-sim gpgpu-sim_uarch $(INTERSIM)
-	$(MAKE) -C ./src/ depend
-	$(MAKE) -C ./src/
+	$(MAKE) -C ./src/ depend EXTRA_FLAGS='$(EXTRA_FLAGS)'
+	$(MAKE) -C ./src/ EXTRA_FLAGS='$(EXTRA_FLAGS)'
 
 opencllib: makedirs cuda-sim
-	$(MAKE) -C ./libopencl/ depend
-	$(MAKE) -C ./libopencl/
+	$(MAKE) -C ./libopencl/ depend EXTRA_FLAGS='$(EXTRA_FLAGS)'
+	$(MAKE) -C ./libopencl/ EXTRA_FLAGS='$(EXTRA_FLAGS)'
 
 .PHONY: cuobjdump_to_ptxplus/cuobjdump_to_ptxplus
 cuobjdump_to_ptxplus/cuobjdump_to_ptxplus: cuda-sim makedirs
-	$(MAKE) -C ./cuobjdump_to_ptxplus/ depend
-	$(MAKE) -C ./cuobjdump_to_ptxplus/
+	$(MAKE) -C ./cuobjdump_to_ptxplus/ depend EXTRA_FLAGS='$(EXTRA_FLAGS)'
+	$(MAKE) -C ./cuobjdump_to_ptxplus/ EXTRA_FLAGS='$(EXTRA_FLAGS)'
 
 makedirs:
 	if [ ! -d $(SIM_LIB_DIR) ]; then mkdir -p $(SIM_LIB_DIR); fi;

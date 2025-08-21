@@ -42,7 +42,7 @@ ifeq ($(CREATE_LIBRARY),1)
 INCPATH += -I$(GPGPUSIM_ROOT)/src/gpgpu-sim/
 endif
 
-CPPFLAGS += -Wall $(INCPATH) $(DEFINE)
+CPPFLAGS += -Wall $(INCPATH) $(DEFINE) $(EXTRA_FLAGS)
 ifneq ($(DEBUG),1)
 CPPFLAGS += -O3
 endif
