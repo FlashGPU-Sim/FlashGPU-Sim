@@ -7257,3 +7257,103 @@ extern "C" CUresult CUDAAPI cuMemPrefetchAsync_ptsz(CUdeviceptr devPtr,
   printf("WARNING: this function has not been implemented yet.");
   return CUDA_SUCCESS;
 }
+
+extern "C" {
+
+#define cuda_error_not_impl \
+  if (g_debug_execution >= 3) { \
+    announce_call(__my_func__); \
+  } \
+  printf("ERROR: %s is not implemented yet.", __my_func__); \
+  abort(); \
+  return cudaSuccess;
+
+__host__ cudaError_t CUDARTAPI cudaThreadExchangeStreamCaptureMode(enum cudaStreamCaptureMode *mode) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaDeviceGetDefaultMemPool(cudaMemPool_t *memPool, int device) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaMemPoolGetAttribute(cudaMemPool_t memPool, enum cudaMemPoolAttr attr, void *value ) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaMemPoolSetAttribute(cudaMemPool_t memPool, enum cudaMemPoolAttr attr, void *value ) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaMemPoolSetAccess(cudaMemPool_t memPool, const struct cudaMemAccessDesc *descList, size_t count) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaMemPoolTrimTo(cudaMemPool_t memPool, size_t minBytesToKeep) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaStreamIsCapturing(cudaStream_t stream, enum cudaStreamCaptureStatus *pCaptureStatus) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaMallocAsync(void **devPtr, size_t size, cudaStream_t hStream) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaMemcpyPeerAsync(void *dst, int dstDevice, const void *src, int srcDevice, size_t count, cudaStream_t stream __dv(0)) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaFreeAsync(void *devPtr, cudaStream_t hStream) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaIpcOpenEventHandle(cudaEvent_t *event, cudaIpcEventHandle_t handle) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaIpcGetEventHandle(cudaIpcEventHandle_t *handle, cudaEvent_t event) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaIpcCloseMemHandle(void *devPtr) {
+  cuda_error_not_impl;
+}
+
+__host__ __cudart_builtin__ cudaError_t CUDARTAPI cudaGetDeviceProperties_v2(struct cudaDeviceProp *prop, int device) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaGraphDebugDotPrint(cudaGraph_t graph, const char *path, unsigned int flags) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaGraphDestroy(cudaGraph_t graph) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaGraphExecDestroy(cudaGraphExec_t graphExec) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaGraphGetNodes(cudaGraph_t graph, cudaGraphNode_t *nodes, size_t *numNodes) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaGraphInstantiate(cudaGraphExec_t *pGraphExec, cudaGraph_t graph, unsigned long long flags __dv(0)) {
+  cuda_error_not_impl;
+}
+
+#if __CUDART_API_VERSION >= 11040
+__host__ cudaError_t CUDARTAPI cudaGraphInstantiateWithFlags(cudaGraphExec_t *pGraphExec, cudaGraph_t graph, unsigned long long flags __dv(0)) {
+  cuda_error_not_impl;
+}
+#endif
+
+__host__ cudaError_t CUDARTAPI cudaGraphLaunch(cudaGraphExec_t graphExec, cudaStream_t stream) {
+  cuda_error_not_impl;
+}
+
+#undef cuda_error_not_impl
+
+}
