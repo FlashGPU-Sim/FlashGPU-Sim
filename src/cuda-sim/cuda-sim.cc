@@ -2271,8 +2271,8 @@ void cuda_sim::gpgpu_ptx_sim_register_const_variable(void *hostVar,
 void cuda_sim::gpgpu_ptx_sim_register_global_variable(void *hostVar,
                                                       const char *deviceName,
                                                       size_t size) {
-  printf("GPGPU-Sim PTX registering global %s hostVar to name mapping\n",
-         deviceName);
+  // printf("GPGPU-Sim PTX registering global %s hostVar to name mapping\n",
+  //        deviceName);
   g_global_name_lookup[hostVar] = deviceName;
 }
 

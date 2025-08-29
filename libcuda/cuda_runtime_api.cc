@@ -846,14 +846,14 @@ void cudaRegisterVarInternal(
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  printf(
-      "GPGPU-Sim PTX: __cudaRegisterVar: hostVar = %p; deviceAddress = %s; "
-      "deviceName = %s\n",
-      hostVar, deviceAddress, deviceName);
-  printf(
-      "GPGPU-Sim PTX: __cudaRegisterVar: Registering const memory space of %d "
-      "bytes\n",
-      size);
+  // printf(
+  //     "GPGPU-Sim PTX: __cudaRegisterVar: hostVar = %p; deviceAddress = %s; "
+  //     "deviceName = %s\n",
+  //     hostVar, deviceAddress, deviceName);
+  // printf(
+  //     "GPGPU-Sim PTX: __cudaRegisterVar: Registering const memory space of %d "
+  //     "bytes\n",
+  //     size);
   if (GPGPUSim_Context(ctx)
           ->get_device()
           ->get_gpgpu()
@@ -3975,6 +3975,22 @@ cudaPointerGetAttributes(cudaPointerAttributes *attributes, const void *ptr) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
+
+  // auto ctx = GPGPU_Context();
+  // auto context = GPGPUSim_Context(ctx);
+  // auto addr = reinterpret_cast<addr_t>(ptr);
+  // if (isspace_global(addr)) {
+  //   attributes->type = cudaMemoryTypeDevice;
+  //   attributes->device = context->get_device()->get_id();
+  //   attributes->devicePointer = const_cast<void *>(ptr);
+  //   attributes->hostPointer = nullptr;
+
+  //   printf("GPGPU-Sim PTX: cudaPointerGetAttributes on global ptr %p, device %d\n",
+  //     ptr, attributes->device);
+
+  //   return g_last_cudaError = cudaSuccess;
+  // }
+
   cuda_not_implemented(__my_func__, __LINE__);
   return g_last_cudaError = cudaErrorUnknown;
 }
@@ -4965,7 +4981,7 @@ CUresult CUDAAPI cuMemHostRegister(void *p, size_t bytesize,
   printf("WARNING: this function has not been implemented yet.");
   return CUDA_SUCCESS;
 }
-__host__ cudaError_t cudaHostRegister(void *ptr, size_t size,
+extern "C" __host__ cudaError_t CUDARTAPI cudaHostRegister(void *ptr, size_t size,
                                       unsigned int flags) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
@@ -4974,7 +4990,7 @@ __host__ cudaError_t cudaHostRegister(void *ptr, size_t size,
   return g_last_cudaError = cudaSuccess;
 }
 
-__host__ cudaError_t cudaProfilerStart() {
+extern "C" __host__ cudaError_t cudaProfilerStart() {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
@@ -4982,7 +4998,7 @@ __host__ cudaError_t cudaProfilerStart() {
   return g_last_cudaError = cudaSuccess;
 }
 
-__host__ cudaError_t cudaProfilerStop() {
+extern "C" __host__ cudaError_t cudaProfilerStop() {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
@@ -7344,13 +7360,46 @@ __host__ cudaError_t CUDARTAPI cudaGraphInstantiate(cudaGraphExec_t *pGraphExec,
   cuda_error_not_impl;
 }
 
-#if __CUDART_API_VERSION >= 11040
 __host__ cudaError_t CUDARTAPI cudaGraphInstantiateWithFlags(cudaGraphExec_t *pGraphExec, cudaGraph_t graph, unsigned long long flags __dv(0)) {
   cuda_error_not_impl;
 }
-#endif
 
 __host__ cudaError_t CUDARTAPI cudaGraphLaunch(cudaGraphExec_t graphExec, cudaStream_t stream) {
+  cuda_error_not_impl;
+}
+
+typedef void (CUDART_CB *cudaStreamCallback_t)(cudaStream_t stream, cudaError_t status, void *userData);
+
+__host__ cudaError_t CUDARTAPI cudaStreamAddCallback(cudaStream_t stream,
+        cudaStreamCallback_t callback, void *userData, unsigned int flags) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaStreamBeginCapture(cudaStream_t stream, enum cudaStreamCaptureMode mode) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaStreamEndCapture(cudaStream_t stream, cudaGraph_t *pGraph) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaStreamGetCaptureInfo_v2(cudaStream_t stream, enum cudaStreamCaptureStatus *captureStatus_out, unsigned long long *id_out __dv(0), cudaGraph_t *graph_out __dv(0), const cudaGraphNode_t **dependencies_out __dv(0), size_t *numDependencies_out __dv(0)) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaGetDriverEntryPoint(const char *symbol, void **funcPtr, unsigned long long flags, enum cudaDriverEntryPointQueryResult *driverStatus = NULL) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaHostUnregister(void *ptr) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaLaunchKernelExC(const cudaLaunchConfig_t *config, const void *func, void **args) {
+  cuda_error_not_impl;
+}
+
+__host__ cudaError_t CUDARTAPI cudaLaunchHostFunc(cudaStream_t stream, cudaHostFn_t fn, void *userData) {
   cuda_error_not_impl;
 }
 
