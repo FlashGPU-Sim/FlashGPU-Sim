@@ -346,6 +346,8 @@ class symbol_table {
   iterator const_iterator_begin() { return m_consts.begin(); }
   iterator const_iterator_end() { return m_consts.end(); }
 
+  symbol_table *get_parent() { return m_parent; }
+
   void dump();
 
   // Jin: handle instruction group for cdp
@@ -939,7 +941,8 @@ struct gpgpu_recon_t {
 class ptx_instruction : public warp_inst_t {
  public:
   ptx_instruction(int opcode, const symbol *pred, int neg_pred, int pred_mod,
-                  symbol *label, const std::list<operand_info> &operands,
+                  symbol *label, symbol_table *symtab,
+                  const std::list<operand_info> &operands,
                   const operand_info &return_var, const std::list<int> &options,
                   const std::list<int> &wmma_options,
                   const std::list<int> &scalar_type, memory_space_t space_spec,
@@ -1069,6 +1072,7 @@ class ptx_instruction : public warp_inst_t {
   unsigned get_m_instr_mem_index() { return m_instr_mem_index; }
   unsigned get_cmpop() const { return m_compare_op; }
   const symbol *get_label() const { return m_label; }
+  symbol_table *get_symbol_table() const { return m_symbol_table; }
   bool is_label() const {
     if (m_label) {
       assert(m_opcode == -1);
@@ -1091,6 +1095,7 @@ class ptx_instruction : public warp_inst_t {
   unsigned left_mode() const { return m_left_mode; }
   unsigned dimension() const { return m_geom_spec; }
   unsigned barrier_op() const { return m_barrier_op; }
+  bool parity_op() const { return m_parity_op; }
   unsigned shfl_op() const { return m_shfl_op; }
   unsigned prmt_op() const { return m_prmt_op; }
   enum vote_mode_t { vote_any, vote_all, vote_uni, vote_ballot };
@@ -1142,6 +1147,8 @@ class ptx_instruction : public warp_inst_t {
   int m_pred_mod;
   int m_opcode;
   const symbol *m_label;
+  // I need symbol table to resolve scoped labels.
+  symbol_table *m_symbol_table;
   std::vector<operand_info> m_operands;
   operand_info m_return_var;
 
@@ -1166,6 +1173,7 @@ class ptx_instruction : public warp_inst_t {
   unsigned m_clamp_mode;
   unsigned m_left_mode;
   unsigned m_barrier_op;
+  bool m_parity_op = false;
   unsigned m_shfl_op;
   unsigned m_prmt_op;
 
@@ -1412,7 +1420,17 @@ class function_info {
   std::list<ptx_instruction *> m_instructions;
   std::vector<basic_block_t *> m_basic_blocks;
   std::list<std::pair<unsigned, unsigned> > m_back_edges;
-  std::map<std::string, unsigned> labels;
+
+  /**
+   * WZR: To support scoped label, we need to remember the scope of each label,
+   * in addition to its name.
+   * During query, we have to search backwards for the symbol in incase it is
+   * defined in an outer scope.
+   */
+  using label_key_t = std::pair<symbol_table *, std::string>;
+  std::map<label_key_t, unsigned> labels;
+  void insert_label(symbol_table *symtab, const std::string &name, unsigned pc);
+  unsigned find_label(symbol_table *symtab, const std::string &name);
   unsigned num_reconvergence_pairs;
 
   // Registers/shmem/etc. used (from ptxas -v), loaded from ___.ptxinfo along

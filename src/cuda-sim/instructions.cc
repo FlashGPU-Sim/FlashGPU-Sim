@@ -1612,6 +1612,12 @@ void bar_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
   thread->m_last_dram_callback.instruction = pIin;
 }
 
+void mbarrier_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  // Placeholder implementation for mbarrier instruction
+  // TODO: Implement the mbarrier logic
+  printf("GPGPU-Sim: mbarrier instruction encountered (not yet implemented)\n");
+}
+
 void bfe_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned i_type = pI->get_type();
   unsigned msb = (i_type == U32_TYPE || i_type == S32_TYPE) ? 31 : 63;

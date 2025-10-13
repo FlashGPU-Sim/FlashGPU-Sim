@@ -318,6 +318,10 @@ type_info *symbol_table::get_array_type(type_info *base_type,
 
 void symbol_table::set_label_address(const symbol *label, unsigned addr) {
   std::map<std::string, symbol *>::iterator i = m_symbols.find(label->name());
+  if (i == m_symbols.end()) {
+    printf("GPGPU-Sim PTX: error - cannot find label \'%s\'\n",
+           label->name().c_str());
+  }
   assert(i != m_symbols.end());
   symbol *s = i->second;
   s->set_label_address(addr);
@@ -552,7 +556,7 @@ void function_info::connect_basic_blocks()  // iterate across m_basic_blocks of
     } else if (pI->get_opcode() == BRA_OP) {
       // find successor and link that basic_block to this one
       operand_info &target = pI->dst();  // get operand, e.g. target name
-      unsigned addr = labels[target.name()];
+      unsigned addr = find_label(pI->get_symbol_table(), target.name());
       ptx_instruction *target_pI = m_instr_mem[addr];
       basic_block_t *target_bb = target_pI->get_bb();
       (*bb_itr)->successor_ids.insert(target_bb->bb_id);
@@ -601,7 +605,8 @@ bool function_info::connect_break_targets()  // connecting break instructions
       // find successor and link that basic_block to this one
       // successor of a break is set by an preceeding breakaddr instruction
       operand_info *target = find_break_target(pI);
-      unsigned addr = labels[target->name()];
+      // unsigned addr = labels[target->name()];
+      unsigned addr = find_label(pI->get_symbol_table(), target->name());
       ptx_instruction *target_pI = m_instr_mem[addr];
       basic_block_t *target_bb = target_pI->get_bb();
       p_bb->successor_ids.insert(target_bb->bb_id);
@@ -1210,6 +1215,7 @@ static std::list<operand_info> check_operands(
 
 ptx_instruction::ptx_instruction(
     int opcode, const symbol *pred, int neg_pred, int pred_mod, symbol *label,
+    symbol_table *symtab,
     const std::list<operand_info> &operands, const operand_info &return_var,
     const std::list<int> &options, const std::list<int> &wmma_options,
     const std::list<int> &scalar_type, memory_space_t space_spec,
@@ -1224,6 +1230,7 @@ ptx_instruction::ptx_instruction(
   m_neg_pred = neg_pred;
   m_pred_mod = pred_mod;
   m_label = label;
+  m_symbol_table = symtab;
   const std::list<operand_info> checked_operands =
       check_operands(opcode, scalar_type, operands, ctx);
   m_operands.insert(m_operands.begin(), checked_operands.begin(),
@@ -1285,7 +1292,12 @@ ptx_instruction::ptx_instruction(
       case SYNC_OPTION:
       case ARRIVE_OPTION:
       case RED_OPTION:
+      case INIT_OPTION:
+      case TRY_WAIT_OPTION:
         m_barrier_op = last_ptx_inst_option;
+        break;
+      case PARITY_OPTION:
+        m_parity_op = true;
         break;
       case EQU_OPTION:
       case NEU_OPTION:

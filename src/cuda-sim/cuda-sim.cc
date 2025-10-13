@@ -276,6 +276,23 @@ void gpgpu_t::gpgpu_ptx_sim_unbindTexture(
 
 #define MAX_INST_SIZE 8 /*bytes*/
 
+void function_info::insert_label(symbol_table *symtab, const std::string &name, unsigned pc) {
+  labels.insert(std::make_pair(std::make_pair(symtab, name), pc));
+}
+
+unsigned function_info::find_label(symbol_table *symtab, const std::string &name) {
+  symbol_table *st = symtab;
+  while (st) {
+    label_key_t key = std::make_pair(st, name);
+    auto i = labels.find(key);
+    if (i != labels.end()) return i->second;
+    st = st->get_parent();
+  }
+  printf("GPGPU-Sim PTX: Error: label \'%s\' not found in function \'%s\'\n",
+         name.c_str(), m_name.c_str());
+  abort();
+}
+
 void function_info::ptx_assemble() {
   if (m_assembled) {
     return;
@@ -309,7 +326,8 @@ void function_info::ptx_assemble() {
     ptx_instruction *pI = *i;
     if (pI->is_label()) {
       const symbol *l = pI->get_label();
-      labels[l->name()] = n;
+      insert_label(pI->get_symbol_table(), l->name(), n);
+      // labels[l->name()] = n;
     } else {
       gpgpu_ctx->func_sim->g_pc_to_finfo[PC] = this;
       m_instr_mem[n] = pI;
@@ -333,16 +351,33 @@ void function_info::ptx_assemble() {
     if (pI->get_opcode() == BRA_OP || pI->get_opcode() == BREAKADDR_OP ||
         pI->get_opcode() == CALLP_OP) {
       operand_info &target = pI->dst();  // get operand, e.g. target name
-      if (labels.find(target.name()) == labels.end()) {
-        printf(
-            "GPGPU-Sim PTX: Loader error (%s:%u): Branch label \"%s\" does not "
-            "appear in assembly code.",
-            pI->source_file(), pI->source_line(), target.name().c_str());
-        abort();
-      }
-      unsigned index = labels[target.name()];  // determine address from name
+
+      // if (labels.find(target.name()) == labels.end()) {
+      //   printf(
+      //       "GPGPU-Sim PTX: Loader error (%s:%u): Branch label \"%s\" does not "
+      //       "appear in assembly code.",
+      //       pI->source_file(), pI->source_line(), target.name().c_str());
+      //   abort();
+      // }
+      // unsigned index = labels[target.name()];  // determine address from name
+      unsigned index = find_label(pI->get_symbol_table(), target.name());
       unsigned PC = m_instr_mem[index]->get_PC();
-      m_symtab->set_label_address(target.get_symbol(), PC);
+      DPRINTF_NoGPU(PTX_IR,
+              "  handling branch inst %s resolving label %s to inst %s PC 0x%x\n",
+              pI->to_string().c_str(), target.name().c_str(),
+              m_instr_mem[index]->to_string().c_str(), PC);
+      /**
+       * WZR: Not sure why we need to set this target address here.
+       * If this is for lookup later, the current symbol_table::lookup()
+       * function never go through child scoped symbol tables.
+       * 
+       * But here to make this address is set somewhere, use the pI's
+       * scoped symbol table to set the label address.
+       * TODO: revisit this later -- maybe we need to go up to parent's
+       * scope if needed.
+       */
+      // m_symtab->set_label_address(target.get_symbol(), PC);
+      pI->get_symbol_table()->set_label_address(target.get_symbol(), PC);
       target.set_type(label_t);
     }
   }
