@@ -57,6 +57,7 @@
 #include "stack.h"
 #include "stats.h"
 #include "traffic_breakdown.h"
+#include "flash/mbarrier.h"
 
 #define NO_OP_FLAG 0xFF
 
@@ -1072,6 +1073,10 @@ class barrier_set_t {
   void warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
                             warp_inst_t *inst);
 
+  // individual warp hits mbarrier
+  void warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
+                             warp_inst_t *inst);
+
   // warp reaches exit
   void warp_exit(unsigned warp_id);
 
@@ -1091,6 +1096,7 @@ class barrier_set_t {
   warp_set_t m_warp_active;
   warp_set_t m_warp_at_barrier;
   shader_core_ctx *m_shader;
+  flash_gpgpu_sim::mbarrier_manager_t m_mbarrier_manager;
 };
 
 struct insn_latency_info {

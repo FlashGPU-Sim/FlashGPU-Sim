@@ -874,6 +874,9 @@ void ptx_instruction::set_opcode_and_latency() {
     case BAR_OP:
       op = BARRIER_OP;
       break;
+    case MBAR_OP:
+      op = MBARRIER_OP;
+      break;
     case SST_OP:
       op = BARRIER_OP;
       break;

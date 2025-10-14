@@ -2,6 +2,9 @@
 *.swp
 *.swo
 
+_cuobjdump_*
+_app_cuda_version_*
+
 src/intersim2/lex.yy.c
 src/intersim2/y.tab.c
 src/intersim2/y.tab.h

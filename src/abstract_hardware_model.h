@@ -131,6 +131,7 @@ enum uarch_op_t {
   STORE_OP,
   BRANCH_OP,
   BARRIER_OP,
+  MBARRIER_OP,
   MEMORY_BARRIER_OP,
   CALL_OPS,
   RET_OPS,
