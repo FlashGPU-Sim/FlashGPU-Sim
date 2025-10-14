@@ -944,6 +944,7 @@ class inst_t {
     red_type = NOT_RED;
     bar_id = (unsigned)-1;
     bar_count = (unsigned)-1;
+    bar_parity = false;
     oprnd_type = UN_OP;
     sp_op = OTHER_OP;
     op_pipe = UNKOWN_OP;
@@ -1001,6 +1002,7 @@ class inst_t {
   void set_num_operands(unsigned num) { num_operands = num; }
   void set_bar_id(unsigned id) { bar_id = id; }
   void set_bar_count(unsigned count) { bar_count = count; }
+  void set_bar_parity(bool parity) { bar_parity = parity; }
 
   address_type pc;  // program counter address of instruction
   unsigned isize;   // size of instruction in bytes
@@ -1010,6 +1012,7 @@ class inst_t {
   reduction_type red_type;
   unsigned bar_id;
   unsigned bar_count;
+  bool bar_parity = false;
 
   types_of_operands oprnd_type;  // code (uarch visible) identify if the
                                  // operation is an interger or a floating point

@@ -1868,6 +1868,9 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       } else {
         skip = !pred_lookup(pI->get_pred_mod(), pred_value.pred & 0x000F);
       }
+      // printf("inst %s pred_mode %d pred_neg %d pred=%x skip=%d\n",
+      //        pI->to_string().c_str(),
+      //        pI->get_pred_mod(), pI->get_pred_neg(), pred_value.pred, skip);
     }
     int inst_opcode = pI->get_opcode();
 
