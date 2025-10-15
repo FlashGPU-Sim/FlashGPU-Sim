@@ -62,7 +62,24 @@ void init();
 #define DPRINTF(x, ...)                                                      \
   do {                                                                       \
     if (DTRACE(x)) {                                                         \
-      printf(SIM_PRINT_STR, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, \
+      printf(SIM_PRINT_STR , m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, \
+             Trace::trace_streams_str[Trace::x]);                            \
+      printf(__VA_ARGS__);                                                   \
+    }                                                                        \
+  } while (0)
+
+#define DPRINTF_GPU(m_gpu, x, fmt, ...)                                                      \
+  do {                                                                       \
+    if (DTRACE(x)) {                                                         \
+      printf(SIM_PRINT_STR fmt, (m_gpu)->gpu_sim_cycle + (m_gpu)->gpu_tot_sim_cycle, \
+             Trace::trace_streams_str[Trace::x], __VA_ARGS__);               \
+    }                                                                        \
+  } while (0)
+
+#define DPRINTF_NoGPU(x, ...)                                                \
+  do {                                                                       \
+    if (DTRACE(x)) {                                                         \
+      printf(SIM_PRINT_STR, 0,                                               \
              Trace::trace_streams_str[Trace::x]);                            \
       printf(__VA_ARGS__);                                                   \
     }                                                                        \
@@ -81,6 +98,12 @@ void init();
 
 #define DTRACE(x) (false)
 #define DPRINTF(x, ...) \
+  do {                  \
+  } while (0)
+#define DPRINTF_GPU(m_gpu, x, fmt, ...) \
+  do {                  \
+  } while (0)
+#define DPRINTF_NoGPU(x, ...) \
   do {                  \
   } while (0)
 #define DPRINTFG(x, ...) \

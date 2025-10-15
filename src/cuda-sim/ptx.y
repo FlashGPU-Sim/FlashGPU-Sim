@@ -176,6 +176,9 @@ class ptx_recognizer;
 %token SYNC_OPTION
 %token RED_OPTION
 %token ARRIVE_OPTION
+%token INIT_OPTION
+%token TRY_WAIT_OPTION
+%token PARITY_OPTION
 %token ATOMIC_POPC
 %token ATOMIC_AND
 %token ATOMIC_OR
@@ -477,6 +480,9 @@ option: type_spec
 	| SYNC_OPTION { recognizer->add_option(SYNC_OPTION); }
 	| ARRIVE_OPTION { recognizer->add_option(ARRIVE_OPTION); }
 	| RED_OPTION { recognizer->add_option(RED_OPTION); }
+	| INIT_OPTION { recognizer->add_option(INIT_OPTION); }
+	| TRY_WAIT_OPTION { recognizer->add_option(TRY_WAIT_OPTION); }
+	| PARITY_OPTION { recognizer->add_option(PARITY_OPTION); }
 	| UNI_OPTION { recognizer->add_option(UNI_OPTION); }
 	| WIDE_OPTION { recognizer->add_option(WIDE_OPTION); }
 	| ANY_OPTION { recognizer->add_option(ANY_OPTION); }

@@ -158,6 +158,7 @@ $(SIM_LIB_DIR)/libcudart.so: makedirs $(LIBS) cudalib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/*.o \
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
 			$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
 			$(SIM_OBJ_FILES_DIR)/*.o -lm -lz -lGL -pthread -fopenmp \
 			$(MCPAT) \
@@ -188,6 +189,7 @@ $(SIM_LIB_DIR)/libcudart.dylib: makedirs $(LIBS) cudalib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/*.o \
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
 			$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o  \
 			$(SIM_OBJ_FILES_DIR)/*.o -lm -lz -pthread \
 			$(MCPAT) \
@@ -199,6 +201,7 @@ $(SIM_LIB_DIR)/libOpenCL.so: makedirs $(LIBS) opencllib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/*.o \
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
 			$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
 			$(SIM_OBJ_FILES_DIR)/*.o -lm -lz -lGL -pthread \
 			$(MCPAT) \

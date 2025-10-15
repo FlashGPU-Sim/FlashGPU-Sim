@@ -614,6 +614,37 @@ float shader_core_ctx::get_current_occupancy(unsigned long long &active,
   }
 }
 
+int shader_core_ctx::get_logical_cta_id(unsigned warp_id) const {
+  unsigned hw_thread_id = warp_id * m_config->warp_size;
+  if (m_thread[hw_thread_id] != nullptr) {
+    dim3 logical_ctaid_3d = m_thread[hw_thread_id]->get_ctaid();
+    kernel_info_t *kernel_info = m_warp[warp_id]->get_kernel_info();
+    if (kernel_info != nullptr) {
+      dim3 grid_dim = kernel_info->get_grid_dim();
+      return logical_ctaid_3d.x + 
+             logical_ctaid_3d.y * grid_dim.x +
+             logical_ctaid_3d.z * grid_dim.x * grid_dim.y;
+    }
+  }
+  return -1;
+}
+
+int shader_core_ctx::get_cta_warp_id(unsigned warp_id) const {
+  unsigned hw_thread_id = warp_id * m_config->warp_size;
+  if (m_thread[hw_thread_id] != NULL) {
+    dim3 logical_tid_3d = m_thread[hw_thread_id]->get_tid();
+    kernel_info_t *kernel_info = m_warp[warp_id]->get_kernel_info();
+    if (kernel_info != NULL) {
+      dim3 block_dim = kernel_info->get_cta_dim();
+      unsigned thread_in_cta = logical_tid_3d.x + 
+                              logical_tid_3d.y * block_dim.x +
+                              logical_tid_3d.z * block_dim.x * block_dim.y;
+      return thread_in_cta / m_config->warp_size;
+    }
+  }
+  return -1;
+}
+
 namespace {
 template <typename T>
 void merge_stat(T *dst, const T *src, int lhs, int rhs) {
@@ -1264,7 +1295,10 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
     m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
                                     const_cast<warp_inst_t *>(next_inst));
-
+  } else if (next_inst->op == MBARRIER_OP) {
+    m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
+    m_barriers.warp_reaches_mbarrier(m_warp[warp_id]->get_cta_id(), warp_id,
+                                     const_cast<warp_inst_t *>(next_inst));
   } else if (next_inst->op == MEMORY_BARRIER_OP) {
     m_warp[warp_id]->set_membar();
   } else if (next_inst->m_is_ldgdepbar) {  // Add for LDGDEPBAR
@@ -4009,6 +4043,10 @@ void barrier_set_t::allocate_barrier(unsigned cta_id, warp_set_t warps) {
   for (unsigned i = 0; i < m_max_barriers_per_cta; i++) {
     m_bar_id_to_warps[i] &= ~warps;
   }
+}
+
+void barrier_set_t::reset_mbarrier() {
+  m_mbarrier_manager.reset();
 }
 
 // during cta deallocation

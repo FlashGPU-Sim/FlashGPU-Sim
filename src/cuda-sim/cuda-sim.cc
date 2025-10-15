@@ -56,6 +56,8 @@ typedef void *yyscan_t;
 #include "ptx_parser.h"
 #include "ptx_sim.h"
 
+#include "dyn_ptx_inst.h"
+
 int g_debug_execution = 0;
 // Output debug information to file options
 
@@ -276,6 +278,23 @@ void gpgpu_t::gpgpu_ptx_sim_unbindTexture(
 
 #define MAX_INST_SIZE 8 /*bytes*/
 
+void function_info::insert_label(symbol_table *symtab, const std::string &name, unsigned pc) {
+  labels.insert(std::make_pair(std::make_pair(symtab, name), pc));
+}
+
+unsigned function_info::find_label(symbol_table *symtab, const std::string &name) {
+  symbol_table *st = symtab;
+  while (st) {
+    label_key_t key = std::make_pair(st, name);
+    auto i = labels.find(key);
+    if (i != labels.end()) return i->second;
+    st = st->get_parent();
+  }
+  printf("GPGPU-Sim PTX: Error: label \'%s\' not found in function \'%s\'\n",
+         name.c_str(), m_name.c_str());
+  abort();
+}
+
 void function_info::ptx_assemble() {
   if (m_assembled) {
     return;
@@ -309,7 +328,8 @@ void function_info::ptx_assemble() {
     ptx_instruction *pI = *i;
     if (pI->is_label()) {
       const symbol *l = pI->get_label();
-      labels[l->name()] = n;
+      insert_label(pI->get_symbol_table(), l->name(), n);
+      // labels[l->name()] = n;
     } else {
       gpgpu_ctx->func_sim->g_pc_to_finfo[PC] = this;
       m_instr_mem[n] = pI;
@@ -333,16 +353,33 @@ void function_info::ptx_assemble() {
     if (pI->get_opcode() == BRA_OP || pI->get_opcode() == BREAKADDR_OP ||
         pI->get_opcode() == CALLP_OP) {
       operand_info &target = pI->dst();  // get operand, e.g. target name
-      if (labels.find(target.name()) == labels.end()) {
-        printf(
-            "GPGPU-Sim PTX: Loader error (%s:%u): Branch label \"%s\" does not "
-            "appear in assembly code.",
-            pI->source_file(), pI->source_line(), target.name().c_str());
-        abort();
-      }
-      unsigned index = labels[target.name()];  // determine address from name
+
+      // if (labels.find(target.name()) == labels.end()) {
+      //   printf(
+      //       "GPGPU-Sim PTX: Loader error (%s:%u): Branch label \"%s\" does not "
+      //       "appear in assembly code.",
+      //       pI->source_file(), pI->source_line(), target.name().c_str());
+      //   abort();
+      // }
+      // unsigned index = labels[target.name()];  // determine address from name
+      unsigned index = find_label(pI->get_symbol_table(), target.name());
       unsigned PC = m_instr_mem[index]->get_PC();
-      m_symtab->set_label_address(target.get_symbol(), PC);
+      DPRINTF_NoGPU(PTX_IR,
+              "  handling branch inst %s resolving label %s to inst %s PC 0x%x\n",
+              pI->to_string().c_str(), target.name().c_str(),
+              m_instr_mem[index]->to_string().c_str(), PC);
+      /**
+       * WZR: Not sure why we need to set this target address here.
+       * If this is for lookup later, the current symbol_table::lookup()
+       * function never go through child scoped symbol tables.
+       * 
+       * But here to make this address is set somewhere, use the pI's
+       * scoped symbol table to set the label address.
+       * TODO: revisit this later -- maybe we need to go up to parent's
+       * scope if needed.
+       */
+      // m_symtab->set_label_address(target.get_symbol(), PC);
+      pI->get_symbol_table()->set_label_address(target.get_symbol(), PC);
       target.set_type(label_t);
     }
   }
@@ -839,6 +876,9 @@ void ptx_instruction::set_opcode_and_latency() {
     case BAR_OP:
       op = BARRIER_OP;
       break;
+    case MBAR_OP:
+      op = MBARRIER_OP;
+      break;
     case SST_OP:
       op = BARRIER_OP;
       break;
@@ -1031,7 +1071,7 @@ void ptx_instruction::set_opcode_and_latency() {
 
 void ptx_thread_info::ptx_fetch_inst(inst_t &inst) const {
   addr_t pc = get_pc();
-  const ptx_instruction *pI = m_func_info->get_instruction(pc);
+  const ptx_instruction *pI = m_func_info->get_dyn_inst(pc);
   inst = (const inst_t &)*pI;
   assert(inst.valid());
 }
@@ -1796,7 +1836,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
   addr_t pc = next_instr();
   assert(pc ==
          inst.pc);  // make sure timing model and functional model are in sync
-  const ptx_instruction *pI = m_func_info->get_instruction(pc);
+  const ptx_instruction *pI = m_func_info->get_dyn_inst(pc);
 
   set_npc(pc + pI->inst_size());
 
@@ -1830,6 +1870,9 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       } else {
         skip = !pred_lookup(pI->get_pred_mod(), pred_value.pred & 0x000F);
       }
+      // printf("inst %s pred_mode %d pred_neg %d pred=%x skip=%d\n",
+      //        pI->to_string().c_str(),
+      //        pI->get_pred_mod(), pI->get_pred_neg(), pred_value.pred, skip);
     }
     int inst_opcode = pI->get_opcode();
 
@@ -2056,7 +2099,11 @@ const struct gpgpu_ptx_sim_info *ptx_sim_kernel_info(
 }
 
 const warp_inst_t *gpgpu_context::ptx_fetch_inst(address_type pc) {
-  return pc_to_instruction(pc);
+  auto static_inst = pc_to_instruction(pc);
+  if (static_inst) {
+    return flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(pc, static_inst);
+  }
+  return NULL;
 }
 
 unsigned ptx_sim_init_thread(kernel_info_t &kernel,

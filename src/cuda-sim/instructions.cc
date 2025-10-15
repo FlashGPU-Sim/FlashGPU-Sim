@@ -51,6 +51,7 @@ class ptx_recognizer;
 #include "../abstract_hardware_model.h"
 #include "../gpgpu-sim/gpu-sim.h"
 #include "../gpgpu-sim/shader.h"
+#include "../gpgpu-sim/flash/mbarrier.h"
 #include "cuda-math.h"
 #include "cuda_device_printf.h"
 #include "ptx.tab.h"
@@ -1610,6 +1611,10 @@ void bar_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
   thread->m_last_dram_callback.function = bar_callback;
   thread->m_last_dram_callback.instruction = pIin;
+}
+
+void mbarrier_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
+  handle_mbarrier_inst(pIin, thread);
 }
 
 void bfe_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

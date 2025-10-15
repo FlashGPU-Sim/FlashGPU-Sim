@@ -57,6 +57,7 @@
 #include "stack.h"
 #include "stats.h"
 #include "traffic_breakdown.h"
+#include "flash/mbarrier.h"
 
 #define NO_OP_FLAG 0xFF
 
@@ -1064,6 +1065,8 @@ class barrier_set_t {
   // during cta deallocation
   void deallocate_barrier(unsigned cta_id);
 
+  void reset_mbarrier();
+
   typedef std::map<unsigned, warp_set_t> cta_to_warp_t;
   typedef std::map<unsigned, warp_set_t>
       bar_id_to_warp_t; /*set of warps reached a specific barrier id*/
@@ -1071,6 +1074,10 @@ class barrier_set_t {
   // individual warp hits barrier
   void warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
                             warp_inst_t *inst);
+
+  // individual warp hits mbarrier
+  void warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
+                             warp_inst_t *inst);
 
   // warp reaches exit
   void warp_exit(unsigned warp_id);
@@ -1091,6 +1098,7 @@ class barrier_set_t {
   warp_set_t m_warp_active;
   warp_set_t m_warp_at_barrier;
   shader_core_ctx *m_shader;
+  flash_gpgpu_sim::mbarrier_manager_t m_mbarrier_manager;
 };
 
 struct insn_latency_info {
@@ -2083,6 +2091,8 @@ class shader_core_ctx : public core_t {
     //        k->inc_running();
     printf("GPGPU-Sim uArch: Shader %d bind to kernel %u \'%s\'\n", m_sid,
            m_kernel->get_uid(), m_kernel->name().c_str());
+    // Reset mbarrier manager when a new kernel is assigned to the shader core
+    m_barriers.reset_mbarrier();
   }
   PowerscalingCoefficients *scaling_coeffs;
   // accessors
@@ -2098,6 +2108,10 @@ class shader_core_ctx : public core_t {
   }
   kernel_info_t *get_kernel() { return m_kernel; }
   unsigned get_sid() const { return m_sid; }
+
+  // Get logical CTA ID and logical Warp ID from hardware warp ID
+  int get_logical_cta_id(unsigned warp_id) const;
+  int get_cta_warp_id(unsigned warp_id) const;
 
   // used by functional simulation:
   // modifiers

@@ -178,12 +178,14 @@ void ptx_recognizer::add_function_name(const char *name) {
 
 // Jin: handle instruction group for cdp
 void ptx_recognizer::start_inst_group() {
-  PTX_PARSE_DPRINTF("start_instruction_group");
   g_current_symbol_table = g_current_symbol_table->start_inst_group();
+  PTX_PARSE_DPRINTF("start_instruction_group %s",
+                    g_current_symbol_table->get_scope_name().c_str());
 }
 
 void ptx_recognizer::end_inst_group() {
-  PTX_PARSE_DPRINTF("end_instruction_group");
+  PTX_PARSE_DPRINTF("end_instruction_group %s",
+                    g_current_symbol_table->get_scope_name().c_str());
   g_current_symbol_table = g_current_symbol_table->end_inst_group();
 }
 
@@ -265,7 +267,8 @@ void ptx_recognizer::add_instruction() {
                     ((g_opcode > 0) ? g_opcode_string[g_opcode] : "<label>"));
   assert(g_shader_core_config != 0);
   ptx_instruction *i = new ptx_instruction(
-      g_opcode, g_pred, g_neg_pred, g_pred_mod, g_label, g_operands,
+      g_opcode, g_pred, g_neg_pred, g_pred_mod, g_label, g_current_symbol_table,
+      g_operands,
       g_return_var, g_options, g_wmma_options, g_scalar_type, g_space_spec,
       gpgpu_ctx->g_filename, ptx_get_lineno(scanner), linebuf,
       g_shader_core_config, gpgpu_ctx);
@@ -634,7 +637,7 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
 }
 
 void ptx_recognizer::add_label(const char *identifier) {
-  PTX_PARSE_DPRINTF("add_label");
+  PTX_PARSE_DPRINTF("add_label %s", identifier);
   symbol *s = g_current_symbol_table->lookup(identifier);
   if (s != NULL) {
     g_label = s;

@@ -53,7 +53,10 @@ else
 	CXXFLAGS += 
 endif
 
-CXXFLAGS += -I$(CUDA_INSTALL_PATH)/include
+# Include cuda-sim to get ptx.tab.h for mbarrier.cc
+CXXFLAGS += -I$(CUDA_INSTALL_PATH)/include \
+-I$(SIM_OBJ_FILES_DIR)/cuda-sim \
+
 
 POWER_FLAGS=
 ifneq ($(GPGPUSIM_POWER_MODEL),)
@@ -68,7 +71,7 @@ OEXT = o
 
 OUTPUT_DIR=$(SIM_OBJ_FILES_DIR)/gpgpu-sim
 
-SRCS = $(shell ls *.cc)
+SRCS = $(shell ls *.cc) $(shell ls flash/*.cc)
 
 EXCLUDES = 
 
@@ -83,6 +86,10 @@ OBJS = $(CSRCS:%.cc=$(OUTPUT_DIR)/%.$(OEXT))
 libgpu_uarch_sim.a:$(OBJS)
 	ar rcs  $(OUTPUT_DIR)/libgpu_uarch_sim.a $(OBJS)
 
+# Create flash directory if it doesn't exist
+$(OUTPUT_DIR)/flash:
+	mkdir -p $(OUTPUT_DIR)/flash
+
 $(OUTPUT_DIR)/Makefile.makedepend: depend
 
 depend:
@@ -90,7 +97,12 @@ depend:
 	makedepend -f$(OUTPUT_DIR)/Makefile.makedepend -p$(OUTPUT_DIR)/ $(CSRCS) 2> /dev/null
 
 $(OUTPUT_DIR)/%.$(OEXT): %.cc
-	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $(OUTPUT_DIR)/$*.$(OEXT) -c $*.cc
+	@mkdir -p $(dir $@)
+	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
+
+# Specific rule for flash subdirectory
+$(OUTPUT_DIR)/flash/%.$(OEXT): flash/%.cc | $(OUTPUT_DIR)/flash
+	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
 
 clean:
 	rm -f *.o core *~ *.a 
