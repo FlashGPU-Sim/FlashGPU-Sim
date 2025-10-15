@@ -4014,6 +4014,10 @@ void barrier_set_t::allocate_barrier(unsigned cta_id, warp_set_t warps) {
   }
 }
 
+void barrier_set_t::reset_mbarrier() {
+  m_mbarrier_manager.reset();
+}
+
 // during cta deallocation
 void barrier_set_t::deallocate_barrier(unsigned cta_id) {
   cta_to_warp_t::iterator w = m_cta_to_warps.find(cta_id);

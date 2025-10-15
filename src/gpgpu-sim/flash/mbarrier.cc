@@ -61,6 +61,45 @@ bool mbarrier_manager_t::try_wait(gpgpu_sim *gpu, int cta_id, int warp_id,
   mbarrier->m_waiting_warps.insert(warp_id);
   return false;
 }
+
+std::set<int> mbarrier_manager_t::arrive(gpgpu_sim *gpu, int cta_id,
+                                         int warp_id, uint64_t addr,
+                                         int arrival_count) {
+  auto it = addr_to_mbarrier_map.find(addr);
+  if (it == addr_to_mbarrier_map.end()) {
+    assert(false && "mbarrier to arrive at does not exist");
+  }
+  auto mbarrier = it->second.get();
+
+  DPRINTF_GPU(
+      gpu, MBAR,
+      "CTA %d Warp %d mbarrier.arrive id %d at 0x%x with arrival_count %d "
+      "arrived count %d/%d tx_count %d/%d\n",
+      cta_id, warp_id, mbarrier->m_id, (unsigned)addr, arrival_count,
+      mbarrier->m_arrived_count, mbarrier->m_expected_count,
+      mbarrier->m_arrived_tx_count, mbarrier->m_expected_tx_count);
+
+  mbarrier->m_arrived_count += arrival_count;
+  if (mbarrier->m_arrived_count == mbarrier->m_expected_count &&
+      mbarrier->m_arrived_tx_count == mbarrier->m_expected_tx_count) {
+    // Release all waiting warps.
+    std::set<int> released_warps = mbarrier->m_waiting_warps;
+    mbarrier->m_waiting_warps.clear();
+    mbarrier->m_arrived_count = 0;
+    mbarrier->m_arrived_tx_count = 0;
+    mbarrier->m_expected_tx_count = 0;
+    mbarrier->m_phase++;
+    DPRINTF_GPU(gpu, MBAR,
+                "CTA %d Warp %d mbarrier.id %d at 0x%x all arrived, "
+                "releasing %zu warps, moving to phase %d\n",
+                cta_id, warp_id, mbarrier->m_id, (unsigned)addr,
+                released_warps.size(), mbarrier->m_phase);
+    return released_warps;
+  } else {
+    return {};
+  }
+}
+
 } // namespace flash_gpgpu_sim
 
 void handle_mbarrier_inst(const ptx_instruction *pIin,
@@ -71,6 +110,7 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
   ptx_instruction *pI = const_cast<ptx_instruction *>(pIin);
   unsigned bar_op = pI->barrier_op();
   unsigned ctaid = thread->get_cta_uid();
+  auto tid = thread->get_tid();
 
   auto get_u32_value = [&](const operand_info &op) {
     ptx_reg_t reg = thread->get_operand_value(op, op, U32_TYPE, thread, 0);
@@ -87,8 +127,9 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     auto addr = get_u32_value(addr_op);
     auto expected_count = get_u32_value(expected_count_op);
     DPRINTF_GPU(thread->get_gpu(), MBAR,
-                "mbarrier init at address 0x%x with expected count %u\n", addr,
-                expected_count);
+                "CTA %d Thread %d mbarrier init at address 0x%x with expected "
+                "count %u\n",
+                ctaid, tid, addr, expected_count);
     pI->set_bar_id(addr);
     pI->set_bar_count(expected_count);
   } else if (bar_op == TRY_WAIT_OPTION) {
@@ -104,9 +145,10 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     auto addr = get_u32_value(addr_op);
     auto parity = get_u32_value(parity_op) & 1;
 
-    DPRINTF_GPU(thread->get_gpu(), MBAR,
-                "mbarrier.try_wait at address 0x%x with parity %u\n", addr,
-                parity);
+    DPRINTF_GPU(
+        thread->get_gpu(), MBAR,
+        "CTA %d Thread %d mbarrier.try_wait at address 0x%x with parity %u\n",
+        ctaid, tid, addr, parity);
     pI->set_bar_id(addr);
     pI->set_bar_parity(parity);
 
@@ -120,6 +162,29 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     ptx_reg_t true_pred;
     true_pred.pred = 0;
     thread->set_operand_value(pI->dst(), true_pred, PRED_TYPE, thread, pI);
+
+  } else if (bar_op == ARRIVE_OPTION) {
+    assert(pI->get_num_operands() == 3 || pI->get_num_operands() == 2);
+    assert(pI->membar_level() == CTA_OPTION &&
+           "Only support shared::cta mbarrier");
+
+    const operand_info &phase_op = pI->dst();
+    assert(phase_op.name() == "_" &&
+           "Only support sink reg for mbarrier.arrive");
+    const operand_info &addr_op = pI->src1();
+    auto addr = get_u32_value(addr_op);
+    auto arrival_count = 1;
+    if (pI->get_num_operands() == 3) {
+      const operand_info &arrival_count_op = pI->src2();
+      arrival_count = get_u32_value(arrival_count_op);
+    }
+
+    DPRINTF_GPU(thread->get_gpu(), MBAR,
+                "CTA %d Thread %d mbarrier.arrive at address 0x%x with "
+                "arrival_count %u\n",
+                ctaid, tid, addr, arrival_count);
+    pI->set_bar_id(addr);
+    pI->set_bar_count(arrival_count);
 
   } else {
     // Placeholder implementation for mbarrier instruction
@@ -153,6 +218,18 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
                                                 warp_id, addr, parity);
     if (!released) {
       m_warp_at_barrier.set(warp_id);
+    }
+
+    return;
+  } else if (bar_op == ARRIVE_OPTION) {
+
+    auto addr = pI->bar_id;
+    auto arrival_count = pI->bar_count;
+
+    auto released_warps = m_mbarrier_manager.arrive(
+        m_shader->get_gpu(), cta_id, warp_id, addr, arrival_count);
+    for (auto w : released_warps) {
+      m_warp_at_barrier.reset(w);
     }
 
     return;

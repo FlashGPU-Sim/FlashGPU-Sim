@@ -1065,6 +1065,8 @@ class barrier_set_t {
   // during cta deallocation
   void deallocate_barrier(unsigned cta_id);
 
+  void reset_mbarrier();
+
   typedef std::map<unsigned, warp_set_t> cta_to_warp_t;
   typedef std::map<unsigned, warp_set_t>
       bar_id_to_warp_t; /*set of warps reached a specific barrier id*/
@@ -2089,6 +2091,8 @@ class shader_core_ctx : public core_t {
     //        k->inc_running();
     printf("GPGPU-Sim uArch: Shader %d bind to kernel %u \'%s\'\n", m_sid,
            m_kernel->get_uid(), m_kernel->name().c_str());
+    // Reset mbarrier manager when a new kernel is assigned to the shader core
+    m_barriers.reset_mbarrier();
   }
   PowerscalingCoefficients *scaling_coeffs;
   // accessors
