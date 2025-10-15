@@ -56,23 +56,30 @@ public:
     addr_to_mbarrier_map.clear();
   }
 
-  void init(gpgpu_sim *gpu, int cta_id, int warp_id, uint64_t addr,
+  struct thread_index_t {
+    int hw_cta_id;
+    int hw_warp_id;
+    int sw_cta_id;
+    int sw_warp_id;
+  };
+
+  void init(gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr,
             int expected_count);
-  void inval(gpgpu_sim *gpu, int cta_id, int warp_id, uint64_t addr);
+  void inval(gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr);
 
   /**
    * Try to wait on the mbarrier at addr with parity for warp warp_id.
    * @return true if the wait is satisfied.
    */
-  bool try_wait(gpgpu_sim *gpu, int cta_id, int warp_id, uint64_t addr,
-                int parity);
+  bool try_wait(gpgpu_sim *gpu, const thread_index_t &thread_index,
+                uint64_t addr, int parity);
 
   /**
    * Arrive at the mbarrier at addr with arrival_count for warp warp_id.
    * @return the set of warp ids that are released due to this arrive.
    */
-  std::set<int> arrive(gpgpu_sim *gpu, int cta_id, int warp_id, uint64_t addr,
-                       int arrival_count);
+  std::set<int> arrive(gpgpu_sim *gpu, const thread_index_t &thread_index,
+                       uint64_t addr, int arrival_count);
 
 private:
   int m_next_id;

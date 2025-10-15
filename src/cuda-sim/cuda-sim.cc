@@ -56,6 +56,8 @@ typedef void *yyscan_t;
 #include "ptx_parser.h"
 #include "ptx_sim.h"
 
+#include "dyn_ptx_inst.h"
+
 int g_debug_execution = 0;
 // Output debug information to file options
 
@@ -1069,7 +1071,7 @@ void ptx_instruction::set_opcode_and_latency() {
 
 void ptx_thread_info::ptx_fetch_inst(inst_t &inst) const {
   addr_t pc = get_pc();
-  const ptx_instruction *pI = m_func_info->get_instruction(pc);
+  const ptx_instruction *pI = m_func_info->get_dyn_inst(pc);
   inst = (const inst_t &)*pI;
   assert(inst.valid());
 }
@@ -1834,7 +1836,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
   addr_t pc = next_instr();
   assert(pc ==
          inst.pc);  // make sure timing model and functional model are in sync
-  const ptx_instruction *pI = m_func_info->get_instruction(pc);
+  const ptx_instruction *pI = m_func_info->get_dyn_inst(pc);
 
   set_npc(pc + pI->inst_size());
 
@@ -2097,7 +2099,11 @@ const struct gpgpu_ptx_sim_info *ptx_sim_kernel_info(
 }
 
 const warp_inst_t *gpgpu_context::ptx_fetch_inst(address_type pc) {
-  return pc_to_instruction(pc);
+  auto static_inst = pc_to_instruction(pc);
+  if (static_inst) {
+    return flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(pc, static_inst);
+  }
+  return NULL;
 }
 
 unsigned ptx_sim_init_thread(kernel_info_t &kernel,

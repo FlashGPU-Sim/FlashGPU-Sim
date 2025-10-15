@@ -614,6 +614,37 @@ float shader_core_ctx::get_current_occupancy(unsigned long long &active,
   }
 }
 
+int shader_core_ctx::get_logical_cta_id(unsigned warp_id) const {
+  unsigned hw_thread_id = warp_id * m_config->warp_size;
+  if (m_thread[hw_thread_id] != nullptr) {
+    dim3 logical_ctaid_3d = m_thread[hw_thread_id]->get_ctaid();
+    kernel_info_t *kernel_info = m_warp[warp_id]->get_kernel_info();
+    if (kernel_info != nullptr) {
+      dim3 grid_dim = kernel_info->get_grid_dim();
+      return logical_ctaid_3d.x + 
+             logical_ctaid_3d.y * grid_dim.x +
+             logical_ctaid_3d.z * grid_dim.x * grid_dim.y;
+    }
+  }
+  return -1;
+}
+
+int shader_core_ctx::get_cta_warp_id(unsigned warp_id) const {
+  unsigned hw_thread_id = warp_id * m_config->warp_size;
+  if (m_thread[hw_thread_id] != NULL) {
+    dim3 logical_tid_3d = m_thread[hw_thread_id]->get_tid();
+    kernel_info_t *kernel_info = m_warp[warp_id]->get_kernel_info();
+    if (kernel_info != NULL) {
+      dim3 block_dim = kernel_info->get_cta_dim();
+      unsigned thread_in_cta = logical_tid_3d.x + 
+                              logical_tid_3d.y * block_dim.x +
+                              logical_tid_3d.z * block_dim.x * block_dim.y;
+      return thread_in_cta / m_config->warp_size;
+    }
+  }
+  return -1;
+}
+
 namespace {
 template <typename T>
 void merge_stat(T *dst, const T *src, int lhs, int rhs) {

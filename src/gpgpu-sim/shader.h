@@ -2109,6 +2109,10 @@ class shader_core_ctx : public core_t {
   kernel_info_t *get_kernel() { return m_kernel; }
   unsigned get_sid() const { return m_sid; }
 
+  // Get logical CTA ID and logical Warp ID from hardware warp ID
+  int get_logical_cta_id(unsigned warp_id) const;
+  int get_cta_warp_id(unsigned warp_id) const;
+
   // used by functional simulation:
   // modifiers
   virtual void warp_exit(unsigned warp_id);
