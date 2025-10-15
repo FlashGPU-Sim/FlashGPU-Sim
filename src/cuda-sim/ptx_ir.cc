@@ -1294,6 +1294,7 @@ ptx_instruction::ptx_instruction(
       case RED_OPTION:
       case INIT_OPTION:
       case TRY_WAIT_OPTION:
+      case EXPECT_TX_OPTION:
         m_barrier_op = last_ptx_inst_option;
         break;
       case PARITY_OPTION:

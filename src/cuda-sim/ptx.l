@@ -357,6 +357,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 
 \.sync TC; return SYNC_OPTION;
 \.arrive TC; return ARRIVE_OPTION;
+\.expect_tx TC; return EXPECT_TX_OPTION;
 \.red TC; return RED_OPTION;
 
 \.clamp	TC; return CLAMP_OPTION;

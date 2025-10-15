@@ -81,6 +81,13 @@ public:
   std::set<int> arrive(gpgpu_sim *gpu, const thread_index_t &thread_index,
                        uint64_t addr, int arrival_count);
 
+  /**
+   * Increase the expected tx count for the mbarrier at addr.
+   * @return void
+   */
+  void expect_tx(gpgpu_sim *gpu, const thread_index_t &thread_index,
+                 uint64_t addr, int expected_tx_count);
+
 private:
   int m_next_id;
   std::unordered_map<uint64_t, std::unique_ptr<mbarrier_t>>
