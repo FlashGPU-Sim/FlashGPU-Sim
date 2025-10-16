@@ -1,0 +1,39 @@
+# Build output
+build/
+*.o
+*.a
+*.so
+
+# Google Test
+gtest/
+
+# Test executables
+*_test
+run_all_tests
+
+# Run directory (auto-generated)
+run/
+
+# Coverage files
+*.gcno
+*.gcda
+*.gcov
+coverage/
+
+# Editor files
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Log files
+*.log
+test_output.txt
