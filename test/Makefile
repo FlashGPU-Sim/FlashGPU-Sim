@@ -15,6 +15,7 @@ CUDA_PATH ?= /home/wzr/cuda
 CUDA_LIBS = -L$(CUDA_PATH)/lib64 -lcudart
 
 # Directories
+GTEST_CLONE_DIR = gtest
 GTEST_DIR = gtest/googletest
 SRC_DIR = ../src
 BUILD_DIR = build
@@ -79,7 +80,7 @@ help:
 setup-gtest:
 	@if [ ! -d "$(GTEST_DIR)" ]; then \
 		echo "Downloading Google Test..."; \
-		git clone https://github.com/google/googletest.git $(GTEST_DIR); \
+		git clone https://github.com/google/googletest.git $(GTEST_CLONE_DIR); \
 		cd $(GTEST_DIR) && git checkout release-1.12.1; \
 	else \
 		echo "Google Test already exists."; \
