@@ -1617,6 +1617,14 @@ void mbarrier_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
   handle_mbarrier_inst(pIin, thread);
 }
 
+void tma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  inst_not_implemented(pI);
+}
+
+void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  inst_not_implemented(pI);
+}
+
 void bfe_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned i_type = pI->get_type();
   unsigned msb = (i_type == U32_TYPE || i_type == S32_TYPE) ? 31 : 63;

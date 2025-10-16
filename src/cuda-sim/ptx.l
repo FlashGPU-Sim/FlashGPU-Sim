@@ -74,6 +74,8 @@ bar.warp 	TC; yylval->int_value = NOP_OP; return OPCODE;
 bar 	TC; yylval->int_value = BAR_OP; return OPCODE;
 barrier	TC; yylval->int_value = BAR_OP; return OPCODE;
 mbarrier 	TC; yylval->int_value = MBAR_OP; return OPCODE;
+cp\.async\.bulk TC; yylval->int_value = TMA_OP; return OPCODE;
+cp\.async 		TC; yylval->int_value = CP_ASYNC_OP; return OPCODE;
 bfe     TC; yylval->int_value = BFE_OP; return OPCODE;
 bfi     TC; yylval->int_value = BFI_OP; return OPCODE;
 bfind   TC; yylval->int_value = BFIND_OP; return OPCODE;
@@ -237,6 +239,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.weak TC; return WEAK_DIRECTIVE;
 \.address_size TC; return ADDRESS_SIZE_DIRECTIVE;
 \.weak	TC; return WEAK_DIRECTIVE;
+\.mbarrier::complete_tx::bytes TC; return TMA_MBAR_COMPLETE_BYTES;
 
 \.constptr TC; return CONSTPTR_DIRECTIVE; /* Ptx plus directive for pointer to constant memory */
 \.ptr TC; return PTR_DIRECTIVE; /* Added for new OpenCL genrated code */
@@ -381,6 +384,9 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.try_wait TC; return TRY_WAIT_OPTION;
 \.parity TC; return PARITY_OPTION;
 \.shared::cta TC; return CTA_OPTION;
+
+\.commit_group TC; return COMMIT_GROUP_OPTION;
+\.wait_group TC; return WAIT_GROUP_OPTION;
 
 \.to	TC; return TO_OPTION;
 

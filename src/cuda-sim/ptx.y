@@ -180,6 +180,9 @@ class ptx_recognizer;
 %token INIT_OPTION
 %token TRY_WAIT_OPTION
 %token PARITY_OPTION
+%token TMA_MBAR_COMPLETE_BYTES
+%token COMMIT_GROUP_OPTION
+%token WAIT_GROUP_OPTION
 %token ATOMIC_POPC
 %token ATOMIC_AND
 %token ATOMIC_OR
@@ -485,6 +488,9 @@ option: type_spec
 	| INIT_OPTION { recognizer->add_option(INIT_OPTION); }
 	| TRY_WAIT_OPTION { recognizer->add_option(TRY_WAIT_OPTION); }
 	| PARITY_OPTION { recognizer->add_option(PARITY_OPTION); }
+	| TMA_MBAR_COMPLETE_BYTES { recognizer->add_option(TMA_MBAR_COMPLETE_BYTES); }
+	| COMMIT_GROUP_OPTION { recognizer->add_option(COMMIT_GROUP_OPTION); }
+	| WAIT_GROUP_OPTION { recognizer->add_option(WAIT_GROUP_OPTION); }
 	| UNI_OPTION { recognizer->add_option(UNI_OPTION); }
 	| WIDE_OPTION { recognizer->add_option(WIDE_OPTION); }
 	| ANY_OPTION { recognizer->add_option(ANY_OPTION); }
