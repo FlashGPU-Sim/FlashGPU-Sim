@@ -6,6 +6,11 @@
 #include <map>
 #include <string>
 
+#ifdef FLASH_GPGPU_SIM_OMP
+#include <mutex>
+#include <shared_mutex>
+#endif
+
 // Forward declarations
 class function_info;
 class ptx_thread_info;
@@ -33,16 +38,23 @@ struct dim3comp {
 // Function declaration
 void increment_x_then_y_then_z(dim3 &i, const dim3 &bound);
 
+/**
+ * ! This is shared among all simulator threads and causes race conditions.
+ * ! So far, the issue_block2core() is not in parallel region, so CTA allocation
+ * ! is fine. However, thread exiting has race conditions as the call chain:
+ * !
+ * ! gpgpu_sim::cycle() ->
+ * ! // Parallel region starts
+ * ! simt_core_cluster::core_cycle() ->
+ * ! shader_core_ctx::cycle() ->
+ * ! shader_core_ctx::fetch() ->
+ * ! shader_core_ctx::register_cta_thread_exit() ->
+ * ! kernel->dec_running()
+ *
+ * ! Our solution so far is to use a mutex in dec_running()...
+ */
 class kernel_info_t {
- public:
-  //   kernel_info_t()
-  //   {
-  //      m_valid=false;
-  //      m_kernel_entry=NULL;
-  //      m_uid=0;
-  //      m_num_cores_running=0;
-  //      m_param_mem=NULL;
-  //   }
+public:
   kernel_info_t(dim3 gridDim, dim3 blockDim, class function_info *entry,
                 unsigned long long streamID);
   kernel_info_t(
@@ -53,6 +65,9 @@ class kernel_info_t {
 
   void inc_running() { m_num_cores_running++; }
   void dec_running() {
+#ifdef FLASH_GPGPU_SIM_OMP
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+#endif
     assert(m_num_cores_running > 0);
     m_num_cores_running--;
   }
@@ -127,13 +142,13 @@ class kernel_info_t {
     return t->second;
   }
 
- private:
-  kernel_info_t(const kernel_info_t &);   // disable copy constructor
-  void operator=(const kernel_info_t &);  // disable copy operator
+private:
+  kernel_info_t(const kernel_info_t &);  // disable copy constructor
+  void operator=(const kernel_info_t &); // disable copy operator
 
   class function_info *m_kernel_entry;
 
-  unsigned m_uid;  // Kernel ID
+  unsigned m_uid; // Kernel ID
   unsigned long long m_streamID;
 
   // These maps contain the snapshot of the texture mappings at kernel launch
@@ -150,7 +165,11 @@ class kernel_info_t {
   std::list<class ptx_thread_info *> m_active_threads;
   class memory_space *m_param_mem;
 
- public:
+#ifdef FLASH_GPGPU_SIM_OMP
+  mutable std::shared_mutex m_mutex;
+#endif
+
+public:
   // Jin: parent and child kernel management for CDP
   void set_parent(kernel_info_t *parent, dim3 parent_ctaid, dim3 parent_tid);
   void set_child(kernel_info_t *child);
@@ -165,16 +184,16 @@ class kernel_info_t {
   void print_parent_info();
   kernel_info_t *get_parent() { return m_parent_kernel; }
 
- private:
+private:
   kernel_info_t *m_parent_kernel;
   dim3 m_parent_ctaid;
   dim3 m_parent_tid;
-  std::list<kernel_info_t *> m_child_kernels;  // child kernel launched
+  std::list<kernel_info_t *> m_child_kernels; // child kernel launched
   std::map<dim3, std::list<CUstream_st *>, dim3comp>
-      m_cta_streams;  // streams created in each CTA
+      m_cta_streams; // streams created in each CTA
 
   // Jin: kernel timing
- public:
+public:
   unsigned long long launch_cycle;
   unsigned long long start_cycle;
   unsigned long long end_cycle;
@@ -182,8 +201,8 @@ class kernel_info_t {
 
   mutable bool cache_config_set;
 
-  unsigned m_kernel_TB_latency;  // this used for any CPU-GPU kernel latency and
-                                 // counted in the gpu_cycle
+  unsigned m_kernel_TB_latency; // this used for any CPU-GPU kernel latency and
+                                // counted in the gpu_cycle
 };
 
-#endif  // #ifndef KERNEL_INFO_INCLUDED
+#endif // #ifndef KERNEL_INFO_INCLUDED
