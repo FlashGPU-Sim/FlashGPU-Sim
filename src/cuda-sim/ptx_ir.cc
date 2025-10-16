@@ -1300,6 +1300,11 @@ ptx_instruction::ptx_instruction(
       case PARITY_OPTION:
         m_parity_op = true;
         break;
+      case TMA_MBAR_COMPLETE_BYTES:
+      case COMMIT_GROUP_OPTION:
+      case WAIT_GROUP_OPTION:
+        // Do nothing for now... need to be implemented later.
+        break;
       case EQU_OPTION:
       case NEU_OPTION:
       case LTU_OPTION:

@@ -8,7 +8,7 @@
 CXX = g++
 NVCC = nvcc
 CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -g -O2
-NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu
+NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -arch=sm_90
 
 # CUDA settings
 CUDA_PATH ?= /home/wzr/cuda
@@ -27,6 +27,11 @@ BIN_DIR = $(BUILD_DIR)/bin
 GTEST_HEADERS = $(wildcard $(GTEST_DIR)/include/gtest/*.h) \
                 $(wildcard $(GTEST_DIR)/include/gtest/internal/*.h)
 GTEST_SRCS_ = $(wildcard $(GTEST_DIR)/src/*.cc) $(wildcard $(GTEST_DIR)/src/*.h) $(GTEST_HEADERS)
+
+# CUDA header dependencies - track all .cuh files in src directories
+CUH_HEADERS = $(wildcard $(TEST_SRC_DIR)/*/*.cuh) \
+              $(wildcard $(SRC_DIR)/*/*.cuh) \
+              $(wildcard $(SRC_DIR)/*.cuh)
 
 # Include paths
 INCLUDES = -I$(GTEST_DIR)/include \
@@ -106,10 +111,10 @@ $(OBJ_DIR)/gtest_main.a: $(OBJ_DIR)/gtest-all.o $(OBJ_DIR)/gtest_main.o
 	$(AR) $(ARFLAGS) $@ $^
 
 # Build test objects
-$(OBJ_DIR)/unit/%.o: $(TEST_SRC_DIR)/unit/%.cc | $(UNIT_OBJ_DIR)
+$(OBJ_DIR)/unit/%.o: $(TEST_SRC_DIR)/unit/%.cc $(CUH_HEADERS) | $(UNIT_OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
-$(OBJ_DIR)/integration/%.cu.o: $(TEST_SRC_DIR)/integration/%.cc | $(INTEGRATION_OBJ_DIR)
+$(OBJ_DIR)/integration/%.cu.o: $(TEST_SRC_DIR)/integration/%.cc $(CUH_HEADERS) | $(INTEGRATION_OBJ_DIR)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
 # Build individual test executables
@@ -152,3 +157,4 @@ debug:
 	@echo "TEST_OBJECTS: $(TEST_OBJECTS)"
 	@echo "TEST_TARGETS: $(TEST_TARGETS)"
 	@echo "MAIN_TEST_TARGET: $(MAIN_TEST_TARGET)"
+	@echo "CUH_HEADERS: $(CUH_HEADERS)"
