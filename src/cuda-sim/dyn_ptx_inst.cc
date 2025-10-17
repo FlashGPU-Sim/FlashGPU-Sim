@@ -6,6 +6,8 @@
 #include <omp.h>
 #endif
 
+#include <signal.h>
+
 namespace flash_gpgpu_sim {
 
 static dyn_ptx_inst_manager g_dyn_ptx_inst_manager;
@@ -43,6 +45,10 @@ dyn_ptx_inst_manager::get_or_allocate(int thread_id, uint64_t pc,
   if (thread_inst_mem[pc] == nullptr) {
     // allocate a new dynamic instruction
     thread_inst_mem[pc] = new ptx_instruction(*static_inst);
+#ifdef FLASH_GPGPU_SIM_OMP
+    // printf("GPGPU-Sim PTX: Thread %d allocated dyn ptx_inst for PC 0x%llx\n",
+    //        thread_id, pc);
+#endif
   }
   return thread_inst_mem[pc];
 }
@@ -59,6 +65,29 @@ dyn_ptx_inst_manager::get_or_allocate(uint64_t pc,
   return g_dyn_ptx_inst_manager.get_or_allocate(thread_id, pc, static_inst);
 }
 
+void dyn_ptx_inst_manager::update_predecoded_inst_impl(
+    uint64_t pc, ptx_instruction *static_inst) {
+  for (int thread_id = 0; thread_id < m_thread_cnt; thread_id++) {
+    auto &thread_inst_mem = m_all_inst_mem[thread_id];
+    if (pc >= thread_inst_mem.size()) {
+      continue;
+    }
+    if (thread_inst_mem[pc] == nullptr) {
+      continue;
+    }
+    *thread_inst_mem[pc] = *static_inst;
+#ifdef FLASH_GPGPU_SIM_OMP
+    // printf("GPGPU-Sim PTX: Thread %d updated dyn ptx_inst for PC 0x%llx\n",
+    //        thread_id, pc);
+#endif
+  }
+}
+
+void dyn_ptx_inst_manager::update_predecoded_inst(
+    uint64_t pc, ptx_instruction *static_inst) {
+  g_dyn_ptx_inst_manager.update_predecoded_inst_impl(pc, static_inst);
+}
+
 } // namespace flash_gpgpu_sim
 
 const ptx_instruction *function_info::get_dyn_inst(unsigned PC) const {
@@ -69,4 +98,9 @@ const ptx_instruction *function_info::get_dyn_inst(unsigned PC) const {
                                                                   static_inst);
   }
   return NULL;
+}
+
+void function_info::update_dyn_inst(ptx_instruction *inst) {
+  flash_gpgpu_sim::dyn_ptx_inst_manager::update_predecoded_inst(inst->get_PC(),
+                                                                inst);
 }

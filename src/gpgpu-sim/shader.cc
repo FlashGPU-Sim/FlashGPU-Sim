@@ -1546,10 +1546,10 @@ void scheduler_unit::cycle() {
       if (pI) {
         assert(valid);
         if (pc != pI->pc) {
-          SCHED_DPRINTF(
-              "Warp (warp_id %u, dynamic_warp_id %u) control hazard "
-              "instruction flush\n",
-              (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+          SCHED_DPRINTF("Warp (warp_id %u, dynamic_warp_id %u) control hazard "
+                        "inst flush current pc %llx != next_pc %llx\n",
+                        (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(),
+                        pI->pc, pc);
           // control hazard
           warp(warp_id).set_next_pc(pc);
           warp(warp_id).ibuffer_flush();
