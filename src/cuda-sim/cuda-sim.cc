@@ -40,6 +40,7 @@ typedef void *yyscan_t;
 #include <map>
 #include <set>
 #include <sstream>
+#include <cassert>
 #include "../../libcuda/gpgpu_context.h"
 #include "../abstract_hardware_model.h"
 #include "../gpgpu-sim/gpu-sim.h"
@@ -295,6 +296,78 @@ unsigned function_info::find_label(symbol_table *symtab, const std::string &name
   abort();
 }
 
+void function_info::recognize_dynamic_shared_mem() {
+
+  /**
+   * I have to search for instructions using dynamic shared memory.
+   */
+  for (auto instr : m_instructions) {
+    for (unsigned i = 0; i < instr->get_num_operands(); i++) {
+      auto &op = instr->get_operands()[i];
+      if (op.is_shared()) {
+        auto symbol = m_symtab->lookup(op.name().c_str());
+        if (symbol && symbol->is_shared()) {
+          auto size_in_bytes = symbol->get_size_in_bytes();
+          printf("GPGPU-Sim PTX: >>> This is a shared memory symbol: %s size "
+                 "in bytes %u\n",
+                 op.name().c_str(), size_in_bytes);
+
+          if (size_in_bytes == 0) {
+            // This is a dynamic shared memory symbol.
+            // Check if it is not added to my scope.
+            if (m_local_dyn_shared_mem_symbol == nullptr) {
+              // I need to add it to the function's symbol table.
+              printf("GPGPU-Sim PTX: >>>>>> Adding localized dynamic shared "
+                     "memory symbol for %s\n",
+                     symbol->name().c_str());
+              m_local_dyn_shared_mem_symbol = m_symtab->add_symbol(*symbol);
+            }
+
+            assert(m_local_dyn_shared_mem_symbol->name() == symbol->name() &&
+                   "Multiple dynamic shared memory symbols found!");
+
+            // Update the operand to use the localized dynamic smem symbol.
+            printf("GPGPU-Sim PTX: >>>>>> Updating operand to use localized "
+                   "dyn shared mem symbol.\n");
+            const_cast<operand_info &>(op).set_symbolic(
+                m_local_dyn_shared_mem_symbol);
+          }
+        }
+      }
+    }
+  }
+}
+
+void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
+  // Handle dynamic shared memory for extern shared symbols
+  printf("GPGPU-Sim PTX: Setting up dynamic shared memory: size=%zu bytes\n",
+         shared_mem_size);
+
+  symbol_table *symtab = get_symtab();
+
+  if (m_local_dyn_shared_mem_symbol) {
+    addr_t addr = symtab->get_shared_next();
+    // Simple address padding for alignment
+    unsigned alignto = 128;
+    if (shared_mem_size < 128 &&
+        (shared_mem_size & (shared_mem_size - 1)) == 0) {
+      alignto = shared_mem_size;
+    }
+    addr_t addr_pad = alignto ? ((alignto - (addr % alignto)) % alignto) : 0;
+    printf("GPGPU-Sim PTX: Allocating local dyn shared mem symbol %s from "
+           "0x%llx to 0x%llx (size %zu)\n",
+           m_local_dyn_shared_mem_symbol->name().c_str(), addr + addr_pad,
+           addr + addr_pad + shared_mem_size, shared_mem_size);
+    m_local_dyn_shared_mem_symbol->set_address(addr + addr_pad);
+    symtab->alloc_shared(shared_mem_size + addr_pad);
+  } else {
+    symtab->dump_until_top();
+    printf("GPGPU-Sim PTX: Error -- dynamic shared memory size specified "
+           "but no local dynamic shared memory symbol found in kernel\n");
+    abort();
+  }
+}
+
 void function_info::ptx_assemble() {
   if (m_assembled) {
     return;
@@ -307,6 +380,9 @@ void function_info::ptx_assemble() {
 
   printf("GPGPU-Sim PTX: instruction assembly for function \'%s\'... ",
          m_name.c_str());
+
+  recognize_dynamic_shared_mem();
+
   fflush(stdout);
   std::list<ptx_instruction *>::iterator i;
 
@@ -1381,6 +1457,9 @@ void function_info::add_param_data(unsigned argn,
     scratchpad_memory_param = true;
   }
 
+  printf(">>>>> Binding parameter %s argn=%u scratchpad_memory_param=%d\n",
+    m_name.c_str(), argn, scratchpad_memory_param);
+
   if (scratchpad_memory_param) {
     // This should only happen for OpenCL:
     //
@@ -1896,6 +1975,8 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
           assert(0);
         }
       }
+
+      DPRINTF_THREAD(PTX_INST_EXEC, this, "exec %s\n", pI->to_string().c_str());
 
       // Tensorcore is warp synchronous operation. So these instructions needs
       // to be executed only once. To make the simulation faster removing the
