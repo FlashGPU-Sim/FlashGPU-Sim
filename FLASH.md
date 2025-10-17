@@ -86,6 +86,8 @@ Execute CUDA applications following standard GPGPU-Sim workflow:
 | Mixed Precision MMA | ⭕ **init** | fp16/bf16/fp8 tensor operations |
 | 5th Gen MMA (`tcgen05`) | ⭕ **init** | Hopper tensor core integration |
 | L2 Cache Partitioning | ⭕ **init** | Coherence protocol with partitioned L2 |
+| Better Logging System | ⭕ **init** | Help debugging |
+| NCU like report | ⭕ **init** | Easier understanding of the system bottleneck |
 | Hopper/Blackwell Validation | 🔄 **long-term** | Hardware validation framework |
 | Extended Test Coverage | 🔄 **long-term** | New workloads and benchmarks |
 
