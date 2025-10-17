@@ -672,6 +672,7 @@ void function_info::do_pdom() {
        ii += m_instr_mem[ii]->inst_size()) {  // handle branch instructions
     ptx_instruction *pI = m_instr_mem[ii];
     pI->pre_decode();
+    update_dyn_inst(pI);
   }
   printf("GPGPU-Sim PTX: ... done pre-decoding instructions for \'%s\'.\n",
          m_name.c_str());

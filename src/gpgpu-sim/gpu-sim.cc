@@ -2060,7 +2060,7 @@ void gpgpu_sim::cycle() {
  #ifdef FLASH_GPGPU_SIM_OMP
  
     unsigned int active_sms_local = 0;
-    #pragma omp parallel for reduction(+:active_sms_local) 
+    #pragma omp parallel for schedule(static) reduction(+:active_sms_local) 
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();

@@ -1373,6 +1373,7 @@ class function_info {
   bool has_return() const { return m_return_var_sym != NULL; }
   const symbol *get_return_var() const { return m_return_var_sym; }
   const ptx_instruction *get_dyn_inst(unsigned PC) const;
+  void update_dyn_inst(ptx_instruction *inst);
   addr_t get_start_PC() const { return m_start_PC; }
 
   void finalize(memory_space *param_mem);
