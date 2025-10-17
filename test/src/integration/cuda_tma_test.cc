@@ -37,7 +37,7 @@ protected:
 
     for (size_t i = 0; i < num_elements; ++i) {
       h_input[i] = dis(gen);
-	//   h_input[i] = 2;
+      //   h_input[i] = 2;
     }
   }
 
@@ -82,10 +82,8 @@ protected:
     uint8_t *d_input = nullptr;
     unsigned long long *d_output = nullptr;
 
-    EXPECT_TRUE(cudaSafeMalloc((void **)&d_input, data_size_bytes));
-    EXPECT_TRUE(cudaSafeMalloc((void **)&d_output, sizeof(unsigned long long)));
-
     // Copy input data to device (cast to uint8_t)
+    EXPECT_TRUE(cudaSafeMalloc((void **)&d_input, data_size_bytes));
     EXPECT_TRUE(cudaSafeMemcpy(d_input, h_input.data(), data_size_bytes,
                                cudaMemcpyHostToDevice));
 
@@ -94,7 +92,16 @@ protected:
 
     // Launch kernel with enough threads for all warps
     const int threads_per_block = Config::total_warps * 32;
-    const int blocks = 1;
+    int num_sms = 0;
+    auto error =
+        cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
+    EXPECT_EQ(error, cudaSuccess)
+        << "Failed to get SM count: " << cudaGetErrorString(error);
+    printf("Detected %d SMs on GPU\n", num_sms);
+    const int blocks = num_sms;
+    // const int blocks = 1;
+    EXPECT_TRUE(cudaSafeMalloc((void **)&d_output,
+                               sizeof(unsigned long long) * blocks));
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -116,9 +123,16 @@ protected:
         end_time - start_time);
 
     // Copy result back to host
-    unsigned long long h_result = 0;
-    EXPECT_TRUE(cudaSafeMemcpy(&h_result, d_output, sizeof(unsigned long long),
+    std::vector<unsigned long long> h_output(blocks);
+    EXPECT_TRUE(cudaSafeMemcpy(h_output.data(), d_output,
+                               sizeof(unsigned long long) * blocks,
                                cudaMemcpyDeviceToHost));
+
+    // Sum all the block results.
+    unsigned long long h_result = 0;
+    for (const auto &val : h_output) {
+      h_result += val;
+    }
 
     // The cp_bw_kernel sums the first uint32_t of each chunk
     // For verification, we need to compute the expected result differently
@@ -229,6 +243,12 @@ TEST_F(CudaTMATest, CPAsyncMethod) {
 
 TEST_F(CudaTMATest, NormalLoadMethod) {
   using Config = TMAConfig<2, 1, 1, 256>;
+  bool result = runTMATest<Config, CP_METHOD::NORMAL_LOAD>();
+  ASSERT_TRUE(result);
+}
+
+TEST_F(CudaTMATest, NormalLoad4Producer4Consumer) {
+  using Config = TMAConfig<4, 4, 4, 256>;
   bool result = runTMATest<Config, CP_METHOD::NORMAL_LOAD>();
   ASSERT_TRUE(result);
 }

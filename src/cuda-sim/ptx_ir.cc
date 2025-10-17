@@ -64,8 +64,8 @@ void symbol::add_initializer(const std::list<operand_info> &init) {
 }
 
 void symbol::print_info(FILE *fp) const {
-  fprintf(fp, "uid:%u, decl:%s, type:%p, ", m_uid, m_decl_location.c_str(),
-          m_type);
+  fprintf(fp, "uid:%u, decl:%s, type:%p, size:%u, ", m_uid, m_decl_location.c_str(),
+          m_type, m_size);
   if (m_address_valid) fprintf(fp, "<address valid>, ");
   if (m_is_label) fprintf(fp, " is_label ");
   if (m_is_shared) fprintf(fp, " is_shared ");
@@ -153,6 +153,15 @@ symbol *symbol_table::lookup_by_addr(addr_t addr) {
     return m_parent->lookup_by_addr(addr);
   }
   return NULL;
+}
+
+symbol *symbol_table::add_symbol(const symbol &sym) {
+  // Directly add a symbol.
+  std::string key = sym.name();
+  assert(m_symbols.find(key) == m_symbols.end());
+  symbol *s = new symbol(sym);
+  m_symbols[key] = s;
+  return s;
 }
 
 symbol *symbol_table::add_variable(const char *identifier,
@@ -340,6 +349,13 @@ void symbol_table::dump() {
     printf("\n");
   }
   printf("\n");
+}
+
+void symbol_table::dump_until_top() {
+  if (m_parent) {
+    m_parent->dump_until_top();
+  }
+  dump();
 }
 
 unsigned operand_info::get_uid() {

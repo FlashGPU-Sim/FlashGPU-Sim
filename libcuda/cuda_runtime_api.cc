@@ -882,6 +882,11 @@ cudaError_t cudaConfigureCallInternal(dim3 gridDim, dim3 blockDim,
   }
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
+    printf(
+        "GPGPU-Sim PTX: cudaConfigureCall gridDim=(%u,%u,%u) "
+        "blockDim=(%u,%u,%u) sharedMem=%zu stream=0x%p\n",
+        gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z,
+        sharedMem, stream);
   }
   struct CUstream_st *s = (struct CUstream_st *)stream;
   ctx->api->g_cuda_launch_stack.push_back(
@@ -1004,6 +1009,14 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
   kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
       hostFun, config.get_args(), config.grid_dim(), config.block_dim(),
       context);
+
+  // Handle dynamic shared memory for extern shared symbols
+  size_t shared_mem_size = config.shared_mem();
+  if (shared_mem_size > 0) {
+    function_info *func_info = grid->entry();
+    func_info->alloc_dyn_shared_mem(shared_mem_size);
+  }
+
   // do dynamic PDOM analysis for performance simulation scenario
   std::string kname = grid->name();
   function_info *kernel_func_info = grid->entry();
@@ -2046,6 +2059,14 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernelInternal(
 
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
+    // Get the actual shared memory size from the kernel configuration
+    // instead of using the potentially garbage sharedMem parameter
+    if (!ctx->api->g_cuda_launch_stack.empty()) {
+      kernel_config config = ctx->api->g_cuda_launch_stack.back();
+      printf("shared mem size = %zu\n", config.shared_mem());
+    } else {
+      printf("shared mem size = %zu (no config available)\n", sharedMem);
+    }
   }
   CUctx_st *context = GPGPUSim_Context(ctx);
   function_info *entry = context->get_kernel(hostFun);

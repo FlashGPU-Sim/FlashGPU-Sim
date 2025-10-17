@@ -101,7 +101,8 @@ void memory_space_impl<BSIZE>::write(mem_addr_t addr, size_t length,
     // fast route for intra-block access
     unsigned offset = addr & (BSIZE - 1);
     unsigned nbytes = length;
-    get_or_init_block(index).write(offset, nbytes, (const unsigned char *)data);
+    auto &storage = get_or_init_block(index);
+    storage.write(offset, nbytes, (const unsigned char *)data);
   } else {
     // slow route for inter-block access
     unsigned nbytes_remain = length;

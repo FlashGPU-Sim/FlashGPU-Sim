@@ -201,6 +201,31 @@ class symbol {
     if (type) m_is_tex = type->get_key().is_tex();
     if (type) m_is_func_addr = type->get_key().is_func_addr();
   }
+  symbol(const symbol &s) {
+    // Default copy everything except uid.
+    gpgpu_ctx = s.gpgpu_ctx;
+    m_uid = get_uid();
+    m_name = s.m_name;
+    m_decl_location = s.m_decl_location;
+    m_type = s.m_type;
+    m_size = s.m_size;
+    m_address = s.m_address;
+    m_address_valid = s.m_address_valid;
+    m_is_label = s.m_is_label;
+    m_is_shared = s.m_is_shared;
+    m_is_const = s.m_is_const;
+    m_is_global = s.m_is_global;
+    m_is_local = s.m_is_local;
+    m_is_param_local = s.m_is_param_local;
+    m_is_param_kernel = s.m_is_param_kernel;
+    m_is_tex = s.m_is_tex;
+    m_is_func_addr = s.m_is_func_addr;
+    m_reg_num = s.m_reg_num;
+    m_arch_reg_num = s.m_arch_reg_num;
+    m_reg_num_valid = s.m_reg_num_valid;
+    m_function = s.m_function;
+    m_initializer = s.m_initializer;
+  }
   unsigned get_size_in_bytes() const { return m_size; }
   const std::string &name() const { return m_name; }
   const std::string &decl_location() const { return m_decl_location; }
@@ -313,6 +338,7 @@ class symbol_table {
   symbol *lookup(const char *identifier);
   symbol *lookup_by_addr(addr_t addr);
   std::string get_scope_name() const { return m_scope_name; }
+  symbol *add_symbol(const symbol &sym);
   symbol *add_variable(const char *identifier, const type_info *type,
                        unsigned size, const char *filename, unsigned line);
   void add_function(function_info *func, const char *filename,
@@ -349,6 +375,7 @@ class symbol_table {
   symbol_table *get_parent() { return m_parent; }
 
   void dump();
+  void dump_until_top();
 
   // Jin: handle instruction group for cdp
   symbol_table *start_inst_group();
@@ -831,6 +858,7 @@ class operand_info {
   int get_int() const { return m_value.m_int; }
   int get_addr_offset() const { return m_addr_offset; }
   const symbol *get_symbol() const { return m_value.m_symbolic; }
+  void set_symbolic(const symbol *sym) { m_value.m_symbolic = sym; }
   void set_type(enum operand_type type) { m_type = type; }
   enum operand_type get_type() const { return m_type; }
   void set_neg_pred() {
@@ -976,6 +1004,9 @@ class ptx_instruction : public warp_inst_t {
 
   typedef std::vector<operand_info>::const_iterator const_iterator;
 
+  const std::vector<operand_info> &get_operands() const {
+    return m_operands;
+  }
   const_iterator op_iter_begin() const { return m_operands.begin(); }
 
   const_iterator op_iter_end() const { return m_operands.end(); }
@@ -1316,6 +1347,7 @@ class function_info {
 
   unsigned get_function_size() { return m_instructions.size(); }
 
+  void recognize_dynamic_shared_mem();
   void ptx_assemble();
 
   unsigned ptx_get_inst_op(ptx_thread_info *thread);
@@ -1363,6 +1395,10 @@ class function_info {
     m_kernel_info.maxthreads = maxnt_id;
   }
   symbol_table *get_symtab() { return m_symtab; }
+  symbol *get_local_dyn_shared_mem_symbol() const {
+    return m_local_dyn_shared_mem_symbol;
+  }
+  void alloc_dyn_shared_mem(int size);
 
   unsigned local_mem_framesize() const { return m_local_mem_framesize; }
   void set_framesize(unsigned sz) { m_local_mem_framesize = sz; }
@@ -1434,6 +1470,9 @@ class function_info {
   // with ___.ptx
 
   symbol_table *m_symtab;
+
+  // Localized dynamic shared memory symbol
+  symbol *m_local_dyn_shared_mem_symbol = nullptr;
 
   // parameter size for device kernels
   int m_args_aligned_size;
