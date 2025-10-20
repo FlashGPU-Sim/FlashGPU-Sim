@@ -123,6 +123,7 @@ enum uarch_op_t {
   LOAD_OP,
   TENSOR_CORE_LOAD_OP,
   TENSOR_CORE_STORE_OP,
+  TENSOR_MEMORY_ACCELERATOR_OP,
   STORE_OP,
   BRANCH_OP,
   BARRIER_OP,
@@ -840,6 +841,20 @@ class inst_t {
   unsigned bar_count;
   bool bar_parity = false;
 
+  // Information for TMA ops.
+  struct tma_dyn_info {
+    uint64_t dst_addr;
+    uint64_t src_addr;
+    uint32_t size_in_bytes;
+    uint32_t mbar_addr;
+  };
+  void set_tma_info(const tma_dyn_info &info) { tma_info = info; }
+  const tma_dyn_info &get_tma_info() const { return tma_info; }
+
+private:
+  tma_dyn_info tma_info;
+
+public:
   types_of_operands oprnd_type;  // code (uarch visible) identify if the
                                  // operation is an interger or a floating point
   special_ops
