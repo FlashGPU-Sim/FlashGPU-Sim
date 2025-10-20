@@ -1299,6 +1299,8 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
     m_barriers.warp_reaches_mbarrier(m_warp[warp_id]->get_cta_id(), warp_id,
                                      const_cast<warp_inst_t *>(next_inst));
+  } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
+    assert(false && "TMA OP not implemented yet");
   } else if (next_inst->op == MEMORY_BARRIER_OP) {
     m_warp[warp_id]->set_membar();
   } else if (next_inst->m_is_ldgdepbar) {  // Add for LDGDEPBAR

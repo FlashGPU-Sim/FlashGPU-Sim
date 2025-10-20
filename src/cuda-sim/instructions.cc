@@ -52,6 +52,7 @@ class ptx_recognizer;
 #include "../gpgpu-sim/gpu-sim.h"
 #include "../gpgpu-sim/shader.h"
 #include "../gpgpu-sim/flash/mbarrier.h"
+#include "../gpgpu-sim/flash/tma.h"
 #include "cuda-math.h"
 #include "cuda_device_printf.h"
 #include "ptx.tab.h"
@@ -1618,7 +1619,7 @@ void mbarrier_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
 }
 
 void tma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  inst_not_implemented(pI);
+  handle_tma_inst(pI, thread);
 }
 
 void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

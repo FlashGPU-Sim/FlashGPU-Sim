@@ -34,6 +34,7 @@ TS_TUP_BEGIN( trace_streams_type )
     TS_TUP( PTX_IR ),
     TS_TUP( PTX_INST_EXEC ),
     TS_TUP( MBAR ),
+    TS_TUP( TMA ),
     TS_TUP( LIVENESS ),
     TS_TUP( NUM_TRACE_STREAMS )
 TS_TUP_END( trace_streams_type )
