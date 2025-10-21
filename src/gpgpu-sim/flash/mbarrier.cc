@@ -66,6 +66,29 @@ bool mbarrier_manager_t::try_wait(gpgpu_sim *gpu,
   return false;
 }
 
+std::set<int> mbarrier_manager_t::try_advance(
+    gpgpu_sim *gpu, const thread_index_t &thread_index, mbarrier_t *mbarrier) {
+
+  if (mbarrier->m_arrived_count == mbarrier->m_expected_count &&
+      mbarrier->m_arrived_tx_count == mbarrier->m_expected_tx_count) {
+    // Release all waiting warps.
+    std::set<int> released_warps = mbarrier->m_waiting_warps;
+    mbarrier->m_waiting_warps.clear();
+    mbarrier->m_arrived_count = 0;
+    mbarrier->m_arrived_tx_count = 0;
+    mbarrier->m_expected_tx_count = 0;
+    mbarrier->m_phase++;
+    DPRINTF_GPU(gpu, MBAR,
+                "CTA %d Warp %d mbarrier.id %d at 0x%x all arrived, "
+                "releasing %zu warps, moving to phase %d\n",
+                thread_index.sw_cta_id, thread_index.sw_warp_id, mbarrier->m_id,
+                mbarrier->m_addr, released_warps.size(), mbarrier->m_phase);
+    return released_warps;
+  } else {
+    return {};
+  }
+}
+
 std::set<int> mbarrier_manager_t::arrive(gpgpu_sim *gpu,
                                          const thread_index_t &thread_index,
                                          uint64_t addr, int arrival_count) {
@@ -85,24 +108,28 @@ std::set<int> mbarrier_manager_t::arrive(gpgpu_sim *gpu,
       mbarrier->m_expected_tx_count);
 
   mbarrier->m_arrived_count += arrival_count;
-  if (mbarrier->m_arrived_count == mbarrier->m_expected_count &&
-      mbarrier->m_arrived_tx_count == mbarrier->m_expected_tx_count) {
-    // Release all waiting warps.
-    std::set<int> released_warps = mbarrier->m_waiting_warps;
-    mbarrier->m_waiting_warps.clear();
-    mbarrier->m_arrived_count = 0;
-    mbarrier->m_arrived_tx_count = 0;
-    mbarrier->m_expected_tx_count = 0;
-    mbarrier->m_phase++;
-    DPRINTF_GPU(gpu, MBAR,
-                "CTA %d Warp %d mbarrier.id %d at 0x%x all arrived, "
-                "releasing %zu warps, moving to phase %d\n",
-                thread_index.sw_cta_id, thread_index.sw_warp_id, mbarrier->m_id,
-                (unsigned)addr, released_warps.size(), mbarrier->m_phase);
-    return released_warps;
-  } else {
-    return {};
+  return try_advance(gpu, thread_index, mbarrier);
+}
+
+std::set<int>
+mbarrier_manager_t::complete_tx(gpgpu_sim *gpu,
+                                const thread_index_t &thread_index,
+                                uint64_t addr, int completed_tx_count) {
+  auto it = addr_to_mbarrier_map.find(addr);
+  if (it == addr_to_mbarrier_map.end()) {
+    assert(false && "mbarrier to complete tx at does not exist");
   }
+  auto mbarrier = it->second.get();
+
+  DPRINTF_GPU(gpu, MBAR,
+              "CTA %d Warp %d mbarrier.complete_tx id %d at 0x%x with "
+              "completed_tx_count %d arrived tx count %d/%d\n",
+              thread_index.sw_cta_id, thread_index.sw_warp_id, mbarrier->m_id,
+              (unsigned)addr, completed_tx_count, mbarrier->m_arrived_tx_count,
+              mbarrier->m_expected_tx_count);
+
+  mbarrier->m_arrived_tx_count += completed_tx_count;
+  return try_advance(gpu, thread_index, mbarrier);
 }
 
 void mbarrier_manager_t::expect_tx(gpgpu_sim *gpu,
@@ -282,6 +309,24 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     printf(
         "GPGPU-Sim: mbarrier instruction encountered (not yet implemented)\n");
     assert(false && "mbarrier not implemented");
+  }
+}
+
+void barrier_set_t::complete_tx(unsigned cta_id, unsigned warp_id,
+                                uint32_t mbarrier_addr,
+                                uint32_t completed_tx_count) {
+
+  // We use the logical CTA ID here.
+  auto logical_cta_id = m_shader->get_logical_cta_id(warp_id);
+  auto logical_warp_id = m_shader->get_cta_warp_id(warp_id);
+
+  flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{
+      cta_id, warp_id, logical_cta_id, logical_warp_id};
+
+  auto released_warps = m_mbarrier_manager.complete_tx(
+      m_shader->get_gpu(), thread_index, mbarrier_addr, completed_tx_count);
+  for (auto w : released_warps) {
+    m_warp_at_barrier.reset(w);
   }
 }
 

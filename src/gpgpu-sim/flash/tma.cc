@@ -9,6 +9,101 @@ typedef void *yyscan_t;
 #include "../../trace.h"
 #include "ptx.tab.h"
 
+#include <vector>
+
+namespace flash_gpgpu_sim {
+
+class tma_unit_impl_t {
+public:
+  tma_unit_impl_t(shader_core_ctx *shader_ctx, barrier_set_t *barriers)
+      : m_shader_ctx(shader_ctx), m_barriers(barriers) {}
+
+private:
+  shader_core_ctx *m_shader_ctx;
+  barrier_set_t *m_barriers;
+
+  struct tma_transaction_t {
+    ptx_thread_info *m_thread = nullptr;
+    ptx_instruction *m_inst = nullptr;
+    inst_t::tma_static_info_t m_static_info;
+    inst_t::tma_dyn_info_t m_dyn_info;
+    uint32_t m_bytes_completed = 0;
+    void reset() {
+      m_thread = nullptr;
+      m_inst = nullptr;
+      m_bytes_completed = 0;
+    }
+    bool is_valid() const { return m_thread != nullptr; }
+  };
+
+  std::vector<tma_transaction_t> m_transactions;
+
+public:
+  void warp_reaches_tma(unsigned cta_id, unsigned warp_id, warp_inst_t *inst) {
+    ptx_instruction *pI = dynamic_cast<ptx_instruction *>(inst);
+    if (pI == nullptr) {
+      printf("Error: TMA inst is not a ptx_inst\n");
+      abort();
+    }
+
+    const auto &tma_static_info = pI->get_tma_static_info();
+
+    const auto warp_size = m_shader_ctx->get_warp_size();
+    auto num_transactions_before = m_transactions.size();
+    for (int laneid = 0; laneid < warp_size; laneid++) {
+      const auto &tma_dyn_info = pI->get_tma_dyn_info(laneid);
+      if (tma_dyn_info.is_valid()) {
+        unsigned tid = warp_size * warp_id + laneid;
+        auto thread = m_shader_ctx->get_thread_info()[tid];
+
+        // Create a TMA transaction for this thread.
+        tma_transaction_t tx{
+            .m_thread = thread,
+            .m_inst = pI,
+            .m_static_info = tma_static_info,
+            .m_dyn_info = tma_dyn_info,
+            .m_bytes_completed = 0,
+        };
+        m_transactions.push_back(tx);
+
+        DPRINTF_INST_EXEC(TMA,
+                          "Start transaction dst=0x%llx, src=0x%llx, "
+                          "size_in_bytes=%u, mbar=0x%x\n",
+                          tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+                          tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
+
+        // ! For now we directly arrive!
+        DPRINTF_INST_EXEC(TMA,
+                          "Complete transaction dst=0x%llx, src=0x%llx, "
+                          "size_in_bytes=%u, mbar=0x%x \n",
+                          tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+                          tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
+        m_barriers->complete_tx(
+            cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+            tx.m_dyn_info.size_in_bytes); // complete all bytes immediately
+
+        m_transactions.pop_back();
+      }
+    }
+    if (m_transactions.size() - num_transactions_before > 1) {
+      printf("Error: Multiple active threads for TMA inst not supported\n");
+      abort();
+    }
+  }
+};
+
+tma_unit_t::tma_unit_t(shader_core_ctx *shader_ctx, barrier_set_t *barriers)
+    : m_impl(std::make_unique<tma_unit_impl_t>(shader_ctx, barriers)) {}
+
+tma_unit_t::~tma_unit_t() = default;
+
+void tma_unit_t::warp_reaches_tma(unsigned cta_id, unsigned warp_id,
+                                  warp_inst_t *inst) {
+  m_impl->warp_reaches_tma(cta_id, warp_id, inst);
+}
+
+} // namespace flash_gpgpu_sim
+
 void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
   // Currently no TMA instructions are defined.
 
@@ -78,13 +173,19 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
                         "size_in_bytes=%u, mbar=0x%x\n",
                         dst_addr, src_addr, size_in_bytes, mbar_addr);
 
-      inst_t::tma_dyn_info tma_info{
+      inst_t::tma_static_info_t tma_static_info{
+          .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+          .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
+      };
+      pI->set_tma_static_info(tma_static_info);
+      inst_t::tma_dyn_info_t tma_dyn_info{
           .dst_addr = dst_addr,
           .src_addr = src_addr,
           .size_in_bytes = size_in_bytes,
           .mbar_addr = mbar_addr,
       };
-      pI->set_tma_info(tma_info);
+      auto laneid = thread->get_laneid();
+      pI->set_tma_dyn_info(laneid, tma_dyn_info);
 
     } else {
       assert(false && "Unsupported TMA copy instruction");

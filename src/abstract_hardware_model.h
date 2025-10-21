@@ -841,18 +841,40 @@ class inst_t {
   unsigned bar_count;
   bool bar_parity = false;
 
-  // Information for TMA ops.
-  struct tma_dyn_info {
-    uint64_t dst_addr;
-    uint64_t src_addr;
-    uint32_t size_in_bytes;
-    uint32_t mbar_addr;
+public:
+  struct tma_static_info_t {
+    enum space_t {
+      TMA_INVALID = 0,
+      TMA_SHARED_CTA,
+      TMA_SHARED_CLUSTER,
+      TMA_GLOBAL,
+    };
+    space_t dst_space;
+    space_t src_space;
   };
-  void set_tma_info(const tma_dyn_info &info) { tma_info = info; }
-  const tma_dyn_info &get_tma_info() const { return tma_info; }
+  struct tma_dyn_info_t {
+    uint64_t dst_addr = 0;
+    uint64_t src_addr = 0;
+    uint32_t size_in_bytes = 0;
+    uint32_t mbar_addr = -1;
+    bool is_valid() const { return mbar_addr != (uint32_t)-1; }
+  };
+  void set_tma_static_info(const tma_static_info_t &info) {
+    tma_static_info = info;
+  }
+  const tma_static_info_t &get_tma_static_info() const {
+    return tma_static_info;
+  }
+  void set_tma_dyn_info(int laneid, const tma_dyn_info_t &info) {
+    tma_dyn_info[laneid] = info;
+  }
+  const tma_dyn_info_t &get_tma_dyn_info(int laneid) const {
+    return tma_dyn_info[laneid];
+  }
 
 private:
-  tma_dyn_info tma_info;
+  tma_static_info_t tma_static_info;
+  tma_dyn_info_t tma_dyn_info[MAX_WARP_SIZE];
 
 public:
   types_of_operands oprnd_type;  // code (uarch visible) identify if the
