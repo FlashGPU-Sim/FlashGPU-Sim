@@ -1,17 +1,26 @@
 #ifndef FLASH_GPGPU_SIM_TMA_H
 #define FLASH_GPGPU_SIM_TMA_H
 
-#include "mbarrier.h"
+#include <memory>
+
+class shader_core_ctx;
+class warp_inst_t;
+class barrier_set_t;
+class ptx_instruction;
+class ptx_thread_info;
 
 namespace flash_gpgpu_sim {
 
-class tensor_memory_accelerator_t {
+class tma_unit_impl_t;
+class tma_unit_t {
 public:
-  tensor_memory_accelerator_t(mbarrier_manager_t *mbarrier_manager)
-      : m_mbarrier_manager(mbarrier_manager) {}
+  tma_unit_t(shader_core_ctx *shader_ctx, barrier_set_t *barriers);
+  ~tma_unit_t();
+
+  void warp_reaches_tma(unsigned cta_id, unsigned warp_id, warp_inst_t *inst);
 
 private:
-  mbarrier_manager_t *m_mbarrier_manager;
+  std::unique_ptr<tma_unit_impl_t> m_impl;
 };
 
 } // namespace flash_gpgpu_sim

@@ -1492,9 +1492,9 @@ ptx_instruction::ptx_instruction(
   if (opcode == TMA_OP) {
     assert(m_scalar_type.empty() && "TMA inst should have no scalar type");
     m_scalar_type.push_back(B64_TYPE);
-    for (auto op : m_options) {
-      printf("TMA option: %d\n", op);
-    }
+    // for (auto op : m_options) {
+    //   printf("TMA option: %d\n", op);
+    // }
   }
 
   m_space_spec = space_spec;

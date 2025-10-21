@@ -455,6 +455,11 @@ void shader_core_ctx::create_exec_pipeline() {
   m_dispatch_port.push_back(ID_OC_MEM);
   m_issue_port.push_back(OC_EX_MEM);
 
+  if (m_tma) {
+    delete m_tma;
+  }
+  m_tma = new flash_gpgpu_sim::tma_unit_t(this, &m_barriers);
+
   assert(m_num_function_units == m_fu.size() and
          m_fu.size() == m_dispatch_port.size() and
          m_fu.size() == m_issue_port.size());
@@ -1265,6 +1270,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 
   m_warp[warp_id]->ibuffer_free();
   assert(next_inst->valid());
+  // ! zhengrong: Note here GPGPU-Sim creates a copy of next_inst.
   **pipe_reg = *next_inst;  // static instruction information
   (*pipe_reg)->issue(
       active_mask, warp_id, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
@@ -1300,7 +1306,8 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     m_barriers.warp_reaches_mbarrier(m_warp[warp_id]->get_cta_id(), warp_id,
                                      const_cast<warp_inst_t *>(next_inst));
   } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
-    assert(false && "TMA OP not implemented yet");
+    m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id,
+                             const_cast<warp_inst_t *>(next_inst));
   } else if (next_inst->op == MEMORY_BARRIER_OP) {
     m_warp[warp_id]->set_membar();
   } else if (next_inst->m_is_ldgdepbar) {  // Add for LDGDEPBAR
