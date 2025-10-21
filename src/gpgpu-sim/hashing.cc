@@ -84,11 +84,113 @@ unsigned ipoly_hash_function(new_addr_type higher_bits, unsigned index,
     new_index[5] =
         a[17] ^ a[16] ^ a[15] ^ a[14] ^ a[11] ^ a[9] ^ a[5] ^ a[4] ^ b[5];
     return new_index.to_ulong();
-  } else { /* Else incorrect number of channels for the hashing function */
+  } else if (bank_set_num == 128) {
+    std::bitset<64> a(higher_bits);
+    std::bitset<7> b(index);
+    std::bitset<7> new_index(index);
+
+    // Equations derived for primitive polynomial x^7 + x^3 + 1 (IPOLY(131))
+    new_index[0] = a[12] ^ a[11] ^ a[10] ^ a[9] ^ a[8] ^ a[7] ^ a[6] ^ a[3] ^
+                   a[0] ^ b[0];
+    new_index[1] = a[13] ^ a[12] ^ a[11] ^ a[10] ^ a[9] ^ a[8] ^ a[7] ^ a[4] ^
+                   a[1] ^ b[1];
+    new_index[2] = a[14] ^ a[13] ^ a[12] ^ a[11] ^ a[10] ^ a[9] ^ a[8] ^ a[5] ^
+                   a[2] ^ b[2];
+    new_index[3] = a[15] ^ a[14] ^ a[13] ^ a[12] ^ a[11] ^ a[10] ^ a[9] ^ a[6] ^
+                   a[3] ^ a[0] ^ b[3];
+    new_index[4] = a[16] ^ a[15] ^ a[14] ^ a[13] ^ a[12] ^ a[11] ^ a[10] ^ a[7] ^
+                   a[4] ^ a[1] ^ b[4];
+    new_index[5] = a[17] ^ a[16] ^ a[15] ^ a[14] ^ a[13] ^ a[12] ^ a[11] ^ a[8] ^
+                   a[5] ^ a[2] ^ b[5];
+    new_index[6] = a[18] ^ a[17] ^ a[16] ^ a[15] ^ a[14] ^ a[13] ^ a[12] ^ a[9] ^
+                   a[6] ^ a[3] ^ b[6];
+
+    return new_index.to_ulong();
+  } else if (bank_set_num == 256) {
+    std::bitset<64> a(higher_bits);
+    std::bitset<8> b(index);
+    std::bitset<8> new_index(index);
+
+    // Equations derived for primitive polynomial x^8 + x^4 + x^3 + x^2 + 1 (IPOLY(285))
+    new_index[0] = a[19] ^ a[18] ^ a[17] ^ a[15] ^ a[13] ^ a[12] ^ a[10] ^ a[7] ^
+                   a[4] ^ a[3] ^ a[2] ^ a[0] ^ b[0];
+    new_index[1] = a[20] ^ a[19] ^ a[18] ^ a[16] ^ a[14] ^ a[13] ^ a[11] ^ a[8] ^
+                   a[5] ^ a[4] ^ a[3] ^ a[1] ^ b[1];
+    new_index[2] = a[21] ^ a[20] ^ a[19] ^ a[17] ^ a[15] ^ a[14] ^ a[12] ^ a[9] ^
+                   a[6] ^ a[5] ^ a[4] ^ a[2] ^ b[2];
+    new_index[3] = a[22] ^ a[21] ^ a[20] ^ a[18] ^ a[16] ^ a[15] ^ a[13] ^ a[10] ^
+                   a[7] ^ a[6] ^ a[5] ^ a[3] ^ b[3];
+    new_index[4] = a[23] ^ a[22] ^ a[21] ^ a[19] ^ a[17] ^ a[16] ^ a[14] ^ a[11] ^
+                   a[8] ^ a[7] ^ a[6] ^ a[4] ^ a[0] ^ b[4];
+    new_index[5] = a[24] ^ a[23] ^ a[22] ^ a[20] ^ a[18] ^ a[17] ^ a[15] ^ a[12] ^
+                   a[9] ^ a[8] ^ a[7] ^ a[5] ^ a[1] ^ b[5];
+    new_index[6] = a[25] ^ a[24] ^ a[23] ^ a[21] ^ a[19] ^ a[18] ^ a[16] ^ a[13] ^
+                   a[10] ^ a[9] ^ a[8] ^ a[6] ^ a[2] ^ b[6];
+    new_index[7] = a[26] ^ a[25] ^ a[24] ^ a[22] ^ a[20] ^ a[19] ^ a[17] ^ a[14] ^
+                   a[11] ^ a[10] ^ a[9] ^ a[7] ^ a[3] ^ b[7];
+
+    return new_index.to_ulong();
+
+  } else if (bank_set_num == 512) {
+    std::bitset<64> a(higher_bits);
+    std::bitset<9> b(index);
+    std::bitset<9> new_index(index);
+
+    // Equations derived for primitive polynomial x^9 + x^4 + 1 (IPOLY(529))
+    new_index[0] = a[25] ^ a[23] ^ a[22] ^ a[21] ^ a[19] ^ a[17] ^ a[15] ^ a[12] ^
+                   a[8] ^ a[4] ^ a[0] ^ b[0];
+    new_index[1] = a[26] ^ a[24] ^ a[23] ^ a[22] ^ a[20] ^ a[18] ^ a[16] ^ a[13] ^
+                   a[9] ^ a[5] ^ a[1] ^ b[1];
+    new_index[2] = a[27] ^ a[25] ^ a[24] ^ a[23] ^ a[21] ^ a[19] ^ a[17] ^ a[14] ^
+                   a[10] ^ a[6] ^ a[2] ^ b[2];
+    new_index[3] = a[28] ^ a[26] ^ a[25] ^ a[24] ^ a[22] ^ a[20] ^ a[18] ^ a[15] ^
+                   a[11] ^ a[7] ^ a[3] ^ b[3];
+    new_index[4] = a[29] ^ a[27] ^ a[26] ^ a[25] ^ a[23] ^ a[21] ^ a[19] ^ a[16] ^
+                   a[12] ^ a[8] ^ a[4] ^ a[0] ^ b[4];
+    new_index[5] = a[30] ^ a[28] ^ a[27] ^ a[26] ^ a[24] ^ a[22] ^ a[20] ^ a[17] ^
+                   a[13] ^ a[9] ^ a[5] ^ a[1] ^ b[5];
+    new_index[6] = a[31] ^ a[29] ^ a[28] ^ a[27] ^ a[25] ^ a[23] ^ a[21] ^ a[18] ^
+                   a[14] ^ a[10] ^ a[6] ^ a[2] ^ b[6];
+    new_index[7] = a[32] ^ a[30] ^ a[29] ^ a[28] ^ a[26] ^ a[24] ^ a[22] ^ a[19] ^
+                   a[15] ^ a[11] ^ a[7] ^ a[3] ^ b[7];
+    new_index[8] = a[33] ^ a[31] ^ a[30] ^ a[29] ^ a[27] ^ a[25] ^ a[23] ^ a[20] ^
+                   a[16] ^ a[12] ^ a[8] ^ a[4] ^ b[8];
+
+    return new_index.to_ulong();
+
+  } else if (bank_set_num == 1024) {
+    std::bitset<64> a(higher_bits);
+    std::bitset<10> b(index);
+    std::bitset<10> new_index(index);
+
+    // Equations derived for primitive polynomial x^10 + x^3 + 1 (IPOLY(1033))
+    new_index[0] = a[30] ^ a[28] ^ a[27] ^ a[26] ^ a[24] ^ a[22] ^ a[20] ^ a[18] ^
+                   a[16] ^ a[12] ^ a[9] ^ a[3] ^ a[0] ^ b[0];
+    new_index[1] = a[31] ^ a[29] ^ a[28] ^ a[27] ^ a[25] ^ a[23] ^ a[21] ^ a[19] ^
+                   a[17] ^ a[13] ^ a[10] ^ a[4] ^ a[1] ^ b[1];
+    new_index[2] = a[32] ^ a[30] ^ a[29] ^ a[28] ^ a[26] ^ a[24] ^ a[22] ^ a[20] ^
+                   a[18] ^ a[14] ^ a[11] ^ a[5] ^ a[2] ^ b[2];
+    new_index[3] = a[33] ^ a[31] ^ a[30] ^ a[29] ^ a[27] ^ a[25] ^ a[23] ^ a[21] ^
+                   a[19] ^ a[15] ^ a[12] ^ a[6] ^ a[3] ^ a[0] ^ b[3];
+    new_index[4] = a[34] ^ a[32] ^ a[31] ^ a[30] ^ a[28] ^ a[26] ^ a[24] ^ a[22] ^
+                   a[20] ^ a[16] ^ a[13] ^ a[7] ^ a[4] ^ a[1] ^ b[4];
+    new_index[5] = a[35] ^ a[33] ^ a[32] ^ a[31] ^ a[29] ^ a[27] ^ a[25] ^ a[23] ^
+                   a[21] ^ a[17] ^ a[14] ^ a[8] ^ a[5] ^ a[2] ^ b[5];
+    new_index[6] = a[36] ^ a[34] ^ a[33] ^ a[32] ^ a[30] ^ a[28] ^ a[26] ^ a[24] ^
+                   a[22] ^ a[18] ^ a[15] ^ a[9] ^ a[6] ^ a[3] ^ b[6];
+    new_index[7] = a[37] ^ a[35] ^ a[34] ^ a[33] ^ a[31] ^ a[29] ^ a[27] ^ a[25] ^
+                   a[23] ^ a[19] ^ a[16] ^ a[10] ^ a[7] ^ a[4] ^ b[7];
+    new_index[8] = a[38] ^ a[36] ^ a[35] ^ a[34] ^ a[32] ^ a[30] ^ a[28] ^ a[26] ^
+                   a[24] ^ a[20] ^ a[17] ^ a[11] ^ a[8] ^ a[5] ^ b[8];
+    new_index[9] = a[39] ^ a[37] ^ a[36] ^ a[35] ^ a[33] ^ a[31] ^ a[29] ^ a[27] ^
+                   a[25] ^ a[21] ^ a[18] ^ a[12] ^ a[9] ^ a[6] ^ b[9];
+
+    return new_index.to_ulong();
+  }else { /* Else incorrect number of channels for the hashing function */
     assert(
         "\nmemory_partition_indexing error: The number of "
         "channels should be "
-        "16, 32 or 64 for the hashing IPOLY index function. other banks "
+        "16, 32, 64, 128, 256, 512 or 1024 for the hashing IPOLY index function. other banks "
         "numbers are not supported. Generate it by yourself! \n" &&
         0);
 
