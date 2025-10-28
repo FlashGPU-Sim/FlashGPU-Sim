@@ -95,7 +95,8 @@ struct CUctx_st {
       if (s != NULL) {
         function_info *f = s->get_pc();
         assert(f != NULL);
-        m_kernel_lookup[hostFun] = f;
+        auto [new_iter, success] = m_kernel_lookup.emplace(hostFun, f);
+        assert(success);
       } else {
         printf("Warning: cannot find deviceFun %s\n", deviceFun);
         m_kernel_lookup[hostFun] = NULL;
@@ -114,10 +115,20 @@ struct CUctx_st {
   }
 
   function_info *get_kernel(const char *hostFun) {
-    std::map<const void *, function_info *>::iterator i =
-        m_kernel_lookup.find(hostFun);
-    assert(i != m_kernel_lookup.end());
+    auto i = m_kernel_lookup.find(hostFun);
+    if (i == m_kernel_lookup.end()) {
+      printf("Warning: cannot find hostFun %p\n", hostFun);
+      abort();
+    }
     return i->second;
+  }
+
+  symbol_table *get_symbol_table(unsigned fat_cubin_handle) {
+    auto code_iter = m_code.find(fat_cubin_handle);
+    if (code_iter != m_code.end()) {
+      return code_iter->second;
+    }
+    return NULL;
   }
 
   int no_of_ptx;
