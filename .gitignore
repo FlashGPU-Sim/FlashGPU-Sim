@@ -5,6 +5,9 @@
 _cuobjdump_*
 _app_cuda_version_*
 
+test/triton_trace/triton_kernel_tracking/*
+__pycache__
+
 src/intersim2/lex.yy.c
 src/intersim2/y.tab.c
 src/intersim2/y.tab.h
