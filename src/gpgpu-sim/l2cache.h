@@ -74,7 +74,7 @@ class partition_mf_allocator : public mem_fetch_allocator {
 class memory_partition_unit {
  public:
   memory_partition_unit(unsigned partition_id, const memory_config *config,
-                        class memory_stats_t *stats, class gpgpu_sim *gpu);
+                        memory_stats_manager_t *stats, class gpgpu_sim *gpu);
   ~memory_partition_unit();
 
   bool busy() const;
@@ -111,7 +111,7 @@ class memory_partition_unit {
  private:
   unsigned m_id;
   const memory_config *m_config;
-  class memory_stats_t *m_stats;
+  memory_stats_manager_t *m_mem_stats;
   class memory_sub_partition **m_sub_partition;
   class dram_t *m_dram;
 
@@ -160,7 +160,7 @@ class memory_partition_unit {
 class memory_sub_partition {
  public:
   memory_sub_partition(unsigned sub_partition_id, const memory_config *config,
-                       class memory_stats_t *stats, class gpgpu_sim *gpu);
+                       memory_stats_manager_t *stats, class gpgpu_sim *gpu);
   ~memory_sub_partition();
 
   unsigned get_id() const { return m_id; }
@@ -230,7 +230,7 @@ class memory_sub_partition {
   class mem_fetch *L2dramout;
   unsigned long long int wb_addr;
 
-  class memory_stats_t *m_stats;
+  class memory_stats_manager_t *m_mem_stats;
 
   std::set<mem_fetch *> m_request_tracker;
 

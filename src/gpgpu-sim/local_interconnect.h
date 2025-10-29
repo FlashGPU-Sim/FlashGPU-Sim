@@ -98,6 +98,18 @@ class xbar_router {
   unsigned m_id;
   enum Interconnect_type router_type;
   unsigned active_in_buffers, active_out_buffers;
+
+  // Help us to avoid iterate all buffers every time.
+  unsigned active_in_buffer_base, active_out_buffer_base;
+  unsigned round_in_idx(unsigned idx) const {
+    return (idx - active_in_buffer_base) % active_in_buffers +
+           active_in_buffer_base;
+  }
+  unsigned round_out_idx(unsigned idx) const {
+    return (idx - active_out_buffer_base) % active_out_buffers +
+           active_out_buffer_base;
+  }
+
   Arbiteration_type arbit_type;
   unsigned verbose;
 

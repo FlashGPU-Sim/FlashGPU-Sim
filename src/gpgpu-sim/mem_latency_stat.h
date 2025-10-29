@@ -32,6 +32,10 @@
 #include <stdio.h>
 #include <zlib.h>
 #include <map>
+#include <array>
+#include <vector>
+
+#include "../parallel_sim_util.h"
 
 class memory_config;
 class memory_stats_t {
@@ -39,6 +43,13 @@ class memory_stats_t {
   memory_stats_t(unsigned n_shader,
                  const class shader_core_config *shader_config,
                  const memory_config *mem_config, const class gpgpu_sim *gpu);
+
+  memory_stats_t(const memory_stats_t &other)
+      : memory_stats_t(other.m_n_shader, other.m_shader_config,
+                       other.m_memory_config, other.m_gpu) {}
+
+  void clear_accumulator();
+  void aggregate(const memory_stats_t &other);
 
   unsigned memlatstat_done(class mem_fetch *mf);
   void memlatstat_read_done(class mem_fetch *mf);
@@ -62,26 +73,32 @@ class memory_stats_t {
   unsigned max_dq_latency;
   unsigned max_mf_latency;
   unsigned max_icnt2mem_latency;
+  unsigned max_icnt2sh_latency;
   unsigned long long int tot_icnt2mem_latency;
   unsigned long long int tot_icnt2sh_latency;
   unsigned long long int tot_mrq_latency;
   unsigned long long int tot_mrq_num;
-  unsigned max_icnt2sh_latency;
-  unsigned mrq_lat_table[32];
-  unsigned dq_lat_table[32];
-  unsigned mf_lat_table[32];
-  unsigned icnt2mem_lat_table[24];
-  unsigned icnt2sh_lat_table[24];
-  unsigned mf_lat_pw_table[32];  // table storing values of mf latency Per
-                                 // Window
+  std::array<unsigned, 32> mrq_lat_table;
+  std::array<unsigned, 32> dq_lat_table;
+  std::array<unsigned, 32> mf_lat_table;
+  std::array<unsigned, 24> icnt2mem_lat_table;
+  std::array<unsigned, 24> icnt2sh_lat_table;
+  std::array<unsigned, 32> mf_lat_pw_table;  // table storing values of mf latency Per
+                                              // Window
+  // total latency summed up per window. divide by
+  // mf_num_lat_pw to obtain average latency Per Window
   unsigned mf_num_lat_pw;
   unsigned max_warps;
-  unsigned mf_tot_lat_pw;  // total latency summed up per window. divide by
-                           // mf_num_lat_pw to obtain average latency Per Window
+  unsigned mf_tot_lat_pw;
+
   unsigned long long int mf_total_lat;
+
+  using table_t = std::vector<std::vector<unsigned int>>;
+
   unsigned long long int *
       *mf_total_lat_table;      // mf latency sums[dram chip id][bank id]
-  unsigned **mf_max_lat_table;  // mf latency sums[dram chip id][bank id]
+  // [dram chip id][bank id]
+  table_t mf_max_lat_table;
   unsigned num_mfs;
   unsigned int ***bankwrites;  // bankwrites[shader id][dram chip id][bank id]
   unsigned int ***bankreads;   // bankreads[shader id][dram chip id][bank id]
@@ -110,19 +127,37 @@ class memory_stats_t {
   unsigned int *L2_L2todramlength;
 
   // DRAM access row locality stats
-  unsigned int *
-      *concurrent_row_access;    // concurrent_row_access[dram chip id][bank id]
-  unsigned int **num_activates;  // num_activates[dram chip id][bank id]
-  unsigned int **row_access;     // row_access[dram chip id][bank id]
-  unsigned int **max_conc_access2samerow;  // max_conc_access2samerow[dram chip
-                                           // id][bank id]
-  unsigned int **max_servicetime2samerow;  // max_servicetime2samerow[dram chip
-                                           // id][bank id]
+  // [dram chip id][bank id]
+  table_t concurrent_row_access;
+  table_t num_activates;
+  table_t row_access;
+  table_t max_conc_access2samerow;
+  table_t max_servicetime2samerow;
 
   // Power stats
   unsigned total_n_access;
   unsigned total_n_reads;
   unsigned total_n_writes;
+};
+
+// Provide a thread-safe manager for memory_stats_t objects.
+class memory_stats_manager_t {
+public:
+  using stats_ptr_t = std::shared_ptr<memory_stats_t>;
+  memory_stats_manager_t(unsigned n_shader, const memory_config *mem_config,
+                         const shader_core_config *shader_config,
+                         const gpgpu_sim *gpu);
+
+  stats_ptr_t get_stats();
+  stats_ptr_t get_aggregate_stats() { return m_aggregate_stats; }
+
+  void aggregate_stats();
+
+private:
+  stats_ptr_t m_aggregate_stats;
+#ifdef FLASH_GPGPU_SIM_OMP
+  std::array<stats_ptr_t, FLASH_GPGPU_SIM_OMP_MAX_THREADS> m_thread_local_stats;
+#endif
 };
 
 #endif /*MEM_LATENCY_STAT_H*/
