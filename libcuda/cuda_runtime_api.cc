@@ -5814,6 +5814,17 @@ CUresult CUDAAPI cuFuncGetAttribute(int *pi, CUfunction_attribute attrib,
   return CUDA_SUCCESS;
 }
 
+CUresult CUDAAPI cuFuncSetAttribute(CUfunction hfunc,
+                                    CUfunction_attribute attrib, int value) {
+
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+  printf("WARNING: this function has not been implemented yet %s\n",
+         __my_func__);
+  return CUDA_SUCCESS;
+}
+
 CUresult CUDAAPI cuFuncSetCacheConfig(CUfunction hfunc, CUfunc_cache config) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
