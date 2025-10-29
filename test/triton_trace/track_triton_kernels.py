@@ -544,12 +544,88 @@ class TritonKernelTracker:
             self._generate_launch_specific_harness(kernel_info=matching_kernel, 
                                                      launch_info=launch_info)
     
+    def _generate_helper_functions(self):
+        """Generate reusable helper functions for data loading and validation"""
+        return """
+// Helper function to load tensor from binary file
+void* load_tensor_arg(const char* exe_path, const char* rel_path, size_t size, int arg_idx, 
+                      const char* dtype, const char* shape) {
+    void* d_ptr;
+    cudaMalloc(&d_ptr, size);
+    
+    char data_path[2048];
+    snprintf(data_path, sizeof(data_path), "%s/%s", exe_path, rel_path);
+    FILE* fp = fopen(data_path, "rb");
+    if (!fp) {
+        fprintf(stderr, "Error: Cannot open %s\\n", data_path);
+        return NULL;
+    }
+    
+    void* h_ptr = malloc(size);
+    fread(h_ptr, 1, size, fp);
+    fclose(fp);
+    cudaMemcpy(d_ptr, h_ptr, size, cudaMemcpyHostToDevice);
+    free(h_ptr);
+    
+    printf("  Loaded arg[%d]: tensor shape=%s, dtype=%s, size=%zu bytes\\n", arg_idx, shape, dtype, size);
+    return d_ptr;
+}
+
+// Helper function to validate output tensor
+int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel_expected_path, 
+                           size_t size, int arg_idx) {
+    char expected_path[2048];
+    snprintf(expected_path, sizeof(expected_path), "%s/%s", exe_path, rel_expected_path);
+    FILE* fp = fopen(expected_path, "rb");
+    if (!fp) {
+        printf("  No expected output file for arg[%d], skipping validation\\n", arg_idx);
+        return 0;
+    }
+    
+    void* h_expected = malloc(size);
+    void* h_actual = malloc(size);
+    fread(h_expected, 1, size, fp);
+    fclose(fp);
+    cudaMemcpy(h_actual, d_actual, size, cudaMemcpyDeviceToHost);
+    
+    // Compare element-wise with tolerance (assumes float)
+    int mismatches = 0;
+    size_t num_elements = size / sizeof(float);
+    float* expected_data = (float*)h_expected;
+    float* actual_data = (float*)h_actual;
+    float tolerance = 1e-5f;
+    
+    for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
+        float diff = fabsf(expected_data[i] - actual_data[i]);
+        if (diff > tolerance) {
+            if (mismatches == 0) {
+                printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
+            }
+            printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e\\n", 
+                   i, expected_data[i], actual_data[i], diff);
+            mismatches++;
+        }
+    }
+    
+    if (mismatches == 0) {
+        printf("  Validation PASSED for arg[%d]: all %zu elements match within tolerance %.2e\\n", 
+               arg_idx, num_elements, tolerance);
+    } else {
+        printf("  Total mismatches for arg[%d]: %d (showing first 10)\\n", arg_idx, mismatches);
+    }
+    
+    free(h_expected);
+    free(h_actual);
+    return (mismatches == 0) ? 0 : 1;
+}
+"""
+
     def _generate_launch_specific_harness(self, kernel_info: KernelBinaryInfo, launch_info: KernelLaunchInfo):
         """Generate a harness for a specific launch with actual argument data"""
         kernel_name = kernel_info.kernel_name
         launch_id = launch_info.launch_id
         
-        # Read PTX to embed as C string
+        # Read PTX to check if we can generate
         binary_path = Path(kernel_info.binary_path)
         ptx_path = binary_path.parent / f"{kernel_name}.ptx"
         
@@ -558,28 +634,19 @@ class TritonKernelTracker:
             try:
                 with open(ptx_path, 'r') as f:
                     ptx_content = f.read()
-                # Escape for C string literal - split into multiple lines for readability
-                lines = ptx_content.split('\n')
-                escaped_lines = ['    "' + line.replace('\\', '\\\\').replace('"', '\\"') + '\\n"' for line in lines]
-                ptx_string = '\n'.join(escaped_lines)
+                ptx_string = "exists"  # Just need to know it exists
             except Exception as e:
                 print(f"  Warning: Could not read PTX: {e}")
         
-        # Make binary path relative to launchers directory (fallback)
-        if not binary_path.is_absolute():
-            binary_path = (Path.cwd() / binary_path).resolve()
+        # Make binary path relative to launchers directory
         launchers_dir = self.launchers_dir.resolve()
-        try:
-            relative_binary_path = os.path.relpath(binary_path, launchers_dir)
-        except:
-            relative_binary_path = str(binary_path)
         
-        # Build argument loading code
-        arg_alloc_code = []
-        arg_init_code = []
-        arg_cleanup_code = []
+        # Build simplified argument loading code using helper functions
+        arg_declarations = []
+        arg_loading_calls = []
         arg_pointers = []
-        validation_code = []
+        validation_calls = []
+        cleanup_code = []
         
         for arg_info in launch_info.args_info:
             idx = arg_info.index
@@ -593,35 +660,22 @@ class TritonKernelTracker:
                     relative_data_path = os.path.relpath(data_file_path, launchers_dir)
                 except Exception as e:
                     relative_data_path = arg_info.data_file
-                    
-                # Generate code to load tensor using simple CUDA Runtime API
-                arg_alloc_code.append(f"""
-    // Argument {idx}: Tensor ({arg_info.shape}, {arg_info.dtype})
-    void* d_arg{idx};
-    size_t arg{idx}_size = {arg_info.size_bytes};
-    cudaMalloc(&d_arg{idx}, arg{idx}_size);
-    
-    // Load data from file
-    {{
-        char data_path[2048];
-        snprintf(data_path, sizeof(data_path), "%s/{relative_data_path}", exe_path);
-        FILE* fp{idx} = fopen(data_path, "rb");
-        if (!fp{idx}) {{
-            fprintf(stderr, "Error: Cannot open %s\\n", data_path);
-            return 1;
-        }}
-        void* h_arg{idx} = malloc(arg{idx}_size);
-        fread(h_arg{idx}, 1, arg{idx}_size, fp{idx});
-        fclose(fp{idx});
-        cudaMemcpy(d_arg{idx}, h_arg{idx}, arg{idx}_size, cudaMemcpyHostToDevice);
-        free(h_arg{idx});
-        printf("  Loaded arg[{idx}]: tensor shape={list(arg_info.shape)}, dtype={arg_info.dtype}, size=%zu bytes\\n", arg{idx}_size);
-    }}
-""")
-                arg_pointers.append(f"&d_arg{idx}")
-                arg_cleanup_code.append(f"    cudaFree(d_arg{idx});")
                 
-                # Add validation code if we have expected output
+                # Generate simplified code using helper function
+                arg_declarations.append(f"    void* d_arg{idx};")
+                arg_declarations.append(f"    size_t arg{idx}_size = {arg_info.size_bytes};")
+                
+                shape_str = str(list(arg_info.shape))
+                arg_loading_calls.append(
+                    f'    d_arg{idx} = load_tensor_arg(exe_path, "{relative_data_path}", '
+                    f'arg{idx}_size, {idx}, "{arg_info.dtype}", "{shape_str}");'
+                )
+                arg_loading_calls.append(f'    if (!d_arg{idx}) return 1;')
+                
+                arg_pointers.append(f"&d_arg{idx}")
+                cleanup_code.append(f"    cudaFree(d_arg{idx});")
+                
+                # Add validation call if we have expected output
                 if arg_info.output_file:
                     output_file_path = Path(arg_info.output_file)
                     if not output_file_path.is_absolute():
@@ -631,54 +685,10 @@ class TritonKernelTracker:
                     except:
                         relative_output_path = arg_info.output_file
                     
-                    validation_code.append(f"""
-    // Validate output for arg[{idx}]
-    {{
-        char expected_output_path[2048];
-        snprintf(expected_output_path, sizeof(expected_output_path), "%s/{relative_output_path}", exe_path);
-        FILE* fp_expected{idx} = fopen(expected_output_path, "rb");
-        if (fp_expected{idx}) {{
-            void* h_expected{idx} = malloc(arg{idx}_size);
-            void* h_actual{idx} = malloc(arg{idx}_size);
-            
-            fread(h_expected{idx}, 1, arg{idx}_size, fp_expected{idx});
-            fclose(fp_expected{idx});
-            
-            cudaMemcpy(h_actual{idx}, d_arg{idx}, arg{idx}_size, cudaMemcpyDeviceToHost);
-            
-            // Compare outputs (byte-by-byte for exact match, or element-wise with tolerance)
-            int mismatches = 0;
-            size_t num_elements = arg{idx}_size / sizeof(float);  // Assuming float, adjust as needed
-            float* expected_data = (float*)h_expected{idx};
-            float* actual_data = (float*)h_actual{idx};
-            float tolerance = 1e-5f;
-            
-            for (size_t i = 0; i < num_elements && mismatches < 10; i++) {{
-                float diff = fabsf(expected_data[i] - actual_data[i]);
-                if (diff > tolerance) {{
-                    if (mismatches == 0) {{
-                        printf("\\n  Validation FAILED for arg[{idx}]:\\n");
-                    }}
-                    printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e\\n", 
-                           i, expected_data[i], actual_data[i], diff);
-                    mismatches++;
-                }}
-            }}
-            
-            if (mismatches == 0) {{
-                printf("  Validation PASSED for arg[{idx}]: all %zu elements match within tolerance %.2e\\n", 
-                       num_elements, tolerance);
-            }} else {{
-                printf("  Total mismatches for arg[{idx}]: %d (showing first 10)\\n", mismatches);
-            }}
-            
-            free(h_expected{idx});
-            free(h_actual{idx});
-        }} else {{
-            printf("  No expected output file found for arg[{idx}], skipping validation\\n");
-        }}
-    }}
-""")
+                    validation_calls.append(
+                        f'    validate_tensor_output(d_arg{idx}, exe_path, "{relative_output_path}", '
+                        f'arg{idx}_size, {idx});'
+                    )
                 
             elif arg_info.arg_type == 'scalar':
                 # Generate code for scalar argument
@@ -690,25 +700,20 @@ class TritonKernelTracker:
                 c_type = dtype_map.get(arg_info.dtype, 'int32_t')
                 value = arg_info.value
                 
-                arg_alloc_code.append(f"""
-    // Argument {idx}: Scalar ({arg_info.dtype} = {value})
-    {c_type} arg{idx} = {value};
-    printf("  Set arg[{idx}]: {arg_info.dtype} = {value}\\n");
-""")
+                arg_declarations.append(f"    {c_type} arg{idx} = {value};")
+                arg_loading_calls.append(f'    printf("  Set arg[{idx}]: {arg_info.dtype} = {value}\\n");')
                 arg_pointers.append(f"&arg{idx}")
         
-        # Generate harness that loads fatbin from file (simpler than embedding)
+        # Generate harness with helper functions
         if ptx_string:
             fatbin_filename = f"{kernel_name}_launch{launch_id}_kernel.fatbin"
+            helper_functions = self._generate_helper_functions()
 
             cpp_code = f"""
 // Standalone harness for Triton kernel: {kernel_name}
 // Launch ID: {launch_id}
 // Generated by TritonKernelTracker with captured arguments
 // Kernel hash: {kernel_info.kernel_hash}
-//
-// Loads fatbin from file using cuModuleLoad.
-// Compatible with cuobjdump (can extract PTX from the fatbin file).
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -719,7 +724,9 @@ class TritonKernelTracker:
 #include <unistd.h>
 #include <math.h>
 
-int main(int argc, char** argv) {{
+{helper_functions}
+
+int main(int argc, char** argv) {{{{
     printf("=== Standalone Harness for Triton Kernel ===\\n");
     printf("Kernel: {kernel_name}\\n");
     printf("Launch ID: {launch_id}\\n");
@@ -728,101 +735,92 @@ int main(int argc, char** argv) {{
     printf("Shared memory: {launch_info.shared_memory} bytes\\n");
     printf("\\n");
 
-    // Initialize CUDA Driver API
+    // Initialize CUDA
     cuInit(0);
-
     CUdevice device;
     CUcontext context;
     cuDeviceGet(&device, 0);
     cuCtxCreate(&context, 0, device);
 
-    // Resolve fatbin path relative to executable location
+    // Get executable directory
     char exe_path[1024];
     ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len == -1) {{
+    if (len == -1) {{{{
         fprintf(stderr, "Failed to get executable path\\n");
         return 1;
-    }}
+    }}}}
     exe_path[len] = '\\0';
-    
-    // Get directory of executable
     char* last_slash = strrchr(exe_path, '/');
-    if (last_slash) {{
-        *last_slash = '\\0';
-    }}
-    
-    // Build full path to fatbin
+    if (last_slash) *last_slash = '\\0';
+
+    // Load module
     char fatbin_path[2048];
     snprintf(fatbin_path, sizeof(fatbin_path), "%s/{fatbin_filename}", exe_path);
-    
-    // Load module directly from fatbin file
     CUmodule module;
     CUresult load_result = cuModuleLoad(&module, fatbin_path);
-    if (load_result != CUDA_SUCCESS) {{
+    if (load_result != CUDA_SUCCESS) {{{{
         const char* errStr;
         cuGetErrorString(load_result, &errStr);
         fprintf(stderr, "Failed to load fatbin: %s\\n", errStr);
         return 1;
-    }}
+    }}}}
     printf("Loaded module from: %s\\n", fatbin_path);
 
     // Get kernel function
     CUfunction kernel_func;
     CUresult func_result = cuModuleGetFunction(&kernel_func, module, "{kernel_name}");
-    if (func_result != CUDA_SUCCESS) {{
+    if (func_result != CUDA_SUCCESS) {{{{
         const char* errStr;
         cuGetErrorString(func_result, &errStr);
         fprintf(stderr, "Failed to get function: %s\\n", errStr);
         return 1;
-    }}
+    }}}}
     printf("Got kernel function: {kernel_name}\\n\\n");
 
+    // Initialize arguments
     printf("Initializing arguments:\\n");
-{''.join(arg_alloc_code)}
+{chr(10).join(arg_declarations)}
 
-    // Triton adds global_scratch and profile_scratch arguments
+{chr(10).join(arg_loading_calls)}
+
+    // Setup kernel arguments (user args + triton runtime args)
     void* global_scratch = NULL;
     void* profile_scratch = NULL;
-
-    // Setup kernel arguments (user args + global_scratch + profile_scratch)
     void* args[] = {{ {', '.join(arg_pointers)}, &global_scratch, &profile_scratch }};
 
     // Launch kernel
     printf("\\nLaunching kernel...\\n");
     CUresult launch_result = cuLaunchKernel(
         kernel_func,
-        {launch_info.grid[0]}, {launch_info.grid[1]}, {launch_info.grid[2]},  // grid
-        {launch_info.block[0]}, {launch_info.block[1]}, {launch_info.block[2]},  // block
-        {launch_info.shared_memory},  // shared memory
-        0,  // stream
-        args,
-        0   // extra
+        {launch_info.grid[0]}, {launch_info.grid[1]}, {launch_info.grid[2]},
+        {launch_info.block[0]}, {launch_info.block[1]}, {launch_info.block[2]},
+        {launch_info.shared_memory}, 0, args, 0
     );
-
-    if (launch_result != CUDA_SUCCESS) {{
+    if (launch_result != CUDA_SUCCESS) {{{{
         const char* errStr;
         cuGetErrorString(launch_result, &errStr);
         fprintf(stderr, "Kernel launch failed: %s\\n", errStr);
         return 1;
-    }}
+    }}}}
 
-    // Synchronize
     cuCtxSynchronize();
     printf("Kernel execution completed successfully\\n");
 
     // Validate outputs
     printf("\\nValidating outputs...\\n");
-{''.join(validation_code)}
+{chr(10).join(validation_calls)}
 
     // Cleanup
     printf("\\nCleaning up...\\n");
-{''.join(arg_cleanup_code)}    cuModuleUnload(module);
+{chr(10).join(cleanup_code)}
+    cuModuleUnload(module);
     cuCtxDestroy(context);
 
     printf("Done!\\n");
     return 0;
-}}
+}}}}
 """
+        
         else:
             # Fallback: warn that PTX couldn't be embedded
             cpp_code = f"""
