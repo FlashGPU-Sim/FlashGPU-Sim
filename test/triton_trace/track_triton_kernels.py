@@ -51,7 +51,8 @@ class ArgumentInfo:
     dtype: Optional[str] = None
     shape: Optional[Tuple[int, ...]] = None
     value: Optional[Any] = None  # For scalars
-    data_file: Optional[str] = None  # For tensors
+    data_file: Optional[str] = None  # For input tensors
+    output_file: Optional[str] = None  # For output tensors (captured after kernel execution)
     size_bytes: int = 0
 
 
@@ -98,6 +99,7 @@ class TritonKernelTracker:
         self.launch_counter = 0
         self.pending_args: Optional[tuple] = None  # Store args from JIT wrapper
         self.pending_grid: Optional[tuple] = None  # Store grid from JIT wrapper
+        self.pending_args_snapshots: Optional[List[torch.Tensor]] = None  # Store pre-launch tensor snapshots
         
         # Create subdirectories
         self.binaries_dir = output_dir / "binaries"
@@ -126,6 +128,9 @@ class TritonKernelTracker:
         
         # Hook for kernel launch (captures invocations)
         triton.knobs.runtime.launch_enter_hook.add(self._on_launch_enter)
+        
+        # Hook for kernel exit (captures outputs after execution)
+        triton.knobs.runtime.launch_exit_hook.add(self._on_launch_exit)
         
         # Hook for post-run to capture arguments
         # This gets called after JIT compilation but before actual launch
@@ -190,9 +195,13 @@ class TritonKernelTracker:
             # Call original run
             result = original_run(jit_self, *args, **kwargs)
             
-            # Clear pending data
-            tracker_self.pending_args = None
-            tracker_self.pending_grid = None
+            # Don't clear pending data here - launch_exit_hook needs it!
+            # It will be cleared in _on_launch_exit
+            # Note: If no launch happens (warmup), we should clear it
+            if warmup or not tracker_self.capture_args:
+                tracker_self.pending_args = None
+                tracker_self.pending_grid = None
+                tracker_self.pending_args_snapshots = None
             
             return result
         
@@ -304,6 +313,10 @@ class TritonKernelTracker:
         """Capture and serialize kernel arguments"""
         arg_infos = []
         
+        # Also store snapshots of tensor arguments for later comparison
+        if HAS_TORCH:
+            self.pending_args_snapshots = []
+        
         for idx, arg in enumerate(args):
             arg_info = ArgumentInfo(index=idx, name=f"arg{idx}", arg_type='unknown')
             
@@ -315,6 +328,11 @@ class TritonKernelTracker:
                 arg_info.shape = tuple(metadata.get('shape', []))
                 arg_info.data_file = data_file
                 arg_info.size_bytes = metadata.get('size_bytes', 0)
+                
+                # Store a snapshot for comparison after execution
+                # Clone to capture current state before kernel modifies it
+                snapshot = arg.detach().clone()
+                self.pending_args_snapshots.append(snapshot)
                 
             elif isinstance(arg, (int, float, bool)):
                 # Scalar value
@@ -340,6 +358,103 @@ class TritonKernelTracker:
             arg_infos.append(arg_info)
         
         return arg_infos
+    
+    def _on_launch_exit(self, launch_metadata):
+        """Called after kernel launch completes"""
+        # Extract metadata
+        metadata = launch_metadata.get() if hasattr(launch_metadata, 'get') else launch_metadata
+        
+        if not isinstance(metadata, dict):
+            return
+        
+        kernel_name = metadata.get('name', 'unknown')
+        
+        # Find the corresponding launch info from launch_enter
+        if not self.kernel_launches:
+            return
+        
+        # Get the most recent launch (should be the one that just finished)
+        launch_info = self.kernel_launches[-1]
+        
+        if launch_info.kernel_name != kernel_name:
+            print(f"[WARNING] Kernel name mismatch in launch_exit: expected {launch_info.kernel_name}, got {kernel_name}")
+            return
+        
+        # Capture output tensors by comparing with pre-launch snapshots
+        if self.capture_args and self.pending_args is not None and self.pending_args_snapshots is not None and HAS_TORCH:
+            print(f"\n[TritonKernelTracker] Detecting and capturing outputs for launch #{launch_info.launch_id}")
+            
+            # Ensure GPU operations are complete before checking
+            torch.cuda.synchronize()
+            
+            snapshot_idx = 0
+            for idx, arg in enumerate(self.pending_args):
+                if isinstance(arg, torch.Tensor):
+                    if snapshot_idx >= len(self.pending_args_snapshots):
+                        print(f"    [WARNING] Snapshot index out of bounds for arg[{idx}]")
+                        continue
+                    
+                    arg_info = launch_info.args_info[idx] if idx < len(launch_info.args_info) else None
+                    if not arg_info or arg_info.arg_type != 'tensor':
+                        snapshot_idx += 1
+                        continue
+                    
+                    # Compare current tensor with pre-launch snapshot
+                    pre_snapshot = self.pending_args_snapshots[snapshot_idx]
+                    snapshot_idx += 1
+                    
+                    # Check if tensor was modified (is an output)
+                    is_output = False
+                    try:
+                        # Use torch.equal for exact comparison, or allclose for floating point
+                        if arg.dtype.is_floating_point:
+                            is_output = not torch.allclose(arg, pre_snapshot, rtol=1e-7, atol=1e-7)
+                        else:
+                            is_output = not torch.equal(arg, pre_snapshot)
+                    except Exception as e:
+                        print(f"    [WARNING] Could not compare arg[{idx}]: {e}")
+                        # Assume it's an output if we can't compare
+                        is_output = True
+                    
+                    if is_output:
+                        # Save the output tensor state
+                        output_filename = f"{kernel_name}_launch{launch_info.launch_id}_arg{idx}_output.bin"
+                        output_path = self.data_dir / output_filename
+                        
+                        # Save output tensor
+                        cpu_tensor = arg.detach().cpu()
+                        np_array = cpu_tensor.numpy()
+                        np_array.tofile(str(output_path))
+                        
+                        # Update arg_info with output file
+                        arg_info.output_file = str(output_path)
+                        
+                        print(f"    Saved OUTPUT arg[{idx}]: shape={list(np_array.shape)}, dtype={np_array.dtype}, size={np_array.nbytes} bytes")
+                    else:
+                        print(f"    Skipped arg[{idx}]: unchanged (input-only)")
+            
+            print(f"  Output capture complete for launch #{launch_info.launch_id}")
+            
+            # Clear snapshots
+            self.pending_args_snapshots = None
+            
+            # Regenerate harness now that we have output files
+            if self.save_binaries:
+                # Find the matching kernel info
+                matching_kernel = None
+                for kernel_info in self.compiled_kernels.values():
+                    if kernel_info.kernel_name == kernel_name:
+                        matching_kernel = kernel_info
+                        break
+                
+                if matching_kernel:
+                    print(f"  Regenerating harness with validation code...")
+                    self._generate_launch_specific_harness(kernel_info=matching_kernel, 
+                                                           launch_info=launch_info)
+        
+        # Clear pending args after processing
+        self.pending_args = None
+        self.pending_grid = None
     
     def _on_launch_enter(self, launch_metadata):
         """Called before kernel launch"""
@@ -424,6 +539,7 @@ class TritonKernelTracker:
         print(f"  Num warps: {num_warps}, Num CTAs: {num_ctas}")
         
         # Generate launcher with actual arguments if captured
+        # Note: This will be regenerated after launch_exit with validation code
         if self.save_binaries and args_info:
             self._generate_launch_specific_harness(kernel_info=matching_kernel, 
                                                      launch_info=launch_info)
@@ -463,6 +579,7 @@ class TritonKernelTracker:
         arg_init_code = []
         arg_cleanup_code = []
         arg_pointers = []
+        validation_code = []
         
         for arg_info in launch_info.args_info:
             idx = arg_info.index
@@ -504,6 +621,65 @@ class TritonKernelTracker:
                 arg_pointers.append(f"&d_arg{idx}")
                 arg_cleanup_code.append(f"    cudaFree(d_arg{idx});")
                 
+                # Add validation code if we have expected output
+                if arg_info.output_file:
+                    output_file_path = Path(arg_info.output_file)
+                    if not output_file_path.is_absolute():
+                        output_file_path = (Path.cwd() / output_file_path).resolve()
+                    try:
+                        relative_output_path = os.path.relpath(output_file_path, launchers_dir)
+                    except:
+                        relative_output_path = arg_info.output_file
+                    
+                    validation_code.append(f"""
+    // Validate output for arg[{idx}]
+    {{
+        char expected_output_path[2048];
+        snprintf(expected_output_path, sizeof(expected_output_path), "%s/{relative_output_path}", exe_path);
+        FILE* fp_expected{idx} = fopen(expected_output_path, "rb");
+        if (fp_expected{idx}) {{
+            void* h_expected{idx} = malloc(arg{idx}_size);
+            void* h_actual{idx} = malloc(arg{idx}_size);
+            
+            fread(h_expected{idx}, 1, arg{idx}_size, fp_expected{idx});
+            fclose(fp_expected{idx});
+            
+            cudaMemcpy(h_actual{idx}, d_arg{idx}, arg{idx}_size, cudaMemcpyDeviceToHost);
+            
+            // Compare outputs (byte-by-byte for exact match, or element-wise with tolerance)
+            int mismatches = 0;
+            size_t num_elements = arg{idx}_size / sizeof(float);  // Assuming float, adjust as needed
+            float* expected_data = (float*)h_expected{idx};
+            float* actual_data = (float*)h_actual{idx};
+            float tolerance = 1e-5f;
+            
+            for (size_t i = 0; i < num_elements && mismatches < 10; i++) {{
+                float diff = fabsf(expected_data[i] - actual_data[i]);
+                if (diff > tolerance) {{
+                    if (mismatches == 0) {{
+                        printf("\\n  Validation FAILED for arg[{idx}]:\\n");
+                    }}
+                    printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e\\n", 
+                           i, expected_data[i], actual_data[i], diff);
+                    mismatches++;
+                }}
+            }}
+            
+            if (mismatches == 0) {{
+                printf("  Validation PASSED for arg[{idx}]: all %zu elements match within tolerance %.2e\\n", 
+                       num_elements, tolerance);
+            }} else {{
+                printf("  Total mismatches for arg[{idx}]: %d (showing first 10)\\n", mismatches);
+            }}
+            
+            free(h_expected{idx});
+            free(h_actual{idx});
+        }} else {{
+            printf("  No expected output file found for arg[{idx}], skipping validation\\n");
+        }}
+    }}
+""")
+                
             elif arg_info.arg_type == 'scalar':
                 # Generate code for scalar argument
                 dtype_map = {
@@ -541,6 +717,7 @@ class TritonKernelTracker:
 #include <string.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <math.h>
 
 int main(int argc, char** argv) {{
     printf("=== Standalone Harness for Triton Kernel ===\\n");
@@ -632,6 +809,10 @@ int main(int argc, char** argv) {{
     // Synchronize
     cuCtxSynchronize();
     printf("Kernel execution completed successfully\\n");
+
+    // Validate outputs
+    printf("\\nValidating outputs...\\n");
+{''.join(validation_code)}
 
     // Cleanup
     printf("\\nCleaning up...\\n");
@@ -894,7 +1075,9 @@ int main(int argc, char** argv) {{
                     if arg_info.arg_type == 'tensor':
                         f.write(f" shape={arg_info.shape}, dtype={arg_info.dtype}, size={arg_info.size_bytes} bytes\n")
                         if arg_info.data_file:
-                            f.write(f"        data: {arg_info.data_file}\n")
+                            f.write(f"        input: {arg_info.data_file}\n")
+                        if arg_info.output_file:
+                            f.write(f"        output: {arg_info.output_file}\n")
                     elif arg_info.arg_type == 'scalar':
                         f.write(f" {arg_info.dtype} = {arg_info.value}\n")
                     else:
