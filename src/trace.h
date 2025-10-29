@@ -94,13 +94,12 @@ void init();
     }                                                                          \
   } while (0)
 
-#define DPRINTF_NoGPU(x, ...)                                                \
-  do {                                                                       \
-    if (DTRACE(x)) {                                                         \
-      printf(SIM_PRINT_STR, 0,                                               \
-             Trace::trace_streams_str[Trace::x]);                            \
-      printf(__VA_ARGS__);                                                   \
-    }                                                                        \
+#define DPRINTF_NoGPU(x, ...)                                                  \
+  do {                                                                         \
+    if (DTRACE(x)) {                                                           \
+      printf(SIM_PRINT_STR, -1ll, Trace::trace_streams_str[Trace::x]);         \
+      printf(__VA_ARGS__);                                                     \
+    }                                                                          \
   } while (0)
 
 #define DPRINTFG(x, ...)                                       \

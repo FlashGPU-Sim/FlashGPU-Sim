@@ -68,6 +68,7 @@
 #include "power_stat.h"
 #include "stats.h"
 #include "visualizer.h"
+#include "gpu-sim-profiler.h"
 
 #ifdef GPGPUSIM_POWER_MODEL
 #include "power_interface.h"
@@ -944,18 +945,16 @@ void gpgpu_sim::stop_all_running_kernels() {
 void exec_gpgpu_sim::createSIMTCluster() {
   m_cluster = new simt_core_cluster *[m_shader_config->n_simt_clusters];
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
-    m_cluster[i] =
-        new exec_simt_core_cluster(this, i, m_shader_config, m_memory_config,
-                                   m_shader_stats, m_memory_stats);
+    m_cluster[i] = new exec_simt_core_cluster(
+        this, i, m_shader_config, m_memory_config, m_shader_stats, m_mem_stats);
 }
 
 // SST get its own simt_cluster
 void sst_gpgpu_sim::createSIMTCluster() {
   m_cluster = new simt_core_cluster *[m_shader_config->n_simt_clusters];
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
-    m_cluster[i] =
-        new sst_simt_core_cluster(this, i, m_shader_config, m_memory_config,
-                                  m_shader_stats, m_memory_stats);
+    m_cluster[i] = new sst_simt_core_cluster(
+        this, i, m_shader_config, m_memory_config, m_shader_stats, m_mem_stats);
   SST_gpgpu_reply_buffer.resize(m_shader_config->n_simt_clusters);
 }
 
@@ -974,13 +973,15 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
 #endif
 
   m_shader_stats = new shader_core_stats(m_shader_config);
-  m_memory_stats = new memory_stats_t(m_config.num_shader(), m_shader_config,
-                                      m_memory_config, this);
+  // m_memory_stats = new memory_stats_t(m_config.num_shader(), m_shader_config,
+  //                                     m_memory_config, this);
+  m_mem_stats = new memory_stats_manager_t(
+      m_config.num_shader(), m_memory_config, m_shader_config, this);
   average_pipeline_duty_cycle = (float *)malloc(sizeof(float));
   active_sms = (float *)malloc(sizeof(float));
   m_power_stats =
       new power_stat_t(m_shader_config, average_pipeline_duty_cycle, active_sms,
-                       m_shader_stats, m_memory_config, m_memory_stats);
+                       m_shader_stats, m_memory_config, m_mem_stats);
 
   gpu_sim_insn = 0;
   gpu_tot_sim_insn = 0;
@@ -1012,7 +1013,7 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
         new memory_sub_partition *[m_memory_config->m_n_mem_sub_partition];
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
       m_memory_partition_unit[i] =
-          new memory_partition_unit(i, m_memory_config, m_memory_stats, this);
+          new memory_partition_unit(i, m_memory_config, m_mem_stats, this);
       for (unsigned p = 0;
            p < m_memory_config->m_n_sub_partition_per_memory_channel; p++) {
         unsigned submpid =
@@ -1223,7 +1224,7 @@ void gpgpu_sim::init() {
 }
 
 void gpgpu_sim::update_stats() {
-  m_memory_stats->memlatstat_lat_pw();
+  m_mem_stats->get_stats()->memlatstat_lat_pw();
   gpu_tot_sim_cycle += gpu_sim_cycle;
   gpu_tot_sim_insn += gpu_sim_insn;
   gpu_tot_issued_cta += m_total_cta_launched;
@@ -1544,8 +1545,8 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
 #endif
 
   // performance counter that are not local to one shader
-  m_memory_stats->memlatstat_print(m_memory_config->m_n_mem,
-                                   m_memory_config->nbk);
+  m_mem_stats->get_aggregate_stats()->memlatstat_print(m_memory_config->m_n_mem,
+                                                       m_memory_config->nbk);
   for (unsigned i = 0; i < m_memory_config->m_n_mem; i++)
     m_memory_partition_unit[i]->print(stdout);
 
@@ -1963,18 +1964,24 @@ void gpgpu_sim::aggregate_cluster_stats() {
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
     m_cluster[i]->aggregate_stats();
   }
+  m_mem_stats->aggregate_stats();
 }
 
 void gpgpu_sim::cycle() {
   int clock_mask = next_clock_domain();
 
+  static flash_gpgpu_sim::gpgpu_sim_profiler_t profiler;
+
   if (clock_mask & CORE) {
+    profiler.start_step();
     // shader core loading (pop from ICNT into core) follows CORE clock
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
       m_cluster[i]->icnt_cycle();
+    profiler.end_step(profiler.total_icnt_cycle_time);
   }
   unsigned partiton_replys_in_parallel_per_cycle = 0;
   if (clock_mask & ICNT) {
+    profiler.start_step();
     // pop from memory controller to interconnect
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
       mem_fetch *mf = m_memory_sub_partition[i]->top();
@@ -1996,10 +2003,12 @@ void gpgpu_sim::cycle() {
         m_memory_sub_partition[i]->pop();
       }
     }
+    profiler.end_step(profiler.total_mem_to_icnt_time);
   }
   partiton_replys_in_parallel += partiton_replys_in_parallel_per_cycle;
 
   if (clock_mask & DRAM) {
+    profiler.start_step();
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
       if (m_memory_config->simple_dram_model)
         m_memory_partition_unit[i]->simple_dram_model_cycle();
@@ -2018,11 +2027,13 @@ void gpgpu_sim::cycle() {
           m_power_stats->pwr_mem_stat->n_wr_WB[CURRENT_STAT_IDX][i],
           m_power_stats->pwr_mem_stat->n_req[CURRENT_STAT_IDX][i]);
     }
+    profiler.end_step(profiler.total_dram_cycle_time);
   }
 
   // L2 operations follow L2 clock domain
   unsigned partiton_reqs_in_parallel_per_cycle = 0;
   if (clock_mask & L2) {
+    profiler.start_step();
     m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].clear();
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
       // move memory request from interconnect into memory partition (if not
@@ -2042,6 +2053,7 @@ void gpgpu_sim::cycle() {
             m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX]);
       }
     }
+    profiler.end_step(profiler.total_l2_cache_time);
   }
   partiton_reqs_in_parallel += partiton_reqs_in_parallel_per_cycle;
   if (partiton_reqs_in_parallel_per_cycle > 0) {
@@ -2050,10 +2062,13 @@ void gpgpu_sim::cycle() {
   }
 
   if (clock_mask & ICNT) {
+    profiler.start_step();
     icnt_transfer();
+    profiler.end_step(profiler.total_icnt_transfer_time);
   }
 
   if (clock_mask & CORE) {
+    profiler.start_step();
     // L1 cache + shader core pipeline stages
     m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].clear();
 
@@ -2100,6 +2115,9 @@ void gpgpu_sim::cycle() {
           gpu_occupancy.aggregate_theoretical_warp_slots);
     }
 #endif
+    profiler.end_step(profiler.total_core_cycle_time);
+    
+    profiler.start_step();
     float temp = 0;
     for (unsigned i = 0; i < m_shader_config->num_shader(); i++) {
       temp += m_shader_stats->m_pipeline_duty_cycle[i];
@@ -2200,14 +2218,15 @@ void gpgpu_sim::cycle() {
       // Need to aggregate before we can print visualizer stats
       aggregate_cluster_stats();
       visualizer_printstat();
-      m_memory_stats->memlatstat_lat_pw();
+      auto mem_stats = m_mem_stats->get_stats();
+      mem_stats->memlatstat_lat_pw();
       if (m_config.gpgpu_runtime_stat &&
           (m_config.gpu_runtime_stat_flag != 0)) {
         if (m_config.gpu_runtime_stat_flag & GPU_RSTAT_BW_STAT) {
           for (unsigned i = 0; i < m_memory_config->m_n_mem; i++)
             m_memory_partition_unit[i]->print_stat(stdout);
-          printf("maxmrqlatency = %d \n", m_memory_stats->max_mrq_latency);
-          printf("maxmflatency = %d \n", m_memory_stats->max_mf_latency);
+          printf("maxmrqlatency = %d \n", mem_stats->max_mrq_latency);
+          printf("maxmflatency = %d \n", mem_stats->max_mf_latency);
         }
         if (m_config.gpu_runtime_stat_flag & GPU_RSTAT_SHD_INFO)
           shader_print_runtime_stat(stdout);
@@ -2233,6 +2252,9 @@ void gpgpu_sim::cycle() {
     // launch device kernel
     gpgpu_ctx->device_runtime->launch_one_device_kernel();
 #endif
+    
+    profiler.end_step(profiler.total_other_time);
+    profiler.increment_and_check();
   }
 }
 
@@ -2394,13 +2416,14 @@ void sst_gpgpu_sim::SST_cycle() {
       last_liveness_message_time = elapsed_time;
     }
     visualizer_printstat();
-    m_memory_stats->memlatstat_lat_pw();
+    auto mem_stats = m_mem_stats->get_stats();
+    mem_stats->memlatstat_lat_pw();
     if (m_config.gpgpu_runtime_stat && (m_config.gpu_runtime_stat_flag != 0)) {
       if (m_config.gpu_runtime_stat_flag & GPU_RSTAT_BW_STAT) {
         for (unsigned i = 0; i < m_memory_config->m_n_mem; i++)
           m_memory_partition_unit[i]->print_stat(stdout);
-        printf("maxmrqlatency = %d \n", m_memory_stats->max_mrq_latency);
-        printf("maxmflatency = %d \n", m_memory_stats->max_mf_latency);
+        printf("maxmrqlatency = %d \n", mem_stats->max_mrq_latency);
+        printf("maxmflatency = %d \n", mem_stats->max_mf_latency);
       }
       if (m_config.gpu_runtime_stat_flag & GPU_RSTAT_SHD_INFO)
         shader_print_runtime_stat(stdout);

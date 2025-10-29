@@ -50,6 +50,8 @@
 #define BANK_IDLE 'I'
 #define BANK_ACTIVE 'A'
 
+class memory_stats_manager_t;
+
 class dram_req_t {
  public:
   dram_req_t(class mem_fetch *data, unsigned banks,
@@ -112,7 +114,7 @@ class memory_config;
 class dram_t {
  public:
   dram_t(unsigned int parition_id, const memory_config *config,
-         class memory_stats_t *stats, class memory_partition_unit *mp,
+         memory_stats_manager_t *stats, class memory_partition_unit *mp,
          class gpgpu_sim *gpu);
 
   bool full(bool is_write) const;
@@ -241,7 +243,7 @@ class dram_t {
   unsigned int ave_mrqs_partial;
   unsigned int bwutil_partial;
 
-  class memory_stats_t *m_stats;
+  memory_stats_manager_t *m_mem_stats;
   class Stats *mrqq_Dist;  // memory request queue inside DRAM
 
   friend class frfcfs_scheduler;

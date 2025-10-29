@@ -44,6 +44,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef FLASH_GPGPU_SIM_OMP
+#include <omp.h>
+#endif
+
 #include "../../libcuda/gpgpu_context.h"
 
 memory_stats_t::memory_stats_t(unsigned n_shader,
@@ -55,31 +59,26 @@ memory_stats_t::memory_stats_t(unsigned n_shader,
 
   unsigned i, j;
 
-  concurrent_row_access =
-      (unsigned int **)calloc(mem_config->m_n_mem, sizeof(unsigned int *));
-  num_activates =
-      (unsigned int **)calloc(mem_config->m_n_mem, sizeof(unsigned int *));
-  row_access =
-      (unsigned int **)calloc(mem_config->m_n_mem, sizeof(unsigned int *));
-  max_conc_access2samerow =
-      (unsigned int **)calloc(mem_config->m_n_mem, sizeof(unsigned int *));
-  max_servicetime2samerow =
-      (unsigned int **)calloc(mem_config->m_n_mem, sizeof(unsigned int *));
+  // [dram chip id][bank id]
+  mf_max_lat_table.resize(mem_config->m_n_mem);
 
+  concurrent_row_access.resize(mem_config->m_n_mem);
+  num_activates.resize(mem_config->m_n_mem);
+  row_access.resize(mem_config->m_n_mem);
+  max_conc_access2samerow.resize(mem_config->m_n_mem);
+  max_servicetime2samerow.resize(mem_config->m_n_mem);
   for (unsigned i = 0; i < mem_config->m_n_mem; i++) {
-    concurrent_row_access[i] =
-        (unsigned int *)calloc(mem_config->nbk, sizeof(unsigned int));
-    row_access[i] =
-        (unsigned int *)calloc(mem_config->nbk, sizeof(unsigned int));
-    num_activates[i] =
-        (unsigned int *)calloc(mem_config->nbk, sizeof(unsigned int));
-    max_conc_access2samerow[i] =
-        (unsigned int *)calloc(mem_config->nbk, sizeof(unsigned int));
-    max_servicetime2samerow[i] =
-        (unsigned int *)calloc(mem_config->nbk, sizeof(unsigned int));
+    mf_max_lat_table[i].resize(mem_config->nbk, 0);
+
+    concurrent_row_access[i].resize(mem_config->nbk, 0);
+    num_activates[i].resize(mem_config->nbk, 0);
+    row_access[i].resize(mem_config->nbk, 0);
+    max_conc_access2samerow[i].resize(mem_config->nbk, 0);
+    max_servicetime2samerow[i].resize(mem_config->nbk, 0);
   }
 
   m_n_shader = n_shader;
+  m_shader_config = shader_config;
   m_memory_config = mem_config;
   m_gpu = gpu;
   total_n_access = 0;
@@ -94,12 +93,12 @@ memory_stats_t::memory_stats_t(unsigned n_shader,
   tot_icnt2sh_latency = 0;
   tot_mrq_num = 0;
   tot_mrq_latency = 0;
-  memset(mrq_lat_table, 0, sizeof(unsigned) * 32);
-  memset(dq_lat_table, 0, sizeof(unsigned) * 32);
-  memset(mf_lat_table, 0, sizeof(unsigned) * 32);
-  memset(icnt2mem_lat_table, 0, sizeof(unsigned) * 24);
-  memset(icnt2sh_lat_table, 0, sizeof(unsigned) * 24);
-  memset(mf_lat_pw_table, 0, sizeof(unsigned) * 32);
+  memset(mrq_lat_table.data(), 0, sizeof(mrq_lat_table));
+  memset(dq_lat_table.data(), 0, sizeof(dq_lat_table));
+  memset(mf_lat_table.data(), 0, sizeof(mf_lat_table));
+  memset(icnt2mem_lat_table.data(), 0, sizeof(icnt2mem_lat_table));
+  memset(icnt2sh_lat_table.data(), 0, sizeof(icnt2sh_lat_table));
+  memset(mf_lat_pw_table.data(), 0, sizeof(mf_lat_pw_table));
   mf_num_lat_pw = 0;
   max_warps =
       n_shader *
@@ -108,7 +107,6 @@ memory_stats_t::memory_stats_t(unsigned n_shader,
                       // mf_num_lat_pw to obtain average latency Per Window
   mf_total_lat = 0;
   num_mfs = 0;
-  printf("*** Initializing Memory Statistics ***\n");
   totalbankreads =
       (unsigned int **)calloc(mem_config->m_n_mem, sizeof(unsigned int *));
   totalbankwrites =
@@ -117,8 +115,6 @@ memory_stats_t::memory_stats_t(unsigned n_shader,
       (unsigned int **)calloc(mem_config->m_n_mem, sizeof(unsigned int *));
   mf_total_lat_table = (unsigned long long int **)calloc(
       mem_config->m_n_mem, sizeof(unsigned long long *));
-  mf_max_lat_table =
-      (unsigned **)calloc(mem_config->m_n_mem, sizeof(unsigned *));
   bankreads = (unsigned int ***)calloc(n_shader, sizeof(unsigned int **));
   bankwrites = (unsigned int ***)calloc(n_shader, sizeof(unsigned int **));
   num_MCBs_accessed = (unsigned int *)calloc(
@@ -150,7 +146,6 @@ memory_stats_t::memory_stats_t(unsigned n_shader,
         (unsigned int *)calloc(mem_config->nbk, sizeof(unsigned int));
     mf_total_lat_table[i] = (unsigned long long int *)calloc(
         mem_config->nbk, sizeof(unsigned long long int));
-    mf_max_lat_table[i] = (unsigned *)calloc(mem_config->nbk, sizeof(unsigned));
   }
 
   mem_access_type_stats =
@@ -536,4 +531,161 @@ void memory_stats_t::memlatstat_print(unsigned n_mem, unsigned gpu_mem_n_bk) {
     printf("\n");
     printf("\naverage position of mrq chosen = %f\n", (float)l / k);
   }
+}
+
+void memory_stats_t::clear_accumulator(){
+#define accumulate(name) name = 0
+#define maximize(name) name = 0 
+#define accumulate_array(name) memset(name.data(), 0, sizeof(name))
+#define accumulate_vec_2d(name)                                                \
+  {                                                                            \
+    for (size_t i = 0; i < name.size(); i++)                                   \
+      memset(name[i].data(), 0, sizeof(name[i][0]) * name[i].size());          \
+  }
+#define maximize_vec_2d(name) accumulate_vec_2d(name)
+
+  maximize(max_mrq_latency);
+  maximize(max_dq_latency);
+  maximize(max_mf_latency);
+  maximize(max_icnt2mem_latency);
+  maximize(max_icnt2sh_latency);
+
+  accumulate(tot_icnt2mem_latency);
+  accumulate(tot_icnt2sh_latency);
+  accumulate(tot_mrq_latency);
+  accumulate(tot_mrq_num);
+
+  accumulate_array(mrq_lat_table);
+  accumulate_array(dq_lat_table);
+  accumulate_array(mf_lat_table);
+  accumulate_array(icnt2mem_lat_table);
+  accumulate_array(icnt2sh_lat_table);
+  accumulate_array(mf_lat_pw_table);
+
+  // unsigned mf_num_lat_pw;
+  // unsigned max_warps;
+  // unsigned mf_tot_lat_pw;
+
+  accumulate(mf_total_lat);
+
+  // unsigned long long int *
+  //     *mf_total_lat_table;      // mf latency sums[dram chip id][bank id]
+  // unsigned **mf_max_lat_table;  // mf latency sums[dram chip id][bank id]
+
+  accumulate(num_mfs);
+
+  maximize_vec_2d(mf_max_lat_table);
+
+  accumulate_vec_2d(concurrent_row_access);
+  accumulate_vec_2d(num_activates);
+  accumulate_vec_2d(row_access);
+  maximize_vec_2d(max_conc_access2samerow);
+  maximize_vec_2d(max_servicetime2samerow);
+
+#undef maximize
+#undef accumulate
+#undef accumulate_array
+#undef accumulate_vec_2d
+#undef maximize_vec_2d
+}
+
+void memory_stats_t::aggregate(const memory_stats_t &other){
+
+#define accumulate(name) name += other.name
+#define maximize(name) name = std::max(name, other.name)
+#define accumulate_array(name)                                                 \
+  {                                                                            \
+    for (size_t i = 0; i < name.size(); i++)                                   \
+      name[i] += other.name[i];                                                \
+  }
+#define accumulate_vec_2d(name)                                                \
+  {                                                                            \
+    for (size_t i = 0; i < name.size(); i++)                                   \
+      for (size_t j = 0; j < name[i].size(); j++)                              \
+        name[i][j] += other.name[i][j];                                        \
+  }
+#define maximize_vec_2d(name)                                                  \
+  {                                                                            \
+    for (size_t i = 0; i < name.size(); i++)                                   \
+      for (size_t j = 0; j < name[i].size(); j++)                              \
+        name[i][j] = std::max(name[i][j], other.name[i][j]);                   \
+  }
+
+  maximize(max_mrq_latency);
+  maximize(max_dq_latency);
+  maximize(max_mf_latency);
+  maximize(max_icnt2mem_latency);
+  maximize(max_icnt2sh_latency);
+
+  accumulate(tot_icnt2mem_latency);
+  accumulate(tot_icnt2sh_latency);
+  accumulate(tot_mrq_latency);
+  accumulate(tot_mrq_num);
+
+  accumulate_array(mrq_lat_table);
+  accumulate_array(dq_lat_table);
+  accumulate_array(mf_lat_table);
+  accumulate_array(icnt2mem_lat_table);
+  accumulate_array(icnt2sh_lat_table);
+  accumulate_array(mf_lat_pw_table);
+
+  // unsigned mf_num_lat_pw;
+  // unsigned max_warps;
+  // unsigned mf_tot_lat_pw;
+
+  accumulate(mf_total_lat);
+
+  // unsigned long long int *
+  //     *mf_total_lat_table;      // mf latency sums[dram chip id][bank id]
+  // unsigned **mf_max_lat_table;  // mf latency sums[dram chip id][bank id]
+
+  accumulate(num_mfs);
+
+  maximize_vec_2d(mf_max_lat_table);
+
+  accumulate_vec_2d(concurrent_row_access);
+  accumulate_vec_2d(num_activates);
+  accumulate_vec_2d(row_access);
+  maximize_vec_2d(max_conc_access2samerow);
+  maximize_vec_2d(max_servicetime2samerow);
+
+#undef maximize
+#undef accumulate
+#undef accumulate_array
+#undef accumulate_vec_2d
+#undef maximize_vec_2d
+}
+
+memory_stats_manager_t::memory_stats_manager_t(
+    unsigned n_shader, const memory_config *mem_config,
+    const shader_core_config *shader_config, const gpgpu_sim *gpu) {
+  m_aggregate_stats = std::make_shared<memory_stats_t>(n_shader, shader_config,
+                                                       mem_config, gpu);
+#ifdef FLASH_GPGPU_SIM_OMP
+  for (unsigned i = 0; i < FLASH_GPGPU_SIM_OMP_MAX_THREADS; i++) {
+    m_thread_local_stats[i] = std::make_shared<memory_stats_t>(
+        n_shader, shader_config, mem_config, gpu);
+  }
+#endif
+}
+
+memory_stats_manager_t::stats_ptr_t memory_stats_manager_t::get_stats() {
+  // ! For now just return aggregate stats.
+  return m_aggregate_stats;
+// #ifdef FLASH_GPGPU_SIM_OMP
+//   int tid = omp_get_thread_num();
+//   assert(tid < FLASH_GPGPU_SIM_OMP_MAX_THREADS);
+//   return m_thread_local_stats[tid];
+// #else
+//   return m_aggregate_stats;
+// #endif
+}
+
+void memory_stats_manager_t::aggregate_stats() {
+// #ifdef FLASH_GPGPU_SIM_OMP
+//   m_aggregate_stats->clear_accumulator();
+//   for (unsigned i = 0; i < FLASH_GPGPU_SIM_OMP_MAX_THREADS; i++) {
+//     m_aggregate_stats->aggregate(*m_thread_local_stats[i]);
+//   }
+// #endif
 }

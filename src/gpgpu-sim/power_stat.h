@@ -128,17 +128,18 @@ struct mem_power_stats_pod {
 };
 
 class power_mem_stat_t : public mem_power_stats_pod {
- public:
+public:
   power_mem_stat_t(const memory_config *mem_config,
                    const shader_core_config *shdr_config,
-                   memory_stats_t *mem_stats, shader_core_stats *shdr_stats);
+                   memory_stats_manager_t *mem_stats,
+                   shader_core_stats *shdr_stats);
   void visualizer_print(gzFile visualizer_file);
   void print(FILE *fout) const;
   void init();
   void save_stats();
 
- private:
-  memory_stats_t *m_mem_stats;
+private:
+  memory_stats_manager_t *m_mem_stats;
   shader_core_stats *m_core_stats;
   const memory_config *m_config;
   const shader_core_config *m_core_config;
@@ -149,7 +150,7 @@ class power_stat_t {
   power_stat_t(const shader_core_config *shader_config,
                float *average_pipeline_duty_cycle, float *active_sms,
                shader_core_stats *shader_stats, const memory_config *mem_config,
-               memory_stats_t *memory_stats);
+               memory_stats_manager_t *memory_stats);
   void visualizer_print(gzFile visualizer_file);
   void print(FILE *fout) const;
   void save_stats() {

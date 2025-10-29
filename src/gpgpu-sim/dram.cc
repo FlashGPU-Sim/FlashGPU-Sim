@@ -47,11 +47,12 @@ template class fifo_pipeline<mem_fetch>;
 template class fifo_pipeline<dram_req_t>;
 
 dram_t::dram_t(unsigned int partition_id, const memory_config *config,
-               memory_stats_t *stats, memory_partition_unit *mp,
+               memory_stats_manager_t *stats,
+               memory_partition_unit *mp,
                gpgpu_sim *gpu) {
   id = partition_id;
   m_memory_partition_unit = mp;
-  m_stats = stats;
+  m_mem_stats = stats;
   m_config = config;
   m_gpu = gpu;
 
@@ -266,7 +267,8 @@ void dram_t::push(class mem_fetch *data) {
     max_mrqs_temp = (max_mrqs_temp > mrqq->get_length()) ? max_mrqs_temp
                                                          : mrqq->get_length();
   }
-  m_stats->memlatstat_dram_access(data);
+
+  m_mem_stats->get_stats()->memlatstat_dram_access(data);
 }
 
 void dram_t::scheduler_fifo() {
@@ -837,19 +839,20 @@ void dram_t::visualizer_print(gzFile visualizer_file) {
   n_req_partial = 0;
 
   // dram access type classification
+  auto mem_stats = m_mem_stats->get_stats();
   for (unsigned j = 0; j < m_config->nbk; j++) {
     gzprintf(visualizer_file, "dramglobal_acc_r: %u %u %u\n", id, j,
-             m_stats->mem_access_type_stats[GLOBAL_ACC_R][id][j]);
+             mem_stats->mem_access_type_stats[GLOBAL_ACC_R][id][j]);
     gzprintf(visualizer_file, "dramglobal_acc_w: %u %u %u\n", id, j,
-             m_stats->mem_access_type_stats[GLOBAL_ACC_W][id][j]);
+             mem_stats->mem_access_type_stats[GLOBAL_ACC_W][id][j]);
     gzprintf(visualizer_file, "dramlocal_acc_r: %u %u %u\n", id, j,
-             m_stats->mem_access_type_stats[LOCAL_ACC_R][id][j]);
+             mem_stats->mem_access_type_stats[LOCAL_ACC_R][id][j]);
     gzprintf(visualizer_file, "dramlocal_acc_w: %u %u %u\n", id, j,
-             m_stats->mem_access_type_stats[LOCAL_ACC_W][id][j]);
+             mem_stats->mem_access_type_stats[LOCAL_ACC_W][id][j]);
     gzprintf(visualizer_file, "dramconst_acc_r: %u %u %u\n", id, j,
-             m_stats->mem_access_type_stats[CONST_ACC_R][id][j]);
+             mem_stats->mem_access_type_stats[CONST_ACC_R][id][j]);
     gzprintf(visualizer_file, "dramtexture_acc_r: %u %u %u\n", id, j,
-             m_stats->mem_access_type_stats[TEXTURE_ACC_R][id][j]);
+             mem_stats->mem_access_type_stats[TEXTURE_ACC_R][id][j]);
   }
 }
 

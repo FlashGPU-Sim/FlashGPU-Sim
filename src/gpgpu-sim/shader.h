@@ -75,6 +75,7 @@
 #define WRITE_MASK_SIZE 8
 
 class gpgpu_context;
+class memory_stats_manager_t;
 
 enum exec_unit_type_t {
   NONE = 0,
@@ -2628,7 +2629,7 @@ class simt_core_cluster {
   simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
                     const shader_core_config *config,
                     const memory_config *mem_config, shader_core_stats *stats,
-                    memory_stats_t *mstats);
+                    memory_stats_manager_t *mstats);
 
   void core_cycle();
   void icnt_cycle();
@@ -2681,7 +2682,7 @@ class simt_core_cluster {
   const shader_core_config *m_config;
   shader_core_stats *m_stats;
   shader_core_stats *m_aggregate_stats;
-  memory_stats_t *m_memory_stats;
+  memory_stats_manager_t *m_mem_stats;
   shader_core_ctx **m_core;
   const memory_config *m_mem_config;
 
@@ -2696,7 +2697,7 @@ class exec_simt_core_cluster : public simt_core_cluster {
                          const shader_core_config *config,
                          const memory_config *mem_config,
                          class shader_core_stats *stats,
-                         class memory_stats_t *mstats)
+                         memory_stats_manager_t *mstats)
       : simt_core_cluster(gpu, cluster_id, config, mem_config, stats, mstats) {
     create_shader_core_ctx();
   }
@@ -2714,7 +2715,7 @@ class sst_simt_core_cluster : public exec_simt_core_cluster {
                         const shader_core_config *config,
                         const memory_config *mem_config,
                         class shader_core_stats *stats,
-                        class memory_stats_t *mstats)
+                        memory_stats_manager_t *mstats)
       : exec_simt_core_cluster(gpu, cluster_id, config, mem_config, stats,
                                mstats) {}
 

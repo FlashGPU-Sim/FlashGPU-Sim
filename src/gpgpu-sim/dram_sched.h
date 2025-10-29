@@ -41,7 +41,7 @@ enum memory_mode { READ_MODE = 0, WRITE_MODE };
 class frfcfs_scheduler {
  public:
   frfcfs_scheduler(const memory_config *config, dram_t *dm,
-                   memory_stats_t *stats);
+                   memory_stats_manager_t *stats);
   void add_req(dram_req_t *req);
   void data_collection(unsigned bank);
   dram_req_t *schedule(unsigned bank, unsigned curr_row);
@@ -67,7 +67,7 @@ class frfcfs_scheduler {
   std::list<std::list<dram_req_t *>::iterator> **m_last_write_row;
 
   enum memory_mode m_mode;
-  memory_stats_t *m_stats;
+  memory_stats_manager_t *m_mem_stats;
 };
 
 #endif
