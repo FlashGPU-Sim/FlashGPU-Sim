@@ -33,7 +33,7 @@ def main():
     print("=" * 80)
     
     # Initialize tracker
-    output_dir = Path("./triton_kernel_tracking")
+    output_dir = Path("./triton_kernel_tracking/example_vector_add").resolve()
     tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)
     print(f"\nOutput directory: {output_dir}")
     

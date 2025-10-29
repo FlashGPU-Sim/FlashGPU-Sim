@@ -87,10 +87,11 @@ class KernelBinaryInfo:
 class TritonKernelTracker:
     """Tracks Triton kernel compilation and invocation"""
     
-    def __init__(self, output_dir: Path, save_binaries: bool = True, capture_args: bool = True):
+    def __init__(self, output_dir: Path, save_binaries: bool = True, capture_args: bool = True, enabled: bool = True):
         self.output_dir = output_dir
         self.save_binaries = save_binaries
         self.capture_args = capture_args
+        self.enabled = enabled  # Master switch for tracking
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # Storage for tracked data
@@ -120,6 +121,21 @@ class TritonKernelTracker:
         print(f"  Output directory: {self.output_dir}")
         print(f"  Save binaries: {self.save_binaries}")
         print(f"  Capture arguments: {self.capture_args}")
+        print(f"  Tracking enabled: {self.enabled}")
+    
+    def enable(self):
+        """Enable tracking"""
+        self.enabled = True
+        print("[TritonKernelTracker] Tracking ENABLED")
+    
+    def disable(self):
+        """Disable tracking"""
+        self.enabled = False
+        print("[TritonKernelTracker] Tracking DISABLED")
+    
+    def is_enabled(self) -> bool:
+        """Check if tracking is enabled"""
+        return self.enabled
     
     def _install_hooks(self):
         """Install Triton runtime hooks"""
@@ -153,7 +169,7 @@ class TritonKernelTracker:
         def patched_run(jit_self, *args, **kwargs):
             # Capture arguments and grid before running
             warmup = kwargs.get('warmup', False)
-            if tracker_self.capture_args and not warmup:
+            if tracker_self.enabled and tracker_self.capture_args and not warmup:
                 # Store args for the launch hook
                 tracker_self.pending_args = args
                 
@@ -198,7 +214,7 @@ class TritonKernelTracker:
             # Don't clear pending data here - launch_exit_hook needs it!
             # It will be cleared in _on_launch_exit
             # Note: If no launch happens (warmup), we should clear it
-            if warmup or not tracker_self.capture_args:
+            if warmup or not tracker_self.enabled or not tracker_self.capture_args:
                 tracker_self.pending_args = None
                 tracker_self.pending_grid = None
                 tracker_self.pending_args_snapshots = None
@@ -211,6 +227,9 @@ class TritonKernelTracker:
     
     def _on_kernel_load(self, module, function, name, metadata_group, hash_val):
         """Called when a kernel binary is loaded"""
+
+        # We always track the kernel compilation.
+        
         if hash_val in self.compiled_kernels:
             return  # Already tracked
         
@@ -310,7 +329,13 @@ class TritonKernelTracker:
         return str(tensor_path), metadata
     
     def _capture_arguments(self, args: tuple, kernel_name: str, launch_id: int) -> List[ArgumentInfo]:
-        """Capture and serialize kernel arguments"""
+        """Capture and serialize kernel arguments
+        
+        NOTE: This captures arguments at the Python call level. Triton may optimize away
+        some arguments during compilation (e.g., redundant strides for contiguous tensors).
+        The actual PTX kernel may have fewer parameters than captured here.
+        Use the PTX signature to determine the actual kernel parameters for harness generation.
+        """
         arg_infos = []
         
         # Also store snapshots of tensor arguments for later comparison
@@ -361,6 +386,9 @@ class TritonKernelTracker:
     
     def _on_launch_exit(self, launch_metadata):
         """Called after kernel launch completes"""
+        if not self.enabled:
+            return  # Tracking disabled
+        
         # Extract metadata
         metadata = launch_metadata.get() if hasattr(launch_metadata, 'get') else launch_metadata
         
@@ -448,7 +476,7 @@ class TritonKernelTracker:
                         break
                 
                 if matching_kernel:
-                    print(f"  Regenerating harness with validation code...")
+                    print(f"  Generating harness with validation code...")
                     self._generate_launch_specific_harness(kernel_info=matching_kernel, 
                                                            launch_info=launch_info)
         
@@ -458,6 +486,9 @@ class TritonKernelTracker:
     
     def _on_launch_enter(self, launch_metadata):
         """Called before kernel launch"""
+        if not self.enabled:
+            return  # Tracking disabled
+        
         self.launch_counter += 1
         
         # Extract metadata (LazyDict)
@@ -537,12 +568,6 @@ class TritonKernelTracker:
         print(f"  Grid: {grid}, Block: {block}")
         print(f"  Shared memory: {shared_memory} bytes")
         print(f"  Num warps: {num_warps}, Num CTAs: {num_ctas}")
-        
-        # Generate launcher with actual arguments if captured
-        # Note: This will be regenerated after launch_exit with validation code
-        if self.save_binaries and args_info:
-            self._generate_launch_specific_harness(kernel_info=matching_kernel, 
-                                                     launch_info=launch_info)
     
     def _generate_helper_functions(self):
         """Generate reusable helper functions for data loading and validation"""
@@ -620,6 +645,63 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
 }
 """
 
+    def _parse_ptx_signature(self, ptx_path: Path, kernel_name: str) -> int:
+        """Parse PTX file to count actual kernel parameters
+        
+        Returns: Number of user parameters (excluding Triton runtime scratch pointers)
+        """
+        if not ptx_path.exists():
+            return -1
+        
+        try:
+            with open(ptx_path, 'r') as f:
+                content = f.read()
+            
+            # Find the kernel entry
+            import re
+            pattern = rf'\.visible\s+\.entry\s+{re.escape(kernel_name)}\s*\('
+            match = re.search(pattern, content)
+            if not match:
+                return -1
+            
+            # Count parameters (lines with .param until we hit closing paren)
+            start_pos = match.end()
+            closing_paren = content.find(')', start_pos)
+            if closing_paren == -1:
+                return -1
+            
+            params_section = content[start_pos:closing_paren]
+            param_count = params_section.count('.param')
+            
+            # Triton always adds 2 scratch pointers at the end, so user params = total - 2
+            user_param_count = max(0, param_count - 2)
+            
+            return user_param_count
+        except Exception as e:
+            print(f"    [WARNING] Could not parse PTX signature: {e}")
+            return -1
+    
+    def _check_dynamic_shared_memory(self, ptx_path: Path) -> bool:
+        """Check if PTX uses dynamic shared memory
+        
+        Returns: True if the PTX declares external shared memory (dynamic allocation)
+        """
+        if not ptx_path.exists():
+            return False
+        
+        try:
+            with open(ptx_path, 'r') as f:
+                content = f.read()
+            
+            # Look for .extern .shared declaration (indicates dynamic shared memory)
+            import re
+            # Pattern matches: .extern .shared .align N .b8 name[];
+            pattern = r'\.extern\s+\.shared\s+.*\[\s*\]'
+            return bool(re.search(pattern, content))
+        except Exception as e:
+            print(f"    [WARNING] Could not check for dynamic shared memory: {e}")
+            return False
+    
     def _generate_launch_specific_harness(self, kernel_info: KernelBinaryInfo, launch_info: KernelLaunchInfo):
         """Generate a harness for a specific launch with actual argument data"""
         kernel_name = kernel_info.kernel_name
@@ -638,10 +720,29 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
             except Exception as e:
                 print(f"  Warning: Could not read PTX: {e}")
         
+        # Check for argument count mismatch
+        ptx_param_count = self._parse_ptx_signature(ptx_path, kernel_name)
+        captured_arg_count = len(launch_info.args_info)
+        
+        if ptx_param_count >= 0 and ptx_param_count != captured_arg_count:
+            error_msg = (
+                f"\n"
+                f"Argument count mismatch for kernel '{kernel_name}':\n"
+                f"  Captured from Python: {captured_arg_count} arguments\n"
+                f"  PTX kernel signature: {ptx_param_count} user parameters (+ 2 runtime scratch pointers)\n"
+                f"  Mismatch: {captured_arg_count - ptx_param_count} arguments were optimized away by Triton\n"
+                f"\n"
+                f"  Triton optimizes away redundant parameters during compilation.\n"
+                f"  Cannot automatically generate correct harness without knowing which parameters were kept.\n"
+                f"  Please inspect the PTX file manually: {ptx_path}\n\n"
+                f"\n"
+            )
+            raise RuntimeError(error_msg)
+        
         # Make binary path relative to launchers directory
         launchers_dir = self.launchers_dir.resolve()
         
-        # Build simplified argument loading code using helper functions
+        # Build argument loading code using helper functions
         arg_declarations = []
         arg_loading_calls = []
         arg_pointers = []
@@ -708,6 +809,32 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
         if ptx_string:
             fatbin_filename = f"{kernel_name}_launch{launch_id}_kernel.fatbin"
             helper_functions = self._generate_helper_functions()
+            
+            # Check if kernel uses dynamic shared memory
+            uses_dynamic_smem = self._check_dynamic_shared_memory(ptx_path)
+            
+            # Generate shared memory configuration code if needed
+            smem_config_code = ""
+            if uses_dynamic_smem and launch_info.shared_memory > 0:
+                smem_config_code = f"""
+    // Configure shared memory if needed ({launch_info.shared_memory} bytes requires opt-in on some GPUs)
+    int shared_mem_bytes = {launch_info.shared_memory};
+    CUresult attr_result = cuFuncSetAttribute(
+        kernel_func, 
+        CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, 
+        shared_mem_bytes);
+    if (attr_result != CUDA_SUCCESS) {{{{
+      const char* errStr;
+      cuGetErrorString(attr_result, &errStr);
+      fprintf(stderr, "Warning: Failed to set shared memory size: %s\\n", errStr);
+      fprintf(stderr, "Attempting to continue anyway...\\n");
+    }}}} else {{{{
+      printf("Configured dynamic shared memory: %d bytes\\n", shared_mem_bytes);
+    }}}}
+    printf("\\n");
+"""
+            else:
+                smem_config_code = "    printf(\"\\n\");\n"
 
             cpp_code = f"""
 // Standalone harness for Triton kernel: {kernel_name}
@@ -775,8 +902,8 @@ int main(int argc, char** argv) {{{{
         fprintf(stderr, "Failed to get function: %s\\n", errStr);
         return 1;
     }}}}
-    printf("Got kernel function: {kernel_name}\\n\\n");
-
+    printf("Got kernel function: {kernel_name}\\n");
+{smem_config_code}
     // Initialize arguments
     printf("Initializing arguments:\\n");
 {chr(10).join(arg_declarations)}
