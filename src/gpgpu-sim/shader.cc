@@ -2069,6 +2069,7 @@ void shader_core_ctx::execute() {
       }
     }
   }
+  m_tma -> cycle();
 }
 
 void ldst_unit::print_cache_stats(FILE *fp, unsigned &dl1_accesses,

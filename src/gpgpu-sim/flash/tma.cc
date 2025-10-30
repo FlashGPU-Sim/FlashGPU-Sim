@@ -37,6 +37,7 @@ private:
   };
 
   std::vector<tma_transaction_t> m_transactions;
+  std::vector<mem_fetch *> m_response_fifo;
 
 public:
   void warp_reaches_tma(unsigned cta_id, unsigned warp_id, warp_inst_t *inst) {
@@ -71,18 +72,6 @@ public:
                           "size_in_bytes=%u, mbar=0x%x\n",
                           tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
                           tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
-
-        // ! For now we directly arrive!
-        DPRINTF_INST_EXEC(TMA,
-                          "Complete transaction dst=0x%llx, src=0x%llx, "
-                          "size_in_bytes=%u, mbar=0x%x \n",
-                          tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-                          tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
-        m_barriers->complete_tx(
-            cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-            tx.m_dyn_info.size_in_bytes); // complete all bytes immediately
-
-        m_transactions.pop_back();
       }
     }
     if (m_transactions.size() - num_transactions_before > 1) {
@@ -90,6 +79,31 @@ public:
       abort();
     }
   }
+
+  void cycle() {
+    // Check Transaction Status
+    // Arrive if all transactions are completed
+
+    // For now, we directly arrive
+    if (!m_transactions.empty()) {
+      auto &tx = m_transactions.back();
+      auto thread = tx.m_thread;
+      unsigned cta_id = thread->get_hw_ctaid();
+      unsigned warp_id = thread->get_hw_wid();
+      
+      DPRINTF_INST_EXEC(TMA,
+                        "Complete transaction dst=0x%llx, src=0x%llx, "
+                        "size_in_bytes=%u, mbar=0x%x \n",
+                        tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+                        tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
+      m_barriers->complete_tx(
+          cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+          tx.m_dyn_info.size_in_bytes); // complete all bytes immediately
+
+      m_transactions.pop_back();
+    }
+  }
+
 };
 
 tma_unit_t::tma_unit_t(shader_core_ctx *shader_ctx, barrier_set_t *barriers)
@@ -100,6 +114,10 @@ tma_unit_t::~tma_unit_t() = default;
 void tma_unit_t::warp_reaches_tma(unsigned cta_id, unsigned warp_id,
                                   warp_inst_t *inst) {
   m_impl->warp_reaches_tma(cta_id, warp_id, inst);
+}
+
+void tma_unit_t::cycle() {
+  m_impl->cycle();
 }
 
 } // namespace flash_gpgpu_sim

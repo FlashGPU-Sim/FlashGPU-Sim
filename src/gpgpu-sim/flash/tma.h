@@ -17,6 +17,7 @@ public:
   tma_unit_t(shader_core_ctx *shader_ctx, barrier_set_t *barriers);
   ~tma_unit_t();
 
+  void cycle();
   void warp_reaches_tma(unsigned cta_id, unsigned warp_id, warp_inst_t *inst);
 
 private:
