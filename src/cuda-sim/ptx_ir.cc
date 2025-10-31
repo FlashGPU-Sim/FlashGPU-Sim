@@ -1319,9 +1319,10 @@ ptx_instruction::ptx_instruction(
         break;
       case TMA_MBAR_COMPLETE_BYTES:
       case COMMIT_GROUP_OPTION:
-      case WAIT_GROUP_OPTION:
+      case WAIT_GROUP_OPTION: {
         // Do nothing for now... need to be implemented later.
         break;
+      }
       case EQU_OPTION:
       case NEU_OPTION:
       case LTU_OPTION:
@@ -1484,6 +1485,18 @@ ptx_instruction::ptx_instruction(
     }
   }
   m_scalar_type = scalar_type;
+
+  /**
+   * TMA instructions has no scalar type. Make it b64 by default.
+   */
+  if (opcode == TMA_OP) {
+    assert(m_scalar_type.empty() && "TMA inst should have no scalar type");
+    m_scalar_type.push_back(B64_TYPE);
+    // for (auto op : m_options) {
+    //   printf("TMA option: %d\n", op);
+    // }
+  }
+
   m_space_spec = space_spec;
   if ((opcode == ST_OP || opcode == LD_OP || opcode == LDU_OP) &&
       (space_spec == undefined_space)) {

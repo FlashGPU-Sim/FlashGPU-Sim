@@ -82,6 +82,14 @@ public:
                        uint64_t addr, int arrival_count);
 
   /**
+   * Complete transaction at the mbarrier at addr with completed_tx_count for
+   * warp warp_id.
+   * @return the set of warp ids that are released due to this complete_tx.
+   */
+  std::set<int> complete_tx(gpgpu_sim *gpu, const thread_index_t &thread_index,
+                            uint64_t addr, int completed_tx_count);
+
+  /**
    * Increase the expected tx count for the mbarrier at addr.
    * @return void
    */
@@ -92,6 +100,13 @@ private:
   int m_next_id;
   std::unordered_map<uint64_t, std::unique_ptr<mbarrier_t>>
       addr_to_mbarrier_map;
+
+  /**
+   * Check if the mbarrier is satisfied, and release warps if so.
+   * @return the set of warp ids that are released.
+   */
+  std::set<int> try_advance(gpgpu_sim *gpu, const thread_index_t &thread_index,
+                            mbarrier_t *mbarrier);
 };
 } // namespace flash_gpgpu_sim
 

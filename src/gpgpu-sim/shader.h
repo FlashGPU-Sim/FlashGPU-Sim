@@ -58,6 +58,7 @@
 #include "stats.h"
 #include "traffic_breakdown.h"
 #include "flash/mbarrier.h"
+#include "flash/tma.h"
 
 #define NO_OP_FLAG 0xFF
 
@@ -1079,6 +1080,9 @@ class barrier_set_t {
   // individual warp hits mbarrier
   void warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
                              warp_inst_t *inst);
+  // complete_tx for TMA usages
+  void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
+                   uint32_t completed_tx_count);
 
   // warp reaches exit
   void warp_exit(unsigned warp_id);
@@ -2566,6 +2570,9 @@ class shader_core_ctx : public core_t {
   static const unsigned MAX_ALU_LATENCY = 512;
   unsigned num_result_bus;
   std::vector<std::bitset<MAX_ALU_LATENCY> *> m_result_bus;
+
+  // TMA support.
+  flash_gpgpu_sim::tma_unit_t *m_tma = nullptr;
 
   // used for local address mapping with single kernel launch
   unsigned kernel_max_cta_per_shader;

@@ -955,6 +955,9 @@ void ptx_instruction::set_opcode_and_latency() {
     case MBAR_OP:
       op = MBARRIER_OP;
       break;
+    case TMA_OP:
+      op = TENSOR_MEMORY_ACCELERATOR_OP;
+      break;
     case SST_OP:
       op = BARRIER_OP;
       break;

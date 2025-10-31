@@ -343,6 +343,9 @@ class ptx_thread_info {
   int get_flat_tid() const {
     return m_tid.x + m_ntid.x * (m_tid.y + m_ntid.y * m_tid.z);
   }
+  int get_laneid() const {
+    return get_flat_tid() % get_core()->get_warp_size();
+  }
   int get_flat_ctaid() const {
     return m_ctaid.x + m_nctaid.x * (m_ctaid.y + m_nctaid.y * m_ctaid.z);
   }
@@ -352,6 +355,7 @@ class ptx_thread_info {
   unsigned get_hw_wid() const { return m_hw_wid; }
   unsigned get_hw_sid() const { return m_hw_sid; }
   core_t *get_core() { return m_core; }
+  const core_t *get_core() const { return m_core; }
 
   unsigned get_icount() const { return m_icount; }
   void set_valid() { m_valid = true; }

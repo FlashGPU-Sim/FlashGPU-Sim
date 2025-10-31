@@ -477,6 +477,12 @@ option_list: option
 	| option option_list ;
 
 option: type_spec
+	// Special rules for TMA to recognize .global as option, not directive.
+	// TODO: Find clever way to do this.
+	| CTA_OPTION GLOBAL_DIRECTIVE {
+		recognizer->add_option(CTA_OPTION);
+		recognizer->add_option(GLOBAL_OPTION);
+	}
 	| compare_spec
 	| addressable_spec
 	| rounding_mode
