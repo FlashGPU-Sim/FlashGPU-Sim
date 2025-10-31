@@ -29,6 +29,7 @@
 #ifndef MEM_FETCH_H
 #define MEM_FETCH_H
 
+#include <atomic>
 #include <bitset>
 #include "../abstract_hardware_model.h"
 #include "addrdec.h"

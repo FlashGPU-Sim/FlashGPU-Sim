@@ -600,6 +600,7 @@ typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
       MA_TUP(TEXTURE_ACC_R), MA_TUP(GLOBAL_ACC_W), MA_TUP(LOCAL_ACC_W), \
       MA_TUP(L1_WRBK_ACC), MA_TUP(L2_WRBK_ACC), MA_TUP(INST_ACC_R),     \
       MA_TUP(L1_WR_ALLOC_R), MA_TUP(L2_WR_ALLOC_R),                     \
+      MA_TUP(TMA_ACC_R), MA_TUP(TMA_ACC_W),                             \
       MA_TUP(NUM_MEM_ACCESS_TYPE) MA_TUP_END(mem_access_type)
 
 #define MA_TUP_BEGIN(X) enum X {

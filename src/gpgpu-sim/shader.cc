@@ -458,7 +458,7 @@ void shader_core_ctx::create_exec_pipeline() {
   if (m_tma) {
     delete m_tma;
   }
-  m_tma = new flash_gpgpu_sim::tma_unit_t(this, &m_barriers);
+  m_tma = new flash_gpgpu_sim::tma_unit_t(this, &m_barriers, m_icnt, m_mem_fetch_allocator);
 
   assert(m_num_function_units == m_fu.size() and
          m_fu.size() == m_dispatch_port.size() and
@@ -763,6 +763,7 @@ void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, in
   accumulate(gpgpu_n_mem_l2_writeback);
   accumulate(gpgpu_n_mem_l1_write_allocate);
   accumulate(gpgpu_n_mem_l2_write_allocate);
+  accumulate(gpgpu_n_mem_tma);
 
   accumulate(made_write_mfs);
   accumulate(made_read_mfs);
@@ -830,6 +831,7 @@ void shader_core_stats::clear_accumulator() {
   accumulate(gpgpu_n_mem_l2_writeback);
   accumulate(gpgpu_n_mem_l1_write_allocate);
   accumulate(gpgpu_n_mem_l2_write_allocate);
+  accumulate(gpgpu_n_mem_tma);
 
   accumulate(made_write_mfs);
   accumulate(made_read_mfs);
@@ -2538,7 +2540,7 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
       mem_fetch *mf =
           m_mf_allocator->alloc(inst, access,
                                 m_core->get_gpu()->gpu_sim_cycle +
-                                    m_core->get_gpu()->gpu_tot_sim_cycle);
+                                m_core->get_gpu()->gpu_tot_sim_cycle);
       m_icnt->push(mf);
       inst.accessq_pop_back();
       // inst.clear_active( access.get_warp_mask() );
@@ -4260,6 +4262,14 @@ void shader_core_ctx::broadcast_barrier_reduction(unsigned cta_id,
   }
 }
 
+bool shader_core_ctx::tma_response_buffer_full() const {
+  return m_tma->response_buffer_full();
+}
+
+void shader_core_ctx::accept_tma_response(mem_fetch *mf) {
+  m_tma->fill(mf);
+}
+
 bool shader_core_ctx::fetch_unit_response_buffer_full() const { return false; }
 
 void shader_core_ctx::accept_fetch_response(mem_fetch *mf) {
@@ -4927,6 +4937,9 @@ void simt_core_cluster::update_icnt_stats(class mem_fetch *mf) {
     case L2_WR_ALLOC_R:
       m_stats->gpgpu_n_mem_l2_write_allocate++;
       break;
+    case TMA_ACC_R:
+      m_stats->gpgpu_n_mem_tma++;
+      break;
     default:
       assert(0);
   }
@@ -4971,7 +4984,13 @@ void simt_core_cluster::icnt_cycle() {
   if (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
     unsigned cid = m_config->sid_to_cid(mf->get_sid());
-    if (mf->get_access_type() == INST_ACC_R) {
+    if (mf->get_access_type() == TMA_ACC_R) {
+      // TMA response
+      if (!m_core[cid]->tma_response_buffer_full()) {
+        m_response_fifo.pop_front();
+        m_core[cid]->accept_tma_response(mf);
+      }
+    } else if (mf->get_access_type() == INST_ACC_R) {
       // instruction fetch response
       if (!m_core[cid]->fetch_unit_response_buffer_full()) {
         m_response_fifo.pop_front();

@@ -1,4 +1,5 @@
 #include "tma.h"
+#include <atomic>
 
 #include "../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
@@ -11,16 +12,23 @@ typedef void *yyscan_t;
 
 #include <vector>
 
+std::atomic<unsigned int> tma_next_tx_uid = 0;
+std::atomic<unsigned int> tma_cycle_count = 0;
+
 namespace flash_gpgpu_sim {
 
 class tma_unit_impl_t {
 public:
-  tma_unit_impl_t(shader_core_ctx *shader_ctx, barrier_set_t *barriers)
-      : m_shader_ctx(shader_ctx), m_barriers(barriers) {}
+  tma_unit_impl_t(shader_core_ctx *shader_ctx, barrier_set_t *barriers, 
+                  mem_fetch_interface *icnt, shader_core_mem_fetch_allocator *mf_allocator)
+      : m_shader_ctx(shader_ctx), m_barriers(barriers), m_icnt(icnt), m_mf_allocator(mf_allocator) {
+      }
 
 private:
   shader_core_ctx *m_shader_ctx;
   barrier_set_t *m_barriers;
+  mem_fetch_interface *m_icnt;
+  shader_core_mem_fetch_allocator *m_mf_allocator;
 
   struct tma_transaction_t {
     ptx_thread_info *m_thread = nullptr;
@@ -36,8 +44,11 @@ private:
     bool is_valid() const { return m_thread != nullptr; }
   };
 
-  std::vector<tma_transaction_t> m_transactions;
-  std::vector<mem_fetch *> m_response_fifo;
+  std::unordered_map<unsigned, tma_transaction_t>  m_transactions;
+
+  std::list<unsigned> issue_queue;
+  std::unordered_map<unsigned, unsigned> m_mf_to_tx;
+  std::list<mem_fetch *> m_response_fifo;
 
 public:
   void warp_reaches_tma(unsigned cta_id, unsigned warp_id, warp_inst_t *inst) {
@@ -50,7 +61,7 @@ public:
     const auto &tma_static_info = pI->get_tma_static_info();
 
     const auto warp_size = m_shader_ctx->get_warp_size();
-    auto num_transactions_before = m_transactions.size();
+    auto num_transactions_before = issue_queue.size();
     for (int laneid = 0; laneid < warp_size; laneid++) {
       const auto &tma_dyn_info = pI->get_tma_dyn_info(laneid);
       if (tma_dyn_info.is_valid()) {
@@ -65,49 +76,125 @@ public:
             .m_dyn_info = tma_dyn_info,
             .m_bytes_completed = 0,
         };
-        m_transactions.push_back(tx);
+
+        unsigned tx_uid = tma_next_tx_uid.fetch_add(1, std::memory_order_relaxed);
+        m_transactions.emplace(tx_uid, tx);
+        issue_queue.push_back(tx_uid);
 
         DPRINTF_INST_EXEC(TMA,
                           "Start transaction dst=0x%llx, src=0x%llx, "
-                          "size_in_bytes=%u, mbar=0x%x\n",
+                          "size_in_bytes=%u, mbar=0x%x, tx_uid=%u\n",
                           tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-                          tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
+                          tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
+
       }
     }
-    if (m_transactions.size() - num_transactions_before > 1) {
+    if (issue_queue.size() - num_transactions_before > 1) {
       printf("Error: Multiple active threads for TMA inst not supported\n");
       abort();
     }
   }
 
   void cycle() {
-    // Check Transaction Status
-    // Arrive if all transactions are completed
+    unsigned tma_cycle = tma_cycle_count.fetch_add(1, std::memory_order_relaxed);
 
-    // For now, we directly arrive
-    if (!m_transactions.empty()) {
-      auto &tx = m_transactions.back();
-      auto thread = tx.m_thread;
-      unsigned cta_id = thread->get_hw_ctaid();
-      unsigned warp_id = thread->get_hw_wid();
-      
-      DPRINTF_INST_EXEC(TMA,
-                        "Complete transaction dst=0x%llx, src=0x%llx, "
-                        "size_in_bytes=%u, mbar=0x%x \n",
-                        tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-                        tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
-      m_barriers->complete_tx(
-          cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-          tx.m_dyn_info.size_in_bytes); // complete all bytes immediately
+    // check response fifo
+    if (!m_response_fifo.empty()) {
+      mem_fetch *mf = m_response_fifo.front();
+      m_response_fifo.pop_front();
+      assert(mf->get_access_type() == TMA_ACC_R);
 
-      m_transactions.pop_back();
+      // TODO: write data into shared memory
+
+      auto mf_it = m_mf_to_tx.find(mf->get_original_mf()->get_request_uid());
+      assert(mf_it != m_mf_to_tx.end());
+      auto tx_uid = mf_it->second;
+
+      // DPRINTF_TMA(TMA, "" "TMA cycle %u, core %d, Found TMA table, tx_uid=%u, req_uid=%u\n",
+      //             tma_cycle, m_shader_ctx->get_sid(),tx_uid, mf->get_original_mf()->get_request_uid());
+
+      auto tx_it = m_transactions.find(tx_uid);
+      assert(tx_it != m_transactions.end());
+      auto &tx = tx_it->second;
+
+      DPRINTF_TMA(TMA, 
+                  "TMA cycle %u, core %d, Found TMA request, tx_uid=%u, dst=0x%llx, src=0x%llx,"
+                  "size_in_bytes=%u, mbar=0x%x \n",
+                  tma_cycle, m_shader_ctx->get_sid(), tx_uid,
+                  tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+                  tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
+
+      tx.m_bytes_completed += mf->get_data_size();
+
+      // TODO: add complete transaction logic
+      if ( tx.m_bytes_completed >= MAX_MEMORY_ACCESS_SIZE ) {
+        auto thread = tx.m_thread;
+        unsigned cta_id = thread->get_hw_ctaid();
+        unsigned warp_id = thread->get_hw_wid();
+        
+        DPRINTF_INST_EXEC(TMA,
+                          "Complete transaction dst=0x%llx, src=0x%llx, "
+                          "size_in_bytes=%u, mbar=0x%x \n",
+                          tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+                          tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
+        m_barriers->complete_tx(
+            cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+            tx.m_dyn_info.size_in_bytes); // complete all bytes immediately
+    
+        m_transactions.erase(tx_it);
+        m_mf_to_tx.erase(mf_it);
+
+      }
+
+      delete mf;
+    }
+
+    // issue memory requests
+    if (!issue_queue.empty()) {
+      unsigned tx_uid = issue_queue.front();
+
+      auto it = m_transactions.find(tx_uid);
+      assert(it != m_transactions.end());
+      auto &tx = it->second;
+
+      if (!m_icnt->full(READ_PACKET_SIZE, false)) {
+        // TODO: send all data, currently only send one big request
+        mem_access_t access(TMA_ACC_R, tx.m_dyn_info.src_addr, 
+                            MAX_MEMORY_ACCESS_SIZE, false, m_shader_ctx->get_gpu()->gpgpu_ctx);
+        mem_fetch *mf =
+            m_mf_allocator->alloc(access, -1,
+                                  m_shader_ctx->get_gpu()->gpu_sim_cycle +
+                                  m_shader_ctx->get_gpu()->gpu_tot_sim_cycle);
+        m_icnt->push(mf);
+
+        issue_queue.pop_front();
+        m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
+
+        DPRINTF_TMA(TMA, "TMA cycle %u, core %d, Issued memory fetch request, tx_uid=%u, req_uid=%u, "
+                    "dst = 0x%llx, src=0x%llx, size_in_bytes=%u, mbar=0x%x \n",
+                    tma_cycle, m_shader_ctx->get_sid(), tx_uid, mf->get_request_uid(),
+                    tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+                    tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
+      }
     }
   }
 
+  void fill(mem_fetch *mf) {
+    mf->set_status(
+      IN_TMA_RESPONSE_FIFO,
+      m_shader_ctx->get_gpu()->gpu_sim_cycle + m_shader_ctx->get_gpu()->gpu_tot_sim_cycle);
+    m_response_fifo.push_back(mf);
+  }
+
+  bool response_buffer_full() const {
+    // for simplicity, assume infinite buffer
+    return false;
+  }
 };
 
-tma_unit_t::tma_unit_t(shader_core_ctx *shader_ctx, barrier_set_t *barriers)
-    : m_impl(std::make_unique<tma_unit_impl_t>(shader_ctx, barriers)) {}
+tma_unit_t::tma_unit_t(shader_core_ctx *shader_ctx, barrier_set_t *barriers,
+                       mem_fetch_interface *icnt, shader_core_mem_fetch_allocator *mf_allocator)
+    : m_impl(std::make_unique<tma_unit_impl_t>(shader_ctx, barriers, icnt, mf_allocator)) {}
 
 tma_unit_t::~tma_unit_t() = default;
 
@@ -118,6 +205,14 @@ void tma_unit_t::warp_reaches_tma(unsigned cta_id, unsigned warp_id,
 
 void tma_unit_t::cycle() {
   m_impl->cycle();
+}
+
+void tma_unit_t::fill(mem_fetch *mf) {
+  m_impl->fill(mf);
+}
+
+bool tma_unit_t::response_buffer_full() const {
+  return m_impl->response_buffer_full();
 }
 
 } // namespace flash_gpgpu_sim

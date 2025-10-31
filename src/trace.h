@@ -94,6 +94,16 @@ void init();
     }                                                                          \
   } while (0)
 
+#define DPRINTF_TMA(x, fmt, ...)                                               \
+  do {                                                                         \
+    if (DTRACE(x)) {                                                           \
+      auto m_gpu = m_shader_ctx->get_gpu();                                    \
+      printf(SIM_PRINT_STR fmt,                                                    \
+            (m_gpu)->gpu_sim_cycle + (m_gpu)->gpu_tot_sim_cycle,                  \
+            Trace::trace_streams_str[Trace::x], __VA_ARGS__);                  \
+    }                                                                          \
+  } while (0)
+
 #define DPRINTF_NoGPU(x, ...)                                                  \
   do {                                                                         \
     if (DTRACE(x)) {                                                           \

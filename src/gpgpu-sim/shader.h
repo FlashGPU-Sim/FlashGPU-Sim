@@ -1820,6 +1820,8 @@ struct shader_core_stats_pod {
   int gpgpu_n_mem_l1_write_allocate;
   int gpgpu_n_mem_l2_write_allocate;
 
+  int gpgpu_n_mem_tma;
+
   unsigned made_write_mfs;
   unsigned made_read_mfs;
 
@@ -2063,6 +2065,13 @@ class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
     return mf;
   }
 
+  mem_fetch *alloc(const mem_access_t &access, unsigned long long cycle,
+                   unsigned long long streamID) const {
+    mem_fetch *mf = new mem_fetch(access, nullptr, streamID, READ_PACKET_SIZE, -1, 
+                                  m_core_id, m_cluster_id, m_memory_config, cycle);
+    return mf;
+  }
+
  private:
   unsigned m_core_id;
   unsigned m_cluster_id;
@@ -2086,6 +2095,7 @@ class shader_core_ctx : public core_t {
 
   void cache_flush();
   void cache_invalidate();
+  void accept_tma_response(mem_fetch *mf);
   void accept_fetch_response(mem_fetch *mf);
   void accept_ldst_unit_response(class mem_fetch *mf);
   void broadcast_barrier_reduction(unsigned cta_id, unsigned bar_id,
@@ -2101,6 +2111,7 @@ class shader_core_ctx : public core_t {
   }
   PowerscalingCoefficients *scaling_coeffs;
   // accessors
+  bool tma_response_buffer_full() const;
   bool fetch_unit_response_buffer_full() const;
   bool ldst_unit_response_buffer_full() const;
   unsigned get_not_completed() const { return m_not_completed; }
