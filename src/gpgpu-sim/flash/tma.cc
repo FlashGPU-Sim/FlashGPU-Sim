@@ -104,30 +104,24 @@ public:
       m_response_fifo.pop_front();
       assert(mf->get_access_type() == TMA_ACC_R);
 
-      // TODO: write data into shared memory
-
       auto mf_it = m_mf_to_tx.find(mf->get_original_mf()->get_request_uid());
       assert(mf_it != m_mf_to_tx.end());
       auto tx_uid = mf_it->second;
-
-      // DPRINTF_TMA(TMA, "" "TMA cycle %u, core %d, Found TMA table, tx_uid=%u, req_uid=%u\n",
-      //             tma_cycle, m_shader_ctx->get_sid(),tx_uid, mf->get_original_mf()->get_request_uid());
 
       auto tx_it = m_transactions.find(tx_uid);
       assert(tx_it != m_transactions.end());
       auto &tx = tx_it->second;
 
-      DPRINTF_TMA(TMA, 
-                  "TMA cycle %u, core %d, Found TMA request, tx_uid=%u, dst=0x%llx, src=0x%llx,"
-                  "size_in_bytes=%u, mbar=0x%x \n",
-                  tma_cycle, m_shader_ctx->get_sid(), tx_uid,
-                  tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-                  tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
+      // DPRINTF_TMA(TMA, 
+      //             "TMA cycle %u, core %d, Found TMA request, tx_uid=%u, dst=0x%llx, src=0x%llx,"
+      //             "size_in_bytes=%u, mbar=0x%x \n",
+      //             tma_cycle, m_shader_ctx->get_sid(), tx_uid,
+      //             tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+      //             tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
 
       tx.m_bytes_completed += mf->get_data_size();
 
-      // TODO: add complete transaction logic
-      if ( tx.m_bytes_completed >= MAX_MEMORY_ACCESS_SIZE ) {
+      if ( tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes ) {
         auto thread = tx.m_thread;
         unsigned cta_id = thread->get_hw_ctaid();
         unsigned warp_id = thread->get_hw_wid();
@@ -139,7 +133,7 @@ public:
                           tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
         m_barriers->complete_tx(
             cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-            tx.m_dyn_info.size_in_bytes); // complete all bytes immediately
+            tx.m_dyn_info.size_in_bytes);
     
         m_transactions.erase(tx_it);
         m_mf_to_tx.erase(mf_it);
@@ -158,23 +152,31 @@ public:
       auto &tx = it->second;
 
       if (!m_icnt->full(READ_PACKET_SIZE, false)) {
-        // TODO: send all data, currently only send one big request
-        mem_access_t access(TMA_ACC_R, tx.m_dyn_info.src_addr, 
-                            MAX_MEMORY_ACCESS_SIZE, false, m_shader_ctx->get_gpu()->gpgpu_ctx);
+        // TODO: deal with corner case, would need sector mask if size not aligned w. cacheline size
+        unsigned size = std::min(MAX_MEMORY_ACCESS_SIZE, tx.m_dyn_info.size_in_bytes - tx.m_bytes_completed);
+
+        mem_access_t access(TMA_ACC_R, tx.m_dyn_info.src_addr + tx.m_bytes_completed, 
+                            size, false, m_shader_ctx->get_gpu()->gpgpu_ctx);
         mem_fetch *mf =
             m_mf_allocator->alloc(access, -1,
                                   m_shader_ctx->get_gpu()->gpu_sim_cycle +
                                   m_shader_ctx->get_gpu()->gpu_tot_sim_cycle);
+        
+        m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
+        tx.m_bytes_completed += size;
+
         m_icnt->push(mf);
 
-        issue_queue.pop_front();
-        m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
+        // DPRINTF_TMA(TMA, "TMA cycle %u, core %d, Issued memory fetch request, tx_uid=%u, req_uid=%u, "
+        //             "dst = 0x%llx, src=0x%llx, size_in_bytes=%u, mbar=0x%x \n",
+        //             tma_cycle, m_shader_ctx->get_sid(), tx_uid, mf->get_request_uid(),
+        //             tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+        //             tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
+      }
 
-        DPRINTF_TMA(TMA, "TMA cycle %u, core %d, Issued memory fetch request, tx_uid=%u, req_uid=%u, "
-                    "dst = 0x%llx, src=0x%llx, size_in_bytes=%u, mbar=0x%x \n",
-                    tma_cycle, m_shader_ctx->get_sid(), tx_uid, mf->get_request_uid(),
-                    tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-                    tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
+      if ( tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes ) {
+        issue_queue.pop_front();
+        tx.m_bytes_completed = 0;
       }
     }
   }
@@ -300,6 +302,22 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       auto laneid = thread->get_laneid();
       pI->set_tma_dyn_info(laneid, tma_dyn_info);
 
+      // write data into shared memory
+      memory_space *global_mem = thread->get_global_memory();
+      memory_space *shared_mem = thread->m_shared_mem;
+
+      unsigned char *data_buffer = new unsigned char[size_in_bytes];
+      global_mem->read(src_addr, size_in_bytes, data_buffer);
+      shared_mem->write(dst_addr, size_in_bytes, data_buffer, thread, pI);
+
+      delete[] data_buffer;
+
+      DPRINTF_INST_EXEC(
+          TMA,
+          "Functional sim: TMA moved %u bytes from global 0x%llx to shared "
+          "0x%x\n",
+          size_in_bytes, src_addr, dst_addr);
+          
     } else {
       assert(false && "Unsupported TMA copy instruction");
     }
