@@ -13,7 +13,6 @@ typedef void *yyscan_t;
 #include <vector>
 
 std::atomic<unsigned int> tma_next_tx_uid = 0;
-std::atomic<unsigned int> tma_cycle_count = 0;
 
 namespace flash_gpgpu_sim {
 
@@ -43,11 +42,11 @@ private:
     }
     bool is_valid() const { return m_thread != nullptr; }
   };
-
   std::unordered_map<unsigned, tma_transaction_t>  m_transactions;
 
   std::list<unsigned> issue_queue;
   std::unordered_map<unsigned, unsigned> m_mf_to_tx;
+  
   std::list<mem_fetch *> m_response_fifo;
 
 public:
@@ -96,7 +95,6 @@ public:
   }
 
   void cycle() {
-    unsigned tma_cycle = tma_cycle_count.fetch_add(1, std::memory_order_relaxed);
 
     // check response fifo
     if (!m_response_fifo.empty()) {
@@ -112,35 +110,40 @@ public:
       assert(tx_it != m_transactions.end());
       auto &tx = tx_it->second;
 
-      // DPRINTF_TMA(TMA, 
-      //             "TMA cycle %u, core %d, Found TMA request, tx_uid=%u, dst=0x%llx, src=0x%llx,"
-      //             "size_in_bytes=%u, mbar=0x%x \n",
-      //             tma_cycle, m_shader_ctx->get_sid(), tx_uid,
-      //             tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-      //             tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
+      DPRINTF_TMA(TMA, "TMA response received for mf uid=%u, tx_uid=%u, data_size=%u, response fifo size=%lu\n",
+                 mf->get_request_uid(),  tx_uid, mf->get_data_size(), m_response_fifo.size());
 
-      tx.m_bytes_completed += mf->get_data_size();
+      if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CTA) {
+        // TMA would attempt to write data to shared memory once receive mf response
+        // ! assume no shared memory bank conflict for simplicity
+        tx.m_bytes_completed += mf->get_data_size();
 
-      if ( tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes ) {
-        auto thread = tx.m_thread;
-        unsigned cta_id = thread->get_hw_ctaid();
-        unsigned warp_id = thread->get_hw_wid();
-        
-        DPRINTF_INST_EXEC(TMA,
-                          "Complete transaction dst=0x%llx, src=0x%llx, "
-                          "size_in_bytes=%u, mbar=0x%x \n",
-                          tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-                          tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
-        m_barriers->complete_tx(
-            cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-            tx.m_dyn_info.size_in_bytes);
-    
-        m_transactions.erase(tx_it);
-        m_mf_to_tx.erase(mf_it);
+        if ( tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes ) {
+          auto thread = tx.m_thread;
+          unsigned cta_id = thread->get_hw_ctaid();
+          unsigned warp_id = thread->get_hw_wid();
+          
+          DPRINTF_INST_EXEC(TMA,
+                            "Complete transaction dst=0x%llx, src=0x%llx, "
+                            "size_in_bytes=%u, mbar=0x%x, tx_uid=%u \n",
+                            tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+                            tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
 
+          m_barriers->complete_tx(
+              cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+              tx.m_dyn_info.size_in_bytes);
+      
+          m_transactions.erase(tx_it);
+          m_mf_to_tx.erase(mf_it);
+        } 
+
+        delete mf;
+
+      } else if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
+        assert(false && "Unsupported TMA destination space");
+      } else {
+        assert(false && "Unrecognized TMA destination space");
       }
-
-      delete mf;
     }
 
     // issue memory requests
@@ -166,12 +169,6 @@ public:
         tx.m_bytes_completed += size;
 
         m_icnt->push(mf);
-
-        // DPRINTF_TMA(TMA, "TMA cycle %u, core %d, Issued memory fetch request, tx_uid=%u, req_uid=%u, "
-        //             "dst = 0x%llx, src=0x%llx, size_in_bytes=%u, mbar=0x%x \n",
-        //             tma_cycle, m_shader_ctx->get_sid(), tx_uid, mf->get_request_uid(),
-        //             tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-        //             tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
       }
 
       if ( tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes ) {
@@ -189,7 +186,7 @@ public:
   }
 
   bool response_buffer_full() const {
-    // for simplicity, assume infinite buffer
+    // ! assume infinite buffer for simplicity
     return false;
   }
 };
@@ -228,12 +225,13 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
   bool is_commit_group = false;
   bool is_wait_group = false;
+  bool is_tensor = false;
   for (auto op : pI->get_options()) {
-    if (op == COMMIT_GROUP_OPTION) {
-      is_commit_group = true;
-    }
-    if (op == WAIT_GROUP_OPTION) {
-      is_wait_group = true;
+    switch (op) {
+      case COMMIT_GROUP_OPTION: is_commit_group = true; break;
+      case WAIT_GROUP_OPTION:   is_wait_group = true;   break;
+      case TENSOR_OPTION:       is_tensor = true;       break;
+      default: break;
     }
   }
 
@@ -246,7 +244,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
     return reg.u64;
   };
 
-  if (!is_commit_group && !is_wait_group) {
+  if (!is_commit_group && !is_wait_group && !is_tensor) {
     // This is TMA copy instruction.
     const auto &options = pI->get_options();
     if (options.size() != 3) {
@@ -283,11 +281,6 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
         abort();
       }
 
-      DPRINTF_INST_EXEC(TMA,
-                        "TMA shared::cta <- global dst=0x%x, src=0x%llx, "
-                        "size_in_bytes=%u, mbar=0x%x\n",
-                        dst_addr, src_addr, size_in_bytes, mbar_addr);
-
       inst_t::tma_static_info_t tma_static_info{
           .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
           .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
@@ -312,16 +305,19 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
       delete[] data_buffer;
 
-      DPRINTF_INST_EXEC(
-          TMA,
-          "Functional sim: TMA moved %u bytes from global 0x%llx to shared "
-          "0x%x\n",
-          size_in_bytes, src_addr, dst_addr);
-          
+      DPRINTF_INST_EXEC(TMA,
+        "Functional Sim: "
+        "TMA shared::cta <- global dst=0x%x, src=0x%llx, "
+        "size_in_bytes=%u, mbar=0x%x\n",
+        dst_addr, src_addr, size_in_bytes, mbar_addr);
+
     } else {
       assert(false && "Unsupported TMA copy instruction");
     }
 
+  } else if (is_tensor) {
+    // Handle TMA tensor instruction.
+    assert(false && "TMA instructions are not implemented yet");
   } else if (is_commit_group) {
     // Handle TMA commit group instruction.
     assert(false && "TMA instructions are not implemented yet");

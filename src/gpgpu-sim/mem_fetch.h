@@ -168,7 +168,7 @@ class mem_fetch {
 
   unsigned long long m_streamID;
 
-  static unsigned sm_next_mf_request_uid;
+  static std::atomic<unsigned int> sm_next_mf_request_uid;
 
   const memory_config *m_mem_config;
   unsigned icnt_flit_size;

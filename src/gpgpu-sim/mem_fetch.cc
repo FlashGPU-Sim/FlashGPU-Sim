@@ -26,13 +26,14 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
+#include <atomic>
 #include "mem_fetch.h"
 #include "gpu-sim.h"
 #include "mem_latency_stat.h"
 #include "shader.h"
 #include "visualizer.h"
 
-unsigned mem_fetch::sm_next_mf_request_uid = 1;
+std::atomic<unsigned int> mem_fetch::sm_next_mf_request_uid = 1;
 
 mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
                      unsigned long long streamID, unsigned ctrl_size,
@@ -42,7 +43,7 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
     : m_access(access)
 
 {
-  m_request_uid = sm_next_mf_request_uid++;
+  m_request_uid = sm_next_mf_request_uid.fetch_add(1, std::memory_order_relaxed);
   m_access = access;
   if (inst) {
     m_inst = *inst;

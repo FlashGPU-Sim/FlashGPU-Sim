@@ -231,6 +231,12 @@ class ptx_recognizer;
 %token	CLAMP_OPTION;
 %token	LEFT_OPTION;
 %token	RIGHT_OPTION;
+%token	TENSOR_OPTION;
+%token 	DIM_1D_OPTION;
+%token	DIM_2D_OPTION;
+%token	DIM_3D_OPTION;
+%token	DIM_4D_OPTION;
+%token	DIM_5D_OPTION;
 
 %type <int_value> function_decl_header
 %type <ptr_value> function_decl
@@ -522,6 +528,12 @@ option: type_spec
 	| EXTP_OPTION { recognizer->add_option(EXTP_OPTION); }
 	| CA_OPTION { recognizer->add_option(CA_OPTION); }
 	| CG_OPTION { recognizer->add_option(CG_OPTION); }
+	| TENSOR_OPTION { recognizer->add_option(TENSOR_OPTION); }
+	| DIM_1D_OPTION	{ recognizer->add_option(DIM_1D_OPTION); }
+	| DIM_2D_OPTION { recognizer->add_option(DIM_2D_OPTION); }
+	| DIM_3D_OPTION { recognizer->add_option(DIM_3D_OPTION); }
+	| DIM_4D_OPTION { recognizer->add_option(DIM_4D_OPTION); }
+	| DIM_5D_OPTION { recognizer->add_option(DIM_5D_OPTION); }
 	| CS_OPTION { recognizer->add_option(CS_OPTION); }
 	| LU_OPTION { recognizer->add_option(LU_OPTION); }
 	| CV_OPTION { recognizer->add_option(CV_OPTION); }

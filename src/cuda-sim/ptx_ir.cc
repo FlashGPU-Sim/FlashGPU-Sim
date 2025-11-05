@@ -1482,6 +1482,13 @@ ptx_instruction::ptx_instruction(
       default:
         assert(0);
         break;
+      case TENSOR_OPTION:
+      case DIM_1D_OPTION: 
+      case DIM_2D_OPTION: 
+      case DIM_3D_OPTION: 
+      case DIM_4D_OPTION: 
+      case DIM_5D_OPTION: 
+        break;
     }
   }
   m_scalar_type = scalar_type;

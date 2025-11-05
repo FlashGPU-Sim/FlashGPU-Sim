@@ -384,6 +384,12 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.try_wait TC; return TRY_WAIT_OPTION;
 \.parity TC; return PARITY_OPTION;
 \.shared::cta TC; return CTA_OPTION;
+\.tensor TC; return TENSOR_OPTION;
+\.1d	TC; return DIM_1D_OPTION;
+\.2d	TC; return DIM_2D_OPTION;
+\.3d	TC; return DIM_3D_OPTION;
+\.4d	TC; return DIM_4D_OPTION;
+\.5d	TC; return DIM_5D_OPTION;
 
 \.commit_group TC; return COMMIT_GROUP_OPTION;
 \.wait_group TC; return WAIT_GROUP_OPTION;
