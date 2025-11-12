@@ -70,6 +70,10 @@ class KernelLaunchInfo:
     args_info: List[ArgumentInfo]
     launch_id: int = 0
     stream: Optional[int] = None
+    global_scratch_size: int = 0
+    global_scratch_align: int = 1
+    profile_scratch_size: int = 0
+    profile_scratch_align: int = 1
 
 
 @dataclass
@@ -547,6 +551,12 @@ class TritonKernelTracker:
             print(f"  Capturing {len(self.pending_args)} arguments...")
             args_info = self._capture_arguments(self.pending_args, kernel_name, self.launch_counter)
         
+        # Extract scratch memory metadata
+        global_scratch_size = meta_dict.get('global_scratch_size', 0)
+        global_scratch_align = meta_dict.get('global_scratch_align', 1)
+        profile_scratch_size = meta_dict.get('profile_scratch_size', 0)
+        profile_scratch_align = meta_dict.get('profile_scratch_align', 1)
+        
         # Create launch info
         launch_info = KernelLaunchInfo(
             timestamp=datetime.now().isoformat(),
@@ -559,7 +569,11 @@ class TritonKernelTracker:
             num_ctas=num_ctas,
             args_info=args_info,
             launch_id=self.launch_counter,
-            stream=None
+            stream=None,
+            global_scratch_size=global_scratch_size,
+            global_scratch_align=global_scratch_align,
+            profile_scratch_size=profile_scratch_size,
+            profile_scratch_align=profile_scratch_align
         )
         
         self.kernel_launches.append(launch_info)
@@ -701,6 +715,46 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
         except Exception as e:
             print(f"    [WARNING] Could not check for dynamic shared memory: {e}")
             return False
+    
+    def _generate_scratch_allocation_code(self, launch_info: KernelLaunchInfo) -> str:
+        """Generate scratch buffer allocation code based on metadata
+        
+        Only generates allocation code if size > 0, avoiding unnecessary conditionals in C code.
+        """
+        code_lines = []
+        
+        if launch_info.global_scratch_size > 0:
+            code_lines.append(f"""    
+    cudaMalloc(&global_scratch, {launch_info.global_scratch_size});
+    printf("  Allocated global_scratch: %zu bytes (alignment: %zu)\\\\n", 
+           (size_t){launch_info.global_scratch_size}, (size_t){launch_info.global_scratch_align});""")
+        
+        if launch_info.profile_scratch_size > 0:
+            code_lines.append(f"""    
+    cudaMalloc(&profile_scratch, {launch_info.profile_scratch_size});
+    printf("  Allocated profile_scratch: %zu bytes (alignment: %zu)\\\\n", 
+           (size_t){launch_info.profile_scratch_size}, (size_t){launch_info.profile_scratch_align});""")
+        
+        return ''.join(code_lines)
+    
+    def _generate_scratch_cleanup_code(self, launch_info: KernelLaunchInfo) -> str:
+        """Generate scratch buffer cleanup code based on metadata
+        
+        Only generates cleanup code if size > 0, avoiding unnecessary conditionals in C code.
+        """
+        code_lines = []
+        
+        if launch_info.global_scratch_size > 0:
+            code_lines.append("""    
+    cudaFree(global_scratch);
+    printf("  Freed global_scratch\\\\n");""")
+        
+        if launch_info.profile_scratch_size > 0:
+            code_lines.append("""    
+    cudaFree(profile_scratch);
+    printf("  Freed profile_scratch\\\\n");""")
+        
+        return ''.join(code_lines)
     
     def _generate_launch_specific_harness(self, kernel_info: KernelBinaryInfo, launch_info: KernelLaunchInfo):
         """Generate a harness for a specific launch with actual argument data"""
@@ -910,9 +964,12 @@ int main(int argc, char** argv) {{{{
 
 {chr(10).join(arg_loading_calls)}
 
-    // Setup kernel arguments (user args + triton runtime args)
+    // Allocate Triton runtime scratch buffers based on metadata
+    // Note: These pointers may differ from Triton's original allocation, but are functionally equivalent
     void* global_scratch = NULL;
     void* profile_scratch = NULL;
+{self._generate_scratch_allocation_code(launch_info)}
+    // Setup kernel arguments (user args + triton runtime args)
     void* args[] = {{ {', '.join(arg_pointers)}, &global_scratch, &profile_scratch }};
 
     // Launch kernel
@@ -940,6 +997,7 @@ int main(int argc, char** argv) {{{{
     // Cleanup
     printf("\\nCleaning up...\\n");
 {chr(10).join(cleanup_code)}
+{self._generate_scratch_cleanup_code(launch_info)}
     cuModuleUnload(module);
     cuCtxDestroy(context);
 
@@ -969,21 +1027,12 @@ int main() {{
         if ptx_string:
             ptx_filename = f"{kernel_name}_launch{launch_id}_kernel.ptx"
             ptx_file_path = self.launchers_dir / ptx_filename
-            # Write the original PTX content (not escaped)
+            # Copy the original PTX content
             ptx_path_src = Path(kernel_info.binary_path).parent / f"{kernel_name}.ptx"
             if ptx_path_src.exists():
                 import shutil
-                # Read and fix PTX: replace sm_XXXa with sm_XXX for fatbin compatibility
-                with open(ptx_path_src, 'r') as f:
-                    ptx_content = f.read()
-                # Replace sm_120a -> sm_120 (and any other 'a' variants)
-                import re
-                ptx_fixed = re.sub(r'\.target (sm_\d+)a\b', r'.target \1', ptx_content)
-                with open(ptx_file_path, 'w') as f:
-                    f.write(ptx_fixed)
+                shutil.copy(ptx_path_src, ptx_file_path)
                 print(f"  Copied PTX for linking: {ptx_file_path}")
-                if 'sm_' in ptx_content and ptx_content != ptx_fixed:
-                    print(f"    Fixed architecture variants (e.g., sm_120a -> sm_120) for fatbin compatibility")
         
         # Generate Makefile. If PTX was found we'll produce steps to build a fatbin
         makefile_path = self.launchers_dir / f"{kernel_name}_launch{launch_id}_Makefile"
@@ -1194,6 +1243,8 @@ int main(int argc, char** argv) {{
                 f.write(f"  Block: {launch.block}\n")
                 f.write(f"  Shared memory: {launch.shared_memory} bytes\n")
                 f.write(f"  Num warps: {launch.num_warps}\n")
+                f.write(f"  Global scratch: {launch.global_scratch_size} bytes (align: {launch.global_scratch_align})\n")
+                f.write(f"  Profile scratch: {launch.profile_scratch_size} bytes (align: {launch.profile_scratch_align})\n")
                 f.write(f"  Arguments: {len(launch.args_info)}\n")
                 for arg_info in launch.args_info:
                     f.write(f"    [{arg_info.index}] {arg_info.arg_type}")
