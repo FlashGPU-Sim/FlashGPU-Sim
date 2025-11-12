@@ -68,3 +68,6 @@ accel-sim-framework/
 gpu-app-collection/
 
 setup
+
+# Editor Files
+.vscode/
