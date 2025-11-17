@@ -551,11 +551,17 @@ class TritonKernelTracker:
             print(f"  Capturing {len(self.pending_args)} arguments...")
             args_info = self._capture_arguments(self.pending_args, kernel_name, self.launch_counter)
         
-        # Extract scratch memory metadata
-        global_scratch_size = meta_dict.get('global_scratch_size', 0)
+        # Extract scratch memory metadata (per-CTA sizes)
+        per_cta_global_scratch = meta_dict.get('global_scratch_size', 0)
         global_scratch_align = meta_dict.get('global_scratch_align', 1)
-        profile_scratch_size = meta_dict.get('profile_scratch_size', 0)
+        per_cta_profile_scratch = meta_dict.get('profile_scratch_size', 0)
         profile_scratch_align = meta_dict.get('profile_scratch_align', 1)
+        
+        # Calculate total scratch sizes as Triton does:
+        # At runtime CudaLauncher.__call__ multiplies the per-CTA size by gridX*gridY*gridZ * num_ctas
+        total_ctas = grid[0] * grid[1] * grid[2] * num_ctas
+        global_scratch_size = per_cta_global_scratch * total_ctas
+        profile_scratch_size = per_cta_profile_scratch * total_ctas
         
         # Create launch info
         launch_info = KernelLaunchInfo(
@@ -720,19 +726,24 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
         """Generate scratch buffer allocation code based on metadata
         
         Only generates allocation code if size > 0, avoiding unnecessary conditionals in C code.
+        Note: Sizes are already calculated as total = per_cta_size * gridX*gridY*gridZ * num_ctas
         """
         code_lines = []
         
         if launch_info.global_scratch_size > 0:
-            code_lines.append(f"""    
+            total_ctas = launch_info.grid[0] * launch_info.grid[1] * launch_info.grid[2] * launch_info.num_ctas
+            code_lines.append(f"""
+    // Total size = per_cta_size * grid_size * num_ctas = per_cta * {total_ctas}
     cudaMalloc(&global_scratch, {launch_info.global_scratch_size});
-    printf("  Allocated global_scratch: %zu bytes (alignment: %zu)\\\\n", 
+    printf("  Allocated global_scratch: %zu bytes (alignment: %zu)\\n", 
            (size_t){launch_info.global_scratch_size}, (size_t){launch_info.global_scratch_align});""")
         
         if launch_info.profile_scratch_size > 0:
-            code_lines.append(f"""    
+            total_ctas = launch_info.grid[0] * launch_info.grid[1] * launch_info.grid[2] * launch_info.num_ctas
+            code_lines.append(f"""
+    // Total size = per_cta_size * grid_size * num_ctas = per_cta * {total_ctas}
     cudaMalloc(&profile_scratch, {launch_info.profile_scratch_size});
-    printf("  Allocated profile_scratch: %zu bytes (alignment: %zu)\\\\n", 
+    printf("  Allocated profile_scratch: %zu bytes (alignment: %zu)\\n", 
            (size_t){launch_info.profile_scratch_size}, (size_t){launch_info.profile_scratch_align});""")
         
         return ''.join(code_lines)
@@ -747,12 +758,12 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
         if launch_info.global_scratch_size > 0:
             code_lines.append("""    
     cudaFree(global_scratch);
-    printf("  Freed global_scratch\\\\n");""")
+    printf("  Freed global_scratch\\n");""")
         
         if launch_info.profile_scratch_size > 0:
             code_lines.append("""    
     cudaFree(profile_scratch);
-    printf("  Freed profile_scratch\\\\n");""")
+    printf("  Freed profile_scratch\\n");""")
         
         return ''.join(code_lines)
     
