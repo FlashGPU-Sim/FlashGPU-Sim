@@ -278,8 +278,8 @@ If running applications which use cuDNN or cuBLAS:
 
 * Modify the Makefile or the compilation command of the application to change 
    all the dynamic links to static ones, for example:
-	* `-L$(CUDA_PATH)/lib64 -lcublas` to
-	  `-L$(CUDA_PATH)/lib64 -lcublas_static`
+	* `-L$(CUDA_INSTALL_PATH)/lib64 -lcublas` to
+	  `-L$(CUDA_INSTALL_PATH)/lib64 -lcublas_static`
 
 	* `-L$(CUDNN_PATH)/lib64 -lcudnn` to
 	  `-L$(CUDNN_PATH)/lib64 -lcudnn_static`

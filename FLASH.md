@@ -22,7 +22,7 @@ Configure CUDA installation paths:
 
 ```bash
 export CUDA_INSTALL_PATH=/path/to/cuda     # e.g., /usr/local/cuda-12.0
-export CUDA_PATH=/path/to/cuda             # e.g., /usr/local/cuda-12.0
+export CUDA_INSTALL_PATH=/path/to/cuda             # e.g., /usr/local/cuda-12.0
 source setup_environment
 ```
 
