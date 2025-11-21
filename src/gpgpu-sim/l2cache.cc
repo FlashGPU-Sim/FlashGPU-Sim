@@ -100,7 +100,7 @@ void memory_partition_unit::handle_memcpy_to_gpu(
   unsigned p = global_sub_partition_id_to_local_id(global_subpart_id);
   std::string mystring = mask.to_string<char, std::string::traits_type,
                                         std::string::allocator_type>();
-  MEMPART_DPRINTF(
+  MEMPART_GPPRINTF(
       "Copy Engine Request Received For Address=%zx, local_subpart=%u, "
       "global_subpart=%u, sector_mask=%s \n",
       addr, p, global_subpart_id, mystring.c_str());
@@ -219,7 +219,7 @@ bool memory_partition_unit::can_issue_to_dram(int inner_sub_partition_id) {
   bool sub_partition_contention = m_sub_partition[spid]->dram_L2_queue_full();
   bool has_dram_resource = m_arbitration_metadata.has_credits(spid);
 
-  MEMPART_DPRINTF(
+  MEMPART_GPPRINTF(
       "sub partition %d sub_partition_contention=%c has_dram_resource=%c\n",
       spid, (sub_partition_contention) ? 'T' : 'F',
       (has_dram_resource) ? 'T' : 'F');
@@ -257,7 +257,7 @@ void memory_partition_unit::simple_dram_model_cycle() {
               IN_PARTITION_DRAM_TO_L2_QUEUE,
               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
           m_arbitration_metadata.return_credit(dest_spid);
-          MEMPART_DPRINTF(
+          MEMPART_GPPRINTF(
               "mem_fetch request %p return from dram to sub partition %d\n",
               mf_return, dest_spid);
         }
@@ -286,7 +286,7 @@ void memory_partition_unit::simple_dram_model_cycle() {
       if (m_dram->full(mf->is_write())) break;
 
       m_sub_partition[spid]->L2_dram_queue_pop();
-      MEMPART_DPRINTF(
+      MEMPART_GPPRINTF(
           "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
           spid);
       dram_delay_t d;
@@ -320,7 +320,7 @@ void memory_partition_unit::dram_cycle() {
         mf_return->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE,
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         m_arbitration_metadata.return_credit(dest_spid);
-        MEMPART_DPRINTF(
+        MEMPART_GPPRINTF(
             "mem_fetch request %p return from dram to sub partition %d\n",
             mf_return, dest_spid);
       }
@@ -348,7 +348,7 @@ void memory_partition_unit::dram_cycle() {
       if (m_dram->full(mf->is_write())) break;
 
       m_sub_partition[spid]->L2_dram_queue_pop();
-      MEMPART_DPRINTF(
+      MEMPART_GPPRINTF(
           "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
           spid);
       dram_delay_t d;
@@ -382,7 +382,7 @@ void memory_partition_unit::set_done(mem_fetch *mf) {
   if (mf->get_access_type() == L1_WRBK_ACC ||
       mf->get_access_type() == L2_WRBK_ACC) {
     m_arbitration_metadata.return_credit(spid);
-    MEMPART_DPRINTF(
+    MEMPART_GPPRINTF(
         "mem_fetch request %p return from dram to sub partition %d\n", mf,
         spid);
   }
@@ -531,7 +531,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
                               events);
         bool write_sent = was_write_sent(events);
         bool read_sent = was_read_sent(events);
-        MEM_SUBPART_DPRINTF("Probing L2 cache Address=%llx, status=%u\n",
+        MEM_SUBPART_GPPRINTF("Probing L2 cache Address=%llx, status=%u\n",
                             mf->get_addr(), status);
 
         if (status == HIT) {

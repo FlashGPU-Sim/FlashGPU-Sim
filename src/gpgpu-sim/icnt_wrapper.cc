@@ -35,7 +35,7 @@
 icnt_create_p icnt_create;
 icnt_init_p icnt_init;
 icnt_has_buffer_p icnt_has_buffer;
-icnt_push_p icnt_push;
+icnt_push_p icnt_push = nullptr;
 icnt_pop_p icnt_pop;
 icnt_transfer_p icnt_transfer;
 icnt_busy_p icnt_busy;
@@ -47,6 +47,10 @@ icnt_get_flit_size_p icnt_get_flit_size;
 unsigned g_network_mode;
 char* g_network_config_filename;
 
+// Global variables to track interconnect configuration
+unsigned g_icnt_n_shader = 0;
+unsigned g_icnt_n_mem = 0;
+
 struct inct_config g_inct_config;
 LocalInterconnect* g_localicnt_interface;
 
@@ -56,6 +60,8 @@ LocalInterconnect* g_localicnt_interface;
 // TODO: use delegate/boost/c++11<funtion> instead
 
 static void intersim2_create(unsigned int n_shader, unsigned int n_mem) {
+  g_icnt_n_shader = n_shader;
+  g_icnt_n_mem = n_mem;
   g_icnt_interface->CreateInterconnect(n_shader, n_mem);
 }
 
@@ -96,6 +102,8 @@ static unsigned intersim2_get_flit_size() {
 
 static void LocalInterconnect_create(unsigned int n_shader,
                                      unsigned int n_mem) {
+  g_icnt_n_shader = n_shader;
+  g_icnt_n_mem = n_mem;
   g_localicnt_interface->CreateInterconnect(n_shader, n_mem);
 }
 

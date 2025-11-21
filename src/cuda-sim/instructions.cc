@@ -3110,7 +3110,7 @@ void cvt_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     data = result;
   }
 
-  // DPRINTF_INST_EXEC(PTX_INST_EXEC, "cvt_impl: %s -> %s val %llu inst %s\n",
+  // GPPRINTF_INST_EXEC(PTX_INST_EXEC, "cvt_impl: %s -> %s val %llu inst %s\n",
   //                   decode_token(from_type), decode_token(to_type), data.u64,
   //                   pI->to_string().c_str());
 
@@ -3413,7 +3413,7 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
     if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
     thread->set_operand_value(dst, data, type, thread, pI);
 
-    DPRINTF_INST_EXEC(
+    GPPRINTF_INST_EXEC(
         PTX_INST_EXEC, "ld: space %p type %s addr %llx val %llu inst %s\n",
         mem,
         decode_token(type), addr, data.u64, pI->to_string().c_str());
@@ -5834,7 +5834,7 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
     mem->write(addr, size / 8, &data.s64, thread, pI);
 
-    DPRINTF_INST_EXEC(
+    GPPRINTF_INST_EXEC(
         PTX_INST_EXEC, "st: space %p type %s addr %llx data %llu inst %s\n",
         mem, decode_token(type), addr, data.u64, pI->to_string().c_str());
 
@@ -5862,7 +5862,7 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       mem->write(addr + 2 * size / 8, size / 8, &ptx_regs[2].s64, thread, pI);
       mem->write(addr + 3 * size / 8, size / 8, &ptx_regs[3].s64, thread, pI);
 
-      DPRINTF_INST_EXEC(PTX_INST_EXEC,
+      GPPRINTF_INST_EXEC(PTX_INST_EXEC,
                         "st.v4: space %p type %s addr %llx data %llu %llu %llu "
                         "%llu inst %s\n",
                         mem, decode_token(type), addr, ptx_regs[0].u64,
