@@ -67,7 +67,7 @@ class gpgpu_context {
   class symbol_table *gpgpu_ptx_sim_load_ptx_from_filename(
       const char *filename);
   void gpgpu_ptx_info_load_from_filename(const char *filename,
-                                         unsigned sm_version);
+                                         const char *arch_str);
   void gpgpu_ptxinfo_load_from_string(const char *p_for_info,
                                       unsigned source_num,
                                       unsigned sm_version = 20,
