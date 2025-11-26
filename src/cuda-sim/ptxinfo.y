@@ -52,6 +52,8 @@ typedef void * yyscan_t;
 %token BARRIERS
 %token COMPILETIME
 %token BYTES
+%token CUMULATIVE
+%token STACK
 %token LMEM
 %token SMEM
 %token CMEM
@@ -131,6 +133,7 @@ info: 	  USED INT_OPERAND REGS { ptxinfo_regs($2); }
 	| INT_OPERAND BYTES LMEM { ptxinfo_lmem($1,0); }
 	| INT_OPERAND BYTES SMEM { ptxinfo_smem($1,0); }
 	| INT_OPERAND BYTES CMEM { ptxinfo_cmem($1,0); }
+	| INT_OPERAND BYTES CUMULATIVE STACK IDENTIFIER {}
 	| USED INT_OPERAND BARRIERS { ptxinfo_barriers($2); }
 	| INT_OPERAND REGS { ptxinfo_regs($1); }
 	| INT_OPERAND TEXTURES {}
