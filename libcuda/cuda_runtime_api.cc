@@ -3749,20 +3749,35 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
   symbol_table *symtab = NULL;
 
 #if (CUDART_VERSION >= 6000)
-  // loops through all ptx files from smallest sm version to largest
-  std::map<unsigned, std::set<std::string> >::iterator itr_m;
-  for (itr_m = api->version_filename.begin();
-       itr_m != api->version_filename.end(); itr_m++) {
-    // Check if this version has suffix variants
+  // Build selected_files based on forced_max_capability and suffix rules
+  std::vector<std::string> selected_files;
+  unsigned forced_max_capability = context->get_device()
+                                       ->get_gpgpu()
+                                       ->get_config()
+                                       .get_forced_max_capability();
+  if (!api->version_filename.empty()) {
+    // pick selected_version: largest version <= forced_max_capability (or largest available)
+    unsigned selected_version = 0;
+    if (forced_max_capability != 0) {
+      for (auto rit = api->version_filename.rbegin();
+           rit != api->version_filename.rend(); ++rit) {
+        if (rit->first <= forced_max_capability) {
+          selected_version = rit->first;
+          break;
+        }
+      }
+      if (selected_version == 0) selected_version = api->version_filename.rbegin()->first;
+    } else {
+      selected_version = api->version_filename.rbegin()->first;
+    }
+
+    // Determine if there are suffix variants for this selected_version
     bool has_suffix = false;
-    for (std::set<std::string>::iterator check_itr = itr_m->second.begin();
-         check_itr != itr_m->second.end(); check_itr++) {
-      std::string check_name = *check_itr;
+    for (auto &check_name : api->version_filename[selected_version]) {
       size_t sm_pos = check_name.find("sm_");
       if (sm_pos != std::string::npos) {
-        size_t dot_pos = check_name.find(".", sm_pos);
+        size_t dot_pos = check_name.find('.', sm_pos);
         std::string arch_part = check_name.substr(sm_pos + 3, dot_pos - sm_pos - 3);
-        // Check if there's any non-digit character (suffix)
         for (size_t j = 0; j < arch_part.length(); j++) {
           if (!isdigit(arch_part[j])) {
             has_suffix = true;
@@ -3772,16 +3787,13 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
         if (has_suffix) break;
       }
     }
-    
-    std::set<std::string>::iterator itr_s;
-    for (itr_s = itr_m->second.begin(); itr_s != itr_m->second.end(); itr_s++) {
-      std::string ptx_filename = *itr_s;
-      
+
+    for (auto &ptx_filename : api->version_filename[selected_version]) {
       // Skip base version if suffix version exists
       if (has_suffix) {
         size_t sm_pos = ptx_filename.find("sm_");
         if (sm_pos != std::string::npos) {
-          size_t dot_pos = ptx_filename.find(".", sm_pos);
+          size_t dot_pos = ptx_filename.find('.', sm_pos);
           std::string arch_part = ptx_filename.substr(sm_pos + 3, dot_pos - sm_pos - 3);
           bool is_base = true;
           for (size_t j = 0; j < arch_part.length(); j++) {
@@ -3796,10 +3808,14 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
           }
         }
       }
-      
-      printf("GPGPU-Sim PTX: Parsing %s\n", ptx_filename.c_str());
-      symtab = gpgpu_ptx_sim_load_ptx_from_filename(ptx_filename.c_str());
+      selected_files.push_back(ptx_filename);
     }
+  }
+
+  // Parse the selected files (if any)
+  for (auto &ptx_filename : selected_files) {
+    printf("GPGPU-Sim PTX: Parsing %s\n", ptx_filename.c_str());
+    symtab = gpgpu_ptx_sim_load_ptx_from_filename(ptx_filename.c_str());
   }
   api->name_symtab[fname] = symtab;
   context->add_binary(symtab, handle);
@@ -3807,62 +3823,17 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
                            context->get_device()->get_gpgpu());
   api->load_constants(symtab, STATIC_ALLOC_LIMIT,
                       context->get_device()->get_gpgpu());
-  for (itr_m = api->version_filename.begin();
-       itr_m != api->version_filename.end(); itr_m++) {
-    // Check if this version has suffix variants
-    bool has_suffix = false;
-    for (std::set<std::string>::iterator check_itr = itr_m->second.begin();
-         check_itr != itr_m->second.end(); check_itr++) {
-      std::string check_name = *check_itr;
-      size_t sm_pos = check_name.find("sm_");
-      if (sm_pos != std::string::npos) {
-        size_t dot_pos = check_name.find(".", sm_pos);
-        std::string arch_part = check_name.substr(sm_pos + 3, dot_pos - sm_pos - 3);
-        // Check if there's any non-digit character (suffix)
-        for (size_t j = 0; j < arch_part.length(); j++) {
-          if (!isdigit(arch_part[j])) {
-            has_suffix = true;
-            break;
-          }
-        }
-        if (has_suffix) break;
-      }
+  // Load PTXInfo only for the selected files (if any)
+  for (auto &ptx_filename : selected_files) {
+    // Extract full architecture string (e.g., "sm_120a" from "kernel.2.sm_120a.ptx")
+    std::string arch_str = "";
+    size_t sm_pos = ptx_filename.find("sm_");
+    if (sm_pos != std::string::npos) {
+      size_t dot_pos = ptx_filename.find('.', sm_pos);
+      arch_str = ptx_filename.substr(sm_pos, dot_pos - sm_pos);
     }
-    
-    std::set<std::string>::iterator itr_s;
-    for (itr_s = itr_m->second.begin(); itr_s != itr_m->second.end(); itr_s++) {
-      std::string ptx_filename = *itr_s;
-      
-      // Extract full architecture string (e.g., "sm_120a" from "kernel.2.sm_120a.ptx")
-      std::string arch_str = "";
-      size_t sm_pos = ptx_filename.find("sm_");
-      if (sm_pos != std::string::npos) {
-        size_t dot_pos = ptx_filename.find(".", sm_pos);
-        arch_str = ptx_filename.substr(sm_pos, dot_pos - sm_pos);
-      }
-      
-      // Skip base version if suffix version exists
-      if (has_suffix) {
-        if (sm_pos != std::string::npos) {
-          size_t dot_pos = ptx_filename.find(".", sm_pos);
-          std::string arch_part = ptx_filename.substr(sm_pos + 3, dot_pos - sm_pos - 3);
-          bool is_base = true;
-          for (size_t j = 0; j < arch_part.length(); j++) {
-            if (!isdigit(arch_part[j])) {
-              is_base = false;
-              break;
-            }
-          }
-          if (is_base) {
-            printf("GPGPU-Sim PTX: Skipping PTXInfo from %s (suffix version available)\n", ptx_filename.c_str());
-            continue;
-          }
-        }
-      }
-      
-      printf("GPGPU-Sim PTX: Loading PTXInfo from %s\n", ptx_filename.c_str());
-      gpgpu_ptx_info_load_from_filename(ptx_filename.c_str(), arch_str.c_str());
-    }
+    printf("GPGPU-Sim PTX: Loading PTXInfo from %s\n", ptx_filename.c_str());
+    gpgpu_ptx_info_load_from_filename(ptx_filename.c_str(), arch_str.c_str());
   }
   return;
 #endif
