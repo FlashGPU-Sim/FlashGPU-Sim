@@ -1622,6 +1622,31 @@ void tma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   handle_tma_inst(pI, thread);
 }
 
+void tensormap_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  // tensormap instruction - used for TMA (Tensor Memory Access)
+  // Currently treated as NOP since we don't simulate actual tensor map operations
+}
+
+void fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  // fence instruction - memory barrier
+  // Currently treated as NOP since memory ordering is not simulated
+}
+
+void elect_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  // elect.sync instruction - elect a leader thread
+  // Currently treated as NOP
+}
+
+void ldmatrix_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  // ldmatrix instruction - load matrix from shared memory
+  // Currently treated as NOP
+}
+
+void stmatrix_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  // stmatrix instruction - store matrix to shared memory
+  // Currently treated as NOP
+}
+
 void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   inst_not_implemented(pI);
 }

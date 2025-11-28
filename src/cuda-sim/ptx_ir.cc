@@ -1488,6 +1488,36 @@ ptx_instruction::ptx_instruction(
       case DIM_3D_OPTION: 
       case DIM_4D_OPTION: 
       case DIM_5D_OPTION: 
+      case REPLACE_OPTION:
+      case TILE_OPTION:
+      case GLOBAL_ADDRESS_OPTION:
+      case RANK_OPTION:
+      case BOX_DIM_OPTION:
+      case GLOBAL_DIM_OPTION:
+      case GLOBAL_STRIDE_OPTION:
+      case ELEMENT_STRIDE_OPTION:
+      case ELEMTYPE_OPTION:
+      case INTERLEAVE_LAYOUT_OPTION:
+      case SWIZZLE_MODE_OPTION:
+      case FILL_MODE_OPTION:
+      case CP_FENCEPROXY_OPTION:
+      case RELEASE_OPTION:
+      case ACQUIRE_OPTION:
+      case GPU_OPTION:
+      case ALIGNED_OPTION:
+      case B1024_TYPE:
+      case GENERIC_OPTION:
+      case PROXY_OPTION:
+      case ASYNC_OPTION:
+      case TENSORMAP_OPTION:
+      case READ_OPTION:
+      case BULK_GROUP_OPTION:
+      case CLUSTER_OPTION:
+      case INVAL_OPTION:
+      case M8N8_OPTION:
+      case X1_OPTION:
+      case X2_OPTION:
+      case X4_OPTION:
         break;
     }
   }

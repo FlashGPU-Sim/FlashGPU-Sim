@@ -76,6 +76,7 @@ class ptx_recognizer;
 %token  REG_DIRECTIVE
 %token  REQNTID_DIRECTIVE
 %token  SECTION_DIRECTIVE
+%token  DEBUG_DIRECTIVE
 %token  SHARED_DIRECTIVE
 %token  SREG_DIRECTIVE
 %token	SSTARR_DIRECTIVE
@@ -237,7 +238,36 @@ class ptx_recognizer;
 %token	DIM_3D_OPTION;
 %token	DIM_4D_OPTION;
 %token	DIM_5D_OPTION;
-
+%token	REPLACE_OPTION;
+%token	TILE_OPTION;
+%token	GLOBAL_ADDRESS_OPTION;
+%token	RANK_OPTION;
+%token	BOX_DIM_OPTION;
+%token	GLOBAL_DIM_OPTION;
+%token	GLOBAL_STRIDE_OPTION;
+%token	ELEMENT_STRIDE_OPTION;
+%token	ELEMTYPE_OPTION;
+%token	INTERLEAVE_LAYOUT_OPTION;
+%token	SWIZZLE_MODE_OPTION;
+%token	FILL_MODE_OPTION;
+%token	CP_FENCEPROXY_OPTION;
+%token	RELEASE_OPTION;
+%token	ACQUIRE_OPTION;
+%token	GPU_OPTION;
+%token	ALIGNED_OPTION;
+%token	B1024_TYPE;
+%token	GENERIC_OPTION;
+%token	PROXY_OPTION;
+%token	ASYNC_OPTION;
+%token	TENSORMAP_OPTION;
+%token	READ_OPTION;
+%token	BULK_GROUP_OPTION;
+%token	CLUSTER_OPTION;
+%token	INVAL_OPTION;
+%token	M8N8_OPTION;
+%token	X1_OPTION;
+%token	X2_OPTION;
+%token	X4_OPTION;
 %type <int_value> function_decl_header
 %type <ptr_value> function_decl
 
@@ -335,6 +365,7 @@ directive_statement: variable_declaration SEMI_COLON
 	| FILE_DIRECTIVE INT_OPERAND STRING COMMA INT_OPERAND COMMA INT_OPERAND { recognizer->add_file($2,$3); }
 	| LOC_DIRECTIVE INT_OPERAND INT_OPERAND INT_OPERAND 
 	| PRAGMA_DIRECTIVE STRING SEMI_COLON { recognizer->add_pragma($2); }
+	| SECTION_DIRECTIVE DEBUG_DIRECTIVE { /* ignore debug sections */ }
 	| function_decl SEMI_COLON {/*Do nothing*/}
 	;
 
@@ -548,6 +579,36 @@ option: type_spec
 	| CLAMP_OPTION { recognizer->add_option(CLAMP_OPTION); }
 	| LEFT_OPTION { recognizer->add_option(LEFT_OPTION); }
 	| RIGHT_OPTION { recognizer->add_option(RIGHT_OPTION); }
+	| REPLACE_OPTION { recognizer->add_option(REPLACE_OPTION); }
+	| TILE_OPTION { recognizer->add_option(TILE_OPTION); }
+	| GLOBAL_ADDRESS_OPTION { recognizer->add_option(GLOBAL_ADDRESS_OPTION); }
+	| RANK_OPTION { recognizer->add_option(RANK_OPTION); }
+	| BOX_DIM_OPTION { recognizer->add_option(BOX_DIM_OPTION); }
+	| GLOBAL_DIM_OPTION { recognizer->add_option(GLOBAL_DIM_OPTION); }
+	| GLOBAL_STRIDE_OPTION { recognizer->add_option(GLOBAL_STRIDE_OPTION); }
+	| ELEMENT_STRIDE_OPTION { recognizer->add_option(ELEMENT_STRIDE_OPTION); }
+	| ELEMTYPE_OPTION { recognizer->add_option(ELEMTYPE_OPTION); }
+	| INTERLEAVE_LAYOUT_OPTION { recognizer->add_option(INTERLEAVE_LAYOUT_OPTION); }
+	| SWIZZLE_MODE_OPTION { recognizer->add_option(SWIZZLE_MODE_OPTION); }
+	| FILL_MODE_OPTION { recognizer->add_option(FILL_MODE_OPTION); }
+	| CP_FENCEPROXY_OPTION { recognizer->add_option(CP_FENCEPROXY_OPTION); }
+	| RELEASE_OPTION { recognizer->add_option(RELEASE_OPTION); }
+	| ACQUIRE_OPTION { recognizer->add_option(ACQUIRE_OPTION); }
+	| GPU_OPTION { recognizer->add_option(GPU_OPTION); }
+	| ALIGNED_OPTION { recognizer->add_option(ALIGNED_OPTION); }
+	| B1024_TYPE { recognizer->add_option(B1024_TYPE); }
+	| GENERIC_OPTION { recognizer->add_option(GENERIC_OPTION); }
+	| PROXY_OPTION { recognizer->add_option(PROXY_OPTION); }
+	| ASYNC_OPTION { recognizer->add_option(ASYNC_OPTION); }
+	| TENSORMAP_OPTION { recognizer->add_option(TENSORMAP_OPTION); }
+	| READ_OPTION { recognizer->add_option(READ_OPTION); }
+	| BULK_GROUP_OPTION { recognizer->add_option(BULK_GROUP_OPTION); }
+	| CLUSTER_OPTION { recognizer->add_option(CLUSTER_OPTION); }
+	| INVAL_OPTION { recognizer->add_option(INVAL_OPTION); }
+	| M8N8_OPTION { recognizer->add_option(M8N8_OPTION); }
+	| X1_OPTION { recognizer->add_option(X1_OPTION); }
+	| X2_OPTION { recognizer->add_option(X2_OPTION); }
+	| X4_OPTION { recognizer->add_option(X4_OPTION); }
 	;
 
 atomic_operation_spec: ATOMIC_AND { recognizer->add_option(ATOMIC_AND); }

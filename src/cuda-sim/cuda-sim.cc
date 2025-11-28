@@ -692,7 +692,8 @@ void ptx_instruction::set_fp_or_int_archop() {
   if ((m_opcode == MEMBAR_OP) || (m_opcode == SSY_OP) || (m_opcode == BRA_OP) ||
       (m_opcode == BAR_OP) || (m_opcode == RET_OP) || (m_opcode == RETP_OP) ||
       (m_opcode == NOP_OP) || (m_opcode == EXIT_OP) || (m_opcode == CALLP_OP) ||
-      (m_opcode == CALL_OP)) {
+      (m_opcode == CALL_OP) || (m_opcode == TENSORMAP_OP) || (m_opcode == FENCE_OP) ||
+      (m_opcode == ELECT_OP) || (m_opcode == LDMATRIX_OP) || (m_opcode == STMATRIX_OP)) {
     // do nothing
   } else if ((m_opcode == CVT_OP || m_opcode == SET_OP ||
               m_opcode == SLCT_OP)) {
@@ -716,7 +717,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
   if ((m_opcode != MEMBAR_OP) && (m_opcode != SSY_OP) && (m_opcode != BRA_OP) &&
       (m_opcode != BAR_OP) && (m_opcode != EXIT_OP) && (m_opcode != NOP_OP) &&
       (m_opcode != RETP_OP) && (m_opcode != RET_OP) && (m_opcode != CALLP_OP) &&
-      (m_opcode != CALL_OP)) {
+      (m_opcode != CALL_OP) && (m_opcode != TENSORMAP_OP) && (m_opcode != FENCE_OP) &&
+      (m_opcode != ELECT_OP) && (m_opcode != LDMATRIX_OP) && (m_opcode != STMATRIX_OP)) {
     if (get_type() == F64_TYPE || get_type() == FF64_TYPE) {
       switch (get_opcode()) {
         case MUL_OP:
@@ -957,6 +959,12 @@ void ptx_instruction::set_opcode_and_latency() {
       break;
     case TMA_OP:
       op = TENSOR_MEMORY_ACCELERATOR_OP;
+      break;
+    case TENSORMAP_OP:
+    case FENCE_OP:
+    case ELECT_OP:
+    case LDMATRIX_OP:
+    case STMATRIX_OP:
       break;
     case SST_OP:
       op = BARRIER_OP;
