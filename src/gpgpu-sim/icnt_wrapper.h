@@ -30,15 +30,16 @@
 #define ICNT_WRAPPER_H
 
 #include <stdio.h>
+#include <functional>
 
 // functional interface to the interconnect
 
 typedef void (*icnt_create_p)(unsigned n_shader, unsigned n_mem);
 typedef void (*icnt_init_p)();
 typedef bool (*icnt_has_buffer_p)(unsigned input, unsigned int size);
-typedef void (*icnt_push_p)(unsigned input, unsigned output, void* data,
-                            unsigned int size);
-typedef void* (*icnt_pop_p)(unsigned output);
+typedef std::function<void(unsigned input, unsigned output, void* data,
+                            unsigned int size)> icnt_push_p;
+typedef std::function<void*(unsigned output)> icnt_pop_p;
 typedef void (*icnt_transfer_p)();
 typedef bool (*icnt_busy_p)();
 typedef void (*icnt_drain_p)();
@@ -60,6 +61,10 @@ extern icnt_display_overall_stats_p icnt_display_overall_stats;
 extern icnt_display_state_p icnt_display_state;
 extern icnt_get_flit_size_p icnt_get_flit_size;
 extern unsigned g_network_mode;
+
+// Global variables to track interconnect configuration
+extern unsigned g_icnt_n_shader;
+extern unsigned g_icnt_n_mem;
 
 enum network_mode { INTERSIM = 1, LOCAL_XBAR = 2, N_NETWORK_MODE };
 

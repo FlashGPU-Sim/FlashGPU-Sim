@@ -1491,7 +1491,7 @@ void scheduler_unit::order_by_priority(
 }
 
 void scheduler_unit::cycle() {
-  SCHED_DPRINTF("scheduler_unit::cycle()\n");
+  SCHED_GPPRINTF("scheduler_unit::cycle()\n");
   bool valid_inst =
       false;  // there was one warp with a valid instruction to issue (didn't
               // require flush due to control hazard)
@@ -1507,7 +1507,7 @@ void scheduler_unit::cycle() {
     if ((*iter) == NULL || (*iter)->done_exit()) {
       continue;
     }
-    SCHED_DPRINTF("Testing (warp_id %u, dynamic_warp_id %u)\n",
+    SCHED_GPPRINTF("Testing (warp_id %u, dynamic_warp_id %u)\n",
                   (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
     unsigned warp_id = (*iter)->get_warp_id();
     unsigned checked = 0;
@@ -1522,12 +1522,12 @@ void scheduler_unit::cycle() {
                                                  // Pascal)
 
     if (warp(warp_id).ibuffer_empty())
-      SCHED_DPRINTF(
+      SCHED_GPPRINTF(
           "Warp (warp_id %u, dynamic_warp_id %u) fails as ibuffer_empty\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
 
     if (warp(warp_id).waiting())
-      SCHED_DPRINTF(
+      SCHED_GPPRINTF(
           "Warp (warp_id %u, dynamic_warp_id %u) fails as waiting for "
           "barrier\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
@@ -1547,7 +1547,7 @@ void scheduler_unit::cycle() {
       bool warp_inst_issued = false;
       unsigned pc, rpc;
       m_shader->get_pdom_stack_top_info(warp_id, pI, &pc, &rpc);
-      SCHED_DPRINTF(
+      SCHED_GPPRINTF(
           "Warp (warp_id %u, dynamic_warp_id %u) has valid instruction (%s)\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(),
           m_shader->m_config->gpgpu_ctx->func_sim->ptx_get_insn_str(pc)
@@ -1555,7 +1555,7 @@ void scheduler_unit::cycle() {
       if (pI) {
         assert(valid);
         if (pc != pI->pc) {
-          SCHED_DPRINTF("Warp (warp_id %u, dynamic_warp_id %u) control hazard "
+          SCHED_GPPRINTF("Warp (warp_id %u, dynamic_warp_id %u) control hazard "
                         "inst flush current pc %llx != next_pc %llx\n",
                         (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(),
                         pI->pc, pc);
@@ -1565,7 +1565,7 @@ void scheduler_unit::cycle() {
         } else {
           valid_inst = true;
           if (!m_scoreboard->checkCollision(warp_id, pI)) {
-            SCHED_DPRINTF(
+            SCHED_GPPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
                 (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
             ready_inst = true;
@@ -1741,14 +1741,14 @@ void scheduler_unit::cycle() {
 
             }  // end of else
           } else {
-            SCHED_DPRINTF(
+            SCHED_GPPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) fails scoreboard\n",
                 (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
           }
         }
       } else if (valid) {
         // this case can happen after a return instruction in diverged warp
-        SCHED_DPRINTF(
+        SCHED_GPPRINTF(
             "Warp (warp_id %u, dynamic_warp_id %u) return from diverged warp "
             "flush\n",
             (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
@@ -1756,7 +1756,7 @@ void scheduler_unit::cycle() {
         warp(warp_id).ibuffer_flush();
       }
       if (warp_inst_issued) {
-        SCHED_DPRINTF(
+        SCHED_GPPRINTF(
             "Warp (warp_id %u, dynamic_warp_id %u) issued %u instructions\n",
             (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(), issued);
         do_on_warp_issued(warp_id, issued, iter);
@@ -1880,7 +1880,7 @@ void two_level_active_scheduler::order_warps() {
     if (waiting) {
       m_pending_warps.push_back(*iter);
       iter = m_next_cycle_prioritized_warps.erase(iter);
-      SCHED_DPRINTF("DEMOTED warp_id=%d, dynamic_warp_id=%d\n",
+      SCHED_GPPRINTF("DEMOTED warp_id=%d, dynamic_warp_id=%d\n",
                     (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
       ++num_demoted;
     } else {
@@ -1895,7 +1895,7 @@ void two_level_active_scheduler::order_warps() {
     while (m_next_cycle_prioritized_warps.size() < m_max_active_warps) {
       m_next_cycle_prioritized_warps.push_back(m_pending_warps.front());
       m_pending_warps.pop_front();
-      SCHED_DPRINTF(
+      SCHED_GPPRINTF(
           "PROMOTED warp_id=%d, dynamic_warp_id=%d\n",
           (m_next_cycle_prioritized_warps.back())->get_warp_id(),
           (m_next_cycle_prioritized_warps.back())->get_dynamic_warp_id());
@@ -3226,14 +3226,14 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
     m_barriers.deallocate_barrier(cta_num);
     shader_CTA_count_unlog(m_sid, 1);
 
-    SHADER_DPRINTF(
+    SHADER_GPPRINTF(
         LIVENESS,
         "GPGPU-Sim uArch: Finished CTA #%u (%lld,%lld), %u CTAs running\n",
         cta_num, m_gpu->gpu_sim_cycle, m_gpu->gpu_tot_sim_cycle,
         m_n_active_cta);
 
     if (m_n_active_cta == 0) {
-      SHADER_DPRINTF(
+      SHADER_GPPRINTF(
           LIVENESS,
           "GPGPU-Sim uArch: Empty (last released kernel %u \'%s\').\n",
           kernel->get_uid(), kernel->name().c_str());
@@ -3251,7 +3251,7 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
     kernel->dec_running();
     if (!m_gpu->kernel_more_cta_left(kernel)) {
       if (!kernel->running()) {
-        SHADER_DPRINTF(LIVENESS,
+        SHADER_GPPRINTF(LIVENESS,
                        "GPGPU-Sim uArch: GPU detected kernel %u \'%s\' "
                        "finished on shader %u.\n",
                        kernel->get_uid(), kernel->name().c_str(), m_sid);

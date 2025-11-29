@@ -66,14 +66,14 @@ public:
         };
         m_transactions.push_back(tx);
 
-        DPRINTF_INST_EXEC(TMA,
+        GPPRINTF_INST_EXEC(TMA,
                           "Start transaction dst=0x%llx, src=0x%llx, "
                           "size_in_bytes=%u, mbar=0x%x\n",
                           tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
                           tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr);
 
         // ! For now we directly arrive!
-        DPRINTF_INST_EXEC(TMA,
+        GPPRINTF_INST_EXEC(TMA,
                           "Complete transaction dst=0x%llx, src=0x%llx, "
                           "size_in_bytes=%u, mbar=0x%x \n",
                           tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
@@ -109,7 +109,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
   ptx_instruction *pI = const_cast<ptx_instruction *>(pIin);
 
-  DPRINTF_INST_EXEC(TMA, "inst %s\n", pI->to_string().c_str());
+  GPPRINTF_INST_EXEC(TMA, "inst %s\n", pI->to_string().c_str());
 
   bool is_commit_group = false;
   bool is_wait_group = false;
@@ -136,7 +136,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
     const auto &options = pI->get_options();
     if (options.size() != 3) {
       for (auto op : options) {
-        DPRINTF_INST_EXEC(TMA, "option: %d\n", op);
+        GPPRINTF_INST_EXEC(TMA, "option: %d\n", op);
       }
     }
     assert(options.size() >= 3 &&
@@ -162,13 +162,13 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
       // Check alignment to 16 bytes.
       if (dst_addr % 16 != 0 || src_addr % 16 != 0 || size_in_bytes % 16 != 0) {
-        DPRINTF_INST_EXEC(
+        GPPRINTF_INST_EXEC(
             TMA, "unaligned TMA copy dst=0x%x, src=0x%llx, size_in_bytes=%u\n",
             dst_addr, src_addr, size_in_bytes);
         abort();
       }
 
-      DPRINTF_INST_EXEC(TMA,
+      GPPRINTF_INST_EXEC(TMA,
                         "TMA shared::cta <- global dst=0x%x, src=0x%llx, "
                         "size_in_bytes=%u, mbar=0x%x\n",
                         dst_addr, src_addr, size_in_bytes, mbar_addr);

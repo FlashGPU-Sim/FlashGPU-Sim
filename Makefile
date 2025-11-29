@@ -31,12 +31,33 @@ ifeq ($(FLASH), 1)
 EXTRA_FLAGS += -DFLASH_GPGPU_SIM -DFLASH_GPGPU_SIM_OMP
 endif
 
+# GEM5 Integration support
+ifeq ($(FLASH_GEM_FORGE), 1)
+ifndef GEM_FORGE_TOP
+$(error FLASH_GEM_FORGE is enabled but GEM_FORGE_TOP is not set)
+endif
+EXTRA_FLAGS += -DFLASH_GEM_FORGE=1
+EXTRA_FLAGS += -I$(GEM_FORGE_TOP)/gem5/src -I$(GEM_FORGE_TOP)/gem5/build/X86
+EXTRA_FLAGS += -I$(GEM_FORGE_TOP)/gem5/ext/gpgpusim
+EXTRA_FLAGS += -I$(GEM_FORGE_TOP)/gem5/ext
+GEM5_LDFLAGS = -L$(GEM_FORGE_TOP)/gem5/ext/gpgpusim -lgem5_to_gpgpusim -Wl,-rpath,$(GEM_FORGE_TOP)/gem5/ext/gpgpusim
+else
+GEM5_LDFLAGS =
+endif
+
 # # Print the value of EXTRA_FLAGS
 # print-flags:
 # 	@echo 'EXTRA_FLAGS=$(EXTRA_FLAGS)'
 
 # comment out next line to disable OpenGL support
 # export OPENGL_SUPPORT=1
+
+# OpenGL library flag (only if OPENGL_SUPPORT is enabled)
+ifeq ($(OPENGL_SUPPORT),1)
+OPENGL_LIB = -lGL
+else
+OPENGL_LIB =
+endif
 
 # Specify INTERSIM folder, the folder will be located at $GPGPUSIM_ROOT/src/$INTERSIM
 INTERSIM ?= intersim2
@@ -158,11 +179,12 @@ $(SIM_LIB_DIR)/libcudart.so: makedirs $(LIBS) cudalib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/*.o \
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
-			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
-			$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
-			$(SIM_OBJ_FILES_DIR)/*.o -lm -lz -lGL -pthread -fopenmp \
-			$(MCPAT) \
-			-o $(SIM_LIB_DIR)/libcudart.so
+		$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
+		$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/gem5/*.o \
+		$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
+		$(SIM_OBJ_FILES_DIR)/*.o -lm -lz $(OPENGL_LIB) -pthread -fopenmp \
+		$(MCPAT) $(GEM5_LDFLAGS) \
+		-o $(SIM_LIB_DIR)/libcudart.so
 	if [ ! -f $(SIM_LIB_DIR)/libcudart.so.2 ]; then ln -s libcudart.so $(SIM_LIB_DIR)/libcudart.so.2; fi
 	if [ ! -f $(SIM_LIB_DIR)/libcudart.so.3 ]; then ln -s libcudart.so $(SIM_LIB_DIR)/libcudart.so.3; fi
 	if [ ! -f $(SIM_LIB_DIR)/libcudart.so.4 ]; then ln -s libcudart.so $(SIM_LIB_DIR)/libcudart.so.4; fi
@@ -190,9 +212,10 @@ $(SIM_LIB_DIR)/libcudart.dylib: makedirs $(LIBS) cudalib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/gem5/*.o \
 			$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o  \
 			$(SIM_OBJ_FILES_DIR)/*.o -lm -lz -pthread \
-			$(MCPAT) \
+			$(MCPAT) $(GEM5_LDFLAGS) \
 			-o $(SIM_LIB_DIR)/libcudart.dylib
 
 $(SIM_LIB_DIR)/libOpenCL.so: makedirs $(LIBS) opencllib
@@ -201,11 +224,12 @@ $(SIM_LIB_DIR)/libOpenCL.so: makedirs $(LIBS) opencllib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/*.o \
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
-			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
-			$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
-			$(SIM_OBJ_FILES_DIR)/*.o -lm -lz -lGL -pthread \
-			$(MCPAT) \
-			-o $(SIM_LIB_DIR)/libOpenCL.so 
+		$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
+		$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/gem5/*.o \
+		$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
+		$(SIM_OBJ_FILES_DIR)/*.o -lm -lz $(OPENGL_LIB) -pthread \
+		$(MCPAT) \
+		-o $(SIM_LIB_DIR)/libOpenCL.so
 	if [ ! -f $(SIM_LIB_DIR)/libOpenCL.so.1 ]; then ln -s libOpenCL.so $(SIM_LIB_DIR)/libOpenCL.so.1; fi
 	if [ ! -f $(SIM_LIB_DIR)/libOpenCL.so.1.1 ]; then ln -s libOpenCL.so $(SIM_LIB_DIR)/libOpenCL.so.1.1; fi
 
@@ -287,3 +311,4 @@ cleangpgpusim: cleandocs
 		./cuobjdump_to_ptxplus/sass_lexer.cc ./cuobjdump_to_ptxplus/sass_parser.cc ./cuobjdump_to_ptxplus/sass_parser.hh \
 		./cuobjdump_to_ptxplus/ptx.tab.cc ./cuobjdump_to_ptxplus/*.output
 
+# DO NOT DELETE

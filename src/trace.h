@@ -58,26 +58,26 @@ void init();
 #if TRACING_ON
 
 #define SIM_PRINT_STR "GPGPU-Sim Cycle %llu: %s - "
-#define DTRACE(x) ((Trace::trace_streams_enabled[Trace::x]) && Trace::enabled)
-#define DPRINTF(x, ...)                                                      \
+#define GPTRACE(x) ((Trace::trace_streams_enabled[Trace::x]) && Trace::enabled)
+#define GPPRINTF(x, ...)                                                      \
   do {                                                                       \
-    if (DTRACE(x)) {                                                         \
+    if (GPTRACE(x)) {                                                         \
       printf(SIM_PRINT_STR , m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, \
              Trace::trace_streams_str[Trace::x]);                            \
       printf(__VA_ARGS__);                                                   \
     }                                                                        \
   } while (0)
 
-#define DPRINTF_GPU(m_gpu, x, fmt, ...)                                        \
+#define GPPRINTF_GPU(m_gpu, x, fmt, ...)                                        \
   do {                                                                         \
-    if (DTRACE(x)) {                                                           \
+    if (GPTRACE(x)) {                                                           \
       printf(SIM_PRINT_STR fmt,                                                \
              (m_gpu)->gpu_sim_cycle + (m_gpu)->gpu_tot_sim_cycle,              \
              Trace::trace_streams_str[Trace::x], __VA_ARGS__);                 \
     }                                                                          \
   } while (0)
 
-#define DPRINTF_THREAD(x, thread, fmt, ...)                                    \
+#define GPPRINTF_THREAD(x, thread, fmt, ...)                                    \
   do {                                                                         \
     auto m_gpu = thread->get_gpu();                                            \
     auto flat_ctaid = thread->get_flat_ctaid();                                \
@@ -86,7 +86,7 @@ void init();
     auto warpid = flat_tid / warp_size;                                        \
     auto laneid = flat_tid % warp_size;                                        \
                                                                                \
-    if (DTRACE(x)) {                                                           \
+    if (GPTRACE(x)) {                                                           \
       printf(SIM_PRINT_STR "[%3d,%3d,%3d] " fmt,                               \
              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,                  \
              Trace::trace_streams_str[Trace::x], flat_ctaid, warpid, laneid,   \
@@ -94,17 +94,17 @@ void init();
     }                                                                          \
   } while (0)
 
-#define DPRINTF_NoGPU(x, ...)                                                  \
+#define GPPRINTF_NoGPU(x, ...)                                                  \
   do {                                                                         \
-    if (DTRACE(x)) {                                                           \
+    if (GPTRACE(x)) {                                                           \
       printf(SIM_PRINT_STR, -1ll, Trace::trace_streams_str[Trace::x]);         \
       printf(__VA_ARGS__);                                                     \
     }                                                                          \
   } while (0)
 
-#define DPRINTFG(x, ...)                                       \
+#define GPPRINTFG(x, ...)                                       \
   do {                                                         \
-    if (DTRACE(x)) {                                           \
+    if (GPTRACE(x)) {                                           \
       printf(SIM_PRINT_STR, gpu_sim_cycle + gpu_tot_sim_cycle, \
              Trace::trace_streams_str[Trace::x]);              \
       printf(__VA_ARGS__);                                     \
@@ -113,26 +113,26 @@ void init();
 
 #else
 
-#define DTRACE(x) (false)
-#define DPRINTF(x, ...) \
+#define GPTRACE(x) (false)
+#define GPPRINTF(x, ...) \
   do {                  \
   } while (0)
-#define DPRINTF_GPU(m_gpu, x, fmt, ...)                                        \
+#define GPPRINTF_GPU(m_gpu, x, fmt, ...)                                        \
   do {                                                                         \
   } while (0)
-#define DPRINTF_THREAD(m_gpu, x, fmt, ...)                                     \
+#define GPPRINTF_THREAD(m_gpu, x, fmt, ...)                                     \
   do {                                                                         \
   } while (0)
-#define DPRINTF_NoGPU(x, ...) \
+#define GPPRINTF_NoGPU(x, ...) \
   do {                  \
   } while (0)
-#define DPRINTFG(x, ...) \
+#define GPPRINTFG(x, ...) \
   do {                   \
   } while (0)
 
 #endif
 
-#define DPRINTF_INST_EXEC(x, fmt, ...)                                         \
-  DPRINTF_THREAD(x, thread, fmt, __VA_ARGS__)
+#define GPPRINTF_INST_EXEC(x, fmt, ...)                                         \
+  GPPRINTF_THREAD(x, thread, fmt, __VA_ARGS__)
 
 #endif

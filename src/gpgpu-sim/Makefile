@@ -71,7 +71,7 @@ OEXT = o
 
 OUTPUT_DIR=$(SIM_OBJ_FILES_DIR)/gpgpu-sim
 
-SRCS = $(shell ls *.cc) $(shell ls flash/*.cc)
+SRCS = $(shell ls *.cc) $(shell ls flash/*.cc) $(shell ls flash/gem5/*.cc)
 
 EXCLUDES = 
 
@@ -90,6 +90,9 @@ libgpu_uarch_sim.a:$(OBJS)
 $(OUTPUT_DIR)/flash:
 	mkdir -p $(OUTPUT_DIR)/flash
 
+$(OUTPUT_DIR)/flash/gem5:
+	mkdir -p $(OUTPUT_DIR)/flash/gem5
+
 $(OUTPUT_DIR)/Makefile.makedepend: depend
 
 depend:
@@ -102,6 +105,10 @@ $(OUTPUT_DIR)/%.$(OEXT): %.cc
 
 # Specific rule for flash subdirectory
 $(OUTPUT_DIR)/flash/%.$(OEXT): flash/%.cc | $(OUTPUT_DIR)/flash
+	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
+
+# Specific rule for flash/gem5 subdirectory
+$(OUTPUT_DIR)/flash/gem5/%.$(OEXT): flash/gem5/%.cc | $(OUTPUT_DIR)/flash/gem5
 	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
 
 clean:
