@@ -316,15 +316,23 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
     }
 
   } else if (is_tensor) {
-    // Handle TMA tensor instruction.
-    assert(false && "TMA instructions are not implemented yet");
+    // Handle TMA tensor instruction (cp.async.bulk.tensor.Nd).
+    // TODO: Implement TMA tensor copy
+    DPRINTF_INST_EXEC(TMA, "[STUB] cp.async.bulk.tensor instruction not implemented%s\n", "");
+
   } else if (is_commit_group) {
-    // Handle TMA commit group instruction.
-    assert(false && "TMA instructions are not implemented yet");
+    // Handle TMA commit group instruction (cp.async.bulk.commit_group).
+    // TODO: Implement commit group - for now treat as NOP
+    DPRINTF_INST_EXEC(TMA, "[STUB] cp.async.bulk.commit_group not implemented (treated as NOP)%s\n", "");
+
   } else if (is_wait_group) {
-    // Handle TMA wait group instruction.
-    assert(false && "TMA instructions are not implemented yet");
+    // Handle TMA wait group instruction (cp.async.bulk.wait_group).
+    // TODO: Implement wait group - for now treat as NOP (assume all transfers complete immediately)
+    DPRINTF_INST_EXEC(TMA, "[STUB] cp.async.bulk.wait_group not implemented (treated as NOP)%s\n", "");
+
   } else {
+    DPRINTF_INST_EXEC(TMA, "Unrecognized TMA instruction%s\n", "");
+    pI->print_insn();
     assert(false && "Unrecognized TMA instruction");
   }
 }

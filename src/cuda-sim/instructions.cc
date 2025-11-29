@@ -51,8 +51,10 @@ class ptx_recognizer;
 #include "../abstract_hardware_model.h"
 #include "../gpgpu-sim/gpu-sim.h"
 #include "../gpgpu-sim/shader.h"
+#include "../gpgpu-sim/flash/elect.h"
 #include "../gpgpu-sim/flash/mbarrier.h"
 #include "../gpgpu-sim/flash/tma.h"
+#include "../trace.h"
 #include "cuda-math.h"
 #include "cuda_device_printf.h"
 #include "ptx.tab.h"
@@ -1625,26 +1627,29 @@ void tma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 void tensormap_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // tensormap instruction - used for TMA (Tensor Memory Access)
   // Currently treated as NOP since we don't simulate actual tensor map operations
+  DPRINTF_INST_EXEC(WIP, "[STUB] tensormap instruction not implemented%s\n", "");
 }
 
 void fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // fence instruction - memory barrier
   // Currently treated as NOP since memory ordering is not simulated
+  DPRINTF_INST_EXEC(WIP, "[STUB] fence instruction not implemented%s\n", "");
 }
 
 void elect_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  // elect.sync instruction - elect a leader thread
-  // Currently treated as NOP
+  handle_elect_inst(pI, thread);
 }
 
 void ldmatrix_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // ldmatrix instruction - load matrix from shared memory
   // Currently treated as NOP
+  DPRINTF_INST_EXEC(WIP, "[STUB] ldmatrix instruction not implemented%s\n", "");
 }
 
 void stmatrix_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // stmatrix instruction - store matrix to shared memory
   // Currently treated as NOP
+  DPRINTF_INST_EXEC(WIP, "[STUB] stmatrix instruction not implemented%s\n", "");
 }
 
 void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
