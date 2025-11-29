@@ -1304,9 +1304,14 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
                                     const_cast<warp_inst_t *>(next_inst));
   } else if (next_inst->op == MBARRIER_OP) {
-    m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
-    m_barriers.warp_reaches_mbarrier(m_warp[warp_id]->get_cta_id(), warp_id,
-                                     const_cast<warp_inst_t *>(next_inst));
+    // Skip mbarrier processing if no threads are active (e.g., all predicated out)
+    // Otherwise, bar_id/bar_count would contain garbage values since
+    // mbarrier_impl was never called to set them.
+    if (next_inst->active_count() > 0) {
+      m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
+      m_barriers.warp_reaches_mbarrier(m_warp[warp_id]->get_cta_id(), warp_id,
+                                       const_cast<warp_inst_t *>(next_inst));
+    }
   } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
     m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id,
                              const_cast<warp_inst_t *>(next_inst));

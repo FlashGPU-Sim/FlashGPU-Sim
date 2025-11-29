@@ -185,10 +185,24 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     return reg.u32;
   };
 
+  // Helper to check if membar_level indicates shared memory scope.
+  // .shared::cta is parsed as CTA_OPTION and sets membar_level.
+  // .shared (without ::cta) is parsed as SHARED_DIRECTIVE which sets
+  // m_space_spec to shared_space (accessible via get_space()).
+  // Both should be treated as shared memory scope for mbarrier.
+  // TODO: .shared can also point to other SM's shared memory (distributed
+  // shared memory). For now, we treat it as local CTA shared memory.
+  auto is_shared_level = [&]() {
+    // Check membar_level for .shared::cta
+    if (pI->membar_level() == CTA_OPTION) return true;
+    // Check space_spec for .shared (without ::cta)
+    if (pI->get_space() == shared_space) return true;
+    return false;
+  };
+
   if (bar_op == INIT_OPTION) {
     assert(pI->get_num_operands() == 2);
-    assert(pI->membar_level() == CTA_OPTION &&
-           "Only support shared::cta mbarrier");
+    assert(is_shared_level() && "Only support shared mbarrier");
     // So weird, pI->dst() is always the first operand.
     const operand_info &addr_op = pI->dst();
     const operand_info &expected_count_op = pI->src1();
@@ -204,8 +218,7 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
   } else if (bar_op == TRY_WAIT_OPTION) {
 
     assert(pI->parity_op() && "Only support parity op of mbarrier.try_wait");
-    assert(pI->membar_level() == CTA_OPTION &&
-           "Only support shared::cta mbarrier");
+    assert(is_shared_level() && "Only support shared mbarrier");
 
     assert(pI->get_num_operands() == 3);
 
@@ -234,8 +247,7 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
 
   } else if (bar_op == ARRIVE_OPTION || bar_op == EXPECT_TX_OPTION) {
 
-    assert(pI->membar_level() == CTA_OPTION &&
-           "Only support shared::cta mbarrier");
+    assert(is_shared_level() && "Only support shared mbarrier");
     /**
      * arrive and expect_tx may be combined into single instruction.
      */
