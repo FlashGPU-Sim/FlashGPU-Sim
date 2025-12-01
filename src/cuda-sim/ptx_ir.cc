@@ -1297,8 +1297,10 @@ ptx_instruction::ptx_instruction(
       case M8N32K16:
         break;
       default:
-        assert(0);
-        break;
+        printf("Error: Unsupported WMMA option (0x%x) for opcode %s\n",
+               last_ptx_inst_option, g_opcode_string[opcode]);
+        fflush(stdout);
+        exit(1);
     }
   }
   rr = 0;
@@ -1479,9 +1481,6 @@ ptx_instruction::ptx_instruction(
       case PRMT_RC16_MODE:
         m_prmt_op = last_ptx_inst_option;
         break;
-      default:
-        assert(0);
-        break;
       case TENSOR_OPTION:
       case DIM_1D_OPTION: 
       case DIM_2D_OPTION: 
@@ -1519,6 +1518,11 @@ ptx_instruction::ptx_instruction(
       case X2_OPTION:
       case X4_OPTION:
         break;
+      default:
+        printf("Error: Unsupported PTX instruction option (0x%x) for opcode %s\n",
+               last_ptx_inst_option, g_opcode_string[opcode]);
+        fflush(stdout);
+        exit(1);
     }
   }
   m_scalar_type = scalar_type;

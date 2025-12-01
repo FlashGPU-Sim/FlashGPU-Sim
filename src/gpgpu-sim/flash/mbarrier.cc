@@ -196,7 +196,15 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     // Check membar_level for .shared::cta
     if (pI->membar_level() == CTA_OPTION) return true;
     // Check space_spec for .shared (without ::cta)
-    if (pI->get_space() == shared_space) return true;
+    if (pI->get_space() == shared_space){
+      if (isspace_shared(thread->get_hw_sid(), get_u32_value(pI->dst()))) {
+        return true; // equivalent to shared::cta
+      } else {
+        printf("GPGPU-Sim: mbarrier on .shared (non-CTA) is not supported\n");
+        fflush(stdout);
+        abort();
+      }
+    } 
     return false;
   };
 

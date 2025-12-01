@@ -413,6 +413,11 @@ void function_info::ptx_assemble() {
       assert(pI == gpgpu_ctx->s_g_pc_to_insn[PC]);
       pI->set_m_instr_mem_index(n);
       pI->set_PC(PC);
+
+      DPRINTF_NoGPU(PTX_IR,
+        "  set inst %s to PC 0x%x\n",
+        pI->to_string().c_str(), PC);
+
       assert(pI->inst_size() <= MAX_INST_SIZE);
       for (unsigned i = 1; i < pI->inst_size(); i++) {
         gpgpu_ctx->s_g_pc_to_insn.push_back((ptx_instruction *)NULL);
@@ -878,32 +883,88 @@ void ptx_instruction::set_opcode_and_latency() {
    * [4] DIV
    * [5] SHFL
    */
-  sscanf(gpgpu_ctx->func_sim->opcode_latency_int, "%u,%u,%u,%u,%u,%u",
-         &int_latency[0], &int_latency[1], &int_latency[2], &int_latency[3],
-         &int_latency[4], &int_latency[5]);
-  sscanf(gpgpu_ctx->func_sim->opcode_latency_fp, "%u,%u,%u,%u,%u",
-         &fp_latency[0], &fp_latency[1], &fp_latency[2], &fp_latency[3],
-         &fp_latency[4]);
-  sscanf(gpgpu_ctx->func_sim->opcode_latency_dp, "%u,%u,%u,%u,%u",
-         &dp_latency[0], &dp_latency[1], &dp_latency[2], &dp_latency[3],
-         &dp_latency[4]);
-  sscanf(gpgpu_ctx->func_sim->opcode_latency_sfu, "%u", &sfu_latency);
-  sscanf(gpgpu_ctx->func_sim->opcode_latency_tensor, "%u", &tensor_latency);
-  sscanf(gpgpu_ctx->func_sim->opcode_initiation_int, "%u,%u,%u,%u,%u,%u",
-         &int_init[0], &int_init[1], &int_init[2], &int_init[3], &int_init[4],
-         &int_init[5]);
-  sscanf(gpgpu_ctx->func_sim->opcode_initiation_fp, "%u,%u,%u,%u,%u",
-         &fp_init[0], &fp_init[1], &fp_init[2], &fp_init[3], &fp_init[4]);
-  sscanf(gpgpu_ctx->func_sim->opcode_initiation_dp, "%u,%u,%u,%u,%u",
-         &dp_init[0], &dp_init[1], &dp_init[2], &dp_init[3], &dp_init[4]);
-  sscanf(gpgpu_ctx->func_sim->opcode_initiation_sfu, "%u", &sfu_init);
-  sscanf(gpgpu_ctx->func_sim->opcode_initiation_tensor, "%u", &tensor_init);
-  sscanf(gpgpu_ctx->func_sim->cdp_latency_str, "%u,%u,%u,%u,%u",
-         &gpgpu_ctx->func_sim->cdp_latency[0],
-         &gpgpu_ctx->func_sim->cdp_latency[1],
-         &gpgpu_ctx->func_sim->cdp_latency[2],
-         &gpgpu_ctx->func_sim->cdp_latency[3],
-         &gpgpu_ctx->func_sim->cdp_latency[4]);
+  int nret;
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_int, "%u,%u,%u,%u,%u,%u",
+                &int_latency[0], &int_latency[1], &int_latency[2], &int_latency[3],
+                &int_latency[4], &int_latency[5]);
+  if (nret != 6) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_int (expected 6 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_fp, "%u,%u,%u,%u,%u",
+                &fp_latency[0], &fp_latency[1], &fp_latency[2], &fp_latency[3],
+                &fp_latency[4]);
+  if (nret != 5) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_fp (expected 5 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_dp, "%u,%u,%u,%u,%u",
+                &dp_latency[0], &dp_latency[1], &dp_latency[2], &dp_latency[3],
+                &dp_latency[4]);
+  if (nret != 5) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_dp (expected 5 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_sfu, "%u", &sfu_latency);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_sfu (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_tensor, "%u", &tensor_latency);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_tensor (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_int, "%u,%u,%u,%u,%u,%u",
+                &int_init[0], &int_init[1], &int_init[2], &int_init[3], &int_init[4],
+                &int_init[5]);
+  if (nret != 6) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_int (expected 6 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_fp, "%u,%u,%u,%u,%u",
+                &fp_init[0], &fp_init[1], &fp_init[2], &fp_init[3], &fp_init[4]);
+  if (nret != 5) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_fp (expected 5 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_dp, "%u,%u,%u,%u,%u",
+                &dp_init[0], &dp_init[1], &dp_init[2], &dp_init[3], &dp_init[4]);
+  if (nret != 5) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_dp (expected 5 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_sfu, "%u", &sfu_init);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_sfu (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_tensor, "%u", &tensor_init);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_tensor (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->cdp_latency_str, "%u,%u,%u,%u,%u",
+                &gpgpu_ctx->func_sim->cdp_latency[0],
+                &gpgpu_ctx->func_sim->cdp_latency[1],
+                &gpgpu_ctx->func_sim->cdp_latency[2],
+                &gpgpu_ctx->func_sim->cdp_latency[3],
+                &gpgpu_ctx->func_sim->cdp_latency[4]);
+  if (nret != 5) {
+    printf("GPGPU-Sim PTX: ERROR parsing cdp_latency (expected 5 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
 
   if (!m_operands.empty()) {
     std::vector<operand_info>::iterator it;
@@ -1154,6 +1215,13 @@ void ptx_instruction::set_opcode_and_latency() {
   }
   set_fp_or_int_archop();
   set_mul_div_or_other_archop();
+
+  // printf("Warning: instruction latency for inst %s is set to %u cycles %u init_interval PC %x\n",
+  //          this->to_string().c_str(), latency, initiation_interval, pc);
+  // if(initiation_interval >= 1000){
+  //   fflush(stdout);
+  //   exit(1);
+  // }
 }
 
 void ptx_thread_info::ptx_fetch_inst(inst_t &inst) const {
@@ -1244,7 +1312,8 @@ void ptx_instruction::pre_decode() {
 #undef OP_W_DEF
     default:
       printf("Execution error: Invalid opcode (0x%x)\n", get_opcode());
-      break;
+      fflush(stdout);
+      exit(1);
   }
 
   switch (m_cache_option) {
@@ -2011,7 +2080,8 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
           default:
             printf("Execution error: Invalid opcode (0x%x)\n",
                    pI->get_opcode());
-            break;
+            fflush(stdout);
+            exit(1);
         }
       }
       delete pJ;
@@ -2209,7 +2279,7 @@ unsigned ptx_sim_init_thread(kernel_info_t &kernel,
   static std::map<unsigned, memory_space *> shared_memory_lookup;
   static std::map<unsigned, memory_space *> sstarr_memory_lookup;
   static std::map<unsigned, ptx_cta_info *> ptx_cta_lookup;
-  static std::map<unsigned, ptx_warp_info *> ptx_warp_lookup;
+  static std::map<std::pair<unsigned, unsigned>, ptx_warp_info *> ptx_warp_lookup;
   static std::map<unsigned, std::map<unsigned, memory_space *> >
       local_memory_lookup;
 
@@ -2301,11 +2371,11 @@ unsigned ptx_sim_init_thread(kernel_info_t &kernel,
     new_tid += tid;
     ptx_thread_info *thd = new ptx_thread_info(kernel);
     ptx_warp_info *warp_info = NULL;
-    if (ptx_warp_lookup.find(hw_warp_id) == ptx_warp_lookup.end()) {
+    if (ptx_warp_lookup.find(std::make_pair(sid, hw_warp_id)) == ptx_warp_lookup.end()) {
       warp_info = new ptx_warp_info();
-      ptx_warp_lookup[hw_warp_id] = warp_info;
+      ptx_warp_lookup[std::make_pair(sid, hw_warp_id)] = warp_info;
     } else {
-      warp_info = ptx_warp_lookup[hw_warp_id];
+      warp_info = ptx_warp_lookup[std::make_pair(sid, hw_warp_id)];
     }
     thd->m_warp_info = warp_info;
 
