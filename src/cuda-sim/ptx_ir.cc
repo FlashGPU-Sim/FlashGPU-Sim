@@ -1312,6 +1312,7 @@ ptx_instruction::ptx_instruction(
       case ARRIVE_OPTION:
       case RED_OPTION:
       case INIT_OPTION:
+      case INVAL_OPTION:
       case TRY_WAIT_OPTION:
       case EXPECT_TX_OPTION:
         m_barrier_op = last_ptx_inst_option;
@@ -1512,7 +1513,6 @@ ptx_instruction::ptx_instruction(
       case READ_OPTION:
       case BULK_GROUP_OPTION:
       case CLUSTER_OPTION:
-      case INVAL_OPTION:
       case M8N8_OPTION:
       case X1_OPTION:
       case X2_OPTION:

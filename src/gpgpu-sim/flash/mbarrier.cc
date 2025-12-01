@@ -188,33 +188,32 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
   // Helper to check if membar_level indicates shared memory scope.
   // .shared::cta is parsed as CTA_OPTION and sets membar_level.
   // .shared (without ::cta) is parsed as SHARED_DIRECTIVE which sets
-  // m_space_spec to shared_space (accessible via get_space()).
-  // Both should be treated as shared memory scope for mbarrier.
-  // TODO: .shared can also point to other SM's shared memory (distributed
-  // shared memory). For now, we treat it as local CTA shared memory.
-  auto is_shared_level = [&]() {
-    // Check membar_level for .shared::cta
-    if (pI->membar_level() == CTA_OPTION) return true;
-    // Check space_spec for .shared (without ::cta)
-    if (pI->get_space() == shared_space){
-      if (isspace_shared(thread->get_hw_sid(), get_u32_value(pI->dst()))) {
-        return true; // equivalent to shared::cta
-      } else {
-        printf("GPGPU-Sim: mbarrier on .shared (non-CTA) is not supported\n");
+  // Only support shared memory in the same CTA for now.
+  auto is_shared_level = [&](uint32_t *addr = nullptr) {
+    bool is_shared = (pI->membar_level() == CTA_OPTION) || 
+                     (pI->get_space() == shared_space);
+    
+    if (is_shared && addr != nullptr) {
+      // Convert relative shared memory offset to absolute generic address
+      addr_t absolute_addr = shared_to_generic(thread->get_hw_sid(), *addr);
+      if (!isspace_shared(thread->get_hw_sid(), absolute_addr)) {
+        printf("GPGPU-Sim ERROR: mbarrier address 0x%x (absolute 0x%llx) is not in SM %u's shared memory.\n"
+               "Distributed shared memory for mbarrier is not supported.\n",
+               *addr, (unsigned long long)absolute_addr, thread->get_hw_sid());
         fflush(stdout);
         abort();
       }
-    } 
-    return false;
+    }
+    return is_shared;
   };
 
   if (bar_op == INIT_OPTION) {
     assert(pI->get_num_operands() == 2);
-    assert(is_shared_level() && "Only support shared mbarrier");
     // So weird, pI->dst() is always the first operand.
     const operand_info &addr_op = pI->dst();
     const operand_info &expected_count_op = pI->src1();
     auto addr = get_u32_value(addr_op);
+    assert(is_shared_level(&addr) && "Only support shared mbarrier");
     auto expected_count = get_u32_value(expected_count_op);
     assert(expected_count > 0 && "expected count must be positive");
     DPRINTF_GPU(thread->get_gpu(), MBAR,
@@ -226,13 +225,13 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
   } else if (bar_op == TRY_WAIT_OPTION) {
 
     assert(pI->parity_op() && "Only support parity op of mbarrier.try_wait");
-    assert(is_shared_level() && "Only support shared mbarrier");
 
     assert(pI->get_num_operands() == 3);
 
     const operand_info &addr_op = pI->src1();
     const operand_info &parity_op = pI->src2();
     auto addr = get_u32_value(addr_op);
+    assert(is_shared_level(&addr) && "Only support shared mbarrier");
     auto parity = get_u32_value(parity_op) & 1;
 
     DPRINTF_GPU(
@@ -255,7 +254,6 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
 
   } else if (bar_op == ARRIVE_OPTION || bar_op == EXPECT_TX_OPTION) {
 
-    assert(is_shared_level() && "Only support shared mbarrier");
     /**
      * arrive and expect_tx may be combined into single instruction.
      */
@@ -322,6 +320,16 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
       printf("GPGPU-Sim: mbarrier.arrive/expect_tx inst invalid options\n");
       abort();
     }
+
+  } else if (bar_op == INVAL_OPTION) {
+
+    assert(pI->get_num_operands() == 1);
+    const operand_info &addr_op = pI->dst();
+    auto addr = get_u32_value(addr_op);
+    DPRINTF_GPU(thread->get_gpu(), MBAR,
+                "CTA %d Thread %d mbarrier inval at address 0x%x\n", ctaid,
+                hw_tid, addr);
+    pI->set_bar_id(addr);
 
   } else {
     // Placeholder implementation for mbarrier instruction
@@ -422,7 +430,13 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     }
 
     return;
-  }
+  } else if (bar_op == INVAL_OPTION) {
+
+    auto addr = pI->bar_id;
+    m_mbarrier_manager.inval(m_shader->get_gpu(), thread_index, addr);
+    return;
+
+  } 
 
   assert(false && "mbarrier in barrier_set_t not implemented");
 }
