@@ -266,3 +266,294 @@ TEST_F(LdMatrixX4Test, PrintLoadedValuesX4) {
   runKernelAndCopyBack();
   printResults();
 }
+
+// ============================================================================
+// stmatrix tests
+// ============================================================================
+// stmatrix instruction stores data from registers to shared memory
+// Each thread in a warp participates in storing a matrix fragment
+//
+// stmatrix.sync.aligned.xN.m8n8.shared.b16
+// - x1: Stores one 8x8 matrix, each thread provides 1 register (32-bit)
+//       Threads 0-7 provide row addresses for the single matrix
+// - x2: Stores two 8x8 matrices, each thread provides 2 registers
+//       Threads 0-7 provide row addresses for matrix 0
+//       Threads 8-15 provide row addresses for matrix 1
+// - x4: Stores four 8x8 matrices, each thread provides 4 registers
+//       Threads 0-7 provide row addresses for matrix 0
+//       Threads 8-15 provide row addresses for matrix 1
+//       Threads 16-23 provide row addresses for matrix 2
+//       Threads 24-31 provide row addresses for matrix 3
+
+// Template parameter N specifies x1, x2, or x4 variant
+// N = number of matrices to store (1, 2, or 4)
+template <int N>
+__global__ void stmatrix_test_kernel(uint32_t *input, uint16_t *output) {
+  // Shared memory for N matrices (each 8x8 matrix of 16-bit elements = 128
+  // bytes) Must be aligned to 16 bytes for stmatrix
+  __shared__ __align__(16) uint16_t smem[MATRIX_ELEMENTS * N];
+
+  const int tid = threadIdx.x;
+  const int lane_id = tid % WARP_SIZE;
+
+  // Step 1: Initialize shared memory to zero
+  for (int i = 0; i < 2 * N; ++i) {
+    int idx = lane_id * 2 * N + i;
+    if (idx < MATRIX_ELEMENTS * N) {
+      smem[idx] = 0;
+    }
+  }
+
+  __syncthreads();
+
+  // Step 2: Each thread calculates its address for stmatrix
+  // Same addressing scheme as ldmatrix
+  const int matrix_idx = lane_id / 8; // Which matrix this thread addresses
+  const int row = lane_id % 8;        // Row within that matrix
+
+  // Calculate the shared memory address
+  const uint32_t smem_addr = static_cast<uint32_t>(__cvta_generic_to_shared(
+      &smem[matrix_idx * MATRIX_ELEMENTS + row * MATRIX_DIM]));
+
+  // Step 3: Load register values from global memory input
+  // Each thread loads N registers worth of data
+  // The input is organized as: input[lane_id * N + reg]
+
+  // Step 4: Use stmatrix inline assembly to store to shared memory
+  if constexpr (N == 1) {
+    uint32_t reg_value = input[lane_id];
+    asm volatile("stmatrix.sync.aligned.x1.m8n8.shared.b16 [%0], {%1};\n"
+                 :
+                 : "r"(smem_addr), "r"(reg_value));
+  } else if constexpr (N == 2) {
+    uint32_t reg0 = input[lane_id * 2];
+    uint32_t reg1 = input[lane_id * 2 + 1];
+    asm volatile("stmatrix.sync.aligned.x2.m8n8.shared.b16 [%0], {%1, %2};\n"
+                 :
+                 : "r"(smem_addr), "r"(reg0), "r"(reg1));
+  } else if constexpr (N == 4) {
+    uint32_t reg0 = input[lane_id * 4];
+    uint32_t reg1 = input[lane_id * 4 + 1];
+    uint32_t reg2 = input[lane_id * 4 + 2];
+    uint32_t reg3 = input[lane_id * 4 + 3];
+    asm volatile(
+        "stmatrix.sync.aligned.x4.m8n8.shared.b16 [%0], {%1, %2, %3, %4};\n"
+        :
+        : "r"(smem_addr), "r"(reg0), "r"(reg1), "r"(reg2), "r"(reg3));
+  }
+
+  __syncthreads();
+
+  // Step 5: Copy shared memory to global memory output for verification
+  for (int i = 0; i < 2 * N; ++i) {
+    int idx = lane_id * 2 * N + i;
+    if (idx < MATRIX_ELEMENTS * N) {
+      output[idx] = smem[idx];
+    }
+  }
+}
+
+// Explicit template instantiations for stmatrix
+template __global__ void stmatrix_test_kernel<1>(uint32_t *input,
+                                                  uint16_t *output);
+template __global__ void stmatrix_test_kernel<2>(uint32_t *input,
+                                                  uint16_t *output);
+template __global__ void stmatrix_test_kernel<4>(uint32_t *input,
+                                                  uint16_t *output);
+
+// Test fixture for stmatrix with template parameter for number of matrices
+template <int N> class StMatrixTestT : public ::testing::Test {
+protected:
+  static constexpr int NUM_REGS_PER_THREAD = N;
+  static constexpr int TOTAL_INPUT_SIZE = WARP_SIZE * N;   // 32-bit registers
+  static constexpr int TOTAL_OUTPUT_SIZE = MATRIX_ELEMENTS * N; // 16-bit elements
+
+  void SetUp() override {
+    h_input.resize(TOTAL_INPUT_SIZE);
+    h_output.resize(TOTAL_OUTPUT_SIZE);
+
+    cudaError_t err =
+        cudaMalloc(&d_input, TOTAL_INPUT_SIZE * sizeof(uint32_t));
+    ASSERT_EQ(err, cudaSuccess)
+        << "Failed to allocate device input memory: " << cudaGetErrorString(err);
+
+    err = cudaMalloc(&d_output, TOTAL_OUTPUT_SIZE * sizeof(uint16_t));
+    ASSERT_EQ(err, cudaSuccess)
+        << "Failed to allocate device output memory: " << cudaGetErrorString(err);
+  }
+
+  void TearDown() override {
+    if (d_input) {
+      cudaFree(d_input);
+      d_input = nullptr;
+    }
+    if (d_output) {
+      cudaFree(d_output);
+      d_output = nullptr;
+    }
+  }
+
+  // Prepare input data - each thread gets N registers
+  // The data is organized following the tensor core fragment layout
+  void prepareInput() {
+    // Generate input values that will be stored via stmatrix
+    // Each thread's register contains two 16-bit values packed into 32-bit
+    // Following the same layout as ldmatrix output:
+    // Thread (lane_id) stores data to row (lane_id / 4), columns ((lane_id % 4) * 2) and ((lane_id % 4) * 2 + 1)
+    for (int lane_id = 0; lane_id < WARP_SIZE; ++lane_id) {
+      int row = lane_id / 4;
+      int col = (lane_id % 4) * 2;
+
+      for (int reg = 0; reg < N; ++reg) {
+        int matrix_idx = reg;
+        int smem_offset = matrix_idx * MATRIX_ELEMENTS + row * MATRIX_DIM + col;
+        uint16_t lo = static_cast<uint16_t>(smem_offset);
+        uint16_t hi = static_cast<uint16_t>(smem_offset + 1);
+
+        // Pack two 16-bit values into one 32-bit register (little-endian)
+        h_input[lane_id * N + reg] =
+            static_cast<uint32_t>(lo) | (static_cast<uint32_t>(hi) << 16);
+      }
+    }
+  }
+
+  // Run kernel and copy results back to host
+  void runKernelAndCopyBack() {
+    // Copy input to device
+    cudaError_t err = cudaMemcpy(d_input, h_input.data(),
+                                  TOTAL_INPUT_SIZE * sizeof(uint32_t),
+                                  cudaMemcpyHostToDevice);
+    ASSERT_EQ(err, cudaSuccess)
+        << "Failed to copy input to device: " << cudaGetErrorString(err);
+
+    stmatrix_test_kernel<N><<<1, BLOCK_SIZE>>>(d_input, d_output);
+
+    err = cudaGetLastError();
+    ASSERT_EQ(err, cudaSuccess)
+        << "Kernel launch failed: " << cudaGetErrorString(err);
+
+    err = cudaDeviceSynchronize();
+    ASSERT_EQ(err, cudaSuccess)
+        << "Kernel execution failed: " << cudaGetErrorString(err);
+
+    err = cudaMemcpy(h_output.data(), d_output,
+                     TOTAL_OUTPUT_SIZE * sizeof(uint16_t),
+                     cudaMemcpyDeviceToHost);
+    ASSERT_EQ(err, cudaSuccess)
+        << "Failed to copy results to host: " << cudaGetErrorString(err);
+  }
+
+  // Compute expected output in shared memory after stmatrix
+  void computeExpectedOutput(std::vector<uint16_t> &expected) {
+    expected.resize(TOTAL_OUTPUT_SIZE);
+
+    // stmatrix stores the register data back to shared memory
+    // The expected result is that smem[i] = i for all elements
+    // (since we prepared input to store value i at position i)
+    for (int i = 0; i < TOTAL_OUTPUT_SIZE; ++i) {
+      expected[i] = static_cast<uint16_t>(i);
+    }
+  }
+
+  // Compare actual output against expected values
+  void compareResults(const std::vector<uint16_t> &expected) {
+    for (int matrix_idx = 0; matrix_idx < N; ++matrix_idx) {
+      for (int row = 0; row < MATRIX_DIM; ++row) {
+        for (int col = 0; col < MATRIX_DIM; ++col) {
+          int idx = matrix_idx * MATRIX_ELEMENTS + row * MATRIX_DIM + col;
+          EXPECT_EQ(h_output[idx], expected[idx])
+              << "X" << N << " Mismatch at matrix " << matrix_idx 
+              << " row " << row << " col " << col
+              << ": expected " << expected[idx]
+              << ", got " << h_output[idx];
+        }
+      }
+    }
+  }
+
+  // Print stored values for debugging
+  void printResults() {
+    printf("\nstmatrix.x%d stored values (shared memory content):\n", N);
+    for (int matrix_idx = 0; matrix_idx < N; ++matrix_idx) {
+      printf("Matrix %d:\n", matrix_idx);
+      printf("     ");
+      for (int col = 0; col < MATRIX_DIM; ++col) {
+        printf(" %5d", col);
+      }
+      printf("\n");
+      printf("     ");
+      for (int col = 0; col < MATRIX_DIM; ++col) {
+        printf(" -----");
+      }
+      printf("\n");
+      
+      for (int row = 0; row < MATRIX_DIM; ++row) {
+        printf("%3d |", row);
+        for (int col = 0; col < MATRIX_DIM; ++col) {
+          int idx = matrix_idx * MATRIX_ELEMENTS + row * MATRIX_DIM + col;
+          printf(" %5u", h_output[idx]);
+        }
+        printf("\n");
+      }
+      printf("\n");
+    }
+  }
+
+  std::vector<uint32_t> h_input;
+  std::vector<uint16_t> h_output;
+  uint32_t *d_input = nullptr;
+  uint16_t *d_output = nullptr;
+};
+
+// Type aliases for different stmatrix test configurations
+using StMatrixX1Test = StMatrixTestT<1>;
+using StMatrixX2Test = StMatrixTestT<2>;
+using StMatrixX4Test = StMatrixTestT<4>;
+
+// ============== StMatrix X1 Tests ==============
+TEST_F(StMatrixX1Test, BasicStMatrixX1) {
+  prepareInput();
+  runKernelAndCopyBack();
+
+  std::vector<uint16_t> expected;
+  computeExpectedOutput(expected);
+  compareResults(expected);
+}
+
+TEST_F(StMatrixX1Test, PrintStoredValuesX1) {
+  prepareInput();
+  runKernelAndCopyBack();
+  printResults();
+}
+
+// ============== StMatrix X2 Tests ==============
+TEST_F(StMatrixX2Test, BasicStMatrixX2) {
+  prepareInput();
+  runKernelAndCopyBack();
+
+  std::vector<uint16_t> expected;
+  computeExpectedOutput(expected);
+  compareResults(expected);
+}
+
+TEST_F(StMatrixX2Test, PrintStoredValuesX2) {
+  prepareInput();
+  runKernelAndCopyBack();
+  printResults();
+}
+
+// ============== StMatrix X4 Tests ==============
+TEST_F(StMatrixX4Test, BasicStMatrixX4) {
+  prepareInput();
+  runKernelAndCopyBack();
+
+  std::vector<uint16_t> expected;
+  computeExpectedOutput(expected);
+  compareResults(expected);
+}
+
+TEST_F(StMatrixX4Test, PrintStoredValuesX4) {
+  prepareInput();
+  runKernelAndCopyBack();
+  printResults();
+}
