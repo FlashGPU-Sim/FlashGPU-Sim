@@ -1984,7 +1984,8 @@ static unsigned get_tex_datasize(const ptx_instruction *pI,
 
 int tensorcore_op(int inst_opcode) {
   if ((inst_opcode == MMA_OP) || (inst_opcode == MMA_LD_OP) ||
-      (inst_opcode == MMA_ST_OP))
+      (inst_opcode == MMA_ST_OP) ||
+      (inst_opcode == LDMATRIX_OP) || (inst_opcode == STMATRIX_OP))
     return 1;
   else
     return 0;

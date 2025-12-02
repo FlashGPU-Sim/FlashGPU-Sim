@@ -53,6 +53,7 @@ class ptx_recognizer;
 #include "../gpgpu-sim/shader.h"
 #include "../gpgpu-sim/flash/elect.h"
 #include "../gpgpu-sim/flash/mbarrier.h"
+#include "../gpgpu-sim/flash/ldmatrix.h"
 #include "../gpgpu-sim/flash/tma.h"
 #include "../trace.h"
 #include "cuda-math.h"
@@ -1640,15 +1641,19 @@ void elect_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   handle_elect_inst(pI, thread);
 }
 
-void ldmatrix_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+void ldmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
   // ldmatrix instruction - load matrix from shared memory
   // Currently treated as NOP
-  DPRINTF_INST_EXEC(WIP, "[STUB] ldmatrix instruction not implemented%s\n", "");
+  handle_ldmatrix_inst(pI, core, inst);
 }
 
-void stmatrix_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+void stmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
   // stmatrix instruction - store matrix to shared memory
   // Currently treated as NOP
+
+  // We need the thread for DPRINTF.
+  int tid_lane0 = inst.warp_id() * core->get_warp_size();
+  auto thread = core->get_thread_info()[tid_lane0];
   DPRINTF_INST_EXEC(WIP, "[STUB] stmatrix instruction not implemented%s\n", "");
 }
 
