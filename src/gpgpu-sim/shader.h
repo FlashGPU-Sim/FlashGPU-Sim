@@ -1079,7 +1079,8 @@ class barrier_set_t {
 
   // individual warp hits mbarrier
   void warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
-                             warp_inst_t *inst);
+                             warp_inst_t *inst,
+                             const active_mask_t &active_mask);
   // complete_tx for TMA usages
   void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
                    uint32_t completed_tx_count);

@@ -175,10 +175,14 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
   unsigned bar_op = pI->barrier_op();
   unsigned ctaid = thread->get_cta_uid();
   auto hw_tid = thread->get_hw_tid();
+  auto laneid = thread->get_laneid();
 
+  printf("handling mbarrier inst %s\n", pIin->to_string().c_str()); fflush(stdout);
+  
   DPRINTF_GPU(thread->get_gpu(), MBAR,
-              "CTA %d Thread %d handling mbarrier inst %s\n", ctaid, hw_tid,
-              pIin->to_string().c_str());
+              "CTA %d Thread %d (lane %u) handling mbarrier inst %s\n", ctaid, hw_tid,
+              laneid, pIin->to_string().c_str());
+  fflush(stdout);
 
   auto get_u32_value = [&](const operand_info &op) {
     ptx_reg_t reg = thread->get_operand_value(op, op, U32_TYPE, thread, 0);
@@ -207,6 +211,15 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     return is_shared;
   };
 
+  // Helper to set per-thread mbarrier info
+  auto set_thread_mbarrier_info = [&](unsigned addr, unsigned count, bool parity) {
+    inst_t::mbarrier_info_t info;
+    info.bar_id = addr;
+    info.bar_count = count;
+    info.bar_parity = parity;
+    pI->set_mbarrier_info(laneid, info);
+  };
+
   if (bar_op == INIT_OPTION) {
     assert(pI->get_num_operands() == 2);
     // So weird, pI->dst() is always the first operand.
@@ -217,11 +230,12 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     auto expected_count = get_u32_value(expected_count_op);
     assert(expected_count > 0 && "expected count must be positive");
     DPRINTF_GPU(thread->get_gpu(), MBAR,
-                "CTA %d Thread %d mbarrier init at address 0x%x with expected "
+                "CTA %d Thread %d (lane %u) mbarrier init at address 0x%x with expected "
                 "count %u\n",
-                ctaid, hw_tid, addr, expected_count);
-    pI->set_bar_id(addr);
-    pI->set_bar_count(expected_count);
+                ctaid, hw_tid, laneid, addr, expected_count);
+    fflush(stdout);
+    // Set per-thread info
+    set_thread_mbarrier_info(addr, expected_count, false);
   } else if (bar_op == TRY_WAIT_OPTION) {
 
     assert(pI->parity_op() && "Only support parity op of mbarrier.try_wait");
@@ -236,10 +250,10 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
 
     DPRINTF_GPU(
         thread->get_gpu(), MBAR,
-        "CTA %d Thread %d mbarrier.try_wait at address 0x%x with parity %u\n",
-        ctaid, hw_tid, addr, parity);
-    pI->set_bar_id(addr);
-    pI->set_bar_parity(parity);
+        "CTA %d Thread %d (lane %u) mbarrier.try_wait at address 0x%x with parity %u\n",
+        ctaid, hw_tid, laneid, addr, parity);
+    // Set per-thread info
+    set_thread_mbarrier_info(addr, (unsigned)-1, parity);
 
     /**
      * So far we always block until the mbarrier is released,
@@ -274,11 +288,11 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
       expected_tx_count = get_u32_value(pI->src2());
 
       DPRINTF_GPU(thread->get_gpu(), MBAR,
-                  "CTA %d Thread %d mbarrier.arrive.expect_tx at address 0x%x "
+                  "CTA %d Thread %d (lane %u) mbarrier.arrive.expect_tx at address 0x%x "
                   "with expected_tx_count %u\n",
-                  ctaid, hw_tid, addr, expected_tx_count);
-      pI->set_bar_id(addr);
-      pI->set_bar_count(expected_tx_count);
+                  ctaid, hw_tid, laneid, addr, expected_tx_count);
+      // Set per-thread info (for arrive.expect_tx, store expected_tx_count in bar_count)
+      set_thread_mbarrier_info(addr, expected_tx_count, false);
 
     } else if (is_arrive) {
       assert(pI->get_num_operands() == 3 || pI->get_num_operands() == 2);
@@ -297,11 +311,11 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
       }
 
       DPRINTF_GPU(thread->get_gpu(), MBAR,
-                  "CTA %d Thread %d mbarrier.arrive at address 0x%x with "
+                  "CTA %d Thread %d (lane %u) mbarrier.arrive at address 0x%x with "
                   "arrival_count %u\n",
-                  ctaid, hw_tid, addr, arrival_count);
-      pI->set_bar_id(addr);
-      pI->set_bar_count(arrival_count);
+                  ctaid, hw_tid, laneid, addr, arrival_count);
+      // Set per-thread info
+      set_thread_mbarrier_info(addr, arrival_count, false);
 
     } else if (is_expect_tx) {
       assert(pI->get_num_operands() == 2);
@@ -310,11 +324,11 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
       expected_tx_count = get_u32_value(pI->src1());
 
       DPRINTF_GPU(thread->get_gpu(), MBAR,
-                  "CTA %d Thread %d mbarrier.expect_tx at address 0x%x "
+                  "CTA %d Thread %d (lane %u) mbarrier.expect_tx at address 0x%x "
                   "with expected_tx_count %u\n",
-                  ctaid, hw_tid, addr, expected_tx_count);
-      pI->set_bar_id(addr);
-      pI->set_bar_count(expected_tx_count);
+                  ctaid, hw_tid, laneid, addr, expected_tx_count);
+      // Set per-thread info
+      set_thread_mbarrier_info(addr, expected_tx_count, false);
 
     } else {
       printf("GPGPU-Sim: mbarrier.arrive/expect_tx inst invalid options\n");
@@ -327,9 +341,10 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     const operand_info &addr_op = pI->dst();
     auto addr = get_u32_value(addr_op);
     DPRINTF_GPU(thread->get_gpu(), MBAR,
-                "CTA %d Thread %d mbarrier inval at address 0x%x\n", ctaid,
-                hw_tid, addr);
-    pI->set_bar_id(addr);
+                "CTA %d Thread %d (lane %u) mbarrier inval at address 0x%x\n", ctaid,
+                hw_tid, laneid, addr);
+    // Set per-thread info
+    set_thread_mbarrier_info(addr, (unsigned)-1, false);
 
   } else {
     // Placeholder implementation for mbarrier instruction
@@ -359,7 +374,8 @@ void barrier_set_t::complete_tx(unsigned cta_id, unsigned warp_id,
 }
 
 void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
-                                          warp_inst_t *inst) {
+                                          warp_inst_t *inst,
+                                          const active_mask_t &active_mask) {
 
   auto pI = dynamic_cast<ptx_instruction *>(inst);
   assert(pI && "mbarrier instruction is not ptx_instruction");
@@ -372,22 +388,41 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       cta_id, warp_id, logical_cta_id, logical_warp_id};
 
   auto bar_op = pI->barrier_op();
-  if (bar_op == INIT_OPTION) {
+  
+  unsigned warp_size = m_shader->get_config()->warp_size;
 
-    auto addr = pI->bar_id;
-    auto expected_count = pI->bar_count;
-    m_mbarrier_manager.init(m_shader->get_gpu(), thread_index, addr,
-                            expected_count);
+  if (bar_op == INIT_OPTION) {
+    
+    for (unsigned lane = 0; lane < warp_size; lane++) {
+      if (!active_mask.test(lane)) continue;
+      
+      const auto &mbar_info = pI->get_mbarrier_info(lane);
+      auto addr = mbar_info.bar_id;
+      auto expected_count = mbar_info.bar_count;
+      
+      m_mbarrier_manager.init(m_shader->get_gpu(), thread_index, addr,
+                              expected_count);
+
+    }
     return;
 
   } else if (bar_op == TRY_WAIT_OPTION) {
 
-    auto addr = pI->bar_id;
-    auto parity = pI->bar_parity;
-    bool released = m_mbarrier_manager.try_wait(m_shader->get_gpu(),
-                                                thread_index, addr, parity);
-    if (!released) {
-      m_warp_at_barrier.set(warp_id);
+    unsigned addr = 0;
+    bool parity = false;
+    
+    for (unsigned lane = 0; lane < warp_size; lane++) {
+      if (!active_mask.test(lane)) continue;
+      
+      const auto &mbar_info = pI->get_mbarrier_info(lane);
+      addr = mbar_info.bar_id;
+      parity = mbar_info.bar_parity;
+
+      bool released = m_mbarrier_manager.try_wait(m_shader->get_gpu(),
+                                                  thread_index, addr, parity);
+      if (!released) {
+        m_warp_at_barrier.set(warp_id);
+      }
     }
 
     return;
@@ -396,44 +431,50 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     auto [is_arrive, is_expect_tx] =
         parse_mbarrier_arrive_expect_tx_options(pI);
 
-    if (is_expect_tx && is_arrive) {
+    for (unsigned lane = 0; lane < warp_size; lane++) {
+      if (!active_mask.test(lane)) continue;
+      
+      const auto &mbar_info = pI->get_mbarrier_info(lane);
+      auto addr = mbar_info.bar_id;
+      auto count = mbar_info.bar_count;
 
-      // We have to do expect_tx first, in case arrive releases the barrier.
-      auto addr = pI->bar_id;
-      auto expected_tx_count = pI->bar_count;
-      auto arrival_count = 1;
-      m_mbarrier_manager.expect_tx(m_shader->get_gpu(), thread_index, addr,
-                                   expected_tx_count);
+      if (is_expect_tx && is_arrive) {
 
-      auto released_warps = m_mbarrier_manager.arrive(
-          m_shader->get_gpu(), thread_index, addr, arrival_count);
-      for (auto w : released_warps) {
-        m_warp_at_barrier.reset(w);
+        // We have to do expect_tx first, in case arrive releases the barrier.
+        auto arrival_count = 1;
+        m_mbarrier_manager.expect_tx(m_shader->get_gpu(), thread_index, addr,
+                                    count);
+
+        auto released_warps = m_mbarrier_manager.arrive(
+            m_shader->get_gpu(), thread_index, addr, arrival_count);
+        for (auto w : released_warps) {
+          m_warp_at_barrier.reset(w);
+        }
+
+      } else if (is_arrive) {
+
+        auto released_warps = m_mbarrier_manager.arrive(
+            m_shader->get_gpu(), thread_index, addr, count);
+        for (auto w : released_warps) {
+          m_warp_at_barrier.reset(w);
+        }
+
+      } else if (is_expect_tx) {
+        m_mbarrier_manager.expect_tx(m_shader->get_gpu(), thread_index, addr, count);
       }
-
-    } else if (is_arrive) {
-      auto addr = pI->bar_id;
-      auto arrival_count = pI->bar_count;
-
-      auto released_warps = m_mbarrier_manager.arrive(
-          m_shader->get_gpu(), thread_index, addr, arrival_count);
-      for (auto w : released_warps) {
-        m_warp_at_barrier.reset(w);
-      }
-
-    } else if (is_expect_tx) {
-
-      auto addr = pI->bar_id;
-      auto expected_tx_count = pI->bar_count;
-      m_mbarrier_manager.expect_tx(m_shader->get_gpu(), thread_index, addr,
-                                   expected_tx_count);
     }
 
     return;
   } else if (bar_op == INVAL_OPTION) {
-
-    auto addr = pI->bar_id;
-    m_mbarrier_manager.inval(m_shader->get_gpu(), thread_index, addr);
+    
+    for (unsigned lane = 0; lane < warp_size; lane++) {
+      if (!active_mask.test(lane)) continue;
+      
+      const auto &mbar_info = pI->get_mbarrier_info(lane);
+      auto addr = mbar_info.bar_id;
+      
+      m_mbarrier_manager.inval(m_shader->get_gpu(), thread_index, addr);
+    }
     return;
 
   } 

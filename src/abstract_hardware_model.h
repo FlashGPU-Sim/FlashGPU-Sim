@@ -878,6 +878,36 @@ private:
   tma_dyn_info_t tma_dyn_info[MAX_WARP_SIZE];
 
 public:
+  // Per-thread mbarrier info (mbarrier is thread-level, not warp-level)
+  // Note: Whether a thread participates is determined by inst->active(lane)
+  // at warp_reaches_mbarrier time, not stored in this struct.
+  struct mbarrier_info_t {
+    unsigned bar_id = (unsigned)-1;     // mbarrier address in shared memory
+    unsigned bar_count = (unsigned)-1;  // expected count or arrival count
+    bool bar_parity = false;            // parity for try_wait
+    
+    void reset() {
+      bar_id = (unsigned)-1;
+      bar_count = (unsigned)-1;
+      bar_parity = false;
+    }
+  };
+  void set_mbarrier_info(int laneid, const mbarrier_info_t &info) {
+    mbarrier_info[laneid] = info;
+  }
+  const mbarrier_info_t &get_mbarrier_info(int laneid) const {
+    return mbarrier_info[laneid];
+  }
+  void reset_mbarrier_info() {
+    for (unsigned i = 0; i < MAX_WARP_SIZE; i++) {
+      mbarrier_info[i].reset();
+    }
+  }
+
+private:
+  mbarrier_info_t mbarrier_info[MAX_WARP_SIZE];
+
+public:
   types_of_operands oprnd_type;  // code (uarch visible) identify if the
                                  // operation is an interger or a floating point
   special_ops
