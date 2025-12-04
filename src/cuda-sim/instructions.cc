@@ -1626,9 +1626,7 @@ void tma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void tensormap_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  // tensormap instruction - used for TMA (Tensor Memory Access)
-  // Currently treated as NOP since we don't simulate actual tensor map operations
-  DPRINTF_INST_EXEC(WIP, "[STUB] tensormap instruction not implemented%s\n", "");
+  handle_tensormap_inst(pI, thread);
 }
 
 void fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
