@@ -24,7 +24,7 @@ class CudaTMATest : public ::testing::Test {
 protected:
   void SetUp() override {
     // Test with 1MB of data
-    num_elements = 262144; // 1MB / 4 bytes per float
+    num_elements = 262144 * 16; // 1MB / 4 bytes per float
     data_size_bytes = num_elements * sizeof(float);
 
     // Allocate host memory
