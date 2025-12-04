@@ -15,8 +15,9 @@ void mbarrier_manager_t::init(gpgpu_sim *gpu,
                               const thread_index_t &thread_index, uint64_t addr,
                               int expected_count) {
   auto id = m_next_id++;
+  auto key = std::make_pair(thread_index.hw_cta_id, addr);
   auto ret = addr_to_mbarrier_map.emplace(
-      addr, std::make_unique<mbarrier_t>(id, addr, expected_count));
+      key, std::make_unique<mbarrier_t>(id, addr, expected_count));
   assert(ret.second && "mbarrier at the same address already exists");
 
   DPRINTF_GPU(gpu, MBAR,
@@ -29,7 +30,8 @@ void mbarrier_manager_t::init(gpgpu_sim *gpu,
 void mbarrier_manager_t::inval(gpgpu_sim *gpu,
                                const thread_index_t &thread_index,
                                uint64_t addr) {
-  auto it = addr_to_mbarrier_map.find(addr);
+  auto key = std::make_pair(thread_index.hw_cta_id, addr);
+  auto it = addr_to_mbarrier_map.find(key);
   if (it != addr_to_mbarrier_map.end()) {
     addr_to_mbarrier_map.erase(it);
   } else {
@@ -40,7 +42,8 @@ void mbarrier_manager_t::inval(gpgpu_sim *gpu,
 bool mbarrier_manager_t::try_wait(gpgpu_sim *gpu,
                                   const thread_index_t &thread_index,
                                   uint64_t addr, int parity) {
-  auto it = addr_to_mbarrier_map.find(addr);
+  auto key = std::make_pair(thread_index.hw_cta_id, addr);
+  auto it = addr_to_mbarrier_map.find(key);
   if (it == addr_to_mbarrier_map.end()) {
     assert(false && "mbarrier to wait on does not exist");
   }
@@ -92,7 +95,8 @@ std::set<int> mbarrier_manager_t::try_advance(
 std::set<int> mbarrier_manager_t::arrive(gpgpu_sim *gpu,
                                          const thread_index_t &thread_index,
                                          uint64_t addr, int arrival_count) {
-  auto it = addr_to_mbarrier_map.find(addr);
+  auto key = std::make_pair(thread_index.hw_cta_id, addr);
+  auto it = addr_to_mbarrier_map.find(key);
   if (it == addr_to_mbarrier_map.end()) {
     assert(false && "mbarrier to arrive at does not exist");
   }
@@ -115,7 +119,8 @@ std::set<int>
 mbarrier_manager_t::complete_tx(gpgpu_sim *gpu,
                                 const thread_index_t &thread_index,
                                 uint64_t addr, int completed_tx_count) {
-  auto it = addr_to_mbarrier_map.find(addr);
+  auto key = std::make_pair(thread_index.hw_cta_id, addr);
+  auto it = addr_to_mbarrier_map.find(key);
   if (it == addr_to_mbarrier_map.end()) {
     assert(false && "mbarrier to complete tx at does not exist");
   }
@@ -135,7 +140,8 @@ mbarrier_manager_t::complete_tx(gpgpu_sim *gpu,
 void mbarrier_manager_t::expect_tx(gpgpu_sim *gpu,
                                    const thread_index_t &thread_index,
                                    uint64_t addr, int expected_tx_count) {
-  auto it = addr_to_mbarrier_map.find(addr);
+  auto key = std::make_pair(thread_index.hw_cta_id, addr);
+  auto it = addr_to_mbarrier_map.find(key);
   if (it == addr_to_mbarrier_map.end()) {
     assert(false && "mbarrier to expect tx does not exist");
   }
@@ -177,7 +183,7 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
   auto hw_tid = thread->get_hw_tid();
   auto laneid = thread->get_laneid();
 
-  printf("handling mbarrier inst %s\n", pIin->to_string().c_str()); fflush(stdout);
+  // printf("handling mbarrier inst %s\n", pIin->to_string().c_str()); fflush(stdout);
   
   DPRINTF_GPU(thread->get_gpu(), MBAR,
               "CTA %d Thread %d (lane %u) handling mbarrier inst %s\n", ctaid, hw_tid,

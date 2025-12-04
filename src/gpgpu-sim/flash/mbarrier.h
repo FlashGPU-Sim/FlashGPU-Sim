@@ -42,8 +42,8 @@ class mbarrier_manager_t {
 public:
   mbarrier_manager_t() : m_next_id(0) {}
 
-  mbarrier_t *get_mbarrier(uint64_t addr) {
-    auto it = addr_to_mbarrier_map.find(addr);
+  mbarrier_t *get_mbarrier(int sw_cta_id, uint64_t addr) {
+    auto it = addr_to_mbarrier_map.find(std::make_pair(sw_cta_id, addr));
     if (it != addr_to_mbarrier_map.end()) {
       return it->second.get();
     } else {
@@ -98,7 +98,14 @@ public:
 
 private:
   int m_next_id;
-  std::unordered_map<uint64_t, std::unique_ptr<mbarrier_t>>
+  struct pair_hash {
+    size_t operator()(const std::pair<int, uint64_t> &p) const noexcept {
+      return std::hash<int>()(p.first) ^
+             (std::hash<uint64_t>()(p.second) << 1);
+    }
+  };
+  std::unordered_map<std::pair<int, uint64_t>, std::unique_ptr<mbarrier_t>,
+                     pair_hash>
       addr_to_mbarrier_map;
 
   /**
