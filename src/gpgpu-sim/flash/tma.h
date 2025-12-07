@@ -39,6 +39,8 @@ private:
 // TensorMap descriptor (aligned to 128B, mirrors CUDA Driver API layout)
 // -----------------------------------------------------------------------------
 
+#define TENSORMAP_DESCRIPTOR_SIZE 128u
+
 // Element data type encoding
 #define TMA_DTYPE_U8    0u
 #define TMA_DTYPE_U16   1u
@@ -99,7 +101,7 @@ typedef union __attribute__((aligned(128))) tensormap_descriptor_t {
   void print() const;
 
   static tensormap_descriptor_t read_from_shared(memory_space *shared_mem, uint32_t addr);
-  void write_to_shared(memory_space *shared_mem, uint32_t addr) const;
+  void write_to_shared(memory_space *shared_mem, uint32_t addr, ptx_thread_info *thd, const ptx_instruction *pI) const;
   
 } tensormap_descriptor_t;
 

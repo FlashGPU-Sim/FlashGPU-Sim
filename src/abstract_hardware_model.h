@@ -854,6 +854,7 @@ public:
     space_t src_space;
   };
   struct tma_dyn_info_t {
+    bool is_tensor = false;
     uint64_t dst_addr = 0;
     uint64_t src_addr = 0;
     uint32_t size_in_bytes = 0;

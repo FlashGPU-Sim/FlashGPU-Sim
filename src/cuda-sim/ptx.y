@@ -520,6 +520,14 @@ option: type_spec
 		recognizer->add_option(CTA_OPTION);
 		recognizer->add_option(GLOBAL_OPTION);
 	}
+	| CLUSTER_OPTION GLOBAL_DIRECTIVE {
+		recognizer->add_option(CLUSTER_OPTION);
+		recognizer->add_option(GLOBAL_OPTION);
+	}
+	| GLOBAL_DIRECTIVE CTA_OPTION {
+		recognizer->add_option(GLOBAL_OPTION);
+		recognizer->add_option(CTA_OPTION);
+	}
 	| compare_spec
 	| addressable_spec
 	| rounding_mode
