@@ -1,5 +1,6 @@
 #include "tma.h"
 #include <atomic>
+#include <cstdarg>
 
 #include "../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
@@ -395,6 +396,11 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       // Read tensormap descriptor from global memory
       flash_gpgpu_sim::tensormap_descriptor_t tensormap;
       global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &tensormap);
+      if(!tensormap.is_valid()) {
+        tensormap.print();
+        fflush(stdout);
+        exit(1);
+      }
       
       // Calculate transfer size from tensormap
       uint32_t size_in_bytes = tensormap.get_tile_size_bytes();
@@ -419,7 +425,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       
       // Validate tensormap rank matches instruction dimension
       // Note: tensormap rank encoding is 0-based (0=1D, 1=2D, 2=3D, etc.)
-      unsigned tensormap_dim = tensormap.fields.tensorRank + 1;
+      unsigned tensormap_dim = tensormap.num_dims();
       if (tensormap_dim != inst_dim) {
         DPRINTF_INST_EXEC(TMA, 
           "ERROR: Dimension mismatch - instruction is %uD but tensormap rank is %u (dim=%uD)\n",
@@ -444,9 +450,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       DPRINTF_INST_EXEC(TMA, "Extracted coordinates: [%u, %u, %u, %u, %u]\n", 
                 coords[0], coords[1], coords[2], coords[3], coords[4]);
       
-      // Calculate source address from tensormap and coordinates
-      uint64_t src_addr = tensormap.calculate_src_addr(coords);
-      
+      // Pass info to perf sim
       inst_t::tma_static_info_t tma_static_info{
           .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
           .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
@@ -460,27 +464,37 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
           .size_in_bytes = size_in_bytes,
           .mbar_addr = mbar_addr,
       };
+      for (unsigned i = 0; i < 5; ++i) tma_dyn_info.coords[i] = coords[i];
+
       auto laneid = thread->get_laneid();
       pI->set_tma_dyn_info(laneid, tma_dyn_info);
       
-      // Perform actual data transfer (functional simulation)
-      if (tensormap.is_valid()) {
-        memory_space *global_mem = thread->get_global_memory();
-        unsigned char *data_buffer = new unsigned char[size_in_bytes];
-        global_mem->read(src_addr, size_in_bytes, data_buffer);
-        shared_mem->write(dst_addr, size_in_bytes, data_buffer, thread, pI);
+      // Functional simulation: Copy data from global to shared
+      auto memory_requests = flash_gpgpu_sim::generate_tma_requests(tensormap, coords);
+      
+      // DPRINTF_INST_EXEC(TMA, "Generated %lu memory requests for TMA tensor load:\n", 
+      //                   memory_requests.size());
+      // for (size_t i = 0; i < memory_requests.size(); i++) {
+      //   DPRINTF_INST_EXEC(TMA, "  Request[%lu]: addr=0x%llx, size=%u bytes\n", 
+      //                     i, (unsigned long long)memory_requests[i].first, 
+      //                     memory_requests[i].second);
+      // }
+
+      uint64_t base_src_addr = tensormap.calculate_src_addr(coords);
+      for (const auto &req : memory_requests) {
+        uint64_t req_addr = req.first;
+        uint32_t req_size = req.second;
+        unsigned char *data_buffer = new unsigned char[req_size];
+        global_mem->read(req_addr, req_size, data_buffer);
+        uint64_t dst_offset = req_addr - base_src_addr;
+        shared_mem->write(dst_addr + dst_offset, req_size, data_buffer, thread, pI);
         delete[] data_buffer;
-        
-        DPRINTF_INST_EXEC(TMA,
-          "Functional Sim: TMA tensor load dst=0x%x, src=0x%llx, "
-          "size=%u, mbar=0x%x, tensormap=0x%x\n",
-          dst_addr, (unsigned long long)src_addr, size_in_bytes, mbar_addr, tensormap_addr);
-      } else {
-        DPRINTF_INST_EXEC(TMA,
-          "Functional Sim: TMA tensor load (tensormap invalid) "
-          "dst=0x%x, mbar=0x%x, size=%u\n",
-          dst_addr, mbar_addr, size_in_bytes);
       }
+      
+      DPRINTF_INST_EXEC(TMA,
+        "Functional Sim: TMA tensor load dst=0x%x, src=0x%llx, "
+        "size=%u, mbar=0x%x, tensormap=0x%x\n",
+        dst_addr, (unsigned long long)base_src_addr, size_in_bytes, mbar_addr, tensormap_addr);
         
     } else if (dst_option == GLOBAL_OPTION && completion_option == TMA_MBAR_COMPLETE_BYTES) {
       // cp.async.bulk.tensor.Nd.global.shared::cta.bulk_group
@@ -533,6 +547,124 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
 }
 
 //=============================================================================
+// TMA Memory Request Generation
+//=============================================================================
+
+namespace flash_gpgpu_sim {
+
+// Helper function to generate 128B-aligned memory fetch requests
+// Splits a contiguous memory range into cache-line-aligned requests
+static void gen_aligned_req(uint64_t start_addr, uint32_t total_bytes,
+                            std::vector<std::pair<uint64_t, uint32_t>>& requests) {
+  if (total_bytes == 0) return;
+  
+  constexpr uint32_t CACHE_LINE_SIZE = 128;
+  uint64_t current_addr = start_addr;
+  uint32_t remaining_bytes = total_bytes;
+  
+  while (remaining_bytes > 0) {
+    // Calculate bytes to next cache line boundary
+    uint64_t next_boundary = (current_addr + CACHE_LINE_SIZE) & ~(CACHE_LINE_SIZE - 1);
+    uint32_t bytes_to_boundary = static_cast<uint32_t>(next_boundary - current_addr);
+    
+    // Determine request size: min(remaining, bytes_to_boundary, CACHE_LINE_SIZE)
+    uint32_t request_size = std::min({remaining_bytes, bytes_to_boundary, CACHE_LINE_SIZE});
+    
+    requests.push_back({current_addr, request_size});
+    
+    current_addr += request_size;
+    remaining_bytes -= request_size;
+  }
+}
+
+// Recursive helper to traverse tensor dimensions and generate memory requests
+// dim: current dimension being processed (Rank-1 down to 0)
+// current_coords: accumulated coordinates from higher dimensions
+// base_addr: current physical address
+// tensormap: tensor descriptor
+// requests: output vector of (address, size) pairs
+static void traverse_tensor_dim(int dim, 
+                                const uint32_t current_coords[5],
+                                uint64_t base_addr,
+                                const tensormap_descriptor_t& tensormap,
+                                std::vector<std::pair<uint64_t, uint32_t>>& requests) {
+  uint32_t elem_size = tensormap.get_element_size();
+  
+  if (dim == 0) {
+    // Base case: innermost dimension (contiguous)
+    uint32_t start_x = current_coords[0];
+    uint32_t box_width = tensormap.fields.boxDim[0];
+    uint32_t global_width = tensormap.fields.globalDim[0];
+    
+    // Calculate valid range intersection: [start_x, start_x + box_width) ∩ [0, global_width)
+    uint32_t valid_start = start_x;
+    uint32_t valid_end = start_x + box_width;
+    
+    // Check if completely out of bounds
+    if (valid_start >= global_width || valid_end <= 0) {
+      return; // No valid data, skip
+    }
+    
+    // Clamp to valid tensor boundaries
+    valid_start = std::max(valid_start, 0u);
+    valid_end = std::min(valid_end, global_width);
+    
+    if (valid_start >= valid_end) return;
+    
+    // Calculate physical start address and total bytes
+    uint64_t phys_start_addr = base_addr + (valid_start * elem_size);
+    uint32_t valid_bytes = (valid_end - valid_start) * elem_size;
+    
+    // Generate aligned memory fetch requests
+    gen_aligned_req(phys_start_addr, valid_bytes, requests);
+    
+  } else {
+    // Recursive case: traverse higher dimensions
+    uint32_t box_extent = tensormap.fields.boxDim[dim];
+    uint32_t global_extent = tensormap.fields.globalDim[dim];
+    uint64_t stride = tensormap.fields.globalStrides[dim - 1];
+    
+    for (uint32_t i = 0; i < box_extent; i++) {
+      uint32_t current_coord = current_coords[dim] + i;
+      
+      // OOB check: skip if outside valid tensor range
+      if (current_coord >= global_extent) {
+        continue; // Skip this branch (zero-padding)
+      }
+      
+      // Calculate address offset for this coordinate
+      uint64_t next_addr = base_addr + (current_coord * stride);
+      
+      // Recurse to next lower dimension
+      traverse_tensor_dim(dim - 1, current_coords, next_addr, tensormap, requests);
+    }
+  }
+}
+
+// Main entry point: Generate TMA memory fetch requests
+// start_coords: starting coordinate for each dimension (e.g., {x, y, z, w, v})
+// Returns: vector of (physical_address, size_in_bytes) pairs
+std::vector<std::pair<uint64_t, uint32_t>> 
+generate_tma_requests(const tensormap_descriptor_t& tensormap, 
+                      const uint32_t start_coords[5]) {
+  std::vector<std::pair<uint64_t, uint32_t>> requests;
+  
+  if (!tensormap.is_valid() || tensormap.fields.tensorRank > 4) {
+    return requests; // Empty result for invalid tensormap
+  }
+  
+  // Start recursive traversal from highest dimension (0-based index)
+  int highest_dim = static_cast<int>(tensormap.num_dims()) - 1; // highest dimension index (0-based)
+  uint64_t base_addr = tensormap.fields.globalAddress;
+  
+  traverse_tensor_dim(highest_dim, start_coords, base_addr, tensormap, requests);
+  
+  return requests;
+}
+
+} // namespace flash_gpgpu_sim
+
+//=============================================================================
 // TensorMap Descriptor Implementation
 //=============================================================================
 
@@ -554,22 +686,25 @@ uint32_t tensormap_descriptor_t::get_element_size() const {
 }
 
 uint32_t tensormap_descriptor_t::get_tile_size_bytes() const {
-  if (fields.tensorRank == 0) return 0;
+  if (fields.tensorRank > 4) return 0;
   
   uint32_t total_elements = 1;
-  for (uint32_t i = 0; i < fields.tensorRank; i++) {
+  uint32_t dims = num_dims();
+  for (uint32_t i = 0; i < dims; i++) {
     total_elements *= fields.boxDim[i];
   }
   return total_elements * get_element_size();
 }
 
 uint64_t tensormap_descriptor_t::calculate_src_addr(const uint32_t coords[5]) const {
-  // Calculate the source address based on coordinates and strides
-  // This is a simplified linear address calculation
+  // Calculate the base address for the tile starting at given coordinates
+  // This is used for simple address calculation (not for generating actual memory requests)
+  // Assume fields.tensorRank is 0-based.
   uint64_t addr = fields.globalAddress;
   uint32_t elem_size = get_element_size();
+  uint32_t dims = num_dims();
   
-  for (uint32_t i = 0; i < fields.tensorRank+1; i++) {
+  for (uint32_t i = 0; i < dims; i++) {
     // For dimension 0, use element size; for others, use stride
     if (i == 0) {
       addr += coords[i] * elem_size;
@@ -581,17 +716,92 @@ uint64_t tensormap_descriptor_t::calculate_src_addr(const uint32_t coords[5]) co
 }
 
 void tensormap_descriptor_t::print() const {
-  printf("TensorMap Descriptor:\n");
-  printf("  global_address: 0x%llx\n", (unsigned long long)fields.globalAddress);
-  printf("  rank: %u\n", fields.tensorRank);
-  printf("  elemtype: %u (size=%u bytes)\n", fields.tensorDataType, get_element_size());
-  printf("  box_dim: [");
-  for (uint32_t i = 0; i < fields.tensorRank; i++) printf("%u%s", fields.boxDim[i], i < fields.tensorRank-1 ? ", " : "");
-  printf("]\n");
-  printf("  global_dim: [");
-  for (uint32_t i = 0; i < fields.tensorRank; i++) printf("%u%s", fields.globalDim[i], i < fields.tensorRank-1 ? ", " : "");
-  printf("]\n");
-  printf("  tile_size_bytes: %u\n", get_tile_size_bytes());
+  char buf[1024];
+  size_t pos = 0;
+  uint32_t dims = num_dims();
+
+  auto append_checked = [&](const char *fmt, ...) {
+    if (pos >= sizeof(buf)) return;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + pos, sizeof(buf) - pos, fmt, ap);
+    va_end(ap);
+    if (n < 0) { pos = sizeof(buf) - 1; buf[pos] = '\0'; return; }
+    size_t rem = sizeof(buf) - pos;
+    if ((size_t)n >= rem) { pos = sizeof(buf) - 1; buf[pos] = '\0'; }
+    else pos += (size_t)n;
+  };
+
+  append_checked("TensorMap Descriptor:\n");
+  append_checked("  global_address: 0x%llx\n", (unsigned long long)fields.globalAddress);
+  append_checked("  rank: %u (num_dims=%u)\n", fields.tensorRank, dims);
+  append_checked("  elemtype: %u (size=%u bytes)\n", fields.tensorDataType, get_element_size());
+
+  append_checked("  box_dim: [");
+  for (uint32_t i = 0; i < dims; i++) {
+    if (i > 0) append_checked(", ");
+    append_checked("%u", fields.boxDim[i]);
+  }
+  append_checked("]\n");
+
+  append_checked("  global_dim: [");
+  for (uint32_t i = 0; i < dims; i++) {
+    if (i > 0) append_checked(", ");
+    append_checked("%u", fields.globalDim[i]);
+  }
+  append_checked("]\n");
+
+  append_checked("  global_strides: [");
+  if (dims > 1) {
+    for (uint32_t i = 0; i < dims - 1; i++) {
+      if (i > 0) append_checked(", ");
+      append_checked("0x%llx", (unsigned long long)fields.globalStrides[i]);
+    }
+  }
+  append_checked("]\n");
+
+  append_checked("  element_strides: [");
+  for (uint32_t i = 0; i < dims; i++) {
+    if (i > 0) append_checked(", ");
+    append_checked("%u", fields.elementStrides[i]);
+  }
+  append_checked("]\n");
+
+  // Map numeric mode values to human-readable macro names.
+  auto interleave_to_string = [](uint32_t v) -> const char* {
+    switch (v) {
+      case TMA_INTERLEAVE_NONE: return "TMA_INTERLEAVE_NONE";
+      case TMA_INTERLEAVE_16B:  return "TMA_INTERLEAVE_16B";
+      case TMA_INTERLEAVE_32B:  return "TMA_INTERLEAVE_32B";
+      default: return "TMA_INTERLEAVE_UNKNOWN";
+    }
+  };
+  auto swizzle_to_string = [](uint32_t v) -> const char* {
+    switch (v) {
+      case TMA_SWIZZLE_NONE:  return "TMA_SWIZZLE_NONE";
+      case TMA_SWIZZLE_32B:   return "TMA_SWIZZLE_32B";
+      case TMA_SWIZZLE_64B:   return "TMA_SWIZZLE_64B";
+      case TMA_SWIZZLE_128B:  return "TMA_SWIZZLE_128B";
+      case TMA_SWIZZLE_96B:   return "TMA_SWIZZLE_96B";
+      default: return "TMA_SWIZZLE_UNKNOWN";
+    }
+  };
+  auto oobfill_to_string = [](uint32_t v) -> const char* {
+    switch (v) {
+      case TMA_OOB_ZERO: return "TMA_OOB_ZERO";
+      case TMA_OOB_NAN:  return "TMA_OOB_NAN";
+      default: return "TMA_OOB_UNKNOWN";
+    }
+  };
+
+  append_checked("  interleave: %s (%u), swizzle: %s (%u), oobFill: %s (%u)\n",
+                 interleave_to_string(fields.interleave), fields.interleave,
+                 swizzle_to_string(fields.swizzle), fields.swizzle,
+                 oobfill_to_string(fields.oobFill), fields.oobFill);
+
+  append_checked("  tile_size_bytes: %u\n", get_tile_size_bytes());
+
+  printf("%s", buf);
 }
 
 tensormap_descriptor_t tensormap_descriptor_t::read_from_shared(memory_space *shared_mem, uint32_t addr) {

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <vector>
 
 class shader_core_ctx;
 class warp_inst_t;
@@ -97,13 +98,21 @@ typedef union __attribute__((aligned(128))) tensormap_descriptor_t {
   uint32_t get_element_size() const;
   uint32_t get_tile_size_bytes() const;
   uint64_t calculate_src_addr(const uint32_t coords[5]) const;
-  bool is_valid() const { return fields.tensorRank > 0 && fields.globalAddress != 0; }
+  uint32_t num_dims() const { return fields.tensorRank + 1u; }
+  bool is_valid() const { return fields.tensorRank <= 4 && fields.globalAddress != 0; }
   void print() const;
 
   static tensormap_descriptor_t read_from_shared(memory_space *shared_mem, uint32_t addr);
   void write_to_shared(memory_space *shared_mem, uint32_t addr, ptx_thread_info *thd, const ptx_instruction *pI) const;
   
 } tensormap_descriptor_t;
+
+// Generate memory fetch requests for TMA tensor operations
+// start_coords: starting coordinate for each dimension [x, y, z, w, v]
+// Returns: vector of (physical_address, size_in_bytes) pairs for memory fetches
+std::vector<std::pair<uint64_t, uint32_t>> 
+generate_tma_requests(const tensormap_descriptor_t& tensormap, 
+                      const uint32_t start_coords[5]);
 
 } // namespace flash_gpgpu_sim
 
