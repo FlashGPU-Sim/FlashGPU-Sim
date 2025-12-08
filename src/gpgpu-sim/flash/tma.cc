@@ -257,8 +257,7 @@ bool tma_unit_t::response_buffer_full() const {
 } // namespace flash_gpgpu_sim
 
 void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
-  // Currently no TMA instructions are defined.
-
+  
   ptx_instruction *pI = const_cast<ptx_instruction *>(pIin);
 
   DPRINTF_INST_EXEC(TMA, "inst %s\n", pI->to_string().c_str());
@@ -380,24 +379,48 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
     auto completion_option = *option_iter;
     ++option_iter;
 
+    memory_space *shared_mem = thread->m_shared_mem;
+    memory_space *global_mem = thread->get_global_memory();
+
+    auto compute_inst_dim = [&](unsigned dim_option) -> unsigned {
+      unsigned d = 0;
+      switch (dim_option) {
+        case DIM_1D_OPTION: d = 1; break;
+        case DIM_2D_OPTION: d = 2; break;
+        case DIM_3D_OPTION: d = 3; break;
+        case DIM_4D_OPTION: d = 4; break;
+        case DIM_5D_OPTION: d = 5; break;
+        default:
+          DPRINTF_INST_EXEC(TMA, "ERROR: Unknown dimension option %d\n", dim_option);
+          abort();
+      }
+      return d;
+    };
+
     if ((dst_option == CTA_OPTION || dst_option == CLUSTER_OPTION) && 
         src_option == GLOBAL_OPTION && completion_option == TMA_MBAR_COMPLETE_BYTES) {
       // cp.async.bulk.tensor.Nd.shared::cta.global.mbarrier::complete_tx::bytes
       // cp.async.bulk.tensor.Nd.shared::cluster.global.mbarrier::complete_tx::bytes
-      // Operands: [dst_shared], [tensormap, {coords...}], [mbar]
+      // Operands: [dst_shared], [tensormap, {coords...}], [mbar], ignore cache-hint for now
       
       auto dst_addr = get_u32_value(pI->dst());
       uint64_t tensormap_addr = get_u64_value(pI->src1());      
       auto mbar_addr = get_u32_value(pI->src3());
-      
-      memory_space *shared_mem = thread->m_shared_mem;
-      memory_space *global_mem = thread->get_global_memory();
 
       // Read tensormap descriptor from global memory
       flash_gpgpu_sim::tensormap_descriptor_t tensormap;
       global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &tensormap);
       if(!tensormap.is_valid()) {
         tensormap.print();
+        fflush(stdout);
+        exit(1);
+      }
+      unsigned tensormap_dim = tensormap.num_dims();
+      unsigned inst_dim = compute_inst_dim(dim_option);
+      if (tensormap_dim != inst_dim) {
+        DPRINTF_INST_EXEC(TMA,
+          "ERROR: Dimension mismatch - instruction is %uD but tensormap num_dims is %u (dim=%uD)\n",
+          inst_dim, tensormap_dim, tensormap_dim);
         fflush(stdout);
         exit(1);
       }
@@ -408,32 +431,9 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       
       // Get coordinates from operands (between tensormap and mbar)
       // For 1D/2D/3D/4D/5D: coords are {coord0, coord1, ...}
-      uint32_t coords[5] = {0, 0, 0, 0, 0};
-      
-      // Determine instruction dimension from dim_option
-      unsigned inst_dim = 0;
-      switch (dim_option) {
-        case DIM_1D_OPTION: inst_dim = 1; break;
-        case DIM_2D_OPTION: inst_dim = 2; break;
-        case DIM_3D_OPTION: inst_dim = 3; break;
-        case DIM_4D_OPTION: inst_dim = 4; break;
-        case DIM_5D_OPTION: inst_dim = 5; break;
-        default:
-          DPRINTF_INST_EXEC(TMA, "ERROR: Unknown dimension option %d\n", dim_option);
-          abort();
-      }
-      
-      // Validate tensormap rank matches instruction dimension
-      // Note: tensormap rank encoding is 0-based (0=1D, 1=2D, 2=3D, etc.)
-      unsigned tensormap_dim = tensormap.num_dims();
-      if (tensormap_dim != inst_dim) {
-        DPRINTF_INST_EXEC(TMA, 
-          "ERROR: Dimension mismatch - instruction is %uD but tensormap rank is %u (dim=%uD)\n",
-          inst_dim, tensormap.fields.tensorRank, tensormap_dim);
-        abort();
-      }
-      
       const auto &coord_operand = pI->get_operands()[2];
+
+      uint32_t coords[5] = {0, 0, 0, 0, 0};
       if (coord_operand.is_vector()) {
         unsigned n_coords = coord_operand.get_vect_nelem();
         ptx_reg_t coord_regs[8];
@@ -447,12 +447,12 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
         coords[0] = thread->get_operand_value(coord_operand, coord_operand, U32_TYPE, thread, 0).u32;
       }
       
-      DPRINTF_INST_EXEC(TMA, "Extracted coordinates: [%u, %u, %u, %u, %u]\n", 
-                coords[0], coords[1], coords[2], coords[3], coords[4]);
-      
+      // DPRINTF_INST_EXEC(TMA, "TMA tensor load Extracted coordinates: [%u, %u, %u, %u, %u]\n", 
+      //           coords[0], coords[1], coords[2], coords[3], coords[4]);
+
       // Pass info to perf sim
       inst_t::tma_static_info_t tma_static_info{
-          .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+          .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA, // treat shared::cluster same as shared::cta
           .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
       };
       pI->set_tma_static_info(tma_static_info);
@@ -491,38 +491,99 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
         delete[] data_buffer;
       }
       
-      DPRINTF_INST_EXEC(TMA,
-        "Functional Sim: TMA tensor load dst=0x%x, src=0x%llx, "
-        "size=%u, mbar=0x%x, tensormap=0x%x\n",
-        dst_addr, (unsigned long long)base_src_addr, size_in_bytes, mbar_addr, tensormap_addr);
+      // DPRINTF_INST_EXEC(TMA,
+      //   "Functional Sim: TMA tensor load dst=0x%x, src=0x%llx, "
+      //   "size=%u, mbar=0x%x, tensormap=0x%x\n",
+      //   dst_addr, (unsigned long long)base_src_addr, size_in_bytes, mbar_addr, tensormap_addr);
         
-    } else if (dst_option == GLOBAL_OPTION && completion_option == TMA_MBAR_COMPLETE_BYTES) {
+    } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION) {
       // cp.async.bulk.tensor.Nd.global.shared::cta.bulk_group
       // This is a store operation, no mbarrier involved
+      // Operands: [tensormap, {coords...}], [src_shared], ignore cache-hint for now
       
       // Get tensormap address
       auto tensormap_addr = get_u32_value(pI->dst());  // dst is tensormap for store
-      auto src_addr = get_u32_value(pI->src1());        // src is shared memory
+      auto src_addr = get_u32_value(pI->src2());       // src is shared memory
       
       // Read tensormap descriptor
-      memory_space *shared_mem = thread->m_shared_mem;
-      flash_gpgpu_sim::tensormap_descriptor_t tensormap = 
-          flash_gpgpu_sim::tensormap_descriptor_t::read_from_shared(shared_mem, tensormap_addr);
+      flash_gpgpu_sim::tensormap_descriptor_t tensormap;
+      global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &tensormap);
+      if(!tensormap.is_valid()) {
+        tensormap.print();
+        fflush(stdout);
+        exit(1);
+      }
+      unsigned tensormap_dim = tensormap.num_dims();
+      unsigned inst_dim = compute_inst_dim(dim_option);
+      if (tensormap_dim != inst_dim) {
+        DPRINTF_INST_EXEC(TMA,
+          "ERROR: Dimension mismatch - instruction is %uD but tensormap num_dims is %u (dim=%uD)\n",
+          inst_dim, tensormap_dim, tensormap_dim);
+        fflush(stdout);
+        exit(1);
+      }
       
+      // Calculate transfer size from tensormap
       uint32_t size_in_bytes = tensormap.get_tile_size_bytes();
-      if (size_in_bytes == 0) size_in_bytes = 65536;  // Fallback
+      assert(size_in_bytes > 0 && "TMA tensor load size cannot be zero");
+      
+      // Get coordinates from operands (between tensormap and src_addr)
+      // For 1D/2D/3D/4D/5D: coords are {coord0, coord1, ...}
+      const auto &coord_operand = pI->get_operands()[1];
+
+      uint32_t coords[5] = {0, 0, 0, 0, 0};
+      if (coord_operand.is_vector()) {
+        unsigned n_coords = coord_operand.get_vect_nelem();
+        ptx_reg_t coord_regs[8];
+        thread->get_vector_operand_values(coord_operand, coord_regs, n_coords);
+        
+        for (unsigned i = 0; i < n_coords && i < 5; i++) {
+          coords[i] = coord_regs[i].u32;
+        }
+      } else {
+        // Single coordinate (1D case with non-vector operand)
+        coords[0] = thread->get_operand_value(coord_operand, coord_operand, U32_TYPE, thread, 0).u32;
+      }
+      
+      DPRINTF_INST_EXEC(TMA, "TMA tensore store Extracted coordinates: [%u, %u, %u, %u, %u]\n", 
+                coords[0], coords[1], coords[2], coords[3], coords[4]);
       
       inst_t::tma_static_info_t tma_static_info{
           .dst_space = inst_t::tma_static_info_t::TMA_GLOBAL,
           .src_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
       };
       pI->set_tma_static_info(tma_static_info);
+
+      // TODO: set dyn info
       
-      // TODO: Perform actual store (shared -> global) when needed
+      // Functional simulation: Copy data from shared to global
+      // Use generate_tma_requests to get the global memory request layout
+      auto memory_requests = flash_gpgpu_sim::generate_tma_requests(tensormap, coords);
+      
+      // base_dst_addr: the starting global address for this tile
+      uint64_t base_dst_addr = tensormap.calculate_src_addr(coords);
+      
+      for (const auto &req : memory_requests) {
+        uint64_t global_req_addr = req.first;
+        uint32_t req_size = req.second;
+        
+        // Calculate the offset within the tile
+        uint64_t offset_in_tile = global_req_addr - base_dst_addr;
+        
+        // Read from shared memory (src_addr + offset)
+        unsigned char *data_buffer = new unsigned char[req_size];
+        shared_mem->read(src_addr + offset_in_tile, req_size, data_buffer);
+        
+        // Write to global memory at the calculated address
+        global_mem->write(global_req_addr, req_size, data_buffer, thread, pI);
+        
+        delete[] data_buffer;
+      }
+
       DPRINTF_INST_EXEC(TMA,
-        "Functional Sim: TMA tensor store (global <- shared) "
-        "tensormap=0x%x, src=0x%x, size=%u\n",
-        tensormap_addr, src_addr, size_in_bytes);
+        "Functional Sim: TMA tensor store dst=0x%llx, src=0x%x, "
+        "size=%u, tensormap=0x%x\n",
+        (unsigned long long)base_dst_addr, src_addr, size_in_bytes, tensormap_addr);
         
     } else {
       DPRINTF_INST_EXEC(TMA, 
