@@ -340,8 +340,8 @@ void function_info::recognize_dynamic_shared_mem() {
 
 void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
   // Handle dynamic shared memory for extern shared symbols
-  printf("GPGPU-Sim PTX: Setting up dynamic shared memory: size=%zu bytes\n",
-         shared_mem_size);
+    printf("GPGPU-Sim PTX: Setting up dynamic shared memory: size=%d bytes\n",
+      shared_mem_size);
 
   symbol_table *symtab = get_symtab();
 
@@ -354,12 +354,20 @@ void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
       alignto = shared_mem_size;
     }
     addr_t addr_pad = alignto ? ((alignto - (addr % alignto)) % alignto) : 0;
-    printf("GPGPU-Sim PTX: Allocating local dyn shared mem symbol %s from "
-           "0x%llx to 0x%llx (size %zu)\n",
+        printf("GPGPU-Sim PTX: Allocating local dyn shared mem symbol %s from "
+          "0x%llx to 0x%llx (size %d)\n",
            m_local_dyn_shared_mem_symbol->name().c_str(), addr + addr_pad,
            addr + addr_pad + shared_mem_size, shared_mem_size);
     m_local_dyn_shared_mem_symbol->set_address(addr + addr_pad);
     symtab->alloc_shared(shared_mem_size + addr_pad);
+    // Print the dynamic allocation and the resulting total shared mem for this
+    // kernel. `m_kernel_info.smem` is the declared (static) smem size parsed
+    // at assembly time; `shared_mem_size` is the per-launch dynamic size.
+    unsigned declared_smem = (unsigned)m_kernel_info.smem;
+    unsigned total_smem = declared_smem + (unsigned)shared_mem_size;
+    printf(
+      "GPGPU-Sim PTX: Kernel '%s' : smem(static)=%u, smem(dynamic)=%d, total_smem=%u\n",
+      m_name.c_str(), declared_smem, shared_mem_size, total_smem);
   } else {
     symtab->dump_until_top();
     printf("GPGPU-Sim PTX: Error -- dynamic shared memory size specified "
@@ -2658,15 +2666,17 @@ unsigned max_cta(const struct gpgpu_ptx_sim_info *kernel_info,
                  unsigned int n_thread_per_shader,
                  unsigned int gpgpu_shmem_size,
                  unsigned int gpgpu_shader_registers,
-                 unsigned int max_cta_per_core) {
+                 unsigned int max_cta_per_core,
+                 unsigned int dynamic_smem) {
   unsigned int padded_cta_size = threads_per_cta;
   if (padded_cta_size % warp_size)
     padded_cta_size = ((padded_cta_size / warp_size) + 1) * (warp_size);
   unsigned int result_thread = n_thread_per_shader / padded_cta_size;
 
   unsigned int result_shmem = (unsigned)-1;
-  if (kernel_info->smem > 0)
-    result_shmem = gpgpu_shmem_size / kernel_info->smem;
+  unsigned int block_smem = kernel_info->smem + dynamic_smem;
+  if (block_smem > 0)
+    result_shmem = gpgpu_shmem_size / block_smem;
   unsigned int result_regs = (unsigned)-1;
   if (kernel_info->regs > 0)
     result_regs = gpgpu_shader_registers /
@@ -2730,8 +2740,9 @@ void cuda_sim::gpgpu_cuda_ptx_sim_main_func(kernel_info_t &kernel,
           ->gpgpu_shmem_size,
       gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()
           ->gpgpu_shader_registers,
-      gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()
-          ->max_cta_per_core);
+        gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()
+          ->max_cta_per_core,
+        kernel.get_dynamic_smem());
   printf("Max CTA : %d\n", max_cta_tot);
 
   int cp_op = gpgpu_ctx->the_gpgpusim->g_the_gpu->checkpoint_option;
@@ -2985,8 +2996,12 @@ void print_ptxinfo() {
            g_ptxinfo.cmem);
   }
   if (get_ptxinfo_kname()) {
+    // NOTE: The printed `smem` below is the statically-declared shared memory
+    // size that is known at PTX parsing/assembly time. Dynamic (per-launch)
+    // shared memory is configured at kernel launch and is printed separately
+    // when it is configured (see function_info::alloc_dyn_shared_mem()).
     printf(
-        "GPGPU-Sim PTX: Kernel \'%s\' : regs=%u, lmem=%u, smem=%u, cmem=%u\n",
+        "GPGPU-Sim PTX: Kernel '%s' : regs=%u, lmem=%u, smem(static)=%u, cmem=%u\n",
         get_ptxinfo_kname(), g_ptxinfo.regs, g_ptxinfo.lmem, g_ptxinfo.smem,
         g_ptxinfo.cmem);
   }
@@ -3058,9 +3073,9 @@ void ptxinfo_opencl_addinfo(std::map<std::string, function_info *> &kernels) {
     abort();
   } else {
     printf(
-        "GPGPU-Sim PTX: Kernel \'%s\' : regs=%u, lmem=%u, smem=%u, cmem=%u\n",
-        g_ptxinfo_kname, g_ptxinfo.regs, g_ptxinfo.lmem, g_ptxinfo.smem,
-        g_ptxinfo.cmem);
+      "GPGPU-Sim PTX: Kernel '%s' : regs=%u, lmem=%u, smem(static)=%u, cmem=%u\n",
+      g_ptxinfo_kname, g_ptxinfo.regs, g_ptxinfo.lmem, g_ptxinfo.smem,
+      g_ptxinfo.cmem);
     function_info *finfo = k->second;
     assert(finfo != NULL);
     finfo->set_kernel_info(g_ptxinfo);

@@ -169,6 +169,9 @@ private:
   mutable std::shared_mutex m_mutex;
 #endif
 
+  // dynamic shared memory specified at kernel launch (bytes per CTA)
+  unsigned m_dynamic_smem;
+
 public:
   // Jin: parent and child kernel management for CDP
   void set_parent(kernel_info_t *parent, dim3 parent_ctaid, dim3 parent_tid);
@@ -203,6 +206,9 @@ public:
 
   unsigned m_kernel_TB_latency; // this used for any CPU-GPU kernel latency and
                                 // counted in the gpu_cycle
+  // Dynamic shared memory per CTA (specified at launch)
+  void set_dynamic_smem(unsigned bytes) { m_dynamic_smem = bytes; }
+  unsigned get_dynamic_smem() const { return m_dynamic_smem; }
 };
 
 #endif // #ifndef KERNEL_INFO_INCLUDED

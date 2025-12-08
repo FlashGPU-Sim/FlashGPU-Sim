@@ -46,6 +46,7 @@ kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
       num_blocks() * entry->gpgpu_ctx->device_runtime->g_TB_launch_latency;
 
   cache_config_set = false;
+  m_dynamic_smem = 0;
 }
 
 /*A snapshot of the texture mappings needs to be stored in the kernel's info as
@@ -79,6 +80,7 @@ kernel_info_t::kernel_info_t(
   cache_config_set = false;
   m_NameToCudaArray = nameToCudaArray;
   m_NameToTextureInfo = nameToTextureInfo;
+  m_dynamic_smem = 0;
 }
 
 kernel_info_t::~kernel_info_t() {

@@ -1017,8 +1017,10 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
       hostFun, config.get_args(), config.grid_dim(), config.block_dim(),
       context);
 
-  // Handle dynamic shared memory for extern shared symbols
+  // Handle dynamic shared memory for extern shared symbols and record the
+  // per-launch dynamic shared memory size on the kernel grid object
   size_t shared_mem_size = config.shared_mem();
+  grid->set_dynamic_smem((unsigned)shared_mem_size);
   if (shared_mem_size > 0) {
     function_info *func_info = grid->entry();
     func_info->alloc_dyn_shared_mem(shared_mem_size);
