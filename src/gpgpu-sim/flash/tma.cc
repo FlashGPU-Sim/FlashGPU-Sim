@@ -15,6 +15,12 @@ typedef void *yyscan_t;
 
 std::atomic<unsigned int> tma_next_tx_uid = 0;
 
+// Forward declaration for helper function defined later
+namespace flash_gpgpu_sim {
+static uint64_t global_to_tile_offset(uint64_t global_addr, uint64_t base_addr,
+                                       const tensormap_descriptor_t& tensormap);
+}
+
 namespace flash_gpgpu_sim {
 
 class tma_unit_impl_t {
@@ -260,8 +266,6 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
   
   ptx_instruction *pI = const_cast<ptx_instruction *>(pIin);
 
-  DPRINTF_INST_EXEC(TMA, "inst %s\n", pI->to_string().c_str());
-
   bool is_commit_group = false;
   bool is_wait_group = false;
   bool is_tensor = false;
@@ -486,8 +490,9 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
         uint32_t req_size = req.second;
         unsigned char *data_buffer = new unsigned char[req_size];
         global_mem->read(req_addr, req_size, data_buffer);
-        uint64_t dst_offset = req_addr - base_src_addr;
-        shared_mem->write(dst_addr + dst_offset, req_size, data_buffer, thread, pI);
+        // Use tile-local offset (accounting for stride difference between global and tile)
+        uint64_t tile_offset = flash_gpgpu_sim::global_to_tile_offset(req_addr, base_src_addr, tensormap);
+        shared_mem->write(dst_addr + tile_offset, req_size, data_buffer, thread, pI);
         delete[] data_buffer;
       }
       
@@ -567,12 +572,12 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
         uint64_t global_req_addr = req.first;
         uint32_t req_size = req.second;
         
-        // Calculate the offset within the tile
-        uint64_t offset_in_tile = global_req_addr - base_dst_addr;
+        // Calculate the tile-local offset (accounting for stride difference between global and tile)
+        uint64_t tile_offset = flash_gpgpu_sim::global_to_tile_offset(global_req_addr, base_dst_addr, tensormap);
         
-        // Read from shared memory (src_addr + offset)
+        // Read from shared memory (src_addr + tile_offset)
         unsigned char *data_buffer = new unsigned char[req_size];
-        shared_mem->read(src_addr + offset_in_tile, req_size, data_buffer);
+        shared_mem->read(src_addr + tile_offset, req_size, data_buffer);
         
         // Write to global memory at the calculated address
         global_mem->write(global_req_addr, req_size, data_buffer, thread, pI);
@@ -612,6 +617,55 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
 //=============================================================================
 
 namespace flash_gpgpu_sim {
+
+// Helper function to convert a global address offset to tile-local offset
+// The global tensor may have a different row stride than the tile (based on box dimensions)
+// For example: global tensor has 4096 cols, tile has 32 cols
+// Global row stride = 4096 * elem_size, tile row stride = 32 * elem_size
+// This function converts (global_addr - base_global_addr) to the equivalent tile offset
+static uint64_t global_to_tile_offset(uint64_t global_addr, uint64_t base_addr,
+                                       const tensormap_descriptor_t& tensormap) {
+  uint32_t elem_size = tensormap.get_element_size();
+  uint32_t num_dims = tensormap.num_dims();
+  
+  // Calculate the byte offset in global memory space
+  uint64_t global_byte_offset = global_addr - base_addr;
+  
+  if (num_dims == 1) {
+    // 1D: tile offset equals global offset
+    return global_byte_offset;
+  }
+  
+  // For 2D and higher, we need to decompose the global offset into coordinates
+  // and then recompute using tile strides
+  
+  // Get global strides (dim 0 uses elem_size, higher dims use globalStrides)
+  uint64_t global_strides[5];
+  global_strides[0] = elem_size;
+  for (uint32_t d = 1; d < num_dims; d++) {
+    global_strides[d] = tensormap.fields.globalStrides[d - 1];
+  }
+  
+  // Get tile strides (based on box dimensions)
+  uint64_t tile_strides[5];
+  tile_strides[0] = elem_size;
+  for (uint32_t d = 1; d < num_dims; d++) {
+    tile_strides[d] = tile_strides[d - 1] * tensormap.fields.boxDim[d - 1];
+  }
+  
+  // Decompose global_byte_offset into coordinates (from highest to lowest dimension)
+  // Then recompute offset using tile strides
+  uint64_t tile_offset = 0;
+  uint64_t remaining = global_byte_offset;
+  
+  for (int d = num_dims - 1; d >= 0; d--) {
+    uint64_t coord_in_tile = remaining / global_strides[d];
+    remaining = remaining % global_strides[d];
+    tile_offset += coord_in_tile * tile_strides[d];
+  }
+  
+  return tile_offset;
+}
 
 // Helper function to generate 128B-aligned memory fetch requests
 // Splits a contiguous memory range into cache-line-aligned requests
