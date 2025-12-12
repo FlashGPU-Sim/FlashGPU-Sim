@@ -88,12 +88,6 @@ static bool validate_tensormap(const tensormap_descriptor_t &tensormap,
   return true;
 }
 
-
-// Forward declaration for generate_tma_requests (defined later)
-std::vector<std::pair<uint64_t, uint32_t>> 
-generate_tma_requests(const tensormap_descriptor_t& tensormap, 
-                      const uint32_t start_coords[5]);
-
 // Convert global address offset to tile-local offset
 // Global tensor may have different row stride than tile (based on box dimensions)
 // This function converts (global_addr - base_global_addr) to equivalent tile offset
@@ -139,45 +133,6 @@ static uint64_t global_to_tile_offset(uint64_t global_addr, uint64_t base_addr,
   }
   
   return tile_offset;
-}
-
-// Execute TMA data transfer (load or store)
-// is_load=true: global -> shared, is_load=false: shared -> global
-static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
-                            const uint32_t coords[5],
-                            memory_space *shared_mem,
-                            memory_space *global_mem,
-                            uint32_t smem_addr,
-                            ptx_thread_info *thread,
-                            const ptx_instruction *pI,
-                            bool is_load) {
-  // Generate memory requests based on tensormap and coordinates
-  auto memory_requests = generate_tma_requests(tensormap, coords);
-  
-  // Calculate base address in global memory for this tile
-  uint64_t base_global_addr = tensormap.calculate_src_addr(coords);
-  
-  for (const auto &req : memory_requests) {
-    uint64_t global_req_addr = req.first;
-    uint32_t req_size = req.second;
-    
-    // Calculate tile-local offset (accounting for stride difference)
-    uint64_t tile_offset = global_to_tile_offset(global_req_addr, base_global_addr, tensormap);
-    
-    unsigned char *data_buffer = new unsigned char[req_size];
-    
-    if (is_load) {
-      // Load: global -> shared
-      global_mem->read(global_req_addr, req_size, data_buffer);
-      shared_mem->write(smem_addr + tile_offset, req_size, data_buffer, thread, pI);
-    } else {
-      // Store: shared -> global
-      shared_mem->read(smem_addr + tile_offset, req_size, data_buffer);
-      global_mem->write(global_req_addr, req_size, data_buffer, thread, pI);
-    }
-    
-    delete[] data_buffer;
-  }
 }
 
 // Generate 128B-aligned memory fetch requests
@@ -269,8 +224,251 @@ static void traverse_tensor_dim(int dim,
   }
 }
 
+// Main entry point: Generate TMA memory fetch requests
+// start_coords: starting coordinate for each dimension (e.g., {x, y, z, w, v})
+// Returns: vector of (physical_address, size_in_bytes) pairs
+std::vector<std::pair<uint64_t, uint32_t>> 
+generate_tma_requests(const tensormap_descriptor_t& tensormap, 
+                      const uint32_t start_coords[5]) {
+  std::vector<std::pair<uint64_t, uint32_t>> requests;
+  
+  if (!tensormap.is_valid() || tensormap.fields.tensorRank > 4) {
+    return requests; // Empty result for invalid tensormap
+  }
+  
+  // Start recursive traversal from highest dimension (0-based index)
+  int highest_dim = static_cast<int>(tensormap.num_dims()) - 1; // highest dimension index (0-based)
+  uint64_t base_addr = tensormap.fields.globalAddress;
+  
+  traverse_tensor_dim(highest_dim, start_coords, base_addr, tensormap, requests);
+  
+  return requests;
+}
+
+// Execute TMA data transfer (load or store)
+// is_load=true: global -> shared, is_load=false: shared -> global
+static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
+                            const uint32_t coords[5],
+                            memory_space *shared_mem,
+                            memory_space *global_mem,
+                            uint32_t smem_addr,
+                            ptx_thread_info *thread,
+                            const ptx_instruction *pI,
+                            bool is_load) {
+  // Generate memory requests based on tensormap and coordinates
+  auto memory_requests = generate_tma_requests(tensormap, coords);
+  
+  // Calculate base address in global memory for this tile
+  uint64_t base_global_addr = tensormap.calculate_src_addr(coords);
+  
+  for (const auto &req : memory_requests) {
+    uint64_t global_req_addr = req.first;
+    uint32_t req_size = req.second;
+    
+    // Calculate tile-local offset (accounting for stride difference)
+    uint64_t tile_offset = global_to_tile_offset(global_req_addr, base_global_addr, tensormap);
+    
+    unsigned char *data_buffer = new unsigned char[req_size];
+    
+    if (is_load) {
+      // Load: global -> shared
+      global_mem->read(global_req_addr, req_size, data_buffer);
+      shared_mem->write(smem_addr + tile_offset, req_size, data_buffer, thread, pI);
+    } else {
+      // Store: shared -> global
+      shared_mem->read(smem_addr + tile_offset, req_size, data_buffer);
+      global_mem->write(global_req_addr, req_size, data_buffer, thread, pI);
+    }
+    
+    delete[] data_buffer;
+  }
+}
+
+
 //=============================================================================
-// TMA Unit Implementation (Timing Simulation)
+// TMA AGU Unit (Address Generation Unit)
+//=============================================================================
+
+struct tma_agu_state_t {
+  // Mode and completion state
+  bool is_tensor = false;          // true=tensor mode, false=linear mode
+  bool done = true;                // true=iteration complete
+  
+  // Tensor mode state (multi-dimensional tile traversal)
+  uint32_t num_dims = 0;           // Number of dimensions (1-5)
+  uint32_t elem_size = 0;          // Element size in bytes
+  uint32_t box_dim[5] = {0};       // Tile dimensions [d0, d1, d2, d3, d4]
+  uint32_t global_dim[5] = {0};    // Global tensor dimensions
+  uint32_t start_coords[5] = {0};  // Starting coordinates of this tile
+  uint64_t global_strides[5] = {0}; // Strides for each dimension
+  uint32_t tile_coords[5] = {0};   // Current position within tile (odometer)
+  uint64_t curr_row_addr = 0;      // Base physical address of current row
+  uint32_t offset_in_row = 0;      // Byte offset within current row
+  uint32_t row_bytes = 0;          // Total bytes in a row (dim0 extent)
+  
+  // Linear mode state (simple 1D address range)
+  uint64_t linear_addr = 0;        // Current address
+  uint32_t linear_remaining = 0;   // Remaining bytes
+};
+
+class tma_agu_unit_t {
+public:
+
+  void init_tensor(tma_agu_state_t &state, 
+                   const tensormap_descriptor_t &tm,
+                   const uint32_t start_coords[5]) {
+
+    if (!tm.is_valid()) {
+      assert(false && "TMA AGU ERROR: Invalid tensormap in init_tensor");
+    }
+    
+    state = tma_agu_state_t();  // Reset to defaults
+    state.is_tensor = true;
+    state.num_dims = tm.num_dims();
+    state.elem_size = tm.get_element_size();
+    
+    // Cache box dimensions and global dimensions
+    for (uint32_t d = 0; d < state.num_dims; d++) {
+      state.box_dim[d] = tm.fields.boxDim[d];
+      state.global_dim[d] = tm.fields.globalDim[d];
+      state.start_coords[d] = start_coords[d];
+    }
+    
+    // Calculate strides: stride[0] = elem_size, stride[i] = globalStrides[i-1]
+    state.global_strides[0] = state.elem_size;
+    for (uint32_t d = 1; d < state.num_dims; d++) {
+      state.global_strides[d] = tm.fields.globalStrides[d - 1];
+    }
+    
+    // Initialize tile coordinates to (0,0,...,0)
+    for (int i = 0; i < 5; i++) {
+      state.tile_coords[i] = 0;
+    }
+    
+    // Calculate initial row address: base + sum(start_coords[d] * stride[d])
+    state.curr_row_addr = tm.fields.globalAddress;
+    for (uint32_t d = 0; d < state.num_dims; d++) {
+      state.curr_row_addr += start_coords[d] * state.global_strides[d];
+    }
+    
+    state.row_bytes = state.box_dim[0] * state.elem_size;
+    state.offset_in_row = 0;
+    state.done = false;
+  }
+  
+  void init_linear(tma_agu_state_t &state,
+                   uint64_t start_addr,
+                   uint32_t total_bytes) {
+    state = tma_agu_state_t();  // Reset to defaults
+    state.is_tensor = false;
+    state.linear_addr = start_addr;
+    state.linear_remaining = total_bytes;
+    state.done = (total_bytes == 0);
+  }
+  
+  /**
+   * Generate next memory request using AGU
+   * 
+   * For tensor mode:
+   *   - Traverses tile in row-major order
+   *   - Skips OOB coordinates (zero-padding)
+   *   - Breaks rows into 128B-aligned chunks
+   * 
+   * For linear mode:
+   *   - Simple sequential address generation
+   *   - Aligns to 128B boundaries
+   */
+  bool gen_next_req(tma_agu_state_t &state,
+                    uint64_t &out_addr,
+                    uint32_t &out_size) {
+    if (state.done) return false;
+    
+    if (!state.is_tensor) {
+      // Linear mode: simple sequential address generation
+      if (state.linear_remaining == 0) {
+        state.done = true;
+        return false;
+      }
+      
+      out_addr = state.linear_addr;
+      // Size = min(128B, remaining, bytes to next 128B boundary)
+      uint32_t to_boundary = 128 - (state.linear_addr % 128);
+      out_size = std::min({(uint32_t)128, state.linear_remaining, to_boundary});
+      
+      state.linear_addr += out_size;
+      state.linear_remaining -= out_size;
+      
+      if (state.linear_remaining == 0) {
+        state.done = true;
+      }
+      
+    } else {
+      // Tensor mode: odometer-style multi-dimensional traversal
+      // Skip OOB coordinates (zero-padding logic)
+      while (!is_position_valid(state)) {
+        advance_to_next_row(state);
+        if (state.done) return false;
+      }
+      
+      // Calculate address: current_row_base + offset_within_row
+      out_addr = state.curr_row_addr + state.offset_in_row;
+      
+      // Calculate size: min(128B, remaining in row)
+      uint32_t row_remaining = state.row_bytes - state.offset_in_row;
+      out_size = std::min((uint32_t)128, row_remaining);
+      
+      // Advance position within row
+      state.offset_in_row += out_size;
+      
+      // If row complete, advance to next row (odometer increment)
+      if (state.offset_in_row >= state.row_bytes) {
+        advance_to_next_row(state);
+      }
+    }
+    
+    return true;
+  }
+  
+private:
+  // Check if current position is within valid tensor bounds (not OOB)
+  bool is_position_valid(const tma_agu_state_t &state) const {
+    if (!state.is_tensor) return true;
+    for (uint32_t d = 0; d < state.num_dims; d++) {
+      uint32_t global_coord = state.start_coords[d] + state.tile_coords[d];
+      if (global_coord >= state.global_dim[d]) {
+        return false;  // Out of bounds
+      }
+    }
+    return true;
+  }
+  
+  // Advance to next row using odometer-style increment of higher dimensions
+  void advance_to_next_row(tma_agu_state_t &state) {
+    state.offset_in_row = 0;
+    
+    // Increment coordinates starting from dimension 1 (dimension 0 is row)
+    for (uint32_t d = 1; d < state.num_dims; d++) {
+      state.tile_coords[d]++;
+      
+      state.curr_row_addr += state.global_strides[d];
+      
+      if (state.tile_coords[d] < state.box_dim[d]) {
+        // No carry - we're done
+        return;
+      }
+      
+      // Carry to next dimension: reset this dimension
+      state.curr_row_addr -= state.tile_coords[d] * state.global_strides[d];
+      state.tile_coords[d] = 0;
+    }
+    
+    // All dimensions wrapped - iteration complete
+    state.done = true;
+  }
+};
+
+//=============================================================================
+// TMA Unit (Performance Simulation)
 //=============================================================================
 
 class tma_unit_impl_t {
@@ -285,6 +483,8 @@ private:
   barrier_set_t *m_barriers;
   mem_fetch_interface *m_icnt;
   shader_core_mem_fetch_allocator *m_mf_allocator;
+  
+  tma_agu_unit_t m_agu;
 
   struct tma_transaction_t {
     ptx_thread_info *m_thread = nullptr;
@@ -292,11 +492,15 @@ private:
     inst_t::tma_static_info_t m_static_info;
     inst_t::tma_dyn_info_t m_dyn_info;
     uint32_t m_bytes_completed = 0;
+    tma_agu_state_t agu_state;       // AGU state for this transaction
+    
     void reset() {
       m_thread = nullptr;
       m_inst = nullptr;
       m_bytes_completed = 0;
+      agu_state = tma_agu_state_t();  // Reset to default state
     }
+    
     bool is_valid() const { return m_thread != nullptr; }
   };
   std::unordered_map<unsigned, tma_transaction_t>  m_transactions;
@@ -326,7 +530,7 @@ public:
     const auto &tma_static_info = pI->get_tma_static_info();
 
     // For tensor load operations (shared <- global with mbar), complete immediately
-    if (is_tensor && 
+    if (tma_static_info.tma_type == inst_t::tma_static_info_t::TMA_TENSOR && 
         tma_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CTA &&
         tma_static_info.src_space == inst_t::tma_static_info_t::TMA_GLOBAL) {
       
@@ -349,7 +553,7 @@ public:
     }
     
     // For tensor store operations, nothing to do (no mbar completion)
-    if (is_tensor) {
+    if (tma_static_info.tma_type == inst_t::tma_static_info_t::TMA_TENSOR) {
       DPRINTF_TMA(TMA, "Tensor store: no mbar completion needed%s\n", "");
       return;
     }
@@ -371,6 +575,18 @@ public:
             .m_dyn_info = tma_dyn_info,
             .m_bytes_completed = 0,
         };
+        
+        // Initialize address generator
+        if (tma_static_info.tma_type == inst_t::tma_static_info_t::TMA_TENSOR) {
+          
+          memory_space *global_mem = thread->get_global_memory();
+          tensormap_descriptor_t tensormap;
+          global_mem->read(tma_dyn_info.src_addr, TENSORMAP_DESCRIPTOR_SIZE, &tensormap);
+          m_agu.init_tensor(tx.agu_state, tensormap, tma_dyn_info.coords);
+          
+        } else {
+          m_agu.init_linear(tx.agu_state, tma_dyn_info.src_addr, tma_dyn_info.size_in_bytes);
+        }
 
         unsigned tx_uid = tma_next_tx_uid.fetch_add(1, std::memory_order_relaxed);
         m_transactions.emplace(tx_uid, tx);
@@ -378,9 +594,10 @@ public:
 
         DPRINTF_INST_EXEC(TMA,
                           "Start transaction dst=0x%llx, src=0x%llx, "
-                          "size_in_bytes=%u, mbar=0x%x, tx_uid=%u\n",
-                          tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-                          tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
+                          "size_in_bytes=%u, mbar=0x%x, tx_uid=%u, tma_type=%d\n",
+                          tma_dyn_info.dst_addr, tma_dyn_info.src_addr,
+                          tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr, tx_uid,
+                          tma_static_info.tma_type);
 
       }
     }
@@ -442,7 +659,7 @@ public:
       }
     }
 
-    // issue memory requests
+    // issue memory requests using shadow stride accumulation
     if (!issue_queue.empty()) {
       unsigned tx_uid = issue_queue.front();
 
@@ -452,24 +669,28 @@ public:
 
       if (!m_icnt->full(READ_PACKET_SIZE, false)) {
         // TODO: deal with corner case, would need sector mask if size not aligned w. cacheline size
-        unsigned size = std::min(MAX_MEMORY_ACCESS_SIZE, tx.m_dyn_info.size_in_bytes - tx.m_bytes_completed);
-
-        mem_access_t access(TMA_ACC_R, tx.m_dyn_info.src_addr + tx.m_bytes_completed, 
-                            size, false, m_shader_ctx->get_gpu()->gpgpu_ctx);
-        mem_fetch *mf =
-            m_mf_allocator->alloc(access, -1,
-                                  m_shader_ctx->get_gpu()->gpu_sim_cycle +
-                                  m_shader_ctx->get_gpu()->gpu_tot_sim_cycle);
+        uint64_t addr;  uint32_t size;
         
-        m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
-        tx.m_bytes_completed += size;
+        // Use AGU Unit to generate next address
+        if (m_agu.gen_next_req(tx.agu_state, addr, size)) {
+          
+          mem_access_t access(TMA_ACC_R, addr, size, false, 
+                              m_shader_ctx->get_gpu()->gpgpu_ctx);
 
-        m_icnt->push(mf);
+          mem_fetch *mf =
+              m_mf_allocator->alloc(access, -1,
+                                    m_shader_ctx->get_gpu()->gpu_sim_cycle +
+                                    m_shader_ctx->get_gpu()->gpu_tot_sim_cycle);
+          
+          m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
+          
+          m_icnt->push(mf);
+        }
       }
 
-      if ( tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes ) {
+      // Remove from issue queue when all requests have been issued
+      if (tx.agu_state.done) {
         issue_queue.pop_front();
-        tx.m_bytes_completed = 0;
       }
     }
   }
@@ -511,32 +732,7 @@ bool tma_unit_t::response_buffer_full() const {
 }
 
 //=============================================================================
-// TMA Memory Request Generation
-//=============================================================================
-
-// Main entry point: Generate TMA memory fetch requests
-// start_coords: starting coordinate for each dimension (e.g., {x, y, z, w, v})
-// Returns: vector of (physical_address, size_in_bytes) pairs
-std::vector<std::pair<uint64_t, uint32_t>> 
-generate_tma_requests(const tensormap_descriptor_t& tensormap, 
-                      const uint32_t start_coords[5]) {
-  std::vector<std::pair<uint64_t, uint32_t>> requests;
-  
-  if (!tensormap.is_valid() || tensormap.fields.tensorRank > 4) {
-    return requests; // Empty result for invalid tensormap
-  }
-  
-  // Start recursive traversal from highest dimension (0-based index)
-  int highest_dim = static_cast<int>(tensormap.num_dims()) - 1; // highest dimension index (0-based)
-  uint64_t base_addr = tensormap.fields.globalAddress;
-  
-  traverse_tensor_dim(highest_dim, start_coords, base_addr, tensormap, requests);
-  
-  return requests;
-}
-
-//=============================================================================
-// TensorMap Descriptor Implementation
+// TensorMap Descriptor
 //=============================================================================
 
 uint32_t tensormap_descriptor_t::get_element_size() const {
@@ -568,7 +764,7 @@ uint32_t tensormap_descriptor_t::get_tile_size_bytes() const {
 uint64_t tensormap_descriptor_t::calculate_src_addr(const uint32_t coords[5]) const {
   // Calculate the base address for the tile starting at given coordinates
   // This is used for simple address calculation (not for generating actual memory requests)
-  // Assume fields.tensorRank is 0-based.
+  // fields.tensorRank is 0-based.
   uint64_t addr = fields.globalAddress;
   uint32_t elem_size = get_element_size();
   uint32_t dims = num_dims();
@@ -748,6 +944,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       }
 
       inst_t::tma_static_info_t tma_static_info{
+          .tma_type = inst_t::tma_static_info_t::TMA_NORMAL,
           .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
           .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
       };
@@ -838,13 +1035,13 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
       // Pass info to perf sim
       inst_t::tma_static_info_t tma_static_info{
+          .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
           .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA, // treat shared::cluster same as shared::cta
           .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
       };
       pI->set_tma_static_info(tma_static_info);
       
       inst_t::tma_dyn_info_t tma_dyn_info{
-          .is_tensor = true, 
           .dst_addr = dst_addr,
           .src_addr = tensormap_addr,
           .size_in_bytes = size_in_bytes,
@@ -884,13 +1081,23 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       DPRINTF_INST_EXEC(TMA, "TMA tensor store Extracted coordinates: [%u, %u, %u, %u, %u]\n", 
                 coords[0], coords[1], coords[2], coords[3], coords[4]);
       
+      // Pass info to perf sim
       inst_t::tma_static_info_t tma_static_info{
-          .dst_space = inst_t::tma_static_info_t::TMA_GLOBAL,
-          .src_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+          .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
+          .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA, // treat shared::cluster same as shared::cta
+          .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
       };
       pI->set_tma_static_info(tma_static_info);
+      
+      inst_t::tma_dyn_info_t tma_dyn_info{
+          .dst_addr = tensormap_addr,
+          .src_addr = src_addr,
+          .size_in_bytes = size_in_bytes,
+      };
+      for (unsigned i = 0; i < 5; ++i) tma_dyn_info.coords[i] = coords[i];
 
-      // TODO: set dyn info
+      auto laneid = thread->get_laneid();
+      pI->set_tma_dyn_info(laneid, tma_dyn_info);
       
       // Functional simulation: Copy data from shared to global
       do_tma_transfer(tensormap, coords, shared_mem, global_mem, src_addr, thread, pI, false);

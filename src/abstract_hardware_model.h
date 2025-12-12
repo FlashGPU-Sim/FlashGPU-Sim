@@ -844,17 +844,22 @@ class inst_t {
 
 public:
   struct tma_static_info_t {
+    enum type_t {
+      TMA_TYPE_INVALID = 0,
+      TMA_NORMAL,
+      TMA_TENSOR,
+    };
     enum space_t {
-      TMA_INVALID = 0,
+      TMA_SPACE_INVALID = 0,
       TMA_SHARED_CTA,
       TMA_SHARED_CLUSTER,
       TMA_GLOBAL,
     };
+    type_t  tma_type;
     space_t dst_space;
     space_t src_space;
   };
   struct tma_dyn_info_t {
-    bool is_tensor = false;
     uint64_t dst_addr = 0;
     uint64_t src_addr = 0;
     uint32_t size_in_bytes = 0;
