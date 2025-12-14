@@ -879,6 +879,11 @@ public:
   const tma_dyn_info_t &get_tma_dyn_info(int laneid) const {
     return tma_dyn_info[laneid];
   }
+  void reset_tma_dyn_info() {
+    for (unsigned i = 0; i < MAX_WARP_SIZE; i++) {
+      tma_dyn_info[i] = tma_dyn_info_t();  // Reset to defaults (mbar_addr = -1)
+    }
+  }
 
 private:
   tma_static_info_t tma_static_info;

@@ -494,11 +494,17 @@ private:
     uint32_t m_bytes_completed = 0;
     tma_agu_state_t agu_state;       // AGU state for this transaction
     
+    // Debug counters
+    uint32_t m_mf_issued_count = 0;   // Number of mem_fetch requests issued
+    uint32_t m_mf_received_count = 0; // Number of mem_fetch responses received
+    
     void reset() {
       m_thread = nullptr;
       m_inst = nullptr;
       m_bytes_completed = 0;
       agu_state = tma_agu_state_t();  // Reset to default state
+      m_mf_issued_count = 0;
+      m_mf_received_count = 0;
     }
     
     bool is_valid() const { return m_thread != nullptr; }
@@ -528,35 +534,6 @@ public:
     }
 
     const auto &tma_static_info = pI->get_tma_static_info();
-
-    // For tensor load operations (shared <- global with mbar), complete immediately
-    if (tma_static_info.tma_type == inst_t::tma_static_info_t::TMA_TENSOR && 
-        tma_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CTA &&
-        tma_static_info.src_space == inst_t::tma_static_info_t::TMA_GLOBAL) {
-      
-      const auto warp_size = m_shader_ctx->get_warp_size();
-      for (int laneid = 0; laneid < warp_size; laneid++) {
-        const auto &tma_dyn_info = pI->get_tma_dyn_info(laneid);
-        if (tma_dyn_info.is_valid()) {
-          DPRINTF_TMA(TMA,
-                      "Tensor load immediate complete: "
-                      "cta=%u, warp=%u, mbar=0x%x, size=%u\n",
-                      cta_id, warp_id, tma_dyn_info.mbar_addr,
-                      tma_dyn_info.size_in_bytes);
-          
-          // Immediately complete the transaction
-          m_barriers->complete_tx(cta_id, warp_id, tma_dyn_info.mbar_addr,
-                                  tma_dyn_info.size_in_bytes);
-        }
-      }
-      return;
-    }
-    
-    // For tensor store operations, nothing to do (no mbar completion)
-    if (tma_static_info.tma_type == inst_t::tma_static_info_t::TMA_TENSOR) {
-      DPRINTF_TMA(TMA, "Tensor store: no mbar completion needed%s\n", "");
-      return;
-    }
 
     // Regular TMA copy instruction - queue for async processing
     const auto warp_size = m_shader_ctx->get_warp_size();
@@ -592,6 +569,12 @@ public:
         m_transactions.emplace(tx_uid, tx);
         issue_queue.push_back(tx_uid);
 
+        DPRINTF_INST_EXEC(TMA, "[TMA START] cta_id=%u, warp_id=%u, lane=%d, tid=%u, tx_uid=%u, dst=0x%llx, src=0x%llx, size=%u, mbar=0x%x\n",
+               thread->get_hw_ctaid(), warp_id, laneid, tid, tx_uid,
+               tma_dyn_info.dst_addr, tma_dyn_info.src_addr,
+               tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr);
+        fflush(stdout);
+
         DPRINTF_INST_EXEC(TMA,
                           "Start transaction dst=0x%llx, src=0x%llx, "
                           "size_in_bytes=%u, mbar=0x%x, tx_uid=%u, tma_type=%d\n",
@@ -623,6 +606,9 @@ public:
       assert(tx_it != m_transactions.end());
       auto &tx = tx_it->second;
 
+      // Count mem_fetch responses for this transaction
+      tx.m_mf_received_count++;
+      
       DPRINTF_TMA(TMA, "TMA response received for mf uid=%u, tx_uid=%u, data_size=%u, response fifo size=%lu\n",
                  mf->get_request_uid(),  tx_uid, mf->get_data_size(), m_response_fifo.size());
 
@@ -636,7 +622,14 @@ public:
           unsigned cta_id = thread->get_hw_ctaid();
           unsigned warp_id = thread->get_hw_wid();
           
-          DPRINTF_INST_EXEC(TMA,
+          DPRINTF_TMA(TMA, "[TMA COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, issued_mf=%u, received_mf=%u, bytes_completed=%u/%u, calling complete_tx with %u bytes\n",
+                 tx_uid, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+                 tx.m_mf_issued_count, tx.m_mf_received_count,
+                 tx.m_bytes_completed, tx.m_dyn_info.size_in_bytes,
+                 tx.m_dyn_info.size_in_bytes);
+          fflush(stdout);
+          
+          DPRINTF_TMA(TMA,
                             "Complete transaction dst=0x%llx, src=0x%llx, "
                             "size_in_bytes=%u, mbar=0x%x, tx_uid=%u \n",
                             tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
@@ -674,6 +667,13 @@ public:
         // Use AGU Unit to generate next address
         if (m_agu.gen_next_req(tx.agu_state, addr, size)) {
           
+          // Count mem_fetch issued for this transaction
+          if (tx.m_mf_issued_count == 0) {
+            DPRINTF_TMA(TMA, "[TMA AGU] tx_uid=%u starting to issue mem_fetch requests\n", tx_uid);
+            fflush(stdout);
+          }
+          tx.m_mf_issued_count++;
+          
           mem_access_t access(TMA_ACC_R, addr, size, false, 
                               m_shader_ctx->get_gpu()->gpgpu_ctx);
 
@@ -690,6 +690,9 @@ public:
 
       // Remove from issue queue when all requests have been issued
       if (tx.agu_state.done) {
+        DPRINTF_TMA(TMA, "[TMA AGU DONE] tx_uid=%u issued %u mem_fetch requests (total bytes: %u)\n",
+               tx_uid, tx.m_mf_issued_count, tx.m_dyn_info.size_in_bytes);
+        fflush(stdout);
         issue_queue.pop_front();
       }
     }

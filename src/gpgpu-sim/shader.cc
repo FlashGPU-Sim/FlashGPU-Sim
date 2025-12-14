@@ -38,6 +38,7 @@
 #include "../cuda-sim/cuda-sim.h"
 #include "../cuda-sim/ptx-stats.h"
 #include "../cuda-sim/ptx_sim.h"
+#include "../cuda-sim/dyn_ptx_inst.h"
 #include "../statwrapper.h"
 #include "addrdec.h"
 #include "dram.h"
@@ -1278,6 +1279,17 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       active_mask, warp_id, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
       m_warp[warp_id]->get_dynamic_warp_id(), sch_id,
       m_warp[warp_id]->get_streamID());  // dynamic instruction information
+  
+  // For TMA instructions, reset dyn_inst's tma_dyn_info BEFORE functional simulation
+  // to prevent stale data from previous warps. This is the key fix for TMA over-issue.
+  ptx_instruction *dyn_inst = nullptr;
+  if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
+    dyn_inst = const_cast<ptx_instruction *>(
+        flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(
+            next_inst->pc, static_cast<const ptx_instruction*>(next_inst)));
+    dyn_inst->reset_tma_dyn_info();
+  }
+  
   m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
   func_exec_inst(**pipe_reg);
 
@@ -1312,8 +1324,10 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                        (*pipe_reg)->get_active_mask());
     }
   } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
-    m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id,
-                             const_cast<warp_inst_t *>(next_inst));
+    // dyn_inst was already obtained and reset before func_exec_inst
+    // Now it has the correct tma_dyn_info set only for active lanes
+    assert(dyn_inst != nullptr);
+    m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id, dyn_inst);
   } else if (next_inst->op == MEMORY_BARRIER_OP) {
     m_warp[warp_id]->set_membar();
   } else if (next_inst->m_is_ldgdepbar) {  // Add for LDGDEPBAR
