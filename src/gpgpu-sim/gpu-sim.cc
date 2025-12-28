@@ -1995,9 +1995,9 @@ void gpgpu_sim::cycle() {
   static flash_gpgpu_sim::gpgpu_sim_profiler_t profiler;
 
 #if defined(FLASH_GEM_FORGE)
-    const bool gem5_integrated = (m_gem5_wrapper != nullptr);
+  const bool gem5_integrated = (m_gem5_wrapper != nullptr);
 #else
-    const bool gem5_integrated = false;
+  const bool gem5_integrated = false;
 #endif
 
   if (clock_mask & CORE) {
@@ -2009,7 +2009,7 @@ void gpgpu_sim::cycle() {
   }
   unsigned partiton_replys_in_parallel_per_cycle = 0;
 
-    if (clock_mask & ICNT && !gem5_integrated) {
+  if (clock_mask & ICNT && !gem5_integrated) {
     profiler.start_step();
     // pop from memory controller to interconnect
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
@@ -2036,7 +2036,7 @@ void gpgpu_sim::cycle() {
   }
   partiton_replys_in_parallel += partiton_replys_in_parallel_per_cycle;
 
-    if (clock_mask & DRAM && !gem5_integrated) {
+  if (clock_mask & DRAM && !gem5_integrated) {
     profiler.start_step();
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
       if (m_memory_config->simple_dram_model)
@@ -2061,7 +2061,7 @@ void gpgpu_sim::cycle() {
 
   // L2 operations follow L2 clock domain
   unsigned partiton_reqs_in_parallel_per_cycle = 0;
-    if (clock_mask & L2 && !gem5_integrated) {
+  if (clock_mask & L2 && !gem5_integrated) {
     profiler.start_step();
     m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].clear();
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
@@ -2090,14 +2090,14 @@ void gpgpu_sim::cycle() {
     gpu_sim_cycle_parition_util++;
   }
 
-    if (clock_mask & ICNT && !gem5_integrated) {
+  if (clock_mask & ICNT && !gem5_integrated) {
     profiler.start_step();
     icnt_transfer();
     profiler.end_step(profiler.total_icnt_transfer_time);
   }
 
 #if defined(FLASH_GEM_FORGE)
-    if (gem5_integrated) {
+  if (gem5_integrated) {
     // We have gem5 integrated. Advance its simulation by the actual elapsed
     // time. next_clock_domain() advanced time by determining the smallest time
     // among all clock domains and incrementing it. The elapsed time is stored
