@@ -71,7 +71,11 @@ OEXT = o
 
 OUTPUT_DIR=$(SIM_OBJ_FILES_DIR)/gpgpu-sim
 
-SRCS = $(shell ls *.cc) $(shell ls flash/*.cc) $(shell ls flash/gem5/*.cc)
+SRCS = $(shell ls *.cc) $(shell ls flash/*.cc)
+
+ifeq ($(FLASH_GEM_FORGE),1)
+SRCS += $(shell ls flash/gem5/*.cc)
+endif
 
 EXCLUDES = 
 

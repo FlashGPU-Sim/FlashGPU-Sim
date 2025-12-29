@@ -1,0 +1,63 @@
+# Docker ignore file for GPGPU-Sim
+
+# Git
+.git
+.gitignore
+.gitmodules
+
+# Build artifacts (when building outside container)
+# Comment these out if you want to include pre-built binaries
+# build/
+# lib/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.*.sw?
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.bak
+
+# Test artifacts (can be regenerated)
+test/gtest/
+test/build/
+test/run/
+
+# Documentation build
+doc/doxygen/html/
+doc/doxygen/latex/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+.eggs/
+
+# Coverage files
+*.gcda
+*.gcno
+*.gcov
+coverage/
+
+# Docker files (no need to copy these into the image)
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Large unnecessary files
+*.tar
+*.tar.gz
+*.zip
+*.rar

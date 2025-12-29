@@ -68,3 +68,10 @@ accel-sim-framework/
 gpu-app-collection/
 
 setup
+
+# Docker
+.env
+docker-compose.override.yml
+
+# Playground (personal testing)
+playground/

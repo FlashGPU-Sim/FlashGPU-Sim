@@ -1,0 +1,70 @@
+# GPGPU-Sim Docker Compose Configuration
+# 
+# Usage:
+#   ./docker.sh build    # Build Docker image
+#   ./docker.sh shell    # Enter container shell
+#   ./docker.sh stop     # Stop container
+#
+# Inside container:
+#   source setup_environment
+#   make -j$(nproc)              # Standard build
+#   make FLASH=1 -j$(nproc)      # Flash mode build
+
+services:
+  gpgpusim:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: gpgpu-sim:cuda12.8
+    container_name: gpgpusim-dev
+    
+    # Enable GPU access (requires NVIDIA Container Toolkit)
+    # Uncomment if you have NVIDIA GPU and want GPU access in container
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    
+    # Environment variables
+    environment:
+      # CUDA configuration
+      - CUDA_INSTALL_PATH=${CUDA_INSTALL_PATH:-/usr/local/cuda}
+      - PTXAS_CUDA_INSTALL_PATH=${PTXAS_CUDA_INSTALL_PATH:-/usr/local/cuda}
+      
+      # GPGPU-Sim build configuration
+      - GPGPUSIM_BUILD_TYPE=${GPGPUSIM_BUILD_TYPE:-release}
+      
+      # OpenMP threads for Flash mode
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}
+      
+      # Terminal settings
+      - TERM=xterm-256color
+    
+    # Volume mounts
+    volumes:
+      # Mount entire project directory
+      - ..:/gpgpu-sim:rw
+    
+    # Working directory
+    working_dir: /gpgpu-sim
+    
+    # Keep container running
+    stdin_open: true
+    tty: true
+    
+    # Network settings
+    network_mode: host
+    
+    # Privileged mode (needed for some debugging tools)
+    privileged: false
+    
+    # Security options for debugging
+    security_opt:
+      - seccomp:unconfined
+    
+    # Capabilities for debugging
+    cap_add:
+      - SYS_PTRACE

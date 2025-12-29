@@ -65,6 +65,25 @@ Execute CUDA applications following standard GPGPU-Sim workflow:
 
 **Note**: For Flash mode issues, first verify behavior in single-threaded mode to isolate multi-threading related problems.
 
+### Docker Setup
+
+A Docker-based development environment is provided for consistent builds across different systems.
+
+**Quick Start**:
+
+```bash
+# Build Docker image
+./docker.sh build
+
+# Enter container shell (environment auto-configured)
+./docker.sh shell
+
+# Inside container: build directly with Flash mode
+make FLASH=1 -j$(nproc)
+```
+
+For detailed Docker usage, see [docker/README.md](docker/README.md).
+
 ## Roadmap
 
 **Legend**: 
