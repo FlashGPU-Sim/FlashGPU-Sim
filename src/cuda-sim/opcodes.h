@@ -74,4 +74,21 @@ enum wmma_type {
   M8N32K16
 
 };
+
+// NEW: MMA instruction enums (separate from WMMA)
+enum mma_shape_type {
+  MMA_M16N8K8,
+  MMA_M16N8K16,
+  MMA_M16N8K32,
+  MMA_M16N16K8,
+  MMA_M16N16K16_MMA  // Avoid conflict with M16N16K16 from wmma_type
+};
+
+enum mma_layout_mode {
+  MMA_ROW_COL,
+  MMA_ROW_ROW,
+  MMA_COL_ROW,
+  MMA_COL_COL
+};
+
 #endif

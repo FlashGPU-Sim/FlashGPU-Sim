@@ -746,6 +746,7 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           sp_op = FP_EXP_OP;
           break;
         case MMA_OP:
+        case TENSOR_MMA_OP:
           sp_op = TENSOR__OP;
           break;
         case TEX_OP:
@@ -784,6 +785,7 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           sp_op = FP_EXP_OP;
           break;
         case MMA_OP:
+        case TENSOR_MMA_OP:
           sp_op = TENSOR__OP;
           break;
         case TEX_OP:
@@ -813,6 +815,7 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           sp_op = INT_DIV_OP;
           break;
         case MMA_OP:
+        case TENSOR_MMA_OP:
           sp_op = TENSOR__OP;
           break;
         case TEX_OP:
@@ -1133,6 +1136,11 @@ void ptx_instruction::set_opcode_and_latency() {
       op = SFU_OP;
       break;
     case MMA_OP:
+      latency = tensor_latency;
+      initiation_interval = tensor_init;
+      op = TENSOR_CORE_OP;
+      break;
+    case TENSOR_MMA_OP:
       latency = tensor_latency;
       initiation_interval = tensor_init;
       op = TENSOR_CORE_OP;
