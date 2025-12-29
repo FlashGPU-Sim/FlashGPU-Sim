@@ -27,6 +27,10 @@
 
 # Define EXTRA_FLAGS for propagating extra macros/flags to sub-makefiles
 EXTRA_FLAGS ?=
+
+# Flash mode is enabled by default 
+FLASH ?= 1
+
 ifeq ($(FLASH), 1)
 EXTRA_FLAGS += -DFLASH_GPGPU_SIM -DFLASH_GPGPU_SIM_OMP
 endif
