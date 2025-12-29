@@ -43,6 +43,7 @@
 #include "ptx_sim.h"
 
 #include "memory.h"
+#include "tensor_mma.h"
 
 class gpgpu_context;
 
@@ -1080,6 +1081,27 @@ class ptx_instruction : public warp_inst_t {
   int get_wmma_layout(int index) const {
     return m_wmma_layout[index];  // 0->Matrix D,1->Matrix C
   }
+
+  // NEW: MMA getters/setters (separate from WMMA)
+  void set_mma_shape(mma_shape_type shape) { m_mma_shape = shape; }
+  mma_shape_type get_mma_shape() const { return m_mma_shape; }
+
+  void set_mma_layout(mma_layout_mode layout_a, mma_layout_mode layout_b) {
+    m_mma_layout_a = layout_a;
+    m_mma_layout_b = layout_b;
+  }
+  void get_mma_layout(mma_layout_mode &layout_a,
+                      mma_layout_mode &layout_b) const {
+    layout_a = m_mma_layout_a;
+    layout_b = m_mma_layout_b;
+  }
+
+  void set_is_mma(bool is_mma) { m_is_mma_instruction = is_mma; }
+  bool is_mma() const { return m_is_mma_instruction; }
+
+  void set_mma_saturate(bool saturate) { m_mma_saturate = saturate; }
+  bool get_mma_saturate() const { return m_mma_saturate; }
+
   int get_type() const {
     assert(!m_scalar_type.empty());
     return m_scalar_type.front();
@@ -1198,6 +1220,12 @@ class ptx_instruction : public warp_inst_t {
   int m_wmma_type;
   int m_wmma_layout[2];
   int m_wmma_configuration;
+  // NEW: MMA-specific members (separate from WMMA)
+  mma_shape_type m_mma_shape;
+  mma_layout_mode m_mma_layout_a;
+  mma_layout_mode m_mma_layout_b;
+  bool m_is_mma_instruction;
+  bool m_mma_saturate;
   unsigned m_rounding_mode;
   unsigned m_compare_op;
   unsigned m_saturation_mode;
