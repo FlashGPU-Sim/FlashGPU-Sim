@@ -101,6 +101,8 @@ class ptx_recognizer;
 %token  U32_TYPE
 %token  U64_TYPE
 %token  F16_TYPE
+%token  BF16_TYPE
+%token  TF32_TYPE
 %token  F32_TYPE
 %token  F64_TYPE
 %token  FF64_TYPE
@@ -406,6 +408,8 @@ scalar_type: S8_TYPE { recognizer->add_scalar_type_spec( S8_TYPE ); }
 	| U32_TYPE   { recognizer->add_scalar_type_spec( U32_TYPE ); }
 	| U64_TYPE   { recognizer->add_scalar_type_spec( U64_TYPE ); }
 	| F16_TYPE   { recognizer->add_scalar_type_spec( F16_TYPE ); }
+	| BF16_TYPE  { recognizer->add_scalar_type_spec( BF16_TYPE ); }
+	| TF32_TYPE  { recognizer->add_scalar_type_spec( TF32_TYPE ); }
 	| F32_TYPE   { recognizer->add_scalar_type_spec( F32_TYPE ); }
 	| F64_TYPE   { recognizer->add_scalar_type_spec( F64_TYPE ); }
 	| FF64_TYPE   { recognizer->add_scalar_type_spec( FF64_TYPE ); }

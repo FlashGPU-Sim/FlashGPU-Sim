@@ -378,11 +378,30 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
   pI->get_mma_layout(layout_a, layout_b);
   bool saturate = pI->get_mma_saturate();
 
-  // Determine data type from shape (heuristic for now)
-  // M16N8K16/K32 typically used for S8/U8 integer types
-  // M16N8K8 typically used for F16 floating-point types
-  bool is_s8_type = (shape == MMA_M16N8K16 || shape == MMA_M16N8K32);
-  bool is_f16_type = (shape == MMA_M16N8K8);
+  // Determine data type from PTX instruction scalar types
+  // For MMA: .m16n8k8.row.col.f32.bf16.bf16.f32
+  //   First type = accumulator output type (f32)
+  //   Second type = A matrix input type (bf16, f16, s8, etc.)
+  // Get the input data type (first type in scalar type list, which is the accumulator for MMA)
+  // For MMA, the operand types are: D (output), A (input), B (input), C (accumulator)
+  // Scalar types list order: output type, then input types
+  std::list<int> scalar_types = pI->get_scalar_type();
+  // For MMA with .f32.bf16.bf16.f32, get_type() returns first type (f32 output),
+  // get_type2() would return second if it exists
+  // We need to examine the full scalar type list to find input types
+  // Typically: scalar_types = {F32_TYPE, BF16_TYPE, BF16_TYPE, F32_TYPE} for bf16 MMA
+
+  int input_type = F16_TYPE;  // Default to F16
+  if (scalar_types.size() >= 2) {
+    auto it = scalar_types.begin();
+    ++it;  // Skip first type (accumulator output type)
+    input_type = *it;  // Second type is A input type
+  }
+
+  bool is_f16_type = (input_type == F16_TYPE);
+  bool is_bf16_type = (input_type == BF16_TYPE);
+  bool is_tf32_type = (input_type == TF32_TYPE);
+  bool is_s8_type = (input_type == S8_TYPE || input_type == U8_TYPE);
 
   // Determine matrix dimensions based on shape
   int M, N, K;
@@ -404,8 +423,12 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
   }
 
   if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
+    const char *type_str = is_f16_type ? "F16" :
+                           is_bf16_type ? "BF16" :
+                           is_tf32_type ? "TF32" :
+                           is_s8_type ? "S8" : "UNKNOWN";
     printf("GPGPU-Sim: tensor_mma_impl called for shape M%dN%dK%d, type=%s\n",
-           M, N, K, is_s8_type ? "S8" : "F16");
+           M, N, K, type_str);
   }
 
   // Validate shape/type combination (from PTX ISA)
@@ -430,14 +453,14 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
     // S8/U8 integer MMA implementation for M16N8K16
     tensor_mma_s8_impl(pI, core, inst, M, N, K, saturate, tid, dst);
     return;
-  } else if (!is_f16_type) {
+  } else if (!is_f16_type && !is_bf16_type) {
     if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
       printf("GPGPU-Sim: tensor_mma_impl - unsupported data type for shape\n");
     }
     return;
   }
 
-  // F16 implementation continues below (existing code)
+  // F16/BF16 implementation continues below (reuses same logic with different conversion)
 
   // M16N8K8 implementation with proper NVIDIA tensor core fragment distribution
   // Based on PTX ISA and CUTLASS reference implementation
@@ -488,35 +511,49 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
     // Unpack and place A fragments into full matrix
     // Official formula: row = groupID for a0,a1; groupID+8 for a2,a3
     //                   col = threadID_in_group * 2 + (i & 0x1) where i = {0,1,2,3}
-    half a_vals[4];
-    a_vals[0] = *(half*)&a_regs[0].u16;
-    a_vals[1] = *((half*)&a_regs[0].u16 + 1);
-    a_vals[2] = *(half*)&a_regs[1].u16;
-    a_vals[3] = *((half*)&a_regs[1].u16 + 1);
+    uint16_t a_u16[4];
+    a_u16[0] = a_regs[0].u16;
+    a_u16[1] = (a_regs[0].u32 >> 16) & 0xFFFF;
+    a_u16[2] = a_regs[1].u16;
+    a_u16[3] = (a_regs[1].u32 >> 16) & 0xFFFF;
 
     int a_row0 = groupID;
     int a_row1 = groupID + 8;
     int a_col0 = threadID_in_group * 2;
     int a_col1 = threadID_in_group * 2 + 1;
     // A is row-major: A[row][col] = A[row * K + col]
-    A_mat[a_row0 * K + a_col0] = (float)a_vals[0];  // a0
-    A_mat[a_row0 * K + a_col1] = (float)a_vals[1];  // a1
-    A_mat[a_row1 * K + a_col0] = (float)a_vals[2];  // a2
-    A_mat[a_row1 * K + a_col1] = (float)a_vals[3];  // a3
+    // Convert from F16 or BF16 to F32 based on input_type
+    if (is_bf16_type) {
+      A_mat[a_row0 * K + a_col0] = mma_bf16_to_f32(a_u16[0]);  // a0
+      A_mat[a_row0 * K + a_col1] = mma_bf16_to_f32(a_u16[1]);  // a1
+      A_mat[a_row1 * K + a_col0] = mma_bf16_to_f32(a_u16[2]);  // a2
+      A_mat[a_row1 * K + a_col1] = mma_bf16_to_f32(a_u16[3]);  // a3
+    } else {  // F16
+      A_mat[a_row0 * K + a_col0] = mma_f16_to_f32(a_u16[0]);  // a0
+      A_mat[a_row0 * K + a_col1] = mma_f16_to_f32(a_u16[1]);  // a1
+      A_mat[a_row1 * K + a_col0] = mma_f16_to_f32(a_u16[2]);  // a2
+      A_mat[a_row1 * K + a_col1] = mma_f16_to_f32(a_u16[3]);  // a3
+    }
 
     // Unpack and place B fragments into full matrix (B is column-major: B[n][k])
     // Official formula: row = (threadID_in_group * 2) + i, col = groupID, i = {0, 1}
     // B fragments hold: b_vals[0] = B[col][row0], b_vals[1] = B[col][row1]
-    half b_vals[2];
-    b_vals[0] = *(half*)&b_regs[0].u16;
-    b_vals[1] = *((half*)&b_regs[0].u16 + 1);
+    uint16_t b_u16[2];
+    b_u16[0] = b_regs[0].u16;
+    b_u16[1] = (b_regs[0].u32 >> 16) & 0xFFFF;
 
     int b_row0 = threadID_in_group * 2;
     int b_row1 = threadID_in_group * 2 + 1;
     int b_col = groupID;
     // B is column-major: B[n][k] stored as B[n*K + k]
-    B_mat[b_col * K + b_row0] = (float)b_vals[0];
-    B_mat[b_col * K + b_row1] = (float)b_vals[1];
+    // Convert from F16 or BF16 to F32 based on input_type
+    if (is_bf16_type) {
+      B_mat[b_col * K + b_row0] = mma_bf16_to_f32(b_u16[0]);
+      B_mat[b_col * K + b_row1] = mma_bf16_to_f32(b_u16[1]);
+    } else {  // F16
+      B_mat[b_col * K + b_row0] = mma_f16_to_f32(b_u16[0]);
+      B_mat[b_col * K + b_row1] = mma_f16_to_f32(b_u16[1]);
+    }
 
     // Place C fragments
     int c_row0 = groupID;
