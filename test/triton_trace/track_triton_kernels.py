@@ -104,7 +104,9 @@ class TritonKernelTracker:
         self.launch_counter = 0
         self.pending_args: Optional[tuple] = None  # Store args from JIT wrapper
         self.pending_grid: Optional[tuple] = None  # Store grid from JIT wrapper
+        self.pending_kernel_hash: Optional[str] = None  # Store kernel hash from JIT wrapper
         self.pending_args_snapshots: Optional[List[torch.Tensor]] = None  # Store pre-launch tensor snapshots
+        self.function_to_hash: Dict[int, str] = {}  # Map function pointers to kernel hashes
         
         # Create subdirectories
         self.binaries_dir = output_dir / "binaries"
@@ -215,12 +217,17 @@ class TritonKernelTracker:
             # Call original run
             result = original_run(jit_self, *args, **kwargs)
             
+            # Capture the kernel hash from the result (CompiledKernel object)
+            if tracker_self.enabled and hasattr(result, 'hash'):
+                tracker_self.pending_kernel_hash = result.hash
+            
             # Don't clear pending data here - launch_exit_hook needs it!
             # It will be cleared in _on_launch_exit
             # Note: If no launch happens (warmup), we should clear it
             if warmup or not tracker_self.enabled or not tracker_self.capture_args:
                 tracker_self.pending_args = None
                 tracker_self.pending_grid = None
+                tracker_self.pending_kernel_hash = None
                 tracker_self.pending_args_snapshots = None
             
             return result
@@ -298,6 +305,10 @@ class TritonKernelTracker:
         )
         
         self.compiled_kernels[hash_val] = kernel_info
+        
+        # Store function pointer to hash mapping for launch-time lookup
+        # The function id uniquely identifies this compiled kernel variant
+        self.function_to_hash[id(function)] = hash_val
         
         # Generate standalone launcher
         if self.save_binaries:
@@ -472,12 +483,24 @@ class TritonKernelTracker:
             
             # Regenerate harness now that we have output files
             if self.save_binaries:
-                # Find the matching kernel info
+                # Use pending_kernel_hash (captured after run) for correct kernel variant matching
+                # This is more accurate than launch_info.kernel_hash which was set during launch_enter
+                actual_kernel_hash = self.pending_kernel_hash or launch_info.kernel_hash
+                
+                # Update launch_info with the correct hash if available
+                if self.pending_kernel_hash and self.pending_kernel_hash != launch_info.kernel_hash:
+                    launch_info.kernel_hash = self.pending_kernel_hash
+                
+                # Find the matching kernel info by hash
                 matching_kernel = None
-                for kernel_info in self.compiled_kernels.values():
-                    if kernel_info.kernel_name == kernel_name:
-                        matching_kernel = kernel_info
-                        break
+                if actual_kernel_hash in self.compiled_kernels:
+                    matching_kernel = self.compiled_kernels[actual_kernel_hash]
+                else:
+                    # Fallback to name matching
+                    for kernel_info in self.compiled_kernels.values():
+                        if kernel_info.kernel_name == kernel_name:
+                            matching_kernel = kernel_info
+                            break
                 
                 if matching_kernel:
                     print(f"  Generating harness with validation code...")
@@ -487,6 +510,7 @@ class TritonKernelTracker:
         # Clear pending args after processing
         self.pending_args = None
         self.pending_grid = None
+        self.pending_kernel_hash = None
     
     def _on_launch_enter(self, launch_metadata):
         """Called before kernel launch"""
@@ -504,12 +528,25 @@ class TritonKernelTracker:
         kernel_name = metadata.get('name', 'unknown')
         function = metadata.get('function', None)
         
-        # Try to find matching kernel
+        # Try to find matching kernel using function pointer (most accurate), then by name (fallback)
         matching_kernel = None
-        for kernel_info in self.compiled_kernels.values():
-            if kernel_info.kernel_name == kernel_name:
-                matching_kernel = kernel_info
-                break
+        kernel_hash = None
+        
+        # Method 1: Use function pointer to hash mapping (most reliable)
+        if function is not None:
+            func_id = id(function)
+            if func_id in self.function_to_hash:
+                kernel_hash = self.function_to_hash[func_id]
+                if kernel_hash in self.compiled_kernels:
+                    matching_kernel = self.compiled_kernels[kernel_hash]
+        
+        # Method 2: Fallback to name matching (for backwards compatibility)
+        if matching_kernel is None:
+            for kernel_info in self.compiled_kernels.values():
+                if kernel_info.kernel_name == kernel_name:
+                    matching_kernel = kernel_info
+                    kernel_hash = kernel_info.kernel_hash
+                    break
         
         if not matching_kernel:
             print(f"[TritonKernelTracker] Launch #{self.launch_counter}: {kernel_name} (not yet tracked)")
