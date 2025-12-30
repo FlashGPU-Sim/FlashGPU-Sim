@@ -758,11 +758,11 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
                          "none");
   option_parser_register(
       opp, "-trace_sampling_core", OPT_INT32, &Trace::sampling_core,
-      "The core which is printed using CORE_DPRINTF. Default 0", "0");
+      "The core which is printed using CORE_GPPRINTF. Default 0", "0");
   option_parser_register(opp, "-trace_sampling_memory_partition", OPT_INT32,
                          &Trace::sampling_memory_partition,
                          "The memory partition which is printed using "
-                         "MEMPART_DPRINTF. Default -1 (i.e. all)",
+                         "MEMPART_GPPRINTF. Default -1 (i.e. all)",
                          "-1");
   gpgpu_ctx->stats->ptx_file_line_stats_options(opp);
 
@@ -1027,6 +1027,24 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
     icnt_create(m_shader_config->n_simt_clusters,
                 m_memory_config->m_n_mem_sub_partition);
   }
+
+  /**
+   * ! GemForge
+   */
+#ifdef FLASH_GEM_FORGE
+  std::vector<std::string> gem5_args = {
+      "/gem-forge-stack/gem5/configs/example/gem_forge/example_config.txt"};
+  m_gem5_wrapper = std::make_unique<flash_gpgpu_sim::Gem5Wrapper>(
+      "/gem-forge-stack/gem5/configs/example/gem_forge/run.py", gem5_args);
+
+  m_gem5_wrapper->initialize();
+
+  m_gem5_mem_subsys = std::make_shared<flash_gpgpu_sim::Gem5MemSubsystem>(
+      m_gem5_wrapper->getSystem(), m_gem5_wrapper->getGPGPUSimRequestors());
+
+  m_gem5_mem_subsys->registerGPGPUSimInterconnectInterface();
+#endif
+
   time_vector_create(NUM_MEM_REQ_STAT);
   fprintf(stdout,
           "GPGPU-Sim uArch: performance model initialization complete.\n");
@@ -1129,6 +1147,8 @@ void gpgpu_sim::reinit_clock_domains(void) {
   dram_time = 0;
   icnt_time = 0;
   l2_time = 0;
+  next_sim_time = 0;
+  prev_sim_time = 0;
 }
 
 bool gpgpu_sim::active() {
@@ -1733,7 +1753,7 @@ bool shader_core_ctx::occupy_shader_resource_1block(kernel_info_t &k,
     m_occupied_regs += (padded_cta_size * ((kernel_info->regs + 3) & ~3));
     m_occupied_ctas++;
 
-    SHADER_DPRINTF(LIVENESS,
+    SHADER_GPPRINTF(LIVENESS,
                    "GPGPU-Sim uArch: Occupied %u threads, %u shared mem, %u "
                    "registers, %u ctas, on shader %d\n",
                    m_occupied_n_threads, m_occupied_shmem, m_occupied_regs,
@@ -1902,7 +1922,7 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   m_n_active_cta++;
 
   shader_CTA_count_log(m_sid, 1);
-  SHADER_DPRINTF(LIVENESS,
+  SHADER_GPPRINTF(LIVENESS,
                  "GPGPU-Sim uArch: cta:%2u, start_tid:%4u, end_tid:%4u, "
                  "initialized @(%lld,%lld), kernel_uid:%u, kernel_name:%s\n",
                  free_cta_hw_id, start_thread, end_thread, m_gpu->gpu_sim_cycle,
@@ -1923,25 +1943,27 @@ void dram_t::dram_log(int task) {
 
 // Find next clock domain and increment its time
 int gpgpu_sim::next_clock_domain(void) {
-  double smallest = min3(core_time, icnt_time, dram_time);
+  // Store the current simulation time before advancing
+  prev_sim_time = next_sim_time;
   int mask = 0x00;
-  if (l2_time <= smallest) {
-    smallest = l2_time;
+  if (l2_time <= prev_sim_time) {
     mask |= L2;
     l2_time += m_config.l2_period;
   }
-  if (icnt_time <= smallest) {
+  if (icnt_time <= prev_sim_time) {
     mask |= ICNT;
     icnt_time += m_config.icnt_period;
   }
-  if (dram_time <= smallest) {
+  if (dram_time <= prev_sim_time) {
     mask |= DRAM;
     dram_time += m_config.dram_period;
   }
-  if (core_time <= smallest) {
+  if (core_time <= prev_sim_time) {
     mask |= CORE;
     core_time += m_config.core_period;
   }
+  // Calculate the new simulation time after domains have advanced
+  next_sim_time = std::min({core_time, l2_time, icnt_time, dram_time});
   return mask;
 }
 
@@ -1973,6 +1995,12 @@ void gpgpu_sim::cycle() {
 
   static flash_gpgpu_sim::gpgpu_sim_profiler_t profiler;
 
+#if defined(FLASH_GEM_FORGE)
+  const bool gem5_integrated = (m_gem5_wrapper != nullptr);
+#else
+  const bool gem5_integrated = false;
+#endif
+
   if (clock_mask & CORE) {
     profiler.start_step();
     // shader core loading (pop from ICNT into core) follows CORE clock
@@ -1981,7 +2009,8 @@ void gpgpu_sim::cycle() {
     profiler.end_step(profiler.total_icnt_cycle_time);
   }
   unsigned partiton_replys_in_parallel_per_cycle = 0;
-  if (clock_mask & ICNT) {
+
+  if (clock_mask & ICNT && !gem5_integrated) {
     profiler.start_step();
     // pop from memory controller to interconnect
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
@@ -2008,7 +2037,7 @@ void gpgpu_sim::cycle() {
   }
   partiton_replys_in_parallel += partiton_replys_in_parallel_per_cycle;
 
-  if (clock_mask & DRAM) {
+  if (clock_mask & DRAM && !gem5_integrated) {
     profiler.start_step();
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
       if (m_memory_config->simple_dram_model)
@@ -2033,7 +2062,7 @@ void gpgpu_sim::cycle() {
 
   // L2 operations follow L2 clock domain
   unsigned partiton_reqs_in_parallel_per_cycle = 0;
-  if (clock_mask & L2) {
+  if (clock_mask & L2 && !gem5_integrated) {
     profiler.start_step();
     m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].clear();
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
@@ -2062,11 +2091,29 @@ void gpgpu_sim::cycle() {
     gpu_sim_cycle_parition_util++;
   }
 
-  if (clock_mask & ICNT) {
+  if (clock_mask & ICNT && !gem5_integrated) {
     profiler.start_step();
     icnt_transfer();
     profiler.end_step(profiler.total_icnt_transfer_time);
   }
+
+#if defined(FLASH_GEM_FORGE)
+  if (gem5_integrated) {
+    // We have gem5 integrated. Advance its simulation by the actual elapsed
+    // time. next_clock_domain() advanced time by determining the smallest time
+    // among all clock domains and incrementing it. The elapsed time is stored
+    // in prev_sim_time, which represents the simulation time BEFORE the
+    // domain(s) incremented. gem5 uses 1 Tick = 1 picosecond by default (1e12
+    // ticks/second). The time delta is the smallest period among whichever
+    // domain(s) just fired.
+    double time_delta = next_sim_time - prev_sim_time;
+    gem5::Tick ticks_to_advance = static_cast<gem5::Tick>(time_delta * 1e12);
+    profiler.start_step();
+    m_gem5_mem_subsys->drainPendingMemFetches();
+    m_gem5_wrapper->simulate(ticks_to_advance);
+    profiler.end_step(profiler.total_gem5_simulate_time);
+  }
+#endif
 
   if (clock_mask & CORE) {
     profiler.start_step();
@@ -2194,7 +2241,7 @@ void gpgpu_sim::cycle() {
           MAX(curr_time - gpgpu_ctx->the_gpgpusim->g_simulation_starttime, 1);
       if ((elapsed_time - last_liveness_message_time) >=
               m_config.liveness_message_freq &&
-          DTRACE(LIVENESS)) {
+          GPTRACE(LIVENESS)) {
         days = elapsed_time / (3600 * 24);
         hrs = elapsed_time / 3600 - 24 * days;
         minutes = elapsed_time / 60 - 60 * (hrs + 24 * days);
@@ -2204,7 +2251,7 @@ void gpgpu_sim::cycle() {
         for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
           m_cluster[i]->get_current_occupancy(active, total);
         }
-        DPRINTFG(LIVENESS,
+        GPPRINTFG(LIVENESS,
                  "uArch: inst.: %lld (ipc=%4.1f, occ=%0.4f%% [%llu / %llu]) "
                  "sim_rate=%u (inst/sec) elapsed = %u:%u:%02u:%02u / %s",
                  gpu_tot_sim_insn + gpu_sim_insn,

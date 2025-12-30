@@ -11,8 +11,8 @@ CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -g -O2
 NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -arch=sm_120
 
 # CUDA settings
-CUDA_PATH ?= /home/wzr/cuda
-CUDA_LIBS = -L$(CUDA_PATH)/lib64 -lcudart
+CUDA_INSTALL_PATH ?= /usr/local/cuda
+CUDA_LIBS = -L$(CUDA_INSTALL_PATH)/lib64 -lcudart
 
 # Directories
 GTEST_CLONE_DIR = gtest
@@ -39,7 +39,7 @@ INCLUDES = -I$(GTEST_DIR)/include \
            -I$(SRC_DIR)/gpgpu-sim \
            -I$(SRC_DIR)/cuda-sim \
            -I$(SRC_DIR)/accelwattch \
-           -I$(CUDA_PATH)/include
+           -I$(CUDA_INSTALL_PATH)/include
 
 # Test source files
 UNIT_TEST_SOURCES = $(wildcard $(TEST_SRC_DIR)/unit/*_test.cc)

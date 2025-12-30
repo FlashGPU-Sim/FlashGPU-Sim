@@ -63,7 +63,7 @@ void Scoreboard::reserveRegister(unsigned wid, unsigned regnum) {
         m_sid, wid, regnum);
     abort();
   }
-  SHADER_DPRINTF(SCOREBOARD, "Reserved Register - warp:%d, reg: %d\n", wid,
+  SHADER_GPPRINTF(SCOREBOARD, "Reserved Register - warp:%d, reg: %d\n", wid,
                  regnum);
   reg_table[wid].insert(regnum);
 }
@@ -71,7 +71,7 @@ void Scoreboard::reserveRegister(unsigned wid, unsigned regnum) {
 // Unmark register as write-pending
 void Scoreboard::releaseRegister(unsigned wid, unsigned regnum) {
   if (!(reg_table[wid].find(regnum) != reg_table[wid].end())) return;
-  SHADER_DPRINTF(SCOREBOARD, "Release register - warp:%d, reg: %d\n", wid,
+  SHADER_GPPRINTF(SCOREBOARD, "Release register - warp:%d, reg: %d\n", wid,
                  regnum);
   reg_table[wid].erase(regnum);
 }
@@ -84,7 +84,7 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
   for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
     if (inst->out[r] > 0) {
       reserveRegister(inst->warp_id(), inst->out[r]);
-      SHADER_DPRINTF(SCOREBOARD, "Reserved register - warp:%d, reg: %d\n",
+      SHADER_GPPRINTF(SCOREBOARD, "Reserved register - warp:%d, reg: %d\n",
                      inst->warp_id(), inst->out[r]);
     }
   }
@@ -98,7 +98,7 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
                           inst->space.get_type() == tex_space)) {
     for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
       if (inst->out[r] > 0) {
-        SHADER_DPRINTF(SCOREBOARD, "New longopreg marked - warp:%d, reg: %d\n",
+        SHADER_GPPRINTF(SCOREBOARD, "New longopreg marked - warp:%d, reg: %d\n",
                        inst->warp_id(), inst->out[r]);
         longopregs[inst->warp_id()].insert(inst->out[r]);
       }
@@ -110,7 +110,7 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
 void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
   for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
     if (inst->out[r] > 0) {
-      SHADER_DPRINTF(SCOREBOARD, "Register Released - warp:%d, reg: %d\n",
+      SHADER_GPPRINTF(SCOREBOARD, "Register Released - warp:%d, reg: %d\n",
                      inst->warp_id(), inst->out[r]);
       releaseRegister(inst->warp_id(), inst->out[r]);
       longopregs[inst->warp_id()].erase(inst->out[r]);

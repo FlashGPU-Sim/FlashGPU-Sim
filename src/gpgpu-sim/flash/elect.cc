@@ -10,7 +10,7 @@ typedef void *yyscan_t;
 #include "ptx.tab.h"
 
 void handle_elect_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
-  DPRINTF_INST_EXEC(WIP, "elect.sync instruction%s\n", "");
+  GPPRINTF_INST_EXEC(WIP, "elect.sync instruction%s\n", "");
   fflush(stdout);
   
   // elect.sync instruction - elect a leader thread from active threads

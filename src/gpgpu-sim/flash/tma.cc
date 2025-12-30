@@ -569,13 +569,13 @@ public:
         m_transactions.emplace(tx_uid, tx);
         issue_queue.push_back(tx_uid);
 
-        DPRINTF_INST_EXEC(TMA, "[TMA START] cta_id=%u, warp_id=%u, lane=%d, tid=%u, tx_uid=%u, dst=0x%llx, src=0x%llx, size=%u, mbar=0x%x\n",
+        GPPRINTF_INST_EXEC(TMA, "[TMA START] cta_id=%u, warp_id=%u, lane=%d, tid=%u, tx_uid=%u, dst=0x%llx, src=0x%llx, size=%u, mbar=0x%x\n",
                thread->get_hw_ctaid(), warp_id, laneid, tid, tx_uid,
                tma_dyn_info.dst_addr, tma_dyn_info.src_addr,
                tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr);
         fflush(stdout);
 
-        DPRINTF_INST_EXEC(TMA,
+        GPPRINTF_INST_EXEC(TMA,
                           "Start transaction dst=0x%llx, src=0x%llx, "
                           "size_in_bytes=%u, mbar=0x%x, tx_uid=%u, tma_type=%d\n",
                           tma_dyn_info.dst_addr, tma_dyn_info.src_addr,
@@ -609,7 +609,7 @@ public:
       // Count mem_fetch responses for this transaction
       tx.m_mf_received_count++;
       
-      DPRINTF_TMA(TMA, "TMA response received for mf uid=%u, tx_uid=%u, data_size=%u, response fifo size=%lu\n",
+      GPPRINTF_TMA(TMA, "TMA response received for mf uid=%u, tx_uid=%u, data_size=%u, response fifo size=%lu\n",
                  mf->get_request_uid(),  tx_uid, mf->get_data_size(), m_response_fifo.size());
 
       if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CTA) {
@@ -622,14 +622,14 @@ public:
           unsigned cta_id = thread->get_hw_ctaid();
           unsigned warp_id = thread->get_hw_wid();
           
-          DPRINTF_TMA(TMA, "[TMA COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, issued_mf=%u, received_mf=%u, bytes_completed=%u/%u, calling complete_tx with %u bytes\n",
+          GPPRINTF_TMA(TMA, "[TMA COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, issued_mf=%u, received_mf=%u, bytes_completed=%u/%u, calling complete_tx with %u bytes\n",
                  tx_uid, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
                  tx.m_mf_issued_count, tx.m_mf_received_count,
                  tx.m_bytes_completed, tx.m_dyn_info.size_in_bytes,
                  tx.m_dyn_info.size_in_bytes);
           fflush(stdout);
           
-          DPRINTF_TMA(TMA,
+          GPPRINTF_TMA(TMA,
                             "Complete transaction dst=0x%llx, src=0x%llx, "
                             "size_in_bytes=%u, mbar=0x%x, tx_uid=%u \n",
                             tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
@@ -669,7 +669,7 @@ public:
           
           // Count mem_fetch issued for this transaction
           if (tx.m_mf_issued_count == 0) {
-            DPRINTF_TMA(TMA, "[TMA AGU] tx_uid=%u starting to issue mem_fetch requests\n", tx_uid);
+            GPPRINTF_TMA(TMA, "[TMA AGU] tx_uid=%u starting to issue mem_fetch requests\n", tx_uid);
             fflush(stdout);
           }
           tx.m_mf_issued_count++;
@@ -690,7 +690,7 @@ public:
 
       // Remove from issue queue when all requests have been issued
       if (tx.agu_state.done) {
-        DPRINTF_TMA(TMA, "[TMA AGU DONE] tx_uid=%u issued %u mem_fetch requests (total bytes: %u)\n",
+        GPPRINTF_TMA(TMA, "[TMA AGU DONE] tx_uid=%u issued %u mem_fetch requests (total bytes: %u)\n",
                tx_uid, tx.m_mf_issued_count, tx.m_dyn_info.size_in_bytes);
         fflush(stdout);
         issue_queue.pop_front();
@@ -914,7 +914,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
     const auto &options = pI->get_options();
     if (options.size() != 3) {
       for (auto op : options) {
-        DPRINTF_INST_EXEC(TMA, "option: %d\n", op);
+        GPPRINTF_INST_EXEC(TMA, "option: %d\n", op);
       }
     }
     assert(options.size() >= 3 &&
@@ -940,7 +940,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
       // Check alignment to 16 bytes.
       if (dst_addr % 16 != 0 || src_addr % 16 != 0 || size_in_bytes % 16 != 0) {
-        DPRINTF_INST_EXEC(
+        GPPRINTF_INST_EXEC(
             TMA, "unaligned TMA copy dst=0x%x, src=0x%llx, size_in_bytes=%u\n",
             dst_addr, src_addr, size_in_bytes);
         abort();
@@ -971,7 +971,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
       delete[] data_buffer;
 
-      DPRINTF_INST_EXEC(TMA,
+      GPPRINTF_INST_EXEC(TMA,
         "Functional Sim: "
         "TMA shared::cta <- global dst=0x%x, src=0x%llx, "
         "size_in_bytes=%u, mbar=0x%x\n",
@@ -989,7 +989,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
     const auto &options = pI->get_options();
     if (options.size() != 5) {
       for (auto op : options) {
-        DPRINTF_INST_EXEC(TMA, "  option: %d\n", op);
+        GPPRINTF_INST_EXEC(TMA, "  option: %d\n", op);
       }
     }
     assert(options.size() >= 5 &&
@@ -1081,7 +1081,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       uint32_t coords[5];
       parse_tensor_coords(thread, coord_operand, coords);
       
-      DPRINTF_INST_EXEC(TMA, "TMA tensor store Extracted coordinates: [%u, %u, %u, %u, %u]\n", 
+      GPPRINTF_INST_EXEC(TMA, "TMA tensor store Extracted coordinates: [%u, %u, %u, %u, %u]\n", 
                 coords[0], coords[1], coords[2], coords[3], coords[4]);
       
       // Pass info to perf sim
@@ -1106,28 +1106,28 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       do_tma_transfer(tensormap, coords, shared_mem, global_mem, src_addr, thread, pI, false);
 
       uint64_t base_dst_addr = tensormap.calculate_src_addr(coords);
-      DPRINTF_INST_EXEC(TMA,
+      GPPRINTF_INST_EXEC(TMA,
         "Functional Sim: TMA tensor store dst=0x%llx, src=0x%x, "
         "size=%u, tensormap=0x%x\n",
         (unsigned long long)base_dst_addr, src_addr, size_in_bytes, tensormap_addr);
         
     } else {
-      DPRINTF_INST_EXEC(TMA, 
+      GPPRINTF_INST_EXEC(TMA, 
         "[STUB] Unsupported cp.async.bulk.tensor variant%s\n", "");
     }
 
   } else if (is_commit_group) {
     // Handle TMA commit group instruction (cp.async.bulk.commit_group).
     // TODO: Implement commit group - for now treat as NOP
-    DPRINTF_INST_EXEC(TMA, "[STUB] cp.async.bulk.commit_group not implemented (treated as NOP)%s\n", "");
+    GPPRINTF_INST_EXEC(TMA, "[STUB] cp.async.bulk.commit_group not implemented (treated as NOP)%s\n", "");
 
   } else if (is_wait_group) {
     // Handle TMA wait group instruction (cp.async.bulk.wait_group).
     // TODO: Implement wait group - for now treat as NOP (assume all transfers complete immediately)
-    DPRINTF_INST_EXEC(TMA, "[STUB] cp.async.bulk.wait_group not implemented (treated as NOP)%s\n", "");
+    GPPRINTF_INST_EXEC(TMA, "[STUB] cp.async.bulk.wait_group not implemented (treated as NOP)%s\n", "");
 
   } else {
-    DPRINTF_INST_EXEC(TMA, "Unrecognized TMA instruction%s\n", "");
+    GPPRINTF_INST_EXEC(TMA, "Unrecognized TMA instruction%s\n", "");
     pI->print_insn();
     assert(false && "Unrecognized TMA instruction");
   }
@@ -1194,21 +1194,21 @@ void handle_tensormap_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
       // tensormap.replace.tile.global_address [dst], value
       uint64_t value = get_operand_u64(thread, pI->src1());
       desc.fields.globalAddress = value;
-      DPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.global_address [0x%x] = 0x%llx\n", 
+      GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.global_address [0x%x] = 0x%llx\n", 
                         tensormap_addr, (unsigned long long)value);
                         
     } else if (is_rank) {
       // tensormap.replace.tile.rank [dst], value
       uint32_t value = get_operand_u32(thread, pI->src1());
       desc.fields.tensorRank = value;
-      DPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.rank [0x%x] = %u\n", tensormap_addr, value);
+      GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.rank [0x%x] = %u\n", tensormap_addr, value);
       
     } else if (is_box_dim) {
       // tensormap.replace.tile.box_dim [dst], dim_idx, value
       uint32_t dim_idx = get_operand_u32(thread, pI->src1());
       uint32_t value = get_operand_u32(thread, pI->src2());
       if (dim_idx < 5) desc.fields.boxDim[dim_idx] = value;
-      DPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.box_dim [0x%x], dim=%u, value=%u\n", 
+      GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.box_dim [0x%x], dim=%u, value=%u\n", 
                         tensormap_addr, dim_idx, value);
       
     } else if (is_global_dim) {
@@ -1216,7 +1216,7 @@ void handle_tensormap_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
       uint32_t dim_idx = get_operand_u32(thread, pI->src1());
       uint32_t value = get_operand_u32(thread, pI->src2());
       if (dim_idx < 5) desc.fields.globalDim[dim_idx] = value;
-      DPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.global_dim [0x%x], dim=%u, value=%u\n", 
+      GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.global_dim [0x%x], dim=%u, value=%u\n", 
                         tensormap_addr, dim_idx, value);
       
     } else if (is_global_stride) {
@@ -1224,7 +1224,7 @@ void handle_tensormap_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
       uint32_t dim_idx = get_operand_u32(thread, pI->src1());
       uint64_t value = get_operand_u64(thread, pI->src2());
       if (dim_idx < 5) desc.fields.globalStrides[dim_idx] = value;
-      DPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.global_stride [0x%x], dim=%u, value=%llu\n", 
+      GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.global_stride [0x%x], dim=%u, value=%llu\n", 
                         tensormap_addr, dim_idx, (unsigned long long)value);
       
     } else if (is_element_stride) {
@@ -1232,35 +1232,35 @@ void handle_tensormap_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
       uint32_t dim_idx = get_operand_u32(thread, pI->src1());
       uint32_t value = get_operand_u32(thread, pI->src2());
       if (dim_idx < 5) desc.fields.elementStrides[dim_idx] = value;
-      DPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.element_stride [0x%x], dim=%u, value=%u\n", 
+      GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.element_stride [0x%x], dim=%u, value=%u\n", 
                         tensormap_addr, dim_idx, value);
       
     } else if (is_elemtype) {
       // tensormap.replace.tile.elemtype [dst], value
       uint32_t value = get_operand_u32(thread, pI->src1());
       desc.fields.tensorDataType = value;
-      DPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.elemtype [0x%x] = %u\n", tensormap_addr, value);
+      GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.elemtype [0x%x] = %u\n", tensormap_addr, value);
       
     } else if (is_interleave_layout) {
       // tensormap.replace.tile.interleave_layout [dst], value
       uint32_t value = get_operand_u32(thread, pI->src1());
       desc.fields.interleave = value;
-      DPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.interleave_layout [0x%x] = %u\n", tensormap_addr, value);
+      GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.interleave_layout [0x%x] = %u\n", tensormap_addr, value);
       
     } else if (is_swizzle_mode) {
       // tensormap.replace.tile.swizzle_mode [dst], value
       uint32_t value = get_operand_u32(thread, pI->src1());
       desc.fields.swizzle = value;
-      DPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.swizzle_mode [0x%x] = %u\n", tensormap_addr, value);
+      GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.swizzle_mode [0x%x] = %u\n", tensormap_addr, value);
       
     } else if (is_fill_mode) {
       // tensormap.replace.tile.fill_mode [dst], value
       uint32_t value = get_operand_u32(thread, pI->src1());
       desc.fields.oobFill = value;
-      DPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.fill_mode [0x%x] = %u\n", tensormap_addr, value);
+      GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.fill_mode [0x%x] = %u\n", tensormap_addr, value);
       
     } else {
-      DPRINTF_INST_EXEC(TMA, "[STUB] Unrecognized tensormap.replace.tile field%s\n", "");
+      GPPRINTF_INST_EXEC(TMA, "[STUB] Unrecognized tensormap.replace.tile field%s\n", "");
     }
     
     // Write modified descriptor back to shared memory
@@ -1281,6 +1281,6 @@ void handle_tensormap_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
     global_mem->write(dst_addr, size_in_bytes, desc.raw_bytes, thread, pI);
     
   } else {
-    DPRINTF_INST_EXEC(TMA, "[STUB] Unrecognized tensormap instruction variant%s\n", "");
+    GPPRINTF_INST_EXEC(TMA, "[STUB] Unrecognized tensormap instruction variant%s\n", "");
   }
 }

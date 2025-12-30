@@ -25,7 +25,7 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
                   core->get_warp_size();
   auto thread = core->get_thread_info()[tid_lane0];
 
-  DPRINTF_INST_EXEC(WIP, "Handling %s\n", pI->to_string().c_str());
+  GPPRINTF_INST_EXEC(WIP, "Handling %s\n", pI->to_string().c_str());
 
   // Process the options.
   bool is_sync = false;
@@ -97,7 +97,7 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
            "Source operand size mismatch in stmatrix");
   }
 
-  DPRINTF_INST_EXEC(WIP,
+  GPPRINTF_INST_EXEC(WIP,
                     "%s options: matrix_shape=%d, num_matrixs=%d, "
                     "scalar_type=%d, num_operands=%d\n",
                     inst_name, matrix_shape, num_matrixs, scalar_type,
@@ -148,7 +148,7 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
                                     thread, pI);
       }
 
-      DPRINTF_INST_EXEC(WIP,
+      GPPRINTF_INST_EXEC(WIP,
                         "%s: lane_id=%d, matrix_id=%d, row_address_lane_id=%d, "
                         "matrix_row_id=%d, matrix_col_id=%d, row_address=0x%x, "
                         "address=0x%x data=%04x %04x\n",

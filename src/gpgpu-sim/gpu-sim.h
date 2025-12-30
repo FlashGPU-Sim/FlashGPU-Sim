@@ -70,6 +70,15 @@ class gpgpu_context;
 
 extern tr1_hash_map<new_addr_type, unsigned> address_random_interleaving;
 
+/**
+ * ! GemForge
+ * Integrate gem5/ext/gpgpusim
+ */
+#ifdef FLASH_GEM_FORGE
+#include "gem5_wrapper.hh"
+#include "flash/gem5/gem5_mem_subsystem.hh"
+#endif
+
 // SST communication functions
 /**
  * @brief Check if SST requests buffer is full
@@ -705,10 +714,14 @@ class gpgpu_sim : public gpgpu_t {
   float *average_pipeline_duty_cycle;
   float *active_sms;
   // time of next rising edge
+  // NOTE: Using double for time accumulation can lead to rounding errors over long simulations.
+  // Consider switching to integer tick counts if precision becomes an issue.
   double core_time;
   double icnt_time;
   double dram_time;
   double l2_time;
+  double next_sim_time;
+  double prev_sim_time;  // Track previous simulation time for gem5 synchronization
 
   // debug
   bool gpu_deadlock;
@@ -806,6 +819,12 @@ class gpgpu_sim : public gpgpu_t {
     m_functional_sim = false;
     m_functional_sim_kernel = NULL;
   }
+
+#ifdef FLASH_GEM_FORGE
+  std::unique_ptr<flash_gpgpu_sim::Gem5Wrapper> m_gem5_wrapper;
+  std::shared_ptr<flash_gpgpu_sim::Gem5MemSubsystem> m_gem5_mem_subsys;
+#endif
+
 };
 
 class exec_gpgpu_sim : public gpgpu_sim {

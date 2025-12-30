@@ -15,6 +15,7 @@ struct gpgpu_sim_profiler_t {
   double total_icnt_transfer_time = 0.0;
   double total_core_cycle_time = 0.0;
   double total_other_time = 0.0;
+  double total_gem5_simulate_time = 0.0;
   unsigned long profile_cycle_count = 0;
 
   // Timing points
@@ -36,7 +37,7 @@ struct gpgpu_sim_profiler_t {
     double total_time = total_icnt_cycle_time + total_mem_to_icnt_time +
                         total_dram_cycle_time + total_l2_cache_time +
                         total_icnt_transfer_time + total_core_cycle_time +
-                        total_other_time;
+                        total_gem5_simulate_time + total_other_time;
 
     printf("\n========== Cycle Profiling Statistics (Last 10000 cycles) "
            "==========\n");
@@ -55,6 +56,9 @@ struct gpgpu_sim_profiler_t {
            (total_icnt_transfer_time / total_time) * 100.0);
     printf("  Core Cycle (CORE):           %.2f ms (%.1f%%)\n",
            total_core_cycle_time, (total_core_cycle_time / total_time) * 100.0);
+    printf("  gem5 Simulate:               %.2f ms (%.1f%%)\n",
+           total_gem5_simulate_time,
+           (total_gem5_simulate_time / total_time) * 100.0);
     printf("  Other Operations:            %.2f ms (%.1f%%)\n",
            total_other_time, (total_other_time / total_time) * 100.0);
     printf("Average time per cycle: %.4f ms\n", total_time / 10000.0);
@@ -70,6 +74,7 @@ struct gpgpu_sim_profiler_t {
     total_dram_cycle_time = 0.0;
     total_l2_cache_time = 0.0;
     total_icnt_transfer_time = 0.0;
+    total_gem5_simulate_time = 0.0;
     total_core_cycle_time = 0.0;
     total_other_time = 0.0;
   }

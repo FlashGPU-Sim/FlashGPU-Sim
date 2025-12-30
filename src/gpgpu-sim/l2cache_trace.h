@@ -34,17 +34,17 @@
 
 #define MEMPART_PRINT_STR SIM_PRINT_STR " %d - "
 #define MEMPART_DTRACE(x)                                  \
-  (DTRACE(x) && (Trace::sampling_memory_partition == -1 || \
+  (GPTRACE(x) && (Trace::sampling_memory_partition == -1 || \
                  Trace::sampling_memory_partition == (int)get_mpid()))
 
 #define MEM_SUBPART_PRINT_STR SIM_PRINT_STR " %d - "
 #define MEM_SUBPART_DTRACE(x)                              \
-  (DTRACE(x) && (Trace::sampling_memory_partition == -1 || \
+  (GPTRACE(x) && (Trace::sampling_memory_partition == -1 || \
                  Trace::sampling_memory_partition == (int)m_id))
 
 // Intended to be called from inside components of a memory partition
 // Depends on a get_mpid() function
-#define MEMPART_DPRINTF(...)                                                   \
+#define MEMPART_GPPRINTF(...)                                                   \
   do {                                                                         \
     if (MEMPART_DTRACE(MEMORY_PARTITION_UNIT)) {                               \
       printf(                                                                  \
@@ -54,7 +54,7 @@
     }                                                                          \
   } while (0)
 
-#define MEM_SUBPART_DPRINTF(...)                                               \
+#define MEM_SUBPART_GPPRINTF(...)                                               \
   do {                                                                         \
     if (MEM_SUBPART_DTRACE(MEMORY_PARTITION_UNIT)) {                           \
       printf(MEM_SUBPART_PRINT_STR,                                            \
@@ -67,12 +67,12 @@
 #else
 
 #define MEMPART_DTRACE(x) (false)
-#define MEMPART_DPRINTF(x, ...) \
+#define MEMPART_GPPRINTF(x, ...) \
   do {                          \
   } while (0)
 
 #define MEM_SUBPART_DTRACE(x) (false)
-#define MEM_SUBPART_DPRINTF(x, ...) \
+#define MEM_SUBPART_GPPRINTF(x, ...) \
   do {                              \
   } while (0)
 

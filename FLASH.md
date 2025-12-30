@@ -22,23 +22,20 @@ Configure CUDA installation paths:
 
 ```bash
 export CUDA_INSTALL_PATH=/path/to/cuda     # e.g., /usr/local/cuda-12.0
-export CUDA_PATH=/path/to/cuda             # e.g., /usr/local/cuda-12.0
+export CUDA_INSTALL_PATH=/path/to/cuda             # e.g., /usr/local/cuda-12.0
 source setup_environment
 ```
 
 ### Building GPGPU-Sim
 
-**Single-threaded version** (traditional):
+**Multi-threaded version** (Flash mode, default):
 ```bash
 make -j$(nproc)
 ```
 
-**Multi-threaded version** (Flash mode):
-```bash
-make FLASH=1 -j$(nproc)
-```
+Flash mode is now **enabled by default** (`FLASH=1`). This provides modern GPU feature support and multi-threaded simulation out of the box.
 
-The `FLASH=1` flag enables:
+The Flash mode enables:
 - `-DFLASH_GPGPU_SIM`: Core Flash features
 - `-DFLASH_GPGPU_SIM_OMP`: OpenMP parallelization
 - `-fopenmp`: OpenMP compiler support
@@ -64,6 +61,25 @@ Execute CUDA applications following standard GPGPU-Sim workflow:
 3. Run your binary directly
 
 **Note**: For Flash mode issues, first verify behavior in single-threaded mode to isolate multi-threading related problems.
+
+### Docker Setup
+
+A Docker-based development environment is provided for consistent builds across different systems.
+
+**Quick Start**:
+
+```bash
+# Build Docker image
+./docker.sh build
+
+# Enter container shell (environment auto-configured)
+./docker.sh shell
+
+# Inside container: build directly (Flash mode is default)
+make -j$(nproc)
+```
+
+For detailed Docker usage, see [docker/README.md](docker/README.md).
 
 ## Roadmap
 

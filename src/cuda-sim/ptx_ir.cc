@@ -1625,14 +1625,18 @@ function_info::function_info(int entry_point, gpgpu_context *ctx) {
 unsigned function_info::print_insn(unsigned pc, FILE *fp) const {
   unsigned inst_size = 1;  // return offset to next instruction or 1 if unknown
   unsigned index = pc - m_start_PC;
-  char command[1024];
-  char buffer[1024];
-  memset(command, 0, 1024);
-  memset(buffer, 0, 1024);
-  snprintf(command, 1024, "c++filt -p %s", m_name.c_str());
+  const int buffer_size = 1024;
+  char command[buffer_size];
+  char buffer[buffer_size];
+  memset(command, 0, buffer_size);
+  memset(buffer, 0, buffer_size);
+  snprintf(command, buffer_size, "c++filt -p %s", m_name.c_str());
   FILE *p = popen(command, "r");
   buffer[0] = 0;
-  assert(fgets(buffer, 1023, p) != NULL);
+  if (fgets(buffer, buffer_size - 1, p) == NULL) {
+    fprintf(stderr, "%s: <could not demangle>\n", m_name.c_str());
+    assert(false);
+  }
   // Remove trailing "\n" in buffer
   char *c;
   if ((c = strchr(buffer, '\n')) != NULL) *c = '\0';

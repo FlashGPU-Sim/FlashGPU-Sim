@@ -422,7 +422,7 @@ void function_info::ptx_assemble() {
       pI->set_m_instr_mem_index(n);
       pI->set_PC(PC);
 
-      DPRINTF_NoGPU(PTX_IR,
+      GPPRINTF_NoGPU(PTX_IR,
         "  set inst %s to PC 0x%x\n",
         pI->to_string().c_str(), PC);
 
@@ -453,7 +453,7 @@ void function_info::ptx_assemble() {
       // unsigned index = labels[target.name()];  // determine address from name
       unsigned index = find_label(pI->get_symbol_table(), target.name());
       unsigned PC = m_instr_mem[index]->get_PC();
-      DPRINTF_NoGPU(PTX_IR,
+      GPPRINTF_NoGPU(PTX_IR,
               "  handling branch inst %s resolving label %s to inst %s PC 0x%x\n",
               pI->to_string().c_str(), target.name().c_str(),
               m_instr_mem[index]->to_string().c_str(), PC);
@@ -2065,7 +2065,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
         }
       }
 
-      DPRINTF_THREAD(PTX_INST_EXEC, this, "exec %s\n", pI->to_string().c_str());
+      GPPRINTF_THREAD(PTX_INST_EXEC, this, "exec %s\n", pI->to_string().c_str());
 
       // Tensorcore is warp synchronous operation. So these instructions needs
       // to be executed only once. To make the simulation faster removing the
@@ -2234,7 +2234,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
     if ((m_gpu->gpgpu_ctx->func_sim->g_ptx_sim_num_insn % 100000) == 0) {
       dim3 ctaid = get_ctaid();
       dim3 tid = get_tid();
-      DPRINTF(LIVENESS,
+      GPPRINTF(LIVENESS,
               "GPGPU-Sim PTX: %u instructions simulated : ctaid=(%u,%u,%u) "
               "tid=(%u,%u,%u)\n",
               m_gpu->gpgpu_ctx->func_sim->g_ptx_sim_num_insn, ctaid.x, ctaid.y,

@@ -37,12 +37,12 @@
 #define SHADER_PRINT_STR SIM_PRINT_STR "Core %d - "
 #define SCHED_PRINT_STR SHADER_PRINT_STR "Scheduler %d - "
 #define SHADER_DTRACE(x) \
-  (DTRACE(x) &&          \
+  (GPTRACE(x) &&          \
    (Trace::sampling_core == (int)get_sid() || Trace::sampling_core == -1))
 
 // Intended to be called from inside components of a shader core.
 // Depends on a get_sid() function
-#define SHADER_DPRINTF(x, ...)                                \
+#define SHADER_GPPRINTF(x, ...)                                \
   do {                                                        \
     if (SHADER_DTRACE(x)) {                                   \
       printf(SHADER_PRINT_STR,                                \
@@ -54,7 +54,7 @@
 
 // Intended to be called from inside a scheduler_unit.
 // Depends on a m_id member
-#define SCHED_DPRINTF(...)                                               \
+#define SCHED_GPPRINTF(...)                                               \
   do {                                                                   \
     if (SHADER_DTRACE(WARP_SCHEDULER)) {                                 \
       printf(SCHED_PRINT_STR,                                            \
@@ -69,10 +69,10 @@
 #else
 
 #define SHADER_DTRACE(x) (false)
-#define SHADER_DPRINTF(x, ...) \
+#define SHADER_GPPRINTF(x, ...) \
   do {                         \
   } while (0)
-#define SCHED_DPRINTF(x, ...) \
+#define SCHED_GPPRINTF(x, ...) \
   do {                        \
   } while (0)
 

@@ -74,3 +74,9 @@ setup
 
 # temporary files
 temp/
+# Docker
+.env
+docker-compose.override.yml
+
+# Playground (personal testing)
+playground/
