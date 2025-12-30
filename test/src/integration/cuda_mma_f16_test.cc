@@ -9,8 +9,8 @@
 #include <random>
 #include <cmath>
 
-// Test fixture for MMA M16N8K8 integration tests
-class MMAM16N8K8IntegrationTest : public ::testing::Test {
+// Test fixture for F16 MMA M16N8K8 integration tests
+class MMAF16M16N8K8IntegrationTest : public ::testing::Test {
 protected:
     static constexpr int M = 16;
     static constexpr int N = 8;
@@ -232,7 +232,7 @@ __global__ void mma_m16n8k8_f16_kernel(
     D[c_row1 * 8 + c_col1] = D_frag[3];
 }
 
-void MMAM16N8K8IntegrationTest::run_mma_kernel() {
+void MMAF16M16N8K8IntegrationTest::run_mma_kernel() {
     // Copy inputs to device
     cudaMemcpy(d_A, h_A, M * K * sizeof(uint16_t), cudaMemcpyHostToDevice);
     cudaMemcpy(d_B, h_B, K * N * sizeof(uint16_t), cudaMemcpyHostToDevice);
@@ -250,7 +250,7 @@ void MMAM16N8K8IntegrationTest::run_mma_kernel() {
 }
 
 // Test 1: Simple case with all 1.0 values
-TEST_F(MMAM16N8K8IntegrationTest, AllOnesTest) {
+TEST_F(MMAF16M16N8K8IntegrationTest, AllOnesTest) {
     // Initialize with 1.0 in F16 = 0x3C00
     for (int i = 0; i < M * K; i++) h_A[i] = 0x3C00;  // 1.0
     for (int i = 0; i < K * N; i++) h_B[i] = 0x3C00;  // 1.0
@@ -269,7 +269,7 @@ TEST_F(MMAM16N8K8IntegrationTest, AllOnesTest) {
 }
 
 // Test 2: Zero matrix test
-TEST_F(MMAM16N8K8IntegrationTest, ZeroMatrixTest) {
+TEST_F(MMAF16M16N8K8IntegrationTest, ZeroMatrixTest) {
     // Initialize with zeros
     for (int i = 0; i < M * K; i++) h_A[i] = 0x0000;  // 0.0
     for (int i = 0; i < K * N; i++) h_B[i] = 0x0000;  // 0.0
@@ -288,7 +288,7 @@ TEST_F(MMAM16N8K8IntegrationTest, ZeroMatrixTest) {
 }
 
 // Test 3: Random values test
-TEST_F(MMAM16N8K8IntegrationTest, RandomValuesTest) {
+TEST_F(MMAF16M16N8K8IntegrationTest, RandomValuesTest) {
     // Random number generator
     std::random_device rd;
     std::mt19937 gen(42);  // Fixed seed for reproducibility
@@ -322,7 +322,7 @@ TEST_F(MMAM16N8K8IntegrationTest, RandomValuesTest) {
 }
 
 // Test 4: Random values with larger range
-TEST_F(MMAM16N8K8IntegrationTest, RandomValuesLargeRangeTest) {
+TEST_F(MMAF16M16N8K8IntegrationTest, RandomValuesLargeRangeTest) {
     // Random number generator with larger range
     std::random_device rd;
     std::mt19937 gen(123);  // Different seed
@@ -355,7 +355,7 @@ TEST_F(MMAM16N8K8IntegrationTest, RandomValuesLargeRangeTest) {
 }
 
 // Test 5: Mixed positive and negative values
-TEST_F(MMAM16N8K8IntegrationTest, MixedSignTest) {
+TEST_F(MMAF16M16N8K8IntegrationTest, MixedSignTest) {
     // Initialize with alternating positive/negative values
     for (int i = 0; i < M * K; i++) {
         h_A[i] = (i % 2 == 0) ? 0x3C00 : 0xBC00;  // +1.0 or -1.0
