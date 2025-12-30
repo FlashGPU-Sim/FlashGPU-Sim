@@ -6,8 +6,8 @@ Before running tests, ensure the environment is properly configured:
 
 ```bash
 # Source environment setup scripts (REQUIRED before testing)
-source setup_environment
 source setup.sh
+source setup_environment
 ```
 
 **Note:** These commands must be run before `make test` or any compilation commands.
@@ -16,7 +16,7 @@ source setup.sh
 
 ```bash
 # Run all tests
-make test
+./test/run_tests.sh run
 ```
 
 ## Test Organization

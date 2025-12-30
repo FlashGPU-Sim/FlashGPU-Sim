@@ -70,6 +70,20 @@ enum mma_layout_mode {
 // Implements D = A * B + C matrix multiplication
 void tensor_mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst);
 
+// tensor_mma_f16_impl: F16/BF16 floating-point MMA implementation
+// Implements functional simulation for M16N8K8 tensor cores with F16 or BF16 inputs
+void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
+                         warp_inst_t inst, int M, int N, int K,
+                         bool is_bf16, unsigned tid,
+                         const operand_info &dst);
+
+// tensor_mma_tf32_impl: TF32 floating-point MMA implementation
+// Implements functional simulation for M16N8K8 tensor cores with TF32 inputs
+void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
+                          warp_inst_t inst, int M, int N, int K,
+                          bool saturate, unsigned tid,
+                          const operand_info &dst);
+
 // tensor_mma_s8_impl: S8/U8 integer MMA implementation
 // Implements functional simulation for M16N8K16 integer tensor cores
 void tensor_mma_s8_impl(const ptx_instruction *pI, core_t *core,
