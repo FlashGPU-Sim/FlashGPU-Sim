@@ -71,3 +71,6 @@ setup
 
 # Editor Files
 .vscode/
+
+# temporary files
+temp/
