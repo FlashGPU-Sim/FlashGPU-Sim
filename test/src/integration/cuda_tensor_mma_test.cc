@@ -9,6 +9,9 @@
 // MMA instructions use mma.sync.aligned syntax (PTX ISA spec)
 // WMMA uses wmma.mma.sync syntax (different instruction set)
 
+// TODO: Add inline PTX MMA kernels when we figure out correct PTX syntax
+// For now, these tests validate CPU reference implementations
+
 // CPU reference implementation for MMA M16N8K8 (F16 inputs, F32 accumulator)
 void mmaReferenceF16M16N8K8(
     const uint16_t* A,  // 16x8 matrix, F16
@@ -172,20 +175,44 @@ TEST_F(CudaTensorMMATest, F16_M16N8K8_RowCol_Identity) {
         h_B[i] = randomF16(-10.0f, 10.0f);
     }
 
-    // Compute reference
+    // Compute CPU reference
     mmaReferenceF16M16N8K8(h_A.data(), h_B.data(), h_C.data(), h_D_ref.data(), true, false);
 
-    // Note: Actual CUDA kernel execution will be added once MMA instructions are implemented
-    // For now, this test validates the reference implementation
+    // TODO: Add CUDA kernel execution when PTX MMA syntax is resolved
+    // For now, just verify CPU reference correctness
 
-    // Verify first 8 rows of D match B (approximately)
+    // Expected: First 8 rows should approximately match B values
+    // (since A is partial identity: first 8x8 is I, rest is zeros)
+    // D[i,j] = sum_k(A[i,k] * B[k,j]) + C[i,j]
+    // For i < 8: D[i,j] ≈ B[i,j] (since A is identity)
+    // For i >= 8: D[i,j] ≈ 0 (since A rows are zeros)
+
+    const float tolerance = 1e-3f;  // F16 precision tolerance
+    bool reference_looks_correct = true;
+
+    // Verify the reference implementation produces sensible results
     for (int i = 0; i < 8; ++i) {
         for (int j = 0; j < 8; ++j) {
-            // D[i,j] should equal B[i,j] (converted from F16)
-            // This is a structural test; actual execution test comes later
-            EXPECT_TRUE(true);  // Placeholder
+            int idx = i * 8 + j;
+            // First 8 rows: Result should be non-zero (B values)
+            if (std::abs(h_D_ref[idx]) < tolerance && h_B[idx] != 0) {
+                reference_looks_correct = false;
+            }
         }
     }
+
+    for (int i = 8; i < 16; ++i) {
+        for (int j = 0; j < 8; ++j) {
+            int idx = i * 8 + j;
+            // Last 8 rows: Result should be close to zero
+            if (std::abs(h_D_ref[idx]) > tolerance) {
+                reference_looks_correct = false;
+            }
+        }
+    }
+
+    EXPECT_TRUE(reference_looks_correct)
+        << "CPU reference implementation produces unexpected results";
 }
 
 // Test: S8 MMA M16N8K16 with saturation
@@ -193,7 +220,7 @@ TEST_F(CudaTensorMMATest, S8_M16N8K16_Saturation) {
     // Matrix A: 16x16, all max value (127)
     // Matrix B: 16x8, all max value (127)
     // Matrix C: zeros
-    // Expected D with saturation: clamped to INT32_MAX
+    // Expected D: 127 * 127 * 16 = 258,048 (fits in S32, no saturation needed)
 
     std::vector<int8_t> h_A(16 * 16, 127);
     std::vector<int8_t> h_B(16 * 8, 127);
@@ -201,16 +228,17 @@ TEST_F(CudaTensorMMATest, S8_M16N8K16_Saturation) {
     std::vector<int32_t> h_D(16 * 8);
     std::vector<int32_t> h_D_ref(16 * 8);
 
-    // Compute reference with saturation enabled
+    // Compute CPU reference with saturation enabled
     mmaReferenceS8M16N8K16(h_A.data(), h_B.data(), h_C.data(), h_D_ref.data(), true, true, true);
 
-    // Verify saturation occurred
-    // 127 * 127 * 16 (K=16) = 258,048 (fits in S32, no overflow for this case)
-    // But if values were larger, saturation would kick in
+    // TODO: Add CUDA kernel execution when PTX MMA syntax is resolved
 
-    int32_t expected = 127 * 127 * 16;  // No saturation needed
+    // Verify CPU reference produces correct result
+    int32_t expected = 127 * 127 * 16;  // = 258,048
     for (int i = 0; i < 16 * 8; ++i) {
-        EXPECT_EQ(h_D_ref[i], expected);
+        EXPECT_EQ(h_D_ref[i], expected)
+            << "CPU reference incorrect at element " << i
+            << " (row " << (i / 8) << ", col " << (i % 8) << ")";
     }
 }
 
@@ -219,13 +247,17 @@ TEST_F(CudaTensorMMATest, F16_M16N8K8_ZeroMatrices) {
     std::vector<uint16_t> h_A(16 * 8, 0);
     std::vector<uint16_t> h_B(8 * 8, 0);
     std::vector<float> h_C(16 * 8, 0.0f);
+    std::vector<float> h_D(16 * 8);
     std::vector<float> h_D_ref(16 * 8);
 
+    // Compute CPU reference
     mmaReferenceF16M16N8K8(h_A.data(), h_B.data(), h_C.data(), h_D_ref.data(), true, true);
+
+    // TODO: Add CUDA kernel execution when PTX MMA syntax is resolved
 
     // All outputs should be zero
     for (int i = 0; i < 16 * 8; ++i) {
-        EXPECT_FLOAT_EQ(h_D_ref[i], 0.0f);
+        EXPECT_FLOAT_EQ(h_D_ref[i], 0.0f) << "CPU reference should be zero at element " << i;
     }
 }
 
@@ -236,6 +268,8 @@ TEST_F(CudaTensorMMATest, LayoutModeComparison) {
     std::vector<float> h_C(16 * 8, 0.0f);
     std::vector<float> h_D_row_col(16 * 8);
     std::vector<float> h_D_row_row(16 * 8);
+    std::vector<float> h_D_ref_row_col(16 * 8);
+    std::vector<float> h_D_ref_row_row(16 * 8);
 
     // Initialize with random values
     for (int i = 0; i < 16 * 8; ++i) {
@@ -245,21 +279,24 @@ TEST_F(CudaTensorMMATest, LayoutModeComparison) {
         h_B[i] = randomF16(-1.0f, 1.0f);
     }
 
-    // Compute with different layouts
-    mmaReferenceF16M16N8K8(h_A.data(), h_B.data(), h_C.data(), h_D_row_col.data(), true, false);
-    mmaReferenceF16M16N8K8(h_A.data(), h_B.data(), h_C.data(), h_D_row_row.data(), true, true);
+    // Compute CPU references with different layouts
+    mmaReferenceF16M16N8K8(h_A.data(), h_B.data(), h_C.data(), h_D_ref_row_col.data(), true, false);
+    mmaReferenceF16M16N8K8(h_A.data(), h_B.data(), h_C.data(), h_D_ref_row_row.data(), true, true);
 
-    // Results should differ (different memory access patterns)
+    // TODO: Add CUDA kernel execution when PTX MMA syntax is resolved
+
+    // Results should differ between layouts (different memory access patterns)
     bool results_differ = false;
     for (int i = 0; i < 16 * 8; ++i) {
-        if (std::abs(h_D_row_col[i] - h_D_row_row[i]) > 1e-5f) {
+        if (std::abs(h_D_ref_row_col[i] - h_D_ref_row_row[i]) > 1e-5f) {
             results_differ = true;
             break;
         }
     }
 
     // Layout mode affects the computation, so results should differ
-    EXPECT_TRUE(results_differ);
+    EXPECT_TRUE(results_differ)
+        << "CPU references for different layouts should produce different results";
 }
 
 // Test: Accumulator addition (C != 0)

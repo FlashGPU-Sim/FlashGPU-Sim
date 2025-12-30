@@ -1915,7 +1915,8 @@ static unsigned get_tex_datasize(const ptx_instruction *pI,
 
 int tensorcore_op(int inst_opcode) {
   if ((inst_opcode == MMA_OP) || (inst_opcode == MMA_LD_OP) ||
-      (inst_opcode == MMA_ST_OP))
+      (inst_opcode == MMA_ST_OP) || (inst_opcode == TENSOR_MMA_OP) ||
+      (inst_opcode == TENSOR_MMA_LD_OP) || (inst_opcode == TENSOR_MMA_ST_OP))
     return 1;
   else
     return 0;
@@ -2005,6 +2006,9 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
     FUNC(pI, get_core(), inst);                      \
     op_classification = CLASSIFICATION;              \
     break;
+using flash_gpgpu_sim::tensor_mma_impl;
+using flash_gpgpu_sim::tensor_mma_ld_impl;
+using flash_gpgpu_sim::tensor_mma_st_impl;
 #include "opcodes.def"
 #undef OP_DEF
 #undef OP_W_DEF

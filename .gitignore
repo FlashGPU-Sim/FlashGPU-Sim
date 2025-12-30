@@ -75,3 +75,11 @@ docker-compose.override.yml
 
 # Playground (personal testing)
 playground/
+
+.claude/*
+.tmp/*
+.milestones/*
+.vscode/*
+CLAUDE.md
+package.json
+package-lock.json

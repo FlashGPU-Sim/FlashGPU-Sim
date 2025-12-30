@@ -75,20 +75,24 @@ enum wmma_type {
 
 };
 
-// NEW: MMA instruction enums (separate from WMMA)
-enum mma_shape_type {
-  MMA_M16N8K8,
-  MMA_M16N8K16,
-  MMA_M16N8K32,
-  MMA_M16N16K8,
-  MMA_M16N16K16_MMA  // Avoid conflict with M16N16K16 from wmma_type
+// MMA instruction shape identifiers (for lexer/parser token values)
+// These are separate from flash_gpgpu_sim::mma_shape_type to avoid enum value conflicts
+// Values start at 100 to avoid conflicts with wmma_type enum (which ends at ~10)
+enum {
+  MMA_M16N8K8 = 100,
+  MMA_M16N8K4 = 101,
+  MMA_M16N8K16 = 102,
+  MMA_M16N8K32 = 103,
+  MMA_M16N8K64 = 104,
+  MMA_M8N8K4 = 105
 };
 
-enum mma_layout_mode {
-  MMA_ROW_COL,
-  MMA_ROW_ROW,
-  MMA_COL_ROW,
-  MMA_COL_COL
+// MMA layout mode identifiers
+enum {
+  MMA_ROW_COL = 200,
+  MMA_ROW_ROW = 201,
+  MMA_COL_ROW = 202,
+  MMA_COL_COL = 203
 };
 
 #endif

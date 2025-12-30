@@ -95,6 +95,7 @@ void ptx_recognizer::init_instruction_state() {
   g_opcode = -1;
   g_options.clear();
   g_wmma_options.clear();
+  g_mma_options.clear();
   g_return_var = operand_info(gpgpu_ctx);
   init_directive_state();
 }
@@ -269,7 +270,7 @@ void ptx_recognizer::add_instruction() {
   ptx_instruction *i = new ptx_instruction(
       g_opcode, g_pred, g_neg_pred, g_pred_mod, g_label, g_current_symbol_table,
       g_operands,
-      g_return_var, g_options, g_wmma_options, g_scalar_type, g_space_spec,
+      g_return_var, g_options, g_wmma_options, g_mma_options, g_scalar_type, g_space_spec,
       gpgpu_ctx->g_filename, ptx_get_lineno(scanner), linebuf,
       g_shader_core_config, gpgpu_ctx);
   g_instructions.push_back(i);
@@ -628,9 +629,9 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
     parse_assert(
         (g_opcode == -1) || (g_opcode == CVT_OP) || (g_opcode == SET_OP) ||
             (g_opcode == SLCT_OP) || (g_opcode == TEX_OP) ||
-            (g_opcode == MMA_OP) || (g_opcode == DP4A_OP) ||
-            (g_opcode == VMIN_OP) || (g_opcode == VMAX_OP),
-        "only cvt, set, slct, tex, vmin, vmax and dp4a can have more than one "
+            (g_opcode == MMA_OP) || (g_opcode == TENSOR_MMA_OP) ||
+            (g_opcode == DP4A_OP) || (g_opcode == VMIN_OP) || (g_opcode == VMAX_OP),
+        "only cvt, set, slct, tex, mma, vmin, vmax and dp4a can have more than one "
         "type specifier.");
   }
   g_scalar_type_spec = type_spec;
@@ -670,6 +671,10 @@ void ptx_recognizer::add_option(int option) {
 void ptx_recognizer::add_wmma_option(int option) {
   PTX_PARSE_GPPRINTF("add_option");
   g_wmma_options.push_back(option);
+}
+void ptx_recognizer::add_mma_option(int option) {
+  PTX_PARSE_GPPRINTF("add_mma_option");
+  g_mma_options.push_back(option);
 }
 void ptx_recognizer::add_double_operand(const char *d1, const char *d2) {
   // operands that access two variables.

@@ -47,6 +47,8 @@
 
 using flash_gpgpu_sim::mma_layout_mode;
 using flash_gpgpu_sim::mma_shape_type;
+// Note: MMA enum values (MMA_M16N8K8, etc.) are defined in opcodes.h
+// for lexer/parser use and mapped to flash_gpgpu_sim types in constructor
 
 class gpgpu_context;
 
@@ -977,6 +979,7 @@ class ptx_instruction : public warp_inst_t {
                   const std::list<operand_info> &operands,
                   const operand_info &return_var, const std::list<int> &options,
                   const std::list<int> &wmma_options,
+                  const std::list<int> &mma_options,
                   const std::list<int> &scalar_type, memory_space_t space_spec,
                   const char *file, unsigned line, const char *source,
                   const core_config *config, gpgpu_context *ctx);

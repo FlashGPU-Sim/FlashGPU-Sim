@@ -88,6 +88,7 @@ wmma	TC; yylval->int_value = MMA_OP; return OPCODE;
 wmma\.load	TC; yylval->int_value = MMA_LD_OP; return OPCODE;
 wmma\.store 	TC; yylval->int_value = MMA_ST_OP; return OPCODE;
 
+mma\.sync\.aligned	TC; yylval->int_value = TENSOR_MMA_OP; return OPCODE;
 mma\.sync	TC; yylval->int_value = TENSOR_MMA_OP; return OPCODE;
 
 call	TC; BEGIN(NOT_OPCODE); yylval->int_value = CALL_OP; return OPCODE; // blocking opcode token in case the callee has the same name as an opcode
@@ -198,9 +199,11 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.m8n32k16 TC;  yylval->int_value = M8N32K16; return CONFIGURATION;
 
 \.m16n8k8 TC; yylval->int_value = MMA_M16N8K8; return CONFIGURATION;
+\.m16n8k4 TC; yylval->int_value = MMA_M16N8K4; return CONFIGURATION;
 \.m16n8k16 TC; yylval->int_value = MMA_M16N8K16; return CONFIGURATION;
 \.m16n8k32 TC; yylval->int_value = MMA_M16N8K32; return CONFIGURATION;
-\.m16n16k8 TC; yylval->int_value = MMA_M16N16K8; return CONFIGURATION;
+\.m16n8k64 TC; yylval->int_value = MMA_M16N8K64; return CONFIGURATION;
+\.m8n8k4 TC; yylval->int_value = MMA_M8N8K4; return CONFIGURATION;
 
 \.f4e TC;  return PRMT_F4E_MODE;
 \.b4e TC;  return PRMT_B4E_MODE;

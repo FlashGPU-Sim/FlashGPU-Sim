@@ -39,17 +39,17 @@ namespace flash_gpgpu_sim {
 
 // MMA shape types (separate from WMMA)
 // Corresponds to the MxNxK dimensions in PTX MMA instructions
+// These are the REAL shapes supported by NVIDIA hardware (SM75/SM80)
 enum mma_shape_type {
-  MMA_M16N8K8,
-  MMA_M16N8K16,
-  MMA_M16N8K32,
-  MMA_M16N8K64,
-  MMA_M16N16K8,
-  MMA_M16N16K16,
-  MMA_M8N8K4,
-  MMA_M8N8K16,
-  MMA_M8N8K32,
-  MMA_M8N8K128
+  // SM75 (Turing) and SM80 (Ampere)
+  MMA_M16N8K8,   // F16, BF16, TF32
+
+  // SM80 (Ampere) only
+  MMA_M16N8K4,   // TF32
+  MMA_M16N8K16,  // F16, BF16, S8/U8
+  MMA_M16N8K32,  // S8/U8
+  MMA_M16N8K64,  // S4/U4
+  MMA_M8N8K4     // F64
 };
 
 // MMA layout modes for matrix operands
