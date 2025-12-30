@@ -123,11 +123,13 @@ protected:
         }
 
         // Compute D = A * B + C
+        // A is row-major: A[m][k] = A[m * K + k]
+        // B is column-major: B[k][n] = B[n * K + k]
         for (int i = 0; i < M; i++) {
             for (int j = 0; j < N; j++) {
                 float sum = 0.0f;
                 for (int k = 0; k < K; k++) {
-                    sum += A_f32[i * K + k] * B_f32[k * N + j];
+                    sum += A_f32[i * K + k] * B_f32[j * K + k];  // B is column-major!
                 }
                 h_D_ref[i * N + j] = sum + h_C[i * N + j];
             }
@@ -159,31 +161,54 @@ __global__ void mma_m16n8k8_f16_kernel(
     float C_frag[4];
     float D_frag[4];
 
-    // Simple loading: each thread loads its portion
-    // In real code, this would use proper thread-to-element mapping
-    // For test purposes, we'll use simplified loading
-    int a_idx = lane_id * 4;  // Each thread handles 4 F16 values from A
-    int b_idx = lane_id * 2;  // Each thread handles 2 F16 values from B
-    int c_idx = lane_id * 4;  // Each thread handles 4 F32 values from C
+    // Proper NVIDIA tensor core fragment distribution
+    // groupID = lane_id / 4 (0-7), threadID_in_group = lane_id % 4 (0-3)
+    int groupID = lane_id / 4;
+    int threadID_in_group = lane_id % 4;
 
-    // Load A (cast to unsigned for PTX assembly)
-    if (a_idx < 128) {  // 16*8 = 128 elements
-        A_frag[0] = *reinterpret_cast<const unsigned*>(&A[a_idx]);
-        A_frag[1] = *reinterpret_cast<const unsigned*>(&A[a_idx + 2]);
-    }
+    // Each thread produces 4 output elements at specific positions:
+    // d[0]: row=groupID,   col=threadID_in_group*2
+    // d[1]: row=groupID,   col=threadID_in_group*2+1
+    // d[2]: row=groupID+8, col=threadID_in_group*2
+    // d[3]: row=groupID+8, col=threadID_in_group*2+1
 
-    // Load B
-    if (b_idx < 64) {  // 8*8 = 64 elements
-        B_frag[0] = *reinterpret_cast<const unsigned*>(&B[b_idx]);
-    }
+    // Load A fragments (16×8 row-major, A is M×K)
+    // Official formula: row = groupID for a0,a1; groupID+8 for a2,a3
+    //                   col = threadID_in_group * 2 + (i & 0x1) where i = {0,1,2,3}
+    uint16_t a_vals[4];
+    int a_row0 = groupID;
+    int a_row1 = groupID + 8;
+    int a_col0 = threadID_in_group * 2;
+    int a_col1 = threadID_in_group * 2 + 1;
+    // A is row-major: A[row][col] = A[row * K + col] where K=8
+    a_vals[0] = A[a_row0 * 8 + a_col0];  // a0: row=groupID, col=threadID_in_group*2
+    a_vals[1] = A[a_row0 * 8 + a_col1];  // a1: row=groupID, col=threadID_in_group*2+1
+    a_vals[2] = A[a_row1 * 8 + a_col0];  // a2: row=groupID+8, col=threadID_in_group*2
+    a_vals[3] = A[a_row1 * 8 + a_col1];  // a3: row=groupID+8, col=threadID_in_group*2+1
+    A_frag[0] = *reinterpret_cast<unsigned*>(&a_vals[0]);
+    A_frag[1] = *reinterpret_cast<unsigned*>(&a_vals[2]);
 
-    // Load C
-    if (c_idx < 128) {
-        C_frag[0] = C[c_idx];
-        C_frag[1] = C[c_idx + 1];
-        C_frag[2] = C[c_idx + 2];
-        C_frag[3] = C[c_idx + 3];
-    }
+    // Load B fragments (8×8 column-major K×N, B is stored as B[n*K+k])
+    // Official formula: row = (threadID_in_group * 2) + i, col = groupID, where i = {0, 1}
+    // So thread gets B[row0][col] and B[row1][col] where row0=threadID_in_group*2, row1=row0+1
+    uint16_t b_vals[2];
+    int b_row0 = threadID_in_group * 2;
+    int b_row1 = threadID_in_group * 2 + 1;
+    int b_col = groupID;
+    // B is column-major: B[n][k] stored as B[n*K + k]
+    b_vals[0] = B[b_col * 8 + b_row0];  // B[col][row0]
+    b_vals[1] = B[b_col * 8 + b_row1];  // B[col][row1]
+    B_frag[0] = *reinterpret_cast<unsigned*>(&b_vals[0]);
+
+    // Load C fragments - same positions as D output
+    int c_row0 = groupID;
+    int c_row1 = groupID + 8;
+    int c_col0 = threadID_in_group * 2;
+    int c_col1 = threadID_in_group * 2 + 1;
+    C_frag[0] = C[c_row0 * 8 + c_col0];
+    C_frag[1] = C[c_row0 * 8 + c_col1];
+    C_frag[2] = C[c_row1 * 8 + c_col0];
+    C_frag[3] = C[c_row1 * 8 + c_col1];
 
     // Execute MMA instruction using inline PTX
     // Syntax: mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32
@@ -200,13 +225,11 @@ __global__ void mma_m16n8k8_f16_kernel(
           "f"(C_frag[0]), "f"(C_frag[1]), "f"(C_frag[2]), "f"(C_frag[3])
     );
 
-    // Store D
-    if (c_idx < 128) {
-        D[c_idx] = D_frag[0];
-        D[c_idx + 1] = D_frag[1];
-        D[c_idx + 2] = D_frag[2];
-        D[c_idx + 3] = D_frag[3];
-    }
+    // Store D fragments - same positions as C
+    D[c_row0 * 8 + c_col0] = D_frag[0];
+    D[c_row0 * 8 + c_col1] = D_frag[1];
+    D[c_row1 * 8 + c_col0] = D_frag[2];
+    D[c_row1 * 8 + c_col1] = D_frag[3];
 }
 
 void MMAM16N8K8IntegrationTest::run_mma_kernel() {

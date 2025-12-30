@@ -261,68 +261,126 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
 
   const operand_info &dst = pI->operand_lookup(0);
 
-  // SIMPLIFIED M16N8K8 implementation for linear fragment loading
-  // This matches the test pattern where threads load data linearly:
-  //   Thread i: A[i*4:i*4+3], B[i*2:i*2+1], C/D[i*4:i*4+3]
+  // M16N8K8 implementation with proper NVIDIA tensor core fragment distribution
+  // Based on PTX ISA and CUTLASS reference implementation
   //
-  // NOTE: This is a simplified implementation that works with the test's
-  // linear loading pattern. A full implementation would need to handle
-  // the complex tensor core fragment distribution pattern.
+  // Fragment distribution pattern for 32 threads:
+  //   groupID = lane_id / 4  (0-7)
+  //   threadID_in_group = lane_id % 4  (0-3)
+  //
+  // Each thread holds:
+  //   A: 4 F16 values (2 U32 registers) - elements from 16×8 matrix A
+  //   B: 2 F16 values (1 U32 register) - elements from 8×8 matrix B
+  //   D: 4 F32 values (4 F32 registers) - elements from 16×8 output matrix D
+  //
+  // Output matrix D[16×8] mapping:
+  //   Thread (groupID, threadID_in_group) produces 4 elements:
+  //     d[0] at row=groupID,     col=threadID_in_group*2
+  //     d[1] at row=groupID,     col=threadID_in_group*2+1
+  //     d[2] at row=groupID+8,   col=threadID_in_group*2
+  //     d[3] at row=groupID+8,   col=threadID_in_group*2+1
 
+  // Step 1: Collect all fragments from all 32 threads
+  float A_mat[M * K];  // 16×8
+  float B_mat[K * N];  // 8×8
+  float C_mat[M * N];  // 16×8
+  float D_mat[M * N];  // 16×8
+
+  // Initialize matrices
+  for (int i = 0; i < M * K; i++) A_mat[i] = 0.0f;
+  for (int i = 0; i < K * N; i++) B_mat[i] = 0.0f;
+  for (int i = 0; i < M * N; i++) C_mat[i] = 0.0f;
+
+  const operand_info &src_a = pI->operand_lookup(1);
+  const operand_info &src_b = pI->operand_lookup(2);
+  const operand_info &src_c = pI->operand_lookup(3);
+
+  // Collect fragments from all threads
   for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
     ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
-
-    // Load this thread's operands
-    const operand_info &src_a = pI->operand_lookup(1);  // A matrix
-    const operand_info &src_b = pI->operand_lookup(2);  // B matrix
-    const operand_info &src_c = pI->operand_lookup(3);  // C accumulator
+    unsigned lane_id = thrd;
+    unsigned groupID = lane_id / 4;  // 0-7
+    unsigned threadID_in_group = lane_id % 4;  // 0-3
 
     ptx_reg_t a_regs[2], b_regs[1], c_regs[4];
     thread->get_vector_operand_values(src_a, a_regs, 2);
     thread->get_vector_operand_values(src_b, b_regs, 1);
     thread->get_vector_operand_values(src_c, c_regs, 4);
 
-    // Unpack F16 values from U32 registers
+    // Unpack and place A fragments into full matrix
+    // Official formula: row = groupID for a0,a1; groupID+8 for a2,a3
+    //                   col = threadID_in_group * 2 + (i & 0x1) where i = {0,1,2,3}
     half a_vals[4];
     a_vals[0] = *(half*)&a_regs[0].u16;
     a_vals[1] = *((half*)&a_regs[0].u16 + 1);
     a_vals[2] = *(half*)&a_regs[1].u16;
     a_vals[3] = *((half*)&a_regs[1].u16 + 1);
 
+    int a_row0 = groupID;
+    int a_row1 = groupID + 8;
+    int a_col0 = threadID_in_group * 2;
+    int a_col1 = threadID_in_group * 2 + 1;
+    // A is row-major: A[row][col] = A[row * K + col]
+    A_mat[a_row0 * K + a_col0] = (float)a_vals[0];  // a0
+    A_mat[a_row0 * K + a_col1] = (float)a_vals[1];  // a1
+    A_mat[a_row1 * K + a_col0] = (float)a_vals[2];  // a2
+    A_mat[a_row1 * K + a_col1] = (float)a_vals[3];  // a3
+
+    // Unpack and place B fragments into full matrix (B is column-major: B[n][k])
+    // Official formula: row = (threadID_in_group * 2) + i, col = groupID, i = {0, 1}
+    // B fragments hold: b_vals[0] = B[col][row0], b_vals[1] = B[col][row1]
     half b_vals[2];
     b_vals[0] = *(half*)&b_regs[0].u16;
     b_vals[1] = *((half*)&b_regs[0].u16 + 1);
 
-    ptx_reg_t d_regs[4];
+    int b_row0 = threadID_in_group * 2;
+    int b_row1 = threadID_in_group * 2 + 1;
+    int b_col = groupID;
+    // B is column-major: B[n][k] stored as B[n*K + k]
+    B_mat[b_col * K + b_row0] = (float)b_vals[0];
+    B_mat[b_col * K + b_row1] = (float)b_vals[1];
 
-    // For the simplified test case with linear loading:
-    // All threads compute the same pattern, just with different data.
-    // Since the test loads A, B linearly but expects full matrix mult,
-    // we need to determine which actual matrix positions these fragments represent.
-    //
-    // With linear loading: thread i has:
-    //   A: elements [i*4 .. i*4+3] from flattened 16×8 matrix
-    //   B: elements [i*2 .. i*2+1] from flattened 8×8 matrix
-    //   D: will write to elements [i*4 .. i*4+3] of flattened 16×8 output
-    //
-    // For uniform values (all 1.0), each output should be 8.0 (K=8 accumulations)
-    // For random values, need proper mapping to matrix positions
+    // Place C fragments
+    int c_row0 = groupID;
+    int c_row1 = groupID + 8;
+    int c_col0 = threadID_in_group * 2;
+    int c_col1 = threadID_in_group * 2 + 1;
+    C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
+    C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
+    C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
+    C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
+  }
 
-    // Simple approach: compute the same pattern for all threads
-    // Each thread produces 4 outputs from its fragments
-    for (int i = 0; i < 4; i++) {
-      // For each output, accumulate over K=8
+  // Step 2: Perform matrix multiplication D = A * B + C
+  for (int m = 0; m < M; m++) {
+    for (int n = 0; n < N; n++) {
       float sum = 0.0f;
       for (int k = 0; k < K; k++) {
-        // Use all A and B fragments in rotation
-        int a_idx = k % 4;
-        int b_idx = k % 2;
-        sum += (float)a_vals[a_idx] * (float)b_vals[b_idx];
+        // A is row-major: A[m][k], B is column-major: B[n][k]
+        sum += A_mat[m * K + k] * B_mat[n * K + k];
       }
-      d_regs[i].f32 = sum + c_regs[i].f32;
+      D_mat[m * N + n] = sum + C_mat[m * N + n];
     }
+  }
 
-    // Write results back
+  // Step 3: Distribute results back to threads
+  for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
+    ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
+    unsigned lane_id = thrd;
+    unsigned groupID = lane_id / 4;
+    unsigned threadID_in_group = lane_id % 4;
+
+    ptx_reg_t d_regs[4];
+    int d_row0 = groupID;
+    int d_row1 = groupID + 8;
+    int d_col0 = threadID_in_group * 2;
+    int d_col1 = threadID_in_group * 2 + 1;
+
+    d_regs[0].f32 = D_mat[d_row0 * N + d_col0];
+    d_regs[1].f32 = D_mat[d_row0 * N + d_col1];
+    d_regs[2].f32 = D_mat[d_row1 * N + d_col0];
+    d_regs[3].f32 = D_mat[d_row1 * N + d_col1];
+
     thread->set_vector_operand_values(dst, d_regs[0], d_regs[1], d_regs[2], d_regs[3]);
   }
 
