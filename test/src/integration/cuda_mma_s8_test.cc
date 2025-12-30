@@ -100,25 +100,38 @@ __global__ void mma_m16n8k16_s8_kernel(
     int lane_id = threadIdx.x % 32;
 
     // Load fragments into registers
-    // For m16n8k16: A needs 1 register (packed S8), B needs 1 register, C/D need 4 registers each
-    unsigned A_frag[1];
+    // For m16n8k16: A needs 2 registers (8 packed S8), B needs 1 register (4 packed S8), C/D need 4 registers each
+    unsigned A_frag[2];
     unsigned B_frag[1];
     int32_t C_frag[4];
     int32_t D_frag[4];
 
-    // Fragment distribution (similar to F16 but K=16)
-    int groupID = lane_id / 4;
+    // Fragment distribution for M16N8K16
+    // groupID = lane_id >> 2 (range 0-7)
+    // threadID_in_group = lane_id % 4 (range 0-3)
+    int groupID = lane_id >> 2;
     int threadID_in_group = lane_id % 4;
 
     // Load A fragments (16×16 row-major)
-    int8_t a_vals[4];
+    // Each thread loads 8 S8 values from matrix A
+    int8_t a_vals[8];
     int a_row0 = groupID;
     int a_row1 = groupID + 8;
-    a_vals[0] = A[a_row0 * 16 + threadID_in_group * 4];
-    a_vals[1] = A[a_row0 * 16 + threadID_in_group * 4 + 1];
-    a_vals[2] = A[a_row1 * 16 + threadID_in_group * 4];
-    a_vals[3] = A[a_row1 * 16 + threadID_in_group * 4 + 1];
-    A_frag[0] = *reinterpret_cast<unsigned*>(&a_vals[0]);
+    int col_base = threadID_in_group * 4;
+
+    // Load a[0..3] from row=groupID, columns [col_base..col_base+3]
+    a_vals[0] = A[a_row0 * 16 + col_base + 0];
+    a_vals[1] = A[a_row0 * 16 + col_base + 1];
+    a_vals[2] = A[a_row0 * 16 + col_base + 2];
+    a_vals[3] = A[a_row0 * 16 + col_base + 3];
+    // Load a[4..7] from row=groupID+8, columns [col_base..col_base+3]
+    a_vals[4] = A[a_row1 * 16 + col_base + 0];
+    a_vals[5] = A[a_row1 * 16 + col_base + 1];
+    a_vals[6] = A[a_row1 * 16 + col_base + 2];
+    a_vals[7] = A[a_row1 * 16 + col_base + 3];
+
+    A_frag[0] = *reinterpret_cast<unsigned*>(&a_vals[0]);  // a[0..3]
+    A_frag[1] = *reinterpret_cast<unsigned*>(&a_vals[4]);  // a[4..7]
 
     // Load B fragments (16×8 column-major)
     int8_t b_vals[4];
@@ -142,12 +155,12 @@ __global__ void mma_m16n8k16_s8_kernel(
     // Execute MMA instruction using inline PTX
     asm volatile(
         "mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32 "
-        "{%0, %1, %2, %3}, "       // D output (4 S32 registers)
-        "{%4}, "                   // A input (1 packed S8 register)
-        "{%5}, "                   // B input (1 packed S8 register)
-        "{%6, %7, %8, %9};\n"      // C accumulator (4 S32 registers)
+        "{%0, %1, %2, %3}, "           // D output (4 S32 registers)
+        "{%4, %5}, "                   // A input (2 packed S8 registers)
+        "{%6}, "                       // B input (1 packed S8 register)
+        "{%7, %8, %9, %10};\n"         // C accumulator (4 S32 registers)
         : "=r"(D_frag[0]), "=r"(D_frag[1]), "=r"(D_frag[2]), "=r"(D_frag[3])
-        : "r"(A_frag[0]),
+        : "r"(A_frag[0]), "r"(A_frag[1]),
           "r"(B_frag[0]),
           "r"(C_frag[0]), "r"(C_frag[1]), "r"(C_frag[2]), "r"(C_frag[3])
     );

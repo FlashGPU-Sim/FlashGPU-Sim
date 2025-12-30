@@ -34,6 +34,7 @@
 class ptx_instruction;
 class core_t;
 struct warp_inst_t;
+class operand_info;
 
 namespace flash_gpgpu_sim {
 
@@ -68,6 +69,13 @@ enum mma_layout_mode {
 // tensor_mma_impl: Main compute function for MMA instructions
 // Implements D = A * B + C matrix multiplication
 void tensor_mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst);
+
+// tensor_mma_s8_impl: S8/U8 integer MMA implementation
+// Implements functional simulation for M16N8K16 integer tensor cores
+void tensor_mma_s8_impl(const ptx_instruction *pI, core_t *core,
+                        warp_inst_t inst, int M, int N, int K,
+                        bool saturate, unsigned tid,
+                        const operand_info &dst);
 
 // tensor_mma_ld_impl: Load matrix fragments from memory
 // Loads matrix fragments into registers for MMA computation
