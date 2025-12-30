@@ -116,6 +116,8 @@ uint8_t mma_saturate_u4(int32_t val);
 // Thread-to-element mapping function
 // Maps warp thread ID to matrix element offset based on MMA shape and layout
 // Returns byte offset into matrix fragment for given thread
+// type_size: Element size in bytes (2 for F16/BF16, 4 for F32, 1 for S8/U8)
+// stride: Row/column stride in elements (NOT bytes)
 unsigned mma_thread_to_element_offset(unsigned thread_id, mma_shape_type shape,
                                       mma_layout_mode layout,
                                       unsigned char type_size, unsigned stride);
