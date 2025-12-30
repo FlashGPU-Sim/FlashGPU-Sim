@@ -33,7 +33,9 @@
 #include <cstring>
 
 #include "../abstract_hardware_model.h"
-#include "ptx_ir.h"
+#include "../cuda-sim/ptx_ir.h"
+
+namespace flash_gpgpu_sim {
 
 // Helper: Convert F16 to F32
 float mma_f16_to_f32(uint16_t f16) {
@@ -502,3 +504,5 @@ void tensor_mma_st_impl(const ptx_instruction *pI, core_t *core,
     printf("GPGPU-Sim: tensor_mma_st_impl completed for shape\n");
   }
 }
+
+} // namespace flash_gpgpu_sim

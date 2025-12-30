@@ -25,8 +25,8 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef TENSOR_MMA_H
-#define TENSOR_MMA_H
+#ifndef FLASH_GPGPU_SIM_TENSOR_MMA_H
+#define FLASH_GPGPU_SIM_TENSOR_MMA_H
 
 #include <cstdint>
 
@@ -34,6 +34,8 @@
 class ptx_instruction;
 class core_t;
 struct warp_inst_t;
+
+namespace flash_gpgpu_sim {
 
 // MMA shape types (separate from WMMA)
 // Corresponds to the MxNxK dimensions in PTX MMA instructions
@@ -118,4 +120,6 @@ unsigned mma_thread_to_element_offset(unsigned thread_id, mma_shape_type shape,
                                       mma_layout_mode layout,
                                       unsigned char type_size, unsigned stride);
 
-#endif  // TENSOR_MMA_H
+} // namespace flash_gpgpu_sim
+
+#endif  // FLASH_GPGPU_SIM_TENSOR_MMA_H
