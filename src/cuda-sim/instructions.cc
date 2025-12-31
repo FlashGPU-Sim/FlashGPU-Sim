@@ -36,6 +36,7 @@
 #include "opcodes.h"
 #include "ptx_ir.h"
 #include "ptx_sim.h"
+#include "../gpgpu-sim/flash/tensor_mma.h"
 typedef void *yyscan_t;
 class ptx_recognizer;
 #include <assert.h>

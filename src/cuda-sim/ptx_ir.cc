@@ -1188,8 +1188,8 @@ static std::list<operand_info> check_operands(
     const std::list<operand_info> &operands, gpgpu_context *ctx) {
   static int g_warn_literal_operands_two_type_inst;
   if ((opcode == CVT_OP) || (opcode == SET_OP) || (opcode == SLCT_OP) ||
-      (opcode == TEX_OP) || (opcode == MMA_OP) || (opcode == DP4A_OP) ||
-      (opcode == VMIN_OP) || (opcode == VMAX_OP)) {
+      (opcode == TEX_OP) || (opcode == MMA_OP) || (opcode == TENSOR_MMA_OP) ||
+      (opcode == DP4A_OP) || (opcode == VMIN_OP) || (opcode == VMAX_OP)) {
     // just make sure these do not have have const operands...
     if (!g_warn_literal_operands_two_type_inst) {
       std::list<operand_info>::const_iterator o;
@@ -1235,6 +1235,7 @@ ptx_instruction::ptx_instruction(
     symbol_table *symtab,
     const std::list<operand_info> &operands, const operand_info &return_var,
     const std::list<int> &options, const std::list<int> &wmma_options,
+    const std::list<int> &mma_options,
     const std::list<int> &scalar_type, memory_space_t space_spec,
     const char *file, unsigned line, const char *source,
     const core_config *config, gpgpu_context *ctx)
@@ -1301,6 +1302,65 @@ ptx_instruction::ptx_instruction(
         break;
     }
   }
+
+  // Process MMA options (for tensor_mma_impl)
+  m_is_mma_instruction = false;
+  if (!mma_options.empty()) {
+    m_is_mma_instruction = true;
+    std::list<int>::const_iterator mma_i;
+    int first_layout = -1;
+    int second_layout = -1;
+    for (mma_i = mma_options.begin(); mma_i != mma_options.end(); mma_i++) {
+      int opt = *mma_i;
+      switch (opt) {
+        // MMA shapes - map token values (100-105) to enum values (0-5)
+        case MMA_M16N8K8:
+          m_mma_shape = flash_gpgpu_sim::MMA_M16N8K8;
+          break;
+        case MMA_M16N8K4:
+          m_mma_shape = flash_gpgpu_sim::MMA_M16N8K4;
+          break;
+        case MMA_M16N8K16:
+          m_mma_shape = flash_gpgpu_sim::MMA_M16N8K16;
+          break;
+        case MMA_M16N8K32:
+          m_mma_shape = flash_gpgpu_sim::MMA_M16N8K32;
+          break;
+        case MMA_M16N8K64:
+          m_mma_shape = flash_gpgpu_sim::MMA_M16N8K64;
+          break;
+        case MMA_M8N8K4:
+          m_mma_shape = flash_gpgpu_sim::MMA_M8N8K4;
+          break;
+        // MMA layouts - collect both layout tokens
+        case ROW:
+        case COL:
+          if (first_layout == -1) {
+            first_layout = opt;
+          } else if (second_layout == -1) {
+            second_layout = opt;
+          }
+          break;
+        default:
+          // Types will be in scalar_type list, not mma_options
+          break;
+      }
+    }
+
+    // Map collected layout tokens to actual layout mode enum
+    if (first_layout != -1 && second_layout != -1) {
+      if (first_layout == ROW && second_layout == COL) {
+        m_mma_layout_a = flash_gpgpu_sim::MMA_ROW_COL;
+      } else if (first_layout == ROW && second_layout == ROW) {
+        m_mma_layout_a = flash_gpgpu_sim::MMA_ROW_ROW;
+      } else if (first_layout == COL && second_layout == ROW) {
+        m_mma_layout_a = flash_gpgpu_sim::MMA_COL_ROW;
+      } else if (first_layout == COL && second_layout == COL) {
+        m_mma_layout_a = flash_gpgpu_sim::MMA_COL_COL;
+      }
+    }
+  }
+
   rr = 0;
   n = 1;
   for (i = options.begin(); i != options.end(); i++, n++) {
