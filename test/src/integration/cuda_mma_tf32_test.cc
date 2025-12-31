@@ -194,7 +194,8 @@ TEST_F(MMATF32M16N8K4IntegrationTest, AllOnesTest) {
     run_mma_kernel();
 
     // Verify results (expected: 4.0 = sum of 1*1 for K=4)
-    // TF32 should handle this exactly
+    // TF32 tolerance: 1e-6f for exact values
+    // Small integers like 4.0 are exactly representable in TF32
     float tolerance = 1e-6f;
     for (int i = 0; i < M * N; i++) {
         EXPECT_NEAR(h_D[i], 4.0f, tolerance) << "Mismatch at index " << i;
@@ -215,6 +216,7 @@ TEST_F(MMATF32M16N8K4IntegrationTest, ZeroMatrixTest) {
     run_mma_kernel();
 
     // Verify results
+    // TF32 tolerance: 1e-6f for zero test (exact representation)
     float tolerance = 1e-6f;
     for (int i = 0; i < M * N; i++) {
         EXPECT_NEAR(h_D[i], 0.0f, tolerance) << "Mismatch at index " << i;
@@ -240,7 +242,9 @@ TEST_F(MMATF32M16N8K4IntegrationTest, PrecisionTest) {
     // Run MMA kernel
     run_mma_kernel();
 
-    // TF32 tolerance is larger due to 10-bit mantissa truncation
+    // TF32 tolerance: 1e-3f for precision test
+    // Accounts for 10-bit mantissa truncation (vs F32's 23-bit)
+    // Values with fine precision differences test rounding behavior
     float tolerance = 1e-3f;
     for (int i = 0; i < M * N; i++) {
         EXPECT_NEAR(h_D[i], h_D_ref[i], tolerance)
@@ -273,7 +277,10 @@ TEST_F(MMATF32M16N8K4IntegrationTest, RandomValuesTest) {
     // Run MMA kernel
     run_mma_kernel();
 
-    // TF32 tolerance accounts for 10-bit mantissa precision
+    // TF32 tolerance: 1e-2f for random values accounts for:
+    // - 10-bit mantissa precision (vs F32's 23-bit)
+    // - Accumulation errors over K=4 multiply-adds
+    // - Larger input range [-10, 10] amplifying rounding errors
     float tolerance = 1e-2f;
     for (int i = 0; i < M * N; i++) {
         EXPECT_NEAR(h_D[i], h_D_ref[i], tolerance)

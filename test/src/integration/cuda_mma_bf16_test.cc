@@ -201,7 +201,8 @@ TEST_F(MMABF16M16N8K8IntegrationTest, AllOnesTest) {
     run_mma_kernel();
 
     // Verify results (expected: 8.0 = sum of 1*1 for K=8)
-    // Use tolerance for BF16 precision (7 bits mantissa)
+    // BF16 tolerance: 1e-2f accounts for 7-bit mantissa precision
+    // BF16 has wider range than F16 but lower precision (7 vs 10 mantissa bits)
     float tolerance = 1e-2f;
     for (int i = 0; i < M * N; i++) {
         EXPECT_NEAR(h_D[i], 8.0f, tolerance) << "Mismatch at index " << i;
@@ -222,6 +223,7 @@ TEST_F(MMABF16M16N8K8IntegrationTest, ZeroMatrixTest) {
     run_mma_kernel();
 
     // Verify results
+    // Zero test: use tight tolerance as exact zeros are representable in BF16
     float tolerance = 1e-6f;
     for (int i = 0; i < M * N; i++) {
         EXPECT_NEAR(h_D[i], 0.0f, tolerance) << "Mismatch at index " << i;
@@ -243,7 +245,8 @@ TEST_F(MMABF16M16N8K8IntegrationTest, PrecisionTest) {
     run_mma_kernel();
 
     // Expected: 0.125 * 0.25 * 8 = 0.25
-    // BF16 tolerance is larger than F16 (7 bits vs 10 bits mantissa)
+    // BF16 tolerance: 5e-3f accounts for 7-bit mantissa (vs F16's 10-bit)
+    // Larger tolerance needed due to reduced precision
     float tolerance = 5e-3f;
     for (int i = 0; i < M * N; i++) {
         EXPECT_NEAR(h_D[i], 0.25f, tolerance) << "Mismatch at index " << i;
@@ -274,7 +277,10 @@ TEST_F(MMABF16M16N8K8IntegrationTest, RandomValuesTest) {
     // Run MMA kernel
     run_mma_kernel();
 
-    // Verify results with BF16 tolerance
+    // BF16 tolerance: 1e-2f for random values accounts for:
+    // - 7-bit mantissa precision loss
+    // - Accumulation errors over K=8 multiply-adds
+    // - Random value distribution amplifying rounding errors
     float tolerance = 1e-2f;
     for (int i = 0; i < M * N; i++) {
         EXPECT_NEAR(h_D[i], h_D_ref[i], tolerance)

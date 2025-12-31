@@ -43,26 +43,104 @@ class ptx_recognizer;
 
 namespace flash_gpgpu_sim {
 
+// ============================================================================
+// IEEE 754 Floating-Point Format Constants
+// ============================================================================
+
+// F16 (IEEE 754 half-precision) format constants
+// F16: 1 sign bit, 5 exponent bits, 10 mantissa bits
+namespace F16Constants {
+  constexpr uint32_t SIGN_MASK = 0x1;
+  constexpr uint32_t EXPONENT_MASK = 0x1F;
+  constexpr uint32_t MANTISSA_MASK = 0x3FF;
+
+  constexpr int SIGN_SHIFT = 15;
+  constexpr int EXPONENT_SHIFT = 10;
+  constexpr int MANTISSA_SHIFT = 13;  // F16 to F32 mantissa shift
+
+  constexpr int EXPONENT_BIAS = 15;
+  constexpr int MAX_EXPONENT = 31;
+  constexpr uint16_t INFINITY_BITS = 0x7C00;
+
+  // Denormal number scaling: mantissa / 1024.0 / 16384.0
+  constexpr float DENORMAL_SCALE_1 = 1024.0f;   // 2^10 (mantissa bits)
+  constexpr float DENORMAL_SCALE_2 = 16384.0f;  // 2^14 (exponent adjustment)
+}
+
+// F32 (IEEE 754 single-precision) format constants
+namespace F32Constants {
+  constexpr int SIGN_SHIFT = 31;
+  constexpr int EXPONENT_SHIFT = 23;
+  constexpr uint32_t EXPONENT_MASK = 0xFF;
+  constexpr uint32_t MANTISSA_MASK_F16 = 0x3FF;  // When converting from F16
+
+  constexpr int EXPONENT_BIAS = 127;
+  constexpr int MANTISSA_SHIFT_FROM_F16 = 13;  // F32 mantissa shift from F16
+}
+
+// BF16 (bfloat16) format constants
+// BF16: 1 sign bit, 8 exponent bits, 7 mantissa bits
+namespace BF16Constants {
+  constexpr int SHIFT = 16;  // BF16 occupies upper 16 bits of F32
+}
+
+// TF32 (TensorFloat-32) format constants
+// TF32: 1 sign bit, 8 exponent bits, 10 mantissa bits (uses F32 container)
+namespace TF32Constants {
+  constexpr uint32_t MANTISSA_MASK = 0x1FFF;  // Lower 13 bits to zero out
+  constexpr uint32_t ROUND_BIT = 0x1000;      // Bit 12 (rounding decision bit)
+  // TF32 has 10 mantissa bits, F32 has 23, so zero out lower 13 bits (23-10=13)
+}
+
+// ============================================================================
+// Integer Saturation Constants
+// ============================================================================
+
+namespace SaturationLimits {
+  // Signed 8-bit integer range [-128, 127]
+  constexpr int32_t S8_MAX = 127;
+  constexpr int32_t S8_MIN = -128;
+
+  // Unsigned 8-bit integer range [0, 255]
+  constexpr int32_t U8_MAX = 255;
+  constexpr int32_t U8_MIN = 0;
+
+  // Signed 4-bit integer range [-8, 7]
+  constexpr int32_t S4_MAX = 7;
+  constexpr int32_t S4_MIN = -8;
+
+  // Unsigned 4-bit integer range [0, 15]
+  constexpr int32_t U4_MAX = 15;
+  constexpr int32_t U4_MIN = 0;
+}
+
+// ============================================================================
+// Type Conversion Helper Functions
+// ============================================================================
+
 // Helper: Convert F16 to F32
 float mma_f16_to_f32(uint16_t f16) {
-  uint32_t sign = (f16 >> 15) & 0x1;
-  uint32_t exp = (f16 >> 10) & 0x1F;
-  uint32_t frac = f16 & 0x3FF;
+  using namespace F16Constants;
+  using namespace F32Constants;
+
+  uint32_t sign = (f16 >> SIGN_SHIFT) & SIGN_MASK;
+  uint32_t exp = (f16 >> EXPONENT_SHIFT) & EXPONENT_MASK;
+  uint32_t frac = f16 & MANTISSA_MASK;
 
   if (exp == 0) {
     if (frac == 0) return sign ? -0.0f : 0.0f;
-    // Denormal
-    float result = frac / 1024.0f / 16384.0f;
+    // Denormal: mantissa / 2^10 / 2^14
+    float result = frac / DENORMAL_SCALE_1 / DENORMAL_SCALE_2;
     return sign ? -result : result;
-  } else if (exp == 31) {
+  } else if (exp == MAX_EXPONENT) {
     // Inf or NaN
     return frac ? NAN : (sign ? -INFINITY : INFINITY);
   }
 
-  // Normalized
-  uint32_t f32_exp = exp - 15 + 127;
-  uint32_t f32_frac = frac << 13;
-  uint32_t f32_bits = (sign << 31) | (f32_exp << 23) | f32_frac;
+  // Normalized: convert exponent from F16 bias to F32 bias
+  uint32_t f32_exp = exp - F16Constants::EXPONENT_BIAS + F32Constants::EXPONENT_BIAS;
+  uint32_t f32_frac = frac << MANTISSA_SHIFT;
+  uint32_t f32_bits = (sign << F32Constants::SIGN_SHIFT) | (f32_exp << F32Constants::EXPONENT_SHIFT) | f32_frac;
 
   float result;
   memcpy(&result, &f32_bits, sizeof(float));
@@ -71,22 +149,28 @@ float mma_f16_to_f32(uint16_t f16) {
 
 // Helper: Convert F32 to F16
 uint16_t mma_f32_to_f16(float f32) {
+  using namespace F16Constants;
+  using namespace F32Constants;
+
   uint32_t f32_bits;
   memcpy(&f32_bits, &f32, sizeof(float));
 
-  uint32_t sign = (f32_bits >> 31) & 0x1;
-  int32_t exp = ((f32_bits >> 23) & 0xFF) - 127 + 15;
-  uint32_t frac = (f32_bits >> 13) & 0x3FF;
+  uint32_t sign = (f32_bits >> F32Constants::SIGN_SHIFT) & F16Constants::SIGN_MASK;
+  int32_t exp = ((f32_bits >> F32Constants::EXPONENT_SHIFT) & F32Constants::EXPONENT_MASK)
+                - F32Constants::EXPONENT_BIAS + F16Constants::EXPONENT_BIAS;
+  uint32_t frac = (f32_bits >> F32Constants::MANTISSA_SHIFT_FROM_F16) & F32Constants::MANTISSA_MASK_F16;
 
-  if (exp <= 0) return sign << 15;          // Flush to zero
-  if (exp >= 31) return (sign << 15) | 0x7C00;  // Inf
+  if (exp <= 0) return sign << F16Constants::SIGN_SHIFT;  // Flush to zero
+  if (exp >= F16Constants::MAX_EXPONENT) return (sign << F16Constants::SIGN_SHIFT) | F16Constants::INFINITY_BITS;  // Inf
 
-  return (sign << 15) | (exp << 10) | frac;
+  return (sign << F16Constants::SIGN_SHIFT) | (exp << F16Constants::EXPONENT_SHIFT) | frac;
 }
 
 // Helper: Convert BF16 to F32
 float mma_bf16_to_f32(uint16_t bf16) {
-  uint32_t f32_bits = static_cast<uint32_t>(bf16) << 16;
+  using namespace BF16Constants;
+  // BF16 occupies the upper 16 bits of F32
+  uint32_t f32_bits = static_cast<uint32_t>(bf16) << SHIFT;
   float result;
   memcpy(&result, &f32_bits, sizeof(float));
   return result;
@@ -94,29 +178,29 @@ float mma_bf16_to_f32(uint16_t bf16) {
 
 // Helper: Convert F32 to BF16
 uint16_t mma_f32_to_bf16(float f32) {
+  using namespace BF16Constants;
   uint32_t f32_bits;
   memcpy(&f32_bits, &f32, sizeof(float));
-  return static_cast<uint16_t>(f32_bits >> 16);
+  // BF16 is the upper 16 bits of F32 (truncation)
+  return static_cast<uint16_t>(f32_bits >> SHIFT);
 }
 
 // Helper: Round float32 to TensorFloat-32 precision
 // TF32: 1 sign bit, 8 exponent bits, 10 mantissa bits (19 bits total)
 float mma_tf32_round(float f32) {
+  using namespace TF32Constants;
+
   uint32_t f32_bits;
   memcpy(&f32_bits, &f32, sizeof(float));
 
-  // TF32 has 10 mantissa bits, so we need to round to nearest even
-  // and zero out the lower 13 bits (23 - 10 = 13)
-  uint32_t mantissa_mask = 0x1FFF;  // Lower 13 bits
-  uint32_t round_bit = 0x1000;      // Bit 12 (rounding bit)
-
-  // Round to nearest even
-  if ((f32_bits & round_bit) && ((f32_bits & mantissa_mask) != round_bit)) {
-    f32_bits += round_bit;
+  // TF32 has 10 mantissa bits, F32 has 23, so zero out lower 13 bits (23-10=13)
+  // Round to nearest even before truncation
+  if ((f32_bits & ROUND_BIT) && ((f32_bits & MANTISSA_MASK) != ROUND_BIT)) {
+    f32_bits += ROUND_BIT;
   }
 
-  // Zero out lower 13 bits
-  f32_bits &= ~mantissa_mask;
+  // Zero out lower 13 bits to get TF32 precision
+  f32_bits &= ~MANTISSA_MASK;
 
   float result;
   memcpy(&result, &f32_bits, sizeof(float));
@@ -125,29 +209,33 @@ float mma_tf32_round(float f32) {
 
 // Helper: Saturate S8 value
 int8_t mma_saturate_s8(int32_t val) {
-  if (val > 127) return 127;
-  if (val < -128) return -128;
+  using namespace SaturationLimits;
+  if (val > S8_MAX) return S8_MAX;
+  if (val < S8_MIN) return S8_MIN;
   return static_cast<int8_t>(val);
 }
 
 // Helper: Saturate U8 value
 uint8_t mma_saturate_u8(int32_t val) {
-  if (val > 255) return 255;
-  if (val < 0) return 0;
+  using namespace SaturationLimits;
+  if (val > U8_MAX) return U8_MAX;
+  if (val < U8_MIN) return U8_MIN;
   return static_cast<uint8_t>(val);
 }
 
 // Helper: Saturate S4 value
 int8_t mma_saturate_s4(int32_t val) {
-  if (val > 7) return 7;
-  if (val < -8) return -8;
+  using namespace SaturationLimits;
+  if (val > S4_MAX) return S4_MAX;
+  if (val < S4_MIN) return S4_MIN;
   return static_cast<int8_t>(val);
 }
 
 // Helper: Saturate U4 value
 uint8_t mma_saturate_u4(int32_t val) {
-  if (val > 15) return 15;
-  if (val < 0) return 0;
+  using namespace SaturationLimits;
+  if (val > U4_MAX) return U4_MAX;
+  if (val < U4_MIN) return U4_MIN;
   return static_cast<uint8_t>(val);
 }
 

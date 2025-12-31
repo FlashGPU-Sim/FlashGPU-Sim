@@ -313,7 +313,10 @@ TEST_F(MMAF16M16N8K8IntegrationTest, RandomValuesTest) {
 
     // Verify results with tolerance for FP16 precision
     for (int i = 0; i < M * N; i++) {
-        // Use relative tolerance for larger values
+        // F16 dynamic tolerance: max(0.01, |expected| * 1%)
+        // - Absolute: 0.01 for small values
+        // - Relative: 1% of expected for large values
+        // F16 has 10-bit mantissa, requiring larger tolerance than F32
         float tolerance = std::max(0.01f, std::abs(h_D_ref[i]) * 0.01f);
         EXPECT_NEAR(h_D[i], h_D_ref[i], tolerance)
             << "Mismatch at index " << i
@@ -347,6 +350,11 @@ TEST_F(MMAF16M16N8K8IntegrationTest, RandomValuesLargeRangeTest) {
 
     // Verify results with larger tolerance for FP16 precision and larger values
     for (int i = 0; i < M * N; i++) {
+        // F16 dynamic tolerance: max(0.1, |expected| * 2%)
+        // Larger than previous test due to:
+        // - Wider input range [-10, 10] amplifies rounding errors
+        // - Accumulation errors over K=8 multiply-adds
+        // - F16's 10-bit mantissa precision limits
         float tolerance = std::max(0.1f, std::abs(h_D_ref[i]) * 0.02f);
         EXPECT_NEAR(h_D[i], h_D_ref[i], tolerance)
             << "Mismatch at index " << i
