@@ -123,9 +123,9 @@ float mma_f16_to_f32(uint16_t f16) {
   using namespace F16Constants;
   using namespace F32Constants;
 
-  uint32_t sign = (f16 >> SIGN_SHIFT) & SIGN_MASK;
-  uint32_t exp = (f16 >> EXPONENT_SHIFT) & EXPONENT_MASK;
-  uint32_t frac = f16 & MANTISSA_MASK;
+  uint32_t sign = (f16 >> F16Constants::SIGN_SHIFT) & F16Constants::SIGN_MASK;
+  uint32_t exp = (f16 >> F16Constants::EXPONENT_SHIFT) & F16Constants::EXPONENT_MASK;
+  uint32_t frac = f16 & F16Constants::MANTISSA_MASK;
 
   if (exp == 0) {
     if (frac == 0) return sign ? -0.0f : 0.0f;
