@@ -15,8 +15,36 @@ source setup_environment
 ## Running Tests
 
 ```bash
-# Run all tests
+# Run all tests with default configuration (SM120_RTX5090)
 ./test/run_tests.sh run
+
+# Run tests with reduced configuration (faster, less memory)
+./test/run_tests.sh run --config SM120_RTX5090_REDUCED
+./test/run_tests.sh run -c SM120_RTX5090_REDUCED
+
+# List available GPU configurations
+./test/run_tests.sh list-configs
+```
+
+## GPU Configurations
+
+The test framework supports multiple GPU configurations:
+
+- **SM120_RTX5090** (default): Full RTX 5090 simulation (170 SMs, 16 memory controllers)
+  - Use for: Complete validation, performance testing, final verification
+  - Resource usage: High memory and time
+
+- **SM120_RTX5090_REDUCED**: Lightweight configuration (1 SM, 1 L2, 1 DDR)
+  - Use for: Quick tests, development iterations, continuous integration
+  - Resource usage: Low memory and time
+
+**Selecting a configuration:**
+```bash
+# Explicit config selection
+./test/run_tests.sh run --config SM120_RTX5090_REDUCED
+
+# Run specific test with config
+./test/run_tests.sh run -c SM120_RTX5090_REDUCED CudaVectorAdd
 ```
 
 ## Test Organization

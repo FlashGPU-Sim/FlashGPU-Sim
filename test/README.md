@@ -20,7 +20,16 @@ cd test
 | `./run_tests.sh run <test>` | Run specific test |
 | `./run_tests.sh refresh` | Refresh run directory and configuration |
 | `./run_tests.sh list` | List available tests |
+| `./run_tests.sh list-configs` | List available GPU configurations |
 | `./run_tests.sh clean` | Clean build files |
+
+### GPU Configuration Options
+
+| Command | Description |
+|---------|-------------|
+| `./run_tests.sh run --config <name>` | Run tests with specific GPU configuration |
+| `./run_tests.sh run -c <name>` | Short form of --config |
+| `./run_tests.sh list-configs` | Show all available configurations |
 
 ## Running Individual Tests
 
@@ -28,12 +37,49 @@ cd test
 # Run specific test suite
 ./run_tests.sh run CudaVectorAdd
 
-# Run specific test case  
+# Run specific test case
 ./run_tests.sh run BasicVectorAddition
 
 # Run with verbose output
 ./run_tests.sh -v run MBarrierTest
 ```
+
+## GPU Configurations
+
+The test framework supports multiple GPU configurations for different testing scenarios:
+
+### Available Configurations
+
+- **SM120_RTX5090** (default): Full RTX 5090 configuration with 170 SMs
+- **SM120_RTX5090_REDUCED**: Lightweight configuration with 1 SM, 1 L2, 1 DDR (faster for quick tests)
+
+### Using Different Configurations
+
+```bash
+# Run with default configuration (SM120_RTX5090)
+./run_tests.sh run
+
+# Run with reduced configuration (faster)
+./run_tests.sh run --config SM120_RTX5090_REDUCED
+./run_tests.sh run -c SM120_RTX5090_REDUCED
+
+# List all available configurations
+./run_tests.sh list-configs
+
+# Run specific test with custom config
+./run_tests.sh run -c SM120_RTX5090_REDUCED CudaVectorAdd
+```
+
+### When to Use Each Configuration
+
+- **SM120_RTX5090**: Full validation, performance testing, comprehensive test runs
+- **SM120_RTX5090_REDUCED**: Quick smoke tests, development iterations, CI/CD pipelines
+
+### Adding Custom Configurations
+
+1. Create config directory: `configs/YOUR_CONFIG_NAME/`
+2. Add required files: `gpgpusim.config` and `config_*.icnt`
+3. Configuration will be automatically detected by `./run_tests.sh list-configs`
 
 ## Test Organization
 
@@ -84,7 +130,12 @@ cudaSafeFree(d_ptr);
 
 ## Test Environment
 
-Tests automatically run from `test/run/SM120_RTX5090/` directory with GPGPU-Sim configuration files. The run directory and configuration are automatically created when building or running tests.
+Tests run from `test/run/<CONFIG_NAME>/` directory with GPGPU-Sim configuration files. The run directory and configuration are automatically created when building or running tests.
+
+- Default configuration: `SM120_RTX5090`
+- Configuration files are copied from `configs/<CONFIG_NAME>/` to the run directory
+- Test binaries are shared across all configurations (no duplication)
+- Each configuration has its own isolated run directory
 
 ## Build System
 
