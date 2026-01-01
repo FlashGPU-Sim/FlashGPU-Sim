@@ -19,8 +19,7 @@ source setup_environment
 ./test/run_tests.sh run
 
 # Run tests with reduced configuration (faster, less memory)
-./test/run_tests.sh run --config SM120_RTX5090_REDUCED
-./test/run_tests.sh run -c SM120_RTX5090_REDUCED
+./test/run_tests.sh -c SM120_RTX5090_REDUCED run
 
 # List available GPU configurations
 ./test/run_tests.sh list-configs
@@ -41,10 +40,10 @@ The test framework supports multiple GPU configurations:
 **Selecting a configuration:**
 ```bash
 # Explicit config selection
-./test/run_tests.sh run --config SM120_RTX5090_REDUCED
+./test/run_tests.sh -c SM120_RTX5090_REDUCED run
 
 # Run specific test with config
-./test/run_tests.sh run -c SM120_RTX5090_REDUCED CudaVectorAdd
+./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaVectorAdd
 ```
 
 ## Test Organization
