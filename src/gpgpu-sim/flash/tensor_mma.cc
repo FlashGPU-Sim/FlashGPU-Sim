@@ -503,6 +503,9 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
     case MMA_M16N8K32:
       M = 16; N = 8; K = 32;
       break;
+    case MMA_M8N8K4:
+      M = 8; N = 8; K = 4;
+      break;
     default:
       fprintf(stderr, "GPGPU-Sim: ERROR - tensor_mma_impl unsupported shape=%d\n", (int)shape);
       exit(1);
@@ -544,7 +547,12 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
     tensor_mma_tf32_impl(pI, core, inst, M, N, K, saturate, tid, dst);
     return;
   } else if (is_f16_type || is_bf16_type) {
-    // F16/BF16 floating-point MMA implementation for M16N8K8
+    // F16/BF16 M8N8K4 requires specialized 4-computation implementation
+    if (shape == MMA_M8N8K4) {
+      tensor_mma_f16_m8n8k4_impl(pI, core, inst, is_bf16_type, tid, dst);
+      return;
+    }
+    // F16/BF16 floating-point MMA implementation for other shapes
     tensor_mma_f16_impl(pI, core, inst, M, N, K, is_bf16_type, tid, dst);
     return;
   } else {
@@ -700,6 +708,157 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
 
   if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
     printf("GPGPU-Sim: tensor_mma_impl completed for M16N8K8\n");
+  }
+}
+
+// F16/BF16 M8N8K4 specialized implementation with 4-computation decomposition
+// Per PTX ISA: "A warp executing mma.m8n8k4 with .f16 floating point type will
+// compute 4 MMA operations of shape .m8n8k4"
+// Reference: https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-884-f16
+void tensor_mma_f16_m8n8k4_impl(const ptx_instruction *pI, core_t *core,
+                                warp_inst_t inst, bool is_bf16, unsigned tid,
+                                const operand_info &dst) {
+  // Constants for M8N8K4
+  const int M = 8, N = 8, K = 4;
+
+  // Helper structure to identify thread groups for 4 computations
+  struct ThreadGroup {
+    unsigned computation_idx;  // 0-3 (which of the 4 MMA operations)
+    bool is_high_group;        // false: lanes 0-15, true: lanes 16-31
+    unsigned local_lane;       // 0-3 (position within 4-thread group)
+  };
+
+  // Lambda to compute thread group from lane_id
+  auto get_thread_group = [](unsigned lane_id) -> ThreadGroup {
+    return ThreadGroup{
+      .computation_idx = (lane_id % 16) / 4,    // 0-3
+      .is_high_group = (lane_id >= 16),         // lanes 16-31
+      .local_lane = lane_id % 4                 // 0-3
+    };
+  };
+
+  // 4 separate result matrices (one per computation)
+  float A_mat[4][M * K];  // 4 separate 8×4 matrices
+  float B_mat[4][K * N];  // 4 separate 4×8 matrices
+  float C_mat[4][M * N];  // 4 separate 8×8 matrices
+  float D_mat[4][M * N];  // 4 separate 8×8 output matrices
+
+  // Initialize matrices
+  for (int comp = 0; comp < 4; comp++) {
+    for (int i = 0; i < M * K; i++) A_mat[comp][i] = 0.0f;
+    for (int i = 0; i < K * N; i++) B_mat[comp][i] = 0.0f;
+    for (int i = 0; i < M * N; i++) C_mat[comp][i] = 0.0f;
+  }
+
+  const operand_info &src_a = pI->operand_lookup(1);
+  const operand_info &src_b = pI->operand_lookup(2);
+  const operand_info &src_c = pI->operand_lookup(3);
+
+  // Step 1: Collect fragments from all 32 threads, distributing to their respective computations
+  for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
+    ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
+    unsigned lane_id = thrd;
+    ThreadGroup tg = get_thread_group(lane_id);
+    unsigned comp = tg.computation_idx;  // Which of the 4 computations this thread belongs to
+
+    // Each thread holds: 4 F16 values in A, 4 F16 values in B, 8 F32 values in C
+    ptx_reg_t a_regs[2], b_regs[2], c_regs[8];
+    thread->get_vector_operand_values(src_a, a_regs, 2);
+    thread->get_vector_operand_values(src_b, b_regs, 2);
+    thread->get_vector_operand_values(src_c, c_regs, 8);
+
+    // Unpack A and B registers (4 F16 values each)
+    uint16_t a_u16[4], b_u16[4];
+    a_u16[0] = a_regs[0].u16;
+    a_u16[1] = (a_regs[0].u32 >> 16) & 0xFFFF;
+    a_u16[2] = a_regs[1].u16;
+    a_u16[3] = (a_regs[1].u32 >> 16) & 0xFFFF;
+
+    b_u16[0] = b_regs[0].u16;
+    b_u16[1] = (b_regs[0].u32 >> 16) & 0xFFFF;
+    b_u16[2] = b_regs[1].u16;
+    b_u16[3] = (b_regs[1].u32 >> 16) & 0xFFFF;
+
+    // Fragment distribution for Matrix A (row layout):
+    // row = lane_id % 4          if lane_id < 16
+    //       (lane_id % 4) + 4    otherwise
+    // col = i                    for a[i] where i = {0,1,2,3}
+    int a_row_base = (lane_id % 4) + (tg.is_high_group ? 4 : 0);
+    for (int i = 0; i < 4; i++) {
+      int row = a_row_base;
+      int col = i;
+      float val = is_bf16 ? mma_bf16_to_f32(a_u16[i]) : mma_f16_to_f32(a_u16[i]);
+      A_mat[comp][row * K + col] = val;
+    }
+
+    // Fragment distribution for Matrix B (col layout):
+    // row = i                    for b[i] where i = {0,1,2,3}
+    // col = lane_id % 4          if lane_id < 16
+    //       (lane_id % 4) + 4    otherwise
+    int b_col_base = (lane_id % 4) + (tg.is_high_group ? 4 : 0);
+    for (int i = 0; i < 4; i++) {
+      int row = i;
+      int col = b_col_base;
+      float val = is_bf16 ? mma_bf16_to_f32(b_u16[i]) : mma_f16_to_f32(b_u16[i]);
+      B_mat[comp][row * N + col] = val;
+    }
+
+    // Fragment distribution for Accumulator C (f32 type):
+    // row = X                    if lane_id < 16
+    //       X + 4                otherwise
+    //       where X = (lane_id & 0b1) + (i & 0b10)  for c[i] where i = {0,...,7}
+    // col = (i & 0b100) + (lane_id & 0b10) + (i & 0b1)  for c[i]
+    for (int i = 0; i < 8; i++) {
+      int X = (lane_id & 0b1) + (i & 0b10);
+      int row = X + (tg.is_high_group ? 4 : 0);
+      int col = (i & 0b100) + (lane_id & 0b10) + (i & 0b1);
+      C_mat[comp][row * N + col] = c_regs[i].f32;
+    }
+  }
+
+  // Step 2: Perform 4 separate MMA computations (REQUIRED BY PTX ISA)
+  // Each computation operates on its own 8x8x4 matrices
+  // Computation 0: uses threads 0-3, 16-19
+  // Computation 1: uses threads 4-7, 20-23
+  // Computation 2: uses threads 8-11, 24-27
+  // Computation 3: uses threads 12-15, 28-31
+  for (int comp = 0; comp < 4; comp++) {
+    // D[comp] = A[comp] × B[comp] + C[comp]
+    for (int i = 0; i < M; i++) {
+      for (int j = 0; j < N; j++) {
+        float sum = C_mat[comp][i * N + j];
+        for (int k = 0; k < K; k++) {
+          sum += A_mat[comp][i * K + k] * B_mat[comp][k * N + j];
+        }
+        D_mat[comp][i * N + j] = sum;
+      }
+    }
+  }
+
+  // Step 3: Distribute results back to threads from their respective computations
+  for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
+    ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
+    unsigned lane_id = thrd;
+    ThreadGroup tg = get_thread_group(lane_id);
+    unsigned comp = tg.computation_idx;  // Which computation this thread belongs to
+
+    ptx_reg_t d_regs[8];
+
+    // Use same accumulator distribution formula as for C
+    for (int i = 0; i < 8; i++) {
+      int X = (lane_id & 0b1) + (i & 0b10);
+      int row = X + (tg.is_high_group ? 4 : 0);
+      int col = (i & 0b100) + (lane_id & 0b10) + (i & 0b1);
+      d_regs[i].f32 = D_mat[comp][row * N + col];  // Read from this thread's computation result
+    }
+
+    // M8N8K4 uses 8 F32 output registers
+    thread->set_wmma_vector_operand_values(dst, d_regs[0], d_regs[1], d_regs[2], d_regs[3],
+                                            d_regs[4], d_regs[5], d_regs[6], d_regs[7]);
+  }
+
+  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
+    printf("GPGPU-Sim: tensor_mma_f16_m8n8k4_impl completed (4-computation decomposition)\n");
   }
 }
 

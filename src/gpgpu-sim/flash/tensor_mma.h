@@ -77,6 +77,13 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
                          bool is_bf16, unsigned tid,
                          const operand_info &dst);
 
+// tensor_mma_f16_m8n8k4_impl: F16 M8N8K4 specialized implementation
+// Per PTX ISA, F16 M8N8K4 computes 4 separate MMA operations
+// Requires specialized 4-computation decomposition architecture
+void tensor_mma_f16_m8n8k4_impl(const ptx_instruction *pI, core_t *core,
+                                warp_inst_t inst, bool is_bf16, unsigned tid,
+                                const operand_info &dst);
+
 // tensor_mma_tf32_impl: TF32 floating-point MMA implementation
 // Implements functional simulation for M16N8K8 tensor cores with TF32 inputs
 void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
