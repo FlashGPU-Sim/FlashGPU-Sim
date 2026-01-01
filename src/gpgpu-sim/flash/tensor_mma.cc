@@ -187,6 +187,8 @@ uint16_t mma_f32_to_bf16(float f32) {
 
 // Helper: Round float32 to TensorFloat-32 precision
 // TF32: 1 sign bit, 8 exponent bits, 10 mantissa bits (19 bits total)
+// Per NVIDIA spec: "rounding and handling of subnormal inputs are unspecified"
+// Using simple truncation (RTZ) as the most hardware-efficient approach
 float mma_tf32_round(float f32) {
   using namespace TF32Constants;
 
@@ -194,12 +196,7 @@ float mma_tf32_round(float f32) {
   memcpy(&f32_bits, &f32, sizeof(float));
 
   // TF32 has 10 mantissa bits, F32 has 23, so zero out lower 13 bits (23-10=13)
-  // Round to nearest even before truncation
-  if ((f32_bits & ROUND_BIT) && ((f32_bits & MANTISSA_MASK) != ROUND_BIT)) {
-    f32_bits += ROUND_BIT;
-  }
-
-  // Zero out lower 13 bits to get TF32 precision
+  // Simple truncation: just clear the lower 13 bits
   f32_bits &= ~MANTISSA_MASK;
 
   float result;
