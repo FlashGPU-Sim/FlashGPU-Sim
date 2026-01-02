@@ -1225,13 +1225,6 @@ void ptx_instruction::set_opcode_and_latency() {
   }
   set_fp_or_int_archop();
   set_mul_div_or_other_archop();
-
-  // printf("Warning: instruction latency for inst %s is set to %u cycles %u init_interval PC %x\n",
-  //          this->to_string().c_str(), latency, initiation_interval, pc);
-  // if(initiation_interval >= 1000){
-  //   fflush(stdout);
-  //   exit(1);
-  // }
 }
 
 void ptx_thread_info::ptx_fetch_inst(inst_t &inst) const {

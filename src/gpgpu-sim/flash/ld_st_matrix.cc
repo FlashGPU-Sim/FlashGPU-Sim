@@ -40,6 +40,11 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
 
   bool is_transpose = false;
 
+  // Matrix layout constants for 8x8 matrix distributed across 32-lane warp
+  constexpr int MATRIX_DIMENSION = 8;          // 8x8 matrix size
+  constexpr int LANES_PER_MATRIX_ROW = 4;      // 32 lanes / 8 rows = 4 lanes per row
+  constexpr int COLUMNS_PER_LANE = 2;          // Each lane handles 2 consecutive columns
+
   constexpr int invalid_scalar_type = -1;
   int scalar_type = invalid_scalar_type;
 
@@ -115,10 +120,9 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
   for (auto lane_id = 0; lane_id < core->get_warp_size(); lane_id++) {
     auto thread = core->get_thread_info()[tid_lane0 + lane_id];
 
-    // Every 4 lanes handle one row.
-    auto matrix_row_id = lane_id / 4;
-    // Each lane handles 2 columns of b16.
-    auto matrix_col_id = (lane_id % 4) * 2;
+    // Map lane ID to matrix position
+    auto matrix_row_id = lane_id / LANES_PER_MATRIX_ROW;
+    auto matrix_col_id = (lane_id % LANES_PER_MATRIX_ROW) * COLUMNS_PER_LANE;
 
     // For stmatrix: read data from source registers first
     if constexpr (!is_load) {
@@ -128,7 +132,7 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
 
     for (auto matrix_id = 0; matrix_id < num_matrixs; matrix_id++) {
 
-      auto row_address_lane_id = matrix_id * 8 + matrix_row_id;
+      auto row_address_lane_id = matrix_id * MATRIX_DIMENSION + matrix_row_id;
       auto row_address_thread =
           core->get_thread_info()[tid_lane0 + row_address_lane_id];
       auto row_address = get_u32_value(row_address_thread, addr_operand);
