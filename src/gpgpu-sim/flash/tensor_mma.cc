@@ -911,12 +911,14 @@ void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
                           warp_inst_t inst, int M, int N, int K,
                           bool saturate, unsigned tid,
                           const operand_info &dst) {
-  // TF32 implementation for M16N8K4: 2 F32 registers for A, 1 F32 for B
+  // TF32 implementation for M16N8K4 and M16N8K8
+  // K=4: A needs 2 F32 registers, B needs 1 F32 register
+  // K=8: A needs 4 F32 registers, B needs 2 F32 registers
   // Each TF32 value is stored as F32 but with reduced precision (10-bit mantissa)
 
   // Step 1: Collect all fragments from all 32 threads
-  float A_mat[M * K];  // 16×4
-  float B_mat[K * N];  // 4×8
+  float A_mat[M * K];  // 16×K
+  float B_mat[K * N];  // K×8
   float C_mat[M * N];  // 16×8
   float D_mat[M * N];  // 16×8
 
@@ -936,36 +938,75 @@ void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
     unsigned groupID = lane_id / 4;  // 0-7
     unsigned threadID_in_group = lane_id % 4;  // 0-3
 
-    // TF32 M16N8K4 uses 2 F32 registers for A, 1 F32 for B
-    ptx_reg_t a_regs[2], b_regs[1], c_regs[4];
-    thread->get_vector_operand_values(src_a, a_regs, 2);
-    thread->get_vector_operand_values(src_b, b_regs, 1);
-    thread->get_vector_operand_values(src_c, c_regs, 4);
+    // Fragment distribution differs based on K dimension
+    if (K == 4) {
+      // M16N8K4 uses 2 F32 registers for A, 1 F32 for B
+      ptx_reg_t a_regs[2], b_regs[1], c_regs[4];
+      thread->get_vector_operand_values(src_a, a_regs, 2);
+      thread->get_vector_operand_values(src_b, b_regs, 1);
+      thread->get_vector_operand_values(src_c, c_regs, 4);
 
-    // Unpack and place A fragments with TF32 rounding (16×4 matrix)
-    // Each thread holds 2 TF32 values in one column
-    int a_row0 = groupID;
-    int a_row1 = groupID + 8;
-    int a_col = threadID_in_group;
+      // Unpack and place A fragments with TF32 rounding (16×4 matrix)
+      // Each thread holds 2 TF32 values in one column
+      int a_row0 = groupID;
+      int a_row1 = groupID + 8;
+      int a_col = threadID_in_group;
 
-    A_mat[a_row0 * K + a_col] = mma_tf32_round(a_regs[0].f32);
-    A_mat[a_row1 * K + a_col] = mma_tf32_round(a_regs[1].f32);
+      A_mat[a_row0 * K + a_col] = mma_tf32_round(a_regs[0].f32);
+      A_mat[a_row1 * K + a_col] = mma_tf32_round(a_regs[1].f32);
 
-    // Unpack and place B fragments with TF32 rounding (4×8 matrix)
-    // Each thread holds 1 TF32 value
-    int b_row = threadID_in_group;
-    int b_col = groupID;
-    B_mat[b_col * K + b_row] = mma_tf32_round(b_regs[0].f32);
+      // Unpack and place B fragments with TF32 rounding (4×8 matrix)
+      // Each thread holds 1 TF32 value
+      int b_row = threadID_in_group;
+      int b_col = groupID;
+      B_mat[b_col * K + b_row] = mma_tf32_round(b_regs[0].f32);
 
-    // Place C fragments (no rounding needed for accumulator)
-    int c_row0 = groupID;
-    int c_row1 = groupID + 8;
-    int c_col0 = threadID_in_group * 2;
-    int c_col1 = threadID_in_group * 2 + 1;
-    C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
-    C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
-    C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
-    C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
+      // Place C fragments (no rounding needed for accumulator)
+      int c_row0 = groupID;
+      int c_row1 = groupID + 8;
+      int c_col0 = threadID_in_group * 2;
+      int c_col1 = threadID_in_group * 2 + 1;
+      C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
+      C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
+      C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
+      C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
+    } else if (K == 8) {
+      // M16N8K8 uses 4 F32 registers for A, 2 F32 for B
+      ptx_reg_t a_regs[4], b_regs[2], c_regs[4];
+      thread->get_vector_operand_values(src_a, a_regs, 4);
+      thread->get_vector_operand_values(src_b, b_regs, 2);
+      thread->get_vector_operand_values(src_c, c_regs, 4);
+
+      // Unpack and place A fragments with TF32 rounding (16×8 matrix)
+      // Each thread holds 4 TF32 values
+      int a_row0 = groupID;
+      int a_row1 = groupID + 8;
+      int a_col0 = threadID_in_group;
+      int a_col1 = threadID_in_group + 4;
+
+      A_mat[a_row0 * K + a_col0] = mma_tf32_round(a_regs[0].f32);
+      A_mat[a_row0 * K + a_col1] = mma_tf32_round(a_regs[1].f32);
+      A_mat[a_row1 * K + a_col0] = mma_tf32_round(a_regs[2].f32);
+      A_mat[a_row1 * K + a_col1] = mma_tf32_round(a_regs[3].f32);
+
+      // Unpack and place B fragments with TF32 rounding (8×8 matrix)
+      // Each thread holds 2 TF32 values
+      int b_row0 = threadID_in_group;
+      int b_row1 = threadID_in_group + 4;
+      int b_col = groupID;
+      B_mat[b_col * K + b_row0] = mma_tf32_round(b_regs[0].f32);
+      B_mat[b_col * K + b_row1] = mma_tf32_round(b_regs[1].f32);
+
+      // Place C fragments (no rounding needed for accumulator)
+      int c_row0 = groupID;
+      int c_row1 = groupID + 8;
+      int c_col0 = threadID_in_group * 2;
+      int c_col1 = threadID_in_group * 2 + 1;
+      C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
+      C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
+      C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
+      C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
+    }
   }
 
   // Step 2: Perform matrix multiplication D = A * B + C
@@ -1001,7 +1042,7 @@ void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
   }
 
   if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    printf("GPGPU-Sim: tensor_mma_tf32_impl completed for M16N8K4\n");
+    printf("GPGPU-Sim: tensor_mma_tf32_impl completed for M16N8K%d\n", K);
   }
 }
 
