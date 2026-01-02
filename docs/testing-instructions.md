@@ -12,17 +12,27 @@ source setup_environment
 
 **Note:** These commands must be run before `make test` or any compilation commands.
 
+## Building Tests
+
+```
+source setup.sh && source setup_environment && ./test/run_tests.sh build
+```
+
+**Note:** Never directly invoke the built test binary as it does not have GPU configuration files! Always use `run_tests.sh` as the driver.
+
+**Automatic Library Rebuild:** The test runner automatically detects when GPGPU-Sim library (`lib/gcc-*/libcudart.so`) is out of date compared to source files and rebuilds it with `make FLASH=1 -j` before building tests. This prevents test failures from stale library builds.
+
 ## Running Tests
 
 ```bash
 # Run all tests with default configuration (SM120_RTX5090)
-./test/run_tests.sh run
+source setup.sh && source setup_environment && ./test/run_tests.sh run
 
 # Run tests with reduced configuration (faster, less memory)
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED run
 
 # List available GPU configurations
-./test/run_tests.sh list-configs
+source setup.sh && source setup_environment && ./test/run_tests.sh list-configs
 ```
 
 ## GPU Configurations
@@ -40,10 +50,26 @@ The test framework supports multiple GPU configurations:
 **Selecting a configuration:**
 ```bash
 # Explicit config selection
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED run
 
 # Run specific test with config
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaVectorAdd
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaVectorAdd
+```
+
+## Listing Available Tests
+
+List all available test cases using GoogleTest's `--gtest_list_tests`:
+```bash
+source setup.sh && source setup_environment && ./test/run_tests.sh list
+```
+
+This displays the actual test suite and test case names from the compiled test binary.
+
+## Select Test Cases
+
+**Note:** You can pass test name (with regex matches), which will be passed to the test binary as `--gtest_filter`. No need to pass in `--gtest_filter` in the command line of `run_tests.sh`.
+```bash
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*MMA*"
 ```
 
 ## Test Organization
