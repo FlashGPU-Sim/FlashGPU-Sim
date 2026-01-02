@@ -195,6 +195,7 @@ enum _memory_op_t { no_memory_op = 0, memory_load, memory_store };
 #include <stdlib.h>
 #include <algorithm>
 #include <bitset>
+#include <cstdint>
 #include <deque>
 #include <list>
 #include <map>

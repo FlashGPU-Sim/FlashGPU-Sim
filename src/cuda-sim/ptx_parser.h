@@ -82,6 +82,7 @@ class ptx_recognizer {
   std::list<operand_info> g_operands;
   std::list<int> g_options;
   std::list<int> g_wmma_options;
+  std::list<int> g_mma_options;
   std::list<int> g_scalar_type;
   // type specifier stuff:
   memory_space_t g_space_spec;
@@ -137,6 +138,7 @@ class ptx_recognizer {
                            const char *d7, const char *d8);
   void add_option(int option);
   void add_wmma_option(int option);
+  void add_mma_option(int option);
   void add_builtin_operand(int builtin, int dim_modifier);
   void add_memory_operand();
   void add_literal_int(int value);

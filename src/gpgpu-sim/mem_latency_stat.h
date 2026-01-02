@@ -34,6 +34,7 @@
 #include <map>
 #include <array>
 #include <vector>
+#include <memory>
 
 #include "../parallel_sim_util.h"
 

@@ -102,6 +102,8 @@ class ptx_recognizer;
 %token  U32_TYPE
 %token  U64_TYPE
 %token  F16_TYPE
+%token  BF16_TYPE
+%token  TF32_TYPE
 %token  F32_TYPE
 %token  F64_TYPE
 %token  FF64_TYPE
@@ -443,6 +445,8 @@ scalar_type: S8_TYPE { recognizer->add_scalar_type_spec( S8_TYPE ); }
 	| U32_TYPE   { recognizer->add_scalar_type_spec( U32_TYPE ); }
 	| U64_TYPE   { recognizer->add_scalar_type_spec( U64_TYPE ); }
 	| F16_TYPE   { recognizer->add_scalar_type_spec( F16_TYPE ); }
+	| BF16_TYPE  { recognizer->add_scalar_type_spec( BF16_TYPE ); }
+	| TF32_TYPE  { recognizer->add_scalar_type_spec( TF32_TYPE ); }
 	| F32_TYPE   { recognizer->add_scalar_type_spec( F32_TYPE ); }
 	| F64_TYPE   { recognizer->add_scalar_type_spec( F64_TYPE ); }
 	| FF64_TYPE   { recognizer->add_scalar_type_spec( FF64_TYPE ); }
@@ -531,7 +535,8 @@ option: type_spec
 	| compare_spec
 	| addressable_spec
 	| rounding_mode
-	| wmma_spec 
+	| wmma_spec
+	| mma_spec
 	| prmt_spec 
 	| SYNC_OPTION { recognizer->add_option(SYNC_OPTION); }
 	| ARRIVE_OPTION { recognizer->add_option(ARRIVE_OPTION); }
@@ -678,6 +683,9 @@ prmt_spec: PRMT_F4E_MODE { recognizer->add_option( PRMT_F4E_MODE); }
 
 wmma_spec: WMMA_DIRECTIVE LAYOUT CONFIGURATION{recognizer->add_space_spec(global_space,0);recognizer->add_ptr_spec(global_space); recognizer->add_wmma_option($1);recognizer->add_wmma_option($2);recognizer->add_wmma_option($3);}
 	| WMMA_DIRECTIVE LAYOUT LAYOUT CONFIGURATION{recognizer->add_wmma_option($1);recognizer->add_wmma_option($2);recognizer->add_wmma_option($3);recognizer->add_wmma_option($4);}
+	;
+
+mma_spec: CONFIGURATION LAYOUT LAYOUT scalar_type scalar_type scalar_type scalar_type{recognizer->add_mma_option($1);recognizer->add_mma_option($2);recognizer->add_mma_option($3);}
 	;
 
 vp_spec: WMMA_DIRECTIVE LAYOUT CONFIGURATION{recognizer->add_space_spec(global_space,0);recognizer->add_ptr_spec(global_space);recognizer->add_wmma_option($1);recognizer->add_wmma_option($2);recognizer->add_wmma_option($3);}

@@ -1,1 +1,1 @@
-export CUDA_INSTALL_PATH=/usr/local/cuda/
+export CUDA_INSTALL_PATH=/home/wzr/cuda/

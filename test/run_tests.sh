@@ -18,6 +18,7 @@ fi
 TEST_TIMEOUT=${TEST_TIMEOUT:-3600}
 TEST_VERBOSE=${TEST_VERBOSE:-1}
 DEBUG_TESTS=${DEBUG_TESTS:-0}
+GPU_CONFIG=${GPU_CONFIG:-SM120_RTX5090}  # Default GPU configuration
 
 # Colors for output
 RED='\033[0;31m'
@@ -46,28 +47,32 @@ usage() {
     echo "Usage: $0 [OPTIONS] [COMMAND] [TEST_NAME]"
     echo ""
     echo "Commands:"
-    echo "  build           Build all tests"
-    echo "  run             Run all tests"
-    echo "  run <test>      Run specific test"
-    echo "  clean           Clean build artifacts"
-    echo "  setup           Setup test environment"
-    echo "  refresh         Refresh run directory and configuration"
-    echo "  list            List available tests"
-    echo "  help            Show this help"
+    echo "  build              Build all tests"
+    echo "  run                Run all tests"
+    echo "  run <test>         Run specific test"
+    echo "  clean              Clean build artifacts"
+    echo "  setup              Setup test environment"
+    echo "  refresh            Refresh run directory and configuration"
+    echo "  list               List available tests"
+    echo "  list-configs       List available GPU configurations"
+    echo "  help               Show this help"
     echo ""
     echo "Options:"
-    echo "  -v, --verbose   Verbose output"
-    echo "  -d, --debug     Enable debug mode"
-    echo "  -t, --timeout   Set test timeout (seconds)"
-    echo "  -h, --help      Show this help"
+    echo "  -v, --verbose      Verbose output"
+    echo "  -d, --debug        Enable debug mode"
+    echo "  -t, --timeout      Set test timeout (seconds)"
+    echo "  -c, --config NAME  Use specific GPU configuration (default: SM120_RTX5090)"
+    echo "  -h, --help         Show this help"
     echo ""
     echo "Examples:"
-    echo "  $0 setup                    # Setup test environment"
-    echo "  $0 build                    # Build all tests"
-    echo "  $0 run                      # Run all tests"
-    echo "  $0 run CudaVectorAdd        # Run specific test suite"
-    echo "  $0 run BasicVectorAddition  # Run specific test case"
-    echo "  $0 -v run                   # Run all tests with verbose output"
+    echo "  $0 setup                              # Setup test environment"
+    echo "  $0 build                              # Build all tests"
+    echo "  $0 run                                # Run all tests (default config)"
+    echo "  $0 list-configs                       # List available GPU configs"
+    echo "  $0 -c SM120_RTX5090_REDUCED run       # Run with reduced config"
+    echo "  $0 --config SM120_RTX5090_REDUCED run # Run with reduced config (long form)"
+    echo "  $0 run CudaVectorAdd                  # Run specific test suite"
+    echo "  $0 -v run                             # Run all tests with verbose output"
 }
 
 # Setup test environment
@@ -102,30 +107,35 @@ setup_environment() {
 
 # Setup run directory with configuration
 setup_run_directory() {
-    print_color $YELLOW "Setting up test run directory..."
-    
-    local config_dir="run/SM120_RTX5090"
-    
+    local force_refresh="$1"
+    local config_name="${GPU_CONFIG}"
+
+    print_color $YELLOW "Setting up test run directory for config: $config_name..."
+
+    local config_dir="run/$config_name"
+    local source_config="../configs/$config_name"
+
     # Create run directory if it doesn't exist
     if [ ! -d "run" ]; then
         mkdir -p run
         print_color $BLUE "Created run directory"
     fi
-    
-    # Copy SM120_RTX5090 configuration if it doesn't exist or if forced
-    if [ ! -d "$config_dir" ] || [ "$1" = "force" ]; then
-        if [ -d "../configs/SM120_RTX5090" ]; then
-            rm -rf "$config_dir" 2>/dev/null
-            run_command cp -r "../configs/SM120_RTX5090" run/
-            print_color $GREEN "Copied SM120_RTX5090 configuration to run directory"
-        else
-            print_color $RED "Error: SM120_RTX5090 config not found in ../configs/"
-            print_color $YELLOW "Available configs:"
-            run_command ls -1 ../configs/ 2>/dev/null || echo "  No configs directory found"
-            exit 1
-        fi
+
+    # Validate that source config exists
+    if [ ! -d "$source_config" ]; then
+        print_color $RED "Error: Configuration '$config_name' not found at $source_config"
+        print_color $YELLOW "Available configs:"
+        list_configs
+        exit 1
+    fi
+
+    # Copy configuration if it doesn't exist or if forced
+    if [ ! -d "$config_dir" ] || [ "$force_refresh" = "force" ]; then
+        rm -rf "$config_dir" 2>/dev/null
+        run_command cp -r "$source_config" run/
+        print_color $GREEN "Copied $config_name configuration to run directory"
     else
-        print_color $BLUE "SM120_RTX5090 configuration already exists in run directory"
+        print_color $BLUE "$config_name configuration already exists in run directory"
     fi
 }
 
@@ -182,11 +192,49 @@ list_tests() {
     fi
 }
 
+# List available GPU configurations
+list_configs() {
+    print_color $BLUE "Available GPU configurations:"
+
+    local configs_dir="../configs"
+
+    if [ ! -d "$configs_dir" ]; then
+        print_color $RED "Error: configs directory not found at $configs_dir"
+        exit 1
+    fi
+
+    # Find all directories in configs that contain gpgpusim.config
+    local found_configs=0
+    for config_path in "$configs_dir"/*; do
+        if [ -d "$config_path" ] && [ -f "$config_path/gpgpusim.config" ]; then
+            local config_name=$(basename "$config_path")
+
+            # Mark default config
+            if [ "$config_name" = "$GPU_CONFIG" ]; then
+                print_color $GREEN "  ✓ $config_name (default)"
+            else
+                echo "    $config_name"
+            fi
+
+            found_configs=1
+        fi
+    done
+
+    if [ $found_configs -eq 0 ]; then
+        print_color $YELLOW "No GPU configurations found in $configs_dir"
+    fi
+
+    echo ""
+    print_color $BLUE "To use a config:"
+    echo "  $0 -c CONFIG_NAME run"
+    echo "  $0 --config CONFIG_NAME run"
+}
+
 # Run specific test
 run_individual_test() {
     local test_name=$1
     local test_executable="build/bin/run_all_tests"
-    local config_dir="run/SM120_RTX5090"
+    local config_dir="run/${GPU_CONFIG}"
     
     if [ ! -f "$test_executable" ]; then
         print_color $RED "Test executable not found: $test_executable"
@@ -238,10 +286,10 @@ run_individual_test() {
 
 # Run all tests
 run_all_tests() {
-    print_color $BLUE "Running all GPGPU-Sim tests..."
-    
+    print_color $BLUE "Running all GPGPU-Sim tests with config: ${GPU_CONFIG}..."
+
     local test_executable="build/bin/run_all_tests"
-    local config_dir="run/SM120_RTX5090"
+    local config_dir="run/${GPU_CONFIG}"
     
     # Check if test executable exists
     if [ ! -f "$test_executable" ]; then
@@ -328,6 +376,10 @@ while [[ $# -gt 0 ]]; do
             TEST_TIMEOUT="$2"
             shift 2
             ;;
+        -c|--config)
+            GPU_CONFIG="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -367,6 +419,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         list)
             list_tests
+            exit 0
+            ;;
+        list-configs)
+            list_configs
             exit 0
             ;;
         help)
