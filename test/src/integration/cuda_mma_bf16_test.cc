@@ -288,3 +288,91 @@ TEST_F(MMABF16M16N8K8IntegrationTest, RandomValuesTest) {
             << " (got: " << h_D[i] << ", expected: " << h_D_ref[i] << ")";
     }
 }
+
+// ============================================================================
+// BF16 M16N8K16 Test
+// ============================================================================
+
+// Kernel for BF16 M16N8K16
+__global__ void mma_m16n8k16_bf16_kernel(
+    const uint16_t* A, const uint16_t* B, const float* C, float* D
+) {
+    if (threadIdx.x / 32 != 0) return;
+    int lane_id = threadIdx.x % 32;
+    int groupID = lane_id / 4, threadID_in_group = lane_id % 4;
+
+    unsigned A_frag[4], B_frag[2];
+    float C_frag[4], D_frag[4];
+
+    // Load A/B fragments (same as F16 M16N8K16)
+    uint16_t a_vals[8];
+    for (int i = 0; i < 8; i++) {
+        int a_row = (i < 2 || (i >= 4 && i < 6)) ? groupID : (groupID + 8);
+        int a_col = (i < 4) ? (threadID_in_group * 2 + (i & 0x1)) :
+                              (threadID_in_group * 2 + (i & 0x1) + 8);
+        a_vals[i] = A[a_row * 16 + a_col];
+    }
+    A_frag[0] = *reinterpret_cast<unsigned*>(&a_vals[0]);
+    A_frag[1] = *reinterpret_cast<unsigned*>(&a_vals[2]);
+    A_frag[2] = *reinterpret_cast<unsigned*>(&a_vals[4]);
+    A_frag[3] = *reinterpret_cast<unsigned*>(&a_vals[6]);
+
+    uint16_t b_vals[4];
+    for (int i = 0; i < 4; i++) {
+        int b_row = (i < 2) ? (threadID_in_group * 2 + (i & 0x1)) :
+                              (threadID_in_group * 2 + (i & 0x1) + 8);
+        b_vals[i] = B[groupID * 16 + b_row];
+    }
+    B_frag[0] = *reinterpret_cast<unsigned*>(&b_vals[0]);
+    B_frag[1] = *reinterpret_cast<unsigned*>(&b_vals[2]);
+
+    int row0 = groupID, row1 = groupID + 8;
+    int col0 = threadID_in_group * 2, col1 = col0 + 1;
+    C_frag[0] = C[row0 * 8 + col0]; C_frag[1] = C[row0 * 8 + col1];
+    C_frag[2] = C[row1 * 8 + col0]; C_frag[3] = C[row1 * 8 + col1];
+
+    asm volatile(
+        "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+        "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, %13};\n"
+        : "=f"(D_frag[0]), "=f"(D_frag[1]), "=f"(D_frag[2]), "=f"(D_frag[3])
+        : "r"(A_frag[0]), "r"(A_frag[1]), "r"(A_frag[2]), "r"(A_frag[3]),
+          "r"(B_frag[0]), "r"(B_frag[1]),
+          "f"(C_frag[0]), "f"(C_frag[1]), "f"(C_frag[2]), "f"(C_frag[3])
+    );
+
+    D[row0 * 8 + col0] = D_frag[0]; D[row0 * 8 + col1] = D_frag[1];
+    D[row1 * 8 + col0] = D_frag[2]; D[row1 * 8 + col1] = D_frag[3];
+}
+
+TEST(MMABF16M16N8K16Test, AllOnesTest) {
+    constexpr int M = 16, N = 8, K = 16;
+    uint16_t *h_A = new uint16_t[M*K], *h_B = new uint16_t[K*N];
+    float *h_C = new float[M*N], *h_D = new float[M*N];
+    
+    // BF16 1.0 = 0x3F80
+    for (int i = 0; i < M*K; i++) h_A[i] = 0x3F80;
+    for (int i = 0; i < K*N; i++) h_B[i] = 0x3F80;
+    for (int i = 0; i < M*N; i++) h_C[i] = 0.0f;
+    
+    uint16_t *d_A, *d_B; float *d_C, *d_D;
+    cudaMalloc(&d_A, M*K*sizeof(uint16_t));
+    cudaMalloc(&d_B, K*N*sizeof(uint16_t));
+    cudaMalloc(&d_C, M*N*sizeof(float));
+    cudaMalloc(&d_D, M*N*sizeof(float));
+    
+    cudaMemcpy(d_A, h_A, M*K*sizeof(uint16_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, h_B, K*N*sizeof(uint16_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_C, h_C, M*N*sizeof(float), cudaMemcpyHostToDevice);
+    
+    mma_m16n8k16_bf16_kernel<<<1, 32>>>(d_A, d_B, d_C, d_D);
+    ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+    
+    cudaMemcpy(h_D, d_D, M*N*sizeof(float), cudaMemcpyDeviceToHost);
+    
+    for (int i = 0; i < M*N; i++) {
+        EXPECT_FLOAT_EQ(h_D[i], 16.0f) << "Mismatch at index " << i;
+    }
+    
+    delete[] h_A; delete[] h_B; delete[] h_C; delete[] h_D;
+    cudaFree(d_A); cudaFree(d_B); cudaFree(d_C); cudaFree(d_D);
+}

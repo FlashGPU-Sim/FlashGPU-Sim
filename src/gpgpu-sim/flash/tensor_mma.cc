@@ -589,15 +589,19 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
   //     d[3] at row=groupID+8,   col=threadID_in_group*2+1
 
   // Step 1: Collect all fragments from all 32 threads
-  float A_mat[M * K];  // 16×8
-  float B_mat[K * N];  // 8×8
-  float C_mat[M * N];  // 16×8
-  float D_mat[M * N];  // 16×8
+  float A_mat[M * K];  // MxK
+  float B_mat[K * N];  // KxN
+  float C_mat[M * N];  // MxN
+  float D_mat[M * N];  // MxN
 
   // Initialize matrices
   for (int i = 0; i < M * K; i++) A_mat[i] = 0.0f;
   for (int i = 0; i < K * N; i++) B_mat[i] = 0.0f;
   for (int i = 0; i < M * N; i++) C_mat[i] = 0.0f;
+
+  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
+    printf("GPGPU-Sim: tensor_mma_f16_impl M=%d N=%d K=%d is_bf16=%d\n", M, N, K, is_bf16);
+  }
 
   const operand_info &src_a = pI->operand_lookup(1);
   const operand_info &src_b = pI->operand_lookup(2);
@@ -610,67 +614,107 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
     unsigned groupID = lane_id / 4;  // 0-7
     unsigned threadID_in_group = lane_id % 4;  // 0-3
 
-    ptx_reg_t a_regs[2], b_regs[1], c_regs[4];
-    thread->get_vector_operand_values(src_a, a_regs, 2);
-    thread->get_vector_operand_values(src_b, b_regs, 1);
-    thread->get_vector_operand_values(src_c, c_regs, 4);
+    // Fragment distribution differs based on K dimension
+    if (K == 8) {
+      // M16N8K8: A needs 2 registers, B needs 1 register
+      ptx_reg_t a_regs[2], b_regs[1], c_regs[4];
+      thread->get_vector_operand_values(src_a, a_regs, 2);
+      thread->get_vector_operand_values(src_b, b_regs, 1);
+      thread->get_vector_operand_values(src_c, c_regs, 4);
 
-    // Unpack and place A fragments into full matrix
-    // Official formula: row = groupID for a0,a1; groupID+8 for a2,a3
-    //                   col = threadID_in_group * 2 + (i & 0x1) where i = {0,1,2,3}
-    uint16_t a_u16[4];
-    a_u16[0] = a_regs[0].u16;
-    a_u16[1] = (a_regs[0].u32 >> 16) & 0xFFFF;
-    a_u16[2] = a_regs[1].u16;
-    a_u16[3] = (a_regs[1].u32 >> 16) & 0xFFFF;
+      // Unpack A fragments (4 F16 values)
+      uint16_t a_u16[4];
+      a_u16[0] = a_regs[0].u16;
+      a_u16[1] = (a_regs[0].u32 >> 16) & 0xFFFF;
+      a_u16[2] = a_regs[1].u16;
+      a_u16[3] = (a_regs[1].u32 >> 16) & 0xFFFF;
 
-    int a_row0 = groupID;
-    int a_row1 = groupID + 8;
-    int a_col0 = threadID_in_group * 2;
-    int a_col1 = threadID_in_group * 2 + 1;
-    // A is row-major: A[row][col] = A[row * K + col]
-    // Convert from F16 or BF16 to F32 based on is_bf16 parameter
-    if (is_bf16) {
-      A_mat[a_row0 * K + a_col0] = mma_bf16_to_f32(a_u16[0]);  // a0
-      A_mat[a_row0 * K + a_col1] = mma_bf16_to_f32(a_u16[1]);  // a1
-      A_mat[a_row1 * K + a_col0] = mma_bf16_to_f32(a_u16[2]);  // a2
-      A_mat[a_row1 * K + a_col1] = mma_bf16_to_f32(a_u16[3]);  // a3
-    } else {  // F16
-      A_mat[a_row0 * K + a_col0] = mma_f16_to_f32(a_u16[0]);  // a0
-      A_mat[a_row0 * K + a_col1] = mma_f16_to_f32(a_u16[1]);  // a1
-      A_mat[a_row1 * K + a_col0] = mma_f16_to_f32(a_u16[2]);  // a2
-      A_mat[a_row1 * K + a_col1] = mma_f16_to_f32(a_u16[3]);  // a3
+      int a_row0 = groupID, a_row1 = groupID + 8;
+      int a_col0 = threadID_in_group * 2, a_col1 = a_col0 + 1;
+
+      if (is_bf16) {
+        A_mat[a_row0 * K + a_col0] = mma_bf16_to_f32(a_u16[0]);
+        A_mat[a_row0 * K + a_col1] = mma_bf16_to_f32(a_u16[1]);
+        A_mat[a_row1 * K + a_col0] = mma_bf16_to_f32(a_u16[2]);
+        A_mat[a_row1 * K + a_col1] = mma_bf16_to_f32(a_u16[3]);
+      } else {
+        A_mat[a_row0 * K + a_col0] = mma_f16_to_f32(a_u16[0]);
+        A_mat[a_row0 * K + a_col1] = mma_f16_to_f32(a_u16[1]);
+        A_mat[a_row1 * K + a_col0] = mma_f16_to_f32(a_u16[2]);
+        A_mat[a_row1 * K + a_col1] = mma_f16_to_f32(a_u16[3]);
+      }
+
+      // Unpack B fragments (2 F16 values)
+      uint16_t b_u16[2];
+      b_u16[0] = b_regs[0].u16;
+      b_u16[1] = (b_regs[0].u32 >> 16) & 0xFFFF;
+
+      int b_row0 = threadID_in_group * 2, b_row1 = b_row0 + 1;
+      int b_col = groupID;
+
+      if (is_bf16) {
+        B_mat[b_col * K + b_row0] = mma_bf16_to_f32(b_u16[0]);
+        B_mat[b_col * K + b_row1] = mma_bf16_to_f32(b_u16[1]);
+      } else {
+        B_mat[b_col * K + b_row0] = mma_f16_to_f32(b_u16[0]);
+        B_mat[b_col * K + b_row1] = mma_f16_to_f32(b_u16[1]);
+      }
+
+      // C fragments (same for all K values)
+      int c_row0 = groupID, c_row1 = groupID + 8;
+      int c_col0 = threadID_in_group * 2, c_col1 = c_col0 + 1;
+      C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
+      C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
+      C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
+      C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
+    } else if (K == 16) {
+      // M16N8K16: A needs 4 registers, B needs 2 registers
+      ptx_reg_t a_regs[4], b_regs[2], c_regs[4];
+      thread->get_vector_operand_values(src_a, a_regs, 4);
+      thread->get_vector_operand_values(src_b, b_regs, 2);
+      thread->get_vector_operand_values(src_c, c_regs, 4);
+
+      // Unpack A fragments (8 F16 values) with proper distribution per PTX ISA
+      uint16_t a_u16[8];
+      for (int i = 0; i < 4; i++) {
+        a_u16[i*2] = a_regs[i].u16;
+        a_u16[i*2+1] = (a_regs[i].u32 >> 16) & 0xFFFF;
+      }
+
+      for (int i = 0; i < 8; i++) {
+        // row = groupID for i in {0,1,4,5}; groupID+8 otherwise
+        int a_row = (i < 2 || (i >= 4 && i < 6)) ? groupID : (groupID + 8);
+        // col = (threadID_in_group*2)+(i&1) for i<4; same+8 for i>=4
+        int a_col = (i < 4) ? (threadID_in_group * 2 + (i & 1)) :
+                              (threadID_in_group * 2 + (i & 1) + 8);
+        A_mat[a_row * K + a_col] = is_bf16 ? mma_bf16_to_f32(a_u16[i]) :
+                                              mma_f16_to_f32(a_u16[i]);
+      }
+
+      // Unpack B fragments (4 F16 values)
+      uint16_t b_u16[4];
+      for (int i = 0; i < 2; i++) {
+        b_u16[i*2] = b_regs[i].u16;
+        b_u16[i*2+1] = (b_regs[i].u32 >> 16) & 0xFFFF;
+      }
+
+      for (int i = 0; i < 4; i++) {
+        // row = (threadID_in_group*2)+(i&1) for i<2; same+8 for i>=2
+        int b_row = (i < 2) ? (threadID_in_group * 2 + (i & 1)) :
+                              (threadID_in_group * 2 + (i & 1) + 8);
+        int b_col = groupID;
+        B_mat[b_col * K + b_row] = is_bf16 ? mma_bf16_to_f32(b_u16[i]) :
+                                              mma_f16_to_f32(b_u16[i]);
+      }
+
+      // C fragments (same for all K values)
+      int c_row0 = groupID, c_row1 = groupID + 8;
+      int c_col0 = threadID_in_group * 2, c_col1 = c_col0 + 1;
+      C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
+      C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
+      C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
+      C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
     }
-
-    // Unpack and place B fragments into full matrix (B is column-major: B[n][k])
-    // Official formula: row = (threadID_in_group * 2) + i, col = groupID, i = {0, 1}
-    // B fragments hold: b_vals[0] = B[col][row0], b_vals[1] = B[col][row1]
-    uint16_t b_u16[2];
-    b_u16[0] = b_regs[0].u16;
-    b_u16[1] = (b_regs[0].u32 >> 16) & 0xFFFF;
-
-    int b_row0 = threadID_in_group * 2;
-    int b_row1 = threadID_in_group * 2 + 1;
-    int b_col = groupID;
-    // B is column-major: B[n][k] stored as B[n*K + k]
-    // Convert from F16 or BF16 to F32 based on is_bf16 parameter
-    if (is_bf16) {
-      B_mat[b_col * K + b_row0] = mma_bf16_to_f32(b_u16[0]);
-      B_mat[b_col * K + b_row1] = mma_bf16_to_f32(b_u16[1]);
-    } else {  // F16
-      B_mat[b_col * K + b_row0] = mma_f16_to_f32(b_u16[0]);
-      B_mat[b_col * K + b_row1] = mma_f16_to_f32(b_u16[1]);
-    }
-
-    // Place C fragments
-    int c_row0 = groupID;
-    int c_row1 = groupID + 8;
-    int c_col0 = threadID_in_group * 2;
-    int c_col1 = threadID_in_group * 2 + 1;
-    C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
-    C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
-    C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
-    C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
   }
 
   // Step 2: Perform matrix multiplication D = A * B + C
