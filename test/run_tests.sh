@@ -139,10 +139,29 @@ setup_run_directory() {
     fi
 }
 
+# Build GPGPU-Sim library
+build_gpgpusim() {
+    print_color $BLUE "Building GPGPU-Sim library..."
+    local root_dir="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+    cd "$root_dir"
+    if [ ! -f "lib/gcc-*/libcudart.so" ] || find src -name "*.cc" -newer "lib/gcc-*/libcudart.so" 2>/dev/null | grep -q .; then
+        print_color $YELLOW "GPGPU-Sim library needs rebuild..."
+        run_command make FLASH=1 -j
+        print_color $GREEN "GPGPU-Sim library built successfully"
+    else
+        print_color $GREEN "GPGPU-Sim library is up to date"
+    fi
+    cd "$SCRIPT_DIR"
+}
+
 # Build tests
 build_tests() {
+    # First ensure GPGPU-Sim is built
+    build_gpgpusim
+
     print_color $BLUE "Building GPGPU-Sim tests..."
-    
+
     if [ "$DEBUG_TESTS" -eq 1 ]; then
         run_command make CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" all
     else
@@ -159,37 +178,21 @@ build_tests() {
 
 # List available tests
 list_tests() {
-    print_color $BLUE "Available tests:"
-    
-    if [ -d "src/unit" ]; then
-        print_color $YELLOW "Unit Tests:"
-        for test_file in src/unit/*_test.cc; do
-            if [ -f "$test_file" ]; then
-                test_name=$(basename "$test_file" .cc)
-                echo "  - $test_name"
-            fi
-        done
+    print_color $BLUE "Available test cases:"
+
+    # Check if test binary exists
+    local TEST_BINARY="build/bin/run_all_tests"
+    local RUN_DIR="run/$GPU_CONFIG"
+
+    if [ ! -f "$TEST_BINARY" ]; then
+        print_color $RED "Error: Test binary not found at $TEST_BINARY"
+        print_color $YELLOW "Please run '$0 build' first"
+        exit 1
     fi
-    
-    if [ -d "src/integration" ]; then
-        print_color $YELLOW "Integration Tests:"
-        for test_file in src/integration/*_test.cc; do
-            if [ -f "$test_file" ]; then
-                test_name=$(basename "$test_file" .cc)
-                echo "  - $test_name"
-            fi
-        done
-    fi
-    
-    if [ ! -d "src/unit" ] && [ ! -d "src/integration" ] && [ -d "src" ]; then
-        print_color $YELLOW "All Tests:"
-        for test_file in src/*_test.cc; do
-            if [ -f "$test_file" ]; then
-                test_name=$(basename "$test_file" .cc)
-                echo "  - $test_name"
-            fi
-        done
-    fi
+
+    # Run the test binary with --gtest_list_tests within the run directory
+    # This ensures proper environment (gpgpusim.config etc.)
+    (cd "$RUN_DIR" && ../../build/bin/run_all_tests --gtest_list_tests 2>/dev/null)
 }
 
 # List available GPU configurations

@@ -38,6 +38,7 @@ typedef void *yyscan_t;
 #include <stdlib.h>
 #include <algorithm>
 #include <list>
+#include <execinfo.h>  // For backtrace
 #include "assert.h"
 #include "opcodes.h"
 #include "ptx.tab.h"
@@ -1115,8 +1116,28 @@ unsigned type_info_key::type_decode(int type, size_t &size, int &basic_type) {
       basic_type = 3;
       return 16;
     default:
-      printf("ERROR ** type_decode() does not know about \"%s\"\n",
-             decode_token(type));
+      fprintf(stderr, "\n\n***** ERROR ***** type_decode() does not know about type=%d \"%s\" *****\n",
+              type, decode_token(type));
+      fprintf(stderr, "Called from: %s:%d in %s\n", __FILE__, __LINE__, __FUNCTION__);
+      fprintf(stderr, "This is likely a bug where a return value is being used as a type token.\n");
+      fprintf(stderr, "Type tokens should be >= 300 (see ptx.tab.h), but got: %d\n", type);
+      fprintf(stderr, "\nStack trace (use gdb for full trace):\n");
+      fflush(stderr);
+
+      // Print backtrace if available
+      #ifdef __GNUC__
+      void *array[10];
+      size_t size = backtrace(array, 10);
+      char **strings = backtrace_symbols(array, size);
+      if (strings != NULL) {
+        for (size_t i = 0; i < size; i++)
+          fprintf(stderr, "  [%zu] %s\n", i, strings[i]);
+        free(strings);
+      }
+      #endif
+
+      fflush(stderr);
+      fflush(stdout);
       assert(0);
       return 0xDEADBEEF;
   }
@@ -1331,6 +1352,9 @@ ptx_instruction::ptx_instruction(
           break;
         case MMA_M8N8K4:
           m_mma_shape = flash_gpgpu_sim::MMA_M8N8K4;
+          break;
+        case MMA_M8N8K16:
+          m_mma_shape = flash_gpgpu_sim::MMA_M8N8K16;
           break;
         // MMA layouts - collect both layout tokens
         case ROW:

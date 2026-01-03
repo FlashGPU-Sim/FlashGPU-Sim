@@ -287,31 +287,39 @@ void tensor_mma_s8_impl(const ptx_instruction *pI, core_t *core,
                         warp_inst_t inst, int M, int N, int K,
                         bool saturate, unsigned tid,
                         const operand_info &dst) {
-  // M16N8K16 implementation for S8 integers
+  // S8/U8 integer MMA implementation for M16N8K16 and M16N8K32
   // Based on PTX ISA spec for integer tensor cores
   //
   // Fragment distribution pattern for 32 threads:
   //   groupID = lane_id >> 2  (lane_id / 4, range 0-7)
   //   threadID_in_group = lane_id % 4  (range 0-3)
   //
-  // Each thread holds:
+  // M16N8K16: Each thread holds:
   //   A: 8 S8 values (2 U32 registers, packed 4 values each) - from 16×16 matrix A
   //   B: 4 S8 values (1 U32 register, packed) - from 16×8 matrix B
   //   C/D: 4 S32 values (4 S32 registers) - from 16×8 output matrix D
   //
-  // Matrix A[16×16] fragment distribution (row-major):
-  //   row = groupID       for a[i] where i < 4
-  //       = groupID + 8   for a[i] where i >= 4
-  //   col = (threadID_in_group * 4) + (i & 0x3)   for a[i] where i = {0,..,7}
+  // M16N8K32: Each thread holds:
+  //   A: 16 S8 values (4 U32 registers, packed 4 values each) - from 16×32 matrix A
+  //   B: 8 S8 values (2 U32 registers, packed) - from 32×8 matrix B
+  //   C/D: 4 S32 values (4 S32 registers) - from 16×8 output matrix D
   //
-  // Matrix B[16×8] fragment distribution (column-major):
-  //   row = (threadID_in_group * 4) + i    for b[i] where i = {0,..,3}
+  // Matrix A fragment distribution (row-major):
+  //   K=16: row = groupID for a[0..3], groupID+8 for a[4..7]
+  //         col = (threadID_in_group * 4) + (i & 0x3)
+  //   K=32: row = groupID for a[0..7], groupID+8 for a[8..15]
+  //         col = (threadID_in_group * 4) + (i & 0x3) for i<8
+  //               (threadID_in_group * 4) + (i & 0x3) + 16 for i>=8
+  //
+  // Matrix B fragment distribution (column-major):
+  //   K=16: row = (threadID_in_group * 4) + i for b[0..3]
+  //   K=32: row = (threadID_in_group * 4) + i for b[0..3]
+  //               (threadID_in_group * 4) + i + 16 for b[4..7]
   //   col = groupID
   //
-  // Output matrix D[16×8] mapping:
-  //   row = groupID       for d[i] where i < 2
-  //       = groupID + 8   for d[i] where i >= 2
-  //   col = (threadID_in_group * 2) + (i & 0x1)   for d[i] where i = {0,..,3}
+  // Output matrix D[16×8] mapping (same for both K values):
+  //   row = groupID for d[0..1], groupID+8 for d[2..3]
+  //   col = (threadID_in_group * 2) + (i & 0x1)
 
   // Step 1: Collect all fragments from all 32 threads into full matrices
   int32_t A_mat[M * K];  // 16×16, stored as int32 for computation
@@ -335,68 +343,115 @@ void tensor_mma_s8_impl(const ptx_instruction *pI, core_t *core,
     unsigned groupID = lane_id >> 2;  // lane_id / 4, range 0-7
     unsigned threadID_in_group = lane_id % 4;  // range 0-3
 
-    // A: 2 registers (8 S8 values total)
-    // B: 1 register (4 S8 values)
-    // C: 4 registers (4 S32 values)
-    ptx_reg_t a_regs[2], b_regs[1], c_regs[4];
-    thread->get_vector_operand_values(src_a, a_regs, 2);
-    thread->get_vector_operand_values(src_b, b_regs, 1);
-    thread->get_vector_operand_values(src_c, c_regs, 4);
+    // Fragment distribution differs based on K dimension
+    if (K == 16) {
+      // M16N8K16: A needs 2 registers, B needs 1 register
+      ptx_reg_t a_regs[2], b_regs[1], c_regs[4];
+      thread->get_vector_operand_values(src_a, a_regs, 2);
+      thread->get_vector_operand_values(src_b, b_regs, 1);
+      thread->get_vector_operand_values(src_c, c_regs, 4);
 
-    // Unpack A fragments (8 S8 values packed in 2 U32 registers)
-    // a_regs[0] contains a[0..3], a_regs[1] contains a[4..7]
-    int8_t a_vals[8];
-    memcpy(&a_vals[0], &a_regs[0].u32, 4);  // a[0..3]
-    memcpy(&a_vals[4], &a_regs[1].u32, 4);  // a[4..7]
+      // Unpack A fragments (8 S8 values packed in 2 U32 registers)
+      int8_t a_vals[8];
+      memcpy(&a_vals[0], &a_regs[0].u32, 4);  // a[0..3]
+      memcpy(&a_vals[4], &a_regs[1].u32, 4);  // a[4..7]
 
-    // A fragment distribution for M16N8K16 (row-major)
-    // a[0..3] are in row=groupID, a[4..7] are in row=groupID+8
-    int a_row0 = groupID;
-    int a_row1 = groupID + 8;
+      // A fragment distribution for M16N8K16 (row-major)
+      int a_row0 = groupID, a_row1 = groupID + 8;
+      int col_base = threadID_in_group * 4;
 
-    // Column mapping: col = (threadID_in_group * 4) + (i & 0x3)
-    int col_base = threadID_in_group * 4;
+      // A is row-major: A[row][col] = A[row * K + col]
+      for (int i = 0; i < 4; i++) {
+        int col = col_base + (i & 0x3);
+        A_mat[a_row0 * K + col] = a_vals[i];
+      }
+      for (int i = 4; i < 8; i++) {
+        int col = col_base + (i & 0x3);
+        A_mat[a_row1 * K + col] = a_vals[i];
+      }
 
-    // A is row-major: A[row][col] = A[row * K + col]
-    // Place a[0..3] in row=groupID
-    for (int i = 0; i < 4; i++) {
-      int col = col_base + (i & 0x3);
-      A_mat[a_row0 * K + col] = a_vals[i];
+      // Unpack B fragments (4 S8 values packed in 1 U32 register)
+      int8_t b_vals[4];
+      memcpy(&b_vals[0], &b_regs[0].u32, 4);
+
+      // B fragment distribution for M16N8K16 (column-major)
+      int b_col = groupID;
+      int row_base = threadID_in_group * 4;
+
+      // B is column-major: B[n][k] stored as B[n*K + k]
+      for (int i = 0; i < 4; i++) {
+        int row = row_base + i;
+        B_mat[b_col * K + row] = b_vals[i];
+      }
+
+      // Place C fragments (4 S32 accumulator values)
+      int c_row0 = groupID, c_row1 = groupID + 8;
+      int c_col0 = threadID_in_group * 2, c_col1 = threadID_in_group * 2 + 1;
+
+      C_mat[c_row0 * N + c_col0] = c_regs[0].s32;
+      C_mat[c_row0 * N + c_col1] = c_regs[1].s32;
+      C_mat[c_row1 * N + c_col0] = c_regs[2].s32;
+      C_mat[c_row1 * N + c_col1] = c_regs[3].s32;
+
+    } else if (K == 32) {
+      // M16N8K32: A needs 4 registers, B needs 2 registers
+      ptx_reg_t a_regs[4], b_regs[2], c_regs[4];
+      thread->get_vector_operand_values(src_a, a_regs, 4);
+      thread->get_vector_operand_values(src_b, b_regs, 2);
+      thread->get_vector_operand_values(src_c, c_regs, 4);
+
+      // Unpack A fragments (16 S8 values packed in 4 U32 registers)
+      int8_t a_vals[16];
+      for (int i = 0; i < 4; i++) {
+        memcpy(&a_vals[i*4], &a_regs[i].u32, 4);
+      }
+
+      // A fragment distribution for M16N8K32 (row-major)
+      // a[0..7] in row=groupID, a[8..15] in row=groupID+8
+      int a_row0 = groupID, a_row1 = groupID + 8;
+      int col_base = threadID_in_group * 4;
+
+      // A is row-major: A[row][col] = A[row * K + col]
+      // Place a[0..7] in row=groupID
+      for (int i = 0; i < 8; i++) {
+        int col = (i < 4) ? (col_base + (i & 0x3)) : (col_base + (i & 0x3) + 16);
+        A_mat[a_row0 * K + col] = a_vals[i];
+      }
+      // Place a[8..15] in row=groupID+8
+      for (int i = 8; i < 16; i++) {
+        int col = (i < 12) ? (col_base + (i & 0x3)) : (col_base + (i & 0x3) + 16);
+        A_mat[a_row1 * K + col] = a_vals[i];
+      }
+
+      // Unpack B fragments (8 S8 values packed in 2 U32 registers)
+      int8_t b_vals[8];
+      for (int i = 0; i < 2; i++) {
+        memcpy(&b_vals[i*4], &b_regs[i].u32, 4);
+      }
+
+      // B fragment distribution for M16N8K32 (column-major)
+      int b_col = groupID;
+      int row_base = threadID_in_group * 4;
+
+      // B is column-major: B[n][k] stored as B[n*K + k]
+      for (int i = 0; i < 4; i++) {
+        int row = row_base + i;
+        B_mat[b_col * K + row] = b_vals[i];
+      }
+      for (int i = 4; i < 8; i++) {
+        int row = row_base + (i & 0x3) + 16;
+        B_mat[b_col * K + row] = b_vals[i];
+      }
+
+      // Place C fragments (4 S32 accumulator values - same for both K values)
+      int c_row0 = groupID, c_row1 = groupID + 8;
+      int c_col0 = threadID_in_group * 2, c_col1 = threadID_in_group * 2 + 1;
+
+      C_mat[c_row0 * N + c_col0] = c_regs[0].s32;
+      C_mat[c_row0 * N + c_col1] = c_regs[1].s32;
+      C_mat[c_row1 * N + c_col0] = c_regs[2].s32;
+      C_mat[c_row1 * N + c_col1] = c_regs[3].s32;
     }
-    // Place a[4..7] in row=groupID+8
-    for (int i = 4; i < 8; i++) {
-      int col = col_base + (i & 0x3);
-      A_mat[a_row1 * K + col] = a_vals[i];
-    }
-
-    // Unpack B fragments (4 S8 values packed in 1 U32 register)
-    int8_t b_vals[4];
-    memcpy(&b_vals[0], &b_regs[0].u32, 4);
-
-    // B fragment distribution for M16N8K16 (column-major)
-    // row = (threadID_in_group * 4) + i for b[i] where i = {0,..,3}
-    // col = groupID
-    int b_col = groupID;
-    int row_base = threadID_in_group * 4;
-
-    // B is column-major: B[n][k] stored as B[n*K + k]
-    for (int i = 0; i < 4; i++) {
-      int row = row_base + i;
-      B_mat[b_col * K + row] = b_vals[i];
-    }
-
-    // Place C fragments (4 S32 accumulator values)
-    // row = groupID for c[0..1], groupID+8 for c[2..3]
-    // col = (threadID_in_group * 2) + (i & 0x1)
-    int c_row0 = groupID;
-    int c_row1 = groupID + 8;
-    int c_col0 = threadID_in_group * 2;
-    int c_col1 = threadID_in_group * 2 + 1;
-
-    C_mat[c_row0 * N + c_col0] = c_regs[0].s32;
-    C_mat[c_row0 * N + c_col1] = c_regs[1].s32;
-    C_mat[c_row1 * N + c_col0] = c_regs[2].s32;
-    C_mat[c_row1 * N + c_col1] = c_regs[3].s32;
   }
 
   // Step 2: Perform matrix multiplication D = A * B + C
@@ -442,6 +497,146 @@ void tensor_mma_s8_impl(const ptx_instruction *pI, core_t *core,
 
   if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
     printf("GPGPU-Sim: tensor_mma_s8_impl completed for M%dN%dK%d\n", M, N, K);
+  }
+}
+
+// S8/U8 M8N8K16 specialized implementation for smaller M dimension
+// Per PTX ISA: M8N8K16 with S8/U8 uses 8×8 output instead of 16×8
+// Fragment distribution adapted for M=8 matrix dimension
+void tensor_mma_s8_m8n8k16_impl(const ptx_instruction *pI, core_t *core,
+                                warp_inst_t inst, bool saturate, unsigned tid,
+                                const operand_info &dst) {
+  // Constants for M8N8K16
+  const int M = 8, N = 8, K = 16;
+
+  // Fragment distribution pattern for 32 threads with M=8:
+  //   groupID = lane_id / 4  (0-7)
+  //   threadID_in_group = lane_id % 4  (0-3)
+  //
+  // Each thread holds:
+  //   A: 4 S8 values (1 U32 register, packed 4 values) - from 8×16 matrix A
+  //   B: 4 S8 values (1 U32 register, packed) - from 16×8 matrix B
+  //   C/D: 2 S32 values (2 S32 registers) - from 8×8 output matrix D
+  //
+  // Matrix A[8×16] fragment distribution (row-major):
+  //   row = groupID (only 0-7, no +8 offset since M=8)
+  //   col = (threadID_in_group * 4) + i for a[i] where i = {0,..,3}
+  //
+  // Matrix B[16×8] fragment distribution (column-major):
+  //   row = (threadID_in_group * 4) + i for b[i] where i = {0,..,3}
+  //   col = groupID
+  //
+  // Output matrix D[8×8] mapping:
+  //   row = groupID (only 0-7)
+  //   col = (threadID_in_group * 2) + (i & 0x1) for d[i] where i = {0,1}
+
+  // Step 1: Collect all fragments from all 32 threads into full matrices
+  int32_t A_mat[M * K];  // 8×16
+  int32_t B_mat[K * N];  // 16×8
+  int32_t C_mat[M * N];  // 8×8
+  int64_t D_mat[M * N];  // 8×8, use int64 to detect overflow
+
+  // Initialize matrices
+  for (int i = 0; i < M * K; i++) A_mat[i] = 0;
+  for (int i = 0; i < K * N; i++) B_mat[i] = 0;
+  for (int i = 0; i < M * N; i++) C_mat[i] = 0;
+
+  const operand_info &src_a = pI->operand_lookup(1);
+  const operand_info &src_b = pI->operand_lookup(2);
+  const operand_info &src_c = pI->operand_lookup(3);
+
+  // Collect fragments from all threads
+  for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
+    ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
+    unsigned lane_id = thrd;
+    unsigned groupID = lane_id / 4;  // 0-7
+    unsigned threadID_in_group = lane_id % 4;  // 0-3
+
+    // M8N8K16: A needs 1 register, B needs 1 register, C needs 2 registers
+    ptx_reg_t a_regs[1], b_regs[1], c_regs[2];
+    thread->get_vector_operand_values(src_a, a_regs, 1);
+    thread->get_vector_operand_values(src_b, b_regs, 1);
+    thread->get_vector_operand_values(src_c, c_regs, 2);
+
+    // Unpack A fragments (4 S8 values packed in 1 U32 register)
+    int8_t a_vals[4];
+    memcpy(&a_vals[0], &a_regs[0].u32, 4);
+
+    // A fragment distribution for M8N8K16 (row-major)
+    int a_row = groupID;  // Only 0-7, no +8 offset
+    int col_base = threadID_in_group * 4;
+
+    // A is row-major: A[row][col] = A[row * K + col]
+    for (int i = 0; i < 4; i++) {
+      int col = col_base + i;
+      A_mat[a_row * K + col] = a_vals[i];
+    }
+
+    // Unpack B fragments (4 S8 values packed in 1 U32 register)
+    int8_t b_vals[4];
+    memcpy(&b_vals[0], &b_regs[0].u32, 4);
+
+    // B fragment distribution for M8N8K16 (column-major)
+    int b_col = groupID;
+    int row_base = threadID_in_group * 4;
+
+    // B is column-major: B[n][k] stored as B[n*K + k]
+    for (int i = 0; i < 4; i++) {
+      int row = row_base + i;
+      B_mat[b_col * K + row] = b_vals[i];
+    }
+
+    // Place C fragments (2 S32 accumulator values for M=8)
+    int c_row = groupID;  // Only 0-7
+    int c_col0 = threadID_in_group * 2;
+    int c_col1 = threadID_in_group * 2 + 1;
+
+    C_mat[c_row * N + c_col0] = c_regs[0].s32;
+    C_mat[c_row * N + c_col1] = c_regs[1].s32;
+  }
+
+  // Step 2: Perform matrix multiplication D = A * B + C
+  // Use int64 to detect overflow, then saturate to S32 if enabled
+  for (int m = 0; m < M; m++) {
+    for (int n = 0; n < N; n++) {
+      int64_t sum = 0;
+      for (int k = 0; k < K; k++) {
+        // A is row-major: A[m][k], B is column-major: B[n][k]
+        sum += (int64_t)A_mat[m * K + k] * (int64_t)B_mat[n * K + k];
+      }
+      // Add accumulator
+      D_mat[m * N + n] = sum + (int64_t)C_mat[m * N + n];
+
+      // Apply saturation if enabled (.satfinite modifier)
+      if (saturate) {
+        if (D_mat[m * N + n] > INT32_MAX) D_mat[m * N + n] = INT32_MAX;
+        if (D_mat[m * N + n] < INT32_MIN) D_mat[m * N + n] = INT32_MIN;
+      }
+    }
+  }
+
+  // Step 3: Distribute results back to threads
+  for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
+    ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
+    unsigned lane_id = thrd;
+    unsigned groupID = lane_id / 4;
+    unsigned threadID_in_group = lane_id % 4;
+
+    ptx_reg_t d_regs[4];  // Function signature requires 4 args (checks num_elements internally)
+    int d_row = groupID;  // Only 0-7
+    int d_col0 = threadID_in_group * 2;
+    int d_col1 = threadID_in_group * 2 + 1;
+
+    d_regs[0].s32 = (int32_t)D_mat[d_row * N + d_col0];
+    d_regs[1].s32 = (int32_t)D_mat[d_row * N + d_col1];
+    d_regs[2].s32 = 0;  // Padding (function only writes first num_elements)
+    d_regs[3].s32 = 0;  // Padding (function only writes first num_elements)
+
+    thread->set_vector_operand_values(dst, d_regs[0], d_regs[1], d_regs[2], d_regs[3]);
+  }
+
+  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
+    printf("GPGPU-Sim: tensor_mma_s8_m8n8k16_impl completed for M8N8K16\n");
   }
 }
 
@@ -503,6 +698,12 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
     case MMA_M16N8K32:
       M = 16; N = 8; K = 32;
       break;
+    case MMA_M8N8K4:
+      M = 8; N = 8; K = 4;
+      break;
+    case MMA_M8N8K16:
+      M = 8; N = 8; K = 16;
+      break;
     default:
       fprintf(stderr, "GPGPU-Sim: ERROR - tensor_mma_impl unsupported shape=%d\n", (int)shape);
       exit(1);
@@ -536,6 +737,11 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
 
   // Dispatch to type-specific implementation based on data type
   if (is_s8_type) {
+    // S8/U8 M8N8K16 requires specialized implementation due to smaller M dimension
+    if (shape == MMA_M8N8K16) {
+      tensor_mma_s8_m8n8k16_impl(pI, core, inst, saturate, tid, dst);
+      return;
+    }
     // S8/U8 integer MMA implementation for M16N8K16/K32
     tensor_mma_s8_impl(pI, core, inst, M, N, K, saturate, tid, dst);
     return;
@@ -544,7 +750,12 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
     tensor_mma_tf32_impl(pI, core, inst, M, N, K, saturate, tid, dst);
     return;
   } else if (is_f16_type || is_bf16_type) {
-    // F16/BF16 floating-point MMA implementation for M16N8K8
+    // F16/BF16 M8N8K4 requires specialized 4-computation implementation
+    if (shape == MMA_M8N8K4) {
+      tensor_mma_f16_m8n8k4_impl(pI, core, inst, is_bf16_type, tid, dst);
+      return;
+    }
+    // F16/BF16 floating-point MMA implementation for other shapes
     tensor_mma_f16_impl(pI, core, inst, M, N, K, is_bf16_type, tid, dst);
     return;
   } else {
@@ -581,15 +792,19 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
   //     d[3] at row=groupID+8,   col=threadID_in_group*2+1
 
   // Step 1: Collect all fragments from all 32 threads
-  float A_mat[M * K];  // 16×8
-  float B_mat[K * N];  // 8×8
-  float C_mat[M * N];  // 16×8
-  float D_mat[M * N];  // 16×8
+  float A_mat[M * K];  // MxK
+  float B_mat[K * N];  // KxN
+  float C_mat[M * N];  // MxN
+  float D_mat[M * N];  // MxN
 
   // Initialize matrices
   for (int i = 0; i < M * K; i++) A_mat[i] = 0.0f;
   for (int i = 0; i < K * N; i++) B_mat[i] = 0.0f;
   for (int i = 0; i < M * N; i++) C_mat[i] = 0.0f;
+
+  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
+    printf("GPGPU-Sim: tensor_mma_f16_impl M=%d N=%d K=%d is_bf16=%d\n", M, N, K, is_bf16);
+  }
 
   const operand_info &src_a = pI->operand_lookup(1);
   const operand_info &src_b = pI->operand_lookup(2);
@@ -602,67 +817,107 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
     unsigned groupID = lane_id / 4;  // 0-7
     unsigned threadID_in_group = lane_id % 4;  // 0-3
 
-    ptx_reg_t a_regs[2], b_regs[1], c_regs[4];
-    thread->get_vector_operand_values(src_a, a_regs, 2);
-    thread->get_vector_operand_values(src_b, b_regs, 1);
-    thread->get_vector_operand_values(src_c, c_regs, 4);
+    // Fragment distribution differs based on K dimension
+    if (K == 8) {
+      // M16N8K8: A needs 2 registers, B needs 1 register
+      ptx_reg_t a_regs[2], b_regs[1], c_regs[4];
+      thread->get_vector_operand_values(src_a, a_regs, 2);
+      thread->get_vector_operand_values(src_b, b_regs, 1);
+      thread->get_vector_operand_values(src_c, c_regs, 4);
 
-    // Unpack and place A fragments into full matrix
-    // Official formula: row = groupID for a0,a1; groupID+8 for a2,a3
-    //                   col = threadID_in_group * 2 + (i & 0x1) where i = {0,1,2,3}
-    uint16_t a_u16[4];
-    a_u16[0] = a_regs[0].u16;
-    a_u16[1] = (a_regs[0].u32 >> 16) & 0xFFFF;
-    a_u16[2] = a_regs[1].u16;
-    a_u16[3] = (a_regs[1].u32 >> 16) & 0xFFFF;
+      // Unpack A fragments (4 F16 values)
+      uint16_t a_u16[4];
+      a_u16[0] = a_regs[0].u16;
+      a_u16[1] = (a_regs[0].u32 >> 16) & 0xFFFF;
+      a_u16[2] = a_regs[1].u16;
+      a_u16[3] = (a_regs[1].u32 >> 16) & 0xFFFF;
 
-    int a_row0 = groupID;
-    int a_row1 = groupID + 8;
-    int a_col0 = threadID_in_group * 2;
-    int a_col1 = threadID_in_group * 2 + 1;
-    // A is row-major: A[row][col] = A[row * K + col]
-    // Convert from F16 or BF16 to F32 based on is_bf16 parameter
-    if (is_bf16) {
-      A_mat[a_row0 * K + a_col0] = mma_bf16_to_f32(a_u16[0]);  // a0
-      A_mat[a_row0 * K + a_col1] = mma_bf16_to_f32(a_u16[1]);  // a1
-      A_mat[a_row1 * K + a_col0] = mma_bf16_to_f32(a_u16[2]);  // a2
-      A_mat[a_row1 * K + a_col1] = mma_bf16_to_f32(a_u16[3]);  // a3
-    } else {  // F16
-      A_mat[a_row0 * K + a_col0] = mma_f16_to_f32(a_u16[0]);  // a0
-      A_mat[a_row0 * K + a_col1] = mma_f16_to_f32(a_u16[1]);  // a1
-      A_mat[a_row1 * K + a_col0] = mma_f16_to_f32(a_u16[2]);  // a2
-      A_mat[a_row1 * K + a_col1] = mma_f16_to_f32(a_u16[3]);  // a3
+      int a_row0 = groupID, a_row1 = groupID + 8;
+      int a_col0 = threadID_in_group * 2, a_col1 = a_col0 + 1;
+
+      if (is_bf16) {
+        A_mat[a_row0 * K + a_col0] = mma_bf16_to_f32(a_u16[0]);
+        A_mat[a_row0 * K + a_col1] = mma_bf16_to_f32(a_u16[1]);
+        A_mat[a_row1 * K + a_col0] = mma_bf16_to_f32(a_u16[2]);
+        A_mat[a_row1 * K + a_col1] = mma_bf16_to_f32(a_u16[3]);
+      } else {
+        A_mat[a_row0 * K + a_col0] = mma_f16_to_f32(a_u16[0]);
+        A_mat[a_row0 * K + a_col1] = mma_f16_to_f32(a_u16[1]);
+        A_mat[a_row1 * K + a_col0] = mma_f16_to_f32(a_u16[2]);
+        A_mat[a_row1 * K + a_col1] = mma_f16_to_f32(a_u16[3]);
+      }
+
+      // Unpack B fragments (2 F16 values)
+      uint16_t b_u16[2];
+      b_u16[0] = b_regs[0].u16;
+      b_u16[1] = (b_regs[0].u32 >> 16) & 0xFFFF;
+
+      int b_row0 = threadID_in_group * 2, b_row1 = b_row0 + 1;
+      int b_col = groupID;
+
+      if (is_bf16) {
+        B_mat[b_col * K + b_row0] = mma_bf16_to_f32(b_u16[0]);
+        B_mat[b_col * K + b_row1] = mma_bf16_to_f32(b_u16[1]);
+      } else {
+        B_mat[b_col * K + b_row0] = mma_f16_to_f32(b_u16[0]);
+        B_mat[b_col * K + b_row1] = mma_f16_to_f32(b_u16[1]);
+      }
+
+      // C fragments (same for all K values)
+      int c_row0 = groupID, c_row1 = groupID + 8;
+      int c_col0 = threadID_in_group * 2, c_col1 = c_col0 + 1;
+      C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
+      C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
+      C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
+      C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
+    } else if (K == 16) {
+      // M16N8K16: A needs 4 registers, B needs 2 registers
+      ptx_reg_t a_regs[4], b_regs[2], c_regs[4];
+      thread->get_vector_operand_values(src_a, a_regs, 4);
+      thread->get_vector_operand_values(src_b, b_regs, 2);
+      thread->get_vector_operand_values(src_c, c_regs, 4);
+
+      // Unpack A fragments (8 F16 values) with proper distribution per PTX ISA
+      uint16_t a_u16[8];
+      for (int i = 0; i < 4; i++) {
+        a_u16[i*2] = a_regs[i].u16;
+        a_u16[i*2+1] = (a_regs[i].u32 >> 16) & 0xFFFF;
+      }
+
+      for (int i = 0; i < 8; i++) {
+        // row = groupID for i in {0,1,4,5}; groupID+8 otherwise
+        int a_row = (i < 2 || (i >= 4 && i < 6)) ? groupID : (groupID + 8);
+        // col = (threadID_in_group*2)+(i&1) for i<4; same+8 for i>=4
+        int a_col = (i < 4) ? (threadID_in_group * 2 + (i & 1)) :
+                              (threadID_in_group * 2 + (i & 1) + 8);
+        A_mat[a_row * K + a_col] = is_bf16 ? mma_bf16_to_f32(a_u16[i]) :
+                                              mma_f16_to_f32(a_u16[i]);
+      }
+
+      // Unpack B fragments (4 F16 values)
+      uint16_t b_u16[4];
+      for (int i = 0; i < 2; i++) {
+        b_u16[i*2] = b_regs[i].u16;
+        b_u16[i*2+1] = (b_regs[i].u32 >> 16) & 0xFFFF;
+      }
+
+      for (int i = 0; i < 4; i++) {
+        // row = (threadID_in_group*2)+(i&1) for i<2; same+8 for i>=2
+        int b_row = (i < 2) ? (threadID_in_group * 2 + (i & 1)) :
+                              (threadID_in_group * 2 + (i & 1) + 8);
+        int b_col = groupID;
+        B_mat[b_col * K + b_row] = is_bf16 ? mma_bf16_to_f32(b_u16[i]) :
+                                              mma_f16_to_f32(b_u16[i]);
+      }
+
+      // C fragments (same for all K values)
+      int c_row0 = groupID, c_row1 = groupID + 8;
+      int c_col0 = threadID_in_group * 2, c_col1 = c_col0 + 1;
+      C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
+      C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
+      C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
+      C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
     }
-
-    // Unpack and place B fragments into full matrix (B is column-major: B[n][k])
-    // Official formula: row = (threadID_in_group * 2) + i, col = groupID, i = {0, 1}
-    // B fragments hold: b_vals[0] = B[col][row0], b_vals[1] = B[col][row1]
-    uint16_t b_u16[2];
-    b_u16[0] = b_regs[0].u16;
-    b_u16[1] = (b_regs[0].u32 >> 16) & 0xFFFF;
-
-    int b_row0 = threadID_in_group * 2;
-    int b_row1 = threadID_in_group * 2 + 1;
-    int b_col = groupID;
-    // B is column-major: B[n][k] stored as B[n*K + k]
-    // Convert from F16 or BF16 to F32 based on is_bf16 parameter
-    if (is_bf16) {
-      B_mat[b_col * K + b_row0] = mma_bf16_to_f32(b_u16[0]);
-      B_mat[b_col * K + b_row1] = mma_bf16_to_f32(b_u16[1]);
-    } else {  // F16
-      B_mat[b_col * K + b_row0] = mma_f16_to_f32(b_u16[0]);
-      B_mat[b_col * K + b_row1] = mma_f16_to_f32(b_u16[1]);
-    }
-
-    // Place C fragments
-    int c_row0 = groupID;
-    int c_row1 = groupID + 8;
-    int c_col0 = threadID_in_group * 2;
-    int c_col1 = threadID_in_group * 2 + 1;
-    C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
-    C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
-    C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
-    C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
   }
 
   // Step 2: Perform matrix multiplication D = A * B + C
@@ -703,17 +958,170 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
   }
 }
 
+// F16/BF16 M8N8K4 specialized implementation with 4-computation decomposition
+// Per PTX ISA: "A warp executing mma.m8n8k4 with .f16 floating point type will
+// compute 4 MMA operations of shape .m8n8k4"
+// Reference: https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-884-f16
+void tensor_mma_f16_m8n8k4_impl(const ptx_instruction *pI, core_t *core,
+                                warp_inst_t inst, bool is_bf16, unsigned tid,
+                                const operand_info &dst) {
+  // Constants for M8N8K4
+  const int M = 8, N = 8, K = 4;
+
+  // Helper structure to identify thread groups for 4 computations
+  struct ThreadGroup {
+    unsigned computation_idx;  // 0-3 (which of the 4 MMA operations)
+    bool is_high_group;        // false: lanes 0-15, true: lanes 16-31
+    unsigned local_lane;       // 0-3 (position within 4-thread group)
+  };
+
+  // Lambda to compute thread group from lane_id
+  auto get_thread_group = [](unsigned lane_id) -> ThreadGroup {
+    return ThreadGroup{
+      .computation_idx = (lane_id % 16) / 4,    // 0-3
+      .is_high_group = (lane_id >= 16),         // lanes 16-31
+      .local_lane = lane_id % 4                 // 0-3
+    };
+  };
+
+  // 4 separate result matrices (one per computation)
+  float A_mat[4][M * K];  // 4 separate 8×4 matrices
+  float B_mat[4][K * N];  // 4 separate 4×8 matrices
+  float C_mat[4][M * N];  // 4 separate 8×8 matrices
+  float D_mat[4][M * N];  // 4 separate 8×8 output matrices
+
+  // Initialize matrices
+  for (int comp = 0; comp < 4; comp++) {
+    for (int i = 0; i < M * K; i++) A_mat[comp][i] = 0.0f;
+    for (int i = 0; i < K * N; i++) B_mat[comp][i] = 0.0f;
+    for (int i = 0; i < M * N; i++) C_mat[comp][i] = 0.0f;
+  }
+
+  const operand_info &src_a = pI->operand_lookup(1);
+  const operand_info &src_b = pI->operand_lookup(2);
+  const operand_info &src_c = pI->operand_lookup(3);
+
+  // Step 1: Collect fragments from all 32 threads, distributing to their respective computations
+  for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
+    ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
+    unsigned lane_id = thrd;
+    ThreadGroup tg = get_thread_group(lane_id);
+    unsigned comp = tg.computation_idx;  // Which of the 4 computations this thread belongs to
+
+    // Each thread holds: 4 F16 values in A, 4 F16 values in B, 8 F32 values in C
+    ptx_reg_t a_regs[2], b_regs[2], c_regs[8];
+    thread->get_vector_operand_values(src_a, a_regs, 2);
+    thread->get_vector_operand_values(src_b, b_regs, 2);
+    thread->get_vector_operand_values(src_c, c_regs, 8);
+
+    // Unpack A and B registers (4 F16 values each)
+    uint16_t a_u16[4], b_u16[4];
+    a_u16[0] = a_regs[0].u16;
+    a_u16[1] = (a_regs[0].u32 >> 16) & 0xFFFF;
+    a_u16[2] = a_regs[1].u16;
+    a_u16[3] = (a_regs[1].u32 >> 16) & 0xFFFF;
+
+    b_u16[0] = b_regs[0].u16;
+    b_u16[1] = (b_regs[0].u32 >> 16) & 0xFFFF;
+    b_u16[2] = b_regs[1].u16;
+    b_u16[3] = (b_regs[1].u32 >> 16) & 0xFFFF;
+
+    // Fragment distribution for Matrix A (row layout):
+    // row = lane_id % 4          if lane_id < 16
+    //       (lane_id % 4) + 4    otherwise
+    // col = i                    for a[i] where i = {0,1,2,3}
+    int a_row_base = (lane_id % 4) + (tg.is_high_group ? 4 : 0);
+    for (int i = 0; i < 4; i++) {
+      int row = a_row_base;
+      int col = i;
+      float val = is_bf16 ? mma_bf16_to_f32(a_u16[i]) : mma_f16_to_f32(a_u16[i]);
+      A_mat[comp][row * K + col] = val;
+    }
+
+    // Fragment distribution for Matrix B (col layout):
+    // row = i                    for b[i] where i = {0,1,2,3}
+    // col = lane_id % 4          if lane_id < 16
+    //       (lane_id % 4) + 4    otherwise
+    int b_col_base = (lane_id % 4) + (tg.is_high_group ? 4 : 0);
+    for (int i = 0; i < 4; i++) {
+      int row = i;
+      int col = b_col_base;
+      float val = is_bf16 ? mma_bf16_to_f32(b_u16[i]) : mma_f16_to_f32(b_u16[i]);
+      B_mat[comp][row * N + col] = val;
+    }
+
+    // Fragment distribution for Accumulator C (f32 type):
+    // row = X                    if lane_id < 16
+    //       X + 4                otherwise
+    //       where X = (lane_id & 0b1) + (i & 0b10)  for c[i] where i = {0,...,7}
+    // col = (i & 0b100) + (lane_id & 0b10) + (i & 0b1)  for c[i]
+    for (int i = 0; i < 8; i++) {
+      int X = (lane_id & 0b1) + (i & 0b10);
+      int row = X + (tg.is_high_group ? 4 : 0);
+      int col = (i & 0b100) + (lane_id & 0b10) + (i & 0b1);
+      C_mat[comp][row * N + col] = c_regs[i].f32;
+    }
+  }
+
+  // Step 2: Perform 4 separate MMA computations (REQUIRED BY PTX ISA)
+  // Each computation operates on its own 8x8x4 matrices
+  // Computation 0: uses threads 0-3, 16-19
+  // Computation 1: uses threads 4-7, 20-23
+  // Computation 2: uses threads 8-11, 24-27
+  // Computation 3: uses threads 12-15, 28-31
+  for (int comp = 0; comp < 4; comp++) {
+    // D[comp] = A[comp] × B[comp] + C[comp]
+    for (int i = 0; i < M; i++) {
+      for (int j = 0; j < N; j++) {
+        float sum = C_mat[comp][i * N + j];
+        for (int k = 0; k < K; k++) {
+          sum += A_mat[comp][i * K + k] * B_mat[comp][k * N + j];
+        }
+        D_mat[comp][i * N + j] = sum;
+      }
+    }
+  }
+
+  // Step 3: Distribute results back to threads from their respective computations
+  for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
+    ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
+    unsigned lane_id = thrd;
+    ThreadGroup tg = get_thread_group(lane_id);
+    unsigned comp = tg.computation_idx;  // Which computation this thread belongs to
+
+    ptx_reg_t d_regs[8];
+
+    // Use same accumulator distribution formula as for C
+    for (int i = 0; i < 8; i++) {
+      int X = (lane_id & 0b1) + (i & 0b10);
+      int row = X + (tg.is_high_group ? 4 : 0);
+      int col = (i & 0b100) + (lane_id & 0b10) + (i & 0b1);
+      d_regs[i].f32 = D_mat[comp][row * N + col];  // Read from this thread's computation result
+    }
+
+    // M8N8K4 uses 8 F32 output registers
+    thread->set_wmma_vector_operand_values(dst, d_regs[0], d_regs[1], d_regs[2], d_regs[3],
+                                            d_regs[4], d_regs[5], d_regs[6], d_regs[7]);
+  }
+
+  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
+    printf("GPGPU-Sim: tensor_mma_f16_m8n8k4_impl completed (4-computation decomposition)\n");
+  }
+}
+
 // TF32 floating-point MMA implementation
 void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
                           warp_inst_t inst, int M, int N, int K,
                           bool saturate, unsigned tid,
                           const operand_info &dst) {
-  // TF32 implementation for M16N8K4: 2 F32 registers for A, 1 F32 for B
+  // TF32 implementation for M16N8K4 and M16N8K8
+  // K=4: A needs 2 F32 registers, B needs 1 F32 register
+  // K=8: A needs 4 F32 registers, B needs 2 F32 registers
   // Each TF32 value is stored as F32 but with reduced precision (10-bit mantissa)
 
   // Step 1: Collect all fragments from all 32 threads
-  float A_mat[M * K];  // 16×4
-  float B_mat[K * N];  // 4×8
+  float A_mat[M * K];  // 16×K
+  float B_mat[K * N];  // K×8
   float C_mat[M * N];  // 16×8
   float D_mat[M * N];  // 16×8
 
@@ -733,36 +1141,75 @@ void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
     unsigned groupID = lane_id / 4;  // 0-7
     unsigned threadID_in_group = lane_id % 4;  // 0-3
 
-    // TF32 M16N8K4 uses 2 F32 registers for A, 1 F32 for B
-    ptx_reg_t a_regs[2], b_regs[1], c_regs[4];
-    thread->get_vector_operand_values(src_a, a_regs, 2);
-    thread->get_vector_operand_values(src_b, b_regs, 1);
-    thread->get_vector_operand_values(src_c, c_regs, 4);
+    // Fragment distribution differs based on K dimension
+    if (K == 4) {
+      // M16N8K4 uses 2 F32 registers for A, 1 F32 for B
+      ptx_reg_t a_regs[2], b_regs[1], c_regs[4];
+      thread->get_vector_operand_values(src_a, a_regs, 2);
+      thread->get_vector_operand_values(src_b, b_regs, 1);
+      thread->get_vector_operand_values(src_c, c_regs, 4);
 
-    // Unpack and place A fragments with TF32 rounding (16×4 matrix)
-    // Each thread holds 2 TF32 values in one column
-    int a_row0 = groupID;
-    int a_row1 = groupID + 8;
-    int a_col = threadID_in_group;
+      // Unpack and place A fragments with TF32 rounding (16×4 matrix)
+      // Each thread holds 2 TF32 values in one column
+      int a_row0 = groupID;
+      int a_row1 = groupID + 8;
+      int a_col = threadID_in_group;
 
-    A_mat[a_row0 * K + a_col] = mma_tf32_round(a_regs[0].f32);
-    A_mat[a_row1 * K + a_col] = mma_tf32_round(a_regs[1].f32);
+      A_mat[a_row0 * K + a_col] = mma_tf32_round(a_regs[0].f32);
+      A_mat[a_row1 * K + a_col] = mma_tf32_round(a_regs[1].f32);
 
-    // Unpack and place B fragments with TF32 rounding (4×8 matrix)
-    // Each thread holds 1 TF32 value
-    int b_row = threadID_in_group;
-    int b_col = groupID;
-    B_mat[b_col * K + b_row] = mma_tf32_round(b_regs[0].f32);
+      // Unpack and place B fragments with TF32 rounding (4×8 matrix)
+      // Each thread holds 1 TF32 value
+      int b_row = threadID_in_group;
+      int b_col = groupID;
+      B_mat[b_col * K + b_row] = mma_tf32_round(b_regs[0].f32);
 
-    // Place C fragments (no rounding needed for accumulator)
-    int c_row0 = groupID;
-    int c_row1 = groupID + 8;
-    int c_col0 = threadID_in_group * 2;
-    int c_col1 = threadID_in_group * 2 + 1;
-    C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
-    C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
-    C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
-    C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
+      // Place C fragments (no rounding needed for accumulator)
+      int c_row0 = groupID;
+      int c_row1 = groupID + 8;
+      int c_col0 = threadID_in_group * 2;
+      int c_col1 = threadID_in_group * 2 + 1;
+      C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
+      C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
+      C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
+      C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
+    } else if (K == 8) {
+      // M16N8K8 uses 4 F32 registers for A, 2 F32 for B
+      ptx_reg_t a_regs[4], b_regs[2], c_regs[4];
+      thread->get_vector_operand_values(src_a, a_regs, 4);
+      thread->get_vector_operand_values(src_b, b_regs, 2);
+      thread->get_vector_operand_values(src_c, c_regs, 4);
+
+      // Unpack and place A fragments with TF32 rounding (16×8 matrix)
+      // Each thread holds 4 TF32 values
+      int a_row0 = groupID;
+      int a_row1 = groupID + 8;
+      int a_col0 = threadID_in_group;
+      int a_col1 = threadID_in_group + 4;
+
+      A_mat[a_row0 * K + a_col0] = mma_tf32_round(a_regs[0].f32);
+      A_mat[a_row0 * K + a_col1] = mma_tf32_round(a_regs[1].f32);
+      A_mat[a_row1 * K + a_col0] = mma_tf32_round(a_regs[2].f32);
+      A_mat[a_row1 * K + a_col1] = mma_tf32_round(a_regs[3].f32);
+
+      // Unpack and place B fragments with TF32 rounding (8×8 matrix)
+      // Each thread holds 2 TF32 values
+      int b_row0 = threadID_in_group;
+      int b_row1 = threadID_in_group + 4;
+      int b_col = groupID;
+      B_mat[b_col * K + b_row0] = mma_tf32_round(b_regs[0].f32);
+      B_mat[b_col * K + b_row1] = mma_tf32_round(b_regs[1].f32);
+
+      // Place C fragments (no rounding needed for accumulator)
+      int c_row0 = groupID;
+      int c_row1 = groupID + 8;
+      int c_col0 = threadID_in_group * 2;
+      int c_col1 = threadID_in_group * 2 + 1;
+      C_mat[c_row0 * N + c_col0] = c_regs[0].f32;
+      C_mat[c_row0 * N + c_col1] = c_regs[1].f32;
+      C_mat[c_row1 * N + c_col0] = c_regs[2].f32;
+      C_mat[c_row1 * N + c_col1] = c_regs[3].f32;
+    }
   }
 
   // Step 2: Perform matrix multiplication D = A * B + C
@@ -798,7 +1245,7 @@ void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
   }
 
   if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    printf("GPGPU-Sim: tensor_mma_tf32_impl completed for M16N8K4\n");
+    printf("GPGPU-Sim: tensor_mma_tf32_impl completed for M16N8K%d\n", K);
   }
 }
 

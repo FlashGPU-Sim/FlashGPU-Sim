@@ -20,16 +20,29 @@ Reference: [PTX ISA - Warp-Level Matrix Instructions for MMA](https://docs.nvidi
 
 ## Supported MMA Variants
 
-### Matrix Shapes
+### Support Matrix by Architecture
 
-The following matrix shapes (M×N×K) are supported:
+The following table shows currently supported MMA shape/type combinations:
 
-- **M16N8K8** - 16×8 output, K=8
-- **M16N8K16** - 16×8 output, K=16
-- **M16N8K32** - 16×8 output, K=32
-- **M16N16K16** - 16×16 output, K=16
-- **M16N16K8** - 16×16 output, K=8
-- Additional shapes as defined in PTX ISA
+| Shape | F16 | BF16 | TF32 | S8/U8 | F64 | Architecture |
+|-------|-----|------|------|-------|-----|--------------|
+| **8x8x4** | ⏳ | - | - | - | ✓ | Volta (SM70) / Ampere (SM80) |
+| **8x8x16** | - | - | - | ⏳ | - | Turing (SM75) |
+| **16x8x4** | - | - | ✓ | - | - | Ampere (SM80) |
+| **16x8x8** | ✓ | ✓ | ⏳ | - | - | Turing (SM75) / Ampere (SM80) |
+| **16x8x16** | ⏳ | ⏳ | - | ✓ | - | Ampere (SM80) |
+| **16x8x32** | - | - | - | ⏳ | - | Ampere (SM80) |
+
+**Legend**:
+- ✓ = Fully implemented and tested
+- ⏳ = Planned for implementation (see issue #26)
+- \- = Not supported by PTX ISA for this type
+
+**Target completion** (issue #26):
+- **Phase 1**: F16 8x8x4 and 16x8x16
+- **Phase 2**: BF16 16x8x16
+- **Phase 3**: TF32 16x8x8
+- **Phase 4**: S8/U8 8x8x16 and 16x8x32
 
 ### Data Types
 
@@ -221,17 +234,18 @@ mma.store.d.sync.aligned.m16n8k16.s32 [addr_d], {r4, r5, r6, r7};
 ### Test Execution
 
 ```bash
-cd test
-./run_tests.sh build
+# Setup environment (REQUIRED before testing)
+source setup.sh
+source setup_environment
 
-# Run only MMA tests
-./run_tests.sh run --filter=TensorMMA*
+# Run all tests with reduced configuration
+./test/run_tests.sh -c SM120_RTX5090_REDUCED run
 
-# Verify WMMA tests still pass (regression check)
-./run_tests.sh run --filter=MMA*
-
-# Run all tests
-./run_tests.sh run
+# Run specific MMA test files
+./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaMmaF16Test
+./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaMmaBf16Test
+./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaMmaTf32Test
+./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaMmaS8Test
 ```
 
 ### Coverage Goals
