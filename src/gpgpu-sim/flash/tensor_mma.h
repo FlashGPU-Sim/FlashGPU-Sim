@@ -50,7 +50,8 @@ enum mma_shape_type {
   MMA_M16N8K16,  // F16, BF16, S8/U8
   MMA_M16N8K32,  // S8/U8
   MMA_M16N8K64,  // S4/U4
-  MMA_M8N8K4     // F64
+  MMA_M8N8K4,    // F64, F16/BF16
+  MMA_M8N8K16    // S8/U8
 };
 
 // MMA layout modes for matrix operands
@@ -92,11 +93,17 @@ void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
                           const operand_info &dst);
 
 // tensor_mma_s8_impl: S8/U8 integer MMA implementation
-// Implements functional simulation for M16N8K16 integer tensor cores
+// Implements functional simulation for M16N8K16/K32 integer tensor cores
 void tensor_mma_s8_impl(const ptx_instruction *pI, core_t *core,
                         warp_inst_t inst, int M, int N, int K,
                         bool saturate, unsigned tid,
                         const operand_info &dst);
+
+// tensor_mma_s8_m8n8k16_impl: S8/U8 M8N8K16 specialized implementation
+// M8N8K16 requires specialized fragment distribution for smaller M dimension
+void tensor_mma_s8_m8n8k16_impl(const ptx_instruction *pI, core_t *core,
+                                warp_inst_t inst, bool saturate, unsigned tid,
+                                const operand_info &dst);
 
 // tensor_mma_ld_impl: Load matrix fragments from memory
 // Loads matrix fragments into registers for MMA computation

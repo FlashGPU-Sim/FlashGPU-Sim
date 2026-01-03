@@ -323,3 +323,185 @@ TEST_F(MMAS8M16N8K16IntegrationTest, NonZeroAccumulatorTest) {
             << " (got: " << h_D[i] << ", expected: " << expected << ")";
     }
 }
+
+// ============================================================================
+// M16N8K32 Tests
+// ============================================================================
+
+class MMAS8M16N8K32IntegrationTest : public ::testing::Test {
+protected:
+    static constexpr int M = 16;
+    static constexpr int N = 8;
+    static constexpr int K = 32;
+
+    int8_t* h_A; int8_t* h_B; int32_t* h_C; int32_t* h_D; int32_t* h_D_ref;
+    int8_t *d_A, *d_B; int32_t *d_C, *d_D;
+
+    void SetUp() override {
+        h_A = new int8_t[M * K]; h_B = new int8_t[K * N];
+        h_C = new int32_t[M * N]; h_D = new int32_t[M * N]; h_D_ref = new int32_t[M * N];
+        cudaMalloc(&d_A, M * K * sizeof(int8_t)); cudaMalloc(&d_B, K * N * sizeof(int8_t));
+        cudaMalloc(&d_C, M * N * sizeof(int32_t)); cudaMalloc(&d_D, M * N * sizeof(int32_t));
+    }
+
+    void TearDown() override {
+        delete[] h_A; delete[] h_B; delete[] h_C; delete[] h_D; delete[] h_D_ref;
+        cudaFree(d_A); cudaFree(d_B); cudaFree(d_C); cudaFree(d_D);
+    }
+
+    void compute_reference() {
+        for (int i = 0; i < M; i++) {
+            for (int j = 0; j < N; j++) {
+                int32_t sum = 0;
+                for (int k = 0; k < K; k++) {
+                    sum += (int32_t)h_A[i * K + k] * (int32_t)h_B[j * K + k];
+                }
+                h_D_ref[i * N + j] = sum + h_C[i * N + j];
+            }
+        }
+    }
+
+    void run_mma_kernel();
+};
+
+__global__ void mma_m16n8k32_s8_kernel(const int8_t* A, const int8_t* B, const int32_t* C, int32_t* D) {
+    if (threadIdx.x / 32 != 0) return;
+    int lane_id = threadIdx.x % 32;
+    unsigned A_frag[4], B_frag[2]; int32_t C_frag[4], D_frag[4];
+    int groupID = lane_id >> 2, threadID_in_group = lane_id % 4;
+    for (int i = 0; i < 4; i++) {
+        uint8_t a_vals[4];
+        int a_row = (i < 2) ? groupID : (groupID + 8);
+        int col_base = threadID_in_group * 4 + ((i & 1) ? 16 : 0);
+        for (int j = 0; j < 4; j++) a_vals[j] = A[a_row * 32 + col_base + j];
+        A_frag[i] = *reinterpret_cast<unsigned*>(a_vals);
+    }
+    for (int i = 0; i < 2; i++) {
+        uint8_t b_vals[4];
+        int row_base = threadID_in_group * 4 + (i ? 16 : 0);
+        for (int j = 0; j < 4; j++) b_vals[j] = B[groupID * 32 + row_base + j];
+        B_frag[i] = *reinterpret_cast<unsigned*>(b_vals);
+    }
+    for (int i = 0; i < 4; i++) {
+        int c_row = (i < 2) ? groupID : (groupID + 8);
+        int c_col = threadID_in_group * 2 + (i & 1);
+        C_frag[i] = C[c_row * 8 + c_col];
+    }
+    asm volatile(
+        "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
+        "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, %13};\n"
+        : "=r"(D_frag[0]), "=r"(D_frag[1]), "=r"(D_frag[2]), "=r"(D_frag[3])
+        : "r"(A_frag[0]), "r"(A_frag[1]), "r"(A_frag[2]), "r"(A_frag[3]),
+          "r"(B_frag[0]), "r"(B_frag[1]),
+          "r"(C_frag[0]), "r"(C_frag[1]), "r"(C_frag[2]), "r"(C_frag[3])
+    );
+    for (int i = 0; i < 4; i++) {
+        int d_row = (i < 2) ? groupID : (groupID + 8);
+        int d_col = threadID_in_group * 2 + (i & 1);
+        D[d_row * 8 + d_col] = D_frag[i];
+    }
+}
+
+void MMAS8M16N8K32IntegrationTest::run_mma_kernel() {
+    cudaMemcpy(d_A, h_A, M * K * sizeof(int8_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, h_B, K * N * sizeof(int8_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_C, h_C, M * N * sizeof(int32_t), cudaMemcpyHostToDevice);
+    mma_m16n8k32_s8_kernel<<<1, 32>>>(d_A, d_B, d_C, d_D);
+    ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+    cudaMemcpy(h_D, d_D, M * N * sizeof(int32_t), cudaMemcpyDeviceToHost);
+}
+
+TEST_F(MMAS8M16N8K32IntegrationTest, BasicTest) {
+    for (int i = 0; i < M * K; i++) h_A[i] = 1;
+    for (int i = 0; i < K * N; i++) h_B[i] = 1;
+    for (int i = 0; i < M * N; i++) h_C[i] = 0;
+    compute_reference(); run_mma_kernel();
+    for (int i = 0; i < M * N; i++) {
+        EXPECT_EQ(h_D[i], h_D_ref[i]) << "Mismatch at " << i;
+    }
+}
+
+// ============================================================================
+// M8N8K16 Tests
+// ============================================================================
+
+class MMAS8M8N8K16IntegrationTest : public ::testing::Test {
+protected:
+    static constexpr int M = 8;
+    static constexpr int N = 8;
+    static constexpr int K = 16;
+
+    int8_t* h_A; int8_t* h_B; int32_t* h_C; int32_t* h_D; int32_t* h_D_ref;
+    int8_t *d_A, *d_B; int32_t *d_C, *d_D;
+
+    void SetUp() override {
+        h_A = new int8_t[M * K]; h_B = new int8_t[K * N];
+        h_C = new int32_t[M * N]; h_D = new int32_t[M * N]; h_D_ref = new int32_t[M * N];
+        cudaMalloc(&d_A, M * K * sizeof(int8_t)); cudaMalloc(&d_B, K * N * sizeof(int8_t));
+        cudaMalloc(&d_C, M * N * sizeof(int32_t)); cudaMalloc(&d_D, M * N * sizeof(int32_t));
+    }
+
+    void TearDown() override {
+        delete[] h_A; delete[] h_B; delete[] h_C; delete[] h_D; delete[] h_D_ref;
+        cudaFree(d_A); cudaFree(d_B); cudaFree(d_C); cudaFree(d_D);
+    }
+
+    void compute_reference() {
+        for (int i = 0; i < M; i++) {
+            for (int j = 0; j < N; j++) {
+                int32_t sum = 0;
+                for (int k = 0; k < K; k++) {
+                    sum += (int32_t)h_A[i * K + k] * (int32_t)h_B[j * K + k];
+                }
+                h_D_ref[i * N + j] = sum + h_C[i * N + j];
+            }
+        }
+    }
+
+    void run_mma_kernel();
+};
+
+__global__ void mma_m8n8k16_s8_kernel(const int8_t* A, const int8_t* B, const int32_t* C, int32_t* D) {
+    if (threadIdx.x / 32 != 0) return;
+    int lane_id = threadIdx.x % 32;
+    unsigned A_frag[1], B_frag[1]; int32_t C_frag[2], D_frag[2];
+    int groupID = lane_id / 4, threadID_in_group = lane_id % 4;
+    uint8_t a_vals[4];
+    int a_row = groupID, col_base = threadID_in_group * 4;
+    for (int i = 0; i < 4; i++) a_vals[i] = A[a_row * 16 + col_base + i];
+    A_frag[0] = *reinterpret_cast<unsigned*>(a_vals);
+    uint8_t b_vals[4];
+    int row_base = threadID_in_group * 4;
+    for (int i = 0; i < 4; i++) b_vals[i] = B[groupID * 16 + row_base + i];
+    B_frag[0] = *reinterpret_cast<unsigned*>(b_vals);
+    C_frag[0] = C[groupID * 8 + threadID_in_group * 2];
+    C_frag[1] = C[groupID * 8 + threadID_in_group * 2 + 1];
+    asm volatile(
+        "mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 "
+        "{%0, %1}, {%2}, {%3}, {%4, %5};\n"
+        : "=r"(D_frag[0]), "=r"(D_frag[1])
+        : "r"(A_frag[0]), "r"(B_frag[0]),
+          "r"(C_frag[0]), "r"(C_frag[1])
+    );
+    D[groupID * 8 + threadID_in_group * 2] = D_frag[0];
+    D[groupID * 8 + threadID_in_group * 2 + 1] = D_frag[1];
+}
+
+void MMAS8M8N8K16IntegrationTest::run_mma_kernel() {
+    cudaMemcpy(d_A, h_A, M * K * sizeof(int8_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, h_B, K * N * sizeof(int8_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_C, h_C, M * N * sizeof(int32_t), cudaMemcpyHostToDevice);
+    mma_m8n8k16_s8_kernel<<<1, 32>>>(d_A, d_B, d_C, d_D);
+    ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+    cudaMemcpy(h_D, d_D, M * N * sizeof(int32_t), cudaMemcpyDeviceToHost);
+}
+
+TEST_F(MMAS8M8N8K16IntegrationTest, BasicTest) {
+    for (int i = 0; i < M * K; i++) h_A[i] = 1;
+    for (int i = 0; i < K * N; i++) h_B[i] = 1;
+    for (int i = 0; i < M * N; i++) h_C[i] = 0;
+    compute_reference(); run_mma_kernel();
+    for (int i = 0; i < M * N; i++) {
+        EXPECT_EQ(h_D[i], h_D_ref[i]) << "Mismatch at " << i;
+    }
+}

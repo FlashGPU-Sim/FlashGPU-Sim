@@ -204,6 +204,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.m16n8k32 TC; yylval->int_value = MMA_M16N8K32; return CONFIGURATION;
 \.m16n8k64 TC; yylval->int_value = MMA_M16N8K64; return CONFIGURATION;
 \.m8n8k4 TC; yylval->int_value = MMA_M8N8K4; return CONFIGURATION;
+\.m8n8k16 TC; yylval->int_value = MMA_M8N8K16; return CONFIGURATION;
 
 \.f4e TC;  return PRMT_F4E_MODE;
 \.b4e TC;  return PRMT_B4E_MODE;

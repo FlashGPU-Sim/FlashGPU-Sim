@@ -84,7 +84,8 @@ enum {
   MMA_M16N8K16 = 102,
   MMA_M16N8K32 = 103,
   MMA_M16N8K64 = 104,
-  MMA_M8N8K4 = 105
+  MMA_M8N8K4 = 105,
+  MMA_M8N8K16 = 106
 };
 
 // MMA layout mode identifiers
