@@ -37,3 +37,8 @@ Thumbs.db
 # Log files
 *.log
 test_output.txt
+
+# triton trace
+triton_trace/triton_kernel_tracking/
+triton_trace/.venv
+triton_trace/temp

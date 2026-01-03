@@ -601,6 +601,7 @@ typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
       MA_TUP(TEXTURE_ACC_R), MA_TUP(GLOBAL_ACC_W), MA_TUP(LOCAL_ACC_W), \
       MA_TUP(L1_WRBK_ACC), MA_TUP(L2_WRBK_ACC), MA_TUP(INST_ACC_R),     \
       MA_TUP(L1_WR_ALLOC_R), MA_TUP(L2_WR_ALLOC_R),                     \
+      MA_TUP(TMA_ACC_R), MA_TUP(TMA_ACC_W),                             \
       MA_TUP(NUM_MEM_ACCESS_TYPE) MA_TUP_END(mem_access_type)
 
 #define MA_TUP_BEGIN(X) enum X {
@@ -844,12 +845,18 @@ class inst_t {
 
 public:
   struct tma_static_info_t {
+    enum type_t {
+      TMA_TYPE_INVALID = 0,
+      TMA_NORMAL,
+      TMA_TENSOR,
+    };
     enum space_t {
-      TMA_INVALID = 0,
+      TMA_SPACE_INVALID = 0,
       TMA_SHARED_CTA,
       TMA_SHARED_CLUSTER,
       TMA_GLOBAL,
     };
+    type_t  tma_type;
     space_t dst_space;
     space_t src_space;
   };
@@ -858,6 +865,7 @@ public:
     uint64_t src_addr = 0;
     uint32_t size_in_bytes = 0;
     uint32_t mbar_addr = -1;
+    uint32_t coords[5] = {0, 0, 0, 0, 0};
     bool is_valid() const { return mbar_addr != (uint32_t)-1; }
   };
   void set_tma_static_info(const tma_static_info_t &info) {
@@ -872,10 +880,45 @@ public:
   const tma_dyn_info_t &get_tma_dyn_info(int laneid) const {
     return tma_dyn_info[laneid];
   }
+  void reset_tma_dyn_info() {
+    for (unsigned i = 0; i < MAX_WARP_SIZE; i++) {
+      tma_dyn_info[i] = tma_dyn_info_t();  // Reset to defaults (mbar_addr = -1)
+    }
+  }
 
 private:
   tma_static_info_t tma_static_info;
   tma_dyn_info_t tma_dyn_info[MAX_WARP_SIZE];
+
+public:
+  // Per-thread mbarrier info (mbarrier is thread-level, not warp-level)
+  // Note: Whether a thread participates is determined by inst->active(lane)
+  // at warp_reaches_mbarrier time, not stored in this struct.
+  struct mbarrier_info_t {
+    unsigned bar_id = (unsigned)-1;     // mbarrier address in shared memory
+    unsigned bar_count = (unsigned)-1;  // expected count or arrival count
+    bool bar_parity = false;            // parity for try_wait
+    
+    void reset() {
+      bar_id = (unsigned)-1;
+      bar_count = (unsigned)-1;
+      bar_parity = false;
+    }
+  };
+  void set_mbarrier_info(int laneid, const mbarrier_info_t &info) {
+    mbarrier_info[laneid] = info;
+  }
+  const mbarrier_info_t &get_mbarrier_info(int laneid) const {
+    return mbarrier_info[laneid];
+  }
+  void reset_mbarrier_info() {
+    for (unsigned i = 0; i < MAX_WARP_SIZE; i++) {
+      mbarrier_info[i].reset();
+    }
+  }
+
+private:
+  mbarrier_info_t mbarrier_info[MAX_WARP_SIZE];
 
 public:
   types_of_operands oprnd_type;  // code (uarch visible) identify if the

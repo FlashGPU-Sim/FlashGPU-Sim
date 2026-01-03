@@ -29,6 +29,7 @@
 #ifndef MEM_FETCH_H
 #define MEM_FETCH_H
 
+#include <atomic>
 #include <bitset>
 #include "../abstract_hardware_model.h"
 #include "addrdec.h"
@@ -167,7 +168,7 @@ class mem_fetch {
 
   unsigned long long m_streamID;
 
-  static unsigned sm_next_mf_request_uid;
+  static std::atomic<unsigned int> sm_next_mf_request_uid;
 
   const memory_config *m_mem_config;
   unsigned icnt_flit_size;

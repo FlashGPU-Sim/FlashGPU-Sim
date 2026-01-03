@@ -61,6 +61,7 @@ int ptx_error( yyscan_t yyscanner, ptx_recognizer* recognizer, const char *s );
 %s IN_COMMENT
 %x IN_FUNC_DECL
 %x NOT_OPCODE
+%x IN_DEBUG_SECTION
 %%
 
 abs	TC; yylval->int_value = ABS_OP; return OPCODE;
@@ -158,6 +159,11 @@ surst	TC; yylval->int_value = SUST_OP; return OPCODE;
 suq	TC; yylval->int_value = SUQ_OP; return OPCODE;
 tex	TC; BEGIN(NOT_OPCODE); yylval->int_value = TEX_OP; return OPCODE;
 txq	TC; yylval->int_value = TEX_OP; return OPCODE;
+tensormap	TC; yylval->int_value = TENSORMAP_OP; return OPCODE;
+fence	TC; yylval->int_value = FENCE_OP; return OPCODE;
+elect	TC; yylval->int_value = ELECT_OP; return OPCODE;
+ldmatrix	TC; yylval->int_value = LDMATRIX_OP; return OPCODE;
+stmatrix	TC; yylval->int_value = STMATRIX_OP; return OPCODE;
 trap	TC; yylval->int_value = TRAP_OP; return OPCODE;
 vabsdiff TC; yylval->int_value = VABSDIFF_OP; return OPCODE;
 vadd    TC; yylval->int_value = VADD_OP; return OPCODE;
@@ -237,6 +243,10 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.reg    TC; return REG_DIRECTIVE;
 \.reqntid TC; return REQNTID_DIRECTIVE;
 \.section TC; return SECTION_DIRECTIVE;
+\.section[ \t]+\.debug_[a-z]+ TC; BEGIN(IN_DEBUG_SECTION); /* skip debug sections */
+\.debug_abbrev TC; return DEBUG_DIRECTIVE;
+\.debug_info TC; return DEBUG_DIRECTIVE;
+\.debug_line TC; return DEBUG_DIRECTIVE;
 \.shared  TC; return SHARED_DIRECTIVE;
 \.sreg   TC; return SREG_DIRECTIVE;
 \.sstarr TC; return SSTARR_DIRECTIVE;
@@ -394,9 +404,46 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.abs   TC; return ABS_OPTION;
 
 \.init  TC; return INIT_OPTION;
+\.inval TC; return INVAL_OPTION;
+\.m8n8 TC; return M8N8_OPTION;
+\.x1 TC; return X1_OPTION;
+\.x2 TC; return X2_OPTION;
+\.x4 TC; return X4_OPTION;
 \.try_wait TC; return TRY_WAIT_OPTION;
 \.parity TC; return PARITY_OPTION;
 \.shared::cta TC; return CTA_OPTION;
+\.shared::cluster TC; return CLUSTER_OPTION;
+\.tensor TC; return TENSOR_OPTION;
+\.1d	TC; return DIM_1D_OPTION;
+\.2d	TC; return DIM_2D_OPTION;
+\.3d	TC; return DIM_3D_OPTION;
+\.4d	TC; return DIM_4D_OPTION;
+\.5d	TC; return DIM_5D_OPTION;
+
+\.replace TC; return REPLACE_OPTION;
+\.tile TC; return TILE_OPTION;
+\.global_address TC; return GLOBAL_ADDRESS_OPTION;
+\.rank TC; return RANK_OPTION;
+\.box_dim TC; return BOX_DIM_OPTION;
+\.global_dim TC; return GLOBAL_DIM_OPTION;
+\.global_stride TC; return GLOBAL_STRIDE_OPTION;
+\.element_stride TC; return ELEMENT_STRIDE_OPTION;
+\.elemtype TC; return ELEMTYPE_OPTION;
+\.interleave_layout TC; return INTERLEAVE_LAYOUT_OPTION;
+\.swizzle_mode TC; return SWIZZLE_MODE_OPTION;
+\.fill_mode TC; return FILL_MODE_OPTION;
+\.cp_fenceproxy TC; return CP_FENCEPROXY_OPTION;
+\.release TC; return RELEASE_OPTION;
+\.acquire TC; return ACQUIRE_OPTION;
+\.gpu TC; return GPU_OPTION;
+\.aligned TC; return ALIGNED_OPTION;
+\.b1024 TC; return B1024_TYPE;
+::generic TC; return GENERIC_OPTION;
+\.proxy TC; return PROXY_OPTION;
+\.async TC; return ASYNC_OPTION;
+\.tensormap TC; return TENSORMAP_OPTION;
+\.read TC; return READ_OPTION;
+\.bulk_group TC; return BULK_GROUP_OPTION;
 
 \.commit_group TC; return COMMIT_GROUP_OPTION;
 \.wait_group TC; return WAIT_GROUP_OPTION;
@@ -494,6 +541,11 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 <IN_STRING>{
 "\"" 	TC; BEGIN(INITIAL); return STRING;
 [^\"]*	TC; yylval->string_value = strdup(yytext);
+}
+
+<IN_DEBUG_SECTION>{
+"}"      BEGIN(INITIAL);
+[^}]+    /* eat debug section content */
 }
 
 <*>\t@@DWARF.*\n

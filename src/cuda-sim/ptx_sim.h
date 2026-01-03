@@ -73,6 +73,8 @@ union ptx_reg_t {
     s64 = 0;
     u8 = 0;
     u16 = 0;
+    u16_2[0] = 0;
+    u16_2[1] = 0;
     u64 = 0;
     f16 = 0;
     f32 = 0;
@@ -92,6 +94,8 @@ union ptx_reg_t {
     s64 = 0;
     u8 = 0;
     u16 = 0;
+    u16_2[0] = 0;
+    u16_2[1] = 0;
     u64 = 0;
     f16 = 0;
     f32 = 0;
@@ -126,6 +130,7 @@ union ptx_reg_t {
   signed long long s64;
   unsigned char u8;
   unsigned short u16;
+  uint16_t u16_2[2];
   unsigned int u32;
   unsigned long long u64;
 // gcc 4.7.0

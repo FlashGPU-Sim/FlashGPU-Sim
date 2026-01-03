@@ -340,8 +340,8 @@ void function_info::recognize_dynamic_shared_mem() {
 
 void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
   // Handle dynamic shared memory for extern shared symbols
-  printf("GPGPU-Sim PTX: Setting up dynamic shared memory: size=%d bytes\n",
-         shared_mem_size);
+    printf("GPGPU-Sim PTX: Setting up dynamic shared memory: size=%d bytes\n",
+      shared_mem_size);
 
   symbol_table *symtab = get_symtab();
 
@@ -354,12 +354,20 @@ void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
       alignto = shared_mem_size;
     }
     addr_t addr_pad = alignto ? ((alignto - (addr % alignto)) % alignto) : 0;
-    printf("GPGPU-Sim PTX: Allocating local dyn shared mem symbol %s from "
-           "0x%llx to 0x%llx (size %d)\n",
+        printf("GPGPU-Sim PTX: Allocating local dyn shared mem symbol %s from "
+          "0x%llx to 0x%llx (size %d)\n",
            m_local_dyn_shared_mem_symbol->name().c_str(), addr + addr_pad,
            addr + addr_pad + shared_mem_size, shared_mem_size);
     m_local_dyn_shared_mem_symbol->set_address(addr + addr_pad);
     symtab->alloc_shared(shared_mem_size + addr_pad);
+    // Print the dynamic allocation and the resulting total shared mem for this
+    // kernel. `m_kernel_info.smem` is the declared (static) smem size parsed
+    // at assembly time; `shared_mem_size` is the per-launch dynamic size.
+    unsigned declared_smem = (unsigned)m_kernel_info.smem;
+    unsigned total_smem = declared_smem + (unsigned)shared_mem_size;
+    printf(
+      "GPGPU-Sim PTX: Kernel '%s' : smem(static)=%u, smem(dynamic)=%d, total_smem=%u\n",
+      m_name.c_str(), declared_smem, shared_mem_size, total_smem);
   } else {
     symtab->dump_until_top();
     printf("GPGPU-Sim PTX: Error -- dynamic shared memory size specified "
@@ -413,6 +421,11 @@ void function_info::ptx_assemble() {
       assert(pI == gpgpu_ctx->s_g_pc_to_insn[PC]);
       pI->set_m_instr_mem_index(n);
       pI->set_PC(PC);
+
+      GPPRINTF_NoGPU(PTX_IR,
+        "  set inst %s to PC 0x%x\n",
+        pI->to_string().c_str(), PC);
+
       assert(pI->inst_size() <= MAX_INST_SIZE);
       for (unsigned i = 1; i < pI->inst_size(); i++) {
         gpgpu_ctx->s_g_pc_to_insn.push_back((ptx_instruction *)NULL);
@@ -692,7 +705,9 @@ void ptx_instruction::set_fp_or_int_archop() {
   if ((m_opcode == MEMBAR_OP) || (m_opcode == SSY_OP) || (m_opcode == BRA_OP) ||
       (m_opcode == BAR_OP) || (m_opcode == RET_OP) || (m_opcode == RETP_OP) ||
       (m_opcode == NOP_OP) || (m_opcode == EXIT_OP) || (m_opcode == CALLP_OP) ||
-      (m_opcode == CALL_OP)) {
+      (m_opcode == CALL_OP) || (m_opcode == TENSORMAP_OP) || (m_opcode == FENCE_OP) ||
+      (m_opcode == ELECT_OP) || (m_opcode == LDMATRIX_OP) || (m_opcode == STMATRIX_OP) ||
+      (m_opcode == CP_ASYNC_OP)) {
     // do nothing
   } else if ((m_opcode == CVT_OP || m_opcode == SET_OP ||
               m_opcode == SLCT_OP)) {
@@ -716,7 +731,9 @@ void ptx_instruction::set_mul_div_or_other_archop() {
   if ((m_opcode != MEMBAR_OP) && (m_opcode != SSY_OP) && (m_opcode != BRA_OP) &&
       (m_opcode != BAR_OP) && (m_opcode != EXIT_OP) && (m_opcode != NOP_OP) &&
       (m_opcode != RETP_OP) && (m_opcode != RET_OP) && (m_opcode != CALLP_OP) &&
-      (m_opcode != CALL_OP)) {
+      (m_opcode != CALL_OP) && (m_opcode != TENSORMAP_OP) && (m_opcode != FENCE_OP) &&
+      (m_opcode != ELECT_OP) && (m_opcode != LDMATRIX_OP) && (m_opcode != STMATRIX_OP) &&
+      (m_opcode != CP_ASYNC_OP)) {
     if (get_type() == F64_TYPE || get_type() == FF64_TYPE) {
       switch (get_opcode()) {
         case MUL_OP:
@@ -879,32 +896,88 @@ void ptx_instruction::set_opcode_and_latency() {
    * [4] DIV
    * [5] SHFL
    */
-  sscanf(gpgpu_ctx->func_sim->opcode_latency_int, "%u,%u,%u,%u,%u,%u",
-         &int_latency[0], &int_latency[1], &int_latency[2], &int_latency[3],
-         &int_latency[4], &int_latency[5]);
-  sscanf(gpgpu_ctx->func_sim->opcode_latency_fp, "%u,%u,%u,%u,%u",
-         &fp_latency[0], &fp_latency[1], &fp_latency[2], &fp_latency[3],
-         &fp_latency[4]);
-  sscanf(gpgpu_ctx->func_sim->opcode_latency_dp, "%u,%u,%u,%u,%u",
-         &dp_latency[0], &dp_latency[1], &dp_latency[2], &dp_latency[3],
-         &dp_latency[4]);
-  sscanf(gpgpu_ctx->func_sim->opcode_latency_sfu, "%u", &sfu_latency);
-  sscanf(gpgpu_ctx->func_sim->opcode_latency_tensor, "%u", &tensor_latency);
-  sscanf(gpgpu_ctx->func_sim->opcode_initiation_int, "%u,%u,%u,%u,%u,%u",
-         &int_init[0], &int_init[1], &int_init[2], &int_init[3], &int_init[4],
-         &int_init[5]);
-  sscanf(gpgpu_ctx->func_sim->opcode_initiation_fp, "%u,%u,%u,%u,%u",
-         &fp_init[0], &fp_init[1], &fp_init[2], &fp_init[3], &fp_init[4]);
-  sscanf(gpgpu_ctx->func_sim->opcode_initiation_dp, "%u,%u,%u,%u,%u",
-         &dp_init[0], &dp_init[1], &dp_init[2], &dp_init[3], &dp_init[4]);
-  sscanf(gpgpu_ctx->func_sim->opcode_initiation_sfu, "%u", &sfu_init);
-  sscanf(gpgpu_ctx->func_sim->opcode_initiation_tensor, "%u", &tensor_init);
-  sscanf(gpgpu_ctx->func_sim->cdp_latency_str, "%u,%u,%u,%u,%u",
-         &gpgpu_ctx->func_sim->cdp_latency[0],
-         &gpgpu_ctx->func_sim->cdp_latency[1],
-         &gpgpu_ctx->func_sim->cdp_latency[2],
-         &gpgpu_ctx->func_sim->cdp_latency[3],
-         &gpgpu_ctx->func_sim->cdp_latency[4]);
+  int nret;
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_int, "%u,%u,%u,%u,%u,%u",
+                &int_latency[0], &int_latency[1], &int_latency[2], &int_latency[3],
+                &int_latency[4], &int_latency[5]);
+  if (nret != 6) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_int (expected 6 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_fp, "%u,%u,%u,%u,%u",
+                &fp_latency[0], &fp_latency[1], &fp_latency[2], &fp_latency[3],
+                &fp_latency[4]);
+  if (nret != 5) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_fp (expected 5 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_dp, "%u,%u,%u,%u,%u",
+                &dp_latency[0], &dp_latency[1], &dp_latency[2], &dp_latency[3],
+                &dp_latency[4]);
+  if (nret != 5) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_dp (expected 5 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_sfu, "%u", &sfu_latency);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_sfu (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_tensor, "%u", &tensor_latency);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_tensor (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_int, "%u,%u,%u,%u,%u,%u",
+                &int_init[0], &int_init[1], &int_init[2], &int_init[3], &int_init[4],
+                &int_init[5]);
+  if (nret != 6) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_int (expected 6 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_fp, "%u,%u,%u,%u,%u",
+                &fp_init[0], &fp_init[1], &fp_init[2], &fp_init[3], &fp_init[4]);
+  if (nret != 5) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_fp (expected 5 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_dp, "%u,%u,%u,%u,%u",
+                &dp_init[0], &dp_init[1], &dp_init[2], &dp_init[3], &dp_init[4]);
+  if (nret != 5) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_dp (expected 5 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_sfu, "%u", &sfu_init);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_sfu (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_tensor, "%u", &tensor_init);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_tensor (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->cdp_latency_str, "%u,%u,%u,%u,%u",
+                &gpgpu_ctx->func_sim->cdp_latency[0],
+                &gpgpu_ctx->func_sim->cdp_latency[1],
+                &gpgpu_ctx->func_sim->cdp_latency[2],
+                &gpgpu_ctx->func_sim->cdp_latency[3],
+                &gpgpu_ctx->func_sim->cdp_latency[4]);
+  if (nret != 5) {
+    printf("GPGPU-Sim PTX: ERROR parsing cdp_latency (expected 5 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
 
   if (!m_operands.empty()) {
     std::vector<operand_info>::iterator it;
@@ -960,6 +1033,12 @@ void ptx_instruction::set_opcode_and_latency() {
       break;
     case TMA_OP:
       op = TENSOR_MEMORY_ACCELERATOR_OP;
+      break;
+    case TENSORMAP_OP:
+    case FENCE_OP:
+    case ELECT_OP:
+    case LDMATRIX_OP:
+    case STMATRIX_OP:
       break;
     case SST_OP:
       op = BARRIER_OP;
@@ -1244,7 +1323,8 @@ void ptx_instruction::pre_decode() {
 #undef OP_W_DEF
     default:
       printf("Execution error: Invalid opcode (0x%x)\n", get_opcode());
-      break;
+      fflush(stdout);
+      exit(1);
   }
 
   switch (m_cache_option) {
@@ -2015,7 +2095,8 @@ using flash_gpgpu_sim::tensor_mma_st_impl;
           default:
             printf("Execution error: Invalid opcode (0x%x)\n",
                    pI->get_opcode());
-            break;
+            fflush(stdout);
+            exit(1);
         }
       }
       delete pJ;
@@ -2213,7 +2294,7 @@ unsigned ptx_sim_init_thread(kernel_info_t &kernel,
   static std::map<unsigned, memory_space *> shared_memory_lookup;
   static std::map<unsigned, memory_space *> sstarr_memory_lookup;
   static std::map<unsigned, ptx_cta_info *> ptx_cta_lookup;
-  static std::map<unsigned, ptx_warp_info *> ptx_warp_lookup;
+  static std::map<std::pair<unsigned, unsigned>, ptx_warp_info *> ptx_warp_lookup;
   static std::map<unsigned, std::map<unsigned, memory_space *> >
       local_memory_lookup;
 
@@ -2305,11 +2386,11 @@ unsigned ptx_sim_init_thread(kernel_info_t &kernel,
     new_tid += tid;
     ptx_thread_info *thd = new ptx_thread_info(kernel);
     ptx_warp_info *warp_info = NULL;
-    if (ptx_warp_lookup.find(hw_warp_id) == ptx_warp_lookup.end()) {
+    if (ptx_warp_lookup.find(std::make_pair(sid, hw_warp_id)) == ptx_warp_lookup.end()) {
       warp_info = new ptx_warp_info();
-      ptx_warp_lookup[hw_warp_id] = warp_info;
+      ptx_warp_lookup[std::make_pair(sid, hw_warp_id)] = warp_info;
     } else {
-      warp_info = ptx_warp_lookup[hw_warp_id];
+      warp_info = ptx_warp_lookup[std::make_pair(sid, hw_warp_id)];
     }
     thd->m_warp_info = warp_info;
 
@@ -2591,15 +2672,17 @@ unsigned max_cta(const struct gpgpu_ptx_sim_info *kernel_info,
                  unsigned int n_thread_per_shader,
                  unsigned int gpgpu_shmem_size,
                  unsigned int gpgpu_shader_registers,
-                 unsigned int max_cta_per_core) {
+                 unsigned int max_cta_per_core,
+                 unsigned int dynamic_smem) {
   unsigned int padded_cta_size = threads_per_cta;
   if (padded_cta_size % warp_size)
     padded_cta_size = ((padded_cta_size / warp_size) + 1) * (warp_size);
   unsigned int result_thread = n_thread_per_shader / padded_cta_size;
 
   unsigned int result_shmem = (unsigned)-1;
-  if (kernel_info->smem > 0)
-    result_shmem = gpgpu_shmem_size / kernel_info->smem;
+  unsigned int block_smem = kernel_info->smem + dynamic_smem;
+  if (block_smem > 0)
+    result_shmem = gpgpu_shmem_size / block_smem;
   unsigned int result_regs = (unsigned)-1;
   if (kernel_info->regs > 0)
     result_regs = gpgpu_shader_registers /
@@ -2663,8 +2746,9 @@ void cuda_sim::gpgpu_cuda_ptx_sim_main_func(kernel_info_t &kernel,
           ->gpgpu_shmem_size,
       gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()
           ->gpgpu_shader_registers,
-      gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()
-          ->max_cta_per_core);
+        gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()
+          ->max_cta_per_core,
+        kernel.get_dynamic_smem());
   printf("Max CTA : %d\n", max_cta_tot);
 
   int cp_op = gpgpu_ctx->the_gpgpusim->g_the_gpu->checkpoint_option;
@@ -2918,8 +3002,12 @@ void print_ptxinfo() {
            g_ptxinfo.cmem);
   }
   if (get_ptxinfo_kname()) {
+    // NOTE: The printed `smem` below is the statically-declared shared memory
+    // size that is known at PTX parsing/assembly time. Dynamic (per-launch)
+    // shared memory is configured at kernel launch and is printed separately
+    // when it is configured (see function_info::alloc_dyn_shared_mem()).
     printf(
-        "GPGPU-Sim PTX: Kernel \'%s\' : regs=%u, lmem=%u, smem=%u, cmem=%u\n",
+        "GPGPU-Sim PTX: Kernel '%s' : regs=%u, lmem=%u, smem(static)=%u, cmem=%u\n",
         get_ptxinfo_kname(), g_ptxinfo.regs, g_ptxinfo.lmem, g_ptxinfo.smem,
         g_ptxinfo.cmem);
   }
@@ -2991,9 +3079,9 @@ void ptxinfo_opencl_addinfo(std::map<std::string, function_info *> &kernels) {
     abort();
   } else {
     printf(
-        "GPGPU-Sim PTX: Kernel \'%s\' : regs=%u, lmem=%u, smem=%u, cmem=%u\n",
-        g_ptxinfo_kname, g_ptxinfo.regs, g_ptxinfo.lmem, g_ptxinfo.smem,
-        g_ptxinfo.cmem);
+      "GPGPU-Sim PTX: Kernel '%s' : regs=%u, lmem=%u, smem(static)=%u, cmem=%u\n",
+      g_ptxinfo_kname, g_ptxinfo.regs, g_ptxinfo.lmem, g_ptxinfo.smem,
+      g_ptxinfo.cmem);
     function_info *finfo = k->second;
     assert(finfo != NULL);
     finfo->set_kernel_info(g_ptxinfo);

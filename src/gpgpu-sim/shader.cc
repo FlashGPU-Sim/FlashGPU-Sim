@@ -38,6 +38,7 @@
 #include "../cuda-sim/cuda-sim.h"
 #include "../cuda-sim/ptx-stats.h"
 #include "../cuda-sim/ptx_sim.h"
+#include "../cuda-sim/dyn_ptx_inst.h"
 #include "../statwrapper.h"
 #include "addrdec.h"
 #include "dram.h"
@@ -458,7 +459,7 @@ void shader_core_ctx::create_exec_pipeline() {
   if (m_tma) {
     delete m_tma;
   }
-  m_tma = new flash_gpgpu_sim::tma_unit_t(this, &m_barriers);
+  m_tma = new flash_gpgpu_sim::tma_unit_t(this, &m_barriers, m_icnt, m_mem_fetch_allocator);
 
   assert(m_num_function_units == m_fu.size() and
          m_fu.size() == m_dispatch_port.size() and
@@ -763,6 +764,7 @@ void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, in
   accumulate(gpgpu_n_mem_l2_writeback);
   accumulate(gpgpu_n_mem_l1_write_allocate);
   accumulate(gpgpu_n_mem_l2_write_allocate);
+  accumulate(gpgpu_n_mem_tma);
 
   accumulate(made_write_mfs);
   accumulate(made_read_mfs);
@@ -830,6 +832,7 @@ void shader_core_stats::clear_accumulator() {
   accumulate(gpgpu_n_mem_l2_writeback);
   accumulate(gpgpu_n_mem_l1_write_allocate);
   accumulate(gpgpu_n_mem_l2_write_allocate);
+  accumulate(gpgpu_n_mem_tma);
 
   accumulate(made_write_mfs);
   accumulate(made_read_mfs);
@@ -1276,6 +1279,17 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       active_mask, warp_id, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
       m_warp[warp_id]->get_dynamic_warp_id(), sch_id,
       m_warp[warp_id]->get_streamID());  // dynamic instruction information
+  
+  // For TMA instructions, reset dyn_inst's tma_dyn_info BEFORE functional simulation
+  // to prevent stale data from previous warps. This is the key fix for TMA over-issue.
+  ptx_instruction *dyn_inst = nullptr;
+  if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
+    dyn_inst = const_cast<ptx_instruction *>(
+        flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(
+            next_inst->pc, static_cast<const ptx_instruction*>(next_inst)));
+    dyn_inst->reset_tma_dyn_info();
+  }
+  
   m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
   func_exec_inst(**pipe_reg);
 
@@ -1302,12 +1316,18 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
                                     const_cast<warp_inst_t *>(next_inst));
   } else if (next_inst->op == MBARRIER_OP) {
-    m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
-    m_barriers.warp_reaches_mbarrier(m_warp[warp_id]->get_cta_id(), warp_id,
-                                     const_cast<warp_inst_t *>(next_inst));
+    // Skip mbarrier processing if no threads are active (e.g., all predicated out)
+    if ((*pipe_reg)->get_active_mask().any()) {
+      m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
+      m_barriers.warp_reaches_mbarrier(m_warp[warp_id]->get_cta_id(), warp_id,
+                                       const_cast<warp_inst_t *>(next_inst),
+                                       (*pipe_reg)->get_active_mask());
+    }
   } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
-    m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id,
-                             const_cast<warp_inst_t *>(next_inst));
+    // dyn_inst was already obtained and reset before func_exec_inst
+    // Now it has the correct tma_dyn_info set only for active lanes
+    assert(dyn_inst != nullptr);
+    m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id, dyn_inst);
   } else if (next_inst->op == MEMORY_BARRIER_OP) {
     m_warp[warp_id]->set_membar();
   } else if (next_inst->m_is_ldgdepbar) {  // Add for LDGDEPBAR
@@ -2069,6 +2089,7 @@ void shader_core_ctx::execute() {
       }
     }
   }
+  m_tma -> cycle();
 }
 
 void ldst_unit::print_cache_stats(FILE *fp, unsigned &dl1_accesses,
@@ -2537,7 +2558,7 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
       mem_fetch *mf =
           m_mf_allocator->alloc(inst, access,
                                 m_core->get_gpu()->gpu_sim_cycle +
-                                    m_core->get_gpu()->gpu_tot_sim_cycle);
+                                m_core->get_gpu()->gpu_tot_sim_cycle);
       m_icnt->push(mf);
       inst.accessq_pop_back();
       // inst.clear_active( access.get_warp_mask() );
@@ -3759,10 +3780,11 @@ unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
 
   const struct gpgpu_ptx_sim_info *kernel_info = ptx_sim_kernel_info(kernel);
 
-  // Limit by shmem/shader
+  // Limit by shmem/shader (account for dynamic smem set at launch)
   unsigned int result_shmem = (unsigned)-1;
-  if (kernel_info->smem > 0)
-    result_shmem = gpgpu_shmem_size / kernel_info->smem;
+  unsigned int block_smem = kernel_info->smem + k.get_dynamic_smem();
+  if (block_smem > 0)
+    result_shmem = gpgpu_shmem_size / block_smem;
 
   // Limit by register count, rounded up to multiple of 4.
   unsigned int result_regs = (unsigned)-1;
@@ -3814,7 +3836,7 @@ unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
   if (adaptive_cache_config && !k.cache_config_set) {
     // For more info about adaptive cache, see
     // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory-7-x
-    unsigned total_shmem = kernel_info->smem * result;
+    unsigned total_shmem = block_smem * result;
     assert(total_shmem >= 0 && total_shmem <= shmem_opt_list.back());
 
     // Unified cache config is in KB. Converting to B
@@ -4257,6 +4279,14 @@ void shader_core_ctx::broadcast_barrier_reduction(unsigned cta_id,
           inst->get_active_mask());
     }
   }
+}
+
+bool shader_core_ctx::tma_response_buffer_full() const {
+  return m_tma->response_buffer_full();
+}
+
+void shader_core_ctx::accept_tma_response(mem_fetch *mf) {
+  m_tma->fill(mf);
 }
 
 bool shader_core_ctx::fetch_unit_response_buffer_full() const { return false; }
@@ -4926,6 +4956,9 @@ void simt_core_cluster::update_icnt_stats(class mem_fetch *mf) {
     case L2_WR_ALLOC_R:
       m_stats->gpgpu_n_mem_l2_write_allocate++;
       break;
+    case TMA_ACC_R:
+      m_stats->gpgpu_n_mem_tma++;
+      break;
     default:
       assert(0);
   }
@@ -4970,7 +5003,13 @@ void simt_core_cluster::icnt_cycle() {
   if (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
     unsigned cid = m_config->sid_to_cid(mf->get_sid());
-    if (mf->get_access_type() == INST_ACC_R) {
+    if (mf->get_access_type() == TMA_ACC_R) {
+      // TMA response
+      if (!m_core[cid]->tma_response_buffer_full()) {
+        m_response_fifo.pop_front();
+        m_core[cid]->accept_tma_response(mf);
+      }
+    } else if (mf->get_access_type() == INST_ACC_R) {
       // instruction fetch response
       if (!m_core[cid]->fetch_unit_response_buffer_full()) {
         m_response_fifo.pop_front();

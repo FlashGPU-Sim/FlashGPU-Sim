@@ -52,8 +52,11 @@ class ptx_recognizer;
 #include "../abstract_hardware_model.h"
 #include "../gpgpu-sim/gpu-sim.h"
 #include "../gpgpu-sim/shader.h"
+#include "../gpgpu-sim/flash/elect.h"
 #include "../gpgpu-sim/flash/mbarrier.h"
+#include "../gpgpu-sim/flash/ld_st_matrix.h"
 #include "../gpgpu-sim/flash/tma.h"
+#include "../trace.h"
 #include "cuda-math.h"
 #include "cuda_device_printf.h"
 #include "ptx.tab.h"
@@ -1621,6 +1624,28 @@ void mbarrier_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
 void tma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   handle_tma_inst(pI, thread);
+}
+
+void tensormap_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  handle_tensormap_inst(pI, thread);
+}
+
+void fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  // fence instruction - memory barrier
+  // Currently treated as NOP since memory ordering is not simulated
+  GPPRINTF_INST_EXEC(WIP, "[STUB] fence instruction not implemented%s\n", "");
+}
+
+void elect_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  handle_elect_inst(pI, thread);
+}
+
+void ldmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
+  handle_ldmatrix_inst(pI, core, inst);
+}
+
+void stmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
+  handle_stmatrix_inst(pI, core, inst);
 }
 
 void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

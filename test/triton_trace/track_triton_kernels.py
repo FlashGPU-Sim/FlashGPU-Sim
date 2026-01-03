@@ -70,6 +70,10 @@ class KernelLaunchInfo:
     args_info: List[ArgumentInfo]
     launch_id: int = 0
     stream: Optional[int] = None
+    global_scratch_size: int = 0
+    global_scratch_align: int = 1
+    profile_scratch_size: int = 0
+    profile_scratch_align: int = 1
 
 
 @dataclass
@@ -100,7 +104,9 @@ class TritonKernelTracker:
         self.launch_counter = 0
         self.pending_args: Optional[tuple] = None  # Store args from JIT wrapper
         self.pending_grid: Optional[tuple] = None  # Store grid from JIT wrapper
+        self.pending_kernel_hash: Optional[str] = None  # Store kernel hash from JIT wrapper
         self.pending_args_snapshots: Optional[List[torch.Tensor]] = None  # Store pre-launch tensor snapshots
+        self.function_to_hash: Dict[int, str] = {}  # Map function pointers to kernel hashes
         
         # Create subdirectories
         self.binaries_dir = output_dir / "binaries"
@@ -211,12 +217,17 @@ class TritonKernelTracker:
             # Call original run
             result = original_run(jit_self, *args, **kwargs)
             
+            # Capture the kernel hash from the result (CompiledKernel object)
+            if tracker_self.enabled and hasattr(result, 'hash'):
+                tracker_self.pending_kernel_hash = result.hash
+            
             # Don't clear pending data here - launch_exit_hook needs it!
             # It will be cleared in _on_launch_exit
             # Note: If no launch happens (warmup), we should clear it
             if warmup or not tracker_self.enabled or not tracker_self.capture_args:
                 tracker_self.pending_args = None
                 tracker_self.pending_grid = None
+                tracker_self.pending_kernel_hash = None
                 tracker_self.pending_args_snapshots = None
             
             return result
@@ -294,6 +305,10 @@ class TritonKernelTracker:
         )
         
         self.compiled_kernels[hash_val] = kernel_info
+        
+        # Store function pointer to hash mapping for launch-time lookup
+        # The function id uniquely identifies this compiled kernel variant
+        self.function_to_hash[id(function)] = hash_val
         
         # Generate standalone launcher
         if self.save_binaries:
@@ -468,12 +483,24 @@ class TritonKernelTracker:
             
             # Regenerate harness now that we have output files
             if self.save_binaries:
-                # Find the matching kernel info
+                # Use pending_kernel_hash (captured after run) for correct kernel variant matching
+                # This is more accurate than launch_info.kernel_hash which was set during launch_enter
+                actual_kernel_hash = self.pending_kernel_hash or launch_info.kernel_hash
+                
+                # Update launch_info with the correct hash if available
+                if self.pending_kernel_hash and self.pending_kernel_hash != launch_info.kernel_hash:
+                    launch_info.kernel_hash = self.pending_kernel_hash
+                
+                # Find the matching kernel info by hash
                 matching_kernel = None
-                for kernel_info in self.compiled_kernels.values():
-                    if kernel_info.kernel_name == kernel_name:
-                        matching_kernel = kernel_info
-                        break
+                if actual_kernel_hash in self.compiled_kernels:
+                    matching_kernel = self.compiled_kernels[actual_kernel_hash]
+                else:
+                    # Fallback to name matching
+                    for kernel_info in self.compiled_kernels.values():
+                        if kernel_info.kernel_name == kernel_name:
+                            matching_kernel = kernel_info
+                            break
                 
                 if matching_kernel:
                     print(f"  Generating harness with validation code...")
@@ -483,6 +510,7 @@ class TritonKernelTracker:
         # Clear pending args after processing
         self.pending_args = None
         self.pending_grid = None
+        self.pending_kernel_hash = None
     
     def _on_launch_enter(self, launch_metadata):
         """Called before kernel launch"""
@@ -500,12 +528,25 @@ class TritonKernelTracker:
         kernel_name = metadata.get('name', 'unknown')
         function = metadata.get('function', None)
         
-        # Try to find matching kernel
+        # Try to find matching kernel using function pointer (most accurate), then by name (fallback)
         matching_kernel = None
-        for kernel_info in self.compiled_kernels.values():
-            if kernel_info.kernel_name == kernel_name:
-                matching_kernel = kernel_info
-                break
+        kernel_hash = None
+        
+        # Method 1: Use function pointer to hash mapping (most reliable)
+        if function is not None:
+            func_id = id(function)
+            if func_id in self.function_to_hash:
+                kernel_hash = self.function_to_hash[func_id]
+                if kernel_hash in self.compiled_kernels:
+                    matching_kernel = self.compiled_kernels[kernel_hash]
+        
+        # Method 2: Fallback to name matching (for backwards compatibility)
+        if matching_kernel is None:
+            for kernel_info in self.compiled_kernels.values():
+                if kernel_info.kernel_name == kernel_name:
+                    matching_kernel = kernel_info
+                    kernel_hash = kernel_info.kernel_hash
+                    break
         
         if not matching_kernel:
             print(f"[TritonKernelTracker] Launch #{self.launch_counter}: {kernel_name} (not yet tracked)")
@@ -547,6 +588,18 @@ class TritonKernelTracker:
             print(f"  Capturing {len(self.pending_args)} arguments...")
             args_info = self._capture_arguments(self.pending_args, kernel_name, self.launch_counter)
         
+        # Extract scratch memory metadata (per-CTA sizes)
+        per_cta_global_scratch = meta_dict.get('global_scratch_size', 0)
+        global_scratch_align = meta_dict.get('global_scratch_align', 1)
+        per_cta_profile_scratch = meta_dict.get('profile_scratch_size', 0)
+        profile_scratch_align = meta_dict.get('profile_scratch_align', 1)
+        
+        # Calculate total scratch sizes as Triton does:
+        # At runtime CudaLauncher.__call__ multiplies the per-CTA size by gridX*gridY*gridZ * num_ctas
+        total_ctas = grid[0] * grid[1] * grid[2] * num_ctas
+        global_scratch_size = per_cta_global_scratch * total_ctas
+        profile_scratch_size = per_cta_profile_scratch * total_ctas
+        
         # Create launch info
         launch_info = KernelLaunchInfo(
             timestamp=datetime.now().isoformat(),
@@ -559,7 +612,11 @@ class TritonKernelTracker:
             num_ctas=num_ctas,
             args_info=args_info,
             launch_id=self.launch_counter,
-            stream=None
+            stream=None,
+            global_scratch_size=global_scratch_size,
+            global_scratch_align=global_scratch_align,
+            profile_scratch_size=profile_scratch_size,
+            profile_scratch_align=profile_scratch_align
         )
         
         self.kernel_launches.append(launch_info)
@@ -701,6 +758,51 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
         except Exception as e:
             print(f"    [WARNING] Could not check for dynamic shared memory: {e}")
             return False
+    
+    def _generate_scratch_allocation_code(self, launch_info: KernelLaunchInfo) -> str:
+        """Generate scratch buffer allocation code based on metadata
+        
+        Only generates allocation code if size > 0, avoiding unnecessary conditionals in C code.
+        Note: Sizes are already calculated as total = per_cta_size * gridX*gridY*gridZ * num_ctas
+        """
+        code_lines = []
+        
+        if launch_info.global_scratch_size > 0:
+            total_ctas = launch_info.grid[0] * launch_info.grid[1] * launch_info.grid[2] * launch_info.num_ctas
+            code_lines.append(f"""
+    // Total size = per_cta_size * grid_size * num_ctas = per_cta * {total_ctas}
+    cudaMalloc(&global_scratch, {launch_info.global_scratch_size});
+    printf("  Allocated global_scratch: %zu bytes (alignment: %zu)\\n", 
+           (size_t){launch_info.global_scratch_size}, (size_t){launch_info.global_scratch_align});""")
+        
+        if launch_info.profile_scratch_size > 0:
+            total_ctas = launch_info.grid[0] * launch_info.grid[1] * launch_info.grid[2] * launch_info.num_ctas
+            code_lines.append(f"""
+    // Total size = per_cta_size * grid_size * num_ctas = per_cta * {total_ctas}
+    cudaMalloc(&profile_scratch, {launch_info.profile_scratch_size});
+    printf("  Allocated profile_scratch: %zu bytes (alignment: %zu)\\n", 
+           (size_t){launch_info.profile_scratch_size}, (size_t){launch_info.profile_scratch_align});""")
+        
+        return ''.join(code_lines)
+    
+    def _generate_scratch_cleanup_code(self, launch_info: KernelLaunchInfo) -> str:
+        """Generate scratch buffer cleanup code based on metadata
+        
+        Only generates cleanup code if size > 0, avoiding unnecessary conditionals in C code.
+        """
+        code_lines = []
+        
+        if launch_info.global_scratch_size > 0:
+            code_lines.append("""    
+    cudaFree(global_scratch);
+    printf("  Freed global_scratch\\n");""")
+        
+        if launch_info.profile_scratch_size > 0:
+            code_lines.append("""    
+    cudaFree(profile_scratch);
+    printf("  Freed profile_scratch\\n");""")
+        
+        return ''.join(code_lines)
     
     def _generate_launch_specific_harness(self, kernel_info: KernelBinaryInfo, launch_info: KernelLaunchInfo):
         """Generate a harness for a specific launch with actual argument data"""
@@ -910,9 +1012,12 @@ int main(int argc, char** argv) {{{{
 
 {chr(10).join(arg_loading_calls)}
 
-    // Setup kernel arguments (user args + triton runtime args)
+    // Allocate Triton runtime scratch buffers based on metadata
+    // Note: These pointers may differ from Triton's original allocation, but are functionally equivalent
     void* global_scratch = NULL;
     void* profile_scratch = NULL;
+{self._generate_scratch_allocation_code(launch_info)}
+    // Setup kernel arguments (user args + triton runtime args)
     void* args[] = {{ {', '.join(arg_pointers)}, &global_scratch, &profile_scratch }};
 
     // Launch kernel
@@ -940,6 +1045,7 @@ int main(int argc, char** argv) {{{{
     // Cleanup
     printf("\\nCleaning up...\\n");
 {chr(10).join(cleanup_code)}
+{self._generate_scratch_cleanup_code(launch_info)}
     cuModuleUnload(module);
     cuCtxDestroy(context);
 
@@ -969,21 +1075,12 @@ int main() {{
         if ptx_string:
             ptx_filename = f"{kernel_name}_launch{launch_id}_kernel.ptx"
             ptx_file_path = self.launchers_dir / ptx_filename
-            # Write the original PTX content (not escaped)
+            # Copy the original PTX content
             ptx_path_src = Path(kernel_info.binary_path).parent / f"{kernel_name}.ptx"
             if ptx_path_src.exists():
                 import shutil
-                # Read and fix PTX: replace sm_XXXa with sm_XXX for fatbin compatibility
-                with open(ptx_path_src, 'r') as f:
-                    ptx_content = f.read()
-                # Replace sm_120a -> sm_120 (and any other 'a' variants)
-                import re
-                ptx_fixed = re.sub(r'\.target (sm_\d+)a\b', r'.target \1', ptx_content)
-                with open(ptx_file_path, 'w') as f:
-                    f.write(ptx_fixed)
+                shutil.copy(ptx_path_src, ptx_file_path)
                 print(f"  Copied PTX for linking: {ptx_file_path}")
-                if 'sm_' in ptx_content and ptx_content != ptx_fixed:
-                    print(f"    Fixed architecture variants (e.g., sm_120a -> sm_120) for fatbin compatibility")
         
         # Generate Makefile. If PTX was found we'll produce steps to build a fatbin
         makefile_path = self.launchers_dir / f"{kernel_name}_launch{launch_id}_Makefile"
@@ -1194,6 +1291,8 @@ int main(int argc, char** argv) {{
                 f.write(f"  Block: {launch.block}\n")
                 f.write(f"  Shared memory: {launch.shared_memory} bytes\n")
                 f.write(f"  Num warps: {launch.num_warps}\n")
+                f.write(f"  Global scratch: {launch.global_scratch_size} bytes (align: {launch.global_scratch_align})\n")
+                f.write(f"  Profile scratch: {launch.profile_scratch_size} bytes (align: {launch.profile_scratch_align})\n")
                 f.write(f"  Arguments: {len(launch.args_info)}\n")
                 for arg_info in launch.args_info:
                     f.write(f"    [{arg_info.index}] {arg_info.arg_type}")

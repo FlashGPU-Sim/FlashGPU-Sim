@@ -24,7 +24,7 @@ class CudaTMATest : public ::testing::Test {
 protected:
   void SetUp() override {
     // Test with 1MB of data
-    num_elements = 262144; // 1MB / 4 bytes per float
+    num_elements = 262144 * 16; // 1MB / 4 bytes per float
     data_size_bytes = num_elements * sizeof(float);
 
     // Allocate host memory
@@ -136,7 +136,7 @@ protected:
 
     // The cp_bw_kernel sums the first uint32_t of each chunk
     // For verification, we need to compute the expected result differently
-    unsigned long long expected_result = computeExpectedSum<Config>();
+    unsigned long long expected_result = computeExpectedSum<Config>(blocks);
 
     // Verify exact match for unsigned long long results
     EXPECT_EQ(h_result, expected_result)
@@ -155,8 +155,11 @@ protected:
     return sync_error == cudaSuccess && kernel_error == cudaSuccess;
   }
 
-  // Compute expected result based on how cp_bw_kernel processes data
-  template <typename Config> unsigned long long computeExpectedSum() {
+  // Compute expected result based on how cp_bw_kernel processes data.
+  // With repeat=1, each unique chunk is processed exactly once across all blocks.
+  // The kernel sums the first uint32_t of each chunk's data.
+  template <typename Config>
+  unsigned long long computeExpectedSum(int num_blocks) {
     const size_t chunk_size_bytes = Config::chunk_size * sizeof(float);
     const size_t total_chunks = data_size_bytes / chunk_size_bytes;
 
@@ -164,7 +167,7 @@ protected:
     const uint32_t *data_as_uint32 =
         reinterpret_cast<const uint32_t *>(h_input.data());
 
-    // cp_bw_kernel sums the first uint32_t of each chunk
+    // Each chunk is processed exactly once. Sum the first uint32 of each chunk.
     for (size_t chunk = 0; chunk < total_chunks; ++chunk) {
       size_t offset_in_uint32 = (chunk * chunk_size_bytes) / sizeof(uint32_t);
       if (offset_in_uint32 < num_elements) {
@@ -184,8 +187,9 @@ protected:
 };
 
 // Basic TMA test with minimal configuration
+// Note: TMA requires at least 2 stages due to barrier parity synchronization
 TEST_F(CudaTMATest, BasicSingleStageProducerConsumer) {
-  using Config = TMAConfig<1, 1, 1, 256>;
+  using Config = TMAConfig<2, 1, 1, 256>;
   bool result = runTMATest<Config, CP_METHOD::TMA>();
   ASSERT_TRUE(result);
 }
@@ -264,9 +268,9 @@ TEST_F(CudaTMATest, PerformanceComparison) {
   };
 
   std::vector<TestConfig> configs = {
-      {"TMA Single Stage",
+      {"TMA Minimal Stage",  // TMA requires at least 2 stages for correct sync
        [this]() {
-         return runTMATest<TMAConfig<1, 1, 1, 256>, CP_METHOD::TMA>();
+         return runTMATest<TMAConfig<2, 1, 1, 256>, CP_METHOD::TMA>();
        }},
       {"TMA Multi Stage",
        [this]() {

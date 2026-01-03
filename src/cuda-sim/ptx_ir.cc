@@ -1319,8 +1319,10 @@ ptx_instruction::ptx_instruction(
       case M8N32K16:
         break;
       default:
-        assert(0);
-        break;
+        printf("Error: Unsupported WMMA option (0x%x) for opcode %s\n",
+               last_ptx_inst_option, g_opcode_string[opcode]);
+        fflush(stdout);
+        exit(1);
     }
   }
 
@@ -1394,6 +1396,7 @@ ptx_instruction::ptx_instruction(
       case ARRIVE_OPTION:
       case RED_OPTION:
       case INIT_OPTION:
+      case INVAL_OPTION:
       case TRY_WAIT_OPTION:
       case EXPECT_TX_OPTION:
         m_barrier_op = last_ptx_inst_option;
@@ -1563,9 +1566,47 @@ ptx_instruction::ptx_instruction(
       case PRMT_RC16_MODE:
         m_prmt_op = last_ptx_inst_option;
         break;
-      default:
-        assert(0);
+      case TENSOR_OPTION:
+      case DIM_1D_OPTION: 
+      case DIM_2D_OPTION: 
+      case DIM_3D_OPTION: 
+      case DIM_4D_OPTION: 
+      case DIM_5D_OPTION: 
+      case REPLACE_OPTION:
+      case TILE_OPTION:
+      case GLOBAL_ADDRESS_OPTION:
+      case RANK_OPTION:
+      case BOX_DIM_OPTION:
+      case GLOBAL_DIM_OPTION:
+      case GLOBAL_STRIDE_OPTION:
+      case ELEMENT_STRIDE_OPTION:
+      case ELEMTYPE_OPTION:
+      case INTERLEAVE_LAYOUT_OPTION:
+      case SWIZZLE_MODE_OPTION:
+      case FILL_MODE_OPTION:
+      case CP_FENCEPROXY_OPTION:
+      case RELEASE_OPTION:
+      case ACQUIRE_OPTION:
+      case GPU_OPTION:
+      case ALIGNED_OPTION:
+      case B1024_TYPE:
+      case GENERIC_OPTION:
+      case PROXY_OPTION:
+      case ASYNC_OPTION:
+      case TENSORMAP_OPTION:
+      case READ_OPTION:
+      case BULK_GROUP_OPTION:
+      case CLUSTER_OPTION:
+      case M8N8_OPTION:
+      case X1_OPTION:
+      case X2_OPTION:
+      case X4_OPTION:
         break;
+      default:
+        printf("Error: Unsupported PTX instruction option (0x%x) for opcode %s\n",
+               last_ptx_inst_option, g_opcode_string[opcode]);
+        fflush(stdout);
+        exit(1);
     }
   }
   m_scalar_type = scalar_type;

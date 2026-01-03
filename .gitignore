@@ -69,6 +69,15 @@ gpu-app-collection/
 
 setup
 
+# Editor Files
+.vscode/
+.claude/
+.agentize.yaml
+docs/
+
+# temporary files
+temp/
+
 # Docker
 .env
 docker-compose.override.yml
