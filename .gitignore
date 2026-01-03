@@ -89,6 +89,5 @@ playground/
 .tmp/*
 .milestones/*
 .vscode/*
-CLAUDE.md
 package.json
 package-lock.json
