@@ -295,7 +295,9 @@ Lane 28-31: Row 7
 **TMA Subsystem**:
 1. **CP.ASYNC sector masking**: Corner cases with non-cacheline-aligned sizes not fully handled (src/gpgpu-sim/flash/tma.cc:664)
 2. **Commit/wait groups**: `cp.async.bulk.commit_group` and `cp.async.bulk.wait_group` treated as NOPs (src/gpgpu-sim/flash/tma.cc:1121-1127)
+   - **Note**: These stubbed instructions are explicitly allowed during PTX inspection for TMA tests (see docs/tma_instructions.md section 2)
 3. **Tensormap options**: Some tensormap manipulation options not validated (src/gpgpu-sim/flash/tma.cc:1273)
+4. **Multi-dimensional testing**: Full test coverage for 1D and 3D-5D tensor operations documented in docs/tma_instructions.md
 
 **Mbarrier Subsystem**:
 1. **Idealized implementation**: Barriers reside in simulator memory rather than GPU shared memory
