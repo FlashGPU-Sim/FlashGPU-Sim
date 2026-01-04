@@ -197,6 +197,7 @@ def kernel_add_3d(
 def kernel_add_4d(
     A_ptr, B_ptr,
     D0, D1, D2, D3,
+    GRID_D1: tl.constexpr,
     BLOCK_D0: tl.constexpr,
     BLOCK_D1: tl.constexpr,
     BLOCK_D2: tl.constexpr,
@@ -224,8 +225,8 @@ def kernel_add_4d(
 
     # Calculate offsets (4D uses 3 program IDs max, linearize first two dims)
     pid_01 = pid_0
-    offs_0 = (pid_01 // triton.cdiv(D1, BLOCK_D1)) * BLOCK_D0
-    offs_1 = (pid_01 % triton.cdiv(D1, BLOCK_D1)) * BLOCK_D1
+    offs_0 = (pid_01 // GRID_D1) * BLOCK_D0
+    offs_1 = (pid_01 % GRID_D1) * BLOCK_D1
     offs_2 = pid_1 * BLOCK_D2
     offs_3 = pid_2 * BLOCK_D3
     offsets = [offs_0, offs_1, offs_2, offs_3]
@@ -240,6 +241,8 @@ def kernel_add_4d(
 def kernel_add_5d(
     A_ptr, B_ptr,
     D0, D1, D2, D3, D4,
+    GRID_D1: tl.constexpr,
+    GRID_D2: tl.constexpr,
     BLOCK_D0: tl.constexpr,
     BLOCK_D1: tl.constexpr,
     BLOCK_D2: tl.constexpr,
@@ -268,11 +271,9 @@ def kernel_add_5d(
 
     # Calculate offsets (5D uses 3 program IDs max, linearize first three dims)
     pid_012 = pid_0
-    grid_d1 = triton.cdiv(D1, BLOCK_D1)
-    grid_d2 = triton.cdiv(D2, BLOCK_D2)
-    offs_0 = (pid_012 // (grid_d1 * grid_d2)) * BLOCK_D0
-    offs_1 = ((pid_012 // grid_d2) % grid_d1) * BLOCK_D1
-    offs_2 = (pid_012 % grid_d2) * BLOCK_D2
+    offs_0 = (pid_012 // (GRID_D1 * GRID_D2)) * BLOCK_D0
+    offs_1 = ((pid_012 // GRID_D2) % GRID_D1) * BLOCK_D1
+    offs_2 = (pid_012 % GRID_D2) * BLOCK_D2
     offs_3 = pid_1 * BLOCK_D3
     offs_4 = pid_2 * BLOCK_D4
     offsets = [offs_0, offs_1, offs_2, offs_3, offs_4]
@@ -457,9 +458,10 @@ def test_4d_tensor(tracker, shapes_and_blocks):
         a = torch.randn(D0, D1, D2, D3, dtype=torch.float32, device="cuda")
         b = torch.empty(D0, D1, D2, D3, dtype=torch.float32, device="cuda")
 
-        grid_01 = triton.cdiv(D0, B0) * triton.cdiv(D1, B1)
+        grid_d1 = triton.cdiv(D1, B1)
+        grid_01 = triton.cdiv(D0, B0) * grid_d1
         grid = (grid_01, triton.cdiv(D2, B2), triton.cdiv(D3, B3))
-        kernel_add_4d[grid](a, b, D0, D1, D2, D3, BLOCK_D0=B0, BLOCK_D1=B1, BLOCK_D2=B2, BLOCK_D3=B3)
+        kernel_add_4d[grid](a, b, D0, D1, D2, D3, GRID_D1=grid_d1, BLOCK_D0=B0, BLOCK_D1=B1, BLOCK_D2=B2, BLOCK_D3=B3)
 
         expected = a + 1.0
         if torch.allclose(b, expected, atol=1e-2, rtol=1e-2):
@@ -474,9 +476,10 @@ def test_4d_tensor(tracker, shapes_and_blocks):
     b = torch.empty(D0, D1, D2, D3, dtype=torch.float32, device="cuda")
     b.zero_()
     tracker.enable()
-    grid_01 = triton.cdiv(D0, B0) * triton.cdiv(D1, B1)
+    grid_d1 = triton.cdiv(D1, B1)
+    grid_01 = triton.cdiv(D0, B0) * grid_d1
     grid = (grid_01, triton.cdiv(D2, B2), triton.cdiv(D3, B3))
-    kernel_add_4d[grid](a, b, D0, D1, D2, D3, BLOCK_D0=B0, BLOCK_D1=B1, BLOCK_D2=B2, BLOCK_D3=B3)
+    kernel_add_4d[grid](a, b, D0, D1, D2, D3, GRID_D1=grid_d1, BLOCK_D0=B0, BLOCK_D1=B1, BLOCK_D2=B2, BLOCK_D3=B3)
     tracker.disable()
 
     return True
@@ -493,9 +496,11 @@ def test_5d_tensor(tracker, shapes_and_blocks):
         a = torch.randn(D0, D1, D2, D3, D4, dtype=torch.float32, device="cuda")
         b = torch.empty(D0, D1, D2, D3, D4, dtype=torch.float32, device="cuda")
 
-        grid_012 = triton.cdiv(D0, B0) * triton.cdiv(D1, B1) * triton.cdiv(D2, B2)
+        grid_d1 = triton.cdiv(D1, B1)
+        grid_d2 = triton.cdiv(D2, B2)
+        grid_012 = triton.cdiv(D0, B0) * grid_d1 * grid_d2
         grid = (grid_012, triton.cdiv(D3, B3), triton.cdiv(D4, B4))
-        kernel_add_5d[grid](a, b, D0, D1, D2, D3, D4, BLOCK_D0=B0, BLOCK_D1=B1, BLOCK_D2=B2, BLOCK_D3=B3, BLOCK_D4=B4)
+        kernel_add_5d[grid](a, b, D0, D1, D2, D3, D4, GRID_D1=grid_d1, GRID_D2=grid_d2, BLOCK_D0=B0, BLOCK_D1=B1, BLOCK_D2=B2, BLOCK_D3=B3, BLOCK_D4=B4)
 
         expected = a + 1.0
         if torch.allclose(b, expected, atol=1e-2, rtol=1e-2):
@@ -510,9 +515,11 @@ def test_5d_tensor(tracker, shapes_and_blocks):
     b = torch.empty(D0, D1, D2, D3, D4, dtype=torch.float32, device="cuda")
     b.zero_()
     tracker.enable()
-    grid_012 = triton.cdiv(D0, B0) * triton.cdiv(D1, B1) * triton.cdiv(D2, B2)
+    grid_d1 = triton.cdiv(D1, B1)
+    grid_d2 = triton.cdiv(D2, B2)
+    grid_012 = triton.cdiv(D0, B0) * grid_d1 * grid_d2
     grid = (grid_012, triton.cdiv(D3, B3), triton.cdiv(D4, B4))
-    kernel_add_5d[grid](a, b, D0, D1, D2, D3, D4, BLOCK_D0=B0, BLOCK_D1=B1, BLOCK_D2=B2, BLOCK_D3=B3, BLOCK_D4=B4)
+    kernel_add_5d[grid](a, b, D0, D1, D2, D3, D4, GRID_D1=grid_d1, GRID_D2=grid_d2, BLOCK_D0=B0, BLOCK_D1=B1, BLOCK_D2=B2, BLOCK_D3=B3, BLOCK_D4=B4)
     tracker.disable()
 
     return True
