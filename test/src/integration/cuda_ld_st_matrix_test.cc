@@ -559,308 +559,6 @@ TEST_F(StMatrixX4Test, PrintStoredValuesX4) {
 }
 
 // ============================================================================
-// m16n8, m16n16, .trans, and .b8 Tests - DISABLED
-// ============================================================================
-//
-// NOTE: The tests below are commented out because NVIDIA's ptxas (PTX assembler)
-// does not support these features for sm_120 target:
-//   - .m16n8 shape (Feature '.m16n8' not supported)
-//   - .m16n16 shape (Feature '.m16n16' not supported)
-//   - .trans modifier (Modifier .trans not allowed)
-//   - .b8 type (Incorrect instruction type specified for ldmatrix with .b8)
-//
-// However, the GPGPU-Sim implementation IS complete and supports these features:
-//   - Parser tokens added (src/cuda-sim/ptx.l, ptx.y, ptx_ir.cc)
-//   - Handler implementation complete (src/gpgpu-sim/flash/ld_st_matrix.cc)
-//   - Shape-spec table with parametric fragment distribution
-//   - Transpose and b8 type support
-//
-// These features can be tested by:
-//   1. Writing PTX files directly (bypassing nvcc/ptxas)
-//   2. Using future CUDA toolkits that add support for these variants
-//   3. Testing with direct PTX input to GPGPU-Sim
-//
-// The tests are preserved below for documentation and future use when
-// NVIDIA adds official support for these PTX features.
-// ============================================================================
-
-#if 0  // DISABLED: Unsupported by nvidia ptxas for sm_120
-
-// m16n8 test kernel - loads 16x8 matrices
-template <int N> __global__ void ldmatrix_m16n8_test_kernel(uint32_t *output) {
-  constexpr int M16N8_ELEMENTS = 16 * 8; // 128 elements per m16n8 matrix
-  __shared__ __align__(16) uint16_t smem[M16N8_ELEMENTS * N];
-
-  const int tid = threadIdx.x;
-  const int lane_id = tid % WARP_SIZE;
-
-  // Initialize shared memory
-  for (int i = 0; i < (M16N8_ELEMENTS * N + WARP_SIZE - 1) / WARP_SIZE; ++i) {
-    int idx = lane_id + i * WARP_SIZE;
-    if (idx < M16N8_ELEMENTS * N) {
-      smem[idx] = static_cast<uint16_t>(idx);
-    }
-  }
-  __syncthreads();
-
-  // Address calculation for m16n8
-  // m16n8 uses similar addressing pattern but with 16 rows instead of 8
-  const int matrix_idx = lane_id / 8;
-  const int row = lane_id % 8;
-
-  const uint32_t smem_addr = static_cast<uint32_t>(__cvta_generic_to_shared(
-      &smem[matrix_idx * M16N8_ELEMENTS + row * 8]));
-
-  // ldmatrix for m16n8 shape
-  if constexpr (N == 1) {
-    uint32_t reg_value;
-    asm volatile("ldmatrix.sync.aligned.m16n8.x1.shared.b16 {%0}, [%1];\n"
-                 : "=r"(reg_value)
-                 : "r"(smem_addr));
-    output[lane_id] = reg_value;
-  } else if constexpr (N == 2) {
-    uint32_t reg0, reg1;
-    asm volatile("ldmatrix.sync.aligned.m16n8.x2.shared.b16 {%0, %1}, [%2];\n"
-                 : "=r"(reg0), "=r"(reg1)
-                 : "r"(smem_addr));
-    output[lane_id * 2] = reg0;
-    output[lane_id * 2 + 1] = reg1;
-  } else if constexpr (N == 4) {
-    uint32_t reg0, reg1, reg2, reg3;
-    asm volatile(
-        "ldmatrix.sync.aligned.m16n8.x4.shared.b16 {%0, %1, %2, %3}, [%4];\n"
-        : "=r"(reg0), "=r"(reg1), "=r"(reg2), "=r"(reg3)
-        : "r"(smem_addr));
-    output[lane_id * 4] = reg0;
-    output[lane_id * 4 + 1] = reg1;
-    output[lane_id * 4 + 2] = reg2;
-    output[lane_id * 4 + 3] = reg3;
-  }
-}
-
-// m16n8 test fixture
-template <int N> class LdMatrixM16N8TestT : public ::testing::Test {
-protected:
-  static constexpr int M16N8_ELEMENTS = 16 * 8;
-  static constexpr int NUM_REGS_PER_THREAD = N;
-  static constexpr int TOTAL_OUTPUT_SIZE = WARP_SIZE * N;
-
-  void SetUp() override {
-    h_output.resize(TOTAL_OUTPUT_SIZE);
-    cudaError_t err =
-        cudaMalloc(&d_output, TOTAL_OUTPUT_SIZE * sizeof(uint32_t));
-    ASSERT_EQ(err, cudaSuccess);
-  }
-
-  void TearDown() override {
-    if (d_output) {
-      cudaFree(d_output);
-      d_output = nullptr;
-    }
-  }
-
-  void runKernelAndCopyBack() {
-    ldmatrix_m16n8_test_kernel<N><<<1, BLOCK_SIZE>>>(d_output);
-    ASSERT_EQ(cudaGetLastError(), cudaSuccess);
-    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
-    cudaMemcpy(h_output.data(), d_output, TOTAL_OUTPUT_SIZE * sizeof(uint32_t),
-               cudaMemcpyDeviceToHost);
-  }
-
-  void computeExpectedOutput(std::vector<uint32_t> &expected) {
-    expected.resize(TOTAL_OUTPUT_SIZE);
-    std::vector<uint16_t> smem(M16N8_ELEMENTS * N);
-    for (int i = 0; i < M16N8_ELEMENTS * N; ++i) {
-      smem[i] = static_cast<uint16_t>(i);
-    }
-
-    // m16n8 fragment distribution
-    for (int lane_id = 0; lane_id < WARP_SIZE; ++lane_id) {
-      int row = lane_id / 4;
-      int col = (lane_id % 4) * 2;
-
-      for (int reg = 0; reg < N; ++reg) {
-        int matrix_idx = reg;
-        int smem_offset = matrix_idx * M16N8_ELEMENTS + row * 8 + col;
-        uint16_t lo = smem[smem_offset];
-        uint16_t hi = smem[smem_offset + 1];
-        expected[lane_id * N + reg] =
-            static_cast<uint32_t>(lo) | (static_cast<uint32_t>(hi) << 16);
-      }
-    }
-  }
-
-  void compareResults(const std::vector<uint32_t> &expected) {
-    for (int i = 0; i < TOTAL_OUTPUT_SIZE; ++i) {
-      EXPECT_EQ(h_output[i], expected[i])
-          << "M16N8 X" << N << " Mismatch at index " << i;
-    }
-  }
-
-  std::vector<uint32_t> h_output;
-  uint32_t *d_output = nullptr;
-};
-
-using LdMatrixM16N8X1Test = LdMatrixM16N8TestT<1>;
-using LdMatrixM16N8X2Test = LdMatrixM16N8TestT<2>;
-using LdMatrixM16N8X4Test = LdMatrixM16N8TestT<4>;
-
-TEST_F(LdMatrixM16N8X1Test, BasicLdMatrixM16N8X1) {
-  runKernelAndCopyBack();
-  std::vector<uint32_t> expected;
-  computeExpectedOutput(expected);
-  compareResults(expected);
-}
-
-TEST_F(LdMatrixM16N8X2Test, BasicLdMatrixM16N8X2) {
-  runKernelAndCopyBack();
-  std::vector<uint32_t> expected;
-  computeExpectedOutput(expected);
-  compareResults(expected);
-}
-
-TEST_F(LdMatrixM16N8X4Test, BasicLdMatrixM16N8X4) {
-  runKernelAndCopyBack();
-  std::vector<uint32_t> expected;
-  computeExpectedOutput(expected);
-  compareResults(expected);
-}
-
-// ============================================================================
-// m16n16 Shape Tests (16x16 matrix)
-// ============================================================================
-
-template <int N> __global__ void ldmatrix_m16n16_test_kernel(uint32_t *output) {
-  constexpr int M16N16_ELEMENTS = 16 * 16; // 256 elements
-  __shared__ __align__(16) uint16_t smem[M16N16_ELEMENTS * N];
-
-  const int lane_id = threadIdx.x % WARP_SIZE;
-
-  // Initialize shared memory
-  for (int i = 0; i < (M16N16_ELEMENTS * N + WARP_SIZE - 1) / WARP_SIZE; ++i) {
-    int idx = lane_id + i * WARP_SIZE;
-    if (idx < M16N16_ELEMENTS * N) {
-      smem[idx] = static_cast<uint16_t>(idx);
-    }
-  }
-  __syncthreads();
-
-  // Address calculation for m16n16
-  const int matrix_idx = lane_id / 8;
-  const int row = lane_id % 8;
-
-  const uint32_t smem_addr = static_cast<uint32_t>(__cvta_generic_to_shared(
-      &smem[matrix_idx * M16N16_ELEMENTS + row * 16]));
-
-  // ldmatrix for m16n16 shape
-  if constexpr (N == 1) {
-    uint32_t reg_value;
-    asm volatile("ldmatrix.sync.aligned.m16n16.x1.shared.b16 {%0}, [%1];\n"
-                 : "=r"(reg_value)
-                 : "r"(smem_addr));
-    output[lane_id] = reg_value;
-  } else if constexpr (N == 2) {
-    uint32_t reg0, reg1;
-    asm volatile("ldmatrix.sync.aligned.m16n16.x2.shared.b16 {%0, %1}, [%2];\n"
-                 : "=r"(reg0), "=r"(reg1)
-                 : "r"(smem_addr));
-    output[lane_id * 2] = reg0;
-    output[lane_id * 2 + 1] = reg1;
-  } else if constexpr (N == 4) {
-    uint32_t reg0, reg1, reg2, reg3;
-    asm volatile(
-        "ldmatrix.sync.aligned.m16n16.x4.shared.b16 {%0, %1, %2, %3}, [%4];\n"
-        : "=r"(reg0), "=r"(reg1), "=r"(reg2), "=r"(reg3)
-        : "r"(smem_addr));
-    output[lane_id * 4] = reg0;
-    output[lane_id * 4 + 1] = reg1;
-    output[lane_id * 4 + 2] = reg2;
-    output[lane_id * 4 + 3] = reg3;
-  }
-}
-
-template <int N> class LdMatrixM16N16TestT : public ::testing::Test {
-protected:
-  static constexpr int M16N16_ELEMENTS = 16 * 16;
-  static constexpr int TOTAL_OUTPUT_SIZE = WARP_SIZE * N;
-
-  void SetUp() override {
-    h_output.resize(TOTAL_OUTPUT_SIZE);
-    cudaMalloc(&d_output, TOTAL_OUTPUT_SIZE * sizeof(uint32_t));
-  }
-
-  void TearDown() override {
-    if (d_output)
-      cudaFree(d_output);
-  }
-
-  void runKernelAndCopyBack() {
-    ldmatrix_m16n16_test_kernel<N><<<1, BLOCK_SIZE>>>(d_output);
-    cudaDeviceSynchronize();
-    cudaMemcpy(h_output.data(), d_output, TOTAL_OUTPUT_SIZE * sizeof(uint32_t),
-               cudaMemcpyDeviceToHost);
-  }
-
-  void computeExpectedOutput(std::vector<uint32_t> &expected) {
-    expected.resize(TOTAL_OUTPUT_SIZE);
-    std::vector<uint16_t> smem(M16N16_ELEMENTS * N);
-    for (int i = 0; i < M16N16_ELEMENTS * N; ++i) {
-      smem[i] = static_cast<uint16_t>(i);
-    }
-
-    // m16n16 fragment distribution
-    for (int lane_id = 0; lane_id < WARP_SIZE; ++lane_id) {
-      int row = lane_id / 8;
-      int col = (lane_id % 8) * 2;
-
-      for (int reg = 0; reg < N; ++reg) {
-        int matrix_idx = reg;
-        int smem_offset = matrix_idx * M16N16_ELEMENTS + row * 16 + col;
-        uint16_t lo = smem[smem_offset];
-        uint16_t hi = smem[smem_offset + 1];
-        expected[lane_id * N + reg] =
-            static_cast<uint32_t>(lo) | (static_cast<uint32_t>(hi) << 16);
-      }
-    }
-  }
-
-  void compareResults(const std::vector<uint32_t> &expected) {
-    for (int i = 0; i < TOTAL_OUTPUT_SIZE; ++i) {
-      EXPECT_EQ(h_output[i], expected[i])
-          << "M16N16 X" << N << " Mismatch at index " << i;
-    }
-  }
-
-  std::vector<uint32_t> h_output;
-  uint32_t *d_output = nullptr;
-};
-
-using LdMatrixM16N16X1Test = LdMatrixM16N16TestT<1>;
-using LdMatrixM16N16X2Test = LdMatrixM16N16TestT<2>;
-using LdMatrixM16N16X4Test = LdMatrixM16N16TestT<4>;
-
-TEST_F(LdMatrixM16N16X1Test, BasicLdMatrixM16N16X1) {
-  runKernelAndCopyBack();
-  std::vector<uint32_t> expected;
-  computeExpectedOutput(expected);
-  compareResults(expected);
-}
-
-TEST_F(LdMatrixM16N16X2Test, BasicLdMatrixM16N16X2) {
-  runKernelAndCopyBack();
-  std::vector<uint32_t> expected;
-  computeExpectedOutput(expected);
-  compareResults(expected);
-}
-
-TEST_F(LdMatrixM16N16X4Test, BasicLdMatrixM16N16X4) {
-  runKernelAndCopyBack();
-  std::vector<uint32_t> expected;
-  computeExpectedOutput(expected);
-  compareResults(expected);
-}
-
-// ============================================================================
 // Transpose Tests (sanity checks for .trans modifier)
 // ============================================================================
 
@@ -911,199 +609,135 @@ protected:
 
 TEST_F(LdMatrixM8N8TransTest, TransposeLoadSanity) {
   runKernelAndCopyBack();
-  // Sanity check: just verify kernel executed without crash
-  // Full transpose validation would require detailed transpose semantics
-  EXPECT_NE(h_output[0], 0xFFFFFFFF); // Basic non-garbage check
+
+  // Verify exact values for transpose load
+  // Fragment position: (frag_row, frag_col) = (lane_id / 4, (lane_id % 4) * 2)
+  // For transpose: access transposed matrix at (frag_col, frag_row)
+  // - Column address comes from lane (col_index = (lane_id % 4))
+  // - Lanes 0-3 provide addresses for columns 0-3
+  // - Access rows: each row is 8 elements apart
+  for (int lane_id = 0; lane_id < WARP_SIZE; ++lane_id) {
+    int frag_row = lane_id / 4;           // fragment row position (0-7)
+    int frag_col_base = (lane_id % 4) * 2; // fragment column position (0,2,4,6)
+
+    int col_index = lane_id % 4;          // which column address (0-3)
+    int col_address_lane = col_index;     // lane providing column address
+
+    // For m8n8: 8 rows x 8 cols, smem[i] = i (row-major storage)
+    // Transpose accesses: (col, row) instead of (row, col)
+    // smem is initialized as smem[row * 8 + col] = row * 8 + col
+    // For transpose, we access smem[frag_col * 8 + frag_row]
+    uint16_t expected_lo = frag_col_base * 8 + frag_row;
+    uint16_t expected_hi = (frag_col_base + 1) * 8 + frag_row;
+    uint32_t expected = expected_lo | (expected_hi << 16);
+
+    EXPECT_EQ(h_output[lane_id], expected)
+        << "Mismatch at lane " << lane_id
+        << " (frag_row=" << frag_row << ", frag_col=" << frag_col_base << ")"
+        << ": expected " << std::hex << expected
+        << " (lo=" << expected_lo << ", hi=" << expected_hi << ")"
+        << ", got " << h_output[lane_id]
+        << " (lo=" << (h_output[lane_id] & 0xFFFF)
+        << ", hi=" << ((h_output[lane_id] >> 16) & 0xFFFF) << ")" << std::dec;
+  }
 }
 
-// Similar transpose sanity tests for m16n8 and m16n16 (abbreviated for brevity)
-
-__global__ void ldmatrix_m16n8_trans_test_kernel(uint32_t *output) {
-  constexpr int M16N8_ELEMENTS = 16 * 8;
-  __shared__ __align__(16) uint16_t smem[M16N8_ELEMENTS];
+// stmatrix transpose test
+__global__ void stmatrix_m8n8_trans_test_kernel(uint16_t *output) {
+  __shared__ __align__(16) uint16_t smem[MATRIX_ELEMENTS];
 
   const int lane_id = threadIdx.x % WARP_SIZE;
-  for (int i = lane_id; i < M16N8_ELEMENTS; i += WARP_SIZE) {
-    smem[i] = static_cast<uint16_t>(i);
-  }
-  __syncthreads();
 
-  const int row = lane_id % 8;
-  const uint32_t smem_addr =
-      static_cast<uint32_t>(__cvta_generic_to_shared(&smem[row * 8]));
-
-  uint32_t reg_value;
-  asm volatile("ldmatrix.sync.aligned.m16n8.x1.trans.shared.b16 {%0}, [%1];\n"
-               : "=r"(reg_value)
-               : "r"(smem_addr));
-  output[lane_id] = reg_value;
-}
-
-class LdMatrixM16N8TransTest : public ::testing::Test {
-protected:
-  void SetUp() override {
-    h_output.resize(WARP_SIZE);
-    cudaMalloc(&d_output, WARP_SIZE * sizeof(uint32_t));
-  }
-  void TearDown() override {
-    if (d_output)
-      cudaFree(d_output);
-  }
-  void runKernelAndCopyBack() {
-    ldmatrix_m16n8_trans_test_kernel<<<1, BLOCK_SIZE>>>(d_output);
-    cudaDeviceSynchronize();
-    cudaMemcpy(h_output.data(), d_output, WARP_SIZE * sizeof(uint32_t),
-               cudaMemcpyDeviceToHost);
-  }
-  std::vector<uint32_t> h_output;
-  uint32_t *d_output = nullptr;
-};
-
-TEST_F(LdMatrixM16N8TransTest, TransposeLoadSanity) {
-  runKernelAndCopyBack();
-  EXPECT_NE(h_output[0], 0xFFFFFFFF);
-}
-
-__global__ void ldmatrix_m16n16_trans_test_kernel(uint32_t *output) {
-  constexpr int M16N16_ELEMENTS = 16 * 16;
-  __shared__ __align__(16) uint16_t smem[M16N16_ELEMENTS];
-
-  const int lane_id = threadIdx.x % WARP_SIZE;
-  for (int i = lane_id; i < M16N16_ELEMENTS; i += WARP_SIZE) {
-    smem[i] = static_cast<uint16_t>(i);
-  }
-  __syncthreads();
-
-  const int row = lane_id % 8;
-  const uint32_t smem_addr =
-      static_cast<uint32_t>(__cvta_generic_to_shared(&smem[row * 16]));
-
-  uint32_t reg_value;
-  asm volatile("ldmatrix.sync.aligned.m16n16.x1.trans.shared.b16 {%0}, [%1];\n"
-               : "=r"(reg_value)
-               : "r"(smem_addr));
-  output[lane_id] = reg_value;
-}
-
-class LdMatrixM16N16TransTest : public ::testing::Test {
-protected:
-  void SetUp() override {
-    h_output.resize(WARP_SIZE);
-    cudaMalloc(&d_output, WARP_SIZE * sizeof(uint32_t));
-  }
-  void TearDown() override {
-    if (d_output)
-      cudaFree(d_output);
-  }
-  void runKernelAndCopyBack() {
-    ldmatrix_m16n16_trans_test_kernel<<<1, BLOCK_SIZE>>>(d_output);
-    cudaDeviceSynchronize();
-    cudaMemcpy(h_output.data(), d_output, WARP_SIZE * sizeof(uint32_t),
-               cudaMemcpyDeviceToHost);
-  }
-  std::vector<uint32_t> h_output;
-  uint32_t *d_output = nullptr;
-};
-
-TEST_F(LdMatrixM16N16TransTest, TransposeLoadSanity) {
-  runKernelAndCopyBack();
-  EXPECT_NE(h_output[0], 0xFFFFFFFF);
-}
-
-// ============================================================================
-// b8 (8-bit) Type Tests
-// ============================================================================
-
-__global__ void ldmatrix_m8n8_b8_test_kernel(uint32_t *output) {
-  __shared__ __align__(16) uint8_t smem[MATRIX_ELEMENTS];
-
-  const int lane_id = threadIdx.x % WARP_SIZE;
+  // Initialize shared memory to zeros
   for (int i = lane_id; i < MATRIX_ELEMENTS; i += WARP_SIZE) {
-    smem[i] = static_cast<uint8_t>(i);
+    smem[i] = 0;
   }
   __syncthreads();
 
+  // Each thread computes its register value based on fragment distribution
+  // For m8n8: matrix_row_id = lane_id / 4, col_offset = (lane_id % 4) * 2
+  int matrix_row_id = lane_id / 4;
+  int col_offset = (lane_id % 4) * 2;
+
+  // Pack two elements into a 32-bit register
+  // Use values that make it easy to verify transpose
+  uint16_t elem_lo = matrix_row_id * 10 + col_offset;
+  uint16_t elem_hi = matrix_row_id * 10 + col_offset + 1;
+  uint32_t reg_value = elem_lo | (elem_hi << 16);
+
+  // Calculate address for stmatrix (row-based addressing)
   const int row = lane_id % 8;
   const uint32_t smem_addr =
       static_cast<uint32_t>(__cvta_generic_to_shared(&smem[row * MATRIX_DIM]));
 
-  uint32_t reg_value;
-  asm volatile("ldmatrix.sync.aligned.m8n8.x1.shared.b8 {%0}, [%1];\n"
-               : "=r"(reg_value)
-               : "r"(smem_addr));
-  output[lane_id] = reg_value;
-}
+  // Use stmatrix with .trans modifier
+  asm volatile("stmatrix.sync.aligned.x1.m8n8.trans.shared.b16 [%0], {%1};\n"
+               :
+               : "r"(smem_addr), "r"(reg_value));
 
-class LdMatrixM8N8B8Test : public ::testing::Test {
-protected:
-  void SetUp() override {
-    h_output.resize(WARP_SIZE);
-    cudaMalloc(&d_output, WARP_SIZE * sizeof(uint32_t));
-  }
-  void TearDown() override {
-    if (d_output)
-      cudaFree(d_output);
-  }
-  void runKernelAndCopyBack() {
-    ldmatrix_m8n8_b8_test_kernel<<<1, BLOCK_SIZE>>>(d_output);
-    cudaDeviceSynchronize();
-    cudaMemcpy(h_output.data(), d_output, WARP_SIZE * sizeof(uint32_t),
-               cudaMemcpyDeviceToHost);
-  }
-  std::vector<uint32_t> h_output;
-  uint32_t *d_output = nullptr;
-};
-
-TEST_F(LdMatrixM8N8B8Test, BasicLdMatrixB8) {
-  runKernelAndCopyBack();
-  // Verify b8 packing: 4 bytes per register instead of 2 for b16
-  EXPECT_NE(h_output[0], 0xFFFFFFFF);
-}
-
-__global__ void ldmatrix_m16n8_b8_test_kernel(uint32_t *output) {
-  constexpr int M16N8_ELEMENTS = 16 * 8;
-  __shared__ __align__(16) uint8_t smem[M16N8_ELEMENTS];
-
-  const int lane_id = threadIdx.x % WARP_SIZE;
-  for (int i = lane_id; i < M16N8_ELEMENTS; i += WARP_SIZE) {
-    smem[i] = static_cast<uint8_t>(i);
-  }
   __syncthreads();
 
-  const int row = lane_id % 8;
-  const uint32_t smem_addr =
-      static_cast<uint32_t>(__cvta_generic_to_shared(&smem[row * 8]));
-
-  uint32_t reg_value;
-  asm volatile("ldmatrix.sync.aligned.m16n8.x1.shared.b8 {%0}, [%1];\n"
-               : "=r"(reg_value)
-               : "r"(smem_addr));
-  output[lane_id] = reg_value;
+  // Copy shared memory to output for verification
+  for (int i = lane_id; i < MATRIX_ELEMENTS; i += WARP_SIZE) {
+    output[i] = smem[i];
+  }
 }
 
-class LdMatrixM16N8B8Test : public ::testing::Test {
+class StMatrixM8N8TransTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    h_output.resize(WARP_SIZE);
-    cudaMalloc(&d_output, WARP_SIZE * sizeof(uint32_t));
+    h_output.resize(MATRIX_ELEMENTS);
+    cudaMalloc(&d_output, MATRIX_ELEMENTS * sizeof(uint16_t));
   }
+
   void TearDown() override {
     if (d_output)
       cudaFree(d_output);
   }
+
   void runKernelAndCopyBack() {
-    ldmatrix_m16n8_b8_test_kernel<<<1, BLOCK_SIZE>>>(d_output);
+    stmatrix_m8n8_trans_test_kernel<<<1, BLOCK_SIZE>>>(d_output);
     cudaDeviceSynchronize();
-    cudaMemcpy(h_output.data(), d_output, WARP_SIZE * sizeof(uint32_t),
+    cudaMemcpy(h_output.data(), d_output, MATRIX_ELEMENTS * sizeof(uint16_t),
                cudaMemcpyDeviceToHost);
   }
-  std::vector<uint32_t> h_output;
-  uint32_t *d_output = nullptr;
+
+  std::vector<uint16_t> h_output;
+  uint16_t *d_output = nullptr;
 };
 
-TEST_F(LdMatrixM16N8B8Test, BasicLdMatrixM16N8B8) {
+TEST_F(StMatrixM8N8TransTest, TransposeStoreSanity) {
   runKernelAndCopyBack();
-  EXPECT_NE(h_output[0], 0xFFFFFFFF);
+
+  // Verify transpose storage
+  // For transpose: thread provides column address, stores to rows
+  // Fragment position: (frag_row, frag_col) = (lane_id / 4, (lane_id % 4) * 2)
+  // Register contains: elem_lo = frag_row * 10 + frag_col, elem_hi = frag_row * 10 + frag_col + 1
+  // Memory access for transpose: (frag_col, frag_row) instead of (frag_row, frag_col)
+
+  // Build expected output matrix
+  std::vector<uint16_t> expected(MATRIX_ELEMENTS, 0);
+  for (int lane_id = 0; lane_id < WARP_SIZE; ++lane_id) {
+    int frag_row = lane_id / 4;           // fragment row position (0-7)
+    int frag_col_base = (lane_id % 4) * 2; // fragment column position (0,2,4,6)
+
+    // Values from register (set in kernel)
+    uint16_t elem_lo = frag_row * 10 + frag_col_base;
+    uint16_t elem_hi = frag_row * 10 + frag_col_base + 1;
+
+    // For transpose: store at memory position (frag_col, frag_row)
+    // smem[frag_col * 8 + frag_row] for first element
+    // smem[(frag_col+1) * 8 + frag_row] for second element
+    expected[frag_col_base * MATRIX_DIM + frag_row] = elem_lo;
+    expected[(frag_col_base + 1) * MATRIX_DIM + frag_row] = elem_hi;
+  }
+
+  // Verify the stored values
+  for (int i = 0; i < MATRIX_ELEMENTS; ++i) {
+    EXPECT_EQ(h_output[i], expected[i])
+        << "Mismatch at index " << i << " (row " << i / MATRIX_DIM
+        << ", col " << i % MATRIX_DIM << "): expected " << expected[i]
+        << ", got " << h_output[i];
+  }
 }
 
-#endif  // End of DISABLED tests (m16n8, m16n16, .trans, .b8)

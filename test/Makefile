@@ -8,7 +8,8 @@
 CXX = g++
 NVCC = nvcc
 CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -g -O2
-NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -arch=sm_120
+# Note: sm_120a enables advanced SM 12.0 features including ldmatrix/stmatrix .trans modifier
+NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -arch=sm_120a
 
 # CUDA settings
 CUDA_INSTALL_PATH ?= /usr/local/cuda

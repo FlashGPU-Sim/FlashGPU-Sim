@@ -8,6 +8,20 @@ MMA instructions are warp-level matrix operations for tensor cores, as defined i
 
 Reference: [PTX ISA - Warp-Level Matrix Instructions for MMA](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?highlight=tensormap%2520replace#warp-level-matrix-instructions-for-mma)
 
+## Related Instructions: ldmatrix/stmatrix
+
+For tensor core memory operations (loading/storing matrix tiles to/from shared memory), see:
+
+**[ldmatrix/stmatrix Instructions](ldmatrix_instructions.md)**
+
+The `ldmatrix` and `stmatrix` instructions provide cooperative, warp-level memory operations specifically designed for tensor core workflows. They handle fragment distribution and data packing for all supported matrix shapes (m8n8, m16n8, m16n16) with transpose and multi-type support (b16, b8).
+
+**Key differences:**
+- **MMA instructions** (this document): Compute operations (matrix multiply-accumulate)
+- **ldmatrix/stmatrix** (separate doc): Memory operations (load/store matrix tiles)
+
+Both instruction families work together in tensor core kernels: ldmatrix loads data, MMA computes, stmatrix stores results.
+
 ## MMA vs WMMA
 
 | Aspect | WMMA (Existing) | MMA (This Implementation) |

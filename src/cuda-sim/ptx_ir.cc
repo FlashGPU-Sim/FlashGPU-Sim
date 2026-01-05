@@ -1598,6 +1598,7 @@ ptx_instruction::ptx_instruction(
       case BULK_GROUP_OPTION:
       case CLUSTER_OPTION:
       case M8N8_OPTION:
+      case TRANS_OPTION:
       case X1_OPTION:
       case X2_OPTION:
       case X4_OPTION:

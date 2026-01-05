@@ -267,6 +267,7 @@ class ptx_recognizer;
 %token	CLUSTER_OPTION;
 %token	INVAL_OPTION;
 %token	M8N8_OPTION;
+%token	TRANS_OPTION;
 %token	X1_OPTION;
 %token	X2_OPTION;
 %token	X4_OPTION;
@@ -619,6 +620,7 @@ option: type_spec
 	| CLUSTER_OPTION { recognizer->add_option(CLUSTER_OPTION); }
 	| INVAL_OPTION { recognizer->add_option(INVAL_OPTION); }
 	| M8N8_OPTION { recognizer->add_option(M8N8_OPTION); }
+	| TRANS_OPTION { recognizer->add_option(TRANS_OPTION); }
 	| X1_OPTION { recognizer->add_option(X1_OPTION); }
 	| X2_OPTION { recognizer->add_option(X2_OPTION); }
 	| X4_OPTION { recognizer->add_option(X4_OPTION); }
