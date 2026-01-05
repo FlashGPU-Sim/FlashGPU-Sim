@@ -87,6 +87,22 @@ run_test "Invalid config name is rejected" \
     "! $TEST_SCRIPT run --config INVALID_CONFIG_NAME 2>&1 | grep -qi 'error\|not found\|invalid' || \
      $TEST_SCRIPT run --config INVALID_CONFIG_NAME &>/dev/null && false || true"
 
+# Doc-guard tests for test configuration matrix (issue #28)
+run_test "Test configuration matrix file exists" \
+    "[ -f '$SCRIPT_DIR/../docs/test-configuration-matrix.md' ]"
+
+run_test "Matrix documents SM120_RTX5090 config" \
+    "grep -q 'SM120_RTX5090' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
+
+run_test "Matrix documents SM120_RTX5090_REDUCED config" \
+    "grep -q 'SM120_RTX5090_REDUCED' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
+
+run_test "Matrix documents excluded test CPAsyncMethod" \
+    "grep -q 'CPAsyncMethod' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
+
+run_test "Matrix documents excluded test PerformanceComparison" \
+    "grep -q 'PerformanceComparison' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
+
 echo "========================================="
 echo "Test Results: $passed_tests/$total_tests passed"
 echo "========================================="

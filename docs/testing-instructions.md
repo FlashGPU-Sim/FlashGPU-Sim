@@ -72,6 +72,21 @@ This displays the actual test suite and test case names from the compiled test b
 source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*MMA*"
 ```
 
+## Test Status & Configuration Matrix
+
+For a comprehensive view of all test suites, their recommended configurations, and current status, see:
+- **[Test Configuration Matrix](test-configuration-matrix.md)** - Complete test suite reference
+
+**Quick reference:**
+- MMA tests → Use `SM120_RTX5090_REDUCED` (single-block functionality tests)
+- Other tests → Use `SM120_RTX5090` (full validation)
+
+**Excluded tests:** Currently, 2 tests are excluded due to unimplemented features:
+- `TMA.CPAsyncMethod` - Uses unimplemented `cp.async` instruction
+- `TMA.PerformanceComparison` - Internally calls CPAsyncMethod
+
+These exclusions are hard-coded in `test/run_tests.sh` and are automatically skipped during test runs.
+
 ## Test Organization
 
 Tests for MMA (Matrix Multiply-Accumulate) instructions:

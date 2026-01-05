@@ -75,6 +75,15 @@ The test framework supports multiple GPU configurations for different testing sc
 - **SM120_RTX5090**: Full validation, performance testing, comprehensive test runs
 - **SM120_RTX5090_REDUCED**: Quick smoke tests, development iterations, CI/CD pipelines
 
+### Configuration Matrix
+
+For detailed test-to-configuration mapping and test status, see:
+- **[docs/test-configuration-matrix.md](../docs/test-configuration-matrix.md)** - Complete test suite reference
+
+**Recommended config rule:**
+- MMA tests (single-block functionality) → `SM120_RTX5090_REDUCED`
+- Other tests (multi-block validation) → `SM120_RTX5090`
+
 ### Adding Custom Configurations
 
 1. Create config directory: `configs/YOUR_CONFIG_NAME/`
