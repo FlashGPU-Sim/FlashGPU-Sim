@@ -157,22 +157,25 @@ Saturated = 127 (max value for S8)
 
 ```
 src/cuda-sim/
-├── ptx.l                   # Lexer - NEW MMA tokens
-├── ptx.y                   # Parser - NEW MMA grammar rules
-├── ptx_ir.h                # NEW mma_type enum, mma_layout_mode enum
-├── opcodes.def             # NEW TENSOR_MMA_* opcodes
-├── instructions.cc         # NEW tensor_mma_impl() functions
-└── cuda-sim.cc             # NEW case statements for TENSOR_MMA_*
+├── ptx.l                   # Lexer - MMA tokens
+├── ptx.y                   # Parser - MMA grammar rules
+├── ptx_ir.h                # mma_type enum, mma_layout_mode enum
+├── opcodes.def             # TENSOR_MMA_* opcodes
+├── instructions.cc         # Dispatcher to flash MMA implementations
+└── cuda-sim.cc             # Case statements for TENSOR_MMA_*
 
-test/
-├── src/
-│   ├── unit/
-│   │   └── tensor_mma_test.cc         # NEW MMA unit tests
-│   └── integration/
-│       └── cuda_tensor_mma_test.cc    # NEW MMA integration tests
-└── kernels/
-    ├── tensor_mma_f16_m16n8k8.ptx     # NEW test kernels
-    └── ...
+src/gpgpu-sim/flash/mma/
+├── tensor_mma.h            # MMA public interface
+├── tensor_mma.cc           # Main dispatcher + shared helpers
+├── mma_f16.cc              # F16/BF16 implementations
+├── mma_tf32.cc             # TF32 implementation
+└── mma_s8.cc               # S8/U8 implementations
+
+test/src/integration/mma/
+├── cuda_mma_f16_test.cc    # F16 MMA integration tests
+├── cuda_mma_bf16_test.cc   # BF16 MMA integration tests
+├── cuda_mma_tf32_test.cc   # TF32 MMA integration tests
+└── cuda_mma_s8_test.cc     # S8/U8 MMA integration tests
 ```
 
 ### Naming Conventions

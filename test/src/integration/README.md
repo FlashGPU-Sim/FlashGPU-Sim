@@ -58,7 +58,9 @@ test/run_tests.sh run 'MMAF16M16N8K8IntegrationTest.AllOnesTest'
 
 ### Tensor Core MMA Tests
 
-#### F16 Tests (`cuda_mma_f16_test.cc`)
+Located in `test/src/integration/mma/` subdirectory:
+
+#### F16 Tests (`mma/cuda_mma_f16_test.cc`)
 - Tests F16 (half-precision float) MMA operations with M16N8K8 shape
 - Test cases:
   - AllOnesTest: Uniform inputs (all 1.0)
@@ -69,14 +71,14 @@ test/run_tests.sh run 'MMAF16M16N8K8IntegrationTest.AllOnesTest'
 
 **Fragment distribution**: Each thread holds 4 F16 values for A, 2 for B, 4 F32 for C/D
 
-#### BF16 Tests (`cuda_mma_bf16_test.cc`)
+#### BF16 Tests (`mma/cuda_mma_bf16_test.cc`)
 - Tests BF16 (bfloat16) MMA operations with M16N8K8 shape
 - BF16: 1 sign bit, 8 exponent bits, 7 mantissa bits
 - Wider dynamic range than F16, preferred for ML training
 
 **Fragment distribution**: Same as F16 (4 BF16 for A, 2 for B, 4 F32 for C/D)
 
-#### TF32 Tests (`cuda_mma_tf32_test.cc`)
+#### TF32 Tests (`mma/cuda_mma_tf32_test.cc`)
 - Tests TF32 (TensorFloat-32) MMA operations with M16N8K4 shape
 - TF32: 1 sign bit, 8 exponent bits, 10 mantissa bits
 - Uses `b32` registers for A/B fragments (not `f32`)
@@ -84,7 +86,7 @@ test/run_tests.sh run 'MMAF16M16N8K8IntegrationTest.AllOnesTest'
 
 **Fragment distribution**: Each thread holds 2 TF32 for A, 1 for B, 4 F32 for C/D
 
-#### S8 Tests (`cuda_mma_s8_test.cc`)
+#### S8 Tests (`mma/cuda_mma_s8_test.cc`)
 - Tests S8 (signed 8-bit integer) MMA operations with M16N8K16 shape
 - Includes saturation tests (clamp to [-128, 127])
 - Integer accumulation in S32 format
@@ -204,7 +206,7 @@ If test results are all zeros:
 
 When adding support for new MMA shapes or data types:
 
-1. **Create test file**: `cuda_mma_<type>_test.cc`
+1. **Create test file**: `mma/cuda_mma_<type>_test.cc`
 2. **Define test fixture**: Inherit from `::testing::Test`
 3. **Implement reference**: CPU implementation with proper type rounding
 4. **Write test cases**: At least 5 tests (all-ones, zeros, identity, random, edge cases)
@@ -213,6 +215,6 @@ When adding support for new MMA shapes or data types:
 ## References
 
 - Test execution: `docs/testing-instructions.md`
-- MMA implementation: `src/gpgpu-sim/flash/tensor_mma.{h,cc,md}`
+- MMA implementation: `src/gpgpu-sim/flash/mma/tensor_mma.{h,cc,md}`
 - PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)
 - Google Test: [Testing framework documentation](https://google.github.io/googletest/)

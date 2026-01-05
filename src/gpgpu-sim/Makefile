@@ -71,7 +71,7 @@ OEXT = o
 
 OUTPUT_DIR=$(SIM_OBJ_FILES_DIR)/gpgpu-sim
 
-SRCS = $(shell ls *.cc) $(shell ls flash/*.cc)
+SRCS = $(shell ls *.cc) $(shell ls flash/*.cc) $(shell ls flash/mma/*.cc)
 
 ifeq ($(FLASH_GEM_FORGE),1)
 SRCS += $(shell ls flash/gem5/*.cc)
@@ -94,6 +94,9 @@ libgpu_uarch_sim.a:$(OBJS)
 $(OUTPUT_DIR)/flash:
 	mkdir -p $(OUTPUT_DIR)/flash
 
+$(OUTPUT_DIR)/flash/mma:
+	mkdir -p $(OUTPUT_DIR)/flash/mma
+
 $(OUTPUT_DIR)/flash/gem5:
 	mkdir -p $(OUTPUT_DIR)/flash/gem5
 
@@ -109,6 +112,10 @@ $(OUTPUT_DIR)/%.$(OEXT): %.cc
 
 # Specific rule for flash subdirectory
 $(OUTPUT_DIR)/flash/%.$(OEXT): flash/%.cc | $(OUTPUT_DIR)/flash
+	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
+
+# Specific rule for flash/mma subdirectory
+$(OUTPUT_DIR)/flash/mma/%.$(OEXT): flash/mma/%.cc | $(OUTPUT_DIR)/flash/mma
 	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
 
 # Specific rule for flash/gem5 subdirectory
