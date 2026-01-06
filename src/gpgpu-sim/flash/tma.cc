@@ -497,7 +497,7 @@ private:
     // Debug counters
     uint32_t m_mf_issued_count = 0;   // Number of mem_fetch requests issued
     uint32_t m_mf_received_count = 0; // Number of mem_fetch responses received
-    
+
     void reset() {
       m_thread = nullptr;
       m_inst = nullptr;
@@ -598,46 +598,37 @@ public:
       m_response_fifo.pop_front();
       assert(mf->get_access_type() == TMA_ACC_R);
 
-      // Handle both top-level TMA requests and sector sub-requests from L2 cache
-      // If mf is a sector sub-request, get_original_mf() points to the parent
-      // If mf is a top-level request, get_original_mf() is NULL, so use mf itself
       mem_fetch *parent_mf = mf->get_original_mf() ? mf->get_original_mf() : mf;
       auto mf_it = m_mf_to_tx.find(parent_mf->get_request_uid());
 
-      // Late response: transaction already completed, cleanup and continue
-      if (mf_it == m_mf_to_tx.end()) {
-        delete mf;
-      } else {
-        auto tx_uid = mf_it->second;
-        auto tx_it = m_transactions.find(tx_uid);
+      assert(mf_it != m_mf_to_tx.end());
+      unsigned tx_uid = mf_it->second;
+      auto tx_it = m_transactions.find(tx_uid);
 
-        // Orphaned mapping: transaction removed but mapping remains, cleanup and continue
-        if (tx_it == m_transactions.end()) {
-          m_mf_to_tx.erase(mf_it);
-          delete mf;
-        } else {
-          // Normal path: process the response
-          auto &tx = tx_it->second;
-          tx.m_mf_received_count++;
+      assert(tx_it != m_transactions.end());
+      auto &tx = tx_it->second;
+      tx.m_mf_received_count++;
 
-          GPPRINTF_TMA(TMA, "TMA response received for mf uid=%u, tx_uid=%u, data_size=%u, response fifo size=%lu\n",
-                     mf->get_request_uid(),  tx_uid, mf->get_data_size(), m_response_fifo.size());
+      GPPRINTF_TMA(TMA, "TMA response received for mf uid=%u, tx_uid=%u, data_size=%u, response fifo size=%lu\n",
+            mf->get_request_uid(),  tx_uid, mf->get_data_size(), m_response_fifo.size());
 
-          // Validate destination space
-          if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
-            assert(false && "Unsupported TMA destination space: CLUSTER");
-          } else if (tx.m_static_info.dst_space != inst_t::tma_static_info_t::TMA_SHARED_CTA) {
-            assert(false && "Unrecognized TMA destination space");
-          }
+      // Validate destination space
+      if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
+        assert(false && "Unsupported TMA destination space: CLUSTER");
+      } else if (tx.m_static_info.dst_space != inst_t::tma_static_info_t::TMA_SHARED_CTA) {
+        assert(false && "Unrecognized TMA destination space");
+      }
+      // Count bytes: use min(mf_size, parent_size) to handle L2 sector subdivision
+      unsigned mf_size = mf->get_data_size();
+      unsigned parent_size = parent_mf->get_data_size();
+      unsigned bytes_to_add = (mf_size > parent_size) ? parent_size : mf_size;
+      tx.m_bytes_completed += bytes_to_add;
 
-          // Write data to shared memory and track completion
-          tx.m_bytes_completed += mf->get_data_size();
-
-          // Check if transaction is complete
-          if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
-            auto thread = tx.m_thread;
-            unsigned cta_id = thread->get_hw_ctaid();
-            unsigned warp_id = thread->get_hw_wid();
+      // Check if transaction is complete
+      if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
+        auto thread = tx.m_thread;
+        unsigned cta_id = thread->get_hw_ctaid();
+        unsigned warp_id = thread->get_hw_wid();
 
             GPPRINTF_TMA(TMA, "[TMA COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, issued_mf=%u, received_mf=%u, bytes_completed=%u/%u\n",
                    tx_uid, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
@@ -651,16 +642,22 @@ public:
                               tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
                               tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
 
-            m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-                                   tx.m_dyn_info.size_in_bytes);
+                              m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+                               tx.m_dyn_info.size_in_bytes);
 
-            m_transactions.erase(tx_it);
-            m_mf_to_tx.erase(mf_it);
+        m_transactions.erase(tx_it);
+
+        // Remove all mappings for this transaction
+        for (auto it = m_mf_to_tx.begin(); it != m_mf_to_tx.end(); ) {
+          if (it->second == tx_uid) {
+            it = m_mf_to_tx.erase(it);
+          } else {
+            ++it;
           }
-
-          delete mf;
         }
       }
+
+      delete mf;
     }
 
     // issue memory requests using shadow stride accumulation
