@@ -598,13 +598,27 @@ public:
       m_response_fifo.pop_front();
       assert(mf->get_access_type() == TMA_ACC_R);
 
-      auto mf_it = m_mf_to_tx.find(mf->get_original_mf()->get_request_uid());
-      assert(mf_it != m_mf_to_tx.end());
-      auto tx_uid = mf_it->second;
+      // Handle both top-level TMA requests and sector sub-requests from L2 cache
+      // If mf is a sector sub-request, get_original_mf() points to the parent
+      // If mf is a top-level request, get_original_mf() is NULL, so use mf itself
+      mem_fetch *parent_mf = mf->get_original_mf() ? mf->get_original_mf() : mf;
+      auto mf_it = m_mf_to_tx.find(parent_mf->get_request_uid());
 
-      auto tx_it = m_transactions.find(tx_uid);
-      assert(tx_it != m_transactions.end());
-      auto &tx = tx_it->second;
+      // The transaction may have already completed (if this is a late response)
+      if (mf_it == m_mf_to_tx.end()) {
+        delete mf;
+      } else {
+        auto tx_uid = mf_it->second;
+        auto tx_it = m_transactions.find(tx_uid);
+
+        // Transaction may have been completed and removed already
+        if (tx_it == m_transactions.end()) {
+          // Clean up this mapping entry
+          m_mf_to_tx.erase(mf_it);
+          delete mf;
+        } else {
+          // Process the response normally
+          auto &tx = tx_it->second;
 
       // Count mem_fetch responses for this transaction
       tx.m_mf_received_count++;
@@ -638,7 +652,7 @@ public:
           m_barriers->complete_tx(
               cta_id, warp_id, tx.m_dyn_info.mbar_addr,
               tx.m_dyn_info.size_in_bytes);
-      
+
           m_transactions.erase(tx_it);
           m_mf_to_tx.erase(mf_it);
         } 
@@ -650,6 +664,8 @@ public:
       } else {
         assert(false && "Unrecognized TMA destination space");
       }
+        }  // end of "else" for transaction found
+      }  // end of "else" for mapping found
     }
 
     // issue memory requests using shadow stride accumulation
@@ -666,15 +682,37 @@ public:
         
         // Use AGU Unit to generate next address
         if (m_agu.gen_next_req(tx.agu_state, addr, size)) {
-          
+
           // Count mem_fetch issued for this transaction
           if (tx.m_mf_issued_count == 0) {
             GPPRINTF_TMA(TMA, "[TMA AGU] tx_uid=%u starting to issue mem_fetch requests\n", tx_uid);
             fflush(stdout);
           }
           tx.m_mf_issued_count++;
-          
-          mem_access_t access(TMA_ACC_R, addr, size, false, 
+
+          // Compute byte mask and sector mask for this TMA request
+          // TMA requests are up to 128 bytes (MAX_MEMORY_ACCESS_SIZE)
+          // Each sector is 32 bytes (SECTOR_SIZE), 4 sectors total (SECTOR_CHUNCK_SIZE)
+          mem_access_byte_mask_t byte_mask;
+          mem_access_sector_mask_t sector_mask;
+
+          // Set byte mask for the requested bytes
+          unsigned start_byte = addr % MAX_MEMORY_ACCESS_SIZE;
+          for (unsigned i = 0; i < size; i++) {
+            byte_mask.set((start_byte + i) % MAX_MEMORY_ACCESS_SIZE);
+          }
+
+          // Set sector mask based on which 32-byte sectors are accessed
+          unsigned start_sector = start_byte / SECTOR_SIZE;
+          unsigned end_sector = (start_byte + size - 1) / SECTOR_SIZE;
+          for (unsigned i = start_sector; i <= end_sector && i < SECTOR_CHUNCK_SIZE; i++) {
+            sector_mask.set(i);
+          }
+
+          active_mask_t active_mask; // Empty mask for TMA (not warp-based)
+
+          mem_access_t access(TMA_ACC_R, addr, size, false,
+                              active_mask, byte_mask, sector_mask,
                               m_shader_ctx->get_gpu()->gpgpu_ctx);
 
           mem_fetch *mf =
