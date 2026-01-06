@@ -592,7 +592,7 @@ public:
 
   void cycle() {
 
-    // check response fifo
+    // Process pending TMA responses
     if (!m_response_fifo.empty()) {
       mem_fetch *mf = m_response_fifo.front();
       m_response_fifo.pop_front();
@@ -604,68 +604,63 @@ public:
       mem_fetch *parent_mf = mf->get_original_mf() ? mf->get_original_mf() : mf;
       auto mf_it = m_mf_to_tx.find(parent_mf->get_request_uid());
 
-      // The transaction may have already completed (if this is a late response)
+      // Late response: transaction already completed, cleanup and continue
       if (mf_it == m_mf_to_tx.end()) {
         delete mf;
       } else {
         auto tx_uid = mf_it->second;
         auto tx_it = m_transactions.find(tx_uid);
 
-        // Transaction may have been completed and removed already
+        // Orphaned mapping: transaction removed but mapping remains, cleanup and continue
         if (tx_it == m_transactions.end()) {
-          // Clean up this mapping entry
           m_mf_to_tx.erase(mf_it);
           delete mf;
         } else {
-          // Process the response normally
+          // Normal path: process the response
           auto &tx = tx_it->second;
+          tx.m_mf_received_count++;
 
-      // Count mem_fetch responses for this transaction
-      tx.m_mf_received_count++;
-      
-      GPPRINTF_TMA(TMA, "TMA response received for mf uid=%u, tx_uid=%u, data_size=%u, response fifo size=%lu\n",
-                 mf->get_request_uid(),  tx_uid, mf->get_data_size(), m_response_fifo.size());
+          GPPRINTF_TMA(TMA, "TMA response received for mf uid=%u, tx_uid=%u, data_size=%u, response fifo size=%lu\n",
+                     mf->get_request_uid(),  tx_uid, mf->get_data_size(), m_response_fifo.size());
 
-      if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CTA) {
-        // TMA would attempt to write data to shared memory once receive mf response
-        // ! assume no shared memory bank conflict for simplicity
-        tx.m_bytes_completed += mf->get_data_size();
+          // Validate destination space
+          if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
+            assert(false && "Unsupported TMA destination space: CLUSTER");
+          } else if (tx.m_static_info.dst_space != inst_t::tma_static_info_t::TMA_SHARED_CTA) {
+            assert(false && "Unrecognized TMA destination space");
+          }
 
-        if ( tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes ) {
-          auto thread = tx.m_thread;
-          unsigned cta_id = thread->get_hw_ctaid();
-          unsigned warp_id = thread->get_hw_wid();
-          
-          GPPRINTF_TMA(TMA, "[TMA COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, issued_mf=%u, received_mf=%u, bytes_completed=%u/%u, calling complete_tx with %u bytes\n",
-                 tx_uid, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-                 tx.m_mf_issued_count, tx.m_mf_received_count,
-                 tx.m_bytes_completed, tx.m_dyn_info.size_in_bytes,
-                 tx.m_dyn_info.size_in_bytes);
-          fflush(stdout);
-          
-          GPPRINTF_TMA(TMA,
-                            "Complete transaction dst=0x%llx, src=0x%llx, "
-                            "size_in_bytes=%u, mbar=0x%x, tx_uid=%u \n",
-                            tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-                            tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
+          // Write data to shared memory and track completion
+          tx.m_bytes_completed += mf->get_data_size();
 
-          m_barriers->complete_tx(
-              cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-              tx.m_dyn_info.size_in_bytes);
+          // Check if transaction is complete
+          if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
+            auto thread = tx.m_thread;
+            unsigned cta_id = thread->get_hw_ctaid();
+            unsigned warp_id = thread->get_hw_wid();
 
-          m_transactions.erase(tx_it);
-          m_mf_to_tx.erase(mf_it);
-        } 
+            GPPRINTF_TMA(TMA, "[TMA COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, issued_mf=%u, received_mf=%u, bytes_completed=%u/%u\n",
+                   tx_uid, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+                   tx.m_mf_issued_count, tx.m_mf_received_count,
+                   tx.m_bytes_completed, tx.m_dyn_info.size_in_bytes);
+            fflush(stdout);
 
-        delete mf;
+            GPPRINTF_TMA(TMA,
+                              "Complete transaction dst=0x%llx, src=0x%llx, "
+                              "size_in_bytes=%u, mbar=0x%x, tx_uid=%u\n",
+                              tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+                              tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
 
-      } else if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
-        assert(false && "Unsupported TMA destination space");
-      } else {
-        assert(false && "Unrecognized TMA destination space");
+            m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+                                   tx.m_dyn_info.size_in_bytes);
+
+            m_transactions.erase(tx_it);
+            m_mf_to_tx.erase(mf_it);
+          }
+
+          delete mf;
+        }
       }
-        }  // end of "else" for transaction found
-      }  // end of "else" for mapping found
     }
 
     // issue memory requests using shadow stride accumulation

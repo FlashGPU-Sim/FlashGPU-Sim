@@ -143,26 +143,31 @@ Check that tensor addition produces correct results for all dimensions (1D, 2D, 
 
 ## Known Issues and Fixes
 
-### Issue #31: 4D/5D TMA Parser and Memory System Support
+### Multi-Dimensional TMA Support (1D-5D)
 
-**Problem**: GPGPU-Sim failed to run `kernel_add_4d_launch4` and `kernel_add_5d_launch5` due to:
-1. Missing parser support for 5-element coordinate vectors
-2. TMA memory requests lacking proper byte/sector masks
-3. TMA response handler not handling late responses from multi-mem_fetch transactions
+**Overview**: GPGPU-Sim supports TMA operations for 1D through 5D tensors with proper L2 cache integration and asynchronous response handling.
 
-**Root Causes**:
-1. PTX parser (`src/cuda-sim/ptx.y`) lacked grammar for 5-element vectors needed for 5D coordinates
-2. TMA AGU created mem_fetch without byte_mask/sector_mask, causing L2 cache assertion: `assert(0 && "no mf sent")`
-3. TMA transactions issue multiple mem_fetch requests via AGU, but completion logic erased transaction while responses were still in flight, causing crash when late responses arrived
+**Technical Challenges**:
+1. **High-dimensional coordinates**: 5D tensors require 5-element coordinate vectors in PTX
+2. **L2 cache integration**: TMA memory requests must specify byte and sector masks for proper cache line handling
+3. **Asynchronous responses**: TMA transactions may issue multiple mem_fetch requests, with responses arriving after transaction completion
 
-**Fixes Applied** (commits e20b0ffa + current):
-- **Parser**: Added 5-vector operand grammar in `src/cuda-sim/ptx.y:725`
-- **Parser**: Implemented `add_5vector_operand()` in `src/cuda-sim/ptx_parser.cc`
-- **Parser**: Added declaration in `src/cuda-sim/ptx_parser.h`
-- **Parser**: Mirrored changes in `cuobjdump_to_ptxplus/` for consistency
-- **TMA Memory**: Compute byte_mask and sector_mask for requests (`src/gpgpu-sim/flash/tma.cc:687-698`)
-- **TMA Response**: Handle both top-level and sector-subdivided responses (`src/gpgpu-sim/flash/tma.cc:604`)
-- **TMA Completion**: Gracefully handle late responses after transaction completion (`src/gpgpu-sim/flash/tma.cc:607-622`)
+**Implementation Details**:
+
+*PTX Parser Support* (`src/cuda-sim/ptx.y`, `src/cuda-sim/ptx_parser.{cc,h}`):
+- Parses 5-element vector operands for 5D coordinate representation: `{%r1, %r2, %r3, %r4, %r5}`
+- `add_5vector_operand()` function constructs operand structures for high-dimensional addressing
+- Changes mirrored in `cuobjdump_to_ptxplus/` for PTXPlus consistency
+
+*TMA Memory Request Generation* (`src/gpgpu-sim/flash/tma.cc`):
+- Computes byte_mask indicating which bytes in a 128-byte cache line are accessed
+- Computes sector_mask indicating which 32-byte sectors (4 per cache line) are accessed
+- Ensures L2 cache can properly subdivide requests into sector-sized chunks
+
+*TMA Response Handling* (`src/gpgpu-sim/flash/tma.cc`):
+- Handles both direct responses (top-level mem_fetch) and sector-subdivided responses from L2 cache
+- Uses `get_original_mf()` to identify parent request when L2 breaks requests into sectors
+- Gracefully handles late responses arriving after transaction marked complete (cleans up stale mappings)
 
 **Test Status** (verified in GPGPU-Sim with `setup_environment` sourced):
 - ✅ **1D TMA**: PASSED (8,192 elements validated, tolerance 1e-05)
