@@ -127,13 +127,29 @@ make
 
 Check that tensor addition produces correct results for all dimensions (1D, 2D, 3D, 4D, 5D).
 
+## Known Issues and Fixes
+
+### Issue #31: 4D/5D TMA Parser Support
+
+**Problem**: GPGPU-Sim failed to run `kernel_add_4d_launch4` and `kernel_add_5d_launch5` due to missing parser support for 5-element coordinate vectors.
+
+**Root Cause**: The PTX parser (`src/cuda-sim/ptx.y`) lacked grammar rules for 5-element vector operands, which are required to parse coordinate vectors like `{%r32, %r33, %r34, %r35, %r36}` in 5D TMA instructions.
+
+**Fix Applied** (commit cc79c1d4):
+- Added 5-element vector operand grammar rule in `src/cuda-sim/ptx.y:725`
+- Implemented `add_5vector_operand()` function in `src/cuda-sim/ptx_parser.cc`
+- Added function declaration in `src/cuda-sim/ptx_parser.h`
+- Mirrored changes in `cuobjdump_to_ptxplus/` for consistency
+
+**Verification**: After rebuilding with `make FLASH=1`, both 4D and 5D TMA kernel launches should work correctly. Use `test/triton_trace/triton_kernel_tracking/example_tensor_add/launchers/test_4d_5d.sh` to validate.
+
 ## Success Criteria
 
 - [ ] PTX inspection passes (only stubbed instructions appear, no new unsupported ops)
 - [ ] 1D launcher runs and validates output
 - [ ] 3D launcher runs and validates output
-- [ ] 4D launcher runs and validates output (including degenerate cases)
-- [ ] 5D launcher runs and validates output
+- [ ] 4D launcher runs and validates output (including degenerate cases) ✓ Fixed in issue #31
+- [ ] 5D launcher runs and validates output ✓ Fixed in issue #31
 - [ ] 2D regression test still passes
 
 ## References

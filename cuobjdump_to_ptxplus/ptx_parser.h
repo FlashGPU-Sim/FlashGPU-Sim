@@ -100,6 +100,7 @@ void add_1vector_operand( const char *a ) {PTX_PARSE_DPRINTF(" ");}
 void add_2vector_operand( const char *a, const char *b ) {PTX_PARSE_DPRINTF(" ");}
 void add_3vector_operand( const char *a, const char *b, const char *c ) {PTX_PARSE_DPRINTF(" ");}
 void add_4vector_operand( const char *a, const char *b, const char *c, const char *d ) {PTX_PARSE_DPRINTF(" ");}
+void add_5vector_operand( const char *a, const char *b, const char *c, const char *d, const char *e) {PTX_PARSE_DPRINTF(" ");}
 void add_8vector_operand( const char *a, const char *b, const char *c, const char *d ,const char *e,const char *f,const char *g,const char *h) {PTX_PARSE_DPRINTF(" ");}
 void add_builtin_operand( int a, int b ) {PTX_PARSE_DPRINTF(" ");}
 void add_memory_operand() {PTX_PARSE_DPRINTF(" ");}
