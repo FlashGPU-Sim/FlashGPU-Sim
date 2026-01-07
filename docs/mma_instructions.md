@@ -135,6 +135,48 @@ The `mma_type_convert()` function handles conversions between:
 - Precision: 7-bit mantissa
 - Better for training than FP16 due to wider range
 
+## TF32 MMA Modeling Notes
+
+### Rounding Mode
+
+TF32 (TensorFloat-32) MMA operations use **truncation** (round-toward-zero) for converting FP32 inputs to TF32 precision:
+- FP32 has 23-bit mantissa, TF32 has 10-bit mantissa
+- Rounding: Clear lower 13 bits of FP32 mantissa (truncation)
+- This matches NVIDIA hardware behavior on Ampere/Hopper architectures
+
+**Implementation:**
+```c
+// TF32 rounding by truncation
+uint32_t u32 = *reinterpret_cast<uint32_t*>(&f32);
+u32 &= 0xFFFFE000;  // Clear lower 13 bits
+float tf32 = *reinterpret_cast<float*>(&u32);
+```
+
+### Accumulation Behavior
+
+MMA TF32 operations follow this computation pattern:
+1. **Input rounding**: A and B matrix elements are rounded to TF32 precision
+2. **Multiplication**: TF32-rounded inputs are multiplied (result in FP32)
+3. **Accumulation**: Products are accumulated in full FP32 precision
+4. **Output**: Result stored as FP32 (no rounding)
+
+This applies to both M16N8K4 and M16N8K8 shapes:
+- **M16N8K4**: 4 multiply-accumulate operations per output element
+- **M16N8K8**: 8 multiply-accumulate operations per output element
+
+### Precision Characteristics
+
+TF32 precision limitations:
+- **Representable range**: Same as FP32 (8-bit exponent)
+- **Mantissa precision**: 10 bits vs FP32's 23 bits
+- **Relative error**: Up to 2^-10 ≈ 0.001 (0.1%) for single operations
+- **Accumulation error**: Grows with K dimension (more multiply-adds)
+
+**Test tolerances:**
+- Exact values (0, 1, small integers): 1e-6 (effectively exact)
+- Precision-sensitive tests: 1e-4 (accounts for 10-bit mantissa with K=8 accumulation)
+- Random values with accumulation: 1e-4 (tightened based on RTX 5090 hardware validation)
+
 ## Saturation Modes
 
 For integer MMA operations (S8, U8, S4, U4), saturation prevents overflow:

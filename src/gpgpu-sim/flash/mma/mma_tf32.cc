@@ -108,15 +108,17 @@ void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
 
       // Unpack and place A fragments with TF32 rounding (16×8 matrix)
       // Each thread holds 4 TF32 values
+      // Fragment order: [row0,col0], [row1,col0], [row0,col1], [row1,col1]
       int a_row0 = groupID;
       int a_row1 = groupID + 8;
       int a_col0 = threadID_in_group;
       int a_col1 = threadID_in_group + 4;
 
       A_mat[a_row0 * K + a_col0] = mma_tf32_round(a_regs[0].f32);
-      A_mat[a_row0 * K + a_col1] = mma_tf32_round(a_regs[1].f32);
-      A_mat[a_row1 * K + a_col0] = mma_tf32_round(a_regs[2].f32);
+      A_mat[a_row1 * K + a_col0] = mma_tf32_round(a_regs[1].f32);
+      A_mat[a_row0 * K + a_col1] = mma_tf32_round(a_regs[2].f32);
       A_mat[a_row1 * K + a_col1] = mma_tf32_round(a_regs[3].f32);
+
 
       // Unpack and place B fragments with TF32 rounding (8×8 matrix)
       // Each thread holds 2 TF32 values

@@ -391,8 +391,8 @@ __global__ void mma_m16n8k8_tf32_kernel(
     int a_col1 = threadID_in_group + 4;
 
     A_frag[0] = *reinterpret_cast<const uint32_t*>(&A[a_row0 * 8 + a_col0]);
-    A_frag[1] = *reinterpret_cast<const uint32_t*>(&A[a_row0 * 8 + a_col1]);
-    A_frag[2] = *reinterpret_cast<const uint32_t*>(&A[a_row1 * 8 + a_col0]);
+    A_frag[1] = *reinterpret_cast<const uint32_t*>(&A[a_row1 * 8 + a_col0]);
+    A_frag[2] = *reinterpret_cast<const uint32_t*>(&A[a_row0 * 8 + a_col1]);
     A_frag[3] = *reinterpret_cast<const uint32_t*>(&A[a_row1 * 8 + a_col1]);
 
     // Load B fragments (8×8 column-major)
@@ -507,8 +507,10 @@ TEST_F(MMATF32M16N8K8IntegrationTest, PrecisionTest) {
     // Run MMA kernel
     run_mma_kernel();
 
-    // TF32 tolerance for precision test
-    float tolerance = 1e-3f;
+    // TF32 tolerance for precision test with K=8
+    // Accounts for 10-bit mantissa truncation (vs F32's 23-bit)
+    // K=8 accumulation may amplify rounding differences
+    float tolerance = 1e-4f;
     for (int i = 0; i < M * N; i++) {
         EXPECT_NEAR(h_D[i], h_D_ref[i], tolerance)
             << "Mismatch at index " << i
@@ -540,8 +542,12 @@ TEST_F(MMATF32M16N8K8IntegrationTest, RandomValuesTest) {
     // Run MMA kernel
     run_mma_kernel();
 
-    // TF32 tolerance for random values
-    float tolerance = 1e-2f;
+    // TF32 tolerance for random values with K=8
+    // Increased tolerance accounts for:
+    // - 10-bit mantissa precision (vs FP32's 23-bit)
+    // - K=8 accumulation errors (8 multiply-adds per output element)
+    // - Larger input range [-10, 10] amplifying rounding errors
+    float tolerance = 1e-4f;
     for (int i = 0; i < M * N; i++) {
         EXPECT_NEAR(h_D[i], h_D_ref[i], tolerance)
             << "Mismatch at index " << i

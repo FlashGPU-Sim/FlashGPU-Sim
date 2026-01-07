@@ -190,6 +190,7 @@ $(SIM_LIB_DIR)/libcudart.so: makedirs $(LIBS) cudalib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
 		$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
+		$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/mma/*.o \
 		$(GEM5_OBJ_FILES) \
 		$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
 		$(SIM_OBJ_FILES_DIR)/*.o -lm -lz $(OPENGL_LIB) -pthread -fopenmp \
@@ -235,6 +236,7 @@ $(SIM_LIB_DIR)/libOpenCL.so: makedirs $(LIBS) opencllib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
 		$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
+		$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/mma/*.o \
 		$(GEM5_OBJ_FILES) \
 		$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
 		$(SIM_OBJ_FILES_DIR)/*.o -lm -lz $(OPENGL_LIB) -pthread \

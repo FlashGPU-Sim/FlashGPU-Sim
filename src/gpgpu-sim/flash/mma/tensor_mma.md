@@ -158,7 +158,17 @@ void tensor_mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &in
 
 **Output**: 32-bit float rounded to TF32 precision (1 sign, 8 exponent, 10 mantissa bits)
 
+**Rounding Mode**: **Truncation** (round-toward-zero)
+- Implementation: Clear lower 13 bits of FP32 mantissa
+- Applied to input matrices A and B before multiplication
+- Accumulation uses full FP32 precision (no intermediate rounding)
+
 **Use Case**: Simulates TF32 arithmetic precision for Ampere+ tensor cores
+
+**Implementation Note**: Both M16N8K4 and M16N8K8 TF32 MMA variants use the same rounding behavior:
+- K=4: 4 TF32 multiply-accumulate operations per output element
+- K=8: 8 TF32 multiply-accumulate operations per output element
+- Rounding applied consistently to inputs in both paths
 
 ---
 
