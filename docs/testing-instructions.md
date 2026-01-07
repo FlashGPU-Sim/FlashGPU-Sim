@@ -2,15 +2,26 @@
 
 ## Prerequisites
 
-Before running tests, ensure the environment is properly configured:
+### Simulator Mode (Default)
+
+Before running tests with GPGPU-Sim simulation, ensure the environment is properly configured:
 
 ```bash
-# Source environment setup scripts (REQUIRED before testing)
+# Source environment setup scripts (REQUIRED for simulator mode)
 source setup.sh
 source setup_environment
 ```
 
-**Note:** These commands must be run before `make test` or any compilation commands.
+**Note:** These commands must be run before `make test` or any compilation commands in simulator mode.
+
+### Native GPU Mode
+
+To run tests on real GPU hardware (for test validation), ensure:
+- A clean shell environment (no simulator environment variables)
+- CUDA-capable GPU installed
+- CUDA toolkit installed and available in PATH
+
+**Important:** Do NOT source `setup_environment` before running tests in native GPU mode. The test runner automatically detects a clean environment and skips the simulator build.
 
 ## Building Tests
 
@@ -20,7 +31,12 @@ source setup.sh && source setup_environment && ./test/run_tests.sh build
 
 **Note:** Never directly invoke the built test binary as it does not have GPU configuration files! Always use `run_tests.sh` as the driver.
 
-**Automatic Library Rebuild:** The test runner automatically detects when GPGPU-Sim library (`lib/gcc-*/libcudart.so`) is out of date compared to source files and rebuilds it with `make FLASH=1 -j` before building tests. This prevents test failures from stale library builds.
+**Automatic Library Rebuild (Simulator Mode):** When running in simulator mode (after sourcing `setup_environment`), the test runner automatically detects when GPGPU-Sim library is out of date by:
+1. Resolving the actual `libcudart.so` path using `find lib -name libcudart.so`
+2. Comparing modification times of source files against the library
+3. Rebuilding with `make FLASH=1 -j` if needed
+
+This prevents test failures from stale library builds. In native GPU mode, the simulator build is skipped entirely.
 
 ## Running Tests
 
@@ -71,6 +87,29 @@ This displays the actual test suite and test case names from the compiled test b
 ```bash
 source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*MMA*"
 ```
+
+## Native GPU Mode (Test Validation)
+
+Run tests on real GPU hardware to validate test correctness without simulator overhead:
+
+```bash
+# In a CLEAN shell (no setup_environment sourced)
+./test/run_tests.sh build    # Builds tests only (skips simulator build)
+./test/run_tests.sh run       # Runs on real GPU
+```
+
+**Prerequisites:**
+- Clean shell environment (no `GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN` variable)
+- No simulator library paths in `LD_LIBRARY_PATH`
+- CUDA toolkit and GPU hardware available
+
+**Automatic Detection:** The test runner checks:
+1. Whether `GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN` is set
+2. Whether `LD_LIBRARY_PATH` contains simulator library paths (e.g., `gpgpu-sim_distribution/lib`)
+
+If both checks pass (clean environment), native GPU mode is activated and the simulator build is skipped.
+
+**Warning:** If you previously sourced `setup_environment` in the current shell, start a new shell session to ensure a clean environment. Unsetting variables manually may leave residual `LD_LIBRARY_PATH` contamination.
 
 ## Test Status & Configuration Matrix
 

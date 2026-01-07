@@ -4,24 +4,40 @@ Unit and integration tests for GPGPU-Sim using Google Test.
 
 ## Quick Start
 
+### Simulator Mode (Default)
 ```bash
 cd test
+source ../setup.sh && source ../setup_environment  # Required for simulator
 ./run_tests.sh setup    # One-time setup
-./run_tests.sh run      # Build and run all tests
+./run_tests.sh run      # Build and run all tests with GPGPU-Sim
 ```
+
+### Native GPU Mode (Test Validation)
+```bash
+cd test
+# In a CLEAN shell (no setup_environment sourced)
+./run_tests.sh setup    # One-time setup
+./run_tests.sh run      # Build and run tests on real GPU
+```
+
+**Note:** The test runner automatically detects simulator vs. native mode based on environment variables (`GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN`) and `LD_LIBRARY_PATH` contents.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `./run_tests.sh setup` | Download Google Test |
-| `./run_tests.sh build` | Build all tests (auto-creates run directory) |
-| `./run_tests.sh run` | Run all tests (auto-creates run directory) |
+| `./run_tests.sh build` | Build all tests (auto-creates run directory, skips simulator build in native mode) |
+| `./run_tests.sh run` | Run all tests (auto-creates run directory, skips simulator build in native mode) |
 | `./run_tests.sh run <test>` | Run specific test |
 | `./run_tests.sh refresh` | Refresh run directory and configuration |
 | `./run_tests.sh list` | List available tests |
 | `./run_tests.sh list-configs` | List available GPU configurations |
 | `./run_tests.sh clean` | Clean build files |
+
+**Mode Detection:** The `build` and `run` commands automatically detect whether to operate in simulator mode (requires GPGPU-Sim library) or native GPU mode (skips simulator build) based on:
+- Presence of `GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN` environment variable
+- Absence of simulator library paths in `LD_LIBRARY_PATH`
 
 ### GPU Configuration Options
 

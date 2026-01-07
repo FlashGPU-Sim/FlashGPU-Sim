@@ -73,7 +73,6 @@ setup
 .vscode/
 .claude/
 .agentize.yaml
-docs/
 
 # temporary files
 temp/

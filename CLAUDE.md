@@ -34,12 +34,23 @@ make clean && make FLASH=1 -j
 
 ## Testing Commands
 
-### Build Tests
+### Build Tests (Simulator Mode)
 ```bash
 source setup.sh && source setup_environment && ./test/run_tests.sh build
 ```
 
-**Critical**: The test runner automatically rebuilds GPGPU-Sim library if source files are newer than `lib/gcc-*/libcudart.so`. Never bypass this by running test binaries directly.
+**Critical**: The test runner automatically rebuilds GPGPU-Sim library if source files are newer than the resolved `libcudart.so` path (found via `find lib -name libcudart.so`). Never bypass this by running test binaries directly.
+
+### Native GPU Mode (Test Validation)
+To run tests on real GPU hardware without simulator overhead:
+
+```bash
+# In a CLEAN shell (no setup_environment sourced)
+./test/run_tests.sh build    # Builds tests only
+./test/run_tests.sh run       # Runs on real GPU
+```
+
+**Prerequisites**: Clean environment (no `GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN` and no simulator paths in `LD_LIBRARY_PATH`). Start a new shell if you previously sourced `setup_environment`.
 
 ### Run Tests
 ```bash

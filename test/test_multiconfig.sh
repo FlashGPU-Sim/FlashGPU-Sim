@@ -103,6 +103,16 @@ run_test "Matrix documents excluded test CPAsyncMethod" \
 run_test "Matrix documents excluded test PerformanceComparison" \
     "grep -q 'PerformanceComparison' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
 
+# Doc-guard tests for build detection and native GPU mode (issue #36)
+run_test "Build detection uses find command for libcudart.so" \
+    "grep -q 'find.*lib.*libcudart.so' '$TEST_SCRIPT'"
+
+run_test "Native mode checks GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN" \
+    "grep -q 'GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN' '$TEST_SCRIPT'"
+
+run_test "Native mode checks LD_LIBRARY_PATH for simulator paths" \
+    "grep -q 'LD_LIBRARY_PATH' '$TEST_SCRIPT'"
+
 echo "========================================="
 echo "Test Results: $passed_tests/$total_tests passed"
 echo "========================================="
