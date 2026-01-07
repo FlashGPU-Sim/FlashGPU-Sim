@@ -18,6 +18,16 @@ void mbarrier_manager_t::init(gpgpu_sim *gpu,
   auto key = std::make_pair(thread_index.hw_cta_id, addr);
   auto ret = addr_to_mbarrier_map.emplace(
       key, std::make_unique<mbarrier_t>(id, addr, expected_count));
+
+  if (!ret.second) {
+    printf("MBARRIER INIT COLLISION: CTA %u (hw_cta=%u) Warp %u trying to init mbarrier at addr 0x%lx, but it already exists!\n",
+           thread_index.sw_cta_id, thread_index.hw_cta_id, thread_index.sw_warp_id, (unsigned long)addr);
+    printf("  Existing mbarrier: id=%d, addr=0x%lx, expected_count=%d\n",
+           ret.first->second->m_id, (unsigned long)ret.first->second->m_addr, ret.first->second->m_expected_count);
+    printf("  New mbarrier: expected_count=%d\n", expected_count);
+    fflush(stdout);
+  }
+
   assert(ret.second && "mbarrier at the same address already exists");
 
   GPPRINTF_GPU(gpu, MBAR,
@@ -36,6 +46,18 @@ void mbarrier_manager_t::inval(gpgpu_sim *gpu,
     addr_to_mbarrier_map.erase(it);
   } else {
     assert(false && "mbarrier to be invalidated does not exist");
+  }
+}
+
+void mbarrier_manager_t::cleanup_cta(unsigned hw_cta_id) {
+  // Remove all mbarriers for this hw_cta_id to prevent collisions when
+  // the hw_cta_id gets recycled for a new CTA
+  for (auto it = addr_to_mbarrier_map.begin(); it != addr_to_mbarrier_map.end();) {
+    if (it->first.first == (int)hw_cta_id) {
+      it = addr_to_mbarrier_map.erase(it);
+    } else {
+      ++it;
+    }
   }
 }
 
@@ -398,14 +420,14 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
   unsigned warp_size = m_shader->get_config()->warp_size;
 
   if (bar_op == INIT_OPTION) {
-    
+
     for (unsigned lane = 0; lane < warp_size; lane++) {
       if (!active_mask.test(lane)) continue;
-      
+
       const auto &mbar_info = pI->get_mbarrier_info(lane);
       auto addr = mbar_info.bar_id;
       auto expected_count = mbar_info.bar_count;
-      
+
       m_mbarrier_manager.init(m_shader->get_gpu(), thread_index, addr,
                               expected_count);
 

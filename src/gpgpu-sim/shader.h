@@ -1068,6 +1068,9 @@ class barrier_set_t {
   // during cta deallocation
   void deallocate_barrier(unsigned cta_id);
 
+  // cleanup mbarriers for a CTA when it completes
+  void cleanup_cta_mbarriers(unsigned cta_id);
+
   void reset_mbarrier();
 
   typedef std::map<unsigned, warp_set_t> cta_to_warp_t;
