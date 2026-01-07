@@ -733,6 +733,25 @@ void ptx_recognizer::add_4vector_operand(const char *d1, const char *d2,
   if (s4 == null_op) s4 = NULL;
   g_operands.push_back(operand_info(s1, s2, s3, s4, gpgpu_ctx));
 }
+void ptx_recognizer::add_5vector_operand(const char *d1, const char *d2,
+                                         const char *d3, const char *d4,
+                                         const char *d5) {
+  PTX_PARSE_GPPRINTF("add_5vector_operand");
+  const symbol *s1 = g_current_symbol_table->lookup(d1);
+  const symbol *s2 = g_current_symbol_table->lookup(d2);
+  const symbol *s3 = g_current_symbol_table->lookup(d3);
+  const symbol *s4 = g_current_symbol_table->lookup(d4);
+  const symbol *s5 = g_current_symbol_table->lookup(d5);
+  parse_assert(s1 != NULL && s2 != NULL && s3 != NULL && s4 != NULL &&
+                   s5 != NULL,
+               "v5 component(s) missing declarations.");
+  const symbol *null_op = g_current_symbol_table->lookup("_");
+  if (s2 == null_op) s2 = NULL;
+  if (s3 == null_op) s3 = NULL;
+  if (s4 == null_op) s4 = NULL;
+  if (s5 == null_op) s5 = NULL;
+  g_operands.push_back(operand_info(s1, s2, s3, s4, s5, NULL, NULL, NULL, gpgpu_ctx));
+}
 void ptx_recognizer::add_8vector_operand(const char *d1, const char *d2,
                                          const char *d3, const char *d4,
                                          const char *d5, const char *d6,

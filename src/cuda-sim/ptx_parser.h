@@ -133,6 +133,8 @@ class ptx_recognizer {
   void add_3vector_operand(const char *d1, const char *d2, const char *d3);
   void add_4vector_operand(const char *d1, const char *d2, const char *d3,
                            const char *d4);
+  void add_5vector_operand(const char *d1, const char *d2, const char *d3,
+                           const char *d4, const char *d5);
   void add_8vector_operand(const char *d1, const char *d2, const char *d3,
                            const char *d4, const char *d5, const char *d6,
                            const char *d7, const char *d8);

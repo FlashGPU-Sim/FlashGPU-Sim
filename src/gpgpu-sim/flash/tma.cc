@@ -497,7 +497,7 @@ private:
     // Debug counters
     uint32_t m_mf_issued_count = 0;   // Number of mem_fetch requests issued
     uint32_t m_mf_received_count = 0; // Number of mem_fetch responses received
-    
+
     void reset() {
       m_thread = nullptr;
       m_inst = nullptr;
@@ -592,64 +592,72 @@ public:
 
   void cycle() {
 
-    // check response fifo
+    // Process pending TMA responses
     if (!m_response_fifo.empty()) {
       mem_fetch *mf = m_response_fifo.front();
       m_response_fifo.pop_front();
       assert(mf->get_access_type() == TMA_ACC_R);
 
-      auto mf_it = m_mf_to_tx.find(mf->get_original_mf()->get_request_uid());
-      assert(mf_it != m_mf_to_tx.end());
-      auto tx_uid = mf_it->second;
+      mem_fetch *parent_mf = mf->get_original_mf() ? mf->get_original_mf() : mf;
+      auto mf_it = m_mf_to_tx.find(parent_mf->get_request_uid());
 
+      assert(mf_it != m_mf_to_tx.end());
+      unsigned tx_uid = mf_it->second;
       auto tx_it = m_transactions.find(tx_uid);
+
       assert(tx_it != m_transactions.end());
       auto &tx = tx_it->second;
-
-      // Count mem_fetch responses for this transaction
       tx.m_mf_received_count++;
-      
+
       GPPRINTF_TMA(TMA, "TMA response received for mf uid=%u, tx_uid=%u, data_size=%u, response fifo size=%lu\n",
-                 mf->get_request_uid(),  tx_uid, mf->get_data_size(), m_response_fifo.size());
+            mf->get_request_uid(),  tx_uid, mf->get_data_size(), m_response_fifo.size());
 
-      if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CTA) {
-        // TMA would attempt to write data to shared memory once receive mf response
-        // ! assume no shared memory bank conflict for simplicity
-        tx.m_bytes_completed += mf->get_data_size();
-
-        if ( tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes ) {
-          auto thread = tx.m_thread;
-          unsigned cta_id = thread->get_hw_ctaid();
-          unsigned warp_id = thread->get_hw_wid();
-          
-          GPPRINTF_TMA(TMA, "[TMA COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, issued_mf=%u, received_mf=%u, bytes_completed=%u/%u, calling complete_tx with %u bytes\n",
-                 tx_uid, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-                 tx.m_mf_issued_count, tx.m_mf_received_count,
-                 tx.m_bytes_completed, tx.m_dyn_info.size_in_bytes,
-                 tx.m_dyn_info.size_in_bytes);
-          fflush(stdout);
-          
-          GPPRINTF_TMA(TMA,
-                            "Complete transaction dst=0x%llx, src=0x%llx, "
-                            "size_in_bytes=%u, mbar=0x%x, tx_uid=%u \n",
-                            tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-                            tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
-
-          m_barriers->complete_tx(
-              cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-              tx.m_dyn_info.size_in_bytes);
-      
-          m_transactions.erase(tx_it);
-          m_mf_to_tx.erase(mf_it);
-        } 
-
-        delete mf;
-
-      } else if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
-        assert(false && "Unsupported TMA destination space");
-      } else {
+      // Validate destination space
+      if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
+        assert(false && "Unsupported TMA destination space: CLUSTER");
+      } else if (tx.m_static_info.dst_space != inst_t::tma_static_info_t::TMA_SHARED_CTA) {
         assert(false && "Unrecognized TMA destination space");
       }
+      // Count bytes: use min(mf_size, parent_size) to handle L2 sector subdivision
+      unsigned mf_size = mf->get_data_size();
+      unsigned parent_size = parent_mf->get_data_size();
+      unsigned bytes_to_add = (mf_size > parent_size) ? parent_size : mf_size;
+      tx.m_bytes_completed += bytes_to_add;
+
+      // Check if transaction is complete
+      if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
+        auto thread = tx.m_thread;
+        unsigned cta_id = thread->get_hw_ctaid();
+        unsigned warp_id = thread->get_hw_wid();
+
+            GPPRINTF_TMA(TMA, "[TMA COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, issued_mf=%u, received_mf=%u, bytes_completed=%u/%u\n",
+                   tx_uid, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+                   tx.m_mf_issued_count, tx.m_mf_received_count,
+                   tx.m_bytes_completed, tx.m_dyn_info.size_in_bytes);
+            fflush(stdout);
+
+            GPPRINTF_TMA(TMA,
+                              "Complete transaction dst=0x%llx, src=0x%llx, "
+                              "size_in_bytes=%u, mbar=0x%x, tx_uid=%u\n",
+                              tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+                              tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
+
+                              m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+                               tx.m_dyn_info.size_in_bytes);
+
+        m_transactions.erase(tx_it);
+
+        // Remove all mappings for this transaction
+        for (auto it = m_mf_to_tx.begin(); it != m_mf_to_tx.end(); ) {
+          if (it->second == tx_uid) {
+            it = m_mf_to_tx.erase(it);
+          } else {
+            ++it;
+          }
+        }
+      }
+
+      delete mf;
     }
 
     // issue memory requests using shadow stride accumulation
@@ -666,15 +674,37 @@ public:
         
         // Use AGU Unit to generate next address
         if (m_agu.gen_next_req(tx.agu_state, addr, size)) {
-          
+
           // Count mem_fetch issued for this transaction
           if (tx.m_mf_issued_count == 0) {
             GPPRINTF_TMA(TMA, "[TMA AGU] tx_uid=%u starting to issue mem_fetch requests\n", tx_uid);
             fflush(stdout);
           }
           tx.m_mf_issued_count++;
-          
-          mem_access_t access(TMA_ACC_R, addr, size, false, 
+
+          // Compute byte mask and sector mask for this TMA request
+          // TMA requests are up to 128 bytes (MAX_MEMORY_ACCESS_SIZE)
+          // Each sector is 32 bytes (SECTOR_SIZE), 4 sectors total (SECTOR_CHUNCK_SIZE)
+          mem_access_byte_mask_t byte_mask;
+          mem_access_sector_mask_t sector_mask;
+
+          // Set byte mask for the requested bytes
+          unsigned start_byte = addr % MAX_MEMORY_ACCESS_SIZE;
+          for (unsigned i = 0; i < size; i++) {
+            byte_mask.set((start_byte + i) % MAX_MEMORY_ACCESS_SIZE);
+          }
+
+          // Set sector mask based on which 32-byte sectors are accessed
+          unsigned start_sector = start_byte / SECTOR_SIZE;
+          unsigned end_sector = (start_byte + size - 1) / SECTOR_SIZE;
+          for (unsigned i = start_sector; i <= end_sector && i < SECTOR_CHUNCK_SIZE; i++) {
+            sector_mask.set(i);
+          }
+
+          active_mask_t active_mask; // Empty mask for TMA (not warp-based)
+
+          mem_access_t access(TMA_ACC_R, addr, size, false,
+                              active_mask, byte_mask, sector_mask,
                               m_shader_ctx->get_gpu()->gpgpu_ctx);
 
           mem_fetch *mf =

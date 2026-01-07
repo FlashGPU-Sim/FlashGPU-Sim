@@ -148,6 +148,61 @@ Tests for MMA (Matrix Multiply-Accumulate) instructions:
 - GCC/G++ compiler
 - Make build system
 
+## TMA (Tensor Memory Accelerator) Testing
+
+TMA instructions (`cp.async.bulk.tensor`) use the Triton-based test workflow to generate PTX kernels and launcher harnesses for simulation.
+
+### TMA Test Requirements
+
+**Stubbed Instructions**: The following instructions are parsed but implemented as NOPs and are **explicitly allowed** in PTX inspection:
+- `cp.async.bulk.commit_group` - NOP with debug logging (see FLASH.md:297)
+- `cp.async.bulk.wait_group` - NOP with debug logging (see FLASH.md:297)
+- `tensormap.cp_fence` - Parsed but not functionally simulated
+
+**Device-Side Tensormap Creation**: All tensormap descriptors must be created on the device side using Triton's `tl.make_tensor_descriptor` within the kernel (not passed as host-side parameters).
+
+**Multi-Dimensional Coverage**: Tests cover 1D-5D tensor operations with corner cases (remainder handling, degenerate dimensions, non-uniform sizes).
+
+### TMA Test Workflow (Triton-based)
+
+1. **Setup Environment**:
+   ```bash
+   source setup.sh && source setup_environment
+   source test/triton_trace/.venv/bin/activate
+   ```
+
+2. **Modify Test Kernels**: Edit `test/triton_trace/example_tensor_add.py` with test variants
+
+3. **Extract PTX via Triton Tracker**:
+   ```bash
+   python test/triton_trace/triton_kernel_tracking/tracker.py example_tensor_add.py
+   ```
+   Generates launcher artifacts in `test/triton_trace/triton_kernel_tracking/example_tensor_add/launchers/`
+
+4. **Build Launchers**:
+   ```bash
+   make -f kernel_add_1d_launch2_Makefile  # In launchers directory
+   ```
+
+5. **Execute Under GPGPU-Sim**:
+   ```bash
+   # CRITICAL: Source environment first (otherwise runs on real GPU!)
+   source setup.sh && source setup_environment
+   cd test/triton_trace/triton_kernel_tracking/example_tensor_add/launchers
+   ./kernel_add_1d_launch2
+   ```
+
+6. **Validate Output**: Check tensor addition produces correct results
+
+**TMA Test Status** (issue #31):
+- ✅ 1D TMA: PASSED (8,192 elements validated)
+- ✅ 2D TMA: PASSED (regression test)
+- ✅ 3D TMA: PASSED (262,144 elements validated)
+- ✅ 4D TMA: PASSED (1,048,576 elements validated)
+- ✅ 5D TMA: PASSED (1,048,576 elements validated)
+
+**Implementation Notes**: Multi-dimensional support (1D-5D) includes PTX parser support for 5-element vectors, L2 cache integration with byte/sector masking, and proper handling of sector-subdivided and late responses.
+
 ## Troubleshooting
 
 If you see "Install CUDA Toolkit and set CUDA_INSTALL_PATH":
@@ -158,3 +213,7 @@ If you see "Install CUDA Toolkit and set CUDA_INSTALL_PATH":
 If tests don't exist yet:
 - Tests may be in untracked files (check `tests/` directory)
 - Tests may need to be created according to test strategy in docs/mma_instructions.md
+
+**TMA tests run on real GPU instead of simulation**:
+- Ensure `setup_environment` is sourced before running launcher executables
+- Verify "GPGPU-Sim version" message appears at startup
