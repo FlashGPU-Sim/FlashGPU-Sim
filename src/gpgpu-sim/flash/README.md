@@ -13,21 +13,30 @@ The `flash/` namespace provides:
 
 ### Tensor Core MMA Implementation
 
-- **tensor_mma.h**: Public interface for MMA instruction support
+Located in `flash/mma/` subdirectory:
+
+- **mma/tensor_mma.h**: Public interface for MMA instruction support
   - Function declarations for MMA compute, load, and store operations
   - Enum definitions for shapes (M16N8K8, M16N8K4, etc.) and layouts (ROW_COL, etc.)
   - Helper function prototypes for type conversion and saturation
 
-- **tensor_mma.cc**: Implementation of MMA functional simulation
+- **mma/tensor_mma.cc**: Main dispatcher and shared helpers
   - Main dispatcher: `tensor_mma_impl()` - routes to type-specific implementations
-  - Type-specific implementations:
-    - `tensor_mma_f16_impl()` - F16/BF16 floating-point MMA
-    - `tensor_mma_tf32_impl()` - TF32 floating-point MMA
-    - `tensor_mma_s8_impl()` - S8/U8 integer MMA
-  - Helper functions: Type conversions (F16, BF16, TF32), saturation (S8, U8, S4, U4)
+  - Shared helper functions: Type conversions (F16, BF16, TF32), saturation (S8, U8, S4, U4)
   - Load/store implementations: `tensor_mma_ld_impl()`, `tensor_mma_st_impl()`
 
-- **tensor_mma.md**: Interface documentation
+- **mma/mma_f16.cc**: F16/BF16 floating-point MMA implementations
+  - `tensor_mma_f16_impl()` - F16/BF16 M16N8K8 implementation
+  - `tensor_mma_f16_m8n8k4_impl()` - F16 M8N8K4 implementation
+
+- **mma/mma_tf32.cc**: TF32 floating-point MMA implementation
+  - `tensor_mma_tf32_impl()` - TF32 M16N8K4 and M16N8K8 implementations
+
+- **mma/mma_s8.cc**: S8/U8 integer MMA implementations
+  - `tensor_mma_s8_impl()` - S8/U8 M16N8K16/K32 implementations
+  - `tensor_mma_s8_m8n8k16_impl()` - S8/U8 M8N8K16 implementation
+
+- **mma/tensor_mma.md**: Interface documentation (moved from flash/)
   - Detailed API documentation for all public functions
   - Fragment distribution patterns for each MMA shape
   - Type conversion specifications
@@ -50,7 +59,7 @@ The flash namespace integrates with GPGPU-Sim through:
    - Separate from existing WMMA (MMA_OP) to avoid conflicts
 
 3. **Execution** (`src/cuda-sim/instructions.cc`):
-   - `using flash_gpgpu_sim::tensor_mma_impl` imports implementation
+   - `using flash_gpgpu_sim::tensor_mma_impl` imports implementation from `flash/mma/tensor_mma.h`
    - Warp-level collective execution across 32 threads
 
 ### Separation from WMMA
@@ -61,7 +70,7 @@ The flash namespace integrates with GPGPU-Sim through:
 |--------|----------------|---------------------------|
 | PTX Instruction | `wmma.mma.sync` | `mma.sync.aligned` |
 | Opcodes | MMA_OP | TENSOR_MMA_OP |
-| Implementation | instructions.cc:mma_impl() | flash/tensor_mma.cc:tensor_mma_impl() |
+| Implementation | instructions.cc:mma_impl() | flash/mma/tensor_mma.cc:tensor_mma_impl() |
 | Namespace | Global | flash_gpgpu_sim |
 
 This separation ensures:
@@ -88,7 +97,7 @@ This separation ensures:
 
 ## Testing
 
-Integration tests are located in `test/src/integration/`:
+Integration tests are located in `test/src/integration/mma/`:
 - `cuda_mma_f16_test.cc` - F16 M16N8K8 tests
 - `cuda_mma_bf16_test.cc` - BF16 M16N8K8 tests
 - `cuda_mma_tf32_test.cc` - TF32 M16N8K4 tests

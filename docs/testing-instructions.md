@@ -129,8 +129,11 @@ These exclusions are hard-coded in `test/run_tests.sh` and are automatically ski
 ## Test Organization
 
 Tests for MMA (Matrix Multiply-Accumulate) instructions:
-- Unit tests: `tests/src/unit/tensor_mma_test.cc` (if exists)
-- Integration tests: `tests/src/integration/cuda_tensor_mma_test.cc` (if exists)
+- Integration tests: `test/src/integration/mma/cuda_mma_*.cc`
+  - F16 tests: `test/src/integration/mma/cuda_mma_f16_test.cc`
+  - BF16 tests: `test/src/integration/mma/cuda_mma_bf16_test.cc`
+  - TF32 tests: `test/src/integration/mma/cuda_mma_tf32_test.cc`
+  - S8/U8 tests: `test/src/integration/mma/cuda_mma_s8_test.cc`
 
 ## Expected Test Results (Issue #18 Implementation)
 

@@ -286,10 +286,10 @@ All MMA implementation code is wrapped in `namespace flash_gpgpu_sim` to:
 
 The main instruction decoder calls MMA implementations:
 ```cpp
-#include "../gpgpu-sim/flash/tensor_mma.h"
+#include "../gpgpu-sim/flash/mma/tensor_mma.h"
 
 // In instruction execution:
-case MMA_OP:
+case TENSOR_MMA_OP:
   flash_gpgpu_sim::tensor_mma_impl(pI, core, inst);
   break;
 ```
@@ -305,7 +305,6 @@ MMA opcodes defined in `opcodes.def` and parsed in `ptx.l`:
 
 ## Testing
 
-See `test/src/unit/tensor_mma_test.cc` and `test/src/integration/cuda_tensor_mma_test.cc` for:
-- Unit tests for type conversion and saturation functions
+See `test/src/integration/mma/cuda_mma_*_test.cc` for:
 - Integration tests for full MMA instruction execution
-- Test coverage for all supported shapes and data types
+- Test coverage for all supported shapes and data types (F16, BF16, TF32, S8/U8)

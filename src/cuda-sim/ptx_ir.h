@@ -43,7 +43,7 @@
 #include "ptx_sim.h"
 
 #include "memory.h"
-#include "../gpgpu-sim/flash/tensor_mma.h"
+#include "../gpgpu-sim/flash/mma/tensor_mma.h"
 
 using flash_gpgpu_sim::mma_layout_mode;
 using flash_gpgpu_sim::mma_shape_type;
