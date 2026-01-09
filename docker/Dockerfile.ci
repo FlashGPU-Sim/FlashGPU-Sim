@@ -1,0 +1,47 @@
+# GPGPU-Sim CI Docker Image
+# Minimal container for automated testing in CI/CD pipelines
+# Based on NVIDIA CUDA 12.8 (aligned with docker/Dockerfile)
+
+ARG CUDA_IMAGE=nvidia/cuda:12.8.0-devel-ubuntu22.04
+FROM ${CUDA_IMAGE}
+
+LABEL maintainer="GPGPU-Sim CI"
+LABEL description="Minimal GPGPU-Sim CI environment for automated testing"
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Set CUDA environment variables
+ENV CUDA_INSTALL_PATH=/usr/local/cuda
+ENV PATH="${CUDA_INSTALL_PATH}/bin:${PATH}"
+ENV LD_LIBRARY_PATH="${CUDA_INSTALL_PATH}/lib64:${LD_LIBRARY_PATH}"
+
+# Install minimal dependencies for CI testing
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Build essentials
+    build-essential=12.9ubuntu3 \
+    g++=4:11.2.0-1ubuntu1 \
+    gcc=4:11.2.0-1ubuntu1 \
+    make=4.3-4.1build1 \
+    # Required by GPGPU-Sim build
+    xutils-dev=1:7.7+6ubuntu1 \
+    bison=2:3.8.2+dfsg-1build1 \
+    flex=2.6.4-8build2 \
+    zlib1g-dev=1:1.2.11.dfsg-2ubuntu9.2 \
+    libglu1-mesa-dev=9.0.2-1 \
+    # Version control (for checkout in CI)
+    git=1:2.34.1-1ubuntu1.15 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create working directory
+WORKDIR /gpgpu-sim
+
+# Set up environment variables for GPGPU-Sim
+ENV GPGPUSIM_ROOT=/gpgpu-sim
+ENV PTXAS_CUDA_INSTALL_PATH=${CUDA_INSTALL_PATH}
+
+# Create necessary directories
+RUN mkdir -p /gpgpu-sim/lib /gpgpu-sim/build
+
+# Default command
+CMD ["bash"]

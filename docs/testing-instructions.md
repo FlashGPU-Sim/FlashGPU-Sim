@@ -203,6 +203,37 @@ TMA instructions (`cp.async.bulk.tensor`) use the Triton-based test workflow to 
 
 **Implementation Notes**: Multi-dimensional support (1D-5D) includes PTX parser support for 5-element vectors, L2 cache integration with byte/sector masking, and proper handling of sector-subdivided and late responses.
 
+## CI/CD Testing
+
+### Continuous Integration
+
+The repository includes a GitHub Actions workflow that runs automated tests on pull requests. The CI workflow uses the reduced GPU configuration for fast feedback:
+
+```bash
+# CI workflow runs this command
+./test/ci/run_ci_tests.sh
+```
+
+**CI configuration:**
+- Uses `SM120_RTX5090_REDUCED` for resource efficiency
+- Runs in a minimal Docker container (`docker/Dockerfile.ci`)
+- Automatically triggered on PR approval
+
+### Local Workflow Validation with act
+
+You can test the CI workflow locally using [act](https://nektosact.com):
+
+```bash
+# Prerequisites
+# 1. Install act: https://nektosact.com/installation/index.html
+# 2. Configure .actrc (already included in repository)
+
+# Run the PR test workflow locally
+act
+```
+
+The `.actrc` file configures Docker socket binding and runner image for local workflow execution.
+
 ## Troubleshooting
 
 If you see "Install CUDA Toolkit and set CUDA_INSTALL_PATH":
