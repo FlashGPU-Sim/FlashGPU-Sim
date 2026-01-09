@@ -517,6 +517,43 @@ private:
   
   std::list<mem_fetch *> m_response_fifo;
 
+  // Helper function to finalize a completed transaction
+  void finalize_transaction(unsigned tx_uid) {
+    auto it = m_transactions.find(tx_uid);
+    if (it == m_transactions.end()) return;
+    
+    auto &tx = it->second;
+    auto thread = tx.m_thread;
+    unsigned cta_id = thread->get_hw_ctaid();
+    unsigned warp_id = thread->get_hw_wid();
+
+    GPPRINTF_TMA(TMA, "[TMA COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, issued_mf=%u, received_mf=%u, bytes_completed=%u/%u\n",
+           tx_uid, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+           tx.m_mf_issued_count, tx.m_mf_received_count,
+           tx.m_bytes_completed, tx.m_dyn_info.size_in_bytes);
+    fflush(stdout);
+
+    GPPRINTF_TMA(TMA,
+                 "Complete transaction dst=0x%llx, src=0x%llx, "
+                 "size_in_bytes=%u, mbar=0x%x, tx_uid=%u\n",
+                 tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+                 tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
+
+    m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+                            tx.m_dyn_info.size_in_bytes);
+
+    m_transactions.erase(it);
+
+    // Remove all mappings for this transaction
+    for (auto map_it = m_mf_to_tx.begin(); map_it != m_mf_to_tx.end(); ) {
+      if (map_it->second == tx_uid) {
+        map_it = m_mf_to_tx.erase(map_it);
+      } else {
+        ++map_it;
+      }
+    }
+  }
+
 public:
   void warp_reaches_tma(unsigned cta_id, unsigned warp_id, warp_inst_t *inst) {
     ptx_instruction *pI = dynamic_cast<ptx_instruction *>(inst);
@@ -626,37 +663,7 @@ public:
       tx.m_bytes_completed += bytes_to_add;
 
       // Check if transaction is complete
-      if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
-        auto thread = tx.m_thread;
-        unsigned cta_id = thread->get_hw_ctaid();
-        unsigned warp_id = thread->get_hw_wid();
-
-            GPPRINTF_TMA(TMA, "[TMA COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, issued_mf=%u, received_mf=%u, bytes_completed=%u/%u\n",
-                   tx_uid, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-                   tx.m_mf_issued_count, tx.m_mf_received_count,
-                   tx.m_bytes_completed, tx.m_dyn_info.size_in_bytes);
-            fflush(stdout);
-
-            GPPRINTF_TMA(TMA,
-                              "Complete transaction dst=0x%llx, src=0x%llx, "
-                              "size_in_bytes=%u, mbar=0x%x, tx_uid=%u\n",
-                              tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-                              tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
-
-                              m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-                               tx.m_dyn_info.size_in_bytes);
-
-        m_transactions.erase(tx_it);
-
-        // Remove all mappings for this transaction
-        for (auto it = m_mf_to_tx.begin(); it != m_mf_to_tx.end(); ) {
-          if (it->second == tx_uid) {
-            it = m_mf_to_tx.erase(it);
-          } else {
-            ++it;
-          }
-        }
-      }
+      if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) finalize_transaction(tx_uid);
 
       delete mf;
     }
@@ -689,30 +696,7 @@ public:
             tx.m_bytes_completed += size;
 
             // Check if transaction is complete
-            if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
-              auto thread = tx.m_thread;
-              unsigned cta_id = thread->get_hw_ctaid();
-              unsigned warp_id = thread->get_hw_wid();
-
-              GPPRINTF_TMA(TMA, "[TMA COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, bytes_completed=%u/%u\n",
-                     tx_uid, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-                     tx.m_bytes_completed, tx.m_dyn_info.size_in_bytes);
-              fflush(stdout);
-
-              m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-                       tx.m_dyn_info.size_in_bytes);
-
-              m_transactions.erase(it);
-
-              // Remove all mappings for this transaction
-              for (auto map_it = m_mf_to_tx.begin(); map_it != m_mf_to_tx.end(); ) {
-                if (map_it->second == tx_uid) {
-                  map_it = m_mf_to_tx.erase(map_it);
-                } else {
-                  ++map_it;
-                }
-              }
-            }
+            if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) finalize_transaction(tx_uid);
 
           } else {
             // Normal memory request: issue mem_fetch to interconnect
