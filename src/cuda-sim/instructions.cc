@@ -3090,6 +3090,65 @@ void cvt_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       type_info_key::type_decode(from_type, from_width, from_sign);
   unsigned dst_fmt = type_info_key::type_decode(to_type, to_width, to_sign);
 
+  // Special handling for cvt.f16x2.f32: convert two f32 sources to one f16x2 destination
+  if (to_type == F16X2_TYPE && from_type == F32_TYPE) {
+
+    // Get both source operands
+    assert(pI->get_num_operands() >= 3 &&
+          "cvt.rn.f16x2.f32 requires 3 operands (dst, src1, src2).");
+    const std::vector<operand_info> &operands = pI->get_operands();
+    const operand_info &src2 = operands[2];  // dst=0, src1=1, src2=2
+    ptx_reg_t src1_data = thread->get_operand_value(src1, dst, from_type, thread, 1);
+    ptx_reg_t src2_data = thread->get_operand_value(src2, dst, from_type, thread, 1);
+
+    // GPPRINTF_INST_EXEC(
+    //     PTX_INST_EXEC,
+    //     "cvt.rn.f16x2.f32: src1 %f src2 %f rounding_mode %u inst %s\n",
+    //     src1_data.f32, src2_data.f32, rounding_mode, pI->to_string().c_str());
+
+    // Convert each f32 to f16 using the specified rounding mode
+    half_float::detail::uint16 f16_low, f16_high;
+    switch (rounding_mode) {
+      case RZI_OPTION:
+        f16_low = half_float::detail::float2half<std::round_toward_zero>(src1_data.f32);
+        f16_high = half_float::detail::float2half<std::round_toward_zero>(src2_data.f32);
+        break;
+      case RMI_OPTION:
+        f16_low = half_float::detail::float2half<std::round_toward_neg_infinity>(src1_data.f32);
+        f16_high = half_float::detail::float2half<std::round_toward_neg_infinity>(src2_data.f32);
+        break;
+      case RPI_OPTION:
+        f16_low = half_float::detail::float2half<std::round_toward_infinity>(src1_data.f32);
+        f16_high = half_float::detail::float2half<std::round_toward_infinity>(src2_data.f32);
+        break;
+      case RNI_OPTION:
+      case RN_OPTION:
+      default:
+        f16_low = half_float::detail::float2half<std::round_to_nearest>(src1_data.f32);
+        f16_high = half_float::detail::float2half<std::round_to_nearest>(src2_data.f32);
+        break;
+    }
+
+    // Pack two f16 values into one 32-bit register
+    // Low 16 bits: first f16 (from src1)
+    // High 16 bits: second f16 (from src2)
+    ptx_reg_t result;
+    result.u32 = (static_cast<uint32_t>(f16_high) << 16) | static_cast<uint32_t>(f16_low);
+
+    thread->set_operand_value(dst, result, to_type, thread, pI);
+    return;
+  }
+
+  // Abort for other unimplemented conversions involving F16X2_TYPE
+  if (to_type == F16X2_TYPE || from_type == F16X2_TYPE) {
+    printf("GPGPU-Sim PTX: ERROR ** Unsupported cvt conversion involving f16x2\n");
+    printf("  Instruction: %s\n", pI->to_string().c_str());
+    printf("  From type: %s, To type: %s\n",
+           decode_token(from_type), decode_token(to_type));
+    printf("  Only cvt.f16x2.f32 is currently supported\n");
+    abort();
+  }
+
   ptx_reg_t data = thread->get_operand_value(src1, dst, from_type, thread, 1);
 
   if (pI->is_neg()) {

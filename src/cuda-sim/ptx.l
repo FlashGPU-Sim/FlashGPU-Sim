@@ -309,7 +309,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.u32  TC;  return U32_TYPE;
 \.u64  TC;  return U64_TYPE;
 \.f16  TC;  return F16_TYPE;
-\.f16x2  TC;  return F16_TYPE; /* TODO: figure out what this should really be */
+\.f16x2  TC;  return F16X2_TYPE;
 \.bf16  TC;  return BF16_TYPE;
 \.tf32  TC;  return TF32_TYPE;
 \.f32  TC;  return F32_TYPE;
