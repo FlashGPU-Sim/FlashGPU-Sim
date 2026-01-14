@@ -252,6 +252,7 @@ class ptx_recognizer;
 %token	ELEMTYPE_OPTION;
 %token	INTERLEAVE_LAYOUT_OPTION;
 %token	SWIZZLE_MODE_OPTION;
+%token	SWIZZLE_ATOMICITY_OPTION;
 %token	FILL_MODE_OPTION;
 %token	CP_FENCEPROXY_OPTION;
 %token	RELEASE_OPTION;
@@ -606,6 +607,7 @@ option: type_spec
 	| ELEMTYPE_OPTION { recognizer->add_option(ELEMTYPE_OPTION); }
 	| INTERLEAVE_LAYOUT_OPTION { recognizer->add_option(INTERLEAVE_LAYOUT_OPTION); }
 	| SWIZZLE_MODE_OPTION { recognizer->add_option(SWIZZLE_MODE_OPTION); }
+	| SWIZZLE_ATOMICITY_OPTION { recognizer->add_option(SWIZZLE_ATOMICITY_OPTION); }
 	| FILL_MODE_OPTION { recognizer->add_option(FILL_MODE_OPTION); }
 	| CP_FENCEPROXY_OPTION { recognizer->add_option(CP_FENCEPROXY_OPTION); }
 	| RELEASE_OPTION { recognizer->add_option(RELEASE_OPTION); }

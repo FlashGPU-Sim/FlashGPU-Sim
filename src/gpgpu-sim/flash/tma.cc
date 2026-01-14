@@ -1410,6 +1410,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       // cp.async.bulk.tensor.Nd.global.shared::cta.bulk_group
       // This is a store operation, no mbarrier involved
       // Operands: [tensormap, {coords...}], [src_shared], ignore cache-hint for now
+      assert( completion_option == BULK_GROUP_OPTION && "Only bulk_group completion option is supported for cp.async.bulk.tensor.Nd.shared::cta.global" );
       
       // Get tensormap address
       auto tensormap_addr = get_operand_u32(thread, pI->dst());  // dst is tensormap for store
@@ -1505,6 +1506,7 @@ void handle_tensormap_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
   bool is_elemtype = false;
   bool is_interleave_layout = false;
   bool is_swizzle_mode = false;
+  bool is_swizzle_atomicity = false;
   bool is_fill_mode = false;
   
   for (auto op : options) {
@@ -1521,6 +1523,7 @@ void handle_tensormap_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
       case ELEMTYPE_OPTION: is_elemtype = true; break;
       case INTERLEAVE_LAYOUT_OPTION: is_interleave_layout = true; break;
       case SWIZZLE_MODE_OPTION: is_swizzle_mode = true; break;
+      case SWIZZLE_ATOMICITY_OPTION: is_swizzle_atomicity = true; break;
       case FILL_MODE_OPTION: is_fill_mode = true; break;
       default: break;
     }
@@ -1594,12 +1597,19 @@ void handle_tensormap_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
       uint32_t value = get_operand_u32(thread, pI->src1());
       desc.fields.interleave = value;
       GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.interleave_layout [0x%x] = %u\n", tensormap_addr, value);
+      assert( value == 0 && "Only TMA_INTERLEAVE_NONE (0) is currently supported");
       
     } else if (is_swizzle_mode) {
       // tensormap.replace.tile.swizzle_mode [dst], value
       uint32_t value = get_operand_u32(thread, pI->src1());
       desc.fields.swizzle = value;
       GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.swizzle_mode [0x%x] = %u\n", tensormap_addr, value);
+      
+    } else if (is_swizzle_atomicity) {
+      // tensormap.replace.tile.swizzle_atomicity [dst], value
+      uint32_t value = get_operand_u32(thread, pI->src1());
+      assert(value == 0 && "Only 16B swizzle atomicity (0x0) is currently supported");
+      GPPRINTF_INST_EXEC(TMA, "tensormap.replace.tile.swizzle_atomicity [0x%x] = %u (16B)\n", tensormap_addr, value);
       
     } else if (is_fill_mode) {
       // tensormap.replace.tile.fill_mode [dst], value

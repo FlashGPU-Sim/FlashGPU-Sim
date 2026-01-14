@@ -432,6 +432,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.elemtype TC; return ELEMTYPE_OPTION;
 \.interleave_layout TC; return INTERLEAVE_LAYOUT_OPTION;
 \.swizzle_mode TC; return SWIZZLE_MODE_OPTION;
+\.swizzle_atomicity TC; return SWIZZLE_ATOMICITY_OPTION;
 \.fill_mode TC; return FILL_MODE_OPTION;
 \.cp_fenceproxy TC; return CP_FENCEPROXY_OPTION;
 \.release TC; return RELEASE_OPTION;
