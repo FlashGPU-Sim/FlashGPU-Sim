@@ -1,6 +1,7 @@
 #include "tma.h"
 #include <atomic>
 #include <cstdarg>
+#include <cstring>
 
 #include "../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
@@ -244,6 +245,89 @@ generate_tma_requests(const tensormap_descriptor_t& tensormap,
 
   return requests;
 }
+//=============================================================================
+// Static OOB Fill Pattern Table (precomputed at startup)
+//=============================================================================
+
+class tma_oob_fill_table_t {
+public:
+  static constexpr uint32_t CHUNK_SIZE = 128;  // Cache line size
+  static constexpr uint32_t NUM_DTYPES = 16;   // Max data type index + 1
+  
+  // Fill patterns: [oob_mode][dtype] -> 128-byte pattern
+  // oob_mode: 0 = ZERO, 1 = NAN
+  alignas(16) unsigned char patterns[2][NUM_DTYPES][CHUNK_SIZE];
+  bool nan_supported[NUM_DTYPES];  // Whether NaN is valid for this dtype
+  
+  tma_oob_fill_table_t() {
+    // Initialize all patterns
+    for (uint32_t dtype = 0; dtype < NUM_DTYPES; dtype++) {
+      // Zero pattern (always valid)
+      memset(patterns[TMA_OOB_ZERO][dtype], 0, CHUNK_SIZE);
+      
+      // NaN pattern (depends on dtype)
+      nan_supported[dtype] = false;
+      switch (dtype) {
+        case TMA_DTYPE_F32: {
+          nan_supported[dtype] = true;
+          uint32_t nan_val = 0x7FFFFFFF;
+          for (uint32_t i = 0; i < CHUNK_SIZE / sizeof(uint32_t); i++) {
+            memcpy(patterns[TMA_OOB_NAN][dtype] + i * sizeof(uint32_t), 
+                   &nan_val, sizeof(uint32_t));
+          }
+          break;
+        }
+        case TMA_DTYPE_F64: {
+          nan_supported[dtype] = true;
+          uint64_t nan_val = 0x7FFFFFFFFFFFFFFFULL;
+          for (uint32_t i = 0; i < CHUNK_SIZE / sizeof(uint64_t); i++) {
+            memcpy(patterns[TMA_OOB_NAN][dtype] + i * sizeof(uint64_t), 
+                   &nan_val, sizeof(uint64_t));
+          }
+          break;
+        }
+        case TMA_DTYPE_F16:
+        case TMA_DTYPE_BF16: {
+          nan_supported[dtype] = true;
+          uint16_t nan_val = 0x7FFF;
+          for (uint32_t i = 0; i < CHUNK_SIZE / sizeof(uint16_t); i++) {
+            memcpy(patterns[TMA_OOB_NAN][dtype] + i * sizeof(uint16_t), 
+                   &nan_val, sizeof(uint16_t));
+          }
+          break;
+        }
+        case TMA_DTYPE_U8: {
+          // Treat as FP8 (E4M3/E5M2) NaN: 0x7F
+          nan_supported[dtype] = true;
+          memset(patterns[TMA_OOB_NAN][dtype], 0x7F, CHUNK_SIZE);
+          break;
+        }
+        default:
+          // Integer types: NaN not supported, fall back to zero
+          nan_supported[dtype] = false;
+          memset(patterns[TMA_OOB_NAN][dtype], 0, CHUNK_SIZE);
+          break;
+      }
+    }
+  }
+  
+  // Get fill pattern for given oob mode and data type
+  const unsigned char* get_pattern(uint32_t oob_mode, uint32_t dtype) const {
+    if (dtype >= NUM_DTYPES) dtype = 0;  // Safety bound
+    if (oob_mode == TMA_OOB_NAN && !nan_supported[dtype]) {
+      static bool warned[NUM_DTYPES] = {false};
+      if (!warned[dtype]) {
+        printf("TMA ERROR: OOB_NAN not supported for data type %u, using zero fill\n", dtype);
+        warned[dtype] = true;
+      }
+      return patterns[TMA_OOB_ZERO][dtype];
+    }
+    return patterns[oob_mode][dtype];
+  }
+};
+
+// Global static instance (initialized at startup)
+static tma_oob_fill_table_t g_oob_fill_table;
 
 // Execute TMA data transfer (load or store)
 // is_load=true: global -> shared, is_load=false: shared -> global
@@ -255,12 +339,32 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
                             ptx_thread_info *thread,
                             const ptx_instruction *pI,
                             bool is_load) {
+  // For load operations, pre-fill the entire tile in shared memory with OOB fill value
+  if (is_load) {
+    uint32_t tile_size_bytes = tensormap.get_tile_size_bytes();
+    const unsigned char* fill_pattern = g_oob_fill_table.get_pattern(
+        tensormap.fields.oobFill, tensormap.fields.tensorDataType);
+    
+    // Write fill pattern to shared memory in chunks
+    constexpr uint32_t CHUNK_SIZE = tma_oob_fill_table_t::CHUNK_SIZE;
+    uint32_t offset = 0;
+    while (offset < tile_size_bytes) {
+      uint32_t chunk_size = std::min(tile_size_bytes - offset, CHUNK_SIZE);
+      shared_mem->write(smem_addr + offset, chunk_size, fill_pattern, thread, pI);
+      offset += chunk_size;
+    }
+  }
+
   // Generate memory requests based on tensormap and coordinates
   auto memory_requests = generate_tma_requests(tensormap, coords);
 
   // Calculate base address in global memory for this tile
   uint64_t base_global_addr = tensormap.calculate_src_addr(coords);
 
+  // Stack-allocated buffer for typical TMA request sizes (avoid malloc/free in hot path)
+  constexpr uint32_t LOCAL_BUF_SIZE = 128;  // TMA requests are typically ≤128B
+  alignas(16) unsigned char local_data_buf[LOCAL_BUF_SIZE];
+  
   for (const auto &req : memory_requests) {
     uint64_t global_req_addr = req.first;
     uint32_t req_size = req.second;
@@ -268,7 +372,10 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
     // Calculate tile-local offset (accounting for stride difference)
     uint64_t tile_offset = global_to_tile_offset(global_req_addr, base_global_addr, tensormap);
 
-    unsigned char *data_buffer = new unsigned char[req_size];
+    // Use stack buffer for small requests, heap only for large (rare)
+    unsigned char *data_buffer = (req_size <= LOCAL_BUF_SIZE) 
+        ? local_data_buf 
+        : new unsigned char[req_size];
 
     if (is_load) {
       // Load: global -> shared
@@ -280,7 +387,7 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
       global_mem->write(global_req_addr, req_size, data_buffer, thread, pI);
     }
 
-    delete[] data_buffer;
+    if (req_size > LOCAL_BUF_SIZE) delete[] data_buffer;
   }
 }
 
