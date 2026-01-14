@@ -14,6 +14,16 @@ typedef void *yyscan_t;
 
 #include <vector>
 
+//=============================================================================
+// TMA Swizzle Debug Configuration
+//=============================================================================
+// Set TMA_DEBUG_SWIZZLE to 1 to enable detailed 16B-level swizzle debug output
+// This will print:
+//   - For LOAD: gmem linear -> smem swizzled mapping with data values
+//   - For STORE: smem swizzled -> gmem linear reverse mapping with data values
+// Set to 0 to disable all swizzle debug output
+#define TMA_DEBUG_SWIZZLE 1
+
 std::atomic<unsigned int> tma_next_tx_uid = 0;
 
 namespace flash_gpgpu_sim {
@@ -134,6 +144,36 @@ static uint64_t global_to_tile_offset(uint64_t global_addr, uint64_t base_addr,
   }
 
   return tile_offset;
+}
+
+// Apply TMA swizzle transformation to shared memory address
+// 
+// Mask-based implementation matching Hopper/Blackwell hardware behavior.
+// Assumes 128B row stride for row extraction (addr >> 7).
+// Applies XOR permutation at 16B granularity (shift = 4).
+static uint64_t apply_tma_swizzle(uint64_t linear_offset, uint32_t smem_base_addr,
+                                   uint32_t swizzle_mode, uint32_t row_bytes) {
+  if (swizzle_mode == TMA_SWIZZLE_NONE) return linear_offset;
+
+  uint32_t mask = 0;
+  constexpr uint32_t shift = 4;  // only support 16B granularity for now
+
+  switch (swizzle_mode) {
+    case TMA_SWIZZLE_128B: mask = 0x7; break;  // 3 bits, cycle of 8
+    case TMA_SWIZZLE_64B:  mask = 0x3; break;  // 2 bits, cycle of 4
+    case TMA_SWIZZLE_32B:  mask = 0x1; break;  // 1 bit, cycle of 2
+    case TMA_SWIZZLE_96B:  mask = 0x1; break;  // 1 bit, cycle of 2
+    default: 
+      printf("ERROR: Unknown TMA swizzle mode %u\n", swizzle_mode);
+      abort();
+  }
+
+  // Extract row information assuming 128B stride
+  // In Hopper/Blackwell hardware, row extraction is based on 128B alignment
+  uint32_t row_bits = (uint32_t)(linear_offset >> 7);
+  
+  // Apply XOR permutation: addr XOR ((row_bits & mask) << shift)
+  return linear_offset ^ ((uint64_t)(row_bits & mask) << shift);
 }
 
 // Generate 128B-aligned memory fetch requests
@@ -361,6 +401,14 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
   // Calculate base address in global memory for this tile
   uint64_t base_global_addr = tensormap.calculate_src_addr(coords);
 
+  // Get swizzle mode and row stride for swizzle calculation
+  uint32_t swizzle_mode = tensormap.fields.swizzle;
+  uint32_t elem_size = tensormap.get_element_size();
+  uint32_t row_bytes = tensormap.fields.boxDim[0] * elem_size;
+
+  // Swizzle granularity: 16 bytes (minimum addressable unit for swizzle)
+  constexpr uint32_t SWIZZLE_GRANULARITY = 16;
+
   // Stack-allocated buffer for typical TMA request sizes (avoid malloc/free in hot path)
   constexpr uint32_t LOCAL_BUF_SIZE = 128;  // TMA requests are typically ≤128B
   alignas(16) unsigned char local_data_buf[LOCAL_BUF_SIZE];
@@ -380,10 +428,154 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
     if (is_load) {
       // Load: global -> shared
       global_mem->read(global_req_addr, req_size, data_buffer);
-      shared_mem->write(smem_addr + tile_offset, req_size, data_buffer, thread, pI);
+      
+      // Apply swizzle at 16-byte granularity when writing to shared memory
+      // Each 16-byte sub-block may be written to a different swizzled location
+      if (swizzle_mode != TMA_SWIZZLE_NONE) {
+#if TMA_DEBUG_SWIZZLE
+        // Debug: Print detailed data layout for first 5 tiles
+        static bool printed_first_tile = false;
+        static int tiles_printed = 0;
+        bool print_data = (!printed_first_tile && tile_offset < 640);  // 5 rows * 128B
+        
+        if (print_data && tiles_printed < 5) {
+          if (tiles_printed == 0) {
+            printf("\n=== TMA LOAD Debug: Detailed Swizzle Analysis ===\n");
+            printf("Global addr: 0x%lx, Smem addr: 0x%x\n", (unsigned long)global_req_addr, smem_addr);
+            printf("Swizzle mode: %u, Row bytes: %u\n\n", swizzle_mode, row_bytes);
+          }
+          
+          uint32_t row = tile_offset / row_bytes;
+          printf("--- Tile at offset 0x%lx (Row %u, size %u bytes) ---\n", 
+                 (unsigned long)tile_offset, row, req_size);
+          
+          // Show data pattern for this row (first 16 FP16 values)
+          printf("Data pattern (first 16 FP16 values from global): ");
+          for (uint32_t i = 0; i < std::min(req_size, 32u) && i < 32; i += 2) {
+            uint16_t val = *(uint16_t*)(data_buffer + i);
+            printf("%04x ", val);
+          }
+          printf("\n");
+          
+          tiles_printed++;
+          if (tiles_printed >= 5) printed_first_tile = true;
+        }
+#endif
+        
+        // Apply swizzle with detailed per-block debug
+        for (uint32_t sub_offset = 0; sub_offset < req_size; sub_offset += SWIZZLE_GRANULARITY) {
+          uint32_t sub_size = std::min(SWIZZLE_GRANULARITY, req_size - sub_offset);
+          uint64_t logical_offset = tile_offset + sub_offset;
+          uint64_t swizzled_offset = apply_tma_swizzle(logical_offset, smem_addr, swizzle_mode, row_bytes);
+          
+#if TMA_DEBUG_SWIZZLE
+          // Debug: Show detailed 16B block swizzle mapping
+          if (print_data && sub_offset < 128) {
+            uint32_t logical_row = logical_offset / row_bytes;
+            uint32_t logical_block = (logical_offset % row_bytes) / 16;
+            uint32_t swizzled_row = swizzled_offset / row_bytes;
+            uint32_t swizzled_block = (swizzled_offset % row_bytes) / 16;
+            
+            // Extract first FP16 value from this 16B block
+            uint16_t val = *(uint16_t*)(data_buffer + sub_offset);
+            
+            printf("  16B[%3u]: Logical(R%u,B%u) 0x%03lx -> Swizzled(R%u,B%u) 0x%03lx, Data[0]=0x%04x\n",
+                   sub_offset / 16,
+                   logical_row, logical_block, (unsigned long)logical_offset,
+                   swizzled_row, swizzled_block, (unsigned long)swizzled_offset,
+                   val);
+          }
+#endif
+          
+          shared_mem->write(smem_addr + swizzled_offset, sub_size, 
+                           data_buffer + sub_offset, thread, pI);
+        }
+#if TMA_DEBUG_SWIZZLE
+        if (print_data) {
+          printf("\n");
+        }
+#endif
+      } else {
+        // No swizzle - write contiguously
+        shared_mem->write(smem_addr + tile_offset, req_size, data_buffer, thread, pI);
+      }
+
     } else {
       // Store: shared -> global
-      shared_mem->read(smem_addr + tile_offset, req_size, data_buffer);
+      // **REVERSE SWIZZLE**: Read from swizzled smem, write to linear gmem
+      
+#if TMA_DEBUG_SWIZZLE
+      // Debug: Print detailed data layout for first 5 tiles
+      static bool printed_first_store_tile = false;
+      static int store_tiles_printed = 0;
+      bool print_store_data = (!printed_first_store_tile && tile_offset < 640);  // 5 rows * 128B
+      
+      if (print_store_data && store_tiles_printed < 5) {
+        if (store_tiles_printed == 0) {
+          printf("\n=== TMA STORE Debug: Detailed Reverse Swizzle Analysis ===\n");
+          printf("Global addr: 0x%lx, Smem addr: 0x%x\n", (unsigned long)global_req_addr, smem_addr);
+          printf("Swizzle mode: %u, Row bytes: %u\n", swizzle_mode, row_bytes);
+          printf("NOTE: REVERSE swizzle - reading FROM swizzled smem, writing TO linear gmem\n\n");
+        }
+        
+        uint32_t row = tile_offset / row_bytes;
+        printf("--- Tile at offset 0x%lx (Row %u, size %u bytes) ---\n", 
+               (unsigned long)tile_offset, row, req_size);
+        
+        store_tiles_printed++;
+        if (store_tiles_printed >= 5) printed_first_store_tile = true;
+      }
+#endif
+      
+      // Apply reverse swizzle at 16-byte granularity when reading from shared memory
+      if (swizzle_mode != TMA_SWIZZLE_NONE) {
+        for (uint32_t sub_offset = 0; sub_offset < req_size; sub_offset += SWIZZLE_GRANULARITY) {
+          uint32_t sub_size = std::min(SWIZZLE_GRANULARITY, req_size - sub_offset);
+          uint64_t logical_offset = tile_offset + sub_offset;  // Linear position in gmem
+          uint64_t swizzled_offset = apply_tma_swizzle(logical_offset, smem_addr, swizzle_mode, row_bytes);  // Swizzled position in smem
+          
+          // Read from swizzled smem address
+          shared_mem->read(smem_addr + swizzled_offset, sub_size, 
+                          data_buffer + sub_offset);
+          
+#if TMA_DEBUG_SWIZZLE
+          // Debug: Show detailed 16B block reverse swizzle mapping
+          if (print_store_data && sub_offset < 128) {
+            uint32_t logical_row = logical_offset / row_bytes;
+            uint32_t logical_block = (logical_offset % row_bytes) / 16;
+            uint32_t swizzled_row = swizzled_offset / row_bytes;
+            uint32_t swizzled_block = (swizzled_offset % row_bytes) / 16;
+            
+            // Extract first FP16 value from this 16B block
+            uint16_t val = *(uint16_t*)(data_buffer + sub_offset);
+            
+            printf("  16B[%3u]: Gmem(R%u,B%u) 0x%03lx <- Smem(R%u,B%u) 0x%03lx, Data[0]=0x%04x\n",
+                   sub_offset / 16,
+                   logical_row, logical_block, (unsigned long)logical_offset,
+                   swizzled_row, swizzled_block, (unsigned long)swizzled_offset,
+                   val);
+          }
+#endif
+        }
+        
+#if TMA_DEBUG_SWIZZLE
+        // Show data pattern being written (after gathering from swizzled smem)
+        if (print_store_data) {
+          printf("Data pattern (first 16 FP16 values to write to gmem): ");
+          for (uint32_t i = 0; i < std::min(req_size, 32u) && i < 32; i += 2) {
+            uint16_t val = *(uint16_t*)(data_buffer + i);
+            printf("%04x ", val);
+          }
+          printf("\n\n");
+        }
+#endif
+      } else {
+        // No swizzle - read contiguously
+        shared_mem->read(smem_addr + tile_offset, req_size, data_buffer);
+      }
+
+      
+      // Write contiguous (linear) data to global memory
       global_mem->write(global_req_addr, req_size, data_buffer, thread, pI);
     }
 
