@@ -3110,28 +3110,28 @@ void cvt_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     half_float::detail::uint16 f16_low, f16_high;
     switch (rounding_mode) {
       case RZI_OPTION:
-        f16_low = half_float::detail::float2half<std::round_toward_zero>(src1_data.f32);
-        f16_high = half_float::detail::float2half<std::round_toward_zero>(src2_data.f32);
+        f16_low = half_float::detail::float2half<std::round_toward_zero>(src2_data.f32);
+        f16_high = half_float::detail::float2half<std::round_toward_zero>(src1_data.f32);
         break;
       case RMI_OPTION:
-        f16_low = half_float::detail::float2half<std::round_toward_neg_infinity>(src1_data.f32);
-        f16_high = half_float::detail::float2half<std::round_toward_neg_infinity>(src2_data.f32);
+        f16_low = half_float::detail::float2half<std::round_toward_neg_infinity>(src2_data.f32);
+        f16_high = half_float::detail::float2half<std::round_toward_neg_infinity>(src1_data.f32);
         break;
       case RPI_OPTION:
-        f16_low = half_float::detail::float2half<std::round_toward_infinity>(src1_data.f32);
-        f16_high = half_float::detail::float2half<std::round_toward_infinity>(src2_data.f32);
+        f16_low = half_float::detail::float2half<std::round_toward_infinity>(src2_data.f32);
+        f16_high = half_float::detail::float2half<std::round_toward_infinity>(src1_data.f32);
         break;
       case RNI_OPTION:
       case RN_OPTION:
       default:
-        f16_low = half_float::detail::float2half<std::round_to_nearest>(src1_data.f32);
-        f16_high = half_float::detail::float2half<std::round_to_nearest>(src2_data.f32);
+        f16_low = half_float::detail::float2half<std::round_to_nearest>(src2_data.f32);
+        f16_high = half_float::detail::float2half<std::round_to_nearest>(src1_data.f32);
         break;
     }
 
     // Pack two f16 values into one 32-bit register
-    // Low 16 bits: first f16 (from src1)
-    // High 16 bits: second f16 (from src2)
+    // Low 16 bits: second f16 (from src2)
+    // High 16 bits: first f16 (from src1)
     ptx_reg_t result;
     result.u32 = (static_cast<uint32_t>(f16_high) << 16) | static_cast<uint32_t>(f16_low);
 

@@ -22,7 +22,7 @@ typedef void *yyscan_t;
 //   - For LOAD: gmem linear -> smem swizzled mapping with data values
 //   - For STORE: smem swizzled -> gmem linear reverse mapping with data values
 // Set to 0 to disable all swizzle debug output
-#define TMA_DEBUG_SWIZZLE 1
+#define TMA_DEBUG_SWIZZLE 0
 
 std::atomic<unsigned int> tma_next_tx_uid = 0;
 
@@ -513,8 +513,10 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
       if (print_store_data && store_tiles_printed < 5) {
         if (store_tiles_printed == 0) {
           printf("\n=== TMA STORE Debug: Detailed Reverse Swizzle Analysis ===\n");
-          printf("Global addr: 0x%lx, Smem addr: 0x%x\n", (unsigned long)global_req_addr, smem_addr);
-          printf("Swizzle mode: %u, Row bytes: %u\n", swizzle_mode, row_bytes);
+          // Print tensormap configuration
+          printf("Tensormap configuration:\n");
+          tensormap.print();
+          printf("\n");
           printf("NOTE: REVERSE swizzle - reading FROM swizzled smem, writing TO linear gmem\n\n");
         }
         
@@ -546,14 +548,25 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
             uint32_t swizzled_row = swizzled_offset / row_bytes;
             uint32_t swizzled_block = (swizzled_offset % row_bytes) / 16;
             
-            // Extract first FP16 value from this 16B block
-            uint16_t val = *(uint16_t*)(data_buffer + sub_offset);
-            
-            printf("  16B[%3u]: Gmem(R%u,B%u) 0x%03lx <- Smem(R%u,B%u) 0x%03lx, Data[0]=0x%04x\n",
-                   sub_offset / 16,
-                   logical_row, logical_block, (unsigned long)logical_offset,
-                   swizzled_row, swizzled_block, (unsigned long)swizzled_offset,
-                   val);
+            // Extract first value based on element size
+            uint32_t element_size = tensormap.get_element_size();
+            if (element_size == 4) {
+              // F32 or similar 4-byte type
+              uint32_t val = *(uint32_t*)(data_buffer + sub_offset);
+              printf("  16B[%3u]: Gmem(R%u,B%u) 0x%03lx <- Smem(R%u,B%u) 0x%03lx, Data[0]=0x%08x\n",
+                     sub_offset / 16,
+                     logical_row, logical_block, (unsigned long)logical_offset,
+                     swizzled_row, swizzled_block, (unsigned long)swizzled_offset,
+                     val);
+            } else if (element_size == 2) {
+              // F16/BF16 or similar 2-byte type
+              uint16_t val = *(uint16_t*)(data_buffer + sub_offset);
+              printf("  16B[%3u]: Gmem(R%u,B%u) 0x%03lx <- Smem(R%u,B%u) 0x%03lx, Data[0]=0x%04x\n",
+                     sub_offset / 16,
+                     logical_row, logical_block, (unsigned long)logical_offset,
+                     swizzled_row, swizzled_block, (unsigned long)swizzled_offset,
+                     val);
+            }
           }
 #endif
         }
@@ -561,10 +574,21 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
 #if TMA_DEBUG_SWIZZLE
         // Show data pattern being written (after gathering from swizzled smem)
         if (print_store_data) {
-          printf("Data pattern (first 16 FP16 values to write to gmem): ");
-          for (uint32_t i = 0; i < std::min(req_size, 32u) && i < 32; i += 2) {
-            uint16_t val = *(uint16_t*)(data_buffer + i);
-            printf("%04x ", val);
+          uint32_t element_size = tensormap.get_element_size();
+          uint32_t num_elements = std::min(req_size / element_size, 16u);
+          
+          if (element_size == 4) {
+            printf("Data pattern (first %u F32 values to write to gmem): ", num_elements);
+            for (uint32_t i = 0; i < num_elements && i * 4 < req_size; i++) {
+              uint32_t val = *(uint32_t*)(data_buffer + i * 4);
+              printf("%08x ", val);
+            }
+          } else if (element_size == 2) {
+            printf("Data pattern (first %u F16 values to write to gmem): ", num_elements);
+            for (uint32_t i = 0; i < num_elements && i * 2 < req_size; i++) {
+              uint16_t val = *(uint16_t*)(data_buffer + i * 2);
+              printf("%04x ", val);
+            }
           }
           printf("\n\n");
         }
