@@ -102,6 +102,7 @@ class ptx_recognizer;
 %token  U32_TYPE
 %token  U64_TYPE
 %token  F16_TYPE
+%token  F16X2_TYPE
 %token  BF16_TYPE
 %token  TF32_TYPE
 %token  F32_TYPE
@@ -251,6 +252,7 @@ class ptx_recognizer;
 %token	ELEMTYPE_OPTION;
 %token	INTERLEAVE_LAYOUT_OPTION;
 %token	SWIZZLE_MODE_OPTION;
+%token	SWIZZLE_ATOMICITY_OPTION;
 %token	FILL_MODE_OPTION;
 %token	CP_FENCEPROXY_OPTION;
 %token	RELEASE_OPTION;
@@ -446,6 +448,7 @@ scalar_type: S8_TYPE { recognizer->add_scalar_type_spec( S8_TYPE ); }
 	| U32_TYPE   { recognizer->add_scalar_type_spec( U32_TYPE ); }
 	| U64_TYPE   { recognizer->add_scalar_type_spec( U64_TYPE ); }
 	| F16_TYPE   { recognizer->add_scalar_type_spec( F16_TYPE ); }
+	| F16X2_TYPE { recognizer->add_scalar_type_spec( F16X2_TYPE ); }
 	| BF16_TYPE  { recognizer->add_scalar_type_spec( BF16_TYPE ); }
 	| TF32_TYPE  { recognizer->add_scalar_type_spec( TF32_TYPE ); }
 	| F32_TYPE   { recognizer->add_scalar_type_spec( F32_TYPE ); }
@@ -604,6 +607,7 @@ option: type_spec
 	| ELEMTYPE_OPTION { recognizer->add_option(ELEMTYPE_OPTION); }
 	| INTERLEAVE_LAYOUT_OPTION { recognizer->add_option(INTERLEAVE_LAYOUT_OPTION); }
 	| SWIZZLE_MODE_OPTION { recognizer->add_option(SWIZZLE_MODE_OPTION); }
+	| SWIZZLE_ATOMICITY_OPTION { recognizer->add_option(SWIZZLE_ATOMICITY_OPTION); }
 	| FILL_MODE_OPTION { recognizer->add_option(FILL_MODE_OPTION); }
 	| CP_FENCEPROXY_OPTION { recognizer->add_option(CP_FENCEPROXY_OPTION); }
 	| RELEASE_OPTION { recognizer->add_option(RELEASE_OPTION); }
