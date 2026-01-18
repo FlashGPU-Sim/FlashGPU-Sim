@@ -1324,10 +1324,23 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                        (*pipe_reg)->get_active_mask());
     }
   } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
-    // dyn_inst was already obtained and reset before func_exec_inst
-    // Now it has the correct tma_dyn_info set only for active lanes
-    assert(dyn_inst != nullptr);
-    m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id, dyn_inst);
+    // Check if this is a bulk group operation
+    const auto &tma_info = next_inst->get_tma_static_info();
+    if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_COMMIT) {
+      // cp.async.bulk.commit_group
+      m_barriers.commit_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id);
+    } else if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_WAIT) {
+      // cp.async.bulk.wait_group N
+      unsigned group_num = tma_info.bulk_wait_num;
+      m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
+      m_barriers.wait_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id, group_num);
+    } else {
+      // Regular TMA operation (load/store)
+      // dyn_inst was already obtained and reset before func_exec_inst
+      // Now it has the correct tma_dyn_info set only for active lanes
+      assert(dyn_inst != nullptr);
+      m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id, dyn_inst);
+    }
   } else if (next_inst->op == MEMORY_BARRIER_OP) {
     m_warp[warp_id]->set_membar();
   } else if (next_inst->m_is_ldgdepbar) {  // Add for LDGDEPBAR

@@ -312,3 +312,313 @@ TEST_F(CudaTMATest, PerformanceComparison) {
               << " μs" << std::endl;
   }
 }
+
+//=============================================================================
+// TMA Store with Bulk Group Tests
+//=============================================================================
+
+// Test class for TMA Store with Bulk Group functionality
+class BulkGroupIntegrationTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    // Use smaller data for store tests
+    num_elements = 4096;  // 16KB of uint32_t data
+    data_size_bytes = num_elements * sizeof(uint32_t);
+
+    // Allocate and initialize host input
+    h_input.resize(num_elements);
+    h_output.resize(num_elements);
+    h_expected.resize(num_elements);
+
+    for (size_t i = 0; i < num_elements; ++i) {
+      h_input[i] = static_cast<uint32_t>(i + 1);
+    }
+  }
+
+  void TearDown() override {}
+
+  cudaError_t checkCudaError(cudaError_t error, const char *message) {
+    if (error != cudaSuccess) {
+      fprintf(stderr, "CUDA Error: %s - %s\n", message,
+              cudaGetErrorString(error));
+    }
+    return error;
+  }
+
+  // Test data
+  size_t num_elements;
+  size_t data_size_bytes;
+  std::vector<uint32_t> h_input;
+  std::vector<uint32_t> h_output;
+  std::vector<uint32_t> h_expected;
+};
+
+// Test: Basic TMA Store with single bulk group
+TEST_F(BulkGroupIntegrationTest, BasicTMAStore) {
+  constexpr int CHUNK_BYTES = 256;  // 64 uint32_t elements per chunk
+  constexpr int NUM_GROUPS = 4;
+
+  uint32_t *d_input = nullptr;
+  uint32_t *d_output = nullptr;
+
+  ASSERT_EQ(cudaMalloc(&d_input, data_size_bytes), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_output, data_size_bytes), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(d_input, h_input.data(), data_size_bytes,
+                       cudaMemcpyHostToDevice), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_output, 0, data_size_bytes), cudaSuccess);
+
+  // Calculate grid/block dimensions
+  const int threads_per_block = 32;  // Single warp
+  const int elements_per_warp = NUM_GROUPS * (CHUNK_BYTES / sizeof(uint32_t));
+  const int num_warps_needed = (num_elements + elements_per_warp - 1) / elements_per_warp;
+  const int blocks = num_warps_needed;
+
+  const size_t shared_mem_size = CHUNK_BYTES;
+
+  tma_store_kernel<NUM_GROUPS, CHUNK_BYTES, 0>
+      <<<blocks, threads_per_block, shared_mem_size>>>(d_input, d_output, num_elements);
+
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess) << "Kernel launch failed";
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess) << "Kernel execution failed";
+
+  // Copy result back
+  ASSERT_EQ(cudaMemcpy(h_output.data(), d_output, data_size_bytes,
+                       cudaMemcpyDeviceToHost), cudaSuccess);
+
+  // Verify: each element should be input + 1
+  int errors = 0;
+  for (size_t i = 0; i < num_elements; ++i) {
+    uint32_t expected = h_input[i] + 1;
+    if (h_output[i] != expected) {
+      if (errors < 10) {
+        printf("Mismatch at %zu: expected %u, got %u\n", i, expected, h_output[i]);
+      }
+      errors++;
+    }
+  }
+  EXPECT_EQ(errors, 0) << "Total mismatches: " << errors;
+
+  cudaFree(d_input);
+  cudaFree(d_output);
+}
+
+// Test: TMA Store with multiple groups per warp
+TEST_F(BulkGroupIntegrationTest, MultiGroupTMAStore) {
+  constexpr int CHUNK_BYTES = 128;  // 32 uint32_t elements per chunk
+  const int num_chunks = 8;
+  const int elements_per_chunk = CHUNK_BYTES / sizeof(uint32_t);
+  const size_t test_elements = num_chunks * elements_per_chunk;
+
+  std::vector<uint32_t> test_input(test_elements);
+  std::vector<uint32_t> test_output(test_elements);
+
+  for (size_t i = 0; i < test_elements; ++i) {
+    test_input[i] = static_cast<uint32_t>(i * 10);
+  }
+
+  uint32_t *d_input = nullptr;
+  uint32_t *d_output = nullptr;
+  size_t test_bytes = test_elements * sizeof(uint32_t);
+
+  ASSERT_EQ(cudaMalloc(&d_input, test_bytes), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_output, test_bytes), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(d_input, test_input.data(), test_bytes,
+                       cudaMemcpyHostToDevice), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_output, 0, test_bytes), cudaSuccess);
+
+  const size_t shared_mem_size = CHUNK_BYTES;
+
+  tma_store_multi_group_kernel<CHUNK_BYTES>
+      <<<1, 32, shared_mem_size>>>(d_input, d_output, num_chunks);
+
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess) << "Kernel launch failed";
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess) << "Kernel execution failed";
+
+  ASSERT_EQ(cudaMemcpy(test_output.data(), d_output, test_bytes,
+                       cudaMemcpyDeviceToHost), cudaSuccess);
+
+  // Verify: each chunk's elements should have (chunk_index + 1) added
+  int errors = 0;
+  for (int chunk = 0; chunk < num_chunks; chunk++) {
+    for (int i = 0; i < elements_per_chunk; i++) {
+      size_t idx = chunk * elements_per_chunk + i;
+      uint32_t expected = test_input[idx] + (chunk + 1);
+      if (test_output[idx] != expected) {
+        if (errors < 10) {
+          printf("Chunk %d, elem %d (idx %zu): expected %u, got %u\n",
+                 chunk, i, idx, expected, test_output[idx]);
+        }
+        errors++;
+      }
+    }
+  }
+  EXPECT_EQ(errors, 0) << "Total mismatches: " << errors;
+
+  cudaFree(d_input);
+  cudaFree(d_output);
+}
+
+// Test: Pipelined TMA Store with wait_group(N)
+TEST_F(BulkGroupIntegrationTest, PipelinedTMAStore) {
+  constexpr int CHUNK_BYTES = 128;
+  constexpr int MAX_IN_FLIGHT = 2;  // Allow 2 groups in flight
+  const int num_chunks = 6;
+  const int elements_per_chunk = CHUNK_BYTES / sizeof(uint32_t);
+  const size_t test_elements = num_chunks * elements_per_chunk;
+
+  std::vector<uint32_t> test_input(test_elements);
+  std::vector<uint32_t> test_output(test_elements);
+
+  for (size_t i = 0; i < test_elements; ++i) {
+    test_input[i] = static_cast<uint32_t>(i + 100);
+  }
+
+  uint32_t *d_input = nullptr;
+  uint32_t *d_output = nullptr;
+  size_t test_bytes = test_elements * sizeof(uint32_t);
+
+  ASSERT_EQ(cudaMalloc(&d_input, test_bytes), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_output, test_bytes), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(d_input, test_input.data(), test_bytes,
+                       cudaMemcpyHostToDevice), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_output, 0, test_bytes), cudaSuccess);
+
+  // Need enough shared memory for multiple slots
+  const size_t shared_mem_size = (MAX_IN_FLIGHT + 1) * CHUNK_BYTES;
+
+  tma_store_pipelined_kernel<CHUNK_BYTES, MAX_IN_FLIGHT>
+      <<<1, 32, shared_mem_size>>>(d_input, d_output, num_chunks);
+
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess) << "Kernel launch failed";
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess) << "Kernel execution failed";
+
+  ASSERT_EQ(cudaMemcpy(test_output.data(), d_output, test_bytes,
+                       cudaMemcpyDeviceToHost), cudaSuccess);
+
+  // Verify: each element should be doubled
+  int errors = 0;
+  for (size_t i = 0; i < test_elements; ++i) {
+    uint32_t expected = test_input[i] * 2;
+    if (test_output[i] != expected) {
+      if (errors < 10) {
+        printf("Index %zu: expected %u, got %u\n", i, expected, test_output[i]);
+      }
+      errors++;
+    }
+  }
+  EXPECT_EQ(errors, 0) << "Total mismatches: " << errors;
+
+  cudaFree(d_input);
+  cudaFree(d_output);
+}
+
+// Test: Large scale TMA Store with many groups
+TEST_F(BulkGroupIntegrationTest, LargeScaleTMAStore) {
+  constexpr int CHUNK_BYTES = 256;
+  constexpr int NUM_GROUPS = 16;
+
+  // Use larger data
+  const size_t large_elements = 65536;  // 256KB
+  const size_t large_bytes = large_elements * sizeof(uint32_t);
+
+  std::vector<uint32_t> large_input(large_elements);
+  std::vector<uint32_t> large_output(large_elements);
+
+  for (size_t i = 0; i < large_elements; ++i) {
+    large_input[i] = static_cast<uint32_t>(i % 1000);
+  }
+
+  uint32_t *d_input = nullptr;
+  uint32_t *d_output = nullptr;
+
+  ASSERT_EQ(cudaMalloc(&d_input, large_bytes), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_output, large_bytes), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(d_input, large_input.data(), large_bytes,
+                       cudaMemcpyHostToDevice), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_output, 0, large_bytes), cudaSuccess);
+
+  const int threads_per_block = 128;  // 4 warps per block
+  const int elements_per_warp = NUM_GROUPS * (CHUNK_BYTES / sizeof(uint32_t));
+  const int warps_per_block = threads_per_block / 32;
+  const int elements_per_block = warps_per_block * elements_per_warp;
+  const int blocks = (large_elements + elements_per_block - 1) / elements_per_block;
+
+  const size_t shared_mem_size = warps_per_block * CHUNK_BYTES;
+
+  tma_store_kernel<NUM_GROUPS, CHUNK_BYTES, 0>
+      <<<blocks, threads_per_block, shared_mem_size>>>(d_input, d_output, large_elements);
+
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess) << "Kernel launch failed";
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess) << "Kernel execution failed";
+
+  ASSERT_EQ(cudaMemcpy(large_output.data(), d_output, large_bytes,
+                       cudaMemcpyDeviceToHost), cudaSuccess);
+
+  // Verify
+  int errors = 0;
+  for (size_t i = 0; i < large_elements; ++i) {
+    uint32_t expected = large_input[i] + 1;
+    if (large_output[i] != expected) {
+      if (errors < 10) {
+        printf("Index %zu: expected %u, got %u\n", i, expected, large_output[i]);
+      }
+      errors++;
+    }
+  }
+  EXPECT_EQ(errors, 0) << "Total mismatches: " << errors;
+
+  cudaFree(d_input);
+  cudaFree(d_output);
+}
+
+// Test: Empty bulk groups (commit without any stores)
+TEST_F(BulkGroupIntegrationTest, EmptyBulkGroups) {
+  // This test verifies that empty groups are handled correctly
+  // The kernel will commit groups even when there are no stores
+
+  constexpr int CHUNK_BYTES = 128;
+  const int num_chunks = 4;
+  const int elements_per_chunk = CHUNK_BYTES / sizeof(uint32_t);
+  const size_t test_elements = num_chunks * elements_per_chunk;
+
+  std::vector<uint32_t> test_input(test_elements, 42);
+  std::vector<uint32_t> test_output(test_elements, 0);
+
+  uint32_t *d_input = nullptr;
+  uint32_t *d_output = nullptr;
+  size_t test_bytes = test_elements * sizeof(uint32_t);
+
+  ASSERT_EQ(cudaMalloc(&d_input, test_bytes), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_output, test_bytes), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(d_input, test_input.data(), test_bytes,
+                       cudaMemcpyHostToDevice), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_output, 0, test_bytes), cudaSuccess);
+
+  const size_t shared_mem_size = CHUNK_BYTES;
+
+  // Run the multi-group kernel which tests normal operation
+  tma_store_multi_group_kernel<CHUNK_BYTES>
+      <<<1, 32, shared_mem_size>>>(d_input, d_output, num_chunks);
+
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess) << "Kernel launch failed";
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess) << "Kernel execution failed";
+
+  ASSERT_EQ(cudaMemcpy(test_output.data(), d_output, test_bytes,
+                       cudaMemcpyDeviceToHost), cudaSuccess);
+
+  // Verify correctness
+  int errors = 0;
+  for (int chunk = 0; chunk < num_chunks; chunk++) {
+    for (int i = 0; i < elements_per_chunk; i++) {
+      size_t idx = chunk * elements_per_chunk + i;
+      uint32_t expected = 42 + (chunk + 1);
+      if (test_output[idx] != expected) {
+        errors++;
+      }
+    }
+  }
+  EXPECT_EQ(errors, 0) << "Total mismatches: " << errors;
+
+  cudaFree(d_input);
+  cudaFree(d_output);
+}

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <vector>
+#include <list>
 
 class shader_core_ctx;
 class warp_inst_t;

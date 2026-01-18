@@ -61,6 +61,16 @@ MAIN_TEST_TARGET = $(BIN_DIR)/run_all_tests
 # GPGPU-Sim related flags (from main project)
 GPGPUSIM_FLAGS = -DDEBUG=0
 
+# GPGPU-Sim source files needed by tests (from flash subdirectory)
+# Auto-discover all flash sources (uncomment when needed):
+# FLASH_SOURCES = $(wildcard $(SRC_DIR)/gpgpu-sim/flash/*.cc)
+# FLASH_OBJECTS = $(FLASH_SOURCES:$(SRC_DIR)/gpgpu-sim/flash/%.cc=$(OBJ_DIR)/flash/%.cu.o)
+
+# Explicitly list only required source files
+FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
+FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o
+FLASH_OBJ_DIR = $(OBJ_DIR)/flash
+
 .PHONY: all clean test help setup-gtest run-tests
 
 # Default target
@@ -94,7 +104,7 @@ setup-gtest:
 	fi
 
 # Create build directories
-$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(UNIT_OBJ_DIR) $(INTEGRATION_OBJ_DIR) $(INTEGRATION_MMA_OBJ_DIR):
+$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(UNIT_OBJ_DIR) $(INTEGRATION_OBJ_DIR) $(INTEGRATION_MMA_OBJ_DIR) $(FLASH_OBJ_DIR):
 	mkdir -p $@
 
 # Build Google Test library
@@ -112,6 +122,10 @@ $(OBJ_DIR)/gtest.a: $(OBJ_DIR)/gtest-all.o
 $(OBJ_DIR)/gtest_main.a: $(OBJ_DIR)/gtest-all.o $(OBJ_DIR)/gtest_main.o
 	$(AR) $(ARFLAGS) $@ $^
 
+# Build GPGPU-Sim flash source files needed by tests
+$(OBJ_DIR)/flash/%.cu.o: $(SRC_DIR)/gpgpu-sim/flash/%.cc | $(FLASH_OBJ_DIR)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
 # Build test objects (both unit and integration tests compiled with nvcc for CUDA support)
 $(OBJ_DIR)/unit/%.cu.o: $(TEST_SRC_DIR)/unit/%.cc $(CUH_HEADERS) | $(UNIT_OBJ_DIR)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
@@ -126,7 +140,7 @@ $(BIN_DIR)/%_test: $(OBJ_DIR)/%_test.o $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread
 
 # Build main test runner
-$(MAIN_TEST_TARGET): $(TEST_OBJECTS) $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
+$(MAIN_TEST_TARGET): $(TEST_OBJECTS) $(FLASH_OBJECTS) $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(CUDA_LIBS)
 
 # Run tests

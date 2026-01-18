@@ -569,6 +569,13 @@ public:
         m_transactions.emplace(tx_uid, tx);
         issue_queue.push_back(tx_uid);
 
+        // For TMA write operations, add transaction to bulk group
+        bool is_write_op = (tma_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
+        if (is_write_op) {
+          unsigned cta_id = thread->get_hw_ctaid();
+          m_barriers->add_bulk_tx(cta_id, warp_id, tx_uid);
+        }
+
         GPPRINTF_INST_EXEC(TMA, "[TMA START] cta_id=%u, warp_id=%u, lane=%d, tid=%u, tx_uid=%u, dst=0x%llx, src=0x%llx, size=%u, mbar=0x%x\n",
                thread->get_hw_ctaid(), warp_id, laneid, tid, tx_uid,
                tma_dyn_info.dst_addr, tma_dyn_info.src_addr,
@@ -596,7 +603,6 @@ public:
     if (!m_response_fifo.empty()) {
       mem_fetch *mf = m_response_fifo.front();
       m_response_fifo.pop_front();
-      assert(mf->get_access_type() == TMA_ACC_R);
 
       mem_fetch *parent_mf = mf->get_original_mf() ? mf->get_original_mf() : mf;
       auto mf_it = m_mf_to_tx.find(parent_mf->get_request_uid());
@@ -609,15 +615,27 @@ public:
       auto &tx = tx_it->second;
       tx.m_mf_received_count++;
 
-      GPPRINTF_TMA(TMA, "TMA response received for mf uid=%u, tx_uid=%u, data_size=%u, response fifo size=%lu\n",
-            mf->get_request_uid(),  tx_uid, mf->get_data_size(), m_response_fifo.size());
+      bool is_write = (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
 
-      // Validate destination space
-      if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
-        assert(false && "Unsupported TMA destination space: CLUSTER");
-      } else if (tx.m_static_info.dst_space != inst_t::tma_static_info_t::TMA_SHARED_CTA) {
-        assert(false && "Unrecognized TMA destination space");
+      GPPRINTF_TMA(TMA, "TMA %s response received for mf uid=%u, tx_uid=%u, data_size=%u, response fifo size=%lu\n",
+            is_write ? "WRITE" : "READ",
+            mf->get_request_uid(), tx_uid, mf->get_data_size(), m_response_fifo.size());
+
+      if (is_write) {
+        // TMA Write (shared → global): response is write acknowledgment
+        assert(mf->get_access_type() == TMA_ACC_W);
+      } else {
+        // TMA Read (global → shared): response contains read data
+        assert(mf->get_access_type() == TMA_ACC_R);
+
+        // Validate destination space
+        if (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
+          assert(false && "Unsupported TMA destination space: CLUSTER");
+        } else if (tx.m_static_info.dst_space != inst_t::tma_static_info_t::TMA_SHARED_CTA) {
+          assert(false && "Unrecognized TMA destination space");
+        }
       }
+
       // Count bytes: use min(mf_size, parent_size) to handle L2 sector subdivision
       unsigned mf_size = mf->get_data_size();
       unsigned parent_size = parent_mf->get_data_size();
@@ -630,20 +648,27 @@ public:
         unsigned cta_id = thread->get_hw_ctaid();
         unsigned warp_id = thread->get_hw_wid();
 
-            GPPRINTF_TMA(TMA, "[TMA COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, issued_mf=%u, received_mf=%u, bytes_completed=%u/%u\n",
-                   tx_uid, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-                   tx.m_mf_issued_count, tx.m_mf_received_count,
-                   tx.m_bytes_completed, tx.m_dyn_info.size_in_bytes);
-            fflush(stdout);
+        GPPRINTF_TMA(TMA, "[TMA %s COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, issued_mf=%u, received_mf=%u, bytes_completed=%u/%u\n",
+               is_write ? "WRITE" : "READ",
+               tx_uid, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+               tx.m_mf_issued_count, tx.m_mf_received_count,
+               tx.m_bytes_completed, tx.m_dyn_info.size_in_bytes);
+        fflush(stdout);
 
-            GPPRINTF_TMA(TMA,
-                              "Complete transaction dst=0x%llx, src=0x%llx, "
-                              "size_in_bytes=%u, mbar=0x%x, tx_uid=%u\n",
-                              tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
-                              tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
+        GPPRINTF_TMA(TMA,
+                          "Complete transaction dst=0x%llx, src=0x%llx, "
+                          "size_in_bytes=%u, mbar=0x%x, tx_uid=%u\n",
+                          tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+                          tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
 
-                              m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-                               tx.m_dyn_info.size_in_bytes);
+        // For TMA read, notify mbarrier of completion
+        // For TMA write, use bulk_group completion mechanism
+        if (!is_write) {
+          m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+                                 tx.m_dyn_info.size_in_bytes);
+        } else {
+          m_barriers->complete_bulk_tx(cta_id, warp_id, tx_uid);
+        }
 
         m_transactions.erase(tx_it);
 
@@ -660,7 +685,7 @@ public:
       delete mf;
     }
 
-    // issue memory requests using shadow stride accumulation
+    // Issue memory requests using shadow stride accumulation
     if (!issue_queue.empty()) {
       unsigned tx_uid = issue_queue.front();
 
@@ -668,16 +693,19 @@ public:
       assert(it != m_transactions.end());
       auto &tx = it->second;
 
-      if (!m_icnt->full(READ_PACKET_SIZE, false)) {
-        // TODO: deal with corner case, would need sector mask if size not aligned w. cacheline size
+      bool is_write = (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
+      unsigned packet_size = is_write ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
+
+      if (!m_icnt->full(packet_size, is_write)) {
         uint64_t addr;  uint32_t size;
-        
+
         // Use AGU Unit to generate next address
         if (m_agu.gen_next_req(tx.agu_state, addr, size)) {
 
           // Count mem_fetch issued for this transaction
           if (tx.m_mf_issued_count == 0) {
-            GPPRINTF_TMA(TMA, "[TMA AGU] tx_uid=%u starting to issue mem_fetch requests\n", tx_uid);
+            GPPRINTF_TMA(TMA, "[TMA AGU] tx_uid=%u starting to issue %s mem_fetch requests\n",
+                   tx_uid, is_write ? "WRITE" : "READ");
             fflush(stdout);
           }
           tx.m_mf_issued_count++;
@@ -703,7 +731,10 @@ public:
 
           active_mask_t active_mask; // Empty mask for TMA (not warp-based)
 
-          mem_access_t access(TMA_ACC_R, addr, size, false,
+          // Choose access type based on direction
+          mem_access_type access_type = is_write ? TMA_ACC_W : TMA_ACC_R;
+
+          mem_access_t access(access_type, addr, size, is_write,
                               active_mask, byte_mask, sector_mask,
                               m_shader_ctx->get_gpu()->gpgpu_ctx);
 
@@ -711,17 +742,17 @@ public:
               m_mf_allocator->alloc(access, -1,
                                     m_shader_ctx->get_gpu()->gpu_sim_cycle +
                                     m_shader_ctx->get_gpu()->gpu_tot_sim_cycle);
-          
+
           m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
-          
+
           m_icnt->push(mf);
         }
       }
 
       // Remove from issue queue when all requests have been issued
       if (tx.agu_state.done) {
-        GPPRINTF_TMA(TMA, "[TMA AGU DONE] tx_uid=%u issued %u mem_fetch requests (total bytes: %u)\n",
-               tx_uid, tx.m_mf_issued_count, tx.m_dyn_info.size_in_bytes);
+        GPPRINTF_TMA(TMA, "[TMA AGU DONE] tx_uid=%u issued %u %s mem_fetch requests (total bytes: %u)\n",
+               tx_uid, tx.m_mf_issued_count, is_write ? "WRITE" : "READ", tx.m_dyn_info.size_in_bytes);
         fflush(stdout);
         issue_queue.pop_front();
       }
@@ -1007,9 +1038,80 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
         "size_in_bytes=%u, mbar=0x%x\n",
         dst_addr, src_addr, size_in_bytes, mbar_addr);
 
+    } else if(dst_option == GLOBAL_OPTION && src_option == CTA_OPTION && completion_option == BULK_GROUP_OPTION) {
+      // Handle global <- shared::cta TMA copy inst with bulk group completion.
+
+      // Extract operands.
+      auto dst_addr = get_operand_u64(thread, pI->dst());
+      auto src_addr = get_operand_u32(thread, pI->src1());
+      auto size_in_bytes = get_operand_u32(thread, pI->src2());
+
+      // Check alignment to 16 bytes.
+      if (dst_addr % 16 != 0 || src_addr % 16 != 0 || size_in_bytes % 16 != 0) {
+        GPPRINTF_INST_EXEC(
+            TMA, "unaligned TMA copy dst=0x%x, src=0x%llx, size_in_bytes=%u\n",
+            dst_addr, src_addr, size_in_bytes);
+        abort();
+      }
+
+      inst_t::tma_static_info_t tma_static_info{
+          .tma_type = inst_t::tma_static_info_t::TMA_NORMAL,
+          .dst_space = inst_t::tma_static_info_t::TMA_GLOBAL,
+          .src_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+      };
+      pI->set_tma_static_info(tma_static_info);
+      inst_t::tma_dyn_info_t tma_dyn_info{
+          .dst_addr = dst_addr,
+          .src_addr = src_addr,
+          .size_in_bytes = size_in_bytes,
+      };
+      auto laneid = thread->get_laneid();
+      pI->set_tma_dyn_info(laneid, tma_dyn_info);
+
+      // write data into shared memory
+      memory_space *global_mem = thread->get_global_memory();
+      memory_space *shared_mem = thread->m_shared_mem;
+
+      unsigned char *data_buffer = new unsigned char[size_in_bytes];
+      shared_mem->read(src_addr, size_in_bytes, data_buffer);
+      global_mem->write(dst_addr, size_in_bytes, data_buffer, thread, pI);
+      
+      delete[] data_buffer;
+
+      GPPRINTF_INST_EXEC(TMA,
+        "Functional Sim: "
+        "TMA global <- shared::cta dst=0x%x, src=0x%llx, "
+        "size_in_bytes=%u\n",
+        dst_addr, src_addr, size_in_bytes);
     } else {
       assert(false && "Unsupported TMA copy instruction");
     }
+
+  } else if (is_commit_group) {
+    // Handle TMA bulk commit_group instruction (cp.async.bulk.commit_group)
+    inst_t::tma_static_info_t tma_static_info{
+        .tma_type = inst_t::tma_static_info_t::TMA_BULK_COMMIT,
+        .dst_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
+        .src_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
+    };
+    pI->set_tma_static_info(tma_static_info);
+
+    GPPRINTF_INST_EXEC(TMA, "Functional Sim: cp.async.bulk.commit_group\n", "");
+
+  } else if (is_wait_group) {
+    // Handle TMA bulk wait_group instruction (cp.async.bulk.wait_group N)
+    // The group number N is the first (and only) operand
+    unsigned group_num = get_operand_u32(thread, pI->dst());
+
+    inst_t::tma_static_info_t tma_static_info{
+        .tma_type = inst_t::tma_static_info_t::TMA_BULK_WAIT,
+        .dst_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
+        .src_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
+        .bulk_wait_num = group_num,
+    };
+    pI->set_tma_static_info(tma_static_info);
+
+    GPPRINTF_INST_EXEC(TMA, "Functional Sim: cp.async.bulk.wait_group %u\n", group_num);
 
   } else if (is_tensor) {
     // Handle TMA tensor instruction (cp.async.bulk.tensor.Nd)
@@ -1145,16 +1247,6 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       GPPRINTF_INST_EXEC(TMA, 
         "[STUB] Unsupported cp.async.bulk.tensor variant%s\n", "");
     }
-
-  } else if (is_commit_group) {
-    // Handle TMA commit group instruction (cp.async.bulk.commit_group).
-    // TODO: Implement commit group - for now treat as NOP
-    GPPRINTF_INST_EXEC(TMA, "[STUB] cp.async.bulk.commit_group not implemented (treated as NOP)%s\n", "");
-
-  } else if (is_wait_group) {
-    // Handle TMA wait group instruction (cp.async.bulk.wait_group).
-    // TODO: Implement wait group - for now treat as NOP (assume all transfers complete immediately)
-    GPPRINTF_INST_EXEC(TMA, "[STUB] cp.async.bulk.wait_group not implemented (treated as NOP)%s\n", "");
 
   } else {
     GPPRINTF_INST_EXEC(TMA, "Unrecognized TMA instruction%s\n", "");
