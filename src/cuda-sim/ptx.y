@@ -362,7 +362,36 @@ statement_list: directive_statement { recognizer->add_directive(); }
 directive_statement: variable_declaration SEMI_COLON
 	| VERSION_DIRECTIVE DOUBLE_OPERAND { recognizer->add_version_info($2, 0); }
 	| VERSION_DIRECTIVE DOUBLE_OPERAND PLUS { recognizer->add_version_info($2,1); }
-	| ADDRESS_SIZE_DIRECTIVE INT_OPERAND {/*Do nothing*/}
+	| ADDRESS_SIZE_DIRECTIVE INT_OPERAND {
+		// CRITICAL: 32-bit address size is no longer supported
+		// Modern GPU configurations require 64-bit addressing due to:
+		// - GLOBAL_HEAP_START = 0xC00000000 (48 GB)
+		// - Large SM counts (e.g., RTX 5090 with 170 SMs)
+		// - Expanded shared memory (1 MB per SM)
+		// See docs/addressing_mode.md for details
+		if ($2 != 64) {
+			fprintf(stderr, "\n");
+			fprintf(stderr, "================================================================================\n");
+			fprintf(stderr, "GPGPU-Sim PTX: ERROR - 32-bit address size is not supported.\n");
+			fprintf(stderr, "================================================================================\n");
+			fprintf(stderr, "\n");
+			fprintf(stderr, "Modern GPU configurations require .address_size 64 in PTX files.\n");
+			fprintf(stderr, "\n");
+			fprintf(stderr, "Found: .address_size %d\n", $2);
+			fprintf(stderr, "\n");
+			fprintf(stderr, "Reason:\n");
+			fprintf(stderr, "  - GLOBAL_HEAP_START = 0xC00000000 exceeds 32-bit range\n");
+			fprintf(stderr, "  - Generic addressing with 170+ SMs requires 64-bit addresses\n");
+			fprintf(stderr, "  - All ld/st/mma instructions use 64-bit address operands\n");
+			fprintf(stderr, "\n");
+			fprintf(stderr, "To fix: Recompile your CUDA code with nvcc (sm_70+) to generate 64-bit PTX\n");
+			fprintf(stderr, "\n");
+			fprintf(stderr, "See docs/addressing_mode.md for detailed explanation.\n");
+			fprintf(stderr, "================================================================================\n");
+			fflush(stderr);
+			abort();
+		}
+	}
 	| TARGET_DIRECTIVE IDENTIFIER COMMA IDENTIFIER { recognizer->target_header2($2,$4); }
 	| TARGET_DIRECTIVE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER { recognizer->target_header3($2,$4,$6); }
 	| TARGET_DIRECTIVE IDENTIFIER { recognizer->target_header($2); }

@@ -85,11 +85,12 @@ void init();
     auto warp_size = thread->get_core()->get_warp_size();                      \
     auto warpid = flat_tid / warp_size;                                        \
     auto laneid = flat_tid % warp_size;                                        \
+    auto sm_id = thread->get_hw_sid();                                         \
                                                                                \
     if (GPTRACE(x)) {                                                           \
-      printf(SIM_PRINT_STR "[%3d,%3d,%3d] " fmt,                               \
+      printf(SIM_PRINT_STR "[%3d,%3d,%3d] SM %3d " fmt,                               \
              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,                  \
-             Trace::trace_streams_str[Trace::x], flat_ctaid, warpid, laneid,   \
+             Trace::trace_streams_str[Trace::x], flat_ctaid, warpid, laneid, sm_id,   \
              __VA_ARGS__);                                                     \
     }                                                                          \
   } while (0)

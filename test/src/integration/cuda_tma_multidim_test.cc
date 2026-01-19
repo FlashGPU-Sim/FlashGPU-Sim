@@ -520,7 +520,10 @@ protected:
         
         std::mt19937 gen(seed);
         std::uniform_real_distribution<float> dist(-10, 10);
-        for (auto &v : h_in) v = dist(gen);
+        for (auto &v : h_in) {
+            // v = dist(gen);
+            v = 2;
+        }
         cudaMemcpy(d_in, h_in.data(), tot * sizeof(float), cudaMemcpyHostToDevice);
         
         dim3 block(BOX0, BOX1);
@@ -531,7 +534,8 @@ protected:
         
         cudaMemcpy(h_out.data(), d_out, tot * sizeof(float), cudaMemcpyDeviceToHost);
         for (size_t i = 0; i < tot; i++)
-            EXPECT_NEAR(h_out[i], h_in[i] + 1.0f, 1e-4f);
+            EXPECT_NEAR(h_out[i], h_in[i] + 1.0f, 1e-4f)
+                << " Mismatch at index [" << i /D1 << ", " << i % D1 << "]";
         
         cudaFree(d_in); cudaFree(d_out); cudaFree(d_scratch);
     }

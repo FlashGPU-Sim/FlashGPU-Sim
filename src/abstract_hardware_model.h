@@ -312,16 +312,43 @@ class simt_stack {
   class gpgpu_sim *m_gpu;
 };
 
-// Let's just upgrade to C++11 so we can use constexpr here...
-// start allocating from this address (lower values used for allocating globals
-// in .ptx file)
-const unsigned long long GLOBAL_HEAP_START = 0xC0000000;
-// Volta max shmem size is 96kB
-const unsigned long long SHARED_MEM_SIZE_MAX = 96 * (1 << 10);
-// Volta max local mem is 16kB
+// Generic Addressing Window Configuration
+// ========================================
+// These constants define the memory layout for PTX generic addressing mode.
+// The generic address space is partitioned into:
+//   1. [0, STATIC_ALLOC_LIMIT): Static allocations (globals from .ptx)
+//   2. [LOCAL_GENERIC_START, SHARED_GENERIC_START): Per-thread local memory
+//   3. [SHARED_GENERIC_START, GLOBAL_HEAP_START): Per-SM shared memory
+//   4. [GLOBAL_HEAP_START, ...): Dynamic heap allocations
+//
+// CRITICAL: These values must be large enough to accommodate modern GPUs.
+//           - RTX 5090 has 170 SMs, requiring MAX_STREAMING_MULTIPROCESSORS >= 170
+//           - Blackwell architecture supports up to 228KB shared memory per SM
+//           - The address space MUST be 64-bit (.address_size 64 in PTX)
+//
+// IMPORTANT: When increasing these limits, GLOBAL_HEAP_START must be adjusted
+//            to ensure (GLOBAL_HEAP_START > SHARED_GENERIC_START) to avoid
+//            overlap between shared memory and global heap regions.
+//
+// See docs/addressing_mode.md for detailed explanation of the generic addressing layout.
+
+// Start of dynamic heap allocation region (must be 64-bit address)
+// Increased from 0xC0000000 (32-bit) to 0xC00000000 (64-bit) to accommodate
+// larger local and shared memory windows for modern GPUs (e.g., RTX 5090 with 170 SMs)
+const unsigned long long GLOBAL_HEAP_START = 0xC00000000;
+
+// Maximum shared memory per SM (1 MB = 1024 KB)
+// Increased from 96KB (Volta) to 1MB to support future architectures
+// (e.g., Hopper/Blackwell with up to 228KB per SM)
+const unsigned long long SHARED_MEM_SIZE_MAX = 1024 * (1 << 10);
+
+// Maximum local memory per thread (16 KB)
 const unsigned long long LOCAL_MEM_SIZE_MAX = 1 << 14;
-// Volta Titan V has 80 SMs
-const unsigned MAX_STREAMING_MULTIPROCESSORS = 80;
+
+// Maximum number of streaming multiprocessors supported
+// Increased from 80 (Volta Titan V) to 1024 to support modern GPUs
+// (e.g., RTX 5090 with 170 SMs, Blackwell GB202 with 192 SMs)
+const unsigned MAX_STREAMING_MULTIPROCESSORS = 1024;
 // Max 2048 threads / SM
 const unsigned MAX_THREAD_PER_SM = 1 << 11;
 // MAX 64 warps / SM
