@@ -1070,6 +1070,8 @@ void add_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       break;  // assert(0); break;
     case F32_TYPE:
       data.f32 = src1_data.f32 + src2_data.f32;
+      GPPRINTF_INST_EXEC(PTX_INST_EXEC, "%.3f = %.3f + %.3f\n", data.f32, src1_data.f32,
+                         src2_data.f32);
       break;
     case F64_TYPE:
     case FF64_TYPE:
@@ -3252,6 +3254,9 @@ void cvta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t to_addr;
   to_addr.u64 = to_addr_hw;
   thread->set_reg(dst.get_symbol(), to_addr);
+  GPPRINTF_INST_EXEC(PTX_INST_EXEC,
+                      "cvta_impl: from_addr 0x%llx to_addr 0x%llx inst %s\n",
+                      from_addr.u64, to_addr.u64, pI->to_string().c_str());
 }
 
 void div_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -3485,7 +3490,11 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned vector_spec = pI->get_vector();
 
   memory_space *mem = NULL;
-  addr_t addr = src1_data.u32;
+  // CRITICAL: Use 64-bit address (u64) instead of 32-bit (u32)
+  // With GLOBAL_HEAP_START=0xC00000000 and modern GPUs (e.g., RTX 5090 with
+  // 170 SMs), generic addresses can exceed 32-bit range. Using u32 here would
+  // truncate addresses and cause incorrect memory accesses.
+  addr_t addr = src1_data.u64;
 
   decode_space(space, thread, src1, mem, addr);
 
@@ -3498,10 +3507,15 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
     if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
     thread->set_operand_value(dst, data, type, thread, pI);
 
-    GPPRINTF_INST_EXEC(
-        PTX_INST_EXEC, "ld: space %p type %s addr %llx val %llu inst %s\n",
-        mem,
-        decode_token(type), addr, data.u64, pI->to_string().c_str());
+    if (type == F32_TYPE) {
+      GPPRINTF_INST_EXEC(
+          PTX_INST_EXEC, "ld: space %p type %s addr %lx val %.3f inst %s\n",
+          mem, decode_token(type), addr, data.f32, pI->to_string().c_str());
+    } else {
+      GPPRINTF_INST_EXEC(
+          PTX_INST_EXEC, "ld: space %p type %s addr %lx val %llu inst %s\n",
+          mem, decode_token(type), addr, data.u64, pI->to_string().c_str());
+    }
 
   } else {
     ptx_reg_t data1, data2, data3, data4;
@@ -3564,7 +3578,10 @@ void mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
     memory_space_t space = pI->get_space();
 
     memory_space *mem = NULL;
-    addr_t addr = addr_reg.u32;
+    // CRITICAL: Use 64-bit address (u64) for MMA store operations
+    // MMA instructions can access shared memory with generic addressing, and with
+    // large SM counts (e.g., 170 SMs), the generic address window exceeds 32-bit.
+    addr_t addr = addr_reg.u64;
 
     new_addr_type mem_txn_addr[MAX_ACCESSES_PER_INSN_PER_THREAD];
     int num_mem_txn = 0;
@@ -3684,7 +3701,10 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
     memory_space_t space = pI->get_space();
 
     memory_space *mem = NULL;
-    addr_t addr = src1_data.u32;
+    // CRITICAL: Use 64-bit address (u64) for MMA load operations
+    // MMA instructions can access shared memory with generic addressing, and with
+    // large SM counts (e.g., 170 SMs), the generic address window exceeds 32-bit.
+    addr_t addr = src1_data.u64;
     smid = thread->get_hw_sid();
     if (whichspace(addr) == shared_space) {
       addr = generic_to_shared(smid, addr);
@@ -5907,7 +5927,11 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned vector_spec = pI->get_vector();
 
   memory_space *mem = NULL;
-  addr_t addr = addr_reg.u32;
+  // CRITICAL: Use 64-bit address (u64) instead of 32-bit (u32)
+  // With GLOBAL_HEAP_START=0xC00000000 and modern GPUs (e.g., RTX 5090 with
+  // 170 SMs), generic addresses can exceed 32-bit range. Using u32 here would
+  // truncate addresses and cause incorrect memory accesses.
+  addr_t addr = addr_reg.u64;
 
   decode_space(space, thread, dst, mem, addr);
 
@@ -5919,9 +5943,15 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
     mem->write(addr, size / 8, &data.s64, thread, pI);
 
-    GPPRINTF_INST_EXEC(
-        PTX_INST_EXEC, "st: space %p type %s addr %llx data %llu inst %s\n",
-        mem, decode_token(type), addr, data.u64, pI->to_string().c_str());
+    if (type == F32_TYPE) {
+      GPPRINTF_INST_EXEC(
+          PTX_INST_EXEC, "st: space %p type %s addr %llx data %.3f inst %s\n",
+          mem, decode_token(type), addr, data.f32, pI->to_string().c_str());
+    } else {
+      GPPRINTF_INST_EXEC(
+          PTX_INST_EXEC, "st: space %p type %s addr %llx data %llu inst %s\n",
+          mem, decode_token(type), addr, data.u64, pI->to_string().c_str());
+    }
 
   } else {
     if (vector_spec == V2_TYPE) {

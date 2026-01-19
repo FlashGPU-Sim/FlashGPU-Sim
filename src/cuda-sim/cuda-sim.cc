@@ -605,13 +605,12 @@ void gpgpu_t::memcpy_to_gpu(size_t dst_start_addr, const void *src,
                             size_t count) {
   if (g_debug_execution >= 3) {
     printf(
-        "GPGPU-Sim PTX: copying %zu bytes from CPU[0x%Lx] to GPU[0x%Lx] ... ",
-        count, (unsigned long long)src, (unsigned long long)dst_start_addr);
+        "GPGPU-Sim PTX: copying %zu bytes from CPU[0x%Lx] to GPU[0x%Lx] mem %p ... ",
+        count, (unsigned long long)src, (unsigned long long)dst_start_addr, m_global_mem);
     fflush(stdout);
   }
   char *src_data = (char *)src;
-  for (unsigned n = 0; n < count; n++)
-    m_global_mem->write(dst_start_addr + n, 1, src_data + n, NULL, NULL);
+  m_global_mem->write(dst_start_addr, count, src, NULL, NULL);
 
   // Copy into the performance model.
   // extern gpgpu_sim* g_the_gpu;
@@ -624,13 +623,12 @@ void gpgpu_t::memcpy_to_gpu(size_t dst_start_addr, const void *src,
 
 void gpgpu_t::memcpy_from_gpu(void *dst, size_t src_start_addr, size_t count) {
   if (g_debug_execution >= 3) {
-    printf("GPGPU-Sim PTX: copying %zu bytes from GPU[0x%Lx] to CPU[0x%Lx] ...",
-           count, (unsigned long long)src_start_addr, (unsigned long long)dst);
+    printf("GPGPU-Sim PTX: copying %zu bytes from GPU[0x%Lx] mem %p to CPU[0x%Lx] ...",
+           count, (unsigned long long)src_start_addr, m_global_mem, (unsigned long long)dst);
     fflush(stdout);
   }
   unsigned char *dst_data = (unsigned char *)dst;
-  for (unsigned n = 0; n < count; n++)
-    m_global_mem->read(src_start_addr + n, 1, dst_data + n);
+  m_global_mem->read(src_start_addr, count, dst_data);
 
   // Copy into the performance model.
   // extern gpgpu_sim* g_the_gpu;

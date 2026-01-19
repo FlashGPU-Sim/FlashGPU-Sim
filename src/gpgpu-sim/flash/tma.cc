@@ -428,7 +428,26 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
     if (is_load) {
       // Load: global -> shared
       global_mem->read(global_req_addr, req_size, data_buffer);
-      
+
+      auto flat_ctaid = thread->get_flat_ctaid();
+      auto flat_tid = thread->get_flat_tid();
+      auto warp_size = thread->get_core()->get_warp_size();
+      auto warpid = flat_tid / warp_size;
+      auto laneid = flat_tid % warp_size;
+      auto sm_id = thread->get_hw_sid();
+      GPPRINTF_INST_EXEC(TMA,
+          "[TMA LOAD] [%3d,%3d,%3d] SM %3d coord[%3d,%3d,%3d,%3d,%3d] swizzle_mode %u "
+          "gmem=0x%llx -> "
+          "smem=0x%x, space=%p, size=%u, tile_offset=0x%llx, "
+          "data[0..3]=0x%02x%02x%02x%02x fp32 %.3f\n",
+          flat_ctaid, warpid, laneid, sm_id, coords[0], coords[1], coords[2],
+          swizzle_mode,
+          coords[3], coords[4], (unsigned long long)global_req_addr, smem_addr,
+          shared_mem, req_size, (unsigned long long)tile_offset,
+          req_size > 0 ? data_buffer[0] : 0, req_size > 1 ? data_buffer[1] : 0,
+          req_size > 2 ? data_buffer[2] : 0, req_size > 3 ? data_buffer[3] : 0,
+          *reinterpret_cast<float *>(data_buffer));
+
       // Apply swizzle at 16-byte granularity when writing to shared memory
       // Each 16-byte sub-block may be written to a different swizzled location
       if (swizzle_mode != TMA_SWIZZLE_NONE) {
@@ -857,7 +876,7 @@ private:
     fflush(stdout);
 
     GPPRINTF_TMA(TMA,
-                 "Complete transaction dst=0x%llx, src=0x%llx, "
+                 "Complete transaction dst=0x%lx, src=0x%lx, "
                  "size_in_bytes=%u, mbar=0x%x, tx_uid=%u\n",
                  tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
                  tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
@@ -930,14 +949,14 @@ public:
         m_transactions.emplace(tx_uid, tx);
         issue_queue.push_back(tx_uid);
 
-        GPPRINTF_INST_EXEC(TMA, "[TMA START] cta_id=%u, warp_id=%u, lane=%d, tid=%u, tx_uid=%u, dst=0x%llx, src=0x%llx, size=%u, mbar=0x%x\n",
+        GPPRINTF_INST_EXEC(TMA, "[TMA START] cta_id=%u, warp_id=%u, lane=%d, tid=%u, tx_uid=%u, dst=0x%lx, src=0x%lx, size=%u, mbar=0x%x\n",
                thread->get_hw_ctaid(), warp_id, laneid, tid, tx_uid,
                tma_dyn_info.dst_addr, tma_dyn_info.src_addr,
                tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr);
         fflush(stdout);
 
         GPPRINTF_INST_EXEC(TMA,
-                          "Start transaction dst=0x%llx, src=0x%llx, "
+                          "Start transaction dst=0x%lx, tensormap at 0x%lx, "
                           "size_in_bytes=%u, mbar=0x%x, tx_uid=%u, tma_type=%d\n",
                           tma_dyn_info.dst_addr, tma_dyn_info.src_addr,
                           tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr, tx_uid,
@@ -1313,7 +1332,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       // Check alignment to 16 bytes.
       if (dst_addr % 16 != 0 || src_addr % 16 != 0 || size_in_bytes % 16 != 0) {
         GPPRINTF_INST_EXEC(
-            TMA, "unaligned TMA copy dst=0x%x, src=0x%llx, size_in_bytes=%u\n",
+            TMA, "unaligned TMA copy dst=0x%x, src=0x%lx, size_in_bytes=%u\n",
             dst_addr, src_addr, size_in_bytes);
         abort();
       }
@@ -1345,7 +1364,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
       GPPRINTF_INST_EXEC(TMA,
         "Functional Sim: "
-        "TMA shared::cta <- global dst=0x%x, src=0x%llx, "
+        "TMA shared::cta <- global dst=0x%x, src=0x%lx, "
         "size_in_bytes=%u, mbar=0x%x\n",
         dst_addr, src_addr, size_in_bytes, mbar_addr);
 
