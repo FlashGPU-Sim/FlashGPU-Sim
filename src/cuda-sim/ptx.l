@@ -309,7 +309,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.u32  TC;  return U32_TYPE;
 \.u64  TC;  return U64_TYPE;
 \.f16  TC;  return F16_TYPE;
-\.f16x2  TC;  return F16_TYPE; /* TODO: figure out what this should really be */
+\.f16x2  TC;  return F16X2_TYPE;
 \.bf16  TC;  return BF16_TYPE;
 \.tf32  TC;  return TF32_TYPE;
 \.f32  TC;  return F32_TYPE;
@@ -432,6 +432,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.elemtype TC; return ELEMTYPE_OPTION;
 \.interleave_layout TC; return INTERLEAVE_LAYOUT_OPTION;
 \.swizzle_mode TC; return SWIZZLE_MODE_OPTION;
+\.swizzle_atomicity TC; return SWIZZLE_ATOMICITY_OPTION;
 \.fill_mode TC; return FILL_MODE_OPTION;
 \.cp_fenceproxy TC; return CP_FENCEPROXY_OPTION;
 \.release TC; return RELEASE_OPTION;

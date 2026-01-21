@@ -1070,6 +1070,8 @@ void add_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       break;  // assert(0); break;
     case F32_TYPE:
       data.f32 = src1_data.f32 + src2_data.f32;
+      GPPRINTF_INST_EXEC(PTX_INST_EXEC, "%.3f = %.3f + %.3f\n", data.f32, src1_data.f32,
+                         src2_data.f32);
       break;
     case F64_TYPE:
     case FF64_TYPE:
@@ -3090,6 +3092,65 @@ void cvt_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       type_info_key::type_decode(from_type, from_width, from_sign);
   unsigned dst_fmt = type_info_key::type_decode(to_type, to_width, to_sign);
 
+  // Special handling for cvt.f16x2.f32: convert two f32 sources to one f16x2 destination
+  if (to_type == F16X2_TYPE && from_type == F32_TYPE) {
+
+    // Get both source operands
+    assert(pI->get_num_operands() >= 3 &&
+          "cvt.rn.f16x2.f32 requires 3 operands (dst, src1, src2).");
+    const std::vector<operand_info> &operands = pI->get_operands();
+    const operand_info &src2 = operands[2];  // dst=0, src1=1, src2=2
+    ptx_reg_t src1_data = thread->get_operand_value(src1, dst, from_type, thread, 1);
+    ptx_reg_t src2_data = thread->get_operand_value(src2, dst, from_type, thread, 1);
+
+    // GPPRINTF_INST_EXEC(
+    //     PTX_INST_EXEC,
+    //     "cvt.rn.f16x2.f32: src1 %f src2 %f rounding_mode %u inst %s\n",
+    //     src1_data.f32, src2_data.f32, rounding_mode, pI->to_string().c_str());
+
+    // Convert each f32 to f16 using the specified rounding mode
+    half_float::detail::uint16 f16_low, f16_high;
+    switch (rounding_mode) {
+      case RZI_OPTION:
+        f16_low = half_float::detail::float2half<std::round_toward_zero>(src2_data.f32);
+        f16_high = half_float::detail::float2half<std::round_toward_zero>(src1_data.f32);
+        break;
+      case RMI_OPTION:
+        f16_low = half_float::detail::float2half<std::round_toward_neg_infinity>(src2_data.f32);
+        f16_high = half_float::detail::float2half<std::round_toward_neg_infinity>(src1_data.f32);
+        break;
+      case RPI_OPTION:
+        f16_low = half_float::detail::float2half<std::round_toward_infinity>(src2_data.f32);
+        f16_high = half_float::detail::float2half<std::round_toward_infinity>(src1_data.f32);
+        break;
+      case RNI_OPTION:
+      case RN_OPTION:
+      default:
+        f16_low = half_float::detail::float2half<std::round_to_nearest>(src2_data.f32);
+        f16_high = half_float::detail::float2half<std::round_to_nearest>(src1_data.f32);
+        break;
+    }
+
+    // Pack two f16 values into one 32-bit register
+    // Low 16 bits: second f16 (from src2)
+    // High 16 bits: first f16 (from src1)
+    ptx_reg_t result;
+    result.u32 = (static_cast<uint32_t>(f16_high) << 16) | static_cast<uint32_t>(f16_low);
+
+    thread->set_operand_value(dst, result, to_type, thread, pI);
+    return;
+  }
+
+  // Abort for other unimplemented conversions involving F16X2_TYPE
+  if (to_type == F16X2_TYPE || from_type == F16X2_TYPE) {
+    printf("GPGPU-Sim PTX: ERROR ** Unsupported cvt conversion involving f16x2\n");
+    printf("  Instruction: %s\n", pI->to_string().c_str());
+    printf("  From type: %s, To type: %s\n",
+           decode_token(from_type), decode_token(to_type));
+    printf("  Only cvt.f16x2.f32 is currently supported\n");
+    abort();
+  }
+
   ptx_reg_t data = thread->get_operand_value(src1, dst, from_type, thread, 1);
 
   if (pI->is_neg()) {
@@ -3193,6 +3254,9 @@ void cvta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t to_addr;
   to_addr.u64 = to_addr_hw;
   thread->set_reg(dst.get_symbol(), to_addr);
+  GPPRINTF_INST_EXEC(PTX_INST_EXEC,
+                      "cvta_impl: from_addr 0x%llx to_addr 0x%llx inst %s\n",
+                      from_addr.u64, to_addr.u64, pI->to_string().c_str());
 }
 
 void div_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -3426,7 +3490,11 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned vector_spec = pI->get_vector();
 
   memory_space *mem = NULL;
-  addr_t addr = src1_data.u32;
+  // CRITICAL: Use 64-bit address (u64) instead of 32-bit (u32)
+  // With GLOBAL_HEAP_START=0xC00000000 and modern GPUs (e.g., RTX 5090 with
+  // 170 SMs), generic addresses can exceed 32-bit range. Using u32 here would
+  // truncate addresses and cause incorrect memory accesses.
+  addr_t addr = src1_data.u64;
 
   decode_space(space, thread, src1, mem, addr);
 
@@ -3439,10 +3507,15 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
     if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
     thread->set_operand_value(dst, data, type, thread, pI);
 
-    GPPRINTF_INST_EXEC(
-        PTX_INST_EXEC, "ld: space %p type %s addr %llx val %llu inst %s\n",
-        mem,
-        decode_token(type), addr, data.u64, pI->to_string().c_str());
+    if (type == F32_TYPE) {
+      GPPRINTF_INST_EXEC(
+          PTX_INST_EXEC, "ld: space %p type %s addr %lx val %.3f inst %s\n",
+          mem, decode_token(type), addr, data.f32, pI->to_string().c_str());
+    } else {
+      GPPRINTF_INST_EXEC(
+          PTX_INST_EXEC, "ld: space %p type %s addr %lx val %llu inst %s\n",
+          mem, decode_token(type), addr, data.u64, pI->to_string().c_str());
+    }
 
   } else {
     ptx_reg_t data1, data2, data3, data4;
@@ -3505,7 +3578,10 @@ void mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
     memory_space_t space = pI->get_space();
 
     memory_space *mem = NULL;
-    addr_t addr = addr_reg.u32;
+    // CRITICAL: Use 64-bit address (u64) for MMA store operations
+    // MMA instructions can access shared memory with generic addressing, and with
+    // large SM counts (e.g., 170 SMs), the generic address window exceeds 32-bit.
+    addr_t addr = addr_reg.u64;
 
     new_addr_type mem_txn_addr[MAX_ACCESSES_PER_INSN_PER_THREAD];
     int num_mem_txn = 0;
@@ -3625,7 +3701,10 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
     memory_space_t space = pI->get_space();
 
     memory_space *mem = NULL;
-    addr_t addr = src1_data.u32;
+    // CRITICAL: Use 64-bit address (u64) for MMA load operations
+    // MMA instructions can access shared memory with generic addressing, and with
+    // large SM counts (e.g., 170 SMs), the generic address window exceeds 32-bit.
+    addr_t addr = src1_data.u64;
     smid = thread->get_hw_sid();
     if (whichspace(addr) == shared_space) {
       addr = generic_to_shared(smid, addr);
@@ -5848,7 +5927,11 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned vector_spec = pI->get_vector();
 
   memory_space *mem = NULL;
-  addr_t addr = addr_reg.u32;
+  // CRITICAL: Use 64-bit address (u64) instead of 32-bit (u32)
+  // With GLOBAL_HEAP_START=0xC00000000 and modern GPUs (e.g., RTX 5090 with
+  // 170 SMs), generic addresses can exceed 32-bit range. Using u32 here would
+  // truncate addresses and cause incorrect memory accesses.
+  addr_t addr = addr_reg.u64;
 
   decode_space(space, thread, dst, mem, addr);
 
@@ -5860,9 +5943,15 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
     mem->write(addr, size / 8, &data.s64, thread, pI);
 
-    GPPRINTF_INST_EXEC(
-        PTX_INST_EXEC, "st: space %p type %s addr %llx data %llu inst %s\n",
-        mem, decode_token(type), addr, data.u64, pI->to_string().c_str());
+    if (type == F32_TYPE) {
+      GPPRINTF_INST_EXEC(
+          PTX_INST_EXEC, "st: space %p type %s addr %llx data %.3f inst %s\n",
+          mem, decode_token(type), addr, data.f32, pI->to_string().c_str());
+    } else {
+      GPPRINTF_INST_EXEC(
+          PTX_INST_EXEC, "st: space %p type %s addr %llx data %llu inst %s\n",
+          mem, decode_token(type), addr, data.u64, pI->to_string().c_str());
+    }
 
   } else {
     if (vector_spec == V2_TYPE) {

@@ -1068,6 +1068,9 @@ class barrier_set_t {
   // during cta deallocation
   void deallocate_barrier(unsigned cta_id);
 
+  // cleanup mbarriers for a CTA when it completes
+  void cleanup_cta_mbarriers(unsigned cta_id);
+
   void reset_mbarrier();
 
   typedef std::map<unsigned, warp_set_t> cta_to_warp_t;
@@ -1572,6 +1575,48 @@ class shader_core_config : public core_config {
     assert(!(n_thread_per_shader % warp_size));
 
     set_pipeline_latency();
+
+    // CRITICAL: Validate number of SMs against MAX_STREAMING_MULTIPROCESSORS
+    // This check prevents address space overflow in generic addressing mode.
+    // With GLOBAL_HEAP_START = 0xC00000000, exceeding MAX_STREAMING_MULTIPROCESSORS
+    // will cause SHARED_GENERIC_START calculation to overflow and corrupt memory.
+    // See docs/addressing_mode.md for details.
+    unsigned total_num_sms = n_simt_clusters * n_simt_cores_per_cluster;
+    if (total_num_sms > MAX_STREAMING_MULTIPROCESSORS) {
+      fprintf(stderr, "\n");
+      fprintf(stderr, "================================================================================\n");
+      fprintf(stderr, "GPGPU-Sim Config ERROR: Too many SMs configured\n");
+      fprintf(stderr, "================================================================================\n");
+      fprintf(stderr, "\n");
+      fprintf(stderr, "Configured number of SMs: %u\n", total_num_sms);
+      fprintf(stderr, "  (n_simt_clusters=%u * n_simt_cores_per_cluster=%u)\n",
+              n_simt_clusters, n_simt_cores_per_cluster);
+      fprintf(stderr, "\n");
+      fprintf(stderr, "Maximum supported: %u (MAX_STREAMING_MULTIPROCESSORS)\n",
+              MAX_STREAMING_MULTIPROCESSORS);
+      fprintf(stderr, "  Defined in: src/abstract_hardware_model.h\n");
+      fprintf(stderr, "\n");
+      fprintf(stderr, "Impact:\n");
+      fprintf(stderr, "  This will cause address space overflow and memory corruption in\n");
+      fprintf(stderr, "  generic addressing mode, as the shared memory window will exceed\n");
+      fprintf(stderr, "  GLOBAL_HEAP_START and overlap with the global heap region.\n");
+      fprintf(stderr, "\n");
+      fprintf(stderr, "To fix:\n");
+      fprintf(stderr, "  Option 1: Reduce SM count in your config file\n");
+      fprintf(stderr, "    -gpgpu_n_clusters <clusters> -gpgpu_n_cores_per_cluster <cores>\n");
+      fprintf(stderr, "    such that clusters * cores <= %u\n", MAX_STREAMING_MULTIPROCESSORS);
+      fprintf(stderr, "\n");
+      fprintf(stderr, "  Option 2: If you need more than %u SMs:\n", MAX_STREAMING_MULTIPROCESSORS);
+      fprintf(stderr, "    1. Increase MAX_STREAMING_MULTIPROCESSORS in src/abstract_hardware_model.h\n");
+      fprintf(stderr, "    2. Increase GLOBAL_HEAP_START to accommodate larger address space\n");
+      fprintf(stderr, "       (ensure GLOBAL_HEAP_START > SHARED_GENERIC_START)\n");
+      fprintf(stderr, "    3. Rebuild GPGPU-Sim: make clean && make FLASH=1 -j\n");
+      fprintf(stderr, "\n");
+      fprintf(stderr, "See docs/addressing_mode.md for detailed explanation.\n");
+      fprintf(stderr, "================================================================================\n");
+      fflush(stderr);
+      abort();
+    }
 
     m_L1I_config.init(m_L1I_config.m_config_string, FuncCachePreferNone);
     m_L1T_config.init(m_L1T_config.m_config_string, FuncCachePreferNone);
