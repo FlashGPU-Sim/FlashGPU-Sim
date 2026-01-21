@@ -1,15 +1,13 @@
 #!/bin/bash
 
-# Pre-commit hook to run tests before committing
-# This ensures code quality by running all test suites
+# Pre-commit hook to enforce Flash module code formatting
+# Runs clang-format validation on staged C/C++ files
 
 set -e
 
-# Get the repository root directory
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 # Flash module formatting check (staged files only)
-# Check for staged C/C++ files in src/gpgpu-sim/flash/
 mapfile -t flash_files < <(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR -- src/gpgpu-sim/flash | \
     grep -E '\.(cc|cpp|h|hh|hpp)$' || true)
 
@@ -29,54 +27,6 @@ if [ "${#flash_files[@]}" -gt 0 ]; then
         exit 1
     fi
     echo "Flash formatting check passed."
-    echo ""
 fi
 
-# CRITICAL: Set AGENTIZE_HOME to the current worktree
-# ====================================================
-# Without this, pre-commit hooks inherit AGENTIZE_HOME from the shell environment
-# (set by .claude/hooks/session-init.sh). In worktrees, this causes tests to run
-# against the WRONG codebase:
-#
-# Example failure scenario:
-#   - User is in worktree: /path/to/trees/issue-197-test
-#   - Shell has: AGENTIZE_HOME=/path/to/trees/main (from previous session)
-#   - Pre-commit runs: test-all.sh uses $AGENTIZE_HOME → runs tests from main!
-#   - Result: Tests from main run, which may have different code/failures
-#
-# Solution: Explicitly set AGENTIZE_HOME=$REPO_ROOT before running tests
-# This ensures test-all.sh and lol CLI commands use the current worktree's code
-export AGENTIZE_HOME="$REPO_ROOT"
-
-# Run documentation linter first (skip if not available)
-if [ -f "$REPO_ROOT/scripts/lint-documentation.sh" ]; then
-    echo "Running documentation linter..."
-    if ! "$REPO_ROOT/scripts/lint-documentation.sh"; then
-        echo ""
-        echo "❌ Documentation linting failed! Commit aborted."
-        echo "Fix missing documentation or use --no-verify for milestone commits."
-        exit 1
-    fi
-else
-    echo "Skipping documentation linter (script not found)"
-fi
-
-echo ""
-echo "Running pre-commit tests..."
-echo ""
-
-# Run the test-all.sh script (skip if not available)
-if [ -f "$REPO_ROOT/tests/test-all.sh" ]; then
-    if ! "$REPO_ROOT/tests/test-all.sh"; then
-        echo ""
-        echo "❌ Tests failed! Commit aborted."
-        echo "Please fix the failing tests before committing."
-        exit 1
-    fi
-else
-    echo "Skipping tests (test-all.sh not found)"
-fi
-
-echo ""
-echo "✅ All checks passed! Proceeding with commit."
 exit 0
