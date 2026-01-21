@@ -16,7 +16,7 @@ The Flash module (`src/gpgpu-sim/flash/`) uses LLVM-style formatting enforced vi
 
 ## Pre-commit Hook
 
-The pre-commit hook automatically checks staged Flash C/C++ files:
+The pre-commit hook is automatically installed when you run `source setup_environment` (required for building). It checks staged Flash C/C++ files:
 
 1. Verifies `clang-format` is available
 2. Identifies staged files in `src/gpgpu-sim/flash/` with extensions: `.cc`, `.cpp`, `.h`, `.hh`, `.hpp`
