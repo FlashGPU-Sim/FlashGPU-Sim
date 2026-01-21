@@ -29,32 +29,35 @@
 
 #include <cstdio>
 
+#include "../../../../libcuda/gpgpu_context.h"
 #include "../../../abstract_hardware_model.h"
 #include "../../../cuda-sim/ptx_ir.h"
-#include "../../../../libcuda/gpgpu_context.h"
 
 namespace flash_gpgpu_sim {
 
 // TF32 floating-point MMA implementation
 void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
-                          warp_inst_t inst, int M, int N, int K,
-                          bool saturate, unsigned tid,
-                          const operand_info &dst) {
+                          warp_inst_t inst, int M, int N, int K, bool saturate,
+                          unsigned tid, const operand_info &dst) {
   // TF32 implementation for M16N8K4 and M16N8K8
   // K=4: A needs 2 F32 registers, B needs 1 F32 register
   // K=8: A needs 4 F32 registers, B needs 2 F32 registers
-  // Each TF32 value is stored as F32 but with reduced precision (10-bit mantissa)
+  // Each TF32 value is stored as F32 but with reduced precision (10-bit
+  // mantissa)
 
   // Step 1: Collect all fragments from all 32 threads
-  float A_mat[M * K];  // 16×K
-  float B_mat[K * N];  // K×8
-  float C_mat[M * N];  // 16×8
-  float D_mat[M * N];  // 16×8
+  float A_mat[M * K]; // 16×K
+  float B_mat[K * N]; // K×8
+  float C_mat[M * N]; // 16×8
+  float D_mat[M * N]; // 16×8
 
   // Initialize matrices
-  for (int i = 0; i < M * K; i++) A_mat[i] = 0.0f;
-  for (int i = 0; i < K * N; i++) B_mat[i] = 0.0f;
-  for (int i = 0; i < M * N; i++) C_mat[i] = 0.0f;
+  for (int i = 0; i < M * K; i++)
+    A_mat[i] = 0.0f;
+  for (int i = 0; i < K * N; i++)
+    B_mat[i] = 0.0f;
+  for (int i = 0; i < M * N; i++)
+    C_mat[i] = 0.0f;
 
   const operand_info &src_a = pI->operand_lookup(1);
   const operand_info &src_b = pI->operand_lookup(2);
@@ -64,8 +67,8 @@ void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
   for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
     ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
     unsigned lane_id = thrd;
-    unsigned groupID = lane_id / 4;  // 0-7
-    unsigned threadID_in_group = lane_id % 4;  // 0-3
+    unsigned groupID = lane_id / 4;           // 0-7
+    unsigned threadID_in_group = lane_id % 4; // 0-3
 
     // Fragment distribution differs based on K dimension
     if (K == 4) {
@@ -119,7 +122,6 @@ void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
       A_mat[a_row0 * K + a_col1] = mma_tf32_round(a_regs[2].f32);
       A_mat[a_row1 * K + a_col1] = mma_tf32_round(a_regs[3].f32);
 
-
       // Unpack and place B fragments with TF32 rounding (8×8 matrix)
       // Each thread holds 2 TF32 values
       int b_row0 = threadID_in_group;
@@ -169,7 +171,8 @@ void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
     d_regs[2].f32 = D_mat[d_row1 * N + d_col0];
     d_regs[3].f32 = D_mat[d_row1 * N + d_col1];
 
-    thread->set_vector_operand_values(dst, d_regs[0], d_regs[1], d_regs[2], d_regs[3]);
+    thread->set_vector_operand_values(dst, d_regs[0], d_regs[1], d_regs[2],
+                                      d_regs[3]);
   }
 
   if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {

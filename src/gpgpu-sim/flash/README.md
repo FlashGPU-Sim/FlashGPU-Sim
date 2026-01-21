@@ -105,6 +105,17 @@ Integration tests are located in `test/src/integration/mma/`:
 
 See `test/src/integration/README.md` for test execution instructions.
 
+## Code Formatting
+
+The Flash module uses LLVM-style formatting enforced by pre-commit hooks.
+
+**Quick setup:**
+1. Ensure `clang-format` is installed
+2. Format all files: `./scripts/format-flash.sh`
+3. Commits will be blocked if staged Flash files are not formatted
+
+See `docs/workflows/code-formatting.md` for details.
+
 ## References
 
 - PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)

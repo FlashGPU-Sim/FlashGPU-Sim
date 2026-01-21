@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# Pre-commit hook to enforce Flash module code formatting
+# Runs clang-format validation on staged C/C++ files
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Flash module formatting check (staged files only)
+mapfile -t flash_files < <(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR -- src/gpgpu-sim/flash | \
+    grep -E '\.(cc|cpp|h|hh|hpp)$' || true)
+
+if [ "${#flash_files[@]}" -gt 0 ]; then
+    if ! command -v clang-format >/dev/null 2>&1; then
+        echo "Error: clang-format not found. Install it to commit Flash changes."
+        exit 1
+    fi
+
+    echo "Checking Flash module formatting..."
+    cd "$REPO_ROOT"
+    if ! printf '%s\0' "${flash_files[@]}" | xargs -0 clang-format --style=file --dry-run --Werror 2>&1; then
+        echo ""
+        echo "Error: Flash files are not properly formatted."
+        echo "Run: ./scripts/format-flash.sh"
+        echo "Then re-stage the files and commit again."
+        exit 1
+    fi
+    echo "Flash formatting check passed."
+fi
+
+exit 0
