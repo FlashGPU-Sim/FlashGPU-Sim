@@ -106,8 +106,7 @@ private:
   int m_next_id;
   struct pair_hash {
     size_t operator()(const std::pair<int, uint64_t> &p) const noexcept {
-      return std::hash<int>()(p.first) ^
-             (std::hash<uint64_t>()(p.second) << 1);
+      return std::hash<int>()(p.first) ^ (std::hash<uint64_t>()(p.second) << 1);
     }
   };
   std::unordered_map<std::pair<int, uint64_t>, std::unique_ptr<mbarrier_t>,

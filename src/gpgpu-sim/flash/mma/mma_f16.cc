@@ -30,17 +30,16 @@
 #include <cstdint>
 #include <cstdio>
 
+#include "../../../../libcuda/gpgpu_context.h"
 #include "../../../abstract_hardware_model.h"
 #include "../../../cuda-sim/ptx_ir.h"
-#include "../../../../libcuda/gpgpu_context.h"
 
 namespace flash_gpgpu_sim {
 
 // F16/BF16 floating-point MMA implementation
 void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
-                         warp_inst_t inst, int M, int N, int K,
-                         bool is_bf16, unsigned tid,
-                         const operand_info &dst) {
+                         warp_inst_t inst, int M, int N, int K, bool is_bf16,
+                         unsigned tid, const operand_info &dst) {
   // F16/BF16 implementation: 2 registers for A (packed 16-bit), 1 for B
   // M16N8K8 implementation with proper NVIDIA tensor core fragment distribution
   // Based on PTX ISA and CUTLASS reference implementation
@@ -62,18 +61,22 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
   //     d[3] at row=groupID+8,   col=threadID_in_group*2+1
 
   // Step 1: Collect all fragments from all 32 threads
-  float A_mat[M * K];  // MxK
-  float B_mat[K * N];  // KxN
-  float C_mat[M * N];  // MxN
-  float D_mat[M * N];  // MxN
+  float A_mat[M * K]; // MxK
+  float B_mat[K * N]; // KxN
+  float C_mat[M * N]; // MxN
+  float D_mat[M * N]; // MxN
 
   // Initialize matrices
-  for (int i = 0; i < M * K; i++) A_mat[i] = 0.0f;
-  for (int i = 0; i < K * N; i++) B_mat[i] = 0.0f;
-  for (int i = 0; i < M * N; i++) C_mat[i] = 0.0f;
+  for (int i = 0; i < M * K; i++)
+    A_mat[i] = 0.0f;
+  for (int i = 0; i < K * N; i++)
+    B_mat[i] = 0.0f;
+  for (int i = 0; i < M * N; i++)
+    C_mat[i] = 0.0f;
 
   if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    printf("GPGPU-Sim: tensor_mma_f16_impl M=%d N=%d K=%d is_bf16=%d\n", M, N, K, is_bf16);
+    printf("GPGPU-Sim: tensor_mma_f16_impl M=%d N=%d K=%d is_bf16=%d\n", M, N,
+           K, is_bf16);
   }
 
   const operand_info &src_a = pI->operand_lookup(1);
@@ -84,8 +87,8 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
   for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
     ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
     unsigned lane_id = thrd;
-    unsigned groupID = lane_id / 4;  // 0-7
-    unsigned threadID_in_group = lane_id % 4;  // 0-3
+    unsigned groupID = lane_id / 4;           // 0-7
+    unsigned threadID_in_group = lane_id % 4; // 0-3
 
     // Fragment distribution differs based on K dimension
     if (K == 8) {
@@ -150,34 +153,34 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
       // Unpack A fragments (8 F16 values) with proper distribution per PTX ISA
       uint16_t a_u16[8];
       for (int i = 0; i < 4; i++) {
-        a_u16[i*2] = a_regs[i].u16;
-        a_u16[i*2+1] = (a_regs[i].u32 >> 16) & 0xFFFF;
+        a_u16[i * 2] = a_regs[i].u16;
+        a_u16[i * 2 + 1] = (a_regs[i].u32 >> 16) & 0xFFFF;
       }
 
       for (int i = 0; i < 8; i++) {
         // row = groupID for i in {0,1,4,5}; groupID+8 otherwise
         int a_row = (i < 2 || (i >= 4 && i < 6)) ? groupID : (groupID + 8);
         // col = (threadID_in_group*2)+(i&1) for i<4; same+8 for i>=4
-        int a_col = (i < 4) ? (threadID_in_group * 2 + (i & 1)) :
-                              (threadID_in_group * 2 + (i & 1) + 8);
-        A_mat[a_row * K + a_col] = is_bf16 ? mma_bf16_to_f32(a_u16[i]) :
-                                              mma_f16_to_f32(a_u16[i]);
+        int a_col = (i < 4) ? (threadID_in_group * 2 + (i & 1))
+                            : (threadID_in_group * 2 + (i & 1) + 8);
+        A_mat[a_row * K + a_col] =
+            is_bf16 ? mma_bf16_to_f32(a_u16[i]) : mma_f16_to_f32(a_u16[i]);
       }
 
       // Unpack B fragments (4 F16 values)
       uint16_t b_u16[4];
       for (int i = 0; i < 2; i++) {
-        b_u16[i*2] = b_regs[i].u16;
-        b_u16[i*2+1] = (b_regs[i].u32 >> 16) & 0xFFFF;
+        b_u16[i * 2] = b_regs[i].u16;
+        b_u16[i * 2 + 1] = (b_regs[i].u32 >> 16) & 0xFFFF;
       }
 
       for (int i = 0; i < 4; i++) {
         // row = (threadID_in_group*2)+(i&1) for i<2; same+8 for i>=2
-        int b_row = (i < 2) ? (threadID_in_group * 2 + (i & 1)) :
-                              (threadID_in_group * 2 + (i & 1) + 8);
+        int b_row = (i < 2) ? (threadID_in_group * 2 + (i & 1))
+                            : (threadID_in_group * 2 + (i & 1) + 8);
         int b_col = groupID;
-        B_mat[b_col * K + b_row] = is_bf16 ? mma_bf16_to_f32(b_u16[i]) :
-                                              mma_f16_to_f32(b_u16[i]);
+        B_mat[b_col * K + b_row] =
+            is_bf16 ? mma_bf16_to_f32(b_u16[i]) : mma_f16_to_f32(b_u16[i]);
       }
 
       // C fragments (same for all K values)
@@ -220,7 +223,8 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
     d_regs[2].f32 = D_mat[d_row1 * N + d_col0];
     d_regs[3].f32 = D_mat[d_row1 * N + d_col1];
 
-    thread->set_vector_operand_values(dst, d_regs[0], d_regs[1], d_regs[2], d_regs[3]);
+    thread->set_vector_operand_values(dst, d_regs[0], d_regs[1], d_regs[2],
+                                      d_regs[3]);
   }
 
   if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
@@ -231,7 +235,8 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
 // F16/BF16 M8N8K4 specialized implementation with 4-computation decomposition
 // Per PTX ISA: "A warp executing mma.m8n8k4 with .f16 floating point type will
 // compute 4 MMA operations of shape .m8n8k4"
-// Reference: https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-884-f16
+// Reference:
+// https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-884-f16
 void tensor_mma_f16_m8n8k4_impl(const ptx_instruction *pI, core_t *core,
                                 warp_inst_t inst, bool is_bf16, unsigned tid,
                                 const operand_info &dst) {
@@ -240,45 +245,51 @@ void tensor_mma_f16_m8n8k4_impl(const ptx_instruction *pI, core_t *core,
 
   // Helper structure to identify thread groups for 4 computations
   struct ThreadGroup {
-    unsigned computation_idx;  // 0-3 (which of the 4 MMA operations)
-    bool is_high_group;        // false: lanes 0-15, true: lanes 16-31
-    unsigned local_lane;       // 0-3 (position within 4-thread group)
+    unsigned computation_idx; // 0-3 (which of the 4 MMA operations)
+    bool is_high_group;       // false: lanes 0-15, true: lanes 16-31
+    unsigned local_lane;      // 0-3 (position within 4-thread group)
   };
 
   // Lambda to compute thread group from lane_id
   auto get_thread_group = [](unsigned lane_id) -> ThreadGroup {
     return ThreadGroup{
-      .computation_idx = (lane_id % 16) / 4,    // 0-3
-      .is_high_group = (lane_id >= 16),         // lanes 16-31
-      .local_lane = lane_id % 4                 // 0-3
+        .computation_idx = (lane_id % 16) / 4, // 0-3
+        .is_high_group = (lane_id >= 16),      // lanes 16-31
+        .local_lane = lane_id % 4              // 0-3
     };
   };
 
   // 4 separate result matrices (one per computation)
-  float A_mat[4][M * K];  // 4 separate 8×4 matrices
-  float B_mat[4][K * N];  // 4 separate 4×8 matrices
-  float C_mat[4][M * N];  // 4 separate 8×8 matrices
-  float D_mat[4][M * N];  // 4 separate 8×8 output matrices
+  float A_mat[4][M * K]; // 4 separate 8×4 matrices
+  float B_mat[4][K * N]; // 4 separate 4×8 matrices
+  float C_mat[4][M * N]; // 4 separate 8×8 matrices
+  float D_mat[4][M * N]; // 4 separate 8×8 output matrices
 
   // Initialize matrices
   for (int comp = 0; comp < 4; comp++) {
-    for (int i = 0; i < M * K; i++) A_mat[comp][i] = 0.0f;
-    for (int i = 0; i < K * N; i++) B_mat[comp][i] = 0.0f;
-    for (int i = 0; i < M * N; i++) C_mat[comp][i] = 0.0f;
+    for (int i = 0; i < M * K; i++)
+      A_mat[comp][i] = 0.0f;
+    for (int i = 0; i < K * N; i++)
+      B_mat[comp][i] = 0.0f;
+    for (int i = 0; i < M * N; i++)
+      C_mat[comp][i] = 0.0f;
   }
 
   const operand_info &src_a = pI->operand_lookup(1);
   const operand_info &src_b = pI->operand_lookup(2);
   const operand_info &src_c = pI->operand_lookup(3);
 
-  // Step 1: Collect fragments from all 32 threads, distributing to their respective computations
+  // Step 1: Collect fragments from all 32 threads, distributing to their
+  // respective computations
   for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
     ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
     unsigned lane_id = thrd;
     ThreadGroup tg = get_thread_group(lane_id);
-    unsigned comp = tg.computation_idx;  // Which of the 4 computations this thread belongs to
+    unsigned comp = tg.computation_idx; // Which of the 4 computations this
+                                        // thread belongs to
 
-    // Each thread holds: 4 F16 values in A, 4 F16 values in B, 8 F32 values in C
+    // Each thread holds: 4 F16 values in A, 4 F16 values in B, 8 F32 values in
+    // C
     ptx_reg_t a_regs[2], b_regs[2], c_regs[8];
     thread->get_vector_operand_values(src_a, a_regs, 2);
     thread->get_vector_operand_values(src_b, b_regs, 2);
@@ -304,7 +315,8 @@ void tensor_mma_f16_m8n8k4_impl(const ptx_instruction *pI, core_t *core,
     for (int i = 0; i < 4; i++) {
       int row = a_row_base;
       int col = i;
-      float val = is_bf16 ? mma_bf16_to_f32(a_u16[i]) : mma_f16_to_f32(a_u16[i]);
+      float val =
+          is_bf16 ? mma_bf16_to_f32(a_u16[i]) : mma_f16_to_f32(a_u16[i]);
       A_mat[comp][row * K + col] = val;
     }
 
@@ -316,14 +328,16 @@ void tensor_mma_f16_m8n8k4_impl(const ptx_instruction *pI, core_t *core,
     for (int i = 0; i < 4; i++) {
       int row = i;
       int col = b_col_base;
-      float val = is_bf16 ? mma_bf16_to_f32(b_u16[i]) : mma_f16_to_f32(b_u16[i]);
+      float val =
+          is_bf16 ? mma_bf16_to_f32(b_u16[i]) : mma_f16_to_f32(b_u16[i]);
       B_mat[comp][row * N + col] = val;
     }
 
     // Fragment distribution for Accumulator C (f32 type):
     // row = X                    if lane_id < 16
     //       X + 4                otherwise
-    //       where X = (lane_id & 0b1) + (i & 0b10)  for c[i] where i = {0,...,7}
+    //       where X = (lane_id & 0b1) + (i & 0b10)  for c[i] where i =
+    //       {0,...,7}
     // col = (i & 0b100) + (lane_id & 0b10) + (i & 0b1)  for c[i]
     for (int i = 0; i < 8; i++) {
       int X = (lane_id & 0b1) + (i & 0b10);
@@ -352,12 +366,14 @@ void tensor_mma_f16_m8n8k4_impl(const ptx_instruction *pI, core_t *core,
     }
   }
 
-  // Step 3: Distribute results back to threads from their respective computations
+  // Step 3: Distribute results back to threads from their respective
+  // computations
   for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
     ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
     unsigned lane_id = thrd;
     ThreadGroup tg = get_thread_group(lane_id);
-    unsigned comp = tg.computation_idx;  // Which computation this thread belongs to
+    unsigned comp =
+        tg.computation_idx; // Which computation this thread belongs to
 
     ptx_reg_t d_regs[8];
 
@@ -366,16 +382,20 @@ void tensor_mma_f16_m8n8k4_impl(const ptx_instruction *pI, core_t *core,
       int X = (lane_id & 0b1) + (i & 0b10);
       int row = X + (tg.is_high_group ? 4 : 0);
       int col = (i & 0b100) + (lane_id & 0b10) + (i & 0b1);
-      d_regs[i].f32 = D_mat[comp][row * N + col];  // Read from this thread's computation result
+      d_regs[i].f32 =
+          D_mat[comp]
+               [row * N + col]; // Read from this thread's computation result
     }
 
     // M8N8K4 uses 8 F32 output registers
-    thread->set_wmma_vector_operand_values(dst, d_regs[0], d_regs[1], d_regs[2], d_regs[3],
-                                            d_regs[4], d_regs[5], d_regs[6], d_regs[7]);
+    thread->set_wmma_vector_operand_values(dst, d_regs[0], d_regs[1], d_regs[2],
+                                           d_regs[3], d_regs[4], d_regs[5],
+                                           d_regs[6], d_regs[7]);
   }
 
   if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    printf("GPGPU-Sim: tensor_mma_f16_m8n8k4_impl completed (4-computation decomposition)\n");
+    printf("GPGPU-Sim: tensor_mma_f16_m8n8k4_impl completed (4-computation "
+           "decomposition)\n");
   }
 }
 
