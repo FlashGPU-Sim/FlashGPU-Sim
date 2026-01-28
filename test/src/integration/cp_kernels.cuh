@@ -151,6 +151,13 @@ __device__ inline void cp_async_bulk_commit_group() {
   asm volatile("cp.async.bulk.commit_group;");
 }
 
+// Fence for async proxy - ensures writes to shared memory are visible to TMA
+// MUST be called before TMA store operations (cp.async.bulk.global.shared)
+// to ensure the shared memory writes are ordered before the TMA reads them
+__device__ inline void fence_proxy_async() {
+  asm volatile("fence.proxy.async;");
+}
+
 // Wait for bulk groups to complete
 // N = number of most recent groups that are allowed to be incomplete
 // wait_group(0) = wait for all groups to complete
@@ -214,14 +221,18 @@ __global__ void tma_store_kernel(const uint32_t *__restrict__ src,
         smem_u32[i] += 1;
       }
 
-      // Step 3: TMA store from shared to global
+      // Step 3: Fence before TMA store to ensure shared memory writes
+      // are visible to the async proxy (TMA hardware)
+      fence_proxy_async();
+
+      // Step 4: TMA store from shared to global
       uint32_t *dst_chunk = dst + chunk_start;
       cp_async_bulk_store<CHUNK_BYTES>(dst_chunk, warp_smem);
 
-      // Step 4: Commit the bulk group
+      // Step 5: Commit the bulk group
       cp_async_bulk_commit_group();
 
-      // Step 5: If pipeline depth is set, wait with allowance
+      // Step 6: If pipeline depth is set, wait with allowance
       if constexpr (PIPELINE_DEPTH > 0) {
         if (group >= PIPELINE_DEPTH) {
           cp_async_bulk_wait_group<PIPELINE_DEPTH>();
@@ -241,6 +252,11 @@ __global__ void tma_store_kernel(const uint32_t *__restrict__ src,
  *
  * This kernel creates multiple bulk groups and tests the sequential
  * completion semantics of wait_group.
+ *
+ * NOTE: Since we reuse the same shared memory buffer for each chunk,
+ * we must wait for each async store to complete before loading the
+ * next chunk. This ensures the data is fully transferred before
+ * the shared memory is overwritten.
  */
 template <int CHUNK_BYTES>
 __global__ void tma_store_multi_group_kernel(const uint32_t *__restrict__ src,
@@ -269,15 +285,21 @@ __global__ void tma_store_multi_group_kernel(const uint32_t *__restrict__ src,
           smem_u32[i] += (chunk + 1);  // Add chunk index + 1
         }
 
+        // CRITICAL: Fence before TMA store to ensure shared memory writes
+        // are visible to the async proxy (TMA hardware)
+        fence_proxy_async();
+
         // TMA store
         cp_async_bulk_store<CHUNK_BYTES>(dst + chunk_start, smem);
 
         // Commit this chunk as a group
         cp_async_bulk_commit_group();
-      }
 
-      // Wait for all groups to complete
-      cp_async_bulk_wait_group<0>();
+        // CRITICAL: Wait for this group to complete before reusing smem
+        // Since we have only one shared memory buffer, we must ensure
+        // the async store is done before overwriting the buffer
+        cp_async_bulk_wait_group<0>();
+      }
     }
   }
 }
@@ -286,6 +308,17 @@ __global__ void tma_store_multi_group_kernel(const uint32_t *__restrict__ src,
  * TMA Store Kernel with Pipelined Groups
  *
  * Tests wait_group(N) where N > 0, allowing multiple in-flight groups.
+ *
+ * With NUM_SLOTS shared memory buffers, we can have up to NUM_SLOTS-1
+ * groups in flight. Before reusing a slot, we must ensure the group
+ * that was using that slot has completed.
+ *
+ * Example with NUM_SLOTS=3 (MAX_IN_FLIGHT=2):
+ *   chunk 0: use slot 0, commit group 0
+ *   chunk 1: use slot 1, commit group 1
+ *   chunk 2: use slot 2, commit group 2
+ *   chunk 3: wait until only 2 groups pending (group 0 done), reuse slot 0
+ *   ...
  */
 template <int CHUNK_BYTES, int MAX_IN_FLIGHT>
 __global__ void tma_store_pipelined_kernel(const uint32_t *__restrict__ src,
@@ -297,6 +330,7 @@ __global__ void tma_store_pipelined_kernel(const uint32_t *__restrict__ src,
   const int elements_per_chunk = CHUNK_BYTES / sizeof(uint32_t);
 
   // Use multiple shared memory slots for pipelining
+  // Need NUM_SLOTS = MAX_IN_FLIGHT + 1 to allow MAX_IN_FLIGHT groups in flight
   constexpr int NUM_SLOTS = MAX_IN_FLIGHT + 1;
 
   if (threadIdx.x < 32 && lane_id == 0) {
@@ -305,9 +339,16 @@ __global__ void tma_store_pipelined_kernel(const uint32_t *__restrict__ src,
       uint8_t *slot_smem = smem + slot * CHUNK_BYTES;
       int chunk_start = chunk * elements_per_chunk;
 
-      // Wait if we have too many in-flight groups
-      if (chunk >= MAX_IN_FLIGHT) {
-        cp_async_bulk_wait_group<MAX_IN_FLIGHT>();
+      // Before reusing a slot, wait for the group that was using it to complete
+      // This happens when chunk >= NUM_SLOTS (i.e., we've cycled through all slots)
+      // wait_group<N> waits until at most N groups are still pending
+      // To ensure slot is free, we need the group (chunk - NUM_SLOTS) to be done
+      // After chunk commits, there are (chunk+1) groups total
+      // We need groups 0..(chunk-NUM_SLOTS) to be done, leaving NUM_SLOTS-1 pending
+      if (chunk >= NUM_SLOTS) {
+        // Wait until at most (NUM_SLOTS - 1) groups are pending
+        // This ensures the oldest group (using the slot we're about to reuse) is done
+        cp_async_bulk_wait_group<NUM_SLOTS - 1>();
       }
 
       // Load to shared memory slot
@@ -315,6 +356,10 @@ __global__ void tma_store_pipelined_kernel(const uint32_t *__restrict__ src,
       for (int i = 0; i < elements_per_chunk; i++) {
         smem_u32[i] = src[chunk_start + i] * 2;  // Double the value
       }
+
+      // CRITICAL: Fence before TMA store to ensure shared memory writes
+      // are visible to the async proxy (TMA hardware)
+      fence_proxy_async();
 
       // TMA store
       cp_async_bulk_store<CHUNK_BYTES>(dst + chunk_start, slot_smem);
