@@ -62,7 +62,8 @@ bool bulk_group_manager_t::warp_bulk_info_t::complete_tx(unsigned tx_uid) {
         }
 
         // Check if wait condition is now satisfied
-        // wait_group(N) means: wait until (next_group_id - 1 - latest_completed) <= N
+        // wait_group(N) means: wait until (next_group_id - 1 -
+        // latest_completed) <= N
         if (is_waiting && next_group_id - waiting_group_id >=
                               next_group_id - latest_completed_group_id) {
           is_waiting = false;

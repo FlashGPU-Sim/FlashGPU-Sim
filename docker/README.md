@@ -4,9 +4,27 @@ This directory contains Docker configuration files for the GPGPU-Sim development
 
 ## Files
 
-- `Dockerfile` - Docker image definition based on NVIDIA CUDA 12.8
+- `Dockerfile` - Development Docker image with full dependencies (NVIDIA CUDA 12.8)
+- `Dockerfile.ci` - Minimal CI Docker image for automated testing
 - `docker-compose.yml` - Docker Compose service configurations
 - `entrypoint.sh` - Container entrypoint script
+
+## CI Docker Image
+
+The `Dockerfile.ci` provides a lightweight container optimized for continuous integration:
+
+**Purpose:**
+- Minimal dependencies for CI/CD pipelines
+- Fast build times for GitHub Actions workflows
+- Consistent test environment across local and remote runs
+
+**Differences from Development Dockerfile:**
+- Uses same CUDA base version for compatibility
+- Includes only build essentials and test dependencies
+- Optimized for `SM120_RTX5090_REDUCED` configuration
+- No interactive development tools
+
+**Usage:** The CI image is built automatically by `.github/workflows/pr-tests.yml` and can be tested locally using `act` (see `docs/testing-instructions.md`).
 
 ## Usage
 

@@ -73,6 +73,7 @@ setup
 .vscode/
 .claude/
 .agentize.yaml
+scripts/pre-commit
 
 # temporary files
 temp/

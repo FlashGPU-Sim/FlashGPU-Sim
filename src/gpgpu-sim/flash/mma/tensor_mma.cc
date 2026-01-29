@@ -37,9 +37,9 @@
 // Forward declarations needed by ptx.tab.h
 typedef void *yyscan_t;
 class ptx_recognizer;
-#include "ptx.tab.h"
-#include "../../gpu-sim.h"
 #include "../../../../libcuda/gpgpu_context.h"
+#include "../../gpu-sim.h"
+#include "ptx.tab.h"
 
 namespace flash_gpgpu_sim {
 
@@ -50,69 +50,69 @@ namespace flash_gpgpu_sim {
 // F16 (IEEE 754 half-precision) format constants
 // F16: 1 sign bit, 5 exponent bits, 10 mantissa bits
 namespace F16Constants {
-  constexpr uint32_t SIGN_MASK = 0x1;
-  constexpr uint32_t EXPONENT_MASK = 0x1F;
-  constexpr uint32_t MANTISSA_MASK = 0x3FF;
+constexpr uint32_t SIGN_MASK = 0x1;
+constexpr uint32_t EXPONENT_MASK = 0x1F;
+constexpr uint32_t MANTISSA_MASK = 0x3FF;
 
-  constexpr int SIGN_SHIFT = 15;
-  constexpr int EXPONENT_SHIFT = 10;
-  constexpr int MANTISSA_SHIFT = 13;  // F16 to F32 mantissa shift
+constexpr int SIGN_SHIFT = 15;
+constexpr int EXPONENT_SHIFT = 10;
+constexpr int MANTISSA_SHIFT = 13; // F16 to F32 mantissa shift
 
-  constexpr int EXPONENT_BIAS = 15;
-  constexpr int MAX_EXPONENT = 31;
-  constexpr uint16_t INFINITY_BITS = 0x7C00;
+constexpr int EXPONENT_BIAS = 15;
+constexpr int MAX_EXPONENT = 31;
+constexpr uint16_t INFINITY_BITS = 0x7C00;
 
-  // Denormal number scaling: mantissa / 1024.0 / 16384.0
-  constexpr float DENORMAL_SCALE_1 = 1024.0f;   // 2^10 (mantissa bits)
-  constexpr float DENORMAL_SCALE_2 = 16384.0f;  // 2^14 (exponent adjustment)
-}
+// Denormal number scaling: mantissa / 1024.0 / 16384.0
+constexpr float DENORMAL_SCALE_1 = 1024.0f;  // 2^10 (mantissa bits)
+constexpr float DENORMAL_SCALE_2 = 16384.0f; // 2^14 (exponent adjustment)
+} // namespace F16Constants
 
 // F32 (IEEE 754 single-precision) format constants
 namespace F32Constants {
-  constexpr int SIGN_SHIFT = 31;
-  constexpr int EXPONENT_SHIFT = 23;
-  constexpr uint32_t EXPONENT_MASK = 0xFF;
-  constexpr uint32_t MANTISSA_MASK_F16 = 0x3FF;  // When converting from F16
+constexpr int SIGN_SHIFT = 31;
+constexpr int EXPONENT_SHIFT = 23;
+constexpr uint32_t EXPONENT_MASK = 0xFF;
+constexpr uint32_t MANTISSA_MASK_F16 = 0x3FF; // When converting from F16
 
-  constexpr int EXPONENT_BIAS = 127;
-  constexpr int MANTISSA_SHIFT_FROM_F16 = 13;  // F32 mantissa shift from F16
-}
+constexpr int EXPONENT_BIAS = 127;
+constexpr int MANTISSA_SHIFT_FROM_F16 = 13; // F32 mantissa shift from F16
+} // namespace F32Constants
 
 // BF16 (bfloat16) format constants
 // BF16: 1 sign bit, 8 exponent bits, 7 mantissa bits
 namespace BF16Constants {
-  constexpr int SHIFT = 16;  // BF16 occupies upper 16 bits of F32
+constexpr int SHIFT = 16; // BF16 occupies upper 16 bits of F32
 }
 
 // TF32 (TensorFloat-32) format constants
 // TF32: 1 sign bit, 8 exponent bits, 10 mantissa bits (uses F32 container)
 namespace TF32Constants {
-  constexpr uint32_t MANTISSA_MASK = 0x1FFF;  // Lower 13 bits to zero out
-  constexpr uint32_t ROUND_BIT = 0x1000;      // Bit 12 (rounding decision bit)
-  // TF32 has 10 mantissa bits, F32 has 23, so zero out lower 13 bits (23-10=13)
-}
+constexpr uint32_t MANTISSA_MASK = 0x1FFF; // Lower 13 bits to zero out
+constexpr uint32_t ROUND_BIT = 0x1000;     // Bit 12 (rounding decision bit)
+// TF32 has 10 mantissa bits, F32 has 23, so zero out lower 13 bits (23-10=13)
+} // namespace TF32Constants
 
 // ============================================================================
 // Integer Saturation Constants
 // ============================================================================
 
 namespace SaturationLimits {
-  // Signed 8-bit integer range [-128, 127]
-  constexpr int32_t S8_MAX = 127;
-  constexpr int32_t S8_MIN = -128;
+// Signed 8-bit integer range [-128, 127]
+constexpr int32_t S8_MAX = 127;
+constexpr int32_t S8_MIN = -128;
 
-  // Unsigned 8-bit integer range [0, 255]
-  constexpr int32_t U8_MAX = 255;
-  constexpr int32_t U8_MIN = 0;
+// Unsigned 8-bit integer range [0, 255]
+constexpr int32_t U8_MAX = 255;
+constexpr int32_t U8_MIN = 0;
 
-  // Signed 4-bit integer range [-8, 7]
-  constexpr int32_t S4_MAX = 7;
-  constexpr int32_t S4_MIN = -8;
+// Signed 4-bit integer range [-8, 7]
+constexpr int32_t S4_MAX = 7;
+constexpr int32_t S4_MIN = -8;
 
-  // Unsigned 4-bit integer range [0, 15]
-  constexpr int32_t U4_MAX = 15;
-  constexpr int32_t U4_MIN = 0;
-}
+// Unsigned 4-bit integer range [0, 15]
+constexpr int32_t U4_MAX = 15;
+constexpr int32_t U4_MIN = 0;
+} // namespace SaturationLimits
 
 // ============================================================================
 // Type Conversion Helper Functions
@@ -124,11 +124,13 @@ float mma_f16_to_f32(uint16_t f16) {
   using namespace F32Constants;
 
   uint32_t sign = (f16 >> F16Constants::SIGN_SHIFT) & F16Constants::SIGN_MASK;
-  uint32_t exp = (f16 >> F16Constants::EXPONENT_SHIFT) & F16Constants::EXPONENT_MASK;
+  uint32_t exp =
+      (f16 >> F16Constants::EXPONENT_SHIFT) & F16Constants::EXPONENT_MASK;
   uint32_t frac = f16 & F16Constants::MANTISSA_MASK;
 
   if (exp == 0) {
-    if (frac == 0) return sign ? -0.0f : 0.0f;
+    if (frac == 0)
+      return sign ? -0.0f : 0.0f;
     // Denormal: mantissa / 2^10 / 2^14
     float result = frac / DENORMAL_SCALE_1 / DENORMAL_SCALE_2;
     return sign ? -result : result;
@@ -138,9 +140,11 @@ float mma_f16_to_f32(uint16_t f16) {
   }
 
   // Normalized: convert exponent from F16 bias to F32 bias
-  uint32_t f32_exp = exp - F16Constants::EXPONENT_BIAS + F32Constants::EXPONENT_BIAS;
+  uint32_t f32_exp =
+      exp - F16Constants::EXPONENT_BIAS + F32Constants::EXPONENT_BIAS;
   uint32_t f32_frac = frac << MANTISSA_SHIFT;
-  uint32_t f32_bits = (sign << F32Constants::SIGN_SHIFT) | (f32_exp << F32Constants::EXPONENT_SHIFT) | f32_frac;
+  uint32_t f32_bits = (sign << F32Constants::SIGN_SHIFT) |
+                      (f32_exp << F32Constants::EXPONENT_SHIFT) | f32_frac;
 
   float result;
   memcpy(&result, &f32_bits, sizeof(float));
@@ -155,15 +159,22 @@ uint16_t mma_f32_to_f16(float f32) {
   uint32_t f32_bits;
   memcpy(&f32_bits, &f32, sizeof(float));
 
-  uint32_t sign = (f32_bits >> F32Constants::SIGN_SHIFT) & F16Constants::SIGN_MASK;
-  int32_t exp = ((f32_bits >> F32Constants::EXPONENT_SHIFT) & F32Constants::EXPONENT_MASK)
-                - F32Constants::EXPONENT_BIAS + F16Constants::EXPONENT_BIAS;
-  uint32_t frac = (f32_bits >> F32Constants::MANTISSA_SHIFT_FROM_F16) & F32Constants::MANTISSA_MASK_F16;
+  uint32_t sign =
+      (f32_bits >> F32Constants::SIGN_SHIFT) & F16Constants::SIGN_MASK;
+  int32_t exp = ((f32_bits >> F32Constants::EXPONENT_SHIFT) &
+                 F32Constants::EXPONENT_MASK) -
+                F32Constants::EXPONENT_BIAS + F16Constants::EXPONENT_BIAS;
+  uint32_t frac = (f32_bits >> F32Constants::MANTISSA_SHIFT_FROM_F16) &
+                  F32Constants::MANTISSA_MASK_F16;
 
-  if (exp <= 0) return sign << F16Constants::SIGN_SHIFT;  // Flush to zero
-  if (exp >= F16Constants::MAX_EXPONENT) return (sign << F16Constants::SIGN_SHIFT) | F16Constants::INFINITY_BITS;  // Inf
+  if (exp <= 0)
+    return sign << F16Constants::SIGN_SHIFT; // Flush to zero
+  if (exp >= F16Constants::MAX_EXPONENT)
+    return (sign << F16Constants::SIGN_SHIFT) |
+           F16Constants::INFINITY_BITS; // Inf
 
-  return (sign << F16Constants::SIGN_SHIFT) | (exp << F16Constants::EXPONENT_SHIFT) | frac;
+  return (sign << F16Constants::SIGN_SHIFT) |
+         (exp << F16Constants::EXPONENT_SHIFT) | frac;
 }
 
 // Helper: Convert BF16 to F32
@@ -207,32 +218,40 @@ float mma_tf32_round(float f32) {
 // Helper: Saturate S8 value
 int8_t mma_saturate_s8(int32_t val) {
   using namespace SaturationLimits;
-  if (val > S8_MAX) return S8_MAX;
-  if (val < S8_MIN) return S8_MIN;
+  if (val > S8_MAX)
+    return S8_MAX;
+  if (val < S8_MIN)
+    return S8_MIN;
   return static_cast<int8_t>(val);
 }
 
 // Helper: Saturate U8 value
 uint8_t mma_saturate_u8(int32_t val) {
   using namespace SaturationLimits;
-  if (val > U8_MAX) return U8_MAX;
-  if (val < U8_MIN) return U8_MIN;
+  if (val > U8_MAX)
+    return U8_MAX;
+  if (val < U8_MIN)
+    return U8_MIN;
   return static_cast<uint8_t>(val);
 }
 
 // Helper: Saturate S4 value
 int8_t mma_saturate_s4(int32_t val) {
   using namespace SaturationLimits;
-  if (val > S4_MAX) return S4_MAX;
-  if (val < S4_MIN) return S4_MIN;
+  if (val > S4_MAX)
+    return S4_MAX;
+  if (val < S4_MIN)
+    return S4_MIN;
   return static_cast<int8_t>(val);
 }
 
 // Helper: Saturate U4 value
 uint8_t mma_saturate_u4(int32_t val) {
   using namespace SaturationLimits;
-  if (val > U4_MAX) return U4_MAX;
-  if (val < U4_MIN) return U4_MIN;
+  if (val > U4_MAX)
+    return U4_MAX;
+  if (val < U4_MIN)
+    return U4_MIN;
   return static_cast<uint8_t>(val);
 }
 
@@ -240,35 +259,36 @@ uint8_t mma_saturate_u4(int32_t val) {
 // Maps thread ID to matrix element offset based on shape and layout
 unsigned mma_thread_to_element_offset(unsigned thread_id, mma_shape_type shape,
                                       mma_layout_mode layout,
-                                      unsigned char type_size, unsigned stride) {
+                                      unsigned char type_size,
+                                      unsigned stride) {
   unsigned row, col;
 
   switch (shape) {
-    case MMA_M16N8K8:
-      // M16N8K8: 16x8 output matrix, K=8
-      // 32 threads, each thread maps to specific elements
-      row = thread_id / 4;
-      col = (thread_id % 4) * 2;
-      break;
+  case MMA_M16N8K8:
+    // M16N8K8: 16x8 output matrix, K=8
+    // 32 threads, each thread maps to specific elements
+    row = thread_id / 4;
+    col = (thread_id % 4) * 2;
+    break;
 
-    case MMA_M16N8K16:
-      // M16N8K16: 16x8 output matrix, K=16
-      // Different thread mapping due to larger K dimension
-      row = thread_id / 4;
-      col = (thread_id % 4) * 2;
-      // K=16 affects how many elements per thread, not the row/col mapping
-      break;
+  case MMA_M16N8K16:
+    // M16N8K16: 16x8 output matrix, K=16
+    // Different thread mapping due to larger K dimension
+    row = thread_id / 4;
+    col = (thread_id % 4) * 2;
+    // K=16 affects how many elements per thread, not the row/col mapping
+    break;
 
-    case MMA_M16N8K32:
-      // M16N8K32: 16x8 output matrix, K=32
-      // Even larger K dimension for integer types
-      row = thread_id / 4;
-      col = (thread_id % 4) * 2;
-      break;
+  case MMA_M16N8K32:
+    // M16N8K32: 16x8 output matrix, K=32
+    // Even larger K dimension for integer types
+    row = thread_id / 4;
+    col = (thread_id % 4) * 2;
+    break;
 
-    default:
-      // Unknown shape, fall back to simple linear offset
-      return thread_id * type_size;
+  default:
+    // Unknown shape, fall back to simple linear offset
+    return thread_id * type_size;
   }
 
   // Apply layout mode
@@ -303,20 +323,21 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
   // For MMA: .m16n8k8.row.col.f32.bf16.bf16.f32
   //   First type = accumulator output type (f32)
   //   Second type = A matrix input type (bf16, f16, s8, etc.)
-  // Get the input data type (first type in scalar type list, which is the accumulator for MMA)
-  // For MMA, the operand types are: D (output), A (input), B (input), C (accumulator)
-  // Scalar types list order: output type, then input types
+  // Get the input data type (first type in scalar type list, which is the
+  // accumulator for MMA) For MMA, the operand types are: D (output), A (input),
+  // B (input), C (accumulator) Scalar types list order: output type, then input
+  // types
   std::list<int> scalar_types = pI->get_scalar_type();
-  // For MMA with .f32.bf16.bf16.f32, get_type() returns first type (f32 output),
-  // get_type2() would return second if it exists
-  // We need to examine the full scalar type list to find input types
-  // Typically: scalar_types = {F32_TYPE, BF16_TYPE, BF16_TYPE, F32_TYPE} for bf16 MMA
+  // For MMA with .f32.bf16.bf16.f32, get_type() returns first type (f32
+  // output), get_type2() would return second if it exists We need to examine
+  // the full scalar type list to find input types Typically: scalar_types =
+  // {F32_TYPE, BF16_TYPE, BF16_TYPE, F32_TYPE} for bf16 MMA
 
-  int input_type = F16_TYPE;  // Default to F16
+  int input_type = F16_TYPE; // Default to F16
   if (scalar_types.size() >= 2) {
     auto it = scalar_types.begin();
-    ++it;  // Skip first type (accumulator output type)
-    input_type = *it;  // Second type is A input type
+    ++it;             // Skip first type (accumulator output type)
+    input_type = *it; // Second type is A input type
   }
 
   bool is_f16_type = (input_type == F16_TYPE);
@@ -327,34 +348,48 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
   // Determine matrix dimensions based on shape
   int M, N, K;
   switch (shape) {
-    case MMA_M16N8K4:
-      M = 16; N = 8; K = 4;
-      break;
-    case MMA_M16N8K8:
-      M = 16; N = 8; K = 8;
-      break;
-    case MMA_M16N8K16:
-      M = 16; N = 8; K = 16;
-      break;
-    case MMA_M16N8K32:
-      M = 16; N = 8; K = 32;
-      break;
-    case MMA_M8N8K4:
-      M = 8; N = 8; K = 4;
-      break;
-    case MMA_M8N8K16:
-      M = 8; N = 8; K = 16;
-      break;
-    default:
-      fprintf(stderr, "GPGPU-Sim: ERROR - tensor_mma_impl unsupported shape=%d\n", (int)shape);
-      exit(1);
+  case MMA_M16N8K4:
+    M = 16;
+    N = 8;
+    K = 4;
+    break;
+  case MMA_M16N8K8:
+    M = 16;
+    N = 8;
+    K = 8;
+    break;
+  case MMA_M16N8K16:
+    M = 16;
+    N = 8;
+    K = 16;
+    break;
+  case MMA_M16N8K32:
+    M = 16;
+    N = 8;
+    K = 32;
+    break;
+  case MMA_M8N8K4:
+    M = 8;
+    N = 8;
+    K = 4;
+    break;
+  case MMA_M8N8K16:
+    M = 8;
+    N = 8;
+    K = 16;
+    break;
+  default:
+    fprintf(stderr, "GPGPU-Sim: ERROR - tensor_mma_impl unsupported shape=%d\n",
+            (int)shape);
+    exit(1);
   }
 
   if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    const char *type_str = is_f16_type ? "F16" :
-                           is_bf16_type ? "BF16" :
-                           is_tf32_type ? "TF32" :
-                           is_s8_type ? "S8" : "UNKNOWN";
+    const char *type_str = is_f16_type    ? "F16"
+                           : is_bf16_type ? "BF16"
+                           : is_tf32_type ? "TF32"
+                           : is_s8_type   ? "S8"
+                                          : "UNKNOWN";
     printf("GPGPU-Sim: tensor_mma_impl called for shape M%dN%dK%d, type=%s\n",
            M, N, K, type_str);
   }
@@ -364,7 +399,8 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
   // - FP16: M16N8K8, M16N8K16, M16N8K32 (K=8, 16, 32)
   // - BF16: M16N8K8, M16N8K16 (K=8, 16) - use mma_bf16_to_f32/mma_f32_to_bf16
   // - TF32: M16N8K4, M16N8K8 (K=4, 8 ONLY) - use mma_tf32_round
-  // - S8/U8: M16N8K16, M16N8K32, M8N8K16 (K=16, 32) - use int64 intermediate + saturate
+  // - S8/U8: M16N8K16, M16N8K32, M8N8K16 (K=16, 32) - use int64 intermediate +
+  // saturate
   // - S4/U4: M8N8K32 and larger (K=32+) - use mma_saturate_s4/u4
 
   // Get thread context
@@ -378,7 +414,8 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
 
   // Dispatch to type-specific implementation based on data type
   if (is_s8_type) {
-    // S8/U8 M8N8K16 requires specialized implementation due to smaller M dimension
+    // S8/U8 M8N8K16 requires specialized implementation due to smaller M
+    // dimension
     if (shape == MMA_M8N8K16) {
       tensor_mma_s8_m8n8k16_impl(pI, core, inst, saturate, tid, dst);
       return;
@@ -433,7 +470,8 @@ void tensor_mma_ld_impl(const ptx_instruction *pI, core_t *core,
     ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
 
     // Get base memory address for this thread
-    ptx_reg_t base_addr = thread->get_operand_value(src_addr, src_addr, U32_TYPE, thread, 1);
+    ptx_reg_t base_addr =
+        thread->get_operand_value(src_addr, src_addr, U32_TYPE, thread, 1);
 
     // Calculate element offsets based on shape and layout
     // For simplified implementation, load sequential elements
@@ -442,8 +480,8 @@ void tensor_mma_ld_impl(const ptx_instruction *pI, core_t *core,
 
     for (unsigned i = 0; i < nelem && i < 8; i++) {
       // Calculate memory offset for this element
-      unsigned offset = mma_thread_to_element_offset(
-          thrd, shape, layout_a, sizeof(uint16_t), 0);
+      unsigned offset = mma_thread_to_element_offset(thrd, shape, layout_a,
+                                                     sizeof(uint16_t), 0);
       offset += i * sizeof(uint16_t);
 
       // In full implementation, would load from memory at base_addr + offset
@@ -457,7 +495,8 @@ void tensor_mma_ld_impl(const ptx_instruction *pI, core_t *core,
     if (nelem == 2) {
       thread->set_vector_operand_values(dst, data[0], data[1], zero, zero);
     } else if (nelem >= 4) {
-      thread->set_vector_operand_values(dst, data[0], data[1], data[2], data[3]);
+      thread->set_vector_operand_values(dst, data[0], data[1], data[2],
+                                        data[3]);
     }
   }
 
@@ -492,7 +531,8 @@ void tensor_mma_st_impl(const ptx_instruction *pI, core_t *core,
     ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
 
     // Get base memory address for this thread
-    ptx_reg_t base_addr = thread->get_operand_value(dst_addr, dst_addr, U32_TYPE, thread, 1);
+    ptx_reg_t base_addr =
+        thread->get_operand_value(dst_addr, dst_addr, U32_TYPE, thread, 1);
 
     // Get data to store from source register
     unsigned nelem = src.get_vect_nelem();
@@ -502,8 +542,8 @@ void tensor_mma_st_impl(const ptx_instruction *pI, core_t *core,
     // Store each element to memory
     for (unsigned i = 0; i < nelem && i < 8; i++) {
       // Calculate memory offset for this element
-      unsigned offset = mma_thread_to_element_offset(
-          thrd, shape, layout_a, sizeof(uint16_t), 0);
+      unsigned offset = mma_thread_to_element_offset(thrd, shape, layout_a,
+                                                     sizeof(uint16_t), 0);
       offset += i * sizeof(uint16_t);
 
       // In full implementation, would store to memory at base_addr + offset

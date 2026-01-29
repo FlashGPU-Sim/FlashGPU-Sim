@@ -3258,6 +3258,7 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
     m_gpu->inc_completed_cta();
     m_n_active_cta--;
     m_barriers.deallocate_barrier(cta_num);
+    m_barriers.cleanup_cta_mbarriers(cta_num);  // Clean up mbarriers for this hw_cta_id
     shader_CTA_count_unlog(m_sid, 1);
 
     SHADER_GPPRINTF(
@@ -4111,6 +4112,12 @@ void barrier_set_t::deallocate_barrier(unsigned cta_id) {
     m_bar_id_to_warps[i] &= ~warps;
   }
   m_cta_to_warps.erase(w);
+}
+
+void barrier_set_t::cleanup_cta_mbarriers(unsigned cta_id) {
+  // Clean up all mbarriers for this CTA to prevent collisions when
+  // the hw_cta_id gets recycled for a new CTA
+  m_mbarrier_manager.cleanup_cta(cta_id);
 }
 
 // individual warp hits barrier

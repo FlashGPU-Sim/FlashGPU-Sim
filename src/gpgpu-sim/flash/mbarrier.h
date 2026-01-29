@@ -96,12 +96,17 @@ public:
   void expect_tx(gpgpu_sim *gpu, const thread_index_t &thread_index,
                  uint64_t addr, int expected_tx_count);
 
+  /**
+   * Clean up all mbarriers for a given hw_cta_id when the CTA completes.
+   * This prevents collisions when hw_cta_ids get recycled.
+   */
+  void cleanup_cta(unsigned hw_cta_id);
+
 private:
   int m_next_id;
   struct pair_hash {
     size_t operator()(const std::pair<int, uint64_t> &p) const noexcept {
-      return std::hash<int>()(p.first) ^
-             (std::hash<uint64_t>()(p.second) << 1);
+      return std::hash<int>()(p.first) ^ (std::hash<uint64_t>()(p.second) << 1);
     }
   };
   std::unordered_map<std::pair<int, uint64_t>, std::unique_ptr<mbarrier_t>,

@@ -1,10 +1,10 @@
 #ifndef FLASH_GPGPU_SIM_BULK_GROUP_H
 #define FLASH_GPGPU_SIM_BULK_GROUP_H
 
+#include <cassert>
 #include <map>
 #include <set>
 #include <utility>
-#include <cassert>
 
 namespace flash_gpgpu_sim {
 
@@ -17,9 +17,9 @@ namespace flash_gpgpu_sim {
  * 1. **Bulk Groups**: Collections of TMA store transactions that are committed
  *    together. Each warp maintains its own sequence of bulk groups.
  *
- * 2. **Transactions (tx)**: Individual TMA store operations identified by unique
- *    IDs (tx_uid). Transactions are first added to a "pending" set, then moved
- *    to a committed group when commit_group() is called.
+ * 2. **Transactions (tx)**: Individual TMA store operations identified by
+ * unique IDs (tx_uid). Transactions are first added to a "pending" set, then
+ * moved to a committed group when commit_group() is called.
  *
  * 3. **Group Lifecycle**:
  *    - Pending: Transactions added via add_tx() but not yet committed
@@ -39,7 +39,8 @@ namespace flash_gpgpu_sim {
  *
  *   manager.wait_bulk_group(cta, warp, 1); // Wait until only 1 group remains
  *   manager.complete_tx(cta, warp, tx1);   // Mark tx1 done
- *   manager.complete_tx(cta, warp, tx2);   // Group 1 now complete, wait satisfied
+ *   manager.complete_tx(cta, warp, tx2);   // Group 1 now complete, wait
+ * satisfied
  */
 class bulk_group_manager_t {
 public:
@@ -74,7 +75,8 @@ public:
    *        0 = wait for all groups, 1 = allow 1 incomplete group, etc.
    * @return true if the wait condition is already satisfied, false if waiting
    */
-  bool wait_bulk_group(unsigned cta_id, unsigned warp_id, unsigned latest_group_num);
+  bool wait_bulk_group(unsigned cta_id, unsigned warp_id,
+                       unsigned latest_group_num);
 
   /**
    * Mark a transaction as completed. This may trigger group completion and
@@ -83,7 +85,8 @@ public:
    * @param cta_id CTA identifier
    * @param warp_id Warp identifier within the CTA
    * @param tx_uid Unique transaction identifier
-   * @return true if no wait is pending (or wait is now satisfied), false if still waiting
+   * @return true if no wait is pending (or wait is now satisfied), false if
+   * still waiting
    */
   bool complete_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
 
@@ -114,13 +117,15 @@ private:
 
   // Per-warp bulk group tracking information
   struct warp_bulk_info_t {
-    unsigned next_group_id;                          // Next group ID to assign (starts at 1)
-    std::map<unsigned, unsigned> tx_to_group;        // Maps tx_uid -> group_id
-    std::map<unsigned, bulk_group_t> pending_groups; // Maps group_id -> bulk_group_t
-    std::set<unsigned> pending_txs;                  // Transactions in current uncommitted group
-    unsigned latest_completed_group_id;              // Highest completed group ID (sequential)
-    unsigned waiting_group_id;                       // Group ID being waited on
-    bool is_waiting;                                 // Whether warp is currently waiting
+    unsigned next_group_id; // Next group ID to assign (starts at 1)
+    std::map<unsigned, unsigned> tx_to_group; // Maps tx_uid -> group_id
+    std::map<unsigned, bulk_group_t>
+        pending_groups;             // Maps group_id -> bulk_group_t
+    std::set<unsigned> pending_txs; // Transactions in current uncommitted group
+    unsigned
+        latest_completed_group_id; // Highest completed group ID (sequential)
+    unsigned waiting_group_id;     // Group ID being waited on
+    bool is_waiting;               // Whether warp is currently waiting
 
     warp_bulk_info_t();
 
@@ -129,9 +134,7 @@ private:
     bool complete_tx(unsigned tx_uid);
     void wait_group(unsigned group_num);
 
-    unsigned get_pending_count() const {
-      return pending_groups.size();
-    }
+    unsigned get_pending_count() const { return pending_groups.size(); }
   };
 
   // Maps (cta_id, warp_id) -> warp bulk info

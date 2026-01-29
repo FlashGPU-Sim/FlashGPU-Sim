@@ -93,7 +93,7 @@ void memory_space_impl<BSIZE>::write_only(mem_addr_t offset, mem_addr_t index,
 template <unsigned BSIZE>
 void memory_space_impl<BSIZE>::write(mem_addr_t addr, size_t length,
                                      const void *data,
-                                     class ptx_thread_info *thd,
+                                     class ptx_thread_info *thread,
                                      const ptx_instruction *pI) {
   mem_addr_t index = addr >> m_log2_block_size;
 
@@ -128,14 +128,37 @@ void memory_space_impl<BSIZE>::write(mem_addr_t addr, size_t length,
     }
     assert(nbytes_remain == 0);
   }
+
+  // if ((addr <= 0xc0 && (addr + length) > 0xc0) ||
+  //     (addr <= 0xc0000000 && (addr + length) > 0xc0000000)) {
+  //   if (thread) {
+  //     GPPRINTF_INST_EXEC(PTX_INST_EXEC,
+  //                        "wr: space %p addr %llx length %zu data_ptr %p inst "
+  //                        "%s %.3f %.3f %.3f %.3f\n",
+  //                        this, addr, length, data, pI->to_string().c_str(),
+  //                        reinterpret_cast<const float *>(data)[0],
+  //                        reinterpret_cast<const float *>(data)[1],
+  //                        reinterpret_cast<const float *>(data)[2],
+  //                        reinterpret_cast<const float *>(data)[3]);
+  //   } else {
+  //     printf(
+  //         "wr: space %p addr %llx length %zu data_ptr %p %.3f %.3f "
+  //         "%.3f %.3f\n",
+  //         this, addr, length, data, reinterpret_cast<const float *>(data)[0],
+  //         reinterpret_cast<const float *>(data)[1],
+  //         reinterpret_cast<const float *>(data)[2],
+  //         reinterpret_cast<const float *>(data)[3]);
+  //   }
+  // }
+
   if (!m_watchpoints.empty()) {
     std::map<unsigned, mem_addr_t>::iterator i;
     for (i = m_watchpoints.begin(); i != m_watchpoints.end(); i++) {
       mem_addr_t wa = i->second;
       if (((addr <= wa) && ((addr + length) > wa)) ||
           ((addr > wa) && (addr < (wa + 4))))
-        thd->get_gpu()->gpgpu_ctx->the_gpgpusim->g_the_gpu->hit_watchpoint(
-            i->first, thd, pI);
+        thread->get_gpu()->gpgpu_ctx->the_gpgpusim->g_the_gpu->hit_watchpoint(
+            i->first, thread, pI);
     }
   }
 }

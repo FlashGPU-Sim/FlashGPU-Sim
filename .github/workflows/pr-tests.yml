@@ -1,0 +1,50 @@
+name: PR Tests
+
+# Trigger on PR approval (review approval event)
+on:
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  simulation-tests:
+    # Only run when PR is approved
+    if: github.event.review.state == 'approved'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build CI Docker image
+        run: |
+          docker build -f docker/Dockerfile.ci -t gpgpu-sim-ci:latest .
+
+          # Log image size for documentation accuracy
+          IMAGE_SIZE=$(docker images gpgpu-sim-ci:latest --format "{{.Size}}")
+          echo "CI Docker image size: $IMAGE_SIZE"
+
+      - name: Run simulation tests in container
+        run: |
+          docker run --rm \
+            -e CI=true \
+            -e GITHUB_ACTIONS=true \
+            -v ${{ github.workspace }}:/gpgpu-sim \
+            -w /gpgpu-sim \
+            gpgpu-sim-ci:latest \
+            bash -c "./test/ci/run_ci_tests.sh"
+
+      - name: Archive test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            test/*.log
+            test/**/*.log
+          retention-days: 7

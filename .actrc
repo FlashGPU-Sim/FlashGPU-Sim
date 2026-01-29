@@ -1,0 +1,8 @@
+# act configuration for local GitHub Actions workflow testing
+# See: https://nektosact.com/usage/index.html
+
+# Use catthehacker's runner image (Ubuntu 22.04 with act extensions)
+--platform ubuntu-latest=catthehacker/ubuntu:act-latest
+
+# Bind Docker socket for Docker-in-Docker operations
+--container-daemon-socket /var/run/docker.sock

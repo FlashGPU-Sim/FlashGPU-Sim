@@ -96,6 +96,7 @@ Use the reduced configuration for:
 - TMA tests (except excluded ones)
 - mbarrier tests
 - Any single-block functionality test
+- **CI/CD pipelines** (used by GitHub Actions workflow)
 
 **Rationale:** These tests validate instruction-level functionality within a single thread block. Full multi-SM simulation is unnecessary and wastes resources.
 
@@ -103,6 +104,8 @@ Use the reduced configuration for:
 ```bash
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*MMA*"
 ```
+
+**CI Usage:** The automated CI workflow (`.github/workflows/pr-tests.yml`) uses this configuration via `test/ci/run_ci_tests.sh` for resource-efficient testing on PR approval.
 
 ### When to Use SM120_RTX5090 (Full Config)
 

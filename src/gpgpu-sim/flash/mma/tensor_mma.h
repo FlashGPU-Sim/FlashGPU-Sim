@@ -43,40 +43,41 @@ namespace flash_gpgpu_sim {
 // These are the REAL shapes supported by NVIDIA hardware (SM75/SM80)
 enum mma_shape_type {
   // SM75 (Turing) and SM80 (Ampere)
-  MMA_M16N8K8,   // F16, BF16, TF32
+  MMA_M16N8K8, // F16, BF16, TF32
 
   // SM80 (Ampere) only
-  MMA_M16N8K4,   // TF32
-  MMA_M16N8K16,  // F16, BF16, S8/U8
-  MMA_M16N8K32,  // S8/U8
-  MMA_M16N8K64,  // S4/U4
-  MMA_M8N8K4,    // F64, F16/BF16
-  MMA_M8N8K16    // S8/U8
+  MMA_M16N8K4,  // TF32
+  MMA_M16N8K16, // F16, BF16, S8/U8
+  MMA_M16N8K32, // S8/U8
+  MMA_M16N8K64, // S4/U4
+  MMA_M8N8K4,   // F64, F16/BF16
+  MMA_M8N8K16   // S8/U8
 };
 
 // MMA layout modes for matrix operands
 // Specifies whether operands are in row-major or column-major layout
 enum mma_layout_mode {
-  MMA_ROW_COL,  // A: row-major, B: column-major
-  MMA_ROW_ROW,  // A: row-major, B: row-major
-  MMA_COL_ROW,  // A: column-major, B: row-major
-  MMA_COL_COL   // A: column-major, B: column-major
+  MMA_ROW_COL, // A: row-major, B: column-major
+  MMA_ROW_ROW, // A: row-major, B: row-major
+  MMA_COL_ROW, // A: column-major, B: row-major
+  MMA_COL_COL  // A: column-major, B: column-major
 };
 
 // Main MMA instruction implementations
-// These functions implement the PTX MMA (Matrix Multiply-Accumulate) instructions
-// Separate from existing WMMA implementations to maintain clear separation
+// These functions implement the PTX MMA (Matrix Multiply-Accumulate)
+// instructions Separate from existing WMMA implementations to maintain clear
+// separation
 
 // tensor_mma_impl: Main compute function for MMA instructions
 // Implements D = A * B + C matrix multiplication
 void tensor_mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst);
 
 // tensor_mma_f16_impl: F16/BF16 floating-point MMA implementation
-// Implements functional simulation for M16N8K8 tensor cores with F16 or BF16 inputs
+// Implements functional simulation for M16N8K8 tensor cores with F16 or BF16
+// inputs
 void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
-                         warp_inst_t inst, int M, int N, int K,
-                         bool is_bf16, unsigned tid,
-                         const operand_info &dst);
+                         warp_inst_t inst, int M, int N, int K, bool is_bf16,
+                         unsigned tid, const operand_info &dst);
 
 // tensor_mma_f16_m8n8k4_impl: F16 M8N8K4 specialized implementation
 // Per PTX ISA, F16 M8N8K4 computes 4 separate MMA operations
@@ -88,16 +89,14 @@ void tensor_mma_f16_m8n8k4_impl(const ptx_instruction *pI, core_t *core,
 // tensor_mma_tf32_impl: TF32 floating-point MMA implementation
 // Implements functional simulation for M16N8K8 tensor cores with TF32 inputs
 void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
-                          warp_inst_t inst, int M, int N, int K,
-                          bool saturate, unsigned tid,
-                          const operand_info &dst);
+                          warp_inst_t inst, int M, int N, int K, bool saturate,
+                          unsigned tid, const operand_info &dst);
 
 // tensor_mma_s8_impl: S8/U8 integer MMA implementation
 // Implements functional simulation for M16N8K16/K32 integer tensor cores
 void tensor_mma_s8_impl(const ptx_instruction *pI, core_t *core,
-                        warp_inst_t inst, int M, int N, int K,
-                        bool saturate, unsigned tid,
-                        const operand_info &dst);
+                        warp_inst_t inst, int M, int N, int K, bool saturate,
+                        unsigned tid, const operand_info &dst);
 
 // tensor_mma_s8_m8n8k16_impl: S8/U8 M8N8K16 specialized implementation
 // M8N8K16 requires specialized fragment distribution for smaller M dimension
@@ -160,4 +159,4 @@ unsigned mma_thread_to_element_offset(unsigned thread_id, mma_shape_type shape,
 
 } // namespace flash_gpgpu_sim
 
-#endif  // FLASH_GPGPU_SIM_TENSOR_MMA_H
+#endif // FLASH_GPGPU_SIM_TENSOR_MMA_H

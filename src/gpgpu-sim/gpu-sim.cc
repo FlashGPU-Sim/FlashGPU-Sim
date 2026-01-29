@@ -814,6 +814,56 @@ void gpgpu_sim::launch(kernel_info_t *kinfo) {
         "size.\n");
     abort();
   }
+
+  // CRITICAL: Validate kernel shared memory usage against SHARED_MEM_SIZE_MAX
+  // This check prevents address space corruption in generic addressing mode.
+  // With large SM counts (e.g., 170 SMs), exceeding SHARED_MEM_SIZE_MAX will
+  // cause generic address calculation to overflow into adjacent SM regions.
+  // See docs/addressing_mode.md for details.
+  const struct gpgpu_ptx_sim_info *kernel_info = kinfo->entry()->get_kernel_info();
+  unsigned static_smem = (kernel_info != NULL) ? kernel_info->smem : 0;
+  unsigned dynamic_smem = kinfo->get_dynamic_smem();
+  unsigned total_smem = static_smem + dynamic_smem;
+
+  if (total_smem > SHARED_MEM_SIZE_MAX) {
+    fprintf(stderr, "\n");
+    fprintf(stderr, "================================================================================\n");
+    fprintf(stderr, "GPGPU-Sim Kernel Launch ERROR: Shared memory exceeds maximum\n");
+    fprintf(stderr, "================================================================================\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Kernel: %s\n", kinfo->name().c_str());
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Shared memory required:\n");
+    fprintf(stderr, "  Static:  %u bytes\n", static_smem);
+    fprintf(stderr, "  Dynamic: %u bytes\n", dynamic_smem);
+    fprintf(stderr, "  Total:   %u bytes (%u KB)\n", total_smem, total_smem / 1024);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Maximum supported: %llu bytes (%llu KB)\n",
+            SHARED_MEM_SIZE_MAX, SHARED_MEM_SIZE_MAX / 1024);
+    fprintf(stderr, "  Defined in: src/abstract_hardware_model.h\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Impact:\n");
+    fprintf(stderr, "  Exceeding this limit will cause address space corruption in generic\n");
+    fprintf(stderr, "  addressing mode. The shared memory region for this SM will overflow\n");
+    fprintf(stderr, "  into adjacent SM's shared memory region, causing catastrophic data\n");
+    fprintf(stderr, "  corruption and incorrect simulation results.\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "To fix:\n");
+    fprintf(stderr, "  Option 1: Reduce kernel shared memory usage\n");
+    fprintf(stderr, "    - Reduce static shared memory in CUDA source (__shared__ variables)\n");
+    fprintf(stderr, "    - Reduce dynamic shared memory in kernel launch (3rd <<<...>>> parameter)\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "  Option 2: If you need more than %llu KB per SM:\n", SHARED_MEM_SIZE_MAX / 1024);
+    fprintf(stderr, "    1. Increase SHARED_MEM_SIZE_MAX in src/abstract_hardware_model.h\n");
+    fprintf(stderr, "    2. Increase GLOBAL_HEAP_START to accommodate larger address space\n");
+    fprintf(stderr, "       (ensure GLOBAL_HEAP_START > SHARED_GENERIC_START)\n");
+    fprintf(stderr, "    3. Rebuild GPGPU-Sim: make clean && make FLASH=1 -j\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "See docs/addressing_mode.md for detailed explanation.\n");
+    fprintf(stderr, "================================================================================\n");
+    fflush(stderr);
+    abort();
+  }
   unsigned n = 0;
   for (n = 0; n < m_running_kernels.size(); n++) {
     if ((NULL == m_running_kernels[n]) || m_running_kernels[n]->done()) {
