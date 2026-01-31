@@ -91,11 +91,12 @@ static void parse_tensor_coords(ptx_thread_info *thread,
 }
 
 // Validate tensormap and dimension match
-// Returns true if valid, false otherwise (also prints error and exits on
-// failure)
-static bool validate_tensormap(const tensormap_descriptor_t &tensormap,
+// Returns true if valid, false otherwise
+static bool validate_tensormap(uint64_t tensormap_addr,
+                               const tensormap_descriptor_t &tensormap,
                                unsigned inst_dim) {
   if (!tensormap.is_valid()) {
+    printf("TMA ERROR: Invalid tensormap at 0x%lx\n", tensormap_addr);
     tensormap.print();
     fflush(stdout);
     exit(1);
@@ -1684,7 +1685,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       // Read tensormap descriptor from global memory
       tensormap_descriptor_t tensormap;
       global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &tensormap);
-      validate_tensormap(tensormap, inst_dim);
+      validate_tensormap(tensormap_addr, tensormap, inst_dim);
 
       // Calculate transfer size from tensormap
       uint32_t size_in_bytes = tensormap.get_tile_size_bytes();
@@ -1731,14 +1732,14 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
       // Get tensormap address
       auto tensormap_addr =
-          get_operand_u32(thread, pI->dst()); // dst is tensormap for store
+          get_operand_u64(thread, pI->dst()); // dst is tensormap for store
       auto src_addr =
           get_operand_u32(thread, pI->src2()); // src is shared memory
 
       // Read tensormap descriptor
       tensormap_descriptor_t tensormap;
       global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &tensormap);
-      validate_tensormap(tensormap, inst_dim);
+      validate_tensormap(tensormap_addr, tensormap, inst_dim);
 
       // Calculate transfer size from tensormap
       uint32_t size_in_bytes = tensormap.get_tile_size_bytes();
