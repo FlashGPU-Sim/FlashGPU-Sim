@@ -1014,7 +1014,14 @@ public:
           m_agu.init_tensor(tx.agu_state, tensormap, tma_dyn_info.coords);
 
         } else {
-          m_agu.init_linear(tx.agu_state, tma_dyn_info.src_addr,
+          // For linear mode, AGU generates global memory addresses
+          // Load (shared <- global): use src_addr (global)
+          // Store (global <- shared): use dst_addr (global)
+          bool is_write_op = (tma_static_info.dst_space ==
+                              inst_t::tma_static_info_t::TMA_GLOBAL);
+          uint64_t global_addr =
+              is_write_op ? tma_dyn_info.dst_addr : tma_dyn_info.src_addr;
+          m_agu.init_linear(tx.agu_state, global_addr,
                             tma_dyn_info.size_in_bytes);
         }
 
@@ -1542,6 +1549,25 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
       auto dst_addr = get_operand_u64(thread, pI->dst());
       auto src_addr = get_operand_u32(thread, pI->src1());
       auto size_in_bytes = get_operand_u32(thread, pI->src2());
+      auto laneid = thread->get_laneid();
+
+      auto ctaid = thread->get_ctaid();
+      auto warp_id = thread->get_hw_wid();
+
+      GPPRINTF_INST_EXEC(TMA,
+                         "[TMA STORE] CTA(%u,%u,%u) warp=%u lane=%u: "
+                         "dst=0x%llx, src=0x%x, size=%u\n",
+                         ctaid.x, ctaid.y, ctaid.z, warp_id, laneid, dst_addr,
+                         src_addr, size_in_bytes);
+
+      // Debug: Print first few bytes from shared memory
+      memory_space *shared_mem_debug = thread->m_shared_mem;
+      uint32_t first_value = 0;
+      shared_mem_debug->read(src_addr, sizeof(uint32_t), &first_value);
+      GPPRINTF_INST_EXEC(
+          TMA, "[TMA STORE DEBUG] smem=0x%x, first_value=%u (expected: %u)\n",
+          src_addr, first_value,
+          (96 + (dst_addr - 0xc00008b00) / 4) * 2); // Compute expected value
 
       // Check alignment to 16 bytes.
       if (dst_addr % 16 != 0 || src_addr % 16 != 0 || size_in_bytes % 16 != 0) {
@@ -1562,7 +1588,6 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
           .src_addr = src_addr,
           .size_in_bytes = size_in_bytes,
       };
-      auto laneid = thread->get_laneid();
       pI->set_tma_dyn_info(laneid, tma_dyn_info);
 
       // write data into shared memory
