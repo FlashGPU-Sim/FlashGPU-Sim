@@ -1,4 +1,5 @@
 #include "bulk_group.h"
+#include "../shader.h"
 
 namespace flash_gpgpu_sim {
 
@@ -167,3 +168,37 @@ unsigned bulk_group_manager_t::get_pending_group_count(unsigned cta_id,
 }
 
 } // namespace flash_gpgpu_sim
+
+//=============================================================================
+// Bulk Group Methods (for TMA write operations)
+//=============================================================================
+
+void barrier_set_t::add_bulk_tx(unsigned cta_id, unsigned warp_id,
+                                unsigned tx_uid) {
+  m_bulk_group_manager.add_tx(cta_id, warp_id, tx_uid);
+}
+
+void barrier_set_t::complete_bulk_tx(unsigned cta_id, unsigned warp_id,
+                                     unsigned tx_uid) {
+  bool satisfied = m_bulk_group_manager.complete_tx(cta_id, warp_id, tx_uid);
+
+  // If the warp was waiting and the wait is now satisfied, release the warp
+  if (satisfied) {
+    m_warp_at_barrier.reset(warp_id);
+  }
+}
+
+void barrier_set_t::wait_bulk_group(unsigned cta_id, unsigned warp_id,
+                                    unsigned latest_group_num) {
+  bool satisfied =
+      m_bulk_group_manager.wait_bulk_group(cta_id, warp_id, latest_group_num);
+
+  // If the wait is not immediately satisfied, mark the warp as blocked
+  if (!satisfied) {
+    m_warp_at_barrier.set(warp_id);
+  }
+}
+
+void barrier_set_t::commit_bulk_group(unsigned cta_id, unsigned warp_id) {
+  m_bulk_group_manager.commit_bulk_group(cta_id, warp_id);
+}
