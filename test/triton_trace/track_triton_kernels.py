@@ -104,7 +104,8 @@ class TritonKernelTracker:
         self.launch_counter = 0
         self.pending_args: Optional[tuple] = None  # Store args from JIT wrapper
         self.pending_grid: Optional[tuple] = None  # Store grid from JIT wrapper
-        self.pending_kernel_hash: Optional[str] = None  # Store kernel hash from JIT wrapper
+        self.pending_kernel_hash: Optional[str] = None  # Store kernel hash from previous run (for next launch)
+        self.current_kernel_hash: Optional[str] = None  # Store kernel hash for current launch (set just before launch)
         self.pending_args_snapshots: Optional[List[torch.Tensor]] = None  # Store pre-launch tensor snapshots
         self.function_to_hash: Dict[int, str] = {}  # Map function pointers to kernel hashes
         
@@ -214,10 +215,10 @@ class TritonKernelTracker:
                     else:
                         tracker_self.pending_grid = (grid, 1, 1)
             
-            # Call original run
+            # Call original run - this will trigger compilation and launch
             result = original_run(jit_self, *args, **kwargs)
             
-            # Capture the kernel hash from the result (CompiledKernel object)
+            # After run completes, store the hash for validation in launch_exit
             if tracker_self.enabled and hasattr(result, 'hash'):
                 tracker_self.pending_kernel_hash = result.hash
             
@@ -228,6 +229,7 @@ class TritonKernelTracker:
                 tracker_self.pending_args = None
                 tracker_self.pending_grid = None
                 tracker_self.pending_kernel_hash = None
+                tracker_self.current_kernel_hash = None
                 tracker_self.pending_args_snapshots = None
             
             return result
@@ -307,8 +309,9 @@ class TritonKernelTracker:
         self.compiled_kernels[hash_val] = kernel_info
         
         # Store function pointer to hash mapping for launch-time lookup
-        # The function id uniquely identifies this compiled kernel variant
-        self.function_to_hash[id(function)] = hash_val
+        # The function parameter is already a CUDA function pointer (CUfunction, an integer)
+        # Store this integer directly as the key
+        self.function_to_hash[function] = hash_val
         
         # Generate standalone launcher
         if self.save_binaries:
@@ -483,13 +486,9 @@ class TritonKernelTracker:
             
             # Regenerate harness now that we have output files
             if self.save_binaries:
-                # Use pending_kernel_hash (captured after run) for correct kernel variant matching
-                # This is more accurate than launch_info.kernel_hash which was set during launch_enter
-                actual_kernel_hash = self.pending_kernel_hash or launch_info.kernel_hash
-                
-                # Update launch_info with the correct hash if available
-                if self.pending_kernel_hash and self.pending_kernel_hash != launch_info.kernel_hash:
-                    launch_info.kernel_hash = self.pending_kernel_hash
+                # Use the kernel_hash that was set in launch_enter (most accurate)
+                # DON'T use pending_kernel_hash here as it may be stale (from previous run)
+                actual_kernel_hash = launch_info.kernel_hash
                 
                 # Find the matching kernel info by hash
                 matching_kernel = None
@@ -528,24 +527,38 @@ class TritonKernelTracker:
         kernel_name = metadata.get('name', 'unknown')
         function = metadata.get('function', None)
         
-        # Try to find matching kernel using function pointer (most accurate), then by name (fallback)
+        # Try to find matching kernel using multiple methods in order of reliability:
+        # 1. function pointer to hash mapping (MOST RELIABLE - direct mapping from kernel_load)
+        # 2. pending_kernel_hash (from previous run result, may be stale due to timing)
+        # 3. name matching (WARNING: ambiguous for kernels with different constexpr values!)
         matching_kernel = None
         kernel_hash = None
         
-        # Method 1: Use function pointer to hash mapping (most reliable)
-        if function is not None:
-            func_id = id(function)
-            if func_id in self.function_to_hash:
-                kernel_hash = self.function_to_hash[func_id]
-                if kernel_hash in self.compiled_kernels:
-                    matching_kernel = self.compiled_kernels[kernel_hash]
+        # Method 1: Use function pointer to hash mapping (MOST RELIABLE)
+        # The function is a CUDA function pointer (integer), use it directly as key
+        if function is not None and function in self.function_to_hash:
+            kernel_hash = self.function_to_hash[function]
+            if kernel_hash in self.compiled_kernels:
+                matching_kernel = self.compiled_kernels[kernel_hash]
+                print(f"[TritonKernelTracker] Launch #{self.launch_counter}: {kernel_name} (hash: {kernel_hash[:8]}...) [matched via function pointer]")
         
-        # Method 2: Fallback to name matching (for backwards compatibility)
+        # Method 2: Use pending_kernel_hash from JIT run (may be from previous run, less reliable for timing)
+        elif self.pending_kernel_hash and self.pending_kernel_hash in self.compiled_kernels:
+            kernel_hash = self.pending_kernel_hash
+            matching_kernel = self.compiled_kernels[kernel_hash]
+            print(f"[TritonKernelTracker] Launch #{self.launch_counter}: {kernel_name} (hash: {kernel_hash[:8]}...) [matched via pending_kernel_hash]")
+        
+        # Method 3: Fallback to name matching (UNRELIABLE - may match wrong variant!)
+        # WARNING: This will pick the first kernel with matching name, which may be incorrect
+        # if multiple variants exist with different constexpr values (e.g., CAUSAL=True vs False)
         if matching_kernel is None:
+            print(f"[WARNING] Launch #{self.launch_counter}: Falling back to name matching for '{kernel_name}'")
+            print(f"[WARNING] This may select the wrong kernel variant if multiple specializations exist!")
             for kernel_info in self.compiled_kernels.values():
                 if kernel_info.kernel_name == kernel_name:
                     matching_kernel = kernel_info
                     kernel_hash = kernel_info.kernel_hash
+                    print(f"[WARNING] Matched to hash {kernel_hash[:8]}... (may be incorrect)")
                     break
         
         if not matching_kernel:
