@@ -28,6 +28,22 @@ def is_cuda():
 
 
 # ============================================================================
+# Set up Triton memory allocator for TMA descriptors
+# ============================================================================
+
+def init_triton_allocator():
+    """Initialize Triton's memory allocator using PyTorch's CUDA allocator."""
+    def alloc_fn(size, align, stream):
+        # Allocate memory using PyTorch
+        return torch.empty(size, dtype=torch.uint8, device=DEVICE).data_ptr()
+    
+    triton.set_allocator(alloc_fn)
+
+# Initialize allocator at module load time
+init_triton_allocator()
+
+
+# ============================================================================
 # Simplified Flash Attention Forward Kernel
 # ============================================================================
 
@@ -54,36 +70,30 @@ def _flash_attn_fwd(
     # Compute base pointer for this batch/head
     qkv_offset = off_hz.to(tl.int64) * SEQ_LEN * HEAD_DIM
 
-    # Create block pointer for Q using TMA
+    # Create tensor descriptor for Q using TMA
     # Shape: (SEQ_LEN, HEAD_DIM), we load a (BLOCK_M, HEAD_DIM) tile
-    Q_block_ptr = tl.make_block_ptr(
-        base=Q + qkv_offset,
-        shape=(SEQ_LEN, HEAD_DIM),
-        strides=(HEAD_DIM, 1),
-        offsets=(start_m * BLOCK_M, 0),
-        block_shape=(BLOCK_M, HEAD_DIM),
-        order=(1, 0),  # Row-major
+    Q_desc = tl.make_tensor_descriptor(
+        Q + qkv_offset,
+        shape=[SEQ_LEN, HEAD_DIM],
+        strides=[HEAD_DIM, 1],
+        block_shape=[BLOCK_M, HEAD_DIM],
     )
 
-    # Create block pointer for K (transposed access pattern)
-    # We want K^T, so shape is (HEAD_DIM, SEQ_LEN) logically
-    K_block_ptr = tl.make_block_ptr(
-        base=K + qkv_offset,
-        shape=(HEAD_DIM, SEQ_LEN),
-        strides=(1, HEAD_DIM),  # Transposed strides
-        offsets=(0, 0),
-        block_shape=(HEAD_DIM, BLOCK_N),
-        order=(0, 1),
+    # Create tensor descriptor for K (load normally, transpose in registers)
+    # TMA requires last stride = 1, so we load K normally and transpose after
+    K_desc = tl.make_tensor_descriptor(
+        K + qkv_offset,
+        shape=[SEQ_LEN, HEAD_DIM],
+        strides=[HEAD_DIM, 1],
+        block_shape=[BLOCK_N, HEAD_DIM],
     )
 
-    # Create block pointer for V
-    V_block_ptr = tl.make_block_ptr(
-        base=V + qkv_offset,
-        shape=(SEQ_LEN, HEAD_DIM),
-        strides=(HEAD_DIM, 1),
-        offsets=(0, 0),
-        block_shape=(BLOCK_N, HEAD_DIM),
-        order=(1, 0),
+    # Create tensor descriptor for V
+    V_desc = tl.make_tensor_descriptor(
+        V + qkv_offset,
+        shape=[SEQ_LEN, HEAD_DIM],
+        strides=[HEAD_DIM, 1],
+        block_shape=[BLOCK_N, HEAD_DIM],
     )
 
     # Initialize accumulator and running statistics
@@ -91,8 +101,8 @@ def _flash_attn_fwd(
     l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
     acc = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
 
-    # Load Q block via TMA (boundary_check handles masking)
-    q = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero")
+    # Load Q block via TMA descriptor
+    q = tl.load_tensor_descriptor(Q_desc, [start_m * BLOCK_M, 0])
 
     # Determine loop bounds for causal masking
     if CAUSAL:
@@ -106,8 +116,9 @@ def _flash_attn_fwd(
 
     # Loop over K, V blocks
     for start_n in range(0, hi, BLOCK_N):
-        # Load K block via TMA (already transposed via strides)
-        k = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        # Load K block via TMA descriptor, then transpose for Q @ K^T
+        k = tl.load_tensor_descriptor(K_desc, [start_n, 0])
+        k = tl.trans(k)  # Transpose from (BLOCK_N, HEAD_DIM) to (HEAD_DIM, BLOCK_N)
 
         # Compute Q @ K^T
         qk = tl.dot(q, k)
@@ -138,8 +149,8 @@ def _flash_attn_fwd(
         # Update accumulator with rescaling
         acc = acc * alpha[:, None]
 
-        # Load V block via TMA
-        v = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        # Load V block via TMA descriptor
+        v = tl.load_tensor_descriptor(V_desc, [start_n, 0])
 
         # Accumulate P @ V
         p = p.to(v.dtype)
@@ -149,25 +160,19 @@ def _flash_attn_fwd(
         l_i = l_i * alpha + l_ij
         m_i = m_ij
 
-        # Advance K and V block pointers
-        K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
-        V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
-
     # Normalize by softmax denominator
     acc = acc / l_i[:, None]
 
-    # Create output block pointer
-    Out_block_ptr = tl.make_block_ptr(
-        base=Out + qkv_offset,
-        shape=(SEQ_LEN, HEAD_DIM),
-        strides=(HEAD_DIM, 1),
-        offsets=(start_m * BLOCK_M, 0),
-        block_shape=(BLOCK_M, HEAD_DIM),
-        order=(1, 0),
+    # Create output tensor descriptor
+    Out_desc = tl.make_tensor_descriptor(
+        Out + qkv_offset,
+        shape=[SEQ_LEN, HEAD_DIM],
+        strides=[HEAD_DIM, 1],
+        block_shape=[BLOCK_M, HEAD_DIM],
     )
 
-    # Store output via TMA
-    tl.store(Out_block_ptr, acc.to(Out.type.element_ty), boundary_check=(0, 1))
+    # Store output via TMA descriptor
+    tl.store_tensor_descriptor(Out_desc, [start_m * BLOCK_M, 0], acc.to(Out.type.element_ty))
 
 
 # ============================================================================
