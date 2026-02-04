@@ -142,6 +142,7 @@
 #include "../src/gpgpu-sim/gpu-sim.h"
 #include "../src/gpgpusim_entrypoint.h"
 #include "../src/stream_manager.h"
+#include "../src/gpgpu-sim/flash/tensormap.h"
 #include "cuda_api_object.h"
 #include "gpgpu_context.h"
 
@@ -4481,6 +4482,59 @@ CUresult CUDAAPI cuInit(unsigned int Flags) {
     announce_call(__my_func__);
   }
   printf("WARNING: this function has not been implemented yet %s\n", __my_func__);
+  return CUDA_SUCCESS;
+}
+
+extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
+    CUtensorMap *tensorMap, CUtensorMapDataType tensorDataType,
+    cuuint32_t tensorRank, void *globalAddress,
+    const cuuint64_t *globalDim, const cuuint64_t *globalStrides,
+    const cuuint32_t *boxDim, const cuuint32_t *elementStrides,
+    CUtensorMapInterleave interleave, CUtensorMapSwizzle swizzle,
+    CUtensorMapL2promotion l2Promotion, CUtensorMapFloatOOBfill oobFill) {
+
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+
+  tensormap_descriptor_t desc;
+  memset(&desc, 0, sizeof(desc));
+
+  desc.fields.globalAddress = reinterpret_cast<uint64_t>(globalAddress);
+  desc.fields.tensorRank = tensorRank - 1;  // API: 1-based → internal: 0-based
+
+  // Map CUDA API data type enum to internal TMA dtype constants
+  switch (tensorDataType) {
+    case CU_TENSOR_MAP_DATA_TYPE_UINT8:    desc.fields.tensorDataType = TMA_DTYPE_U8;   break;
+    case CU_TENSOR_MAP_DATA_TYPE_UINT16:   desc.fields.tensorDataType = TMA_DTYPE_U16;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_UINT32:   desc.fields.tensorDataType = TMA_DTYPE_U32;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_INT32:    desc.fields.tensorDataType = TMA_DTYPE_U32;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_UINT64:   desc.fields.tensorDataType = TMA_DTYPE_U64;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_INT64:    desc.fields.tensorDataType = TMA_DTYPE_U64;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_FLOAT16:  desc.fields.tensorDataType = TMA_DTYPE_F16;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_FLOAT32:  desc.fields.tensorDataType = TMA_DTYPE_F32;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_FLOAT64:  desc.fields.tensorDataType = TMA_DTYPE_F64;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_BFLOAT16: desc.fields.tensorDataType = TMA_DTYPE_BF16; break;
+    default:
+      printf("WARNING: cuTensorMapEncodeTiled: unsupported tensorDataType %d\n",
+             (int)tensorDataType);
+      return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  for (cuuint32_t i = 0; i < tensorRank; i++) {
+    desc.fields.globalDim[i] = static_cast<uint32_t>(globalDim[i]);
+    desc.fields.boxDim[i] = boxDim[i];
+    desc.fields.elementStrides[i] = elementStrides[i];
+  }
+  for (cuuint32_t i = 0; i < tensorRank - 1; i++) {
+    desc.fields.globalStrides[i] = globalStrides[i];
+  }
+
+  desc.fields.interleave = static_cast<uint32_t>(interleave);
+  desc.fields.swizzle = static_cast<uint32_t>(swizzle);
+  desc.fields.oobFill = static_cast<uint32_t>(oobFill);
+
+  memcpy(tensorMap, &desc, sizeof(desc));
   return CUDA_SUCCESS;
 }
 

@@ -13,7 +13,7 @@ NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -arch=sm_120a
 
 # CUDA settings
 CUDA_INSTALL_PATH ?= /usr/local/cuda
-CUDA_LIBS = -L$(CUDA_INSTALL_PATH)/lib64 -lcudart
+CUDA_LIBS = -L$(CUDA_INSTALL_PATH)/lib64 -lcudart -lcuda
 
 # Directories
 GTEST_CLONE_DIR = gtest
