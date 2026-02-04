@@ -1950,6 +1950,123 @@ cudaDeviceGetAttributeInternal(int *value, enum cudaDeviceAttr attr, int device,
       case 89:
         *value = 0;
         break;
+      case 90:  // cudaDevAttrComputePreemptionSupported
+        *value = 0;
+        break;
+      case 91:  // cudaDevAttrCanUseHostPointerForRegisteredMem
+        *value = 0;
+        break;
+      case 92:  // cudaDevAttrReserved92
+      case 93:  // cudaDevAttrReserved93
+      case 94:  // cudaDevAttrReserved94
+        *value = 0;
+        break;
+      case 95:  // cudaDevAttrCooperativeLaunch
+        *value = 1;  // Support cooperative kernels
+        break;
+      case 96:  // cudaDevAttrCooperativeMultiDeviceLaunch (deprecated)
+        *value = 0;
+        break;
+      case 97:  // cudaDevAttrMaxSharedMemoryPerBlockOptin
+        *value = prop->sharedMemPerBlock;
+        break;
+      case 98:  // cudaDevAttrCanFlushRemoteWrites
+        *value = 0;
+        break;
+      case 99:  // cudaDevAttrHostRegisterSupported
+        *value = 1;
+        break;
+      case 100:  // cudaDevAttrPageableMemoryAccessUsesHostPageTables
+        *value = 0;
+        break;
+      case 101:  // cudaDevAttrDirectManagedMemAccessFromHost
+        *value = 1;
+        break;
+      case 102:  // Unassigned
+      case 103:  // Unassigned
+      case 104:  // Unassigned
+      case 105:  // Unassigned
+        *value = 0;
+        break;
+      case 106:  // cudaDevAttrMaxBlocksPerMultiprocessor
+        *value = 32;  // Reasonable default for modern GPUs
+        break;
+      case 107:  // Unassigned
+        *value = 0;
+        break;
+      case 108:  // cudaDevAttrMaxPersistingL2CacheSize
+        *value = prop->l2CacheSize;  // Use L2 cache size from device properties
+        break;
+      case 109:  // cudaDevAttrMaxAccessPolicyWindowSize
+        *value = 0;
+        break;
+      case 110:  // Unassigned
+        *value = 0;
+        break;
+      case 111:  // cudaDevAttrReservedSharedMemoryPerBlock
+        *value = 0;
+        break;
+      case 112:  // cudaDevAttrSparseCudaArraySupported
+        *value = 0;
+        break;
+      case 113:  // cudaDevAttrHostRegisterReadOnlySupported
+        *value = 0;
+        break;
+      case 114:  // cudaDevAttrTimelineSemaphoreInteropSupported
+        *value = 0;
+        break;
+      case 115:  // cudaDevAttrMemoryPoolsSupported
+        *value = 0;
+        break;
+      case 116:  // cudaDevAttrGPUDirectRDMASupported
+        *value = 0;
+        break;
+      case 117:  // cudaDevAttrGPUDirectRDMAFlushWritesOptions
+        *value = 0;
+        break;
+      case 118:  // cudaDevAttrGPUDirectRDMAWritesOrdering
+        *value = 0;
+        break;
+      case 119:  // cudaDevAttrMemoryPoolSupportedHandleTypes
+        *value = 0;
+        break;
+      case 120:  // cudaDevAttrClusterLaunch
+        *value = 1;  // Support cluster launch for SM 9.0+
+        break;
+      case 121:  // cudaDevAttrDeferredMappingCudaArraySupported
+        *value = 0;
+        break;
+      case 122:  // cudaDevAttrReserved122
+      case 123:  // cudaDevAttrReserved123
+      case 124:  // cudaDevAttrReserved124
+        *value = 0;
+        break;
+      case 125:  // cudaDevAttrIpcEventSupport
+        *value = 0;
+        break;
+      case 126:  // cudaDevAttrMemSyncDomainCount
+        *value = 0;
+        break;
+      case 127:  // cudaDevAttrReserved127
+      case 128:  // cudaDevAttrReserved128
+      case 129:  // cudaDevAttrReserved129
+        *value = 0;
+        break;
+      case 130:  // cudaDevAttrNumaConfig
+        *value = 0;
+        break;
+      case 131:  // cudaDevAttrNumaId
+        *value = 0;
+        break;
+      case 132:  // cudaDevAttrReserved132
+        *value = 0;
+        break;
+      case 133:  // cudaDevAttrMpsEnabled
+        *value = 0;
+        break;
+      case 134:  // cudaDevAttrHostNumaId
+        *value = 0;
+        break;
       default:
         printf("ERROR: Attribute number %d unimplemented \n", attr);
         abort();
