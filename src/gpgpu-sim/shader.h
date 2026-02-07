@@ -58,6 +58,7 @@
 #include "stats.h"
 #include "traffic_breakdown.h"
 #include "flash/mbarrier.h"
+#include "flash/bulk_group.h"
 #include "flash/tma.h"
 #include "flash/tma.h"
 
@@ -1089,6 +1090,12 @@ class barrier_set_t {
   void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
                    uint32_t completed_tx_count);
 
+  // Bulk group methods for TMA write operations
+  void add_bulk_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
+  void complete_bulk_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
+  void wait_bulk_group(unsigned cta_id, unsigned warp_id, unsigned latest_group_num);
+  void commit_bulk_group(unsigned cta_id, unsigned warp_id);
+
   // warp reaches exit
   void warp_exit(unsigned warp_id);
 
@@ -1109,6 +1116,7 @@ class barrier_set_t {
   warp_set_t m_warp_at_barrier;
   shader_core_ctx *m_shader;
   flash_gpgpu_sim::mbarrier_manager_t m_mbarrier_manager;
+  flash_gpgpu_sim::bulk_group_manager_t m_bulk_group_manager;
 };
 
 struct insn_latency_info {

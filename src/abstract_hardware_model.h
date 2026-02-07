@@ -876,6 +876,8 @@ public:
       TMA_TYPE_INVALID = 0,
       TMA_NORMAL,
       TMA_TENSOR,
+      TMA_BULK_COMMIT,
+      TMA_BULK_WAIT,
     };
     enum space_t {
       TMA_SPACE_INVALID = 0,
@@ -886,6 +888,7 @@ public:
     type_t  tma_type;
     space_t dst_space;
     space_t src_space;
+    unsigned bulk_wait_num = 0;  // For TMA_BULK_WAIT: number of recent groups to wait for
   };
   struct tma_dyn_info_t {
     uint64_t dst_addr = 0;

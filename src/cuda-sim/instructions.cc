@@ -5939,6 +5939,11 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   int t;
   type_info_key::type_decode(type, size, t);
 
+  // mask to shared memory address range
+  if (space == shared_space) {
+    addr &= 0x00000000FFFFFFFF;
+  }
+  
   if (!vector_spec) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
     mem->write(addr, size / 8, &data.s64, thread, pI);
