@@ -13,6 +13,7 @@ import re
 import matplotlib.pyplot as plt
 import sys
 import glob
+import csv
 
 # Configuration
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -159,6 +160,46 @@ def plot_multiwarp_minimal(hw_data, sim_data):
     print(f"Generated plot: {output_file}")
     plt.close()
 
+def export_comparison_csv(hw_data, sim_data, metric_name, x_axis_name, output_filename):
+    """
+    Exports HW vs Sim comparison to a CSV file.
+    Calculates percentage difference: (Sim - HW) / HW * 100
+    """
+    if not hw_data[x_axis_name] or not sim_data[x_axis_name]:
+        print(f"Skipping CSV export for {metric_name} due to missing data")
+        return
+
+    # Map x-axis value to y-axis value for easier lookup
+    hw_dict = {x: y for x, y in zip(hw_data[x_axis_name], hw_data['cycles_per_mma'])}
+    sim_dict = {x: y for x, y in zip(sim_data[x_axis_name], sim_data['cycles_per_mma'])}
+    
+    all_x = sorted(list(set(hw_dict.keys()) | set(sim_dict.keys())))
+    
+    csv_path = os.path.join(OUTPUT_DIR, output_filename)
+    
+    with open(csv_path, 'w', newline='') as csvfile:
+        fieldnames = [x_axis_name, 'HW_Cycles_per_MMA', 'Sim_Cycles_per_MMA', 'Diff_Percent']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        
+        writer.writeheader()
+        for x in all_x:
+            hw_val = hw_dict.get(x, None)
+            sim_val = sim_dict.get(x, None)
+            
+            diff_percent = "N/A"
+            if hw_val is not None and sim_val is not None and hw_val != 0:
+                diff_percent = f"{((sim_val - hw_val) / hw_val) * 100:.2f}%"
+            
+            row = {
+                x_axis_name: x,
+                'HW_Cycles_per_MMA': hw_val if hw_val is not None else "N/A",
+                'Sim_Cycles_per_MMA': sim_val if sim_val is not None else "N/A",
+                'Diff_Percent': diff_percent
+            }
+            writer.writerow(row)
+            
+    print(f"Generated CSV: {csv_path}")
+
 def main():
     ensure_dir(OUTPUT_DIR)
     os.chdir(TEST_DIR) # Make sure we are in test/ dir
@@ -224,10 +265,12 @@ def main():
     hw_ilp = parse_ilp_minimal(os.path.join(OUTPUT_DIR, "MMAILPIssueGapTest.ILPMinimal_HARDWARE.txt"))
     sim_ilp = parse_ilp_minimal(os.path.join(OUTPUT_DIR, "MMAILPIssueGapTest.ILPMinimal_SIM.txt"))
     plot_ilp_minimal(hw_ilp, sim_ilp)
+    export_comparison_csv(hw_ilp, sim_ilp, "ILP Minimal", "ilp", "ilp_issue_gap_calibration.csv")
 
     hw_warp = parse_multiwarp_minimal(os.path.join(OUTPUT_DIR, "MMAILPIssueGapTest.MultiWarpMinimal_HARDWARE.txt"))
     sim_warp = parse_multiwarp_minimal(os.path.join(OUTPUT_DIR, "MMAILPIssueGapTest.MultiWarpMinimal_SIM.txt"))
     plot_multiwarp_minimal(hw_warp, sim_warp)
+    export_comparison_csv(hw_warp, sim_warp, "MultiWarp Minimal", "warps", "multiwarp_throughput_calibration.csv")
 
     print("\nCalibration finished. Results in test/calibration_results/")
 
