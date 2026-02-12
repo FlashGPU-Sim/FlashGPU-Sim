@@ -91,3 +91,21 @@ Change vectors in [`mma_ilp_issue_gap_bench.cc`](mma_ilp_issue_gap_bench.cc):
     const int mma_count = 1000;  // Increased from 16 to 1000 to minimize overhead impact
     std::vector<int> warp_counts = {1, 2, 4, 8, 16, 32};
 ```
+
+## Running Calibration
+
+To calibrate the simulator against hardware, use the provided Python script:
+
+```bash
+# From test/ directory
+./run_calibration.py
+```
+
+This script will:
+1.  Run `MMAILPIssueGapTest.ILPMinimal` and `MMAILPIssueGapTest.MultiWarpMinimal` on **native hardware** (ignoring `setup_environment`).
+2.  Source `setup_environment` and run the same tests on **GPGPU-Sim**.
+3.  Parse the output tables and generating comparison plots in `test/calibration_results/`.
+
+**Output:**
+- `calibration_results/ilp_scaling_calibration.png`: Issue Gap comparison.
+- `calibration_results/multiwarp_scaling_calibration.png`: Pipeline throughput comparison.
