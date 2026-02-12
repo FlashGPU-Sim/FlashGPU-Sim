@@ -880,12 +880,12 @@ void ptx_instruction::set_opcode_and_latency() {
   unsigned fp_latency[5];
   unsigned dp_latency[5];
   unsigned sfu_latency;
-  unsigned tensor_latency;
+  unsigned tensor_latency[7];
   unsigned int_init[6];
   unsigned fp_init[5];
   unsigned dp_init[5];
   unsigned sfu_init;
-  unsigned tensor_init;
+  unsigned tensor_init[7];
   /*
    * [0] ADD,SUB
    * [1] MAX,Min
@@ -925,9 +925,11 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_tensor, "%u", &tensor_latency);
-  if (nret != 1) {
-    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_tensor (expected 1 value, got %d)\n", nret);
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_tensor, "%u,%u,%u,%u,%u,%u,%u",
+                &tensor_latency[0], &tensor_latency[1], &tensor_latency[2], &tensor_latency[3], &tensor_latency[4],
+                &tensor_latency[5], &tensor_latency[6]);
+  if (nret != 7) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_tensor (expected 7 values, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
@@ -959,9 +961,11 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_tensor, "%u", &tensor_init);
-  if (nret != 1) {
-    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_tensor (expected 1 value, got %d)\n", nret);
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_tensor, "%u,%u,%u,%u,%u,%u,%u",
+                &tensor_init[0], &tensor_init[1], &tensor_init[2], &tensor_init[3], &tensor_init[4],
+                &tensor_init[5], &tensor_init[6]);
+  if (nret != 7) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_tensor (expected 7 values, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
@@ -1213,14 +1217,48 @@ void ptx_instruction::set_opcode_and_latency() {
       op = SFU_OP;
       break;
     case MMA_OP:
-      latency = tensor_latency;
-      initiation_interval = tensor_init;
-      op = TENSOR_CORE_OP;
-      break;
     case TENSOR_MMA_OP:
-      latency = tensor_latency;
-      initiation_interval = tensor_init;
-      op = TENSOR_CORE_OP;
+      {
+        int shape_idx = 0;
+
+        // Default mapping for legacy MMA_OP or unknown TENSOR_MMA_OP
+        if (m_opcode == MMA_OP) {
+          shape_idx = 0;
+        } else {
+          // TENSOR_MMA_OP: Use shape and types
+          flash_gpgpu_sim::mma_shape_type shape = get_mma_shape();
+          int input_type = F16_TYPE;
+
+          // Get input type safely (2nd type in list)
+          if (m_scalar_type.size() >= 2) {
+            std::list<int>::const_iterator it = m_scalar_type.begin();
+            it++;
+            input_type = *it;
+          }
+
+          if (shape == flash_gpgpu_sim::MMA_M16N8K16) {
+            if (input_type == S8_TYPE || input_type == U8_TYPE) // m16n8k16 int8
+              shape_idx = 6;
+            else
+              shape_idx = 0; // m16n8k16 fp16
+          } else if (shape == flash_gpgpu_sim::MMA_M16N8K8) {
+            if (input_type == TF32_TYPE)
+              shape_idx = 1;
+            else if (input_type == BF16_TYPE)
+              shape_idx = 4;
+            else
+              shape_idx = 3; // m16n8k8 fp16
+          } else if (shape == flash_gpgpu_sim::MMA_M16N8K32) {
+            shape_idx = 2; // m16n8k32 int8
+          } else if (shape == flash_gpgpu_sim::MMA_M16N8K4) {
+            shape_idx = 5; // m16n8k4 tf32
+          }
+        }
+
+        latency = tensor_latency[shape_idx];
+        initiation_interval = tensor_init[shape_idx];
+        op = TENSOR_CORE_OP;
+      }
       break;
     case SHFL_OP:
       latency = int_latency[5];
