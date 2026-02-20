@@ -85,7 +85,7 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
                          "Opcode latencies for SFU instructions"
                          "Default 8",
                          "8");
-  option_parser_register(opp, "-ptx_opcode_latency_tesnor", OPT_CSTR,
+  option_parser_register(opp, "-ptx_opcode_latency_tensor", OPT_CSTR,
                          &opcode_latency_tensor,
                          "Opcode latencies for Tensor instructions"
                          "Default 64",
