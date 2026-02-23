@@ -808,7 +808,7 @@ __global__ void smem_latency_kernel(uint64_t* cycle_start, uint64_t* cycle_end,
 // Test fixture and helper functions
 // ============================================================================
 
-class InstructionLatencyCalibrationTest : public ::testing::Test {
+class InstLatencyTest : public ::testing::Test {
  protected:
   uint64_t* d_cycle_start;
   uint64_t* d_cycle_end;
@@ -898,7 +898,7 @@ class InstructionLatencyCalibrationTest : public ::testing::Test {
 // Main calibration test - measures all instruction types
 // ============================================================================
 
-TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
+TEST_F(InstLatencyTest, FullCalibrationSuite) {
   printf("\n");
   printf(
       "========================================================================"

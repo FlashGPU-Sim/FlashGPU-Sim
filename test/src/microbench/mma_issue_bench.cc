@@ -341,7 +341,7 @@ inline bool launch_multi_warp_kernel(int ilp, int num_warps,
 // Test Fixture
 // ============================================================================
 
-class MMAILPIssueGapTest : public ::testing::Test {
+class MMAIssueTest : public ::testing::Test {
  protected:
   uint64_t* d_cycle_start;
   uint64_t* d_cycle_end;
@@ -382,7 +382,7 @@ class MMAILPIssueGapTest : public ::testing::Test {
 // Quick Test - Basic validation
 // ============================================================================
 
-TEST_F(MMAILPIssueGapTest, ILPMinimal) {
+TEST_F(MMAIssueTest, ILPMinimal) {
   printf("\n=== MMA ILP Issue Gap Minimal Test ===\n\n");
 
   // Clock overhead measurement disabled for simplicity
@@ -397,7 +397,7 @@ TEST_F(MMAILPIssueGapTest, ILPMinimal) {
   std::vector<int> ilp_values = {1, 2, 4, 8};
 
   // Open file for export
-  std::ofstream out("MMAILPIssueGapTest.ILPMinimal.txt");
+  std::ofstream out("MMAIssueTest.ILPMinimal.txt");
   out << "┌─────────┬────────────┬──────────────┬────────────────┬─────────────"
          "────┐\n";
   out << "│   ILP   │ Iterations │ Total MMAs   │  Total Cycles  │  Cycles/MMA "
@@ -455,14 +455,14 @@ TEST_F(MMAILPIssueGapTest, ILPMinimal) {
   out << "└─────────┴────────────┴──────────────┴────────────────┴─────────────"
          "────┘\n";
   out.close();
-  printf("\nResults exported to: MMAILPIssueGapTest.ILPMinimal.txt\n");
+  printf("\nResults exported to: MMAIssueTest.ILPMinimal.txt\n");
 }
 
 // ============================================================================
 // Minimal Multi-Warp Test for GPGPU-Sim
 // ============================================================================
 
-TEST_F(MMAILPIssueGapTest, MultiWarpMinimal) {
+TEST_F(MMAIssueTest, MultiWarpMinimal) {
   printf("\n=== Minimal Multi-Warp MMA Test (for GPGPU-Sim) ===\n\n");
 
   // Clock overhead measurement disabled for simplicity
@@ -478,7 +478,7 @@ TEST_F(MMAILPIssueGapTest, MultiWarpMinimal) {
       16, 32};  // Removed 64, 128 as max threads per block is 1024 (32 warps)
 
   // Open file for export
-  std::ofstream out("MMAILPIssueGapTest.MultiWarpMinimal.txt");
+  std::ofstream out("MMAIssueTest.MultiWarpMinimal.txt");
   out << "┌─────────┬────────────┬────────────┬────────────┬───────────┐\n";
   out << "│  Warps  │ Total MMAs │   Cycles   │ Cycles/MMA │  Speedup  │\n";
   out << "├─────────┼────────────┼────────────┼────────────┼───────────┤\n";
@@ -523,5 +523,5 @@ TEST_F(MMAILPIssueGapTest, MultiWarpMinimal) {
   out.close();
   printf(
       "\nExpected: 1->2 warps speedup ~= 2x (if 2 independent Tensor Cores)\n");
-  printf("Results exported to: MMAILPIssueGapTest.MultiWarpMinimal.txt\n");
+  printf("Results exported to: MMAIssueTest.MultiWarpMinimal.txt\n");
 }

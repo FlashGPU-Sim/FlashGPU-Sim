@@ -6,40 +6,40 @@ This directory contains microbenchmarks for characterizing GPU instruction laten
 
 The suite is built on GoogleTest. You can run specific tests using the `./run_tests.sh` script from the `test/` directory.
 
-### 1. MMA Issue Gap & Throughput Test (`mma_ilp_issue_gap_bench.cc`)
+### 1. MMA Issue Gap & Throughput Test (`mma_issue_bench.cc`)
 Analyzes the pipeline throughput (issue gap) of Tensor Core instructions by varying Instruction-Level Parallelism (ILP).
 
-*   **Test Name**: `MMAILPIssueGapTest.ILPMinimal`
+*   **Test Name**: `MMAIssueTest.ILPMinimal`
     *   **Description**: Runs single-warp MMA chains with varying ILP (1, 2, 4, 8) to determine the maximum instruction issue rate.
     *   **Run Command**:
         ```bash
-        ./run_tests.sh run "MMAILPIssueGapTest.ILPMinimal"
+        ./run_tests.sh run "MMAIssueTest.ILPMinimal"
         ```
 
-*   **Test Name**: `MMAILPIssueGapTest.MultiWarpMinimal`
+*   **Test Name**: `MMAIssueTest.MultiWarpMinimal`
     *   **Description**: Runs multi-warp workloads to verify if throughput scales with the number of warps (checking for independent Tensor Core pipelines).
     *   **Run Command**:
         ```bash
-        ./run_tests.sh run "MMAILPIssueGapTest.MultiWarpMinimal"
+        ./run_tests.sh run "MMAIssueTest.MultiWarpMinimal"
         ```
 
-### 2. Instruction Latency Calibration (`instruction_latency_calibration_bench.cc`)
+### 2. Instruction Latency Calibration (`inst_latency_bench.cc`)
 Measures the pure execution latency (dependent chain) of various scalar and floating-point instructions.
 
-*   **Test Name**: `InstructionLatencyCalibrationTest.IntegerAdd` (and others)
+*   **Test Name**: `InstLatencyTest.IntegerAdd` (and others)
     *   **Description**: Measures latency for Integer ADD, MUL, MAD, etc.
     *   **Run Command**:
         ```bash
-        ./run_tests.sh run "InstructionLatencyCalibrationTest.*"
+        ./run_tests.sh run "InstLatencyTest.*"
         ```
 
 ## Configuration Guide
 
 ### How to Switch MMA Instruction Type
 
-To test different MMA instruction types (e.g., FP16, TF32, INT8) in the Issue Gap benchmark, you need to modify the source code in [`mma_ilp_issue_gap_bench.cc`](mma_ilp_issue_gap_bench.cc).
+To test different MMA instruction types (e.g., FP16, TF32, INT8) in the Issue Gap benchmark, you need to modify the source code in [`mma_issue_bench.cc`](mma_issue_bench.cc).
 
-1.  Open `mma_ilp_issue_gap_bench.cc`.
+1.  Open `mma_issue_bench.cc`.
 2.  Locate the section marked `// SELECT ACTIVE MMA TYPE HERE` (around line 144-151).
 3.  Uncomment the `using CurrentMmaOp = ...` line corresponding to the instruction you want to test and comment out others.
 
@@ -69,7 +69,7 @@ using CurrentMmaOp = MmaOp_F16_M16N8K16; // <--- Uncomment this for FP16
 
 ### How to change ILP and multi-warp level
 
-Change vectors in [`mma_ilp_issue_gap_bench.cc`](mma_ilp_issue_gap_bench.cc):
+Change vectors in [`mma_issue_bench.cc`](mma_issue_bench.cc):
 
 #### For ILPMinimal
 
@@ -102,7 +102,7 @@ To calibrate the simulator against hardware, use the provided Python script:
 ```
 
 This script will:
-1.  Run `MMAILPIssueGapTest.ILPMinimal` and `MMAILPIssueGapTest.MultiWarpMinimal` on **native hardware** (ignoring `setup_environment`).
+1.  Run `MMAIssueTest.ILPMinimal` and `MMAIssueTest.MultiWarpMinimal` on **native hardware** (ignoring `setup_environment`).
 2.  Source `setup_environment` and run the same tests on **GPGPU-Sim**.
 3.  Parse the output tables and generating comparison plots in `test/calibration_results/`.
 

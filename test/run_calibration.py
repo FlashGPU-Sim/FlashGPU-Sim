@@ -23,8 +23,8 @@ RUN_BASE_DIR = os.path.join(TEST_DIR, "run")
 DEFAULT_CONFIG = "SM120_RTX5090"
 
 TEST_CASES = [
-    "MMAILPIssueGapTest.ILPMinimal",
-    "MMAILPIssueGapTest.MultiWarpMinimal"
+    "MMAIssueTest.ILPMinimal",
+    "MMAIssueTest.MultiWarpMinimal"
 ]
 
 def ensure_dir(path):
@@ -72,7 +72,7 @@ def run_command(cmd, env=None, shell=True):
 
 def parse_ilp_minimal(file_path):
     """
-    Parses MMAILPIssueGapTest.ILPMinimal.txt
+    Parses MMAIssueTest.ILPMinimal.txt
     Format:
     |   ILP   | Iterations | Total MMAs   |  Total Cycles  |  Cycles/MMA     |
     |    1    |      16    |        16    |         105     |        6.56     |
@@ -97,7 +97,7 @@ def parse_ilp_minimal(file_path):
 
 def parse_multiwarp_minimal(file_path):
     """
-    Parses MMAILPIssueGapTest.MultiWarpMinimal.txt
+    Parses MMAIssueTest.MultiWarpMinimal.txt
     Format:
     |  Warps  | Total MMAs |   Cycles   | Cycles/MMA |  Speedup  |
     |     1   |     1000   |      6500  |      6.50  |     0.00x |
@@ -221,7 +221,7 @@ def main():
     hw_env = os.environ.copy()
     hw_env.pop("GPGPUSIM_ROOT", None)
     
-    cmd_hw = "./run_tests.sh run \"MMAILPIssueGapTest.*\""
+    cmd_hw = "./run_tests.sh run \"MMAIssueTest.*\""
     run_command(cmd_hw, env=hw_env)
 
     # Rename results
@@ -239,7 +239,7 @@ def main():
     
     # Setup for Sim
     setup_script = os.path.join(PROJECT_ROOT, "setup_environment")
-    cmd_sim = f"source {setup_script} && ./run_tests.sh run \"MMAILPIssueGapTest.*\""
+    cmd_sim = f"source {setup_script} && ./run_tests.sh run \"MMAIssueTest.*\""
     
     # Clean old results again (just in case)
     for test in TEST_CASES:
@@ -262,13 +262,13 @@ def main():
     # 3. Parse and Plot
     print("\n[Phase 3] Generating Plots...")
     
-    hw_ilp = parse_ilp_minimal(os.path.join(OUTPUT_DIR, "MMAILPIssueGapTest.ILPMinimal_HARDWARE.txt"))
-    sim_ilp = parse_ilp_minimal(os.path.join(OUTPUT_DIR, "MMAILPIssueGapTest.ILPMinimal_SIM.txt"))
+    hw_ilp = parse_ilp_minimal(os.path.join(OUTPUT_DIR, "MMAIssueTest.ILPMinimal_HARDWARE.txt"))
+    sim_ilp = parse_ilp_minimal(os.path.join(OUTPUT_DIR, "MMAIssueTest.ILPMinimal_SIM.txt"))
     plot_ilp_minimal(hw_ilp, sim_ilp)
     export_comparison_csv(hw_ilp, sim_ilp, "ILP Minimal", "ilp", "ilp_issue_gap_calibration.csv")
 
-    hw_warp = parse_multiwarp_minimal(os.path.join(OUTPUT_DIR, "MMAILPIssueGapTest.MultiWarpMinimal_HARDWARE.txt"))
-    sim_warp = parse_multiwarp_minimal(os.path.join(OUTPUT_DIR, "MMAILPIssueGapTest.MultiWarpMinimal_SIM.txt"))
+    hw_warp = parse_multiwarp_minimal(os.path.join(OUTPUT_DIR, "MMAIssueTest.MultiWarpMinimal_HARDWARE.txt"))
+    sim_warp = parse_multiwarp_minimal(os.path.join(OUTPUT_DIR, "MMAIssueTest.MultiWarpMinimal_SIM.txt"))
     plot_multiwarp_minimal(hw_warp, sim_warp)
     export_comparison_csv(hw_warp, sim_warp, "MultiWarp Minimal", "warps", "multiwarp_throughput_calibration.csv")
 
