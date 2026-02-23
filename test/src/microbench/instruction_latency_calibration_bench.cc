@@ -284,11 +284,13 @@ __global__ void measure_clock_overhead(uint64_t* overhead) {
 }
 
 // Integer ADD latency
+// NOTE: 'inc' is passed as parameter to prevent compile-time constant folding
 template <int COUNT>
 __global__ void int_add_latency_kernel(uint64_t* cycle_start,
-                                       uint64_t* cycle_end, int* result) {
+                                       uint64_t* cycle_end, int* result,
+                                       int inc) {
   int a = threadIdx.x + 1;
-  int b = 1;
+  int b = inc;  // Runtime value prevents PTXAS optimization
 
   // Warmup
   INT_ADD_X8(a, b);
@@ -318,16 +320,19 @@ __global__ void int_add_latency_kernel(uint64_t* cycle_start,
     asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
     *cycle_start = start;
     *cycle_end = end;
+    *result = a;
   }
-  if (a < -1000000) *result = a;  // Prevent optimization
 }
 
 // Integer MUL latency
+// NOTE: 'mul' is passed as parameter to prevent compile-time constant folding
+// Using multiply by 1 would be optimized away entirely
 template <int COUNT>
 __global__ void int_mul_latency_kernel(uint64_t* cycle_start,
-                                       uint64_t* cycle_end, int* result) {
+                                       uint64_t* cycle_end, int* result,
+                                       int mul) {
   int a = threadIdx.x + 2;
-  int b = 1;  // Multiply by 1 to avoid overflow
+  int b = mul;  // Runtime value prevents PTXAS optimization
 
   INT_MUL_X8(a, b);
   __syncwarp();
@@ -356,17 +361,19 @@ __global__ void int_mul_latency_kernel(uint64_t* cycle_start,
     asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
     *cycle_start = start;
     *cycle_end = end;
+    *result = a;
   }
-  if (a < -1000000) *result = a;
 }
 
 // Integer MAD latency
+// NOTE: 'mul' and 'add' are passed as parameters to prevent compile-time constant folding
 template <int COUNT>
 __global__ void int_mad_latency_kernel(uint64_t* cycle_start,
-                                       uint64_t* cycle_end, int* result) {
+                                       uint64_t* cycle_end, int* result,
+                                       int mul, int add) {
   int a = threadIdx.x + 1;
-  int b = 1;
-  int c = 1;
+  int b = mul;  // Runtime value prevents PTXAS optimization
+  int c = add;
 
   INT_MAD_X8(a, b, c);
   __syncwarp();
@@ -395,16 +402,17 @@ __global__ void int_mad_latency_kernel(uint64_t* cycle_start,
     asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
     *cycle_start = start;
     *cycle_end = end;
+    *result = a;
   }
-  if (a < -1000000) *result = a;
 }
 
 // FP32 ADD latency
 template <int COUNT>
 __global__ void fp_add_latency_kernel(uint64_t* cycle_start,
-                                      uint64_t* cycle_end, float* result) {
+                                      uint64_t* cycle_end, float* result,
+                                      float inc) {
   float a = (float)(threadIdx.x + 1);
-  float b = 0.1f;
+  float b = inc;  // Runtime value prevents PTXAS optimization
 
   FP_ADD_X8(a, b);
   __syncwarp();
@@ -433,16 +441,17 @@ __global__ void fp_add_latency_kernel(uint64_t* cycle_start,
     asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
     *cycle_start = start;
     *cycle_end = end;
+    *result = a;
   }
-  if (a < -1e30f) *result = a;
 }
 
 // FP32 MUL latency
 template <int COUNT>
 __global__ void fp_mul_latency_kernel(uint64_t* cycle_start,
-                                      uint64_t* cycle_end, float* result) {
+                                      uint64_t* cycle_end, float* result,
+                                      float mul) {
   float a = (float)(threadIdx.x + 1);
-  float b = 1.0f;
+  float b = mul;  // Runtime value prevents PTXAS optimization
 
   FP_MUL_X8(a, b);
   __syncwarp();
@@ -471,17 +480,18 @@ __global__ void fp_mul_latency_kernel(uint64_t* cycle_start,
     asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
     *cycle_start = start;
     *cycle_end = end;
+    *result = a;
   }
-  if (a < -1e30f) *result = a;
 }
 
 // FP32 FMA latency
 template <int COUNT>
 __global__ void fp_fma_latency_kernel(uint64_t* cycle_start,
-                                      uint64_t* cycle_end, float* result) {
+                                      uint64_t* cycle_end, float* result,
+                                      float mul, float add) {
   float a = (float)(threadIdx.x + 1);
-  float b = 1.0f;
-  float c = 0.1f;
+  float b = mul;  // Runtime value prevents PTXAS optimization
+  float c = add;
 
   FP_FMA_X8(a, b, c);
   __syncwarp();
@@ -510,16 +520,17 @@ __global__ void fp_fma_latency_kernel(uint64_t* cycle_start,
     asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
     *cycle_start = start;
     *cycle_end = end;
+    *result = a;
   }
-  if (a < -1e30f) *result = a;
 }
 
 // FP64 ADD latency
 template <int COUNT>
 __global__ void dp_add_latency_kernel(uint64_t* cycle_start,
-                                      uint64_t* cycle_end, double* result) {
+                                      uint64_t* cycle_end, double* result,
+                                      double inc) {
   double a = (double)(threadIdx.x + 1);
-  double b = 0.1;
+  double b = inc;  // Runtime value prevents PTXAS optimization
 
   DP_ADD_X8(a, b);
   __syncwarp();
@@ -548,17 +559,18 @@ __global__ void dp_add_latency_kernel(uint64_t* cycle_start,
     asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
     *cycle_start = start;
     *cycle_end = end;
+    *result = a;
   }
-  if (a < -1e300) *result = a;
 }
 
 // FP64 FMA latency
 template <int COUNT>
 __global__ void dp_fma_latency_kernel(uint64_t* cycle_start,
-                                      uint64_t* cycle_end, double* result) {
+                                      uint64_t* cycle_end, double* result,
+                                      double mul, double add) {
   double a = (double)(threadIdx.x + 1);
-  double b = 1.0;
-  double c = 0.1;
+  double b = mul;  // Runtime value prevents PTXAS optimization
+  double c = add;
 
   DP_FMA_X8(a, b, c);
   __syncwarp();
@@ -587,15 +599,16 @@ __global__ void dp_fma_latency_kernel(uint64_t* cycle_start,
     asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
     *cycle_start = start;
     *cycle_end = end;
+    *result = a;
   }
-  if (a < -1e300) *result = a;
 }
 
 // SFU SIN latency
 template <int COUNT>
 __global__ void sfu_sin_latency_kernel(uint64_t* cycle_start,
-                                       uint64_t* cycle_end, float* result) {
-  float a = (float)(threadIdx.x + 1) * 0.01f;
+                                       uint64_t* cycle_end, float* result,
+                                       float scale) {
+  float a = (float)(threadIdx.x + 1) * scale;  // Runtime value
 
   SFU_SIN_X8(a);
   __syncwarp();
@@ -624,16 +637,16 @@ __global__ void sfu_sin_latency_kernel(uint64_t* cycle_start,
     asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
     *cycle_start = start;
     *cycle_end = end;
+    *result = a;
   }
-  if (a < -1e30f) *result = a;
 }
 
 // SFU EXP2 latency
 template <int COUNT>
 __global__ void sfu_exp_latency_kernel(uint64_t* cycle_start,
-                                       uint64_t* cycle_end, float* result) {
-  float a =
-      (float)(threadIdx.x + 1) * 0.001f;  // Small values to avoid overflow
+                                       uint64_t* cycle_end, float* result,
+                                       float scale) {
+  float a = (float)(threadIdx.x + 1) * scale;  // Runtime value
 
   SFU_EXP_X8(a);
   __syncwarp();
@@ -662,15 +675,16 @@ __global__ void sfu_exp_latency_kernel(uint64_t* cycle_start,
     asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
     *cycle_start = start;
     *cycle_end = end;
+    *result = a;
   }
-  if (a < -1e30f) *result = a;
 }
 
 // SFU RCP latency
 template <int COUNT>
 __global__ void sfu_rcp_latency_kernel(uint64_t* cycle_start,
-                                       uint64_t* cycle_end, float* result) {
-  float a = (float)(threadIdx.x + 1);
+                                       uint64_t* cycle_end, float* result,
+                                       float scale) {
+  float a = (float)(threadIdx.x + 1) * scale;  // Runtime value
 
   SFU_RCP_X8(a);
   __syncwarp();
@@ -699,8 +713,8 @@ __global__ void sfu_rcp_latency_kernel(uint64_t* cycle_start,
     asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
     *cycle_start = start;
     *cycle_end = end;
+    *result = a;
   }
-  if (a < -1e30f) *result = a;
 }
 
 // Tensor Core MMA latency
@@ -735,13 +749,16 @@ __global__ void mma_latency_kernel(uint64_t* cycle_start, uint64_t* cycle_end,
     MMA_X64(D_frag, A_frag, B_frag);
   }
 
+  // Force compiler to preserve computation result
+  asm volatile("" : : "f"(D_frag[0]), "f"(D_frag[1]), "f"(D_frag[2]), "f"(D_frag[3]) : "memory");
+
   __syncwarp();
   if (threadIdx.x == 0) {
     asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
     *cycle_start = start;
     *cycle_end = end;
+    *result = D_frag[0];  // Write result after timing
   }
-  if (D_frag[0] < -1e30f) *result = D_frag[0];
 }
 
 // Shared memory latency kernel
@@ -929,6 +946,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
   {
     printf("INT ADD:\n");
     std::vector<double> results;
+    int inc = 1;  // Runtime value to prevent optimization
     for (int count : counts) {
       double lat;
       switch (count) {
@@ -936,7 +954,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 int_add_latency_kernel<8>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result, inc);
               },
               count, overhead);
           break;
@@ -944,7 +962,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 int_add_latency_kernel<16>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result, inc);
               },
               count, overhead);
           break;
@@ -952,7 +970,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 int_add_latency_kernel<32>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result, inc);
               },
               count, overhead);
           break;
@@ -960,7 +978,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 int_add_latency_kernel<64>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result, inc);
               },
               count, overhead);
           break;
@@ -976,6 +994,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
   {
     printf("INT MUL:\n");
     std::vector<double> results;
+    int mul = 1;  // Runtime value to prevent optimization
     for (int count : counts) {
       double lat;
       switch (count) {
@@ -983,7 +1002,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 int_mul_latency_kernel<8>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result, mul);
               },
               count, overhead);
           break;
@@ -991,7 +1010,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 int_mul_latency_kernel<16>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result, mul);
               },
               count, overhead);
           break;
@@ -999,7 +1018,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 int_mul_latency_kernel<32>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result, mul);
               },
               count, overhead);
           break;
@@ -1007,7 +1026,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 int_mul_latency_kernel<64>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result, mul);
               },
               count, overhead);
           break;
@@ -1023,6 +1042,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
   {
     printf("INT MAD:\n");
     std::vector<double> results;
+    int mul = 1, add = 1;  // Runtime values to prevent optimization
     for (int count : counts) {
       double lat;
       switch (count) {
@@ -1030,7 +1050,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 int_mad_latency_kernel<8>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result, mul, add);
               },
               count, overhead);
           break;
@@ -1038,7 +1058,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 int_mad_latency_kernel<16>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result, mul, add);
               },
               count, overhead);
           break;
@@ -1046,7 +1066,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 int_mad_latency_kernel<32>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result, mul, add);
               },
               count, overhead);
           break;
@@ -1054,7 +1074,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 int_mad_latency_kernel<64>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (int*)d_result, mul, add);
               },
               count, overhead);
           break;
@@ -1074,6 +1094,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
   {
     printf("FP32 ADD:\n");
     std::vector<double> results;
+    float inc = 0.1f;  // Runtime value to prevent optimization
     for (int count : counts) {
       double lat;
       switch (count) {
@@ -1081,7 +1102,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 fp_add_latency_kernel<8>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, inc);
               },
               count, overhead);
           break;
@@ -1089,7 +1110,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 fp_add_latency_kernel<16>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, inc);
               },
               count, overhead);
           break;
@@ -1097,7 +1118,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 fp_add_latency_kernel<32>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, inc);
               },
               count, overhead);
           break;
@@ -1105,7 +1126,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 fp_add_latency_kernel<64>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, inc);
               },
               count, overhead);
           break;
@@ -1121,6 +1142,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
   {
     printf("FP32 MUL:\n");
     std::vector<double> results;
+    float mul = 1.0001f;  // Runtime value to prevent optimization (not exactly 1.0)
     for (int count : counts) {
       double lat;
       switch (count) {
@@ -1128,7 +1150,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 fp_mul_latency_kernel<8>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, mul);
               },
               count, overhead);
           break;
@@ -1136,7 +1158,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 fp_mul_latency_kernel<16>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, mul);
               },
               count, overhead);
           break;
@@ -1144,7 +1166,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 fp_mul_latency_kernel<32>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, mul);
               },
               count, overhead);
           break;
@@ -1152,7 +1174,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 fp_mul_latency_kernel<64>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, mul);
               },
               count, overhead);
           break;
@@ -1168,6 +1190,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
   {
     printf("FP32 FMA:\n");
     std::vector<double> results;
+    float fma_mul = 1.0001f, fma_add = 0.1f;  // Runtime values
     for (int count : counts) {
       double lat;
       switch (count) {
@@ -1175,7 +1198,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 fp_fma_latency_kernel<8>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, fma_mul, fma_add);
               },
               count, overhead);
           break;
@@ -1183,7 +1206,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 fp_fma_latency_kernel<16>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, fma_mul, fma_add);
               },
               count, overhead);
           break;
@@ -1191,7 +1214,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 fp_fma_latency_kernel<32>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, fma_mul, fma_add);
               },
               count, overhead);
           break;
@@ -1199,7 +1222,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 fp_fma_latency_kernel<64>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, fma_mul, fma_add);
               },
               count, overhead);
           break;
@@ -1219,6 +1242,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
   {
     printf("FP64 ADD:\n");
     std::vector<double> results;
+    double dp_inc = 0.1;  // Runtime value
     for (int count : counts) {
       double lat;
       switch (count) {
@@ -1226,7 +1250,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 dp_add_latency_kernel<8>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result, dp_inc);
               },
               count, overhead);
           break;
@@ -1234,7 +1258,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 dp_add_latency_kernel<16>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result, dp_inc);
               },
               count, overhead);
           break;
@@ -1242,7 +1266,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 dp_add_latency_kernel<32>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result, dp_inc);
               },
               count, overhead);
           break;
@@ -1250,7 +1274,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 dp_add_latency_kernel<64>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result, dp_inc);
               },
               count, overhead);
           break;
@@ -1266,6 +1290,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
   {
     printf("FP64 FMA:\n");
     std::vector<double> results;
+    double dp_fma_mul = 1.0001, dp_fma_add = 0.1;  // Runtime values
     for (int count : counts) {
       double lat;
       switch (count) {
@@ -1273,7 +1298,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 dp_fma_latency_kernel<8>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result, dp_fma_mul, dp_fma_add);
               },
               count, overhead);
           break;
@@ -1281,7 +1306,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 dp_fma_latency_kernel<16>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result, dp_fma_mul, dp_fma_add);
               },
               count, overhead);
           break;
@@ -1289,7 +1314,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 dp_fma_latency_kernel<32>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result, dp_fma_mul, dp_fma_add);
               },
               count, overhead);
           break;
@@ -1297,7 +1322,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 dp_fma_latency_kernel<64>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (double*)d_result, dp_fma_mul, dp_fma_add);
               },
               count, overhead);
           break;
@@ -1317,6 +1342,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
   {
     printf("SFU SIN:\n");
     std::vector<double> results;
+    float sfu_scale = 0.01f;  // Runtime value
     for (int count : counts) {
       double lat;
       switch (count) {
@@ -1324,7 +1350,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 sfu_sin_latency_kernel<8>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, sfu_scale);
               },
               count, overhead);
           break;
@@ -1332,7 +1358,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 sfu_sin_latency_kernel<16>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, sfu_scale);
               },
               count, overhead);
           break;
@@ -1340,7 +1366,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 sfu_sin_latency_kernel<32>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, sfu_scale);
               },
               count, overhead);
           break;
@@ -1348,7 +1374,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 sfu_sin_latency_kernel<64>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, sfu_scale);
               },
               count, overhead);
           break;
@@ -1364,6 +1390,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
   {
     printf("SFU EXP2:\n");
     std::vector<double> results;
+    float exp_scale = 0.001f;  // Runtime value (small to avoid overflow)
     for (int count : counts) {
       double lat;
       switch (count) {
@@ -1371,7 +1398,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 sfu_exp_latency_kernel<8>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, exp_scale);
               },
               count, overhead);
           break;
@@ -1379,7 +1406,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 sfu_exp_latency_kernel<16>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, exp_scale);
               },
               count, overhead);
           break;
@@ -1387,7 +1414,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 sfu_exp_latency_kernel<32>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, exp_scale);
               },
               count, overhead);
           break;
@@ -1395,7 +1422,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 sfu_exp_latency_kernel<64>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, exp_scale);
               },
               count, overhead);
           break;
@@ -1411,6 +1438,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
   {
     printf("SFU RCP:\n");
     std::vector<double> results;
+    float rcp_scale = 1.0f;  // Runtime value
     for (int count : counts) {
       double lat;
       switch (count) {
@@ -1418,7 +1446,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 sfu_rcp_latency_kernel<8>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, rcp_scale);
               },
               count, overhead);
           break;
@@ -1426,7 +1454,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 sfu_rcp_latency_kernel<16>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, rcp_scale);
               },
               count, overhead);
           break;
@@ -1434,7 +1462,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 sfu_rcp_latency_kernel<32>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, rcp_scale);
               },
               count, overhead);
           break;
@@ -1442,7 +1470,7 @@ TEST_F(InstructionLatencyCalibrationTest, FullCalibrationSuite) {
           lat = measureLatency(
               [&] {
                 sfu_rcp_latency_kernel<64>
-                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result);
+                    <<<1, 32>>>(d_cycle_start, d_cycle_end, (float*)d_result, rcp_scale);
               },
               count, overhead);
           break;
