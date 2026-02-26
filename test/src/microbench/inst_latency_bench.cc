@@ -5,6 +5,70 @@
 #include <cstdio>
 #include <numeric>
 #include <vector>
+// Logging helpers for duplicating printf output to a log file
+#include <cstdarg>
+#include <ctime>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <cstring>
+#include <limits.h>
+#include <errno.h>
+
+static FILE* g_test_log = nullptr;
+
+static void close_test_log(void) {
+  if (g_test_log) {
+    fclose(g_test_log);
+    g_test_log = nullptr;
+  }
+}
+
+static void init_test_log(void) {
+  if (g_test_log) return;
+  const char* dir = "../logs";
+  if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+    // ignore error if directory exists, otherwise warn
+    if (errno != EEXIST) {
+      fprintf(stderr, "Warning: could not create log dir %s: %s\n", dir, strerror(errno));
+    }
+  }
+
+  time_t t = time(NULL);
+  struct tm tm;
+  localtime_r(&t, &tm);
+  char fname[PATH_MAX];
+  snprintf(fname, sizeof(fname), "%s/inst_latency_%04d%02d%02d_%02d%02d%02d.log",
+           dir, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+           tm.tm_min, tm.tm_sec);
+
+  g_test_log = fopen(fname, "w");
+  if (!g_test_log) {
+    fprintf(stderr, "Warning: failed to open test log '%s': %s\n", fname, strerror(errno));
+  } else {
+    atexit(close_test_log);
+  }
+}
+
+static int my_printf(const char* fmt, ...) {
+  init_test_log();
+  va_list ap;
+  va_start(ap, fmt);
+  int r = vfprintf(stdout, fmt, ap);
+  va_end(ap);
+
+  if (g_test_log) {
+    va_start(ap, fmt);
+    vfprintf(g_test_log, fmt, ap);
+    va_end(ap);
+    fflush(g_test_log);
+  }
+  fflush(stdout);
+  return r;
+}
+
+// Replace printf calls in this compilation unit with our logger wrapper
+#define printf(...) my_printf(__VA_ARGS__)
 
 constexpr int MEASURE_ITERS = 20;
 
@@ -1234,6 +1298,7 @@ TEST_F(InstLatencyTest, FullCalibrationSuite) {
     fp_fma_lat = runAndReport("FP32 FMA", results);
   }
 
+  /* On 5090, fp64 is very slow
   // ========== FP64 Operations ==========
   printf("=== FP64 Operations ===\n");
   printf("(Config: -ptx_opcode_latency_dp ADD,MAX,MUL,MAD,DIV)\n\n");
@@ -1333,6 +1398,7 @@ TEST_F(InstLatencyTest, FullCalibrationSuite) {
     }
     dp_fma_lat = runAndReport("FP64 FMA", results);
   }
+  */
 
   // ========== SFU Operations ==========
   printf("=== SFU Operations ===\n");
@@ -1482,6 +1548,7 @@ TEST_F(InstLatencyTest, FullCalibrationSuite) {
     sfu_rcp_lat = runAndReport("SFU RCP", results);
   }
 
+  /* move to another test
   // ========== Tensor Core Operations ==========
   printf("=== Tensor Core Operations ===\n");
   printf(
@@ -1564,6 +1631,7 @@ TEST_F(InstLatencyTest, FullCalibrationSuite) {
     printf("  Intercept: %.2f\n", fit.intercept);
     printf("  R²: %.4f\n\n", fit.r_squared);
   }
+  */
 
   // ========== Summary and Recommendations ==========
   printf(
@@ -1580,20 +1648,20 @@ TEST_F(InstLatencyTest, FullCalibrationSuite) {
   int int_lat =
       (int)std::round((int_add_lat + int_mul_lat + int_mad_lat) / 3.0);
   int fp_lat = (int)std::round((fp_add_lat + fp_mul_lat + fp_fma_lat) / 3.0);
-  int dp_lat = (int)std::round((dp_add_lat + dp_fma_lat) / 2.0);
+  // int dp_lat = (int)std::round((dp_add_lat + dp_fma_lat) / 2.0);
   int sfu_lat =
       (int)std::round((sfu_sin_lat + sfu_exp_lat + sfu_rcp_lat) / 3.0);
-  int tensor_lat = (int)std::round(mma_lat);
+  // int tensor_lat = (int)std::round(mma_lat);
 
   printf("-ptx_opcode_latency_int %d,%d,%d,%d,21,14\n", int_lat, int_lat,
          (int)std::round(int_mul_lat), (int)std::round(int_mad_lat));
   printf("-ptx_opcode_latency_fp %d,%d,%d,%d,39\n", fp_lat, fp_lat,
          (int)std::round(fp_mul_lat), (int)std::round(fp_fma_lat));
-  printf("-ptx_opcode_latency_dp %d,%d,%d,%d,330\n", dp_lat, dp_lat, dp_lat,
-         dp_lat);
+  // printf("-ptx_opcode_latency_dp %d,%d,%d,%d,330\n", dp_lat, dp_lat, dp_lat,
+  //        dp_lat);
   printf("-ptx_opcode_latency_sfu %d\n", sfu_lat);
-  printf("-ptx_opcode_latency_tensor %d\n", tensor_lat);
-  printf("-ptx_opcode_initiation_tensor %d\n", tensor_lat);
+  // printf("-ptx_opcode_latency_tensor %d\n", tensor_lat);
+  // printf("-ptx_opcode_initiation_tensor %d\n", tensor_lat);
 
   printf("\n# Individual measurements:\n");
   printf("#   INT ADD: %.1f cycles\n", int_add_lat);
@@ -1602,12 +1670,12 @@ TEST_F(InstLatencyTest, FullCalibrationSuite) {
   printf("#   FP32 ADD: %.1f cycles\n", fp_add_lat);
   printf("#   FP32 MUL: %.1f cycles\n", fp_mul_lat);
   printf("#   FP32 FMA: %.1f cycles\n", fp_fma_lat);
-  printf("#   FP64 ADD: %.1f cycles\n", dp_add_lat);
-  printf("#   FP64 FMA: %.1f cycles\n", dp_fma_lat);
+  // printf("#   FP64 ADD: %.1f cycles\n", dp_add_lat);
+  // printf("#   FP64 FMA: %.1f cycles\n", dp_fma_lat);
   printf("#   SFU SIN: %.1f cycles\n", sfu_sin_lat);
   printf("#   SFU EXP: %.1f cycles\n", sfu_exp_lat);
   printf("#   SFU RCP: %.1f cycles\n", sfu_rcp_lat);
-  printf("#   MMA: %.1f cycles\n", mma_lat);
+  // printf("#   MMA: %.1f cycles\n", mma_lat);
 
   printf(
       "\n======================================================================"
