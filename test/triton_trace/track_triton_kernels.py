@@ -686,7 +686,8 @@ float fp16_to_fp32(uint16_t h) {
             return NAN;
         }
     } else {
-        float val = (1.0f + mantissa / 1024.0f) * powf(2.0f, exponent - 15);
+        // Cast exponent to int before subtraction to avoid unsigned underflow
+        float val = (1.0f + mantissa / 1024.0f) * powf(2.0f, (float)((int)exponent - 15));
         return sign ? -val : val;
     }
 }
@@ -747,70 +748,95 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
     if (is_fp16) {
         uint16_t* expected_data = (uint16_t*)h_expected;
         uint16_t* actual_data = (uint16_t*)h_actual;
-        float tolerance = 1e-1f; // relaxed for fp16    
-        
+        float rel_tolerance = 1e-3f; // relative tolerance: 0.1%
+        float abs_tolerance = 1e-2f; // absolute tolerance: 0.01
+
         for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
             float exp_f = fp16_to_fp32(expected_data[i]);
             float act_f = fp16_to_fp32(actual_data[i]);
             float diff = fabsf(exp_f - act_f);
-            
-            if (diff > tolerance) {
+            float max_abs = fmaxf(fabsf(exp_f), fabsf(act_f));
+            float rel_err = (max_abs > 0) ? (diff / max_abs) : 0;
+            // Pass if relative error <= 0.1% OR absolute error <= 0.01
+            int pass = (rel_err <= rel_tolerance) || (diff <= abs_tolerance);
+
+            if (!pass) {
                 if (mismatches == 0) {
                     printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
                 }
-                printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e\\n", 
-                       i, exp_f, act_f, diff);
+                printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e, rel_err=%.6e\\n",
+                       i, exp_f, act_f, diff, rel_err);
                 mismatches++;
             }
         }
     } else if (is_bf16) {
         uint16_t* expected_data = (uint16_t*)h_expected;
         uint16_t* actual_data = (uint16_t*)h_actual;
-        float tolerance = 1e-1f; // relaxed for bf16
-        
+        float rel_tolerance = 1e-3f; // relative tolerance: 0.1%
+        float abs_tolerance = 1e-2f; // absolute tolerance: 0.01
+
         for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
             float exp_f = bf16_to_fp32(expected_data[i]);
             float act_f = bf16_to_fp32(actual_data[i]);
             float diff = fabsf(exp_f - act_f);
-            
-            if (diff > tolerance) {
+            float max_abs = fmaxf(fabsf(exp_f), fabsf(act_f));
+            float rel_err = (max_abs > 0) ? (diff / max_abs) : 0;
+            // Pass if relative error <= 0.1% OR absolute error <= 0.01
+            int pass = (rel_err <= rel_tolerance) || (diff <= abs_tolerance);
+
+            if (!pass) {
                 if (mismatches == 0) {
                     printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
                 }
-                printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e\\n", 
-                       i, exp_f, act_f, diff);
+                printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e, rel_err=%.6e\\n",
+                       i, exp_f, act_f, diff, rel_err);
                 mismatches++;
             }
         }
     } else if (is_fp32) {
         float* expected_data = (float*)h_expected;
         float* actual_data = (float*)h_actual;
-        float tolerance = 1e-5f;
-        
+        float rel_tolerance = 1e-3f; // relative tolerance: 0.1%
+        float abs_tolerance = 1e-2f; // absolute tolerance: 0.01
+
         for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
-            float diff = fabsf(expected_data[i] - actual_data[i]);
-            if (diff > tolerance) {
+            float exp_f = expected_data[i];
+            float act_f = actual_data[i];
+            float diff = fabsf(exp_f - act_f);
+            float max_abs = fmaxf(fabsf(exp_f), fabsf(act_f));
+            float rel_err = (max_abs > 0) ? (diff / max_abs) : 0;
+            // Pass if relative error <= 0.1% OR absolute error <= 0.01
+            int pass = (rel_err <= rel_tolerance) || (diff <= abs_tolerance);
+
+            if (!pass) {
                 if (mismatches == 0) {
                     printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
                 }
-                printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e\\n", 
-                       i, expected_data[i], actual_data[i], diff);
+                printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e, rel_err=%.6e\\n",
+                       i, exp_f, act_f, diff, rel_err);
                 mismatches++;
             }
         }
     } else if (is_fp64) {
         double* expected_data = (double*)h_expected;
         double* actual_data = (double*)h_actual;
-        double tolerance = 1e-10;
-        
+        double rel_tolerance = 1e-6; // relative tolerance: 0.0001%
+        double abs_tolerance = 1e-12; // absolute tolerance for values near zero
+
         for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
-            double diff = fabs(expected_data[i] - actual_data[i]);
-            if (diff > tolerance) {
+            double exp_d = expected_data[i];
+            double act_d = actual_data[i];
+            double diff = fabs(exp_d - act_d);
+            double max_abs = fmax(fabs(exp_d), fabs(act_d));
+            int mismatch = (max_abs > abs_tolerance) ? (diff / max_abs > rel_tolerance) : (diff > abs_tolerance);
+
+            if (mismatch) {
                 if (mismatches == 0) {
                     printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
                 }
-                printf("    Element %zu: expected=%.15f, actual=%.15f, diff=%.6e\\n", 
-                       i, expected_data[i], actual_data[i], diff);
+                double rel_err = (max_abs > 0) ? (diff / max_abs) : 0;
+                printf("    Element %zu: expected=%.15f, actual=%.15f, diff=%.6e, rel_err=%.6e\\n",
+                       i, exp_d, act_d, diff, rel_err);
                 mismatches++;
             }
         }
