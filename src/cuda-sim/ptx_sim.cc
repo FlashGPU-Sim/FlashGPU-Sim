@@ -196,15 +196,28 @@ void ptx_thread_info::set_done() {
   m_cycle_done = m_gpu->gpu_sim_cycle;
 }
 
+unsigned long long ptx_thread_info::get_builtin_u64(int builtin_id,
+                                                    unsigned dim_mod) {
+  assert(m_valid);
+  switch ((builtin_id & 0xFFFF)) {
+    case CLOCK64_REG:
+      // Return full 64-bit cycle counter for %clock64 special register
+      return m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+    default:
+      // For other builtins, return 32-bit value zero-extended to 64-bit
+      return (unsigned long long)get_builtin(builtin_id, dim_mod);
+  }
+}
+
 unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
   assert(m_valid);
   switch ((builtin_id & 0xFFFF)) {
     case CLOCK_REG:
       return (unsigned)(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
     case CLOCK64_REG:
-      abort();  // change return value to unsigned long long?
-                // GPGPUSim clock is 4 times slower - multiply by 4
-      return (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) * 4;
+      // Return lower 32 bits of 64-bit cycle counter
+      // For full 64-bit value, use get_builtin_u64()
+      return (unsigned)(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
     case HALFCLOCK_ID:
       // GPGPUSim clock is 4 times slower - multiply by 4
       // Hardware clock counter is incremented at half the shader clock

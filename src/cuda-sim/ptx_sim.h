@@ -392,6 +392,7 @@ class ptx_thread_info {
   void set_nctaid(dim3 cta_size) { m_nctaid = cta_size; }
 
   unsigned get_builtin(int builtin_id, unsigned dim_mod);
+  unsigned long long get_builtin_u64(int builtin_id, unsigned dim_mod);
 
   void set_done();
   bool is_done() { return m_thread_done; }
