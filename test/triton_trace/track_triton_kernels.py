@@ -104,8 +104,6 @@ class TritonKernelTracker:
         self.launch_counter = 0
         self.pending_args: Optional[tuple] = None  # Store args from JIT wrapper
         self.pending_grid: Optional[tuple] = None  # Store grid from JIT wrapper
-        self.pending_kernel_hash: Optional[str] = None  # Store kernel hash from previous run (for next launch)
-        self.current_kernel_hash: Optional[str] = None  # Store kernel hash for current launch (set just before launch)
         self.pending_args_snapshots: Optional[List[torch.Tensor]] = None  # Store pre-launch tensor snapshots
         self.function_to_hash: Dict[int, str] = {}  # Map function pointers to kernel hashes
         
@@ -148,23 +146,32 @@ class TritonKernelTracker:
         """Install Triton runtime hooks"""
         # Hook for kernel loading (captures binaries)
         triton.knobs.runtime.kernel_load_end_hook.add(self._on_kernel_load)
-        
+
         # Hook for kernel launch (captures invocations)
         triton.knobs.runtime.launch_enter_hook.add(self._on_launch_enter)
-        
+
         # Hook for kernel exit (captures outputs after execution)
         triton.knobs.runtime.launch_exit_hook.add(self._on_launch_exit)
-        
-        # Hook for post-run to capture arguments
-        # This gets called after JIT compilation but before actual launch
-        def jit_hook(key, repr_str, fn, compile_info, is_manual_warmup, already_compiled):
-            # Store compile info for argument capture
-            pass
-        
-        # We'll use a custom pre_run_hook approach by monkey-patching
+
+        # We use a custom pre_run_hook approach by monkey-patching
         self._patch_jit_run()
-        
+
         print("[TritonKernelTracker] Hooks installed")
+
+    @staticmethod
+    def _normalize_grid(grid) -> tuple:
+        """Normalize grid to a 3-tuple (x, y, z)"""
+        if isinstance(grid, int):
+            return (grid, 1, 1)
+        elif isinstance(grid, (list, tuple)):
+            if len(grid) == 1:
+                return (grid[0], 1, 1)
+            elif len(grid) == 2:
+                return (grid[0], grid[1], 1)
+            else:
+                return tuple(grid[:3])
+        else:
+            return (grid, 1, 1)
     
     def _patch_jit_run(self):
         """Patch JITFunction.run to capture arguments and grid"""
@@ -186,52 +193,35 @@ class TritonKernelTracker:
                     # Build bound_args from the function signature
                     # This is a simplified version - Triton does more complex binding
                     if callable(grid):
-                        # Try to evaluate with metadata-like dict
-                        # For simple grids like lambda meta: (cdiv(N, meta['BLOCK_SIZE']),)
-                        # we need to pass constexprs. Try with kwargs that might have them.
+                        # Evaluate grid function with metadata-like dict
+                        # For grids like lambda meta: (cdiv(N, meta['BLOCK_SIZE']),)
+                        # we need to pass constexprs from kwargs.
+                        meta_dict = {k: v for k, v in kwargs.items() if k.isupper() or k == 'grid'}
+                        meta_dict.pop('grid', None)  # Remove grid itself
                         try:
-                            # Extract constexpr values from kwargs (like BLOCK_SIZE=256)
-                            meta_dict = {k: v for k, v in kwargs.items() if k.isupper() or k == 'grid'}
-                            meta_dict.pop('grid', None)  # Remove grid itself
-                            grid_val = grid(meta_dict)
-                        except:
-                            # Fallback: just call it with empty dict
-                            try:
-                                grid_val = grid({})
-                            except:
-                                grid_val = (1, 1, 1)
-                        grid = grid_val
+                            grid = grid(meta_dict)
+                        except Exception as e:
+                            raise RuntimeError(
+                                f"Failed to evaluate grid function: {e}\n"
+                                f"Grid function: {grid}\n"
+                                f"Available meta keys: {list(meta_dict.keys())}\n"
+                                f"This may indicate missing constexpr values in kwargs."
+                            ) from e
                     
                     # Normalize to 3-tuple
-                    if isinstance(grid, int):
-                        tracker_self.pending_grid = (grid, 1, 1)
-                    elif isinstance(grid, (list, tuple)):
-                        if len(grid) == 1:
-                            tracker_self.pending_grid = (grid[0], 1, 1)
-                        elif len(grid) == 2:
-                            tracker_self.pending_grid = (grid[0], grid[1], 1)
-                        else:
-                            tracker_self.pending_grid = tuple(grid[:3])
-                    else:
-                        tracker_self.pending_grid = (grid, 1, 1)
+                    tracker_self.pending_grid = TritonKernelTracker._normalize_grid(grid)
             
             # Call original run - this will trigger compilation and launch
             result = original_run(jit_self, *args, **kwargs)
-            
-            # After run completes, store the hash for validation in launch_exit
-            if tracker_self.enabled and hasattr(result, 'hash'):
-                tracker_self.pending_kernel_hash = result.hash
-            
+
             # Don't clear pending data here - launch_exit_hook needs it!
             # It will be cleared in _on_launch_exit
             # Note: If no launch happens (warmup), we should clear it
             if warmup or not tracker_self.enabled or not tracker_self.capture_args:
                 tracker_self.pending_args = None
                 tracker_self.pending_grid = None
-                tracker_self.pending_kernel_hash = None
-                tracker_self.current_kernel_hash = None
                 tracker_self.pending_args_snapshots = None
-            
+
             return result
         
         # Replace the run method
@@ -486,30 +476,16 @@ class TritonKernelTracker:
             
             # Regenerate harness now that we have output files
             if self.save_binaries:
-                # Use the kernel_hash that was set in launch_enter (most accurate)
-                # DON'T use pending_kernel_hash here as it may be stale (from previous run)
-                actual_kernel_hash = launch_info.kernel_hash
-                
-                # Find the matching kernel info by hash
-                matching_kernel = None
-                if actual_kernel_hash in self.compiled_kernels:
-                    matching_kernel = self.compiled_kernels[actual_kernel_hash]
-                else:
-                    # Fallback to name matching
-                    for kernel_info in self.compiled_kernels.values():
-                        if kernel_info.kernel_name == kernel_name:
-                            matching_kernel = kernel_info
-                            break
-                
+                # Use the kernel_hash from launch_info (set reliably via function pointer in launch_enter)
+                matching_kernel = self.compiled_kernels.get(launch_info.kernel_hash)
                 if matching_kernel:
                     print(f"  Generating harness with validation code...")
-                    self._generate_launch_specific_harness(kernel_info=matching_kernel, 
+                    self._generate_launch_specific_harness(kernel_info=matching_kernel,
                                                            launch_info=launch_info)
-        
+
         # Clear pending args after processing
         self.pending_args = None
         self.pending_grid = None
-        self.pending_kernel_hash = None
     
     def _on_launch_enter(self, launch_metadata):
         """Called before kernel launch"""
@@ -526,44 +502,31 @@ class TritonKernelTracker:
         
         kernel_name = metadata.get('name', 'unknown')
         function = metadata.get('function', None)
-        
-        # Try to find matching kernel using multiple methods in order of reliability:
-        # 1. function pointer to hash mapping (MOST RELIABLE - direct mapping from kernel_load)
-        # 2. pending_kernel_hash (from previous run result, may be stale due to timing)
-        # 3. name matching (WARNING: ambiguous for kernels with different constexpr values!)
-        matching_kernel = None
-        kernel_hash = None
-        
-        # Method 1: Use function pointer to hash mapping (MOST RELIABLE)
-        # The function is a CUDA function pointer (integer), use it directly as key
-        if function is not None and function in self.function_to_hash:
-            kernel_hash = self.function_to_hash[function]
-            if kernel_hash in self.compiled_kernels:
-                matching_kernel = self.compiled_kernels[kernel_hash]
-                print(f"[TritonKernelTracker] Launch #{self.launch_counter}: {kernel_name} (hash: {kernel_hash[:8]}...) [matched via function pointer]")
-        
-        # Method 2: Use pending_kernel_hash from JIT run (may be from previous run, less reliable for timing)
-        elif self.pending_kernel_hash and self.pending_kernel_hash in self.compiled_kernels:
-            kernel_hash = self.pending_kernel_hash
-            matching_kernel = self.compiled_kernels[kernel_hash]
-            print(f"[TritonKernelTracker] Launch #{self.launch_counter}: {kernel_name} (hash: {kernel_hash[:8]}...) [matched via pending_kernel_hash]")
-        
-        # Method 3: Fallback to name matching (UNRELIABLE - may match wrong variant!)
-        # WARNING: This will pick the first kernel with matching name, which may be incorrect
-        # if multiple variants exist with different constexpr values (e.g., CAUSAL=True vs False)
-        if matching_kernel is None:
-            print(f"[WARNING] Launch #{self.launch_counter}: Falling back to name matching for '{kernel_name}'")
-            print(f"[WARNING] This may select the wrong kernel variant if multiple specializations exist!")
-            for kernel_info in self.compiled_kernels.values():
-                if kernel_info.kernel_name == kernel_name:
-                    matching_kernel = kernel_info
-                    kernel_hash = kernel_info.kernel_hash
-                    print(f"[WARNING] Matched to hash {kernel_hash[:8]}... (may be incorrect)")
-                    break
-        
-        if not matching_kernel:
-            print(f"[TritonKernelTracker] Launch #{self.launch_counter}: {kernel_name} (not yet tracked)")
-            return
+
+        # Use function pointer to hash mapping (the only reliable method)
+        # The function is a CUDA function pointer (integer) stored during kernel_load
+        if function is None:
+            raise RuntimeError(
+                f"Cannot match kernel '{kernel_name}': function pointer is None. "
+                f"This indicates a Triton runtime issue - launch_metadata should contain 'function'."
+            )
+
+        if function not in self.function_to_hash:
+            raise RuntimeError(
+                f"Cannot match kernel '{kernel_name}': function pointer {function} not in mapping. "
+                f"This indicates kernel_load hook was not called before launch. "
+                f"Available mappings: {list(self.function_to_hash.keys())}"
+            )
+
+        kernel_hash = self.function_to_hash[function]
+        if kernel_hash not in self.compiled_kernels:
+            raise RuntimeError(
+                f"Cannot match kernel '{kernel_name}': hash {kernel_hash} not in compiled_kernels. "
+                f"This should not happen - kernel_load should have registered it."
+            )
+
+        matching_kernel = self.compiled_kernels[kernel_hash]
+        print(f"[TritonKernelTracker] Launch #{self.launch_counter}: {kernel_name} (hash: {kernel_hash[:8]}...)")
         
         # Extract launch parameters
         # Get grid from pending_grid (already evaluated)
@@ -577,17 +540,11 @@ class TritonKernelTracker:
             )
         
         # Normalize grid to 3-tuple (should already be done, but just in case)
-        if not isinstance(grid, tuple):
-            grid = (grid, 1, 1)
-        elif len(grid) == 1:
-            grid = (grid[0], 1, 1)
-        elif len(grid) == 2:
-            grid = (grid[0], grid[1], 1)
-        
+        grid = self._normalize_grid(grid)
+
         meta_dict = matching_kernel.metadata
         num_warps = meta_dict.get('num_warps', 1)
         num_ctas = meta_dict.get('num_ctas', 1)
-        cluster_dims = meta_dict.get('cluster_dims', (1, 1, 1))
         shared_memory = meta_dict.get('shared', 0)
         
         # Calculate block dimensions
@@ -686,7 +643,8 @@ float fp16_to_fp32(uint16_t h) {
             return NAN;
         }
     } else {
-        float val = (1.0f + mantissa / 1024.0f) * powf(2.0f, exponent - 15);
+        // Cast exponent to int before subtraction to avoid unsigned underflow
+        float val = (1.0f + mantissa / 1024.0f) * powf(2.0f, (float)((int)exponent - 15));
         return sign ? -val : val;
     }
 }
@@ -747,70 +705,95 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
     if (is_fp16) {
         uint16_t* expected_data = (uint16_t*)h_expected;
         uint16_t* actual_data = (uint16_t*)h_actual;
-        float tolerance = 1e-1f; // relaxed for fp16    
-        
+        float rel_tolerance = 1e-3f; // relative tolerance: 0.1%
+        float abs_tolerance = 1e-2f; // absolute tolerance: 0.01
+
         for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
             float exp_f = fp16_to_fp32(expected_data[i]);
             float act_f = fp16_to_fp32(actual_data[i]);
             float diff = fabsf(exp_f - act_f);
-            
-            if (diff > tolerance) {
+            float max_abs = fmaxf(fabsf(exp_f), fabsf(act_f));
+            float rel_err = (max_abs > 0) ? (diff / max_abs) : 0;
+            // Pass if relative error <= 0.1% OR absolute error <= 0.01
+            int pass = (rel_err <= rel_tolerance) || (diff <= abs_tolerance);
+
+            if (!pass) {
                 if (mismatches == 0) {
                     printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
                 }
-                printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e\\n", 
-                       i, exp_f, act_f, diff);
+                printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e, rel_err=%.6e\\n",
+                       i, exp_f, act_f, diff, rel_err);
                 mismatches++;
             }
         }
     } else if (is_bf16) {
         uint16_t* expected_data = (uint16_t*)h_expected;
         uint16_t* actual_data = (uint16_t*)h_actual;
-        float tolerance = 1e-1f; // relaxed for bf16
-        
+        float rel_tolerance = 1e-3f; // relative tolerance: 0.1%
+        float abs_tolerance = 1e-2f; // absolute tolerance: 0.01
+
         for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
             float exp_f = bf16_to_fp32(expected_data[i]);
             float act_f = bf16_to_fp32(actual_data[i]);
             float diff = fabsf(exp_f - act_f);
-            
-            if (diff > tolerance) {
+            float max_abs = fmaxf(fabsf(exp_f), fabsf(act_f));
+            float rel_err = (max_abs > 0) ? (diff / max_abs) : 0;
+            // Pass if relative error <= 0.1% OR absolute error <= 0.01
+            int pass = (rel_err <= rel_tolerance) || (diff <= abs_tolerance);
+
+            if (!pass) {
                 if (mismatches == 0) {
                     printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
                 }
-                printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e\\n", 
-                       i, exp_f, act_f, diff);
+                printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e, rel_err=%.6e\\n",
+                       i, exp_f, act_f, diff, rel_err);
                 mismatches++;
             }
         }
     } else if (is_fp32) {
         float* expected_data = (float*)h_expected;
         float* actual_data = (float*)h_actual;
-        float tolerance = 1e-5f;
-        
+        float rel_tolerance = 1e-3f; // relative tolerance: 0.1%
+        float abs_tolerance = 1e-2f; // absolute tolerance: 0.01
+
         for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
-            float diff = fabsf(expected_data[i] - actual_data[i]);
-            if (diff > tolerance) {
+            float exp_f = expected_data[i];
+            float act_f = actual_data[i];
+            float diff = fabsf(exp_f - act_f);
+            float max_abs = fmaxf(fabsf(exp_f), fabsf(act_f));
+            float rel_err = (max_abs > 0) ? (diff / max_abs) : 0;
+            // Pass if relative error <= 0.1% OR absolute error <= 0.01
+            int pass = (rel_err <= rel_tolerance) || (diff <= abs_tolerance);
+
+            if (!pass) {
                 if (mismatches == 0) {
                     printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
                 }
-                printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e\\n", 
-                       i, expected_data[i], actual_data[i], diff);
+                printf("    Element %zu: expected=%.6f, actual=%.6f, diff=%.6e, rel_err=%.6e\\n",
+                       i, exp_f, act_f, diff, rel_err);
                 mismatches++;
             }
         }
     } else if (is_fp64) {
         double* expected_data = (double*)h_expected;
         double* actual_data = (double*)h_actual;
-        double tolerance = 1e-10;
-        
+        double rel_tolerance = 1e-6; // relative tolerance: 0.0001%
+        double abs_tolerance = 1e-12; // absolute tolerance for values near zero
+
         for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
-            double diff = fabs(expected_data[i] - actual_data[i]);
-            if (diff > tolerance) {
+            double exp_d = expected_data[i];
+            double act_d = actual_data[i];
+            double diff = fabs(exp_d - act_d);
+            double max_abs = fmax(fabs(exp_d), fabs(act_d));
+            int mismatch = (max_abs > abs_tolerance) ? (diff / max_abs > rel_tolerance) : (diff > abs_tolerance);
+
+            if (mismatch) {
                 if (mismatches == 0) {
                     printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
                 }
-                printf("    Element %zu: expected=%.15f, actual=%.15f, diff=%.6e\\n", 
-                       i, expected_data[i], actual_data[i], diff);
+                double rel_err = (max_abs > 0) ? (diff / max_abs) : 0;
+                printf("    Element %zu: expected=%.15f, actual=%.15f, diff=%.6e, rel_err=%.6e\\n",
+                       i, exp_d, act_d, diff, rel_err);
                 mismatches++;
             }
         }
@@ -855,6 +838,32 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
                 mismatches++;
             }
         }
+    } else if (is_int16) {
+        int16_t* expected_data = (int16_t*)h_expected;
+        int16_t* actual_data = (int16_t*)h_actual;
+        for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
+            if (expected_data[i] != actual_data[i]) {
+                if (mismatches == 0) {
+                    printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
+                }
+                printf("    Element %zu: expected=%d, actual=%d\\n",
+                       i, expected_data[i], actual_data[i]);
+                mismatches++;
+            }
+        }
+    } else if (is_uint16) {
+        uint16_t* expected_data = (uint16_t*)h_expected;
+        uint16_t* actual_data = (uint16_t*)h_actual;
+        for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
+            if (expected_data[i] != actual_data[i]) {
+                if (mismatches == 0) {
+                    printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
+                }
+                printf("    Element %zu: expected=%u, actual=%u\\n",
+                       i, expected_data[i], actual_data[i]);
+                mismatches++;
+            }
+        }
     } else if (is_int64) {
         int64_t* expected_data = (int64_t*)h_expected;
         int64_t* actual_data = (int64_t*)h_actual;
@@ -863,15 +872,41 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
                 if (mismatches == 0) {
                     printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
                 }
-                printf("    Element %zu: expected=%lld, actual=%lld\\n", 
+                printf("    Element %zu: expected=%lld, actual=%lld\\n",
                        i, (long long)expected_data[i], (long long)actual_data[i]);
+                mismatches++;
+            }
+        }
+    } else if (is_uint32) {
+        uint32_t* expected_data = (uint32_t*)h_expected;
+        uint32_t* actual_data = (uint32_t*)h_actual;
+        for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
+            if (expected_data[i] != actual_data[i]) {
+                if (mismatches == 0) {
+                    printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
+                }
+                printf("    Element %zu: expected=%u, actual=%u\\n",
+                       i, expected_data[i], actual_data[i]);
+                mismatches++;
+            }
+        }
+    } else if (is_uint64) {
+        uint64_t* expected_data = (uint64_t*)h_expected;
+        uint64_t* actual_data = (uint64_t*)h_actual;
+        for (size_t i = 0; i < num_elements && mismatches < 10; i++) {
+            if (expected_data[i] != actual_data[i]) {
+                if (mismatches == 0) {
+                    printf("\\n  Validation FAILED for arg[%d]:\\n", arg_idx);
+                }
+                printf("    Element %zu: expected=%llu, actual=%llu\\n",
+                       i, (unsigned long long)expected_data[i], (unsigned long long)actual_data[i]);
                 mismatches++;
             }
         }
     } else {
         // Unsupported dtype - report error
         printf("\\n  ERROR: Unsupported dtype '%s' for validation of arg[%d]\\n", dtype, arg_idx);
-        printf("  Supported types: float16, bfloat16, float32, float64, int8, uint8, int32, int64\\n");
+        printf("  Supported types: float16, bfloat16, float32, float64, int8/16/32/64, uint8/16/32/64\\n");
         free(h_expected);
         free(h_actual);
         return -1;  // Return error code
@@ -950,28 +985,27 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
     
     def _generate_scratch_allocation_code(self, launch_info: KernelLaunchInfo) -> str:
         """Generate scratch buffer allocation code based on metadata
-        
+
         Only generates allocation code if size > 0, avoiding unnecessary conditionals in C code.
         Note: Sizes are already calculated as total = per_cta_size * gridX*gridY*gridZ * num_ctas
         """
         code_lines = []
-        
+        total_ctas = launch_info.grid[0] * launch_info.grid[1] * launch_info.grid[2] * launch_info.num_ctas
+
         if launch_info.global_scratch_size > 0:
-            total_ctas = launch_info.grid[0] * launch_info.grid[1] * launch_info.grid[2] * launch_info.num_ctas
             code_lines.append(f"""
     // Total size = per_cta_size * grid_size * num_ctas = per_cta * {total_ctas}
     cudaMalloc(&global_scratch, {launch_info.global_scratch_size});
-    printf("  Allocated global_scratch: %zu bytes (alignment: %zu)\\n", 
+    printf("  Allocated global_scratch: %zu bytes (alignment: %zu)\\n",
            (size_t){launch_info.global_scratch_size}, (size_t){launch_info.global_scratch_align});""")
-        
+
         if launch_info.profile_scratch_size > 0:
-            total_ctas = launch_info.grid[0] * launch_info.grid[1] * launch_info.grid[2] * launch_info.num_ctas
             code_lines.append(f"""
     // Total size = per_cta_size * grid_size * num_ctas = per_cta * {total_ctas}
     cudaMalloc(&profile_scratch, {launch_info.profile_scratch_size});
-    printf("  Allocated profile_scratch: %zu bytes (alignment: %zu)\\n", 
+    printf("  Allocated profile_scratch: %zu bytes (alignment: %zu)\\n",
            (size_t){launch_info.profile_scratch_size}, (size_t){launch_info.profile_scratch_align});""")
-        
+
         return ''.join(code_lines)
     
     def _generate_scratch_cleanup_code(self, launch_info: KernelLaunchInfo) -> str:
