@@ -4614,6 +4614,12 @@ extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
     announce_call(__my_func__);
   }
 
+  if (!tensorMap || !globalAddress || !globalDim || !globalStrides ||
+      !boxDim || !elementStrides)
+    return CUDA_ERROR_INVALID_VALUE;
+  if (tensorRank < 1 || tensorRank > 5)
+    return CUDA_ERROR_INVALID_VALUE;
+
   tensormap_descriptor_t desc;
   memset(&desc, 0, sizeof(desc));
 
