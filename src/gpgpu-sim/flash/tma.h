@@ -6,7 +6,6 @@
 #include <cstdio>
 #include <list>
 #include <memory>
-#include <vector>
 
 #include "tensormap.h"
 
@@ -39,13 +38,6 @@ public:
 private:
   std::unique_ptr<tma_unit_impl_t> m_impl;
 };
-
-// Generate memory fetch requests for TMA tensor operations
-// start_coords: starting coordinate for each dimension [x, y, z, w, v]
-// Returns: vector of (physical_address, size_in_bytes) pairs for memory fetches
-std::vector<std::pair<uint64_t, uint32_t>>
-generate_tma_requests(const tensormap_descriptor_t &tensormap,
-                      const uint32_t start_coords[5]);
 
 } // namespace flash_gpgpu_sim
 
