@@ -610,6 +610,9 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
     case F32_TYPE:
       g_size = 4;
       break;
+    case F32X2_TYPE:
+      g_size = 8;  // two f32 values packed in 64-bit register
+      break;
     case B64_TYPE:
     case BB64_TYPE:
     case S64_TYPE:

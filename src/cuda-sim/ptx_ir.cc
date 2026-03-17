@@ -1073,6 +1073,10 @@ unsigned type_info_key::type_decode(int type, size_t &size, int &basic_type) {
       size = 32;  // Two f16 values packed in 32 bits
       basic_type = -1;
       return 17;  // Use 17 to avoid conflict with PRED_TYPE (11) and other types
+    case F32X2_TYPE:
+      size = 64;  // two f32 values packed in 64 bits
+      basic_type = -1;
+      return 18;
     case F32_TYPE:
       size = 32;
       basic_type = -1;
