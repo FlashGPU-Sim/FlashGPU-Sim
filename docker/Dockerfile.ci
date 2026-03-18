@@ -19,18 +19,18 @@ ENV LD_LIBRARY_PATH="${CUDA_INSTALL_PATH}/lib64:${LD_LIBRARY_PATH}"
 # Install minimal dependencies for CI testing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Build essentials
-    build-essential=12.9ubuntu3 \
-    g++=4:11.2.0-1ubuntu1 \
-    gcc=4:11.2.0-1ubuntu1 \
-    make=4.3-4.1build1 \
+    build-essential \
+    g++ \
+    gcc \
+    make \
     # Required by GPGPU-Sim build
-    xutils-dev=1:7.7+6ubuntu1 \
-    bison=2:3.8.2+dfsg-1build1 \
-    flex=2.6.4-8build2 \
-    zlib1g-dev=1:1.2.11.dfsg-2ubuntu9.2 \
-    libglu1-mesa-dev=9.0.2-1 \
+    xutils-dev \
+    bison \
+    flex \
+    zlib1g-dev \
+    libglu1-mesa-dev \
     # Version control (for checkout in CI)
-    git=1:2.34.1-1ubuntu1.15 \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Create working directory

@@ -91,3 +91,8 @@ playground/
 .vscode/*
 package.json
 package-lock.json
+calibration_results/
+
+# Test logs produced by inst_latency_bench
+test/logs/
+test/*.log

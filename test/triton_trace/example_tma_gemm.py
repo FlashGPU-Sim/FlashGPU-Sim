@@ -243,7 +243,7 @@ def main():
     print(f"\nOutput directory: {output_dir}")
     
     # Prepare data
-    M, N, K = 512, 512, 512
+    M, N, K = 1024, 1024, 1024
     torch.manual_seed(0)
     
     # A is (M, K), B is transposed to (N, K) for coalesced TMA access

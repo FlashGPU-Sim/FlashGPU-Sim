@@ -142,6 +142,7 @@
 #include "../src/gpgpu-sim/gpu-sim.h"
 #include "../src/gpgpusim_entrypoint.h"
 #include "../src/stream_manager.h"
+#include "../src/gpgpu-sim/flash/tensormap.h"
 #include "cuda_api_object.h"
 #include "gpgpu_context.h"
 
@@ -1947,6 +1948,123 @@ cudaDeviceGetAttributeInternal(int *value, enum cudaDeviceAttr attr, int device,
         break;
       case 88:
       case 89:
+        *value = 0;
+        break;
+      case 90:  // cudaDevAttrComputePreemptionSupported
+        *value = 0;
+        break;
+      case 91:  // cudaDevAttrCanUseHostPointerForRegisteredMem
+        *value = 0;
+        break;
+      case 92:  // cudaDevAttrReserved92
+      case 93:  // cudaDevAttrReserved93
+      case 94:  // cudaDevAttrReserved94
+        *value = 0;
+        break;
+      case 95:  // cudaDevAttrCooperativeLaunch
+        *value = 1;  // Support cooperative kernels
+        break;
+      case 96:  // cudaDevAttrCooperativeMultiDeviceLaunch (deprecated)
+        *value = 0;
+        break;
+      case 97:  // cudaDevAttrMaxSharedMemoryPerBlockOptin
+        *value = prop->sharedMemPerBlock;
+        break;
+      case 98:  // cudaDevAttrCanFlushRemoteWrites
+        *value = 0;
+        break;
+      case 99:  // cudaDevAttrHostRegisterSupported
+        *value = 1;
+        break;
+      case 100:  // cudaDevAttrPageableMemoryAccessUsesHostPageTables
+        *value = 0;
+        break;
+      case 101:  // cudaDevAttrDirectManagedMemAccessFromHost
+        *value = 1;
+        break;
+      case 102:  // Unassigned
+      case 103:  // Unassigned
+      case 104:  // Unassigned
+      case 105:  // Unassigned
+        *value = 0;
+        break;
+      case 106:  // cudaDevAttrMaxBlocksPerMultiprocessor
+        *value = 32;  // Reasonable default for modern GPUs
+        break;
+      case 107:  // Unassigned
+        *value = 0;
+        break;
+      case 108:  // cudaDevAttrMaxPersistingL2CacheSize
+        *value = prop->l2CacheSize;  // Use L2 cache size from device properties
+        break;
+      case 109:  // cudaDevAttrMaxAccessPolicyWindowSize
+        *value = 0;
+        break;
+      case 110:  // Unassigned
+        *value = 0;
+        break;
+      case 111:  // cudaDevAttrReservedSharedMemoryPerBlock
+        *value = 0;
+        break;
+      case 112:  // cudaDevAttrSparseCudaArraySupported
+        *value = 0;
+        break;
+      case 113:  // cudaDevAttrHostRegisterReadOnlySupported
+        *value = 0;
+        break;
+      case 114:  // cudaDevAttrTimelineSemaphoreInteropSupported
+        *value = 0;
+        break;
+      case 115:  // cudaDevAttrMemoryPoolsSupported
+        *value = 0;
+        break;
+      case 116:  // cudaDevAttrGPUDirectRDMASupported
+        *value = 0;
+        break;
+      case 117:  // cudaDevAttrGPUDirectRDMAFlushWritesOptions
+        *value = 0;
+        break;
+      case 118:  // cudaDevAttrGPUDirectRDMAWritesOrdering
+        *value = 0;
+        break;
+      case 119:  // cudaDevAttrMemoryPoolSupportedHandleTypes
+        *value = 0;
+        break;
+      case 120:  // cudaDevAttrClusterLaunch
+        *value = 1;  // Support cluster launch for SM 9.0+
+        break;
+      case 121:  // cudaDevAttrDeferredMappingCudaArraySupported
+        *value = 0;
+        break;
+      case 122:  // cudaDevAttrReserved122
+      case 123:  // cudaDevAttrReserved123
+      case 124:  // cudaDevAttrReserved124
+        *value = 0;
+        break;
+      case 125:  // cudaDevAttrIpcEventSupport
+        *value = 0;
+        break;
+      case 126:  // cudaDevAttrMemSyncDomainCount
+        *value = 0;
+        break;
+      case 127:  // cudaDevAttrReserved127
+      case 128:  // cudaDevAttrReserved128
+      case 129:  // cudaDevAttrReserved129
+        *value = 0;
+        break;
+      case 130:  // cudaDevAttrNumaConfig
+        *value = 0;
+        break;
+      case 131:  // cudaDevAttrNumaId
+        *value = 0;
+        break;
+      case 132:  // cudaDevAttrReserved132
+        *value = 0;
+        break;
+      case 133:  // cudaDevAttrMpsEnabled
+        *value = 0;
+        break;
+      case 134:  // cudaDevAttrHostNumaId
         *value = 0;
         break;
       default:
@@ -4481,6 +4599,65 @@ CUresult CUDAAPI cuInit(unsigned int Flags) {
     announce_call(__my_func__);
   }
   printf("WARNING: this function has not been implemented yet %s\n", __my_func__);
+  return CUDA_SUCCESS;
+}
+
+extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
+    CUtensorMap *tensorMap, CUtensorMapDataType tensorDataType,
+    cuuint32_t tensorRank, void *globalAddress,
+    const cuuint64_t *globalDim, const cuuint64_t *globalStrides,
+    const cuuint32_t *boxDim, const cuuint32_t *elementStrides,
+    CUtensorMapInterleave interleave, CUtensorMapSwizzle swizzle,
+    CUtensorMapL2promotion l2Promotion, CUtensorMapFloatOOBfill oobFill) {
+
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+
+  if (!tensorMap || !globalAddress || !globalDim || !globalStrides ||
+      !boxDim || !elementStrides)
+    return CUDA_ERROR_INVALID_VALUE;
+  if (tensorRank < 1 || tensorRank > 5)
+    return CUDA_ERROR_INVALID_VALUE;
+
+  tensormap_descriptor_t desc;
+  memset(&desc, 0, sizeof(desc));
+
+  desc.fields.globalAddress = reinterpret_cast<uint64_t>(globalAddress);
+  desc.fields.tensorRank = tensorRank - 1;  // API: 1-based → internal: 0-based
+
+  // Map CUDA API data type enum to internal TMA dtype constants
+  switch (tensorDataType) {
+    case CU_TENSOR_MAP_DATA_TYPE_UINT8:    desc.fields.tensorDataType = TMA_DTYPE_U8;   break;
+    case CU_TENSOR_MAP_DATA_TYPE_UINT16:   desc.fields.tensorDataType = TMA_DTYPE_U16;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_UINT32:   desc.fields.tensorDataType = TMA_DTYPE_U32;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_INT32:    desc.fields.tensorDataType = TMA_DTYPE_U32;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_UINT64:   desc.fields.tensorDataType = TMA_DTYPE_U64;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_INT64:    desc.fields.tensorDataType = TMA_DTYPE_U64;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_FLOAT16:  desc.fields.tensorDataType = TMA_DTYPE_F16;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_FLOAT32:  desc.fields.tensorDataType = TMA_DTYPE_F32;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_FLOAT64:  desc.fields.tensorDataType = TMA_DTYPE_F64;  break;
+    case CU_TENSOR_MAP_DATA_TYPE_BFLOAT16: desc.fields.tensorDataType = TMA_DTYPE_BF16; break;
+    default:
+      printf("WARNING: cuTensorMapEncodeTiled: unsupported tensorDataType %d\n",
+             (int)tensorDataType);
+      return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  for (cuuint32_t i = 0; i < tensorRank; i++) {
+    desc.fields.globalDim[i] = static_cast<uint32_t>(globalDim[i]);
+    desc.fields.boxDim[i] = boxDim[i];
+    desc.fields.elementStrides[i] = elementStrides[i];
+  }
+  for (cuuint32_t i = 0; i < tensorRank - 1; i++) {
+    desc.fields.globalStrides[i] = globalStrides[i];
+  }
+
+  desc.fields.interleave = static_cast<uint32_t>(interleave);
+  desc.fields.swizzle = static_cast<uint32_t>(swizzle);
+  desc.fields.oobFill = static_cast<uint32_t>(oobFill);
+
+  memcpy(tensorMap, &desc, sizeof(desc));
   return CUDA_SUCCESS;
 }
 

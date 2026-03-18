@@ -2614,6 +2614,67 @@ typedef struct CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS_st {
  */
 #define CU_DEVICE_INVALID ((CUdevice) - 2)
 
+/**
+ * Tensor map descriptor for TMA operations
+ */
+#define CU_TENSOR_MAP_NUM_QWORDS 16
+
+typedef struct CUtensorMap_st {
+#if defined(__cplusplus) && (__cplusplus >= 201103L)
+    alignas(64)
+#elif __STDC_VERSION__ >= 201112L
+    _Alignas(64)
+#endif
+    cuuint64_t opaque[CU_TENSOR_MAP_NUM_QWORDS];
+} CUtensorMap;
+
+typedef enum CUtensorMapDataType_enum {
+    CU_TENSOR_MAP_DATA_TYPE_UINT8 = 0,
+    CU_TENSOR_MAP_DATA_TYPE_UINT16,
+    CU_TENSOR_MAP_DATA_TYPE_UINT32,
+    CU_TENSOR_MAP_DATA_TYPE_INT32,
+    CU_TENSOR_MAP_DATA_TYPE_UINT64,
+    CU_TENSOR_MAP_DATA_TYPE_INT64,
+    CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
+    CU_TENSOR_MAP_DATA_TYPE_FLOAT32,
+    CU_TENSOR_MAP_DATA_TYPE_FLOAT64,
+    CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,
+    CU_TENSOR_MAP_DATA_TYPE_FLOAT32_FTZ,
+    CU_TENSOR_MAP_DATA_TYPE_TFLOAT32,
+    CU_TENSOR_MAP_DATA_TYPE_TFLOAT32_FTZ,
+    CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN8B,
+    CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN16B,
+    CU_TENSOR_MAP_DATA_TYPE_16U6_ALIGN16B
+} CUtensorMapDataType;
+
+typedef enum CUtensorMapInterleave_enum {
+    CU_TENSOR_MAP_INTERLEAVE_NONE = 0,
+    CU_TENSOR_MAP_INTERLEAVE_16B,
+    CU_TENSOR_MAP_INTERLEAVE_32B
+} CUtensorMapInterleave;
+
+typedef enum CUtensorMapSwizzle_enum {
+    CU_TENSOR_MAP_SWIZZLE_NONE = 0,
+    CU_TENSOR_MAP_SWIZZLE_32B,
+    CU_TENSOR_MAP_SWIZZLE_64B,
+    CU_TENSOR_MAP_SWIZZLE_128B,
+    CU_TENSOR_MAP_SWIZZLE_128B_ATOM_32B,
+    CU_TENSOR_MAP_SWIZZLE_128B_ATOM_32B_FLIP_8B,
+    CU_TENSOR_MAP_SWIZZLE_128B_ATOM_64B
+} CUtensorMapSwizzle;
+
+typedef enum CUtensorMapL2promotion_enum {
+    CU_TENSOR_MAP_L2_PROMOTION_NONE = 0,
+    CU_TENSOR_MAP_L2_PROMOTION_L2_64B,
+    CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
+    CU_TENSOR_MAP_L2_PROMOTION_L2_256B
+} CUtensorMapL2promotion;
+
+typedef enum CUtensorMapFloatOOBfill_enum {
+    CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE = 0,
+    CU_TENSOR_MAP_FLOAT_OOB_FILL_NAN_REQUEST_ZERO_FMA
+} CUtensorMapFloatOOBfill;
+
 /** @} */ /* END CUDA_TYPES */
 
 #ifdef _WIN32
@@ -15695,6 +15756,7 @@ CUresult CUDAAPI cuStreamGetCaptureInfo(CUstream hStream,
                                         CUstreamCaptureStatus *captureStatus,
                                         cuuint64_t *id);
 CUresult CUDAAPI cuGraphLaunch(CUgraphExec hGraph, CUstream hStream);
+CUresult CUDAAPI cuTensorMapEncodeTiled(CUtensorMap *tensorMap, CUtensorMapDataType tensorDataType, cuuint32_t tensorRank, void *globalAddress, const cuuint64_t *globalDim, const cuuint64_t *globalStrides, const cuuint32_t *boxDim, const cuuint32_t *elementStrides, CUtensorMapInterleave interleave, CUtensorMapSwizzle swizzle, CUtensorMapL2promotion l2Promotion, CUtensorMapFloatOOBfill oobFill);
 #endif
 
 #ifdef __cplusplus

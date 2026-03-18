@@ -13,7 +13,7 @@ NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -arch=sm_120a
 
 # CUDA settings
 CUDA_INSTALL_PATH ?= /usr/local/cuda
-CUDA_LIBS = -L$(CUDA_INSTALL_PATH)/lib64 -lcudart
+CUDA_LIBS = -L$(CUDA_INSTALL_PATH)/lib64 -lcudart -lcuda
 
 # Directories
 GTEST_CLONE_DIR = gtest
@@ -45,15 +45,18 @@ INCLUDES = -I$(GTEST_DIR)/include \
 # Test source files (recursive discovery for integration tests)
 UNIT_TEST_SOURCES = $(wildcard $(TEST_SRC_DIR)/unit/*_test.cc)
 INTEGRATION_TEST_SOURCES = $(shell find $(TEST_SRC_DIR)/integration -name '*_test.cc' 2>/dev/null)
-TEST_SOURCES = $(UNIT_TEST_SOURCES) $(INTEGRATION_TEST_SOURCES)
+MICROBENCH_SOURCES = $(wildcard $(TEST_SRC_DIR)/microbench/*_bench.cc)
+TEST_SOURCES = $(UNIT_TEST_SOURCES) $(INTEGRATION_TEST_SOURCES) $(MICROBENCH_SOURCES)
 TEST_OBJECTS = $(UNIT_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o) \
-               $(INTEGRATION_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
+               $(INTEGRATION_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o) \
+               $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
 TEST_TARGETS = $(TEST_SOURCES:$(TEST_SRC_DIR)/%_test.cc=$(BIN_DIR)/%)
 
 # Create subdirectories for organized object files
 UNIT_OBJ_DIR = $(OBJ_DIR)/unit
 INTEGRATION_OBJ_DIR = $(OBJ_DIR)/integration
 INTEGRATION_MMA_OBJ_DIR = $(OBJ_DIR)/integration/mma
+MICROBENCH_OBJ_DIR = $(OBJ_DIR)/microbench
 
 # Main test runner
 MAIN_TEST_TARGET = $(BIN_DIR)/run_all_tests
@@ -104,7 +107,7 @@ setup-gtest:
 	fi
 
 # Create build directories
-$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(UNIT_OBJ_DIR) $(INTEGRATION_OBJ_DIR) $(INTEGRATION_MMA_OBJ_DIR) $(FLASH_OBJ_DIR):
+$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(UNIT_OBJ_DIR) $(INTEGRATION_OBJ_DIR) $(INTEGRATION_MMA_OBJ_DIR) $(MICROBENCH_OBJ_DIR) $(FLASH_OBJ_DIR):
 	mkdir -p $@
 
 # Build Google Test library
@@ -133,6 +136,10 @@ $(OBJ_DIR)/unit/%.cu.o: $(TEST_SRC_DIR)/unit/%.cc $(CUH_HEADERS) | $(UNIT_OBJ_DI
 # Integration tests with recursive subdirectory support
 $(OBJ_DIR)/integration/%.cu.o: $(TEST_SRC_DIR)/integration/%.cc $(CUH_HEADERS)
 	@mkdir -p $(dir $@)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
+# Microbench tests
+$(OBJ_DIR)/microbench/%.cu.o: $(TEST_SRC_DIR)/microbench/%.cc $(CUH_HEADERS) | $(MICROBENCH_OBJ_DIR)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
 # Build individual test executables

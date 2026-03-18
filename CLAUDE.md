@@ -290,6 +290,99 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 - **Flash module overview**: `src/gpgpu-sim/flash/README.md`
 - **Original GPGPU-Sim**: `README.md`
 
+## Triton Kernel Trace Testing
+
+This workflow tests GPGPU-Sim against real Triton-generated kernels by comparing simulation results with actual GPU execution.
+
+### Directory Structure
+
+```
+test/triton_trace/
+├── <test_name>.py                # Triton kernel test script (e.g., example_tma_gemm.py)
+├── track_triton_kernels.py       # Kernel tracker utility
+└── triton_kernel_tracking/
+    └── <test_name>/
+        ├── launchers/            # C++ harness, PTX, Makefile
+        │   ├── <kernel>_launch1_harness.cu
+        │   ├── <kernel>_launch1_kernel.ptx
+        │   ├── <kernel>_launch1_Makefile
+        │   ├── gpgpusim.config   # Must copy from configs/
+        │   └── config_ampere_islip.icnt
+        ├── data/                 # Serialized tensors (inputs + expected outputs)
+        └── binaries/             # CUBIN/PTX binaries
+```
+
+### Step 1: Generate Tracking Files
+
+```bash
+# Activate Triton virtual environment (user-specific path)
+source <your_triton_venv>/bin/activate
+
+# Run the test script to generate tracking files
+python3 test/triton_trace/<test_name>.py
+```
+
+**Note**: Triton environment setup is user-specific. Ensure your environment has Triton installed with GPU support.
+
+This creates the `triton_kernel_tracking/<test_name>/` directory with harness, PTX, and test data.
+
+### Step 2: Build the Standalone Launcher
+
+```bash
+# Find the generated Makefile and build
+make -C test/triton_trace/triton_kernel_tracking/<test_name>/launchers -f <kernel>_launch1_Makefile
+```
+
+### Step 3: Copy GPU Config (Required After Regenerating Launchers)
+
+```bash
+cp configs/SM120_RTX5090/gpgpusim.config \
+   test/triton_trace/triton_kernel_tracking/<test_name>/launchers/
+
+cp configs/SM120_RTX5090/config_ampere_islip.icnt \
+   test/triton_trace/triton_kernel_tracking/<test_name>/launchers/
+```
+
+**Important**: Must redo this step whenever you regenerate the tracking files (Step 1).
+
+### Step 4: Test on Real GPU (Baseline Validation)
+
+```bash
+# In a CLEAN shell (no setup_environment sourced)
+test/triton_trace/triton_kernel_tracking/<test_name>/launchers/<kernel>_launch1
+```
+
+Expected output: `Validation PASSED`
+
+### Step 5: Test on GPGPU-Sim
+
+```bash
+source setup_environment && \
+(cd test/triton_trace/triton_kernel_tracking/<test_name>/launchers && ./<kernel>_launch1)
+```
+
+**Note**: The executable must run from the `launchers/` directory because GPGPU-Sim looks for `gpgpusim.config` in the current working directory.
+
+### Development Cycle (Modify GPGPU-Sim and Re-test)
+
+```bash
+# 1. Modify GPGPU-Sim source code
+# 2. Rebuild the simulator
+make FLASH=1 -j$(nproc)
+
+# 3. Re-run the test (no need to rebuild the launcher)
+source setup_environment && \
+(cd test/triton_trace/triton_kernel_tracking/<test_name>/launchers && ./<kernel>_launch1)
+```
+
+### Key Files for Debugging
+
+| File | Purpose |
+|------|---------|
+| `<kernel>_launch1_kernel.ptx` | PTX code being simulated - examine for instruction patterns |
+| `<kernel>_launch1_harness.cu` | C++ harness - modify to add debug output or dump intermediate results |
+| `data/*.bin` | Input tensors and expected outputs |
+
 ## Quick Reference
 
 ```bash
@@ -297,12 +390,12 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 source setup.sh && source setup_environment
 
 # Build simulator
-make FLASH=1 -j
+make FLASH=1 -j$(nproc)
 
 # Build and run specific tests
 ./test/run_tests.sh build
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED run "MMAS8*"
 
 # Clean rebuild
-make clean && make FLASH=1 -j
+make clean && make FLASH=1 -j$(nproc)
 ```
