@@ -600,11 +600,17 @@ class TritonKernelTracker:
         """Generate reusable helper functions for data loading and validation"""
         return """
 // Helper function to load tensor from binary file
-void* load_tensor_arg(const char* exe_path, const char* rel_path, size_t size, int arg_idx, 
+void* load_tensor_arg(const char* exe_path, const char* rel_path, size_t size, int arg_idx,
                       const char* dtype, const char* shape) {
+    // Handle zero-size tensors (e.g., dummy bias when HAS_BIAS=False)
+    if (size == 0) {
+        printf("  Loaded arg[%d]: tensor shape=%s, dtype=%s, size=0 bytes (zero-size, using NULL)\\n", arg_idx, shape, dtype);
+        return NULL;
+    }
+
     void* d_ptr;
     cudaMalloc(&d_ptr, size);
-    
+
     char data_path[2048];
     snprintf(data_path, sizeof(data_path), "%s/%s", exe_path, rel_path);
     FILE* fp = fopen(data_path, "rb");
@@ -612,13 +618,13 @@ void* load_tensor_arg(const char* exe_path, const char* rel_path, size_t size, i
         fprintf(stderr, "Error: Cannot open %s\\n", data_path);
         return NULL;
     }
-    
+
     void* h_ptr = malloc(size);
     fread(h_ptr, 1, size, fp);
     fclose(fp);
     cudaMemcpy(d_ptr, h_ptr, size, cudaMemcpyHostToDevice);
     free(h_ptr);
-    
+
     printf("  Loaded arg[%d]: tensor shape=%s, dtype=%s, size=%zu bytes\\n", arg_idx, shape, dtype, size);
     return d_ptr;
 }
@@ -1096,7 +1102,9 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
                     f'    d_arg{idx} = load_tensor_arg(exe_path, "{relative_data_path}", '
                     f'arg{idx}_size, {idx}, "{arg_info.dtype}", "{shape_str}");'
                 )
-                arg_loading_calls.append(f'    if (!d_arg{idx}) return 1;')
+                # Zero-size tensors legitimately return NULL — only fail for non-zero sizes
+                if arg_info.size_bytes > 0:
+                    arg_loading_calls.append(f'    if (!d_arg{idx}) return 1;')
                 
                 arg_pointers.append(f"&d_arg{idx}")
                 cleanup_code.append(f"    cudaFree(d_arg{idx});")
