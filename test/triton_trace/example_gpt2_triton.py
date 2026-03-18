@@ -79,11 +79,24 @@ def embedding_kernel(
 
 
 def embedding_fwd(tokens, tok_emb, pos_emb):
-    T, C = tokens.shape[0], tok_emb.shape[1]
-    V    = tok_emb.shape[0]
-    out  = torch.empty(T, C, device=DEVICE, dtype=tok_emb.dtype)
-    embedding_kernel[(T,)](tokens, tok_emb, pos_emb, out,
-                           T, C, V, BLOCK_C=triton.next_power_of_2(C))
+    T_tokens = tokens.shape[0]
+    C        = tok_emb.shape[1]
+    V        = tok_emb.shape[0]
+    max_T_pos = pos_emb.shape[0]
+
+    if T_tokens > max_T_pos:
+        raise ValueError(
+            f"Token sequence length {T_tokens} exceeds positional embedding length "
+            f"{max_T_pos}. Truncate the input sequence or use a model/configuration "
+            f"with a larger max positional embedding."
+        )
+
+    T   = T_tokens
+    out = torch.empty(T, C, device=DEVICE, dtype=tok_emb.dtype)
+    embedding_kernel[(T,)](
+        tokens, tok_emb, pos_emb, out,
+        T, C, V, BLOCK_C=triton.next_power_of_2(C)
+    )
     return out
 
 
