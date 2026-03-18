@@ -14,6 +14,7 @@
  * - Each ILP chain uses independent accumulator arrays, no dependencies between
  * chains
  * - Dependencies exist within a chain (D is both output and accumulator input)
+ * - All MMA variants are tested via TYPED_TEST_SUITE (one build, all variants)
  */
 
 #include <cuda_runtime.h>
@@ -34,6 +35,7 @@
 // Strategy 1: FP16 Accumulate to FP32 (M16N8K16) - Default
 // Registers: A=4, B=2, C=4
 struct MmaOp_F16_M16N8K16 {
+  static const char* name() { return "F16_M16N8K16"; }
   static __device__ __forceinline__ void exec(float C[4], const unsigned A[],
                                               const unsigned B[]) {
     asm volatile(
@@ -47,6 +49,7 @@ struct MmaOp_F16_M16N8K16 {
 // Strategy 2: TF32 Accumulate to FP32 (M16N8K8)
 // Registers: A=4, B=2, C=4
 struct MmaOp_TF32_M16N8K8 {
+  static const char* name() { return "TF32_M16N8K8"; }
   static __device__ __forceinline__ void exec(float C[4], const unsigned A[],
                                               const unsigned B[]) {
 #if __CUDA_ARCH__ >= 800 || !defined(__CUDA_ARCH__)
@@ -64,6 +67,7 @@ struct MmaOp_TF32_M16N8K8 {
 // Note: C array in kernel is float, so we punish type safety slightly here
 // using reinterpretation for simplified benchmarking code structure.
 struct MmaOp_S8_M16N8K32 {
+  static const char* name() { return "S8_M16N8K32"; }
   static __device__ __forceinline__ void exec(float C_as_float[4],
                                               const unsigned A[],
                                               const unsigned B[]) {
@@ -81,6 +85,7 @@ struct MmaOp_S8_M16N8K32 {
 // Strategy 4: FP16 Accumulate to FP32 (M16N8K8)
 // Registers: A=2, B=1, C=4
 struct MmaOp_F16_M16N8K8 {
+  static const char* name() { return "F16_M16N8K8"; }
   static __device__ __forceinline__ void exec(float C[4], const unsigned A[],
                                               const unsigned B[]) {
     asm volatile(
@@ -94,6 +99,7 @@ struct MmaOp_F16_M16N8K8 {
 // Strategy 5: BF16 Accumulate to FP32 (M16N8K8)
 // Registers: A=2, B=1, C=4
 struct MmaOp_BF16_M16N8K8 {
+  static const char* name() { return "BF16_M16N8K8"; }
   static __device__ __forceinline__ void exec(float C[4], const unsigned A[],
                                               const unsigned B[]) {
 #if __CUDA_ARCH__ >= 800 || !defined(__CUDA_ARCH__)
@@ -109,6 +115,7 @@ struct MmaOp_BF16_M16N8K8 {
 // Strategy 6: TF32 Accumulate to FP32 (M16N8K4)
 // Registers: A=2, B=1, C=4
 struct MmaOp_TF32_M16N8K4 {
+  static const char* name() { return "TF32_M16N8K4"; }
   static __device__ __forceinline__ void exec(float C[4], const unsigned A[],
                                               const unsigned B[]) {
 #if __CUDA_ARCH__ >= 800 || !defined(__CUDA_ARCH__)
@@ -124,6 +131,7 @@ struct MmaOp_TF32_M16N8K4 {
 // Strategy 7: Int8 Accumulate to Int32 (M16N8K16)
 // Registers: A=2, B=1, C=4
 struct MmaOp_S8_M16N8K16 {
+  static const char* name() { return "S8_M16N8K16"; }
   static __device__ __forceinline__ void exec(float C_as_float[4],
                                               const unsigned A[],
                                               const unsigned B[]) {
@@ -138,26 +146,26 @@ struct MmaOp_S8_M16N8K16 {
   }
 };
 
-// SELECT ACTIVE MMA TYPE HERE
-// using CurrentMmaOp = MmaOp_F16_M16N8K16; // 32cyles
-// using CurrentMmaOp = MmaOp_F16_M16N8K8; // 16cycles
-// using CurrentMmaOp = MmaOp_BF16_M16N8K8; // 16cycles
-using CurrentMmaOp = MmaOp_TF32_M16N8K8;  // 32cycles
-// using CurrentMmaOp = MmaOp_TF32_M16N8K4; // 16cycles
-// using CurrentMmaOp = MmaOp_S8_M16N8K32; // 16cycles(?)
-// using CurrentMmaOp = MmaOp_S8_M16N8K16; // 8cycles(?)
+// ============================================================================
+// All MMA Variants Type List
+// ============================================================================
+
+using AllMmaOps = ::testing::Types<MmaOp_F16_M16N8K16, MmaOp_F16_M16N8K8,
+                                   MmaOp_BF16_M16N8K8, MmaOp_TF32_M16N8K8,
+                                   MmaOp_TF32_M16N8K4, MmaOp_S8_M16N8K32,
+                                   MmaOp_S8_M16N8K16>;
 
 // ============================================================================
 // Compiler-Driven Loop Unrolling for MMA Instructions
 // ============================================================================
 
-template <int ILP>
+template <typename MmaOp, int ILP>
 __device__ __forceinline__ void execute_parallel_mmas(const unsigned* A_frag,
                                                       const unsigned* B_frag,
                                                       float C_frag[][4]) {
 #pragma unroll
   for (int i = 0; i < ILP; i++) {
-    CurrentMmaOp::exec(C_frag[i], A_frag, B_frag);
+    MmaOp::exec(C_frag[i], A_frag, B_frag);
   }
 }
 
@@ -165,7 +173,7 @@ __device__ __forceinline__ void execute_parallel_mmas(const unsigned* A_frag,
 // MMA ILP Measurement Kernel Template
 // ============================================================================
 
-template <int ILP>
+template <typename MmaOp, int ILP>
 __global__ void mma_ilp_kernel(uint64_t* cycle_start, uint64_t* cycle_end,
                                float* D_out, int mma_count) {
   // Only first warp participates
@@ -196,7 +204,7 @@ __global__ void mma_ilp_kernel(uint64_t* cycle_start, uint64_t* cycle_end,
 
 #pragma unroll 1
   for (int iter = 0; iter < mma_count; iter++) {
-    execute_parallel_mmas<ILP>(A_frag, B_frag, C_frag);
+    execute_parallel_mmas<MmaOp, ILP>(A_frag, B_frag, C_frag);
   }
 
   __syncwarp();
@@ -227,14 +235,15 @@ __global__ void mma_ilp_kernel(uint64_t* cycle_start, uint64_t* cycle_end,
 // Kernel Dispatcher
 // ============================================================================
 
+template <typename MmaOp>
 inline bool launch_ilp_kernel(int ilp, uint64_t* cycle_start,
                               uint64_t* cycle_end, float* D_out,
                               int mma_count) {
   switch (ilp) {
-#define DISPATCH_ILP(value)                                    \
-  case value:                                                  \
-    mma_ilp_kernel<value>                                      \
-        <<<1, 32>>>(cycle_start, cycle_end, D_out, mma_count); \
+#define DISPATCH_ILP(value)                                          \
+  case value:                                                        \
+    mma_ilp_kernel<MmaOp, value>                                     \
+        <<<1, 32>>>(cycle_start, cycle_end, D_out, mma_count);       \
     return true;
     DISPATCH_ILP(1)
     DISPATCH_ILP(2)
@@ -253,7 +262,7 @@ inline bool launch_ilp_kernel(int ilp, uint64_t* cycle_start,
 // Multi-Warp MMA Kernel
 // ============================================================================
 
-template <int ILP>
+template <typename MmaOp, int ILP>
 __global__ void mma_multi_warp_kernel(uint64_t* cycle_start,
                                       uint64_t* cycle_end, float* D_out,
                                       int mma_count, int num_warps) {
@@ -285,7 +294,7 @@ __global__ void mma_multi_warp_kernel(uint64_t* cycle_start,
 
 #pragma unroll 1
   for (int iter = 0; iter < mma_count; iter++) {
-    execute_parallel_mmas<ILP>(A_frag, B_frag, C_frag);
+    execute_parallel_mmas<MmaOp, ILP>(A_frag, B_frag, C_frag);
   }
 
   __syncthreads();
@@ -314,6 +323,7 @@ __global__ void mma_multi_warp_kernel(uint64_t* cycle_start,
 }
 
 // Multi-warp kernel dispatcher
+template <typename MmaOp>
 inline bool launch_multi_warp_kernel(int ilp, int num_warps,
                                      uint64_t* cycle_start, uint64_t* cycle_end,
                                      float* D_out, int mma_count) {
@@ -321,7 +331,7 @@ inline bool launch_multi_warp_kernel(int ilp, int num_warps,
   switch (ilp) {
 #define DISPATCH_MW(value)                                                     \
   case value:                                                                  \
-    mma_multi_warp_kernel<value>                                               \
+    mma_multi_warp_kernel<MmaOp, value>                                        \
         <<<1, threads>>>(cycle_start, cycle_end, D_out, mma_count, num_warps); \
     return true;
     DISPATCH_MW(1)
@@ -338,9 +348,10 @@ inline bool launch_multi_warp_kernel(int ilp, int num_warps,
 }
 
 // ============================================================================
-// Test Fixture
+// Typed Test Fixture (parameterized on MmaOp)
 // ============================================================================
 
+template <typename MmaOp>
 class MMAIssueTest : public ::testing::Test {
  protected:
   uint64_t* d_cycle_start;
@@ -348,13 +359,12 @@ class MMAIssueTest : public ::testing::Test {
   float* d_out;
 
   void SetUp() override {
-    // Minimal setup
     cudaSetDevice(0);
 
     cudaMalloc(&d_cycle_start, sizeof(uint64_t));
     cudaMalloc(&d_cycle_end, sizeof(uint64_t));
-    // Allocate space for up to 4 warps
-    cudaMalloc(&d_out, 4 * 4 * sizeof(float));
+    // Allocate space for up to 32 warps
+    cudaMalloc(&d_out, 32 * 4 * sizeof(float));
   }
 
   void TearDown() override {
@@ -365,7 +375,8 @@ class MMAIssueTest : public ::testing::Test {
 
   // Run measurement for a specific ILP and mma_count
   uint64_t run_measurement(int ilp, int mma_count, uint64_t clock_overhead) {
-    launch_ilp_kernel(ilp, d_cycle_start, d_cycle_end, d_out, mma_count);
+    launch_ilp_kernel<MmaOp>(ilp, d_cycle_start, d_cycle_end, d_out,
+                             mma_count);
     cudaDeviceSynchronize();
 
     uint64_t start, end;
@@ -378,26 +389,32 @@ class MMAIssueTest : public ::testing::Test {
   }
 };
 
+TYPED_TEST_SUITE(MMAIssueTest, AllMmaOps);
+
 // ============================================================================
-// Quick Test - Basic validation
+// ILP Test - runs for every MMA variant automatically
 // ============================================================================
 
-TEST_F(MMAIssueTest, ILPMinimal) {
-  printf("\n=== MMA ILP Issue Gap Minimal Test ===\n\n");
+TYPED_TEST(MMAIssueTest, ILPMinimal) {
+  using MmaOp = TypeParam;
+  const char* op_name = MmaOp::name();
 
-  // Clock overhead measurement disabled for simplicity
+  printf("\n=== MMA ILP Issue Gap Minimal Test [%s] ===\n\n", op_name);
+
   uint64_t clock_overhead = 0;
-  printf("Clock64 overhead: %lu cycles (disabled)\n\n", clock_overhead);
 
-  // Test different ILP levels with fixed mma_count
-  const int mma_count = 16;  // iterations per kernel
+  const int mma_count = 16;
   const int warmup = 3;
   const int iterations = 10;
 
   std::vector<int> ilp_values = {1, 2, 4, 8};
 
-  // Open file for export
-  std::ofstream out("MMAIssueTest.ILPMinimal.txt");
+  // Export file named per variant
+  char filename[256];
+  snprintf(filename, sizeof(filename), "MMAIssueTest.ILPMinimal.%s.txt",
+           op_name);
+  std::ofstream out(filename);
+  out << "MMA Variant: " << op_name << "\n";
   out << "┌─────────┬────────────┬──────────────┬────────────────┬─────────────"
          "────┐\n";
   out << "│   ILP   │ Iterations │ Total MMAs   │  Total Cycles  │  Cycles/MMA "
@@ -418,14 +435,15 @@ TEST_F(MMAIssueTest, ILPMinimal) {
   for (int ilp : ilp_values) {
     // Warmup
     for (int i = 0; i < warmup; i++) {
-      launch_ilp_kernel(ilp, d_cycle_start, d_cycle_end, d_out, mma_count);
+      launch_ilp_kernel<MmaOp>(ilp, this->d_cycle_start, this->d_cycle_end,
+                               this->d_out, mma_count);
     }
     cudaDeviceSynchronize();
 
     // Measure
     std::vector<uint64_t> measurements;
     for (int i = 0; i < iterations; i++) {
-      uint64_t cycles = run_measurement(ilp, mma_count, clock_overhead);
+      uint64_t cycles = this->run_measurement(ilp, mma_count, clock_overhead);
       measurements.push_back(cycles);
     }
 
@@ -440,7 +458,6 @@ TEST_F(MMAIssueTest, ILPMinimal) {
         "│  %3d    │    %4d    │    %6d    │     %6lu     │     %7.2f     │\n",
         ilp, mma_count, total_mmas, median_cycles, cycles_per_mma);
 
-    // Write to file
     char buf[256];
     snprintf(
         buf, sizeof(buf),
@@ -455,30 +472,30 @@ TEST_F(MMAIssueTest, ILPMinimal) {
   out << "└─────────┴────────────┴──────────────┴────────────────┴─────────────"
          "────┘\n";
   out.close();
-  printf("\nResults exported to: MMAIssueTest.ILPMinimal.txt\n");
+  printf("\nResults exported to: %s\n", filename);
 }
 
 // ============================================================================
-// Minimal Multi-Warp Test for GPGPU-Sim
+// Multi-Warp Test - runs for every MMA variant automatically
 // ============================================================================
 
-TEST_F(MMAIssueTest, MultiWarpMinimal) {
-  printf("\n=== Minimal Multi-Warp MMA Test (for GPGPU-Sim) ===\n\n");
+TYPED_TEST(MMAIssueTest, MultiWarpMinimal) {
+  using MmaOp = TypeParam;
+  const char* op_name = MmaOp::name();
 
-  // Clock overhead measurement disabled for simplicity
+  printf("\n=== Multi-Warp MMA Test [%s] ===\n\n", op_name);
+
   uint64_t clock_overhead = 0;
-  printf("Clock overhead: %lu cycles (disabled)\n\n", clock_overhead);
 
-  // Minimal parameters for fast simulation
   const int ilp = 1;
-  const int mma_count =
-      1000;  // Increased from 16 to 1000 to minimize overhead impact
-  std::vector<int> warp_counts = {
-      1,  2, 4, 8,
-      16, 32};  // Removed 64, 128 as max threads per block is 1024 (32 warps)
+  const int mma_count = 1000;
+  std::vector<int> warp_counts = {1, 2, 4, 8, 16, 32};
 
-  // Open file for export
-  std::ofstream out("MMAIssueTest.MultiWarpMinimal.txt");
+  char filename[256];
+  snprintf(filename, sizeof(filename), "MMAIssueTest.MultiWarpMinimal.%s.txt",
+           op_name);
+  std::ofstream out(filename);
+  out << "MMA Variant: " << op_name << "\n";
   out << "┌─────────┬────────────┬────────────┬────────────┬───────────┐\n";
   out << "│  Warps  │ Total MMAs │   Cycles   │ Cycles/MMA │  Speedup  │\n";
   out << "├─────────┼────────────┼────────────┼────────────┼───────────┤\n";
@@ -490,13 +507,15 @@ TEST_F(MMAIssueTest, MultiWarpMinimal) {
   double baseline = 0;
 
   for (int num_warps : warp_counts) {
-    launch_multi_warp_kernel(ilp, num_warps, d_cycle_start, d_cycle_end, d_out,
-                             mma_count);
+    launch_multi_warp_kernel<MmaOp>(ilp, num_warps, this->d_cycle_start,
+                                    this->d_cycle_end, this->d_out, mma_count);
     cudaDeviceSynchronize();
 
     uint64_t start, end;
-    cudaMemcpy(&start, d_cycle_start, sizeof(uint64_t), cudaMemcpyDeviceToHost);
-    cudaMemcpy(&end, d_cycle_end, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&start, this->d_cycle_start, sizeof(uint64_t),
+               cudaMemcpyDeviceToHost);
+    cudaMemcpy(&end, this->d_cycle_end, sizeof(uint64_t),
+               cudaMemcpyDeviceToHost);
 
     uint64_t cycles = (end > start + clock_overhead)
                           ? (end - start - clock_overhead)
@@ -507,10 +526,9 @@ TEST_F(MMAIssueTest, MultiWarpMinimal) {
     if (num_warps == 1) baseline = cyc_per_mma;
     double speedup = (cyc_per_mma > 0) ? (baseline / cyc_per_mma) : 0.0;
 
-    printf("│   %3d   │   %6d   │  %8lu  │   %7.2f  │   %5.2fx  │\n", num_warps,
-           total_mmas, cycles, cyc_per_mma, speedup);
+    printf("│   %3d   │   %6d   │  %8lu  │   %7.2f  │   %5.2fx  │\n",
+           num_warps, total_mmas, cycles, cyc_per_mma, speedup);
 
-    // Write to file
     char buf[256];
     snprintf(buf, sizeof(buf),
              "│   %3d   │   %6d   │  %8lu  │   %7.2f  │   %5.2fx  │\n",
@@ -523,5 +541,147 @@ TEST_F(MMAIssueTest, MultiWarpMinimal) {
   out.close();
   printf(
       "\nExpected: 1->2 warps speedup ~= 2x (if 2 independent Tensor Cores)\n");
-  printf("Results exported to: MMAIssueTest.MultiWarpMinimal.txt\n");
+  printf("Results exported to: %s\n", filename);
+}
+
+// ============================================================================
+// Summary Table - all variants side-by-side (ILP=8, single test)
+// ============================================================================
+
+// Measure median cycles for a given MmaOp, ILP, and mma_count
+template <typename MmaOp>
+static uint64_t measure_median_cycles(int ilp, int mma_count, int iterations,
+                                      uint64_t* d_cycle_start,
+                                      uint64_t* d_cycle_end, float* d_out) {
+  std::vector<uint64_t> measurements;
+  for (int i = 0; i < iterations; i++) {
+    launch_ilp_kernel<MmaOp>(ilp, d_cycle_start, d_cycle_end, d_out, mma_count);
+    cudaDeviceSynchronize();
+
+    uint64_t start, end;
+    cudaMemcpy(&start, d_cycle_start, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&end, d_cycle_end, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+    measurements.push_back(end - start);
+  }
+  std::sort(measurements.begin(), measurements.end());
+  return measurements[iterations / 2];
+}
+
+// Use linear regression across multiple mma_counts to extract slope
+// (= cycles per iteration = ILP * cycles_per_mma), removing fixed overhead.
+//
+// Model: total_cycles = slope * mma_count + intercept
+//   slope = ILP * cycles_per_mma
+//   intercept = fixed overhead (clock read, syncwarp, last MMA completion)
+template <typename MmaOp>
+static double measure_variant_cycles_per_mma(uint64_t* d_cycle_start,
+                                             uint64_t* d_cycle_end,
+                                             float* d_out) {
+  const int ilp = 8;
+  const int warmup = 5;
+  const int iterations = 20;
+  // Multiple mma_counts for linear regression
+  const int counts[] = {64, 128, 256, 512, 1024};
+  const int num_points = sizeof(counts) / sizeof(counts[0]);
+
+  // Warmup with longest chain
+  for (int i = 0; i < warmup; i++) {
+    launch_ilp_kernel<MmaOp>(ilp, d_cycle_start, d_cycle_end, d_out,
+                             counts[num_points - 1]);
+  }
+  cudaDeviceSynchronize();
+
+  // Collect (mma_count, median_cycles) data points
+  double sum_x = 0, sum_y = 0, sum_xx = 0, sum_xy = 0;
+  for (int p = 0; p < num_points; p++) {
+    int mc = counts[p];
+    uint64_t median = measure_median_cycles<MmaOp>(ilp, mc, iterations,
+                                                   d_cycle_start, d_cycle_end,
+                                                   d_out);
+    double x = (double)mc;
+    double y = (double)median;
+    sum_x += x;
+    sum_y += y;
+    sum_xx += x * x;
+    sum_xy += x * y;
+  }
+
+  // Linear regression: slope = (n*sum_xy - sum_x*sum_y) / (n*sum_xx - sum_x^2)
+  double n = (double)num_points;
+  double slope = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x);
+
+  // slope = cycles per iteration = ILP * cycles_per_mma
+  return slope / ilp;
+}
+
+TEST(MMAIssueSummary, AllVariants) {
+  cudaSetDevice(0);
+
+  uint64_t* d_cycle_start;
+  uint64_t* d_cycle_end;
+  float* d_out;
+  cudaMalloc(&d_cycle_start, sizeof(uint64_t));
+  cudaMalloc(&d_cycle_end, sizeof(uint64_t));
+  cudaMalloc(&d_out, 32 * 4 * sizeof(float));
+
+  struct Result {
+    const char* name;
+    double cycles_per_mma;
+  };
+
+  Result results[] = {
+      {MmaOp_F16_M16N8K16::name(),
+       measure_variant_cycles_per_mma<MmaOp_F16_M16N8K16>(d_cycle_start,
+                                                           d_cycle_end, d_out)},
+      {MmaOp_F16_M16N8K8::name(),
+       measure_variant_cycles_per_mma<MmaOp_F16_M16N8K8>(d_cycle_start,
+                                                          d_cycle_end, d_out)},
+      {MmaOp_BF16_M16N8K8::name(),
+       measure_variant_cycles_per_mma<MmaOp_BF16_M16N8K8>(d_cycle_start,
+                                                           d_cycle_end, d_out)},
+      {MmaOp_TF32_M16N8K8::name(),
+       measure_variant_cycles_per_mma<MmaOp_TF32_M16N8K8>(d_cycle_start,
+                                                           d_cycle_end, d_out)},
+      {MmaOp_TF32_M16N8K4::name(),
+       measure_variant_cycles_per_mma<MmaOp_TF32_M16N8K4>(d_cycle_start,
+                                                           d_cycle_end, d_out)},
+      {MmaOp_S8_M16N8K32::name(),
+       measure_variant_cycles_per_mma<MmaOp_S8_M16N8K32>(d_cycle_start,
+                                                          d_cycle_end, d_out)},
+      {MmaOp_S8_M16N8K16::name(),
+       measure_variant_cycles_per_mma<MmaOp_S8_M16N8K16>(d_cycle_start,
+                                                          d_cycle_end, d_out)},
+  };
+
+  int num_variants = sizeof(results) / sizeof(results[0]);
+
+  printf("\n=== MMA Variant Summary (ILP=8, linear regression over mma_count=64..1024) ===\n\n");
+  printf("┌──────────────────┬─────────────┐\n");
+  printf("│  MMA Variant     │  Cycles/MMA │\n");
+  printf("├──────────────────┼─────────────┤\n");
+
+  std::ofstream out("MMAIssueTest.Summary.txt");
+  out << "MMA Variant Summary (ILP=8, linear regression over mma_count=64..1024)\n";
+  out << "┌──────────────────┬─────────────┐\n";
+  out << "│  MMA Variant     │  Cycles/MMA │\n";
+  out << "├──────────────────┼─────────────┤\n";
+
+  for (int i = 0; i < num_variants; i++) {
+    printf("│  %-15s │    %7.2f  │\n", results[i].name,
+           results[i].cycles_per_mma);
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "│  %-15s │    %7.2f  │\n", results[i].name,
+             results[i].cycles_per_mma);
+    out << buf;
+  }
+
+  printf("└──────────────────┴─────────────┘\n");
+  out << "└──────────────────┴─────────────┘\n";
+  out.close();
+  printf("\nResults exported to: MMAIssueTest.Summary.txt\n");
+
+  cudaFree(d_cycle_start);
+  cudaFree(d_cycle_end);
+  cudaFree(d_out);
 }
