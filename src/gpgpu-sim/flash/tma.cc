@@ -15,6 +15,9 @@ typedef void *yyscan_t;
 
 #include <vector>
 
+// Atomic because this UID counter is shared across all SM instances (which may
+// run on different OpenMP threads in Flash mode).  The per-SM tma_unit_impl_t
+// members are not shared and therefore do not require synchronization.
 std::atomic<unsigned int> tma_next_tx_uid = 0;
 
 namespace flash_gpgpu_sim {
@@ -684,6 +687,7 @@ static uint64_t global_to_tile_offset(uint64_t global_addr, uint64_t base_addr,
   uint32_t num_dims = tensormap.num_dims();
 
   // Calculate the byte offset in global memory space
+  assert(global_addr >= base_addr && "global_addr must be >= base_addr");
   uint64_t global_byte_offset = global_addr - base_addr;
 
   if (num_dims == 1) {
@@ -747,8 +751,8 @@ static uint64_t apply_tma_swizzle(uint64_t linear_offset,
     mask = 0x1;
     break; // 1 bit, cycle of 2
   case TMA_SWIZZLE_96B:
-    mask = 0x1;
-    break; // 1 bit, cycle of 2
+    printf("ERROR: TMA 96B swizzle mode is not yet implemented\n");
+    abort();
   default:
     printf("ERROR: Unknown TMA swizzle mode %u\n", swizzle_mode);
     abort();
@@ -1342,11 +1346,10 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
         TMA, "TMA tensor store Extracted coordinates: [%u, %u, %u, %u, %u]\n",
         coords[0], coords[1], coords[2], coords[3], coords[4]);
 
-    // NOTE: dst_space/src_space preserved as-is from original code
     inst_t::tma_static_info_t tma_static_info{
         .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
-        .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
-        .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
+        .dst_space = inst_t::tma_static_info_t::TMA_GLOBAL,
+        .src_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
     };
     pI->set_tma_static_info(tma_static_info);
 
