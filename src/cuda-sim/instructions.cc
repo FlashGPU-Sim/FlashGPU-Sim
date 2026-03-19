@@ -1074,6 +1074,21 @@ void add_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     case F16_TYPE:
       data.f16 = src1_data.f16 + src2_data.f16;
       break;  // assert(0); break;
+    case F32X2_TYPE: {
+      // packed dual-f32: lo=bits[31:0], hi=bits[63:32]
+      uint32_t s1lo = (uint32_t)(src1_data.u64 & 0xFFFFFFFFu);
+      uint32_t s1hi = (uint32_t)(src1_data.u64 >> 32);
+      uint32_t s2lo = (uint32_t)(src2_data.u64 & 0xFFFFFFFFu);
+      uint32_t s2hi = (uint32_t)(src2_data.u64 >> 32);
+      float f1lo, f1hi, f2lo, f2hi, rlo, rhi;
+      memcpy(&f1lo, &s1lo, 4); memcpy(&f1hi, &s1hi, 4);
+      memcpy(&f2lo, &s2lo, 4); memcpy(&f2hi, &s2hi, 4);
+      rlo = f1lo + f2lo; rhi = f1hi + f2hi;
+      uint32_t rlo_b, rhi_b;
+      memcpy(&rlo_b, &rlo, 4); memcpy(&rhi_b, &rhi, 4);
+      data.u64 = ((uint64_t)rhi_b << 32) | (uint64_t)rlo_b;
+      break;
+    }
     case F32_TYPE:
       data.f32 = src1_data.f32 + src2_data.f32;
       GPPRINTF_INST_EXEC(PTX_INST_EXEC, "%.3f = %.3f + %.3f\n", data.f32, src1_data.f32,

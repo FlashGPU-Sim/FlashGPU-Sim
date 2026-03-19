@@ -106,6 +106,7 @@ class ptx_recognizer;
 %token  BF16_TYPE
 %token  TF32_TYPE
 %token  F32_TYPE
+%token  F32X2_TYPE
 %token  F64_TYPE
 %token  FF64_TYPE
 %token  B8_TYPE
@@ -481,6 +482,7 @@ scalar_type: S8_TYPE { recognizer->add_scalar_type_spec( S8_TYPE ); }
 	| BF16_TYPE  { recognizer->add_scalar_type_spec( BF16_TYPE ); }
 	| TF32_TYPE  { recognizer->add_scalar_type_spec( TF32_TYPE ); }
 	| F32_TYPE   { recognizer->add_scalar_type_spec( F32_TYPE ); }
+	| F32X2_TYPE { recognizer->add_scalar_type_spec( F32X2_TYPE ); }
 	| F64_TYPE   { recognizer->add_scalar_type_spec( F64_TYPE ); }
 	| FF64_TYPE   { recognizer->add_scalar_type_spec( FF64_TYPE ); }
 	| B8_TYPE    { recognizer->add_scalar_type_spec( B8_TYPE );  }
@@ -762,8 +764,16 @@ vector_operand: LEFT_BRACE IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer-
 		| LEFT_BRACE IDENTIFIER RIGHT_BRACE { recognizer->add_1vector_operand($2); }
 	;
 
+tex_vector_operand: LEFT_BRACE IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_2vector_operand($2,$4); }
+		| LEFT_BRACE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_3vector_operand($2,$4,$6); }
+		| LEFT_BRACE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_4vector_operand($2,$4,$6,$8); }
+		| LEFT_BRACE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_5vector_operand($2,$4,$6,$8,$10); }
+		| LEFT_BRACE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_8vector_operand($2,$4,$6,$8,$10,$12,$14,$16); }
+		| LEFT_BRACE IDENTIFIER RIGHT_BRACE { recognizer->add_1vector_operand($2); }
+	;
+
 tex_operand: LEFT_SQUARE_BRACKET IDENTIFIER COMMA { recognizer->add_scalar_operand($2); }
-		vector_operand 
+		tex_vector_operand 
 	     RIGHT_SQUARE_BRACKET
 	;
 
