@@ -74,7 +74,7 @@ Or run specific test categories:
 
 ```bash
 test/run_tests.sh build
-test/run_tests.sh run --filter=TensorMMA*
+test/run_tests.sh test --filter=TensorMMA*
 ```
 
 ## Incremental Builds

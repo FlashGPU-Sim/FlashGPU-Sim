@@ -47,7 +47,7 @@ To run tests on real GPU hardware without simulator overhead:
 ```bash
 # In a CLEAN shell (no setup_environment sourced)
 ./test/run_tests.sh build    # Builds tests only
-./test/run_tests.sh run       # Runs on real GPU
+./test/run_tests.sh test      # Runs on real GPU
 ```
 
 **Prerequisites**: Clean environment (no `GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN` and no simulator paths in `LD_LIBRARY_PATH`). Start a new shell if you previously sourced `setup_environment`.
@@ -55,14 +55,14 @@ To run tests on real GPU hardware without simulator overhead:
 ### Run Tests
 ```bash
 # Run all tests (slow - use sparingly)
-./test/run_tests.sh run
+./test/run_tests.sh test
 
 # Run specific test pattern (RECOMMENDED)
-./test/run_tests.sh run "*MMA*"              # All MMA tests
-./test/run_tests.sh run "cuda_mma_s8_test"   # Specific test suite
+./test/run_tests.sh test "*MMA*"              # All MMA tests
+./test/run_tests.sh test "cuda_mma_s8_test"   # Specific test suite
 
 # Use reduced configuration for faster iteration
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*MMA*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED test "*MMA*"
 
 # List available tests
 ./test/run_tests.sh list
@@ -79,8 +79,8 @@ To run tests on real GPU hardware without simulator overhead:
 
 ### Running Single Tests During Development
 ```bash
-# Pattern: ./test/run_tests.sh -c <config> run "<pattern>"
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED run "MMAS8M16N8K16*"
+# Pattern: ./test/run_tests.sh -c <config> test "<pattern>"
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED test "MMAS8M16N8K16*"
 ```
 
 ## Code Architecture
@@ -394,7 +394,7 @@ make FLASH=1 -j$(nproc)
 
 # Build and run specific tests
 ./test/run_tests.sh build
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "MMAS8*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED test "MMAS8*"
 
 # Clean rebuild
 make clean && make FLASH=1 -j$(nproc)

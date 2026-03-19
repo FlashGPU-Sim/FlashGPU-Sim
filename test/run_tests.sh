@@ -44,12 +44,15 @@ run_command() {
 # Print usage
 usage() {
     echo "GPGPU-Sim Test Runner"
-    echo "Usage: $0 [OPTIONS] [COMMAND] [TEST_NAME]"
+    echo "Usage: $0 [OPTIONS] COMMAND [PATTERN]"
     echo ""
     echo "Commands:"
-    echo "  build              Build all tests"
-    echo "  run                Run all tests"
-    echo "  run <test>         Run specific test"
+    echo "  build              Build all (verif + bench)"
+    echo "  build verif        Build verification tests only"
+    echo "  build bench        Build microbenchmarks only"
+    echo "  test               Run all verification tests (unit + integration)"
+    echo "  test <pattern>     Run specific verification test"
+    echo "  bench <pattern>    Run microbenchmarks matching pattern"
     echo "  clean              Clean build artifacts"
     echo "  setup              Setup test environment"
     echo "  refresh            Refresh run directory and configuration"
@@ -65,43 +68,40 @@ usage() {
     echo "  -h, --help         Show this help"
     echo ""
     echo "Examples:"
-    echo "  $0 setup                              # Setup test environment"
-    echo "  $0 build                              # Build all tests"
-    echo "  $0 run                                # Run all tests (default config)"
-    echo "  $0 list-configs                       # List available GPU configs"
-    echo "  $0 -c SM120_RTX5090_REDUCED run       # Run with reduced config"
-    echo "  $0 --config SM120_RTX5090_REDUCED run # Run with reduced config (long form)"
-    echo "  $0 run CudaVectorAdd                  # Run specific test suite"
-    echo "  $0 -v run                             # Run all tests with verbose output"
+    echo "  $0 build                              # Build verification tests"
+    echo "  $0 test                               # Run all verification tests"
+    echo "  $0 test \"*MMAS8*\"                     # Run specific verification test"
+    echo "  $0 bench \"*MMAIssue*\"                  # Run microbenchmarks"
+    echo "  $0 -c SM120_RTX5090_REDUCED test      # Run with reduced config"
 }
 
 # Setup test environment
 setup_environment() {
     print_color $BLUE "Setting up GPGPU-Sim test environment..."
-    
+
     # Check prerequisites
     if ! command -v g++ &> /dev/null; then
         print_color $RED "Error: g++ compiler not found"
         exit 1
     fi
-    
+
     if ! command -v make &> /dev/null; then
         print_color $RED "Error: make not found"
         exit 1
     fi
-    
+
     if ! command -v git &> /dev/null; then
         print_color $RED "Error: git not found"
         exit 1
     fi
-    
+
     # Setup Google Test
     print_color $BLUE "Setting up Google Test..."
     run_command make setup-gtest
-    
+
     # Setup run directory and configuration
     setup_run_directory
-    
+
     print_color $GREEN "Environment setup complete!"
 }
 
@@ -182,19 +182,33 @@ build_gpgpusim() {
     cd "$SCRIPT_DIR"
 }
 
-# Build tests
-build_tests() {
-    # First ensure GPGPU-Sim is built
+# Build verification tests (unit + integration)
+build_verif_tests() {
     build_gpgpusim
 
-    print_color $BLUE "Building GPGPU-Sim tests..."
+    print_color $BLUE "Building verification tests..."
 
     if [ "$DEBUG_TESTS" -eq 1 ]; then
-        run_command make CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" all
+        run_command make CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" verif
     else
-        run_command make all
+        run_command make verif
     fi
-    
+
+    if [ $? -eq 0 ]; then
+        print_color $GREEN "Build successful!"
+    else
+        print_color $RED "Build failed!"
+        exit 1
+    fi
+}
+
+# Build microbenchmarks (separate binaries)
+build_bench_tests() {
+    build_gpgpusim
+
+    print_color $BLUE "Building microbenchmarks..."
+    run_command make bench
+
     if [ $? -eq 0 ]; then
         print_color $GREEN "Build successful!"
     else
@@ -256,122 +270,113 @@ list_configs() {
 
     echo ""
     print_color $BLUE "To use a config:"
-    echo "  $0 -c CONFIG_NAME run"
-    echo "  $0 --config CONFIG_NAME run"
+    echo "  $0 -c CONFIG_NAME test"
+    echo "  $0 --config CONFIG_NAME test"
 }
 
-# Run specific test
-run_individual_test() {
-    local test_name=$1
-    local test_executable="build/bin/run_all_tests"
-    local config_dir="run/${GPU_CONFIG}"
-    
-    if [ ! -f "$test_executable" ]; then
-        print_color $RED "Test executable not found: $test_executable"
-        print_color $YELLOW "Build tests first with: $0 build"
-        exit 1
+# Run a binary with a gtest filter in the config directory.
+# Usage: run_binary_with_filter <abs_binary_path> <config_dir> <filter>
+run_binary_with_filter() {
+    local abs_bin="$1"
+    local config_dir="$2"
+    local filter="$3"
+
+    cd "$config_dir"
+    local rc=0
+    if command -v timeout &> /dev/null; then
+        run_command timeout $TEST_TIMEOUT "$abs_bin" --gtest_filter="$filter" || rc=$?
+    else
+        run_command "$abs_bin" --gtest_filter="$filter" || rc=$?
     fi
-    
-    # Verify config directory exists (should be created by initialize_run_directory)
+    cd - > /dev/null
+    return $rc
+}
+
+# Run verification tests with optional pattern
+run_verif_tests() {
+    local test_name="${1:-}"
+    local config_dir="run/${GPU_CONFIG}"
+
     if [ ! -d "$config_dir" ]; then
         print_color $RED "Configuration directory not found: $config_dir"
-        print_color $YELLOW "This should not happen - run directory setup failed"
         exit 1
     fi
-    
-    print_color $BLUE "Running specific test: $test_name from $config_dir"
-    
-    # Set up test environment variables
+
+    build_verif_tests
+
+    local test_executable="build/bin/run_all_tests"
+    if [ ! -f "$test_executable" ]; then
+        print_color $RED "Test executable not found: $test_executable"
+        exit 1
+    fi
+
     export GTEST_COLOR=yes
     if [ "$TEST_VERBOSE" -eq 2 ]; then
         export GTEST_VERBOSITY=1
     fi
-    
-    # Get absolute path to test executable
+
     local abs_test_path="$(pwd)/$test_executable"
-    
-    # Change to config directory and run specific test
-    cd "$config_dir"
-    
-    # Run specific test using gtest filter
-    if command -v timeout &> /dev/null; then
-        run_command timeout $TEST_TIMEOUT "$abs_test_path" --gtest_filter="*${test_name}*"
+    local exit_code=0
+
+    if [ -n "$test_name" ]; then
+        print_color $BLUE "Running verification test: $test_name (config: $GPU_CONFIG)"
+        run_binary_with_filter "$abs_test_path" "$config_dir" "*${test_name}*" || exit_code=$?
     else
-        run_command "$abs_test_path" --gtest_filter="*${test_name}*"
+        print_color $BLUE "Running all verification tests (config: $GPU_CONFIG)"
+        # Excluded tests (use unimplemented instructions that call abort())
+        # - CPAsyncMethod: uses cp.async instruction
+        # - PerformanceComparison: internally calls CP_ASYNC method
+        local EXCLUDED_TESTS="-*CPAsyncMethod*:*PerformanceComparison*"
+        run_binary_with_filter "$abs_test_path" "$config_dir" "$EXCLUDED_TESTS" || exit_code=$?
     fi
-    
-    local exit_code=$?
-    
-    # Return to original directory
-    cd - > /dev/null
-    
+
     if [ $exit_code -eq 0 ]; then
-        print_color $GREEN "✓ Test $test_name passed"
+        print_color $GREEN "✓ Tests passed!"
     else
-        print_color $RED "✗ Test $test_name failed (exit code: $exit_code)"
+        print_color $RED "✗ Tests failed (exit code: $exit_code)"
     fi
-    
+
     return $exit_code
 }
 
-# Run all tests
-run_all_tests() {
-    print_color $BLUE "Running all GPGPU-Sim tests with config: ${GPU_CONFIG}..."
-
-    local test_executable="build/bin/run_all_tests"
+# Run microbenchmarks with pattern
+run_bench_tests() {
+    local test_name="${1:-}"
     local config_dir="run/${GPU_CONFIG}"
-    
-    # Check if test executable exists
-    if [ ! -f "$test_executable" ]; then
-        print_color $RED "Test executable not found: $test_executable"
-        print_color $YELLOW "Build tests first with: $0 build"
-        exit 1
-    fi
-    
-    # Verify config directory exists (should be created by initialize_run_directory)
+
     if [ ! -d "$config_dir" ]; then
         print_color $RED "Configuration directory not found: $config_dir"
-        print_color $YELLOW "This should not happen - run directory setup failed"
         exit 1
     fi
-    
-    # Set up test environment variables
+
+    build_bench_tests
+
     export GTEST_COLOR=yes
     if [ "$TEST_VERBOSE" -eq 2 ]; then
         export GTEST_VERBOSITY=1
     fi
-    
-    print_color $BLUE "Running tests from configuration directory: $config_dir"
-    
-    # Get absolute path to test executable
-    local abs_test_path="$(pwd)/$test_executable"
-    
-    # Change to config directory and run tests
-    cd "$config_dir"
-    
-    # Excluded tests (use unimplemented instructions that call abort())
-    # - CPAsyncMethod: uses cp.async instruction
-    # - PerformanceComparison: internally calls CP_ASYNC method
-    local EXCLUDED_TESTS="-*CPAsyncMethod*:*PerformanceComparison*"
-    
-    # Run the test with timeout
-    if command -v timeout &> /dev/null; then
-        run_command timeout $TEST_TIMEOUT "$abs_test_path" --gtest_filter="$EXCLUDED_TESTS"
-    else
-        run_command "$abs_test_path" --gtest_filter="$EXCLUDED_TESTS"
+
+    local filter="*"
+    if [ -n "$test_name" ]; then
+        filter="*${test_name}*"
     fi
-    
-    local exit_code=$?
-    
-    # Return to original directory
-    cd - > /dev/null
-    
+
+    print_color $BLUE "Running microbenchmarks: ${test_name:-all} (config: $GPU_CONFIG)"
+
+    local exit_code=0
+    for bench_bin in "$(pwd)/build/bin/"*_bench; do
+        [ -f "$bench_bin" ] || continue
+        print_color $BLUE "Running $(basename "$bench_bin")..."
+        run_binary_with_filter "$bench_bin" "$config_dir" "$filter" || exit_code=$?
+    done
+
     if [ $exit_code -eq 0 ]; then
-        print_color $GREEN "✓ All tests passed!"
+        print_color $GREEN "✓ Benchmarks passed!"
     else
-        print_color $RED "✗ Some tests failed (exit code: $exit_code)"
-        exit $exit_code
+        print_color $RED "✗ Benchmarks failed (exit code: $exit_code)"
     fi
+
+    return $exit_code
 }
 
 # Clean build artifacts
@@ -385,7 +390,7 @@ clean_tests() {
 initialize_run_directory() {
     # Only setup if we're doing operations that need the config
     case "${1:-}" in
-        run|build)
+        test|bench|build)
             setup_run_directory
             ;;
     esac
@@ -426,22 +431,33 @@ while [[ $# -gt 0 ]]; do
             ;;
         build)
             initialize_run_directory "build"
-            build_tests
+            case "${2:-}" in
+                verif)
+                    build_verif_tests
+                    ;;
+                bench)
+                    build_bench_tests
+                    ;;
+                "")
+                    build_verif_tests
+                    build_bench_tests
+                    ;;
+                *)
+                    print_color $RED "Unknown build target: $2 (use 'verif' or 'bench')"
+                    exit 1
+                    ;;
+            esac
             exit 0
             ;;
-        run)
-            initialize_run_directory "run"
-            if [ -n "$2" ]; then
-                # Run specific test
-                build_tests
-                run_individual_test "$2"
-                exit $?
-            else
-                # Run all tests
-                build_tests
-                run_all_tests
-                exit $?
-            fi
+        test)
+            initialize_run_directory "test"
+            run_verif_tests "$2"
+            exit $?
+            ;;
+        bench)
+            initialize_run_directory "bench"
+            run_bench_tests "$2"
+            exit $?
             ;;
         clean)
             clean_tests

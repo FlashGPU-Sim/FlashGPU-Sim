@@ -58,9 +58,9 @@ local EXCLUDED_TESTS="-*CPAsyncMethod*:*PerformanceComparison*"
 
 **Command:**
 ```bash
-./test/run_tests.sh run
+./test/run_tests.sh test
 # or explicitly:
-./test/run_tests.sh -c SM120_RTX5090 run
+./test/run_tests.sh -c SM120_RTX5090 test
 ```
 
 ### SM120_RTX5090_REDUCED
@@ -83,7 +83,7 @@ local EXCLUDED_TESTS="-*CPAsyncMethod*:*PerformanceComparison*"
 
 **Command:**
 ```bash
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run
+./test/run_tests.sh -c SM120_RTX5090_REDUCED test
 ```
 
 ## Test Selection Guidelines
@@ -102,7 +102,7 @@ Use the reduced configuration for:
 
 **Example:**
 ```bash
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*MMA*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED test "*MMA*"
 ```
 
 **CI Usage:** The automated CI workflow (`.github/workflows/pr-tests.yml`) uses this configuration via `test/ci/run_ci_tests.sh` for resource-efficient testing on PR approval.
@@ -117,24 +117,24 @@ Use the full configuration for:
 
 **Example:**
 ```bash
-./test/run_tests.sh run CudaVectorAdd
+./test/run_tests.sh test CudaVectorAdd
 ```
 
 ## Usage Examples
 
 ### Run All MMA Tests (Fast)
 ```bash
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*MMA*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED test "*MMA*"
 ```
 
 ### Run Specific Test Suite
 ```bash
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run MMAS8M16N8K16
+./test/run_tests.sh -c SM120_RTX5090_REDUCED test MMAS8M16N8K16
 ```
 
 ### Run Full Validation
 ```bash
-./test/run_tests.sh run
+./test/run_tests.sh test
 ```
 
 ### List All Available Tests

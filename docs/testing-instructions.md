@@ -42,10 +42,10 @@ This prevents test failures from stale library builds. In native GPU mode, the s
 
 ```bash
 # Run all tests with default configuration (SM120_RTX5090)
-source setup.sh && source setup_environment && ./test/run_tests.sh run
+source setup.sh && source setup_environment && ./test/run_tests.sh test
 
 # Run tests with reduced configuration (faster, less memory)
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED run
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED test
 
 # List available GPU configurations
 source setup.sh && source setup_environment && ./test/run_tests.sh list-configs
@@ -66,10 +66,10 @@ The test framework supports multiple GPU configurations:
 **Selecting a configuration:**
 ```bash
 # Explicit config selection
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED run
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED test
 
 # Run specific test with config
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaVectorAdd
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED test CudaVectorAdd
 ```
 
 ## Listing Available Tests
@@ -85,7 +85,7 @@ This displays the actual test suite and test case names from the compiled test b
 
 **Note:** You can pass test name (with regex matches), which will be passed to the test binary as `--gtest_filter`. No need to pass in `--gtest_filter` in the command line of `run_tests.sh`.
 ```bash
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*MMA*"
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED test "*MMA*"
 ```
 
 ## Native GPU Mode (Test Validation)
@@ -95,7 +95,7 @@ Run tests on real GPU hardware to validate test correctness without simulator ov
 ```bash
 # In a CLEAN shell (no setup_environment sourced)
 ./test/run_tests.sh build    # Builds tests only (skips simulator build)
-./test/run_tests.sh run       # Runs on real GPU
+./test/run_tests.sh test      # Runs on real GPU
 ```
 
 **Prerequisites:**

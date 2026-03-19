@@ -36,6 +36,45 @@ jobs:
             gpgpu-sim-ci:latest \
             bash -c "./test/ci/run_ci_tests.sh"
 
+      - name: Test failure summary
+        if: always()
+        run: |
+          XML="test_results.xml"
+          if [ ! -f "$XML" ]; then
+            echo "## :x: Tests failed before producing results" >> $GITHUB_STEP_SUMMARY
+            echo "Check the full log for build or setup errors." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          # Extract counts from <testsuites> root element
+          TESTS=$(grep -oP 'tests="\K[0-9]+' "$XML" | head -1)
+          FAILURES=$(grep -oP 'failures="\K[0-9]+' "$XML" | head -1)
+          ERRORS=$(grep -oP 'errors="\K[0-9]+' "$XML" | head -1)
+
+          if [ "${FAILURES:-0}" = "0" ] && [ "${ERRORS:-0}" = "0" ]; then
+            echo "## :white_check_mark: All $TESTS tests passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## :x: $FAILURES failure(s), $ERRORS error(s) out of $TESTS tests" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            # Extract failed test names and messages from XML
+            python3 -c "
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('$XML')
+          for tc in tree.iter('testcase'):
+              for fail in tc.iter('failure'):
+                  name = tc.get('classname','') + '.' + tc.get('name','')
+                  # Show first 20 lines of failure message
+                  msg = (fail.get('message') or fail.text or 'no message')
+                  lines = msg.strip().splitlines()[:20]
+                  print(f'FAIL: {name}')
+                  for l in lines:
+                      print(f'  {l}')
+                  print()
+          " 2>/dev/null || echo "Failed to parse XML details"
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
       - name: Archive test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -44,4 +83,5 @@ jobs:
           path: |
             test/*.log
             test/**/*.log
+            test_results.xml
           retention-days: 7

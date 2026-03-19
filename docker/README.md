@@ -62,7 +62,7 @@ make FLASH=1 -j$(nproc)         # Flash mode build
 # Run tests (inside container)
 cd test
 ./run_tests.sh setup
-./run_tests.sh run
+./run_tests.sh test
 ```
 
 ## Environment Variables

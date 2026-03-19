@@ -140,7 +140,7 @@ n = 1;       # Dimensions
 ./test/run_tests.sh list-configs
 
 # Test with new configuration
-./test/run_tests.sh run -c MY_CUSTOM_CONFIG
+./test/run_tests.sh test -c MY_CUSTOM_CONFIG
 ```
 
 ## Configuration Guidelines
@@ -181,7 +181,7 @@ Format: `Core:Interconnect:L2:DRAM` (in MHz)
 After creating a new configuration:
 
 1. **Verify detection**: `./test/run_tests.sh list-configs`
-2. **Run basic test**: `./test/run_tests.sh run -c MY_CONFIG CudaVectorAdd`
+2. **Run basic test**: `./test/run_tests.sh test -c MY_CONFIG CudaVectorAdd`
 3. **Validate output**: Check simulation completes without errors
 4. **Document**: Add README.md in config directory describing purpose and specs
 

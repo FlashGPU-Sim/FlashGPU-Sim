@@ -46,11 +46,15 @@ INCLUDES = -I$(GTEST_DIR)/include \
 UNIT_TEST_SOURCES = $(wildcard $(TEST_SRC_DIR)/unit/*_test.cc)
 INTEGRATION_TEST_SOURCES = $(shell find $(TEST_SRC_DIR)/integration -name '*_test.cc' 2>/dev/null)
 MICROBENCH_SOURCES = $(wildcard $(TEST_SRC_DIR)/microbench/*_bench.cc)
-TEST_SOURCES = $(UNIT_TEST_SOURCES) $(INTEGRATION_TEST_SOURCES) $(MICROBENCH_SOURCES)
+# run_all_tests includes unit + integration only (no microbench)
+TEST_SOURCES = $(UNIT_TEST_SOURCES) $(INTEGRATION_TEST_SOURCES)
 TEST_OBJECTS = $(UNIT_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o) \
-               $(INTEGRATION_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o) \
-               $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
+               $(INTEGRATION_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
 TEST_TARGETS = $(TEST_SOURCES:$(TEST_SRC_DIR)/%_test.cc=$(BIN_DIR)/%)
+
+# Microbench built as separate binaries (run individually, not part of run_all_tests)
+MICROBENCH_OBJECTS = $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
+MICROBENCH_TARGETS = $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
 
 # Create subdirectories for organized object files
 UNIT_OBJ_DIR = $(OBJ_DIR)/unit
@@ -74,10 +78,16 @@ FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
 FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o
 FLASH_OBJ_DIR = $(OBJ_DIR)/flash
 
-.PHONY: all clean test help setup-gtest run-tests
+.PHONY: all verif bench clean test help setup-gtest run-tests
 
-# Default target
-all: setup-gtest $(MAIN_TEST_TARGET)
+# Build everything (verification tests + microbenchmarks)
+all: verif bench
+
+# Build verification tests only (unit + integration, used by run_tests.sh and CI)
+verif: setup-gtest $(MAIN_TEST_TARGET)
+
+# Build microbenchmarks only (separate binaries, run individually)
+bench: setup-gtest $(MICROBENCH_TARGETS)
 
 # Help target
 help:
@@ -148,6 +158,10 @@ $(BIN_DIR)/%_test: $(OBJ_DIR)/%_test.o $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
 
 # Build main test runner
 $(MAIN_TEST_TARGET): $(TEST_OBJECTS) $(FLASH_OBJECTS) $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(CUDA_LIBS)
+
+# Build individual microbench executables
+$(BIN_DIR)/%_bench: $(OBJ_DIR)/microbench/%_bench.cu.o $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(CUDA_LIBS)
 
 # Run tests

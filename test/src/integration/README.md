@@ -31,7 +31,7 @@ source setup_environment
 
 ```bash
 # From project root
-test/run_tests.sh run
+test/run_tests.sh test
 ```
 
 ### Run Specific Test Suites
@@ -40,19 +40,19 @@ The test runner accepts Google Test filter patterns:
 
 ```bash
 # Run only F16 MMA tests
-test/run_tests.sh run '*F16*'
+test/run_tests.sh test '*F16*'
 
 # Run only TF32 MMA tests
-test/run_tests.sh run '*TF32*'
+test/run_tests.sh test '*TF32*'
 
 # Run all MMA tests (F16, BF16, TF32, S8)
-test/run_tests.sh run '*MMA*'
+test/run_tests.sh test '*MMA*'
 
 # Run specific test case
-test/run_tests.sh run 'MMAF16M16N8K8IntegrationTest.AllOnesTest'
+test/run_tests.sh test 'MMAF16M16N8K8IntegrationTest.AllOnesTest'
 ```
 
-**Note**: Pass filter pattern directly to `run` command without `--gtest_filter` prefix. The script handles the proper formatting.
+**Note**: Pass filter pattern directly to `test` command without `--gtest_filter` prefix. The script handles the proper formatting.
 
 ## Test Organization
 

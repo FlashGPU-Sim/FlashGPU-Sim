@@ -13,14 +13,14 @@ Analyzes the pipeline throughput (issue gap) of Tensor Core instructions by vary
     *   **Description**: Runs single-warp MMA chains with varying ILP (1, 2, 4, 8) to determine the maximum instruction issue rate.
     *   **Run Command**:
         ```bash
-        ./run_tests.sh run "MMAIssueTest.ILPMinimal"
+        ./run_tests.sh bench "MMAIssueTest.ILPMinimal"
         ```
 
 *   **Test Name**: `MMAIssueTest.MultiWarpMinimal`
     *   **Description**: Runs multi-warp workloads to verify if throughput scales with the number of warps (checking for independent Tensor Core pipelines).
     *   **Run Command**:
         ```bash
-        ./run_tests.sh run "MMAIssueTest.MultiWarpMinimal"
+        ./run_tests.sh bench "MMAIssueTest.MultiWarpMinimal"
         ```
 
 ### 2. Instruction Latency Calibration (`inst_latency_bench.cc`)
@@ -30,7 +30,7 @@ Measures the pure execution latency (dependent chain) of various scalar and floa
     *   **Description**: Measures latency for Integer ADD, MUL, MAD, etc.
     *   **Run Command**:
         ```bash
-        ./run_tests.sh run "InstLatencyTest.*"
+        ./run_tests.sh bench "InstLatencyTest.*"
         ```
 
 ## Configuration Guide
