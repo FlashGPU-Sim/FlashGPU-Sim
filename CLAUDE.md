@@ -64,12 +64,18 @@ To run tests on real GPU hardware without simulator overhead:
 # Use reduced configuration for faster iteration
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED test "*MMA*"
 
+# Run microbenchmarks (separate binaries, not included in 'test')
+./test/run_tests.sh bench "*MMAIssue*"         # MMA issue gap benchmarks
+./test/run_tests.sh bench "*InstLatency*"      # Instruction latency benchmarks
+
 # List available tests
 ./test/run_tests.sh list
 
 # List GPU configurations
 ./test/run_tests.sh list-configs
 ```
+
+**`test` vs `bench`**: `test` runs verification tests (unit + integration) from `run_all_tests`. `bench` runs microbenchmarks from separate binaries (`build/bin/*_bench`). They are independent — `test` never runs microbenchmarks.
 
 **Test selection**: Use glob patterns passed directly as arguments (internally converted to `--gtest_filter`). Do NOT pass `--gtest_filter` manually.
 
@@ -393,8 +399,11 @@ source setup.sh && source setup_environment
 make FLASH=1 -j$(nproc)
 
 # Build and run specific tests
-./test/run_tests.sh build
+./test/run_tests.sh build              # Build all (verif + bench)
+./test/run_tests.sh build verif        # Build verification tests only
+./test/run_tests.sh build bench        # Build microbenchmarks only
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED test "MMAS8*"
+./test/run_tests.sh bench "*MMAIssue*" # Run microbenchmarks
 
 # Clean rebuild
 make clean && make FLASH=1 -j$(nproc)
