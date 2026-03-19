@@ -111,14 +111,14 @@ For detailed test-to-configuration mapping and test status, see:
 
 ```
 test/src/
-├── unit/              # Unit tests (templates + gpgpu-sim internal tests)
+├── unit/              # Unit tests (basic functionality, no simulator component interaction)
 │   ├── basic_test.cc           # gtest template
-│   └── bulk_group_test.cc      # Tests bulk_group_manager_t
+│   ├── bulk_group_test.cc      # Tests bulk_group_manager_t
+│   └── host_tensormap_test.cc  # Tests cuTensorMapEncodeTiled
 │
-├── integration/       # Integration tests (launch CUDA kernels through simulator)
+├── integration/       # Integration tests (test interaction between GPGPU-Sim components)
 │   ├── integration_test.cc     # Integration test template
 │   ├── cuda_vector_add_test.cc
-│   ├── host_tensormap_test.cc
 │   ├── mbarrier_test.cc
 │   ├── cuda_tma_test.cc
 │   ├── cuda_ld_st_matrix_test.cc
