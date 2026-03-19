@@ -110,14 +110,34 @@ For detailed test-to-configuration mapping and test status, see:
 ## Test Organization
 
 ```
-test/
-├── src/unit/           # Unit tests
-│   ├── basic_test.cc
-│   └── mbarrier_test.cc
-└── src/integration/    # Integration tests
-    ├── cuda_vector_add_test.cc
-    └── integration_test.cc
+test/src/
+├── unit/              # Unit tests (templates + gpgpu-sim internal tests)
+│   ├── basic_test.cc           # gtest template
+│   └── bulk_group_test.cc      # Tests bulk_group_manager_t
+│
+├── integration/       # Integration tests (launch CUDA kernels through simulator)
+│   ├── integration_test.cc     # Integration test template
+│   ├── cuda_vector_add_test.cc
+│   ├── host_tensormap_test.cc
+│   ├── mbarrier_test.cc
+│   ├── cuda_tma_test.cc
+│   ├── cuda_ld_st_matrix_test.cc
+│   └── mma/                    # MMA integration tests
+│
+├── standalone/        # Dev tests (decoupled from simulator)
+│   ├── tensor_mma_test.cc      # Type conversion / saturation tests
+│   ├── tma_swizzle_test.cc     # TMA swizzle pattern verification
+│   ├── mbarrier_test.cc        # Mbarrier placeholder tests
+│   └── cuda_tensor_mma_test.cc # CPU reference MMA validation
+│
+└── microbench/        # Performance microbenchmarks (separate binaries)
+    ├── mma_issue_bench.cc
+    └── inst_latency_bench.cc
 ```
+
+**`unit/`** and **`integration/`** are compiled into `run_all_tests` (via `make test`).
+**`standalone/`** dev tests are a separate binary `run_dev_tests` (via `make dev`).
+**`microbench/`** tests are separate binaries (via `make bench`).
 
 ## Writing Tests
 

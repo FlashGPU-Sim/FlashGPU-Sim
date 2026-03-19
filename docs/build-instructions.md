@@ -67,14 +67,8 @@ This is done automatically during the build process.
 After building, run tests:
 
 ```bash
-make test
-```
-
-Or run specific test categories:
-
-```bash
-test/run_tests.sh build
-test/run_tests.sh test --filter=TensorMMA*
+./test/run_tests.sh test                    # Run all verification tests
+./test/run_tests.sh test "*TensorMMA*"      # Run specific tests by pattern
 ```
 
 ## Incremental Builds

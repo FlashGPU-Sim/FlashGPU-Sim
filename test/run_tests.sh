@@ -47,12 +47,14 @@ usage() {
     echo "Usage: $0 [OPTIONS] COMMAND [PATTERN]"
     echo ""
     echo "Commands:"
-    echo "  build              Build all (verif + bench)"
-    echo "  build verif        Build verification tests only"
+    echo "  build              Build all (test + bench + dev)"
+    echo "  build test         Build verification tests only"
     echo "  build bench        Build microbenchmarks only"
+    echo "  build dev          Build standalone dev tests only"
     echo "  test               Run all verification tests (unit + integration)"
     echo "  test <pattern>     Run specific verification test"
     echo "  bench <pattern>    Run microbenchmarks matching pattern"
+    echo "  dev <pattern>      Run standalone dev tests matching pattern"
     echo "  clean              Clean build artifacts"
     echo "  setup              Setup test environment"
     echo "  refresh            Refresh run directory and configuration"
@@ -183,15 +185,15 @@ build_gpgpusim() {
 }
 
 # Build verification tests (unit + integration)
-build_verif_tests() {
+build_test_targets() {
     build_gpgpusim
 
     print_color $BLUE "Building verification tests..."
 
     if [ "$DEBUG_TESTS" -eq 1 ]; then
-        run_command make CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" verif
+        run_command make CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" test
     else
-        run_command make verif
+        run_command make test
     fi
 
     if [ $? -eq 0 ]; then
@@ -208,6 +210,21 @@ build_bench_tests() {
 
     print_color $BLUE "Building microbenchmarks..."
     run_command make bench
+
+    if [ $? -eq 0 ]; then
+        print_color $GREEN "Build successful!"
+    else
+        print_color $RED "Build failed!"
+        exit 1
+    fi
+}
+
+# Build standalone dev tests
+build_dev_tests() {
+    build_gpgpusim
+
+    print_color $BLUE "Building dev tests..."
+    run_command make dev
 
     if [ $? -eq 0 ]; then
         print_color $GREEN "Build successful!"
@@ -293,7 +310,7 @@ run_binary_with_filter() {
 }
 
 # Run verification tests with optional pattern
-run_verif_tests() {
+run_test_targets() {
     local test_name="${1:-}"
     local config_dir="run/${GPU_CONFIG}"
 
@@ -302,7 +319,7 @@ run_verif_tests() {
         exit 1
     fi
 
-    build_verif_tests
+    build_test_targets
 
     local test_executable="build/bin/run_all_tests"
     if [ ! -f "$test_executable" ]; then
@@ -379,6 +396,48 @@ run_bench_tests() {
     return $exit_code
 }
 
+# Run standalone dev tests with pattern
+run_dev_tests() {
+    local test_name="${1:-}"
+    local config_dir="run/${GPU_CONFIG}"
+
+    if [ ! -d "$config_dir" ]; then
+        print_color $RED "Configuration directory not found: $config_dir"
+        exit 1
+    fi
+
+    build_dev_tests
+
+    export GTEST_COLOR=yes
+    if [ "$TEST_VERBOSE" -eq 2 ]; then
+        export GTEST_VERBOSITY=1
+    fi
+
+    local filter="*"
+    if [ -n "$test_name" ]; then
+        filter="*${test_name}*"
+    fi
+
+    print_color $BLUE "Running dev tests: ${test_name:-all} (config: $GPU_CONFIG)"
+
+    local dev_bin="$(pwd)/build/bin/run_dev_tests"
+    if [ ! -f "$dev_bin" ]; then
+        print_color $RED "Dev test binary not found: $dev_bin"
+        exit 1
+    fi
+
+    local exit_code=0
+    run_binary_with_filter "$dev_bin" "$config_dir" "$filter" || exit_code=$?
+
+    if [ $exit_code -eq 0 ]; then
+        print_color $GREEN "✓ Dev tests passed!"
+    else
+        print_color $RED "✗ Dev tests failed (exit code: $exit_code)"
+    fi
+
+    return $exit_code
+}
+
 # Clean build artifacts
 clean_tests() {
     print_color $BLUE "Cleaning test build artifacts..."
@@ -390,7 +449,7 @@ clean_tests() {
 initialize_run_directory() {
     # Only setup if we're doing operations that need the config
     case "${1:-}" in
-        test|bench|build)
+        test|bench|dev|build)
             setup_run_directory
             ;;
     esac
@@ -432,18 +491,22 @@ while [[ $# -gt 0 ]]; do
         build)
             initialize_run_directory "build"
             case "${2:-}" in
-                verif)
-                    build_verif_tests
+                test)
+                    build_test_targets
                     ;;
                 bench)
                     build_bench_tests
                     ;;
+                dev)
+                    build_dev_tests
+                    ;;
                 "")
-                    build_verif_tests
+                    build_test_targets
                     build_bench_tests
+                    build_dev_tests
                     ;;
                 *)
-                    print_color $RED "Unknown build target: $2 (use 'verif' or 'bench')"
+                    print_color $RED "Unknown build target: $2 (use 'test', 'bench', or 'dev')"
                     exit 1
                     ;;
             esac
@@ -451,12 +514,17 @@ while [[ $# -gt 0 ]]; do
             ;;
         test)
             initialize_run_directory "test"
-            run_verif_tests "$2"
+            run_test_targets "$2"
             exit $?
             ;;
         bench)
             initialize_run_directory "bench"
             run_bench_tests "$2"
+            exit $?
+            ;;
+        dev)
+            initialize_run_directory "dev"
+            run_dev_tests "$2"
             exit $?
             ;;
         clean)

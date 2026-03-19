@@ -12,7 +12,7 @@ source setup.sh
 source setup_environment
 ```
 
-**Note:** These commands must be run before `make test` or any compilation commands in simulator mode.
+**Note:** These commands must be run before `./test/run_tests.sh test` or any compilation commands in simulator mode.
 
 ### Native GPU Mode
 

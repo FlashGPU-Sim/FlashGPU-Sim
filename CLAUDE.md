@@ -68,6 +68,10 @@ To run tests on real GPU hardware without simulator overhead:
 ./test/run_tests.sh bench "*MMAIssue*"         # MMA issue gap benchmarks
 ./test/run_tests.sh bench "*InstLatency*"      # Instruction latency benchmarks
 
+# Run standalone dev tests (decoupled from simulator)
+./test/run_tests.sh dev                        # All dev tests
+./test/run_tests.sh dev "*TensorMMA*"          # Specific dev test
+
 # List available tests
 ./test/run_tests.sh list
 
@@ -75,7 +79,10 @@ To run tests on real GPU hardware without simulator overhead:
 ./test/run_tests.sh list-configs
 ```
 
-**`test` vs `bench`**: `test` runs verification tests (unit + integration) from `run_all_tests`. `bench` runs microbenchmarks from separate binaries (`build/bin/*_bench`). They are independent — `test` never runs microbenchmarks.
+**`test` vs `bench` vs `dev`**:
+- `test` — verification tests (unit + integration) from `run_all_tests`
+- `bench` — microbenchmarks from separate binaries (`build/bin/*_bench`)
+- `dev` — standalone dev tests decoupled from simulator (`build/bin/run_dev_tests`)
 
 **Test selection**: Use glob patterns passed directly as arguments (internally converted to `--gtest_filter`). Do NOT pass `--gtest_filter` manually.
 
@@ -399,11 +406,13 @@ source setup.sh && source setup_environment
 make FLASH=1 -j$(nproc)
 
 # Build and run specific tests
-./test/run_tests.sh build              # Build all (verif + bench)
-./test/run_tests.sh build verif        # Build verification tests only
+./test/run_tests.sh build              # Build all (test + bench + dev)
+./test/run_tests.sh build test         # Build verification tests only
 ./test/run_tests.sh build bench        # Build microbenchmarks only
+./test/run_tests.sh build dev          # Build standalone dev tests only
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED test "MMAS8*"
 ./test/run_tests.sh bench "*MMAIssue*" # Run microbenchmarks
+./test/run_tests.sh dev                # Run standalone dev tests
 
 # Clean rebuild
 make clean && make FLASH=1 -j$(nproc)

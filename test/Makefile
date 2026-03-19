@@ -56,11 +56,17 @@ TEST_TARGETS = $(TEST_SOURCES:$(TEST_SRC_DIR)/%_test.cc=$(BIN_DIR)/%)
 MICROBENCH_OBJECTS = $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
 MICROBENCH_TARGETS = $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
 
+# Standalone dev tests (decoupled from simulator, separate binary)
+STANDALONE_SOURCES = $(wildcard $(TEST_SRC_DIR)/standalone/*_test.cc)
+STANDALONE_OBJECTS = $(STANDALONE_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
+DEV_TEST_TARGET = $(BIN_DIR)/run_dev_tests
+
 # Create subdirectories for organized object files
 UNIT_OBJ_DIR = $(OBJ_DIR)/unit
 INTEGRATION_OBJ_DIR = $(OBJ_DIR)/integration
 INTEGRATION_MMA_OBJ_DIR = $(OBJ_DIR)/integration/mma
 MICROBENCH_OBJ_DIR = $(OBJ_DIR)/microbench
+STANDALONE_OBJ_DIR = $(OBJ_DIR)/standalone
 
 # Main test runner
 MAIN_TEST_TARGET = $(BIN_DIR)/run_all_tests
@@ -78,16 +84,19 @@ FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
 FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o
 FLASH_OBJ_DIR = $(OBJ_DIR)/flash
 
-.PHONY: all verif bench clean test help setup-gtest run-tests
+.PHONY: all test bench dev clean help setup-gtest
 
-# Build everything (verification tests + microbenchmarks)
-all: verif bench
+# Build everything (test + bench + dev)
+all: test bench dev
 
-# Build verification tests only (unit + integration, used by run_tests.sh and CI)
-verif: setup-gtest $(MAIN_TEST_TARGET)
+# Build verification tests (unit + integration, used by run_tests.sh and CI)
+test: setup-gtest $(MAIN_TEST_TARGET)
 
 # Build microbenchmarks only (separate binaries, run individually)
 bench: setup-gtest $(MICROBENCH_TARGETS)
+
+# Build standalone dev tests (decoupled from simulator)
+dev: setup-gtest $(DEV_TEST_TARGET)
 
 # Help target
 help:
@@ -117,7 +126,7 @@ setup-gtest:
 	fi
 
 # Create build directories
-$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(UNIT_OBJ_DIR) $(INTEGRATION_OBJ_DIR) $(INTEGRATION_MMA_OBJ_DIR) $(MICROBENCH_OBJ_DIR) $(FLASH_OBJ_DIR):
+$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(UNIT_OBJ_DIR) $(INTEGRATION_OBJ_DIR) $(INTEGRATION_MMA_OBJ_DIR) $(MICROBENCH_OBJ_DIR) $(STANDALONE_OBJ_DIR) $(FLASH_OBJ_DIR):
 	mkdir -p $@
 
 # Build Google Test library
@@ -152,6 +161,10 @@ $(OBJ_DIR)/integration/%.cu.o: $(TEST_SRC_DIR)/integration/%.cc $(CUH_HEADERS)
 $(OBJ_DIR)/microbench/%.cu.o: $(TEST_SRC_DIR)/microbench/%.cc $(CUH_HEADERS) | $(MICROBENCH_OBJ_DIR)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
+# Standalone dev tests
+$(OBJ_DIR)/standalone/%.cu.o: $(TEST_SRC_DIR)/standalone/%.cc $(CUH_HEADERS) | $(STANDALONE_OBJ_DIR)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
 # Build individual test executables
 $(BIN_DIR)/%_test: $(OBJ_DIR)/%_test.o $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread
@@ -164,22 +177,9 @@ $(MAIN_TEST_TARGET): $(TEST_OBJECTS) $(FLASH_OBJECTS) $(OBJ_DIR)/gtest_main.a | 
 $(BIN_DIR)/%_bench: $(OBJ_DIR)/microbench/%_bench.cu.o $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(CUDA_LIBS)
 
-# Run tests
-test: all run-tests
-
-run-tests:
-	@echo "Running all tests..."
-	@if [ -f "$(MAIN_TEST_TARGET)" ]; then \
-		$(MAIN_TEST_TARGET); \
-	else \
-		echo "No tests found. Build tests first with 'make all'"; \
-		exit 1; \
-	fi
-
-# Run individual tests
-run-%: $(BIN_DIR)/%_test
-	@echo "Running $< ..."
-	@$<
+# Build dev test runner (standalone tests)
+$(DEV_TEST_TARGET): $(STANDALONE_OBJECTS) $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(CUDA_LIBS)
 
 # Clean
 clean:

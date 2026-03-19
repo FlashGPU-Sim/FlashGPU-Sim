@@ -72,7 +72,7 @@ fi
 
 # Build verification tests only (microbenchmarks not needed in CI)
 echo "Building tests..."
-./test/run_tests.sh build verif
+./test/run_tests.sh build test
 
 # Run tests with specified configuration
 # Skip CudaTMATest.PerformanceComparison as it takes too long for CI
