@@ -1,14 +1,11 @@
 name: PR Tests
 
-# Trigger on PR approval (review approval event)
 on:
-  pull_request_review:
-    types: [submitted]
+  pull_request:
+    branches: [flash]
 
 jobs:
   simulation-tests:
-    # Only run when PR is approved
-    if: github.event.review.state == 'approved'
 
     runs-on: ubuntu-latest
 
