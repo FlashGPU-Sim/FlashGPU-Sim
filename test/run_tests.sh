@@ -454,22 +454,22 @@ run_trace_tests() {
     local trace_bin_dir="$(pwd)/build/trace/bin"
     local exit_code=0
 
-    # Data-driven test names (must match configs in data_driven_trace_test.cu)
-    local data_driven_tests="gelu flash_attn layernorm residual_add linear"
+    # Data-driven test names (must match configs in gpt2_data_driven_test.cu)
+    local gpt2_data_driven_tests="gelu flash_attn layernorm residual_add linear"
 
-    # Run embedding test (CPU reference, separate binary)
+    # Run GPT-2 embedding test (CPU reference, separate binary)
     if [ -z "$test_name" ] || [[ "embedding" == *"$test_name"* ]]; then
-        print_color $BLUE "--- embedding_trace_test ---"
-        (cd "$trace_bin_dir" && ./embedding_trace_test) || { exit_code=1; print_color $RED "FAILED: embedding"; }
+        print_color $BLUE "--- gpt2_embedding_test ---"
+        (cd "$trace_bin_dir" && ./gpt2_embedding_test) || { exit_code=1; print_color $RED "FAILED: gpt2_embedding"; }
     fi
 
-    # Run data-driven tests (single binary, test name as argument)
-    for name in $data_driven_tests; do
+    # Run GPT-2 data-driven tests (single binary, test name as argument)
+    for name in $gpt2_data_driven_tests; do
         if [ -n "$test_name" ] && [[ "$name" != *"$test_name"* ]]; then
             continue
         fi
-        print_color $BLUE "--- data_driven_trace_test $name ---"
-        (cd "$trace_bin_dir" && ./data_driven_trace_test "$name") || { exit_code=1; print_color $RED "FAILED: $name"; }
+        print_color $BLUE "--- gpt2_data_driven_test $name ---"
+        (cd "$trace_bin_dir" && ./gpt2_data_driven_test "$name") || { exit_code=1; print_color $RED "FAILED: gpt2_$name"; }
     done
 
     if [ $exit_code -eq 0 ]; then

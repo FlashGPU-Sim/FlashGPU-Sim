@@ -8,7 +8,7 @@ CUDA_FLAGS = -lcudart -lcuda
 
 TRACE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 PTX_DIR = $(TRACE_DIR)ptx
-DATA_ARCHIVE = $(TRACE_DIR)data/gpt2_trace_data.tar.gz
+DATA_ARCHIVE = $(TRACE_DIR)gpt2_trace_data.tar.gz
 
 # GPU config (set via run_tests.sh -c or default)
 GPU_CONFIG ?= SM120_RTX5090_REDUCED
@@ -26,9 +26,9 @@ KERNELS = embedding_kernel gelu_kernel flash_attn_kernel layernorm_kernel \
 # Targets
 FATBINS = $(addprefix $(BIN_DIR)/, $(addsuffix .fatbin, $(KERNELS)))
 
-# Two test binaries: embedding (CPU reference) + data_driven (all others)
-EMBEDDING_TEST = $(BIN_DIR)/embedding_trace_test
-DATA_DRIVEN_TEST = $(BIN_DIR)/data_driven_trace_test
+# Two test binaries: gpt2_embedding (CPU reference) + gpt2_data_driven (all others)
+GPT2_EMBEDDING_TEST = $(BIN_DIR)/gpt2_embedding_test
+GPT2_DATA_DRIVEN_TEST = $(BIN_DIR)/gpt2_data_driven_test
 
 # Data-driven test names (passed as argv to data_driven_trace_test)
 DATA_DRIVEN_NAMES = gelu flash_attn layernorm residual_add linear
@@ -39,7 +39,7 @@ CONFIG_STAMP = $(BIN_DIR)/.config_$(GPU_CONFIG)
 
 .PHONY: all clean run
 
-all: $(FATBINS) $(EMBEDDING_TEST) $(DATA_DRIVEN_TEST) $(DATA_STAMP) $(CONFIG_STAMP)
+all: $(FATBINS) $(GPT2_EMBEDDING_TEST) $(GPT2_DATA_DRIVEN_TEST) $(DATA_STAMP) $(CONFIG_STAMP)
 
 # Create directories
 $(BIN_DIR) $(DATA_DIR):
@@ -49,12 +49,12 @@ $(BIN_DIR) $(DATA_DIR):
 $(BIN_DIR)/%.fatbin: $(PTX_DIR)/%.ptx | $(BIN_DIR)
 	$(NVCC) -fatbin -arch=$(ARCH) -o $@ $<
 
-# Compile embedding test (CPU reference)
-$(EMBEDDING_TEST): $(TRACE_DIR)embedding_trace_test.cu $(TRACE_DIR)trace_test_utils.h | $(BIN_DIR)
+# Compile GPT-2 embedding test (CPU reference)
+$(GPT2_EMBEDDING_TEST): $(TRACE_DIR)gpt2_embedding_test.cu $(TRACE_DIR)trace_test_utils.h | $(BIN_DIR)
 	$(NVCC) -arch=$(ARCH) -I$(TRACE_DIR) -o $@ $< $(CUDA_FLAGS)
 
-# Compile unified data-driven test
-$(DATA_DRIVEN_TEST): $(TRACE_DIR)data_driven_trace_test.cu $(TRACE_DIR)trace_test_utils.h | $(BIN_DIR)
+# Compile GPT-2 unified data-driven test
+$(GPT2_DATA_DRIVEN_TEST): $(TRACE_DIR)gpt2_data_driven_test.cu $(TRACE_DIR)trace_test_utils.h | $(BIN_DIR)
 	$(NVCC) -arch=$(ARCH) -I$(TRACE_DIR) -o $@ $< $(CUDA_FLAGS)
 
 # Copy GPU config to bin directory
@@ -72,12 +72,12 @@ $(DATA_STAMP): $(DATA_ARCHIVE) | $(DATA_DIR)
 run: all
 	@echo "=== Running GPT-2 Trace Tests ==="
 	@failed=0; \
-	echo "--- embedding_trace_test ---"; \
-	(cd $(BIN_DIR) && ./embedding_trace_test) || failed=$$((failed + 1)); \
+	echo "--- gpt2_embedding_test ---"; \
+	(cd $(BIN_DIR) && ./gpt2_embedding_test) || failed=$$((failed + 1)); \
 	echo ""; \
 	for name in $(DATA_DRIVEN_NAMES); do \
-		echo "--- data_driven_trace_test $$name ---"; \
-		(cd $(BIN_DIR) && ./data_driven_trace_test $$name) || failed=$$((failed + 1)); \
+		echo "--- gpt2_data_driven_test $$name ---"; \
+		(cd $(BIN_DIR) && ./gpt2_data_driven_test $$name) || failed=$$((failed + 1)); \
 		echo ""; \
 	done; \
 	if [ $$failed -eq 0 ]; then \
