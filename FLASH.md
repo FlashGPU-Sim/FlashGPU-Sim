@@ -47,8 +47,8 @@ After building, validate installation with the test framework:
 ```bash
 cd test
 ./run_tests.sh setup                    # One-time Google Test setup
-./run_tests.sh run BasicVectorAddition  # Run specific test
-./run_tests.sh run CudaTMATest          # Run TMA-specific tests
+./run_tests.sh test BasicVectorAddition  # Run specific test
+./run_tests.sh test CudaTMATest          # Run TMA-specific tests
 ./run_tests.sh list                     # Show available tests
 ./run_tests.sh help                     # Show all options
 ```

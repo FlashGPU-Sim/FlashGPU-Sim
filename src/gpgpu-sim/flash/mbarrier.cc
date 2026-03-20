@@ -389,10 +389,10 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     set_thread_mbarrier_info(addr, (unsigned)-1, false);
 
   } else {
-    // Placeholder implementation for mbarrier instruction
-    // TODO: Implement the mbarrier logic
+    // TODO: Implement remaining mbarrier variants as needed
     printf(
-        "GPGPU-Sim: mbarrier instruction encountered (not yet implemented)\n");
+        "GPGPU-Sim: mbarrier instruction not implemented: bar_op=%u, inst=%s\n",
+        bar_op, pIin->to_string().c_str());
     assert(false && "mbarrier not implemented");
   }
 }

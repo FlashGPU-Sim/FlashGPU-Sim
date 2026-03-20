@@ -208,6 +208,16 @@ def main():
     run_dir = get_run_dir()
     print(f"Detected Run Directory: {run_dir}")
 
+    # Build microbenchmarks
+    print("\n[Phase 0] Building microbenchmarks...")
+    run_command("make bench")
+
+    bench_binary = os.path.join(TEST_DIR, "build", "bin", "mma_issue_bench")
+    if not os.path.exists(bench_binary):
+        print(f"Error: microbench binary not found at {bench_binary}")
+        print("Run 'make bench' in the test/ directory first.")
+        sys.exit(1)
+
     # 1. Run Hardware Tests
     print("\n[Phase 1] Running Hardware Tests (Native)...")
     # Clean old results in Run Dir
@@ -220,8 +230,8 @@ def main():
     # We clear LD_LIBRARY_PATH just in case to avoid simulator libs
     hw_env = os.environ.copy()
     hw_env.pop("GPGPUSIM_ROOT", None)
-    
-    cmd_hw = "./run_tests.sh run \"MMAIssueTest.*\""
+
+    cmd_hw = f"cd {run_dir} && {bench_binary} --gtest_filter='MMAIssueTest.*'"
     run_command(cmd_hw, env=hw_env)
 
     # Rename results
@@ -239,7 +249,7 @@ def main():
     
     # Setup for Sim
     setup_script = os.path.join(PROJECT_ROOT, "setup_environment")
-    cmd_sim = f"source {setup_script} && ./run_tests.sh run \"MMAIssueTest.*\""
+    cmd_sim = f"source {setup_script} && cd {run_dir} && {bench_binary} --gtest_filter='MMAIssueTest.*'"
     
     # Clean old results again (just in case)
     for test in TEST_CASES:

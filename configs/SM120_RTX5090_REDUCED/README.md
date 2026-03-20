@@ -76,14 +76,14 @@ Interconnect network configuration defining:
 
 ```bash
 # Run tests with reduced configuration
-./test/run_tests.sh run -c SM120_RTX5090_REDUCED
+./test/run_tests.sh test -c SM120_RTX5090_REDUCED
 
 # Build and run specific test
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaVectorAdd
+./test/run_tests.sh -c SM120_RTX5090_REDUCED test CudaVectorAdd
 
 # Set as default via environment variable
 export GPU_CONFIG=SM120_RTX5090_REDUCED
-./test/run_tests.sh run
+./test/run_tests.sh test
 ```
 
 ## Creating Custom Reduced Configurations

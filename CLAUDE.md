@@ -47,7 +47,7 @@ To run tests on real GPU hardware without simulator overhead:
 ```bash
 # In a CLEAN shell (no setup_environment sourced)
 ./test/run_tests.sh build    # Builds tests only
-./test/run_tests.sh run       # Runs on real GPU
+./test/run_tests.sh test      # Runs on real GPU
 ```
 
 **Prerequisites**: Clean environment (no `GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN` and no simulator paths in `LD_LIBRARY_PATH`). Start a new shell if you previously sourced `setup_environment`.
@@ -55,14 +55,22 @@ To run tests on real GPU hardware without simulator overhead:
 ### Run Tests
 ```bash
 # Run all tests (slow - use sparingly)
-./test/run_tests.sh run
+./test/run_tests.sh test
 
 # Run specific test pattern (RECOMMENDED)
-./test/run_tests.sh run "*MMA*"              # All MMA tests
-./test/run_tests.sh run "cuda_mma_s8_test"   # Specific test suite
+./test/run_tests.sh test "*MMA*"              # All MMA tests
+./test/run_tests.sh test "cuda_mma_s8_test"   # Specific test suite
 
 # Use reduced configuration for faster iteration
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*MMA*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED test "*MMA*"
+
+# Run microbenchmarks (separate binaries, not included in 'test')
+./test/run_tests.sh bench "*MMAIssue*"         # MMA issue gap benchmarks
+./test/run_tests.sh bench "*InstLatency*"      # Instruction latency benchmarks
+
+# Run standalone dev tests (decoupled from simulator)
+./test/run_tests.sh dev                        # All dev tests
+./test/run_tests.sh dev "*TensorMMA*"          # Specific dev test
 
 # List available tests
 ./test/run_tests.sh list
@@ -70,6 +78,11 @@ To run tests on real GPU hardware without simulator overhead:
 # List GPU configurations
 ./test/run_tests.sh list-configs
 ```
+
+**`test` vs `bench` vs `dev`**:
+- `test` — verification tests (unit + integration) from `run_all_tests`
+- `bench` — microbenchmarks from separate binaries (`build/bin/*_bench`)
+- `dev` — standalone dev tests decoupled from simulator (`build/bin/run_dev_tests`)
 
 **Test selection**: Use glob patterns passed directly as arguments (internally converted to `--gtest_filter`). Do NOT pass `--gtest_filter` manually.
 
@@ -79,8 +92,8 @@ To run tests on real GPU hardware without simulator overhead:
 
 ### Running Single Tests During Development
 ```bash
-# Pattern: ./test/run_tests.sh -c <config> run "<pattern>"
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED run "MMAS8M16N8K16*"
+# Pattern: ./test/run_tests.sh -c <config> test "<pattern>"
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED test "MMAS8M16N8K16*"
 ```
 
 ## Code Architecture
@@ -393,8 +406,13 @@ source setup.sh && source setup_environment
 make FLASH=1 -j$(nproc)
 
 # Build and run specific tests
-./test/run_tests.sh build
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "MMAS8*"
+./test/run_tests.sh build              # Build all (test + bench + dev)
+./test/run_tests.sh build test         # Build verification tests only
+./test/run_tests.sh build bench        # Build microbenchmarks only
+./test/run_tests.sh build dev          # Build standalone dev tests only
+./test/run_tests.sh -c SM120_RTX5090_REDUCED test "MMAS8*"
+./test/run_tests.sh bench "*MMAIssue*" # Run microbenchmarks
+./test/run_tests.sh dev                # Run standalone dev tests
 
 # Clean rebuild
 make clean && make FLASH=1 -j$(nproc)

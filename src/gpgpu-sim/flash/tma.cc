@@ -15,22 +15,15 @@ typedef void *yyscan_t;
 
 #include <vector>
 
-//=============================================================================
-// TMA Swizzle Debug Configuration
-//=============================================================================
-// Set TMA_DEBUG_SWIZZLE to 1 to enable detailed 16B-level swizzle debug output
-// This will print:
-//   - For LOAD: gmem linear -> smem swizzled mapping with data values
-//   - For STORE: smem swizzled -> gmem linear reverse mapping with data values
-// Set to 0 to disable all swizzle debug output
-#define TMA_DEBUG_SWIZZLE 0
-
+// Atomic because this UID counter is shared across all SM instances (which may
+// run on different OpenMP threads in Flash mode).  The per-SM tma_unit_impl_t
+// members are not shared and therefore do not require synchronization.
 std::atomic<unsigned int> tma_next_tx_uid = 0;
 
 namespace flash_gpgpu_sim {
 
 //=============================================================================
-// Helper Functions
+// Shared Helper Functions
 //=============================================================================
 
 // Get a 32-bit unsigned value from an operand
@@ -114,582 +107,8 @@ static bool validate_tensormap(uint64_t tensormap_addr,
   return true;
 }
 
-// Convert global address offset to tile-local offset
-// Global tensor may have different row stride than tile (based on box
-// dimensions) This function converts (global_addr - base_global_addr) to
-// equivalent tile offset
-static uint64_t global_to_tile_offset(uint64_t global_addr, uint64_t base_addr,
-                                      const tensormap_descriptor_t &tensormap) {
-  uint32_t elem_size = tensormap.get_element_size();
-  uint32_t num_dims = tensormap.num_dims();
-
-  // Calculate the byte offset in global memory space
-  uint64_t global_byte_offset = global_addr - base_addr;
-
-  if (num_dims == 1) {
-    // 1D: tile offset equals global offset
-    return global_byte_offset;
-  }
-
-  // For 2D and higher, decompose global offset into coordinates
-  // and recompute using tile strides
-
-  // Get global strides (dim 0 uses elem_size, higher dims use globalStrides)
-  uint64_t global_strides[5];
-  global_strides[0] = elem_size;
-  for (uint32_t d = 1; d < num_dims; d++) {
-    global_strides[d] = tensormap.fields.globalStrides[d - 1];
-  }
-
-  // Get tile strides (based on box dimensions)
-  uint64_t tile_strides[5];
-  tile_strides[0] = elem_size;
-  for (uint32_t d = 1; d < num_dims; d++) {
-    tile_strides[d] = tile_strides[d - 1] * tensormap.fields.boxDim[d - 1];
-  }
-
-  // Decompose global_byte_offset into coordinates (highest to lowest dimension)
-  // Then recompute offset using tile strides
-  uint64_t tile_offset = 0;
-  uint64_t remaining = global_byte_offset;
-
-  for (int d = num_dims - 1; d >= 0; d--) {
-    uint64_t coord_in_tile = remaining / global_strides[d];
-    remaining = remaining % global_strides[d];
-    tile_offset += coord_in_tile * tile_strides[d];
-  }
-
-  return tile_offset;
-}
-
-// Apply TMA swizzle transformation to shared memory address
-//
-// Mask-based implementation matching Hopper/Blackwell hardware behavior.
-// Assumes 128B row stride for row extraction (addr >> 7).
-// Applies XOR permutation at 16B granularity (shift = 4).
-static uint64_t apply_tma_swizzle(uint64_t linear_offset,
-                                  uint32_t smem_base_addr,
-                                  uint32_t swizzle_mode, uint32_t row_bytes) {
-  if (swizzle_mode == TMA_SWIZZLE_NONE)
-    return linear_offset;
-
-  uint32_t mask = 0;
-  constexpr uint32_t shift = 4; // only support 16B granularity for now
-
-  switch (swizzle_mode) {
-  case TMA_SWIZZLE_128B:
-    mask = 0x7;
-    break; // 3 bits, cycle of 8
-  case TMA_SWIZZLE_64B:
-    mask = 0x3;
-    break; // 2 bits, cycle of 4
-  case TMA_SWIZZLE_32B:
-    mask = 0x1;
-    break; // 1 bit, cycle of 2
-  case TMA_SWIZZLE_96B:
-    mask = 0x1;
-    break; // 1 bit, cycle of 2
-  default:
-    printf("ERROR: Unknown TMA swizzle mode %u\n", swizzle_mode);
-    abort();
-  }
-
-  // Extract row information assuming 128B stride
-  // In Hopper/Blackwell hardware, row extraction is based on 128B alignment
-  uint32_t row_bits = (uint32_t)(linear_offset >> 7);
-
-  // Apply XOR permutation: addr XOR ((row_bits & mask) << shift)
-  return linear_offset ^ ((uint64_t)(row_bits & mask) << shift);
-}
-
-// Generate 128B-aligned memory fetch requests
-// Splits a contiguous memory range into cache-line-aligned requests
-static void
-gen_aligned_req(uint64_t start_addr, uint32_t total_bytes,
-                std::vector<std::pair<uint64_t, uint32_t>> &requests) {
-  if (total_bytes == 0)
-    return;
-
-  constexpr uint32_t CACHE_LINE_SIZE = 128;
-  uint64_t current_addr = start_addr;
-  uint32_t remaining_bytes = total_bytes;
-
-  while (remaining_bytes > 0) {
-    // Calculate bytes to next cache line boundary
-    uint64_t next_boundary =
-        (current_addr + CACHE_LINE_SIZE) & ~(CACHE_LINE_SIZE - 1);
-    uint32_t bytes_to_boundary =
-        static_cast<uint32_t>(next_boundary - current_addr);
-
-    // Determine request size: min(remaining, bytes_to_boundary,
-    // CACHE_LINE_SIZE)
-    uint32_t request_size =
-        std::min({remaining_bytes, bytes_to_boundary, CACHE_LINE_SIZE});
-
-    requests.push_back({current_addr, request_size});
-
-    current_addr += request_size;
-    remaining_bytes -= request_size;
-  }
-}
-
-// Recursive helper to traverse tensor dimensions and generate memory requests
-// dim: current dimension being processed (Rank-1 down to 0)
-// current_coords: accumulated coordinates from higher dimensions
-// base_addr: current physical address
-// tensormap: tensor descriptor
-// requests: output vector of (address, size) pairs
-static void
-traverse_tensor_dim(int dim, const uint32_t current_coords[5],
-                    uint64_t base_addr, const tensormap_descriptor_t &tensormap,
-                    std::vector<std::pair<uint64_t, uint32_t>> &requests) {
-  uint32_t elem_size = tensormap.get_element_size();
-
-  if (dim == 0) {
-    // Base case: innermost dimension (contiguous)
-    uint32_t start_x = current_coords[0];
-    uint32_t box_width = tensormap.fields.boxDim[0];
-    uint32_t global_width = tensormap.fields.globalDim[0];
-
-    // Calculate valid range intersection: [start_x, start_x + box_width) ∩ [0,
-    // global_width)
-    uint32_t valid_start = start_x;
-    uint32_t valid_end = start_x + box_width;
-
-    // Check if completely out of bounds
-    if (valid_start >= global_width || valid_end <= 0) {
-      return; // No valid data, skip
-    }
-
-    // Clamp to valid tensor boundaries
-    valid_start = std::max(valid_start, 0u);
-    valid_end = std::min(valid_end, global_width);
-
-    if (valid_start >= valid_end)
-      return;
-
-    // Calculate physical start address and total bytes
-    uint64_t phys_start_addr = base_addr + (valid_start * elem_size);
-    uint32_t valid_bytes = (valid_end - valid_start) * elem_size;
-
-    // Generate aligned memory fetch requests
-    gen_aligned_req(phys_start_addr, valid_bytes, requests);
-
-  } else {
-    // Recursive case: traverse higher dimensions
-    uint32_t box_extent = tensormap.fields.boxDim[dim];
-    uint32_t global_extent = tensormap.fields.globalDim[dim];
-    uint64_t stride = tensormap.fields.globalStrides[dim - 1];
-
-    for (uint32_t i = 0; i < box_extent; i++) {
-      uint32_t current_coord = current_coords[dim] + i;
-
-      // OOB check: skip if outside valid tensor range
-      if (current_coord >= global_extent) {
-        continue; // Skip this branch (zero-padding)
-      }
-
-      // Calculate address offset for this coordinate
-      uint64_t next_addr = base_addr + (current_coord * stride);
-
-      // Recurse to next lower dimension
-      traverse_tensor_dim(dim - 1, current_coords, next_addr, tensormap,
-                          requests);
-    }
-  }
-}
-
-// Main entry point: Generate TMA memory fetch requests
-// start_coords: starting coordinate for each dimension (e.g., {x, y, z, w, v})
-// Returns: vector of (physical_address, size_in_bytes) pairs
-std::vector<std::pair<uint64_t, uint32_t>>
-generate_tma_requests(const tensormap_descriptor_t &tensormap,
-                      const uint32_t start_coords[5]) {
-  std::vector<std::pair<uint64_t, uint32_t>> requests;
-
-  if (!tensormap.is_valid() || tensormap.fields.tensorRank > 4) {
-    return requests; // Empty result for invalid tensormap
-  }
-
-  // Start recursive traversal from highest dimension (0-based index)
-  int highest_dim = static_cast<int>(tensormap.num_dims()) -
-                    1; // highest dimension index (0-based)
-  uint64_t base_addr = tensormap.fields.globalAddress;
-
-  traverse_tensor_dim(highest_dim, start_coords, base_addr, tensormap,
-                      requests);
-
-  return requests;
-}
 //=============================================================================
-// Static OOB Fill Pattern Table (precomputed at startup)
-//=============================================================================
-
-class tma_oob_fill_table_t {
-public:
-  static constexpr uint32_t CHUNK_SIZE = 128; // Cache line size
-  static constexpr uint32_t NUM_DTYPES = 16;  // Max data type index + 1
-
-  // Fill patterns: [oob_mode][dtype] -> 128-byte pattern
-  // oob_mode: 0 = ZERO, 1 = NAN
-  alignas(16) unsigned char patterns[2][NUM_DTYPES][CHUNK_SIZE];
-  bool nan_supported[NUM_DTYPES]; // Whether NaN is valid for this dtype
-
-  tma_oob_fill_table_t() {
-    // Initialize all patterns
-    for (uint32_t dtype = 0; dtype < NUM_DTYPES; dtype++) {
-      // Zero pattern (always valid)
-      memset(patterns[TMA_OOB_ZERO][dtype], 0, CHUNK_SIZE);
-
-      // NaN pattern (depends on dtype)
-      nan_supported[dtype] = false;
-      switch (dtype) {
-      case TMA_DTYPE_F32: {
-        nan_supported[dtype] = true;
-        uint32_t nan_val = 0x7FFFFFFF;
-        for (uint32_t i = 0; i < CHUNK_SIZE / sizeof(uint32_t); i++) {
-          memcpy(patterns[TMA_OOB_NAN][dtype] + i * sizeof(uint32_t), &nan_val,
-                 sizeof(uint32_t));
-        }
-        break;
-      }
-      case TMA_DTYPE_F64: {
-        nan_supported[dtype] = true;
-        uint64_t nan_val = 0x7FFFFFFFFFFFFFFFULL;
-        for (uint32_t i = 0; i < CHUNK_SIZE / sizeof(uint64_t); i++) {
-          memcpy(patterns[TMA_OOB_NAN][dtype] + i * sizeof(uint64_t), &nan_val,
-                 sizeof(uint64_t));
-        }
-        break;
-      }
-      case TMA_DTYPE_F16:
-      case TMA_DTYPE_BF16: {
-        nan_supported[dtype] = true;
-        uint16_t nan_val = 0x7FFF;
-        for (uint32_t i = 0; i < CHUNK_SIZE / sizeof(uint16_t); i++) {
-          memcpy(patterns[TMA_OOB_NAN][dtype] + i * sizeof(uint16_t), &nan_val,
-                 sizeof(uint16_t));
-        }
-        break;
-      }
-      case TMA_DTYPE_U8: {
-        // Treat as FP8 (E4M3/E5M2) NaN: 0x7F
-        nan_supported[dtype] = true;
-        memset(patterns[TMA_OOB_NAN][dtype], 0x7F, CHUNK_SIZE);
-        break;
-      }
-      default:
-        // Integer types: NaN not supported, fall back to zero
-        nan_supported[dtype] = false;
-        memset(patterns[TMA_OOB_NAN][dtype], 0, CHUNK_SIZE);
-        break;
-      }
-    }
-  }
-
-  // Get fill pattern for given oob mode and data type
-  const unsigned char *get_pattern(uint32_t oob_mode, uint32_t dtype) const {
-    if (dtype >= NUM_DTYPES)
-      dtype = 0; // Safety bound
-    if (oob_mode == TMA_OOB_NAN && !nan_supported[dtype]) {
-      static bool warned[NUM_DTYPES] = {false};
-      if (!warned[dtype]) {
-        printf("TMA ERROR: OOB_NAN not supported for data type %u, using zero "
-               "fill\n",
-               dtype);
-        warned[dtype] = true;
-      }
-      return patterns[TMA_OOB_ZERO][dtype];
-    }
-    return patterns[oob_mode][dtype];
-  }
-};
-
-// Global static instance (initialized at startup)
-static tma_oob_fill_table_t g_oob_fill_table;
-
-// Execute TMA data transfer (load or store)
-// is_load=true: global -> shared, is_load=false: shared -> global
-static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
-                            const uint32_t coords[5], memory_space *shared_mem,
-                            memory_space *global_mem, uint32_t smem_addr,
-                            ptx_thread_info *thread, const ptx_instruction *pI,
-                            bool is_load) {
-  // For load operations, pre-fill the entire tile in shared memory with OOB
-  // fill value
-  if (is_load) {
-    uint32_t tile_size_bytes = tensormap.get_tile_size_bytes();
-    const unsigned char *fill_pattern = g_oob_fill_table.get_pattern(
-        tensormap.fields.oobFill, tensormap.fields.tensorDataType);
-
-    // Write fill pattern to shared memory in chunks
-    constexpr uint32_t CHUNK_SIZE = tma_oob_fill_table_t::CHUNK_SIZE;
-    uint32_t offset = 0;
-    while (offset < tile_size_bytes) {
-      uint32_t chunk_size = std::min(tile_size_bytes - offset, CHUNK_SIZE);
-      shared_mem->write(smem_addr + offset, chunk_size, fill_pattern, thread,
-                        pI);
-      offset += chunk_size;
-    }
-  }
-
-  // Generate memory requests based on tensormap and coordinates
-  auto memory_requests = generate_tma_requests(tensormap, coords);
-
-  // Calculate base address in global memory for this tile
-  uint64_t base_global_addr = tensormap.calculate_src_addr(coords);
-
-  // Get swizzle mode and row stride for swizzle calculation
-  uint32_t swizzle_mode = tensormap.fields.swizzle;
-  uint32_t elem_size = tensormap.get_element_size();
-  uint32_t row_bytes = tensormap.fields.boxDim[0] * elem_size;
-
-  // Swizzle granularity: 16 bytes (minimum addressable unit for swizzle)
-  constexpr uint32_t SWIZZLE_GRANULARITY = 16;
-
-  // Stack-allocated buffer for typical TMA request sizes (avoid malloc/free in
-  // hot path)
-  constexpr uint32_t LOCAL_BUF_SIZE = 128; // TMA requests are typically ≤128B
-  alignas(16) unsigned char local_data_buf[LOCAL_BUF_SIZE];
-
-  for (const auto &req : memory_requests) {
-    uint64_t global_req_addr = req.first;
-    uint32_t req_size = req.second;
-
-    // Calculate tile-local offset (accounting for stride difference)
-    uint64_t tile_offset =
-        global_to_tile_offset(global_req_addr, base_global_addr, tensormap);
-
-    // Use stack buffer for small requests, heap only for large (rare)
-    unsigned char *data_buffer = (req_size <= LOCAL_BUF_SIZE)
-                                     ? local_data_buf
-                                     : new unsigned char[req_size];
-
-    if (is_load) {
-      // Load: global -> shared
-      global_mem->read(global_req_addr, req_size, data_buffer);
-
-      auto flat_ctaid = thread->get_flat_ctaid();
-      auto flat_tid = thread->get_flat_tid();
-      auto warp_size = thread->get_core()->get_warp_size();
-      auto warpid = flat_tid / warp_size;
-      auto laneid = flat_tid % warp_size;
-      auto sm_id = thread->get_hw_sid();
-      GPPRINTF_INST_EXEC(
-          TMA,
-          "[TMA LOAD] [%3d,%3d,%3d] SM %3d coord[%3d,%3d,%3d,%3d,%3d] "
-          "swizzle_mode %u "
-          "gmem=0x%llx -> "
-          "smem=0x%x, space=%p, size=%u, tile_offset=0x%llx, "
-          "data[0..3]=0x%02x%02x%02x%02x fp32 %.3f\n",
-          flat_ctaid, warpid, laneid, sm_id, coords[0], coords[1], coords[2],
-          swizzle_mode, coords[3], coords[4],
-          (unsigned long long)global_req_addr, smem_addr, shared_mem, req_size,
-          (unsigned long long)tile_offset, req_size > 0 ? data_buffer[0] : 0,
-          req_size > 1 ? data_buffer[1] : 0, req_size > 2 ? data_buffer[2] : 0,
-          req_size > 3 ? data_buffer[3] : 0,
-          *reinterpret_cast<float *>(data_buffer));
-
-      // Apply swizzle at 16-byte granularity when writing to shared memory
-      // Each 16-byte sub-block may be written to a different swizzled location
-      if (swizzle_mode != TMA_SWIZZLE_NONE) {
-#if TMA_DEBUG_SWIZZLE
-        // Debug: Print detailed data layout for first 5 tiles
-        static bool printed_first_tile = false;
-        static int tiles_printed = 0;
-        bool print_data =
-            (!printed_first_tile && tile_offset < 640); // 5 rows * 128B
-
-        if (print_data && tiles_printed < 5) {
-          if (tiles_printed == 0) {
-            printf("\n=== TMA LOAD Debug: Detailed Swizzle Analysis ===\n");
-            printf("Global addr: 0x%lx, Smem addr: 0x%x\n",
-                   (unsigned long)global_req_addr, smem_addr);
-            printf("Swizzle mode: %u, Row bytes: %u\n\n", swizzle_mode,
-                   row_bytes);
-          }
-
-          uint32_t row = tile_offset / row_bytes;
-          printf("--- Tile at offset 0x%lx (Row %u, size %u bytes) ---\n",
-                 (unsigned long)tile_offset, row, req_size);
-
-          // Show data pattern for this row (first 16 FP16 values)
-          printf("Data pattern (first 16 FP16 values from global): ");
-          for (uint32_t i = 0; i < std::min(req_size, 32u) && i < 32; i += 2) {
-            uint16_t val = *(uint16_t *)(data_buffer + i);
-            printf("%04x ", val);
-          }
-          printf("\n");
-
-          tiles_printed++;
-          if (tiles_printed >= 5)
-            printed_first_tile = true;
-        }
-#endif
-
-        // Apply swizzle with detailed per-block debug
-        for (uint32_t sub_offset = 0; sub_offset < req_size;
-             sub_offset += SWIZZLE_GRANULARITY) {
-          uint32_t sub_size =
-              std::min(SWIZZLE_GRANULARITY, req_size - sub_offset);
-          uint64_t logical_offset = tile_offset + sub_offset;
-          uint64_t swizzled_offset = apply_tma_swizzle(
-              logical_offset, smem_addr, swizzle_mode, row_bytes);
-
-#if TMA_DEBUG_SWIZZLE
-          // Debug: Show detailed 16B block swizzle mapping
-          if (print_data && sub_offset < 128) {
-            uint32_t logical_row = logical_offset / row_bytes;
-            uint32_t logical_block = (logical_offset % row_bytes) / 16;
-            uint32_t swizzled_row = swizzled_offset / row_bytes;
-            uint32_t swizzled_block = (swizzled_offset % row_bytes) / 16;
-
-            // Extract first FP16 value from this 16B block
-            uint16_t val = *(uint16_t *)(data_buffer + sub_offset);
-
-            printf("  16B[%3u]: Logical(R%u,B%u) 0x%03lx -> Swizzled(R%u,B%u) "
-                   "0x%03lx, Data[0]=0x%04x\n",
-                   sub_offset / 16, logical_row, logical_block,
-                   (unsigned long)logical_offset, swizzled_row, swizzled_block,
-                   (unsigned long)swizzled_offset, val);
-          }
-#endif
-
-          shared_mem->write(smem_addr + swizzled_offset, sub_size,
-                            data_buffer + sub_offset, thread, pI);
-        }
-#if TMA_DEBUG_SWIZZLE
-        if (print_data) {
-          printf("\n");
-        }
-#endif
-      } else {
-        // No swizzle - write contiguously
-        shared_mem->write(smem_addr + tile_offset, req_size, data_buffer,
-                          thread, pI);
-      }
-
-    } else {
-      // Store: shared -> global
-      // **REVERSE SWIZZLE**: Read from swizzled smem, write to linear gmem
-
-#if TMA_DEBUG_SWIZZLE
-      // Debug: Print detailed data layout for first 5 tiles
-      static bool printed_first_store_tile = false;
-      static int store_tiles_printed = 0;
-      bool print_store_data =
-          (!printed_first_store_tile && tile_offset < 640); // 5 rows * 128B
-
-      if (print_store_data && store_tiles_printed < 5) {
-        if (store_tiles_printed == 0) {
-          printf(
-              "\n=== TMA STORE Debug: Detailed Reverse Swizzle Analysis ===\n");
-          // Print tensormap configuration
-          printf("Tensormap configuration:\n");
-          tensormap.print();
-          printf("\n");
-          printf("NOTE: REVERSE swizzle - reading FROM swizzled smem, writing "
-                 "TO linear gmem\n\n");
-        }
-
-        uint32_t row = tile_offset / row_bytes;
-        printf("--- Tile at offset 0x%lx (Row %u, size %u bytes) ---\n",
-               (unsigned long)tile_offset, row, req_size);
-
-        store_tiles_printed++;
-        if (store_tiles_printed >= 5)
-          printed_first_store_tile = true;
-      }
-#endif
-
-      // Apply reverse swizzle at 16-byte granularity when reading from shared
-      // memory
-      if (swizzle_mode != TMA_SWIZZLE_NONE) {
-        for (uint32_t sub_offset = 0; sub_offset < req_size;
-             sub_offset += SWIZZLE_GRANULARITY) {
-          uint32_t sub_size =
-              std::min(SWIZZLE_GRANULARITY, req_size - sub_offset);
-          uint64_t logical_offset =
-              tile_offset + sub_offset; // Linear position in gmem
-          uint64_t swizzled_offset =
-              apply_tma_swizzle(logical_offset, smem_addr, swizzle_mode,
-                                row_bytes); // Swizzled position in smem
-
-          // Read from swizzled smem address
-          shared_mem->read(smem_addr + swizzled_offset, sub_size,
-                           data_buffer + sub_offset);
-
-#if TMA_DEBUG_SWIZZLE
-          // Debug: Show detailed 16B block reverse swizzle mapping
-          if (print_store_data && sub_offset < 128) {
-            uint32_t logical_row = logical_offset / row_bytes;
-            uint32_t logical_block = (logical_offset % row_bytes) / 16;
-            uint32_t swizzled_row = swizzled_offset / row_bytes;
-            uint32_t swizzled_block = (swizzled_offset % row_bytes) / 16;
-
-            // Extract first value based on element size
-            uint32_t element_size = tensormap.get_element_size();
-            if (element_size == 4) {
-              // F32 or similar 4-byte type
-              uint32_t val = *(uint32_t *)(data_buffer + sub_offset);
-              printf("  16B[%3u]: Gmem(R%u,B%u) 0x%03lx <- Smem(R%u,B%u) "
-                     "0x%03lx, Data[0]=0x%08x\n",
-                     sub_offset / 16, logical_row, logical_block,
-                     (unsigned long)logical_offset, swizzled_row,
-                     swizzled_block, (unsigned long)swizzled_offset, val);
-            } else if (element_size == 2) {
-              // F16/BF16 or similar 2-byte type
-              uint16_t val = *(uint16_t *)(data_buffer + sub_offset);
-              printf("  16B[%3u]: Gmem(R%u,B%u) 0x%03lx <- Smem(R%u,B%u) "
-                     "0x%03lx, Data[0]=0x%04x\n",
-                     sub_offset / 16, logical_row, logical_block,
-                     (unsigned long)logical_offset, swizzled_row,
-                     swizzled_block, (unsigned long)swizzled_offset, val);
-            }
-          }
-#endif
-        }
-
-#if TMA_DEBUG_SWIZZLE
-        // Show data pattern being written (after gathering from swizzled smem)
-        if (print_store_data) {
-          uint32_t element_size = tensormap.get_element_size();
-          uint32_t num_elements = std::min(req_size / element_size, 16u);
-
-          if (element_size == 4) {
-            printf("Data pattern (first %u F32 values to write to gmem): ",
-                   num_elements);
-            for (uint32_t i = 0; i < num_elements && i * 4 < req_size; i++) {
-              uint32_t val = *(uint32_t *)(data_buffer + i * 4);
-              printf("%08x ", val);
-            }
-          } else if (element_size == 2) {
-            printf("Data pattern (first %u F16 values to write to gmem): ",
-                   num_elements);
-            for (uint32_t i = 0; i < num_elements && i * 2 < req_size; i++) {
-              uint16_t val = *(uint16_t *)(data_buffer + i * 2);
-              printf("%04x ", val);
-            }
-          }
-          printf("\n\n");
-        }
-#endif
-      } else {
-        // No swizzle - read contiguously
-        shared_mem->read(smem_addr + tile_offset, req_size, data_buffer);
-      }
-
-      // Write contiguous (linear) data to global memory
-      global_mem->write(global_req_addr, req_size, data_buffer, thread, pI);
-    }
-
-    if (req_size > LOCAL_BUF_SIZE)
-      delete[] data_buffer;
-  }
-}
-
-//=============================================================================
-// TMA AGU Unit (Address Generation Unit)
+// Performance Simulation: TMA AGU (Address Generation Unit)
 //=============================================================================
 
 struct tma_agu_state_t {
@@ -871,7 +290,7 @@ private:
 };
 
 //=============================================================================
-// TMA Unit (Performance Simulation)
+// Performance Simulation: TMA Unit
 //=============================================================================
 
 class tma_unit_impl_t {
@@ -1255,7 +674,712 @@ bool tma_unit_t::response_buffer_full() const {
 } // namespace flash_gpgpu_sim
 
 //=============================================================================
-// TMA Instruction Functional Simulation
+// Functional Simulation: Helper Functions
+//=============================================================================
+
+// Convert global address offset to tile-local offset
+// Global tensor may have different row stride than tile (based on box
+// dimensions) This function converts (global_addr - base_global_addr) to
+// equivalent tile offset
+static uint64_t global_to_tile_offset(uint64_t global_addr, uint64_t base_addr,
+                                      const tensormap_descriptor_t &tensormap) {
+  uint32_t elem_size = tensormap.get_element_size();
+  uint32_t num_dims = tensormap.num_dims();
+
+  // Calculate the byte offset in global memory space
+  assert(global_addr >= base_addr && "global_addr must be >= base_addr");
+  uint64_t global_byte_offset = global_addr - base_addr;
+
+  if (num_dims == 1) {
+    // 1D: tile offset equals global offset
+    return global_byte_offset;
+  }
+
+  // For 2D and higher, decompose global offset into coordinates
+  // and recompute using tile strides
+
+  // Get global strides (dim 0 uses elem_size, higher dims use globalStrides)
+  uint64_t global_strides[5];
+  global_strides[0] = elem_size;
+  for (uint32_t d = 1; d < num_dims; d++) {
+    global_strides[d] = tensormap.fields.globalStrides[d - 1];
+  }
+
+  // Get tile strides (based on box dimensions)
+  uint64_t tile_strides[5];
+  tile_strides[0] = elem_size;
+  for (uint32_t d = 1; d < num_dims; d++) {
+    tile_strides[d] = tile_strides[d - 1] * tensormap.fields.boxDim[d - 1];
+  }
+
+  // Decompose global_byte_offset into coordinates (highest to lowest dimension)
+  // Then recompute offset using tile strides
+  uint64_t tile_offset = 0;
+  uint64_t remaining = global_byte_offset;
+
+  for (int d = num_dims - 1; d >= 0; d--) {
+    uint64_t coord_in_tile = remaining / global_strides[d];
+    remaining = remaining % global_strides[d];
+    tile_offset += coord_in_tile * tile_strides[d];
+  }
+
+  return tile_offset;
+}
+
+// Apply TMA swizzle transformation to shared memory address
+//
+// Mask-based implementation matching Hopper/Blackwell hardware behavior.
+// Assumes 128B row stride for row extraction (addr >> 7).
+// Applies XOR permutation at 16B granularity (shift = 4).
+static uint64_t apply_tma_swizzle(uint64_t linear_offset,
+                                  uint32_t smem_base_addr,
+                                  uint32_t swizzle_mode, uint32_t row_bytes) {
+  if (swizzle_mode == TMA_SWIZZLE_NONE)
+    return linear_offset;
+
+  uint32_t mask = 0;
+  constexpr uint32_t shift = 4; // only support 16B granularity for now
+
+  switch (swizzle_mode) {
+  case TMA_SWIZZLE_128B:
+    mask = 0x7;
+    break; // 3 bits, cycle of 8
+  case TMA_SWIZZLE_64B:
+    mask = 0x3;
+    break; // 2 bits, cycle of 4
+  case TMA_SWIZZLE_32B:
+    mask = 0x1;
+    break; // 1 bit, cycle of 2
+  case TMA_SWIZZLE_96B:
+    printf("ERROR: TMA 96B swizzle mode is not yet implemented\n");
+    abort();
+  default:
+    printf("ERROR: Unknown TMA swizzle mode %u\n", swizzle_mode);
+    abort();
+  }
+
+  // Extract row information assuming 128B stride
+  // In Hopper/Blackwell hardware, row extraction is based on 128B alignment
+  uint32_t row_bits = (uint32_t)(linear_offset >> 7);
+
+  // Apply XOR permutation: addr XOR ((row_bits & mask) << shift)
+  return linear_offset ^ ((uint64_t)(row_bits & mask) << shift);
+}
+
+// Generate 128B-aligned memory fetch requests
+// Splits a contiguous memory range into cache-line-aligned requests
+static void
+gen_aligned_req(uint64_t start_addr, uint32_t total_bytes,
+                std::vector<std::pair<uint64_t, uint32_t>> &requests) {
+  if (total_bytes == 0)
+    return;
+
+  constexpr uint32_t CACHE_LINE_SIZE = 128;
+  uint64_t current_addr = start_addr;
+  uint32_t remaining_bytes = total_bytes;
+
+  while (remaining_bytes > 0) {
+    // Calculate bytes to next cache line boundary
+    uint64_t next_boundary =
+        (current_addr + CACHE_LINE_SIZE) & ~(CACHE_LINE_SIZE - 1);
+    uint32_t bytes_to_boundary =
+        static_cast<uint32_t>(next_boundary - current_addr);
+
+    // Determine request size: min(remaining, bytes_to_boundary,
+    // CACHE_LINE_SIZE)
+    uint32_t request_size =
+        std::min({remaining_bytes, bytes_to_boundary, CACHE_LINE_SIZE});
+
+    requests.push_back({current_addr, request_size});
+
+    current_addr += request_size;
+    remaining_bytes -= request_size;
+  }
+}
+
+// Recursive helper to traverse tensor dimensions and generate memory requests
+// dim: current dimension being processed (Rank-1 down to 0)
+// current_coords: accumulated coordinates from higher dimensions
+// base_addr: current physical address
+// tensormap: tensor descriptor
+// requests: output vector of (address, size) pairs
+static void
+traverse_tensor_dim(int dim, const uint32_t current_coords[5],
+                    uint64_t base_addr, const tensormap_descriptor_t &tensormap,
+                    std::vector<std::pair<uint64_t, uint32_t>> &requests) {
+  uint32_t elem_size = tensormap.get_element_size();
+
+  if (dim == 0) {
+    // Base case: innermost dimension (contiguous)
+    uint32_t start_x = current_coords[0];
+    uint32_t box_width = tensormap.fields.boxDim[0];
+    uint32_t global_width = tensormap.fields.globalDim[0];
+
+    // Calculate valid range intersection: [start_x, start_x + box_width) ∩ [0,
+    // global_width)
+    uint32_t valid_start = start_x;
+    uint32_t valid_end = start_x + box_width;
+
+    // Check if completely out of bounds
+    if (valid_start >= global_width || valid_end <= 0) {
+      return; // No valid data, skip
+    }
+
+    // Clamp to valid tensor boundaries
+    valid_start = std::max(valid_start, 0u);
+    valid_end = std::min(valid_end, global_width);
+
+    if (valid_start >= valid_end)
+      return;
+
+    // Calculate physical start address and total bytes
+    uint64_t phys_start_addr = base_addr + (valid_start * elem_size);
+    uint32_t valid_bytes = (valid_end - valid_start) * elem_size;
+
+    // Generate aligned memory fetch requests
+    gen_aligned_req(phys_start_addr, valid_bytes, requests);
+
+  } else {
+    // Recursive case: traverse higher dimensions
+    uint32_t box_extent = tensormap.fields.boxDim[dim];
+    uint32_t global_extent = tensormap.fields.globalDim[dim];
+    uint64_t stride = tensormap.fields.globalStrides[dim - 1];
+
+    for (uint32_t i = 0; i < box_extent; i++) {
+      uint32_t current_coord = current_coords[dim] + i;
+
+      // OOB check: skip if outside valid tensor range
+      if (current_coord >= global_extent) {
+        continue; // Skip this branch (zero-padding)
+      }
+
+      // Calculate address offset for this coordinate
+      uint64_t next_addr = base_addr + (current_coord * stride);
+
+      // Recurse to next lower dimension
+      traverse_tensor_dim(dim - 1, current_coords, next_addr, tensormap,
+                          requests);
+    }
+  }
+}
+
+// Generate TMA memory fetch requests for a tensor tile
+// start_coords: starting coordinate for each dimension (e.g., {x, y, z, w, v})
+// Returns: vector of (physical_address, size_in_bytes) pairs
+static std::vector<std::pair<uint64_t, uint32_t>>
+generate_tma_requests(const tensormap_descriptor_t &tensormap,
+                      const uint32_t start_coords[5]) {
+  std::vector<std::pair<uint64_t, uint32_t>> requests;
+
+  if (!tensormap.is_valid() || tensormap.fields.tensorRank > 4) {
+    return requests; // Empty result for invalid tensormap
+  }
+
+  // Start recursive traversal from highest dimension (0-based index)
+  int highest_dim = static_cast<int>(tensormap.num_dims()) -
+                    1; // highest dimension index (0-based)
+  uint64_t base_addr = tensormap.fields.globalAddress;
+
+  traverse_tensor_dim(highest_dim, start_coords, base_addr, tensormap,
+                      requests);
+
+  return requests;
+}
+
+//=============================================================================
+// Functional Simulation: OOB Fill Pattern Table
+//=============================================================================
+
+class tma_oob_fill_table_t {
+public:
+  static constexpr uint32_t CHUNK_SIZE = 128; // Cache line size
+  static constexpr uint32_t NUM_DTYPES = 16;  // Max data type index + 1
+
+  // Fill patterns: [oob_mode][dtype] -> 128-byte pattern
+  // oob_mode: 0 = ZERO, 1 = NAN
+  alignas(16) unsigned char patterns[2][NUM_DTYPES][CHUNK_SIZE];
+  bool nan_supported[NUM_DTYPES]; // Whether NaN is valid for this dtype
+
+  tma_oob_fill_table_t() {
+    // Initialize all patterns
+    for (uint32_t dtype = 0; dtype < NUM_DTYPES; dtype++) {
+      // Zero pattern (always valid)
+      memset(patterns[TMA_OOB_ZERO][dtype], 0, CHUNK_SIZE);
+
+      // NaN pattern (depends on dtype)
+      nan_supported[dtype] = false;
+      switch (dtype) {
+      case TMA_DTYPE_F32: {
+        nan_supported[dtype] = true;
+        uint32_t nan_val = 0x7FFFFFFF;
+        for (uint32_t i = 0; i < CHUNK_SIZE / sizeof(uint32_t); i++) {
+          memcpy(patterns[TMA_OOB_NAN][dtype] + i * sizeof(uint32_t), &nan_val,
+                 sizeof(uint32_t));
+        }
+        break;
+      }
+      case TMA_DTYPE_F64: {
+        nan_supported[dtype] = true;
+        uint64_t nan_val = 0x7FFFFFFFFFFFFFFFULL;
+        for (uint32_t i = 0; i < CHUNK_SIZE / sizeof(uint64_t); i++) {
+          memcpy(patterns[TMA_OOB_NAN][dtype] + i * sizeof(uint64_t), &nan_val,
+                 sizeof(uint64_t));
+        }
+        break;
+      }
+      case TMA_DTYPE_F16:
+      case TMA_DTYPE_BF16: {
+        nan_supported[dtype] = true;
+        uint16_t nan_val = 0x7FFF;
+        for (uint32_t i = 0; i < CHUNK_SIZE / sizeof(uint16_t); i++) {
+          memcpy(patterns[TMA_OOB_NAN][dtype] + i * sizeof(uint16_t), &nan_val,
+                 sizeof(uint16_t));
+        }
+        break;
+      }
+      case TMA_DTYPE_U8: {
+        // Treat as FP8 (E4M3/E5M2) NaN: 0x7F
+        nan_supported[dtype] = true;
+        memset(patterns[TMA_OOB_NAN][dtype], 0x7F, CHUNK_SIZE);
+        break;
+      }
+      default:
+        // Integer types: NaN not supported, fall back to zero
+        nan_supported[dtype] = false;
+        memset(patterns[TMA_OOB_NAN][dtype], 0, CHUNK_SIZE);
+        break;
+      }
+    }
+  }
+
+  // Get fill pattern for given oob mode and data type
+  const unsigned char *get_pattern(uint32_t oob_mode, uint32_t dtype) const {
+    if (dtype >= NUM_DTYPES)
+      dtype = 0; // Safety bound
+    if (oob_mode == TMA_OOB_NAN && !nan_supported[dtype]) {
+      static bool warned[NUM_DTYPES] = {false};
+      if (!warned[dtype]) {
+        printf("TMA ERROR: OOB_NAN not supported for data type %u, using zero "
+               "fill\n",
+               dtype);
+        warned[dtype] = true;
+      }
+      return patterns[TMA_OOB_ZERO][dtype];
+    }
+    return patterns[oob_mode][dtype];
+  }
+};
+
+// Global static instance (initialized at startup)
+static tma_oob_fill_table_t g_oob_fill_table;
+
+//=============================================================================
+// Functional Simulation: TMA Data Transfer
+//=============================================================================
+
+// Execute TMA data transfer (load or store)
+// is_load=true: global -> shared, is_load=false: shared -> global
+static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
+                            const uint32_t coords[5], memory_space *shared_mem,
+                            memory_space *global_mem, uint32_t smem_addr,
+                            ptx_thread_info *thread, const ptx_instruction *pI,
+                            bool is_load) {
+  // For load operations, pre-fill the entire tile in shared memory with OOB
+  // fill value
+  if (is_load) {
+    uint32_t tile_size_bytes = tensormap.get_tile_size_bytes();
+    const unsigned char *fill_pattern = g_oob_fill_table.get_pattern(
+        tensormap.fields.oobFill, tensormap.fields.tensorDataType);
+
+    constexpr uint32_t CHUNK_SIZE = tma_oob_fill_table_t::CHUNK_SIZE;
+    uint32_t offset = 0;
+    while (offset < tile_size_bytes) {
+      uint32_t chunk_size = std::min(tile_size_bytes - offset, CHUNK_SIZE);
+      shared_mem->write(smem_addr + offset, chunk_size, fill_pattern, thread,
+                        pI);
+      offset += chunk_size;
+    }
+  }
+
+  auto memory_requests = generate_tma_requests(tensormap, coords);
+  uint64_t base_global_addr = tensormap.calculate_src_addr(coords);
+
+  uint32_t swizzle_mode = tensormap.fields.swizzle;
+  uint32_t elem_size = tensormap.get_element_size();
+  uint32_t row_bytes = tensormap.fields.boxDim[0] * elem_size;
+
+  constexpr uint32_t SWIZZLE_GRANULARITY = 16;
+  constexpr uint32_t LOCAL_BUF_SIZE = 128;
+  alignas(16) unsigned char local_data_buf[LOCAL_BUF_SIZE];
+
+  for (const auto &req : memory_requests) {
+    uint64_t global_req_addr = req.first;
+    uint32_t req_size = req.second;
+
+    uint64_t tile_offset =
+        global_to_tile_offset(global_req_addr, base_global_addr, tensormap);
+
+    unsigned char *data_buffer = (req_size <= LOCAL_BUF_SIZE)
+                                     ? local_data_buf
+                                     : new unsigned char[req_size];
+
+    if (is_load) {
+      // Load: global -> shared
+      global_mem->read(global_req_addr, req_size, data_buffer);
+
+      auto flat_ctaid = thread->get_flat_ctaid();
+      auto flat_tid = thread->get_flat_tid();
+      auto warp_size = thread->get_core()->get_warp_size();
+      auto warpid = flat_tid / warp_size;
+      auto laneid = flat_tid % warp_size;
+      auto sm_id = thread->get_hw_sid();
+      GPPRINTF_INST_EXEC(
+          TMA,
+          "[TMA LOAD] [%3d,%3d,%3d] SM %3d coord[%3d,%3d,%3d,%3d,%3d] "
+          "swizzle_mode %u "
+          "gmem=0x%llx -> "
+          "smem=0x%x, space=%p, size=%u, tile_offset=0x%llx, "
+          "data[0..3]=0x%02x%02x%02x%02x fp32 %.3f\n",
+          flat_ctaid, warpid, laneid, sm_id, coords[0], coords[1], coords[2],
+          swizzle_mode, coords[3], coords[4],
+          (unsigned long long)global_req_addr, smem_addr, shared_mem, req_size,
+          (unsigned long long)tile_offset, req_size > 0 ? data_buffer[0] : 0,
+          req_size > 1 ? data_buffer[1] : 0, req_size > 2 ? data_buffer[2] : 0,
+          req_size > 3 ? data_buffer[3] : 0,
+          *reinterpret_cast<float *>(data_buffer));
+
+      if (swizzle_mode != TMA_SWIZZLE_NONE) {
+        for (uint32_t sub_offset = 0; sub_offset < req_size;
+             sub_offset += SWIZZLE_GRANULARITY) {
+          uint32_t sub_size =
+              std::min(SWIZZLE_GRANULARITY, req_size - sub_offset);
+          uint64_t logical_offset = tile_offset + sub_offset;
+          uint64_t swizzled_offset = apply_tma_swizzle(
+              logical_offset, smem_addr, swizzle_mode, row_bytes);
+
+          shared_mem->write(smem_addr + swizzled_offset, sub_size,
+                            data_buffer + sub_offset, thread, pI);
+        }
+      } else {
+        // No swizzle - write contiguously
+        shared_mem->write(smem_addr + tile_offset, req_size, data_buffer,
+                          thread, pI);
+      }
+
+    } else {
+      // Store: shared -> global (reverse swizzle)
+      if (swizzle_mode != TMA_SWIZZLE_NONE) {
+        for (uint32_t sub_offset = 0; sub_offset < req_size;
+             sub_offset += SWIZZLE_GRANULARITY) {
+          uint32_t sub_size =
+              std::min(SWIZZLE_GRANULARITY, req_size - sub_offset);
+          uint64_t logical_offset = tile_offset + sub_offset;
+          uint64_t swizzled_offset = apply_tma_swizzle(
+              logical_offset, smem_addr, swizzle_mode, row_bytes);
+
+          shared_mem->read(smem_addr + swizzled_offset, sub_size,
+                           data_buffer + sub_offset);
+        }
+      } else {
+        // No swizzle - read contiguously
+        shared_mem->read(smem_addr + tile_offset, req_size, data_buffer);
+      }
+
+      global_mem->write(global_req_addr, req_size, data_buffer, thread, pI);
+    }
+
+    if (req_size > LOCAL_BUF_SIZE)
+      delete[] data_buffer;
+  }
+}
+
+//=============================================================================
+// Functional Simulation: TMA Instruction Handlers
+//=============================================================================
+
+// Copy data between two memory spaces
+static void copy_mem(memory_space *src_mem, uint64_t src_addr,
+                     memory_space *dst_mem, uint64_t dst_addr,
+                     uint32_t size_in_bytes, ptx_thread_info *thread,
+                     const ptx_instruction *pI) {
+  unsigned char *buf = new unsigned char[size_in_bytes];
+  src_mem->read(src_addr, size_in_bytes, buf);
+  dst_mem->write(dst_addr, size_in_bytes, buf, thread, pI);
+  delete[] buf;
+}
+
+// Check 16-byte alignment for TMA addresses and size
+static void check_tma_alignment(uint64_t dst_addr, uint64_t src_addr,
+                                uint32_t size_in_bytes) {
+  if (dst_addr % 16 != 0 || src_addr % 16 != 0 || size_in_bytes % 16 != 0) {
+    printf("TMA ERROR: unaligned TMA copy dst=0x%llx, src=0x%llx, "
+           "size_in_bytes=%u\n",
+           (unsigned long long)dst_addr, (unsigned long long)src_addr,
+           size_in_bytes);
+    abort();
+  }
+}
+
+// Read tensormap from global memory, validate, parse coordinates, compute size
+static void
+setup_tensor_tma(memory_space *global_mem, uint64_t tensormap_addr,
+                 unsigned inst_dim, const operand_info &coord_operand,
+                 ptx_thread_info *thread, tensormap_descriptor_t &out_tensormap,
+                 uint32_t out_coords[5], uint32_t &out_size_in_bytes) {
+  using namespace flash_gpgpu_sim;
+  global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &out_tensormap);
+  validate_tensormap(tensormap_addr, out_tensormap, inst_dim);
+
+  out_size_in_bytes = out_tensormap.get_tile_size_bytes();
+  assert(out_size_in_bytes > 0 && "TMA tensor transfer size cannot be zero");
+
+  parse_tensor_coords(thread, coord_operand, out_coords);
+}
+
+// Handle TMA linear copy instruction (non-tensor)
+static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
+  using namespace flash_gpgpu_sim;
+
+  const auto &options = pI->get_options();
+  if (options.size() != 3) {
+    for (auto op : options) {
+      GPPRINTF_INST_EXEC(TMA, "option: %d\n", op);
+    }
+  }
+  assert(options.size() >= 3 &&
+         "TMA copy must have at least dst, src, completion_mechanism.");
+
+  auto option_iter = options.begin();
+  auto dst_option = *option_iter++;
+  auto src_option = *option_iter++;
+  auto completion_option = *option_iter++;
+
+  memory_space *global_mem = thread->get_global_memory();
+  memory_space *shared_mem = thread->m_shared_mem;
+
+  if (dst_option == CTA_OPTION && src_option == GLOBAL_OPTION &&
+      completion_option == TMA_MBAR_COMPLETE_BYTES) {
+    // shared::cta <- global with MBAR completion
+    auto dst_addr = get_operand_u32(thread, pI->dst());
+    auto src_addr = get_operand_u64(thread, pI->src1());
+    auto size_in_bytes = get_operand_u32(thread, pI->src2());
+    auto mbar_addr = get_operand_u32(thread, pI->src3());
+
+    check_tma_alignment(dst_addr, src_addr, size_in_bytes);
+
+    inst_t::tma_static_info_t tma_static_info{
+        .tma_type = inst_t::tma_static_info_t::TMA_NORMAL,
+        .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+        .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
+    };
+    pI->set_tma_static_info(tma_static_info);
+
+    inst_t::tma_dyn_info_t tma_dyn_info{
+        .dst_addr = dst_addr,
+        .src_addr = src_addr,
+        .size_in_bytes = size_in_bytes,
+        .mbar_addr = mbar_addr,
+    };
+    pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
+
+    copy_mem(global_mem, src_addr, shared_mem, dst_addr, size_in_bytes, thread,
+             pI);
+
+    GPPRINTF_INST_EXEC(TMA,
+                       "Functional Sim: "
+                       "TMA shared::cta <- global dst=0x%x, src=0x%lx, "
+                       "size_in_bytes=%u, mbar=0x%x\n",
+                       dst_addr, src_addr, size_in_bytes, mbar_addr);
+
+  } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION &&
+             completion_option == BULK_GROUP_OPTION) {
+    // global <- shared::cta with bulk group completion
+    auto dst_addr = get_operand_u64(thread, pI->dst());
+    auto src_addr = get_operand_u32(thread, pI->src1());
+    auto size_in_bytes = get_operand_u32(thread, pI->src2());
+    auto laneid = thread->get_laneid();
+
+    auto ctaid = thread->get_ctaid();
+    auto warp_id = thread->get_hw_wid();
+
+    GPPRINTF_INST_EXEC(TMA,
+                       "[TMA STORE] CTA(%u,%u,%u) warp=%u lane=%u: "
+                       "dst=0x%llx, src=0x%x, size=%u\n",
+                       ctaid.x, ctaid.y, ctaid.z, warp_id, laneid, dst_addr,
+                       src_addr, size_in_bytes);
+
+    check_tma_alignment(dst_addr, src_addr, size_in_bytes);
+
+    inst_t::tma_static_info_t tma_static_info{
+        .tma_type = inst_t::tma_static_info_t::TMA_NORMAL,
+        .dst_space = inst_t::tma_static_info_t::TMA_GLOBAL,
+        .src_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+    };
+    pI->set_tma_static_info(tma_static_info);
+
+    inst_t::tma_dyn_info_t tma_dyn_info{
+        .dst_addr = dst_addr,
+        .src_addr = src_addr,
+        .size_in_bytes = size_in_bytes,
+    };
+    pI->set_tma_dyn_info(laneid, tma_dyn_info);
+
+    copy_mem(shared_mem, src_addr, global_mem, dst_addr, size_in_bytes, thread,
+             pI);
+
+    GPPRINTF_INST_EXEC(TMA,
+                       "Functional Sim: "
+                       "TMA global <- shared::cta dst=0x%x, src=0x%llx, "
+                       "size_in_bytes=%u\n",
+                       dst_addr, src_addr, size_in_bytes);
+  } else {
+    assert(false && "Unsupported TMA copy instruction");
+  }
+}
+
+// Handle cp.async.bulk.commit_group
+static void handle_tma_commit_group(ptx_instruction *pI,
+                                    ptx_thread_info *thread) {
+  inst_t::tma_static_info_t tma_static_info{
+      .tma_type = inst_t::tma_static_info_t::TMA_BULK_COMMIT,
+      .dst_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
+      .src_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
+  };
+  pI->set_tma_static_info(tma_static_info);
+  GPPRINTF_INST_EXEC(TMA, "Functional Sim: cp.async.bulk.commit_group\n", "");
+}
+
+// Handle cp.async.bulk.wait_group N
+static void handle_tma_wait_group(ptx_instruction *pI,
+                                  ptx_thread_info *thread) {
+  using namespace flash_gpgpu_sim;
+  unsigned group_num = get_operand_u32(thread, pI->dst());
+
+  inst_t::tma_static_info_t tma_static_info{
+      .tma_type = inst_t::tma_static_info_t::TMA_BULK_WAIT,
+      .dst_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
+      .src_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
+      .bulk_wait_num = group_num,
+  };
+  pI->set_tma_static_info(tma_static_info);
+  GPPRINTF_INST_EXEC(TMA, "Functional Sim: cp.async.bulk.wait_group %u\n",
+                     group_num);
+}
+
+// Handle cp.async.bulk.tensor.Nd (tensor load/store)
+static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
+  using namespace flash_gpgpu_sim;
+
+  const auto &options = pI->get_options();
+  if (options.size() != 5) {
+    for (auto op : options) {
+      GPPRINTF_INST_EXEC(TMA, "  option: %d\n", op);
+    }
+  }
+  assert(
+      options.size() >= 5 &&
+      "TMA tensor copy must have: TENSOR_OPTION, dim, dst, src, completion.");
+
+  auto option_iter = options.begin();
+  ++option_iter; // Skip TENSOR_OPTION
+  auto dim_option = *option_iter++;
+  auto dst_option = *option_iter++;
+  auto src_option = *option_iter++;
+  auto completion_option = *option_iter++;
+
+  memory_space *shared_mem = thread->m_shared_mem;
+  memory_space *global_mem = thread->get_global_memory();
+  unsigned inst_dim = compute_inst_dim(dim_option);
+
+  if ((dst_option == CTA_OPTION || dst_option == CLUSTER_OPTION) &&
+      src_option == GLOBAL_OPTION &&
+      completion_option == TMA_MBAR_COMPLETE_BYTES) {
+    // Tensor load: shared <- global
+    auto dst_addr = get_operand_u32(thread, pI->dst());
+    uint64_t tensormap_addr = get_operand_u64(thread, pI->src1());
+    auto mbar_addr = get_operand_u32(thread, pI->src3());
+
+    tensormap_descriptor_t tensormap;
+    uint32_t coords[5];
+    uint32_t size_in_bytes;
+    setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
+                     pI->get_operands()[2], thread, tensormap, coords,
+                     size_in_bytes);
+
+    inst_t::tma_static_info_t tma_static_info{
+        .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
+        .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+        .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
+    };
+    pI->set_tma_static_info(tma_static_info);
+
+    inst_t::tma_dyn_info_t tma_dyn_info{
+        .dst_addr = dst_addr,
+        .src_addr = tensormap_addr,
+        .size_in_bytes = size_in_bytes,
+        .mbar_addr = mbar_addr,
+    };
+    for (unsigned i = 0; i < 5; ++i)
+      tma_dyn_info.coords[i] = coords[i];
+    pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
+
+    do_tma_transfer(tensormap, coords, shared_mem, global_mem, dst_addr, thread,
+                    pI, true);
+
+  } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION) {
+    // Tensor store: global <- shared
+    assert(completion_option == BULK_GROUP_OPTION &&
+           "Only bulk_group completion option is supported for "
+           "cp.async.bulk.tensor.Nd.shared::cta.global");
+
+    auto tensormap_addr = get_operand_u64(thread, pI->dst());
+    auto src_addr = get_operand_u32(thread, pI->src2());
+
+    tensormap_descriptor_t tensormap;
+    uint32_t coords[5];
+    uint32_t size_in_bytes;
+    setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
+                     pI->get_operands()[1], thread, tensormap, coords,
+                     size_in_bytes);
+
+    GPPRINTF_INST_EXEC(
+        TMA, "TMA tensor store Extracted coordinates: [%u, %u, %u, %u, %u]\n",
+        coords[0], coords[1], coords[2], coords[3], coords[4]);
+
+    inst_t::tma_static_info_t tma_static_info{
+        .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
+        .dst_space = inst_t::tma_static_info_t::TMA_GLOBAL,
+        .src_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+    };
+    pI->set_tma_static_info(tma_static_info);
+
+    inst_t::tma_dyn_info_t tma_dyn_info{
+        .dst_addr = tensormap_addr,
+        .src_addr = src_addr,
+        .size_in_bytes = size_in_bytes,
+    };
+    for (unsigned i = 0; i < 5; ++i)
+      tma_dyn_info.coords[i] = coords[i];
+    pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
+
+    do_tma_transfer(tensormap, coords, shared_mem, global_mem, src_addr, thread,
+                    pI, false);
+
+    uint64_t base_dst_addr = tensormap.calculate_src_addr(coords);
+    GPPRINTF_INST_EXEC(TMA,
+                       "Functional Sim: TMA tensor store dst=0x%llx, src=0x%x, "
+                       "size=%u, tensormap=0x%llx\n",
+                       (unsigned long long)base_dst_addr, src_addr,
+                       size_in_bytes, (unsigned long long)tensormap_addr);
+
+  } else {
+    GPPRINTF_INST_EXEC(
+        TMA, "[STUB] Unsupported cp.async.bulk.tensor variant%s\n", "");
+  }
+}
+
+//=============================================================================
+// Functional Simulation: Entry Point
 //=============================================================================
 
 void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
@@ -1283,322 +1407,14 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
   }
 
   if (!is_commit_group && !is_wait_group && !is_tensor) {
-    // This is TMA copy instruction.
-    const auto &options = pI->get_options();
-    if (options.size() != 3) {
-      for (auto op : options) {
-        GPPRINTF_INST_EXEC(TMA, "option: %d\n", op);
-      }
-    }
-    assert(options.size() >= 3 &&
-           "TMA copy must have at least dst, src, completion_mechanism.");
-    // ! Ignore cache hint for now.
-    auto option_iter = options.begin();
-    auto dst_option = *option_iter;
-    ++option_iter;
-    auto src_option = *option_iter;
-    ++option_iter;
-    auto completion_option = *option_iter;
-    ++option_iter;
-
-    if (dst_option == CTA_OPTION && src_option == GLOBAL_OPTION &&
-        completion_option == TMA_MBAR_COMPLETE_BYTES) {
-      // Handle shared::cta <- global TMA copy inst with MBAR completion.
-
-      // Extract operands.
-      auto dst_addr = get_operand_u32(thread, pI->dst());
-      auto src_addr = get_operand_u64(thread, pI->src1());
-      auto size_in_bytes = get_operand_u32(thread, pI->src2());
-      auto mbar_addr = get_operand_u32(thread, pI->src3());
-
-      // Check alignment to 16 bytes.
-      if (dst_addr % 16 != 0 || src_addr % 16 != 0 || size_in_bytes % 16 != 0) {
-        GPPRINTF_INST_EXEC(
-            TMA, "unaligned TMA copy dst=0x%x, src=0x%lx, size_in_bytes=%u\n",
-            dst_addr, src_addr, size_in_bytes);
-        abort();
-      }
-
-      inst_t::tma_static_info_t tma_static_info{
-          .tma_type = inst_t::tma_static_info_t::TMA_NORMAL,
-          .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
-          .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
-      };
-      pI->set_tma_static_info(tma_static_info);
-      inst_t::tma_dyn_info_t tma_dyn_info{
-          .dst_addr = dst_addr,
-          .src_addr = src_addr,
-          .size_in_bytes = size_in_bytes,
-          .mbar_addr = mbar_addr,
-      };
-      auto laneid = thread->get_laneid();
-      pI->set_tma_dyn_info(laneid, tma_dyn_info);
-
-      // write data into shared memory
-      memory_space *global_mem = thread->get_global_memory();
-      memory_space *shared_mem = thread->m_shared_mem;
-
-      unsigned char *data_buffer = new unsigned char[size_in_bytes];
-      global_mem->read(src_addr, size_in_bytes, data_buffer);
-      shared_mem->write(dst_addr, size_in_bytes, data_buffer, thread, pI);
-
-      delete[] data_buffer;
-
-      GPPRINTF_INST_EXEC(TMA,
-                         "Functional Sim: "
-                         "TMA shared::cta <- global dst=0x%x, src=0x%lx, "
-                         "size_in_bytes=%u, mbar=0x%x\n",
-                         dst_addr, src_addr, size_in_bytes, mbar_addr);
-
-    } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION &&
-               completion_option == BULK_GROUP_OPTION) {
-      // Handle global <- shared::cta TMA copy inst with bulk group completion.
-
-      // Extract operands.
-      auto dst_addr = get_operand_u64(thread, pI->dst());
-      auto src_addr = get_operand_u32(thread, pI->src1());
-      auto size_in_bytes = get_operand_u32(thread, pI->src2());
-      auto laneid = thread->get_laneid();
-
-      auto ctaid = thread->get_ctaid();
-      auto warp_id = thread->get_hw_wid();
-
-      GPPRINTF_INST_EXEC(TMA,
-                         "[TMA STORE] CTA(%u,%u,%u) warp=%u lane=%u: "
-                         "dst=0x%llx, src=0x%x, size=%u\n",
-                         ctaid.x, ctaid.y, ctaid.z, warp_id, laneid, dst_addr,
-                         src_addr, size_in_bytes);
-
-      // Debug: Print first few bytes from shared memory
-      memory_space *shared_mem_debug = thread->m_shared_mem;
-      uint32_t first_value = 0;
-      shared_mem_debug->read(src_addr, sizeof(uint32_t), &first_value);
-      GPPRINTF_INST_EXEC(
-          TMA, "[TMA STORE DEBUG] smem=0x%x, first_value=%u (expected: %u)\n",
-          src_addr, first_value,
-          (96 + (dst_addr - 0xc00008b00) / 4) * 2); // Compute expected value
-
-      // Check alignment to 16 bytes.
-      if (dst_addr % 16 != 0 || src_addr % 16 != 0 || size_in_bytes % 16 != 0) {
-        GPPRINTF_INST_EXEC(
-            TMA, "unaligned TMA copy dst=0x%x, src=0x%llx, size_in_bytes=%u\n",
-            dst_addr, src_addr, size_in_bytes);
-        abort();
-      }
-
-      inst_t::tma_static_info_t tma_static_info{
-          .tma_type = inst_t::tma_static_info_t::TMA_NORMAL,
-          .dst_space = inst_t::tma_static_info_t::TMA_GLOBAL,
-          .src_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
-      };
-      pI->set_tma_static_info(tma_static_info);
-      inst_t::tma_dyn_info_t tma_dyn_info{
-          .dst_addr = dst_addr,
-          .src_addr = src_addr,
-          .size_in_bytes = size_in_bytes,
-      };
-      pI->set_tma_dyn_info(laneid, tma_dyn_info);
-
-      // write data into shared memory
-      memory_space *global_mem = thread->get_global_memory();
-      memory_space *shared_mem = thread->m_shared_mem;
-
-      unsigned char *data_buffer = new unsigned char[size_in_bytes];
-      shared_mem->read(src_addr, size_in_bytes, data_buffer);
-      global_mem->write(dst_addr, size_in_bytes, data_buffer, thread, pI);
-
-      delete[] data_buffer;
-
-      GPPRINTF_INST_EXEC(TMA,
-                         "Functional Sim: "
-                         "TMA global <- shared::cta dst=0x%x, src=0x%llx, "
-                         "size_in_bytes=%u\n",
-                         dst_addr, src_addr, size_in_bytes);
-    } else {
-      assert(false && "Unsupported TMA copy instruction");
-    }
-
+    // TMA copy instruction (non-tensor linear copy)
+    handle_tma_copy(pI, thread);
   } else if (is_commit_group) {
-    // Handle TMA bulk commit_group instruction (cp.async.bulk.commit_group)
-    inst_t::tma_static_info_t tma_static_info{
-        .tma_type = inst_t::tma_static_info_t::TMA_BULK_COMMIT,
-        .dst_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
-        .src_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
-    };
-    pI->set_tma_static_info(tma_static_info);
-
-    GPPRINTF_INST_EXEC(TMA, "Functional Sim: cp.async.bulk.commit_group\n", "");
-
+    handle_tma_commit_group(pI, thread);
   } else if (is_wait_group) {
-    // Handle TMA bulk wait_group instruction (cp.async.bulk.wait_group N)
-    // The group number N is the first (and only) operand
-    unsigned group_num = get_operand_u32(thread, pI->dst());
-
-    inst_t::tma_static_info_t tma_static_info{
-        .tma_type = inst_t::tma_static_info_t::TMA_BULK_WAIT,
-        .dst_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
-        .src_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
-        .bulk_wait_num = group_num,
-    };
-    pI->set_tma_static_info(tma_static_info);
-
-    GPPRINTF_INST_EXEC(TMA, "Functional Sim: cp.async.bulk.wait_group %u\n",
-                       group_num);
-
+    handle_tma_wait_group(pI, thread);
   } else if (is_tensor) {
-    // Handle TMA tensor instruction (cp.async.bulk.tensor.Nd)
-    // Format: cp.async.bulk.tensor.Nd.dst.src.completion [dst], [tensormap,
-    // {coords}], [mbar] Options include: TENSOR_OPTION, DIM_xD_OPTION,
-    // dst_space, src_space, completion
-
-    const auto &options = pI->get_options();
-    if (options.size() != 5) {
-      for (auto op : options) {
-        GPPRINTF_INST_EXEC(TMA, "  option: %d\n", op);
-      }
-    }
-    assert(
-        options.size() >= 5 &&
-        "TMA tensor copy must have: TENSOR_OPTION, dim, dst, src, completion.");
-
-    auto option_iter = options.begin();
-    ++option_iter; // Skip TENSOR_OPTION (first option is always .tensor)
-    auto dim_option = *option_iter;
-    ++option_iter;
-    auto dst_option = *option_iter;
-    ++option_iter;
-    auto src_option = *option_iter;
-    ++option_iter;
-    auto completion_option = *option_iter;
-    ++option_iter;
-
-    memory_space *shared_mem = thread->m_shared_mem;
-    memory_space *global_mem = thread->get_global_memory();
-
-    // Compute instruction dimension
-    unsigned inst_dim = compute_inst_dim(dim_option);
-
-    if ((dst_option == CTA_OPTION || dst_option == CLUSTER_OPTION) &&
-        src_option == GLOBAL_OPTION &&
-        completion_option == TMA_MBAR_COMPLETE_BYTES) {
-      // cp.async.bulk.tensor.Nd.shared::cta.global.mbarrier::complete_tx::bytes
-      // cp.async.bulk.tensor.Nd.shared::cluster.global.mbarrier::complete_tx::bytes
-      // Operands: [dst_shared], [tensormap, {coords...}], [mbar], ignore
-      // cache-hint for now
-
-      auto dst_addr = get_operand_u32(thread, pI->dst());
-      uint64_t tensormap_addr = get_operand_u64(thread, pI->src1());
-      auto mbar_addr = get_operand_u32(thread, pI->src3());
-
-      // Read tensormap descriptor from global memory
-      tensormap_descriptor_t tensormap;
-      global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &tensormap);
-      validate_tensormap(tensormap_addr, tensormap, inst_dim);
-
-      // Calculate transfer size from tensormap
-      uint32_t size_in_bytes = tensormap.get_tile_size_bytes();
-      assert(size_in_bytes > 0 && "TMA tensor load size cannot be zero");
-
-      // Parse coordinates from operands
-      const auto &coord_operand = pI->get_operands()[2];
-      uint32_t coords[5];
-      parse_tensor_coords(thread, coord_operand, coords);
-
-      // Pass info to perf sim
-      inst_t::tma_static_info_t tma_static_info{
-          .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
-          .dst_space = inst_t::tma_static_info_t::
-              TMA_SHARED_CTA, // treat shared::cluster same as shared::cta
-          .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
-      };
-      pI->set_tma_static_info(tma_static_info);
-
-      inst_t::tma_dyn_info_t tma_dyn_info{
-          .dst_addr = dst_addr,
-          .src_addr = tensormap_addr,
-          .size_in_bytes = size_in_bytes,
-          .mbar_addr = mbar_addr,
-      };
-      for (unsigned i = 0; i < 5; ++i)
-        tma_dyn_info.coords[i] = coords[i];
-
-      auto laneid = thread->get_laneid();
-      pI->set_tma_dyn_info(laneid, tma_dyn_info);
-
-      // Functional simulation: Copy data from global to shared
-      do_tma_transfer(tensormap, coords, shared_mem, global_mem, dst_addr,
-                      thread, pI, true);
-
-    } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION) {
-      // cp.async.bulk.tensor.Nd.global.shared::cta.bulk_group
-      // This is a store operation, no mbarrier involved
-      // Operands: [tensormap, {coords...}], [src_shared], ignore cache-hint for
-      // now
-      assert(completion_option == BULK_GROUP_OPTION &&
-             "Only bulk_group completion option is supported for "
-             "cp.async.bulk.tensor.Nd.shared::cta.global");
-
-      // Get tensormap address
-      auto tensormap_addr =
-          get_operand_u64(thread, pI->dst()); // dst is tensormap for store
-      auto src_addr =
-          get_operand_u32(thread, pI->src2()); // src is shared memory
-
-      // Read tensormap descriptor
-      tensormap_descriptor_t tensormap;
-      global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &tensormap);
-      validate_tensormap(tensormap_addr, tensormap, inst_dim);
-
-      // Calculate transfer size from tensormap
-      uint32_t size_in_bytes = tensormap.get_tile_size_bytes();
-      assert(size_in_bytes > 0 && "TMA tensor store size cannot be zero");
-
-      // Parse coordinates from operands
-      const auto &coord_operand = pI->get_operands()[1];
-      uint32_t coords[5];
-      parse_tensor_coords(thread, coord_operand, coords);
-
-      GPPRINTF_INST_EXEC(
-          TMA, "TMA tensor store Extracted coordinates: [%u, %u, %u, %u, %u]\n",
-          coords[0], coords[1], coords[2], coords[3], coords[4]);
-
-      // Pass info to perf sim
-      inst_t::tma_static_info_t tma_static_info{
-          .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
-          .dst_space = inst_t::tma_static_info_t::
-              TMA_SHARED_CTA, // treat shared::cluster same as shared::cta
-          .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
-      };
-      pI->set_tma_static_info(tma_static_info);
-
-      inst_t::tma_dyn_info_t tma_dyn_info{
-          .dst_addr = tensormap_addr,
-          .src_addr = src_addr,
-          .size_in_bytes = size_in_bytes,
-      };
-      for (unsigned i = 0; i < 5; ++i)
-        tma_dyn_info.coords[i] = coords[i];
-
-      auto laneid = thread->get_laneid();
-      pI->set_tma_dyn_info(laneid, tma_dyn_info);
-
-      // Functional simulation: Copy data from shared to global
-      do_tma_transfer(tensormap, coords, shared_mem, global_mem, src_addr,
-                      thread, pI, false);
-
-      uint64_t base_dst_addr = tensormap.calculate_src_addr(coords);
-      GPPRINTF_INST_EXEC(
-          TMA,
-          "Functional Sim: TMA tensor store dst=0x%llx, src=0x%x, "
-          "size=%u, tensormap=0x%x\n",
-          (unsigned long long)base_dst_addr, src_addr, size_in_bytes,
-          tensormap_addr);
-
-    } else {
-      GPPRINTF_INST_EXEC(
-          TMA, "[STUB] Unsupported cp.async.bulk.tensor variant%s\n", "");
-    }
-
+    handle_tma_tensor(pI, thread);
   } else {
     GPPRINTF_INST_EXEC(TMA, "Unrecognized TMA instruction%s\n", "");
     pI->print_insn();

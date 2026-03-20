@@ -70,13 +70,18 @@ if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
   fi
 fi
 
-# Build tests
+# Build verification tests only (microbenchmarks not needed in CI)
 echo "Building tests..."
-./test/run_tests.sh build
+./test/run_tests.sh build test
 
 # Run tests with specified configuration
 # Skip CudaTMATest.PerformanceComparison as it takes too long for CI
+# Microbenchmarks are already excluded (separate binary, not in run_all_tests)
 echo "Running test suite (excluding CudaTMATest.PerformanceComparison)..."
-./test/run_tests.sh -c "$TEST_CONFIG" run "*:-CudaTMATest.PerformanceComparison" "$@"
+
+# Use gtest XML output for structured results (absolute path since tests cd into run dir)
+export GTEST_OUTPUT="xml:$REPO_ROOT/test_results.xml"
+
+./test/run_tests.sh -c "$TEST_CONFIG" test "*:-CudaTMATest.PerformanceComparison" "$@"
 
 echo "CI tests completed successfully!"

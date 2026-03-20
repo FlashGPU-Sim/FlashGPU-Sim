@@ -82,7 +82,7 @@ if [ "$AUTO_TEST" = "1" ] || [ "$AUTO_TEST" = "true" ]; then
         
         # Build and run tests
         ./run_tests.sh build
-        ./run_tests.sh run
+        ./run_tests.sh test
         
         cd /gpgpu-sim
     else
@@ -97,7 +97,7 @@ echo -e "${GREEN}Environment auto-configured. Quick Start Commands:${NC}"
 echo -e "  ${YELLOW}make -j\$(nproc)${NC}           - Build GPGPU-Sim (standard)"
 echo -e "  ${YELLOW}make FLASH=1 -j\$(nproc)${NC}   - Build GPGPU-Sim (Flash/multi-threaded)"
 echo -e "  ${YELLOW}cd test && ./run_tests.sh setup${NC}  - Setup test environment"
-echo -e "  ${YELLOW}cd test && ./run_tests.sh run${NC}    - Run all tests"
+echo -e "  ${YELLOW}cd test && ./run_tests.sh test${NC}    - Run all tests"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 

@@ -4614,10 +4614,44 @@ extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
     announce_call(__my_func__);
   }
 
+  // Null pointer checks
   if (!tensorMap || !globalAddress || !globalDim || !globalStrides ||
       !boxDim || !elementStrides)
     return CUDA_ERROR_INVALID_VALUE;
+
+  // tensorRank: must be 1-5
   if (tensorRank < 1 || tensorRank > 5)
+    return CUDA_ERROR_INVALID_VALUE;
+
+  // globalAddress: must be 16-byte aligned
+  if (reinterpret_cast<uint64_t>(globalAddress) % 16 != 0)
+    return CUDA_ERROR_INVALID_VALUE;
+
+  // Per-dimension validation
+  for (cuuint32_t i = 0; i < tensorRank; i++) {
+    // globalDim: must be non-zero
+    if (globalDim[i] == 0)
+      return CUDA_ERROR_INVALID_VALUE;
+    // boxDim: must be non-zero and <= 256
+    if (boxDim[i] == 0 || boxDim[i] > 256)
+      return CUDA_ERROR_INVALID_VALUE;
+    // elementStrides: must be non-zero and <= 8
+    if (elementStrides[i] == 0 || elementStrides[i] > 8)
+      return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  // globalStrides: must be a multiple of 16 and < 2^40
+  for (cuuint32_t i = 0; i < tensorRank - 1; i++) {
+    if (globalStrides[i] % 16 != 0)
+      return CUDA_ERROR_INVALID_VALUE;
+    if (globalStrides[i] >= (1ULL << 40))
+      return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  // Enum range checks
+  if (swizzle > CU_TENSOR_MAP_SWIZZLE_128B_ATOM_32B)
+    return CUDA_ERROR_INVALID_VALUE;
+  if (interleave > CU_TENSOR_MAP_INTERLEAVE_32B)
     return CUDA_ERROR_INVALID_VALUE;
 
   tensormap_descriptor_t desc;
@@ -4642,6 +4676,17 @@ extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
       printf("WARNING: cuTensorMapEncodeTiled: unsupported tensorDataType %d\n",
              (int)tensorDataType);
       return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  // When interleave is NONE, boxDim[0] * elementSize must be a multiple of 16
+  if (interleave == CU_TENSOR_MAP_INTERLEAVE_NONE) {
+    uint32_t elemSize = desc.get_element_size();
+    if ((boxDim[0] * elemSize) % 16 != 0) {
+      printf("WARNING: cuTensorMapEncodeTiled: boxDim[0]=%u * elemSize=%u = %u "
+             "is not a multiple of 16\n",
+             boxDim[0], elemSize, boxDim[0] * elemSize);
+      return CUDA_ERROR_INVALID_VALUE;
+    }
   }
 
   for (cuuint32_t i = 0; i < tensorRank; i++) {
