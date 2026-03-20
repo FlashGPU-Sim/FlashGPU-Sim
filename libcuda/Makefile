@@ -77,12 +77,13 @@ CPP = g++ $(SNOW)
 CC = gcc $(SNOW)
 CREATELIBRARY    =  1
 DEBUG ?= 0
+WARN_SUPPRESS = -Wno-unused-function -Wno-sign-compare -Wno-overflow -Wno-switch -Wno-format-truncation -Wno-conversion-null -Wno-int-to-pointer-cast
 ifeq ($(DEBUG),1)
-	CXXFLAGS +=  -Wall -Wno-unused-function -Wno-sign-compare -g -fPIC $(GL)
-	CCFLAGS += -Wall -Wno-unused-function -Wno-sign-compare -ggdb -fPIC
+	CXXFLAGS +=  -Wall $(WARN_SUPPRESS) -g -fPIC $(GL)
+	CCFLAGS += -Wall $(WARN_SUPPRESS) -ggdb -fPIC
 else
-	CXXFLAGS += -O3 -g -Wall -Wno-unused-function -Wno-sign-compare -fPIC $(GL)
-	CCFLAGS += -Wall -Wno-unused-function -Wno-sign-compare -fPIC
+	CXXFLAGS += -O3 -g -Wall $(WARN_SUPPRESS) -fPIC $(GL)
+	CCFLAGS += -Wall $(WARN_SUPPRESS) -fPIC
 endif
 
 PROG     =cuda

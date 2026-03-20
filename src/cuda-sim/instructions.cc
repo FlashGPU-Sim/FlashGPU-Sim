@@ -206,7 +206,7 @@ void ptx_thread_info::print_reg_thread(char *fname) {
       const std::string &name = it->first->name();
       const std::string &dec = it->first->decl_location();
       unsigned size = it->first->get_size_in_bytes();
-      fprintf(fp, "%s %llu %s %d\n", name.c_str(), it->second, dec.c_str(),
+      fprintf(fp, "%s %llu %s %d\n", name.c_str(), it->second.u64, dec.c_str(),
               size);
     }
     // m_regs.pop_back();
@@ -3530,12 +3530,12 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
 
     if (type == F32_TYPE) {
       GPPRINTF_INST_EXEC(
-          PTX_INST_EXEC, "ld: space %p type %s addr %lx val %.3f inst %s\n",
-          mem, decode_token(type), addr, data.f32, pI->to_string().c_str());
+          PTX_INST_EXEC, "ld: space %p type %s addr %llx val %.3f inst %s\n",
+          mem, decode_token(type), (unsigned long long)addr, data.f32, pI->to_string().c_str());
     } else {
       GPPRINTF_INST_EXEC(
-          PTX_INST_EXEC, "ld: space %p type %s addr %lx val %llu inst %s\n",
-          mem, decode_token(type), addr, data.u64, pI->to_string().c_str());
+          PTX_INST_EXEC, "ld: space %p type %s addr %llx val %llu inst %s\n",
+          mem, decode_token(type), (unsigned long long)addr, data.u64, pI->to_string().c_str());
     }
 
   } else {

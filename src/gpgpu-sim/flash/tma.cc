@@ -90,7 +90,8 @@ static bool validate_tensormap(uint64_t tensormap_addr,
                                const tensormap_descriptor_t &tensormap,
                                unsigned inst_dim) {
   if (!tensormap.is_valid()) {
-    printf("TMA ERROR: Invalid tensormap at 0x%lx\n", tensormap_addr);
+    printf("TMA ERROR: Invalid tensormap at 0x%llx\n",
+           (unsigned long long)tensormap_addr);
     tensormap.print();
     fflush(stdout);
     exit(1);
@@ -364,7 +365,8 @@ private:
     GPPRINTF_TMA(TMA,
                  "Complete transaction dst=0x%llx, src=0x%llx, "
                  "size_in_bytes=%u, mbar=0x%x, tx_uid=%u\n",
-                 tx.m_dyn_info.dst_addr, tx.m_dyn_info.src_addr,
+                 (unsigned long long)tx.m_dyn_info.dst_addr,
+                 (unsigned long long)tx.m_dyn_info.src_addr,
                  tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, tx_uid);
 
     // For TMA read, notify mbarrier of completion
@@ -396,21 +398,12 @@ public:
       abort();
     }
 
-    // Check if this is a tensor instruction
-    bool is_tensor = false;
-    for (auto op : pI->get_options()) {
-      if (op == TENSOR_OPTION) {
-        is_tensor = true;
-        break;
-      }
-    }
-
     const auto &tma_static_info = pI->get_tma_static_info();
 
     // Regular TMA copy instruction - queue for async processing
     const auto warp_size = m_shader_ctx->get_warp_size();
     auto num_transactions_before = issue_queue.size();
-    for (int laneid = 0; laneid < warp_size; laneid++) {
+    for (unsigned laneid = 0; laneid < warp_size; laneid++) {
       const auto &tma_dyn_info = pI->get_tma_dyn_info(laneid);
       if (tma_dyn_info.is_valid()) {
         unsigned tid = warp_size * warp_id + laneid;
@@ -464,15 +457,17 @@ public:
             "[TMA START] cta_id=%u, warp_id=%u, lane=%d, tid=%u, tx_uid=%u, "
             "dst=0x%llx, src=0x%llx, size=%u, mbar=0x%x\n",
             thread->get_hw_ctaid(), warp_id, laneid, tid, tx_uid,
-            tma_dyn_info.dst_addr, tma_dyn_info.src_addr,
+            (unsigned long long)tma_dyn_info.dst_addr,
+            (unsigned long long)tma_dyn_info.src_addr,
             tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr);
         fflush(stdout);
 
         GPPRINTF_INST_EXEC(
             TMA,
-            "Start transaction dst=0x%lx, tensormap at 0x%lx, "
+            "Start transaction dst=0x%llx, tensormap at 0x%llx, "
             "size_in_bytes=%u, mbar=0x%x, tx_uid=%u, tma_type=%d\n",
-            tma_dyn_info.dst_addr, tma_dyn_info.src_addr,
+            (unsigned long long)tma_dyn_info.dst_addr,
+            (unsigned long long)tma_dyn_info.src_addr,
             tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr, tx_uid,
             tma_static_info.tma_type);
       }
@@ -1027,25 +1022,18 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
       // Load: global -> shared
       global_mem->read(global_req_addr, req_size, data_buffer);
 
-      auto flat_ctaid = thread->get_flat_ctaid();
-      auto flat_tid = thread->get_flat_tid();
-      auto warp_size = thread->get_core()->get_warp_size();
-      auto warpid = flat_tid / warp_size;
-      auto laneid = flat_tid % warp_size;
-      auto sm_id = thread->get_hw_sid();
       GPPRINTF_INST_EXEC(
           TMA,
-          "[TMA LOAD] [%3d,%3d,%3d] SM %3d coord[%3d,%3d,%3d,%3d,%3d] "
+          "coord[%u,%u,%u,%u,%u] "
           "swizzle_mode %u "
           "gmem=0x%llx -> "
           "smem=0x%x, space=%p, size=%u, tile_offset=0x%llx, "
           "data[0..3]=0x%02x%02x%02x%02x fp32 %.3f\n",
-          flat_ctaid, warpid, laneid, sm_id, coords[0], coords[1], coords[2],
-          swizzle_mode, coords[3], coords[4],
-          (unsigned long long)global_req_addr, smem_addr, shared_mem, req_size,
-          (unsigned long long)tile_offset, req_size > 0 ? data_buffer[0] : 0,
-          req_size > 1 ? data_buffer[1] : 0, req_size > 2 ? data_buffer[2] : 0,
-          req_size > 3 ? data_buffer[3] : 0,
+          coords[0], coords[1], coords[2], coords[3], coords[4], swizzle_mode,
+          (unsigned long long)global_req_addr, (unsigned)smem_addr, shared_mem,
+          req_size, (unsigned long long)tile_offset,
+          req_size > 0 ? data_buffer[0] : 0, req_size > 1 ? data_buffer[1] : 0,
+          req_size > 2 ? data_buffer[2] : 0, req_size > 3 ? data_buffer[3] : 0,
           *reinterpret_cast<float *>(data_buffer));
 
       if (swizzle_mode != TMA_SWIZZLE_NONE) {
@@ -1187,9 +1175,10 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
 
     GPPRINTF_INST_EXEC(TMA,
                        "Functional Sim: "
-                       "TMA shared::cta <- global dst=0x%x, src=0x%lx, "
+                       "TMA shared::cta <- global dst=0x%x, src=0x%llx, "
                        "size_in_bytes=%u, mbar=0x%x\n",
-                       dst_addr, src_addr, size_in_bytes, mbar_addr);
+                       dst_addr, (unsigned long long)src_addr, size_in_bytes,
+                       mbar_addr);
 
   } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION &&
              completion_option == BULK_GROUP_OPTION) {
@@ -1205,8 +1194,8 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
     GPPRINTF_INST_EXEC(TMA,
                        "[TMA STORE] CTA(%u,%u,%u) warp=%u lane=%u: "
                        "dst=0x%llx, src=0x%x, size=%u\n",
-                       ctaid.x, ctaid.y, ctaid.z, warp_id, laneid, dst_addr,
-                       src_addr, size_in_bytes);
+                       ctaid.x, ctaid.y, ctaid.z, warp_id, laneid,
+                       (unsigned long long)dst_addr, src_addr, size_in_bytes);
 
     check_tma_alignment(dst_addr, src_addr, size_in_bytes);
 
@@ -1229,9 +1218,9 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
 
     GPPRINTF_INST_EXEC(TMA,
                        "Functional Sim: "
-                       "TMA global <- shared::cta dst=0x%x, src=0x%llx, "
+                       "TMA global <- shared::cta dst=0x%llx, src=0x%x, "
                        "size_in_bytes=%u\n",
-                       dst_addr, src_addr, size_in_bytes);
+                       (unsigned long long)dst_addr, src_addr, size_in_bytes);
   } else {
     assert(false && "Unsupported TMA copy instruction");
   }
@@ -1246,7 +1235,7 @@ static void handle_tma_commit_group(ptx_instruction *pI,
       .src_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
   };
   pI->set_tma_static_info(tma_static_info);
-  GPPRINTF_INST_EXEC(TMA, "Functional Sim: cp.async.bulk.commit_group\n", "");
+  GPPRINTF_INST_EXEC(TMA, "Functional Sim: cp.async.bulk.commit_group%s\n", "");
 }
 
 // Handle cp.async.bulk.wait_group N

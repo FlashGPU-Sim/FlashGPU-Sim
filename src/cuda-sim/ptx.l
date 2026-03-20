@@ -515,7 +515,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 
 "//"[^\n]* TC;	// eat single
 
-\n.*  recognizer->col=0; strncpy(recognizer->linebuf, yytext + 1, LINEBUF_SIZE); yyless( 1 );
+\n.*  recognizer->col=0; strncpy(recognizer->linebuf, yytext + 1, LINEBUF_SIZE - 1); recognizer->linebuf[LINEBUF_SIZE - 1] = '\0'; yyless( 1 );
 
 " " TC;
 "\t" TC;

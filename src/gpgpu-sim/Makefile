@@ -32,9 +32,9 @@ DEBUG?=0
 TRACE?=0
 
 ifeq ($(DEBUG),1)
-	CXXFLAGS = -Wall -DDEBUG -fopenmp $(EXTRA_FLAGS)
+	CXXFLAGS = -Wall -Wno-sign-compare -DDEBUG -fopenmp $(EXTRA_FLAGS)
 else
-	CXXFLAGS = -Wall -fopenmp $(EXTRA_FLAGS)
+	CXXFLAGS = -Wall -Wno-sign-compare -fopenmp $(EXTRA_FLAGS)
 endif
 
 ifeq ($(TRACE),1)
