@@ -381,11 +381,13 @@ run_bench_tests() {
     print_color $BLUE "Running microbenchmarks: ${test_name:-all} (config: $GPU_CONFIG)"
 
     local exit_code=0
-    for bench_bin in "$(pwd)/build/bin/"*_bench; do
+    while IFS= read -r bench_src; do
+        local bench_bin="$(pwd)/build/bin/${bench_src#src/microbench/}"
+        bench_bin="${bench_bin%.cc}"
         [ -f "$bench_bin" ] || continue
         print_color $BLUE "Running $(basename "$bench_bin")..."
         run_binary_with_filter "$bench_bin" "$config_dir" "$filter" || exit_code=$?
-    done
+    done < <(find src/microbench -type f -name '*_bench.cc' | sort)
 
     if [ $exit_code -eq 0 ]; then
         print_color $GREEN "✓ Benchmarks passed!"

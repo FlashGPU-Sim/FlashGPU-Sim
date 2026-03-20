@@ -131,8 +131,15 @@ test/src/
 │   └── cuda_tensor_mma_test.cc # CPU reference MMA validation
 │
 └── microbench/        # Performance microbenchmarks (separate binaries)
-    ├── mma_issue_bench.cc
-    └── inst_latency_bench.cc
+    ├── mma/
+    │   ├── README.md
+    │   ├── inst_latency_bench.cc
+    │   └── mma_issue_bench.cc
+    └── mbarrier/
+        ├── README.md
+        ├── mbarrier_trywait_latency_bench.cc
+        ├── mbarrier_visibility_bench.cc
+        └── mbarrier_contention_bench.cc
 ```
 
 **`unit/`** and **`integration/`** are compiled into `run_all_tests` (via `make test`).

@@ -1,6 +1,6 @@
 # MMA Microbenchmark Suite
 
-This directory contains microbenchmarks for characterizing GPU instruction latencies and throughputs, specifically focusing on Tensor Core (MMA) instructions and general scalar instructions.
+This directory contains MMA-focused microbenchmarks for characterizing Tensor Core issue behavior and peak throughput.
 
 ## Supported Tests
 
@@ -36,16 +36,6 @@ Analyzes the pipeline throughput (issue gap) of Tensor Core instructions by vary
         *   `BestILP` and `Blocks/SM` are chosen by sweeping candidate ILP values and keeping the configuration with the highest measured throughput.
         *   `Meas GHz` is an inferred runtime SM clock, computed from block-level `clock64()` spans divided by the kernel time measured with `cudaEvent`.
         *   `Theo Now` and `% Peak` scale the whitepaper dense peak using that inferred clock, so they reflect current boost behavior rather than only the static reference clock.
-
-### 2. Instruction Latency Calibration (`inst_latency_bench.cc`)
-Measures the pure execution latency (dependent chain) of various scalar and floating-point instructions.
-
-*   **Test Name**: `InstLatencyTest.IntegerAdd` (and others)
-    *   **Description**: Measures latency for Integer ADD, MUL, MAD, etc.
-    *   **Run Command**:
-        ```bash
-        ./run_tests.sh bench "InstLatencyTest.*"
-        ```
 
 ## Configuration Guide
 

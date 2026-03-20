@@ -21,6 +21,7 @@ GTEST_DIR = gtest/googletest
 SRC_DIR = ../src
 BUILD_DIR = build
 TEST_SRC_DIR = src
+TEST_COMMON_DIR = common
 OBJ_DIR = $(BUILD_DIR)/obj
 BIN_DIR = $(BUILD_DIR)/bin
 
@@ -29,13 +30,12 @@ GTEST_HEADERS = $(wildcard $(GTEST_DIR)/include/gtest/*.h) \
                 $(wildcard $(GTEST_DIR)/include/gtest/internal/*.h)
 GTEST_SRCS_ = $(wildcard $(GTEST_DIR)/src/*.cc) $(wildcard $(GTEST_DIR)/src/*.h) $(GTEST_HEADERS)
 
-# CUDA header dependencies - track all .cuh files in src directories
-CUH_HEADERS = $(wildcard $(TEST_SRC_DIR)/*/*.cuh) \
-              $(wildcard $(SRC_DIR)/*/*.cuh) \
-              $(wildcard $(SRC_DIR)/*.cuh)
+# CUDA header dependencies - track all .cuh files in test/common, test/src, and src
+CUH_HEADERS = $(shell find $(TEST_SRC_DIR) $(TEST_COMMON_DIR) $(SRC_DIR) -name '*.cuh' 2>/dev/null)
 
 # Include paths
 INCLUDES = -I$(GTEST_DIR)/include \
+           -I. \
            -I$(SRC_DIR) \
            -I$(SRC_DIR)/gpgpu-sim \
            -I$(SRC_DIR)/cuda-sim \
@@ -45,7 +45,7 @@ INCLUDES = -I$(GTEST_DIR)/include \
 # Test source files (recursive discovery for integration tests)
 UNIT_TEST_SOURCES = $(wildcard $(TEST_SRC_DIR)/unit/*_test.cc)
 INTEGRATION_TEST_SOURCES = $(shell find $(TEST_SRC_DIR)/integration -name '*_test.cc' 2>/dev/null)
-MICROBENCH_SOURCES = $(wildcard $(TEST_SRC_DIR)/microbench/*_bench.cc)
+MICROBENCH_SOURCES = $(shell find $(TEST_SRC_DIR)/microbench -name '*_bench.cc' 2>/dev/null)
 # run_all_tests includes unit + integration only (no microbench)
 TEST_SOURCES = $(UNIT_TEST_SOURCES) $(INTEGRATION_TEST_SOURCES)
 TEST_OBJECTS = $(UNIT_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o) \
@@ -159,6 +159,7 @@ $(OBJ_DIR)/integration/%.cu.o: $(TEST_SRC_DIR)/integration/%.cc $(CUH_HEADERS)
 
 # Microbench tests
 $(OBJ_DIR)/microbench/%.cu.o: $(TEST_SRC_DIR)/microbench/%.cc $(CUH_HEADERS) | $(MICROBENCH_OBJ_DIR)
+	@mkdir -p $(dir $@)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
 # Standalone dev tests
@@ -175,6 +176,7 @@ $(MAIN_TEST_TARGET): $(TEST_OBJECTS) $(FLASH_OBJECTS) $(OBJ_DIR)/gtest_main.a | 
 
 # Build individual microbench executables
 $(BIN_DIR)/%_bench: $(OBJ_DIR)/microbench/%_bench.cu.o $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
+	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(CUDA_LIBS)
 
 # Build dev test runner (standalone tests)

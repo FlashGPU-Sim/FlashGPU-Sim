@@ -27,7 +27,7 @@
 #include <numeric>
 #include <vector>
 
-#include "microbench_utils.cuh"
+#include "common/microbench_utils.cuh"
 
 // ============================================================================
 // MMA Instruction Traits (Strategy Pattern)
