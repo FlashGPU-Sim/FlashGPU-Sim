@@ -84,4 +84,8 @@ export GTEST_OUTPUT="xml:$REPO_ROOT/test_results.xml"
 
 ./test/run_tests.sh -c "$TEST_CONFIG" test "*:-CudaTMATest.PerformanceComparison" "$@"
 
+# Run trace tests (Triton kernel PTX smoke tests)
+echo "Building and running trace tests..."
+./test/run_tests.sh -c "$TEST_CONFIG" trace
+
 echo "CI tests completed successfully!"
