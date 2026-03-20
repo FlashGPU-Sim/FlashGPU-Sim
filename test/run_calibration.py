@@ -1,288 +1,379 @@
 #!/usr/bin/env python3
 """
-GPGPU-Sim Calibration Runner & Plotter
+GPGPU-Sim calibration runner for the MMA microbenchmarks.
 
-Runs microbenchmarks on both Native Hardware and GPGPU-Sim,
-collects performance data, and generates comparison plots.
+This script runs the committed MMA calibration benches on native hardware and
+under GPGPU-Sim, captures the per-variant output files, and generates
+comparison plots/CSVs in test/calibration_results/.
 """
 
+import csv
+import glob
 import os
 import shutil
 import subprocess
-import re
-import matplotlib.pyplot as plt
-import sys
-import glob
-import csv
 
-# Configuration
+import matplotlib.pyplot as plt
+
+
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(TEST_DIR)
 OUTPUT_DIR = os.path.join(TEST_DIR, "calibration_results")
 RUN_BASE_DIR = os.path.join(TEST_DIR, "run")
 DEFAULT_CONFIG = "SM120_RTX5090"
 
-TEST_CASES = [
-    "MMAIssueTest.ILPMinimal",
-    "MMAIssueTest.MultiWarpMinimal"
+RUN_TARGETS = [
+    {
+        "pattern": "ILPMinimal",
+        "file_prefix": "MMAIssueTest.ILPMinimal.",
+    },
+    {
+        "pattern": "MultiWarpMinimal",
+        "file_prefix": "MMAIssueTest.MultiWarpMinimal.",
+    },
 ]
+
+PLOT_OUTPUTS = [
+    "ilp_issue_gap_calibration.png",
+    "multiwarp_throughput_calibration.png",
+    "ilp_issue_gap_calibration.csv",
+    "multiwarp_throughput_calibration.csv",
+]
+
 
 def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-def get_run_dir():
-    """Determine where run_tests.sh is outputting files"""
-    # First check default
-    default_run = os.path.join(RUN_BASE_DIR, DEFAULT_CONFIG)
-    if os.path.exists(default_run):
-        return default_run
-    
-    # If not found, try to find any directory in run/
-    if os.path.exists(RUN_BASE_DIR):
-        subdirs = [os.path.join(RUN_BASE_DIR, d) for d in os.listdir(RUN_BASE_DIR) if os.path.isdir(os.path.join(RUN_BASE_DIR, d))]
-        if subdirs:
-            # Return the one with the latest modification time
-            return max(subdirs, key=os.path.getmtime)
-    
-    return TEST_DIR 
 
-def run_command(cmd, env=None, shell=True):
-    """Run a shell command and stream output"""
+def run_dir_for_config(config_name):
+    return os.path.join(RUN_BASE_DIR, config_name)
+
+
+def native_env():
+    env = os.environ.copy()
+    for key in (
+        "GPGPUSIM_ROOT",
+        "GPGPUSIM_CONFIG",
+        "GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN",
+        "OPENCL_REMOTE_GPU_HOST",
+    ):
+        env.pop(key, None)
+
+    ld_library_path = env.get("LD_LIBRARY_PATH", "")
+    if ld_library_path:
+        filtered = [
+            path
+            for path in ld_library_path.split(":")
+            if "gpgpu-sim_distribution/lib" not in path
+        ]
+        if filtered:
+            env["LD_LIBRARY_PATH"] = ":".join(filtered)
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+
+    return env
+
+
+def run_command(cmd, env=None):
     print(f"⚡ Running: {cmd}")
-    process = subprocess.Popen(
-        cmd, 
-        shell=shell, 
-        stdout=subprocess.PIPE, 
-        stderr=subprocess.STDOUT, 
-        universal_newlines=True,
+    subprocess.run(
+        cmd,
+        shell=True,
+        check=True,
+        cwd=TEST_DIR,
         env=env,
-        executable="/bin/bash" # Use bash for source command
+        executable="/bin/bash",
     )
-    
-    # Stream output
-    for line in process.stdout:
-        print(line, end='')
-    
-    process.wait()
-    if process.returncode != 0:
-        print(f"Error: Command failed with return code {process.returncode}")
-        # Don't exit immediately, let the script try to recover or show what happened
-        # sys.exit(1) 
+
+
+def clear_run_outputs(run_dir):
+    ensure_dir(run_dir)
+    for target in RUN_TARGETS:
+        pattern = os.path.join(run_dir, f"{target['file_prefix']}*.txt")
+        for path in glob.glob(pattern):
+            os.remove(path)
+
+
+def clear_captured_outputs():
+    ensure_dir(OUTPUT_DIR)
+
+    capture_patterns = [
+        "MMAIssueTest.ILPMinimal.*_HARDWARE.txt",
+        "MMAIssueTest.ILPMinimal.*_SIM.txt",
+        "MMAIssueTest.MultiWarpMinimal.*_HARDWARE.txt",
+        "MMAIssueTest.MultiWarpMinimal.*_SIM.txt",
+    ]
+    for pattern in capture_patterns:
+        for path in glob.glob(os.path.join(OUTPUT_DIR, pattern)):
+            os.remove(path)
+
+    for filename in PLOT_OUTPUTS:
+        path = os.path.join(OUTPUT_DIR, filename)
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def capture_outputs(run_dir, suffix):
+    captured = []
+    for target in RUN_TARGETS:
+        pattern = os.path.join(run_dir, f"{target['file_prefix']}*.txt")
+        for src_path in sorted(glob.glob(pattern)):
+            base, ext = os.path.splitext(os.path.basename(src_path))
+            dst_path = os.path.join(OUTPUT_DIR, f"{base}_{suffix}{ext}")
+            shutil.copy2(src_path, dst_path)
+            captured.append(dst_path)
+            print(f"Captured: {dst_path}")
+    return captured
+
+
+def variant_from_file(file_path):
+    with open(file_path, "r", encoding="utf-8") as infile:
+        first_line = infile.readline().strip()
+
+    prefix = "MMA Variant: "
+    if first_line.startswith(prefix):
+        return first_line[len(prefix) :].strip()
+
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    stem = stem.removesuffix("_HARDWARE")
+    stem = stem.removesuffix("_SIM")
+    parts = stem.split(".")
+    return parts[-1] if parts else stem
+
+
+def parse_box_table_file(file_path, x_index, y_index, skip_tokens):
+    data = {"variant": variant_from_file(file_path), "x": [], "y": []}
+
+    with open(file_path, "r", encoding="utf-8") as infile:
+        for line in infile:
+            normalized = line.replace("│", "|")
+            if "|" not in normalized:
+                continue
+            if any(token in normalized for token in skip_tokens):
+                continue
+
+            parts = [part.strip() for part in normalized.split("|") if part.strip()]
+            if len(parts) <= max(x_index, y_index):
+                continue
+
+            try:
+                data["x"].append(int(parts[x_index]))
+                data["y"].append(float(parts[y_index]))
+            except ValueError:
+                continue
+
+    return data
+
 
 def parse_ilp_minimal(file_path):
-    """
-    Parses MMAIssueTest.ILPMinimal.txt
-    Format:
-    |   ILP   | Iterations | Total MMAs   |  Total Cycles  |  Cycles/MMA     |
-    |    1    |      16    |        16    |         105     |        6.56     |
-    """
-    data = {'ilp': [], 'cycles_per_mma': []}
-    if not os.path.exists(file_path):
-        print(f"Warning: File {file_path} not found")
-        return data
-        
-    with open(file_path, 'r') as f:
-        for line in f:
-            line = line.replace('│', '|') # Handle box-drawing chars
-            if "|" in line and "ILP" not in line and "Cycles" not in line:
-                parts = [p.strip() for p in line.split('|') if p.strip()]
-                if len(parts) >= 5:
-                    try:
-                        data['ilp'].append(int(parts[0]))
-                        data['cycles_per_mma'].append(float(parts[4]))
-                    except ValueError:
-                        continue
-    return data
+    return parse_box_table_file(
+        file_path,
+        x_index=0,
+        y_index=4,
+        skip_tokens=("ILP", "Cycles/MMA", "MMA Variant"),
+    )
+
 
 def parse_multiwarp_minimal(file_path):
-    """
-    Parses MMAIssueTest.MultiWarpMinimal.txt
-    Format:
-    |  Warps  | Total MMAs |   Cycles   | Cycles/MMA |  Speedup  |
-    |     1   |     1000   |      6500  |      6.50  |     0.00x |
-    """
-    data = {'warps': [], 'cycles_per_mma': []}
-    if not os.path.exists(file_path):
-        print(f"Warning: File {file_path} not found")
-        return data
+    return parse_box_table_file(
+        file_path,
+        x_index=0,
+        y_index=3,
+        skip_tokens=("Warps", "Cycles/MMA", "MMA Variant"),
+    )
 
-    with open(file_path, 'r') as f:
-        for line in f:
-            line = line.replace('│', '|') # Handle box-drawing chars
-            if "|" in line and "Warps" not in line and "Cycles" not in line:
-                parts = [p.strip() for p in line.split('|') if p.strip()]
-                if len(parts) >= 5:
-                    try:
-                        data['warps'].append(int(parts[0]))
-                        data['cycles_per_mma'].append(float(parts[3]))
-                    except ValueError:
-                        continue
-    return data
 
-def plot_ilp_minimal(hw_data, sim_data):
-    if not hw_data['ilp'] or not sim_data['ilp']:
-        print("Skipping ILP plot due to missing data")
+def collect_results(prefix, suffix, parser):
+    results = {}
+    pattern = os.path.join(OUTPUT_DIR, f"{prefix}*_{suffix}.txt")
+    for path in sorted(glob.glob(pattern)):
+        parsed = parser(path)
+        if parsed["x"] and parsed["y"]:
+            results[parsed["variant"]] = parsed
+    return results
+
+
+def plot_variant_comparison(
+    hw_results,
+    sim_results,
+    title,
+    xlabel,
+    ylabel,
+    output_filename,
+):
+    if not hw_results or not sim_results:
+        print(f"Skipping {output_filename} due to missing data")
         return
 
-    plt.figure(figsize=(10, 6))
-    plt.plot(hw_data['ilp'], hw_data['cycles_per_mma'], 'bo-', label='Hardware (Native)')
-    plt.plot(sim_data['ilp'], sim_data['cycles_per_mma'], 'rs--', label='GPGPU-Sim')
-    
-    plt.title('MMA Throughput vs ILP (Issue Gap Analysis)')
-    plt.xlabel('ILP (Instruction Level Parallelism)')
-    plt.ylabel('Cycles per MMA Instruction')
-    plt.legend()
+    plt.figure(figsize=(12, 7))
+    color_cycle = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+    variants = sorted(set(hw_results.keys()) | set(sim_results.keys()))
+
+    for index, variant in enumerate(variants):
+        color = color_cycle[index % len(color_cycle)] if color_cycle else None
+
+        if variant in hw_results:
+            plt.plot(
+                hw_results[variant]["x"],
+                hw_results[variant]["y"],
+                marker="o",
+                linestyle="-",
+                color=color,
+                label=f"{variant} HW",
+            )
+        if variant in sim_results:
+            plt.plot(
+                sim_results[variant]["x"],
+                sim_results[variant]["y"],
+                marker="x",
+                linestyle="--",
+                color=color,
+                label=f"{variant} Sim",
+            )
+
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
     plt.grid(True)
-    
-    output_file = os.path.join(OUTPUT_DIR, "ilp_issue_gap_calibration.png")
-    plt.savefig(output_file)
-    print(f"Generated plot: {output_file}")
-    plt.close()
+    plt.legend(fontsize=8, ncol=2)
+    plt.tight_layout()
 
-def plot_multiwarp_minimal(hw_data, sim_data):
-    if not hw_data['warps'] or not sim_data['warps']:
-        print("Skipping MultiWarp plot due to missing data")
+    output_path = os.path.join(OUTPUT_DIR, output_filename)
+    plt.savefig(output_path)
+    plt.close()
+    print(f"Generated plot: {output_path}")
+
+
+def export_variant_csv(hw_results, sim_results, output_filename, x_label):
+    if not hw_results or not sim_results:
+        print(f"Skipping {output_filename} due to missing data")
         return
 
-    plt.figure(figsize=(10, 6))
-    plt.plot(hw_data['warps'], hw_data['cycles_per_mma'], 'bo-', label='Hardware (Native)')
-    plt.plot(sim_data['warps'], sim_data['cycles_per_mma'], 'rs--', label='GPGPU-Sim')
-    
-    plt.title('MMA Throughput vs Warp Count (Pipeline Independence)')
-    plt.xlabel('Number of Warps')
-    plt.ylabel('Cycles per MMA Instruction')
-    plt.legend()
-    plt.grid(True)
-    
-    output_file = os.path.join(OUTPUT_DIR, "multiwarp_throughput_calibration.png")
-    plt.savefig(output_file)
-    print(f"Generated plot: {output_file}")
-    plt.close()
+    output_path = os.path.join(OUTPUT_DIR, output_filename)
+    variants = sorted(set(hw_results.keys()) | set(sim_results.keys()))
 
-def export_comparison_csv(hw_data, sim_data, metric_name, x_axis_name, output_filename):
-    """
-    Exports HW vs Sim comparison to a CSV file.
-    Calculates percentage difference: (Sim - HW) / HW * 100
-    """
-    if not hw_data[x_axis_name] or not sim_data[x_axis_name]:
-        print(f"Skipping CSV export for {metric_name} due to missing data")
-        return
-
-    # Map x-axis value to y-axis value for easier lookup
-    hw_dict = {x: y for x, y in zip(hw_data[x_axis_name], hw_data['cycles_per_mma'])}
-    sim_dict = {x: y for x, y in zip(sim_data[x_axis_name], sim_data['cycles_per_mma'])}
-    
-    all_x = sorted(list(set(hw_dict.keys()) | set(sim_dict.keys())))
-    
-    csv_path = os.path.join(OUTPUT_DIR, output_filename)
-    
-    with open(csv_path, 'w', newline='') as csvfile:
-        fieldnames = [x_axis_name, 'HW_Cycles_per_MMA', 'Sim_Cycles_per_MMA', 'Diff_Percent']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        
+    with open(output_path, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(
+            csvfile,
+            fieldnames=[
+                "variant",
+                x_label,
+                "HW_Cycles_per_MMA",
+                "Sim_Cycles_per_MMA",
+                "Diff_Percent",
+            ],
+        )
         writer.writeheader()
-        for x in all_x:
-            hw_val = hw_dict.get(x, None)
-            sim_val = sim_dict.get(x, None)
-            
-            diff_percent = "N/A"
-            if hw_val is not None and sim_val is not None and hw_val != 0:
-                diff_percent = f"{((sim_val - hw_val) / hw_val) * 100:.2f}%"
-            
-            row = {
-                x_axis_name: x,
-                'HW_Cycles_per_MMA': hw_val if hw_val is not None else "N/A",
-                'Sim_Cycles_per_MMA': sim_val if sim_val is not None else "N/A",
-                'Diff_Percent': diff_percent
-            }
-            writer.writerow(row)
-            
-    print(f"Generated CSV: {csv_path}")
+
+        for variant in variants:
+            hw_map = {}
+            sim_map = {}
+            if variant in hw_results:
+                hw_map = dict(zip(hw_results[variant]["x"], hw_results[variant]["y"]))
+            if variant in sim_results:
+                sim_map = dict(zip(sim_results[variant]["x"], sim_results[variant]["y"]))
+
+            for x_value in sorted(set(hw_map.keys()) | set(sim_map.keys())):
+                hw_value = hw_map.get(x_value)
+                sim_value = sim_map.get(x_value)
+                diff_percent = "N/A"
+                if hw_value is not None and sim_value is not None and hw_value != 0:
+                    diff_percent = f"{((sim_value - hw_value) / hw_value) * 100:.2f}%"
+
+                writer.writerow(
+                    {
+                        "variant": variant,
+                        x_label: x_value,
+                        "HW_Cycles_per_MMA": hw_value if hw_value is not None else "N/A",
+                        "Sim_Cycles_per_MMA": sim_value if sim_value is not None else "N/A",
+                        "Diff_Percent": diff_percent,
+                    }
+                )
+
+    print(f"Generated CSV: {output_path}")
+
+
+def run_hardware_phase(config_name, run_dir):
+    print("\n[Phase 1] Running Hardware Tests (Native)...")
+    clear_run_outputs(run_dir)
+
+    for target in RUN_TARGETS:
+        run_command(
+            f"./run_tests.sh -c {config_name} bench \"{target['pattern']}\"",
+            env=native_env(),
+        )
+
+    capture_outputs(run_dir, "HARDWARE")
+
+
+def run_sim_phase(config_name, run_dir):
+    print("\n[Phase 2] Running GPGPU-Sim Tests...")
+    clear_run_outputs(run_dir)
+
+    setup_script = os.path.join(PROJECT_ROOT, "setup_environment")
+    for target in RUN_TARGETS:
+        run_command(
+            f"source {setup_script} && ./run_tests.sh -c {config_name} bench "
+            f"\"{target['pattern']}\""
+        )
+
+    capture_outputs(run_dir, "SIM")
+
 
 def main():
     ensure_dir(OUTPUT_DIR)
-    os.chdir(TEST_DIR) # Make sure we are in test/ dir
-    
-    # Identify Run Directory
-    run_dir = get_run_dir()
-    print(f"Detected Run Directory: {run_dir}")
+    clear_captured_outputs()
 
-    # Build microbenchmarks
-    print("\n[Phase 0] Building microbenchmarks...")
-    run_command("make bench")
+    config_name = DEFAULT_CONFIG
+    run_dir = run_dir_for_config(config_name)
 
-    bench_binary = os.path.join(TEST_DIR, "build", "bin", "mma_issue_bench")
-    if not os.path.exists(bench_binary):
-        print(f"Error: microbench binary not found at {bench_binary}")
-        print("Run 'make bench' in the test/ directory first.")
-        sys.exit(1)
+    run_command(f"./run_tests.sh -c {config_name} refresh", env=native_env())
+    run_hardware_phase(config_name, run_dir)
+    run_sim_phase(config_name, run_dir)
 
-    # 1. Run Hardware Tests
-    print("\n[Phase 1] Running Hardware Tests (Native)...")
-    # Clean old results in Run Dir
-    for test in TEST_CASES:
-        res_file = os.path.join(run_dir, f"{test}.txt")
-        if os.path.exists(res_file):
-            os.remove(res_file)
-
-    # Run tests without sourcing setup_environment (uses system CUDA)
-    # We clear LD_LIBRARY_PATH just in case to avoid simulator libs
-    hw_env = os.environ.copy()
-    hw_env.pop("GPGPUSIM_ROOT", None)
-
-    cmd_hw = f"cd {run_dir} && {bench_binary} --gtest_filter='MMAIssueTest.*'"
-    run_command(cmd_hw, env=hw_env)
-
-    # Rename results
-    for test in TEST_CASES:
-        src_file = os.path.join(run_dir, f"{test}.txt")
-        dst_file = os.path.join(OUTPUT_DIR, f"{test}_HARDWARE.txt")
-        if os.path.exists(src_file):
-            shutil.move(src_file, dst_file)
-            print(f"Captured: {dst_file}")
-        else:
-            print(f"Error: Hardware test {test} did not produce partial output at {src_file}.")
-
-    # 2. Run Simulator Tests
-    print("\n[Phase 2] Running GPGPU-Sim Tests...")
-    
-    # Setup for Sim
-    setup_script = os.path.join(PROJECT_ROOT, "setup_environment")
-    cmd_sim = f"source {setup_script} && cd {run_dir} && {bench_binary} --gtest_filter='MMAIssueTest.*'"
-    
-    # Clean old results again (just in case)
-    for test in TEST_CASES:
-        res_file = os.path.join(run_dir, f"{test}.txt")
-        if os.path.exists(res_file):
-            os.remove(res_file)
-
-    run_command(cmd_sim)
-
-    # Rename results
-    for test in TEST_CASES:
-        src_file = os.path.join(run_dir, f"{test}.txt")
-        dst_file = os.path.join(OUTPUT_DIR, f"{test}_SIM.txt")
-        if os.path.exists(src_file):
-            shutil.move(src_file, dst_file)
-            print(f"Captured: {dst_file}")
-        else:
-             print(f"Error: Simulator test {test} did not produce partial output at {src_file}.")
-
-    # 3. Parse and Plot
     print("\n[Phase 3] Generating Plots...")
-    
-    hw_ilp = parse_ilp_minimal(os.path.join(OUTPUT_DIR, "MMAIssueTest.ILPMinimal_HARDWARE.txt"))
-    sim_ilp = parse_ilp_minimal(os.path.join(OUTPUT_DIR, "MMAIssueTest.ILPMinimal_SIM.txt"))
-    plot_ilp_minimal(hw_ilp, sim_ilp)
-    export_comparison_csv(hw_ilp, sim_ilp, "ILP Minimal", "ilp", "ilp_issue_gap_calibration.csv")
 
-    hw_warp = parse_multiwarp_minimal(os.path.join(OUTPUT_DIR, "MMAIssueTest.MultiWarpMinimal_HARDWARE.txt"))
-    sim_warp = parse_multiwarp_minimal(os.path.join(OUTPUT_DIR, "MMAIssueTest.MultiWarpMinimal_SIM.txt"))
-    plot_multiwarp_minimal(hw_warp, sim_warp)
-    export_comparison_csv(hw_warp, sim_warp, "MultiWarp Minimal", "warps", "multiwarp_throughput_calibration.csv")
+    hw_ilp = collect_results("MMAIssueTest.ILPMinimal.", "HARDWARE", parse_ilp_minimal)
+    sim_ilp = collect_results("MMAIssueTest.ILPMinimal.", "SIM", parse_ilp_minimal)
+    plot_variant_comparison(
+        hw_ilp,
+        sim_ilp,
+        title="MMA Throughput vs ILP (Issue Gap Analysis)",
+        xlabel="ILP (Instruction Level Parallelism)",
+        ylabel="Cycles per MMA Instruction",
+        output_filename="ilp_issue_gap_calibration.png",
+    )
+    export_variant_csv(
+        hw_ilp,
+        sim_ilp,
+        output_filename="ilp_issue_gap_calibration.csv",
+        x_label="ilp",
+    )
+
+    hw_multiwarp = collect_results(
+        "MMAIssueTest.MultiWarpMinimal.", "HARDWARE", parse_multiwarp_minimal
+    )
+    sim_multiwarp = collect_results(
+        "MMAIssueTest.MultiWarpMinimal.", "SIM", parse_multiwarp_minimal
+    )
+    plot_variant_comparison(
+        hw_multiwarp,
+        sim_multiwarp,
+        title="MMA Throughput vs Warp Count (Pipeline Independence)",
+        xlabel="Number of Warps",
+        ylabel="Cycles per MMA Instruction",
+        output_filename="multiwarp_throughput_calibration.png",
+    )
+    export_variant_csv(
+        hw_multiwarp,
+        sim_multiwarp,
+        output_filename="multiwarp_throughput_calibration.csv",
+        x_label="warps",
+    )
 
     print("\nCalibration finished. Results in test/calibration_results/")
+
 
 if __name__ == "__main__":
     main()
