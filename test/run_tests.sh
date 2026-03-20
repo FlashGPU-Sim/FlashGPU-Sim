@@ -454,17 +454,22 @@ run_trace_tests() {
     local trace_bin_dir="$(pwd)/build/trace/bin"
     local exit_code=0
 
-    for test_bin in "$trace_bin_dir"/*_trace_test; do
-        [ -f "$test_bin" ] || continue
-        local name=$(basename "$test_bin")
+    # Data-driven test names (must match configs in data_driven_trace_test.cu)
+    local data_driven_tests="gelu flash_attn layernorm residual_add linear"
 
-        # Apply filter if specified
+    # Run embedding test (CPU reference, separate binary)
+    if [ -z "$test_name" ] || [[ "embedding" == *"$test_name"* ]]; then
+        print_color $BLUE "--- embedding_trace_test ---"
+        (cd "$trace_bin_dir" && ./embedding_trace_test) || { exit_code=1; print_color $RED "FAILED: embedding"; }
+    fi
+
+    # Run data-driven tests (single binary, test name as argument)
+    for name in $data_driven_tests; do
         if [ -n "$test_name" ] && [[ "$name" != *"$test_name"* ]]; then
             continue
         fi
-
-        print_color $BLUE "--- $name ---"
-        (cd "$trace_bin_dir" && ./"$name") || { exit_code=1; print_color $RED "FAILED: $name"; }
+        print_color $BLUE "--- data_driven_trace_test $name ---"
+        (cd "$trace_bin_dir" && ./data_driven_trace_test "$name") || { exit_code=1; print_color $RED "FAILED: $name"; }
     done
 
     if [ $exit_code -eq 0 ]; then

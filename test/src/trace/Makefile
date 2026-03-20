@@ -23,21 +23,23 @@ DATA_DIR = $(BUILD_DIR)/bin/data
 KERNELS = embedding_kernel gelu_kernel flash_attn_kernel layernorm_kernel \
           residual_add_kernel linear_kernel
 
-# Test binary names (must match *_trace_test.cu filenames)
-TEST_NAMES = embedding gelu flash_attn layernorm residual_add linear
-
 # Targets
 FATBINS = $(addprefix $(BIN_DIR)/, $(addsuffix .fatbin, $(KERNELS)))
-TESTS = $(addprefix $(BIN_DIR)/, $(addsuffix _trace_test, $(TEST_NAMES)))
 
-# Data files needed by data-driven tests (all except embedding)
+# Two test binaries: embedding (CPU reference) + data_driven (all others)
+EMBEDDING_TEST = $(BIN_DIR)/embedding_trace_test
+DATA_DRIVEN_TEST = $(BIN_DIR)/data_driven_trace_test
+
+# Data-driven test names (passed as argv to data_driven_trace_test)
+DATA_DRIVEN_NAMES = gelu flash_attn layernorm residual_add linear
+
+# Data files needed by data-driven tests
 DATA_STAMP = $(DATA_DIR)/.extracted
+CONFIG_STAMP = $(BIN_DIR)/.config_$(GPU_CONFIG)
 
 .PHONY: all clean run
 
-CONFIG_STAMP = $(BIN_DIR)/.config_$(GPU_CONFIG)
-
-all: $(FATBINS) $(TESTS) $(DATA_STAMP) $(CONFIG_STAMP)
+all: $(FATBINS) $(EMBEDDING_TEST) $(DATA_DRIVEN_TEST) $(DATA_STAMP) $(CONFIG_STAMP)
 
 # Create directories
 $(BIN_DIR) $(DATA_DIR):
@@ -47,8 +49,12 @@ $(BIN_DIR) $(DATA_DIR):
 $(BIN_DIR)/%.fatbin: $(PTX_DIR)/%.ptx | $(BIN_DIR)
 	$(NVCC) -fatbin -arch=$(ARCH) -o $@ $<
 
-# Compile test harnesses
-$(BIN_DIR)/%_trace_test: $(TRACE_DIR)%_trace_test.cu $(TRACE_DIR)trace_test_utils.h | $(BIN_DIR)
+# Compile embedding test (CPU reference)
+$(EMBEDDING_TEST): $(TRACE_DIR)embedding_trace_test.cu $(TRACE_DIR)trace_test_utils.h | $(BIN_DIR)
+	$(NVCC) -arch=$(ARCH) -I$(TRACE_DIR) -o $@ $< $(CUDA_FLAGS)
+
+# Compile unified data-driven test
+$(DATA_DRIVEN_TEST): $(TRACE_DIR)data_driven_trace_test.cu $(TRACE_DIR)trace_test_utils.h | $(BIN_DIR)
 	$(NVCC) -arch=$(ARCH) -I$(TRACE_DIR) -o $@ $< $(CUDA_FLAGS)
 
 # Copy GPU config to bin directory
@@ -62,14 +68,16 @@ $(DATA_STAMP): $(DATA_ARCHIVE) | $(DATA_DIR)
 	tar -xzf $(DATA_ARCHIVE) -C $(DATA_DIR)
 	touch $@
 
-# Run all tests (from the bin directory so executables find their data)
+# Run all tests
 run: all
 	@echo "=== Running GPT-2 Trace Tests ==="
 	@failed=0; \
-	for test in $(TESTS); do \
-		name=$$(basename $$test); \
-		echo "--- $$name ---"; \
-		(cd $(BIN_DIR) && ./$$name) || failed=$$((failed + 1)); \
+	echo "--- embedding_trace_test ---"; \
+	(cd $(BIN_DIR) && ./embedding_trace_test) || failed=$$((failed + 1)); \
+	echo ""; \
+	for name in $(DATA_DRIVEN_NAMES); do \
+		echo "--- data_driven_trace_test $$name ---"; \
+		(cd $(BIN_DIR) && ./data_driven_trace_test $$name) || failed=$$((failed + 1)); \
 		echo ""; \
 	done; \
 	if [ $$failed -eq 0 ]; then \
