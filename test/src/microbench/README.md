@@ -23,6 +23,20 @@ Analyzes the pipeline throughput (issue gap) of Tensor Core instructions by vary
         ./run_tests.sh bench "MMAIssueTest.MultiWarpMinimal"
         ```
 
+*   **Test Name**: `MMAPeak.AllVariants`
+    *   **Description**: Sweeps ILP on a full-device MMA workload, selects the best throughput point for each of the 7 supported MMA instructions, and reports the result in `TFLOPS` (floating-point variants) or `TOPS` (integer variants).
+    *   **Run Command**:
+        ```bash
+        ./run_tests.sh bench "MMAPeak.AllVariants"
+        ```
+    *   **Output**:
+        *   Console summary table.
+        *   `MMAPeak.Summary.txt`
+    *   **Notes**:
+        *   `BestILP` and `Blocks/SM` are chosen by sweeping candidate ILP values and keeping the configuration with the highest measured throughput.
+        *   `Meas GHz` is an inferred runtime SM clock, computed from block-level `clock64()` spans divided by the kernel time measured with `cudaEvent`.
+        *   `Theo Now` and `% Peak` scale the whitepaper dense peak using that inferred clock, so they reflect current boost behavior rather than only the static reference clock.
+
 ### 2. Instruction Latency Calibration (`inst_latency_bench.cc`)
 Measures the pure execution latency (dependent chain) of various scalar and floating-point instructions.
 
