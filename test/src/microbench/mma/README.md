@@ -101,13 +101,16 @@ Change vectors in [`mma_issue_bench.cc`](mma_issue_bench.cc):
 To calibrate the simulator against hardware, use the provided Python script:
 
 ```bash
-# From test/ directory
-./run_calibration.py
+# From repository root
+python3 test/src/microbench/mma/run_calibration.py
+
+# Or from test/ directory
+python3 src/microbench/mma/run_calibration.py
 ```
 
 This script will:
 1.  Run `MMAIssueTest.ILPMinimal` and `MMAIssueTest.MultiWarpMinimal` on **native hardware** (ignoring `setup_environment`).
-2.  Source `setup_environment` and run the same tests on **GPGPU-Sim**.
+2.  Source `setup.sh` and `setup_environment`, then run the same tests on **GPGPU-Sim**.
 3.  Parse the output tables and generating comparison plots in `test/calibration_results/`.
 
 **Output:**

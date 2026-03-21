@@ -7,19 +7,26 @@ under GPGPU-Sim, captures the per-variant output files, and generates
 comparison plots/CSVs in test/calibration_results/.
 """
 
+from __future__ import annotations
+
+import argparse
 import csv
-import glob
 import os
+import shlex
 import shutil
 import subprocess
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 
 
-TEST_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(TEST_DIR)
-OUTPUT_DIR = os.path.join(TEST_DIR, "calibration_results")
-RUN_BASE_DIR = os.path.join(TEST_DIR, "run")
+SCRIPT_DIR = Path(__file__).resolve().parent
+TEST_DIR = SCRIPT_DIR.parents[2]
+PROJECT_ROOT = TEST_DIR.parent
+OUTPUT_DIR = TEST_DIR / "calibration_results"
+RUN_BASE_DIR = TEST_DIR / "run"
+SETUP_SH = PROJECT_ROOT / "setup.sh"
+SETUP_ENVIRONMENT = PROJECT_ROOT / "setup_environment"
 DEFAULT_CONFIG = "SM120_RTX5090"
 
 RUN_TARGETS = [
@@ -41,16 +48,20 @@ PLOT_OUTPUTS = [
 ]
 
 
-def ensure_dir(path):
-    if not os.path.exists(path):
-        os.makedirs(path)
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
 
 
-def run_dir_for_config(config_name):
-    return os.path.join(RUN_BASE_DIR, config_name)
+def run_dir_for_config(config_name: str) -> Path:
+    return RUN_BASE_DIR / config_name
 
 
-def native_env():
+def is_simulator_lib_path(path: str) -> bool:
+    resolved = os.path.realpath(path)
+    return resolved.startswith(str(PROJECT_ROOT / "lib"))
+
+
+def native_env() -> dict[str, str]:
     env = os.environ.copy()
     for key in (
         "GPGPUSIM_ROOT",
@@ -65,7 +76,7 @@ def native_env():
         filtered = [
             path
             for path in ld_library_path.split(":")
-            if "gpgpu-sim_distribution/lib" not in path
+            if path and not is_simulator_lib_path(path)
         ]
         if filtered:
             env["LD_LIBRARY_PATH"] = ":".join(filtered)
@@ -75,7 +86,11 @@ def native_env():
     return env
 
 
-def run_command(cmd, env=None):
+def shell_quote(path: Path) -> str:
+    return shlex.quote(str(path))
+
+
+def run_command(cmd: str, env: dict[str, str] | None = None) -> None:
     print(f"⚡ Running: {cmd}")
     subprocess.run(
         cmd,
@@ -87,15 +102,14 @@ def run_command(cmd, env=None):
     )
 
 
-def clear_run_outputs(run_dir):
+def clear_run_outputs(run_dir: Path) -> None:
     ensure_dir(run_dir)
     for target in RUN_TARGETS:
-        pattern = os.path.join(run_dir, f"{target['file_prefix']}*.txt")
-        for path in glob.glob(pattern):
-            os.remove(path)
+        for path in run_dir.glob(f"{target['file_prefix']}*.txt"):
+            path.unlink()
 
 
-def clear_captured_outputs():
+def clear_captured_outputs() -> None:
     ensure_dir(OUTPUT_DIR)
 
     capture_patterns = [
@@ -105,47 +119,48 @@ def clear_captured_outputs():
         "MMAIssueTest.MultiWarpMinimal.*_SIM.txt",
     ]
     for pattern in capture_patterns:
-        for path in glob.glob(os.path.join(OUTPUT_DIR, pattern)):
-            os.remove(path)
+        for path in OUTPUT_DIR.glob(pattern):
+            path.unlink()
 
     for filename in PLOT_OUTPUTS:
-        path = os.path.join(OUTPUT_DIR, filename)
-        if os.path.exists(path):
-            os.remove(path)
+        path = OUTPUT_DIR / filename
+        if path.exists():
+            path.unlink()
 
 
-def capture_outputs(run_dir, suffix):
-    captured = []
+def capture_outputs(run_dir: Path, suffix: str) -> list[Path]:
+    captured: list[Path] = []
     for target in RUN_TARGETS:
-        pattern = os.path.join(run_dir, f"{target['file_prefix']}*.txt")
-        for src_path in sorted(glob.glob(pattern)):
-            base, ext = os.path.splitext(os.path.basename(src_path))
-            dst_path = os.path.join(OUTPUT_DIR, f"{base}_{suffix}{ext}")
+        for src_path in sorted(run_dir.glob(f"{target['file_prefix']}*.txt")):
+            dst_path = OUTPUT_DIR / f"{src_path.stem}_{suffix}{src_path.suffix}"
             shutil.copy2(src_path, dst_path)
             captured.append(dst_path)
             print(f"Captured: {dst_path}")
     return captured
 
 
-def variant_from_file(file_path):
-    with open(file_path, "r", encoding="utf-8") as infile:
+def variant_from_file(file_path: Path) -> str:
+    with file_path.open("r", encoding="utf-8") as infile:
         first_line = infile.readline().strip()
 
     prefix = "MMA Variant: "
     if first_line.startswith(prefix):
         return first_line[len(prefix) :].strip()
 
-    stem = os.path.splitext(os.path.basename(file_path))[0]
-    stem = stem.removesuffix("_HARDWARE")
-    stem = stem.removesuffix("_SIM")
+    stem = file_path.stem.removesuffix("_HARDWARE").removesuffix("_SIM")
     parts = stem.split(".")
     return parts[-1] if parts else stem
 
 
-def parse_box_table_file(file_path, x_index, y_index, skip_tokens):
-    data = {"variant": variant_from_file(file_path), "x": [], "y": []}
+def parse_box_table_file(
+    file_path: Path,
+    x_index: int,
+    y_index: int,
+    skip_tokens: tuple[str, ...],
+) -> dict[str, object]:
+    data: dict[str, object] = {"variant": variant_from_file(file_path), "x": [], "y": []}
 
-    with open(file_path, "r", encoding="utf-8") as infile:
+    with file_path.open("r", encoding="utf-8") as infile:
         for line in infile:
             normalized = line.replace("│", "|")
             if "|" not in normalized:
@@ -166,7 +181,7 @@ def parse_box_table_file(file_path, x_index, y_index, skip_tokens):
     return data
 
 
-def parse_ilp_minimal(file_path):
+def parse_ilp_minimal(file_path: Path) -> dict[str, object]:
     return parse_box_table_file(
         file_path,
         x_index=0,
@@ -175,7 +190,7 @@ def parse_ilp_minimal(file_path):
     )
 
 
-def parse_multiwarp_minimal(file_path):
+def parse_multiwarp_minimal(file_path: Path) -> dict[str, object]:
     return parse_box_table_file(
         file_path,
         x_index=0,
@@ -184,24 +199,23 @@ def parse_multiwarp_minimal(file_path):
     )
 
 
-def collect_results(prefix, suffix, parser):
-    results = {}
-    pattern = os.path.join(OUTPUT_DIR, f"{prefix}*_{suffix}.txt")
-    for path in sorted(glob.glob(pattern)):
+def collect_results(prefix: str, suffix: str, parser) -> dict[str, dict[str, object]]:
+    results: dict[str, dict[str, object]] = {}
+    for path in sorted(OUTPUT_DIR.glob(f"{prefix}*_{suffix}.txt")):
         parsed = parser(path)
         if parsed["x"] and parsed["y"]:
-            results[parsed["variant"]] = parsed
+            results[str(parsed["variant"])] = parsed
     return results
 
 
 def plot_variant_comparison(
-    hw_results,
-    sim_results,
-    title,
-    xlabel,
-    ylabel,
-    output_filename,
-):
+    hw_results: dict[str, dict[str, object]],
+    sim_results: dict[str, dict[str, object]],
+    title: str,
+    xlabel: str,
+    ylabel: str,
+    output_filename: str,
+) -> None:
     if not hw_results or not sim_results:
         print(f"Skipping {output_filename} due to missing data")
         return
@@ -239,21 +253,26 @@ def plot_variant_comparison(
     plt.legend(fontsize=8, ncol=2)
     plt.tight_layout()
 
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
+    output_path = OUTPUT_DIR / output_filename
     plt.savefig(output_path)
     plt.close()
     print(f"Generated plot: {output_path}")
 
 
-def export_variant_csv(hw_results, sim_results, output_filename, x_label):
+def export_variant_csv(
+    hw_results: dict[str, dict[str, object]],
+    sim_results: dict[str, dict[str, object]],
+    output_filename: str,
+    x_label: str,
+) -> None:
     if not hw_results or not sim_results:
         print(f"Skipping {output_filename} due to missing data")
         return
 
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
+    output_path = OUTPUT_DIR / output_filename
     variants = sorted(set(hw_results.keys()) | set(sim_results.keys()))
 
-    with open(output_path, "w", newline="", encoding="utf-8") as csvfile:
+    with output_path.open("w", newline="", encoding="utf-8") as csvfile:
         writer = csv.DictWriter(
             csvfile,
             fieldnames=[
@@ -294,7 +313,7 @@ def export_variant_csv(hw_results, sim_results, output_filename, x_label):
     print(f"Generated CSV: {output_path}")
 
 
-def run_hardware_phase(config_name, run_dir):
+def run_hardware_phase(config_name: str, run_dir: Path) -> None:
     print("\n[Phase 1] Running Hardware Tests (Native)...")
     clear_run_outputs(run_dir)
 
@@ -307,25 +326,41 @@ def run_hardware_phase(config_name, run_dir):
     capture_outputs(run_dir, "HARDWARE")
 
 
-def run_sim_phase(config_name, run_dir):
+def run_sim_phase(config_name: str, run_dir: Path) -> None:
     print("\n[Phase 2] Running GPGPU-Sim Tests...")
     clear_run_outputs(run_dir)
 
-    setup_script = os.path.join(PROJECT_ROOT, "setup_environment")
+    setup_cmd = (
+        f"source {shell_quote(SETUP_SH)} && "
+        f"source {shell_quote(SETUP_ENVIRONMENT)}"
+    )
     for target in RUN_TARGETS:
         run_command(
-            f"source {setup_script} && ./run_tests.sh -c {config_name} bench "
+            f"{setup_cmd} && ./run_tests.sh -c {config_name} bench "
             f"\"{target['pattern']}\""
         )
 
     capture_outputs(run_dir, "SIM")
 
 
-def main():
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "-c",
+        "--config",
+        default=DEFAULT_CONFIG,
+        help=f"GPU configuration name under configs/ (default: {DEFAULT_CONFIG})",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
     ensure_dir(OUTPUT_DIR)
     clear_captured_outputs()
 
-    config_name = DEFAULT_CONFIG
+    config_name = args.config
     run_dir = run_dir_for_config(config_name)
 
     run_command(f"./run_tests.sh -c {config_name} refresh", env=native_env())
@@ -372,7 +407,7 @@ def main():
         x_label="warps",
     )
 
-    print("\nCalibration finished. Results in test/calibration_results/")
+    print(f"\nCalibration finished. Results in {OUTPUT_DIR.relative_to(PROJECT_ROOT)}/")
 
 
 if __name__ == "__main__":

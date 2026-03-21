@@ -143,13 +143,15 @@ setup_run_directory() {
 
 # Detect if running in native GPU mode (clean environment without simulator setup)
 is_native_mode() {
+    local root_dir="$(cd "$SCRIPT_DIR/.." && pwd)"
+
     # Check if simulator environment was sourced
     if [ -n "$GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN" ]; then
         return 1  # Simulator mode
     fi
 
-    # Check if LD_LIBRARY_PATH contains simulator library paths
-    if echo "$LD_LIBRARY_PATH" | grep -q "gpgpu-sim_distribution/lib"; then
+    # Check if LD_LIBRARY_PATH contains simulator library paths from this repo
+    if echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -F -q "$root_dir/lib/"; then
         print_color $YELLOW "Warning: LD_LIBRARY_PATH contains simulator paths but GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN is not set"
         print_color $YELLOW "Treating as simulator mode to avoid contamination"
         return 1  # Simulator mode (contaminated environment)
@@ -174,7 +176,7 @@ build_gpgpusim() {
     # Resolve actual libcudart.so path (fix for broken glob pattern)
     local libcudart_path=$(find lib -name libcudart.so 2>/dev/null | head -n 1)
 
-    if [ -z "$libcudart_path" ] || find src -name "*.cc" -newer "$libcudart_path" 2>/dev/null | grep -q .; then
+    if [ -z "$libcudart_path" ] || [ ! -s "$libcudart_path" ] || find src -name "*.cc" -newer "$libcudart_path" 2>/dev/null | grep -q .; then
         print_color $YELLOW "GPGPU-Sim library needs rebuild..."
         run_command make FLASH=1 -j
         print_color $GREEN "GPGPU-Sim library built successfully"
