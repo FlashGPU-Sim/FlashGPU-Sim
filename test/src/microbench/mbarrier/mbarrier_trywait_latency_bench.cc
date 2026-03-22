@@ -664,6 +664,96 @@ void launch_pred_chase_latency(uint32_t instruction_count,
   }
 }
 
+// Measures arrive_expect_tx(0) + try_wait as a tight pair using inline asm.
+// The barrier is pre-initialized with expected_arrivals=1, so arrive completes
+// the phase and the immediately following try_wait should observe it.
+__global__ void arrive_try_wait_pair_kernel(uint64_t* cycle_start,
+                                            uint64_t* cycle_end,
+                                            uint32_t* sink_out) {
+  __shared__ uint64_t barrier;
+
+  if (threadIdx.x == 0) {
+    mbarrier_init(&barrier, 1);
+  }
+  __syncwarp();
+
+  if (threadIdx.x == 0) {
+    const uint32_t bar_addr = smem_u32_addr(&barrier);
+
+    // Warmup: do one arrive+try_wait cycle to prime the barrier unit.
+    asm volatile(
+        "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], 0;\n" ::"r"(
+            bar_addr));
+    while (!mbarrier_try_wait_parity(&barrier, 0)) {
+    }
+
+    // Measured region: arrive + single try_wait, tightly coupled.
+    // Phase is now 1, so arrive flips to phase 2, try_wait checks parity 1.
+    uint32_t hit = 0;
+    uint64_t start = 0;
+    uint64_t end = 0;
+    asm volatile(
+        "{ .reg .pred p;\n"
+        "mov.u64 %0, %%clock64;\n"
+        "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%2], 0;\n"
+        "mbarrier.try_wait.parity.shared::cta.b64 p, [%2], 1;\n"
+        "mov.u64 %1, %%clock64;\n"
+        "selp.u32 %3, 1, 0, p;\n"
+        "}\n"
+        : "=l"(start), "=l"(end), "+r"(bar_addr), "=r"(hit)
+        :
+        : "memory");
+
+    cycle_start[0] = start;
+    cycle_end[0] = end;
+    sink_out[0] = hit;
+  }
+}
+
+// Cross-warp arrive visibility: warp 0 does arrive, warp 1 polls try_wait.
+// Records arrive timestamp (warp 0) and try_wait success timestamp (warp 1).
+// Difference = cross-warp arrive→try_wait visibility latency.
+__global__ void arrive_crosswarp_kernel(uint64_t* arrive_time,
+                                        uint64_t* observe_time,
+                                        uint32_t* result_out) {
+  __shared__ uint64_t barrier;
+  volatile __shared__ uint32_t observer_ready;
+
+  const int warp = threadIdx.x >> 5;
+  const int lane = threadIdx.x & 31;
+
+  if (threadIdx.x == 0) {
+    mbarrier_init(&barrier, 1);
+    observer_ready = 0;
+  }
+  __syncthreads();
+
+  if (warp == 1 && lane == 0) {
+    // Observer: signal ready, then poll try_wait.
+    observer_ready = 1;
+    asm volatile("membar.cta;" ::: "memory");
+    uint64_t end = 0;
+    uint32_t iters = 0;
+    bool hit = false;
+    do {
+      ++iters;
+      hit = mbarrier_try_wait_parity(&barrier, 0);
+    } while (!hit);
+    asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
+    observe_time[0] = end;
+    result_out[0] = iters;
+    result_out[1] = hit ? 1u : 0u;
+  } else if (warp == 0 && lane == 0) {
+    // Producer: wait for observer, then arrive.
+    while (observer_ready == 0) {
+    }
+    uint64_t start = 0;
+    asm volatile("mov.u64 %0, %%clock64;" : "=l"(start)::"memory");
+    mbarrier_arrive_expect_tx(&barrier, 0);
+    arrive_time[0] = start;
+  }
+}
+
 }  // namespace
 
 class MBarrierLatencyTest : public MBarrierBenchmarkFixture {
@@ -956,4 +1046,105 @@ TEST_F(MBarrierLatencyTest, Summary) {
   printf("  try_wait fused overhead:     %+6.2f cycles  (vs %.2f for manual)\n",
          entries[3].fit.slope - base_slope,
          entries[2].fit.slope - base_slope);
+}
+
+TEST_F(MBarrierLatencyTest, PArriveVisibility) {
+  if (!mbarrier_running_in_native_mode()) {
+    GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
+  }
+
+  const uint64_t clock_overhead = measure_clock_overhead();
+  MBarrierBenchOptions options;
+  options.warmup_iterations = 5;
+  options.measured_iterations = 51;
+  options.subtract_clock_overhead = true;
+
+  // Verify try_wait actually returned true.
+  uint32_t h_hit = 0;
+  arrive_try_wait_pair_kernel<<<1, 32>>>(cycle_start_ptr(), cycle_end_ptr(),
+                                         sink_ptr());
+  cudaDeviceSynchronize();
+  cudaMemcpy(&h_hit, sink_ptr(), sizeof(uint32_t), cudaMemcpyDeviceToHost);
+  ASSERT_EQ(h_hit, 1u) << "try_wait did not observe the arrive!";
+
+  const auto summary = measure_summary(
+      [&] {
+        arrive_try_wait_pair_kernel<<<1, 32>>>(cycle_start_ptr(),
+                                               cycle_end_ptr(), sink_ptr());
+      },
+      options, clock_overhead);
+
+  printf("\n=== Arrive + TryWait Pair Latency ===\n\n");
+  printf("  try_wait returned true: verified\n");
+  printf("  Min:    %8.2f cycles\n", summary.min);
+  printf("  Median: %8.2f cycles\n", summary.median);
+  printf("  P90:    %8.2f cycles\n", summary.p90);
+  printf("  Max:    %8.2f cycles\n", summary.max);
+  printf("  Clock overhead: %lu cycles\n\n", clock_overhead);
+  printf("  This measures: clock64 + arrive_expect_tx(0) + try_wait + clock64\n");
+  printf("  Interpretation: arrive visibility latency is near zero within\n");
+  printf("  the same thread (barrier HW bypass, not smem round-trip).\n");
+}
+
+TEST_F(MBarrierLatencyTest, PArriveCrossWarp) {
+  if (!mbarrier_running_in_native_mode()) {
+    GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
+  }
+
+  const uint64_t clock_overhead = measure_clock_overhead();
+
+  // Allocate separate device buffers for the two timestamps and results.
+  uint64_t* d_arrive_time = nullptr;
+  uint64_t* d_observe_time = nullptr;
+  uint32_t* d_result = nullptr;
+  cudaMalloc(&d_arrive_time, sizeof(uint64_t));
+  cudaMalloc(&d_observe_time, sizeof(uint64_t));
+  cudaMalloc(&d_result, 2 * sizeof(uint32_t));
+
+  constexpr int kWarmup = 5;
+  constexpr int kMeasured = 51;
+  std::vector<int64_t> samples;
+  samples.reserve(kMeasured);
+
+  for (int i = 0; i < kWarmup + kMeasured; ++i) {
+    arrive_crosswarp_kernel<<<1, 64>>>(d_arrive_time, d_observe_time, d_result);
+    cudaDeviceSynchronize();
+
+    if (i >= kWarmup) {
+      uint64_t h_arrive = 0, h_observe = 0;
+      uint32_t h_result[2] = {};
+      cudaMemcpy(&h_arrive, d_arrive_time, sizeof(uint64_t),
+                 cudaMemcpyDeviceToHost);
+      cudaMemcpy(&h_observe, d_observe_time, sizeof(uint64_t),
+                 cudaMemcpyDeviceToHost);
+      cudaMemcpy(h_result, d_result, 2 * sizeof(uint32_t),
+                 cudaMemcpyDeviceToHost);
+      ASSERT_EQ(h_result[1], 1u) << "try_wait did not observe the arrive";
+      samples.push_back(static_cast<int64_t>(h_observe) -
+                         static_cast<int64_t>(h_arrive) -
+                         static_cast<int64_t>(clock_overhead));
+    }
+  }
+
+  std::sort(samples.begin(), samples.end());
+  const double min_v = static_cast<double>(samples.front());
+  const double med_v = static_cast<double>(samples[samples.size() / 2]);
+  const double p90_v = static_cast<double>(
+      samples[static_cast<size_t>(0.9 * (samples.size() - 1))]);
+  const double max_v = static_cast<double>(samples.back());
+
+  printf("\n=== Cross-Warp Arrive Visibility Latency ===\n\n");
+  printf("  Warp 0: clock64 -> arrive_expect_tx(0)\n");
+  printf("  Warp 1: polling try_wait -> clock64 on success\n");
+  printf("  Latency = observe_time - arrive_time - clock_overhead\n\n");
+  printf("  Min:    %8.2f cycles\n", min_v);
+  printf("  Median: %8.2f cycles\n", med_v);
+  printf("  P90:    %8.2f cycles\n", p90_v);
+  printf("  Max:    %8.2f cycles\n", max_v);
+  printf("  Samples: %zu, Clock overhead: %lu cycles\n", samples.size(),
+         clock_overhead);
+
+  cudaFree(d_arrive_time);
+  cudaFree(d_observe_time);
+  cudaFree(d_result);
 }
