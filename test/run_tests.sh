@@ -561,7 +561,15 @@ while [[ $# -gt 0 ]]; do
         test)
             initialize_run_directory "test"
             run_test_targets "$2"
-            exit $?
+            local test_exit=$?
+            # Also run trace tests (unless a specific gtest pattern was given)
+            if [ -z "$2" ]; then
+                run_trace_tests
+                local trace_exit=$?
+                [ $test_exit -ne 0 ] && exit $test_exit
+                exit $trace_exit
+            fi
+            exit $test_exit
             ;;
         bench)
             initialize_run_directory "bench"
