@@ -77,7 +77,7 @@ CPP = g++ $(SNOW)
 CC = gcc $(SNOW)
 CREATELIBRARY    =  1
 DEBUG ?= 0
-WARN_SUPPRESS = -Wno-unused-function -Wno-sign-compare -Wno-overflow -Wno-switch -Wno-format-truncation -Wno-conversion-null -Wno-int-to-pointer-cast
+WARN_SUPPRESS = -Wno-unused-function
 ifeq ($(DEBUG),1)
 	CXXFLAGS +=  -Wall $(WARN_SUPPRESS) -g -fPIC $(GL)
 	CCFLAGS += -Wall $(WARN_SUPPRESS) -ggdb -fPIC

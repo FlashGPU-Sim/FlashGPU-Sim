@@ -647,7 +647,7 @@ void **cudaRegisterFatBiaryInternal_impl(
     // compiled with a newer version of CUDA to run apps compiled with older
     // versions of CUDA. This is especially useful for PTXPLUS execution.
     // Skip cuda version check for pytorch application
-    int pos = app_binary_path.find("python");
+    size_t pos = app_binary_path.find("python");
     if (pos == std::string::npos) {
       // Not pytorch app : checking cuda version
       assert(
@@ -772,7 +772,7 @@ void **cudaRegisterFatBiaryInternal_impl(
                                             context->no_of_ptx);
       }
       source_num++;
-      ctx->api->load_static_globals(symtab, STATIC_ALLOC_LIMIT, 0xFFFFFFFF,
+      ctx->api->load_static_globals(symtab, STATIC_ALLOC_LIMIT,
                                     context->get_device()->get_gpgpu());
       ctx->api->load_constants(symtab, STATIC_ALLOC_LIMIT,
                                context->get_device()->get_gpgpu());
@@ -1054,7 +1054,7 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
              grid->get_uid());
 
     g_checkpoint->load_global_mem(global_mem, f1name);
-    for (int i = 0; i < gpu->resume_CTA; i++) grid->increment_cta_id();
+    for (unsigned i = 0; i < gpu->resume_CTA; i++) grid->increment_cta_id();
   }
   if (gpu->resume_option == 1 && (grid->get_uid() < gpu->resume_kernel)) {
     char f1name[2048];
@@ -1068,7 +1068,7 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
     return g_last_cudaError = cudaSuccess;
   }
   if (gpu->checkpoint_option == 1 &&
-      (grid->get_uid() > gpu->checkpoint_kernel)) {
+      (grid->get_uid() > (unsigned)gpu->checkpoint_kernel)) {
     printf("Skipping kernel %d as checkpoint from kernel %d\n", grid->get_uid(),
            gpu->checkpoint_kernel);
     ctx->api->g_cuda_launch_stack.pop_back();
@@ -1671,7 +1671,7 @@ CUresult cuLinkAddFileInternal(CUlinkState state, CUjitInputType type,
   std::string fname(path);
   ctx->api->name_symtab[fname] = symtab;
   context->add_binary(symtab, 1);
-  ctx->api->load_static_globals(symtab, STATIC_ALLOC_LIMIT, 0xFFFFFFFF,
+  ctx->api->load_static_globals(symtab, STATIC_ALLOC_LIMIT,
                                 context->get_device()->get_gpgpu());
   ctx->api->load_constants(symtab, STATIC_ALLOC_LIMIT,
                            context->get_device()->get_gpgpu());
@@ -1717,7 +1717,7 @@ size_t getMaxThreadsPerBlock(struct cudaFuncAttributes *attr,
 
   size_t max = prop.maxThreadsPerBlock;
 
-  if (attr->numRegs && (prop.regsPerBlock / attr->numRegs) < max)
+  if (attr->numRegs && (size_t)(prop.regsPerBlock / attr->numRegs) < max)
     max = prop.regsPerBlock / attr->numRegs;
 
   if (attr->sharedSizeBytes &&
@@ -1778,7 +1778,7 @@ cudaDeviceGetAttributeInternal(int *value, enum cudaDeviceAttr attr, int device,
 
   if (device <= dev->num_devices()) {
     prop = dev->get_prop();
-    switch (attr) {
+    switch ((int)attr) {
       case 1:
         *value = prop->maxThreadsPerBlock;
         break;
@@ -3324,7 +3324,7 @@ __host__ cudaError_t CUDARTAPI cudaGetExportTable(
 // prog_name.unique_no.sm_<>.ptx files
 void cuda_runtime_api::extract_ptx_files_using_cuobjdump_internal(
     CUctx_st *context, std::string &app_binary) {
-  char command[1000];
+  char command[2048];
   char *pytorch_bin = getenv("PYTORCH_BIN");
 
   char ptx_list_file_name[1024];
@@ -3337,7 +3337,7 @@ void cuda_runtime_api::extract_ptx_files_using_cuobjdump_internal(
   }
 
   // only want file names
-  snprintf(command, 1000,
+  snprintf(command, sizeof(command),
            "$CUDA_INSTALL_PATH/bin/cuobjdump -lptx %s  | cut -d \":\" -f 2 | "
            "awk '{$1=$1}1' > %s",
            app_binary.c_str(), ptx_list_file_name);
@@ -3377,8 +3377,8 @@ void cuda_runtime_api::extract_ptx_files_using_cuobjdump_internal(
   std::string line;
   while (std::getline(infile, line)) {
     // int pos = line.find(std::string(get_app_binary_name(app_binary)));
-    int pos1 = line.find("sm_");
-    int pos2 = line.find_last_of(".");
+    size_t pos1 = line.find("sm_");
+    size_t pos2 = line.find_last_of(".");
     if (pos1 == std::string::npos && pos2 == std::string::npos) {
       printf("ERROR: PTX list is not in correct format");
       exit(0);
@@ -3650,7 +3650,7 @@ std::list<cuobjdumpSection *> cuda_runtime_api::pruneSectionList(
   // each cubin file and set it in cuobjdumpSectionMap. Do this only for ptx
   // sections
   std::map<std::string, unsigned> cuobjdumpSectionMap;
-  int min_ptx_capability_found = 0;
+  unsigned min_ptx_capability_found = 0;
   for (std::list<cuobjdumpSection *>::iterator iter =
            cuobjdumpSectionList.begin();
        iter != cuobjdumpSectionList.end(); iter++) {
@@ -3939,7 +3939,7 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
   }
   api->name_symtab[fname] = symtab;
   context->add_binary(symtab, handle);
-  api->load_static_globals(symtab, STATIC_ALLOC_LIMIT, 0xFFFFFFFF,
+  api->load_static_globals(symtab, STATIC_ALLOC_LIMIT,
                            context->get_device()->get_gpgpu());
   api->load_constants(symtab, STATIC_ALLOC_LIMIT,
                       context->get_device()->get_gpgpu());
@@ -4012,7 +4012,7 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
     gpgpu_ptxinfo_load_from_string(ptxcode, handle, max_capability,
                                    context->no_of_ptx);
   }
-  api->load_static_globals(symtab, STATIC_ALLOC_LIMIT, 0xFFFFFFFF,
+  api->load_static_globals(symtab, STATIC_ALLOC_LIMIT,
                            context->get_device()->get_gpgpu());
   api->load_constants(symtab, STATIC_ALLOC_LIMIT,
                       context->get_device()->get_gpgpu());
@@ -4063,8 +4063,9 @@ cudaError_t CUDARTAPI __cudaPopCallConfiguration(dim3 *gridDim, dim3 *blockDim,
 void CUDARTAPI __cudaRegisterFunctionSST(unsigned fatCubinHandle,
                                          uint64_t hostFun,
                                          char deviceFun[512]) {
-  cudaRegisterFunctionInternal((void **)fatCubinHandle, (const char *)hostFun,
-                               (char *)deviceFun, NULL, NULL, NULL, NULL, NULL,
+  cudaRegisterFunctionInternal((void **)(uintptr_t)fatCubinHandle,
+                               (const char *)(uintptr_t)hostFun,
+                               (char *)deviceFun, NULL, 0, NULL, NULL, NULL,
                                NULL);
 }
 
@@ -4430,8 +4431,7 @@ int CUDARTAPI __cudaSynchronizeThreads(void **, void *) {
 /// static functions
 
 int cuda_runtime_api::load_static_globals(symbol_table *symtab,
-                                          unsigned min_gaddr,
-                                          unsigned max_gaddr, gpgpu_t *gpu) {
+                                          addr_t min_gaddr, gpgpu_t *gpu) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
@@ -4445,7 +4445,7 @@ int cuda_runtime_api::load_static_globals(symbol_table *symtab,
     if (global->has_initializer()) {
       printf("GPGPU-Sim PTX:     initializing '%s' ... ",
              global->name().c_str());
-      unsigned addr = global->get_address();
+      addr_t addr = global->get_address();
       const type_info *type = global->type();
       type_info_key ti = type->get_key();
       size_t size;
