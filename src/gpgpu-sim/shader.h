@@ -1463,8 +1463,6 @@ class ldst_unit : public pipelined_simd_unit {
                                                    warp_inst_t &inst);
   mem_stage_stall_type process_memory_access_queue_l1cache(l1_cache *cache,
                                                            warp_inst_t &inst);
-  gpgpu_sim *m_gpu;
-
   const memory_config *m_memory_config;
   class mem_fetch_interface *m_icnt;
   shader_core_mem_fetch_allocator *m_mf_allocator;
@@ -1484,6 +1482,7 @@ class ldst_unit : public pipelined_simd_unit {
 
   mem_fetch *m_next_global;
   warp_inst_t m_next_wb;
+  gpgpu_sim *m_gpu;
   unsigned m_writeback_arb;  // round-robin arbiter for writeback contention
                              // between L1T, L1C, shared
   unsigned m_num_writeback_clients;

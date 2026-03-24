@@ -42,7 +42,8 @@ ifeq ($(CREATE_LIBRARY),1)
 INCPATH += -I$(GPGPUSIM_ROOT)/src/gpgpu-sim/
 endif
 
-CPPFLAGS += -Wall $(INCPATH) $(DEFINE) $(EXTRA_FLAGS)
+CPPFLAGS += -Wall $(INCPATH) $(DEFINE) $(EXTRA_FLAGS) \
+	-Wno-register -Wno-maybe-uninitialized -Wno-overloaded-virtual -Wno-write-strings
 ifneq ($(DEBUG),1)
 CPPFLAGS += -O3
 endif

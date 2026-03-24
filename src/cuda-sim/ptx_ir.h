@@ -863,7 +863,15 @@ class operand_info {
   }
   int get_int() const { return m_value.m_int; }
   int get_addr_offset() const { return m_addr_offset; }
-  const symbol *get_symbol() const { return m_value.m_symbolic; }
+  const symbol *get_symbol() const {
+    if (m_vector) {
+      assert(get_vect_nelem() == 1 &&
+             "get_symbol() called on multi-element vector operand; "
+             "use vec_symbol(i) instead");
+      return m_value.m_vector_symbolic[0];
+    }
+    return m_value.m_symbolic;
+  }
   void set_symbolic(const symbol *sym) { m_value.m_symbolic = sym; }
   void set_type(enum operand_type type) { m_type = type; }
   enum operand_type get_type() const { return m_type; }

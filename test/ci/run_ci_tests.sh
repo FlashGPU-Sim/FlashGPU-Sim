@@ -74,14 +74,10 @@ fi
 echo "Building tests..."
 ./test/run_tests.sh build test
 
-# Run tests with specified configuration
-# Skip CudaTMATest.PerformanceComparison as it takes too long for CI
-# Microbenchmarks are already excluded (separate binary, not in run_all_tests)
-echo "Running test suite (excluding CudaTMATest.PerformanceComparison)..."
+# Run all tests (unit + integration + trace)
+# PerformanceComparison and CPAsyncMethod are excluded inside run_test_targets()
+echo "Running test suite..."
 
-# Use gtest XML output for structured results (absolute path since tests cd into run dir)
-export GTEST_OUTPUT="xml:$REPO_ROOT/test_results.xml"
-
-./test/run_tests.sh -c "$TEST_CONFIG" test "*:-CudaTMATest.PerformanceComparison" "$@"
+./test/run_tests.sh -c "$TEST_CONFIG" test "$@"
 
 echo "CI tests completed successfully!"

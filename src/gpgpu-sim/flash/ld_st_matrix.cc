@@ -122,10 +122,10 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
   // For ldmatrix: dst is vector register, src1 is address
   // For stmatrix: dst is address, src1 is vector register
   if constexpr (is_load) {
-    assert(pI->dst().get_vect_nelem() == num_matrixs &&
+    assert(pI->dst().get_vect_nelem() == (unsigned)num_matrixs &&
            "Destination operand size mismatch in ldmatrix");
   } else {
-    assert(pI->src1().get_vect_nelem() == num_matrixs &&
+    assert(pI->src1().get_vect_nelem() == (unsigned)num_matrixs &&
            "Source operand size mismatch in stmatrix");
   }
 
@@ -144,7 +144,7 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
   const auto &addr_operand = is_load ? pI->src1() : pI->dst();
 
   ptx_reg_t result_regs[max_num_matrixs];
-  for (auto lane_id = 0; lane_id < core->get_warp_size(); lane_id++) {
+  for (unsigned lane_id = 0; lane_id < core->get_warp_size(); lane_id++) {
     auto thread = core->get_thread_info()[tid_lane0 + lane_id];
 
     // Map lane ID to matrix position using shape-spec

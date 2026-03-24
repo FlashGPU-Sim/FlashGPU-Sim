@@ -2499,18 +2499,12 @@ void sst_gpgpu_sim::SST_cycle() {
   issue_block2core();
 
   if (!(gpu_sim_cycle % m_config.gpu_stat_sample_freq)) {
-    time_t days, hrs, minutes, sec;
     time_t curr_time;
     time(&curr_time);
     unsigned long long elapsed_time =
         MAX(curr_time - gpgpu_ctx->the_gpgpusim->g_simulation_starttime, 1);
     if ((elapsed_time - last_liveness_message_time) >=
         m_config.liveness_message_freq) {
-      days = elapsed_time / (3600 * 24);
-      hrs = elapsed_time / 3600 - 24 * days;
-      minutes = elapsed_time / 60 - 60 * (hrs + 24 * days);
-      sec = elapsed_time - 60 * (minutes + 60 * (hrs + 24 * days));
-
       last_liveness_message_time = elapsed_time;
     }
     visualizer_printstat();

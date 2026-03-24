@@ -423,8 +423,8 @@ void function_info::ptx_assemble() {
       pI->set_PC(PC);
 
       GPPRINTF_NoGPU(PTX_IR,
-        "  set inst %s to PC 0x%x\n",
-        pI->to_string().c_str(), PC);
+        "  set inst %s to PC 0x%llx\n",
+        pI->to_string().c_str(), (unsigned long long)PC);
 
       assert(pI->inst_size() <= MAX_INST_SIZE);
       for (unsigned i = 1; i < pI->inst_size(); i++) {
@@ -609,7 +609,6 @@ void gpgpu_t::memcpy_to_gpu(size_t dst_start_addr, const void *src,
         count, (unsigned long long)src, (unsigned long long)dst_start_addr, m_global_mem);
     fflush(stdout);
   }
-  char *src_data = (char *)src;
   m_global_mem->write(dst_start_addr, count, src, NULL, NULL);
 
   // Copy into the performance model.
