@@ -34,10 +34,10 @@ void mbarrier_manager_t::init(gpgpu_sim *gpu,
   assert(ret.second && "mbarrier at the same address already exists");
 
   GPPRINTF_GPU(gpu, MBAR,
-               "CTA %u Warp %u reached mbarrier init at address 0x%x with "
+               "CTA %u Warp %u reached mbarrier init at address 0x%llx with "
                "expected count %u\n",
-               thread_index.sw_cta_id, thread_index.sw_warp_id, addr,
-               expected_count);
+               thread_index.sw_cta_id, thread_index.sw_warp_id,
+               (unsigned long long)addr, expected_count);
 }
 
 void mbarrier_manager_t::inval(gpgpu_sim *gpu,
@@ -108,11 +108,11 @@ std::set<int> mbarrier_manager_t::try_advance(
     mbarrier->m_expected_tx_count = 0;
     mbarrier->m_phase++;
     GPPRINTF_GPU(gpu, MBAR,
-                 "CTA %d Warp %d mbarrier.id %d at 0x%x all arrived, "
+                 "CTA %d Warp %d mbarrier.id %d at 0x%llx all arrived, "
                  "releasing %zu warps, moving to phase %d\n",
                  thread_index.sw_cta_id, thread_index.sw_warp_id,
-                 mbarrier->m_id, mbarrier->m_addr, released_warps.size(),
-                 mbarrier->m_phase);
+                 mbarrier->m_id, (unsigned long long)mbarrier->m_addr,
+                 released_warps.size(), mbarrier->m_phase);
     return released_warps;
   } else {
     return {};
@@ -406,7 +406,7 @@ void barrier_set_t::complete_tx(unsigned cta_id, unsigned warp_id,
   auto logical_warp_id = m_shader->get_cta_warp_id(warp_id);
 
   flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{
-      cta_id, warp_id, logical_cta_id, logical_warp_id};
+      (int)cta_id, (int)warp_id, logical_cta_id, logical_warp_id};
 
   auto released_warps = m_mbarrier_manager.complete_tx(
       m_shader->get_gpu(), thread_index, mbarrier_addr, completed_tx_count);
@@ -427,7 +427,7 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
   auto logical_warp_id = m_shader->get_cta_warp_id(warp_id);
 
   flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{
-      cta_id, warp_id, logical_cta_id, logical_warp_id};
+      (int)cta_id, (int)warp_id, logical_cta_id, logical_warp_id};
 
   auto bar_op = pI->barrier_op();
 

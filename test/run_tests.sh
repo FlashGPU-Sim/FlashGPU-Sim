@@ -53,6 +53,8 @@ usage() {
     echo "  build dev          Build standalone dev tests only"
     echo "  test               Run all verification tests (unit + integration)"
     echo "  test <pattern>     Run specific verification test"
+    echo "  trace              Run Triton kernel trace smoke tests"
+    echo "  trace <pattern>    Run specific trace test (e.g., 'embedding')"
     echo "  bench <pattern>    Run microbenchmarks matching pattern"
     echo "  dev <pattern>      Run standalone dev tests matching pattern"
     echo "  clean              Clean build artifacts"
@@ -549,6 +551,46 @@ run_dev_tests() {
     return $exit_code
 }
 
+# Build and run trace tests (Triton kernel PTX smoke tests)
+run_trace_tests() {
+    local test_name="${1:-}"
+
+    build_gpgpusim
+
+    print_color $BLUE "Building trace tests (config: $GPU_CONFIG)..."
+    run_command make -C src/trace GPU_CONFIG="$GPU_CONFIG"
+
+    print_color $BLUE "Running trace tests..."
+
+    local trace_bin_dir="$(pwd)/build/trace/bin"
+    local exit_code=0
+
+    # Data-driven test names (must match configs in gpt2_data_driven_test.cu)
+    local gpt2_data_driven_tests="gelu flash_attn layernorm residual_add linear"
+
+    # Run GPT-2 embedding test (CPU reference, separate binary)
+    if [ -z "$test_name" ] || [[ "embedding" == *"$test_name"* ]]; then
+        print_color $BLUE "--- gpt2_embedding_test ---"
+        (cd "$trace_bin_dir" && ./gpt2_embedding_test) || { exit_code=1; print_color $RED "FAILED: gpt2_embedding"; }
+    fi
+
+    # Run GPT-2 data-driven tests (single binary, test name as argument)
+    for name in $gpt2_data_driven_tests; do
+        if [ -n "$test_name" ] && [[ "$name" != *"$test_name"* ]]; then
+            continue
+        fi
+        print_color $BLUE "--- gpt2_data_driven_test $name ---"
+        (cd "$trace_bin_dir" && ./gpt2_data_driven_test "$name") || { exit_code=1; print_color $RED "FAILED: gpt2_$name"; }
+    done
+
+    if [ $exit_code -eq 0 ]; then
+        print_color $GREEN "✓ Trace tests passed!"
+    else
+        print_color $RED "✗ Trace tests failed!"
+    fi
+    return $exit_code
+}
+
 # Clean build artifacts
 clean_tests() {
     print_color $BLUE "Cleaning test build artifacts..."
@@ -560,7 +602,7 @@ clean_tests() {
 initialize_run_directory() {
     # Only setup if we're doing operations that need the config
     case "${1:-}" in
-        test|bench|dev|build)
+        test|bench|dev|trace|build)
             setup_run_directory
             ;;
     esac
@@ -611,13 +653,17 @@ while [[ $# -gt 0 ]]; do
                 dev)
                     build_dev_tests
                     ;;
+                trace)
+                    build_gpgpusim
+                    make -C src/trace GPU_CONFIG="$GPU_CONFIG"
+                    ;;
                 "")
                     build_test_targets
                     build_bench_tests
                     build_dev_tests
                     ;;
                 *)
-                    print_color $RED "Unknown build target: $2 (use 'test', 'bench', or 'dev')"
+                    print_color $RED "Unknown build target: $2 (use 'test', 'bench', 'dev', or 'trace')"
                     exit 1
                     ;;
             esac
@@ -625,7 +671,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         test)
             initialize_run_directory "test"
-            run_test_targets "$2"
+            run_test_targets "$2" || exit $?
+            run_trace_tests
             exit $?
             ;;
         bench)
@@ -636,6 +683,11 @@ while [[ $# -gt 0 ]]; do
         dev)
             initialize_run_directory "dev"
             run_dev_tests "$2"
+            exit $?
+            ;;
+        trace)
+            initialize_run_directory "trace"
+            run_trace_tests "$2"
             exit $?
             ;;
         clean)

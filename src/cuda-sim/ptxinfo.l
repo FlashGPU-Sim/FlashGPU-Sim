@@ -43,7 +43,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #define LINEBUF_SIZE 1024
 #define TC if( (yylineno == 1) && (ptxinfo->col + strlen(yytext) < LINEBUF_SIZE) ) { \
-		strncpy(ptxinfo->linebuf+ptxinfo->col,yytext,strlen(yytext)); \
+		memcpy(ptxinfo->linebuf+ptxinfo->col,yytext,strlen(yytext)); \
 	   } \
 	   ptxinfo->col+=strlen(yytext);
 #define YY_DECL int ptxinfo_lex \
@@ -91,7 +91,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 " " TC;
 "\t" TC;
 
-\n.*  ptxinfo->col=0; strncpy(ptxinfo->linebuf, yytext + 1, 1024); yyless( 1 );
+\n.*  ptxinfo->col=0; strncpy(ptxinfo->linebuf, yytext + 1, LINEBUF_SIZE - 1); ptxinfo->linebuf[LINEBUF_SIZE - 1] = '\0'; yyless( 1 );
 
 %%
 

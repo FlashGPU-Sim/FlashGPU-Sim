@@ -741,14 +741,14 @@ void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, in
 
   accumulate(gpu_reg_bank_conflict_stalls);
 
-  for (int i = 0; i < m_config->warp_size + 3; ++i) {
+  for (unsigned i = 0; i < m_config->warp_size + 3; ++i) {
     accumulate(shader_cycle_distro[i]);
   }
   // no need to handle -- unsigned *last_shader_cycle_distro;
   // not used at all -- unsigned *num_warps_issuable;
 
   accumulate(gpgpu_n_stall_shd_mem);
-  for (int i = 0; i < m_config->gpgpu_num_sched_per_core; ++i) {
+  for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; ++i) {
     accumulate(single_issue_nums[i]);
     accumulate(dual_issue_nums[i]);
   }
@@ -809,14 +809,14 @@ void shader_core_stats::clear_accumulator() {
 
   accumulate(gpu_reg_bank_conflict_stalls);
 
-  for (int i = 0; i < m_config->warp_size + 3; ++i) {
+  for (unsigned i = 0; i < m_config->warp_size + 3; ++i) {
     accumulate(shader_cycle_distro[i]);
   }
   // no need to handle -- unsigned *last_shader_cycle_distro;
   // not used at all -- unsigned *num_warps_issuable;
 
   accumulate(gpgpu_n_stall_shd_mem);
-  for (int i = 0; i < m_config->gpgpu_num_sched_per_core; ++i) {
+  for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; ++i) {
     accumulate(single_issue_nums[i]);
     accumulate(dual_issue_nums[i]);
   }
@@ -1369,9 +1369,9 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     // Check for the case that the LDGSTSs monitored have finished when
     // encountering the DEPBAR instruction
     bool done_flag = true;
-    for (int i = 0; i < end_group; i++) {
-      for (int j = 0; j < m_warp[warp_id]->m_ldgdepbar_buf[i].size(); j++) {
-        if (m_warp[warp_id]->m_ldgdepbar_buf[i][j].pc != -1) {
+    for (unsigned i = 0; i < end_group; i++) {
+      for (size_t j = 0; j < m_warp[warp_id]->m_ldgdepbar_buf[i].size(); j++) {
+        if (m_warp[warp_id]->m_ldgdepbar_buf[i][j].pc != (address_type)-1) {
           done_flag = false;
           goto UpdateDEPBAR;
         }
@@ -1589,9 +1589,9 @@ void scheduler_unit::cycle() {
         assert(valid);
         if (pc != pI->pc) {
           SCHED_GPPRINTF("Warp (warp_id %u, dynamic_warp_id %u) control hazard "
-                        "inst flush current pc %llx != next_pc %llx\n",
+                        "inst flush current pc %llx != next_pc %x\n",
                         (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(),
-                        pI->pc, pc);
+                        (unsigned long long)pI->pc, pc);
           // control hazard
           warp(warp_id).set_next_pc(pc);
           warp(warp_id).ibuffer_flush();
@@ -2138,15 +2138,15 @@ void shader_core_ctx::unset_depbar(const warp_inst_t &inst) {
                                   m_warp[inst.warp_id()]->m_depbar_group + 1);
 
   if (inst.m_is_ldgsts) {
-    for (int i = 0; i < m_warp[inst.warp_id()]->m_ldgdepbar_buf.size(); i++) {
-      for (int j = 0; j < m_warp[inst.warp_id()]->m_ldgdepbar_buf[i].size();
+    for (size_t i = 0; i < m_warp[inst.warp_id()]->m_ldgdepbar_buf.size(); i++) {
+      for (size_t j = 0; j < m_warp[inst.warp_id()]->m_ldgdepbar_buf[i].size();
            j++) {
         if (m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc == inst.pc) {
           // Handle the case that same pc results in multiple LDGSTS
           // instructions
           if (m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].get_addr(0) ==
               inst.get_addr(0)) {
-            m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc = -1;
+            m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc = (address_type)-1;
             goto DoneWB;
           }
         }
@@ -2154,10 +2154,10 @@ void shader_core_ctx::unset_depbar(const warp_inst_t &inst) {
     }
 
   DoneWB:
-    for (int i = 0; i < end_group; i++) {
-      for (int j = 0; j < m_warp[inst.warp_id()]->m_ldgdepbar_buf[i].size();
+    for (unsigned i = 0; i < end_group; i++) {
+      for (size_t j = 0; j < m_warp[inst.warp_id()]->m_ldgdepbar_buf[i].size();
            j++) {
-        if (m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc != -1) {
+        if (m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc != (address_type)-1) {
           done_flag = false;
           goto UpdateDEPBAR;
         }

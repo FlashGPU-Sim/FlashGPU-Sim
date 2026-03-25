@@ -113,14 +113,14 @@ char *ptxinfo_data::gpgpu_ptx_sim_convert_ptx_and_sass_to_ptxplus(
   printf("GPGPU-Sim PTX: converting EMBEDDED .ptx file to ptxplus \n");
 
   char fname_ptxplus[1024];
-  snprintf(fname_ptxplus, 1024, "_ptxplus_XXXXXX");
+  snprintf(fname_ptxplus, sizeof(fname_ptxplus), "_ptxplus_XXXXXX");
   int fd4 = mkstemp(fname_ptxplus);
   close(fd4);
 
   // Run cuobjdump_to_ptxplus
-  char commandline[1024];
+  char commandline[2048];
   int result;
-  snprintf(commandline, 1024,
+  snprintf(commandline, sizeof(commandline),
            "$GPGPUSIM_ROOT/build/$GPGPUSIM_CONFIG/cuobjdump_to_ptxplus/"
            "cuobjdump_to_ptxplus %s %s %s %s",
            ptxfilename.c_str(), sassfilename.c_str(), elffilename.c_str(),
@@ -147,9 +147,9 @@ char *ptxinfo_data::gpgpu_ptx_sim_convert_ptx_and_sass_to_ptxplus(
   strcpy(ptxplus_str, text.c_str());
 
   if (!m_ptx_save_converted_ptxplus) {
-    char rm_commandline[1024];
+    char rm_commandline[2048];
 
-    snprintf(rm_commandline, 1024, "rm -f %s", fname_ptxplus);
+    snprintf(rm_commandline, sizeof(rm_commandline), "rm -f %s", fname_ptxplus);
 
     printf("GPGPU-Sim PTX: removing temporary files using \"%s\"\n",
            rm_commandline);
@@ -382,7 +382,7 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
   char ptx_file[1000];
   char *name = get_app_binary_name();
   char commandline[4096], fname[1024], fname2[1024],
-      final_tempfile_ptxinfo[1024], tempfile_ptxinfo[1024];
+      final_tempfile_ptxinfo[1024], tempfile_ptxinfo[1030];
   for (int index = 1; index <= no_of_ptx; index++) {
     snprintf(ptx_file, 1000, "%s.%d.sm_%u.ptx", name, index, sm_version);
     snprintf(fname, 1024, "_ptx_XXXXXX");
@@ -418,7 +418,7 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
       exit(1);
     }
 
-    snprintf(tempfile_ptxinfo, 1024, "%sinfo", fname);
+    snprintf(tempfile_ptxinfo, sizeof(tempfile_ptxinfo), "%sinfo", fname);
     char extra_flags[1024];
     extra_flags[0] = 0;
 
@@ -434,13 +434,13 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
       exit(1);
     }
     if (!device_runtime->g_cdp_enabled)
-      snprintf(extra_flags, 1024, "--gpu-name=sm_%u", g_occupancy_sm_number);
+      snprintf(extra_flags, sizeof(extra_flags), "--gpu-name=sm_%u", g_occupancy_sm_number);
     else
-      snprintf(extra_flags, 1024, "--compile-only --gpu-name=sm_%u",
+      snprintf(extra_flags, sizeof(extra_flags), "--compile-only --gpu-name=sm_%u",
                g_occupancy_sm_number);
 #endif
 
-    snprintf(commandline, 1024,
+    snprintf(commandline, sizeof(commandline),
              "$PTXAS_CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  "
              "/dev/null 2> %s",
              extra_flags, fname2, tempfile_ptxinfo);
@@ -459,7 +459,7 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
         fclose(ptxinfo_in);
 
         fix_duplicate_errors(fname2);
-        snprintf(commandline, 1024,
+        snprintf(commandline, sizeof(commandline),
                  "$CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  "
                  "/dev/null 2> %s",
                  extra_flags, fname2, tempfile_ptxinfo);
@@ -509,21 +509,21 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
       exit(1);
     }
     // char tempfile_ptxinfo[1024];
-    snprintf(tempfile_ptxinfo, 1024, "%sinfo", fname);
+    snprintf(tempfile_ptxinfo, sizeof(tempfile_ptxinfo), "%sinfo", fname);
     char extra_flags[1024];
     extra_flags[0] = 0;
 
 #if CUDART_VERSION >= 3000
     if (sm_version == 0) sm_version = 20;
     if (!device_runtime->g_cdp_enabled)
-      snprintf(extra_flags, 1024, "--gpu-name=sm_%u", sm_version);
+      snprintf(extra_flags, sizeof(extra_flags), "--gpu-name=sm_%u", sm_version);
     else
-      snprintf(extra_flags, 1024, "--compile-only --gpu-name=sm_%u",
+      snprintf(extra_flags, sizeof(extra_flags), "--compile-only --gpu-name=sm_%u",
                sm_version);
 #endif
 
     snprintf(
-        commandline, 1024,
+        commandline, sizeof(commandline),
         "$CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",
         extra_flags, fname2, tempfile_ptxinfo);
     printf("GPGPU-Sim PTX: generating ptxinfo using \"%s\"\n", commandline);
@@ -562,17 +562,17 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
   ptxinfo_lex_destroy(ptxinfo->scanner);
   fclose(ptxinfo_in);
 
-  snprintf(commandline, 1024, "rm -f *info");
+  snprintf(commandline, sizeof(commandline), "rm -f *info");
   if (system(commandline) != 0) {
     printf("GPGPU-Sim PTX: ERROR ** while removing temporary info files\n");
     exit(1);
   }
   if (!g_save_embedded_ptx) {
     if (no_of_ptx > 0)
-      snprintf(commandline, 1024, "rm -f %s %s %s", fname, fname2,
+      snprintf(commandline, sizeof(commandline), "rm -f %s %s %s", fname, fname2,
                final_tempfile_ptxinfo);
     else
-      snprintf(commandline, 1024, "rm -f %s %s %s", fname, fname2,
+      snprintf(commandline, sizeof(commandline), "rm -f %s %s %s", fname, fname2,
                tempfile_ptxinfo);
     printf("GPGPU-Sim PTX: removing ptxinfo using \"%s\"\n", commandline);
     if (system(commandline) != 0) {

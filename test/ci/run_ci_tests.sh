@@ -74,6 +74,7 @@ fi
 echo "Building tests..."
 ./test/run_tests.sh build test
 
+
 # Run tests with specified configuration
 # Skip CudaTMATest.PerformanceComparison as it takes too long for CI
 # Skip MBarrierSanityTest.* because simulator-mode try_wait currently blocks,

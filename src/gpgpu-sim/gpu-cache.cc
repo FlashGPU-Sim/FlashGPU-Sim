@@ -932,7 +932,7 @@ void cache_stats::print_stats(FILE *fout, unsigned long long streamID,
     unsigned long long streamid = iter->first;
     // when streamID is specified, skip stats for all other streams, otherwise,
     // print stats from all streams
-    if ((streamID != -1) && (streamid != streamID)) continue;
+    if ((streamID != (unsigned long long)-1) && (streamid != streamID)) continue;
     total_access.clear();
     total_access.resize(NUM_MEM_ACCESS_TYPE, 0);
     for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
@@ -964,7 +964,7 @@ void cache_stats::print_fail_stats(FILE *fout, unsigned long long streamID,
     unsigned long long streamid = iter->first;
     // when streamID is specified, skip stats for all other streams, otherwise,
     // print stats from all streams
-    if ((streamID != -1) && (streamid != streamID)) continue;
+    if ((streamID != (unsigned long long)-1) && (streamid != streamID)) continue;
     for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
       for (unsigned fail = 0; fail < NUM_CACHE_RESERVATION_FAIL_STATUS;
            ++fail) {

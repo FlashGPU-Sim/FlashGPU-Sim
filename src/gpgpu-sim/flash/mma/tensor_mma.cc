@@ -454,9 +454,8 @@ void tensor_mma_ld_impl(const ptx_instruction *pI, core_t *core,
   mma_layout_mode layout_a, layout_b;
   pI->get_mma_layout(layout_a, layout_b);
 
-  // Get operands: destination register and memory address
+  // Get operands: destination register
   const operand_info &dst = pI->operand_lookup(0);
-  const operand_info &src_addr = pI->operand_lookup(1);
 
   // Get thread context
   unsigned tid;
@@ -468,10 +467,6 @@ void tensor_mma_ld_impl(const ptx_instruction *pI, core_t *core,
   // Load matrix fragments for each thread in warp
   for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
     ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
-
-    // Get base memory address for this thread
-    ptx_reg_t base_addr =
-        thread->get_operand_value(src_addr, src_addr, U32_TYPE, thread, 1);
 
     // Calculate element offsets based on shape and layout
     // For simplified implementation, load sequential elements
@@ -515,8 +510,7 @@ void tensor_mma_st_impl(const ptx_instruction *pI, core_t *core,
   mma_layout_mode layout_a, layout_b;
   pI->get_mma_layout(layout_a, layout_b);
 
-  // Get operands: memory address and source register
-  const operand_info &dst_addr = pI->operand_lookup(0);
+  // Get operands: source register
   const operand_info &src = pI->operand_lookup(1);
 
   // Get thread context
@@ -529,10 +523,6 @@ void tensor_mma_st_impl(const ptx_instruction *pI, core_t *core,
   // Store matrix fragments from each thread in warp
   for (unsigned thrd = 0; thrd < core->get_warp_size(); thrd++) {
     ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
-
-    // Get base memory address for this thread
-    ptx_reg_t base_addr =
-        thread->get_operand_value(dst_addr, dst_addr, U32_TYPE, thread, 1);
 
     // Get data to store from source register
     unsigned nelem = src.get_vect_nelem();

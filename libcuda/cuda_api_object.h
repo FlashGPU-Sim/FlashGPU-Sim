@@ -235,8 +235,8 @@ class cuda_runtime_api {
                                               struct dim3 gridDim,
                                               struct dim3 blockDim,
                                               struct CUctx_st *context);
-  int load_static_globals(symbol_table *symtab, unsigned min_gaddr,
-                          unsigned max_gaddr, gpgpu_t *gpu);
+  int load_static_globals(symbol_table *symtab, addr_t min_gaddr,
+                          gpgpu_t *gpu);
   int load_constants(symbol_table *symtab, addr_t min_gaddr, gpgpu_t *gpu);
 };
 #endif /* __cuda_api_object_h__ */
