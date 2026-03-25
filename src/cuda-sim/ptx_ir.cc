@@ -1266,6 +1266,7 @@ ptx_instruction::ptx_instruction(
     const std::list<int> &options, const std::list<int> &wmma_options,
     const std::list<int> &mma_options,
     const std::list<int> &scalar_type, memory_space_t space_spec,
+    memory_space_t space_spec2,
     const char *file, unsigned line, const char *source,
     const core_config *config, gpgpu_context *ctx)
     : warp_inst_t(config), m_return_var(ctx) {
@@ -1632,6 +1633,7 @@ ptx_instruction::ptx_instruction(
   }
 
   m_space_spec = space_spec;
+  m_space_spec2 = space_spec2;
   if ((opcode == ST_OP || opcode == LD_OP || opcode == LDU_OP) &&
       (space_spec == undefined_space)) {
     m_space_spec = generic_space;

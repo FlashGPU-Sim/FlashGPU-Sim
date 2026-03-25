@@ -44,6 +44,7 @@ class ptx_recognizer {
     g_var_type = NULL;
     g_opcode = -1;
     g_space_spec = undefined_space;
+    g_space_spec2 = undefined_space;
     g_ptr_spec = undefined_space;
     g_scalar_type_spec = -1;
     g_vector_spec = -1;
@@ -86,6 +87,7 @@ class ptx_recognizer {
   std::list<int> g_scalar_type;
   // type specifier stuff:
   memory_space_t g_space_spec;
+  memory_space_t g_space_spec2;  // For cp.async with dual address spaces (e.g., .shared.global)
   memory_space_t g_ptr_spec;
   int g_scalar_type_spec;
   int g_vector_spec;

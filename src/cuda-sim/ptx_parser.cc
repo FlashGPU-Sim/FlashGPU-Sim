@@ -74,6 +74,7 @@ void ptx_recognizer::read_parser_environment_variables() {
 void ptx_recognizer::init_directive_state() {
   PTX_PARSE_GPPRINTF("init_directive_state");
   g_space_spec = undefined_space;
+  g_space_spec2 = undefined_space;
   g_ptr_spec = undefined_space;
   g_scalar_type_spec = -1;
   g_vector_spec = -1;
@@ -271,6 +272,7 @@ void ptx_recognizer::add_instruction() {
       g_opcode, g_pred, g_neg_pred, g_pred_mod, g_label, g_current_symbol_table,
       g_operands,
       g_return_var, g_options, g_wmma_options, g_mma_options, g_scalar_type, g_space_spec,
+      g_space_spec2,
       gpgpu_ctx->g_filename, ptx_get_lineno(scanner), linebuf,
       g_shader_core_config, gpgpu_ctx);
   g_instructions.push_back(i);
@@ -568,8 +570,11 @@ void ptx_recognizer::add_ptr_spec(enum _memory_space_t spec) {
 
 void ptx_recognizer::add_space_spec(enum _memory_space_t spec, int value) {
   PTX_PARSE_GPPRINTF("add_space_spec \"%s\"", g_ptx_token_decode[spec].c_str());
-  parse_assert(g_space_spec == undefined_space,
-               "multiple space specifiers not allowed.");
+  if (g_space_spec != undefined_space) {
+    // Second space specifier for dual-space instructions (e.g., cp.async.shared.global)
+    g_space_spec2 = spec;
+    return;
+  }
   if (spec == param_space_unclassified) {
     if (g_func_decl) {
       if (g_entry_point == 1)

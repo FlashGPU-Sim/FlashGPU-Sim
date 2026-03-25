@@ -76,6 +76,8 @@ bar 	TC; yylval->int_value = BAR_OP; return OPCODE;
 barrier	TC; yylval->int_value = BAR_OP; return OPCODE;
 mbarrier 	TC; yylval->int_value = MBAR_OP; return OPCODE;
 cp\.async\.bulk TC; yylval->int_value = TMA_OP; return OPCODE;
+cp\.async\.commit_group TC; yylval->int_value = CP_ASYNC_COMMIT_OP; return OPCODE;
+cp\.async\.wait_all TC; yylval->int_value = CP_ASYNC_WAIT_OP; return OPCODE;
 cp\.async 		TC; yylval->int_value = CP_ASYNC_OP; return OPCODE;
 bfe     TC; yylval->int_value = BFE_OP; return OPCODE;
 bfi     TC; yylval->int_value = BFI_OP; return OPCODE;
@@ -233,7 +235,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.global TC; return GLOBAL_DIRECTIVE;
 \.global.volatile TC; return GLOBAL_DIRECTIVE; //TODO: fix this!
 \.local  TC; return LOCAL_DIRECTIVE;
-\.loc    TC; return LOC_DIRECTIVE;
+\.loc[ \t][^\n]*  TC; /* skip .loc debug directive */
 \.maxnctapersm TC; return MAXNCTAPERSM_DIRECTIVE;
 \.maxnreg TC; return MAXNNREG_DIRECTIVE;
 \.maxntid TC; return MAXNTID_DIRECTIVE;

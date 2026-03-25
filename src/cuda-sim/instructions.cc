@@ -1672,6 +1672,21 @@ void stmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
 }
 
 void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  int opcode = pI->get_opcode();
+  if (opcode == CP_ASYNC_COMMIT_OP) {
+    printf(
+        "GPGPU-Sim PTX: ERROR (%s:%u) cp.async.commit_group not yet "
+        "implemented\n",
+        pI->source_file(), pI->source_line());
+    abort();
+  } else if (opcode == CP_ASYNC_WAIT_OP) {
+    printf(
+        "GPGPU-Sim PTX: ERROR (%s:%u) cp.async.wait_all not yet "
+        "implemented\n",
+        pI->source_file(), pI->source_line());
+    abort();
+  }
+  // CP_ASYNC_OP: cp.async.shared.global
   inst_not_implemented(pI);
 }
 
