@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <vector>
 
 #include "common/mbarrier/bench_utils.cuh"
@@ -242,131 +243,6 @@ __global__ void try_wait_true_latency_kernel(uint64_t* cycle_start,
   }
 }
 
-__device__ __forceinline__ uint32_t run_smem_load_step(uint32_t idx,
-                                                       uint32_t base_addr) {
-  asm volatile("{\n"
-               "shl.b32 %0, %0, 2;\n"
-               "add.u32 %0, %0, %1;\n"
-               "ld.shared.u32 %0, [%0];\n"
-               "}\n"
-               : "+r"(idx)
-               : "r"(base_addr));
-  return idx;
-}
-
-template <int InstructionCount>
-__device__ __forceinline__ uint32_t run_smem_load_chain(uint32_t idx,
-                                                        uint32_t base_addr) {
-  if constexpr (InstructionCount == 64) {
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-    idx = run_smem_load_step(idx, base_addr);
-  } else if constexpr (InstructionCount == 128) {
-    idx = run_smem_load_chain<64>(idx, base_addr);
-    idx = run_smem_load_chain<64>(idx, base_addr);
-  } else if constexpr (InstructionCount == 192) {
-    idx = run_smem_load_chain<128>(idx, base_addr);
-    idx = run_smem_load_chain<64>(idx, base_addr);
-  } else if constexpr (InstructionCount == 256) {
-    idx = run_smem_load_chain<128>(idx, base_addr);
-    idx = run_smem_load_chain<128>(idx, base_addr);
-  }
-  return idx;
-}
-
-template <int InstructionCount>
-__global__ void smem_load_latency_kernel(uint64_t* cycle_start,
-                                         uint64_t* cycle_end,
-                                         uint32_t* sink_out) {
-  __shared__ uint32_t chain[kChainLength];
-
-  if (threadIdx.x == 0) {
-    for (uint32_t i = 0; i < kChainLength; ++i) {
-      chain[i] = (i + 1) & (kChainLength - 1);
-    }
-  }
-  __syncwarp();
-
-  if (threadIdx.x == 0) {
-    const uint32_t base_addr = smem_u32_addr(&chain[0]);
-    uint32_t idx = static_cast<uint32_t>(clock64()) & (kChainLength - 1);
-    for (int i = 0; i < 8; ++i) {
-      idx = run_smem_load_step(idx, base_addr);
-    }
-
-    uint64_t start = 0;
-    uint64_t end = 0;
-    asm volatile("mov.u64 %0, %%clock64;" : "=l"(start)::"memory");
-    idx = run_smem_load_chain<InstructionCount>(idx, base_addr);
-    asm volatile("mov.u64 %0, %%clock64;" : "=l"(end)::"memory");
-
-    cycle_start[0] = start;
-    cycle_end[0] = end;
-    sink_out[0] = idx ^ (kChainLength - 1);
-  }
-}
-
 void expect_valid_sweep_summary(const MBarrierSweepSummary& summary,
                                 const std::vector<uint32_t>& instruction_counts,
                                 const MBarrierBenchOptions& options) {
@@ -427,28 +303,6 @@ void launch_try_wait_true_latency(uint32_t instruction_count,
       return;
     default:
       ADD_FAILURE() << "Unsupported true-path try_wait instruction count: "
-                    << instruction_count;
-      return;
-  }
-}
-
-void launch_smem_load_latency(uint32_t instruction_count, uint64_t* cycle_start,
-                              uint64_t* cycle_end, uint32_t* sink_out) {
-  switch (instruction_count) {
-    case 64:
-      smem_load_latency_kernel<64><<<1, 32>>>(cycle_start, cycle_end, sink_out);
-      return;
-    case 128:
-      smem_load_latency_kernel<128><<<1, 32>>>(cycle_start, cycle_end, sink_out);
-      return;
-    case 192:
-      smem_load_latency_kernel<192><<<1, 32>>>(cycle_start, cycle_end, sink_out);
-      return;
-    case 256:
-      smem_load_latency_kernel<256><<<1, 32>>>(cycle_start, cycle_end, sink_out);
-      return;
-    default:
-      ADD_FAILURE() << "Unsupported shared-load instruction count: "
                     << instruction_count;
       return;
   }
@@ -695,13 +549,13 @@ __global__ void arrive_try_wait_pair_kernel(uint64_t* cycle_start,
     asm volatile(
         "{ .reg .pred p;\n"
         "mov.u64 %0, %%clock64;\n"
-        "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%2], 0;\n"
-        "mbarrier.try_wait.parity.shared::cta.b64 p, [%2], 1;\n"
+        "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%3], 0;\n"
+        "mbarrier.try_wait.parity.shared::cta.b64 p, [%3], 1;\n"
         "mov.u64 %1, %%clock64;\n"
-        "selp.u32 %3, 1, 0, p;\n"
+        "selp.u32 %2, 1, 0, p;\n"
         "}\n"
-        : "=l"(start), "=l"(end), "+r"(bar_addr), "=r"(hit)
-        :
+        : "=l"(start), "=l"(end), "=r"(hit)
+        : "r"(bar_addr)
         : "memory");
 
     cycle_start[0] = start;
@@ -756,6 +610,84 @@ __global__ void arrive_crosswarp_kernel(uint64_t* arrive_time,
 
 }  // namespace
 
+namespace {
+
+struct SweepBenchSpec {
+  const char* test_name;
+  const char* description;
+  const char* csv_file;
+};
+
+struct ScalarBenchSpec {
+  const char* test_name;
+  const char* description;
+  const char* csv_file;
+};
+
+struct BreakdownRow {
+  const char* row_name;
+  const char* notes;
+  MBarrierLinearFit fit;
+  double delta = 0.0;
+};
+
+inline std::vector<uint32_t> default_instruction_counts() {
+  return {64, 128, 192, 256};
+}
+
+inline MBarrierBenchOptions default_bench_options() {
+  MBarrierBenchOptions options;
+  options.warmup_iterations = 5;
+  options.measured_iterations = 51;
+  options.subtract_clock_overhead = true;
+  return options;
+}
+
+inline void print_csv_path(const char* filename) {
+  printf("CSV: %s\n", filename);
+}
+
+inline void print_breakdown_summary(const char* test_name,
+                                    const char* description,
+                                    const std::vector<BreakdownRow>& rows,
+                                    uint64_t clock_overhead) {
+  printf("\n=== %s ===\n", test_name);
+  printf("Description: %s\n\n", description);
+  printf("┌─────────────┬───────────────────────┬──────────┬──────────┬────────┬──────────┐\n");
+  printf("│ Test        │ Notes                 │  Slope   │ Intercpt │   R^2  │  Delta   │\n");
+  printf("├─────────────┼───────────────────────┼──────────┼──────────┼────────┼──────────┤\n");
+  for (const auto& row : rows) {
+    printf("│ %-11s │ %-21s │ %6.2f c │ %6.2f c │ %6.4f │ %+6.2f c │\n",
+           row.row_name, row.notes, row.fit.slope, row.fit.intercept,
+           row.fit.r_squared, row.delta);
+  }
+  printf("└─────────────┴───────────────────────┴──────────┴──────────┴────────┴──────────┘\n");
+  printf("Clock overhead: %lu cycles\n", static_cast<unsigned long>(clock_overhead));
+}
+
+inline void export_breakdown_csv(const char* filename, const char* test_name,
+                                 const char* description,
+                                 const std::vector<BreakdownRow>& rows,
+                                 const MBarrierBenchOptions& options,
+                                 uint64_t clock_overhead) {
+  std::ofstream out(filename);
+  if (!out.is_open()) {
+    ADD_FAILURE() << "Failed to open CSV output file: " << filename;
+    return;
+  }
+
+  export_mbarrier_csv_header(out);
+  for (const auto& row : rows) {
+    out << test_name << ',' << description << ",fit,-1,0,"
+        << options.warmup_iterations << ',' << options.measured_iterations
+        << ',' << clock_overhead << ",,,,,," << row.fit.slope << ','
+        << row.fit.intercept << ',' << row.fit.r_squared << ',' << row.delta
+        << ',' << row.row_name << ' ' << row.notes << '\n';
+  }
+}
+
+}  // namespace
+
 class MBarrierLatencyTest : public MBarrierBenchmarkFixture {
  protected:
   void SetUp() override {
@@ -774,297 +706,214 @@ class MBarrierLatencyTest : public MBarrierBenchmarkFixture {
 
   uint32_t* sink_ptr() { return d_sink_; }
 
+  template <typename LaunchForCountFn>
+  void run_sweep_case(const SweepBenchSpec& spec,
+                      LaunchForCountFn&& launch_for_count) {
+    const uint64_t clock_overhead = measure_clock_overhead();
+    const MBarrierBenchOptions options = default_bench_options();
+    const std::vector<uint32_t> instruction_counts = default_instruction_counts();
+
+    const auto summary = measure_with_sweep(
+        [&](uint32_t instruction_count) {
+          launch_for_count(instruction_count);
+        },
+        instruction_counts, options, clock_overhead, spec.test_name,
+        spec.description);
+
+    expect_valid_sweep_summary(summary, instruction_counts, options);
+    export_mbarrier_sweep_csv(spec.csv_file, spec.test_name, spec.description,
+                              summary, options);
+    print_csv_path(spec.csv_file);
+  }
+
+  template <typename LaunchForCountFn>
+  MBarrierSweepSummary measure_sweep_silent(LaunchForCountFn&& launch_for_count,
+                                            const MBarrierBenchOptions& options,
+                                            uint64_t clock_overhead) {
+    MBarrierSweepSummary summary;
+    summary.clock_overhead = clock_overhead;
+
+    const std::vector<uint32_t> instruction_counts = default_instruction_counts();
+    std::vector<double> medians;
+    medians.reserve(instruction_counts.size());
+    summary.points.reserve(instruction_counts.size());
+
+    for (const uint32_t instruction_count : instruction_counts) {
+      const MBarrierCycleSummary cycles = measure_summary(
+          [&] { launch_for_count(instruction_count); }, options,
+          clock_overhead);
+      summary.points.push_back({instruction_count, cycles});
+      medians.push_back(cycles.median);
+    }
+
+    summary.fit = mbarrier_linear_regression(instruction_counts, medians);
+    return summary;
+  }
+
+  void export_scalar_case(const ScalarBenchSpec& spec,
+                          const MBarrierCycleSummary& summary,
+                          const MBarrierBenchOptions& options,
+                          uint64_t clock_overhead,
+                          const char* notes = "") {
+    print_mbarrier_scalar(spec.test_name, spec.description, summary,
+                          clock_overhead);
+    export_mbarrier_scalar_csv(spec.csv_file, spec.test_name, spec.description,
+                               summary, options, clock_overhead, notes);
+    print_csv_path(spec.csv_file);
+  }
+
  private:
   uint32_t* d_sink_ = nullptr;
 };
 
-TEST_F(MBarrierLatencyTest, P1) {
+TEST_F(MBarrierLatencyTest, WaitFalse) {
   if (!mbarrier_running_in_native_mode()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
-  const uint64_t clock_overhead = measure_clock_overhead();
-  MBarrierBenchOptions options;
-  options.warmup_iterations = 5;
-  options.measured_iterations = 51;
-  options.subtract_clock_overhead = true;
-  const std::vector<uint32_t> instruction_counts = {64, 128, 192, 256};
-
-  const auto summary = measure_with_sweep(
+  run_sweep_case(
+      {"WaitFalse", "false-path try_wait dependency chain",
+       "MBarrierLatencyTest.WaitFalse.csv"},
       [&](uint32_t instruction_count) {
         launch_try_wait_false_latency(instruction_count, cycle_start_ptr(),
                                       cycle_end_ptr(), sink_ptr());
-      },
-      instruction_counts, options, clock_overhead, "P1",
-      "T1 predicate-dependent sweep");
-
-  expect_valid_sweep_summary(summary, instruction_counts, options);
-  constexpr const char* kCsvFile = "MBarrierLatencyTest.P1.csv";
-  export_mbarrier_sweep_csv(kCsvFile, "P1", "T1 predicate-dependent sweep",
-                            summary, options);
-  printf("Results exported to: %s\n", kCsvFile);
+      });
 }
 
-TEST_F(MBarrierLatencyTest, P2) {
+TEST_F(MBarrierLatencyTest, WaitTrue) {
   if (!mbarrier_running_in_native_mode()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
-  const uint64_t clock_overhead = measure_clock_overhead();
-  MBarrierBenchOptions options;
-  options.warmup_iterations = 5;
-  options.measured_iterations = 51;
-  options.subtract_clock_overhead = true;
-  const std::vector<uint32_t> instruction_counts = {64, 128, 192, 256};
-
-  const auto summary = measure_with_sweep(
+  run_sweep_case(
+      {"WaitTrue", "true-path try_wait dependency chain",
+       "MBarrierLatencyTest.WaitTrue.csv"},
       [&](uint32_t instruction_count) {
         launch_try_wait_true_latency(instruction_count, cycle_start_ptr(),
                                      cycle_end_ptr(), sink_ptr());
-      },
-      instruction_counts, options, clock_overhead, "P2",
-      "T2a predicate-dependent sweep");
-
-  expect_valid_sweep_summary(summary, instruction_counts, options);
-  constexpr const char* kCsvFile = "MBarrierLatencyTest.P2.csv";
-  export_mbarrier_sweep_csv(kCsvFile, "P2", "T2a predicate-dependent sweep",
-                            summary, options);
-  printf("Results exported to: %s\n", kCsvFile);
+      });
 }
 
-TEST_F(MBarrierLatencyTest, PLd) {
+TEST_F(MBarrierLatencyTest, LoadChase) {
   if (!mbarrier_running_in_native_mode()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
-  const uint64_t clock_overhead = measure_clock_overhead();
-  MBarrierBenchOptions options;
-  options.warmup_iterations = 5;
-  options.measured_iterations = 51;
-  options.subtract_clock_overhead = true;
-  const std::vector<uint32_t> instruction_counts = {64, 128, 192, 256};
-
-  const auto summary = measure_with_sweep(
+  run_sweep_case(
+      {"LoadChase", "pointer-chasing ld.shared baseline",
+       "MBarrierLatencyTest.LoadChase.csv"},
       [&](uint32_t instruction_count) {
-        launch_smem_load_latency(instruction_count, cycle_start_ptr(),
-                                 cycle_end_ptr(), sink_ptr());
-      },
-      instruction_counts, options, clock_overhead, "P_ld",
-      "T3 dependent ld.shared sweep");
-
-  expect_valid_sweep_summary(summary, instruction_counts, options);
-  constexpr const char* kCsvFile = "MBarrierLatencyTest.PLd.csv";
-  export_mbarrier_sweep_csv(kCsvFile, "P_ld", "T3 dependent ld.shared sweep",
-                            summary, options);
-  printf("Results exported to: %s\n", kCsvFile);
+        launch_smem_chase_latency(instruction_count, cycle_start_ptr(),
+                                  cycle_end_ptr(), sink_ptr());
+      });
 }
 
-TEST_F(MBarrierLatencyTest, PLdChase) {
+TEST_F(MBarrierLatencyTest, PredGate) {
+  if (!mbarrier_running_in_native_mode()) {
+    GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
+  }
+
+  run_sweep_case(
+      {"PredGate", "predicated ld.shared pointer chase",
+       "MBarrierLatencyTest.PredGate.csv"},
+      [&](uint32_t instruction_count) {
+        launch_pred_chase_latency(instruction_count, cycle_start_ptr(),
+                                  cycle_end_ptr(), sink_ptr());
+      });
+}
+
+TEST_F(MBarrierLatencyTest, PredChain) {
+  if (!mbarrier_running_in_native_mode()) {
+    GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
+  }
+
+  run_sweep_case(
+      {"PredChain", "ld.shared plus setp plus selp chain",
+       "MBarrierLatencyTest.PredChain.csv"},
+      [&](uint32_t instruction_count) {
+        launch_manual_pred_latency(instruction_count, cycle_start_ptr(),
+                                   cycle_end_ptr(), sink_ptr());
+      });
+}
+
+TEST_F(MBarrierLatencyTest, Breakdown) {
   if (!mbarrier_running_in_native_mode()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
   const uint64_t clock_overhead = measure_clock_overhead();
-  MBarrierBenchOptions options;
-  options.warmup_iterations = 5;
-  options.measured_iterations = 51;
-  options.subtract_clock_overhead = true;
-  const std::vector<uint32_t> instruction_counts = {64, 128, 192, 256};
+  const MBarrierBenchOptions options = default_bench_options();
 
-  const auto summary = measure_with_sweep(
+  const auto load_chase = measure_sweep_silent(
       [&](uint32_t instruction_count) {
         launch_smem_chase_latency(instruction_count, cycle_start_ptr(),
                                   cycle_end_ptr(), sink_ptr());
       },
-      instruction_counts, options, clock_overhead, "P_ld_chase",
-      "T4 pointer-chasing ld.shared sweep");
-
-  expect_valid_sweep_summary(summary, instruction_counts, options);
-  constexpr const char* kCsvFile = "MBarrierLatencyTest.PLdChase.csv";
-  export_mbarrier_sweep_csv(kCsvFile, "P_ld_chase",
-                            "T4 pointer-chasing ld.shared sweep", summary,
-                            options);
-  printf("Results exported to: %s\n", kCsvFile);
-}
-
-TEST_F(MBarrierLatencyTest, PManualPred) {
-  if (!mbarrier_running_in_native_mode()) {
-    GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
-  }
-
-  const uint64_t clock_overhead = measure_clock_overhead();
-  MBarrierBenchOptions options;
-  options.warmup_iterations = 5;
-  options.measured_iterations = 51;
-  options.subtract_clock_overhead = true;
-  const std::vector<uint32_t> instruction_counts = {64, 128, 192, 256};
-
-  const auto summary = measure_with_sweep(
-      [&](uint32_t instruction_count) {
-        launch_manual_pred_latency(instruction_count, cycle_start_ptr(),
-                                   cycle_end_ptr(), sink_ptr());
-      },
-      instruction_counts, options, clock_overhead, "P_manual_pred",
-      "T5 ld.shared.u64 + setp predicate chain");
-
-  expect_valid_sweep_summary(summary, instruction_counts, options);
-  constexpr const char* kCsvFile = "MBarrierLatencyTest.PManualPred.csv";
-  export_mbarrier_sweep_csv(kCsvFile, "P_manual_pred",
-                            "T5 ld.shared.u32 + setp + selp chain", summary,
-                            options);
-  printf("Results exported to: %s\n", kCsvFile);
-}
-
-TEST_F(MBarrierLatencyTest, PPredChase) {
-  if (!mbarrier_running_in_native_mode()) {
-    GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
-  }
-
-  const uint64_t clock_overhead = measure_clock_overhead();
-  MBarrierBenchOptions options;
-  options.warmup_iterations = 5;
-  options.measured_iterations = 51;
-  options.subtract_clock_overhead = true;
-  const std::vector<uint32_t> instruction_counts = {64, 128, 192, 256};
-
-  const auto summary = measure_with_sweep(
+      options, clock_overhead);
+  const auto pred_gate = measure_sweep_silent(
       [&](uint32_t instruction_count) {
         launch_pred_chase_latency(instruction_count, cycle_start_ptr(),
                                   cycle_end_ptr(), sink_ptr());
       },
-      instruction_counts, options, clock_overhead, "P_pred_chase",
-      "T6 @!p0 ld.shared.u32 pointer-chase (static pred)");
+      options, clock_overhead);
+  const auto pred_chain = measure_sweep_silent(
+      [&](uint32_t instruction_count) {
+        launch_manual_pred_latency(instruction_count, cycle_start_ptr(),
+                                   cycle_end_ptr(), sink_ptr());
+      },
+      options, clock_overhead);
+  const auto wait_false = measure_sweep_silent(
+      [&](uint32_t instruction_count) {
+        launch_try_wait_false_latency(instruction_count, cycle_start_ptr(),
+                                      cycle_end_ptr(), sink_ptr());
+      },
+      options, clock_overhead);
+  const auto wait_true = measure_sweep_silent(
+      [&](uint32_t instruction_count) {
+        launch_try_wait_true_latency(instruction_count, cycle_start_ptr(),
+                                     cycle_end_ptr(), sink_ptr());
+      },
+      options, clock_overhead);
 
-  expect_valid_sweep_summary(summary, instruction_counts, options);
-  constexpr const char* kCsvFile = "MBarrierLatencyTest.PPredChase.csv";
-  export_mbarrier_sweep_csv(kCsvFile, "P_pred_chase",
-                            "T6 @!p0 ld.shared.u32 pointer-chase (static pred)",
-                            summary, options);
-  printf("Results exported to: %s\n", kCsvFile);
-}
-
-TEST_F(MBarrierLatencyTest, Summary) {
-  if (!mbarrier_running_in_native_mode()) {
-    GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
-  }
-
-  const uint64_t clock_overhead = measure_clock_overhead();
-  MBarrierBenchOptions options;
-  options.warmup_iterations = 5;
-  options.measured_iterations = 51;
-  options.subtract_clock_overhead = true;
-  const std::vector<uint32_t> instruction_counts = {64, 128, 192, 256};
-
-  struct Entry {
-    const char* name;
-    const char* sass;
-    MBarrierLinearFit fit;
+  const double base_slope = load_chase.fit.slope;
+  const std::vector<BreakdownRow> rows = {
+      {"LoadChase", "LDS -> LDS", load_chase.fit,
+       load_chase.fit.slope - base_slope},
+      {"PredGate", "@P BRA + LDS", pred_gate.fit,
+       pred_gate.fit.slope - base_slope},
+      {"PredChain", "LDS -> ISETP -> SEL", pred_chain.fit,
+       pred_chain.fit.slope - base_slope},
+      {"WaitFalse", "SYNCS.TRYWAIT @!P", wait_false.fit,
+       wait_false.fit.slope - base_slope},
+      {"WaitTrue", "SYNCS.TRYWAIT @P", wait_true.fit,
+       wait_true.fit.slope - base_slope},
   };
-  std::vector<Entry> entries;
 
-  // 1. Baseline: pure pointer-chasing ld.shared
-  {
-    const auto s = measure_with_sweep(
-        [&](uint32_t n) {
-          launch_smem_chase_latency(n, cycle_start_ptr(), cycle_end_ptr(),
-                                    sink_ptr());
-        },
-        instruction_counts, options, clock_overhead, "PLdChase",
-        "pointer-chasing ld.shared");
-    entries.push_back({"ld.shared (chase)", "LDS -> LDS", s.fit});
-  }
-
-  // 2. + predicate gate (static, always true)
-  {
-    const auto s = measure_with_sweep(
-        [&](uint32_t n) {
-          launch_pred_chase_latency(n, cycle_start_ptr(), cycle_end_ptr(),
-                                    sink_ptr());
-        },
-        instruction_counts, options, clock_overhead, "PPredChase",
-        "+ static predicate");
-    entries.push_back({"+ predicate gate", "@P BRA + LDS", s.fit});
-  }
-
-  // 3. + predicate + compare (ld.shared + setp + selp)
-  {
-    const auto s = measure_with_sweep(
-        [&](uint32_t n) {
-          launch_manual_pred_latency(n, cycle_start_ptr(), cycle_end_ptr(),
-                                     sink_ptr());
-        },
-        instruction_counts, options, clock_overhead, "PManualPred",
-        "+ predicate + compare");
-    entries.push_back({"+ pred + compare", "LDS -> ISETP -> SEL", s.fit});
-  }
-
-  // 4. try_wait false-path (fused hardware instruction)
-  {
-    const auto s = measure_with_sweep(
-        [&](uint32_t n) {
-          launch_try_wait_false_latency(n, cycle_start_ptr(), cycle_end_ptr(),
-                                        sink_ptr());
-        },
-        instruction_counts, options, clock_overhead, "P1",
-        "try_wait false-path");
-    entries.push_back({"try_wait (false)", "SYNCS.TRYWAIT @!P", s.fit});
-  }
-
-  // 5. try_wait true-path (fused hardware instruction)
-  {
-    const auto s = measure_with_sweep(
-        [&](uint32_t n) {
-          launch_try_wait_true_latency(n, cycle_start_ptr(), cycle_end_ptr(),
-                                       sink_ptr());
-        },
-        instruction_counts, options, clock_overhead, "P2",
-        "try_wait true-path");
-    entries.push_back({"try_wait (true)", "SYNCS.TRYWAIT @P", s.fit});
-  }
-
-  const double base_slope = entries[0].fit.slope;
-
-  printf("\n=== MBarrier Latency Decomposition Summary ===\n");
-  printf("Clock overhead: %lu cycles\n\n", clock_overhead);
-  printf("┌───┬──────────────────────────┬───────────────────────┬──────────┬──────────┬────────┬──────────┐\n");
-  printf("│ # │ Test                     │ SASS Pattern          │    Slope │ Intercpt │    R^2 │    Delta │\n");
-  printf("├───┼──────────────────────────┼───────────────────────┼──────────┼──────────┼────────┼──────────┤\n");
-  for (size_t i = 0; i < entries.size(); ++i) {
-    const auto& e = entries[i];
-    const double delta = e.fit.slope - base_slope;
-    printf("│ %zu │ %-24s │ %-21s │ %6.2f c │ %6.2f c │ %6.4f │ %+6.2f c │\n",
-           i + 1, e.name, e.sass, e.fit.slope, e.fit.intercept,
-           e.fit.r_squared, delta);
-  }
-  printf("└───┴──────────────────────────┴───────────────────────┴──────────┴──────────┴────────┴──────────┘\n");
-  printf("\nDecomposition:\n");
-  printf("  ld.shared base latency:      %6.2f cycles\n", base_slope);
-  printf("  + predicate gate overhead:   %+6.2f cycles\n",
-         entries[1].fit.slope - base_slope);
-  printf("  + manual compare (setp+selp):%+6.2f cycles\n",
-         entries[2].fit.slope - base_slope);
-  printf("  try_wait fused overhead:     %+6.2f cycles  (vs %.2f for manual)\n",
-         entries[3].fit.slope - base_slope,
-         entries[2].fit.slope - base_slope);
+  print_breakdown_summary("Breakdown", "latency decomposition summary", rows,
+                          clock_overhead);
+  constexpr const char* kCsvFile = "MBarrierLatencyTest.Breakdown.csv";
+  export_breakdown_csv(kCsvFile, "Breakdown",
+                       "latency decomposition summary", rows, options,
+                       clock_overhead);
+  print_csv_path(kCsvFile);
 }
 
-TEST_F(MBarrierLatencyTest, PArriveVisibility) {
+TEST_F(MBarrierLatencyTest, ArriveLocal) {
   if (!mbarrier_running_in_native_mode()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
   const uint64_t clock_overhead = measure_clock_overhead();
-  MBarrierBenchOptions options;
-  options.warmup_iterations = 5;
-  options.measured_iterations = 51;
-  options.subtract_clock_overhead = true;
+  const MBarrierBenchOptions options = default_bench_options();
 
   // Verify try_wait actually returned true.
   uint32_t h_hit = 0;
   arrive_try_wait_pair_kernel<<<1, 32>>>(cycle_start_ptr(), cycle_end_ptr(),
                                          sink_ptr());
-  cudaDeviceSynchronize();
-  cudaMemcpy(&h_hit, sink_ptr(), sizeof(uint32_t), cudaMemcpyDeviceToHost);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(&h_hit, sink_ptr(), sizeof(uint32_t),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
   ASSERT_EQ(h_hit, 1u) << "try_wait did not observe the arrive!";
 
   const auto summary = measure_summary(
@@ -1074,75 +923,60 @@ TEST_F(MBarrierLatencyTest, PArriveVisibility) {
       },
       options, clock_overhead);
 
-  printf("\n=== Arrive + TryWait Pair Latency ===\n\n");
-  printf("  try_wait returned true: verified\n");
-  printf("  Min:    %8.2f cycles\n", summary.min);
-  printf("  Median: %8.2f cycles\n", summary.median);
-  printf("  P90:    %8.2f cycles\n", summary.p90);
-  printf("  Max:    %8.2f cycles\n", summary.max);
-  printf("  Clock overhead: %lu cycles\n\n", clock_overhead);
-  printf("  This measures: clock64 + arrive_expect_tx(0) + try_wait + clock64\n");
-  printf("  Interpretation: arrive visibility latency is near zero within\n");
-  printf("  the same thread (barrier HW bypass, not smem round-trip).\n");
+  export_scalar_case(
+      {"ArriveLocal", "same-thread arrive and try_wait pair",
+       "MBarrierLatencyTest.ArriveLocal.csv"},
+      summary, options, clock_overhead,
+      "clock64 arrive_expect_tx try_wait clock64");
 }
 
-TEST_F(MBarrierLatencyTest, PArriveCrossWarp) {
+TEST_F(MBarrierLatencyTest, ArriveWarp) {
   if (!mbarrier_running_in_native_mode()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
   const uint64_t clock_overhead = measure_clock_overhead();
+  const MBarrierBenchOptions options = default_bench_options();
 
   // Allocate separate device buffers for the two timestamps and results.
   uint64_t* d_arrive_time = nullptr;
   uint64_t* d_observe_time = nullptr;
   uint32_t* d_result = nullptr;
-  cudaMalloc(&d_arrive_time, sizeof(uint64_t));
-  cudaMalloc(&d_observe_time, sizeof(uint64_t));
-  cudaMalloc(&d_result, 2 * sizeof(uint32_t));
+  ASSERT_EQ(cudaMalloc(&d_arrive_time, sizeof(uint64_t)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_observe_time, sizeof(uint64_t)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_result, 2 * sizeof(uint32_t)), cudaSuccess);
 
-  constexpr int kWarmup = 5;
-  constexpr int kMeasured = 51;
-  std::vector<int64_t> samples;
-  samples.reserve(kMeasured);
+  std::vector<uint64_t> samples;
+  samples.reserve(options.measured_iterations);
 
-  for (int i = 0; i < kWarmup + kMeasured; ++i) {
+  for (int i = 0;
+       i < options.warmup_iterations + options.measured_iterations; ++i) {
     arrive_crosswarp_kernel<<<1, 64>>>(d_arrive_time, d_observe_time, d_result);
-    cudaDeviceSynchronize();
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
 
-    if (i >= kWarmup) {
+    if (i >= options.warmup_iterations) {
       uint64_t h_arrive = 0, h_observe = 0;
       uint32_t h_result[2] = {};
-      cudaMemcpy(&h_arrive, d_arrive_time, sizeof(uint64_t),
-                 cudaMemcpyDeviceToHost);
-      cudaMemcpy(&h_observe, d_observe_time, sizeof(uint64_t),
-                 cudaMemcpyDeviceToHost);
-      cudaMemcpy(h_result, d_result, 2 * sizeof(uint32_t),
-                 cudaMemcpyDeviceToHost);
+      ASSERT_EQ(cudaMemcpy(&h_arrive, d_arrive_time, sizeof(uint64_t),
+                           cudaMemcpyDeviceToHost),
+                cudaSuccess);
+      ASSERT_EQ(cudaMemcpy(&h_observe, d_observe_time, sizeof(uint64_t),
+                           cudaMemcpyDeviceToHost),
+                cudaSuccess);
+      ASSERT_EQ(cudaMemcpy(h_result, d_result, 2 * sizeof(uint32_t),
+                           cudaMemcpyDeviceToHost),
+                cudaSuccess);
       ASSERT_EQ(h_result[1], 1u) << "try_wait did not observe the arrive";
-      samples.push_back(static_cast<int64_t>(h_observe) -
-                         static_cast<int64_t>(h_arrive) -
-                         static_cast<int64_t>(clock_overhead));
+      samples.push_back(h_observe - h_arrive - clock_overhead);
     }
   }
 
-  std::sort(samples.begin(), samples.end());
-  const double min_v = static_cast<double>(samples.front());
-  const double med_v = static_cast<double>(samples[samples.size() / 2]);
-  const double p90_v = static_cast<double>(
-      samples[static_cast<size_t>(0.9 * (samples.size() - 1))]);
-  const double max_v = static_cast<double>(samples.back());
-
-  printf("\n=== Cross-Warp Arrive Visibility Latency ===\n\n");
-  printf("  Warp 0: clock64 -> arrive_expect_tx(0)\n");
-  printf("  Warp 1: polling try_wait -> clock64 on success\n");
-  printf("  Latency = observe_time - arrive_time - clock_overhead\n\n");
-  printf("  Min:    %8.2f cycles\n", min_v);
-  printf("  Median: %8.2f cycles\n", med_v);
-  printf("  P90:    %8.2f cycles\n", p90_v);
-  printf("  Max:    %8.2f cycles\n", max_v);
-  printf("  Samples: %zu, Clock overhead: %lu cycles\n", samples.size(),
-         clock_overhead);
+  const MBarrierCycleSummary summary = summarize_mbarrier_cycles(samples);
+  export_scalar_case(
+      {"ArriveWarp", "cross-warp arrive visibility",
+       "MBarrierLatencyTest.ArriveWarp.csv"},
+      summary, options, clock_overhead,
+      "observe_time minus arrive_time minus clock_overhead");
 
   cudaFree(d_arrive_time);
   cudaFree(d_observe_time);

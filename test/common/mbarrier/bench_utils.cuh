@@ -137,10 +137,11 @@ inline MBarrierCycleSummary summarize_mbarrier_cycles(
   return summary;
 }
 
-inline void print_mbarrier_comparison(const char* parameter,
-                                      const char* method,
+inline void print_mbarrier_comparison(const char* test_name,
+                                      const char* description,
                                       const MBarrierComparisonSummary& summary) {
-  printf("\n=== %s (%s) ===\n\n", parameter, method);
+  printf("\n=== %s ===\n", test_name);
+  printf("Description: %s\n\n", description);
   printf("┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┐\n");
   printf("│  Metric  │   Min    │   P10    │  Median  │   P90    │   Max    │\n");
   printf("├──────────┼──────────┼──────────┼──────────┼──────────┼──────────┤\n");
@@ -202,9 +203,11 @@ inline MBarrierLinearFit mbarrier_linear_regression(
   return fit;
 }
 
-inline void print_mbarrier_sweep(const char* parameter, const char* method,
+inline void print_mbarrier_sweep(const char* test_name,
+                                 const char* description,
                                  const MBarrierSweepSummary& summary) {
-  printf("\n=== %s (%s) ===\n\n", parameter, method);
+  printf("\n=== %s ===\n", test_name);
+  printf("Description: %s\n\n", description);
   printf("┌──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐\n");
   printf("│ Instr Count  │     Min      │    Median    │     P90      │     Max      │\n");
   printf("├──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤\n");
@@ -219,9 +222,11 @@ inline void print_mbarrier_sweep(const char* parameter, const char* method,
          static_cast<unsigned long>(summary.clock_overhead));
 }
 
-inline void print_mbarrier_threshold(const char* parameter, const char* method,
+inline void print_mbarrier_threshold(const char* test_name,
+                                     const char* description,
                                      const MBarrierThresholdSummary& summary) {
-  printf("\n=== %s (%s) ===\n\n", parameter, method);
+  printf("\n=== %s ===\n", test_name);
+  printf("Description: %s\n\n", description);
   printf("┌──────────────┬──────────┬──────────┬────────────┐\n");
   printf("│ Sweep Value  │   Hits   │  Trials  │  Hit Rate  │\n");
   printf("├──────────────┼──────────┼──────────┼────────────┤\n");
@@ -237,9 +242,31 @@ inline void print_mbarrier_threshold(const char* parameter, const char* method,
          static_cast<unsigned long>(summary.clock_overhead));
 }
 
+inline void print_mbarrier_scalar(const char* test_name,
+                                  const char* description,
+                                  const MBarrierCycleSummary& summary,
+                                  uint64_t clock_overhead) {
+  printf("\n=== %s ===\n", test_name);
+  printf("Description: %s\n\n", description);
+  printf("┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┐\n");
+  printf("│  Metric  │   Min    │   P10    │  Median  │   P90    │   Max    │\n");
+  printf("├──────────┼──────────┼──────────┼──────────┼──────────┼──────────┤\n");
+  printf("│ Cycles   │ %8.2f │ %8.2f │ %8.2f │ %8.2f │ %8.2f │\n",
+         summary.min, summary.p10, summary.median, summary.p90, summary.max);
+  printf("└──────────┴──────────┴──────────┴──────────┴──────────┴──────────┘\n");
+  printf("Samples: %d, clock overhead: %lu cycles\n", summary.sample_count,
+         static_cast<unsigned long>(clock_overhead));
+}
+
+inline void export_mbarrier_csv_header(std::ofstream& out) {
+  out << "test_name,description,row_type,instruction_count,sample_count,"
+         "warmup_iterations,measured_iterations,clock_overhead,min,p10,"
+         "median,p90,max,slope,intercept,r_squared,delta,notes\n";
+}
+
 inline void export_mbarrier_sweep_csv(const char* filename,
-                                      const char* parameter,
-                                      const char* method,
+                                      const char* test_name,
+                                      const char* description,
                                       const MBarrierSweepSummary& summary,
                                       const MBarrierBenchOptions& options) {
   std::ofstream out(filename);
@@ -248,22 +275,42 @@ inline void export_mbarrier_sweep_csv(const char* filename,
     return;
   }
 
-  out << "parameter,method,instruction_count,sample_count,warmup_iterations,"
-         "measured_iterations,clock_overhead,min,p10,median,p90,max,slope,"
-         "intercept,r_squared\n";
+  export_mbarrier_csv_header(out);
   for (const auto& point : summary.points) {
-    out << parameter << ',' << method << ',' << point.instruction_count << ','
-        << point.cycles.sample_count << ',' << options.warmup_iterations << ','
-        << options.measured_iterations << ',' << summary.clock_overhead << ','
-        << point.cycles.min << ',' << point.cycles.p10 << ','
-        << point.cycles.median << ',' << point.cycles.p90 << ','
-        << point.cycles.max << ',' << summary.fit.slope << ','
-        << summary.fit.intercept << ',' << summary.fit.r_squared << '\n';
+    out << test_name << ',' << description << ",point,"
+        << point.instruction_count << ',' << point.cycles.sample_count << ','
+        << options.warmup_iterations << ',' << options.measured_iterations
+        << ',' << summary.clock_overhead << ',' << point.cycles.min << ','
+        << point.cycles.p10 << ',' << point.cycles.median << ','
+        << point.cycles.p90 << ',' << point.cycles.max << ','
+        << summary.fit.slope << ',' << summary.fit.intercept << ','
+        << summary.fit.r_squared << ",,\n";
   }
 }
 
+inline void export_mbarrier_scalar_csv(const char* filename,
+                                       const char* test_name,
+                                       const char* description,
+                                       const MBarrierCycleSummary& summary,
+                                       const MBarrierBenchOptions& options,
+                                       uint64_t clock_overhead,
+                                       const char* notes = "") {
+  std::ofstream out(filename);
+  if (!out.is_open()) {
+    ADD_FAILURE() << "Failed to open CSV output file: " << filename;
+    return;
+  }
+
+  export_mbarrier_csv_header(out);
+  out << test_name << ',' << description << ",summary,-1,"
+      << summary.sample_count << ',' << options.warmup_iterations << ','
+      << options.measured_iterations << ',' << clock_overhead << ','
+      << summary.min << ',' << summary.p10 << ',' << summary.median << ','
+      << summary.p90 << ',' << summary.max << ",,,,," << notes << '\n';
+}
+
 inline void export_mbarrier_threshold_csv(
-    const char* filename, const char* parameter, const char* method,
+    const char* filename, const char* test_name, const char* description,
     const MBarrierThresholdSummary& summary,
     const MBarrierBenchOptions& options) {
   std::ofstream out(filename);
@@ -272,12 +319,12 @@ inline void export_mbarrier_threshold_csv(
     return;
   }
 
-  out << "parameter,method,sweep_value,hits,trials,hit_rate,"
+  out << "test_name,description,sweep_value,hits,trials,hit_rate,"
          "warmup_iterations,measured_iterations,clock_overhead,"
          "filler_step_cycles,first_any_hit,first_all_hit,"
          "approx_first_any_cycles,approx_first_all_cycles\n";
   for (const auto& point : summary.points) {
-    out << parameter << ',' << method << ',' << point.sweep_value << ','
+    out << test_name << ',' << description << ',' << point.sweep_value << ','
         << point.hits << ',' << point.trials << ',' << point.hit_rate << ','
         << options.warmup_iterations << ',' << options.measured_iterations
         << ',' << summary.clock_overhead << ',' << summary.filler_step_cycles
@@ -375,8 +422,8 @@ class MBarrierBenchmarkFixture : public ::testing::Test {
   MBarrierComparisonSummary measure_with_control(
       RawLaunchFn&& raw_launch, ControlLaunchFn&& control_launch,
       const MBarrierBenchOptions& options, uint64_t clock_overhead,
-      uint32_t normalization_factor, const char* parameter,
-      const char* method) {
+      uint32_t normalization_factor, const char* test_name,
+      const char* description) {
     MBarrierComparisonSummary summary;
     summary.clock_overhead = clock_overhead;
 
@@ -459,7 +506,7 @@ class MBarrierBenchmarkFixture : public ::testing::Test {
           mbarrier_percentile(derived_samples, 0.90) / divisor;
     }
 
-    print_mbarrier_comparison(parameter, method, summary);
+    print_mbarrier_comparison(test_name, description, summary);
     return summary;
   }
 
@@ -468,7 +515,7 @@ class MBarrierBenchmarkFixture : public ::testing::Test {
       LaunchForCountFn&& launch_for_count,
       const std::vector<uint32_t>& instruction_counts,
       const MBarrierBenchOptions& options, uint64_t clock_overhead,
-      const char* parameter, const char* method) {
+      const char* test_name, const char* description) {
     MBarrierSweepSummary summary;
     summary.clock_overhead = clock_overhead;
 
@@ -485,7 +532,7 @@ class MBarrierBenchmarkFixture : public ::testing::Test {
     }
 
     summary.fit = mbarrier_linear_regression(instruction_counts, medians);
-    print_mbarrier_sweep(parameter, method, summary);
+    print_mbarrier_sweep(test_name, description, summary);
     return summary;
   }
 
