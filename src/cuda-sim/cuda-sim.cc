@@ -37,6 +37,7 @@
 class ptx_recognizer;
 typedef void *yyscan_t;
 #include <stdio.h>
+#include <algorithm>
 #include <map>
 #include <set>
 #include <sstream>
@@ -90,6 +91,11 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
                          "Opcode latencies for Tensor instructions"
                          "Default 64",
                          "64");
+  option_parser_register(opp, "-ptx_opcode_latency_tma", OPT_CSTR,
+                         &opcode_latency_tma,
+                         "Opcode latency for TMA (cp.async.bulk) instructions"
+                         "Default 33",
+                         "33");
   option_parser_register(
       opp, "-ptx_opcode_initiation_int", OPT_CSTR, &opcode_initiation_int,
       "Opcode initiation intervals for integers <ADD,MAX,MUL,MAD,DIV,SHFL>"
@@ -117,6 +123,11 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
                          "Opcode initiation intervals for tensor instructions"
                          "Default 64",
                          "64");
+  option_parser_register(opp, "-ptx_opcode_initiation_tma", OPT_CSTR,
+                         &opcode_initiation_tma,
+                         "Opcode initiation interval for TMA (cp.async.bulk) instructions"
+                         "Default 33",
+                         "33");
   option_parser_register(opp, "-cdp_latency", OPT_CSTR, &cdp_latency_str,
                          "CDP API latency <cudaStreamCreateWithFlags, \
 cudaGetParameterBufferV2_init_perWarp, cudaGetParameterBufferV2_perKernel, \
@@ -885,6 +896,8 @@ void ptx_instruction::set_opcode_and_latency() {
   unsigned dp_init[5];
   unsigned sfu_init;
   unsigned tensor_init[7];
+  unsigned tma_latency_val;
+  unsigned tma_init_val;
   /*
    * [0] ADD,SUB
    * [1] MAX,Min
@@ -968,6 +981,18 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_tma, "%u", &tma_latency_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_tma (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_tma, "%u", &tma_init_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_tma (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
   nret = sscanf(gpgpu_ctx->func_sim->cdp_latency_str, "%u,%u,%u,%u,%u",
                 &gpgpu_ctx->func_sim->cdp_latency[0],
                 &gpgpu_ctx->func_sim->cdp_latency[1],
@@ -1032,9 +1057,19 @@ void ptx_instruction::set_opcode_and_latency() {
     case MBAR_OP:
       op = MBARRIER_OP;
       break;
-    case TMA_OP:
-      op = TENSOR_MEMORY_ACCELERATOR_OP;
+    case TMA_OP: {
+      const auto &opts = get_options();
+      bool is_commit = std::find(opts.begin(), opts.end(), COMMIT_GROUP_OPTION) != opts.end();
+      bool is_wait = std::find(opts.begin(), opts.end(), WAIT_GROUP_OPTION) != opts.end();
+      if (is_commit || is_wait) {
+        op = ALU_OP;  // commit_group/wait_group: lightweight, go to SP/INT
+      } else {
+        op = TENSOR_MEMORY_ACCELERATOR_OP;
+        latency = tma_latency_val;
+        initiation_interval = tma_init_val;
+      }
       break;
+    }
     case TENSORMAP_OP:
     case FENCE_OP:
     case ELECT_OP:
