@@ -86,12 +86,20 @@ inline bool mbarrier_running_in_native_mode() {
   }
 
   const char* ld_library_path = std::getenv("LD_LIBRARY_PATH");
-  if (ld_library_path == nullptr) {
+  if (ld_library_path == nullptr || ld_library_path[0] == '\0') {
     return true;
   }
 
-  return std::string(ld_library_path).find("gpgpu-sim_distribution/lib") ==
-         std::string::npos;
+  const std::string ld_path(ld_library_path);
+  const char* gpgpusim_root = std::getenv("GPGPUSIM_ROOT");
+  if (gpgpusim_root != nullptr && gpgpusim_root[0] != '\0') {
+    const std::string sim_lib_prefix = std::string(gpgpusim_root) + "/lib/";
+    if (ld_path.find(sim_lib_prefix) != std::string::npos) {
+      return false;
+    }
+  }
+
+  return ld_path.find("gpgpu-sim") == std::string::npos;
 }
 
 inline double mbarrier_percentile(const std::vector<uint64_t>& sorted_samples,

@@ -1,104 +1,51 @@
 # MMA Microbenchmark Suite
 
-This directory contains MMA-focused microbenchmarks for characterizing Tensor Core issue behavior and peak throughput.
+This directory contains MMA-focused microbenchmarks for Tensor Core issue gap,
+peak throughput, and instruction-latency calibration.
 
 ## Supported Tests
 
-The suite is built on GoogleTest. You can run specific tests using the `./run_tests.sh` script from the `test/` directory.
+Run these tests from `test/` with `./run_tests.sh bench "<pattern>"`.
 
-### 1. MMA Issue Gap & Throughput Test (`mma_issue_bench.cc`)
-Analyzes the pipeline throughput (issue gap) of Tensor Core instructions by varying Instruction-Level Parallelism (ILP).
+| Test | Source | Description | Output |
+|------|--------|-------------|--------|
+| `MMAIssueTest.ILPMinimal` | `mma_issue_bench.cc` | Typed test that sweeps ILP `{1,2,4,8}` for every supported MMA variant. | `MMAIssueTest.ILPMinimal.<variant>.txt` |
+| `MMAIssueTest.MultiWarpMinimal` | `mma_issue_bench.cc` | Typed test that sweeps warp count `{1,2,4,8,16,32}` for every supported MMA variant. | `MMAIssueTest.MultiWarpMinimal.<variant>.txt` |
+| `MMAIssueSummary.AllVariants` | `mma_issue_bench.cc` | Cross-variant summary of cycles per MMA from the issue-gap microbench. | `MMAIssueTest.Summary.txt` |
+| `MMAPeak.AllVariants` | `mma_issue_bench.cc` | Full-device peak throughput summary across all MMA variants. | `MMAPeak.Summary.txt` |
+| `InstLatencyTest.FullCalibrationSuite` | `inst_latency_bench.cc` | Broad scalar/SFU/MMA instruction-latency calibration sweep used for simulator tuning. | Timestamped `test/run/logs/inst_latency_*.log` |
 
-*   **Test Name**: `MMAIssueTest.ILPMinimal`
-    *   **Description**: Runs single-warp MMA chains with varying ILP (1, 2, 4, 8) to determine the maximum instruction issue rate.
-    *   **Run Command**:
-        ```bash
-        ./run_tests.sh bench "MMAIssueTest.ILPMinimal"
-        ```
+## Variant Coverage
 
-*   **Test Name**: `MMAIssueTest.MultiWarpMinimal`
-    *   **Description**: Runs multi-warp workloads to verify if throughput scales with the number of warps (checking for independent Tensor Core pipelines).
-    *   **Run Command**:
-        ```bash
-        ./run_tests.sh bench "MMAIssueTest.MultiWarpMinimal"
-        ```
+`mma_issue_bench.cc` uses `TYPED_TEST_SUITE`, so the issue-gap benchmarks run
+for every supported MMA op in one build. There is no longer a manual
+`CurrentMmaOp` switch in the source.
 
-*   **Test Name**: `MMAPeak.AllVariants`
-    *   **Description**: Sweeps ILP on a full-device MMA workload, selects the best throughput point for each of the 7 supported MMA instructions, and reports the result in `TFLOPS` (floating-point variants) or `TOPS` (integer variants).
-    *   **Run Command**:
-        ```bash
-        ./run_tests.sh bench "MMAPeak.AllVariants"
-        ```
-    *   **Output**:
-        *   Console summary table.
-        *   `MMAPeak.Summary.txt`
-    *   **Notes**:
-        *   `BestILP` and `Blocks/SM` are chosen by sweeping candidate ILP values and keeping the configuration with the highest measured throughput.
-        *   `Meas GHz` is an inferred runtime SM clock, computed from block-level `clock64()` spans divided by the kernel time measured with `cudaEvent`.
-        *   `Theo Now` and `% Peak` scale the whitepaper dense peak using that inferred clock, so they reflect current boost behavior rather than only the static reference clock.
+- `MmaOp_F16_M16N8K16`
+- `MmaOp_F16_M16N8K8`
+- `MmaOp_BF16_M16N8K8`
+- `MmaOp_TF32_M16N8K8`
+- `MmaOp_TF32_M16N8K4`
+- `MmaOp_S8_M16N8K32`
+- `MmaOp_S8_M16N8K16`
 
-## Configuration Guide
+## Example Commands
 
-### How to Switch MMA Instruction Type
-
-To test different MMA instruction types (e.g., FP16, TF32, INT8) in the Issue Gap benchmark, you need to modify the source code in [`mma_issue_bench.cc`](mma_issue_bench.cc).
-
-1.  Open `mma_issue_bench.cc`.
-2.  Locate the section marked `// SELECT ACTIVE MMA TYPE HERE` (around line 144-151).
-3.  Uncomment the `using CurrentMmaOp = ...` line corresponding to the instruction you want to test and comment out others.
-
-**Example:**
-
-To switch from the default **TF32** (M16N8K8) back to **FP16** (M16N8K16):
-
-```cpp
-// SELECT ACTIVE MMA TYPE HERE
-using CurrentMmaOp = MmaOp_F16_M16N8K16; // <--- Uncomment this for FP16
-// using CurrentMmaOp = MmaOp_F16_M16N8K8; 
-// using CurrentMmaOp = MmaOp_BF16_M16N8K8; 
-// using CurrentMmaOp = MmaOp_TF32_M16N8K8; // <--- Comment this out
+```bash
+./run_tests.sh bench "MMAIssueTest.ILPMinimal"
+./run_tests.sh bench "MMAIssueSummary.AllVariants"
+./run_tests.sh bench "MMAPeak.AllVariants"
+./run_tests.sh bench "InstLatencyTest.FullCalibrationSuite"
 ```
 
-4.  Recompile the tests before running.
-
-### Supported Strategies
-
-*   `MmaOp_F16_M16N8K16`: FP16 input, FP32 accum. (Standard Tensor Core op)
-*   `MmaOp_TF32_M16N8K8`: TF32 input, FP32 accum. (Ampere+ default)
-*   `MmaOp_S8_M16N8K32`: Int8 input, Int32 accum. (Integer Tensor Core)
-*   `MmaOp_F16_M16N8K8`: FP16 input, FP32 accum. (Smaller K dimension)
-*   `MmaOp_BF16_M16N8K8`: BF16 input, FP32 accum. (Ampere+ only)
-*   `MmaOp_TF32_M16N8K4`: TF32 input, FP32 accum. (Hopper+ specific shape)
-*   `MmaOp_S8_M16N8K16`: Int8 input, Int32 accum. (Half-K dimension)
-
-### How to change ILP and multi-warp level
-
-Change vectors in [`mma_issue_bench.cc`](mma_issue_bench.cc):
-
-#### For ILPMinimal
-
-```c++
-//line 409-413
-    const int mma_count = 16;  // iterations per kernel
-    const int warmup = 3;
-    const int iterations = 10;
-    
-    std::vector<int> ilp_values = {1, 2, 4, 8};
-```
-
-
-#### For MultiWarpMinimal
-
-```c++
-// line 474-476
-    const int ilp = 1;
-    const int mma_count = 1000;  // Increased from 16 to 1000 to minimize overhead impact
-    std::vector<int> warp_counts = {1, 2, 4, 8, 16, 32};
-```
+For `MMAPeak.AllVariants`, `BestILP` and `Blocks/SM` are chosen by sweeping
+candidate launch settings and keeping the highest measured throughput point.
+`Meas GHz`, `Theo Now`, and `% Peak` are all derived from the measured runtime
+clock instead of a fixed spec clock.
 
 ## Running Calibration
 
-To calibrate the simulator against hardware, use the provided Python script:
+To compare native hardware against GPGPU-Sim, use the provided Python script:
 
 ```bash
 # From repository root
@@ -108,11 +55,13 @@ python3 test/src/microbench/mma/run_calibration.py
 python3 src/microbench/mma/run_calibration.py
 ```
 
-This script will:
-1.  Run `MMAIssueTest.ILPMinimal` and `MMAIssueTest.MultiWarpMinimal` on **native hardware** (ignoring `setup_environment`).
-2.  Source `setup.sh` and `setup_environment`, then run the same tests on **GPGPU-Sim**.
-3.  Parse the output tables and generating comparison plots in `test/calibration_results/`.
+This script:
+1. Runs `MMAIssueTest.ILPMinimal` and `MMAIssueTest.MultiWarpMinimal` on native hardware.
+2. Sources `setup.sh` and `setup_environment`, then reruns the same cases on GPGPU-Sim.
+3. Captures the per-variant outputs and generates comparison plots/CSVs in `test/calibration_results/`.
 
 **Output:**
-- `calibration_results/ilp_scaling_calibration.png`: Issue Gap comparison.
-- `calibration_results/multiwarp_scaling_calibration.png`: Pipeline throughput comparison.
+- `calibration_results/ilp_issue_gap_calibration.png`
+- `calibration_results/ilp_issue_gap_calibration.csv`
+- `calibration_results/multiwarp_throughput_calibration.png`
+- `calibration_results/multiwarp_throughput_calibration.csv`

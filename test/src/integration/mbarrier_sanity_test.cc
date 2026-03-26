@@ -1,10 +1,9 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 #include <cstdint>
-#include <cstdlib>
-#include <string>
 #include <vector>
 
+#include "common/mbarrier/bench_utils.cuh"
 #include "common/mbarrier/device_kernels.cuh"
 
 namespace {
@@ -225,21 +224,6 @@ __global__ void mbarrier_tma_completion_sanity_kernel(const float* source,
   }
 }
 
-bool running_in_native_mode() {
-  const char* sim_env = std::getenv("GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN");
-  if (sim_env != nullptr && sim_env[0] != '\0') {
-    return false;
-  }
-
-  const char* ld_library_path = std::getenv("LD_LIBRARY_PATH");
-  if (ld_library_path == nullptr) {
-    return true;
-  }
-
-  return std::string(ld_library_path).find("gpgpu-sim_distribution/lib") ==
-         std::string::npos;
-}
-
 }  // namespace
 
 class MBarrierSanityTest : public ::testing::Test {
@@ -350,7 +334,7 @@ TEST_F(MBarrierSanityTest, Arrive) {
 }
 
 TEST_F(MBarrierSanityTest, TMA) {
-  if (!running_in_native_mode()) {
+  if (!mbarrier_running_in_native_mode()) {
     GTEST_SKIP() << "TMA mbarrier sanity requires native GPU mode.";
   }
 

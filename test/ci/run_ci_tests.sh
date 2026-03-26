@@ -74,17 +74,15 @@ fi
 echo "Building tests..."
 ./test/run_tests.sh build test
 
-
-# Run tests with specified configuration
-# Skip CudaTMATest.PerformanceComparison as it takes too long for CI
-# Skip MBarrierSanityTest.* because simulator-mode try_wait currently blocks,
-# which can deadlock these sanity cases.
-# Microbenchmarks are already excluded (separate binary, not in run_all_tests)
-echo "Running test suite (excluding CudaTMATest.PerformanceComparison and MBarrierSanityTest.*)..."
+# Run tests with specified configuration.
+# test/run_tests.sh owns the default exclusion list so CI and local runs stay
+# consistent. Microbenchmarks are already excluded because they live in a
+# separate bench binary set.
+echo "Running test suite..."
 
 # Use gtest XML output for structured results (absolute path since tests cd into run dir)
 export GTEST_OUTPUT="xml:$REPO_ROOT/test_results.xml"
 
-./test/run_tests.sh -c "$TEST_CONFIG" test "*:-CudaTMATest.PerformanceComparison:MBarrierSanityTest.*" "$@"
+./test/run_tests.sh -c "$TEST_CONFIG" test "$@"
 
 echo "CI tests completed successfully!"

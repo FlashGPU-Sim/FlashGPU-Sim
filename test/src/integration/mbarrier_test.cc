@@ -1,5 +1,5 @@
 /**
- * @file mbarrier_thread_level_test.cc
+ * @file mbarrier_test.cc
  * @brief Integration tests for mbarrier thread-level features
  *
  * This file contains CUDA-based tests for verifying the thread-level behavior

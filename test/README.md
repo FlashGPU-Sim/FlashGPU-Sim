@@ -111,24 +111,32 @@ For detailed test-to-configuration mapping and test status, see:
 
 ```
 test/src/
-├── unit/              # Unit tests (basic functionality, no simulator component interaction)
-│   ├── basic_test.cc           # gtest template
-│   ├── bulk_group_test.cc      # Tests bulk_group_manager_t
-│   └── host_tensormap_test.cc  # Tests cuTensorMapEncodeTiled
+├── unit/              # Unit tests (basic functionality, no simulator interaction)
+│   ├── basic_test.cc
+│   ├── bulk_group_test.cc
+│   └── host_tensormap_test.cc
 │
-├── integration/       # Integration tests (test interaction between GPGPU-Sim components)
-│   ├── integration_test.cc     # Integration test template
+├── integration/       # Integration tests (cross-component simulator behavior)
+│   ├── README.md
 │   ├── cuda_vector_add_test.cc
-│   ├── mbarrier_test.cc
-│   ├── cuda_tma_test.cc
 │   ├── cuda_ld_st_matrix_test.cc
-│   └── mma/                    # MMA integration tests
+│   ├── cuda_tma_multidim_test.cc
+│   ├── cuda_tma_test.cc
+│   ├── integration_test.cc
+│   ├── mbarrier_sanity_test.cc
+│   ├── mbarrier_test.cc
+│   └── mma/
+│       ├── README.md
+│       ├── cuda_mma_bf16_test.cc
+│       ├── cuda_mma_f16_test.cc
+│       ├── cuda_mma_s8_test.cc
+│       └── cuda_mma_tf32_test.cc
 │
 ├── standalone/        # Dev tests (decoupled from simulator)
-│   ├── tensor_mma_test.cc      # Type conversion / saturation tests
-│   ├── tma_swizzle_test.cc     # TMA swizzle pattern verification
-│   ├── mbarrier_test.cc        # Mbarrier placeholder tests
-│   └── cuda_tensor_mma_test.cc # CPU reference MMA validation
+│   ├── cuda_tensor_mma_test.cc
+│   ├── mbarrier_test.cc
+│   ├── tensor_mma_test.cc
+│   └── tma_swizzle_test.cc
 │
 └── microbench/        # Performance microbenchmarks (separate binaries)
     ├── mma/
@@ -137,14 +145,18 @@ test/src/
     │   └── mma_issue_bench.cc
     └── mbarrier/
         ├── README.md
-        ├── mbarrier_trywait_latency_bench.cc
-        ├── mbarrier_visibility_bench.cc
-        └── mbarrier_contention_bench.cc
+        └── mbarrier_trywait_latency_bench.cc
 ```
 
 **`unit/`** and **`integration/`** are compiled into `run_all_tests` (via `make test`).
 **`standalone/`** dev tests are a separate binary `run_dev_tests` (via `make dev`).
 **`microbench/`** tests are separate binaries (via `make bench`).
+
+Microbenchmarks stay split intentionally: benchmark-specific files rebuild faster,
+one crashing bench does not take down unrelated benches, and each binary can own
+its own output artifacts. `./run_tests.sh bench` hides most of that complexity by
+pre-screening binaries with `--gtest_list_tests` before dispatching a shared
+filter.
 
 ## Writing Tests
 
