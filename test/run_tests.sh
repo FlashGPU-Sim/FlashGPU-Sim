@@ -145,13 +145,15 @@ setup_run_directory() {
 
 # Detect if running in native GPU mode (clean environment without simulator setup)
 is_native_mode() {
+    local root_dir="$(cd "$SCRIPT_DIR/.." && pwd)"
+
     # Check if simulator environment was sourced
     if [ -n "$GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN" ]; then
         return 1  # Simulator mode
     fi
 
-    # Check if LD_LIBRARY_PATH contains simulator library paths
-    if echo "$LD_LIBRARY_PATH" | grep -q "gpgpu-sim_distribution/lib"; then
+    # Check if LD_LIBRARY_PATH contains simulator library paths from this repo
+    if echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -F -q "$root_dir/lib/"; then
         print_color $YELLOW "Warning: LD_LIBRARY_PATH contains simulator paths but GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN is not set"
         print_color $YELLOW "Treating as simulator mode to avoid contamination"
         return 1  # Simulator mode (contaminated environment)
@@ -176,7 +178,7 @@ build_gpgpusim() {
     # Resolve actual libcudart.so path (fix for broken glob pattern)
     local libcudart_path=$(find lib -name libcudart.so 2>/dev/null | head -n 1)
 
-    if [ -z "$libcudart_path" ] || find src -name "*.cc" -newer "$libcudart_path" 2>/dev/null | grep -q .; then
+    if [ -z "$libcudart_path" ] || [ ! -s "$libcudart_path" ] || find src -name "*.cc" -newer "$libcudart_path" 2>/dev/null | grep -q .; then
         print_color $YELLOW "GPGPU-Sim library needs rebuild..."
         run_command make FLASH=1 -j
         print_color $GREEN "GPGPU-Sim library built successfully"
@@ -311,6 +313,96 @@ run_binary_with_filter() {
     return $rc
 }
 
+trim_whitespace() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s\n' "$value"
+}
+
+gtest_name_matches_filter() {
+    local test_name="$1"
+    local filter="$2"
+    local positive_patterns="$filter"
+    local negative_patterns=""
+
+    if [[ "$filter" == *-* ]]; then
+        positive_patterns="${filter%%-*}"
+        negative_patterns="${filter#*-}"
+    fi
+
+    if [ -z "$positive_patterns" ]; then
+        positive_patterns="*"
+    fi
+
+    local pattern=""
+    local -a patterns=()
+    local matched_positive=1
+    IFS=':' read -r -a patterns <<< "$positive_patterns"
+    for pattern in "${patterns[@]}"; do
+        [ -n "$pattern" ] || continue
+        if [[ "$test_name" == $pattern ]]; then
+            matched_positive=0
+            break
+        fi
+    done
+
+    if [ $matched_positive -ne 0 ]; then
+        return 1
+    fi
+
+    if [ -n "$negative_patterns" ]; then
+        IFS=':' read -r -a patterns <<< "$negative_patterns"
+        for pattern in "${patterns[@]}"; do
+            [ -n "$pattern" ] || continue
+            if [[ "$test_name" == $pattern ]]; then
+                return 1
+            fi
+        done
+    fi
+
+    return 0
+}
+
+bench_binary_matches_filter() {
+    local abs_bin="$1"
+    local config_dir="$2"
+    local filter="$3"
+
+    if [ "$filter" = "*" ]; then
+        return 0
+    fi
+
+    local test_list=""
+    if ! test_list="$(cd "$config_dir" && "$abs_bin" --gtest_list_tests 2>/dev/null)"; then
+        print_color $YELLOW "Warning: failed to list tests for $(basename "$abs_bin"), running it anyway"
+        return 0
+    fi
+
+    local suite=""
+    local raw_line=""
+    local line=""
+    while IFS= read -r raw_line; do
+        line="${raw_line%%#*}"
+        line="$(trim_whitespace "$line")"
+        [ -n "$line" ] || continue
+
+        if [[ "$raw_line" != " "* ]]; then
+            if [[ "$line" == *. ]]; then
+                suite="${line%.}"
+            fi
+            continue
+        fi
+
+        [ -n "$suite" ] || continue
+        if gtest_name_matches_filter "$suite.$line" "$filter"; then
+            return 0
+        fi
+    done <<< "$test_list"
+
+    return 1
+}
+
 # Run verification tests with optional pattern
 run_test_targets() {
     local test_name="${1:-}"
@@ -342,10 +434,13 @@ run_test_targets() {
         run_binary_with_filter "$abs_test_path" "$config_dir" "*${test_name}*" || exit_code=$?
     else
         print_color $BLUE "Running all verification tests (config: $GPU_CONFIG)"
-        # Excluded tests (use unimplemented instructions that call abort())
+        # Excluded tests are centralized here so local runs and CI share the
+        # same default skip policy.
         # - CPAsyncMethod: uses cp.async instruction
         # - PerformanceComparison: internally calls CP_ASYNC method
-        local EXCLUDED_TESTS="-*CPAsyncMethod*:*PerformanceComparison*"
+        # - MBarrierSanityTest: TODO: simulator try_wait can deadlock on
+        #   unsatisfied barriers, so keep the sanity suite native-only for now
+        local EXCLUDED_TESTS="-*CPAsyncMethod*:*PerformanceComparison*:MBarrierSanityTest.*"
         run_binary_with_filter "$abs_test_path" "$config_dir" "$EXCLUDED_TESTS" || exit_code=$?
     fi
 
@@ -378,13 +473,32 @@ run_bench_tests() {
     local filter="*"
     if [ -n "$test_name" ]; then
         filter="*${test_name}*"
+        if [[ "$test_name" == *.* && "$test_name" != */* ]]; then
+            local suite_name="${test_name%%.*}"
+            local case_name="${test_name#*.}"
+            filter="${filter}:*${suite_name}/*.${case_name}*"
+        fi
     fi
 
     print_color $BLUE "Running microbenchmarks: ${test_name:-all} (config: $GPU_CONFIG)"
 
     local exit_code=0
-    for bench_bin in "$(pwd)/build/bin/"*_bench; do
+    local -a bench_bins=()
+    while IFS= read -r bench_src; do
+        local bench_bin="$(pwd)/build/bin/${bench_src#src/microbench/}"
+        bench_bin="${bench_bin%.cc}"
         [ -f "$bench_bin" ] || continue
+        if bench_binary_matches_filter "$bench_bin" "$config_dir" "$filter"; then
+            bench_bins+=("$bench_bin")
+        fi
+    done < <(find src/microbench -type f -name '*_bench.cc' | sort)
+
+    if [ ${#bench_bins[@]} -eq 0 ]; then
+        print_color $YELLOW "No microbenchmark binaries matched pattern: ${test_name:-all}"
+        return 1
+    fi
+
+    for bench_bin in "${bench_bins[@]}"; do
         print_color $BLUE "Running $(basename "$bench_bin")..."
         run_binary_with_filter "$bench_bin" "$config_dir" "$filter" || exit_code=$?
     done

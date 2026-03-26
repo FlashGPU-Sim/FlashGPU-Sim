@@ -74,9 +74,14 @@ fi
 echo "Building tests..."
 ./test/run_tests.sh build test
 
-# Run all tests (unit + integration + trace)
-# PerformanceComparison and CPAsyncMethod are excluded inside run_test_targets()
+# Run tests with specified configuration.
+# test/run_tests.sh owns the default exclusion list so CI and local runs stay
+# consistent. Microbenchmarks are already excluded because they live in a
+# separate bench binary set.
 echo "Running test suite..."
+
+# Use gtest XML output for structured results (absolute path since tests cd into run dir)
+export GTEST_OUTPUT="xml:$REPO_ROOT/test_results.xml"
 
 ./test/run_tests.sh -c "$TEST_CONFIG" test "$@"
 
