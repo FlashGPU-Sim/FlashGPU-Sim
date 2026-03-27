@@ -538,6 +538,12 @@ public:
 
     // Issue memory requests using shadow stride accumulation
     if (!issue_queue.empty()) {
+      // Check in-flight mem_fetch limit (0 = unlimited)
+      unsigned max_inflight =
+          m_shader_ctx->get_config()->gpgpu_tma_max_inflight;
+      if (max_inflight > 0 && m_mf_to_tx.size() >= max_inflight)
+        return;
+
       unsigned tx_uid = issue_queue.front();
 
       auto it = m_transactions.find(tx_uid);

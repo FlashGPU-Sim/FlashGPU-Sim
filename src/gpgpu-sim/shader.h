@@ -1763,6 +1763,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_num_mem_units;
   unsigned int gpgpu_num_int_units;
   unsigned int gpgpu_num_tma_units;
+  unsigned int gpgpu_tma_max_inflight;
 
   // Shader core resources
   unsigned gpgpu_shader_registers;
