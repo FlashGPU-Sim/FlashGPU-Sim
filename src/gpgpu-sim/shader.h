@@ -1777,6 +1777,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_num_int_units;
   unsigned int gpgpu_num_tma_units;
   unsigned int gpgpu_tma_max_inflight;
+  unsigned int gpgpu_tma_idealized_memory;
   unsigned int gpgpu_mbarrier_arrive_latency;
   unsigned int gpgpu_mbarrier_trywait_latency;
 

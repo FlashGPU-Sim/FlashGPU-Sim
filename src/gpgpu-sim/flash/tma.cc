@@ -462,7 +462,9 @@ public:
         unsigned tx_uid =
             tma_next_tx_uid.fetch_add(1, std::memory_order_relaxed);
         m_transactions.emplace(tx_uid, tx);
-        issue_queue.push_back(tx_uid);
+
+        bool idealized =
+            m_shader_ctx->get_config()->gpgpu_tma_idealized_memory != 0;
 
         // For TMA write operations, add transaction to bulk group
         bool is_write_op = (tma_static_info.dst_space ==
@@ -470,6 +472,12 @@ public:
         if (is_write_op) {
           unsigned cta_id = thread->get_hw_ctaid();
           m_barriers->add_bulk_tx(cta_id, warp_id, tx_uid);
+        }
+
+        if (idealized) {
+          finalize_transaction(tx_uid);
+        } else {
+          issue_queue.push_back(tx_uid);
         }
 
         GPPRINTF_INST_EXEC(

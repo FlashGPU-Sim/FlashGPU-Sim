@@ -633,6 +633,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_tma_max_inflight", OPT_UINT32,
                          &gpgpu_tma_max_inflight,
                          "Max in-flight TMA mem_fetch requests per SM (default=0, 0=unlimited)", "0");
+  option_parser_register(opp, "-gpgpu_tma_idealized_memory", OPT_UINT32,
+                         &gpgpu_tma_idealized_memory,
+                         "Idealized TMA memory: all requests complete instantly (default=0)", "0");
   option_parser_register(opp, "-gpgpu_mbarrier_arrive_latency", OPT_UINT32,
                          &gpgpu_mbarrier_arrive_latency,
                          "Latency (cycles) for arrive_tx shared memory write before mbarrier update (default=0)", "0");
