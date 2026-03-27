@@ -587,10 +587,18 @@ public:
     // Issue memory requests using shadow stride accumulation
     if (!issue_queue.empty()) {
       // Check in-flight mem_fetch limit (0 = unlimited)
+      // Count truly in-flight requests: issued minus received across all
+      // active transactions.  m_mf_to_tx.size() cannot be used because
+      // entries are only bulk-erased on finalize, so it over-counts.
       unsigned max_inflight =
           m_shader_ctx->get_config()->gpgpu_tma_max_inflight;
-      if (max_inflight > 0 && m_mf_to_tx.size() >= max_inflight)
-        return;
+      if (max_inflight > 0) {
+        unsigned inflight = 0;
+        for (auto &[uid, tx] : m_transactions)
+          inflight += tx.m_mf_issued_count - tx.m_mf_received_count;
+        if (inflight >= max_inflight)
+          return;
+      }
 
       unsigned tx_uid = issue_queue.front();
 
