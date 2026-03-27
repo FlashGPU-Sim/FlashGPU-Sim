@@ -355,7 +355,7 @@ def main():
     print("=" * 80)
 
     # Initialize tracker
-    output_dir = Path("./triton_kernel_tracking/example_flash_attention").resolve()
+    output_dir = (Path(__file__).parent / "triton_kernel_tracking/example_flash_attention").resolve()
     tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)
     tracker.disable()  # Disable during warmup
     print(f"\nOutput directory: {output_dir}")

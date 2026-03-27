@@ -536,7 +536,7 @@ def main():
     )
 
     # Initialize tracker
-    output_dir = Path("./triton_kernel_tracking/example_tensor_add").resolve()
+    output_dir = (Path(__file__).parent / "triton_kernel_tracking/example_tensor_add").resolve()
     tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)
     tracker.disable()
     print(f"\nOutput directory: {output_dir}")

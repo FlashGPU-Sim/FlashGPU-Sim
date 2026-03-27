@@ -553,7 +553,7 @@ def simple_test():
     from pathlib import Path
     from track_triton_kernels import TritonKernelTracker
 
-    output_dir = Path("./triton_kernel_tracking/example_gemm").resolve()
+    output_dir = (Path(__file__).parent / "triton_kernel_tracking/example_gemm").resolve()
     tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)
     tracker.disable()
     print(f"\nOutput directory: {output_dir}")

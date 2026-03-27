@@ -233,7 +233,7 @@ def main():
     )
     
     # Initialize tracker - clear output directory for fresh tracking
-    output_dir = Path("./triton_kernel_tracking/example_tma_gemm").resolve()
+    output_dir = (Path(__file__).parent / "triton_kernel_tracking/example_tma_gemm").resolve()
     import shutil
     if output_dir.exists():
         shutil.rmtree(output_dir)

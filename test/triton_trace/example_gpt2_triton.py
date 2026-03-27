@@ -489,7 +489,7 @@ def main():
     w = GPT2Weights("gpt2")
 
     print("\n[3/4] Tracked forward pass (JIT + capture, tracker ON) …")
-    output_dir = Path("./triton_kernel_tracking/gpt2_small").resolve()
+    output_dir = (Path(__file__).parent / "triton_kernel_tracking/gpt2_small").resolve()
     if output_dir.exists():
         shutil.rmtree(output_dir)
     tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)
