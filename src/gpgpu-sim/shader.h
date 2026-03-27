@@ -1095,6 +1095,9 @@ class barrier_set_t {
   void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
                    uint32_t completed_tx_count);
 
+  // Process delayed mbarrier warp releases each cycle
+  void cycle();
+
   // Bulk group methods for TMA write operations
   void add_bulk_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
   void complete_bulk_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
@@ -1119,9 +1122,19 @@ class barrier_set_t {
   bar_id_to_warp_t m_bar_id_to_warps;
   warp_set_t m_warp_active;
   warp_set_t m_warp_at_barrier;
+  // Release warps with optional try_wait latency delay
+  void release_warps(const std::set<int> &released_warps);
+
   shader_core_ctx *m_shader;
   flash_gpgpu_sim::mbarrier_manager_t m_mbarrier_manager;
   flash_gpgpu_sim::bulk_group_manager_t m_bulk_group_manager;
+
+  // Delayed warp release queue for mbarrier try_wait latency
+  struct pending_warp_release_t {
+    unsigned remaining;
+    int warp_id;
+  };
+  std::vector<pending_warp_release_t> m_pending_warp_releases;
 };
 
 struct insn_latency_info {
@@ -1764,6 +1777,8 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_num_int_units;
   unsigned int gpgpu_num_tma_units;
   unsigned int gpgpu_tma_max_inflight;
+  unsigned int gpgpu_mbarrier_arrive_latency;
+  unsigned int gpgpu_mbarrier_trywait_latency;
 
   // Shader core resources
   unsigned gpgpu_shader_registers;

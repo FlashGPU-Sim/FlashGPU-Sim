@@ -340,6 +340,18 @@ private:
 
   std::list<mem_fetch *> m_response_fifo;
 
+  // Delayed arrive_tx queue: complete_tx is deferred by arrive_latency cycles
+  struct pending_arrive_t {
+    unsigned remaining;
+    unsigned cta_id;
+    unsigned warp_id;
+    uint32_t mbar_addr;
+    uint32_t size_in_bytes;
+    bool is_write;
+    unsigned tx_uid; // for bulk_group (write path)
+  };
+  std::vector<pending_arrive_t> m_pending_arrives;
+
   // Helper function to finalize a completed transaction
   void finalize_transaction(unsigned tx_uid) {
     auto it = m_transactions.find(tx_uid);
@@ -371,11 +383,19 @@ private:
 
     // For TMA read, notify mbarrier of completion
     // For TMA write, use bulk_group completion mechanism
-    if (!is_write) {
-      m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-                              tx.m_dyn_info.size_in_bytes);
+    unsigned arrive_latency =
+        m_shader_ctx->get_config()->gpgpu_mbarrier_arrive_latency;
+    if (arrive_latency > 0) {
+      m_pending_arrives.push_back(
+          {arrive_latency, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+           tx.m_dyn_info.size_in_bytes, is_write, tx_uid});
     } else {
-      m_barriers->complete_bulk_tx(cta_id, warp_id, tx_uid);
+      if (!is_write) {
+        m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
+                                tx.m_dyn_info.size_in_bytes);
+      } else {
+        m_barriers->complete_bulk_tx(cta_id, warp_id, tx_uid);
+      }
     }
 
     m_transactions.erase(it);
@@ -479,6 +499,26 @@ public:
   }
 
   void cycle() {
+
+    // Process delayed arrive_tx notifications
+    if (!m_pending_arrives.empty()) {
+      for (auto &entry : m_pending_arrives) {
+        entry.remaining--;
+      }
+      for (int i = m_pending_arrives.size() - 1; i >= 0; i--) {
+        if (m_pending_arrives[i].remaining == 0) {
+          auto &entry = m_pending_arrives[i];
+          if (!entry.is_write) {
+            m_barriers->complete_tx(entry.cta_id, entry.warp_id,
+                                    entry.mbar_addr, entry.size_in_bytes);
+          } else {
+            m_barriers->complete_bulk_tx(entry.cta_id, entry.warp_id,
+                                         entry.tx_uid);
+          }
+          m_pending_arrives.erase(m_pending_arrives.begin() + i);
+        }
+      }
+    }
 
     // Process pending TMA responses
     if (!m_response_fifo.empty()) {
