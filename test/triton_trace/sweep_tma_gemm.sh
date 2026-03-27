@@ -154,7 +154,49 @@ do_ncu() {
     echo "--- NCU report saved to ${ncu_output}.ncu-rep ---"
 }
 
-# --- Extract metrics from a log file ---
+# --- Extract NCU metrics from .ncu-rep file ---
+extract_ncu_metrics() {
+    local size=$1
+    local ncu_file="$NCU_REP_DIR/size_${size}.ncu-rep"
+
+    if [[ ! -f "$ncu_file" ]]; then
+        echo "$size,N/A,N/A,N/A,N/A,N/A,N/A,N/A"
+        return
+    fi
+
+    local NCU_METRICS="sm__cycles_elapsed.avg"
+    NCU_METRICS+=",sm__cycles_elapsed.avg.per_second"
+    NCU_METRICS+=",gpu__time_duration.avg"
+    NCU_METRICS+=",sm__throughput.avg.pct_of_peak_sustained_elapsed"
+    NCU_METRICS+=",sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed"
+    NCU_METRICS+=",gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed"
+
+    # Use Python csv module to correctly parse quoted CSV fields
+    ncu --import "$ncu_file" --csv --page raw --metrics "$NCU_METRICS" 2>/dev/null \
+    | python3 -c "
+import csv, sys
+rows = list(csv.reader(sys.stdin))
+if len(rows) < 3:
+    print('${size},N/A,N/A,N/A,N/A,N/A,N/A,N/A')
+    sys.exit()
+header = rows[0]
+data = rows[-1]
+d = dict(zip(header, data))
+sm_cycles = d.get('sm__cycles_elapsed.avg', 'N/A')
+sm_freq = d.get('sm__cycles_elapsed.avg.per_second', 'N/A')
+duration_us = d.get('gpu__time_duration.avg', 'N/A')
+sm_tp = d.get('sm__throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
+tensor_tp = d.get('sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed', 'N/A')
+dram_tp = d.get('gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
+try:
+    tflops = f'{2.0 * ${size}**3 / (float(duration_us) * 1e-6) / 1e12:.2f}'
+except:
+    tflops = 'N/A'
+print(f'${size},{sm_cycles},{sm_freq},{duration_us},{tflops},{sm_tp},{tensor_tp},{dram_tp}')
+"
+}
+
+# --- Extract sim metrics from a log file ---
 extract_metrics() {
     local size=$1
     local log_file="$SIM_LOG_DIR/size_${size}_gpgpusim.log"
@@ -207,8 +249,19 @@ if [[ "$MODE" == "ncu" ]]; then
     for size in "${SIZES[@]}"; do
         do_ncu "$size"
     done
+
+    # Generate NCU summary CSV
+    NCU_SUMMARY="$NCU_REP_DIR/summary.csv"
+    echo "size,sm_cycles,sm_freq_ghz,duration_us,tflops,sm_throughput_pct,tensor_pipe_pct,dram_throughput_pct" > "$NCU_SUMMARY"
+    for size in "${SIZES[@]}"; do
+        extract_ncu_metrics "$size" >> "$NCU_SUMMARY"
+    done
+
     echo ""
-    echo "All NCU profiles saved to $NCU_REP_DIR/"
+    echo "========================================"
+    echo "NCU summary written to $NCU_SUMMARY"
+    echo "========================================"
+    cat "$NCU_SUMMARY"
     exit 0
 fi
 
@@ -243,8 +296,8 @@ for size in "${SIZES[@]}"; do
 done
 
 # Generate summary
-SUMMARY_FILE="$RESULTS_DIR/summary.csv"
-mkdir -p "$RESULTS_DIR"
+SUMMARY_FILE="$SIM_LOG_DIR/summary.csv"
+mkdir -p "$SIM_LOG_DIR"
 echo "size,sim_cycles,tot_insn,ipc,sim_time_sec,validation" > "$SUMMARY_FILE"
 for size in "${SIZES[@]}"; do
     extract_metrics "$size" >> "$SUMMARY_FILE"
