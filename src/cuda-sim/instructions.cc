@@ -4183,6 +4183,41 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
       fesetround(orig_rm);
       break;
     }
+    case F32X2_TYPE: {
+      // packed dual-f32 FMA: lo=bits[31:0], hi=bits[63:32]
+      assert(use_carry == false);
+      int orig_rm = fegetround();
+      switch (rounding_mode) {
+        case RN_OPTION:
+          break;
+        case RZ_OPTION:
+          fesetround(FE_TOWARDZERO);
+          break;
+        default:
+          break;
+      }
+      uint32_t alo = (uint32_t)(a.u64 & 0xFFFFFFFFu);
+      uint32_t ahi = (uint32_t)(a.u64 >> 32);
+      uint32_t blo = (uint32_t)(b.u64 & 0xFFFFFFFFu);
+      uint32_t bhi = (uint32_t)(b.u64 >> 32);
+      uint32_t clo = (uint32_t)(c.u64 & 0xFFFFFFFFu);
+      uint32_t chi = (uint32_t)(c.u64 >> 32);
+      float fa_lo, fa_hi, fb_lo, fb_hi, fc_lo, fc_hi;
+      memcpy(&fa_lo, &alo, 4); memcpy(&fa_hi, &ahi, 4);
+      memcpy(&fb_lo, &blo, 4); memcpy(&fb_hi, &bhi, 4);
+      memcpy(&fc_lo, &clo, 4); memcpy(&fc_hi, &chi, 4);
+      float rlo = fa_lo * fb_lo + fc_lo;
+      float rhi = fa_hi * fb_hi + fc_hi;
+      if (pI->saturation_mode()) {
+        rlo = (rlo < 0) ? 0 : (rlo > 1.0f) ? 1.0f : rlo;
+        rhi = (rhi < 0) ? 0 : (rhi > 1.0f) ? 1.0f : rhi;
+      }
+      uint32_t rlo_b, rhi_b;
+      memcpy(&rlo_b, &rlo, 4); memcpy(&rhi_b, &rhi, 4);
+      d.u64 = ((uint64_t)rhi_b << 32) | (uint64_t)rlo_b;
+      fesetround(orig_rm);
+      break;
+    }
     default:
       assert(0);
       break;
