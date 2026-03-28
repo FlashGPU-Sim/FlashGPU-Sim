@@ -1,0 +1,446 @@
+#!/usr/bin/env bash
+#
+# Generic sweep script for triton traced workloads.
+#
+# Usage:
+#   ./sweep.sh <workload> [trace|run|ncu] [options...] [sweep_values...]
+#
+# Workloads:
+#   tma_gemm      TMA GEMM — sweep over M=N=K size
+#   flash_attn    Flash Attention — sweep over seq_len
+#
+# Modes:
+#   trace  — Generate traces only (requires real GPU, no setup_environment)
+#   run    — Run GPGPU-Sim simulation (default). Auto-traces if missing.
+#   ncu    — Profile on real GPU with Nsight Compute
+#
+# Options (flash_attn):
+#   --head-dim D   Head dimension (default: 64)
+#   --batch B      Batch size (default: 2)
+#   --heads H      Number of heads (default: 4)
+#   --causal       Enable causal masking
+#
+# Examples:
+#   ./sweep.sh tma_gemm trace 128 512 1024
+#   ./sweep.sh tma_gemm run
+#   ./sweep.sh flash_attn trace 256 512 1024
+#   ./sweep.sh flash_attn run 256 512 --head-dim 128
+#   ./sweep.sh flash_attn ncu 256 512 --head-dim 64 --causal
+#
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VENV_ACTIVATE="$SCRIPT_DIR/.venv/bin/activate"
+GPU_CONFIG_DIR="$REPO_ROOT/configs/SM120_RTX5090"
+
+# ============================================================================
+# Workload Definitions
+# ============================================================================
+# Each workload implements:
+#   wl_defaults        — default sweep values
+#   wl_subdir VAL      — subdirectory name for a sweep value
+#   wl_python_args VAL — arguments for the python trace script
+#   wl_kernel_name     — triton kernel function name (determines binary name)
+#   wl_tflops_expr VAL — python expression: TFLOPS from sweep val & duration_us
+#   wl_banner          — display string for the sweep header
+# ============================================================================
+
+# --- tma_gemm ---
+tma_gemm_init() {
+    TRACKING_SUBDIR="test_tma_gemm"
+    PYTHON_SCRIPT="test_tma_gemm.py"
+}
+tma_gemm_defaults()     { echo "128 256 512 1024 2048"; }
+tma_gemm_subdir()       { echo "size_$1"; }
+tma_gemm_python_args()  { echo "--size $1"; }
+tma_gemm_kernel_name()  { echo "kernel_tma_gemm"; }
+tma_gemm_tflops_expr()  { echo "2.0 * ${1}**3 / (float(dur) * 1e-6) / 1e12"; }
+tma_gemm_banner()       { echo "TMA GEMM Sweep"; }
+tma_gemm_sweep_label()  { echo "size"; }
+
+# --- flash_attn ---
+FA_HEAD_DIM=128
+FA_BATCH=1
+FA_HEADS=8
+FA_CAUSAL=0
+
+flash_attn_init() {
+    TRACKING_SUBDIR="test_flash_attn"
+    PYTHON_SCRIPT="test_flash_attn.py"
+}
+flash_attn_defaults()    { echo "512 1024 2048"; }
+flash_attn_subdir()      { echo "seq${1}_d${FA_HEAD_DIM}"; }
+flash_attn_python_args() {
+    local args="--seq-len $1 --head-dim $FA_HEAD_DIM --batch $FA_BATCH --heads $FA_HEADS"
+    [[ "$FA_CAUSAL" == "1" ]] && args="$args --causal"
+    echo "$args"
+}
+flash_attn_kernel_name()  { echo "_flash_attn_fwd"; }
+flash_attn_tflops_expr() {
+    # FLOPs: 4 * B * H * S^2 * D (2 for QK^T + 2 for attn@V), halved if causal
+    local factor=4
+    [[ "$FA_CAUSAL" == "1" ]] && factor=2
+    echo "${factor}.0 * ${FA_BATCH} * ${FA_HEADS} * ${1}**2 * ${FA_HEAD_DIM} / (float(dur) * 1e-6) / 1e12"
+}
+flash_attn_banner() {
+    local causal_str="non-causal"
+    [[ "$FA_CAUSAL" == "1" ]] && causal_str="causal"
+    echo "Flash Attention Sweep (d=${FA_HEAD_DIM}, B=${FA_BATCH}, H=${FA_HEADS}, ${causal_str})"
+}
+flash_attn_sweep_label() { echo "seq_len"; }
+
+# ============================================================================
+# Argument Parsing
+# ============================================================================
+
+usage() {
+    echo "Usage: $0 <workload> [trace|run|ncu] [options...] [sweep_values...]"
+    echo ""
+    echo "Workloads: tma_gemm, flash_attn"
+    echo ""
+    echo "Run '$0 <workload> --help' for workload-specific options."
+    exit 1
+}
+
+if [[ $# -lt 1 ]]; then
+    usage
+fi
+
+WORKLOAD="$1"; shift
+
+# Validate workload
+case "$WORKLOAD" in
+    tma_gemm|flash_attn) ;;
+    *) echo "ERROR: Unknown workload '$WORKLOAD'. Available: tma_gemm, flash_attn"; exit 1 ;;
+esac
+
+# Parse mode
+MODE="run"
+if [[ $# -gt 0 ]]; then
+    case "$1" in
+        trace|run|ncu) MODE="$1"; shift ;;
+    esac
+fi
+
+# Parse workload-specific options and sweep values
+SWEEP_VALUES=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --head-dim)  FA_HEAD_DIM="$2"; shift 2 ;;
+        --batch)     FA_BATCH="$2"; shift 2 ;;
+        --heads)     FA_HEADS="$2"; shift 2 ;;
+        --causal)    FA_CAUSAL=1; shift ;;
+        --help)
+            usage ;;
+        -*)
+            echo "ERROR: Unknown option '$1'"; exit 1 ;;
+        *)
+            SWEEP_VALUES+=("$1"); shift ;;
+    esac
+done
+
+# Initialize workload
+${WORKLOAD}_init
+
+TRACKING_DIR="$SCRIPT_DIR/triton_kernel_tracking/$TRACKING_SUBDIR"
+RESULTS_DIR="$TRACKING_DIR/results"
+SIM_LOG_DIR="$RESULTS_DIR/sim-log"
+NCU_REP_DIR="$RESULTS_DIR/ncu-rep"
+
+# Apply defaults if no sweep values given
+if [[ ${#SWEEP_VALUES[@]} -eq 0 ]]; then
+    read -ra SWEEP_VALUES <<< "$(${WORKLOAD}_defaults)"
+fi
+
+KERNEL_NAME="$(${WORKLOAD}_kernel_name)"
+BANNER="$(${WORKLOAD}_banner)"
+SWEEP_LABEL="$(${WORKLOAD}_sweep_label)"
+
+echo "========================================"
+echo "$BANNER"
+echo "  Mode:   $MODE"
+echo "  Values: ${SWEEP_VALUES[*]}"
+echo "========================================"
+
+# ============================================================================
+# Helpers
+# ============================================================================
+
+trace_exists() {
+    local val=$1
+    local subdir
+    subdir="$(${WORKLOAD}_subdir "$val")"
+    [[ -f "$TRACKING_DIR/$subdir/launchers/${KERNEL_NAME}_launch1" ]]
+}
+
+require_clean_env() {
+    if [[ -n "${GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN:-}" ]]; then
+        echo "ERROR: setup_environment is active. This mode requires a clean shell."
+        exit 1
+    fi
+}
+
+# ============================================================================
+# Trace
+# ============================================================================
+
+do_trace() {
+    local val=$1
+    local subdir
+    subdir="$(${WORKLOAD}_subdir "$val")"
+
+    echo ""
+    echo "--- Tracing ${SWEEP_LABEL}=${val} ---"
+
+    require_clean_env
+
+    if [[ ! -f "$VENV_ACTIVATE" ]]; then
+        echo "ERROR: Triton venv not found at $VENV_ACTIVATE"
+        exit 1
+    fi
+    source "$VENV_ACTIVATE"
+
+    # Generate trace
+    local py_args
+    py_args="$(${WORKLOAD}_python_args "$val")"
+    python3 "$SCRIPT_DIR/$PYTHON_SCRIPT" $py_args
+
+    local launcher_dir="$TRACKING_DIR/$subdir/launchers"
+
+    # Build launcher
+    echo "Building launcher for ${SWEEP_LABEL}=${val} ..."
+    make -C "$launcher_dir" -f "${KERNEL_NAME}_launch1_Makefile"
+
+    # Copy GPU config
+    cp "$GPU_CONFIG_DIR/gpgpusim.config" "$launcher_dir/"
+    cp "$GPU_CONFIG_DIR/config_ampere_islip.icnt" "$launcher_dir/"
+
+    echo "--- Trace complete for ${SWEEP_LABEL}=${val} ---"
+}
+
+# ============================================================================
+# Run (GPGPU-Sim)
+# ============================================================================
+
+do_run() {
+    local val=$1
+    local subdir
+    subdir="$(${WORKLOAD}_subdir "$val")"
+
+    echo ""
+    echo "--- Running GPGPU-Sim for ${SWEEP_LABEL}=${val} ---"
+
+    local launcher_dir="$TRACKING_DIR/$subdir/launchers"
+    local log_file="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
+
+    mkdir -p "$SIM_LOG_DIR"
+
+    set +u
+    source "$REPO_ROOT/setup.sh"
+    source "$REPO_ROOT/setup_environment"
+    set -u
+
+    (cd "$launcher_dir" && ./${KERNEL_NAME}_launch1) > "$log_file" 2>&1
+
+    if grep -q 'Validation PASSED' "$log_file"; then
+        local cycles
+        cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}')
+        echo "  PASSED — ${cycles} cycles (log: $log_file)"
+    else
+        echo "  FAILED — check $log_file"
+    fi
+}
+
+# ============================================================================
+# NCU Profiling
+# ============================================================================
+
+do_ncu() {
+    local val=$1
+    local subdir
+    subdir="$(${WORKLOAD}_subdir "$val")"
+
+    echo ""
+    echo "--- Profiling ${SWEEP_LABEL}=${val} with ncu ---"
+
+    require_clean_env
+
+    local launcher_dir="$TRACKING_DIR/$subdir/launchers"
+    local ncu_output="$NCU_REP_DIR/${subdir}"
+
+    mkdir -p "$NCU_REP_DIR"
+
+    ncu -f \
+        -o "$ncu_output" \
+        --set full \
+        --replay-mode application \
+        --cache-control none \
+        --clock-control none \
+        --target-processes all \
+        "$launcher_dir/${KERNEL_NAME}_launch1"
+
+    echo "--- NCU report saved to ${ncu_output}.ncu-rep ---"
+}
+
+# ============================================================================
+# Metric Extraction
+# ============================================================================
+
+extract_ncu_metrics() {
+    local val=$1
+    local subdir
+    subdir="$(${WORKLOAD}_subdir "$val")"
+    local ncu_file="$NCU_REP_DIR/${subdir}.ncu-rep"
+
+    if [[ ! -f "$ncu_file" ]]; then
+        echo "${val},N/A,N/A,N/A,N/A,N/A,N/A,N/A"
+        return
+    fi
+
+    local NCU_METRICS="sm__cycles_elapsed.avg"
+    NCU_METRICS+=",sm__cycles_elapsed.avg.per_second"
+    NCU_METRICS+=",gpu__time_duration.avg"
+    NCU_METRICS+=",sm__throughput.avg.pct_of_peak_sustained_elapsed"
+    NCU_METRICS+=",sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed"
+    NCU_METRICS+=",gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed"
+
+    local tflops_expr
+    tflops_expr="$(${WORKLOAD}_tflops_expr "$val")"
+
+    ncu --import "$ncu_file" --csv --page raw --metrics "$NCU_METRICS" 2>/dev/null \
+    | python3 -c "
+import csv, sys
+rows = list(csv.reader(sys.stdin))
+if len(rows) < 3:
+    print('${val},N/A,N/A,N/A,N/A,N/A,N/A,N/A')
+    sys.exit()
+header = rows[0]
+data = rows[-1]
+d = dict(zip(header, data))
+sm_cycles = d.get('sm__cycles_elapsed.avg', 'N/A')
+sm_freq = d.get('sm__cycles_elapsed.avg.per_second', 'N/A')
+dur = d.get('gpu__time_duration.avg', 'N/A')
+sm_tp = d.get('sm__throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
+tensor_tp = d.get('sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed', 'N/A')
+dram_tp = d.get('gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
+try:
+    tflops = f'{${tflops_expr}:.2f}'
+except:
+    tflops = 'N/A'
+print(f'${val},{sm_cycles},{sm_freq},{dur},{tflops},{sm_tp},{tensor_tp},{dram_tp}')
+"
+}
+
+extract_sim_metrics() {
+    local val=$1
+    local subdir
+    subdir="$(${WORKLOAD}_subdir "$val")"
+    local log_file="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
+
+    local sim_cycles tot_insn ipc sim_time validation
+
+    sim_cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || echo "N/A")
+    tot_insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || echo "N/A")
+    ipc=$(grep -m1 '^gpu_tot_ipc' "$log_file" | awk '{print $3}' || echo "N/A")
+    sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || echo "N/A")
+
+    if grep -q 'Validation PASSED' "$log_file"; then
+        validation="PASSED"
+    else
+        validation="FAILED"
+    fi
+
+    echo "${val},${sim_cycles},${tot_insn},${ipc},${sim_time},${validation}"
+}
+
+# ============================================================================
+# Main
+# ============================================================================
+
+if [[ "$MODE" == "trace" ]]; then
+    for val in "${SWEEP_VALUES[@]}"; do
+        do_trace "$val"
+    done
+    echo ""
+    echo "All traces generated."
+    exit 0
+fi
+
+if [[ "$MODE" == "ncu" ]]; then
+    NEED_TRACE=()
+    for val in "${SWEEP_VALUES[@]}"; do
+        if ! trace_exists "$val"; then
+            NEED_TRACE+=("$val")
+        fi
+    done
+
+    if [[ ${#NEED_TRACE[@]} -gt 0 ]]; then
+        echo ""
+        echo "Missing traces for: ${NEED_TRACE[*]}"
+        echo "Generating traces first..."
+        for val in "${NEED_TRACE[@]}"; do
+            do_trace "$val"
+        done
+    fi
+
+    for val in "${SWEEP_VALUES[@]}"; do
+        do_ncu "$val"
+    done
+
+    NCU_SUMMARY="$NCU_REP_DIR/summary.csv"
+    echo "${SWEEP_LABEL},sm_cycles,sm_freq_ghz,duration_us,tflops,sm_throughput_pct,tensor_pipe_pct,dram_throughput_pct" > "$NCU_SUMMARY"
+    for val in "${SWEEP_VALUES[@]}"; do
+        extract_ncu_metrics "$val" >> "$NCU_SUMMARY"
+    done
+
+    echo ""
+    echo "========================================"
+    echo "NCU summary written to $NCU_SUMMARY"
+    echo "========================================"
+    cat "$NCU_SUMMARY"
+    exit 0
+fi
+
+# MODE == run
+NEED_TRACE=()
+for val in "${SWEEP_VALUES[@]}"; do
+    if ! trace_exists "$val"; then
+        NEED_TRACE+=("$val")
+    fi
+done
+
+if [[ ${#NEED_TRACE[@]} -gt 0 ]]; then
+    echo ""
+    echo "Missing traces for: ${NEED_TRACE[*]}"
+    echo "Generating traces first..."
+
+    if [[ -n "${GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN:-}" ]]; then
+        echo "ERROR: setup_environment is active but traces need to be generated."
+        echo "       Run '$0 $WORKLOAD trace ${NEED_TRACE[*]}' in a clean shell first."
+        exit 1
+    fi
+
+    for val in "${NEED_TRACE[@]}"; do
+        do_trace "$val"
+    done
+fi
+
+for val in "${SWEEP_VALUES[@]}"; do
+    do_run "$val"
+done
+
+# Generate summary
+SUMMARY_FILE="$SIM_LOG_DIR/summary.csv"
+mkdir -p "$SIM_LOG_DIR"
+echo "${SWEEP_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,validation" > "$SUMMARY_FILE"
+for val in "${SWEEP_VALUES[@]}"; do
+    extract_sim_metrics "$val" >> "$SUMMARY_FILE"
+done
+
+echo ""
+echo "========================================"
+echo "Summary written to $SUMMARY_FILE"
+echo "========================================"
+cat "$SUMMARY_FILE"
