@@ -37,6 +37,17 @@
 
 #include "../abstract_hardware_model.h"
 
+// Producer type for scoreboard collision classification (NCU-style stall tracking)
+enum reg_producer_t {
+  PROD_MEM_GLOBAL,   // global/local/param/tex load → NCU "Long Scoreboard"
+  PROD_MEM_SHARED,   // shared memory load → NCU "Short Scoreboard"
+  PROD_TENSOR_CORE,  // TENSOR_CORE_OP result
+  PROD_SP_INT,       // SP/INT/ALU result
+  PROD_SFU,          // SFU/DP result
+  PROD_TMA,          // TMA operation result
+  PROD_OTHER,
+};
+
 class Scoreboard {
  public:
   Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t *gpu);
@@ -46,6 +57,7 @@ class Scoreboard {
   void releaseRegister(unsigned wid, unsigned regnum);
 
   bool checkCollision(unsigned wid, const inst_t *inst) const;
+  reg_producer_t getCollisionType(unsigned wid, const inst_t *inst) const;
   bool pendingWrites(unsigned wid) const;
   void printContents() const;
   const bool islongop(unsigned warp_id, unsigned regnum);
@@ -61,6 +73,8 @@ class Scoreboard {
   std::vector<std::set<unsigned> > reg_table;
   // Register that depend on a long operation (global, local or tex memory)
   std::vector<std::set<unsigned> > longopregs;
+  // Producer type for each pending register (NCU-style stall classification)
+  std::vector<std::map<unsigned, reg_producer_t> > reg_producer;
 
   class gpgpu_t *m_gpu;
 };

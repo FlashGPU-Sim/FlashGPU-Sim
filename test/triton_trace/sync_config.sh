@@ -42,13 +42,12 @@ for test_name in "${TESTS[@]}"; do
         continue
     fi
 
-    for launcher_dir in "$test_dir"/*/launchers; do
-        [[ -d "$launcher_dir" ]] || continue
+    while IFS= read -r -d '' launcher_dir; do
         for f in "${CONFIG_FILES[@]}"; do
             cp "$GPU_CONFIG_DIR/$f" "$launcher_dir/"
         done
         count=$((count + 1))
-    done
+    done < <(find "$test_dir" -type d -name launchers -print0)
 done
 
 echo "Synced ${#CONFIG_FILES[@]} config files to $count launcher directories."

@@ -201,6 +201,7 @@ class shd_warp_t {
   }
 
   unsigned get_n_atomic() const { return m_n_atomic; }
+  bool is_waiting_ldgsts() const { return m_waiting_ldgsts; }
   void inc_n_atomic() { m_n_atomic++; }
   void dec_n_atomic(unsigned n) { m_n_atomic -= n; }
 
@@ -1822,6 +1823,28 @@ class shader_core_config : public core_config {
   unsigned m_specialized_unit_num;
 };
 
+// NCU-style warp stall reason classification
+enum warp_stall_reason_t {
+  STALL_SELECTED = 0,           // warp issued an instruction
+  STALL_NO_INSTRUCTION,         // ibuffer empty or control hazard
+  STALL_BARRIER,                // at CTA barrier (bar.sync / mbarrier.try_wait)
+  STALL_MEMBAR,                 // at memory barrier
+  STALL_WAIT_TMA,               // waiting for LDGSTS / TMA bulk wait
+  STALL_ATOMIC,                 // waiting for atomic completion
+  STALL_SCOREBOARD_MEM_GLOBAL,  // RAW hazard on global/local mem load
+  STALL_SCOREBOARD_MEM_SHARED,  // RAW hazard on shared mem op
+  STALL_SCOREBOARD_TENSOR_CORE, // RAW hazard on tensor core result
+  STALL_SCOREBOARD_SP_INT,      // RAW hazard on SP/INT/ALU result
+  STALL_SCOREBOARD_SFU,         // RAW hazard on SFU/DP result
+  STALL_SCOREBOARD_TMA,         // RAW hazard on TMA result
+  STALL_SCOREBOARD_OTHER,       // RAW hazard, other producer
+  STALL_MATH_PIPE_THROTTLE,     // ready but tensor core / SP / SFU FU full
+  STALL_MIO_THROTTLE,           // ready but MEM FU full
+  STALL_PIPE_STALL_OTHER,       // ready but other FU full
+  STALL_NOT_SELECTED,           // eligible but another warp was issued
+  NUM_STALL_REASONS,
+};
+
 struct shader_core_stats_pod {
   void *
       shader_core_stats_pod_start[0];  // DO NOT MOVE FROM THE TOP - spaceless
@@ -1921,6 +1944,9 @@ struct shader_core_stats_pod {
   unsigned *gpgpu_n_shmem_bank_access;
   long *n_simt_to_mem;  // Interconnect power stats
   long *n_mem_to_simt;
+
+  // NCU-style warp stall breakdown (accumulated across all SMs and schedulers)
+  unsigned long long warp_stall_counts[NUM_STALL_REASONS];
 };
 
 class shader_core_stats : public shader_core_stats_pod {

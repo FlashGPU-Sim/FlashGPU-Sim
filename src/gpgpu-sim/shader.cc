@@ -778,6 +778,9 @@ void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, in
   accumulate(made_write_mfs);
   accumulate(made_read_mfs);
 
+  for (int i = 0; i < NUM_STALL_REASONS; i++)
+    warp_stall_counts[i] += other.warp_stall_counts[i];
+
   merge(gpgpu_n_shmem_bank_access);
   merge(n_simt_to_mem);
   merge(n_mem_to_simt);
@@ -845,6 +848,9 @@ void shader_core_stats::clear_accumulator() {
 
   accumulate(made_write_mfs);
   accumulate(made_read_mfs);
+
+  for (int i = 0; i < NUM_STALL_REASONS; i++)
+    warp_stall_counts[i] = 0;
 
   m_outgoing_traffic_stats->clear();
   m_incoming_traffic_stats->clear();
@@ -977,6 +983,28 @@ void shader_core_stats::print(FILE *fout) const {
   for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; i++)
     fprintf(fout, "WS%d:%d\t", i, dual_issue_nums[i]);
   fprintf(fout, "\n");
+
+  // NCU-style warp stall breakdown
+  {
+    static const char *stall_labels[NUM_STALL_REASONS] = {
+        "Selected",        "NoInstruction",    "Barrier",
+        "Membar",          "WaitTMA",          "Atomic",
+        "SB_MemGlobal",    "SB_MemShared",     "SB_TensorCore",
+        "SB_SpInt",        "SB_Sfu",           "SB_Tma",
+        "SB_Other",        "MathPipeThrottle", "MioThrottle",
+        "PipeStallOther",  "NotSelected",
+    };
+    unsigned long long total = 0;
+    for (int i = 0; i < NUM_STALL_REASONS; i++)
+      total += warp_stall_counts[i];
+    fprintf(fout, "Warp Stall Breakdown:\n");
+    for (int i = 0; i < NUM_STALL_REASONS; i++) {
+      fprintf(fout, "  %-22s %12llu  %5.1f%%\n", stall_labels[i],
+              warp_stall_counts[i],
+              total ? 100.0 * warp_stall_counts[i] / total : 0.0);
+    }
+    fprintf(fout, "  Total warp-scheduler samples: %llu\n", total);
+  }
 
   m_outgoing_traffic_stats->print(fout);
   m_incoming_traffic_stats->print(fout);
@@ -1540,6 +1568,7 @@ void scheduler_unit::cycle() {
   bool ready_inst = false;   // of the valid instructions, there was one not
                              // waiting for pending register writes
   bool issued_inst = false;  // of these we issued one
+  unsigned issued_warp_id = (unsigned)-1;  // warp that was issued
 
   order_warps();
   for (std::vector<shd_warp_t *>::const_iterator iter =
@@ -1822,6 +1851,7 @@ void scheduler_unit::cycle() {
       checked++;
     }
     if (issued) {
+      issued_warp_id = warp_id;
       // This might be a bit inefficient, but we need to maintain
       // two ordered list for proper scheduler execution.
       // We could remove the need for this loop by associating a
@@ -1855,6 +1885,66 @@ void scheduler_unit::cycle() {
                                         // to memory)
   else if (!issued_inst)
     m_stats->shader_cycle_distro[2]++;  // pipeline stalled
+
+  // NCU-style per-warp stall classification
+  for (auto it = m_supervised_warps.begin(); it != m_supervised_warps.end();
+       ++it) {
+    if (*it == NULL || (*it)->done_exit()) continue;
+
+    unsigned wid = (*it)->get_warp_id();
+    warp_stall_reason_t reason;
+
+    if (issued_inst && wid == issued_warp_id) {
+      reason = STALL_SELECTED;
+    } else if (warp(wid).ibuffer_empty()) {
+      reason = STALL_NO_INSTRUCTION;
+    } else if (warp(wid).waiting()) {
+      if (m_shader->warp_waiting_at_barrier(wid))
+        reason = STALL_BARRIER;
+      else if (m_shader->warp_waiting_at_mem_barrier(wid))
+        reason = STALL_MEMBAR;
+      else if (warp(wid).is_waiting_ldgsts())
+        reason = STALL_WAIT_TMA;
+      else if (warp(wid).get_n_atomic() > 0)
+        reason = STALL_ATOMIC;
+      else
+        reason = STALL_BARRIER;  // functional_done or other waiting
+    } else {
+      const warp_inst_t *pI = warp(wid).ibuffer_next_inst();
+      bool valid = warp(wid).ibuffer_next_valid();
+      if (!valid || pI == NULL) {
+        reason = STALL_NO_INSTRUCTION;
+      } else if (m_scoreboard->checkCollision(wid, pI)) {
+        // Scoreboard stall — classify by producer type
+        reg_producer_t prod = m_scoreboard->getCollisionType(wid, pI);
+        switch (prod) {
+          case PROD_MEM_GLOBAL:  reason = STALL_SCOREBOARD_MEM_GLOBAL; break;
+          case PROD_MEM_SHARED:  reason = STALL_SCOREBOARD_MEM_SHARED; break;
+          case PROD_TENSOR_CORE: reason = STALL_SCOREBOARD_TENSOR_CORE; break;
+          case PROD_SP_INT:      reason = STALL_SCOREBOARD_SP_INT; break;
+          case PROD_SFU:         reason = STALL_SCOREBOARD_SFU; break;
+          case PROD_TMA:         reason = STALL_SCOREBOARD_TMA; break;
+          default:               reason = STALL_SCOREBOARD_OTHER; break;
+        }
+      } else if (issued_inst) {
+        // Ready but another warp was issued this cycle
+        reason = STALL_NOT_SELECTED;
+      } else {
+        // Ready, no scoreboard collision, but could not issue (FU full)
+        unsigned op = pI->op;
+        if (op == TENSOR_CORE_OP || op == SP_OP || op == INTP_OP ||
+            op == ALU_OP || op == SFU_OP || op == ALU_SFU_OP || op == DP_OP)
+          reason = STALL_MATH_PIPE_THROTTLE;
+        else if (op == LOAD_OP || op == STORE_OP ||
+                 op == TENSOR_CORE_LOAD_OP || op == TENSOR_CORE_STORE_OP ||
+                 op == MEMORY_BARRIER_OP)
+          reason = STALL_MIO_THROTTLE;
+        else
+          reason = STALL_PIPE_STALL_OTHER;
+      }
+    }
+    m_stats->warp_stall_counts[reason]++;
+  }
 }
 
 void scheduler_unit::do_on_warp_issued(
