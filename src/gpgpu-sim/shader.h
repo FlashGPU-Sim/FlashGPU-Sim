@@ -1063,6 +1063,12 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   shader_core_ctx *m_shader;
 };
 
+enum barrier_wait_type_t {
+  BARRIER_WAIT_BAR_SYNC,     // regular bar.sync / bar.red
+  BARRIER_WAIT_MBARRIER,     // mbarrier.try_wait (TMA)
+  BARRIER_WAIT_BULK_GROUP,   // cp.async.bulk.wait_group (TMA)
+};
+
 class barrier_set_t {
  public:
   barrier_set_t(shader_core_ctx *shader, unsigned max_warps_per_core,
@@ -1110,6 +1116,7 @@ class barrier_set_t {
 
   // assertions
   bool warp_waiting_at_barrier(unsigned warp_id) const;
+  barrier_wait_type_t get_warp_barrier_type(unsigned warp_id) const;
 
   // debug
   void dump();
@@ -1123,6 +1130,7 @@ class barrier_set_t {
   bar_id_to_warp_t m_bar_id_to_warps;
   warp_set_t m_warp_active;
   warp_set_t m_warp_at_barrier;
+  std::vector<barrier_wait_type_t> m_warp_barrier_type;
   // Release warps with optional try_wait latency delay
   void release_warps(const std::set<int> &released_warps);
 
@@ -2257,6 +2265,7 @@ class shader_core_ctx : public core_t {
 
   // accessors
   virtual bool warp_waiting_at_barrier(unsigned warp_id) const;
+  barrier_wait_type_t get_warp_barrier_type(unsigned warp_id) const;
   void get_pdom_stack_top_info(unsigned tid, unsigned *pc, unsigned *rpc) const;
   float get_current_occupancy(unsigned long long &active,
                               unsigned long long &total) const;

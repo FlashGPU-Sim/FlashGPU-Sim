@@ -1897,9 +1897,13 @@ void scheduler_unit::cycle() {
     if (issued_inst && wid == issued_warp_id) {
       reason = STALL_SELECTED;
     } else if (warp(wid).waiting()) {
-      if (m_shader->warp_waiting_at_barrier(wid))
-        reason = STALL_BARRIER;
-      else if (m_shader->warp_waiting_at_mem_barrier(wid))
+      if (m_shader->warp_waiting_at_barrier(wid)) {
+        auto btype = m_shader->get_warp_barrier_type(wid);
+        if (btype == BARRIER_WAIT_MBARRIER || btype == BARRIER_WAIT_BULK_GROUP)
+          reason = STALL_WAIT_TMA;
+        else
+          reason = STALL_BARRIER;
+      } else if (m_shader->warp_waiting_at_mem_barrier(wid))
         reason = STALL_MEMBAR;
       else if (warp(wid).is_waiting_ldgsts())
         reason = STALL_WAIT_TMA;
@@ -4234,6 +4238,7 @@ barrier_set_t::barrier_set_t(shader_core_ctx *shader,
   }
   m_warp_active.reset();
   m_warp_at_barrier.reset();
+  m_warp_barrier_type.resize(max_warps_per_core, BARRIER_WAIT_BAR_SYNC);
   for (unsigned i = 0; i < max_barriers_per_cta; i++) {
     m_bar_id_to_warps[i].reset();
   }
@@ -4308,6 +4313,7 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
   m_bar_id_to_warps[bar_id].set(warp_id);
   if (bar_type == SYNC || bar_type == RED) {
     m_warp_at_barrier.set(warp_id);
+    m_warp_barrier_type[warp_id] = BARRIER_WAIT_BAR_SYNC;
   }
   warp_set_t warps_in_cta = w->second;
   warp_set_t at_barrier = warps_in_cta & m_bar_id_to_warps[bar_id];
@@ -4362,6 +4368,11 @@ void barrier_set_t::warp_exit(unsigned warp_id) {
 // assertions
 bool barrier_set_t::warp_waiting_at_barrier(unsigned warp_id) const {
   return m_warp_at_barrier.test(warp_id);
+}
+
+barrier_wait_type_t barrier_set_t::get_warp_barrier_type(
+    unsigned warp_id) const {
+  return m_warp_barrier_type[warp_id];
 }
 
 void barrier_set_t::dump() {
@@ -4419,6 +4430,11 @@ bool shader_core_ctx::check_if_non_released_reduction_barrier(
 
 bool shader_core_ctx::warp_waiting_at_barrier(unsigned warp_id) const {
   return m_barriers.warp_waiting_at_barrier(warp_id);
+}
+
+barrier_wait_type_t shader_core_ctx::get_warp_barrier_type(
+    unsigned warp_id) const {
+  return m_barriers.get_warp_barrier_type(warp_id);
 }
 
 bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {

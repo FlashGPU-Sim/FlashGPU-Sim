@@ -492,6 +492,7 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
                                                   thread_index, addr, parity);
       if (!released) {
         m_warp_at_barrier.set(warp_id);
+        m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
       }
     }
 

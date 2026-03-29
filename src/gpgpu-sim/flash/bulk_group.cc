@@ -196,6 +196,7 @@ void barrier_set_t::wait_bulk_group(unsigned cta_id, unsigned warp_id,
   // If the wait is not immediately satisfied, mark the warp as blocked
   if (!satisfied) {
     m_warp_at_barrier.set(warp_id);
+    m_warp_barrier_type[warp_id] = BARRIER_WAIT_BULK_GROUP;
   }
 }
 
