@@ -201,7 +201,8 @@ def main():
         lambda size, alignment, stream: torch.empty(size, device="cuda", dtype=torch.int8)
     )
 
-    subdir = f"seq{seq_len}_d{head_dim}"
+    causal_str = "_causal" if causal else ""
+    subdir = f"b{batch}_h{heads}_seq{seq_len}_d{head_dim}{causal_str}"
     output_dir = (Path(__file__).parent / f"triton_kernel_tracking/test_flash_attn/{subdir}").resolve()
     if output_dir.exists():
         shutil.rmtree(output_dir)

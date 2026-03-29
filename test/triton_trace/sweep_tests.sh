@@ -115,25 +115,62 @@ flash_attn_init() {
     PYTHON_SCRIPT="test_flash_attn.py"
 }
 flash_attn_defaults()    { echo "512 1024 2048"; }
-flash_attn_subdir()      { echo "seq${1}_d${FA_HEAD_DIM}"; }
+flash_attn_subdir() {
+    if [[ "$CSV_MODE" == "1" ]]; then
+        local batch nheads seqlen headdim causal
+        IFS=',' read -r batch nheads seqlen headdim causal <<< "$1"
+        local causal_str=""
+        [[ "$causal" == "True" ]] && causal_str="_causal"
+        echo "b${batch}_h${nheads}_seq${seqlen}_d${headdim}${causal_str}"
+    else
+        local causal_str=""
+        [[ "$FA_CAUSAL" == "1" ]] && causal_str="_causal"
+        echo "b${FA_BATCH}_h${FA_HEADS}_seq${1}_d${FA_HEAD_DIM}${causal_str}"
+    fi
+}
 flash_attn_python_args() {
-    local args="--seq-len $1 --head-dim $FA_HEAD_DIM --batch $FA_BATCH --heads $FA_HEADS"
-    [[ "$FA_CAUSAL" == "1" ]] && args="$args --causal"
-    echo "$args"
+    if [[ "$CSV_MODE" == "1" ]]; then
+        local batch nheads seqlen headdim causal
+        IFS=',' read -r batch nheads seqlen headdim causal <<< "$1"
+        local args="--seq-len $seqlen --head-dim $headdim --batch $batch --heads $nheads"
+        [[ "$causal" == "True" ]] && args="$args --causal"
+        echo "$args"
+    else
+        local args="--seq-len $1 --head-dim $FA_HEAD_DIM --batch $FA_BATCH --heads $FA_HEADS"
+        [[ "$FA_CAUSAL" == "1" ]] && args="$args --causal"
+        echo "$args"
+    fi
 }
 flash_attn_kernel_name()  { echo "_flash_attn_fwd"; }
 flash_attn_tflops_expr() {
-    # FLOPs: 4 * B * H * S^2 * D (2 for QK^T + 2 for attn@V), halved if causal
-    local factor=4
-    [[ "$FA_CAUSAL" == "1" ]] && factor=2
-    echo "${factor}.0 * ${FA_BATCH} * ${FA_HEADS} * ${1}**2 * ${FA_HEAD_DIM} / (float(dur) * 1e-6) / 1e12"
+    if [[ "$CSV_MODE" == "1" ]]; then
+        local batch nheads seqlen headdim causal
+        IFS=',' read -r batch nheads seqlen headdim causal <<< "$1"
+        local factor=4
+        [[ "$causal" == "True" ]] && factor=2
+        echo "${factor}.0 * ${batch} * ${nheads} * ${seqlen}**2 * ${headdim} / (float(dur) * 1e-6) / 1e12"
+    else
+        local factor=4
+        [[ "$FA_CAUSAL" == "1" ]] && factor=2
+        echo "${factor}.0 * ${FA_BATCH} * ${FA_HEADS} * ${1}**2 * ${FA_HEAD_DIM} / (float(dur) * 1e-6) / 1e12"
+    fi
 }
 flash_attn_banner() {
-    local causal_str="non-causal"
-    [[ "$FA_CAUSAL" == "1" ]] && causal_str="causal"
-    echo "Flash Attention Sweep (d=${FA_HEAD_DIM}, B=${FA_BATCH}, H=${FA_HEADS}, ${causal_str})"
+    if [[ "$CSV_MODE" == "1" ]]; then
+        echo "Flash Attention Sweep (CSV: $CSV_FILE)"
+    else
+        local causal_str="non-causal"
+        [[ "$FA_CAUSAL" == "1" ]] && causal_str="causal"
+        echo "Flash Attention Sweep (d=${FA_HEAD_DIM}, B=${FA_BATCH}, H=${FA_HEADS}, ${causal_str})"
+    fi
 }
-flash_attn_sweep_label() { echo "seq_len"; }
+flash_attn_sweep_label() {
+    if [[ "$CSV_MODE" == "1" ]]; then
+        echo "batch,nheads,seqlen,headdim,causal"
+    else
+        echo "seq_len"
+    fi
+}
 
 # ============================================================================
 # Argument Parsing
@@ -203,7 +240,9 @@ if [[ "$CSV_MODE" == "1" ]]; then
     if [[ ! -f "$CSV_PATH" ]]; then
         echo "ERROR: CSV file not found: $CSV_PATH"; exit 1
     fi
+    local_first=1
     while IFS= read -r line; do
+        if [[ "$local_first" == "1" ]]; then local_first=0; continue; fi
         line="$(echo "$line" | tr -d '[:space:]')"
         [[ -z "$line" ]] && continue
         SWEEP_VALUES+=("$line")
