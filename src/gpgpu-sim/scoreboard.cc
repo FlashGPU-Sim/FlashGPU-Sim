@@ -92,7 +92,8 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
   } else if (op == SFU_OP || op == ALU_SFU_OP || op == DP_OP) {
     prod = PROD_SFU;
   } else if (op == LOAD_OP || op == STORE_OP || op == MEMORY_BARRIER_OP ||
-             op == TENSOR_CORE_LOAD_OP || op == TENSOR_CORE_STORE_OP) {
+             op == TENSOR_CORE_LOAD_OP || op == TENSOR_CORE_STORE_OP ||
+             op == MBARRIER_OP) {
     if (inst->space.get_type() == shared_space) {
       prod = PROD_MEM_SHARED;
     } else {
@@ -141,7 +142,20 @@ void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
   }
 }
 
-// Return the producer type of the first colliding register
+// Return the dominant (longest-latency) producer type among all colliding
+// registers.  Priority: GLOBAL > TMA > TENSOR_CORE > SFU > SHARED > SP_INT > OTHER
+static int producer_severity(reg_producer_t p) {
+  switch (p) {
+    case PROD_MEM_GLOBAL:  return 6;
+    case PROD_TMA:         return 5;
+    case PROD_TENSOR_CORE: return 4;
+    case PROD_SFU:         return 3;
+    case PROD_MEM_SHARED:  return 2;
+    case PROD_SP_INT:      return 1;
+    default:               return 0;
+  }
+}
+
 reg_producer_t Scoreboard::getCollisionType(unsigned wid,
                                             const class inst_t* inst) const {
   std::set<int> inst_regs;
@@ -151,14 +165,17 @@ reg_producer_t Scoreboard::getCollisionType(unsigned wid,
   if (inst->ar1 > 0) inst_regs.insert(inst->ar1);
   if (inst->ar2 > 0) inst_regs.insert(inst->ar2);
 
+  reg_producer_t worst = PROD_OTHER;
   for (auto it = inst_regs.begin(); it != inst_regs.end(); ++it) {
     if (reg_table[wid].find(*it) != reg_table[wid].end()) {
       auto prod_it = reg_producer[wid].find(*it);
-      if (prod_it != reg_producer[wid].end()) return prod_it->second;
-      return PROD_OTHER;
+      reg_producer_t p = (prod_it != reg_producer[wid].end())
+                             ? prod_it->second
+                             : PROD_OTHER;
+      if (producer_severity(p) > producer_severity(worst)) worst = p;
     }
   }
-  return PROD_OTHER;
+  return worst;
 }
 
 /**

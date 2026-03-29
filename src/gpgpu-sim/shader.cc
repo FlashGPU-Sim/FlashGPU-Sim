@@ -1896,8 +1896,6 @@ void scheduler_unit::cycle() {
 
     if (issued_inst && wid == issued_warp_id) {
       reason = STALL_SELECTED;
-    } else if (warp(wid).ibuffer_empty()) {
-      reason = STALL_NO_INSTRUCTION;
     } else if (warp(wid).waiting()) {
       if (m_shader->warp_waiting_at_barrier(wid))
         reason = STALL_BARRIER;
@@ -1907,8 +1905,12 @@ void scheduler_unit::cycle() {
         reason = STALL_WAIT_TMA;
       else if (warp(wid).get_n_atomic() > 0)
         reason = STALL_ATOMIC;
+      else if (warp(wid).functional_done())
+        reason = STALL_NO_INSTRUCTION;  // all threads done, draining pipeline
       else
-        reason = STALL_BARRIER;  // functional_done or other waiting
+        reason = STALL_BARRIER;  // other waiting
+    } else if (warp(wid).ibuffer_empty()) {
+      reason = STALL_NO_INSTRUCTION;
     } else {
       const warp_inst_t *pI = warp(wid).ibuffer_next_inst();
       bool valid = warp(wid).ibuffer_next_valid();
@@ -1926,21 +1928,46 @@ void scheduler_unit::cycle() {
           case PROD_TMA:         reason = STALL_SCOREBOARD_TMA; break;
           default:               reason = STALL_SCOREBOARD_OTHER; break;
         }
-      } else if (issued_inst) {
-        // Ready but another warp was issued this cycle
-        reason = STALL_NOT_SELECTED;
       } else {
-        // Ready, no scoreboard collision, but could not issue (FU full)
+        // No scoreboard collision — check if FU is available
         unsigned op = pI->op;
-        if (op == TENSOR_CORE_OP || op == SP_OP || op == INTP_OP ||
-            op == ALU_OP || op == SFU_OP || op == ALU_SFU_OP || op == DP_OP)
-          reason = STALL_MATH_PIPE_THROTTLE;
-        else if (op == LOAD_OP || op == STORE_OP ||
-                 op == TENSOR_CORE_LOAD_OP || op == TENSOR_CORE_STORE_OP ||
-                 op == MEMORY_BARRIER_OP)
-          reason = STALL_MIO_THROTTLE;
-        else
+        bool fu_full = false;
+        bool is_math = false;
+        bool is_mio = false;
+
+        if (op == LOAD_OP || op == STORE_OP ||
+            op == TENSOR_CORE_LOAD_OP || op == TENSOR_CORE_STORE_OP ||
+            op == MEMORY_BARRIER_OP || op == TENSOR_MEMORY_ACCELERATOR_OP) {
+          is_mio = true;
+          if (op == TENSOR_MEMORY_ACCELERATOR_OP)
+            fu_full = !m_tma_out->has_free(m_shader->m_config->sub_core_model, m_id);
+          else
+            fu_full = !m_mem_out->has_free(m_shader->m_config->sub_core_model, m_id);
+        } else if (op == TENSOR_CORE_OP) {
+          is_math = true;
+          fu_full = !m_tensor_core_out->has_free(m_shader->m_config->sub_core_model, m_id);
+        } else if (op == SFU_OP || op == ALU_SFU_OP ||
+                   (op == DP_OP && m_shader->m_config->gpgpu_num_dp_units == 0)) {
+          is_math = true;
+          fu_full = !m_sfu_out->has_free(m_shader->m_config->sub_core_model, m_id);
+        } else if (op == DP_OP) {
+          is_math = true;
+          fu_full = !m_dp_out->has_free(m_shader->m_config->sub_core_model, m_id);
+        } else if (op == SP_OP || op == INTP_OP || op == ALU_OP) {
+          is_math = true;
+          if (m_shader->m_config->gpgpu_num_int_units > 0 && op != SP_OP)
+            fu_full = !m_int_out->has_free(m_shader->m_config->sub_core_model, m_id);
+          else
+            fu_full = !m_sp_out->has_free(m_shader->m_config->sub_core_model, m_id);
+        }
+
+        if (fu_full) {
+          reason = is_mio ? STALL_MIO_THROTTLE : STALL_MATH_PIPE_THROTTLE;
+        } else if (issued_inst) {
+          reason = STALL_NOT_SELECTED;
+        } else {
           reason = STALL_PIPE_STALL_OTHER;
+        }
       }
     }
     m_stats->warp_stall_counts[reason]++;
