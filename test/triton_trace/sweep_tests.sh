@@ -14,6 +14,10 @@
 #   run    — Run GPGPU-Sim simulation (default). Auto-traces if missing.
 #   ncu    — Profile on real GPU with Nsight Compute
 #
+# Options (tma_gemm):
+#   --csv FILE     Read M,N,K shapes from FILE (relative to script dir, one m,n,k per line)
+#                  Mutually exclusive with sweep_values.
+#
 # Options (flash_attn):
 #   --head-dim D   Head dimension (default: 64)
 #   --batch B      Batch size (default: 2)
@@ -22,6 +26,8 @@
 #
 # Examples:
 #   ./sweep.sh tma_gemm trace 128 512 1024
+#   ./sweep.sh tma_gemm run --csv configs/gemm_shapes_training.csv
+#   ./sweep.sh tma_gemm ncu --csv configs/gemm_shapes_training.csv
 #   ./sweep.sh tma_gemm run
 #   ./sweep.sh flash_attn trace 256 512 1024
 #   ./sweep.sh flash_attn run 256 512 --head-dim 128
@@ -34,6 +40,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 VENV_ACTIVATE="$SCRIPT_DIR/.venv/bin/activate"
 GPU_CONFIG_DIR="$REPO_ROOT/configs/SM120_RTX5090"
+CSV_MODE=0
+CSV_FILE=""
 
 # ============================================================================
 # Workload Definitions
@@ -53,12 +61,48 @@ tma_gemm_init() {
     PYTHON_SCRIPT="test_tma_gemm.py"
 }
 tma_gemm_defaults()     { echo "128 256 512 1024 2048"; }
-tma_gemm_subdir()       { echo "size_$1"; }
-tma_gemm_python_args()  { echo "--size $1"; }
+tma_gemm_subdir() {
+    if [[ "$CSV_MODE" == "1" ]]; then
+        local m n k
+        IFS=',' read -r m n k <<< "$1"
+        echo "m${m}_n${n}_k${k}"
+    else
+        echo "size_$1"
+    fi
+}
+tma_gemm_python_args() {
+    if [[ "$CSV_MODE" == "1" ]]; then
+        local m n k
+        IFS=',' read -r m n k <<< "$1"
+        echo "--m $m --n $n --k $k"
+    else
+        echo "--size $1"
+    fi
+}
 tma_gemm_kernel_name()  { echo "kernel_tma_gemm"; }
-tma_gemm_tflops_expr()  { echo "2.0 * ${1}**3 / (float(dur) * 1e-6) / 1e12"; }
-tma_gemm_banner()       { echo "TMA GEMM Sweep"; }
-tma_gemm_sweep_label()  { echo "size"; }
+tma_gemm_tflops_expr() {
+    if [[ "$CSV_MODE" == "1" ]]; then
+        local m n k
+        IFS=',' read -r m n k <<< "$1"
+        echo "2.0 * ${m} * ${n} * ${k} / (float(dur) * 1e-6) / 1e12"
+    else
+        echo "2.0 * ${1}**3 / (float(dur) * 1e-6) / 1e12"
+    fi
+}
+tma_gemm_banner() {
+    if [[ "$CSV_MODE" == "1" ]]; then
+        echo "TMA GEMM Sweep (CSV: $CSV_FILE)"
+    else
+        echo "TMA GEMM Sweep"
+    fi
+}
+tma_gemm_sweep_label() {
+    if [[ "$CSV_MODE" == "1" ]]; then
+        echo "m,n,k"
+    else
+        echo "size"
+    fi
+}
 
 # --- flash_attn ---
 FA_HEAD_DIM=128
@@ -128,6 +172,7 @@ fi
 SWEEP_VALUES=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --csv)       CSV_MODE=1; CSV_FILE="$2"; shift 2 ;;
         --head-dim)  FA_HEAD_DIM="$2"; shift 2 ;;
         --batch)     FA_BATCH="$2"; shift 2 ;;
         --heads)     FA_HEADS="$2"; shift 2 ;;
@@ -149,8 +194,21 @@ RESULTS_DIR="$TRACKING_DIR/results"
 SIM_LOG_DIR="$RESULTS_DIR/sim-log"
 NCU_REP_DIR="$RESULTS_DIR/ncu-rep"
 
-# Apply defaults if no sweep values given
-if [[ ${#SWEEP_VALUES[@]} -eq 0 ]]; then
+# Load sweep values from CSV or apply defaults
+if [[ "$CSV_MODE" == "1" ]]; then
+    if [[ ${#SWEEP_VALUES[@]} -gt 0 ]]; then
+        echo "ERROR: --csv and sweep values are mutually exclusive"; exit 1
+    fi
+    CSV_PATH="$SCRIPT_DIR/$CSV_FILE"
+    if [[ ! -f "$CSV_PATH" ]]; then
+        echo "ERROR: CSV file not found: $CSV_PATH"; exit 1
+    fi
+    while IFS= read -r line; do
+        line="$(echo "$line" | tr -d '[:space:]')"
+        [[ -z "$line" ]] && continue
+        SWEEP_VALUES+=("$line")
+    done < "$CSV_PATH"
+elif [[ ${#SWEEP_VALUES[@]} -eq 0 ]]; then
     read -ra SWEEP_VALUES <<< "$(${WORKLOAD}_defaults)"
 fi
 

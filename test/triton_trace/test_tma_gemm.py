@@ -4,9 +4,10 @@ Parameterized TMA GEMM trace generator for shape sweep testing.
 
 Usage:
     python3 test_tma_gemm.py --size 1024
-    python3 test_tma_gemm.py --size 128
+    python3 test_tma_gemm.py --m 64 --n 128 --k 256
 
 Generates trace data in triton_kernel_tracking/test_tma_gemm/size_<N>/
+or triton_kernel_tracking/test_tma_gemm/m<M>_n<N>_k<K>/
 """
 
 import argparse
@@ -116,21 +117,33 @@ def tma_gemm(a, b):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate TMA GEMM trace for a given size")
-    parser.add_argument("--size", type=int, required=True, help="Square GEMM dimension (M=N=K=size)")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--size", type=int, help="Square GEMM dimension (M=N=K=size)")
+    group.add_argument("--m", type=int, help="M dimension (requires --n and --k)")
+    parser.add_argument("--n", type=int, help="N dimension")
+    parser.add_argument("--k", type=int, help="K dimension")
     args = parser.parse_args()
 
-    size = args.size
-    M = N = K = size
+    if args.size is not None:
+        M = N = K = args.size
+        label = f"size={args.size} (M=N=K={args.size})"
+        subdir = f"size_{args.size}"
+    else:
+        if args.n is None or args.k is None:
+            parser.error("--m requires --n and --k")
+        M, N, K = args.m, args.n, args.k
+        label = f"M={M}, N={N}, K={K}"
+        subdir = f"m{M}_n{N}_k{K}"
 
     print(f"{'='*80}")
-    print(f"TMA GEMM Trace Generator — size={size} (M=N=K={size})")
+    print(f"TMA GEMM Trace Generator — {label}")
     print(f"{'='*80}")
 
     triton.set_allocator(
         lambda size, alignment, stream: torch.empty(size, device="cuda", dtype=torch.int8)
     )
 
-    output_dir = (Path(__file__).parent / f"triton_kernel_tracking/test_tma_gemm/size_{size}").resolve()
+    output_dir = (Path(__file__).parent / f"triton_kernel_tracking/test_tma_gemm/{subdir}").resolve()
     if output_dir.exists():
         shutil.rmtree(output_dir)
 
