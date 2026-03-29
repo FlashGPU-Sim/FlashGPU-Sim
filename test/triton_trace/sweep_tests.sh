@@ -17,6 +17,7 @@
 # Options (tma_gemm):
 #   --csv FILE     Read M,N,K shapes from FILE (relative to script dir, one m,n,k per line)
 #                  Mutually exclusive with sweep_values.
+#   --mnk M,N,K    Run a single M,N,K shape (can be repeated)
 #
 # Options (flash_attn):
 #   --head-dim D   Head dimension (default: 64)
@@ -26,6 +27,7 @@
 #
 # Examples:
 #   ./sweep.sh tma_gemm trace 128 512 1024
+#   ./sweep.sh tma_gemm run --mnk 512,6000,2560
 #   ./sweep.sh tma_gemm run --csv configs/gemm_shapes_training.csv
 #   ./sweep.sh tma_gemm ncu --csv configs/gemm_shapes_training.csv
 #   ./sweep.sh tma_gemm run
@@ -210,6 +212,7 @@ SWEEP_VALUES=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --csv)       CSV_MODE=1; CSV_FILE="$2"; shift 2 ;;
+        --mnk)       CSV_MODE=1; SWEEP_VALUES+=("$2"); shift 2 ;;
         --head-dim)  FA_HEAD_DIM="$2"; shift 2 ;;
         --batch)     FA_BATCH="$2"; shift 2 ;;
         --heads)     FA_HEADS="$2"; shift 2 ;;
