@@ -1823,7 +1823,9 @@ cudaDeviceGetAttributeInternal(int *value, enum cudaDeviceAttr attr, int device,
         *value = prop->regsPerBlock;
         break;
       case 13:
-        *value = 1480000;  // for 1080ti
+        *value = prop->clockRate;
+        printf("GPGPU-Sim: cudaDevAttrClockRate returning %d kHz (%.0f MHz)\n",
+               *value, *value / 1000.0);
         break;
       case 14:
         *value = prop->textureAlignment;
