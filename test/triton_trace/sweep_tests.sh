@@ -235,7 +235,7 @@ SIM_LOG_DIR="$RESULTS_DIR/sim-log"
 NCU_REP_DIR="$RESULTS_DIR/ncu-rep"
 
 # Load sweep values from CSV or apply defaults
-if [[ "$CSV_MODE" == "1" ]]; then
+if [[ -n "$CSV_FILE" ]]; then
     if [[ ${#SWEEP_VALUES[@]} -gt 0 ]]; then
         echo "ERROR: --csv and sweep values are mutually exclusive"; exit 1
     fi
