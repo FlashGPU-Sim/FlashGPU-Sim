@@ -5052,6 +5052,14 @@ unsigned simt_core_cluster::issue_block2core() {
         //            (m_core[core]->get_n_active_cta() <
         //            m_config->max_cta(*kernel)) ) {
         m_core[core]->can_issue_1block(*kernel)) {
+      if (m_config->gpgpu_cta_load_balance) {
+        unsigned n_cores = m_config->n_simt_clusters * m_config->n_simt_cores_per_cluster;
+        unsigned total_ctas = kernel->num_blocks();
+        unsigned max_ctas_per_core = (total_ctas + n_cores - 1) / n_cores;
+        if (m_core[core]->get_total_ctas_issued() >= max_ctas_per_core) {
+          continue;
+        }
+      }
       m_core[core]->issue_block2core(*kernel);
       num_blocks_issued++;
       m_cta_issue_next_core = core;

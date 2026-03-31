@@ -1786,6 +1786,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_num_int_units;
   unsigned int gpgpu_num_tma_units;
   unsigned int gpgpu_tma_max_inflight;
+  bool gpgpu_cta_load_balance;
   unsigned int gpgpu_tma_idealized_memory;
   unsigned int gpgpu_mbarrier_arrive_latency;
   unsigned int gpgpu_mbarrier_trywait_latency;
@@ -2233,12 +2234,14 @@ class shader_core_ctx : public core_t {
     //        k->inc_running();
     printf("GPGPU-Sim uArch: Shader %d bind to kernel %u \'%s\'\n", m_sid,
            m_kernel->get_uid(), m_kernel->name().c_str());
-    // Reset mbarrier manager when a new kernel is assigned to the shader core
+    // Reset per-kernel state when a new kernel is assigned
     m_barriers.reset_mbarrier();
+    m_total_ctas_issued = 0;
   }
   PowerscalingCoefficients *scaling_coeffs;
   // accessors
   bool tma_response_buffer_full() const;
+  unsigned get_total_ctas_issued() const { return m_total_ctas_issued; }
   bool fetch_unit_response_buffer_full() const;
   bool ldst_unit_response_buffer_full() const;
   unsigned get_not_completed() const { return m_not_completed; }
@@ -2657,6 +2660,7 @@ class shader_core_ctx : public core_t {
   unsigned m_sid;  // shader id
   unsigned m_tpc;  // texture processor cluster id (aka, node id when using
                    // interconnect concentration)
+  unsigned m_total_ctas_issued = 0;  // CTAs issued for current kernel
   const shader_core_config *m_config;
   const memory_config *m_memory_config;
   class simt_core_cluster *m_cluster;

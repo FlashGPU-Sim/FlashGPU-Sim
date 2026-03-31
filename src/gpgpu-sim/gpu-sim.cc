@@ -633,6 +633,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_tma_max_inflight", OPT_UINT32,
                          &gpgpu_tma_max_inflight,
                          "Max in-flight TMA mem_fetch requests per SM (default=0, 0=unlimited)", "0");
+  option_parser_register(opp, "-gpgpu_cta_load_balance", OPT_BOOL,
+                         &gpgpu_cta_load_balance,
+                         "Cap CTAs per core to ceil(total_ctas/n_cores) for load balancing (default=0)", "0");
   option_parser_register(opp, "-gpgpu_tma_idealized_memory", OPT_UINT32,
                          &gpgpu_tma_idealized_memory,
                          "Idealized TMA memory: all requests complete instantly (default=0)", "0");
@@ -1888,6 +1891,7 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
     assert(occupy_shader_resource_1block(kernel, true));
 
   kernel.inc_running();
+  m_total_ctas_issued++;
 
   // find a free CTA context
   unsigned free_cta_hw_id = (unsigned)-1;
