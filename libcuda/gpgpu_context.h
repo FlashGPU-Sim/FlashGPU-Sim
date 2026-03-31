@@ -1,5 +1,6 @@
 #ifndef __gpgpu_context_h__
 #define __gpgpu_context_h__
+#include <atomic>
 #include "../src/cuda-sim/cuda-sim.h"
 #include "../src/cuda-sim/cuda_device_runtime.h"
 #include "../src/cuda-sim/ptx-stats.h"
@@ -32,8 +33,8 @@ class gpgpu_context {
   // global list
   symbol_table *g_global_allfiles_symbol_table;
   const char *g_filename;
-  unsigned sm_next_access_uid;
-  unsigned warp_inst_sm_next_uid;
+  std::atomic<unsigned> sm_next_access_uid;
+  std::atomic<unsigned> warp_inst_sm_next_uid;
   unsigned operand_info_sm_next_uid;  // uid for operand_info
   unsigned kernel_info_m_next_uid;    // uid for kernel_info_t
   unsigned g_num_ptx_inst_uid;        // uid for ptx inst inside ptx_instruction

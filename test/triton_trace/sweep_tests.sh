@@ -531,12 +531,25 @@ for val in "${SWEEP_VALUES[@]}"; do
     do_run "$val"
 done
 
-# Generate summary
+# Generate/update summary (upsert: update existing rows, append new ones)
 SUMMARY_FILE="$SIM_LOG_DIR/summary.csv"
+HEADER="${SWEEP_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,validation"
 mkdir -p "$SIM_LOG_DIR"
-echo "${SWEEP_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,validation" > "$SUMMARY_FILE"
+
+if [[ ! -f "$SUMMARY_FILE" ]]; then
+    echo "$HEADER" > "$SUMMARY_FILE"
+fi
+
 for val in "${SWEEP_VALUES[@]}"; do
-    extract_sim_metrics "$val" >> "$SUMMARY_FILE"
+    new_line="$(extract_sim_metrics "$val")"
+    # Use the first field (workload identifier) as the key
+    key="$(echo "$new_line" | cut -d',' -f1)"
+    if grep -q "^${key}," "$SUMMARY_FILE"; then
+        # Update existing row in-place
+        sed -i "s|^${key},.*|${new_line}|" "$SUMMARY_FILE"
+    else
+        echo "$new_line" >> "$SUMMARY_FILE"
+    fi
 done
 
 echo ""
