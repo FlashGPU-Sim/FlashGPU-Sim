@@ -213,9 +213,12 @@ public:
 
       state.is_fill_request = false; // Linear mode never fills
       out_addr = state.linear_addr;
-      // Size = min(128B, remaining, bytes to next 128B boundary)
-      uint32_t to_boundary = 128 - (state.linear_addr % 128);
-      out_size = std::min({(uint32_t)128, state.linear_remaining, to_boundary});
+      // Size = min(SECTOR_SIZE, remaining, bytes to next sector boundary)
+      // Issue at sector granularity (32B) to match L2 sector size and ensure
+      // 1:1 correspondence between issued requests and received responses.
+      uint32_t to_boundary = SECTOR_SIZE - (state.linear_addr % SECTOR_SIZE);
+      out_size = std::min(
+          {(uint32_t)SECTOR_SIZE, state.linear_remaining, to_boundary});
 
       state.linear_addr += out_size;
       state.linear_remaining -= out_size;
@@ -232,9 +235,12 @@ public:
       // Calculate address: current_row_base + offset_within_row
       out_addr = state.curr_row_addr + state.offset_in_row;
 
-      // Calculate size: min(128B, remaining in row)
+      // Calculate size: min(SECTOR_SIZE, remaining in row, bytes to next sector
+      // boundary). Issue at sector granularity (32B) to match L2 sector cache.
       uint32_t row_remaining = state.row_bytes - state.offset_in_row;
-      out_size = std::min((uint32_t)128, row_remaining);
+      uint32_t to_sector_boundary = SECTOR_SIZE - (out_addr % SECTOR_SIZE);
+      out_size =
+          std::min({(uint32_t)SECTOR_SIZE, row_remaining, to_sector_boundary});
 
       // Advance position within row
       state.offset_in_row += out_size;
