@@ -1058,16 +1058,17 @@ void ptx_instruction::set_opcode_and_latency() {
       op = MBARRIER_OP;
       break;
     case TMA_OP: {
+      op = TENSOR_MEMORY_ACCELERATOR_OP;
       const auto &opts = get_options();
       bool is_commit = std::find(opts.begin(), opts.end(), COMMIT_GROUP_OPTION) != opts.end();
       bool is_wait = std::find(opts.begin(), opts.end(), WAIT_GROUP_OPTION) != opts.end();
-      if (is_commit || is_wait) {
-        op = ALU_OP;  // commit_group/wait_group: lightweight, go to SP/INT
-      } else {
-        op = TENSOR_MEMORY_ACCELERATOR_OP;
+      if (!is_commit && !is_wait) {
+        // Regular TMA load/store: use TMA latency
         latency = tma_latency_val;
         initiation_interval = tma_init_val;
       }
+      // commit_group/wait_group: keep TENSOR_MEMORY_ACCELERATOR_OP
+      // but use default latency (lightweight control instructions)
       break;
     }
     case TENSORMAP_OP:

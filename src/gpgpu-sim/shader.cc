@@ -5167,6 +5167,7 @@ void simt_core_cluster::update_icnt_stats(class mem_fetch *mf) {
       m_stats->gpgpu_n_mem_l2_write_allocate++;
       break;
     case TMA_ACC_R:
+    case TMA_ACC_W:
       m_stats->gpgpu_n_mem_tma++;
       break;
     default:
@@ -5213,7 +5214,8 @@ void simt_core_cluster::icnt_cycle() {
   if (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
     unsigned cid = m_config->sid_to_cid(mf->get_sid());
-    if (mf->get_access_type() == TMA_ACC_R) {
+    if (mf->get_access_type() == TMA_ACC_R ||
+        mf->get_access_type() == TMA_ACC_W) {
       // TMA response
       if (!m_core[cid]->tma_response_buffer_full()) {
         m_response_fifo.pop_front();

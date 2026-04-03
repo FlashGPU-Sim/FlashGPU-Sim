@@ -896,7 +896,9 @@ public:
     uint32_t size_in_bytes = 0;
     uint32_t mbar_addr = -1;
     uint32_t coords[5] = {0, 0, 0, 0, 0};
-    bool is_valid() const { return mbar_addr != (uint32_t)-1; }
+    bool is_valid() const {
+      return mbar_addr != (uint32_t)-1 || size_in_bytes > 0;
+    }
   };
   void set_tma_static_info(const tma_static_info_t &info) {
     tma_static_info = info;

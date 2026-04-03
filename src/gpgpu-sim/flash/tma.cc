@@ -449,7 +449,17 @@ public:
 
           memory_space *global_mem = thread->get_global_memory();
           tensormap_descriptor_t tensormap;
-          global_mem->read(tma_dyn_info.src_addr, TENSORMAP_DESCRIPTOR_SIZE,
+          // For reads (shared <- global): tensormap is at src_addr
+          // For writes (global <- shared): tensormap is at dst_addr
+          bool is_write_op = (tma_static_info.dst_space ==
+                              inst_t::tma_static_info_t::TMA_GLOBAL);
+          uint64_t tensormap_addr =
+              is_write_op ? tma_dyn_info.dst_addr : tma_dyn_info.src_addr;
+          assert((tensormap_addr < LOCAL_GENERIC_START ||
+                  tensormap_addr >= GLOBAL_HEAP_START) &&
+                 "TMA tensor: tensormap address must be in global memory, "
+                 "not shared/local memory");
+          global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE,
                            &tensormap);
           m_agu.init_tensor(tx.agu_state, tensormap, tma_dyn_info.coords);
 
