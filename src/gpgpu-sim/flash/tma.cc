@@ -676,9 +676,10 @@ public:
                                 m_shader_ctx->get_gpu()->gpgpu_ctx);
 
             mem_fetch *mf = m_mf_allocator->alloc(
-                access, -1,
+                access,
                 m_shader_ctx->get_gpu()->gpu_sim_cycle +
-                    m_shader_ctx->get_gpu()->gpu_tot_sim_cycle);
+                    m_shader_ctx->get_gpu()->gpu_tot_sim_cycle,
+                (unsigned long long)-1);
 
             m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
 
