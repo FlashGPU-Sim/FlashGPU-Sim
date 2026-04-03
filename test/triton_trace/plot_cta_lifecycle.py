@@ -3,10 +3,11 @@
 Plot CTA lifecycle from GPGPU-Sim liveness trace logs.
 
 Usage (same pattern as sweep_tests.sh):
-  python3 plot_cta_lifecycle.py tma_gemm --mnk 512,3000,2816
-  python3 plot_cta_lifecycle.py tma_gemm --mnk 512,3000,2560 --mnk 512,3000,2816
+  python3 plot_cta_lifecycle.py tma_gemm --shape 512,3000,2816
+  python3 plot_cta_lifecycle.py tma_gemm --shape 512,3000,2560 --shape 512,3000,2816
   python3 plot_cta_lifecycle.py tma_gemm --csv configs/gemm_shapes_training.csv
   python3 plot_cta_lifecycle.py tma_gemm 128 512 1024   # square sizes
+  python3 plot_cta_lifecycle.py flash_attn --shape 16,32,1024,64,True
 
 Requires: liveness tracing enabled in gpgpusim.config:
   -trace_enabled 1
@@ -139,7 +140,7 @@ def plot_lifecycle(spans, sim_cycles, ncu_cycles, title, outfile):
         ax.set_ylabel('Core (sorted by finish time)', fontsize=11)
 
         max_ctas = max(dist.keys())
-        patches = [mpatches.Patch(color=colors[i], label=f'CTA #{i+1}')
+        patches = [mpatches.Patch(color=colors[i % len(colors)], label=f'CTA #{i+1}')
                    for i in range(max_ctas)]
     else:
         # Single core: simple slot view
@@ -156,7 +157,7 @@ def plot_lifecycle(spans, sim_cycles, ncu_cycles, title, outfile):
         ax.set_yticklabels(['Slot 0', 'Slot 1'])
         ax.set_ylabel('CTA Slot')
         max_ctas = max(s[4] for s in spans) + 1
-        patches = [mpatches.Patch(color=colors[i], label=f'CTA #{i+1}')
+        patches = [mpatches.Patch(color=colors[i % len(colors)], label=f'CTA #{i+1}')
                    for i in range(max_ctas)]
 
     if ncu_cycles:
@@ -203,12 +204,30 @@ def load_ncu_summary(workload):
                     continue
                 vals = line.strip().split(',')
                 row = dict(zip(header, vals))
-                key = (int(row['m']), int(row['n']), int(row['k']))
+                if 'm' in row:
+                    key = (int(row['m']), int(row['n']), int(row['k']))
+                else:
+                    # flash_attn: use subdir string as key
+                    key = vals[0]  # raw first column value
                 ncu[key] = int(float(row['sm_cycles']))
     return ncu
 
 
 # ── CLI ──
+
+def fa_subdir(batch, nheads, seqlen, headdim, causal):
+    """Build flash_attn subdirectory name (matches sweep_tests.sh flash_attn_subdir)."""
+    causal_str = "_causal" if causal else ""
+    return f"b{batch}_h{nheads}_seq{seqlen}_d{headdim}{causal_str}"
+
+
+def parse_fa_csv(csv_str):
+    """Parse B,H,S,D,causal string into (batch, nheads, seqlen, headdim, causal)."""
+    parts = csv_str.split(',')
+    batch, nheads, seqlen, headdim = int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
+    causal = parts[4].strip().lower() == 'true' if len(parts) > 4 else False
+    return batch, nheads, seqlen, headdim, causal
+
 
 def parse_shapes(args, workload):
     """Parse shape arguments (same logic as sweep_tests.sh)."""
@@ -223,31 +242,40 @@ def parse_shapes(args, workload):
                         continue
                     parts = line.split(',')
                     shapes.append((int(parts[0]), int(parts[1]), int(parts[2])))
-        if args.mnk:
-            for mnk in args.mnk:
-                m, n, k = mnk.split(',')
+        if args.shape:
+            for s in args.shape:
+                m, n, k = s.split(',')
                 shapes.append((int(m), int(n), int(k)))
         if args.sizes:
             for s in args.sizes:
                 shapes.append((int(s), int(s), int(s)))
+    elif workload == "test_flash_attn":
+        if args.shape:
+            for s in args.shape:
+                shapes.append(parse_fa_csv(s))
+        if args.sizes:
+            # positional args = seq_len sweep with defaults
+            batch, nheads, headdim, causal = 1, 8, 128, False
+            for s in args.sizes:
+                shapes.append((batch, nheads, int(s), headdim, causal))
     return shapes
 
 
 def main():
     parser = argparse.ArgumentParser(description="Plot CTA lifecycle from sim logs")
-    parser.add_argument('workload', choices=['tma_gemm'],
+    parser.add_argument('workload', choices=['tma_gemm', 'flash_attn'],
                         help='Workload name')
-    parser.add_argument('sizes', nargs='*', help='Square sizes (M=N=K)')
-    parser.add_argument('--mnk', action='append',
-                        help='M,N,K shape (can be repeated)')
-    parser.add_argument('--csv', help='CSV file with M,N,K shapes')
+    parser.add_argument('sizes', nargs='*', help='Square sizes (tma_gemm) or seq_len (flash_attn)')
+    parser.add_argument('--shape', action='append',
+                        help='CSV shape: M,N,K (tma_gemm) or B,H,S,D,causal (flash_attn). Can be repeated.')
+    parser.add_argument('--csv', help='CSV file with shapes')
     args = parser.parse_args()
 
     workload = f"test_{args.workload}"
     shapes = parse_shapes(args, workload)
 
     if not shapes:
-        print("No shapes specified. Use --mnk M,N,K or positional sizes.")
+        print("No shapes specified. Use --shape <csv> or positional values.")
         sys.exit(1)
 
     results_dir = SCRIPT_DIR / "triton_kernel_tracking" / workload / "results"
@@ -257,13 +285,21 @@ def main():
     ncu_data = load_ncu_summary(workload)
 
     for shape in shapes:
-        m, n, k = shape
-        if m == n == k:
-            log_name = f"size_{m}_gpgpusim.log"
-            label = f"size_{m}"
+        if workload == "test_flash_attn":
+            batch, nheads, seqlen, headdim, causal = shape
+            label = fa_subdir(batch, nheads, seqlen, headdim, causal)
+            log_name = f"{label}_gpgpusim.log"
+            ncu_key = f"{batch},{nheads},{seqlen},{headdim},{'True' if causal else 'False'}"
+            ncu_cycles = ncu_data.get(ncu_key)
         else:
-            log_name = f"m{m}_n{n}_k{k}_gpgpusim.log"
-            label = f"m{m}_n{n}_k{k}"
+            m, n, k = shape
+            if m == n == k:
+                log_name = f"size_{m}_gpgpusim.log"
+                label = f"size_{m}"
+            else:
+                log_name = f"m{m}_n{n}_k{k}_gpgpusim.log"
+                label = f"m{m}_n{n}_k{k}"
+            ncu_cycles = ncu_data.get(shape)
 
         logfile = sim_log_dir / log_name
         if not logfile.exists():
@@ -273,7 +309,6 @@ def main():
         print(f"[{label}]")
         spans = parse_cta_lifecycle(str(logfile))
         sim_cycles = get_sim_cycles(str(logfile))
-        ncu_cycles = ncu_data.get(shape)
 
         if not spans:
             print("  No LIVENESS CTA events found. Enable tracing:")

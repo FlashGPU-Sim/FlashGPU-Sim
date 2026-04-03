@@ -14,28 +14,28 @@
 #   run    — Run GPGPU-Sim simulation (default). Auto-traces if missing.
 #   ncu    — Profile on real GPU with Nsight Compute
 #
-# Options (tma_gemm):
-#   --csv FILE     Read M,N,K shapes from FILE (relative to script dir, one m,n,k per line)
+# Options:
+#   --csv FILE     Read shapes from FILE (relative to script dir, one per line)
 #                  Mutually exclusive with sweep_values.
-#   --mnk M,N,K    Run a single M,N,K shape (can be repeated)
+#   --shape CSV    Run a single shape (can be repeated):
+#                    tma_gemm:    --shape M,N,K
+#                    flash_attn:  --shape B,H,S,D,causal
 #
-# Options (flash_attn):
+# Options (flash_attn, positional mode only):
 #   --head-dim D   Head dimension (default: 64)
 #   --batch B      Batch size (default: 2)
 #   --heads H      Number of heads (default: 4)
 #   --causal       Enable causal masking
-#   --fa B,H,S,D,causal  Run a single flash_attn config (can be repeated)
-#                         e.g. --fa 2,4,1024,128,True
 #
 # Examples:
 #   ./sweep.sh tma_gemm trace 128 512 1024
-#   ./sweep.sh tma_gemm run --mnk 512,6000,2560
+#   ./sweep.sh tma_gemm run --shape 512,6000,2560
 #   ./sweep.sh tma_gemm run --csv configs/gemm_shapes_training.csv
 #   ./sweep.sh tma_gemm ncu --csv configs/gemm_shapes_training.csv
 #   ./sweep.sh tma_gemm run
 #   ./sweep.sh flash_attn trace 256 512 1024
 #   ./sweep.sh flash_attn run 256 512 --head-dim 128
-#   ./sweep.sh flash_attn run --fa 2,4,1024,128,True
+#   ./sweep.sh flash_attn run --shape 2,4,1024,128,True
 #   ./sweep.sh flash_attn ncu 256 512 --head-dim 64 --causal
 #
 
@@ -225,8 +225,7 @@ SWEEP_VALUES=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --csv)       CSV_MODE=1; CSV_FILE="$2"; shift 2 ;;
-        --mnk)       CSV_MODE=1; SWEEP_VALUES+=("$2"); shift 2 ;;
-        --fa)        CSV_MODE=1; SWEEP_VALUES+=("$2"); shift 2 ;;
+        --shape)     CSV_MODE=1; SWEEP_VALUES+=("$2"); shift 2 ;;
         --head-dim)  FA_HEAD_DIM="$2"; shift 2 ;;
         --batch)     FA_BATCH="$2"; shift 2 ;;
         --heads)     FA_HEADS="$2"; shift 2 ;;
