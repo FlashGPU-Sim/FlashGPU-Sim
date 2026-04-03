@@ -24,6 +24,8 @@
 #   --batch B      Batch size (default: 2)
 #   --heads H      Number of heads (default: 4)
 #   --causal       Enable causal masking
+#   --fa B,H,S,D,causal  Run a single flash_attn config (can be repeated)
+#                         e.g. --fa 2,4,1024,128,True
 #
 # Examples:
 #   ./sweep.sh tma_gemm trace 128 512 1024
@@ -33,6 +35,7 @@
 #   ./sweep.sh tma_gemm run
 #   ./sweep.sh flash_attn trace 256 512 1024
 #   ./sweep.sh flash_attn run 256 512 --head-dim 128
+#   ./sweep.sh flash_attn run --fa 2,4,1024,128,True
 #   ./sweep.sh flash_attn ncu 256 512 --head-dim 64 --causal
 #
 
@@ -105,6 +108,14 @@ tma_gemm_sweep_label() {
         echo "size"
     fi
 }
+tma_gemm_summary_key() {
+    if [[ "$CSV_MODE" == "1" ]]; then
+        echo "$1"
+    else
+        echo "$1,$1,$1"   # square: size 512 → 512,512,512
+    fi
+}
+tma_gemm_summary_label() { echo "m,n,k"; }
 
 # --- flash_attn ---
 FA_HEAD_DIM=128
@@ -173,6 +184,8 @@ flash_attn_sweep_label() {
         echo "seq_len"
     fi
 }
+flash_attn_summary_key() { echo "$1"; }
+flash_attn_summary_label() { echo "$(${WORKLOAD}_sweep_label)"; }
 
 # ============================================================================
 # Argument Parsing
@@ -213,6 +226,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --csv)       CSV_MODE=1; CSV_FILE="$2"; shift 2 ;;
         --mnk)       CSV_MODE=1; SWEEP_VALUES+=("$2"); shift 2 ;;
+        --fa)        CSV_MODE=1; SWEEP_VALUES+=("$2"); shift 2 ;;
         --head-dim)  FA_HEAD_DIM="$2"; shift 2 ;;
         --batch)     FA_BATCH="$2"; shift 2 ;;
         --heads)     FA_HEADS="$2"; shift 2 ;;
@@ -438,6 +452,8 @@ extract_sim_metrics() {
     local subdir
     subdir="$(${WORKLOAD}_subdir "$val")"
     local log_file="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
+    local summary_key
+    summary_key="$(${WORKLOAD}_summary_key "$val")"
 
     local sim_cycles tot_insn ipc sim_time validation
 
@@ -452,7 +468,7 @@ extract_sim_metrics() {
         validation="FAILED"
     fi
 
-    echo "${val},${sim_cycles},${tot_insn},${ipc},${sim_time},${validation}"
+    echo "${summary_key},${sim_cycles},${tot_insn},${ipc},${sim_time},${validation}"
 }
 
 # ============================================================================
@@ -533,7 +549,8 @@ done
 
 # Generate/update summary (upsert: update existing rows, append new ones)
 SUMMARY_FILE="$SIM_LOG_DIR/summary.csv"
-HEADER="${SWEEP_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,validation"
+SUMMARY_LABEL="$(${WORKLOAD}_summary_label)"
+HEADER="${SUMMARY_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,validation"
 mkdir -p "$SIM_LOG_DIR"
 
 if [[ ! -f "$SUMMARY_FILE" ]]; then
@@ -542,11 +559,11 @@ fi
 
 for val in "${SWEEP_VALUES[@]}"; do
     new_line="$(extract_sim_metrics "$val")"
-    # Use the first field (workload identifier) as the key
-    key="$(echo "$new_line" | cut -d',' -f1)"
-    if grep -q "^${key}," "$SUMMARY_FILE"; then
-        # Update existing row in-place
-        sed -i "s|^${key},.*|${new_line}|" "$SUMMARY_FILE"
+    # summary_key expands val to canonical form (e.g. size 512 → 512,512,512)
+    summary_key="$(${WORKLOAD}_summary_key "$val")"
+    escaped_key="$(printf '%s' "$summary_key" | sed 's/[.[\*^$()+?{|]/\\&/g')"
+    if grep -q "^${escaped_key}," "$SUMMARY_FILE"; then
+        sed -i "s|^${escaped_key},.*|${new_line}|" "$SUMMARY_FILE"
     else
         echo "$new_line" >> "$SUMMARY_FILE"
     fi
