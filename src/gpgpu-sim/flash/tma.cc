@@ -130,6 +130,10 @@ struct tma_agu_state_t {
   uint32_t offset_in_row = 0;       // Byte offset within current row
   uint32_t row_bytes = 0;           // Total bytes in a row (dim0 extent)
 
+  // Cached OOB state (avoids per-sector dimension traversal)
+  bool row_is_oob = false;      // Higher-dim OOB: entire row is fill
+  uint32_t valid_row_bytes = 0; // Dim0 valid bytes in row (constant per tile)
+
   // Linear mode state (simple 1D address range)
   uint64_t linear_addr = 0;      // Current address
   uint32_t linear_remaining = 0; // Remaining bytes
@@ -176,6 +180,22 @@ public:
     state.row_bytes = state.box_dim[0] * state.elem_size;
     state.offset_in_row = 0;
     state.done = false;
+
+    // Precompute dim0 valid bytes (constant for entire tile)
+    uint32_t dim0_remaining = (start_coords[0] < state.global_dim[0])
+                                  ? state.global_dim[0] - start_coords[0]
+                                  : 0;
+    state.valid_row_bytes =
+        std::min(state.box_dim[0], dim0_remaining) * state.elem_size;
+
+    // Precompute higher-dim OOB for first row (tile_coords all zero)
+    state.row_is_oob = false;
+    for (uint32_t d = 1; d < state.num_dims; d++) {
+      if (start_coords[d] >= state.global_dim[d]) {
+        state.row_is_oob = true;
+        break;
+      }
+    }
   }
 
   void init_linear(tma_agu_state_t &state, uint64_t start_addr,
@@ -229,8 +249,13 @@ public:
 
     } else {
       // Tensor mode: odometer-style multi-dimensional traversal
-      // Check if current position is valid (OOB check)
-      state.is_fill_request = !is_position_valid(state);
+      // OOB check using cached state (no per-sector dimension traversal)
+      if (state.row_is_oob) {
+        state.is_fill_request = true; // Higher-dim OOB: entire row is fill
+      } else {
+        state.is_fill_request =
+            (state.offset_in_row >= state.valid_row_bytes); // Dim0 boundary
+      }
 
       // Calculate address: current_row_base + offset_within_row
       out_addr = state.curr_row_addr + state.offset_in_row;
@@ -255,44 +280,40 @@ public:
   }
 
 private:
-  // Check if current position is within valid tensor bounds (not OOB)
-  bool is_position_valid(const tma_agu_state_t &state) const {
-    if (!state.is_tensor)
-      return true;
-    for (uint32_t d = 0; d < state.num_dims; d++) {
-      uint32_t global_coord = state.start_coords[d] + state.tile_coords[d];
-      if (global_coord >= state.global_dim[d]) {
-        return false; // Out of bounds
-      }
-    }
-    return true;
-  }
-
-  // Advance to next row using odometer-style increment of higher dimensions
+  // Advance to next row using odometer-style increment of higher dimensions.
+  // Updates row_is_oob cache after advancing.
   void advance_to_next_row(tma_agu_state_t &state) {
     state.offset_in_row = 0;
 
     // Increment coordinates starting from dimension 1 (dimension 0 is row)
+    bool carried_all = true;
     for (uint32_t d = 1; d < state.num_dims; d++) {
       state.tile_coords[d]++;
-
       state.curr_row_addr += state.global_strides[d];
 
       if (state.tile_coords[d] < state.box_dim[d]) {
-        // No carry - we're done
-        return;
+        carried_all = false;
+        break; // No carry - done advancing
       }
 
       // Carry to next dimension: reset this dimension
-      // We've added stride[d] a total of box_dim[d] times (for coords 0 through
-      // box_dim[d]-1, plus the current increment) Subtract the full extent to
-      // get back to the base address for this dimension
       state.curr_row_addr -= state.box_dim[d] * state.global_strides[d];
       state.tile_coords[d] = 0;
     }
 
-    // All dimensions wrapped - iteration complete
-    state.done = true;
+    if (carried_all) {
+      state.done = true;
+      return;
+    }
+
+    // Recompute higher-dim OOB for new row (once per row, not per sector)
+    state.row_is_oob = false;
+    for (uint32_t d = 1; d < state.num_dims; d++) {
+      if (state.start_coords[d] + state.tile_coords[d] >= state.global_dim[d]) {
+        state.row_is_oob = true;
+        break;
+      }
+    }
   }
 };
 
@@ -629,11 +650,12 @@ public:
       if (!m_icnt->full(packet_size, is_write)) {
         uint64_t addr;
         uint32_t size;
+        bool oob_l2 = m_shader_ctx->get_config()->gpgpu_tma_oob_l2_traffic;
 
-        // Use AGU Unit to generate next address
-        if (m_agu.gen_next_req(tx.agu_state, addr, size)) {
+        // Loop: batch-consume consecutive skip-OOB requests in one cycle,
+        // then issue at most one mem_fetch to L2 before breaking.
+        while (m_agu.gen_next_req(tx.agu_state, addr, size)) {
 
-          // debug info: Count mem_fetch issued for this transaction
           if (tx.m_mf_issued_count == 0) {
             GPPRINTF_TMA(
                 TMA,
@@ -643,58 +665,58 @@ public:
           }
           tx.m_mf_issued_count++;
 
-          // Check if this is a fill request (OOB region)
-          // For reads: optionally send OOB requests through L2 to model real
-          // HW behavior (full-tile requests, zero-fill after response).
-          // For writes: always skip OOB — must not write beyond tensor bounds.
-          if (tx.agu_state.is_fill_request &&
-              (is_write ||
-               !m_shader_ctx->get_config()->gpgpu_tma_oob_l2_traffic)) {
-            // Skip L2 for OOB fill requests
+          // Determine if this OOB request should skip L2:
+          //   - Writes: always skip OOB (must not write beyond tensor bounds)
+          //   - Reads:  skip OOB only when gpgpu_tma_oob_l2_traffic is off
+          bool skip_l2 = tx.agu_state.is_fill_request && (is_write || !oob_l2);
+
+          if (skip_l2) {
+            // No interconnect needed — just count bytes
             tx.m_bytes_completed += size;
-
-            if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes)
+            if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
               finalize_transaction(tx_uid);
-
-          } else {
-            // Issue mem_fetch to interconnect → L2.
-            // For OOB fill requests with gpgpu_tma_oob_l2_traffic=1:
-            // Real HW TMA sends full-tile requests to L2 unconditionally,
-            // then zero-fills OOB data after response. This generates L2
-            // traffic and cross-CTA L2 hits for shared tiles.
-            mem_access_byte_mask_t byte_mask;
-            mem_access_sector_mask_t sector_mask;
-
-            unsigned start_byte = addr % MAX_MEMORY_ACCESS_SIZE;
-            for (unsigned i = 0; i < size; i++) {
-              byte_mask.set((start_byte + i) % MAX_MEMORY_ACCESS_SIZE);
+              break;
             }
-
-            unsigned start_sector = start_byte / SECTOR_SIZE;
-            unsigned end_sector = (start_byte + size - 1) / SECTOR_SIZE;
-            for (unsigned i = start_sector;
-                 i <= end_sector && i < SECTOR_CHUNCK_SIZE; i++) {
-              sector_mask.set(i);
-            }
-
-            active_mask_t active_mask;
-
-            mem_access_type access_type = is_write ? TMA_ACC_W : TMA_ACC_R;
-
-            mem_access_t access(access_type, addr, size, is_write, active_mask,
-                                byte_mask, sector_mask,
-                                m_shader_ctx->get_gpu()->gpgpu_ctx);
-
-            mem_fetch *mf = m_mf_allocator->alloc(
-                access,
-                m_shader_ctx->get_gpu()->gpu_sim_cycle +
-                    m_shader_ctx->get_gpu()->gpu_tot_sim_cycle,
-                (unsigned long long)-1);
-
-            m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
-
-            m_icnt->push(mf);
+            continue; // Consume next request without waiting for icnt
           }
+
+          // Issue mem_fetch to interconnect → L2.
+          // For OOB fill requests with gpgpu_tma_oob_l2_traffic=1:
+          // Real HW TMA sends full-tile requests to L2 unconditionally,
+          // then zero-fills OOB data after response.
+          mem_access_byte_mask_t byte_mask;
+          mem_access_sector_mask_t sector_mask;
+
+          unsigned start_byte = addr % MAX_MEMORY_ACCESS_SIZE;
+          for (unsigned i = 0; i < size; i++) {
+            byte_mask.set((start_byte + i) % MAX_MEMORY_ACCESS_SIZE);
+          }
+
+          unsigned start_sector = start_byte / SECTOR_SIZE;
+          unsigned end_sector = (start_byte + size - 1) / SECTOR_SIZE;
+          for (unsigned i = start_sector;
+               i <= end_sector && i < SECTOR_CHUNCK_SIZE; i++) {
+            sector_mask.set(i);
+          }
+
+          active_mask_t active_mask;
+
+          mem_access_type access_type = is_write ? TMA_ACC_W : TMA_ACC_R;
+
+          mem_access_t access(access_type, addr, size, is_write, active_mask,
+                              byte_mask, sector_mask,
+                              m_shader_ctx->get_gpu()->gpgpu_ctx);
+
+          mem_fetch *mf = m_mf_allocator->alloc(
+              access,
+              m_shader_ctx->get_gpu()->gpu_sim_cycle +
+                  m_shader_ctx->get_gpu()->gpu_tot_sim_cycle,
+              (unsigned long long)-1);
+
+          m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
+
+          m_icnt->push(mf);
+          break; // One mem_fetch per cycle
         }
       }
 
