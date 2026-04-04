@@ -644,31 +644,32 @@ public:
           tx.m_mf_issued_count++;
 
           // Check if this is a fill request (OOB region)
-          if (tx.agu_state.is_fill_request) {
-            // Fill request: just count the bytes, no actual memory transfer
-            // needed The functional simulation already handled the zero-fill
+          // For reads: optionally send OOB requests through L2 to model real
+          // HW behavior (full-tile requests, zero-fill after response).
+          // For writes: always skip OOB — must not write beyond tensor bounds.
+          if (tx.agu_state.is_fill_request &&
+              (is_write ||
+               !m_shader_ctx->get_config()->gpgpu_tma_oob_l2_traffic)) {
+            // Skip L2 for OOB fill requests
             tx.m_bytes_completed += size;
 
-            // Check if transaction is complete
             if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes)
               finalize_transaction(tx_uid);
 
           } else {
-            // Normal memory request: issue mem_fetch to interconnect
-            // Compute byte mask and sector mask for this TMA request
-            // TMA requests are up to 128 bytes (MAX_MEMORY_ACCESS_SIZE)
-            // Each sector is 32 bytes (SECTOR_SIZE), 4 sectors total
-            // (SECTOR_CHUNCK_SIZE)
+            // Issue mem_fetch to interconnect → L2.
+            // For OOB fill requests with gpgpu_tma_oob_l2_traffic=1:
+            // Real HW TMA sends full-tile requests to L2 unconditionally,
+            // then zero-fills OOB data after response. This generates L2
+            // traffic and cross-CTA L2 hits for shared tiles.
             mem_access_byte_mask_t byte_mask;
             mem_access_sector_mask_t sector_mask;
 
-            // Set byte mask for the requested bytes
             unsigned start_byte = addr % MAX_MEMORY_ACCESS_SIZE;
             for (unsigned i = 0; i < size; i++) {
               byte_mask.set((start_byte + i) % MAX_MEMORY_ACCESS_SIZE);
             }
 
-            // Set sector mask based on which 32-byte sectors are accessed
             unsigned start_sector = start_byte / SECTOR_SIZE;
             unsigned end_sector = (start_byte + size - 1) / SECTOR_SIZE;
             for (unsigned i = start_sector;
@@ -676,9 +677,8 @@ public:
               sector_mask.set(i);
             }
 
-            active_mask_t active_mask; // Empty mask for TMA (not warp-based)
+            active_mask_t active_mask;
 
-            // Choose access type based on direction
             mem_access_type access_type = is_write ? TMA_ACC_W : TMA_ACC_R;
 
             mem_access_t access(access_type, addr, size, is_write, active_mask,
