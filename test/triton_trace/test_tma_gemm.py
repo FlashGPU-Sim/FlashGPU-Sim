@@ -135,6 +135,15 @@ def main():
         label = f"M={M}, N={N}, K={K}"
         subdir = f"m{M}_n{N}_k{K}"
 
+    # TMA requires globalStrides to be 16-byte aligned.
+    # For fp16 (2 bytes), all dimensions used as strides (M, N, K) must be multiples of 8.
+    TMA_ALIGN = 8  # 16 bytes / 2 bytes per fp16 element
+    for name, val in [("M", M), ("N", N), ("K", K)]:
+        if val % TMA_ALIGN != 0:
+            print(f"❌ {label}: {name}={val} is not a multiple of {TMA_ALIGN} "
+                  f"(TMA requires 16-byte stride alignment)")
+            return 1
+
     print(f"{'='*80}")
     print(f"TMA GEMM Trace Generator — {label}")
     print(f"{'='*80}")
