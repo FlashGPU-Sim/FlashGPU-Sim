@@ -336,6 +336,7 @@ private:
   shader_core_mem_fetch_allocator *m_mf_allocator;
 
   tma_agu_unit_t m_agu;
+  unsigned m_mf_inflight = 0; // Actual mem_fetch in L2 pipeline (not skips)
 
   struct tma_transaction_t {
     ptx_thread_info *m_thread = nullptr;
@@ -580,6 +581,8 @@ public:
       assert(tx_it != m_transactions.end());
       auto &tx = tx_it->second;
       tx.m_mf_received_count++;
+      assert(m_mf_inflight > 0);
+      m_mf_inflight--;
 
       bool is_write =
           (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
@@ -629,13 +632,8 @@ public:
       // entries are only bulk-erased on finalize, so it over-counts.
       unsigned max_inflight =
           m_shader_ctx->get_config()->gpgpu_tma_max_inflight;
-      if (max_inflight > 0) {
-        unsigned inflight = 0;
-        for (auto &[uid, tx] : m_transactions)
-          inflight += tx.m_mf_issued_count - tx.m_mf_received_count;
-        if (inflight >= max_inflight)
-          return;
-      }
+      if (max_inflight > 0 && m_mf_inflight >= max_inflight)
+        return;
 
       unsigned tx_uid = issue_queue.front();
 
@@ -716,6 +714,7 @@ public:
           m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
 
           m_icnt->push(mf);
+          m_mf_inflight++;
           break; // One mem_fetch per cycle
         }
       }
