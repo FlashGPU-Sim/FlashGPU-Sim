@@ -49,12 +49,20 @@ def parse_sim_log(path):
     else:
         metrics["l2_hit_rate_pct"] = None
 
-    # DRAM: sum n_rd and n_write across all memory controllers
-    # Format: n_rd=52096 ... n_write=0
+    # DRAM: sum n_rd and n_write+n_wr_bk across all memory controllers
+    # n_rd, n_write, n_wr_bk count DRAM column commands (not sectors).
+    # Read commands: each serves a 32B sector request (1 command per sector).
+    # Write commands: n_write serves per-sector requests (32B each);
+    #   n_wr_bk serves L2 write-back requests (full cache lines, 128B each,
+    #   requiring 2 commands per line at dram_atom_size=64B).
     rd_values = re.findall(r"\bn_rd=(\d+)\b", content)
     wr_values = re.findall(r"\bn_write=(\d+)\b", content)
+    wr_wb_values = re.findall(r"\bn_wr_bk=(\d+)\b", content)
     metrics["dram_read_mb"] = sum(int(v) for v in rd_values) * 32 / (1024 * 1024) if rd_values else None
-    metrics["dram_write_mb"] = sum(int(v) for v in wr_values) * 32 / (1024 * 1024) if wr_values else None
+    # n_write: per-sector writes (32B each), n_wr_bk: line write-backs (64B per command)
+    total_wr_bytes = (sum(int(v) for v in wr_values) * 32 if wr_values else 0) + \
+                     (sum(int(v) for v in wr_wb_values) * 64 if wr_wb_values else 0)
+    metrics["dram_write_mb"] = total_wr_bytes / (1024 * 1024) if (wr_values or wr_wb_values) else None
 
     # L1D cache: aggregate across cores
     # Format: L1D_cache_core[0]: Access = 0, Miss = 0, ...

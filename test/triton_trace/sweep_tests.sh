@@ -504,10 +504,24 @@ if [[ "$MODE" == "ncu" ]]; then
         do_ncu "$val"
     done
 
+    # Generate/update summary (upsert: update existing rows, append new ones)
     NCU_SUMMARY="$NCU_REP_DIR/summary.csv"
-    echo "${SWEEP_LABEL},sm_cycles,sm_freq_ghz,duration_us,tflops,sm_throughput_pct,tensor_pipe_pct,dram_throughput_pct" > "$NCU_SUMMARY"
+    NCU_HEADER="${SWEEP_LABEL},sm_cycles,sm_freq_ghz,duration_us,tflops,sm_throughput_pct,tensor_pipe_pct,dram_throughput_pct"
+    mkdir -p "$NCU_REP_DIR"
+
+    if [[ ! -f "$NCU_SUMMARY" ]]; then
+        echo "$NCU_HEADER" > "$NCU_SUMMARY"
+    fi
+
     for val in "${SWEEP_VALUES[@]}"; do
-        extract_ncu_metrics "$val" >> "$NCU_SUMMARY"
+        new_line="$(extract_ncu_metrics "$val")"
+        summary_key="$(${WORKLOAD}_summary_key "$val")"
+        escaped_key="$(printf '%s' "$summary_key" | sed 's/[.[\*^$()+?{|]/\\&/g')"
+        if grep -q "^${escaped_key}," "$NCU_SUMMARY"; then
+            sed -i "s|^${escaped_key},.*|${new_line}|" "$NCU_SUMMARY"
+        else
+            echo "$new_line" >> "$NCU_SUMMARY"
+        fi
     done
 
     echo ""

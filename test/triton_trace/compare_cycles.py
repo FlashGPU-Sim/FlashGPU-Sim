@@ -7,6 +7,7 @@ directory and outputs a comparison table.
 Usage:
     python3 compare_cycles.py [test_name]          # specific test (default: test_tma_gemm)
     python3 compare_cycles.py --all                 # all tests with results/
+    python3 compare_cycles.py --csv configs/gemm_shapes_training.csv
 """
 
 import argparse
@@ -53,7 +54,29 @@ def read_csv_as_dict(path, val_col):
     return result
 
 
-def compare_one_test(test_name):
+def load_csv_filter(csv_path):
+    """Load shape keys from a CSV file for filtering."""
+    keys = set()
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        header = reader.fieldnames
+        for row in reader:
+            if "m" in header:
+                keys.add(f"{row['m'].strip()},{row['n'].strip()},{row['k'].strip()}")
+            elif "batch" in header:
+                keys.add(f"{row['batch'].strip()},{row['nheads'].strip()},"
+                         f"{row['seqlen'].strip()},{row['headdim'].strip()},"
+                         f"{row['causal'].strip()}")
+            elif "size" in header:
+                keys.add(row["size"].strip())
+            elif "seq_len" in header:
+                keys.add(row["seq_len"].strip())
+            else:
+                keys.add(row[header[0]].strip())
+    return keys
+
+
+def compare_one_test(test_name, filter_keys=None):
     results_dir = os.path.join(TRACKING_DIR, test_name, "results")
     ncu_csv = os.path.join(results_dir, "ncu-rep", "summary.csv")
     sim_csv = os.path.join(results_dir, "sim-log", "summary.csv")
@@ -69,6 +92,8 @@ def compare_one_test(test_name):
     sim_data = read_csv_as_dict(sim_csv, "sim_cycles")
 
     all_keys = sorted(set(ncu_data.keys()) | set(sim_data.keys()))
+    if filter_keys is not None:
+        all_keys = [k for k in all_keys if k in filter_keys]
 
     # Determine label width from longest key
     label_w = max(8, max((len(k) for k in all_keys), default=8))
@@ -106,21 +131,28 @@ def main():
                         help="Test name under triton_kernel_tracking/ (default: test_tma_gemm)")
     parser.add_argument("--all", action="store_true",
                         help="Process all tests that have a results/ directory")
+    parser.add_argument("--csv", type=str, default=None,
+                        help="Filter shapes to those listed in CSV file (relative to script dir)")
     args = parser.parse_args()
+
+    filter_keys = None
+    if args.csv:
+        csv_path = os.path.join(SCRIPT_DIR, args.csv) if not os.path.isabs(args.csv) else args.csv
+        filter_keys = load_csv_filter(csv_path)
 
     if args.all:
         found = False
         for name in sorted(os.listdir(TRACKING_DIR)):
             results_dir = os.path.join(TRACKING_DIR, name, "results")
             if os.path.isdir(results_dir):
-                compare_one_test(name)
+                compare_one_test(name, filter_keys)
                 found = True
         if not found:
             print("No tests with results/ directory found.")
             sys.exit(1)
     else:
         test_name = args.test_name or "test_tma_gemm"
-        if not compare_one_test(test_name):
+        if not compare_one_test(test_name, filter_keys):
             sys.exit(1)
 
 
