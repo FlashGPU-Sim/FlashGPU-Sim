@@ -633,6 +633,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_tma_max_inflight", OPT_UINT32,
                          &gpgpu_tma_max_inflight,
                          "Max in-flight TMA mem_fetch requests per SM (default=0, 0=unlimited)", "0");
+  option_parser_register(opp, "-gpgpu_tma_tx_quota", OPT_UINT32,
+                         &gpgpu_tma_tx_quota,
+                         "Max in-flight mem_fetch per TMA transaction (default=0, 0=unlimited)", "0");
   option_parser_register(opp, "-gpgpu_cta_load_balance", OPT_BOOL,
                          &gpgpu_cta_load_balance,
                          "Cap CTAs per core to ceil(total_ctas/n_cores) for load balancing (default=0)", "0");

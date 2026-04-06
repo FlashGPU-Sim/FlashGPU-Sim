@@ -349,6 +349,7 @@ private:
     // Debug counters
     uint32_t m_mf_issued_count = 0;   // Number of mem_fetch requests issued
     uint32_t m_mf_received_count = 0; // Number of mem_fetch responses received
+    uint32_t m_mf_tx_inflight = 0; // Currently in-flight for this transaction
 
     void reset() {
       m_thread = nullptr;
@@ -357,6 +358,7 @@ private:
       agu_state = tma_agu_state_t(); // Reset to default state
       m_mf_issued_count = 0;
       m_mf_received_count = 0;
+      m_mf_tx_inflight = 0;
     }
 
     bool is_valid() const { return m_thread != nullptr; }
@@ -583,6 +585,8 @@ public:
       tx.m_mf_received_count++;
       assert(m_mf_inflight > 0);
       m_mf_inflight--;
+      assert(tx.m_mf_tx_inflight > 0);
+      tx.m_mf_tx_inflight--;
 
       bool is_write =
           (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
@@ -640,6 +644,17 @@ public:
       auto it = m_transactions.find(tx_uid);
       assert(it != m_transactions.end());
       auto &tx = it->second;
+
+      // Per-transaction quota: limit how many inflight requests a single
+      // transaction can have, so multiple CTAs share bandwidth fairly.
+      unsigned tx_quota = m_shader_ctx->get_config()->gpgpu_tma_tx_quota;
+      if (tx_quota > 0 && tx.m_mf_tx_inflight >= tx_quota) {
+        // This transaction hit its quota — try the next one in the queue.
+        // Rotate: move current to back so other transactions get a chance.
+        issue_queue.pop_front();
+        issue_queue.push_back(tx_uid);
+        return;
+      }
 
       bool is_write =
           (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
@@ -715,6 +730,7 @@ public:
 
           m_icnt->push(mf);
           m_mf_inflight++;
+          tx.m_mf_tx_inflight++;
           break; // One mem_fetch per cycle
         }
       }
