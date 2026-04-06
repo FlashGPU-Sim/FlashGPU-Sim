@@ -146,8 +146,20 @@ void linear_to_raw_address_translation::addrdec_tlx(new_addr_type addr,
       unsigned sub_partition_addr_mask = m_n_sub_partition_in_channel - 1;
       unsigned sub_partition = tlx->chip * m_n_sub_partition_in_channel +
                                (tlx->bk & sub_partition_addr_mask);
+      // Use a lower shift for IPOLY hash input. The original
+      // rest_of_addr_high_bits = addr >> (ADDR_CHIP_S + log2channel +
+      // log2sub_partition) = addr >> 20, which strips bits that carry
+      // stride variation for GEMM workloads (e.g., stride=4096 varies at
+      // bit 12), causing severe bank imbalance (12-28 of 128 banks used).
+      // Since IPOLY computes its own partition mapping via XOR, feeding it
+      // more address bits (from cache-line boundary upward) gives uniform
+      // distribution while preserving IPOLY's conflict-free guarantee for
+      // power-of-2 strides.
+      const unsigned ipoly_shift = 8;  // 256B interleave granularity
+      unsigned long long int ipoly_high_bits =
+          gap ? rest_of_addr_high_bits : (addr >> ipoly_shift);
       sub_partition = ipoly_hash_function(
-          rest_of_addr_high_bits, sub_partition,
+          ipoly_high_bits, sub_partition,
           nextPowerOf2_m_n_channel * m_n_sub_partition_in_channel);
 
       if (gap)  // if it is not 2^n partitions, then take modular
