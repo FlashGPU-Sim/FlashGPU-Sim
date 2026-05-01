@@ -27,6 +27,19 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 # Flash Attention Forward Kernel (TMA-based)
 # ============================================================================
 
+def get_fa_autotune_config():
+    return [
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_stages=2, num_warps=8),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 32}, num_stages=2, num_warps=8),
+        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_stages=2, num_warps=4),
+        triton.Config({"BLOCK_M": 64, "BLOCK_N": 32}, num_stages=2, num_warps=4),
+    ]
+
+
+@triton.autotune(
+    configs=get_fa_autotune_config(),
+    key=["SEQ_LEN", "HEAD_DIM"],
+)
 @triton.jit
 def _flash_attn_fwd(
     Q, K, V, Out,
@@ -142,17 +155,13 @@ def flash_attention_forward(q, k, v, causal=False, sm_scale=None):
     v_r = v.view(batch * heads, seq_len, head_dim)
     o_r = torch.empty_like(q_r)
 
-    BLOCK_M = 64
-    BLOCK_N = 64
-    grid = (triton.cdiv(seq_len, BLOCK_M), batch * heads)
+    grid = lambda META: (triton.cdiv(seq_len, META["BLOCK_M"]), batch * heads)
 
     _flash_attn_fwd[grid](
         q_r, k_r, v_r, o_r,
         sm_scale,
         SEQ_LEN=seq_len,
         HEAD_DIM=head_dim,
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
         CAUSAL=causal,
     )
 
