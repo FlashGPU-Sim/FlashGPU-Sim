@@ -16,7 +16,18 @@ import os
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-TRACKING_DIR = os.path.join(SCRIPT_DIR, "triton_kernel_tracking")
+TRITON_TRACE_DIR = os.path.dirname(SCRIPT_DIR)
+TRACKING_DIR = os.path.join(TRITON_TRACE_DIR, "triton_kernel_tracking")
+
+
+def resolve_input_path(path):
+    """Resolve input files relative to validation/ first, then triton_trace/."""
+    if os.path.isabs(path):
+        return path
+    candidate = os.path.join(SCRIPT_DIR, path)
+    if os.path.exists(candidate):
+        return candidate
+    return os.path.join(TRITON_TRACE_DIR, path)
 
 
 def read_csv_as_dict(path, val_col):
@@ -137,7 +148,7 @@ def main():
 
     filter_keys = None
     if args.csv:
-        csv_path = os.path.join(SCRIPT_DIR, args.csv) if not os.path.isabs(args.csv) else args.csv
+        csv_path = resolve_input_path(args.csv)
         filter_keys = load_csv_filter(csv_path)
 
     if args.all:

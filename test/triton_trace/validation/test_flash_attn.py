@@ -12,11 +12,15 @@ Generates trace data in triton_kernel_tracking/test_flash_attn/seq<S>_d<D>/
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
 import torch
 import triton
 import triton.language as tl
+
+TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(TRITON_TRACE_DIR))
 
 from track_triton_kernels import TritonKernelTracker
 
@@ -212,7 +216,7 @@ def main():
 
     causal_str = "_causal" if causal else ""
     subdir = f"b{batch}_h{heads}_seq{seq_len}_d{head_dim}{causal_str}"
-    output_dir = (Path(__file__).parent / f"triton_kernel_tracking/test_flash_attn/{subdir}").resolve()
+    output_dir = (TRITON_TRACE_DIR / f"triton_kernel_tracking/test_flash_attn/{subdir}").resolve()
     if output_dir.exists():
         shutil.rmtree(output_dir)
 

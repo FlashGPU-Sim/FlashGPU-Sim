@@ -193,16 +193,17 @@ def resolve_results_dir(user_arg):
 
     Tries in order:
       1. user_arg as-is (explicit path)
-      2. triton_kernel_tracking/<user_arg>/results  (relative to script dir)
+      2. triton_kernel_tracking/<user_arg>/results  (relative to triton_trace dir)
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    triton_trace_dir = os.path.dirname(script_dir)
 
     # 1. Direct path
     if os.path.isdir(os.path.join(user_arg, "sim-log")) or os.path.isdir(os.path.join(user_arg, "ncu-rep")):
         return user_arg
 
     # 2. Workload name shorthand
-    candidate = os.path.join(script_dir, "triton_kernel_tracking", user_arg, "results")
+    candidate = os.path.join(triton_trace_dir, "triton_kernel_tracking", user_arg, "results")
     if os.path.isdir(candidate):
         return candidate
 

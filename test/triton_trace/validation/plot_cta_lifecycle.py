@@ -29,6 +29,18 @@ import matplotlib.patches as mpatches
 
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
+TRITON_TRACE_DIR = SCRIPT_DIR.parent
+
+
+def resolve_input_path(path):
+    """Resolve input files relative to validation/ first, then triton_trace/."""
+    p = Path(path)
+    if p.is_absolute():
+        return p
+    candidate = SCRIPT_DIR / p
+    if candidate.exists():
+        return candidate
+    return TRITON_TRACE_DIR / p
 
 
 def parse_cta_lifecycle(logfile):
@@ -193,7 +205,7 @@ def plot_lifecycle(spans, sim_cycles, ncu_cycles, title, outfile):
 
 def load_ncu_summary(workload):
     """Load NCU sm_cycles from summary.csv if available."""
-    ncu_csv = (SCRIPT_DIR / "triton_kernel_tracking" / workload /
+    ncu_csv = (TRITON_TRACE_DIR / "triton_kernel_tracking" / workload /
                "results" / "ncu-rep" / "summary.csv")
     ncu = {}
     if ncu_csv.exists():
@@ -234,7 +246,7 @@ def parse_shapes(args, workload):
     shapes = []
     if workload == "test_tma_gemm":
         if args.csv:
-            csv_path = SCRIPT_DIR / args.csv
+            csv_path = resolve_input_path(args.csv)
             with open(csv_path) as f:
                 for line in f:
                     line = line.strip()
@@ -278,7 +290,7 @@ def main():
         print("No shapes specified. Use --shape <csv> or positional values.")
         sys.exit(1)
 
-    results_dir = SCRIPT_DIR / "triton_kernel_tracking" / workload / "results"
+    results_dir = TRITON_TRACE_DIR / "triton_kernel_tracking" / workload / "results"
     sim_log_dir = results_dir / "sim-log"
     cta_lifecycle_dir = results_dir / "cta_lifecycle"
     cta_lifecycle_dir.mkdir(parents=True, exist_ok=True)

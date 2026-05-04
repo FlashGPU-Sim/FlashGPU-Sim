@@ -10,8 +10,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TRACKING_DIR="$SCRIPT_DIR/triton_kernel_tracking"
+TRITON_TRACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$TRITON_TRACE_DIR/../.." && pwd)"
+TRACKING_DIR="$TRITON_TRACE_DIR/triton_kernel_tracking"
 GPU_CONFIG_DIR="$REPO_ROOT/configs/SM120_RTX5090"
 
 CONFIG_FILES=("gpgpusim.config" "config_ampere_islip.icnt")

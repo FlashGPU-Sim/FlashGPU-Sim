@@ -23,6 +23,7 @@ Row/tile selection goes in the offset list of load/store_tensor_descriptor.
 
 import math
 import shutil
+import sys
 from pathlib import Path
 
 import torch
@@ -30,6 +31,9 @@ import triton
 import triton.language as tl
 
 from transformers import GPT2Tokenizer, GPT2Model
+
+TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(TRITON_TRACE_DIR))
 
 from track_triton_kernels import TritonKernelTracker
 
@@ -489,7 +493,7 @@ def main():
     w = GPT2Weights("gpt2")
 
     print("\n[3/4] Tracked forward pass (JIT + capture, tracker ON) …")
-    output_dir = (Path(__file__).parent / "triton_kernel_tracking/gpt2_small").resolve()
+    output_dir = (TRITON_TRACE_DIR / "triton_kernel_tracking/gpt2_small").resolve()
     if output_dir.exists():
         shutil.rmtree(output_dir)
     tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)

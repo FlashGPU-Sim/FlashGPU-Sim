@@ -42,8 +42,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-VENV_ACTIVATE="$SCRIPT_DIR/.venv/bin/activate"
+TRITON_TRACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$TRITON_TRACE_DIR/../.." && pwd)"
+VENV_ACTIVATE="$TRITON_TRACE_DIR/.venv/bin/activate"
 GPU_CONFIG_DIR="$REPO_ROOT/configs/SM120_RTX5090"
 CSV_MODE=0
 CSV_FILE=""
@@ -242,7 +243,7 @@ done
 # Initialize workload
 ${WORKLOAD}_init
 
-TRACKING_DIR="$SCRIPT_DIR/triton_kernel_tracking/$TRACKING_SUBDIR"
+TRACKING_DIR="$TRITON_TRACE_DIR/triton_kernel_tracking/$TRACKING_SUBDIR"
 RESULTS_DIR="$TRACKING_DIR/results"
 SIM_LOG_DIR="$RESULTS_DIR/sim-log"
 NCU_REP_DIR="$RESULTS_DIR/ncu-rep"
@@ -253,6 +254,9 @@ if [[ -n "$CSV_FILE" ]]; then
         echo "ERROR: --csv and sweep values are mutually exclusive"; exit 1
     fi
     CSV_PATH="$SCRIPT_DIR/$CSV_FILE"
+    if [[ ! -f "$CSV_PATH" ]]; then
+        CSV_PATH="$TRITON_TRACE_DIR/$CSV_FILE"
+    fi
     if [[ ! -f "$CSV_PATH" ]]; then
         echo "ERROR: CSV file not found: $CSV_PATH"; exit 1
     fi

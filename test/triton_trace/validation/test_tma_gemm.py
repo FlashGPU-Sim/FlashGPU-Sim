@@ -12,11 +12,15 @@ or triton_kernel_tracking/test_tma_gemm/m<M>_n<N>_k<K>/
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
 import torch
 import triton
 import triton.language as tl
+
+TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(TRITON_TRACE_DIR))
 
 from track_triton_kernels import TritonKernelTracker
 
@@ -152,7 +156,7 @@ def main():
         lambda size, alignment, stream: torch.empty(size, device="cuda", dtype=torch.int8)
     )
 
-    output_dir = (Path(__file__).parent / f"triton_kernel_tracking/test_tma_gemm/{subdir}").resolve()
+    output_dir = (TRITON_TRACE_DIR / f"triton_kernel_tracking/test_tma_gemm/{subdir}").resolve()
     if output_dir.exists():
         shutil.rmtree(output_dir)
 

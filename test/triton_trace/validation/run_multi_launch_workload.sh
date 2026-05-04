@@ -31,7 +31,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+TRITON_TRACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$TRITON_TRACE_DIR/../.." && pwd)"
 
 # --- Parse arguments ---
 if [ $# -lt 1 ]; then
@@ -76,8 +77,8 @@ fi
 
 # Resolve paths
 if [ ! -d "$TEST_DIR" ]; then
-    # Try relative to script dir
-    TEST_DIR="$SCRIPT_DIR/$TEST_DIR"
+    # Try relative to the triton_trace root.
+    TEST_DIR="$TRITON_TRACE_DIR/$TEST_DIR"
 fi
 TEST_DIR="$(cd "$TEST_DIR" && pwd)"
 LAUNCHERS_DIR="$TEST_DIR/launchers"

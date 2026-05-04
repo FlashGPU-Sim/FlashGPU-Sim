@@ -7,10 +7,14 @@ descriptor API (TMA operations on Hopper+ GPUs). Tensor descriptors are
 built inside the kernel, no host side preparation is needed.
 """
 
+import sys
 from pathlib import Path
 import torch
 import triton
 import triton.language as tl
+
+TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(TRITON_TRACE_DIR))
 
 from track_triton_kernels import TritonKernelTracker
 
@@ -536,7 +540,7 @@ def main():
     )
 
     # Initialize tracker
-    output_dir = (Path(__file__).parent / "triton_kernel_tracking/example_tensor_add").resolve()
+    output_dir = (TRITON_TRACE_DIR / "triton_kernel_tracking/example_tensor_add").resolve()
     tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)
     tracker.disable()
     print(f"\nOutput directory: {output_dir}")
