@@ -1181,3 +1181,223 @@ TEST(MMAPeak, AllVariants) {
   out << "└──────────────────┴─────────┴───────────┴────────────┴────────────┴──────────┴────────────┴────────────┴──────────┴────────┘\n";
   out.close();
 }
+
+// ============================================================================
+// Simulator-Optimized Peak Throughput
+//
+// Hardcoded best ILP and blocks_per_sm from RTX 5090 hardware sweep to skip
+// the expensive ILP scan. Uses 1 warmup + 1 measurement.
+//
+// Key difference from MMAPeak: throughput is computed from GPU clock64() cycles
+// and the configured SM clock frequency, NOT from cudaEventElapsedTime wall
+// clock. On a simulator, wall clock reflects host simulation speed, not
+// simulated GPU time.
+//
+// Throughput = total_ops / (max_block_cycles / sm_clock_hz) / 1e12
+// ============================================================================
+
+struct SimPeakConfig {
+  int ilp;
+  int blocks_per_sm;
+};
+
+template <typename MmaOp>
+struct SimPeakConfigFor;
+
+// Hardware-measured best configs (RTX 5090, 2026-03-30)
+template <> struct SimPeakConfigFor<MmaOp_F16_M16N8K16> {
+  static constexpr SimPeakConfig kConfig = {32, 1};
+};
+template <> struct SimPeakConfigFor<MmaOp_F16_M16N8K8> {
+  static constexpr SimPeakConfig kConfig = {32, 1};
+};
+template <> struct SimPeakConfigFor<MmaOp_BF16_M16N8K8> {
+  static constexpr SimPeakConfig kConfig = {32, 1};
+};
+template <> struct SimPeakConfigFor<MmaOp_TF32_M16N8K8> {
+  static constexpr SimPeakConfig kConfig = {32, 1};
+};
+template <> struct SimPeakConfigFor<MmaOp_TF32_M16N8K4> {
+  static constexpr SimPeakConfig kConfig = {32, 1};
+};
+template <> struct SimPeakConfigFor<MmaOp_S8_M16N8K32> {
+  static constexpr SimPeakConfig kConfig = {2, 6};
+};
+template <> struct SimPeakConfigFor<MmaOp_S8_M16N8K16> {
+  static constexpr SimPeakConfig kConfig = {32, 1};
+};
+
+struct SimPeakResult {
+  const char* name;
+  const char* unit;
+  int ilp;
+  int blocks_per_sm;
+  int total_warps;
+  uint64_t max_block_cycles;
+  double throughput;           // TFLOPS or TOPS from cycle-based calculation
+  double theoretical_peak;     // at reference clock
+  double efficiency_pct;
+  bool valid;
+
+  SimPeakResult()
+      : name(nullptr), unit("TFLOPS"), ilp(0), blocks_per_sm(0),
+        total_warps(0), max_block_cycles(0), throughput(0.0),
+        theoretical_peak(0.0), efficiency_pct(0.0), valid(false) {}
+};
+
+template <typename MmaOp>
+static SimPeakResult measure_variant_peak_sim() {
+  constexpr int kThreadsPerBlock = 256;
+  constexpr int kMmaCount = 32;
+  constexpr SimPeakConfig cfg = SimPeakConfigFor<MmaOp>::kConfig;
+
+  SimPeakResult result;
+  result.name = MmaOp::name();
+  result.unit = MmaOp::throughput_unit();
+
+  cudaDeviceProp prop;
+  if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) return result;
+
+  int num_sms = prop.multiProcessorCount;
+  int grid_blocks = std::max(1, num_sms * cfg.blocks_per_sm);
+  int total_warps = grid_blocks * (kThreadsPerBlock / 32);
+
+  result.ilp = cfg.ilp;
+  result.blocks_per_sm = cfg.blocks_per_sm;
+  result.total_warps = total_warps;
+
+  // Allocate outputs
+  size_t out_elems = static_cast<size_t>(total_warps) * 4;
+  float* d_out = nullptr;
+  uint64_t* d_block_cycles = nullptr;
+  if (cudaMalloc(&d_out, out_elems * sizeof(float)) != cudaSuccess)
+    return result;
+  if (cudaMalloc(&d_block_cycles,
+                 static_cast<size_t>(grid_blocks) * sizeof(uint64_t)) !=
+      cudaSuccess) {
+    cudaFree(d_out);
+    return result;
+  }
+
+  // 1 warmup launch
+  launch_peak_throughput_kernel<MmaOp>(cfg.ilp, grid_blocks, kThreadsPerBlock,
+                                       d_out, d_block_cycles, kMmaCount);
+  cudaDeviceSynchronize();
+
+  // 1 measurement launch
+  launch_peak_throughput_kernel<MmaOp>(cfg.ilp, grid_blocks, kThreadsPerBlock,
+                                       d_out, d_block_cycles, kMmaCount);
+  cudaDeviceSynchronize();
+
+  // Read back per-block cycle counts
+  std::vector<uint64_t> block_cycles(grid_blocks);
+  if (cudaMemcpy(block_cycles.data(), d_block_cycles,
+                 grid_blocks * sizeof(uint64_t),
+                 cudaMemcpyDeviceToHost) != cudaSuccess) {
+    cudaFree(d_out);
+    cudaFree(d_block_cycles);
+    return result;
+  }
+
+  cudaFree(d_out);
+  cudaFree(d_block_cycles);
+
+  uint64_t max_cycles =
+      *std::max_element(block_cycles.begin(), block_cycles.end());
+  if (max_cycles == 0) return result;
+
+  result.max_block_cycles = max_cycles;
+
+  // Compute throughput from cycles + configured SM clock
+  //   sm_clock_hz = cudaDeviceProp.clockRate * 1000 (clockRate is in kHz)
+  //   simulated_time_s = max_cycles / sm_clock_hz
+  //   total_ops = ops_per_mma * mma_count * ilp * total_warps
+  //   throughput = total_ops / simulated_time_s / 1e12
+  //
+  // Simplifies to: throughput = total_ops * sm_clock_hz / max_cycles / 1e12
+  double sm_clock_hz = static_cast<double>(prop.clockRate) * 1000.0;
+  double total_ops = MmaOp::kOpsPerMma * static_cast<double>(kMmaCount) *
+                     static_cast<double>(cfg.ilp) *
+                     static_cast<double>(total_warps);
+  result.throughput = total_ops * sm_clock_hz / static_cast<double>(max_cycles) / 1e12;
+
+  // Theoretical peak at same clock (from whitepaper, scaled)
+  double sm_mhz = sm_clock_hz / 1e6;
+  result.theoretical_peak = MmaOp::kWhitepaperDensePeakAtBoost * sm_mhz /
+                            MmaOp::kWhitepaperBoostClockMHz;
+  result.efficiency_pct =
+      (result.theoretical_peak > 0.0)
+          ? (result.throughput / result.theoretical_peak * 100.0)
+          : 0.0;
+
+  result.valid = true;
+  return result;
+}
+
+TEST(MMAPeakSim, AllVariants) {
+  constexpr const char* kOutputFile = "MMAPeakSim.Summary.txt";
+
+  cudaSetDevice(0);
+
+  cudaDeviceProp prop;
+  ASSERT_EQ(cudaSuccess, cudaGetDeviceProperties(&prop, 0));
+
+  SimPeakResult results[] = {
+      measure_variant_peak_sim<MmaOp_F16_M16N8K16>(),
+      measure_variant_peak_sim<MmaOp_F16_M16N8K8>(),
+      measure_variant_peak_sim<MmaOp_BF16_M16N8K8>(),
+      measure_variant_peak_sim<MmaOp_TF32_M16N8K8>(),
+      measure_variant_peak_sim<MmaOp_TF32_M16N8K4>(),
+      measure_variant_peak_sim<MmaOp_S8_M16N8K32>(),
+      measure_variant_peak_sim<MmaOp_S8_M16N8K16>(),
+  };
+
+  double sm_mhz = static_cast<double>(prop.clockRate) / 1000.0;
+  int num_variants = sizeof(results) / sizeof(results[0]);
+
+  printf("\n=== MMA Peak Summary (Simulator Mode) ===\n");
+  printf("Device: %s (SMs=%d)\n", prop.name, prop.multiProcessorCount);
+  printf("SM clock: %.2f MHz (cudaDeviceProp.clockRate)\n", sm_mhz);
+  printf("Throughput from clock64() cycles, NOT wall clock.\n");
+  printf("ILP and Blocks/SM hardcoded from RTX 5090 hardware sweep.\n\n");
+
+  printf("┌──────────────────┬─────┬───────────┬────────────┬──────────────┬────────────┬────────────┬──────────┬────────┐\n");
+  printf("│  MMA Variant     │ ILP │ Blocks/SM │ TotalWarps │  Max Cycles  │ Throughput │  Theo Peak │ %% Peak   │ Unit   │\n");
+  printf("├──────────────────┼─────┼───────────┼────────────┼──────────────┼────────────┼────────────┼──────────┼────────┤\n");
+
+  std::ofstream out(kOutputFile);
+  out << "MMA Peak Summary (Simulator Mode)\n";
+  out << "Device: " << prop.name << " (SMs=" << prop.multiProcessorCount << ")\n";
+  out << "SM clock: " << sm_mhz << " MHz (cudaDeviceProp.clockRate)\n";
+  out << "Throughput from clock64() cycles, NOT wall clock.\n";
+  out << "ILP and Blocks/SM hardcoded from RTX 5090 hardware sweep.\n";
+  out << "┌──────────────────┬─────┬───────────┬────────────┬──────────────┬────────────┬────────────┬──────────┬────────┐\n";
+  out << "│  MMA Variant     │ ILP │ Blocks/SM │ TotalWarps │  Max Cycles  │ Throughput │  Theo Peak │ % Peak   │ Unit   │\n";
+  out << "├──────────────────┼─────┼───────────┼────────────┼──────────────┼────────────┼────────────┼──────────┼────────┤\n";
+
+  for (int i = 0; i < num_variants; i++) {
+    ASSERT_TRUE(results[i].valid)
+        << "Failed to measure peak throughput for " << results[i].name;
+
+    printf("│  %-15s │  %2d │    %3d    │   %6d   │  %10lu  │   %8.2f │   %8.2f │  %6.2f  │ %-6s │\n",
+           results[i].name, results[i].ilp, results[i].blocks_per_sm,
+           results[i].total_warps, (unsigned long)results[i].max_block_cycles,
+           results[i].throughput, results[i].theoretical_peak,
+           results[i].efficiency_pct, results[i].unit);
+
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "│  %-15s │  %2d │    %3d    │   %6d   │  %10lu  │   %8.2f │   %8.2f │  %6.2f  │ %-6s │\n",
+             results[i].name, results[i].ilp, results[i].blocks_per_sm,
+             results[i].total_warps, (unsigned long)results[i].max_block_cycles,
+             results[i].throughput, results[i].theoretical_peak,
+             results[i].efficiency_pct, results[i].unit);
+    out << buf;
+  }
+
+  printf("└──────────────────┴─────┴───────────┴────────────┴──────────────┴────────────┴────────────┴──────────┴────────┘\n");
+  printf("\nResults exported to: %s\n", kOutputFile);
+
+  out << "└──────────────────┴─────┴───────────┴────────────┴──────────────┴────────────┴────────────┴──────────┴────────┘\n";
+  out.close();
+}

@@ -989,6 +989,7 @@ class ptx_instruction : public warp_inst_t {
                   const std::list<int> &wmma_options,
                   const std::list<int> &mma_options,
                   const std::list<int> &scalar_type, memory_space_t space_spec,
+                  memory_space_t space_spec2,
                   const char *file, unsigned line, const char *source,
                   const core_config *config, gpgpu_context *ctx);
 
@@ -1088,6 +1089,7 @@ class ptx_instruction : public warp_inst_t {
   bool has_return() const { return m_return_var.is_valid(); }
 
   memory_space_t get_space() const { return m_space_spec; }
+  memory_space_t get_space2() const { return m_space_spec2; }
   unsigned get_vector() const { return m_vector_spec; }
   unsigned get_atomic() const { return m_atomic_spec; }
 
@@ -1252,6 +1254,7 @@ class ptx_instruction : public warp_inst_t {
 
   std::list<int> m_scalar_type;
   memory_space_t m_space_spec;
+  memory_space_t m_space_spec2;  // Second address space for dual-space instructions (e.g., cp.async.shared.global)
   int m_geom_spec;
   int m_vector_spec;
   int m_atomic_spec;

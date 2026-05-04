@@ -606,8 +606,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_pipeline_widths", OPT_CSTR, &pipeline_widths_string,
       "Pipeline widths "
       "ID_OC_SP,ID_OC_DP,ID_OC_INT,ID_OC_SFU,ID_OC_MEM,OC_EX_SP,OC_EX_DP,OC_EX_"
-      "INT,OC_EX_SFU,OC_EX_MEM,EX_WB,ID_OC_TENSOR_CORE,OC_EX_TENSOR_CORE",
-      "1,1,1,1,1,1,1,1,1,1,1,1,1");
+      "INT,OC_EX_SFU,OC_EX_MEM,EX_WB,ID_OC_TENSOR_CORE,OC_EX_TENSOR_CORE,"
+      "ID_OC_TMA,OC_EX_TMA",
+      "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1");
   option_parser_register(opp, "-gpgpu_tensor_core_avail", OPT_UINT32,
                          &gpgpu_tensor_core_avail,
                          "Tensor Core Available (default=0)", "0");
@@ -626,6 +627,30 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_num_tensor_core_units", OPT_UINT32,
                          &gpgpu_num_tensor_core_units,
                          "Number of tensor_core units (default=1)", "0");
+  option_parser_register(opp, "-gpgpu_num_tma_units", OPT_UINT32,
+                         &gpgpu_num_tma_units,
+                         "Number of TMA units (default=0)", "0");
+  option_parser_register(opp, "-gpgpu_tma_max_inflight", OPT_UINT32,
+                         &gpgpu_tma_max_inflight,
+                         "Max in-flight TMA mem_fetch requests per SM (default=0, 0=unlimited)", "0");
+  option_parser_register(opp, "-gpgpu_tma_tx_quota", OPT_UINT32,
+                         &gpgpu_tma_tx_quota,
+                         "Max in-flight mem_fetch per TMA transaction (default=0, 0=unlimited)", "0");
+  option_parser_register(opp, "-gpgpu_cta_load_balance", OPT_BOOL,
+                         &gpgpu_cta_load_balance,
+                         "Cap CTAs per core to ceil(total_ctas/n_cores) for load balancing (default=0)", "0");
+  option_parser_register(opp, "-gpgpu_tma_idealized_memory", OPT_UINT32,
+                         &gpgpu_tma_idealized_memory,
+                         "Idealized TMA memory: all requests complete instantly (default=0)", "0");
+  option_parser_register(opp, "-gpgpu_tma_oob_l2_traffic", OPT_BOOL,
+                         &gpgpu_tma_oob_l2_traffic,
+                         "Send OOB fill requests through L2 (models real HW TMA behavior) (default=1)", "1");
+  option_parser_register(opp, "-gpgpu_mbarrier_arrive_latency", OPT_UINT32,
+                         &gpgpu_mbarrier_arrive_latency,
+                         "Latency (cycles) for arrive_tx shared memory write before mbarrier update (default=0)", "0");
+  option_parser_register(opp, "-gpgpu_mbarrier_trywait_latency", OPT_UINT32,
+                         &gpgpu_mbarrier_trywait_latency,
+                         "Latency (cycles) for mbarrier.try_wait polling before warp release (default=0)", "0");
   option_parser_register(
       opp, "-gpgpu_num_mem_units", OPT_UINT32, &gpgpu_num_mem_units,
       "Number if ldst units (default=1) WARNING: not hooked up to anything",
@@ -1872,6 +1897,7 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
     assert(occupy_shader_resource_1block(kernel, true));
 
   kernel.inc_running();
+  m_total_ctas_issued++;
 
   // find a free CTA context
   unsigned free_cta_hw_id = (unsigned)-1;

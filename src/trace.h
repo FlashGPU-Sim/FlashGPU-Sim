@@ -62,9 +62,11 @@ void init();
 #define GPPRINTF(x, ...)                                                      \
   do {                                                                       \
     if (GPTRACE(x)) {                                                         \
+      flockfile(stdout);                                                     \
       printf(SIM_PRINT_STR , m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, \
              Trace::trace_streams_str[Trace::x]);                            \
       printf(__VA_ARGS__);                                                   \
+      funlockfile(stdout);                                                   \
     }                                                                        \
   } while (0)
 
@@ -108,17 +110,21 @@ void init();
 #define GPPRINTF_NoGPU(x, ...)                                                  \
   do {                                                                         \
     if (GPTRACE(x)) {                                                           \
+      flockfile(stdout);                                                       \
       printf(SIM_PRINT_STR, -1ll, Trace::trace_streams_str[Trace::x]);         \
       printf(__VA_ARGS__);                                                     \
+      funlockfile(stdout);                                                     \
     }                                                                          \
   } while (0)
 
 #define GPPRINTFG(x, ...)                                       \
   do {                                                         \
     if (GPTRACE(x)) {                                           \
+      flockfile(stdout);                                       \
       printf(SIM_PRINT_STR, gpu_sim_cycle + gpu_tot_sim_cycle, \
              Trace::trace_streams_str[Trace::x]);              \
       printf(__VA_ARGS__);                                     \
+      funlockfile(stdout);                                     \
     }                                                          \
   } while (0)
 

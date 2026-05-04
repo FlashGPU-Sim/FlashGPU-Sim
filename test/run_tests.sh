@@ -133,14 +133,9 @@ setup_run_directory() {
         exit 1
     fi
 
-    # Copy configuration if it doesn't exist or if forced
-    if [ ! -d "$config_dir" ] || [ "$force_refresh" = "force" ]; then
-        rm -rf "$config_dir" 2>/dev/null
-        run_command cp -r "$source_config" run/
-        print_color $GREEN "Copied $config_name configuration to run directory"
-    else
-        print_color $BLUE "$config_name configuration already exists in run directory"
-    fi
+    # Always sync configuration from source
+    run_command cp -r "$source_config" run/
+    print_color $GREEN "Synced $config_name configuration to run directory"
 }
 
 # Detect if running in native GPU mode (clean environment without simulator setup)

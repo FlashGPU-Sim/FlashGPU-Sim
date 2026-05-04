@@ -13,7 +13,9 @@ Track Triton kernel compilation and invocation, extract binaries, capture inputs
 ## Files
 
 - `track_triton_kernels.py` - Main tracking tool with output validation
-- `example_vector_add.py` - Complete working example
+- `examples/` - Single-workload examples that demonstrate tracker usage
+- `validation/` - Systematic sweep tests, reference CSVs, and comparison tools
+- `triton_kernel_tracking/` - Generated artifacts for both examples and validation sweeps
 - `README.md` - This file
 
 ## Overview
@@ -40,10 +42,10 @@ This eliminates false positives and ensures validation only checks actual output
 
 ```bash
 # Run the example
-python example_vector_add.py
+python examples/example_vector_add.py
 
 # Build and run the generated harness
-cd triton_kernel_tracking/launchers
+cd triton_kernel_tracking/example_vector_add/launchers
 make -f add_kernel_launch1_Makefile
 ./add_kernel_launch1
 ```
@@ -56,7 +58,7 @@ Validating outputs...
 
 ## Example
 
-See `example_vector_add.py` for a complete working example that:
+See `examples/example_vector_add.py` for a complete working example that:
 - Defines a simple vector addition kernel
 - Initializes the tracker
 - Runs the kernel with captured arguments
@@ -64,7 +66,53 @@ See `example_vector_add.py` for a complete working example that:
 
 Run it:
 ```bash
-python example_vector_add.py
+python examples/example_vector_add.py
+```
+
+Additional examples live under `examples/`:
+
+- `example_vector_add.py`
+- `example_tensor_add.py`
+- `example_tma_gemm.py`
+- `example_gemm.py`
+- `example_flash_attn.py`
+- `example_gpt2_triton.py`
+
+All examples write generated artifacts to the root `triton_kernel_tracking/`
+directory, not to `examples/triton_kernel_tracking/`.
+
+## Validation Sweeps
+
+The `validation/` directory contains systematic sweep tests and reference data:
+
+- `validation/test_tma_gemm.py` - TMA GEMM trace generator for sweep shapes
+- `validation/test_flash_attn.py` - Flash Attention trace generator for sweep shapes
+- `validation/sweep_tests.sh` - Trace, simulate, and profile shape sweeps
+- `validation/compare_cycles.py` - Compare NCU and GPGPU-Sim cycle summaries
+- `validation/extract_metrics.py` - Extract sim vs NCU memory/cache metrics
+- `validation/plot_cta_lifecycle.py` - Plot CTA lifecycle timelines from sim logs
+- `validation/kernel-validation.csv` - Reference validation results
+- `validation/configs/` - Shape CSVs used by validation sweeps
+
+Validation outputs are also kept under the root `triton_kernel_tracking/`
+directory:
+
+```text
+triton_kernel_tracking/test_tma_gemm/
+triton_kernel_tracking/test_flash_attn/
+```
+
+Typical commands:
+
+```bash
+# Run TMA GEMM inference sweep in GPGPU-Sim
+./validation/sweep_tests.sh tma_gemm run --csv configs/gemm_shapes_inference_server.csv
+
+# Compare current GEMM inference cycles against NCU summaries
+python3 validation/compare_cycles.py test_tma_gemm --csv configs/gemm_shapes_inference_server.csv
+
+# Sync simulator config into existing validation launcher directories
+./validation/sync_config.sh test_tma_gemm
 ```
 
 ## How It Works
@@ -131,12 +179,12 @@ my_kernel[grid](x, y, output, ...)
 tracker.save_summary()
 ```
 
-See `example_vector_add.py` for a complete example.
+See `examples/example_vector_add.py` for a complete example.
 
 ## Building and Running Standalone Harnesses
 
 ```bash
-cd triton_kernel_tracking/launchers
+cd triton_kernel_tracking/example_vector_add/launchers
 
 # Build
 make -f add_kernel_launch1_Makefile
@@ -167,23 +215,30 @@ cuobjdump --dump-ptx add_kernel_launch1_kernel.fatbin > kernel.ptx
 
 ```
 triton_kernel_tracking/
-├── binaries/
-│   └── add_kernel_*/
-│       ├── add_kernel.cubin
-│       ├── add_kernel.ptx
-│       └── add_kernel_metadata.json
-├── launchers/
-│   ├── add_kernel_launch1_harness.cu      # Harness with validation
-│   ├── add_kernel_launch1_kernel.ptx
-│   ├── add_kernel_launch1_kernel.fatbin
-│   └── add_kernel_launch1_Makefile
-├── data/
-│   ├── add_kernel_launch1_arg0.bin        # Input tensors
-│   ├── add_kernel_launch1_arg1.bin
-│   ├── add_kernel_launch1_arg2.bin
-│   └── add_kernel_launch1_arg2_output.bin # Output tensors (only modified)
-├── tracking_summary.json
-└── tracking_report.txt
+├── example_vector_add/
+│   ├── binaries/
+│   │   └── add_kernel_*/
+│   │       ├── add_kernel.cubin
+│   │       ├── add_kernel.ptx
+│   │       └── add_kernel_metadata.json
+│   ├── launchers/
+│   │   ├── add_kernel_launch1_harness.cu      # Harness with validation
+│   │   ├── add_kernel_launch1_kernel.ptx
+│   │   ├── add_kernel_launch1_kernel.fatbin
+│   │   └── add_kernel_launch1_Makefile
+│   ├── data/
+│   │   ├── add_kernel_launch1_arg0.bin        # Input tensors
+│   │   ├── add_kernel_launch1_arg1.bin
+│   │   ├── add_kernel_launch1_arg2.bin
+│   │   └── add_kernel_launch1_arg2_output.bin # Output tensors (only modified)
+│   ├── tracking_summary.json
+│   └── tracking_report.txt
+├── test_tma_gemm/
+│   ├── m512_n3000_k1536/
+│   └── results/
+└── test_flash_attn/
+    ├── b32_h32_seq512_d64/
+    └── results/
 ```
 
 ## Important Notes

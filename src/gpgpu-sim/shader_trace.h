@@ -45,10 +45,12 @@
 #define SHADER_GPPRINTF(x, ...)                                \
   do {                                                        \
     if (SHADER_DTRACE(x)) {                                   \
+      flockfile(stdout);                                      \
       printf(SHADER_PRINT_STR,                                \
              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, \
              Trace::trace_streams_str[Trace::x], get_sid());  \
       printf(__VA_ARGS__);                                    \
+      funlockfile(stdout);                                    \
     }                                                         \
   } while (0)
 
@@ -57,12 +59,14 @@
 #define SCHED_GPPRINTF(...)                                               \
   do {                                                                   \
     if (SHADER_DTRACE(WARP_SCHEDULER)) {                                 \
+      flockfile(stdout);                                                 \
       printf(SCHED_PRINT_STR,                                            \
              m_shader->get_gpu()->gpu_sim_cycle +                        \
                  m_shader->get_gpu()->gpu_tot_sim_cycle,                 \
              Trace::trace_streams_str[Trace::WARP_SCHEDULER], get_sid(), \
              m_id);                                                      \
       printf(__VA_ARGS__);                                               \
+      funlockfile(stdout);                                               \
     }                                                                    \
   } while (0)
 

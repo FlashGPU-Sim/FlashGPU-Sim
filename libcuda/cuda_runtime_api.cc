@@ -474,12 +474,19 @@ static int get_app_cuda_version_internal(std::string app_binary) {
   close(fd);
   // Weili: Add way to extract CUDA version information from Balar Vanadis
   // binary (stored as a const string)
+  // Try ldd first, then fall back to readelf for cases where ldd doesn't
+  // display libcudart (e.g., gpgpu-sim's libcudart.so has no versioned SONAME)
   std::string app_cuda_version_command =
-      "ldd " + app_binary +
-      " | grep libcudart.so | sed  's/.*libcudart.so.\\(.*\\) =>.*/\\1/' > " +
-      fname + " && strings " + app_binary +
+      "{ ldd " + app_binary +
+      " | grep libcudart.so | sed  's/.*libcudart.so.\\(.*\\) =>.*/\\1/'; "
+      "readelf -d " +
+      app_binary +
+      " 2>/dev/null | grep 'libcudart.so\\.' | sed "
+      "'s/.*libcudart.so\\.\\([0-9][0-9.]*\\)\\].*/\\1/'; "
+      "strings " +
+      app_binary +
       " | grep libcudart_vanadis.a | sed  "
-      "'s/.*libcudart_vanadis.a.\\(.*\\)/\\1/' >> " +
+      "'s/.*libcudart_vanadis.a.\\(.*\\)/\\1/'; } | head -1 > " +
       fname;
   int res = system(app_cuda_version_command.c_str());
   if (res == -1) {
@@ -1816,7 +1823,9 @@ cudaDeviceGetAttributeInternal(int *value, enum cudaDeviceAttr attr, int device,
         *value = prop->regsPerBlock;
         break;
       case 13:
-        *value = 1480000;  // for 1080ti
+        *value = prop->clockRate;
+        printf("GPGPU-Sim: cudaDevAttrClockRate returning %d kHz (%.0f MHz)\n",
+               *value, *value / 1000.0);
         break;
       case 14:
         *value = prop->textureAlignment;
@@ -7745,7 +7754,7 @@ __host__ cudaError_t CUDARTAPI cudaIpcCloseMemHandle(void *devPtr) {
 }
 
 __host__ __cudart_builtin__ cudaError_t CUDARTAPI cudaGetDeviceProperties_v2(struct cudaDeviceProp *prop, int device) {
-  cuda_error_not_impl;
+  return cudaGetDevicePropertiesInternal(prop, device);
 }
 
 __host__ cudaError_t CUDARTAPI cudaGraphDebugDotPrint(cudaGraph_t graph, const char *path, unsigned int flags) {

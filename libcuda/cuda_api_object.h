@@ -77,10 +77,27 @@ struct CUctx_st {
 
   void add_ptxinfo(const char *deviceFun,
                    const struct gpgpu_ptx_sim_info &info) {
+    // Try to find in last fat cubin first
     symbol *s = m_code[m_last_fat_cubin_handle]->lookup(deviceFun);
-    assert(s != NULL);
+    
+    // If not found, search in all fat cubins
+    if (s == NULL) {
+      for (auto& pair : m_code) {
+        s = pair.second->lookup(deviceFun);
+        if (s != NULL) break;
+      }
+    }
+    
+    if (s == NULL) {
+      fprintf(stderr, "GPGPU-Sim PTX: ERROR: cannot find deviceFun '%s' in any fat cubin\n", deviceFun);
+      abort();
+    }
+
     function_info *f = s->get_pc();
-    assert(f != NULL);
+    if (f == NULL) {
+      fprintf(stderr, "GPGPU-Sim PTX: ERROR: deviceFun '%s' has no function_info\n", deviceFun);
+      abort();
+    }
     f->set_kernel_info(info);
   }
 

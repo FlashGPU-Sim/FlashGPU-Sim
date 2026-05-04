@@ -397,6 +397,35 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
   }
 }
 
+void barrier_set_t::release_warps(const std::set<int> &released_warps) {
+  if (released_warps.empty())
+    return;
+  unsigned trywait_latency =
+      m_shader->get_config()->gpgpu_mbarrier_trywait_latency;
+  if (trywait_latency > 0) {
+    for (auto w : released_warps) {
+      m_pending_warp_releases.push_back({trywait_latency, w});
+    }
+  } else {
+    for (auto w : released_warps) {
+      m_warp_at_barrier.reset(w);
+    }
+  }
+}
+
+void barrier_set_t::cycle() {
+  for (auto &entry : m_pending_warp_releases) {
+    entry.remaining--;
+  }
+  // Release warps whose countdown reached zero
+  for (int i = m_pending_warp_releases.size() - 1; i >= 0; i--) {
+    if (m_pending_warp_releases[i].remaining == 0) {
+      m_warp_at_barrier.reset(m_pending_warp_releases[i].warp_id);
+      m_pending_warp_releases.erase(m_pending_warp_releases.begin() + i);
+    }
+  }
+}
+
 void barrier_set_t::complete_tx(unsigned cta_id, unsigned warp_id,
                                 uint32_t mbarrier_addr,
                                 uint32_t completed_tx_count) {
@@ -410,9 +439,7 @@ void barrier_set_t::complete_tx(unsigned cta_id, unsigned warp_id,
 
   auto released_warps = m_mbarrier_manager.complete_tx(
       m_shader->get_gpu(), thread_index, mbarrier_addr, completed_tx_count);
-  for (auto w : released_warps) {
-    m_warp_at_barrier.reset(w);
-  }
+  release_warps(released_warps);
 }
 
 void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
@@ -465,6 +492,7 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
                                                   thread_index, addr, parity);
       if (!released) {
         m_warp_at_barrier.set(warp_id);
+        m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
       }
     }
 
@@ -491,17 +519,13 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
 
         auto released_warps = m_mbarrier_manager.arrive(
             m_shader->get_gpu(), thread_index, addr, arrival_count);
-        for (auto w : released_warps) {
-          m_warp_at_barrier.reset(w);
-        }
+        release_warps(released_warps);
 
       } else if (is_arrive) {
 
         auto released_warps = m_mbarrier_manager.arrive(
             m_shader->get_gpu(), thread_index, addr, count);
-        for (auto w : released_warps) {
-          m_warp_at_barrier.reset(w);
-        }
+        release_warps(released_warps);
 
       } else if (is_expect_tx) {
         m_mbarrier_manager.expect_tx(m_shader->get_gpu(), thread_index, addr,

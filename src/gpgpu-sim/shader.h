@@ -88,7 +88,8 @@ enum exec_unit_type_t {
   DP = 4,
   INT = 5,
   TENSOR = 6,
-  SPECIALIZED = 7
+  SPECIALIZED = 7,
+  TMA_UNIT = 8
 };
 
 class thread_ctx_t {
@@ -200,6 +201,7 @@ class shd_warp_t {
   }
 
   unsigned get_n_atomic() const { return m_n_atomic; }
+  bool is_waiting_ldgsts() const { return m_waiting_ldgsts; }
   void inc_n_atomic() { m_n_atomic++; }
   void dec_n_atomic(unsigned n) { m_n_atomic -= n; }
 
@@ -385,7 +387,7 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
                  register_set *dp_out, register_set *sfu_out,
                  register_set *int_out, register_set *tensor_core_out,
                  std::vector<register_set *> &spec_cores_out,
-                 register_set *mem_out, int id)
+                 register_set *mem_out, register_set *tma_out, int id)
       : m_supervised_warps(),
         m_stats(stats),
         m_shader(shader),
@@ -397,6 +399,7 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
         m_sfu_out(sfu_out),
         m_int_out(int_out),
         m_tensor_core_out(tensor_core_out),
+        m_tma_out(tma_out),
         m_mem_out(mem_out),
         m_spec_cores_out(spec_cores_out),
         m_id(id) {}
@@ -484,6 +487,7 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   register_set *m_sfu_out;
   register_set *m_int_out;
   register_set *m_tensor_core_out;
+  register_set *m_tma_out;
   register_set *m_mem_out;
   std::vector<register_set *> &m_spec_cores_out;
   unsigned m_num_issued_last_cycle;
@@ -500,10 +504,10 @@ class lrr_scheduler : public scheduler_unit {
                 register_set *dp_out, register_set *sfu_out,
                 register_set *int_out, register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
-                register_set *mem_out, int id)
+                register_set *mem_out, register_set *tma_out, int id)
       : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, id) {}
+                       mem_out, tma_out, id) {}
   virtual ~lrr_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -519,10 +523,10 @@ class rrr_scheduler : public scheduler_unit {
                 register_set *dp_out, register_set *sfu_out,
                 register_set *int_out, register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
-                register_set *mem_out, int id)
+                register_set *mem_out, register_set *tma_out, int id)
       : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, id) {}
+                       mem_out, tma_out, id) {}
   virtual ~rrr_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -538,10 +542,10 @@ class gto_scheduler : public scheduler_unit {
                 register_set *dp_out, register_set *sfu_out,
                 register_set *int_out, register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
-                register_set *mem_out, int id)
+                register_set *mem_out, register_set *tma_out, int id)
       : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, id) {}
+                       mem_out, tma_out, id) {}
   virtual ~gto_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -557,10 +561,10 @@ class oldest_scheduler : public scheduler_unit {
                    register_set *dp_out, register_set *sfu_out,
                    register_set *int_out, register_set *tensor_core_out,
                    std::vector<register_set *> &spec_cores_out,
-                   register_set *mem_out, int id)
+                   register_set *mem_out, register_set *tma_out, int id)
       : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, id) {}
+                       mem_out, tma_out, id) {}
   virtual ~oldest_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -577,10 +581,11 @@ class two_level_active_scheduler : public scheduler_unit {
                              register_set *sfu_out, register_set *int_out,
                              register_set *tensor_core_out,
                              std::vector<register_set *> &spec_cores_out,
-                             register_set *mem_out, int id, char *config_str)
+                             register_set *mem_out, register_set *tma_out,
+                             int id, char *config_str)
       : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, id),
+                       mem_out, tma_out, id),
         m_pending_warps() {
     unsigned inner_level_readin;
     unsigned outer_level_readin;
@@ -627,7 +632,8 @@ class swl_scheduler : public scheduler_unit {
                 register_set *dp_out, register_set *sfu_out,
                 register_set *int_out, register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
-                register_set *mem_out, int id, char *config_string);
+                register_set *mem_out, register_set *tma_out,
+                int id, char *config_string);
   virtual ~swl_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -1057,6 +1063,12 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   shader_core_ctx *m_shader;
 };
 
+enum barrier_wait_type_t {
+  BARRIER_WAIT_BAR_SYNC,     // regular bar.sync / bar.red
+  BARRIER_WAIT_MBARRIER,     // mbarrier.try_wait (TMA)
+  BARRIER_WAIT_BULK_GROUP,   // cp.async.bulk.wait_group (TMA)
+};
+
 class barrier_set_t {
  public:
   barrier_set_t(shader_core_ctx *shader, unsigned max_warps_per_core,
@@ -1090,6 +1102,9 @@ class barrier_set_t {
   void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
                    uint32_t completed_tx_count);
 
+  // Process delayed mbarrier warp releases each cycle
+  void cycle();
+
   // Bulk group methods for TMA write operations
   void add_bulk_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
   void complete_bulk_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
@@ -1101,6 +1116,7 @@ class barrier_set_t {
 
   // assertions
   bool warp_waiting_at_barrier(unsigned warp_id) const;
+  barrier_wait_type_t get_warp_barrier_type(unsigned warp_id) const;
 
   // debug
   void dump();
@@ -1114,9 +1130,20 @@ class barrier_set_t {
   bar_id_to_warp_t m_bar_id_to_warps;
   warp_set_t m_warp_active;
   warp_set_t m_warp_at_barrier;
+  std::vector<barrier_wait_type_t> m_warp_barrier_type;
+  // Release warps with optional try_wait latency delay
+  void release_warps(const std::set<int> &released_warps);
+
   shader_core_ctx *m_shader;
   flash_gpgpu_sim::mbarrier_manager_t m_mbarrier_manager;
   flash_gpgpu_sim::bulk_group_manager_t m_bulk_group_manager;
+
+  // Delayed warp release queue for mbarrier try_wait latency
+  struct pending_warp_release_t {
+    unsigned remaining;
+    int warp_id;
+  };
+  std::vector<pending_warp_release_t> m_pending_warp_releases;
 };
 
 struct insn_latency_info {
@@ -1278,6 +1305,19 @@ class tensor_core : public pipelined_simd_unit {
   virtual void active_lanes_in_pipeline();
   virtual void issue(register_set &source_reg);
   bool is_issue_partitioned() { return true; }
+};
+
+class tma_fu : public pipelined_simd_unit {
+ public:
+  tma_fu(register_set *result_port, const shader_core_config *config,
+         shader_core_ctx *core, unsigned issue_reg_id);
+  virtual bool can_issue(const warp_inst_t &inst) const {
+    if (inst.op != TENSOR_MEMORY_ACCELERATOR_OP) return false;
+    return pipelined_simd_unit::can_issue(inst);
+  }
+  virtual void active_lanes_in_pipeline();
+  virtual void issue(register_set &source_reg);
+  bool is_issue_partitioned() { return false; }
 };
 
 class int_unit : public pipelined_simd_unit {
@@ -1513,6 +1553,8 @@ enum pipeline_stage_name_t {
   EX_WB,
   ID_OC_TENSOR_CORE,
   OC_EX_TENSOR_CORE,
+  ID_OC_TMA,
+  OC_EX_TMA,
   N_PIPELINE_STAGES
 };
 
@@ -1520,7 +1562,7 @@ const char *const pipeline_stage_name_decode[] = {
     "ID_OC_SP",          "ID_OC_DP",         "ID_OC_INT", "ID_OC_SFU",
     "ID_OC_MEM",         "OC_EX_SP",         "OC_EX_DP",  "OC_EX_INT",
     "OC_EX_SFU",         "OC_EX_MEM",        "EX_WB",     "ID_OC_TENSOR_CORE",
-    "OC_EX_TENSOR_CORE", "N_PIPELINE_STAGES"};
+    "OC_EX_TENSOR_CORE", "ID_OC_TMA",        "OC_EX_TMA", "N_PIPELINE_STAGES"};
 
 struct specialized_unit_params {
   unsigned latency;
@@ -1560,7 +1602,7 @@ class shader_core_config : public core_config {
        be broken. So to support the legacy config files it's best to handle in
        this way.
      */
-    int num_config_to_read = N_PIPELINE_STAGES - 2 * (!gpgpu_tensor_core_avail);
+    int num_config_to_read = N_PIPELINE_STAGES - 2 * (!gpgpu_tensor_core_avail) - 2 * (!gpgpu_num_tma_units);
 
     for (int i = 0; i < num_config_to_read; i++) {
       assert(toks);
@@ -1742,6 +1784,14 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_num_tensor_core_units;
   unsigned int gpgpu_num_mem_units;
   unsigned int gpgpu_num_int_units;
+  unsigned int gpgpu_num_tma_units;
+  unsigned int gpgpu_tma_max_inflight;
+  unsigned int gpgpu_tma_tx_quota;
+  bool gpgpu_cta_load_balance;
+  unsigned int gpgpu_tma_idealized_memory;
+  bool gpgpu_tma_oob_l2_traffic;
+  unsigned int gpgpu_mbarrier_arrive_latency;
+  unsigned int gpgpu_mbarrier_trywait_latency;
 
   // Shader core resources
   unsigned gpgpu_shader_registers;
@@ -1758,6 +1808,7 @@ class shader_core_config : public core_config {
   unsigned max_sfu_latency;
   unsigned max_dp_latency;
   unsigned max_tensor_core_latency;
+  unsigned max_tma_latency;
 
   unsigned n_simt_cores_per_cluster;
   unsigned n_simt_clusters;
@@ -1781,6 +1832,28 @@ class shader_core_config : public core_config {
   char *specialized_unit_string[SPECIALIZED_UNIT_NUM];
   mutable std::vector<specialized_unit_params> m_specialized_unit;
   unsigned m_specialized_unit_num;
+};
+
+// NCU-style warp stall reason classification
+enum warp_stall_reason_t {
+  STALL_SELECTED = 0,           // warp issued an instruction
+  STALL_NO_INSTRUCTION,         // ibuffer empty or control hazard
+  STALL_BARRIER,                // at CTA barrier (bar.sync / mbarrier.try_wait)
+  STALL_MEMBAR,                 // at memory barrier
+  STALL_WAIT_TMA,               // waiting for LDGSTS / TMA bulk wait
+  STALL_ATOMIC,                 // waiting for atomic completion
+  STALL_SCOREBOARD_MEM_GLOBAL,  // RAW hazard on global/local mem load
+  STALL_SCOREBOARD_MEM_SHARED,  // RAW hazard on shared mem op
+  STALL_SCOREBOARD_TENSOR_CORE, // RAW hazard on tensor core result
+  STALL_SCOREBOARD_SP_INT,      // RAW hazard on SP/INT/ALU result
+  STALL_SCOREBOARD_SFU,         // RAW hazard on SFU/DP result
+  STALL_SCOREBOARD_TMA,         // RAW hazard on TMA result
+  STALL_SCOREBOARD_OTHER,       // RAW hazard, other producer
+  STALL_MATH_PIPE_THROTTLE,     // ready but tensor core / SP / SFU FU full
+  STALL_MIO_THROTTLE,           // ready but MEM FU full
+  STALL_PIPE_STALL_OTHER,       // ready but other FU full
+  STALL_NOT_SELECTED,           // eligible but another warp was issued
+  NUM_STALL_REASONS,
 };
 
 struct shader_core_stats_pod {
@@ -1882,6 +1955,9 @@ struct shader_core_stats_pod {
   unsigned *gpgpu_n_shmem_bank_access;
   long *n_simt_to_mem;  // Interconnect power stats
   long *n_mem_to_simt;
+
+  // NCU-style warp stall breakdown (accumulated across all SMs and schedulers)
+  unsigned long long warp_stall_counts[NUM_STALL_REASONS];
 };
 
 class shader_core_stats : public shader_core_stats_pod {
@@ -2160,12 +2236,14 @@ class shader_core_ctx : public core_t {
     //        k->inc_running();
     printf("GPGPU-Sim uArch: Shader %d bind to kernel %u \'%s\'\n", m_sid,
            m_kernel->get_uid(), m_kernel->name().c_str());
-    // Reset mbarrier manager when a new kernel is assigned to the shader core
+    // Reset per-kernel state when a new kernel is assigned
     m_barriers.reset_mbarrier();
+    m_total_ctas_issued = 0;
   }
   PowerscalingCoefficients *scaling_coeffs;
   // accessors
   bool tma_response_buffer_full() const;
+  unsigned get_total_ctas_issued() const { return m_total_ctas_issued; }
   bool fetch_unit_response_buffer_full() const;
   bool ldst_unit_response_buffer_full() const;
   unsigned get_not_completed() const { return m_not_completed; }
@@ -2192,6 +2270,7 @@ class shader_core_ctx : public core_t {
 
   // accessors
   virtual bool warp_waiting_at_barrier(unsigned warp_id) const;
+  barrier_wait_type_t get_warp_barrier_type(unsigned warp_id) const;
   void get_pdom_stack_top_info(unsigned tid, unsigned *pc, unsigned *rpc) const;
   float get_current_occupancy(unsigned long long &active,
                               unsigned long long &total) const;
@@ -2583,6 +2662,7 @@ class shader_core_ctx : public core_t {
   unsigned m_sid;  // shader id
   unsigned m_tpc;  // texture processor cluster id (aka, node id when using
                    // interconnect concentration)
+  unsigned m_total_ctas_issued = 0;  // CTAs issued for current kernel
   const shader_core_config *m_config;
   const memory_config *m_memory_config;
   class simt_core_cluster *m_cluster;

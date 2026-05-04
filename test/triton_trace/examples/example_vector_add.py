@@ -6,10 +6,14 @@ This example demonstrates how to use TritonKernelTracker to capture
 kernel compilation and launch information.
 """
 
+import sys
 from pathlib import Path
 import torch
 import triton
 import triton.language as tl
+
+TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(TRITON_TRACE_DIR))
 
 from track_triton_kernels import TritonKernelTracker
 
@@ -33,7 +37,7 @@ def main():
     print("=" * 80)
     
     # Initialize tracker
-    output_dir = Path("./triton_kernel_tracking/example_vector_add").resolve()
+    output_dir = (TRITON_TRACE_DIR / "triton_kernel_tracking/example_vector_add").resolve()
     tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)
     print(f"\nOutput directory: {output_dir}")
     

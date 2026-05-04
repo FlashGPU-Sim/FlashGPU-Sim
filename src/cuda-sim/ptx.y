@@ -398,7 +398,6 @@ directive_statement: variable_declaration SEMI_COLON
 	| TARGET_DIRECTIVE IDENTIFIER { recognizer->target_header($2); }
 	| FILE_DIRECTIVE INT_OPERAND STRING { recognizer->add_file($2,$3); }
 	| FILE_DIRECTIVE INT_OPERAND STRING COMMA INT_OPERAND COMMA INT_OPERAND { recognizer->add_file($2,$3); }
-	| LOC_DIRECTIVE INT_OPERAND INT_OPERAND INT_OPERAND 
 	| PRAGMA_DIRECTIVE STRING SEMI_COLON { recognizer->add_pragma($2); }
 	| SECTION_DIRECTIVE DEBUG_DIRECTIVE { /* ignore debug sections */ }
 	| function_decl SEMI_COLON {/*Do nothing*/}
