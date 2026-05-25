@@ -78,11 +78,30 @@ class gpgpu_sim_wrapper {};
 
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <iostream>
 #include <sstream>
 #include <string>
 
 // #define MAX(a, b) (((a) > (b)) ? (a) : (b)) //redefined
+
+#ifdef FLASH_GEM_FORGE
+namespace {
+
+bool flashgpu_env_bool(const char *name, bool default_value) {
+  const char *value = getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return default_value;
+  }
+  if (strcmp(value, "0") == 0 || strcasecmp(value, "false") == 0 ||
+      strcasecmp(value, "off") == 0 || strcasecmp(value, "no") == 0) {
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
+#endif
 
 bool g_interactive_debugger_enabled = false;
 
@@ -1107,30 +1126,47 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
    * ! GemForge
    */
 #ifdef FLASH_GEM_FORGE
-  const char *flashgpu_top_env = getenv("FLASHGPU_GEM5_TOP");
-  const char *gem_forge_top_env = getenv("GEM_FORGE_TOP");
-  std::string gem5_top;
-  if (flashgpu_top_env && flashgpu_top_env[0]) {
-    gem5_top = flashgpu_top_env;
-  } else if (gem_forge_top_env && gem_forge_top_env[0]) {
-    gem5_top = gem_forge_top_env;
+  if (flashgpu_env_bool("FLASHGPU_GEM5_ENABLE", false)) {
+    const char *flashgpu_top_env = getenv("FLASHGPU_GEM5_TOP");
+    const char *gem_forge_top_env = getenv("GEM_FORGE_TOP");
+    std::string gem5_top;
+    if (flashgpu_top_env && flashgpu_top_env[0]) {
+      gem5_top = flashgpu_top_env;
+    } else if (gem_forge_top_env && gem_forge_top_env[0]) {
+      gem5_top = gem_forge_top_env;
+    } else {
+      gem5_top = "/gem-forge-stack";
+    }
+
+    const std::string gem5_config_dir =
+        gem5_top + "/gem5/configs/example/gem_forge";
+    const char *gem5_config_file_env = getenv("FLASHGPU_GEM5_CONFIG_FILE");
+    const char *gem5_config_name_env = getenv("FLASHGPU_GEM5_CONFIG_NAME");
+    std::string gem5_config_file;
+    if (gem5_config_file_env && gem5_config_file_env[0]) {
+      gem5_config_file = gem5_config_file_env;
+    } else if (gem5_config_name_env && gem5_config_name_env[0]) {
+      gem5_config_file = gem5_config_dir + "/" + gem5_config_name_env;
+    } else {
+      gem5_config_file = gem5_config_dir + "/example_config.txt";
+    }
+    printf("FLASHGPU_GEM5_ENABLE=1; using gem5 config file: %s\n",
+           gem5_config_file.c_str());
+
+    std::vector<std::string> gem5_args = {gem5_config_file};
+    m_gem5_wrapper = std::make_unique<flash_gpgpu_sim::Gem5Wrapper>(
+        gem5_config_dir + "/run.py", gem5_args);
+
+    m_gem5_wrapper->initialize();
+
+    m_gem5_mem_subsys = std::make_shared<flash_gpgpu_sim::Gem5MemSubsystem>(
+        m_gem5_wrapper->getSystem(), m_gem5_wrapper->getGPGPUSimRequestors());
+
+    m_gem5_mem_subsys->registerGPGPUSimInterconnectInterface();
   } else {
-    gem5_top = "/gem-forge-stack";
+    printf("FLASHGPU_GEM5_ENABLE=0; using FlashGPU-Sim standalone memory "
+           "system.\n");
   }
-
-  const std::string gem5_config_dir =
-      gem5_top + "/gem5/configs/example/gem_forge";
-  std::vector<std::string> gem5_args = {gem5_config_dir +
-                                        "/example_config.txt"};
-  m_gem5_wrapper = std::make_unique<flash_gpgpu_sim::Gem5Wrapper>(
-      gem5_config_dir + "/run.py", gem5_args);
-
-  m_gem5_wrapper->initialize();
-
-  m_gem5_mem_subsys = std::make_shared<flash_gpgpu_sim::Gem5MemSubsystem>(
-      m_gem5_wrapper->getSystem(), m_gem5_wrapper->getGPGPUSimRequestors());
-
-  m_gem5_mem_subsys->registerGPGPUSimInterconnectInterface();
 #endif
 
   time_vector_create(NUM_MEM_REQ_STAT);
@@ -1372,9 +1408,11 @@ void gpgpu_sim::print_stats(unsigned long long streamID) {
         "----------\n");
   }
 
+#if defined(FLASH_GEM_FORGE)
   if (m_gem5_wrapper) {
     m_gem5_wrapper->dumpStats();
   }
+#endif
 }
 
 void gpgpu_sim::deadlock_check() {
