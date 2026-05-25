@@ -1371,6 +1371,10 @@ void gpgpu_sim::print_stats(unsigned long long streamID) {
         "----------------------------END-of-Interconnect-DETAILS---------------"
         "----------\n");
   }
+
+  if (m_gem5_wrapper) {
+    m_gem5_wrapper->dumpStats();
+  }
 }
 
 void gpgpu_sim::deadlock_check() {
