@@ -169,7 +169,7 @@ fi
 #echo "----------------------------------------------------------------------------";
 
 # Install pre-commit hook if not present
-if [ ! -e "$GPGPUSIM_ROOT/.git/hooks/pre-commit" ]; then
+if [ -d "$GPGPUSIM_ROOT/.git" ] && [ ! -e "$GPGPUSIM_ROOT/.git/hooks/pre-commit" ]; then
     ln -s ../../scripts/pre-commit "$GPGPUSIM_ROOT/.git/hooks/pre-commit"
     echo "Installed pre-commit hook for Flash module formatting"
 fi

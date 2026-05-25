@@ -1107,10 +1107,23 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
    * ! GemForge
    */
 #ifdef FLASH_GEM_FORGE
-  std::vector<std::string> gem5_args = {
-      "/gem-forge-stack/gem5/configs/example/gem_forge/example_config.txt"};
+  const char *flashgpu_top_env = getenv("FLASHGPU_GEM5_TOP");
+  const char *gem_forge_top_env = getenv("GEM_FORGE_TOP");
+  std::string gem5_top;
+  if (flashgpu_top_env && flashgpu_top_env[0]) {
+    gem5_top = flashgpu_top_env;
+  } else if (gem_forge_top_env && gem_forge_top_env[0]) {
+    gem5_top = gem_forge_top_env;
+  } else {
+    gem5_top = "/gem-forge-stack";
+  }
+
+  const std::string gem5_config_dir =
+      gem5_top + "/gem5/configs/example/gem_forge";
+  std::vector<std::string> gem5_args = {gem5_config_dir +
+                                        "/example_config.txt"};
   m_gem5_wrapper = std::make_unique<flash_gpgpu_sim::Gem5Wrapper>(
-      "/gem-forge-stack/gem5/configs/example/gem_forge/run.py", gem5_args);
+      gem5_config_dir + "/run.py", gem5_args);
 
   m_gem5_wrapper->initialize();
 
