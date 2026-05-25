@@ -1148,7 +1148,8 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
     } else if (gem5_config_name_env && gem5_config_name_env[0]) {
       gem5_config_file = gem5_config_dir + "/" + gem5_config_name_env;
     } else {
-      gem5_config_file = gem5_config_dir + "/example_config.txt";
+      gem5_config_file =
+          gem5_config_dir + "/example_config_crossbar_garnet.txt";
     }
     printf("FLASHGPU_GEM5_ENABLE=1; using gem5 config file: %s\n",
            gem5_config_file.c_str());
