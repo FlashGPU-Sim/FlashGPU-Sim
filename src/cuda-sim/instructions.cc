@@ -182,6 +182,40 @@ void video_mem_instruction(const ptx_instruction *pI, ptx_thread_info *thread,
 
 void sign_extend(ptx_reg_t &data, unsigned src_size, const operand_info &dst);
 
+static inline float f32_from_bits(uint32_t bits) {
+  float value;
+  memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+static inline uint32_t bits_from_f32(float value) {
+  uint32_t bits;
+  memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+static inline uint16_t f16_bits_from_f32(float value, unsigned rounding_mode) {
+  switch (rounding_mode) {
+    case RZ_OPTION:
+    case RZI_OPTION:
+      return half_float::detail::float2half<std::round_toward_zero>(value);
+    case RM_OPTION:
+    case RMI_OPTION:
+      return half_float::detail::float2half<std::round_toward_neg_infinity>(value);
+    case RP_OPTION:
+    case RPI_OPTION:
+      return half_float::detail::float2half<std::round_toward_infinity>(value);
+    case RN_OPTION:
+    case RNI_OPTION:
+    default:
+      return half_float::detail::float2half<std::round_to_nearest>(value);
+  }
+}
+
+static inline float f32_from_f16_bits(uint16_t bits) {
+  return half_float::detail::half2float<float>(bits);
+}
+
 void ptx_thread_info::set_reg(const symbol *reg, const ptx_reg_t &value) {
   assert(reg != NULL);
   if (reg->name() == "_") return;
@@ -309,9 +343,17 @@ ptx_reg_t ptx_thread_info::get_operand_value(const operand_info &op,
         } else if (info.is_const()) {
           result.u64 = sym->get_address() + op.get_addr_offset();
         } else if (op.is_shared()) {
-          result.u64 = op.get_symbol()->get_address() + op.get_addr_offset();
+          const symbol *name = op.get_symbol();
+          if (name->is_reg())
+            result.u64 = get_reg(name).u64 + op.get_addr_offset();
+          else
+            result.u64 = name->get_address() + op.get_addr_offset();
         } else if (op.is_sstarr()) {
-          result.u64 = op.get_symbol()->get_address() + op.get_addr_offset();
+          const symbol *name = op.get_symbol();
+          if (name->is_reg())
+            result.u64 = get_reg(name).u64 + op.get_addr_offset();
+          else
+            result.u64 = name->get_address() + op.get_addr_offset();
         } else {
           const char *name = op.name().c_str();
           printf(
@@ -321,20 +363,28 @@ ptx_reg_t ptx_thread_info::get_operand_value(const operand_info &op,
           abort();
         }
 
+      } else if (op.get_type() == address_t && op.get_symbol()->is_reg()) {
+        const symbol *name = op.get_symbol();
+        result.u64 = get_reg(name).u64 + op.get_addr_offset();
       } else if (op.is_literal()) {
         result = op.get_literal_value();
       } else if (op.is_label()) {
         result.u64 = op.get_symbol()->get_address();
       } else if (op.is_shared()) {
-        result.u64 = op.get_symbol()->get_address();
+        const symbol *name = op.get_symbol();
+        result.u64 = name->is_reg() ? get_reg(name).u64 : name->get_address();
       } else if (op.is_sstarr()) {
-        result.u64 = op.get_symbol()->get_address();
+        const symbol *name = op.get_symbol();
+        result.u64 = name->is_reg() ? get_reg(name).u64 : name->get_address();
       } else if (op.is_const()) {
-        result.u64 = op.get_symbol()->get_address();
+        const symbol *name = op.get_symbol();
+        result.u64 = name->is_reg() ? get_reg(name).u64 : name->get_address();
       } else if (op.is_global()) {
-        result.u64 = op.get_symbol()->get_address();
+        const symbol *name = op.get_symbol();
+        result.u64 = name->is_reg() ? get_reg(name).u64 : name->get_address();
       } else if (op.is_local()) {
-        result.u64 = op.get_symbol()->get_address();
+        const symbol *name = op.get_symbol();
+        result.u64 = name->is_reg() ? get_reg(name).u64 : name->get_address();
       } else if (op.is_function_address()) {
         result.u64 = (size_t)op.get_symbol()->get_pc();
       } else if (op.is_param_kernel()) {
@@ -548,9 +598,7 @@ void ptx_thread_info::get_vector_operand_values(const operand_info &op,
     const symbol *sym = NULL;
     sym = op.vec_symbol(idx);
     if (strcmp(sym->name().c_str(), "_") != 0) {
-      reg_map_t::iterator reg_iter = m_regs.back().find(sym);
-      assert(reg_iter != m_regs.back().end());
-      ptx_regs[idx] = reg_iter->second;
+      ptx_regs[idx] = get_reg(sym);
     }
   }
 }
@@ -1074,18 +1122,36 @@ void add_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     case F16_TYPE:
       data.f16 = src1_data.f16 + src2_data.f16;
       break;  // assert(0); break;
+    case F16X2_TYPE: {
+      uint16_t s1lo = static_cast<uint16_t>(src1_data.u32 & 0xFFFFu);
+      uint16_t s1hi = static_cast<uint16_t>((src1_data.u32 >> 16) & 0xFFFFu);
+      uint16_t s2lo = static_cast<uint16_t>(src2_data.u32 & 0xFFFFu);
+      uint16_t s2hi = static_cast<uint16_t>((src2_data.u32 >> 16) & 0xFFFFu);
+      float rlo = f32_from_f16_bits(s1lo) + f32_from_f16_bits(s2lo);
+      float rhi = f32_from_f16_bits(s1hi) + f32_from_f16_bits(s2hi);
+      if (pI->saturation_mode()) {
+        rlo = (rlo < 0.0f) ? 0.0f : (rlo > 1.0f) ? 1.0f : rlo;
+        rhi = (rhi < 0.0f) ? 0.0f : (rhi > 1.0f) ? 1.0f : rhi;
+      }
+      uint16_t dlo = f16_bits_from_f32(rlo, rounding_mode);
+      uint16_t dhi = f16_bits_from_f32(rhi, rounding_mode);
+      data.u32 = (static_cast<uint32_t>(dhi) << 16) | static_cast<uint32_t>(dlo);
+      break;
+    }
     case F32X2_TYPE: {
       // packed dual-f32: lo=bits[31:0], hi=bits[63:32]
       uint32_t s1lo = (uint32_t)(src1_data.u64 & 0xFFFFFFFFu);
       uint32_t s1hi = (uint32_t)(src1_data.u64 >> 32);
       uint32_t s2lo = (uint32_t)(src2_data.u64 & 0xFFFFFFFFu);
       uint32_t s2hi = (uint32_t)(src2_data.u64 >> 32);
-      float f1lo, f1hi, f2lo, f2hi, rlo, rhi;
-      memcpy(&f1lo, &s1lo, 4); memcpy(&f1hi, &s1hi, 4);
-      memcpy(&f2lo, &s2lo, 4); memcpy(&f2hi, &s2hi, 4);
+      float f1lo = f32_from_bits(s1lo);
+      float f1hi = f32_from_bits(s1hi);
+      float f2lo = f32_from_bits(s2lo);
+      float f2hi = f32_from_bits(s2hi);
+      float rlo, rhi;
       rlo = f1lo + f2lo; rhi = f1hi + f2hi;
-      uint32_t rlo_b, rhi_b;
-      memcpy(&rlo_b, &rlo, 4); memcpy(&rhi_b, &rhi, 4);
+      uint32_t rlo_b = bits_from_f32(rlo);
+      uint32_t rhi_b = bits_from_f32(rhi);
       data.u64 = ((uint64_t)rhi_b << 32) | (uint64_t)rlo_b;
       break;
     }
@@ -4608,6 +4674,33 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
         else if (d.f32 > 1.0f)
           d.f32 = 1.0f;
       }
+      fesetround(orig_rm);
+      break;
+    }
+    case F32X2_TYPE: {
+      int orig_rm = fegetround();
+      switch (rounding_mode) {
+        case RN_OPTION:
+          break;
+        case RZ_OPTION:
+          fesetround(FE_TOWARDZERO);
+          break;
+        default:
+          break;
+      }
+
+      uint32_t alo = static_cast<uint32_t>(a.u64 & 0xFFFFFFFFu);
+      uint32_t ahi = static_cast<uint32_t>(a.u64 >> 32);
+      uint32_t blo = static_cast<uint32_t>(b.u64 & 0xFFFFFFFFu);
+      uint32_t bhi = static_cast<uint32_t>(b.u64 >> 32);
+      float rlo = f32_from_bits(alo) * f32_from_bits(blo);
+      float rhi = f32_from_bits(ahi) * f32_from_bits(bhi);
+      if (pI->saturation_mode()) {
+        rlo = (rlo < 0.0f) ? 0.0f : (rlo > 1.0f) ? 1.0f : rlo;
+        rhi = (rhi < 0.0f) ? 0.0f : (rhi > 1.0f) ? 1.0f : rhi;
+      }
+      d.u64 = (static_cast<uint64_t>(bits_from_f32(rhi)) << 32) |
+              static_cast<uint64_t>(bits_from_f32(rlo));
       fesetround(orig_rm);
       break;
     }

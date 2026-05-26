@@ -9,6 +9,7 @@
 #   tma_gemm      TMA GEMM — sweep over M=N=K size
 #   flash_attn    Flash Attention — sweep over seq_len
 #   llama3_gqa_attn Llama3-style grouped-query attention
+#   llama3_layer   Triton-only Llama3-style decoder layer
 #
 # Modes:
 #   trace  — Generate traces only (requires real GPU, no setup_environment)
@@ -41,6 +42,7 @@
 #   ./sweep.sh flash_attn run --shape 2,4,1024,128,True
 #   ./sweep.sh flash_attn ncu 256 512 --head-dim 64 --causal
 #   ./sweep.sh llama3_gqa_attn run --csv configs/llama3_8b_gqa_attn_shapes_smoke.csv
+#   ./sweep.sh llama3_layer run --csv configs/llama3_layer_shapes_smoke.csv
 #
 
 set -euo pipefail
@@ -64,6 +66,7 @@ CSV_FILE=""
 #   wl_kernel_name     — triton kernel function name (determines binary name)
 #   wl_tflops_expr VAL — python expression: TFLOPS from sweep val & duration_us
 #   wl_banner          — display string for the sweep header
+#   wl_multi_launch    — optional: returns true for workloads with many launchers
 # ============================================================================
 
 # --- tma_gemm ---
@@ -226,6 +229,34 @@ llama3_gqa_attn_sweep_label() { echo "batch,qheads,kvheads,seqlen,headdim,causal
 llama3_gqa_attn_summary_key() { echo "$1"; }
 llama3_gqa_attn_summary_label() { echo "$(${WORKLOAD}_sweep_label)"; }
 
+# --- llama3_layer ---
+llama3_layer_init() {
+    TRACKING_SUBDIR="test_llama3_layer"
+    PYTHON_SCRIPT="test_llama3_layer.py"
+}
+llama3_layer_defaults() { echo "1,8,2,128,128,1024,2816,True"; }
+llama3_layer_subdir() {
+    local batch qheads kvheads seqlen headdim hidden intermediate causal
+    IFS=',' read -r batch qheads kvheads seqlen headdim hidden intermediate causal <<< "$1"
+    local causal_str=""
+    [[ "$causal" == "True" ]] && causal_str="_causal"
+    echo "b${batch}_hq${qheads}_hkv${kvheads}_seq${seqlen}_d${headdim}_h${hidden}_i${intermediate}${causal_str}"
+}
+llama3_layer_python_args() {
+    local batch qheads kvheads seqlen headdim hidden intermediate causal
+    IFS=',' read -r batch qheads kvheads seqlen headdim hidden intermediate causal <<< "$1"
+    local args="--seq-len $seqlen --head-dim $headdim --batch $batch --q-heads $qheads --kv-heads $kvheads --hidden $hidden --intermediate $intermediate"
+    [[ "$causal" == "True" ]] && args="$args --causal"
+    echo "$args"
+}
+llama3_layer_kernel_name() { echo "*"; }
+llama3_layer_tflops_expr() { echo "0.0"; }
+llama3_layer_banner() { echo "Triton Llama3 Layer Sweep"; }
+llama3_layer_sweep_label() { echo "batch,qheads,kvheads,seqlen,headdim,hidden,intermediate,causal"; }
+llama3_layer_summary_key() { echo "$1"; }
+llama3_layer_summary_label() { echo "$(${WORKLOAD}_sweep_label)"; }
+llama3_layer_multi_launch() { return 0; }
+
 # ============================================================================
 # Argument Parsing
 # ============================================================================
@@ -233,7 +264,7 @@ llama3_gqa_attn_summary_label() { echo "$(${WORKLOAD}_sweep_label)"; }
 usage() {
     echo "Usage: $0 <workload> [trace|run|ncu] [options...] [sweep_values...]"
     echo ""
-    echo "Workloads: tma_gemm, flash_attn"
+    echo "Workloads: tma_gemm, flash_attn, llama3_gqa_attn, llama3_layer"
     echo ""
     echo "Run '$0 <workload> --help' for workload-specific options."
     exit 1
@@ -247,8 +278,8 @@ WORKLOAD="$1"; shift
 
 # Validate workload
 case "$WORKLOAD" in
-    tma_gemm|flash_attn|llama3_gqa_attn) ;;
-    *) echo "ERROR: Unknown workload '$WORKLOAD'. Available: tma_gemm, flash_attn, llama3_gqa_attn"; exit 1 ;;
+    tma_gemm|flash_attn|llama3_gqa_attn|llama3_layer) ;;
+    *) echo "ERROR: Unknown workload '$WORKLOAD'. Available: tma_gemm, flash_attn, llama3_gqa_attn, llama3_layer"; exit 1 ;;
 esac
 
 # Parse mode
@@ -329,7 +360,33 @@ trace_exists() {
     local val=$1
     local subdir
     subdir="$(${WORKLOAD}_subdir "$val")"
+    if is_multi_launch; then
+        [[ -f "$TRACKING_DIR/$subdir/tracking_summary.json" ]] && compgen -G "$TRACKING_DIR/$subdir/launchers/*_launch*" > /dev/null
+        return
+    fi
     [[ -f "$TRACKING_DIR/$subdir/launchers/${KERNEL_NAME}_launch1" ]]
+}
+
+is_multi_launch() {
+    if declare -F "${WORKLOAD}_multi_launch" >/dev/null; then
+        "${WORKLOAD}_multi_launch"
+        return
+    fi
+    return 1
+}
+
+launcher_makefiles() {
+    local launcher_dir=$1
+    find "$launcher_dir" -maxdepth 1 -type f -name '*_launch*_Makefile' \
+        | awk 'match($0, /launch[0-9]+/) { print substr($0, RSTART + 6, RLENGTH - 6) "\t" $0 }' \
+        | sort -n | cut -f2-
+}
+
+launcher_executables() {
+    local launcher_dir=$1
+    find "$launcher_dir" -maxdepth 1 -type f -executable -name '*_launch*' ! -name '*.*' \
+        | awk 'match($0, /launch[0-9]+/) { print substr($0, RSTART + 6, RLENGTH - 6) "\t" $0 }' \
+        | sort -n | cut -f2-
 }
 
 require_clean_env() {
@@ -404,9 +461,15 @@ PY
 
     local launcher_dir="$TRACKING_DIR/$subdir/launchers"
 
-    # Build launcher
-    echo "Building launcher for ${SWEEP_LABEL}=${val} ..."
-    make -C "$launcher_dir" -f "${KERNEL_NAME}_launch1_Makefile"
+    # Build launcher(s)
+    echo "Building launcher(s) for ${SWEEP_LABEL}=${val} ..."
+    if is_multi_launch; then
+        while IFS= read -r makefile; do
+            make -C "$launcher_dir" -f "$(basename "$makefile")"
+        done < <(launcher_makefiles "$launcher_dir")
+    else
+        make -C "$launcher_dir" -f "${KERNEL_NAME}_launch1_Makefile"
+    fi
 
     # Copy default full-GPU config. Run modes may override selected options.
     install_gpu_config "$launcher_dir"
@@ -427,7 +490,6 @@ do_run() {
     echo "--- Running GPGPU-Sim for ${SWEEP_LABEL}=${val} ---"
 
     local launcher_dir="$TRACKING_DIR/$subdir/launchers"
-    local log_file="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
 
     mkdir -p "$SIM_LOG_DIR"
     install_gpu_config "$launcher_dir" "${GPGPUSIM_SKIP_L1D:-}"
@@ -442,6 +504,62 @@ do_run() {
     source "$REPO_ROOT/setup_environment"
     set -u
 
+    if is_multi_launch; then
+        local shape_log_dir="$SIM_LOG_DIR/${subdir}"
+        local aggregate_log="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
+        local total_cycles=0
+        local total_insn=0
+        local all_passed=1
+        local ran_any=0
+
+        mkdir -p "$shape_log_dir"
+        : > "$aggregate_log"
+
+        while IFS= read -r exe_path; do
+            ran_any=1
+            local exe
+            exe="$(basename "$exe_path")"
+            local log_file="$shape_log_dir/${exe}_gpgpusim.log"
+            echo "=== $exe ===" >> "$aggregate_log"
+            set +e
+            (cd "$launcher_dir" && "./$exe") > "$log_file" 2>&1
+            local status=$?
+            set -e
+            cat "$log_file" >> "$aggregate_log"
+            echo "" >> "$aggregate_log"
+
+            if [[ "$status" == "0" ]] && grep -q 'Validation PASSED' "$log_file"; then
+                local cycles insn
+                cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || true)
+                insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || true)
+                [[ -n "$cycles" ]] && total_cycles=$((total_cycles + cycles))
+                [[ -n "$insn" ]] && total_insn=$((total_insn + insn))
+                echo "  ${exe}: PASSED - ${cycles:-N/A} cycles"
+            else
+                all_passed=0
+                echo "  ${exe}: FAILED - check $log_file"
+            fi
+        done < <(launcher_executables "$launcher_dir")
+
+        if [[ "$all_passed" == "1" && "$ran_any" == "1" ]]; then
+            {
+                echo "multi_launch_validation PASSED"
+                echo "multi_launch_total_cycles $total_cycles"
+                echo "multi_launch_total_insn $total_insn"
+            } >> "$aggregate_log"
+            echo "  ALL PASSED - aggregate ${total_cycles} cycles (log: $aggregate_log)"
+        else
+            {
+                echo "multi_launch_validation FAILED"
+                echo "multi_launch_total_cycles $total_cycles"
+                echo "multi_launch_total_insn $total_insn"
+            } >> "$aggregate_log"
+            echo "  FAILED - aggregate log: $aggregate_log"
+        fi
+        return
+    fi
+
+    local log_file="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
     (cd "$launcher_dir" && ./${KERNEL_NAME}_launch1) > "$log_file" 2>&1
 
     if grep -q 'Validation PASSED' "$log_file"; then
@@ -528,6 +646,12 @@ do_ncu() {
 
     echo ""
     echo "--- Profiling ${SWEEP_LABEL}=${val} with ncu ---"
+
+    if is_multi_launch; then
+        echo "ERROR: ncu mode is not implemented for multi-launch workloads ($WORKLOAD)."
+        echo "       Profile individual generated launchers from $TRACKING_DIR/$subdir/launchers."
+        exit 1
+    fi
 
     require_clean_env
 
@@ -629,12 +753,23 @@ extract_sim_metrics() {
 
     local sim_cycles tot_insn ipc sim_time validation
 
-    sim_cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || echo "N/A")
-    tot_insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || echo "N/A")
+    if is_multi_launch; then
+        sim_cycles=$(grep -m1 '^multi_launch_total_cycles' "$log_file" | awk '{print $2}' || echo "N/A")
+        tot_insn=$(grep -m1 '^multi_launch_total_insn' "$log_file" | awk '{print $2}' || echo "N/A")
+    else
+        sim_cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || echo "N/A")
+        tot_insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || echo "N/A")
+    fi
     ipc=$(grep -m1 '^gpu_tot_ipc' "$log_file" | awk '{print $3}' || echo "N/A")
     sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || echo "N/A")
 
-    if grep -q 'Validation PASSED' "$log_file"; then
+    if is_multi_launch; then
+        if grep -q '^multi_launch_validation PASSED' "$log_file"; then
+            validation="PASSED"
+        else
+            validation="FAILED"
+        fi
+    elif grep -q 'Validation PASSED' "$log_file"; then
         validation="PASSED"
     else
         validation="FAILED"
