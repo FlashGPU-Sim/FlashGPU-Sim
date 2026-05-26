@@ -234,7 +234,7 @@ llama3_layer_init() {
     TRACKING_SUBDIR="test_llama3_layer"
     PYTHON_SCRIPT="test_llama3_layer.py"
 }
-llama3_layer_defaults() { echo "1,8,2,128,128,1024,2816,True"; }
+llama3_layer_defaults() { echo "1,32,8,128,128,4096,14336,True"; }
 llama3_layer_subdir() {
     local batch qheads kvheads seqlen headdim hidden intermediate causal
     IFS=',' read -r batch qheads kvheads seqlen headdim hidden intermediate causal <<< "$1"
@@ -517,8 +517,11 @@ do_run() {
         local aggregate_log="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
         local total_cycles=0
         local total_insn=0
+        local total_sim_time=0
         local all_passed=1
         local ran_any=0
+        local start_wall
+        start_wall="$(date +%s)"
 
         mkdir -p "$shape_log_dir"
         : > "$aggregate_log"
@@ -536,6 +539,10 @@ do_run() {
             cat "$log_file" >> "$aggregate_log"
             echo "" >> "$aggregate_log"
 
+            local kernel_sim_time
+            kernel_sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || true)
+            [[ -n "$kernel_sim_time" ]] && total_sim_time=$((total_sim_time + kernel_sim_time))
+
             if [[ "$status" == "0" ]] && grep -q 'Validation PASSED' "$log_file"; then
                 local cycles insn
                 cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || true)
@@ -549,18 +556,26 @@ do_run() {
             fi
         done < <(launcher_executables "$launcher_dir")
 
+        local end_wall wall_time
+        end_wall="$(date +%s)"
+        wall_time=$((end_wall - start_wall))
+
         if [[ "$all_passed" == "1" && "$ran_any" == "1" ]]; then
             {
                 echo "multi_launch_validation PASSED"
                 echo "multi_launch_total_cycles $total_cycles"
                 echo "multi_launch_total_insn $total_insn"
+                echo "multi_launch_total_sim_time_sec $total_sim_time"
+                echo "multi_launch_wall_time_sec $wall_time"
             } >> "$aggregate_log"
-            echo "  ALL PASSED - aggregate ${total_cycles} cycles (log: $aggregate_log)"
+            echo "  ALL PASSED - aggregate ${total_cycles} cycles, ${total_sim_time}s sim time, ${wall_time}s wall time (log: $aggregate_log)"
         else
             {
                 echo "multi_launch_validation FAILED"
                 echo "multi_launch_total_cycles $total_cycles"
                 echo "multi_launch_total_insn $total_insn"
+                echo "multi_launch_total_sim_time_sec $total_sim_time"
+                echo "multi_launch_wall_time_sec $wall_time"
             } >> "$aggregate_log"
             echo "  FAILED - aggregate log: $aggregate_log"
         fi
@@ -568,7 +583,11 @@ do_run() {
     fi
 
     local log_file="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
+    local start_wall end_wall
+    start_wall="$(date +%s)"
     (cd "$launcher_dir" && ./${KERNEL_NAME}_launch1) > "$log_file" 2>&1
+    end_wall="$(date +%s)"
+    echo "single_launch_wall_time_sec $((end_wall - start_wall))" >> "$log_file"
 
     if grep -q 'Validation PASSED' "$log_file"; then
         local cycles
@@ -620,8 +639,11 @@ do_gem5() {
         local aggregate_log="$GEM5_LOG_DIR/${subdir}_gem5.log"
         local total_cycles=0
         local total_insn=0
+        local total_sim_time=0
         local all_passed=1
         local ran_any=0
+        local start_wall
+        start_wall="$(date +%s)"
 
         mkdir -p "$shape_log_dir"
         : > "$aggregate_log"
@@ -656,6 +678,10 @@ do_gem5() {
             cat "$kernel_log_file" >> "$aggregate_log"
             echo "" >> "$aggregate_log"
 
+            local kernel_sim_time
+            kernel_sim_time=$(grep -oP '\(\K[0-9]+ sec' "$kernel_log_file" | head -1 | awk '{print $1}' || true)
+            [[ -n "$kernel_sim_time" ]] && total_sim_time=$((total_sim_time + kernel_sim_time))
+
             if [[ "$status" == "0" ]] && grep -q 'Validation PASSED' "$kernel_log_file"; then
                 local cycles insn
                 cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$kernel_log_file" | awk '{print $3}' || true)
@@ -669,24 +695,34 @@ do_gem5() {
             fi
         done < <(launcher_executables "$launcher_dir")
 
+        local end_wall wall_time
+        end_wall="$(date +%s)"
+        wall_time=$((end_wall - start_wall))
+
         if [[ "$all_passed" == "1" && "$ran_any" == "1" ]]; then
             {
                 echo "multi_launch_validation PASSED"
                 echo "multi_launch_total_cycles $total_cycles"
                 echo "multi_launch_total_insn $total_insn"
+                echo "multi_launch_total_sim_time_sec $total_sim_time"
+                echo "multi_launch_wall_time_sec $wall_time"
             } >> "$aggregate_log"
-            echo "  ALL PASSED - aggregate ${total_cycles} cycles (log: $aggregate_log)"
+            echo "  ALL PASSED - aggregate ${total_cycles} cycles, ${total_sim_time}s sim time, ${wall_time}s wall time (log: $aggregate_log)"
         else
             {
                 echo "multi_launch_validation FAILED"
                 echo "multi_launch_total_cycles $total_cycles"
                 echo "multi_launch_total_insn $total_insn"
+                echo "multi_launch_total_sim_time_sec $total_sim_time"
+                echo "multi_launch_wall_time_sec $wall_time"
             } >> "$aggregate_log"
             echo "  FAILED - aggregate log: $aggregate_log"
         fi
         return
     fi
 
+    local start_wall end_wall
+    start_wall="$(date +%s)"
     (
         export GEM5_ARCH="$gem5_arch"
         export FLASHGPU_GEM5_TOP="$TOP_ROOT"
@@ -705,6 +741,8 @@ do_gem5() {
         cd "$launcher_dir"
         timeout "$timeout_sec" "./${KERNEL_NAME}_launch1"
     ) > "$log_file" 2>&1
+    end_wall="$(date +%s)"
+    echo "single_launch_wall_time_sec $((end_wall - start_wall))" >> "$log_file"
 
     if grep -q 'Validation PASSED' "$log_file"; then
         local cycles
@@ -831,17 +869,21 @@ extract_sim_metrics() {
     local summary_key
     summary_key="$(${WORKLOAD}_summary_key "$val")"
 
-    local sim_cycles tot_insn ipc sim_time validation
+    local sim_cycles tot_insn ipc sim_time wall_time validation
 
     if is_multi_launch; then
         sim_cycles=$(grep -m1 '^multi_launch_total_cycles' "$log_file" | awk '{print $2}' || echo "N/A")
         tot_insn=$(grep -m1 '^multi_launch_total_insn' "$log_file" | awk '{print $2}' || echo "N/A")
+        sim_time=$(grep -m1 '^multi_launch_total_sim_time_sec' "$log_file" | awk '{print $2}' || echo "N/A")
+        wall_time=$(grep -m1 '^multi_launch_wall_time_sec' "$log_file" | awk '{print $2}' || echo "N/A")
+        ipc=$(awk -v insn="$tot_insn" -v cyc="$sim_cycles" 'BEGIN { if (cyc > 0) printf "%.4f", insn / cyc; else printf "N/A" }')
     else
         sim_cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || echo "N/A")
         tot_insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || echo "N/A")
+        ipc=$(grep -m1 '^gpu_tot_ipc' "$log_file" | awk '{print $3}' || echo "N/A")
+        sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || echo "N/A")
+        wall_time=$(grep -m1 '^single_launch_wall_time_sec' "$log_file" | awk '{print $2}' || echo "N/A")
     fi
-    ipc=$(grep -m1 '^gpu_tot_ipc' "$log_file" | awk '{print $3}' || echo "N/A")
-    sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || echo "N/A")
 
     if is_multi_launch; then
         if grep -q '^multi_launch_validation PASSED' "$log_file"; then
@@ -855,7 +897,7 @@ extract_sim_metrics() {
         validation="FAILED"
     fi
 
-    echo "${summary_key},${sim_cycles},${tot_insn},${ipc},${sim_time},${validation}"
+    echo "${summary_key},${sim_cycles},${tot_insn},${ipc},${sim_time},${wall_time},${validation}"
 }
 
 extract_gem5_metrics() {
@@ -866,17 +908,21 @@ extract_gem5_metrics() {
     local summary_key
     summary_key="$(${WORKLOAD}_summary_key "$val")"
 
-    local sim_cycles tot_insn ipc sim_time validation
+    local sim_cycles tot_insn ipc sim_time wall_time validation
 
     if is_multi_launch; then
         sim_cycles=$(grep -m1 '^multi_launch_total_cycles' "$log_file" | awk '{print $2}' || echo "N/A")
         tot_insn=$(grep -m1 '^multi_launch_total_insn' "$log_file" | awk '{print $2}' || echo "N/A")
+        sim_time=$(grep -m1 '^multi_launch_total_sim_time_sec' "$log_file" | awk '{print $2}' || echo "N/A")
+        wall_time=$(grep -m1 '^multi_launch_wall_time_sec' "$log_file" | awk '{print $2}' || echo "N/A")
+        ipc=$(awk -v insn="$tot_insn" -v cyc="$sim_cycles" 'BEGIN { if (cyc > 0) printf "%.4f", insn / cyc; else printf "N/A" }')
     else
         sim_cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || echo "N/A")
         tot_insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || echo "N/A")
+        ipc=$(grep -m1 '^gpu_tot_ipc' "$log_file" | awk '{print $3}' || echo "N/A")
+        sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || echo "N/A")
+        wall_time=$(grep -m1 '^single_launch_wall_time_sec' "$log_file" | awk '{print $2}' || echo "N/A")
     fi
-    ipc=$(grep -m1 '^gpu_tot_ipc' "$log_file" | awk '{print $3}' || echo "N/A")
-    sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || echo "N/A")
 
     if is_multi_launch; then
         if grep -q '^multi_launch_validation PASSED' "$log_file"; then
@@ -890,7 +936,7 @@ extract_gem5_metrics() {
         validation="FAILED"
     fi
 
-    echo "${summary_key},${sim_cycles},${tot_insn},${ipc},${sim_time},${validation}"
+    echo "${summary_key},${sim_cycles},${tot_insn},${ipc},${sim_time},${wall_time},${validation}"
 }
 
 # ============================================================================
@@ -985,10 +1031,14 @@ if [[ "$MODE" == "gem5" ]]; then
 
     SUMMARY_FILE="$GEM5_LOG_DIR/summary.csv"
     SUMMARY_LABEL="$(${WORKLOAD}_summary_label)"
-    HEADER="${SUMMARY_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,validation"
+    HEADER="${SUMMARY_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,wall_time_sec,validation"
     mkdir -p "$GEM5_LOG_DIR"
 
+    expected_cols=$(awk -F, -v h="$HEADER" 'BEGIN { print split(h, cols, ",") }')
     if [[ ! -f "$SUMMARY_FILE" ]]; then
+        echo "$HEADER" > "$SUMMARY_FILE"
+    elif [[ "$(head -n1 "$SUMMARY_FILE")" != "$HEADER" ]] || \
+        awk -F, -v n="$expected_cols" 'NR > 1 && NF != n { bad = 1 } END { exit bad ? 0 : 1 }' "$SUMMARY_FILE"; then
         echo "$HEADER" > "$SUMMARY_FILE"
     fi
 
@@ -1042,10 +1092,14 @@ done
 # Generate/update summary (upsert: update existing rows, append new ones)
 SUMMARY_FILE="$SIM_LOG_DIR/summary.csv"
 SUMMARY_LABEL="$(${WORKLOAD}_summary_label)"
-HEADER="${SUMMARY_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,validation"
+HEADER="${SUMMARY_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,wall_time_sec,validation"
 mkdir -p "$SIM_LOG_DIR"
 
+expected_cols=$(awk -F, -v h="$HEADER" 'BEGIN { print split(h, cols, ",") }')
 if [[ ! -f "$SUMMARY_FILE" ]]; then
+    echo "$HEADER" > "$SUMMARY_FILE"
+elif [[ "$(head -n1 "$SUMMARY_FILE")" != "$HEADER" ]] || \
+    awk -F, -v n="$expected_cols" 'NR > 1 && NF != n { bad = 1 } END { exit bad ? 0 : 1 }' "$SUMMARY_FILE"; then
     echo "$HEADER" > "$SUMMARY_FILE"
 fi
 
