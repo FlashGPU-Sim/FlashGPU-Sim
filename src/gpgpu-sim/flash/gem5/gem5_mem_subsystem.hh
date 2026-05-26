@@ -19,7 +19,8 @@ class Gem5MemSubsystem {
 public:
   using GPGPUSimReqVec = std::vector<gem5::GPGPUSimRequestor *>;
 
-  Gem5MemSubsystem(gem5::System *sys, const GPGPUSimReqVec &requestors);
+  Gem5MemSubsystem(gem5::System *sys, const GPGPUSimReqVec &requestors,
+                   bool gmem_skip_l1d);
 
   /**
    * Register the interconnect interface for GPGPUSim.
@@ -43,6 +44,7 @@ private:
 
   // Vector of GPGPUSim requestors, one per GPU port.
   GPGPUSimReqVec gpgpusim_requestors;
+  bool gmem_skip_l1d;
 
   gem5::GPGPUSimRequestor *getRequestorForGPUPort(GPGPUSimPortId port_id) const;
 

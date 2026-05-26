@@ -40,8 +40,9 @@ ifeq ($(FLASH_GEM_FORGE), 1)
 ifndef GEM_FORGE_TOP
 $(error FLASH_GEM_FORGE is enabled but GEM_FORGE_TOP is not set)
 endif
+GEM5_ARCH ?= X86
 EXTRA_FLAGS += -DFLASH_GEM_FORGE=1
-EXTRA_FLAGS += -I$(GEM_FORGE_TOP)/gem5/src -I$(GEM_FORGE_TOP)/gem5/build/X86
+EXTRA_FLAGS += -I$(GEM_FORGE_TOP)/gem5/src -I$(GEM_FORGE_TOP)/gem5/build/$(GEM5_ARCH)
 EXTRA_FLAGS += -I$(GEM_FORGE_TOP)/gem5/ext/gpgpusim
 EXTRA_FLAGS += -I$(GEM_FORGE_TOP)/gem5/ext
 GEM5_LDFLAGS = -L$(GEM_FORGE_TOP)/gem5/ext/gpgpusim -lgem5_to_gpgpusim -Wl,-rpath,$(GEM_FORGE_TOP)/gem5/ext/gpgpusim

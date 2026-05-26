@@ -3,7 +3,7 @@
 # Generic sweep script for triton traced workloads.
 #
 # Usage:
-#   ./sweep.sh <workload> [trace|run|ncu] [options...] [sweep_values...]
+#   ./sweep.sh <workload> [trace|run|gem5|ncu] [options...] [sweep_values...]
 #
 # Workloads:
 #   tma_gemm      TMA GEMM — sweep over M=N=K size
@@ -12,6 +12,7 @@
 # Modes:
 #   trace  — Generate traces only (requires real GPU, no setup_environment)
 #   run    — Run GPGPU-Sim simulation (default). Auto-traces if missing.
+#   gem5   — Run FlashGPU-Sim + gem5 Ruby. Auto-traces if missing.
 #   ncu    — Profile on real GPU with Nsight Compute
 #
 # Options:
@@ -31,6 +32,7 @@
 #   ./sweep.sh tma_gemm trace 128 512 1024
 #   ./sweep.sh tma_gemm run --shape 512,6000,2560
 #   ./sweep.sh tma_gemm run --csv configs/gemm_shapes_training.csv
+#   ./sweep.sh tma_gemm gem5 --shape 512,512,512
 #   ./sweep.sh tma_gemm ncu --csv configs/gemm_shapes_training.csv
 #   ./sweep.sh tma_gemm run
 #   ./sweep.sh flash_attn trace 256 512 1024
@@ -44,6 +46,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRITON_TRACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$TRITON_TRACE_DIR/../.." && pwd)"
+TOP_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 VENV_ACTIVATE="$TRITON_TRACE_DIR/.venv/bin/activate"
 GPU_CONFIG_DIR="$REPO_ROOT/configs/SM120_RTX5090"
 CSV_MODE=0
@@ -217,7 +220,7 @@ esac
 MODE="run"
 if [[ $# -gt 0 ]]; then
     case "$1" in
-        trace|run|ncu) MODE="$1"; shift ;;
+        trace|run|gem5|ncu) MODE="$1"; shift ;;
     esac
 fi
 
@@ -246,7 +249,9 @@ ${WORKLOAD}_init
 TRACKING_DIR="$TRITON_TRACE_DIR/triton_kernel_tracking/$TRACKING_SUBDIR"
 RESULTS_DIR="$TRACKING_DIR/results"
 SIM_LOG_DIR="$RESULTS_DIR/sim-log"
+GEM5_LOG_DIR="$RESULTS_DIR/gem5-log"
 NCU_REP_DIR="$RESULTS_DIR/ncu-rep"
+NCU_PROFILE_METRICS="${NCU_PROFILE_METRICS:-sm__cycles_elapsed.avg,sm__cycles_elapsed.avg.per_second,gpu__time_duration.avg,sm__throughput.avg.pct_of_peak_sustained_elapsed,sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed,gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed,dram__bytes.sum,dram__bytes_op_read.sum,dram__bytes_op_write.sum,dram__throughput.avg.pct_of_peak_sustained_elapsed}"
 
 # Load sweep values from CSV or apply defaults
 if [[ -n "$CSV_FILE" ]]; then
@@ -299,6 +304,31 @@ require_clean_env() {
     fi
 }
 
+install_gpu_config() {
+    local launcher_dir=$1
+    local skip_l1d="${2:-}"
+
+    cp "$GPU_CONFIG_DIR/gpgpusim.config" "$launcher_dir/"
+    cp "$GPU_CONFIG_DIR/config_ampere_islip.icnt" "$launcher_dir/"
+
+    if [[ -n "$skip_l1d" ]]; then
+        case "$skip_l1d" in
+            0|1) ;;
+            *)
+                echo "ERROR: GPGPUSIM_SKIP_L1D must be 0 or 1, got '$skip_l1d'" >&2
+                exit 2
+                ;;
+        esac
+        if ! grep -q '^-gpgpu_gmem_skip_L1D[[:space:]]' "$launcher_dir/gpgpusim.config"; then
+            echo "ERROR: gpgpusim.config does not contain -gpgpu_gmem_skip_L1D" >&2
+            exit 2
+        fi
+        sed -i -E \
+            "s/^-gpgpu_gmem_skip_L1D[[:space:]]+[01]/-gpgpu_gmem_skip_L1D ${skip_l1d}/" \
+            "$launcher_dir/gpgpusim.config"
+    fi
+}
+
 # ============================================================================
 # Trace
 # ============================================================================
@@ -330,9 +360,8 @@ do_trace() {
     echo "Building launcher for ${SWEEP_LABEL}=${val} ..."
     make -C "$launcher_dir" -f "${KERNEL_NAME}_launch1_Makefile"
 
-    # Copy GPU config
-    cp "$GPU_CONFIG_DIR/gpgpusim.config" "$launcher_dir/"
-    cp "$GPU_CONFIG_DIR/config_ampere_islip.icnt" "$launcher_dir/"
+    # Copy default full-GPU config. Run modes may override selected options.
+    install_gpu_config "$launcher_dir"
 
     echo "--- Trace complete for ${SWEEP_LABEL}=${val} ---"
 }
@@ -353,6 +382,12 @@ do_run() {
     local log_file="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
 
     mkdir -p "$SIM_LOG_DIR"
+    install_gpu_config "$launcher_dir" "${GPGPUSIM_SKIP_L1D:-}"
+
+    if [[ -f "$TOP_ROOT/scripts/env.sh" ]]; then
+        export GEM5_ARCH="${GEM5_ARCH:-X86_MESI_Two_Level_Stream}"
+        source "$TOP_ROOT/scripts/env.sh"
+    fi
 
     set +u
     source "$REPO_ROOT/setup.sh"
@@ -360,6 +395,66 @@ do_run() {
     set -u
 
     (cd "$launcher_dir" && ./${KERNEL_NAME}_launch1) > "$log_file" 2>&1
+
+    if grep -q 'Validation PASSED' "$log_file"; then
+        local cycles
+        cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}')
+        echo "  PASSED — ${cycles} cycles (log: $log_file)"
+    else
+        echo "  FAILED — check $log_file"
+    fi
+}
+
+# ============================================================================
+# Run (FlashGPU-Sim + gem5)
+# ============================================================================
+
+do_gem5() {
+    local val=$1
+    local subdir
+    subdir="$(${WORKLOAD}_subdir "$val")"
+
+    echo ""
+    echo "--- Running FlashGPU-Sim + gem5 for ${SWEEP_LABEL}=${val} ---"
+
+    local launcher_dir="$TRACKING_DIR/$subdir/launchers"
+    local log_file="$GEM5_LOG_DIR/${subdir}_gem5.log"
+    local gem5_arch="${GEM5_ARCH:-X86_MESI_Two_Level_Stream}"
+    local gem5_config_name="${FLASHGPU_GEM5_CONFIG_NAME:-example_config_crossbar_garnet.txt}"
+    local skip_l1d="${GPGPUSIM_SKIP_L1D:-1}"
+    local timeout_sec="${GEM5_TIMEOUT:-${TIMEOUT:-3600}}"
+
+    if [[ ! -f "$TOP_ROOT/scripts/env.sh" ]]; then
+        echo "ERROR: gem5 top-level scripts/env.sh not found at $TOP_ROOT/scripts/env.sh" >&2
+        echo "       Run gem5 mode from the flashgpu-gem5-top checkout." >&2
+        exit 2
+    fi
+
+    mkdir -p "$GEM5_LOG_DIR"
+    install_gpu_config "$launcher_dir" "$skip_l1d"
+
+    if [[ "${FLASHGPU_GEM5_BUILD:-0}" == "1" ]]; then
+        make -C "$TOP_ROOT" GEM5_ARCH="$gem5_arch" build
+    fi
+
+    (
+        export GEM5_ARCH="$gem5_arch"
+        export FLASHGPU_GEM5_TOP="$TOP_ROOT"
+        export GEM_FORGE_TOP="$TOP_ROOT"
+        export FLASHGPU_GEM5_ENABLE=1
+        export FLASHGPU_GEM5_CONFIG_NAME="$gem5_config_name"
+
+        source "$TOP_ROOT/scripts/env.sh"
+
+        cd "$REPO_ROOT"
+        set +u
+        source setup.sh
+        source setup_environment
+        set -u
+
+        cd "$launcher_dir"
+        timeout "$timeout_sec" "./${KERNEL_NAME}_launch1"
+    ) > "$log_file" 2>&1
 
     if grep -q 'Validation PASSED' "$log_file"; then
         local cycles
@@ -389,14 +484,22 @@ do_ncu() {
 
     mkdir -p "$NCU_REP_DIR"
 
-    ncu -f \
-        -o "$ncu_output" \
-        --set full \
-        --replay-mode application \
-        --cache-control none \
-        --clock-control none \
-        --target-processes all \
-        "$launcher_dir/${KERNEL_NAME}_launch1"
+    local ncu_args=(
+        ncu -f
+        -o "$ncu_output"
+        --replay-mode application
+        --cache-control none
+        --clock-control none
+        --target-processes all
+    )
+
+    if [[ -n "${NCU_SET:-}" ]]; then
+        ncu_args+=(--set "$NCU_SET")
+    else
+        ncu_args+=(--metrics "$NCU_PROFILE_METRICS")
+    fi
+
+    "${ncu_args[@]}" "$launcher_dir/${KERNEL_NAME}_launch1"
 
     echo "--- NCU report saved to ${ncu_output}.ncu-rep ---"
 }
@@ -422,6 +525,10 @@ extract_ncu_metrics() {
     NCU_METRICS+=",sm__throughput.avg.pct_of_peak_sustained_elapsed"
     NCU_METRICS+=",sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed"
     NCU_METRICS+=",gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed"
+    NCU_METRICS+=",dram__bytes.sum"
+    NCU_METRICS+=",dram__bytes_op_read.sum"
+    NCU_METRICS+=",dram__bytes_op_write.sum"
+    NCU_METRICS+=",dram__throughput.avg.pct_of_peak_sustained_elapsed"
 
     local tflops_expr
     tflops_expr="$(${WORKLOAD}_tflops_expr "$val")"
@@ -442,11 +549,21 @@ dur = d.get('gpu__time_duration.avg', 'N/A')
 sm_tp = d.get('sm__throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
 tensor_tp = d.get('sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed', 'N/A')
 dram_tp = d.get('gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
+dram_bytes_kb = d.get('dram__bytes.sum', 'N/A')
+dram_read_kb = d.get('dram__bytes_op_read.sum', 'N/A')
+dram_write_b = d.get('dram__bytes_op_write.sum', 'N/A')
+dram_bw_pct = d.get('dram__throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
 try:
     tflops = f'{${tflops_expr}:.2f}'
 except:
     tflops = 'N/A'
-print(f'${val},{sm_cycles},{sm_freq},{dur},{tflops},{sm_tp},{tensor_tp},{dram_tp}')
+try:
+    total_bytes = float(dram_bytes_kb) * 1000.0
+    dur_s = float(dur) * 1e-6
+    dram_bw_gbs = f'{total_bytes / dur_s / 1e9:.2f}' if dur_s > 0 else 'N/A'
+except:
+    dram_bw_gbs = 'N/A'
+print(f'${val},{sm_cycles},{sm_freq},{dur},{tflops},{dram_bytes_kb},{dram_read_kb},{dram_write_b},{dram_bw_gbs},{dram_tp},{dram_bw_pct},{sm_tp},{tensor_tp}')
 "
 }
 
@@ -455,6 +572,30 @@ extract_sim_metrics() {
     local subdir
     subdir="$(${WORKLOAD}_subdir "$val")"
     local log_file="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
+    local summary_key
+    summary_key="$(${WORKLOAD}_summary_key "$val")"
+
+    local sim_cycles tot_insn ipc sim_time validation
+
+    sim_cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || echo "N/A")
+    tot_insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || echo "N/A")
+    ipc=$(grep -m1 '^gpu_tot_ipc' "$log_file" | awk '{print $3}' || echo "N/A")
+    sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || echo "N/A")
+
+    if grep -q 'Validation PASSED' "$log_file"; then
+        validation="PASSED"
+    else
+        validation="FAILED"
+    fi
+
+    echo "${summary_key},${sim_cycles},${tot_insn},${ipc},${sim_time},${validation}"
+}
+
+extract_gem5_metrics() {
+    local val=$1
+    local subdir
+    subdir="$(${WORKLOAD}_subdir "$val")"
+    local log_file="$GEM5_LOG_DIR/${subdir}_gem5.log"
     local summary_key
     summary_key="$(${WORKLOAD}_summary_key "$val")"
 
@@ -510,7 +651,7 @@ if [[ "$MODE" == "ncu" ]]; then
 
     # Generate/update summary (upsert: update existing rows, append new ones)
     NCU_SUMMARY="$NCU_REP_DIR/summary.csv"
-    NCU_HEADER="${SWEEP_LABEL},sm_cycles,sm_freq_ghz,duration_us,tflops,sm_throughput_pct,tensor_pipe_pct,dram_throughput_pct"
+    NCU_HEADER="${SWEEP_LABEL},sm_cycles,sm_freq_ghz,duration_us,tflops,dram_bytes_kb,dram_read_kb,dram_write_b,dram_bw_gbs,gpu_dram_throughput_pct,dram_throughput_pct,sm_throughput_pct,tensor_pipe_pct"
     mkdir -p "$NCU_REP_DIR"
 
     if [[ ! -f "$NCU_SUMMARY" ]]; then
@@ -533,6 +674,62 @@ if [[ "$MODE" == "ncu" ]]; then
     echo "NCU summary written to $NCU_SUMMARY"
     echo "========================================"
     cat "$NCU_SUMMARY"
+    exit 0
+fi
+
+if [[ "$MODE" == "gem5" ]]; then
+    NEED_TRACE=()
+    for val in "${SWEEP_VALUES[@]}"; do
+        if ! trace_exists "$val"; then
+            NEED_TRACE+=("$val")
+        fi
+    done
+
+    if [[ ${#NEED_TRACE[@]} -gt 0 ]]; then
+        echo ""
+        echo "Missing traces for: ${NEED_TRACE[*]}"
+        echo "Generating traces first..."
+
+        if [[ -n "${GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN:-}" ]]; then
+            echo "ERROR: setup_environment is active but traces need to be generated."
+            echo "       Run '$0 $WORKLOAD trace ${NEED_TRACE[*]}' in a clean shell first."
+            exit 1
+        fi
+
+        for val in "${NEED_TRACE[@]}"; do
+            do_trace "$val"
+        done
+    fi
+
+    for val in "${SWEEP_VALUES[@]}"; do
+        do_gem5 "$val"
+    done
+
+    SUMMARY_FILE="$GEM5_LOG_DIR/summary.csv"
+    SUMMARY_LABEL="$(${WORKLOAD}_summary_label)"
+    HEADER="${SUMMARY_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,validation"
+    mkdir -p "$GEM5_LOG_DIR"
+
+    if [[ ! -f "$SUMMARY_FILE" ]]; then
+        echo "$HEADER" > "$SUMMARY_FILE"
+    fi
+
+    for val in "${SWEEP_VALUES[@]}"; do
+        new_line="$(extract_gem5_metrics "$val")"
+        summary_key="$(${WORKLOAD}_summary_key "$val")"
+        escaped_key="$(printf '%s' "$summary_key" | sed 's/[.[\*^$()+?{|]/\\&/g')"
+        if grep -q "^${escaped_key}," "$SUMMARY_FILE"; then
+            sed -i "s|^${escaped_key},.*|${new_line}|" "$SUMMARY_FILE"
+        else
+            echo "$new_line" >> "$SUMMARY_FILE"
+        fi
+    done
+
+    echo ""
+    echo "========================================"
+    echo "gem5 summary written to $SUMMARY_FILE"
+    echo "========================================"
+    cat "$SUMMARY_FILE"
     exit 0
 fi
 

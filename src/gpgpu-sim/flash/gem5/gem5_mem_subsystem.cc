@@ -6,9 +6,40 @@
 
 namespace flash_gpgpu_sim {
 
+namespace {
+
+bool isTmaAccess(mem_access_type type) {
+  return type == TMA_ACC_R || type == TMA_ACC_W;
+}
+
+bool isGlobalAccess(mem_access_type type) {
+  return type == GLOBAL_ACC_R || type == GLOBAL_ACC_W || isTmaAccess(type);
+}
+
+bool shouldSetGLC(mem_fetch *mf, bool gmem_skip_l1d) {
+  const auto access_type = mf->get_access_type();
+  if (isTmaAccess(access_type)) {
+    return true;
+  }
+
+  const auto &inst = mf->get_inst();
+  const auto cache_op = inst.cache_op;
+  if (cache_op == CACHE_GLOBAL || cache_op == CACHE_STREAMING ||
+      cache_op == CACHE_LAST_USE) {
+    return true;
+  }
+
+  return gmem_skip_l1d && isGlobalAccess(access_type) && cache_op != CACHE_L1;
+}
+
+} // namespace
+
 Gem5MemSubsystem::Gem5MemSubsystem(gem5::System *sys,
-                                   const GPGPUSimReqVec &requestors)
-    : system(sys), gpgpusim_requestors(requestors) {}
+                                   const GPGPUSimReqVec &requestors,
+                                   bool gmem_skip_l1d_)
+    : system(sys),
+      gpgpusim_requestors(requestors),
+      gmem_skip_l1d(gmem_skip_l1d_) {}
 
 void Gem5MemSubsystem::registerGPGPUSimInterconnectInterface() {
   auto original_icnt_push = icnt_push;
@@ -91,6 +122,9 @@ gem5::PacketPtr Gem5MemSubsystem::createGem5PacketForMemFetch(
 
   auto req = std::make_shared<gem5::Request>(
       addr, size, gem5::Request::PHYSICAL, requestor_id);
+  if (shouldSetGLC(mf, gmem_skip_l1d)) {
+    req->setCacheCoherenceFlags(gem5::Request::GLC_BIT);
+  }
 
   auto cmd = is_write ? gem5::MemCmd::WriteReq : gem5::MemCmd::ReadReq;
 

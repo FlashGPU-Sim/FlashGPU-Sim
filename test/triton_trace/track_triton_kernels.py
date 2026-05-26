@@ -988,6 +988,95 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
         except Exception as e:
             print(f"    [WARNING] Could not check for dynamic shared memory: {e}")
             return False
+
+    def _parse_ptx_target(self, ptx_path: Path) -> str:
+        if not ptx_path.exists():
+            return "sm_120a"
+        try:
+            import re
+            content = ptx_path.read_text()
+            match = re.search(r'^\s*\.target\s+([A-Za-z0-9_]+)', content, re.MULTILINE)
+            if match:
+                return match.group(1)
+        except Exception:
+            pass
+        return "sm_120a"
+
+    def _parse_ptx_register_fallback(self, ptx_path: Path) -> int:
+        """Estimate register count from PTX if cuobjdump resource usage is unavailable."""
+        if not ptx_path.exists():
+            return 0
+        try:
+            import re
+            content = ptx_path.read_text()
+            total = 0
+            for reg_type, count in re.findall(r'\.reg\s+\.([a-z0-9]+)\s+%[A-Za-z_][A-Za-z0-9_]*<(\d+)>', content):
+                count_i = int(count)
+                if reg_type == "b64":
+                    total += count_i * 2
+                elif reg_type != "pred":
+                    total += count_i
+            return total
+        except Exception:
+            return 0
+
+    def _generate_ptxinfo_sidecar(self, cubin_path: Path, ptx_path: Path,
+                                  output_path: Path, kernel_name: str) -> None:
+        """Generate a ptxas-style resource sidecar from Triton's CUBIN.
+
+        GPGPU-Sim normally shells out to ptxas -v to get register/shared-memory
+        usage. New Triton TMA PTX can be newer than the system ptxas, while the
+        CUBIN already contains the resource usage. This sidecar lets the
+        simulator consume the same ptxinfo format without reassembling PTX.
+        """
+        import re
+        import subprocess
+
+        arch = self._parse_ptx_target(ptx_path)
+        regs = self._parse_ptx_register_fallback(ptx_path)
+        stack = 0
+        shared = 0
+        local = 0
+        cmem0 = 0
+        gmem = 0
+
+        try:
+            result = subprocess.run(
+                ["cuobjdump", "--dump-resource-usage", str(cubin_path)],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            output = result.stdout
+            global_match = re.search(r'\bGLOBAL:(\d+)', output)
+            if global_match:
+                gmem = int(global_match.group(1))
+
+            func_match = re.search(
+                rf'Function\s+{re.escape(kernel_name)}:\s*\n\s*'
+                r'REG:(\d+)\s+STACK:(\d+)\s+SHARED:(\d+)\s+LOCAL:(\d+)'
+                r'\s+CONSTANT\[0\]:(\d+)',
+                output,
+            )
+            if func_match:
+                regs = int(func_match.group(1))
+                stack = int(func_match.group(2))
+                shared = int(func_match.group(3))
+                local = int(func_match.group(4))
+                cmem0 = int(func_match.group(5))
+        except Exception as e:
+            print(f"  Warning: cuobjdump resource usage failed, using PTX register estimate: {e}")
+
+        output_path.write_text(
+            f"ptxas info    : {gmem} bytes gmem\n"
+            f"ptxas info    : Compiling entry function '{kernel_name}' for '{arch}'\n"
+            f"ptxas info    : Function properties for {kernel_name}\n"
+            f"    {stack} bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\n"
+            f"ptxas info    : Used {regs} registers, {shared} bytes smem, "
+            f"{cmem0} bytes cmem[0], {local} bytes lmem\n"
+        )
+        print(f"  Generated ptxinfo sidecar: {output_path}")
     
     def _generate_scratch_allocation_code(self, launch_info: KernelLaunchInfo) -> str:
         """Generate scratch buffer allocation code based on metadata
@@ -1038,9 +1127,12 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
         kernel_name = kernel_info.kernel_name
         launch_id = launch_info.launch_id
         
-        # Read PTX to check if we can generate
+        # Read PTX to check if we can generate the harness. PTX remains useful
+        # for signature parsing even when the executable fatbin is built from
+        # Triton's CUBIN.
         binary_path = Path(kernel_info.binary_path)
         ptx_path = binary_path.parent / f"{kernel_name}.ptx"
+        cubin_path = binary_path if binary_path.suffix == ".cubin" else None
         
         ptx_string = None
         if ptx_path.exists():
@@ -1302,7 +1394,7 @@ int main() {{
         harness_path.write_text(cpp_code)
         print(f"  Generated harness with arguments: {harness_path}")
         
-        # Save PTX file for linking with nvcc
+        # Save PTX/CUBIN files for linking with nvcc/fatbinary
         if ptx_string:
             ptx_filename = f"{kernel_name}_launch{launch_id}_kernel.ptx"
             ptx_file_path = self.launchers_dir / ptx_filename
@@ -1311,7 +1403,18 @@ int main() {{
             if ptx_path_src.exists():
                 import shutil
                 shutil.copy(ptx_path_src, ptx_file_path)
-                print(f"  Copied PTX for linking: {ptx_file_path}")
+                print(f"  Copied PTX for inspection: {ptx_file_path}")
+
+        cubin_file_path = None
+        if cubin_path and cubin_path.exists():
+            cubin_filename = f"{kernel_name}_launch{launch_id}_kernel.cubin"
+            cubin_file_path = self.launchers_dir / cubin_filename
+            import shutil
+            shutil.copy(cubin_path, cubin_file_path)
+            print(f"  Copied CUBIN for linking: {cubin_file_path}")
+            ptxinfo_path = self.launchers_dir / f"{kernel_name}_launch{launch_id}_kernel.ptxinfo"
+            self._generate_ptxinfo_sidecar(
+                cubin_file_path, ptx_path, ptxinfo_path, kernel_name)
         
         # Generate Makefile. If PTX was found we'll produce steps to build a fatbin
         makefile_path = self.launchers_dir / f"{kernel_name}_launch{launch_id}_Makefile"
@@ -1320,27 +1423,43 @@ int main() {{
         if ptx_string:
             ptx_filename = f"{kernel_name}_launch{launch_id}_kernel.ptx"
             fatbin_filename = f"{kernel_name}_launch{launch_id}_kernel.fatbin"
+            cubin_filename = f"{kernel_name}_launch{launch_id}_kernel.cubin"
+            has_cubin = bool(cubin_path and cubin_path.exists())
+            fatbin_deps = "$(CUBIN_FILE) $(PTX_FILE)" if has_cubin else "$(PTX_FILE)"
+            fatbin_images = (
+                "--image=profile=$(ARCH),file=$(CUBIN_FILE) "
+                "--image=profile=$(PTX_PROFILE),file=$(PTX_FILE)"
+                if has_cubin else
+                "--image=profile=$(PTX_PROFILE),file=$(PTX_FILE)"
+            )
 
             makefile_content = f"""
 # Makefile for {kernel_name} launch {launch_id}
-# Compiles PTX into fatbinary (loaded at runtime).
-# The fatbin file can be examined with cuobjdump to extract PTX.
+# Packages Triton's generated binary into a fatbinary loaded at runtime.
+# PTX is kept alongside it for inspection and trace tooling.
 
 NVCC = nvcc
+FATBINARY = fatbinary
 CUDA_FLAGS = -lcudart -lcuda
 TARGET = {target_name}
 PTX_FILE = {ptx_filename}
+CUBIN_FILE = {cubin_filename}
 FATBIN_FILE = {fatbin_filename}
+FATBIN_DEPS = {fatbin_deps}
+FATBINARY_IMAGES = {fatbin_images}
 
-# Auto-detect architecture from PTX .target directive
+# Auto-detect architecture from PTX .target directive. CUBIN comes from the
+# same Triton compile, so this profile also matches the CUBIN payload.
 ARCH := $(shell grep '^\\.target' $(PTX_FILE) | head -1 | awk '{{print $$2}}')
+PTX_PROFILE := $(patsubst sm_%,compute_%,$(ARCH))
 
 all: $(TARGET) $(FATBIN_FILE)
 
-# Create fatbin from PTX (use detected architecture)
-$(FATBIN_FILE): $(PTX_FILE)
+# Package Triton's CUBIN when available. Falling back to PTX-only avoids ptxas,
+# but may require a driver that understands the PTX version emitted by Triton.
+$(FATBIN_FILE): $(FATBIN_DEPS)
 \t@echo "Detected architecture: $(ARCH)"
-\t$(NVCC) -fatbin -arch=$(ARCH) -o $(FATBIN_FILE) $(PTX_FILE)
+\t$(FATBINARY) --create=$(FATBIN_FILE) $(FATBINARY_IMAGES)
 
 # Compile harness (fatbin is loaded from file at runtime)
 $(TARGET): {harness_filename}
@@ -1567,4 +1686,3 @@ if __name__ == '__main__':
     print("  2. Run them normally")
     print("  3. Call tracker.save_summary() to export tracking data")
     print("\nFor a complete example, run: python example_vector_add.py")
-
