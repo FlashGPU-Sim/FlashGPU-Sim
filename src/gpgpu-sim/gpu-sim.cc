@@ -1161,7 +1161,8 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
     m_gem5_wrapper->initialize();
 
     m_gem5_mem_subsys = std::make_shared<flash_gpgpu_sim::Gem5MemSubsystem>(
-        m_gem5_wrapper->getSystem(), m_gem5_wrapper->getGPGPUSimRequestors());
+        m_gem5_wrapper->getSystem(), m_gem5_wrapper->getGPGPUSimRequestors(),
+        m_shader_config->gmem_skip_L1D);
 
     m_gem5_mem_subsys->registerGPGPUSimInterconnectInterface();
   } else {
