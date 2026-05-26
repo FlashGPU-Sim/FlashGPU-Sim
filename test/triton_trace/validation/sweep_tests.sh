@@ -8,6 +8,7 @@
 # Workloads:
 #   tma_gemm      TMA GEMM — sweep over M=N=K size
 #   flash_attn    Flash Attention — sweep over seq_len
+#   llama3_gqa_attn Llama3-style grouped-query attention
 #
 # Modes:
 #   trace  — Generate traces only (requires real GPU, no setup_environment)
@@ -39,6 +40,7 @@
 #   ./sweep.sh flash_attn run 256 512 --head-dim 128
 #   ./sweep.sh flash_attn run --shape 2,4,1024,128,True
 #   ./sweep.sh flash_attn ncu 256 512 --head-dim 64 --causal
+#   ./sweep.sh llama3_gqa_attn run --csv configs/llama3_8b_gqa_attn_shapes_smoke.csv
 #
 
 set -euo pipefail
@@ -191,6 +193,39 @@ flash_attn_sweep_label() {
 flash_attn_summary_key() { echo "$1"; }
 flash_attn_summary_label() { echo "$(${WORKLOAD}_sweep_label)"; }
 
+# --- llama3_gqa_attn ---
+llama3_gqa_attn_init() {
+    TRACKING_SUBDIR="test_llama3_gqa_attn"
+    PYTHON_SCRIPT="test_llama3_gqa_attn.py"
+}
+llama3_gqa_attn_defaults() { echo "1,32,8,128,128,True 1,32,8,512,128,True"; }
+llama3_gqa_attn_subdir() {
+    local batch qheads kvheads seqlen headdim causal
+    IFS=',' read -r batch qheads kvheads seqlen headdim causal <<< "$1"
+    local causal_str=""
+    [[ "$causal" == "True" ]] && causal_str="_causal"
+    echo "b${batch}_hq${qheads}_hkv${kvheads}_seq${seqlen}_d${headdim}${causal_str}"
+}
+llama3_gqa_attn_python_args() {
+    local batch qheads kvheads seqlen headdim causal
+    IFS=',' read -r batch qheads kvheads seqlen headdim causal <<< "$1"
+    local args="--seq-len $seqlen --head-dim $headdim --batch $batch --q-heads $qheads --kv-heads $kvheads"
+    [[ "$causal" == "True" ]] && args="$args --causal"
+    echo "$args"
+}
+llama3_gqa_attn_kernel_name() { echo "_llama3_gqa_attn_fwd"; }
+llama3_gqa_attn_tflops_expr() {
+    local batch qheads kvheads seqlen headdim causal
+    IFS=',' read -r batch qheads kvheads seqlen headdim causal <<< "$1"
+    local factor=4
+    [[ "$causal" == "True" ]] && factor=2
+    echo "${factor}.0 * ${batch} * ${qheads} * ${seqlen}**2 * ${headdim} / (float(dur) * 1e-6) / 1e12"
+}
+llama3_gqa_attn_banner() { echo "Llama3 GQA Attention Sweep"; }
+llama3_gqa_attn_sweep_label() { echo "batch,qheads,kvheads,seqlen,headdim,causal"; }
+llama3_gqa_attn_summary_key() { echo "$1"; }
+llama3_gqa_attn_summary_label() { echo "$(${WORKLOAD}_sweep_label)"; }
+
 # ============================================================================
 # Argument Parsing
 # ============================================================================
@@ -212,8 +247,8 @@ WORKLOAD="$1"; shift
 
 # Validate workload
 case "$WORKLOAD" in
-    tma_gemm|flash_attn) ;;
-    *) echo "ERROR: Unknown workload '$WORKLOAD'. Available: tma_gemm, flash_attn"; exit 1 ;;
+    tma_gemm|flash_attn|llama3_gqa_attn) ;;
+    *) echo "ERROR: Unknown workload '$WORKLOAD'. Available: tma_gemm, flash_attn, llama3_gqa_attn"; exit 1 ;;
 esac
 
 # Parse mode
@@ -348,6 +383,19 @@ do_trace() {
         exit 1
     fi
     source "$VENV_ACTIVATE"
+    VENV_CUDA_BIN="$(python - <<'PY'
+import site
+from pathlib import Path
+
+for root in site.getsitepackages():
+    for path in sorted(Path(root).glob("nvidia/cu*/bin/nvcc"), reverse=True):
+        print(path.parent)
+        raise SystemExit
+PY
+)"
+    if [[ -n "$VENV_CUDA_BIN" ]]; then
+        export PATH="$VENV_CUDA_BIN:$PATH"
+    fi
 
     # Generate trace
     local py_args
@@ -398,8 +446,12 @@ do_run() {
 
     if grep -q 'Validation PASSED' "$log_file"; then
         local cycles
-        cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}')
-        echo "  PASSED — ${cycles} cycles (log: $log_file)"
+        cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || true)
+        if [[ -n "$cycles" ]]; then
+            echo "  PASSED — ${cycles} cycles (log: $log_file)"
+        else
+            echo "  PASSED validation, but no simulator cycle stats found (log: $log_file)"
+        fi
     else
         echo "  FAILED — check $log_file"
     fi

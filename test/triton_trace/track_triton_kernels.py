@@ -1292,7 +1292,11 @@ int main(int argc, char** argv) {{{{
     CUdevice device;
     CUcontext context;
     cuDeviceGet(&device, 0);
+#if CUDA_VERSION >= 12050
+    cuCtxCreate(&context, NULL, 0, device);
+#else
     cuCtxCreate(&context, 0, device);
+#endif
 
     // Get executable directory
     char exe_path[1024];
@@ -1416,7 +1420,7 @@ int main() {{
             self._generate_ptxinfo_sidecar(
                 cubin_file_path, ptx_path, ptxinfo_path, kernel_name)
         
-        # Generate Makefile. If PTX was found we'll produce steps to build a fatbin
+        # Generate Makefile. If PTX was found we'll produce steps to build a fatbin.
         makefile_path = self.launchers_dir / f"{kernel_name}_launch{launch_id}_Makefile"
         target_name = f"{kernel_name}_launch{launch_id}"
 
@@ -1440,7 +1444,10 @@ int main() {{
 
 NVCC = nvcc
 FATBINARY = fatbinary
-CUDA_FLAGS = -lcudart -lcuda
+NVCC_BIN := $(shell command -v $(NVCC))
+CUDA_LIB_DIR := $(abspath $(dir $(NVCC_BIN))/../lib)
+CUDART_FLAG := $(shell if [ -f "$(CUDA_LIB_DIR)/libcudart.so.13" ]; then echo "-l:libcudart.so.13"; else echo "-lcudart"; fi)
+CUDA_FLAGS = -L$(CUDA_LIB_DIR) -Xlinker -rpath -Xlinker $(CUDA_LIB_DIR) $(CUDART_FLAG) -lcuda
 TARGET = {target_name}
 PTX_FILE = {ptx_filename}
 CUBIN_FILE = {cubin_filename}
@@ -1546,7 +1553,11 @@ int main(int argc, char** argv) {{
     CUdevice device;
     CUcontext context;
     CUDA_CHECK(cuDeviceGet(&device, 0));
+#if CUDA_VERSION >= 12050
+    CUDA_CHECK(cuCtxCreate(&context, NULL, 0, device));
+#else
     CUDA_CHECK(cuCtxCreate(&context, 0, device));
+#endif
     
     // Load kernel binary
     const char* binary_path = "{kernel_info.binary_path}";

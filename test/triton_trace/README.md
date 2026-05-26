@@ -40,8 +40,30 @@ This eliminates false positives and ensures validation only checks actual output
 
 ## Quick Start
 
+Create the local Python environment first. Use Python 3.12 for the current
+Torch/Triton wheels; the host default Python may be newer than supported wheels.
+Install `uv` inside the venv, then use `uv pip` for the large packages:
+
+```bash
+cd /data/wzr/rtl-lib/flashgpu-gem5-top/flashgpu-sim
+python3.12 -m venv test/triton_trace/.venv
+test/triton_trace/.venv/bin/python -m pip install -U pip uv
+
+UV_CACHE_DIR=/data/wzr/rtl-lib/.uv-cache \
+  test/triton_trace/.venv/bin/uv pip install \
+  --python test/triton_trace/.venv/bin/python \
+  --link-mode hardlink \
+  torch triton numpy nvidia-cuda-nvcc
+```
+
+`nvidia-cuda-nvcc` is required on RTX 5090/SM120 flows because recent Triton
+emits PTX 9.1 with `sm_120a`; the system CUDA 12.x `ptxas` cannot assemble it.
+The validation sweep scripts automatically put the venv CUDA `nvcc` before the
+system CUDA toolkit when building generated launchers.
+
 ```bash
 # Run the example
+source test/triton_trace/.venv/bin/activate
 python examples/example_vector_add.py
 
 # Build and run the generated harness
@@ -153,8 +175,8 @@ After Launch (launch_exit_hook):
 
 For each kernel launch, generates:
 - `{kernel}_launch{N}_harness.cu` - Standalone C++ launcher **with validation**
-- `{kernel}_launch{N}_kernel.ptx` - PTX source (sm_XXXa → sm_XXX fixed)
-- `{kernel}_launch{N}_kernel.fatbin` - Compiled fatbin
+- `{kernel}_launch{N}_kernel.ptx` - PTX source captured from Triton
+- `{kernel}_launch{N}_kernel.cubin` - Compiled cubin for real-GPU replay
 - `{kernel}_launch{N}_arg{M}.bin` - Input tensor data
 - `{kernel}_launch{N}_arg{M}_output.bin` - Output tensor data (only if modified)
 - `{kernel}_launch{N}_Makefile` - Build script
@@ -194,21 +216,27 @@ make -f add_kernel_launch1_Makefile
 ```
 
 The harness:
-- Loads the fatbin from file (using cuModuleLoad)
-- Resolves fatbin path relative to executable location (portable)
+- Loads the cubin from file (using cuModuleLoad)
+- Resolves the module image path relative to executable location (portable)
 - Loads tensor arguments from .bin files
 - Launches the kernel with captured parameters
 
 ## GPGPU-Sim Workflow
 
-The generated fatbin files are compatible with cuobjdump:
+The generated launchers are first validated on a real GPU. For GPGPU-Sim,
+confirm that `setup_environment` has selected the simulator `libcudart` and that
+the run log contains `gpu_tot_sim_cycle`. If validation passes but the log has no
+simulator cycle counters, the executable ran through the real CUDA runtime.
+
+Current SM120/Triton 3.7 launchers use CUDA 13 user-space libraries for real-GPU
+replay. GPGPU-Sim runtime interception may need matching `libcudart.so.13`
+compatibility or a separate simulator-linked launcher before cycle comparison is
+meaningful.
 
 ```bash
-# Extract PTX for GPGPU-Sim
-cuobjdump --dump-ptx add_kernel_launch1_kernel.fatbin > kernel.ptx
-
-# Use in GPGPU-Sim
-# The standalone harness can be run under GPGPU-Sim's LD_PRELOAD interception
+source setup.sh && source setup_environment
+cd triton_kernel_tracking/<test>/.../launchers
+./<kernel>_launch1
 ```
 
 ## Output Structure
@@ -224,7 +252,7 @@ triton_kernel_tracking/
 │   ├── launchers/
 │   │   ├── add_kernel_launch1_harness.cu      # Harness with validation
 │   │   ├── add_kernel_launch1_kernel.ptx
-│   │   ├── add_kernel_launch1_kernel.fatbin
+│   │   ├── add_kernel_launch1_kernel.cubin
 │   │   └── add_kernel_launch1_Makefile
 │   ├── data/
 │   │   ├── add_kernel_launch1_arg0.bin        # Input tensors
