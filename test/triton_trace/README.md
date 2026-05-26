@@ -40,6 +40,20 @@ This eliminates false positives and ensures validation only checks actual output
 
 ## Quick Start
 
+When this repository is checked out through `flashgpu-gem5-top`, prefer the
+top-level Docker image for Triton tracing and simulator/gem5 runs:
+
+```bash
+cd /flashgpu-gem5-top
+make docker-build
+make docker-shell
+cd flashgpu-sim/test/triton_trace/validation
+```
+
+That container already provides CUDA 13 tooling plus a Python 3.12 venv with
+`uv`, PyTorch, Triton, NumPy, and SCons. The manual host-side venv setup below
+is only for working outside Docker.
+
 Create the local Python environment first. Use Python 3.12 for the current
 Torch/Triton wheels; the host default Python may be newer than supported wheels.
 Install `uv` inside the venv, then use `uv pip` for the large packages:

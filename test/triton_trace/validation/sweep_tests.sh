@@ -396,6 +396,18 @@ require_clean_env() {
     fi
 }
 
+activate_triton_env() {
+    if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+        return
+    fi
+    if [[ -f "$VENV_ACTIVATE" ]]; then
+        source "$VENV_ACTIVATE"
+        return
+    fi
+    echo "ERROR: Triton venv not found at $VENV_ACTIVATE and no active VIRTUAL_ENV is set."
+    exit 1
+}
+
 install_gpu_config() {
     local launcher_dir=$1
     local skip_l1d="${2:-}"
@@ -435,11 +447,7 @@ do_trace() {
 
     require_clean_env
 
-    if [[ ! -f "$VENV_ACTIVATE" ]]; then
-        echo "ERROR: Triton venv not found at $VENV_ACTIVATE"
-        exit 1
-    fi
-    source "$VENV_ACTIVATE"
+    activate_triton_env
     VENV_CUDA_BIN="$(python - <<'PY'
 import site
 from pathlib import Path
@@ -605,6 +613,78 @@ do_gem5() {
 
     if [[ "${FLASHGPU_GEM5_BUILD:-0}" == "1" ]]; then
         make -C "$TOP_ROOT" GEM5_ARCH="$gem5_arch" build
+    fi
+
+    if is_multi_launch; then
+        local shape_log_dir="$GEM5_LOG_DIR/${subdir}"
+        local aggregate_log="$GEM5_LOG_DIR/${subdir}_gem5.log"
+        local total_cycles=0
+        local total_insn=0
+        local all_passed=1
+        local ran_any=0
+
+        mkdir -p "$shape_log_dir"
+        : > "$aggregate_log"
+
+        while IFS= read -r exe_path; do
+            ran_any=1
+            local exe
+            exe="$(basename "$exe_path")"
+            local kernel_log_file="$shape_log_dir/${exe}_gem5.log"
+            echo "=== $exe ===" >> "$aggregate_log"
+            set +e
+            (
+                export GEM5_ARCH="$gem5_arch"
+                export FLASHGPU_GEM5_TOP="$TOP_ROOT"
+                export GEM_FORGE_TOP="$TOP_ROOT"
+                export FLASHGPU_GEM5_ENABLE=1
+                export FLASHGPU_GEM5_CONFIG_NAME="$gem5_config_name"
+
+                source "$TOP_ROOT/scripts/env.sh"
+
+                cd "$REPO_ROOT"
+                set +u
+                source setup.sh
+                source setup_environment
+                set -u
+
+                cd "$launcher_dir"
+                timeout "$timeout_sec" "./$exe"
+            ) > "$kernel_log_file" 2>&1
+            local status=$?
+            set -e
+            cat "$kernel_log_file" >> "$aggregate_log"
+            echo "" >> "$aggregate_log"
+
+            if [[ "$status" == "0" ]] && grep -q 'Validation PASSED' "$kernel_log_file"; then
+                local cycles insn
+                cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$kernel_log_file" | awk '{print $3}' || true)
+                insn=$(grep -m1 '^gpu_tot_sim_insn' "$kernel_log_file" | awk '{print $3}' || true)
+                [[ -n "$cycles" ]] && total_cycles=$((total_cycles + cycles))
+                [[ -n "$insn" ]] && total_insn=$((total_insn + insn))
+                echo "  ${exe}: PASSED - ${cycles:-N/A} cycles"
+            else
+                all_passed=0
+                echo "  ${exe}: FAILED - check $kernel_log_file"
+            fi
+        done < <(launcher_executables "$launcher_dir")
+
+        if [[ "$all_passed" == "1" && "$ran_any" == "1" ]]; then
+            {
+                echo "multi_launch_validation PASSED"
+                echo "multi_launch_total_cycles $total_cycles"
+                echo "multi_launch_total_insn $total_insn"
+            } >> "$aggregate_log"
+            echo "  ALL PASSED - aggregate ${total_cycles} cycles (log: $aggregate_log)"
+        else
+            {
+                echo "multi_launch_validation FAILED"
+                echo "multi_launch_total_cycles $total_cycles"
+                echo "multi_launch_total_insn $total_insn"
+            } >> "$aggregate_log"
+            echo "  FAILED - aggregate log: $aggregate_log"
+        fi
+        return
     fi
 
     (
@@ -788,12 +868,23 @@ extract_gem5_metrics() {
 
     local sim_cycles tot_insn ipc sim_time validation
 
-    sim_cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || echo "N/A")
-    tot_insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || echo "N/A")
+    if is_multi_launch; then
+        sim_cycles=$(grep -m1 '^multi_launch_total_cycles' "$log_file" | awk '{print $2}' || echo "N/A")
+        tot_insn=$(grep -m1 '^multi_launch_total_insn' "$log_file" | awk '{print $2}' || echo "N/A")
+    else
+        sim_cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || echo "N/A")
+        tot_insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || echo "N/A")
+    fi
     ipc=$(grep -m1 '^gpu_tot_ipc' "$log_file" | awk '{print $3}' || echo "N/A")
     sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || echo "N/A")
 
-    if grep -q 'Validation PASSED' "$log_file"; then
+    if is_multi_launch; then
+        if grep -q '^multi_launch_validation PASSED' "$log_file"; then
+            validation="PASSED"
+        else
+            validation="FAILED"
+        fi
+    elif grep -q 'Validation PASSED' "$log_file"; then
         validation="PASSED"
     else
         validation="FAILED"
