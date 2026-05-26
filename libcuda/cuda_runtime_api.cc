@@ -129,7 +129,18 @@
 #include "builtin_types.h"
 #include "driver_types.h"
 #include "cuda_api.h"
+#if defined(__has_include)
+#if __has_include("cudaProfiler.h")
 #include "cudaProfiler.h"
+#else
+typedef enum CUoutput_mode_enum {
+  CU_OUT_KEY_VALUE_PAIR = 0x00,
+  CU_OUT_CSV = 0x01
+} CUoutput_mode;
+#endif
+#else
+#include "cudaProfiler.h"
+#endif
 // clang-format on
 #if (CUDART_VERSION < 8000)
 #include "__cudaFatFormat.h"
@@ -232,7 +243,9 @@ struct _cuda_device_id *gpgpu_context::GPGPUSim_Init() {
     prop->sharedMemPerBlock = the_gpu->shared_mem_per_block();
     prop->regsPerBlock = the_gpu->num_registers_per_block();
     prop->warpSize = the_gpu->wrp_size();
+#if (CUDART_VERSION < 13000)
     prop->clockRate = the_gpu->shader_clock();
+#endif
 #if (CUDART_VERSION >= 2010)
     prop->multiProcessorCount = the_gpu->get_config().num_shader();
 #endif
@@ -620,6 +633,39 @@ static unsigned get_next_fat_bin_handle() {
   return handle;
 }
 
+static bool file_exists(const std::string &path) {
+  std::ifstream file(path.c_str());
+  return file.good();
+}
+
+static std::string sidecar_ptx_for_module(const char *module_path) {
+  std::string path(module_path);
+  const std::string cubin_suffix = ".cubin";
+  if (path.length() <= cubin_suffix.length()) return "";
+  if (path.compare(path.length() - cubin_suffix.length(), cubin_suffix.length(),
+                   cubin_suffix) != 0) {
+    return "";
+  }
+  std::string ptx_path =
+      path.substr(0, path.length() - cubin_suffix.length()) + ".ptx";
+  return file_exists(ptx_path) ? ptx_path : "";
+}
+
+static std::string ptx_target_from_file(const std::string &ptx_path) {
+  std::ifstream file(ptx_path.c_str());
+  std::string line;
+  while (std::getline(file, line)) {
+    size_t target_pos = line.find(".target");
+    if (target_pos == std::string::npos) continue;
+    size_t sm_pos = line.find("sm_", target_pos);
+    if (sm_pos == std::string::npos) continue;
+    size_t end = line.find_first_of(", \t\r\n", sm_pos);
+    return line.substr(sm_pos, end == std::string::npos ? std::string::npos
+                                                        : end - sm_pos);
+  }
+  return "";
+}
+
 // Internal implementation for cudaRegisterFatBiaryInternal
 void **cudaRegisterFatBiaryInternal_impl(
     void *fatCubin, gpgpu_context *gpgpu_ctx, std::string &app_binary_path,
@@ -657,9 +703,13 @@ void **cudaRegisterFatBiaryInternal_impl(
     size_t pos = app_binary_path.find("python");
     if (pos == std::string::npos) {
       // Not pytorch app : checking cuda version
-      assert(
-          app_cuda_version == CUDART_VERSION / 1000 &&
-          "The app must be compiled with same major version as the simulator.");
+      if (app_cuda_version != CUDART_VERSION / 1000) {
+        printf(
+            "GPGPU-Sim PTX: warning -- app CUDA major version %d differs from "
+            "simulator CUDA major version %d; continuing with compatibility "
+            "shim\n",
+            app_cuda_version, CUDART_VERSION / 1000);
+      }
     }
 
     // int app_cuda_version = get_app_cuda_version();
@@ -1823,7 +1873,11 @@ cudaDeviceGetAttributeInternal(int *value, enum cudaDeviceAttr attr, int device,
         *value = prop->regsPerBlock;
         break;
       case 13:
+#if (CUDART_VERSION >= 13000)
+        *value = dev->get_gpgpu()->shader_clock();
+#else
         *value = prop->clockRate;
+#endif
         printf("GPGPU-Sim: cudaDevAttrClockRate returning %d kHz (%.0f MHz)\n",
                *value, *value / 1000.0);
         break;
@@ -4846,6 +4900,21 @@ CUresult CUDAAPI cuCtxCreate(CUcontext *pctx, unsigned int flags,
   printf("WARNING: this function has not been implemented yet %s\n", __my_func__);
   return CUDA_SUCCESS;
 }
+
+extern "C" CUresult CUDAAPI cuCtxCreate_v3(CUcontext *pctx, void *paramsArray,
+                                           int numParams, unsigned int flags,
+                                           CUdevice dev) {
+  (void)paramsArray;
+  (void)numParams;
+  return cuCtxCreate(pctx, flags, dev);
+}
+
+extern "C" CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
+                                           void *ctxCreateParams,
+                                           unsigned int flags, CUdevice dev) {
+  (void)ctxCreateParams;
+  return cuCtxCreate(pctx, flags, dev);
+}
 #endif /* CUDART_VERSION >= 3020 */
 
 #if CUDART_VERSION >= 4000
@@ -5020,6 +5089,39 @@ CUresult CUDAAPI cuModuleLoad(CUmodule *module, const char *fname) {
   // cudaRegisterFatBinary
   unsigned module_handle = get_next_fat_bin_handle();
   printf("cuModuleLoad: Allocated module handle %u\n", module_handle);
+
+  std::string sidecar_ptx = sidecar_ptx_for_module(fname);
+  if (!sidecar_ptx.empty()) {
+    printf("cuModuleLoad: Loading sidecar PTX %s\n", sidecar_ptx.c_str());
+    symbol_table *symtab = ctx->gpgpu_ptx_sim_load_ptx_from_filename(
+        sidecar_ptx.c_str());
+    context->add_binary(symtab, module_handle);
+    ctx->api->name_symtab[fname] = symtab;
+    ctx->api->name_symtab[sidecar_ptx] = symtab;
+
+    std::string arch_str = ptx_target_from_file(sidecar_ptx);
+    if (arch_str.empty()) {
+      unsigned forced_capability =
+          context->get_device()
+              ->get_gpgpu()
+              ->get_config()
+              .get_forced_max_capability();
+      if (forced_capability == 0) forced_capability = 20;
+      arch_str = "sm_" + std::to_string(forced_capability);
+    }
+    ctx->gpgpu_ptx_info_load_from_filename(sidecar_ptx.c_str(),
+                                            arch_str.c_str());
+
+    ctx->api->load_static_globals(symtab, STATIC_ALLOC_LIMIT,
+                                  context->get_device()->get_gpgpu());
+    ctx->api->load_constants(symtab, STATIC_ALLOC_LIMIT,
+                             context->get_device()->get_gpgpu());
+
+    *module = (CUmodule)(unsigned long long)module_handle;
+    printf("cuModuleLoad: Successfully loaded sidecar PTX with handle %u\n",
+           module_handle);
+    return CUDA_SUCCESS;
+  }
 
   // 1. INIT: Extract code using cuobjdump on first load (handle == 1)
   if (module_handle == 1) {

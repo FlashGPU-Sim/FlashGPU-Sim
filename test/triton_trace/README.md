@@ -53,13 +53,15 @@ UV_CACHE_DIR=/data/wzr/rtl-lib/.uv-cache \
   test/triton_trace/.venv/bin/uv pip install \
   --python test/triton_trace/.venv/bin/python \
   --link-mode hardlink \
-  torch triton numpy nvidia-cuda-nvcc
+  torch triton numpy nvidia-cuda-nvcc nvidia-cuda-cuobjdump
 ```
 
-`nvidia-cuda-nvcc` is required on RTX 5090/SM120 flows because recent Triton
-emits PTX 9.1 with `sm_120a`; the system CUDA 12.x `ptxas` cannot assemble it.
-The validation sweep scripts automatically put the venv CUDA `nvcc` before the
-system CUDA toolkit when building generated launchers.
+`nvidia-cuda-nvcc` and `nvidia-cuda-cuobjdump` are required on RTX 5090/SM120
+flows because recent Triton emits PTX 9.1 with `sm_120a`; the system CUDA 12.x
+`ptxas` cannot assemble it. `setup.sh` prefers the repo-local venv CUDA toolkit
+when `CUDA_INSTALL_PATH` is not already set, and the validation sweep scripts put
+the venv CUDA `nvcc` before the system CUDA toolkit when building generated
+launchers.
 
 ```bash
 # Run the example
@@ -229,9 +231,10 @@ the run log contains `gpu_tot_sim_cycle`. If validation passes but the log has n
 simulator cycle counters, the executable ran through the real CUDA runtime.
 
 Current SM120/Triton 3.7 launchers use CUDA 13 user-space libraries for real-GPU
-replay. GPGPU-Sim runtime interception may need matching `libcudart.so.13`
-compatibility or a separate simulator-linked launcher before cycle comparison is
-meaningful.
+replay. Build FlashGPU-Sim after `source setup.sh && source setup_environment`
+so the simulator runtime uses the venv CUDA 13 toolkit. Generated Triton
+launchers load a cubin through `cuModuleLoad`; for simulation, the runtime uses
+the captured sidecar PTX next to that cubin.
 
 ```bash
 source setup.sh && source setup_environment

@@ -174,12 +174,14 @@ TMA instructions (`cp.async.bulk.tensor`) use the Triton-based test workflow to 
      test/triton_trace/.venv/bin/uv pip install \
      --python test/triton_trace/.venv/bin/python \
      --link-mode hardlink \
-     torch triton numpy nvidia-cuda-nvcc
+     torch triton numpy nvidia-cuda-nvcc nvidia-cuda-cuobjdump
    ```
 
-   Use `nvidia-cuda-nvcc` from the venv when Triton emits PTX 9.1 / `sm_120a`;
-   CUDA 12.x `ptxas` cannot assemble those kernels. The validation sweep scripts
-   detect the venv CUDA `nvcc` automatically after activating `.venv`.
+   Use the venv CUDA toolkit when Triton emits PTX 9.1 / `sm_120a`; CUDA 12.x
+   `ptxas` cannot assemble those kernels. `setup.sh` prefers the repo-local venv
+   CUDA toolkit when `CUDA_INSTALL_PATH` is not already set, and the validation
+   sweep scripts detect the venv CUDA `nvcc` automatically after activating
+   `.venv`.
 
 2. **Modify Test Kernels**: Edit `test/triton_trace/example_tensor_add.py` with test variants
 
