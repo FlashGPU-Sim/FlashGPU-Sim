@@ -6109,7 +6109,11 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
   
   if (!vector_spec) {
-    data = thread->get_operand_value(src1, dst, type, thread, 1);
+    if (src1.is_vector() && src1.get_vect_nelem() == 1) {
+      thread->get_vector_operand_values(src1, &data, 1);
+    } else {
+      data = thread->get_operand_value(src1, dst, type, thread, 1);
+    }
     mem->write(addr, size / 8, &data.s64, thread, pI);
 
     if (type == F32_TYPE) {
