@@ -1436,6 +1436,12 @@ int main() {{
                 if has_cubin else
                 "--image=profile=$(PTX_PROFILE),file=$(PTX_FILE)"
             )
+            fatbin_images_image3 = (
+                "--image3=kind=elf,sm=$(ARCH_NUM),file=$(CUBIN_FILE) "
+                "--image3=kind=ptx,sm=$(ARCH_NUM),file=$(PTX_FILE)"
+                if has_cubin else
+                "--image3=kind=ptx,sm=$(ARCH_NUM),file=$(PTX_FILE)"
+            )
 
             makefile_content = f"""
 # Makefile for {kernel_name} launch {launch_id}
@@ -1453,11 +1459,13 @@ PTX_FILE = {ptx_filename}
 CUBIN_FILE = {cubin_filename}
 FATBIN_FILE = {fatbin_filename}
 FATBIN_DEPS = {fatbin_deps}
-FATBINARY_IMAGES = {fatbin_images}
+FATBINARY_IMAGES_LEGACY = {fatbin_images}
+FATBINARY_IMAGES_IMAGE3 = {fatbin_images_image3}
 
 # Auto-detect architecture from PTX .target directive. CUBIN comes from the
 # same Triton compile, so this profile also matches the CUBIN payload.
 ARCH := $(shell grep '^\\.target' $(PTX_FILE) | head -1 | awk '{{print $$2}}')
+ARCH_NUM := $(patsubst sm_%,%,$(ARCH))
 PTX_PROFILE := $(patsubst sm_%,compute_%,$(ARCH))
 
 all: $(TARGET) $(FATBIN_FILE)
@@ -1466,7 +1474,11 @@ all: $(TARGET) $(FATBIN_FILE)
 # but may require a driver that understands the PTX version emitted by Triton.
 $(FATBIN_FILE): $(FATBIN_DEPS)
 \t@echo "Detected architecture: $(ARCH)"
-\t$(FATBINARY) --create=$(FATBIN_FILE) $(FATBINARY_IMAGES)
+\t@if $(FATBINARY) --help 2>&1 | grep -q -- '--image3'; then \\
+\t\t$(FATBINARY) --create=$(FATBIN_FILE) $(FATBINARY_IMAGES_IMAGE3); \\
+\telse \\
+\t\t$(FATBINARY) --create=$(FATBIN_FILE) $(FATBINARY_IMAGES_LEGACY); \\
+\tfi
 
 # Compile harness (fatbin is loaded from file at runtime)
 $(TARGET): {harness_filename}
