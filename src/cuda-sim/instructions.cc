@@ -4091,8 +4091,14 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
   int overflow = 0;
 
   unsigned i_type = pI->get_type();
-  ptx_reg_t a = thread->get_operand_value(src1, dst, i_type, thread, 1);
-  ptx_reg_t b = thread->get_operand_value(src2, dst, i_type, thread, 1);
+  unsigned mul_type = i_type;
+  const std::list<int> scalar_type = pI->get_scalar_type();
+  if (pI->get_opcode() == FMA_OP && scalar_type.size() == 2) {
+    mul_type = scalar_type.back();
+  }
+
+  ptx_reg_t a = thread->get_operand_value(src1, dst, mul_type, thread, 1);
+  ptx_reg_t b = thread->get_operand_value(src2, dst, mul_type, thread, 1);
   ptx_reg_t c = thread->get_operand_value(src3, dst, i_type, thread, 1);
 
   // take the carry bit, it should be the 4th operand
@@ -4215,7 +4221,11 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
           // assert(0);
           break;
       }
-      d.f32 = a.f32 * b.f32 + c.f32;
+      if (mul_type == F16_TYPE) {
+        d.f32 = static_cast<float>(a.f16) * static_cast<float>(b.f16) + c.f32;
+      } else {
+        d.f32 = a.f32 * b.f32 + c.f32;
+      }
       if (pI->saturation_mode()) {
         if (d.f32 < 0)
           d.f32 = 0;
