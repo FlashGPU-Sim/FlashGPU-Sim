@@ -39,6 +39,11 @@ case "$MODE" in
         ./sweep_tests.sh llama3_gqa_attn "$MODE" --csv "$GQA_CSV"
         if [[ -f "$LAYER_CSV" && "$MODE" != "ncu" ]]; then
             ./sweep_tests.sh llama3_layer "$MODE" --csv "$LAYER_CSV"
+            ./sweep_tests.sh llama3_layer_packed "$MODE" --csv "$LAYER_CSV"
+            ./sweep_tests.sh llama3_layer_tiled "$MODE" --csv "$LAYER_CSV"
+            ./sweep_tests.sh llama3_layer_token_out "$MODE" --csv "$LAYER_CSV"
+            ./sweep_tests.sh llama3_layer_blocked "$MODE" --csv "$LAYER_CSV"
+            ./sweep_tests.sh llama3_layer_full_tiled "$MODE" --csv "$LAYER_CSV"
         fi
         ;;
     compare)
@@ -48,6 +53,11 @@ case "$MODE" in
         python3 extract_metrics.py test_llama3_gqa_attn
         if [[ -f "$LAYER_CSV" ]]; then
             python3 extract_metrics.py test_llama3_layer
+            python3 extract_metrics.py test_llama3_layer_packed
+            python3 extract_metrics.py test_llama3_layer_tiled
+            python3 extract_metrics.py test_llama3_layer_token_out
+            python3 extract_metrics.py test_llama3_layer_blocked
+            python3 extract_metrics.py test_llama3_layer_full_tiled
         fi
         ;;
     *)

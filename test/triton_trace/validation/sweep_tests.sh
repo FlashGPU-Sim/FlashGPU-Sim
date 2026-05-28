@@ -10,6 +10,11 @@
 #   flash_attn    Flash Attention — sweep over seq_len
 #   llama3_gqa_attn Llama3-style grouped-query attention
 #   llama3_layer   Triton-only Llama3-style decoder layer
+#   llama3_layer_packed Packed QKV and gate/up decoder layer
+#   llama3_layer_tiled Packed QKV with head-major QKV output
+#   llama3_layer_token_out Tiled QKV with token-major attention output
+#   llama3_layer_blocked Tiled QKV with blocked attention output
+#   llama3_layer_full_tiled Tile-contract layer tensors and GEMMs
 #
 # Modes:
 #   trace  — Generate traces only (requires real GPU, no setup_environment)
@@ -131,6 +136,8 @@ FA_HEAD_DIM=128
 FA_BATCH=1
 FA_HEADS=8
 FA_CAUSAL=0
+LLAMA3_BLOCK_S_TILE="${LLAMA3_BLOCK_S_TILE:-64}"
+LLAMA3_BLOCK_H_TILE="${LLAMA3_BLOCK_H_TILE:-4}"
 
 flash_attn_init() {
     TRACKING_SUBDIR="test_flash_attn"
@@ -257,6 +264,122 @@ llama3_layer_summary_key() { echo "$1"; }
 llama3_layer_summary_label() { echo "$(${WORKLOAD}_sweep_label)"; }
 llama3_layer_multi_launch() { return 0; }
 
+llama3_layer_variant_subdir() {
+    local base
+    base="$(llama3_layer_subdir "$1")"
+    if [[ "${LLAMA3_LAYER_VARIANT:-}" == "blocked" ]]; then
+        echo "${base}_st${LLAMA3_BLOCK_S_TILE}_ht${LLAMA3_BLOCK_H_TILE}"
+    elif [[ "${LLAMA3_LAYER_VARIANT:-}" == "full_tiled" ]]; then
+        echo "${base}_mt64_nt128"
+    else
+        echo "$base"
+    fi
+}
+llama3_layer_variant_python_args() {
+    local args
+    args="$(llama3_layer_python_args "$1") --variant ${LLAMA3_LAYER_VARIANT}"
+    if [[ "${LLAMA3_LAYER_VARIANT}" == "blocked" ]]; then
+        args="$args --s-tile ${LLAMA3_BLOCK_S_TILE} --h-tile ${LLAMA3_BLOCK_H_TILE}"
+    fi
+    echo "$args"
+}
+llama3_layer_variant_defaults() { llama3_layer_defaults; }
+llama3_layer_variant_kernel_name() { llama3_layer_kernel_name; }
+llama3_layer_variant_tflops_expr() { llama3_layer_tflops_expr "$1"; }
+llama3_layer_variant_sweep_label() { llama3_layer_sweep_label; }
+llama3_layer_variant_summary_key() { llama3_layer_summary_key "$1"; }
+llama3_layer_variant_summary_label() { llama3_layer_summary_label; }
+llama3_layer_variant_multi_launch() { return 0; }
+
+# --- llama3_layer_packed ---
+llama3_layer_packed_init() {
+    TRACKING_SUBDIR="test_llama3_layer_packed"
+    PYTHON_SCRIPT="test_llama3_layer.py"
+    LLAMA3_LAYER_VARIANT="packed"
+}
+llama3_layer_packed_defaults() { llama3_layer_variant_defaults; }
+llama3_layer_packed_subdir() { llama3_layer_variant_subdir "$1"; }
+llama3_layer_packed_python_args() { llama3_layer_variant_python_args "$1"; }
+llama3_layer_packed_kernel_name() { llama3_layer_variant_kernel_name; }
+llama3_layer_packed_tflops_expr() { llama3_layer_variant_tflops_expr "$1"; }
+llama3_layer_packed_banner() { echo "Triton Llama3 Layer Packed Sweep"; }
+llama3_layer_packed_sweep_label() { llama3_layer_variant_sweep_label; }
+llama3_layer_packed_summary_key() { llama3_layer_variant_summary_key "$1"; }
+llama3_layer_packed_summary_label() { llama3_layer_variant_summary_label; }
+llama3_layer_packed_multi_launch() { return 0; }
+
+# --- llama3_layer_tiled ---
+llama3_layer_tiled_init() {
+    TRACKING_SUBDIR="test_llama3_layer_tiled"
+    PYTHON_SCRIPT="test_llama3_layer.py"
+    LLAMA3_LAYER_VARIANT="tiled"
+}
+llama3_layer_tiled_defaults() { llama3_layer_variant_defaults; }
+llama3_layer_tiled_subdir() { llama3_layer_variant_subdir "$1"; }
+llama3_layer_tiled_python_args() { llama3_layer_variant_python_args "$1"; }
+llama3_layer_tiled_kernel_name() { llama3_layer_variant_kernel_name; }
+llama3_layer_tiled_tflops_expr() { llama3_layer_variant_tflops_expr "$1"; }
+llama3_layer_tiled_banner() { echo "Triton Llama3 Layer Tiled-QKV Sweep"; }
+llama3_layer_tiled_sweep_label() { llama3_layer_variant_sweep_label; }
+llama3_layer_tiled_summary_key() { llama3_layer_variant_summary_key "$1"; }
+llama3_layer_tiled_summary_label() { llama3_layer_variant_summary_label; }
+llama3_layer_tiled_multi_launch() { return 0; }
+
+# --- llama3_layer_token_out ---
+llama3_layer_token_out_init() {
+    TRACKING_SUBDIR="test_llama3_layer_token_out"
+    PYTHON_SCRIPT="test_llama3_layer.py"
+    LLAMA3_LAYER_VARIANT="token_out"
+}
+llama3_layer_token_out_defaults() { llama3_layer_variant_defaults; }
+llama3_layer_token_out_subdir() { llama3_layer_variant_subdir "$1"; }
+llama3_layer_token_out_python_args() { llama3_layer_variant_python_args "$1"; }
+llama3_layer_token_out_kernel_name() { llama3_layer_variant_kernel_name; }
+llama3_layer_token_out_tflops_expr() { llama3_layer_variant_tflops_expr "$1"; }
+llama3_layer_token_out_banner() { echo "Triton Llama3 Layer Token-Out Attention Sweep"; }
+llama3_layer_token_out_sweep_label() { llama3_layer_variant_sweep_label; }
+llama3_layer_token_out_summary_key() { llama3_layer_variant_summary_key "$1"; }
+llama3_layer_token_out_summary_label() { llama3_layer_variant_summary_label; }
+llama3_layer_token_out_multi_launch() { return 0; }
+
+# --- llama3_layer_blocked ---
+llama3_layer_blocked_init() {
+    TRACKING_SUBDIR="test_llama3_layer_blocked"
+    PYTHON_SCRIPT="test_llama3_layer.py"
+    LLAMA3_LAYER_VARIANT="blocked"
+}
+llama3_layer_blocked_defaults() { llama3_layer_variant_defaults; }
+llama3_layer_blocked_subdir() { llama3_layer_variant_subdir "$1"; }
+llama3_layer_blocked_python_args() { llama3_layer_variant_python_args "$1"; }
+llama3_layer_blocked_kernel_name() { llama3_layer_variant_kernel_name; }
+llama3_layer_blocked_tflops_expr() { llama3_layer_variant_tflops_expr "$1"; }
+llama3_layer_blocked_banner() {
+    echo "Triton Llama3 Layer Blocked Attention-Out Sweep (S_TILE=${LLAMA3_BLOCK_S_TILE}, H_TILE=${LLAMA3_BLOCK_H_TILE})"
+}
+llama3_layer_blocked_sweep_label() { llama3_layer_variant_sweep_label; }
+llama3_layer_blocked_summary_key() { llama3_layer_variant_summary_key "$1"; }
+llama3_layer_blocked_summary_label() { llama3_layer_variant_summary_label; }
+llama3_layer_blocked_multi_launch() { return 0; }
+
+# --- llama3_layer_full_tiled ---
+llama3_layer_full_tiled_init() {
+    TRACKING_SUBDIR="test_llama3_layer_full_tiled"
+    PYTHON_SCRIPT="test_llama3_layer.py"
+    LLAMA3_LAYER_VARIANT="full_tiled"
+}
+llama3_layer_full_tiled_defaults() { llama3_layer_variant_defaults; }
+llama3_layer_full_tiled_subdir() { llama3_layer_variant_subdir "$1"; }
+llama3_layer_full_tiled_python_args() { llama3_layer_variant_python_args "$1"; }
+llama3_layer_full_tiled_kernel_name() { llama3_layer_variant_kernel_name; }
+llama3_layer_full_tiled_tflops_expr() { llama3_layer_variant_tflops_expr "$1"; }
+llama3_layer_full_tiled_banner() {
+    echo "Triton Llama3 Layer Full-Tiled Sweep (M_TILE=64, N_TILE=128)"
+}
+llama3_layer_full_tiled_sweep_label() { llama3_layer_variant_sweep_label; }
+llama3_layer_full_tiled_summary_key() { llama3_layer_variant_summary_key "$1"; }
+llama3_layer_full_tiled_summary_label() { llama3_layer_variant_summary_label; }
+llama3_layer_full_tiled_multi_launch() { return 0; }
+
 # ============================================================================
 # Argument Parsing
 # ============================================================================
@@ -264,7 +387,7 @@ llama3_layer_multi_launch() { return 0; }
 usage() {
     echo "Usage: $0 <workload> [trace|run|ncu] [options...] [sweep_values...]"
     echo ""
-    echo "Workloads: tma_gemm, flash_attn, llama3_gqa_attn, llama3_layer"
+    echo "Workloads: tma_gemm, flash_attn, llama3_gqa_attn, llama3_layer, llama3_layer_packed, llama3_layer_tiled, llama3_layer_token_out, llama3_layer_blocked, llama3_layer_full_tiled"
     echo ""
     echo "Run '$0 <workload> --help' for workload-specific options."
     exit 1
@@ -278,8 +401,8 @@ WORKLOAD="$1"; shift
 
 # Validate workload
 case "$WORKLOAD" in
-    tma_gemm|flash_attn|llama3_gqa_attn|llama3_layer) ;;
-    *) echo "ERROR: Unknown workload '$WORKLOAD'. Available: tma_gemm, flash_attn, llama3_gqa_attn, llama3_layer"; exit 1 ;;
+    tma_gemm|flash_attn|llama3_gqa_attn|llama3_layer|llama3_layer_packed|llama3_layer_tiled|llama3_layer_token_out|llama3_layer_blocked|llama3_layer_full_tiled) ;;
+    *) echo "ERROR: Unknown workload '$WORKLOAD'. Available: tma_gemm, flash_attn, llama3_gqa_attn, llama3_layer, llama3_layer_packed, llama3_layer_tiled, llama3_layer_token_out, llama3_layer_blocked, llama3_layer_full_tiled"; exit 1 ;;
 esac
 
 # Parse mode
