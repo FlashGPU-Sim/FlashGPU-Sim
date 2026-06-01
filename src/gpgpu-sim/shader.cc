@@ -2293,22 +2293,30 @@ void shader_core_ctx::unset_depbar(const warp_inst_t &inst) {
                                   m_warp[inst.warp_id()]->m_depbar_group + 1);
 
   if (inst.m_is_ldgsts) {
+    // Retire ALL buffer entries matching (pc, addr0), not just the first.
+    // The per-(warp,pc,addr0) m_pending_ldgsts counter aggregates every cp.async
+    // issued with this same lane-0 address (e.g. a cp.async in a loop whose
+    // lane-0 address recurs across iterations, common with boundary-clamped /
+    // strided loads). unset_depbar runs when that aggregate counter hits 0, i.e.
+    // when ALL of those copies are complete — so every matching entry must be
+    // cleared. Clearing only the first (the old `goto DoneWB`) orphaned the
+    // duplicates: their pc never became -1, so done_flag never reached true and
+    // cp.async.wait_group/wait_all hung the warp -> CTA-wide deadlock at scale.
+    int cleared = 0;
     for (size_t i = 0; i < m_warp[inst.warp_id()]->m_ldgdepbar_buf.size(); i++) {
       for (size_t j = 0; j < m_warp[inst.warp_id()]->m_ldgdepbar_buf[i].size();
            j++) {
-        if (m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc == inst.pc) {
-          // Handle the case that same pc results in multiple LDGSTS
-          // instructions
-          if (m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].get_addr(0) ==
-              inst.get_addr(0)) {
-            m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc = (address_type)-1;
-            goto DoneWB;
-          }
+        // pc==inst.pc is checked first; entries already retired (pc==-1) are
+        // skipped before get_addr(0) so no invalid per-scalar-thread access.
+        if (m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc == inst.pc &&
+            m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].get_addr(0) ==
+                inst.get_addr(0)) {
+          m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc = (address_type)-1;
+          cleared++;
         }
       }
     }
-
-  DoneWB:
+    (void)cleared;
     for (unsigned i = 0; i < end_group; i++) {
       for (size_t j = 0; j < m_warp[inst.warp_id()]->m_ldgdepbar_buf[i].size();
            j++) {
