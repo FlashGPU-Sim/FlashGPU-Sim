@@ -2075,7 +2075,10 @@ void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
             hex_val = (v[k / 2].s64 & 0xffff);
           else
             hex_val = ((v[k / 2].s64 & 0xffff0000) >> 16);
-          nw_v[k].f16 = *(reinterpret_cast<half *>(hex_val));
+          // hex_val holds the raw 16-bit half bit-pattern; reinterpret its
+          // ADDRESS (not its value) as a half*. The original `(half*)hex_val`
+          // dereferenced the value as a pointer -> segfault on every wmma kernel.
+          nw_v[k].f16 = *(reinterpret_cast<half *>(&hex_val));
         }
       }
       if (!((operand_num == 3) && (type2 == F32_TYPE))) {
