@@ -1,0 +1,6 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_ZN60_GLOBAL__N__2e92b75c_31_tma_completion_latency_bench_cu_main29tma_completion_latency_kernelEPKtS1_PhPmPjiiiiii' for 'sm_120a'
+ptxas info    : Function properties for _ZN60_GLOBAL__N__2e92b75c_31_tma_completion_latency_bench_cu_main29tma_completion_latency_kernelEPKtS1_PhPmPjiiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 26 registers, used 1 barriers
+ptxas info    : Compile time = 18.543 ms

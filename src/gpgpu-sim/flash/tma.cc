@@ -639,26 +639,46 @@ public:
       if (max_inflight > 0 && m_mf_inflight >= max_inflight)
         return;
 
-      unsigned tx_uid = issue_queue.front();
-
-      auto it = m_transactions.find(tx_uid);
-      assert(it != m_transactions.end());
-      auto &tx = it->second;
-
-      // Per-transaction quota: limit how many inflight requests a single
-      // transaction can have, so multiple CTAs share bandwidth fairly.
       unsigned tx_quota = m_shader_ctx->get_config()->gpgpu_tma_tx_quota;
-      if (tx_quota > 0 && tx.m_mf_tx_inflight >= tx_quota) {
-        // This transaction hit its quota — try the next one in the queue.
-        // Rotate: move current to back so other transactions get a chance.
+      const unsigned num_candidates = issue_queue.size();
+      bool all_candidates_over_quota = false;
+      unsigned tx_uid = 0;
+      tma_transaction_t *selected_tx = nullptr;
+
+      for (unsigned attempt = 0; attempt < num_candidates; ++attempt) {
+        tx_uid = issue_queue.front();
+        auto it = m_transactions.find(tx_uid);
+        assert(it != m_transactions.end());
+        auto &candidate = it->second;
+
+        bool over_quota =
+            tx_quota > 0 && candidate.m_mf_tx_inflight >= tx_quota;
+        if (!over_quota) {
+          selected_tx = &candidate;
+          break;
+        }
+
         issue_queue.pop_front();
         issue_queue.push_back(tx_uid);
-        return;
       }
+
+      if (selected_tx == nullptr) {
+        // Quota is a fairness hint, not a hard throttle.  If every
+        // transaction is already above quota, keep the TMA unit busy under the
+        // SM-wide max_inflight limit and round-robin the over-quota issuers.
+        all_candidates_over_quota = true;
+        tx_uid = issue_queue.front();
+        auto it = m_transactions.find(tx_uid);
+        assert(it != m_transactions.end());
+        selected_tx = &it->second;
+      }
+      auto &tx = *selected_tx;
 
       bool is_write =
           (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
       unsigned packet_size = is_write ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
+      bool made_progress = false;
+      bool transaction_finalized = false;
 
       if (!m_icnt->full(packet_size, is_write)) {
         uint64_t addr;
@@ -668,6 +688,7 @@ public:
         // Loop: batch-consume consecutive skip-OOB requests in one cycle,
         // then issue at most one mem_fetch to L2 before breaking.
         while (m_agu.gen_next_req(tx.agu_state, addr, size)) {
+          made_progress = true;
 
           if (tx.m_mf_issued_count == 0) {
             GPPRINTF_TMA(
@@ -688,6 +709,7 @@ public:
             tx.m_bytes_completed += size;
             if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
               finalize_transaction(tx_uid);
+              transaction_finalized = true;
               break;
             }
             continue; // Consume next request without waiting for icnt
@@ -736,7 +758,9 @@ public:
       }
 
       // Remove from issue queue when all requests have been issued
-      if (tx.agu_state.done) {
+      if (transaction_finalized) {
+        issue_queue.pop_front();
+      } else if (tx.agu_state.done) {
         GPPRINTF_TMA(TMA,
                      "[TMA AGU DONE] tx_uid=%u issued %u %s mem_fetch requests "
                      "(total bytes: %u)\n",
@@ -744,6 +768,9 @@ public:
                      tx.m_dyn_info.size_in_bytes);
         fflush(stdout);
         issue_queue.pop_front();
+      } else if (all_candidates_over_quota && made_progress) {
+        issue_queue.pop_front();
+        issue_queue.push_back(tx_uid);
       }
     }
   }
