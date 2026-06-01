@@ -43,6 +43,7 @@ class GPGPUsim_ctx {
     g_sim_active = false;
     g_sim_done = true;
     break_limit = false;
+    g_sim_thread_joined = false;
     g_sim_lock = PTHREAD_MUTEX_INITIALIZER;
 
     g_the_gpu_config = NULL;
@@ -73,6 +74,8 @@ class GPGPUsim_ctx {
   bool g_sim_active;
   bool g_sim_done;
   bool break_limit;
+  bool g_sim_thread_joined;  // guards exit_simulation() against a double join
+                             // (cudaThreadExit path + atexit handler)
 };
 
 #endif

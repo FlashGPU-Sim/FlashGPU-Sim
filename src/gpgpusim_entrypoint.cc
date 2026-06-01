@@ -86,6 +86,16 @@ void *gpgpu_sim_thread_sequential(void *ctx_ptr) {
 static void termination_callback() {
   printf("GPGPU-Sim: *** exit detected ***\n");
   fflush(stdout);
+  // Join the (possibly still-running) concurrent simulation thread before the
+  // process tears down global state. When a benchmark uses CUDA streams the
+  // concurrent sim thread keeps running after the host is released and, unless
+  // the app explicitly called cudaThreadExit/cudaDeviceReset, it is otherwise
+  // never joined. It would then race the C-runtime static destructors that
+  // free PTX / stats state (e.g. ptx_file_line_stats_write_file reading source
+  // strings being freed concurrently), causing a use-after-free SIGSEGV during
+  // teardown after the simulation had already completed. exit_simulation() is
+  // idempotent, so this is safe even if cudaThreadExit already joined.
+  GPGPU_Context()->exit_simulation();
 }
 
 void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
@@ -293,10 +303,17 @@ bool gpgpu_context::synchronize_check() {
 }
 
 void gpgpu_context::exit_simulation() {
+  // Idempotent: the simulation thread can only be joined once (its
+  // g_sim_signal_exit semaphore is posted a single time). Both the
+  // cudaThreadExit/cudaDeviceReset path and the atexit termination_callback
+  // may reach here, so guard against a second sem_wait that would block
+  // forever on an already-exited thread.
+  if (the_gpgpusim->g_sim_thread_joined) return;
   the_gpgpusim->g_sim_done = true;
   printf("GPGPU-Sim: exit_simulation called\n");
   fflush(stdout);
   sem_wait(&(the_gpgpusim->g_sim_signal_exit));
+  the_gpgpusim->g_sim_thread_joined = true;
   printf("GPGPU-Sim: simulation thread signaled exit\n");
   fflush(stdout);
 }
