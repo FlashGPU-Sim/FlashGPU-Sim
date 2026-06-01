@@ -195,6 +195,11 @@ void register_ptx_function(const char *name, function_info *impl) {
 #endif
 #endif
 
+// CUDA 13.0 removed the deprecated `clockRate` field from cudaDeviceProp.
+// Cache the simulated shader clock (kHz) here so cudaDevAttrClockRate queries
+// still work; the value is populated in GPGPUSim_Init() below.
+static int g_gpgpusim_shader_clock_khz = 0;
+
 struct _cuda_device_id *gpgpu_context::GPGPUSim_Init() {
   _cuda_device_id *the_device = the_gpgpusim->the_cude_device;
   if (!the_device) {
@@ -232,7 +237,10 @@ struct _cuda_device_id *gpgpu_context::GPGPUSim_Init() {
     prop->sharedMemPerBlock = the_gpu->shared_mem_per_block();
     prop->regsPerBlock = the_gpu->num_registers_per_block();
     prop->warpSize = the_gpu->wrp_size();
+#if (CUDART_VERSION < 13000)
     prop->clockRate = the_gpu->shader_clock();
+#endif
+    g_gpgpusim_shader_clock_khz = the_gpu->shader_clock();
 #if (CUDART_VERSION >= 2010)
     prop->multiProcessorCount = the_gpu->get_config().num_shader();
 #endif
@@ -1823,7 +1831,11 @@ cudaDeviceGetAttributeInternal(int *value, enum cudaDeviceAttr attr, int device,
         *value = prop->regsPerBlock;
         break;
       case 13:
+#if (CUDART_VERSION < 13000)
         *value = prop->clockRate;
+#else
+        *value = g_gpgpusim_shader_clock_khz;
+#endif
         printf("GPGPU-Sim: cudaDevAttrClockRate returning %d kHz (%.0f MHz)\n",
                *value, *value / 1000.0);
         break;
@@ -3090,6 +3102,30 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernel(const char *hostFun,
   return cudaLaunchKernelInternal(hostFun, gridDim, blockDim, args, sharedMem,
                                   stream);
 }
+
+#if (CUDART_VERSION >= 12000)
+// CUDA 12.0+ changed the nvcc-generated host launch stub. Instead of calling
+// cudaLaunchKernel(hostFun, ...) directly, the stub first resolves the host
+// function pointer to an opaque cudaKernel_t handle via __cudaGetKernel(), then
+// launches with __cudaLaunchKernel(handle, ...). GPGPU-Sim identifies kernels
+// by their host function pointer, so we treat the handle as a transparent
+// carrier of that pointer: __cudaGetKernel hands back the pointer cast to a
+// handle, and __cudaLaunchKernel casts it back and reuses the existing launch
+// path. (See crt/device_functions.h / crt/host_runtime.h in CUDA 13.)
+extern "C" __host__ cudaError_t CUDARTAPI __cudaGetKernel(cudaKernel_t *pKernel,
+                                                          const void *func) {
+  if (pKernel == NULL) return cudaErrorInvalidValue;
+  *pKernel = (cudaKernel_t)func;
+  return cudaSuccess;
+}
+
+extern "C" __host__ cudaError_t CUDARTAPI __cudaLaunchKernel(
+    cudaKernel_t kernel, dim3 gridDim, dim3 blockDim, void **args,
+    size_t sharedMem, cudaStream_t stream) {
+  return cudaLaunchKernelInternal((const char *)kernel, gridDim, blockDim,
+                                  (const void **)args, sharedMem, stream);
+}
+#endif
 
 /*******************************************************************************
  *                                                                              *
