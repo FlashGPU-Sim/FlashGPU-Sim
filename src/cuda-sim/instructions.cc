@@ -1672,22 +1672,70 @@ void stmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
 }
 
 void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  int opcode = pI->get_opcode();
-  if (opcode == CP_ASYNC_COMMIT_OP) {
-    printf(
-        "GPGPU-Sim PTX: ERROR (%s:%u) cp.async.commit_group not yet "
-        "implemented\n",
-        pI->source_file(), pI->source_line());
-    abort();
-  } else if (opcode == CP_ASYNC_WAIT_OP) {
-    printf(
-        "GPGPU-Sim PTX: ERROR (%s:%u) cp.async.wait_all not yet "
-        "implemented\n",
-        pI->source_file(), pI->source_line());
-    abort();
+  // Ampere asynchronous copy (LDGSTS): copies cp-size bytes directly from
+  // global memory to shared memory, bypassing the register file.
+  //   cp.async.{ca,cg}.shared{::cta}.global [dst_smem], [src_global],
+  //                                          cp-size {, src-size} ;
+  //   cp.async.commit_group ;   cp.async.wait_group N ;   cp.async.wait_all ;
+  // Functionally the copy is performed synchronously here; commit_group /
+  // wait_group / wait_all are ordering primitives and are no-ops for the
+  // functional model (the asynchronous *timing* is modeled in the SM pipeline
+  // via the m_is_ldgsts / cp.async-group machinery — see shader.cc).
+  const int opcode = pI->get_opcode();
+
+  // Group-management forms carry no memory operands: nothing to do functionally.
+  if (opcode == CP_ASYNC_COMMIT_OP || opcode == CP_ASYNC_WAIT_OP) return;
+  // wait_group N is parsed as CP_ASYNC_OP + WAIT_GROUP_OPTION (+ immediate).
+  for (int opt : pI->get_options()) {
+    if (opt == WAIT_GROUP_OPTION || opt == COMMIT_GROUP_OPTION) return;
   }
-  // CP_ASYNC_OP: cp.async.shared.global
-  inst_not_implemented(pI);
+
+  // --- copy form: cp.async.{ca,cg}.shared.global [dst],[src],cp-size{,src-size}
+  const operand_info &dst = pI->dst();   // shared-memory destination address
+  const operand_info &src = pI->src1();  // global-memory source address
+
+  addr_t smem_addr =
+      thread->get_operand_value(dst, dst, U64_TYPE, thread, 1).u64;
+  addr_t gmem_addr =
+      thread->get_operand_value(src, dst, U64_TYPE, thread, 1).u64;
+  smem_addr &= 0x00000000FFFFFFFFULL;  // shared addresses are 32-bit offsets
+
+  // cp-size (4/8/16 bytes) is an integer immediate operand.
+  unsigned cp_size = 16;
+  const operand_info &cp_size_op = pI->src2();
+  if (cp_size_op.is_literal())
+    cp_size = (unsigned)cp_size_op.get_literal_value().u64;
+  assert((cp_size == 4 || cp_size == 8 || cp_size == 16) &&
+         "cp.async cp-size must be 4, 8, or 16 bytes");
+
+  // Optional src-size: bytes actually read from global; the remaining
+  // [src-size, cp-size) bytes in shared are zero-filled. This is the only
+  // zero-fill mechanism for non-bulk cp.async (the "ignore source" / zfill case
+  // is expressed as src-size = 0). Note: instruction-level predication
+  // (@p cp.async) is handled upstream in ptx_exec_inst — a predicated-off
+  // cp.async never reaches this handler and leaves shared memory untouched.
+  // (A trailing .L2::cache_hint cache-policy operand, if ever present, is
+  // ignored here — see cp_async limitations.)
+  unsigned src_size = cp_size;
+  if (pI->get_num_operands() > 3) {
+    const operand_info &src_size_op = pI->src3();
+    if (src_size_op.is_literal())
+      src_size = (unsigned)src_size_op.get_literal_value().u64;
+  }
+
+  if (src_size > cp_size) src_size = cp_size;
+
+  memory_space *gmem = thread->get_global_memory();
+  memory_space *smem = thread->m_shared_mem;
+
+  unsigned char buf[16] = {0};  // zero-init => free zero-fill of the tail
+  if (src_size > 0) gmem->read(gmem_addr, src_size, buf);
+  smem->write(smem_addr, cp_size, buf, thread, pI);
+
+  // Record the global source access so the timing model (Phase 2) can issue a
+  // global load for this LDGSTS. Harmless for the functional path.
+  thread->m_last_effective_address = gmem_addr;
+  thread->m_last_memory_space = global_space;
 }
 
 void bfe_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

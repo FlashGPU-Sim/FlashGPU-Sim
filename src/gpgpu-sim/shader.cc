@@ -1333,17 +1333,24 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   // Add LDGSTS instructions into a buffer
   unsigned int ldgdepbar_id = m_warp[warp_id]->m_ldgdepbar_id;
   if (next_inst->m_is_ldgsts) {
+    // Buffer the DYNAMIC instruction (*pipe_reg): the issue-time active mask is
+    // applied to *pipe_reg (line ~1315) and per-lane addresses are set by
+    // func_exec_inst above. next_inst is the static ibuffer entry whose active
+    // mask is empty (active_count()==0); using it here would make the
+    // active_mask==0 branch below mark every cp.async "complete" (pc=-1)
+    // immediately, so cp.async.wait_group/wait_all would never stall.
+    const warp_inst_t &ldgsts_inst = **pipe_reg;
     if (m_warp[warp_id]->m_ldgdepbar_buf.size() == ldgdepbar_id + 1) {
-      m_warp[warp_id]->m_ldgdepbar_buf[ldgdepbar_id].push_back(*next_inst);
+      m_warp[warp_id]->m_ldgdepbar_buf[ldgdepbar_id].push_back(ldgsts_inst);
     } else {
       assert(m_warp[warp_id]->m_ldgdepbar_buf.size() < ldgdepbar_id + 1);
       std::vector<warp_inst_t> l;
-      l.push_back(*next_inst);
+      l.push_back(ldgsts_inst);
       m_warp[warp_id]->m_ldgdepbar_buf.push_back(l);
     }
     // If the mask of the instruction is all 0, then the address is also 0,
     // so that there's no need to check through the writeback
-    if (next_inst->get_active_mask() == 0) {
+    if (ldgsts_inst.get_active_mask() == 0) {
       (m_warp[warp_id]->m_ldgdepbar_buf.back()).back().pc = -1;
     }
   }
@@ -3114,7 +3121,9 @@ void ldst_unit::issue(register_set &reg_set) {
         m_pending_writes[warp_id][reg_id] += n_accesses;
       }
     }
-    if (inst->m_is_ldgsts) {
+    if (inst->m_is_ldgsts && n_accesses > 0) {
+      // n_accesses == 0 (e.g. a fully predicated-off cp.async) has no per-lane
+      // address, so get_addr(0) would be invalid; nothing to track.
       m_pending_ldgsts[warp_id][inst->pc][inst->get_addr(0)] += n_accesses;
     }
   }
@@ -3150,18 +3159,25 @@ void ldst_unit::writeback() {
           }
         } else if (m_next_wb.m_is_ldgsts) {  // for LDGSTS instructions where no
                                              // output register is used
-          m_pending_ldgsts[m_next_wb.warp_id()][m_next_wb.pc]
-                          [m_next_wb.get_addr(0)]--;
-          if (m_pending_ldgsts[m_next_wb.warp_id()][m_next_wb.pc]
-                              [m_next_wb.get_addr(0)] == 0) {
+          if (m_next_wb.active_count() == 0) {
+            // Fully predicated-off cp.async: generated no accesses and its
+            // async-group buffer entry was already retired at issue; complete
+            // it without touching the (invalid) per-lane address.
             insn_completed = true;
+          } else {
+            m_pending_ldgsts[m_next_wb.warp_id()][m_next_wb.pc]
+                            [m_next_wb.get_addr(0)]--;
+            if (m_pending_ldgsts[m_next_wb.warp_id()][m_next_wb.pc]
+                                [m_next_wb.get_addr(0)] == 0) {
+              insn_completed = true;
+            }
           }
           break;
         }
       }
       if (insn_completed) {
         m_core->warp_inst_complete(m_next_wb);
-        if (m_next_wb.m_is_ldgsts) {
+        if (m_next_wb.m_is_ldgsts && m_next_wb.active_count() > 0) {
           m_core->unset_depbar(m_next_wb);
         }
       }

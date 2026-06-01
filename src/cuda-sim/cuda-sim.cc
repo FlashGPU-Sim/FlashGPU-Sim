@@ -715,8 +715,9 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == NOP_OP) || (m_opcode == EXIT_OP) || (m_opcode == CALLP_OP) ||
       (m_opcode == CALL_OP) || (m_opcode == TENSORMAP_OP) || (m_opcode == FENCE_OP) ||
       (m_opcode == ELECT_OP) || (m_opcode == LDMATRIX_OP) || (m_opcode == STMATRIX_OP) ||
-      (m_opcode == CP_ASYNC_OP)) {
-    // do nothing
+      (m_opcode == CP_ASYNC_OP) || (m_opcode == CP_ASYNC_COMMIT_OP) ||
+      (m_opcode == CP_ASYNC_WAIT_OP)) {
+    // do nothing (these opcodes carry no scalar .type; get_type() would assert)
   } else if ((m_opcode == CVT_OP || m_opcode == SET_OP ||
               m_opcode == SLCT_OP)) {
     if (get_type2() == F16_TYPE || get_type2() == F32_TYPE ||
@@ -741,7 +742,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != RETP_OP) && (m_opcode != RET_OP) && (m_opcode != CALLP_OP) &&
       (m_opcode != CALL_OP) && (m_opcode != TENSORMAP_OP) && (m_opcode != FENCE_OP) &&
       (m_opcode != ELECT_OP) && (m_opcode != LDMATRIX_OP) && (m_opcode != STMATRIX_OP) &&
-      (m_opcode != CP_ASYNC_OP)) {
+      (m_opcode != CP_ASYNC_OP) && (m_opcode != CP_ASYNC_COMMIT_OP) &&
+      (m_opcode != CP_ASYNC_WAIT_OP)) {
     if (get_type() == F64_TYPE || get_type() == FF64_TYPE) {
       switch (get_opcode()) {
         case MUL_OP:
@@ -1031,6 +1033,12 @@ void ptx_instruction::set_opcode_and_latency() {
       break;
     case LDU_OP:
       op = LOAD_OP;
+      break;
+    case CP_ASYNC_OP:
+      // cp.async copy form is a global load (LDGSTS); the commit/wait_group
+      // forms (which set m_is_depbar/m_is_ldgdepbar, not m_is_ldgsts) are
+      // lightweight control ops left as ALU_OP.
+      op = m_is_ldgsts ? LOAD_OP : ALU_OP;
       break;
     case ST_OP:
       op = STORE_OP;
@@ -1372,7 +1380,42 @@ void ptx_instruction::pre_decode() {
   space = m_space_spec;
   memory_op = no_memory_op;
   data_size = 0;
-  if (has_memory_read() || has_memory_write()) {
+  if (m_opcode == CP_ASYNC_OP || m_opcode == CP_ASYNC_COMMIT_OP ||
+      m_opcode == CP_ASYNC_WAIT_OP) {
+    // cp.async (Ampere LDGSTS) has no scalar .type, so get_type() would assert
+    // (m_scalar_type is empty). Map the three forms onto GPGPU-Sim's existing
+    // (Accel-Sim) LDGSTS / LDGDEPBAR / DEPBAR machinery so the asynchronous
+    // timing is modeled by the already-wired m_pending_ldgsts drain:
+    //   copy form  -> m_is_ldgsts (global load whose data lands in shared;
+    //                 per-thread size is the cp-size immediate -> data_size).
+    //                 op becomes LOAD_OP in set_opcode_and_latency().
+    //   commit_group -> m_is_ldgdepbar (closes the current async-group)
+    //   wait_group N -> m_is_depbar with m_depbar_group_no = N
+    //   wait_all     -> m_is_depbar with N = 0
+    bool is_commit = (m_opcode == CP_ASYNC_COMMIT_OP);
+    bool is_wait = (m_opcode == CP_ASYNC_WAIT_OP);
+    unsigned wait_n = 0;
+    for (int opt : get_options()) {
+      if (opt == COMMIT_GROUP_OPTION) is_commit = true;
+      if (opt == WAIT_GROUP_OPTION) is_wait = true;
+    }
+    if (is_wait) {
+      m_is_depbar = true;
+      // wait_group N: N is the operand-0 immediate; wait_all has no operand.
+      if (m_opcode == CP_ASYNC_OP && get_num_operands() > 0 &&
+          operand_lookup(0).is_literal())
+        wait_n = (unsigned)operand_lookup(0).get_literal_value().u64;
+      m_depbar_group_no = wait_n;
+    } else if (is_commit) {
+      m_is_ldgdepbar = true;
+    } else {
+      // copy form: global load (LDGSTS); cp-size is the operand-2 immediate.
+      m_is_ldgsts = true;
+      memory_op = memory_load;
+      if (get_num_operands() > 2 && src2().is_literal())
+        data_size = (unsigned)src2().get_literal_value().u64;
+    }
+  } else if (has_memory_read() || has_memory_write()) {
     unsigned to_type = get_type();
     data_size = datatype2size(to_type);
     memory_op = has_memory_read() ? memory_load : memory_store;
@@ -2213,8 +2256,14 @@ using flash_gpgpu_sim::tensor_mma_st_impl;
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
         insn_memaddr = last_eaddr();
         insn_space = last_space();
-        unsigned to_type = pI->get_type();
-        insn_data_size = datatype2size(to_type);
+        if (pI->m_is_ldgsts) {
+          // cp.async (LDGSTS) has no scalar .type; the access size is the
+          // cp-size immediate captured into data_size during pre_decode.
+          insn_data_size = pI->data_size;
+        } else {
+          unsigned to_type = pI->get_type();
+          insn_data_size = datatype2size(to_type);
+        }
         insn_memory_op = pI->has_memory_read() ? memory_load : memory_store;
       }
     }

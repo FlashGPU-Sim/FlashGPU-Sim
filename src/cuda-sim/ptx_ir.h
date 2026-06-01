@@ -1176,6 +1176,10 @@ class ptx_instruction : public warp_inst_t {
     if (m_opcode == LD_OP || m_opcode == LDU_OP || m_opcode == TEX_OP ||
         m_opcode == MMA_LD_OP)
       return true;
+    // cp.async (LDGSTS) copy form reads global memory. Keyed on m_is_ldgsts
+    // (set in pre_decode for the copy form only) so commit_group/wait_group
+    // forms — which carry no memory operand — correctly return false.
+    if (m_is_ldgsts) return true;
     // Check PTXPlus operand type below
     // Source operands are memory operands
     ptx_instruction::const_iterator op = op_iter_begin();
