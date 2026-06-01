@@ -194,14 +194,9 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 
 \.row TC; yylval->int_value = ROW; return LAYOUT;
 \.col TC; yylval->int_value = COL; return LAYOUT;
-\.m16n16k16\.global TC; yylval->int_value = M16N16K16; return CONFIGURATION;
-\.m32n8k16\.global TC; yylval->int_value = M32N8K16; return CONFIGURATION;
-\.m8n32k16\.global TC;  yylval->int_value = M8N32K16; return CONFIGURATION;
-
-\.m16n16k16\.shared TC; yylval->int_value = M16N16K16; return CONFIGURATION;
-\.m32n8k16\.shared TC; yylval->int_value = M32N8K16; return CONFIGURATION;
-\.m8n32k16\.shared TC;  yylval->int_value = M8N32K16; return CONFIGURATION;
-
+	/* WMMA shape shorthands. Do NOT fold a trailing .global/.shared into these
+	   tokens: that discarded the state space and forced global (zeros from
+	   shared). Leave .global/.shared as their own directive tokens -> space2. */
 \.m16n16k16 TC; yylval->int_value = M16N16K16; return CONFIGURATION;
 \.m32n8k16 TC; yylval->int_value = M32N8K16; return CONFIGURATION;
 \.m8n32k16 TC;  yylval->int_value = M8N32K16; return CONFIGURATION;

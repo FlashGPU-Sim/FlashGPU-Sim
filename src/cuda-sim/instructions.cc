@@ -3678,6 +3678,11 @@ void mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
       addr = generic_to_shared(smid, addr);
       space = shared_space;
     }
+    // Honor an explicit .shared qualifier (the WMMA grammar hardcodes the
+    // primary space to global; the qualifier is captured as space2).
+    if (pI->get_space2().get_type() == shared_space) {
+      space = shared_space;
+    }
     decode_space(space, thread, src1, mem, addr);
 
     type_info_key::type_decode(type, size, t);
@@ -3795,6 +3800,13 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
     smid = thread->get_hw_sid();
     if (whichspace(addr) == shared_space) {
       addr = generic_to_shared(smid, addr);
+      space = shared_space;
+    }
+    // The WMMA grammar hardcodes the primary space to global (ptx.y:wmma_spec);
+    // an explicit .shared state-space qualifier is captured as the secondary
+    // space. Honor it so `wmma.load ... .shared` reads shared memory instead of
+    // reading global[offset] (which returned zeros and broke shared-staged GEMM).
+    if (pI->get_space2().get_type() == shared_space) {
       space = shared_space;
     }
 
@@ -3932,8 +3944,19 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
         num_reg = 8;
 
       for (i = 0; i < num_reg; i++) {
-        nw_data[i].s64 = ((data[2 * i].s64 & 0xffff) << 16) |
-                         ((data[2 * i + 1].s64 & 0xffff));
+        if (wmma_type == LOAD_C) {
+          // Accumulator (matrix C/D) fragment: its .x[] elements are consumed
+          // by store_matrix_sync / user code in standard half2 order (element
+          // 2i = low half, 2i+1 = high half). Pack to match, otherwise each
+          // adjacent element pair is swapped and the beta*C epilogue term is
+          // scrambled. (LOAD_A/LOAD_B keep the opposite packing because their
+          // consumer, mma_impl, unpacks with that matching convention.)
+          nw_data[i].s64 = ((data[2 * i + 1].s64 & 0xffff) << 16) |
+                           ((data[2 * i].s64 & 0xffff));
+        } else {
+          nw_data[i].s64 = ((data[2 * i].s64 & 0xffff) << 16) |
+                           ((data[2 * i + 1].s64 & 0xffff));
+        }
       }
 
       if (wmma_type == LOAD_C)
