@@ -139,10 +139,24 @@ symbol_table *gpgpu_context::init_parser(const char *ptx_filename) {
   FILE *ptx_in;
   ptx_in = fopen(ptx_filename, "r");
   ptx_set_in(ptx_in, ptx_parser->scanner);
+  ptx_parser->g_error_detected = 0;
   ptx_parse(ptx_parser->scanner, ptx_parser);
   ptx_in = ptx_get_in(ptx_parser->scanner);
   ptx_lex_destroy(ptx_parser->scanner);
   fclose(ptx_in);
+  // bison recovers from a syntax error and returns success, but the function
+  // is left malformed and crashes the CFG builder at kernel launch. Fail
+  // cleanly here on any detected syntax error (e.g. an unsupported/unimplemented
+  // WMMA shape or type) — the syntax error was already printed by ptx_error().
+  if (ptx_parser->g_error_detected) {
+    printf(
+        "GPGPU-Sim PTX: ERROR ** parse of \"%s\" failed (unsupported or "
+        "malformed instruction) — aborting instead of running a corrupt "
+        "kernel.\n",
+        ptx_filename);
+    fflush(stdout);
+    abort();
+  }
   return ptx_parser->g_global_symbol_table;
 }
 

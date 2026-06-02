@@ -178,8 +178,15 @@ symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_string(
   symbol_table *symtab = init_parser(buf);
   ptx_lex_init(&(ptx_parser->scanner));
   ptx__scan_string(p, ptx_parser->scanner);
+  ptx_parser->g_error_detected = 0;
   int errors = ptx_parse(ptx_parser->scanner, ptx_parser);
-  if (errors) {
+  // ptx_parse() (bison) recovers from a lexer/syntax error and can return 0
+  // even after ptx_error() fired, leaving a malformed function that later
+  // crashes the CFG builder (connect_basic_blocks) at kernel launch. Treat any
+  // detected syntax error as fatal here so an unsupported/unparseable
+  // instruction (e.g. an unimplemented WMMA shape/type) fails cleanly with the
+  // syntax error already printed above, instead of segfaulting downstream.
+  if (errors || ptx_parser->g_error_detected) {
     char fname[1024];
     snprintf(fname, 1024, "_ptx_errors_XXXXXX");
     int fd = mkstemp(fname);
