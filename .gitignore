@@ -96,3 +96,8 @@ calibration_results/
 # Test logs produced by inst_latency_bench
 test/logs/
 test/*.log
+
+# Generated TMA microbenchmark run outputs
+test/src/microbench/tma/run_*/
+test/src/microbench/tma/gem5_pair48_*_20*/
+test/src/microbench/tma/results/*_rerun_*.csv

@@ -26,6 +26,16 @@ namespace flash_gpgpu_sim {
 // Shared Helper Functions
 //=============================================================================
 
+static uint32_t effective_tma_request_granularity(
+    const shader_core_config *config) {
+  unsigned granularity = config->gpgpu_tma_request_granularity;
+  if (granularity >= MAX_MEMORY_ACCESS_SIZE)
+    return MAX_MEMORY_ACCESS_SIZE;
+  if (granularity >= 2 * SECTOR_SIZE)
+    return 2 * SECTOR_SIZE;
+  return SECTOR_SIZE;
+}
+
 // Get a 32-bit unsigned value from an operand
 static uint32_t get_operand_u32(ptx_thread_info *thread,
                                 const operand_info &op) {
@@ -213,14 +223,14 @@ public:
    * For tensor mode:
    *   - Traverses tile in row-major order
    *   - Skips OOB coordinates (zero-padding)
-   *   - Breaks rows into 128B-aligned chunks
+   *   - Breaks rows into configured request-granularity chunks
    *
    * For linear mode:
    *   - Simple sequential address generation
-   *   - Aligns to 128B boundaries
+   *   - Aligns to configured request-granularity boundaries
    */
   bool gen_next_req(tma_agu_state_t &state, uint64_t &out_addr,
-                    uint32_t &out_size) {
+                    uint32_t &out_size, uint32_t request_granularity) {
     if (state.done)
       return false;
 
@@ -233,12 +243,10 @@ public:
 
       state.is_fill_request = false; // Linear mode never fills
       out_addr = state.linear_addr;
-      // Size = min(SECTOR_SIZE, remaining, bytes to next sector boundary)
-      // Issue at sector granularity (32B) to match L2 sector size and ensure
-      // 1:1 correspondence between issued requests and received responses.
-      uint32_t to_boundary = SECTOR_SIZE - (state.linear_addr % SECTOR_SIZE);
+      uint32_t to_boundary =
+          request_granularity - (state.linear_addr % request_granularity);
       out_size = std::min(
-          {(uint32_t)SECTOR_SIZE, state.linear_remaining, to_boundary});
+          {request_granularity, state.linear_remaining, to_boundary});
 
       state.linear_addr += out_size;
       state.linear_remaining -= out_size;
@@ -260,12 +268,16 @@ public:
       // Calculate address: current_row_base + offset_within_row
       out_addr = state.curr_row_addr + state.offset_in_row;
 
-      // Calculate size: min(SECTOR_SIZE, remaining in row, bytes to next sector
-      // boundary). Issue at sector granularity (32B) to match L2 sector cache.
+      // Avoid mixing valid data and OOB fill bytes in widened requests.
       uint32_t row_remaining = state.row_bytes - state.offset_in_row;
-      uint32_t to_sector_boundary = SECTOR_SIZE - (out_addr % SECTOR_SIZE);
-      out_size =
-          std::min({(uint32_t)SECTOR_SIZE, row_remaining, to_sector_boundary});
+      if (request_granularity > SECTOR_SIZE && !state.row_is_oob &&
+          state.offset_in_row < state.valid_row_bytes) {
+        row_remaining =
+            std::min(row_remaining, state.valid_row_bytes - state.offset_in_row);
+      }
+      uint32_t to_boundary =
+          request_granularity - (out_addr % request_granularity);
+      out_size = std::min({request_granularity, row_remaining, to_boundary});
 
       // Advance position within row
       state.offset_in_row += out_size;
@@ -367,6 +379,7 @@ private:
 
   std::list<unsigned> issue_queue;
   std::unordered_map<unsigned, unsigned> m_mf_to_tx;
+  std::unordered_map<unsigned, uint32_t> m_mf_pending_bytes;
 
   std::list<mem_fetch *> m_response_fifo;
 
@@ -436,6 +449,15 @@ private:
         map_it = m_mf_to_tx.erase(map_it);
       } else {
         ++map_it;
+      }
+    }
+    for (auto pending_it = m_mf_pending_bytes.begin();
+         pending_it != m_mf_pending_bytes.end();) {
+      auto map_it = m_mf_to_tx.find(pending_it->first);
+      if (map_it == m_mf_to_tx.end()) {
+        pending_it = m_mf_pending_bytes.erase(pending_it);
+      } else {
+        ++pending_it;
       }
     }
   }
@@ -568,13 +590,19 @@ public:
       }
     }
 
-    // Process pending TMA responses
-    if (!m_response_fifo.empty()) {
+    // Process pending TMA responses.
+    unsigned response_width =
+        m_shader_ctx->get_config()->gpgpu_tma_response_width
+            ? m_shader_ctx->get_config()->gpgpu_tma_response_width
+            : 1;
+    for (unsigned response = 0;
+         response < response_width && !m_response_fifo.empty(); response++) {
       mem_fetch *mf = m_response_fifo.front();
       m_response_fifo.pop_front();
 
       mem_fetch *parent_mf = mf->get_original_mf() ? mf->get_original_mf() : mf;
-      auto mf_it = m_mf_to_tx.find(parent_mf->get_request_uid());
+      unsigned parent_uid = parent_mf->get_request_uid();
+      auto mf_it = m_mf_to_tx.find(parent_uid);
 
       assert(mf_it != m_mf_to_tx.end());
       unsigned tx_uid = mf_it->second;
@@ -583,10 +611,6 @@ public:
       assert(tx_it != m_transactions.end());
       auto &tx = tx_it->second;
       tx.m_mf_received_count++;
-      assert(m_mf_inflight > 0);
-      m_mf_inflight--;
-      assert(tx.m_mf_tx_inflight > 0);
-      tx.m_mf_tx_inflight--;
 
       bool is_write =
           (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
@@ -620,6 +644,18 @@ public:
       unsigned parent_size = parent_mf->get_data_size();
       unsigned bytes_to_add = (mf_size > parent_size) ? parent_size : mf_size;
       tx.m_bytes_completed += bytes_to_add;
+
+      auto pending_it = m_mf_pending_bytes.find(parent_uid);
+      assert(pending_it != m_mf_pending_bytes.end());
+      if (bytes_to_add >= pending_it->second) {
+        assert(m_mf_inflight > 0);
+        m_mf_inflight--;
+        assert(tx.m_mf_tx_inflight > 0);
+        tx.m_mf_tx_inflight--;
+        m_mf_pending_bytes.erase(pending_it);
+      } else {
+        pending_it->second -= bytes_to_add;
+      }
 
       // Check if transaction is complete
       if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes)
@@ -684,76 +720,102 @@ public:
         uint64_t addr;
         uint32_t size;
         bool oob_l2 = m_shader_ctx->get_config()->gpgpu_tma_oob_l2_traffic;
+        const unsigned request_width =
+            m_shader_ctx->get_config()->gpgpu_tma_request_width
+                ? m_shader_ctx->get_config()->gpgpu_tma_request_width
+                : 1;
+        unsigned issued_requests = 0;
 
         // Loop: batch-consume consecutive skip-OOB requests in one cycle,
-        // then issue at most one mem_fetch to L2 before breaking.
-        while (m_agu.gen_next_req(tx.agu_state, addr, size)) {
-          made_progress = true;
+        // then issue up to request_width mem_fetches to L2 before breaking.
+        const uint32_t request_granularity =
+            effective_tma_request_granularity(m_shader_ctx->get_config());
+        while (issued_requests < request_width && !transaction_finalized) {
+          if (max_inflight > 0 && m_mf_inflight >= max_inflight)
+            break;
+          if (!all_candidates_over_quota && tx_quota > 0 &&
+              tx.m_mf_tx_inflight >= tx_quota)
+            break;
+          if (m_icnt->full(packet_size, is_write))
+            break;
 
-          if (tx.m_mf_issued_count == 0) {
-            GPPRINTF_TMA(
-                TMA,
-                "[TMA AGU] tx_uid=%u starting to issue %s mem_fetch requests\n",
-                tx_uid, is_write ? "WRITE" : "READ");
-            fflush(stdout);
-          }
-          tx.m_mf_issued_count++;
+          bool issued_this_iteration = false;
+          while (m_agu.gen_next_req(tx.agu_state, addr, size,
+                                    request_granularity)) {
+            made_progress = true;
 
-          // Determine if this OOB request should skip L2:
-          //   - Writes: always skip OOB (must not write beyond tensor bounds)
-          //   - Reads:  skip OOB only when gpgpu_tma_oob_l2_traffic is off
-          bool skip_l2 = tx.agu_state.is_fill_request && (is_write || !oob_l2);
-
-          if (skip_l2) {
-            // No interconnect needed — just count bytes
-            tx.m_bytes_completed += size;
-            if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
-              finalize_transaction(tx_uid);
-              transaction_finalized = true;
-              break;
+            if (tx.m_mf_issued_count == 0) {
+              GPPRINTF_TMA(TMA,
+                           "[TMA AGU] tx_uid=%u starting to issue %s "
+                           "mem_fetch requests\n",
+                           tx_uid, is_write ? "WRITE" : "READ");
+              fflush(stdout);
             }
-            continue; // Consume next request without waiting for icnt
+            tx.m_mf_issued_count++;
+
+            // Determine if this OOB request should skip L2:
+            //   - Writes: always skip OOB (must not write beyond tensor bounds)
+            //   - Reads:  skip OOB only when gpgpu_tma_oob_l2_traffic is off
+            bool skip_l2 =
+                tx.agu_state.is_fill_request && (is_write || !oob_l2);
+
+            if (skip_l2) {
+              // No interconnect needed; just count bytes.
+              tx.m_bytes_completed += size;
+              if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
+                finalize_transaction(tx_uid);
+                transaction_finalized = true;
+                break;
+              }
+              continue;
+            }
+
+            // Issue mem_fetch to interconnect -> L2.
+            // For OOB fill requests with gpgpu_tma_oob_l2_traffic=1:
+            // Real HW TMA sends full-tile requests to L2 unconditionally,
+            // then zero-fills OOB data after response.
+            mem_access_byte_mask_t byte_mask;
+            mem_access_sector_mask_t sector_mask;
+
+            unsigned start_byte = addr % MAX_MEMORY_ACCESS_SIZE;
+            for (unsigned i = 0; i < size; i++) {
+              byte_mask.set((start_byte + i) % MAX_MEMORY_ACCESS_SIZE);
+            }
+
+            unsigned start_sector = start_byte / SECTOR_SIZE;
+            unsigned end_sector = (start_byte + size - 1) / SECTOR_SIZE;
+            for (unsigned i = start_sector;
+                 i <= end_sector && i < SECTOR_CHUNCK_SIZE; i++) {
+              sector_mask.set(i);
+            }
+
+            active_mask_t active_mask;
+
+            mem_access_type access_type = is_write ? TMA_ACC_W : TMA_ACC_R;
+
+            mem_access_t access(access_type, addr, size, is_write, active_mask,
+                                byte_mask, sector_mask,
+                                m_shader_ctx->get_gpu()->gpgpu_ctx);
+
+            mem_fetch *mf = m_mf_allocator->alloc(
+                access,
+                m_shader_ctx->get_gpu()->gpu_sim_cycle +
+                    m_shader_ctx->get_gpu()->gpu_tot_sim_cycle,
+                (unsigned long long)-1);
+
+            m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
+            m_mf_pending_bytes.emplace(mf->get_request_uid(), size);
+
+            m_icnt->push(mf);
+            m_mf_inflight++;
+            tx.m_mf_tx_inflight++;
+            issued_requests++;
+            issued_this_iteration = true;
+            break;
           }
 
-          // Issue mem_fetch to interconnect → L2.
-          // For OOB fill requests with gpgpu_tma_oob_l2_traffic=1:
-          // Real HW TMA sends full-tile requests to L2 unconditionally,
-          // then zero-fills OOB data after response.
-          mem_access_byte_mask_t byte_mask;
-          mem_access_sector_mask_t sector_mask;
-
-          unsigned start_byte = addr % MAX_MEMORY_ACCESS_SIZE;
-          for (unsigned i = 0; i < size; i++) {
-            byte_mask.set((start_byte + i) % MAX_MEMORY_ACCESS_SIZE);
-          }
-
-          unsigned start_sector = start_byte / SECTOR_SIZE;
-          unsigned end_sector = (start_byte + size - 1) / SECTOR_SIZE;
-          for (unsigned i = start_sector;
-               i <= end_sector && i < SECTOR_CHUNCK_SIZE; i++) {
-            sector_mask.set(i);
-          }
-
-          active_mask_t active_mask;
-
-          mem_access_type access_type = is_write ? TMA_ACC_W : TMA_ACC_R;
-
-          mem_access_t access(access_type, addr, size, is_write, active_mask,
-                              byte_mask, sector_mask,
-                              m_shader_ctx->get_gpu()->gpgpu_ctx);
-
-          mem_fetch *mf = m_mf_allocator->alloc(
-              access,
-              m_shader_ctx->get_gpu()->gpu_sim_cycle +
-                  m_shader_ctx->get_gpu()->gpu_tot_sim_cycle,
-              (unsigned long long)-1);
-
-          m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
-
-          m_icnt->push(mf);
-          m_mf_inflight++;
-          tx.m_mf_tx_inflight++;
-          break; // One mem_fetch per cycle
+          if (!issued_this_iteration)
+            break;
         }
       }
 

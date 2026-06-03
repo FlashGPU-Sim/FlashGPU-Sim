@@ -5211,16 +5211,24 @@ void sst_simt_core_cluster::icnt_inject_request_packet_to_SST(
 }
 
 void simt_core_cluster::icnt_cycle() {
-  if (!m_response_fifo.empty()) {
+  unsigned tma_response_width =
+      m_config->gpgpu_tma_response_width ? m_config->gpgpu_tma_response_width : 1;
+  unsigned tma_responses_accepted = 0;
+
+  while (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
     unsigned cid = m_config->sid_to_cid(mf->get_sid());
     if (mf->get_access_type() == TMA_ACC_R ||
         mf->get_access_type() == TMA_ACC_W) {
       // TMA response
-      if (!m_core[cid]->tma_response_buffer_full()) {
+      if (tma_responses_accepted < tma_response_width &&
+          !m_core[cid]->tma_response_buffer_full()) {
         m_response_fifo.pop_front();
         m_core[cid]->accept_tma_response(mf);
+        tma_responses_accepted++;
+        continue;
       }
+      break;
     } else if (mf->get_access_type() == INST_ACC_R) {
       // instruction fetch response
       if (!m_core[cid]->fetch_unit_response_buffer_full()) {
@@ -5235,10 +5243,13 @@ void simt_core_cluster::icnt_cycle() {
         m_core[cid]->accept_ldst_unit_response(mf);
       }
     }
+    break;
   }
-  if (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
+
+  unsigned tma_responses_popped = 0;
+  while (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
     mem_fetch *mf = (mem_fetch *)::icnt_pop(m_cluster_id);
-    if (!mf) return;
+    if (!mf) break;
     assert(mf->get_tpc() == m_cluster_id);
     assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
 
@@ -5252,6 +5263,14 @@ void simt_core_cluster::icnt_cycle() {
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
     m_response_fifo.push_back(mf);
     m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+
+    if (mf->get_access_type() == TMA_ACC_R ||
+        mf->get_access_type() == TMA_ACC_W) {
+      tma_responses_popped++;
+      if (tma_responses_popped < tma_response_width)
+        continue;
+    }
+    break;
   }
 }
 

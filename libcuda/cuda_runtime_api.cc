@@ -4120,6 +4120,22 @@ cudaError_t CUDARTAPI __cudaPopCallConfiguration(dim3 *gridDim, dim3 *blockDim,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
+  gpgpu_context *ctx = GPGPU_Context();
+  gpgpusim_ptx_assert(!ctx->api->g_cuda_launch_stack.empty(),
+                      "empty launch stack");
+  kernel_config &config = ctx->api->g_cuda_launch_stack.back();
+  if (gridDim) {
+    *gridDim = config.grid_dim();
+  }
+  if (blockDim) {
+    *blockDim = config.block_dim();
+  }
+  if (sharedMem) {
+    *sharedMem = config.shared_mem();
+  }
+  if (stream) {
+    *reinterpret_cast<cudaStream_t *>(stream) = config.get_stream();
+  }
   return g_last_cudaError = cudaSuccess;
 }
 
@@ -4139,6 +4155,31 @@ void CUDARTAPI __cudaRegisterFunction(void **fatCubinHandle,
                                       dim3 *gDim) {
   cudaRegisterFunctionInternal(fatCubinHandle, hostFun, deviceFun, deviceName,
                                thread_limit, tid, bid, bDim, gDim);
+}
+
+cudaError_t CUDARTAPI __cudaGetKernel(cudaKernel_t *kernelPtr,
+                                      const void *entryFuncAddr) {
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+  *kernelPtr = reinterpret_cast<cudaKernel_t>(const_cast<void *>(entryFuncAddr));
+  return g_last_cudaError = cudaSuccess;
+}
+
+cudaError_t CUDARTAPI __cudaLaunchKernel(cudaKernel_t kernel, dim3 gridDim,
+                                         dim3 blockDim, void **args,
+                                         size_t sharedMem,
+                                         cudaStream_t stream) {
+  return cudaLaunchKernelInternal(
+      reinterpret_cast<const char *>(kernel), gridDim, blockDim,
+      const_cast<const void **>(args), sharedMem, stream);
+}
+
+cudaError_t CUDARTAPI __cudaLaunchKernel_ptsz(cudaKernel_t kernel,
+                                              dim3 gridDim, dim3 blockDim,
+                                              void **args, size_t sharedMem,
+                                              cudaStream_t stream) {
+  return __cudaLaunchKernel(kernel, gridDim, blockDim, args, sharedMem, stream);
 }
 
 extern void __cudaRegisterVar(

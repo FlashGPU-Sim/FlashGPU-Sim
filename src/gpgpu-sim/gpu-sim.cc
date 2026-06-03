@@ -655,6 +655,18 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_tma_tx_quota", OPT_UINT32,
                          &gpgpu_tma_tx_quota,
                          "Max in-flight mem_fetch per TMA transaction (default=0, 0=unlimited)", "0");
+  option_parser_register(opp, "-gpgpu_tma_response_width", OPT_UINT32,
+                         &gpgpu_tma_response_width,
+                         "TMA response tokens accepted per SM per cycle (default=1)", "1");
+  option_parser_register(
+      opp, "-gpgpu_tma_request_granularity", OPT_UINT32,
+      &gpgpu_tma_request_granularity,
+      "TMA memory request granularity in bytes (32/64/128; default=32)",
+      "32");
+  option_parser_register(
+      opp, "-gpgpu_tma_request_width", OPT_UINT32,
+      &gpgpu_tma_request_width,
+      "TMA memory requests issued per TMA unit per cycle (default=1)", "1");
   option_parser_register(opp, "-gpgpu_cta_load_balance", OPT_BOOL,
                          &gpgpu_cta_load_balance,
                          "Cap CTAs per core to ceil(total_ctas/n_cores) for load balancing (default=0)", "0");
