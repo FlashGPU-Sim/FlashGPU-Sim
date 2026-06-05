@@ -45,6 +45,7 @@ enum reg_producer_t {
   PROD_SP_INT,       // SP/INT/ALU result
   PROD_SFU,          // SFU/DP result
   PROD_TMA,          // TMA operation result
+  PROD_TENSOR_MAP,   // tensormap descriptor/proxy operation result
   PROD_OTHER,
 };
 

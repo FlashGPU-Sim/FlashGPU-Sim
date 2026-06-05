@@ -124,6 +124,7 @@ enum uarch_op_t {
   TENSOR_CORE_LOAD_OP,
   TENSOR_CORE_STORE_OP,
   TENSOR_MEMORY_ACCELERATOR_OP,
+  TENSOR_MAP_OP,
   STORE_OP,
   BRANCH_OP,
   BARRIER_OP,
@@ -182,6 +183,7 @@ enum operation_pipeline_t {
   INTP__OP,
   SFU__OP,
   TENSOR_CORE__OP,
+  TENSOR_MAP__OP,
   MEM__OP,
   SPECIALIZED__OP,
 };

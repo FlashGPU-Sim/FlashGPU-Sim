@@ -89,6 +89,8 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
     prod = PROD_TENSOR_CORE;
   } else if (op == TENSOR_MEMORY_ACCELERATOR_OP) {
     prod = PROD_TMA;
+  } else if (op == TENSOR_MAP_OP) {
+    prod = PROD_TENSOR_MAP;
   } else if (op == SFU_OP || op == ALU_SFU_OP || op == DP_OP) {
     prod = PROD_SFU;
   } else if (op == LOAD_OP || op == STORE_OP || op == MEMORY_BARRIER_OP ||

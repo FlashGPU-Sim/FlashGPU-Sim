@@ -649,6 +649,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_num_tma_units", OPT_UINT32,
                          &gpgpu_num_tma_units,
                          "Number of TMA units (default=0)", "0");
+  option_parser_register(opp, "-gpgpu_num_tensormap_units", OPT_UINT32,
+                         &gpgpu_num_tensormap_units,
+                         "Number of tensor-map descriptor units (default=0)",
+                         "0");
   option_parser_register(opp, "-gpgpu_tma_max_inflight", OPT_UINT32,
                          &gpgpu_tma_max_inflight,
                          "Max in-flight TMA mem_fetch requests per SM (default=0, 0=unlimited)", "0");

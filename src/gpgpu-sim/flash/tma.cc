@@ -2,7 +2,9 @@
 #include "tensormap.h"
 #include <atomic>
 #include <cstdarg>
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include "../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
@@ -21,6 +23,71 @@ typedef void *yyscan_t;
 std::atomic<unsigned int> tma_next_tx_uid = 0;
 
 namespace flash_gpgpu_sim {
+
+static void tma_trace_emit(unsigned long long cycle, const char *event,
+                           unsigned tx_uid, const char *kind, unsigned tma_type,
+                           unsigned long long pc, unsigned cta_id,
+                           unsigned warp_id, unsigned lane_id, unsigned tid,
+                           unsigned long long src, unsigned long long dst,
+                           unsigned size, unsigned mbar, unsigned mf_uid,
+                           unsigned long long mf_addr, unsigned mf_size,
+                           unsigned issued_mf, unsigned received_mf,
+                           unsigned bytes_completed, unsigned tx_inflight,
+                           unsigned global_inflight, unsigned response_fifo) {
+  const char *path = std::getenv("FLASHGPU_TMA_TRACE_CSV");
+  if (path == nullptr || path[0] == '\0')
+    return;
+
+  const char *limit = std::getenv("FLASHGPU_TMA_TRACE_CYCLE_LIMIT");
+  if (limit != nullptr && limit[0] != '\0') {
+    unsigned long long limit_cycle = std::strtoull(limit, nullptr, 0);
+    if (limit_cycle != 0 && cycle > limit_cycle)
+      return;
+  }
+
+  static std::mutex trace_mutex;
+  static FILE *trace_file = nullptr;
+  static bool header_written = false;
+
+  std::lock_guard<std::mutex> lock(trace_mutex);
+  if (trace_file == nullptr) {
+    trace_file = std::strcmp(path, "-") == 0 ? stdout : std::fopen(path, "a");
+    if (trace_file == nullptr)
+      return;
+  }
+  if (!header_written) {
+    std::fprintf(trace_file,
+                 "cycle,event,tx_uid,kind,tma_type,pc,cta,warp,lane,tid,"
+                 "src,dst,size,mbar,mf_uid,mf_addr,mf_size,issued_mf,"
+                 "received_mf,bytes_completed,tx_inflight,global_inflight,"
+                 "response_fifo\n");
+    header_written = true;
+  }
+
+  std::fprintf(trace_file,
+               "%llu,%s,%u,%s,%u,0x%llx,%u,%u,%u,%u,0x%llx,0x%llx,%u,"
+               "0x%x,%u,0x%llx,%u,%u,%u,%u,%u,%u,%u\n",
+               cycle, event, tx_uid, kind, tma_type, pc, cta_id, warp_id,
+               lane_id, tid, src, dst, size, mbar, mf_uid, mf_addr, mf_size,
+               issued_mf, received_mf, bytes_completed, tx_inflight,
+               global_inflight, response_fifo);
+  std::fflush(trace_file);
+}
+
+static bool tma_trace_mf_enabled(unsigned long long cycle) {
+  const char *enabled = std::getenv("FLASHGPU_TMA_TRACE_MF");
+  if (enabled == nullptr || enabled[0] == '\0' ||
+      std::strcmp(enabled, "0") == 0)
+    return false;
+
+  const char *limit = std::getenv("FLASHGPU_TMA_TRACE_MF_CYCLE_LIMIT");
+  if (limit != nullptr && limit[0] != '\0') {
+    unsigned long long limit_cycle = std::strtoull(limit, nullptr, 0);
+    if (limit_cycle != 0 && cycle > limit_cycle)
+      return false;
+  }
+  return true;
+}
 
 //=============================================================================
 // Shared Helper Functions
@@ -350,6 +417,11 @@ private:
   tma_agu_unit_t m_agu;
   unsigned m_mf_inflight = 0; // Actual mem_fetch in L2 pipeline (not skips)
 
+  unsigned long long current_cycle() const {
+    return m_shader_ctx->get_gpu()->gpu_sim_cycle +
+           m_shader_ctx->get_gpu()->gpu_tot_sim_cycle;
+  }
+
   struct tma_transaction_t {
     ptx_thread_info *m_thread = nullptr;
     ptx_instruction *m_inst = nullptr;
@@ -357,6 +429,16 @@ private:
     inst_t::tma_dyn_info_t m_dyn_info;
     uint32_t m_bytes_completed = 0;
     tma_agu_state_t agu_state; // AGU state for this transaction
+    unsigned m_cta_id = 0;
+    unsigned m_warp_id = 0;
+    unsigned m_lane_id = 0;
+    unsigned m_tid = 0;
+    unsigned long long m_pc = 0;
+    unsigned long long m_create_cycle = 0;
+    unsigned long long m_first_issue_cycle = 0;
+    unsigned long long m_last_issue_cycle = 0;
+    unsigned long long m_first_response_cycle = 0;
+    unsigned long long m_complete_cycle = 0;
 
     // Debug counters
     uint32_t m_mf_issued_count = 0;   // Number of mem_fetch requests issued
@@ -368,6 +450,16 @@ private:
       m_inst = nullptr;
       m_bytes_completed = 0;
       agu_state = tma_agu_state_t(); // Reset to default state
+      m_cta_id = 0;
+      m_warp_id = 0;
+      m_lane_id = 0;
+      m_tid = 0;
+      m_pc = 0;
+      m_create_cycle = 0;
+      m_first_issue_cycle = 0;
+      m_last_issue_cycle = 0;
+      m_first_response_cycle = 0;
+      m_complete_cycle = 0;
       m_mf_issued_count = 0;
       m_mf_received_count = 0;
       m_mf_tx_inflight = 0;
@@ -408,6 +500,15 @@ private:
 
     bool is_write =
         (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
+    tx.m_complete_cycle = current_cycle();
+    tma_trace_emit(tx.m_complete_cycle, "COMPLETE", tx_uid,
+                   is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                   tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id, tx.m_tid,
+                   tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                   tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0, 0, 0,
+                   tx.m_mf_issued_count, tx.m_mf_received_count,
+                   tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                   m_response_fifo.size());
     GPPRINTF_TMA(
         TMA,
         "[TMA %s COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, "
@@ -439,6 +540,14 @@ private:
       } else {
         m_barriers->complete_bulk_tx(cta_id, warp_id, tx_uid);
       }
+      tma_trace_emit(current_cycle(), "ARRIVE", tx_uid,
+                     is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                     tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                     tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                     tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0, 0,
+                     0, tx.m_mf_issued_count, tx.m_mf_received_count,
+                     tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                     m_response_fifo.size());
     }
 
     m_transactions.erase(it);
@@ -488,6 +597,12 @@ public:
             .m_static_info = tma_static_info,
             .m_dyn_info = tma_dyn_info,
             .m_bytes_completed = 0,
+            .m_cta_id = thread->get_hw_ctaid(),
+            .m_warp_id = warp_id,
+            .m_lane_id = laneid,
+            .m_tid = tid,
+            .m_pc = pI->get_PC(),
+            .m_create_cycle = current_cycle(),
         };
 
         // Initialize address generator
@@ -525,12 +640,19 @@ public:
             tma_next_tx_uid.fetch_add(1, std::memory_order_relaxed);
         m_transactions.emplace(tx_uid, tx);
 
+        bool is_write_op = (tma_static_info.dst_space ==
+                            inst_t::tma_static_info_t::TMA_GLOBAL);
+        tma_trace_emit(tx.m_create_cycle, "NEW", tx_uid,
+                       is_write_op ? "WRITE" : "READ", tma_static_info.tma_type,
+                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                       tx.m_tid, tma_dyn_info.src_addr, tma_dyn_info.dst_addr,
+                       tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr, 0, 0,
+                       0, 0, 0, 0, 0, m_mf_inflight, m_response_fifo.size());
+
         bool idealized =
             m_shader_ctx->get_config()->gpgpu_tma_idealized_memory != 0;
 
         // For TMA write operations, add transaction to bulk group
-        bool is_write_op = (tma_static_info.dst_space ==
-                            inst_t::tma_static_info_t::TMA_GLOBAL);
         if (is_write_op) {
           unsigned cta_id = thread->get_hw_ctaid();
           m_barriers->add_bulk_tx(cta_id, warp_id, tx_uid);
@@ -578,6 +700,12 @@ public:
       for (int i = m_pending_arrives.size() - 1; i >= 0; i--) {
         if (m_pending_arrives[i].remaining == 0) {
           auto &entry = m_pending_arrives[i];
+          tma_trace_emit(current_cycle(), "ARRIVE", entry.tx_uid,
+                         entry.is_write ? "WRITE" : "READ", 0, 0,
+                         entry.cta_id, entry.warp_id, 0, 0, 0, 0,
+                         entry.size_in_bytes, entry.mbar_addr, 0, 0, 0, 0, 0,
+                         entry.size_in_bytes, 0, m_mf_inflight,
+                         m_response_fifo.size());
           if (!entry.is_write) {
             m_barriers->complete_tx(entry.cta_id, entry.warp_id,
                                     entry.mbar_addr, entry.size_in_bytes);
@@ -614,6 +742,30 @@ public:
 
       bool is_write =
           (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
+      unsigned long long response_cycle = current_cycle();
+      if (tma_trace_mf_enabled(response_cycle)) {
+        tma_trace_emit(response_cycle, "MF_RESPONSE", tx_uid,
+                       is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                       tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                       tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+                       parent_uid, parent_mf->get_addr(), mf->get_data_size(),
+                       tx.m_mf_issued_count, tx.m_mf_received_count,
+                       tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                       m_response_fifo.size());
+      }
+      if (tx.m_first_response_cycle == 0) {
+        tx.m_first_response_cycle = response_cycle;
+        tma_trace_emit(tx.m_first_response_cycle, "FIRST_RESPONSE", tx_uid,
+                       is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                       tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                       tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+                       parent_uid, parent_mf->get_addr(), mf->get_data_size(),
+                       tx.m_mf_issued_count, tx.m_mf_received_count,
+                       tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                       m_response_fifo.size());
+      }
 
       GPPRINTF_TMA(TMA,
                    "TMA %s response received for mf uid=%u, tx_uid=%u, "
@@ -744,7 +896,8 @@ public:
                                     request_granularity)) {
             made_progress = true;
 
-            if (tx.m_mf_issued_count == 0) {
+            bool first_request = tx.m_mf_issued_count == 0;
+            if (first_request) {
               GPPRINTF_TMA(TMA,
                            "[TMA AGU] tx_uid=%u starting to issue %s "
                            "mem_fetch requests\n",
@@ -806,6 +959,36 @@ public:
             m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
             m_mf_pending_bytes.emplace(mf->get_request_uid(), size);
 
+            unsigned long long issue_cycle = current_cycle();
+            if (tma_trace_mf_enabled(issue_cycle)) {
+              tma_trace_emit(issue_cycle, "MF_ISSUE", tx_uid,
+                             is_write ? "WRITE" : "READ",
+                             tx.m_static_info.tma_type, tx.m_pc, tx.m_cta_id,
+                             tx.m_warp_id, tx.m_lane_id, tx.m_tid,
+                             tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                             tx.m_dyn_info.size_in_bytes,
+                             tx.m_dyn_info.mbar_addr, mf->get_request_uid(),
+                             addr, size, tx.m_mf_issued_count,
+                             tx.m_mf_received_count, tx.m_bytes_completed,
+                             tx.m_mf_tx_inflight, m_mf_inflight,
+                             m_response_fifo.size());
+            }
+            if (first_request) {
+              tx.m_first_issue_cycle = issue_cycle;
+              tma_trace_emit(issue_cycle, "FIRST_MF_ISSUE", tx_uid,
+                             is_write ? "WRITE" : "READ",
+                             tx.m_static_info.tma_type, tx.m_pc, tx.m_cta_id,
+                             tx.m_warp_id, tx.m_lane_id, tx.m_tid,
+                             tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                             tx.m_dyn_info.size_in_bytes,
+                             tx.m_dyn_info.mbar_addr, mf->get_request_uid(),
+                             addr, size, tx.m_mf_issued_count,
+                             tx.m_mf_received_count, tx.m_bytes_completed,
+                             tx.m_mf_tx_inflight, m_mf_inflight,
+                             m_response_fifo.size());
+            }
+            tx.m_last_issue_cycle = issue_cycle;
+
             m_icnt->push(mf);
             m_mf_inflight++;
             tx.m_mf_tx_inflight++;
@@ -823,6 +1006,14 @@ public:
       if (transaction_finalized) {
         issue_queue.pop_front();
       } else if (tx.agu_state.done) {
+        tma_trace_emit(current_cycle(), "ISSUE_DONE", tx_uid,
+                       is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                       tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                       tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0,
+                       0, 0, tx.m_mf_issued_count, tx.m_mf_received_count,
+                       tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                       m_response_fifo.size());
         GPPRINTF_TMA(TMA,
                      "[TMA AGU DONE] tx_uid=%u issued %u %s mem_fetch requests "
                      "(total bytes: %u)\n",

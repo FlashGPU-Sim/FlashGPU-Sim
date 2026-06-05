@@ -212,7 +212,8 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
-            &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA], i));
+            &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA],
+            &m_pipeline_reg[ID_OC_TENSOR_MAP], i));
         break;
       case CONCRETE_SCHEDULER_TWO_LEVEL_ACTIVE:
         schedulers.push_back(new two_level_active_scheduler(
@@ -221,7 +222,8 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
             &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA],
-            i, m_config->gpgpu_scheduler_string));
+            &m_pipeline_reg[ID_OC_TENSOR_MAP], i,
+            m_config->gpgpu_scheduler_string));
         break;
       case CONCRETE_SCHEDULER_GTO:
         schedulers.push_back(new gto_scheduler(
@@ -229,7 +231,8 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
-            &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA], i));
+            &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA],
+            &m_pipeline_reg[ID_OC_TENSOR_MAP], i));
         break;
       case CONCRETE_SCHEDULER_RRR:
         schedulers.push_back(new rrr_scheduler(
@@ -237,7 +240,8 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
-            &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA], i));
+            &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA],
+            &m_pipeline_reg[ID_OC_TENSOR_MAP], i));
         break;
       case CONCRETE_SCHEDULER_OLDEST_FIRST:
         schedulers.push_back(new oldest_scheduler(
@@ -245,7 +249,8 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
-            &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA], i));
+            &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA],
+            &m_pipeline_reg[ID_OC_TENSOR_MAP], i));
         break;
       case CONCRETE_SCHEDULER_WARP_LIMITING:
         schedulers.push_back(new swl_scheduler(
@@ -254,7 +259,8 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
             &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA],
-            i, m_config->gpgpu_scheduler_string));
+            &m_pipeline_reg[ID_OC_TENSOR_MAP], i,
+            m_config->gpgpu_scheduler_string));
         break;
       default:
         abort();
@@ -303,6 +309,10 @@ void shader_core_ctx::create_exec_pipeline() {
     if (m_config->gpgpu_num_int_units > 0) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_INT]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_INT]);
+    }
+    if (m_config->gpgpu_num_tensormap_units > 0) {
+      in_ports.push_back(&m_pipeline_reg[ID_OC_TENSOR_MAP]);
+      out_ports.push_back(&m_pipeline_reg[OC_EX_TENSOR_MAP]);
     }
     if (m_config->m_specialized_unit.size() > 0) {
       for (unsigned j = 0; j < m_config->m_specialized_unit.size(); ++j) {
@@ -405,8 +415,9 @@ void shader_core_ctx::create_exec_pipeline() {
       m_config->gpgpu_num_sp_units + m_config->gpgpu_num_dp_units +
       m_config->gpgpu_num_sfu_units + m_config->gpgpu_num_tensor_core_units +
       m_config->gpgpu_num_int_units + m_config->gpgpu_num_tma_units +
+      m_config->gpgpu_num_tensormap_units +
       m_config->m_specialized_unit_num +
-      1;  // sp_unit, sfu, dp, tensor, int, tma, ldst_unit
+      1;  // sp_unit, sfu, dp, tensor, int, tma, tensormap, ldst_unit
   // m_dispatch_port = new enum pipeline_stage_name_t[ m_num_function_units ];
   // m_issue_port = new enum pipeline_stage_name_t[ m_num_function_units ];
 
@@ -445,6 +456,13 @@ void shader_core_ctx::create_exec_pipeline() {
     m_fu.push_back(new tma_fu(&m_pipeline_reg[EX_WB], m_config, this, k));
     m_dispatch_port.push_back(ID_OC_TMA);
     m_issue_port.push_back(OC_EX_TMA);
+  }
+
+  for (unsigned k = 0; k < m_config->gpgpu_num_tensormap_units; k++) {
+    m_fu.push_back(
+        new tensormap_fu(&m_pipeline_reg[EX_WB], m_config, this, k));
+    m_dispatch_port.push_back(ID_OC_TENSOR_MAP);
+    m_issue_port.push_back(OC_EX_TENSOR_MAP);
   }
 
   for (unsigned j = 0; j < m_config->m_specialized_unit.size(); j++) {
@@ -1664,7 +1682,10 @@ void scheduler_unit::cycle() {
             } else {
               // This code need to be refactored
               if (pI->op != TENSOR_CORE_OP && pI->op != SFU_OP &&
-                  pI->op != DP_OP && !(pI->op >= SPEC_UNIT_START_ID)) {
+                  pI->op != DP_OP &&
+                  !(pI->op == TENSOR_MAP_OP &&
+                    m_shader->m_config->gpgpu_num_tensormap_units > 0) &&
+                  !(pI->op >= SPEC_UNIT_START_ID)) {
                 bool execute_on_SP = false;
                 bool execute_on_INT = false;
 
@@ -1801,6 +1822,24 @@ void scheduler_unit::cycle() {
                   issued_inst = true;
                   warp_inst_issued = true;
                   previous_issued_inst_exec_type = exec_unit_type_t::TMA_UNIT;
+                }
+              } else if ((pI->op == TENSOR_MAP_OP) &&
+                         !(diff_exec_units && previous_issued_inst_exec_type ==
+                                                  exec_unit_type_t::
+                                                      TENSOR_MAP_UNIT)) {
+                bool tensormap_pipe_avail =
+                    (m_shader->m_config->gpgpu_num_tensormap_units > 0) &&
+                    m_tensormap_out->has_free(
+                        m_shader->m_config->sub_core_model, m_id);
+
+                if (tensormap_pipe_avail) {
+                  m_shader->issue_warp(*m_tensormap_out, pI, active_mask,
+                                       warp_id, m_id);
+                  issued++;
+                  issued_inst = true;
+                  warp_inst_issued = true;
+                  previous_issued_inst_exec_type =
+                      exec_unit_type_t::TENSOR_MAP_UNIT;
                 }
               } else if ((pI->op >= SPEC_UNIT_START_ID) &&
                          !(diff_exec_units &&
@@ -1941,10 +1980,15 @@ void scheduler_unit::cycle() {
 
         if (op == LOAD_OP || op == STORE_OP ||
             op == TENSOR_CORE_LOAD_OP || op == TENSOR_CORE_STORE_OP ||
-            op == MEMORY_BARRIER_OP || op == TENSOR_MEMORY_ACCELERATOR_OP) {
+            op == MEMORY_BARRIER_OP || op == TENSOR_MEMORY_ACCELERATOR_OP ||
+            (op == TENSOR_MAP_OP &&
+             m_shader->m_config->gpgpu_num_tensormap_units > 0)) {
           is_mio = true;
           if (op == TENSOR_MEMORY_ACCELERATOR_OP)
             fu_full = !m_tma_out->has_free(m_shader->m_config->sub_core_model, m_id);
+          else if (op == TENSOR_MAP_OP)
+            fu_full = !m_tensormap_out->has_free(
+                m_shader->m_config->sub_core_model, m_id);
           else
             fu_full = !m_mem_out->has_free(m_shader->m_config->sub_core_model, m_id);
         } else if (op == TENSOR_CORE_OP) {
@@ -2096,10 +2140,11 @@ swl_scheduler::swl_scheduler(shader_core_stats *stats, shader_core_ctx *shader,
                              register_set *tensor_core_out,
                              std::vector<register_set *> &spec_cores_out,
                              register_set *mem_out, register_set *tma_out,
-                             int id, char *config_string)
+                             register_set *tensormap_out, int id,
+                             char *config_string)
     : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
                      sfu_out, int_out, tensor_core_out, spec_cores_out, mem_out,
-                     tma_out, id) {
+                     tma_out, tensormap_out, id) {
   unsigned m_prioritization_readin;
   int ret = sscanf(config_string, "warp_limiting:%d:%d",
                    &m_prioritization_readin, &m_num_warps_to_limit);
@@ -2803,6 +2848,14 @@ tma_fu::tma_fu(register_set *result_port, const shader_core_config *config,
   m_name = "TMA";
 }
 
+tensormap_fu::tensormap_fu(register_set *result_port,
+                           const shader_core_config *config,
+                           shader_core_ctx *core, unsigned issue_reg_id)
+    : pipelined_simd_unit(result_port, config,
+                          config->max_tensormap_latency, core, issue_reg_id) {
+  m_name = "TENSOR_MAP";
+}
+
 void sfu::issue(register_set &source_reg) {
   warp_inst_t **ready_reg =
       source_reg.get_ready(m_config->sub_core_model, m_issue_reg_id);
@@ -2824,6 +2877,16 @@ void tensor_core::issue(register_set &source_reg) {
 }
 
 void tma_fu::issue(register_set &source_reg) {
+  pipelined_simd_unit::issue(source_reg);
+}
+
+void tensormap_fu::issue(register_set &source_reg) {
+  bool partition_issue =
+      m_config->sub_core_model && this->is_issue_partitioned();
+  warp_inst_t **ready_reg =
+      source_reg.get_ready(partition_issue, m_issue_reg_id);
+  (*ready_reg)->op_pipe = TENSOR_MAP__OP;
+  m_core->incsp_stat(m_core->get_config()->warp_size, (*ready_reg)->latency);
   pipelined_simd_unit::issue(source_reg);
 }
 
@@ -2891,6 +2954,11 @@ void tensor_core::active_lanes_in_pipeline() {
 }
 
 void tma_fu::active_lanes_in_pipeline() {
+  unsigned active_count = pipelined_simd_unit::get_active_lanes_in_pipeline();
+  assert(active_count <= m_core->get_config()->warp_size);
+}
+
+void tensormap_fu::active_lanes_in_pipeline() {
   unsigned active_count = pipelined_simd_unit::get_active_lanes_in_pipeline();
   assert(active_count <= m_core->get_config()->warp_size);
 }
@@ -4070,6 +4138,7 @@ void shader_core_config::set_pipeline_latency() {
   unsigned sfu_latency;
   unsigned tensor_latency;
   unsigned tma_latency;
+  unsigned tensormap_latency[3];
 
   /*
    * [0] ADD,SUB
@@ -4094,6 +4163,12 @@ void shader_core_config::set_pipeline_latency() {
     sscanf(gpgpu_ctx->func_sim->opcode_latency_tma, "%u", &tma_latency);
   else
     tma_latency = 1;
+  if (gpgpu_ctx->func_sim->opcode_latency_tensormap)
+    sscanf(gpgpu_ctx->func_sim->opcode_latency_tensormap, "%u,%u,%u",
+           &tensormap_latency[0], &tensormap_latency[1],
+           &tensormap_latency[2]);
+  else
+    tensormap_latency[0] = tensormap_latency[1] = tensormap_latency[2] = 1;
 
   // all div operation are executed on sfu
   // assume that the max latency are dp div or normal sfu_latency
@@ -4104,6 +4179,8 @@ void shader_core_config::set_pipeline_latency() {
   max_dp_latency = dp_latency[1];
   max_tensor_core_latency = tensor_latency;
   max_tma_latency = tma_latency;
+  max_tensormap_latency = std::max(tensormap_latency[0], tensormap_latency[1]);
+  max_tensormap_latency = std::max(max_tensormap_latency, tensormap_latency[2]);
 }
 
 void shader_core_ctx::cycle() {
