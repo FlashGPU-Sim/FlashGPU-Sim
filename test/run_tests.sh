@@ -52,8 +52,8 @@ usage() {
     echo "  build bench        Build microbenchmarks only"
     echo "  build dev          Build standalone dev tests only"
     echo "  build fa3          Build FA3 standalone integration driver"
-    echo "  test               Run all verification tests (unit + integration)"
-    echo "  test <pattern>     Run specific verification test"
+    echo "  test               Run all verification tests and trace tests"
+    echo "  test <pattern>     Run specific verification test only"
     echo "  fa3                Run FA3 standalone integration driver"
     echo "  trace              Run Triton kernel trace smoke tests"
     echo "  trace <pattern>    Run specific trace test (e.g., 'embedding')"
@@ -727,6 +727,9 @@ while [[ $# -gt 0 ]]; do
         test)
             initialize_run_directory "test"
             run_test_targets "$2" || exit $?
+            if [ -n "${2:-}" ]; then
+                exit 0
+            fi
             run_trace_tests
             exit $?
             ;;
