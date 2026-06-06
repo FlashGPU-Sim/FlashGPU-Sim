@@ -58,6 +58,14 @@ TEST_TARGETS = $(TEST_SOURCES:$(TEST_SRC_DIR)/%_test.cc=$(BIN_DIR)/%)
 MICROBENCH_OBJECTS = $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
 MICROBENCH_TARGETS = $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
 
+# Standalone FA3 bring-up case. It is intentionally not folded into
+# run_all_tests because it is a full CUDA application, not a gtest source.
+FA3_NAME = fa3_fwd_hdim128_fp16_sm90
+FA3_SRC_NAME = fa3_fwd_hdim128_fp16_sm90_driver
+FA3_DIR = $(TEST_SRC_DIR)/integration/fa3
+FA3_BIN_DIR = $(BIN_DIR)/integration/fa3
+FA3_TARGET = $(FA3_BIN_DIR)/$(FA3_NAME)
+
 # Standalone dev tests (decoupled from simulator, separate binary)
 STANDALONE_SOURCES = $(wildcard $(TEST_SRC_DIR)/standalone/*_test.cc)
 STANDALONE_OBJECTS = $(STANDALONE_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
@@ -86,7 +94,7 @@ FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
 FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o
 FLASH_OBJ_DIR = $(OBJ_DIR)/flash
 
-.PHONY: all test bench dev clean help setup-gtest
+.PHONY: all test bench dev fa3 clean help setup-gtest
 
 # Build everything (test + bench + dev)
 all: test bench dev
@@ -100,6 +108,12 @@ bench: setup-gtest $(MICROBENCH_TARGETS)
 # Build standalone dev tests (decoupled from simulator)
 dev: setup-gtest $(DEV_TEST_TARGET)
 
+# Build FA3 standalone driver
+fa3: $(FA3_TARGET)
+
+$(FA3_TARGET): $(FA3_DIR)/$(FA3_SRC_NAME).cu $(FA3_DIR)/Makefile | $(BIN_DIR)
+	$(MAKE) -C $(FA3_DIR) OUT_DIR=$(abspath $(FA3_BIN_DIR)) bin
+
 # Help target
 help:
 	@echo "GPGPU-Sim Test Framework"
@@ -107,6 +121,7 @@ help:
 	@echo "Available targets:"
 	@echo "  all         - Build all tests (default)"
 	@echo "  test        - Build and run all tests"
+	@echo "  fa3         - Build FA3 standalone integration driver"
 	@echo "  clean       - Clean all build artifacts"
 	@echo "  setup-gtest - Download and setup Google Test"
 	@echo "  run-tests   - Run all compiled tests"

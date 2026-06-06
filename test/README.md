@@ -28,8 +28,10 @@ cd test
 |---------|-------------|
 | `./run_tests.sh setup` | Download Google Test |
 | `./run_tests.sh build` | Build all tests (auto-creates run directory, skips simulator build in native mode) |
+| `./run_tests.sh build fa3` | Build FA3 standalone integration driver |
 | `./run_tests.sh test` | Run all tests (auto-creates run directory, skips simulator build in native mode) |
 | `./run_tests.sh test <pattern>` | Run specific test |
+| `./run_tests.sh fa3` | Run FA3 standalone integration driver |
 | `./run_tests.sh bench <pattern>` | Run microbenchmark test |
 | `./run_tests.sh refresh` | Refresh run directory and configuration |
 | `./run_tests.sh list` | List available tests |
@@ -151,6 +153,8 @@ test/src/
 **`unit/`** and **`integration/`** are compiled into `run_all_tests` (via `make test`).
 **`standalone/`** dev tests are a separate binary `run_dev_tests` (via `make dev`).
 **`microbench/`** tests are separate binaries (via `make bench`).
+**`integration/fa3/`** is a standalone CUDA application managed by `make fa3`
+and `./run_tests.sh fa3`; its executable is placed under `build/bin/integration/fa3/`.
 
 Microbenchmarks stay split intentionally: benchmark-specific files rebuild faster,
 one crashing bench does not take down unrelated benches, and each binary can own

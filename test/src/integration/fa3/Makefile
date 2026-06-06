@@ -1,8 +1,11 @@
 NVCC ?= nvcc
 
-TARGET := fa3_fwd_hdim128_fp16_sm90_driver
-SRC := $(TARGET).cu
-PTX := $(TARGET).ptx
+TARGET_NAME := fa3_fwd_hdim128_fp16_sm90
+SRC_NAME := fa3_fwd_hdim128_fp16_sm90_driver
+OUT_DIR ?= .
+TARGET := $(OUT_DIR)/$(TARGET_NAME)
+SRC := $(SRC_NAME).cu
+PTX := $(OUT_DIR)/$(TARGET_NAME).ptx
 
 COMMON_FLAGS := -O3 -std=c++17 --ftemplate-backtrace-limit=0 --use_fast_math \
 	-lineinfo --expt-relaxed-constexpr \
@@ -13,6 +16,9 @@ COMMON_FLAGS := -O3 -std=c++17 --ftemplate-backtrace-limit=0 --use_fast_math \
 	-Iflash-attention/hopper \
 	-Iflash-attention/csrc/cutlass/include
 
+BIN_GENCODE := -gencode arch=compute_90a,code=[sm_90a,compute_90a]
+BIN_LDLIBS := -lcudart
+
 .PHONY: all ptx bin clean
 
 all: ptx bin
@@ -20,12 +26,14 @@ all: ptx bin
 ptx: $(PTX)
 
 $(PTX): $(SRC)
+	@mkdir -p $(dir $@)
 	$(NVCC) -ptx $< -o $@ $(COMMON_FLAGS) -arch=compute_90a
 
 bin: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(NVCC) $< -o $@ $(COMMON_FLAGS) -gencode arch=compute_90a,code=sm_90a
+	@mkdir -p $(dir $@)
+	$(NVCC) $< -o $@ $(COMMON_FLAGS) $(BIN_GENCODE) $(BIN_LDLIBS)
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(PTX)

@@ -51,8 +51,10 @@ usage() {
     echo "  build test         Build verification tests only"
     echo "  build bench        Build microbenchmarks only"
     echo "  build dev          Build standalone dev tests only"
+    echo "  build fa3          Build FA3 standalone integration driver"
     echo "  test               Run all verification tests (unit + integration)"
     echo "  test <pattern>     Run specific verification test"
+    echo "  fa3                Run FA3 standalone integration driver"
     echo "  trace              Run Triton kernel trace smoke tests"
     echo "  trace <pattern>    Run specific trace test (e.g., 'embedding')"
     echo "  bench <pattern>    Run microbenchmarks matching pattern"
@@ -224,6 +226,21 @@ build_dev_tests() {
 
     print_color $BLUE "Building dev tests..."
     run_command make dev
+
+    if [ $? -eq 0 ]; then
+        print_color $GREEN "Build successful!"
+    else
+        print_color $RED "Build failed!"
+        exit 1
+    fi
+}
+
+# Build FA3 standalone integration driver
+build_fa3_test() {
+    build_gpgpusim
+
+    print_color $BLUE "Building FA3 standalone integration driver..."
+    run_command make fa3
 
     if [ $? -eq 0 ]; then
         print_color $GREEN "Build successful!"
@@ -549,6 +566,43 @@ run_dev_tests() {
     return $exit_code
 }
 
+# Run FA3 standalone integration driver
+run_fa3_test() {
+    local config_dir="run/${GPU_CONFIG}"
+
+    if [ ! -d "$config_dir" ]; then
+        print_color $RED "Configuration directory not found: $config_dir"
+        exit 1
+    fi
+
+    build_fa3_test
+
+    local fa3_bin="$(pwd)/build/bin/integration/fa3/fa3_fwd_hdim128_fp16_sm90"
+    if [ ! -f "$fa3_bin" ]; then
+        print_color $RED "FA3 executable not found: $fa3_bin"
+        exit 1
+    fi
+
+    print_color $BLUE "Running FA3 standalone integration driver (config: $GPU_CONFIG)"
+
+    local exit_code=0
+    cd "$config_dir"
+    if command -v timeout &> /dev/null; then
+        run_command timeout $TEST_TIMEOUT "$fa3_bin" || exit_code=$?
+    else
+        run_command "$fa3_bin" || exit_code=$?
+    fi
+    cd - > /dev/null
+
+    if [ $exit_code -eq 0 ]; then
+        print_color $GREEN "✓ FA3 passed!"
+    else
+        print_color $RED "✗ FA3 failed (exit code: $exit_code)"
+    fi
+
+    return $exit_code
+}
+
 # Build and run trace tests (Triton kernel PTX smoke tests)
 run_trace_tests() {
     local test_name="${1:-}"
@@ -600,7 +654,7 @@ clean_tests() {
 initialize_run_directory() {
     # Only setup if we're doing operations that need the config
     case "${1:-}" in
-        test|bench|dev|trace|build)
+        test|bench|dev|fa3|trace|build)
             setup_run_directory
             ;;
     esac
@@ -651,6 +705,9 @@ while [[ $# -gt 0 ]]; do
                 dev)
                     build_dev_tests
                     ;;
+                fa3)
+                    build_fa3_test
+                    ;;
                 trace)
                     build_gpgpusim
                     make -C src/trace GPU_CONFIG="$GPU_CONFIG"
@@ -661,7 +718,7 @@ while [[ $# -gt 0 ]]; do
                     build_dev_tests
                     ;;
                 *)
-                    print_color $RED "Unknown build target: $2 (use 'test', 'bench', 'dev', or 'trace')"
+                    print_color $RED "Unknown build target: $2 (use 'test', 'bench', 'dev', 'fa3', or 'trace')"
                     exit 1
                     ;;
             esac
@@ -681,6 +738,11 @@ while [[ $# -gt 0 ]]; do
         dev)
             initialize_run_directory "dev"
             run_dev_tests "$2"
+            exit $?
+            ;;
+        fa3)
+            initialize_run_directory "fa3"
+            run_fa3_test
             exit $?
             ;;
         trace)
