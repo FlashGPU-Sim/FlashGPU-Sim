@@ -105,10 +105,13 @@ class ptx_recognizer;
 %token  F16X2_TYPE
 %token  BF16_TYPE
 %token  TF32_TYPE
+%token  E4M3_TYPE
+%token  E5M2_TYPE
 %token  F32_TYPE
 %token  F32X2_TYPE
 %token  F64_TYPE
 %token  FF64_TYPE
+%token  B1_TYPE
 %token  B8_TYPE
 %token  B16_TYPE
 %token  B32_TYPE
@@ -163,6 +166,7 @@ class ptx_recognizer;
 %token  PERIOD
 %token  BACKSLASH
 %token <int_value> DIMENSION_MODIFIER
+%token <int_value> WGMMA_SHAPE
 %token RN_OPTION
 %token RZ_OPTION
 %token RM_OPTION
@@ -176,6 +180,7 @@ class ptx_recognizer;
 %token GEOM_MODIFIER_2D
 %token GEOM_MODIFIER_3D
 %token SAT_OPTION
+%token SATFINITE_OPTION
 %token FTZ_OPTION
 %token NEG_OPTION
 %token SYNC_OPTION
@@ -184,10 +189,12 @@ class ptx_recognizer;
 %token EXPECT_TX_OPTION
 %token INIT_OPTION
 %token TRY_WAIT_OPTION
+%token WAIT_OPTION
 %token PARITY_OPTION
 %token TMA_MBAR_COMPLETE_BYTES
 %token COMMIT_GROUP_OPTION
 %token WAIT_GROUP_OPTION
+%token LAUNCH_DEPENDENTS_OPTION
 %token ATOMIC_POPC
 %token ATOMIC_AND
 %token ATOMIC_OR
@@ -259,6 +266,8 @@ class ptx_recognizer;
 %token	RELEASE_OPTION;
 %token	ACQUIRE_OPTION;
 %token	GPU_OPTION;
+%token	L2_CACHE_HINT_OPTION;
+%token	L2_OPTION;
 %token	ALIGNED_OPTION;
 %token	B1024_TYPE;
 %token	GENERIC_OPTION;
@@ -269,6 +278,7 @@ class ptx_recognizer;
 %token	BULK_GROUP_OPTION;
 %token	CLUSTER_OPTION;
 %token	INVAL_OPTION;
+%token	MBARRIER_INIT_OPTION;
 %token	M8N8_OPTION;
 %token	TRANS_OPTION;
 %token	X1_OPTION;
@@ -276,12 +286,14 @@ class ptx_recognizer;
 %token	X4_OPTION;
 %type <int_value> function_decl_header
 %type <ptr_value> function_decl
+%type <ptr_value> vector_identifier_list
 
 %{
   	#include "ptx_parser.h"
 	#include <stdlib.h>
 	#include <string.h>
 	#include <math.h>
+	#include <vector>
 	void syntax_not_implemented(yyscan_t yyscanner, ptx_recognizer* recognizer);
 	int ptx_lex(YYSTYPE * yylval_param, yyscan_t yyscanner, ptx_recognizer* recognizer);
 	int ptx_error( yyscan_t yyscanner, ptx_recognizer* recognizer, const char *s );
@@ -480,10 +492,13 @@ scalar_type: S8_TYPE { recognizer->add_scalar_type_spec( S8_TYPE ); }
 	| F16X2_TYPE { recognizer->add_scalar_type_spec( F16X2_TYPE ); }
 	| BF16_TYPE  { recognizer->add_scalar_type_spec( BF16_TYPE ); }
 	| TF32_TYPE  { recognizer->add_scalar_type_spec( TF32_TYPE ); }
+	| E4M3_TYPE  { recognizer->add_scalar_type_spec( E4M3_TYPE ); }
+	| E5M2_TYPE  { recognizer->add_scalar_type_spec( E5M2_TYPE ); }
 	| F32_TYPE   { recognizer->add_scalar_type_spec( F32_TYPE ); }
 	| F32X2_TYPE { recognizer->add_scalar_type_spec( F32X2_TYPE ); }
 	| F64_TYPE   { recognizer->add_scalar_type_spec( F64_TYPE ); }
 	| FF64_TYPE   { recognizer->add_scalar_type_spec( FF64_TYPE ); }
+	| B1_TYPE    { recognizer->add_scalar_type_spec( B1_TYPE );  }
 	| B8_TYPE    { recognizer->add_scalar_type_spec( B8_TYPE );  }
 	| B16_TYPE   { recognizer->add_scalar_type_spec( B16_TYPE ); }
 	| B32_TYPE   { recognizer->add_scalar_type_spec( B32_TYPE ); }
@@ -578,10 +593,12 @@ option: type_spec
 	| RED_OPTION { recognizer->add_option(RED_OPTION); }
 	| INIT_OPTION { recognizer->add_option(INIT_OPTION); }
 	| TRY_WAIT_OPTION { recognizer->add_option(TRY_WAIT_OPTION); }
+	| WAIT_OPTION { recognizer->add_option(WAIT_OPTION); }
 	| PARITY_OPTION { recognizer->add_option(PARITY_OPTION); }
 	| TMA_MBAR_COMPLETE_BYTES { recognizer->add_option(TMA_MBAR_COMPLETE_BYTES); }
 	| COMMIT_GROUP_OPTION { recognizer->add_option(COMMIT_GROUP_OPTION); }
 	| WAIT_GROUP_OPTION { recognizer->add_option(WAIT_GROUP_OPTION); }
+	| LAUNCH_DEPENDENTS_OPTION { recognizer->add_option(LAUNCH_DEPENDENTS_OPTION); }
 	| UNI_OPTION { recognizer->add_option(UNI_OPTION); }
 	| WIDE_OPTION { recognizer->add_option(WIDE_OPTION); }
 	| ANY_OPTION { recognizer->add_option(ANY_OPTION); }
@@ -594,6 +611,8 @@ option: type_spec
 	| GEOM_MODIFIER_2D { recognizer->add_option(GEOM_MODIFIER_2D); }
 	| GEOM_MODIFIER_3D { recognizer->add_option(GEOM_MODIFIER_3D); }
 	| SAT_OPTION { recognizer->add_option(SAT_OPTION); }
+	| SATFINITE_OPTION { recognizer->add_option(SATFINITE_OPTION); recognizer->add_wgmma_option(SATFINITE_OPTION); }
+	| WGMMA_SHAPE { recognizer->add_wgmma_option($1); }
 	| FTZ_OPTION { recognizer->add_option(FTZ_OPTION); }
 	| NEG_OPTION { recognizer->add_option(NEG_OPTION); }
 	| APPROX_OPTION { recognizer->add_option(APPROX_OPTION); }
@@ -643,6 +662,8 @@ option: type_spec
 	| RELEASE_OPTION { recognizer->add_option(RELEASE_OPTION); }
 	| ACQUIRE_OPTION { recognizer->add_option(ACQUIRE_OPTION); }
 	| GPU_OPTION { recognizer->add_option(GPU_OPTION); }
+	| L2_CACHE_HINT_OPTION { recognizer->add_option(L2_CACHE_HINT_OPTION); }
+	| L2_OPTION { recognizer->add_option(L2_OPTION); }
 	| ALIGNED_OPTION { recognizer->add_option(ALIGNED_OPTION); }
 	| B1024_TYPE { recognizer->add_option(B1024_TYPE); }
 	| GENERIC_OPTION { recognizer->add_option(GENERIC_OPTION); }
@@ -653,6 +674,7 @@ option: type_spec
 	| BULK_GROUP_OPTION { recognizer->add_option(BULK_GROUP_OPTION); }
 	| CLUSTER_OPTION { recognizer->add_option(CLUSTER_OPTION); }
 	| INVAL_OPTION { recognizer->add_option(INVAL_OPTION); }
+	| MBARRIER_INIT_OPTION { recognizer->add_option(MBARRIER_INIT_OPTION); }
 	| M8N8_OPTION { recognizer->add_option(M8N8_OPTION); }
 	| TRANS_OPTION { recognizer->add_option(TRANS_OPTION); }
 	| X1_OPTION { recognizer->add_option(X1_OPTION); }
@@ -755,12 +777,23 @@ operand: IDENTIFIER  { recognizer->add_scalar_operand( $1 ); }
 	| IDENTIFIER BACKSLASH IDENTIFIER HI_OPTION { recognizer->add_2vector_operand($1,$3); recognizer->change_double_operand_type(-3); recognizer->change_operand_lohi(2);}
 	;
 
-vector_operand: LEFT_BRACE IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_2vector_operand($2,$4); }
-		| LEFT_BRACE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_3vector_operand($2,$4,$6); }
-		| LEFT_BRACE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_4vector_operand($2,$4,$6,$8); }
-		| LEFT_BRACE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_5vector_operand($2,$4,$6,$8,$10); }
-		| LEFT_BRACE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_8vector_operand($2,$4,$6,$8,$10,$12,$14,$16); }
-		| LEFT_BRACE IDENTIFIER RIGHT_BRACE { recognizer->add_1vector_operand($2); }
+vector_operand: LEFT_BRACE vector_identifier_list RIGHT_BRACE {
+			std::vector<const char *> *ids = (std::vector<const char *> *)$2;
+			recognizer->add_vector_operand(*ids);
+			delete ids;
+		}
+	;
+
+vector_identifier_list: IDENTIFIER {
+			std::vector<const char *> *ids = new std::vector<const char *>();
+			ids->push_back($1);
+			$$ = ids;
+		}
+		| vector_identifier_list COMMA IDENTIFIER {
+			std::vector<const char *> *ids = (std::vector<const char *> *)$1;
+			ids->push_back($3);
+			$$ = ids;
+		}
 	;
 
 tex_vector_operand: LEFT_BRACE IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_2vector_operand($2,$4); }

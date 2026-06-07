@@ -1772,6 +1772,12 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
   ptx_instruction *pI = const_cast<ptx_instruction *>(pIin);
 
+  if (pI->get_opcode() == TMA_PREFETCH_OP) {
+    GPPRINTF_INST_EXEC(TMA, "[STUB] cp.async.bulk.prefetch treated as nop%s\n",
+                       "");
+    return;
+  }
+
   bool is_commit_group = false;
   bool is_wait_group = false;
   bool is_tensor = false;

@@ -32,6 +32,8 @@
 #include "../abstract_hardware_model.h"
 #include "ptx_ir.h"
 
+#include <vector>
+
 class gpgpu_context;
 typedef void *yyscan_t;
 class ptx_recognizer {
@@ -84,6 +86,7 @@ class ptx_recognizer {
   std::list<int> g_options;
   std::list<int> g_wmma_options;
   std::list<int> g_mma_options;
+  std::list<int> g_wgmma_options;
   std::list<int> g_scalar_type;
   // type specifier stuff:
   memory_space_t g_space_spec;
@@ -140,9 +143,11 @@ class ptx_recognizer {
   void add_8vector_operand(const char *d1, const char *d2, const char *d3,
                            const char *d4, const char *d5, const char *d6,
                            const char *d7, const char *d8);
+  void add_vector_operand(const std::vector<const char *> &components);
   void add_option(int option);
   void add_wmma_option(int option);
   void add_mma_option(int option);
+  void add_wgmma_option(int option);
   void add_builtin_operand(int builtin, int dim_modifier);
   void add_memory_operand();
   void add_literal_int(int value);

@@ -45,6 +45,7 @@ typedef void *yyscan_t;
 #include "../../libcuda/gpgpu_context.h"
 #include "../abstract_hardware_model.h"
 #include "../gpgpu-sim/gpu-sim.h"
+#include "../gpgpu-sim/flash/wgmma/tensor_wgmma.h"
 #include "../gpgpusim_entrypoint.h"
 #include "../statwrapper.h"
 #include "../stream_manager.h"
@@ -726,8 +727,11 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == BAR_OP) || (m_opcode == RET_OP) || (m_opcode == RETP_OP) ||
       (m_opcode == NOP_OP) || (m_opcode == EXIT_OP) || (m_opcode == CALLP_OP) ||
       (m_opcode == CALL_OP) || (m_opcode == TENSORMAP_OP) || (m_opcode == FENCE_OP) ||
-      (m_opcode == ELECT_OP) || (m_opcode == LDMATRIX_OP) || (m_opcode == STMATRIX_OP) ||
-      (m_opcode == CP_ASYNC_OP)) {
+      (m_opcode == GRIDDEPCONTROL_OP) || (m_opcode == ELECT_OP) ||
+      (m_opcode == LDMATRIX_OP) || (m_opcode == STMATRIX_OP) ||
+      (m_opcode == CP_ASYNC_OP) || (m_opcode == WGMMA_FENCE_OP) ||
+      (m_opcode == WGMMA_COMMIT_GROUP_OP) || (m_opcode == WGMMA_WAIT_GROUP_OP) ||
+      (m_opcode == SETMAXNREG_OP)) {
     // do nothing
   } else if ((m_opcode == CVT_OP || m_opcode == SET_OP ||
               m_opcode == SLCT_OP)) {
@@ -752,8 +756,11 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != BAR_OP) && (m_opcode != EXIT_OP) && (m_opcode != NOP_OP) &&
       (m_opcode != RETP_OP) && (m_opcode != RET_OP) && (m_opcode != CALLP_OP) &&
       (m_opcode != CALL_OP) && (m_opcode != TENSORMAP_OP) && (m_opcode != FENCE_OP) &&
-      (m_opcode != ELECT_OP) && (m_opcode != LDMATRIX_OP) && (m_opcode != STMATRIX_OP) &&
-      (m_opcode != CP_ASYNC_OP)) {
+      (m_opcode != GRIDDEPCONTROL_OP) && (m_opcode != ELECT_OP) &&
+      (m_opcode != LDMATRIX_OP) && (m_opcode != STMATRIX_OP) &&
+      (m_opcode != CP_ASYNC_OP) && (m_opcode != WGMMA_FENCE_OP) &&
+      (m_opcode != WGMMA_COMMIT_GROUP_OP) && (m_opcode != WGMMA_WAIT_GROUP_OP) &&
+      (m_opcode != SETMAXNREG_OP)) {
     if (get_type() == F64_TYPE || get_type() == FF64_TYPE) {
       switch (get_opcode()) {
         case MUL_OP:
@@ -784,6 +791,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           break;
         case MMA_OP:
         case TENSOR_MMA_OP:
+        case WGMMA_MMA_ASYNC_OP:
+        case WGMMA_MMA_ASYNC_SP_OP:
           sp_op = TENSOR__OP;
           break;
         case TEX_OP:
@@ -823,6 +832,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           break;
         case MMA_OP:
         case TENSOR_MMA_OP:
+        case WGMMA_MMA_ASYNC_OP:
+        case WGMMA_MMA_ASYNC_SP_OP:
           sp_op = TENSOR__OP;
           break;
         case TEX_OP:
@@ -853,6 +864,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           break;
         case MMA_OP:
         case TENSOR_MMA_OP:
+        case WGMMA_MMA_ASYNC_OP:
+        case WGMMA_MMA_ASYNC_SP_OP:
           sp_op = TENSOR__OP;
           break;
         case TEX_OP:
@@ -1087,7 +1100,8 @@ void ptx_instruction::set_opcode_and_latency() {
     case MBAR_OP:
       op = MBARRIER_OP;
       break;
-    case TMA_OP: {
+    case TMA_OP:
+    case TMA_PREFETCH_OP: {
       op = TENSOR_MEMORY_ACCELERATOR_OP;
       const auto &opts = get_options();
       bool is_commit = std::find(opts.begin(), opts.end(), COMMIT_GROUP_OPTION) != opts.end();
@@ -1123,9 +1137,14 @@ void ptx_instruction::set_opcode_and_latency() {
       }
       break;
     }
+    case GRIDDEPCONTROL_OP:
     case ELECT_OP:
     case LDMATRIX_OP:
     case STMATRIX_OP:
+    case WGMMA_FENCE_OP:
+    case WGMMA_COMMIT_GROUP_OP:
+    case WGMMA_WAIT_GROUP_OP:
+    case SETMAXNREG_OP:
       break;
     case SST_OP:
       op = BARRIER_OP;
@@ -1303,11 +1322,14 @@ void ptx_instruction::set_opcode_and_latency() {
       break;
     case MMA_OP:
     case TENSOR_MMA_OP:
+    case WGMMA_MMA_ASYNC_OP:
+    case WGMMA_MMA_ASYNC_SP_OP:
       {
         int shape_idx = 0;
 
         // Default mapping for legacy MMA_OP or unknown TENSOR_MMA_OP
-        if (m_opcode == MMA_OP) {
+        if (m_opcode == MMA_OP || m_opcode == WGMMA_MMA_ASYNC_OP ||
+            m_opcode == WGMMA_MMA_ASYNC_SP_OP) {
           shape_idx = 0;
         } else {
           // TENSOR_MMA_OP: Use shape and types
@@ -1508,7 +1530,8 @@ void ptx_instruction::pre_decode() {
         if (num_elem >= 6) out[5] = o.reg6_num();
         if (num_elem >= 7) out[6] = o.reg7_num();
         if (num_elem >= 8) out[7] = o.reg8_num();
-        for (int i = 0; i < num_elem; i++) arch_reg.dst[i] = o.arch_reg_num(i);
+        for (unsigned i = 0; i < num_elem && i < MAX_REG_OPERANDS; i++)
+          arch_reg.dst[i] = o.arch_reg_num(i);
       }
     } else {
       if (o.is_reg() && !o.is_non_arch_reg()) {
@@ -1533,15 +1556,23 @@ void ptx_instruction::pre_decode() {
         // now
         is_vectorout = 1;
         unsigned num_elem = o.get_vect_nelem();
-        if (num_elem >= 1) in[m + 0] = o.reg1_num();
-        if (num_elem >= 2) in[m + 1] = o.reg2_num();
-        if (num_elem >= 3) in[m + 2] = o.reg3_num();
-        if (num_elem >= 4) in[m + 3] = o.reg4_num();
-        if (num_elem >= 5) in[m + 4] = o.reg5_num();
-        if (num_elem >= 6) in[m + 5] = o.reg6_num();
-        if (num_elem >= 7) in[m + 6] = o.reg7_num();
-        if (num_elem >= 8) in[m + 7] = o.reg8_num();
-        for (int i = 0; i < num_elem; i++)
+        if (num_elem >= 1 && m + 0 < MAX_INPUT_VALUES)
+          in[m + 0] = o.reg1_num();
+        if (num_elem >= 2 && m + 1 < MAX_INPUT_VALUES)
+          in[m + 1] = o.reg2_num();
+        if (num_elem >= 3 && m + 2 < MAX_INPUT_VALUES)
+          in[m + 2] = o.reg3_num();
+        if (num_elem >= 4 && m + 3 < MAX_INPUT_VALUES)
+          in[m + 3] = o.reg4_num();
+        if (num_elem >= 5 && m + 4 < MAX_INPUT_VALUES)
+          in[m + 4] = o.reg5_num();
+        if (num_elem >= 6 && m + 5 < MAX_INPUT_VALUES)
+          in[m + 5] = o.reg6_num();
+        if (num_elem >= 7 && m + 6 < MAX_INPUT_VALUES)
+          in[m + 6] = o.reg7_num();
+        if (num_elem >= 8 && m + 7 < MAX_INPUT_VALUES)
+          in[m + 7] = o.reg8_num();
+        for (int i = 0; i < num_elem && m + i < MAX_REG_OPERANDS; i++)
           arch_reg.src[m + i] = o.arch_reg_num(i);
         m += num_elem;
       }
@@ -2117,7 +2148,12 @@ static unsigned get_tex_datasize(const ptx_instruction *pI,
 int tensorcore_op(int inst_opcode) {
   if ((inst_opcode == MMA_OP) || (inst_opcode == MMA_LD_OP) ||
       (inst_opcode == MMA_ST_OP) || (inst_opcode == TENSOR_MMA_OP) ||
-      (inst_opcode == TENSOR_MMA_LD_OP) || (inst_opcode == TENSOR_MMA_ST_OP))
+      (inst_opcode == TENSOR_MMA_LD_OP) || (inst_opcode == TENSOR_MMA_ST_OP) ||
+      (inst_opcode == WGMMA_MMA_ASYNC_OP) ||
+      (inst_opcode == WGMMA_MMA_ASYNC_SP_OP) ||
+      (inst_opcode == WGMMA_FENCE_OP) ||
+      (inst_opcode == WGMMA_COMMIT_GROUP_OP) ||
+      (inst_opcode == WGMMA_WAIT_GROUP_OP) || (inst_opcode == SETMAXNREG_OP))
     return 1;
   else
     return 0;
@@ -2210,6 +2246,12 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
 using flash_gpgpu_sim::tensor_mma_impl;
 using flash_gpgpu_sim::tensor_mma_ld_impl;
 using flash_gpgpu_sim::tensor_mma_st_impl;
+using flash_gpgpu_sim::setmaxnreg_impl;
+using flash_gpgpu_sim::wgmma_commit_group_impl;
+using flash_gpgpu_sim::wgmma_fence_impl;
+using flash_gpgpu_sim::wgmma_mma_async_impl;
+using flash_gpgpu_sim::wgmma_mma_async_sp_impl;
+using flash_gpgpu_sim::wgmma_wait_group_impl;
 #include "opcodes.def"
 #undef OP_DEF
 #undef OP_W_DEF

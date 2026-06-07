@@ -59,6 +59,7 @@ enum special_regs {
   SMID_REG,
   TID_REG,
   WARPID_REG,
+  CLUSTER_CTA_RANK_REG,
   WARPSZ_REG
 };
 enum wmma_type {
@@ -95,5 +96,30 @@ enum {
   MMA_COL_ROW = 202,
   MMA_COL_COL = 203
 };
+
+// WGMMA shape option encoding. The PTX shape is always .m64nNkK; N and K are
+// encoded into one parser option so the lexer can accept the full WGMMA shape
+// family without enumerating every N/K pair.
+enum {
+  WGMMA_SHAPE_BASE = 100000,
+  WGMMA_SHAPE_N_STRIDE = 512,
+  WGMMA_SHAPE_LIMIT = WGMMA_SHAPE_BASE + WGMMA_SHAPE_N_STRIDE * 257
+};
+
+static inline int make_wgmma_shape_option(int n, int k) {
+  return WGMMA_SHAPE_BASE + n * WGMMA_SHAPE_N_STRIDE + k;
+}
+
+static inline bool is_wgmma_shape_option(int option) {
+  return option >= WGMMA_SHAPE_BASE && option < WGMMA_SHAPE_LIMIT;
+}
+
+static inline int wgmma_shape_n(int option) {
+  return (option - WGMMA_SHAPE_BASE) / WGMMA_SHAPE_N_STRIDE;
+}
+
+static inline int wgmma_shape_k(int option) {
+  return (option - WGMMA_SHAPE_BASE) % WGMMA_SHAPE_N_STRIDE;
+}
 
 #endif

@@ -620,6 +620,11 @@ class operand_info {
     m_valid = true;
     m_vector = true;
     m_type = vector_t;
+    m_vector_nelem = 4;
+    if (!s4) m_vector_nelem = 3;
+    if (!s3) m_vector_nelem = 2;
+    if (!s2) m_vector_nelem = 1;
+    if (!s1) m_vector_nelem = 0;
     m_value.m_vector_symbolic = new const symbol *[8];
     m_value.m_vector_symbolic[0] = s1;
     m_value.m_vector_symbolic[1] = s2;
@@ -648,6 +653,11 @@ class operand_info {
     m_valid = true;
     m_vector = true;
     m_type = vector_t;
+    const symbol *tmp[8] = {s1, s2, s3, s4, s5, s6, s7, s8};
+    m_vector_nelem = 0;
+    while (m_vector_nelem < 8 && tmp[m_vector_nelem] != NULL) {
+      m_vector_nelem++;
+    }
     m_value.m_vector_symbolic = new const symbol *[8];
     m_value.m_vector_symbolic[0] = s1;
     m_value.m_vector_symbolic[1] = s2;
@@ -663,11 +673,36 @@ class operand_info {
     m_immediate_address = false;
   }
 
+  operand_info(const std::vector<const symbol *> &symbols, gpgpu_context *ctx) {
+    init(ctx);
+    m_is_non_arch_reg = false;
+    m_addr_space = undefined_space;
+    m_operand_lohi = 0;
+    m_double_operand_type = 0;
+    m_operand_neg = false;
+    m_const_mem_offset = 0;
+    m_uid = get_uid();
+    m_valid = true;
+    m_vector = true;
+    m_type = vector_t;
+    m_vector_nelem = symbols.size();
+    size_t alloc_size = symbols.size() < 8 ? 8 : symbols.size();
+    m_value.m_vector_symbolic = new const symbol *[alloc_size];
+    for (size_t i = 0; i < alloc_size; ++i) {
+      m_value.m_vector_symbolic[i] = i < symbols.size() ? symbols[i] : NULL;
+    }
+    m_addr_offset = 0;
+    m_neg_pred = false;
+    m_is_return_var = false;
+    m_immediate_address = false;
+  }
+
   void init(gpgpu_context *ctx) {
     gpgpu_ctx = ctx;
     m_uid = (unsigned)-1;
     m_valid = false;
     m_vector = false;
+    m_vector_nelem = 0;
     m_type = undef_t;
     m_immediate_address = false;
     m_addr_space = undefined_space;
@@ -703,19 +738,11 @@ class operand_info {
 
   unsigned get_vect_nelem() const {
     assert(is_vector());
-    if (!m_value.m_vector_symbolic[0]) return 0;
-    if (!m_value.m_vector_symbolic[1]) return 1;
-    if (!m_value.m_vector_symbolic[2]) return 2;
-    if (!m_value.m_vector_symbolic[3]) return 3;
-    if (!m_value.m_vector_symbolic[4]) return 4;
-    if (!m_value.m_vector_symbolic[5]) return 5;
-    if (!m_value.m_vector_symbolic[6]) return 6;
-    if (!m_value.m_vector_symbolic[7]) return 7;
-    return 8;
+    return m_vector_nelem;
   }
 
   const symbol *vec_symbol(int idx) const {
-    assert(idx < 8);
+    assert(idx >= 0 && (unsigned)idx < m_vector_nelem);
     const symbol *result = m_value.m_vector_symbolic[idx];
     assert(result != NULL);
     return result;
@@ -799,6 +826,7 @@ class operand_info {
   }
   int arch_reg_num() const { return m_value.m_symbolic->arch_reg_num(); }
   int arch_reg_num(unsigned n) const {
+    if (n >= m_vector_nelem) return -1;
     return (m_value.m_vector_symbolic[n])
                ? m_value.m_vector_symbolic[n]->arch_reg_num()
                : -1;
@@ -905,6 +933,7 @@ class operand_info {
   unsigned m_uid;
   bool m_valid;
   bool m_vector;
+  unsigned m_vector_nelem;
   enum operand_type m_type;
   bool m_immediate_address;
   enum _memory_space_t m_addr_space;
@@ -988,6 +1017,7 @@ class ptx_instruction : public warp_inst_t {
                   const operand_info &return_var, const std::list<int> &options,
                   const std::list<int> &wmma_options,
                   const std::list<int> &mma_options,
+                  const std::list<int> &wgmma_options,
                   const std::list<int> &scalar_type, memory_space_t space_spec,
                   memory_space_t space_spec2,
                   const char *file, unsigned line, const char *source,
@@ -1118,6 +1148,13 @@ class ptx_instruction : public warp_inst_t {
   void set_mma_saturate(bool saturate) { m_mma_saturate = saturate; }
   bool get_mma_saturate() const { return m_mma_saturate; }
 
+  bool is_wgmma() const { return m_is_wgmma_instruction; }
+  bool is_wgmma_sparse() const { return m_wgmma_sparse; }
+  int get_wgmma_shape_n() const { return m_wgmma_shape_n; }
+  int get_wgmma_shape_k() const { return m_wgmma_shape_k; }
+  bool get_wgmma_saturate() const { return m_wgmma_saturate; }
+  const std::list<int> &get_wgmma_options() const { return m_wgmma_options; }
+
   int get_type() const {
     assert(!m_scalar_type.empty());
     return m_scalar_type.front();
@@ -1223,6 +1260,7 @@ class ptx_instruction : public warp_inst_t {
 
   std::list<int> m_options;
   std::list<int> m_wmma_options;
+  std::list<int> m_wgmma_options;
   bool m_wide;
   bool m_hi;
   bool m_lo;
@@ -1242,6 +1280,11 @@ class ptx_instruction : public warp_inst_t {
   mma_layout_mode m_mma_layout_b;
   bool m_is_mma_instruction;
   bool m_mma_saturate;
+  bool m_is_wgmma_instruction;
+  bool m_wgmma_sparse;
+  bool m_wgmma_saturate;
+  int m_wgmma_shape_n;
+  int m_wgmma_shape_k;
   unsigned m_rounding_mode;
   unsigned m_compare_op;
   unsigned m_saturation_mode;

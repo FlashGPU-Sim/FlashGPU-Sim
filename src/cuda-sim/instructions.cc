@@ -1725,6 +1725,11 @@ void fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   GPPRINTF_INST_EXEC(WIP, "[STUB] fence instruction not implemented%s\n", "");
 }
 
+void griddepcontrol_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  (void)pI;
+  (void)thread;
+}
+
 void elect_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   handle_elect_inst(pI, thread);
 }
@@ -4077,6 +4082,14 @@ void madp_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
 void madc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   mad_def(pI, thread, true);
+}
+
+void mapa_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const operand_info &dst = pI->dst();
+  const operand_info &src1 = pI->src1();
+  unsigned i_type = pI->get_type();
+  ptx_reg_t data = thread->get_operand_value(src1, dst, i_type, thread, 1);
+  thread->set_operand_value(dst, data, i_type, thread, pI);
 }
 
 void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,

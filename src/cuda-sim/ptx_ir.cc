@@ -1033,6 +1033,10 @@ unsigned type_info_key::type_decode(size_t &size, int &basic_type) const {
 
 unsigned type_info_key::type_decode(int type, size_t &size, int &basic_type) {
   switch (type) {
+    case B1_TYPE:
+      size = 1;
+      basic_type = 0;
+      return 19;
     case S8_TYPE:
       size = 8;
       basic_type = 1;
@@ -1069,6 +1073,10 @@ unsigned type_info_key::type_decode(int type, size_t &size, int &basic_type) {
       size = 16;
       basic_type = -1;
       return 8;
+    case BF16_TYPE:
+      size = 16;
+      basic_type = -1;
+      return 20;
     case F16X2_TYPE:
       size = 32;  // Two f16 values packed in 32 bits
       basic_type = -1;
@@ -1081,6 +1089,10 @@ unsigned type_info_key::type_decode(int type, size_t &size, int &basic_type) {
       size = 32;
       basic_type = -1;
       return 9;
+    case TF32_TYPE:
+      size = 32;
+      basic_type = -1;
+      return 21;
     case F64_TYPE:
       size = 64;
       basic_type = -1;
@@ -1097,6 +1109,14 @@ unsigned type_info_key::type_decode(int type, size_t &size, int &basic_type) {
       size = 8;
       basic_type = 0;
       return 12;
+    case E4M3_TYPE:
+      size = 8;
+      basic_type = -1;
+      return 22;
+    case E5M2_TYPE:
+      size = 8;
+      basic_type = -1;
+      return 23;
     case B16_TYPE:
       size = 16;
       basic_type = 0;
@@ -1218,8 +1238,10 @@ static std::list<operand_info> check_operands(
   static int g_warn_literal_operands_two_type_inst;
   if ((opcode == CVT_OP) || (opcode == SET_OP) || (opcode == SLCT_OP) ||
       (opcode == TEX_OP) || (opcode == MMA_OP) || (opcode == TENSOR_MMA_OP) ||
-      (opcode == FMA_OP) || (opcode == DP4A_OP) || (opcode == VMIN_OP) ||
-      (opcode == VMAX_OP)) {
+      (opcode == FMA_OP) ||
+      (opcode == WGMMA_MMA_ASYNC_OP) ||
+      (opcode == WGMMA_MMA_ASYNC_SP_OP) ||
+      (opcode == DP4A_OP) || (opcode == VMIN_OP) || (opcode == VMAX_OP)) {
     // just make sure these do not have have const operands...
     if (!g_warn_literal_operands_two_type_inst) {
       std::list<operand_info>::const_iterator o;
@@ -1266,6 +1288,7 @@ ptx_instruction::ptx_instruction(
     const std::list<operand_info> &operands, const operand_info &return_var,
     const std::list<int> &options, const std::list<int> &wmma_options,
     const std::list<int> &mma_options,
+    const std::list<int> &wgmma_options,
     const std::list<int> &scalar_type, memory_space_t space_spec,
     memory_space_t space_spec2,
     const char *file, unsigned line, const char *source,
@@ -1287,6 +1310,7 @@ ptx_instruction::ptx_instruction(
   m_return_var = return_var;
   m_options = options;
   m_wmma_options = wmma_options;
+  m_wgmma_options = wgmma_options;
   m_wide = false;
   m_hi = false;
   m_lo = false;
@@ -1338,6 +1362,7 @@ ptx_instruction::ptx_instruction(
 
   // Process MMA options (for tensor_mma_impl)
   m_is_mma_instruction = false;
+  m_mma_saturate = false;
   if (!mma_options.empty()) {
     m_is_mma_instruction = true;
     std::list<int>::const_iterator mma_i;
@@ -1397,6 +1422,24 @@ ptx_instruction::ptx_instruction(
     }
   }
 
+  m_is_wgmma_instruction =
+      opcode == WGMMA_MMA_ASYNC_OP || opcode == WGMMA_MMA_ASYNC_SP_OP ||
+      opcode == WGMMA_FENCE_OP || opcode == WGMMA_COMMIT_GROUP_OP ||
+      opcode == WGMMA_WAIT_GROUP_OP;
+  m_wgmma_sparse = opcode == WGMMA_MMA_ASYNC_SP_OP;
+  m_wgmma_saturate = false;
+  m_wgmma_shape_n = 0;
+  m_wgmma_shape_k = 0;
+  for (i = wgmma_options.begin(); i != wgmma_options.end(); i++) {
+    int opt = *i;
+    if (is_wgmma_shape_option(opt)) {
+      m_wgmma_shape_n = wgmma_shape_n(opt);
+      m_wgmma_shape_k = wgmma_shape_k(opt);
+    } else if (opt == SATFINITE_OPTION) {
+      m_wgmma_saturate = true;
+    }
+  }
+
   rr = 0;
   n = 1;
   for (i = options.begin(); i != options.end(); i++, n++) {
@@ -1416,7 +1459,9 @@ ptx_instruction::ptx_instruction(
         break;
       case TMA_MBAR_COMPLETE_BYTES:
       case COMMIT_GROUP_OPTION:
-      case WAIT_GROUP_OPTION: {
+      case WAIT_GROUP_OPTION:
+      case LAUNCH_DEPENDENTS_OPTION:
+      case WAIT_OPTION: {
         // Do nothing for now... need to be implemented later.
         break;
       }
@@ -1443,6 +1488,11 @@ ptx_instruction::ptx_instruction(
         break;
       case SAT_OPTION:
         m_saturation_mode = 1;
+        break;
+      case SATFINITE_OPTION:
+        m_saturation_mode = 1;
+        if (m_is_mma_instruction) m_mma_saturate = true;
+        if (m_is_wgmma_instruction) m_wgmma_saturate = true;
         break;
       case WRAP_OPTION:
         m_clamp_mode = 0;
@@ -1498,6 +1548,7 @@ ptx_instruction::ptx_instruction(
         m_vector_spec = last_ptx_inst_option;
         break;
       case ATOMIC_AND:
+      case ATOMIC_POPC:
       case ATOMIC_OR:
       case ATOMIC_XOR:
       case ATOMIC_CAS:
@@ -1598,6 +1649,8 @@ ptx_instruction::ptx_instruction(
       case RELEASE_OPTION:
       case ACQUIRE_OPTION:
       case GPU_OPTION:
+      case L2_CACHE_HINT_OPTION:
+      case L2_OPTION:
       case ALIGNED_OPTION:
       case B1024_TYPE:
       case GENERIC_OPTION:
@@ -1608,6 +1661,7 @@ ptx_instruction::ptx_instruction(
       case BULK_GROUP_OPTION:
       case CLUSTER_OPTION:
       case M8N8_OPTION:
+      case MBARRIER_INIT_OPTION:
       case TRANS_OPTION:
       case X1_OPTION:
       case X2_OPTION:
@@ -1625,7 +1679,7 @@ ptx_instruction::ptx_instruction(
   /**
    * TMA instructions has no scalar type. Make it b64 by default.
    */
-  if (opcode == TMA_OP) {
+  if (opcode == TMA_OP || opcode == TMA_PREFETCH_OP) {
     assert(m_scalar_type.empty() && "TMA inst should have no scalar type");
     m_scalar_type.push_back(B64_TYPE);
     // for (auto op : m_options) {

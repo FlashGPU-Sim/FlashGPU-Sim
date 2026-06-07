@@ -309,6 +309,15 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
       if (dim_mod == 2) return m_tid.z;
       abort();
       break;
+    case CLUSTER_CTA_RANK_REG: {
+      static bool warned_cluster_ctarank = false;
+      if (!warned_cluster_ctarank) {
+        printf("GPGPU-Sim PTX: Warning - special register %%cluster_ctarank "
+               "is not modeled; returning 0.\n");
+        warned_cluster_ctarank = true;
+      }
+      return 0;
+    }
     case WARPSZ_REG:
       return m_core->get_warp_size();
     default:

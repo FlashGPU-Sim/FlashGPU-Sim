@@ -71,7 +71,7 @@ OEXT = o
 
 OUTPUT_DIR=$(SIM_OBJ_FILES_DIR)/gpgpu-sim
 
-SRCS = $(shell ls *.cc) $(shell ls flash/*.cc) $(shell ls flash/mma/*.cc)
+SRCS = $(shell ls *.cc) $(shell ls flash/*.cc) $(shell ls flash/mma/*.cc) $(shell ls flash/wgmma/*.cc)
 
 ifeq ($(FLASH_GEM_FORGE),1)
 SRCS += $(shell ls flash/gem5/*.cc)
@@ -97,6 +97,9 @@ $(OUTPUT_DIR)/flash:
 $(OUTPUT_DIR)/flash/mma:
 	mkdir -p $(OUTPUT_DIR)/flash/mma
 
+$(OUTPUT_DIR)/flash/wgmma:
+	mkdir -p $(OUTPUT_DIR)/flash/wgmma
+
 $(OUTPUT_DIR)/flash/gem5:
 	mkdir -p $(OUTPUT_DIR)/flash/gem5
 
@@ -118,6 +121,10 @@ $(OUTPUT_DIR)/flash/%.$(OEXT): flash/%.cc | $(OUTPUT_DIR)/flash
 $(OUTPUT_DIR)/flash/mma/%.$(OEXT): flash/mma/%.cc | $(OUTPUT_DIR)/flash/mma
 	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
 
+# Specific rule for flash/wgmma subdirectory
+$(OUTPUT_DIR)/flash/wgmma/%.$(OEXT): flash/wgmma/%.cc | $(OUTPUT_DIR)/flash/wgmma
+	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
+
 # Specific rule for flash/gem5 subdirectory
 $(OUTPUT_DIR)/flash/gem5/%.$(OEXT): flash/gem5/%.cc | $(OUTPUT_DIR)/flash/gem5
 	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
@@ -134,4 +141,3 @@ $(OUTPUT_DIR)/../cuda-sim/ptx.tab.h:
 	make -C ../cuda-sim/ $(OUTPUT_DIR)/../cuda-sim/ptx.tab.c
 
 include $(OUTPUT_DIR)/Makefile.makedepend
-

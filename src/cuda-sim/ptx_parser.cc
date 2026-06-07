@@ -97,6 +97,7 @@ void ptx_recognizer::init_instruction_state() {
   g_options.clear();
   g_wmma_options.clear();
   g_mma_options.clear();
+  g_wgmma_options.clear();
   g_return_var = operand_info(gpgpu_ctx);
   init_directive_state();
 }
@@ -271,8 +272,8 @@ void ptx_recognizer::add_instruction() {
   ptx_instruction *i = new ptx_instruction(
       g_opcode, g_pred, g_neg_pred, g_pred_mod, g_label, g_current_symbol_table,
       g_operands,
-      g_return_var, g_options, g_wmma_options, g_mma_options, g_scalar_type, g_space_spec,
-      g_space_spec2,
+      g_return_var, g_options, g_wmma_options, g_mma_options, g_wgmma_options,
+      g_scalar_type, g_space_spec, g_space_spec2,
       gpgpu_ctx->g_filename, ptx_get_lineno(scanner), linebuf,
       g_shader_core_config, gpgpu_ctx);
   g_instructions.push_back(i);
@@ -539,8 +540,8 @@ void ptx_recognizer::add_function_arg() {
     PTX_PARSE_GPPRINTF("add_function_arg \"%s\"", g_last_symbol->name().c_str());
     g_func_info->add_arg(g_last_symbol);
     unsigned alignment = (g_alignment_spec == -1) ? g_size : g_alignment_spec;
-    assert(alignment == 1 || alignment == 2 || alignment == 4 ||
-           alignment == 8 || alignment == 16);  // known valid alignment values
+    parse_assert(alignment > 0 && (alignment & (alignment - 1)) == 0,
+                 "function argument alignment must be a power of two.");
     g_func_info->add_config_param(g_size, alignment);
   }
 }
@@ -599,20 +600,25 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
   // save size of parameter
   switch (type_spec) {
     case B8_TYPE:
+    case B1_TYPE:
     case S8_TYPE:
     case U8_TYPE:
+    case E4M3_TYPE:
+    case E5M2_TYPE:
       g_size = 1;
       break;
     case B16_TYPE:
     case S16_TYPE:
     case U16_TYPE:
     case F16_TYPE:
+    case BF16_TYPE:
       g_size = 2;
       break;
     case B32_TYPE:
     case S32_TYPE:
     case U32_TYPE:
     case F32_TYPE:
+    case TF32_TYPE:
       g_size = 4;
       break;
     case F32X2_TYPE:
@@ -639,9 +645,11 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
             (g_opcode == SLCT_OP) || (g_opcode == TEX_OP) ||
             (g_opcode == MMA_OP) || (g_opcode == TENSOR_MMA_OP) ||
             (g_opcode == FMA_OP) ||
+            (g_opcode == WGMMA_MMA_ASYNC_OP) ||
+            (g_opcode == WGMMA_MMA_ASYNC_SP_OP) ||
             (g_opcode == DP4A_OP) || (g_opcode == VMIN_OP) || (g_opcode == VMAX_OP),
-        "only cvt, set, slct, tex, mma, fma, vmin, vmax and dp4a can have more than one "
-        "type specifier.");
+        "only cvt, set, slct, tex, mma, fma, wgmma, vmin, vmax and dp4a can have "
+        "more than one type specifier.");
   }
   g_scalar_type_spec = type_spec;
 }
@@ -684,6 +692,10 @@ void ptx_recognizer::add_wmma_option(int option) {
 void ptx_recognizer::add_mma_option(int option) {
   PTX_PARSE_GPPRINTF("add_mma_option");
   g_mma_options.push_back(option);
+}
+void ptx_recognizer::add_wgmma_option(int option) {
+  PTX_PARSE_GPPRINTF("add_wgmma_option");
+  g_wgmma_options.push_back(option);
 }
 void ptx_recognizer::add_double_operand(const char *d1, const char *d2) {
   // operands that access two variables.
@@ -786,6 +798,23 @@ void ptx_recognizer::add_8vector_operand(const char *d1, const char *d2,
   if (s7 == null_op) s7 = NULL;
   if (s8 == null_op) s8 = NULL;
   g_operands.push_back(operand_info(s1, s2, s3, s4, s5, s6, s7, s8, gpgpu_ctx));
+}
+
+void ptx_recognizer::add_vector_operand(
+    const std::vector<const char *> &components) {
+  PTX_PARSE_GPPRINTF("add_vector_operand");
+  parse_assert(!components.empty(), "empty vector operand is not allowed.");
+
+  const symbol *null_op = g_current_symbol_table->lookup("_");
+  std::vector<const symbol *> symbols;
+  symbols.reserve(components.size());
+  for (size_t i = 0; i < components.size(); ++i) {
+    const symbol *s = g_current_symbol_table->lookup(components[i]);
+    parse_assert(s != NULL, "vector component(s) missing declarations.");
+    if (i != 0 && s == null_op) s = NULL;
+    symbols.push_back(s);
+  }
+  g_operands.push_back(operand_info(symbols, gpgpu_ctx));
 }
 
 void ptx_recognizer::add_builtin_operand(int builtin, int dim_modifier) {
