@@ -18,7 +18,14 @@ fi
 TEST_TIMEOUT=${TEST_TIMEOUT:-3600}
 TEST_VERBOSE=${TEST_VERBOSE:-1}
 DEBUG_TESTS=${DEBUG_TESTS:-0}
-GPU_CONFIG=${GPU_CONFIG:-SM120_RTX5090}  # Default GPU configuration
+DEFAULT_GPU_CONFIG=${DEFAULT_GPU_CONFIG:-SM120_RTX5090}
+HOPPER_GPU_CONFIG=${HOPPER_GPU_CONFIG:-SM90_H200}
+GPU_CONFIG_EXPLICIT=0
+if [ -n "${GPU_CONFIG:-}" ]; then
+    GPU_CONFIG_EXPLICIT=1
+fi
+GPU_CONFIG=${GPU_CONFIG:-$DEFAULT_GPU_CONFIG}  # Default GPU configuration
+HOPPER_CUDA_ARCH=${HOPPER_CUDA_ARCH:-sm_90a}
 
 # Colors for output
 RED='\033[0;31m'
@@ -51,10 +58,11 @@ usage() {
     echo "  build test         Build verification tests only"
     echo "  build bench        Build microbenchmarks only"
     echo "  build dev          Build standalone dev tests only"
-    echo "  build fa3          Build FA3 standalone integration driver"
+    echo "  build hopper       Build Hopper tests"
     echo "  test               Run all verification tests and trace tests"
     echo "  test <pattern>     Run specific verification test only"
-    echo "  fa3                Run FA3 standalone integration driver"
+    echo "  hopper             Run all Hopper gtests"
+    echo "  hopper <pattern>   Run Hopper gtests matching pattern"
     echo "  trace              Run Triton kernel trace smoke tests"
     echo "  trace <pattern>    Run specific trace test (e.g., 'embedding')"
     echo "  bench <pattern>    Run microbenchmarks matching pattern"
@@ -70,13 +78,18 @@ usage() {
     echo "  -v, --verbose      Verbose output"
     echo "  -d, --debug        Enable debug mode"
     echo "  -t, --timeout      Set test timeout (seconds)"
-    echo "  -c, --config NAME  Use specific GPU configuration (default: SM120_RTX5090)"
+    echo "  -c, --config NAME  Use specific GPU configuration"
+    echo "                     Default: $DEFAULT_GPU_CONFIG; Hopper default: $HOPPER_GPU_CONFIG"
     echo "  -h, --help         Show this help"
     echo ""
     echo "Examples:"
     echo "  $0 build                              # Build verification tests"
     echo "  $0 test                               # Run all verification tests"
     echo "  $0 test \"*MMAS8*\"                     # Run specific verification test"
+    echo "  $0 hopper WgmmaF16M64N8K16IntegrationTest.AllOnesTest"
+    echo "                                         # Run one Hopper gtest"
+    echo "  $0 hopper Fa3FwdHdim128Fp16IntegrationTest"
+    echo "                                         # Run FA3 Hopper gtest"
     echo "  $0 bench \"*MMAIssue*\"                  # Run microbenchmarks"
     echo "  $0 -c SM120_RTX5090_REDUCED test      # Run with reduced config"
 }
@@ -138,6 +151,12 @@ setup_run_directory() {
     # Always sync configuration from source
     run_command cp -r "$source_config" run/
     print_color $GREEN "Synced $config_name configuration to run directory"
+}
+
+use_hopper_default_config() {
+    if [ "$GPU_CONFIG_EXPLICIT" -eq 0 ]; then
+        GPU_CONFIG="$HOPPER_GPU_CONFIG"
+    fi
 }
 
 # Detect if running in native GPU mode (clean environment without simulator setup)
@@ -235,12 +254,37 @@ build_dev_tests() {
     fi
 }
 
-# Build FA3 standalone integration driver
-build_fa3_test() {
+# Build Hopper gtests.
+build_hopper_tests() {
     build_gpgpusim
 
-    print_color $BLUE "Building FA3 standalone integration driver..."
-    run_command make fa3
+    print_color $BLUE "Building Hopper gtests (CUDA_ARCH: $HOPPER_CUDA_ARCH)..."
+    if [ "$DEBUG_TESTS" -eq 1 ]; then
+        run_command make CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" \
+            HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" hopper
+    else
+        run_command make HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" hopper
+    fi
+
+    if [ $? -eq 0 ]; then
+        print_color $GREEN "Build successful!"
+    else
+        print_color $RED "Build failed!"
+        exit 1
+    fi
+}
+
+# Build Hopper gtest sources only.
+build_hopper_gtests() {
+    build_gpgpusim
+
+    print_color $BLUE "Building Hopper gtests (CUDA_ARCH: $HOPPER_CUDA_ARCH)..."
+    if [ "$DEBUG_TESTS" -eq 1 ]; then
+        run_command make CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" \
+            HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" hopper-gtest
+    else
+        run_command make HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" hopper-gtest
+    fi
 
     if [ $? -eq 0 ]; then
         print_color $GREEN "Build successful!"
@@ -566,8 +610,13 @@ run_dev_tests() {
     return $exit_code
 }
 
-# Run FA3 standalone integration driver
-run_fa3_test() {
+hopper_has_gtests() {
+    find src/hopper -name '*_test.cc' -print -quit 2>/dev/null | grep -q .
+}
+
+# Run Hopper gtests.
+run_hopper_tests() {
+    local test_name="${1:-}"
     local config_dir="run/${GPU_CONFIG}"
 
     if [ ! -d "$config_dir" ]; then
@@ -575,29 +624,42 @@ run_fa3_test() {
         exit 1
     fi
 
-    build_fa3_test
-
-    local fa3_bin="$(pwd)/build/bin/integration/fa3/fa3_fwd_hdim128_fp16_sm90"
-    if [ ! -f "$fa3_bin" ]; then
-        print_color $RED "FA3 executable not found: $fa3_bin"
-        exit 1
+    if [ -n "$test_name" ]; then
+        build_hopper_gtests
+    else
+        build_hopper_tests
     fi
 
-    print_color $BLUE "Running FA3 standalone integration driver (config: $GPU_CONFIG)"
+    export GTEST_COLOR=yes
+    if [ "$TEST_VERBOSE" -eq 2 ]; then
+        export GTEST_VERBOSITY=1
+    fi
 
     local exit_code=0
-    cd "$config_dir"
-    if command -v timeout &> /dev/null; then
-        run_command timeout $TEST_TIMEOUT "$fa3_bin" || exit_code=$?
+
+    if hopper_has_gtests; then
+        local hopper_bin="$(pwd)/build/bin/hopper/run_hopper_tests"
+        if [ ! -f "$hopper_bin" ]; then
+            print_color $RED "Hopper gtest executable not found: $hopper_bin"
+            exit 1
+        fi
+
+        local filter="*"
+        if [ -n "$test_name" ]; then
+            filter="*${test_name}*"
+        fi
+
+        print_color $BLUE "Running Hopper gtests: ${test_name:-all} (config: $GPU_CONFIG)"
+        run_binary_with_filter "$hopper_bin" "$config_dir" "$filter" || exit_code=$?
     else
-        run_command "$fa3_bin" || exit_code=$?
+        print_color $YELLOW "No Hopper gtests matched: ${test_name:-all}"
+        return 1
     fi
-    cd - > /dev/null
 
     if [ $exit_code -eq 0 ]; then
-        print_color $GREEN "✓ FA3 passed!"
+        print_color $GREEN "✓ Hopper passed!"
     else
-        print_color $RED "✗ FA3 failed (exit code: $exit_code)"
+        print_color $RED "✗ Hopper failed (exit code: $exit_code)"
     fi
 
     return $exit_code
@@ -654,7 +716,7 @@ clean_tests() {
 initialize_run_directory() {
     # Only setup if we're doing operations that need the config
     case "${1:-}" in
-        test|bench|dev|fa3|trace|build)
+        test|bench|dev|hopper|trace|build)
             setup_run_directory
             ;;
     esac
@@ -677,6 +739,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         -c|--config)
             GPU_CONFIG="$2"
+            GPU_CONFIG_EXPLICIT=1
             shift 2
             ;;
         -h|--help)
@@ -694,6 +757,9 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         build)
+            if [ "${2:-}" = "hopper" ]; then
+                use_hopper_default_config
+            fi
             initialize_run_directory "build"
             case "${2:-}" in
                 test)
@@ -705,8 +771,12 @@ while [[ $# -gt 0 ]]; do
                 dev)
                     build_dev_tests
                     ;;
-                fa3)
-                    build_fa3_test
+                hopper)
+                    if [ -n "${3:-}" ]; then
+                        print_color $RED "build hopper does not accept a pattern; use '$0 hopper ${3}' to run a filtered Hopper gtest."
+                        exit 1
+                    fi
+                    build_hopper_tests
                     ;;
                 trace)
                     build_gpgpusim
@@ -718,7 +788,7 @@ while [[ $# -gt 0 ]]; do
                     build_dev_tests
                     ;;
                 *)
-                    print_color $RED "Unknown build target: $2 (use 'test', 'bench', 'dev', 'fa3', or 'trace')"
+                    print_color $RED "Unknown build target: $2 (use 'test', 'bench', 'dev', 'hopper', or 'trace')"
                     exit 1
                     ;;
             esac
@@ -743,9 +813,10 @@ while [[ $# -gt 0 ]]; do
             run_dev_tests "$2"
             exit $?
             ;;
-        fa3)
-            initialize_run_directory "fa3"
-            run_fa3_test
+        hopper)
+            use_hopper_default_config
+            initialize_run_directory "hopper"
+            run_hopper_tests "$2"
             exit $?
             ;;
         trace)

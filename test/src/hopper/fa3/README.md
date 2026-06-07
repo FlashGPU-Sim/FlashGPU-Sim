@@ -21,25 +21,25 @@ CUTLASS/CuTe is provided by that submodule's nested `csrc/cutlass` submodule.
 
 ## Files
 
-- `fa3_fwd_hdim128_fp16_sm90_driver.cu` - standalone host driver using local FA3/CUTLASS headers
-- `fa3_fwd_hdim128_fp16_sm90_driver.ptx` - pre-generated SM90a PTX
+- `fa3_fwd_hdim128_fp16_test.cc` - Google Test wrapper for the fixed FA3 case
+- `fa3_fwd_hdim128_fp16_case.cuh` - shared CUDA workload implementation
 - `flash-attention/` - flash-attention submodule pinned to `d80a77103021c4e980f8cbbf85774f6a19e6474a`
-- `gpgpusim_fa3_ptx_gap.md` - instruction support notes for this PTX
 
 ## Build
 
 From the GPGPU-Sim repository root:
 
 ```bash
-git submodule update --init test/src/integration/fa3/flash-attention
-git -C test/src/integration/fa3/flash-attention submodule update --init csrc/cutlass
+git submodule update --init test/src/hopper/fa3/flash-attention
+git -C test/src/hopper/fa3/flash-attention submodule update --init csrc/cutlass
 ```
 
-Then from this directory:
+Then from `test/`:
 
 ```bash
-make ptx
-make bin
+./run_tests.sh build hopper
+./run_tests.sh hopper Fa3FwdHdim128Fp16IntegrationTest
+./run_tests.sh hopper Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase
 ```
 
 The generated kernel targets `sm_90a`. It is for GPGPU-Sim/PTX bring-up and

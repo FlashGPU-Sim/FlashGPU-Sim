@@ -9,8 +9,11 @@ CXX = g++
 NVCC = nvcc
 CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -g -O2
 CUDA_ARCH ?= sm_120a
+HOPPER_CUDA_ARCH ?= sm_90a
 # Note: sm_120a enables advanced SM 12.0 features including ldmatrix/stmatrix .trans modifier
 NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -arch=$(CUDA_ARCH)
+HOPPER_NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -arch=$(HOPPER_CUDA_ARCH)
+HOPPER_EXTRA_NVCCFLAGS =
 
 # CUDA settings
 CUDA_INSTALL_PATH ?= /usr/local/cuda
@@ -46,12 +49,15 @@ INCLUDES = -I$(GTEST_DIR)/include \
 # Test source files (recursive discovery for integration tests)
 UNIT_TEST_SOURCES = $(wildcard $(TEST_SRC_DIR)/unit/*_test.cc)
 INTEGRATION_TEST_SOURCES = $(shell find $(TEST_SRC_DIR)/integration -name '*_test.cc' 2>/dev/null)
+HOPPER_SRC_DIR = $(TEST_SRC_DIR)/hopper
+HOPPER_TEST_SOURCES = $(shell find $(HOPPER_SRC_DIR) -name '*_test.cc' 2>/dev/null)
 MICROBENCH_SOURCES = $(shell find $(TEST_SRC_DIR)/microbench -name '*_bench.cc' 2>/dev/null)
 # run_all_tests includes unit + integration only (no microbench)
 TEST_SOURCES = $(UNIT_TEST_SOURCES) $(INTEGRATION_TEST_SOURCES)
 TEST_OBJECTS = $(UNIT_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o) \
                $(INTEGRATION_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
 TEST_TARGETS = $(TEST_SOURCES:$(TEST_SRC_DIR)/%_test.cc=$(BIN_DIR)/%)
+HOPPER_TEST_OBJECTS = $(HOPPER_TEST_SOURCES:$(HOPPER_SRC_DIR)/%.cc=$(OBJ_DIR)/hopper/%.cu.o)
 
 # Microbench stay as separate binaries by design: faster incremental rebuilds,
 # failure isolation, and benchmark-specific artifacts. run_tests.sh pre-screens
@@ -59,13 +65,19 @@ TEST_TARGETS = $(TEST_SOURCES:$(TEST_SRC_DIR)/%_test.cc=$(BIN_DIR)/%)
 MICROBENCH_OBJECTS = $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
 MICROBENCH_TARGETS = $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
 
-# Standalone FA3 bring-up case. It is intentionally not folded into
-# run_all_tests because it is a full CUDA application, not a gtest source.
-FA3_NAME = fa3_fwd_hdim128_fp16_sm90
-FA3_SRC_NAME = fa3_fwd_hdim128_fp16_sm90_driver
-FA3_DIR = $(TEST_SRC_DIR)/integration/fa3
-FA3_BIN_DIR = $(BIN_DIR)/integration/fa3
-FA3_TARGET = $(FA3_BIN_DIR)/$(FA3_NAME)
+HOPPER_FA3_DIR = $(HOPPER_SRC_DIR)/fa3
+HOPPER_FA3_FLAGS = --ftemplate-backtrace-limit=0 --use_fast_math \
+                   -lineinfo --expt-relaxed-constexpr \
+                   -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED \
+                   -DCUTLASS_ENABLE_GDC_FOR_SM90 \
+                   -DCUTLASS_DEBUG_TRACE_LEVEL=0 \
+                   -DNDEBUG \
+                   -I$(HOPPER_FA3_DIR)/flash-attention/hopper \
+                   -I$(HOPPER_FA3_DIR)/flash-attention/csrc/cutlass/include
+ifneq ($(strip $(HOPPER_TEST_SOURCES)),)
+HOPPER_GTEST_TARGETS = $(HOPPER_TEST_TARGET)
+endif
+HOPPER_TARGETS = $(HOPPER_GTEST_TARGETS)
 
 # Standalone dev tests (decoupled from simulator, separate binary)
 STANDALONE_SOURCES = $(wildcard $(TEST_SRC_DIR)/standalone/*_test.cc)
@@ -78,9 +90,11 @@ INTEGRATION_OBJ_DIR = $(OBJ_DIR)/integration
 INTEGRATION_MMA_OBJ_DIR = $(OBJ_DIR)/integration/mma
 MICROBENCH_OBJ_DIR = $(OBJ_DIR)/microbench
 STANDALONE_OBJ_DIR = $(OBJ_DIR)/standalone
+HOPPER_OBJ_DIR = $(OBJ_DIR)/hopper
 
 # Main test runner
 MAIN_TEST_TARGET = $(BIN_DIR)/run_all_tests
+HOPPER_TEST_TARGET = $(BIN_DIR)/hopper/run_hopper_tests
 
 # GPGPU-Sim related flags (from main project)
 GPGPUSIM_FLAGS = -DDEBUG=0
@@ -95,7 +109,7 @@ FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
 FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o
 FLASH_OBJ_DIR = $(OBJ_DIR)/flash
 
-.PHONY: all test bench dev fa3 clean help setup-gtest
+.PHONY: all test bench dev hopper hopper-gtest clean help setup-gtest
 
 # Build everything (test + bench + dev)
 all: test bench dev
@@ -109,11 +123,11 @@ bench: setup-gtest $(MICROBENCH_TARGETS)
 # Build standalone dev tests (decoupled from simulator)
 dev: setup-gtest $(DEV_TEST_TARGET)
 
-# Build FA3 standalone driver
-fa3: $(FA3_TARGET)
+# Build Hopper tests with Hopper-specific CUDA arch.
+hopper: setup-gtest $(HOPPER_TARGETS)
 
-$(FA3_TARGET): $(FA3_DIR)/$(FA3_SRC_NAME).cu $(FA3_DIR)/Makefile | $(BIN_DIR)
-	$(MAKE) -C $(FA3_DIR) OUT_DIR=$(abspath $(FA3_BIN_DIR)) bin
+# Build only Hopper gtest sources.
+hopper-gtest: setup-gtest $(HOPPER_GTEST_TARGETS)
 
 # Help target
 help:
@@ -122,7 +136,7 @@ help:
 	@echo "Available targets:"
 	@echo "  all         - Build all tests (default)"
 	@echo "  test        - Build and run all tests"
-	@echo "  fa3         - Build FA3 standalone integration driver"
+	@echo "  hopper      - Build Hopper tests"
 	@echo "  clean       - Clean all build artifacts"
 	@echo "  setup-gtest - Download and setup Google Test"
 	@echo "  run-tests   - Run all compiled tests"
@@ -144,7 +158,7 @@ setup-gtest:
 	fi
 
 # Create build directories
-$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(UNIT_OBJ_DIR) $(INTEGRATION_OBJ_DIR) $(INTEGRATION_MMA_OBJ_DIR) $(MICROBENCH_OBJ_DIR) $(STANDALONE_OBJ_DIR) $(FLASH_OBJ_DIR):
+$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(UNIT_OBJ_DIR) $(INTEGRATION_OBJ_DIR) $(INTEGRATION_MMA_OBJ_DIR) $(MICROBENCH_OBJ_DIR) $(STANDALONE_OBJ_DIR) $(HOPPER_OBJ_DIR) $(FLASH_OBJ_DIR):
 	mkdir -p $@
 
 # Build Google Test library
@@ -175,6 +189,12 @@ $(OBJ_DIR)/integration/%.cu.o: $(TEST_SRC_DIR)/integration/%.cc $(CUH_HEADERS)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
+# Hopper gtest sources use their own CUDA architecture.
+$(OBJ_DIR)/hopper/fa3/%.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_FLAGS)
+$(OBJ_DIR)/hopper/%.cu.o: $(HOPPER_SRC_DIR)/%.cc $(CUH_HEADERS) | $(HOPPER_OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
 # Microbench tests
 $(OBJ_DIR)/microbench/%.cu.o: $(TEST_SRC_DIR)/microbench/%.cc $(CUH_HEADERS) | $(MICROBENCH_OBJ_DIR)
 	@mkdir -p $(dir $@)
@@ -190,6 +210,11 @@ $(BIN_DIR)/%_test: $(OBJ_DIR)/%_test.o $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
 
 # Build main test runner
 $(MAIN_TEST_TARGET): $(TEST_OBJECTS) $(FLASH_OBJECTS) $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(CUDA_LIBS)
+
+# Build Hopper gtest runner
+$(HOPPER_TEST_TARGET): $(HOPPER_TEST_OBJECTS) $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
+	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(CUDA_LIBS)
 
 # Build individual microbench executables
@@ -215,5 +240,8 @@ debug:
 	@echo "TEST_SOURCES: $(TEST_SOURCES)"
 	@echo "TEST_OBJECTS: $(TEST_OBJECTS)"
 	@echo "TEST_TARGETS: $(TEST_TARGETS)"
+	@echo "HOPPER_TEST_SOURCES: $(HOPPER_TEST_SOURCES)"
+	@echo "HOPPER_TARGETS: $(HOPPER_TARGETS)"
 	@echo "MAIN_TEST_TARGET: $(MAIN_TEST_TARGET)"
+	@echo "HOPPER_TEST_TARGET: $(HOPPER_TEST_TARGET)"
 	@echo "CUH_HEADERS: $(CUH_HEADERS)"

@@ -8,7 +8,6 @@
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
 
-#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -27,9 +26,6 @@ static_assert(kM * kN == kOutputRegs,
               "m64n8 WGMMA must produce one accumulator per output element.");
 static_assert(kSharedBElements >= kN * kK,
               "shared-memory B tile must cover at least N*K half values.");
-
-constexpr int kStatusOk = 0;
-constexpr int kStatusUnsupportedArch = 1;
 
 uint16_t f32_to_f16(float f32) {
   uint32_t bits;
@@ -72,46 +68,14 @@ float f16_to_f32(uint16_t f16) {
   return result;
 }
 
-bool has_wgmma_capable_device() {
-  int device_count = 0;
-  cudaError_t count_err = cudaGetDeviceCount(&device_count);
-  if (count_err != cudaSuccess || device_count == 0) {
-    cudaGetLastError();
-    return false;
-  }
-
-  int device = 0;
-  if (cudaGetDevice(&device) != cudaSuccess) {
-    cudaGetLastError();
-    return false;
-  }
-
-  cudaDeviceProp prop{};
-  if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) {
-    cudaGetLastError();
-    return false;
-  }
-
-  return prop.major >= 9;
-}
-
 struct RunResult {
   cudaError_t setup_error = cudaSuccess;
   cudaError_t launch_error = cudaSuccess;
   cudaError_t sync_error = cudaSuccess;
   cudaError_t copy_error = cudaSuccess;
-  int status = -1;
   std::vector<float> output;
 };
 
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900) && \
-    defined(__CUDA_ARCH_FEAT_SM90_ALL)
-#define GPGPUSIM_TEST_WGMMA_ENABLED 1
-#else
-#define GPGPUSIM_TEST_WGMMA_ENABLED 0
-#endif
-
-#if GPGPUSIM_TEST_WGMMA_ENABLED
 __device__ __forceinline__ uint32_t smem_ptr_to_uint(void const *ptr) {
   uint32_t smem_ptr;
   asm("{ .reg .u64 smem_ptr; cvta.to.shared.u64 smem_ptr, %1; "
@@ -147,19 +111,14 @@ __device__ __forceinline__ void wgmma_m64n8k16_f32_f16_f16_rs(
       : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "l"(desc_b),
         "r"(scale_d), "n"(1), "n"(1), "n"(0));
 }
-#endif
 
-__global__ void wgmma_m64n8k16_f16_uniform_kernel(float *out, int *status,
+__global__ void wgmma_m64n8k16_f16_uniform_kernel(float *out,
                                                   uint16_t a_bits,
                                                   uint16_t b_bits,
                                                   float initial_c,
                                                   int32_t scale_d) {
   if (threadIdx.x >= kWarpgroupThreads) return;
 
-#if !GPGPUSIM_TEST_WGMMA_ENABLED
-  if (threadIdx.x == 0) *status = kStatusUnsupportedArch;
-  return;
-#else
   __shared__ __align__(16) uint16_t smem_b[kSharedBElements];
 
   for (int i = threadIdx.x; i < kSharedBElements; i += blockDim.x) {
@@ -197,9 +156,6 @@ __global__ void wgmma_m64n8k16_f16_uniform_kernel(float *out, int *status,
   out[base + 1] = d1;
   out[base + 2] = d2;
   out[base + 3] = d3;
-
-  if (threadIdx.x == 0) *status = kStatusOk;
-#endif
 }
 
 RunResult run_wgmma_kernel(uint16_t a_bits, uint16_t b_bits, float initial_c,
@@ -208,28 +164,13 @@ RunResult run_wgmma_kernel(uint16_t a_bits, uint16_t b_bits, float initial_c,
   result.output.assign(kOutputRegs, 0.0f);
 
   float *d_out = nullptr;
-  int *d_status = nullptr;
 
   result.setup_error = cudaMalloc(&d_out, kOutputRegs * sizeof(float));
   if (result.setup_error != cudaSuccess) return result;
-  result.setup_error = cudaMalloc(&d_status, sizeof(int));
-  if (result.setup_error != cudaSuccess) {
-    cudaFree(d_out);
-    return result;
-  }
-
-  int initial_status = -1;
-  result.setup_error =
-      cudaMemcpy(d_status, &initial_status, sizeof(int), cudaMemcpyHostToDevice);
-  if (result.setup_error != cudaSuccess) {
-    cudaFree(d_status);
-    cudaFree(d_out);
-    return result;
-  }
 
   cudaGetLastError();
   wgmma_m64n8k16_f16_uniform_kernel<<<1, kWarpgroupThreads>>>(
-      d_out, d_status, a_bits, b_bits, initial_c, scale_d);
+      d_out, a_bits, b_bits, initial_c, scale_d);
 
   result.launch_error = cudaGetLastError();
   if (result.launch_error == cudaSuccess) {
@@ -238,15 +179,10 @@ RunResult run_wgmma_kernel(uint16_t a_bits, uint16_t b_bits, float initial_c,
 
   if (result.launch_error == cudaSuccess && result.sync_error == cudaSuccess) {
     result.copy_error =
-        cudaMemcpy(&result.status, d_status, sizeof(int), cudaMemcpyDeviceToHost);
-    if (result.copy_error == cudaSuccess) {
-      result.copy_error =
-          cudaMemcpy(result.output.data(), d_out, kOutputRegs * sizeof(float),
-                     cudaMemcpyDeviceToHost);
-    }
+        cudaMemcpy(result.output.data(), d_out, kOutputRegs * sizeof(float),
+                   cudaMemcpyDeviceToHost);
   }
 
-  cudaFree(d_status);
   cudaFree(d_out);
   return result;
 }
@@ -255,16 +191,7 @@ class WgmmaF16M64N8K16IntegrationTest : public ::testing::Test {
  protected:
   void validate_uniform_wgmma(uint16_t a_bits, uint16_t b_bits, float initial_c,
                               int32_t scale_d, float tolerance = 1e-3f) {
-    if (!has_wgmma_capable_device()) {
-      GTEST_SKIP() << "WGMMA requires a Hopper-or-newer GPU.";
-    }
-
     RunResult result = run_wgmma_kernel(a_bits, b_bits, initial_c, scale_d);
-
-    if (result.launch_error == cudaErrorNoKernelImageForDevice ||
-        result.launch_error == cudaErrorInvalidDeviceFunction) {
-      GTEST_SKIP() << "Rebuild tests with CUDA_ARCH=sm_90a for Hopper.";
-    }
 
     ASSERT_EQ(result.setup_error, cudaSuccess)
         << "CUDA setup error: " << cudaGetErrorString(result.setup_error);
@@ -275,12 +202,6 @@ class WgmmaF16M64N8K16IntegrationTest : public ::testing::Test {
     ASSERT_EQ(result.copy_error, cudaSuccess)
         << "CUDA copy error: " << cudaGetErrorString(result.copy_error);
 
-    if (result.status == kStatusUnsupportedArch) {
-      GTEST_SKIP() << "Test binary was not compiled with SM90A WGMMA support; "
-                      "use CUDA_ARCH=sm_90a.";
-    }
-
-    ASSERT_EQ(result.status, kStatusOk);
     ASSERT_EQ(result.output.size(), static_cast<size_t>(kOutputRegs));
 
     float a = f16_to_f32(a_bits);
