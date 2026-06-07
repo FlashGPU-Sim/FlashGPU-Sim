@@ -571,6 +571,24 @@ class operand_info {
     m_is_return_var = false;
     m_immediate_address = false;
   }
+  operand_info(long long x, gpgpu_context *ctx) {
+    init(ctx);
+    m_is_non_arch_reg = false;
+    m_addr_space = undefined_space;
+    m_operand_lohi = 0;
+    m_double_operand_type = 0;
+    m_operand_neg = false;
+    m_const_mem_offset = 0;
+    m_uid = get_uid();
+    m_valid = true;
+    m_vector = false;
+    m_type = int_t;
+    m_value.m_int = x;
+    m_addr_offset = 0;
+    m_neg_pred = false;
+    m_is_return_var = false;
+    m_immediate_address = false;
+  }
   operand_info(float x, gpgpu_context *ctx) {
     init(ctx);
     m_is_non_arch_reg = false;
@@ -881,7 +899,7 @@ class operand_info {
         result.f64 = m_value.m_double;
         break;
       case unsigned_t:
-        result.u32 = m_value.m_unsigned;
+        result.u64 = m_value.m_unsigned;
         break;
       default:
         assert(0);
@@ -889,7 +907,7 @@ class operand_info {
     }
     return result;
   }
-  int get_int() const { return m_value.m_int; }
+  int get_int() const { return static_cast<int>(m_value.m_int); }
   int get_addr_offset() const { return m_addr_offset; }
   const symbol *get_symbol() const {
     if (m_vector) {
@@ -942,8 +960,8 @@ class operand_info {
   bool m_operand_neg;
   addr_t m_const_mem_offset;
   union {
-    int m_int;
-    unsigned int m_unsigned;
+    long long m_int;
+    unsigned long long m_unsigned;
     float m_float;
     double m_double;
     int m_vint[4];

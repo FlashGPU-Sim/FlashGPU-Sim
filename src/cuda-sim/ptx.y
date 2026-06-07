@@ -42,7 +42,7 @@ class ptx_recognizer;
 %union {
   double double_value;
   float  float_value;
-  int    int_value;
+  long long int_value;
   char * string_value;
   void * ptr_value;
 }
@@ -390,7 +390,7 @@ directive_statement: variable_declaration SEMI_COLON
 			fprintf(stderr, "\n");
 			fprintf(stderr, "Modern GPU configurations require .address_size 64 in PTX files.\n");
 			fprintf(stderr, "\n");
-			fprintf(stderr, "Found: .address_size %d\n", $2);
+			fprintf(stderr, "Found: .address_size %lld\n", $2);
 			fprintf(stderr, "\n");
 			fprintf(stderr, "Reason:\n");
 			fprintf(stderr, "  - GLOBAL_HEAP_START = 0xC00000000 exceeds 32-bit range\n");

@@ -931,7 +931,7 @@ void ptx_recognizer::change_operand_neg() {
   g_operands.back().set_operand_neg();
 }
 
-void ptx_recognizer::add_literal_int(int value) {
+void ptx_recognizer::add_literal_int(long long value) {
   PTX_PARSE_GPPRINTF("add_literal_int");
   g_operands.push_back(operand_info(value, gpgpu_ctx));
 }

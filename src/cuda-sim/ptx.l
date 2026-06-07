@@ -42,6 +42,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "opcodes.h"
 #include "ptx_parser.h"
 #include "ptx.tab.h"
+#include <cstdlib>
 #include <string.h>
 #include "../../libcuda/gpgpu_context.h"
 
@@ -296,7 +297,12 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 "%halfclock" TC; yylval->int_value = HALFCLOCK_ID; return SPECIAL_REGISTER;
 "%clock64" TC; yylval->int_value = CLOCK64_REG; return SPECIAL_REGISTER;
 "%ctaid" TC; yylval->int_value = CTAID_REG; return SPECIAL_REGISTER;
-"%envreg"[0-9]+ TC; sscanf(yytext+7,"%u",&yylval->int_value); yylval->int_value<<=16; yylval->int_value += ENVREG_REG; return SPECIAL_REGISTER;
+"%envreg"[0-9]+ TC; {
+  unsigned reg = 0;
+  sscanf(yytext+7,"%u",&reg);
+  yylval->int_value = (static_cast<long long>(reg) << 16) + ENVREG_REG;
+  return SPECIAL_REGISTER;
+}
 "%gridid" TC; yylval->int_value = GRIDID_REG; return SPECIAL_REGISTER;
 "%laneid"  TC; yylval->int_value = LANEID_REG; return SPECIAL_REGISTER;
 "%lanemask_eq"  TC; yylval->int_value = LANEMASK_EQ_REG; return SPECIAL_REGISTER;
@@ -308,7 +314,12 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 "%ntid"  TC; yylval->int_value = NTID_REG; return SPECIAL_REGISTER;
 "%nsmid"  TC; yylval->int_value = NSMID_REG; return SPECIAL_REGISTER;
 "%nwarpid"  TC; yylval->int_value = NWARPID_REG; return SPECIAL_REGISTER;
-"%pm"[0-3]  TC; sscanf(yytext+3,"%u",&yylval->int_value); yylval->int_value<<=16; yylval->int_value += PM_REG; return SPECIAL_REGISTER;
+"%pm"[0-3]  TC; {
+  unsigned reg = 0;
+  sscanf(yytext+3,"%u",&reg);
+  yylval->int_value = (static_cast<long long>(reg) << 16) + PM_REG;
+  return SPECIAL_REGISTER;
+}
 "%smid"  TC; yylval->int_value = SMID_REG; return SPECIAL_REGISTER;
 "%tid"  TC; yylval->int_value = TID_REG; return SPECIAL_REGISTER;
 "%warpid"  TC; yylval->int_value = WARPID_REG; return SPECIAL_REGISTER;
@@ -320,10 +331,10 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 
 [0-9]+\.[0-9]+ 	 TC; sscanf(yytext,"%lf", &yylval->double_value); return DOUBLE_OPERAND;
 	
-0[xX][0-9a-fA-F]+U? TC; CHECK_UNSIGNED; sscanf(yytext,"%x", &yylval->int_value); return INT_OPERAND;
+0[xX][0-9a-fA-F]+U? TC; CHECK_UNSIGNED; yylval->int_value = (long long)strtoull(yytext, NULL, 0); return INT_OPERAND;
 0[0-7]+U?   	TC; printf("GPGPU-Sim: ERROR ** parsing octal not (yet) implemented\n"); abort(); return INT_OPERAND;
 0[bB][01]+U?  	TC; printf("GPGPU-Sim: ERROR ** parsing binary not (yet) implemented\n"); abort(); return INT_OPERAND;
-[-]?[0-9]+U?    TC; CHECK_UNSIGNED; yylval->int_value =  atoi(yytext); return INT_OPERAND;
+[-]?[0-9]+U?    TC; CHECK_UNSIGNED; yylval->int_value = strtoll(yytext, NULL, 10); return INT_OPERAND;
 
 0[fF][0-9a-fA-F]{8}  TC; sscanf(yytext+2,"%x", (unsigned*)(void*)&yylval->float_value); return FLOAT_OPERAND;
 0[dD][0-9a-fA-F]{16}  TC; sscanf(yytext+2,"%Lx", (unsigned long long*)(void*)&yylval->double_value); return DOUBLE_OPERAND;
