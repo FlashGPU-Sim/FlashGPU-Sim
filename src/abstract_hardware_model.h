@@ -1009,6 +1009,11 @@ class warp_inst_t : public inst_t {
     m_streamID = (unsigned long long)-1;
     m_empty = true;
     m_config = NULL;
+    m_wgmma_warpgroup = false;
+    m_wgmma_warpgroup_size = 0;
+    m_wgmma_warpgroup_base_warp_id = (unsigned)-1;
+    for (unsigned i = 0; i < 4; ++i)
+      m_wgmma_warpgroup_warp_id[i] = (unsigned)-1;
 
     // Ni:
     m_is_ldgsts = false;
@@ -1030,6 +1035,11 @@ class warp_inst_t : public inst_t {
     m_is_printf = false;
     m_is_cdp = 0;
     should_do_atomic = true;
+    m_wgmma_warpgroup = false;
+    m_wgmma_warpgroup_size = 0;
+    m_wgmma_warpgroup_base_warp_id = (unsigned)-1;
+    for (unsigned i = 0; i < 4; ++i)
+      m_wgmma_warpgroup_warp_id[i] = (unsigned)-1;
 
     // Ni:
     m_is_ldgsts = false;
@@ -1049,6 +1059,23 @@ class warp_inst_t : public inst_t {
   void issue(const active_mask_t &mask, unsigned warp_id,
              unsigned long long cycle, int dynamic_warp_id, int sch_id,
              unsigned long long streamID);
+  void set_wgmma_warpgroup_info(const unsigned *warp_ids, unsigned count) {
+    assert(count > 0 && count <= 4);
+    m_wgmma_warpgroup = true;
+    m_wgmma_warpgroup_size = count;
+    m_wgmma_warpgroup_base_warp_id = warp_ids[0];
+    for (unsigned i = 0; i < 4; ++i)
+      m_wgmma_warpgroup_warp_id[i] = (i < count) ? warp_ids[i] : (unsigned)-1;
+  }
+  bool is_wgmma_warpgroup() const { return m_wgmma_warpgroup; }
+  unsigned wgmma_warpgroup_size() const { return m_wgmma_warpgroup_size; }
+  unsigned wgmma_warpgroup_warp_id(unsigned idx) const {
+    assert(idx < m_wgmma_warpgroup_size);
+    return m_wgmma_warpgroup_warp_id[idx];
+  }
+  unsigned wgmma_warpgroup_base_warp_id() const {
+    return m_wgmma_warpgroup_base_warp_id;
+  }
 
   const active_mask_t &get_active_mask() const { return m_warp_active_mask; }
   void completed(unsigned long long cycle)
@@ -1218,6 +1245,10 @@ class warp_inst_t : public inst_t {
   std::list<mem_access_t> m_accessq;
 
   unsigned m_scheduler_id;  // the scheduler that issues this inst
+  bool m_wgmma_warpgroup;
+  unsigned m_wgmma_warpgroup_size;
+  unsigned m_wgmma_warpgroup_base_warp_id;
+  unsigned m_wgmma_warpgroup_warp_id[4];
 
   // Jin: cdp support
  public:

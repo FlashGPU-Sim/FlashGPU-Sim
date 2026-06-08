@@ -1,5 +1,6 @@
 #include "tensor_wgmma.h"
 
+#include <cassert>
 #include <cstdint>
 
 #include "../../../abstract_hardware_model.h"
@@ -20,6 +21,31 @@ unsigned wgmma_warp_base_tid(core_t *core, const warp_inst_t &inst) {
   if (core->get_gpu()->is_functional_sim())
     return inst.warp_id_func() * core->get_warp_size();
   return inst.warp_id() * core->get_warp_size();
+}
+
+unsigned wgmma_thread_count(core_t *core, const warp_inst_t &inst) {
+  if (inst.is_wgmma_warpgroup())
+    return inst.wgmma_warpgroup_size() * core->get_warp_size();
+  return core->get_warp_size();
+}
+
+unsigned wgmma_hw_tid(core_t *core, const warp_inst_t &inst,
+                      unsigned thread_idx) {
+  unsigned warp_size = core->get_warp_size();
+  if (inst.is_wgmma_warpgroup()) {
+    unsigned warpgroup_slot = thread_idx / warp_size;
+    unsigned lane = thread_idx % warp_size;
+    return inst.wgmma_warpgroup_warp_id(warpgroup_slot) * warp_size + lane;
+  }
+  return wgmma_warp_base_tid(core, inst) + thread_idx;
+}
+
+ptx_thread_info *wgmma_thread(core_t *core, const warp_inst_t &inst,
+                              unsigned thread_idx) {
+  ptx_thread_info *thread =
+      core->get_thread_info()[wgmma_hw_tid(core, inst, thread_idx)];
+  assert(thread != NULL);
+  return thread;
 }
 
 uint16_t packed_f16(const ptx_reg_t &reg, int half_index) {
@@ -95,8 +121,8 @@ void wgmma_m64n8k16_f16_impl(const ptx_instruction *pI, core_t *core,
   for (int i = 0; i < N * K; ++i)
     B_mat[i] = 0.0f;
 
-  unsigned tid = wgmma_warp_base_tid(core, inst);
-  ptx_thread_info *representative_thread = core->get_thread_info()[tid];
+  unsigned thread_count = wgmma_thread_count(core, inst);
+  ptx_thread_info *representative_thread = wgmma_thread(core, inst, 0);
   ptx_reg_t b_desc_reg = representative_thread->get_operand_value(
       src_b_desc, src_b_desc, U64_TYPE, representative_thread, 0);
   uint64_t b_desc = static_cast<uint64_t>(b_desc_reg.u64);
@@ -111,8 +137,8 @@ void wgmma_m64n8k16_f16_impl(const ptx_instruction *pI, core_t *core,
     }
   }
 
-  for (unsigned thrd = 0; thrd < core->get_warp_size(); ++thrd) {
-    ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
+  for (unsigned thrd = 0; thrd < thread_count; ++thrd) {
+    ptx_thread_info *thread = wgmma_thread(core, inst, thrd);
     unsigned lane = wgmma_lane(thread);
     int tid_mma_col = lane % 4;
     int tid_row = (lane / 4) % 8;
@@ -132,8 +158,8 @@ void wgmma_m64n8k16_f16_impl(const ptx_instruction *pI, core_t *core,
     }
   }
 
-  for (unsigned thrd = 0; thrd < core->get_warp_size(); ++thrd) {
-    ptx_thread_info *thread = core->get_thread_info()[tid + thrd];
+  for (unsigned thrd = 0; thrd < thread_count; ++thrd) {
+    ptx_thread_info *thread = wgmma_thread(core, inst, thrd);
     unsigned lane = wgmma_lane(thread);
 
     ptx_reg_t c_regs[4];

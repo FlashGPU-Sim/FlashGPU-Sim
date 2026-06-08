@@ -462,6 +462,14 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   virtual void do_on_warp_issued(
       unsigned warp_id, unsigned num_issued,
       const std::vector<shd_warp_t *>::const_iterator &prioritized_iter);
+  void do_on_warpgroup_issued(
+      const unsigned *warp_ids, unsigned count, unsigned num_issued,
+      const std::vector<shd_warp_t *>::const_iterator &prioritized_iter);
+  bool is_wgmma_mma_async(const warp_inst_t *inst) const;
+  bool get_wgmma_warpgroup(unsigned warp_id, const warp_inst_t *inst,
+                           unsigned *warp_ids, unsigned *count);
+  bool wgmma_warpgroup_ready(const unsigned *warp_ids, unsigned count,
+                             const warp_inst_t *inst);
   inline int get_sid() const;
 
  protected:
@@ -2644,6 +2652,9 @@ class shader_core_ctx : public core_t {
   virtual void issue_warp(register_set &warp, const warp_inst_t *pI,
                           const active_mask_t &active_mask, unsigned warp_id,
                           unsigned sch_id);
+  virtual void issue_wgmma_warpgroup(register_set &warp, const warp_inst_t *pI,
+                                     const unsigned *warp_ids, unsigned count,
+                                     unsigned sch_id);
 
   void create_front_pipeline();
   void create_schedulers();

@@ -55,6 +55,8 @@ class Scoreboard {
 
   void reserveRegisters(const warp_inst_t *inst);
   void releaseRegisters(const warp_inst_t *inst);
+  void reserveRegistersForWarp(const warp_inst_t *inst, unsigned warp_id);
+  void releaseRegistersForWarp(const warp_inst_t *inst, unsigned warp_id);
   void releaseRegister(unsigned wid, unsigned regnum);
 
   bool checkCollision(unsigned wid, const inst_t *inst) const;
