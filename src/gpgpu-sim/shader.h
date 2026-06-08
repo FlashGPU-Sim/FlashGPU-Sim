@@ -347,6 +347,7 @@ inline unsigned wid_from_hw_tid(unsigned tid, unsigned warp_size) {
 };
 
 const unsigned WARP_PER_CTA_MAX = 64;
+#define WGMMA_WARPGROUP_SIZE 4
 typedef std::bitset<WARP_PER_CTA_MAX> warp_set_t;
 
 unsigned register_bank(int regnum, int wid, unsigned num_banks,
@@ -2649,6 +2650,11 @@ class shader_core_ctx : public core_t {
   friend class scheduler_unit;  // this is needed to use private issue warp.
   friend class TwoLevelScheduler;
   friend class LooseRoundRobbinScheduler;
+  bool can_issue_wgmma_warpgroup(const unsigned *warp_ids, unsigned count,
+                                 register_set &pipe_reg_set) const;
+  bool wgmma_issued_this_cycle() const { return m_wgmma_issued_this_cycle; }
+  void mark_scheduler_issued(unsigned sch_id);
+  void mark_wgmma_issued();
   virtual void issue_warp(register_set &warp, const warp_inst_t *pI,
                           const active_mask_t &active_mask, unsigned warp_id,
                           unsigned sch_id);
@@ -2749,6 +2755,8 @@ class shader_core_ctx : public core_t {
 
   // issue
   unsigned int Issue_Prio;
+  unsigned long long m_subpartition_issue_mask;
+  bool m_wgmma_issued_this_cycle;
 
   // execute
   unsigned m_num_function_units;

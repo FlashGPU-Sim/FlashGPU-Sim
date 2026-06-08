@@ -509,6 +509,8 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
       m_barriers(this, config->max_warps_per_shader, config->max_cta_per_core,
                  config->max_barriers_per_cta, config->warp_size),
       m_active_warps(0),
+      m_subpartition_issue_mask(0),
+      m_wgmma_issued_this_cycle(false),
       m_dynamic_warp_id(0) {
   m_cluster = cluster;
   m_config = config;
@@ -1318,11 +1320,54 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
   }
 }
 
+static unsigned long long scheduler_issue_mask_bit(unsigned sch_id) {
+  assert(sch_id < 8 * sizeof(unsigned long long));
+  return 1ULL << sch_id;
+}
+
+static unsigned long long all_scheduler_issue_mask(unsigned num_sched) {
+  assert(num_sched > 0 && num_sched < 8 * sizeof(unsigned long long));
+  return (1ULL << num_sched) - 1ULL;
+}
+
+bool shader_core_ctx::can_issue_wgmma_warpgroup(
+    const unsigned *warp_ids, unsigned count, register_set &pipe_reg_set) const {
+  if (count != WGMMA_WARPGROUP_SIZE) return false;
+  if (m_config->gpgpu_num_sched_per_core != WGMMA_WARPGROUP_SIZE) return false;
+  if (m_wgmma_issued_this_cycle || m_subpartition_issue_mask != 0) return false;
+
+  unsigned long long participant_sched_mask = 0;
+  for (unsigned i = 0; i < count; ++i) {
+    unsigned participant_sched_id =
+        warp_ids[i] % m_config->gpgpu_num_sched_per_core;
+    unsigned long long bit = scheduler_issue_mask_bit(participant_sched_id);
+    if (participant_sched_mask & bit) return false;
+    participant_sched_mask |= bit;
+    if (!pipe_reg_set.has_free(m_config->sub_core_model, participant_sched_id))
+      return false;
+  }
+
+  return participant_sched_mask ==
+         all_scheduler_issue_mask(m_config->gpgpu_num_sched_per_core);
+}
+
+void shader_core_ctx::mark_scheduler_issued(unsigned sch_id) {
+  m_subpartition_issue_mask |= scheduler_issue_mask_bit(sch_id);
+}
+
+void shader_core_ctx::mark_wgmma_issued() {
+  assert(m_subpartition_issue_mask == 0);
+  m_wgmma_issued_this_cycle = true;
+  m_subpartition_issue_mask =
+      all_scheduler_issue_mask(m_config->gpgpu_num_sched_per_core);
+}
+
 void shader_core_ctx::issue_wgmma_warpgroup(register_set &pipe_reg_set,
                                             const warp_inst_t *next_inst,
                                             const unsigned *warp_ids,
                                             unsigned count, unsigned sch_id) {
-  assert(count == 4);
+  assert(count == WGMMA_WARPGROUP_SIZE);
+  mark_wgmma_issued();
   unsigned representative_warp_id = warp_ids[0];
   const active_mask_t &representative_mask =
       get_active_mask(representative_warp_id, next_inst);
@@ -1385,6 +1430,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   warp_inst_t **pipe_reg =
       pipe_reg_set.get_free(m_config->sub_core_model, sch_id);
   assert(pipe_reg);
+  mark_scheduler_issued(sch_id);
 
   m_warp[warp_id]->ibuffer_free();
   assert(next_inst->valid());
@@ -1508,11 +1554,15 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 }
 
 void shader_core_ctx::issue() {
+  m_subpartition_issue_mask = 0;
+  m_wgmma_issued_this_cycle = false;
+
   // Ensure fair round robin issu between schedulers
   unsigned j;
   for (unsigned i = 0; i < schedulers.size(); i++) {
     j = (Issue_Prio + i) % schedulers.size();
     schedulers[j]->cycle();
+    if (m_wgmma_issued_this_cycle) break;
   }
   Issue_Prio = (Issue_Prio + 1) % schedulers.size();
 
@@ -1542,9 +1592,10 @@ bool scheduler_unit::get_wgmma_warpgroup(unsigned warp_id,
 
   unsigned cta_id = warp(warp_id).get_cta_id();
   unsigned cta_warpgroup_base =
-      (static_cast<unsigned>(cta_warp_id) / 4) * 4;
+      (static_cast<unsigned>(cta_warp_id) / WGMMA_WARPGROUP_SIZE) *
+      WGMMA_WARPGROUP_SIZE;
 
-  for (unsigned slot = 0; slot < 4; ++slot) {
+  for (unsigned slot = 0; slot < WGMMA_WARPGROUP_SIZE; ++slot) {
     bool found = false;
     unsigned target_cta_warp_id = cta_warpgroup_base + slot;
     for (unsigned candidate = 0; candidate < m_warp->size(); ++candidate) {
@@ -1562,14 +1613,14 @@ bool scheduler_unit::get_wgmma_warpgroup(unsigned warp_id,
     if (!found) return false;
   }
 
-  *count = 4;
+  *count = WGMMA_WARPGROUP_SIZE;
   return true;
 }
 
 bool scheduler_unit::wgmma_warpgroup_ready(const unsigned *warp_ids,
                                            unsigned count,
                                            const warp_inst_t *inst) {
-  if (count != 4 || !is_wgmma_mma_async(inst)) return false;
+  if (count != WGMMA_WARPGROUP_SIZE || !is_wgmma_mma_async(inst)) return false;
 
   const ptx_instruction *ref_ptx_inst =
       static_cast<const ptx_instruction *>(inst);
@@ -1774,8 +1825,8 @@ void scheduler_unit::cycle() {
       bool valid = warp(warp_id).ibuffer_next_valid();
       bool warp_inst_issued = false;
       bool warpgroup_inst_issued = false;
-      unsigned issued_warpgroup_ids[4] = {(unsigned)-1, (unsigned)-1,
-                                          (unsigned)-1, (unsigned)-1};
+      unsigned issued_warpgroup_ids[WGMMA_WARPGROUP_SIZE] = {
+          (unsigned)-1, (unsigned)-1, (unsigned)-1, (unsigned)-1};
       unsigned issued_warpgroup_count = 0;
       unsigned pc, rpc;
       m_shader->get_pdom_stack_top_info(warp_id, pI, &pc, &rpc);
@@ -1943,14 +1994,17 @@ void scheduler_unit::cycle() {
                         m_shader->m_config->sub_core_model, m_id);
                 if (tensor_core_pipe_avail) {
                   if (is_wgmma_mma_async(pI)) {
-                    unsigned wgmma_warp_ids[4] = {
+                    unsigned wgmma_warp_ids[WGMMA_WARPGROUP_SIZE] = {
                         (unsigned)-1, (unsigned)-1, (unsigned)-1,
                         (unsigned)-1};
                     unsigned wgmma_warp_count = 0;
                     if (get_wgmma_warpgroup(warp_id, pI, wgmma_warp_ids,
                                             &wgmma_warp_count) &&
                         wgmma_warpgroup_ready(wgmma_warp_ids,
-                                              wgmma_warp_count, pI)) {
+                                              wgmma_warp_count, pI) &&
+                        m_shader->can_issue_wgmma_warpgroup(
+                            wgmma_warp_ids, wgmma_warp_count,
+                            *m_tensor_core_out)) {
                       m_shader->issue_wgmma_warpgroup(
                           *m_tensor_core_out, pI, wgmma_warp_ids,
                           wgmma_warp_count, m_id);
@@ -2056,6 +2110,7 @@ void scheduler_unit::cycle() {
                                  issued_warpgroup_count, issued, iter);
         else
           do_on_warp_issued(warp_id, issued, iter);
+        if (warpgroup_inst_issued) break;
       }
       checked++;
     }
