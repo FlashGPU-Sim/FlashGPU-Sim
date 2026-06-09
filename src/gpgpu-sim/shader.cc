@@ -1008,11 +1008,11 @@ void shader_core_stats::print(FILE *fout) const {
   {
     static const char *stall_labels[NUM_STALL_REASONS] = {
         "Selected",        "NoInstruction",    "Barrier",
-        "Membar",          "WaitTMA",          "Atomic",
-        "SB_MemGlobal",    "SB_MemShared",     "SB_TensorCore",
-        "SB_SpInt",        "SB_Sfu",           "SB_Tma",
-        "SB_Other",        "MathPipeThrottle", "MioThrottle",
-        "PipeStallOther",  "NotSelected",
+        "Membar",          "WaitTMA",          "WaitWGMMA",
+        "Atomic",          "SB_MemGlobal",     "SB_MemShared",
+        "SB_TensorCore",   "SB_SpInt",         "SB_Sfu",
+        "SB_Tma",          "SB_Other",         "MathPipeThrottle",
+        "MioThrottle",     "PipeStallOther",   "NotSelected",
     };
     unsigned long long total = 0;
     for (int i = 0; i < NUM_STALL_REASONS; i++)
@@ -1330,6 +1330,34 @@ static unsigned long long all_scheduler_issue_mask(unsigned num_sched) {
   return (1ULL << num_sched) - 1ULL;
 }
 
+static int wgmma_opcode(const warp_inst_t *inst) {
+  assert(inst != NULL);
+  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
+  return ptx_inst->get_opcode();
+}
+
+static bool is_wgmma_mma_async_opcode(int opcode) {
+  return opcode == WGMMA_MMA_ASYNC_OP || opcode == WGMMA_MMA_ASYNC_SP_OP;
+}
+
+static bool is_wgmma_async_group_control_opcode(int opcode) {
+  return opcode == WGMMA_COMMIT_GROUP_OP || opcode == WGMMA_WAIT_GROUP_OP;
+}
+
+static bool is_wgmma_warpgroup_opcode(int opcode) {
+  return is_wgmma_mma_async_opcode(opcode) ||
+         is_wgmma_async_group_control_opcode(opcode);
+}
+
+static unsigned wgmma_wait_group_num_from_inst(const warp_inst_t *inst) {
+  assert(wgmma_opcode(inst) == WGMMA_WAIT_GROUP_OP);
+  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
+  if (ptx_inst->get_num_operands() == 0) return 0;
+  const operand_info &op = ptx_inst->operand_lookup(0);
+  assert(op.is_literal());
+  return static_cast<unsigned>(op.get_literal_value().u64);
+}
+
 bool shader_core_ctx::can_issue_wgmma_warpgroup(
     const unsigned *warp_ids, unsigned count, register_set &pipe_reg_set) const {
   if (count != WGMMA_WARPGROUP_SIZE) return false;
@@ -1351,6 +1379,13 @@ bool shader_core_ctx::can_issue_wgmma_warpgroup(
          all_scheduler_issue_mask(m_config->gpgpu_num_sched_per_core);
 }
 
+unsigned shader_core_ctx::wgmma_cta_warpgroup_id(unsigned warp_id) const {
+  int cta_warp_id = get_cta_warp_id(warp_id);
+  assert(cta_warp_id >= 0);
+  return (static_cast<unsigned>(cta_warp_id) / WGMMA_WARPGROUP_SIZE) *
+         WGMMA_WARPGROUP_SIZE;
+}
+
 void shader_core_ctx::mark_scheduler_issued(unsigned sch_id) {
   m_subpartition_issue_mask |= scheduler_issue_mask_bit(sch_id);
 }
@@ -1366,6 +1401,69 @@ void shader_core_ctx::issue_wgmma_warpgroup(register_set &pipe_reg_set,
                                             const warp_inst_t *next_inst,
                                             const unsigned *warp_ids,
                                             unsigned count, unsigned sch_id) {
+  assert(count == WGMMA_WARPGROUP_SIZE);
+  mark_wgmma_issued();
+  unsigned representative_warp_id = warp_ids[0];
+  const active_mask_t &representative_mask =
+      get_active_mask(representative_warp_id, next_inst);
+
+  warp_inst_t **pipe_reg =
+      pipe_reg_set.get_free(m_config->sub_core_model, sch_id);
+  assert(pipe_reg);
+
+  for (unsigned i = 0; i < count; ++i)
+    m_warp[warp_ids[i]]->ibuffer_free();
+
+  assert(next_inst->valid());
+  **pipe_reg = *next_inst;
+  (*pipe_reg)->issue(
+      representative_mask, representative_warp_id,
+      m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+      m_warp[representative_warp_id]->get_dynamic_warp_id(), sch_id,
+      m_warp[representative_warp_id]->get_streamID());
+  (*pipe_reg)->set_wgmma_warpgroup_info(warp_ids, count);
+  m_barriers.add_wgmma_op(m_warp[representative_warp_id]->get_cta_id(),
+                          wgmma_cta_warpgroup_id(representative_warp_id),
+                          (*pipe_reg)->get_uid());
+
+  m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
+
+  for (unsigned i = 0; i < count; ++i) {
+    unsigned warp_id = warp_ids[i];
+    if (warp_id == representative_warp_id) {
+      func_exec_inst(**pipe_reg);
+      updateSIMTStack(warp_id, *pipe_reg);
+    } else {
+      warp_inst_t participant_inst = *next_inst;
+      const active_mask_t &active_mask = get_active_mask(warp_id, next_inst);
+      participant_inst.issue(
+          active_mask, warp_id,
+          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+          m_warp[warp_id]->get_dynamic_warp_id(), sch_id,
+          m_warp[warp_id]->get_streamID());
+      for (unsigned t = 0; t < m_config->warp_size; ++t) {
+        if (!participant_inst.active(t)) continue;
+        unsigned tid = warp_id * m_config->warp_size + t;
+        ptx_thread_info *thread = m_thread[tid];
+        assert(thread != NULL);
+        addr_t pc = thread->next_instr();
+        assert(pc == participant_inst.pc);
+        thread->set_npc(participant_inst.pc + participant_inst.isize);
+        thread->update_pc();
+        checkExecutionStatusAndUpdate(participant_inst, t, tid);
+      }
+      updateSIMTStack(warp_id, &participant_inst);
+    }
+    m_warp[warp_id]->set_next_pc(next_inst->pc + next_inst->isize);
+  }
+
+  for (unsigned i = 0; i < count; ++i)
+    m_scoreboard->reserveRegistersForWarp(*pipe_reg, warp_ids[i]);
+}
+
+void shader_core_ctx::issue_wgmma_warpgroup_control(
+    register_set &pipe_reg_set, const warp_inst_t *next_inst,
+    const unsigned *warp_ids, unsigned count, unsigned sch_id) {
   assert(count == WGMMA_WARPGROUP_SIZE);
   mark_wgmma_issued();
   unsigned representative_warp_id = warp_ids[0];
@@ -1417,6 +1515,18 @@ void shader_core_ctx::issue_wgmma_warpgroup(register_set &pipe_reg_set,
       updateSIMTStack(warp_id, &participant_inst);
     }
     m_warp[warp_id]->set_next_pc(next_inst->pc + next_inst->isize);
+  }
+
+  unsigned cta_id = m_warp[representative_warp_id]->get_cta_id();
+  unsigned warpgroup_id = wgmma_cta_warpgroup_id(representative_warp_id);
+  int opcode = wgmma_opcode(next_inst);
+  if (opcode == WGMMA_COMMIT_GROUP_OP) {
+    m_barriers.commit_wgmma_group(cta_id, warpgroup_id);
+  } else {
+    assert(opcode == WGMMA_WAIT_GROUP_OP);
+    m_barriers.wait_wgmma_group(cta_id, warpgroup_id,
+                                wgmma_wait_group_num_from_inst(next_inst),
+                                warp_ids, count);
   }
 
   for (unsigned i = 0; i < count; ++i)
@@ -1576,16 +1686,26 @@ shd_warp_t &scheduler_unit::warp(int i) { return *((*m_warp)[i]); }
 
 bool scheduler_unit::is_wgmma_mma_async(const warp_inst_t *inst) const {
   if (inst == NULL || inst->op != TENSOR_CORE_OP) return false;
-  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
-  int opcode = ptx_inst->get_opcode();
-  return opcode == WGMMA_MMA_ASYNC_OP || opcode == WGMMA_MMA_ASYNC_SP_OP;
+  return is_wgmma_mma_async_opcode(wgmma_opcode(inst));
+}
+
+bool scheduler_unit::is_wgmma_async_group_control(
+    const warp_inst_t *inst) const {
+  if (inst == NULL) return false;
+  return is_wgmma_async_group_control_opcode(wgmma_opcode(inst));
+}
+
+bool scheduler_unit::is_wgmma_warpgroup_instruction(
+    const warp_inst_t *inst) const {
+  if (inst == NULL) return false;
+  return is_wgmma_warpgroup_opcode(wgmma_opcode(inst));
 }
 
 bool scheduler_unit::get_wgmma_warpgroup(unsigned warp_id,
                                          const warp_inst_t *inst,
                                          unsigned *warp_ids,
                                          unsigned *count) {
-  if (!is_wgmma_mma_async(inst)) return false;
+  if (!is_wgmma_warpgroup_instruction(inst)) return false;
 
   int cta_warp_id = m_shader->get_cta_warp_id(warp_id);
   if (cta_warp_id < 0) return false;
@@ -1620,7 +1740,9 @@ bool scheduler_unit::get_wgmma_warpgroup(unsigned warp_id,
 bool scheduler_unit::wgmma_warpgroup_ready(const unsigned *warp_ids,
                                            unsigned count,
                                            const warp_inst_t *inst) {
-  if (count != WGMMA_WARPGROUP_SIZE || !is_wgmma_mma_async(inst)) return false;
+  if (count != WGMMA_WARPGROUP_SIZE ||
+      !is_wgmma_warpgroup_instruction(inst))
+    return false;
 
   const ptx_instruction *ref_ptx_inst =
       static_cast<const ptx_instruction *>(inst);
@@ -1636,7 +1758,7 @@ bool scheduler_unit::wgmma_warpgroup_ready(const unsigned *warp_ids,
     const warp_inst_t *participant_inst = warp(warp_id).ibuffer_next_inst();
     if (!warp(warp_id).ibuffer_next_valid() || participant_inst == NULL)
       return false;
-    if (!is_wgmma_mma_async(participant_inst) ||
+    if (!is_wgmma_warpgroup_instruction(participant_inst) ||
         participant_inst->pc != ref_pc)
       return false;
 
@@ -1652,6 +1774,11 @@ bool scheduler_unit::wgmma_warpgroup_ready(const unsigned *warp_ids,
   }
 
   return true;
+}
+
+unsigned scheduler_unit::get_wgmma_wait_group_num(
+    const warp_inst_t *inst) const {
+  return wgmma_wait_group_num_from_inst(inst);
 }
 
 /**
@@ -1858,7 +1985,28 @@ void scheduler_unit::cycle() {
 
             assert(warp(warp_id).inst_in_pipeline());
 
-            if ((pI->op == LOAD_OP) || (pI->op == STORE_OP) ||
+            if (is_wgmma_async_group_control(pI)) {
+              unsigned wgmma_warp_ids[WGMMA_WARPGROUP_SIZE] = {
+                  (unsigned)-1, (unsigned)-1, (unsigned)-1, (unsigned)-1};
+              unsigned wgmma_warp_count = 0;
+              if (get_wgmma_warpgroup(warp_id, pI, wgmma_warp_ids,
+                                      &wgmma_warp_count) &&
+                  wgmma_warpgroup_ready(wgmma_warp_ids, wgmma_warp_count,
+                                        pI) &&
+                  m_shader->can_issue_wgmma_warpgroup(
+                      wgmma_warp_ids, wgmma_warp_count, *m_sp_out)) {
+                m_shader->issue_wgmma_warpgroup_control(
+                    *m_sp_out, pI, wgmma_warp_ids, wgmma_warp_count, m_id);
+                for (unsigned i = 0; i < wgmma_warp_count; ++i)
+                  issued_warpgroup_ids[i] = wgmma_warp_ids[i];
+                issued_warpgroup_count = wgmma_warp_count;
+                issued++;
+                issued_inst = true;
+                warp_inst_issued = true;
+                warpgroup_inst_issued = true;
+                previous_issued_inst_exec_type = exec_unit_type_t::SP;
+              }
+            } else if ((pI->op == LOAD_OP) || (pI->op == STORE_OP) ||
                 (pI->op == MEMORY_BARRIER_OP) ||
                 (pI->op == TENSOR_CORE_LOAD_OP) ||
                 (pI->op == TENSOR_CORE_STORE_OP)) {
@@ -2165,6 +2313,8 @@ void scheduler_unit::cycle() {
         auto btype = m_shader->get_warp_barrier_type(wid);
         if (btype == BARRIER_WAIT_MBARRIER || btype == BARRIER_WAIT_BULK_GROUP)
           reason = STALL_WAIT_TMA;
+        else if (btype == BARRIER_WAIT_WGMMA_GROUP)
+          reason = STALL_WAIT_WGMMA;
         else
           reason = STALL_BARRIER;
       } else if (m_shader->warp_waiting_at_mem_barrier(wid))
@@ -2665,6 +2815,12 @@ void shader_core_ctx::writeback() {
     m_operand_collector.writeback(*pipe_reg);
     unsigned warp_id = pipe_reg->warp_id();
     if (pipe_reg->is_wgmma_warpgroup()) {
+      if (pipe_reg->op == TENSOR_CORE_OP) {
+        unsigned base_warp_id = pipe_reg->wgmma_warpgroup_warp_id(0);
+        m_barriers.complete_wgmma_op(
+            m_warp[base_warp_id]->get_cta_id(),
+            wgmma_cta_warpgroup_id(base_warp_id), pipe_reg->get_uid());
+      }
       for (unsigned i = 0; i < pipe_reg->wgmma_warpgroup_size(); ++i) {
         unsigned participant_warp_id = pipe_reg->wgmma_warpgroup_warp_id(i);
         m_scoreboard->releaseRegistersForWarp(pipe_reg, participant_warp_id);
@@ -3736,6 +3892,7 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
     m_n_active_cta--;
     m_barriers.deallocate_barrier(cta_num);
     m_barriers.cleanup_cta_mbarriers(cta_num);  // Clean up mbarriers for this hw_cta_id
+    m_barriers.cleanup_cta_wgmma_groups(cta_num);
     shader_CTA_count_unlog(m_sid, 1);
 
     SHADER_GPPRINTF(

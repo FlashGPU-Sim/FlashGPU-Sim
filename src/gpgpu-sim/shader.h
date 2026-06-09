@@ -60,6 +60,7 @@
 #include "flash/mbarrier.h"
 #include "flash/bulk_group.h"
 #include "flash/tma.h"
+#include "flash/wgmma/wgmma_async_group.h"
 #include "flash/tma.h"
 
 #define NO_OP_FLAG 0xFF
@@ -467,10 +468,13 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
       const unsigned *warp_ids, unsigned count, unsigned num_issued,
       const std::vector<shd_warp_t *>::const_iterator &prioritized_iter);
   bool is_wgmma_mma_async(const warp_inst_t *inst) const;
+  bool is_wgmma_async_group_control(const warp_inst_t *inst) const;
+  bool is_wgmma_warpgroup_instruction(const warp_inst_t *inst) const;
   bool get_wgmma_warpgroup(unsigned warp_id, const warp_inst_t *inst,
                            unsigned *warp_ids, unsigned *count);
   bool wgmma_warpgroup_ready(const unsigned *warp_ids, unsigned count,
                              const warp_inst_t *inst);
+  unsigned get_wgmma_wait_group_num(const warp_inst_t *inst) const;
   inline int get_sid() const;
 
  protected:
@@ -1086,6 +1090,7 @@ enum barrier_wait_type_t {
   BARRIER_WAIT_BAR_SYNC,     // regular bar.sync / bar.red
   BARRIER_WAIT_MBARRIER,     // mbarrier.try_wait (TMA)
   BARRIER_WAIT_BULK_GROUP,   // cp.async.bulk.wait_group (TMA)
+  BARRIER_WAIT_WGMMA_GROUP,  // wgmma.wait_group
 };
 
 class barrier_set_t {
@@ -1130,6 +1135,16 @@ class barrier_set_t {
   void wait_bulk_group(unsigned cta_id, unsigned warp_id, unsigned latest_group_num);
   void commit_bulk_group(unsigned cta_id, unsigned warp_id);
 
+  // WGMMA async group methods
+  void add_wgmma_op(unsigned cta_id, unsigned warpgroup_id, unsigned op_uid);
+  void complete_wgmma_op(unsigned cta_id, unsigned warpgroup_id,
+                         unsigned op_uid);
+  void wait_wgmma_group(unsigned cta_id, unsigned warpgroup_id,
+                        unsigned max_pending_groups, const unsigned *warp_ids,
+                        unsigned count);
+  void commit_wgmma_group(unsigned cta_id, unsigned warpgroup_id);
+  void cleanup_cta_wgmma_groups(unsigned cta_id);
+
   // warp reaches exit
   void warp_exit(unsigned warp_id);
 
@@ -1156,6 +1171,7 @@ class barrier_set_t {
   shader_core_ctx *m_shader;
   flash_gpgpu_sim::mbarrier_manager_t m_mbarrier_manager;
   flash_gpgpu_sim::bulk_group_manager_t m_bulk_group_manager;
+  flash_gpgpu_sim::wgmma_async_group_manager_t m_wgmma_group_manager;
 
   // Delayed warp release queue for mbarrier try_wait latency
   struct pending_warp_release_t {
@@ -1884,6 +1900,7 @@ enum warp_stall_reason_t {
   STALL_BARRIER,                // at CTA barrier (bar.sync / mbarrier.try_wait)
   STALL_MEMBAR,                 // at memory barrier
   STALL_WAIT_TMA,               // waiting for LDGSTS / TMA bulk wait
+  STALL_WAIT_WGMMA,             // waiting for WGMMA async group
   STALL_ATOMIC,                 // waiting for atomic completion
   STALL_SCOREBOARD_MEM_GLOBAL,  // RAW hazard on global/local mem load
   STALL_SCOREBOARD_MEM_SHARED,  // RAW hazard on shared mem op
@@ -2652,6 +2669,7 @@ class shader_core_ctx : public core_t {
   friend class LooseRoundRobbinScheduler;
   bool can_issue_wgmma_warpgroup(const unsigned *warp_ids, unsigned count,
                                  register_set &pipe_reg_set) const;
+  unsigned wgmma_cta_warpgroup_id(unsigned warp_id) const;
   bool wgmma_issued_this_cycle() const { return m_wgmma_issued_this_cycle; }
   void mark_scheduler_issued(unsigned sch_id);
   void mark_wgmma_issued();
@@ -2661,6 +2679,10 @@ class shader_core_ctx : public core_t {
   virtual void issue_wgmma_warpgroup(register_set &warp, const warp_inst_t *pI,
                                      const unsigned *warp_ids, unsigned count,
                                      unsigned sch_id);
+  virtual void issue_wgmma_warpgroup_control(register_set &warp,
+                                             const warp_inst_t *pI,
+                                             const unsigned *warp_ids,
+                                             unsigned count, unsigned sch_id);
 
   void create_front_pipeline();
   void create_schedulers();
