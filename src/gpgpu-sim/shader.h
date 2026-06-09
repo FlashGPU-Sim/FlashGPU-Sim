@@ -60,7 +60,7 @@
 #include "flash/mbarrier.h"
 #include "flash/bulk_group.h"
 #include "flash/tma.h"
-#include "flash/wgmma/wgmma_async_group.h"
+#include "flash/wgmma/tensor_wgmma.h"
 #include "flash/tma.h"
 
 #define NO_OP_FLAG 0xFF
@@ -1135,15 +1135,9 @@ class barrier_set_t {
   void wait_bulk_group(unsigned cta_id, unsigned warp_id, unsigned latest_group_num);
   void commit_bulk_group(unsigned cta_id, unsigned warp_id);
 
-  // WGMMA async group methods
-  void add_wgmma_op(unsigned cta_id, unsigned warpgroup_id, unsigned op_uid);
-  void complete_wgmma_op(unsigned cta_id, unsigned warpgroup_id,
-                         unsigned op_uid);
-  void wait_wgmma_group(unsigned cta_id, unsigned warpgroup_id,
-                        unsigned max_pending_groups, const unsigned *warp_ids,
-                        unsigned count);
-  void commit_wgmma_group(unsigned cta_id, unsigned warpgroup_id);
-  void cleanup_cta_wgmma_groups(unsigned cta_id);
+  // WGMMA wait_group uses the barrier bitset only as a scheduler wait state.
+  void set_wgmma_waiting_warps(const unsigned *warp_ids, unsigned count);
+  void release_wgmma_warps(const std::vector<unsigned> &released_warps);
 
   // warp reaches exit
   void warp_exit(unsigned warp_id);
@@ -1171,7 +1165,6 @@ class barrier_set_t {
   shader_core_ctx *m_shader;
   flash_gpgpu_sim::mbarrier_manager_t m_mbarrier_manager;
   flash_gpgpu_sim::bulk_group_manager_t m_bulk_group_manager;
-  flash_gpgpu_sim::wgmma_async_group_manager_t m_wgmma_group_manager;
 
   // Delayed warp release queue for mbarrier try_wait latency
   struct pending_warp_release_t {
@@ -2765,6 +2758,7 @@ class shader_core_ctx : public core_t {
   // decode/dispatch
   std::vector<shd_warp_t *> m_warp;  // per warp information array
   barrier_set_t m_barriers;
+  flash_gpgpu_sim::wgmma_unit_t m_wgmma;
   ifetch_buffer_t m_inst_fetch_buffer;
   std::vector<register_set> m_pipeline_reg;
   Scoreboard *m_scoreboard;

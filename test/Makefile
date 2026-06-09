@@ -16,7 +16,16 @@ HOPPER_NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -arch=$
 HOPPER_EXTRA_NVCCFLAGS =
 
 # CUDA settings
-CUDA_INSTALL_PATH ?= /usr/local/cuda
+CUDA_ENV_PATH := $(if $(CUDA_HOME),$(CUDA_HOME),$(CUDA_PATH))
+ifneq ($(origin CUDA_INSTALL_PATH),command line)
+  ifeq ($(wildcard $(CUDA_INSTALL_PATH)/lib64/libcudart.so),)
+    ifneq ($(strip $(CUDA_ENV_PATH)),)
+      CUDA_INSTALL_PATH := $(CUDA_ENV_PATH)
+    else
+      CUDA_INSTALL_PATH ?= /usr/local/cuda
+    endif
+  endif
+endif
 CUDA_LIBS = -L$(CUDA_INSTALL_PATH)/lib64 -lcudart -lcuda
 
 # Directories

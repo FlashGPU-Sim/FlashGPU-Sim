@@ -1,12 +1,16 @@
 #include "tensor_wgmma.h"
 
 #include <cassert>
-#include <cstdint>
+#include <list>
+#include <map>
+#include <set>
+#include <utility>
+#include <vector>
 
 #include "../../../abstract_hardware_model.h"
 #include "../../../cuda-sim/ptx_ir.h"
 #include "../../gpu-sim.h"
-#include "../mma/tensor_mma.h"
+#include "../../shader.h"
 
 class ptx_recognizer;
 typedef void *yyscan_t;
@@ -22,6 +26,183 @@ unsigned wgmma_warp_base_tid(core_t *core, const warp_inst_t &inst) {
     return inst.warp_id_func() * core->get_warp_size();
   return inst.warp_id() * core->get_warp_size();
 }
+
+int wgmma_scalar_type_at(const ptx_instruction *pI, unsigned index,
+                         int default_type) {
+  const std::list<int> &scalar_types = pI->get_scalar_type();
+  if (scalar_types.size() <= index)
+    return default_type;
+
+  std::list<int>::const_iterator it = scalar_types.begin();
+  for (unsigned i = 0; i < index; ++i)
+    ++it;
+  return *it;
+}
+
+class wgmma_group_manager_t {
+public:
+  struct wait_result_t {
+    bool satisfied = true;
+    std::vector<unsigned> released_warps;
+  };
+
+  void add_op(unsigned cta_id, unsigned warpgroup_id, unsigned op_uid);
+  void commit_group(unsigned cta_id, unsigned warpgroup_id);
+  wait_result_t wait_group(unsigned cta_id, unsigned warpgroup_id,
+                           unsigned max_pending_groups,
+                           const unsigned *warp_ids, unsigned count);
+  wait_result_t complete_op(unsigned cta_id, unsigned warpgroup_id,
+                            unsigned op_uid);
+  void cleanup_cta(unsigned cta_id);
+
+private:
+  typedef std::pair<unsigned, unsigned> key_t;
+
+  struct group_t {
+    unsigned group_id = 0;
+    std::set<unsigned> op_uids;
+  };
+
+  struct warpgroup_info_t {
+    unsigned next_group_id = 1;
+    std::set<unsigned> pending_ops;
+    std::map<unsigned, unsigned> op_to_group;
+    std::map<unsigned, group_t> pending_groups;
+    bool is_waiting = false;
+    unsigned wait_allowance = 0;
+    std::vector<unsigned> waiting_warps;
+
+    void add_op(unsigned op_uid);
+    void commit_group();
+    wait_result_t wait_group(unsigned max_pending_groups,
+                             const unsigned *warp_ids, unsigned count);
+    wait_result_t complete_op(unsigned op_uid);
+    bool wait_satisfied() const;
+    wait_result_t release_if_satisfied();
+  };
+
+  std::map<key_t, warpgroup_info_t> m_warpgroup_info;
+};
+
+void wgmma_group_manager_t::warpgroup_info_t::add_op(unsigned op_uid) {
+  pending_ops.insert(op_uid);
+}
+
+void wgmma_group_manager_t::warpgroup_info_t::commit_group() {
+  group_t group;
+  group.group_id = next_group_id++;
+  group.op_uids.swap(pending_ops);
+
+  if (group.op_uids.empty())
+    return;
+
+  for (std::set<unsigned>::const_iterator it = group.op_uids.begin();
+       it != group.op_uids.end(); ++it) {
+    op_to_group[*it] = group.group_id;
+  }
+  pending_groups[group.group_id] = group;
+}
+
+bool wgmma_group_manager_t::warpgroup_info_t::wait_satisfied() const {
+  return pending_groups.size() <= wait_allowance;
+}
+
+wgmma_group_manager_t::wait_result_t
+wgmma_group_manager_t::warpgroup_info_t::release_if_satisfied() {
+  wait_result_t result;
+  if (!is_waiting || !wait_satisfied())
+    return result;
+
+  result.satisfied = true;
+  result.released_warps = waiting_warps;
+  waiting_warps.clear();
+  is_waiting = false;
+  return result;
+}
+
+wgmma_group_manager_t::wait_result_t
+wgmma_group_manager_t::warpgroup_info_t::wait_group(unsigned max_pending_groups,
+                                                    const unsigned *warp_ids,
+                                                    unsigned count) {
+  assert(!is_waiting && "Warpgroup is already waiting on a WGMMA group");
+  wait_allowance = max_pending_groups;
+
+  wait_result_t result;
+  if (wait_satisfied())
+    return result;
+
+  result.satisfied = false;
+  is_waiting = true;
+  waiting_warps.assign(warp_ids, warp_ids + count);
+  return result;
+}
+
+wgmma_group_manager_t::wait_result_t
+wgmma_group_manager_t::warpgroup_info_t::complete_op(unsigned op_uid) {
+  std::set<unsigned>::iterator pending_it = pending_ops.find(op_uid);
+  if (pending_it != pending_ops.end()) {
+    pending_ops.erase(pending_it);
+    return release_if_satisfied();
+  }
+
+  std::map<unsigned, unsigned>::iterator op_it = op_to_group.find(op_uid);
+  if (op_it == op_to_group.end())
+    return release_if_satisfied();
+
+  unsigned group_id = op_it->second;
+  op_to_group.erase(op_it);
+
+  std::map<unsigned, group_t>::iterator group_it =
+      pending_groups.find(group_id);
+  assert(group_it != pending_groups.end());
+  group_it->second.op_uids.erase(op_uid);
+  if (group_it->second.op_uids.empty())
+    pending_groups.erase(group_it);
+
+  return release_if_satisfied();
+}
+
+void wgmma_group_manager_t::add_op(unsigned cta_id, unsigned warpgroup_id,
+                                   unsigned op_uid) {
+  m_warpgroup_info[std::make_pair(cta_id, warpgroup_id)].add_op(op_uid);
+}
+
+void wgmma_group_manager_t::commit_group(unsigned cta_id,
+                                         unsigned warpgroup_id) {
+  m_warpgroup_info[std::make_pair(cta_id, warpgroup_id)].commit_group();
+}
+
+wgmma_group_manager_t::wait_result_t
+wgmma_group_manager_t::wait_group(unsigned cta_id, unsigned warpgroup_id,
+                                  unsigned max_pending_groups,
+                                  const unsigned *warp_ids, unsigned count) {
+  return m_warpgroup_info[std::make_pair(cta_id, warpgroup_id)].wait_group(
+      max_pending_groups, warp_ids, count);
+}
+
+wgmma_group_manager_t::wait_result_t
+wgmma_group_manager_t::complete_op(unsigned cta_id, unsigned warpgroup_id,
+                                   unsigned op_uid) {
+  std::map<key_t, warpgroup_info_t>::iterator it =
+      m_warpgroup_info.find(std::make_pair(cta_id, warpgroup_id));
+  if (it == m_warpgroup_info.end())
+    return wait_result_t();
+  return it->second.complete_op(op_uid);
+}
+
+void wgmma_group_manager_t::cleanup_cta(unsigned cta_id) {
+  for (std::map<key_t, warpgroup_info_t>::iterator it =
+           m_warpgroup_info.begin();
+       it != m_warpgroup_info.end();) {
+    if (it->first.first == cta_id) {
+      it = m_warpgroup_info.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+} // namespace
 
 unsigned wgmma_thread_count(core_t *core, const warp_inst_t &inst) {
   if (inst.is_wgmma_warpgroup())
@@ -48,43 +229,39 @@ ptx_thread_info *wgmma_thread(core_t *core, const warp_inst_t &inst,
   return thread;
 }
 
-uint16_t packed_f16(const ptx_reg_t &reg, int half_index) {
-  if (half_index == 0)
-    return static_cast<uint16_t>(reg.u32 & 0xFFFFu);
-  return static_cast<uint16_t>((reg.u32 >> 16) & 0xFFFFu);
-}
-
 unsigned wgmma_lane(const ptx_thread_info *thread) {
   return static_cast<unsigned>(thread->get_flat_tid()) % 128;
 }
 
-uint64_t gmma_desc_base(uint64_t desc) { return (desc & 0x3FFFULL) << 4; }
+uint64_t wgmma_gmma_desc_base(uint64_t desc) { return (desc & 0x3FFFULL) << 4; }
 
-uint64_t gmma_desc_leading_byte_offset(uint64_t desc) {
+uint64_t wgmma_gmma_desc_leading_byte_offset(uint64_t desc) {
   return ((desc >> 16) & 0x3FFFULL) << 4;
 }
 
-uint64_t gmma_desc_stride_byte_offset(uint64_t desc) {
+uint64_t wgmma_gmma_desc_stride_byte_offset(uint64_t desc) {
   return ((desc >> 32) & 0x3FFFULL) << 4;
 }
 
-unsigned gmma_k_major_b_smem_addr(uint64_t desc, int col, int k) {
-  constexpr unsigned bytes_per_f16 = sizeof(uint16_t);
-  uint64_t base = gmma_desc_base(desc);
-  uint64_t leading = gmma_desc_leading_byte_offset(desc);
-  uint64_t stride = gmma_desc_stride_byte_offset(desc);
+unsigned wgmma_gmma_k_major_smem_addr(uint64_t desc, int col, int k,
+                                      unsigned element_size,
+                                      unsigned default_contiguous_k) {
+  uint64_t base = wgmma_gmma_desc_base(desc);
+  uint64_t leading = wgmma_gmma_desc_leading_byte_offset(desc);
+  uint64_t stride = wgmma_gmma_desc_stride_byte_offset(desc);
 
-  unsigned contiguous_k =
-      stride == 0 ? 16 : static_cast<unsigned>(stride / bytes_per_f16);
+  unsigned contiguous_k = stride == 0
+                              ? default_contiguous_k
+                              : static_cast<unsigned>(stride / element_size);
   if (contiguous_k == 0)
-    contiguous_k = 16;
+    contiguous_k = default_contiguous_k;
 
   return static_cast<unsigned>(base + (k / contiguous_k) * leading +
                                col * stride +
-                               (k % contiguous_k) * bytes_per_f16);
+                               (k % contiguous_k) * element_size);
 }
 
-void wgmma_accumulator_coord(unsigned lane, int reg, int &row, int &col) {
+void wgmma_m64n8_accumulator_coord(unsigned lane, int reg, int &row, int &col) {
   int tid_mma_col = lane % 4;
   int tid_row = (lane / 4) % 8;
   int tid_m_block = lane / 32;
@@ -96,102 +273,25 @@ void wgmma_accumulator_coord(unsigned lane, int reg, int &row, int &col) {
   col = 2 * tid_mma_col + reg_col;
 }
 
-void wgmma_m64n8k16_f16_impl(const ptx_instruction *pI, core_t *core,
-                             warp_inst_t &inst) {
-  constexpr int M = 64;
-  constexpr int N = 8;
-  constexpr int K = 16;
-
-  if (pI->get_wgmma_shape_n() != 8 || pI->get_wgmma_shape_k() != 16)
+void tensor_wgmma_impl(const ptx_instruction *pI, core_t *core,
+                       warp_inst_t &inst) {
+  if (pI->is_wgmma_sparse())
     return;
 
-  const operand_info &dst = pI->operand_lookup(0);
-  const operand_info &src_a = pI->operand_lookup(1);
-  const operand_info &src_b_desc = pI->operand_lookup(2);
-  const operand_info &scale_d_pred = pI->operand_lookup(3);
-  if (!dst.is_vector() || dst.get_vect_nelem() != 4 || !src_a.is_vector() ||
-      src_a.get_vect_nelem() != 4) {
-    return;
-  }
+  int accumulator_type = wgmma_scalar_type_at(pI, 0, F32_TYPE);
+  int a_type = wgmma_scalar_type_at(pI, 1, F16_TYPE);
+  int b_type = wgmma_scalar_type_at(pI, 2, a_type);
 
-  float A_mat[M * K];
-  float B_mat[N * K];
-  for (int i = 0; i < M * K; ++i)
-    A_mat[i] = 0.0f;
-  for (int i = 0; i < N * K; ++i)
-    B_mat[i] = 0.0f;
-
-  unsigned thread_count = wgmma_thread_count(core, inst);
-  ptx_thread_info *representative_thread = wgmma_thread(core, inst, 0);
-  ptx_reg_t b_desc_reg = representative_thread->get_operand_value(
-      src_b_desc, src_b_desc, U64_TYPE, representative_thread, 0);
-  uint64_t b_desc = static_cast<uint64_t>(b_desc_reg.u64);
-
-  for (int col = 0; col < N; ++col) {
-    for (int k = 0; k < K; ++k) {
-      uint16_t b_bits = 0;
-      unsigned b_smem_addr = gmma_k_major_b_smem_addr(b_desc, col, k);
-      representative_thread->m_shared_mem->read(b_smem_addr, sizeof(b_bits),
-                                                &b_bits);
-      B_mat[col * K + k] = mma_f16_to_f32(b_bits);
-    }
-  }
-
-  for (unsigned thrd = 0; thrd < thread_count; ++thrd) {
-    ptx_thread_info *thread = wgmma_thread(core, inst, thrd);
-    unsigned lane = wgmma_lane(thread);
-    int tid_mma_col = lane % 4;
-    int tid_row = (lane / 4) % 8;
-    int tid_m_block = lane / 32;
-
-    ptx_reg_t a_regs[4];
-    thread->get_vector_operand_values(src_a, a_regs, 4);
-
-    for (int reg = 0; reg < 4; ++reg) {
-      int reg_row_block = reg & 0x1;
-      int reg_k_block = (reg >> 1) & 0x1;
-      int row = tid_row + 16 * tid_m_block + 8 * reg_row_block;
-      int k0 = 2 * tid_mma_col + 8 * reg_k_block;
-
-      A_mat[row * K + k0] = mma_f16_to_f32(packed_f16(a_regs[reg], 0));
-      A_mat[row * K + k0 + 1] = mma_f16_to_f32(packed_f16(a_regs[reg], 1));
-    }
-  }
-
-  for (unsigned thrd = 0; thrd < thread_count; ++thrd) {
-    ptx_thread_info *thread = wgmma_thread(core, inst, thrd);
-    unsigned lane = wgmma_lane(thread);
-
-    ptx_reg_t c_regs[4];
-    thread->get_vector_operand_values(dst, c_regs, 4);
-
-    ptx_reg_t pred = thread->get_operand_value(scale_d_pred, scale_d_pred,
-                                               PRED_TYPE, thread, 0);
-    bool include_c = (pred.pred & 0x1u) == 0;
-
-    ptx_reg_t d_regs[4];
-    for (int reg = 0; reg < 4; ++reg) {
-      int row = 0;
-      int col = 0;
-      wgmma_accumulator_coord(lane, reg, row, col);
-
-      float product = 0.0f;
-      for (int k = 0; k < K; ++k)
-        product += A_mat[row * K + k] * B_mat[col * K + k];
-
-      d_regs[reg].f32 = product + (include_c ? c_regs[reg].f32 : 0.0f);
-    }
-
-    thread->set_vector_operand_values(dst, d_regs[0], d_regs[1], d_regs[2],
-                                      d_regs[3]);
+  if (accumulator_type == F32_TYPE && a_type == F16_TYPE &&
+      b_type == F16_TYPE && pI->get_wgmma_shape_n() == 8 &&
+      pI->get_wgmma_shape_k() == 16) {
+    wgmma_m64n8k16_f16_impl(pI, core, inst);
   }
 }
 
-} // namespace
-
 void wgmma_mma_async_impl(const ptx_instruction *pI, core_t *core,
                           warp_inst_t &inst) {
-  wgmma_m64n8k16_f16_impl(pI, core, inst);
+  tensor_wgmma_impl(pI, core, inst);
 }
 
 void wgmma_mma_async_sp_impl(const ptx_instruction *pI, core_t *core,
@@ -229,4 +329,142 @@ void setmaxnreg_impl(const ptx_instruction *pI, core_t *core,
   (void)inst;
 }
 
+class wgmma_unit_t::impl_t {
+public:
+  explicit impl_t(barrier_set_t *barriers) : m_barriers(barriers) {
+    assert(m_barriers != NULL);
+  }
+
+  void add_op(unsigned cta_id, unsigned warpgroup_id, unsigned op_uid,
+              unsigned completion_latency);
+  void commit_group(unsigned cta_id, unsigned warpgroup_id);
+  void wait_group(unsigned cta_id, unsigned warpgroup_id,
+                  unsigned max_pending_groups, const unsigned *warp_ids,
+                  unsigned count);
+  void cycle();
+  void cleanup_cta(unsigned cta_id);
+
+private:
+  typedef std::pair<unsigned, unsigned> key_t;
+
+  struct pending_completion_t {
+    key_t key;
+    unsigned op_uid = 0;
+    unsigned remaining = 0;
+  };
+
+  barrier_set_t *m_barriers;
+  wgmma_group_manager_t m_group_manager;
+  std::vector<pending_completion_t> m_pending_completions;
+};
+
+void wgmma_unit_t::impl_t::add_op(unsigned cta_id, unsigned warpgroup_id,
+                                  unsigned op_uid,
+                                  unsigned completion_latency) {
+  m_group_manager.add_op(cta_id, warpgroup_id, op_uid);
+
+  pending_completion_t pending;
+  pending.key = std::make_pair(cta_id, warpgroup_id);
+  pending.op_uid = op_uid;
+  pending.remaining = completion_latency == 0 ? 1 : completion_latency;
+  m_pending_completions.push_back(pending);
+}
+
+void wgmma_unit_t::impl_t::commit_group(unsigned cta_id,
+                                        unsigned warpgroup_id) {
+  m_group_manager.commit_group(cta_id, warpgroup_id);
+}
+
+void wgmma_unit_t::impl_t::wait_group(unsigned cta_id, unsigned warpgroup_id,
+                                      unsigned max_pending_groups,
+                                      const unsigned *warp_ids,
+                                      unsigned count) {
+  wgmma_group_manager_t::wait_result_t result = m_group_manager.wait_group(
+      cta_id, warpgroup_id, max_pending_groups, warp_ids, count);
+  if (!result.satisfied)
+    m_barriers->set_wgmma_waiting_warps(warp_ids, count);
+}
+
+void wgmma_unit_t::impl_t::cycle() {
+  wgmma_group_manager_t::wait_result_t result;
+  for (std::vector<pending_completion_t>::iterator it =
+           m_pending_completions.begin();
+       it != m_pending_completions.end(); ++it) {
+    if (it->remaining > 0)
+      it->remaining--;
+  }
+
+  for (int i = static_cast<int>(m_pending_completions.size()) - 1; i >= 0;
+       --i) {
+    if (m_pending_completions[i].remaining != 0)
+      continue;
+    wgmma_group_manager_t::wait_result_t completed =
+        m_group_manager.complete_op(m_pending_completions[i].key.first,
+                                    m_pending_completions[i].key.second,
+                                    m_pending_completions[i].op_uid);
+    result.released_warps.insert(result.released_warps.end(),
+                                 completed.released_warps.begin(),
+                                 completed.released_warps.end());
+    m_pending_completions.erase(m_pending_completions.begin() + i);
+  }
+
+  m_barriers->release_wgmma_warps(result.released_warps);
+}
+
+void wgmma_unit_t::impl_t::cleanup_cta(unsigned cta_id) {
+  for (std::vector<pending_completion_t>::iterator it =
+           m_pending_completions.begin();
+       it != m_pending_completions.end();) {
+    if (it->key.first == cta_id) {
+      it = m_pending_completions.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  m_group_manager.cleanup_cta(cta_id);
+}
+
+wgmma_unit_t::wgmma_unit_t(barrier_set_t *barriers)
+    : m_impl(new impl_t(barriers)) {}
+
+wgmma_unit_t::~wgmma_unit_t() = default;
+
+void wgmma_unit_t::add_op(unsigned cta_id, unsigned warpgroup_id,
+                          unsigned op_uid, unsigned completion_latency) {
+  m_impl->add_op(cta_id, warpgroup_id, op_uid, completion_latency);
+}
+
+void wgmma_unit_t::commit_group(unsigned cta_id, unsigned warpgroup_id) {
+  m_impl->commit_group(cta_id, warpgroup_id);
+}
+
+void wgmma_unit_t::wait_group(unsigned cta_id, unsigned warpgroup_id,
+                              unsigned max_pending_groups,
+                              const unsigned *warp_ids, unsigned count) {
+  m_impl->wait_group(cta_id, warpgroup_id, max_pending_groups, warp_ids, count);
+}
+
+void wgmma_unit_t::cycle() { m_impl->cycle(); }
+
+void wgmma_unit_t::cleanup_cta(unsigned cta_id) { m_impl->cleanup_cta(cta_id); }
+
 } // namespace flash_gpgpu_sim
+
+void barrier_set_t::release_wgmma_warps(
+    const std::vector<unsigned> &released_warps) {
+  for (std::vector<unsigned>::const_iterator it = released_warps.begin();
+       it != released_warps.end(); ++it) {
+    unsigned warp_id = *it;
+    if (m_warp_barrier_type[warp_id] == BARRIER_WAIT_WGMMA_GROUP)
+      m_warp_at_barrier.reset(warp_id);
+  }
+}
+
+void barrier_set_t::set_wgmma_waiting_warps(const unsigned *warp_ids,
+                                            unsigned count) {
+  for (unsigned i = 0; i < count; ++i) {
+    m_warp_at_barrier.set(warp_ids[i]);
+    m_warp_barrier_type[warp_ids[i]] = BARRIER_WAIT_WGMMA_GROUP;
+  }
+}

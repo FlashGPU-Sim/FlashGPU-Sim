@@ -508,6 +508,7 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
     : core_t(gpu, NULL, config->warp_size, config->n_thread_per_shader),
       m_barriers(this, config->max_warps_per_shader, config->max_cta_per_core,
                  config->max_barriers_per_cta, config->warp_size),
+      m_wgmma(&m_barriers),
       m_active_warps(0),
       m_subpartition_issue_mask(0),
       m_wgmma_issued_this_cycle(false),
@@ -1422,9 +1423,10 @@ void shader_core_ctx::issue_wgmma_warpgroup(register_set &pipe_reg_set,
       m_warp[representative_warp_id]->get_dynamic_warp_id(), sch_id,
       m_warp[representative_warp_id]->get_streamID());
   (*pipe_reg)->set_wgmma_warpgroup_info(warp_ids, count);
-  m_barriers.add_wgmma_op(m_warp[representative_warp_id]->get_cta_id(),
-                          wgmma_cta_warpgroup_id(representative_warp_id),
-                          (*pipe_reg)->get_uid());
+  m_wgmma.add_op(
+      m_warp[representative_warp_id]->get_cta_id(),
+      wgmma_cta_warpgroup_id(representative_warp_id), (*pipe_reg)->get_uid(),
+      (*pipe_reg)->latency);
 
   m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
 
@@ -1457,8 +1459,8 @@ void shader_core_ctx::issue_wgmma_warpgroup(register_set &pipe_reg_set,
     m_warp[warp_id]->set_next_pc(next_inst->pc + next_inst->isize);
   }
 
-  for (unsigned i = 0; i < count; ++i)
-    m_scoreboard->reserveRegistersForWarp(*pipe_reg, warp_ids[i]);
+  // WGMMA is asynchronous: accumulator dst registers are not held in the
+  // ordinary scoreboard. wait_group models completion visibility.
 }
 
 void shader_core_ctx::issue_wgmma_warpgroup_control(
@@ -1521,16 +1523,15 @@ void shader_core_ctx::issue_wgmma_warpgroup_control(
   unsigned warpgroup_id = wgmma_cta_warpgroup_id(representative_warp_id);
   int opcode = wgmma_opcode(next_inst);
   if (opcode == WGMMA_COMMIT_GROUP_OP) {
-    m_barriers.commit_wgmma_group(cta_id, warpgroup_id);
+    m_wgmma.commit_group(cta_id, warpgroup_id);
   } else {
     assert(opcode == WGMMA_WAIT_GROUP_OP);
-    m_barriers.wait_wgmma_group(cta_id, warpgroup_id,
-                                wgmma_wait_group_num_from_inst(next_inst),
-                                warp_ids, count);
+    m_wgmma.wait_group(cta_id, warpgroup_id,
+                       wgmma_wait_group_num_from_inst(next_inst), warp_ids,
+                       count);
   }
 
-  for (unsigned i = 0; i < count; ++i)
-    m_scoreboard->reserveRegistersForWarp(*pipe_reg, warp_ids[i]);
+  // wgmma.commit_group/wait_group have no architectural register output.
 }
 
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
@@ -2681,6 +2682,7 @@ void shader_core_ctx::execute() {
       }
     }
   }
+  m_wgmma.cycle();
   m_tma -> cycle();
   m_barriers.cycle();
 }
@@ -2815,12 +2817,6 @@ void shader_core_ctx::writeback() {
     m_operand_collector.writeback(*pipe_reg);
     unsigned warp_id = pipe_reg->warp_id();
     if (pipe_reg->is_wgmma_warpgroup()) {
-      if (pipe_reg->op == TENSOR_CORE_OP) {
-        unsigned base_warp_id = pipe_reg->wgmma_warpgroup_warp_id(0);
-        m_barriers.complete_wgmma_op(
-            m_warp[base_warp_id]->get_cta_id(),
-            wgmma_cta_warpgroup_id(base_warp_id), pipe_reg->get_uid());
-      }
       for (unsigned i = 0; i < pipe_reg->wgmma_warpgroup_size(); ++i) {
         unsigned participant_warp_id = pipe_reg->wgmma_warpgroup_warp_id(i);
         m_scoreboard->releaseRegistersForWarp(pipe_reg, participant_warp_id);
@@ -3892,7 +3888,7 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
     m_n_active_cta--;
     m_barriers.deallocate_barrier(cta_num);
     m_barriers.cleanup_cta_mbarriers(cta_num);  // Clean up mbarriers for this hw_cta_id
-    m_barriers.cleanup_cta_wgmma_groups(cta_num);
+    m_wgmma.cleanup_cta(cta_num);
     shader_CTA_count_unlog(m_sid, 1);
 
     SHADER_GPPRINTF(

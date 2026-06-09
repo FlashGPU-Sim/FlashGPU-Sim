@@ -19,6 +19,20 @@ These tests follow the same validation pattern as `test/src/integration/mma`:
 - 128-thread warpgroup execution
 - `wgmma.fence`, `wgmma.commit_group`, and `wgmma.wait_group`
 
+## Test Organization
+
+This directory follows the data-type split used by `test/src/integration/mma`:
+
+- `cuda_wgmma_f16_test.cc` contains the current FP16-specific inline PTX
+  kernel, runner, and gtest cases.
+- `tensor_wgmma_test.cuh` contains shared WGMMA test utilities: the current
+  m64n8k16 shape constants, accumulator mapping, shared-memory descriptor
+  helpers, and common CUDA run result plumbing.
+
+New data types should use their own `cuda_wgmma_<type>_test.cc` file and reuse
+the common helpers where the layout matches. Implementation-side variant
+dispatch remains centralized in `src/gpgpu-sim/flash/wgmma/tensor_wgmma.cc`.
+
 The first tests use uniform input tiles, so every accumulator register should
 contain the same CPU reference value. This validates the instruction path before
 adding tests that depend on the full GMMA accumulator-to-matrix layout.
