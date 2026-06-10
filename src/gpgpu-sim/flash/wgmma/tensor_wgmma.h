@@ -18,7 +18,7 @@ namespace flash_gpgpu_sim {
 // WGMMA functional entry and data-type dispatch.
 void tensor_wgmma_impl(const ptx_instruction *pI, core_t *core,
                        warp_inst_t &inst);
-void wgmma_m64n8k16_f16_impl(const ptx_instruction *pI, core_t *core,
+void wgmma_m64nXk16_f16_impl(const ptx_instruction *pI, core_t *core,
                              warp_inst_t &inst);
 void wgmma_m64n8k16_bf16_impl(const ptx_instruction *pI, core_t *core,
                               warp_inst_t &inst);
@@ -43,6 +43,8 @@ uint64_t wgmma_gmma_desc_stride_byte_offset(uint64_t desc);
 unsigned wgmma_gmma_k_major_smem_addr(uint64_t desc, int col, int k,
                                       unsigned element_size,
                                       unsigned default_contiguous_k);
+unsigned wgmma_gmma_mn_major_smem_addr(uint64_t desc, int row, int k,
+                                       unsigned element_size);
 void wgmma_m64n8_accumulator_coord(unsigned lane, int reg, int &row, int &col);
 
 // WGMMA opcode hooks. These are wired through OP_W_DEF because WGMMA is a

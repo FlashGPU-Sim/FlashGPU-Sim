@@ -245,12 +245,70 @@ uint64_t wgmma_gmma_desc_stride_byte_offset(uint64_t desc) {
   return ((desc >> 32) & 0x3FFFULL) << 4;
 }
 
+namespace {
+
+unsigned wgmma_gmma_desc_swizzle_mode(uint64_t desc) {
+  return static_cast<unsigned>((desc >> 62) & 0x3ULL);
+}
+
+uint64_t wgmma_apply_gmma_swizzle(uint64_t byte_offset, unsigned swizzle_mode) {
+  unsigned bits = 0;
+  switch (swizzle_mode) {
+  case 1:
+    bits = 3; // 128-byte swizzle.
+    break;
+  case 2:
+    bits = 2; // 64-byte swizzle.
+    break;
+  case 3:
+    bits = 1; // 32-byte swizzle.
+    break;
+  default:
+    return byte_offset;
+  }
+
+  uint64_t y_mask = ((1ULL << bits) - 1ULL) << (4 + 3);
+  return byte_offset ^ ((byte_offset & y_mask) >> 3);
+}
+
+unsigned wgmma_swizzle_bytes(unsigned swizzle_mode) {
+  switch (swizzle_mode) {
+  case 1:
+    return 128;
+  case 2:
+    return 64;
+  case 3:
+    return 32;
+  default:
+    return 0;
+  }
+}
+
+} // namespace
+
 unsigned wgmma_gmma_k_major_smem_addr(uint64_t desc, int col, int k,
                                       unsigned element_size,
                                       unsigned default_contiguous_k) {
   uint64_t base = wgmma_gmma_desc_base(desc);
   uint64_t leading = wgmma_gmma_desc_leading_byte_offset(desc);
   uint64_t stride = wgmma_gmma_desc_stride_byte_offset(desc);
+  unsigned swizzle_mode = wgmma_gmma_desc_swizzle_mode(desc);
+  unsigned swizzle_bytes = wgmma_swizzle_bytes(swizzle_mode);
+
+  if (swizzle_bytes != 0) {
+    unsigned elements_per_128b = 16 / element_size;
+    uint64_t row_group = static_cast<uint64_t>(col / 8);
+    unsigned row_in_group = static_cast<unsigned>(col % 8);
+    uint64_t k_group = static_cast<uint64_t>(k / elements_per_128b);
+    unsigned k_in_group = static_cast<unsigned>(k % elements_per_128b);
+    uint64_t leading_offset =
+        leading == 0 ? static_cast<uint64_t>(16) : leading;
+
+    uint64_t offset = row_group * stride + row_in_group * swizzle_bytes +
+                      k_group * leading_offset + k_in_group * element_size;
+    return static_cast<unsigned>(
+        base + wgmma_apply_gmma_swizzle(offset, swizzle_mode));
+  }
 
   unsigned contiguous_k = stride == 0
                               ? default_contiguous_k
@@ -261,6 +319,37 @@ unsigned wgmma_gmma_k_major_smem_addr(uint64_t desc, int col, int k,
   return static_cast<unsigned>(base + (k / contiguous_k) * leading +
                                col * stride +
                                (k % contiguous_k) * element_size);
+}
+
+unsigned wgmma_gmma_mn_major_smem_addr(uint64_t desc, int row, int k,
+                                       unsigned element_size) {
+  uint64_t base = wgmma_gmma_desc_base(desc);
+  uint64_t leading = wgmma_gmma_desc_leading_byte_offset(desc);
+  uint64_t stride = wgmma_gmma_desc_stride_byte_offset(desc);
+  unsigned swizzle_mode = wgmma_gmma_desc_swizzle_mode(desc);
+  unsigned swizzle_bytes = wgmma_swizzle_bytes(swizzle_mode);
+  unsigned elements_per_128b = 16 / element_size;
+
+  if (swizzle_bytes == 0) {
+    unsigned contiguous_m = elements_per_128b;
+    uint64_t row_group = static_cast<uint64_t>(row / contiguous_m);
+    unsigned row_in_group = static_cast<unsigned>(row % contiguous_m);
+    uint64_t k_group = static_cast<uint64_t>(k / 8);
+    unsigned k_in_group = static_cast<unsigned>(k % 8);
+    uint64_t offset = row_group * stride + row_in_group * element_size +
+                      k_group * leading + k_in_group * 16;
+    return static_cast<unsigned>(base + offset);
+  }
+
+  unsigned rows_per_swizzle = swizzle_bytes / element_size;
+  uint64_t row_group = static_cast<uint64_t>(row / rows_per_swizzle);
+  unsigned row_in_group = static_cast<unsigned>(row % rows_per_swizzle);
+  uint64_t k_group = static_cast<uint64_t>(k / 8);
+  unsigned k_in_group = static_cast<unsigned>(k % 8);
+  uint64_t offset = row_group * leading + row_in_group * element_size +
+                    k_group * stride + k_in_group * swizzle_bytes;
+  return static_cast<unsigned>(base +
+                               wgmma_apply_gmma_swizzle(offset, swizzle_mode));
 }
 
 void wgmma_m64n8_accumulator_coord(unsigned lane, int reg, int &row, int &col) {
@@ -288,9 +377,10 @@ void tensor_wgmma_impl(const ptx_instruction *pI, core_t *core,
   int b_type = wgmma_scalar_type_at(pI, 2, a_type);
 
   if (accumulator_type == F32_TYPE && a_type == F16_TYPE &&
-      b_type == F16_TYPE && pI->get_wgmma_shape_n() == 8 &&
+      b_type == F16_TYPE && pI->get_wgmma_shape_n() >= 8 &&
+      pI->get_wgmma_shape_n() <= 256 && (pI->get_wgmma_shape_n() % 8) == 0 &&
       pI->get_wgmma_shape_k() == 16) {
-    wgmma_m64n8k16_f16_impl(pI, core, inst);
+    wgmma_m64nXk16_f16_impl(pI, core, inst);
     return;
   }
 
