@@ -731,7 +731,8 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == LDMATRIX_OP) || (m_opcode == STMATRIX_OP) ||
       (m_opcode == CP_ASYNC_OP) || (m_opcode == WGMMA_FENCE_OP) ||
       (m_opcode == WGMMA_COMMIT_GROUP_OP) || (m_opcode == WGMMA_WAIT_GROUP_OP) ||
-      (m_opcode == SETMAXNREG_OP)) {
+      (m_opcode == SETMAXNREG_OP) || (m_opcode == PREFETCH_OP) ||
+      (m_opcode == PREFETCHU_OP)) {
     // do nothing
   } else if ((m_opcode == CVT_OP || m_opcode == SET_OP ||
               m_opcode == SLCT_OP)) {
@@ -760,7 +761,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != LDMATRIX_OP) && (m_opcode != STMATRIX_OP) &&
       (m_opcode != CP_ASYNC_OP) && (m_opcode != WGMMA_FENCE_OP) &&
       (m_opcode != WGMMA_COMMIT_GROUP_OP) && (m_opcode != WGMMA_WAIT_GROUP_OP) &&
-      (m_opcode != SETMAXNREG_OP)) {
+      (m_opcode != SETMAXNREG_OP) && (m_opcode != PREFETCH_OP) &&
+      (m_opcode != PREFETCHU_OP)) {
     if (get_type() == F64_TYPE || get_type() == FF64_TYPE) {
       switch (get_opcode()) {
         case MUL_OP:

@@ -3337,6 +3337,10 @@ void cvta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       case global_space:
         to_addr_hw = generic_to_global(from_addr_hw);
         break;
+      case param_space_unclassified:
+      case param_space_kernel:
+        to_addr_hw = from_addr_hw;
+        break;
       default:
         abort();
     }
@@ -3352,6 +3356,10 @@ void cvta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
                 // function call
       case global_space:
         to_addr_hw = global_to_generic(from_addr_hw);
+        break;
+      case param_space_unclassified:
+      case param_space_kernel:
+        to_addr_hw = from_addr_hw;
         break;
       default:
         abort();
@@ -4938,10 +4946,11 @@ void popc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   thread->set_operand_value(dst, data, i_type, thread, pI);
 }
 void prefetch_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  inst_not_implemented(pI);
+  // Functional no-op. Prefetch instructions are cache hints; the simulator
+  // handles the actual data movement through the load/store/TMA instructions.
 }
 void prefetchu_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  inst_not_implemented(pI);
+  // Functional no-op. See prefetch_impl.
 }
 
 int prmt_mode_present(int mode) {
@@ -5739,7 +5748,14 @@ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
         "threads in a warp\n");
     data.u32 = 0;
   }
-  thread->set_operand_value(dst, data, i_type, thread, pI);
+  if (dst.is_vector()) {
+    ptx_reg_t pred;
+    pred.pred = p ? 0 : 1;  // PTXPlus predicate convention: 0=true, 1=false.
+    thread->set_reg(dst.vec_symbol(0), data);
+    thread->set_reg(dst.vec_symbol(1), pred);
+  } else {
+    thread->set_operand_value(dst, data, i_type, thread, pI);
+  }
 
   /*
   TODO: deal with predicates appropriately using the following pseudocode:
