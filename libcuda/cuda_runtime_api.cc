@@ -7962,14 +7962,57 @@ __host__ cudaError_t CUDARTAPI cudaStreamGetCaptureInfo_v2(cudaStream_t stream, 
 __host__ cudaError_t CUDARTAPI cudaGetDriverEntryPoint(
     const char *symbol, void **funcPtr, unsigned long long flags,
     enum cudaDriverEntryPointQueryResult *driverStatus = NULL) {
-  cuda_error_not_impl;
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+
+  (void)flags;
+  if (!symbol || !funcPtr) {
+    if (driverStatus) {
+      *driverStatus = cudaDriverEntryPointSymbolNotFound;
+    }
+    return cudaErrorInvalidValue;
+  }
+
+  if (strcmp(symbol, "cuTensorMapEncodeTiled") == 0) {
+    *funcPtr = reinterpret_cast<void *>(&cuTensorMapEncodeTiled);
+    if (driverStatus) {
+      *driverStatus = cudaDriverEntryPointSuccess;
+    }
+    return cudaSuccess;
+  }
+
+  *funcPtr = NULL;
+  if (driverStatus) {
+    *driverStatus = cudaDriverEntryPointSymbolNotFound;
+  }
+  return cudaSuccess;
 }
 
 __host__ cudaError_t CUDARTAPI cudaGetDriverEntryPointByVersion(
     const char *symbol, void **funcPtr, unsigned int cudaVersion,
     unsigned long long flags,
-    cudaDriverEntryPointQueryResult **driverStatus = NULL) {
-  cuda_error_not_impl;
+    enum cudaDriverEntryPointQueryResult *driverStatus = NULL) {
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+
+  if (!symbol || !funcPtr) {
+    if (driverStatus) {
+      *driverStatus = cudaDriverEntryPointSymbolNotFound;
+    }
+    return cudaErrorInvalidValue;
+  }
+
+  if (strcmp(symbol, "cuTensorMapEncodeTiled") == 0 && cudaVersion < 12000) {
+    *funcPtr = NULL;
+    if (driverStatus) {
+      *driverStatus = cudaDriverEntryPointVersionNotSufficent;
+    }
+    return cudaSuccess;
+  }
+
+  return cudaGetDriverEntryPoint(symbol, funcPtr, flags, driverStatus);
 }
 
 __host__ cudaError_t CUDARTAPI cudaHostUnregister(void *ptr) {
