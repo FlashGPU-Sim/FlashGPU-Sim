@@ -1603,9 +1603,17 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       m_barriers.commit_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id);
     } else if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_WAIT) {
       // cp.async.bulk.wait_group N
-      unsigned group_num = tma_info.bulk_wait_num;
-      m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
-      m_barriers.wait_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id, group_num);
+      //
+      // The .read modifier only waits for tensormap/source reads.  This TMA
+      // model reads source data during functional execution before queuing the
+      // asynchronous destination-side traffic, so the read phase is complete at
+      // issue time.
+      if (!tma_info.bulk_wait_read_only) {
+        unsigned group_num = tma_info.bulk_wait_num;
+        m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
+        m_barriers.wait_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id,
+                                   group_num);
+      }
     } else {
       // Regular TMA operation (load/store)
       // dyn_inst was already obtained and reset before func_exec_inst

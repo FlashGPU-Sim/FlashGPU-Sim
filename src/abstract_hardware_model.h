@@ -887,17 +887,22 @@ public:
       TMA_SHARED_CLUSTER,
       TMA_GLOBAL,
     };
-    type_t  tma_type;
+    type_t tma_type;
     space_t dst_space;
     space_t src_space;
+    unsigned tensor_dim = 0;
     unsigned bulk_wait_num = 0;  // For TMA_BULK_WAIT: number of recent groups to wait for
+    bool bulk_wait_read_only = false;
   };
   struct tma_dyn_info_t {
+    static constexpr unsigned TMA_DESCRIPTOR_BYTES = 128;
     uint64_t dst_addr = 0;
     uint64_t src_addr = 0;
     uint32_t size_in_bytes = 0;
     uint32_t mbar_addr = -1;
     uint32_t coords[5] = {0, 0, 0, 0, 0};
+    uint8_t tensormap_descriptor[TMA_DESCRIPTOR_BYTES] = {};
+    bool has_tensormap_descriptor = false;
     bool is_valid() const {
       return mbar_addr != (uint32_t)-1 || size_in_bytes > 0;
     }

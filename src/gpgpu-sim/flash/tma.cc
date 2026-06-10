@@ -185,6 +185,44 @@ static bool validate_tensormap(uint64_t tensormap_addr,
   return true;
 }
 
+static bool is_valid_tensormap_for_dim(const tensormap_descriptor_t &tensormap,
+                                       unsigned inst_dim) {
+  return tensormap.is_valid() && tensormap.num_dims() == inst_dim;
+}
+
+static bool
+is_valid_tensormap_for_optional_dim(const tensormap_descriptor_t &tensormap,
+                                    unsigned inst_dim) {
+  return inst_dim == 0 ? tensormap.is_valid()
+                       : is_valid_tensormap_for_dim(tensormap, inst_dim);
+}
+
+static void read_tensormap_descriptor(memory_space *global_mem,
+                                      memory_space *param_mem,
+                                      uint64_t tensormap_addr,
+                                      unsigned inst_dim,
+                                      tensormap_descriptor_t &out_tensormap) {
+  if (tensormap_addr < STATIC_ALLOC_LIMIT && param_mem != nullptr) {
+    param_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &out_tensormap);
+    if (is_valid_tensormap_for_optional_dim(out_tensormap, inst_dim)) {
+      return;
+    }
+  }
+
+  global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &out_tensormap);
+}
+
+static void
+cache_tensormap_descriptor(inst_t::tma_dyn_info_t &tma_dyn_info,
+                           const tensormap_descriptor_t &tensormap) {
+  static_assert(inst_t::tma_dyn_info_t::TMA_DESCRIPTOR_BYTES ==
+                    TENSORMAP_DESCRIPTOR_SIZE,
+                "TMA descriptor cache size must match tensor map size");
+  memcpy(tma_dyn_info.tensormap_descriptor, tensormap.raw_bytes,
+         TENSORMAP_DESCRIPTOR_SIZE);
+  tma_dyn_info.has_tensormap_descriptor = true;
+}
+
 //=============================================================================
 // Performance Simulation: TMA AGU (Address Generation Unit)
 //=============================================================================
@@ -616,12 +654,24 @@ public:
                               inst_t::tma_static_info_t::TMA_GLOBAL);
           uint64_t tensormap_addr =
               is_write_op ? tma_dyn_info.dst_addr : tma_dyn_info.src_addr;
-          assert((tensormap_addr < LOCAL_GENERIC_START ||
-                  tensormap_addr >= GLOBAL_HEAP_START) &&
-                 "TMA tensor: tensormap address must be in global memory, "
-                 "not shared/local memory");
-          global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE,
-                           &tensormap);
+          if (tma_dyn_info.has_tensormap_descriptor) {
+            memcpy(tensormap.raw_bytes, tma_dyn_info.tensormap_descriptor,
+                   TENSORMAP_DESCRIPTOR_SIZE);
+          } else {
+            read_tensormap_descriptor(global_mem, thread->get_param_memory(),
+                                      tensormap_addr,
+                                      tma_static_info.tensor_dim, tensormap);
+          }
+          if (tma_static_info.tensor_dim != 0) {
+            validate_tensormap(tensormap_addr, tensormap,
+                               tma_static_info.tensor_dim);
+          } else if (!tensormap.is_valid()) {
+            printf("TMA ERROR: Invalid tensormap at 0x%llx\n",
+                   (unsigned long long)tensormap_addr);
+            tensormap.print();
+            fflush(stdout);
+            exit(1);
+          }
           m_agu.init_tensor(tx.agu_state, tensormap, tma_dyn_info.coords);
 
         } else {
@@ -781,11 +831,10 @@ public:
         assert(mf->get_access_type() == TMA_ACC_R);
 
         // Validate destination space
-        if (tx.m_static_info.dst_space ==
-            inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
-          assert(false && "Unsupported TMA destination space: CLUSTER");
-        } else if (tx.m_static_info.dst_space !=
-                   inst_t::tma_static_info_t::TMA_SHARED_CTA) {
+        if (tx.m_static_info.dst_space !=
+                inst_t::tma_static_info_t::TMA_SHARED_CTA &&
+            tx.m_static_info.dst_space !=
+                inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
           assert(false && "Unrecognized TMA destination space");
         }
       }
@@ -1109,6 +1158,11 @@ static uint64_t global_to_tile_offset(uint64_t global_addr, uint64_t base_addr,
   uint64_t remaining = global_byte_offset;
 
   for (int d = num_dims - 1; d >= 0; d--) {
+    if (global_strides[d] == 0) {
+      // Singleton outer dimensions may have zero byte stride in tensor maps.
+      // They do not contribute to the in-tile byte offset.
+      continue;
+    }
     uint64_t coord_in_tile = remaining / global_strides[d];
     remaining = remaining % global_strides[d];
     tile_offset += coord_in_tile * tile_strides[d];
@@ -1504,14 +1558,17 @@ static void check_tma_alignment(uint64_t dst_addr, uint64_t src_addr,
   }
 }
 
-// Read tensormap from global memory, validate, parse coordinates, compute size
+// Read tensormap from memory, validate, parse coordinates, compute size.
+// FA3/CUTLASS may pass descriptors embedded in kernel .param storage via
+// cvta.param; those addresses are simulator param-memory offsets.
 static void
 setup_tensor_tma(memory_space *global_mem, uint64_t tensormap_addr,
                  unsigned inst_dim, const operand_info &coord_operand,
                  ptx_thread_info *thread, tensormap_descriptor_t &out_tensormap,
                  uint32_t out_coords[5], uint32_t &out_size_in_bytes) {
   using namespace flash_gpgpu_sim;
-  global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &out_tensormap);
+  read_tensormap_descriptor(global_mem, thread->get_param_memory(),
+                            tensormap_addr, inst_dim, out_tensormap);
   validate_tensormap(tensormap_addr, out_tensormap, inst_dim);
 
   out_size_in_bytes = out_tensormap.get_tile_size_bytes();
@@ -1639,16 +1696,24 @@ static void handle_tma_wait_group(ptx_instruction *pI,
                                   ptx_thread_info *thread) {
   using namespace flash_gpgpu_sim;
   unsigned group_num = get_operand_u32(thread, pI->dst());
+  bool read_only = false;
+  for (auto op : pI->get_options()) {
+    if (op == READ_OPTION) {
+      read_only = true;
+      break;
+    }
+  }
 
   inst_t::tma_static_info_t tma_static_info{
       .tma_type = inst_t::tma_static_info_t::TMA_BULK_WAIT,
       .dst_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
       .src_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
       .bulk_wait_num = group_num,
+      .bulk_wait_read_only = read_only,
   };
   pI->set_tma_static_info(tma_static_info);
-  GPPRINTF_INST_EXEC(TMA, "Functional Sim: cp.async.bulk.wait_group %u\n",
-                     group_num);
+  GPPRINTF_INST_EXEC(TMA, "Functional Sim: cp.async.bulk.wait_group%s %u\n",
+                     read_only ? ".read" : "", group_num);
 }
 
 // Handle cp.async.bulk.tensor.Nd (tensor load/store)
@@ -1693,8 +1758,11 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
 
     inst_t::tma_static_info_t tma_static_info{
         .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
-        .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+        .dst_space = dst_option == CLUSTER_OPTION
+                         ? inst_t::tma_static_info_t::TMA_SHARED_CLUSTER
+                         : inst_t::tma_static_info_t::TMA_SHARED_CTA,
         .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
+        .tensor_dim = inst_dim,
     };
     pI->set_tma_static_info(tma_static_info);
 
@@ -1706,6 +1774,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     };
     for (unsigned i = 0; i < 5; ++i)
       tma_dyn_info.coords[i] = coords[i];
+    cache_tensormap_descriptor(tma_dyn_info, tensormap);
     pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
 
     do_tma_transfer(tensormap, coords, shared_mem, global_mem, dst_addr, thread,
@@ -1735,6 +1804,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
         .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
         .dst_space = inst_t::tma_static_info_t::TMA_GLOBAL,
         .src_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+        .tensor_dim = inst_dim,
     };
     pI->set_tma_static_info(tma_static_info);
 
@@ -1745,6 +1815,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     };
     for (unsigned i = 0; i < 5; ++i)
       tma_dyn_info.coords[i] = coords[i];
+    cache_tensormap_descriptor(tma_dyn_info, tensormap);
     pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
 
     do_tma_transfer(tensormap, coords, shared_mem, global_mem, src_addr, thread,
