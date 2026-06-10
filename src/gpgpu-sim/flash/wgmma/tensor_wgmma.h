@@ -20,6 +20,17 @@ void tensor_wgmma_impl(const ptx_instruction *pI, core_t *core,
                        warp_inst_t &inst);
 void wgmma_m64n8k16_f16_impl(const ptx_instruction *pI, core_t *core,
                              warp_inst_t &inst);
+void wgmma_m64n8k16_bf16_impl(const ptx_instruction *pI, core_t *core,
+                              warp_inst_t &inst);
+void wgmma_m64n8k8_tf32_impl(const ptx_instruction *pI, core_t *core,
+                             warp_inst_t &inst);
+void wgmma_m64n8k32_fp8_impl(const ptx_instruction *pI, core_t *core,
+                             warp_inst_t &inst, bool a_is_e4m3, bool b_is_e4m3);
+void wgmma_m64n8k32_int8_impl(const ptx_instruction *pI, core_t *core,
+                              warp_inst_t &inst, bool a_is_signed,
+                              bool b_is_signed);
+void wgmma_m64n8k256_b1_impl(const ptx_instruction *pI, core_t *core,
+                             warp_inst_t &inst);
 
 // Shared WGMMA fragment helpers used by data-type-specific implementations.
 unsigned wgmma_thread_count(core_t *core, const warp_inst_t &inst);

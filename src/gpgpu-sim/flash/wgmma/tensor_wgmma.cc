@@ -1,6 +1,8 @@
 #include "tensor_wgmma.h"
 
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <list>
 #include <map>
 #include <set>
@@ -275,8 +277,11 @@ void wgmma_m64n8_accumulator_coord(unsigned lane, int reg, int &row, int &col) {
 
 void tensor_wgmma_impl(const ptx_instruction *pI, core_t *core,
                        warp_inst_t &inst) {
-  if (pI->is_wgmma_sparse())
+  if (pI->is_wgmma_sparse()) {
+    fprintf(stderr,
+            "GPGPU-Sim: ERROR - sparse WGMMA is not functionally supported\n");
     return;
+  }
 
   int accumulator_type = wgmma_scalar_type_at(pI, 0, F32_TYPE);
   int a_type = wgmma_scalar_type_at(pI, 1, F16_TYPE);
@@ -286,7 +291,54 @@ void tensor_wgmma_impl(const ptx_instruction *pI, core_t *core,
       b_type == F16_TYPE && pI->get_wgmma_shape_n() == 8 &&
       pI->get_wgmma_shape_k() == 16) {
     wgmma_m64n8k16_f16_impl(pI, core, inst);
+    return;
   }
+
+  if (accumulator_type == F32_TYPE && a_type == BF16_TYPE &&
+      b_type == BF16_TYPE && pI->get_wgmma_shape_n() == 8 &&
+      pI->get_wgmma_shape_k() == 16) {
+    wgmma_m64n8k16_bf16_impl(pI, core, inst);
+    return;
+  }
+
+  if (accumulator_type == F32_TYPE && a_type == TF32_TYPE &&
+      b_type == TF32_TYPE && pI->get_wgmma_shape_n() == 8 &&
+      pI->get_wgmma_shape_k() == 8) {
+    wgmma_m64n8k8_tf32_impl(pI, core, inst);
+    return;
+  }
+
+  if (accumulator_type == F32_TYPE &&
+      (a_type == E4M3_TYPE || a_type == E5M2_TYPE) &&
+      (b_type == E4M3_TYPE || b_type == E5M2_TYPE) &&
+      pI->get_wgmma_shape_n() == 8 && pI->get_wgmma_shape_k() == 32) {
+    wgmma_m64n8k32_fp8_impl(pI, core, inst, a_type == E4M3_TYPE,
+                            b_type == E4M3_TYPE);
+    return;
+  }
+
+  if (accumulator_type == S32_TYPE &&
+      (a_type == S8_TYPE || a_type == U8_TYPE) &&
+      (b_type == S8_TYPE || b_type == U8_TYPE) &&
+      pI->get_wgmma_shape_n() == 8 && pI->get_wgmma_shape_k() == 32) {
+    wgmma_m64n8k32_int8_impl(pI, core, inst, a_type == S8_TYPE,
+                             b_type == S8_TYPE);
+    return;
+  }
+
+  if (accumulator_type == S32_TYPE && a_type == B1_TYPE && b_type == B1_TYPE &&
+      pI->get_wgmma_shape_n() == 8 && pI->get_wgmma_shape_k() == 256) {
+    wgmma_m64n8k256_b1_impl(pI, core, inst);
+    return;
+  }
+
+  fprintf(stderr,
+          "GPGPU-Sim: ERROR - unsupported WGMMA variant "
+          "m64n%dk%d type tuple (%d, %d, %d)\n",
+          pI->get_wgmma_shape_n(), pI->get_wgmma_shape_k(), accumulator_type,
+          a_type, b_type);
+  assert(0 && "unsupported WGMMA variant");
+  std::abort();
 }
 
 void wgmma_mma_async_impl(const ptx_instruction *pI, core_t *core,
@@ -299,6 +351,8 @@ void wgmma_mma_async_sp_impl(const ptx_instruction *pI, core_t *core,
   (void)pI;
   (void)core;
   (void)inst;
+  fprintf(stderr,
+          "GPGPU-Sim: ERROR - sparse WGMMA is not functionally supported\n");
 }
 
 void wgmma_fence_impl(const ptx_instruction *pI, core_t *core,
