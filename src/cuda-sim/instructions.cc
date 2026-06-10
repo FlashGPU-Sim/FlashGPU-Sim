@@ -1730,8 +1730,8 @@ void griddepcontrol_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   (void)thread;
 }
 
-void elect_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  handle_elect_inst(pI, thread);
+void elect_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
+  handle_elect_inst(pI, core, inst);
 }
 
 void ldmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {

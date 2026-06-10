@@ -4,6 +4,8 @@
 // Forward declarations
 class ptx_instruction;
 class ptx_thread_info;
+class core_t;
+class warp_inst_t;
 
 /**
  * Handle elect.sync instruction.
@@ -16,6 +18,7 @@ class ptx_thread_info;
  *
  * Election is deterministic: the lowest numbered lane in membermask is elected.
  */
-void handle_elect_inst(const ptx_instruction *pI, ptx_thread_info *thread);
+void handle_elect_inst(const ptx_instruction *pI, core_t *core,
+                       const warp_inst_t &inst);
 
 #endif // FLASH_GPGPU_SIM_ELECT_H
