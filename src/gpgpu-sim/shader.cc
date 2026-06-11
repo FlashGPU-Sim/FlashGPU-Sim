@@ -3965,6 +3965,45 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
 }
 
 void gpgpu_sim::shader_print_runtime_stat(FILE *fout) {
+  unsigned long long tma_tx_completed = 0;
+  unsigned long long tma_read_tx_completed = 0;
+  unsigned long long tma_write_tx_completed = 0;
+  for (unsigned i = 0; i < m_shader_config->num_shader(); i++) {
+    tma_tx_completed += m_shader_stats->m_tma_tx_completed[i];
+    tma_read_tx_completed += m_shader_stats->m_tma_read_tx_completed[i];
+    tma_write_tx_completed += m_shader_stats->m_tma_write_tx_completed[i];
+  }
+
+  static unsigned long long last_tma_tx_completed = 0;
+  static unsigned long long last_tma_read_tx_completed = 0;
+  static unsigned long long last_tma_write_tx_completed = 0;
+  unsigned long long tma_tx_completed_delta =
+      tma_tx_completed >= last_tma_tx_completed
+          ? tma_tx_completed - last_tma_tx_completed
+          : tma_tx_completed;
+  unsigned long long tma_read_tx_completed_delta =
+      tma_read_tx_completed >= last_tma_read_tx_completed
+          ? tma_read_tx_completed - last_tma_read_tx_completed
+          : tma_read_tx_completed;
+  unsigned long long tma_write_tx_completed_delta =
+      tma_write_tx_completed >= last_tma_write_tx_completed
+          ? tma_write_tx_completed - last_tma_write_tx_completed
+          : tma_write_tx_completed;
+
+  fprintf(fout,
+          "gpgpu_runtime_tma_tx_completed cycle=%llu ctas_completed=%u "
+          "total=%llu delta=%llu read_total=%llu read_delta=%llu "
+          "write_total=%llu write_delta=%llu\n",
+          gpu_tot_sim_cycle + gpu_sim_cycle, m_shader_stats->ctas_completed,
+          tma_tx_completed, tma_tx_completed_delta, tma_read_tx_completed,
+          tma_read_tx_completed_delta, tma_write_tx_completed,
+          tma_write_tx_completed_delta);
+  fflush(fout);
+
+  last_tma_tx_completed = tma_tx_completed;
+  last_tma_read_tx_completed = tma_read_tx_completed;
+  last_tma_write_tx_completed = tma_write_tx_completed;
+
   /*
  fprintf(fout, "SHD_INSN: ");
  for (unsigned i=0;i<m_n_shader;i++)
