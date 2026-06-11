@@ -1093,6 +1093,20 @@ enum barrier_wait_type_t {
   BARRIER_WAIT_WGMMA_GROUP,  // wgmma.wait_group
 };
 
+static inline const char *barrier_wait_type_name(barrier_wait_type_t type) {
+  switch (type) {
+  case BARRIER_WAIT_BAR_SYNC:
+    return "bar_sync";
+  case BARRIER_WAIT_MBARRIER:
+    return "mbarrier";
+  case BARRIER_WAIT_BULK_GROUP:
+    return "bulk_group";
+  case BARRIER_WAIT_WGMMA_GROUP:
+    return "wgmma_group";
+  }
+  return "unknown";
+}
+
 class barrier_set_t {
  public:
   barrier_set_t(shader_core_ctx *shader, unsigned max_warps_per_core,
@@ -1163,6 +1177,31 @@ class barrier_set_t {
   warp_set_t m_warp_active;
   warp_set_t m_warp_at_barrier;
   std::vector<barrier_wait_type_t> m_warp_barrier_type;
+  std::vector<unsigned> m_warp_named_barrier_id;
+  warp_set_t named_barrier_waiters(unsigned bar_id,
+                                   const warp_set_t &participants) const;
+  void clear_named_barrier_waiters(const warp_set_t &waiters);
+  void assert_warp_waiting(unsigned warp_id, barrier_wait_type_t expected_type,
+                           const char *reason) const {
+    bool valid = warp_id < m_warp_barrier_type.size();
+    bool matches = valid && m_warp_at_barrier.test(warp_id) &&
+                   m_warp_barrier_type[warp_id] == expected_type;
+    if (!matches) {
+      printf("GPGPU-Sim ERROR: %s reached warp %u, expected wait type %s. "
+             "warp_at_barrier=%s actual_type=%s\n",
+             reason, warp_id, barrier_wait_type_name(expected_type),
+             m_warp_at_barrier.to_string().c_str(),
+             valid ? barrier_wait_type_name(m_warp_barrier_type[warp_id])
+                   : "invalid");
+      assert(false && "barrier release target has wrong wait type");
+    }
+  }
+  void clear_warp_waiting(unsigned warp_id, barrier_wait_type_t expected_type,
+                          const char *reason) {
+    assert_warp_waiting(warp_id, expected_type, reason);
+    m_warp_at_barrier.reset(warp_id);
+    m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+  }
   // Release warps with optional try_wait latency delay
   void release_warps(const std::set<int> &released_warps);
 

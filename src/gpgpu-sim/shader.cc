@@ -33,6 +33,7 @@
 #include "shader.h"
 #include <float.h>
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 #include "../../libcuda/gpgpu_context.h"
 #include "../cuda-sim/cuda-sim.h"
@@ -4413,6 +4414,8 @@ void shader_core_ctx::display_pipeline(FILE *fout, int print_mem,
       fout,
       "Last EX/WB writeback @ %llu + %llu (gpu_sim_cycle+gpu_tot_sim_cycle)\n",
       m_last_inst_gpu_sim_cycle, m_last_inst_gpu_tot_sim_cycle);
+  fprintf(fout, "-------------------------- Barrier Set\n");
+  m_barriers.dump();
 
   if (m_active_threads.count() <= 2 * m_config->warp_size) {
     fprintf(fout, "Active Threads : ");
@@ -4732,6 +4735,7 @@ barrier_set_t::barrier_set_t(shader_core_ctx *shader,
   m_warp_active.reset();
   m_warp_at_barrier.reset();
   m_warp_barrier_type.resize(max_warps_per_core, BARRIER_WAIT_BAR_SYNC);
+  m_warp_named_barrier_id.resize(max_warps_per_core, (unsigned)-1);
   for (unsigned i = 0; i < max_barriers_per_cta; i++) {
     m_bar_id_to_warps[i].reset();
   }
@@ -4749,6 +4753,11 @@ void barrier_set_t::allocate_barrier(unsigned cta_id, warp_set_t warps) {
 
   m_warp_active |= warps;
   m_warp_at_barrier &= ~warps;
+  for (unsigned warp_id = 0; warp_id < m_max_warps_per_core; warp_id++) {
+    if (warps.test(warp_id)) {
+      m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+    }
+  }
   for (unsigned i = 0; i < m_max_barriers_per_cta; i++) {
     m_bar_id_to_warps[i] &= ~warps;
   }
@@ -4775,6 +4784,11 @@ void barrier_set_t::deallocate_barrier(unsigned cta_id) {
   assert(active.any() == false);  // no warps in CTA still running
   m_warp_active &= ~warps;
   m_warp_at_barrier &= ~warps;
+  for (unsigned warp_id = 0; warp_id < m_max_warps_per_core; warp_id++) {
+    if (warps.test(warp_id)) {
+      m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+    }
+  }
 
   for (unsigned i = 0; i < m_max_barriers_per_cta; i++) {
     m_bar_id_to_warps[i] &= ~warps;
@@ -4792,6 +4806,47 @@ void barrier_set_t::cleanup_cta_mbarriers(unsigned cta_id) {
   // Clean up all mbarriers for this CTA to prevent collisions when
   // the hw_cta_id gets recycled for a new CTA
   m_mbarrier_manager.cleanup_cta(cta_id);
+}
+
+static bool named_barrier_trace_enabled() {
+  const char *trace = getenv("FLASHGPU_SIM_BARRIER_TRACE");
+  return trace != NULL && trace[0] != '\0' && trace[0] != '0';
+}
+
+static const char *uarch_bar_type_name(barrier_type type) {
+  switch (type) {
+  case SYNC:
+    return "sync";
+  case ARRIVE:
+    return "arrive";
+  case RED:
+    return "red";
+  default:
+    return "not_bar";
+  }
+}
+
+warp_set_t barrier_set_t::named_barrier_waiters(
+    unsigned bar_id, const warp_set_t &participants) const {
+  warp_set_t waiters;
+  for (unsigned warp_id = 0; warp_id < m_max_warps_per_core; warp_id++) {
+    if (participants.test(warp_id) && m_warp_at_barrier.test(warp_id) &&
+        m_warp_barrier_type[warp_id] == BARRIER_WAIT_BAR_SYNC &&
+        m_warp_named_barrier_id[warp_id] == bar_id) {
+      waiters.set(warp_id);
+    }
+  }
+  return waiters;
+}
+
+void barrier_set_t::clear_named_barrier_waiters(
+    const warp_set_t &waiters) {
+  for (unsigned warp_id = 0; warp_id < m_max_warps_per_core; warp_id++) {
+    if (waiters.test(warp_id)) {
+      clear_warp_waiting(warp_id, BARRIER_WAIT_BAR_SYNC,
+                         "named barrier release");
+    }
+  }
 }
 
 // individual warp hits barrier
@@ -4813,23 +4868,52 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
   }
   assert(w->second.test(warp_id) == true);  // warp is in cta
 
-  m_bar_id_to_warps[bar_id].set(warp_id);
+  const bool trace_barrier = named_barrier_trace_enabled();
   auto count_key = std::make_pair(cta_id, bar_id);
+  unsigned count_before = 0;
+  auto count_it = m_bar_id_to_count.find(count_key);
+  if (count_it != m_bar_id_to_count.end()) count_before = count_it->second;
+
+  m_bar_id_to_warps[bar_id].set(warp_id);
   if (bar_count != (unsigned)-1) {
     m_bar_id_to_count[count_key] += m_warp_size;
   }
   if (bar_type == SYNC || bar_type == RED) {
     m_warp_at_barrier.set(warp_id);
     m_warp_barrier_type[warp_id] = BARRIER_WAIT_BAR_SYNC;
+    m_warp_named_barrier_id[warp_id] = bar_id;
   }
   warp_set_t warps_in_cta = w->second;
   warp_set_t at_barrier = warps_in_cta & m_bar_id_to_warps[bar_id];
   warp_set_t active = warps_in_cta & m_warp_active;
+  if (trace_barrier) {
+    unsigned count_after = 0;
+    auto after_it = m_bar_id_to_count.find(count_key);
+    if (after_it != m_bar_id_to_count.end()) count_after = after_it->second;
+    printf("GPGPU-Sim Cycle %llu: BAR - CTA %u Warp %u %s bar_id=%u "
+           "bar_count=%u count_before=%u count_after=%u at=%s active=%s "
+           "wait=%s\n",
+           m_shader->get_gpu()->gpu_sim_cycle +
+               m_shader->get_gpu()->gpu_tot_sim_cycle,
+           cta_id, warp_id, uarch_bar_type_name(bar_type), bar_id, bar_count,
+           count_before, count_after, at_barrier.to_string().c_str(),
+           active.to_string().c_str(),
+           (bar_type == SYNC || bar_type == RED) ? "yes" : "no");
+  }
   if (bar_count == (unsigned)-1) {
     if (at_barrier == active) {
+      warp_set_t waiters = named_barrier_waiters(bar_id, at_barrier);
+      if (trace_barrier) {
+        printf("GPGPU-Sim Cycle %llu: BAR - CTA %u release bar_id=%u "
+               "reason=all_active at=%s active=%s waiters=%s\n",
+               m_shader->get_gpu()->gpu_sim_cycle +
+                   m_shader->get_gpu()->gpu_tot_sim_cycle,
+               cta_id, bar_id, at_barrier.to_string().c_str(),
+               active.to_string().c_str(), waiters.to_string().c_str());
+      }
       // all warps have reached barrier, so release waiting warps...
       m_bar_id_to_warps[bar_id] &= ~at_barrier;
-      m_warp_at_barrier &= ~at_barrier;
+      clear_named_barrier_waiters(waiters);
       m_bar_id_to_count.erase(count_key);
       if (bar_type == RED) {
         m_shader->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
@@ -4838,10 +4922,21 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
   } else {
     // TODO: check on the hardware if the count should include warp that exited
     if (m_bar_id_to_count[count_key] >= bar_count) {
+      warp_set_t waiters = named_barrier_waiters(bar_id, at_barrier);
+      if (trace_barrier) {
+        printf("GPGPU-Sim Cycle %llu: BAR - CTA %u release bar_id=%u "
+               "reason=count count=%u threshold=%u at=%s active=%s "
+               "waiters=%s\n",
+               m_shader->get_gpu()->gpu_sim_cycle +
+                   m_shader->get_gpu()->gpu_tot_sim_cycle,
+               cta_id, bar_id, m_bar_id_to_count[count_key], bar_count,
+               at_barrier.to_string().c_str(), active.to_string().c_str(),
+               waiters.to_string().c_str());
+      }
       // required number of warps have reached barrier, so release waiting
       // warps...
       m_bar_id_to_warps[bar_id] &= ~at_barrier;
-      m_warp_at_barrier &= ~at_barrier;
+      clear_named_barrier_waiters(waiters);
       m_bar_id_to_count.erase(count_key);
       if (bar_type == RED) {
         m_shader->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
@@ -4855,6 +4950,7 @@ void barrier_set_t::warp_exit(unsigned warp_id) {
   // caller needs to verify all threads in warp are done, e.g., by checking PDOM
   // stack to see it has only one entry during exit_impl()
   m_warp_active.reset(warp_id);
+  m_warp_named_barrier_id[warp_id] = (unsigned)-1;
 
   // test for barrier release
   cta_to_warp_t::iterator w = m_cta_to_warps.begin();
@@ -4867,9 +4963,10 @@ void barrier_set_t::warp_exit(unsigned warp_id) {
   for (unsigned i = 0; i < m_max_barriers_per_cta; i++) {
     warp_set_t at_a_specific_barrier = warps_in_cta & m_bar_id_to_warps[i];
     if (at_a_specific_barrier == active) {
+      warp_set_t waiters = named_barrier_waiters(i, at_a_specific_barrier);
       // all warps have reached barrier, so release waiting warps...
       m_bar_id_to_warps[i] &= ~at_a_specific_barrier;
-      m_warp_at_barrier &= ~at_a_specific_barrier;
+      clear_named_barrier_waiters(waiters);
       m_bar_id_to_count.erase(std::make_pair(w->first, i));
     }
   }
@@ -4900,11 +4997,24 @@ void barrier_set_t::dump() const {
   }
   printf("  warp_active: %s\n", m_warp_active.to_string().c_str());
   printf("  warp_at_barrier: %s\n", m_warp_at_barrier.to_string().c_str());
+  printf("  waiting_warp_types:");
+  for (unsigned warp_id = 0; warp_id < m_max_warps_per_core; warp_id++) {
+    if (m_warp_at_barrier.test(warp_id)) {
+      printf(" {warp=%u,type=%s", warp_id,
+             barrier_wait_type_name(m_warp_barrier_type[warp_id]));
+      if (m_warp_barrier_type[warp_id] == BARRIER_WAIT_BAR_SYNC) {
+        printf(",bar_id=%u", m_warp_named_barrier_id[warp_id]);
+      }
+      printf("}");
+    }
+  }
+  printf("\n");
   printf("  pending_mbarrier_releases: %zu", m_pending_warp_releases.size());
   for (const auto &entry : m_pending_warp_releases) {
     printf(" {warp=%d, remaining=%u}", entry.warp_id, entry.remaining);
   }
   printf("\n");
+  m_mbarrier_manager.dump();
   for (unsigned i = 0; i < m_max_barriers_per_cta; i++) {
     warp_set_t warps_reached_barrier;
     auto it = m_bar_id_to_warps.find(i);

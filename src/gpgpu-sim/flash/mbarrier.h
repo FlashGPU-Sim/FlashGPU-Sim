@@ -58,6 +58,8 @@ public:
     addr_to_mbarrier_map.clear();
   }
 
+  void dump() const;
+
   struct thread_index_t {
     int hw_cta_id;
     int hw_warp_id;

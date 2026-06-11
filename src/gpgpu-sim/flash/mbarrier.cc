@@ -3,6 +3,7 @@
 #include "../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
 #include "../shader.h"
+#include <cstdlib>
 
 class ptx_recognizer;
 typedef void *yyscan_t;
@@ -70,6 +71,24 @@ void mbarrier_manager_t::cleanup_cta(unsigned hw_cta_id) {
     } else {
       ++it;
     }
+  }
+}
+
+void mbarrier_manager_t::dump() const {
+  printf("  mbarriers: %zu\n", addr_to_mbarrier_map.size());
+  for (const auto &entry : addr_to_mbarrier_map) {
+    const auto *mbarrier = entry.second.get();
+    printf("    sw_cta=%d hw_cta=%d id=%d addr=0x%llx expected=%d "
+           "pending_arrivals=%d tx_count=%d phase=%d parity=%d "
+           "waiting_warps:",
+           mbarrier->m_sw_cta_id, mbarrier->m_hw_cta_id, mbarrier->m_id,
+           (unsigned long long)mbarrier->m_addr, mbarrier->m_expected_count,
+           mbarrier->m_pending_arrival_count, mbarrier->m_tx_count,
+           mbarrier->m_phase, mbarrier->m_phase & 1);
+    for (int warp_id : mbarrier->m_waiting_warps) {
+      printf(" %d", warp_id);
+    }
+    printf("\n");
   }
 }
 
@@ -198,6 +217,11 @@ namespace {
 // Some helper functions
 bool is_valid_mbarrier_info(const inst_t::mbarrier_info_t &info) {
   return info.bar_id != (unsigned)-1;
+}
+
+bool mbarrier_trace_enabled() {
+  const char *trace = getenv("FLASHGPU_SIM_MBARRIER_TRACE");
+  return trace != nullptr && trace[0] != '\0' && trace[0] != '0';
 }
 
 std::pair<bool, bool>
@@ -419,13 +443,36 @@ void barrier_set_t::release_warps(const std::set<int> &released_warps) {
     return;
   unsigned trywait_latency =
       m_shader->get_config()->gpgpu_mbarrier_trywait_latency;
+  const char *trace = getenv("FLASHGPU_SIM_BARRIER_TRACE");
+  bool trace_barrier = trace != nullptr && trace[0] != '\0' && trace[0] != '0';
   if (trywait_latency > 0) {
     for (auto w : released_warps) {
+      assert_warp_waiting(w, BARRIER_WAIT_MBARRIER, "mbarrier release");
+      if (trace_barrier) {
+        printf("GPGPU-Sim Cycle %llu: MBAR_RELEASE - schedule warp=%d "
+               "latency=%u warp_at_barrier=%s type=%d\n",
+               m_shader->get_gpu()->gpu_sim_cycle +
+                   m_shader->get_gpu()->gpu_tot_sim_cycle,
+               w, trywait_latency, m_warp_at_barrier.to_string().c_str(),
+               (w >= 0 && (unsigned)w < m_warp_barrier_type.size())
+                   ? (int)m_warp_barrier_type[w]
+                   : -1);
+      }
       m_pending_warp_releases.push_back({trywait_latency, w});
     }
   } else {
     for (auto w : released_warps) {
-      m_warp_at_barrier.reset(w);
+      if (trace_barrier) {
+        printf("GPGPU-Sim Cycle %llu: MBAR_RELEASE - reset warp=%d "
+               "warp_at_barrier_before=%s type=%d\n",
+               m_shader->get_gpu()->gpu_sim_cycle +
+                   m_shader->get_gpu()->gpu_tot_sim_cycle,
+               w, m_warp_at_barrier.to_string().c_str(),
+               (w >= 0 && (unsigned)w < m_warp_barrier_type.size())
+                   ? (int)m_warp_barrier_type[w]
+                   : -1);
+      }
+      clear_warp_waiting(w, BARRIER_WAIT_MBARRIER, "mbarrier release");
     }
   }
 }
@@ -437,7 +484,20 @@ void barrier_set_t::cycle() {
   // Release warps whose countdown reached zero
   for (int i = m_pending_warp_releases.size() - 1; i >= 0; i--) {
     if (m_pending_warp_releases[i].remaining == 0) {
-      m_warp_at_barrier.reset(m_pending_warp_releases[i].warp_id);
+      int warp_id = m_pending_warp_releases[i].warp_id;
+      const char *trace = getenv("FLASHGPU_SIM_BARRIER_TRACE");
+      if (trace != nullptr && trace[0] != '\0' && trace[0] != '0') {
+        printf("GPGPU-Sim Cycle %llu: MBAR_RELEASE - delayed reset warp=%d "
+               "warp_at_barrier_before=%s type=%d\n",
+               m_shader->get_gpu()->gpu_sim_cycle +
+                   m_shader->get_gpu()->gpu_tot_sim_cycle,
+               warp_id, m_warp_at_barrier.to_string().c_str(),
+               (warp_id >= 0 && (unsigned)warp_id < m_warp_barrier_type.size())
+                   ? (int)m_warp_barrier_type[warp_id]
+                   : -1);
+      }
+      clear_warp_waiting(warp_id, BARRIER_WAIT_MBARRIER,
+                         "delayed mbarrier release");
       m_pending_warp_releases.erase(m_pending_warp_releases.begin() + i);
     }
   }
@@ -474,6 +534,7 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
   auto bar_op = pI->barrier_op();
 
   unsigned warp_size = m_shader->get_config()->warp_size;
+  const bool trace_mbarrier = mbarrier_trace_enabled();
 
   if (bar_op == INIT_OPTION) {
 
@@ -513,9 +574,18 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
 
       bool released = m_mbarrier_manager.try_wait(m_shader->get_gpu(),
                                                   thread_index, addr, parity);
+      if (trace_mbarrier) {
+        printf("GPGPU-Sim Cycle %llu: MBAR_TRY_WAIT - CTA %u Warp %u lane=%u "
+               "addr=0x%x parity=%u released=%s active=%s\n",
+               m_shader->get_gpu()->gpu_sim_cycle +
+                   m_shader->get_gpu()->gpu_tot_sim_cycle,
+               cta_id, warp_id, lane, addr, (unsigned)parity,
+               released ? "yes" : "no", active_mask.to_string().c_str());
+      }
       if (!released) {
         m_warp_at_barrier.set(warp_id);
         m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
+        m_warp_named_barrier_id[warp_id] = (unsigned)-1;
       }
     }
 

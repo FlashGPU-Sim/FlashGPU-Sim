@@ -1470,6 +1470,13 @@ void gpgpu_sim::deadlock_check() {
       printf("GPGPU-Sim uArch DEADLOCK:  iterconnect contains traffic\n");
       icnt_display_state(stdout);
     }
+    const char *deadlock_dump = getenv("FLASHGPU_SIM_DEADLOCK_DUMP");
+    if (deadlock_dump != NULL && deadlock_dump[0] != '\0' &&
+        deadlock_dump[0] != '0') {
+      printf("GPGPU-Sim uArch DEADLOCK: dumping shader pipeline for core %u\n",
+             gpu_sim_insn_last_update_sid);
+      dump_pipeline(1, gpu_sim_insn_last_update_sid, 0);
+    }
     printf(
         "\nRe-run the simulator in gdb and use debug routines in .gdbinit to "
         "debug this\n");

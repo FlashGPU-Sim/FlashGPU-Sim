@@ -600,15 +600,23 @@ void barrier_set_t::release_wgmma_warps(
   for (std::vector<unsigned>::const_iterator it = released_warps.begin();
        it != released_warps.end(); ++it) {
     unsigned warp_id = *it;
-    if (m_warp_barrier_type[warp_id] == BARRIER_WAIT_WGMMA_GROUP)
-      m_warp_at_barrier.reset(warp_id);
+    clear_warp_waiting(warp_id, BARRIER_WAIT_WGMMA_GROUP, "WGMMA release");
   }
 }
 
 void barrier_set_t::set_wgmma_waiting_warps(const unsigned *warp_ids,
                                             unsigned count) {
   for (unsigned i = 0; i < count; ++i) {
+    if (m_warp_at_barrier.test(warp_ids[i])) {
+      printf("GPGPU-Sim ERROR: warp %u reached WGMMA wait while already "
+             "waiting. warp_at_barrier=%s type=%d\n",
+             warp_ids[i], m_warp_at_barrier.to_string().c_str(),
+             (int)m_warp_barrier_type[warp_ids[i]]);
+      dump();
+      assert(false && "warp reached WGMMA wait while already waiting");
+    }
     m_warp_at_barrier.set(warp_ids[i]);
     m_warp_barrier_type[warp_ids[i]] = BARRIER_WAIT_WGMMA_GROUP;
+    m_warp_named_barrier_id[warp_ids[i]] = (unsigned)-1;
   }
 }
