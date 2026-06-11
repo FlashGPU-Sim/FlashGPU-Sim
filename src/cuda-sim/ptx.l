@@ -485,6 +485,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.release TC; return RELEASE_OPTION;
 \.acquire TC; return ACQUIRE_OPTION;
 \.gpu TC; return GPU_OPTION;
+\.L2::128B TC; return L2_OPTION;
 \.L2::cache_hint TC; return L2_CACHE_HINT_OPTION;
 \.L2 TC; return L2_OPTION;
 \.aligned TC; return ALIGNED_OPTION;

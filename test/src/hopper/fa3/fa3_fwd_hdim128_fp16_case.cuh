@@ -45,15 +45,35 @@ struct Fa3PrefillCase {
 
 static constexpr int kFa3PrefillCaseCount = 20;
 
+#define FA3_PREFILL_SMOKE_CASE_LIST(X)              \
+  X(H32D64FullB2S128, 2, 128, 32, 64, false)        \
+  X(H32D64CausalB2S128, 2, 128, 32, 64, true)       \
+  X(H16D128FullB2S128, 2, 128, 16, 128, false)      \
+  X(H16D128CausalB2S128, 2, 128, 16, 128, true)
+
+static constexpr int kFa3PrefillSmokeCaseCount = 4;
+
 #define FA3_PREFILL_CASE_ENTRY(name, batch, seqlen, heads, head_dim, causal) \
   Fa3PrefillCase{#name, batch, seqlen, heads, head_dim, causal},
 static constexpr Fa3PrefillCase kFa3PrefillCases[] = {
     FA3_PREFILL_CASE_LIST(FA3_PREFILL_CASE_ENTRY)};
+static constexpr Fa3PrefillCase kFa3PrefillSmokeCases[] = {
+    FA3_PREFILL_SMOKE_CASE_LIST(FA3_PREFILL_CASE_ENTRY)};
 #undef FA3_PREFILL_CASE_ENTRY
 
 static_assert(sizeof(kFa3PrefillCases) / sizeof(kFa3PrefillCases[0]) ==
                   kFa3PrefillCaseCount,
               "FA3 prefill case list must contain 20 cases");
+static_assert(sizeof(kFa3PrefillSmokeCases) /
+                      sizeof(kFa3PrefillSmokeCases[0]) ==
+                  kFa3PrefillSmokeCaseCount,
+              "FA3 prefill smoke case list must contain 4 cases");
+
+inline bool is_supported_fa3_prefill_case(const Fa3PrefillCase &cfg) {
+  return cfg.batch > 0 && cfg.seqlen > 0 &&
+         ((cfg.heads == 32 && cfg.head_dim == 64) ||
+          (cfg.heads == 16 && cfg.head_dim == 128));
+}
 
 struct Fa3RunResult {
   cudaError_t error = cudaSuccess;
@@ -63,10 +83,13 @@ struct Fa3RunResult {
 };
 
 inline bool is_valid_fa3_prefill_case(const Fa3PrefillCase &cfg) {
-  return cfg.batch > 0 && cfg.seqlen > 0 &&
-         cfg.batch * cfg.seqlen == 32 * 1024 &&
-         ((cfg.heads == 32 && cfg.head_dim == 64) ||
-          (cfg.heads == 16 && cfg.head_dim == 128));
+  return is_supported_fa3_prefill_case(cfg) &&
+         cfg.batch * cfg.seqlen == 32 * 1024;
+}
+
+inline bool is_valid_fa3_prefill_smoke_case(const Fa3PrefillCase &cfg) {
+  return is_supported_fa3_prefill_case(cfg) &&
+         cfg.batch == 2 && cfg.seqlen == 128;
 }
 
 inline void fill_half(std::vector<cutlass::half_t> &x, float scale) {
@@ -133,7 +156,7 @@ inline Fa3RunResult run_fa3_prefill_fp16_typed(const Fa3PrefillCase &cfg) {
     if (status__ != cudaSuccess) return finish(status__, #expr); \
   } while (0)
 
-  if (!is_valid_fa3_prefill_case(cfg) || cfg.head_dim != HeadDim ||
+  if (!is_supported_fa3_prefill_case(cfg) || cfg.head_dim != HeadDim ||
       cfg.causal != IsCausal) {
     return finish(cudaErrorInvalidValue, "Fa3PrefillCase");
   }
