@@ -43,6 +43,32 @@ Lightweight configuration with 1 streaming multiprocessor.
 - Low memory and time requirements
 - Functionally equivalent for single-SM workloads
 
+### SM90_H100
+Full Hopper H100 configuration with 132 streaming multiprocessors.
+
+**Use for:**
+- Hopper/FA3 final validation
+- WGMMA and TMA behavior with full H100 SM count
+- Performance-oriented H100 experiments
+
+**Characteristics:**
+- 132 SM clusters (1 core per cluster = 132 total SMs)
+- 16 memory controllers
+- Full H100 shared memory sizing
+
+### SM90_H100_REDUCED
+Lightweight Hopper H100 configuration with 1 streaming multiprocessor.
+
+**Use for:**
+- FA3 deadlock/debug iterations
+- Reduced log volume
+- Hopper instruction semantics debugging
+
+**Characteristics:**
+- 1 SM cluster (1 core per cluster = 1 total SM)
+- 16 memory controllers (GPGPU-Sim minimum)
+- Full H100 per-SM shared memory and TMA settings
+
 ### deprecated-cfgs/
 Legacy configurations maintained for reference.
 
