@@ -58,5 +58,5 @@ WGMMA requires an architecture-accelerated Hopper build. From `test/`:
 ```
 
 The `hopper` command builds Hopper workloads with `HOPPER_CUDA_ARCH=sm_90a`
-and uses `SM90_H200` as the default simulation config unless `-c/--config` is
+and uses `SM90_H100` as the default simulation config unless `-c/--config` is
 specified.
