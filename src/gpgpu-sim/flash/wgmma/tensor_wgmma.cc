@@ -284,6 +284,24 @@ unsigned wgmma_swizzle_bytes(unsigned swizzle_mode) {
   }
 }
 
+uint64_t wgmma_swizzle_period_bytes(unsigned swizzle_mode) {
+  unsigned swizzle_bytes = wgmma_swizzle_bytes(swizzle_mode);
+  return swizzle_bytes == 0 ? 0 : static_cast<uint64_t>(swizzle_bytes) * 8;
+}
+
+uint64_t wgmma_apply_gmma_swizzle(uint64_t base, uint64_t byte_offset,
+                                  unsigned swizzle_mode) {
+  uint64_t period = wgmma_swizzle_period_bytes(swizzle_mode);
+  if (period == 0)
+    return base + byte_offset;
+
+  // K-slice descriptors can start inside a swizzle period, so keep the base
+  // low bits in the swizzle coordinate instead of swizzling only byte_offset.
+  uint64_t period_base = base & ~(period - 1);
+  uint64_t period_offset = (base - period_base) + byte_offset;
+  return period_base + wgmma_apply_gmma_swizzle(period_offset, swizzle_mode);
+}
+
 } // namespace
 
 unsigned wgmma_gmma_k_major_smem_addr(uint64_t desc, int col, int k,
@@ -307,7 +325,7 @@ unsigned wgmma_gmma_k_major_smem_addr(uint64_t desc, int col, int k,
     uint64_t offset = row_group * stride + row_in_group * swizzle_bytes +
                       k_group * leading_offset + k_in_group * element_size;
     return static_cast<unsigned>(
-        base + wgmma_apply_gmma_swizzle(offset, swizzle_mode));
+        wgmma_apply_gmma_swizzle(base, offset, swizzle_mode));
   }
 
   unsigned contiguous_k = stride == 0
@@ -348,8 +366,8 @@ unsigned wgmma_gmma_mn_major_smem_addr(uint64_t desc, int row, int k,
   unsigned k_in_group = static_cast<unsigned>(k % 8);
   uint64_t offset = row_group * leading + row_in_group * element_size +
                     k_group * stride + k_in_group * swizzle_bytes;
-  return static_cast<unsigned>(base +
-                               wgmma_apply_gmma_swizzle(offset, swizzle_mode));
+  return static_cast<unsigned>(
+      wgmma_apply_gmma_swizzle(base, offset, swizzle_mode));
 }
 
 void wgmma_m64n8_accumulator_coord(unsigned lane, int reg, int &row, int &col) {
