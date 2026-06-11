@@ -23,18 +23,20 @@ class mbarrier_manager_t {
    * a barrier, the entire warp is blocked.
    */
   struct mbarrier_t {
-    mbarrier_t(int id, uint64_t addr, int expected_count)
-        : m_id(id), m_addr(addr), m_expected_count(expected_count),
-          m_arrived_count(0), m_expected_tx_count(0), m_arrived_tx_count(0),
-          m_phase(0) {}
+    mbarrier_t(int id, int hw_cta_id, int sw_cta_id, uint64_t addr,
+               int expected_count)
+        : m_id(id), m_hw_cta_id(hw_cta_id), m_sw_cta_id(sw_cta_id),
+          m_addr(addr), m_expected_count(expected_count),
+          m_pending_arrival_count(expected_count), m_tx_count(0), m_phase(0) {}
 
     const int m_id;
+    const int m_hw_cta_id;
+    const int m_sw_cta_id;
     const uint64_t m_addr;
     const int m_expected_count;
-    int m_arrived_count;
+    int m_pending_arrival_count;
     // This is for TMA interaction. It may change every phase.
-    int m_expected_tx_count;
-    int m_arrived_tx_count;
+    int m_tx_count;
     int m_phase;
     std::set<int> m_waiting_warps;
   };
@@ -98,7 +100,7 @@ public:
 
   /**
    * Clean up all mbarriers for a given hw_cta_id when the CTA completes.
-   * This prevents collisions when hw_cta_ids get recycled.
+   * This prevents stale barriers when hw_cta_ids get recycled.
    */
   void cleanup_cta(unsigned hw_cta_id);
 

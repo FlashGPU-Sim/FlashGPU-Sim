@@ -1552,9 +1552,17 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       m_warp[warp_id]->get_dynamic_warp_id(), sch_id,
       m_warp[warp_id]->get_streamID());  // dynamic instruction information
   
-  // For TMA instructions, reset dyn_inst's tma_dyn_info BEFORE functional simulation
-  // to prevent stale data from previous warps. This is the key fix for TMA over-issue.
+  // Reset per-lane dynamic fields before functional execution.  The functional
+  // model fills the dyn ptx instruction, while the pipeline register only holds
+  // a copy made before execution.
   ptx_instruction *dyn_inst = nullptr;
+  ptx_instruction *mbarrier_dyn_inst = nullptr;
+  if (next_inst->op == MBARRIER_OP) {
+    mbarrier_dyn_inst = const_cast<ptx_instruction *>(
+        flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(
+            next_inst->pc, static_cast<const ptx_instruction *>(next_inst)));
+    mbarrier_dyn_inst->reset_mbarrier_info();
+  }
   if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
     dyn_inst = const_cast<ptx_instruction *>(
         flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(
@@ -1590,9 +1598,11 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   } else if (next_inst->op == MBARRIER_OP) {
     // Skip mbarrier processing if no threads are active (e.g., all predicated out)
     if ((*pipe_reg)->get_active_mask().any()) {
+      auto pI = mbarrier_dyn_inst;
+      assert(pI && "mbarrier instruction is not ptx_instruction");
       m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
       m_barriers.warp_reaches_mbarrier(m_warp[warp_id]->get_cta_id(), warp_id,
-                                       const_cast<warp_inst_t *>(next_inst),
+                                       pI, pI,
                                        (*pipe_reg)->get_active_mask());
     }
   } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
@@ -4742,6 +4752,12 @@ void barrier_set_t::allocate_barrier(unsigned cta_id, warp_set_t warps) {
   for (unsigned i = 0; i < m_max_barriers_per_cta; i++) {
     m_bar_id_to_warps[i] &= ~warps;
   }
+  for (auto it = m_bar_id_to_count.begin(); it != m_bar_id_to_count.end();) {
+    if (it->first.first == cta_id)
+      it = m_bar_id_to_count.erase(it);
+    else
+      ++it;
+  }
 }
 
 void barrier_set_t::reset_mbarrier() {
@@ -4761,9 +4777,13 @@ void barrier_set_t::deallocate_barrier(unsigned cta_id) {
   m_warp_at_barrier &= ~warps;
 
   for (unsigned i = 0; i < m_max_barriers_per_cta; i++) {
-    warp_set_t at_a_specific_barrier = warps & m_bar_id_to_warps[i];
-    assert(at_a_specific_barrier.any() == false);  // no warps stuck at barrier
     m_bar_id_to_warps[i] &= ~warps;
+  }
+  for (auto it = m_bar_id_to_count.begin(); it != m_bar_id_to_count.end();) {
+    if (it->first.first == cta_id)
+      it = m_bar_id_to_count.erase(it);
+    else
+      ++it;
   }
   m_cta_to_warps.erase(w);
 }
@@ -4794,6 +4814,10 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
   assert(w->second.test(warp_id) == true);  // warp is in cta
 
   m_bar_id_to_warps[bar_id].set(warp_id);
+  auto count_key = std::make_pair(cta_id, bar_id);
+  if (bar_count != (unsigned)-1) {
+    m_bar_id_to_count[count_key] += m_warp_size;
+  }
   if (bar_type == SYNC || bar_type == RED) {
     m_warp_at_barrier.set(warp_id);
     m_warp_barrier_type[warp_id] = BARRIER_WAIT_BAR_SYNC;
@@ -4806,17 +4830,19 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
       // all warps have reached barrier, so release waiting warps...
       m_bar_id_to_warps[bar_id] &= ~at_barrier;
       m_warp_at_barrier &= ~at_barrier;
+      m_bar_id_to_count.erase(count_key);
       if (bar_type == RED) {
         m_shader->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
       }
     }
   } else {
     // TODO: check on the hardware if the count should include warp that exited
-    if ((at_barrier.count() * m_warp_size) == bar_count) {
+    if (m_bar_id_to_count[count_key] >= bar_count) {
       // required number of warps have reached barrier, so release waiting
       // warps...
       m_bar_id_to_warps[bar_id] &= ~at_barrier;
       m_warp_at_barrier &= ~at_barrier;
+      m_bar_id_to_count.erase(count_key);
       if (bar_type == RED) {
         m_shader->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
       }
@@ -4844,6 +4870,7 @@ void barrier_set_t::warp_exit(unsigned warp_id) {
       // all warps have reached barrier, so release waiting warps...
       m_bar_id_to_warps[i] &= ~at_a_specific_barrier;
       m_warp_at_barrier &= ~at_a_specific_barrier;
+      m_bar_id_to_count.erase(std::make_pair(w->first, i));
     }
   }
 }
@@ -4858,7 +4885,7 @@ barrier_wait_type_t barrier_set_t::get_warp_barrier_type(
   return m_warp_barrier_type[warp_id];
 }
 
-void barrier_set_t::dump() {
+void barrier_set_t::dump() const {
   printf("barrier set information\n");
   printf("  m_max_cta_per_core = %u\n", m_max_cta_per_core);
   printf("  m_max_warps_per_core = %u\n", m_max_warps_per_core);
@@ -4873,11 +4900,25 @@ void barrier_set_t::dump() {
   }
   printf("  warp_active: %s\n", m_warp_active.to_string().c_str());
   printf("  warp_at_barrier: %s\n", m_warp_at_barrier.to_string().c_str());
+  printf("  pending_mbarrier_releases: %zu", m_pending_warp_releases.size());
+  for (const auto &entry : m_pending_warp_releases) {
+    printf(" {warp=%d, remaining=%u}", entry.warp_id, entry.remaining);
+  }
+  printf("\n");
   for (unsigned i = 0; i < m_max_barriers_per_cta; i++) {
-    warp_set_t warps_reached_barrier = m_bar_id_to_warps[i];
+    warp_set_t warps_reached_barrier;
+    auto it = m_bar_id_to_warps.find(i);
+    if (it != m_bar_id_to_warps.end())
+      warps_reached_barrier = it->second;
     printf("  warp_at_barrier %u: %s\n", i,
            warps_reached_barrier.to_string().c_str());
   }
+  printf("  named_barrier_counts:");
+  for (const auto &entry : m_bar_id_to_count) {
+    printf(" {cta=%u,id=%u,count=%u}", entry.first.first,
+           entry.first.second, entry.second);
+  }
+  printf("\n");
   fflush(stdout);
 }
 

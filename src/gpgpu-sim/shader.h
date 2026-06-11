@@ -1113,6 +1113,8 @@ class barrier_set_t {
   typedef std::map<unsigned, warp_set_t> cta_to_warp_t;
   typedef std::map<unsigned, warp_set_t>
       bar_id_to_warp_t; /*set of warps reached a specific barrier id*/
+  typedef std::map<std::pair<unsigned, unsigned>, unsigned>
+      bar_id_to_count_t; /*arrived thread count keyed by (cta_id, bar_id)*/
 
   // individual warp hits barrier
   void warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
@@ -1120,7 +1122,8 @@ class barrier_set_t {
 
   // individual warp hits mbarrier
   void warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
-                             warp_inst_t *inst,
+                             const ptx_instruction *static_inst,
+                             const warp_inst_t *dynamic_inst,
                              const active_mask_t &active_mask);
   // complete_tx for TMA usages
   void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
@@ -1147,7 +1150,7 @@ class barrier_set_t {
   barrier_wait_type_t get_warp_barrier_type(unsigned warp_id) const;
 
   // debug
-  void dump();
+  void dump() const;
 
  private:
   unsigned m_max_cta_per_core;
@@ -1156,6 +1159,7 @@ class barrier_set_t {
   unsigned m_warp_size;
   cta_to_warp_t m_cta_to_warps;
   bar_id_to_warp_t m_bar_id_to_warps;
+  bar_id_to_count_t m_bar_id_to_count;
   warp_set_t m_warp_active;
   warp_set_t m_warp_at_barrier;
   std::vector<barrier_wait_type_t> m_warp_barrier_type;
