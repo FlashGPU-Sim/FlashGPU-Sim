@@ -68,7 +68,7 @@ public:
   ~wgmma_unit_t();
 
   void add_op(unsigned cta_id, unsigned warpgroup_id, unsigned op_uid,
-              unsigned completion_latency);
+              unsigned compute_latency, unsigned completion_tail_latency);
   void commit_group(unsigned cta_id, unsigned warpgroup_id);
   void wait_group(unsigned cta_id, unsigned warpgroup_id,
                   unsigned max_pending_groups, const unsigned *warp_ids,

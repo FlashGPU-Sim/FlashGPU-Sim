@@ -1,5 +1,6 @@
 #include "tensor_wgmma.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -498,7 +499,7 @@ public:
   }
 
   void add_op(unsigned cta_id, unsigned warpgroup_id, unsigned op_uid,
-              unsigned completion_latency);
+              unsigned compute_latency, unsigned completion_tail_latency);
   void commit_group(unsigned cta_id, unsigned warpgroup_id);
   void wait_group(unsigned cta_id, unsigned warpgroup_id,
                   unsigned max_pending_groups, const unsigned *warp_ids,
@@ -512,6 +513,7 @@ private:
   struct pending_completion_t {
     key_t key;
     unsigned op_uid = 0;
+    unsigned compute_remaining = 0;
     unsigned remaining = 0;
   };
 
@@ -521,14 +523,30 @@ private:
 };
 
 void wgmma_unit_t::impl_t::add_op(unsigned cta_id, unsigned warpgroup_id,
-                                  unsigned op_uid,
-                                  unsigned completion_latency) {
+                                  unsigned op_uid, unsigned compute_latency,
+                                  unsigned completion_tail_latency) {
   m_group_manager.add_op(cta_id, warpgroup_id, op_uid);
+
+  compute_latency = std::max(1u, compute_latency);
+
+  unsigned compute_tail_remaining = 0;
+  for (std::vector<pending_completion_t>::const_iterator it =
+           m_pending_completions.begin();
+       it != m_pending_completions.end(); ++it) {
+    compute_tail_remaining =
+        std::max(compute_tail_remaining, it->compute_remaining);
+  }
+  const unsigned compute_done_remaining =
+      compute_tail_remaining + compute_latency;
 
   pending_completion_t pending;
   pending.key = std::make_pair(cta_id, warpgroup_id);
   pending.op_uid = op_uid;
-  pending.remaining = completion_latency == 0 ? 1 : completion_latency;
+  // The tensor compute segment consumes the per-SM WGMMA backend and is
+  // serialized. The async completion tail models scoreboard/writeback time that
+  // may overlap with later WGMMA compute.
+  pending.compute_remaining = compute_done_remaining;
+  pending.remaining = compute_done_remaining + completion_tail_latency;
   m_pending_completions.push_back(pending);
 }
 
@@ -552,6 +570,8 @@ void wgmma_unit_t::impl_t::cycle() {
   for (std::vector<pending_completion_t>::iterator it =
            m_pending_completions.begin();
        it != m_pending_completions.end(); ++it) {
+    if (it->compute_remaining > 0)
+      it->compute_remaining--;
     if (it->remaining > 0)
       it->remaining--;
   }
@@ -593,8 +613,10 @@ wgmma_unit_t::wgmma_unit_t(barrier_set_t *barriers)
 wgmma_unit_t::~wgmma_unit_t() = default;
 
 void wgmma_unit_t::add_op(unsigned cta_id, unsigned warpgroup_id,
-                          unsigned op_uid, unsigned completion_latency) {
-  m_impl->add_op(cta_id, warpgroup_id, op_uid, completion_latency);
+                          unsigned op_uid, unsigned compute_latency,
+                          unsigned completion_tail_latency) {
+  m_impl->add_op(cta_id, warpgroup_id, op_uid, compute_latency,
+                 completion_tail_latency);
 }
 
 void wgmma_unit_t::commit_group(unsigned cta_id, unsigned warpgroup_id) {

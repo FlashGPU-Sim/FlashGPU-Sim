@@ -818,6 +818,8 @@ class inst_t {
     cache_op = CACHE_UNDEFINED;
     latency = 1;
     initiation_interval = 1;
+    wgmma_compute_latency = 0;
+    wgmma_completion_tail_latency = 0;
     for (unsigned i = 0; i < MAX_REG_OPERANDS; i++) {
       arch_reg.src[i] = -1;
       arch_reg.dst[i] = -1;
@@ -992,6 +994,8 @@ public:
   // evaluation
   unsigned latency;  // operation latency
   unsigned initiation_interval;
+  unsigned wgmma_compute_latency;
+  unsigned wgmma_completion_tail_latency;
 
   unsigned data_size;  // what is the size of the word being operated on?
   memory_space_t space;

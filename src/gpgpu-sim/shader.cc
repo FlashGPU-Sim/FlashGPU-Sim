@@ -1442,10 +1442,12 @@ void shader_core_ctx::issue_wgmma_warpgroup(register_set &pipe_reg_set,
       m_warp[representative_warp_id]->get_dynamic_warp_id(), sch_id,
       m_warp[representative_warp_id]->get_streamID());
   (*pipe_reg)->set_wgmma_warpgroup_info(warp_ids, count);
-  m_wgmma.add_op(
-      m_warp[representative_warp_id]->get_cta_id(),
-      wgmma_cta_warpgroup_id(representative_warp_id), (*pipe_reg)->get_uid(),
-      (*pipe_reg)->latency);
+  unsigned compute_latency = (*pipe_reg)->wgmma_compute_latency;
+  if (compute_latency == 0) compute_latency = (*pipe_reg)->latency;
+  m_wgmma.add_op(m_warp[representative_warp_id]->get_cta_id(),
+                 wgmma_cta_warpgroup_id(representative_warp_id),
+                 (*pipe_reg)->get_uid(), compute_latency,
+                 (*pipe_reg)->wgmma_completion_tail_latency);
 
   m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
 
@@ -4651,7 +4653,10 @@ void shader_core_config::set_pipeline_latency() {
   unsigned fp_latency[5];
   unsigned dp_latency[5];
   unsigned sfu_latency;
-  unsigned tensor_latency;
+  unsigned tensor_latency[7];
+  unsigned tensor_latency_max = 1;
+  unsigned wgmma_latency[4];
+  unsigned wgmma_latency_max = 1;
   unsigned tma_latency;
   unsigned tensormap_latency[3];
 
@@ -4673,7 +4678,30 @@ void shader_core_config::set_pipeline_latency() {
          &dp_latency[0], &dp_latency[1], &dp_latency[2], &dp_latency[3],
          &dp_latency[4]);
   sscanf(gpgpu_ctx->func_sim->opcode_latency_sfu, "%u", &sfu_latency);
-  sscanf(gpgpu_ctx->func_sim->opcode_latency_tensor, "%u", &tensor_latency);
+  int nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_tensor,
+                    "%u,%u,%u,%u,%u,%u,%u", &tensor_latency[0],
+                    &tensor_latency[1], &tensor_latency[2],
+                    &tensor_latency[3], &tensor_latency[4],
+                    &tensor_latency[5], &tensor_latency[6]);
+  if (nret == 7) {
+    for (unsigned i = 0; i < 7; ++i)
+      tensor_latency_max = std::max(tensor_latency_max, tensor_latency[i]);
+  } else {
+    sscanf(gpgpu_ctx->func_sim->opcode_latency_tensor, "%u",
+           &tensor_latency_max);
+  }
+  if (sscanf(gpgpu_ctx->func_sim->opcode_latency_wgmma_ss, "%u,%u,%u,%u",
+             &wgmma_latency[0], &wgmma_latency[1], &wgmma_latency[2],
+             &wgmma_latency[3]) == 4) {
+    for (unsigned i = 0; i < 4; ++i)
+      wgmma_latency_max = std::max(wgmma_latency_max, wgmma_latency[i]);
+  }
+  if (sscanf(gpgpu_ctx->func_sim->opcode_latency_wgmma_rs, "%u,%u,%u,%u",
+             &wgmma_latency[0], &wgmma_latency[1], &wgmma_latency[2],
+             &wgmma_latency[3]) == 4) {
+    for (unsigned i = 0; i < 4; ++i)
+      wgmma_latency_max = std::max(wgmma_latency_max, wgmma_latency[i]);
+  }
   if (gpgpu_ctx->func_sim->opcode_latency_tma)
     sscanf(gpgpu_ctx->func_sim->opcode_latency_tma, "%u", &tma_latency);
   else
@@ -4692,7 +4720,7 @@ void shader_core_config::set_pipeline_latency() {
   max_sp_latency = fp_latency[1];
   max_int_latency = std::max(int_latency[1], int_latency[5]);
   max_dp_latency = dp_latency[1];
-  max_tensor_core_latency = tensor_latency;
+  max_tensor_core_latency = std::max(tensor_latency_max, wgmma_latency_max);
   max_tma_latency = tma_latency;
   max_tensormap_latency = std::max(tensormap_latency[0], tensormap_latency[1]);
   max_tensormap_latency = std::max(max_tensormap_latency, tensormap_latency[2]);
