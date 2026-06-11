@@ -646,7 +646,7 @@ run_hopper_tests() {
 
         # Keep simulator launch-heavy FA3 prefill cases out of the default
         # Hopper suite. Explicitly named suites/cases below bypass this filter.
-        local filter="*-Fa3PrefillFp16IntegrationTest.H*:Fa3PrefillFp16SmokeTest.H*"
+        local filter="*-Fa3PrefillFp16IntegrationTest.H*:Fa3PrefillFp16BackwardIntegrationTest.H*:Fa3PrefillFp16SmokeTest.H*:Fa3PrefillFp16BackwardSmokeTest.H*"
         if [ -n "$test_name" ]; then
             filter="*${test_name}*"
         fi

@@ -91,6 +91,7 @@ bar.warp 	TC; yylval->int_value = NOP_OP; return OPCODE;
 bar 	TC; yylval->int_value = BAR_OP; return OPCODE;
 barrier	TC; yylval->int_value = BAR_OP; return OPCODE;
 mbarrier 	TC; yylval->int_value = MBAR_OP; return OPCODE;
+cp\.reduce\.async\.bulk TC; yylval->int_value = TMA_OP; return OPCODE;
 cp\.async\.bulk\.prefetch TC; yylval->int_value = TMA_PREFETCH_OP; return OPCODE;
 cp\.async\.bulk TC; yylval->int_value = TMA_OP; return OPCODE;
 cp\.async\.commit_group TC; yylval->int_value = CP_ASYNC_COMMIT_OP; return OPCODE;
@@ -323,6 +324,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 "%smid"  TC; yylval->int_value = SMID_REG; return SPECIAL_REGISTER;
 "%tid"  TC; yylval->int_value = TID_REG; return SPECIAL_REGISTER;
 "%warpid"  TC; yylval->int_value = WARPID_REG; return SPECIAL_REGISTER;
+"%cluster_ctaid" TC; yylval->int_value = CLUSTER_CTAID_REG; return SPECIAL_REGISTER;
 "%cluster_ctarank" TC; yylval->int_value = CLUSTER_CTA_RANK_REG; return SPECIAL_REGISTER;
 "WARP_SZ"  TC; yylval->int_value = WARPSZ_REG; return SPECIAL_REGISTER;
 

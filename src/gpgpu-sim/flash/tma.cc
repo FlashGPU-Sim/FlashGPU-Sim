@@ -1547,6 +1547,26 @@ static void copy_mem(memory_space *src_mem, uint64_t src_addr,
   delete[] buf;
 }
 
+static void reduce_add_f32_mem(memory_space *src_mem, uint64_t src_addr,
+                               memory_space *dst_mem, uint64_t dst_addr,
+                               uint32_t size_in_bytes, ptx_thread_info *thread,
+                               const ptx_instruction *pI) {
+  if (size_in_bytes % sizeof(float) != 0) {
+    printf("TMA ERROR: f32 reduce size must be a multiple of 4, got %u\n",
+           size_in_bytes);
+    abort();
+  }
+
+  std::vector<float> src(size_in_bytes / sizeof(float));
+  std::vector<float> dst(size_in_bytes / sizeof(float));
+  src_mem->read(src_addr, size_in_bytes, src.data());
+  dst_mem->read(dst_addr, size_in_bytes, dst.data());
+  for (size_t i = 0; i < dst.size(); ++i) {
+    dst[i] += src[i];
+  }
+  dst_mem->write(dst_addr, size_in_bytes, dst.data(), thread, pI);
+}
+
 // Check 16-byte alignment for TMA addresses and size
 static void check_tma_alignment(uint64_t dst_addr, uint64_t src_addr,
                                 uint32_t size_in_bytes) {
@@ -1583,25 +1603,51 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
   using namespace flash_gpgpu_sim;
 
   const auto &options = pI->get_options();
-  if (options.size() != 3) {
-    for (auto op : options) {
-      GPPRINTF_INST_EXEC(TMA, "option: %d\n", op);
+  std::vector<int> space_options;
+  int completion_option = 0;
+  bool reduce_add = false;
+
+  for (auto op : options) {
+    switch (op) {
+    case GLOBAL_OPTION:
+    case CTA_OPTION:
+    case CLUSTER_OPTION:
+      space_options.push_back(op);
+      break;
+    case TMA_MBAR_COMPLETE_BYTES:
+    case BULK_GROUP_OPTION:
+      completion_option = op;
+      break;
+    case ATOMIC_ADD:
+      reduce_add = true;
+      break;
+    case L2_CACHE_HINT_OPTION:
+      break;
+    default:
+      break;
     }
   }
-  assert(options.size() >= 3 &&
-         "TMA copy must have at least dst, src, completion_mechanism.");
 
-  auto option_iter = options.begin();
-  auto dst_option = *option_iter++;
-  auto src_option = *option_iter++;
-  auto completion_option = *option_iter++;
+  if (space_options.size() < 2 || completion_option == 0) {
+    printf("TMA ERROR: unsupported linear TMA option list: ");
+    for (auto op : options) {
+      printf("%d ", op);
+    }
+    printf("\n");
+    pI->print_insn();
+    abort();
+  }
+
+  auto dst_option = space_options[0];
+  auto src_option = space_options[1];
 
   memory_space *global_mem = thread->get_global_memory();
   memory_space *shared_mem = thread->m_shared_mem;
 
-  if (dst_option == CTA_OPTION && src_option == GLOBAL_OPTION &&
+  if ((dst_option == CTA_OPTION || dst_option == CLUSTER_OPTION) &&
+      src_option == GLOBAL_OPTION &&
       completion_option == TMA_MBAR_COMPLETE_BYTES) {
-    // shared::cta <- global with MBAR completion
+    // shared::cta/shared::cluster <- global with MBAR completion
     auto dst_addr = get_operand_u32(thread, pI->dst());
     auto src_addr = get_operand_u64(thread, pI->src1());
     auto size_in_bytes = get_operand_u32(thread, pI->src2());
@@ -1611,7 +1657,9 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
 
     inst_t::tma_static_info_t tma_static_info{
         .tma_type = inst_t::tma_static_info_t::TMA_NORMAL,
-        .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+        .dst_space = dst_option == CLUSTER_OPTION
+                         ? inst_t::tma_static_info_t::TMA_SHARED_CLUSTER
+                         : inst_t::tma_static_info_t::TMA_SHARED_CTA,
         .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
     };
     pI->set_tma_static_info(tma_static_info);
@@ -1629,8 +1677,9 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
 
     GPPRINTF_INST_EXEC(TMA,
                        "Functional Sim: "
-                       "TMA shared::cta <- global dst=0x%x, src=0x%llx, "
+                       "TMA shared::%s <- global dst=0x%x, src=0x%llx, "
                        "size_in_bytes=%u, mbar=0x%x\n",
+                       dst_option == CLUSTER_OPTION ? "cluster" : "cta",
                        dst_addr, (unsigned long long)src_addr, size_in_bytes,
                        mbar_addr);
 
@@ -1667,16 +1716,37 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
     };
     pI->set_tma_dyn_info(laneid, tma_dyn_info);
 
-    copy_mem(shared_mem, src_addr, global_mem, dst_addr, size_in_bytes, thread,
-             pI);
+    if (reduce_add) {
+      const auto scalar_types = pI->get_scalar_type();
+      if (scalar_types.empty() || scalar_types.front() != F32_TYPE) {
+        printf("TMA ERROR: only cp.reduce.async.bulk.add.f32 is supported\n");
+        pI->print_insn();
+        abort();
+      }
+      reduce_add_f32_mem(shared_mem, src_addr, global_mem, dst_addr,
+                         size_in_bytes, thread, pI);
+    } else {
+      copy_mem(shared_mem, src_addr, global_mem, dst_addr, size_in_bytes,
+               thread, pI);
+    }
 
     GPPRINTF_INST_EXEC(TMA,
                        "Functional Sim: "
-                       "TMA global <- shared::cta dst=0x%llx, src=0x%x, "
+                       "TMA global <- shared::cta%s dst=0x%llx, src=0x%x, "
                        "size_in_bytes=%u\n",
+                       reduce_add ? " reduce.add.f32" : "",
                        (unsigned long long)dst_addr, src_addr, size_in_bytes);
   } else {
-    assert(false && "Unsupported TMA copy instruction");
+    printf("TMA ERROR: unsupported linear TMA instruction options: dst=%d "
+           "src=%d completion=%d reduce_add=%d\n",
+           dst_option, src_option, completion_option, reduce_add ? 1 : 0);
+    printf("  raw options: ");
+    for (auto op : options) {
+      printf("%d ", op);
+    }
+    printf("\n");
+    pI->print_insn();
+    abort();
   }
 }
 

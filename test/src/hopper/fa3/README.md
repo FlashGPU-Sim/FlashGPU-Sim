@@ -41,16 +41,18 @@ Then from `test/`:
 ./run_tests.sh hopper Fa3FwdHdim128Fp16IntegrationTest
 ./run_tests.sh hopper Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase
 ./run_tests.sh hopper Fa3PrefillFp16SmokeTest.H32D64FullB2S128
+./run_tests.sh hopper Fa3PrefillFp16BackwardSmokeTest.H32D64FullB2S128
 ./run_tests.sh hopper Fa3PrefillFp16IntegrationTest.H16D128FullB64S512
+./run_tests.sh hopper Fa3PrefillFp16BackwardIntegrationTest.H16D128FullB64S512
 ```
 
 The generated kernel targets `sm_90a`. It is for GPGPU-Sim/PTX bring-up and
 Hopper inspection; it is not expected to run on non-Hopper hardware.
 
-The generated FA3 prefill launch cases are excluded from the default Hopper
-suite because they run the simulator path. Run an individual case by passing
-its gtest name to `run_tests.sh hopper`; no extra environment variable is
-required.
+The generated FA3 prefill forward and backward launch cases are excluded from
+the default Hopper suite because they run the simulator path. Run an individual
+case by passing its gtest name to `run_tests.sh hopper`; no extra environment
+variable is required.
 
 ## Notes
 

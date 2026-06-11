@@ -1678,10 +1678,13 @@ ptx_instruction::ptx_instruction(
 
   /**
    * TMA instructions has no scalar type. Make it b64 by default.
+   * cp.reduce.async.bulk uses the same opcode path but carries a scalar
+   * reduction type such as .f32, so preserve it when present.
    */
   if (opcode == TMA_OP || opcode == TMA_PREFETCH_OP) {
-    assert(m_scalar_type.empty() && "TMA inst should have no scalar type");
-    m_scalar_type.push_back(B64_TYPE);
+    if (m_scalar_type.empty()) {
+      m_scalar_type.push_back(B64_TYPE);
+    }
     // for (auto op : m_options) {
     //   printf("TMA option: %d\n", op);
     // }

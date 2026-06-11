@@ -309,6 +309,13 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
       if (dim_mod == 2) return m_tid.z;
       abort();
       break;
+    case CLUSTER_CTAID_REG:
+      assert(dim_mod < 3);
+      if (dim_mod == 0) return m_ctaid.x;
+      if (dim_mod == 1) return m_ctaid.y;
+      if (dim_mod == 2) return m_ctaid.z;
+      abort();
+      break;
     case CLUSTER_CTA_RANK_REG: {
       static bool warned_cluster_ctarank = false;
       if (!warned_cluster_ctarank) {

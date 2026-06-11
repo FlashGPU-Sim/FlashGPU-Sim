@@ -59,6 +59,7 @@ enum special_regs {
   SMID_REG,
   TID_REG,
   WARPID_REG,
+  CLUSTER_CTAID_REG,
   CLUSTER_CTA_RANK_REG,
   WARPSZ_REG
 };
