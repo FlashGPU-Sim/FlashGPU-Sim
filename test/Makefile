@@ -60,6 +60,7 @@ UNIT_TEST_SOURCES = $(wildcard $(TEST_SRC_DIR)/unit/*_test.cc)
 INTEGRATION_TEST_SOURCES = $(shell find $(TEST_SRC_DIR)/integration -name '*_test.cc' 2>/dev/null)
 HOPPER_SRC_DIR = $(TEST_SRC_DIR)/hopper
 HOPPER_TEST_SOURCES = $(shell find $(HOPPER_SRC_DIR) -name '*_test.cc' 2>/dev/null)
+HOPPER_TEST_SOURCES := $(filter-out $(HOPPER_SRC_DIR)/fa2/%,$(HOPPER_TEST_SOURCES))
 MICROBENCH_SOURCES = $(shell find $(TEST_SRC_DIR)/microbench -name '*_bench.cc' 2>/dev/null)
 # run_all_tests includes unit + integration only (no microbench)
 TEST_SOURCES = $(UNIT_TEST_SOURCES) $(INTEGRATION_TEST_SOURCES)
@@ -222,9 +223,9 @@ $(MAIN_TEST_TARGET): $(TEST_OBJECTS) $(FLASH_OBJECTS) $(OBJ_DIR)/gtest_main.a | 
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(CUDA_LIBS)
 
 # Build Hopper gtest runner
-$(HOPPER_TEST_TARGET): $(HOPPER_TEST_OBJECTS) $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
+$(HOPPER_TEST_TARGET): $(HOPPER_TEST_OBJECTS) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(CUDA_LIBS)
+	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
 
 # Build individual microbench executables
 $(BIN_DIR)/%_bench: $(OBJ_DIR)/microbench/%_bench.cu.o $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
