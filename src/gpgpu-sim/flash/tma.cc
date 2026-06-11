@@ -1118,58 +1118,21 @@ bool tma_unit_t::response_buffer_full() const {
 // Functional Simulation: Helper Functions
 //=============================================================================
 
-// Convert global address offset to tile-local offset
-// Global tensor may have different row stride than tile (based on box
-// dimensions) This function converts (global_addr - base_global_addr) to
-// equivalent tile offset
-static uint64_t global_to_tile_offset(uint64_t global_addr, uint64_t base_addr,
-                                      const tensormap_descriptor_t &tensormap) {
+struct tma_request_t {
+  uint64_t global_addr;
+  uint64_t tile_offset;
+  uint32_t size;
+};
+
+static void compute_tile_strides(const tensormap_descriptor_t &tensormap,
+                                 uint64_t tile_strides[5]) {
   uint32_t elem_size = tensormap.get_element_size();
   uint32_t num_dims = tensormap.num_dims();
 
-  // Calculate the byte offset in global memory space
-  assert(global_addr >= base_addr && "global_addr must be >= base_addr");
-  uint64_t global_byte_offset = global_addr - base_addr;
-
-  if (num_dims == 1) {
-    // 1D: tile offset equals global offset
-    return global_byte_offset;
-  }
-
-  // For 2D and higher, decompose global offset into coordinates
-  // and recompute using tile strides
-
-  // Get global strides (dim 0 uses elem_size, higher dims use globalStrides)
-  uint64_t global_strides[5];
-  global_strides[0] = elem_size;
-  for (uint32_t d = 1; d < num_dims; d++) {
-    global_strides[d] = tensormap.fields.globalStrides[d - 1];
-  }
-
-  // Get tile strides (based on box dimensions)
-  uint64_t tile_strides[5];
   tile_strides[0] = elem_size;
   for (uint32_t d = 1; d < num_dims; d++) {
     tile_strides[d] = tile_strides[d - 1] * tensormap.fields.boxDim[d - 1];
   }
-
-  // Decompose global_byte_offset into coordinates (highest to lowest dimension)
-  // Then recompute offset using tile strides
-  uint64_t tile_offset = 0;
-  uint64_t remaining = global_byte_offset;
-
-  for (int d = num_dims - 1; d >= 0; d--) {
-    if (global_strides[d] == 0) {
-      // Singleton outer dimensions may have zero byte stride in tensor maps.
-      // They do not contribute to the in-tile byte offset.
-      continue;
-    }
-    uint64_t coord_in_tile = remaining / global_strides[d];
-    remaining = remaining % global_strides[d];
-    tile_offset += coord_in_tile * tile_strides[d];
-  }
-
-  return tile_offset;
 }
 
 // Apply TMA swizzle transformation to shared memory address
@@ -1214,14 +1177,15 @@ static uint64_t apply_tma_swizzle(uint64_t linear_offset,
 
 // Generate 128B-aligned memory fetch requests
 // Splits a contiguous memory range into cache-line-aligned requests
-static void
-gen_aligned_req(uint64_t start_addr, uint32_t total_bytes,
-                std::vector<std::pair<uint64_t, uint32_t>> &requests) {
+static void gen_aligned_req(uint64_t start_addr, uint64_t start_tile_offset,
+                            uint32_t total_bytes,
+                            std::vector<tma_request_t> &requests) {
   if (total_bytes == 0)
     return;
 
   constexpr uint32_t CACHE_LINE_SIZE = 128;
   uint64_t current_addr = start_addr;
+  uint64_t current_tile_offset = start_tile_offset;
   uint32_t remaining_bytes = total_bytes;
 
   while (remaining_bytes > 0) {
@@ -1236,9 +1200,10 @@ gen_aligned_req(uint64_t start_addr, uint32_t total_bytes,
     uint32_t request_size =
         std::min({remaining_bytes, bytes_to_boundary, CACHE_LINE_SIZE});
 
-    requests.push_back({current_addr, request_size});
+    requests.push_back({current_addr, current_tile_offset, request_size});
 
     current_addr += request_size;
+    current_tile_offset += request_size;
     remaining_bytes -= request_size;
   }
 }
@@ -1249,10 +1214,12 @@ gen_aligned_req(uint64_t start_addr, uint32_t total_bytes,
 // base_addr: current physical address
 // tensormap: tensor descriptor
 // requests: output vector of (address, size) pairs
-static void
-traverse_tensor_dim(int dim, const uint32_t current_coords[5],
-                    uint64_t base_addr, const tensormap_descriptor_t &tensormap,
-                    std::vector<std::pair<uint64_t, uint32_t>> &requests) {
+static void traverse_tensor_dim(int dim, const uint32_t current_coords[5],
+                                uint64_t base_addr,
+                                const tensormap_descriptor_t &tensormap,
+                                const uint64_t tile_strides[5],
+                                uint64_t tile_offset,
+                                std::vector<tma_request_t> &requests) {
   uint32_t elem_size = tensormap.get_element_size();
 
   if (dim == 0) {
@@ -1280,10 +1247,12 @@ traverse_tensor_dim(int dim, const uint32_t current_coords[5],
 
     // Calculate physical start address and total bytes
     uint64_t phys_start_addr = base_addr + (valid_start * elem_size);
+    uint64_t valid_tile_offset =
+        tile_offset + (valid_start - start_x) * elem_size;
     uint32_t valid_bytes = (valid_end - valid_start) * elem_size;
 
     // Generate aligned memory fetch requests
-    gen_aligned_req(phys_start_addr, valid_bytes, requests);
+    gen_aligned_req(phys_start_addr, valid_tile_offset, valid_bytes, requests);
 
   } else {
     // Recursive case: traverse higher dimensions
@@ -1301,10 +1270,11 @@ traverse_tensor_dim(int dim, const uint32_t current_coords[5],
 
       // Calculate address offset for this coordinate
       uint64_t next_addr = base_addr + (current_coord * stride);
+      uint64_t next_tile_offset = tile_offset + i * tile_strides[dim];
 
       // Recurse to next lower dimension
       traverse_tensor_dim(dim - 1, current_coords, next_addr, tensormap,
-                          requests);
+                          tile_strides, next_tile_offset, requests);
     }
   }
 }
@@ -1312,10 +1282,10 @@ traverse_tensor_dim(int dim, const uint32_t current_coords[5],
 // Generate TMA memory fetch requests for a tensor tile
 // start_coords: starting coordinate for each dimension (e.g., {x, y, z, w, v})
 // Returns: vector of (physical_address, size_in_bytes) pairs
-static std::vector<std::pair<uint64_t, uint32_t>>
+static std::vector<tma_request_t>
 generate_tma_requests(const tensormap_descriptor_t &tensormap,
                       const uint32_t start_coords[5]) {
-  std::vector<std::pair<uint64_t, uint32_t>> requests;
+  std::vector<tma_request_t> requests;
 
   if (!tensormap.is_valid() || tensormap.fields.tensorRank > 4) {
     return requests; // Empty result for invalid tensormap
@@ -1325,9 +1295,11 @@ generate_tma_requests(const tensormap_descriptor_t &tensormap,
   int highest_dim = static_cast<int>(tensormap.num_dims()) -
                     1; // highest dimension index (0-based)
   uint64_t base_addr = tensormap.fields.globalAddress;
+  uint64_t tile_strides[5] = {};
+  compute_tile_strides(tensormap, tile_strides);
 
   traverse_tensor_dim(highest_dim, start_coords, base_addr, tensormap,
-                      requests);
+                      tile_strides, 0, requests);
 
   return requests;
 }
@@ -1448,8 +1420,6 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
   }
 
   auto memory_requests = generate_tma_requests(tensormap, coords);
-  uint64_t base_global_addr = tensormap.calculate_src_addr(coords);
-
   uint32_t swizzle_mode = tensormap.fields.swizzle;
   uint32_t elem_size = tensormap.get_element_size();
   uint32_t row_bytes = tensormap.fields.boxDim[0] * elem_size;
@@ -1459,11 +1429,9 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
   alignas(16) unsigned char local_data_buf[LOCAL_BUF_SIZE];
 
   for (const auto &req : memory_requests) {
-    uint64_t global_req_addr = req.first;
-    uint32_t req_size = req.second;
-
-    uint64_t tile_offset =
-        global_to_tile_offset(global_req_addr, base_global_addr, tensormap);
+    uint64_t global_req_addr = req.global_addr;
+    uint32_t req_size = req.size;
+    uint64_t tile_offset = req.tile_offset;
 
     unsigned char *data_buffer = (req_size <= LOCAL_BUF_SIZE)
                                      ? local_data_buf
