@@ -747,6 +747,9 @@ void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, in
   merge(m_active_exu_threads);  // For power model
   merge(m_active_exu_warps);   // For power model
   merge(m_n_diverge);  // number of divergence occurring in this shader
+  merge(m_tma_tx_completed);
+  merge(m_tma_read_tx_completed);
+  merge(m_tma_write_tx_completed);
   
 #define accumulate(name) \
   name += other.name
@@ -899,6 +902,20 @@ void shader_core_stats::print(FILE *fout) const {
   fprintf(fout, "gpgpu_n_mem_write_global = %d\n", gpgpu_n_mem_write_global);
   fprintf(fout, "gpgpu_n_mem_texture = %d\n", gpgpu_n_mem_texture);
   fprintf(fout, "gpgpu_n_mem_const = %d\n", gpgpu_n_mem_const);
+
+  unsigned long long tma_tx_completed = 0;
+  unsigned long long tma_read_tx_completed = 0;
+  unsigned long long tma_write_tx_completed = 0;
+  for (unsigned i = 0; i < m_config->num_shader(); i++) {
+    tma_tx_completed += m_tma_tx_completed[i];
+    tma_read_tx_completed += m_tma_read_tx_completed[i];
+    tma_write_tx_completed += m_tma_write_tx_completed[i];
+  }
+  fprintf(fout, "gpgpu_n_tma_tx_completed = %llu\n", tma_tx_completed);
+  fprintf(fout, "gpgpu_n_tma_read_tx_completed = %llu\n",
+          tma_read_tx_completed);
+  fprintf(fout, "gpgpu_n_tma_write_tx_completed = %llu\n",
+          tma_write_tx_completed);
 
   fprintf(fout, "gpgpu_n_load_insn  = %d\n", gpgpu_n_load_insn);
   fprintf(fout, "gpgpu_n_store_insn = %d\n", gpgpu_n_store_insn);

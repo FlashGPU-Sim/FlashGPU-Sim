@@ -2044,6 +2044,9 @@ struct shader_core_stats_pod {
   int gpgpu_n_mem_l2_write_allocate;
 
   int gpgpu_n_mem_tma;
+  unsigned long long *m_tma_tx_completed;
+  unsigned long long *m_tma_read_tx_completed;
+  unsigned long long *m_tma_write_tx_completed;
 
   unsigned made_write_mfs;
   unsigned made_read_mfs;
@@ -2157,6 +2160,15 @@ class shader_core_stats : public shader_core_stats_pod {
     ctas_completed = 0;
     n_simt_to_mem = (long *)calloc(config->num_shader(), sizeof(long));
     n_mem_to_simt = (long *)calloc(config->num_shader(), sizeof(long));
+    m_tma_tx_completed =
+        (unsigned long long *)calloc(config->num_shader(),
+                                     sizeof(unsigned long long));
+    m_tma_read_tx_completed =
+        (unsigned long long *)calloc(config->num_shader(),
+                                     sizeof(unsigned long long));
+    m_tma_write_tx_completed =
+        (unsigned long long *)calloc(config->num_shader(),
+                                     sizeof(unsigned long long));
 
     m_outgoing_traffic_stats = new traffic_breakdown("coretomem");
     m_incoming_traffic_stats = new traffic_breakdown("memtocore");
@@ -2218,6 +2230,9 @@ class shader_core_stats : public shader_core_stats_pod {
     free(m_n_diverge);
     free(shader_cycle_distro);
     free(last_shader_cycle_distro);
+    free(m_tma_tx_completed);
+    free(m_tma_read_tx_completed);
+    free(m_tma_write_tx_completed);
   }
 
   void aggregate(const shader_core_stats &other, int sm_lhs, int sm_rhs);
@@ -2404,6 +2419,14 @@ class shader_core_ctx : public core_t {
 
   void incload_stat() { m_stats->m_num_loadqueued_insn[m_sid]++; }
   void incstore_stat() { m_stats->m_num_storequeued_insn[m_sid]++; }
+  void inc_tma_tx_completed(bool is_write) {
+    m_stats->m_tma_tx_completed[m_sid]++;
+    if (is_write) {
+      m_stats->m_tma_write_tx_completed[m_sid]++;
+    } else {
+      m_stats->m_tma_read_tx_completed[m_sid]++;
+    }
+  }
   void incialu_stat(unsigned active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_ialu_acesses[m_sid] =

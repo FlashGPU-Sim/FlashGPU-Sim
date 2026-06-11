@@ -547,6 +547,7 @@ private:
                    tx.m_mf_issued_count, tx.m_mf_received_count,
                    tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
                    m_response_fifo.size());
+    m_shader_ctx->inc_tma_tx_completed(is_write);
     GPPRINTF_TMA(
         TMA,
         "[TMA %s COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, "
