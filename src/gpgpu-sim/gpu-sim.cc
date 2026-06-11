@@ -1988,7 +1988,9 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   else
     max_cta_per_core = m_config->max_cta_per_core;
   for (unsigned i = 0; i < max_cta_per_core; i++) {
-    if (m_cta_status[i] == 0) {
+    if (m_cta_status[i] == 0 &&
+        m_pending_tma_cta_releases.find(i) ==
+            m_pending_tma_cta_releases.end()) {
       free_cta_hw_id = i;
       break;
     }

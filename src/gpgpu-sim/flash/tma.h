@@ -34,6 +34,7 @@ public:
 
   void fill(mem_fetch *mf);
   bool response_buffer_full() const;
+  bool has_pending_for_cta(unsigned cta_id) const;
 
 private:
   std::unique_ptr<tma_unit_impl_t> m_impl;

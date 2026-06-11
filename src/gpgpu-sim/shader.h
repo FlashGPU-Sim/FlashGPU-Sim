@@ -1151,6 +1151,7 @@ class barrier_set_t {
   void complete_bulk_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
   void wait_bulk_group(unsigned cta_id, unsigned warp_id, unsigned latest_group_num);
   void commit_bulk_group(unsigned cta_id, unsigned warp_id);
+  void cleanup_cta_bulk_groups(unsigned cta_id);
 
   // WGMMA wait_group uses the barrier bitset only as a scheduler wait state.
   void set_wgmma_waiting_warps(const unsigned *warp_ids, unsigned count);
@@ -2333,6 +2334,8 @@ class shader_core_ctx : public core_t {
   void reinit(unsigned start_thread, unsigned end_thread,
               bool reset_not_completed);
   void issue_block2core(class kernel_info_t &kernel);
+  void release_finished_cta(unsigned cta_num, kernel_info_t *kernel);
+  void release_pending_tma_ctas();
 
   void cache_flush();
   void cache_invalidate();
@@ -2357,7 +2360,9 @@ class shader_core_ctx : public core_t {
   unsigned get_total_ctas_issued() const { return m_total_ctas_issued; }
   bool fetch_unit_response_buffer_full() const;
   bool ldst_unit_response_buffer_full() const;
-  unsigned get_not_completed() const { return m_not_completed; }
+  unsigned get_not_completed() const {
+    return m_not_completed + (m_pending_tma_cta_releases.empty() ? 0 : 1);
+  }
   unsigned get_n_active_cta() const { return m_n_active_cta; }
   unsigned isactive() const {
     if (m_n_active_cta > 0)
@@ -2806,6 +2811,7 @@ class shader_core_ctx : public core_t {
   unsigned m_n_active_cta;  // number of Cooperative Thread Arrays (blocks)
                             // currently running on this shader.
   unsigned m_cta_status[MAX_CTA_PER_SHADER];  // CTAs status
+  std::map<unsigned, kernel_info_t *> m_pending_tma_cta_releases;
   unsigned m_not_completed;  // number of threads to be completed (==0 when all
                              // thread on this core completed)
   std::bitset<MAX_THREAD_PER_SM> m_active_threads;

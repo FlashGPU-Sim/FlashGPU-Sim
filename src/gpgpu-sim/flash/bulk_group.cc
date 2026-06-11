@@ -147,6 +147,16 @@ bool bulk_group_manager_t::complete_tx(unsigned cta_id, unsigned warp_id,
   return was_waiting && !it->second.is_waiting;
 }
 
+void bulk_group_manager_t::cleanup_cta(unsigned cta_id) {
+  for (auto it = m_warp_bulk_info.begin(); it != m_warp_bulk_info.end();) {
+    if (it->first.first == cta_id) {
+      it = m_warp_bulk_info.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 bool bulk_group_manager_t::is_waiting(unsigned cta_id, unsigned warp_id) const {
   auto key = std::make_pair(cta_id, warp_id);
   auto it = m_warp_bulk_info.find(key);
@@ -211,4 +221,8 @@ void barrier_set_t::wait_bulk_group(unsigned cta_id, unsigned warp_id,
 
 void barrier_set_t::commit_bulk_group(unsigned cta_id, unsigned warp_id) {
   m_bulk_group_manager.commit_bulk_group(cta_id, warp_id);
+}
+
+void barrier_set_t::cleanup_cta_bulk_groups(unsigned cta_id) {
+  m_bulk_group_manager.cleanup_cta(cta_id);
 }

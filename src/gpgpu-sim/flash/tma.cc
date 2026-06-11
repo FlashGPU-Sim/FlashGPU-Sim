@@ -1,10 +1,12 @@
 #include "tma.h"
 #include "tensormap.h"
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <unordered_map>
 
 #include "../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
@@ -465,8 +467,6 @@ private:
     ptx_instruction *m_inst = nullptr;
     inst_t::tma_static_info_t m_static_info;
     inst_t::tma_dyn_info_t m_dyn_info;
-    uint32_t m_bytes_completed = 0;
-    tma_agu_state_t agu_state; // AGU state for this transaction
     unsigned m_cta_id = 0;
     unsigned m_warp_id = 0;
     unsigned m_lane_id = 0;
@@ -477,6 +477,8 @@ private:
     unsigned long long m_last_issue_cycle = 0;
     unsigned long long m_first_response_cycle = 0;
     unsigned long long m_complete_cycle = 0;
+    uint32_t m_bytes_completed = 0;
+    tma_agu_state_t agu_state; // AGU state for this transaction
 
     // Debug counters
     uint32_t m_mf_issued_count = 0;   // Number of mem_fetch requests issued
@@ -486,8 +488,6 @@ private:
     void reset() {
       m_thread = nullptr;
       m_inst = nullptr;
-      m_bytes_completed = 0;
-      agu_state = tma_agu_state_t(); // Reset to default state
       m_cta_id = 0;
       m_warp_id = 0;
       m_lane_id = 0;
@@ -498,6 +498,8 @@ private:
       m_last_issue_cycle = 0;
       m_first_response_cycle = 0;
       m_complete_cycle = 0;
+      m_bytes_completed = 0;
+      agu_state = tma_agu_state_t(); // Reset to default state
       m_mf_issued_count = 0;
       m_mf_received_count = 0;
       m_mf_tx_inflight = 0;
@@ -525,6 +527,10 @@ private:
   };
   std::vector<pending_arrive_t> m_pending_arrives;
 
+  static bool is_write_transaction(const tma_transaction_t &tx) {
+    return tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL;
+  }
+
   // Helper function to finalize a completed transaction
   void finalize_transaction(unsigned tx_uid) {
     auto it = m_transactions.find(tx_uid);
@@ -532,12 +538,10 @@ private:
       return;
 
     auto &tx = it->second;
-    auto thread = tx.m_thread;
-    unsigned cta_id = thread->get_hw_ctaid();
-    unsigned warp_id = thread->get_hw_wid();
+    unsigned cta_id = tx.m_cta_id;
+    unsigned warp_id = tx.m_warp_id;
 
-    bool is_write =
-        (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
+    bool is_write = is_write_transaction(tx);
     tx.m_complete_cycle = current_cycle();
     tma_trace_emit(tx.m_complete_cycle, "COMPLETE", tx_uid,
                    is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
@@ -635,13 +639,13 @@ public:
             .m_inst = pI,
             .m_static_info = tma_static_info,
             .m_dyn_info = tma_dyn_info,
-            .m_bytes_completed = 0,
-            .m_cta_id = thread->get_hw_ctaid(),
+            .m_cta_id = cta_id,
             .m_warp_id = warp_id,
             .m_lane_id = laneid,
             .m_tid = tid,
             .m_pc = pI->get_PC(),
             .m_create_cycle = current_cycle(),
+            .m_bytes_completed = 0,
         };
 
         // Initialize address generator
@@ -705,7 +709,6 @@ public:
 
         // For TMA write operations, add transaction to bulk group
         if (is_write_op) {
-          unsigned cta_id = thread->get_hw_ctaid();
           m_barriers->add_bulk_tx(cta_id, warp_id, tx_uid);
         }
 
@@ -782,8 +785,8 @@ public:
       mem_fetch *parent_mf = mf->get_original_mf() ? mf->get_original_mf() : mf;
       unsigned parent_uid = parent_mf->get_request_uid();
       auto mf_it = m_mf_to_tx.find(parent_uid);
-
-      assert(mf_it != m_mf_to_tx.end());
+      assert(mf_it != m_mf_to_tx.end() &&
+             "TMA response has no live transaction");
       unsigned tx_uid = mf_it->second;
       auto tx_it = m_transactions.find(tx_uid);
 
@@ -791,8 +794,7 @@ public:
       auto &tx = tx_it->second;
       tx.m_mf_received_count++;
 
-      bool is_write =
-          (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
+      bool is_write = is_write_transaction(tx);
       unsigned long long response_cycle = current_cycle();
       if (tma_trace_mf_enabled(response_cycle)) {
         tma_trace_emit(response_cycle, "MF_RESPONSE", tx_uid,
@@ -1089,6 +1091,18 @@ public:
     // ! assume infinite buffer for simplicity
     return false;
   }
+
+  bool has_pending_for_cta(unsigned cta_id) const {
+    for (const auto &entry : m_transactions) {
+      if (entry.second.m_cta_id == cta_id)
+        return true;
+    }
+    for (const auto &entry : m_pending_arrives) {
+      if (entry.cta_id == cta_id)
+        return true;
+    }
+    return false;
+  }
 };
 
 tma_unit_t::tma_unit_t(shader_core_ctx *shader_ctx, barrier_set_t *barriers,
@@ -1110,6 +1124,10 @@ void tma_unit_t::fill(mem_fetch *mf) { m_impl->fill(mf); }
 
 bool tma_unit_t::response_buffer_full() const {
   return m_impl->response_buffer_full();
+}
+
+bool tma_unit_t::has_pending_for_cta(unsigned cta_id) const {
+  return m_impl->has_pending_for_cta(cta_id);
 }
 
 } // namespace flash_gpgpu_sim

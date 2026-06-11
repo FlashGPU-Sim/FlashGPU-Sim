@@ -554,6 +554,7 @@ void shader_core_ctx::reinit(unsigned start_thread, unsigned end_thread,
     m_occupied_hwtid.reset();
     m_occupied_cta_to_hwtid.clear();
     m_active_warps = 0;
+    m_pending_tma_cta_releases.clear();
   }
   for (unsigned i = start_thread; i < end_thread; i++) {
     m_threadState[i].n_insn = 0;
@@ -2719,7 +2720,8 @@ void shader_core_ctx::execute() {
     }
   }
   m_wgmma.cycle();
-  m_tma -> cycle();
+  m_tma->cycle();
+  release_pending_tma_ctas();
   m_barriers.cycle();
 }
 
@@ -3913,54 +3915,92 @@ void ldst_unit::cycle() {
   }
 }
 
+void shader_core_ctx::release_finished_cta(unsigned cta_num,
+                                           kernel_info_t *kernel) {
+  assert(m_cta_status[cta_num] == 0);
+  assert(m_pending_tma_cta_releases.find(cta_num) ==
+         m_pending_tma_cta_releases.end());
+
+  // Increment the completed CTAs
+  m_stats->ctas_completed++;
+  m_gpu->inc_completed_cta();
+  m_n_active_cta--;
+  m_barriers.deallocate_barrier(cta_num);
+  m_barriers.cleanup_cta_mbarriers(cta_num);  // Clean up mbarriers for this hw_cta_id
+  m_barriers.cleanup_cta_bulk_groups(cta_num);
+  m_wgmma.cleanup_cta(cta_num);
+  shader_CTA_count_unlog(m_sid, 1);
+
+  SHADER_GPPRINTF(
+      LIVENESS,
+      "GPGPU-Sim uArch: Finished CTA #%u (%lld,%lld), %u CTAs running\n",
+      cta_num, m_gpu->gpu_sim_cycle, m_gpu->gpu_tot_sim_cycle,
+      m_n_active_cta);
+
+  if (m_n_active_cta == 0) {
+    SHADER_GPPRINTF(
+        LIVENESS,
+        "GPGPU-Sim uArch: Empty (last released kernel %u \'%s\').\n",
+        kernel->get_uid(), kernel->name().c_str());
+    fflush(stdout);
+
+    // Shader can only be empty when no more cta are dispatched
+    if (kernel != m_kernel) {
+      assert(m_kernel == NULL || !m_gpu->kernel_more_cta_left(m_kernel));
+    }
+    m_kernel = NULL;
+  }
+
+  // Jin: for concurrent kernels on sm
+  release_shader_resource_1block(cta_num, *kernel);
+  kernel->dec_running();
+  if (!m_gpu->kernel_more_cta_left(kernel)) {
+    if (!kernel->running()) {
+      SHADER_GPPRINTF(LIVENESS,
+                     "GPGPU-Sim uArch: GPU detected kernel %u \'%s\' "
+                     "finished on shader %u.\n",
+                     kernel->get_uid(), kernel->name().c_str(), m_sid);
+
+      if (m_kernel == kernel) m_kernel = NULL;
+      m_gpu->set_kernel_done(kernel);
+    }
+  }
+}
+
+void shader_core_ctx::release_pending_tma_ctas() {
+  if (m_pending_tma_cta_releases.empty())
+    return;
+
+  std::vector<std::pair<unsigned, kernel_info_t *>> ready;
+  for (const auto &entry : m_pending_tma_cta_releases) {
+    if (m_tma == nullptr || !m_tma->has_pending_for_cta(entry.first)) {
+      ready.push_back(entry);
+    }
+  }
+
+  for (const auto &entry : ready) {
+    m_pending_tma_cta_releases.erase(entry.first);
+    release_finished_cta(entry.first, entry.second);
+  }
+}
+
 void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
                                                kernel_info_t *kernel) {
   assert(m_cta_status[cta_num] > 0);
   m_cta_status[cta_num]--;
   if (!m_cta_status[cta_num]) {
-    // Increment the completed CTAs
-    m_stats->ctas_completed++;
-    m_gpu->inc_completed_cta();
-    m_n_active_cta--;
-    m_barriers.deallocate_barrier(cta_num);
-    m_barriers.cleanup_cta_mbarriers(cta_num);  // Clean up mbarriers for this hw_cta_id
-    m_wgmma.cleanup_cta(cta_num);
-    shader_CTA_count_unlog(m_sid, 1);
-
-    SHADER_GPPRINTF(
-        LIVENESS,
-        "GPGPU-Sim uArch: Finished CTA #%u (%lld,%lld), %u CTAs running\n",
-        cta_num, m_gpu->gpu_sim_cycle, m_gpu->gpu_tot_sim_cycle,
-        m_n_active_cta);
-
-    if (m_n_active_cta == 0) {
+    if (m_tma != nullptr && m_tma->has_pending_for_cta(cta_num)) {
+      bool inserted = m_pending_tma_cta_releases.emplace(cta_num, kernel).second;
+      assert(inserted && "CTA already pending TMA release");
       SHADER_GPPRINTF(
           LIVENESS,
-          "GPGPU-Sim uArch: Empty (last released kernel %u \'%s\').\n",
-          kernel->get_uid(), kernel->name().c_str());
-      fflush(stdout);
-
-      // Shader can only be empty when no more cta are dispatched
-      if (kernel != m_kernel) {
-        assert(m_kernel == NULL || !m_gpu->kernel_more_cta_left(m_kernel));
-      }
-      m_kernel = NULL;
+          "GPGPU-Sim uArch: CTA #%u threads exited with pending TMA, "
+          "delaying resource release.\n",
+          cta_num);
+      return;
     }
 
-    // Jin: for concurrent kernels on sm
-    release_shader_resource_1block(cta_num, *kernel);
-    kernel->dec_running();
-    if (!m_gpu->kernel_more_cta_left(kernel)) {
-      if (!kernel->running()) {
-        SHADER_GPPRINTF(LIVENESS,
-                       "GPGPU-Sim uArch: GPU detected kernel %u \'%s\' "
-                       "finished on shader %u.\n",
-                       kernel->get_uid(), kernel->name().c_str(), m_sid);
-
-        if (m_kernel == kernel) m_kernel = NULL;
-        m_gpu->set_kernel_done(kernel);
-      }
-    }
+    release_finished_cta(cta_num, kernel);
   }
 }
 
