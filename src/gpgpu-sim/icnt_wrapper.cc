@@ -166,6 +166,8 @@ void icnt_reg_options(class OptionParser* opp) {
                          &g_inct_config.verbose, "inct_verbose", "0");
   option_parser_register(opp, "-icnt_grant_cycles", OPT_UINT32,
                          &g_inct_config.grant_cycles, "grant_cycles", "1");
+  option_parser_register(opp, "-icnt_use_voq", OPT_UINT32,
+                         &g_inct_config.use_voq, "use_voq", "0");
 }
 
 void icnt_wrapper_init() {

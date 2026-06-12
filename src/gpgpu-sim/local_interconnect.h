@@ -29,9 +29,9 @@
 #ifndef _LOCAL_INTERCONNECT_HPP_
 #define _LOCAL_INTERCONNECT_HPP_
 
+#include <deque>
 #include <iostream>
 #include <map>
-#include <queue>
 #include <vector>
 using namespace std;
 
@@ -47,9 +47,12 @@ struct inct_config {
   Arbiteration_type arbiter_algo;
   unsigned verbose;
   unsigned grant_cycles;
+  unsigned use_voq;
 };
 
 class xbar_router {
+  struct Packet;
+
  public:
   xbar_router(unsigned router_id, enum Interconnect_type m_type,
               unsigned n_shader, unsigned n_mem,
@@ -64,6 +67,7 @@ class xbar_router {
   bool Has_Buffer_In(unsigned input_deviceID, unsigned size,
                      bool update_counter = false);
   bool Has_Buffer_Out(unsigned output_deviceID, unsigned size);
+  void DisplayStats(const char* name) const;
 
   // some stats
   unsigned long long cycles;
@@ -80,6 +84,13 @@ class xbar_router {
  private:
   void iSLIP_Advance();
   void RR_Advance();
+  void CollectRequestStats(bool* active, unsigned* conflicts) const;
+  bool InputHasPackets(unsigned input_deviceID) const;
+  bool InputHasPacketForOutput(unsigned input_deviceID,
+                               unsigned output_deviceID) const;
+  unsigned FirstReadyOutput(unsigned input_deviceID) const;
+  unsigned InputQueueIndex(unsigned output_deviceID) const;
+  void TransferPacket(unsigned input_deviceID, unsigned output_deviceID);
 
   struct Packet {
     Packet(void* m_data, unsigned m_output_deviceID) {
@@ -89,8 +100,9 @@ class xbar_router {
     void* data;
     unsigned output_deviceID;
   };
-  vector<queue<Packet> > in_buffers;
-  vector<queue<Packet> > out_buffers;
+  vector<vector<deque<Packet> > > in_buffers;
+  vector<deque<Packet> > out_buffers;
+  vector<unsigned> in_buffer_occupancy;
   unsigned _n_shader, _n_mem, total_nodes;
   unsigned in_buffer_limit, out_buffer_limit;
   vector<unsigned> next_node;  // used for iSLIP arbit
@@ -115,6 +127,7 @@ class xbar_router {
 
   unsigned grant_cycles;
   unsigned grant_cycles_count;
+  bool use_voq;
 
   friend class LocalInterconnect;
 };
