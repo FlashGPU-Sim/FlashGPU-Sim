@@ -1761,10 +1761,13 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
       printf("L2_total_cache_reservation_fails = %llu\n",
              total_l2_css.res_fails);
       printf("L2_total_cache_breakdown:\n");
-      l2_stats.print_stats(stdout, streamID, "L2_cache_stats_breakdown");
+      l2_stats.print_aggregate_stats(stdout, "L2_cache_stats_breakdown");
+      printf("L2_total_cache_reservation_fail_reason_breakdown:\n");
+      l2_stats.print_fail_reason_stats(stdout, (unsigned long long)-1,
+                                       "L2_cache_stats_fail_reason_breakdown");
       printf("L2_total_cache_reservation_fail_breakdown:\n");
-      l2_stats.print_fail_stats(stdout, streamID,
-                                "L2_cache_stats_fail_breakdown");
+      l2_stats.print_aggregate_fail_stats(stdout,
+                                          "L2_cache_stats_fail_breakdown");
       total_l2_css.print_port_stats(stdout, "L2_cache");
     }
   }
