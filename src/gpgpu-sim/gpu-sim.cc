@@ -1637,6 +1637,19 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
 
   // performance counter for stalls due to congestion.
   printf("gpu_stall_dramfull = %d\n", gpu_stall_dramfull);
+  unsigned long long mem_sub_part_full_stats
+      [NUM_MEM_SUB_PARTITION_FULL_STATS] = {};
+  for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
+    m_memory_sub_partition[i]->accumulate_full_state_stats(
+        mem_sub_part_full_stats);
+  }
+  printf("memory_sub_partition_full_breakdown:\n");
+  for (unsigned i = 0; i < NUM_MEM_SUB_PARTITION_FULL_STATS; i++) {
+    printf("\tmemory_sub_partition_full_breakdown[%s] = %llu\n",
+           mem_sub_partition_full_stat_str(
+               static_cast<mem_sub_partition_full_stat>(i)),
+           mem_sub_part_full_stats[i]);
+  }
   printf("gpu_stall_icnt2sh    = %d\n", gpu_stall_icnt2sh);
 
   // printf("partiton_reqs_in_parallel = %lld\n", partiton_reqs_in_parallel);
@@ -2234,6 +2247,7 @@ void gpgpu_sim::cycle() {
       // SECTOR_CHUNCK_SIZE requests, so ensure you have enough buffer for them
       if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
         gpu_stall_dramfull++;
+        m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE);
       } else {
         mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
         m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);

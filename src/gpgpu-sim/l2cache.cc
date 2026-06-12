@@ -49,6 +49,33 @@
 #include "mem_latency_stat.h"
 #include "shader.h"
 
+const char *mem_sub_partition_full_stat_str(
+    enum mem_sub_partition_full_stat stat) {
+  switch (stat) {
+    case MSP_FULL_ICNT_TO_L2_NOT_ENOUGH_SECTOR_SLOTS:
+      return "ICNT_TO_L2_NOT_ENOUGH_SECTOR_SLOTS";
+    case MSP_FULL_ICNT_TO_L2_QUEUE_FULL:
+      return "ICNT_TO_L2_QUEUE_FULL";
+    case MSP_FULL_ICNT_TO_L2_QUEUE_NEAR_FULL:
+      return "ICNT_TO_L2_QUEUE_NEAR_FULL";
+    case MSP_FULL_L2_DRAM_QUEUE_FULL:
+      return "L2_DRAM_QUEUE_FULL";
+    case MSP_FULL_DRAM_L2_QUEUE_FULL:
+      return "DRAM_L2_QUEUE_FULL";
+    case MSP_FULL_L2_ICNT_QUEUE_FULL:
+      return "L2_ICNT_QUEUE_FULL";
+    case MSP_FULL_L2_DATA_PORT_BUSY:
+      return "L2_DATA_PORT_BUSY";
+    case MSP_FULL_L2_FILL_PORT_BUSY:
+      return "L2_FILL_PORT_BUSY";
+    case MSP_FULL_L2_READY_BLOCKED_BY_L2_ICNT_QUEUE:
+      return "L2_READY_BLOCKED_BY_L2_ICNT_QUEUE";
+    case NUM_MEM_SUB_PARTITION_FULL_STATS:
+      break;
+  }
+  return "UNKNOWN";
+}
+
 mem_fetch *partition_mf_allocator::alloc(new_addr_type addr,
                                          mem_access_type type, unsigned size,
                                          bool wr, unsigned long long cycle,
@@ -427,6 +454,7 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
   m_mem_stats = stats;
   m_gpu = gpu;
   m_memcpy_cycle_offset = 0;
+  memset(m_full_state_stats, 0, sizeof(m_full_state_stats));
 
   assert(m_id < m_config->m_n_mem_sub_partition);
 
@@ -600,6 +628,41 @@ bool memory_sub_partition::full() const { return m_icnt_L2_queue->full(); }
 
 bool memory_sub_partition::full(unsigned size) const {
   return m_icnt_L2_queue->is_avilable_size(size);
+}
+
+void memory_sub_partition::record_full_state(unsigned size) {
+  if (!full(size)) return;
+
+  m_full_state_stats[MSP_FULL_ICNT_TO_L2_NOT_ENOUGH_SECTOR_SLOTS]++;
+  if (m_icnt_L2_queue->full()) {
+    m_full_state_stats[MSP_FULL_ICNT_TO_L2_QUEUE_FULL]++;
+  } else {
+    m_full_state_stats[MSP_FULL_ICNT_TO_L2_QUEUE_NEAR_FULL]++;
+  }
+
+  if (m_L2_dram_queue->full())
+    m_full_state_stats[MSP_FULL_L2_DRAM_QUEUE_FULL]++;
+  if (m_dram_L2_queue->full())
+    m_full_state_stats[MSP_FULL_DRAM_L2_QUEUE_FULL]++;
+  if (m_L2_icnt_queue->full())
+    m_full_state_stats[MSP_FULL_L2_ICNT_QUEUE_FULL]++;
+
+  if (!m_config->m_L2_config.disabled()) {
+    if (!m_L2cache->data_port_free())
+      m_full_state_stats[MSP_FULL_L2_DATA_PORT_BUSY]++;
+    if (!m_L2cache->fill_port_free())
+      m_full_state_stats[MSP_FULL_L2_FILL_PORT_BUSY]++;
+    if (m_L2cache->access_ready() && m_L2_icnt_queue->full()) {
+      m_full_state_stats
+          [MSP_FULL_L2_READY_BLOCKED_BY_L2_ICNT_QUEUE]++;
+    }
+  }
+}
+
+void memory_sub_partition::accumulate_full_state_stats(
+    unsigned long long *stats) const {
+  for (unsigned i = 0; i < NUM_MEM_SUB_PARTITION_FULL_STATS; ++i)
+    stats[i] += m_full_state_stats[i];
 }
 
 bool memory_sub_partition::L2_dram_queue_empty() const {

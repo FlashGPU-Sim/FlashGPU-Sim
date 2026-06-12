@@ -40,6 +40,22 @@
 
 class mem_fetch;
 
+enum mem_sub_partition_full_stat {
+  MSP_FULL_ICNT_TO_L2_NOT_ENOUGH_SECTOR_SLOTS = 0,
+  MSP_FULL_ICNT_TO_L2_QUEUE_FULL,
+  MSP_FULL_ICNT_TO_L2_QUEUE_NEAR_FULL,
+  MSP_FULL_L2_DRAM_QUEUE_FULL,
+  MSP_FULL_DRAM_L2_QUEUE_FULL,
+  MSP_FULL_L2_ICNT_QUEUE_FULL,
+  MSP_FULL_L2_DATA_PORT_BUSY,
+  MSP_FULL_L2_FILL_PORT_BUSY,
+  MSP_FULL_L2_READY_BLOCKED_BY_L2_ICNT_QUEUE,
+  NUM_MEM_SUB_PARTITION_FULL_STATS
+};
+
+const char *mem_sub_partition_full_stat_str(
+    enum mem_sub_partition_full_stat stat);
+
 class partition_mf_allocator : public mem_fetch_allocator {
  public:
   partition_mf_allocator(const memory_config *config) {
@@ -171,6 +187,8 @@ class memory_sub_partition {
 
   bool full() const;
   bool full(unsigned size) const;
+  void record_full_state(unsigned size);
+  void accumulate_full_state_stats(unsigned long long *stats) const;
   void push(class mem_fetch *mf, unsigned long long clock_cycle);
   class mem_fetch *pop();
   class mem_fetch *top();
@@ -226,6 +244,9 @@ class memory_sub_partition {
   fifo_pipeline<mem_fetch> *m_L2_dram_queue;
   fifo_pipeline<mem_fetch> *m_dram_L2_queue;
   fifo_pipeline<mem_fetch> *m_L2_icnt_queue;  // L2 cache hit response queue
+
+  unsigned long long
+      m_full_state_stats[NUM_MEM_SUB_PARTITION_FULL_STATS];
 
   class mem_fetch *L2dramout;
   unsigned long long int wb_addr;
