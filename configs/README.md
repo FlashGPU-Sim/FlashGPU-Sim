@@ -56,6 +56,18 @@ Full Hopper H100 configuration with 132 streaming multiprocessors.
 - 16 memory controllers
 - Full H100 shared memory sizing
 
+### SM90_H100_1500MHZ
+Full Hopper H100 configuration with core, interconnect, and L2 clocks fixed at
+1.5 GHz.
+
+**Use for:**
+- H100/NCU comparisons when the measured SM clock is near 1.5 GHz
+- FA3 performance tuning runs that should not mutate the default H100 config
+
+**Characteristics:**
+- Same SM count, memory hierarchy, and TMA/WGMMA settings as `SM90_H100`
+- `-gpgpu_clock_domains 1500:1500:1500:14000`
+
 ### SM90_H100_REDUCED
 Lightweight Hopper H100 configuration with 1 streaming multiprocessor.
 
