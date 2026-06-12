@@ -21,6 +21,25 @@ class memory_space;
 
 namespace flash_gpgpu_sim {
 
+struct tma_progress_counters_t {
+  unsigned long long tx_started = 0;
+  unsigned long long read_tx_started = 0;
+  unsigned long long write_tx_started = 0;
+  unsigned long long tx_completed = 0;
+  unsigned long long read_tx_completed = 0;
+  unsigned long long write_tx_completed = 0;
+  unsigned long long mf_issued = 0;
+  unsigned long long read_mf_issued = 0;
+  unsigned long long write_mf_issued = 0;
+  unsigned long long mf_responses = 0;
+  unsigned long long read_mf_responses = 0;
+  unsigned long long write_mf_responses = 0;
+  unsigned long long bytes_issued = 0;
+  unsigned long long bytes_completed = 0;
+};
+
+tma_progress_counters_t get_global_tma_progress_counters();
+
 class tma_unit_impl_t;
 class tma_unit_t {
 public:

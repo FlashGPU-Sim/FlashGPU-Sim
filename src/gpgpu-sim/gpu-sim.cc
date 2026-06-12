@@ -69,6 +69,7 @@
 #include "stats.h"
 #include "visualizer.h"
 #include "gpu-sim-profiler.h"
+#include "flash/tma.h"
 
 #ifdef GPGPUSIM_POWER_MODEL
 #include "power_interface.h"
@@ -2460,7 +2461,30 @@ void gpgpu_sim::cycle() {
 #endif
     
     profiler.end_step(profiler.total_other_time);
-    profiler.increment_and_check();
+    if (profiler.should_print_next()) {
+      auto tma_progress = flash_gpgpu_sim::get_global_tma_progress_counters();
+      flash_gpgpu_sim::gpgpu_sim_profile_progress_t progress;
+      progress.cycle = gpu_sim_cycle + gpu_tot_sim_cycle;
+      progress.cta_launched = gpu_tot_issued_cta + m_total_cta_launched;
+      progress.cta_completed = gpu_completed_cta;
+      progress.tma_tx_started = tma_progress.tx_started;
+      progress.tma_read_tx_started = tma_progress.read_tx_started;
+      progress.tma_write_tx_started = tma_progress.write_tx_started;
+      progress.tma_tx_completed = tma_progress.tx_completed;
+      progress.tma_read_tx_completed = tma_progress.read_tx_completed;
+      progress.tma_write_tx_completed = tma_progress.write_tx_completed;
+      progress.tma_mf_issued = tma_progress.mf_issued;
+      progress.tma_read_mf_issued = tma_progress.read_mf_issued;
+      progress.tma_write_mf_issued = tma_progress.write_mf_issued;
+      progress.tma_mf_responses = tma_progress.mf_responses;
+      progress.tma_read_mf_responses = tma_progress.read_mf_responses;
+      progress.tma_write_mf_responses = tma_progress.write_mf_responses;
+      progress.tma_bytes_issued = tma_progress.bytes_issued;
+      progress.tma_bytes_completed = tma_progress.bytes_completed;
+      profiler.increment_and_check(&progress);
+    } else {
+      profiler.increment_and_check();
+    }
   }
 }
 
