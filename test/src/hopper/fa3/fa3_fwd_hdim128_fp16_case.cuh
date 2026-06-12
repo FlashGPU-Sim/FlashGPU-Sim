@@ -54,12 +54,32 @@ static constexpr int kFa3PrefillCaseCount = 20;
 
 static constexpr int kFa3PrefillSmokeCaseCount = 4;
 
+#define FA3_PREFILL_SMALL_CASE_LIST(X)              \
+  X(H32D64FullB32S256, 32, 256, 32, 64, false)      \
+  X(H32D64CausalB32S256, 32, 256, 32, 64, true)     \
+  X(H16D128FullB32S256, 32, 256, 16, 128, false)    \
+  X(H16D128CausalB32S256, 32, 256, 16, 128, true)
+
+static constexpr int kFa3PrefillSmallCaseCount = 4;
+
+#define FA3_PREFILL_MEDIUM_CASE_LIST(X)             \
+  X(H32D64FullB16S512, 16, 512, 32, 64, false)      \
+  X(H32D64CausalB16S512, 16, 512, 32, 64, true)     \
+  X(H16D128FullB16S512, 16, 512, 16, 128, false)    \
+  X(H16D128CausalB16S512, 16, 512, 16, 128, true)
+
+static constexpr int kFa3PrefillMediumCaseCount = 4;
+
 #define FA3_PREFILL_CASE_ENTRY(name, batch, seqlen, heads, head_dim, causal) \
   Fa3PrefillCase{#name, batch, seqlen, heads, head_dim, causal},
 static constexpr Fa3PrefillCase kFa3PrefillCases[] = {
     FA3_PREFILL_CASE_LIST(FA3_PREFILL_CASE_ENTRY)};
 static constexpr Fa3PrefillCase kFa3PrefillSmokeCases[] = {
     FA3_PREFILL_SMOKE_CASE_LIST(FA3_PREFILL_CASE_ENTRY)};
+static constexpr Fa3PrefillCase kFa3PrefillSmallCases[] = {
+    FA3_PREFILL_SMALL_CASE_LIST(FA3_PREFILL_CASE_ENTRY)};
+static constexpr Fa3PrefillCase kFa3PrefillMediumCases[] = {
+    FA3_PREFILL_MEDIUM_CASE_LIST(FA3_PREFILL_CASE_ENTRY)};
 #undef FA3_PREFILL_CASE_ENTRY
 
 static_assert(sizeof(kFa3PrefillCases) / sizeof(kFa3PrefillCases[0]) ==
@@ -69,6 +89,14 @@ static_assert(sizeof(kFa3PrefillSmokeCases) /
                       sizeof(kFa3PrefillSmokeCases[0]) ==
                   kFa3PrefillSmokeCaseCount,
               "FA3 prefill smoke case list must contain 4 cases");
+static_assert(sizeof(kFa3PrefillSmallCases) /
+                      sizeof(kFa3PrefillSmallCases[0]) ==
+                  kFa3PrefillSmallCaseCount,
+              "FA3 prefill small case list must contain 4 cases");
+static_assert(sizeof(kFa3PrefillMediumCases) /
+                      sizeof(kFa3PrefillMediumCases[0]) ==
+                  kFa3PrefillMediumCaseCount,
+              "FA3 prefill medium case list must contain 4 cases");
 
 inline bool is_supported_fa3_prefill_case(const Fa3PrefillCase &cfg) {
   return cfg.batch > 0 && cfg.seqlen > 0 &&
@@ -91,6 +119,10 @@ inline bool is_valid_fa3_prefill_case(const Fa3PrefillCase &cfg) {
 inline bool is_valid_fa3_prefill_smoke_case(const Fa3PrefillCase &cfg) {
   return is_supported_fa3_prefill_case(cfg) &&
          cfg.batch == 2 && cfg.seqlen == 128;
+}
+
+inline bool is_valid_fa3_prefill_tuning_case(const Fa3PrefillCase &cfg) {
+  return is_supported_fa3_prefill_case(cfg) && cfg.seqlen % 128 == 0;
 }
 
 inline void fill_half(std::vector<cutlass::half_t> &x, float scale) {
