@@ -334,15 +334,19 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     set_thread_mbarrier_info(addr, (unsigned)-1, parity);
 
     /**
-     * The 3-operand form is a non-blocking predicate probe.  We conservatively
-     * report "not complete" so code falls through to its explicit blocking
-     * wait path.  The 4-operand form is modeled as the blocking wait point in
-     * timing, so it reports complete once the warp is released.
+     * Inline PTX commonly lowers mbarrier waits to an explicit software loop:
+     *
+     *   mbarrier.try_wait.parity ..., complete;
+     *   @!complete bra waitLoop;
+     *
+     * The timing model below already blocks and releases the warp at this
+     * instruction, so functional execution must let the loop exit. Otherwise,
+     * the warp re-enters the same try_wait forever after timing release.
      *
      * ! PTXPlus inverts the zero flag -- 0 means true, 1 means false !
      */
     ptx_reg_t pred;
-    pred.pred = (pI->get_num_operands() == 4) ? 0 : 1;
+    pred.pred = 0;
     thread->set_operand_value(pI->dst(), pred, PRED_TYPE, thread, pI);
 
   } else if (bar_op == ARRIVE_OPTION || bar_op == EXPECT_TX_OPTION) {
@@ -554,11 +558,6 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     return;
 
   } else if (bar_op == TRY_WAIT_OPTION) {
-
-    if (pI->get_num_operands() == 3) {
-      return;
-    }
-
     unsigned addr = 0;
     bool parity = false;
 
