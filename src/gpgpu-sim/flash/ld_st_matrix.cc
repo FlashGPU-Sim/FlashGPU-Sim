@@ -91,8 +91,15 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
     case X4_OPTION:
       num_matrixs = 4;
       break;
+    case B8_TYPE:
+    case B16_TYPE:
+      // Scalar type is consumed below from pI->get_scalar_type(). Depending on
+      // the PTX grammar path, the same type token can also appear in options.
+      break;
     default:
-      printf("%s: unknown option %d\n", inst_name, option);
+      fprintf(stderr, "%s: unknown option %d in %s\n", inst_name, option,
+              pI->to_string().c_str());
+      fflush(stderr);
       abort();
     }
   }
