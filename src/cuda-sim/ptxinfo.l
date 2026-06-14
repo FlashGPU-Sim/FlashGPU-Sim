@@ -52,6 +52,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 %%
 "ptxas info    : Function properties for"[^\n]*\n[^\n]*
+"ptxas info    : ("[A-Z][0-9]+")"[^\n]*
+"ptxas info    : "[A-Z][0-9]+[^\n]*
 "warning"[^\n]* TC; return WARNING;
 "ptxas"	TC; 	return HEADER;
 "info"	TC; 	return INFO;
