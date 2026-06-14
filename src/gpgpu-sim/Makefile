@@ -135,7 +135,7 @@ clean:
 
 $(OUTPUT_DIR)/option_parser.$(OEXT): option_parser.h
 
-$(OUTPUT_DIR)/dram_sched.$(OEXT): $(OUTPUT_DIR)/../cuda-sim/ptx.tab.h
+$(OBJS): $(OUTPUT_DIR)/../cuda-sim/ptx.tab.h
 
 $(OUTPUT_DIR)/../cuda-sim/ptx.tab.h:
 	make -C ../cuda-sim/ $(OUTPUT_DIR)/../cuda-sim/ptx.tab.c
