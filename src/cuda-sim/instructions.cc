@@ -1508,14 +1508,22 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
           op_result.u32 = MY_MIN_I(data.u32, src2_data.u32);
           data_ready = true;
           break;
+        case U64_TYPE:
+          op_result.u64 = MY_MIN_I(data.u64, src2_data.u64);
+          data_ready = true;
+          break;
         case S32_TYPE:
           op_result.s32 = MY_MIN_I(data.s32, src2_data.s32);
+          data_ready = true;
+          break;
+        case S64_TYPE:
+          op_result.s64 = MY_MIN_I(data.s64, src2_data.s64);
           data_ready = true;
           break;
         default:
           printf(
               "Execution error: type mismatch with instruction\natom.MIN only "
-              "accepts u32 and s32\n");
+              "accepts u32, u64, s32, and s64\n");
           assert(0);
           break;
       }
@@ -1529,14 +1537,22 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
           op_result.u32 = MY_MAX_I(data.u32, src2_data.u32);
           data_ready = true;
           break;
+        case U64_TYPE:
+          op_result.u64 = MY_MAX_I(data.u64, src2_data.u64);
+          data_ready = true;
+          break;
         case S32_TYPE:
           op_result.s32 = MY_MAX_I(data.s32, src2_data.s32);
+          data_ready = true;
+          break;
+        case S64_TYPE:
+          op_result.s64 = MY_MAX_I(data.s64, src2_data.s64);
           data_ready = true;
           break;
         default:
           printf(
               "Execution error: type mismatch with instruction\natom.MAX only "
-              "accepts u32 and s32\n");
+              "accepts u32, u64, s32, and s64\n");
           assert(0);
           break;
       }
