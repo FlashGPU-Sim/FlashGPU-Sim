@@ -187,11 +187,13 @@ class ptx_recognizer;
 %token RED_OPTION
 %token ARRIVE_OPTION
 %token EXPECT_TX_OPTION
+%token COMPLETE_TX_OPTION
 %token INIT_OPTION
 %token TRY_WAIT_OPTION
 %token WAIT_OPTION
 %token PARITY_OPTION
 %token TMA_MBAR_COMPLETE_BYTES
+%token RELAXED_OPTION
 %token COMMIT_GROUP_OPTION
 %token WAIT_GROUP_OPTION
 %token LAUNCH_DEPENDENTS_OPTION
@@ -590,6 +592,7 @@ option: type_spec
 	| SYNC_OPTION { recognizer->add_option(SYNC_OPTION); }
 	| ARRIVE_OPTION { recognizer->add_option(ARRIVE_OPTION); }
 	| EXPECT_TX_OPTION { recognizer->add_option(EXPECT_TX_OPTION); }
+	| COMPLETE_TX_OPTION { recognizer->add_option(COMPLETE_TX_OPTION); }
 	| RED_OPTION { recognizer->add_option(RED_OPTION); }
 	| INIT_OPTION { recognizer->add_option(INIT_OPTION); }
 	| TRY_WAIT_OPTION { recognizer->add_option(TRY_WAIT_OPTION); }
@@ -660,6 +663,7 @@ option: type_spec
 	| FILL_MODE_OPTION { recognizer->add_option(FILL_MODE_OPTION); }
 	| CP_FENCEPROXY_OPTION { recognizer->add_option(CP_FENCEPROXY_OPTION); }
 	| RELEASE_OPTION { recognizer->add_option(RELEASE_OPTION); }
+	| RELAXED_OPTION { recognizer->add_option(RELAXED_OPTION); }
 	| ACQUIRE_OPTION { recognizer->add_option(ACQUIRE_OPTION); }
 	| GPU_OPTION { recognizer->add_option(GPU_OPTION); }
 	| L2_CACHE_HINT_OPTION { recognizer->add_option(L2_CACHE_HINT_OPTION); }

@@ -1452,6 +1452,7 @@ ptx_instruction::ptx_instruction(
       case INVAL_OPTION:
       case TRY_WAIT_OPTION:
       case EXPECT_TX_OPTION:
+      case COMPLETE_TX_OPTION:
         m_barrier_op = last_ptx_inst_option;
         break;
       case PARITY_OPTION:
@@ -1647,6 +1648,7 @@ ptx_instruction::ptx_instruction(
       case FILL_MODE_OPTION:
       case CP_FENCEPROXY_OPTION:
       case RELEASE_OPTION:
+      case RELAXED_OPTION:
       case ACQUIRE_OPTION:
       case GPU_OPTION:
       case L2_CACHE_HINT_OPTION:

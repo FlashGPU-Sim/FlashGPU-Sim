@@ -430,6 +430,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.sync TC; return SYNC_OPTION;
 \.arrive TC; return ARRIVE_OPTION;
 \.expect_tx TC; return EXPECT_TX_OPTION;
+\.complete_tx TC; return COMPLETE_TX_OPTION;
 \.red TC; return RED_OPTION;
 
 \.clamp	TC; return CLAMP_OPTION;
@@ -485,6 +486,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.fill_mode TC; return FILL_MODE_OPTION;
 \.cp_fenceproxy TC; return CP_FENCEPROXY_OPTION;
 \.release TC; return RELEASE_OPTION;
+\.relaxed TC; return RELAXED_OPTION;
 \.acquire TC; return ACQUIRE_OPTION;
 \.gpu TC; return GPU_OPTION;
 \.L2::128B TC; return L2_OPTION;
