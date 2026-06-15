@@ -23,9 +23,9 @@ dyn_ptx_inst_manager::dyn_ptx_inst_manager() : m_thread_cnt(1) {
 
 dyn_ptx_inst_manager::~dyn_ptx_inst_manager() {
   for (auto &thread_inst_mem : m_all_inst_mem) {
-    for (auto &inst : thread_inst_mem) {
-      if (inst) {
-        delete inst;
+    for (auto &entry : thread_inst_mem) {
+      if (entry.second) {
+        delete entry.second;
       }
     }
   }
@@ -39,18 +39,17 @@ dyn_ptx_inst_manager::get_or_allocate(int thread_id, uint64_t pc,
     abort();
   }
   auto &thread_inst_mem = m_all_inst_mem[thread_id];
-  if (pc >= thread_inst_mem.size()) {
-    thread_inst_mem.resize(pc + 1, nullptr);
-  }
-  if (thread_inst_mem[pc] == nullptr) {
+  auto it = thread_inst_mem.find(pc);
+  if (it == thread_inst_mem.end()) {
     // allocate a new dynamic instruction
-    thread_inst_mem[pc] = new ptx_instruction(*static_inst);
+    auto *inst = new ptx_instruction(*static_inst);
+    it = thread_inst_mem.emplace(pc, inst).first;
 #ifdef FLASH_GPGPU_SIM_OMP
     // printf("GPGPU-Sim PTX: Thread %d allocated dyn ptx_inst for PC 0x%llx\n",
     //        thread_id, pc);
 #endif
   }
-  return thread_inst_mem[pc];
+  return it->second;
 }
 
 const ptx_instruction *
@@ -69,13 +68,11 @@ void dyn_ptx_inst_manager::update_predecoded_inst_impl(
     uint64_t pc, ptx_instruction *static_inst) {
   for (int thread_id = 0; thread_id < m_thread_cnt; thread_id++) {
     auto &thread_inst_mem = m_all_inst_mem[thread_id];
-    if (pc >= thread_inst_mem.size()) {
+    auto it = thread_inst_mem.find(pc);
+    if (it == thread_inst_mem.end()) {
       continue;
     }
-    if (thread_inst_mem[pc] == nullptr) {
-      continue;
-    }
-    *thread_inst_mem[pc] = *static_inst;
+    *it->second = *static_inst;
 #ifdef FLASH_GPGPU_SIM_OMP
     // printf("GPGPU-Sim PTX: Thread %d updated dyn ptx_inst for PC 0x%llx\n",
     //        thread_id, pc);

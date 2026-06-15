@@ -136,6 +136,7 @@ class shd_warp_t {
 
     // Ni: Initialize ldgdepbar_id
     m_ldgdepbar_id = 0;
+    m_ldgdepbar_buf_base_id = 0;
     m_depbar_start_id = 0;
     m_depbar_group = 0;
 
@@ -168,6 +169,7 @@ class shd_warp_t {
 
     // Ni: Initialize ldgdepbar_id
     m_ldgdepbar_id = 0;
+    m_ldgdepbar_buf_base_id = 0;
     m_depbar_start_id = 0;
     m_depbar_group = 0;
 
@@ -332,6 +334,7 @@ class shd_warp_t {
   // Ni: LDGDEPBAR barrier support
  public:
   unsigned int m_ldgdepbar_id;  // LDGDEPBAR barrier ID
+  unsigned int m_ldgdepbar_buf_base_id;
   std::vector<std::vector<warp_inst_t>>
       m_ldgdepbar_buf;  // LDGDEPBAR barrier buffer
   unsigned int m_depbar_start_id;
@@ -1509,7 +1512,7 @@ class ldst_unit : public pipelined_simd_unit {
    */
   std::map<unsigned /*warp_id*/,
            std::map<unsigned /*pc*/,
-                    std::map<unsigned /*addr*/, unsigned /*count*/>>>
+                    std::map<new_addr_type /*addr*/, unsigned /*count*/>>>
       m_pending_ldgsts;
   // modifiers
   virtual void issue(register_set &inst);
@@ -1585,6 +1588,8 @@ class ldst_unit : public pipelined_simd_unit {
       cache_t *cache, new_addr_type address, warp_inst_t &inst,
       std::list<cache_event> &events, mem_fetch *mf,
       enum cache_request_status status);
+  unsigned dec_pending_ldgsts(const warp_inst_t &inst);
+  unsigned pending_ldgsts_count(const warp_inst_t &inst) const;
   mem_stage_stall_type process_memory_access_queue(cache_t *cache,
                                                    warp_inst_t &inst);
   mem_stage_stall_type process_memory_access_queue_l1cache(l1_cache *cache,

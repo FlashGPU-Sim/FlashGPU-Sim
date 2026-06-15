@@ -40,6 +40,8 @@
 #include <map>
 #include <set>
 #include <string>
+#include <stdint.h>
+#include <vector>
 
 #include "memory.h"
 
@@ -159,6 +161,115 @@ class operand_info;
 class symbol_table;
 class function_info;
 class ptx_thread_info;
+class symbol;
+
+class compact_reg_map_t {
+ public:
+  struct value_type {
+    const symbol *first;
+    ptx_reg_t second;
+  };
+
+  typedef std::vector<value_type>::iterator iterator;
+  typedef std::vector<value_type>::const_iterator const_iterator;
+
+  iterator begin() { return m_entries.begin(); }
+  iterator end() { return m_entries.end(); }
+  const_iterator begin() const { return m_entries.begin(); }
+  const_iterator end() const { return m_entries.end(); }
+
+  bool empty() const { return m_entries.empty(); }
+  size_t size() const { return m_entries.size(); }
+  size_t bucket_count() const { return m_buckets.size(); }
+  void clear() {
+    m_entries.clear();
+    m_buckets.clear();
+  }
+
+  iterator find(const symbol *key) {
+    size_t index = find_entry_index(key);
+    return index == kNotFound ? m_entries.end() : m_entries.begin() + index;
+  }
+
+  const_iterator find(const symbol *key) const {
+    size_t index = find_entry_index(key);
+    return index == kNotFound ? m_entries.end() : m_entries.begin() + index;
+  }
+
+  ptx_reg_t &operator[](const symbol *key) {
+    size_t index = find_entry_index(key);
+    if (index != kNotFound) return m_entries[index].second;
+
+    reserve_for_insert(m_entries.size() + 1);
+    size_t bucket = find_insert_bucket(key);
+    uint32_t entry_index = static_cast<uint32_t>(m_entries.size());
+    m_entries.push_back(value_type{key, ptx_reg_t()});
+    m_buckets[bucket] = entry_index + 1;
+    return m_entries.back().second;
+  }
+
+ private:
+  static const size_t kNotFound = static_cast<size_t>(-1);
+
+  static size_t hash_key(const symbol *key) {
+    uintptr_t x = reinterpret_cast<uintptr_t>(key);
+    x ^= x >> 33;
+    x *= static_cast<uintptr_t>(0xff51afd7ed558ccdULL);
+    x ^= x >> 33;
+    x *= static_cast<uintptr_t>(0xc4ceb9fe1a85ec53ULL);
+    x ^= x >> 33;
+    return static_cast<size_t>(x);
+  }
+
+  bool has_capacity_for(size_t entries) const {
+    return !m_buckets.empty() && entries * 5 <= m_buckets.size() * 4;
+  }
+
+  void reserve_for_insert(size_t entries) {
+    if (has_capacity_for(entries)) return;
+    size_t new_bucket_count = entries * 2 + 1;
+    if (new_bucket_count < 16) new_bucket_count = 16;
+    rehash(new_bucket_count);
+  }
+
+  void rehash(size_t bucket_count) {
+    std::vector<uint32_t> new_buckets(bucket_count, 0);
+    for (uint32_t i = 0; i < m_entries.size(); i++) {
+      size_t bucket = hash_key(m_entries[i].first) % bucket_count;
+      while (new_buckets[bucket] != 0) {
+        bucket++;
+        if (bucket == bucket_count) bucket = 0;
+      }
+      new_buckets[bucket] = i + 1;
+    }
+    m_buckets.swap(new_buckets);
+  }
+
+  size_t find_entry_index(const symbol *key) const {
+    if (m_buckets.empty()) return kNotFound;
+    size_t bucket = hash_key(key) % m_buckets.size();
+    while (true) {
+      uint32_t entry_plus_one = m_buckets[bucket];
+      if (entry_plus_one == 0) return kNotFound;
+      size_t entry_index = entry_plus_one - 1;
+      if (m_entries[entry_index].first == key) return entry_index;
+      bucket++;
+      if (bucket == m_buckets.size()) bucket = 0;
+    }
+  }
+
+  size_t find_insert_bucket(const symbol *key) const {
+    size_t bucket = hash_key(key) % m_buckets.size();
+    while (m_buckets[bucket] != 0) {
+      bucket++;
+      if (bucket == m_buckets.size()) bucket = 0;
+    }
+    return bucket;
+  }
+
+  std::vector<value_type> m_entries;
+  std::vector<uint32_t> m_buckets;
+};
 
 class ptx_cta_info {
  public:
@@ -395,7 +506,7 @@ class ptx_thread_info {
   unsigned long long get_builtin_u64(int builtin_id, unsigned dim_mod);
 
   void set_done();
-  bool is_done() { return m_thread_done; }
+  bool is_done() const { return m_thread_done; }
   unsigned donecycle() const { return m_cycle_done; }
 
   unsigned next_instr() {
@@ -519,11 +630,12 @@ class ptx_thread_info {
 
   symbol_table *m_symbol_table;
   function_info *m_func_info;
+  const symbol *canonicalize_reg(const symbol *reg) const;
 
   std::list<stack_entry> m_callstack;
   unsigned m_local_mem_stack_pointer;
 
-  typedef tr1_hash_map<const symbol *, ptx_reg_t> reg_map_t;
+  typedef compact_reg_map_t reg_map_t;
   std::list<reg_map_t> m_regs;
   std::list<reg_map_t> m_debug_trace_regs_modified;
   std::list<reg_map_t> m_debug_trace_regs_read;

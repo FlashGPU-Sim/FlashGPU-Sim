@@ -82,6 +82,47 @@ mem_fetch *shader_core_mem_fetch_allocator::alloc(
 }
 /////////////////////////////////////////////////////////////////////////////
 
+static void ensure_ldgdepbar_group(shd_warp_t *warp, unsigned group_id) {
+  assert(group_id >= warp->m_ldgdepbar_buf_base_id);
+  size_t index = group_id - warp->m_ldgdepbar_buf_base_id;
+  while (warp->m_ldgdepbar_buf.size() <= index) {
+    warp->m_ldgdepbar_buf.push_back(std::vector<warp_inst_t>());
+  }
+}
+
+static bool ldgdepbar_groups_done(const shd_warp_t *warp,
+                                  unsigned end_group) {
+  unsigned group_id = warp->m_ldgdepbar_buf_base_id;
+  if (end_group <= group_id) return true;
+  assert(end_group - group_id <= warp->m_ldgdepbar_buf.size());
+
+  for (; group_id < end_group; ++group_id) {
+    size_t index = group_id - warp->m_ldgdepbar_buf_base_id;
+    for (size_t j = 0; j < warp->m_ldgdepbar_buf[index].size(); j++) {
+      if (warp->m_ldgdepbar_buf[index][j].pc != (address_type)-1) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static void retire_ldgdepbar_groups(shd_warp_t *warp, unsigned end_group) {
+  if (end_group <= warp->m_ldgdepbar_buf_base_id) return;
+
+  size_t retire_count = end_group - warp->m_ldgdepbar_buf_base_id;
+  assert(retire_count <= warp->m_ldgdepbar_buf.size());
+  warp->m_ldgdepbar_buf.erase(warp->m_ldgdepbar_buf.begin(),
+                              warp->m_ldgdepbar_buf.begin() + retire_count);
+  warp->m_ldgdepbar_buf_base_id += retire_count;
+}
+
+static void update_ldgdepbar_wait(shd_warp_t *warp, unsigned end_group) {
+  if (!ldgdepbar_groups_done(warp, end_group)) return;
+  warp->m_waiting_ldgsts = false;
+  retire_ldgdepbar_groups(warp, end_group);
+}
+
 std::list<unsigned> shader_core_ctx::get_regs_written(const inst_t &fvt) const {
   std::list<unsigned> result;
   for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
@@ -1603,18 +1644,14 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   unsigned int ldgdepbar_id = m_warp[warp_id]->m_ldgdepbar_id;
   if (next_inst->m_is_ldgsts) {
     const warp_inst_t &ldgsts_inst = **pipe_reg;
-    if (m_warp[warp_id]->m_ldgdepbar_buf.size() == ldgdepbar_id + 1) {
-      m_warp[warp_id]->m_ldgdepbar_buf[ldgdepbar_id].push_back(ldgsts_inst);
-    } else {
-      assert(m_warp[warp_id]->m_ldgdepbar_buf.size() < ldgdepbar_id + 1);
-      std::vector<warp_inst_t> l;
-      l.push_back(ldgsts_inst);
-      m_warp[warp_id]->m_ldgdepbar_buf.push_back(l);
-    }
+    ensure_ldgdepbar_group(m_warp[warp_id], ldgdepbar_id);
+    unsigned int group_idx =
+        ldgdepbar_id - m_warp[warp_id]->m_ldgdepbar_buf_base_id;
+    m_warp[warp_id]->m_ldgdepbar_buf[group_idx].push_back(ldgsts_inst);
     // If the mask of the instruction is all 0, then the address is also 0,
     // so that there's no need to check through the writeback
     if (ldgsts_inst.get_active_mask() == 0) {
-      (m_warp[warp_id]->m_ldgdepbar_buf.back()).back().pc = -1;
+      m_warp[warp_id]->m_ldgdepbar_buf[group_idx].back().pc = -1;
     }
   }
 
@@ -1661,13 +1698,8 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   } else if (next_inst->op == MEMORY_BARRIER_OP) {
     m_warp[warp_id]->set_membar();
   } else if (next_inst->m_is_ldgdepbar) {  // Add for LDGDEPBAR
+    ensure_ldgdepbar_group(m_warp[warp_id], ldgdepbar_id);
     m_warp[warp_id]->m_ldgdepbar_id++;
-    // If there are no added LDGSTS, insert an empty vector
-    if (m_warp[warp_id]->m_ldgdepbar_buf.size() != ldgdepbar_id + 1) {
-      assert(m_warp[warp_id]->m_ldgdepbar_buf.size() < ldgdepbar_id + 1);
-      std::vector<warp_inst_t> l;
-      m_warp[warp_id]->m_ldgdepbar_buf.push_back(l);
-    }
   } else if (next_inst->m_is_depbar) {  // Add for DEPBAR
     // Set to true immediately when a DEPBAR instruction is met
     m_warp[warp_id]->m_waiting_ldgsts = true;
@@ -1680,27 +1712,14 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 
     // Record the last group that's actually being monitored by this DEPBAR
     // instr
+    assert(m_warp[warp_id]->m_ldgdepbar_id >=
+           m_warp[warp_id]->m_depbar_group);
     unsigned int end_group =
         m_warp[warp_id]->m_ldgdepbar_id - m_warp[warp_id]->m_depbar_group;
 
     // Check for the case that the LDGSTSs monitored have finished when
     // encountering the DEPBAR instruction
-    bool done_flag = true;
-    for (unsigned i = 0; i < end_group; i++) {
-      for (size_t j = 0; j < m_warp[warp_id]->m_ldgdepbar_buf[i].size(); j++) {
-        if (m_warp[warp_id]->m_ldgdepbar_buf[i][j].pc != (address_type)-1) {
-          done_flag = false;
-          goto UpdateDEPBAR;
-        }
-      }
-    }
-
-  UpdateDEPBAR:
-    if (done_flag) {
-      if (m_warp[warp_id]->m_waiting_ldgsts) {
-        m_warp[warp_id]->m_waiting_ldgsts = false;
-      }
-    }
+    update_ldgdepbar_wait(m_warp[warp_id], end_group);
   }
 
   updateSIMTStack(warp_id, *pipe_reg);
@@ -2759,39 +2778,24 @@ void ldst_unit::get_L1T_sub_stats(struct cache_sub_stats &css) const {
 
 // Add this function to unset depbar
 void shader_core_ctx::unset_depbar(const warp_inst_t &inst) {
-  bool done_flag = true;
-  unsigned int end_group = m_warp[inst.warp_id()]->m_depbar_start_id == 0
-                               ? m_warp[inst.warp_id()]->m_ldgdepbar_buf.size()
-                               : (m_warp[inst.warp_id()]->m_depbar_start_id -
-                                  m_warp[inst.warp_id()]->m_depbar_group + 1);
+  shd_warp_t *warp = m_warp[inst.warp_id()];
+  unsigned int end_group =
+      warp->m_depbar_start_id == 0
+          ? warp->m_ldgdepbar_buf_base_id + warp->m_ldgdepbar_buf.size()
+          : (warp->m_depbar_start_id - warp->m_depbar_group + 1);
 
   if (inst.m_is_ldgsts) {
-    for (size_t i = 0; i < m_warp[inst.warp_id()]->m_ldgdepbar_buf.size(); i++) {
-      for (size_t j = 0; j < m_warp[inst.warp_id()]->m_ldgdepbar_buf[i].size();
-           j++) {
-        if (m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc == inst.pc &&
-            m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].get_addr(0) ==
-                inst.get_addr(0)) {
-          m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc = (address_type)-1;
+    for (size_t i = 0; i < warp->m_ldgdepbar_buf.size(); i++) {
+      for (size_t j = 0; j < warp->m_ldgdepbar_buf[i].size(); j++) {
+        if (warp->m_ldgdepbar_buf[i][j].pc == inst.pc &&
+            warp->m_ldgdepbar_buf[i][j].get_addr(0) == inst.get_addr(0)) {
+          warp->m_ldgdepbar_buf[i][j].pc = (address_type)-1;
         }
       }
     }
 
-    for (unsigned i = 0; i < end_group; i++) {
-      for (size_t j = 0; j < m_warp[inst.warp_id()]->m_ldgdepbar_buf[i].size();
-           j++) {
-        if (m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc != (address_type)-1) {
-          done_flag = false;
-          goto UpdateDEPBAR;
-        }
-      }
-    }
-
-  UpdateDEPBAR:
-    if (done_flag) {
-      if (m_warp[inst.warp_id()]->m_waiting_ldgsts) {
-        m_warp[inst.warp_id()]->m_waiting_ldgsts = false;
-      }
+    if (warp->m_waiting_ldgsts) {
+      update_ldgdepbar_wait(warp, end_group);
     }
   }
 }
@@ -2922,8 +2926,7 @@ mem_stage_stall_type ldst_unit::process_cache_access(
 
       // release LDGSTS
       if (inst.m_is_ldgsts) {
-        m_pending_ldgsts[inst.warp_id()][inst.pc][inst.get_addr(0)]--;
-        if (m_pending_ldgsts[inst.warp_id()][inst.pc][inst.get_addr(0)] == 0) {
+        if (dec_pending_ldgsts(inst) == 0) {
           m_core->unset_depbar(inst);
         }
       }
@@ -2942,6 +2945,38 @@ mem_stage_stall_type ldst_unit::process_cache_access(
   }
   if (!inst.accessq_empty() && result == NO_RC_FAIL) result = COAL_STALL;
   return result;
+}
+
+unsigned ldst_unit::dec_pending_ldgsts(const warp_inst_t &inst) {
+  auto warp_it = m_pending_ldgsts.find(inst.warp_id());
+  assert(warp_it != m_pending_ldgsts.end());
+  auto pc_it = warp_it->second.find(inst.pc);
+  assert(pc_it != warp_it->second.end());
+  auto addr_it = pc_it->second.find(inst.get_addr(0));
+  assert(addr_it != pc_it->second.end());
+  assert(addr_it->second > 0);
+
+  unsigned remaining = --addr_it->second;
+  if (remaining == 0) {
+    pc_it->second.erase(addr_it);
+    if (pc_it->second.empty()) {
+      warp_it->second.erase(pc_it);
+      if (warp_it->second.empty()) {
+        m_pending_ldgsts.erase(warp_it);
+      }
+    }
+  }
+  return remaining;
+}
+
+unsigned ldst_unit::pending_ldgsts_count(const warp_inst_t &inst) const {
+  auto warp_it = m_pending_ldgsts.find(inst.warp_id());
+  if (warp_it == m_pending_ldgsts.end()) return 0;
+  auto pc_it = warp_it->second.find(inst.pc);
+  if (pc_it == warp_it->second.end()) return 0;
+  auto addr_it = pc_it->second.find(inst.get_addr(0));
+  if (addr_it == pc_it->second.end()) return 0;
+  return addr_it->second;
 }
 
 mem_stage_stall_type ldst_unit::process_memory_access_queue(cache_t *cache,
@@ -3058,12 +3093,7 @@ void ldst_unit::L1_latency_queue_cycle() {
 
           // release LDGSTS
           if (mf_next->get_inst().m_is_ldgsts) {
-            m_pending_ldgsts[mf_next->get_inst().warp_id()]
-                            [mf_next->get_inst().pc]
-                            [mf_next->get_inst().get_addr(0)]--;
-            if (m_pending_ldgsts[mf_next->get_inst().warp_id()]
-                                [mf_next->get_inst().pc]
-                                [mf_next->get_inst().get_addr(0)] == 0) {
+            if (dec_pending_ldgsts(mf_next->get_inst()) == 0) {
               m_core->unset_depbar(mf_next->get_inst());
             }
           }
@@ -3659,10 +3689,7 @@ void ldst_unit::writeback() {
           if (m_next_wb.active_count() == 0) {
             insn_completed = true;
           } else {
-            m_pending_ldgsts[m_next_wb.warp_id()][m_next_wb.pc]
-                            [m_next_wb.get_addr(0)]--;
-            if (m_pending_ldgsts[m_next_wb.warp_id()][m_next_wb.pc]
-                                [m_next_wb.get_addr(0)] == 0) {
+            if (dec_pending_ldgsts(m_next_wb) == 0) {
               insn_completed = true;
             }
           }
@@ -3904,8 +3931,7 @@ void ldst_unit::cycle() {
           // release LDGSTS
           if (m_dispatch_reg->m_is_ldgsts) {
             // m_pending_ldgsts[m_dispatch_reg->warp_id()][m_dispatch_reg->pc][m_dispatch_reg->get_addr(0)]--;
-            if (m_pending_ldgsts[m_dispatch_reg->warp_id()][m_dispatch_reg->pc]
-                                [m_dispatch_reg->get_addr(0)] == 0) {
+            if (pending_ldgsts_count(*m_dispatch_reg) == 0) {
               m_core->unset_depbar(*m_dispatch_reg);
             }
           }

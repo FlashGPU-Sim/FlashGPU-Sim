@@ -10,6 +10,7 @@
  * This wastes space, but it is simple and effective.
  */
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 class ptx_instruction;
@@ -35,7 +36,7 @@ public:
   ~dyn_ptx_inst_manager();
 
 private:
-  using thread_inst_mem_t = std::vector<ptx_instruction *>;
+  using thread_inst_mem_t = std::unordered_map<uint64_t, ptx_instruction *>;
   using all_inst_mem_t = std::vector<thread_inst_mem_t>;
   int m_thread_cnt;
 
