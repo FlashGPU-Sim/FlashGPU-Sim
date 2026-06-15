@@ -860,7 +860,8 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == CALL_OP) || (m_opcode == TENSORMAP_OP) || (m_opcode == FENCE_OP) ||
       (m_opcode == GRIDDEPCONTROL_OP) || (m_opcode == ELECT_OP) ||
       (m_opcode == LDMATRIX_OP) || (m_opcode == STMATRIX_OP) ||
-      (m_opcode == CP_ASYNC_OP) || (m_opcode == WGMMA_FENCE_OP) ||
+      (m_opcode == CP_ASYNC_OP) || (m_opcode == CP_ASYNC_COMMIT_OP) ||
+      (m_opcode == CP_ASYNC_WAIT_OP) || (m_opcode == WGMMA_FENCE_OP) ||
       (m_opcode == WGMMA_COMMIT_GROUP_OP) || (m_opcode == WGMMA_WAIT_GROUP_OP) ||
       (m_opcode == SETMAXNREG_OP) || (m_opcode == PREFETCH_OP) ||
       (m_opcode == PREFETCHU_OP)) {
@@ -890,7 +891,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != CALL_OP) && (m_opcode != TENSORMAP_OP) && (m_opcode != FENCE_OP) &&
       (m_opcode != GRIDDEPCONTROL_OP) && (m_opcode != ELECT_OP) &&
       (m_opcode != LDMATRIX_OP) && (m_opcode != STMATRIX_OP) &&
-      (m_opcode != CP_ASYNC_OP) && (m_opcode != WGMMA_FENCE_OP) &&
+      (m_opcode != CP_ASYNC_OP) && (m_opcode != CP_ASYNC_COMMIT_OP) &&
+      (m_opcode != CP_ASYNC_WAIT_OP) && (m_opcode != WGMMA_FENCE_OP) &&
       (m_opcode != WGMMA_COMMIT_GROUP_OP) && (m_opcode != WGMMA_WAIT_GROUP_OP) &&
       (m_opcode != SETMAXNREG_OP) && (m_opcode != PREFETCH_OP) &&
       (m_opcode != PREFETCHU_OP)) {
@@ -1241,6 +1243,9 @@ void ptx_instruction::set_opcode_and_latency() {
       break;
     case LDU_OP:
       op = LOAD_OP;
+      break;
+    case CP_ASYNC_OP:
+      op = m_is_ldgsts ? LOAD_OP : ALU_OP;
       break;
     case ST_OP:
       op = STORE_OP;
@@ -1645,7 +1650,33 @@ void ptx_instruction::pre_decode() {
   space = m_space_spec;
   memory_op = no_memory_op;
   data_size = 0;
-  if (has_memory_read() || has_memory_write()) {
+  if (m_opcode == CP_ASYNC_OP || m_opcode == CP_ASYNC_COMMIT_OP ||
+      m_opcode == CP_ASYNC_WAIT_OP) {
+    bool is_commit = (m_opcode == CP_ASYNC_COMMIT_OP);
+    bool is_wait = (m_opcode == CP_ASYNC_WAIT_OP);
+    unsigned wait_n = 0;
+    for (int opt : get_options()) {
+      if (opt == COMMIT_GROUP_OPTION) is_commit = true;
+      if (opt == WAIT_GROUP_OPTION) is_wait = true;
+    }
+
+    if (is_wait) {
+      m_is_depbar = true;
+      if (m_opcode == CP_ASYNC_OP && get_num_operands() > 0 &&
+          operand_lookup(0).is_literal()) {
+        wait_n = (unsigned)operand_lookup(0).get_literal_value().u64;
+      }
+      m_depbar_group_no = wait_n;
+    } else if (is_commit) {
+      m_is_ldgdepbar = true;
+    } else {
+      m_is_ldgsts = true;
+      memory_op = memory_load;
+      if (get_num_operands() > 2 && src2().is_literal()) {
+        data_size = (unsigned)src2().get_literal_value().u64;
+      }
+    }
+  } else if (has_memory_read() || has_memory_write()) {
     unsigned to_type = get_type();
     data_size = datatype2size(to_type);
     memory_op = has_memory_read() ? memory_load : memory_store;
@@ -2506,8 +2537,12 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
         insn_memaddr = last_eaddr();
         insn_space = last_space();
-        unsigned to_type = pI->get_type();
-        insn_data_size = datatype2size(to_type);
+        if (pI->m_is_ldgsts) {
+          insn_data_size = pI->data_size;
+        } else {
+          unsigned to_type = pI->get_type();
+          insn_data_size = datatype2size(to_type);
+        }
         insn_memory_op = pI->has_memory_read() ? memory_load : memory_store;
       }
     }

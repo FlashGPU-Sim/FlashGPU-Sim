@@ -1232,6 +1232,7 @@ class ptx_instruction : public warp_inst_t {
     if (m_opcode == LD_OP || m_opcode == LDU_OP || m_opcode == TEX_OP ||
         m_opcode == MMA_LD_OP)
       return true;
+    if (m_is_ldgsts) return true;
     // Check PTXPlus operand type below
     // Source operands are memory operands
     ptx_instruction::const_iterator op = op_iter_begin();

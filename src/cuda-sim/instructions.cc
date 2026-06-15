@@ -1759,22 +1759,48 @@ void stmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
 }
 
 void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  int opcode = pI->get_opcode();
-  if (opcode == CP_ASYNC_COMMIT_OP) {
-    printf(
-        "GPGPU-Sim PTX: ERROR (%s:%u) cp.async.commit_group not yet "
-        "implemented\n",
-        pI->source_file(), pI->source_line());
-    abort();
-  } else if (opcode == CP_ASYNC_WAIT_OP) {
-    printf(
-        "GPGPU-Sim PTX: ERROR (%s:%u) cp.async.wait_all not yet "
-        "implemented\n",
-        pI->source_file(), pI->source_line());
-    abort();
+  const int opcode = pI->get_opcode();
+  if (opcode == CP_ASYNC_COMMIT_OP || opcode == CP_ASYNC_WAIT_OP) return;
+
+  for (int opt : pI->get_options()) {
+    if (opt == COMMIT_GROUP_OPTION || opt == WAIT_GROUP_OPTION) return;
   }
-  // CP_ASYNC_OP: cp.async.shared.global
-  inst_not_implemented(pI);
+
+  const operand_info &dst = pI->dst();
+  const operand_info &src = pI->src1();
+
+  addr_t smem_addr =
+      thread->get_operand_value(dst, dst, U64_TYPE, thread, 1).u64;
+  addr_t gmem_addr =
+      thread->get_operand_value(src, dst, U64_TYPE, thread, 1).u64;
+  smem_addr &= 0x00000000FFFFFFFFULL;
+
+  unsigned cp_size = 16;
+  const operand_info &cp_size_op = pI->src2();
+  if (cp_size_op.is_literal()) {
+    cp_size = (unsigned)cp_size_op.get_literal_value().u64;
+  }
+  assert((cp_size == 4 || cp_size == 8 || cp_size == 16) &&
+         "cp.async cp-size must be 4, 8, or 16 bytes");
+
+  unsigned src_size = cp_size;
+  if (pI->get_num_operands() > 3) {
+    const operand_info &src_size_op = pI->src3();
+    if (src_size_op.is_literal()) {
+      src_size = (unsigned)src_size_op.get_literal_value().u64;
+    }
+  }
+  if (src_size > cp_size) src_size = cp_size;
+
+  memory_space *gmem = thread->get_global_memory();
+  memory_space *smem = thread->m_shared_mem;
+
+  unsigned char buf[16] = {0};
+  if (src_size > 0) gmem->read(gmem_addr, src_size, buf);
+  smem->write(smem_addr, cp_size, buf, thread, pI);
+
+  thread->m_last_effective_address = gmem_addr;
+  thread->m_last_memory_space = global_space;
 }
 
 void bfe_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
