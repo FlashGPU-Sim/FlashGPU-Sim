@@ -5962,6 +5962,27 @@ void sin_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   thread->set_operand_value(dst, d, i_type, thread, pI);
 }
 
+void tanh_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t a, d;
+  const operand_info &dst = pI->dst();
+  const operand_info &src1 = pI->src1();
+
+  unsigned i_type = pI->get_type();
+  a = thread->get_operand_value(src1, dst, i_type, thread, 1);
+
+  switch (i_type) {
+    case F32_TYPE:
+      d.f32 = tanhf(a.f32);
+      break;
+    default:
+      printf("Execution error: type mismatch with instruction\n");
+      assert(0);
+      break;
+  }
+
+  thread->set_operand_value(dst, d, i_type, thread, pI);
+}
+
 void slct_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();

@@ -917,6 +917,7 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           break;
         case SIN_OP:
         case COS_OP:
+        case TANH_OP:
           sp_op = FP_SIN_OP;
           break;
         case EX2_OP:
@@ -958,6 +959,7 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           break;
         case SIN_OP:
         case COS_OP:
+        case TANH_OP:
           sp_op = FP_SIN_OP;
           break;
         case EX2_OP:
@@ -1477,6 +1479,7 @@ void ptx_instruction::set_opcode_and_latency() {
     case SQRT_OP:
     case SIN_OP:
     case COS_OP:
+    case TANH_OP:
     case EX2_OP:
     case LG2_OP:
     case RSQRT_OP:

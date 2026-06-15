@@ -185,6 +185,7 @@ suld	TC; yylval->int_value = SULD_OP; return OPCODE;
 sured	TC; yylval->int_value = SURED_OP; return OPCODE;
 surst	TC; yylval->int_value = SUST_OP; return OPCODE;
 suq	TC; yylval->int_value = SUQ_OP; return OPCODE;
+tanh	TC; yylval->int_value = TANH_OP; return OPCODE;
 tex	TC; BEGIN(NOT_OPCODE); yylval->int_value = TEX_OP; return OPCODE;
 txq	TC; yylval->int_value = TEX_OP; return OPCODE;
 tensormap	TC; yylval->int_value = TENSORMAP_OP; return OPCODE;
