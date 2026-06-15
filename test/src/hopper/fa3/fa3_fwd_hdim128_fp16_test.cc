@@ -1,6 +1,13 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
+#include <cctype>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+
 #include "fa3_fwd_hdim128_fp16_case.cuh"
 
 namespace fa3_hopper_test {
@@ -14,6 +21,248 @@ class Fa3PrefillFp16BackwardSmallTest : public ::testing::Test {};
 class Fa3PrefillFp16MediumTest : public ::testing::Test {};
 class Fa3PrefillFp16BackwardMediumTest : public ::testing::Test {};
 class Fa3FwdHdim128Fp16IntegrationTest : public ::testing::Test {};
+
+#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
+class Fa3SingleTileProfileTest : public ::testing::Test {};
+class Fa3PrefillProfileTest : public ::testing::Test {};
+
+inline std::vector<int> ParseSingleTileSkList() {
+  const char *env = std::getenv("FA3_SINGLE_TILE_SK_LIST");
+  std::string list = env == nullptr || std::string(env).empty() ? "512" : env;
+  for (char &ch : list) {
+    if (ch == ',') ch = ' ';
+  }
+  std::istringstream is(list);
+  std::vector<int> out;
+  int value = 0;
+  while (is >> value) {
+    out.push_back(value);
+  }
+  if (out.empty()) out.push_back(512);
+  return out;
+}
+
+inline std::string SingleTileProfileOutPath() {
+  const char *env = std::getenv("FA3_SINGLE_TILE_PROFILE_OUT");
+  return env == nullptr || std::string(env).empty()
+             ? "fa3_single_tile_profile.csv"
+             : std::string(env);
+}
+
+inline std::vector<int> ParsePrefillProfileSeqlenList() {
+  const char *env = std::getenv("FA3_PREFILL_PROFILE_S_LIST");
+  std::string list =
+      env == nullptr || std::string(env).empty()
+          ? "512,1024,2048,4096,8192"
+          : env;
+  for (char &ch : list) {
+    if (ch == ',') ch = ' ';
+  }
+  std::istringstream is(list);
+  std::vector<int> out;
+  int value = 0;
+  while (is >> value) {
+    out.push_back(value);
+  }
+  if (out.empty()) out = {512, 1024, 2048, 4096, 8192};
+  return out;
+}
+
+inline bool HasPrefillProfileSeqlenOverride() {
+  const char *env = std::getenv("FA3_PREFILL_PROFILE_S_LIST");
+  return env != nullptr && !std::string(env).empty();
+}
+
+inline std::vector<std::string> ParsePrefillProfileCaseList() {
+  const char *env = std::getenv("FA3_PREFILL_PROFILE_CASE_LIST");
+  std::vector<std::string> cases;
+  if (env == nullptr || std::string(env).empty()) return cases;
+  std::string list = env;
+  for (char &ch : list) {
+    if (ch == ',') ch = ' ';
+  }
+  std::istringstream is(list);
+  std::string value;
+  while (is >> value) {
+    std::string trimmed;
+    for (char ch : value) {
+      if (!std::isspace(static_cast<unsigned char>(ch))) trimmed.push_back(ch);
+    }
+    if (!trimmed.empty()) cases.push_back(trimmed);
+  }
+  return cases;
+}
+
+inline std::string PrefillProfileOutPath() {
+  const char *env = std::getenv("FA3_PREFILL_PROFILE_OUT");
+  return env == nullptr || std::string(env).empty()
+             ? "fa3_prefill_h16d128_full_profile.csv"
+             : std::string(env);
+}
+
+inline Fa3PrefillCase H16D128FullProfileCaseForSeqlen(int seqlen) {
+  switch (seqlen) {
+    case 512:
+      return Fa3PrefillCase{"H16D128FullB64S512", 64, 512, 16, 128, false};
+    case 1024:
+      return Fa3PrefillCase{"H16D128FullB32S1024", 32, 1024, 16, 128, false};
+    case 2048:
+      return Fa3PrefillCase{"H16D128FullB16S2048", 16, 2048, 16, 128, false};
+    case 4096:
+      return Fa3PrefillCase{"H16D128FullB8S4096", 8, 4096, 16, 128, false};
+    case 8192:
+      return Fa3PrefillCase{"H16D128FullB4S8192", 4, 8192, 16, 128, false};
+    default:
+      return Fa3PrefillCase{"H16D128FullCustom", 32768 / seqlen, seqlen, 16,
+                            128, false};
+  }
+}
+
+inline std::vector<Fa3PrefillCase> DefaultPrefillProfileCases() {
+  return {
+      // Original H16D128 full-prefill cases with B*S fixed at 32768.
+      {"H16D128FullB64S512", 64, 512, 16, 128, false},
+      {"H16D128FullB32S1024", 32, 1024, 16, 128, false},
+      {"H16D128FullB16S2048", 16, 2048, 16, 128, false},
+      {"H16D128FullB8S4096", 8, 4096, 16, 128, false},
+      {"H16D128FullB4S8192", 4, 8192, 16, 128, false},
+
+      // Reduce H only while keeping the original B/S points.
+      {"H4D128FullB64S512", 64, 512, 4, 128, false},
+      {"H4D128FullB32S1024", 32, 1024, 4, 128, false},
+      {"H4D128FullB16S2048", 16, 2048, 4, 128, false},
+      {"H4D128FullB8S4096", 8, 4096, 4, 128, false},
+      {"H4D128FullB4S8192", 4, 8192, 4, 128, false},
+
+      // Reduce B only while keeping H=16 and the same S points.
+      {"H16D128FullB16S512", 16, 512, 16, 128, false},
+      {"H16D128FullB8S1024", 8, 1024, 16, 128, false},
+      {"H16D128FullB4S2048", 4, 2048, 16, 128, false},
+      {"H16D128FullB2S4096", 2, 4096, 16, 128, false},
+      {"H16D128FullB1S8192", 1, 8192, 16, 128, false},
+
+      // Minimal-H/B long-S cases for later simulator repro attempts.
+      {"H1D128FullB1S512", 1, 512, 1, 128, false},
+      {"H1D128FullB1S1024", 1, 1024, 1, 128, false},
+      {"H1D128FullB1S2048", 1, 2048, 1, 128, false},
+      {"H1D128FullB1S4096", 1, 4096, 1, 128, false},
+      {"H1D128FullB1S8192", 1, 8192, 1, 128, false},
+
+      // S-reduced cases bracketing the smallest original S=512 point.
+      {"H16D128FullB64S128", 64, 128, 16, 128, false},
+      {"H16D128FullB64S256", 64, 256, 16, 128, false},
+      {"H1D128FullB1S128", 1, 128, 1, 128, false},
+      {"H1D128FullB1S256", 1, 256, 1, 128, false},
+  };
+}
+
+inline std::vector<Fa3PrefillCase> PrefillProfileCases() {
+  std::vector<Fa3PrefillCase> cases;
+  if (!HasPrefillProfileSeqlenOverride()) {
+    cases = DefaultPrefillProfileCases();
+  } else {
+    for (int seqlen : ParsePrefillProfileSeqlenList()) {
+      cases.push_back(H16D128FullProfileCaseForSeqlen(seqlen));
+    }
+  }
+
+  std::vector<std::string> selected_names = ParsePrefillProfileCaseList();
+  if (selected_names.empty()) return cases;
+
+  std::vector<Fa3PrefillCase> selected_cases;
+  for (const Fa3PrefillCase &cfg : cases) {
+    for (const std::string &name : selected_names) {
+      if (cfg.name == name) selected_cases.push_back(cfg);
+    }
+  }
+  return selected_cases;
+}
+
+inline void WritePrefillProfileCsv(
+    const std::string &path,
+    const std::vector<Fa3PrefillProfileResult> &results) {
+  std::ofstream out(path);
+  ASSERT_TRUE(out) << "failed to open " << path;
+  out << "case,batch,seqlen_q,seqlen_k,heads,head_dim,causal,block_m,"
+         "block_n,m_tiles,k_tiles,logical_tiles,clock_start,clock_end,"
+         "clock_delta,mainloop_start,mainloop_end,mainloop_delta,"
+         "epilogue_start,epilogue_end,epilogue_delta,qk_wait_cycles,"
+         "qk_wgmma_issue_cycles,softmax_cycles,pv_wait_cycles,"
+         "pv_wgmma_issue_wait_cycles,mainloop_iterations,output0,lse0\n";
+  for (const auto &result : results) {
+    out << result.name << ","
+        << result.batch << ","
+        << result.seqlen_q << ","
+        << result.seqlen_k << ","
+        << result.heads << ","
+        << result.head_dim << ","
+        << result.causal << ","
+        << result.block_m << ","
+        << result.block_n << ","
+        << result.m_tiles << ","
+        << result.k_tiles << ","
+        << result.logical_tiles << ","
+        << result.clock_start << ","
+        << result.clock_end << ","
+        << result.clock_delta << ","
+        << result.mainloop_start << ","
+        << result.mainloop_end << ","
+        << result.mainloop_delta << ","
+        << result.epilogue_start << ","
+        << result.epilogue_end << ","
+        << result.epilogue_delta << ","
+        << result.qk_wait_cycles << ","
+        << result.qk_wgmma_issue_cycles << ","
+        << result.softmax_cycles << ","
+        << result.pv_wait_cycles << ","
+        << result.pv_wgmma_issue_wait_cycles << ","
+        << result.mainloop_iterations << ","
+        << result.output0 << ","
+        << result.lse0 << "\n";
+  }
+}
+
+inline void WriteSingleTileProfileCsv(
+    const std::string &path,
+    const std::vector<Fa3SingleTileProfileResult> &results) {
+  std::ofstream out(path);
+  ASSERT_TRUE(out) << "failed to open " << path;
+  out << "case,seqlen_q,seqlen_k,heads,head_dim,causal,block_m,block_n,"
+         "k_tiles,clock_start,clock_end,clock_delta,mainloop_start,"
+         "mainloop_end,mainloop_delta,epilogue_start,epilogue_end,"
+         "epilogue_delta,qk_wait_cycles,qk_wgmma_issue_cycles,"
+         "softmax_cycles,pv_wait_cycles,pv_wgmma_issue_wait_cycles,"
+         "mainloop_iterations,output0,lse0\n";
+  for (const auto &result : results) {
+    out << "H16D128FullSq128Sk" << result.seqlen_k << ","
+        << result.seqlen_q << ","
+        << result.seqlen_k << ","
+        << result.heads << ","
+        << result.head_dim << ","
+        << 0 << ","
+        << result.block_m << ","
+        << result.block_n << ","
+        << result.k_tiles << ","
+        << result.clock_start << ","
+        << result.clock_end << ","
+        << result.clock_delta << ","
+        << result.mainloop_start << ","
+        << result.mainloop_end << ","
+        << result.mainloop_delta << ","
+        << result.epilogue_start << ","
+        << result.epilogue_end << ","
+        << result.epilogue_delta << ","
+        << result.qk_wait_cycles << ","
+        << result.qk_wgmma_issue_cycles << ","
+        << result.softmax_cycles << ","
+        << result.pv_wait_cycles << ","
+        << result.pv_wgmma_issue_wait_cycles << ","
+        << result.mainloop_iterations << ","
+        << result.output0 << ","
+        << result.lse0 << "\n";
+  }
+}
+#endif
 
 inline void RunFa3PrefillCase(const Fa3PrefillCase &cfg) {
   SCOPED_TRACE(::testing::Message()
@@ -283,5 +532,43 @@ TEST_F(Fa3FwdHdim128Fp16IntegrationTest, FixedForwardCase) {
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
+
+#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
+TEST_F(Fa3SingleTileProfileTest, H16D128FullSq128Sweep) {
+  std::vector<Fa3SingleTileProfileResult> results;
+  for (int seqlen_k : ParseSingleTileSkList()) {
+    SCOPED_TRACE(::testing::Message() << "seqlen_k=" << seqlen_k);
+    Fa3SingleTileProfileResult result =
+        run_fa3_single_tile_hdim128_fp16_full(seqlen_k);
+    ASSERT_EQ(result.error, cudaSuccess)
+        << result.where << " failed: " << cudaGetErrorString(result.error);
+    ASSERT_GT(result.clock_delta, uint64_t{0})
+        << "clock64 timestamps were not written";
+    results.push_back(result);
+  }
+  WriteSingleTileProfileCsv(SingleTileProfileOutPath(), results);
+}
+
+TEST_F(Fa3PrefillProfileTest, H16D128FullSqSweep) {
+  std::vector<Fa3PrefillProfileResult> results;
+  for (const Fa3PrefillCase &cfg : PrefillProfileCases()) {
+    SCOPED_TRACE(::testing::Message() << "case=" << cfg.name);
+    ASSERT_TRUE(is_supported_fa3_prefill_case(cfg));
+    if (HasPrefillProfileSeqlenOverride()) {
+      ASSERT_EQ(cfg.batch * cfg.seqlen, 32768)
+          << "FA3_PREFILL_PROFILE_S_LIST keeps B*S fixed at 32768";
+    }
+    Fa3PrefillProfileResult result = run_fa3_prefill_profile_fp16(cfg);
+    ASSERT_EQ(result.error, cudaSuccess)
+        << result.where << " failed: " << cudaGetErrorString(result.error);
+    if (fa3_prefill_profile_clock_enabled()) {
+      ASSERT_GT(result.clock_delta, uint64_t{0})
+          << "clock64 timestamps were not written";
+    }
+    results.push_back(result);
+  }
+  WritePrefillProfileCsv(PrefillProfileOutPath(), results);
+}
+#endif
 
 }  // namespace fa3_hopper_test
