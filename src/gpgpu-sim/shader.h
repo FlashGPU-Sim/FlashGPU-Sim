@@ -1715,6 +1715,24 @@ class shader_core_config : public core_config {
     assert(!(n_thread_per_shader % warp_size));
 
     set_pipeline_latency();
+    int ss_chain_ntok = sscanf(gpgpu_wgmma_issue_chain_ss, "%u,%u,%u,%u,%u",
+                               &gpgpu_wgmma_issue_chain_ss_config[0],
+                               &gpgpu_wgmma_issue_chain_ss_config[1],
+                               &gpgpu_wgmma_issue_chain_ss_config[2],
+                               &gpgpu_wgmma_issue_chain_ss_config[3],
+                               &gpgpu_wgmma_issue_chain_ss_config[4]);
+    int rs_chain_ntok = sscanf(gpgpu_wgmma_issue_chain_rs, "%u,%u,%u,%u,%u",
+                               &gpgpu_wgmma_issue_chain_rs_config[0],
+                               &gpgpu_wgmma_issue_chain_rs_config[1],
+                               &gpgpu_wgmma_issue_chain_rs_config[2],
+                               &gpgpu_wgmma_issue_chain_rs_config[3],
+                               &gpgpu_wgmma_issue_chain_rs_config[4]);
+    if (ss_chain_ntok != 5 || rs_chain_ntok != 5) {
+      printf("GPGPU-Sim uArch: error while parsing WGMMA issue chain "
+             "configuration, expected "
+             "<depth,startup_gap,fast_gap,slow_gap,reset_gap>\n");
+      abort();
+    }
 
     // CRITICAL: Validate number of SMs against MAX_STREAMING_MULTIPROCESSORS
     // This check prevents address space overflow in generic addressing mode.
@@ -1887,6 +1905,10 @@ class shader_core_config : public core_config {
   bool gpgpu_tma_oob_l2_traffic;
   unsigned int gpgpu_mbarrier_arrive_latency;
   unsigned int gpgpu_mbarrier_trywait_latency;
+  char *gpgpu_wgmma_issue_chain_ss;
+  char *gpgpu_wgmma_issue_chain_rs;
+  unsigned gpgpu_wgmma_issue_chain_ss_config[5];
+  unsigned gpgpu_wgmma_issue_chain_rs_config[5];
 
   // Shader core resources
   unsigned gpgpu_shader_registers;
@@ -2732,7 +2754,8 @@ class shader_core_ctx : public core_t {
   friend class TwoLevelScheduler;
   friend class LooseRoundRobbinScheduler;
   bool can_issue_wgmma_warpgroup(const unsigned *warp_ids, unsigned count,
-                                 register_set &pipe_reg_set) const;
+                                 register_set &pipe_reg_set,
+                                 const warp_inst_t *inst) const;
   unsigned wgmma_cta_warpgroup_id(unsigned warp_id) const;
   bool wgmma_issued_this_cycle() const { return m_wgmma_issued_this_cycle; }
   void mark_scheduler_issued(unsigned sch_id);

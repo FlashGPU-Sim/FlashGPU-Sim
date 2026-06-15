@@ -509,7 +509,7 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
     : core_t(gpu, NULL, config->warp_size, config->n_thread_per_shader),
       m_barriers(this, config->max_warps_per_shader, config->max_cta_per_core,
                  config->max_barriers_per_cta, config->warp_size),
-      m_wgmma(&m_barriers),
+      m_wgmma(&m_barriers, config),
       m_active_warps(0),
       m_subpartition_issue_mask(0),
       m_wgmma_issued_this_cycle(false),
@@ -1379,10 +1379,13 @@ static unsigned wgmma_wait_group_num_from_inst(const warp_inst_t *inst) {
 }
 
 bool shader_core_ctx::can_issue_wgmma_warpgroup(
-    const unsigned *warp_ids, unsigned count, register_set &pipe_reg_set) const {
+    const unsigned *warp_ids, unsigned count, register_set &pipe_reg_set,
+    const warp_inst_t *inst) const {
   if (count != WGMMA_WARPGROUP_SIZE) return false;
   if (m_config->gpgpu_num_sched_per_core != WGMMA_WARPGROUP_SIZE) return false;
   if (m_wgmma_issued_this_cycle || m_subpartition_issue_mask != 0) return false;
+  const unsigned long long now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+  if (!m_wgmma.issue_chain_ready(inst, now)) return false;
 
   unsigned long long participant_sched_mask = 0;
   for (unsigned i = 0; i < count; ++i) {
@@ -1423,6 +1426,8 @@ void shader_core_ctx::issue_wgmma_warpgroup(register_set &pipe_reg_set,
                                             unsigned count, unsigned sch_id) {
   assert(count == WGMMA_WARPGROUP_SIZE);
   mark_wgmma_issued();
+  const unsigned long long now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+  m_wgmma.record_issue_chain(next_inst, now);
   unsigned representative_warp_id = warp_ids[0];
   const active_mask_t &representative_mask =
       get_active_mask(representative_warp_id, next_inst);
@@ -2034,7 +2039,7 @@ void scheduler_unit::cycle() {
                   wgmma_warpgroup_ready(wgmma_warp_ids, wgmma_warp_count,
                                         pI) &&
                   m_shader->can_issue_wgmma_warpgroup(
-                      wgmma_warp_ids, wgmma_warp_count, *m_sp_out)) {
+                      wgmma_warp_ids, wgmma_warp_count, *m_sp_out, pI)) {
                 m_shader->issue_wgmma_warpgroup_control(
                     *m_sp_out, pI, wgmma_warp_ids, wgmma_warp_count, m_id);
                 for (unsigned i = 0; i < wgmma_warp_count; ++i)
@@ -2192,7 +2197,7 @@ void scheduler_unit::cycle() {
                                               wgmma_warp_count, pI) &&
                         m_shader->can_issue_wgmma_warpgroup(
                             wgmma_warp_ids, wgmma_warp_count,
-                            *m_tensor_core_out)) {
+                            *m_tensor_core_out, pI)) {
                       m_shader->issue_wgmma_warpgroup(
                           *m_tensor_core_out, pI, wgmma_warp_ids,
                           wgmma_warp_count, m_id);
@@ -4656,12 +4661,14 @@ void shader_core_config::set_pipeline_latency() {
              &wgmma_latency[3]) == 4) {
     for (unsigned i = 0; i < 4; ++i)
       wgmma_latency_max = std::max(wgmma_latency_max, wgmma_latency[i]);
+    wgmma_latency_max = std::max(wgmma_latency_max, 4 * wgmma_latency[3]);
   }
   if (sscanf(gpgpu_ctx->func_sim->opcode_latency_wgmma_rs, "%u,%u,%u,%u",
              &wgmma_latency[0], &wgmma_latency[1], &wgmma_latency[2],
              &wgmma_latency[3]) == 4) {
     for (unsigned i = 0; i < 4; ++i)
       wgmma_latency_max = std::max(wgmma_latency_max, wgmma_latency[i]);
+    wgmma_latency_max = std::max(wgmma_latency_max, 4 * wgmma_latency[3]);
   }
   if (gpgpu_ctx->func_sim->opcode_latency_tma)
     sscanf(gpgpu_ctx->func_sim->opcode_latency_tma, "%u", &tma_latency);

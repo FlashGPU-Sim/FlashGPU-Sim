@@ -42,6 +42,24 @@ int wgmma_scalar_type_at(const ptx_instruction *pI, unsigned index,
   return *it;
 }
 
+int wgmma_opcode(const warp_inst_t *inst) {
+  assert(inst != NULL);
+  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
+  return ptx_inst->get_opcode();
+}
+
+bool is_wgmma_mma_async_opcode(int opcode) {
+  return opcode == WGMMA_MMA_ASYNC_OP || opcode == WGMMA_MMA_ASYNC_SP_OP;
+}
+
+bool wgmma_uses_register_a_operand(const warp_inst_t *inst) {
+  assert(inst != NULL);
+  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
+  if (ptx_inst->get_num_operands() < 2)
+    return false;
+  return ptx_inst->operand_lookup(1).is_vector();
+}
+
 class wgmma_group_manager_t {
 public:
   struct wait_result_t {
@@ -494,10 +512,15 @@ void setmaxnreg_impl(const ptx_instruction *pI, core_t *core,
 
 class wgmma_unit_t::impl_t {
 public:
-  explicit impl_t(barrier_set_t *barriers) : m_barriers(barriers) {
+  impl_t(barrier_set_t *barriers, const shader_core_config *config)
+      : m_barriers(barriers), m_config(config) {
     assert(m_barriers != NULL);
+    assert(m_config != NULL);
   }
 
+  bool issue_chain_ready(const warp_inst_t *inst,
+                         unsigned long long cycle) const;
+  void record_issue_chain(const warp_inst_t *inst, unsigned long long cycle);
   void add_op(unsigned cta_id, unsigned warpgroup_id, unsigned op_uid,
               unsigned compute_latency, unsigned completion_tail_latency);
   void commit_group(unsigned cta_id, unsigned warpgroup_id);
@@ -518,9 +541,64 @@ private:
   };
 
   barrier_set_t *m_barriers;
+  const shader_core_config *m_config;
   wgmma_group_manager_t m_group_manager;
   std::vector<pending_completion_t> m_pending_completions;
+  unsigned long long m_issue_chain_next_cycle = 0;
+  unsigned long long m_issue_chain_last_cycle = 0;
+  unsigned m_issue_chain_depth = 0;
 };
+
+bool wgmma_unit_t::impl_t::issue_chain_ready(const warp_inst_t *inst,
+                                             unsigned long long cycle) const {
+  if (!is_wgmma_mma_async_opcode(wgmma_opcode(inst)))
+    return true;
+
+  const unsigned *chain_config =
+      wgmma_uses_register_a_operand(inst)
+          ? m_config->gpgpu_wgmma_issue_chain_rs_config
+          : m_config->gpgpu_wgmma_issue_chain_ss_config;
+  if (chain_config[0] == 0)
+    return true;
+
+  return cycle >= m_issue_chain_next_cycle;
+}
+
+void wgmma_unit_t::impl_t::record_issue_chain(const warp_inst_t *inst,
+                                              unsigned long long cycle) {
+  if (!is_wgmma_mma_async_opcode(wgmma_opcode(inst)))
+    return;
+
+  const unsigned *chain_config =
+      wgmma_uses_register_a_operand(inst)
+          ? m_config->gpgpu_wgmma_issue_chain_rs_config
+          : m_config->gpgpu_wgmma_issue_chain_ss_config;
+  const unsigned depth_limit = chain_config[0];
+  if (depth_limit == 0)
+    return;
+
+  const unsigned startup_gap = chain_config[1];
+  const unsigned fast_gap = chain_config[2];
+  const unsigned slow_gap = chain_config[3];
+  const unsigned reset_gap = chain_config[4];
+
+  if (m_issue_chain_depth != 0 && reset_gap != 0 &&
+      cycle >= m_issue_chain_last_cycle + reset_gap) {
+    m_issue_chain_depth = 0;
+  }
+
+  const unsigned current_ordinal = m_issue_chain_depth + 1;
+  unsigned next_gap = fast_gap;
+  if (m_issue_chain_depth == 0 && startup_gap != 0) {
+    next_gap = startup_gap;
+  } else if (current_ordinal >= depth_limit) {
+    next_gap = slow_gap;
+  }
+
+  m_issue_chain_depth = current_ordinal;
+  m_issue_chain_last_cycle = cycle;
+  m_issue_chain_next_cycle = cycle + next_gap;
+}
 
 void wgmma_unit_t::impl_t::add_op(unsigned cta_id, unsigned warpgroup_id,
                                   unsigned op_uid, unsigned compute_latency,
@@ -607,10 +685,21 @@ void wgmma_unit_t::impl_t::cleanup_cta(unsigned cta_id) {
   m_group_manager.cleanup_cta(cta_id);
 }
 
-wgmma_unit_t::wgmma_unit_t(barrier_set_t *barriers)
-    : m_impl(new impl_t(barriers)) {}
+wgmma_unit_t::wgmma_unit_t(barrier_set_t *barriers,
+                           const shader_core_config *config)
+    : m_impl(new impl_t(barriers, config)) {}
 
 wgmma_unit_t::~wgmma_unit_t() = default;
+
+bool wgmma_unit_t::issue_chain_ready(const warp_inst_t *inst,
+                                     unsigned long long cycle) const {
+  return m_impl->issue_chain_ready(inst, cycle);
+}
+
+void wgmma_unit_t::record_issue_chain(const warp_inst_t *inst,
+                                      unsigned long long cycle) {
+  m_impl->record_issue_chain(inst, cycle);
+}
 
 void wgmma_unit_t::add_op(unsigned cta_id, unsigned warpgroup_id,
                           unsigned op_uid, unsigned compute_latency,

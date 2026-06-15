@@ -688,6 +688,18 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &gpgpu_mbarrier_trywait_latency,
                          "Latency (cycles) for mbarrier.try_wait polling before warp release (default=0)", "0");
   option_parser_register(
+      opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
+      &gpgpu_wgmma_issue_chain_ss,
+      "Per-SM WGMMA SS issue chain throttle "
+      "<depth,startup_gap,fast_gap,slow_gap,reset_gap>; depth=0 disables",
+      "0,0,0,0,64");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_issue_chain_rs", OPT_CSTR,
+      &gpgpu_wgmma_issue_chain_rs,
+      "Per-SM WGMMA RS issue chain throttle "
+      "<depth,startup_gap,fast_gap,slow_gap,reset_gap>; depth=0 disables",
+      "0,0,0,0,64");
+  option_parser_register(
       opp, "-gpgpu_num_mem_units", OPT_UINT32, &gpgpu_num_mem_units,
       "Number if ldst units (default=1) WARNING: not hooked up to anything",
       "1");

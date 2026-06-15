@@ -11,6 +11,7 @@ class ptx_instruction;
 class ptx_thread_info;
 class core_t;
 class barrier_set_t;
+class shader_core_config;
 struct warp_inst_t;
 
 namespace flash_gpgpu_sim {
@@ -64,9 +65,12 @@ void setmaxnreg_impl(const ptx_instruction *pI, core_t *core,
 
 class wgmma_unit_t {
 public:
-  explicit wgmma_unit_t(barrier_set_t *barriers);
+  wgmma_unit_t(barrier_set_t *barriers, const shader_core_config *config);
   ~wgmma_unit_t();
 
+  bool issue_chain_ready(const warp_inst_t *inst,
+                         unsigned long long cycle) const;
+  void record_issue_chain(const warp_inst_t *inst, unsigned long long cycle);
   void add_op(unsigned cta_id, unsigned warpgroup_id, unsigned op_uid,
               unsigned compute_latency, unsigned completion_tail_latency);
   void commit_group(unsigned cta_id, unsigned warpgroup_id);
