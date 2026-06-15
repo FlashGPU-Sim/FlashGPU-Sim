@@ -58,6 +58,15 @@ extern int ptxinfo_lex_destroy(yyscan_t scanner);
 static bool g_save_embedded_ptx;
 static int g_occupancy_sm_number;
 
+static const char *ptxas_clean_env_prefix() {
+  return "LD_PRELOAD= HEAPPROFILE= HEAPPROFILESIGNAL= HEAPCHECK= "
+         "HEAP_PROFILE_TIME_INTERVAL= HEAP_PROFILE_INUSE_INTERVAL= "
+         "HEAP_PROFILE_ALLOCATION_INTERVAL= HEAP_PROFILE_DEALLOCATION_INTERVAL= "
+         "HEAP_PROFILE_MMAP= HEAP_PROFILE_MMAP_LOG= HEAP_PROFILE_ONLY_MMAP= "
+         "HEAP_PROFILE_CLEANUP= CPUPROFILE= CPUPROFILESIGNAL= "
+         "CPUPROFILE_REALTIME= CPUPROFILE_FREQUENCY= ";
+}
+
 static bool copy_ptxinfo_sidecar(const std::string &ptx_file,
                                  const std::string &dst_file) {
   std::vector<std::string> candidates;
@@ -120,6 +129,14 @@ void gpgpu_context::ptx_reg_options(option_parser_t opp) {
                          "The SM number to pass to ptxas when getting register "
                          "usage for computing GPU occupancy. "
                          "This parameter is required in the config.",
+                         "0");
+  option_parser_register(opp, "-gpgpu_ptx_register_allocator", OPT_BOOL,
+                         &ptx_register_allocator_enabled,
+                         "Enable conservative PTX virtual register aliasing.",
+                         "0");
+  option_parser_register(opp, "-gpgpu_ptx_register_allocator_stats", OPT_BOOL,
+                         &ptx_register_allocator_stats,
+                         "Print PTX virtual register allocator statistics.",
                          "0");
 }
 
@@ -388,16 +405,16 @@ char *get_app_binary_name() {
 void gpgpu_context::gpgpu_ptx_info_load_from_filename(const char *filename,
                                                       const char *arch_str) {
   std::string ptxas_filename(std::string(filename) + "as");
-  char buff[1024], extra_flags[1024];
+  char buff[4096], extra_flags[1024];
   extra_flags[0] = 0;
   if (!device_runtime->g_cdp_enabled)
     snprintf(extra_flags, 1024, "--gpu-name=%s", arch_str);
   else
     snprintf(extra_flags, 1024, "--compile-only --gpu-name=%s", arch_str);
   snprintf(
-      buff, 1024,
-      "${PTXAS_CUDA_INSTALL_PATH:-$CUDA_INSTALL_PATH}/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",
-      extra_flags, filename, ptxas_filename.c_str());
+      buff, sizeof(buff),
+      "%s${PTXAS_CUDA_INSTALL_PATH:-$CUDA_INSTALL_PATH}/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",
+      ptxas_clean_env_prefix(), extra_flags, filename, ptxas_filename.c_str());
   int result = system(buff);
   if (result != 0) {
     if (!copy_ptxinfo_sidecar(filename, ptxas_filename)) {
@@ -485,9 +502,9 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
 #endif
 
     snprintf(commandline, sizeof(commandline),
-             "${PTXAS_CUDA_INSTALL_PATH:-$CUDA_INSTALL_PATH}/bin/ptxas %s -v %s --output-file  "
+             "%s${PTXAS_CUDA_INSTALL_PATH:-$CUDA_INSTALL_PATH}/bin/ptxas %s -v %s --output-file  "
              "/dev/null 2> %s",
-             extra_flags, fname2, tempfile_ptxinfo);
+             ptxas_clean_env_prefix(), extra_flags, fname2, tempfile_ptxinfo);
     printf("GPGPU-Sim PTX: generating ptxinfo using \"%s\"\n", commandline);
     result = system(commandline);
     if (result != 0) {
@@ -509,9 +526,9 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
 
         fix_duplicate_errors(fname2);
         snprintf(commandline, sizeof(commandline),
-                 "${PTXAS_CUDA_INSTALL_PATH:-$CUDA_INSTALL_PATH}/bin/ptxas %s -v %s --output-file  "
+                 "%s${PTXAS_CUDA_INSTALL_PATH:-$CUDA_INSTALL_PATH}/bin/ptxas %s -v %s --output-file  "
                  "/dev/null 2> %s",
-                 extra_flags, fname2, tempfile_ptxinfo);
+                 ptxas_clean_env_prefix(), extra_flags, fname2, tempfile_ptxinfo);
         printf("GPGPU-Sim PTX: regenerating ptxinfo using \"%s\"\n",
                commandline);
         result = system(commandline);
@@ -573,8 +590,8 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
 
     snprintf(
         commandline, sizeof(commandline),
-        "${PTXAS_CUDA_INSTALL_PATH:-$CUDA_INSTALL_PATH}/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",
-        extra_flags, fname2, tempfile_ptxinfo);
+        "%s${PTXAS_CUDA_INSTALL_PATH:-$CUDA_INSTALL_PATH}/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",
+        ptxas_clean_env_prefix(), extra_flags, fname2, tempfile_ptxinfo);
     printf("GPGPU-Sim PTX: generating ptxinfo using \"%s\"\n", commandline);
     fflush(stdout);
     result = system(commandline);

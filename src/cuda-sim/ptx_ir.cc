@@ -38,12 +38,16 @@ typedef void *yyscan_t;
 #include <stdlib.h>
 #include <algorithm>
 #include <list>
+#include <map>
+#include <set>
+#include <vector>
 #include <execinfo.h>  // For backtrace
 #include "assert.h"
 #include "opcodes.h"
 #include "ptx.tab.h"
 
 #include "../../libcuda/gpgpu_context.h"
+#include "../gpgpu-sim/flash/reg_alloc.h"
 #include "cuda-sim.h"
 
 #define STR_SIZE 1024
@@ -675,6 +679,7 @@ void function_info::do_pdom() {
     pI->pre_decode();
     update_dyn_inst(pI);
   }
+  flash_gpgpu_sim::run_ptx_register_allocation(this);
   printf("GPGPU-Sim PTX: ... done pre-decoding instructions for \'%s\'.\n",
          m_name.c_str());
   fflush(stdout);

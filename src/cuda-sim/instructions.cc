@@ -220,9 +220,11 @@ void ptx_thread_info::set_reg(const symbol *reg, const ptx_reg_t &value) {
   assert(reg != NULL);
   if (reg->name() == "_") return;
   assert(!m_regs.empty());
-  assert(reg->uid() > 0);
-  m_regs.back()[reg] = value;
-  if (m_enable_debug_trace) m_debug_trace_regs_modified.back()[reg] = value;
+  const symbol *mapped_reg = canonicalize_reg(reg);
+  assert(mapped_reg->uid() > 0);
+  m_regs.back()[mapped_reg] = value;
+  if (m_enable_debug_trace)
+    m_debug_trace_regs_modified.back()[mapped_reg] = value;
   m_last_set_operand_value = value;
 }
 
@@ -264,7 +266,7 @@ void ptx_thread_info::resume_reg_thread(char *fname, symbol_table *symtab) {
     data = atoi(pch);
     pch = strtok(NULL, " ");
     pch = strtok(NULL, " ");
-    m_regs.back()[reg] = data;
+    set_reg(reg, data);
   }
   fclose(fp2);
 }
@@ -273,15 +275,18 @@ ptx_reg_t ptx_thread_info::get_reg(const symbol *reg) {
   static bool unfound_register_warned = false;
   assert(reg != NULL);
   assert(!m_regs.empty());
-  reg_map_t::iterator regs_iter = m_regs.back().find(reg);
+  const symbol *logical_reg = reg;
+  const symbol *mapped_reg = canonicalize_reg(reg);
+  reg_map_t::iterator regs_iter = m_regs.back().find(mapped_reg);
   if (regs_iter == m_regs.back().end()) {
-    assert(reg->type()->get_key().is_reg());
-    const std::string &name = reg->name();
+    assert(logical_reg->type()->get_key().is_reg());
+    const std::string &name = logical_reg->name();
     unsigned call_uid = m_callstack.back().m_call_uid;
     ptx_reg_t uninit_reg;
     uninit_reg.u32 = 0x0;
-    set_reg(reg, uninit_reg);  // give it a value since we are going to warn the
-                               // user anyway
+    set_reg(logical_reg,
+            uninit_reg);  // give it a value since we are going to warn the
+                          // user anyway
     std::string file_loc = get_location();
     if (!unfound_register_warned) {
       printf(
@@ -292,10 +297,10 @@ ptx_reg_t ptx_thread_info::get_reg(const symbol *reg) {
           file_loc.c_str(), name.c_str(), call_uid);
       unfound_register_warned = true;
     }
-    regs_iter = m_regs.back().find(reg);
+    regs_iter = m_regs.back().find(mapped_reg);
   }
   if (m_enable_debug_trace)
-    m_debug_trace_regs_read.back()[reg] = regs_iter->second;
+    m_debug_trace_regs_read.back()[mapped_reg] = regs_iter->second;
   return regs_iter->second;
 }
 
@@ -633,7 +638,7 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
     ptx_reg_t predValue;
 
     const symbol *sym = dst.vec_symbol(0);
-    predValue.u64 = (m_regs.back()[sym].u64) & ~(0x0C);
+    predValue.u64 = get_reg(sym).u64 & ~(0x0C);
     predValue.u64 |= ((overflow & 0x01) << 3);
     predValue.u64 |= ((carry & 0x01) << 2);
 
@@ -746,9 +751,9 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
 
       if (dst.get_operand_lohi() == 1) {
         setValue.u64 =
-            ((m_regs.back()[regName].u64) & (~(0xFFFF))) + (data.u64 & 0xFFFF);
+            (get_reg(regName).u64 & (~(0xFFFF))) + (data.u64 & 0xFFFF);
       } else if (dst.get_operand_lohi() == 2) {
-        setValue.u64 = ((m_regs.back()[regName].u64) & (~(0xFFFF0000))) +
+        setValue.u64 = (get_reg(regName).u64 & (~(0xFFFF0000))) +
                        ((data.u64 << 16) & 0xFFFF0000);
       }
 
@@ -796,11 +801,11 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
       set_reg(name2, setValue2);
     } else {
       if (dst.get_operand_lohi() == 1) {
-        setValue.u64 = ((m_regs.back()[dst.get_symbol()].u64) & (~(0xFFFF))) +
+        setValue.u64 = (get_reg(dst.get_symbol()).u64 & (~(0xFFFF))) +
                        (data.u64 & 0xFFFF);
       } else if (dst.get_operand_lohi() == 2) {
         setValue.u64 =
-            ((m_regs.back()[dst.get_symbol()].u64) & (~(0xFFFF0000))) +
+            (get_reg(dst.get_symbol()).u64 & (~(0xFFFF0000))) +
             ((data.u64 << 16) & 0xFFFF0000);
       }
       set_reg(dst.get_symbol(), setValue);

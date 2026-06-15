@@ -22,6 +22,8 @@ class gpgpu_context {
     symbol_sm_next_uid = 1;
     function_info_sm_next_uid = 1;
     debug_tensorcore = 0;
+    ptx_register_allocator_enabled = false;
+    ptx_register_allocator_stats = false;
     api = new cuda_runtime_api(this);
     ptxinfo = new ptxinfo_data(this);
     ptx_parser = new ptx_recognizer(this);
@@ -44,6 +46,8 @@ class gpgpu_context {
   std::vector<ptx_instruction *>
       s_g_pc_to_insn;  // a direct mapping from PC to instruction
   bool debug_tensorcore;
+  bool ptx_register_allocator_enabled;
+  bool ptx_register_allocator_stats;
 
   // SST related
   bool requested_synchronize = false;

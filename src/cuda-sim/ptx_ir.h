@@ -37,6 +37,7 @@
 #include <list>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // #include "ptx.tab.h"
@@ -51,6 +52,11 @@ using flash_gpgpu_sim::mma_shape_type;
 // for lexer/parser use and mapped to flash_gpgpu_sim types in constructor
 
 class gpgpu_context;
+class function_info;
+
+namespace flash_gpgpu_sim {
+void run_ptx_register_allocation(function_info *func);
+}
 
 class type_info_key {
  public:
@@ -1534,6 +1540,16 @@ class function_info {
 
   void set_maxnt_id(unsigned maxthreads) { maxnt_id = maxthreads; }
   unsigned get_maxnt_id() { return maxnt_id; }
+  const symbol *canonicalize_register(const symbol *reg) const {
+    if (m_reg_alloc_aliases.empty()) return reg;
+    std::unordered_map<const symbol *, const symbol *>::const_iterator it =
+        m_reg_alloc_aliases.find(reg);
+    return it == m_reg_alloc_aliases.end() ? reg : it->second;
+  }
+  bool has_register_aliases() const { return !m_reg_alloc_aliases.empty(); }
+
+  friend void flash_gpgpu_sim::run_ptx_register_allocation(function_info *func);
+
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
 
@@ -1562,6 +1578,7 @@ class function_info {
   std::list<ptx_instruction *> m_instructions;
   std::vector<basic_block_t *> m_basic_blocks;
   std::list<std::pair<unsigned, unsigned> > m_back_edges;
+  std::unordered_map<const symbol *, const symbol *> m_reg_alloc_aliases;
 
   /**
    * WZR: To support scoped label, we need to remember the scope of each label,

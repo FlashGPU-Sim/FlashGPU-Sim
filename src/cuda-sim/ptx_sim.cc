@@ -338,6 +338,11 @@ void ptx_thread_info::set_info(function_info *func) {
   m_PC = func->get_start_PC();
 }
 
+const symbol *ptx_thread_info::canonicalize_reg(const symbol *reg) const {
+  if (m_func_info == NULL) return reg;
+  return m_func_info->canonicalize_register(reg);
+}
+
 void ptx_thread_info::cpy_tid_to_reg(dim3 tid) {
   // copies %tid.x, %tid.y and %tid.z into $r0
   ptx_reg_t data;
