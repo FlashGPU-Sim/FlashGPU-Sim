@@ -110,6 +110,7 @@ class mem_fetch {
   unsigned long long get_streamID() const { return m_streamID; }
 
   enum mem_access_type get_access_type() const { return m_access.get_type(); }
+  unsigned long long get_status_change() const { return m_status_change; }
   const active_mask_t &get_access_warp_mask() const {
     return m_access.get_warp_mask();
   }

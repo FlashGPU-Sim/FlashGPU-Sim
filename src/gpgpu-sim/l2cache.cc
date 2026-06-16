@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #include <list>
 #include <set>
@@ -75,6 +76,113 @@ const char *mem_sub_partition_full_stat_str(
   }
   return "UNKNOWN";
 }
+
+namespace {
+
+class l2_request_trace {
+ public:
+  static l2_request_trace &instance() {
+    static l2_request_trace trace;
+    return trace;
+  }
+
+  bool cache_accept_enabled() const { return m_enabled && m_trace_cache_accept; }
+
+  void log(const char *event, unsigned long long cycle, unsigned subpart_id,
+           mem_fetch *mf, const char *status) {
+    if (!m_enabled || !mf || cycle > m_max_cycle) return;
+
+    const mem_access_type access_type = mf->get_access_type();
+    if (m_tma_only && access_type != TMA_ACC_R && access_type != TMA_ACC_W)
+      return;
+
+    const mem_fetch *original_mf = mf->get_original_mf();
+    const unsigned original_uid =
+        original_mf ? original_mf->get_request_uid() : mf->get_request_uid();
+    const unsigned long sector_mask =
+        mf->get_access_sector_mask().to_ulong();
+
+    flockfile(m_file);
+    fprintf(m_file,
+            "%llu,%s,%u,%u,0x%llx,0x%llx,%u,%u,%u,%u,%u,%s,%u,%u,%u,0x%lx,%s\n",
+            cycle, event, subpart_id, mf->get_sub_partition_id(),
+            (unsigned long long)mf->get_addr(),
+            (unsigned long long)mf->get_partition_addr(), mf->get_sid(),
+            mf->get_tpc(), mf->get_wid(), mf->get_request_uid(), original_uid,
+            mem_access_type_str(access_type), mf->get_is_write(),
+            mf->get_data_size(), mf->get_access_size(), sector_mask, status);
+    ++m_lines;
+    if ((m_lines & ((1ULL << 20) - 1)) == 0) fflush(m_file);
+    funlockfile(m_file);
+  }
+
+ private:
+  l2_request_trace()
+      : m_enabled(false),
+        m_trace_cache_accept(false),
+        m_tma_only(false),
+        m_max_cycle(ULLONG_MAX),
+        m_file(NULL),
+        m_buffer(NULL),
+        m_lines(0) {
+    const char *path = getenv("FLASHGPU_L2_TRACE_CSV");
+    if (!path || path[0] == '\0') return;
+
+    const char *max_cycle = getenv("FLASHGPU_L2_TRACE_MAX_CYCLE");
+    if (max_cycle && max_cycle[0] != '\0')
+      m_max_cycle = strtoull(max_cycle, NULL, 0);
+
+    const char *cache_accept = getenv("FLASHGPU_L2_TRACE_CACHE_ACCEPT");
+    m_trace_cache_accept =
+        cache_accept && cache_accept[0] != '\0' && strcmp(cache_accept, "0");
+
+    const char *tma_only = getenv("FLASHGPU_L2_TRACE_TMA_ONLY");
+    m_tma_only = tma_only && tma_only[0] != '\0' && strcmp(tma_only, "0");
+
+    m_file = fopen(path, "w");
+    if (!m_file) {
+      perror("FLASHGPU_L2_TRACE_CSV");
+      return;
+    }
+
+    m_buffer = (char *)malloc(16 * 1024 * 1024);
+    if (m_buffer) setvbuf(m_file, m_buffer, _IOFBF, 16 * 1024 * 1024);
+
+    fprintf(m_file,
+            "cycle,event,subpart,mf_subpart,addr,partition_addr,requestor_sm,"
+            "tpc,wid,uid,orig_uid,type,is_write,data_size,access_size,"
+            "sector_mask,status\n");
+    m_enabled = true;
+    printf("FLASHGPU_L2_TRACE_CSV enabled: path=%s max_cycle=%llu "
+           "tma_only=%u cache_accept=%u\n",
+           path, m_max_cycle, m_tma_only ? 1 : 0,
+           m_trace_cache_accept ? 1 : 0);
+  }
+
+  ~l2_request_trace() {
+    if (m_file) {
+      fflush(m_file);
+      fclose(m_file);
+    }
+    free(m_buffer);
+  }
+
+  bool m_enabled;
+  bool m_trace_cache_accept;
+  bool m_tma_only;
+  unsigned long long m_max_cycle;
+  FILE *m_file;
+  char *m_buffer;
+  unsigned long long m_lines;
+};
+
+static void trace_l2_event(const char *event, unsigned long long cycle,
+                           unsigned subpart_id, mem_fetch *mf,
+                           const char *status) {
+  l2_request_trace::instance().log(event, cycle, subpart_id, mf, status);
+}
+
+}  // namespace
 
 mem_fetch *partition_mf_allocator::alloc(new_addr_type addr,
                                          mem_access_type type, unsigned size,
@@ -557,6 +665,12 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
                                   m_memcpy_cycle_offset,
                               events);
+        if (status != RESERVATION_FAIL &&
+            l2_request_trace::instance().cache_accept_enabled()) {
+          trace_l2_event("CACHE_ACCEPT",
+                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, m_id,
+                         mf, cache_request_status_str(status));
+        }
         bool write_sent = was_write_sent(events);
         bool read_sent = was_read_sent(events);
         MEM_SUBPART_GPPRINTF("Probing L2 cache Address=%llx, status=%u\n",
@@ -781,49 +895,26 @@ std::vector<mem_fetch *>
 memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
   std::vector<mem_fetch *> result;
   mem_access_sector_mask_t sector_mask = mf->get_access_sector_mask();
+
   if (mf->get_data_size() == SECTOR_SIZE &&
       mf->get_access_sector_mask().count() == 1) {
     result.push_back(mf);
-  } else if (mf->get_data_size() == MAX_MEMORY_ACCESS_SIZE) {
-    // break down every sector
-    mem_access_byte_mask_t mask;
-    for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; i++) {
-      for (unsigned k = i * SECTOR_SIZE; k < (i + 1) * SECTOR_SIZE; k++) {
-        mask.set(k);
-      }
-      mem_fetch *n_mf = m_mf_allocator->alloc(
-          mf->get_addr() + SECTOR_SIZE * i, mf->get_access_type(),
-          mf->get_access_warp_mask(), mf->get_access_byte_mask() & mask,
-          std::bitset<SECTOR_CHUNCK_SIZE>().set(i), SECTOR_SIZE, mf->is_write(),
-          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, mf->get_wid(),
-          mf->get_sid(), mf->get_tpc(), mf, mf->get_streamID());
-
-      result.push_back(n_mf);
-    }
-    // This is for constant cache
-  } else if (mf->get_data_size() == 64 &&
-             (mf->get_access_sector_mask().all() ||
-              mf->get_access_sector_mask().none())) {
-    unsigned start;
-    if (mf->get_addr() % MAX_MEMORY_ACCESS_SIZE == 0)
-      start = 0;
-    else
-      start = 2;
-    mem_access_byte_mask_t mask;
-    for (unsigned i = start; i < start + 2; i++) {
-      for (unsigned k = i * SECTOR_SIZE; k < (i + 1) * SECTOR_SIZE; k++) {
-        mask.set(k);
-      }
-      mem_fetch *n_mf = m_mf_allocator->alloc(
-          mf->get_addr(), mf->get_access_type(), mf->get_access_warp_mask(),
-          mf->get_access_byte_mask() & mask,
-          std::bitset<SECTOR_CHUNCK_SIZE>().set(i), SECTOR_SIZE, mf->is_write(),
-          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, mf->get_wid(),
-          mf->get_sid(), mf->get_tpc(), mf, mf->get_streamID());
-
-      result.push_back(n_mf);
-    }
   } else {
+    if (mf->get_data_size() == MAX_MEMORY_ACCESS_SIZE) {
+      sector_mask.set();
+      // This is for constant cache.
+    } else if (mf->get_data_size() == 2 * SECTOR_SIZE &&
+               (sector_mask.all() || sector_mask.none())) {
+      sector_mask.reset();
+      const unsigned start =
+          (mf->get_addr() % MAX_MEMORY_ACCESS_SIZE == 0) ? 0 : 2;
+      sector_mask.set(start);
+      sector_mask.set(start + 1);
+    }
+
+    const new_addr_type line_base =
+        mf->get_addr() - (mf->get_addr() % MAX_MEMORY_ACCESS_SIZE);
+
     for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; i++) {
       if (sector_mask.test(i)) {
         mem_access_byte_mask_t mask;
@@ -831,7 +922,7 @@ memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
           mask.set(k);
         }
         mem_fetch *n_mf = m_mf_allocator->alloc(
-            mf->get_addr() + SECTOR_SIZE * i, mf->get_access_type(),
+            line_base + SECTOR_SIZE * i, mf->get_access_type(),
             mf->get_access_warp_mask(), mf->get_access_byte_mask() & mask,
             std::bitset<SECTOR_CHUNCK_SIZE>().set(i), SECTOR_SIZE,
             mf->is_write(), m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
@@ -858,6 +949,7 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
     for (unsigned i = 0; i < reqs.size(); ++i) {
       mem_fetch *req = reqs[i];
       m_request_tracker.insert(req);
+      trace_l2_event("REQ", cycle, m_id, req, "ICNT_TO_L2");
       if (req->istexture()) {
         m_icnt_L2_queue->push(req);
         req->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
@@ -882,6 +974,10 @@ mem_fetch *memory_sub_partition::pop() {
              mf->get_access_type() == L1_WRBK_ACC)) {
     delete mf;
     mf = NULL;
+  }
+  if (mf) {
+    trace_l2_event("RESP", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
+                   m_id, mf, "L2_TO_ICNT");
   }
   return mf;
 }

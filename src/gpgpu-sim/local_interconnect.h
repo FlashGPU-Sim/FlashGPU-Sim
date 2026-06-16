@@ -80,6 +80,14 @@ class xbar_router {
   unsigned long long in_buffer_full;
   unsigned long long in_buffer_util;
   unsigned long long packets_num;
+  std::vector<unsigned long long> input_pushes;
+  std::vector<unsigned long long> output_pushes;
+  std::vector<unsigned long long> input_grants;
+  std::vector<unsigned long long> output_grants;
+  std::vector<unsigned long long> input_full_events;
+  std::vector<unsigned long long> output_full_events;
+  std::vector<unsigned> max_input_occupancy;
+  std::vector<unsigned> max_output_occupancy;
 
  private:
   void iSLIP_Advance();
@@ -93,12 +101,14 @@ class xbar_router {
   void TransferPacket(unsigned input_deviceID, unsigned output_deviceID);
 
   struct Packet {
-    Packet(void* m_data, unsigned m_output_deviceID) {
+    Packet(void* m_data, unsigned m_output_deviceID, unsigned m_size) {
       data = m_data;
       output_deviceID = m_output_deviceID;
+      size = m_size;
     }
     void* data;
     unsigned output_deviceID;
+    unsigned size;
   };
   vector<vector<deque<Packet> > > in_buffers;
   vector<deque<Packet> > out_buffers;
