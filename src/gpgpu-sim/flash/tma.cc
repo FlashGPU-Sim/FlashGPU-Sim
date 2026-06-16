@@ -935,6 +935,7 @@ public:
       tx.m_bytes_completed += bytes_to_add;
       record_tma_mf_response(is_write, bytes_to_add);
 
+      bool parent_complete = false;
       auto pending_it = m_mf_pending_bytes.find(parent_uid);
       assert(pending_it != m_mf_pending_bytes.end());
       if (bytes_to_add >= pending_it->second) {
@@ -943,6 +944,8 @@ public:
         assert(tx.m_mf_tx_inflight > 0);
         tx.m_mf_tx_inflight--;
         m_mf_pending_bytes.erase(pending_it);
+        m_mf_to_tx.erase(parent_uid);
+        parent_complete = true;
       } else {
         pending_it->second -= bytes_to_add;
       }
@@ -951,7 +954,10 @@ public:
       if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes)
         finalize_transaction(tx_uid);
 
+      mem_fetch *parent_to_delete =
+          (parent_complete && parent_mf != mf) ? parent_mf : NULL;
       delete mf;
+      delete parent_to_delete;
     }
 
     // Issue memory requests using shadow stride accumulation
