@@ -56,6 +56,7 @@ class function_info;
 
 namespace flash_gpgpu_sim {
 void run_ptx_register_allocation(function_info *func);
+void run_ptx_reorder(function_info *func);
 }
 
 class type_info_key {
@@ -1549,6 +1550,7 @@ class function_info {
   bool has_register_aliases() const { return !m_reg_alloc_aliases.empty(); }
 
   friend void flash_gpgpu_sim::run_ptx_register_allocation(function_info *func);
+  friend void flash_gpgpu_sim::run_ptx_reorder(function_info *func);
 
   // backward pointer
   class gpgpu_context *gpgpu_ctx;

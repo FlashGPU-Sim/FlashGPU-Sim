@@ -545,6 +545,7 @@ void function_info::ptx_assemble() {
          m_name.c_str());
 
   recognize_dynamic_shared_mem();
+  flash_gpgpu_sim::run_ptx_reorder(this);
 
   fflush(stdout);
   std::list<ptx_instruction *>::iterator i;

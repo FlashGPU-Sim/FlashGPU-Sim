@@ -138,6 +138,17 @@ void gpgpu_context::ptx_reg_options(option_parser_t opp) {
                          &ptx_register_allocator_stats,
                          "Print PTX virtual register allocator statistics.",
                          "0");
+  option_parser_register(opp, "-gpgpu_ptx_reorder", OPT_BOOL,
+                         &ptx_reorder_enabled,
+                         "Enable conservative PTX instruction reordering.",
+                         "0");
+  option_parser_register(opp, "-gpgpu_ptx_reorder_stats", OPT_BOOL,
+                         &ptx_reorder_stats,
+                         "Print PTX instruction reordering statistics.", "0");
+  option_parser_register(opp, "-gpgpu_ptx_reorder_ready_slack", OPT_INT32,
+                         &ptx_reorder_ready_slack,
+                         "Extra issue-ready slack for PTX switch reordering.",
+                         "0");
 }
 
 void gpgpu_context::print_ptx_file(const char *p, unsigned source_num,
