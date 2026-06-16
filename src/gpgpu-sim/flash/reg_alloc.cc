@@ -347,17 +347,23 @@ void run_ptx_register_allocation(function_info *func) {
     }
   }
 
+  // Live-out registers must cover the tail of the predecessor block; otherwise
+  // loop-carried values can be re-aliased before the backedge is taken.
   for (unsigned bb_id = 0; bb_id < func->m_basic_blocks.size(); ++bb_id) {
-    const reg_symbol_set &live_in = bb_live[bb_id].live_in;
-    if (live_in.empty())
-      continue;
     basic_block_t *bb = func->m_basic_blocks[bb_id];
     if (bb->ptx_begin == NULL)
       continue;
     const unsigned begin = bb->ptx_begin->get_m_instr_mem_index();
-    for (reg_symbol_set::const_iterator r = live_in.begin(); r != live_in.end();
-         ++r) {
+    const unsigned end =
+        bb->ptx_end == NULL ? begin : bb->ptx_end->get_m_instr_mem_index();
+
+    for (reg_symbol_set::const_iterator r = bb_live[bb_id].live_in.begin();
+         r != bb_live[bb_id].live_in.end(); ++r) {
       record_interval(intervals, *r, begin);
+    }
+    for (reg_symbol_set::const_iterator r = bb_live[bb_id].live_out.begin();
+         r != bb_live[bb_id].live_out.end(); ++r) {
+      record_interval(intervals, *r, end);
     }
   }
 
