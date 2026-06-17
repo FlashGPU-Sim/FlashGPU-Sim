@@ -482,7 +482,8 @@ void barrier_set_t::release_warps(const std::set<int> &released_warps) {
                    ? (int)m_warp_barrier_type[w]
                    : -1);
       }
-      m_pending_warp_releases.push_back({trywait_latency, w});
+      m_pending_warp_releases.push_back(
+          {trywait_latency, w, BARRIER_WAIT_MBARRIER});
     }
   } else {
     for (auto w : released_warps) {
@@ -520,8 +521,11 @@ void barrier_set_t::cycle() {
                    ? (int)m_warp_barrier_type[warp_id]
                    : -1);
       }
-      clear_warp_waiting(warp_id, BARRIER_WAIT_MBARRIER,
-                         "delayed mbarrier release");
+      barrier_wait_type_t type = m_pending_warp_releases[i].type;
+      const char *reason = (type == BARRIER_WAIT_CP_ASYNC_GROUP)
+                               ? "delayed cp.async wait_group release"
+                               : "delayed mbarrier release";
+      clear_warp_waiting(warp_id, type, reason);
       m_pending_warp_releases.erase(m_pending_warp_releases.begin() + i);
     }
   }

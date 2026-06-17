@@ -60,7 +60,8 @@ class req_noc_trace {
   bool accepts(const mem_fetch *mf) const {
     if (!mf) return false;
     const mem_access_type access_type = mf->get_access_type();
-    return !m_tma_only || access_type == TMA_ACC_R || access_type == TMA_ACC_W;
+    return !m_tma_only || access_type == TMA_ACC_R || access_type == TMA_ACC_W ||
+           access_type == CP_ASYNC_ACC_R;
   }
 
   void log_packet(unsigned long long icnt_cycle, const char *event,

@@ -93,7 +93,8 @@ class l2_request_trace {
     if (!m_enabled || !mf || cycle > m_max_cycle) return;
 
     const mem_access_type access_type = mf->get_access_type();
-    if (m_tma_only && access_type != TMA_ACC_R && access_type != TMA_ACC_W)
+    if (m_tma_only && access_type != TMA_ACC_R && access_type != TMA_ACC_W &&
+        access_type != CP_ASYNC_ACC_R)
       return;
 
     const mem_fetch *original_mf = mf->get_original_mf();

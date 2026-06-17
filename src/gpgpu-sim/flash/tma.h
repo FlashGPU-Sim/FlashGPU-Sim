@@ -49,6 +49,13 @@ public:
   ~tma_unit_t();
 
   void warp_reaches_tma(unsigned cta_id, unsigned warp_id, warp_inst_t *inst);
+  void warp_reaches_cp_async(unsigned cta_id, unsigned warp_id,
+                             const warp_inst_t &inst,
+                             const ptx_instruction *static_inst);
+  void commit_cp_async_group(unsigned cta_id, unsigned warp_id);
+  void wait_cp_async_group(unsigned cta_id, unsigned warp_id,
+                           unsigned max_pending_groups);
+  void cleanup_cta(unsigned cta_id);
   void cycle();
 
   void fill(mem_fetch *mf);

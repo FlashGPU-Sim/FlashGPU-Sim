@@ -217,6 +217,20 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
                          "Default 33",
                          "33");
   option_parser_register(
+      opp, "-ptx_opcode_latency_cp_async", OPT_CSTR, &opcode_latency_cp_async,
+      "Opcode latency for ordinary cp.async instructions. Default 7", "7");
+  option_parser_register(
+      opp, "-ptx_opcode_latency_cp_async_commit", OPT_CSTR,
+      &opcode_latency_cp_async_commit,
+      "Opcode latency for ordinary cp.async.commit_group instructions. Default 7",
+      "7");
+  option_parser_register(
+      opp, "-ptx_opcode_latency_cp_async_wait", OPT_CSTR,
+      &opcode_latency_cp_async_wait,
+      "Opcode latency for ordinary cp.async.wait_group/wait_all instructions. "
+      "Default 5",
+      "5");
+  option_parser_register(
       opp, "-ptx_opcode_latency_tensormap", OPT_CSTR,
       &opcode_latency_tensormap,
       "Opcode latencies for tensormap descriptor instructions "
@@ -266,6 +280,23 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
                          "Opcode initiation interval for TMA (cp.async.bulk) instructions"
                          "Default 33",
                          "33");
+  option_parser_register(
+      opp, "-ptx_opcode_initiation_cp_async", OPT_CSTR,
+      &opcode_initiation_cp_async,
+      "Opcode initiation interval for ordinary cp.async instructions. Default 7",
+      "7");
+  option_parser_register(
+      opp, "-ptx_opcode_initiation_cp_async_commit", OPT_CSTR,
+      &opcode_initiation_cp_async_commit,
+      "Opcode initiation interval for ordinary cp.async.commit_group "
+      "instructions. Default 7",
+      "7");
+  option_parser_register(
+      opp, "-ptx_opcode_initiation_cp_async_wait", OPT_CSTR,
+      &opcode_initiation_cp_async_wait,
+      "Opcode initiation interval for ordinary cp.async.wait_group/wait_all "
+      "instructions. Default 5",
+      "5");
   option_parser_register(
       opp, "-ptx_opcode_initiation_tensormap", OPT_CSTR,
       &opcode_initiation_tensormap,
@@ -1070,6 +1101,12 @@ void ptx_instruction::set_opcode_and_latency() {
   unsigned wgmma_rs_init[4];
   unsigned tma_latency_val;
   unsigned tma_init_val;
+  unsigned cp_async_latency_val;
+  unsigned cp_async_commit_latency_val;
+  unsigned cp_async_wait_latency_val;
+  unsigned cp_async_init_val;
+  unsigned cp_async_commit_init_val;
+  unsigned cp_async_wait_init_val;
   unsigned tensormap_latency[3];
   unsigned tensormap_init[3];
   /*
@@ -1184,6 +1221,27 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_cp_async, "%u",
+                &cp_async_latency_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_cp_async (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_cp_async_commit, "%u",
+                &cp_async_commit_latency_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_cp_async_commit (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_cp_async_wait, "%u",
+                &cp_async_wait_latency_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_cp_async_wait (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
   nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_tensormap, "%u,%u,%u",
                 &tensormap_latency[0], &tensormap_latency[1],
                 &tensormap_latency[2]);
@@ -1195,6 +1253,27 @@ void ptx_instruction::set_opcode_and_latency() {
   nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_tma, "%u", &tma_init_val);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_tma (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_cp_async, "%u",
+                &cp_async_init_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_cp_async (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_cp_async_commit, "%u",
+                &cp_async_commit_init_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_cp_async_commit (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_cp_async_wait, "%u",
+                &cp_async_wait_init_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_cp_async_wait (expected 1 value, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
@@ -1246,7 +1325,21 @@ void ptx_instruction::set_opcode_and_latency() {
       op = LOAD_OP;
       break;
     case CP_ASYNC_OP:
-      op = m_is_ldgsts ? LOAD_OP : ALU_OP;
+      op = ASYNC_COPY_OP;
+      if (m_is_ldgsts) {
+        latency = cp_async_latency_val;
+        initiation_interval = cp_async_init_val;
+      }
+      break;
+    case CP_ASYNC_COMMIT_OP:
+      op = ASYNC_COPY_OP;
+      latency = cp_async_commit_latency_val;
+      initiation_interval = cp_async_commit_init_val;
+      break;
+    case CP_ASYNC_WAIT_OP:
+      op = ASYNC_COPY_OP;
+      latency = cp_async_wait_latency_val;
+      initiation_interval = cp_async_wait_init_val;
       break;
     case ST_OP:
       op = STORE_OP;

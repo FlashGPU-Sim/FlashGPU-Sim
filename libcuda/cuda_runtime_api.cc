@@ -108,6 +108,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -3389,6 +3390,10 @@ void cuda_runtime_api::extract_ptx_files_using_cuobjdump_internal(
     CUctx_st *context, std::string &app_binary) {
   char command[2048];
   char *pytorch_bin = getenv("PYTORCH_BIN");
+  const char *ptx_debug_env = getenv("GPGPUSIM_PTX_DEBUG");
+  const bool ptx_debug =
+      ptx_debug_env != NULL && ptx_debug_env[0] != '\0' &&
+      strcmp(ptx_debug_env, "0") != 0;
 
   char ptx_list_file_name[1024];
   snprintf(ptx_list_file_name, 1024, "_cuobjdump_list_ptx_XXXXXX");
@@ -3404,6 +3409,14 @@ void cuda_runtime_api::extract_ptx_files_using_cuobjdump_internal(
            "$CUDA_INSTALL_PATH/bin/cuobjdump -lptx %s  | cut -d \":\" -f 2 | "
            "awk '{$1=$1}1' > %s",
            app_binary.c_str(), ptx_list_file_name);
+  if (ptx_debug) {
+    char cwd_buf[4096];
+    const char *cwd =
+        getcwd(cwd_buf, sizeof(cwd_buf)) ? cwd_buf : "<getcwd failed>";
+    printf("GPGPU-Sim PTX DEBUG: extract cwd=%s app_binary=%s list_file=%s\n",
+           cwd, app_binary.c_str(), ptx_list_file_name);
+    printf("GPGPU-Sim PTX DEBUG: extract command=%s\n", command);
+  }
   if (system(command) != 0) {
     printf("WARNING: Failed to execute cuobjdump to get list of ptx files \n");
     exit(0);
@@ -3996,9 +4009,48 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
   }
 
   // Parse the selected files (if any)
+  const char *selected_ptx_override = getenv("GPGPUSIM_SELECTED_PTX_OVERRIDE");
+  const bool use_selected_ptx_override =
+      selected_ptx_override != NULL && strlen(selected_ptx_override) != 0;
+  const char *ptx_debug_env = getenv("GPGPUSIM_PTX_DEBUG");
+  const bool ptx_debug =
+      ptx_debug_env != NULL && ptx_debug_env[0] != '\0' &&
+      strcmp(ptx_debug_env, "0") != 0;
+  if (ptx_debug) {
+    char cwd_buf[4096];
+    const char *cwd =
+        getcwd(cwd_buf, sizeof(cwd_buf)) ? cwd_buf : "<getcwd failed>";
+    printf("GPGPU-Sim PTX DEBUG: selected-file path cwd=%s fname=%s handle=%u\n",
+           cwd, fname.c_str(), handle);
+    printf("GPGPU-Sim PTX DEBUG: env GPGPUSIM_SELECTED_PTX_OVERRIDE=%s\n",
+           selected_ptx_override ? selected_ptx_override : "<unset>");
+    printf("GPGPU-Sim PTX DEBUG: env PTX_SIM_USE_PTX_FILE=%s\n",
+           getenv("PTX_SIM_USE_PTX_FILE") ? getenv("PTX_SIM_USE_PTX_FILE")
+                                          : "<unset>");
+    printf("GPGPU-Sim PTX DEBUG: env PTX_SIM_KERNELFILE=%s\n",
+           getenv("PTX_SIM_KERNELFILE") ? getenv("PTX_SIM_KERNELFILE")
+                                        : "<unset>");
+    printf("GPGPU-Sim PTX DEBUG: selected_files=%zu override_enabled=%d\n",
+           selected_files.size(), use_selected_ptx_override ? 1 : 0);
+    for (size_t i = 0; i < selected_files.size(); ++i) {
+      printf("GPGPU-Sim PTX DEBUG: selected_files[%zu]=%s\n", i,
+             selected_files[i].c_str());
+    }
+  }
+
   for (auto &ptx_filename : selected_files) {
-    printf("GPGPU-Sim PTX: Parsing %s\n", ptx_filename.c_str());
-    symtab = gpgpu_ptx_sim_load_ptx_from_filename(ptx_filename.c_str());
+    const char *parse_filename =
+        use_selected_ptx_override ? selected_ptx_override : ptx_filename.c_str();
+    if (use_selected_ptx_override) {
+      printf("GPGPU-Sim PTX: overriding selected PTX %s with %s\n",
+             ptx_filename.c_str(), selected_ptx_override);
+    }
+    if (ptx_debug) {
+      printf("GPGPU-Sim PTX DEBUG: parse selected=%s parse_filename=%s\n",
+             ptx_filename.c_str(), parse_filename);
+    }
+    printf("GPGPU-Sim PTX: Parsing %s\n", parse_filename);
+    symtab = gpgpu_ptx_sim_load_ptx_from_filename(parse_filename);
   }
   api->name_symtab[fname] = symtab;
   context->add_binary(symtab, handle);
@@ -4015,8 +4067,14 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
       size_t dot_pos = ptx_filename.find('.', sm_pos);
       arch_str = ptx_filename.substr(sm_pos, dot_pos - sm_pos);
     }
-    printf("GPGPU-Sim PTX: Loading PTXInfo from %s\n", ptx_filename.c_str());
-    gpgpu_ptx_info_load_from_filename(ptx_filename.c_str(), arch_str.c_str());
+    const char *ptxinfo_filename =
+        use_selected_ptx_override ? selected_ptx_override : ptx_filename.c_str();
+    if (ptx_debug) {
+      printf("GPGPU-Sim PTX DEBUG: ptxinfo selected=%s ptxinfo_filename=%s arch=%s\n",
+             ptx_filename.c_str(), ptxinfo_filename, arch_str.c_str());
+    }
+    printf("GPGPU-Sim PTX: Loading PTXInfo from %s\n", ptxinfo_filename);
+    gpgpu_ptx_info_load_from_filename(ptxinfo_filename, arch_str.c_str());
   }
   return;
 #endif

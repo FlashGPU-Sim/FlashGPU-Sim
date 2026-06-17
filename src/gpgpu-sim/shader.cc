@@ -35,6 +35,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include "../../libcuda/gpgpu_context.h"
 #include "../cuda-sim/cuda-sim.h"
 #include "../cuda-sim/ptx-stats.h"
@@ -56,6 +57,145 @@
 #define PRIORITIZE_MSHR_OVER_WB 1
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
+
+namespace {
+
+struct issue_trace_state {
+  bool initialized;
+  bool enabled;
+  int sm;
+  int warp;
+  unsigned long long max_lines;
+  unsigned long long lines;
+  FILE *fp;
+
+  issue_trace_state()
+      : initialized(false),
+        enabled(false),
+        sm(-1),
+        warp(-1),
+        max_lines(0),
+        lines(0),
+        fp(NULL) {}
+};
+
+issue_trace_state &get_issue_trace_state() {
+  static issue_trace_state state;
+  if (state.initialized) return state;
+  state.initialized = true;
+
+  const char *path = getenv("FGSIM_ISSUE_TRACE_FILE");
+  if (path == NULL || path[0] == '\0') return state;
+
+  const char *sm = getenv("FGSIM_ISSUE_TRACE_SM");
+  const char *warp = getenv("FGSIM_ISSUE_TRACE_WARP");
+  const char *max_lines = getenv("FGSIM_ISSUE_TRACE_MAX");
+  state.sm = sm != NULL ? atoi(sm) : -1;
+  state.warp = warp != NULL ? atoi(warp) : -1;
+  state.max_lines = max_lines != NULL ? strtoull(max_lines, NULL, 10) : 0;
+  state.fp = fopen(path, "w");
+  if (state.fp == NULL) {
+    fprintf(stderr, "GPGPU-Sim: failed to open issue trace '%s': %s\n", path,
+            strerror(errno));
+    return state;
+  }
+  state.enabled = true;
+  fprintf(state.fp,
+          "# cycle sm sched warp dyn_warp event op pc producer instruction\n");
+  fflush(state.fp);
+  return state;
+}
+
+const char *issue_trace_op_name(unsigned op) {
+  switch (op) {
+    case SP_OP:
+      return "SP";
+    case SFU_OP:
+      return "SFU";
+    case ALU_SFU_OP:
+      return "ALU_SFU";
+    case DP_OP:
+      return "DP";
+    case INTP_OP:
+      return "INT";
+    case ALU_OP:
+      return "ALU";
+    case LOAD_OP:
+      return "LD";
+    case STORE_OP:
+      return "ST";
+    case MEMORY_BARRIER_OP:
+      return "MEMBAR";
+    case TENSOR_CORE_LOAD_OP:
+      return "LDSM";
+    case TENSOR_CORE_STORE_OP:
+      return "STMATRIX";
+    case TENSOR_CORE_OP:
+      return "MMA";
+    case TENSOR_MEMORY_ACCELERATOR_OP:
+      return "TMA";
+    case ASYNC_COPY_OP:
+      return "CP_ASYNC";
+    case TENSOR_MAP_OP:
+      return "TENSOR_MAP";
+    default:
+      return "OTHER";
+  }
+}
+
+const char *issue_trace_producer_name(reg_producer_t producer) {
+  switch (producer) {
+    case PROD_MEM_GLOBAL:
+      return "MEM_GLOBAL";
+    case PROD_MEM_SHARED:
+      return "MEM_SHARED";
+    case PROD_TENSOR_CORE:
+      return "TENSOR";
+    case PROD_SP_INT:
+      return "SP_INT";
+    case PROD_SFU:
+      return "SFU";
+    case PROD_TMA:
+      return "TMA";
+    case PROD_TENSOR_MAP:
+      return "TENSOR_MAP";
+    default:
+      return "OTHER";
+  }
+}
+
+void issue_trace_log(shader_core_ctx *shader, unsigned sched_id,
+                     unsigned warp_id, unsigned dynamic_warp_id,
+                     const warp_inst_t *inst, const char *event,
+                     const char *producer) {
+  issue_trace_state &trace = get_issue_trace_state();
+  if (!trace.enabled) return;
+  if (trace.max_lines != 0 && trace.lines >= trace.max_lines) return;
+  if (trace.sm >= 0 && trace.sm != static_cast<int>(shader->get_sid())) return;
+  if (trace.warp >= 0 && trace.warp != static_cast<int>(warp_id)) return;
+
+  const unsigned long long cycle =
+      shader->get_gpu()->gpu_sim_cycle + shader->get_gpu()->gpu_tot_sim_cycle;
+  std::string inst_text;
+  const char *op_name = "NONE";
+  unsigned long long pc = 0;
+  if (inst != NULL) {
+    op_name = issue_trace_op_name(inst->op);
+    pc = static_cast<unsigned long long>(inst->pc);
+    inst_text =
+        shader->get_config()->gpgpu_ctx->func_sim->ptx_get_insn_str(inst->pc);
+  }
+
+  flockfile(trace.fp);
+  fprintf(trace.fp, "%llu sm=%u sched=%u warp=%u dyn=%u event=%s op=%s "
+                    "pc=0x%llx prod=%s | %s\n",
+          cycle, shader->get_sid(), sched_id, warp_id, dynamic_warp_id, event,
+          op_name, pc, producer != NULL ? producer : "-", inst_text.c_str());
+  ++trace.lines;
+  funlockfile(trace.fp);
+}
+
+}  // namespace
 
 mem_fetch *shader_core_mem_fetch_allocator::alloc(
     new_addr_type addr, mem_access_type type, unsigned size, bool wr,
@@ -255,6 +395,7 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
             &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA],
+            &m_pipeline_reg[ID_OC_CP_ASYNC],
             &m_pipeline_reg[ID_OC_TENSOR_MAP], i));
         break;
       case CONCRETE_SCHEDULER_TWO_LEVEL_ACTIVE:
@@ -264,6 +405,7 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
             &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA],
+            &m_pipeline_reg[ID_OC_CP_ASYNC],
             &m_pipeline_reg[ID_OC_TENSOR_MAP], i,
             m_config->gpgpu_scheduler_string));
         break;
@@ -274,6 +416,7 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
             &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA],
+            &m_pipeline_reg[ID_OC_CP_ASYNC],
             &m_pipeline_reg[ID_OC_TENSOR_MAP], i));
         break;
       case CONCRETE_SCHEDULER_RRR:
@@ -283,6 +426,7 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
             &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA],
+            &m_pipeline_reg[ID_OC_CP_ASYNC],
             &m_pipeline_reg[ID_OC_TENSOR_MAP], i));
         break;
       case CONCRETE_SCHEDULER_OLDEST_FIRST:
@@ -292,6 +436,7 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
             &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA],
+            &m_pipeline_reg[ID_OC_CP_ASYNC],
             &m_pipeline_reg[ID_OC_TENSOR_MAP], i));
         break;
       case CONCRETE_SCHEDULER_WARP_LIMITING:
@@ -301,6 +446,7 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
             &m_pipeline_reg[ID_OC_MEM], &m_pipeline_reg[ID_OC_TMA],
+            &m_pipeline_reg[ID_OC_CP_ASYNC],
             &m_pipeline_reg[ID_OC_TENSOR_MAP], i,
             m_config->gpgpu_scheduler_string));
         break;
@@ -351,6 +497,10 @@ void shader_core_ctx::create_exec_pipeline() {
     if (m_config->gpgpu_num_int_units > 0) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_INT]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_INT]);
+    }
+    if (m_config->gpgpu_num_cp_async_units > 0) {
+      in_ports.push_back(&m_pipeline_reg[ID_OC_CP_ASYNC]);
+      out_ports.push_back(&m_pipeline_reg[OC_EX_CP_ASYNC]);
     }
     if (m_config->gpgpu_num_tensormap_units > 0) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_TENSOR_MAP]);
@@ -457,9 +607,10 @@ void shader_core_ctx::create_exec_pipeline() {
       m_config->gpgpu_num_sp_units + m_config->gpgpu_num_dp_units +
       m_config->gpgpu_num_sfu_units + m_config->gpgpu_num_tensor_core_units +
       m_config->gpgpu_num_int_units + m_config->gpgpu_num_tma_units +
+      m_config->gpgpu_num_cp_async_units +
       m_config->gpgpu_num_tensormap_units +
       m_config->m_specialized_unit_num +
-      1;  // sp_unit, sfu, dp, tensor, int, tma, tensormap, ldst_unit
+      1;  // sp_unit, sfu, dp, tensor, int, tma, cp.async, tensormap, ldst_unit
   // m_dispatch_port = new enum pipeline_stage_name_t[ m_num_function_units ];
   // m_issue_port = new enum pipeline_stage_name_t[ m_num_function_units ];
 
@@ -498,6 +649,12 @@ void shader_core_ctx::create_exec_pipeline() {
     m_fu.push_back(new tma_fu(&m_pipeline_reg[EX_WB], m_config, this, k));
     m_dispatch_port.push_back(ID_OC_TMA);
     m_issue_port.push_back(OC_EX_TMA);
+  }
+
+  for (unsigned k = 0; k < m_config->gpgpu_num_cp_async_units; k++) {
+    m_fu.push_back(new cp_async_fu(&m_pipeline_reg[EX_WB], m_config, this, k));
+    m_dispatch_port.push_back(ID_OC_CP_ASYNC);
+    m_issue_port.push_back(OC_EX_CP_ASYNC);
   }
 
   for (unsigned k = 0; k < m_config->gpgpu_num_tensormap_units; k++) {
@@ -1642,7 +1799,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 
   // Add LDGSTS instructions into a buffer
   unsigned int ldgdepbar_id = m_warp[warp_id]->m_ldgdepbar_id;
-  if (next_inst->m_is_ldgsts) {
+  if (next_inst->m_is_ldgsts && next_inst->op != ASYNC_COPY_OP) {
     const warp_inst_t &ldgsts_inst = **pipe_reg;
     ensure_ldgdepbar_group(m_warp[warp_id], ldgdepbar_id);
     unsigned int group_idx =
@@ -1694,6 +1851,22 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       // Now it has the correct tma_dyn_info set only for active lanes
       assert(dyn_inst != nullptr);
       m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id, dyn_inst);
+    }
+  } else if (next_inst->op == ASYNC_COPY_OP) {
+    const ptx_instruction *static_inst =
+        dynamic_cast<const ptx_instruction *>(next_inst);
+    unsigned cta_id = m_warp[warp_id]->get_cta_id();
+    if (next_inst->m_is_ldgsts) {
+      if ((*pipe_reg)->get_active_mask().any()) {
+        m_tma->warp_reaches_cp_async(cta_id, warp_id, **pipe_reg,
+                                     static_inst);
+      }
+    } else if (next_inst->m_is_ldgdepbar) {
+      m_tma->commit_cp_async_group(cta_id, warp_id);
+    } else if (next_inst->m_is_depbar) {
+      m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
+      m_tma->wait_cp_async_group(cta_id, warp_id,
+                                 next_inst->m_depbar_group_no);
     }
   } else if (next_inst->op == MEMORY_BARRIER_OP) {
     m_warp[warp_id]->set_membar();
@@ -2090,6 +2263,7 @@ void scheduler_unit::cycle() {
               // This code need to be refactored
               if (pI->op != TENSOR_CORE_OP && pI->op != SFU_OP &&
                   pI->op != DP_OP &&
+                  pI->op != ASYNC_COPY_OP &&
                   !(pI->op == TENSOR_MAP_OP &&
                     m_shader->m_config->gpgpu_num_tensormap_units > 0) &&
                   !(pI->op >= SPEC_UNIT_START_ID)) {
@@ -2256,6 +2430,24 @@ void scheduler_unit::cycle() {
                   warp_inst_issued = true;
                   previous_issued_inst_exec_type = exec_unit_type_t::TMA_UNIT;
                 }
+              } else if ((pI->op == ASYNC_COPY_OP) &&
+                         !(diff_exec_units && previous_issued_inst_exec_type ==
+                                                  exec_unit_type_t::
+                                                      CP_ASYNC_UNIT)) {
+                bool cp_async_pipe_avail =
+                    (m_shader->m_config->gpgpu_num_cp_async_units > 0) &&
+                    m_cp_async_out->has_free(
+                        m_shader->m_config->sub_core_model, m_id);
+
+                if (cp_async_pipe_avail) {
+                  m_shader->issue_warp(*m_cp_async_out, pI, active_mask,
+                                       warp_id, m_id);
+                  issued++;
+                  issued_inst = true;
+                  warp_inst_issued = true;
+                  previous_issued_inst_exec_type =
+                      exec_unit_type_t::CP_ASYNC_UNIT;
+                }
               } else if ((pI->op == TENSOR_MAP_OP) &&
                          !(diff_exec_units && previous_issued_inst_exec_type ==
                                                   exec_unit_type_t::
@@ -2303,6 +2495,12 @@ void scheduler_unit::cycle() {
             SCHED_GPPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) fails scoreboard\n",
                 (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+            const reg_producer_t producer =
+                m_scoreboard->getCollisionType(warp_id, pI);
+            issue_trace_log(m_shader, m_id, warp_id,
+                            (*iter)->get_dynamic_warp_id(), pI,
+                            "STALL_SCOREBOARD",
+                            issue_trace_producer_name(producer));
           }
         }
       } else if (valid) {
@@ -2315,6 +2513,8 @@ void scheduler_unit::cycle() {
         warp(warp_id).ibuffer_flush();
       }
       if (warp_inst_issued) {
+        issue_trace_log(m_shader, m_id, warp_id, (*iter)->get_dynamic_warp_id(),
+                        pI, "ISSUE", "-");
         SCHED_GPPRINTF(
             "Warp (warp_id %u, dynamic_warp_id %u) issued %u instructions\n",
             (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(), issued);
@@ -2324,6 +2524,10 @@ void scheduler_unit::cycle() {
         else
           do_on_warp_issued(warp_id, issued, iter);
         if (warpgroup_inst_issued) break;
+      } else if (pI != NULL && valid &&
+                 !m_scoreboard->checkCollision(warp_id, pI)) {
+        issue_trace_log(m_shader, m_id, warp_id, (*iter)->get_dynamic_warp_id(),
+                        pI, "STALL_READY_NO_ISSUE", "-");
       }
       checked++;
     }
@@ -2376,7 +2580,9 @@ void scheduler_unit::cycle() {
     } else if (warp(wid).waiting()) {
       if (m_shader->warp_waiting_at_barrier(wid)) {
         auto btype = m_shader->get_warp_barrier_type(wid);
-        if (btype == BARRIER_WAIT_MBARRIER || btype == BARRIER_WAIT_BULK_GROUP)
+        if (btype == BARRIER_WAIT_MBARRIER ||
+            btype == BARRIER_WAIT_BULK_GROUP ||
+            btype == BARRIER_WAIT_CP_ASYNC_GROUP)
           reason = STALL_WAIT_TMA;
         else if (btype == BARRIER_WAIT_WGMMA_GROUP)
           reason = STALL_WAIT_WGMMA;
@@ -2421,11 +2627,16 @@ void scheduler_unit::cycle() {
         if (op == LOAD_OP || op == STORE_OP ||
             op == TENSOR_CORE_LOAD_OP || op == TENSOR_CORE_STORE_OP ||
             op == MEMORY_BARRIER_OP || op == TENSOR_MEMORY_ACCELERATOR_OP ||
+            op == ASYNC_COPY_OP ||
             (op == TENSOR_MAP_OP &&
              m_shader->m_config->gpgpu_num_tensormap_units > 0)) {
           is_mio = true;
           if (op == TENSOR_MEMORY_ACCELERATOR_OP)
             fu_full = !m_tma_out->has_free(m_shader->m_config->sub_core_model, m_id);
+          else if (op == ASYNC_COPY_OP)
+            fu_full = m_shader->m_config->gpgpu_num_cp_async_units == 0 ||
+                      !m_cp_async_out->has_free(
+                m_shader->m_config->sub_core_model, m_id);
           else if (op == TENSOR_MAP_OP)
             fu_full = !m_tensormap_out->has_free(
                 m_shader->m_config->sub_core_model, m_id);
@@ -2592,11 +2803,12 @@ swl_scheduler::swl_scheduler(shader_core_stats *stats, shader_core_ctx *shader,
                              register_set *tensor_core_out,
                              std::vector<register_set *> &spec_cores_out,
                              register_set *mem_out, register_set *tma_out,
+                             register_set *cp_async_out,
                              register_set *tensormap_out, int id,
                              char *config_string)
     : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
                      sfu_out, int_out, tensor_core_out, spec_cores_out, mem_out,
-                     tma_out, tensormap_out, id) {
+                     tma_out, cp_async_out, tensormap_out, id) {
   unsigned m_prioritization_readin;
   int ret = sscanf(config_string, "warp_limiting:%d:%d",
                    &m_prioritization_readin, &m_num_warps_to_limit);
@@ -3309,11 +3521,37 @@ tensor_core::tensor_core(register_set *result_port,
   m_name = "TENSOR_CORE";
 }
 
+unsigned tensor_core::get_issue_reg_id() {
+  unsigned units_per_subpartition =
+      m_config->gpgpu_tensor_core_units_per_sub_partition;
+  if (m_config->sub_core_model && units_per_subpartition > 1) {
+    assert(m_config->gpgpu_num_sched_per_core > 0);
+    assert(m_config->gpgpu_num_tensor_core_units ==
+           m_config->gpgpu_num_sched_per_core * units_per_subpartition);
+    return m_issue_reg_id / units_per_subpartition;
+  }
+  return m_issue_reg_id;
+}
+
 tma_fu::tma_fu(register_set *result_port, const shader_core_config *config,
                shader_core_ctx *core, unsigned issue_reg_id)
     : pipelined_simd_unit(result_port, config, config->max_tma_latency, core,
                           issue_reg_id) {
   m_name = "TMA";
+}
+
+cp_async_fu::cp_async_fu(register_set *result_port,
+                         const shader_core_config *config,
+                         shader_core_ctx *core, unsigned issue_reg_id)
+    : pipelined_simd_unit(result_port, config, config->max_cp_async_latency,
+                          core, issue_reg_id) {
+  m_name = "CP_ASYNC";
+}
+
+bool cp_async_fu::is_issue_partitioned() {
+  return m_config->sub_core_model &&
+         m_config->gpgpu_num_cp_async_units >=
+             m_config->gpgpu_num_sched_per_core;
 }
 
 tensormap_fu::tensormap_fu(register_set *result_port,
@@ -3336,7 +3574,7 @@ void sfu::issue(register_set &source_reg) {
 
 void tensor_core::issue(register_set &source_reg) {
   warp_inst_t **ready_reg =
-      source_reg.get_ready(m_config->sub_core_model, m_issue_reg_id);
+      source_reg.get_ready(m_config->sub_core_model, this->get_issue_reg_id());
   // m_core->incexecstat((*ready_reg));
 
   (*ready_reg)->op_pipe = TENSOR_CORE__OP;
@@ -3345,6 +3583,16 @@ void tensor_core::issue(register_set &source_reg) {
 }
 
 void tma_fu::issue(register_set &source_reg) {
+  pipelined_simd_unit::issue(source_reg);
+}
+
+void cp_async_fu::issue(register_set &source_reg) {
+  bool partition_issue =
+      m_config->sub_core_model && this->is_issue_partitioned();
+  warp_inst_t **ready_reg =
+      source_reg.get_ready(partition_issue, m_issue_reg_id);
+  (*ready_reg)->op_pipe = CP_ASYNC__OP;
+  m_core->incmem_stat(m_core->get_config()->warp_size, (*ready_reg)->latency);
   pipelined_simd_unit::issue(source_reg);
 }
 
@@ -3422,6 +3670,11 @@ void tensor_core::active_lanes_in_pipeline() {
 }
 
 void tma_fu::active_lanes_in_pipeline() {
+  unsigned active_count = pipelined_simd_unit::get_active_lanes_in_pipeline();
+  assert(active_count <= m_core->get_config()->warp_size);
+}
+
+void cp_async_fu::active_lanes_in_pipeline() {
   unsigned active_count = pipelined_simd_unit::get_active_lanes_in_pipeline();
   assert(active_count <= m_core->get_config()->warp_size);
 }
@@ -3541,8 +3794,9 @@ void pipelined_simd_unit::issue(register_set &source_reg) {
   // move_warp(m_dispatch_reg,source_reg);
   bool partition_issue =
       m_config->sub_core_model && this->is_issue_partitioned();
+  unsigned issue_reg_id = this->get_issue_reg_id();
   warp_inst_t **ready_reg =
-      source_reg.get_ready(partition_issue, m_issue_reg_id);
+      source_reg.get_ready(partition_issue, issue_reg_id);
   m_core->incexecstat((*ready_reg));
   // source_reg.move_out_to(m_dispatch_reg);
   simd_function_unit::issue(source_reg);
@@ -3961,6 +4215,7 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
   m_barriers.deallocate_barrier(cta_num);
   m_barriers.cleanup_cta_mbarriers(cta_num);  // Clean up mbarriers for this hw_cta_id
   m_barriers.cleanup_cta_bulk_groups(cta_num);
+  if (m_tma != nullptr) m_tma->cleanup_cta(cta_num);
   m_wgmma.cleanup_cta(cta_num);
   shader_CTA_count_unlog(m_sid, 1);
 
@@ -4027,7 +4282,7 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
       assert(inserted && "CTA already pending TMA release");
       SHADER_GPPRINTF(
           LIVENESS,
-          "GPGPU-Sim uArch: CTA #%u threads exited with pending TMA, "
+          "GPGPU-Sim uArch: CTA #%u threads exited with pending TMA/cp.async, "
           "delaying resource release.\n",
           cta_num);
       return;
@@ -4650,6 +4905,9 @@ void shader_core_config::set_pipeline_latency() {
   unsigned wgmma_latency[4];
   unsigned wgmma_latency_max = 1;
   unsigned tma_latency;
+  unsigned cp_async_latency;
+  unsigned cp_async_commit_latency;
+  unsigned cp_async_wait_latency;
   unsigned tensormap_latency[3];
 
   /*
@@ -4700,6 +4958,21 @@ void shader_core_config::set_pipeline_latency() {
     sscanf(gpgpu_ctx->func_sim->opcode_latency_tma, "%u", &tma_latency);
   else
     tma_latency = 1;
+  if (gpgpu_ctx->func_sim->opcode_latency_cp_async)
+    sscanf(gpgpu_ctx->func_sim->opcode_latency_cp_async, "%u",
+           &cp_async_latency);
+  else
+    cp_async_latency = 1;
+  if (gpgpu_ctx->func_sim->opcode_latency_cp_async_commit)
+    sscanf(gpgpu_ctx->func_sim->opcode_latency_cp_async_commit, "%u",
+           &cp_async_commit_latency);
+  else
+    cp_async_commit_latency = cp_async_latency;
+  if (gpgpu_ctx->func_sim->opcode_latency_cp_async_wait)
+    sscanf(gpgpu_ctx->func_sim->opcode_latency_cp_async_wait, "%u",
+           &cp_async_wait_latency);
+  else
+    cp_async_wait_latency = cp_async_latency;
   if (gpgpu_ctx->func_sim->opcode_latency_tensormap)
     sscanf(gpgpu_ctx->func_sim->opcode_latency_tensormap, "%u,%u,%u",
            &tensormap_latency[0], &tensormap_latency[1],
@@ -4716,6 +4989,8 @@ void shader_core_config::set_pipeline_latency() {
   max_dp_latency = dp_latency[1];
   max_tensor_core_latency = std::max(tensor_latency_max, wgmma_latency_max);
   max_tma_latency = tma_latency;
+  max_cp_async_latency = std::max(cp_async_latency, cp_async_commit_latency);
+  max_cp_async_latency = std::max(max_cp_async_latency, cp_async_wait_latency);
   max_tensormap_latency = std::max(tensormap_latency[0], tensormap_latency[1]);
   max_tensormap_latency = std::max(max_tensormap_latency, tensormap_latency[2]);
 }
@@ -5098,6 +5373,34 @@ bool barrier_set_t::warp_waiting_at_barrier(unsigned warp_id) const {
 barrier_wait_type_t barrier_set_t::get_warp_barrier_type(
     unsigned warp_id) const {
   return m_warp_barrier_type[warp_id];
+}
+
+void barrier_set_t::wait_cp_async_group(unsigned warp_id) {
+  if (m_warp_at_barrier.test(warp_id)) {
+    printf("GPGPU-Sim ERROR: warp %u reached cp.async wait while already "
+           "waiting. warp_at_barrier=%s type=%d\n",
+           warp_id, m_warp_at_barrier.to_string().c_str(),
+           (int)m_warp_barrier_type[warp_id]);
+    assert(false && "warp reached cp.async wait while already waiting");
+  }
+  m_warp_at_barrier.set(warp_id);
+  m_warp_barrier_type[warp_id] = BARRIER_WAIT_CP_ASYNC_GROUP;
+  m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+}
+
+void barrier_set_t::release_cp_async_warp(unsigned warp_id) {
+  unsigned release_latency =
+      m_shader->get_config()->gpgpu_cp_async_wait_release_latency;
+  if (release_latency > 0) {
+    assert_warp_waiting(warp_id, BARRIER_WAIT_CP_ASYNC_GROUP,
+                        "cp.async wait_group release");
+    m_pending_warp_releases.push_back(
+        {release_latency, static_cast<int>(warp_id),
+         BARRIER_WAIT_CP_ASYNC_GROUP});
+    return;
+  }
+  clear_warp_waiting(warp_id, BARRIER_WAIT_CP_ASYNC_GROUP,
+                     "cp.async wait_group release");
 }
 
 void barrier_set_t::dump() const {
@@ -5922,6 +6225,9 @@ void simt_core_cluster::update_icnt_stats(class mem_fetch *mf) {
     case TMA_ACC_W:
       m_stats->gpgpu_n_mem_tma++;
       break;
+    case CP_ASYNC_ACC_R:
+      m_stats->gpgpu_n_mem_read_global++;
+      break;
     default:
       assert(0);
   }
@@ -5965,19 +6271,28 @@ void sst_simt_core_cluster::icnt_inject_request_packet_to_SST(
 void simt_core_cluster::icnt_cycle() {
   unsigned tma_response_width =
       m_config->gpgpu_tma_response_width ? m_config->gpgpu_tma_response_width : 1;
+  unsigned cp_async_response_width =
+      m_config->gpgpu_cp_async_response_width
+          ? m_config->gpgpu_cp_async_response_width
+          : 1;
   unsigned tma_responses_accepted = 0;
+  unsigned cp_async_responses_accepted = 0;
 
   while (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
     unsigned cid = m_config->sid_to_cid(mf->get_sid());
     if (mf->get_access_type() == TMA_ACC_R ||
-        mf->get_access_type() == TMA_ACC_W) {
-      // TMA response
-      if (tma_responses_accepted < tma_response_width &&
+        mf->get_access_type() == TMA_ACC_W ||
+        mf->get_access_type() == CP_ASYNC_ACC_R) {
+      bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
+      unsigned &accepted =
+          is_cp_async ? cp_async_responses_accepted : tma_responses_accepted;
+      unsigned width = is_cp_async ? cp_async_response_width : tma_response_width;
+      if (accepted < width &&
           !m_core[cid]->tma_response_buffer_full()) {
         m_response_fifo.pop_front();
         m_core[cid]->accept_tma_response(mf);
-        tma_responses_accepted++;
+        accepted++;
         continue;
       }
       break;
@@ -5999,6 +6314,7 @@ void simt_core_cluster::icnt_cycle() {
   }
 
   unsigned tma_responses_popped = 0;
+  unsigned cp_async_responses_popped = 0;
   while (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
     mem_fetch *mf = (mem_fetch *)::icnt_pop(m_cluster_id);
     if (!mf) break;
@@ -6017,9 +6333,14 @@ void simt_core_cluster::icnt_cycle() {
     m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
 
     if (mf->get_access_type() == TMA_ACC_R ||
-        mf->get_access_type() == TMA_ACC_W) {
-      tma_responses_popped++;
-      if (tma_responses_popped < tma_response_width)
+        mf->get_access_type() == TMA_ACC_W ||
+        mf->get_access_type() == CP_ASYNC_ACC_R) {
+      bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
+      unsigned &popped =
+          is_cp_async ? cp_async_responses_popped : tma_responses_popped;
+      unsigned width = is_cp_async ? cp_async_response_width : tma_response_width;
+      popped++;
+      if (popped < width)
         continue;
     }
     break;
@@ -6030,7 +6351,14 @@ void sst_simt_core_cluster::icnt_cycle_SST() {
   if (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
     unsigned cid = m_config->sid_to_cid(mf->get_sid());
-    if (mf->get_access_type() == INST_ACC_R) {
+    if (mf->get_access_type() == TMA_ACC_R ||
+        mf->get_access_type() == TMA_ACC_W ||
+        mf->get_access_type() == CP_ASYNC_ACC_R) {
+      if (!m_core[cid]->tma_response_buffer_full()) {
+        m_response_fifo.pop_front();
+        m_core[cid]->accept_tma_response(mf);
+      }
+    } else if (mf->get_access_type() == INST_ACC_R) {
       // instruction fetch response
       if (!m_core[cid]->fetch_unit_response_buffer_full()) {
         m_response_fifo.pop_front();

@@ -124,6 +124,7 @@ enum uarch_op_t {
   TENSOR_CORE_LOAD_OP,
   TENSOR_CORE_STORE_OP,
   TENSOR_MEMORY_ACCELERATOR_OP,
+  ASYNC_COPY_OP,
   TENSOR_MAP_OP,
   STORE_OP,
   BRANCH_OP,
@@ -184,6 +185,7 @@ enum operation_pipeline_t {
   SFU__OP,
   TENSOR_CORE__OP,
   TENSOR_MAP__OP,
+  CP_ASYNC__OP,
   MEM__OP,
   SPECIALIZED__OP,
 };
@@ -630,7 +632,7 @@ typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
       MA_TUP(TEXTURE_ACC_R), MA_TUP(GLOBAL_ACC_W), MA_TUP(LOCAL_ACC_W), \
       MA_TUP(L1_WRBK_ACC), MA_TUP(L2_WRBK_ACC), MA_TUP(INST_ACC_R),     \
       MA_TUP(L1_WR_ALLOC_R), MA_TUP(L2_WR_ALLOC_R),                     \
-      MA_TUP(TMA_ACC_R), MA_TUP(TMA_ACC_W),                             \
+      MA_TUP(TMA_ACC_R), MA_TUP(TMA_ACC_W), MA_TUP(CP_ASYNC_ACC_R),     \
       MA_TUP(NUM_MEM_ACCESS_TYPE) MA_TUP_END(mem_access_type)
 
 #define MA_TUP_BEGIN(X) enum X {
@@ -715,6 +717,9 @@ class mem_access_t {
         break;
       case GLOBAL_ACC_W:
         fprintf(fp, "GLOBAL_W");
+        break;
+      case CP_ASYNC_ACC_R:
+        fprintf(fp, "CP_ASYNC_R");
         break;
       case LOCAL_ACC_W:
         fprintf(fp, "LOCAL_W ");

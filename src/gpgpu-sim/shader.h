@@ -91,7 +91,8 @@ enum exec_unit_type_t {
   TENSOR = 6,
   SPECIALIZED = 7,
   TMA_UNIT = 8,
-  TENSOR_MAP_UNIT = 9
+  CP_ASYNC_UNIT = 9,
+  TENSOR_MAP_UNIT = 10
 };
 
 class thread_ctx_t {
@@ -394,7 +395,8 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
                  register_set *int_out, register_set *tensor_core_out,
                  std::vector<register_set *> &spec_cores_out,
                  register_set *mem_out, register_set *tma_out,
-                 register_set *tensormap_out, int id)
+                 register_set *cp_async_out, register_set *tensormap_out,
+                 int id)
       : m_supervised_warps(),
         m_stats(stats),
         m_shader(shader),
@@ -407,6 +409,7 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
         m_int_out(int_out),
         m_tensor_core_out(tensor_core_out),
         m_tma_out(tma_out),
+        m_cp_async_out(cp_async_out),
         m_tensormap_out(tensormap_out),
         m_mem_out(mem_out),
         m_spec_cores_out(spec_cores_out),
@@ -507,6 +510,7 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   register_set *m_int_out;
   register_set *m_tensor_core_out;
   register_set *m_tma_out;
+  register_set *m_cp_async_out;
   register_set *m_tensormap_out;
   register_set *m_mem_out;
   std::vector<register_set *> &m_spec_cores_out;
@@ -525,10 +529,11 @@ class lrr_scheduler : public scheduler_unit {
                 register_set *int_out, register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
                 register_set *mem_out, register_set *tma_out,
-                register_set *tensormap_out, int id)
+                register_set *cp_async_out, register_set *tensormap_out,
+                int id)
       : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, tma_out, tensormap_out, id) {}
+                       mem_out, tma_out, cp_async_out, tensormap_out, id) {}
   virtual ~lrr_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -545,10 +550,11 @@ class rrr_scheduler : public scheduler_unit {
                 register_set *int_out, register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
                 register_set *mem_out, register_set *tma_out,
-                register_set *tensormap_out, int id)
+                register_set *cp_async_out, register_set *tensormap_out,
+                int id)
       : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, tma_out, tensormap_out, id) {}
+                       mem_out, tma_out, cp_async_out, tensormap_out, id) {}
   virtual ~rrr_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -565,10 +571,11 @@ class gto_scheduler : public scheduler_unit {
                 register_set *int_out, register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
                 register_set *mem_out, register_set *tma_out,
-                register_set *tensormap_out, int id)
+                register_set *cp_async_out, register_set *tensormap_out,
+                int id)
       : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, tma_out, tensormap_out, id) {}
+                       mem_out, tma_out, cp_async_out, tensormap_out, id) {}
   virtual ~gto_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -585,10 +592,11 @@ class oldest_scheduler : public scheduler_unit {
                    register_set *int_out, register_set *tensor_core_out,
                    std::vector<register_set *> &spec_cores_out,
                    register_set *mem_out, register_set *tma_out,
-                   register_set *tensormap_out, int id)
+                   register_set *cp_async_out, register_set *tensormap_out,
+                   int id)
       : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, tma_out, tensormap_out, id) {}
+                       mem_out, tma_out, cp_async_out, tensormap_out, id) {}
   virtual ~oldest_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -606,11 +614,12 @@ class two_level_active_scheduler : public scheduler_unit {
                              register_set *tensor_core_out,
                              std::vector<register_set *> &spec_cores_out,
                              register_set *mem_out, register_set *tma_out,
+                             register_set *cp_async_out,
                              register_set *tensormap_out, int id,
                              char *config_str)
       : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, tma_out, tensormap_out, id),
+                       mem_out, tma_out, cp_async_out, tensormap_out, id),
         m_pending_warps() {
     unsigned inner_level_readin;
     unsigned outer_level_readin;
@@ -658,7 +667,7 @@ class swl_scheduler : public scheduler_unit {
                 register_set *int_out, register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
                 register_set *mem_out, register_set *tma_out,
-                register_set *tensormap_out,
+                register_set *cp_async_out, register_set *tensormap_out,
                 int id, char *config_string);
   virtual ~swl_scheduler() {}
   virtual void order_warps();
@@ -1093,6 +1102,7 @@ enum barrier_wait_type_t {
   BARRIER_WAIT_BAR_SYNC,     // regular bar.sync / bar.red
   BARRIER_WAIT_MBARRIER,     // mbarrier.try_wait (TMA)
   BARRIER_WAIT_BULK_GROUP,   // cp.async.bulk.wait_group (TMA)
+  BARRIER_WAIT_CP_ASYNC_GROUP,  // cp.async.wait_group
   BARRIER_WAIT_WGMMA_GROUP,  // wgmma.wait_group
 };
 
@@ -1104,6 +1114,8 @@ static inline const char *barrier_wait_type_name(barrier_wait_type_t type) {
     return "mbarrier";
   case BARRIER_WAIT_BULK_GROUP:
     return "bulk_group";
+  case BARRIER_WAIT_CP_ASYNC_GROUP:
+    return "cp_async_group";
   case BARRIER_WAIT_WGMMA_GROUP:
     return "wgmma_group";
   }
@@ -1155,6 +1167,10 @@ class barrier_set_t {
   void wait_bulk_group(unsigned cta_id, unsigned warp_id, unsigned latest_group_num);
   void commit_bulk_group(unsigned cta_id, unsigned warp_id);
   void cleanup_cta_bulk_groups(unsigned cta_id);
+
+  // Ordinary cp.async wait_group uses this only as a scheduler wait state.
+  void wait_cp_async_group(unsigned warp_id);
+  void release_cp_async_warp(unsigned warp_id);
 
   // WGMMA wait_group uses the barrier bitset only as a scheduler wait state.
   void set_wgmma_waiting_warps(const unsigned *warp_ids, unsigned count);
@@ -1217,6 +1233,7 @@ class barrier_set_t {
   struct pending_warp_release_t {
     unsigned remaining;
     int warp_id;
+    barrier_wait_type_t type;
   };
   std::vector<pending_warp_release_t> m_pending_warp_releases;
 };
@@ -1379,6 +1396,7 @@ class tensor_core : public pipelined_simd_unit {
   }
   virtual void active_lanes_in_pipeline();
   virtual void issue(register_set &source_reg);
+  unsigned get_issue_reg_id();
   bool is_issue_partitioned() { return true; }
 };
 
@@ -1393,6 +1411,19 @@ class tma_fu : public pipelined_simd_unit {
   virtual void active_lanes_in_pipeline();
   virtual void issue(register_set &source_reg);
   bool is_issue_partitioned() { return false; }
+};
+
+class cp_async_fu : public pipelined_simd_unit {
+ public:
+  cp_async_fu(register_set *result_port, const shader_core_config *config,
+              shader_core_ctx *core, unsigned issue_reg_id);
+  virtual bool can_issue(const warp_inst_t &inst) const {
+    if (inst.op != ASYNC_COPY_OP) return false;
+    return pipelined_simd_unit::can_issue(inst);
+  }
+  virtual void active_lanes_in_pipeline();
+  virtual void issue(register_set &source_reg);
+  bool is_issue_partitioned();
 };
 
 class tensormap_fu : public pipelined_simd_unit {
@@ -1427,6 +1458,8 @@ class int_unit : public pipelined_simd_unit {
         return false;
       case MEMORY_BARRIER_OP:
         return false;
+      case ASYNC_COPY_OP:
+        return false;
       case SP_OP:
         return false;
       case DP_OP:
@@ -1458,6 +1491,8 @@ class sp_unit : public pipelined_simd_unit {
       case TENSOR_CORE_STORE_OP:
         return false;
       case MEMORY_BARRIER_OP:
+        return false;
+      case ASYNC_COPY_OP:
         return false;
       case DP_OP:
         return false;
@@ -1646,6 +1681,8 @@ enum pipeline_stage_name_t {
   OC_EX_TENSOR_CORE,
   ID_OC_TMA,
   OC_EX_TMA,
+  ID_OC_CP_ASYNC,
+  OC_EX_CP_ASYNC,
   ID_OC_TENSOR_MAP,
   OC_EX_TENSOR_MAP,
   N_PIPELINE_STAGES
@@ -1656,7 +1693,8 @@ const char *const pipeline_stage_name_decode[] = {
     "ID_OC_MEM",         "OC_EX_SP",         "OC_EX_DP",  "OC_EX_INT",
     "OC_EX_SFU",         "OC_EX_MEM",        "EX_WB",     "ID_OC_TENSOR_CORE",
     "OC_EX_TENSOR_CORE", "ID_OC_TMA",        "OC_EX_TMA",
-    "ID_OC_TENSOR_MAP",  "OC_EX_TENSOR_MAP", "N_PIPELINE_STAGES"};
+    "ID_OC_CP_ASYNC",    "OC_EX_CP_ASYNC",   "ID_OC_TENSOR_MAP",
+    "OC_EX_TENSOR_MAP",  "N_PIPELINE_STAGES"};
 
 struct specialized_unit_params {
   unsigned latency;
@@ -1698,6 +1736,7 @@ class shader_core_config : public core_config {
      */
     int num_config_to_read = N_PIPELINE_STAGES - 2 * (!gpgpu_tensor_core_avail) -
                              2 * (!gpgpu_num_tma_units) -
+                             2 * (!gpgpu_num_cp_async_units) -
                              2 * (!gpgpu_num_tensormap_units);
 
     for (int i = 0; i < num_config_to_read; i++) {
@@ -1893,18 +1932,26 @@ class shader_core_config : public core_config {
 
   unsigned int gpgpu_num_sp_units;
   unsigned int gpgpu_tensor_core_avail;
+  unsigned int gpgpu_tensor_core_units_per_sub_partition;
   unsigned int gpgpu_num_dp_units;
   unsigned int gpgpu_num_sfu_units;
   unsigned int gpgpu_num_tensor_core_units;
   unsigned int gpgpu_num_mem_units;
   unsigned int gpgpu_num_int_units;
   unsigned int gpgpu_num_tma_units;
+  unsigned int gpgpu_num_cp_async_units;
   unsigned int gpgpu_num_tensormap_units;
   unsigned int gpgpu_tma_max_inflight;
   unsigned int gpgpu_tma_tx_quota;
   unsigned int gpgpu_tma_response_width;
   unsigned int gpgpu_tma_request_granularity;
   unsigned int gpgpu_tma_request_width;
+  unsigned int gpgpu_cp_async_max_inflight;
+  unsigned int gpgpu_cp_async_request_width;
+  unsigned int gpgpu_cp_async_response_width;
+  unsigned int gpgpu_cp_async_request_granularity;
+  unsigned int gpgpu_cp_async_idealized_memory;
+  unsigned int gpgpu_cp_async_wait_release_latency;
   bool gpgpu_cta_load_balance;
   unsigned int gpgpu_tma_idealized_memory;
   bool gpgpu_tma_oob_l2_traffic;
@@ -1931,6 +1978,7 @@ class shader_core_config : public core_config {
   unsigned max_dp_latency;
   unsigned max_tensor_core_latency;
   unsigned max_tma_latency;
+  unsigned max_cp_async_latency;
   unsigned max_tensormap_latency;
 
   unsigned n_simt_cores_per_cluster;

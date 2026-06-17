@@ -148,6 +148,9 @@ class cuda_sim {
   char *opcode_completion_wgmma_int_rs;
   char *opcode_compute_throughput_wgmma;
   char *opcode_latency_tma;
+  char *opcode_latency_cp_async;
+  char *opcode_latency_cp_async_commit;
+  char *opcode_latency_cp_async_wait;
   char *opcode_latency_tensormap;
   char *opcode_initiation_int;
   char *opcode_initiation_fp;
@@ -157,6 +160,9 @@ class cuda_sim {
   char *opcode_initiation_wgmma_ss;
   char *opcode_initiation_wgmma_rs;
   char *opcode_initiation_tma;
+  char *opcode_initiation_cp_async;
+  char *opcode_initiation_cp_async_commit;
+  char *opcode_initiation_cp_async_wait;
   char *opcode_initiation_tensormap;
   int cp_count;
   int cp_cta_resume;

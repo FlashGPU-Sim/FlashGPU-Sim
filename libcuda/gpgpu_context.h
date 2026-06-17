@@ -27,6 +27,11 @@ class gpgpu_context {
     ptx_reorder_enabled = false;
     ptx_reorder_stats = false;
     ptx_reorder_ready_slack = 0;
+    ptx_reorder_dump = false;
+    ptx_reorder_dump_dir = NULL;
+    ptx_reorder_sass_guided = false;
+    ptx_reorder_sass_file = NULL;
+    ptx_reorder_sass_guide_lookahead = 256;
     api = new cuda_runtime_api(this);
     ptxinfo = new ptxinfo_data(this);
     ptx_parser = new ptx_recognizer(this);
@@ -54,6 +59,11 @@ class gpgpu_context {
   bool ptx_reorder_enabled;
   bool ptx_reorder_stats;
   int ptx_reorder_ready_slack;
+  bool ptx_reorder_dump;
+  char *ptx_reorder_dump_dir;
+  bool ptx_reorder_sass_guided;
+  char *ptx_reorder_sass_file;
+  int ptx_reorder_sass_guide_lookahead;
 
   // SST related
   bool requested_synchronize = false;

@@ -5,7 +5,9 @@
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 
 #include "../cuda-sim/ptx_ir.h"
@@ -188,6 +190,109 @@ effective_tma_request_granularity(const shader_core_config *config) {
   if (granularity >= 2 * SECTOR_SIZE)
     return 2 * SECTOR_SIZE;
   return SECTOR_SIZE;
+}
+
+static uint32_t
+effective_cp_async_request_granularity(const shader_core_config *config) {
+  unsigned granularity = config->gpgpu_cp_async_request_granularity;
+  if (granularity >= MAX_MEMORY_ACCESS_SIZE)
+    return MAX_MEMORY_ACCESS_SIZE;
+  if (granularity >= 2 * SECTOR_SIZE)
+    return 2 * SECTOR_SIZE;
+  return SECTOR_SIZE;
+}
+
+static new_addr_type align_down(new_addr_type addr, unsigned alignment) {
+  return addr - (addr % alignment);
+}
+
+static bool cp_async_access_merge_candidate(const mem_access_t &access,
+                                            unsigned granularity,
+                                            new_addr_type base) {
+  if (access.get_type() != CP_ASYNC_ACC_R || access.is_write())
+    return false;
+  if (access.get_size() == 0 || access.get_size() > granularity)
+    return false;
+  if ((access.get_addr() % SECTOR_SIZE) != 0 ||
+      (access.get_size() % SECTOR_SIZE) != 0)
+    return false;
+  return access.get_addr() >= base &&
+         access.get_addr() + access.get_size() <= base + granularity;
+}
+
+static void
+append_cp_async_access_group(const std::vector<mem_access_t> &group,
+                             unsigned granularity, gpgpu_context *ctx,
+                             std::vector<mem_access_t> &merged_accesses) {
+  if (group.empty())
+    return;
+  if (group.size() == 1) {
+    merged_accesses.push_back(group.front());
+    return;
+  }
+
+  const new_addr_type base = align_down(group.front().get_addr(), granularity);
+  active_mask_t active_mask;
+  mem_access_byte_mask_t byte_mask;
+  mem_access_sector_mask_t sector_mask;
+
+  for (const auto &access : group) {
+    if (!cp_async_access_merge_candidate(access, granularity, base)) {
+      merged_accesses.insert(merged_accesses.end(), group.begin(), group.end());
+      return;
+    }
+    active_mask |= access.get_warp_mask();
+    byte_mask |= access.get_byte_mask();
+
+    mem_access_sector_mask_t access_sectors = access.get_sector_mask();
+    if (access_sectors.none()) {
+      const unsigned start_sector =
+          (access.get_addr() % MAX_MEMORY_ACCESS_SIZE) / SECTOR_SIZE;
+      const unsigned num_sectors = access.get_size() / SECTOR_SIZE;
+      for (unsigned i = 0; i < num_sectors; ++i)
+        access_sectors.set(start_sector + i);
+    }
+    sector_mask |= access_sectors;
+  }
+
+  mem_access_sector_mask_t required_sectors;
+  const unsigned start_sector = (base % MAX_MEMORY_ACCESS_SIZE) / SECTOR_SIZE;
+  const unsigned num_sectors = granularity / SECTOR_SIZE;
+  for (unsigned i = 0; i < num_sectors; ++i)
+    required_sectors.set(start_sector + i);
+
+  if ((sector_mask & required_sectors) != required_sectors) {
+    merged_accesses.insert(merged_accesses.end(), group.begin(), group.end());
+    return;
+  }
+
+  merged_accesses.emplace_back(CP_ASYNC_ACC_R, base, granularity, false,
+                               active_mask, byte_mask, required_sectors, ctx);
+}
+
+static std::vector<mem_access_t>
+coalesce_cp_async_accesses(std::vector<mem_access_t> accesses,
+                           unsigned granularity, gpgpu_context *ctx) {
+  if (granularity <= SECTOR_SIZE || accesses.size() <= 1)
+    return accesses;
+
+  std::sort(accesses.begin(), accesses.end(),
+            [](const mem_access_t &a, const mem_access_t &b) {
+              return a.get_addr() < b.get_addr();
+            });
+
+  std::vector<mem_access_t> merged_accesses;
+  for (auto it = accesses.begin(); it != accesses.end();) {
+    const new_addr_type base = align_down(it->get_addr(), granularity);
+    std::vector<mem_access_t> group;
+    do {
+      group.push_back(*it);
+      ++it;
+    } while (it != accesses.end() &&
+             align_down(it->get_addr(), granularity) == base);
+    append_cp_async_access_group(group, granularity, ctx, merged_accesses);
+  }
+  return merged_accesses;
 }
 
 // Get a 32-bit unsigned value from an operand
@@ -598,6 +703,87 @@ private:
   std::unordered_map<unsigned, unsigned> m_mf_to_tx;
   std::unordered_map<unsigned, uint32_t> m_mf_pending_bytes;
 
+  struct cp_async_transaction_t {
+    mem_access_t access;
+    warp_inst_t inst;
+    unsigned cta_id = 0;
+    unsigned warp_id = 0;
+    unsigned long long pc = 0;
+    unsigned long long stream_id = 0;
+    unsigned long long create_cycle = 0;
+    unsigned long long first_issue_cycle = 0;
+    unsigned long long first_response_cycle = 0;
+    uint32_t bytes_completed = 0;
+    uint32_t mf_issued_count = 0;
+    uint32_t mf_received_count = 0;
+
+    cp_async_transaction_t(gpgpu_context *ctx) : access(ctx) {}
+  };
+
+  struct cp_async_warp_group_info_t {
+    unsigned next_group_id = 1;
+    unsigned wait_allowance = 0;
+    bool is_waiting = false;
+    std::set<unsigned> pending_txs;
+    std::map<unsigned, std::set<unsigned>> pending_groups;
+    std::map<unsigned, unsigned> tx_to_group;
+
+    void add_tx(unsigned tx_uid) { pending_txs.insert(tx_uid); }
+
+    void commit_group() {
+      if (!pending_txs.empty()) {
+        for (unsigned tx_uid : pending_txs) {
+          tx_to_group[tx_uid] = next_group_id;
+        }
+        pending_groups.emplace(next_group_id, pending_txs);
+        pending_txs.clear();
+      }
+      next_group_id++;
+    }
+
+    bool wait_group(unsigned max_pending_groups) {
+      if (pending_groups.size() <= max_pending_groups)
+        return true;
+      assert(!is_waiting && "warp is already waiting on cp.async group");
+      wait_allowance = max_pending_groups;
+      is_waiting = true;
+      return false;
+    }
+
+    bool complete_tx(unsigned tx_uid) {
+      auto tx_it = tx_to_group.find(tx_uid);
+      if (tx_it == tx_to_group.end()) {
+        pending_txs.erase(tx_uid);
+      } else {
+        unsigned group_id = tx_it->second;
+        tx_to_group.erase(tx_it);
+        auto group_it = pending_groups.find(group_id);
+        assert(group_it != pending_groups.end());
+        group_it->second.erase(tx_uid);
+        if (group_it->second.empty())
+          pending_groups.erase(group_it);
+      }
+
+      if (is_waiting && pending_groups.size() <= wait_allowance) {
+        is_waiting = false;
+        return true;
+      }
+      return false;
+    }
+
+    bool has_pending() const {
+      return !pending_txs.empty() || !pending_groups.empty() || is_waiting;
+    }
+  };
+
+  std::unordered_map<unsigned, cp_async_transaction_t> m_cp_transactions;
+  std::list<unsigned> m_cp_issue_queue;
+  std::unordered_map<unsigned, unsigned> m_cp_mf_to_tx;
+  std::unordered_map<unsigned, uint32_t> m_cp_mf_pending_bytes;
+  std::map<std::pair<unsigned, unsigned>, cp_async_warp_group_info_t>
+      m_cp_group_info;
+  unsigned m_cp_mf_inflight = 0;
+
   std::list<mem_fetch *> m_response_fifo;
 
   // Delayed arrive_tx queue: complete_tx is deferred by arrive_latency cycles
@@ -696,6 +882,106 @@ private:
       } else {
         ++pending_it;
       }
+    }
+  }
+
+  void finalize_cp_async_transaction(unsigned tx_uid) {
+    auto it = m_cp_transactions.find(tx_uid);
+    if (it == m_cp_transactions.end())
+      return;
+
+    unsigned cta_id = it->second.cta_id;
+    unsigned warp_id = it->second.warp_id;
+    auto group_it = m_cp_group_info.find(std::make_pair(cta_id, warp_id));
+    assert(group_it != m_cp_group_info.end());
+    bool should_release = group_it->second.complete_tx(tx_uid);
+    if (should_release) {
+      m_barriers->release_cp_async_warp(warp_id);
+    }
+
+    m_cp_transactions.erase(it);
+  }
+
+  void process_cp_async_response(mem_fetch *mf) {
+    mem_fetch *parent_mf = mf->get_original_mf() ? mf->get_original_mf() : mf;
+    unsigned parent_uid = parent_mf->get_request_uid();
+    auto mf_it = m_cp_mf_to_tx.find(parent_uid);
+    assert(mf_it != m_cp_mf_to_tx.end() &&
+           "cp.async response has no live transaction");
+    unsigned tx_uid = mf_it->second;
+    auto tx_it = m_cp_transactions.find(tx_uid);
+    assert(tx_it != m_cp_transactions.end());
+    auto &tx = tx_it->second;
+
+    assert(mf->get_access_type() == CP_ASYNC_ACC_R);
+    tx.mf_received_count++;
+    if (tx.first_response_cycle == 0)
+      tx.first_response_cycle = current_cycle();
+
+    unsigned mf_size = mf->get_data_size();
+    unsigned parent_size = parent_mf->get_data_size();
+    unsigned bytes_to_add = (mf_size > parent_size) ? parent_size : mf_size;
+    tx.bytes_completed += bytes_to_add;
+
+    bool parent_complete = false;
+    auto pending_it = m_cp_mf_pending_bytes.find(parent_uid);
+    assert(pending_it != m_cp_mf_pending_bytes.end());
+    if (bytes_to_add >= pending_it->second) {
+      assert(m_cp_mf_inflight > 0);
+      m_cp_mf_inflight--;
+      m_cp_mf_pending_bytes.erase(pending_it);
+      m_cp_mf_to_tx.erase(parent_uid);
+      parent_complete = true;
+    } else {
+      pending_it->second -= bytes_to_add;
+    }
+
+    if (tx.bytes_completed >= tx.access.get_size()) {
+      finalize_cp_async_transaction(tx_uid);
+    }
+
+    mem_fetch *parent_to_delete =
+        (parent_complete && parent_mf != mf) ? parent_mf : NULL;
+    delete mf;
+    delete parent_to_delete;
+  }
+
+  void issue_cp_async_requests() {
+    if (m_cp_issue_queue.empty())
+      return;
+
+    unsigned max_inflight =
+        m_shader_ctx->get_config()->gpgpu_cp_async_max_inflight;
+    unsigned request_width =
+        m_shader_ctx->get_config()->gpgpu_cp_async_request_width
+            ? m_shader_ctx->get_config()->gpgpu_cp_async_request_width
+            : 1;
+    unsigned issued_requests = 0;
+
+    while (issued_requests < request_width && !m_cp_issue_queue.empty()) {
+      if (max_inflight > 0 && m_cp_mf_inflight >= max_inflight)
+        break;
+      if (m_icnt->full(READ_PACKET_SIZE, false))
+        break;
+
+      unsigned tx_uid = m_cp_issue_queue.front();
+      auto tx_it = m_cp_transactions.find(tx_uid);
+      assert(tx_it != m_cp_transactions.end());
+      auto &tx = tx_it->second;
+
+      mem_fetch *mf =
+          m_mf_allocator->alloc(tx.inst, tx.access, current_cycle());
+      m_cp_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
+      m_cp_mf_pending_bytes.emplace(mf->get_request_uid(),
+                                    tx.access.get_size());
+
+      if (tx.first_issue_cycle == 0)
+        tx.first_issue_cycle = current_cycle();
+      tx.mf_issued_count++;
+      m_icnt->push(mf);
+      m_cp_mf_inflight++;
+      issued_requests++;
+      m_cp_issue_queue.pop_front();
     }
   }
 
@@ -830,6 +1116,80 @@ public:
     }
   }
 
+  void warp_reaches_cp_async(unsigned cta_id, unsigned warp_id,
+                             const warp_inst_t &inst,
+                             const ptx_instruction *static_inst) {
+    unsigned cp_size = inst.data_size ? inst.data_size : 16;
+    unsigned src_size = cp_size;
+    if (static_inst != nullptr && static_inst->get_num_operands() > 3) {
+      const operand_info &src_size_op = static_inst->src3();
+      if (src_size_op.is_literal()) {
+        src_size = (unsigned)src_size_op.get_literal_value().u64;
+      }
+    }
+    if (src_size > cp_size)
+      src_size = cp_size;
+    if (src_size == 0)
+      return;
+
+    warp_inst_t access_inst = inst;
+    access_inst.space.set_type(global_space);
+    access_inst.memory_op = memory_load;
+    access_inst.data_size = src_size;
+    access_inst.memory_coalescing_arch(false, CP_ASYNC_ACC_R);
+
+    std::vector<mem_access_t> accesses;
+    while (!access_inst.accessq_empty()) {
+      accesses.push_back(access_inst.accessq_back());
+      access_inst.accessq_pop_back();
+    }
+    accesses = coalesce_cp_async_accesses(
+        accesses,
+        effective_cp_async_request_granularity(m_shader_ctx->get_config()),
+        m_shader_ctx->get_gpu()->gpgpu_ctx);
+
+    auto &group = m_cp_group_info[std::make_pair(cta_id, warp_id)];
+    for (const auto &access : accesses) {
+      unsigned tx_uid = tma_next_tx_uid.fetch_add(1, std::memory_order_relaxed);
+
+      cp_async_transaction_t tx(m_shader_ctx->get_gpu()->gpgpu_ctx);
+      tx.access = access;
+      tx.inst = inst;
+      tx.cta_id = cta_id;
+      tx.warp_id = warp_id;
+      tx.pc = inst.pc;
+      tx.stream_id = inst.get_streamID();
+      tx.create_cycle = current_cycle();
+
+      m_cp_transactions.emplace(tx_uid, tx);
+      group.add_tx(tx_uid);
+
+      if (m_shader_ctx->get_config()->gpgpu_cp_async_idealized_memory != 0) {
+        finalize_cp_async_transaction(tx_uid);
+      } else {
+        m_cp_issue_queue.push_back(tx_uid);
+      }
+    }
+  }
+
+  void commit_cp_async_group(unsigned cta_id, unsigned warp_id) {
+    m_cp_group_info[std::make_pair(cta_id, warp_id)].commit_group();
+  }
+
+  void wait_cp_async_group(unsigned cta_id, unsigned warp_id,
+                           unsigned max_pending_groups) {
+    auto key = std::make_pair(cta_id, warp_id);
+    m_barriers->wait_cp_async_group(warp_id);
+    auto it = m_cp_group_info.find(key);
+    if (it == m_cp_group_info.end()) {
+      m_barriers->release_cp_async_warp(warp_id);
+      return;
+    }
+    bool satisfied = it->second.wait_group(max_pending_groups);
+    if (satisfied)
+      m_barriers->release_cp_async_warp(warp_id);
+  }
+
   void cycle() {
 
     // Process delayed arrive_tx notifications
@@ -857,15 +1217,34 @@ public:
       }
     }
 
-    // Process pending TMA responses.
+    // Process pending async-copy/TMA responses.
     unsigned response_width =
         m_shader_ctx->get_config()->gpgpu_tma_response_width
             ? m_shader_ctx->get_config()->gpgpu_tma_response_width
             : 1;
-    for (unsigned response = 0;
-         response < response_width && !m_response_fifo.empty(); response++) {
+    unsigned cp_response_width =
+        m_shader_ctx->get_config()->gpgpu_cp_async_response_width
+            ? m_shader_ctx->get_config()->gpgpu_cp_async_response_width
+            : 1;
+    unsigned tma_responses = 0;
+    unsigned cp_responses = 0;
+    while (!m_response_fifo.empty()) {
       mem_fetch *mf = m_response_fifo.front();
+      if (mf->get_access_type() == CP_ASYNC_ACC_R) {
+        if (cp_responses >= cp_response_width)
+          break;
+        m_response_fifo.pop_front();
+        process_cp_async_response(mf);
+        cp_responses++;
+        continue;
+      }
+      if (tma_responses >= response_width)
+        break;
       m_response_fifo.pop_front();
+      tma_responses++;
+      assert((mf->get_access_type() == TMA_ACC_R ||
+              mf->get_access_type() == TMA_ACC_W) &&
+             "unexpected response type in TMA/cp.async unit");
 
       mem_fetch *parent_mf = mf->get_original_mf() ? mf->get_original_mf() : mf;
       unsigned parent_uid = parent_mf->get_request_uid();
@@ -959,6 +1338,8 @@ public:
       delete mf;
       delete parent_to_delete;
     }
+
+    issue_cp_async_requests();
 
     // Issue memory requests using shadow stride accumulation
     if (!issue_queue.empty()) {
@@ -1187,11 +1568,29 @@ public:
       if (entry.second.m_cta_id == cta_id)
         return true;
     }
+    for (const auto &entry : m_cp_transactions) {
+      if (entry.second.cta_id == cta_id)
+        return true;
+    }
     for (const auto &entry : m_pending_arrives) {
       if (entry.cta_id == cta_id)
         return true;
     }
+    for (const auto &entry : m_cp_group_info) {
+      if (entry.first.first == cta_id && entry.second.has_pending())
+        return true;
+    }
     return false;
+  }
+
+  void cleanup_cta(unsigned cta_id) {
+    for (auto it = m_cp_group_info.begin(); it != m_cp_group_info.end();) {
+      if (it->first.first == cta_id) {
+        it = m_cp_group_info.erase(it);
+      } else {
+        ++it;
+      }
+    }
   }
 };
 
@@ -1207,6 +1606,23 @@ void tma_unit_t::warp_reaches_tma(unsigned cta_id, unsigned warp_id,
                                   warp_inst_t *inst) {
   m_impl->warp_reaches_tma(cta_id, warp_id, inst);
 }
+
+void tma_unit_t::warp_reaches_cp_async(unsigned cta_id, unsigned warp_id,
+                                       const warp_inst_t &inst,
+                                       const ptx_instruction *static_inst) {
+  m_impl->warp_reaches_cp_async(cta_id, warp_id, inst, static_inst);
+}
+
+void tma_unit_t::commit_cp_async_group(unsigned cta_id, unsigned warp_id) {
+  m_impl->commit_cp_async_group(cta_id, warp_id);
+}
+
+void tma_unit_t::wait_cp_async_group(unsigned cta_id, unsigned warp_id,
+                                     unsigned max_pending_groups) {
+  m_impl->wait_cp_async_group(cta_id, warp_id, max_pending_groups);
+}
+
+void tma_unit_t::cleanup_cta(unsigned cta_id) { m_impl->cleanup_cta(cta_id); }
 
 void tma_unit_t::cycle() { m_impl->cycle(); }
 

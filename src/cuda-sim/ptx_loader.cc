@@ -149,6 +149,29 @@ void gpgpu_context::ptx_reg_options(option_parser_t opp) {
                          &ptx_reorder_ready_slack,
                          "Extra issue-ready slack for PTX switch reordering.",
                          "0");
+  option_parser_register(opp, "-gpgpu_ptx_reorder_dump", OPT_BOOL,
+                         &ptx_reorder_dump,
+                         "Dump PTX instruction order after reordering.",
+                         "0");
+  option_parser_register(opp, "-gpgpu_ptx_reorder_dump_dir", OPT_CSTR,
+                         &ptx_reorder_dump_dir,
+                         "Directory for PTX reorder dumps.",
+                         "ptx_sched_dump");
+  option_parser_register(opp, "-gpgpu_ptx_reorder_sass_guided", OPT_BOOL,
+                         &ptx_reorder_sass_guided,
+                         "Use a SASS LDSM/HMMA class stream to guide PTX "
+                         "reordering in segments containing MMA.",
+                         "0");
+  option_parser_register(opp, "-gpgpu_ptx_reorder_sass_file", OPT_CSTR,
+                         &ptx_reorder_sass_file,
+                         "cuobjdump --dump-sass file used by SASS-guided PTX "
+                         "reordering.",
+                         "");
+  option_parser_register(opp, "-gpgpu_ptx_reorder_sass_guide_lookahead",
+                         OPT_INT32, &ptx_reorder_sass_guide_lookahead,
+                         "Maximum LDSM/HMMA guide-stream distance searched by "
+                         "SASS-guided PTX reordering.",
+                         "256");
 }
 
 void gpgpu_context::print_ptx_file(const char *p, unsigned source_num,

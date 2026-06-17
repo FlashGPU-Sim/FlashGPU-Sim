@@ -16,8 +16,11 @@ bool isTmaAccess(mem_access_type type) {
   return type == TMA_ACC_R || type == TMA_ACC_W;
 }
 
+bool isCpAsyncAccess(mem_access_type type) { return type == CP_ASYNC_ACC_R; }
+
 bool isGlobalAccess(mem_access_type type) {
-  return type == GLOBAL_ACC_R || type == GLOBAL_ACC_W || isTmaAccess(type);
+  return type == GLOBAL_ACC_R || type == GLOBAL_ACC_W || isTmaAccess(type) ||
+         isCpAsyncAccess(type);
 }
 
 bool shouldSetGLC(mem_fetch *mf, bool gmem_skip_l1d) {
@@ -25,7 +28,7 @@ bool shouldSetGLC(mem_fetch *mf, bool gmem_skip_l1d) {
   if (access_type == GLOBAL_ACC_W) {
     return true;
   }
-  if (isTmaAccess(access_type)) {
+  if (isTmaAccess(access_type) || isCpAsyncAccess(access_type)) {
     return true;
   }
 
@@ -89,8 +92,7 @@ void gem5_mf_trace_emit(gem5::Tick tick, const char *event, mem_fetch *mf,
 Gem5MemSubsystem::Gem5MemSubsystem(gem5::System *sys,
                                    const GPGPUSimReqVec &requestors,
                                    bool gmem_skip_l1d_)
-    : system(sys),
-      gpgpusim_requestors(requestors),
+    : system(sys), gpgpusim_requestors(requestors),
       gmem_skip_l1d(gmem_skip_l1d_) {}
 
 void Gem5MemSubsystem::registerGPGPUSimInterconnectInterface() {

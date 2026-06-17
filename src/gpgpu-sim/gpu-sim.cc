@@ -627,7 +627,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Pipeline widths "
       "ID_OC_SP,ID_OC_DP,ID_OC_INT,ID_OC_SFU,ID_OC_MEM,OC_EX_SP,OC_EX_DP,OC_EX_"
       "INT,OC_EX_SFU,OC_EX_MEM,EX_WB,ID_OC_TENSOR_CORE,OC_EX_TENSOR_CORE,"
-      "ID_OC_TMA,OC_EX_TMA",
+      "ID_OC_TMA,OC_EX_TMA,ID_OC_CP_ASYNC,OC_EX_CP_ASYNC,ID_OC_TENSOR_MAP,"
+      "OC_EX_TENSOR_MAP",
       "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1");
   option_parser_register(opp, "-gpgpu_tensor_core_avail", OPT_UINT32,
                          &gpgpu_tensor_core_avail,
@@ -647,9 +648,18 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_num_tensor_core_units", OPT_UINT32,
                          &gpgpu_num_tensor_core_units,
                          "Number of tensor_core units (default=1)", "0");
+  option_parser_register(
+      opp, "-gpgpu_tensor_core_units_per_sub_partition", OPT_UINT32,
+      &gpgpu_tensor_core_units_per_sub_partition,
+      "Tensor core issue units sharing each subpartition issue register "
+      "(default=1)",
+      "1");
   option_parser_register(opp, "-gpgpu_num_tma_units", OPT_UINT32,
                          &gpgpu_num_tma_units,
                          "Number of TMA units (default=0)", "0");
+  option_parser_register(opp, "-gpgpu_num_cp_async_units", OPT_UINT32,
+                         &gpgpu_num_cp_async_units,
+                         "Number of ordinary cp.async units (default=0)", "0");
   option_parser_register(opp, "-gpgpu_num_tensormap_units", OPT_UINT32,
                          &gpgpu_num_tensormap_units,
                          "Number of tensor-map descriptor units (default=0)",
@@ -672,6 +682,40 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_tma_request_width", OPT_UINT32,
       &gpgpu_tma_request_width,
       "TMA memory requests issued per TMA unit per cycle (default=1)", "1");
+  option_parser_register(
+      opp, "-gpgpu_cp_async_max_inflight", OPT_UINT32,
+      &gpgpu_cp_async_max_inflight,
+      "Maximum in-flight ordinary cp.async memory requests per SM "
+      "(0=unlimited)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_cp_async_request_width", OPT_UINT32,
+      &gpgpu_cp_async_request_width,
+      "Ordinary cp.async memory requests issued per SM per cycle (default=1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_cp_async_response_width", OPT_UINT32,
+      &gpgpu_cp_async_response_width,
+      "Ordinary cp.async memory responses accepted per SM per cycle (default=1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_cp_async_request_granularity", OPT_UINT32,
+      &gpgpu_cp_async_request_granularity,
+      "Ordinary cp.async memory request granularity in bytes "
+      "(32/64/128; default=32)",
+      "32");
+  option_parser_register(
+      opp, "-gpgpu_cp_async_idealized_memory", OPT_UINT32,
+      &gpgpu_cp_async_idealized_memory,
+      "Idealized ordinary cp.async memory: requests complete instantly "
+      "(default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_cp_async_wait_release_latency", OPT_UINT32,
+      &gpgpu_cp_async_wait_release_latency,
+      "Warp release latency for ordinary cp.async.wait_group after the group "
+      "condition is satisfied (default=5)",
+      "5");
   option_parser_register(opp, "-gpgpu_cta_load_balance", OPT_BOOL,
                          &gpgpu_cta_load_balance,
                          "Cap CTAs per core to ceil(total_ctas/n_cores) for load balancing (default=0)", "0");
