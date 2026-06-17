@@ -1385,19 +1385,17 @@ class tensor_core : public pipelined_simd_unit {
  public:
   tensor_core(register_set *result_port, const shader_core_config *config,
               shader_core_ctx *core, unsigned issue_reg_id);
-  virtual bool can_issue(const warp_inst_t &inst) const {
-    switch (inst.op) {
-      case TENSOR_CORE_OP:
-        break;
-      default:
-        return false;
-    }
-    return pipelined_simd_unit::can_issue(inst);
-  }
+  virtual bool can_issue(const warp_inst_t &inst) const;
+  virtual void cycle();
   virtual void active_lanes_in_pipeline();
   virtual void issue(register_set &source_reg);
+  virtual bool stallable() const;
   unsigned get_issue_reg_id();
   bool is_issue_partitioned() { return true; }
+
+ private:
+  bool issue_queue_enabled_for(const warp_inst_t &inst) const;
+  std::deque<warp_inst_t> m_issue_queue;
 };
 
 class tma_fu : public pipelined_simd_unit {
@@ -1933,6 +1931,8 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_num_sp_units;
   unsigned int gpgpu_tensor_core_avail;
   unsigned int gpgpu_tensor_core_units_per_sub_partition;
+  unsigned int gpgpu_tensor_core_issue_queue_depth;
+  bool gpgpu_tensor_core_skip_writeback;
   unsigned int gpgpu_num_dp_units;
   unsigned int gpgpu_num_sfu_units;
   unsigned int gpgpu_num_tensor_core_units;
@@ -2478,6 +2478,7 @@ class shader_core_ctx : public core_t {
   bool warp_waiting_at_mem_barrier(unsigned warp_id);
   void set_max_cta(const kernel_info_t &kernel);
   void warp_inst_complete(const warp_inst_t &inst);
+  void complete_inst_without_writeback(warp_inst_t *inst);
 
   // accessors
   std::list<unsigned> get_regs_written(const inst_t &fvt) const;

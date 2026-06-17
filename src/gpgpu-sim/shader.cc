@@ -3039,6 +3039,26 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
   inst.completed(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
 }
 
+void shader_core_ctx::complete_inst_without_writeback(warp_inst_t *inst) {
+  unsigned warp_id = inst->warp_id();
+  if (inst->is_wgmma_warpgroup()) {
+    for (unsigned i = 0; i < inst->wgmma_warpgroup_size(); ++i) {
+      unsigned participant_warp_id = inst->wgmma_warpgroup_warp_id(i);
+      m_scoreboard->releaseRegistersForWarp(inst, participant_warp_id);
+      m_warp[participant_warp_id]->dec_inst_in_pipeline();
+    }
+  } else {
+    m_scoreboard->releaseRegisters(inst);
+    m_warp[warp_id]->dec_inst_in_pipeline();
+  }
+  warp_inst_complete(*inst);
+  m_gpu->gpu_sim_insn_last_update_sid = m_sid;
+  m_gpu->gpu_sim_insn_last_update = m_gpu->gpu_sim_cycle;
+  m_last_inst_gpu_sim_cycle = m_gpu->gpu_sim_cycle;
+  m_last_inst_gpu_tot_sim_cycle = m_gpu->gpu_tot_sim_cycle;
+  inst->clear();
+}
+
 void shader_core_ctx::writeback() {
   unsigned max_committed_thread_instructions =
       m_config->warp_size *
@@ -3521,6 +3541,71 @@ tensor_core::tensor_core(register_set *result_port,
   m_name = "TENSOR_CORE";
 }
 
+bool tensor_core::issue_queue_enabled_for(const warp_inst_t &inst) const {
+  if (m_config->gpgpu_tensor_core_issue_queue_depth == 0) return false;
+  if (inst.op != TENSOR_CORE_OP) return false;
+
+  // The queue idealizes classic warp-level MMA. WGMMA has separate warpgroup
+  // ordering and completion machinery, so leave it on the existing path.
+  return !is_wgmma_warpgroup_opcode(wgmma_opcode(&inst));
+}
+
+bool tensor_core::can_issue(const warp_inst_t &inst) const {
+  if (inst.op != TENSOR_CORE_OP) return false;
+  if (issue_queue_enabled_for(inst)) {
+    return m_issue_queue.size() <
+           m_config->gpgpu_tensor_core_issue_queue_depth;
+  }
+  return pipelined_simd_unit::can_issue(inst);
+}
+
+bool tensor_core::stallable() const {
+  return m_config->gpgpu_tensor_core_skip_writeback;
+}
+
+void tensor_core::cycle() {
+  if (!m_pipeline_reg[0]->empty()) {
+    if (m_config->gpgpu_tensor_core_skip_writeback &&
+        m_pipeline_reg[0]->op == TENSOR_CORE_OP) {
+      m_core->complete_inst_without_writeback(m_pipeline_reg[0]);
+      assert(active_insts_in_pipeline > 0);
+      active_insts_in_pipeline--;
+    } else if (!m_result_port->has_free()) {
+      occupied >>= 1;
+      return;
+    } else {
+      m_result_port->move_in(m_pipeline_reg[0]);
+      assert(active_insts_in_pipeline > 0);
+      active_insts_in_pipeline--;
+    }
+  }
+  if (active_insts_in_pipeline) {
+    for (unsigned stage = 0; (stage + 1) < m_pipeline_depth; stage++)
+      move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
+  }
+  if (!m_dispatch_reg->empty()) {
+    if (!m_dispatch_reg->dispatch_delay()) {
+      int start_stage =
+          m_dispatch_reg->latency - m_dispatch_reg->initiation_interval;
+      if (m_pipeline_reg[start_stage]->empty()) {
+        move_warp(m_pipeline_reg[start_stage], m_dispatch_reg);
+        active_insts_in_pipeline++;
+      }
+    }
+  }
+  occupied >>= 1;
+
+  if (m_config->gpgpu_tensor_core_issue_queue_depth == 0) return;
+  if (!m_dispatch_reg->empty() || m_issue_queue.empty()) return;
+
+  const warp_inst_t &next_inst = m_issue_queue.front();
+  if (occupied.test(next_inst.latency)) return;
+
+  *m_dispatch_reg = next_inst;
+  m_issue_queue.pop_front();
+  occupied.set(m_dispatch_reg->latency);
+}
+
 unsigned tensor_core::get_issue_reg_id() {
   unsigned units_per_subpartition =
       m_config->gpgpu_tensor_core_units_per_sub_partition;
@@ -3573,12 +3658,23 @@ void sfu::issue(register_set &source_reg) {
 }
 
 void tensor_core::issue(register_set &source_reg) {
+  bool partition_issue =
+      m_config->sub_core_model && this->is_issue_partitioned();
+  unsigned issue_reg_id = this->get_issue_reg_id();
   warp_inst_t **ready_reg =
-      source_reg.get_ready(m_config->sub_core_model, this->get_issue_reg_id());
+      source_reg.get_ready(partition_issue, issue_reg_id);
   // m_core->incexecstat((*ready_reg));
 
   (*ready_reg)->op_pipe = TENSOR_CORE__OP;
   m_core->incsfu_stat(m_core->get_config()->warp_size, (*ready_reg)->latency);
+  if (issue_queue_enabled_for(**ready_reg)) {
+    assert(m_issue_queue.size() <
+           m_config->gpgpu_tensor_core_issue_queue_depth);
+    m_core->incexecstat((*ready_reg));
+    m_issue_queue.push_back(**ready_reg);
+    (*ready_reg)->clear();
+    return;
+  }
   pipelined_simd_unit::issue(source_reg);
 }
 

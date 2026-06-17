@@ -654,6 +654,17 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Tensor core issue units sharing each subpartition issue register "
       "(default=1)",
       "1");
+  option_parser_register(
+      opp, "-gpgpu_tensor_core_issue_queue_depth", OPT_UINT32,
+      &gpgpu_tensor_core_issue_queue_depth,
+      "Ideal tensor-core pre-FU issue queue depth. 0 disables the queue.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tensor_core_skip_writeback", OPT_BOOL,
+      &gpgpu_tensor_core_skip_writeback,
+      "Complete tensor-core instructions without using the register-file "
+      "writeback path.",
+      "0");
   option_parser_register(opp, "-gpgpu_num_tma_units", OPT_UINT32,
                          &gpgpu_num_tma_units,
                          "Number of TMA units (default=0)", "0");
