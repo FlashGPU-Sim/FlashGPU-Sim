@@ -21,39 +21,176 @@ struct Fa2PrefillCase {
   bool causal;
 };
 
-#define FA2_PREFILL_CASE_LIST(X)                    \
+#if !defined(FA2_PREFILL_ENABLE_H32D64_FULL) && \
+    !defined(FA2_PREFILL_ENABLE_H32D64_CAUSAL) && \
+    !defined(FA2_PREFILL_ENABLE_H16D128_FULL) && \
+    !defined(FA2_PREFILL_ENABLE_H16D128_CAUSAL)
+#define FA2_PREFILL_ENABLE_H32D64_FULL
+#define FA2_PREFILL_ENABLE_H32D64_CAUSAL
+#define FA2_PREFILL_ENABLE_H16D128_FULL
+#define FA2_PREFILL_ENABLE_H16D128_CAUSAL
+#endif
+
+#define FA2_PREFILL_H32D64_FULL_CASE_LIST(X)        \
   X(H32D64FullB64S512, 64, 512, 32, 64, false)      \
   X(H32D64FullB32S1024, 32, 1024, 32, 64, false)    \
   X(H32D64FullB16S2048, 16, 2048, 32, 64, false)    \
   X(H32D64FullB8S4096, 8, 4096, 32, 64, false)      \
-  X(H32D64FullB4S8192, 4, 8192, 32, 64, false)      \
+  X(H32D64FullB4S8192, 4, 8192, 32, 64, false)
+
+#define FA2_PREFILL_H32D64_CAUSAL_CASE_LIST(X)      \
   X(H32D64CausalB64S512, 64, 512, 32, 64, true)     \
   X(H32D64CausalB32S1024, 32, 1024, 32, 64, true)   \
   X(H32D64CausalB16S2048, 16, 2048, 32, 64, true)   \
   X(H32D64CausalB8S4096, 8, 4096, 32, 64, true)     \
-  X(H32D64CausalB4S8192, 4, 8192, 32, 64, true)     \
+  X(H32D64CausalB4S8192, 4, 8192, 32, 64, true)
+
+#define FA2_PREFILL_H16D128_FULL_CASE_LIST(X)       \
   X(H16D128FullB64S512, 64, 512, 16, 128, false)    \
   X(H16D128FullB32S1024, 32, 1024, 16, 128, false)  \
   X(H16D128FullB16S2048, 16, 2048, 16, 128, false)  \
   X(H16D128FullB8S4096, 8, 4096, 16, 128, false)    \
-  X(H16D128FullB4S8192, 4, 8192, 16, 128, false)    \
+  X(H16D128FullB4S8192, 4, 8192, 16, 128, false)
+
+#define FA2_PREFILL_H16D128_CAUSAL_CASE_LIST(X)     \
   X(H16D128CausalB64S512, 64, 512, 16, 128, true)   \
   X(H16D128CausalB32S1024, 32, 1024, 16, 128, true) \
   X(H16D128CausalB16S2048, 16, 2048, 16, 128, true) \
   X(H16D128CausalB8S4096, 8, 4096, 16, 128, true)   \
   X(H16D128CausalB4S8192, 4, 8192, 16, 128, true)
 
+#define FA2_PREFILL_CASE_LIST(X)                    \
+  FA2_PREFILL_H32D64_FULL_CASE_LIST(X)              \
+  FA2_PREFILL_H32D64_CAUSAL_CASE_LIST(X)            \
+  FA2_PREFILL_H16D128_FULL_CASE_LIST(X)             \
+  FA2_PREFILL_H16D128_CAUSAL_CASE_LIST(X)
+
 static constexpr int kFa2PrefillCaseCount = 20;
+
+#define FA2_PREFILL_SMOKE_H32D64_FULL_CASE_LIST(X)  \
+  X(H32D64FullB2S128, 2, 128, 32, 64, false)
+
+#define FA2_PREFILL_SMOKE_H32D64_CAUSAL_CASE_LIST(X) \
+  X(H32D64CausalB2S128, 2, 128, 32, 64, true)
+
+#define FA2_PREFILL_SMOKE_H16D128_FULL_CASE_LIST(X) \
+  X(H16D128FullB2S128, 2, 128, 16, 128, false)
+
+#define FA2_PREFILL_SMOKE_H16D128_CAUSAL_CASE_LIST(X) \
+  X(H16D128CausalB2S128, 2, 128, 16, 128, true)
+
+#define FA2_PREFILL_SMOKE_CASE_LIST(X)              \
+  FA2_PREFILL_SMOKE_H32D64_FULL_CASE_LIST(X)        \
+  FA2_PREFILL_SMOKE_H32D64_CAUSAL_CASE_LIST(X)      \
+  FA2_PREFILL_SMOKE_H16D128_FULL_CASE_LIST(X)       \
+  FA2_PREFILL_SMOKE_H16D128_CAUSAL_CASE_LIST(X)
+
+static constexpr int kFa2PrefillSmokeCaseCount = 4;
+
+#define FA2_PREFILL_SMALL_H32D64_FULL_CASE_LIST(X)  \
+  X(H32D64FullB32S256, 32, 256, 32, 64, false)
+
+#define FA2_PREFILL_SMALL_H32D64_CAUSAL_CASE_LIST(X) \
+  X(H32D64CausalB32S256, 32, 256, 32, 64, true)
+
+#define FA2_PREFILL_SMALL_H16D128_FULL_CASE_LIST(X) \
+  X(H16D128FullB32S256, 32, 256, 16, 128, false)
+
+#define FA2_PREFILL_SMALL_H16D128_CAUSAL_CASE_LIST(X) \
+  X(H16D128CausalB32S256, 32, 256, 16, 128, true)
+
+#define FA2_PREFILL_SMALL_CASE_LIST(X)              \
+  FA2_PREFILL_SMALL_H32D64_FULL_CASE_LIST(X)        \
+  FA2_PREFILL_SMALL_H32D64_CAUSAL_CASE_LIST(X)      \
+  FA2_PREFILL_SMALL_H16D128_FULL_CASE_LIST(X)       \
+  FA2_PREFILL_SMALL_H16D128_CAUSAL_CASE_LIST(X)
+
+static constexpr int kFa2PrefillSmallCaseCount = 4;
+
+#define FA2_PREFILL_MEDIUM_H32D64_FULL_CASE_LIST(X) \
+  X(H32D64FullB16S512, 16, 512, 32, 64, false)
+
+#define FA2_PREFILL_MEDIUM_H32D64_CAUSAL_CASE_LIST(X) \
+  X(H32D64CausalB16S512, 16, 512, 32, 64, true)
+
+#define FA2_PREFILL_MEDIUM_H16D128_FULL_CASE_LIST(X) \
+  X(H16D128FullB16S512, 16, 512, 16, 128, false)
+
+#define FA2_PREFILL_MEDIUM_H16D128_CAUSAL_CASE_LIST(X) \
+  X(H16D128CausalB16S512, 16, 512, 16, 128, true)
+
+#define FA2_PREFILL_MEDIUM_CASE_LIST(X)             \
+  FA2_PREFILL_MEDIUM_H32D64_FULL_CASE_LIST(X)       \
+  FA2_PREFILL_MEDIUM_H32D64_CAUSAL_CASE_LIST(X)     \
+  FA2_PREFILL_MEDIUM_H16D128_FULL_CASE_LIST(X)      \
+  FA2_PREFILL_MEDIUM_H16D128_CAUSAL_CASE_LIST(X)
+
+static constexpr int kFa2PrefillMediumCaseCount = 4;
+
+#define FA2_PREFILL_SENSITIVITY_CASE_LIST(X)       \
+  X(H1D128FullB1S256, 1, 256, 1, 128, false)
+
+static constexpr int kFa2PrefillSensitivityCaseCount = 1;
+
+#define FA2_PREFILL_SENSITIVITY_H1D128_FULL_CASE_LIST(X) \
+  X(H1D128FullB1S256, 1, 256, 1, 128, false)             \
+  X(H1D128FullB1S512, 1, 512, 1, 128, false)             \
+  X(H1D128FullB1S1024, 1, 1024, 1, 128, false)           \
+  X(H1D128FullB1S2048, 1, 2048, 1, 128, false)           \
+  X(H1D128FullB1S4096, 1, 4096, 1, 128, false)
+
+#define FA2_PREFILL_SENSITIVITY_H1D128_CAUSAL_CASE_LIST(X) \
+  X(H1D128CausalB1S256, 1, 256, 1, 128, true)              \
+  X(H1D128CausalB1S512, 1, 512, 1, 128, true)              \
+  X(H1D128CausalB1S1024, 1, 1024, 1, 128, true)            \
+  X(H1D128CausalB1S2048, 1, 2048, 1, 128, true)            \
+  X(H1D128CausalB1S4096, 1, 4096, 1, 128, true)
+
+#define FA2_PREFILL_SENSITIVITY_H1D128_CASE_LIST(X)     \
+  FA2_PREFILL_SENSITIVITY_H1D128_FULL_CASE_LIST(X)      \
+  FA2_PREFILL_SENSITIVITY_H1D128_CAUSAL_CASE_LIST(X)
+
+static constexpr int kFa2PrefillSensitivityH1D128CaseCount = 10;
 
 #define FA2_PREFILL_CASE_ENTRY(name, batch, seqlen, heads, head_dim, causal) \
   Fa2PrefillCase{#name, batch, seqlen, heads, head_dim, causal},
 static constexpr Fa2PrefillCase kFa2PrefillCases[] = {
     FA2_PREFILL_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
+static constexpr Fa2PrefillCase kFa2PrefillSmokeCases[] = {
+    FA2_PREFILL_SMOKE_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
+static constexpr Fa2PrefillCase kFa2PrefillSmallCases[] = {
+    FA2_PREFILL_SMALL_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
+static constexpr Fa2PrefillCase kFa2PrefillMediumCases[] = {
+    FA2_PREFILL_MEDIUM_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
+static constexpr Fa2PrefillCase kFa2PrefillSensitivityCases[] = {
+    FA2_PREFILL_SENSITIVITY_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
+static constexpr Fa2PrefillCase kFa2PrefillSensitivityH1D128Cases[] = {
+    FA2_PREFILL_SENSITIVITY_H1D128_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
 #undef FA2_PREFILL_CASE_ENTRY
 
 static_assert(sizeof(kFa2PrefillCases) / sizeof(kFa2PrefillCases[0]) ==
                   kFa2PrefillCaseCount,
               "FA2 prefill case list must contain 20 cases");
+static_assert(sizeof(kFa2PrefillSmokeCases) /
+                      sizeof(kFa2PrefillSmokeCases[0]) ==
+                  kFa2PrefillSmokeCaseCount,
+              "FA2 prefill smoke case list must contain 4 cases");
+static_assert(sizeof(kFa2PrefillSmallCases) /
+                      sizeof(kFa2PrefillSmallCases[0]) ==
+                  kFa2PrefillSmallCaseCount,
+              "FA2 prefill small case list must contain 4 cases");
+static_assert(sizeof(kFa2PrefillMediumCases) /
+                      sizeof(kFa2PrefillMediumCases[0]) ==
+                  kFa2PrefillMediumCaseCount,
+              "FA2 prefill medium case list must contain 4 cases");
+static_assert(sizeof(kFa2PrefillSensitivityCases) /
+                      sizeof(kFa2PrefillSensitivityCases[0]) ==
+                  kFa2PrefillSensitivityCaseCount,
+              "FA2 prefill sensitivity case list must contain 1 case");
+static_assert(sizeof(kFa2PrefillSensitivityH1D128Cases) /
+                      sizeof(kFa2PrefillSensitivityH1D128Cases[0]) ==
+                  kFa2PrefillSensitivityH1D128CaseCount,
+              "FA2 prefill H1D128 sensitivity case list must contain 10 cases");
 
 struct Fa2RunResult {
   cudaError_t error = cudaSuccess;
@@ -62,11 +199,43 @@ struct Fa2RunResult {
   float lse0 = 0.0f;
 };
 
-inline bool is_valid_fa2_prefill_case(const Fa2PrefillCase &cfg) {
-  return cfg.batch > 0 && cfg.seqlen > 0 &&
-         cfg.batch * cfg.seqlen == 32 * 1024 &&
+inline Fa2RunResult make_fa2_invalid_result(const char *where) {
+  Fa2RunResult result;
+  result.error = cudaErrorInvalidValue;
+  result.where = where;
+  return result;
+}
+
+inline bool is_supported_fa2_prefill_case(const Fa2PrefillCase &cfg) {
+  return cfg.batch > 0 && cfg.seqlen > 0 && cfg.heads > 0 &&
          ((cfg.heads == 32 && cfg.head_dim == 64) ||
           (cfg.heads == 16 && cfg.head_dim == 128));
+}
+
+inline bool is_valid_fa2_prefill_case(const Fa2PrefillCase &cfg) {
+  return is_supported_fa2_prefill_case(cfg) &&
+         cfg.batch * cfg.seqlen == 32 * 1024;
+}
+
+inline bool is_valid_fa2_prefill_smoke_case(const Fa2PrefillCase &cfg) {
+  return is_supported_fa2_prefill_case(cfg) &&
+         cfg.batch == 2 && cfg.seqlen == 128;
+}
+
+inline bool is_valid_fa2_prefill_tuning_case(const Fa2PrefillCase &cfg) {
+  return is_supported_fa2_prefill_case(cfg) && cfg.seqlen % 128 == 0;
+}
+
+inline bool is_valid_fa2_prefill_sensitivity_case(
+    const Fa2PrefillCase &cfg) {
+  return cfg.batch == 1 && cfg.seqlen == 256 && cfg.heads == 1 &&
+         cfg.head_dim == 128 && !cfg.causal;
+}
+
+inline bool is_valid_fa2_prefill_sensitivity_h1d128_case(
+    const Fa2PrefillCase &cfg) {
+  return cfg.batch == 1 && cfg.heads == 1 && cfg.head_dim == 128 &&
+         cfg.seqlen >= 256 && cfg.seqlen <= 4096 && cfg.seqlen % 128 == 0;
 }
 
 inline void fill_half(std::vector<cutlass::half_t> &x, float scale) {
@@ -261,31 +430,66 @@ inline Fa2RunResult run_fa2_fwd_fp16_typed(int batch, int seqlen_q,
 }
 
 inline Fa2RunResult run_fa2_prefill_fp16(const Fa2PrefillCase &cfg) {
-  if (!is_valid_fa2_prefill_case(cfg)) {
-    Fa2RunResult result;
-    result.error = cudaErrorInvalidValue;
-    result.where = "Fa2PrefillCase";
-    return result;
+  if (!is_supported_fa2_prefill_case(cfg)) {
+    return make_fa2_invalid_result("Fa2PrefillCase");
   }
 
+#if defined(FA2_PREFILL_ENABLE_H32D64_FULL)
   if (cfg.head_dim == 64 && !cfg.causal) {
     return run_fa2_fwd_fp16_typed<64, false>(cfg.batch, cfg.seqlen,
                                              cfg.seqlen, cfg.heads, false);
   }
+#endif
+#if defined(FA2_PREFILL_ENABLE_H32D64_CAUSAL)
   if (cfg.head_dim == 64 && cfg.causal) {
     return run_fa2_fwd_fp16_typed<64, true>(cfg.batch, cfg.seqlen,
                                             cfg.seqlen, cfg.heads, false);
   }
+#endif
+#if defined(FA2_PREFILL_ENABLE_H16D128_FULL)
   if (cfg.head_dim == 128 && !cfg.causal) {
     return run_fa2_fwd_fp16_typed<128, false>(cfg.batch, cfg.seqlen,
                                               cfg.seqlen, cfg.heads, false);
   }
-  return run_fa2_fwd_fp16_typed<128, true>(cfg.batch, cfg.seqlen, cfg.seqlen,
-                                           cfg.heads, false);
+#endif
+#if defined(FA2_PREFILL_ENABLE_H16D128_CAUSAL)
+  if (cfg.head_dim == 128 && cfg.causal) {
+    return run_fa2_fwd_fp16_typed<128, true>(cfg.batch, cfg.seqlen,
+                                             cfg.seqlen, cfg.heads, false);
+  }
+#endif
+  return make_fa2_invalid_result("Fa2PrefillVariantDisabled");
+}
+
+inline Fa2RunResult run_fa2_sensitivity_fp16(const Fa2PrefillCase &cfg) {
+  if (!is_valid_fa2_prefill_sensitivity_case(cfg)) {
+    return make_fa2_invalid_result("Fa2SensitivityCase");
+  }
+
+  return run_fa2_fwd_fp16_typed<128, false>(cfg.batch, cfg.seqlen,
+                                            cfg.seqlen, cfg.heads, false);
+}
+
+inline Fa2RunResult run_fa2_sensitivity_h1d128_fp16(
+    const Fa2PrefillCase &cfg) {
+  if (!is_valid_fa2_prefill_sensitivity_h1d128_case(cfg)) {
+    return make_fa2_invalid_result("Fa2SensitivityH1D128Case");
+  }
+
+  if (cfg.causal) {
+    return run_fa2_fwd_fp16_typed<128, true>(cfg.batch, cfg.seqlen,
+                                             cfg.seqlen, cfg.heads, false);
+  }
+  return run_fa2_fwd_fp16_typed<128, false>(cfg.batch, cfg.seqlen,
+                                            cfg.seqlen, cfg.heads, false);
 }
 
 inline Fa2RunResult run_fa2_fwd_smoke_fp16() {
+#if defined(FA2_PREFILL_ENABLE_H32D64_FULL)
   return run_fa2_fwd_fp16_typed<64, false>(1, 128, 128, 2, true);
+#else
+  return make_fa2_invalid_result("Fa2FixedSmokeVariantDisabled");
+#endif
 }
 
 }  // namespace fa2_hopper_test

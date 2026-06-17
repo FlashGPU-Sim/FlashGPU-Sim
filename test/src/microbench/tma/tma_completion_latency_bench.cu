@@ -34,15 +34,22 @@ enum IssueMode {
   kIssueSerial = 1,
 };
 
+enum LocalityMode {
+  kLocalityStride = 0,
+  kLocalityHot = 1,
+  kLocalityBlockHot = 2,
+};
+
 struct Options {
   int device = 0;
   int blocks = 128;
   int iters = 4096;
   int warmup = 256;
   int tiles = 4096;
+  int repeat = 1;
   BenchCase bench_case = kCasePair48;
   IssueMode issue_mode = kIssueLlama;
-  bool hot = false;
+  LocalityMode locality = kLocalityStride;
   std::string csv_path;
 };
 
@@ -269,12 +276,13 @@ __device__ __forceinline__ void issue_b32(int tid, IssueMode issue_mode,
 __global__ void tma_completion_latency_kernel(
     const uint16_t* a, const uint16_t* b, uint8_t* global_tmaps,
     uint64_t* samples, uint32_t* block_sinks, int iters, int warmup, int tiles,
-    int bench_case_i, int issue_mode_i, int hot) {
+    int repeat, int bench_case_i, int issue_mode_i, int locality_i) {
   extern __shared__ uint8_t smem[];
 
   const int tid = threadIdx.x;
   const BenchCase bench_case = static_cast<BenchCase>(bench_case_i);
   const IssueMode issue_mode = static_cast<IssueMode>(issue_mode_i);
+  const LocalityMode locality = static_cast<LocalityMode>(locality_i);
   uintptr_t p = reinterpret_cast<uintptr_t>(smem);
 
   uint8_t* tmap_a_smem = reinterpret_cast<uint8_t*>(align_up(p, 128));
@@ -317,23 +325,17 @@ __global__ void tma_completion_latency_kernel(
   }
   __syncthreads();
 
-  const uint32_t expected_bytes =
+  const uint32_t bytes_per_repeat =
       bench_case == kCasePair48
           ? kPairBytes
           : (bench_case == kCaseA16
                  ? kATotalBytes
                  : (bench_case == kCaseB32 ? kBTotalBytes : 0));
+  const uint32_t expected_bytes = bytes_per_repeat * repeat;
   uint32_t sink = 0;
   const int total_iters = warmup + iters;
 
   for (int i = 0; i < total_iters; ++i) {
-    const int tile =
-        hot ? 0
-            : static_cast<int>(
-                  (static_cast<uint64_t>(i) * gridDim.x + blockIdx.x) % tiles);
-    const int a_coord1 = tile * 64;
-    const int b_coord1 = tile * 128;
-
     if (tid == 0) {
       mbarrier_init(bar, 1);
       mbarrier_arrive_expect_tx(bar, expected_bytes);
@@ -346,17 +348,33 @@ __global__ void tma_completion_latency_kernel(
       start = clock64_now();
     }
 
-    if (bench_case == kCaseA16 || bench_case == kCasePair48) {
-      issue_a16(tid, issue_mode, dst_a0, dst_a1, global_tmap_a, a_coord1, bar);
-    }
+    for (int r = 0; r < repeat; ++r) {
+      uint64_t tile = 0;
+      if (locality == kLocalityHot) {
+        tile = static_cast<uint64_t>(r);
+      } else if (locality == kLocalityBlockHot) {
+        tile = static_cast<uint64_t>(blockIdx.x) * repeat + r;
+      } else {
+        tile = (static_cast<uint64_t>(i) * gridDim.x + blockIdx.x) * repeat + r;
+      }
+      tile %= static_cast<uint64_t>(tiles);
+      const int a_coord1 = static_cast<int>(tile) * 64;
+      const int b_coord1 = static_cast<int>(tile) * 128;
 
-    if (bench_case == kCasePair48 && issue_mode == kIssueLlama) {
-      asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
-      __syncthreads();
-    }
+      if (bench_case == kCaseA16 || bench_case == kCasePair48) {
+        issue_a16(tid, issue_mode, dst_a0, dst_a1, global_tmap_a, a_coord1,
+                  bar);
+      }
 
-    if (bench_case == kCaseB32 || bench_case == kCasePair48) {
-      issue_b32(tid, issue_mode, dst_b0, dst_b1, global_tmap_b, b_coord1, bar);
+      if (bench_case == kCasePair48 && issue_mode == kIssueLlama) {
+        asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+        __syncthreads();
+      }
+
+      if (bench_case == kCaseB32 || bench_case == kCasePair48) {
+        issue_b32(tid, issue_mode, dst_b0, dst_b1, global_tmap_b, b_coord1,
+                  bar);
+      }
     }
 
     if (tid == 0) {
@@ -395,11 +413,24 @@ const char* issue_name(IssueMode mode) {
   return mode == kIssueSerial ? "serial" : "llama";
 }
 
+const char* locality_name(LocalityMode mode) {
+  switch (mode) {
+    case kLocalityStride:
+      return "stride";
+    case kLocalityHot:
+      return "hot";
+    case kLocalityBlockHot:
+      return "block-hot";
+  }
+  return "unknown";
+}
+
 void usage(const char* argv0) {
   std::printf(
       "Usage: %s [--device N] [--blocks N] [--iters N] [--warmup N]\n"
-      "          [--tiles N] [--case empty|a16|b32|pair48]\n"
-      "          [--issue llama|serial] [--hot|--stride] [--csv path]\n",
+      "          [--tiles N] [--repeat N] [--case empty|a16|b32|pair48]\n"
+      "          [--issue llama|serial] [--hot|--block-hot|--stride]\n"
+      "          [--csv path]\n",
       argv0);
 }
 
@@ -423,7 +454,8 @@ Options parse_options(int argc, char** argv) {
                parse_int_arg(arg, "--blocks", &opts.blocks) ||
                parse_int_arg(arg, "--iters", &opts.iters) ||
                parse_int_arg(arg, "--warmup", &opts.warmup) ||
-               parse_int_arg(arg, "--tiles", &opts.tiles)) {
+               parse_int_arg(arg, "--tiles", &opts.tiles) ||
+               parse_int_arg(arg, "--repeat", &opts.repeat)) {
       continue;
     } else if (std::strncmp(arg, "--case=", 7) == 0) {
       const char* value = arg + 7;
@@ -450,9 +482,11 @@ Options parse_options(int argc, char** argv) {
         std::exit(1);
       }
     } else if (std::strcmp(arg, "--hot") == 0) {
-      opts.hot = true;
+      opts.locality = kLocalityHot;
+    } else if (std::strcmp(arg, "--block-hot") == 0) {
+      opts.locality = kLocalityBlockHot;
     } else if (std::strcmp(arg, "--stride") == 0) {
-      opts.hot = false;
+      opts.locality = kLocalityStride;
     } else if (std::strncmp(arg, "--csv=", 6) == 0) {
       opts.csv_path = arg + 6;
     } else {
@@ -463,10 +497,10 @@ Options parse_options(int argc, char** argv) {
   }
 
   if (opts.blocks <= 0 || opts.iters <= 0 || opts.warmup < 0 ||
-      opts.tiles <= 0) {
+      opts.repeat <= 0 || opts.tiles <= 0) {
     std::fprintf(stderr,
-                 "blocks, iters, and tiles must be positive; warmup must be "
-                 "non-negative\n");
+                 "blocks, iters, tiles, and repeat must be positive; warmup "
+                 "must be non-negative\n");
     std::exit(1);
   }
   return opts;
@@ -519,6 +553,13 @@ void print_stats(const std::vector<uint64_t>& values) {
       static_cast<unsigned long long>(percentile(sorted, 0.99)),
       static_cast<unsigned long long>(percentile(sorted, 0.999)),
       static_cast<unsigned long long>(sorted.back()));
+}
+
+double mean_cycles(const std::vector<uint64_t>& values) {
+  const double sum =
+      std::accumulate(values.begin(), values.end(), 0.0,
+                      [](double a, uint64_t b) { return a + b; });
+  return sum / static_cast<double>(values.size());
 }
 
 void write_csv(const std::string& path, const std::vector<uint64_t>& values,
@@ -587,20 +628,38 @@ int main(int argc, char** argv) {
               prop.multiProcessorCount, clock_rate_khz);
   std::printf(
       "case=%s issue=%s locality=%s blocks=%d threads=%d iters=%d warmup=%d "
-      "tiles=%d smem=%zu bytes expected_tx=%d\n",
+      "tiles=%d repeat=%d smem=%zu bytes expected_tx=%d\n",
       case_name(opts.bench_case), issue_name(opts.issue_mode),
-      opts.hot ? "hot" : "stride", opts.blocks, kThreads, opts.iters,
-      opts.warmup, opts.tiles, smem_bytes,
+      locality_name(opts.locality), opts.blocks, kThreads, opts.iters,
+      opts.warmup, opts.tiles, opts.repeat, smem_bytes,
       opts.bench_case == kCasePair48
-          ? kPairBytes
+          ? kPairBytes * opts.repeat
           : (opts.bench_case == kCaseA16
-                 ? kATotalBytes
-                 : (opts.bench_case == kCaseB32 ? kBTotalBytes : 0)));
+                 ? kATotalBytes * opts.repeat
+                 : (opts.bench_case == kCaseB32 ? kBTotalBytes * opts.repeat
+                                                : 0)));
+  const uint64_t expected_tx_bytes =
+      opts.bench_case == kCasePair48
+          ? static_cast<uint64_t>(kPairBytes) * opts.repeat
+          : (opts.bench_case == kCaseA16
+                 ? static_cast<uint64_t>(kATotalBytes) * opts.repeat
+                 : (opts.bench_case == kCaseB32
+                        ? static_cast<uint64_t>(kBTotalBytes) * opts.repeat
+                        : 0));
+  const uint64_t measured_data_bytes =
+      expected_tx_bytes * static_cast<uint64_t>(opts.blocks) *
+      static_cast<uint64_t>(opts.iters);
+  const double working_set_mib =
+      (static_cast<double>(kPairBytes) * static_cast<double>(opts.tiles)) /
+      (1024.0 * 1024.0);
+  std::printf("working_set_pair48_mib=%.2f measured_data_bytes=%llu\n",
+              working_set_mib,
+              static_cast<unsigned long long>(measured_data_bytes));
 
   tma_completion_latency_kernel<<<opts.blocks, kThreads, smem_bytes>>>(
       d_a, d_b, d_tmaps, d_samples, d_sinks, opts.iters, opts.warmup,
-      opts.tiles, static_cast<int>(opts.bench_case),
-      static_cast<int>(opts.issue_mode), opts.hot ? 1 : 0);
+      opts.tiles, opts.repeat, static_cast<int>(opts.bench_case),
+      static_cast<int>(opts.issue_mode), static_cast<int>(opts.locality));
   CUDA_CHECK(cudaGetLastError());
   CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -616,6 +675,16 @@ int main(int argc, char** argv) {
   const uint64_t sink_sum =
       std::accumulate(sinks.begin(), sinks.end(), uint64_t{0});
   print_stats(samples);
+  const double mean = mean_cycles(samples);
+  const double aggregate_bytes_per_cycle =
+      mean > 0.0 ? static_cast<double>(expected_tx_bytes) *
+                       static_cast<double>(opts.blocks) / mean
+                 : 0.0;
+  const double aggregate_gib_per_sec =
+      aggregate_bytes_per_cycle * static_cast<double>(clock_rate_khz) * 1000.0 /
+      (1024.0 * 1024.0 * 1024.0);
+  std::printf("mean_aggregate_tma_bw_gib_s=%.2f bytes_per_cycle=%.2f\n",
+              aggregate_gib_per_sec, aggregate_bytes_per_cycle);
   std::printf("sink=%llu\n", static_cast<unsigned long long>(sink_sum));
 
   if (!opts.csv_path.empty()) {

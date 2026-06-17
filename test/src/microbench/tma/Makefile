@@ -16,13 +16,18 @@ CUDA_LIB_DIR ?= $(if $(wildcard $(CUDA_ROOT)/lib64/libcudart.so*),$(CUDA_ROOT)/l
 CONFIG_DIR ?= ../../../../configs/SM120_RTX5090
 RUN_DIR ?= gem5_pair48_smoke_cuda129
 DESC_RUN_DIR ?= gem5_descriptor_smoke_cuda129
+BW_BLOCKS ?= 132
+BW_ITERS ?= 64
+BW_WARMUP ?= 4
+BW_TILES ?= 8192
+BW_REPEAT ?= 1
 
 NVCC_FLAGS := -std=c++17 -O3 -lineinfo -cudart shared
 NVCC_FLAGS += -gencode arch=$(PTX_PROFILE),code=$(ARCH)
 NVCC_FLAGS += -gencode arch=$(PTX_PROFILE),code=$(PTX_PROFILE)
 NVCC_FLAGS += -L$(CUDA_LIB_DIR) -Xlinker -rpath -Xlinker $(CUDA_LIB_DIR)
 
-.PHONY: all clean check-ptx desc-check-ptx gem5-dir gem5-smoke desc-gem5-dir desc-gem5-smoke run-hw desc-run-hw
+.PHONY: all clean check-ptx desc-check-ptx gem5-dir gem5-smoke gem5-dram-bw desc-gem5-dir desc-gem5-smoke run-hw run-hw-dram-bw desc-run-hw
 
 all: $(TARGET) $(DESC_TARGET)
 
@@ -48,6 +53,9 @@ gem5-dir: $(TARGET)
 gem5-smoke: gem5-dir
 	cd $(RUN_DIR) && env -u PTX_SIM_USE_PTX_FILE -u PTX_SIM_KERNELFILE ./$(TARGET) --blocks=1 --iters=1 --warmup=0 --tiles=64 --case=pair48 --issue=llama --stride
 
+gem5-dram-bw: gem5-dir
+	cd $(RUN_DIR) && env -u PTX_SIM_USE_PTX_FILE -u PTX_SIM_KERNELFILE ./$(TARGET) --blocks=$(BW_BLOCKS) --iters=$(BW_ITERS) --warmup=$(BW_WARMUP) --tiles=$(BW_TILES) --repeat=$(BW_REPEAT) --case=pair48 --issue=llama --stride
+
 desc-gem5-dir: $(DESC_TARGET)
 	mkdir -p $(DESC_RUN_DIR)
 	rm -f $(DESC_RUN_DIR)/*.ptx $(DESC_RUN_DIR)/*.ptxas $(DESC_RUN_DIR)/_cuobjdump_list_ptx_*
@@ -60,6 +68,9 @@ desc-gem5-smoke: desc-gem5-dir
 
 run-hw: $(TARGET)
 	./$(TARGET) --blocks=128 --iters=4096 --warmup=256 --tiles=4096 --case=pair48 --issue=llama --stride
+
+run-hw-dram-bw: $(TARGET)
+	./$(TARGET) --blocks=$(BW_BLOCKS) --iters=$(BW_ITERS) --warmup=$(BW_WARMUP) --tiles=$(BW_TILES) --repeat=$(BW_REPEAT) --case=pair48 --issue=llama --stride
 
 desc-run-hw: $(DESC_TARGET)
 	./$(DESC_TARGET) --blocks=128 --iters=4096 --warmup=256 --tiles=4096 --case=full --stride

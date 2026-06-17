@@ -18,6 +18,7 @@ fi
 TEST_TIMEOUT=${TEST_TIMEOUT:-3600}
 TEST_VERBOSE=${TEST_VERBOSE:-1}
 DEBUG_TESTS=${DEBUG_TESTS:-0}
+FA2_BUILD_JOBS=${FA2_BUILD_JOBS:-4}
 DEFAULT_GPU_CONFIG=${DEFAULT_GPU_CONFIG:-SM120_RTX5090}
 HOPPER_GPU_CONFIG=${HOPPER_GPU_CONFIG:-SM90_H100}
 GPU_CONFIG_EXPLICIT=0
@@ -59,6 +60,11 @@ usage() {
     echo "  build bench        Build microbenchmarks only"
     echo "  build dev          Build standalone dev tests only"
     echo "  build hopper       Build Hopper tests"
+    echo "  build hopper-fa2   Build split FA2 forward-only Hopper tests"
+    echo "  build hopper-fa2-smoke|small|medium|large"
+    echo "                     Build one FA2 size group"
+    echo "  build hopper-fa2-sensitivity"
+    echo "                     Build FA2 H1/B1 sensitivity runners"
     echo "  test               Run all verification tests and trace tests"
     echo "  test <pattern>     Run specific verification test only"
     echo "  hopper             Run all Hopper gtests"
@@ -90,6 +96,7 @@ usage() {
     echo "                                         # Run one Hopper gtest"
     echo "  $0 hopper Fa3FwdHdim128Fp16IntegrationTest"
     echo "                                         # Run FA3 Hopper gtest"
+    echo "  $0 hopper Fa2PrefillFp16SmokeTest      # Run FA2 forward Hopper gtest"
     echo "  $0 bench \"*MMAIssue*\"                  # Run microbenchmarks"
     echo "  $0 -c SM120_RTX5090_REDUCED test      # Run with reduced config"
 }
@@ -284,6 +291,27 @@ build_hopper_gtests() {
             HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" hopper-gtest
     else
         run_command make HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" hopper-gtest
+    fi
+
+    if [ $? -eq 0 ]; then
+        print_color $GREEN "Build successful!"
+    else
+        print_color $RED "Build failed!"
+        exit 1
+    fi
+}
+
+build_hopper_fa2_tests() {
+    local make_target="${1:-hopper-fa2}"
+
+    build_gpgpusim
+
+    print_color $BLUE "Building FA2 Hopper gtests target '$make_target' (CUDA_ARCH: $HOPPER_CUDA_ARCH)..."
+    if [ "$DEBUG_TESTS" -eq 1 ]; then
+        run_command make -j"$FA2_BUILD_JOBS" CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" \
+            HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" "$make_target"
+    else
+        run_command make -j"$FA2_BUILD_JOBS" HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" "$make_target"
     fi
 
     if [ $? -eq 0 ]; then
@@ -614,17 +642,120 @@ hopper_has_gtests() {
     find src/hopper -name '*_test.cc' -print -quit 2>/dev/null | grep -q .
 }
 
+fa2_group_for_test_name() {
+    local test_name="$1"
+    if [[ -z "$test_name" ]]; then
+        echo "all"
+    elif [[ "$test_name" == *Fa2PrefillFp16SmokeTest* || "$test_name" == *Fa2FwdFp16SmokeIntegrationTest* ]]; then
+        echo "smoke"
+    elif [[ "$test_name" == *Fa2PrefillFp16SmallTest* ]]; then
+        echo "small"
+    elif [[ "$test_name" == *Fa2PrefillFp16MediumTest* ]]; then
+        echo "medium"
+    elif [[ "$test_name" == *Fa2PrefillFp16SensitivityTest* ]]; then
+        echo "sensitivity"
+    elif [[ "$test_name" == *Fa2PrefillFp16IntegrationTest* ]]; then
+        echo "large"
+    else
+        echo "all"
+    fi
+}
+
+fa2_variant_for_test_name() {
+    local test_name="$1"
+    if [[ "$test_name" == *H32D64Full* || "$test_name" == *SmallForwardCase* ]]; then
+        echo "h32d64_full"
+    elif [[ "$test_name" == *H32D64Causal* ]]; then
+        echo "h32d64_causal"
+    elif [[ "$test_name" == *H16D128Full* ]]; then
+        echo "h16d128_full"
+    elif [[ "$test_name" == *H16D128Causal* ]]; then
+        echo "h16d128_causal"
+    else
+        echo "all"
+    fi
+}
+
+fa2_make_target_for_group_variant() {
+    local group="$1"
+    local variant="$2"
+    if [[ "$group" == "all" ]]; then
+        echo "hopper-fa2"
+    elif [[ "$group" == "sensitivity" ]]; then
+        echo "hopper-fa2-sensitivity"
+    elif [[ "$group" == "large" && "$variant" != "all" ]]; then
+        echo "hopper-fa2-large-${variant//_/-}"
+    else
+        echo "hopper-fa2-${group}"
+    fi
+}
+
+run_fa2_split_binaries() {
+    local group="$1"
+    local variant="$2"
+    local filter="$3"
+    local config_dir="$4"
+    local exit_code=0
+    local groups=("smoke" "small" "medium" "large")
+    local variants=("h32d64_full" "h32d64_causal" "h16d128_full" "h16d128_causal")
+
+    if [[ "$group" == "sensitivity" ]]; then
+        local modes=("baseline" "skip_cp_async" "skip_mma" "skip_softmax" "fma_softmax")
+        for mode in "${modes[@]}"; do
+            local hopper_bin="$(pwd)/build/bin/hopper/run_fa2_sensitivity_${mode}_tests"
+            if [ ! -f "$hopper_bin" ]; then
+                print_color $RED "FA2 sensitivity gtest executable not found: $hopper_bin"
+                return 1
+            fi
+            print_color $BLUE "Running FA2 sensitivity gtests: ${mode} filter=$filter (config: $GPU_CONFIG)"
+            run_binary_with_filter "$hopper_bin" "$config_dir" "$filter" || exit_code=$?
+        done
+        return $exit_code
+    fi
+
+    if [[ "$group" != "all" ]]; then
+        groups=("$group")
+    fi
+    if [[ "$variant" != "all" ]]; then
+        variants=("$variant")
+    fi
+
+    for g in "${groups[@]}"; do
+        for v in "${variants[@]}"; do
+            local hopper_bin="$(pwd)/build/bin/hopper/run_fa2_${g}_${v}_tests"
+            if [ ! -f "$hopper_bin" ]; then
+                print_color $RED "FA2 Hopper gtest executable not found: $hopper_bin"
+                return 1
+            fi
+            print_color $BLUE "Running FA2 Hopper gtests: ${g}/${v} filter=$filter (config: $GPU_CONFIG)"
+            run_binary_with_filter "$hopper_bin" "$config_dir" "$filter" || exit_code=$?
+        done
+    done
+
+    return $exit_code
+}
+
 # Run Hopper gtests.
 run_hopper_tests() {
     local test_name="${1:-}"
     local config_dir="run/${GPU_CONFIG}"
+    local is_fa2_test=0
+
+    if [[ "$test_name" == Fa2* ]]; then
+        is_fa2_test=1
+    fi
 
     if [ ! -d "$config_dir" ]; then
         print_color $RED "Configuration directory not found: $config_dir"
         exit 1
     fi
 
-    if [ -n "$test_name" ]; then
+    if [ "$is_fa2_test" -eq 1 ]; then
+        local fa2_group="$(fa2_group_for_test_name "$test_name")"
+        local fa2_variant="$(fa2_variant_for_test_name "$test_name")"
+        local fa2_make_target="$(fa2_make_target_for_group_variant "$fa2_group" "$fa2_variant")"
+        build_hopper_fa2_tests "$fa2_make_target"
+    elif [ -n "$test_name" ]; then
         build_hopper_gtests
     else
         build_hopper_tests
@@ -637,7 +768,12 @@ run_hopper_tests() {
 
     local exit_code=0
 
-    if hopper_has_gtests; then
+    if [ "$is_fa2_test" -eq 1 ]; then
+        local fa2_group="$(fa2_group_for_test_name "$test_name")"
+        local fa2_variant="$(fa2_variant_for_test_name "$test_name")"
+        local filter="*${test_name}*"
+        run_fa2_split_binaries "$fa2_group" "$fa2_variant" "$filter" "$config_dir" || exit_code=$?
+    elif hopper_has_gtests; then
         local hopper_bin="$(pwd)/build/bin/hopper/run_hopper_tests"
         if [ ! -f "$hopper_bin" ]; then
             print_color $RED "Hopper gtest executable not found: $hopper_bin"
@@ -759,7 +895,7 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         build)
-            if [ "${2:-}" = "hopper" ]; then
+            if [ "${2:-}" = "hopper" ] || [[ "${2:-}" == hopper-fa2* ]]; then
                 use_hopper_default_config
             fi
             initialize_run_directory "build"
@@ -780,6 +916,13 @@ while [[ $# -gt 0 ]]; do
                     fi
                     build_hopper_tests
                     ;;
+                hopper-fa2*)
+                    if [ -n "${3:-}" ]; then
+                        print_color $RED "build hopper-fa2 does not accept a pattern; use '$0 hopper ${3}' to run a filtered FA2 Hopper gtest."
+                        exit 1
+                    fi
+                    build_hopper_fa2_tests "$2"
+                    ;;
                 trace)
                     build_gpgpusim
                     make -C src/trace GPU_CONFIG="$GPU_CONFIG"
@@ -790,7 +933,7 @@ while [[ $# -gt 0 ]]; do
                     build_dev_tests
                     ;;
                 *)
-                    print_color $RED "Unknown build target: $2 (use 'test', 'bench', 'dev', 'hopper', or 'trace')"
+                    print_color $RED "Unknown build target: $2 (use 'test', 'bench', 'dev', 'hopper', 'hopper-fa2*', or 'trace')"
                     exit 1
                     ;;
             esac

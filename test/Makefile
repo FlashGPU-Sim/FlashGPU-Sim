@@ -70,6 +70,18 @@ TEST_OBJECTS = $(UNIT_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o) \
                $(INTEGRATION_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
 TEST_TARGETS = $(TEST_SOURCES:$(TEST_SRC_DIR)/%_test.cc=$(BIN_DIR)/%)
 HOPPER_TEST_OBJECTS = $(HOPPER_TEST_SOURCES:$(HOPPER_SRC_DIR)/%.cc=$(OBJ_DIR)/hopper/%.cu.o)
+HOPPER_FA2_TEST_SOURCE = $(HOPPER_SRC_DIR)/fa2/fa2_fwd_fp16_test.cc
+HOPPER_FA2_VARIANTS = h32d64_full h32d64_causal h16d128_full h16d128_causal
+HOPPER_FA2_GROUPS = smoke small medium large
+HOPPER_FA2_SMOKE_OBJECTS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(OBJ_DIR)/hopper/fa2/smoke_$(variant)/fa2_fwd_fp16_test.cu.o)
+HOPPER_FA2_SMALL_OBJECTS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(OBJ_DIR)/hopper/fa2/small_$(variant)/fa2_fwd_fp16_test.cu.o)
+HOPPER_FA2_MEDIUM_OBJECTS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(OBJ_DIR)/hopper/fa2/medium_$(variant)/fa2_fwd_fp16_test.cu.o)
+HOPPER_FA2_LARGE_OBJECTS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(OBJ_DIR)/hopper/fa2/large_$(variant)/fa2_fwd_fp16_test.cu.o)
+HOPPER_FA2_OBJECTS = $(HOPPER_FA2_SMOKE_OBJECTS) $(HOPPER_FA2_SMALL_OBJECTS) $(HOPPER_FA2_MEDIUM_OBJECTS) $(HOPPER_FA2_LARGE_OBJECTS)
+HOPPER_FA2_SENSITIVITY_MODES = baseline skip_cp_async skip_mma skip_softmax fma_softmax only_mma only_cp_async only_softmax nothing
+HOPPER_FA2_SENSITIVITY_OBJECTS = $(foreach mode,$(HOPPER_FA2_SENSITIVITY_MODES),$(OBJ_DIR)/hopper/fa2/sensitivity_$(mode)/fa2_fwd_fp16_test.cu.o)
+HOPPER_FA2_SENSITIVITY_H1D128_MODES = baseline nothing only_cp_async only_softmax only_mma softmax_mma
+HOPPER_FA2_SENSITIVITY_H1D128_OBJECTS = $(foreach mode,$(HOPPER_FA2_SENSITIVITY_H1D128_MODES),$(OBJ_DIR)/hopper/fa2/sensitivity_h1d128_$(mode)/fa2_fwd_fp16_test.cu.o)
 HOPPER_FA3_TEST_SOURCES = $(wildcard $(HOPPER_SRC_DIR)/fa3/*_test.cc)
 HOPPER_FA3_NOEXT_OBJECTS = $(HOPPER_FA3_TEST_SOURCES:$(HOPPER_SRC_DIR)/fa3/%.cc=$(OBJ_DIR)/hopper/fa3_noext/%.cu.o)
 HOPPER_FA3_EXTENDED_OBJECTS = $(HOPPER_FA3_TEST_SOURCES:$(HOPPER_SRC_DIR)/fa3/%.cc=$(OBJ_DIR)/hopper/fa3_extended/%.cu.o)
@@ -122,6 +134,18 @@ HOPPER_GTEST_TARGETS = $(HOPPER_TEST_TARGET)
 endif
 HOPPER_TARGETS = $(HOPPER_GTEST_TARGETS)
 
+HOPPER_FA2_DIR = $(HOPPER_SRC_DIR)/fa2
+HOPPER_FA2_COMMON_FLAGS = --ftemplate-backtrace-limit=0 -O3 \
+                          --use_fast_math \
+                          -lineinfo --expt-relaxed-constexpr \
+                          --expt-extended-lambda \
+                          -DNDEBUG \
+                          -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED \
+                          -I$(HOPPER_FA2_DIR) \
+                          -I$(HOPPER_FA3_DIR)/flash-attention/csrc/flash_attn/src \
+                          -I$(HOPPER_FA3_DIR)/flash-attention/csrc/cutlass/include
+HOPPER_FA2_FLAGS = $(HOPPER_FA2_COMMON_FLAGS)
+
 # Standalone dev tests (decoupled from simulator, separate binary)
 STANDALONE_SOURCES = $(wildcard $(TEST_SRC_DIR)/standalone/*_test.cc)
 STANDALONE_OBJECTS = $(STANDALONE_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
@@ -138,6 +162,13 @@ HOPPER_OBJ_DIR = $(OBJ_DIR)/hopper
 # Main test runner
 MAIN_TEST_TARGET = $(BIN_DIR)/run_all_tests
 HOPPER_TEST_TARGET = $(BIN_DIR)/hopper/run_hopper_tests
+HOPPER_FA2_SMOKE_TARGETS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(BIN_DIR)/hopper/run_fa2_smoke_$(variant)_tests)
+HOPPER_FA2_SMALL_TARGETS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(BIN_DIR)/hopper/run_fa2_small_$(variant)_tests)
+HOPPER_FA2_MEDIUM_TARGETS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(BIN_DIR)/hopper/run_fa2_medium_$(variant)_tests)
+HOPPER_FA2_LARGE_TARGETS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(BIN_DIR)/hopper/run_fa2_large_$(variant)_tests)
+HOPPER_FA2_TARGETS = $(HOPPER_FA2_SMOKE_TARGETS) $(HOPPER_FA2_SMALL_TARGETS) $(HOPPER_FA2_MEDIUM_TARGETS) $(HOPPER_FA2_LARGE_TARGETS)
+HOPPER_FA2_SENSITIVITY_TARGETS = $(foreach mode,$(HOPPER_FA2_SENSITIVITY_MODES),$(BIN_DIR)/hopper/run_fa2_sensitivity_$(mode)_tests)
+HOPPER_FA2_SENSITIVITY_H1D128_TARGETS = $(foreach mode,$(HOPPER_FA2_SENSITIVITY_H1D128_MODES),$(BIN_DIR)/hopper/run_fa2_sensitivity_h1d128_$(mode)_tests)
 HOPPER_FA3_NOEXT_TARGET = $(BIN_DIR)/hopper/run_fa3_noext_tests
 HOPPER_FA3_EXTENDED_TARGET = $(BIN_DIR)/hopper/run_fa3_extended_tests
 HOPPER_FA3_SINGLE_TILE_TARGET = $(BIN_DIR)/hopper/run_fa3_single_tile_tests
@@ -190,7 +221,7 @@ FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
 FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o
 FLASH_OBJ_DIR = $(OBJ_DIR)/flash
 
-.PHONY: all test bench dev hopper hopper-gtest hopper-fa3-noext hopper-fa3-extended hopper-fa3-variants hopper-fa3-single-tile hopper-fa3-h1d128-profile hopper-fa3-sensitivity hopper-fa3-sensitivity-extended wgmma-n16-chain clean help setup-gtest
+.PHONY: all test bench dev hopper hopper-gtest hopper-fa2 hopper-fa2-smoke hopper-fa2-small hopper-fa2-medium hopper-fa2-large hopper-fa2-sensitivity hopper-fa2-sensitivity-h1d128 hopper-fa2-large-h32d64-full hopper-fa2-large-h32d64-causal hopper-fa2-large-h16d128-full hopper-fa2-large-h16d128-causal hopper-fa3-noext hopper-fa3-extended hopper-fa3-variants hopper-fa3-single-tile hopper-fa3-h1d128-profile hopper-fa3-sensitivity hopper-fa3-sensitivity-extended wgmma-n16-chain clean help setup-gtest
 
 # Build everything (test + bench + dev)
 all: test bench dev
@@ -209,6 +240,29 @@ hopper: setup-gtest $(HOPPER_TARGETS)
 
 # Build only Hopper gtest sources.
 hopper-gtest: setup-gtest $(HOPPER_GTEST_TARGETS)
+
+# Build FA2 forward-only runners with extended-shape macro enabled.
+hopper-fa2: setup-gtest $(HOPPER_FA2_TARGETS)
+
+hopper-fa2-smoke: setup-gtest $(HOPPER_FA2_SMOKE_TARGETS)
+
+hopper-fa2-small: setup-gtest $(HOPPER_FA2_SMALL_TARGETS)
+
+hopper-fa2-medium: setup-gtest $(HOPPER_FA2_MEDIUM_TARGETS)
+
+hopper-fa2-large: setup-gtest $(HOPPER_FA2_LARGE_TARGETS)
+
+hopper-fa2-sensitivity: setup-gtest $(HOPPER_FA2_SENSITIVITY_TARGETS)
+
+hopper-fa2-sensitivity-h1d128: setup-gtest $(HOPPER_FA2_SENSITIVITY_H1D128_TARGETS)
+
+hopper-fa2-large-h32d64-full: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h32d64_full_tests
+
+hopper-fa2-large-h32d64-causal: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h32d64_causal_tests
+
+hopper-fa2-large-h16d128-full: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h16d128_full_tests
+
+hopper-fa2-large-h16d128-causal: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h16d128_causal_tests
 
 # Build FA3-only runners with explicit extended-shape selection.
 hopper-fa3-noext: setup-gtest $(HOPPER_FA3_NOEXT_TARGET)
@@ -240,6 +294,13 @@ help:
 	@echo "  all         - Build all tests (default)"
 	@echo "  test        - Build and run all tests"
 	@echo "  hopper      - Build Hopper tests"
+	@echo "  hopper-fa2 - Build split FA2 forward-only runners with extended-shape macro"
+	@echo "  hopper-fa2-smoke - Build split FA2 smoke runners"
+	@echo "  hopper-fa2-small - Build split FA2 small runners"
+	@echo "  hopper-fa2-medium - Build split FA2 medium runners"
+	@echo "  hopper-fa2-large - Build split FA2 large runners"
+	@echo "  hopper-fa2-sensitivity - Build FA2 H1/B1 sensitivity runners"
+	@echo "  hopper-fa2-sensitivity-h1d128 - Build FA2 H1D128 full/causal debug sensitivity runners"
 	@echo "  hopper-fa3-noext - Build FA3-only runner without extended GMMA shapes"
 	@echo "  hopper-fa3-extended - Build FA3-only runner with extended GMMA shapes"
 	@echo "  hopper-fa3-variants - Build both FA3-only runners"
@@ -302,6 +363,61 @@ $(OBJ_DIR)/integration/%.cu.o: $(TEST_SRC_DIR)/integration/%.cc $(CUH_HEADERS)
 # Hopper gtest sources use their own CUDA architecture.
 $(OBJ_DIR)/hopper/fa3/%.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_FLAGS)
 $(OBJ_DIR)/hopper/%.cu.o: $(HOPPER_SRC_DIR)/%.cc $(CUH_HEADERS) Makefile | $(HOPPER_OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
+# FA2 stays in split runners so each compile unit instantiates one D/full-causal
+# kernel family. It still uses HOPPER_CUDA_ARCH, which defaults to sm_90a.
+HOPPER_FA2_H32D64_FULL_FLAGS = -DFA2_PREFILL_ENABLE_H32D64_FULL
+HOPPER_FA2_H32D64_CAUSAL_FLAGS = -DFA2_PREFILL_ENABLE_H32D64_CAUSAL
+HOPPER_FA2_H16D128_FULL_FLAGS = -DFA2_PREFILL_ENABLE_H16D128_FULL
+HOPPER_FA2_H16D128_CAUSAL_FLAGS = -DFA2_PREFILL_ENABLE_H16D128_CAUSAL
+
+$(OBJ_DIR)/hopper/fa2/smoke_h32d64_full/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_SMOKE $(HOPPER_FA2_H32D64_FULL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/smoke_h32d64_causal/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_SMOKE $(HOPPER_FA2_H32D64_CAUSAL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/smoke_h16d128_full/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_SMOKE $(HOPPER_FA2_H16D128_FULL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/smoke_h16d128_causal/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_SMOKE $(HOPPER_FA2_H16D128_CAUSAL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/small_h32d64_full/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_SMALL $(HOPPER_FA2_H32D64_FULL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/small_h32d64_causal/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_SMALL $(HOPPER_FA2_H32D64_CAUSAL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/small_h16d128_full/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_SMALL $(HOPPER_FA2_H16D128_FULL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/small_h16d128_causal/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_SMALL $(HOPPER_FA2_H16D128_CAUSAL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/medium_h32d64_full/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_MEDIUM $(HOPPER_FA2_H32D64_FULL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/medium_h32d64_causal/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_MEDIUM $(HOPPER_FA2_H32D64_CAUSAL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/medium_h16d128_full/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_MEDIUM $(HOPPER_FA2_H16D128_FULL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/medium_h16d128_causal/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_MEDIUM $(HOPPER_FA2_H16D128_CAUSAL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/large_h32d64_full/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_LARGE $(HOPPER_FA2_H32D64_FULL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/large_h32d64_causal/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_LARGE $(HOPPER_FA2_H32D64_CAUSAL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/large_h16d128_full/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_LARGE $(HOPPER_FA2_H16D128_FULL_FLAGS)
+$(OBJ_DIR)/hopper/fa2/large_h16d128_causal/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_LARGE $(HOPPER_FA2_H16D128_CAUSAL_FLAGS)
+
+$(HOPPER_FA2_OBJECTS): $(HOPPER_FA2_TEST_SOURCE) $(CUH_HEADERS) Makefile | $(HOPPER_OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
+HOPPER_FA2_SENSITIVITY_FLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_SENSITIVITY $(HOPPER_FA2_H16D128_FULL_FLAGS) -DFA2_FWD_SENS_FORCE_H100_HDIM128
+$(OBJ_DIR)/hopper/fa2/sensitivity_baseline/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_FLAGS)
+$(OBJ_DIR)/hopper/fa2/sensitivity_skip_cp_async/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_FLAGS) -DFA2_FWD_SENS_SKIP_CP_ASYNC
+$(OBJ_DIR)/hopper/fa2/sensitivity_skip_mma/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_FLAGS) -DFA2_FWD_SENS_SKIP_MMA
+$(OBJ_DIR)/hopper/fa2/sensitivity_skip_softmax/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_FLAGS) -DFA2_FWD_SENS_SKIP_SOFTMAX
+$(OBJ_DIR)/hopper/fa2/sensitivity_fma_softmax/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_FLAGS) -DFA2_FWD_SENS_FMA_SOFTMAX
+$(OBJ_DIR)/hopper/fa2/sensitivity_only_mma/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_FLAGS) -DFA2_FWD_SENS_SKIP_CP_ASYNC -DFA2_FWD_SENS_SKIP_SOFTMAX
+$(OBJ_DIR)/hopper/fa2/sensitivity_only_cp_async/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_FLAGS) -DFA2_FWD_SENS_SKIP_MMA -DFA2_FWD_SENS_SKIP_SOFTMAX
+$(OBJ_DIR)/hopper/fa2/sensitivity_only_softmax/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_FLAGS) -DFA2_FWD_SENS_SKIP_CP_ASYNC -DFA2_FWD_SENS_SKIP_MMA
+$(OBJ_DIR)/hopper/fa2/sensitivity_nothing/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_FLAGS) -DFA2_FWD_SENS_SKIP_CP_ASYNC -DFA2_FWD_SENS_SKIP_MMA -DFA2_FWD_SENS_SKIP_SOFTMAX
+
+$(HOPPER_FA2_SENSITIVITY_OBJECTS): $(HOPPER_FA2_TEST_SOURCE) $(CUH_HEADERS) Makefile | $(HOPPER_OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
+HOPPER_FA2_SENSITIVITY_H1D128_FLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_SENSITIVITY_H1D128 $(HOPPER_FA2_H16D128_FULL_FLAGS) $(HOPPER_FA2_H16D128_CAUSAL_FLAGS) -DFA2_FWD_SENS_FORCE_H100_HDIM128
+$(OBJ_DIR)/hopper/fa2/sensitivity_h1d128_baseline/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_H1D128_FLAGS)
+$(OBJ_DIR)/hopper/fa2/sensitivity_h1d128_nothing/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_H1D128_FLAGS) -DFA2_FWD_SENS_SKIP_CP_ASYNC -DFA2_FWD_SENS_SKIP_MMA -DFA2_FWD_SENS_SKIP_MMA_OPERANDS -DFA2_FWD_SENS_SKIP_SOFTMAX
+$(OBJ_DIR)/hopper/fa2/sensitivity_h1d128_only_cp_async/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_H1D128_FLAGS) -DFA2_FWD_SENS_SKIP_MMA -DFA2_FWD_SENS_SKIP_MMA_OPERANDS -DFA2_FWD_SENS_SKIP_SOFTMAX
+$(OBJ_DIR)/hopper/fa2/sensitivity_h1d128_only_softmax/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_H1D128_FLAGS) -DFA2_FWD_SENS_SKIP_CP_ASYNC -DFA2_FWD_SENS_SKIP_MMA -DFA2_FWD_SENS_SKIP_MMA_OPERANDS
+$(OBJ_DIR)/hopper/fa2/sensitivity_h1d128_only_mma/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_H1D128_FLAGS) -DFA2_FWD_SENS_SKIP_CP_ASYNC -DFA2_FWD_SENS_SKIP_SOFTMAX
+$(OBJ_DIR)/hopper/fa2/sensitivity_h1d128_softmax_mma/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_H1D128_FLAGS) -DFA2_FWD_SENS_SKIP_CP_ASYNC
+
+$(HOPPER_FA2_SENSITIVITY_H1D128_OBJECTS): $(HOPPER_FA2_TEST_SOURCE) $(CUH_HEADERS) Makefile | $(HOPPER_OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
@@ -386,6 +502,11 @@ $(MAIN_TEST_TARGET): $(TEST_OBJECTS) $(FLASH_OBJECTS) $(OBJ_DIR)/gtest_main.a | 
 
 # Build Hopper gtest runner
 $(HOPPER_TEST_TARGET): $(HOPPER_TEST_OBJECTS) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
+
+# Build split FA2 forward-only runners.
+$(BIN_DIR)/hopper/run_fa2_%_tests: $(OBJ_DIR)/hopper/fa2/%/fa2_fwd_fp16_test.cu.o $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
 

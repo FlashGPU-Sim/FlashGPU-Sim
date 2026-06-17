@@ -8,7 +8,24 @@
 
 namespace fa2_hopper_test {
 
+#if !defined(FA2_PREFILL_GROUP_SMOKE) && \
+    !defined(FA2_PREFILL_GROUP_SMALL) && \
+    !defined(FA2_PREFILL_GROUP_MEDIUM) && \
+    !defined(FA2_PREFILL_GROUP_LARGE) && \
+    !defined(FA2_PREFILL_GROUP_SENSITIVITY) && \
+    !defined(FA2_PREFILL_GROUP_SENSITIVITY_H1D128)
+#define FA2_PREFILL_GROUP_SMOKE
+#define FA2_PREFILL_GROUP_SMALL
+#define FA2_PREFILL_GROUP_MEDIUM
+#define FA2_PREFILL_GROUP_LARGE
+#endif
+
 class Fa2PrefillFp16IntegrationTest : public ::testing::Test {};
+class Fa2PrefillFp16SmokeTest : public ::testing::Test {};
+class Fa2PrefillFp16SmallTest : public ::testing::Test {};
+class Fa2PrefillFp16MediumTest : public ::testing::Test {};
+class Fa2PrefillFp16SensitivityTest : public ::testing::Test {};
+class Fa2PrefillFp16SensitivityH1D128Test : public ::testing::Test {};
 class Fa2FwdFp16SmokeIntegrationTest : public ::testing::Test {};
 
 inline bool run_32ki_fa2_cases_enabled() {
@@ -34,6 +51,59 @@ inline void RunFa2PrefillCase(const Fa2PrefillCase &cfg) {
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
 
+inline void RunFa2PrefillSmokeCase(const Fa2PrefillCase &cfg) {
+  SCOPED_TRACE(::testing::Message()
+               << "case=" << cfg.name << " batch=" << cfg.batch
+               << " seqlen=" << cfg.seqlen << " heads=" << cfg.heads
+               << " head_dim=" << cfg.head_dim << " causal=" << cfg.causal);
+
+  ASSERT_TRUE(is_valid_fa2_prefill_smoke_case(cfg));
+
+  Fa2RunResult result = run_fa2_prefill_fp16(cfg);
+  ASSERT_EQ(result.error, cudaSuccess)
+      << result.where << " failed: " << cudaGetErrorString(result.error);
+}
+
+inline void RunFa2PrefillTuningCase(const Fa2PrefillCase &cfg) {
+  SCOPED_TRACE(::testing::Message()
+               << "case=" << cfg.name << " batch=" << cfg.batch
+               << " seqlen=" << cfg.seqlen << " heads=" << cfg.heads
+               << " head_dim=" << cfg.head_dim << " causal=" << cfg.causal);
+
+  ASSERT_TRUE(is_valid_fa2_prefill_tuning_case(cfg));
+
+  Fa2RunResult result = run_fa2_prefill_fp16(cfg);
+  ASSERT_EQ(result.error, cudaSuccess)
+      << result.where << " failed: " << cudaGetErrorString(result.error);
+}
+
+inline void RunFa2PrefillSensitivityCase(const Fa2PrefillCase &cfg) {
+  SCOPED_TRACE(::testing::Message()
+               << "case=" << cfg.name << " batch=" << cfg.batch
+               << " seqlen=" << cfg.seqlen << " heads=" << cfg.heads
+               << " head_dim=" << cfg.head_dim << " causal=" << cfg.causal);
+
+  ASSERT_TRUE(is_valid_fa2_prefill_sensitivity_case(cfg));
+
+  Fa2RunResult result = run_fa2_sensitivity_fp16(cfg);
+  ASSERT_EQ(result.error, cudaSuccess)
+      << result.where << " failed: " << cudaGetErrorString(result.error);
+}
+
+inline void RunFa2PrefillSensitivityH1D128Case(const Fa2PrefillCase &cfg) {
+  SCOPED_TRACE(::testing::Message()
+               << "case=" << cfg.name << " batch=" << cfg.batch
+               << " seqlen=" << cfg.seqlen << " heads=" << cfg.heads
+               << " head_dim=" << cfg.head_dim << " causal=" << cfg.causal);
+
+  ASSERT_TRUE(is_valid_fa2_prefill_sensitivity_h1d128_case(cfg));
+
+  Fa2RunResult result = run_fa2_sensitivity_h1d128_fp16(cfg);
+  ASSERT_EQ(result.error, cudaSuccess)
+      << result.where << " failed: " << cudaGetErrorString(result.error);
+}
+
+#if defined(FA2_PREFILL_GROUP_LARGE)
 TEST_F(Fa2PrefillFp16IntegrationTest, ShapeTableHas20PrefillCases) {
   ASSERT_EQ(sizeof(kFa2PrefillCases) / sizeof(kFa2PrefillCases[0]),
             size_t{kFa2PrefillCaseCount});
@@ -43,6 +113,72 @@ TEST_F(Fa2PrefillFp16IntegrationTest, ShapeTableHas20PrefillCases) {
         << cfg.name << " is not a valid 32Ki-token prefill case";
   }
 }
+#endif
+
+#if defined(FA2_PREFILL_GROUP_SMOKE)
+TEST_F(Fa2PrefillFp16SmokeTest, ShapeTableHas4SmokeCases) {
+  ASSERT_EQ(sizeof(kFa2PrefillSmokeCases) /
+                sizeof(kFa2PrefillSmokeCases[0]),
+            size_t{kFa2PrefillSmokeCaseCount});
+
+  for (const Fa2PrefillCase &cfg : kFa2PrefillSmokeCases) {
+    EXPECT_TRUE(is_valid_fa2_prefill_smoke_case(cfg))
+        << cfg.name << " is not a valid FA2 smoke case";
+  }
+}
+#endif
+
+#if defined(FA2_PREFILL_GROUP_SMALL)
+TEST_F(Fa2PrefillFp16SmallTest, ShapeTableHas4SmallCases) {
+  ASSERT_EQ(sizeof(kFa2PrefillSmallCases) / sizeof(kFa2PrefillSmallCases[0]),
+            size_t{kFa2PrefillSmallCaseCount});
+
+  for (const Fa2PrefillCase &cfg : kFa2PrefillSmallCases) {
+    EXPECT_TRUE(is_valid_fa2_prefill_tuning_case(cfg))
+        << cfg.name << " is not a valid FA2 small case";
+  }
+}
+#endif
+
+#if defined(FA2_PREFILL_GROUP_MEDIUM)
+TEST_F(Fa2PrefillFp16MediumTest, ShapeTableHas4MediumCases) {
+  ASSERT_EQ(sizeof(kFa2PrefillMediumCases) /
+                sizeof(kFa2PrefillMediumCases[0]),
+            size_t{kFa2PrefillMediumCaseCount});
+
+  for (const Fa2PrefillCase &cfg : kFa2PrefillMediumCases) {
+    EXPECT_TRUE(is_valid_fa2_prefill_tuning_case(cfg))
+        << cfg.name << " is not a valid FA2 medium case";
+  }
+}
+#endif
+
+#if defined(FA2_PREFILL_GROUP_SENSITIVITY)
+TEST_F(Fa2PrefillFp16SensitivityTest, ShapeTableHas1SensitivityCase) {
+  ASSERT_EQ(sizeof(kFa2PrefillSensitivityCases) /
+                sizeof(kFa2PrefillSensitivityCases[0]),
+            size_t{kFa2PrefillSensitivityCaseCount});
+
+  for (const Fa2PrefillCase &cfg : kFa2PrefillSensitivityCases) {
+    EXPECT_TRUE(is_valid_fa2_prefill_sensitivity_case(cfg))
+        << cfg.name << " is not a valid FA2 sensitivity case";
+  }
+}
+#endif
+
+#if defined(FA2_PREFILL_GROUP_SENSITIVITY_H1D128)
+TEST_F(Fa2PrefillFp16SensitivityH1D128Test,
+       ShapeTableHas10SensitivityH1D128Cases) {
+  ASSERT_EQ(sizeof(kFa2PrefillSensitivityH1D128Cases) /
+                sizeof(kFa2PrefillSensitivityH1D128Cases[0]),
+            size_t{kFa2PrefillSensitivityH1D128CaseCount});
+
+  for (const Fa2PrefillCase &cfg : kFa2PrefillSensitivityH1D128Cases) {
+    EXPECT_TRUE(is_valid_fa2_prefill_sensitivity_h1d128_case(cfg))
+        << cfg.name << " is not a valid FA2 H1D128 sensitivity case";
+  }
+}
+#endif
 
 #define FA2_PREFILL_TEST(name, batch, seqlen, heads, head_dim, causal) \
   TEST_F(Fa2PrefillFp16IntegrationTest, name) {                        \
@@ -50,15 +186,124 @@ TEST_F(Fa2PrefillFp16IntegrationTest, ShapeTableHas20PrefillCases) {
         Fa2PrefillCase{#name, batch, seqlen, heads, head_dim, causal}); \
   }
 
-FA2_PREFILL_CASE_LIST(FA2_PREFILL_TEST)
+#if defined(FA2_PREFILL_GROUP_LARGE)
+#if defined(FA2_PREFILL_ENABLE_H32D64_FULL)
+FA2_PREFILL_H32D64_FULL_CASE_LIST(FA2_PREFILL_TEST)
+#endif
+#if defined(FA2_PREFILL_ENABLE_H32D64_CAUSAL)
+FA2_PREFILL_H32D64_CAUSAL_CASE_LIST(FA2_PREFILL_TEST)
+#endif
+#if defined(FA2_PREFILL_ENABLE_H16D128_FULL)
+FA2_PREFILL_H16D128_FULL_CASE_LIST(FA2_PREFILL_TEST)
+#endif
+#if defined(FA2_PREFILL_ENABLE_H16D128_CAUSAL)
+FA2_PREFILL_H16D128_CAUSAL_CASE_LIST(FA2_PREFILL_TEST)
+#endif
+#endif
 
 #undef FA2_PREFILL_TEST
 
+#define FA2_PREFILL_SMOKE_TEST(name, batch, seqlen, heads, head_dim, causal) \
+  TEST_F(Fa2PrefillFp16SmokeTest, name) {                                    \
+    RunFa2PrefillSmokeCase(                                                  \
+        Fa2PrefillCase{#name, batch, seqlen, heads, head_dim, causal});       \
+  }
+
+#if defined(FA2_PREFILL_GROUP_SMOKE)
+#if defined(FA2_PREFILL_ENABLE_H32D64_FULL)
+FA2_PREFILL_SMOKE_H32D64_FULL_CASE_LIST(FA2_PREFILL_SMOKE_TEST)
+#endif
+#if defined(FA2_PREFILL_ENABLE_H32D64_CAUSAL)
+FA2_PREFILL_SMOKE_H32D64_CAUSAL_CASE_LIST(FA2_PREFILL_SMOKE_TEST)
+#endif
+#if defined(FA2_PREFILL_ENABLE_H16D128_FULL)
+FA2_PREFILL_SMOKE_H16D128_FULL_CASE_LIST(FA2_PREFILL_SMOKE_TEST)
+#endif
+#if defined(FA2_PREFILL_ENABLE_H16D128_CAUSAL)
+FA2_PREFILL_SMOKE_H16D128_CAUSAL_CASE_LIST(FA2_PREFILL_SMOKE_TEST)
+#endif
+#endif
+
+#undef FA2_PREFILL_SMOKE_TEST
+
+#define FA2_PREFILL_SMALL_TEST(name, batch, seqlen, heads, head_dim, causal) \
+  TEST_F(Fa2PrefillFp16SmallTest, name) {                                    \
+    RunFa2PrefillTuningCase(                                                 \
+        Fa2PrefillCase{#name, batch, seqlen, heads, head_dim, causal});       \
+  }
+
+#if defined(FA2_PREFILL_GROUP_SMALL)
+#if defined(FA2_PREFILL_ENABLE_H32D64_FULL)
+FA2_PREFILL_SMALL_H32D64_FULL_CASE_LIST(FA2_PREFILL_SMALL_TEST)
+#endif
+#if defined(FA2_PREFILL_ENABLE_H32D64_CAUSAL)
+FA2_PREFILL_SMALL_H32D64_CAUSAL_CASE_LIST(FA2_PREFILL_SMALL_TEST)
+#endif
+#if defined(FA2_PREFILL_ENABLE_H16D128_FULL)
+FA2_PREFILL_SMALL_H16D128_FULL_CASE_LIST(FA2_PREFILL_SMALL_TEST)
+#endif
+#if defined(FA2_PREFILL_ENABLE_H16D128_CAUSAL)
+FA2_PREFILL_SMALL_H16D128_CAUSAL_CASE_LIST(FA2_PREFILL_SMALL_TEST)
+#endif
+#endif
+
+#undef FA2_PREFILL_SMALL_TEST
+
+#define FA2_PREFILL_MEDIUM_TEST(name, batch, seqlen, heads, head_dim, causal) \
+  TEST_F(Fa2PrefillFp16MediumTest, name) {                                    \
+    RunFa2PrefillTuningCase(                                                  \
+        Fa2PrefillCase{#name, batch, seqlen, heads, head_dim, causal});        \
+  }
+
+#if defined(FA2_PREFILL_GROUP_MEDIUM)
+#if defined(FA2_PREFILL_ENABLE_H32D64_FULL)
+FA2_PREFILL_MEDIUM_H32D64_FULL_CASE_LIST(FA2_PREFILL_MEDIUM_TEST)
+#endif
+#if defined(FA2_PREFILL_ENABLE_H32D64_CAUSAL)
+FA2_PREFILL_MEDIUM_H32D64_CAUSAL_CASE_LIST(FA2_PREFILL_MEDIUM_TEST)
+#endif
+#if defined(FA2_PREFILL_ENABLE_H16D128_FULL)
+FA2_PREFILL_MEDIUM_H16D128_FULL_CASE_LIST(FA2_PREFILL_MEDIUM_TEST)
+#endif
+#if defined(FA2_PREFILL_ENABLE_H16D128_CAUSAL)
+FA2_PREFILL_MEDIUM_H16D128_CAUSAL_CASE_LIST(FA2_PREFILL_MEDIUM_TEST)
+#endif
+#endif
+
+#undef FA2_PREFILL_MEDIUM_TEST
+
+#define FA2_PREFILL_SENSITIVITY_TEST(name, batch, seqlen, heads, head_dim, causal) \
+  TEST_F(Fa2PrefillFp16SensitivityTest, name) {                                    \
+    RunFa2PrefillSensitivityCase(                                                  \
+        Fa2PrefillCase{#name, batch, seqlen, heads, head_dim, causal});            \
+  }
+
+#if defined(FA2_PREFILL_GROUP_SENSITIVITY)
+FA2_PREFILL_SENSITIVITY_CASE_LIST(FA2_PREFILL_SENSITIVITY_TEST)
+#endif
+
+#undef FA2_PREFILL_SENSITIVITY_TEST
+
+#define FA2_PREFILL_SENSITIVITY_H1D128_TEST(name, batch, seqlen, heads, head_dim, causal) \
+  TEST_F(Fa2PrefillFp16SensitivityH1D128Test, name) {                                     \
+    RunFa2PrefillSensitivityH1D128Case(                                                    \
+        Fa2PrefillCase{#name, batch, seqlen, heads, head_dim, causal});                    \
+  }
+
+#if defined(FA2_PREFILL_GROUP_SENSITIVITY_H1D128)
+FA2_PREFILL_SENSITIVITY_H1D128_CASE_LIST(FA2_PREFILL_SENSITIVITY_H1D128_TEST)
+#endif
+
+#undef FA2_PREFILL_SENSITIVITY_H1D128_TEST
+
+#if defined(FA2_PREFILL_GROUP_SMOKE) && \
+    defined(FA2_PREFILL_ENABLE_H32D64_FULL)
 TEST_F(Fa2FwdFp16SmokeIntegrationTest, SmallForwardCase) {
   Fa2RunResult result = run_fa2_fwd_smoke_fp16();
 
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
+#endif
 
 }  // namespace fa2_hopper_test
