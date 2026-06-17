@@ -561,7 +561,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpgpusim-config", default="gcc-13.3.0/cuda-12080/release")
     parser.add_argument("--ptx-sim-use-ptx-file", default=None)
     parser.add_argument("--ptx-sim-kernelfile", default=None)
-    parser.add_argument("--cuobjdump-sim-file", default=None)
+    parser.add_argument("--cuobjdump-sim-file", default="jj")
     parser.add_argument("--env", action="append", default=[])
     args = parser.parse_args()
 
