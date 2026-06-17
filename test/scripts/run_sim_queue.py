@@ -228,9 +228,6 @@ def make_env(args: argparse.Namespace) -> dict[str, str]:
             "GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN": "1",
             "GPGPUSIM_POWER_MODEL": f"{root}/src/accelwattch/",
             "PTXAS_CUDA_INSTALL_PATH": cuda,
-            "PTX_SIM_USE_PTX_FILE": args.ptx_sim_use_ptx_file,
-            "PTX_SIM_KERNELFILE": args.ptx_sim_kernelfile,
-            "CUOBJDUMP_SIM_FILE": args.cuobjdump_sim_file,
             "QTINC": env.get("QTINC", "/usr/include"),
             "OMP_NUM_THREADS": str(args.threads_per_job),
             "OPENBLAS_NUM_THREADS": str(args.threads_per_job),
@@ -239,6 +236,15 @@ def make_env(args: argparse.Namespace) -> dict[str, str]:
             "GTEST_COLOR": "no",
         }
     )
+    for key, value in (
+        ("PTX_SIM_USE_PTX_FILE", args.ptx_sim_use_ptx_file),
+        ("PTX_SIM_KERNELFILE", args.ptx_sim_kernelfile),
+        ("CUOBJDUMP_SIM_FILE", args.cuobjdump_sim_file),
+    ):
+        if value:
+            env[key] = value
+        else:
+            env.pop(key, None)
     path_parts = [f"{root}/bin", f"{cuda}/bin", env.get("PATH", "")]
     ld_parts = [f"{root}/lib/{gpgpusim_config}", f"{cuda}/lib64", env.get("LD_LIBRARY_PATH", "")]
     env["PATH"] = ":".join(part for part in path_parts if part)
@@ -553,9 +559,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cuda-path", type=Path, default=Path("/usr/local/cuda-12.8"))
     parser.add_argument("--cuda-version-number", default="12080")
     parser.add_argument("--gpgpusim-config", default="gcc-13.3.0/cuda-12080/release")
-    parser.add_argument("--ptx-sim-use-ptx-file", default="1.ptx")
-    parser.add_argument("--ptx-sim-kernelfile", default="_1.ptx")
-    parser.add_argument("--cuobjdump-sim-file", default="jj")
+    parser.add_argument("--ptx-sim-use-ptx-file", default=None)
+    parser.add_argument("--ptx-sim-kernelfile", default=None)
+    parser.add_argument("--cuobjdump-sim-file", default=None)
     parser.add_argument("--env", action="append", default=[])
     args = parser.parse_args()
 
