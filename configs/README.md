@@ -68,6 +68,20 @@ Full Hopper H100 configuration with core, interconnect, and L2 clocks fixed at
 - Same SM count, memory hierarchy, and TMA/WGMMA settings as `SM90_H100`
 - `-gpgpu_clock_domains 1500:1500:1500:14000`
 
+### FlashAttention H100 result configs
+The current FlashAttention H100 result set uses four primary configs:
+
+- `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700`
+  - FA3 baseline and generic H100 baseline.
+- `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA2_REGALLOC`
+  - FA2 baseline. Enables PTX register allocation and PTX scheduling.
+- `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA2_IDEAL`
+  - FA2 sensitivity config. Enables PTX register allocation/scheduling, idealized tensor-core issue queue, tensor-core init 4, and ideal cp.async frontend latency. Backend memory latency is still modeled.
+- `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA3_TMA128_NO_OOB`
+  - FA3 sensitivity config from the final rebuttal archive. Uses TMA 128-byte request granularity and disables synthetic OOB L2 traffic.
+
+Intermediate parameter sweeps for cp.async, TMA response width, WGMMA/MMA queue experiments, and temporary `_TMP` configs are intentionally not kept here. The final raw logs and reports are archived outside this repository in `flashgpu_sim_micro26_rebuttal`.
+
 ### SM90_H100_REDUCED
 Lightweight Hopper H100 configuration with 1 streaming multiprocessor.
 
