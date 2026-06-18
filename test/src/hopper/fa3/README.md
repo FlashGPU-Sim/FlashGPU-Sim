@@ -3,9 +3,10 @@
 This directory contains a standalone FlashAttention-3 Hopper forward test case
 for GPGPU-Sim bring-up.
 
-It does not require files from the original `flash-attention/hopper` directory.
-FA3 headers are provided by the GPGPU-Sim submodule at `flash-attention`.
-CUTLASS/CuTe is provided by that submodule's nested `csrc/cutlass` submodule.
+The test wrapper is local, while FA3 kernel headers come from a generated
+`flash-attention/` checkout built from upstream FlashAttention plus the patches
+in `patches/`. CUTLASS/CuTe is provided by that checkout's nested
+`csrc/cutlass` submodule.
 
 ## Case
 
@@ -23,16 +24,26 @@ CUTLASS/CuTe is provided by that submodule's nested `csrc/cutlass` submodule.
 
 - `fa3_fwd_hdim128_fp16_test.cc` - Google Test wrapper for the fixed FA3 case
 - `fa3_fwd_hdim128_fp16_case.cuh` - shared CUDA workload implementation
-- `flash-attention/` - flash-attention submodule pinned to `d80a77103021c4e980f8cbbf85774f6a19e6474a`
+- `prepare_flash_attention.sh` - clones FlashAttention, checks out the pinned
+  upstream commit, initializes CUTLASS, and applies local patches
+- `patches/flash-attention-fa3-profile-hooks.patch` - FA3 profiling and
+  sensitivity hooks previously carried as a local FlashAttention commit
+- `patches/flash-attention-fa2-fa3-sensitivity-hooks.patch` - additional FA2/FA3
+  sensitivity macro hooks used by isolated debug targets
 
 ## Build
 
 From the GPGPU-Sim repository root:
 
 ```bash
-git submodule update --init test/src/hopper/fa3/flash-attention
-git -C test/src/hopper/fa3/flash-attention submodule update --init csrc/cutlass
+cd test
+make prepare-fa3-flash-attention
 ```
+
+This prepares:
+
+- FlashAttention base commit: `d80a77103021c4e980f8cbbf85774f6a19e6474a`
+- CUTLASS commit: `7127592069c2fe01b041e174ba4345ef9b279671`
 
 Then from `test/`:
 

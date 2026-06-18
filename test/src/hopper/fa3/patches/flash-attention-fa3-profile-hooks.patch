@@ -1,0 +1,1240 @@
+diff --git a/hopper/flash.h b/hopper/flash.h
+index 6848e8c..f0f2c25 100644
+--- a/hopper/flash.h
++++ b/hopper/flash.h
+@@ -7,6 +7,10 @@
+ #include <cuda.h>
+ #include <vector>
+ 
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++#include "flash_profile.h"
++#endif
++
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ struct Qkv_params {
+@@ -165,6 +169,12 @@ struct Flash_fwd_params : public Qkv_params {
+ 
+     int arch;
+     int num_sm;
++
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++    // Optional profiling buffer. When non-null, the SM90 forward kernel writes
++    // first-CTA clock64 values indexed by FlashFwdProfileClockIndex.
++    uint64_t * __restrict__ profile_clock_ptr;
++#endif
+ };
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+diff --git a/hopper/flash_fwd_kernel_sm90.h b/hopper/flash_fwd_kernel_sm90.h
+index 47b3817..c6b8250 100644
+--- a/hopper/flash_fwd_kernel_sm90.h
++++ b/hopper/flash_fwd_kernel_sm90.h
+@@ -19,11 +19,40 @@
+ #include "seqlen.h"
+ #include "utils.h"
+ #include "softmax.h"
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++#include "flash_profile.h"
++#endif
+ 
+ namespace flash {
+ 
+ using namespace cute;
+ 
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++CUTLASS_DEVICE
++void profile_clock_min(uint64_t *ptr, uint64_t value) {
++#if defined(FLASH_FWD_PROFILE_CLOCK_NON_ATOMIC)
++    if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && value < *ptr) {
++        *ptr = value;
++    }
++#else
++    atomicMin(reinterpret_cast<unsigned long long*>(ptr),
++              static_cast<unsigned long long>(value));
++#endif
++}
++
++CUTLASS_DEVICE
++void profile_clock_max(uint64_t *ptr, uint64_t value) {
++#if defined(FLASH_FWD_PROFILE_CLOCK_NON_ATOMIC)
++    if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && value > *ptr) {
++        *ptr = value;
++    }
++#else
++    atomicMax(reinterpret_cast<unsigned long long*>(ptr),
++              static_cast<unsigned long long>(value));
++#endif
++}
++#endif
++
+ template <class CollectiveMainloop_, class CollectiveEpilogue_, class TileScheduler_>
+ class FlashAttnFwdSm90 {
+ 
+@@ -124,6 +153,9 @@ public:
+         EpilogueArguments epilogue{};
+         cutlass::KernelHardwareInfo hw_info{};
+         TileSchedulerArguments scheduler{};
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++        uint64_t* profile_clock_ptr = nullptr;
++#endif
+     };
+ 
+     // Kernel entry point API
+@@ -132,6 +164,9 @@ public:
+         EpilogueParams epilogue{};
+         cutlass::KernelHardwareInfo hw_info{};
+         TileSchedulerParams scheduler{};
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++        uint64_t* profile_clock_ptr = nullptr;
++#endif
+     };
+ 
+     //
+@@ -160,6 +195,10 @@ public:
+             CollectiveEpilogue::to_underlying_arguments(args.epilogue),
+             hw_info,
+             TileScheduler::to_underlying_arguments(args.scheduler)
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++            ,
++            args.profile_clock_ptr
++#endif
+         };
+     }
+ 
+@@ -197,6 +236,12 @@ public:
+         int const lane_predicate = cute::elect_one_sync();
+         int const warp_idx = cutlass::canonical_warp_idx_sync();
+ 
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++        if (params.profile_clock_ptr != nullptr && threadIdx.x == 0) {
++            profile_clock_min(&params.profile_clock_ptr[kFlashFwdProfileKernelStart], clock64());
++        }
++#endif
++
+         // Issue Tma Descriptor Prefetch from a single thread
+         if (warp_idx == 0 && lane_predicate) {
+             CollectiveMainloop::prefetch_tma_descriptors(params.mainloop);
+@@ -354,9 +399,17 @@ public:
+                 };
+                 // pipeline_vt won't be used if we don't need to transpose V.
+                 mainloop.load(params.mainloop, pipeline_k, pipeline_v, pipeline_vt, smem_pipe_write,
+-                                         shared_storage, scheduler_prefetch, seqlen_info, block_coord, work_idx);
++                                         shared_storage, scheduler_prefetch, seqlen_info, block_coord, work_idx
++#if defined(FLASH_FWD_PROFILE_TIMELINE)
++                                         , params.profile_clock_ptr
++#endif
++                                         );
+             }
+-            mainloop.load_tail(pipeline_k, pipeline_v, pipeline_vt, smem_pipe_write, shared_storage, work_idx);
++            mainloop.load_tail(pipeline_k, pipeline_v, pipeline_vt, smem_pipe_write, shared_storage, work_idx
++#if defined(FLASH_FWD_PROFILE_TIMELINE)
++                               , params.profile_clock_ptr
++#endif
++                               );
+         } else {  // Consumer
+             cutlass::arch::warpgroup_reg_alloc<MmaRegisterRequirement>();
+ 
+@@ -417,15 +470,30 @@ public:
+                 // Attention output (GEMM-II) accumulator.
+                 Tensor tOrO = partition_fragment_C(tiled_mma_pv, select<0, 1>(TileShape_MNK_PV{}));
+                 bool tile_valid;
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++                if (params.profile_clock_ptr != nullptr && threadIdx.x == MmaThreadOffset) {
++                    profile_clock_min(&params.profile_clock_ptr[kFlashFwdProfileMainloopStart], clock64());
++                }
++#endif
+                 if constexpr (!LargeHeadDimV) {
+                     tile_valid = mainloop.mma(
+                         params.mainloop, pipeline_k, pipeline_v, smem_pipe_read,
+-                        tOrO, softmax, threadIdx.x - MmaThreadOffset, work_idx, seqlen_info, block_coord, shared_storage);
++                        tOrO, softmax, threadIdx.x - MmaThreadOffset, work_idx, seqlen_info, block_coord,
++                        shared_storage
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++                        , params.profile_clock_ptr
++#endif
++                    );
+                 } else {  // mma_pv might not compile if !LargeHeadDimV
+                     if (warp_group_idx == 1) {
+                         tile_valid = mainloop.mma(
+                             params.mainloop, pipeline_k, pipeline_v, smem_pipe_read,
+-                            tOrO, softmax, threadIdx.x - MmaThreadOffset, work_idx, seqlen_info, block_coord, shared_storage);
++                            tOrO, softmax, threadIdx.x - MmaThreadOffset, work_idx, seqlen_info, block_coord,
++                            shared_storage
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++                            , params.profile_clock_ptr
++#endif
++                        );
+                     } else {
+                         tile_valid = mainloop.mma_pv(
+                             params.mainloop, pipeline_v, smem_pipe_read,
+@@ -433,6 +501,13 @@ public:
+                     }
+                 }
+                 // Do this here before the epilogue so that the next tile is ready to go.
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++                if (params.profile_clock_ptr != nullptr && threadIdx.x == MmaThreadOffset) {
++                    uint64_t const profile_clock = clock64();
++                    profile_clock_max(&params.profile_clock_ptr[kFlashFwdProfileMainloopEnd], profile_clock);
++                    profile_clock_min(&params.profile_clock_ptr[kFlashFwdProfileEpilogueStart], profile_clock);
++                }
++#endif
+                 work_tile_info = scheduler.template get_next_work</*IsProducerWarp=*/false>(params.scheduler, work_tile_info);
+                 if constexpr (Split && Varlen) {
+                     if (!work_tile_info.is_valid(params.scheduler)) {  // Last tile
+@@ -447,8 +522,18 @@ public:
+                     // Write 0 to gO and -inf to gLSE.
+                     epilogue.store_zero(params.epilogue, threadIdx.x - MmaThreadOffset, block_coord);
+                 }
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++                if (params.profile_clock_ptr != nullptr && threadIdx.x == MmaThreadOffset) {
++                    profile_clock_max(&params.profile_clock_ptr[kFlashFwdProfileEpilogueEnd], clock64());
++                }
++#endif
+             }
+             epilogue.store_tail();
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++            if (params.profile_clock_ptr != nullptr && threadIdx.x == MmaThreadOffset) {
++                profile_clock_max(&params.profile_clock_ptr[kFlashFwdProfileKernelEnd], clock64());
++            }
++#endif
+         }
+ 
+     }
+diff --git a/hopper/flash_fwd_launch_template.h b/hopper/flash_fwd_launch_template.h
+index 43567a5..f426a45 100644
+--- a/hopper/flash_fwd_launch_template.h
++++ b/hopper/flash_fwd_launch_template.h
+@@ -27,7 +27,7 @@ using namespace cute;
+ 
+ template <int Arch, int kHeadDim, int kHeadDimV, int ClusterM, typename Element, typename ElementOut,
+           bool Is_causal, bool Is_local, bool Has_softcap, bool Varlen, bool PagedKVNonTMA, bool AppendKV, bool HasQv,
+-          bool PackGQA, bool Split, bool V_colmajor>
++          bool PackGQA, bool Split, bool V_colmajor, bool ForceSingleTile=false>
+ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
+     static_assert(!(Is_causal && Is_local), "Causal and Local cannot be enabled at the same time");
+     static_assert(!(AppendKV && V_colmajor), "AppendKV and V_colmajor cannot be enabled at the same time");
+@@ -73,7 +73,8 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
+     // since we'll avoid launching a bunch of thread blocks that immediately exit.
+     // On Sm80, noncausal persistent seems a bit slower.
+     static constexpr bool UsePersistentScheduler = Arch >= 90 ? !(Split && !Varlen) : ((Is_causal && !Varlen) || (Varlen && Split));
+-    using Scheduler = std::conditional_t<!UsePersistentScheduler, SchedulerSingleTile, SchedulerPersistent>;
++    using Scheduler = std::conditional_t<ForceSingleTile, SchedulerSingleTile,
++        std::conditional_t<!UsePersistentScheduler, SchedulerSingleTile, SchedulerPersistent>>;
+     using AttnKernel = std::conditional_t<
+         Arch >= 90,
+         flash::enable_sm90<flash::FlashAttnFwdSm90<CollectiveMainloop, CollectiveEpilogue, Scheduler>>,
+@@ -167,9 +168,15 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
+ 
+     int device;
+     CHECK_CUDA(cudaGetDevice(&device));
+-    typename AttnKernel::Params kernel_params = AttnKernel::to_underlying_arguments({
++    typename AttnKernel::Arguments kernel_args{
+         mainloop_args, epilogue_args, {device, params.num_sm}, scheduler_args
+-    });
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++        ,
++        params.profile_clock_ptr
++#endif
++    };
++    typename AttnKernel::Params kernel_params =
++        AttnKernel::to_underlying_arguments(kernel_args);
+ 
+     dim3 grid_dims = AttnKernel::get_grid_shape(kernel_params);
+     dim3 block_dims = AttnKernel::get_block_shape();
+diff --git a/hopper/flash_profile.h b/hopper/flash_profile.h
+new file mode 100644
+index 0000000..ed24eaa
+--- /dev/null
++++ b/hopper/flash_profile.h
+@@ -0,0 +1,176 @@
++/******************************************************************************
++ * Optional profiling indices for local FA3 forward experiments.
++ ******************************************************************************/
++
++#pragma once
++
++#include <cstdint>
++
++enum FlashFwdProfileClockIndex : int {
++    kFlashFwdProfileKernelStart = 0,
++    kFlashFwdProfileKernelEnd = 1,
++    kFlashFwdProfileMainloopStart = 2,
++    kFlashFwdProfileMainloopEnd = 3,
++    kFlashFwdProfileEpilogueStart = 4,
++    kFlashFwdProfileEpilogueEnd = 5,
++    kFlashFwdProfileQkWaitCycles = 6,
++    kFlashFwdProfileQkWgmmaIssueCycles = 7,
++    kFlashFwdProfileSoftmaxCycles = 8,
++    kFlashFwdProfilePvWaitCycles = 9,
++    kFlashFwdProfilePvWgmmaIssueWaitCycles = 10,
++    kFlashFwdProfileMainloopIterations = 11,
++    kFlashFwdProfileAggregateCount = 12
++};
++
++enum FlashFwdProfileTraceStepKind : int {
++    kFlashFwdProfileTraceUnused = 0,
++    kFlashFwdProfileTraceInitialQk = 1,
++    kFlashFwdProfileTraceSteady = 2,
++    kFlashFwdProfileTraceFinalPv = 3
++};
++
++enum FlashFwdProfileTraceFieldIndex : int {
++    kFlashFwdProfileTraceKind = 0,
++    kFlashFwdProfileTraceNBlock = 1,
++    kFlashFwdProfileTraceStart = 2,
++    kFlashFwdProfileTraceEnd = 3,
++    kFlashFwdProfileTraceQkWaitCycles = 4,
++    kFlashFwdProfileTraceQkWgmmaIssueCycles = 5,
++    kFlashFwdProfileTraceSoftmaxCycles = 6,
++    kFlashFwdProfileTracePvWaitCycles = 7,
++    kFlashFwdProfileTracePvWgmmaIssueWaitCycles = 8,
++    kFlashFwdProfileTraceFieldCount = 9
++};
++
++static constexpr int kFlashFwdProfileTraceMaxSteps = 512;
++static constexpr int kFlashFwdProfileTraceBase = kFlashFwdProfileAggregateCount;
++static constexpr int kFlashFwdProfileTraceClockCount =
++    kFlashFwdProfileTraceMaxSteps * kFlashFwdProfileTraceFieldCount;
++
++enum FlashFwdProfileTimelineActor : int {
++    kFlashFwdProfileTimelineProducer = 0,
++    kFlashFwdProfileTimelineConsumerLow = 1,
++    kFlashFwdProfileTimelineConsumerHigh = 2,
++    kFlashFwdProfileTimelineActorCount = 3
++};
++
++enum FlashFwdProfileTimelineEvent : int {
++    kFlashFwdProfileTimelineTileBegin = 0,
++    kFlashFwdProfileTimelineProducerLoadKBegin = 1,
++    kFlashFwdProfileTimelineProducerLoadKEnd = 2,
++    kFlashFwdProfileTimelineProducerLoadVBegin = 3,
++    kFlashFwdProfileTimelineProducerLoadVEnd = 4,
++    kFlashFwdProfileTimelineProducerBarrierOBegin = 5,
++    kFlashFwdProfileTimelineProducerBarrierOEnd = 6,
++    kFlashFwdProfileTimelineProducerTailBegin = 7,
++    kFlashFwdProfileTimelineProducerTailEnd = 8,
++    kFlashFwdProfileTimelineConsumerStepBegin = 9,
++    kFlashFwdProfileTimelineConsumerKWaitBegin = 10,
++    kFlashFwdProfileTimelineConsumerKWaitEnd = 11,
++    kFlashFwdProfileTimelineConsumerSchedulerWaitBegin = 12,
++    kFlashFwdProfileTimelineConsumerSchedulerWaitEnd = 13,
++    kFlashFwdProfileTimelineConsumerQkIssueBegin = 14,
++    kFlashFwdProfileTimelineConsumerQkIssueEnd = 15,
++    kFlashFwdProfileTimelineConsumerPvWaitBegin = 16,
++    kFlashFwdProfileTimelineConsumerPvWaitEnd = 17,
++    kFlashFwdProfileTimelineConsumerPvIssueBegin = 18,
++    kFlashFwdProfileTimelineConsumerSchedulerArrive = 19,
++    kFlashFwdProfileTimelineConsumerWait1End = 20,
++    kFlashFwdProfileTimelineConsumerKRelease = 21,
++    kFlashFwdProfileTimelineConsumerWait0Begin = 22,
++    kFlashFwdProfileTimelineConsumerWait0End = 23,
++    kFlashFwdProfileTimelineConsumerVRelease = 24,
++    kFlashFwdProfileTimelineConsumerStepEnd = 25,
++    kFlashFwdProfileTimelineEventCount = 26
++};
++
++static constexpr int kFlashFwdProfileTimelineMaxSteps = 48;
++static constexpr int kFlashFwdProfileTimelineBase =
++    kFlashFwdProfileTraceBase + kFlashFwdProfileTraceClockCount;
++static constexpr int kFlashFwdProfileTimelineClockCount =
++    kFlashFwdProfileTimelineActorCount *
++    kFlashFwdProfileTimelineMaxSteps *
++    kFlashFwdProfileTimelineEventCount;
++
++enum FlashFwdProfileRegTimelineEvent : int {
++    kFlashFwdProfileRegTimelineSchedulerWaitBefore = 0,
++    kFlashFwdProfileRegTimelineSchedulerWaitAfter = 1,
++    kFlashFwdProfileRegTimelineQkIssueBegin = 2,
++    kFlashFwdProfileRegTimelineQkIssueEnd = 3,
++    kFlashFwdProfileRegTimelinePvIssueBegin = 4,
++    kFlashFwdProfileRegTimelinePvIssueEnd = 5,
++    kFlashFwdProfileRegTimelineSchedulerArriveBefore = 6,
++    kFlashFwdProfileRegTimelineSchedulerArriveAfter = 7,
++    kFlashFwdProfileRegTimelineWait1Before = 8,
++    kFlashFwdProfileRegTimelineWait1After = 9,
++    kFlashFwdProfileRegTimelineWait0Before = 10,
++    kFlashFwdProfileRegTimelineWait0After = 11,
++    kFlashFwdProfileRegTimelineEventCount = 12
++};
++
++#ifndef FLASH_FWD_PROFILE_REG_TIMELINE_STEPS
++#define FLASH_FWD_PROFILE_REG_TIMELINE_STEPS 2
++#endif
++
++#ifndef FLASH_FWD_PROFILE_REG_TIMELINE_BLOCKS
++#define FLASH_FWD_PROFILE_REG_TIMELINE_BLOCKS 256
++#endif
++
++static constexpr int kFlashFwdProfileRegTimelineMaxSteps =
++    FLASH_FWD_PROFILE_REG_TIMELINE_STEPS;
++static constexpr int kFlashFwdProfileRegTimelineMaxBlocks =
++    FLASH_FWD_PROFILE_REG_TIMELINE_BLOCKS;
++static constexpr int kFlashFwdProfileRegTimelineConsumerThreads =
++    3 * 128;
++static constexpr int kFlashFwdProfileRegTimelineBlockMetaCount = 4;
++static constexpr int kFlashFwdProfileRegTimelineBase =
++    kFlashFwdProfileTimelineBase + kFlashFwdProfileTimelineClockCount;
++static constexpr int kFlashFwdProfileRegTimelineBlockClockCount =
++    kFlashFwdProfileRegTimelineBlockMetaCount +
++    kFlashFwdProfileRegTimelineMaxSteps *
++    kFlashFwdProfileRegTimelineConsumerThreads *
++    kFlashFwdProfileRegTimelineEventCount;
++static constexpr int kFlashFwdProfileRegTimelineClockCount =
++    kFlashFwdProfileRegTimelineMaxBlocks *
++    kFlashFwdProfileRegTimelineBlockClockCount;
++static constexpr int kFlashFwdProfileClockCount =
++    kFlashFwdProfileRegTimelineBase +
++    kFlashFwdProfileRegTimelineClockCount;
++
++constexpr int flash_fwd_profile_timeline_offset(int actor, int step, int event) {
++    return ((actor * kFlashFwdProfileTimelineMaxSteps + step) *
++            kFlashFwdProfileTimelineEventCount) + event;
++}
++
++constexpr int flash_fwd_profile_reg_timeline_meta_offset(int block_slot, int field) {
++    return block_slot * kFlashFwdProfileRegTimelineBlockClockCount + field;
++}
++
++constexpr int flash_fwd_profile_reg_timeline_offset(int block_slot, int slot,
++                                                    int thread, int event) {
++    return block_slot * kFlashFwdProfileRegTimelineBlockClockCount +
++           kFlashFwdProfileRegTimelineBlockMetaCount +
++           ((slot * kFlashFwdProfileRegTimelineConsumerThreads + thread) *
++            kFlashFwdProfileRegTimelineEventCount) + event;
++}
++
++constexpr int flash_fwd_profile_reg_timeline_capture_count(int k_tiles) {
++    int const steady_count = k_tiles > 1 ? k_tiles - 1 : 0;
++    return steady_count < kFlashFwdProfileRegTimelineMaxSteps
++        ? steady_count
++        : kFlashFwdProfileRegTimelineMaxSteps;
++}
++
++constexpr int flash_fwd_profile_reg_timeline_first_step(int k_tiles) {
++    int const steady_count = k_tiles > 1 ? k_tiles - 1 : 0;
++    int const capture_count = flash_fwd_profile_reg_timeline_capture_count(k_tiles);
++    return capture_count > 0 ? 1 + (steady_count - capture_count) / 2 : -1;
++}
++
++constexpr int flash_fwd_profile_reg_timeline_slot_for_step(int step, int k_tiles) {
++    int const first_step = flash_fwd_profile_reg_timeline_first_step(k_tiles);
++    int const capture_count = flash_fwd_profile_reg_timeline_capture_count(k_tiles);
++    return step >= first_step && step < first_step + capture_count
++        ? step - first_step
++        : -1;
++}
+diff --git a/hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp b/hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp
+index 536ff85..0364a11 100644
+--- a/hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp
++++ b/hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp
+@@ -22,12 +22,46 @@
+ #include "paged_kv.h"
+ #include "rotary.h"
+ #include "utils.h"
++#include "flash_profile.h"
+ #include "sm90_pipeline_no_cluster.hpp"
+ 
+ namespace flash {
+ 
+ using namespace cute;
+ 
++#if defined(FLASH_FWD_SENS_SKIP_QK_WGMMA)
++static constexpr bool FlashFwdSensSkipQkWgmma = true;
++#else
++static constexpr bool FlashFwdSensSkipQkWgmma = false;
++#endif
++
++#if defined(FLASH_FWD_SENS_SKIP_PV_WGMMA)
++static constexpr bool FlashFwdSensSkipPvWgmma = true;
++#else
++static constexpr bool FlashFwdSensSkipPvWgmma = false;
++#endif
++
++#if defined(FLASH_FWD_SENS_SKIP_SOFTMAX)
++static constexpr bool FlashFwdSensSkipSoftmax = true;
++#else
++static constexpr bool FlashFwdSensSkipSoftmax = false;
++#endif
++
++#if defined(FLASH_FWD_SENS_SKIP_TMA)
++static constexpr bool FlashFwdSensSkipTma = true;
++#else
++static constexpr bool FlashFwdSensSkipTma = false;
++#endif
++
++#if defined(FLASH_FWD_SENS_SYNC_ONLY)
++static constexpr bool FlashFwdSensSyncOnly = true;
++static_assert(FlashFwdSensSkipQkWgmma && FlashFwdSensSkipPvWgmma &&
++              FlashFwdSensSkipSoftmax && FlashFwdSensSkipTma,
++              "sync-only sensitivity requires all compute and TMA skips");
++#else
++static constexpr bool FlashFwdSensSyncOnly = false;
++#endif
++
+ template <int Stages, class ClusterShape_, class TileShape_MNK_, int kHeadDimV, class Element_, class ElementAccum_, class ArchTag_,
+         bool Is_causal_, bool Is_local_, bool Has_softcap_, bool Varlen_, bool PagedKVNonTMA_, bool AppendKV_, bool HasQv_,
+         bool MmaPV_is_RS, bool IntraWGOverlap, bool PackGQA_, bool Split_, bool V_colmajor_>
+@@ -570,7 +604,9 @@ struct CollectiveMainloopFwdSm90 {
+     /// Issue Tma Descriptor Prefetch -- ideally from a single thread for best performance
+     CUTLASS_DEVICE
+     static void prefetch_tma_descriptors(Params const& params) {
+-        if constexpr (Use_TMA_Q) {
++        if constexpr (FlashFwdSensSkipTma) {
++            (void) params;
++        } else if constexpr (Use_TMA_Q) {
+             cute::prefetch_tma_descriptor(params.tma_load_Q.get_tma_descriptor());
+             if constexpr (HasQv) {
+                 cute::prefetch_tma_descriptor(params.tma_load_Qv.get_tma_descriptor());
+@@ -598,6 +634,10 @@ struct CollectiveMainloopFwdSm90 {
+          SeqlenInfo_t const& seqlen_info,
+          cute::tuple<int32_t, int32_t, int32_t, int32_t> block_coord,
+          int &work_idx
++#if defined(FLASH_FWD_PROFILE_TIMELINE)
++         ,
++         uint64_t *profile_clock_ptr = nullptr
++#endif
+          ) {
+ 
+         // some of these are captured in lambda so can't use structured binding
+@@ -644,6 +684,28 @@ struct CollectiveMainloopFwdSm90 {
+         int const thread_idx = threadIdx.x % NumProducerThreads;
+         int const bidh_kv = !PackGQA ? params.qhead_per_khead_divmod.divide(bidh) : bidh;
+         int const bidb_kv = params.kv_batch_idx == nullptr ? bidb : params.kv_batch_idx[bidb];
++#if defined(FLASH_FWD_PROFILE_TIMELINE)
++        bool const profile_timeline_this_producer =
++            profile_clock_ptr != nullptr &&
++            blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && thread_idx == 0;
++        auto profile_timeline_step_for_n_block = [&](int step_n_block) {
++            return n_block_max - 1 - step_n_block;
++        };
++        auto profile_timeline_producer_store = [&](int step, int event) {
++            if (profile_timeline_this_producer &&
++                step >= 0 && step < kFlashFwdProfileTimelineMaxSteps) {
++                profile_clock_ptr[
++                    kFlashFwdProfileTimelineBase +
++                    flash_fwd_profile_timeline_offset(
++                        kFlashFwdProfileTimelineProducer, step, event)] =
++                    static_cast<uint64_t>(clock64());
++            }
++        };
++        profile_timeline_producer_store(0, kFlashFwdProfileTimelineTileBegin);
++#else
++        auto profile_timeline_step_for_n_block = [](int) { return 0; };
++        auto profile_timeline_producer_store = [](int, int) {};
++#endif
+ 
+         // Prepare the TMA loads
+         uint32_t block_rank_in_cluster = cute::block_rank_in_cluster();
+@@ -747,8 +809,16 @@ struct CollectiveMainloopFwdSm90 {
+         }
+ 
+         auto load_K = [&] (int const n_block, auto const& smem_pipe_write, auto need_seqlenk_masking_type) {
++            int const profile_timeline_step = profile_timeline_step_for_n_block(n_block);
++            profile_timeline_producer_store(profile_timeline_step, kFlashFwdProfileTimelineProducerLoadKBegin);
+             pipeline_k.producer_acquire(smem_pipe_write);
+-            if constexpr (!PagedKVNonTMA) {
++            if constexpr (FlashFwdSensSkipTma) {
++                (void) n_block;
++                (void) need_seqlenk_masking_type;
++                cutlass::arch::ClusterTransactionBarrier::complete_transaction(
++                    pipeline_k.producer_get_barrier(smem_pipe_write),
++                    cute::block_rank_in_cluster(), TmaTransactionBytesK);
++            } else if constexpr (!PagedKVNonTMA) {
+                 auto [n_block_idx, bidb_kv_idx] = paged_kv_manager.get_indices_for_K_TMA();
+                 copy(params.tma_load_K.with(*pipeline_k.producer_get_barrier(smem_pipe_write), mcast_mask_kv, TMA::CacheHintSm90::EVICT_LAST),
+                     tKgK_TMA(_, n_block_idx, bidb_kv_idx), tKsK_TMA(_, smem_pipe_write.index()));
+@@ -757,12 +827,21 @@ struct CollectiveMainloopFwdSm90 {
+                 paged_kv_manager.template load_K<Seqlenk_mask>(n_block, sK_pi(_, _, smem_pipe_write.index()));
+                 pipeline_k.producer_commit(smem_pipe_write, cutlass::arch::cpasync_barrier_arrive);
+             }
++            profile_timeline_producer_store(profile_timeline_step, kFlashFwdProfileTimelineProducerLoadKEnd);
+         };
+ 
+         auto load_V = [&] (int const n_block, auto const& smem_pipe_write, auto need_seqlenk_masking_type) {
++            int const profile_timeline_step = profile_timeline_step_for_n_block(n_block);
++            profile_timeline_producer_store(profile_timeline_step, kFlashFwdProfileTimelineProducerLoadVBegin);
+             auto pipeline_v_load = cute::conditional_return<!Transpose_V>(pipeline_v, pipeline_vt);
+             pipeline_v_load.producer_acquire(smem_pipe_write);
+-            if constexpr (!PagedKVNonTMA) {
++            if constexpr (FlashFwdSensSkipTma) {
++                (void) n_block;
++                (void) need_seqlenk_masking_type;
++                cutlass::arch::ClusterTransactionBarrier::complete_transaction(
++                    pipeline_v_load.producer_get_barrier(smem_pipe_write),
++                    cute::block_rank_in_cluster(), TmaTransactionBytesV);
++            } else if constexpr (!PagedKVNonTMA) {
+                 auto [n_block_idx, bidb_kv_idx] = paged_kv_manager.get_indices_for_V_TMA();
+                 copy(params.tma_load_V.with(*pipeline_v_load.producer_get_barrier(smem_pipe_write), mcast_mask_kv, TMA::CacheHintSm90::EVICT_LAST),
+                     tVgVt_TMA(_, n_block_idx, bidb_kv_idx), tVsVt_TMA(_, smem_pipe_write.index()));
+@@ -771,6 +850,7 @@ struct CollectiveMainloopFwdSm90 {
+                 paged_kv_manager.template load_V<Seqlenk_mask>(n_block, sVcpasync(_, _, smem_pipe_write.index()));
+                 pipeline_v_load.producer_commit(smem_pipe_write, cutlass::arch::cpasync_barrier_arrive);
+             }
++            profile_timeline_producer_store(profile_timeline_step, kFlashFwdProfileTimelineProducerLoadVEnd);
+         };
+ 
+         auto copy_Vt_to_V = [&] (auto const& smem_pipe_write) {
+@@ -816,13 +896,22 @@ struct CollectiveMainloopFwdSm90 {
+             }
+ 
+             if ((SingleProducerWarp || warp_idx_in_warpgroup == 0) && cute::elect_one_sync()) {
+-                shared_storage.pipelines.barrier_Q.arrive_and_expect_tx(TmaTransactionBytesQ);
+-                copy(params.tma_load_Q.with(reinterpret_cast<typename cutlass::arch::ClusterTransactionBarrier::ValueType&>(shared_storage.pipelines.barrier_Q), 0 /*mcast_mask*/, !Split ? TMA::CacheHintSm90::EVICT_FIRST : TMA::CacheHintSm90::EVICT_LAST),
+-                    tQgQ, tQsQ);
+-                if constexpr (HasQv) {
+-                    shared_storage.pipelines.barrier_Qv.arrive_and_expect_tx(TmaTransactionBytesQv);
+-                    copy(params.tma_load_Qv.with(reinterpret_cast<typename cutlass::arch::ClusterTransactionBarrier::ValueType&>(shared_storage.pipelines.barrier_Qv), 0 /*mcast_mask*/, !Split ? TMA::CacheHintSm90::EVICT_FIRST : TMA::CacheHintSm90::EVICT_LAST),
+-                        tQvgQv, tQvsQv);
++                if constexpr (FlashFwdSensSkipTma) {
++                    shared_storage.pipelines.barrier_Q.arrive_and_expect_tx(TmaTransactionBytesQ);
++                    shared_storage.pipelines.barrier_Q.complete_transaction(TmaTransactionBytesQ);
++                    if constexpr (HasQv) {
++                        shared_storage.pipelines.barrier_Qv.arrive_and_expect_tx(TmaTransactionBytesQv);
++                        shared_storage.pipelines.barrier_Qv.complete_transaction(TmaTransactionBytesQv);
++                    }
++                } else {
++                    shared_storage.pipelines.barrier_Q.arrive_and_expect_tx(TmaTransactionBytesQ);
++                    copy(params.tma_load_Q.with(reinterpret_cast<typename cutlass::arch::ClusterTransactionBarrier::ValueType&>(shared_storage.pipelines.barrier_Q), 0 /*mcast_mask*/, !Split ? TMA::CacheHintSm90::EVICT_FIRST : TMA::CacheHintSm90::EVICT_LAST),
++                        tQgQ, tQsQ);
++                    if constexpr (HasQv) {
++                        shared_storage.pipelines.barrier_Qv.arrive_and_expect_tx(TmaTransactionBytesQv);
++                        copy(params.tma_load_Qv.with(reinterpret_cast<typename cutlass::arch::ClusterTransactionBarrier::ValueType&>(shared_storage.pipelines.barrier_Qv), 0 /*mcast_mask*/, !Split ? TMA::CacheHintSm90::EVICT_FIRST : TMA::CacheHintSm90::EVICT_LAST),
++                            tQvgQv, tQvsQv);
++                    }
+                 }
+             }
+         } else {  // Load Q with cp.async
+@@ -830,15 +919,19 @@ struct CollectiveMainloopFwdSm90 {
+             Tensor mQ = make_tensor(make_gmem_ptr(params.ptr_Q + seqlen_info.offset_q * get<0>(params.stride_Q)), params.shape_Q_packed, params.stride_Q_packed)(_, _, bidh, !is_varlen_q ? bidb : 0);
+             Tensor sQ_pi = cute::as_position_independent_swizzle_tensor(sQ);
+             using PackGQAt = flash::PackGQAManager<get<0>(TileShape_MNK{}), get<2>(TileShape_MNK{}), NumProducerThreads, Element>;
+-            PackGQAt::load_Q(mQ, sQ_pi, params.qhead_per_khead_divmod, thread_idx, seqlen_info.seqlen_q, m_block);
++            if constexpr (!FlashFwdSensSkipTma) {
++                PackGQAt::load_Q(mQ, sQ_pi, params.qhead_per_khead_divmod, thread_idx, seqlen_info.seqlen_q, m_block);
++            }
+             auto &barrier_Q = shared_storage.pipelines.barrier_Q;
+             cutlass::arch::cpasync_barrier_arrive(reinterpret_cast<uint64_t*>(&barrier_Q));
+             barrier_Q.arrive();
+             if constexpr (HasQv) {
+                 Tensor mQv = make_tensor(make_gmem_ptr(params.ptr_Qv + seqlen_info.offset_q * get<0>(params.stride_Qv)), params.shape_Qv_packed, params.stride_Qv_packed)(_, _, bidh, !is_varlen_q ? bidb : 0);
+                 Tensor sQv_pi = cute::as_position_independent_swizzle_tensor(sQv);
+-                using PackGQAt = flash::PackGQAManager<get<0>(TileShape_MNK_QV{}), get<2>(TileShape_MNK_QV{}), NumProducerThreads, Element>;
+-                PackGQAt::load_Q(mQv, sQv_pi, params.qhead_per_khead_divmod, thread_idx, seqlen_info.seqlen_q, m_block);
++                using PackGQAvt = flash::PackGQAManager<get<0>(TileShape_MNK_QV{}), get<2>(TileShape_MNK_QV{}), NumProducerThreads, Element>;
++                if constexpr (!FlashFwdSensSkipTma) {
++                    PackGQAvt::load_Q(mQv, sQv_pi, params.qhead_per_khead_divmod, thread_idx, seqlen_info.seqlen_q, m_block);
++                }
+                 auto &barrier_Qv = shared_storage.pipelines.barrier_Qv;
+                 cutlass::arch::cpasync_barrier_arrive(reinterpret_cast<uint64_t*>(&barrier_Qv));
+                 barrier_Qv.arrive();
+@@ -849,7 +942,11 @@ struct CollectiveMainloopFwdSm90 {
+         // Need ClusterBarrier, not just NamedBarrier. Otherwise we might have CTA 0 finishing the
+         // TMA store on O first, call TMA multicast load on V, before CTA 1 can finishing TMA store on O.
+         // if (thread_idx == 0) { printf("Producer: main load, before barrier_O, work_idx = %d\n", work_idx);}
++        profile_timeline_producer_store(profile_timeline_step_for_n_block(n_block),
++                                        kFlashFwdProfileTimelineProducerBarrierOBegin);
+         shared_storage.pipelines.barrier_O.wait((work_idx + 1) % 2);
++        profile_timeline_producer_store(profile_timeline_step_for_n_block(n_block),
++                                        kFlashFwdProfileTimelineProducerBarrierOEnd);
+         // if (thread_idx == 0) { printf("Producer: main load, after barrier_O\n");}
+ 
+         if constexpr (!Transpose_V && !IntraWGOverlap) {
+@@ -893,7 +990,24 @@ struct CollectiveMainloopFwdSm90 {
+     template <typename SharedStorage>
+     CUTLASS_DEVICE void
+     load_tail(MainloopPipelineK pipeline_k, MainloopPipelineV pipeline_v, MainloopPipelineVt pipeline_vt,
+-              PipelineState& smem_pipe_write, SharedStorage &shared_storage, int const work_idx) {
++              PipelineState& smem_pipe_write, SharedStorage &shared_storage, int const work_idx
++#if defined(FLASH_FWD_PROFILE_TIMELINE)
++              ,
++              uint64_t *profile_clock_ptr = nullptr
++#endif
++              ) {
++#if defined(FLASH_FWD_PROFILE_TIMELINE)
++        if (profile_clock_ptr != nullptr &&
++            blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 &&
++            threadIdx.x % NumProducerThreads == 0) {
++            profile_clock_ptr[
++                kFlashFwdProfileTimelineBase +
++                flash_fwd_profile_timeline_offset(
++                    kFlashFwdProfileTimelineProducer, 0,
++                    kFlashFwdProfileTimelineProducerTailBegin)] =
++                static_cast<uint64_t>(clock64());
++        }
++#endif
+         // If we don't wait for barrier_O here, when using Cluster, CTA0 might exit early and CTA1 will
+         // try to arrive on barrier_O of CTA0, causing "unspecified launch failure".
+         shared_storage.pipelines.barrier_O.wait((work_idx + 1) % 2);
+@@ -909,6 +1023,18 @@ struct CollectiveMainloopFwdSm90 {
+             pipeline_v.producer_tail(smem_pipe_write);
+             if constexpr (Transpose_V) { pipeline_vt.producer_tail(smem_pipe_write); }
+         }
++#if defined(FLASH_FWD_PROFILE_TIMELINE)
++        if (profile_clock_ptr != nullptr &&
++            blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 &&
++            threadIdx.x % NumProducerThreads == 0) {
++            profile_clock_ptr[
++                kFlashFwdProfileTimelineBase +
++                flash_fwd_profile_timeline_offset(
++                    kFlashFwdProfileTimelineProducer, 0,
++                    kFlashFwdProfileTimelineProducerTailEnd)] =
++                static_cast<uint64_t>(clock64());
++        }
++#endif
+     }
+ 
+     CUTLASS_DEVICE void
+@@ -963,6 +1089,10 @@ struct CollectiveMainloopFwdSm90 {
+         SeqlenInfo_t const& seqlen_info,
+         cute::tuple<int32_t, int32_t, int32_t, int32_t> block_coord,
+         SharedStorage& shared_storage
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++        ,
++        uint64_t *profile_clock_ptr = nullptr
++#endif
+         ) {
+         static_assert(is_rmem<FrgTensorO>::value, "O tensor must be rmem resident.");
+         static constexpr int kBlockM = get<0>(TileShape_MNK{});
+@@ -1054,6 +1184,192 @@ struct CollectiveMainloopFwdSm90 {
+             auto barrier_token = pipeline.consumer_try_wait(smem_pipe_read);
+             pipeline.consumer_wait(smem_pipe_read, barrier_token);
+         };
++#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK) && !defined(FLASH_FWD_PROFILE_REG_TIMELINE_ONLY)
++        bool const profile_this_thread = profile_clock_ptr != nullptr
++            && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && thread_idx == 0;
++        auto profile_now = []() { return static_cast<uint64_t>(clock64()); };
++        auto profile_add = [&](int index, uint64_t start, uint64_t end) {
++            if (profile_this_thread && end >= start) { profile_clock_ptr[index] += end - start; }
++        };
++        auto profile_count = [&](int index) {
++            if (profile_this_thread) { profile_clock_ptr[index] += 1; }
++        };
++        uint32_t profile_trace_step_idx = 0;
++        auto profile_trace_offset = [](uint32_t step, int field) {
++            return kFlashFwdProfileTraceBase
++                + static_cast<int>(step) * kFlashFwdProfileTraceFieldCount
++                + field;
++        };
++        auto profile_trace_set = [&](uint32_t step, int field, uint64_t value) {
++            if (profile_this_thread && step < kFlashFwdProfileTraceMaxSteps) {
++                profile_clock_ptr[profile_trace_offset(step, field)] = value;
++            }
++        };
++        auto profile_trace_add = [&](uint32_t step, int field, uint64_t start, uint64_t end) {
++            if (profile_this_thread && step < kFlashFwdProfileTraceMaxSteps && end >= start) {
++                profile_clock_ptr[profile_trace_offset(step, field)] += end - start;
++            }
++        };
++        auto profile_trace_begin = [&](uint32_t step, int kind, int step_n_block, uint64_t start) {
++            profile_trace_set(step, kFlashFwdProfileTraceKind, static_cast<uint64_t>(kind));
++            profile_trace_set(step, kFlashFwdProfileTraceNBlock, static_cast<uint64_t>(step_n_block));
++            profile_trace_set(step, kFlashFwdProfileTraceStart, start);
++        };
++        auto profile_trace_end = [&](uint32_t step, uint64_t end) {
++            profile_trace_set(step, kFlashFwdProfileTraceEnd, end);
++        };
++#else
++        static constexpr bool profile_this_thread = false;
++        auto profile_now = []() { return uint64_t{0}; };
++        auto profile_add = [](int, uint64_t, uint64_t) {};
++        auto profile_count = [](int) {};
++        uint32_t profile_trace_step_idx = 0;
++        auto profile_trace_add = [](uint32_t, int, uint64_t, uint64_t) {};
++        auto profile_trace_begin = [](uint32_t, int, int, uint64_t) {};
++        auto profile_trace_end = [](uint32_t, uint64_t) {};
++#endif
++#if defined(FLASH_FWD_PROFILE_TIMELINE)
++        bool const profile_timeline_this_consumer =
++            profile_clock_ptr != nullptr &&
++            blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 &&
++            (thread_idx % cutlass::NumThreadsPerWarpGroup) == 0;
++        int const profile_timeline_actor =
++            kFlashFwdProfileTimelineConsumerLow + warp_group_idx;
++        auto profile_timeline_step_for_n_block = [&](int step_n_block) {
++            return n_block_max - 1 - step_n_block;
++        };
++        auto profile_timeline_consumer_store = [&](int step, int event) {
++            if (profile_timeline_this_consumer &&
++                profile_timeline_actor >= kFlashFwdProfileTimelineConsumerLow &&
++                profile_timeline_actor <= kFlashFwdProfileTimelineConsumerHigh &&
++                step >= 0 && step < kFlashFwdProfileTimelineMaxSteps) {
++                profile_clock_ptr[
++                    kFlashFwdProfileTimelineBase +
++                    flash_fwd_profile_timeline_offset(
++                        profile_timeline_actor, step, event)] =
++                    static_cast<uint64_t>(clock64());
++            }
++        };
++#else
++        auto profile_timeline_step_for_n_block = [](int) { return 0; };
++        auto profile_timeline_consumer_store = [](int, int) {};
++#endif
++#if defined(FLASH_FWD_PROFILE_REG_TIMELINE) && defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++#if FLASH_FWD_PROFILE_REG_TIMELINE_STEPS > 3
++#error "FLASH_FWD_PROFILE_REG_TIMELINE_STEPS currently supports at most 3 scalar slots"
++#endif
++#define FLASH_FWD_PROFILE_REG_TIMELINE_FOR_EACH_EVENT(M, slot) \
++        M(slot, scheduler_wait_before, kFlashFwdProfileRegTimelineSchedulerWaitBefore) \
++        M(slot, scheduler_wait_after, kFlashFwdProfileRegTimelineSchedulerWaitAfter) \
++        M(slot, qk_issue_begin, kFlashFwdProfileRegTimelineQkIssueBegin) \
++        M(slot, qk_issue_end, kFlashFwdProfileRegTimelineQkIssueEnd) \
++        M(slot, pv_issue_begin, kFlashFwdProfileRegTimelinePvIssueBegin) \
++        M(slot, pv_issue_end, kFlashFwdProfileRegTimelinePvIssueEnd) \
++        M(slot, scheduler_arrive_before, kFlashFwdProfileRegTimelineSchedulerArriveBefore) \
++        M(slot, scheduler_arrive_after, kFlashFwdProfileRegTimelineSchedulerArriveAfter) \
++        M(slot, wait1_before, kFlashFwdProfileRegTimelineWait1Before) \
++        M(slot, wait1_after, kFlashFwdProfileRegTimelineWait1After) \
++        M(slot, wait0_before, kFlashFwdProfileRegTimelineWait0Before) \
++        M(slot, wait0_after, kFlashFwdProfileRegTimelineWait0After)
++#define FLASH_FWD_PROFILE_REG_TIMELINE_DECLARE(slot, name, event) \
++        uint32_t profile_reg_timeline_s##slot##_##name = 0;
++        FLASH_FWD_PROFILE_REG_TIMELINE_FOR_EACH_EVENT(FLASH_FWD_PROFILE_REG_TIMELINE_DECLARE, 0)
++#if FLASH_FWD_PROFILE_REG_TIMELINE_STEPS > 1
++        FLASH_FWD_PROFILE_REG_TIMELINE_FOR_EACH_EVENT(FLASH_FWD_PROFILE_REG_TIMELINE_DECLARE, 1)
++#endif
++#if FLASH_FWD_PROFILE_REG_TIMELINE_STEPS > 2
++        FLASH_FWD_PROFILE_REG_TIMELINE_FOR_EACH_EVENT(FLASH_FWD_PROFILE_REG_TIMELINE_DECLARE, 2)
++#endif
++#undef FLASH_FWD_PROFILE_REG_TIMELINE_DECLARE
++        int const profile_reg_timeline_k_tiles = n_block_max - n_block_min;
++        int const profile_reg_timeline_block_slot =
++            static_cast<int>((blockIdx.z * gridDim.y + blockIdx.y) * gridDim.x +
++                             blockIdx.x);
++        auto profile_reg_timeline_slot_for_n_block = [&](int step_n_block) {
++            return flash_fwd_profile_reg_timeline_slot_for_step(
++                n_block_max - 1 - step_n_block,
++                profile_reg_timeline_k_tiles);
++        };
++        auto profile_reg_timeline_smid = []() {
++            uint32_t smid = 0;
++            asm volatile("mov.u32 %0, %%smid;" : "=r"(smid));
++            return smid;
++        };
++#if FLASH_FWD_PROFILE_REG_TIMELINE_STEPS == 1
++#define FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(slot, name) do { \
++            if ((slot) == 0) { \
++                profile_reg_timeline_s0_##name = static_cast<uint32_t>(clock64()); \
++            } \
++        } while (0)
++#elif FLASH_FWD_PROFILE_REG_TIMELINE_STEPS == 2
++#define FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(slot, name) do { \
++            if ((slot) == 0) { \
++                profile_reg_timeline_s0_##name = static_cast<uint32_t>(clock64()); \
++            } else if ((slot) == 1) { \
++                profile_reg_timeline_s1_##name = static_cast<uint32_t>(clock64()); \
++            } \
++        } while (0)
++#else
++#define FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(slot, name) do { \
++            if ((slot) == 0) { \
++                profile_reg_timeline_s0_##name = static_cast<uint32_t>(clock64()); \
++            } else if ((slot) == 1) { \
++                profile_reg_timeline_s1_##name = static_cast<uint32_t>(clock64()); \
++            } else if ((slot) == 2) { \
++                profile_reg_timeline_s2_##name = static_cast<uint32_t>(clock64()); \
++            } \
++        } while (0)
++#endif
++        auto profile_reg_timeline_flush = [&]() {
++            if (profile_clock_ptr != nullptr &&
++                profile_reg_timeline_block_slot >= 0 &&
++                profile_reg_timeline_block_slot <
++                    kFlashFwdProfileRegTimelineMaxBlocks &&
++                thread_idx >= 0 &&
++                thread_idx < kFlashFwdProfileRegTimelineConsumerThreads) {
++                if (thread_idx == 0) {
++                    profile_clock_ptr[
++                        kFlashFwdProfileRegTimelineBase +
++                        flash_fwd_profile_reg_timeline_meta_offset(
++                            profile_reg_timeline_block_slot, 0)] =
++                        static_cast<uint64_t>(blockIdx.x);
++                    profile_clock_ptr[
++                        kFlashFwdProfileRegTimelineBase +
++                        flash_fwd_profile_reg_timeline_meta_offset(
++                            profile_reg_timeline_block_slot, 1)] =
++                        static_cast<uint64_t>(blockIdx.y);
++                    profile_clock_ptr[
++                        kFlashFwdProfileRegTimelineBase +
++                        flash_fwd_profile_reg_timeline_meta_offset(
++                            profile_reg_timeline_block_slot, 2)] =
++                        static_cast<uint64_t>(blockIdx.z);
++                    profile_clock_ptr[
++                        kFlashFwdProfileRegTimelineBase +
++                        flash_fwd_profile_reg_timeline_meta_offset(
++                            profile_reg_timeline_block_slot, 3)] =
++                        static_cast<uint64_t>(profile_reg_timeline_smid());
++                }
++#define FLASH_FWD_PROFILE_REG_TIMELINE_FLUSH(slot, name, event) \
++                profile_clock_ptr[ \
++                    kFlashFwdProfileRegTimelineBase + \
++                    flash_fwd_profile_reg_timeline_offset( \
++                        profile_reg_timeline_block_slot, slot, thread_idx, event)] = \
++                    static_cast<uint64_t>(profile_reg_timeline_s##slot##_##name);
++                FLASH_FWD_PROFILE_REG_TIMELINE_FOR_EACH_EVENT(FLASH_FWD_PROFILE_REG_TIMELINE_FLUSH, 0)
++#if FLASH_FWD_PROFILE_REG_TIMELINE_STEPS > 1
++                FLASH_FWD_PROFILE_REG_TIMELINE_FOR_EACH_EVENT(FLASH_FWD_PROFILE_REG_TIMELINE_FLUSH, 1)
++#endif
++#if FLASH_FWD_PROFILE_REG_TIMELINE_STEPS > 2
++                FLASH_FWD_PROFILE_REG_TIMELINE_FOR_EACH_EVENT(FLASH_FWD_PROFILE_REG_TIMELINE_FLUSH, 2)
++#endif
++#undef FLASH_FWD_PROFILE_REG_TIMELINE_FLUSH
++            }
++        };
++#else
++        auto profile_reg_timeline_slot_for_n_block = [](int) { return -1; };
++        auto profile_reg_timeline_flush = []() {};
++#define FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(slot, name) do {} while (0)
++#endif
+ 
+         int const seqlen_q = seqlen_info.seqlen_q;
+         int const seqlen_k = seqlen_info.seqlen_k;
+@@ -1137,29 +1453,79 @@ struct CollectiveMainloopFwdSm90 {
+ 
+         if constexpr (IntraWGOverlap) {
+             Tensor tSrS = partition_fragment_C(tiled_mma_qk, select<0, 1>(TileShape_MNK{}));
++            uint32_t profile_trace_step = profile_trace_step_idx++;
++            uint64_t profile_t0 = 0;
++            uint64_t profile_t1 = 0;
++            if (profile_this_thread) {
++                profile_t0 = profile_now();
++                profile_trace_begin(profile_trace_step, kFlashFwdProfileTraceInitialQk, n_block, profile_t0);
++            }
++            int const profile_timeline_step = profile_timeline_step_for_n_block(n_block);
++            profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerStepBegin);
++            profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerKWaitBegin);
+             consumer_wait(pipeline_k, smem_pipe_read);
+-            flash::gemm</*zero_init=*/true, /*wg_wait=*/-1>(tiled_mma_qk, tSrQ, tSrK(_, _, _, smem_pipe_read.index()), tSrS);
+-            warpgroup_wait<0>();
++            profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerKWaitEnd);
++            if (profile_this_thread) {
++                profile_t1 = profile_now();
++                profile_add(kFlashFwdProfileQkWaitCycles, profile_t0, profile_t1);
++                profile_trace_add(profile_trace_step, kFlashFwdProfileTraceQkWaitCycles, profile_t0, profile_t1);
++                profile_t0 = profile_t1;
++            }
++            profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerQkIssueBegin);
++            if constexpr (FlashFwdSensSkipQkWgmma) {
++                if constexpr (!FlashFwdSensSyncOnly) { clear(tSrS); }
++            } else {
++                flash::gemm</*zero_init=*/true, /*wg_wait=*/-1>(tiled_mma_qk, tSrQ, tSrK(_, _, _, smem_pipe_read.index()), tSrS);
++                warpgroup_wait<0>();
++            }
++            profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerQkIssueEnd);
++            if (profile_this_thread) {
++                profile_t1 = profile_now();
++                profile_add(kFlashFwdProfileQkWgmmaIssueCycles, profile_t0, profile_t1);
++                profile_trace_add(profile_trace_step, kFlashFwdProfileTraceQkWgmmaIssueCycles, profile_t0, profile_t1);
++                profile_t0 = profile_t1;
++            }
+             pipeline_k.consumer_release(smem_pipe_read);
++            profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerKRelease);
+             if constexpr (HasQv) {
+                 shared_storage.pipelines.barrier_Qv.wait(work_idx % 2);
+                 consumer_wait(pipeline_v, smem_pipe_read);
+                 flash::gemm</*zero_init=*/false, /*wg_wait=*/0>(tiled_mma_qv, tSrQv, tSrV(_, _, _, smem_pipe_read.index()), tSrS);
+             }
+-            scoremod_premask_fn(tSrS);
+-            mask.template apply<true /*Seqlenk_mask*/, Is_causal, Is_local>(tSrS, m_block, n_block);
+-
+-            Tensor scores_scale = softmax.template max_get_scale</*Is_first=*/true, /*Check_inf=*/true>(tSrS);
+-            // Don't need to store scales to send to WG1 (in the case of LargeHeadDimV) since it's 1.f
+-
+-            softmax.template online_softmax</*Is_first=*/true, /*Check_inf=*/true>(tSrS);
++            if (profile_this_thread) { profile_t0 = profile_now(); }
++            auto scores_scale = [&] {
++                if constexpr (FlashFwdSensSkipSoftmax) {
++                    typename Softmax::TensorT scores_scale_skip;
++                    if constexpr (!FlashFwdSensSyncOnly) { cute::fill(scores_scale_skip, 1.f); }
++                    return scores_scale_skip;
++                } else {
++                    scoremod_premask_fn(tSrS);
++                    mask.template apply<true /*Seqlenk_mask*/, Is_causal, Is_local>(tSrS, m_block, n_block);
++                    Tensor scores_scale_ = softmax.template max_get_scale</*Is_first=*/true, /*Check_inf=*/true>(tSrS);
++                    // Don't need to store scales to send to WG1 (in the case of LargeHeadDimV) since it's 1.f
++                    softmax.template online_softmax</*Is_first=*/true, /*Check_inf=*/true>(tSrS);
++                    return scores_scale_;
++                }
++            }();
+             if constexpr (Is_FP8 && !V_colmajor) { flash::permute_Cregs_fp8(tSrS); }
+             Tensor tOrP_acc = make_tensor(tSrS.data(), flash::convert_layout_acc_Aregs<TiledMmaPV>(tSrS.layout()));
+             Tensor tOrP = make_tensor_like<Element>(tOrP_acc);
+-            convert_type_out(tOrP_acc, tOrP);
+-            if constexpr (Is_FP8 && V_colmajor) { flash::permute_Aregs_fp8(tOrP); }
+-            if constexpr (!MmaPV_is_RS) { write_P_to_smem(tOrP); }
+-            if constexpr (!MmaPV_is_RS) { arrive_on_P_write_barrier(); }
++            if constexpr (!FlashFwdSensSyncOnly) {
++                convert_type_out(tOrP_acc, tOrP);
++                if constexpr (Is_FP8 && V_colmajor) { flash::permute_Aregs_fp8(tOrP); }
++                if constexpr (!MmaPV_is_RS) { write_P_to_smem(tOrP); }
++                if constexpr (!MmaPV_is_RS) { arrive_on_P_write_barrier(); }
++            }
++            if (profile_this_thread) {
++                profile_t1 = profile_now();
++                if constexpr (!FlashFwdSensSkipSoftmax) {
++                    profile_add(kFlashFwdProfileSoftmaxCycles, profile_t0, profile_t1);
++                    profile_trace_add(profile_trace_step, kFlashFwdProfileTraceSoftmaxCycles, profile_t0, profile_t1);
++                }
++                profile_trace_end(profile_trace_step, profile_t1);
++            }
++            profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerStepEnd);
++            profile_count(kFlashFwdProfileMainloopIterations);
+             --n_block;
+ 
+             // Need to initialize tOrO in the case of RescaleOBeforeGemm where we will scale tOrO even in the 1st iter
+@@ -1172,38 +1538,156 @@ struct CollectiveMainloopFwdSm90 {
+                 PipelineState smem_pipe_read_v(smem_pipe_read.index(), smem_pipe_read.phase(), smem_pipe_read.count());
+                 ++smem_pipe_read;
+                 Tensor tSrS = partition_fragment_C(tiled_mma_qk, select<0, 1>(TileShape_MNK{}));
++                uint32_t profile_trace_step = profile_trace_step_idx++;
++                uint64_t profile_step_t0 = 0;
++                uint64_t profile_step_t1 = 0;
++                if (profile_this_thread) {
++                    profile_step_t0 = profile_now();
++                    profile_trace_begin(profile_trace_step, kFlashFwdProfileTraceSteady, n_block, profile_step_t0);
++                }
++                int const profile_timeline_step = profile_timeline_step_for_n_block(n_block);
++                int const profile_reg_timeline_slot =
++                    profile_reg_timeline_slot_for_n_block(n_block);
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerStepBegin);
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerKWaitBegin);
+                 if (!UseSchedulerBarrier || warp_group_idx == 0) { consumer_wait(pipeline_k, smem_pipe_read); }
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerKWaitEnd);
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerSchedulerWaitBegin);
++                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
++                    profile_reg_timeline_slot, scheduler_wait_before);
+                 warp_scheduler_barrier_sync();
+-                flash::gemm</*zero_init=*/true, /*wg_wait=*/-1>(tiled_mma_qk, tSrQ, tSrK(_, _, _, smem_pipe_read.index()), tSrS);
++                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
++                    profile_reg_timeline_slot, scheduler_wait_after);
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerSchedulerWaitEnd);
++                if (profile_this_thread) {
++                    profile_step_t1 = profile_now();
++                    profile_add(kFlashFwdProfileQkWaitCycles, profile_step_t0, profile_step_t1);
++                    profile_trace_add(profile_trace_step, kFlashFwdProfileTraceQkWaitCycles, profile_step_t0, profile_step_t1);
++                    profile_step_t0 = profile_step_t1;
++                }
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerQkIssueBegin);
++                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
++                    profile_reg_timeline_slot, qk_issue_begin);
++                if constexpr (FlashFwdSensSkipQkWgmma) {
++                    if constexpr (!FlashFwdSensSyncOnly) { clear(tSrS); }
++                } else {
++                    flash::gemm</*zero_init=*/true, /*wg_wait=*/-1>(tiled_mma_qk, tSrQ, tSrK(_, _, _, smem_pipe_read.index()), tSrS);
++                    if constexpr (FlashFwdSensSkipPvWgmma) { warpgroup_wait<0>(); }
++                }
++                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
++                    profile_reg_timeline_slot, qk_issue_end);
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerQkIssueEnd);
++                if (profile_this_thread) {
++                    profile_step_t1 = profile_now();
++                    profile_add(kFlashFwdProfileQkWgmmaIssueCycles, profile_step_t0, profile_step_t1);
++                    profile_trace_add(profile_trace_step, kFlashFwdProfileTraceQkWgmmaIssueCycles, profile_step_t0, profile_step_t1);
++                    profile_step_t0 = profile_step_t1;
++                }
+                 if constexpr (RescaleOBeforeGemm) { softmax.rescale_o(tOrO, scores_scale); }
+                 if constexpr(!HasQv) {
++                    if (profile_this_thread) { profile_step_t0 = profile_now(); }
++                    profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerPvWaitBegin);
+                     if (!UseSchedulerBarrier || warp_group_idx == 0) { consumer_wait(pipeline_v, smem_pipe_read_v); }
++                    profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerPvWaitEnd);
++                    if (profile_this_thread) {
++                        profile_step_t1 = profile_now();
++                        profile_add(kFlashFwdProfilePvWaitCycles, profile_step_t0, profile_step_t1);
++                        profile_trace_add(profile_trace_step, kFlashFwdProfileTracePvWaitCycles, profile_step_t0, profile_step_t1);
++                    }
++                }
++                if (profile_this_thread) { profile_step_t0 = profile_now(); }
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerPvIssueBegin);
++                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
++                    profile_reg_timeline_slot, pv_issue_begin);
++                if constexpr (FlashFwdSensSkipPvWgmma) {
++                    if constexpr (!FlashFwdSensSyncOnly) { clear(tOrO); }
++                } else {
++                    flash::gemm</*zero_init=*/false, /*wg_wait=*/-1>(tiled_mma_pv, cute::conditional_return<MmaPV_is_RS>(tOrP, tOsP), tOrV(_, _, _, smem_pipe_read_v.index()), tOrO);
+                 }
+-                flash::gemm</*zero_init=*/false, /*wg_wait=*/-1>(tiled_mma_pv, cute::conditional_return<MmaPV_is_RS>(tOrP, tOsP), tOrV(_, _, _, smem_pipe_read_v.index()), tOrO);
++                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
++                    profile_reg_timeline_slot, pv_issue_end);
++                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
++                    profile_reg_timeline_slot, scheduler_arrive_before);
+                 warp_scheduler_barrier_arrive();
+-                warpgroup_wait<1>();
++                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
++                    profile_reg_timeline_slot, scheduler_arrive_after);
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerSchedulerArrive);
++                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
++                    profile_reg_timeline_slot, wait1_before);
++                if constexpr (!FlashFwdSensSkipPvWgmma) { warpgroup_wait<1>(); }
++                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
++                    profile_reg_timeline_slot, wait1_after);
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerWait1End);
++                if (profile_this_thread) {
++                    profile_step_t1 = profile_now();
++                    profile_add(kFlashFwdProfilePvWgmmaIssueWaitCycles, profile_step_t0, profile_step_t1);
++                    profile_trace_add(profile_trace_step, kFlashFwdProfileTracePvWgmmaIssueWaitCycles, profile_step_t0, profile_step_t1);
++                }
+                 pipeline_k.consumer_release(smem_pipe_read);  // release K
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerKRelease);
+                 if constexpr (HasQv) {
+                     warpgroup_wait<0>();
+                     pipeline_v.consumer_release(smem_pipe_read_v);  // release V
+                     consumer_wait(pipeline_v, smem_pipe_read);
+                     flash::gemm</*zero_init=*/false, /*wg_wait=*/0>(tiled_mma_qv, tSrQv, tSrV(_, _, _, smem_pipe_read.index()), tSrS);
+                 }
+-                scoremod_premask_fn(tSrS);
+-                mask_fn(tSrS, n_block);
+-                cute::copy(softmax.template max_get_scale</*Is_first=*/false, Check_inf>(tSrS), scores_scale);
+-                if constexpr (LargeHeadDimV) { store_scales(scores_scale, smem_pipe_read_v.index()); }
+-                softmax.template online_softmax</*Is_first=*/false, Check_inf>(tSrS);
++                if (profile_this_thread) { profile_step_t0 = profile_now(); }
++                if constexpr (!FlashFwdSensSkipSoftmax) {
++                    scoremod_premask_fn(tSrS);
++                    mask_fn(tSrS, n_block);
++                    cute::copy(softmax.template max_get_scale</*Is_first=*/false, Check_inf>(tSrS), scores_scale);
++                    if constexpr (LargeHeadDimV) { store_scales(scores_scale, smem_pipe_read_v.index()); }
++                    softmax.template online_softmax</*Is_first=*/false, Check_inf>(tSrS);
++                }
+                 if constexpr (!HasQv) {
+-                    warpgroup_wait<0>();
++                    if (profile_this_thread) { profile_step_t1 = profile_now(); }
++                    if constexpr (!FlashFwdSensSkipSoftmax) {
++                        profile_add(kFlashFwdProfileSoftmaxCycles, profile_step_t0, profile_step_t1);
++                        profile_trace_add(profile_trace_step, kFlashFwdProfileTraceSoftmaxCycles, profile_step_t0, profile_step_t1);
++                    }
++                    profile_step_t0 = profile_step_t1;
++                    profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerWait0Begin);
++                    FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
++                        profile_reg_timeline_slot, wait0_before);
++                    if constexpr (!FlashFwdSensSkipPvWgmma) { warpgroup_wait<0>(); }
++                    FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
++                        profile_reg_timeline_slot, wait0_after);
++                    profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerWait0End);
++                    if (profile_this_thread) {
++                        profile_step_t1 = profile_now();
++                        if constexpr (!FlashFwdSensSkipPvWgmma) {
++                            profile_add(kFlashFwdProfilePvWgmmaIssueWaitCycles, profile_step_t0, profile_step_t1);
++                            profile_trace_add(profile_trace_step, kFlashFwdProfileTracePvWgmmaIssueWaitCycles, profile_step_t0, profile_step_t1);
++                        }
++                        profile_step_t0 = profile_step_t1;
++                    }
+                     pipeline_v.consumer_release(smem_pipe_read_v);  // release V
++                    profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerVRelease);
++                } else if (profile_this_thread) {
++                    profile_step_t1 = profile_now();
++                    if constexpr (!FlashFwdSensSkipSoftmax) {
++                        profile_add(kFlashFwdProfileSoftmaxCycles, profile_step_t0, profile_step_t1);
++                        profile_trace_add(profile_trace_step, kFlashFwdProfileTraceSoftmaxCycles, profile_step_t0, profile_step_t1);
++                    }
+                 }
+                 if constexpr (Is_FP8 && !V_colmajor) { flash::permute_Cregs_fp8(tSrS); }
+-                convert_type_out(make_tensor(tSrS.data(), tOrP.layout()), tOrP);
+-                if constexpr (Is_FP8 && V_colmajor) { flash::permute_Aregs_fp8(tOrP); }
+-                if constexpr (!MmaPV_is_RS) { write_P_to_smem(tOrP); }
+-                if constexpr (!RescaleOBeforeGemm) { softmax.rescale_o(tOrO, scores_scale); }
+-                if constexpr (!MmaPV_is_RS) { arrive_on_P_write_barrier(); }
++                if constexpr (!FlashFwdSensSyncOnly) {
++                    convert_type_out(make_tensor(tSrS.data(), tOrP.layout()), tOrP);
++                    if constexpr (Is_FP8 && V_colmajor) { flash::permute_Aregs_fp8(tOrP); }
++                    if constexpr (!MmaPV_is_RS) { write_P_to_smem(tOrP); }
++                }
++                if constexpr (!RescaleOBeforeGemm && !FlashFwdSensSkipSoftmax) { softmax.rescale_o(tOrO, scores_scale); }
++                if constexpr (!FlashFwdSensSyncOnly && !MmaPV_is_RS) { arrive_on_P_write_barrier(); }
++                if (profile_this_thread) {
++                    profile_step_t1 = profile_now();
++                    if constexpr (!FlashFwdSensSkipSoftmax) {
++                        profile_add(kFlashFwdProfileSoftmaxCycles, profile_step_t0, profile_step_t1);
++                        profile_trace_add(profile_trace_step, kFlashFwdProfileTraceSoftmaxCycles, profile_step_t0, profile_step_t1);
++                    }
++                    profile_trace_end(profile_trace_step, profile_step_t1);
++                }
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerStepEnd);
++                profile_count(kFlashFwdProfileMainloopIterations);
+             };
+ 
+             if constexpr (Is_causal || Is_local) { // Separate iterations with causal or local masking
+@@ -1236,19 +1720,61 @@ struct CollectiveMainloopFwdSm90 {
+             // Tell producers that smem_q is ready
+             cutlass::arch::NamedBarrier::arrive(NumMmaThreadsQK + (Use_TMA_Q ? cutlass::NumThreadsPerWarp : NumProducerThreads), static_cast<uint32_t>(FwdNamedBarriers::QueryEmpty) /*id*/);
+             if constexpr (RescaleOBeforeGemm) { softmax.rescale_o(tOrO, scores_scale); }
++            profile_trace_step = profile_trace_step_idx++;
++            if (profile_this_thread) {
++                profile_t0 = profile_now();
++                profile_trace_begin(profile_trace_step, kFlashFwdProfileTraceFinalPv, n_block, profile_t0);
++            }
++            int const profile_timeline_final_step = n_block_max - n_block_min;
++            profile_timeline_consumer_store(profile_timeline_final_step, kFlashFwdProfileTimelineConsumerStepBegin);
++            profile_timeline_consumer_store(profile_timeline_final_step, kFlashFwdProfileTimelineConsumerPvWaitBegin);
+             if constexpr (!HasQv) { consumer_wait(pipeline_v, smem_pipe_read); }
+-            flash::gemm</*zero_init=*/false, /*wg_wait=*/-1>(tiled_mma_pv, cute::conditional_return<MmaPV_is_RS>(tOrP, tOsP), tOrV(_, _, _, smem_pipe_read.index()), tOrO);
+-            float const v_descale = !Is_FP8 || params.ptr_v_descale == nullptr ? 1.0f : params.ptr_v_descale[bidb * get<0>(params.stride_v_descale) + bidh_kv * get<1>(params.stride_v_descale)];
+-            cute::copy(softmax.finalize(v_descale), scores_scale);
+-            if constexpr (LargeHeadDimV) {
+-                cutlass::arch::NamedBarrier::sync(NumMmaThreads, static_cast<uint32_t>(FwdNamedBarriers::PEmpty) /*id*/);
+-                store_scales(scores_scale, smem_pipe_read.index());
+-                cutlass::arch::NamedBarrier::arrive(NumMmaThreads, static_cast<uint32_t>(FwdNamedBarriers::PFull) /*id*/);
++            profile_timeline_consumer_store(profile_timeline_final_step, kFlashFwdProfileTimelineConsumerPvWaitEnd);
++            if (profile_this_thread) {
++                profile_t1 = profile_now();
++                profile_add(kFlashFwdProfilePvWaitCycles, profile_t0, profile_t1);
++                profile_trace_add(profile_trace_step, kFlashFwdProfileTracePvWaitCycles, profile_t0, profile_t1);
++                profile_t0 = profile_t1;
++            }
++            profile_timeline_consumer_store(profile_timeline_final_step, kFlashFwdProfileTimelineConsumerPvIssueBegin);
++            if constexpr (FlashFwdSensSkipPvWgmma) {
++                if constexpr (!FlashFwdSensSyncOnly) { clear(tOrO); }
++            } else {
++                flash::gemm</*zero_init=*/false, /*wg_wait=*/-1>(tiled_mma_pv, cute::conditional_return<MmaPV_is_RS>(tOrP, tOsP), tOrV(_, _, _, smem_pipe_read.index()), tOrO);
++            }
++            if constexpr (!FlashFwdSensSkipSoftmax) {
++                float const v_descale = !Is_FP8 || params.ptr_v_descale == nullptr ? 1.0f : params.ptr_v_descale[bidb * get<0>(params.stride_v_descale) + bidh_kv * get<1>(params.stride_v_descale)];
++                cute::copy(softmax.finalize(v_descale), scores_scale);
++                if constexpr (LargeHeadDimV) {
++                    cutlass::arch::NamedBarrier::sync(NumMmaThreads, static_cast<uint32_t>(FwdNamedBarriers::PEmpty) /*id*/);
++                    store_scales(scores_scale, smem_pipe_read.index());
++                    cutlass::arch::NamedBarrier::arrive(NumMmaThreads, static_cast<uint32_t>(FwdNamedBarriers::PFull) /*id*/);
++                }
++            }
++            profile_timeline_consumer_store(profile_timeline_final_step, kFlashFwdProfileTimelineConsumerWait0Begin);
++            if constexpr (!FlashFwdSensSkipPvWgmma) { warpgroup_wait<0>(); }
++            profile_timeline_consumer_store(profile_timeline_final_step, kFlashFwdProfileTimelineConsumerWait0End);
++            if (profile_this_thread) {
++                profile_t1 = profile_now();
++                if constexpr (!FlashFwdSensSkipPvWgmma) {
++                    profile_add(kFlashFwdProfilePvWgmmaIssueWaitCycles, profile_t0, profile_t1);
++                    profile_trace_add(profile_trace_step, kFlashFwdProfileTracePvWgmmaIssueWaitCycles, profile_t0, profile_t1);
++                }
++                profile_t0 = profile_t1;
+             }
+-            warpgroup_wait<0>();
+             pipeline_v.consumer_release(smem_pipe_read);  // release V, otherwise producers will hang
+-            softmax.rescale_o(tOrO, scores_scale);
++            profile_timeline_consumer_store(profile_timeline_final_step, kFlashFwdProfileTimelineConsumerVRelease);
++            if constexpr (!FlashFwdSensSkipSoftmax) { softmax.rescale_o(tOrO, scores_scale); }
+             if constexpr (Is_FP8 && !V_colmajor) { flash::permute_output_fp8(tOrO); }
++            if (profile_this_thread) {
++                profile_t1 = profile_now();
++                if constexpr (!FlashFwdSensSkipSoftmax) {
++                    profile_add(kFlashFwdProfileSoftmaxCycles, profile_t0, profile_t1);
++                    profile_trace_add(profile_trace_step, kFlashFwdProfileTraceSoftmaxCycles, profile_t0, profile_t1);
++                }
++                profile_trace_end(profile_trace_step, profile_t1);
++            }
++            profile_timeline_consumer_store(profile_timeline_final_step, kFlashFwdProfileTimelineConsumerStepEnd);
+             ++smem_pipe_read;
+ 
+         } else {  // No intra-WG overlap
+@@ -1347,6 +1873,13 @@ struct CollectiveMainloopFwdSm90 {
+             if constexpr (Is_FP8 && !V_colmajor) { flash::permute_output_fp8(tOrO); }
+             ++smem_pipe_read;
+         }
++        profile_reg_timeline_flush();
++#ifdef FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE
++#undef FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE
++#endif
++#ifdef FLASH_FWD_PROFILE_REG_TIMELINE_FOR_EACH_EVENT
++#undef FLASH_FWD_PROFILE_REG_TIMELINE_FOR_EACH_EVENT
++#endif
+         ++work_idx;
+         return true;
+     }

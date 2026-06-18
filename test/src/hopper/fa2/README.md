@@ -2,7 +2,8 @@
 
 This directory contains standalone FlashAttention-2 forward gtests for
 GPGPU-Sim bring-up. The CUDA kernel templates come from the existing
-`test/src/hopper/fa3/flash-attention/csrc/flash_attn/src` submodule checkout.
+`test/src/hopper/fa3/flash-attention/csrc/flash_attn/src` checkout prepared by
+`test/src/hopper/fa3/prepare_flash_attention.sh`.
 
 ## Cases
 
@@ -31,6 +32,7 @@ smoke/small/medium/large binaries.
 From `test/`:
 
 ```bash
+make prepare-fa3-flash-attention
 ./run_tests.sh build hopper-fa2
 ./run_tests.sh build hopper-fa2-smoke
 ./run_tests.sh build hopper-fa2-large-h16d128-full
