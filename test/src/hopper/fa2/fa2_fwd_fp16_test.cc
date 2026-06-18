@@ -33,6 +33,19 @@ inline bool run_32ki_fa2_cases_enabled() {
   return value != nullptr && std::string(value) == "1";
 }
 
+inline void ExpectFa2ReferenceMatch(const Fa2RunResult &result) {
+  constexpr float kOutputAbsTolerance = 5.0e-2f;
+  constexpr float kLseAbsTolerance = 5.0e-2f;
+  ASSERT_TRUE(result.reference_checked);
+  EXPECT_LE(result.max_output_abs_error, kOutputAbsTolerance)
+      << "max output abs error at linear index "
+      << result.max_output_abs_error_index << ", output0=" << result.output0
+      << ", output0_ref=" << result.output0_ref;
+  EXPECT_LE(result.max_lse_abs_error, kLseAbsTolerance)
+      << "max LSE abs error at linear index " << result.max_lse_abs_error_index
+      << ", lse0=" << result.lse0 << ", lse0_ref=" << result.lse0_ref;
+}
+
 inline void RunFa2PrefillCase(const Fa2PrefillCase &cfg) {
   SCOPED_TRACE(::testing::Message()
                << "case=" << cfg.name << " batch=" << cfg.batch
@@ -59,9 +72,12 @@ inline void RunFa2PrefillSmokeCase(const Fa2PrefillCase &cfg) {
 
   ASSERT_TRUE(is_valid_fa2_prefill_smoke_case(cfg));
 
-  Fa2RunResult result = run_fa2_prefill_fp16(cfg);
+  Fa2RunResult result =
+      run_fa2_prefill_fp16(cfg, /*initialize_inputs=*/true,
+                           /*validate_reference=*/true);
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
+  ExpectFa2ReferenceMatch(result);
 }
 
 inline void RunFa2PrefillTuningCase(const Fa2PrefillCase &cfg) {
@@ -77,6 +93,7 @@ inline void RunFa2PrefillTuningCase(const Fa2PrefillCase &cfg) {
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
 
+#if defined(FA2_PREFILL_GROUP_SENSITIVITY)
 inline void RunFa2PrefillSensitivityCase(const Fa2PrefillCase &cfg) {
   SCOPED_TRACE(::testing::Message()
                << "case=" << cfg.name << " batch=" << cfg.batch
@@ -89,7 +106,9 @@ inline void RunFa2PrefillSensitivityCase(const Fa2PrefillCase &cfg) {
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
+#endif
 
+#if defined(FA2_PREFILL_GROUP_SENSITIVITY_H1D128)
 inline void RunFa2PrefillSensitivityH1D128Case(const Fa2PrefillCase &cfg) {
   SCOPED_TRACE(::testing::Message()
                << "case=" << cfg.name << " batch=" << cfg.batch
@@ -102,6 +121,7 @@ inline void RunFa2PrefillSensitivityH1D128Case(const Fa2PrefillCase &cfg) {
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
+#endif
 
 #if defined(FA2_PREFILL_GROUP_LARGE)
 TEST_F(Fa2PrefillFp16IntegrationTest, ShapeTableHas20PrefillCases) {
@@ -303,6 +323,7 @@ TEST_F(Fa2FwdFp16SmokeIntegrationTest, SmallForwardCase) {
 
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
+  ExpectFa2ReferenceMatch(result);
 }
 #endif
 

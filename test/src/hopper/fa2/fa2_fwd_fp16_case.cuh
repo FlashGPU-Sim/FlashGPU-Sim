@@ -3,8 +3,10 @@
 #include <cuda_runtime.h>
 #include <cutlass/numeric_types.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 #include "flash.h"
@@ -197,6 +199,13 @@ struct Fa2RunResult {
   const char *where = "success";
   float output0 = 0.0f;
   float lse0 = 0.0f;
+  bool reference_checked = false;
+  float output0_ref = 0.0f;
+  float lse0_ref = 0.0f;
+  float max_output_abs_error = 0.0f;
+  float max_lse_abs_error = 0.0f;
+  size_t max_output_abs_error_index = 0;
+  size_t max_lse_abs_error_index = 0;
 };
 
 inline Fa2RunResult make_fa2_invalid_result(const char *where) {
@@ -244,6 +253,95 @@ inline void fill_half(std::vector<cutlass::half_t> &x, float scale) {
     x[i] = cutlass::half_t(v);
   }
 }
+
+#ifndef __CUDA_ARCH__
+inline size_t fa2_qkv_index(int batch_idx, int row, int head, int dim,
+                            int seqlen, int heads, int head_dim) {
+  return ((size_t(batch_idx) * seqlen + row) * heads + head) * head_dim + dim;
+}
+
+inline size_t fa2_lse_index(int batch_idx, int head, int row, int seqlen,
+                            int heads) {
+  return (size_t(batch_idx) * heads + head) * seqlen + row;
+}
+
+struct Fa2ReferenceStats {
+  float output0_ref = 0.0f;
+  float lse0_ref = 0.0f;
+  float max_output_abs_error = 0.0f;
+  float max_lse_abs_error = 0.0f;
+  size_t max_output_abs_error_index = 0;
+  size_t max_lse_abs_error_index = 0;
+};
+
+template <int HeadDim, bool IsCausal>
+inline Fa2ReferenceStats compute_fa2_reference_errors(
+    const std::vector<cutlass::half_t> &q,
+    const std::vector<cutlass::half_t> &k,
+    const std::vector<cutlass::half_t> &v,
+    const std::vector<cutlass::half_t> &actual_o,
+    const std::vector<float> &actual_lse, int batch, int seqlen_q,
+    int seqlen_k, int heads) {
+  constexpr int D = HeadDim;
+  const float scale = 1.0f / std::sqrt(float(D));
+  std::vector<float> scores(seqlen_k);
+  Fa2ReferenceStats stats;
+
+  for (int b = 0; b < batch; ++b) {
+    for (int h = 0; h < heads; ++h) {
+      for (int m = 0; m < seqlen_q; ++m) {
+        const int valid_k = IsCausal ? std::min(m + 1, seqlen_k) : seqlen_k;
+        float max_score = -std::numeric_limits<float>::infinity();
+        for (int n = 0; n < valid_k; ++n) {
+          float dot = 0.0f;
+          for (int d = 0; d < D; ++d) {
+            const size_t q_idx =
+                fa2_qkv_index(b, m, h, d, seqlen_q, heads, D);
+            const size_t k_idx =
+                fa2_qkv_index(b, n, h, d, seqlen_k, heads, D);
+            dot += float(q[q_idx]) * float(k[k_idx]);
+          }
+          scores[n] = dot * scale;
+          max_score = std::max(max_score, scores[n]);
+        }
+
+        float sum_exp = 0.0f;
+        for (int n = 0; n < valid_k; ++n) {
+          scores[n] = std::exp(scores[n] - max_score);
+          sum_exp += scores[n];
+        }
+        const float inv_sum = 1.0f / sum_exp;
+        const float ref_lse = max_score + std::log(sum_exp);
+        const size_t lse_idx = fa2_lse_index(b, h, m, seqlen_q, heads);
+        if (lse_idx == 0) stats.lse0_ref = ref_lse;
+        const float lse_error = std::fabs(actual_lse[lse_idx] - ref_lse);
+        if (lse_error > stats.max_lse_abs_error) {
+          stats.max_lse_abs_error = lse_error;
+          stats.max_lse_abs_error_index = lse_idx;
+        }
+
+        for (int d = 0; d < D; ++d) {
+          float ref = 0.0f;
+          for (int n = 0; n < valid_k; ++n) {
+            const size_t v_idx =
+                fa2_qkv_index(b, n, h, d, seqlen_k, heads, D);
+            ref += scores[n] * inv_sum * float(v[v_idx]);
+          }
+          const size_t o_idx = fa2_qkv_index(b, m, h, d, seqlen_q, heads, D);
+          if (o_idx == 0) stats.output0_ref = ref;
+          const float output_error = std::fabs(float(actual_o[o_idx]) - ref);
+          if (output_error > stats.max_output_abs_error) {
+            stats.max_output_abs_error = output_error;
+            stats.max_output_abs_error_index = o_idx;
+          }
+        }
+      }
+    }
+  }
+
+  return stats;
+}
+#endif  // !defined(__CUDA_ARCH__)
 
 template <int HeadDim, bool IsCausal>
 inline void run_fa2_fwd_kernel(flash::Flash_fwd_params &params,
@@ -306,7 +404,7 @@ inline void populate_fa2_params(flash::Flash_fwd_params &params,
   params.rp_dropout = 1.0f;
   params.scale_softmax_rp_dropout = params.scale_softmax;
   params.window_size_left = -1;
-  params.window_size_right = -1;
+  params.window_size_right = causal ? 0 : -1;
   params.softcap = 0.0f;
 
   params.philox_args = at::PhiloxCudaState(0, 0);
@@ -323,7 +421,8 @@ inline void populate_fa2_params(flash::Flash_fwd_params &params,
 template <int HeadDim, bool IsCausal>
 inline Fa2RunResult run_fa2_fwd_fp16_typed(int batch, int seqlen_q,
                                            int seqlen_k, int heads,
-                                           bool initialize_inputs) {
+                                           bool initialize_inputs,
+                                           bool validate_reference = false) {
   const int D = HeadDim;
   const int H = heads;
   const int H_KV = heads;
@@ -339,6 +438,9 @@ inline Fa2RunResult run_fa2_fwd_fp16_typed(int batch, int seqlen_q,
   cutlass::half_t *d_v = nullptr;
   cutlass::half_t *d_o = nullptr;
   float *d_lse = nullptr;
+  std::vector<cutlass::half_t> h_q;
+  std::vector<cutlass::half_t> h_k;
+  std::vector<cutlass::half_t> h_v;
 
   Fa2RunResult result;
   auto finish = [&](cudaError_t error, const char *where) {
@@ -381,13 +483,18 @@ inline Fa2RunResult run_fa2_fwd_fp16_typed(int batch, int seqlen_q,
   FA2_RETURN_IF_CUDA_ERROR(cudaMalloc(&d_o, o_elems * sizeof(cutlass::half_t)));
   FA2_RETURN_IF_CUDA_ERROR(cudaMalloc(&d_lse, lse_elems * sizeof(float)));
 
+  if (initialize_inputs || validate_reference) {
+    h_q.resize(q_elems);
+    h_k.resize(k_elems);
+    h_v.resize(v_elems);
+    if (initialize_inputs) {
+      fill_half(h_q, 0.25f);
+      fill_half(h_k, 0.20f);
+      fill_half(h_v, 0.30f);
+    }
+  }
+
   if (initialize_inputs) {
-    std::vector<cutlass::half_t> h_q(q_elems);
-    std::vector<cutlass::half_t> h_k(k_elems);
-    std::vector<cutlass::half_t> h_v(v_elems);
-    fill_half(h_q, 0.25f);
-    fill_half(h_k, 0.20f);
-    fill_half(h_v, 0.30f);
     FA2_RETURN_IF_CUDA_ERROR(cudaMemcpy(d_q, h_q.data(),
                                         q_elems * sizeof(cutlass::half_t),
                                         cudaMemcpyHostToDevice));
@@ -424,12 +531,37 @@ inline Fa2RunResult run_fa2_fwd_fp16_typed(int batch, int seqlen_q,
                                       cudaMemcpyDeviceToHost));
   result.output0 = float(output0);
 
+  if (validate_reference) {
+#ifndef __CUDA_ARCH__
+    std::vector<cutlass::half_t> h_o(o_elems);
+    std::vector<float> h_lse(lse_elems);
+    FA2_RETURN_IF_CUDA_ERROR(cudaMemcpy(h_o.data(), d_o,
+                                        o_elems * sizeof(cutlass::half_t),
+                                        cudaMemcpyDeviceToHost));
+    FA2_RETURN_IF_CUDA_ERROR(cudaMemcpy(h_lse.data(), d_lse,
+                                        lse_elems * sizeof(float),
+                                        cudaMemcpyDeviceToHost));
+    const Fa2ReferenceStats stats =
+        compute_fa2_reference_errors<HeadDim, IsCausal>(
+            h_q, h_k, h_v, h_o, h_lse, batch, seqlen_q, seqlen_k, heads);
+    result.reference_checked = true;
+    result.output0_ref = stats.output0_ref;
+    result.lse0_ref = stats.lse0_ref;
+    result.max_output_abs_error = stats.max_output_abs_error;
+    result.max_lse_abs_error = stats.max_lse_abs_error;
+    result.max_output_abs_error_index = stats.max_output_abs_error_index;
+    result.max_lse_abs_error_index = stats.max_lse_abs_error_index;
+#endif
+  }
+
   return finish(cudaSuccess, "success");
 
 #undef FA2_RETURN_IF_CUDA_ERROR
 }
 
-inline Fa2RunResult run_fa2_prefill_fp16(const Fa2PrefillCase &cfg) {
+inline Fa2RunResult run_fa2_prefill_fp16(const Fa2PrefillCase &cfg,
+                                         bool initialize_inputs = false,
+                                         bool validate_reference = false) {
   if (!is_supported_fa2_prefill_case(cfg)) {
     return make_fa2_invalid_result("Fa2PrefillCase");
   }
@@ -437,30 +569,39 @@ inline Fa2RunResult run_fa2_prefill_fp16(const Fa2PrefillCase &cfg) {
 #if defined(FA2_PREFILL_ENABLE_H32D64_FULL)
   if (cfg.head_dim == 64 && !cfg.causal) {
     return run_fa2_fwd_fp16_typed<64, false>(cfg.batch, cfg.seqlen,
-                                             cfg.seqlen, cfg.heads, false);
+                                             cfg.seqlen, cfg.heads,
+                                             initialize_inputs,
+                                             validate_reference);
   }
 #endif
 #if defined(FA2_PREFILL_ENABLE_H32D64_CAUSAL)
   if (cfg.head_dim == 64 && cfg.causal) {
     return run_fa2_fwd_fp16_typed<64, true>(cfg.batch, cfg.seqlen,
-                                            cfg.seqlen, cfg.heads, false);
+                                            cfg.seqlen, cfg.heads,
+                                            initialize_inputs,
+                                            validate_reference);
   }
 #endif
 #if defined(FA2_PREFILL_ENABLE_H16D128_FULL)
   if (cfg.head_dim == 128 && !cfg.causal) {
     return run_fa2_fwd_fp16_typed<128, false>(cfg.batch, cfg.seqlen,
-                                              cfg.seqlen, cfg.heads, false);
+                                              cfg.seqlen, cfg.heads,
+                                              initialize_inputs,
+                                              validate_reference);
   }
 #endif
 #if defined(FA2_PREFILL_ENABLE_H16D128_CAUSAL)
   if (cfg.head_dim == 128 && cfg.causal) {
     return run_fa2_fwd_fp16_typed<128, true>(cfg.batch, cfg.seqlen,
-                                             cfg.seqlen, cfg.heads, false);
+                                             cfg.seqlen, cfg.heads,
+                                             initialize_inputs,
+                                             validate_reference);
   }
 #endif
   return make_fa2_invalid_result("Fa2PrefillVariantDisabled");
 }
 
+#if defined(FA2_PREFILL_GROUP_SENSITIVITY)
 inline Fa2RunResult run_fa2_sensitivity_fp16(const Fa2PrefillCase &cfg) {
   if (!is_valid_fa2_prefill_sensitivity_case(cfg)) {
     return make_fa2_invalid_result("Fa2SensitivityCase");
@@ -469,7 +610,9 @@ inline Fa2RunResult run_fa2_sensitivity_fp16(const Fa2PrefillCase &cfg) {
   return run_fa2_fwd_fp16_typed<128, false>(cfg.batch, cfg.seqlen,
                                             cfg.seqlen, cfg.heads, false);
 }
+#endif
 
+#if defined(FA2_PREFILL_GROUP_SENSITIVITY_H1D128)
 inline Fa2RunResult run_fa2_sensitivity_h1d128_fp16(
     const Fa2PrefillCase &cfg) {
   if (!is_valid_fa2_prefill_sensitivity_h1d128_case(cfg)) {
@@ -483,10 +626,11 @@ inline Fa2RunResult run_fa2_sensitivity_h1d128_fp16(
   return run_fa2_fwd_fp16_typed<128, false>(cfg.batch, cfg.seqlen,
                                             cfg.seqlen, cfg.heads, false);
 }
+#endif
 
 inline Fa2RunResult run_fa2_fwd_smoke_fp16() {
 #if defined(FA2_PREFILL_ENABLE_H32D64_FULL)
-  return run_fa2_fwd_fp16_typed<64, false>(1, 128, 128, 2, true);
+  return run_fa2_fwd_fp16_typed<64, false>(1, 128, 128, 2, true, true);
 #else
   return make_fa2_invalid_result("Fa2FixedSmokeVariantDisabled");
 #endif
