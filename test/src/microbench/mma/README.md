@@ -3,6 +3,15 @@
 This directory contains MMA-focused microbenchmarks for Tensor Core issue gap,
 peak throughput, and instruction-latency calibration.
 
+There are two build paths:
+
+- gtest microbenchmarks (`inst_latency_bench.cc`, `mma_issue_bench.cc`) are
+  built from `test/` with `make bench`.
+- standalone CUDA calibration binaries (`mma_accept_queue_bench.cu`,
+  `mma_saturation_bench.cu`) are built from `test/` with
+  `make mma-standalone-bench` or from this directory with the local Makefile.
+  They are emitted under `test/build/bin/microbench/mma/`.
+
 ## Supported Tests
 
 Run these tests from `test/` with `./run_tests.sh bench "<pattern>"`.
@@ -36,6 +45,7 @@ for every supported MMA op in one build. There is no longer a manual
 ./run_tests.sh bench "MMAIssueSummary.AllVariants"
 ./run_tests.sh bench "MMAPeak.AllVariants"
 ./run_tests.sh bench "InstLatencyTest.FullCalibrationSuite"
+make mma-standalone-bench
 ```
 
 For `MMAPeak.AllVariants`, `BestILP` and `Blocks/SM` are chosen by sweeping

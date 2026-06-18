@@ -141,10 +141,19 @@ test/src/
 │   └── tma_swizzle_test.cc
 │
 └── microbench/        # Performance microbenchmarks (separate binaries)
+    ├── cp_async/
+    │   ├── README.md
+    │   ├── cp_async_latency_bench.cu
+    │   └── cp_async_ptx_bench.cu
     ├── mma/
     │   ├── README.md
     │   ├── inst_latency_bench.cc
+    │   ├── mma_accept_queue_bench.cu
     │   └── mma_issue_bench.cc
+    ├── wgmma/
+    │   ├── README.md
+    │   ├── wgmma_async_latency_bench.cc
+    │   └── wgmma_n16_chain_bench.cc
     └── mbarrier/
         ├── README.md
         └── mbarrier_trywait_latency_bench.cc
@@ -152,7 +161,12 @@ test/src/
 
 **`unit/`** and **`integration/`** are compiled into `run_all_tests` (via `make test`).
 **`standalone/`** dev tests are a separate binary `run_dev_tests` (via `make dev`).
-**`microbench/`** tests are separate binaries (via `make bench`).
+**`microbench/`** gtest benchmarks are separate binaries (via `make bench`).
+Standalone CUDA calibration binaries are built with `make standalone-bench`, or
+with focused targets such as `make cp-async-bench`, `make mma-standalone-bench`,
+`make tma-standalone-bench`, and `make memory-standalone-bench`.
+Those binaries are emitted under `build/bin/microbench/`, and their simulator
+workdirs go under `run/microbench/`.
 **`integration/fa3/`** is a standalone CUDA application managed by `make fa3`
 and `./run_tests.sh fa3`; its executable is placed under `build/bin/integration/fa3/`.
 

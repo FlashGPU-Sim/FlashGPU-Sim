@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="${BIN:-./mma_saturation_bench_cuda128_sm90a}"
+BIN="${BIN:-${ROOT}/build/bin/microbench/mma/mma_saturation_bench_cuda128_sm90a}"
 CUDA128_LIB="${CUDA128_LIB:-${ROOT}/prebuilt_cuda128/lib64}"
 OUT_DIR="${OUT_DIR:-mma_saturation_h100_$(date +%Y%m%d_%H%M%S)}"
 

@@ -221,7 +221,7 @@ FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
 FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o
 FLASH_OBJ_DIR = $(OBJ_DIR)/flash
 
-.PHONY: all test bench dev hopper hopper-gtest hopper-fa2 hopper-fa2-smoke hopper-fa2-small hopper-fa2-medium hopper-fa2-large hopper-fa2-sensitivity hopper-fa2-sensitivity-h1d128 hopper-fa2-large-h32d64-full hopper-fa2-large-h32d64-causal hopper-fa2-large-h16d128-full hopper-fa2-large-h16d128-causal hopper-fa3-noext hopper-fa3-extended hopper-fa3-variants hopper-fa3-single-tile hopper-fa3-h1d128-profile hopper-fa3-sensitivity hopper-fa3-sensitivity-extended wgmma-n16-chain clean help setup-gtest
+.PHONY: all test bench standalone-bench cp-async-bench mma-standalone-bench tma-standalone-bench memory-standalone-bench dev hopper hopper-gtest hopper-fa2 hopper-fa2-smoke hopper-fa2-small hopper-fa2-medium hopper-fa2-large hopper-fa2-sensitivity hopper-fa2-sensitivity-h1d128 hopper-fa2-large-h32d64-full hopper-fa2-large-h32d64-causal hopper-fa2-large-h16d128-full hopper-fa2-large-h16d128-causal hopper-fa3-noext hopper-fa3-extended hopper-fa3-variants hopper-fa3-single-tile hopper-fa3-h1d128-profile hopper-fa3-sensitivity hopper-fa3-sensitivity-extended wgmma-n16-chain clean help setup-gtest
 
 # Build everything (test + bench + dev)
 all: test bench dev
@@ -231,6 +231,21 @@ test: setup-gtest $(MAIN_TEST_TARGET)
 
 # Build microbenchmarks only (separate binaries, run individually)
 bench: setup-gtest $(MICROBENCH_TARGETS)
+
+# Build standalone CUDA calibration microbenchmarks that are not gtest binaries.
+standalone-bench: cp-async-bench mma-standalone-bench tma-standalone-bench memory-standalone-bench
+
+cp-async-bench:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/cp_async all ptx-bench
+
+mma-standalone-bench:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/mma sm120a sm90a saturation-sm120a saturation-sm90a
+
+tma-standalone-bench:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/tma all
+
+memory-standalone-bench:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/memory all
 
 # Build standalone dev tests (decoupled from simulator)
 dev: setup-gtest $(DEV_TEST_TARGET)
@@ -293,6 +308,10 @@ help:
 	@echo "Available targets:"
 	@echo "  all         - Build all tests (default)"
 	@echo "  test        - Build and run all tests"
+	@echo "  bench       - Build gtest-based microbenchmarks"
+	@echo "  standalone-bench - Build standalone CUDA calibration microbenchmarks"
+	@echo "  cp-async-bench - Build standalone cp.async calibration binaries"
+	@echo "  mma-standalone-bench - Build standalone warp-MMA calibration binaries"
 	@echo "  hopper      - Build Hopper tests"
 	@echo "  hopper-fa2 - Build split FA2 forward-only runners with extended-shape macro"
 	@echo "  hopper-fa2-smoke - Build split FA2 smoke runners"
