@@ -73,6 +73,8 @@ The current FlashAttention H100 result set uses four primary configs:
 
 - `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700`
   - FA3 baseline and generic H100 baseline.
+- `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA3_TMA128_OOB_READ`
+  - FA3 large-run config. Starts from the FA3 baseline, uses TMA 128-byte request granularity, and models OOB TMA reads as L2 traffic while OOB writes are skipped.
 - `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA2_REGALLOC`
   - FA2 baseline. Enables PTX register allocation and PTX scheduling.
 - `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA2_IDEAL`
