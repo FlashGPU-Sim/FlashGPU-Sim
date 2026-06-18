@@ -12,6 +12,8 @@ Optional columns:
   skip    if true/1/yes, the job is marked skipped
 
 Paths in `binary` may be absolute or relative to --root.
+
+Use --print-example-jobs to print a minimal TSV template.
 """
 
 from __future__ import annotations
@@ -52,6 +54,11 @@ STATUS_FIELDS = [
     "log",
     "workdir",
 ]
+
+
+EXAMPLE_JOBS_TSV = """job_id\tstage\tcase\tbinary\tgtest_filter\tconfig\targs\tskip
+example_smoke\tsmoke\tExampleCase\ttest/build/bin/hopper/run_example_tests\tExampleSuite.ExampleCase\tSM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700\t\t0
+"""
 
 
 @dataclass(frozen=True)
@@ -168,6 +175,10 @@ def read_jobs(path: Path, root: Path) -> list[Job]:
     if not jobs:
         raise SystemExit(f"no jobs found in {path}")
     return jobs
+
+
+def print_example_jobs() -> None:
+    print(EXAMPLE_JOBS_TSV, end="")
 
 
 def write_status(status_dir: Path, job: Job, values: dict[str, object]) -> None:
@@ -357,11 +368,11 @@ def run_job(
             "state": "running",
             "rc": "",
             "elapsed_sec": "",
-                "slot": slot,
-                "cpu_set": cpu_set or "",
-                "config": config_name,
-                "log": log_path,
-                "workdir": workdir,
+            "slot": slot,
+            "cpu_set": cpu_set or "",
+            "config": config_name,
+            "log": log_path,
+            "workdir": workdir,
         },
     )
     with summary_lock:
@@ -544,10 +555,13 @@ def write_metadata(args: argparse.Namespace, jobs: Iterable[Job], core_clock_mhz
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
-    parser.add_argument("--run-root", type=Path, required=True)
-    parser.add_argument("--jobs", type=Path, required=True)
+    parser.add_argument("--run-root", type=Path)
+    parser.add_argument("--jobs", type=Path)
     parser.add_argument("--config", default="SM90_H100")
     parser.add_argument("--max-parallel", type=int, default=4)
     parser.add_argument("--cpu-sets", nargs="*", default=["0,2,4,6", "8,10,12,14", "16-19", "20-23"])
@@ -563,9 +577,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ptx-sim-kernelfile", default=None)
     parser.add_argument("--cuobjdump-sim-file", default="jj")
     parser.add_argument("--env", action="append", default=[])
+    parser.add_argument("--print-example-jobs", action="store_true")
     args = parser.parse_args()
 
+    if args.print_example_jobs:
+        print_example_jobs()
+        raise SystemExit(0)
+
     args.root = args.root.resolve()
+    if args.run_root is None:
+        raise SystemExit("--run-root is required")
+    if args.jobs is None:
+        raise SystemExit("--jobs is required")
     args.run_root = args.run_root.resolve()
     args.jobs = args.jobs.resolve()
     args.config_dir = args.root / "configs" / args.config

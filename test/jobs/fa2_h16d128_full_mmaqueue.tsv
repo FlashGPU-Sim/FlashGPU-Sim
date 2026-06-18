@@ -1,2 +1,0 @@
-job_id	stage	case	binary	gtest_filter	config
-h16d128_full_mmaqueue	fa2_small_mmaqueue	H16D128FullB32S256	test/build/bin/hopper/run_fa2_small_h16d128_full_tests	Fa2PrefillFp16SmallTest.H16D128FullB32S256	SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA2_MMAQUEUE
