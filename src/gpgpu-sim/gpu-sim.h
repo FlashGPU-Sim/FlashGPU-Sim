@@ -748,6 +748,7 @@ class gpgpu_sim : public gpgpu_t {
   unsigned long long last_liveness_message_time;
 
   std::map<std::string, FuncCache> m_special_cache_config;
+  std::map<std::string, unsigned> m_kernel_max_dynamic_smem;
 
   std::vector<std::string>
       m_executed_kernel_names;  //< names of kernel for stat printout
@@ -798,6 +799,10 @@ class gpgpu_sim : public gpgpu_t {
   bool has_special_cache_config(std::string kernel_name);
   void change_cache_config(FuncCache cache_config);
   void set_cache_config(std::string kernel_name);
+  void set_kernel_max_dynamic_smem(std::string kernel_name, unsigned bytes);
+  bool has_kernel_max_dynamic_smem(std::string kernel_name);
+  unsigned get_kernel_max_dynamic_smem(std::string kernel_name);
+  void apply_kernel_max_dynamic_smem(std::string kernel_name);
 
   void aggregate_cluster_stats();
 

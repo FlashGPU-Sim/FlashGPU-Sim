@@ -4518,10 +4518,36 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  printf(
-      "GPGPU-Sim PTX: Execution warning: ignoring call to \"%s ( func=%p, "
-      "attr=%d, value=%d )\"\n",
-      __my_func__, func, attr, value);
+
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  function_info *entry = context->get_kernel((const char *)func);
+
+  if (attr == cudaFuncAttributeMaxDynamicSharedMemorySize) {
+    if (value < 0) return g_last_cudaError = cudaErrorInvalidValue;
+    const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
+    unsigned static_smem = kinfo ? kinfo->smem : 0;
+    unsigned max_per_block =
+        context->get_device()->get_gpgpu()->shared_mem_per_block();
+    if (static_smem + (unsigned)value > max_per_block) {
+      printf("GPGPU-Sim PTX: cudaFuncSetAttribute "
+             "MaxDynamicSharedMemorySize invalid for '%s': static=%u, "
+             "dynamic=%u, max_per_block=%u\n",
+             entry->get_name().c_str(), static_smem, (unsigned)value,
+             max_per_block);
+      return g_last_cudaError = cudaErrorInvalidValue;
+    }
+    context->get_device()->get_gpgpu()->set_kernel_max_dynamic_smem(
+        entry->get_name(), (unsigned)value);
+    printf("GPGPU-Sim PTX: cudaFuncSetAttribute "
+           "MaxDynamicSharedMemorySize for '%s' = %u bytes\n",
+           entry->get_name().c_str(), (unsigned)value);
+    return g_last_cudaError = cudaSuccess;
+  }
+
+  printf("GPGPU-Sim PTX: Execution warning: ignoring call to \"%s "
+         "( func=%p, attr=%d, value=%d )\"\n",
+         __my_func__, func, attr, value);
   return g_last_cudaError = cudaSuccess;
 }
 #endif

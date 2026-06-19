@@ -32,6 +32,7 @@
 
 #include "gpu-sim.h"
 
+#include <algorithm>
 #include <math.h>
 #include <signal.h>
 #include <stdio.h>
@@ -1612,12 +1613,57 @@ bool gpgpu_sim::has_special_cache_config(std::string kernel_name) {
   return false;
 }
 
+void gpgpu_sim::set_kernel_max_dynamic_smem(std::string kernel_name,
+                                            unsigned bytes) {
+  m_kernel_max_dynamic_smem[kernel_name] = bytes;
+}
+
+bool gpgpu_sim::has_kernel_max_dynamic_smem(std::string kernel_name) {
+  return m_kernel_max_dynamic_smem.find(kernel_name) !=
+         m_kernel_max_dynamic_smem.end();
+}
+
+unsigned gpgpu_sim::get_kernel_max_dynamic_smem(std::string kernel_name) {
+  std::map<std::string, unsigned>::const_iterator it =
+      m_kernel_max_dynamic_smem.find(kernel_name);
+  if (it == m_kernel_max_dynamic_smem.end()) return 0;
+  return it->second;
+}
+
+void gpgpu_sim::apply_kernel_max_dynamic_smem(std::string kernel_name) {
+  if (!has_kernel_max_dynamic_smem(kernel_name)) return;
+
+  unsigned requested = get_kernel_max_dynamic_smem(kernel_name);
+  unsigned target = std::max(m_shader_config->gpgpu_shmem_sizeDefault,
+                             requested);
+
+  if (m_shader_config->adaptive_cache_config &&
+      !m_shader_config->shmem_opt_list.empty()) {
+    std::vector<unsigned>::const_iterator it = std::lower_bound(
+        m_shader_config->shmem_opt_list.begin(),
+        m_shader_config->shmem_opt_list.end(), target);
+    if (it != m_shader_config->shmem_opt_list.end()) {
+      target = *it;
+    } else {
+      target = m_shader_config->shmem_opt_list.back();
+    }
+  }
+
+  if (target != m_shader_config->gpgpu_shmem_size) {
+    printf("GPGPU-Sim: Apply kernel max dynamic shared memory opt-in for "
+           "'%s': requested=%u, shmem_size=%u\n",
+           kernel_name.c_str(), requested, target);
+  }
+  m_shader_config->gpgpu_shmem_size = target;
+}
+
 void gpgpu_sim::set_cache_config(std::string kernel_name) {
   if (has_special_cache_config(kernel_name)) {
     change_cache_config(get_cache_config(kernel_name));
   } else {
     change_cache_config(FuncCachePreferNone);
   }
+  apply_kernel_max_dynamic_smem(kernel_name);
 }
 
 void gpgpu_sim::change_cache_config(FuncCache cache_config) {
