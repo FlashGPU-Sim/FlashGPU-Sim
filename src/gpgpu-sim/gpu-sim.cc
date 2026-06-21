@@ -423,6 +423,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_clock_gated_reg_file", OPT_BOOL, &gpgpu_clock_gated_reg_file,
       "enable clock gated reg file for power calculations", "0");
   option_parser_register(
+      opp, "-gpgpu_reg_file_read_bytes_per_cycle", OPT_UINT32,
+      &gpgpu_reg_file_read_bytes_per_cycle,
+      "maximum operand collector register-file read bandwidth per shader core "
+      "cycle in bytes (0=unlimited)",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_clock_gated_lanes", OPT_BOOL, &gpgpu_clock_gated_lanes,
       "enable clock gated lanes for power calculations", "0");
   option_parser_register(opp, "-gpgpu_shader_registers", OPT_UINT32,
@@ -755,6 +761,35 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Per-SM WGMMA RS issue chain throttle "
       "<depth,startup_gap,fast_gap,slow_gap,reset_gap>; depth=0 disables",
       "0,0,0,0,64");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_rf_traffic_enable", OPT_BOOL,
+      &gpgpu_wgmma_rf_traffic_enable,
+      "Model WGMMA accumulator register-file traffic as shared RF read "
+      "bandwidth tokens (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_rf_traffic_bytes_per_cycle", OPT_UINT32,
+      &gpgpu_wgmma_rf_traffic_bytes_per_cycle,
+      "Maximum WGMMA RF traffic drain bytes per shader core cycle; 0 uses "
+      "all pending WGMMA RF traffic or all remaining RF read bandwidth when "
+      "share_read_budget is enabled (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_rf_traffic_share_read_budget", OPT_BOOL,
+      &gpgpu_wgmma_rf_traffic_share_read_budget,
+      "Make WGMMA RF traffic consume the normal operand-collector RF read "
+      "bandwidth budget (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_rf_traffic_assume_accumulate", OPT_BOOL,
+      &gpgpu_wgmma_rf_traffic_assume_accumulate,
+      "Include accumulator reads in WGMMA RF traffic tokens (default=1)", "1");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_rf_traffic_include_rs_a", OPT_BOOL,
+      &gpgpu_wgmma_rf_traffic_include_rs_a,
+      "Include register-A operand reads in WGMMA RF traffic tokens for RS "
+      "WGMMA (default=0)",
+      "0");
   option_parser_register(
       opp, "-gpgpu_num_mem_units", OPT_UINT32, &gpgpu_num_mem_units,
       "Number if ldst units (default=1) WARNING: not hooked up to anything",

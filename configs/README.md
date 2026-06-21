@@ -69,18 +69,41 @@ Full Hopper H100 configuration with core, interconnect, and L2 clocks fixed at
 - `-gpgpu_clock_domains 1500:1500:1500:14000`
 
 ### FlashAttention H100 result configs
-The current FlashAttention H100 result set uses four primary configs:
+The current FlashAttention H100 result set uses these primary configs:
 
 - `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700`
   - FA3 baseline and generic H100 baseline.
+- `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA3_WGMMA_RF`
+  - Current FA3 large-run config. Starts from the shared FA register-allocation/PTX-scheduling config, uses TMA 128-byte request granularity with OOB read traffic, and models pending WGMMA accumulator RF pressure as shared operand-collector read traffic.
 - `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA3_TMA128_OOB_READ`
-  - FA3 large-run config. Starts from the FA3 baseline, uses TMA 128-byte request granularity, and models OOB TMA reads as L2 traffic while OOB writes are skipped.
+  - Previous FA3 large-run config without the WGMMA RF pressure model. Starts from the FA3 baseline, uses TMA 128-byte request granularity, and models OOB TMA reads as L2 traffic while OOB writes are skipped.
 - `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA2_REGALLOC`
   - FA2 baseline. Enables PTX register allocation and PTX scheduling.
 - `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA2_IDEAL`
   - FA2 sensitivity config. Enables PTX register allocation/scheduling, idealized tensor-core issue queue, tensor-core init 4, and ideal cp.async frontend latency. Backend memory latency is still modeled.
 - `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA3_TMA128_NO_OOB`
   - FA3 sensitivity config from the final rebuttal archive. Uses TMA 128-byte request granularity and disables synthetic OOB L2 traffic.
+
+The FA3 WGMMA RF config uses an intentionally compact pressure model. Each
+WGMMA MMA injects one accumulator-sized RF-read-equivalent token:
+
+```
+4 warps * 32 lanes * accumulator registers per thread * accumulator bytes
+```
+
+For the common FA3 fp16->fp32 WGMMA shapes, the accumulator footprint is derived
+from the destination vector width, falling back to `N/2` registers per thread
+when the vector width is unavailable. With fp32 accumulators this is `128 *
+(N/2) * 4` bytes per WGMMA, e.g. 32 KiB for `n128` and 44 KiB for `n176`.
+The model drains those tokens at 512 B/cycle/SM from the same 1024 B/cycle/SM
+effective RF read budget used by the normal operand collector. This is not a
+full RF read/write bandwidth model for WGMMA itself; calibrated WGMMA issue,
+compute, and completion timing still determine tensor throughput. The token
+drain models the observed extra RF/collector pressure that pending WGMMA
+accumulator traffic places on independent fp/int instructions. Accumulate and
+overwrite forms are charged the same because the simulator does not yet model a
+separate RF write path, and the focused H100 microbenchmarks did not show a
+large enough accumulate/overwrite split to justify a more invasive model.
 
 Intermediate parameter sweeps for cp.async, TMA response width, WGMMA/MMA queue experiments, and temporary `_TMP` configs are intentionally not kept here. The final raw logs and reports are archived outside this repository in `flashgpu_sim_micro26_rebuttal`.
 

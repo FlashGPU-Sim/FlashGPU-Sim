@@ -72,7 +72,10 @@ public:
                          unsigned long long cycle) const;
   void record_issue_chain(const warp_inst_t *inst, unsigned long long cycle);
   void add_op(unsigned cta_id, unsigned warpgroup_id, unsigned op_uid,
-              unsigned compute_latency, unsigned completion_tail_latency);
+              unsigned compute_latency, unsigned completion_tail_latency,
+              unsigned long long rf_traffic_tokens);
+  unsigned long long drain_rf_traffic(unsigned long long bytes);
+  unsigned long long rf_traffic_backlog() const;
   void commit_group(unsigned cta_id, unsigned warpgroup_id);
   void wait_group(unsigned cta_id, unsigned warpgroup_id,
                   unsigned max_pending_groups, const unsigned *warp_ids,

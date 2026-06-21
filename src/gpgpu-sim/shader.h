@@ -687,6 +687,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     m_num_banks = 0;
     m_shader = NULL;
     m_initialized = false;
+    m_rf_read_bytes_remaining = 0;
   }
   void add_cu_set(unsigned cu_set, unsigned num_cu, unsigned num_dispatch);
   typedef std::vector<register_set *> port_vector_t;
@@ -697,6 +698,9 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
   // modifiers
   bool writeback(warp_inst_t &warp);
+  void begin_cycle();
+  unsigned rf_read_budget_remaining() const;
+  unsigned consume_rf_read_budget(unsigned bytes);
 
   void step() {
     dispatch_ready_cu();
@@ -916,7 +920,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     }
 
     // modifiers
-    std::list<op_t> allocate_reads();
+    std::list<op_t> allocate_reads(unsigned max_grants);
 
     void add_read_requests(collector_unit_t *cu) {
       const op_t *src = cu->get_operands();
@@ -1078,6 +1082,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   unsigned m_num_banks_per_sched;
   unsigned m_num_warp_scheds;
   bool sub_core_model;
+  unsigned m_rf_read_bytes_remaining;
 
   // unsigned m_num_ports;
   // std::vector<warp_inst_t**> m_input;
@@ -1878,6 +1883,7 @@ class shader_core_config : public core_config {
   bool gpgpu_perfect_mem;
   bool gpgpu_clock_gated_reg_file;
   bool gpgpu_clock_gated_lanes;
+  unsigned gpgpu_reg_file_read_bytes_per_cycle;
   enum divergence_support_t model;
   unsigned n_thread_per_shader;
   unsigned n_regfile_gating_group;
@@ -1961,6 +1967,11 @@ class shader_core_config : public core_config {
   char *gpgpu_wgmma_issue_chain_rs;
   unsigned gpgpu_wgmma_issue_chain_ss_config[5];
   unsigned gpgpu_wgmma_issue_chain_rs_config[5];
+  bool gpgpu_wgmma_rf_traffic_enable;
+  unsigned int gpgpu_wgmma_rf_traffic_bytes_per_cycle;
+  bool gpgpu_wgmma_rf_traffic_share_read_budget;
+  bool gpgpu_wgmma_rf_traffic_assume_accumulate;
+  bool gpgpu_wgmma_rf_traffic_include_rs_a;
 
   // Shader core resources
   unsigned gpgpu_shader_registers;
@@ -2133,6 +2144,13 @@ struct shader_core_stats_pod {
 
   // NCU-style warp stall breakdown (accumulated across all SMs and schedulers)
   unsigned long long warp_stall_counts[NUM_STALL_REASONS];
+
+  // WGMMA register-file traffic model counters.
+  unsigned long long wgmma_collector_token_events;
+  unsigned long long wgmma_collector_tokens_added;
+  unsigned long long wgmma_collector_tokens_drained;
+  unsigned long long wgmma_collector_active_cycles;
+  unsigned long long wgmma_collector_max_backlog;
 };
 
 class shader_core_stats : public shader_core_stats_pod {
@@ -2814,6 +2832,8 @@ class shader_core_ctx : public core_t {
   bool wgmma_issued_this_cycle() const { return m_wgmma_issued_this_cycle; }
   void mark_scheduler_issued(unsigned sch_id);
   void mark_wgmma_issued();
+  unsigned long long wgmma_rf_traffic_tokens(const warp_inst_t *inst) const;
+  void drain_wgmma_rf_traffic();
   virtual void issue_warp(register_set &warp, const warp_inst_t *pI,
                           const active_mask_t &active_mask, unsigned warp_id,
                           unsigned sch_id);

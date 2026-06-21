@@ -522,7 +522,10 @@ public:
                          unsigned long long cycle) const;
   void record_issue_chain(const warp_inst_t *inst, unsigned long long cycle);
   void add_op(unsigned cta_id, unsigned warpgroup_id, unsigned op_uid,
-              unsigned compute_latency, unsigned completion_tail_latency);
+              unsigned compute_latency, unsigned completion_tail_latency,
+              unsigned long long rf_traffic_tokens);
+  unsigned long long drain_rf_traffic(unsigned long long bytes);
+  unsigned long long rf_traffic_backlog() const;
   void commit_group(unsigned cta_id, unsigned warpgroup_id);
   void wait_group(unsigned cta_id, unsigned warpgroup_id,
                   unsigned max_pending_groups, const unsigned *warp_ids,
@@ -538,6 +541,7 @@ private:
     unsigned op_uid = 0;
     unsigned compute_remaining = 0;
     unsigned remaining = 0;
+    unsigned long long rf_traffic_remaining = 0;
   };
 
   barrier_set_t *m_barriers;
@@ -602,7 +606,8 @@ void wgmma_unit_t::impl_t::record_issue_chain(const warp_inst_t *inst,
 
 void wgmma_unit_t::impl_t::add_op(unsigned cta_id, unsigned warpgroup_id,
                                   unsigned op_uid, unsigned compute_latency,
-                                  unsigned completion_tail_latency) {
+                                  unsigned completion_tail_latency,
+                                  unsigned long long rf_traffic_tokens) {
   m_group_manager.add_op(cta_id, warpgroup_id, op_uid);
 
   compute_latency = std::max(1u, compute_latency);
@@ -625,7 +630,34 @@ void wgmma_unit_t::impl_t::add_op(unsigned cta_id, unsigned warpgroup_id,
   // may overlap with later WGMMA compute.
   pending.compute_remaining = compute_done_remaining;
   pending.remaining = compute_done_remaining + completion_tail_latency;
+  pending.rf_traffic_remaining = rf_traffic_tokens;
   m_pending_completions.push_back(pending);
+}
+
+unsigned long long
+wgmma_unit_t::impl_t::drain_rf_traffic(unsigned long long bytes) {
+  unsigned long long drained = 0;
+  for (std::vector<pending_completion_t>::iterator it =
+           m_pending_completions.begin();
+       it != m_pending_completions.end() && bytes > 0; ++it) {
+    if (it->rf_traffic_remaining == 0)
+      continue;
+    const unsigned long long take = std::min(bytes, it->rf_traffic_remaining);
+    it->rf_traffic_remaining -= take;
+    bytes -= take;
+    drained += take;
+  }
+  return drained;
+}
+
+unsigned long long wgmma_unit_t::impl_t::rf_traffic_backlog() const {
+  unsigned long long backlog = 0;
+  for (std::vector<pending_completion_t>::const_iterator it =
+           m_pending_completions.begin();
+       it != m_pending_completions.end(); ++it) {
+    backlog += it->rf_traffic_remaining;
+  }
+  return backlog;
 }
 
 void wgmma_unit_t::impl_t::commit_group(unsigned cta_id,
@@ -656,7 +688,8 @@ void wgmma_unit_t::impl_t::cycle() {
 
   for (int i = static_cast<int>(m_pending_completions.size()) - 1; i >= 0;
        --i) {
-    if (m_pending_completions[i].remaining != 0)
+    if (m_pending_completions[i].remaining != 0 ||
+        m_pending_completions[i].rf_traffic_remaining != 0)
       continue;
     wgmma_group_manager_t::wait_result_t completed =
         m_group_manager.complete_op(m_pending_completions[i].key.first,
@@ -703,9 +736,18 @@ void wgmma_unit_t::record_issue_chain(const warp_inst_t *inst,
 
 void wgmma_unit_t::add_op(unsigned cta_id, unsigned warpgroup_id,
                           unsigned op_uid, unsigned compute_latency,
-                          unsigned completion_tail_latency) {
+                          unsigned completion_tail_latency,
+                          unsigned long long rf_traffic_tokens) {
   m_impl->add_op(cta_id, warpgroup_id, op_uid, compute_latency,
-                 completion_tail_latency);
+                 completion_tail_latency, rf_traffic_tokens);
+}
+
+unsigned long long wgmma_unit_t::drain_rf_traffic(unsigned long long bytes) {
+  return m_impl->drain_rf_traffic(bytes);
+}
+
+unsigned long long wgmma_unit_t::rf_traffic_backlog() const {
+  return m_impl->rf_traffic_backlog();
 }
 
 void wgmma_unit_t::commit_group(unsigned cta_id, unsigned warpgroup_id) {

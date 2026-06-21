@@ -40,6 +40,7 @@
 #include "../cuda-sim/cuda-sim.h"
 #include "../cuda-sim/ptx-stats.h"
 #include "../cuda-sim/ptx_sim.h"
+#include "ptx.tab.h"
 #include "../cuda-sim/dyn_ptx_inst.h"
 #include "../statwrapper.h"
 #include "addrdec.h"
@@ -1005,6 +1006,14 @@ void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, in
   for (int i = 0; i < NUM_STALL_REASONS; i++)
     warp_stall_counts[i] += other.warp_stall_counts[i];
 
+  accumulate(wgmma_collector_token_events);
+  accumulate(wgmma_collector_tokens_added);
+  accumulate(wgmma_collector_tokens_drained);
+  accumulate(wgmma_collector_active_cycles);
+  wgmma_collector_max_backlog =
+      std::max(wgmma_collector_max_backlog,
+               other.wgmma_collector_max_backlog);
+
   merge(gpgpu_n_shmem_bank_access);
   merge(n_simt_to_mem);
   merge(n_mem_to_simt);
@@ -1075,6 +1084,12 @@ void shader_core_stats::clear_accumulator() {
 
   for (int i = 0; i < NUM_STALL_REASONS; i++)
     warp_stall_counts[i] = 0;
+
+  accumulate(wgmma_collector_token_events);
+  accumulate(wgmma_collector_tokens_added);
+  accumulate(wgmma_collector_tokens_drained);
+  accumulate(wgmma_collector_active_cycles);
+  accumulate(wgmma_collector_max_backlog);
 
   m_outgoing_traffic_stats->clear();
   m_incoming_traffic_stats->clear();
@@ -1221,6 +1236,17 @@ void shader_core_stats::print(FILE *fout) const {
   for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; i++)
     fprintf(fout, "WS%d:%d\t", i, dual_issue_nums[i]);
   fprintf(fout, "\n");
+
+  fprintf(fout, "WGMMA RF Traffic:\n");
+  fprintf(fout, "  token_events = %llu\n", wgmma_collector_token_events);
+  fprintf(fout, "  tokens_added_bytes = %llu\n",
+          wgmma_collector_tokens_added);
+  fprintf(fout, "  tokens_drained_bytes = %llu\n",
+          wgmma_collector_tokens_drained);
+  fprintf(fout, "  max_backlog_bytes = %llu\n",
+          wgmma_collector_max_backlog);
+  fprintf(fout, "  active_cycles = %llu\n",
+          wgmma_collector_active_cycles);
 
   // NCU-style warp stall breakdown
   {
@@ -1567,6 +1593,93 @@ static bool is_wgmma_warpgroup_opcode(int opcode) {
          is_wgmma_async_group_control_opcode(opcode);
 }
 
+static bool wgmma_collector_debug_enabled() {
+  static int enabled = -1;
+  if (enabled < 0)
+    enabled = getenv("GPGPU_SIM_WGMMA_COLLECTOR_DEBUG") ? 1 : 0;
+  return enabled != 0;
+}
+
+static bool wgmma_collector_debug_take_slot() {
+  static unsigned long long prints = 0;
+  if (!wgmma_collector_debug_enabled())
+    return false;
+  if (prints >= 128)
+    return false;
+  prints++;
+  return true;
+}
+
+static int wgmma_scalar_type_at(const ptx_instruction *ptx_inst,
+                                unsigned index, int fallback) {
+  const std::list<int> scalar_types = ptx_inst->get_scalar_type();
+  if (scalar_types.empty())
+    return fallback;
+  if (index >= scalar_types.size())
+    return fallback;
+  std::list<int>::const_iterator it = scalar_types.begin();
+  for (unsigned i = 0; i < index; ++i)
+    ++it;
+  return *it;
+}
+
+static unsigned scalar_type_bytes(int type) {
+  size_t bits = 0;
+  int basic_type = 0;
+  type_info_key::type_decode(type, bits, basic_type);
+  return static_cast<unsigned>(std::max<size_t>(1, (bits + 7) / 8));
+}
+
+static unsigned wgmma_accumulator_regs_per_thread(
+    const ptx_instruction *ptx_inst) {
+  if (ptx_inst->get_num_operands() > 0) {
+    const operand_info &dst = ptx_inst->operand_lookup(0);
+    if (dst.is_vector())
+      return dst.get_vect_nelem();
+  }
+  const int n = ptx_inst->get_wgmma_shape_n();
+  return n > 0 ? static_cast<unsigned>(n / 2) : 0;
+}
+
+static unsigned wgmma_register_a_regs_per_thread(
+    const ptx_instruction *ptx_inst) {
+  if (ptx_inst->get_num_operands() < 2)
+    return 0;
+  const operand_info &src_a = ptx_inst->operand_lookup(1);
+  return src_a.is_vector() ? src_a.get_vect_nelem() : 0;
+}
+
+static unsigned long long wgmma_collector_token_bytes_from_inst(
+    const warp_inst_t *inst, const shader_core_config *config) {
+  if (!config->gpgpu_wgmma_rf_traffic_enable)
+    return 0;
+  if (!is_wgmma_mma_async_opcode(wgmma_opcode(inst)))
+    return 0;
+
+  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
+  const unsigned long long warpgroup_threads =
+      static_cast<unsigned long long>(WGMMA_WARPGROUP_SIZE) * config->warp_size;
+  const unsigned accumulator_type =
+      static_cast<unsigned>(wgmma_scalar_type_at(ptx_inst, 0, F32_TYPE));
+  const unsigned accumulator_bytes =
+      wgmma_accumulator_regs_per_thread(ptx_inst) *
+      scalar_type_bytes(accumulator_type);
+
+  unsigned long long tokens = warpgroup_threads * accumulator_bytes;
+  if (config->gpgpu_wgmma_rf_traffic_assume_accumulate)
+    tokens += warpgroup_threads * accumulator_bytes;
+
+  if (config->gpgpu_wgmma_rf_traffic_include_rs_a) {
+    // Register A operands are PTX registers, so count 32-bit register reads.
+    tokens += warpgroup_threads *
+              static_cast<unsigned long long>(
+                  wgmma_register_a_regs_per_thread(ptx_inst)) *
+              4ULL;
+  }
+
+  return tokens;
+}
+
 static unsigned wgmma_wait_group_num_from_inst(const warp_inst_t *inst) {
   assert(wgmma_opcode(inst) == WGMMA_WAIT_GROUP_OP);
   const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
@@ -1618,12 +1731,64 @@ void shader_core_ctx::mark_wgmma_issued() {
       all_scheduler_issue_mask(m_config->gpgpu_num_sched_per_core);
 }
 
+unsigned long long shader_core_ctx::wgmma_rf_traffic_tokens(
+    const warp_inst_t *inst) const {
+  return wgmma_collector_token_bytes_from_inst(inst, m_config);
+}
+
+void shader_core_ctx::drain_wgmma_rf_traffic() {
+  if (!m_config->gpgpu_wgmma_rf_traffic_enable)
+    return;
+
+  const unsigned long long backlog = m_wgmma.rf_traffic_backlog();
+  if (backlog == 0)
+    return;
+
+  unsigned long long request = backlog;
+  if (m_config->gpgpu_wgmma_rf_traffic_bytes_per_cycle > 0) {
+    request = std::min<unsigned long long>(
+        request, m_config->gpgpu_wgmma_rf_traffic_bytes_per_cycle);
+  }
+
+  if (m_config->gpgpu_wgmma_rf_traffic_share_read_budget) {
+    unsigned budget = m_operand_collector.rf_read_budget_remaining();
+    if (budget == 0)
+      return;
+    request = std::min<unsigned long long>(request, budget);
+    const unsigned granted =
+        m_operand_collector.consume_rf_read_budget(
+            static_cast<unsigned>(request));
+    request = granted;
+  }
+
+  if (request == 0)
+    return;
+
+  const unsigned long long drained = m_wgmma.drain_rf_traffic(request);
+  m_stats->wgmma_collector_active_cycles++;
+  m_stats->wgmma_collector_tokens_drained += drained;
+  m_stats->wgmma_collector_max_backlog =
+      std::max(m_stats->wgmma_collector_max_backlog,
+               m_wgmma.rf_traffic_backlog());
+
+  if (drained > 0 && wgmma_collector_debug_take_slot()) {
+    const unsigned long long now =
+        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+    printf("WGMMA_RF_TRAFFIC drain sid=%u cycle=%llu request=%u drain=%llu "
+           "backlog=%llu\n",
+           m_sid, now, static_cast<unsigned>(request), drained,
+           m_wgmma.rf_traffic_backlog());
+  }
+}
+
 void shader_core_ctx::issue_wgmma_warpgroup(register_set &pipe_reg_set,
                                             const warp_inst_t *next_inst,
                                             const unsigned *warp_ids,
                                             unsigned count, unsigned sch_id) {
   assert(count == WGMMA_WARPGROUP_SIZE);
   mark_wgmma_issued();
+  const unsigned long long rf_traffic_tokens =
+      wgmma_rf_traffic_tokens(next_inst);
   const unsigned long long now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
   m_wgmma.record_issue_chain(next_inst, now);
   unsigned representative_warp_id = warp_ids[0];
@@ -1650,7 +1815,20 @@ void shader_core_ctx::issue_wgmma_warpgroup(register_set &pipe_reg_set,
   m_wgmma.add_op(m_warp[representative_warp_id]->get_cta_id(),
                  wgmma_cta_warpgroup_id(representative_warp_id),
                  (*pipe_reg)->get_uid(), compute_latency,
-                 (*pipe_reg)->wgmma_completion_tail_latency);
+                 (*pipe_reg)->wgmma_completion_tail_latency,
+                 rf_traffic_tokens);
+  if (rf_traffic_tokens > 0) {
+    m_stats->wgmma_collector_token_events++;
+    m_stats->wgmma_collector_tokens_added += rf_traffic_tokens;
+    m_stats->wgmma_collector_max_backlog =
+        std::max(m_stats->wgmma_collector_max_backlog,
+                 m_wgmma.rf_traffic_backlog());
+    if (wgmma_collector_debug_take_slot()) {
+      printf("WGMMA_RF_TRAFFIC token sid=%u cycle=%llu add=%llu "
+             "backlog=%llu\n",
+             m_sid, now, rf_traffic_tokens, m_wgmma.rf_traffic_backlog());
+    }
+  }
 
   m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
 
@@ -2833,6 +3011,8 @@ void swl_scheduler::order_warps() {
 }
 
 void shader_core_ctx::read_operands() {
+  m_operand_collector.begin_cycle();
+  drain_wgmma_rf_traffic();
   for (unsigned int i = 0; i < m_config->reg_file_port_throughput; ++i)
     m_operand_collector.step();
 }
@@ -5112,7 +5292,8 @@ void shader_core_ctx::cache_flush() { m_ldst_unit->flush(); }
 void shader_core_ctx::cache_invalidate() { m_ldst_unit->invalidate(); }
 
 // modifiers
-std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
+std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads(
+    unsigned max_grants) {
   std::list<op_t>
       result;  // a list of registers that (a) are in different register banks,
                // (b) do not go to the same operand collector
@@ -5183,13 +5364,16 @@ std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
   /// <--- end code from booksim
 
   m_last_cu = _pri;
+  unsigned grants = 0;
   for (unsigned i = 0; i < m_num_banks; i++) {
     if (_inmatch[i] != -1) {
       if (!m_allocated_bank[i].is_write()) {
+        if (grants >= max_grants) continue;
         unsigned bank = (unsigned)i;
         op_t &op = m_queue[bank].front();
         result.push_back(op);
         m_queue[bank].pop_front();
+        grants++;
       }
     }
   }
@@ -5926,12 +6110,11 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
         bool allocated = false;
         unsigned cuLowerBound = 0;
         unsigned cuUpperBound = cu_set.size();
-        unsigned schd_id;
         if (sub_core_model) {
           // Sub core model only allocates on the subset of CUs assigned to the
           // scheduler that issued
           unsigned reg_id = (*inp.m_in[i]).get_ready_reg_id();
-          schd_id = (*inp.m_in[i]).get_schd_id(reg_id);
+          unsigned schd_id = (*inp.m_in[i]).get_schd_id(reg_id);
           assert(cu_set.size() % m_num_warp_scheds == 0 &&
                  cu_set.size() >= m_num_warp_scheds);
           unsigned cusPerSched = cu_set.size() / m_num_warp_scheds;
@@ -5947,7 +6130,9 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
             break;
           }
         }
-        if (allocated) break;  // cu has been allocated, no need to search more.
+        if (allocated) {
+          break;  // cu has been allocated, no need to search more.
+        }
       }
       // break;  // can only service a single input, if it failed it will fail
       // for
@@ -5956,9 +6141,46 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
   }
 }
 
+void opndcoll_rfu_t::begin_cycle() {
+  m_rf_read_bytes_remaining =
+      m_shader->get_config()->gpgpu_reg_file_read_bytes_per_cycle;
+}
+
+unsigned opndcoll_rfu_t::rf_read_budget_remaining() const {
+  const unsigned read_limit =
+      m_shader->get_config()->gpgpu_reg_file_read_bytes_per_cycle;
+  if (read_limit == 0)
+    return static_cast<unsigned>(-1);
+  return m_rf_read_bytes_remaining;
+}
+
+unsigned opndcoll_rfu_t::consume_rf_read_budget(unsigned bytes) {
+  if (bytes == 0)
+    return 0;
+
+  const unsigned read_limit =
+      m_shader->get_config()->gpgpu_reg_file_read_bytes_per_cycle;
+  if (read_limit == 0)
+    return bytes;
+
+  const unsigned consumed = std::min(bytes, m_rf_read_bytes_remaining);
+  m_rf_read_bytes_remaining -= consumed;
+  return consumed;
+}
+
 void opndcoll_rfu_t::allocate_reads() {
   // process read requests that do not have conflicts
-  std::list<op_t> allocated = m_arbiter.allocate_reads();
+  unsigned max_grants = static_cast<unsigned>(-1);
+  const unsigned read_limit =
+      m_shader->get_config()->gpgpu_reg_file_read_bytes_per_cycle;
+  const unsigned bytes_per_operand =
+      m_shader->get_config()->warp_size * sizeof(unsigned);
+  if (read_limit > 0) {
+    max_grants = m_rf_read_bytes_remaining / bytes_per_operand;
+    if (max_grants == 0) return;
+  }
+
+  std::list<op_t> allocated = m_arbiter.allocate_reads(max_grants);
   std::map<unsigned, op_t> read_ops;
   for (std::list<op_t>::iterator r = allocated.begin(); r != allocated.end();
        r++) {
@@ -5976,6 +6198,10 @@ void opndcoll_rfu_t::allocate_reads() {
     unsigned cu = op.get_oc_id();
     unsigned operand = op.get_operand();
     m_cu[cu]->collect_operand(operand);
+    if (read_limit > 0) {
+      assert(m_rf_read_bytes_remaining >= bytes_per_operand);
+      m_rf_read_bytes_remaining -= bytes_per_operand;
+    }
     if (m_shader->get_config()->gpgpu_clock_gated_reg_file) {
       unsigned active_count = 0;
       for (unsigned i = 0; i < m_shader->get_config()->warp_size;
