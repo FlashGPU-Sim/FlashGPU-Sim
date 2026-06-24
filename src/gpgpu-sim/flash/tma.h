@@ -40,6 +40,32 @@ struct tma_progress_counters_t {
 
 tma_progress_counters_t get_global_tma_progress_counters();
 
+struct cp_async_debug_counters_t {
+  unsigned long long tx_started = 0;
+  unsigned long long tx_completed = 0;
+  unsigned long long mf_issued = 0;
+  unsigned long long mf_responses = 0;
+  unsigned long long bytes_issued = 0;
+  unsigned long long bytes_completed = 0;
+  unsigned long long issue_queue_cycles = 0;
+  unsigned long long issue_active_cycles = 0;
+  unsigned long long issue_width_limited_cycles = 0;
+  unsigned long long issue_blocked_inflight_cycles = 0;
+  unsigned long long issue_blocked_icnt_cycles = 0;
+  unsigned long long max_issue_queue = 0;
+  unsigned long long max_inflight = 0;
+  unsigned long long wait_calls = 0;
+  unsigned long long wait_immediate = 0;
+  unsigned long long wait_blocked = 0;
+  unsigned long long wait_releases = 0;
+  unsigned long long waiting_warp_cycles = 0;
+  unsigned long long response_fifo_nonempty_cycles = 0;
+  unsigned long long response_width_limited_cycles = 0;
+  unsigned long long max_response_fifo = 0;
+};
+
+cp_async_debug_counters_t get_global_cp_async_debug_counters();
+
 class tma_unit_impl_t;
 class tma_unit_t {
 public:

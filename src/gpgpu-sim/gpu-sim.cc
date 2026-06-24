@@ -709,6 +709,13 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       &gpgpu_tma_request_width,
       "TMA memory requests issued per TMA unit per cycle (default=1)", "1");
   option_parser_register(
+      opp, "-gpgpu_tma_request_bytes_per_cycle", OPT_UINT32,
+      &gpgpu_tma_request_bytes_per_cycle,
+      "TMA request-side byte issue budget per TMA unit per cycle "
+      "(default=0, disabled; e.g. 32 makes one 128B coalesced request consume "
+      "four cycles)",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_cp_async_max_inflight", OPT_UINT32,
       &gpgpu_cp_async_max_inflight,
       "Maximum in-flight ordinary cp.async memory requests per SM "

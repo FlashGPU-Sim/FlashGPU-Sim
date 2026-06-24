@@ -1952,6 +1952,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_tma_response_width;
   unsigned int gpgpu_tma_request_granularity;
   unsigned int gpgpu_tma_request_width;
+  unsigned int gpgpu_tma_request_bytes_per_cycle;
   unsigned int gpgpu_cp_async_max_inflight;
   unsigned int gpgpu_cp_async_request_width;
   unsigned int gpgpu_cp_async_response_width;

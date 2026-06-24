@@ -43,6 +43,40 @@ static std::atomic<unsigned long long> g_tma_write_mf_responses{0};
 static std::atomic<unsigned long long> g_tma_bytes_issued{0};
 static std::atomic<unsigned long long> g_tma_bytes_completed{0};
 
+static std::atomic<unsigned long long> g_cp_async_tx_started{0};
+static std::atomic<unsigned long long> g_cp_async_tx_completed{0};
+static std::atomic<unsigned long long> g_cp_async_mf_issued{0};
+static std::atomic<unsigned long long> g_cp_async_mf_responses{0};
+static std::atomic<unsigned long long> g_cp_async_bytes_issued{0};
+static std::atomic<unsigned long long> g_cp_async_bytes_completed{0};
+static std::atomic<unsigned long long> g_cp_async_issue_queue_cycles{0};
+static std::atomic<unsigned long long> g_cp_async_issue_active_cycles{0};
+static std::atomic<unsigned long long> g_cp_async_issue_width_limited_cycles{0};
+static std::atomic<unsigned long long> g_cp_async_issue_blocked_inflight_cycles{
+    0};
+static std::atomic<unsigned long long> g_cp_async_issue_blocked_icnt_cycles{0};
+static std::atomic<unsigned long long> g_cp_async_max_issue_queue{0};
+static std::atomic<unsigned long long> g_cp_async_max_inflight{0};
+static std::atomic<unsigned long long> g_cp_async_wait_calls{0};
+static std::atomic<unsigned long long> g_cp_async_wait_immediate{0};
+static std::atomic<unsigned long long> g_cp_async_wait_blocked{0};
+static std::atomic<unsigned long long> g_cp_async_wait_releases{0};
+static std::atomic<unsigned long long> g_cp_async_waiting_warp_cycles{0};
+static std::atomic<unsigned long long> g_cp_async_response_fifo_nonempty_cycles{
+    0};
+static std::atomic<unsigned long long> g_cp_async_response_width_limited_cycles{
+    0};
+static std::atomic<unsigned long long> g_cp_async_max_response_fifo{0};
+
+static void atomic_update_max(std::atomic<unsigned long long> &target,
+                              unsigned long long value) {
+  unsigned long long current = target.load(std::memory_order_relaxed);
+  while (current < value && !target.compare_exchange_weak(
+                                current, value, std::memory_order_relaxed,
+                                std::memory_order_relaxed)) {
+  }
+}
+
 tma_progress_counters_t get_global_tma_progress_counters() {
   tma_progress_counters_t counters;
   counters.tx_started = g_tma_tx_started.load(std::memory_order_relaxed);
@@ -68,6 +102,50 @@ tma_progress_counters_t get_global_tma_progress_counters() {
   counters.bytes_issued = g_tma_bytes_issued.load(std::memory_order_relaxed);
   counters.bytes_completed =
       g_tma_bytes_completed.load(std::memory_order_relaxed);
+  return counters;
+}
+
+cp_async_debug_counters_t get_global_cp_async_debug_counters() {
+  cp_async_debug_counters_t counters;
+  counters.tx_started = g_cp_async_tx_started.load(std::memory_order_relaxed);
+  counters.tx_completed =
+      g_cp_async_tx_completed.load(std::memory_order_relaxed);
+  counters.mf_issued = g_cp_async_mf_issued.load(std::memory_order_relaxed);
+  counters.mf_responses =
+      g_cp_async_mf_responses.load(std::memory_order_relaxed);
+  counters.bytes_issued =
+      g_cp_async_bytes_issued.load(std::memory_order_relaxed);
+  counters.bytes_completed =
+      g_cp_async_bytes_completed.load(std::memory_order_relaxed);
+  counters.issue_queue_cycles =
+      g_cp_async_issue_queue_cycles.load(std::memory_order_relaxed);
+  counters.issue_active_cycles =
+      g_cp_async_issue_active_cycles.load(std::memory_order_relaxed);
+  counters.issue_width_limited_cycles =
+      g_cp_async_issue_width_limited_cycles.load(std::memory_order_relaxed);
+  counters.issue_blocked_inflight_cycles =
+      g_cp_async_issue_blocked_inflight_cycles.load(std::memory_order_relaxed);
+  counters.issue_blocked_icnt_cycles =
+      g_cp_async_issue_blocked_icnt_cycles.load(std::memory_order_relaxed);
+  counters.max_issue_queue =
+      g_cp_async_max_issue_queue.load(std::memory_order_relaxed);
+  counters.max_inflight =
+      g_cp_async_max_inflight.load(std::memory_order_relaxed);
+  counters.wait_calls = g_cp_async_wait_calls.load(std::memory_order_relaxed);
+  counters.wait_immediate =
+      g_cp_async_wait_immediate.load(std::memory_order_relaxed);
+  counters.wait_blocked =
+      g_cp_async_wait_blocked.load(std::memory_order_relaxed);
+  counters.wait_releases =
+      g_cp_async_wait_releases.load(std::memory_order_relaxed);
+  counters.waiting_warp_cycles =
+      g_cp_async_waiting_warp_cycles.load(std::memory_order_relaxed);
+  counters.response_fifo_nonempty_cycles =
+      g_cp_async_response_fifo_nonempty_cycles.load(std::memory_order_relaxed);
+  counters.response_width_limited_cycles =
+      g_cp_async_response_width_limited_cycles.load(std::memory_order_relaxed);
+  counters.max_response_fifo =
+      g_cp_async_max_response_fifo.load(std::memory_order_relaxed);
   return counters;
 }
 
@@ -646,6 +724,7 @@ private:
 
   tma_agu_unit_t m_agu;
   unsigned m_mf_inflight = 0; // Actual mem_fetch in L2 pipeline (not skips)
+  unsigned m_request_byte_credit = 0;
 
   unsigned long long current_cycle() const {
     return m_shader_ctx->get_gpu()->gpu_sim_cycle +
@@ -896,9 +975,11 @@ private:
     assert(group_it != m_cp_group_info.end());
     bool should_release = group_it->second.complete_tx(tx_uid);
     if (should_release) {
+      g_cp_async_wait_releases.fetch_add(1, std::memory_order_relaxed);
       m_barriers->release_cp_async_warp(warp_id);
     }
 
+    g_cp_async_tx_completed.fetch_add(1, std::memory_order_relaxed);
     m_cp_transactions.erase(it);
   }
 
@@ -915,6 +996,7 @@ private:
 
     assert(mf->get_access_type() == CP_ASYNC_ACC_R);
     tx.mf_received_count++;
+    g_cp_async_mf_responses.fetch_add(1, std::memory_order_relaxed);
     if (tx.first_response_cycle == 0)
       tx.first_response_cycle = current_cycle();
 
@@ -922,6 +1004,8 @@ private:
     unsigned parent_size = parent_mf->get_data_size();
     unsigned bytes_to_add = (mf_size > parent_size) ? parent_size : mf_size;
     tx.bytes_completed += bytes_to_add;
+    g_cp_async_bytes_completed.fetch_add(bytes_to_add,
+                                         std::memory_order_relaxed);
 
     bool parent_complete = false;
     auto pending_it = m_cp_mf_pending_bytes.find(parent_uid);
@@ -950,6 +1034,10 @@ private:
     if (m_cp_issue_queue.empty())
       return;
 
+    g_cp_async_issue_queue_cycles.fetch_add(1, std::memory_order_relaxed);
+    atomic_update_max(g_cp_async_max_issue_queue, m_cp_issue_queue.size());
+    atomic_update_max(g_cp_async_max_inflight, m_cp_mf_inflight);
+
     unsigned max_inflight =
         m_shader_ctx->get_config()->gpgpu_cp_async_max_inflight;
     unsigned request_width =
@@ -959,10 +1047,16 @@ private:
     unsigned issued_requests = 0;
 
     while (issued_requests < request_width && !m_cp_issue_queue.empty()) {
-      if (max_inflight > 0 && m_cp_mf_inflight >= max_inflight)
+      if (max_inflight > 0 && m_cp_mf_inflight >= max_inflight) {
+        g_cp_async_issue_blocked_inflight_cycles.fetch_add(
+            1, std::memory_order_relaxed);
         break;
-      if (m_icnt->full(READ_PACKET_SIZE, false))
+      }
+      if (m_icnt->full(READ_PACKET_SIZE, false)) {
+        g_cp_async_issue_blocked_icnt_cycles.fetch_add(
+            1, std::memory_order_relaxed);
         break;
+      }
 
       unsigned tx_uid = m_cp_issue_queue.front();
       auto tx_it = m_cp_transactions.find(tx_uid);
@@ -978,11 +1072,21 @@ private:
       if (tx.first_issue_cycle == 0)
         tx.first_issue_cycle = current_cycle();
       tx.mf_issued_count++;
+      g_cp_async_mf_issued.fetch_add(1, std::memory_order_relaxed);
+      g_cp_async_bytes_issued.fetch_add(tx.access.get_size(),
+                                        std::memory_order_relaxed);
       m_icnt->push(mf);
       m_cp_mf_inflight++;
+      atomic_update_max(g_cp_async_max_inflight, m_cp_mf_inflight);
       issued_requests++;
       m_cp_issue_queue.pop_front();
     }
+
+    if (issued_requests > 0)
+      g_cp_async_issue_active_cycles.fetch_add(1, std::memory_order_relaxed);
+    if (issued_requests >= request_width && !m_cp_issue_queue.empty())
+      g_cp_async_issue_width_limited_cycles.fetch_add(
+          1, std::memory_order_relaxed);
   }
 
 public:
@@ -1162,6 +1266,7 @@ public:
       tx.create_cycle = current_cycle();
 
       m_cp_transactions.emplace(tx_uid, tx);
+      g_cp_async_tx_started.fetch_add(1, std::memory_order_relaxed);
       group.add_tx(tx_uid);
 
       if (m_shader_ctx->get_config()->gpgpu_cp_async_idealized_memory != 0) {
@@ -1179,18 +1284,38 @@ public:
   void wait_cp_async_group(unsigned cta_id, unsigned warp_id,
                            unsigned max_pending_groups) {
     auto key = std::make_pair(cta_id, warp_id);
+    g_cp_async_wait_calls.fetch_add(1, std::memory_order_relaxed);
     m_barriers->wait_cp_async_group(warp_id);
     auto it = m_cp_group_info.find(key);
     if (it == m_cp_group_info.end()) {
+      g_cp_async_wait_immediate.fetch_add(1, std::memory_order_relaxed);
       m_barriers->release_cp_async_warp(warp_id);
       return;
     }
     bool satisfied = it->second.wait_group(max_pending_groups);
-    if (satisfied)
+    if (satisfied) {
+      g_cp_async_wait_immediate.fetch_add(1, std::memory_order_relaxed);
       m_barriers->release_cp_async_warp(warp_id);
+    } else {
+      g_cp_async_wait_blocked.fetch_add(1, std::memory_order_relaxed);
+    }
   }
 
   void cycle() {
+    const auto *config = m_shader_ctx->get_config();
+    const unsigned request_bytes_per_cycle =
+        config->gpgpu_tma_request_bytes_per_cycle;
+    const uint32_t request_granularity =
+        effective_tma_request_granularity(config);
+    if (request_bytes_per_cycle > 0) {
+      const unsigned request_width =
+          config->gpgpu_tma_request_width ? config->gpgpu_tma_request_width : 1;
+      const unsigned credit_cap =
+          std::max(request_bytes_per_cycle,
+                   request_width * static_cast<unsigned>(request_granularity));
+      m_request_byte_credit =
+          std::min(m_request_byte_credit + request_bytes_per_cycle, credit_cap);
+    }
 
     // Process delayed arrive_tx notifications
     if (!m_pending_arrives.empty()) {
@@ -1217,6 +1342,16 @@ public:
       }
     }
 
+    unsigned cp_waiting_warps = 0;
+    for (const auto &entry : m_cp_group_info) {
+      if (entry.second.is_waiting)
+        cp_waiting_warps++;
+    }
+    if (cp_waiting_warps > 0) {
+      g_cp_async_waiting_warp_cycles.fetch_add(cp_waiting_warps,
+                                               std::memory_order_relaxed);
+    }
+
     // Process pending async-copy/TMA responses.
     unsigned response_width =
         m_shader_ctx->get_config()->gpgpu_tma_response_width
@@ -1228,11 +1363,19 @@ public:
             : 1;
     unsigned tma_responses = 0;
     unsigned cp_responses = 0;
+    if (!m_response_fifo.empty()) {
+      g_cp_async_response_fifo_nonempty_cycles.fetch_add(
+          1, std::memory_order_relaxed);
+      atomic_update_max(g_cp_async_max_response_fifo, m_response_fifo.size());
+    }
     while (!m_response_fifo.empty()) {
       mem_fetch *mf = m_response_fifo.front();
       if (mf->get_access_type() == CP_ASYNC_ACC_R) {
-        if (cp_responses >= cp_response_width)
+        if (cp_responses >= cp_response_width) {
+          g_cp_async_response_width_limited_cycles.fetch_add(
+              1, std::memory_order_relaxed);
           break;
+        }
         m_response_fifo.pop_front();
         process_cp_async_response(mf);
         cp_responses++;
@@ -1405,8 +1548,6 @@ public:
 
         // Loop: batch-consume consecutive skip-OOB requests in one cycle,
         // then issue up to request_width mem_fetches to L2 before breaking.
-        const uint32_t request_granularity =
-            effective_tma_request_granularity(m_shader_ctx->get_config());
         while (issued_requests < request_width && !transaction_finalized) {
           if (max_inflight > 0 && m_mf_inflight >= max_inflight)
             break;
@@ -1414,6 +1555,9 @@ public:
               tx.m_mf_tx_inflight >= tx_quota)
             break;
           if (m_icnt->full(packet_size, is_write))
+            break;
+          if (request_bytes_per_cycle > 0 &&
+              m_request_byte_credit < request_granularity)
             break;
 
           bool issued_this_iteration = false;
@@ -1439,6 +1583,9 @@ public:
 
             if (skip_l2) {
               // No interconnect needed; just count bytes.
+              if (request_bytes_per_cycle > 0)
+                m_request_byte_credit -= std::min<unsigned>(
+                    m_request_byte_credit, std::max(size, request_granularity));
               tx.m_bytes_completed += size;
               record_tma_bytes_completed(size);
               if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
@@ -1515,6 +1662,9 @@ public:
             m_mf_inflight++;
             tx.m_mf_tx_inflight++;
             record_tma_mf_issued(is_write, size);
+            if (request_bytes_per_cycle > 0)
+              m_request_byte_credit -=
+                  std::min<unsigned>(m_request_byte_credit, size);
             issued_requests++;
             issued_this_iteration = true;
             break;
@@ -1556,6 +1706,7 @@ public:
                    m_shader_ctx->get_gpu()->gpu_sim_cycle +
                        m_shader_ctx->get_gpu()->gpu_tot_sim_cycle);
     m_response_fifo.push_back(mf);
+    atomic_update_max(g_cp_async_max_response_fifo, m_response_fifo.size());
   }
 
   bool response_buffer_full() const {
