@@ -44,6 +44,7 @@ class frfcfs_scheduler {
                    memory_stats_manager_t *stats);
   void add_req(dram_req_t *req);
   void data_collection(unsigned bank);
+  bool has_rowhit(unsigned bank, unsigned curr_row) const;
   dram_req_t *schedule(unsigned bank, unsigned curr_row);
   void print(FILE *fp);
   unsigned num_pending() const { return m_num_pending; }

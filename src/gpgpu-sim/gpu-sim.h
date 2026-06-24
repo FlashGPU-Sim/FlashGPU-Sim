@@ -341,6 +341,7 @@ class memory_config {
   bool l2_ideal;
   unsigned gpgpu_frfcfs_dram_sched_queue_size;
   unsigned gpgpu_dram_return_queue_size;
+  unsigned gpgpu_dram_frfcfs_rowhit_first;
   enum dram_ctrl_t scheduler_type;
   bool gpgpu_memlatency_stat;
   unsigned m_n_mem;
@@ -349,6 +350,8 @@ class memory_config {
   unsigned gpu_n_mem_per_ctrlr;
 
   unsigned rop_latency;
+  unsigned l2_partition_count;
+  unsigned l2_partition_extra_latency;
   unsigned dram_latency;
 
   // DRAM parameters

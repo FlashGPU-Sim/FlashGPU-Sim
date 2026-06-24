@@ -37,6 +37,7 @@
 
 #include <list>
 #include <queue>
+#include <vector>
 
 class mem_fetch;
 
@@ -189,6 +190,8 @@ class memory_sub_partition {
   bool full(unsigned size) const;
   void record_full_state(unsigned size);
   void accumulate_full_state_stats(unsigned long long *stats) const;
+  void accumulate_l2_partition_stats(unsigned long long &remote_accesses,
+                                     unsigned long long &extra_latency) const;
   void push(class mem_fetch *mf, unsigned long long clock_cycle);
   class mem_fetch *pop();
   class mem_fetch *top();
@@ -235,9 +238,22 @@ class memory_sub_partition {
   // model delay of ROP units with a fixed latency
   struct rop_delay_t {
     unsigned long long ready_cycle;
+    unsigned long long sequence;
     class mem_fetch *req;
   };
-  std::queue<rop_delay_t> m_rop;
+  struct rop_delay_compare {
+    bool operator()(const rop_delay_t &lhs, const rop_delay_t &rhs) const {
+      if (lhs.ready_cycle != rhs.ready_cycle)
+        return lhs.ready_cycle > rhs.ready_cycle;
+      return lhs.sequence > rhs.sequence;
+    }
+  };
+  typedef std::priority_queue<rop_delay_t, std::vector<rop_delay_t>,
+                              rop_delay_compare>
+      rop_delay_queue_t;
+  rop_delay_queue_t m_rop_local;
+  rop_delay_queue_t m_rop_remote;
+  unsigned long long m_next_rop_sequence;
 
   // these are various FIFOs between units within a memory partition
   fifo_pipeline<mem_fetch> *m_icnt_L2_queue;
@@ -247,6 +263,8 @@ class memory_sub_partition {
 
   unsigned long long
       m_full_state_stats[NUM_MEM_SUB_PARTITION_FULL_STATS];
+  unsigned long long m_l2_partition_remote_accesses;
+  unsigned long long m_l2_partition_extra_latency_cycles;
 
   class mem_fetch *L2dramout;
   unsigned long long int wb_addr;
@@ -257,7 +275,11 @@ class memory_sub_partition {
 
   friend class L2interface;
 
+  unsigned l2_partition_extra_latency(const mem_fetch *mf) const;
   std::vector<mem_fetch *> breakdown_request_to_sector_requests(mem_fetch *mf);
+  void push_rop_delay(mem_fetch *mf, unsigned long long ready_cycle,
+                      bool remote);
+  bool pop_ready_rop(unsigned long long cycle, mem_fetch *&mf);
 
   // This is a cycle offset that has to be applied to the l2 accesses to account
   // for the cudamemcpy read/writes. We want GPGPU-Sim to only count cycles for

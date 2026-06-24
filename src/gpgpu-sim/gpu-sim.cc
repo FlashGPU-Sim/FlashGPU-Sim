@@ -299,6 +299,12 @@ void memory_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_dram_return_queue_size", OPT_INT32,
                          &gpgpu_dram_return_queue_size,
                          "0 = unlimited (default); # entries per chip", "0");
+  option_parser_register(
+      opp, "-gpgpu_dram_frfcfs_rowhit_first", OPT_UINT32,
+      &gpgpu_dram_frfcfs_rowhit_first,
+      "Prefer banks with row-hit requests when assigning FR-FCFS requests to "
+      "banks. 0 = legacy round-robin bank assignment.",
+      "0");
   option_parser_register(opp, "-gpgpu_dram_buswidth", OPT_UINT32, &busW,
                          "default = 4 bytes (8 bytes per cycle at DDR)", "4");
   option_parser_register(
@@ -316,6 +322,17 @@ void memory_config::reg_options(class OptionParser *opp) {
       "4:2:8:12:21:13:34:9:4:5:13:1:0:0");
   option_parser_register(opp, "-gpgpu_l2_rop_latency", OPT_UINT32, &rop_latency,
                          "ROP queue latency (default 85)", "85");
+  option_parser_register(
+      opp, "-gpgpu_l2_partition_count", OPT_UINT32, &l2_partition_count,
+      "Number of coarse L2/NOC locality partitions used for remote L2 latency "
+      "modeling. 1 disables remote partition detection.",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_partition_extra_latency", OPT_UINT32,
+      &l2_partition_extra_latency,
+      "Extra cycles charged when an SM accesses a remote coarse L2 partition "
+      "(default 0)",
+      "0");
   option_parser_register(opp, "-dram_latency", OPT_UINT32, &dram_latency,
                          "DRAM latency (default 30)", "30");
   option_parser_register(opp, "-dram_dual_bus_interface", OPT_UINT32,
@@ -1896,6 +1913,52 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
                static_cast<mem_sub_partition_full_stat>(i)),
            mem_sub_part_full_stats[i]);
   }
+  unsigned long long l2_partition_remote_accesses = 0;
+  unsigned long long l2_partition_extra_latency_cycles = 0;
+  for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
+    m_memory_sub_partition[i]->accumulate_l2_partition_stats(
+        l2_partition_remote_accesses, l2_partition_extra_latency_cycles);
+  }
+  printf("l2_partition_remote_accesses = %llu\n",
+         l2_partition_remote_accesses);
+  printf("l2_partition_extra_latency_cycles = %llu\n",
+         l2_partition_extra_latency_cycles);
+  auto cp_async_debug = flash_gpgpu_sim::get_global_cp_async_debug_counters();
+  printf("cp_async_debug_tx_started = %llu\n", cp_async_debug.tx_started);
+  printf("cp_async_debug_tx_completed = %llu\n", cp_async_debug.tx_completed);
+  printf("cp_async_debug_mf_issued = %llu\n", cp_async_debug.mf_issued);
+  printf("cp_async_debug_mf_responses = %llu\n", cp_async_debug.mf_responses);
+  printf("cp_async_debug_bytes_issued = %llu\n", cp_async_debug.bytes_issued);
+  printf("cp_async_debug_bytes_completed = %llu\n",
+         cp_async_debug.bytes_completed);
+  printf("cp_async_debug_issue_queue_cycles = %llu\n",
+         cp_async_debug.issue_queue_cycles);
+  printf("cp_async_debug_issue_active_cycles = %llu\n",
+         cp_async_debug.issue_active_cycles);
+  printf("cp_async_debug_issue_width_limited_cycles = %llu\n",
+         cp_async_debug.issue_width_limited_cycles);
+  printf("cp_async_debug_issue_blocked_inflight_cycles = %llu\n",
+         cp_async_debug.issue_blocked_inflight_cycles);
+  printf("cp_async_debug_issue_blocked_icnt_cycles = %llu\n",
+         cp_async_debug.issue_blocked_icnt_cycles);
+  printf("cp_async_debug_max_issue_queue = %llu\n",
+         cp_async_debug.max_issue_queue);
+  printf("cp_async_debug_max_inflight = %llu\n",
+         cp_async_debug.max_inflight);
+  printf("cp_async_debug_wait_calls = %llu\n", cp_async_debug.wait_calls);
+  printf("cp_async_debug_wait_immediate = %llu\n",
+         cp_async_debug.wait_immediate);
+  printf("cp_async_debug_wait_blocked = %llu\n", cp_async_debug.wait_blocked);
+  printf("cp_async_debug_wait_releases = %llu\n",
+         cp_async_debug.wait_releases);
+  printf("cp_async_debug_waiting_warp_cycles = %llu\n",
+         cp_async_debug.waiting_warp_cycles);
+  printf("cp_async_debug_response_fifo_nonempty_cycles = %llu\n",
+         cp_async_debug.response_fifo_nonempty_cycles);
+  printf("cp_async_debug_response_width_limited_cycles = %llu\n",
+         cp_async_debug.response_width_limited_cycles);
+  printf("cp_async_debug_max_response_fifo = %llu\n",
+         cp_async_debug.max_response_fifo);
   printf("gpu_stall_icnt2sh    = %d\n", gpu_stall_icnt2sh);
 
   // printf("partiton_reqs_in_parallel = %lld\n", partiton_reqs_in_parallel);

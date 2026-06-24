@@ -225,6 +225,11 @@ class dram_t {
   unsigned long long issued_total;
   unsigned long long issued_total_row;
   unsigned long long issued_total_col;
+  unsigned long long last_cmd_cycle;
+  unsigned long long last_col_cycle;
+  unsigned long long last_read_col_cycle;
+  unsigned long long last_write_col_cycle;
+  unsigned long long last_row_cycle;
   double write_to_read_ratio_blp_rw_average;
   unsigned long long bkgrp_parallsim_rw;
 

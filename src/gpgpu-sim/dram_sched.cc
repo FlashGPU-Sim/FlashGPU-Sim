@@ -107,6 +107,29 @@ void frfcfs_scheduler::data_collection(unsigned int bank) {
   mem_stats->num_activates[m_dram->id][bank]++;
 }
 
+bool frfcfs_scheduler::has_rowhit(unsigned bank, unsigned curr_row) const {
+  std::list<dram_req_t *> *m_current_queue = m_queue;
+  std::map<unsigned, std::list<std::list<dram_req_t *>::iterator> >
+      *m_current_bins = m_bins;
+  std::list<std::list<dram_req_t *>::iterator> **m_current_last_row =
+      m_last_row;
+
+  if (m_config->seperate_write_queue_enabled && m_mode == WRITE_MODE) {
+    m_current_queue = m_write_queue;
+    m_current_bins = m_write_bins;
+    m_current_last_row = m_last_write_row;
+  }
+
+  if (m_current_last_row[bank] != NULL) {
+    if (m_current_last_row[bank]->empty()) return false;
+    dram_req_t *req = *(m_current_last_row[bank]->back());
+    return req->row == curr_row;
+  }
+
+  if (m_current_queue[bank].empty()) return false;
+  return m_current_bins[bank].find(curr_row) != m_current_bins[bank].end();
+}
+
 dram_req_t *frfcfs_scheduler::schedule(unsigned bank, unsigned curr_row) {
   // row
   bool rowhit = true;
@@ -229,33 +252,47 @@ void dram_t::scheduler_frfcfs() {
     sched->add_req(req);
   }
 
-  dram_req_t *req;
-  unsigned i;
-  for (i = 0; i < m_config->nbk; i++) {
-    unsigned b = (i + prio) % m_config->nbk;
-    if (!bk[b]->mrq) {
-      req = sched->schedule(b, bk[b]->curr_row);
+  auto assign_request_to_bank = [&](unsigned b) -> bool {
+    dram_req_t *req;
+    if (bk[b]->mrq) return false;
+    req = sched->schedule(b, bk[b]->curr_row);
 
-      if (req) {
-        req->data->set_status(IN_PARTITION_MC_BANK_ARB_QUEUE,
-                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-        prio = (prio + 1) % m_config->nbk;
-        bk[b]->mrq = req;
-        if (m_config->gpgpu_memlatency_stat) {
-          mrq_latency = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle -
-                        bk[b]->mrq->timestamp;
-          mem_stats->tot_mrq_latency += mrq_latency;
-          mem_stats->tot_mrq_num++;
-          bk[b]->mrq->timestamp =
-              m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
-          mem_stats->mrq_lat_table[LOGB2(mrq_latency)]++;
-          if (mrq_latency > mem_stats->max_mrq_latency) {
-            mem_stats->max_mrq_latency = mrq_latency;
-          }
+    if (req) {
+      req->data->set_status(IN_PARTITION_MC_BANK_ARB_QUEUE,
+                            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+      prio = (prio + 1) % m_config->nbk;
+      bk[b]->mrq = req;
+      if (m_config->gpgpu_memlatency_stat) {
+        mrq_latency = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle -
+                      bk[b]->mrq->timestamp;
+        mem_stats->tot_mrq_latency += mrq_latency;
+        mem_stats->tot_mrq_num++;
+        bk[b]->mrq->timestamp =
+            m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+        mem_stats->mrq_lat_table[LOGB2(mrq_latency)]++;
+        if (mrq_latency > mem_stats->max_mrq_latency) {
+          mem_stats->max_mrq_latency = mrq_latency;
         }
+      }
 
-        break;
+      return true;
+    }
+    return false;
+  };
+
+  unsigned i;
+  if (m_config->gpgpu_dram_frfcfs_rowhit_first) {
+    for (i = 0; i < m_config->nbk; i++) {
+      unsigned b = (i + prio) % m_config->nbk;
+      if (!bk[b]->mrq && sched->has_rowhit(b, bk[b]->curr_row) &&
+          assign_request_to_bank(b)) {
+        return;
       }
     }
+  }
+
+  for (i = 0; i < m_config->nbk; i++) {
+    unsigned b = (i + prio) % m_config->nbk;
+    if (assign_request_to_bank(b)) break;
   }
 }

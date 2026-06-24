@@ -183,6 +183,16 @@ static void trace_l2_event(const char *event, unsigned long long cycle,
   l2_request_trace::instance().log(event, cycle, subpart_id, mf, status);
 }
 
+static unsigned coarse_l2_partition_id(unsigned id, unsigned total,
+                                       unsigned partition_count) {
+  assert(partition_count > 0);
+  assert(total > 0);
+  unsigned long long partition =
+      (static_cast<unsigned long long>(id) * partition_count) / total;
+  if (partition >= partition_count) partition = partition_count - 1;
+  return static_cast<unsigned>(partition);
+}
+
 }  // namespace
 
 mem_fetch *partition_mf_allocator::alloc(new_addr_type addr,
@@ -563,7 +573,10 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
   m_mem_stats = stats;
   m_gpu = gpu;
   m_memcpy_cycle_offset = 0;
+  m_next_rop_sequence = 0;
   memset(m_full_state_stats, 0, sizeof(m_full_state_stats));
+  m_l2_partition_remote_accesses = 0;
+  m_l2_partition_extra_latency_cycles = 0;
 
   assert(m_id < m_config->m_n_mem_sub_partition);
 
@@ -728,11 +741,10 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
     }
   }
 
-  // ROP delay queue
-  if (!m_rop.empty() && (cycle >= m_rop.front().ready_cycle) &&
-      !m_icnt_L2_queue->full()) {
-    mem_fetch *mf = m_rop.front().req;
-    m_rop.pop();
+  // ROP/L2-partition delay queues. Keep local and remote traffic separate so
+  // a far-L2 request cannot block an already-ready local request.
+  mem_fetch *mf = NULL;
+  if (!m_icnt_L2_queue->full() && pop_ready_rop(cycle, mf)) {
     m_icnt_L2_queue->push(mf);
     mf->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
@@ -778,6 +790,13 @@ void memory_sub_partition::accumulate_full_state_stats(
     unsigned long long *stats) const {
   for (unsigned i = 0; i < NUM_MEM_SUB_PARTITION_FULL_STATS; ++i)
     stats[i] += m_full_state_stats[i];
+}
+
+void memory_sub_partition::accumulate_l2_partition_stats(
+    unsigned long long &remote_accesses,
+    unsigned long long &extra_latency) const {
+  remote_accesses += m_l2_partition_remote_accesses;
+  extra_latency += m_l2_partition_extra_latency_cycles;
 }
 
 bool memory_sub_partition::L2_dram_queue_empty() const {
@@ -892,6 +911,63 @@ unsigned memory_sub_partition::invalidateL2() {
 
 bool memory_sub_partition::busy() const { return !m_request_tracker.empty(); }
 
+unsigned memory_sub_partition::l2_partition_extra_latency(
+    const mem_fetch *mf) const {
+  if (m_config->l2_partition_extra_latency == 0 ||
+      m_config->l2_partition_count <= 1 || mf == NULL)
+    return 0;
+
+  const unsigned sid = mf->get_sid();
+  const unsigned num_sms = m_gpu->get_config().num_shader();
+  if (sid >= num_sms) return 0;
+
+  const unsigned sm_partition =
+      coarse_l2_partition_id(sid, num_sms, m_config->l2_partition_count);
+  const unsigned l2_partition =
+      coarse_l2_partition_id(m_id, m_config->m_n_mem_sub_partition,
+                             m_config->l2_partition_count);
+  if (sm_partition == l2_partition) return 0;
+
+  return m_config->l2_partition_extra_latency;
+}
+
+void memory_sub_partition::push_rop_delay(mem_fetch *mf,
+                                          unsigned long long ready_cycle,
+                                          bool remote) {
+  rop_delay_t r;
+  r.ready_cycle = ready_cycle;
+  r.sequence = m_next_rop_sequence++;
+  r.req = mf;
+  if (remote)
+    m_rop_remote.push(r);
+  else
+    m_rop_local.push(r);
+}
+
+bool memory_sub_partition::pop_ready_rop(unsigned long long cycle,
+                                         mem_fetch *&mf) {
+  const bool local_ready =
+      !m_rop_local.empty() && cycle >= m_rop_local.top().ready_cycle;
+  const bool remote_ready =
+      !m_rop_remote.empty() && cycle >= m_rop_remote.top().ready_cycle;
+  if (!local_ready && !remote_ready) return false;
+
+  rop_delay_queue_t *queue = NULL;
+  if (local_ready && remote_ready) {
+    const rop_delay_t &local = m_rop_local.top();
+    const rop_delay_t &remote = m_rop_remote.top();
+    queue = (local.ready_cycle <= remote.ready_cycle) ? &m_rop_local
+                                                     : &m_rop_remote;
+  } else {
+    queue = local_ready ? &m_rop_local : &m_rop_remote;
+  }
+
+  rop_delay_t r = queue->top();
+  queue->pop();
+  mf = r.req;
+  return true;
+}
+
 std::vector<mem_fetch *>
 memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
   std::vector<mem_fetch *> result;
@@ -951,15 +1027,19 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
       mem_fetch *req = reqs[i];
       m_request_tracker.insert(req);
       trace_l2_event("REQ", cycle, m_id, req, "ICNT_TO_L2");
-      if (req->istexture()) {
+      const unsigned extra_latency = l2_partition_extra_latency(req);
+      if (extra_latency > 0) {
+        m_l2_partition_remote_accesses++;
+        m_l2_partition_extra_latency_cycles += extra_latency;
+      }
+      if (req->istexture() && extra_latency == 0) {
         m_icnt_L2_queue->push(req);
         req->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       } else {
-        rop_delay_t r;
-        r.req = req;
-        r.ready_cycle = cycle + m_config->rop_latency;
-        m_rop.push(r);
+        unsigned long long ready_cycle = cycle + extra_latency;
+        if (!req->istexture()) ready_cycle += m_config->rop_latency;
+        push_rop_delay(req, ready_cycle, extra_latency > 0);
         req->set_status(IN_PARTITION_ROP_DELAY,
                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       }

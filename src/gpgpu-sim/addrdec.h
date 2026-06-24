@@ -91,6 +91,8 @@ class linear_to_raw_address_translation {
   unsigned log2channel;
   unsigned log2sub_partition;
   unsigned nextPowerOf2_m_n_channel;
+  unsigned ipoly_non_power2_balanced;
+  unsigned ipoly_channel_stable_l2slice;
 };
 
 #endif
