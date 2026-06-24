@@ -10,8 +10,7 @@ cutlass_commit="${FLASH_ATTENTION_CUTLASS_COMMIT:-7127592069c2fe01b041e174ba4345
 force_reset="${FLASH_ATTENTION_FORCE:-0}"
 
 patches=(
-  "${script_dir}/patches/flash-attention-fa3-profile-hooks.patch"
-  "${script_dir}/patches/flash-attention-fa2-fa3-sensitivity-hooks.patch"
+  "${script_dir}/patches/flash-attention-fa2-fa3-hooks.patch"
 )
 
 die() {

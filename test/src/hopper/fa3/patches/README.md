@@ -1,14 +1,11 @@
 # FlashAttention Patches
 
-`prepare_flash_attention.sh` applies these patches on top of upstream
+`prepare_flash_attention.sh` applies this patch on top of upstream
 FlashAttention commit `d80a77103021c4e980f8cbbf85774f6a19e6474a`.
 
-Apply order:
+Patch:
 
-1. `flash-attention-fa3-profile-hooks.patch`
-2. `flash-attention-fa2-fa3-sensitivity-hooks.patch`
+- `flash-attention-fa2-fa3-hooks.patch`
 
-The first patch preserves the local FA3 profiling hooks that were previously
-stored as the `wzr/fa3-profile-hooks` submodule commit. The second patch
-preserves the uncommitted FA2/FA3 sensitivity macros used by the isolated debug
-targets.
+The patch preserves the local FA2/FA3 profiling hooks, sensitivity macros, and
+task/globaltimer tracing used by the isolated debug targets.

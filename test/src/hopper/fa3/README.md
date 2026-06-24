@@ -26,10 +26,9 @@ in `patches/`. CUTLASS/CuTe is provided by that checkout's nested
 - `fa3_fwd_hdim128_fp16_case.cuh` - shared CUDA workload implementation
 - `prepare_flash_attention.sh` - clones FlashAttention, checks out the pinned
   upstream commit, initializes CUTLASS, and applies local patches
-- `patches/flash-attention-fa3-profile-hooks.patch` - FA3 profiling and
-  sensitivity hooks previously carried as a local FlashAttention commit
-- `patches/flash-attention-fa2-fa3-sensitivity-hooks.patch` - additional FA2/FA3
-  sensitivity macro hooks used by isolated debug targets
+- `patches/flash-attention-fa2-fa3-hooks.patch` - FA2/FA3 profiling hooks,
+  sensitivity macro hooks, and task/globaltimer tracing used by isolated debug
+  targets
 
 ## Build
 

@@ -1,21 +1,23 @@
 # FA2/FA3 Reproduction Notes
 
 This branch packages the June 17 FA2/H100 simulator state for remote
-reproduction. The official FlashAttention submodule changes are not committed
-as submodule contents; apply the patch below before building FA2 sensitivity
-or FA3 profile variants.
+reproduction. The official FlashAttention changes are not committed as
+submodule contents; `make prepare-fa3-flash-attention` clones the pinned
+upstream commit and applies the local FA2/FA3 patch before building FA2
+sensitivity or FA3 profile variants.
 
 ## Checkout
 
 ```bash
 git fetch origin codex/fa2-h100-repro-20260617
 git switch codex/fa2-h100-repro-20260617
-git submodule update --init --recursive
-git -C test/src/hopper/fa3/flash-attention apply ../../../../../docs/patches/fa3_flash_attention_profile_hooks.patch
+cd test
+make prepare-fa3-flash-attention
+cd ..
 ```
 
-If the submodule already contains these local profiling hooks, the last command
-may report that the patch is already applied.
+If the generated FlashAttention checkout already contains these local hooks,
+the prepare script may report that the patch is already applied.
 
 ## Build Simulator
 
@@ -58,7 +60,7 @@ CUDA_INSTALL_PATH=/usr/local/cuda-12.8 ./run_tests.sh build hopper-fa2-medium
 CUDA_INSTALL_PATH=/usr/local/cuda-12.8 ./run_tests.sh build hopper-fa2-large-h16d128-full
 CUDA_INSTALL_PATH=/usr/local/cuda-12.8 ./run_tests.sh build hopper-fa2-large-h32d64-full
 CUDA_INSTALL_PATH=/usr/local/cuda-12.8 ./run_tests.sh build hopper-fa2-sensitivity-h1d128
-CUDA_INSTALL_PATH=/usr/local/cuda-12.8 ./run_tests.sh build hopper-fa3-variants
+CUDA_INSTALL_PATH=/usr/local/cuda-12.8 ./run_tests.sh build hopper-fa3-extended
 CUDA_INSTALL_PATH=/usr/local/cuda-12.8 ./run_tests.sh build hopper-fa3-sensitivity-extended
 cd ..
 ```

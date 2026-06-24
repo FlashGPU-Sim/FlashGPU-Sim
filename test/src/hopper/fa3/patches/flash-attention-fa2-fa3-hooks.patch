@@ -1,3 +1,374 @@
+diff --git a/csrc/flash_attn/src/flash.h b/csrc/flash_attn/src/flash.h
+index 8ffbb62..883a36a 100644
+--- a/csrc/flash_attn/src/flash.h
++++ b/csrc/flash_attn/src/flash.h
+@@ -45,6 +45,21 @@ struct Qkv_params {
+
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+
++#if defined(FA2_FWD_CTA_PROFILE)
++struct Flash_fwd_cta_profile_record {
++    uint64_t start_globaltimer;
++    uint64_t end_globaltimer;
++    uint32_t start_smid;
++    uint32_t end_smid;
++    uint32_t cta_x;
++    uint32_t cta_y;
++    uint32_t cta_z;
++    uint32_t reserved;
++};
++#endif
++
++////////////////////////////////////////////////////////////////////////////////////////////////////
++
+ struct Flash_fwd_params : public Qkv_params {
+
+     // The O matrix (output).
+@@ -140,6 +155,11 @@ struct Flash_fwd_params : public Qkv_params {
+
+     bool unpadded_lse;  // For varlen paths: LSE is in [nheads, total_seqlen_q] format instead of [b, nheads, seqlen_q].
+     bool seqlenq_ngroups_swapped;  // q has been transposed from (b, 1, (nheads_kv ngroups), d) to (b, ngroups, nheads_kv, d).
++
++#if defined(FA2_FWD_CTA_PROFILE)
++    Flash_fwd_cta_profile_record *__restrict__ cta_profile_ptr;
++    int cta_profile_capacity;
++#endif
+ };
+
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+diff --git a/csrc/flash_attn/src/flash_fwd_kernel.h b/csrc/flash_attn/src/flash_fwd_kernel.h
+index d492c87..7755e81 100644
+--- a/csrc/flash_attn/src/flash_fwd_kernel.h
++++ b/csrc/flash_attn/src/flash_fwd_kernel.h
+@@ -27,6 +27,22 @@ using namespace cute;
+
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+
++#if defined(FA2_FWD_CTA_PROFILE)
++__forceinline__ __device__ uint64_t fa2_cta_profile_globaltimer() {
++    uint64_t value;
++    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(value) :: "memory");
++    return value;
++}
++
++__forceinline__ __device__ uint32_t fa2_cta_profile_smid() {
++    uint32_t value;
++    asm volatile("mov.u32 %0, %%smid;" : "=r"(value) :: "memory");
++    return value;
++}
++#endif
++
++////////////////////////////////////////////////////////////////////////////////////////////////////
++
+ template<typename ElementAccum, typename Params, int kBlockM, bool Is_even_MN>
+ __forceinline__ __device__ auto get_lse_tile(const Params &params, const int bidb, const int bidh, const int m_block, const BlockInfo</*Varlen=*/!Is_even_MN> &binfo) {
+         // When params.unpadded_lse is false, LSE is written as (b, h, seqlen_q) - this is non-variable seqlen path.
+@@ -247,9 +263,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
+     // Prologue
+
+     // We don't need to clear the sQ smem tiles since we'll only write out the valid outputs
++#if !defined(FA2_FWD_SENS_SKIP_CP_ASYNC)
+     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tQgQ, tQsQ, tQcQ, tQpQ,
+                                        binfo.actual_seqlen_q - m_block * kBlockM);
+-    if (Kernel_traits::Is_Q_in_regs) { cute::cp_async_fence(); }
++#endif
++    if (Kernel_traits::Is_Q_in_regs) { FLASH_NAMESPACE::cp_async_fence(); }
+
+     // // if (cute::thread(1, 0)) { print(tQsQ); }
+     // // Tensor sQNoSwizzle = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)), typename Kernel_traits::SmemLayoutQNoSwizzle{});
+@@ -266,9 +284,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
+
+     int n_block = n_block_max - 1;
+     // We don't need to clear the sK smem tiles since we'll mask out the scores anyway.
++#if !defined(FA2_FWD_SENS_SKIP_CP_ASYNC)
+     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block), tKsK, tKVcKV, tKVpKV,
+                                        binfo.actual_seqlen_k - n_block * kBlockN);
+-    cute::cp_async_fence();
++#endif
++    FLASH_NAMESPACE::cp_async_fence();
+     // if (threadIdx.x == 0 && blockIdx.y == 0 && blockIdx.z < 2) { print(tKgK); }
+     // __syncthreads();
+
+@@ -307,14 +327,18 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
+
+         // Advance gV
+         if (masking_step > 0) {
++#if !defined(FA2_FWD_SENS_SKIP_CP_ASYNC)
+             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
++#endif
+         } else {
+             // Clear the smem tiles to account for predicated off loads
++#if !defined(FA2_FWD_SENS_SKIP_CP_ASYNC)
+             FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(
+                 gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN
+             );
++#endif
+         }
+-        cute::cp_async_fence();
++        FLASH_NAMESPACE::cp_async_fence();
+
+         FLASH_NAMESPACE::gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
+             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+@@ -332,10 +356,12 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
+         FLASH_NAMESPACE::cp_async_wait<0>();
+         __syncthreads();
+         if (n_block > n_block_min) {
++#if !defined(FA2_FWD_SENS_SKIP_CP_ASYNC)
+             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
++#endif
+             // This cp_async_fence needs to be in the if block, otherwise the synchronization
+             // isn't right and we get race conditions.
+-            cute::cp_async_fence();
++            FLASH_NAMESPACE::cp_async_fence();
+         }
+
+         // TODO: when we have key_padding_mask we'll need to Check_inf
+@@ -380,8 +406,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
+         clear(acc_s);
+         FLASH_NAMESPACE::cp_async_wait<0>();
+         __syncthreads();
++#if !defined(FA2_FWD_SENS_SKIP_CP_ASYNC)
+         FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
+-        cute::cp_async_fence();
++#endif
++        FLASH_NAMESPACE::cp_async_fence();
+
+         FLASH_NAMESPACE::gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
+             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+@@ -394,10 +422,12 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
+         FLASH_NAMESPACE::cp_async_wait<0>();
+         __syncthreads();
+         if (n_block > n_block_min) {
++#if !defined(FA2_FWD_SENS_SKIP_CP_ASYNC)
+             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
++#endif
+             // This cp_async_fence needs to be in the if block, otherwise the synchronization
+             // isn't right and we get race conditions.
+-            cute::cp_async_fence();
++            FLASH_NAMESPACE::cp_async_fence();
+         }
+
+         mask.template apply_mask</*Causal_mask=*/false>(
+@@ -824,7 +854,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
+     // We don't need to clear the sK smem tiles since we'll mask out the scores anyway.
+     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV,
+                                        binfo.actual_seqlen_k - n_block * kBlockN);
+-    cute::cp_async_fence();
++    FLASH_NAMESPACE::cp_async_fence();
+
+     // FLASH_NAMESPACE::cp_async_wait<0>();
+     // __syncthreads();
+@@ -874,7 +904,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
+                 gmem_tiled_copy_QKV, tVgV, tVsV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN
+             );
+         }
+-        cute::cp_async_fence();
++        FLASH_NAMESPACE::cp_async_fence();
+
+         FLASH_NAMESPACE::gemm(
+             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+@@ -909,7 +939,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
+             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
+             // This cp_async_fence needs to be in the if block, otherwise the synchronization
+             // isn't right and we get race conditions.
+-            cute::cp_async_fence();
++            FLASH_NAMESPACE::cp_async_fence();
+         }
+
+         // We have key_padding_mask so we'll need to Check_inf
+@@ -950,7 +980,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
+             tVgV.data() = tVgV.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.v_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.v_row_stride;
+         }
+         FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV, tVsV, tKVcKV, tKVpKV);
+-        cute::cp_async_fence();
++        FLASH_NAMESPACE::cp_async_fence();
+
+         FLASH_NAMESPACE::gemm(
+             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+@@ -976,7 +1006,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
+             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
+             // This cp_async_fence needs to be in the if block, otherwise the synchronization
+             // isn't right and we get race conditions.
+-            cute::cp_async_fence();
++            FLASH_NAMESPACE::cp_async_fence();
+         }
+
+         mask.template apply_mask</*Causal_mask=*/false>(
+@@ -1079,6 +1109,20 @@ inline __device__ void compute_attn(const Params &params) {
+     const int bidb = blockIdx.y;
+     // The block index for the head.
+     const int bidh = blockIdx.z;
++#if defined(FA2_FWD_CTA_PROFILE)
++    const int cta_profile_idx =
++        int(blockIdx.x) + int(gridDim.x) * (int(blockIdx.y) + int(gridDim.y) * int(blockIdx.z));
++    const bool cta_profile_enabled =
++        params.cta_profile_ptr != nullptr && cta_profile_idx < params.cta_profile_capacity;
++    if (threadIdx.x == 0 && cta_profile_enabled) {
++        Flash_fwd_cta_profile_record &record = params.cta_profile_ptr[cta_profile_idx];
++        record.start_globaltimer = fa2_cta_profile_globaltimer();
++        record.start_smid = fa2_cta_profile_smid();
++        record.cta_x = blockIdx.x;
++        record.cta_y = blockIdx.y;
++        record.cta_z = blockIdx.z;
++    }
++#endif
+
+     // We want the fwd and bwd to generate the same dropout pattern (RNG), without restricting
+     // them to have the same number of threads or have to traverse the attention matrix
+@@ -1089,6 +1133,14 @@ inline __device__ void compute_attn(const Params &params) {
+     // the 16 x 32 block within the attention matrix, we can generate the exact same dropout pattern.
+
+     FLASH_NAMESPACE::compute_attn_1rowblock<Kernel_traits, Is_dropout, Is_causal, Is_local, Has_alibi, Is_even_MN, Is_even_K, Is_softcap, Return_softmax>(params, bidb, bidh, m_block);
++#if defined(FA2_FWD_CTA_PROFILE)
++    __syncthreads();
++    if (threadIdx.x == 0 && cta_profile_enabled) {
++        Flash_fwd_cta_profile_record &record = params.cta_profile_ptr[cta_profile_idx];
++        record.end_globaltimer = fa2_cta_profile_globaltimer();
++        record.end_smid = fa2_cta_profile_smid();
++    }
++#endif
+ }
+
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+diff --git a/csrc/flash_attn/src/flash_fwd_launch_template.h b/csrc/flash_attn/src/flash_fwd_launch_template.h
+index b7831c5..1342b77 100644
+--- a/csrc/flash_attn/src/flash_fwd_launch_template.h
++++ b/csrc/flash_attn/src/flash_fwd_launch_template.h
+@@ -232,6 +232,9 @@ void run_mha_fwd_hdim96(Flash_fwd_params &params, cudaStream_t stream) {
+ template<typename T, bool Is_causal>
+ void run_mha_fwd_hdim128(Flash_fwd_params &params, cudaStream_t stream) {
+     constexpr static int Headdim = 128;
++#if defined(FA2_FWD_SENS_FORCE_H100_HDIM128)
++    run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 4, false, false, T>, false, Is_causal>(params, stream);
++#else
+     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
+     bool is_sm8x = cc_major == 8 && cc_minor > 0;
+     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
+@@ -262,6 +265,7 @@ void run_mha_fwd_hdim128(Flash_fwd_params &params, cudaStream_t stream) {
+             // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 32, 4, true, true, T>, Is_dropout, Is_causal>(params, stream);
+         }
+     });
++#endif
+ }
+
+ template<typename T, bool Is_causal>
+diff --git a/csrc/flash_attn/src/softmax.h b/csrc/flash_attn/src/softmax.h
+index 01589ad..d833d0f 100644
+--- a/csrc/flash_attn/src/softmax.h
++++ b/csrc/flash_attn/src/softmax.h
+@@ -82,7 +82,9 @@ __forceinline__ __device__ void scale_apply_exp2(Tensor<Engine0, Layout0> &tenso
+             // The following macro will disable the use of fma.
+             // See: https://github.com/pytorch/pytorch/issues/121558 for more details
+             // This macro is set in PyTorch and not FlashAttention
+-            #ifdef UNFUSE_FMA
++            #if defined(FA2_FWD_SENS_FMA_SOFTMAX)
++                tensor(mi, ni) = exp2f(__fmaf_rn(tensor(mi, ni), scale, -max_scaled));
++            #elif defined(UNFUSE_FMA)
+                 tensor(mi, ni) = exp2f(__fmul_rn(tensor(mi, ni), scale) - max_scaled);
+             #else
+                 tensor(mi, ni) = exp2f(tensor(mi, ni) * scale - max_scaled);
+@@ -135,6 +137,9 @@ struct Softmax {
+
+     template<bool Is_first, bool Check_inf=false, typename Tensor0, typename Tensor1>
+     __forceinline__ __device__ void softmax_rescale_o(Tensor0 &acc_s, Tensor1 &acc_o, float softmax_scale_log2) {
++#if defined(FA2_FWD_SENS_SKIP_SOFTMAX)
++        return;
++#endif
+         // Reshape acc_s from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
+         Tensor scores = make_tensor(acc_s.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(acc_s.layout()));
+         static_assert(decltype(size<0>(scores))::value == kNRows);
+@@ -168,6 +173,11 @@ struct Softmax {
+
+     template<bool Is_dropout=false, bool Split=false, typename Tensor0>
+     __forceinline__ __device__ TensorT normalize_softmax_lse(Tensor0 &acc_o, float softmax_scale, float rp_dropout=1.0) {
++#if defined(FA2_FWD_SENS_SKIP_SOFTMAX)
++        TensorT lse = make_fragment_like(row_sum);
++        clear(lse);
++        return lse;
++#else
+         SumOp<float> sum_op;
+         quad_allreduce_(row_sum, row_sum, sum_op);
+         TensorT lse = make_fragment_like(row_sum);
+@@ -183,6 +193,7 @@ struct Softmax {
+             for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { acc_o_rowcol(mi, ni) *= scale; }
+         }
+         return lse;
++#endif
+     };
+ };
+
+diff --git a/csrc/flash_attn/src/utils.h b/csrc/flash_attn/src/utils.h
+index a7729ae..6b05738 100644
+--- a/csrc/flash_attn/src/utils.h
++++ b/csrc/flash_attn/src/utils.h
+@@ -147,15 +147,21 @@ __forceinline__ __device__ void gemm(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB,
+     CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view));            // M
+     Tensor tCrB_copy_view = smem_thr_copy_B.retile_D(tCrB);
+     CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));            // N
++#if !defined(FA2_FWD_SENS_SKIP_MMA_OPERANDS)
+     if (!A_in_regs) { cute::copy(smem_tiled_copy_A, tCsA(_, _, _0{}), tCrA_copy_view(_, _, _0{})); }
+     if (!B_in_regs) { cute::copy(smem_tiled_copy_B, tCsB(_, _, _0{}), tCrB_copy_view(_, _, _0{})); }
++#endif
+     #pragma unroll
+     for (int i = 0; i < size<2>(tCrA); ++i) {
+         if (i < size<2>(tCrA) - 1) {
++#if !defined(FA2_FWD_SENS_SKIP_MMA_OPERANDS)
+             if (!A_in_regs) { cute::copy(smem_tiled_copy_A, tCsA(_, _, i + 1), tCrA_copy_view(_, _, i + 1)); }
+             if (!B_in_regs) { cute::copy(smem_tiled_copy_B, tCsB(_, _, i + 1), tCrB_copy_view(_, _, i + 1)); }
++#endif
+         }
++#if !defined(FA2_FWD_SENS_SKIP_MMA)
+         cute::gemm(tiled_mma, tCrA(_, _, i), tCrB(_, _, i), acc);
++#endif
+     }
+ }
+
+@@ -171,13 +177,19 @@ __forceinline__ __device__ void gemm_rs(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tC
+     CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                     // MMA_K
+     Tensor tCrB_copy_view = smem_thr_copy_B.retile_D(tCrB);
+     CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));            // N
++#if !defined(FA2_FWD_SENS_SKIP_MMA_OPERANDS)
+     cute::copy(smem_tiled_copy_B, tCsB(_, _, _0{}), tCrB_copy_view(_, _, _0{}));
++#endif
+     #pragma unroll
+     for (int i = 0; i < size<2>(tCrA); ++i) {
+         if (i < size<2>(tCrA) - 1) {
++#if !defined(FA2_FWD_SENS_SKIP_MMA_OPERANDS)
+             cute::copy(smem_tiled_copy_B, tCsB(_, _, i + 1), tCrB_copy_view(_, _, i + 1));
++#endif
+         }
++#if !defined(FA2_FWD_SENS_SKIP_MMA)
+         cute::gemm(tiled_mma, tCrA(_, _, i), tCrB(_, _, i), acc);
++#endif
+     }
+ }
+
+@@ -278,6 +290,16 @@ __forceinline__ __device__ auto convert_type_relu(Tensor<Engine, Layout> const &
+
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+
++// Commit a cp.async group, unless this sensitivity build removes cp.async traffic.
++CUTE_HOST_DEVICE
++void cp_async_fence() {
++#if defined(CUTE_ARCH_CP_ASYNC_SM80_ENABLED) && !defined(FA2_FWD_SENS_SKIP_CP_ASYNC)
++    cute::cp_async_fence();
++#endif
++}
++
++////////////////////////////////////////////////////////////////////////////////////////////////////
++
+ // Blocks until all but N previous cp.async.commit_group operations have committed.
+ // This differs from cute::cp_async_wait in that when N = 0 we don't call cp.async.wait_all
+ // (which is equivalent to commit_group then wait_group 0).
+@@ -286,7 +308,7 @@ __forceinline__ __device__ auto convert_type_relu(Tensor<Engine, Layout> const &
+ template <int N>
+ CUTE_HOST_DEVICE
+ void cp_async_wait() {
+-#if defined(CUTE_ARCH_CP_ASYNC_SM80_ENABLED)
++#if defined(CUTE_ARCH_CP_ASYNC_SM80_ENABLED) && !defined(FA2_FWD_SENS_SKIP_CP_ASYNC)
+     asm volatile("cp.async.wait_group %0;\n" :: "n"(N));
+ #endif
+ }
 diff --git a/hopper/flash.h b/hopper/flash.h
 index 6848e8c..f0f2c25 100644
 --- a/hopper/flash.h
@@ -5,16 +376,16 @@ index 6848e8c..f0f2c25 100644
 @@ -7,6 +7,10 @@
  #include <cuda.h>
  #include <vector>
- 
+
 +#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
 +#include "flash_profile.h"
 +#endif
 +
  ////////////////////////////////////////////////////////////////////////////////////////////////////
- 
+
  struct Qkv_params {
 @@ -165,6 +169,12 @@ struct Flash_fwd_params : public Qkv_params {
- 
+
      int arch;
      int num_sm;
 +
@@ -24,24 +395,24 @@ index 6848e8c..f0f2c25 100644
 +    uint64_t * __restrict__ profile_clock_ptr;
 +#endif
  };
- 
+
  ////////////////////////////////////////////////////////////////////////////////////////////////////
 diff --git a/hopper/flash_fwd_kernel_sm90.h b/hopper/flash_fwd_kernel_sm90.h
-index 47b3817..c6b8250 100644
+index 47b3817..2fccaae 100644
 --- a/hopper/flash_fwd_kernel_sm90.h
 +++ b/hopper/flash_fwd_kernel_sm90.h
-@@ -19,11 +19,40 @@
+@@ -19,11 +19,52 @@
  #include "seqlen.h"
  #include "utils.h"
  #include "softmax.h"
 +#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
 +#include "flash_profile.h"
 +#endif
- 
+
  namespace flash {
- 
+
  using namespace cute;
- 
+
 +#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
 +CUTLASS_DEVICE
 +void profile_clock_min(uint64_t *ptr, uint64_t value) {
@@ -66,12 +437,24 @@ index 47b3817..c6b8250 100644
 +              static_cast<unsigned long long>(value));
 +#endif
 +}
++
++CUTLASS_DEVICE
++uint32_t profile_clock_smid() {
++    uint32_t smid = 0;
++    asm volatile("mov.u32 %0, %%smid;" : "=r"(smid));
++    return smid;
++}
++
++CUTLASS_DEVICE
++uint64_t profile_task_trace_now() {
++    return flash_fwd_profile_now();
++}
 +#endif
 +
  template <class CollectiveMainloop_, class CollectiveEpilogue_, class TileScheduler_>
  class FlashAttnFwdSm90 {
- 
-@@ -124,6 +153,9 @@ public:
+
+@@ -124,6 +165,9 @@ public:
          EpilogueArguments epilogue{};
          cutlass::KernelHardwareInfo hw_info{};
          TileSchedulerArguments scheduler{};
@@ -79,9 +462,9 @@ index 47b3817..c6b8250 100644
 +        uint64_t* profile_clock_ptr = nullptr;
 +#endif
      };
- 
+
      // Kernel entry point API
-@@ -132,6 +164,9 @@ public:
+@@ -132,6 +176,9 @@ public:
          EpilogueParams epilogue{};
          cutlass::KernelHardwareInfo hw_info{};
          TileSchedulerParams scheduler{};
@@ -89,9 +472,9 @@ index 47b3817..c6b8250 100644
 +        uint64_t* profile_clock_ptr = nullptr;
 +#endif
      };
- 
+
      //
-@@ -160,6 +195,10 @@ public:
+@@ -160,6 +207,10 @@ public:
              CollectiveEpilogue::to_underlying_arguments(args.epilogue),
              hw_info,
              TileScheduler::to_underlying_arguments(args.scheduler)
@@ -101,21 +484,21 @@ index 47b3817..c6b8250 100644
 +#endif
          };
      }
- 
-@@ -197,6 +236,12 @@ public:
+
+@@ -197,6 +248,12 @@ public:
          int const lane_predicate = cute::elect_one_sync();
          int const warp_idx = cutlass::canonical_warp_idx_sync();
- 
+
 +#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
 +        if (params.profile_clock_ptr != nullptr && threadIdx.x == 0) {
-+            profile_clock_min(&params.profile_clock_ptr[kFlashFwdProfileKernelStart], clock64());
++            profile_clock_min(&params.profile_clock_ptr[kFlashFwdProfileKernelStart], flash_fwd_profile_now());
 +        }
 +#endif
 +
          // Issue Tma Descriptor Prefetch from a single thread
          if (warp_idx == 0 && lane_predicate) {
              CollectiveMainloop::prefetch_tma_descriptors(params.mainloop);
-@@ -354,9 +399,17 @@ public:
+@@ -354,9 +411,17 @@ public:
                  };
                  // pipeline_vt won't be used if we don't need to transpose V.
                  mainloop.load(params.mainloop, pipeline_k, pipeline_v, pipeline_vt, smem_pipe_write,
@@ -134,14 +517,64 @@ index 47b3817..c6b8250 100644
 +                               );
          } else {  // Consumer
              cutlass::arch::warpgroup_reg_alloc<MmaRegisterRequirement>();
- 
-@@ -417,15 +470,30 @@ public:
+
+@@ -417,15 +482,80 @@ public:
                  // Attention output (GEMM-II) accumulator.
                  Tensor tOrO = partition_fragment_C(tiled_mma_pv, select<0, 1>(TileShape_MNK_PV{}));
                  bool tile_valid;
 +#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
++                int profile_task_slot = -1;
 +                if (params.profile_clock_ptr != nullptr && threadIdx.x == MmaThreadOffset) {
-+                    profile_clock_min(&params.profile_clock_ptr[kFlashFwdProfileMainloopStart], clock64());
++                    uint64_t const profile_clock = flash_fwd_profile_now();
++                    uint64_t const profile_task_time = profile_task_trace_now();
++                    profile_clock_min(&params.profile_clock_ptr[kFlashFwdProfileMainloopStart], profile_clock);
++
++                    int const profile_m_block = int(get<0>(block_coord));
++                    int const profile_bidh = int(get<1>(block_coord));
++                    int const profile_bidb = int(get<2>(block_coord));
++                    int const profile_split_idx = int(get<3>(block_coord));
++                    int const profile_heads = int(get<2>(params.mainloop.shape_Q));
++                    int const profile_seqlen_q = int(get<0>(params.mainloop.shape_Q));
++                    int const profile_m_tiles = (profile_seqlen_q + kBlockM - 1) / kBlockM;
++                    int const profile_slot =
++                        (profile_bidb * profile_heads + profile_bidh) *
++                            profile_m_tiles +
++                        profile_m_block;
++                    if (profile_slot >= 0 &&
++                        profile_slot < kFlashFwdProfileTaskTraceMaxTasks) {
++                        profile_task_slot = profile_slot;
++                        int const profile_task_base =
++                            kFlashFwdProfileTaskTraceBase +
++                            flash_fwd_profile_task_trace_offset(profile_task_slot, 0);
++                        params.profile_clock_ptr[
++                            profile_task_base +
++                            kFlashFwdProfileTaskTraceMBlock] =
++                            static_cast<uint64_t>(profile_m_block);
++                        params.profile_clock_ptr[
++                            profile_task_base +
++                            kFlashFwdProfileTaskTraceBidh] =
++                            static_cast<uint64_t>(profile_bidh);
++                        params.profile_clock_ptr[
++                            profile_task_base +
++                            kFlashFwdProfileTaskTraceBidb] =
++                            static_cast<uint64_t>(profile_bidb);
++                        params.profile_clock_ptr[
++                            profile_task_base +
++                            kFlashFwdProfileTaskTraceSplitIdx] =
++                            static_cast<uint64_t>(profile_split_idx);
++                        params.profile_clock_ptr[
++                            profile_task_base +
++                            kFlashFwdProfileTaskTraceCtaX] =
++                            static_cast<uint64_t>(blockIdx.x);
++                        params.profile_clock_ptr[
++                            profile_task_base +
++                            kFlashFwdProfileTaskTraceSmid] =
++                            static_cast<uint64_t>(profile_clock_smid());
++                        params.profile_clock_ptr[
++                            profile_task_base +
++                            kFlashFwdProfileTaskTraceMainloopStart] =
++                            profile_task_time;
++                    }
 +                }
 +#endif
                  if constexpr (!LargeHeadDimV) {
@@ -168,45 +601,77 @@ index 47b3817..c6b8250 100644
                      } else {
                          tile_valid = mainloop.mma_pv(
                              params.mainloop, pipeline_v, smem_pipe_read,
-@@ -433,6 +501,13 @@ public:
+@@ -433,6 +563,31 @@ public:
                      }
                  }
                  // Do this here before the epilogue so that the next tile is ready to go.
 +#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
 +                if (params.profile_clock_ptr != nullptr && threadIdx.x == MmaThreadOffset) {
-+                    uint64_t const profile_clock = clock64();
++                    uint64_t const profile_clock = flash_fwd_profile_now();
++                    uint64_t const profile_task_time = profile_task_trace_now();
 +                    profile_clock_max(&params.profile_clock_ptr[kFlashFwdProfileMainloopEnd], profile_clock);
 +                    profile_clock_min(&params.profile_clock_ptr[kFlashFwdProfileEpilogueStart], profile_clock);
++                    if (profile_task_slot >= 0) {
++                        int const profile_task_base =
++                            kFlashFwdProfileTaskTraceBase +
++                            flash_fwd_profile_task_trace_offset(profile_task_slot, 0);
++                        params.profile_clock_ptr[
++                            profile_task_base +
++                            kFlashFwdProfileTaskTraceMainloopEnd] =
++                            profile_task_time;
++                        params.profile_clock_ptr[
++                            profile_task_base +
++                            kFlashFwdProfileTaskTraceEpilogueStart] =
++                            profile_task_time;
++                        params.profile_clock_ptr[
++                            profile_task_base +
++                            kFlashFwdProfileTaskTraceTileValid] =
++                            tile_valid ? uint64_t{1} : uint64_t{0};
++                    }
 +                }
 +#endif
                  work_tile_info = scheduler.template get_next_work</*IsProducerWarp=*/false>(params.scheduler, work_tile_info);
                  if constexpr (Split && Varlen) {
                      if (!work_tile_info.is_valid(params.scheduler)) {  // Last tile
-@@ -447,8 +522,18 @@ public:
+@@ -447,8 +602,32 @@ public:
                      // Write 0 to gO and -inf to gLSE.
                      epilogue.store_zero(params.epilogue, threadIdx.x - MmaThreadOffset, block_coord);
                  }
 +#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
 +                if (params.profile_clock_ptr != nullptr && threadIdx.x == MmaThreadOffset) {
-+                    profile_clock_max(&params.profile_clock_ptr[kFlashFwdProfileEpilogueEnd], clock64());
++                    uint64_t const profile_clock = flash_fwd_profile_now();
++                    uint64_t const profile_task_time = profile_task_trace_now();
++                    profile_clock_max(&params.profile_clock_ptr[kFlashFwdProfileEpilogueEnd], profile_clock);
++                    if (profile_task_slot >= 0) {
++                        int const profile_task_base =
++                            kFlashFwdProfileTaskTraceBase +
++                            flash_fwd_profile_task_trace_offset(profile_task_slot, 0);
++                        params.profile_clock_ptr[
++                            profile_task_base +
++                            kFlashFwdProfileTaskTraceEpilogueEnd] =
++                            profile_task_time;
++                        params.profile_clock_ptr[
++                            profile_task_base +
++                            kFlashFwdProfileTaskTraceValid] = uint64_t{1};
++                    }
 +                }
 +#endif
              }
              epilogue.store_tail();
 +#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
 +            if (params.profile_clock_ptr != nullptr && threadIdx.x == MmaThreadOffset) {
-+                profile_clock_max(&params.profile_clock_ptr[kFlashFwdProfileKernelEnd], clock64());
++                profile_clock_max(&params.profile_clock_ptr[kFlashFwdProfileKernelEnd], flash_fwd_profile_now());
 +            }
 +#endif
          }
- 
+
      }
 diff --git a/hopper/flash_fwd_launch_template.h b/hopper/flash_fwd_launch_template.h
 index 43567a5..f426a45 100644
 --- a/hopper/flash_fwd_launch_template.h
 +++ b/hopper/flash_fwd_launch_template.h
 @@ -27,7 +27,7 @@ using namespace cute;
- 
+
  template <int Arch, int kHeadDim, int kHeadDimV, int ClusterM, typename Element, typename ElementOut,
            bool Is_causal, bool Is_local, bool Has_softcap, bool Varlen, bool PagedKVNonTMA, bool AppendKV, bool HasQv,
 -          bool PackGQA, bool Split, bool V_colmajor>
@@ -225,7 +690,7 @@ index 43567a5..f426a45 100644
          Arch >= 90,
          flash::enable_sm90<flash::FlashAttnFwdSm90<CollectiveMainloop, CollectiveEpilogue, Scheduler>>,
 @@ -167,9 +168,15 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
- 
+
      int device;
      CHECK_CUDA(cudaGetDevice(&device));
 -    typename AttnKernel::Params kernel_params = AttnKernel::to_underlying_arguments({
@@ -239,15 +704,15 @@ index 43567a5..f426a45 100644
 +    };
 +    typename AttnKernel::Params kernel_params =
 +        AttnKernel::to_underlying_arguments(kernel_args);
- 
+
      dim3 grid_dims = AttnKernel::get_grid_shape(kernel_params);
      dim3 block_dims = AttnKernel::get_block_shape();
 diff --git a/hopper/flash_profile.h b/hopper/flash_profile.h
 new file mode 100644
-index 0000000..ed24eaa
+index 0000000..4476e39
 --- /dev/null
 +++ b/hopper/flash_profile.h
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,223 @@
 +/******************************************************************************
 + * Optional profiling indices for local FA3 forward experiments.
 + ******************************************************************************/
@@ -255,6 +720,18 @@ index 0000000..ed24eaa
 +#pragma once
 +
 +#include <cstdint>
++
++#if defined(__CUDACC__)
++__device__ __forceinline__ uint64_t flash_fwd_profile_now() {
++#if defined(FLASH_FWD_PROFILE_GLOBALTIMER) || defined(FLASH_FWD_PROFILE_TASK_GLOBALTIMER)
++    uint64_t value = 0;
++    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(value)::"memory");
++    return value;
++#else
++    return static_cast<uint64_t>(clock64());
++#endif
++}
++#endif
 +
 +enum FlashFwdProfileClockIndex : int {
 +    kFlashFwdProfileKernelStart = 0,
@@ -330,8 +807,10 @@ index 0000000..ed24eaa
 +    kFlashFwdProfileTimelineConsumerWait0Begin = 22,
 +    kFlashFwdProfileTimelineConsumerWait0End = 23,
 +    kFlashFwdProfileTimelineConsumerVRelease = 24,
-+    kFlashFwdProfileTimelineConsumerStepEnd = 25,
-+    kFlashFwdProfileTimelineEventCount = 26
++    kFlashFwdProfileTimelineConsumerSoftmaxBegin = 25,
++    kFlashFwdProfileTimelineConsumerSoftmaxEnd = 26,
++    kFlashFwdProfileTimelineConsumerStepEnd = 27,
++    kFlashFwdProfileTimelineEventCount = 28
 +};
 +
 +static constexpr int kFlashFwdProfileTimelineMaxSteps = 48;
@@ -383,9 +862,38 @@ index 0000000..ed24eaa
 +static constexpr int kFlashFwdProfileRegTimelineClockCount =
 +    kFlashFwdProfileRegTimelineMaxBlocks *
 +    kFlashFwdProfileRegTimelineBlockClockCount;
-+static constexpr int kFlashFwdProfileClockCount =
++
++enum FlashFwdProfileTaskTraceFieldIndex : int {
++    kFlashFwdProfileTaskTraceValid = 0,
++    kFlashFwdProfileTaskTraceMBlock = 1,
++    kFlashFwdProfileTaskTraceBidh = 2,
++    kFlashFwdProfileTaskTraceBidb = 3,
++    kFlashFwdProfileTaskTraceSplitIdx = 4,
++    kFlashFwdProfileTaskTraceCtaX = 5,
++    kFlashFwdProfileTaskTraceSmid = 6,
++    kFlashFwdProfileTaskTraceMainloopStart = 7,
++    kFlashFwdProfileTaskTraceMainloopEnd = 8,
++    kFlashFwdProfileTaskTraceEpilogueStart = 9,
++    kFlashFwdProfileTaskTraceEpilogueEnd = 10,
++    kFlashFwdProfileTaskTraceTileValid = 11,
++    kFlashFwdProfileTaskTraceFieldCount = 12
++};
++
++#ifndef FLASH_FWD_PROFILE_TASK_TRACE_MAX_TASKS
++#define FLASH_FWD_PROFILE_TASK_TRACE_MAX_TASKS 8192
++#endif
++
++static constexpr int kFlashFwdProfileTaskTraceMaxTasks =
++    FLASH_FWD_PROFILE_TASK_TRACE_MAX_TASKS;
++static constexpr int kFlashFwdProfileTaskTraceBase =
 +    kFlashFwdProfileRegTimelineBase +
 +    kFlashFwdProfileRegTimelineClockCount;
++static constexpr int kFlashFwdProfileTaskTraceClockCount =
++    kFlashFwdProfileTaskTraceMaxTasks *
++    kFlashFwdProfileTaskTraceFieldCount;
++static constexpr int kFlashFwdProfileClockCount =
++    kFlashFwdProfileTaskTraceBase +
++    kFlashFwdProfileTaskTraceClockCount;
 +
 +constexpr int flash_fwd_profile_timeline_offset(int actor, int step, int event) {
 +    return ((actor * kFlashFwdProfileTimelineMaxSteps + step) *
@@ -402,6 +910,10 @@ index 0000000..ed24eaa
 +           kFlashFwdProfileRegTimelineBlockMetaCount +
 +           ((slot * kFlashFwdProfileRegTimelineConsumerThreads + thread) *
 +            kFlashFwdProfileRegTimelineEventCount) + event;
++}
++
++constexpr int flash_fwd_profile_task_trace_offset(int slot, int field) {
++    return slot * kFlashFwdProfileTaskTraceFieldCount + field;
 +}
 +
 +constexpr int flash_fwd_profile_reg_timeline_capture_count(int k_tiles) {
@@ -425,7 +937,7 @@ index 0000000..ed24eaa
 +        : -1;
 +}
 diff --git a/hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp b/hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp
-index 536ff85..0364a11 100644
+index 536ff85..94a784a 100644
 --- a/hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp
 +++ b/hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp
 @@ -22,12 +22,46 @@
@@ -434,11 +946,11 @@ index 536ff85..0364a11 100644
  #include "utils.h"
 +#include "flash_profile.h"
  #include "sm90_pipeline_no_cluster.hpp"
- 
+
  namespace flash {
- 
+
  using namespace cute;
- 
+
 +#if defined(FLASH_FWD_SENS_SKIP_QK_WGMMA)
 +static constexpr bool FlashFwdSensSkipQkWgmma = true;
 +#else
@@ -495,7 +1007,7 @@ index 536ff85..0364a11 100644
 +         uint64_t *profile_clock_ptr = nullptr
 +#endif
           ) {
- 
+
          // some of these are captured in lambda so can't use structured binding
 @@ -644,6 +684,28 @@ struct CollectiveMainloopFwdSm90 {
          int const thread_idx = threadIdx.x % NumProducerThreads;
@@ -515,7 +1027,7 @@ index 536ff85..0364a11 100644
 +                    kFlashFwdProfileTimelineBase +
 +                    flash_fwd_profile_timeline_offset(
 +                        kFlashFwdProfileTimelineProducer, step, event)] =
-+                    static_cast<uint64_t>(clock64());
++                    flash_fwd_profile_now();
 +            }
 +        };
 +        profile_timeline_producer_store(0, kFlashFwdProfileTimelineTileBegin);
@@ -523,12 +1035,12 @@ index 536ff85..0364a11 100644
 +        auto profile_timeline_step_for_n_block = [](int) { return 0; };
 +        auto profile_timeline_producer_store = [](int, int) {};
 +#endif
- 
+
          // Prepare the TMA loads
          uint32_t block_rank_in_cluster = cute::block_rank_in_cluster();
 @@ -747,8 +809,16 @@ struct CollectiveMainloopFwdSm90 {
          }
- 
+
          auto load_K = [&] (int const n_block, auto const& smem_pipe_write, auto need_seqlenk_masking_type) {
 +            int const profile_timeline_step = profile_timeline_step_for_n_block(n_block);
 +            profile_timeline_producer_store(profile_timeline_step, kFlashFwdProfileTimelineProducerLoadKBegin);
@@ -550,7 +1062,7 @@ index 536ff85..0364a11 100644
              }
 +            profile_timeline_producer_store(profile_timeline_step, kFlashFwdProfileTimelineProducerLoadKEnd);
          };
- 
+
          auto load_V = [&] (int const n_block, auto const& smem_pipe_write, auto need_seqlenk_masking_type) {
 +            int const profile_timeline_step = profile_timeline_step_for_n_block(n_block);
 +            profile_timeline_producer_store(profile_timeline_step, kFlashFwdProfileTimelineProducerLoadVBegin);
@@ -573,11 +1085,11 @@ index 536ff85..0364a11 100644
              }
 +            profile_timeline_producer_store(profile_timeline_step, kFlashFwdProfileTimelineProducerLoadVEnd);
          };
- 
+
          auto copy_Vt_to_V = [&] (auto const& smem_pipe_write) {
 @@ -816,13 +896,22 @@ struct CollectiveMainloopFwdSm90 {
              }
- 
+
              if ((SingleProducerWarp || warp_idx_in_warpgroup == 0) && cute::elect_one_sync()) {
 -                shared_storage.pipelines.barrier_Q.arrive_and_expect_tx(TmaTransactionBytesQ);
 -                copy(params.tma_load_Q.with(reinterpret_cast<typename cutlass::arch::ClusterTransactionBarrier::ValueType&>(shared_storage.pipelines.barrier_Q), 0 /*mcast_mask*/, !Split ? TMA::CacheHintSm90::EVICT_FIRST : TMA::CacheHintSm90::EVICT_LAST),
@@ -638,7 +1150,7 @@ index 536ff85..0364a11 100644
 +        profile_timeline_producer_store(profile_timeline_step_for_n_block(n_block),
 +                                        kFlashFwdProfileTimelineProducerBarrierOEnd);
          // if (thread_idx == 0) { printf("Producer: main load, after barrier_O\n");}
- 
+
          if constexpr (!Transpose_V && !IntraWGOverlap) {
 @@ -893,7 +990,24 @@ struct CollectiveMainloopFwdSm90 {
      template <typename SharedStorage>
@@ -660,7 +1172,7 @@ index 536ff85..0364a11 100644
 +                flash_fwd_profile_timeline_offset(
 +                    kFlashFwdProfileTimelineProducer, 0,
 +                    kFlashFwdProfileTimelineProducerTailBegin)] =
-+                static_cast<uint64_t>(clock64());
++                flash_fwd_profile_now();
 +        }
 +#endif
          // If we don't wait for barrier_O here, when using Cluster, CTA0 might exit early and CTA1 will
@@ -679,11 +1191,11 @@ index 536ff85..0364a11 100644
 +                flash_fwd_profile_timeline_offset(
 +                    kFlashFwdProfileTimelineProducer, 0,
 +                    kFlashFwdProfileTimelineProducerTailEnd)] =
-+                static_cast<uint64_t>(clock64());
++                flash_fwd_profile_now();
 +        }
 +#endif
      }
- 
+
      CUTLASS_DEVICE void
 @@ -963,6 +1089,10 @@ struct CollectiveMainloopFwdSm90 {
          SeqlenInfo_t const& seqlen_info,
@@ -703,7 +1215,7 @@ index 536ff85..0364a11 100644
 +#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK) && !defined(FLASH_FWD_PROFILE_REG_TIMELINE_ONLY)
 +        bool const profile_this_thread = profile_clock_ptr != nullptr
 +            && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && thread_idx == 0;
-+        auto profile_now = []() { return static_cast<uint64_t>(clock64()); };
++        auto profile_now = []() { return flash_fwd_profile_now(); };
 +        auto profile_add = [&](int index, uint64_t start, uint64_t end) {
 +            if (profile_this_thread && end >= start) { profile_clock_ptr[index] += end - start; }
 +        };
@@ -763,7 +1275,7 @@ index 536ff85..0364a11 100644
 +                    kFlashFwdProfileTimelineBase +
 +                    flash_fwd_profile_timeline_offset(
 +                        profile_timeline_actor, step, event)] =
-+                    static_cast<uint64_t>(clock64());
++                    flash_fwd_profile_now();
 +            }
 +        };
 +#else
@@ -814,25 +1326,25 @@ index 536ff85..0364a11 100644
 +#if FLASH_FWD_PROFILE_REG_TIMELINE_STEPS == 1
 +#define FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(slot, name) do { \
 +            if ((slot) == 0) { \
-+                profile_reg_timeline_s0_##name = static_cast<uint32_t>(clock64()); \
++                profile_reg_timeline_s0_##name = static_cast<uint32_t>(flash_fwd_profile_now()); \
 +            } \
 +        } while (0)
 +#elif FLASH_FWD_PROFILE_REG_TIMELINE_STEPS == 2
 +#define FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(slot, name) do { \
 +            if ((slot) == 0) { \
-+                profile_reg_timeline_s0_##name = static_cast<uint32_t>(clock64()); \
++                profile_reg_timeline_s0_##name = static_cast<uint32_t>(flash_fwd_profile_now()); \
 +            } else if ((slot) == 1) { \
-+                profile_reg_timeline_s1_##name = static_cast<uint32_t>(clock64()); \
++                profile_reg_timeline_s1_##name = static_cast<uint32_t>(flash_fwd_profile_now()); \
 +            } \
 +        } while (0)
 +#else
 +#define FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(slot, name) do { \
 +            if ((slot) == 0) { \
-+                profile_reg_timeline_s0_##name = static_cast<uint32_t>(clock64()); \
++                profile_reg_timeline_s0_##name = static_cast<uint32_t>(flash_fwd_profile_now()); \
 +            } else if ((slot) == 1) { \
-+                profile_reg_timeline_s1_##name = static_cast<uint32_t>(clock64()); \
++                profile_reg_timeline_s1_##name = static_cast<uint32_t>(flash_fwd_profile_now()); \
 +            } else if ((slot) == 2) { \
-+                profile_reg_timeline_s2_##name = static_cast<uint32_t>(clock64()); \
++                profile_reg_timeline_s2_##name = static_cast<uint32_t>(flash_fwd_profile_now()); \
 +            } \
 +        } while (0)
 +#endif
@@ -886,11 +1398,11 @@ index 536ff85..0364a11 100644
 +        auto profile_reg_timeline_flush = []() {};
 +#define FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(slot, name) do {} while (0)
 +#endif
- 
+
          int const seqlen_q = seqlen_info.seqlen_q;
          int const seqlen_k = seqlen_info.seqlen_k;
-@@ -1137,29 +1453,79 @@ struct CollectiveMainloopFwdSm90 {
- 
+@@ -1137,29 +1453,85 @@ struct CollectiveMainloopFwdSm90 {
+
          if constexpr (IntraWGOverlap) {
              Tensor tSrS = partition_fragment_C(tiled_mma_qk, select<0, 1>(TileShape_MNK{}));
 +            uint32_t profile_trace_step = profile_trace_step_idx++;
@@ -942,6 +1454,9 @@ index 536ff85..0364a11 100644
 -
 -            softmax.template online_softmax</*Is_first=*/true, /*Check_inf=*/true>(tSrS);
 +            if (profile_this_thread) { profile_t0 = profile_now(); }
++            if constexpr (!FlashFwdSensSkipSoftmax) {
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerSoftmaxBegin);
++            }
 +            auto scores_scale = [&] {
 +                if constexpr (FlashFwdSensSkipSoftmax) {
 +                    typename Softmax::TensorT scores_scale_skip;
@@ -969,6 +1484,9 @@ index 536ff85..0364a11 100644
 +                if constexpr (!MmaPV_is_RS) { write_P_to_smem(tOrP); }
 +                if constexpr (!MmaPV_is_RS) { arrive_on_P_write_barrier(); }
 +            }
++            if constexpr (!FlashFwdSensSkipSoftmax) {
++                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerSoftmaxEnd);
++            }
 +            if (profile_this_thread) {
 +                profile_t1 = profile_now();
 +                if constexpr (!FlashFwdSensSkipSoftmax) {
@@ -980,9 +1498,9 @@ index 536ff85..0364a11 100644
 +            profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerStepEnd);
 +            profile_count(kFlashFwdProfileMainloopIterations);
              --n_block;
- 
+
              // Need to initialize tOrO in the case of RescaleOBeforeGemm where we will scale tOrO even in the 1st iter
-@@ -1172,38 +1538,156 @@ struct CollectiveMainloopFwdSm90 {
+@@ -1172,38 +1544,162 @@ struct CollectiveMainloopFwdSm90 {
                  PipelineState smem_pipe_read_v(smem_pipe_read.index(), smem_pipe_read.phase(), smem_pipe_read.count());
                  ++smem_pipe_read;
                  Tensor tSrS = partition_fragment_C(tiled_mma_qk, select<0, 1>(TileShape_MNK{}));
@@ -1043,7 +1561,8 @@ index 536ff85..0364a11 100644
 +                        profile_add(kFlashFwdProfilePvWaitCycles, profile_step_t0, profile_step_t1);
 +                        profile_trace_add(profile_trace_step, kFlashFwdProfileTracePvWaitCycles, profile_step_t0, profile_step_t1);
 +                    }
-+                }
+                 }
+-                flash::gemm</*zero_init=*/false, /*wg_wait=*/-1>(tiled_mma_pv, cute::conditional_return<MmaPV_is_RS>(tOrP, tOsP), tOrV(_, _, _, smem_pipe_read_v.index()), tOrO);
 +                if (profile_this_thread) { profile_step_t0 = profile_now(); }
 +                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerPvIssueBegin);
 +                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
@@ -1052,8 +1571,7 @@ index 536ff85..0364a11 100644
 +                    if constexpr (!FlashFwdSensSyncOnly) { clear(tOrO); }
 +                } else {
 +                    flash::gemm</*zero_init=*/false, /*wg_wait=*/-1>(tiled_mma_pv, cute::conditional_return<MmaPV_is_RS>(tOrP, tOsP), tOrV(_, _, _, smem_pipe_read_v.index()), tOrO);
-                 }
--                flash::gemm</*zero_init=*/false, /*wg_wait=*/-1>(tiled_mma_pv, cute::conditional_return<MmaPV_is_RS>(tOrP, tOsP), tOrV(_, _, _, smem_pipe_read_v.index()), tOrO);
++                }
 +                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
 +                    profile_reg_timeline_slot, pv_issue_end);
 +                FLASH_FWD_PROFILE_REG_TIMELINE_CAPTURE(
@@ -1088,6 +1606,9 @@ index 536ff85..0364a11 100644
 -                if constexpr (LargeHeadDimV) { store_scales(scores_scale, smem_pipe_read_v.index()); }
 -                softmax.template online_softmax</*Is_first=*/false, Check_inf>(tSrS);
 +                if (profile_this_thread) { profile_step_t0 = profile_now(); }
++                if constexpr (!FlashFwdSensSkipSoftmax) {
++                    profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerSoftmaxBegin);
++                }
 +                if constexpr (!FlashFwdSensSkipSoftmax) {
 +                    scoremod_premask_fn(tSrS);
 +                    mask_fn(tSrS, n_block);
@@ -1140,6 +1661,9 @@ index 536ff85..0364a11 100644
 +                }
 +                if constexpr (!RescaleOBeforeGemm && !FlashFwdSensSkipSoftmax) { softmax.rescale_o(tOrO, scores_scale); }
 +                if constexpr (!FlashFwdSensSyncOnly && !MmaPV_is_RS) { arrive_on_P_write_barrier(); }
++                if constexpr (!FlashFwdSensSkipSoftmax) {
++                    profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerSoftmaxEnd);
++                }
 +                if (profile_this_thread) {
 +                    profile_step_t1 = profile_now();
 +                    if constexpr (!FlashFwdSensSkipSoftmax) {
@@ -1151,9 +1675,9 @@ index 536ff85..0364a11 100644
 +                profile_timeline_consumer_store(profile_timeline_step, kFlashFwdProfileTimelineConsumerStepEnd);
 +                profile_count(kFlashFwdProfileMainloopIterations);
              };
- 
+
              if constexpr (Is_causal || Is_local) { // Separate iterations with causal or local masking
-@@ -1236,19 +1720,61 @@ struct CollectiveMainloopFwdSm90 {
+@@ -1236,19 +1732,67 @@ struct CollectiveMainloopFwdSm90 {
              // Tell producers that smem_q is ready
              cutlass::arch::NamedBarrier::arrive(NumMmaThreadsQK + (Use_TMA_Q ? cutlass::NumThreadsPerWarp : NumProducerThreads), static_cast<uint32_t>(FwdNamedBarriers::QueryEmpty) /*id*/);
              if constexpr (RescaleOBeforeGemm) { softmax.rescale_o(tOrO, scores_scale); }
@@ -1187,6 +1711,9 @@ index 536ff85..0364a11 100644
 +                flash::gemm</*zero_init=*/false, /*wg_wait=*/-1>(tiled_mma_pv, cute::conditional_return<MmaPV_is_RS>(tOrP, tOsP), tOrV(_, _, _, smem_pipe_read.index()), tOrO);
 +            }
 +            if constexpr (!FlashFwdSensSkipSoftmax) {
++                profile_timeline_consumer_store(profile_timeline_final_step, kFlashFwdProfileTimelineConsumerSoftmaxBegin);
++            }
++            if constexpr (!FlashFwdSensSkipSoftmax) {
 +                float const v_descale = !Is_FP8 || params.ptr_v_descale == nullptr ? 1.0f : params.ptr_v_descale[bidb * get<0>(params.stride_v_descale) + bidh_kv * get<1>(params.stride_v_descale)];
 +                cute::copy(softmax.finalize(v_descale), scores_scale);
 +                if constexpr (LargeHeadDimV) {
@@ -1212,6 +1739,9 @@ index 536ff85..0364a11 100644
 +            profile_timeline_consumer_store(profile_timeline_final_step, kFlashFwdProfileTimelineConsumerVRelease);
 +            if constexpr (!FlashFwdSensSkipSoftmax) { softmax.rescale_o(tOrO, scores_scale); }
              if constexpr (Is_FP8 && !V_colmajor) { flash::permute_output_fp8(tOrO); }
++            if constexpr (!FlashFwdSensSkipSoftmax) {
++                profile_timeline_consumer_store(profile_timeline_final_step, kFlashFwdProfileTimelineConsumerSoftmaxEnd);
++            }
 +            if (profile_this_thread) {
 +                profile_t1 = profile_now();
 +                if constexpr (!FlashFwdSensSkipSoftmax) {
@@ -1222,9 +1752,9 @@ index 536ff85..0364a11 100644
 +            }
 +            profile_timeline_consumer_store(profile_timeline_final_step, kFlashFwdProfileTimelineConsumerStepEnd);
              ++smem_pipe_read;
- 
+
          } else {  // No intra-WG overlap
-@@ -1347,6 +1873,13 @@ struct CollectiveMainloopFwdSm90 {
+@@ -1347,6 +1891,13 @@ struct CollectiveMainloopFwdSm90 {
              if constexpr (Is_FP8 && !V_colmajor) { flash::permute_output_fp8(tOrO); }
              ++smem_pipe_read;
          }
@@ -1238,3 +1768,56 @@ index 536ff85..0364a11 100644
          ++work_idx;
          return true;
      }
+diff --git a/hopper/tile_scheduler.hpp b/hopper/tile_scheduler.hpp
+index 241eaed..7d228c7 100644
+--- a/hopper/tile_scheduler.hpp
++++ b/hopper/tile_scheduler.hpp
+@@ -230,6 +230,16 @@ class DynamicPersistentTileScheduler {
+
+     static_assert(WarpSpecialized || NumProducerThreads == NumMmaThreads);
+     static constexpr int NumThreads = WarpSpecialized ? NumMmaThreads + NumProducerThreads : NumMmaThreads;
++#if defined(FLASH_FWD_PROFILE_SCHED_M3_ONLY)
++    static constexpr bool ProfileSchedM3Only = true;
++#else
++    static constexpr bool ProfileSchedM3Only = false;
++#endif
++#if defined(FLASH_FWD_PROFILE_SCHED_FIRST_BH_SECTION_ONLY)
++    static constexpr bool ProfileSchedFirstBhSectionOnly = true;
++#else
++    static constexpr bool ProfileSchedFirstBhSectionOnly = false;
++#endif
+
+ public:
+     using SharedStorage = int;
+@@ -263,9 +273,15 @@ public:
+         // swizzle. Instead we want to divide by the remainder.
+         int const num_hb_remainder = (args.num_head * args.num_batch) % swizzle;
+         int const num_split_blocks = args.num_blocks * (!Split ? 1 : args.num_splits);
++        int const total_hb = args.num_head * args.num_batch;
++        int const first_section_hb = total_hb < swizzle ? total_hb : swizzle;
++        int const profile_hb =
++            ProfileSchedFirstBhSectionOnly ? first_section_hb : total_hb;
++        int const profile_total_blocks =
++            profile_hb * (ProfileSchedM3Only ? 1 : num_split_blocks);
+         // printf("num_split_blocks = %d, num_head = %d, num_batch = %d, swizzle = %d, PackGQA = %d, qhead_per_khead = %d, num_hb_remainder = %d\n", num_split_blocks, args.num_head, args.num_batch, swizzle, int(PackGQA), args.qhead_per_khead, num_hb_remainder);
+         assert(args.tile_count_semaphore != nullptr);
+-        return {num_split_blocks * args.num_head * args.num_batch,
++        return {profile_total_blocks,
+                 cutlass::FastDivmod(args.num_blocks), cutlass::FastDivmod(args.num_head),
+                 cutlass::FastDivmod(swizzle), cutlass::FastDivmod(swizzle * num_split_blocks),
+                 // don't divide by 0
+@@ -293,7 +309,13 @@ public:
+         get_block_coord(Params const& params) const {
+             int block, bidh, bidb;
+             int l2_mod, bidhb, bidhb_residual;
+-            bidhb = params.l2_major_divmod.divmod(l2_mod, tile_idx);
++            int physical_tile_idx = tile_idx;
++            if constexpr (ProfileSchedM3Only) {
++                int section, section_residual;
++                section = params.l2_minor_divmod.divmod(section_residual, tile_idx);
++                physical_tile_idx = section * params.l2_major_divmod.divisor + section_residual;
++            }
++            bidhb = params.l2_major_divmod.divmod(l2_mod, physical_tile_idx);
+             // If we're in the last section (called residual), we don't want to divide by
+             // swizzle. Instead we want to divide by the remainder.
+             if (bidhb < params.num_hb_quotient) {
