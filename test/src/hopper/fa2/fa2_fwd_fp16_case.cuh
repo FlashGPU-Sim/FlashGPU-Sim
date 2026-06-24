@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <cstddef>
 #include <limits>
 #include <vector>
@@ -154,6 +156,16 @@ static constexpr int kFa2PrefillSensitivityCaseCount = 1;
 
 static constexpr int kFa2PrefillSensitivityH1D128CaseCount = 10;
 
+#if defined(FA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_BH_HALF)
+#define FA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_CASE_LIST(X) \
+  X(H8D128FullB32S512, 32, 512, 8, 128, false)
+#else
+#define FA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_CASE_LIST(X) \
+  X(H16D128FullB64S512, 64, 512, 16, 128, false)
+#endif
+
+static constexpr int kFa2PrefillSensitivityLargeD128FullCaseCount = 1;
+
 #define FA2_PREFILL_CASE_ENTRY(name, batch, seqlen, heads, head_dim, causal) \
   Fa2PrefillCase{#name, batch, seqlen, heads, head_dim, causal},
 static constexpr Fa2PrefillCase kFa2PrefillCases[] = {
@@ -168,6 +180,8 @@ static constexpr Fa2PrefillCase kFa2PrefillSensitivityCases[] = {
     FA2_PREFILL_SENSITIVITY_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
 static constexpr Fa2PrefillCase kFa2PrefillSensitivityH1D128Cases[] = {
     FA2_PREFILL_SENSITIVITY_H1D128_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
+static constexpr Fa2PrefillCase kFa2PrefillSensitivityLargeD128FullCases[] = {
+    FA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
 #undef FA2_PREFILL_CASE_ENTRY
 
 static_assert(sizeof(kFa2PrefillCases) / sizeof(kFa2PrefillCases[0]) ==
@@ -193,6 +207,10 @@ static_assert(sizeof(kFa2PrefillSensitivityH1D128Cases) /
                       sizeof(kFa2PrefillSensitivityH1D128Cases[0]) ==
                   kFa2PrefillSensitivityH1D128CaseCount,
               "FA2 prefill H1D128 sensitivity case list must contain 10 cases");
+static_assert(sizeof(kFa2PrefillSensitivityLargeD128FullCases) /
+                      sizeof(kFa2PrefillSensitivityLargeD128FullCases[0]) ==
+                  kFa2PrefillSensitivityLargeD128FullCaseCount,
+              "FA2 prefill large D128 full sensitivity case list must contain 1 case");
 
 struct Fa2RunResult {
   cudaError_t error = cudaSuccess;
@@ -245,6 +263,13 @@ inline bool is_valid_fa2_prefill_sensitivity_h1d128_case(
     const Fa2PrefillCase &cfg) {
   return cfg.batch == 1 && cfg.heads == 1 && cfg.head_dim == 128 &&
          cfg.seqlen >= 256 && cfg.seqlen <= 4096 && cfg.seqlen % 128 == 0;
+}
+
+inline bool is_valid_fa2_prefill_sensitivity_large_d128_full_case(
+    const Fa2PrefillCase &cfg) {
+  return cfg.seqlen == 512 && cfg.head_dim == 128 && !cfg.causal &&
+         ((cfg.batch == 64 && cfg.heads == 16) ||
+          (cfg.batch == 32 && cfg.heads == 8));
 }
 
 inline void fill_half(std::vector<cutlass::half_t> &x, float scale) {
@@ -438,6 +463,12 @@ inline Fa2RunResult run_fa2_fwd_fp16_typed(int batch, int seqlen_q,
   cutlass::half_t *d_v = nullptr;
   cutlass::half_t *d_o = nullptr;
   float *d_lse = nullptr;
+#if defined(FA2_FWD_CTA_PROFILE)
+  flash::Flash_fwd_cta_profile_record *d_cta_profile = nullptr;
+  const char *cta_profile_csv_path = std::getenv("FA2_CTA_PROFILE_CSV");
+  const int cta_profile_count =
+      ((seqlen_q + 127) / 128) * batch * heads;
+#endif
   std::vector<cutlass::half_t> h_q;
   std::vector<cutlass::half_t> h_k;
   std::vector<cutlass::half_t> h_v;
@@ -455,6 +486,9 @@ inline Fa2RunResult run_fa2_fwd_fp16_typed(int batch, int seqlen_q,
     free_if_needed(d_v);
     free_if_needed(d_o);
     free_if_needed(d_lse);
+#if defined(FA2_FWD_CTA_PROFILE)
+    free_if_needed(d_cta_profile);
+#endif
 
     if (error != cudaSuccess) {
       result.error = error;
@@ -519,11 +553,51 @@ inline Fa2RunResult run_fa2_fwd_fp16_typed(int batch, int seqlen_q,
   populate_fa2_params(params, d_q, d_k, d_v, d_o, d_lse, batch, seqlen_q,
                       seqlen_k, heads, D, IsCausal);
 
+#if defined(FA2_FWD_CTA_PROFILE)
+  if (cta_profile_csv_path != nullptr && cta_profile_csv_path[0] != '\0') {
+    FA2_RETURN_IF_CUDA_ERROR(cudaMalloc(
+        &d_cta_profile,
+        size_t(cta_profile_count) *
+            sizeof(flash::Flash_fwd_cta_profile_record)));
+    FA2_RETURN_IF_CUDA_ERROR(cudaMemset(
+        d_cta_profile, 0,
+        size_t(cta_profile_count) *
+            sizeof(flash::Flash_fwd_cta_profile_record)));
+    params.cta_profile_ptr = d_cta_profile;
+    params.cta_profile_capacity = cta_profile_count;
+  }
+#endif
+
   cudaStream_t stream = nullptr;
   run_fa2_fwd_kernel<HeadDim, IsCausal>(params, stream);
 
   FA2_RETURN_IF_CUDA_ERROR(cudaGetLastError());
   FA2_RETURN_IF_CUDA_ERROR(cudaDeviceSynchronize());
+#if defined(FA2_FWD_CTA_PROFILE)
+  if (d_cta_profile != nullptr) {
+    std::vector<flash::Flash_fwd_cta_profile_record> h_cta_profile(
+        cta_profile_count);
+    FA2_RETURN_IF_CUDA_ERROR(cudaMemcpy(
+        h_cta_profile.data(), d_cta_profile,
+        size_t(cta_profile_count) *
+            sizeof(flash::Flash_fwd_cta_profile_record),
+        cudaMemcpyDeviceToHost));
+    std::ofstream out(cta_profile_csv_path);
+    out << "cta_linear,cta_x,cta_y,cta_z,start_smid,end_smid,"
+           "start_globaltimer,end_globaltimer,duration_globaltimer\n";
+    for (int i = 0; i < cta_profile_count; ++i) {
+      const auto &r = h_cta_profile[i];
+      const uint64_t duration =
+          r.end_globaltimer >= r.start_globaltimer
+              ? r.end_globaltimer - r.start_globaltimer
+              : 0;
+      out << i << "," << r.cta_x << "," << r.cta_y << "," << r.cta_z
+          << "," << r.start_smid << "," << r.end_smid << ","
+          << r.start_globaltimer << "," << r.end_globaltimer << ","
+          << duration << "\n";
+    }
+  }
+#endif
   cutlass::half_t output0;
   FA2_RETURN_IF_CUDA_ERROR(cudaMemcpy(&output0, d_o, sizeof(cutlass::half_t),
                                       cudaMemcpyDeviceToHost));
@@ -623,6 +697,18 @@ inline Fa2RunResult run_fa2_sensitivity_h1d128_fp16(
     return run_fa2_fwd_fp16_typed<128, true>(cfg.batch, cfg.seqlen,
                                              cfg.seqlen, cfg.heads, false);
   }
+  return run_fa2_fwd_fp16_typed<128, false>(cfg.batch, cfg.seqlen,
+                                            cfg.seqlen, cfg.heads, false);
+}
+#endif
+
+#if defined(FA2_PREFILL_GROUP_SENSITIVITY_LARGE_D128_FULL)
+inline Fa2RunResult run_fa2_sensitivity_large_d128_full_fp16(
+    const Fa2PrefillCase &cfg) {
+  if (!is_valid_fa2_prefill_sensitivity_large_d128_full_case(cfg)) {
+    return make_fa2_invalid_result("Fa2SensitivityLargeD128FullCase");
+  }
+
   return run_fa2_fwd_fp16_typed<128, false>(cfg.batch, cfg.seqlen,
                                             cfg.seqlen, cfg.heads, false);
 }

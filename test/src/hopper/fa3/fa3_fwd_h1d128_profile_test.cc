@@ -21,6 +21,7 @@ constexpr Fa3PrefillCase kD128FullProfileCases[] = {
     {"H16D128FullB16S2048", 16, 2048, 16, 128, false},
     {"H16D128FullB8S4096", 8, 4096, 16, 128, false},
     {"H16D128FullB4S8192", 4, 8192, 16, 128, false},
+    {"H16D128CausalB64S512", 64, 512, 16, 128, true},
 
     // Reduced-H cases.
     {"H4D128FullB64S512", 64, 512, 4, 128, false},
@@ -44,6 +45,9 @@ constexpr Fa3PrefillCase kD128FullProfileCases[] = {
     {"H1D128FullB1S2048", 1, 2048, 1, 128, false},
     {"H1D128FullB1S4096", 1, 4096, 1, 128, false},
     {"H1D128FullB1S8192", 1, 8192, 1, 128, false},
+
+    // Minimal-H/B causal repro cases.
+    {"H1D128CausalB1S512", 1, 512, 1, 128, true},
 
     // Short aliases for interactive use.
     {"H1D128B1S128", 1, 128, 1, 128, false},
@@ -94,6 +98,11 @@ std::string TimelineProfileOutPath() {
 
 std::string RegTimelineProfileOutPath() {
   const char *env = std::getenv("FA3_H1D128_PROFILE_REG_TIMELINE_OUT");
+  return env == nullptr ? std::string() : std::string(env);
+}
+
+std::string TaskProfileOutPath() {
+  const char *env = std::getenv("FA3_H1D128_PROFILE_TASK_OUT");
   return env == nullptr ? std::string() : std::string(env);
 }
 
@@ -414,6 +423,66 @@ void WriteRegTimelineProfileCsv(
   }
 }
 
+void WriteTaskProfileCsv(
+    const std::string &path,
+    const std::vector<Fa3PrefillProfileResult> &results) {
+  if (path.empty()) return;
+  std::ofstream out(path);
+  ASSERT_TRUE(out) << "failed to open " << path;
+  out << "case,batch,seqlen_q,seqlen_k,heads,head_dim,causal,block_m,"
+         "block_n,logical_tiles,slot,m_block,bidh,bidb,split_idx,cta_x,"
+         "smid,tile_valid,mainloop_start,mainloop_end,mainloop_delta,"
+         "epilogue_start,epilogue_end,epilogue_delta,task_delta,"
+         "mainloop_start_from_kernel,epilogue_end_from_kernel\n";
+  for (const auto &result : results) {
+    for (const auto &task : result.task_traces) {
+      const uint64_t mainloop_delta =
+          fa3_profile_clock_delta(task.mainloop_start, task.mainloop_end);
+      const uint64_t epilogue_delta =
+          fa3_profile_clock_delta(task.epilogue_start, task.epilogue_end);
+      const uint64_t task_delta =
+          fa3_profile_clock_delta(task.mainloop_start, task.epilogue_end);
+      const uint64_t mainloop_start_from_kernel =
+          result.clock_start != std::numeric_limits<uint64_t>::max() &&
+                  task.mainloop_start >= result.clock_start
+              ? task.mainloop_start - result.clock_start
+              : 0;
+      const uint64_t epilogue_end_from_kernel =
+          result.clock_start != std::numeric_limits<uint64_t>::max() &&
+                  task.epilogue_end >= result.clock_start
+              ? task.epilogue_end - result.clock_start
+              : 0;
+      out << result.name << ","
+          << result.batch << ","
+          << result.seqlen_q << ","
+          << result.seqlen_k << ","
+          << result.heads << ","
+          << result.head_dim << ","
+          << result.causal << ","
+          << result.block_m << ","
+          << result.block_n << ","
+          << result.logical_tiles << ","
+          << task.slot << ","
+          << task.m_block << ","
+          << task.bidh << ","
+          << task.bidb << ","
+          << task.split_idx << ","
+          << task.cta_x << ","
+          << task.smid << ","
+          << task.tile_valid << ","
+          << task.mainloop_start << ","
+          << task.mainloop_end << ","
+          << mainloop_delta << ","
+          << task.epilogue_start << ","
+          << task.epilogue_end << ","
+          << epilogue_delta << ","
+          << task_delta << ","
+          << mainloop_start_from_kernel << ","
+          << epilogue_end_from_kernel << "\n";
+    }
+  }
+}
+
 #else
 
 std::string NoProfileOutPath() {
@@ -463,10 +532,9 @@ TEST_F(Fa3H1D128ProfileTest, SelectedD128FullCases) {
                  << " heads=" << cfg.heads);
     ASSERT_TRUE(is_supported_fa3_prefill_case(cfg));
     ASSERT_EQ(cfg.head_dim, 128);
-    ASSERT_FALSE(cfg.causal);
 
     Fa3PrefillProfileResult result =
-        run_fa3_prefill_profile_fp16_typed<128, false>(cfg);
+        run_fa3_prefill_profile_fp16(cfg);
     ASSERT_EQ(result.error, cudaSuccess)
         << result.where << " failed: " << cudaGetErrorString(result.error);
     if (fa3_prefill_profile_clock_enabled()) {
@@ -479,6 +547,7 @@ TEST_F(Fa3H1D128ProfileTest, SelectedD128FullCases) {
   WriteIterationProfileCsv(IterProfileOutPath(), results);
   WriteTimelineProfileCsv(TimelineProfileOutPath(), results);
   WriteRegTimelineProfileCsv(RegTimelineProfileOutPath(), results);
+  WriteTaskProfileCsv(TaskProfileOutPath(), results);
 }
 
 #else
@@ -497,7 +566,6 @@ TEST_F(Fa3H1D128ProfileTest, SelectedD128FullCases) {
                  << " heads=" << cfg.heads);
     ASSERT_TRUE(is_supported_fa3_prefill_case(cfg));
     ASSERT_EQ(cfg.head_dim, 128);
-    ASSERT_FALSE(cfg.causal);
 
     Fa3RunResult result = run_fa3_prefill_fp16(cfg);
     ASSERT_EQ(result.error, cudaSuccess)

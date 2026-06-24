@@ -13,7 +13,7 @@ HOPPER_CUDA_ARCH ?= sm_90a
 # Note: sm_120a enables advanced SM 12.0 features including ldmatrix/stmatrix .trans modifier
 NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -arch=$(CUDA_ARCH)
 HOPPER_NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -arch=$(HOPPER_CUDA_ARCH)
-WGMMA_SM90A_NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -gencode arch=compute_90a,code=sm_90a -gencode arch=compute_90a,code=compute_90a
+WGMMA_SM90A_NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -gencode arch=compute_90a,code=sm_90a -gencode arch=compute_90a,code=compute_90a
 HOPPER_EXTRA_NVCCFLAGS =
 
 # CUDA settings
@@ -82,8 +82,9 @@ HOPPER_FA2_SENSITIVITY_MODES = baseline skip_cp_async skip_mma skip_softmax fma_
 HOPPER_FA2_SENSITIVITY_OBJECTS = $(foreach mode,$(HOPPER_FA2_SENSITIVITY_MODES),$(OBJ_DIR)/hopper/fa2/sensitivity_$(mode)/fa2_fwd_fp16_test.cu.o)
 HOPPER_FA2_SENSITIVITY_H1D128_MODES = baseline nothing only_cp_async only_softmax only_mma softmax_mma
 HOPPER_FA2_SENSITIVITY_H1D128_OBJECTS = $(foreach mode,$(HOPPER_FA2_SENSITIVITY_H1D128_MODES),$(OBJ_DIR)/hopper/fa2/sensitivity_h1d128_$(mode)/fa2_fwd_fp16_test.cu.o)
+HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_MODES = only_cp_async only_cp_async_bhhalf qk_softmax_pv_only qk_pv_only
+HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_OBJECTS = $(foreach mode,$(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_MODES),$(OBJ_DIR)/hopper/fa2/sensitivity_large_d128_full_$(mode)/fa2_fwd_fp16_test.cu.o)
 HOPPER_FA3_TEST_SOURCES = $(wildcard $(HOPPER_SRC_DIR)/fa3/*_test.cc)
-HOPPER_FA3_NOEXT_OBJECTS = $(HOPPER_FA3_TEST_SOURCES:$(HOPPER_SRC_DIR)/fa3/%.cc=$(OBJ_DIR)/hopper/fa3_noext/%.cu.o)
 HOPPER_FA3_EXTENDED_OBJECTS = $(HOPPER_FA3_TEST_SOURCES:$(HOPPER_SRC_DIR)/fa3/%.cc=$(OBJ_DIR)/hopper/fa3_extended/%.cu.o)
 HOPPER_FA3_SINGLE_TILE_OBJECT = $(OBJ_DIR)/hopper/fa3_profile/fa3_fwd_hdim128_fp16_test.cu.o
 HOPPER_FA3_H1D128_PROFILE_OBJECT = $(OBJ_DIR)/hopper/fa3_profile/fa3_fwd_h1d128_profile_test.cu.o
@@ -92,9 +93,18 @@ HOPPER_FA3_SENS_SOFTMAX_ONLY_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/softmax_
 HOPPER_FA3_SENS_QK_ONLY_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/qk_only/fa3_fwd_h1d128_profile_test.cu.o
 HOPPER_FA3_SENS_PV_ONLY_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/pv_only/fa3_fwd_h1d128_profile_test.cu.o
 HOPPER_FA3_SENS_QK_PV_ONLY_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/qk_pv_only/fa3_fwd_h1d128_profile_test.cu.o
+HOPPER_FA3_SENS_TMA_ONLY_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/tma_only/fa3_fwd_h1d128_profile_test.cu.o
+HOPPER_FA3_SENS_TMA_ONLY_M3_ONLY_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/tma_only_m3_only/fa3_fwd_h1d128_profile_test.cu.o
+HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/tma_only_first_round_bh/fa3_fwd_h1d128_profile_test.cu.o
+HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_M3_ONLY_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/tma_only_first_round_bh_m3_only/fa3_fwd_h1d128_profile_test.cu.o
+HOPPER_FA3_SENS_BASELINE_NOPROFILE_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/baseline_noprofile/fa3_fwd_h1d128_profile_test.cu.o
+HOPPER_FA3_SENS_SOFTMAX_ONLY_NOPROFILE_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/softmax_only_noprofile/fa3_fwd_h1d128_profile_test.cu.o
+HOPPER_FA3_SENS_QK_PV_ONLY_NOPROFILE_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/qk_pv_only_noprofile/fa3_fwd_h1d128_profile_test.cu.o
 HOPPER_FA3_SENS_BASE_NO_TMA_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/base_no_tma/fa3_fwd_h1d128_profile_test.cu.o
 HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/softmax_only_no_tma/fa3_fwd_h1d128_profile_test.cu.o
 HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/qk_pv_only_no_tma/fa3_fwd_h1d128_profile_test.cu.o
+HOPPER_FA3_SENS_BASE_NO_TMA_NOPROFILE_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/base_no_tma_noprofile/fa3_fwd_h1d128_profile_test.cu.o
+HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_NOPROFILE_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/softmax_only_no_tma_noprofile/fa3_fwd_h1d128_profile_test.cu.o
 HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/qk_pv_only_no_tma_extended/fa3_fwd_h1d128_profile_test.cu.o
 HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_NOPROFILE_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/qk_pv_only_no_tma_extended_noprofile/fa3_fwd_h1d128_profile_test.cu.o
 HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_REG_TIMELINE_OBJECT = $(OBJ_DIR)/hopper/fa3_sensitivity/qk_pv_only_no_tma_extended_reg_timeline/fa3_fwd_h1d128_profile_test.cu.o
@@ -109,6 +119,13 @@ HOPPER_FA3_SENS_SYNC_ONLY_NO_TMA_NOPROFILE_OBJECT = $(OBJ_DIR)/hopper/fa3_sensit
 # binaries with --gtest_list_tests so users can still pass one filter.
 MICROBENCH_OBJECTS = $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
 MICROBENCH_TARGETS = $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
+WGMMA_FP16_CORE_TARGETS = \
+	$(BIN_DIR)/wgmma/wgmma_fp16_ss_g1_bench \
+	$(BIN_DIR)/wgmma/wgmma_fp16_ss_g2_bench \
+	$(BIN_DIR)/wgmma/wgmma_fp16_ss_g4_bench \
+	$(BIN_DIR)/wgmma/wgmma_fp16_rs_g1_bench \
+	$(BIN_DIR)/wgmma/wgmma_fp16_rs_g2_bench \
+	$(BIN_DIR)/wgmma/wgmma_fp16_rs_g4_bench
 
 HOPPER_FA3_DIR = $(HOPPER_SRC_DIR)/fa3
 HOPPER_FA3_COMMON_FLAGS = --ftemplate-backtrace-limit=0 -O3 \
@@ -122,7 +139,6 @@ HOPPER_FA3_COMMON_FLAGS = --ftemplate-backtrace-limit=0 -O3 \
                           -DNDEBUG \
                           -I$(HOPPER_FA3_DIR)/flash-attention/hopper \
                           -I$(HOPPER_FA3_DIR)/flash-attention/csrc/cutlass/include
-HOPPER_FA3_NOEXT_FLAGS = $(HOPPER_FA3_COMMON_FLAGS)
 HOPPER_FA3_EXTENDED_FLAGS = $(HOPPER_FA3_COMMON_FLAGS) -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED
 HOPPER_FA3_FLAGS = $(HOPPER_FA3_EXTENDED_FLAGS)
 HOPPER_FA3_PROFILE_HEADERS = \
@@ -169,7 +185,7 @@ HOPPER_FA2_LARGE_TARGETS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(BIN_DIR)/h
 HOPPER_FA2_TARGETS = $(HOPPER_FA2_SMOKE_TARGETS) $(HOPPER_FA2_SMALL_TARGETS) $(HOPPER_FA2_MEDIUM_TARGETS) $(HOPPER_FA2_LARGE_TARGETS)
 HOPPER_FA2_SENSITIVITY_TARGETS = $(foreach mode,$(HOPPER_FA2_SENSITIVITY_MODES),$(BIN_DIR)/hopper/run_fa2_sensitivity_$(mode)_tests)
 HOPPER_FA2_SENSITIVITY_H1D128_TARGETS = $(foreach mode,$(HOPPER_FA2_SENSITIVITY_H1D128_MODES),$(BIN_DIR)/hopper/run_fa2_sensitivity_h1d128_$(mode)_tests)
-HOPPER_FA3_NOEXT_TARGET = $(BIN_DIR)/hopper/run_fa3_noext_tests
+HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_TARGETS = $(foreach mode,$(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_MODES),$(BIN_DIR)/hopper/run_fa2_sensitivity_large_d128_full_$(mode)_tests)
 HOPPER_FA3_EXTENDED_TARGET = $(BIN_DIR)/hopper/run_fa3_extended_tests
 HOPPER_FA3_SINGLE_TILE_TARGET = $(BIN_DIR)/hopper/run_fa3_single_tile_tests
 HOPPER_FA3_H1D128_PROFILE_TARGET = $(BIN_DIR)/hopper/run_fa3_h1d128_profile_tests
@@ -178,9 +194,18 @@ HOPPER_FA3_SENS_SOFTMAX_ONLY_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_soft
 HOPPER_FA3_SENS_QK_ONLY_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_qk_only_tests
 HOPPER_FA3_SENS_PV_ONLY_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_pv_only_tests
 HOPPER_FA3_SENS_QK_PV_ONLY_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_qk_pv_only_tests
+HOPPER_FA3_SENS_TMA_ONLY_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_tma_only_tests
+HOPPER_FA3_SENS_TMA_ONLY_M3_ONLY_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_tma_only_m3_only_tests
+HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_tma_only_first_round_bh_tests
+HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_M3_ONLY_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_tma_only_first_round_bh_m3_only_tests
+HOPPER_FA3_SENS_BASELINE_NOPROFILE_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_baseline_noprofile_tests
+HOPPER_FA3_SENS_SOFTMAX_ONLY_NOPROFILE_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_softmax_only_noprofile_tests
+HOPPER_FA3_SENS_QK_PV_ONLY_NOPROFILE_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_qk_pv_only_noprofile_tests
 HOPPER_FA3_SENS_BASE_NO_TMA_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_base_no_tma_tests
 HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_softmax_only_no_tma_tests
 HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_tests
+HOPPER_FA3_SENS_BASE_NO_TMA_NOPROFILE_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_base_no_tma_noprofile_tests
+HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_NOPROFILE_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_softmax_only_no_tma_noprofile_tests
 HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_extended_tests
 HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_NOPROFILE_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_extended_noprofile_tests
 HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_REG_TIMELINE_TARGET = $(BIN_DIR)/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_extended_reg_timeline_tests
@@ -195,9 +220,18 @@ HOPPER_FA3_SENSITIVITY_TARGETS = \
 	$(HOPPER_FA3_SENS_QK_ONLY_TARGET) \
 	$(HOPPER_FA3_SENS_PV_ONLY_TARGET) \
 	$(HOPPER_FA3_SENS_QK_PV_ONLY_TARGET) \
+	$(HOPPER_FA3_SENS_TMA_ONLY_TARGET) \
+	$(HOPPER_FA3_SENS_TMA_ONLY_M3_ONLY_TARGET) \
+	$(HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_TARGET) \
+	$(HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_M3_ONLY_TARGET) \
+	$(HOPPER_FA3_SENS_BASELINE_NOPROFILE_TARGET) \
+	$(HOPPER_FA3_SENS_SOFTMAX_ONLY_NOPROFILE_TARGET) \
+	$(HOPPER_FA3_SENS_QK_PV_ONLY_NOPROFILE_TARGET) \
 	$(HOPPER_FA3_SENS_BASE_NO_TMA_TARGET) \
 	$(HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_TARGET) \
 	$(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_TARGET) \
+	$(HOPPER_FA3_SENS_BASE_NO_TMA_NOPROFILE_TARGET) \
+	$(HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_NOPROFILE_TARGET) \
 	$(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_NOPROFILE_TARGET) \
 	$(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_TIMELINE_TARGET) \
 	$(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_REG_TIMELINE_TARGET) \
@@ -221,7 +255,7 @@ FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
 FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o
 FLASH_OBJ_DIR = $(OBJ_DIR)/flash
 
-.PHONY: all test bench standalone-bench cp-async-bench mma-standalone-bench tma-standalone-bench memory-standalone-bench dev hopper hopper-gtest prepare-fa3-flash-attention hopper-fa2 hopper-fa2-smoke hopper-fa2-small hopper-fa2-medium hopper-fa2-large hopper-fa2-sensitivity hopper-fa2-sensitivity-h1d128 hopper-fa2-large-h32d64-full hopper-fa2-large-h32d64-causal hopper-fa2-large-h16d128-full hopper-fa2-large-h16d128-causal hopper-fa3-noext hopper-fa3-extended hopper-fa3-variants hopper-fa3-single-tile hopper-fa3-h1d128-profile hopper-fa3-sensitivity hopper-fa3-sensitivity-extended wgmma-n16-chain clean help setup-gtest
+.PHONY: all test bench standalone-bench cp-async-bench mma-standalone-bench tma-standalone-bench memory-standalone-bench dev hopper hopper-gtest prepare-fa3-flash-attention hopper-fa2 hopper-fa2-smoke hopper-fa2-small hopper-fa2-medium hopper-fa2-large hopper-fa2-sensitivity hopper-fa2-sensitivity-h1d128 hopper-fa2-sensitivity-large-d128-full hopper-fa2-large-h32d64-full hopper-fa2-large-h16d128-full hopper-fa2-large-h32d64-causal hopper-fa2-large-h16d128-causal hopper-fa3-extended hopper-fa3-single-tile hopper-fa3-h1d128-profile hopper-fa3-sensitivity hopper-fa3-sensitivity-extended wgmma-n16-chain wgmma-fp16-core wgmma-softmax-mix wgmma-rf-bandwidth clean help setup-gtest
 
 # Build everything (test + bench + dev)
 all: test bench dev
@@ -274,6 +308,8 @@ hopper-fa2-sensitivity: setup-gtest $(HOPPER_FA2_SENSITIVITY_TARGETS)
 
 hopper-fa2-sensitivity-h1d128: setup-gtest $(HOPPER_FA2_SENSITIVITY_H1D128_TARGETS)
 
+hopper-fa2-sensitivity-large-d128-full: setup-gtest $(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_TARGETS)
+
 hopper-fa2-large-h32d64-full: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h32d64_full_tests
 
 hopper-fa2-large-h32d64-causal: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h32d64_causal_tests
@@ -282,12 +318,8 @@ hopper-fa2-large-h16d128-full: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h16d1
 
 hopper-fa2-large-h16d128-causal: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h16d128_causal_tests
 
-# Build FA3-only runners with explicit extended-shape selection.
-hopper-fa3-noext: setup-gtest $(HOPPER_FA3_NOEXT_TARGET)
-
+# Build FA3-only runners. FA3 always uses extended GMMA shapes.
 hopper-fa3-extended: setup-gtest $(HOPPER_FA3_EXTENDED_TARGET)
-
-hopper-fa3-variants: setup-gtest $(HOPPER_FA3_NOEXT_TARGET) $(HOPPER_FA3_EXTENDED_TARGET)
 
 # Build only the FA3 single-tile profiling runner.
 hopper-fa3-single-tile: setup-gtest $(HOPPER_FA3_SINGLE_TILE_TARGET)
@@ -304,6 +336,15 @@ hopper-fa3-sensitivity-extended: setup-gtest $(HOPPER_FA3_SENSITIVITY_EXTENDED_T
 # Build the raw PTX WGMMA n16 chain microbenchmark.
 wgmma-n16-chain: setup-gtest $(BIN_DIR)/wgmma/wgmma_n16_chain_bench
 
+# Build split FP16 WGMMA core calibration binaries.
+wgmma-fp16-core: setup-gtest $(WGMMA_FP16_CORE_TARGETS)
+
+# Build focused WGMMA + softmax-math mixing microbenchmark.
+wgmma-softmax-mix: setup-gtest $(BIN_DIR)/wgmma/wgmma_softmax_mix_bench
+
+# Build focused WGMMA accumulator/RF bandwidth microbenchmark.
+wgmma-rf-bandwidth: setup-gtest $(BIN_DIR)/wgmma/wgmma_rf_bandwidth_bench
+
 # Help target
 help:
 	@echo "GPGPU-Sim Test Framework"
@@ -315,6 +356,8 @@ help:
 	@echo "  standalone-bench - Build standalone CUDA calibration microbenchmarks"
 	@echo "  cp-async-bench - Build standalone cp.async calibration binaries"
 	@echo "  mma-standalone-bench - Build standalone warp-MMA calibration binaries"
+	@echo "  wgmma-softmax-mix - Build focused WGMMA/softmax mixing microbenchmark"
+	@echo "  wgmma-rf-bandwidth - Build focused WGMMA accumulator/RF bandwidth microbenchmark"
 	@echo "  prepare-fa3-flash-attention - Prepare local flash-attention headers for FA2/FA3"
 	@echo "  hopper      - Build Hopper tests"
 	@echo "  hopper-fa2 - Build split FA2 forward-only runners with extended-shape macro"
@@ -324,9 +367,7 @@ help:
 	@echo "  hopper-fa2-large - Build split FA2 large runners"
 	@echo "  hopper-fa2-sensitivity - Build FA2 H1/B1 sensitivity runners"
 	@echo "  hopper-fa2-sensitivity-h1d128 - Build FA2 H1D128 full/causal debug sensitivity runners"
-	@echo "  hopper-fa3-noext - Build FA3-only runner without extended GMMA shapes"
 	@echo "  hopper-fa3-extended - Build FA3-only runner with extended GMMA shapes"
-	@echo "  hopper-fa3-variants - Build both FA3-only runners"
 	@echo "  hopper-fa3-single-tile - Build FA3 single-tile profiling runner"
 	@echo "  hopper-fa3-h1d128-profile - Build FA3 H1/D128/full profiling runner"
 	@echo "  hopper-fa3-sensitivity - Build FA3 H1/D128/full sensitivity runners"
@@ -444,9 +485,13 @@ $(HOPPER_FA2_SENSITIVITY_H1D128_OBJECTS): $(HOPPER_FA2_TEST_SOURCE) $(CUH_HEADER
 	@mkdir -p $(dir $@)
 	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
-# FA3-only variants keep the extended-shape macro explicit and auditable.
-$(OBJ_DIR)/hopper/fa3_noext/%.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_NOEXT_FLAGS)
-$(OBJ_DIR)/hopper/fa3_noext/%.cu.o: $(HOPPER_SRC_DIR)/fa3/%.cc $(CUH_HEADERS) Makefile | $(HOPPER_OBJ_DIR)
+HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_FLAGS = $(HOPPER_FA2_FLAGS) -DFA2_PREFILL_GROUP_SENSITIVITY_LARGE_D128_FULL $(HOPPER_FA2_H16D128_FULL_FLAGS) -DFA2_FWD_SENS_FORCE_H100_HDIM128
+$(OBJ_DIR)/hopper/fa2/sensitivity_large_d128_full_only_cp_async/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_FLAGS) -DFA2_FWD_SENS_SKIP_MMA -DFA2_FWD_SENS_SKIP_MMA_OPERANDS -DFA2_FWD_SENS_SKIP_SOFTMAX
+$(OBJ_DIR)/hopper/fa2/sensitivity_large_d128_full_only_cp_async_bhhalf/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_FLAGS) -DFA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_BH_HALF -DFA2_FWD_SENS_SKIP_MMA -DFA2_FWD_SENS_SKIP_MMA_OPERANDS -DFA2_FWD_SENS_SKIP_SOFTMAX -DFA2_FWD_CTA_PROFILE
+$(OBJ_DIR)/hopper/fa2/sensitivity_large_d128_full_qk_softmax_pv_only/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_FLAGS) -DFA2_FWD_SENS_SKIP_CP_ASYNC
+$(OBJ_DIR)/hopper/fa2/sensitivity_large_d128_full_qk_pv_only/fa2_fwd_fp16_test.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_FLAGS) -DFA2_FWD_SENS_SKIP_CP_ASYNC -DFA2_FWD_SENS_SKIP_SOFTMAX
+
+$(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_OBJECTS): $(HOPPER_FA2_TEST_SOURCE) $(CUH_HEADERS) Makefile | $(HOPPER_OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
@@ -462,8 +507,8 @@ $(OBJ_DIR)/hopper/fa3_profile/%.cu.o: $(HOPPER_SRC_DIR)/fa3/%.cc $(CUH_HEADERS) 
 	@mkdir -p $(dir $@)
 	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
-HOPPER_FA3_SENS_PROFILE_FLAGS = $(HOPPER_FA3_NOEXT_FLAGS) -DFLASH_FWD_ENABLE_PROFILE_CLOCK -DFLASH_FWD_PROFILE_CLOCK_NON_ATOMIC
-HOPPER_FA3_SENS_NOPROFILE_FLAGS = $(HOPPER_FA3_NOEXT_FLAGS)
+HOPPER_FA3_SENS_PROFILE_FLAGS = $(HOPPER_FA3_EXTENDED_FLAGS) -DFLASH_FWD_ENABLE_PROFILE_CLOCK -DFLASH_FWD_PROFILE_CLOCK_NON_ATOMIC -DFLASH_FWD_PROFILE_GLOBALTIMER -DFLASH_FWD_PROFILE_TASK_GLOBALTIMER
+HOPPER_FA3_SENS_NOPROFILE_FLAGS = $(HOPPER_FA3_EXTENDED_FLAGS)
 HOPPER_FA3_SENS_EXTENDED_PROFILE_FLAGS = $(HOPPER_FA3_EXTENDED_FLAGS) -DFLASH_FWD_ENABLE_PROFILE_CLOCK -DFLASH_FWD_PROFILE_CLOCK_NON_ATOMIC
 HOPPER_FA3_SENS_EXTENDED_NOPROFILE_FLAGS = $(HOPPER_FA3_EXTENDED_FLAGS)
 $(HOPPER_FA3_SENS_BASELINE_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_PROFILE_FLAGS)
@@ -471,9 +516,18 @@ $(HOPPER_FA3_SENS_SOFTMAX_ONLY_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SE
 $(HOPPER_FA3_SENS_QK_ONLY_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_PROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_SOFTMAX -DFLASH_FWD_SENS_SKIP_PV_WGMMA
 $(HOPPER_FA3_SENS_PV_ONLY_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_PROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_SOFTMAX -DFLASH_FWD_SENS_SKIP_QK_WGMMA
 $(HOPPER_FA3_SENS_QK_PV_ONLY_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_PROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_SOFTMAX
+$(HOPPER_FA3_SENS_TMA_ONLY_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_PROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_QK_WGMMA -DFLASH_FWD_SENS_SKIP_PV_WGMMA -DFLASH_FWD_SENS_SKIP_SOFTMAX
+$(HOPPER_FA3_SENS_TMA_ONLY_M3_ONLY_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_PROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_QK_WGMMA -DFLASH_FWD_SENS_SKIP_PV_WGMMA -DFLASH_FWD_SENS_SKIP_SOFTMAX -DFLASH_FWD_PROFILE_SCHED_M3_ONLY
+$(HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_PROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_QK_WGMMA -DFLASH_FWD_SENS_SKIP_PV_WGMMA -DFLASH_FWD_SENS_SKIP_SOFTMAX -DFLASH_FWD_PROFILE_SCHED_FIRST_BH_SECTION_ONLY
+$(HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_M3_ONLY_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_PROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_QK_WGMMA -DFLASH_FWD_SENS_SKIP_PV_WGMMA -DFLASH_FWD_SENS_SKIP_SOFTMAX -DFLASH_FWD_PROFILE_SCHED_FIRST_BH_SECTION_ONLY -DFLASH_FWD_PROFILE_SCHED_M3_ONLY
+$(HOPPER_FA3_SENS_BASELINE_NOPROFILE_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_NOPROFILE_FLAGS)
+$(HOPPER_FA3_SENS_SOFTMAX_ONLY_NOPROFILE_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_NOPROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_QK_WGMMA -DFLASH_FWD_SENS_SKIP_PV_WGMMA
+$(HOPPER_FA3_SENS_QK_PV_ONLY_NOPROFILE_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_NOPROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_SOFTMAX
 $(HOPPER_FA3_SENS_BASE_NO_TMA_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_PROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_TMA
 $(HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_PROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_QK_WGMMA -DFLASH_FWD_SENS_SKIP_PV_WGMMA -DFLASH_FWD_SENS_SKIP_TMA
 $(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_PROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_SOFTMAX -DFLASH_FWD_SENS_SKIP_TMA
+$(HOPPER_FA3_SENS_BASE_NO_TMA_NOPROFILE_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_NOPROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_TMA
+$(HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_NOPROFILE_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_NOPROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_QK_WGMMA -DFLASH_FWD_SENS_SKIP_PV_WGMMA -DFLASH_FWD_SENS_SKIP_TMA
 $(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_OBJECT): HOPPER_NVCCFLAGS = $(WGMMA_SM90A_NVCCFLAGS)
 $(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_SENS_EXTENDED_PROFILE_FLAGS) -DFLASH_FWD_SENS_SKIP_SOFTMAX -DFLASH_FWD_SENS_SKIP_TMA
 $(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_NOPROFILE_OBJECT): HOPPER_NVCCFLAGS = $(WGMMA_SM90A_NVCCFLAGS)
@@ -491,9 +545,18 @@ $(HOPPER_FA3_SENS_SOFTMAX_ONLY_OBJECT) \
 $(HOPPER_FA3_SENS_QK_ONLY_OBJECT) \
 $(HOPPER_FA3_SENS_PV_ONLY_OBJECT) \
 $(HOPPER_FA3_SENS_QK_PV_ONLY_OBJECT) \
+$(HOPPER_FA3_SENS_TMA_ONLY_OBJECT) \
+$(HOPPER_FA3_SENS_TMA_ONLY_M3_ONLY_OBJECT) \
+$(HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_OBJECT) \
+$(HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_M3_ONLY_OBJECT) \
+$(HOPPER_FA3_SENS_BASELINE_NOPROFILE_OBJECT) \
+$(HOPPER_FA3_SENS_SOFTMAX_ONLY_NOPROFILE_OBJECT) \
+$(HOPPER_FA3_SENS_QK_PV_ONLY_NOPROFILE_OBJECT) \
 $(HOPPER_FA3_SENS_BASE_NO_TMA_OBJECT) \
 $(HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_OBJECT) \
 $(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_OBJECT) \
+$(HOPPER_FA3_SENS_BASE_NO_TMA_NOPROFILE_OBJECT) \
+$(HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_NOPROFILE_OBJECT) \
 $(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_OBJECT) \
 $(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_NOPROFILE_OBJECT) \
 $(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_REG_TIMELINE_OBJECT) \
@@ -507,6 +570,9 @@ $(HOPPER_FA3_SENS_SYNC_ONLY_NO_TMA_NOPROFILE_OBJECT): $(HOPPER_SRC_DIR)/fa3/fa3_
 
 # Microbench tests
 $(OBJ_DIR)/microbench/wgmma/wgmma_n16_chain_bench.cu.o: NVCCFLAGS = $(WGMMA_SM90A_NVCCFLAGS)
+$(OBJ_DIR)/microbench/wgmma/wgmma_fp16_%_bench.cu.o: NVCCFLAGS = $(WGMMA_SM90A_NVCCFLAGS)
+$(OBJ_DIR)/microbench/wgmma/wgmma_softmax_mix_bench.cu.o: NVCCFLAGS = $(WGMMA_SM90A_NVCCFLAGS)
+$(OBJ_DIR)/microbench/wgmma/wgmma_rf_bandwidth_bench.cu.o: NVCCFLAGS = $(WGMMA_SM90A_NVCCFLAGS)
 $(OBJ_DIR)/microbench/%.cu.o: $(TEST_SRC_DIR)/microbench/%.cc $(CUH_HEADERS) | $(MICROBENCH_OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
@@ -533,11 +599,7 @@ $(BIN_DIR)/hopper/run_fa2_%_tests: $(OBJ_DIR)/hopper/fa2/%/fa2_fwd_fp16_test.cu.
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
 
-# Build FA3-only runners with and without CUTE extended MMA shapes.
-$(HOPPER_FA3_NOEXT_TARGET): $(HOPPER_FA3_NOEXT_OBJECTS) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
-
+# Build FA3-only runner. Extended GMMA shapes are mandatory for FA3.
 $(HOPPER_FA3_EXTENDED_TARGET): $(HOPPER_FA3_EXTENDED_OBJECTS) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
@@ -572,6 +634,34 @@ $(HOPPER_FA3_SENS_QK_PV_ONLY_TARGET): $(HOPPER_FA3_SENS_QK_PV_ONLY_OBJECT) $(OBJ
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
 
+$(HOPPER_FA3_SENS_TMA_ONLY_TARGET): $(HOPPER_FA3_SENS_TMA_ONLY_OBJECT) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
+
+$(HOPPER_FA3_SENS_TMA_ONLY_M3_ONLY_TARGET): $(HOPPER_FA3_SENS_TMA_ONLY_M3_ONLY_OBJECT) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
+
+$(HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_TARGET): $(HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_OBJECT) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
+
+$(HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_M3_ONLY_TARGET): $(HOPPER_FA3_SENS_TMA_ONLY_FIRST_ROUND_BH_M3_ONLY_OBJECT) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
+
+$(HOPPER_FA3_SENS_BASELINE_NOPROFILE_TARGET): $(HOPPER_FA3_SENS_BASELINE_NOPROFILE_OBJECT) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
+
+$(HOPPER_FA3_SENS_SOFTMAX_ONLY_NOPROFILE_TARGET): $(HOPPER_FA3_SENS_SOFTMAX_ONLY_NOPROFILE_OBJECT) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
+
+$(HOPPER_FA3_SENS_QK_PV_ONLY_NOPROFILE_TARGET): $(HOPPER_FA3_SENS_QK_PV_ONLY_NOPROFILE_OBJECT) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
+
 $(HOPPER_FA3_SENS_BASE_NO_TMA_TARGET): $(HOPPER_FA3_SENS_BASE_NO_TMA_OBJECT) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
@@ -581,6 +671,14 @@ $(HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_TARGET): $(HOPPER_FA3_SENS_SOFTMAX_ONLY_NO
 	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
 
 $(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_TARGET): $(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_OBJECT) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
+
+$(HOPPER_FA3_SENS_BASE_NO_TMA_NOPROFILE_TARGET): $(HOPPER_FA3_SENS_BASE_NO_TMA_NOPROFILE_OBJECT) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
+
+$(HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_NOPROFILE_TARGET): $(HOPPER_FA3_SENS_SOFTMAX_ONLY_NO_TMA_NOPROFILE_OBJECT) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
 

@@ -1,29 +1,34 @@
 SRC := tma_completion_latency_bench.cu
-TARGET_NAME := tma_completion_latency_bench_shared_cuda129
+TARGET_NAME ?= tma_completion_latency_bench_$(ARCH)
 DESC_SRC := tma_descriptor_setup_bench.cu
-DESC_TARGET_NAME := tma_descriptor_setup_bench_cuda129
+DESC_TARGET_NAME ?= tma_descriptor_setup_bench_$(ARCH)
+FA3_M3_SRC := tma_fa3_m3_bench.cu
+FA3_M3_TARGET_NAME ?= tma_fa3_m3_bench_$(ARCH)
 
-ARCH ?= sm_120a
-PTX_PROFILE ?= compute_120a
+ARCH ?= sm_90a
+PTX_PROFILE ?= compute_90a
 include ../common.mk
 BIN_DIR ?= $(STANDALONE_BIN_ROOT)/tma
 TARGET ?= $(BIN_DIR)/$(TARGET_NAME)
 DESC_TARGET ?= $(BIN_DIR)/$(DESC_TARGET_NAME)
+FA3_M3_TARGET ?= $(BIN_DIR)/$(FA3_M3_TARGET_NAME)
 TARGET_EXE := $(notdir $(TARGET))
 DESC_TARGET_EXE := $(notdir $(DESC_TARGET))
+FA3_M3_TARGET_EXE := $(notdir $(FA3_M3_TARGET))
 
-CONFIG_DIR ?= ../../../../configs/SM120_RTX5090
-RUN_DIR ?= $(STANDALONE_RUN_ROOT)/tma/gem5_pair48_smoke_cuda129
-DESC_RUN_DIR ?= $(STANDALONE_RUN_ROOT)/tma/gem5_descriptor_smoke_cuda129
+CONFIG_DIR ?= ../../../../configs/SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA3_TMA128_OOB_READ
+RUN_DIR ?= $(STANDALONE_RUN_ROOT)/tma/gem5_pair48_smoke_$(ARCH)
+DESC_RUN_DIR ?= $(STANDALONE_RUN_ROOT)/tma/gem5_descriptor_smoke_$(ARCH)
+FA3_M3_RUN_DIR ?= $(STANDALONE_RUN_ROOT)/tma/fa3_m3_smoke_$(ARCH)
 BW_BLOCKS ?= 132
 BW_ITERS ?= 64
 BW_WARMUP ?= 4
 BW_TILES ?= 8192
 BW_REPEAT ?= 1
 
-.PHONY: all clean check-ptx desc-check-ptx gem5-dir gem5-smoke gem5-dram-bw desc-gem5-dir desc-gem5-smoke run-hw run-hw-dram-bw desc-run-hw
+.PHONY: all clean check-ptx desc-check-ptx fa3-m3-check-ptx gem5-dir gem5-smoke gem5-dram-bw desc-gem5-dir desc-gem5-smoke fa3-m3-gem5-dir fa3-m3-gem5-smoke run-hw run-hw-dram-bw desc-run-hw fa3-m3-run-hw
 
-all: $(TARGET) $(DESC_TARGET)
+all: $(TARGET) $(DESC_TARGET) $(FA3_M3_TARGET)
 
 $(TARGET): $(SRC)
 	@mkdir -p $(dir $@)
@@ -33,11 +38,18 @@ $(DESC_TARGET): $(DESC_SRC)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(NVCC_FLAGS) -o $@ $<
 
+$(FA3_M3_TARGET): $(FA3_M3_SRC)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(NVCC_FLAGS) -o $@ $< -lcuda
+
 check-ptx: $(TARGET)
 	$(CUOBJDUMP) -lptx $(TARGET)
 
 desc-check-ptx: $(DESC_TARGET)
 	$(CUOBJDUMP) -lptx $(DESC_TARGET)
+
+fa3-m3-check-ptx: $(FA3_M3_TARGET)
+	$(CUOBJDUMP) -lptx $(FA3_M3_TARGET)
 
 gem5-dir: $(TARGET)
 	mkdir -p $(RUN_DIR)
@@ -62,6 +74,16 @@ desc-gem5-dir: $(DESC_TARGET)
 desc-gem5-smoke: desc-gem5-dir
 	cd $(DESC_RUN_DIR) && env -u PTX_SIM_USE_PTX_FILE -u PTX_SIM_KERNELFILE ./$(DESC_TARGET_EXE) --blocks=1 --iters=1 --warmup=0 --tiles=64 --case=full --stride
 
+fa3-m3-gem5-dir: $(FA3_M3_TARGET)
+	mkdir -p $(FA3_M3_RUN_DIR)
+	rm -f $(FA3_M3_RUN_DIR)/*.ptx $(FA3_M3_RUN_DIR)/*.ptxas $(FA3_M3_RUN_DIR)/_cuobjdump_list_ptx_*
+	cp $(FA3_M3_TARGET) $(FA3_M3_RUN_DIR)/$(FA3_M3_TARGET_EXE)
+	cp $(CONFIG_DIR)/gpgpusim.config $(FA3_M3_RUN_DIR)/
+	cp $(CONFIG_DIR)/config_ampere_islip.icnt $(FA3_M3_RUN_DIR)/
+
+fa3-m3-gem5-smoke: fa3-m3-gem5-dir
+	cd $(FA3_M3_RUN_DIR) && env -u PTX_SIM_USE_PTX_FILE -u PTX_SIM_KERNELFILE ./$(FA3_M3_TARGET_EXE) --blocks=1 --iters=1 --warmup=0 --batch=1 --heads=1 --seqlen=512 --m-block=3 --sweep-hb=0 --csv=fa3_m3_smoke.csv
+
 run-hw: $(TARGET)
 	$(TARGET) --blocks=128 --iters=4096 --warmup=256 --tiles=4096 --case=pair48 --issue=llama --stride
 
@@ -71,7 +93,10 @@ run-hw-dram-bw: $(TARGET)
 desc-run-hw: $(DESC_TARGET)
 	$(DESC_TARGET) --blocks=128 --iters=4096 --warmup=256 --tiles=4096 --case=full --stride
 
+fa3-m3-run-hw: $(FA3_M3_TARGET)
+	$(FA3_M3_TARGET) --blocks=128 --iters=8 --warmup=0 --batch=64 --heads=16 --seqlen=512 --head-dim=128 --block-m=128 --block-n=128 --m-block=3 --group-nblocks=2 --causal=1 --sweep-hb=1 --explicit-cluster=1 --load=kv --csv=fa3_m3_h16d128_causal_b64s512.csv
+
 clean:
-	rm -f $(TARGET) $(DESC_TARGET)
-	rm -f $(RUN_DIR)/$(TARGET_EXE) $(DESC_RUN_DIR)/$(DESC_TARGET_EXE)
+	rm -f $(TARGET) $(DESC_TARGET) $(FA3_M3_TARGET)
+	rm -f $(RUN_DIR)/$(TARGET_EXE) $(DESC_RUN_DIR)/$(DESC_TARGET_EXE) $(FA3_M3_RUN_DIR)/$(FA3_M3_TARGET_EXE)
 	rm -f *.ptx *.ptxas

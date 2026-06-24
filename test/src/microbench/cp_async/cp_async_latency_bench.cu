@@ -51,6 +51,7 @@ struct Options {
   BenchMode mode = kModeFa2Issue;
   LocalityMode locality = kLocalityBlockHot;
   bool same_address = false;
+  bool sync_end = false;
   std::string csv_path;
 };
 
@@ -281,7 +282,7 @@ __global__ void cp_async_latency_kernel(
     int tile_mask, int global_slot_mask, int groups, int group_size,
     int fa2_stages, int active_warps, int active_lanes, int smem_slots,
     int smem_slot_mask, int compute_gap, int mode_i, int locality_i,
-    int same_address_i) {
+    int same_address_i, int sync_end_i) {
   extern __shared__ uint8_t smem_raw[];
 
   const int tid = threadIdx.x;
@@ -319,6 +320,10 @@ __global__ void cp_async_latency_kernel(
                                  smem_slot_mask, global_slots, global_slot_mask,
                                  compute_gap, same_address, sink);
       }
+    }
+
+    if (sync_end_i != 0) {
+      __syncthreads();
     }
 
     if (tid == 0) {
@@ -384,7 +389,7 @@ void usage(const char* argv0) {
       "          [--groups N] [--group-size N] [--fa2-stages N]\n"
       "          [--active-warps N] [--active-lanes N]\n"
       "          [--smem-slots N] [--global-slots N] [--compute-gap N]\n"
-      "          [--same-address] [--hot|--block-hot|--stride] [--csv path]\n",
+      "          [--same-address] [--sync-end] [--hot|--block-hot|--stride] [--csv path]\n",
       argv0);
 }
 
@@ -447,6 +452,8 @@ Options parse_options(int argc, char** argv) {
       opts.locality = kLocalityStride;
     } else if (std::strcmp(arg, "--same-address") == 0) {
       opts.same_address = true;
+    } else if (std::strcmp(arg, "--sync-end") == 0) {
+      opts.sync_end = true;
     } else if (std::strncmp(arg, "--csv=", 6) == 0) {
       opts.csv_path = arg + 6;
     } else {
@@ -668,12 +675,12 @@ int main(int argc, char** argv) {
       "mode=%s locality=%s blocks=%d threads=%d iters=%d warmup=%d tiles=%d "
       "groups=%d group_size=%d fa2_stages=%d active_warps=%d "
       "active_lanes=%d smem_slots=%d global_slots=%d compute_gap=%d "
-      "same_address=%d\n",
+      "same_address=%d sync_end=%d\n",
       mode_name(opts.mode), locality_name(opts.locality), opts.blocks,
       opts.threads, opts.iters, opts.warmup, opts.tiles, opts.groups,
       opts.group_size, opts.fa2_stages, opts.active_warps, opts.active_lanes,
       opts.smem_slots, opts.global_slots, opts.compute_gap,
-      opts.same_address ? 1 : 0);
+      opts.same_address ? 1 : 0, opts.sync_end ? 1 : 0);
   std::printf(
       "smem=%zu bytes tile_bytes=%zu global_bytes=%zu cp_async_per_warp=%llu "
       "commit_groups_per_warp=%llu active_bytes_per_iter=%llu "
@@ -702,7 +709,7 @@ int main(int argc, char** argv) {
       opts.groups, opts.group_size, opts.fa2_stages, opts.active_warps,
       opts.active_lanes, opts.smem_slots, smem_slot_mask, opts.compute_gap,
       static_cast<int>(opts.mode), static_cast<int>(opts.locality),
-      opts.same_address ? 1 : 0);
+      opts.same_address ? 1 : 0, opts.sync_end ? 1 : 0);
   CUDA_CHECK(cudaGetLastError());
   CUDA_CHECK(cudaDeviceSynchronize());
 

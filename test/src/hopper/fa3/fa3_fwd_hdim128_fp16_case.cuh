@@ -182,6 +182,21 @@ struct Fa3PrefillProfileRegTimelineEvent {
   uint64_t clock = 0;
 };
 
+struct Fa3PrefillProfileTaskTrace {
+  int slot = 0;
+  int m_block = 0;
+  int bidh = 0;
+  int bidb = 0;
+  int split_idx = 0;
+  int cta_x = 0;
+  int smid = 0;
+  int tile_valid = 0;
+  uint64_t mainloop_start = 0;
+  uint64_t mainloop_end = 0;
+  uint64_t epilogue_start = 0;
+  uint64_t epilogue_end = 0;
+};
+
 struct Fa3PrefillProfileResult {
   cudaError_t error = cudaSuccess;
   const char *where = "success";
@@ -215,6 +230,7 @@ struct Fa3PrefillProfileResult {
   std::vector<Fa3PrefillProfileTraceStep> trace_steps;
   std::vector<Fa3PrefillProfileTimelineEvent> timeline_events;
   std::vector<Fa3PrefillProfileRegTimelineEvent> reg_timeline_events;
+  std::vector<Fa3PrefillProfileTaskTrace> task_traces;
   float output0 = 0.0f;
   float lse0 = 0.0f;
 };
@@ -341,6 +357,12 @@ inline int fa3_profile_reg_timeline_offset(int block_slot, int slot, int thread,
          flash_fwd_profile_reg_timeline_offset(block_slot, slot, thread, event);
 }
 
+inline int fa3_profile_task_trace_offset(
+    int slot, FlashFwdProfileTaskTraceFieldIndex field) {
+  return kFlashFwdProfileTaskTraceBase +
+         flash_fwd_profile_task_trace_offset(slot, int(field));
+}
+
 inline std::vector<Fa3PrefillProfileRegTimelineEvent>
 extract_fa3_profile_reg_timeline(const std::vector<uint64_t> &profile_clock,
                                  int k_tiles, int logical_tiles) {
@@ -394,6 +416,56 @@ extract_fa3_profile_reg_timeline(const std::vector<uint64_t> &profile_clock,
     }
   }
   return timeline;
+}
+
+inline std::vector<Fa3PrefillProfileTaskTrace>
+extract_fa3_profile_task_trace(const std::vector<uint64_t> &profile_clock,
+                               int logical_tiles) {
+  std::vector<Fa3PrefillProfileTaskTrace> trace;
+  const int task_count =
+      logical_tiles < kFlashFwdProfileTaskTraceMaxTasks
+          ? logical_tiles
+          : kFlashFwdProfileTaskTraceMaxTasks;
+  trace.reserve(task_count);
+  for (int slot = 0; slot < task_count; ++slot) {
+    const int base =
+        fa3_profile_task_trace_offset(slot, kFlashFwdProfileTaskTraceValid);
+    if (base + kFlashFwdProfileTaskTraceFieldCount >
+        static_cast<int>(profile_clock.size())) {
+      return trace;
+    }
+    if (profile_clock[base + kFlashFwdProfileTaskTraceValid] == 0 &&
+        profile_clock[base + kFlashFwdProfileTaskTraceMainloopStart] == 0 &&
+        profile_clock[base + kFlashFwdProfileTaskTraceMainloopEnd] == 0) {
+      continue;
+    }
+    Fa3PrefillProfileTaskTrace row;
+    row.slot = slot;
+    row.m_block =
+        static_cast<int>(profile_clock[base + kFlashFwdProfileTaskTraceMBlock]);
+    row.bidh =
+        static_cast<int>(profile_clock[base + kFlashFwdProfileTaskTraceBidh]);
+    row.bidb =
+        static_cast<int>(profile_clock[base + kFlashFwdProfileTaskTraceBidb]);
+    row.split_idx = static_cast<int>(
+        profile_clock[base + kFlashFwdProfileTaskTraceSplitIdx]);
+    row.cta_x =
+        static_cast<int>(profile_clock[base + kFlashFwdProfileTaskTraceCtaX]);
+    row.smid =
+        static_cast<int>(profile_clock[base + kFlashFwdProfileTaskTraceSmid]);
+    row.tile_valid = static_cast<int>(
+        profile_clock[base + kFlashFwdProfileTaskTraceTileValid]);
+    row.mainloop_start =
+        profile_clock[base + kFlashFwdProfileTaskTraceMainloopStart];
+    row.mainloop_end =
+        profile_clock[base + kFlashFwdProfileTaskTraceMainloopEnd];
+    row.epilogue_start =
+        profile_clock[base + kFlashFwdProfileTaskTraceEpilogueStart];
+    row.epilogue_end =
+        profile_clock[base + kFlashFwdProfileTaskTraceEpilogueEnd];
+    trace.push_back(row);
+  }
+  return trace;
 }
 #endif
 
@@ -1021,6 +1093,8 @@ inline Fa3PrefillProfileResult run_fa3_prefill_profile_fp16_typed(
   result.reg_timeline_events =
       extract_fa3_profile_reg_timeline(h_profile_clock, result.k_tiles,
                                        result.logical_tiles);
+  result.task_traces =
+      extract_fa3_profile_task_trace(h_profile_clock, result.logical_tiles);
   result.output0 = float(output0);
 
   return finish(cudaSuccess, "success");

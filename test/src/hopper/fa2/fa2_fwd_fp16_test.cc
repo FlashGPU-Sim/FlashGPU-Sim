@@ -13,7 +13,8 @@ namespace fa2_hopper_test {
     !defined(FA2_PREFILL_GROUP_MEDIUM) && \
     !defined(FA2_PREFILL_GROUP_LARGE) && \
     !defined(FA2_PREFILL_GROUP_SENSITIVITY) && \
-    !defined(FA2_PREFILL_GROUP_SENSITIVITY_H1D128)
+    !defined(FA2_PREFILL_GROUP_SENSITIVITY_H1D128) && \
+    !defined(FA2_PREFILL_GROUP_SENSITIVITY_LARGE_D128_FULL)
 #define FA2_PREFILL_GROUP_SMOKE
 #define FA2_PREFILL_GROUP_SMALL
 #define FA2_PREFILL_GROUP_MEDIUM
@@ -26,6 +27,7 @@ class Fa2PrefillFp16SmallTest : public ::testing::Test {};
 class Fa2PrefillFp16MediumTest : public ::testing::Test {};
 class Fa2PrefillFp16SensitivityTest : public ::testing::Test {};
 class Fa2PrefillFp16SensitivityH1D128Test : public ::testing::Test {};
+class Fa2PrefillFp16SensitivityLargeD128FullTest : public ::testing::Test {};
 class Fa2FwdFp16SmokeIntegrationTest : public ::testing::Test {};
 
 inline bool run_32ki_fa2_cases_enabled() {
@@ -123,6 +125,27 @@ inline void RunFa2PrefillSensitivityH1D128Case(const Fa2PrefillCase &cfg) {
 }
 #endif
 
+#if defined(FA2_PREFILL_GROUP_SENSITIVITY_LARGE_D128_FULL)
+inline void RunFa2PrefillSensitivityLargeD128FullCase(
+    const Fa2PrefillCase &cfg) {
+  SCOPED_TRACE(::testing::Message()
+               << "case=" << cfg.name << " batch=" << cfg.batch
+               << " seqlen=" << cfg.seqlen << " heads=" << cfg.heads
+               << " head_dim=" << cfg.head_dim << " causal=" << cfg.causal);
+
+  ASSERT_TRUE(is_valid_fa2_prefill_sensitivity_large_d128_full_case(cfg));
+
+  if (!run_32ki_fa2_cases_enabled()) {
+    GTEST_SKIP() << "32Ki FA2 sensitivity launch cases are opt-in; set "
+                    "FA2_RUN_32KI=1 to run this simulator path.";
+  }
+
+  Fa2RunResult result = run_fa2_sensitivity_large_d128_full_fp16(cfg);
+  ASSERT_EQ(result.error, cudaSuccess)
+      << result.where << " failed: " << cudaGetErrorString(result.error);
+}
+#endif
+
 #if defined(FA2_PREFILL_GROUP_LARGE)
 TEST_F(Fa2PrefillFp16IntegrationTest, ShapeTableHas20PrefillCases) {
   ASSERT_EQ(sizeof(kFa2PrefillCases) / sizeof(kFa2PrefillCases[0]),
@@ -196,6 +219,21 @@ TEST_F(Fa2PrefillFp16SensitivityH1D128Test,
   for (const Fa2PrefillCase &cfg : kFa2PrefillSensitivityH1D128Cases) {
     EXPECT_TRUE(is_valid_fa2_prefill_sensitivity_h1d128_case(cfg))
         << cfg.name << " is not a valid FA2 H1D128 sensitivity case";
+  }
+}
+#endif
+
+#if defined(FA2_PREFILL_GROUP_SENSITIVITY_LARGE_D128_FULL)
+TEST_F(Fa2PrefillFp16SensitivityLargeD128FullTest,
+       ShapeTableHas1SensitivityLargeD128FullCase) {
+  ASSERT_EQ(sizeof(kFa2PrefillSensitivityLargeD128FullCases) /
+                sizeof(kFa2PrefillSensitivityLargeD128FullCases[0]),
+            size_t{kFa2PrefillSensitivityLargeD128FullCaseCount});
+
+  for (const Fa2PrefillCase &cfg :
+       kFa2PrefillSensitivityLargeD128FullCases) {
+    EXPECT_TRUE(is_valid_fa2_prefill_sensitivity_large_d128_full_case(cfg))
+        << cfg.name << " is not a valid FA2 large D128 full sensitivity case";
   }
 }
 #endif
@@ -315,6 +353,19 @@ FA2_PREFILL_SENSITIVITY_H1D128_CASE_LIST(FA2_PREFILL_SENSITIVITY_H1D128_TEST)
 #endif
 
 #undef FA2_PREFILL_SENSITIVITY_H1D128_TEST
+
+#define FA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_TEST(name, batch, seqlen, heads, head_dim, causal) \
+  TEST_F(Fa2PrefillFp16SensitivityLargeD128FullTest, name) {                                      \
+    RunFa2PrefillSensitivityLargeD128FullCase(                                                     \
+        Fa2PrefillCase{#name, batch, seqlen, heads, head_dim, causal});                            \
+  }
+
+#if defined(FA2_PREFILL_GROUP_SENSITIVITY_LARGE_D128_FULL)
+FA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_CASE_LIST(
+    FA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_TEST)
+#endif
+
+#undef FA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_TEST
 
 #if defined(FA2_PREFILL_GROUP_SMOKE) && \
     defined(FA2_PREFILL_ENABLE_H32D64_FULL)
