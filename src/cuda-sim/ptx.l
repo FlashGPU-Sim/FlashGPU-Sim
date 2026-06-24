@@ -298,6 +298,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 "%clock" TC; yylval->int_value = CLOCK_REG; return SPECIAL_REGISTER;
 "%halfclock" TC; yylval->int_value = HALFCLOCK_ID; return SPECIAL_REGISTER;
 "%clock64" TC; yylval->int_value = CLOCK64_REG; return SPECIAL_REGISTER;
+"%globaltimer" TC; yylval->int_value = GLOBALTIMER_REG; return SPECIAL_REGISTER;
 "%ctaid" TC; yylval->int_value = CTAID_REG; return SPECIAL_REGISTER;
 "%envreg"[0-9]+ TC; {
   unsigned reg = 0;

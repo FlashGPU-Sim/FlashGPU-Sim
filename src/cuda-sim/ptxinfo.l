@@ -61,7 +61,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 "Used"		TC; return USED;
 "registers"	TC; return REGS;
 "used"		TC; return USED;
-"barriers"	TC; return REGS;
+"barriers"	TC; return BARRIERS;
 "bytes"		TC; return BYTES;
 "cumulative"	TC; return CUMULATIVE;
 "stack"		TC; return STACK;
