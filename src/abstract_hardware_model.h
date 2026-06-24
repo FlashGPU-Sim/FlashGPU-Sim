@@ -226,6 +226,7 @@ class core_config {
     gpgpu_shmem_sizeDefault = (unsigned)-1;
     gpgpu_shmem_sizePrefL1 = (unsigned)-1;
     gpgpu_shmem_sizePrefShared = (unsigned)-1;
+    max_dynamic_smem_prefer_occupancy_carveout = false;
   }
   virtual void init() = 0;
 
@@ -251,6 +252,7 @@ class core_config {
   unsigned gpgpu_shmem_sizeDefault;
   unsigned gpgpu_shmem_sizePrefL1;
   unsigned gpgpu_shmem_sizePrefShared;
+  bool max_dynamic_smem_prefer_occupancy_carveout;
   unsigned mem_unit_ports;
 
   // texture and constant cache line sizes (used to determine number of memory

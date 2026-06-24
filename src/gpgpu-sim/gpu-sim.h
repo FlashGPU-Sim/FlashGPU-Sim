@@ -749,6 +749,8 @@ class gpgpu_sim : public gpgpu_t {
 
   std::map<std::string, FuncCache> m_special_cache_config;
   std::map<std::string, unsigned> m_kernel_max_dynamic_smem;
+  std::map<std::string, unsigned> m_kernel_min_smem_for_max_dynamic;
+  std::map<std::string, int> m_kernel_preferred_shared_carveout;
 
   std::vector<std::string>
       m_executed_kernel_names;  //< names of kernel for stat printout
@@ -799,10 +801,16 @@ class gpgpu_sim : public gpgpu_t {
   bool has_special_cache_config(std::string kernel_name);
   void change_cache_config(FuncCache cache_config);
   void set_cache_config(std::string kernel_name);
-  void set_kernel_max_dynamic_smem(std::string kernel_name, unsigned bytes);
+  void set_kernel_max_dynamic_smem(std::string kernel_name, unsigned bytes,
+                                   unsigned static_smem = 0);
   bool has_kernel_max_dynamic_smem(std::string kernel_name);
   unsigned get_kernel_max_dynamic_smem(std::string kernel_name);
   void apply_kernel_max_dynamic_smem(std::string kernel_name);
+  void set_kernel_preferred_shared_carveout(std::string kernel_name,
+                                            int carveout);
+  bool has_kernel_preferred_shared_carveout(std::string kernel_name);
+  int get_kernel_preferred_shared_carveout(std::string kernel_name);
+  void apply_kernel_preferred_shared_carveout(std::string kernel_name);
 
   void aggregate_cluster_stats();
 

@@ -4538,10 +4538,23 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
       return g_last_cudaError = cudaErrorInvalidValue;
     }
     context->get_device()->get_gpgpu()->set_kernel_max_dynamic_smem(
-        entry->get_name(), (unsigned)value);
+        entry->get_name(), (unsigned)value, static_smem);
     printf("GPGPU-Sim PTX: cudaFuncSetAttribute "
            "MaxDynamicSharedMemorySize for '%s' = %u bytes\n",
            entry->get_name().c_str(), (unsigned)value);
+    return g_last_cudaError = cudaSuccess;
+  }
+
+  if (attr == cudaFuncAttributePreferredSharedMemoryCarveout) {
+    if (value != cudaSharedmemCarveoutDefault &&
+        (value < 0 || value > 100)) {
+      return g_last_cudaError = cudaErrorInvalidValue;
+    }
+    context->get_device()->get_gpgpu()->set_kernel_preferred_shared_carveout(
+        entry->get_name(), value);
+    printf("GPGPU-Sim PTX: cudaFuncSetAttribute "
+           "PreferredSharedMemoryCarveout for '%s' = %d\n",
+           entry->get_name().c_str(), value);
     return g_last_cudaError = cudaSuccess;
   }
 
@@ -6346,8 +6359,50 @@ CUresult CUDAAPI cuFuncSetAttribute(CUfunction hfunc,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  printf("WARNING: this function has not been implemented yet %s\n",
-         __my_func__);
+  function_info *entry = reinterpret_cast<function_info *>(hfunc);
+  if (entry == NULL) return CUDA_ERROR_INVALID_HANDLE;
+
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
+
+  if (attrib == CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES) {
+    if (value < 0) return CUDA_ERROR_INVALID_VALUE;
+    const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
+    unsigned static_smem = kinfo ? kinfo->smem : 0;
+    unsigned max_per_block =
+        context->get_device()->get_gpgpu()->shared_mem_per_block();
+    if (static_smem + (unsigned)value > max_per_block) {
+      printf("GPGPU-Sim PTX: cuFuncSetAttribute "
+             "MAX_DYNAMIC_SHARED_SIZE_BYTES invalid for '%s': static=%u, "
+             "dynamic=%u, max_per_block=%u\n",
+             entry->get_name().c_str(), static_smem, (unsigned)value,
+             max_per_block);
+      return CUDA_ERROR_INVALID_VALUE;
+    }
+    context->get_device()->get_gpgpu()->set_kernel_max_dynamic_smem(
+        entry->get_name(), (unsigned)value, static_smem);
+    printf("GPGPU-Sim PTX: cuFuncSetAttribute "
+           "MAX_DYNAMIC_SHARED_SIZE_BYTES for '%s' = %u bytes\n",
+           entry->get_name().c_str(), (unsigned)value);
+    return CUDA_SUCCESS;
+  }
+
+  if (attrib == CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT) {
+    if (value != CU_SHAREDMEM_CARVEOUT_DEFAULT &&
+        (value < 0 || value > 100)) {
+      return CUDA_ERROR_INVALID_VALUE;
+    }
+    context->get_device()->get_gpgpu()->set_kernel_preferred_shared_carveout(
+        entry->get_name(), value);
+    printf("GPGPU-Sim PTX: cuFuncSetAttribute "
+           "PREFERRED_SHARED_MEMORY_CARVEOUT for '%s' = %d\n",
+           entry->get_name().c_str(), value);
+    return CUDA_SUCCESS;
+  }
+
+  printf("GPGPU-Sim PTX: Execution warning: ignoring call to \"%s "
+         "( func=%p, attrib=%d, value=%d )\"\n",
+         __my_func__, hfunc, attrib, value);
   return CUDA_SUCCESS;
 }
 

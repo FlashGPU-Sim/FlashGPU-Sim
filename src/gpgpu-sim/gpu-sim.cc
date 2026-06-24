@@ -486,6 +486,14 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "Size of shared memory per shader core (default 16kB)",
                          "16384");
   option_parser_register(
+      opp, "-gpgpu_max_dynamic_smem_prefer_occupancy_carveout", OPT_BOOL,
+      &max_dynamic_smem_prefer_occupancy_carveout,
+      "When cudaFuncAttributeMaxDynamicSharedMemorySize is set without an "
+      "explicit preferred carveout, model the NVIDIA driver choosing the "
+      "smallest shared/L1 carveout that maximizes shared-memory-limited CTA "
+      "occupancy (default 0)",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_shmem_num_banks", OPT_UINT32, &num_shmem_bank,
       "Number of banks in the shared memory in each shader core (default 16)",
       "16");
@@ -1649,8 +1657,10 @@ bool gpgpu_sim::has_special_cache_config(std::string kernel_name) {
 }
 
 void gpgpu_sim::set_kernel_max_dynamic_smem(std::string kernel_name,
-                                            unsigned bytes) {
+                                            unsigned bytes,
+                                            unsigned static_smem) {
   m_kernel_max_dynamic_smem[kernel_name] = bytes;
+  m_kernel_min_smem_for_max_dynamic[kernel_name] = static_smem + bytes;
 }
 
 bool gpgpu_sim::has_kernel_max_dynamic_smem(std::string kernel_name) {
@@ -1669,8 +1679,28 @@ void gpgpu_sim::apply_kernel_max_dynamic_smem(std::string kernel_name) {
   if (!has_kernel_max_dynamic_smem(kernel_name)) return;
 
   unsigned requested = get_kernel_max_dynamic_smem(kernel_name);
-  unsigned target = std::max(m_shader_config->gpgpu_shmem_sizeDefault,
-                             requested);
+  unsigned required = requested;
+  std::map<std::string, unsigned>::const_iterator required_it =
+      m_kernel_min_smem_for_max_dynamic.find(kernel_name);
+  if (required_it != m_kernel_min_smem_for_max_dynamic.end()) {
+    required = std::max(required, required_it->second);
+  }
+  unsigned target = std::max(m_shader_config->gpgpu_shmem_size, required);
+  bool applied_occupancy_policy = false;
+  bool has_explicit_carveout =
+      has_kernel_preferred_shared_carveout(kernel_name) &&
+      get_kernel_preferred_shared_carveout(kernel_name) >= 0;
+
+  if (m_shader_config->max_dynamic_smem_prefer_occupancy_carveout &&
+      !has_explicit_carveout && required > 0 &&
+      m_shader_config->adaptive_cache_config &&
+      !m_shader_config->shmem_opt_list.empty()) {
+    unsigned max_carveout = m_shader_config->shmem_opt_list.back();
+    unsigned target_ctas = max_carveout / required;
+    if (target_ctas == 0) target_ctas = 1;
+    target = std::max(target, target_ctas * required);
+    applied_occupancy_policy = true;
+  }
 
   if (m_shader_config->adaptive_cache_config &&
       !m_shader_config->shmem_opt_list.empty()) {
@@ -1685,9 +1715,69 @@ void gpgpu_sim::apply_kernel_max_dynamic_smem(std::string kernel_name) {
   }
 
   if (target != m_shader_config->gpgpu_shmem_size) {
-    printf("GPGPU-Sim: Apply kernel max dynamic shared memory opt-in for "
-           "'%s': requested=%u, shmem_size=%u\n",
-           kernel_name.c_str(), requested, target);
+    if (applied_occupancy_policy) {
+      printf("GPGPU-Sim: Apply max dynamic shared memory occupancy carveout "
+             "policy for '%s': requested=%u, required_block_smem=%u, "
+             "shmem_size=%u\n",
+             kernel_name.c_str(), requested, required, target);
+    } else {
+      printf("GPGPU-Sim: Apply kernel max dynamic shared memory opt-in for "
+             "'%s': requested=%u, required_block_smem=%u, shmem_size=%u\n",
+             kernel_name.c_str(), requested, required, target);
+    }
+  }
+  m_shader_config->gpgpu_shmem_size = target;
+}
+
+void gpgpu_sim::set_kernel_preferred_shared_carveout(std::string kernel_name,
+                                                     int carveout) {
+  m_kernel_preferred_shared_carveout[kernel_name] = carveout;
+}
+
+bool gpgpu_sim::has_kernel_preferred_shared_carveout(std::string kernel_name) {
+  return m_kernel_preferred_shared_carveout.find(kernel_name) !=
+         m_kernel_preferred_shared_carveout.end();
+}
+
+int gpgpu_sim::get_kernel_preferred_shared_carveout(std::string kernel_name) {
+  std::map<std::string, int>::const_iterator it =
+      m_kernel_preferred_shared_carveout.find(kernel_name);
+  if (it == m_kernel_preferred_shared_carveout.end()) return -1;
+  return it->second;
+}
+
+void gpgpu_sim::apply_kernel_preferred_shared_carveout(
+    std::string kernel_name) {
+  if (!has_kernel_preferred_shared_carveout(kernel_name)) return;
+
+  int carveout = get_kernel_preferred_shared_carveout(kernel_name);
+  if (carveout < 0) return;
+
+  unsigned max_shared = m_shader_config->gpgpu_shmem_size;
+  if (m_shader_config->adaptive_cache_config &&
+      !m_shader_config->shmem_opt_list.empty()) {
+    max_shared = m_shader_config->shmem_opt_list.back();
+  }
+
+  unsigned target =
+      (unsigned)(((unsigned long long)max_shared * (unsigned)carveout + 99) /
+                 100);
+  if (m_shader_config->adaptive_cache_config &&
+      !m_shader_config->shmem_opt_list.empty()) {
+    std::vector<unsigned>::const_iterator it = std::lower_bound(
+        m_shader_config->shmem_opt_list.begin(),
+        m_shader_config->shmem_opt_list.end(), target);
+    if (it != m_shader_config->shmem_opt_list.end()) {
+      target = *it;
+    } else {
+      target = m_shader_config->shmem_opt_list.back();
+    }
+  }
+
+  if (target != m_shader_config->gpgpu_shmem_size) {
+    printf("GPGPU-Sim: Apply kernel preferred shared memory carveout for "
+           "'%s': carveout=%d%%, shmem_size=%u\n",
+           kernel_name.c_str(), carveout, target);
   }
   m_shader_config->gpgpu_shmem_size = target;
 }
@@ -1698,6 +1788,7 @@ void gpgpu_sim::set_cache_config(std::string kernel_name) {
   } else {
     change_cache_config(FuncCachePreferNone);
   }
+  apply_kernel_preferred_shared_carveout(kernel_name);
   apply_kernel_max_dynamic_smem(kernel_name);
 }
 
