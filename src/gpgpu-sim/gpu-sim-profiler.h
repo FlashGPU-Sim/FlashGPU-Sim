@@ -8,6 +8,7 @@ namespace flash_gpgpu_sim {
 
 struct gpgpu_sim_profile_progress_t {
   unsigned long long cycle = 0;
+  unsigned long long cta_total = 0;
   unsigned long long cta_launched = 0;
   unsigned long long cta_completed = 0;
   unsigned long long tma_tx_started = 0;
@@ -142,10 +143,20 @@ struct gpgpu_sim_profiler_t {
                              last_progress.tma_bytes_completed)
             : progress.tma_bytes_completed;
 
-    printf("Progress: cycle=%llu CTA launched +%llu=%llu completed "
-           "+%llu=%llu\n",
-           progress.cycle, cta_launched_delta, progress.cta_launched,
-           cta_completed_delta, progress.cta_completed);
+    if (progress.cta_total > 0) {
+      double cta_completed_pct =
+          100.0 * (double)progress.cta_completed / (double)progress.cta_total;
+      printf("Progress: cycle=%llu CTA total=%llu launched +%llu=%llu/%llu "
+             "completed +%llu=%llu/%llu (%.1f%%)\n",
+             progress.cycle, progress.cta_total, cta_launched_delta,
+             progress.cta_launched, progress.cta_total, cta_completed_delta,
+             progress.cta_completed, progress.cta_total, cta_completed_pct);
+    } else {
+      printf("Progress: cycle=%llu CTA launched +%llu=%llu completed "
+             "+%llu=%llu\n",
+             progress.cycle, cta_launched_delta, progress.cta_launched,
+             cta_completed_delta, progress.cta_completed);
+    }
     printf("Progress TMA tx: started +%llu=%llu (R +%llu=%llu, W "
            "+%llu=%llu) completed +%llu=%llu (R +%llu=%llu, W +%llu=%llu)\n",
            tma_tx_started_delta, progress.tma_tx_started,

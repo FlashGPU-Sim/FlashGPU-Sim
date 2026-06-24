@@ -2791,6 +2791,13 @@ void gpgpu_sim::cycle() {
       auto tma_progress = flash_gpgpu_sim::get_global_tma_progress_counters();
       flash_gpgpu_sim::gpgpu_sim_profile_progress_t progress;
       progress.cycle = gpu_sim_cycle + gpu_tot_sim_cycle;
+      for (kernel_info_t *kernel : m_running_kernels) {
+        if (kernel && !kernel->done()) progress.cta_total += kernel->num_blocks();
+      }
+      if (m_config.gpu_max_cta_opt != 0 &&
+          progress.cta_total > m_config.gpu_max_cta_opt) {
+        progress.cta_total = m_config.gpu_max_cta_opt;
+      }
       progress.cta_launched = gpu_tot_issued_cta + m_total_cta_launched;
       progress.cta_completed = gpu_completed_cta;
       progress.tma_tx_started = tma_progress.tx_started;
