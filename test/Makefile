@@ -252,7 +252,9 @@ GPGPUSIM_FLAGS = -DDEBUG=0
 
 # Explicitly list only required source files
 FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
-FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o
+FLASH_OBJECTS = \
+	$(OBJ_DIR)/flash/bulk_group.cu.o \
+	$(OBJ_DIR)/flash/tcgen05.cu.o
 FLASH_OBJ_DIR = $(OBJ_DIR)/flash
 
 .PHONY: all test bench standalone-bench cp-async-bench mma-standalone-bench tma-standalone-bench memory-standalone-bench dev hopper hopper-gtest prepare-fa3-flash-attention hopper-fa2 hopper-fa2-smoke hopper-fa2-small hopper-fa2-medium hopper-fa2-large hopper-fa2-sensitivity hopper-fa2-sensitivity-h1d128 hopper-fa2-sensitivity-large-d128-full hopper-fa2-large-h32d64-full hopper-fa2-large-h16d128-full hopper-fa2-large-h32d64-causal hopper-fa2-large-h16d128-causal hopper-fa3-extended hopper-fa3-single-tile hopper-fa3-h1d128-profile hopper-fa3-sensitivity hopper-fa3-sensitivity-extended wgmma-n16-chain wgmma-fp16-core wgmma-softmax-mix wgmma-rf-bandwidth clean help setup-gtest
