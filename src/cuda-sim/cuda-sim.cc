@@ -896,7 +896,12 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == CP_ASYNC_WAIT_OP) || (m_opcode == WGMMA_FENCE_OP) ||
       (m_opcode == WGMMA_COMMIT_GROUP_OP) || (m_opcode == WGMMA_WAIT_GROUP_OP) ||
       (m_opcode == SETMAXNREG_OP) || (m_opcode == PREFETCH_OP) ||
-      (m_opcode == PREFETCHU_OP)) {
+      (m_opcode == PREFETCHU_OP) ||
+      (m_opcode == TCGEN05_ALLOC_OP) || (m_opcode == TCGEN05_DEALLOC_OP) ||
+      (m_opcode == TCGEN05_RELINQUISH_ALLOC_PERMIT_OP) ||
+      (m_opcode == TCGEN05_MMA_OP) || (m_opcode == TCGEN05_COMMIT_OP) ||
+      (m_opcode == TCGEN05_LD_OP) || (m_opcode == TCGEN05_ST_OP) ||
+      (m_opcode == TCGEN05_WAIT_OP)) {
     // do nothing
   } else if ((m_opcode == CVT_OP || m_opcode == SET_OP ||
               m_opcode == SLCT_OP)) {
@@ -927,7 +932,12 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != CP_ASYNC_WAIT_OP) && (m_opcode != WGMMA_FENCE_OP) &&
       (m_opcode != WGMMA_COMMIT_GROUP_OP) && (m_opcode != WGMMA_WAIT_GROUP_OP) &&
       (m_opcode != SETMAXNREG_OP) && (m_opcode != PREFETCH_OP) &&
-      (m_opcode != PREFETCHU_OP)) {
+      (m_opcode != PREFETCHU_OP) &&
+      (m_opcode != TCGEN05_ALLOC_OP) && (m_opcode != TCGEN05_DEALLOC_OP) &&
+      (m_opcode != TCGEN05_RELINQUISH_ALLOC_PERMIT_OP) &&
+      (m_opcode != TCGEN05_MMA_OP) && (m_opcode != TCGEN05_COMMIT_OP) &&
+      (m_opcode != TCGEN05_LD_OP) && (m_opcode != TCGEN05_ST_OP) &&
+      (m_opcode != TCGEN05_WAIT_OP)) {
     if (get_type() == F64_TYPE || get_type() == FF64_TYPE) {
       switch (get_opcode()) {
         case MUL_OP:
@@ -1381,6 +1391,24 @@ void ptx_instruction::set_opcode_and_latency() {
       // but use default latency (lightweight control instructions)
       break;
     }
+    case TCGEN05_MMA_OP:
+      op = TENSOR_CORE_OP;
+      sp_op = TENSOR__OP;
+      break;
+    case TCGEN05_LD_OP:
+      op = TENSOR_CORE_OP;
+      sp_op = TENSOR__OP;
+      break;
+    case TCGEN05_ST_OP:
+      op = TENSOR_CORE_OP;
+      sp_op = TENSOR__OP;
+      break;
+    case TCGEN05_ALLOC_OP:
+    case TCGEN05_DEALLOC_OP:
+    case TCGEN05_RELINQUISH_ALLOC_PERMIT_OP:
+    case TCGEN05_COMMIT_OP:
+    case TCGEN05_WAIT_OP:
+      break;
     case TENSORMAP_OP: {
       op = TENSOR_MAP_OP;
       const auto &opts = get_options();

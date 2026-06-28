@@ -41,6 +41,7 @@
 #include "../option_parser.h"
 #include "../trace.h"
 #include "addrdec.h"
+#include "flash/tcgen05.h"
 #include "gpu-cache.h"
 #include "shader.h"
 
@@ -683,6 +684,15 @@ class gpgpu_sim : public gpgpu_t {
    */
   bool is_SST_mode() { return m_config.is_SST_mode(); }
 
+  flash_gpgpu_sim::tcgen05_tmem_manager_t &get_tcgen05_tmem_manager() {
+    return m_tcgen05_tmem_manager;
+  }
+
+  const flash_gpgpu_sim::tcgen05_tmem_manager_t &
+  get_tcgen05_tmem_manager() const {
+    return m_tcgen05_tmem_manager;
+  }
+
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
 
@@ -760,6 +770,7 @@ class gpgpu_sim : public gpgpu_t {
   std::vector<unsigned>
       m_executed_kernel_uids;  //< uids of kernel launches for stat printout
   std::map<unsigned, watchpoint_event> g_watchpoint_hits;
+  flash_gpgpu_sim::tcgen05_tmem_manager_t m_tcgen05_tmem_manager;
 
   std::string executed_kernel_info_string();  //< format the kernel information
                                               // into a string for stat printout

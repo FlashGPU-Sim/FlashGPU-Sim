@@ -1959,7 +1959,11 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   // a copy made before execution.
   ptx_instruction *dyn_inst = nullptr;
   ptx_instruction *mbarrier_dyn_inst = nullptr;
-  if (next_inst->op == MBARRIER_OP) {
+  const ptx_instruction *next_ptx_inst =
+      dynamic_cast<const ptx_instruction *>(next_inst);
+  const bool is_tcgen05_commit =
+      next_ptx_inst && next_ptx_inst->get_opcode() == TCGEN05_COMMIT_OP;
+  if (next_inst->op == MBARRIER_OP || is_tcgen05_commit) {
     mbarrier_dyn_inst = const_cast<ptx_instruction *>(
         flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(
             next_inst->pc, static_cast<const ptx_instruction *>(next_inst)));
@@ -1994,7 +1998,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
     m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
                                     const_cast<warp_inst_t *>(next_inst));
-  } else if (next_inst->op == MBARRIER_OP) {
+  } else if (next_inst->op == MBARRIER_OP || is_tcgen05_commit) {
     // Skip mbarrier processing if no threads are active (e.g., all predicated out)
     if ((*pipe_reg)->get_active_mask().any()) {
       auto pI = mbarrier_dyn_inst;
@@ -2005,30 +2009,34 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                        (*pipe_reg)->get_active_mask());
     }
   } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
-    // Check if this is a bulk group operation
-    const auto &tma_info = next_inst->get_tma_static_info();
-    if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_COMMIT) {
-      // cp.async.bulk.commit_group
-      m_barriers.commit_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id);
-    } else if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_WAIT) {
-      // cp.async.bulk.wait_group N
-      //
-      // The .read modifier only waits for tensormap/source reads.  This TMA
-      // model reads source data during functional execution before queuing the
-      // asynchronous destination-side traffic, so the read phase is complete at
-      // issue time.
-      if (!tma_info.bulk_wait_read_only) {
-        unsigned group_num = tma_info.bulk_wait_num;
-        m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
-        m_barriers.wait_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id,
-                                   group_num);
+    // Functional TMA decoding writes the static/dynamic TMA metadata into the
+    // per-PC dynamic PTX instruction.  The fetch-side next_inst is only the
+    // predecoded template and may still carry the default INVALID TMA type.
+    assert(dyn_inst != nullptr);
+    if ((*pipe_reg)->get_active_mask().any()) {
+      // Check if this is a bulk group operation.
+      const auto &tma_info = dyn_inst->get_tma_static_info();
+      if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_COMMIT) {
+        // cp.async.bulk.commit_group
+        m_barriers.commit_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id);
+      } else if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_WAIT) {
+        // cp.async.bulk.wait_group N
+        //
+        // The .read modifier only waits for tensormap/source reads.  This TMA
+        // model reads source data during functional execution before queuing the
+        // asynchronous destination-side traffic, so the read phase is complete at
+        // issue time.
+        if (!tma_info.bulk_wait_read_only) {
+          unsigned group_num = tma_info.bulk_wait_num;
+          m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
+          m_barriers.wait_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id,
+                                     group_num);
+        }
+      } else {
+        // Regular TMA operation (load/store).
+        m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id,
+                                dyn_inst);
       }
-    } else {
-      // Regular TMA operation (load/store)
-      // dyn_inst was already obtained and reset before func_exec_inst
-      // Now it has the correct tma_dyn_info set only for active lanes
-      assert(dyn_inst != nullptr);
-      m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id, dyn_inst);
     }
   } else if (next_inst->op == ASYNC_COPY_OP) {
     const ptx_instruction *static_inst =
@@ -4493,6 +4501,7 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
   m_barriers.cleanup_cta_bulk_groups(cta_num);
   if (m_tma != nullptr) m_tma->cleanup_cta(cta_num);
   m_wgmma.cleanup_cta(cta_num);
+  m_gpu->get_tcgen05_tmem_manager().clear_cta(m_sid, cta_num);
   shader_CTA_count_unlog(m_sid, 1);
 
   SHADER_GPPRINTF(

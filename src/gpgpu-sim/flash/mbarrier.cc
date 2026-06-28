@@ -239,6 +239,14 @@ parse_mbarrier_arrive_expect_tx_options(const ptx_instruction *pI) {
   assert(is_arrive || is_expect_tx);
   return {is_arrive, is_expect_tx};
 }
+
+bool is_tcgen05_mbarrier_arrive_one(const ptx_instruction *pI) {
+  for (auto op : pI->get_options()) {
+    if (op == TCGEN05_MBARRIER_ARRIVE_ONE_OPTION)
+      return true;
+  }
+  return false;
+}
 } // namespace
 
 void handle_mbarrier_inst(const ptx_instruction *pIin,
@@ -559,6 +567,23 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
   flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{
       (int)cta_id, (int)warp_id, logical_cta_id, logical_warp_id};
 
+  if (is_tcgen05_mbarrier_arrive_one(pI)) {
+    for (unsigned lane = 0; lane < m_shader->get_config()->warp_size; lane++) {
+      if (!active_mask.test(lane))
+        continue;
+
+      const auto &mbar_info = dynamic_inst->get_mbarrier_info(lane);
+      if (!is_valid_mbarrier_info(mbar_info))
+        continue;
+
+      auto released_warps = m_mbarrier_manager.arrive(
+          m_shader->get_gpu(), thread_index, mbar_info.bar_id, 1);
+      release_warps(released_warps);
+      return;
+    }
+    return;
+  }
+
   auto bar_op = pI->barrier_op();
 
   unsigned warp_size = m_shader->get_config()->warp_size;
@@ -603,6 +628,25 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       assert(matches && "mbarrier parameters must be uniform across lanes");
     }
     return found;
+  };
+
+  auto count_uniform_mbarrier_lanes =
+      [&](const inst_t::mbarrier_info_t &mbar_info) -> unsigned {
+    unsigned lanes = 0;
+    for (unsigned lane = 0; lane < warp_size; lane++) {
+      if (!active_mask.test(lane))
+        continue;
+
+      const auto &info = dynamic_inst->get_mbarrier_info(lane);
+      if (!is_valid_mbarrier_info(info))
+        continue;
+
+      assert(info.bar_id == mbar_info.bar_id &&
+             info.bar_count == mbar_info.bar_count &&
+             info.bar_parity == mbar_info.bar_parity);
+      lanes++;
+    }
+    return lanes;
   };
 
   if (bar_op == INIT_OPTION) {
@@ -677,7 +721,7 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     if (is_expect_tx && is_arrive) {
 
       // We have to do expect_tx first, in case arrive releases the barrier.
-      auto arrival_count = 1;
+      auto arrival_count = count_uniform_mbarrier_lanes(mbar_info);
       m_mbarrier_manager.expect_tx(m_shader->get_gpu(), thread_index, addr,
                                    count);
 
@@ -687,8 +731,9 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
 
     } else if (is_arrive) {
 
+      auto arrival_count = count * count_uniform_mbarrier_lanes(mbar_info);
       auto released_warps = m_mbarrier_manager.arrive(
-          m_shader->get_gpu(), thread_index, addr, count);
+          m_shader->get_gpu(), thread_index, addr, arrival_count);
       release_warps(released_warps);
 
     } else if (is_expect_tx) {

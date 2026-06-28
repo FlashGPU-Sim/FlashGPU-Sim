@@ -1,5 +1,6 @@
 #include "tma.h"
 #include "tensormap.h"
+#include "tma_opaque_tensormap.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdarg>
@@ -467,6 +468,21 @@ is_valid_tensormap_for_optional_dim(const tensormap_descriptor_t &tensormap,
                        : is_valid_tensormap_for_dim(tensormap, inst_dim);
 }
 
+static bool try_decode_tensormap_descriptor(tensormap_descriptor_t &tensormap,
+                                            unsigned inst_dim) {
+  if (is_valid_tensormap_for_optional_dim(tensormap, inst_dim))
+    return true;
+
+  tensormap_descriptor_t decoded;
+  if (decode_sm100_opaque_tensormap(tensormap, decoded) &&
+      is_valid_tensormap_for_optional_dim(decoded, inst_dim)) {
+    tensormap = decoded;
+    return true;
+  }
+
+  return false;
+}
+
 static void read_tensormap_descriptor(memory_space *global_mem,
                                       memory_space *param_mem,
                                       uint64_t tensormap_addr,
@@ -474,12 +490,13 @@ static void read_tensormap_descriptor(memory_space *global_mem,
                                       tensormap_descriptor_t &out_tensormap) {
   if (tensormap_addr < STATIC_ALLOC_LIMIT && param_mem != nullptr) {
     param_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &out_tensormap);
-    if (is_valid_tensormap_for_optional_dim(out_tensormap, inst_dim)) {
+    if (try_decode_tensormap_descriptor(out_tensormap, inst_dim)) {
       return;
     }
   }
 
   global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &out_tensormap);
+  try_decode_tensormap_descriptor(out_tensormap, inst_dim);
 }
 
 static void
@@ -881,6 +898,27 @@ private:
     return tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL;
   }
 
+  static bool same_tma_dyn_info(const inst_t::tma_dyn_info_t &lhs,
+                                const inst_t::tma_dyn_info_t &rhs) {
+    if (lhs.dst_addr != rhs.dst_addr || lhs.src_addr != rhs.src_addr ||
+        lhs.size_in_bytes != rhs.size_in_bytes ||
+        lhs.mbar_addr != rhs.mbar_addr ||
+        lhs.has_tensormap_descriptor != rhs.has_tensormap_descriptor)
+      return false;
+
+    for (unsigned i = 0; i < 5; ++i) {
+      if (lhs.coords[i] != rhs.coords[i])
+        return false;
+    }
+
+    if (lhs.has_tensormap_descriptor &&
+        std::memcmp(lhs.tensormap_descriptor, rhs.tensormap_descriptor,
+                    inst_t::tma_dyn_info_t::TMA_DESCRIPTOR_BYTES) != 0)
+      return false;
+
+    return true;
+  }
+
   // Helper function to finalize a completed transaction
   void finalize_transaction(unsigned tx_uid) {
     auto it = m_transactions.find(tx_uid);
@@ -1101,8 +1139,52 @@ public:
 
     // Regular TMA copy instruction - queue for async processing
     const auto warp_size = m_shader_ctx->get_warp_size();
+    int canonical_lane = -1;
+    const inst_t::tma_dyn_info_t *canonical_tma_dyn_info = nullptr;
+    for (unsigned laneid = 0; laneid < warp_size; laneid++) {
+      const auto &tma_dyn_info = pI->get_tma_dyn_info(laneid);
+      if (!tma_dyn_info.is_valid())
+        continue;
+
+      if (canonical_tma_dyn_info == nullptr) {
+        canonical_lane = laneid;
+        canonical_tma_dyn_info = &tma_dyn_info;
+        continue;
+      }
+
+      if (!same_tma_dyn_info(*canonical_tma_dyn_info, tma_dyn_info)) {
+        printf("Error: non-uniform active lanes for one TMA instruction are "
+               "not supported: canonical_lane=%d lane=%u pc=0x%llx inst=%s\n",
+               canonical_lane, laneid, (unsigned long long)pI->get_PC(),
+               pI->to_string().c_str());
+        printf("  canonical dst=0x%llx src=0x%llx size=%u mbar=0x%x "
+               "coords=[%u,%u,%u,%u,%u]\n",
+               (unsigned long long)canonical_tma_dyn_info->dst_addr,
+               (unsigned long long)canonical_tma_dyn_info->src_addr,
+               canonical_tma_dyn_info->size_in_bytes,
+               canonical_tma_dyn_info->mbar_addr,
+               canonical_tma_dyn_info->coords[0],
+               canonical_tma_dyn_info->coords[1],
+               canonical_tma_dyn_info->coords[2],
+               canonical_tma_dyn_info->coords[3],
+               canonical_tma_dyn_info->coords[4]);
+        printf("  lane       dst=0x%llx src=0x%llx size=%u mbar=0x%x "
+               "coords=[%u,%u,%u,%u,%u]\n",
+               (unsigned long long)tma_dyn_info.dst_addr,
+               (unsigned long long)tma_dyn_info.src_addr,
+               tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr,
+               tma_dyn_info.coords[0], tma_dyn_info.coords[1],
+               tma_dyn_info.coords[2], tma_dyn_info.coords[3],
+               tma_dyn_info.coords[4]);
+        abort();
+      }
+    }
+
     auto num_transactions_before = issue_queue.size();
     for (unsigned laneid = 0; laneid < warp_size; laneid++) {
+      if (canonical_lane >= 0 && (int)laneid != canonical_lane)
+        continue;
+
       const auto &tma_dyn_info = pI->get_tma_dyn_info(laneid);
       if (tma_dyn_info.is_valid()) {
         unsigned tid = warp_size * warp_id + laneid;
@@ -2435,21 +2517,48 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
   using namespace flash_gpgpu_sim;
 
   const auto &options = pI->get_options();
-  if (options.size() != 5) {
-    for (auto op : options) {
-      GPPRINTF_INST_EXEC(TMA, "  option: %d\n", op);
+  int dim_option = 0;
+  int completion_option = 0;
+  std::vector<int> space_options;
+  for (auto op : options) {
+    switch (op) {
+    case DIM_1D_OPTION:
+    case DIM_2D_OPTION:
+    case DIM_3D_OPTION:
+    case DIM_4D_OPTION:
+    case DIM_5D_OPTION:
+      dim_option = op;
+      break;
+    case GLOBAL_OPTION:
+    case CTA_OPTION:
+    case CLUSTER_OPTION:
+      space_options.push_back(op);
+      break;
+    case TMA_MBAR_COMPLETE_BYTES:
+    case BULK_GROUP_OPTION:
+      completion_option = op;
+      break;
+    case TENSOR_OPTION:
+    case TILE_OPTION:
+    case L2_CACHE_HINT_OPTION:
+      break;
+    default:
+      break;
     }
   }
-  assert(
-      options.size() >= 5 &&
-      "TMA tensor copy must have: TENSOR_OPTION, dim, dst, src, completion.");
 
-  auto option_iter = options.begin();
-  ++option_iter; // Skip TENSOR_OPTION
-  auto dim_option = *option_iter++;
-  auto dst_option = *option_iter++;
-  auto src_option = *option_iter++;
-  auto completion_option = *option_iter++;
+  if (dim_option == 0 || space_options.size() < 2 || completion_option == 0) {
+    printf("TMA ERROR: unsupported tensor TMA option list: ");
+    for (auto op : options) {
+      printf("%d ", op);
+    }
+    printf("\n");
+    pI->print_insn();
+    abort();
+  }
+
+  auto dst_option = space_options[0];
+  auto src_option = space_options[1];
 
   memory_space *shared_mem = thread->m_shared_mem;
   memory_space *global_mem = thread->get_global_memory();

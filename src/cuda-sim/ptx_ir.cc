@@ -1673,6 +1673,12 @@ ptx_instruction::ptx_instruction(
       case X1_OPTION:
       case X2_OPTION:
       case X4_OPTION:
+      case X16_OPTION:
+      case X32_OPTION:
+      case TCGEN05_CTA_GROUP_1_OPTION:
+      case TCGEN05_KIND_F16_OPTION:
+      case TCGEN05_MBARRIER_ARRIVE_ONE_OPTION:
+      case TCGEN05_32X32B_OPTION:
         break;
       default:
         printf("Error: Unsupported PTX instruction option (0x%x) for opcode %s\n",
