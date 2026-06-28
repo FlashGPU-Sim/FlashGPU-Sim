@@ -1,0 +1,22 @@
+# suite,name,batch,seqlen_q,seqlen_k,heads,head_dim,head_dim_v,dtype
+smoke,prefill_smoke_b1_s128_h2_d64,1,128,128,2,64,64,fp16
+smoke,prefill_multiblock_b1_s256_h2_d64,1,256,256,2,64,64,fp16
+smoke,decode_smoke_b2_q1_k128_h2_d64,2,1,128,2,64,64,fp16
+paper-prefill,prefill_d64_total32k_s1024_b32_h32,32,1024,1024,32,64,64,fp16
+paper-prefill,prefill_d64_total32k_s2048_b16_h32,16,2048,2048,32,64,64,fp16
+paper-prefill,prefill_d64_total32k_s4096_b8_h32,8,4096,4096,32,64,64,fp16
+paper-prefill,prefill_d64_total32k_s8192_b4_h32,4,8192,8192,32,64,64,fp16
+paper-prefill,prefill_d64_total32k_s16384_b2_h32,2,16384,16384,32,64,64,fp16
+paper-prefill,prefill_d64_total32k_s32768_b1_h32,1,32768,32768,32,64,64,fp16
+paper-prefill,prefill_d128_total32k_s1024_b32_h16,32,1024,1024,16,128,128,fp16
+paper-prefill,prefill_d128_total32k_s4096_b8_h16,8,4096,4096,16,128,128,fp16
+paper-prefill,prefill_d128_total32k_s32768_b1_h16,1,32768,32768,16,128,128,fp16
+paper-prefill,prefill_deepseek_like_q192_v128_s1024_b32_h16,32,1024,1024,16,192,128,fp16
+paper-prefill,prefill_deepseek_like_q192_v128_s4096_b8_h16,8,4096,4096,16,192,128,fp16
+paper-decode,decode_d64_b32_q1_k1024_h32,32,1,1024,32,64,64,fp16
+paper-decode,decode_d64_b16_q1_k4096_h32,16,1,4096,32,64,64,fp16
+paper-decode,decode_d64_b8_q1_k8192_h32,8,1,8192,32,64,64,fp16
+paper-decode,decode_d64_b4_q1_k16384_h32,4,1,16384,32,64,64,fp16
+paper-decode,decode_d64_b1_q1_k32768_h32,1,1,32768,32,64,64,fp16
+paper-decode,decode_d128_b16_q1_k4096_h16,16,1,4096,16,128,128,fp16
+paper-decode,decode_deepseek_like_q192_v128_b16_q1_k4096_h16,16,1,4096,16,192,128,fp16
