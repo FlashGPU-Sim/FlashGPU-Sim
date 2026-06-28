@@ -158,6 +158,8 @@ typedef enum CUoutput_mode_enum {
 #include "cuda_api_object.h"
 #include "gpgpu_context.h"
 
+typedef cudaKernel_t CUkernel;
+
 #include <pthread.h>
 #include <semaphore.h>
 
@@ -665,6 +667,75 @@ static std::string ptx_target_from_file(const std::string &ptx_path) {
                                                         : end - sm_pos);
   }
   return "";
+}
+
+static std::string get_cuda_library_ptx_path() {
+  const char *ptx_path = getenv("GPGPUSIM_CUDA_LIBRARY_PTX");
+  if (ptx_path != NULL && strlen(ptx_path) != 0) return std::string(ptx_path);
+
+  ptx_path = getenv("PTX_SIM_KERNELFILE");
+  if (ptx_path != NULL && strlen(ptx_path) != 0) return std::string(ptx_path);
+
+  return std::string();
+}
+
+static CUresult load_module_from_ptx_file(CUmodule *module,
+                                          const std::string &ptx_path,
+                                          const char *caller) {
+  gpgpu_context *ctx = GPGPU_Context();
+  if (!ctx) {
+    printf("ERROR: No active GPGPU context\n");
+    return CUDA_ERROR_INVALID_HANDLE;
+  }
+
+  if (ptx_path.empty() || !file_exists(ptx_path)) {
+    printf("GPGPU-Sim PTX: ERROR: %s sidecar PTX not found: %s\n", caller,
+           ptx_path.c_str());
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  unsigned module_handle = get_next_fat_bin_handle();
+  printf("GPGPU-Sim PTX: %s loading module handle %u using PTX sidecar %s\n",
+         caller, module_handle, ptx_path.c_str());
+
+  symbol_table *symtab =
+      ctx->gpgpu_ptx_sim_load_ptx_from_filename(ptx_path.c_str());
+  context->add_binary(symtab, module_handle);
+  ctx->api->fatbinmap[module_handle] = ptx_path;
+  ctx->api->fatbin_registered[module_handle] = true;
+  ctx->api->name_symtab[ptx_path] = symtab;
+
+  std::string arch = ptx_target_from_file(ptx_path);
+  if (arch.empty()) {
+    unsigned forced_capability =
+        context->get_device()->get_gpgpu()->get_config().get_forced_max_capability();
+    if (forced_capability == 0) forced_capability = 20;
+    arch = "sm_" + std::to_string(forced_capability);
+  }
+  ctx->gpgpu_ptx_info_load_from_filename(ptx_path.c_str(), arch.c_str());
+
+  ctx->api->load_static_globals(symtab, STATIC_ALLOC_LIMIT,
+                                context->get_device()->get_gpgpu());
+  ctx->api->load_constants(symtab, STATIC_ALLOC_LIMIT,
+                           context->get_device()->get_gpgpu());
+
+  *module = (CUmodule)(unsigned long long)module_handle;
+  return CUDA_SUCCESS;
+}
+
+static CUresult load_module_from_cuda_library_ptx(CUmodule *module,
+                                                  const char *caller) {
+  const std::string ptx_path = get_cuda_library_ptx_path();
+  if (ptx_path.empty()) {
+    printf(
+        "GPGPU-Sim PTX: ERROR: %s needs GPGPUSIM_CUDA_LIBRARY_PTX or "
+        "PTX_SIM_KERNELFILE to point at the PTX sidecar for an in-memory CUDA "
+        "library\n",
+        caller);
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+  return load_module_from_ptx_file(module, ptx_path, caller);
 }
 
 // Internal implementation for cudaRegisterFatBiaryInternal
@@ -4565,6 +4636,114 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
 }
 #endif
 
+cudaError_t CUDARTAPI cudaLibraryLoadData(
+    cudaLibrary_t *library, const void *code, cudaJitOption *jitOptions,
+    void **jitOptionsValues, unsigned int numJitOptions,
+    cudaLibraryOption *libraryOptions, void **libraryOptionValues,
+    unsigned int numLibraryOptions) {
+  (void)code;
+  (void)jitOptions;
+  (void)jitOptionsValues;
+  (void)numJitOptions;
+  (void)libraryOptions;
+  (void)libraryOptionValues;
+  (void)numLibraryOptions;
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+  if (library == NULL) return g_last_cudaError = cudaErrorInvalidValue;
+
+  CUmodule module = NULL;
+  CUresult result = load_module_from_cuda_library_ptx(&module, __my_func__);
+  if (result != CUDA_SUCCESS) {
+    return g_last_cudaError = cudaErrorInvalidValue;
+  }
+
+  *library = (cudaLibrary_t)module;
+  return g_last_cudaError = cudaSuccess;
+}
+
+cudaError_t CUDARTAPI cudaLibraryUnload(cudaLibrary_t library) {
+  (void)library;
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+  return g_last_cudaError = cudaSuccess;
+}
+
+cudaError_t CUDARTAPI cudaLibraryGetKernel(cudaKernel_t *pKernel,
+                                           cudaLibrary_t library,
+                                           const char *name) {
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+  if (pKernel == NULL || library == NULL || name == NULL) {
+    return g_last_cudaError = cudaErrorInvalidValue;
+  }
+
+  CUfunction function = NULL;
+  CUresult result = cuModuleGetFunction(&function, (CUmodule)library, name);
+  if (result != CUDA_SUCCESS) return g_last_cudaError = cudaErrorInvalidValue;
+
+  *pKernel = (cudaKernel_t)function;
+  return g_last_cudaError = cudaSuccess;
+}
+
+cudaError_t CUDARTAPI cudaKernelSetAttributeForDevice(
+    cudaKernel_t kernel, enum cudaFuncAttribute attr, int value, int device) {
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+  (void)device;
+  return cudaFuncSetAttribute((const void *)kernel, attr, value);
+}
+
+extern "C" cudaError_t CUDARTAPI _cudaLibraryLoadData(
+    cudaLibrary_t *library, const void *code, cudaJitOption *jitOptions,
+    void **jitOptionsValues, unsigned int numJitOptions,
+    cudaLibraryOption *libraryOptions, void **libraryOptionValues,
+    unsigned int numLibraryOptions) {
+  return cudaLibraryLoadData(library, code, jitOptions, jitOptionsValues,
+                             numJitOptions, libraryOptions, libraryOptionValues,
+                             numLibraryOptions);
+}
+
+extern "C" cudaError_t CUDARTAPI _cudaLibraryUnload(cudaLibrary_t library) {
+  return cudaLibraryUnload(library);
+}
+
+extern "C" cudaError_t CUDARTAPI _cudaLibraryGetKernel(
+    cudaKernel_t *pKernel, cudaLibrary_t library, const char *name) {
+  return cudaLibraryGetKernel(pKernel, library, name);
+}
+
+extern "C" cudaError_t CUDARTAPI _cudaFuncSetAttribute(
+    const void *func, enum cudaFuncAttribute attr, int value) {
+  return cudaFuncSetAttribute(func, attr, value);
+}
+
+extern "C" cudaError_t CUDARTAPI _cudaKernelSetAttributeForDevice(
+    cudaKernel_t kernel, enum cudaFuncAttribute attr, int value, int device) {
+  return cudaKernelSetAttributeForDevice(kernel, attr, value, device);
+}
+
+extern "C" cudaError_t CUDARTAPI _cudaGetDevice(int *device) {
+  return cudaGetDevice(device);
+}
+
+extern "C" cudaError_t CUDARTAPI _cudaGetDeviceCount(int *count) {
+  return cudaGetDeviceCount(count);
+}
+
+extern "C" cudaError_t CUDARTAPI _cudaDeviceGetAttribute(
+    int *value, enum cudaDeviceAttr attr, int device) {
+  return cudaDeviceGetAttribute(value, attr, device);
+}
+
+extern "C" cudaError_t CUDARTAPI _cudaSetDevice(int device) {
+  return cudaSetDevice(device);
+}
+
 cudaError_t CUDARTAPI cudaGLSetGLDevice(int device) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
@@ -5223,43 +5402,15 @@ CUresult CUDAAPI cuModuleLoad(CUmodule *module, const char *fname) {
 
   CUctx_st *context = GPGPUSim_Context(ctx);
 
+  std::string sidecar_ptx = sidecar_ptx_for_module(fname);
+  if (!sidecar_ptx.empty()) {
+    return load_module_from_ptx_file(module, sidecar_ptx, __my_func__);
+  }
+
   // Allocate a unique module handle using the same mechanism as
   // cudaRegisterFatBinary
   unsigned module_handle = get_next_fat_bin_handle();
   printf("cuModuleLoad: Allocated module handle %u\n", module_handle);
-
-  std::string sidecar_ptx = sidecar_ptx_for_module(fname);
-  if (!sidecar_ptx.empty()) {
-    printf("cuModuleLoad: Loading sidecar PTX %s\n", sidecar_ptx.c_str());
-    symbol_table *symtab = ctx->gpgpu_ptx_sim_load_ptx_from_filename(
-        sidecar_ptx.c_str());
-    context->add_binary(symtab, module_handle);
-    ctx->api->name_symtab[fname] = symtab;
-    ctx->api->name_symtab[sidecar_ptx] = symtab;
-
-    std::string arch_str = ptx_target_from_file(sidecar_ptx);
-    if (arch_str.empty()) {
-      unsigned forced_capability =
-          context->get_device()
-              ->get_gpgpu()
-              ->get_config()
-              .get_forced_max_capability();
-      if (forced_capability == 0) forced_capability = 20;
-      arch_str = "sm_" + std::to_string(forced_capability);
-    }
-    ctx->gpgpu_ptx_info_load_from_filename(sidecar_ptx.c_str(),
-                                            arch_str.c_str());
-
-    ctx->api->load_static_globals(symtab, STATIC_ALLOC_LIMIT,
-                                  context->get_device()->get_gpgpu());
-    ctx->api->load_constants(symtab, STATIC_ALLOC_LIMIT,
-                             context->get_device()->get_gpgpu());
-
-    *module = (CUmodule)(unsigned long long)module_handle;
-    printf("cuModuleLoad: Successfully loaded sidecar PTX with handle %u\n",
-           module_handle);
-    return CUDA_SUCCESS;
-  }
 
   // 1. INIT: Extract code using cuobjdump on first load (handle == 1)
   if (module_handle == 1) {
@@ -5288,8 +5439,8 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  printf("WARNING: this function has not been implemented yet %s\n", __my_func__);
-  return CUDA_SUCCESS;
+  (void)image;
+  return load_module_from_cuda_library_ptx(module, __my_func__);
 }
 
 CUresult CUDAAPI cuModuleLoadDataEx(CUmodule *module, const void *image,
@@ -5299,8 +5450,11 @@ CUresult CUDAAPI cuModuleLoadDataEx(CUmodule *module, const void *image,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  printf("WARNING: this function has not been implemented yet %s\n", __my_func__);
-  return CUDA_SUCCESS;
+  (void)image;
+  (void)numOptions;
+  (void)options;
+  (void)optionValues;
+  return load_module_from_cuda_library_ptx(module, __my_func__);
 }
 
 CUresult CUDAAPI cuModuleLoadFatBinary(CUmodule *module, const void *fatCubin) {
@@ -6350,7 +6504,19 @@ CUresult CUDAAPI cuFuncGetAttribute(int *pi, CUfunction_attribute attrib,
     announce_call(__my_func__);
   }
   printf("WARNING: this function has not been implemented yet %s\n", __my_func__);
+  if (pi) *pi = 0;
   return CUDA_SUCCESS;
+}
+
+CUresult CUDAAPI cuKernelGetAttribute(int *pi, CUfunction_attribute attrib,
+                                      CUkernel kernel, CUdevice dev) {
+  (void)dev;
+  return cuFuncGetAttribute(pi, attrib, (CUfunction)kernel);
+}
+
+extern "C" CUresult CUDAAPI _cuKernelGetAttribute(
+    int *pi, CUfunction_attribute attrib, CUkernel kernel, CUdevice dev) {
+  return cuKernelGetAttribute(pi, attrib, kernel, dev);
 }
 
 CUresult CUDAAPI cuFuncSetAttribute(CUfunction hfunc,
@@ -8158,8 +8324,25 @@ __host__ cudaError_t CUDARTAPI cudaHostUnregister(void *ptr) {
   cuda_error_not_impl;
 }
 
-__host__ cudaError_t CUDARTAPI cudaLaunchKernelExC(const cudaLaunchConfig_t *config, const void *func, void **args) {
-  cuda_error_not_impl;
+__host__ cudaError_t CUDARTAPI cudaLaunchKernelExC(
+    const cudaLaunchConfig_t *config, const void *func, void **args) {
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+  if (config == NULL || func == NULL) {
+    return g_last_cudaError = cudaErrorInvalidValue;
+  }
+
+  cudaConfigureCallInternal(config->gridDim, config->blockDim,
+                            config->dynamicSmemBytes, config->stream);
+  return cudaLaunchKernelInternal((const char *)func, config->gridDim,
+                                  config->blockDim, (const void **)args,
+                                  config->dynamicSmemBytes, config->stream);
+}
+
+__host__ cudaError_t CUDARTAPI _cudaLaunchKernelEx(
+    const cudaLaunchConfig_t *config, const void *func, void **args) {
+  return cudaLaunchKernelExC(config, func, args);
 }
 
 __host__ cudaError_t CUDARTAPI cudaLaunchHostFunc(cudaStream_t stream, cudaHostFn_t fn, void *userData) {
