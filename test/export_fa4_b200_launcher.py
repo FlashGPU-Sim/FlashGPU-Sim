@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export the real FA4/CuTeDSL B200 forward host launcher as C artifacts.
+"""Export the real FA4/CuTeDSL B200 host launcher as C artifacts.
 
 The generated .h/.o pair comes from CuTeDSL's export_to_c() path.  This keeps
 the FA4 host wrapper responsible for TMA descriptors, launch shape, dynamic
@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--export-dir", required=True)
     parser.add_argument("--export-name", default="fa4_b200_launcher")
+    parser.add_argument("--direction", choices=("fwd", "bwd"), default="fwd")
     parser.add_argument("--dump-dir", required=True)
     parser.add_argument("--arch", default="sm_100a")
     parser.add_argument("--flash-attn-arch", default="sm_100")
@@ -32,6 +33,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--head-dim-v", type=int, default=None)
     parser.add_argument("--dtype", choices=("fp16", "bf16"), default="fp16")
     parser.add_argument("--non-causal", action="store_true")
+    parser.add_argument(
+        "--disable-2cta",
+        action="store_true",
+        help="Force FA4 to avoid cta_group::2 kernels during export",
+    )
     parser.add_argument("--clean", action="store_true")
     return parser.parse_args()
 
@@ -43,6 +49,8 @@ def configure_environment(args: argparse.Namespace, dump_dir: Path) -> None:
     os.environ["CUTE_DSL_DUMP_DIR"] = str(dump_dir)
     os.environ.setdefault("QUACK_CUTE_DSL_SHIM", "0")
     os.environ.pop("CUTE_DSL_PTXAS_PATH", None)
+    if args.disable_2cta:
+        os.environ["FA_DISABLE_2CTA"] = "1"
 
     cu13_root = (
         Path(sysconfig.get_paths()["purelib"])
@@ -65,6 +73,45 @@ def configure_environment(args: argparse.Namespace, dump_dir: Path) -> None:
 def first_artifact(dump_dir: Path, suffix: str) -> Path | None:
     matches = sorted(dump_dir.glob(f"*.{suffix}"))
     return matches[0] if matches else None
+
+
+def function_artifact(dump_dir: Path, suffix: str, function_name: str) -> Path | None:
+    matches = sorted(
+        path for path in dump_dir.glob(f"*.{suffix}")
+        if function_name in path.name
+    )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"multiple .{suffix} artifacts matched {function_name}: "
+            + ", ".join(str(path) for path in matches)
+        )
+    if matches:
+        return matches[0]
+    return first_artifact(dump_dir, suffix)
+
+
+def select_compiled_function(compiled_functions, direction: str):
+    if direction == "fwd":
+        allowed = (
+            "FlashAttentionForwardSm100",
+            "BlackwellFusedMultiHeadAttentionForward",
+        )
+    else:
+        allowed = (
+            "FlashAttentionBackwardSm100",
+            "BlackwellFusedMultiHeadAttentionBackward",
+        )
+    candidates = [
+        fn for cls_name, fn in compiled_functions
+        if cls_name in allowed
+    ]
+    if not candidates:
+        seen = ", ".join(cls_name for cls_name, _ in compiled_functions)
+        raise RuntimeError(
+            f"did not capture an FA4 {direction} main kernel compile; "
+            f"captured=[{seen}]"
+        )
+    return candidates[-1]
 
 
 def main() -> int:
@@ -92,7 +139,8 @@ def main() -> int:
         # the generated C ABI export instead.
         compile_kwargs.pop("options", None)
         fn = original_compile(*compile_args, **compile_kwargs)
-        compiled_functions.append(fn)
+        obj = compile_args[0] if compile_args else None
+        compiled_functions.append((obj.__class__.__name__, fn))
         return fn
 
     cute.compile = compile_for_c_export
@@ -119,19 +167,42 @@ def main() -> int:
             device="cuda",
             dtype=dtype,
         )
-        out, lse = interface._flash_attn_fwd(
-            q,
-            k,
-            v,
-            softmax_scale=1.0 / math.sqrt(args.head_dim),
-            causal=causal,
-            return_lse=False,
-        )
+        if args.direction == "fwd":
+            out, lse = interface._flash_attn_fwd(
+                q,
+                k,
+                v,
+                softmax_scale=1.0 / math.sqrt(args.head_dim),
+                causal=causal,
+                return_lse=False,
+            )
+        else:
+            out = torch.empty(
+                (args.batch, args.seqlen_q, args.heads, head_dim_v),
+                device="cuda",
+                dtype=dtype,
+            )
+            dout = torch.empty_like(out)
+            lse = torch.empty(
+                (args.batch, args.heads, args.seqlen_q),
+                device="cuda",
+                dtype=torch.float32,
+            )
+            interface._flash_attn_bwd(
+                q,
+                k,
+                v,
+                out,
+                dout,
+                lse,
+                softmax_scale=1.0 / math.sqrt(args.head_dim),
+                causal=causal,
+            )
 
     if not compiled_functions:
         raise RuntimeError("FA4 did not compile a CuTeDSL function")
 
-    fn = compiled_functions[-1]
+    fn = select_compiled_function(compiled_functions, args.direction)
     fn.export_to_c(str(export_dir), args.export_name, args.export_name)
     header_path = export_dir / f"{args.export_name}.h"
     object_path = export_dir / f"{args.export_name}.o"
@@ -140,8 +211,8 @@ def main() -> int:
     if not object_path.exists():
         raise RuntimeError(f"CuTeDSL export did not create {object_path}")
 
-    ptx_path = first_artifact(dump_dir, "ptx")
-    cubin_path = first_artifact(dump_dir, "cubin")
+    ptx_path = function_artifact(dump_dir, "ptx", fn.function_name)
+    cubin_path = function_artifact(dump_dir, "cubin", fn.function_name)
     canonical_ptx = export_dir / f"{args.export_name}.ptx"
     canonical_cubin = export_dir / f"{args.export_name}.cubin"
     if ptx_path is not None:
@@ -154,10 +225,12 @@ def main() -> int:
         )
 
     metadata = {
+        "direction": args.direction,
         "arch": args.arch,
         "flash_attention_arch": args.flash_attn_arch,
         "export_name": args.export_name,
         "function_name": fn.function_name,
+        "captured_compiles": [cls_name for cls_name, _ in compiled_functions],
         "shape": {
             "batch": args.batch,
             "seqlen_q": args.seqlen_q,

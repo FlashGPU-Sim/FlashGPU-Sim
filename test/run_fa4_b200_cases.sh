@@ -9,6 +9,7 @@ CONFIG="SM100_B200"
 SUITE="smoke"
 RUN_DIR="$ROOT_DIR/../fa4-b200-sim-run"
 LAUNCHER="generated"
+ARTIFACT_DIRECTION="fwd"
 FATBIN=""
 PTX=""
 KERNEL=""
@@ -16,11 +17,13 @@ TIMEOUT_SECONDS=300
 DRY_RUN=0
 LIST_ONLY=0
 REBUILD_LAUNCHER=0
+RUN_BWD=0
 LEGACY_COORDS=0
 ARTIFACT_HEAD_DIM=64
 ARTIFACT_HEAD_DIM_V=""
 ARTIFACT_HEAD_DIM_V_SET=0
 ARTIFACT_DTYPE="fp16"
+ARTIFACT_CAUSAL=1
 DYNAMIC_SMEM=231424
 CASES_FILE="$ROOT_DIR/test/fa4_b200_cases.csv"
 FA4_PYTHON="${FA4_PYTHON:-}"
@@ -37,10 +40,14 @@ usage: test/run_fa4_b200_cases.sh [options]
 options:
   --config NAME             GPGPU-Sim config to copy into the FA4 run dir
                             (default: SM100_B200)
-  --suite NAME              smoke | paper-prefill | paper-decode | all
+  --suite NAME              smoke | small | medium | large | all
                             (default: smoke)
   --launcher NAME           generated | manual
                             (default: generated)
+  --direction fwd|bwd       FA4 generated kernel direction (default: fwd)
+  --run-bwd                 Actually launch backward artifacts. By default
+                            --direction bwd exports only; BWD opaque TMA store
+                            descriptors are still under bring-up.
   --run-dir DIR             FA4 artifact/run directory
                             (default: ../fa4-b200-sim-run)
   --fatbin PATH             FA4 fatbin path
@@ -53,6 +60,8 @@ options:
                             (default: artifact-head-dim)
   --artifact-dtype fp16|bf16
                             Dtype compiled into the artifact (default: fp16)
+  --causal                  Use a causal generated FA4 artifact (default)
+  --non-causal              Use a non-causal generated FA4 artifact
   --dynamic-smem BYTES      Dynamic shared memory bytes (default: 231424)
   --fa4-python PATH         Python interpreter with FA4 installed
                             (default: ../fa4-env-cu133/bin/python if present)
@@ -81,6 +90,10 @@ parse_args() {
         ;;
       --launcher)
         LAUNCHER="$2"
+        shift 2
+        ;;
+      --direction)
+        ARTIFACT_DIRECTION="$2"
         shift 2
         ;;
       --run-dir)
@@ -116,6 +129,14 @@ parse_args() {
         ARTIFACT_DTYPE="$2"
         shift 2
         ;;
+      --causal)
+        ARTIFACT_CAUSAL=1
+        shift
+        ;;
+      --non-causal)
+        ARTIFACT_CAUSAL=0
+        shift
+        ;;
       --dynamic-smem)
         DYNAMIC_SMEM="$2"
         shift 2
@@ -126,6 +147,10 @@ parse_args() {
         ;;
       --rebuild-launcher)
         REBUILD_LAUNCHER=1
+        shift
+        ;;
+      --run-bwd)
+        RUN_BWD=1
         shift
         ;;
       --legacy-coord-pointers)
@@ -162,6 +187,14 @@ parse_args() {
       exit 2
       ;;
   esac
+  case "$ARTIFACT_DIRECTION" in
+    fwd|bwd)
+      ;;
+    *)
+      echo "unknown direction: $ARTIFACT_DIRECTION" >&2
+      exit 2
+      ;;
+  esac
 }
 
 ceil_div() {
@@ -176,7 +209,7 @@ case_table() {
     exit 2
   fi
   case "$SUITE" in
-    smoke|paper-prefill|paper-decode)
+    smoke|small|medium|large)
       awk -F, -v suite="$SUITE" '
         /^[[:space:]]*(#|$)/ { next }
         $1 == suite {
@@ -317,20 +350,24 @@ PY
 
 generated_launcher_metadata_matches() {
   [[ -f "$GENERATED_METADATA" ]] || return 1
-  "$FA4_PYTHON" - "$GENERATED_METADATA" "$ARTIFACT_HEAD_DIM" \
-    "$ARTIFACT_HEAD_DIM_V" "$ARTIFACT_DTYPE" <<'PY'
+  "$FA4_PYTHON" - "$GENERATED_METADATA" "$ARTIFACT_DIRECTION" "$ARTIFACT_HEAD_DIM" \
+    "$ARTIFACT_HEAD_DIM_V" "$ARTIFACT_DTYPE" "$ARTIFACT_CAUSAL" <<'PY'
 import json
 import sys
 
-metadata_path, head_dim, head_dim_v, dtype = sys.argv[1:5]
+metadata_path, direction, head_dim, head_dim_v, dtype, causal = sys.argv[1:7]
+expected_causal = causal == "1"
 try:
     with open(metadata_path, "r", encoding="utf-8") as f:
         metadata = json.load(f)
     shape = metadata.get("shape", {})
     ok = (
-        int(shape.get("head_dim", -1)) == int(head_dim)
+        metadata.get("direction", "fwd") == direction
+        and int(shape.get("head_dim", -1)) == int(head_dim)
         and int(shape.get("head_dim_v", -1)) == int(head_dim_v)
         and shape.get("dtype") == dtype
+        and isinstance(shape.get("causal"), bool)
+        and shape.get("causal") is expected_causal
     )
 except Exception:
     ok = False
@@ -369,17 +406,28 @@ export_generated_launcher() {
     echo "generated launcher cache is stale or mismatched; rebuilding"
   fi
 
-  run_cmd "$FA4_PYTHON" "$export_script" \
-    --export-dir "$RUN_DIR" \
-    --export-name "$GENERATED_EXPORT_NAME" \
-    --dump-dir "$dump_dir" \
-    --batch 1 \
-    --seqlen-q 128 \
-    --seqlen-k 128 \
-    --heads 2 \
-    --head-dim "$ARTIFACT_HEAD_DIM" \
-    --head-dim-v "$ARTIFACT_HEAD_DIM_V" \
+  local export_args=(
+    "$FA4_PYTHON" "$export_script"
+    --export-dir "$RUN_DIR"
+    --export-name "$GENERATED_EXPORT_NAME"
+    --direction "$ARTIFACT_DIRECTION"
+    --dump-dir "$dump_dir"
+    --batch 1
+    --seqlen-q 128
+    --seqlen-k 128
+    --heads 2
+    --head-dim "$ARTIFACT_HEAD_DIM"
+    --head-dim-v "$ARTIFACT_HEAD_DIM_V"
     --dtype "$ARTIFACT_DTYPE"
+  )
+  if [[ "$ARTIFACT_CAUSAL" -eq 0 ]]; then
+    export_args+=(--non-causal)
+  fi
+  if [[ "$ARTIFACT_DIRECTION" == "bwd" ]]; then
+    # Current simulator bring-up intentionally excludes cta_group::2.
+    export_args+=(--disable-2cta)
+  fi
+  run_cmd "${export_args[@]}"
 }
 
 build_generated_runner() {
@@ -396,7 +444,12 @@ build_generated_runner() {
   if [[ -d "$cuda_stub" ]]; then
     lib_args+=("-L$cuda_stub")
   fi
+  local runner_def="-DFA4_B200_RUNNER_BWD=0"
+  if [[ "$ARTIFACT_DIRECTION" == "bwd" ]]; then
+    runner_def="-DFA4_B200_RUNNER_BWD=1"
+  fi
   run_cmd g++ -std=c++17 -O2 "$src" "$GENERATED_OBJECT" \
+    "$runner_def" \
     -I"$RUN_DIR" -I"$CUDA_INSTALL_PATH/include" \
     "${lib_args[@]}" -Wl,-rpath,"$sim_lib" -Wl,-rpath,"$cuda_lib" \
     -lcudart -lcuda -ldl -pthread -o "$out"
@@ -411,16 +464,40 @@ run_case() {
   local head_dim="$6"
   local head_dim_v="$7"
   local dtype="$8"
+  local causal="$9"
 
   local m_blocks
   m_blocks="$(ceil_div "$seqlen_q" 128)"
   local grid_x=$((m_blocks * heads * batch))
   local log="$RUN_DIR/fa4_${CONFIG}_${name}.log"
 
+  local case_causal
+  case "$causal" in
+    true|1|yes)
+      case_causal=1
+      ;;
+    false|0|no)
+      case_causal=0
+      ;;
+    *)
+      echo "invalid causal field for $name: $causal" >&2
+      exit 2
+      ;;
+  esac
+
   if [[ "$head_dim" != "$ARTIFACT_HEAD_DIM" ||
         "$head_dim_v" != "$ARTIFACT_HEAD_DIM_V" ||
-        "$dtype" != "$ARTIFACT_DTYPE" ]]; then
-    echo "SKIP $name: case requires ${dtype} d=${head_dim}/${head_dim_v}, artifact is ${ARTIFACT_DTYPE} d=${ARTIFACT_HEAD_DIM}/${ARTIFACT_HEAD_DIM_V}"
+        "$dtype" != "$ARTIFACT_DTYPE" ||
+        "$case_causal" != "$ARTIFACT_CAUSAL" ]]; then
+    local case_mode="non-causal"
+    local artifact_mode="non-causal"
+    if [[ "$case_causal" -eq 1 ]]; then
+      case_mode="causal"
+    fi
+    if [[ "$ARTIFACT_CAUSAL" -eq 1 ]]; then
+      artifact_mode="causal"
+    fi
+    echo "SKIP $name: case requires ${dtype} d=${head_dim}/${head_dim_v} ${case_mode}, artifact is ${ARTIFACT_DTYPE} d=${ARTIFACT_HEAD_DIM}/${ARTIFACT_HEAD_DIM_V} ${artifact_mode}"
     return 0
   fi
 
@@ -436,6 +513,11 @@ run_case() {
       --head-dim-v "$head_dim_v"
       --dtype "$dtype"
     )
+    if [[ "$case_causal" -eq 1 ]]; then
+      cmd+=(--causal)
+    else
+      cmd+=(--non-causal)
+    fi
   else
     cmd=(
       "$RUN_DIR/fa4_b200_driver_harness"
@@ -498,6 +580,20 @@ main() {
 
   sync_config
 
+  if [[ "$DRY_RUN" -eq 1 &&
+        "$LAUNCHER" == "generated" &&
+        "$ARTIFACT_DIRECTION" == "bwd" &&
+        "$RUN_BWD" -eq 0 ]]; then
+    FA4_PYTHON="$(default_fa4_python)"
+    echo "backward artifact would be exported; skipping launch by default"
+    echo "use --run-bwd to print or exercise the experimental backward runner"
+    echo "generated_header=$GENERATED_HEADER"
+    echo "generated_object=$GENERATED_OBJECT"
+    echo "generated_ptx=$GENERATED_PTX"
+    echo "generated_metadata=$GENERATED_METADATA"
+    exit 0
+  fi
+
   if [[ "$DRY_RUN" -eq 1 ]]; then
     if [[ "$LAUNCHER" == "generated" ]]; then
       FA4_PYTHON="$(default_fa4_python)"
@@ -511,6 +607,17 @@ main() {
   else
     if [[ "$LAUNCHER" == "generated" ]]; then
       export_generated_launcher
+    fi
+    if [[ "$LAUNCHER" == "generated" &&
+          "$ARTIFACT_DIRECTION" == "bwd" &&
+          "$RUN_BWD" -eq 0 ]]; then
+      echo "backward artifact exported; skipping launch by default"
+      echo "use --run-bwd to exercise the experimental backward runner"
+      echo "generated_header=$GENERATED_HEADER"
+      echo "generated_object=$GENERATED_OBJECT"
+      echo "generated_ptx=$GENERATED_PTX"
+      echo "generated_metadata=$GENERATED_METADATA"
+      exit 0
     fi
     setup_sim_env
     if [[ "$LAUNCHER" == "generated" ]]; then
@@ -528,10 +635,15 @@ main() {
 
   echo "config=$CONFIG suite=$SUITE launcher=$LAUNCHER run_dir=$RUN_DIR"
   if [[ "$LAUNCHER" == "generated" ]]; then
+    local artifact_mode="non-causal"
+    if [[ "$ARTIFACT_CAUSAL" -eq 1 ]]; then
+      artifact_mode="causal"
+    fi
     echo "generated_header=$GENERATED_HEADER"
     echo "generated_object=$GENERATED_OBJECT"
     echo "generated_ptx=$GENERATED_PTX"
     echo "generated_metadata=$GENERATED_METADATA"
+    echo "generated_shape=direction=$ARTIFACT_DIRECTION dtype=$ARTIFACT_DTYPE head_dim=$ARTIFACT_HEAD_DIM head_dim_v=$ARTIFACT_HEAD_DIM_V $artifact_mode"
   else
     echo "fatbin=$FATBIN"
     echo "kernel=$KERNEL"
@@ -540,8 +652,8 @@ main() {
   local row
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
-    IFS=',' read -r name batch seqlen_q seqlen_k heads head_dim head_dim_v dtype <<<"$row"
-    run_case "$name" "$batch" "$seqlen_q" "$seqlen_k" "$heads" "$head_dim" "$head_dim_v" "$dtype"
+    IFS=',' read -r name batch seqlen_q seqlen_k heads head_dim head_dim_v dtype causal <<<"$row"
+    run_case "$name" "$batch" "$seqlen_q" "$seqlen_k" "$heads" "$head_dim" "$head_dim_v" "$dtype" "$causal"
   done < <(case_table)
 }
 

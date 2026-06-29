@@ -13,11 +13,16 @@
 
 #include "fa4_b200_launcher.h"
 
+#ifndef FA4_B200_RUNNER_BWD
+#define FA4_B200_RUNNER_BWD 0
+#endif
+
 namespace {
 
 struct Options {
   bool load_only = false;
   bool head_dim_v_set = false;
+  bool causal = true;
   std::uint32_t batch = 1;
   std::uint32_t seqlen_q = 128;
   std::uint32_t seqlen_k = 128;
@@ -48,7 +53,9 @@ void checkCuda(cudaError_t status, const char *what) {
       "  --heads N                  Number of heads (default: 2)\n"
       "  --head-dim N               Q/K head dimension (default: 64)\n"
       "  --head-dim-v N             V/O head dimension (default: head-dim)\n"
-      "  --dtype fp16|bf16          Tensor dtype compiled into the artifact\n",
+      "  --dtype fp16|bf16          Tensor dtype compiled into the artifact\n"
+      "  --causal                   Fill metadata for a causal artifact\n"
+      "  --non-causal               Fill metadata for a non-causal artifact\n",
       argv0);
   std::exit(2);
 }
@@ -96,6 +103,10 @@ void parseArgs(int argc, char **argv, Options *opts) {
         std::fprintf(stderr, "invalid --dtype: %s\n", opts->dtype.c_str());
         std::exit(2);
       }
+    } else if (arg == "--causal") {
+      opts->causal = true;
+    } else if (arg == "--non-causal") {
+      opts->causal = false;
     } else {
       usage(argv[0]);
     }
@@ -127,6 +138,14 @@ std::size_t tensorBytes(std::uint32_t batch, std::uint32_t seqlen,
   return checkedMul(elements, sizeof(std::uint16_t), "tensor bytes");
 }
 
+std::size_t tensor3BytesF32(std::uint32_t dim0, std::uint32_t dim1,
+                            std::uint32_t dim2) {
+  std::size_t elements = dim0;
+  elements = checkedMul(elements, dim1, "tensor3 elements");
+  elements = checkedMul(elements, dim2, "tensor3 elements");
+  return checkedMul(elements, sizeof(float), "tensor3 bytes");
+}
+
 template <typename Tensor>
 void fillTensorDescriptor(void *data, std::uint32_t batch, std::uint32_t seqlen,
                           std::uint32_t heads, std::uint32_t head_dim,
@@ -140,6 +159,17 @@ void fillTensorDescriptor(void *data, std::uint32_t batch, std::uint32_t seqlen,
       static_cast<std::int64_t>(seqlen) * heads * head_dim;
   tensor->dynamic_strides[1] = static_cast<std::int64_t>(heads) * head_dim;
   tensor->dynamic_strides[2] = head_dim;
+}
+
+template <typename Tensor>
+void fillTensor3Descriptor(void *data, std::uint32_t dim0, std::uint32_t dim1,
+                           std::uint32_t dim2, Tensor *tensor) {
+  tensor->data = data;
+  tensor->dynamic_shapes[0] = static_cast<std::int32_t>(dim0);
+  tensor->dynamic_shapes[1] = static_cast<std::int32_t>(dim1);
+  tensor->dynamic_shapes[2] = static_cast<std::int32_t>(dim2);
+  tensor->dynamic_strides[0] = static_cast<std::int64_t>(dim1) * dim2;
+  tensor->dynamic_strides[1] = dim2;
 }
 
 void checkDevicePrefixPattern(const void *device_ptr, std::size_t bytes,
@@ -178,6 +208,38 @@ void fillDeviceU16(void *device_ptr, std::size_t bytes, std::uint16_t value,
   std::vector<std::uint16_t> host(bytes / sizeof(std::uint16_t), value);
   checkCuda(cudaMemcpy(device_ptr, host.data(), bytes, cudaMemcpyHostToDevice),
             name);
+}
+
+void fillDeviceF32(void *device_ptr, std::size_t bytes, float value,
+                   const char *name) {
+  if (bytes % sizeof(float) != 0) {
+    std::fprintf(stderr, "%s byte size is not float aligned: %zu\n", name,
+                 bytes);
+    std::exit(2);
+  }
+  std::vector<float> host(bytes / sizeof(float), value);
+  checkCuda(cudaMemcpy(device_ptr, host.data(), bytes, cudaMemcpyHostToDevice),
+            name);
+}
+
+void fillLse(void *device_ptr, std::uint32_t batch, std::uint32_t heads,
+             std::uint32_t seqlen_q, std::uint32_t seqlen_k, bool causal) {
+  std::vector<float> host(static_cast<std::size_t>(batch) * heads * seqlen_q);
+  for (std::uint32_t b = 0; b < batch; ++b) {
+    for (std::uint32_t h = 0; h < heads; ++h) {
+      for (std::uint32_t q = 0; q < seqlen_q; ++q) {
+        std::uint32_t visible = seqlen_k;
+        if (causal) visible = std::min<std::uint32_t>(seqlen_k, q + 1);
+        if (visible == 0) visible = 1;
+        const std::size_t offset =
+            (static_cast<std::size_t>(b) * heads + h) * seqlen_q + q;
+        host[offset] = std::log(static_cast<float>(visible));
+      }
+    }
+  }
+  checkCuda(cudaMemcpy(device_ptr, host.data(),
+                       host.size() * sizeof(float), cudaMemcpyHostToDevice),
+            "fill(lse)");
 }
 
 void checkDeviceU16All(const void *device_ptr, std::size_t bytes,
@@ -229,39 +291,98 @@ int main(int argc, char **argv) {
   void *k = nullptr;
   void *v = nullptr;
   void *o = nullptr;
+  void *d_o = nullptr;
+  void *lse = nullptr;
+  void *d_psum = nullptr;
+  void *d_qaccum = nullptr;
+  void *d_k = nullptr;
+  void *d_v = nullptr;
   checkCuda(cudaMalloc(&q, q_bytes), "cudaMalloc(q)");
   checkCuda(cudaMalloc(&k, k_bytes), "cudaMalloc(k)");
   checkCuda(cudaMalloc(&v, v_bytes), "cudaMalloc(v)");
+#if FA4_B200_RUNNER_BWD
+  const std::size_t lse_bytes =
+      tensor3BytesF32(opts.batch, opts.heads, opts.seqlen_q);
+  checkCuda(cudaMalloc(&d_o, o_bytes), "cudaMalloc(dO)");
+  checkCuda(cudaMalloc(&lse, lse_bytes), "cudaMalloc(lse)");
+  checkCuda(cudaMalloc(&d_psum, lse_bytes), "cudaMalloc(dPsum)");
+  checkCuda(cudaMalloc(&d_qaccum, lse_bytes), "cudaMalloc(dQaccum)");
+  checkCuda(cudaMalloc(&d_k, k_bytes), "cudaMalloc(dK)");
+  checkCuda(cudaMalloc(&d_v, v_bytes), "cudaMalloc(dV)");
+#else
   checkCuda(cudaMalloc(&o, o_bytes), "cudaMalloc(o)");
+#endif
 
   const std::uint16_t one = oneBits(opts.dtype);
   fillDeviceU16(q, q_bytes, 0, "fill(q)");
   fillDeviceU16(k, k_bytes, 0, "fill(k)");
   fillDeviceU16(v, v_bytes, one, "fill(v)");
+#if FA4_B200_RUNNER_BWD
+  fillDeviceU16(d_o, o_bytes, one, "fill(dO)");
+  fillLse(lse, opts.batch, opts.heads, opts.seqlen_q, opts.seqlen_k,
+          opts.causal);
+  fillDeviceF32(d_psum, lse_bytes, 0.0f, "fill(dPsum)");
+  fillDeviceF32(d_qaccum, lse_bytes, 0.0f, "fill(dQaccum)");
+  fillDeviceU16(d_k, k_bytes, 0, "fill(dK)");
+  fillDeviceU16(d_v, v_bytes, 0, "fill(dV)");
+#else
   fillDeviceU16(o, o_bytes, 0, "fill(o)");
+#endif
 
   fa4_b200_launcher_Tensor_mQ_t mQ{};
   fa4_b200_launcher_Tensor_mK_t mK{};
   fa4_b200_launcher_Tensor_mV_t mV{};
-  fa4_b200_launcher_Tensor_mO_t mO{};
   fillTensorDescriptor(q, opts.batch, opts.seqlen_q, opts.heads, opts.head_dim,
                        &mQ);
   fillTensorDescriptor(k, opts.batch, opts.seqlen_k, opts.heads, opts.head_dim,
                        &mK);
   fillTensorDescriptor(v, opts.batch, opts.seqlen_k, opts.heads,
                        opts.head_dim_v, &mV);
+#if FA4_B200_RUNNER_BWD
+  fa4_b200_launcher_Tensor_mdO_t mdO{};
+  fa4_b200_launcher_Tensor_mLSE_t mLSE{};
+  fa4_b200_launcher_Tensor_mdPsum_t mdPsum{};
+  fa4_b200_launcher_Tensor_mdQaccum_t mdQaccum{};
+  fa4_b200_launcher_Tensor_mdK_t mdK{};
+  fa4_b200_launcher_Tensor_mdV_t mdV{};
+  fillTensorDescriptor(d_o, opts.batch, opts.seqlen_q, opts.heads,
+                       opts.head_dim_v, &mdO);
+  fillTensor3Descriptor(lse, opts.batch, opts.heads, opts.seqlen_q, &mLSE);
+  fillTensor3Descriptor(d_psum, opts.batch, opts.heads, opts.seqlen_q,
+                        &mdPsum);
+  fillTensor3Descriptor(d_qaccum, opts.batch, opts.heads, opts.seqlen_q,
+                        &mdQaccum);
+  fillTensorDescriptor(d_k, opts.batch, opts.seqlen_k, opts.heads,
+                       opts.head_dim, &mdK);
+  fillTensorDescriptor(d_v, opts.batch, opts.seqlen_k, opts.heads,
+                       opts.head_dim_v, &mdV);
+#else
+  fa4_b200_launcher_Tensor_mO_t mO{};
   fillTensorDescriptor(o, opts.batch, opts.seqlen_q, opts.heads,
                        opts.head_dim_v, &mO);
+#endif
 
   const float scale = 1.0f / std::sqrt(static_cast<float>(opts.head_dim));
   std::printf(
-      "launch generated FA4 wrapper shape batch=%u seqlen_q=%u seqlen_k=%u "
-      "heads=%u head_dim=%u head_dim_v=%u dtype=%s\n",
+      "launch generated FA4 %s wrapper shape batch=%u seqlen_q=%u "
+      "seqlen_k=%u heads=%u head_dim=%u head_dim_v=%u dtype=%s %s\n",
+#if FA4_B200_RUNNER_BWD
+      "backward",
+#else
+      "forward",
+#endif
       opts.batch, opts.seqlen_q, opts.seqlen_k, opts.heads, opts.head_dim,
-      opts.head_dim_v, opts.dtype.c_str());
+      opts.head_dim_v, opts.dtype.c_str(),
+      opts.causal ? "causal" : "non-causal");
 
+#if FA4_B200_RUNNER_BWD
+  const int ret = cute_dsl_fa4_b200_launcher_wrapper(
+      &module, &mQ, &mK, &mV, &mdO, &mLSE, &mdPsum, &mdQaccum, &mdK, &mdV,
+      scale, 0);
+#else
   const int ret =
       cute_dsl_fa4_b200_launcher_wrapper(&module, &mQ, &mK, &mV, &mO, scale, 0);
+#endif
   if (ret != 0) {
     std::fprintf(stderr, "generated FA4 wrapper returned %d\n", ret);
     return 1;
@@ -270,7 +391,13 @@ int main(int argc, char **argv) {
   checkCuda(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
   checkDeviceU16All(k, k_bytes, 0, "K input");
   checkDeviceU16All(v, v_bytes, one, "V input");
+#if FA4_B200_RUNNER_BWD
+  checkDeviceU16All(q, q_bytes, 0, "Q input");
+  checkDeviceU16All(d_o, o_bytes, one, "dO input");
+  std::printf("synchronized backward smoke check passed\n");
+#else
   checkDeviceU16All(o, o_bytes, one, "O output");
   std::printf("synchronized and numeric check passed\n");
+#endif
   return 0;
 }
