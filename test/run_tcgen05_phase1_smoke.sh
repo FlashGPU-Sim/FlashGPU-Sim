@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PTX_FILE="${1:-${ROOT_DIR}/test/src/trace/ptx/tcgen05_phase1_smoke.ptx}"
+PTX_FILE="$(readlink -f "${PTX_FILE}")"
 BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/test/build/tcgen05_phase1}"
 GPGPUSIM_CONFIG="${GPGPUSIM_CONFIG:-gcc-13.3.0/cuda-12080/release}"
 SIM_LIB_DIR="${SIM_LIB_DIR:-${ROOT_DIR}/lib/${GPGPUSIM_CONFIG}}"

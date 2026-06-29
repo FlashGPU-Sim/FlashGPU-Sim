@@ -1676,9 +1676,33 @@ ptx_instruction::ptx_instruction(
       case X16_OPTION:
       case X32_OPTION:
       case TCGEN05_CTA_GROUP_1_OPTION:
+      case TCGEN05_CTA_GROUP_2_OPTION:
       case TCGEN05_KIND_F16_OPTION:
+      case TCGEN05_KIND_TF32_OPTION:
+      case TCGEN05_KIND_I8_OPTION:
+      case TCGEN05_KIND_F8F6F4_OPTION:
+      case TCGEN05_KIND_MXF8F6F4_OPTION:
+      case TCGEN05_KIND_MXF4_OPTION:
+      case TCGEN05_KIND_MXF4NVF4_OPTION:
       case TCGEN05_MBARRIER_ARRIVE_ONE_OPTION:
       case TCGEN05_32X32B_OPTION:
+      case TCGEN05_128X256B_OPTION:
+      case TCGEN05_128X128B_OPTION:
+      case TCGEN05_64X128B_OPTION:
+      case TCGEN05_32X128B_OPTION:
+      case TCGEN05_16X256B_OPTION:
+      case TCGEN05_16X128B_OPTION:
+      case TCGEN05_16X64B_OPTION:
+      case TCGEN05_16X32BX2_OPTION:
+      case TCGEN05_4X256B_OPTION:
+      case TCGEN05_WARPX4_OPTION:
+      case TCGEN05_WARPX2_02_13_OPTION:
+      case TCGEN05_WARPX2_01_23_OPTION:
+      case TCGEN05_MULTICAST_CLUSTER_OPTION:
+      case TCGEN05_PACK_16B_OPTION:
+      case TCGEN05_UNPACK_16B_OPTION:
+      case TCGEN05_BEFORE_THREAD_SYNC_OPTION:
+      case TCGEN05_AFTER_THREAD_SYNC_OPTION:
         break;
       default:
         printf("Error: Unsupported PTX instruction option (0x%x) for opcode %s\n",

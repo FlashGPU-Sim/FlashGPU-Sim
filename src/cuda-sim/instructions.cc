@@ -1775,8 +1775,14 @@ static unsigned tcgen05_cta_group(const ptx_instruction *pI) {
   for (std::list<int>::const_iterator i = options.begin(); i != options.end();
        ++i) {
     if (*i == TCGEN05_CTA_GROUP_1_OPTION) return 1;
+    if (*i == TCGEN05_CTA_GROUP_2_OPTION) return 2;
   }
   return 1;
+}
+
+static void tcgen05_assert_cta_group1(const ptx_instruction *pI) {
+  assert(tcgen05_cta_group(pI) == 1 &&
+         "TCGen05 cta_group::2 is parsed but not implemented");
 }
 
 static bool tcgen05_has_option(const ptx_instruction *pI, int option) {
@@ -1975,6 +1981,77 @@ static std::vector<uint16_t> tcgen05_read_shared_f16_linearized(
   return values;
 }
 
+static std::vector<uint32_t> tcgen05_read_shared_words_linearized(
+    const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t rows,
+    uint32_t words_per_row, ptx_thread_info *thread) {
+  assert(!desc.leading_dimension_absolute &&
+         "TCGen05 CP absolute leading-dimension mode is not implemented");
+
+  if (tcgen05_debug_enabled() && desc.swizzle_mode != 0) {
+    printf("TCGEN05_DEBUG cp shared_desc swizzle=%u linearized start=%u "
+           "rows=%u row_words=%u\n",
+           desc.swizzle_mode, desc.start_address, rows, words_per_row);
+    fflush(stdout);
+  }
+
+  std::vector<uint32_t> values(rows * words_per_row, 0);
+  for (uint32_t i = 0; i < values.size(); ++i) {
+    thread->m_shared_mem->read(desc.start_address + i * sizeof(uint32_t),
+                               sizeof(uint32_t), &values[i]);
+  }
+  return values;
+}
+
+static bool tcgen05_cp_shape_words(const ptx_instruction *pI, uint32_t *rows,
+                                   uint32_t *words_per_row) {
+  if (tcgen05_has_option(pI, TCGEN05_128X256B_OPTION)) {
+    *rows = 128;
+    *words_per_row = 8;
+    return true;
+  }
+  if (tcgen05_has_option(pI, TCGEN05_128X128B_OPTION)) {
+    *rows = 128;
+    *words_per_row = 4;
+    return true;
+  }
+  if (tcgen05_has_option(pI, TCGEN05_64X128B_OPTION)) {
+    *rows = 64;
+    *words_per_row = 4;
+    return true;
+  }
+  if (tcgen05_has_option(pI, TCGEN05_32X128B_OPTION)) {
+    *rows = 32;
+    *words_per_row = 4;
+    return true;
+  }
+  if (tcgen05_has_option(pI, TCGEN05_16X256B_OPTION)) {
+    *rows = 16;
+    *words_per_row = 8;
+    return true;
+  }
+  if (tcgen05_has_option(pI, TCGEN05_16X128B_OPTION)) {
+    *rows = 16;
+    *words_per_row = 4;
+    return true;
+  }
+  if (tcgen05_has_option(pI, TCGEN05_16X64B_OPTION)) {
+    *rows = 16;
+    *words_per_row = 2;
+    return true;
+  }
+  if (tcgen05_has_option(pI, TCGEN05_16X32BX2_OPTION)) {
+    *rows = 16;
+    *words_per_row = 2;
+    return true;
+  }
+  if (tcgen05_has_option(pI, TCGEN05_4X256B_OPTION)) {
+    *rows = 4;
+    *words_per_row = 8;
+    return true;
+  }
+  return false;
+}
+
 static void tcgen05_check_disable_output_lane_zero(const operand_info &op,
                                                    ptx_thread_info *thread) {
   assert(op.is_vector());
@@ -1990,6 +2067,7 @@ static void tcgen05_check_disable_output_lane_zero(const operand_info &op,
 
 void tcgen05_alloc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (!tcgen05_is_warp_leader(thread)) return;
+  tcgen05_assert_cta_group1(pI);
   assert(pI->get_num_operands() >= 2);
 
   const operand_info &dst = pI->operand_lookup(0);
@@ -2010,6 +2088,7 @@ void tcgen05_alloc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
 void tcgen05_dealloc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (!tcgen05_is_warp_leader(thread)) return;
+  tcgen05_assert_cta_group1(pI);
   assert(pI->get_num_operands() >= 2);
 
   uint32_t base = tcgen05_read_operand(pI, thread, 0).u32;
@@ -2029,6 +2108,7 @@ void tcgen05_dealloc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
 void tcgen05_relinq_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (!tcgen05_is_warp_leader(thread)) return;
+  tcgen05_assert_cta_group1(pI);
   flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
       thread->get_gpu()->get_tcgen05_tmem_manager();
   manager.relinquish_alloc_permit(tcgen05_tmem_scope(pI, thread));
@@ -2036,6 +2116,7 @@ void tcgen05_relinq_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
 void tcgen05_mma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (!tcgen05_is_warp_leader(thread)) return;
+  tcgen05_assert_cta_group1(pI);
   assert(pI->get_num_operands() >= 5);
   assert(tcgen05_has_option(pI, TCGEN05_KIND_F16_OPTION));
 
@@ -2111,6 +2192,7 @@ void tcgen05_mma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void tcgen05_commit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  tcgen05_assert_cta_group1(pI);
   assert(pI->get_num_operands() >= 1);
   assert(tcgen05_has_option(pI, TCGEN05_MBARRIER_ARRIVE_ONE_OPTION));
 
@@ -2120,6 +2202,7 @@ void tcgen05_commit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void tcgen05_ld_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  tcgen05_assert_cta_group1(pI);
   assert(pI->get_num_operands() >= 2);
 
   const operand_info &dst = pI->operand_lookup(0);
@@ -2145,6 +2228,7 @@ void tcgen05_ld_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void tcgen05_st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  tcgen05_assert_cta_group1(pI);
   assert(pI->get_num_operands() >= 2);
 
   const operand_info &addr = pI->operand_lookup(0);
@@ -2168,6 +2252,53 @@ void tcgen05_st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void tcgen05_wait_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  tcgen05_assert_cta_group1(pI);
+  (void)pI;
+  (void)thread;
+}
+
+void tcgen05_cp_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (!tcgen05_is_warp_leader(thread)) return;
+  tcgen05_assert_cta_group1(pI);
+  assert(pI->get_num_operands() >= 2);
+
+  uint32_t rows = 0;
+  uint32_t words_per_row = 0;
+  assert(tcgen05_cp_shape_words(pI, &rows, &words_per_row) &&
+         "Unsupported TCGen05 CP tile shape");
+
+  const operand_info &dst_tmem = pI->operand_lookup(0);
+  uint32_t dst_address = static_cast<uint32_t>(tcgen05_eval_address(dst_tmem,
+                                                                    thread));
+  uint64_t src_desc_value = tcgen05_read_u64_operand(pI, thread, 1).u64;
+  flash_gpgpu_sim::tcgen05_shared_descriptor_t src_desc =
+      flash_gpgpu_sim::tcgen05_decode_shared_descriptor(src_desc_value);
+  std::vector<uint32_t> values =
+      tcgen05_read_shared_words_linearized(src_desc, rows, words_per_row,
+                                           thread);
+
+  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
+      thread->get_gpu()->get_tcgen05_tmem_manager();
+  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
+  if (tcgen05_debug_enabled()) {
+    printf("TCGEN05_DEBUG cp line=%u tid=%u lane=%u scope=(%u,%u,%u) "
+           "dst=%u rows=%u row_words=%u\n",
+           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
+           scope.sm_id, scope.cta_id, scope.cta_group, dst_address, rows,
+           words_per_row);
+    fflush(stdout);
+  }
+  manager.write_matrix_words(scope, dst_address, values, rows, words_per_row);
+}
+
+void tcgen05_shift_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (!tcgen05_is_warp_leader(thread)) return;
+  tcgen05_assert_cta_group1(pI);
+  assert(pI->get_num_operands() >= 1);
+  (void)thread;
+}
+
+void tcgen05_fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   (void)pI;
   (void)thread;
 }

@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
+#include <fstream>
 #include <initializer_list>
 #include <map>
 #include <string>
@@ -78,33 +79,42 @@ void expect_opcode_count(
   }
 }
 
-void assert_tcgen05_decode(gpgpu_context *ctx, symbol_table *symtab) {
-  symbol *kernel_symbol = symtab->lookup("tcgen05_phase1_smoke");
-  if (kernel_symbol == nullptr || kernel_symbol->get_pc() == nullptr) {
-    fail("missing tcgen05_phase1_smoke entry");
-  }
-
-  function_info *kernel = kernel_symbol->get_pc();
-  constexpr unsigned kMaxInstSize = 8;
-  const unsigned start_pc = kernel->get_start_PC();
-  const unsigned limit_pc = std::min<unsigned>(
-      start_pc + kMaxInstSize * (kernel->get_function_size() + 1),
-      ctx->s_g_pc_to_insn.size());
-
+std::map<int, std::vector<const ptx_instruction *>> collect_tcgen05_by_opcode(
+    gpgpu_context *ctx, const std::string &ptx_path) {
   std::map<int, std::vector<const ptx_instruction *>> by_opcode;
-  for (unsigned pc = start_pc; pc < limit_pc; ++pc) {
-    const ptx_instruction *inst = ctx->s_g_pc_to_insn[pc];
-    if (inst == nullptr || static_cast<int>(inst->get_opcode()) < 0) {
+
+  std::ifstream input(ptx_path);
+  if (!input) fail("failed to reopen PTX file for line scan: " + ptx_path);
+
+  std::string line;
+  unsigned line_number = 0;
+  while (std::getline(input, line)) {
+    ++line_number;
+    if (line.find("tcgen05.") == std::string::npos) {
       continue;
     }
-    const std::string source = inst->get_source();
-    if (source.find("tcgen05") != std::string::npos &&
-        inst->get_opcode() == NOP_OP) {
-      fail("TCGen05 instruction decoded as nop: " + source);
+    const ptx_instruction *inst =
+        ctx->ptx_parser->ptx_instruction_lookup(ptx_path.c_str(),
+                                                line_number);
+    if (inst == nullptr) {
+      fail("missing parsed instruction for " + ptx_path + ":" +
+           std::to_string(line_number));
+    }
+    if (static_cast<int>(inst->get_opcode()) < 0) {
+      continue;
+    }
+    if (inst->get_opcode() == NOP_OP) {
+      fail("TCGen05 instruction decoded as nop: " + line);
     }
     by_opcode[inst->get_opcode()].push_back(inst);
   }
+  return by_opcode;
+}
 
+void assert_tcgen05_phase1_decode(gpgpu_context *ctx,
+                                  const std::string &ptx_path) {
+  std::map<int, std::vector<const ptx_instruction *>> by_opcode =
+      collect_tcgen05_by_opcode(ctx, ptx_path);
   expect_opcode_count(by_opcode, TCGEN05_ALLOC_OP, 1);
   expect_opcode_count(by_opcode, TCGEN05_MMA_OP, 2);
   expect_opcode_count(by_opcode, TCGEN05_COMMIT_OP, 1);
@@ -162,6 +172,75 @@ void assert_tcgen05_decode(gpgpu_context *ctx, symbol_table *symtab) {
                        0);
 }
 
+void assert_tcgen05_surface_decode(gpgpu_context *ctx,
+                                   const std::string &ptx_path) {
+  std::map<int, std::vector<const ptx_instruction *>> by_opcode =
+      collect_tcgen05_by_opcode(ctx, ptx_path);
+  expect_opcode_count(by_opcode, TCGEN05_ALLOC_OP, 1);
+  expect_opcode_count(by_opcode, TCGEN05_CP_OP, 10);
+  expect_opcode_count(by_opcode, TCGEN05_SHIFT_OP, 1);
+  expect_opcode_count(by_opcode, TCGEN05_FENCE_OP, 2);
+  expect_opcode_count(by_opcode, TCGEN05_COMMIT_OP, 1);
+  expect_opcode_count(by_opcode, TCGEN05_LD_OP, 2);
+  expect_opcode_count(by_opcode, TCGEN05_ST_OP, 2);
+  expect_opcode_count(by_opcode, TCGEN05_WAIT_OP, 2);
+  expect_opcode_count(by_opcode, TCGEN05_DEALLOC_OP, 1);
+  expect_opcode_count(by_opcode, TCGEN05_RELINQUISH_ALLOC_PERMIT_OP, 1);
+
+  const ptx_instruction *cp = first(by_opcode, TCGEN05_CP_OP);
+  expect_operand_count(cp, 2);
+  expect_options(cp, {TCGEN05_CTA_GROUP_1_OPTION,
+                      TCGEN05_128X256B_OPTION});
+
+  bool saw_warpx2_0213 = false;
+  bool saw_warpx2_0123 = false;
+  bool saw_warpx4 = false;
+  bool saw_16x32bx2 = false;
+  for (const ptx_instruction *inst : by_opcode.at(TCGEN05_CP_OP)) {
+    saw_warpx2_0213 |= has_option(inst, TCGEN05_WARPX2_02_13_OPTION);
+    saw_warpx2_0123 |= has_option(inst, TCGEN05_WARPX2_01_23_OPTION);
+    saw_warpx4 |= has_option(inst, TCGEN05_WARPX4_OPTION);
+    saw_16x32bx2 |= has_option(inst, TCGEN05_16X32BX2_OPTION);
+  }
+  if (!saw_warpx2_0213 || !saw_warpx2_0123 || !saw_warpx4 ||
+      !saw_16x32bx2) {
+    fail("tcgen05.cp surface did not preserve expected shape/warp options");
+  }
+
+  const ptx_instruction *shift = first(by_opcode, TCGEN05_SHIFT_OP);
+  expect_operand_count(shift, 1);
+  expect_options(shift, {TCGEN05_CTA_GROUP_1_OPTION, DOWN_OPTION});
+
+  const std::vector<const ptx_instruction *> &fences =
+      by_opcode.at(TCGEN05_FENCE_OP);
+  expect_options(fences.at(0), {TCGEN05_BEFORE_THREAD_SYNC_OPTION});
+  expect_options(fences.at(1), {TCGEN05_AFTER_THREAD_SYNC_OPTION});
+
+  const ptx_instruction *commit = first(by_opcode, TCGEN05_COMMIT_OP);
+  expect_operand_count(commit, 2);
+  expect_options(commit, {TCGEN05_CTA_GROUP_1_OPTION,
+                          TCGEN05_MBARRIER_ARRIVE_ONE_OPTION,
+                          TCGEN05_MULTICAST_CLUSTER_OPTION});
+
+  bool saw_pack = false;
+  for (const ptx_instruction *inst : by_opcode.at(TCGEN05_LD_OP)) {
+    saw_pack |= has_option(inst, TCGEN05_PACK_16B_OPTION);
+    expect_options(inst, {SYNC_OPTION, ALIGNED_OPTION,
+                          TCGEN05_32X32B_OPTION, X1_OPTION});
+    expect_vector_width(inst, 0, 1);
+  }
+  if (!saw_pack) fail("tcgen05.ld surface did not preserve .pack::16b");
+
+  bool saw_unpack = false;
+  for (const ptx_instruction *inst : by_opcode.at(TCGEN05_ST_OP)) {
+    saw_unpack |= has_option(inst, TCGEN05_UNPACK_16B_OPTION);
+    expect_options(inst, {SYNC_OPTION, ALIGNED_OPTION,
+                          TCGEN05_32X32B_OPTION, X1_OPTION});
+    expect_vector_width(inst, 1, 1);
+  }
+  if (!saw_unpack) fail("tcgen05.st surface did not preserve .unpack::16b");
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -177,7 +256,15 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "failed to parse %s\n", argv[1]);
     return 1;
   }
-  assert_tcgen05_decode(ctx, symtab);
+  const std::string ptx_path = argv[1];
+  if (ptx_path.find("tcgen05_phase1_smoke") != std::string::npos) {
+    assert_tcgen05_phase1_decode(ctx, ptx_path);
+  } else if (ptx_path.find("tcgen05_instruction_surface_smoke") !=
+             std::string::npos) {
+    assert_tcgen05_surface_decode(ctx, ptx_path);
+  } else {
+    fail("unknown tcgen05 parser smoke PTX path");
+  }
 
   std::printf("parsed and validated %s\n", argv[1]);
   return 0;
