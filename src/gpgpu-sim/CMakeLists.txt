@@ -20,7 +20,10 @@ list(APPEND gpgpusim_SRC addrdec.cc
     stat-tool.cc
     traffic_breakdown.cc
     visualizer.cc
-    flash/tcgen05.cc
+    flash/tcgen05/descriptor.cc
+    flash/tcgen05/mma.cc
+    flash/tcgen05/tmem.cc
+    flash/tcgen05/timing.cc
     flash/ptx_sched/ptx_scheduler.cc)
 if(NOT GPGPUSIM_USE_POWER_MODEL)
     list(REMOVE_ITEM ${gpgpusim_SRC} power_interface.cc)

@@ -254,7 +254,10 @@ GPGPUSIM_FLAGS = -DDEBUG=0
 FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
 FLASH_OBJECTS = \
 	$(OBJ_DIR)/flash/bulk_group.cu.o \
-	$(OBJ_DIR)/flash/tcgen05.cu.o
+	$(OBJ_DIR)/flash/tcgen05/descriptor.cu.o \
+	$(OBJ_DIR)/flash/tcgen05/mma.cu.o \
+	$(OBJ_DIR)/flash/tcgen05/tmem.cu.o \
+	$(OBJ_DIR)/flash/tcgen05/timing.cu.o
 FLASH_OBJ_DIR = $(OBJ_DIR)/flash
 
 .PHONY: all test bench standalone-bench cp-async-bench mma-standalone-bench tma-standalone-bench memory-standalone-bench dev hopper hopper-gtest prepare-fa3-flash-attention hopper-fa2 hopper-fa2-smoke hopper-fa2-small hopper-fa2-medium hopper-fa2-large hopper-fa2-sensitivity hopper-fa2-sensitivity-h1d128 hopper-fa2-sensitivity-large-d128-full hopper-fa2-large-h32d64-full hopper-fa2-large-h16d128-full hopper-fa2-large-h32d64-causal hopper-fa2-large-h16d128-causal hopper-fa3-extended hopper-fa3-single-tile hopper-fa3-h1d128-profile hopper-fa3-sensitivity hopper-fa3-sensitivity-extended wgmma-n16-chain wgmma-fp16-core wgmma-softmax-mix wgmma-rf-bandwidth clean help setup-gtest
@@ -415,6 +418,7 @@ $(OBJ_DIR)/gtest_main.a: $(OBJ_DIR)/gtest-all.o $(OBJ_DIR)/gtest_main.o
 
 # Build GPGPU-Sim flash source files needed by tests
 $(OBJ_DIR)/flash/%.cu.o: $(SRC_DIR)/gpgpu-sim/flash/%.cc | $(FLASH_OBJ_DIR)
+	@mkdir -p $(dir $@)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
 # Build test objects (both unit and integration tests compiled with nvcc for CUDA support)
