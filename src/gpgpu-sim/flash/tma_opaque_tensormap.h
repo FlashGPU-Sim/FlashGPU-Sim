@@ -40,9 +40,11 @@ inline bool decode_sm100_opaque_tensormap(const tensormap_descriptor_t &encoded,
   //   raw_u64[7].lo   box dim1-1
   constexpr uint32_t kMagicMask = 0x000fffffu;
   constexpr uint32_t kCudaApiMagic = 0x06330u;
-  constexpr uint32_t kCuteDslMagic = 0x46332u;
+  constexpr uint32_t kCuteDslLoadMagic = 0x46332u;
+  constexpr uint32_t kCuteDslStoreMagic = 0x44332u;
   const uint32_t magic = tma_opaque_low32(encoded.raw_u64[1]) & kMagicMask;
-  if (magic != kCudaApiMagic && magic != kCuteDslMagic)
+  if (magic != kCudaApiMagic && magic != kCuteDslLoadMagic &&
+      magic != kCuteDslStoreMagic)
     return false;
   if (encoded.raw_u64[0] == 0)
     return false;

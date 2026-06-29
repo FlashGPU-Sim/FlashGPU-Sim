@@ -493,6 +493,9 @@ static void read_tensormap_descriptor(memory_space *global_mem,
     if (try_decode_tensormap_descriptor(out_tensormap, inst_dim)) {
       return;
     }
+    if (out_tensormap.raw_u64[0] != 0) {
+      return;
+    }
   }
 
   global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &out_tensormap);

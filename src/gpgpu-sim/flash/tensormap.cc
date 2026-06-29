@@ -95,7 +95,7 @@ tensormap_descriptor_t::calculate_src_addr(const uint32_t coords[5]) const {
 }
 
 void tensormap_descriptor_t::print() const {
-  char buf[1024];
+  char buf[2048];
   size_t pos = 0;
   uint32_t dims = num_dims();
 
@@ -206,6 +206,13 @@ void tensormap_descriptor_t::print() const {
                  oobfill_to_string(fields.oobFill), fields.oobFill);
 
   append_checked("  tile_size_bytes: %u\n", get_tile_size_bytes());
+  append_checked("  raw_u64:");
+  for (uint32_t i = 0; i < 16; i++) {
+    if (i % 4 == 0)
+      append_checked("\n    ");
+    append_checked("0x%016llx ", (unsigned long long)raw_u64[i]);
+  }
+  append_checked("\n");
 
   printf("%s", buf);
 }
