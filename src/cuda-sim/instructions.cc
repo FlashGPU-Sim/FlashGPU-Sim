@@ -2024,26 +2024,6 @@ static bool tcgen05_cp_shape_words(const ptx_instruction *pI, uint32_t *rows,
     *words_per_row = 4;
     return true;
   }
-  if (tcgen05_has_option(pI, TCGEN05_16X256B_OPTION)) {
-    *rows = 16;
-    *words_per_row = 8;
-    return true;
-  }
-  if (tcgen05_has_option(pI, TCGEN05_16X128B_OPTION)) {
-    *rows = 16;
-    *words_per_row = 4;
-    return true;
-  }
-  if (tcgen05_has_option(pI, TCGEN05_16X64B_OPTION)) {
-    *rows = 16;
-    *words_per_row = 2;
-    return true;
-  }
-  if (tcgen05_has_option(pI, TCGEN05_16X32BX2_OPTION)) {
-    *rows = 16;
-    *words_per_row = 2;
-    return true;
-  }
   if (tcgen05_has_option(pI, TCGEN05_4X256B_OPTION)) {
     *rows = 4;
     *words_per_row = 8;

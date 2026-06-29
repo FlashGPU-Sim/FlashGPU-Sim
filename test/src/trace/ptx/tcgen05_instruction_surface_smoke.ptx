@@ -22,17 +22,13 @@ tcgen05.cp.cta_group::1.128x128b [tmem_addr], sdesc;
 tcgen05.cp.cta_group::1.64x128b.warpx2::02_13 [tmem_addr], sdesc;
 tcgen05.cp.cta_group::1.64x128b.warpx2::01_23 [tmem_addr], sdesc;
 tcgen05.cp.cta_group::1.32x128b.warpx4 [tmem_addr], sdesc;
-tcgen05.cp.cta_group::1.16x256b [tmem_addr], sdesc;
-tcgen05.cp.cta_group::1.16x128b [tmem_addr], sdesc;
-tcgen05.cp.cta_group::1.16x64b [tmem_addr], sdesc;
-tcgen05.cp.cta_group::1.16x32bx2 [tmem_addr], sdesc;
 tcgen05.cp.cta_group::1.4x256b [tmem_addr], sdesc;
 
 tcgen05.shift.cta_group::1.down [tmem_addr];
 tcgen05.fence::before_thread_sync;
 tcgen05.fence::after_thread_sync;
 
-tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [__dynamic_shmem__0+16], %r1;
+tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [__dynamic_shmem__0+16];
 tcgen05.ld.sync.aligned.32x32b.x1.b32 {%r2}, [tmem_addr];
 tcgen05.ld.sync.aligned.32x32b.x1.pack::16b.b32 {%r3}, [tmem_addr];
 tcgen05.st.sync.aligned.32x32b.x1.b32 [tmem_addr], {%r4};

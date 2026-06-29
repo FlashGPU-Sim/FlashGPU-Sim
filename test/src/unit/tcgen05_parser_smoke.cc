@@ -177,7 +177,7 @@ void assert_tcgen05_surface_decode(gpgpu_context *ctx,
   std::map<int, std::vector<const ptx_instruction *>> by_opcode =
       collect_tcgen05_by_opcode(ctx, ptx_path);
   expect_opcode_count(by_opcode, TCGEN05_ALLOC_OP, 1);
-  expect_opcode_count(by_opcode, TCGEN05_CP_OP, 10);
+  expect_opcode_count(by_opcode, TCGEN05_CP_OP, 6);
   expect_opcode_count(by_opcode, TCGEN05_SHIFT_OP, 1);
   expect_opcode_count(by_opcode, TCGEN05_FENCE_OP, 2);
   expect_opcode_count(by_opcode, TCGEN05_COMMIT_OP, 1);
@@ -195,15 +195,12 @@ void assert_tcgen05_surface_decode(gpgpu_context *ctx,
   bool saw_warpx2_0213 = false;
   bool saw_warpx2_0123 = false;
   bool saw_warpx4 = false;
-  bool saw_16x32bx2 = false;
   for (const ptx_instruction *inst : by_opcode.at(TCGEN05_CP_OP)) {
     saw_warpx2_0213 |= has_option(inst, TCGEN05_WARPX2_02_13_OPTION);
     saw_warpx2_0123 |= has_option(inst, TCGEN05_WARPX2_01_23_OPTION);
     saw_warpx4 |= has_option(inst, TCGEN05_WARPX4_OPTION);
-    saw_16x32bx2 |= has_option(inst, TCGEN05_16X32BX2_OPTION);
   }
-  if (!saw_warpx2_0213 || !saw_warpx2_0123 || !saw_warpx4 ||
-      !saw_16x32bx2) {
+  if (!saw_warpx2_0213 || !saw_warpx2_0123 || !saw_warpx4) {
     fail("tcgen05.cp surface did not preserve expected shape/warp options");
   }
 
@@ -217,10 +214,10 @@ void assert_tcgen05_surface_decode(gpgpu_context *ctx,
   expect_options(fences.at(1), {TCGEN05_AFTER_THREAD_SYNC_OPTION});
 
   const ptx_instruction *commit = first(by_opcode, TCGEN05_COMMIT_OP);
-  expect_operand_count(commit, 2);
+  expect_operand_count(commit, 1);
   expect_options(commit, {TCGEN05_CTA_GROUP_1_OPTION,
                           TCGEN05_MBARRIER_ARRIVE_ONE_OPTION,
-                          TCGEN05_MULTICAST_CLUSTER_OPTION});
+                          CLUSTER_OPTION});
 
   bool saw_pack = false;
   for (const ptx_instruction *inst : by_opcode.at(TCGEN05_LD_OP)) {
@@ -260,7 +257,9 @@ int main(int argc, char **argv) {
   if (ptx_path.find("tcgen05_phase1_smoke") != std::string::npos) {
     assert_tcgen05_phase1_decode(ctx, ptx_path);
   } else if (ptx_path.find("tcgen05_instruction_surface_smoke") !=
-             std::string::npos) {
+                 std::string::npos ||
+             ptx_path.find("tcgen05_instruction_surface_inline") !=
+                 std::string::npos) {
     assert_tcgen05_surface_decode(ctx, ptx_path);
   } else {
     fail("unknown tcgen05 parser smoke PTX path");
