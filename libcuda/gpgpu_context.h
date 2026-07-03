@@ -28,6 +28,7 @@ class gpgpu_context {
     ptx_reorder_stats = false;
     ptx_reorder_ready_slack = 0;
     ptx_reorder_dump = false;
+    ptx_reorder_dump_exit = false;
     ptx_reorder_dump_dir = NULL;
     ptx_reorder_sass_guided = false;
     ptx_reorder_sass_file = NULL;
@@ -60,6 +61,7 @@ class gpgpu_context {
   bool ptx_reorder_stats;
   int ptx_reorder_ready_slack;
   bool ptx_reorder_dump;
+  bool ptx_reorder_dump_exit;
   char *ptx_reorder_dump_dir;
   bool ptx_reorder_sass_guided;
   char *ptx_reorder_sass_file;

@@ -159,6 +159,7 @@ typedef enum CUoutput_mode_enum {
 #include "gpgpu_context.h"
 
 #include <pthread.h>
+#include <cstdlib>
 #include <semaphore.h>
 
 #ifdef __APPLE__
@@ -167,6 +168,15 @@ typedef enum CUoutput_mode_enum {
 
 // SST cycle
 extern bool SST_Cycle();
+
+static void maybe_exit_after_ptx_reorder_dump(gpgpu_context *ctx) {
+  if (!ctx->ptx_reorder_dump || !ctx->ptx_reorder_dump_exit) return;
+  printf("GPGPU-Sim PTX: exiting after PTX reorder dump in %s\n",
+         ctx->ptx_reorder_dump_dir ? ctx->ptx_reorder_dump_dir
+                                   : "ptx_sched_dump");
+  fflush(stdout);
+  std::exit(0);
+}
 
 /*DEVICE_BUILTIN*/
 struct cudaArray {
@@ -4076,6 +4086,7 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
     printf("GPGPU-Sim PTX: Loading PTXInfo from %s\n", ptxinfo_filename);
     gpgpu_ptx_info_load_from_filename(ptxinfo_filename, arch_str.c_str());
   }
+  maybe_exit_after_ptx_reorder_dump(this);
   return;
 #endif
 
@@ -4140,6 +4151,7 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
   api->name_symtab[fname] = symtab;
 
   // TODO: Remove temporarily files as per configurations
+  maybe_exit_after_ptx_reorder_dump(this);
 }
 }
 

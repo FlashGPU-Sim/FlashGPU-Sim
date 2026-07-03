@@ -104,3 +104,4 @@ test/src/hopper/fa3/flash-attention/
 test/src/microbench/tma/run_*/
 test/src/microbench/tma/gem5_pair48_*_20*/
 test/src/microbench/tma/results/*_rerun_*.csv
+test/build_sm120a/*

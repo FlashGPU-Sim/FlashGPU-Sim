@@ -153,6 +153,10 @@ void gpgpu_context::ptx_reg_options(option_parser_t opp) {
                          &ptx_reorder_dump,
                          "Dump PTX instruction order after reordering.",
                          "0");
+  option_parser_register(
+      opp, "-gpgpu_ptx_reorder_dump_exit", OPT_BOOL, &ptx_reorder_dump_exit,
+      "Exit after PTX reorder dumps are emitted, before kernel simulation.",
+      "0");
   option_parser_register(opp, "-gpgpu_ptx_reorder_dump_dir", OPT_CSTR,
                          &ptx_reorder_dump_dir,
                          "Directory for PTX reorder dumps.",
