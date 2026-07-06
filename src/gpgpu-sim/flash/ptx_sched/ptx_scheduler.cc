@@ -8,10 +8,12 @@
 #include <cctype>
 #include <cerrno>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <dirent.h>
 #include <fstream>
 #include <functional>
 #include <limits>
@@ -24,6 +26,8 @@
 #include <vector>
 
 namespace {
+
+const char *k_sass_ptxline_guide_file = "sass_ptxline_guide.ptxline.sass";
 
 enum class inst_class_t {
   tensor,
@@ -146,6 +150,77 @@ struct sass_file_guides_t {
   sass_file_guides_t() : parsed(false), ok(false) {}
 };
 
+struct sass_primary_rules_t {
+  bool parsed;
+  bool ok;
+  std::string arch;
+  std::string gpu;
+  std::string toolchain;
+  std::string error;
+  std::map<std::string, std::set<std::string>> primary_opcode;
+  std::map<std::string, std::set<std::string>> attached_opcode_allowlist;
+  std::map<std::string, std::string> policy;
+
+  sass_primary_rules_t() : parsed(false), ok(false) {}
+};
+
+struct sass_ptxline_inst_t {
+  unsigned sass_index;
+  unsigned sass_offset;
+  unsigned ptx_line;
+  std::string opcode;
+  inst_class_t cls;
+  char token;
+
+  sass_ptxline_inst_t()
+      : sass_index(0), sass_offset(0), ptx_line(0), cls(inst_class_t::other),
+        token(0) {}
+};
+
+struct sass_ptxline_function_t {
+  std::string name;
+  std::vector<sass_ptxline_inst_t> insts;
+};
+
+struct sass_ptxline_file_t {
+  bool parsed;
+  bool ok;
+  std::string error;
+  std::vector<sass_ptxline_function_t> functions;
+
+  sass_ptxline_file_t() : parsed(false), ok(false) {}
+};
+
+struct ptxline_inst_ref_t {
+  const ptx_instruction *inst;
+  unsigned original_index;
+  std::string ptx_opcode;
+  inst_class_t cls;
+
+  ptxline_inst_ref_t()
+      : inst(NULL), original_index(0), cls(inst_class_t::other) {}
+};
+
+struct ptxline_guide_item_t {
+  unsigned ptx_line;
+  unsigned original_index;
+  std::string ptx_opcode;
+  std::string sass_opcode;
+  unsigned sass_offset;
+  char token;
+
+  ptxline_guide_item_t()
+      : ptx_line(0), original_index(0), sass_offset(0), token('?') {}
+};
+
+struct ptxline_guide_t {
+  std::string source;
+  std::vector<ptxline_guide_item_t> items;
+  unsigned matched_ptx_lines;
+
+  ptxline_guide_t() : matched_ptx_lines(0) {}
+};
+
 inst_class_t classify_inst(const ptx_instruction *inst);
 char class_token(inst_class_t cls);
 
@@ -258,6 +333,155 @@ std::string uppercase_copy(const std::string &in) {
     out[i] =
         static_cast<char>(std::toupper(static_cast<unsigned char>(out[i])));
   return out;
+}
+
+std::string lowercase_copy(const std::string &in) {
+  std::string out = in;
+  for (std::size_t i = 0; i < out.size(); ++i)
+    out[i] =
+        static_cast<char>(std::tolower(static_cast<unsigned char>(out[i])));
+  return out;
+}
+
+void ptx_reorder_fatal(const char *fmt, ...) {
+  fprintf(stderr, "GPGPU-Sim PTX: SASS-guided reorder fatal: ");
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, fmt, args);
+  va_end(args);
+  fprintf(stderr, "\n");
+  std::abort();
+}
+
+bool string_ends_with(const std::string &text, const std::string &suffix) {
+  return text.size() >= suffix.size() &&
+         text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool regular_file_exists(const char *path) {
+  struct stat st;
+  return path != NULL && stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+std::string join_strings(const std::vector<std::string> &values,
+                         const char *separator) {
+  std::ostringstream out;
+  for (unsigned i = 0; i < values.size(); ++i) {
+    if (i != 0)
+      out << separator;
+    out << values[i];
+  }
+  return out.str();
+}
+
+std::string find_unique_sass_primary_rules_file() {
+  DIR *dir = opendir(".");
+  if (dir == NULL) {
+    ptx_reorder_fatal("failed to open current config directory for .rules "
+                      "discovery: %s",
+                      strerror(errno));
+  }
+
+  std::vector<std::string> matches;
+  while (struct dirent *entry = readdir(dir)) {
+    const std::string name = entry->d_name;
+    if (name == "." || name == ".." || !string_ends_with(name, ".rules"))
+      continue;
+
+    struct stat st;
+    if (stat(name.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+      continue;
+    matches.push_back(name);
+  }
+  closedir(dir);
+
+  std::sort(matches.begin(), matches.end());
+  if (matches.empty()) {
+    ptx_reorder_fatal(
+        "SASS PTX-line guide is enabled but no .rules file exists in the "
+        "current config/run directory");
+  }
+  if (matches.size() != 1) {
+    ptx_reorder_fatal(
+        "SASS PTX-line guide requires exactly one .rules file in the current "
+        "config/run directory, found: %s",
+        join_strings(matches, ", ").c_str());
+  }
+  return matches[0];
+}
+
+std::string strip_rule_comment(const std::string &line) {
+  const std::size_t comment = line.find('#');
+  if (comment == std::string::npos)
+    return trim_copy(line);
+  return trim_copy(line.substr(0, comment));
+}
+
+std::vector<std::string> split_csv_values(const std::string &text,
+                                          bool uppercase) {
+  std::vector<std::string> values;
+  std::size_t begin = 0;
+  while (begin <= text.size()) {
+    std::size_t comma = text.find(',', begin);
+    const std::string raw = comma == std::string::npos
+                                ? text.substr(begin)
+                                : text.substr(begin, comma - begin);
+    std::string value = trim_copy(raw);
+    if (!value.empty())
+      values.push_back(uppercase ? uppercase_copy(value)
+                                 : lowercase_copy(value));
+    if (comma == std::string::npos)
+      break;
+    begin = comma + 1;
+  }
+  return values;
+}
+
+std::string normalize_ptx_opcode_key(const std::string &opcode) {
+  return lowercase_copy(trim_copy(opcode));
+}
+
+std::string normalize_sass_opcode_key(const std::string &opcode) {
+  return uppercase_copy(trim_copy(opcode));
+}
+
+bool opcode_set_contains(const std::set<std::string> &values,
+                         const std::string &opcode) {
+  return values.find(normalize_sass_opcode_key(opcode)) != values.end();
+}
+
+std::string ptx_mnemonic_from_source(const ptx_instruction *inst) {
+  if (inst == NULL)
+    return std::string();
+
+  std::string source = trim_copy(inst->get_source());
+  std::size_t pos = 0;
+  while (pos < source.size() &&
+         (std::isspace(static_cast<unsigned char>(source[pos])) ||
+          source[pos] == '{'))
+    ++pos;
+
+  if (pos < source.size() && source[pos] == '@') {
+    while (pos < source.size() &&
+           !std::isspace(static_cast<unsigned char>(source[pos])))
+      ++pos;
+    while (pos < source.size() &&
+           (std::isspace(static_cast<unsigned char>(source[pos])) ||
+            source[pos] == '{'))
+      ++pos;
+  }
+
+  const std::size_t begin = pos;
+  while (pos < source.size()) {
+    const unsigned char c = static_cast<unsigned char>(source[pos]);
+    if (std::isspace(c) || source[pos] == ';' || source[pos] == '}')
+      break;
+    ++pos;
+  }
+
+  if (pos == begin)
+    return normalize_ptx_opcode_key(inst->get_opcode_cstr());
+  return normalize_ptx_opcode_key(source.substr(begin, pos - begin));
 }
 
 char sass_opcode_token(const std::string &opcode) {
@@ -479,6 +703,256 @@ bool parse_sass_instruction_line(const std::string &line, std::string *opcode,
     ++pos;
   *operands = trim_copy(line.substr(operands_begin, pos - operands_begin));
   return true;
+}
+
+bool parse_sass_offset(const std::string &line, unsigned *offset) {
+  const std::size_t begin = line.find("/*");
+  if (begin == std::string::npos)
+    return false;
+  const std::size_t end = line.find("*/", begin + 2);
+  if (end == std::string::npos || end <= begin + 2)
+    return false;
+  const std::string text = line.substr(begin + 2, end - begin - 2);
+  char *parse_end = NULL;
+  const unsigned long value = strtoul(text.c_str(), &parse_end, 16);
+  if (parse_end == NULL || *parse_end != '\0')
+    return false;
+  *offset = static_cast<unsigned>(value);
+  return true;
+}
+
+bool parse_sass_ptxline_marker(const std::string &line, unsigned *ptx_line) {
+  const std::size_t marker = line.find("//##");
+  if (marker == std::string::npos)
+    return false;
+  std::size_t line_pos = line.find("line ", marker);
+  if (line_pos == std::string::npos)
+    return false;
+  line_pos += 5;
+  while (line_pos < line.size() &&
+         std::isspace(static_cast<unsigned char>(line[line_pos])))
+    ++line_pos;
+  if (line_pos == line.size() ||
+      !std::isdigit(static_cast<unsigned char>(line[line_pos])))
+    return false;
+  char *parse_end = NULL;
+  const unsigned long value = strtoul(line.c_str() + line_pos, &parse_end, 10);
+  if (parse_end == NULL || parse_end == line.c_str() + line_pos)
+    return false;
+  *ptx_line = static_cast<unsigned>(value);
+  return true;
+}
+
+bool parse_sass_function_name(const std::string &line, std::string *name) {
+  const std::size_t text = line.find(".text.");
+  if (text == std::string::npos)
+    return false;
+  std::size_t begin = text + 6;
+  std::size_t end = begin;
+  while (end < line.size()) {
+    const unsigned char c = static_cast<unsigned char>(line[end]);
+    if (std::isspace(c) || line[end] == ',' || line[end] == '"' ||
+        line[end] == ':' || line[end] == '(')
+      break;
+    ++end;
+  }
+  if (end == begin)
+    return false;
+  *name = line.substr(begin, end - begin);
+  return true;
+}
+
+sass_primary_rules_t parse_sass_primary_rules_from_file(const char *path) {
+  sass_primary_rules_t rules;
+  rules.parsed = true;
+  if (path == NULL || path[0] == '\0') {
+    rules.error = "empty primary hint file path";
+    return rules;
+  }
+
+  std::ifstream in(path);
+  if (!in.good()) {
+    rules.error =
+        std::string("failed to open primary hint file '") + path + "'";
+    return rules;
+  }
+
+  std::string section;
+  std::string line;
+  unsigned lineno = 0;
+  while (std::getline(in, line)) {
+    ++lineno;
+    line = strip_rule_comment(line);
+    if (line.empty())
+      continue;
+    if (line[0] == '[' && line[line.size() - 1] == ']') {
+      section = trim_copy(line.substr(1, line.size() - 2));
+      continue;
+    }
+
+    const std::size_t equal = line.find('=');
+    if (equal == std::string::npos) {
+      std::ostringstream out;
+      out << "invalid rule line " << lineno << ": " << line;
+      rules.error = out.str();
+      return rules;
+    }
+
+    const std::string key = trim_copy(line.substr(0, equal));
+    const std::string value = trim_copy(line.substr(equal + 1));
+    if (section == "metadata") {
+      if (key == "arch")
+        rules.arch = value;
+      else if (key == "gpu")
+        rules.gpu = value;
+      else if (key == "toolchain")
+        rules.toolchain = value;
+    } else if (section == "primary_opcode") {
+      const std::string ptx_opcode = normalize_ptx_opcode_key(key);
+      const std::vector<std::string> values = split_csv_values(value, true);
+      rules.primary_opcode[ptx_opcode].insert(values.begin(), values.end());
+    } else if (section == "attached_opcode_allowlist") {
+      const std::string ptx_opcode = normalize_ptx_opcode_key(key);
+      const std::vector<std::string> values = split_csv_values(value, true);
+      rules.attached_opcode_allowlist[ptx_opcode].insert(values.begin(),
+                                                         values.end());
+    } else if (section == "policy") {
+      rules.policy[trim_copy(key)] = trim_copy(value);
+    }
+  }
+
+  if (rules.primary_opcode.empty()) {
+    rules.error = "primary hint file has no [primary_opcode] entries";
+    return rules;
+  }
+  for (std::map<std::string, std::set<std::string>>::const_iterator it =
+           rules.primary_opcode.begin();
+       it != rules.primary_opcode.end(); ++it) {
+    if (it->second.empty()) {
+      rules.error =
+          std::string("empty primary SASS opcode list for '") + it->first + "'";
+      return rules;
+    }
+  }
+  for (std::map<std::string, std::set<std::string>>::const_iterator it =
+           rules.attached_opcode_allowlist.begin();
+       it != rules.attached_opcode_allowlist.end(); ++it) {
+    if (rules.primary_opcode.find(it->first) == rules.primary_opcode.end()) {
+      rules.error =
+          std::string("attached allowlist without primary rule for '") +
+          it->first + "'";
+      return rules;
+    }
+  }
+  std::map<std::string, std::string>::const_iterator fallback =
+      rules.policy.find("fallback");
+  if (fallback != rules.policy.end() && fallback->second != "disabled") {
+    rules.error = "SASS PTX-line guide requires policy fallback = disabled";
+    return rules;
+  }
+
+  rules.ok = true;
+  return rules;
+}
+
+const sass_primary_rules_t &get_sass_primary_rules(const char *path) {
+  static std::map<std::string, sass_primary_rules_t> cache;
+  const std::string key = path == NULL ? std::string() : std::string(path);
+  std::map<std::string, sass_primary_rules_t>::iterator found = cache.find(key);
+  if (found != cache.end())
+    return found->second;
+
+  sass_primary_rules_t parsed = parse_sass_primary_rules_from_file(path);
+  std::pair<std::map<std::string, sass_primary_rules_t>::iterator, bool>
+      inserted = cache.insert(std::make_pair(key, parsed));
+  return inserted.first->second;
+}
+
+sass_ptxline_file_t parse_sass_ptxline_file(const char *path) {
+  sass_ptxline_file_t result;
+  result.parsed = true;
+  if (path == NULL || path[0] == '\0') {
+    result.error = "empty SASS PTX-line file path";
+    return result;
+  }
+
+  std::ifstream in(path);
+  if (!in.good()) {
+    result.error =
+        std::string("failed to open SASS PTX-line file '") + path + "'";
+    return result;
+  }
+
+  sass_ptxline_function_t current;
+  bool have_function = false;
+  unsigned current_ptx_line = 0;
+  std::string line;
+  while (std::getline(in, line)) {
+    std::string function_name;
+    if (parse_sass_function_name(line, &function_name)) {
+      if (!have_function || function_name != current.name) {
+        if (have_function && !current.insts.empty())
+          result.functions.push_back(current);
+        current = sass_ptxline_function_t();
+        current.name = function_name;
+        have_function = true;
+        current_ptx_line = 0;
+      }
+      continue;
+    }
+
+    if (!have_function)
+      continue;
+
+    unsigned marked_line = 0;
+    if (parse_sass_ptxline_marker(line, &marked_line)) {
+      current_ptx_line = marked_line;
+      continue;
+    }
+
+    std::string opcode;
+    std::string operands;
+    if (!parse_sass_instruction_line(line, &opcode, &operands))
+      continue;
+
+    unsigned sass_offset = 0;
+    if (!parse_sass_offset(line, &sass_offset))
+      continue;
+    if (current_ptx_line == 0)
+      continue;
+
+    sass_ptxline_inst_t inst;
+    inst.sass_index = current.insts.size();
+    inst.sass_offset = sass_offset;
+    inst.ptx_line = current_ptx_line;
+    inst.opcode = normalize_sass_opcode_key(opcode);
+    inst.cls = classify_sass_opcode(inst.opcode);
+    inst.token = class_token(inst.cls);
+    current.insts.push_back(inst);
+  }
+
+  if (have_function && !current.insts.empty())
+    result.functions.push_back(current);
+
+  if (result.functions.empty()) {
+    result.error = "SASS PTX-line file has no parsed function records";
+    return result;
+  }
+  result.ok = true;
+  return result;
+}
+
+const sass_ptxline_file_t &get_sass_ptxline_file(const char *path) {
+  static std::map<std::string, sass_ptxline_file_t> cache;
+  const std::string key = path == NULL ? std::string() : std::string(path);
+  std::map<std::string, sass_ptxline_file_t>::iterator found = cache.find(key);
+  if (found != cache.end())
+    return found->second;
+
+  sass_ptxline_file_t parsed = parse_sass_ptxline_file(path);
+  std::pair<std::map<std::string, sass_ptxline_file_t>::iterator, bool>
+      inserted = cache.insert(std::make_pair(key, parsed));
+  return inserted.first->second;
 }
 
 void sort_int_vector(std::vector<int> &values) {
@@ -760,6 +1234,209 @@ const sass_function_guide_t *select_sass_guide(const sass_file_guides_t &guides,
   }
 
   return best;
+}
+
+const sass_ptxline_function_t *
+select_sass_ptxline_function(const sass_ptxline_file_t &guides,
+                             const std::string &function_name) {
+  if (!guides.ok)
+    return NULL;
+
+  for (std::vector<sass_ptxline_function_t>::const_iterator it =
+           guides.functions.begin();
+       it != guides.functions.end(); ++it) {
+    if (!it->insts.empty() && it->name == function_name)
+      return &(*it);
+  }
+
+  for (std::vector<sass_ptxline_function_t>::const_iterator it =
+           guides.functions.begin();
+       it != guides.functions.end(); ++it) {
+    if (it->insts.empty())
+      continue;
+    if (guides.functions.size() == 1 &&
+        (it->name.find(function_name) != std::string::npos ||
+         function_name.find(it->name) != std::string::npos))
+      return &(*it);
+  }
+
+  return NULL;
+}
+
+std::map<unsigned, std::vector<ptxline_inst_ref_t>>
+build_ptxline_inst_refs(const std::list<ptx_instruction *> &instructions) {
+  std::map<unsigned, std::vector<ptxline_inst_ref_t>> refs;
+  unsigned original_index = 0;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it, ++original_index) {
+    const ptx_instruction *inst = *it;
+    if (inst == NULL || inst->is_label())
+      continue;
+
+    ptxline_inst_ref_t ref;
+    ref.inst = inst;
+    ref.original_index = original_index;
+    ref.ptx_opcode = ptx_mnemonic_from_source(inst);
+    ref.cls = classify_inst(inst);
+    refs[inst->source_line()].push_back(ref);
+  }
+  return refs;
+}
+
+struct ptxline_build_state_t {
+  bool initialized;
+  ptxline_inst_ref_t ref;
+  std::vector<sass_ptxline_inst_t> primary_candidates;
+  std::vector<sass_ptxline_inst_t> attached_insts;
+
+  ptxline_build_state_t() : initialized(false) {}
+};
+
+std::string format_sass_offsets(const std::vector<sass_ptxline_inst_t> &insts) {
+  std::ostringstream out;
+  for (unsigned i = 0; i < insts.size(); ++i) {
+    if (i != 0)
+      out << ",";
+    out << "0x" << std::hex << insts[i].sass_offset << std::dec << ":"
+        << insts[i].opcode;
+  }
+  return out.str();
+}
+
+ptxline_guide_t
+build_sass_ptxline_guide(const std::string &function_name,
+                         const std::list<ptx_instruction *> &instructions,
+                         const sass_ptxline_function_t &sass_func,
+                         const sass_primary_rules_t &rules) {
+  if (!rules.ok)
+    ptx_reorder_fatal("invalid primary SASS hint rules for function '%s': %s",
+                      function_name.c_str(), rules.error.c_str());
+
+  const std::map<unsigned, std::vector<ptxline_inst_ref_t>> ptx_by_line =
+      build_ptxline_inst_refs(instructions);
+  std::map<unsigned, ptxline_build_state_t> states;
+
+  for (std::vector<sass_ptxline_inst_t>::const_iterator sass =
+           sass_func.insts.begin();
+       sass != sass_func.insts.end(); ++sass) {
+    std::map<unsigned, std::vector<ptxline_inst_ref_t>>::const_iterator
+        ptx_line = ptx_by_line.find(sass->ptx_line);
+    if (ptx_line == ptx_by_line.end())
+      continue;
+
+    std::vector<ptxline_inst_ref_t> ruled_ptx;
+    for (std::vector<ptxline_inst_ref_t>::const_iterator ref =
+             ptx_line->second.begin();
+         ref != ptx_line->second.end(); ++ref) {
+      if (rules.primary_opcode.find(ref->ptx_opcode) !=
+          rules.primary_opcode.end())
+        ruled_ptx.push_back(*ref);
+    }
+    if (ruled_ptx.empty())
+      continue;
+    if (ruled_ptx.size() != 1) {
+      ptx_reorder_fatal(
+          "function '%s' PTX line %u has %zu rule-covered PTX "
+          "instructions; add a line-disambiguation rule before using it",
+          function_name.c_str(), sass->ptx_line, ruled_ptx.size());
+    }
+
+    ptxline_build_state_t &state = states[sass->ptx_line];
+    if (!state.initialized) {
+      state.initialized = true;
+      state.ref = ruled_ptx[0];
+    } else if (state.ref.original_index != ruled_ptx[0].original_index) {
+      ptx_reorder_fatal(
+          "function '%s' PTX line %u maps to multiple PTX instructions "
+          "(orig=%u and orig=%u)",
+          function_name.c_str(), sass->ptx_line, state.ref.original_index,
+          ruled_ptx[0].original_index);
+    }
+
+    const std::set<std::string> &primary =
+        rules.primary_opcode.find(state.ref.ptx_opcode)->second;
+    if (opcode_set_contains(primary, sass->opcode))
+      state.primary_candidates.push_back(*sass);
+    else
+      state.attached_insts.push_back(*sass);
+  }
+
+  ptxline_guide_t guide;
+  guide.source = sass_func.name;
+  guide.matched_ptx_lines = states.size();
+
+  for (std::map<unsigned, ptxline_build_state_t>::const_iterator state =
+           states.begin();
+       state != states.end(); ++state) {
+    const unsigned ptx_line = state->first;
+    const ptxline_build_state_t &entry = state->second;
+    if (entry.primary_candidates.empty()) {
+      ptx_reorder_fatal(
+          "function '%s' PTX line %u opcode '%s' has no primary SASS "
+          "candidate in guide '%s'",
+          function_name.c_str(), ptx_line, entry.ref.ptx_opcode.c_str(),
+          sass_func.name.c_str());
+    }
+    if (entry.primary_candidates.size() != 1) {
+      ptx_reorder_fatal(
+          "function '%s' PTX line %u opcode '%s' has multiple primary "
+          "SASS candidates: %s",
+          function_name.c_str(), ptx_line, entry.ref.ptx_opcode.c_str(),
+          format_sass_offsets(entry.primary_candidates).c_str());
+    }
+
+    std::map<std::string, std::set<std::string>>::const_iterator allow =
+        rules.attached_opcode_allowlist.find(entry.ref.ptx_opcode);
+    for (std::vector<sass_ptxline_inst_t>::const_iterator attached =
+             entry.attached_insts.begin();
+         attached != entry.attached_insts.end(); ++attached) {
+      if (allow == rules.attached_opcode_allowlist.end() ||
+          !opcode_set_contains(allow->second, attached->opcode)) {
+        ptx_reorder_fatal(
+            "function '%s' PTX line %u opcode '%s' has unexpected "
+            "attached SASS opcode '%s' at 0x%x",
+            function_name.c_str(), ptx_line, entry.ref.ptx_opcode.c_str(),
+            attached->opcode.c_str(), attached->sass_offset);
+      }
+    }
+
+    const sass_ptxline_inst_t &primary = entry.primary_candidates[0];
+    ptxline_guide_item_t item;
+    item.ptx_line = ptx_line;
+    item.original_index = entry.ref.original_index;
+    item.ptx_opcode = entry.ref.ptx_opcode;
+    item.sass_opcode = primary.opcode;
+    item.sass_offset = primary.sass_offset;
+    item.token = class_token(entry.ref.cls);
+    guide.items.push_back(item);
+  }
+
+  std::sort(guide.items.begin(), guide.items.end(),
+            [](const ptxline_guide_item_t &a, const ptxline_guide_item_t &b) {
+              if (a.sass_offset != b.sass_offset)
+                return a.sass_offset < b.sass_offset;
+              return a.original_index < b.original_index;
+            });
+
+  if (guide.items.empty()) {
+    ptx_reorder_fatal(
+        "function '%s' matched SASS PTX-line guide '%s' but produced no "
+        "primary guide items",
+        function_name.c_str(), sass_func.name.c_str());
+  }
+  return guide;
+}
+
+std::string build_ptxline_guide_head(const ptxline_guide_t &guide,
+                                     unsigned limit) {
+  std::ostringstream out;
+  for (unsigned i = 0; i < guide.items.size() && i < limit; ++i) {
+    if (i != 0)
+      out << " ";
+    out << guide.items[i].token << "@" << guide.items[i].ptx_line << "/0x"
+        << std::hex << guide.items[i].sass_offset << std::dec;
+  }
+  return out.str();
 }
 
 void dump_ptx_reorder_result(
@@ -2003,11 +2680,209 @@ schedule_sass_guided(const std::vector<sched_inst_t> &chunk,
   return scheduled;
 }
 
+std::vector<ptxline_guide_item_t>
+filter_ptxline_guide_for_segment(const std::vector<sched_inst_t> &chunk,
+                                 const ptxline_guide_t &guide) {
+  std::set<unsigned> segment_indices;
+  for (unsigned i = 0; i < chunk.size(); ++i)
+    segment_indices.insert(chunk[i].original_index);
+
+  std::vector<ptxline_guide_item_t> out;
+  for (std::vector<ptxline_guide_item_t>::const_iterator item =
+           guide.items.begin();
+       item != guide.items.end(); ++item) {
+    if (segment_indices.find(item->original_index) != segment_indices.end())
+      out.push_back(*item);
+  }
+  return out;
+}
+
+std::vector<sched_inst_t> schedule_sass_ptxline_guided(
+    const std::vector<sched_inst_t> &chunk,
+    const std::vector<ptxline_guide_item_t> &segment_guide,
+    unsigned *edge_count, bool *valid) {
+  *valid = true;
+  if (segment_guide.empty()) {
+    *valid = false;
+    return chunk;
+  }
+
+  dep_graph_t graph = build_dependency_graph(chunk, true, false);
+  *edge_count = graph.edges.size();
+
+  std::vector<std::vector<dep_edge_t>> edge_by_src(chunk.size());
+  std::vector<std::vector<unsigned>> pred_by_dst(chunk.size());
+  for (unsigned i = 0; i < graph.edges.size(); ++i) {
+    edge_by_src[graph.edges[i].src].push_back(graph.edges[i]);
+    pred_by_dst[graph.edges[i].dst].push_back(graph.edges[i].src);
+  }
+
+  std::vector<unsigned> height(chunk.size(), 1);
+  for (int i = static_cast<int>(chunk.size()) - 1; i >= 0; --i) {
+    height[i] = inst_latency(chunk[i]);
+    for (std::vector<dep_edge_t>::const_iterator edge = edge_by_src[i].begin();
+         edge != edge_by_src[i].end(); ++edge) {
+      height[i] = std::max(height[i], edge->latency + height[edge->dst]);
+    }
+  }
+
+  std::map<unsigned, unsigned> chunk_by_original;
+  for (unsigned i = 0; i < chunk.size(); ++i)
+    chunk_by_original[chunk[i].original_index] = i;
+
+  std::vector<unsigned> guide_nodes;
+  std::set<unsigned> guided_node_set;
+  for (std::vector<ptxline_guide_item_t>::const_iterator item =
+           segment_guide.begin();
+       item != segment_guide.end(); ++item) {
+    std::map<unsigned, unsigned>::const_iterator found =
+        chunk_by_original.find(item->original_index);
+    if (found == chunk_by_original.end()) {
+      *valid = false;
+      return chunk;
+    }
+    guide_nodes.push_back(found->second);
+    guided_node_set.insert(found->second);
+  }
+
+  std::set<unsigned> ready;
+  for (unsigned i = 0; i < graph.indeg.size(); ++i) {
+    if (graph.indeg[i] == 0)
+      ready.insert(i);
+  }
+
+  std::vector<unsigned> emitted;
+  std::vector<bool> emitted_flag(chunk.size(), false);
+  std::deque<inst_class_t> recent;
+  unsigned guide_pos = 0;
+
+  while (!ready.empty()) {
+    while (guide_pos < guide_nodes.size() &&
+           emitted_flag[guide_nodes[guide_pos]])
+      ++guide_pos;
+
+    const bool have_current_guide = guide_pos < guide_nodes.size();
+    const unsigned desired_node =
+        have_current_guide ? guide_nodes[guide_pos] : 0;
+    std::set<unsigned> desired_ready_ancestors;
+    if (have_current_guide && ready.find(desired_node) == ready.end()) {
+      std::vector<unsigned> stack = pred_by_dst[desired_node];
+      std::set<unsigned> seen;
+      while (!stack.empty()) {
+        const unsigned pred = stack.back();
+        stack.pop_back();
+        if (seen.find(pred) != seen.end() || emitted_flag[pred])
+          continue;
+        seen.insert(pred);
+        if (ready.find(pred) != ready.end()) {
+          desired_ready_ancestors.insert(pred);
+        } else {
+          const std::vector<unsigned> &preds = pred_by_dst[pred];
+          stack.insert(stack.end(), preds.begin(), preds.end());
+        }
+      }
+      if (desired_ready_ancestors.empty()) {
+        *valid = false;
+        return chunk;
+      }
+    }
+
+    bool have_pick = false;
+    unsigned pick = 0;
+    double best_score = -std::numeric_limits<double>::infinity();
+    double best_target_score = -std::numeric_limits<double>::infinity();
+    unsigned best_height = 0;
+    int best_neg_index = std::numeric_limits<int>::min();
+
+    for (std::set<unsigned>::const_iterator it = ready.begin();
+         it != ready.end(); ++it) {
+      const unsigned idx = *it;
+      const sched_inst_t &inst = chunk[idx];
+      double target_score = 0.0;
+      if (have_current_guide && idx == desired_node) {
+        target_score = 100000.0;
+      } else if (have_current_guide && desired_ready_ancestors.find(idx) !=
+                                           desired_ready_ancestors.end()) {
+        target_score = 50000.0 + 0.001 * static_cast<double>(height[idx]);
+      } else if (have_current_guide &&
+                 guided_node_set.find(idx) != guided_node_set.end()) {
+        target_score = -100000.0;
+      }
+
+      unsigned same_recent = 0;
+      for (std::deque<inst_class_t>::const_iterator r = recent.begin();
+           r != recent.end(); ++r) {
+        if (*r == inst.cls)
+          ++same_recent;
+      }
+
+      const double age = -static_cast<double>(inst.original_index);
+      const double score =
+          32.0 * target_score + 0.05 * static_cast<double>(height[idx]) +
+          0.002 * age - 0.25 * static_cast<double>(same_recent);
+
+      const int neg_index = -static_cast<int>(inst.original_index);
+      const bool better =
+          !have_pick || score > best_score + 1e-12 ||
+          (std::fabs(score - best_score) <= 1e-12 &&
+           (target_score > best_target_score + 1e-12 ||
+            (std::fabs(target_score - best_target_score) <= 1e-12 &&
+             (height[idx] > best_height ||
+              (height[idx] == best_height && neg_index > best_neg_index)))));
+      if (better) {
+        have_pick = true;
+        pick = idx;
+        best_score = score;
+        best_target_score = target_score;
+        best_height = height[idx];
+        best_neg_index = neg_index;
+      }
+    }
+
+    if (!have_pick) {
+      *valid = false;
+      return chunk;
+    }
+
+    ready.erase(pick);
+    emitted.push_back(pick);
+    emitted_flag[pick] = true;
+
+    recent.push_back(chunk[pick].cls);
+    if (recent.size() > 16)
+      recent.pop_front();
+
+    for (std::vector<dep_edge_t>::const_iterator edge =
+             edge_by_src[pick].begin();
+         edge != edge_by_src[pick].end(); ++edge) {
+      if (graph.indeg[edge->dst] == 0) {
+        *valid = false;
+        return chunk;
+      }
+      --graph.indeg[edge->dst];
+      if (graph.indeg[edge->dst] == 0)
+        ready.insert(edge->dst);
+    }
+  }
+
+  if (emitted.size() != chunk.size()) {
+    *valid = false;
+    return chunk;
+  }
+
+  std::vector<sched_inst_t> scheduled;
+  scheduled.reserve(chunk.size());
+  for (unsigned i = 0; i < emitted.size(); ++i)
+    scheduled.push_back(chunk[emitted[i]]);
+  return scheduled;
+}
+
 void flush_segment(std::vector<sched_inst_t> &segment,
                    std::list<ptx_instruction *> &out, int ready_slack,
                    reorder_stats_t &stats, bool sass_guided,
                    const sass_function_guide_t *sass_guide,
-                   unsigned guide_lookahead, unsigned *sass_guide_cursor) {
+                   unsigned guide_lookahead, unsigned *sass_guide_cursor,
+                   const ptxline_guide_t *sass_ptxline_guide) {
   if (segment.empty())
     return;
 
@@ -2024,13 +2899,30 @@ void flush_segment(std::vector<sched_inst_t> &segment,
   unsigned edge_count = 0;
   bool valid = true;
   std::vector<sched_inst_t> scheduled;
+  std::vector<ptxline_guide_item_t> segment_ptxline_guide;
+  if (sass_ptxline_guide != NULL)
+    segment_ptxline_guide =
+        filter_ptxline_guide_for_segment(segment, *sass_ptxline_guide);
+  const bool use_sass_ptxline_guide = !segment_ptxline_guide.empty();
   const bool use_sass_guide =
       sass_guided && sass_guide != NULL && !sass_guide->lt_stream.empty() &&
       !sass_guide->guide_items.empty() && sass_guide_cursor != NULL &&
+      !use_sass_ptxline_guide &&
       (contains_class(segment, inst_class_t::tensor) ||
        contains_class(segment, inst_class_t::ldmatrix));
   const bool has_relaxed_barrier = contains_barrier_inst(segment);
-  if (use_sass_guide) {
+  if (use_sass_ptxline_guide) {
+    scheduled = schedule_sass_ptxline_guided(segment, segment_ptxline_guide,
+                                             &edge_count, &valid);
+    if (!valid) {
+      ptx_reorder_fatal(
+          "SASS PTX-line guide failed to schedule a segment with %zu "
+          "instructions and %zu guide anchors",
+          segment.size(), segment_ptxline_guide.size());
+    }
+    ++stats.sass_guided_segments;
+    stats.sass_guide_cursor += segment_ptxline_guide.size();
+  } else if (use_sass_guide) {
     scheduled = schedule_sass_guided(segment, *sass_guide, guide_lookahead,
                                      sass_guide_cursor, &edge_count, &valid);
     if (valid)
@@ -2038,11 +2930,12 @@ void flush_segment(std::vector<sched_inst_t> &segment,
     else
       ++stats.sass_guided_fallback_segments;
   }
-  if ((!use_sass_guide || !valid) && has_relaxed_barrier) {
+  if ((!use_sass_ptxline_guide && (!use_sass_guide || !valid)) &&
+      has_relaxed_barrier) {
     scheduled = segment;
     valid = false;
     edge_count = 0;
-  } else if (!use_sass_guide || !valid) {
+  } else if (!use_sass_ptxline_guide && (!use_sass_guide || !valid)) {
     bool switch_valid = true;
     scheduled =
         schedule_switch(segment, ready_slack, &edge_count, &switch_valid);
@@ -2080,12 +2973,61 @@ void run_ptx_reorder(function_info *func) {
   unsigned original_index = 0;
   std::string sass_guide_stream;
   const sass_function_guide_t *sass_guide = NULL;
+  ptxline_guide_t sass_ptxline_guide_storage;
+  const ptxline_guide_t *sass_ptxline_guide = NULL;
   unsigned sass_guide_cursor = 0;
-  const bool sass_guided = func->gpgpu_ctx->ptx_reorder_sass_guided &&
+  const bool have_sass_ptxline_file =
+      regular_file_exists(k_sass_ptxline_guide_file);
+  const bool sass_ptxline_guided =
+      func->gpgpu_ctx->ptx_reorder_sass_guided && have_sass_ptxline_file;
+  const bool sass_guided = !sass_ptxline_guided &&
+                           func->gpgpu_ctx->ptx_reorder_sass_guided &&
                            func->gpgpu_ctx->ptx_reorder_sass_file != NULL &&
                            func->gpgpu_ctx->ptx_reorder_sass_file[0] != '\0';
 
-  if (sass_guided) {
+  if (func->gpgpu_ctx->ptx_reorder_sass_guided && !sass_ptxline_guided &&
+      !sass_guided) {
+    ptx_reorder_fatal(
+        "SASS-guided reorder is enabled but neither cwd guide '%s' nor legacy "
+        "-gpgpu_ptx_reorder_sass_file is available",
+        k_sass_ptxline_guide_file);
+  }
+
+  if (sass_ptxline_guided) {
+    const std::string primary_rules_file =
+        find_unique_sass_primary_rules_file();
+    const sass_primary_rules_t &rules =
+        get_sass_primary_rules(primary_rules_file.c_str());
+    if (!rules.ok) {
+      ptx_reorder_fatal("failed to parse primary SASS hint rules '%s': %s",
+                        primary_rules_file.c_str(), rules.error.c_str());
+    }
+    const sass_ptxline_file_t &guides =
+        get_sass_ptxline_file(k_sass_ptxline_guide_file);
+    if (!guides.ok) {
+      ptx_reorder_fatal("failed to parse SASS PTX-line guide '%s': %s",
+                        k_sass_ptxline_guide_file, guides.error.c_str());
+    }
+    const sass_ptxline_function_t *sass_func =
+        select_sass_ptxline_function(guides, func->m_name);
+    if (sass_func != NULL) {
+      sass_ptxline_guide_storage = build_sass_ptxline_guide(
+          func->m_name, func->m_instructions, *sass_func, rules);
+      sass_ptxline_guide = &sass_ptxline_guide_storage;
+      stats.sass_guide_source = sass_ptxline_guide->source;
+      const unsigned guide_head_limit = std::min<unsigned>(
+          32, static_cast<unsigned>(sass_ptxline_guide->items.size()));
+      stats.sass_guide_head =
+          build_ptxline_guide_head(*sass_ptxline_guide, guide_head_limit);
+      if (func->gpgpu_ctx->ptx_reorder_stats) {
+        printf("GPGPU-Sim PTX: SASS PTX-line guide function '%s': "
+               "anchors=%zu matched_lines=%u source=%s\n",
+               func->m_name.c_str(), sass_ptxline_guide->items.size(),
+               sass_ptxline_guide->matched_ptx_lines,
+               sass_ptxline_guide->source.c_str());
+      }
+    }
+  } else if (sass_guided) {
     unsigned ptx_tensor_count = 0;
     unsigned ptx_ldmatrix_count = 0;
     count_lt_classes(func->m_instructions, &ptx_tensor_count,
@@ -2114,14 +3056,15 @@ void run_ptx_reorder(function_info *func) {
     ptx_instruction *inst = *it;
     original_indices[inst] = original_index;
     const bool guide_relaxed_ldmatrix =
-        sass_guided && sass_guide != NULL && !sass_guide_stream.empty() &&
+        ((sass_guided && sass_guide != NULL && !sass_guide_stream.empty()) ||
+         sass_ptxline_guide != NULL) &&
         inst != NULL && inst->get_opcode() == LDMATRIX_OP;
     if (is_segment_boundary(inst, guide_relaxed_ldmatrix)) {
       flush_segment(
           segment, reordered, func->gpgpu_ctx->ptx_reorder_ready_slack, stats,
           sass_guided, sass_guide,
           std::max(1, func->gpgpu_ctx->ptx_reorder_sass_guide_lookahead),
-          &sass_guide_cursor);
+          &sass_guide_cursor, sass_ptxline_guide);
       reordered.push_back(inst);
       continue;
     }
@@ -2136,8 +3079,9 @@ void run_ptx_reorder(function_info *func) {
   flush_segment(segment, reordered, func->gpgpu_ctx->ptx_reorder_ready_slack,
                 stats, sass_guided, sass_guide,
                 std::max(1, func->gpgpu_ctx->ptx_reorder_sass_guide_lookahead),
-                &sass_guide_cursor);
-  stats.sass_guide_cursor = sass_guide_cursor;
+                &sass_guide_cursor, sass_ptxline_guide);
+  if (sass_ptxline_guide == NULL)
+    stats.sass_guide_cursor = sass_guide_cursor;
 
   if (reordered.size() != func->m_instructions.size()) {
     printf("GPGPU-Sim PTX: reorder switch skipped function '%s' due to size "
@@ -2156,6 +3100,9 @@ void run_ptx_reorder(function_info *func) {
   }
 
   if (func->gpgpu_ctx->ptx_reorder_stats || stats.moved_slots != 0) {
+    const std::size_t guide_total = sass_ptxline_guide != NULL
+                                        ? sass_ptxline_guide->items.size()
+                                        : sass_guide_stream.size();
     printf("GPGPU-Sim PTX: reorder switch function '%s': segments=%u "
            "skipped=%u insts=%u moved_slots=%u max_segment=%u edges=%u "
            "slack=%d sass_guided=%u sass_guided_fallback=%u "
@@ -2163,8 +3110,8 @@ void run_ptx_reorder(function_info *func) {
            func->m_name.c_str(), stats.segments, stats.skipped_segments,
            stats.total_insts, stats.moved_slots, stats.max_segment, stats.edges,
            func->gpgpu_ctx->ptx_reorder_ready_slack, stats.sass_guided_segments,
-           stats.sass_guided_fallback_segments, sass_guide_cursor,
-           sass_guide_stream.size());
+           stats.sass_guided_fallback_segments, stats.sass_guide_cursor,
+           guide_total);
   }
 }
 
