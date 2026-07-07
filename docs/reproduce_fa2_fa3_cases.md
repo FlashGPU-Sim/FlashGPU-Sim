@@ -163,7 +163,8 @@ NCU_SET=full \
 ## Notes
 
 - `GPGPUSIM_PTX_DEBUG=1` enables verbose PTX extraction/debug prints.
-- `-gpgpu_ptx_reorder_dump 1` plus `-gpgpu_ptx_reorder_dump_dir <dir>` dumps
-  reordered PTX files for inspection.
+- `-gpgpu_ptx_reorder 1` dumps reordered PTX files under `sass_ptxline/`.
+  With `-gpgpu_ptx_reorder_sass_guided 1`, the simulator also auto-extracts
+  full SASS PTX-line info into the same directory and uses it as the guide.
 - Keep generated `test/run/*`, microbenchmark binaries, and temporary config
   sweep directories out of commits.

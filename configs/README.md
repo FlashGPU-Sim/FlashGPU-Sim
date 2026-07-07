@@ -21,12 +21,15 @@ Full RTX 5090 configuration with 170 streaming multiprocessors.
 - Multi-SM workload validation
 - Scalability testing
 - Production-equivalent simulations
+- FA2 SASS-guided PTX reorder runs
 
 **Characteristics:**
 - 170 SM clusters (1 core per cluster = 170 total SMs)
 - 16 memory controllers
 - High memory and time requirements
 - Accurate performance modeling
+- PTX register allocation and SASS-guided PTX reorder enabled by default
+- Includes `sass_primary_hints.rules` for auto-extracted full-SASS guides
 
 ### SM120_RTX5090_REDUCED
 Lightweight configuration with 1 streaming multiprocessor.
@@ -50,11 +53,14 @@ Full Hopper H100 configuration with 132 streaming multiprocessors.
 - Hopper/FA3 final validation
 - WGMMA and TMA behavior with full H100 SM count
 - Performance-oriented H100 experiments
+- FA2/FA3 SASS-guided PTX reorder runs
 
 **Characteristics:**
 - 132 SM clusters (1 core per cluster = 132 total SMs)
-- 16 memory controllers
-- Full H100 shared memory sizing
+- 80 HBM memory controllers, modeled as 160 L2/HBM subpartitions
+- Full H100 shared memory sizing with occupancy-aware default carveout
+- PTX register allocation and SASS-guided PTX reorder enabled by default
+- Includes `sass_primary_hints.rules` for auto-extracted full-SASS guides
 
 ### SM90_H100_1500MHZ
 Full Hopper H100 configuration with core, interconnect, and L2 clocks fixed at
@@ -105,7 +111,11 @@ overwrite forms are charged the same because the simulator does not yet model a
 separate RF write path, and the focused H100 microbenchmarks did not show a
 large enough accumulate/overwrite split to justify a more invasive model.
 
-Intermediate parameter sweeps for cp.async, TMA response width, WGMMA/MMA queue experiments, and temporary `_TMP` configs are intentionally not kept here. The final raw logs and reports are archived outside this repository in `flashgpu_sim_micro26_rebuttal`.
+Intermediate parameter sweeps for cp.async, TMA response width, WGMMA/MMA queue
+experiments, and most temporary `_TMP` configs are intentionally not kept here.
+`TMP_FA2_CPASYNC_FORMAL_IPOLY1024_RANGE_MAP9` is retained only as a baseline
+reference. The final raw logs and reports are archived outside this repository
+in `flashgpu_sim_micro26_rebuttal`.
 
 ### SM90_H100_REDUCED
 Lightweight Hopper H100 configuration with 1 streaming multiprocessor.

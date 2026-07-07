@@ -9,11 +9,9 @@ Optional columns:
 
   args    extra arguments appended to the command
   config  simulator config directory name for this job
-  sass_ptxline
-          workload-specific selected nvdisasm -gp guide copied into the job cwd
   skip    if true/1/yes, the job is marked skipped
 
-Paths in `binary` and `sass_ptxline` may be absolute or relative to --root.
+Paths in `binary` may be absolute or relative to --root.
 
 Use --print-example-jobs to print a minimal TSV template.
 """
@@ -53,17 +51,13 @@ STATUS_FIELDS = [
     "sim_time_us",
     "rss_mb",
     "max_rss_mb",
-    "sass_ptxline",
     "log",
     "workdir",
 ]
 
 
-SASS_PTXLINE_GUIDE_NAME = "sass_ptxline_guide.ptxline.sass"
-
-
-EXAMPLE_JOBS_TSV = """job_id\tstage\tcase\tbinary\tgtest_filter\tconfig\targs\tsass_ptxline\tskip
-example_smoke\tsmoke\tExampleCase\ttest/build/bin/hopper/run_example_tests\tExampleSuite.ExampleCase\tSM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700\t\ttemp/example.ptxline.selected.sass\t0
+EXAMPLE_JOBS_TSV = """job_id\tstage\tcase\tbinary\tgtest_filter\tconfig\targs\tskip
+example_smoke\tsmoke\tExampleCase\ttest/build/bin/hopper/run_example_tests\tExampleSuite.ExampleCase\tSM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700\t\t0
 """
 
 
@@ -77,7 +71,6 @@ class Job:
     gtest_filter: str
     args: tuple[str, ...]
     config: str
-    sass_ptxline: Path | None
     skip: bool = False
 
 
@@ -165,10 +158,6 @@ def read_jobs(path: Path, root: Path) -> list[Job]:
             binary = Path(row["binary"])
             if not binary.is_absolute():
                 binary = root / binary
-            sass_ptxline_text = (row.get("sass_ptxline") or "").strip()
-            sass_ptxline = Path(sass_ptxline_text) if sass_ptxline_text else None
-            if sass_ptxline is not None and not sass_ptxline.is_absolute():
-                sass_ptxline = root / sass_ptxline
             job_id = row.get("job_id") or f"{index:03d}_{row['stage']}_{row['case']}"
             jobs.append(
                 Job(
@@ -180,7 +169,6 @@ def read_jobs(path: Path, root: Path) -> list[Job]:
                     gtest_filter=row["gtest_filter"].strip(),
                     args=tuple(shlex.split(row.get("args") or "")),
                     config=(row.get("config") or "").strip(),
-                    sass_ptxline=sass_ptxline,
                     skip=truthy(row.get("skip")),
                 )
             )
@@ -201,7 +189,6 @@ def write_status(status_dir: Path, job: Job, values: dict[str, object]) -> None:
         "stage": job.stage,
         "case": job.case,
         "config": job.config,
-        "sass_ptxline": job.sass_ptxline or "",
         **values,
     }
     lines = [f"{key}={merged.get(key, '')}" for key in STATUS_FIELDS]
@@ -365,31 +352,10 @@ def run_job(
             refresh_summary(status_dir)
         return 127
 
-    if job.sass_ptxline is not None and not job.sass_ptxline.exists():
-        write_status(
-            status_dir,
-            job,
-            {
-                "state": "missing_sass_ptxline",
-                "rc": 125,
-                "elapsed_sec": 0,
-                "slot": slot,
-                "cpu_set": cpu_set or "",
-                "config": config_name,
-                "log": log_path,
-                "workdir": workdir,
-            },
-        )
-        with summary_lock:
-            refresh_summary(status_dir)
-        return 125
-
     if workdir.exists():
         shutil.rmtree(workdir)
     workdir.mkdir(parents=True)
     copy_config(config_dir, workdir)
-    if job.sass_ptxline is not None:
-        shutil.copy2(job.sass_ptxline, workdir / SASS_PTXLINE_GUIDE_NAME)
     job_core_clock_mhz = parse_core_clock_mhz(config_dir / "gpgpusim.config")
 
     cmd = command_for(job, cpu_set if shutil.which("taskset") else None)
@@ -417,11 +383,6 @@ def run_job(
         log.write(f"[{timestamp()}] cpu_set={cpu_set or ''}\n")
         log.write(f"[{timestamp()}] command={' '.join(shlex.quote(part) for part in cmd)}\n")
         log.write(f"[{timestamp()}] config={config_name}\n")
-        if job.sass_ptxline is not None:
-            log.write(
-                f"[{timestamp()}] sass_ptxline={job.sass_ptxline} "
-                f"copied_as={SASS_PTXLINE_GUIDE_NAME}\n"
-            )
         log.write(f"[{timestamp()}] core_clock_mhz={job_core_clock_mhz or core_clock_mhz or ''}\n")
         log.write(f"[{timestamp()}] LD_LIBRARY_PATH={env.get('LD_LIBRARY_PATH', '')}\n")
         log.flush()
@@ -585,7 +546,6 @@ def write_metadata(args: argparse.Namespace, jobs: Iterable[Job], core_clock_mhz
                 "gtest_filter",
                 "config",
                 "args",
-                "sass_ptxline",
                 "skip",
             ]
         )
@@ -600,7 +560,6 @@ def write_metadata(args: argparse.Namespace, jobs: Iterable[Job], core_clock_mhz
                     job.gtest_filter,
                     job.config or args.config,
                     " ".join(shlex.quote(part) for part in job.args),
-                    job.sass_ptxline or "",
                     int(job.skip),
                 ]
             )

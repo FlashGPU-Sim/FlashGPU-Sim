@@ -27,7 +27,7 @@
 
 namespace {
 
-const char *k_sass_ptxline_guide_file = "sass_ptxline_guide.ptxline.sass";
+const char *k_ptx_reorder_dump_dir = "sass_ptxline";
 
 enum class inst_class_t {
   tensor,
@@ -103,16 +103,6 @@ struct guide_item_t {
   guide_item_t() : token('?') {}
 };
 
-struct sass_sched_inst_t {
-  inst_class_t cls;
-  char token;
-  unsigned original_index;
-  string_reg_set_t defs;
-  string_reg_set_t uses;
-
-  sass_sched_inst_t() : cls(inst_class_t::other), token(0), original_index(0) {}
-};
-
 struct reorder_stats_t {
   unsigned segments;
   unsigned skipped_segments;
@@ -140,14 +130,6 @@ struct sass_function_guide_t {
   unsigned ldmatrix_count;
 
   sass_function_guide_t() : tensor_count(0), ldmatrix_count(0) {}
-};
-
-struct sass_file_guides_t {
-  bool parsed;
-  bool ok;
-  std::vector<sass_function_guide_t> functions;
-
-  sass_file_guides_t() : parsed(false), ok(false) {}
 };
 
 struct sass_primary_rules_t {
@@ -356,11 +338,6 @@ void ptx_reorder_fatal(const char *fmt, ...) {
 bool string_ends_with(const std::string &text, const std::string &suffix) {
   return text.size() >= suffix.size() &&
          text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
-bool regular_file_exists(const char *path) {
-  struct stat st;
-  return path != NULL && stat(path, &st) == 0 && S_ISREG(st.st_mode);
 }
 
 std::string join_strings(const std::vector<std::string> &values,
@@ -639,33 +616,6 @@ unsigned sass_tensor_dest_width(const std::string &opcode) {
       starts_with(op, "DMMA") || starts_with(op, "MMA"))
     return 4;
   return 1;
-}
-
-void collect_sass_defs_uses(const std::string &opcode,
-                            const std::string &operands_text,
-                            string_reg_set_t &defs, string_reg_set_t &uses) {
-  const std::vector<std::string> operands = split_top_operands(operands_text);
-  if (operands.empty())
-    return;
-
-  const inst_class_t cls = classify_sass_opcode(opcode);
-  if (cls != inst_class_t::ldmatrix && cls != inst_class_t::tensor)
-    return;
-
-  string_reg_set_t dst_regs = sass_regs_in(operands[0]);
-  if (dst_regs.size() == 1) {
-    add_sass_reg(defs, *dst_regs.begin(),
-                 cls == inst_class_t::ldmatrix
-                     ? sass_ldmatrix_width(opcode)
-                     : sass_tensor_dest_width(opcode));
-  } else {
-    defs.insert(dst_regs.begin(), dst_regs.end());
-  }
-
-  for (unsigned i = 1; i < operands.size(); ++i) {
-    const string_reg_set_t regs = sass_regs_in(operands[i]);
-    uses.insert(regs.begin(), regs.end());
-  }
 }
 
 bool parse_sass_instruction_line(const std::string &line, std::string *opcode,
@@ -959,283 +909,6 @@ void sort_int_vector(std::vector<int> &values) {
   std::sort(values.begin(), values.end());
 }
 
-std::vector<role_signature_t>
-compute_sass_role_signatures(const std::vector<sass_sched_inst_t> &insts) {
-  std::vector<role_signature_t> out(insts.size());
-  std::map<char, unsigned> class_seen;
-  for (unsigned i = 0; i < insts.size(); ++i) {
-    const char token = class_token(insts[i].cls);
-    out[i].token = token;
-    out[i].rank = class_seen[token]++;
-  }
-
-  std::vector<std::set<unsigned>> ldmatrix_tensor_succ(insts.size());
-  std::vector<std::set<unsigned>> tensor_ldmatrix_pred(insts.size());
-  std::vector<std::set<unsigned>> tensor_tensor_pred(insts.size());
-  std::map<std::string, unsigned> last_def;
-  std::set<std::pair<unsigned, unsigned>> raw_edges;
-
-  for (unsigned i = 0; i < insts.size(); ++i) {
-    const sass_sched_inst_t &inst = insts[i];
-    for (string_reg_set_t::const_iterator use = inst.uses.begin();
-         use != inst.uses.end(); ++use) {
-      std::map<std::string, unsigned>::const_iterator def = last_def.find(*use);
-      if (def == last_def.end())
-        continue;
-      const unsigned src = def->second;
-      const std::pair<unsigned, unsigned> edge(src, i);
-      if (!raw_edges.insert(edge).second)
-        continue;
-      if (insts[src].cls == inst_class_t::ldmatrix &&
-          inst.cls == inst_class_t::tensor) {
-        ldmatrix_tensor_succ[src].insert(i);
-        tensor_ldmatrix_pred[i].insert(src);
-      } else if (insts[src].cls == inst_class_t::tensor &&
-                 inst.cls == inst_class_t::tensor) {
-        tensor_tensor_pred[i].insert(src);
-      }
-    }
-    for (string_reg_set_t::const_iterator def = inst.defs.begin();
-         def != inst.defs.end(); ++def)
-      last_def[*def] = i;
-  }
-
-  std::map<unsigned, int> tensor_stage;
-  std::map<unsigned, int> tensor_chain;
-  int next_chain = 0;
-  for (unsigned i = 0; i < insts.size(); ++i) {
-    if (insts[i].cls != inst_class_t::tensor)
-      continue;
-    int stage = 0;
-    bool have_stage = false;
-    int chain = -1;
-    for (std::set<unsigned>::const_iterator pred =
-             tensor_tensor_pred[i].begin();
-         pred != tensor_tensor_pred[i].end(); ++pred) {
-      std::map<unsigned, int>::const_iterator pred_stage =
-          tensor_stage.find(*pred);
-      if (pred_stage != tensor_stage.end()) {
-        stage = std::max(stage, pred_stage->second + 1);
-        have_stage = true;
-      }
-      std::map<unsigned, int>::const_iterator pred_chain =
-          tensor_chain.find(*pred);
-      if (pred_chain != tensor_chain.end())
-        chain = chain < 0 ? pred_chain->second
-                          : std::min(chain, pred_chain->second);
-    }
-    tensor_stage[i] = have_stage ? stage : 0;
-    if (chain < 0)
-      chain = next_chain++;
-    tensor_chain[i] = chain;
-  }
-
-  std::map<unsigned, int> ldmatrix_stage;
-  for (unsigned i = 0; i < insts.size(); ++i) {
-    if (ldmatrix_tensor_succ[i].empty())
-      continue;
-    int stage = -1;
-    for (std::set<unsigned>::const_iterator succ =
-             ldmatrix_tensor_succ[i].begin();
-         succ != ldmatrix_tensor_succ[i].end(); ++succ) {
-      std::map<unsigned, int>::const_iterator found = tensor_stage.find(*succ);
-      if (found != tensor_stage.end())
-        stage = stage < 0 ? found->second : std::min(stage, found->second);
-    }
-    if (stage >= 0)
-      ldmatrix_stage[i] = stage;
-  }
-
-  for (unsigned i = 0; i < insts.size(); ++i) {
-    role_signature_t &sig = out[i];
-    std::map<unsigned, int>::const_iterator ts = tensor_stage.find(i);
-    std::map<unsigned, int>::const_iterator ls = ldmatrix_stage.find(i);
-    std::map<unsigned, int>::const_iterator tc = tensor_chain.find(i);
-    sig.stage = ts != tensor_stage.end()
-                    ? ts->second
-                    : (ls != ldmatrix_stage.end() ? ls->second : -1);
-    sig.chain = tc != tensor_chain.end() ? tc->second : -1;
-    sig.pred_ld_count = tensor_ldmatrix_pred[i].size();
-    sig.pred_tensor_count = tensor_tensor_pred[i].size();
-    sig.succ_tensor_count = ldmatrix_tensor_succ[i].size();
-    for (std::set<unsigned>::const_iterator pred =
-             tensor_ldmatrix_pred[i].begin();
-         pred != tensor_ldmatrix_pred[i].end(); ++pred) {
-      sig.pred_ld_fanout.push_back(ldmatrix_tensor_succ[*pred].size());
-      std::map<unsigned, int>::const_iterator pred_stage =
-          ldmatrix_stage.find(*pred);
-      sig.pred_ld_stage.push_back(
-          pred_stage == ldmatrix_stage.end() ? -1 : pred_stage->second);
-    }
-    for (std::set<unsigned>::const_iterator succ =
-             ldmatrix_tensor_succ[i].begin();
-         succ != ldmatrix_tensor_succ[i].end(); ++succ) {
-      std::map<unsigned, int>::const_iterator succ_stage =
-          tensor_stage.find(*succ);
-      std::map<unsigned, int>::const_iterator succ_chain =
-          tensor_chain.find(*succ);
-      sig.succ_tensor_stage.push_back(
-          succ_stage == tensor_stage.end() ? -1 : succ_stage->second);
-      sig.succ_tensor_chain.push_back(
-          succ_chain == tensor_chain.end() ? -1 : succ_chain->second);
-    }
-    sort_int_vector(sig.pred_ld_fanout);
-    sort_int_vector(sig.pred_ld_stage);
-    sort_int_vector(sig.succ_tensor_stage);
-    sort_int_vector(sig.succ_tensor_chain);
-  }
-
-  return out;
-}
-
-std::vector<guide_item_t>
-build_sass_guide_items(const std::vector<sass_sched_inst_t> &insts) {
-  const std::vector<role_signature_t> sigs =
-      compute_sass_role_signatures(insts);
-  std::vector<guide_item_t> items;
-  for (unsigned i = 0; i < insts.size(); ++i) {
-    const char token = class_token(insts[i].cls);
-    if (token != 'T' && token != 'L')
-      continue;
-    guide_item_t item;
-    item.token = token;
-    item.sig = sigs[i];
-    items.push_back(item);
-  }
-  return items;
-}
-
-sass_file_guides_t parse_sass_guides_from_file(const char *path) {
-  sass_file_guides_t result;
-  result.parsed = true;
-  if (path == NULL || path[0] == '\0')
-    return result;
-
-  std::ifstream in(path);
-  if (!in.good()) {
-    fprintf(stderr,
-            "GPGPU-Sim PTX: failed to open SASS guide file '%s'; "
-            "SASS-guided PTX reorder will fall back\n",
-            path);
-    return result;
-  }
-
-  sass_function_guide_t current;
-  std::vector<sass_sched_inst_t> current_insts;
-  bool have_function = false;
-  std::string line;
-  while (std::getline(in, line)) {
-    const std::size_t function_pos = line.find("Function");
-    if (function_pos != std::string::npos) {
-      if (have_function) {
-        current.guide_items = build_sass_guide_items(current_insts);
-        result.functions.push_back(current);
-      }
-      current = sass_function_guide_t();
-      current_insts.clear();
-      have_function = true;
-      const std::size_t colon = line.find(':', function_pos);
-      if (colon != std::string::npos)
-        current.name = trim_copy(line.substr(colon + 1));
-      else
-        current.name = trim_copy(line.substr(function_pos + 8));
-      continue;
-    }
-
-    if (!have_function)
-      continue;
-
-    std::string opcode;
-    std::string operands;
-    if (!parse_sass_instruction_line(line, &opcode, &operands))
-      continue;
-    sass_sched_inst_t inst;
-    inst.cls = classify_sass_opcode(opcode);
-    inst.token = sass_opcode_token(opcode);
-    inst.original_index = current_insts.size();
-    collect_sass_defs_uses(opcode, operands, inst.defs, inst.uses);
-    current_insts.push_back(inst);
-
-    const char token = sass_opcode_token(opcode);
-    if (token == 0)
-      continue;
-    current.lt_stream += token;
-    if (token == 'T')
-      ++current.tensor_count;
-    else if (token == 'L')
-      ++current.ldmatrix_count;
-  }
-
-  if (have_function) {
-    current.guide_items = build_sass_guide_items(current_insts);
-    result.functions.push_back(current);
-  }
-
-  result.ok = !result.functions.empty();
-  return result;
-}
-
-const sass_file_guides_t &get_sass_guides(const char *path) {
-  static std::map<std::string, sass_file_guides_t> cache;
-  const std::string key = path == NULL ? std::string() : std::string(path);
-  std::map<std::string, sass_file_guides_t>::iterator found = cache.find(key);
-  if (found != cache.end())
-    return found->second;
-
-  sass_file_guides_t parsed = parse_sass_guides_from_file(path);
-  std::pair<std::map<std::string, sass_file_guides_t>::iterator, bool>
-      inserted = cache.insert(std::make_pair(key, parsed));
-  return inserted.first->second;
-}
-
-const sass_function_guide_t *select_sass_guide(const sass_file_guides_t &guides,
-                                               const std::string &function_name,
-                                               unsigned ptx_tensor_count,
-                                               unsigned ptx_ldmatrix_count) {
-  if (!guides.ok)
-    return NULL;
-
-  for (std::vector<sass_function_guide_t>::const_iterator it =
-           guides.functions.begin();
-       it != guides.functions.end(); ++it) {
-    if (!it->lt_stream.empty() && it->name == function_name)
-      return &(*it);
-  }
-
-  for (std::vector<sass_function_guide_t>::const_iterator it =
-           guides.functions.begin();
-       it != guides.functions.end(); ++it) {
-    if (it->lt_stream.empty())
-      continue;
-    if (it->name.find(function_name) != std::string::npos ||
-        function_name.find(it->name) != std::string::npos)
-      return &(*it);
-  }
-
-  const sass_function_guide_t *best = NULL;
-  unsigned best_score = std::numeric_limits<unsigned>::max();
-  for (std::vector<sass_function_guide_t>::const_iterator it =
-           guides.functions.begin();
-       it != guides.functions.end(); ++it) {
-    if (it->lt_stream.empty() || it->tensor_count == 0)
-      continue;
-    const unsigned tensor_delta = it->tensor_count > ptx_tensor_count
-                                      ? it->tensor_count - ptx_tensor_count
-                                      : ptx_tensor_count - it->tensor_count;
-    const unsigned ldmatrix_delta =
-        it->ldmatrix_count > ptx_ldmatrix_count
-            ? it->ldmatrix_count - ptx_ldmatrix_count
-            : ptx_ldmatrix_count - it->ldmatrix_count;
-    const unsigned score = tensor_delta * 4 + ldmatrix_delta;
-    if (best == NULL || score < best_score) {
-      best = &(*it);
-      best_score = score;
-    }
-  }
-
-  return best;
-}
-
 const sass_ptxline_function_t *
 select_sass_ptxline_function(const sass_ptxline_file_t &guides,
                              const std::string &function_name) {
@@ -1287,7 +960,6 @@ struct ptxline_build_state_t {
   bool initialized;
   ptxline_inst_ref_t ref;
   std::vector<sass_ptxline_inst_t> primary_candidates;
-  std::vector<sass_ptxline_inst_t> attached_insts;
 
   ptxline_build_state_t() : initialized(false) {}
 };
@@ -1357,8 +1029,6 @@ build_sass_ptxline_guide(const std::string &function_name,
         rules.primary_opcode.find(state.ref.ptx_opcode)->second;
     if (opcode_set_contains(primary, sass->opcode))
       state.primary_candidates.push_back(*sass);
-    else
-      state.attached_insts.push_back(*sass);
   }
 
   ptxline_guide_t guide;
@@ -1384,22 +1054,6 @@ build_sass_ptxline_guide(const std::string &function_name,
           function_name.c_str(), ptx_line, entry.ref.ptx_opcode.c_str(),
           format_sass_offsets(entry.primary_candidates).c_str());
     }
-
-    std::map<std::string, std::set<std::string>>::const_iterator allow =
-        rules.attached_opcode_allowlist.find(entry.ref.ptx_opcode);
-    for (std::vector<sass_ptxline_inst_t>::const_iterator attached =
-             entry.attached_insts.begin();
-         attached != entry.attached_insts.end(); ++attached) {
-      if (allow == rules.attached_opcode_allowlist.end() ||
-          !opcode_set_contains(allow->second, attached->opcode)) {
-        ptx_reorder_fatal(
-            "function '%s' PTX line %u opcode '%s' has unexpected "
-            "attached SASS opcode '%s' at 0x%x",
-            function_name.c_str(), ptx_line, entry.ref.ptx_opcode.c_str(),
-            attached->opcode.c_str(), attached->sass_offset);
-      }
-    }
-
     const sass_ptxline_inst_t &primary = entry.primary_candidates[0];
     ptxline_guide_item_t item;
     item.ptx_line = ptx_line;
@@ -2422,20 +2076,6 @@ bool contains_barrier_inst(const std::vector<sched_inst_t> &chunk) {
   return false;
 }
 
-void count_lt_classes(const std::list<ptx_instruction *> &instructions,
-                      unsigned *tensor_count, unsigned *ldmatrix_count) {
-  *tensor_count = 0;
-  *ldmatrix_count = 0;
-  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
-       it != instructions.end(); ++it) {
-    const inst_class_t cls = classify_inst(*it);
-    if (cls == inst_class_t::tensor)
-      ++(*tensor_count);
-    else if (cls == inst_class_t::ldmatrix)
-      ++(*ldmatrix_count);
-  }
-}
-
 double sass_guide_target_score(const std::string &guide, unsigned cursor,
                                unsigned lookahead, char token,
                                unsigned *next_cursor) {
@@ -2971,29 +2611,19 @@ void run_ptx_reorder(function_info *func) {
   std::map<const ptx_instruction *, unsigned> original_indices;
   reorder_stats_t stats;
   unsigned original_index = 0;
-  std::string sass_guide_stream;
   const sass_function_guide_t *sass_guide = NULL;
   ptxline_guide_t sass_ptxline_guide_storage;
   const ptxline_guide_t *sass_ptxline_guide = NULL;
   unsigned sass_guide_cursor = 0;
-  const bool have_sass_ptxline_file =
-      regular_file_exists(k_sass_ptxline_guide_file);
-  const bool sass_ptxline_guided =
-      func->gpgpu_ctx->ptx_reorder_sass_guided && have_sass_ptxline_file;
-  const bool sass_guided = !sass_ptxline_guided &&
-                           func->gpgpu_ctx->ptx_reorder_sass_guided &&
-                           func->gpgpu_ctx->ptx_reorder_sass_file != NULL &&
-                           func->gpgpu_ctx->ptx_reorder_sass_file[0] != '\0';
-
-  if (func->gpgpu_ctx->ptx_reorder_sass_guided && !sass_ptxline_guided &&
-      !sass_guided) {
-    ptx_reorder_fatal(
-        "SASS-guided reorder is enabled but neither cwd guide '%s' nor legacy "
-        "-gpgpu_ptx_reorder_sass_file is available",
-        k_sass_ptxline_guide_file);
-  }
+  const int ready_slack = 0;
+  const bool sass_ptxline_guided = func->gpgpu_ctx->ptx_reorder_sass_guided;
 
   if (sass_ptxline_guided) {
+    if (func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.empty()) {
+      ptx_reorder_fatal(
+          "SASS-guided reorder is enabled but no auto full SASS guide path "
+          "was recorded before PTX assembly");
+    }
     const std::string primary_rules_file =
         find_unique_sass_primary_rules_file();
     const sass_primary_rules_t &rules =
@@ -3002,69 +2632,46 @@ void run_ptx_reorder(function_info *func) {
       ptx_reorder_fatal("failed to parse primary SASS hint rules '%s': %s",
                         primary_rules_file.c_str(), rules.error.c_str());
     }
-    const sass_ptxline_file_t &guides =
-        get_sass_ptxline_file(k_sass_ptxline_guide_file);
+    const sass_ptxline_file_t &guides = get_sass_ptxline_file(
+        func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.c_str());
     if (!guides.ok) {
       ptx_reorder_fatal("failed to parse SASS PTX-line guide '%s': %s",
-                        k_sass_ptxline_guide_file, guides.error.c_str());
+                        func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.c_str(),
+                        guides.error.c_str());
     }
     const sass_ptxline_function_t *sass_func =
         select_sass_ptxline_function(guides, func->m_name);
-    if (sass_func != NULL) {
-      sass_ptxline_guide_storage = build_sass_ptxline_guide(
-          func->m_name, func->m_instructions, *sass_func, rules);
-      sass_ptxline_guide = &sass_ptxline_guide_storage;
-      stats.sass_guide_source = sass_ptxline_guide->source;
-      const unsigned guide_head_limit = std::min<unsigned>(
-          32, static_cast<unsigned>(sass_ptxline_guide->items.size()));
-      stats.sass_guide_head =
-          build_ptxline_guide_head(*sass_ptxline_guide, guide_head_limit);
-      if (func->gpgpu_ctx->ptx_reorder_stats) {
-        printf("GPGPU-Sim PTX: SASS PTX-line guide function '%s': "
-               "anchors=%zu matched_lines=%u source=%s\n",
-               func->m_name.c_str(), sass_ptxline_guide->items.size(),
-               sass_ptxline_guide->matched_ptx_lines,
-               sass_ptxline_guide->source.c_str());
-      }
+    if (sass_func == NULL) {
+      ptx_reorder_fatal(
+          "auto full SASS guide '%s' has no .text section for function '%s'",
+          func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.c_str(),
+          func->m_name.c_str());
     }
-  } else if (sass_guided) {
-    unsigned ptx_tensor_count = 0;
-    unsigned ptx_ldmatrix_count = 0;
-    count_lt_classes(func->m_instructions, &ptx_tensor_count,
-                     &ptx_ldmatrix_count);
-    const sass_file_guides_t &guides =
-        get_sass_guides(func->gpgpu_ctx->ptx_reorder_sass_file);
-    sass_guide = select_sass_guide(guides, func->m_name, ptx_tensor_count,
-                                   ptx_ldmatrix_count);
-    if (sass_guide != NULL)
-      sass_guide_stream = sass_guide->lt_stream;
-    stats.sass_guide_source =
-        sass_guide != NULL ? sass_guide->name : std::string();
-    stats.sass_guide_head = sass_guide_stream.substr(
-        0, std::min<std::size_t>(128, sass_guide_stream.size()));
-    if (func->gpgpu_ctx->ptx_reorder_stats) {
-      printf("GPGPU-Sim PTX: SASS guide function '%s': ptx_T=%u ptx_L=%u "
-             "guide_len=%zu source=%s\n",
-             func->m_name.c_str(), ptx_tensor_count, ptx_ldmatrix_count,
-             sass_guide_stream.size(),
-             sass_guide != NULL ? sass_guide->name.c_str() : "<none>");
-    }
+    sass_ptxline_guide_storage = build_sass_ptxline_guide(
+        func->m_name, func->m_instructions, *sass_func, rules);
+    sass_ptxline_guide = &sass_ptxline_guide_storage;
+    stats.sass_guide_source = sass_ptxline_guide->source;
+    const unsigned guide_head_limit = std::min<unsigned>(
+        32, static_cast<unsigned>(sass_ptxline_guide->items.size()));
+    stats.sass_guide_head =
+        build_ptxline_guide_head(*sass_ptxline_guide, guide_head_limit);
+    printf("GPGPU-Sim PTX: SASS PTX-line guide function '%s': "
+           "anchors=%zu matched_lines=%u source=%s\n",
+           func->m_name.c_str(), sass_ptxline_guide->items.size(),
+           sass_ptxline_guide->matched_ptx_lines,
+           sass_ptxline_guide->source.c_str());
   }
 
   for (std::list<ptx_instruction *>::iterator it = func->m_instructions.begin();
        it != func->m_instructions.end(); ++it, ++original_index) {
     ptx_instruction *inst = *it;
     original_indices[inst] = original_index;
-    const bool guide_relaxed_ldmatrix =
-        ((sass_guided && sass_guide != NULL && !sass_guide_stream.empty()) ||
-         sass_ptxline_guide != NULL) &&
-        inst != NULL && inst->get_opcode() == LDMATRIX_OP;
+    const bool guide_relaxed_ldmatrix = sass_ptxline_guide != NULL &&
+                                        inst != NULL &&
+                                        inst->get_opcode() == LDMATRIX_OP;
     if (is_segment_boundary(inst, guide_relaxed_ldmatrix)) {
-      flush_segment(
-          segment, reordered, func->gpgpu_ctx->ptx_reorder_ready_slack, stats,
-          sass_guided, sass_guide,
-          std::max(1, func->gpgpu_ctx->ptx_reorder_sass_guide_lookahead),
-          &sass_guide_cursor, sass_ptxline_guide);
+      flush_segment(segment, reordered, ready_slack, stats, false, sass_guide,
+                    1, &sass_guide_cursor, sass_ptxline_guide);
       reordered.push_back(inst);
       continue;
     }
@@ -3076,12 +2683,8 @@ void run_ptx_reorder(function_info *func) {
     collect_inst_regs(inst, sched_inst.uses, sched_inst.defs);
     segment.push_back(sched_inst);
   }
-  flush_segment(segment, reordered, func->gpgpu_ctx->ptx_reorder_ready_slack,
-                stats, sass_guided, sass_guide,
-                std::max(1, func->gpgpu_ctx->ptx_reorder_sass_guide_lookahead),
+  flush_segment(segment, reordered, ready_slack, stats, false, sass_guide, 1,
                 &sass_guide_cursor, sass_ptxline_guide);
-  if (sass_ptxline_guide == NULL)
-    stats.sass_guide_cursor = sass_guide_cursor;
 
   if (reordered.size() != func->m_instructions.size()) {
     printf("GPGPU-Sim PTX: reorder switch skipped function '%s' due to size "
@@ -3092,27 +2695,21 @@ void run_ptx_reorder(function_info *func) {
 
   func->m_instructions.swap(reordered);
 
-  if (func->gpgpu_ctx->ptx_reorder_dump) {
-    dump_ptx_reorder_result(func->m_name, func->m_instructions,
-                            original_indices, stats,
-                            func->gpgpu_ctx->ptx_reorder_ready_slack,
-                            func->gpgpu_ctx->ptx_reorder_dump_dir);
-  }
+  dump_ptx_reorder_result(func->m_name, func->m_instructions, original_indices,
+                          stats, ready_slack, k_ptx_reorder_dump_dir);
 
-  if (func->gpgpu_ctx->ptx_reorder_stats || stats.moved_slots != 0) {
-    const std::size_t guide_total = sass_ptxline_guide != NULL
-                                        ? sass_ptxline_guide->items.size()
-                                        : sass_guide_stream.size();
-    printf("GPGPU-Sim PTX: reorder switch function '%s': segments=%u "
-           "skipped=%u insts=%u moved_slots=%u max_segment=%u edges=%u "
-           "slack=%d sass_guided=%u sass_guided_fallback=%u "
-           "sass_cursor=%u/%zu\n",
-           func->m_name.c_str(), stats.segments, stats.skipped_segments,
-           stats.total_insts, stats.moved_slots, stats.max_segment, stats.edges,
-           func->gpgpu_ctx->ptx_reorder_ready_slack, stats.sass_guided_segments,
-           stats.sass_guided_fallback_segments, stats.sass_guide_cursor,
-           guide_total);
-  }
+  const std::size_t guide_total =
+      sass_ptxline_guide != NULL ? sass_ptxline_guide->items.size() : 0;
+  printf("GPGPU-Sim PTX: reorder function '%s': mode=%s segments=%u "
+         "skipped=%u insts=%u moved_slots=%u max_segment=%u edges=%u "
+         "slack=%d sass_guided=%u sass_guided_fallback=%u "
+         "sass_cursor=%u/%zu\n",
+         func->m_name.c_str(),
+         sass_ptxline_guide != NULL ? "sass_ptxline" : "plain", stats.segments,
+         stats.skipped_segments, stats.total_insts, stats.moved_slots,
+         stats.max_segment, stats.edges, ready_slack,
+         stats.sass_guided_segments, stats.sass_guided_fallback_segments,
+         stats.sass_guide_cursor, guide_total);
 }
 
 } // namespace flash_gpgpu_sim
