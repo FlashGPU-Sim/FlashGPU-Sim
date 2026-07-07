@@ -17,39 +17,39 @@ ENV LD_LIBRARY_PATH="${CUDA_INSTALL_PATH}/lib64:${LD_LIBRARY_PATH}"
 # Install GPGPU-Sim dependencies (versions pinned for Ubuntu 22.04)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Build essentials
-    build-essential=12.9ubuntu3 \
-    g++=4:11.2.0-1ubuntu1 \
-    gcc=4:11.2.0-1ubuntu1 \
-    make=4.3-4.1build1 \
-    cmake=3.22.1-1ubuntu1.22.04.2 \
+    build-essential \
+    g++ \
+    gcc \
+    make \
+    cmake \
     # Required by GPGPU-Sim
-    xutils-dev=1:7.7+6ubuntu1 \
-    bison=2:3.8.2+dfsg-1build1 \
-    flex=2.6.4-8build2 \
-    zlib1g-dev=1:1.2.11.dfsg-2ubuntu9.2 \
-    libglu1-mesa-dev=9.0.2-1 \
+    xutils-dev \
+    bison \
+    flex \
+    zlib1g-dev \
+    libglu1-mesa-dev \
     # Documentation
-    doxygen=1.9.1-2ubuntu2 \
-    graphviz=2.42.2-6ubuntu0.1 \
+    doxygen \
+    graphviz \
     # Version control
-    git=1:2.34.1-1ubuntu1.15 \
+    git \
     # Additional utilities
-    wget=1.21.2-2ubuntu1.1 \
-    curl=7.81.0-1ubuntu1.21 \
-    vim=2:8.2.3995-1ubuntu2.24 \
+    wget \
+    curl \
+    vim \
     nano \
-    gdb=12.1-0ubuntu1~22.04.2 \
-    valgrind=1:3.18.1-1ubuntu2 \
+    gdb \
+    valgrind \
     # Python for scripts
-    python3=3.10.6-1~22.04.1 \
-    python3-pip=22.0.2+dfsg-1ubuntu0.7 \
-    python3-dev=3.10.6-1~22.04.1 \
+    python3 \
+    python3-pip \
+    python3-dev \
     # AerialVision dependencies (optional)
-    python3-numpy=1:1.21.5-1ubuntu22.04.1 \
-    python3-matplotlib=3.5.1-2build1 \
-    libpng-dev=1.6.37-3ubuntu0.1 \
+    python3-numpy \
+    python3-matplotlib \
+    libpng-dev \
     # Debugging and utilities
-    htop=3.0.5-7build2 \
+    htop \
     less \
     tree \
     && rm -rf /var/lib/apt/lists/*
