@@ -1489,7 +1489,9 @@ public:
         // TMA Read (global → shared): response contains read data
         assert(mf->get_access_type() == TMA_ACC_R);
 
-        // Validate destination space
+        // Validate destination space. TMA_SHARED_CLUSTER is accepted: the
+        // functional path already multicasts to peer SMs; timing still uses a
+        // single L2 fetch (multicast hop is free).
         if (tx.m_static_info.dst_space !=
                 inst_t::tma_static_info_t::TMA_SHARED_CTA &&
             tx.m_static_info.dst_space !=
@@ -2274,6 +2276,36 @@ static void reduce_add_f32_mem(memory_space *src_mem, uint64_t src_addr,
   dst_mem->write(dst_addr, size_in_bytes, dst.data(), thread, pI);
 }
 
+// Multicast: copy data from the issuing CTA's shared memory to the shared
+// memory of the corresponding CTA on every other SM in the cluster.
+// This implements TMA .shared::cluster multicast for both linear and tensor
+// TMA loads.  The issuing CTA's smem is already populated by the caller; this
+// function replicates the bytes to peer SMs.
+static void multicast_smem_to_cluster(memory_space *src_smem,
+                                      uint32_t smem_addr,
+                                      uint32_t size_in_bytes,
+                                      ptx_thread_info *thread,
+                                      const ptx_instruction *pI) {
+  auto *core = static_cast<shader_core_ctx *>(thread->get_core());
+  if (!core)
+    return;
+  auto *cluster = core->get_cluster();
+  if (!cluster || cluster->num_cores() <= 1)
+    return;
+
+  unsigned hw_cta_id = thread->get_hw_ctaid();
+  for (unsigned cid = 0; cid < cluster->num_cores(); cid++) {
+    auto *peer_core = cluster->get_core(cid);
+    if (peer_core == core)
+      continue; // issuing SM already written by caller
+    memory_space *peer_smem = peer_core->get_cta_smem(hw_cta_id);
+    if (peer_smem) {
+      copy_mem(src_smem, smem_addr, peer_smem, smem_addr, size_in_bytes,
+               thread, pI);
+    }
+  }
+}
+
 // Check 16-byte alignment for TMA addresses and size
 static void check_tma_alignment(uint64_t dst_addr, uint64_t src_addr,
                                 uint32_t size_in_bytes) {
@@ -2354,7 +2386,8 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
   if ((dst_option == CTA_OPTION || dst_option == CLUSTER_OPTION) &&
       src_option == GLOBAL_OPTION &&
       completion_option == TMA_MBAR_COMPLETE_BYTES) {
-    // shared::cta/shared::cluster <- global with MBAR completion
+    // shared::cta/shared::cluster <- global with MBAR completion.
+    // For .shared::cluster, data is replicated to every SM in the cluster.
     auto dst_addr = get_operand_u32(thread, pI->dst());
     auto src_addr = get_operand_u64(thread, pI->src1());
     auto size_in_bytes = get_operand_u32(thread, pI->src2());
@@ -2362,9 +2395,10 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
 
     check_tma_alignment(dst_addr, src_addr, size_in_bytes);
 
+    bool is_cluster = (dst_option == CLUSTER_OPTION);
     inst_t::tma_static_info_t tma_static_info{
         .tma_type = inst_t::tma_static_info_t::TMA_NORMAL,
-        .dst_space = dst_option == CLUSTER_OPTION
+        .dst_space = is_cluster
                          ? inst_t::tma_static_info_t::TMA_SHARED_CLUSTER
                          : inst_t::tma_static_info_t::TMA_SHARED_CTA,
         .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
@@ -2382,15 +2416,20 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
     copy_mem(global_mem, src_addr, shared_mem, dst_addr, size_in_bytes, thread,
              pI);
 
+    // TMA cluster multicast: replicate to peer SMs' shared memory.
+    if (is_cluster) {
+      multicast_smem_to_cluster(shared_mem, dst_addr, size_in_bytes, thread,
+                                pI);
+    }
+
     GPPRINTF_INST_EXEC(TMA,
                        "Functional Sim: "
                        "TMA shared::%s <- global dst=0x%x, src=0x%llx, "
                        "size_in_bytes=%u, mbar=0x%x\n",
-                       dst_option == CLUSTER_OPTION ? "cluster" : "cta",
-                       dst_addr, (unsigned long long)src_addr, size_in_bytes,
-                       mbar_addr);
+                       is_cluster ? "cluster" : "cta", dst_addr,
+                       (unsigned long long)src_addr, size_in_bytes, mbar_addr);
 
-  } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION &&
+ } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION &&
              completion_option == BULK_GROUP_OPTION) {
     // global <- shared::cta with bulk group completion
     auto dst_addr = get_operand_u64(thread, pI->dst());
@@ -2530,13 +2569,14 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     tensormap_descriptor_t tensormap;
     int32_t coords[5];
     uint32_t size_in_bytes;
-    setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
-                     pI->get_operands()[2], thread, tensormap, coords,
-                     size_in_bytes);
+   setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
+                    pI->get_operands()[2], thread, tensormap, coords,
+                    size_in_bytes);
 
+    bool is_cluster = (dst_option == CLUSTER_OPTION);
     inst_t::tma_static_info_t tma_static_info{
         .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
-        .dst_space = dst_option == CLUSTER_OPTION
+        .dst_space = is_cluster
                          ? inst_t::tma_static_info_t::TMA_SHARED_CLUSTER
                          : inst_t::tma_static_info_t::TMA_SHARED_CTA,
         .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
@@ -2558,7 +2598,13 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     do_tma_transfer(tensormap, coords, shared_mem, global_mem, dst_addr, thread,
                     pI, true);
 
-  } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION) {
+    // TMA cluster multicast: replicate to peer SMs' shared memory.
+    if (is_cluster) {
+      multicast_smem_to_cluster(shared_mem, dst_addr, size_in_bytes, thread,
+                                pI);
+    }
+
+ } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION) {
     // Tensor store: global <- shared
     assert(completion_option == BULK_GROUP_OPTION &&
            "Only bulk_group completion option is supported for "

@@ -42,6 +42,7 @@
 #include "../cuda-sim/ptx_sim.h"
 #include "ptx.tab.h"
 #include "../cuda-sim/dyn_ptx_inst.h"
+#include "../cuda-sim/memory.h"
 #include "../statwrapper.h"
 #include "addrdec.h"
 #include "dram.h"
@@ -337,9 +338,10 @@ void shader_core_ctx::create_front_pipeline() {
 
   m_not_completed = 0;
   m_active_threads.reset();
-  m_n_active_cta = 0;
-  for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_status[i] = 0;
-  for (unsigned i = 0; i < m_config->n_thread_per_shader; i++) {
+ m_n_active_cta = 0;
+ for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_status[i] = 0;
+ for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_smem[i] = NULL;
+ for (unsigned i = 0; i < m_config->n_thread_per_shader; i++) {
     m_thread[i] = NULL;
     m_threadState[i].m_cta_id = -1;
     m_threadState[i].m_active = false;
@@ -864,6 +866,11 @@ int shader_core_ctx::get_logical_cta_id(unsigned warp_id) const {
     }
   }
   return -1;
+}
+
+memory_space *shader_core_ctx::get_cta_smem(unsigned hw_cta_id) const {
+  assert(hw_cta_id < MAX_CTA_PER_SHADER);
+  return m_cta_smem[hw_cta_id];
 }
 
 int shader_core_ctx::get_cta_warp_id(unsigned warp_id) const {
@@ -4537,6 +4544,7 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
   m_barriers.cleanup_cta_bulk_groups(cta_num);
   if (m_tma != nullptr) m_tma->cleanup_cta(cta_num);
   m_wgmma.cleanup_cta(cta_num);
+  m_cta_smem[cta_num] = NULL;  // Clear shared memory pointer for TMA multicast
   shader_CTA_count_unlog(m_sid, 1);
 
   SHADER_GPPRINTF(

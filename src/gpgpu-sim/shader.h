@@ -80,6 +80,7 @@
 
 class gpgpu_context;
 class memory_stats_manager_t;
+class memory_space;
 
 enum exec_unit_type_t {
   NONE = 0,
@@ -2466,11 +2467,12 @@ class shader_core_ctx : public core_t {
     else
       return 0;
   }
-  kernel_info_t *get_kernel() { return m_kernel; }
-  unsigned get_sid() const { return m_sid; }
+ kernel_info_t *get_kernel() { return m_kernel; }
+ unsigned get_sid() const { return m_sid; }
+  class simt_core_cluster *get_cluster() const { return m_cluster; }
 
-  // Get logical CTA ID and logical Warp ID from hardware warp ID
-  int get_logical_cta_id(unsigned warp_id) const;
+ // Get logical CTA ID and logical Warp ID from hardware warp ID
+ int get_logical_cta_id(unsigned warp_id) const;
   int get_cta_warp_id(unsigned warp_id) const;
 
   // used by functional simulation:
@@ -2501,11 +2503,15 @@ class shader_core_ctx : public core_t {
   void warp_inst_complete(const warp_inst_t &inst);
   void complete_inst_without_writeback(warp_inst_t *inst);
 
-  // accessors
-  std::list<unsigned> get_regs_written(const inst_t &fvt) const;
-  const shader_core_config *get_config() const { return m_config; }
-  void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
-                         unsigned &dl1_misses);
+ // accessors
+ std::list<unsigned> get_regs_written(const inst_t &fvt) const;
+ const shader_core_config *get_config() const { return m_config; }
+
+  // Cluster TMA multicast: return shared memory of a CTA running on this SM.
+  // Returns nullptr if the CTA slot is not currently occupied.
+  class memory_space *get_cta_smem(unsigned hw_cta_id) const;
+ void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
+                        unsigned &dl1_misses);
 
   void get_cache_stats(cache_stats &cs);
   void get_L1I_sub_stats(struct cache_sub_stats &css) const;
@@ -2977,12 +2983,16 @@ class shader_core_ctx : public core_t {
   int find_available_hwtid(unsigned int cta_size, bool occupy);
 
  private:
-  unsigned int m_occupied_n_threads;
-  unsigned int m_occupied_shmem;
-  unsigned int m_occupied_regs;
-  unsigned int m_occupied_ctas;
-  std::bitset<MAX_THREAD_PER_SM> m_occupied_hwtid;
-  std::map<unsigned int, unsigned int> m_occupied_cta_to_hwtid;
+ unsigned int m_occupied_n_threads;
+ unsigned int m_occupied_shmem;
+ unsigned int m_occupied_regs;
+ unsigned int m_occupied_ctas;
+ std::bitset<MAX_THREAD_PER_SM> m_occupied_hwtid;
+ std::map<unsigned int, unsigned int> m_occupied_cta_to_hwtid;
+
+  // Per-CTA shared memory pointer, indexed by hardware CTA slot.
+  // Used by TMA cluster multicast to write data to other SMs' CTAs.
+  class memory_space *m_cta_smem[MAX_CTA_PER_SHADER];
 };
 
 class exec_shader_core_ctx : public shader_core_ctx {
@@ -3068,6 +3078,13 @@ class simt_core_cluster {
   virtual void create_shader_core_ctx() = 0;
 
   void aggregate_stats();
+
+  // Cluster accessors for TMA multicast and distributed shared memory.
+  shader_core_ctx *get_core(unsigned cid) const {
+    assert(cid < m_config->n_simt_cores_per_cluster);
+    return m_core[cid];
+  }
+  unsigned num_cores() const { return m_config->n_simt_cores_per_cluster; }
 
  protected:
   unsigned m_cluster_id;
