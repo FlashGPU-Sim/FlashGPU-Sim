@@ -68,7 +68,7 @@ __device__ inline void cp_async_bulk_cluster(void *smem_dst,
 template <int CHUNK_BYTES, bool USE_CLUSTER>
 __global__ void tmaLoadKernel(const uint8_t *global_src, uint8_t *global_dst,
                                int total_bytes) {
-  extern __shared__ uint8_t smem[];
+  __shared__ uint8_t smem[CHUNK_BYTES + 64];
   __shared__ unsigned long long bar;
   __shared__ volatile int done;
 
@@ -135,14 +135,14 @@ protected:
               cudaSuccess);
     ASSERT_EQ(cudaMemset(d_dst, 0xff, CHUNK_BYTES * NUM_BLOCKS), cudaSuccess);
 
-    size_t smem_size = CHUNK_BYTES + 64;
+    
     if (use_cluster) {
       tmaLoadKernel<CHUNK_BYTES, true>
-          <<<NUM_BLOCKS, THREADS_PER_BLOCK, smem_size>>>(d_src, d_dst,
+          <<<NUM_BLOCKS, THREADS_PER_BLOCK>>>(d_src, d_dst,
                                                           CHUNK_BYTES);
     } else {
       tmaLoadKernel<CHUNK_BYTES, false>
-          <<<NUM_BLOCKS, THREADS_PER_BLOCK, smem_size>>>(d_src, d_dst,
+          <<<NUM_BLOCKS, THREADS_PER_BLOCK>>>(d_src, d_dst,
                                                           CHUNK_BYTES);
     }
 
