@@ -1419,7 +1419,7 @@ int main() {{
             ptxinfo_path = self.launchers_dir / f"{kernel_name}_launch{launch_id}_kernel.ptxinfo"
             self._generate_ptxinfo_sidecar(
                 cubin_file_path, ptx_path, ptxinfo_path, kernel_name)
-        
+
         # Generate Makefile. If PTX was found we'll produce steps to build a fatbin.
         makefile_path = self.launchers_dir / f"{kernel_name}_launch{launch_id}_Makefile"
         target_name = f"{kernel_name}_launch{launch_id}"

@@ -68,53 +68,6 @@ cd ..
 Use narrower targets when possible. For example, `hopper-fa2-small` builds only
 the four small split FA2 binaries instead of every FA2 case.
 
-## Run FA2 Small Simulator Cases
-
-The four-case queue used for the saved result table is committed at
-`test/jobs/fa2_small4.tsv`.
-
-```bash
-python3 test/scripts/run_sim_queue.py \
-  --root . \
-  --run-root test/run/FA2_SMALL4_REPRO_$(date +%Y%m%d_%H%M%S) \
-  --jobs test/jobs/fa2_small4.tsv \
-  --config SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA2_REGALLOC \
-  --max-parallel 4 \
-  --cpu-sets 0,2,4,6 8,10,12,14 16-19 20-23 \
-  --threads-per-job 4 \
-  --timeout 0 \
-  --cuda-path /usr/local/cuda-12.8 \
-  --cuda-version-number 12080 \
-  --gpgpusim-config gcc-13.3.0/cuda-12080/release
-```
-
-The queue writes `status/summary.tsv`; `gpu_tot_sim_cycle` is the cycle column
-used for comparison.
-
-## Saved FA2 Small Result
-
-The latest local result is recorded in:
-
-```text
-docs/results/fa2_small_tensor6_lat22_20260617.tsv
-docs/results/fa2_small_tensor6_lat22_20260617_logs/
-```
-
-Summary:
-
-```text
-H32D64FullB32S256      sim 154427 cycles, 102.951 us; H100 NCU 140113.9 cycles, 99.168 us
-H16D128FullB32S256     sim 126540 cycles, 84.360 us; H100 NCU 120424.2 cycles, 82.976 us
-H32D64CausalB32S256    sim 117846 cycles, 78.564 us; H100 NCU 123712.4 cycles, 86.016 us
-H16D128CausalB32S256   sim 111523 cycles, 74.349 us; H100 NCU 112769.7 cycles, 80.352 us
-```
-
-The H100 reference source on this machine was:
-
-```text
-test/run/H100_FA2_FULL_NCU_CUDA128_LOCAL_COPY_20260615_090305/fa2_vs_fa3_ext_ncu_cycles_time.csv
-```
-
 ## H100 NCU Collection
 
 For FA2 full NCU collection, build a CUDA 12.8 prebuilt bundle locally and move
