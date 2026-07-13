@@ -288,16 +288,14 @@ TEST_GROUP_BINARIES_fa3-sensitivity-extended = $(HOPPER_FA3_SENSITIVITY_EXTENDED
 
 # User-facing suite/target registry. One target is an independently buildable
 # and runnable architecture domain, not an individual Make target or gtest.
-TEST_SUITES = test fa microbench dev trace
+TEST_SUITES = test microbench dev trace
 
-SUITE_TARGETS_test = default sm90
-SUITE_TARGETS_fa = fa2 fa3
+SUITE_TARGETS_test = default sm90 fa2 fa3
 SUITE_TARGETS_microbench = default sm90
 SUITE_TARGETS_dev = default
 SUITE_TARGETS_trace = default
 
 SUITE_DEFAULT_TARGET_test = default
-SUITE_DEFAULT_TARGET_fa =
 SUITE_DEFAULT_TARGET_microbench = default
 SUITE_DEFAULT_TARGET_dev = default
 SUITE_DEFAULT_TARGET_trace = default
@@ -316,19 +314,19 @@ SUITE_TARGET_DEFAULT_CONFIG_test_sm90 = SM90_H100
 SUITE_TARGET_REQUIRED_CC_test_sm90 = 9.0
 SUITE_TARGET_CUDA_ARCH_test_sm90 = sm_90a
 
-SUITE_TARGET_BUILD_GROUP_fa_fa2 = fa2
-SUITE_TARGET_BINARY_GROUP_fa_fa2 = fa2
-SUITE_TARGET_EXECUTOR_fa_fa2 = fa2
-SUITE_TARGET_DEFAULT_CONFIG_fa_fa2 = SM90_H100
-SUITE_TARGET_REQUIRED_CC_fa_fa2 = 9.0
-SUITE_TARGET_CUDA_ARCH_fa_fa2 = sm_90a
+SUITE_TARGET_BUILD_GROUP_test_fa2 = fa2
+SUITE_TARGET_BINARY_GROUP_test_fa2 = fa2
+SUITE_TARGET_EXECUTOR_test_fa2 = fa2
+SUITE_TARGET_DEFAULT_CONFIG_test_fa2 = SM90_H100
+SUITE_TARGET_REQUIRED_CC_test_fa2 = 9.0
+SUITE_TARGET_CUDA_ARCH_test_fa2 = sm_90a
 
-SUITE_TARGET_BUILD_GROUP_fa_fa3 = fa3
-SUITE_TARGET_BINARY_GROUP_fa_fa3 = fa3
-SUITE_TARGET_EXECUTOR_fa_fa3 = gtest-single
-SUITE_TARGET_DEFAULT_CONFIG_fa_fa3 = SM90_H100
-SUITE_TARGET_REQUIRED_CC_fa_fa3 = 9.0
-SUITE_TARGET_CUDA_ARCH_fa_fa3 = sm_90a
+SUITE_TARGET_BUILD_GROUP_test_fa3 = fa3
+SUITE_TARGET_BINARY_GROUP_test_fa3 = fa3
+SUITE_TARGET_EXECUTOR_test_fa3 = gtest-single
+SUITE_TARGET_DEFAULT_CONFIG_test_fa3 = SM90_H100
+SUITE_TARGET_REQUIRED_CC_test_fa3 = 9.0
+SUITE_TARGET_CUDA_ARCH_test_fa3 = sm_90a
 
 SUITE_TARGET_BUILD_GROUP_microbench_default = microbench-default
 SUITE_TARGET_BINARY_GROUP_microbench_default = microbench-default

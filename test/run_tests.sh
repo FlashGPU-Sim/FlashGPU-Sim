@@ -64,10 +64,8 @@ usage() {
     echo "Usage: $0 [OPTIONS] ACTION SUITE [FILTER] [OPTIONS]"
     echo ""
     echo "Actions and suites:"
-    echo "  build test [--target default|sm90]"
-    echo "  run test [filter] [--target default|sm90]"
-    echo "  build fa --target fa2|fa3"
-    echo "  run fa [filter] --target fa2|fa3"
+    echo "  build test [--target default|sm90|fa2|fa3]"
+    echo "  run test [filter] [--target default|sm90|fa2|fa3]"
     echo "  build microbench [--target default|sm90]"
     echo "  run microbench [filter] [--target default|sm90]"
     echo "  build dev"
@@ -96,8 +94,8 @@ usage() {
     echo "  $0 run test"
     echo "  $0 run test '*MMAS8*' -c SM120_RTX5090_REDUCED"
     echo "  $0 run test --target sm90 '*WgmmaF16*'"
-    echo "  $0 run fa --target fa2 'Fa2PrefillFp16SmokeTest*'"
-    echo "  $0 run fa --target fa3 'Fa3FwdHdim128Fp16IntegrationTest*'"
+    echo "  $0 run test --target fa2 'Fa2PrefillFp16SmokeTest*'"
+    echo "  $0 run test --target fa3 'Fa3FwdHdim128Fp16IntegrationTest*'"
     echo "  $0 run microbench --target sm90 '*Wgmma*'"
 }
 
