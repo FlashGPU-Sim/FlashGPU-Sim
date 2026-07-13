@@ -54,13 +54,11 @@ run_test "SM120_RTX5090_REDUCED config is available" \
 
 # Test 4: --config flag is recognized
 run_test "--config flag is recognized" \
-    "$TEST_SCRIPT run --config SM120_RTX5090 --help 2>&1 | grep -qv 'Unknown option' || \
-     $TEST_SCRIPT --help 2>&1 | grep -q '\-\-config'"
+    "$TEST_SCRIPT list-configs --config SM120_RTX5090 &>/dev/null"
 
 # Test 5: -c short flag is recognized
 run_test "-c short flag is recognized" \
-    "$TEST_SCRIPT run -c SM120_RTX5090 --help 2>&1 | grep -qv 'Unknown option' || \
-     $TEST_SCRIPT --help 2>&1 | grep -q '\-c'"
+    "$TEST_SCRIPT list-configs -c SM120_RTX5090 &>/dev/null"
 
 # Test 6: Run directory exists for default config
 run_test "Run directory structure for SM120_RTX5090" \
@@ -84,8 +82,7 @@ run_test "Reduced config can be set up" \
 
 # Test 10: Invalid config name is rejected
 run_test "Invalid config name is rejected" \
-    "! $TEST_SCRIPT run --config INVALID_CONFIG_NAME 2>&1 | grep -qi 'error\|not found\|invalid' || \
-     $TEST_SCRIPT run --config INVALID_CONFIG_NAME &>/dev/null && false || true"
+    "! $TEST_SCRIPT refresh --config INVALID_CONFIG_NAME &>/dev/null"
 
 # Doc-guard tests for test configuration matrix (issue #28)
 run_test "Test configuration matrix file exists" \

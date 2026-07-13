@@ -242,6 +242,53 @@ HOPPER_FA3_SENSITIVITY_EXTENDED_TARGETS = \
 	$(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_NOPROFILE_TARGET) \
 	$(HOPPER_FA3_SENS_QK_PV_ONLY_NO_TMA_EXTENDED_REG_TIMELINE_TARGET)
 
+# Binary group manifest. run_tests.sh queries this list instead of duplicating
+# source, variant, or sensitivity mode arrays in shell.
+TEST_GROUPS = \
+	test \
+	bench \
+	dev \
+	hopper \
+	hopper-fa2 \
+	hopper-fa2-smoke \
+	hopper-fa2-small \
+	hopper-fa2-medium \
+	hopper-fa2-large \
+	hopper-fa2-sensitivity \
+	hopper-fa2-sensitivity-h1d128 \
+	hopper-fa2-sensitivity-large-d128-full \
+	hopper-fa2-large-h32d64-full \
+	hopper-fa2-large-h32d64-causal \
+	hopper-fa2-large-h16d128-full \
+	hopper-fa2-large-h16d128-causal \
+	hopper-fa3-extended \
+	hopper-fa3-single-tile \
+	hopper-fa3-h1d128-profile \
+	hopper-fa3-sensitivity \
+	hopper-fa3-sensitivity-extended
+
+TEST_GROUP_BINARIES_test = $(MAIN_TEST_TARGET)
+TEST_GROUP_BINARIES_bench = $(MICROBENCH_TARGETS)
+TEST_GROUP_BINARIES_dev = $(DEV_TEST_TARGET)
+TEST_GROUP_BINARIES_hopper = $(HOPPER_TARGETS)
+TEST_GROUP_BINARIES_hopper-fa2 = $(HOPPER_FA2_TARGETS)
+TEST_GROUP_BINARIES_hopper-fa2-smoke = $(HOPPER_FA2_SMOKE_TARGETS)
+TEST_GROUP_BINARIES_hopper-fa2-small = $(HOPPER_FA2_SMALL_TARGETS)
+TEST_GROUP_BINARIES_hopper-fa2-medium = $(HOPPER_FA2_MEDIUM_TARGETS)
+TEST_GROUP_BINARIES_hopper-fa2-large = $(HOPPER_FA2_LARGE_TARGETS)
+TEST_GROUP_BINARIES_hopper-fa2-sensitivity = $(HOPPER_FA2_SENSITIVITY_TARGETS)
+TEST_GROUP_BINARIES_hopper-fa2-sensitivity-h1d128 = $(HOPPER_FA2_SENSITIVITY_H1D128_TARGETS)
+TEST_GROUP_BINARIES_hopper-fa2-sensitivity-large-d128-full = $(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_TARGETS)
+TEST_GROUP_BINARIES_hopper-fa2-large-h32d64-full = $(BIN_DIR)/hopper/run_fa2_large_h32d64_full_tests
+TEST_GROUP_BINARIES_hopper-fa2-large-h32d64-causal = $(BIN_DIR)/hopper/run_fa2_large_h32d64_causal_tests
+TEST_GROUP_BINARIES_hopper-fa2-large-h16d128-full = $(BIN_DIR)/hopper/run_fa2_large_h16d128_full_tests
+TEST_GROUP_BINARIES_hopper-fa2-large-h16d128-causal = $(BIN_DIR)/hopper/run_fa2_large_h16d128_causal_tests
+TEST_GROUP_BINARIES_hopper-fa3-extended = $(HOPPER_FA3_EXTENDED_TARGET)
+TEST_GROUP_BINARIES_hopper-fa3-single-tile = $(HOPPER_FA3_SINGLE_TILE_TARGET)
+TEST_GROUP_BINARIES_hopper-fa3-h1d128-profile = $(HOPPER_FA3_H1D128_PROFILE_TARGET)
+TEST_GROUP_BINARIES_hopper-fa3-sensitivity = $(HOPPER_FA3_SENSITIVITY_TARGETS)
+TEST_GROUP_BINARIES_hopper-fa3-sensitivity-extended = $(HOPPER_FA3_SENSITIVITY_EXTENDED_TARGETS)
+
 # GPGPU-Sim related flags (from main project)
 GPGPUSIM_FLAGS = -DDEBUG=0
 
@@ -255,7 +302,22 @@ FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
 FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o
 FLASH_OBJ_DIR = $(OBJ_DIR)/flash
 
-.PHONY: all test bench standalone-bench cp-async-bench mma-standalone-bench tma-standalone-bench memory-standalone-bench dev hopper hopper-gtest prepare-fa3-flash-attention hopper-fa2 hopper-fa2-smoke hopper-fa2-small hopper-fa2-medium hopper-fa2-large hopper-fa2-sensitivity hopper-fa2-sensitivity-h1d128 hopper-fa2-sensitivity-large-d128-full hopper-fa2-large-h32d64-full hopper-fa2-large-h16d128-full hopper-fa2-large-h32d64-causal hopper-fa2-large-h16d128-causal hopper-fa3-extended hopper-fa3-single-tile hopper-fa3-h1d128-profile hopper-fa3-sensitivity hopper-fa3-sensitivity-extended wgmma-n16-chain wgmma-fp16-core wgmma-softmax-mix wgmma-rf-bandwidth clean help setup-gtest
+.PHONY: all test bench standalone-bench cp-async-bench mma-standalone-bench tma-standalone-bench memory-standalone-bench dev hopper hopper-gtest prepare-fa3-flash-attention hopper-fa2 hopper-fa2-smoke hopper-fa2-small hopper-fa2-medium hopper-fa2-large hopper-fa2-sensitivity hopper-fa2-sensitivity-h1d128 hopper-fa2-sensitivity-large-d128-full hopper-fa2-large-h32d64-full hopper-fa2-large-h16d128-full hopper-fa2-large-h32d64-causal hopper-fa2-large-h16d128-causal hopper-fa3-extended hopper-fa3-single-tile hopper-fa3-h1d128-profile hopper-fa3-sensitivity hopper-fa3-sensitivity-extended wgmma-n16-chain wgmma-fp16-core wgmma-softmax-mix wgmma-rf-bandwidth list-test-groups print-test-binaries clean help setup-gtest
+
+# Machine-readable manifest used by run_tests.sh.
+list-test-groups:
+	@printf '%s\n' $(TEST_GROUPS)
+
+print-test-binaries:
+	@if [ -z "$(TEST_GROUP)" ]; then \
+		echo "TEST_GROUP is required" >&2; \
+		exit 2; \
+	elif [ -z "$(filter $(TEST_GROUP),$(TEST_GROUPS))" ]; then \
+		echo "Unknown TEST_GROUP: $(TEST_GROUP)" >&2; \
+		exit 2; \
+	else \
+		printf '%s\n' $(TEST_GROUP_BINARIES_$(TEST_GROUP)); \
+	fi
 
 # Build everything (test + bench + dev)
 all: test bench dev
@@ -367,6 +429,7 @@ help:
 	@echo "  hopper-fa2-large - Build split FA2 large runners"
 	@echo "  hopper-fa2-sensitivity - Build FA2 H1/B1 sensitivity runners"
 	@echo "  hopper-fa2-sensitivity-h1d128 - Build FA2 H1D128 full/causal debug sensitivity runners"
+	@echo "  hopper-fa2-sensitivity-large-d128-full - Build FA2 large-D128 sensitivity runners"
 	@echo "  hopper-fa3-extended - Build FA3-only runner with extended GMMA shapes"
 	@echo "  hopper-fa3-single-tile - Build FA3 single-tile profiling runner"
 	@echo "  hopper-fa3-h1d128-profile - Build FA3 H1/D128/full profiling runner"
@@ -375,6 +438,8 @@ help:
 	@echo "  clean       - Clean all build artifacts"
 	@echo "  setup-gtest - Download and setup Google Test"
 	@echo "  run-tests   - Run all compiled tests"
+	@echo "  list-test-groups - List groups in the binary manifest"
+	@echo "  print-test-binaries TEST_GROUP=<group> - Print one group's binaries"
 	@echo "  help        - Show this help message"
 	@echo ""
 	@echo "Individual test targets:"

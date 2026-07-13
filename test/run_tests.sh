@@ -18,7 +18,7 @@ fi
 TEST_TIMEOUT=${TEST_TIMEOUT:-3600}
 TEST_VERBOSE=${TEST_VERBOSE:-1}
 DEBUG_TESTS=${DEBUG_TESTS:-0}
-FA2_BUILD_JOBS=${FA2_BUILD_JOBS:-4}
+HOPPER_BUILD_JOBS=${HOPPER_BUILD_JOBS:-${FA2_BUILD_JOBS:-4}}
 DEFAULT_GPU_CONFIG=${DEFAULT_GPU_CONFIG:-SM120_RTX5090}
 HOPPER_GPU_CONFIG=${HOPPER_GPU_CONFIG:-SM90_H100}
 GPU_CONFIG_EXPLICIT=0
@@ -52,7 +52,7 @@ run_command() {
 # Print usage
 usage() {
     echo "GPGPU-Sim Test Runner"
-    echo "Usage: $0 [OPTIONS] COMMAND [PATTERN]"
+    echo "Usage: $0 [OPTIONS] COMMAND [ARGUMENT] [OPTIONS]"
     echo ""
     echo "Commands:"
     echo "  build              Build all (test + bench + dev)"
@@ -63,8 +63,9 @@ usage() {
     echo "  build hopper-fa2   Build split FA2 forward-only Hopper tests"
     echo "  build hopper-fa2-smoke|small|medium|large"
     echo "                     Build one FA2 size group"
-    echo "  build hopper-fa2-sensitivity"
-    echo "                     Build FA2 H1/B1 sensitivity runners"
+    echo "  build hopper-fa2-sensitivity[-h1d128|-large-d128-full]"
+    echo "                     Build one FA2 sensitivity group"
+    echo "  build hopper-fa3-* Build one FA3 target declared by the Makefile"
     echo "  test               Run all verification tests and trace tests"
     echo "  test <pattern>     Run specific verification test only"
     echo "  hopper             Run all Hopper gtests"
@@ -87,6 +88,7 @@ usage() {
     echo "  -c, --config NAME  Use specific GPU configuration"
     echo "                     Default: $DEFAULT_GPU_CONFIG; Hopper default: $HOPPER_GPU_CONFIG"
     echo "  -h, --help         Show this help"
+    echo "  Options may appear before or after the command."
     echo ""
     echo "Examples:"
     echo "  $0 build                              # Build verification tests"
@@ -301,17 +303,17 @@ build_hopper_gtests() {
     fi
 }
 
-build_hopper_fa2_tests() {
+build_hopper_target() {
     local make_target="${1:-hopper-fa2}"
 
     build_gpgpusim
 
-    print_color $BLUE "Building FA2 Hopper gtests target '$make_target' (CUDA_ARCH: $HOPPER_CUDA_ARCH)..."
+    print_color $BLUE "Building Hopper target '$make_target' (CUDA_ARCH: $HOPPER_CUDA_ARCH)..."
     if [ "$DEBUG_TESTS" -eq 1 ]; then
-        run_command make -j"$FA2_BUILD_JOBS" CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" \
+        run_command make -j"$HOPPER_BUILD_JOBS" CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" \
             HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" "$make_target"
     else
-        run_command make -j"$FA2_BUILD_JOBS" HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" "$make_target"
+        run_command make -j"$HOPPER_BUILD_JOBS" HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" "$make_target"
     fi
 
     if [ $? -eq 0 ]; then
@@ -322,12 +324,44 @@ build_hopper_fa2_tests() {
     fi
 }
 
+# Query the Makefile-owned binary manifest for one test group.
+test_group_binaries() {
+    local group="$1"
+    make -s --no-print-directory print-test-binaries TEST_GROUP="$group"
+}
+
+test_group_exists() {
+    test_group_binaries "$1" >/dev/null 2>&1
+}
+
+single_test_group_binary() {
+    local group="$1"
+    local binaries=""
+    local count=0
+
+    if ! binaries="$(test_group_binaries "$group")"; then
+        print_color $RED "Unable to resolve test group: $group" >&2
+        return 1
+    fi
+
+    count="$(printf '%s\n' "$binaries" | sed '/^[[:space:]]*$/d' | wc -l)"
+    if [ "$count" -ne 1 ]; then
+        print_color $RED "Expected one binary for group '$group', found $count" >&2
+        return 1
+    fi
+
+    printf '%s\n' "$binaries"
+}
+
 # List available tests
 list_tests() {
     print_color $BLUE "Available test cases:"
 
     # Check if test binary exists
-    local TEST_BINARY="build/bin/run_all_tests"
+    local TEST_BINARY=""
+    if ! TEST_BINARY="$(single_test_group_binary test)"; then
+        return 1
+    fi
     local RUN_DIR="run/$GPU_CONFIG"
 
     if [ ! -f "$TEST_BINARY" ]; then
@@ -385,6 +419,21 @@ run_binary_with_filter() {
     local abs_bin="$1"
     local config_dir="$2"
     local filter="$3"
+    local match_rc=0
+
+    if [ ! -x "$abs_bin" ]; then
+        print_color $RED "Test executable not found or not executable: $abs_bin"
+        return 1
+    fi
+
+    gtest_binary_matches_filter "$abs_bin" "$config_dir" "$filter" || match_rc=$?
+    if [ "$match_rc" -eq 1 ]; then
+        print_color $RED "No tests in $(basename "$abs_bin") matched filter: $filter"
+        return 1
+    elif [ "$match_rc" -ne 0 ]; then
+        print_color $RED "Failed to list tests in: $abs_bin"
+        return 1
+    fi
 
     cd "$config_dir"
     local rc=0
@@ -448,19 +497,14 @@ gtest_name_matches_filter() {
     return 0
 }
 
-bench_binary_matches_filter() {
+gtest_binary_matches_filter() {
     local abs_bin="$1"
     local config_dir="$2"
     local filter="$3"
 
-    if [ "$filter" = "*" ]; then
-        return 0
-    fi
-
     local test_list=""
-    if ! test_list="$(cd "$config_dir" && "$abs_bin" --gtest_list_tests 2>/dev/null)"; then
-        print_color $YELLOW "Warning: failed to list tests for $(basename "$abs_bin"), running it anyway"
-        return 0
+    if ! test_list="$(cd "$config_dir" && "$abs_bin" --gtest_color=no --gtest_list_tests 2>/dev/null)"; then
+        return 2
     fi
 
     local suite=""
@@ -499,7 +543,10 @@ run_test_targets() {
 
     build_test_targets
 
-    local test_executable="build/bin/run_all_tests"
+    local test_executable=""
+    if ! test_executable="$(single_test_group_binary test)"; then
+        return 1
+    fi
     if [ ! -f "$test_executable" ]; then
         print_color $RED "Test executable not found: $test_executable"
         exit 1
@@ -567,15 +614,26 @@ run_bench_tests() {
     print_color $BLUE "Running microbenchmarks: ${test_name:-all} (config: $GPU_CONFIG)"
 
     local exit_code=0
+    local bench_manifest=""
+    if ! bench_manifest="$(test_group_binaries bench)"; then
+        print_color $RED "Unable to resolve microbenchmark binaries"
+        return 1
+    fi
+
     local -a bench_bins=()
-    while IFS= read -r bench_src; do
-        local bench_bin="$(pwd)/build/bin/${bench_src#src/microbench/}"
-        bench_bin="${bench_bin%.cc}"
+    while IFS= read -r bench_rel; do
+        [ -n "$bench_rel" ] || continue
+        local bench_bin="$(pwd)/$bench_rel"
         [ -f "$bench_bin" ] || continue
-        if bench_binary_matches_filter "$bench_bin" "$config_dir" "$filter"; then
+        local match_rc=0
+        gtest_binary_matches_filter "$bench_bin" "$config_dir" "$filter" || match_rc=$?
+        if [ "$match_rc" -eq 0 ]; then
             bench_bins+=("$bench_bin")
+        elif [ "$match_rc" -ne 1 ]; then
+            print_color $RED "Failed to list tests in microbenchmark: $bench_bin"
+            return 1
         fi
-    done < <(find src/microbench -type f -name '*_bench.cc' | sort)
+    done <<< "$bench_manifest"
 
     if [ ${#bench_bins[@]} -eq 0 ]; then
         print_color $YELLOW "No microbenchmark binaries matched pattern: ${test_name:-all}"
@@ -620,7 +678,11 @@ run_dev_tests() {
 
     print_color $BLUE "Running dev tests: ${test_name:-all} (config: $GPU_CONFIG)"
 
-    local dev_bin="$(pwd)/build/bin/run_dev_tests"
+    local dev_rel=""
+    if ! dev_rel="$(single_test_group_binary dev)"; then
+        return 1
+    fi
+    local dev_bin="$(pwd)/$dev_rel"
     if [ ! -f "$dev_bin" ]; then
         print_color $RED "Dev test binary not found: $dev_bin"
         exit 1
@@ -652,6 +714,10 @@ fa2_group_for_test_name() {
         echo "small"
     elif [[ "$test_name" == *Fa2PrefillFp16MediumTest* ]]; then
         echo "medium"
+    elif [[ "$test_name" == *Fa2PrefillFp16SensitivityH1D128Test* ]]; then
+        echo "sensitivity_h1d128"
+    elif [[ "$test_name" == *Fa2PrefillFp16SensitivityLargeD128FullTest* ]]; then
+        echo "sensitivity_large_d128_full"
     elif [[ "$test_name" == *Fa2PrefillFp16SensitivityTest* ]]; then
         echo "sensitivity"
     elif [[ "$test_name" == *Fa2PrefillFp16IntegrationTest* ]]; then
@@ -681,8 +747,8 @@ fa2_make_target_for_group_variant() {
     local variant="$2"
     if [[ "$group" == "all" ]]; then
         echo "hopper-fa2"
-    elif [[ "$group" == "sensitivity" ]]; then
-        echo "hopper-fa2-sensitivity"
+    elif [[ "$group" == sensitivity* ]]; then
+        echo "hopper-fa2-${group//_/-}"
     elif [[ "$group" == "large" && "$variant" != "all" ]]; then
         echo "hopper-fa2-large-${variant//_/-}"
     else
@@ -691,46 +757,27 @@ fa2_make_target_for_group_variant() {
 }
 
 run_fa2_split_binaries() {
-    local group="$1"
-    local variant="$2"
-    local filter="$3"
-    local config_dir="$4"
+    local make_target="$1"
+    local filter="$2"
+    local config_dir="$3"
     local exit_code=0
-    local groups=("smoke" "small" "medium" "large")
-    local variants=("h32d64_full" "h32d64_causal" "h16d128_full" "h16d128_causal")
+    local binary_manifest=""
 
-    if [[ "$group" == "sensitivity" ]]; then
-        local modes=("baseline" "skip_cp_async" "skip_mma" "skip_softmax" "fma_softmax")
-        for mode in "${modes[@]}"; do
-            local hopper_bin="$(pwd)/build/bin/hopper/run_fa2_sensitivity_${mode}_tests"
-            if [ ! -f "$hopper_bin" ]; then
-                print_color $RED "FA2 sensitivity gtest executable not found: $hopper_bin"
-                return 1
-            fi
-            print_color $BLUE "Running FA2 sensitivity gtests: ${mode} filter=$filter (config: $GPU_CONFIG)"
-            run_binary_with_filter "$hopper_bin" "$config_dir" "$filter" || exit_code=$?
-        done
-        return $exit_code
+    if ! binary_manifest="$(test_group_binaries "$make_target")"; then
+        print_color $RED "Unable to resolve FA2 binaries for target: $make_target"
+        return 1
     fi
 
-    if [[ "$group" != "all" ]]; then
-        groups=("$group")
-    fi
-    if [[ "$variant" != "all" ]]; then
-        variants=("$variant")
-    fi
-
-    for g in "${groups[@]}"; do
-        for v in "${variants[@]}"; do
-            local hopper_bin="$(pwd)/build/bin/hopper/run_fa2_${g}_${v}_tests"
-            if [ ! -f "$hopper_bin" ]; then
-                print_color $RED "FA2 Hopper gtest executable not found: $hopper_bin"
-                return 1
-            fi
-            print_color $BLUE "Running FA2 Hopper gtests: ${g}/${v} filter=$filter (config: $GPU_CONFIG)"
-            run_binary_with_filter "$hopper_bin" "$config_dir" "$filter" || exit_code=$?
-        done
-    done
+    while IFS= read -r binary_rel; do
+        [ -n "$binary_rel" ] || continue
+        local hopper_bin="$(pwd)/$binary_rel"
+        if [ ! -f "$hopper_bin" ]; then
+            print_color $RED "FA2 Hopper gtest executable not found: $hopper_bin"
+            return 1
+        fi
+        print_color $BLUE "Running FA2 gtests: $(basename "$hopper_bin") filter=$filter (config: $GPU_CONFIG)"
+        run_binary_with_filter "$hopper_bin" "$config_dir" "$filter" || exit_code=$?
+    done <<< "$binary_manifest"
 
     return $exit_code
 }
@@ -754,7 +801,7 @@ run_hopper_tests() {
         local fa2_group="$(fa2_group_for_test_name "$test_name")"
         local fa2_variant="$(fa2_variant_for_test_name "$test_name")"
         local fa2_make_target="$(fa2_make_target_for_group_variant "$fa2_group" "$fa2_variant")"
-        build_hopper_fa2_tests "$fa2_make_target"
+        build_hopper_target "$fa2_make_target"
     elif [ -n "$test_name" ]; then
         build_hopper_gtests
     else
@@ -772,9 +819,14 @@ run_hopper_tests() {
         local fa2_group="$(fa2_group_for_test_name "$test_name")"
         local fa2_variant="$(fa2_variant_for_test_name "$test_name")"
         local filter="*${test_name}*"
-        run_fa2_split_binaries "$fa2_group" "$fa2_variant" "$filter" "$config_dir" || exit_code=$?
+        local fa2_make_target="$(fa2_make_target_for_group_variant "$fa2_group" "$fa2_variant")"
+        run_fa2_split_binaries "$fa2_make_target" "$filter" "$config_dir" || exit_code=$?
     elif hopper_has_gtests; then
-        local hopper_bin="$(pwd)/build/bin/hopper/run_hopper_tests"
+        local hopper_rel=""
+        if ! hopper_rel="$(single_test_group_binary hopper)"; then
+            return 1
+        fi
+        local hopper_bin="$(pwd)/$hopper_rel"
         if [ ! -f "$hopper_bin" ]; then
             print_color $RED "Hopper gtest executable not found: $hopper_bin"
             exit 1
@@ -816,12 +868,14 @@ run_trace_tests() {
 
     local trace_bin_dir="$(pwd)/build/trace/bin"
     local exit_code=0
+    local matched_tests=0
 
     # Data-driven test names (must match configs in gpt2_data_driven_test.cu)
     local gpt2_data_driven_tests="gelu flash_attn layernorm residual_add linear"
 
     # Run GPT-2 embedding test (CPU reference, separate binary)
     if [ -z "$test_name" ] || [[ "embedding" == *"$test_name"* ]]; then
+        matched_tests=$((matched_tests + 1))
         print_color $BLUE "--- gpt2_embedding_test ---"
         (cd "$trace_bin_dir" && ./gpt2_embedding_test) || { exit_code=1; print_color $RED "FAILED: gpt2_embedding"; }
     fi
@@ -831,11 +885,15 @@ run_trace_tests() {
         if [ -n "$test_name" ] && [[ "$name" != *"$test_name"* ]]; then
             continue
         fi
+        matched_tests=$((matched_tests + 1))
         print_color $BLUE "--- gpt2_data_driven_test $name ---"
         (cd "$trace_bin_dir" && ./gpt2_data_driven_test "$name") || { exit_code=1; print_color $RED "FAILED: gpt2_$name"; }
     done
 
-    if [ $exit_code -eq 0 ]; then
+    if [ "$matched_tests" -eq 0 ]; then
+        print_color $RED "No trace tests matched pattern: $test_name"
+        return 1
+    elif [ $exit_code -eq 0 ]; then
         print_color $GREEN "✓ Trace tests passed!"
     else
         print_color $RED "✗ Trace tests failed!"
@@ -860,46 +918,110 @@ initialize_run_directory() {
     esac
 }
 
-# Parse command line arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        -v|--verbose)
-            TEST_VERBOSE=2
-            shift
+main() {
+    local command=""
+    local -a command_args=()
+
+    # Parse global options independently from the command so options work on
+    # either side of it. Positional arguments retain their original order.
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -v|--verbose)
+                TEST_VERBOSE=2
+                shift
+                ;;
+            -d|--debug)
+                DEBUG_TESTS=1
+                shift
+                ;;
+            -t|--timeout)
+                if [ $# -lt 2 ] || ! [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
+                    print_color $RED "--timeout requires a positive integer"
+                    return 1
+                fi
+                TEST_TIMEOUT="$2"
+                shift 2
+                ;;
+            -c|--config)
+                if [ $# -lt 2 ] || [ -z "$2" ]; then
+                    print_color $RED "--config requires a configuration name"
+                    return 1
+                fi
+                GPU_CONFIG="$2"
+                GPU_CONFIG_EXPLICIT=1
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                return 0
+                ;;
+            --)
+                shift
+                while [[ $# -gt 0 ]]; do
+                    if [ -z "$command" ]; then
+                        command="$1"
+                    else
+                        command_args+=("$1")
+                    fi
+                    shift
+                done
+                ;;
+            -*)
+                print_color $RED "Unknown option: $1"
+                return 1
+                ;;
+            *)
+                if [ -z "$command" ]; then
+                    command="$1"
+                else
+                    command_args+=("$1")
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [ -z "$command" ]; then
+        usage
+        return 0
+    fi
+
+    case "$command" in
+        build|test|bench|dev|hopper|trace)
+            if [ "${#command_args[@]}" -gt 1 ]; then
+                print_color $RED "$command accepts at most one argument"
+                return 1
+            fi
             ;;
-        -d|--debug)
-            DEBUG_TESTS=1
-            shift
+        setup|refresh|clean|list|list-configs|help)
+            if [ "${#command_args[@]}" -ne 0 ]; then
+                print_color $RED "$command does not accept arguments"
+                return 1
+            fi
             ;;
-        -t|--timeout)
-            TEST_TIMEOUT="$2"
-            shift 2
-            ;;
-        -c|--config)
-            GPU_CONFIG="$2"
-            GPU_CONFIG_EXPLICIT=1
-            shift 2
-            ;;
-        -h|--help)
+        *)
+            print_color $RED "Unknown command: $command"
             usage
-            exit 0
+            return 1
             ;;
+    esac
+
+    local argument="${command_args[0]:-}"
+    case "$command" in
         setup)
             setup_environment
-            exit 0
             ;;
         refresh)
             print_color $BLUE "Refreshing run directory and configuration..."
             setup_run_directory "force"
             print_color $GREEN "Run directory refreshed!"
-            exit 0
             ;;
         build)
-            if [ "${2:-}" = "hopper" ] || [[ "${2:-}" == hopper-fa2* ]]; then
+            if [[ "$argument" == hopper* ]]; then
                 use_hopper_default_config
             fi
-            initialize_run_directory "build"
-            case "${2:-}" in
+            initialize_run_directory build
+            case "$argument" in
                 test)
                     build_test_targets
                     ;;
@@ -910,18 +1032,7 @@ while [[ $# -gt 0 ]]; do
                     build_dev_tests
                     ;;
                 hopper)
-                    if [ -n "${3:-}" ]; then
-                        print_color $RED "build hopper does not accept a pattern; use '$0 hopper ${3}' to run a filtered Hopper gtest."
-                        exit 1
-                    fi
                     build_hopper_tests
-                    ;;
-                hopper-fa2*)
-                    if [ -n "${3:-}" ]; then
-                        print_color $RED "build hopper-fa2 does not accept a pattern; use '$0 hopper ${3}' to run a filtered FA2 Hopper gtest."
-                        exit 1
-                    fi
-                    build_hopper_fa2_tests "$2"
                     ;;
                 trace)
                     build_gpgpusim
@@ -932,66 +1043,58 @@ while [[ $# -gt 0 ]]; do
                     build_bench_tests
                     build_dev_tests
                     ;;
+                hopper-*)
+                    if ! test_group_exists "$argument"; then
+                        print_color $RED "Unknown Hopper build target: $argument"
+                        return 1
+                    fi
+                    build_hopper_target "$argument"
+                    ;;
                 *)
-                    print_color $RED "Unknown build target: $2 (use 'test', 'bench', 'dev', 'hopper', 'hopper-fa2*', or 'trace')"
-                    exit 1
+                    print_color $RED "Unknown build target: $argument"
+                    return 1
                     ;;
             esac
-            exit 0
             ;;
         test)
-            initialize_run_directory "test"
-            run_test_targets "$2" || exit $?
-            if [ -n "${2:-}" ]; then
-                exit 0
+            initialize_run_directory test
+            run_test_targets "$argument" || return $?
+            if [ -z "$argument" ]; then
+                run_trace_tests
             fi
-            run_trace_tests
-            exit $?
             ;;
         bench)
-            initialize_run_directory "bench"
-            run_bench_tests "$2"
-            exit $?
+            initialize_run_directory bench
+            run_bench_tests "$argument"
             ;;
         dev)
-            initialize_run_directory "dev"
-            run_dev_tests "$2"
-            exit $?
+            initialize_run_directory dev
+            run_dev_tests "$argument"
             ;;
         hopper)
             use_hopper_default_config
-            initialize_run_directory "hopper"
-            run_hopper_tests "$2"
-            exit $?
+            initialize_run_directory hopper
+            run_hopper_tests "$argument"
             ;;
         trace)
-            initialize_run_directory "trace"
-            run_trace_tests "$2"
-            exit $?
+            initialize_run_directory trace
+            run_trace_tests "$argument"
             ;;
         clean)
             clean_tests
-            exit 0
             ;;
         list)
             list_tests
-            exit 0
             ;;
         list-configs)
             list_configs
-            exit 0
             ;;
         help)
             usage
-            exit 0
-            ;;
-        *)
-            print_color $RED "Unknown option: $1"
-            usage
-            exit 1
             ;;
     esac
-done
+}
 
-# If no command specified, show usage
-usage
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
