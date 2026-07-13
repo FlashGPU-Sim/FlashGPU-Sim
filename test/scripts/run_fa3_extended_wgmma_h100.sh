@@ -12,7 +12,7 @@ export PATH="${CUDA_INSTALL_PATH}/bin:${PATH}"
 export LD_LIBRARY_PATH="${CUDA_INSTALL_PATH}/lib64:${LD_LIBRARY_PATH:-}"
 
 OUT_DIR="${OUT_DIR:-${TEST_DIR}/run/H100_FA3_EXT_WGMMA_$(date +%Y%m%d_%H%M%S)}"
-FA3_CASES="${FA3_CASES:-H1D128B1S4096}"
+FA3_CASES="${FA3_CASES:-H1D128FullB1S4096}"
 JOBS="${JOBS:-8}"
 NCU_SET="${NCU_SET:-full}"
 NCU_METRICS="${NCU_METRICS:-}"
@@ -40,7 +40,7 @@ nvidia-smi | tee "${OUT_DIR}/provenance/nvidia_smi.txt"
 make -C "${TEST_DIR}" -j"${JOBS}" \
   HOPPER_CUDA_ARCH=sm_90a \
   CUDA_ARCH=sm_90a \
-  build/bin/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_extended_tests \
+  build/bin/hopper/run_fa3_qk_pv_only_no_tma_extended_tests \
   build/bin/wgmma/wgmma_n16_chain_bench \
   2>&1 | tee "${OUT_DIR}/logs/build.log"
 
@@ -52,7 +52,7 @@ fi
 
 run_fa3_extended() {
   local variant="qk_pv_only_no_tma_extended"
-  local bin="${TEST_DIR}/build/bin/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_extended_tests"
+  local bin="${TEST_DIR}/build/bin/hopper/run_fa3_qk_pv_only_no_tma_extended_tests"
   local clock_csv="${OUT_DIR}/clock/${variant}.csv"
   local iter_csv="${OUT_DIR}/clock/${variant}_iter.csv"
   local timeline_csv="${OUT_DIR}/clock/${variant}_timeline.csv"

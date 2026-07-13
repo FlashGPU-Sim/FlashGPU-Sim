@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="${ROOT:-/data/wzr/flashgpu-sim-blackwell/flashgpu-sim}"
 OUT="${OUT:-${ROOT}/test/run/FA3_SYNC_NOPROFILE_REGTIMELINE_SIM_$(date +%Y%m%d_%H%M%S)}"
 CONFIG="${CONFIG:-SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700}"
-CASE="${FA3_CASES:-H1D128B1S4096}"
+CASE="${FA3_CASES:-H1D128FullB1S4096}"
 CONFIG_SRC="${ROOT}/configs/${CONFIG}"
 
 export CUDA_INSTALL_PATH="${CUDA_INSTALL_PATH:-/usr/local/cuda-12.8}"
@@ -54,11 +54,11 @@ run_one() {
 }
 
 run_one qk_pv_only_no_tma_noprofile \
-  run_fa3_sensitivity_qk_pv_only_no_tma_noprofile_tests
+  run_fa3_qk_pv_only_no_tma_noprofile_tests
 run_one sync_only_no_tma_noprofile \
-  run_fa3_sensitivity_sync_only_no_tma_noprofile_tests
+  run_fa3_sync_only_no_tma_noprofile_tests
 run_one qk_pv_only_no_tma_reg_timeline \
-  run_fa3_sensitivity_qk_pv_only_no_tma_reg_timeline_tests
+  run_fa3_qk_pv_only_no_tma_reg_timeline_tests
 
 echo "${OUT}" >"${OUT}/result_dir.txt"
 cat "${OUT}"/*/sanity.txt >"${OUT}/summary.txt" 2>/dev/null || true

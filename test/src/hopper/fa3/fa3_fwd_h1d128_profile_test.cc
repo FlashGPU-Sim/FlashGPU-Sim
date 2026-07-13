@@ -49,14 +49,6 @@ constexpr Fa3PrefillCase kD128FullProfileCases[] = {
     // Minimal-H/B causal repro cases.
     {"H1D128CausalB1S512", 1, 512, 1, 128, true},
 
-    // Short aliases for interactive use.
-    {"H1D128B1S128", 1, 128, 1, 128, false},
-    {"H1D128B1S256", 1, 256, 1, 128, false},
-    {"H1D128B1S512", 1, 512, 1, 128, false},
-    {"H1D128B1S1024", 1, 1024, 1, 128, false},
-    {"H1D128B1S2048", 1, 2048, 1, 128, false},
-    {"H1D128B1S4096", 1, 4096, 1, 128, false},
-    {"H1D128B1S8192", 1, 8192, 1, 128, false},
 };
 
 std::vector<std::string> ParseCaseNames() {

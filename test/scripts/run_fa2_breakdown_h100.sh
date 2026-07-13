@@ -24,7 +24,7 @@ if [[ -n "${PREBUILT_ROOT:-}" && -d "${PREBUILT_ROOT}/lib64" ]]; then
   export LD_LIBRARY_PATH="${PREBUILT_ROOT}/lib64:${LD_LIBRARY_PATH}"
 fi
 
-OUT_DIR="${OUT_DIR:-${TEST_DIR}/run/H100_FA2_SENSITIVITY_$(date +%Y%m%d_%H%M%S)}"
+OUT_DIR="${OUT_DIR:-${TEST_DIR}/run/H100_FA2_BREAKDOWN_$(date +%Y%m%d_%H%M%S)}"
 NCU_SET="${NCU_SET:-full}"
 NCU_METRICS="${NCU_METRICS:-}"
 NCU_KERNEL_NAME="${NCU_KERNEL_NAME:-regex:.*flash_fwd_kernel.*}"
@@ -35,15 +35,15 @@ FORCE="${FORCE:-0}"
 SELECT_CASES="${SELECT_CASES:-}"
 
 CASES=(
-  "baseline|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16SensitivityTest.H1D128FullB1S256|run_fa2_sensitivity_baseline_tests"
-  "skip_cp_async|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16SensitivityTest.H1D128FullB1S256|run_fa2_sensitivity_skip_cp_async_tests"
-  "skip_mma|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16SensitivityTest.H1D128FullB1S256|run_fa2_sensitivity_skip_mma_tests"
-  "skip_softmax|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16SensitivityTest.H1D128FullB1S256|run_fa2_sensitivity_skip_softmax_tests"
-  "fma_softmax|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16SensitivityTest.H1D128FullB1S256|run_fa2_sensitivity_fma_softmax_tests"
-  "only_mma|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16SensitivityTest.H1D128FullB1S256|run_fa2_sensitivity_only_mma_tests"
-  "only_cp_async|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16SensitivityTest.H1D128FullB1S256|run_fa2_sensitivity_only_cp_async_tests"
-  "only_softmax|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16SensitivityTest.H1D128FullB1S256|run_fa2_sensitivity_only_softmax_tests"
-  "nothing|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16SensitivityTest.H1D128FullB1S256|run_fa2_sensitivity_nothing_tests"
+  "baseline|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16BreakdownTest.H1D128FullB1S256|run_fa2_breakdown_baseline_tests"
+  "skip_cp_async|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16BreakdownTest.H1D128FullB1S256|run_fa2_breakdown_skip_cp_async_tests"
+  "skip_mma|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16BreakdownTest.H1D128FullB1S256|run_fa2_breakdown_skip_mma_tests"
+  "skip_softmax|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16BreakdownTest.H1D128FullB1S256|run_fa2_breakdown_skip_softmax_tests"
+  "fma_softmax|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16BreakdownTest.H1D128FullB1S256|run_fa2_breakdown_fma_softmax_tests"
+  "only_mma|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16BreakdownTest.H1D128FullB1S256|run_fa2_breakdown_only_mma_tests"
+  "only_cp_async|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16BreakdownTest.H1D128FullB1S256|run_fa2_breakdown_only_cp_async_tests"
+  "only_softmax|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16BreakdownTest.H1D128FullB1S256|run_fa2_breakdown_only_softmax_tests"
+  "nothing|H1D128FullB1S256|1|256|1|128|full|Fa2PrefillFp16BreakdownTest.H1D128FullB1S256|run_fa2_breakdown_nothing_tests"
 )
 
 csv_header() {
@@ -62,10 +62,10 @@ print_cases() {
 usage() {
   cat <<'EOF'
 Usage:
-  run_fa2_sensitivity_h100.sh [--print-cases|--dry-run]
+  run_fa2_breakdown_h100.sh [--print-cases|--dry-run]
 
 Environment:
-  PREBUILT_ROOT     Directory containing bin/run_fa2_sensitivity_*_tests.
+  PREBUILT_ROOT     Directory containing bin/run_fa2_breakdown_*_tests.
   CUDA_INSTALL_PATH CUDA root, default /usr/local/cuda-12.8.
   OUT_DIR           Output directory.
   NCU_SET           Nsight Compute section set, default full.

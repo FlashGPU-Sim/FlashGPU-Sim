@@ -12,7 +12,7 @@ export PATH="${CUDA_INSTALL_PATH}/bin:${PATH}"
 export LD_LIBRARY_PATH="${CUDA_INSTALL_PATH}/lib64:${LD_LIBRARY_PATH:-}"
 
 JOBS="${JOBS:-8}"
-OUT_DIR="${OUT_DIR:-${TEST_DIR}/run/FA2_SENSITIVITY_H1D128_PREBUILT_CUDA128_$(date +%Y%m%d_%H%M%S)}"
+OUT_DIR="${OUT_DIR:-${TEST_DIR}/run/FA2_BREAKDOWN_PREBUILT_CUDA128_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "${OUT_DIR}"
 OUT_DIR="$(cd "${OUT_DIR}" && pwd)"
 PREBUILT_ROOT="${OUT_DIR}/prebuilt"
@@ -41,16 +41,19 @@ make -C "${TEST_DIR}" -j"${JOBS}" \
   CUDA_PATH="${CUDA_PATH}" \
   HOPPER_CUDA_ARCH=sm_90a \
   CUDA_ARCH=sm_90a \
-  hopper-fa2-sensitivity-h1d128 \
-  2>&1 | tee "${LOG_DIR}/build_hopper_fa2_sensitivity_h1d128.log"
+  fa2-breakdown \
+  2>&1 | tee "${LOG_DIR}/build_hopper_fa2_breakdown.log"
 
 bins=(
-  run_fa2_sensitivity_h1d128_baseline_tests
-  run_fa2_sensitivity_h1d128_nothing_tests
-  run_fa2_sensitivity_h1d128_only_cp_async_tests
-  run_fa2_sensitivity_h1d128_only_softmax_tests
-  run_fa2_sensitivity_h1d128_only_mma_tests
-  run_fa2_sensitivity_h1d128_softmax_mma_tests
+  run_fa2_breakdown_baseline_tests
+  run_fa2_breakdown_skip_cp_async_tests
+  run_fa2_breakdown_skip_mma_tests
+  run_fa2_breakdown_skip_softmax_tests
+  run_fa2_breakdown_fma_softmax_tests
+  run_fa2_breakdown_only_mma_tests
+  run_fa2_breakdown_only_cp_async_tests
+  run_fa2_breakdown_only_softmax_tests
+  run_fa2_breakdown_nothing_tests
 )
 
 for bin_name in "${bins[@]}"; do
@@ -64,9 +67,8 @@ done
 
 cp -P "${CUDA_INSTALL_PATH}"/lib64/libcudart.so* "${LIB_DIR}/"
 
-cp -f "${SCRIPT_DIR}/run_fa2_sensitivity_h1d128_h100.sh" \
-  "${PREBUILT_ROOT}/run_fa2_sensitivity_h1d128_h100.sh"
-chmod +x "${PREBUILT_ROOT}/run_fa2_sensitivity_h1d128_h100.sh"
+cp -f "${SCRIPT_DIR}/run_fa2_breakdown_h100.sh" "${PREBUILT_ROOT}/run_fa2_breakdown_h100.sh"
+chmod +x "${PREBUILT_ROOT}/run_fa2_breakdown_h100.sh"
 
 cat >"${PREBUILT_ROOT}/run_remote.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -74,13 +76,12 @@ set -euo pipefail
 PREBUILT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PREBUILT_ROOT
 export CUDA_INSTALL_PATH="${CUDA_INSTALL_PATH:-/usr/local/cuda-12.8}"
-export OUT_DIR="${OUT_DIR:-${PREBUILT_ROOT}/../H100_FA2_SENSITIVITY_H1D128_$(date +%Y%m%d_%H%M%S)}"
-exec "${PREBUILT_ROOT}/run_fa2_sensitivity_h1d128_h100.sh" "$@"
+export OUT_DIR="${OUT_DIR:-${PREBUILT_ROOT}/../H100_FA2_BREAKDOWN_$(date +%Y%m%d_%H%M%S)}"
+exec "${PREBUILT_ROOT}/run_fa2_breakdown_h100.sh" "$@"
 EOF
 chmod +x "${PREBUILT_ROOT}/run_remote.sh"
 
-PREBUILT_ROOT="${PREBUILT_ROOT}" \
-  "${PREBUILT_ROOT}/run_fa2_sensitivity_h1d128_h100.sh" \
+PREBUILT_ROOT="${PREBUILT_ROOT}" "${PREBUILT_ROOT}/run_fa2_breakdown_h100.sh" \
   --print-cases >"${PREBUILT_ROOT}/case_manifest.csv"
 
 (
@@ -107,13 +108,13 @@ PREBUILT_ROOT="${PREBUILT_ROOT}" \
 {
   echo "binary_count=${#bins[@]}"
   echo "case_count=$(($(wc -l < "${PREBUILT_ROOT}/case_manifest.csv") - 1))"
-  echo "collector=${PREBUILT_ROOT}/run_fa2_sensitivity_h1d128_h100.sh"
+  echo "collector=${PREBUILT_ROOT}/run_fa2_breakdown_h100.sh"
   echo "remote_wrapper=${PREBUILT_ROOT}/run_remote.sh"
   echo "manifest=${PREBUILT_ROOT}/case_manifest.csv"
   echo "runtime_libs=${LIB_DIR}"
 } | tee "${PREBUILT_ROOT}/README.txt"
 
-tarball="${OUT_DIR}/fa2_sensitivity_h1d128_prebuilt_cuda128.tar.gz"
+tarball="${OUT_DIR}/fa2_breakdown_prebuilt_cuda128.tar.gz"
 tar -C "${OUT_DIR}" -czf "${tarball}" prebuilt
 
 echo "PREBUILT_ROOT=${PREBUILT_ROOT}"

@@ -11,8 +11,8 @@ export CUDA_PATH="${CUDA_PATH:-${CUDA_INSTALL_PATH}}"
 export PATH="${CUDA_INSTALL_PATH}/bin:${PATH}"
 export LD_LIBRARY_PATH="${CUDA_INSTALL_PATH}/lib64:${LD_LIBRARY_PATH:-}"
 
-OUT_DIR="${OUT_DIR:-${TEST_DIR}/run/H100_FA3_SYNC_SENS_$(date +%Y%m%d_%H%M%S)}"
-FA3_CASES="${FA3_CASES:-H1D128B1S4096}"
+OUT_DIR="${OUT_DIR:-${TEST_DIR}/run/H100_FA3_BREAKDOWN_$(date +%Y%m%d_%H%M%S)}"
+FA3_CASES="${FA3_CASES:-H1D128FullB1S4096}"
 JOBS="${JOBS:-8}"
 NCU_SET="${NCU_SET:-full}"
 NCU_METRICS="${NCU_METRICS:-}"
@@ -33,9 +33,9 @@ nvidia-smi | tee "${OUT_DIR}/provenance/nvidia_smi.txt"
 
 make -C "${TEST_DIR}" -j"${JOBS}" \
   HOPPER_CUDA_ARCH=sm_90a \
-  build/bin/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_tests \
-  build/bin/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_reg_timeline_tests \
-  build/bin/hopper/run_fa3_sensitivity_sync_only_no_tma_tests \
+  build/bin/hopper/run_fa3_qk_pv_only_no_tma_tests \
+  build/bin/hopper/run_fa3_qk_pv_only_no_tma_reg_timeline_tests \
+  build/bin/hopper/run_fa3_sync_only_no_tma_tests \
   2>&1 | tee "${OUT_DIR}/logs/build.log"
 
 if [[ -n "${NCU_METRICS}" ]]; then
@@ -82,12 +82,12 @@ run_variant() {
 
 run_variant \
   qk_pv_only_no_tma \
-  "${TEST_DIR}/build/bin/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_tests"
+  "${TEST_DIR}/build/bin/hopper/run_fa3_qk_pv_only_no_tma_tests"
 run_variant \
   qk_pv_only_no_tma_reg_timeline \
-  "${TEST_DIR}/build/bin/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_reg_timeline_tests"
+  "${TEST_DIR}/build/bin/hopper/run_fa3_qk_pv_only_no_tma_reg_timeline_tests"
 run_variant \
   sync_only_no_tma \
-  "${TEST_DIR}/build/bin/hopper/run_fa3_sensitivity_sync_only_no_tma_tests"
+  "${TEST_DIR}/build/bin/hopper/run_fa3_sync_only_no_tma_tests"
 
 echo "${OUT_DIR}" | tee "${OUT_DIR}/result_dir.txt"

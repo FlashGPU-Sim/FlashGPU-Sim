@@ -20,8 +20,8 @@ NCU_METRICS="${NCU_METRICS:-}"
 mkdir -p "${OUT_DIR}/clock" "${OUT_DIR}/ncu" "${OUT_DIR}/logs" \
   "${OUT_DIR}/provenance" "${OUT_DIR}/sass"
 
-PROFILE_BIN="${TEST_DIR}/build/bin/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_extended_tests"
-NOPROFILE_BIN="${TEST_DIR}/build/bin/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_extended_noprofile_tests"
+PROFILE_BIN="${TEST_DIR}/build/bin/hopper/run_fa3_qk_pv_only_no_tma_extended_tests"
+NOPROFILE_BIN="${TEST_DIR}/build/bin/hopper/run_fa3_qk_pv_only_no_tma_extended_noprofile_tests"
 GTEST_FILTER="Fa3H1D128ProfileTest.SelectedD128FullCases"
 
 {
@@ -42,8 +42,8 @@ nvidia-smi --query-gpu=name,driver_version,clocks.sm,clocks.max.sm,memory.total 
 make -C "${TEST_DIR}" -j"${JOBS}" \
   HOPPER_CUDA_ARCH=sm_90a \
   CUDA_ARCH=sm_90a \
-  build/bin/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_extended_tests \
-  build/bin/hopper/run_fa3_sensitivity_qk_pv_only_no_tma_extended_noprofile_tests \
+  build/bin/hopper/run_fa3_qk_pv_only_no_tma_extended_tests \
+  build/bin/hopper/run_fa3_qk_pv_only_no_tma_extended_noprofile_tests \
   2>&1 | tee "${OUT_DIR}/logs/build.log"
 
 dump_sass() {

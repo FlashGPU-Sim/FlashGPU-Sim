@@ -24,7 +24,7 @@ if [[ -n "${PREBUILT_ROOT:-}" && -d "${PREBUILT_ROOT}/lib64" ]]; then
   export LD_LIBRARY_PATH="${PREBUILT_ROOT}/lib64:${LD_LIBRARY_PATH}"
 fi
 
-OUT_DIR="${OUT_DIR:-${TEST_DIR}/run/H100_FA2_SENSITIVITY_H1D128_$(date +%Y%m%d_%H%M%S)}"
+OUT_DIR="${OUT_DIR:-${TEST_DIR}/run/H100_FA2_SCALING_$(date +%Y%m%d_%H%M%S)}"
 NCU_SET="${NCU_SET:-full}"
 NCU_METRICS="${NCU_METRICS:-}"
 NCU_KERNEL_NAME="${NCU_KERNEL_NAME:-regex:.*flash_fwd_kernel.*}"
@@ -44,7 +44,7 @@ csv_header() {
 emit_cases() {
   local variant seqlen mode case_name gtest_filter binary
   for variant in "${VARIANTS[@]}"; do
-    binary="run_fa2_sensitivity_h1d128_${variant}_tests"
+    binary="run_fa2_scaling_${variant}_tests"
     for mode in full causal; do
       for seqlen in "${SEQLENS[@]}"; do
         if [[ "${mode}" == "full" ]]; then
@@ -52,7 +52,7 @@ emit_cases() {
         else
           case_name="H1D128CausalB1S${seqlen}"
         fi
-        gtest_filter="Fa2PrefillFp16SensitivityH1D128Test.${case_name}"
+        gtest_filter="Fa2PrefillFp16ScalingTest.${case_name}"
         echo "${case_name}_${variant}_fwd|${variant}|${case_name}|1|${seqlen}|1|128|${mode}|${gtest_filter}|${binary}"
       done
     done
@@ -71,10 +71,10 @@ print_cases() {
 usage() {
   cat <<'EOF'
 Usage:
-  run_fa2_sensitivity_h1d128_h100.sh [--print-cases|--dry-run]
+  run_fa2_scaling_h100.sh [--print-cases|--dry-run]
 
 Environment:
-  PREBUILT_ROOT     Directory containing bin/run_fa2_sensitivity_h1d128_*_tests.
+  PREBUILT_ROOT     Directory containing bin/run_fa2_scaling_*_tests.
   CUDA_INSTALL_PATH CUDA root, default /usr/local/cuda-12.8.
   OUT_DIR           Output directory.
   NCU_SET           Nsight Compute section set, default full.

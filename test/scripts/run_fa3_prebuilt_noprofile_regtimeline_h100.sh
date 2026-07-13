@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CASE="${FA3_CASES:-H1D128B1S4096}"
+CASE="${FA3_CASES:-H1D128FullB1S4096}"
 NCU="${NCU:-/usr/local/cuda-13.0/bin/ncu}"
 
 mkdir -p "${ROOT}/clock" "${ROOT}/ncu" "${ROOT}/logs" "${ROOT}/provenance"
@@ -69,10 +69,10 @@ run_reg_timeline() {
 
 run_plain \
   qk_pv_only_no_tma_noprofile \
-  run_fa3_sensitivity_qk_pv_only_no_tma_noprofile_tests
+  run_fa3_qk_pv_only_no_tma_noprofile_tests
 run_plain \
   sync_only_no_tma_noprofile \
-  run_fa3_sensitivity_sync_only_no_tma_noprofile_tests
+  run_fa3_sync_only_no_tma_noprofile_tests
 run_reg_timeline \
   qk_pv_only_no_tma_reg_timeline \
-  run_fa3_sensitivity_qk_pv_only_no_tma_reg_timeline_tests
+  run_fa3_qk_pv_only_no_tma_reg_timeline_tests

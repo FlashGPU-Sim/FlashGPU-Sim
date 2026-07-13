@@ -26,6 +26,8 @@ if [ -n "${GPU_CONFIG:-}" ]; then
 fi
 GPU_CONFIG=${GPU_CONFIG:-$DEFAULT_GPU_CONFIG}  # Default GPU configuration
 REQUESTED_TARGET=""
+REQUESTED_GROUP=""
+REQUESTED_MODE=""
 
 # Resolved from the Makefile-owned suite/target registry.
 ACTIVE_SUITE=""
@@ -36,6 +38,10 @@ ACTIVE_EXECUTOR=""
 ACTIVE_DEFAULT_CONFIG=""
 ACTIVE_REQUIRED_CC=""
 ACTIVE_CUDA_ARCH=""
+ACTIVE_GROUP=""
+ACTIVE_MODE=""
+ACTIVE_DEFAULT_FILTER="*"
+ACTIVE_CASE_LIST=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -64,8 +70,10 @@ usage() {
     echo "Usage: $0 [OPTIONS] ACTION SUITE [FILTER] [OPTIONS]"
     echo ""
     echo "Actions and suites:"
-    echo "  build test [--target default|sm90|fa2|fa3]"
-    echo "  run test [filter] [--target default|sm90|fa2|fa3]"
+    echo "  build test [--target default|sm90]"
+    echo "  run test [filter] [--target default|sm90]"
+    echo "  build test --target fa2|fa3 --group NAME [--mode NAME|all]"
+    echo "  run test --target fa2|fa3 --group NAME [--mode NAME] [filter]"
     echo "  build microbench [--target default|sm90]"
     echo "  run microbench [filter] [--target default|sm90]"
     echo "  build dev"
@@ -87,6 +95,8 @@ usage() {
     echo "  -t, --timeout      Set test timeout (seconds)"
     echo "  -c, --config NAME  Use specific GPU configuration"
     echo "  --target NAME      Select one target within a suite"
+    echo "  --group NAME       Select a workload group for FA2/FA3"
+    echo "  --mode NAME        Select an analysis mode for FA2/FA3"
     echo "  -h, --help         Show this help"
     echo "  Options may appear before or after the command."
     echo ""
@@ -94,8 +104,9 @@ usage() {
     echo "  $0 run test"
     echo "  $0 run test '*MMAS8*' -c SM120_RTX5090_REDUCED"
     echo "  $0 run test --target sm90 '*WgmmaF16*'"
-    echo "  $0 run test --target fa2 'Fa2PrefillFp16SmokeTest*'"
-    echo "  $0 run test --target fa3 'Fa3FwdHdim128Fp16IntegrationTest*'"
+    echo "  $0 run test --target fa2 --group smoke 'Fa2PrefillFp16SmokeTest*'"
+    echo "  $0 run test --target fa2 --group breakdown --mode only_mma"
+    echo "  $0 run test --target fa3 --group scaling --mode baseline"
     echo "  $0 run microbench --target sm90 '*Wgmma*'"
 }
 
@@ -276,6 +287,21 @@ suite_target_list() {
     make -s --no-print-directory list-suite-targets SUITE="$suite"
 }
 
+target_group_list() {
+    local suite="$1"
+    local target="$2"
+    make -s --no-print-directory list-target-groups \
+        SUITE="$suite" SUITE_TARGET="$target"
+}
+
+target_group_mode_list() {
+    local suite="$1"
+    local target="$2"
+    local group="$3"
+    make -s --no-print-directory list-target-group-modes \
+        SUITE="$suite" SUITE_TARGET="$target" TARGET_GROUP="$group"
+}
+
 line_list_contains() {
     local list="$1"
     local expected="$2"
@@ -349,6 +375,75 @@ resolve_suite_target() {
     fi
 }
 
+resolve_target_group() {
+    local requested_group="${1:-}"
+    local requested_mode="${2:-}"
+    local groups=""
+    local modes=""
+    local metadata=""
+
+    if [ "$ACTIVE_EXECUTOR" != "group-required" ]; then
+        if [ -n "$requested_group" ] || [ -n "$requested_mode" ]; then
+            print_color $RED "$ACTIVE_SUITE/$ACTIVE_TARGET does not accept --group or --mode"
+            return 1
+        fi
+        ACTIVE_DEFAULT_FILTER="*"
+        return 0
+    fi
+
+    if ! groups="$(target_group_list "$ACTIVE_SUITE" "$ACTIVE_TARGET")"; then
+        print_color $RED "Unable to read groups for $ACTIVE_SUITE/$ACTIVE_TARGET"
+        return 1
+    fi
+    if [ -z "$requested_group" ]; then
+        print_color $RED "$ACTIVE_SUITE/$ACTIVE_TARGET requires --group"
+        print_color $YELLOW "Available groups: $(printf '%s' "$groups" | tr '\n' ' ')"
+        return 1
+    fi
+    if ! line_list_contains "$groups" "$requested_group"; then
+        print_color $RED "Unknown group '$requested_group' for $ACTIVE_SUITE/$ACTIVE_TARGET"
+        print_color $YELLOW "Available groups: $(printf '%s' "$groups" | tr '\n' ' ')"
+        return 1
+    fi
+
+    if ! modes="$(target_group_mode_list "$ACTIVE_SUITE" "$ACTIVE_TARGET" "$requested_group")"; then
+        print_color $RED "Unable to read modes for $ACTIVE_SUITE/$ACTIVE_TARGET/$requested_group"
+        return 1
+    fi
+    modes="$(printf '%s\n' "$modes" | sed '/^[[:space:]]*$/d')"
+    if [ -n "$modes" ] && [ -z "$requested_mode" ]; then
+        print_color $RED "$ACTIVE_SUITE/$ACTIVE_TARGET/$requested_group requires --mode"
+        print_color $YELLOW "Available modes: $(printf '%s' "$modes" | tr '\n' ' ')"
+        return 1
+    fi
+    if [ -z "$modes" ] && [ -n "$requested_mode" ]; then
+        print_color $RED "$ACTIVE_SUITE/$ACTIVE_TARGET/$requested_group does not accept --mode"
+        return 1
+    fi
+    if [ -n "$requested_mode" ] && ! line_list_contains "$modes" "$requested_mode"; then
+        print_color $RED "Unknown mode '$requested_mode' for $ACTIVE_SUITE/$ACTIVE_TARGET/$requested_group"
+        print_color $YELLOW "Available modes: $(printf '%s' "$modes" | tr '\n' ' ')"
+        return 1
+    fi
+
+    if ! metadata="$(make -s --no-print-directory print-target-group-metadata \
+        SUITE="$ACTIVE_SUITE" SUITE_TARGET="$ACTIVE_TARGET" \
+        TARGET_GROUP="$requested_group" TARGET_MODE="$requested_mode")"; then
+        print_color $RED "Unable to read metadata for $ACTIVE_SUITE/$ACTIVE_TARGET/$requested_group"
+        return 1
+    fi
+    IFS='|' read -r ACTIVE_BUILD_GROUP ACTIVE_BINARY_GROUP ACTIVE_EXECUTOR \
+        ACTIVE_DEFAULT_FILTER ACTIVE_CASE_LIST <<< "$metadata"
+    ACTIVE_GROUP="$requested_group"
+    ACTIVE_MODE="$requested_mode"
+
+    if [ -z "$ACTIVE_BUILD_GROUP" ] || [ -z "$ACTIVE_BINARY_GROUP" ] || \
+       [ -z "$ACTIVE_EXECUTOR" ] || [ -z "$ACTIVE_DEFAULT_FILTER" ]; then
+        print_color $RED "Incomplete group registry entry for $ACTIVE_SUITE/$ACTIVE_TARGET/$requested_group"
+        return 1
+    fi
+}
+
 validate_active_target_config() {
     local config_file="../configs/$GPU_CONFIG/gpgpusim.config"
     local major=""
@@ -379,6 +474,7 @@ prepare_suite_target() {
     local target="${2:-}"
 
     resolve_suite_target "$suite" "$target" || return $?
+    resolve_target_group "$REQUESTED_GROUP" "$REQUESTED_MODE" || return $?
     if [ "$GPU_CONFIG_EXPLICIT" -eq 0 ]; then
         GPU_CONFIG="$ACTIVE_DEFAULT_CONFIG"
     fi
@@ -563,6 +659,54 @@ gtest_binary_matches_filter() {
     return 1
 }
 
+# Resolve a user substring to exact tests while preserving a registry-owned
+# group filter. This prevents a filter from escaping its selected group when
+# several groups share one binary (FA3 standard workloads do this).
+gtest_binary_intersection_filter() {
+    local abs_bin="$1"
+    local config_dir="$2"
+    local group_filter="$3"
+    local test_name="$4"
+    local user_filter="*${test_name}*"
+    local test_list=""
+    local suite=""
+    local raw_line=""
+    local line=""
+    local resolved_filter=""
+    local full_name=""
+
+    if ! test_list="$(cd "$config_dir" && "$abs_bin" \
+        --gtest_color=no --gtest_list_tests 2>/dev/null)"; then
+        return 2
+    fi
+
+    while IFS= read -r raw_line; do
+        line="${raw_line%%#*}"
+        line="$(trim_whitespace "$line")"
+        [ -n "$line" ] || continue
+
+        if [[ "$raw_line" != " "* ]]; then
+            if [[ "$line" == *. ]]; then
+                suite="${line%.}"
+            fi
+            continue
+        fi
+
+        [ -n "$suite" ] || continue
+        full_name="$suite.$line"
+        if gtest_name_matches_filter "$full_name" "$group_filter" && \
+           gtest_name_matches_filter "$full_name" "$user_filter"; then
+            if [ -n "$resolved_filter" ]; then
+                resolved_filter+=":"
+            fi
+            resolved_filter+="$full_name"
+        fi
+    done <<< "$test_list"
+
+    [ -n "$resolved_filter" ] || return 1
+    printf '%s\n' "$resolved_filter"
+}
+
 # Run verification tests with optional pattern
 run_test_targets() {
     local test_name="${1:-}"
@@ -645,7 +789,20 @@ run_single_gtest_target() {
     local binary_path="$(pwd)/$binary_rel"
     local filter="$default_filter"
     if [ -n "$test_name" ]; then
-        filter="*${test_name}*"
+        if [ "$default_filter" = "*" ]; then
+            filter="*${test_name}*"
+        else
+            local filter_rc=0
+            filter="$(gtest_binary_intersection_filter "$binary_path" \
+                "$config_dir" "$default_filter" "$test_name")" || filter_rc=$?
+            if [ "$filter_rc" -eq 1 ]; then
+                print_color $RED "No tests in $label matched: $test_name"
+                return 1
+            elif [ "$filter_rc" -ne 0 ]; then
+                print_color $RED "Failed to resolve tests in: $binary_path"
+                return 1
+            fi
+        fi
     fi
 
     export GTEST_COLOR=yes
@@ -663,12 +820,14 @@ run_single_gtest_target() {
     fi
 }
 
-# Run microbenchmarks with pattern
-run_microbench_tests() {
-    local test_name="${1:-}"
-    local build_group="$2"
-    local binary_group="$3"
-    local cuda_arch="$4"
+# Run one logical target backed by one or more gtest binaries.
+run_multi_gtest_target() {
+    local label="$1"
+    local test_name="${2:-}"
+    local build_group="$3"
+    local binary_group="$4"
+    local cuda_arch="$5"
+    local default_filter="${6:-*}"
     local config_dir="run/${GPU_CONFIG}"
 
     if [ ! -d "$config_dir" ]; then
@@ -687,7 +846,7 @@ run_microbench_tests() {
         export GTEST_VERBOSITY=1
     fi
 
-    local filter="*"
+    local filter="$default_filter"
     if [ -n "$test_name" ]; then
         filter="*${test_name}*"
         if [[ "$test_name" == *.* && "$test_name" != */* ]]; then
@@ -697,12 +856,12 @@ run_microbench_tests() {
         fi
     fi
 
-    print_color $BLUE "Running microbenchmarks: ${test_name:-all} (config: $GPU_CONFIG)"
+    print_color $BLUE "Running $label: ${test_name:-all} (config: $GPU_CONFIG)"
 
     local exit_code=0
     local bench_manifest=""
     if ! bench_manifest="$(test_group_binaries "$binary_group")"; then
-        print_color $RED "Unable to resolve microbenchmark binaries"
+        print_color $RED "Unable to resolve binaries for $label"
         return 1
     fi
 
@@ -716,13 +875,13 @@ run_microbench_tests() {
         if [ "$match_rc" -eq 0 ]; then
             bench_bins+=("$bench_bin")
         elif [ "$match_rc" -ne 1 ]; then
-            print_color $RED "Failed to list tests in microbenchmark: $bench_bin"
+            print_color $RED "Failed to list tests in $label binary: $bench_bin"
             return 1
         fi
     done <<< "$bench_manifest"
 
     if [ ${#bench_bins[@]} -eq 0 ]; then
-        print_color $YELLOW "No microbenchmark binaries matched pattern: ${test_name:-all}"
+        print_color $YELLOW "No $label binaries matched pattern: ${test_name:-all}"
         return 1
     fi
 
@@ -732,9 +891,9 @@ run_microbench_tests() {
     done
 
     if [ $exit_code -eq 0 ]; then
-        print_color $GREEN "✓ Benchmarks passed!"
+        print_color $GREEN "✓ $label passed!"
     else
-        print_color $RED "✗ Benchmarks failed (exit code: $exit_code)"
+        print_color $RED "✗ $label failed (exit code: $exit_code)"
     fi
 
     return $exit_code
@@ -789,108 +948,18 @@ run_dev_tests() {
     return $exit_code
 }
 
-fa2_group_for_test_name() {
-    local test_name="$1"
-    if [[ -z "$test_name" ]]; then
-        echo "all"
-    elif [[ "$test_name" == *Fa2PrefillFp16SmokeTest* || "$test_name" == *Fa2FwdFp16SmokeIntegrationTest* ]]; then
-        echo "smoke"
-    elif [[ "$test_name" == *Fa2PrefillFp16SmallTest* ]]; then
-        echo "small"
-    elif [[ "$test_name" == *Fa2PrefillFp16MediumTest* ]]; then
-        echo "medium"
-    elif [[ "$test_name" == *Fa2PrefillFp16SensitivityH1D128Test* ]]; then
-        echo "sensitivity_h1d128"
-    elif [[ "$test_name" == *Fa2PrefillFp16SensitivityLargeD128FullTest* ]]; then
-        echo "sensitivity_large_d128_full"
-    elif [[ "$test_name" == *Fa2PrefillFp16SensitivityTest* ]]; then
-        echo "sensitivity"
-    elif [[ "$test_name" == *Fa2PrefillFp16IntegrationTest* ]]; then
-        echo "large"
-    else
-        echo "all"
-    fi
-}
-
-fa2_variant_for_test_name() {
-    local test_name="$1"
-    if [[ "$test_name" == *H32D64Full* || "$test_name" == *SmallForwardCase* ]]; then
-        echo "h32d64_full"
-    elif [[ "$test_name" == *H32D64Causal* ]]; then
-        echo "h32d64_causal"
-    elif [[ "$test_name" == *H16D128Full* ]]; then
-        echo "h16d128_full"
-    elif [[ "$test_name" == *H16D128Causal* ]]; then
-        echo "h16d128_causal"
-    else
-        echo "all"
-    fi
-}
-
-fa2_make_target_for_group_variant() {
-    local group="$1"
-    local variant="$2"
-    if [[ "$group" == "all" ]]; then
-        echo "fa2"
-    elif [[ "$group" == sensitivity* ]]; then
-        echo "fa2-${group//_/-}"
-    elif [[ "$group" == "large" && "$variant" != "all" ]]; then
-        echo "fa2-large-${variant//_/-}"
-    else
-        echo "fa2-${group}"
-    fi
-}
-
-run_fa2_split_binaries() {
-    local make_target="$1"
-    local filter="$2"
-    local config_dir="$3"
-    local exit_code=0
+run_fa3_profile_target() {
+    local label="$1"
+    local test_name="${2:-}"
+    local build_group="$3"
+    local binary_group="$4"
+    local cuda_arch="$5"
+    local default_filter="$6"
+    local case_list="$7"
+    local config_dir="run/${GPU_CONFIG}"
+    local filter="$default_filter"
     local binary_manifest=""
     local matched_binaries=0
-
-    if ! binary_manifest="$(test_group_binaries "$make_target")"; then
-        print_color $RED "Unable to resolve FA2 binaries for target: $make_target"
-        return 1
-    fi
-
-    while IFS= read -r binary_rel; do
-        [ -n "$binary_rel" ] || continue
-        local fa2_bin="$(pwd)/$binary_rel"
-        if [ ! -f "$fa2_bin" ]; then
-            print_color $RED "FA2 gtest executable not found: $fa2_bin"
-            return 1
-        fi
-
-        local match_rc=0
-        gtest_binary_matches_filter "$fa2_bin" "$config_dir" "$filter" || match_rc=$?
-        if [ "$match_rc" -eq 1 ]; then
-            continue
-        elif [ "$match_rc" -ne 0 ]; then
-            print_color $RED "Failed to list tests in FA2 binary: $fa2_bin"
-            return 1
-        fi
-
-        matched_binaries=$((matched_binaries + 1))
-        print_color $BLUE "Running FA2 gtests: $(basename "$fa2_bin") filter=$filter (config: $GPU_CONFIG)"
-        run_binary_with_filter "$fa2_bin" "$config_dir" "$filter" || exit_code=$?
-    done <<< "$binary_manifest"
-
-    if [ "$matched_binaries" -eq 0 ]; then
-        print_color $RED "No FA2 binaries matched filter: $filter"
-        return 1
-    fi
-    return $exit_code
-}
-
-run_fa2_target() {
-    local test_name="${1:-}"
-    local cuda_arch="$2"
-    local config_dir="run/${GPU_CONFIG}"
-    local fa2_group="$(fa2_group_for_test_name "$test_name")"
-    local fa2_variant="$(fa2_variant_for_test_name "$test_name")"
-    local make_target="$(fa2_make_target_for_group_variant "$fa2_group" "$fa2_variant")"
-    local filter="*"
     local exit_code=0
 
     if [ ! -d "$config_dir" ]; then
@@ -901,17 +970,44 @@ run_fa2_target() {
         filter="*${test_name}*"
     fi
 
-    build_make_group "$make_target" "$cuda_arch" 1 || return $?
-    export GTEST_COLOR=yes
-    if [ "$TEST_VERBOSE" -eq 2 ]; then
-        export GTEST_VERBOSITY=1
+    build_make_group "$build_group" "$cuda_arch" 1 || return $?
+    if ! binary_manifest="$(test_group_binaries "$binary_group")"; then
+        print_color $RED "Unable to resolve binaries for $label"
+        return 1
     fi
 
-    run_fa2_split_binaries "$make_target" "$filter" "$config_dir" || exit_code=$?
-    if [ "$exit_code" -eq 0 ]; then
-        print_color $GREEN "✓ FA2 passed!"
+    export GTEST_COLOR=yes
+    while IFS= read -r binary_rel; do
+        [ -n "$binary_rel" ] || continue
+        local binary_path="$(pwd)/$binary_rel"
+        local match_rc=0
+        if [ ! -f "$binary_path" ]; then
+            print_color $RED "FA3 gtest executable not found: $binary_path"
+            return 1
+        fi
+        gtest_binary_matches_filter "$binary_path" "$config_dir" "$filter" || match_rc=$?
+        if [ "$match_rc" -eq 1 ]; then
+            continue
+        elif [ "$match_rc" -ne 0 ]; then
+            print_color $RED "Failed to list tests in FA3 binary: $binary_path"
+            return 1
+        fi
+
+        matched_binaries=$((matched_binaries + 1))
+        print_color $BLUE "Running $label: $(basename "$binary_path") (config: $GPU_CONFIG)"
+        (
+            export FA3_H1D128_PROFILE_CASE_LIST="$case_list"
+            run_binary_with_filter "$binary_path" "$config_dir" "$filter"
+        ) || exit_code=$?
+    done <<< "$binary_manifest"
+
+    if [ "$matched_binaries" -eq 0 ]; then
+        print_color $RED "No FA3 binaries matched filter: $filter"
+        return 1
+    elif [ "$exit_code" -eq 0 ]; then
+        print_color $GREEN "✓ $label passed!"
     else
-        print_color $RED "✗ FA2 failed (exit code: $exit_code)"
+        print_color $RED "✗ $label failed (exit code: $exit_code)"
     fi
     return $exit_code
 }
@@ -965,6 +1061,13 @@ run_trace_tests() {
 
 run_active_target() {
     local filter="${1:-}"
+    local label="$ACTIVE_SUITE/$ACTIVE_TARGET"
+    if [ -n "$ACTIVE_GROUP" ]; then
+        label="$label/$ACTIVE_GROUP"
+    fi
+    if [ -n "$ACTIVE_MODE" ]; then
+        label="$label/$ACTIVE_MODE"
+    fi
 
     case "$ACTIVE_EXECUTOR" in
         test)
@@ -972,15 +1075,17 @@ run_active_target() {
                 "$ACTIVE_BINARY_GROUP" "$ACTIVE_CUDA_ARCH"
             ;;
         gtest-single)
-            run_single_gtest_target "$ACTIVE_SUITE/$ACTIVE_TARGET" "$filter" \
-                "$ACTIVE_BUILD_GROUP" "$ACTIVE_BINARY_GROUP" "$ACTIVE_CUDA_ARCH"
+            run_single_gtest_target "$label" "$filter" "$ACTIVE_BUILD_GROUP" \
+                "$ACTIVE_BINARY_GROUP" "$ACTIVE_CUDA_ARCH" "$ACTIVE_DEFAULT_FILTER"
             ;;
         gtest-multi)
-            run_microbench_tests "$filter" "$ACTIVE_BUILD_GROUP" \
-                "$ACTIVE_BINARY_GROUP" "$ACTIVE_CUDA_ARCH"
+            run_multi_gtest_target "$label" "$filter" "$ACTIVE_BUILD_GROUP" \
+                "$ACTIVE_BINARY_GROUP" "$ACTIVE_CUDA_ARCH" "$ACTIVE_DEFAULT_FILTER"
             ;;
-        fa2)
-            run_fa2_target "$filter" "$ACTIVE_CUDA_ARCH"
+        fa3-profile)
+            run_fa3_profile_target "$label" "$filter" "$ACTIVE_BUILD_GROUP" \
+                "$ACTIVE_BINARY_GROUP" "$ACTIVE_CUDA_ARCH" \
+                "$ACTIVE_DEFAULT_FILTER" "$ACTIVE_CASE_LIST"
             ;;
         dev)
             run_dev_tests "$filter" "$ACTIVE_BUILD_GROUP" \
@@ -1058,6 +1163,30 @@ main() {
                 REQUESTED_TARGET="$2"
                 shift 2
                 ;;
+            --group)
+                if [ $# -lt 2 ] || [ -z "$2" ]; then
+                    print_color $RED "--group requires a group name"
+                    return 1
+                fi
+                if [ -n "$REQUESTED_GROUP" ]; then
+                    print_color $RED "--group may only be specified once"
+                    return 1
+                fi
+                REQUESTED_GROUP="$2"
+                shift 2
+                ;;
+            --mode)
+                if [ $# -lt 2 ] || [ -z "$2" ]; then
+                    print_color $RED "--mode requires a mode name"
+                    return 1
+                fi
+                if [ -n "$REQUESTED_MODE" ]; then
+                    print_color $RED "--mode may only be specified once"
+                    return 1
+                fi
+                REQUESTED_MODE="$2"
+                shift 2
+                ;;
             -h|--help)
                 usage
                 return 0
@@ -1119,8 +1248,10 @@ main() {
             ;;
     esac
 
-    if [ -n "$REQUESTED_TARGET" ] && [ "$command" != "build" ] && [ "$command" != "run" ]; then
-        print_color $RED "--target is only valid with build or run"
+    if { [ -n "$REQUESTED_TARGET" ] || [ -n "$REQUESTED_GROUP" ] || \
+         [ -n "$REQUESTED_MODE" ]; } && \
+       [ "$command" != "build" ] && [ "$command" != "run" ]; then
+        print_color $RED "--target, --group, and --mode are only valid with build or run"
         return 1
     fi
 
@@ -1143,6 +1274,10 @@ main() {
             local suite="$argument"
             local filter="${command_args[1]:-}"
             prepare_suite_target "$suite" "$REQUESTED_TARGET" || return $?
+            if [ "$ACTIVE_MODE" = "all" ]; then
+                print_color $RED "--mode all is build-only; run requires one concrete mode"
+                return 1
+            fi
             initialize_run_directory run
             run_active_target "$filter"
             ;;

@@ -39,7 +39,7 @@ make -C "${TEST_DIR}" -j"${JOBS}" \
   CUDA_PATH="${CUDA_PATH}" \
   HOPPER_CUDA_ARCH=sm_90a \
   CUDA_ARCH=sm_90a \
-  hopper-fa2 \
+  fa2-standard \
   2>&1 | tee "${LOG_DIR}/build_hopper_fa2.log"
 
 bins=()
