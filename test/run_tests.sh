@@ -20,13 +20,22 @@ TEST_VERBOSE=${TEST_VERBOSE:-1}
 DEBUG_TESTS=${DEBUG_TESTS:-0}
 HOPPER_BUILD_JOBS=${HOPPER_BUILD_JOBS:-${FA2_BUILD_JOBS:-4}}
 DEFAULT_GPU_CONFIG=${DEFAULT_GPU_CONFIG:-SM120_RTX5090}
-HOPPER_GPU_CONFIG=${HOPPER_GPU_CONFIG:-SM90_H100}
 GPU_CONFIG_EXPLICIT=0
 if [ -n "${GPU_CONFIG:-}" ]; then
     GPU_CONFIG_EXPLICIT=1
 fi
 GPU_CONFIG=${GPU_CONFIG:-$DEFAULT_GPU_CONFIG}  # Default GPU configuration
-HOPPER_CUDA_ARCH=${HOPPER_CUDA_ARCH:-sm_90a}
+REQUESTED_TARGET=""
+
+# Resolved from the Makefile-owned suite/target registry.
+ACTIVE_SUITE=""
+ACTIVE_TARGET=""
+ACTIVE_BUILD_GROUP=""
+ACTIVE_BINARY_GROUP=""
+ACTIVE_EXECUTOR=""
+ACTIVE_DEFAULT_CONFIG=""
+ACTIVE_REQUIRED_CC=""
+ACTIVE_CUDA_ARCH=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -52,28 +61,21 @@ run_command() {
 # Print usage
 usage() {
     echo "GPGPU-Sim Test Runner"
-    echo "Usage: $0 [OPTIONS] COMMAND [ARGUMENT] [OPTIONS]"
+    echo "Usage: $0 [OPTIONS] ACTION SUITE [FILTER] [OPTIONS]"
     echo ""
-    echo "Commands:"
-    echo "  build              Build all (test + bench + dev)"
-    echo "  build test         Build verification tests only"
-    echo "  build bench        Build microbenchmarks only"
-    echo "  build dev          Build standalone dev tests only"
-    echo "  build hopper       Build Hopper tests"
-    echo "  build hopper-fa2   Build split FA2 forward-only Hopper tests"
-    echo "  build hopper-fa2-smoke|small|medium|large"
-    echo "                     Build one FA2 size group"
-    echo "  build hopper-fa2-sensitivity[-h1d128|-large-d128-full]"
-    echo "                     Build one FA2 sensitivity group"
-    echo "  build hopper-fa3-* Build one FA3 target declared by the Makefile"
-    echo "  test               Run all verification tests and trace tests"
-    echo "  test <pattern>     Run specific verification test only"
-    echo "  hopper             Run all Hopper gtests"
-    echo "  hopper <pattern>   Run Hopper gtests matching pattern"
-    echo "  trace              Run Triton kernel trace smoke tests"
-    echo "  trace <pattern>    Run specific trace test (e.g., 'embedding')"
-    echo "  bench <pattern>    Run microbenchmarks matching pattern"
-    echo "  dev <pattern>      Run standalone dev tests matching pattern"
+    echo "Actions and suites:"
+    echo "  build test [--target default|sm90]"
+    echo "  run test [filter] [--target default|sm90]"
+    echo "  build fa --target fa2|fa3"
+    echo "  run fa [filter] --target fa2|fa3"
+    echo "  build microbench [--target default|sm90]"
+    echo "  run microbench [filter] [--target default|sm90]"
+    echo "  build dev"
+    echo "  run dev [filter]"
+    echo "  build trace"
+    echo "  run trace [filter]"
+    echo ""
+    echo "Other commands:"
     echo "  clean              Clean build artifacts"
     echo "  setup              Setup test environment"
     echo "  refresh            Refresh run directory and configuration"
@@ -86,21 +88,17 @@ usage() {
     echo "  -d, --debug        Enable debug mode"
     echo "  -t, --timeout      Set test timeout (seconds)"
     echo "  -c, --config NAME  Use specific GPU configuration"
-    echo "                     Default: $DEFAULT_GPU_CONFIG; Hopper default: $HOPPER_GPU_CONFIG"
+    echo "  --target NAME      Select one target within a suite"
     echo "  -h, --help         Show this help"
     echo "  Options may appear before or after the command."
     echo ""
     echo "Examples:"
-    echo "  $0 build                              # Build verification tests"
-    echo "  $0 test                               # Run all verification tests"
-    echo "  $0 test \"*MMAS8*\"                     # Run specific verification test"
-    echo "  $0 hopper WgmmaF16M64N8K16IntegrationTest.AllOnesTest"
-    echo "                                         # Run one Hopper gtest"
-    echo "  $0 hopper Fa3FwdHdim128Fp16IntegrationTest"
-    echo "                                         # Run FA3 Hopper gtest"
-    echo "  $0 hopper Fa2PrefillFp16SmokeTest      # Run FA2 forward Hopper gtest"
-    echo "  $0 bench \"*MMAIssue*\"                  # Run microbenchmarks"
-    echo "  $0 -c SM120_RTX5090_REDUCED test      # Run with reduced config"
+    echo "  $0 run test"
+    echo "  $0 run test '*MMAS8*' -c SM120_RTX5090_REDUCED"
+    echo "  $0 run test --target sm90 '*WgmmaF16*'"
+    echo "  $0 run fa --target fa2 'Fa2PrefillFp16SmokeTest*'"
+    echo "  $0 run fa --target fa3 'Fa3FwdHdim128Fp16IntegrationTest*'"
+    echo "  $0 run microbench --target sm90 '*Wgmma*'"
 }
 
 # Setup test environment
@@ -162,12 +160,6 @@ setup_run_directory() {
     print_color $GREEN "Synced $config_name configuration to run directory"
 }
 
-use_hopper_default_config() {
-    if [ "$GPU_CONFIG_EXPLICIT" -eq 0 ]; then
-        GPU_CONFIG="$HOPPER_GPU_CONFIG"
-    fi
-}
-
 # Detect if running in native GPU mode (clean environment without simulator setup)
 is_native_mode() {
     local root_dir="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -213,125 +205,49 @@ build_gpgpusim() {
     cd "$SCRIPT_DIR"
 }
 
-# Build verification tests (unit + integration)
-build_test_targets() {
+build_make_group() {
+    local make_target="$1"
+    local cuda_arch="$2"
+    local parallel="${3:-0}"
+    local -a make_args=(make)
+
     build_gpgpusim
+    print_color $BLUE "Building $ACTIVE_SUITE/$ACTIVE_TARGET via '$make_target' (CUDA arch: $cuda_arch)..."
 
-    print_color $BLUE "Building verification tests..."
-
+    if [ "$parallel" -eq 1 ]; then
+        make_args+=("-j$HOPPER_BUILD_JOBS")
+    fi
     if [ "$DEBUG_TESTS" -eq 1 ]; then
-        run_command make CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" test
-    else
-        run_command make test
+        make_args+=("CXXFLAGS=-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG")
     fi
+    make_args+=("CUDA_ARCH=$cuda_arch" "HOPPER_CUDA_ARCH=$cuda_arch" "$make_target")
 
-    if [ $? -eq 0 ]; then
+    if run_command "${make_args[@]}"; then
         print_color $GREEN "Build successful!"
     else
         print_color $RED "Build failed!"
-        exit 1
+        return 1
     fi
 }
 
-# Build microbenchmarks (separate binaries)
-build_bench_tests() {
-    build_gpgpusim
-
-    print_color $BLUE "Building microbenchmarks..."
-    run_command make bench
-
-    if [ $? -eq 0 ]; then
-        print_color $GREEN "Build successful!"
-    else
-        print_color $RED "Build failed!"
-        exit 1
-    fi
-}
-
-# Build standalone dev tests
-build_dev_tests() {
-    build_gpgpusim
-
-    print_color $BLUE "Building dev tests..."
-    run_command make dev
-
-    if [ $? -eq 0 ]; then
-        print_color $GREEN "Build successful!"
-    else
-        print_color $RED "Build failed!"
-        exit 1
-    fi
-}
-
-# Build Hopper gtests.
-build_hopper_tests() {
-    build_gpgpusim
-
-    print_color $BLUE "Building Hopper gtests (CUDA_ARCH: $HOPPER_CUDA_ARCH)..."
-    if [ "$DEBUG_TESTS" -eq 1 ]; then
-        run_command make CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" \
-            HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" hopper
-    else
-        run_command make HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" hopper
+build_active_target() {
+    if [ "$ACTIVE_EXECUTOR" = "trace" ]; then
+        build_gpgpusim
+        run_command make -C src/trace ARCH="$ACTIVE_CUDA_ARCH" GPU_CONFIG="$GPU_CONFIG"
+        return $?
     fi
 
-    if [ $? -eq 0 ]; then
-        print_color $GREEN "Build successful!"
-    else
-        print_color $RED "Build failed!"
-        exit 1
+    local parallel=0
+    if [ "$ACTIVE_REQUIRED_CC" = "9.0" ]; then
+        parallel=1
     fi
-}
-
-# Build Hopper gtest sources only.
-build_hopper_gtests() {
-    build_gpgpusim
-
-    print_color $BLUE "Building Hopper gtests (CUDA_ARCH: $HOPPER_CUDA_ARCH)..."
-    if [ "$DEBUG_TESTS" -eq 1 ]; then
-        run_command make CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" \
-            HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" hopper-gtest
-    else
-        run_command make HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" hopper-gtest
-    fi
-
-    if [ $? -eq 0 ]; then
-        print_color $GREEN "Build successful!"
-    else
-        print_color $RED "Build failed!"
-        exit 1
-    fi
-}
-
-build_hopper_target() {
-    local make_target="${1:-hopper-fa2}"
-
-    build_gpgpusim
-
-    print_color $BLUE "Building Hopper target '$make_target' (CUDA_ARCH: $HOPPER_CUDA_ARCH)..."
-    if [ "$DEBUG_TESTS" -eq 1 ]; then
-        run_command make -j"$HOPPER_BUILD_JOBS" CXXFLAGS="-std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG" \
-            HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" "$make_target"
-    else
-        run_command make -j"$HOPPER_BUILD_JOBS" HOPPER_CUDA_ARCH="$HOPPER_CUDA_ARCH" "$make_target"
-    fi
-
-    if [ $? -eq 0 ]; then
-        print_color $GREEN "Build successful!"
-    else
-        print_color $RED "Build failed!"
-        exit 1
-    fi
+    build_make_group "$ACTIVE_BUILD_GROUP" "$ACTIVE_CUDA_ARCH" "$parallel"
 }
 
 # Query the Makefile-owned binary manifest for one test group.
 test_group_binaries() {
     local group="$1"
     make -s --no-print-directory print-test-binaries TEST_GROUP="$group"
-}
-
-test_group_exists() {
-    test_group_binaries "$1" >/dev/null 2>&1
 }
 
 single_test_group_binary() {
@@ -353,6 +269,124 @@ single_test_group_binary() {
     printf '%s\n' "$binaries"
 }
 
+suite_list() {
+    make -s --no-print-directory list-suites
+}
+
+suite_target_list() {
+    local suite="$1"
+    make -s --no-print-directory list-suite-targets SUITE="$suite"
+}
+
+line_list_contains() {
+    local list="$1"
+    local expected="$2"
+    local item=""
+
+    while IFS= read -r item; do
+        if [ "$item" = "$expected" ]; then
+            return 0
+        fi
+    done <<< "$list"
+    return 1
+}
+
+resolve_suite_target() {
+    local suite="$1"
+    local requested_target="${2:-}"
+    local suites=""
+    local targets=""
+    local metadata=""
+
+    if ! suites="$(suite_list)"; then
+        print_color $RED "Unable to read suite registry"
+        return 1
+    fi
+    if ! line_list_contains "$suites" "$suite"; then
+        print_color $RED "Unknown suite: $suite"
+        print_color $YELLOW "Available suites: $(printf '%s' "$suites" | tr '\n' ' ')"
+        return 1
+    fi
+
+    if ! targets="$(suite_target_list "$suite")"; then
+        print_color $RED "Unable to read targets for suite: $suite"
+        return 1
+    fi
+
+    if [ -z "$requested_target" ]; then
+        if ! requested_target="$(make -s --no-print-directory \
+            print-suite-default-target SUITE="$suite")"; then
+            print_color $RED "Unable to read the default target for suite: $suite"
+            return 1
+        fi
+        if [ -z "$requested_target" ]; then
+            print_color $RED "Suite '$suite' requires --target"
+            print_color $YELLOW "Available targets: $(printf '%s' "$targets" | tr '\n' ' ')"
+            return 1
+        fi
+    fi
+
+    if ! line_list_contains "$targets" "$requested_target"; then
+        print_color $RED "Unknown target '$requested_target' for suite '$suite'"
+        print_color $YELLOW "Available targets: $(printf '%s' "$targets" | tr '\n' ' ')"
+        return 1
+    fi
+
+    if ! metadata="$(make -s --no-print-directory print-suite-target-metadata \
+        SUITE="$suite" SUITE_TARGET="$requested_target")"; then
+        print_color $RED "Unable to read metadata for $suite/$requested_target"
+        return 1
+    fi
+
+    IFS='|' read -r ACTIVE_BUILD_GROUP ACTIVE_BINARY_GROUP ACTIVE_EXECUTOR \
+        ACTIVE_DEFAULT_CONFIG ACTIVE_REQUIRED_CC ACTIVE_CUDA_ARCH <<< "$metadata"
+    ACTIVE_SUITE="$suite"
+    ACTIVE_TARGET="$requested_target"
+
+    if [ -z "$ACTIVE_BUILD_GROUP" ] || [ -z "$ACTIVE_BINARY_GROUP" ] || \
+       [ -z "$ACTIVE_EXECUTOR" ] || [ -z "$ACTIVE_DEFAULT_CONFIG" ] || \
+       [ -z "$ACTIVE_REQUIRED_CC" ] || [ -z "$ACTIVE_CUDA_ARCH" ]; then
+        print_color $RED "Incomplete registry entry for $suite/$requested_target"
+        return 1
+    fi
+}
+
+validate_active_target_config() {
+    local config_file="../configs/$GPU_CONFIG/gpgpusim.config"
+    local major=""
+    local minor=""
+    local actual_cc=""
+
+    if [ ! -f "$config_file" ]; then
+        print_color $RED "Configuration '$GPU_CONFIG' is missing $config_file"
+        return 1
+    fi
+
+    major="$(awk '$1 == "-gpgpu_compute_capability_major" { print $2; exit }' "$config_file")"
+    minor="$(awk '$1 == "-gpgpu_compute_capability_minor" { print $2; exit }' "$config_file")"
+    if ! [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]]; then
+        print_color $RED "Unable to read compute capability from $config_file"
+        return 1
+    fi
+
+    actual_cc="$major.$minor"
+    if [ "$actual_cc" != "$ACTIVE_REQUIRED_CC" ]; then
+        print_color $RED "$ACTIVE_SUITE/$ACTIVE_TARGET requires compute capability $ACTIVE_REQUIRED_CC ($ACTIVE_CUDA_ARCH), but $GPU_CONFIG declares $actual_cc"
+        return 1
+    fi
+}
+
+prepare_suite_target() {
+    local suite="$1"
+    local target="${2:-}"
+
+    resolve_suite_target "$suite" "$target" || return $?
+    if [ "$GPU_CONFIG_EXPLICIT" -eq 0 ]; then
+        GPU_CONFIG="$ACTIVE_DEFAULT_CONFIG"
+    fi
+    validate_active_target_config || return $?
+}
+
 # List available tests
 list_tests() {
     print_color $BLUE "Available test cases:"
@@ -366,7 +400,7 @@ list_tests() {
 
     if [ ! -f "$TEST_BINARY" ]; then
         print_color $RED "Error: Test binary not found at $TEST_BINARY"
-        print_color $YELLOW "Please run '$0 build' first"
+        print_color $YELLOW "Please run '$0 build test' first"
         exit 1
     fi
 
@@ -534,6 +568,9 @@ gtest_binary_matches_filter() {
 # Run verification tests with optional pattern
 run_test_targets() {
     local test_name="${1:-}"
+    local build_group="$2"
+    local binary_group="$3"
+    local cuda_arch="$4"
     local config_dir="run/${GPU_CONFIG}"
 
     if [ ! -d "$config_dir" ]; then
@@ -541,10 +578,10 @@ run_test_targets() {
         exit 1
     fi
 
-    build_test_targets
+    build_make_group "$build_group" "$cuda_arch"
 
     local test_executable=""
-    if ! test_executable="$(single_test_group_binary test)"; then
+    if ! test_executable="$(single_test_group_binary "$binary_group")"; then
         return 1
     fi
     if [ ! -f "$test_executable" ]; then
@@ -584,9 +621,56 @@ run_test_targets() {
     return $exit_code
 }
 
+run_single_gtest_target() {
+    local label="$1"
+    local test_name="${2:-}"
+    local build_group="$3"
+    local binary_group="$4"
+    local cuda_arch="$5"
+    local default_filter="${6:-*}"
+    local config_dir="run/${GPU_CONFIG}"
+    local parallel=0
+
+    if [ ! -d "$config_dir" ]; then
+        print_color $RED "Configuration directory not found: $config_dir"
+        return 1
+    fi
+    if [ "$cuda_arch" = "sm_90a" ]; then
+        parallel=1
+    fi
+    build_make_group "$build_group" "$cuda_arch" "$parallel" || return $?
+
+    local binary_rel=""
+    if ! binary_rel="$(single_test_group_binary "$binary_group")"; then
+        return 1
+    fi
+    local binary_path="$(pwd)/$binary_rel"
+    local filter="$default_filter"
+    if [ -n "$test_name" ]; then
+        filter="*${test_name}*"
+    fi
+
+    export GTEST_COLOR=yes
+    if [ "$TEST_VERBOSE" -eq 2 ]; then
+        export GTEST_VERBOSITY=1
+    fi
+
+    print_color $BLUE "Running $label: ${test_name:-all} (config: $GPU_CONFIG)"
+    if run_binary_with_filter "$binary_path" "$config_dir" "$filter"; then
+        print_color $GREEN "✓ $label passed!"
+    else
+        local rc=$?
+        print_color $RED "✗ $label failed (exit code: $rc)"
+        return $rc
+    fi
+}
+
 # Run microbenchmarks with pattern
-run_bench_tests() {
+run_microbench_tests() {
     local test_name="${1:-}"
+    local build_group="$2"
+    local binary_group="$3"
+    local cuda_arch="$4"
     local config_dir="run/${GPU_CONFIG}"
 
     if [ ! -d "$config_dir" ]; then
@@ -594,7 +678,11 @@ run_bench_tests() {
         exit 1
     fi
 
-    build_bench_tests
+    local parallel=0
+    if [ "$cuda_arch" = "sm_90a" ]; then
+        parallel=1
+    fi
+    build_make_group "$build_group" "$cuda_arch" "$parallel"
 
     export GTEST_COLOR=yes
     if [ "$TEST_VERBOSE" -eq 2 ]; then
@@ -615,7 +703,7 @@ run_bench_tests() {
 
     local exit_code=0
     local bench_manifest=""
-    if ! bench_manifest="$(test_group_binaries bench)"; then
+    if ! bench_manifest="$(test_group_binaries "$binary_group")"; then
         print_color $RED "Unable to resolve microbenchmark binaries"
         return 1
     fi
@@ -657,6 +745,9 @@ run_bench_tests() {
 # Run standalone dev tests with pattern
 run_dev_tests() {
     local test_name="${1:-}"
+    local build_group="$2"
+    local binary_group="$3"
+    local cuda_arch="$4"
     local config_dir="run/${GPU_CONFIG}"
 
     if [ ! -d "$config_dir" ]; then
@@ -664,7 +755,7 @@ run_dev_tests() {
         exit 1
     fi
 
-    build_dev_tests
+    build_make_group "$build_group" "$cuda_arch"
 
     export GTEST_COLOR=yes
     if [ "$TEST_VERBOSE" -eq 2 ]; then
@@ -679,7 +770,7 @@ run_dev_tests() {
     print_color $BLUE "Running dev tests: ${test_name:-all} (config: $GPU_CONFIG)"
 
     local dev_rel=""
-    if ! dev_rel="$(single_test_group_binary dev)"; then
+    if ! dev_rel="$(single_test_group_binary "$binary_group")"; then
         return 1
     fi
     local dev_bin="$(pwd)/$dev_rel"
@@ -698,10 +789,6 @@ run_dev_tests() {
     fi
 
     return $exit_code
-}
-
-hopper_has_gtests() {
-    find src/hopper -name '*_test.cc' -print -quit 2>/dev/null | grep -q .
 }
 
 fa2_group_for_test_name() {
@@ -746,13 +833,13 @@ fa2_make_target_for_group_variant() {
     local group="$1"
     local variant="$2"
     if [[ "$group" == "all" ]]; then
-        echo "hopper-fa2"
+        echo "fa2"
     elif [[ "$group" == sensitivity* ]]; then
-        echo "hopper-fa2-${group//_/-}"
+        echo "fa2-${group//_/-}"
     elif [[ "$group" == "large" && "$variant" != "all" ]]; then
-        echo "hopper-fa2-large-${variant//_/-}"
+        echo "fa2-large-${variant//_/-}"
     else
-        echo "hopper-fa2-${group}"
+        echo "fa2-${group}"
     fi
 }
 
@@ -762,6 +849,7 @@ run_fa2_split_binaries() {
     local config_dir="$3"
     local exit_code=0
     local binary_manifest=""
+    local matched_binaries=0
 
     if ! binary_manifest="$(test_group_binaries "$make_target")"; then
         print_color $RED "Unable to resolve FA2 binaries for target: $make_target"
@@ -770,99 +858,75 @@ run_fa2_split_binaries() {
 
     while IFS= read -r binary_rel; do
         [ -n "$binary_rel" ] || continue
-        local hopper_bin="$(pwd)/$binary_rel"
-        if [ ! -f "$hopper_bin" ]; then
-            print_color $RED "FA2 Hopper gtest executable not found: $hopper_bin"
+        local fa2_bin="$(pwd)/$binary_rel"
+        if [ ! -f "$fa2_bin" ]; then
+            print_color $RED "FA2 gtest executable not found: $fa2_bin"
             return 1
         fi
-        print_color $BLUE "Running FA2 gtests: $(basename "$hopper_bin") filter=$filter (config: $GPU_CONFIG)"
-        run_binary_with_filter "$hopper_bin" "$config_dir" "$filter" || exit_code=$?
+
+        local match_rc=0
+        gtest_binary_matches_filter "$fa2_bin" "$config_dir" "$filter" || match_rc=$?
+        if [ "$match_rc" -eq 1 ]; then
+            continue
+        elif [ "$match_rc" -ne 0 ]; then
+            print_color $RED "Failed to list tests in FA2 binary: $fa2_bin"
+            return 1
+        fi
+
+        matched_binaries=$((matched_binaries + 1))
+        print_color $BLUE "Running FA2 gtests: $(basename "$fa2_bin") filter=$filter (config: $GPU_CONFIG)"
+        run_binary_with_filter "$fa2_bin" "$config_dir" "$filter" || exit_code=$?
     done <<< "$binary_manifest"
 
+    if [ "$matched_binaries" -eq 0 ]; then
+        print_color $RED "No FA2 binaries matched filter: $filter"
+        return 1
+    fi
     return $exit_code
 }
 
-# Run Hopper gtests.
-run_hopper_tests() {
+run_fa2_target() {
     local test_name="${1:-}"
+    local cuda_arch="$2"
     local config_dir="run/${GPU_CONFIG}"
-    local is_fa2_test=0
-
-    if [[ "$test_name" == Fa2* ]]; then
-        is_fa2_test=1
-    fi
+    local fa2_group="$(fa2_group_for_test_name "$test_name")"
+    local fa2_variant="$(fa2_variant_for_test_name "$test_name")"
+    local make_target="$(fa2_make_target_for_group_variant "$fa2_group" "$fa2_variant")"
+    local filter="*"
+    local exit_code=0
 
     if [ ! -d "$config_dir" ]; then
         print_color $RED "Configuration directory not found: $config_dir"
-        exit 1
+        return 1
+    fi
+    if [ -n "$test_name" ]; then
+        filter="*${test_name}*"
     fi
 
-    if [ "$is_fa2_test" -eq 1 ]; then
-        local fa2_group="$(fa2_group_for_test_name "$test_name")"
-        local fa2_variant="$(fa2_variant_for_test_name "$test_name")"
-        local fa2_make_target="$(fa2_make_target_for_group_variant "$fa2_group" "$fa2_variant")"
-        build_hopper_target "$fa2_make_target"
-    elif [ -n "$test_name" ]; then
-        build_hopper_gtests
-    else
-        build_hopper_tests
-    fi
-
+    build_make_group "$make_target" "$cuda_arch" 1 || return $?
     export GTEST_COLOR=yes
     if [ "$TEST_VERBOSE" -eq 2 ]; then
         export GTEST_VERBOSITY=1
     fi
 
-    local exit_code=0
-
-    if [ "$is_fa2_test" -eq 1 ]; then
-        local fa2_group="$(fa2_group_for_test_name "$test_name")"
-        local fa2_variant="$(fa2_variant_for_test_name "$test_name")"
-        local filter="*${test_name}*"
-        local fa2_make_target="$(fa2_make_target_for_group_variant "$fa2_group" "$fa2_variant")"
-        run_fa2_split_binaries "$fa2_make_target" "$filter" "$config_dir" || exit_code=$?
-    elif hopper_has_gtests; then
-        local hopper_rel=""
-        if ! hopper_rel="$(single_test_group_binary hopper)"; then
-            return 1
-        fi
-        local hopper_bin="$(pwd)/$hopper_rel"
-        if [ ! -f "$hopper_bin" ]; then
-            print_color $RED "Hopper gtest executable not found: $hopper_bin"
-            exit 1
-        fi
-
-        # Keep simulator launch-heavy FA3 prefill cases out of the default
-        # Hopper suite. Explicitly named suites/cases below bypass this filter.
-        local filter="*-Fa3PrefillFp16IntegrationTest.H*:Fa3PrefillFp16BackwardIntegrationTest.H*:Fa3PrefillFp16SmokeTest.H*:Fa3PrefillFp16BackwardSmokeTest.H*:Fa3SingleTileProfileTest.*:Fa3PrefillProfileTest.*"
-        if [ -n "$test_name" ]; then
-            filter="*${test_name}*"
-        fi
-
-        print_color $BLUE "Running Hopper gtests: ${test_name:-all} (config: $GPU_CONFIG)"
-        run_binary_with_filter "$hopper_bin" "$config_dir" "$filter" || exit_code=$?
+    run_fa2_split_binaries "$make_target" "$filter" "$config_dir" || exit_code=$?
+    if [ "$exit_code" -eq 0 ]; then
+        print_color $GREEN "✓ FA2 passed!"
     else
-        print_color $YELLOW "No Hopper gtests matched: ${test_name:-all}"
-        return 1
+        print_color $RED "✗ FA2 failed (exit code: $exit_code)"
     fi
-
-    if [ $exit_code -eq 0 ]; then
-        print_color $GREEN "✓ Hopper passed!"
-    else
-        print_color $RED "✗ Hopper failed (exit code: $exit_code)"
-    fi
-
     return $exit_code
 }
 
 # Build and run trace tests (Triton kernel PTX smoke tests)
 run_trace_tests() {
     local test_name="${1:-}"
+    local cuda_arch="$2"
 
     build_gpgpusim
 
     print_color $BLUE "Building trace tests (config: $GPU_CONFIG)..."
-    run_command make -C src/trace GPU_CONFIG="$GPU_CONFIG"
+    run_command make -C src/trace ARCH="$cuda_arch" GPU_CONFIG="$GPU_CONFIG"
 
     print_color $BLUE "Running trace tests..."
 
@@ -901,6 +965,39 @@ run_trace_tests() {
     return $exit_code
 }
 
+run_active_target() {
+    local filter="${1:-}"
+
+    case "$ACTIVE_EXECUTOR" in
+        test)
+            run_test_targets "$filter" "$ACTIVE_BUILD_GROUP" \
+                "$ACTIVE_BINARY_GROUP" "$ACTIVE_CUDA_ARCH"
+            ;;
+        gtest-single)
+            run_single_gtest_target "$ACTIVE_SUITE/$ACTIVE_TARGET" "$filter" \
+                "$ACTIVE_BUILD_GROUP" "$ACTIVE_BINARY_GROUP" "$ACTIVE_CUDA_ARCH"
+            ;;
+        gtest-multi)
+            run_microbench_tests "$filter" "$ACTIVE_BUILD_GROUP" \
+                "$ACTIVE_BINARY_GROUP" "$ACTIVE_CUDA_ARCH"
+            ;;
+        fa2)
+            run_fa2_target "$filter" "$ACTIVE_CUDA_ARCH"
+            ;;
+        dev)
+            run_dev_tests "$filter" "$ACTIVE_BUILD_GROUP" \
+                "$ACTIVE_BINARY_GROUP" "$ACTIVE_CUDA_ARCH"
+            ;;
+        trace)
+            run_trace_tests "$filter" "$ACTIVE_CUDA_ARCH"
+            ;;
+        *)
+            print_color $RED "Unknown executor '$ACTIVE_EXECUTOR' for $ACTIVE_SUITE/$ACTIVE_TARGET"
+            return 1
+            ;;
+    esac
+}
+
 # Clean build artifacts
 clean_tests() {
     print_color $BLUE "Cleaning test build artifacts..."
@@ -912,7 +1009,7 @@ clean_tests() {
 initialize_run_directory() {
     # Only setup if we're doing operations that need the config
     case "${1:-}" in
-        test|bench|dev|hopper|trace|build)
+        build|run)
             setup_run_directory
             ;;
     esac
@@ -951,6 +1048,18 @@ main() {
                 GPU_CONFIG_EXPLICIT=1
                 shift 2
                 ;;
+            --target)
+                if [ $# -lt 2 ] || [ -z "$2" ]; then
+                    print_color $RED "--target requires a target name"
+                    return 1
+                fi
+                if [ -n "$REQUESTED_TARGET" ]; then
+                    print_color $RED "--target may only be specified once"
+                    return 1
+                fi
+                REQUESTED_TARGET="$2"
+                shift 2
+                ;;
             -h|--help)
                 usage
                 return 0
@@ -987,9 +1096,15 @@ main() {
     fi
 
     case "$command" in
-        build|test|bench|dev|hopper|trace)
-            if [ "${#command_args[@]}" -gt 1 ]; then
-                print_color $RED "$command accepts at most one argument"
+        build)
+            if [ "${#command_args[@]}" -ne 1 ]; then
+                print_color $RED "build requires exactly one suite"
+                return 1
+            fi
+            ;;
+        run)
+            if [ "${#command_args[@]}" -lt 1 ] || [ "${#command_args[@]}" -gt 2 ]; then
+                print_color $RED "run requires a suite and accepts at most one filter"
                 return 1
             fi
             ;;
@@ -1006,6 +1121,11 @@ main() {
             ;;
     esac
 
+    if [ -n "$REQUESTED_TARGET" ] && [ "$command" != "build" ] && [ "$command" != "run" ]; then
+        print_color $RED "--target is only valid with build or run"
+        return 1
+    fi
+
     local argument="${command_args[0]:-}"
     case "$command" in
         setup)
@@ -1017,68 +1137,16 @@ main() {
             print_color $GREEN "Run directory refreshed!"
             ;;
         build)
-            if [[ "$argument" == hopper* ]]; then
-                use_hopper_default_config
-            fi
+            prepare_suite_target "$argument" "$REQUESTED_TARGET" || return $?
             initialize_run_directory build
-            case "$argument" in
-                test)
-                    build_test_targets
-                    ;;
-                bench)
-                    build_bench_tests
-                    ;;
-                dev)
-                    build_dev_tests
-                    ;;
-                hopper)
-                    build_hopper_tests
-                    ;;
-                trace)
-                    build_gpgpusim
-                    make -C src/trace GPU_CONFIG="$GPU_CONFIG"
-                    ;;
-                "")
-                    build_test_targets
-                    build_bench_tests
-                    build_dev_tests
-                    ;;
-                hopper-*)
-                    if ! test_group_exists "$argument"; then
-                        print_color $RED "Unknown Hopper build target: $argument"
-                        return 1
-                    fi
-                    build_hopper_target "$argument"
-                    ;;
-                *)
-                    print_color $RED "Unknown build target: $argument"
-                    return 1
-                    ;;
-            esac
+            build_active_target
             ;;
-        test)
-            initialize_run_directory test
-            run_test_targets "$argument" || return $?
-            if [ -z "$argument" ]; then
-                run_trace_tests
-            fi
-            ;;
-        bench)
-            initialize_run_directory bench
-            run_bench_tests "$argument"
-            ;;
-        dev)
-            initialize_run_directory dev
-            run_dev_tests "$argument"
-            ;;
-        hopper)
-            use_hopper_default_config
-            initialize_run_directory hopper
-            run_hopper_tests "$argument"
-            ;;
-        trace)
-            initialize_run_directory trace
-            run_trace_tests "$argument"
+        run)
+            local suite="$argument"
+            local filter="${command_args[1]:-}"
+            prepare_suite_target "$suite" "$REQUESTED_TARGET" || return $?
+            initialize_run_directory run
+            run_active_target "$filter"
             ;;
         clean)
             clean_tests

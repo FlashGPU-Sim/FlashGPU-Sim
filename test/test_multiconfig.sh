@@ -39,7 +39,7 @@ echo "Multi-Config Support Test Suite"
 echo "========================================="
 echo ""
 
-# Test 1: Backward compatibility - default config should be SM120_RTX5090
+# Test 1: Default config should be SM120_RTX5090
 run_test "Default config is SM120_RTX5090" \
     "$TEST_SCRIPT list-configs 2>&1 | grep -q 'SM120_RTX5090 (default)' || \
      $TEST_SCRIPT list-configs 2>&1 | grep -q 'SM120_RTX5090.*default'"
@@ -63,7 +63,7 @@ run_test "-c short flag is recognized" \
 # Test 6: Run directory exists for default config
 run_test "Run directory structure for SM120_RTX5090" \
     "[ -d '$SCRIPT_DIR/run/SM120_RTX5090' ] || \
-     ($TEST_SCRIPT build &>/dev/null && [ -d '$SCRIPT_DIR/run/SM120_RTX5090' ])"
+     ($TEST_SCRIPT build test &>/dev/null && [ -d '$SCRIPT_DIR/run/SM120_RTX5090' ])"
 
 # Test 7: Test binary is shared (only one copy in build/bin/)
 run_test "Test binary is shared (single location)" \

@@ -77,12 +77,18 @@ echo "Building tests..."
 # Run tests with specified configuration.
 # test/run_tests.sh owns the default exclusion list so CI and local runs stay
 # consistent. Microbenchmarks are already excluded because they live in a
-# separate bench binary set.
+# separate microbenchmark binary set.
 echo "Running test suite..."
 
 # Use gtest XML output for structured results (absolute path since tests cd into run dir)
 export GTEST_OUTPUT="xml:$REPO_ROOT/test_results.xml"
 
-./test/run_tests.sh -c "$TEST_CONFIG" test "$@"
+./test/run_tests.sh -c "$TEST_CONFIG" run test "$@"
+
+# Preserve the existing no-filter CI scope: the deprecated `test` command also
+# ran trace tests when no filter was supplied.
+if [ "$#" -eq 0 ]; then
+  ./test/run_tests.sh -c "$TEST_CONFIG" run trace
+fi
 
 echo "CI tests completed successfully!"

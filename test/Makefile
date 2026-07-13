@@ -60,16 +60,19 @@ INCLUDES = -I$(GTEST_DIR)/include \
 UNIT_TEST_SOURCES = $(wildcard $(TEST_SRC_DIR)/unit/*_test.cc)
 INTEGRATION_TEST_SOURCES = $(shell find $(TEST_SRC_DIR)/integration -name '*_test.cc' 2>/dev/null)
 HOPPER_SRC_DIR = $(TEST_SRC_DIR)/hopper
-HOPPER_TEST_SOURCES = $(shell find $(HOPPER_SRC_DIR) -name '*_test.cc' 2>/dev/null)
-HOPPER_TEST_SOURCES := $(filter-out $(HOPPER_SRC_DIR)/fa2/%,$(HOPPER_TEST_SOURCES))
-MICROBENCH_SOURCES = $(shell find $(TEST_SRC_DIR)/microbench -name '*_bench.cc' 2>/dev/null)
-MICROBENCH_SOURCES := $(filter-out $(TEST_SRC_DIR)/microbench/wgmma/wgmma_n16_chain_bench.cc,$(MICROBENCH_SOURCES))
+SM90_TEST_SOURCES = $(HOPPER_SRC_DIR)/named_barrier_test.cc \
+                    $(sort $(wildcard $(HOPPER_SRC_DIR)/wgmma/*_test.cc))
+SM90_TEST_CUH_HEADERS = $(shell find $(TEST_COMMON_DIR) $(SRC_DIR) -name '*.cuh' 2>/dev/null) \
+                        $(wildcard $(HOPPER_SRC_DIR)/wgmma/*.cuh)
+MICROBENCH_ALL_SOURCES = $(shell find $(TEST_SRC_DIR)/microbench -name '*_bench.cc' 2>/dev/null)
+MICROBENCH_SM90_SOURCES = $(filter $(TEST_SRC_DIR)/microbench/wgmma/%,$(MICROBENCH_ALL_SOURCES))
+MICROBENCH_DEFAULT_SOURCES = $(filter-out $(TEST_SRC_DIR)/microbench/wgmma/%,$(MICROBENCH_ALL_SOURCES))
 # run_all_tests includes unit + integration only (no microbench)
 TEST_SOURCES = $(UNIT_TEST_SOURCES) $(INTEGRATION_TEST_SOURCES)
 TEST_OBJECTS = $(UNIT_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o) \
                $(INTEGRATION_TEST_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
 TEST_TARGETS = $(TEST_SOURCES:$(TEST_SRC_DIR)/%_test.cc=$(BIN_DIR)/%)
-HOPPER_TEST_OBJECTS = $(HOPPER_TEST_SOURCES:$(HOPPER_SRC_DIR)/%.cc=$(OBJ_DIR)/hopper/%.cu.o)
+SM90_TEST_OBJECTS = $(SM90_TEST_SOURCES:$(HOPPER_SRC_DIR)/%.cc=$(OBJ_DIR)/hopper/%.cu.o)
 HOPPER_FA2_TEST_SOURCE = $(HOPPER_SRC_DIR)/fa2/fa2_fwd_fp16_test.cc
 HOPPER_FA2_VARIANTS = h32d64_full h32d64_causal h16d128_full h16d128_causal
 HOPPER_FA2_GROUPS = smoke small medium large
@@ -117,15 +120,8 @@ HOPPER_FA3_SENS_SYNC_ONLY_NO_TMA_NOPROFILE_OBJECT = $(OBJ_DIR)/hopper/fa3_sensit
 # Microbench stay as separate binaries by design: faster incremental rebuilds,
 # failure isolation, and benchmark-specific artifacts. run_tests.sh pre-screens
 # binaries with --gtest_list_tests so users can still pass one filter.
-MICROBENCH_OBJECTS = $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/%.cc=$(OBJ_DIR)/%.cu.o)
-MICROBENCH_TARGETS = $(MICROBENCH_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
-WGMMA_FP16_CORE_TARGETS = \
-	$(BIN_DIR)/wgmma/wgmma_fp16_ss_g1_bench \
-	$(BIN_DIR)/wgmma/wgmma_fp16_ss_g2_bench \
-	$(BIN_DIR)/wgmma/wgmma_fp16_ss_g4_bench \
-	$(BIN_DIR)/wgmma/wgmma_fp16_rs_g1_bench \
-	$(BIN_DIR)/wgmma/wgmma_fp16_rs_g2_bench \
-	$(BIN_DIR)/wgmma/wgmma_fp16_rs_g4_bench
+MICROBENCH_DEFAULT_TARGETS = $(MICROBENCH_DEFAULT_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
+MICROBENCH_SM90_TARGETS = $(MICROBENCH_SM90_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
 
 HOPPER_FA3_DIR = $(HOPPER_SRC_DIR)/fa3
 HOPPER_FA3_COMMON_FLAGS = --ftemplate-backtrace-limit=0 -O3 \
@@ -145,10 +141,9 @@ HOPPER_FA3_PROFILE_HEADERS = \
 	$(HOPPER_FA3_DIR)/fa3_fwd_hdim128_fp16_case.cuh \
 	$(HOPPER_FA3_DIR)/flash-attention/hopper/flash_profile.h \
 	$(HOPPER_FA3_DIR)/flash-attention/hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp
-ifneq ($(strip $(HOPPER_TEST_SOURCES)),)
-HOPPER_GTEST_TARGETS = $(HOPPER_TEST_TARGET)
+ifneq ($(strip $(SM90_TEST_SOURCES)),)
+SM90_TEST_TARGETS = $(SM90_TEST_TARGET)
 endif
-HOPPER_TARGETS = $(HOPPER_GTEST_TARGETS)
 
 HOPPER_FA2_DIR = $(HOPPER_SRC_DIR)/fa2
 HOPPER_FA2_COMMON_FLAGS = --ftemplate-backtrace-limit=0 -O3 \
@@ -177,7 +172,7 @@ HOPPER_OBJ_DIR = $(OBJ_DIR)/hopper
 
 # Main test runner
 MAIN_TEST_TARGET = $(BIN_DIR)/run_all_tests
-HOPPER_TEST_TARGET = $(BIN_DIR)/hopper/run_hopper_tests
+SM90_TEST_TARGET = $(BIN_DIR)/sm90/run_sm90_tests
 HOPPER_FA2_SMOKE_TARGETS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(BIN_DIR)/hopper/run_fa2_smoke_$(variant)_tests)
 HOPPER_FA2_SMALL_TARGETS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(BIN_DIR)/hopper/run_fa2_small_$(variant)_tests)
 HOPPER_FA2_MEDIUM_TARGETS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(BIN_DIR)/hopper/run_fa2_medium_$(variant)_tests)
@@ -246,48 +241,122 @@ HOPPER_FA3_SENSITIVITY_EXTENDED_TARGETS = \
 # source, variant, or sensitivity mode arrays in shell.
 TEST_GROUPS = \
 	test \
-	bench \
+	microbench-default \
+	microbench-sm90 \
 	dev \
-	hopper \
-	hopper-fa2 \
-	hopper-fa2-smoke \
-	hopper-fa2-small \
-	hopper-fa2-medium \
-	hopper-fa2-large \
-	hopper-fa2-sensitivity \
-	hopper-fa2-sensitivity-h1d128 \
-	hopper-fa2-sensitivity-large-d128-full \
-	hopper-fa2-large-h32d64-full \
-	hopper-fa2-large-h32d64-causal \
-	hopper-fa2-large-h16d128-full \
-	hopper-fa2-large-h16d128-causal \
-	hopper-fa3-extended \
-	hopper-fa3-single-tile \
-	hopper-fa3-h1d128-profile \
-	hopper-fa3-sensitivity \
-	hopper-fa3-sensitivity-extended
+	test-sm90 \
+	fa2 \
+	fa2-smoke \
+	fa2-small \
+	fa2-medium \
+	fa2-large \
+	fa2-sensitivity \
+	fa2-sensitivity-h1d128 \
+	fa2-sensitivity-large-d128-full \
+	fa2-large-h32d64-full \
+	fa2-large-h32d64-causal \
+	fa2-large-h16d128-full \
+	fa2-large-h16d128-causal \
+	fa3 \
+	fa3-single-tile \
+	fa3-h1d128-profile \
+	fa3-sensitivity \
+	fa3-sensitivity-extended
 
 TEST_GROUP_BINARIES_test = $(MAIN_TEST_TARGET)
-TEST_GROUP_BINARIES_bench = $(MICROBENCH_TARGETS)
+TEST_GROUP_BINARIES_microbench-default = $(MICROBENCH_DEFAULT_TARGETS)
+TEST_GROUP_BINARIES_microbench-sm90 = $(MICROBENCH_SM90_TARGETS)
 TEST_GROUP_BINARIES_dev = $(DEV_TEST_TARGET)
-TEST_GROUP_BINARIES_hopper = $(HOPPER_TARGETS)
-TEST_GROUP_BINARIES_hopper-fa2 = $(HOPPER_FA2_TARGETS)
-TEST_GROUP_BINARIES_hopper-fa2-smoke = $(HOPPER_FA2_SMOKE_TARGETS)
-TEST_GROUP_BINARIES_hopper-fa2-small = $(HOPPER_FA2_SMALL_TARGETS)
-TEST_GROUP_BINARIES_hopper-fa2-medium = $(HOPPER_FA2_MEDIUM_TARGETS)
-TEST_GROUP_BINARIES_hopper-fa2-large = $(HOPPER_FA2_LARGE_TARGETS)
-TEST_GROUP_BINARIES_hopper-fa2-sensitivity = $(HOPPER_FA2_SENSITIVITY_TARGETS)
-TEST_GROUP_BINARIES_hopper-fa2-sensitivity-h1d128 = $(HOPPER_FA2_SENSITIVITY_H1D128_TARGETS)
-TEST_GROUP_BINARIES_hopper-fa2-sensitivity-large-d128-full = $(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_TARGETS)
-TEST_GROUP_BINARIES_hopper-fa2-large-h32d64-full = $(BIN_DIR)/hopper/run_fa2_large_h32d64_full_tests
-TEST_GROUP_BINARIES_hopper-fa2-large-h32d64-causal = $(BIN_DIR)/hopper/run_fa2_large_h32d64_causal_tests
-TEST_GROUP_BINARIES_hopper-fa2-large-h16d128-full = $(BIN_DIR)/hopper/run_fa2_large_h16d128_full_tests
-TEST_GROUP_BINARIES_hopper-fa2-large-h16d128-causal = $(BIN_DIR)/hopper/run_fa2_large_h16d128_causal_tests
-TEST_GROUP_BINARIES_hopper-fa3-extended = $(HOPPER_FA3_EXTENDED_TARGET)
-TEST_GROUP_BINARIES_hopper-fa3-single-tile = $(HOPPER_FA3_SINGLE_TILE_TARGET)
-TEST_GROUP_BINARIES_hopper-fa3-h1d128-profile = $(HOPPER_FA3_H1D128_PROFILE_TARGET)
-TEST_GROUP_BINARIES_hopper-fa3-sensitivity = $(HOPPER_FA3_SENSITIVITY_TARGETS)
-TEST_GROUP_BINARIES_hopper-fa3-sensitivity-extended = $(HOPPER_FA3_SENSITIVITY_EXTENDED_TARGETS)
+TEST_GROUP_BINARIES_test-sm90 = $(SM90_TEST_TARGETS)
+TEST_GROUP_BINARIES_fa2 = $(HOPPER_FA2_TARGETS)
+TEST_GROUP_BINARIES_fa2-smoke = $(HOPPER_FA2_SMOKE_TARGETS)
+TEST_GROUP_BINARIES_fa2-small = $(HOPPER_FA2_SMALL_TARGETS)
+TEST_GROUP_BINARIES_fa2-medium = $(HOPPER_FA2_MEDIUM_TARGETS)
+TEST_GROUP_BINARIES_fa2-large = $(HOPPER_FA2_LARGE_TARGETS)
+TEST_GROUP_BINARIES_fa2-sensitivity = $(HOPPER_FA2_SENSITIVITY_TARGETS)
+TEST_GROUP_BINARIES_fa2-sensitivity-h1d128 = $(HOPPER_FA2_SENSITIVITY_H1D128_TARGETS)
+TEST_GROUP_BINARIES_fa2-sensitivity-large-d128-full = $(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_TARGETS)
+TEST_GROUP_BINARIES_fa2-large-h32d64-full = $(BIN_DIR)/hopper/run_fa2_large_h32d64_full_tests
+TEST_GROUP_BINARIES_fa2-large-h32d64-causal = $(BIN_DIR)/hopper/run_fa2_large_h32d64_causal_tests
+TEST_GROUP_BINARIES_fa2-large-h16d128-full = $(BIN_DIR)/hopper/run_fa2_large_h16d128_full_tests
+TEST_GROUP_BINARIES_fa2-large-h16d128-causal = $(BIN_DIR)/hopper/run_fa2_large_h16d128_causal_tests
+TEST_GROUP_BINARIES_fa3 = $(HOPPER_FA3_EXTENDED_TARGET)
+TEST_GROUP_BINARIES_fa3-single-tile = $(HOPPER_FA3_SINGLE_TILE_TARGET)
+TEST_GROUP_BINARIES_fa3-h1d128-profile = $(HOPPER_FA3_H1D128_PROFILE_TARGET)
+TEST_GROUP_BINARIES_fa3-sensitivity = $(HOPPER_FA3_SENSITIVITY_TARGETS)
+TEST_GROUP_BINARIES_fa3-sensitivity-extended = $(HOPPER_FA3_SENSITIVITY_EXTENDED_TARGETS)
+
+# User-facing suite/target registry. One target is an independently buildable
+# and runnable architecture domain, not an individual Make target or gtest.
+TEST_SUITES = test fa microbench dev trace
+
+SUITE_TARGETS_test = default sm90
+SUITE_TARGETS_fa = fa2 fa3
+SUITE_TARGETS_microbench = default sm90
+SUITE_TARGETS_dev = default
+SUITE_TARGETS_trace = default
+
+SUITE_DEFAULT_TARGET_test = default
+SUITE_DEFAULT_TARGET_fa =
+SUITE_DEFAULT_TARGET_microbench = default
+SUITE_DEFAULT_TARGET_dev = default
+SUITE_DEFAULT_TARGET_trace = default
+
+SUITE_TARGET_BUILD_GROUP_test_default = test
+SUITE_TARGET_BINARY_GROUP_test_default = test
+SUITE_TARGET_EXECUTOR_test_default = test
+SUITE_TARGET_DEFAULT_CONFIG_test_default = SM120_RTX5090
+SUITE_TARGET_REQUIRED_CC_test_default = 12.0
+SUITE_TARGET_CUDA_ARCH_test_default = sm_120a
+
+SUITE_TARGET_BUILD_GROUP_test_sm90 = test-sm90
+SUITE_TARGET_BINARY_GROUP_test_sm90 = test-sm90
+SUITE_TARGET_EXECUTOR_test_sm90 = gtest-single
+SUITE_TARGET_DEFAULT_CONFIG_test_sm90 = SM90_H100
+SUITE_TARGET_REQUIRED_CC_test_sm90 = 9.0
+SUITE_TARGET_CUDA_ARCH_test_sm90 = sm_90a
+
+SUITE_TARGET_BUILD_GROUP_fa_fa2 = fa2
+SUITE_TARGET_BINARY_GROUP_fa_fa2 = fa2
+SUITE_TARGET_EXECUTOR_fa_fa2 = fa2
+SUITE_TARGET_DEFAULT_CONFIG_fa_fa2 = SM90_H100
+SUITE_TARGET_REQUIRED_CC_fa_fa2 = 9.0
+SUITE_TARGET_CUDA_ARCH_fa_fa2 = sm_90a
+
+SUITE_TARGET_BUILD_GROUP_fa_fa3 = fa3
+SUITE_TARGET_BINARY_GROUP_fa_fa3 = fa3
+SUITE_TARGET_EXECUTOR_fa_fa3 = gtest-single
+SUITE_TARGET_DEFAULT_CONFIG_fa_fa3 = SM90_H100
+SUITE_TARGET_REQUIRED_CC_fa_fa3 = 9.0
+SUITE_TARGET_CUDA_ARCH_fa_fa3 = sm_90a
+
+SUITE_TARGET_BUILD_GROUP_microbench_default = microbench-default
+SUITE_TARGET_BINARY_GROUP_microbench_default = microbench-default
+SUITE_TARGET_EXECUTOR_microbench_default = gtest-multi
+SUITE_TARGET_DEFAULT_CONFIG_microbench_default = SM120_RTX5090
+SUITE_TARGET_REQUIRED_CC_microbench_default = 12.0
+SUITE_TARGET_CUDA_ARCH_microbench_default = sm_120a
+
+SUITE_TARGET_BUILD_GROUP_microbench_sm90 = microbench-sm90
+SUITE_TARGET_BINARY_GROUP_microbench_sm90 = microbench-sm90
+SUITE_TARGET_EXECUTOR_microbench_sm90 = gtest-multi
+SUITE_TARGET_DEFAULT_CONFIG_microbench_sm90 = SM90_H100
+SUITE_TARGET_REQUIRED_CC_microbench_sm90 = 9.0
+SUITE_TARGET_CUDA_ARCH_microbench_sm90 = sm_90a
+
+SUITE_TARGET_BUILD_GROUP_dev_default = dev
+SUITE_TARGET_BINARY_GROUP_dev_default = dev
+SUITE_TARGET_EXECUTOR_dev_default = dev
+SUITE_TARGET_DEFAULT_CONFIG_dev_default = SM120_RTX5090
+SUITE_TARGET_REQUIRED_CC_dev_default = 12.0
+SUITE_TARGET_CUDA_ARCH_dev_default = sm_120a
+
+SUITE_TARGET_BUILD_GROUP_trace_default = trace
+SUITE_TARGET_BINARY_GROUP_trace_default = none
+SUITE_TARGET_EXECUTOR_trace_default = trace
+SUITE_TARGET_DEFAULT_CONFIG_trace_default = SM120_RTX5090
+SUITE_TARGET_REQUIRED_CC_trace_default = 12.0
+SUITE_TARGET_CUDA_ARCH_trace_default = sm_120a
 
 # GPGPU-Sim related flags (from main project)
 GPGPUSIM_FLAGS = -DDEBUG=0
@@ -302,7 +371,7 @@ FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
 FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o
 FLASH_OBJ_DIR = $(OBJ_DIR)/flash
 
-.PHONY: all test bench standalone-bench cp-async-bench mma-standalone-bench tma-standalone-bench memory-standalone-bench dev hopper hopper-gtest prepare-fa3-flash-attention hopper-fa2 hopper-fa2-smoke hopper-fa2-small hopper-fa2-medium hopper-fa2-large hopper-fa2-sensitivity hopper-fa2-sensitivity-h1d128 hopper-fa2-sensitivity-large-d128-full hopper-fa2-large-h32d64-full hopper-fa2-large-h16d128-full hopper-fa2-large-h32d64-causal hopper-fa2-large-h16d128-causal hopper-fa3-extended hopper-fa3-single-tile hopper-fa3-h1d128-profile hopper-fa3-sensitivity hopper-fa3-sensitivity-extended wgmma-n16-chain wgmma-fp16-core wgmma-softmax-mix wgmma-rf-bandwidth list-test-groups print-test-binaries clean help setup-gtest
+.PHONY: test test-sm90 microbench-default microbench-sm90 standalone-bench cp-async-bench mma-standalone-bench tma-standalone-bench memory-standalone-bench dev prepare-fa3-flash-attention fa2 fa2-smoke fa2-small fa2-medium fa2-large fa2-sensitivity fa2-sensitivity-h1d128 fa2-sensitivity-large-d128-full fa2-large-h32d64-full fa2-large-h16d128-full fa2-large-h32d64-causal fa2-large-h16d128-causal fa3 fa3-single-tile fa3-h1d128-profile fa3-sensitivity fa3-sensitivity-extended list-test-groups print-test-binaries list-suites list-suite-targets print-suite-default-target print-suite-target-metadata clean help setup-gtest
 
 # Machine-readable manifest used by run_tests.sh.
 list-test-groups:
@@ -319,14 +388,57 @@ print-test-binaries:
 		printf '%s\n' $(TEST_GROUP_BINARIES_$(TEST_GROUP)); \
 	fi
 
-# Build everything (test + bench + dev)
-all: test bench dev
+list-suites:
+	@printf '%s\n' $(TEST_SUITES)
+
+list-suite-targets:
+	@if [ -z "$(SUITE)" ]; then \
+		echo "SUITE is required" >&2; \
+		exit 2; \
+	elif [ -z "$(filter $(SUITE),$(TEST_SUITES))" ]; then \
+		echo "Unknown SUITE: $(SUITE)" >&2; \
+		exit 2; \
+	else \
+		printf '%s\n' $(SUITE_TARGETS_$(SUITE)); \
+	fi
+
+print-suite-default-target:
+	@if [ -z "$(SUITE)" ]; then \
+		echo "SUITE is required" >&2; \
+		exit 2; \
+	elif [ -z "$(filter $(SUITE),$(TEST_SUITES))" ]; then \
+		echo "Unknown SUITE: $(SUITE)" >&2; \
+		exit 2; \
+	else \
+		printf '%s\n' "$(SUITE_DEFAULT_TARGET_$(SUITE))"; \
+	fi
+
+print-suite-target-metadata:
+	@if [ -z "$(SUITE)" ] || [ -z "$(SUITE_TARGET)" ]; then \
+		echo "SUITE and SUITE_TARGET are required" >&2; \
+		exit 2; \
+	elif [ -z "$(filter $(SUITE),$(TEST_SUITES))" ]; then \
+		echo "Unknown SUITE: $(SUITE)" >&2; \
+		exit 2; \
+	elif [ -z "$(filter $(SUITE_TARGET),$(SUITE_TARGETS_$(SUITE)))" ]; then \
+		echo "Unknown target for $(SUITE): $(SUITE_TARGET)" >&2; \
+		exit 2; \
+	else \
+		printf '%s|%s|%s|%s|%s|%s\n' \
+			"$(SUITE_TARGET_BUILD_GROUP_$(SUITE)_$(SUITE_TARGET))" \
+			"$(SUITE_TARGET_BINARY_GROUP_$(SUITE)_$(SUITE_TARGET))" \
+			"$(SUITE_TARGET_EXECUTOR_$(SUITE)_$(SUITE_TARGET))" \
+			"$(SUITE_TARGET_DEFAULT_CONFIG_$(SUITE)_$(SUITE_TARGET))" \
+			"$(SUITE_TARGET_REQUIRED_CC_$(SUITE)_$(SUITE_TARGET))" \
+			"$(SUITE_TARGET_CUDA_ARCH_$(SUITE)_$(SUITE_TARGET))"; \
+	fi
 
 # Build verification tests (unit + integration, used by run_tests.sh and CI)
 test: setup-gtest $(MAIN_TEST_TARGET)
 
-# Build microbenchmarks only (separate binaries, run individually)
-bench: setup-gtest $(MICROBENCH_TARGETS)
+microbench-default: setup-gtest $(MICROBENCH_DEFAULT_TARGETS)
+
+microbench-sm90: setup-gtest $(MICROBENCH_SM90_TARGETS)
 
 # Build standalone CUDA calibration microbenchmarks that are not gtest binaries.
 standalone-bench: cp-async-bench mma-standalone-bench tma-standalone-bench memory-standalone-bench
@@ -346,106 +458,70 @@ memory-standalone-bench:
 # Build standalone dev tests (decoupled from simulator)
 dev: setup-gtest $(DEV_TEST_TARGET)
 
-# Build Hopper tests with Hopper-specific CUDA arch.
-hopper: setup-gtest $(HOPPER_TARGETS)
-
-# Build only Hopper gtest sources.
-hopper-gtest: setup-gtest $(HOPPER_GTEST_TARGETS)
+# Build SM90-only instruction tests.
+test-sm90: setup-gtest $(SM90_TEST_TARGETS)
 
 prepare-fa3-flash-attention:
 	$(HOPPER_FA3_DIR)/prepare_flash_attention.sh
 
 # Build FA2 forward-only runners with extended-shape macro enabled.
-hopper-fa2: setup-gtest $(HOPPER_FA2_TARGETS)
+fa2: setup-gtest $(HOPPER_FA2_TARGETS)
 
-hopper-fa2-smoke: setup-gtest $(HOPPER_FA2_SMOKE_TARGETS)
+fa2-smoke: setup-gtest $(HOPPER_FA2_SMOKE_TARGETS)
 
-hopper-fa2-small: setup-gtest $(HOPPER_FA2_SMALL_TARGETS)
+fa2-small: setup-gtest $(HOPPER_FA2_SMALL_TARGETS)
 
-hopper-fa2-medium: setup-gtest $(HOPPER_FA2_MEDIUM_TARGETS)
+fa2-medium: setup-gtest $(HOPPER_FA2_MEDIUM_TARGETS)
 
-hopper-fa2-large: setup-gtest $(HOPPER_FA2_LARGE_TARGETS)
+fa2-large: setup-gtest $(HOPPER_FA2_LARGE_TARGETS)
 
-hopper-fa2-sensitivity: setup-gtest $(HOPPER_FA2_SENSITIVITY_TARGETS)
+fa2-sensitivity: setup-gtest $(HOPPER_FA2_SENSITIVITY_TARGETS)
 
-hopper-fa2-sensitivity-h1d128: setup-gtest $(HOPPER_FA2_SENSITIVITY_H1D128_TARGETS)
+fa2-sensitivity-h1d128: setup-gtest $(HOPPER_FA2_SENSITIVITY_H1D128_TARGETS)
 
-hopper-fa2-sensitivity-large-d128-full: setup-gtest $(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_TARGETS)
+fa2-sensitivity-large-d128-full: setup-gtest $(HOPPER_FA2_SENSITIVITY_LARGE_D128_FULL_TARGETS)
 
-hopper-fa2-large-h32d64-full: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h32d64_full_tests
+fa2-large-h32d64-full: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h32d64_full_tests
 
-hopper-fa2-large-h32d64-causal: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h32d64_causal_tests
+fa2-large-h32d64-causal: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h32d64_causal_tests
 
-hopper-fa2-large-h16d128-full: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h16d128_full_tests
+fa2-large-h16d128-full: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h16d128_full_tests
 
-hopper-fa2-large-h16d128-causal: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h16d128_causal_tests
+fa2-large-h16d128-causal: setup-gtest $(BIN_DIR)/hopper/run_fa2_large_h16d128_causal_tests
 
 # Build FA3-only runners. FA3 always uses extended GMMA shapes.
-hopper-fa3-extended: setup-gtest $(HOPPER_FA3_EXTENDED_TARGET)
+fa3: setup-gtest $(HOPPER_FA3_EXTENDED_TARGET)
 
 # Build only the FA3 single-tile profiling runner.
-hopper-fa3-single-tile: setup-gtest $(HOPPER_FA3_SINGLE_TILE_TARGET)
+fa3-single-tile: setup-gtest $(HOPPER_FA3_SINGLE_TILE_TARGET)
 
 # Build only the FA3 H1/D128/full profiling runner.
-hopper-fa3-h1d128-profile: setup-gtest $(HOPPER_FA3_H1D128_PROFILE_TARGET)
+fa3-h1d128-profile: setup-gtest $(HOPPER_FA3_H1D128_PROFILE_TARGET)
 
 # Build FA3 H1/D128/full sensitivity runners.
-hopper-fa3-sensitivity: setup-gtest $(HOPPER_FA3_SENSITIVITY_TARGETS)
+fa3-sensitivity: setup-gtest $(HOPPER_FA3_SENSITIVITY_TARGETS)
 
 # Build extra FA3 sensitivity runners that intentionally change compile flags.
-hopper-fa3-sensitivity-extended: setup-gtest $(HOPPER_FA3_SENSITIVITY_EXTENDED_TARGETS)
-
-# Build the raw PTX WGMMA n16 chain microbenchmark.
-wgmma-n16-chain: setup-gtest $(BIN_DIR)/wgmma/wgmma_n16_chain_bench
-
-# Build split FP16 WGMMA core calibration binaries.
-wgmma-fp16-core: setup-gtest $(WGMMA_FP16_CORE_TARGETS)
-
-# Build focused WGMMA + softmax-math mixing microbenchmark.
-wgmma-softmax-mix: setup-gtest $(BIN_DIR)/wgmma/wgmma_softmax_mix_bench
-
-# Build focused WGMMA accumulator/RF bandwidth microbenchmark.
-wgmma-rf-bandwidth: setup-gtest $(BIN_DIR)/wgmma/wgmma_rf_bandwidth_bench
+fa3-sensitivity-extended: setup-gtest $(HOPPER_FA3_SENSITIVITY_EXTENDED_TARGETS)
 
 # Help target
 help:
-	@echo "GPGPU-Sim Test Framework"
-	@echo "========================"
-	@echo "Available targets:"
-	@echo "  all         - Build all tests (default)"
-	@echo "  test        - Build and run all tests"
-	@echo "  bench       - Build gtest-based microbenchmarks"
+	@echo "Internal test build graph"
+	@echo "========================="
+	@echo "Use './run_tests.sh help' for the supported test CLI."
+	@echo "The suite build targets in this Makefile are internal implementation details."
+	@echo ""
+	@echo "Standalone calibration targets:"
 	@echo "  standalone-bench - Build standalone CUDA calibration microbenchmarks"
 	@echo "  cp-async-bench - Build standalone cp.async calibration binaries"
 	@echo "  mma-standalone-bench - Build standalone warp-MMA calibration binaries"
-	@echo "  wgmma-softmax-mix - Build focused WGMMA/softmax mixing microbenchmark"
-	@echo "  wgmma-rf-bandwidth - Build focused WGMMA accumulator/RF bandwidth microbenchmark"
 	@echo "  prepare-fa3-flash-attention - Prepare local flash-attention headers for FA2/FA3"
-	@echo "  hopper      - Build Hopper tests"
-	@echo "  hopper-fa2 - Build split FA2 forward-only runners with extended-shape macro"
-	@echo "  hopper-fa2-smoke - Build split FA2 smoke runners"
-	@echo "  hopper-fa2-small - Build split FA2 small runners"
-	@echo "  hopper-fa2-medium - Build split FA2 medium runners"
-	@echo "  hopper-fa2-large - Build split FA2 large runners"
-	@echo "  hopper-fa2-sensitivity - Build FA2 H1/B1 sensitivity runners"
-	@echo "  hopper-fa2-sensitivity-h1d128 - Build FA2 H1D128 full/causal debug sensitivity runners"
-	@echo "  hopper-fa2-sensitivity-large-d128-full - Build FA2 large-D128 sensitivity runners"
-	@echo "  hopper-fa3-extended - Build FA3-only runner with extended GMMA shapes"
-	@echo "  hopper-fa3-single-tile - Build FA3 single-tile profiling runner"
-	@echo "  hopper-fa3-h1d128-profile - Build FA3 H1/D128/full profiling runner"
-	@echo "  hopper-fa3-sensitivity - Build FA3 H1/D128/full sensitivity runners"
-	@echo "  hopper-fa3-sensitivity-extended - Build FA3 sensitivity runners with extended GMMA shapes"
-	@echo "  clean       - Clean all build artifacts"
-	@echo "  setup-gtest - Download and setup Google Test"
-	@echo "  run-tests   - Run all compiled tests"
+	@echo ""
+	@echo "Registry inspection:"
 	@echo "  list-test-groups - List groups in the binary manifest"
 	@echo "  print-test-binaries TEST_GROUP=<group> - Print one group's binaries"
-	@echo "  help        - Show this help message"
-	@echo ""
-	@echo "Individual test targets:"
-	@for test in $(TEST_TARGETS); do \
-		echo "  $$(basename $$test) - Build and run specific test"; \
-	done
+	@echo "  list-suites - List user-facing suites"
+	@echo "  list-suite-targets SUITE=<suite> - List one suite's targets"
 
 # Setup Google Test
 setup-gtest:
@@ -489,9 +565,9 @@ $(OBJ_DIR)/integration/%.cu.o: $(TEST_SRC_DIR)/integration/%.cc $(CUH_HEADERS)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
-# Hopper gtest sources use their own CUDA architecture.
-$(OBJ_DIR)/hopper/fa3/%.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_FLAGS)
-$(OBJ_DIR)/hopper/%.cu.o: $(HOPPER_SRC_DIR)/%.cc $(CUH_HEADERS) Makefile | $(HOPPER_OBJ_DIR)
+# SM90 instruction tests use their own CUDA architecture and do not depend on
+# FA2/FA3 headers or a prepared FlashAttention checkout.
+$(OBJ_DIR)/hopper/%.cu.o: $(HOPPER_SRC_DIR)/%.cc $(SM90_TEST_CUH_HEADERS) Makefile | $(HOPPER_OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
@@ -633,11 +709,8 @@ $(HOPPER_FA3_SENS_SYNC_ONLY_NO_TMA_NOPROFILE_OBJECT): $(HOPPER_SRC_DIR)/fa3/fa3_
 	@mkdir -p $(dir $@)
 	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
-# Microbench tests
-$(OBJ_DIR)/microbench/wgmma/wgmma_n16_chain_bench.cu.o: NVCCFLAGS = $(WGMMA_SM90A_NVCCFLAGS)
-$(OBJ_DIR)/microbench/wgmma/wgmma_fp16_%_bench.cu.o: NVCCFLAGS = $(WGMMA_SM90A_NVCCFLAGS)
-$(OBJ_DIR)/microbench/wgmma/wgmma_softmax_mix_bench.cu.o: NVCCFLAGS = $(WGMMA_SM90A_NVCCFLAGS)
-$(OBJ_DIR)/microbench/wgmma/wgmma_rf_bandwidth_bench.cu.o: NVCCFLAGS = $(WGMMA_SM90A_NVCCFLAGS)
+# Every WGMMA microbenchmark is forced to SM90A.
+$(OBJ_DIR)/microbench/wgmma/%.cu.o: NVCCFLAGS = $(WGMMA_SM90A_NVCCFLAGS)
 $(OBJ_DIR)/microbench/%.cu.o: $(TEST_SRC_DIR)/microbench/%.cc $(CUH_HEADERS) | $(MICROBENCH_OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
@@ -654,8 +727,8 @@ $(BIN_DIR)/%_test: $(OBJ_DIR)/%_test.o $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
 $(MAIN_TEST_TARGET): $(TEST_OBJECTS) $(FLASH_OBJECTS) $(OBJ_DIR)/gtest_main.a | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(CUDA_LIBS)
 
-# Build Hopper gtest runner
-$(HOPPER_TEST_TARGET): $(HOPPER_TEST_OBJECTS) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
+# Build the SM90 instruction-test runner.
+$(SM90_TEST_TARGET): $(SM90_TEST_OBJECTS) $(OBJ_DIR)/gtest_main.a Makefile | $(BIN_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out Makefile,$^) -o $@ -lpthread $(CUDA_LIBS)
 
@@ -802,8 +875,8 @@ debug:
 	@echo "TEST_SOURCES: $(TEST_SOURCES)"
 	@echo "TEST_OBJECTS: $(TEST_OBJECTS)"
 	@echo "TEST_TARGETS: $(TEST_TARGETS)"
-	@echo "HOPPER_TEST_SOURCES: $(HOPPER_TEST_SOURCES)"
-	@echo "HOPPER_TARGETS: $(HOPPER_TARGETS)"
+	@echo "SM90_TEST_SOURCES: $(SM90_TEST_SOURCES)"
+	@echo "SM90_TEST_TARGETS: $(SM90_TEST_TARGETS)"
 	@echo "MAIN_TEST_TARGET: $(MAIN_TEST_TARGET)"
-	@echo "HOPPER_TEST_TARGET: $(HOPPER_TEST_TARGET)"
+	@echo "SM90_TEST_TARGET: $(SM90_TEST_TARGET)"
 	@echo "CUH_HEADERS: $(CUH_HEADERS)"

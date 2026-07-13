@@ -319,7 +319,7 @@ def run_hardware_phase(config_name: str, run_dir: Path) -> None:
 
     for target in RUN_TARGETS:
         run_command(
-            f"./run_tests.sh -c {config_name} bench \"{target['pattern']}\"",
+            f"./run_tests.sh -c {config_name} run microbench \"{target['pattern']}\"",
             env=native_env(),
         )
 
@@ -336,7 +336,7 @@ def run_sim_phase(config_name: str, run_dir: Path) -> None:
     )
     for target in RUN_TARGETS:
         run_command(
-            f"{setup_cmd} && ./run_tests.sh -c {config_name} bench "
+            f"{setup_cmd} && ./run_tests.sh -c {config_name} run microbench "
             f"\"{target['pattern']}\""
         )
 
