@@ -1,4 +1,4 @@
-# SM90-only instruction verification tests.
+# Non-FlashAttention SM90 verification tests.
 
 SM90_MK := $(lastword $(MAKEFILE_LIST))
 

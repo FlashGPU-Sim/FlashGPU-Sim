@@ -60,9 +60,32 @@ GPGPUSIM_FLAGS = -DDEBUG=0
 TOP_MAKEFILE := $(firstword $(MAKEFILE_LIST))
 .DEFAULT_GOAL := help
 
-include make/core.mk
+$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(HOPPER_OBJ_DIR):
+	mkdir -p $@
+
+include make/gtest.mk
+include make/sm120.mk
 include make/sm90.mk
 include make/fa3.mk
 include make/fa2.mk
 include make/microbench.mk
 include make/registry.mk
+
+.PHONY: clean clean-all debug
+
+clean:
+	rm -rf $(BUILD_DIR)
+	@echo "Cleaned build directory"
+
+clean-all: clean
+	rm -rf $(GTEST_DIR)
+	@echo "Cleaned everything including Google Test"
+
+debug:
+	@echo "UNIT_TEST_SOURCES: $(UNIT_TEST_SOURCES)"
+	@echo "INTEGRATION_TEST_SOURCES: $(INTEGRATION_TEST_SOURCES)"
+	@echo "SM120_UNIT_TARGET: $(SM120_UNIT_TARGET)"
+	@echo "SM120_INTEGRATION_TARGET: $(SM120_INTEGRATION_TARGET)"
+	@echo "SM90_INSTRUCTION_SOURCES: $(SM90_INSTRUCTION_SOURCES)"
+	@echo "SM90_INSTRUCTION_TARGET: $(SM90_INSTRUCTION_TARGET)"
+	@echo "CUH_HEADERS: $(CUH_HEADERS)"
