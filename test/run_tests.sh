@@ -1020,6 +1020,12 @@ run_trace_tests() {
         (cd "$trace_bin_dir" && ./gpt2_embedding_test) || { exit_code=1; print_color $RED "FAILED: gpt2_embedding"; }
     fi
 
+    # Run Triton TMA 1D copy test (separate binary)
+    if [ -z "$test_name" ] || [[ "tma_copy" == *"$test_name"* ]]; then
+        print_color $BLUE "--- tma_copy_test ---"
+        (cd "$trace_bin_dir" && ./tma_copy_test) || { exit_code=1; print_color $RED "FAILED: tma_copy"; }
+    fi
+
     # Run GPT-2 data-driven tests (single binary, test name as argument)
     for name in $gpt2_data_driven_tests; do
         if [ -n "$test_name" ] && [[ "$name" != *"$test_name"* ]]; then
