@@ -171,7 +171,7 @@ When adding support for new MMA shapes or data types:
 source setup.sh && source setup_environment
 
 # Rebuild tests
-./test/run_tests.sh build
+./test/run_tests.sh build test --target sm120 --group integration
 ```
 
 ### Test Execution Failures

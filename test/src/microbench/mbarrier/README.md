@@ -6,7 +6,7 @@ The current suite builds a single bench binary from
 
 ## Supported Tests
 
-Run these tests from `test/` with `./run_tests.sh bench "<pattern>"`.
+Run these tests from `test/` through `microbench/sm120/mbarrier`.
 
 ### Sweep Cases
 
@@ -29,9 +29,11 @@ Run these tests from `test/` with `./run_tests.sh bench "<pattern>"`.
 ## Example Commands
 
 ```bash
-./run_tests.sh bench "MBarrierLatencyTest.WaitFalse"
-./run_tests.sh bench "MBarrierLatencyTest.Arrive*"
-./run_tests.sh bench "MBarrierLatencyTest.*"
+./run_tests.sh run microbench --target sm120 --group mbarrier \
+  "MBarrierLatencyTest.WaitFalse"
+./run_tests.sh run microbench --target sm120 --group mbarrier \
+  "MBarrierLatencyTest.Arrive*"
+./run_tests.sh run microbench --target sm120 --group mbarrier
 ```
 
 ## Notes

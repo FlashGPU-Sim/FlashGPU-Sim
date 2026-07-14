@@ -70,16 +70,22 @@ usage() {
     echo "Usage: $0 [OPTIONS] ACTION SUITE [FILTER] [OPTIONS]"
     echo ""
     echo "Actions and suites:"
-    echo "  build test [--target default|sm90]"
-    echo "  run test [filter] [--target default|sm90]"
-    echo "  build test --target fa2|fa3 --group NAME [--mode NAME|all]"
-    echo "  run test --target fa2|fa3 --group NAME [--mode NAME] [filter]"
-    echo "  build microbench [--target default|sm90]"
-    echo "  run microbench [filter] [--target default|sm90]"
-    echo "  build dev"
-    echo "  run dev [filter]"
-    echo "  build trace"
-    echo "  run trace [filter]"
+    echo "  build test [--target sm120|sm90] --group NAME"
+    echo "  run test [--target sm120|sm90] --group NAME [filter]"
+    echo "  build analysis --target fa2|fa3 --group NAME [--mode NAME|all]"
+    echo "  run analysis --target fa2|fa3 --group NAME [--mode NAME] [filter]"
+    echo "  build microbench [--target sm120|sm90] --group NAME"
+    echo "  run microbench [--target sm120|sm90] --group NAME [filter]"
+    echo "  build trace [--target sm120] --group gpt2"
+    echo "  run trace [--target sm120] --group gpt2 [filter]"
+    echo ""
+    echo "Groups:"
+    echo "  test/sm120:       unit, integration"
+    echo "  test/sm90:        instructions, fa2-smoke, fa3-smoke"
+    echo "  analysis/fa2|fa3: small, medium, large, breakdown, scaling, concurrency"
+    echo "  microbench/sm120: mbarrier, mma, memory"
+    echo "  microbench/sm90:  cp-async, mma, tma, wgmma"
+    echo "  trace/sm120:      gpt2"
     echo ""
     echo "Other commands:"
     echo "  clean              Clean build artifacts"
@@ -95,19 +101,23 @@ usage() {
     echo "  -t, --timeout      Set test timeout (seconds)"
     echo "  -c, --config NAME  Use specific GPU configuration"
     echo "  --target NAME      Select one target within a suite"
-    echo "  --group NAME       Select a workload group for FA2/FA3"
-    echo "  --mode NAME        Select an analysis mode for FA2/FA3"
+    echo "  --group NAME       Select one group within a target"
+    echo "  --mode NAME        Select an analysis compile-time mode"
     echo "  -h, --help         Show this help"
     echo "  Options may appear before or after the command."
     echo ""
     echo "Examples:"
-    echo "  $0 run test"
-    echo "  $0 run test '*MMAS8*' -c SM120_RTX5090_REDUCED"
-    echo "  $0 run test --target sm90 '*WgmmaF16*'"
-    echo "  $0 run test --target fa2 --group smoke 'Fa2PrefillFp16SmokeTest*'"
-    echo "  $0 run test --target fa2 --group breakdown --mode only_mma"
-    echo "  $0 run test --target fa3 --group scaling --mode baseline"
-    echo "  $0 run microbench --target sm90 '*Wgmma*'"
+    echo "  $0 run test --target sm120 --group integration CudaVectorAdd"
+    echo "  $0 run test --target sm90 --group instructions WgmmaF16"
+    echo "  $0 run test --target sm90 --group fa2-smoke"
+    echo "  $0 run analysis --target fa2 --group breakdown --mode only_mma"
+    echo "  $0 run analysis --target fa3 --group scaling --mode baseline"
+    echo "  $0 build microbench --target sm120 --group memory"
+    echo "  $0 run microbench --target sm90 --group wgmma"
+    echo "  $0 run trace --target sm120 --group gpt2 flash_attn"
+    echo ""
+    echo "Standalone calibration groups are build-only; use their local Makefiles"
+    echo "for benchmark-specific runtime arguments. Mode 'all' is also build-only."
 }
 
 # Setup test environment
@@ -253,25 +263,25 @@ build_active_target() {
     build_make_group "$ACTIVE_BUILD_GROUP" "$ACTIVE_CUDA_ARCH" "$parallel"
 }
 
-# Query the Makefile-owned binary manifest for one test group.
-test_group_binaries() {
+# Query the Makefile-owned binary manifest for one resolved group.
+binary_group_binaries() {
     local group="$1"
-    make -s --no-print-directory print-test-binaries TEST_GROUP="$group"
+    make -s --no-print-directory print-binary-group BINARY_GROUP="$group"
 }
 
-single_test_group_binary() {
+single_binary_group_binary() {
     local group="$1"
     local binaries=""
     local count=0
 
-    if ! binaries="$(test_group_binaries "$group")"; then
-        print_color $RED "Unable to resolve test group: $group" >&2
+    if ! binaries="$(binary_group_binaries "$group")"; then
+        print_color $RED "Unable to resolve binary group: $group" >&2
         return 1
     fi
 
     count="$(printf '%s\n' "$binaries" | sed '/^[[:space:]]*$/d' | wc -l)"
     if [ "$count" -ne 1 ]; then
-        print_color $RED "Expected one binary for group '$group', found $count" >&2
+        print_color $RED "Expected one binary in group '$group', found $count" >&2
         return 1
     fi
 
@@ -483,24 +493,39 @@ prepare_suite_target() {
 
 # List available tests
 list_tests() {
-    print_color $BLUE "Available test cases:"
+    print_color $BLUE "Supported suite / target / group hierarchy:"
 
-    # Check if test binary exists
-    local TEST_BINARY=""
-    if ! TEST_BINARY="$(single_test_group_binary test)"; then
+    local suites=""
+    if ! suites="$(suite_list)"; then
         return 1
     fi
-    local RUN_DIR="run/$GPU_CONFIG"
 
-    if [ ! -f "$TEST_BINARY" ]; then
-        print_color $RED "Error: Test binary not found at $TEST_BINARY"
-        print_color $YELLOW "Please run '$0 build test' first"
-        exit 1
-    fi
-
-    # Run the test binary with --gtest_list_tests within the run directory
-    # This ensures proper environment (gpgpusim.config etc.)
-    (cd "$RUN_DIR" && ../../build/bin/run_all_tests --gtest_list_tests 2>/dev/null)
+    local suite=""
+    local target=""
+    local group=""
+    local targets=""
+    local groups=""
+    local modes=""
+    while IFS= read -r suite; do
+        [ -n "$suite" ] || continue
+        echo "$suite"
+        targets="$(suite_target_list "$suite")" || return $?
+        while IFS= read -r target; do
+            [ -n "$target" ] || continue
+            echo "  $target"
+            groups="$(target_group_list "$suite" "$target")" || return $?
+            while IFS= read -r group; do
+                [ -n "$group" ] || continue
+                modes="$(target_group_mode_list "$suite" "$target" "$group")" || return $?
+                modes="$(printf '%s\n' "$modes" | sed '/^[[:space:]]*$/d' | tr '\n' ' ')"
+                if [ -n "$modes" ]; then
+                    echo "    $group [modes: ${modes% }]"
+                else
+                    echo "    $group"
+                fi
+            done <<< "$groups"
+        done <<< "$targets"
+    done <<< "$suites"
 }
 
 # List available GPU configurations
@@ -537,8 +562,8 @@ list_configs() {
 
     echo ""
     print_color $BLUE "To use a config:"
-    echo "  $0 -c CONFIG_NAME test"
-    echo "  $0 --config CONFIG_NAME test"
+    echo "  $0 -c CONFIG_NAME run test --target sm120 --group integration"
+    echo "  $0 --config CONFIG_NAME run test --target sm120 --group integration"
 }
 
 # Run a binary with a gtest filter in the config directory.
@@ -723,7 +748,7 @@ run_test_targets() {
     build_make_group "$build_group" "$cuda_arch"
 
     local test_executable=""
-    if ! test_executable="$(single_test_group_binary "$binary_group")"; then
+    if ! test_executable="$(single_binary_group_binary "$binary_group")"; then
         return 1
     fi
     if [ ! -f "$test_executable" ]; then
@@ -783,7 +808,7 @@ run_single_gtest_target() {
     build_make_group "$build_group" "$cuda_arch" "$parallel" || return $?
 
     local binary_rel=""
-    if ! binary_rel="$(single_test_group_binary "$binary_group")"; then
+    if ! binary_rel="$(single_binary_group_binary "$binary_group")"; then
         return 1
     fi
     local binary_path="$(pwd)/$binary_rel"
@@ -860,7 +885,7 @@ run_multi_gtest_target() {
 
     local exit_code=0
     local bench_manifest=""
-    if ! bench_manifest="$(test_group_binaries "$binary_group")"; then
+    if ! bench_manifest="$(binary_group_binaries "$binary_group")"; then
         print_color $RED "Unable to resolve binaries for $label"
         return 1
     fi
@@ -899,55 +924,6 @@ run_multi_gtest_target() {
     return $exit_code
 }
 
-# Run standalone dev tests with pattern
-run_dev_tests() {
-    local test_name="${1:-}"
-    local build_group="$2"
-    local binary_group="$3"
-    local cuda_arch="$4"
-    local config_dir="run/${GPU_CONFIG}"
-
-    if [ ! -d "$config_dir" ]; then
-        print_color $RED "Configuration directory not found: $config_dir"
-        exit 1
-    fi
-
-    build_make_group "$build_group" "$cuda_arch"
-
-    export GTEST_COLOR=yes
-    if [ "$TEST_VERBOSE" -eq 2 ]; then
-        export GTEST_VERBOSITY=1
-    fi
-
-    local filter="*"
-    if [ -n "$test_name" ]; then
-        filter="*${test_name}*"
-    fi
-
-    print_color $BLUE "Running dev tests: ${test_name:-all} (config: $GPU_CONFIG)"
-
-    local dev_rel=""
-    if ! dev_rel="$(single_test_group_binary "$binary_group")"; then
-        return 1
-    fi
-    local dev_bin="$(pwd)/$dev_rel"
-    if [ ! -f "$dev_bin" ]; then
-        print_color $RED "Dev test binary not found: $dev_bin"
-        exit 1
-    fi
-
-    local exit_code=0
-    run_binary_with_filter "$dev_bin" "$config_dir" "$filter" || exit_code=$?
-
-    if [ $exit_code -eq 0 ]; then
-        print_color $GREEN "✓ Dev tests passed!"
-    else
-        print_color $RED "✗ Dev tests failed (exit code: $exit_code)"
-    fi
-
-    return $exit_code
-}
-
 run_fa3_profile_target() {
     local label="$1"
     local test_name="${2:-}"
@@ -971,7 +947,7 @@ run_fa3_profile_target() {
     fi
 
     build_make_group "$build_group" "$cuda_arch" 1 || return $?
-    if ! binary_manifest="$(test_group_binaries "$binary_group")"; then
+    if ! binary_manifest="$(binary_group_binaries "$binary_group")"; then
         print_color $RED "Unable to resolve binaries for $label"
         return 1
     fi
@@ -1087,12 +1063,13 @@ run_active_target() {
                 "$ACTIVE_BINARY_GROUP" "$ACTIVE_CUDA_ARCH" \
                 "$ACTIVE_DEFAULT_FILTER" "$ACTIVE_CASE_LIST"
             ;;
-        dev)
-            run_dev_tests "$filter" "$ACTIVE_BUILD_GROUP" \
-                "$ACTIVE_BINARY_GROUP" "$ACTIVE_CUDA_ARCH"
-            ;;
         trace)
             run_trace_tests "$filter" "$ACTIVE_CUDA_ARCH"
+            ;;
+        build-only)
+            print_color $RED "$label is a standalone calibration group and cannot be run with the generic runner"
+            print_color $YELLOW "Build it here, then use its local Makefile with explicit benchmark arguments"
+            return 1
             ;;
         *)
             print_color $RED "Unknown executor '$ACTIVE_EXECUTOR' for $ACTIVE_SUITE/$ACTIVE_TARGET"

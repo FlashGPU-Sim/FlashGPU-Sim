@@ -35,15 +35,12 @@ HOPPER_FA2_SMOKE_TARGETS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(BIN_DIR)/h
 HOPPER_FA2_SMALL_TARGETS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(BIN_DIR)/hopper/run_fa2_small_$(variant)_tests)
 HOPPER_FA2_MEDIUM_TARGETS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(BIN_DIR)/hopper/run_fa2_medium_$(variant)_tests)
 HOPPER_FA2_LARGE_TARGETS = $(foreach variant,$(HOPPER_FA2_VARIANTS),$(BIN_DIR)/hopper/run_fa2_large_$(variant)_tests)
-HOPPER_FA2_STANDARD_TARGETS = $(HOPPER_FA2_SMOKE_TARGETS) $(HOPPER_FA2_SMALL_TARGETS) $(HOPPER_FA2_MEDIUM_TARGETS) $(HOPPER_FA2_LARGE_TARGETS)
 HOPPER_FA2_BREAKDOWN_TARGETS = $(foreach mode,$(HOPPER_FA2_BREAKDOWN_MODES),$(BIN_DIR)/hopper/run_fa2_breakdown_$(mode)_tests)
 HOPPER_FA2_SCALING_TARGETS = $(foreach mode,$(HOPPER_FA2_SCALING_MODES),$(BIN_DIR)/hopper/run_fa2_scaling_$(mode)_tests)
 HOPPER_FA2_CONCURRENCY_TARGETS = $(foreach mode,$(HOPPER_FA2_CONCURRENCY_MODES),$(BIN_DIR)/hopper/run_fa2_concurrency_$(mode)_tests)
 
-.PHONY: fa2-standard fa2-smoke fa2-small fa2-medium fa2-large \
+.PHONY: fa2-smoke fa2-small fa2-medium fa2-large \
 fa2-breakdown fa2-scaling fa2-concurrency
-
-fa2-standard: setup-gtest $(HOPPER_FA2_STANDARD_TARGETS)
 
 fa2-smoke: setup-gtest $(HOPPER_FA2_SMOKE_TARGETS)
 

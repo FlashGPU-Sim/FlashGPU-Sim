@@ -58,7 +58,7 @@ INCLUDES = -I$(GTEST_DIR)/include \
 GPGPUSIM_FLAGS = -DDEBUG=0
 
 TOP_MAKEFILE := $(firstword $(MAKEFILE_LIST))
-.DEFAULT_GOAL := list-test-groups
+.DEFAULT_GOAL := help
 
 include make/core.mk
 include make/sm90.mk

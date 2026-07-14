@@ -3,10 +3,8 @@
 FA3_MK := $(lastword $(MAKEFILE_LIST))
 
 HOPPER_FA3_DIR = $(HOPPER_SRC_DIR)/fa3
-HOPPER_FA3_TEST_SOURCES = $(wildcard $(HOPPER_FA3_DIR)/*_test.cc)
-HOPPER_FA3_EXTENDED_OBJECTS = $(HOPPER_FA3_TEST_SOURCES:$(HOPPER_FA3_DIR)/%.cc=$(OBJ_DIR)/hopper/fa3_extended/%.cu.o)
-HOPPER_FA3_SINGLE_TILE_OBJECT = $(OBJ_DIR)/hopper/fa3_profile/fa3_fwd_hdim128_fp16_test.cu.o
-HOPPER_FA3_H1D128_PROFILE_OBJECT = $(OBJ_DIR)/hopper/fa3_profile/fa3_fwd_h1d128_profile_test.cu.o
+HOPPER_FA3_STANDARD_SOURCE = $(HOPPER_FA3_DIR)/fa3_fwd_hdim128_fp16_test.cc
+HOPPER_FA3_STANDARD_OBJECT = $(OBJ_DIR)/hopper/fa3_standard/fa3_fwd_hdim128_fp16_test.cu.o
 
 HOPPER_FA3_MODES = \
 	baseline softmax_only qk_only pv_only qk_pv_only \
@@ -44,16 +42,12 @@ HOPPER_FA3_COMMON_FLAGS = --ftemplate-backtrace-limit=0 -O3 \
                           -I$(HOPPER_FA3_DIR)/flash-attention/hopper \
                           -I$(HOPPER_FA3_DIR)/flash-attention/csrc/cutlass/include
 HOPPER_FA3_EXTENDED_FLAGS = $(HOPPER_FA3_COMMON_FLAGS) -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED
-HOPPER_FA3_FLAGS = $(HOPPER_FA3_EXTENDED_FLAGS)
 
-HOPPER_FA3_EXTENDED_TARGET = $(BIN_DIR)/hopper/run_fa3_extended_tests
-HOPPER_FA3_SINGLE_TILE_TARGET = $(BIN_DIR)/hopper/run_fa3_single_tile_tests
-HOPPER_FA3_H1D128_PROFILE_TARGET = $(BIN_DIR)/hopper/run_fa3_h1d128_profile_tests
+HOPPER_FA3_STANDARD_TARGET = $(BIN_DIR)/hopper/run_fa3_standard_tests
 HOPPER_FA3_MODE_TARGET = $(BIN_DIR)/hopper/run_fa3_$(1)_tests
 HOPPER_FA3_MODE_TARGETS = $(foreach mode,$(HOPPER_FA3_MODES),$(call HOPPER_FA3_MODE_TARGET,$(mode)))
 
-.PHONY: prepare-fa3-flash-attention fa3 fa3-single-tile \
-fa3-h1d128-profile fa3-modes
+.PHONY: prepare-fa3-flash-attention fa3-standard fa3-modes
 
 prepare-fa3-flash-attention: $(HOPPER_FA3_PREPARED_STAMP)
 
@@ -64,11 +58,7 @@ $(HOPPER_FA3_PREPARED_STAMP): $(HOPPER_FA3_PREPARE_SCRIPT) $(HOPPER_FA3_PATCHES)
 $(HOPPER_FA3_GENERATED_HEADERS): $(HOPPER_FA3_PREPARED_STAMP)
 	@test -f $@ || { echo "Prepared FlashAttention header is missing: $@" >&2; exit 1; }
 
-fa3: setup-gtest $(HOPPER_FA3_EXTENDED_TARGET)
-
-fa3-single-tile: setup-gtest $(HOPPER_FA3_SINGLE_TILE_TARGET)
-
-fa3-h1d128-profile: setup-gtest $(HOPPER_FA3_H1D128_PROFILE_TARGET)
+fa3-standard: setup-gtest $(HOPPER_FA3_STANDARD_TARGET)
 
 # Analysis groups reuse these mode binaries with different case lists.
 fa3-modes: setup-gtest $(HOPPER_FA3_MODE_TARGETS)
@@ -79,16 +69,8 @@ fa3-mode-$(1): setup-gtest $(call HOPPER_FA3_MODE_TARGET,$(1))
 endef
 $(foreach mode,$(HOPPER_FA3_MODES),$(eval $(call REGISTER_FA3_BUILD_TARGET,$(mode))))
 
-$(OBJ_DIR)/hopper/fa3_extended/%.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_EXTENDED_FLAGS)
-$(OBJ_DIR)/hopper/fa3_extended/%.cu.o: $(HOPPER_FA3_DIR)/%.cc \
-$(CUH_HEADERS) $(TOP_MAKEFILE) $(FA3_MK) $(HOPPER_FA3_PREPARED_STAMP) | $(HOPPER_OBJ_DIR)
-	@mkdir -p $(dir $@)
-	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) \
-		$(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
-
-# Profile runners use separate objects so the normal FA3 binary stays clean.
-$(OBJ_DIR)/hopper/fa3_profile/%.cu.o: HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_FLAGS) -DFLASH_FWD_ENABLE_PROFILE_CLOCK
-$(OBJ_DIR)/hopper/fa3_profile/%.cu.o: $(HOPPER_FA3_DIR)/%.cc \
+$(HOPPER_FA3_STANDARD_OBJECT): HOPPER_EXTRA_NVCCFLAGS = $(HOPPER_FA3_EXTENDED_FLAGS)
+$(HOPPER_FA3_STANDARD_OBJECT): $(HOPPER_FA3_STANDARD_SOURCE) \
 $(CUH_HEADERS) $(TOP_MAKEFILE) $(FA3_MK) $(HOPPER_FA3_PREPARED_STAMP) | $(HOPPER_OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) \
@@ -134,19 +116,7 @@ $(HOPPER_FA3_PREPARED_STAMP) | $(HOPPER_OBJ_DIR)
 	$(NVCC) $(HOPPER_NVCCFLAGS) $(HOPPER_EXTRA_NVCCFLAGS) \
 		$(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
-$(HOPPER_FA3_EXTENDED_TARGET): $(HOPPER_FA3_EXTENDED_OBJECTS) \
-$(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(FA3_MK) | $(BIN_DIR)
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(filter-out $(TOP_MAKEFILE) $(FA3_MK),$^) \
-		-o $@ -lpthread $(CUDA_LIBS)
-
-$(HOPPER_FA3_SINGLE_TILE_TARGET): $(HOPPER_FA3_SINGLE_TILE_OBJECT) \
-$(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(FA3_MK) | $(BIN_DIR)
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(filter-out $(TOP_MAKEFILE) $(FA3_MK),$^) \
-		-o $@ -lpthread $(CUDA_LIBS)
-
-$(HOPPER_FA3_H1D128_PROFILE_TARGET): $(HOPPER_FA3_H1D128_PROFILE_OBJECT) \
+$(HOPPER_FA3_STANDARD_TARGET): $(HOPPER_FA3_STANDARD_OBJECT) \
 $(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(FA3_MK) | $(BIN_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out $(TOP_MAKEFILE) $(FA3_MK),$^) \

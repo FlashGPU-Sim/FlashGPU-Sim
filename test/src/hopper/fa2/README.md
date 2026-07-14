@@ -23,9 +23,8 @@ GPGPU-Sim bring-up. The CUDA kernel templates come from the existing
 
 Each size group is compiled as split binaries by `D x full/causal`, so each
 translation unit only instantiates one FA2 kernel family. All FA2 targets use
-the Hopper default `HOPPER_CUDA_ARCH=sm_90a`. Sensitivity runners are built by
-the separate `hopper-fa2-sensitivity` target and do not change the normal FA2
-smoke/small/medium/large binaries.
+`sm_90a`. Smoke is a correctness group under `test/sm90`; larger shapes and
+sensitivity modes are analysis groups under `analysis/fa2`.
 
 ## Run
 
@@ -33,15 +32,13 @@ From `test/`:
 
 ```bash
 make prepare-fa3-flash-attention
-./run_tests.sh build hopper-fa2
-./run_tests.sh build hopper-fa2-smoke
-./run_tests.sh build hopper-fa2-large-h16d128-full
-./run_tests.sh build hopper-fa2-sensitivity
-./run_tests.sh hopper Fa2PrefillFp16SmokeTest
-./run_tests.sh hopper Fa2PrefillFp16SmallTest
-./run_tests.sh hopper Fa2PrefillFp16MediumTest
-./run_tests.sh hopper Fa2PrefillFp16SensitivityTest
-FA2_RUN_32KI=1 ./run_tests.sh hopper Fa2PrefillFp16IntegrationTest.H32D64FullB64S512
+./run_tests.sh run test --target sm90 --group fa2-smoke
+./run_tests.sh run analysis --target fa2 --group small
+./run_tests.sh run analysis --target fa2 --group medium
+./run_tests.sh run analysis --target fa2 --group large \
+  Fa2PrefillFp16IntegrationTest.H32D64FullB64S512
+./run_tests.sh run analysis --target fa2 --group breakdown --mode only_mma
+./run_tests.sh build analysis --target fa2 --group scaling --mode all
 ```
 
 To prepare a CUDA 12.8 prebuilt bundle for H100 NCU collection:

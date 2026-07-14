@@ -63,12 +63,13 @@ run_test "-c short flag is recognized" \
 # Test 6: Run directory exists for default config
 run_test "Run directory structure for SM120_RTX5090" \
     "[ -d '$SCRIPT_DIR/run/SM120_RTX5090' ] || \
-     ($TEST_SCRIPT build test &>/dev/null && [ -d '$SCRIPT_DIR/run/SM120_RTX5090' ])"
+     ($TEST_SCRIPT build test --target sm120 --group unit &>/dev/null && \
+      [ -d '$SCRIPT_DIR/run/SM120_RTX5090' ])"
 
 # Test 7: Test binary is shared (only one copy in build/bin/)
 run_test "Test binary is shared (single location)" \
-    "[ -f '$SCRIPT_DIR/build/bin/run_all_tests' ] && \
-     [ ! -f '$SCRIPT_DIR/run/SM120_RTX5090/run_all_tests' ]"
+    "[ -f '$SCRIPT_DIR/build/bin/sm120/run_unit_tests' ] && \
+     [ ! -f '$SCRIPT_DIR/run/SM120_RTX5090/run_unit_tests' ]"
 
 # Test 8: Config files are copied to run directory
 run_test "Config files copied to run directory" \

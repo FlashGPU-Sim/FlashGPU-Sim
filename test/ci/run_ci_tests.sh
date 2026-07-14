@@ -70,9 +70,10 @@ if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
   fi
 fi
 
-# Build verification tests only (microbenchmarks not needed in CI)
+# Build SM120 correctness tests only (analysis and microbenchmarks stay out of CI).
 echo "Building tests..."
-./test/run_tests.sh build test
+./test/run_tests.sh build test --target sm120 --group unit
+./test/run_tests.sh build test --target sm120 --group integration
 
 # Run tests with specified configuration.
 # test/run_tests.sh owns the default exclusion list so CI and local runs stay
@@ -83,12 +84,12 @@ echo "Running test suite..."
 # Use gtest XML output for structured results (absolute path since tests cd into run dir)
 export GTEST_OUTPUT="xml:$REPO_ROOT/test_results.xml"
 
-./test/run_tests.sh -c "$TEST_CONFIG" run test "$@"
+./test/run_tests.sh -c "$TEST_CONFIG" run test --target sm120 --group unit
+./test/run_tests.sh -c "$TEST_CONFIG" run test --target sm120 --group integration "$@"
 
-# Preserve the existing no-filter CI scope: the deprecated `test` command also
-# ran trace tests when no filter was supplied.
+# Preserve the existing no-filter CI scope, including GPT-2 trace smoke tests.
 if [ "$#" -eq 0 ]; then
-  ./test/run_tests.sh -c "$TEST_CONFIG" run trace
+  ./test/run_tests.sh -c "$TEST_CONFIG" run trace --target sm120 --group gpt2
 fi
 
 echo "CI tests completed successfully!"

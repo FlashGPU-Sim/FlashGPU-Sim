@@ -1,11 +1,12 @@
-# Machine-readable binary, suite/target, and FA group/mode registry.
+# Machine-readable suite/target/group registry and binary manifest.
 
-TEST_GROUPS = \
-	test \
-	microbench-default \
-	microbench-sm90 \
-	dev \
-	test-sm90 \
+# A binary group is an internal manifest used by the runner after the public
+# suite/target/group selection has been resolved.
+BINARY_GROUPS = \
+	none \
+	test-sm120-unit \
+	test-sm120-integration \
+	test-sm90-instructions \
 	fa2-smoke \
 	fa2-small \
 	fa2-medium \
@@ -13,139 +14,150 @@ TEST_GROUPS = \
 	fa2-breakdown \
 	fa2-scaling \
 	fa2-concurrency \
-	fa3 \
-	fa3-single-tile \
-	fa3-h1d128-profile \
+	fa3-standard \
 	fa3-modes \
+	microbench-sm120-mbarrier \
+	microbench-sm120-mma \
+	microbench-sm90-wgmma \
 	$(foreach mode,$(HOPPER_FA2_BREAKDOWN_MODES),fa2-breakdown-$(mode)) \
 	$(foreach mode,$(HOPPER_FA2_SCALING_MODES),fa2-scaling-$(mode)) \
 	$(foreach mode,$(HOPPER_FA2_CONCURRENCY_MODES),fa2-concurrency-$(mode)) \
 	$(foreach mode,$(HOPPER_FA3_MODES),fa3-mode-$(mode))
 
-TEST_GROUP_BINARIES_test = $(MAIN_TEST_TARGET)
-TEST_GROUP_BINARIES_microbench-default = $(MICROBENCH_DEFAULT_TARGETS)
-TEST_GROUP_BINARIES_microbench-sm90 = $(MICROBENCH_SM90_TARGETS)
-TEST_GROUP_BINARIES_dev = $(DEV_TEST_TARGET)
-TEST_GROUP_BINARIES_test-sm90 = $(SM90_TEST_TARGETS)
-TEST_GROUP_BINARIES_fa2-smoke = $(HOPPER_FA2_SMOKE_TARGETS)
-TEST_GROUP_BINARIES_fa2-small = $(HOPPER_FA2_SMALL_TARGETS)
-TEST_GROUP_BINARIES_fa2-medium = $(HOPPER_FA2_MEDIUM_TARGETS)
-TEST_GROUP_BINARIES_fa2-large = $(HOPPER_FA2_LARGE_TARGETS)
-TEST_GROUP_BINARIES_fa2-breakdown = $(HOPPER_FA2_BREAKDOWN_TARGETS)
-TEST_GROUP_BINARIES_fa2-scaling = $(HOPPER_FA2_SCALING_TARGETS)
-TEST_GROUP_BINARIES_fa2-concurrency = $(HOPPER_FA2_CONCURRENCY_TARGETS)
-TEST_GROUP_BINARIES_fa3 = $(HOPPER_FA3_EXTENDED_TARGET)
-TEST_GROUP_BINARIES_fa3-single-tile = $(HOPPER_FA3_SINGLE_TILE_TARGET)
-TEST_GROUP_BINARIES_fa3-h1d128-profile = $(HOPPER_FA3_H1D128_PROFILE_TARGET)
-TEST_GROUP_BINARIES_fa3-modes = $(HOPPER_FA3_MODE_TARGETS)
-$(foreach mode,$(HOPPER_FA2_BREAKDOWN_MODES),$(eval TEST_GROUP_BINARIES_fa2-breakdown-$(mode) = $(BIN_DIR)/hopper/run_fa2_breakdown_$(mode)_tests))
-$(foreach mode,$(HOPPER_FA2_SCALING_MODES),$(eval TEST_GROUP_BINARIES_fa2-scaling-$(mode) = $(BIN_DIR)/hopper/run_fa2_scaling_$(mode)_tests))
-$(foreach mode,$(HOPPER_FA2_CONCURRENCY_MODES),$(eval TEST_GROUP_BINARIES_fa2-concurrency-$(mode) = $(BIN_DIR)/hopper/run_fa2_concurrency_$(mode)_tests))
-$(foreach mode,$(HOPPER_FA3_MODES),$(eval TEST_GROUP_BINARIES_fa3-mode-$(mode) = $(call HOPPER_FA3_MODE_TARGET,$(mode))))
+BINARY_GROUP_BINARIES_none =
+BINARY_GROUP_BINARIES_test-sm120-unit = $(SM120_UNIT_TARGET)
+BINARY_GROUP_BINARIES_test-sm120-integration = $(SM120_INTEGRATION_TARGET)
+BINARY_GROUP_BINARIES_test-sm90-instructions = $(SM90_INSTRUCTION_TARGETS)
+BINARY_GROUP_BINARIES_fa2-smoke = $(HOPPER_FA2_SMOKE_TARGETS)
+BINARY_GROUP_BINARIES_fa2-small = $(HOPPER_FA2_SMALL_TARGETS)
+BINARY_GROUP_BINARIES_fa2-medium = $(HOPPER_FA2_MEDIUM_TARGETS)
+BINARY_GROUP_BINARIES_fa2-large = $(HOPPER_FA2_LARGE_TARGETS)
+BINARY_GROUP_BINARIES_fa2-breakdown = $(HOPPER_FA2_BREAKDOWN_TARGETS)
+BINARY_GROUP_BINARIES_fa2-scaling = $(HOPPER_FA2_SCALING_TARGETS)
+BINARY_GROUP_BINARIES_fa2-concurrency = $(HOPPER_FA2_CONCURRENCY_TARGETS)
+BINARY_GROUP_BINARIES_fa3-standard = $(HOPPER_FA3_STANDARD_TARGET)
+BINARY_GROUP_BINARIES_fa3-modes = $(HOPPER_FA3_MODE_TARGETS)
+BINARY_GROUP_BINARIES_microbench-sm120-mbarrier = $(MICROBENCH_SM120_MBAR_TARGETS)
+BINARY_GROUP_BINARIES_microbench-sm120-mma = $(MICROBENCH_SM120_MMA_TARGETS)
+BINARY_GROUP_BINARIES_microbench-sm90-wgmma = $(MICROBENCH_SM90_WGMMA_TARGETS)
+$(foreach mode,$(HOPPER_FA2_BREAKDOWN_MODES),$(eval BINARY_GROUP_BINARIES_fa2-breakdown-$(mode) = $(BIN_DIR)/hopper/run_fa2_breakdown_$(mode)_tests))
+$(foreach mode,$(HOPPER_FA2_SCALING_MODES),$(eval BINARY_GROUP_BINARIES_fa2-scaling-$(mode) = $(BIN_DIR)/hopper/run_fa2_scaling_$(mode)_tests))
+$(foreach mode,$(HOPPER_FA2_CONCURRENCY_MODES),$(eval BINARY_GROUP_BINARIES_fa2-concurrency-$(mode) = $(BIN_DIR)/hopper/run_fa2_concurrency_$(mode)_tests))
+$(foreach mode,$(HOPPER_FA3_MODES),$(eval BINARY_GROUP_BINARIES_fa3-mode-$(mode) = $(call HOPPER_FA3_MODE_TARGET,$(mode))))
 
-# One target is an independently buildable and runnable architecture domain.
-TEST_SUITES = test microbench dev trace
+# Public runner hierarchy: suite -> architecture/workload target -> group.
+TEST_SUITES = test analysis microbench trace
 
-SUITE_TARGETS_test = default sm90 fa2 fa3
-SUITE_TARGETS_microbench = default sm90
-SUITE_TARGETS_dev = default
-SUITE_TARGETS_trace = default
+SUITE_TARGETS_test = sm120 sm90
+SUITE_TARGETS_analysis = fa2 fa3
+SUITE_TARGETS_microbench = sm120 sm90
+SUITE_TARGETS_trace = sm120
 
-SUITE_DEFAULT_TARGET_test = default
-SUITE_DEFAULT_TARGET_microbench = default
-SUITE_DEFAULT_TARGET_dev = default
-SUITE_DEFAULT_TARGET_trace = default
+SUITE_DEFAULT_TARGET_test = sm120
+SUITE_DEFAULT_TARGET_analysis =
+SUITE_DEFAULT_TARGET_microbench = sm120
+SUITE_DEFAULT_TARGET_trace = sm120
 
-SUITE_TARGET_BUILD_GROUP_test_default = test
-SUITE_TARGET_BINARY_GROUP_test_default = test
-SUITE_TARGET_EXECUTOR_test_default = test
-SUITE_TARGET_DEFAULT_CONFIG_test_default = SM120_RTX5090
-SUITE_TARGET_REQUIRED_CC_test_default = 12.0
-SUITE_TARGET_CUDA_ARCH_test_default = sm_120a
+define REGISTER_SUITE_TARGET
+SUITE_TARGET_BUILD_GROUP_$(1)_$(2) = group-required
+SUITE_TARGET_BINARY_GROUP_$(1)_$(2) = group-required
+SUITE_TARGET_EXECUTOR_$(1)_$(2) = group-required
+SUITE_TARGET_DEFAULT_CONFIG_$(1)_$(2) = $(3)
+SUITE_TARGET_REQUIRED_CC_$(1)_$(2) = $(4)
+SUITE_TARGET_CUDA_ARCH_$(1)_$(2) = $(5)
+endef
 
-SUITE_TARGET_BUILD_GROUP_test_sm90 = test-sm90
-SUITE_TARGET_BINARY_GROUP_test_sm90 = test-sm90
-SUITE_TARGET_EXECUTOR_test_sm90 = gtest-single
-SUITE_TARGET_DEFAULT_CONFIG_test_sm90 = SM90_H100
-SUITE_TARGET_REQUIRED_CC_test_sm90 = 9.0
-SUITE_TARGET_CUDA_ARCH_test_sm90 = sm_90a
+$(eval $(call REGISTER_SUITE_TARGET,test,sm120,SM120_RTX5090,12.0,sm_120a))
+$(eval $(call REGISTER_SUITE_TARGET,test,sm90,SM90_H100,9.0,sm_90a))
+$(eval $(call REGISTER_SUITE_TARGET,analysis,fa2,SM90_H100,9.0,sm_90a))
+$(eval $(call REGISTER_SUITE_TARGET,analysis,fa3,SM90_H100,9.0,sm_90a))
+$(eval $(call REGISTER_SUITE_TARGET,microbench,sm120,SM120_RTX5090,12.0,sm_120a))
+$(eval $(call REGISTER_SUITE_TARGET,microbench,sm90,SM90_H100,9.0,sm_90a))
+$(eval $(call REGISTER_SUITE_TARGET,trace,sm120,SM120_RTX5090,12.0,sm_120a))
 
-SUITE_TARGET_BUILD_GROUP_test_fa2 = group-required
-SUITE_TARGET_BINARY_GROUP_test_fa2 = group-required
-SUITE_TARGET_EXECUTOR_test_fa2 = group-required
-SUITE_TARGET_DEFAULT_CONFIG_test_fa2 = SM90_H100
-SUITE_TARGET_REQUIRED_CC_test_fa2 = 9.0
-SUITE_TARGET_CUDA_ARCH_test_fa2 = sm_90a
+TARGET_GROUPS_test_sm120 = unit integration
+TARGET_GROUPS_test_sm90 = instructions fa2-smoke fa3-smoke
+TARGET_GROUPS_analysis_fa2 = small medium large breakdown scaling concurrency
+TARGET_GROUPS_analysis_fa3 = small medium large breakdown scaling concurrency
+TARGET_GROUPS_microbench_sm120 = mbarrier mma memory
+TARGET_GROUPS_microbench_sm90 = cp-async mma tma wgmma
+TARGET_GROUPS_trace_sm120 = gpt2
 
-SUITE_TARGET_BUILD_GROUP_test_fa3 = group-required
-SUITE_TARGET_BINARY_GROUP_test_fa3 = group-required
-SUITE_TARGET_EXECUTOR_test_fa3 = group-required
-SUITE_TARGET_DEFAULT_CONFIG_test_fa3 = SM90_H100
-SUITE_TARGET_REQUIRED_CC_test_fa3 = 9.0
-SUITE_TARGET_CUDA_ARCH_test_fa3 = sm_90a
+# SM120 correctness tests.
+TARGET_GROUP_BUILD_GROUP_test_sm120_unit = test-sm120-unit
+TARGET_GROUP_BINARY_GROUP_test_sm120_unit = test-sm120-unit
+TARGET_GROUP_EXECUTOR_test_sm120_unit = gtest-single
+TARGET_GROUP_FILTER_test_sm120_unit = *
 
-TARGET_GROUPS_test_fa2 = smoke small medium large breakdown scaling concurrency
-TARGET_GROUPS_test_fa3 = smoke small medium large breakdown scaling concurrency
+TARGET_GROUP_BUILD_GROUP_test_sm120_integration = test-sm120-integration
+TARGET_GROUP_BINARY_GROUP_test_sm120_integration = test-sm120-integration
+TARGET_GROUP_EXECUTOR_test_sm120_integration = test
+TARGET_GROUP_FILTER_test_sm120_integration = *
 
-TARGET_GROUP_MODES_test_fa2_breakdown = $(HOPPER_FA2_BREAKDOWN_MODES) all
-TARGET_GROUP_MODES_test_fa2_scaling = $(HOPPER_FA2_SCALING_MODES) all
-TARGET_GROUP_MODES_test_fa2_concurrency = $(HOPPER_FA2_CONCURRENCY_MODES) all
-TARGET_GROUP_MODES_test_fa3_breakdown = $(HOPPER_FA3_MODES) all
-TARGET_GROUP_MODES_test_fa3_scaling = $(HOPPER_FA3_MODES) all
-TARGET_GROUP_MODES_test_fa3_concurrency = $(HOPPER_FA3_MODES) all
+# SM90 instruction and smoke correctness tests.
+TARGET_GROUP_BUILD_GROUP_test_sm90_instructions = test-sm90-instructions
+TARGET_GROUP_BINARY_GROUP_test_sm90_instructions = test-sm90-instructions
+TARGET_GROUP_EXECUTOR_test_sm90_instructions = gtest-single
+TARGET_GROUP_FILTER_test_sm90_instructions = *
 
-TARGET_GROUP_BUILD_GROUP_test_fa2_smoke = fa2-smoke
-TARGET_GROUP_BINARY_GROUP_test_fa2_smoke = fa2-smoke
-TARGET_GROUP_EXECUTOR_test_fa2_smoke = gtest-multi
-TARGET_GROUP_FILTER_test_fa2_smoke = *
-TARGET_GROUP_BUILD_GROUP_test_fa2_small = fa2-small
-TARGET_GROUP_BINARY_GROUP_test_fa2_small = fa2-small
-TARGET_GROUP_EXECUTOR_test_fa2_small = gtest-multi
-TARGET_GROUP_FILTER_test_fa2_small = *
-TARGET_GROUP_BUILD_GROUP_test_fa2_medium = fa2-medium
-TARGET_GROUP_BINARY_GROUP_test_fa2_medium = fa2-medium
-TARGET_GROUP_EXECUTOR_test_fa2_medium = gtest-multi
-TARGET_GROUP_FILTER_test_fa2_medium = *
-TARGET_GROUP_BUILD_GROUP_test_fa2_large = fa2-large
-TARGET_GROUP_BINARY_GROUP_test_fa2_large = fa2-large
-TARGET_GROUP_EXECUTOR_test_fa2_large = gtest-multi
-TARGET_GROUP_FILTER_test_fa2_large = *
+TARGET_GROUP_BUILD_GROUP_test_sm90_fa2-smoke = fa2-smoke
+TARGET_GROUP_BINARY_GROUP_test_sm90_fa2-smoke = fa2-smoke
+TARGET_GROUP_EXECUTOR_test_sm90_fa2-smoke = gtest-multi
+TARGET_GROUP_FILTER_test_sm90_fa2-smoke = *
+
+TARGET_GROUP_BUILD_GROUP_test_sm90_fa3-smoke = fa3-standard
+TARGET_GROUP_BINARY_GROUP_test_sm90_fa3-smoke = fa3-standard
+TARGET_GROUP_EXECUTOR_test_sm90_fa3-smoke = gtest-single
+TARGET_GROUP_FILTER_test_sm90_fa3-smoke = Fa3PrefillFp16SmokeTest.*:Fa3PrefillFp16BackwardSmokeTest.*:Fa3FwdHdim128Fp16IntegrationTest.*
+
+# FA2 functional sizes and compile-time analysis modes.
+define REGISTER_FA2_STANDARD_GROUP
+TARGET_GROUP_BUILD_GROUP_analysis_fa2_$(1) = fa2-$(1)
+TARGET_GROUP_BINARY_GROUP_analysis_fa2_$(1) = fa2-$(1)
+TARGET_GROUP_EXECUTOR_analysis_fa2_$(1) = gtest-multi
+TARGET_GROUP_FILTER_analysis_fa2_$(1) = *
+endef
+$(foreach group,small medium large,$(eval $(call REGISTER_FA2_STANDARD_GROUP,$(group))))
+
+TARGET_GROUP_MODES_analysis_fa2_breakdown = $(HOPPER_FA2_BREAKDOWN_MODES) all
+TARGET_GROUP_MODES_analysis_fa2_scaling = $(HOPPER_FA2_SCALING_MODES) all
+TARGET_GROUP_MODES_analysis_fa2_concurrency = $(HOPPER_FA2_CONCURRENCY_MODES) all
 
 define REGISTER_FA2_MODE
-TARGET_GROUP_BUILD_GROUP_test_fa2_$(1)_$(2) = fa2-$(1)-$(2)
-TARGET_GROUP_BINARY_GROUP_test_fa2_$(1)_$(2) = fa2-$(1)-$(2)
-TARGET_GROUP_EXECUTOR_test_fa2_$(1)_$(2) = gtest-multi
-TARGET_GROUP_FILTER_test_fa2_$(1)_$(2) = *
+TARGET_GROUP_BUILD_GROUP_analysis_fa2_$(1)_$(2) = fa2-$(1)-$(2)
+TARGET_GROUP_BINARY_GROUP_analysis_fa2_$(1)_$(2) = fa2-$(1)-$(2)
+TARGET_GROUP_EXECUTOR_analysis_fa2_$(1)_$(2) = gtest-multi
+TARGET_GROUP_FILTER_analysis_fa2_$(1)_$(2) = *
 endef
 $(foreach mode,$(HOPPER_FA2_BREAKDOWN_MODES),$(eval $(call REGISTER_FA2_MODE,breakdown,$(mode))))
 $(foreach mode,$(HOPPER_FA2_SCALING_MODES),$(eval $(call REGISTER_FA2_MODE,scaling,$(mode))))
 $(foreach mode,$(HOPPER_FA2_CONCURRENCY_MODES),$(eval $(call REGISTER_FA2_MODE,concurrency,$(mode))))
-$(eval $(call REGISTER_FA2_MODE,breakdown,all))
-$(eval $(call REGISTER_FA2_MODE,scaling,all))
-$(eval $(call REGISTER_FA2_MODE,concurrency,all))
-TARGET_GROUP_BUILD_GROUP_test_fa2_breakdown_all = fa2-breakdown
-TARGET_GROUP_BINARY_GROUP_test_fa2_breakdown_all = fa2-breakdown
-TARGET_GROUP_BUILD_GROUP_test_fa2_scaling_all = fa2-scaling
-TARGET_GROUP_BINARY_GROUP_test_fa2_scaling_all = fa2-scaling
-TARGET_GROUP_BUILD_GROUP_test_fa2_concurrency_all = fa2-concurrency
-TARGET_GROUP_BINARY_GROUP_test_fa2_concurrency_all = fa2-concurrency
+$(foreach group,breakdown scaling concurrency,$(eval $(call REGISTER_FA2_MODE,$(group),all)))
+TARGET_GROUP_BUILD_GROUP_analysis_fa2_breakdown_all = fa2-breakdown
+TARGET_GROUP_BINARY_GROUP_analysis_fa2_breakdown_all = fa2-breakdown
+TARGET_GROUP_BUILD_GROUP_analysis_fa2_scaling_all = fa2-scaling
+TARGET_GROUP_BINARY_GROUP_analysis_fa2_scaling_all = fa2-scaling
+TARGET_GROUP_BUILD_GROUP_analysis_fa2_concurrency_all = fa2-concurrency
+TARGET_GROUP_BINARY_GROUP_analysis_fa2_concurrency_all = fa2-concurrency
 
-TARGET_GROUP_BUILD_GROUP_test_fa3_smoke = fa3
-TARGET_GROUP_BINARY_GROUP_test_fa3_smoke = fa3
-TARGET_GROUP_EXECUTOR_test_fa3_smoke = gtest-single
-TARGET_GROUP_FILTER_test_fa3_smoke = Fa3PrefillFp16SmokeTest.*:Fa3PrefillFp16BackwardSmokeTest.*:Fa3FwdHdim128Fp16IntegrationTest.*
-TARGET_GROUP_BUILD_GROUP_test_fa3_small = fa3
-TARGET_GROUP_BINARY_GROUP_test_fa3_small = fa3
-TARGET_GROUP_EXECUTOR_test_fa3_small = gtest-single
-TARGET_GROUP_FILTER_test_fa3_small = Fa3PrefillFp16SmallTest.*:Fa3PrefillFp16BackwardSmallTest.*
-TARGET_GROUP_BUILD_GROUP_test_fa3_medium = fa3
-TARGET_GROUP_BINARY_GROUP_test_fa3_medium = fa3
-TARGET_GROUP_EXECUTOR_test_fa3_medium = gtest-single
-TARGET_GROUP_FILTER_test_fa3_medium = Fa3PrefillFp16MediumTest.*:Fa3PrefillFp16BackwardMediumTest.*
-TARGET_GROUP_BUILD_GROUP_test_fa3_large = fa3
-TARGET_GROUP_BINARY_GROUP_test_fa3_large = fa3
-TARGET_GROUP_EXECUTOR_test_fa3_large = gtest-single
-TARGET_GROUP_FILTER_test_fa3_large = Fa3PrefillFp16IntegrationTest.*:Fa3PrefillFp16BackwardIntegrationTest.*
+# FA3 functional sizes share the standard binary; analysis modes share the
+# same mode binaries but select different runtime case lists.
+TARGET_GROUP_BUILD_GROUP_analysis_fa3_small = fa3-standard
+TARGET_GROUP_BINARY_GROUP_analysis_fa3_small = fa3-standard
+TARGET_GROUP_EXECUTOR_analysis_fa3_small = gtest-single
+TARGET_GROUP_FILTER_analysis_fa3_small = Fa3PrefillFp16SmallTest.*:Fa3PrefillFp16BackwardSmallTest.*
+TARGET_GROUP_BUILD_GROUP_analysis_fa3_medium = fa3-standard
+TARGET_GROUP_BINARY_GROUP_analysis_fa3_medium = fa3-standard
+TARGET_GROUP_EXECUTOR_analysis_fa3_medium = gtest-single
+TARGET_GROUP_FILTER_analysis_fa3_medium = Fa3PrefillFp16MediumTest.*:Fa3PrefillFp16BackwardMediumTest.*
+TARGET_GROUP_BUILD_GROUP_analysis_fa3_large = fa3-standard
+TARGET_GROUP_BINARY_GROUP_analysis_fa3_large = fa3-standard
+TARGET_GROUP_EXECUTOR_analysis_fa3_large = gtest-single
+TARGET_GROUP_FILTER_analysis_fa3_large = Fa3PrefillFp16IntegrationTest.*:Fa3PrefillFp16BackwardIntegrationTest.*
+
+TARGET_GROUP_MODES_analysis_fa3_breakdown = $(HOPPER_FA3_MODES) all
+TARGET_GROUP_MODES_analysis_fa3_scaling = $(HOPPER_FA3_MODES) all
+TARGET_GROUP_MODES_analysis_fa3_concurrency = $(HOPPER_FA3_MODES) all
 
 FA3_GROUP_CASES_breakdown = H1D128FullB1S4096
 FA3_GROUP_CASES_scaling = \
@@ -160,61 +172,71 @@ FA3_GROUP_CASES_concurrency = \
 	H16D128FullB4S8192 H4D128FullB4S8192 H16D128FullB1S8192 H1D128FullB1S8192
 
 define REGISTER_FA3_MODE
-TARGET_GROUP_BUILD_GROUP_test_fa3_$(1)_$(2) = fa3-mode-$(2)
-TARGET_GROUP_BINARY_GROUP_test_fa3_$(1)_$(2) = fa3-mode-$(2)
-TARGET_GROUP_EXECUTOR_test_fa3_$(1)_$(2) = fa3-profile
-TARGET_GROUP_FILTER_test_fa3_$(1)_$(2) = Fa3H1D128ProfileTest.SelectedD128FullCases
-TARGET_GROUP_CASES_test_fa3_$(1)_$(2) = $(FA3_GROUP_CASES_$(1))
+TARGET_GROUP_BUILD_GROUP_analysis_fa3_$(1)_$(2) = fa3-mode-$(2)
+TARGET_GROUP_BINARY_GROUP_analysis_fa3_$(1)_$(2) = fa3-mode-$(2)
+TARGET_GROUP_EXECUTOR_analysis_fa3_$(1)_$(2) = fa3-profile
+TARGET_GROUP_FILTER_analysis_fa3_$(1)_$(2) = Fa3H1D128ProfileTest.SelectedD128FullCases
+TARGET_GROUP_CASES_analysis_fa3_$(1)_$(2) = $(FA3_GROUP_CASES_$(1))
 endef
 $(foreach group,breakdown scaling concurrency,$(foreach mode,$(HOPPER_FA3_MODES),$(eval $(call REGISTER_FA3_MODE,$(group),$(mode)))))
 $(foreach group,breakdown scaling concurrency,$(eval $(call REGISTER_FA3_MODE,$(group),all)))
-$(foreach group,breakdown scaling concurrency,$(eval TARGET_GROUP_BUILD_GROUP_test_fa3_$(group)_all = fa3-modes))
-$(foreach group,breakdown scaling concurrency,$(eval TARGET_GROUP_BINARY_GROUP_test_fa3_$(group)_all = fa3-modes))
+$(foreach group,breakdown scaling concurrency,$(eval TARGET_GROUP_BUILD_GROUP_analysis_fa3_$(group)_all = fa3-modes))
+$(foreach group,breakdown scaling concurrency,$(eval TARGET_GROUP_BINARY_GROUP_analysis_fa3_$(group)_all = fa3-modes))
 
-SUITE_TARGET_BUILD_GROUP_microbench_default = microbench-default
-SUITE_TARGET_BINARY_GROUP_microbench_default = microbench-default
-SUITE_TARGET_EXECUTOR_microbench_default = gtest-multi
-SUITE_TARGET_DEFAULT_CONFIG_microbench_default = SM120_RTX5090
-SUITE_TARGET_REQUIRED_CC_microbench_default = 12.0
-SUITE_TARGET_CUDA_ARCH_microbench_default = sm_120a
+# Microbench groups with a gtest interface can run through the generic runner.
+# Standalone calibration groups are build-only because they require bespoke
+# performance arguments rather than a safe universal invocation.
+TARGET_GROUP_BUILD_GROUP_microbench_sm120_mbarrier = microbench-sm120-mbarrier
+TARGET_GROUP_BINARY_GROUP_microbench_sm120_mbarrier = microbench-sm120-mbarrier
+TARGET_GROUP_EXECUTOR_microbench_sm120_mbarrier = gtest-multi
+TARGET_GROUP_FILTER_microbench_sm120_mbarrier = *
+TARGET_GROUP_BUILD_GROUP_microbench_sm120_mma = microbench-sm120-mma
+TARGET_GROUP_BINARY_GROUP_microbench_sm120_mma = microbench-sm120-mma
+TARGET_GROUP_EXECUTOR_microbench_sm120_mma = gtest-multi
+TARGET_GROUP_FILTER_microbench_sm120_mma = *
+TARGET_GROUP_BUILD_GROUP_microbench_sm120_memory = microbench-sm120-memory
+TARGET_GROUP_BINARY_GROUP_microbench_sm120_memory = none
+TARGET_GROUP_EXECUTOR_microbench_sm120_memory = build-only
+TARGET_GROUP_FILTER_microbench_sm120_memory = *
 
-SUITE_TARGET_BUILD_GROUP_microbench_sm90 = microbench-sm90
-SUITE_TARGET_BINARY_GROUP_microbench_sm90 = microbench-sm90
-SUITE_TARGET_EXECUTOR_microbench_sm90 = gtest-multi
-SUITE_TARGET_DEFAULT_CONFIG_microbench_sm90 = SM90_H100
-SUITE_TARGET_REQUIRED_CC_microbench_sm90 = 9.0
-SUITE_TARGET_CUDA_ARCH_microbench_sm90 = sm_90a
+TARGET_GROUP_BUILD_GROUP_microbench_sm90_cp-async = microbench-sm90-cp-async
+TARGET_GROUP_BINARY_GROUP_microbench_sm90_cp-async = none
+TARGET_GROUP_EXECUTOR_microbench_sm90_cp-async = build-only
+TARGET_GROUP_FILTER_microbench_sm90_cp-async = *
+TARGET_GROUP_BUILD_GROUP_microbench_sm90_mma = microbench-sm90-mma
+TARGET_GROUP_BINARY_GROUP_microbench_sm90_mma = none
+TARGET_GROUP_EXECUTOR_microbench_sm90_mma = build-only
+TARGET_GROUP_FILTER_microbench_sm90_mma = *
+TARGET_GROUP_BUILD_GROUP_microbench_sm90_tma = microbench-sm90-tma
+TARGET_GROUP_BINARY_GROUP_microbench_sm90_tma = none
+TARGET_GROUP_EXECUTOR_microbench_sm90_tma = build-only
+TARGET_GROUP_FILTER_microbench_sm90_tma = *
+TARGET_GROUP_BUILD_GROUP_microbench_sm90_wgmma = microbench-sm90-wgmma
+TARGET_GROUP_BINARY_GROUP_microbench_sm90_wgmma = microbench-sm90-wgmma
+TARGET_GROUP_EXECUTOR_microbench_sm90_wgmma = gtest-multi
+TARGET_GROUP_FILTER_microbench_sm90_wgmma = *
 
-SUITE_TARGET_BUILD_GROUP_dev_default = dev
-SUITE_TARGET_BINARY_GROUP_dev_default = dev
-SUITE_TARGET_EXECUTOR_dev_default = dev
-SUITE_TARGET_DEFAULT_CONFIG_dev_default = SM120_RTX5090
-SUITE_TARGET_REQUIRED_CC_dev_default = 12.0
-SUITE_TARGET_CUDA_ARCH_dev_default = sm_120a
+TARGET_GROUP_BUILD_GROUP_trace_sm120_gpt2 = trace-sm120-gpt2
+TARGET_GROUP_BINARY_GROUP_trace_sm120_gpt2 = none
+TARGET_GROUP_EXECUTOR_trace_sm120_gpt2 = trace
+TARGET_GROUP_FILTER_trace_sm120_gpt2 = *
 
-SUITE_TARGET_BUILD_GROUP_trace_default = trace
-SUITE_TARGET_BINARY_GROUP_trace_default = none
-SUITE_TARGET_EXECUTOR_trace_default = trace
-SUITE_TARGET_DEFAULT_CONFIG_trace_default = SM120_RTX5090
-SUITE_TARGET_REQUIRED_CC_trace_default = 12.0
-SUITE_TARGET_CUDA_ARCH_trace_default = sm_120a
-
-.PHONY: list-test-groups print-test-binaries list-suites list-suite-targets \
+.PHONY: list-binary-groups print-binary-group list-suites list-suite-targets \
 print-suite-default-target print-suite-target-metadata list-target-groups \
 list-target-group-modes print-target-group-metadata help
 
-list-test-groups:
-	@printf '%s\n' $(TEST_GROUPS)
+list-binary-groups:
+	@printf '%s\n' $(BINARY_GROUPS)
 
-print-test-binaries:
-	@if [ -z "$(TEST_GROUP)" ]; then \
-		echo "TEST_GROUP is required" >&2; \
+print-binary-group:
+	@if [ -z "$(BINARY_GROUP)" ]; then \
+		echo "BINARY_GROUP is required" >&2; \
 		exit 2; \
-	elif [ -z "$(filter $(TEST_GROUP),$(TEST_GROUPS))" ]; then \
-		echo "Unknown TEST_GROUP: $(TEST_GROUP)" >&2; \
+	elif [ -z "$(filter $(BINARY_GROUP),$(BINARY_GROUPS))" ]; then \
+		echo "Unknown BINARY_GROUP: $(BINARY_GROUP)" >&2; \
 		exit 2; \
 	else \
-		printf '%s\n' $(TEST_GROUP_BINARIES_$(TEST_GROUP)); \
+		printf '%s\n' $(BINARY_GROUP_BINARIES_$(BINARY_GROUP)); \
 	fi
 
 list-suites:
@@ -266,11 +288,11 @@ list-target-groups:
 	@if [ -z "$(SUITE)" ] || [ -z "$(SUITE_TARGET)" ]; then \
 		echo "SUITE and SUITE_TARGET are required" >&2; \
 		exit 2; \
+	elif [ -z "$(filter $(SUITE),$(TEST_SUITES))" ]; then \
+		echo "Unknown SUITE: $(SUITE)" >&2; \
+		exit 2; \
 	elif [ -z "$(filter $(SUITE_TARGET),$(SUITE_TARGETS_$(SUITE)))" ]; then \
 		echo "Unknown target for $(SUITE): $(SUITE_TARGET)" >&2; \
-		exit 2; \
-	elif [ -z "$(TARGET_GROUPS_$(SUITE)_$(SUITE_TARGET))" ]; then \
-		echo "$(SUITE)/$(SUITE_TARGET) does not define groups" >&2; \
 		exit 2; \
 	else \
 		printf '%s\n' $(TARGET_GROUPS_$(SUITE)_$(SUITE_TARGET)); \
@@ -313,19 +335,11 @@ print-target-group-metadata:
 	fi
 
 help:
-	@echo "Internal test build graph"
-	@echo "========================="
-	@echo "Use './run_tests.sh help' for the supported test CLI."
-	@echo "The suite build targets in this Makefile are internal implementation details."
+	@echo "Supported runner hierarchy"
+	@echo "=========================="
+	@echo "  test:      sm120/{unit,integration}; sm90/{instructions,fa2-smoke,fa3-smoke}"
+	@echo "  analysis:  fa2|fa3/{small,medium,large,breakdown,scaling,concurrency}"
+	@echo "  microbench: sm120/{mbarrier,mma,memory}; sm90/{cp-async,mma,tma,wgmma}"
+	@echo "  trace:     sm120/gpt2"
 	@echo ""
-	@echo "Standalone calibration targets:"
-	@echo "  standalone-bench - Build standalone CUDA calibration microbenchmarks"
-	@echo "  cp-async-bench - Build standalone cp.async calibration binaries"
-	@echo "  mma-standalone-bench - Build standalone warp-MMA calibration binaries"
-	@echo "  prepare-fa3-flash-attention - Prepare local flash-attention headers for FA2/FA3"
-	@echo ""
-	@echo "Registry inspection:"
-	@echo "  list-test-groups - List groups in the binary manifest"
-	@echo "  print-test-binaries TEST_GROUP=<group> - Print one group's binaries"
-	@echo "  list-suites - List user-facing suites"
-	@echo "  list-suite-targets SUITE=<suite> - List one suite's targets"
+	@echo "Use './run_tests.sh help' for the supported CLI."

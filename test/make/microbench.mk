@@ -1,36 +1,43 @@
-# GTest microbenchmarks and standalone CUDA calibration binaries.
+# Architecture- and mechanism-scoped microbenchmarks.
 
 MICROBENCH_MK := $(lastword $(MAKEFILE_LIST))
 
-MICROBENCH_ALL_SOURCES = $(shell find $(TEST_SRC_DIR)/microbench -name '*_bench.cc' 2>/dev/null)
-MICROBENCH_SM90_SOURCES = $(filter $(TEST_SRC_DIR)/microbench/wgmma/%,$(MICROBENCH_ALL_SOURCES))
-MICROBENCH_DEFAULT_SOURCES = $(filter-out $(TEST_SRC_DIR)/microbench/wgmma/%,$(MICROBENCH_ALL_SOURCES))
+MICROBENCH_ALL_GTEST_SOURCES = $(shell find $(TEST_SRC_DIR)/microbench -name '*_bench.cc' 2>/dev/null)
+MICROBENCH_SM120_MBAR_SOURCE = $(filter $(TEST_SRC_DIR)/microbench/mbarrier/%,$(MICROBENCH_ALL_GTEST_SOURCES))
+MICROBENCH_SM120_MMA_SOURCES = $(filter $(TEST_SRC_DIR)/microbench/mma/%,$(MICROBENCH_ALL_GTEST_SOURCES))
+MICROBENCH_SM90_WGMMA_SOURCES = $(filter $(TEST_SRC_DIR)/microbench/wgmma/%,$(MICROBENCH_ALL_GTEST_SOURCES))
 
-# Separate binaries keep incremental rebuilds and benchmark artifacts isolated.
-MICROBENCH_DEFAULT_TARGETS = $(MICROBENCH_DEFAULT_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
-MICROBENCH_SM90_TARGETS = $(MICROBENCH_SM90_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
+MICROBENCH_SM120_MBAR_TARGETS = $(MICROBENCH_SM120_MBAR_SOURCE:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
+MICROBENCH_SM120_MMA_TARGETS = $(MICROBENCH_SM120_MMA_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
+MICROBENCH_SM90_WGMMA_TARGETS = $(MICROBENCH_SM90_WGMMA_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/%_bench)
 MICROBENCH_OBJ_DIR = $(OBJ_DIR)/microbench
 
-.PHONY: microbench-default microbench-sm90 standalone-bench cp-async-bench \
-mma-standalone-bench tma-standalone-bench memory-standalone-bench
+.PHONY: microbench-sm120-mbarrier microbench-sm120-mma \
+microbench-sm120-memory microbench-sm90-cp-async microbench-sm90-mma \
+microbench-sm90-tma microbench-sm90-wgmma
 
-microbench-default: setup-gtest $(MICROBENCH_DEFAULT_TARGETS)
+microbench-sm120-mbarrier: setup-gtest $(MICROBENCH_SM120_MBAR_TARGETS)
 
-microbench-sm90: setup-gtest $(MICROBENCH_SM90_TARGETS)
+# The MMA group contains gtest timing probes plus standalone calibration binaries.
+microbench-sm120-mma: setup-gtest $(MICROBENCH_SM120_MMA_TARGETS)
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/mma sm120a saturation-sm120a
 
-standalone-bench: cp-async-bench mma-standalone-bench tma-standalone-bench memory-standalone-bench
+microbench-sm120-memory:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/memory \
+		ARCH=sm_120a PTX_PROFILE=compute_120a all
 
-cp-async-bench:
-	$(MAKE) -C $(TEST_SRC_DIR)/microbench/cp_async all ptx-bench
+microbench-sm90-cp-async:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/cp_async \
+		ARCH=sm_90a PTX_PROFILE=compute_90a all ptx-bench issue-scope
 
-mma-standalone-bench:
-	$(MAKE) -C $(TEST_SRC_DIR)/microbench/mma sm120a sm90a saturation-sm120a saturation-sm90a
+microbench-sm90-mma:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/mma sm90a saturation-sm90a
 
-tma-standalone-bench:
-	$(MAKE) -C $(TEST_SRC_DIR)/microbench/tma all
+microbench-sm90-tma:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/tma \
+		ARCH=sm_90a PTX_PROFILE=compute_90a all
 
-memory-standalone-bench:
-	$(MAKE) -C $(TEST_SRC_DIR)/microbench/memory all
+microbench-sm90-wgmma: setup-gtest $(MICROBENCH_SM90_WGMMA_TARGETS)
 
 $(MICROBENCH_OBJ_DIR):
 	mkdir -p $@

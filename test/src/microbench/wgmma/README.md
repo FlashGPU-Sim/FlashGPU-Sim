@@ -9,9 +9,7 @@ The WGMMA microbenchmarks are gtest binaries built by the top-level
   `m64n176k16.ss`/`m64n128k16.rs` plus softmax-like FP/SFU mixing probes.
 - `wgmma_fp16_{ss,rs}_g{1,2,4}_bench.cc`: split FP16 core sweeps for
   independent compilation by operand kind and groups-before-wait.
-- `wgmma_n16_chain_bench.cc`: focused `m64n16k16` chain/count sweeps. This is
-  intentionally built by the explicit `make wgmma-n16-chain` target because it
-  requires SM90a code generation.
+- `wgmma_n16_chain_bench.cc`: focused `m64n16k16` chain/count sweeps.
 
 The old standalone mixed-softmax file was removed because the same probes now
 live in `wgmma_async_latency_bench.cc`.
@@ -19,8 +17,9 @@ live in `wgmma_async_latency_bench.cc`.
 Build examples from `test/`:
 
 ```bash
-make bench
-make wgmma-n16-chain HOPPER_CUDA_ARCH=sm_90a CUDA_ARCH=sm_90a
+./run_tests.sh build microbench --target sm90 --group wgmma
+./run_tests.sh run microbench --target sm90 --group wgmma \
+  WgmmaN16Chain
 ```
 
 FP16 WGMMA core sweep:

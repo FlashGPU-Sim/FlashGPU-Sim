@@ -6,15 +6,15 @@ peak throughput, and instruction-latency calibration.
 There are two build paths:
 
 - gtest microbenchmarks (`inst_latency_bench.cc`, `mma_issue_bench.cc`) are
-  built from `test/` with `make bench`.
+  built through `microbench/sm120/mma`.
 - standalone CUDA calibration binaries (`mma_accept_queue_bench.cu`,
-  `mma_saturation_bench.cu`) are built from `test/` with
-  `make mma-standalone-bench` or from this directory with the local Makefile.
+  `mma_saturation_bench.cu`) are built by the same group or from this directory
+  with the local Makefile.
   They are emitted under `test/build/bin/microbench/mma/`.
 
 ## Supported Tests
 
-Run these tests from `test/` with `./run_tests.sh bench "<pattern>"`.
+Run the gtest probes from `test/` through `microbench/sm120/mma`.
 
 | Test | Source | Description | Output |
 |------|--------|-------------|--------|
@@ -41,11 +41,13 @@ for every supported MMA op in one build. There is no longer a manual
 ## Example Commands
 
 ```bash
-./run_tests.sh bench "MMAIssueTest.ILPMinimal"
-./run_tests.sh bench "MMAIssueSummary.AllVariants"
-./run_tests.sh bench "MMAPeak.AllVariants"
-./run_tests.sh bench "InstLatencyTest.FullCalibrationSuite"
-make mma-standalone-bench
+./run_tests.sh run microbench --target sm120 --group mma \
+  "MMAIssueTest.ILPMinimal"
+./run_tests.sh run microbench --target sm120 --group mma \
+  "MMAIssueSummary.AllVariants"
+./run_tests.sh run microbench --target sm120 --group mma \
+  "InstLatencyTest.FullCalibrationSuite"
+./run_tests.sh build microbench --target sm90 --group mma
 ```
 
 For `MMAPeak.AllVariants`, `BestILP` and `Blocks/SM` are chosen by sweeping
