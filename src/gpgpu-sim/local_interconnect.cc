@@ -406,6 +406,7 @@ void xbar_router::RR_Advance() {
 // https://www.cs.rutgers.edu/~sn624/552-F18/papers/islip.pdf
 void xbar_router::iSLIP_Advance() {
   bool active = false;
+  vector<bool> input_granted(total_nodes, false);
 
   unsigned conflict_sub = 0;
   unsigned reqs = 0;
@@ -426,8 +427,10 @@ void xbar_router::iSLIP_Advance() {
         unsigned node_id =
             (j + next_node[i]) % active_in_buffers + active_in_buffer_base;
 
-        if (InputHasPacketForOutput(node_id, i)) {
+        if (!input_granted[node_id] &&
+            InputHasPacketForOutput(node_id, i)) {
           TransferPacket(node_id, i);
+          input_granted[node_id] = true;
           if (verbose)
             printf("%d : cycle %llu : send req from %d to %d\n", m_id, cycles,
                    node_id, i - _n_shader);
