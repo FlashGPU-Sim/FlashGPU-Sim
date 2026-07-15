@@ -909,7 +909,7 @@ public:
     uint64_t src_addr = 0;
     uint32_t size_in_bytes = 0;
     uint32_t mbar_addr = -1;
-    uint32_t coords[5] = {0, 0, 0, 0, 0};
+    int32_t coords[5] = {0, 0, 0, 0, 0};
     uint8_t tensormap_descriptor[TMA_DESCRIPTOR_BYTES] = {};
     bool has_tensormap_descriptor = false;
     bool is_valid() const {

@@ -409,7 +409,7 @@ static unsigned compute_inst_dim(unsigned dim_option) {
 // Parse coordinates from an operand into a coords array
 static void parse_tensor_coords(ptx_thread_info *thread,
                                 const operand_info &coord_operand,
-                                uint32_t coords[5]) {
+                                int32_t coords[5]) {
   // Initialize all coords to 0
   for (int i = 0; i < 5; i++)
     coords[i] = 0;
@@ -420,14 +420,14 @@ static void parse_tensor_coords(ptx_thread_info *thread,
     thread->get_vector_operand_values(coord_operand, coord_regs, n_coords);
 
     for (unsigned i = 0; i < n_coords && i < 5; i++) {
-      coords[i] = coord_regs[i].u32;
+      coords[i] = coord_regs[i].s32;
     }
   } else {
     // Single coordinate (1D case with non-vector operand)
     coords[0] = thread
-                    ->get_operand_value(coord_operand, coord_operand, U32_TYPE,
+                    ->get_operand_value(coord_operand, coord_operand, S32_TYPE,
                                         thread, 0)
-                    .u32;
+                    .s32;
   }
 }
 
@@ -508,7 +508,7 @@ struct tma_agu_state_t {
   uint32_t elem_size = 0;           // Element size in bytes
   uint32_t box_dim[5] = {0};        // Tile dimensions [d0, d1, d2, d3, d4]
   uint32_t global_dim[5] = {0};     // Global tensor dimensions
-  uint32_t start_coords[5] = {0};   // Starting coordinates of this tile
+  int32_t start_coords[5] = {0};    // Starting coordinates of this tile
   uint64_t global_strides[5] = {0}; // Strides for each dimension
   uint32_t tile_coords[5] = {0};    // Current position within tile (odometer)
   uint64_t curr_row_addr = 0;       // Base physical address of current row
@@ -516,8 +516,9 @@ struct tma_agu_state_t {
   uint32_t row_bytes = 0;           // Total bytes in a row (dim0 extent)
 
   // Cached OOB state (avoids per-sector dimension traversal)
-  bool row_is_oob = false;      // Higher-dim OOB: entire row is fill
-  uint32_t valid_row_bytes = 0; // Dim0 valid bytes in row (constant per tile)
+  bool row_is_oob = false; // Higher-dim OOB: entire row is fill
+  uint32_t valid_row_start_bytes = 0; // First valid dim0 byte in the tile row
+  uint32_t valid_row_end_bytes = 0;   // One-past-last valid dim0 byte
 
   // Linear mode state (simple 1D address range)
   uint64_t linear_addr = 0;      // Current address
@@ -527,7 +528,7 @@ struct tma_agu_state_t {
 class tma_agu_unit_t {
 public:
   void init_tensor(tma_agu_state_t &state, const tensormap_descriptor_t &tm,
-                   const uint32_t start_coords[5]) {
+                   const int32_t start_coords[5]) {
 
     if (!tm.is_valid()) {
       assert(false && "TMA AGU ERROR: Invalid tensormap in init_tensor");
@@ -556,27 +557,48 @@ public:
       state.tile_coords[i] = 0;
     }
 
-    // Calculate initial row address: base + sum(start_coords[d] * stride[d])
-    state.curr_row_addr = tm.fields.globalAddress;
+    // Calculate initial row address using signed coordinates.  OOB requests
+    // may precede the tensor base when OOB L2 traffic is enabled.
+    int64_t byte_offset = 0;
     for (uint32_t d = 0; d < state.num_dims; d++) {
-      state.curr_row_addr += start_coords[d] * state.global_strides[d];
+      byte_offset += static_cast<int64_t>(start_coords[d]) *
+                     static_cast<int64_t>(state.global_strides[d]);
+    }
+    if (byte_offset < 0) {
+      state.curr_row_addr =
+          tm.fields.globalAddress - static_cast<uint64_t>(-byte_offset);
+    } else {
+      state.curr_row_addr =
+          tm.fields.globalAddress + static_cast<uint64_t>(byte_offset);
     }
 
     state.row_bytes = state.box_dim[0] * state.elem_size;
     state.offset_in_row = 0;
     state.done = false;
 
-    // Precompute dim0 valid bytes (constant for entire tile)
-    uint32_t dim0_remaining = (start_coords[0] < state.global_dim[0])
-                                  ? state.global_dim[0] - start_coords[0]
-                                  : 0;
-    state.valid_row_bytes =
-        std::min(state.box_dim[0], dim0_remaining) * state.elem_size;
+    // Precompute the dim0 intersection with the tensor.  Both boundaries are
+    // tile-relative so a negative start coordinate produces leading fill
+    // bytes followed by valid data.
+    const int64_t row_start = start_coords[0];
+    const int64_t row_end = row_start + state.box_dim[0];
+    const int64_t valid_start = std::max<int64_t>(row_start, 0);
+    const int64_t valid_end =
+        std::min<int64_t>(row_end, state.global_dim[0]);
+    if (valid_start < valid_end) {
+      state.valid_row_start_bytes =
+          static_cast<uint32_t>(valid_start - row_start) * state.elem_size;
+      state.valid_row_end_bytes =
+          static_cast<uint32_t>(valid_end - row_start) * state.elem_size;
+    } else {
+      state.valid_row_start_bytes = state.row_bytes;
+      state.valid_row_end_bytes = state.row_bytes;
+    }
 
     // Precompute higher-dim OOB for first row (tile_coords all zero)
     state.row_is_oob = false;
     for (uint32_t d = 1; d < state.num_dims; d++) {
-      if (start_coords[d] >= state.global_dim[d]) {
+      if (start_coords[d] < 0 ||
+          static_cast<uint32_t>(start_coords[d]) >= state.global_dim[d]) {
         state.row_is_oob = true;
         break;
       }
@@ -637,18 +659,25 @@ public:
         state.is_fill_request = true; // Higher-dim OOB: entire row is fill
       } else {
         state.is_fill_request =
-            (state.offset_in_row >= state.valid_row_bytes); // Dim0 boundary
+            state.offset_in_row < state.valid_row_start_bytes ||
+            state.offset_in_row >= state.valid_row_end_bytes;
       }
 
       // Calculate address: current_row_base + offset_within_row
       out_addr = state.curr_row_addr + state.offset_in_row;
 
-      // Avoid mixing valid data and OOB fill bytes in widened requests.
+      // Never mix fill and valid bytes in one request.
       uint32_t row_remaining = state.row_bytes - state.offset_in_row;
-      if (request_granularity > SECTOR_SIZE && !state.row_is_oob &&
-          state.offset_in_row < state.valid_row_bytes) {
-        row_remaining = std::min(row_remaining,
-                                 state.valid_row_bytes - state.offset_in_row);
+      if (!state.row_is_oob) {
+        if (state.offset_in_row < state.valid_row_start_bytes) {
+          row_remaining =
+              std::min(row_remaining, state.valid_row_start_bytes -
+                                          state.offset_in_row);
+        } else if (state.offset_in_row < state.valid_row_end_bytes) {
+          row_remaining =
+              std::min(row_remaining,
+                       state.valid_row_end_bytes - state.offset_in_row);
+        }
       }
       uint32_t to_boundary =
           request_granularity - (out_addr % request_granularity);
@@ -696,7 +725,9 @@ private:
     // Recompute higher-dim OOB for new row (once per row, not per sector)
     state.row_is_oob = false;
     for (uint32_t d = 1; d < state.num_dims; d++) {
-      if (state.start_coords[d] + state.tile_coords[d] >= state.global_dim[d]) {
+      const int64_t coord = static_cast<int64_t>(state.start_coords[d]) +
+                            state.tile_coords[d];
+      if (coord < 0 || coord >= state.global_dim[d]) {
         state.row_is_oob = true;
         break;
       }
@@ -1889,7 +1920,7 @@ static void gen_aligned_req(uint64_t start_addr, uint64_t start_tile_offset,
 // base_addr: current physical address
 // tensormap: tensor descriptor
 // requests: output vector of (address, size) pairs
-static void traverse_tensor_dim(int dim, const uint32_t current_coords[5],
+static void traverse_tensor_dim(int dim, const int32_t current_coords[5],
                                 uint64_t base_addr,
                                 const tensormap_descriptor_t &tensormap,
                                 const uint64_t tile_strides[5],
@@ -1899,14 +1930,14 @@ static void traverse_tensor_dim(int dim, const uint32_t current_coords[5],
 
   if (dim == 0) {
     // Base case: innermost dimension (contiguous)
-    uint32_t start_x = current_coords[0];
+    int64_t start_x = current_coords[0];
     uint32_t box_width = tensormap.fields.boxDim[0];
     uint32_t global_width = tensormap.fields.globalDim[0];
 
     // Calculate valid range intersection: [start_x, start_x + box_width) ∩ [0,
     // global_width)
-    uint32_t valid_start = start_x;
-    uint32_t valid_end = start_x + box_width;
+    int64_t valid_start = start_x;
+    int64_t valid_end = start_x + box_width;
 
     // Check if completely out of bounds
     if (valid_start >= global_width || valid_end <= 0) {
@@ -1914,17 +1945,19 @@ static void traverse_tensor_dim(int dim, const uint32_t current_coords[5],
     }
 
     // Clamp to valid tensor boundaries
-    valid_start = std::max(valid_start, 0u);
-    valid_end = std::min(valid_end, global_width);
+    valid_start = std::max<int64_t>(valid_start, 0);
+    valid_end = std::min<int64_t>(valid_end, global_width);
 
     if (valid_start >= valid_end)
       return;
 
     // Calculate physical start address and total bytes
-    uint64_t phys_start_addr = base_addr + (valid_start * elem_size);
+    uint64_t phys_start_addr =
+        base_addr + static_cast<uint64_t>(valid_start) * elem_size;
     uint64_t valid_tile_offset =
-        tile_offset + (valid_start - start_x) * elem_size;
-    uint32_t valid_bytes = (valid_end - valid_start) * elem_size;
+        tile_offset + static_cast<uint64_t>(valid_start - start_x) * elem_size;
+    uint32_t valid_bytes =
+        static_cast<uint32_t>(valid_end - valid_start) * elem_size;
 
     // Generate aligned memory fetch requests
     gen_aligned_req(phys_start_addr, valid_tile_offset, valid_bytes, requests);
@@ -1936,15 +1969,17 @@ static void traverse_tensor_dim(int dim, const uint32_t current_coords[5],
     uint64_t stride = tensormap.fields.globalStrides[dim - 1];
 
     for (uint32_t i = 0; i < box_extent; i++) {
-      uint32_t current_coord = current_coords[dim] + i;
+      int64_t current_coord =
+          static_cast<int64_t>(current_coords[dim]) + i;
 
       // OOB check: skip if outside valid tensor range
-      if (current_coord >= global_extent) {
+      if (current_coord < 0 || current_coord >= global_extent) {
         continue; // Skip this branch (zero-padding)
       }
 
       // Calculate address offset for this coordinate
-      uint64_t next_addr = base_addr + (current_coord * stride);
+      uint64_t next_addr =
+          base_addr + static_cast<uint64_t>(current_coord) * stride;
       uint64_t next_tile_offset = tile_offset + i * tile_strides[dim];
 
       // Recurse to next lower dimension
@@ -1959,7 +1994,7 @@ static void traverse_tensor_dim(int dim, const uint32_t current_coords[5],
 // Returns: vector of (physical_address, size_in_bytes) pairs
 static std::vector<tma_request_t>
 generate_tma_requests(const tensormap_descriptor_t &tensormap,
-                      const uint32_t start_coords[5]) {
+                      const int32_t start_coords[5]) {
   std::vector<tma_request_t> requests;
 
   if (!tensormap.is_valid() || tensormap.fields.tensorRank > 4) {
@@ -2073,7 +2108,7 @@ static tma_oob_fill_table_t g_oob_fill_table;
 // Execute TMA data transfer (load or store)
 // is_load=true: global -> shared, is_load=false: shared -> global
 static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
-                            const uint32_t coords[5], memory_space *shared_mem,
+                            const int32_t coords[5], memory_space *shared_mem,
                             memory_space *global_mem, uint32_t smem_addr,
                             ptx_thread_info *thread, const ptx_instruction *pI,
                             bool is_load) {
@@ -2118,7 +2153,7 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
 
       GPPRINTF_INST_EXEC(
           TMA,
-          "coord[%u,%u,%u,%u,%u] "
+          "coord[%d,%d,%d,%d,%d] "
           "swizzle_mode %u "
           "gmem=0x%llx -> "
           "smem=0x%x, space=%p, size=%u, tile_offset=0x%llx, "
@@ -2229,7 +2264,7 @@ static void
 setup_tensor_tma(memory_space *global_mem, uint64_t tensormap_addr,
                  unsigned inst_dim, const operand_info &coord_operand,
                  ptx_thread_info *thread, tensormap_descriptor_t &out_tensormap,
-                 uint32_t out_coords[5], uint32_t &out_size_in_bytes) {
+                 int32_t out_coords[5], uint32_t &out_size_in_bytes) {
   using namespace flash_gpgpu_sim;
   read_tensormap_descriptor(global_mem, thread->get_param_memory(),
                             tensormap_addr, inst_dim, out_tensormap);
@@ -2464,7 +2499,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     auto mbar_addr = get_operand_u32(thread, pI->src3());
 
     tensormap_descriptor_t tensormap;
-    uint32_t coords[5];
+    int32_t coords[5];
     uint32_t size_in_bytes;
     setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
                      pI->get_operands()[2], thread, tensormap, coords,
@@ -2504,14 +2539,14 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     auto src_addr = get_operand_u32(thread, pI->src2());
 
     tensormap_descriptor_t tensormap;
-    uint32_t coords[5];
+    int32_t coords[5];
     uint32_t size_in_bytes;
     setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
                      pI->get_operands()[1], thread, tensormap, coords,
                      size_in_bytes);
 
     GPPRINTF_INST_EXEC(
-        TMA, "TMA tensor store Extracted coordinates: [%u, %u, %u, %u, %u]\n",
+        TMA, "TMA tensor store Extracted coordinates: [%d, %d, %d, %d, %d]\n",
         coords[0], coords[1], coords[2], coords[3], coords[4]);
 
     inst_t::tma_static_info_t tma_static_info{

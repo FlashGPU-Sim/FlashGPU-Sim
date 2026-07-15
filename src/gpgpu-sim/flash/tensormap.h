@@ -65,7 +65,7 @@ typedef union __attribute__((aligned(128))) tensormap_descriptor_t {
   // Helpers
   uint32_t get_element_size() const;
   uint32_t get_tile_size_bytes() const;
-  uint64_t calculate_src_addr(const uint32_t coords[5]) const;
+  uint64_t calculate_src_addr(const int32_t coords[5]) const;
   uint32_t num_dims() const { return fields.tensorRank + 1u; }
   bool is_valid() const {
     return fields.tensorRank <= 4 && fields.globalAddress != 0;
