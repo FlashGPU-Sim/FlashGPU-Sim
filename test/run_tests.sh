@@ -650,13 +650,16 @@ gtest_name_matches_filter() {
     return 0
 }
 
+# GTest writes a separate discovery report for --gtest_list_tests when
+# GTEST_OUTPUT is set. Discovery helpers must not pollute CI result directories.
 gtest_binary_matches_filter() {
     local abs_bin="$1"
     local config_dir="$2"
     local filter="$3"
 
     local test_list=""
-    if ! test_list="$(cd "$config_dir" && "$abs_bin" --gtest_color=no --gtest_list_tests 2>/dev/null)"; then
+    if ! test_list="$(cd "$config_dir" && env -u GTEST_OUTPUT "$abs_bin" \
+        --gtest_color=no --gtest_list_tests 2>/dev/null)"; then
         return 2
     fi
 
@@ -700,7 +703,7 @@ gtest_binary_intersection_filter() {
     local resolved_filter=""
     local full_name=""
 
-    if ! test_list="$(cd "$config_dir" && "$abs_bin" \
+    if ! test_list="$(cd "$config_dir" && env -u GTEST_OUTPUT "$abs_bin" \
         --gtest_color=no --gtest_list_tests 2>/dev/null)"; then
         return 2
     fi

@@ -41,6 +41,8 @@ run_logged reduced-config-parity \
   python3 test/scripts/check_reduced_config_parity.py
 run_logged ptx-scheduler-operand-regression \
   python3 test/scripts/test_ptx_scheduler_probe_operands.py
+run_logged gtest-discovery-output-regression \
+  python3 test/scripts/test_gtest_discovery_output.py
 
 # Source environment setup
 # Note: In CI Docker, CUDA_INSTALL_PATH is already set via ENV, so we skip setup.sh
