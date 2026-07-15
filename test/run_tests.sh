@@ -771,8 +771,10 @@ run_test_targets() {
         print_color $BLUE "Running all verification tests (config: $GPU_CONFIG)"
         # Excluded tests are centralized here so local runs and CI share the
         # same default skip policy.
-        # - CPAsyncMethod: uses cp.async instruction
-        # - PerformanceComparison: internally calls CP_ASYNC method
+        # - CPAsyncMethod: source test is currently disabled; retain the
+        #   pattern so it remains opt-in if re-enabled
+        # - PerformanceComparison: legacy multi-iteration performance test;
+        #   its CP_ASYNC entry is currently disabled in the source
         # - MBarrierSanityTest: TODO: simulator try_wait can deadlock on
         #   unsatisfied barriers, so keep the sanity suite native-only for now
         local EXCLUDED_TESTS="-*CPAsyncMethod*:*PerformanceComparison*:MBarrierSanityTest.*"
