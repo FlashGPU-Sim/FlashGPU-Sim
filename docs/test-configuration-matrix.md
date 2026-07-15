@@ -15,26 +15,68 @@ The test framework supports multiple GPU configurations to balance validation th
 | `cuda_mma_tf32_test.cc` | TF32 MMA instruction tests | `SM120_RTX5090_REDUCED` | ✅ Active | Single-block functionality tests, fast execution |
 | `cuda_mma_s8_test.cc` | S8/U8 MMA instruction tests (M16N8K16/K32, M8N8K16) | `SM120_RTX5090_REDUCED` | ✅ Active | Single-block functionality tests, fast execution |
 | `cuda_tensor_mma_test.cc` | General tensor MMA tests | `SM120_RTX5090_REDUCED` | ✅ Active | Single-block functionality tests, fast execution |
-| `cuda_tma_test.cc` | Tensor Memory Accelerator (TMA) tests | `SM120_RTX5090_REDUCED` | ⚠️ Partial | Contains 2 excluded tests (see below) |
+| `cuda_tma_test.cc` | Tensor Memory Accelerator (TMA) tests | `SM120_RTX5090_REDUCED` | ⚠️ Partial | One source-disabled wrapper and one default-excluded test (see below) |
 | `cuda_ld_st_matrix_test.cc` | ldmatrix/stmatrix instruction tests | `SM120_RTX5090_REDUCED` | ✅ Active | Matrix load/store operations |
 | `cuda_vector_add_test.cc` | Basic CUDA vector addition | `SM120_RTX5090` | ✅ Active | Multi-block baseline validation |
 | `integration_test.cc` | General integration tests | `SM120_RTX5090` | ✅ Active | Multi-block validation |
-| `mbarrier_test.cc` (integration) | Memory barrier tests | `SM120_RTX5090_REDUCED` | ✅ Active | Functionality validation |
+| `mbarrier_test.cc` (integration) | Memory barrier tests | `SM120_RTX5090_REDUCED` | ⚠️ Known failure | `MBarrierThreadLevelTest.DifferentThreadsArriveSameBarrier` reaches the liveness timeout |
+| Hopper instruction suites | SM90 instruction semantics | `SM90_H100_REDUCED` | ✅ Active | Included in PR CI |
+| FA2 smoke suites | Four FP16 forward smoke shapes | `SM90_H100_REDUCED` | ✅ Active | Included in PR CI; exercises ordinary `cp.async` |
+| `Fa3PrefillFp16SmokeTest` | FA3 FP16 forward smoke shapes | `SM90_H100_REDUCED` | ✅ Active | Included in PR CI |
+| `Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase` | Fixed FA3 forward integration case | `SM90_H100_REDUCED` | ✅ Active | Included in PR CI |
 
-## Excluded/Broken Tests
+## Inactive/Default-Excluded Tests
 
-The following tests are currently excluded from test runs due to unimplemented features. These exclusions are hard-coded in `test/run_tests.sh` (line 328).
+The following legacy TMA coverage is not part of the default simulator run.
+Ordinary `cp.async` itself is implemented and exercised by the SM90 FA2 smoke
+tests; these entries describe the state of the older TMA comparison wrapper.
 
 | Test Name | Test Suite | Issue | Status | Reason |
 |-----------|------------|-------|--------|--------|
-| `TMA.CPAsyncMethod` | `cuda_tma_test.cc` | Unimplemented `cp.async` instruction | Excluded | Uses `cp.async` PTX instruction not yet implemented in GPGPU-Sim |
-| `TMA.PerformanceComparison` | `cuda_tma_test.cc` | Depends on CPAsyncMethod | Excluded | Internally calls CPAsyncMethod, which is excluded |
+| `TMA.CPAsyncMethod` | `cuda_tma_test.cc` | Wrapper is commented out | Source-disabled | Needs re-enabling and validation against the current ordinary `cp.async` model |
+| `TMA.PerformanceComparison` | `cuda_tma_test.cc` | Legacy default exclusion | Excluded | Its CP_ASYNC comparison entry is currently commented out; audit separately before restoring this multi-iteration performance test |
 
 **Exclusion mechanism:**
 ```bash
-# In test/run_tests.sh:328
-local EXCLUDED_TESTS="-*CPAsyncMethod*:*PerformanceComparison*"
+# In the gtest-multi executor in test/run_tests.sh
+local EXCLUDED_TESTS="-*CPAsyncMethod*:*PerformanceComparison*:MBarrierSanityTest.*"
 ```
+
+### Known SM120 gating failure
+
+`MBarrierThreadLevelTest.DifferentThreadsArriveSameBarrier` reaches the
+100,000-cycle liveness timeout in detailed performance simulation. The same
+failure reproduces with both `SM120_RTX5090_REDUCED` and `SM120_RTX5090`, so it
+is not caused by reduced/full field synchronization. The test remains active
+and is not added to the default exclusion list; CI should continue to expose
+this performance-simulator correctness issue until it is fixed.
+
+### Known SM90 non-gating coverage
+
+The full `fa3-smoke` registry group continues to include
+`Fa3PrefillFp16BackwardSmokeTest.*`, but that suite is not a PR CI gate yet. Its
+main backward kernel currently reaches the simulator liveness timeout under
+`SM90_H100_REDUCED`; the failure also reproduces after reverting the synchronized
+cp.async, MMA/WGMMA, PTX scheduling, VOQ, and RF-pressure settings. This keeps
+the known simulator issue visible without conflating it with reduced/full
+configuration parity. PR CI runs the FA3 forward smoke suite and the fixed
+forward integration case instead.
+
+## Pull Request CI Scope
+
+Pull requests targeting `flash` run `test/ci/run_ci_tests.sh` in the CI
+container. The gate checks:
+
+- reduced/full config parity plus its regression tests;
+- PTX scheduler SETP def/use classification;
+- SM120 unit and integration suites with `SM120_RTX5090_REDUCED`;
+- SM90 instruction and FA2 smoke suites with `SM90_H100_REDUCED`;
+- FA3 forward smoke shapes and the fixed forward integration case; and
+- the existing SM120 GPT-2 trace smoke tests.
+
+Each build/run group writes a text log under `test/logs/ci/logs/`; gtest groups
+also write XML under `test/logs/ci/xml/`. The workflow uploads the entire
+`test/logs/ci` tree even when a gate fails.
 
 ## Configuration Reference
 
@@ -58,9 +100,7 @@ local EXCLUDED_TESTS="-*CPAsyncMethod*:*PerformanceComparison*"
 
 **Command:**
 ```bash
-./test/run_tests.sh test
-# or explicitly:
-./test/run_tests.sh -c SM120_RTX5090 test
+./test/run_tests.sh -c SM120_RTX5090 run test --target sm120 --group integration
 ```
 
 ### SM120_RTX5090_REDUCED
@@ -68,22 +108,40 @@ local EXCLUDED_TESTS="-*CPAsyncMethod*:*PerformanceComparison*"
 **Use cases:**
 - Quick smoke tests
 - Development iterations
-- Single-block functionality tests (MMA, TMA, mbarrier)
+- Single-block simulator-correctness tests (MMA, TMA, mbarrier)
+- Performance-simulator pipeline, backpressure, and liveness checks
 - CI/CD pipelines
 
 **Architecture:**
 - 1 Streaming Multiprocessor (SM)
-- 1 L2 cache bank
-- 1 DDR memory controller
-- Minimal interconnect
+- The same 16 memory channels and 128 L2 sub-partitions as the full config
+- Every simulator field except `-gpgpu_n_clusters` matches the full config
+- Reduced interconnect topology paired with the one-SM configuration
 
 **Resource usage:**
-- Memory: Low (single SM simulation)
-- Time: Fast (4-8x speedup vs. full config)
+- Memory: Lower SM state than the full configuration
+- Time: Workload-dependent; intended for small smoke and single-block tests
+- Results: Not valid for performance or multi-SM scaling conclusions
 
 **Command:**
 ```bash
-./test/run_tests.sh -c SM120_RTX5090_REDUCED test
+./test/run_tests.sh -c SM120_RTX5090_REDUCED run test --target sm120 --group unit
+```
+
+### SM90_H100_REDUCED
+
+**Use cases:**
+- Hopper instruction validation
+- FA2 and FA3 forward correctness smoke tests
+- Single-SM debugging of cp.async, TMA, WGMMA, and mbarrier behavior
+
+This configuration preserves the full H100 per-SM FlashAttention execution
+features while reducing the SM and memory topology. The parity contract is
+enforced by `test/scripts/check_reduced_config_parity.py`.
+
+**Command:**
+```bash
+./test/run_tests.sh -c SM90_H100_REDUCED run test --target sm90 --group fa2-smoke
 ```
 
 ## Test Selection Guidelines
@@ -102,10 +160,12 @@ Use the reduced configuration for:
 
 **Example:**
 ```bash
-./test/run_tests.sh -c SM120_RTX5090_REDUCED test "*MMA*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED run test --target sm120 --group integration MMA
 ```
 
-**CI Usage:** The automated CI workflow (`.github/workflows/pr-tests.yml`) uses this configuration via `test/ci/run_ci_tests.sh` for resource-efficient testing on PR approval.
+**CI Usage:** The automated workflow (`.github/workflows/pr-tests.yml`) uses
+this configuration via `test/ci/run_ci_tests.sh` for pull requests targeting
+`flash`.
 
 ### When to Use SM120_RTX5090 (Full Config)
 
@@ -117,24 +177,25 @@ Use the full configuration for:
 
 **Example:**
 ```bash
-./test/run_tests.sh test CudaVectorAdd
+./test/run_tests.sh -c SM120_RTX5090 run test --target sm120 --group integration CudaVectorAdd
 ```
 
 ## Usage Examples
 
 ### Run All MMA Tests (Fast)
 ```bash
-./test/run_tests.sh -c SM120_RTX5090_REDUCED test "*MMA*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED run test --target sm120 --group integration MMA
 ```
 
 ### Run Specific Test Suite
 ```bash
-./test/run_tests.sh -c SM120_RTX5090_REDUCED test MMAS8M16N8K16
+./test/run_tests.sh -c SM120_RTX5090_REDUCED run test --target sm120 --group integration MMAS8M16N8K16
 ```
 
 ### Run Full Validation
 ```bash
-./test/run_tests.sh test
+./test/run_tests.sh -c SM120_RTX5090 run test --target sm120 --group unit
+./test/run_tests.sh -c SM120_RTX5090 run test --target sm120 --group integration
 ```
 
 ### List All Available Tests
@@ -160,7 +221,7 @@ This matrix is manually maintained. When adding new tests or configurations:
 
 2. **Excluding a test:**
    - Update `test/run_tests.sh` EXCLUDED_TESTS list
-   - Add entry to "Excluded/Broken Tests" table with reasoning
+   - Add an entry to "Inactive/Default-Excluded Tests" with reasoning
 
 3. **Adding a new config:**
    - Add entry to "Configuration Reference" section
@@ -172,9 +233,11 @@ The `test/test_multiconfig.sh` script includes automated checks to prevent this 
 
 - Verifies this file exists
 - Confirms both config names are documented
-- Ensures excluded tests are mentioned
+- Ensures inactive/default-excluded tests are mentioned
+- Runs the reduced/full parity checker and its future-field regression tests
 
-These checks run as part of the test suite and will fail if the matrix is incomplete.
+Run them with `bash test/test_multiconfig.sh`. The parity and scheduler
+regressions also run directly in PR CI.
 
 ## Related Documentation
 
@@ -184,4 +247,4 @@ These checks run as part of the test suite and will fail if the matrix is incomp
 
 ---
 
-**Last updated:** 2026-01-05 (Issue #28 implementation)
+**Last updated:** 2026-07-15
