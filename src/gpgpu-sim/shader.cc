@@ -1693,7 +1693,15 @@ bool shader_core_ctx::can_issue_wgmma_warpgroup(
     const unsigned *warp_ids, unsigned count, register_set &pipe_reg_set,
     const warp_inst_t *inst) const {
   if (count != WGMMA_WARPGROUP_SIZE) return false;
-  if (m_config->gpgpu_num_sched_per_core != WGMMA_WARPGROUP_SIZE) return false;
+  if (m_config->gpgpu_num_sched_per_core != WGMMA_WARPGROUP_SIZE) {
+    fprintf(stderr,
+            "\nGPGPU-Sim configuration error: WGMMA requires exactly %u "
+            "warp schedulers per core, but -gpgpu_num_sched_per_core is %u.\n",
+            WGMMA_WARPGROUP_SIZE,
+            m_config->gpgpu_num_sched_per_core);
+    fflush(stderr);
+    abort();
+  }
   if (m_wgmma_issued_this_cycle || m_subpartition_issue_mask != 0) return false;
   const unsigned long long now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
   if (!m_wgmma.issue_chain_ready(inst, now)) return false;
