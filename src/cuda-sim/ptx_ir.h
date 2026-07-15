@@ -524,7 +524,7 @@ class operand_info {
     m_is_return_var = false;
     m_immediate_address = false;
   }
-  operand_info(const symbol *addr, int offset, gpgpu_context *ctx) {
+  operand_info(const symbol *addr, long long offset, gpgpu_context *ctx) {
     init(ctx);
     m_is_non_arch_reg = false;
     m_addr_space = undefined_space;
@@ -542,7 +542,7 @@ class operand_info {
     m_is_return_var = false;
     m_immediate_address = false;
   }
-  operand_info(unsigned x, gpgpu_context *ctx) {
+  operand_info(unsigned long long x, gpgpu_context *ctx) {
     init(ctx);
     m_is_non_arch_reg = false;
     m_addr_space = undefined_space;
@@ -915,7 +915,7 @@ class operand_info {
     return result;
   }
   int get_int() const { return static_cast<int>(m_value.m_int); }
-  int get_addr_offset() const { return m_addr_offset; }
+  long long get_addr_offset() const { return m_addr_offset; }
   const symbol *get_symbol() const {
     if (m_vector) {
       assert(get_vect_nelem() == 1 &&
@@ -979,7 +979,7 @@ class operand_info {
     const symbol **m_vector_symbolic;
   } m_value;
 
-  int m_addr_offset;
+  long long m_addr_offset;
 
   bool m_neg_pred;
   bool m_is_return_var;
