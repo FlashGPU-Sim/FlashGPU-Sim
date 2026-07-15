@@ -1214,10 +1214,9 @@ void collect_inst_regs(const ptx_instruction *inst, reg_set_t &uses,
     collect_operand_regs(inst->get_pred(), uses);
 
   const std::vector<operand_info> &operands = inst->get_operands();
-  if (inst->get_opcode() == SETP_OP && operands.size() >= 2) {
+  if (inst->get_opcode() == SETP_OP && !operands.empty()) {
     collect_operand_regs(operands[0], defs);
-    collect_operand_regs(operands[1], defs);
-    for (unsigned i = 2; i < operands.size(); ++i)
+    for (unsigned i = 1; i < operands.size(); ++i)
       collect_operand_regs(operands[i], uses);
     return;
   }

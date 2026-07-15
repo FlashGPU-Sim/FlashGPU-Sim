@@ -270,8 +270,7 @@ def extract_ptx_defs_uses(op: str, operands_text: str, pred: str | None) -> tupl
 
     if op.startswith("setp.") and len(operands) >= 2:
         defs.update(regs_in(operands[0]))
-        defs.update(regs_in(operands[1]))
-        for operand in operands[2:]:
+        for operand in operands[1:]:
             uses.update(regs_in(operand))
         return defs, uses
 
