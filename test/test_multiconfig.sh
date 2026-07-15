@@ -95,10 +95,10 @@ run_test "Matrix documents SM120_RTX5090 config" \
 run_test "Matrix documents SM120_RTX5090_REDUCED config" \
     "grep -q 'SM120_RTX5090_REDUCED' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
 
-run_test "Matrix documents excluded test CPAsyncMethod" \
+run_test "Matrix documents inactive test CPAsyncMethod" \
     "grep -q 'CPAsyncMethod' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
 
-run_test "Matrix documents excluded test PerformanceComparison" \
+run_test "Matrix documents default-excluded test PerformanceComparison" \
     "grep -q 'PerformanceComparison' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
 
 # Doc-guard tests for build detection and native GPU mode (issue #36)
@@ -110,6 +110,12 @@ run_test "Native mode checks GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN" \
 
 run_test "Native mode checks LD_LIBRARY_PATH for simulator paths" \
     "grep -q 'LD_LIBRARY_PATH' '$TEST_SCRIPT'"
+
+run_test "Reduced config parity checker rejects unapproved fields" \
+    "python3 '$SCRIPT_DIR/scripts/test_reduced_config_parity.py'"
+
+run_test "Reduced configs permit only documented full-config differences" \
+    "python3 '$SCRIPT_DIR/scripts/check_reduced_config_parity.py'"
 
 echo "========================================="
 echo "Test Results: $passed_tests/$total_tests passed"
