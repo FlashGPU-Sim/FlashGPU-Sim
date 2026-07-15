@@ -48,7 +48,10 @@ run_logged ptx-scheduler-operand-regression \
 echo "Setting up GPGPU-Sim environment..."
 if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
   echo "CI environment detected, skipping setup.sh (CUDA_INSTALL_PATH already set)"
+  # setup_environment is a legacy sourced script and is not nounset-safe.
+  set +u
   source setup_environment
+  set -u
 
   # Verify simulator environment is set up correctly
   if [ -z "$GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN" ]; then
@@ -60,8 +63,11 @@ if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
   echo "  LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
 else
   echo "Local environment detected, sourcing both setup.sh and setup_environment"
+  # The legacy setup scripts intentionally probe optional unset variables.
+  set +u
   source setup.sh
   source setup_environment
+  set -u
 fi
 
 # CI_TEST_CONFIG remains a backward-compatible alias for the SM120 config.
