@@ -2390,6 +2390,20 @@ void scheduler_unit::cycle() {
           warp(warp_id).ibuffer_flush();
         } else {
           valid_inst = true;
+          if (pI->op == ASYNC_COPY_OP &&
+              m_shader->m_config->gpgpu_num_cp_async_units == 0) {
+            fprintf(
+                stderr,
+                "\nGPGPU-Sim configuration error: shader %u warp %u "
+                "encountered ordinary cp.async at PC 0x%llx, but "
+                "-gpgpu_num_cp_async_units is 0. Enable at least one "
+                "cp.async issue unit and provide the ID_OC_CP_ASYNC and "
+                "OC_EX_CP_ASYNC pipeline widths.\n",
+                m_shader->get_sid(), warp_id,
+                static_cast<unsigned long long>(pI->pc));
+            fflush(stderr);
+            abort();
+          }
           if (!m_scoreboard->checkCollision(warp_id, pI)) {
             SCHED_GPPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
