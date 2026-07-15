@@ -896,9 +896,9 @@ public:
       TMA_SHARED_CLUSTER,
       TMA_GLOBAL,
     };
-    type_t tma_type;
-    space_t dst_space;
-    space_t src_space;
+    type_t tma_type = TMA_TYPE_INVALID;
+    space_t dst_space = TMA_SPACE_INVALID;
+    space_t src_space = TMA_SPACE_INVALID;
     unsigned tensor_dim = 0;
     unsigned bulk_wait_num = 0;  // For TMA_BULK_WAIT: number of recent groups to wait for
     bool bulk_wait_read_only = false;

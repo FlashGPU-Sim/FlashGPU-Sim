@@ -2012,7 +2012,8 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                        pI, pI,
                                        (*pipe_reg)->get_active_mask());
     }
-  } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
+  } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP &&
+             (*pipe_reg)->get_active_mask().any()) {
     // Check if this is a bulk group operation
     const auto &tma_info = next_inst->get_tma_static_info();
     if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_COMMIT) {

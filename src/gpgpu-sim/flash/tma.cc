@@ -2606,7 +2606,11 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
   ptx_instruction *pI = const_cast<ptx_instruction *>(pIin);
 
   if (pI->get_opcode() == TMA_PREFETCH_OP) {
-    reject_unsupported_tma("cp.async.bulk.prefetch is not implemented", pI);
+    // cp.async.bulk.prefetch is a non-binding cache hint with no
+    // architectural result. Accept it as a functional no-op; the
+    // performance pipeline still issues it through the configured TMA unit
+    // and accounts for the instruction latency.
+    return;
   }
 
   bool is_commit_group = false;
