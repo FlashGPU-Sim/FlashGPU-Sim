@@ -387,6 +387,14 @@ static uint64_t get_operand_u64(ptx_thread_info *thread,
   return reg.u64;
 }
 
+[[noreturn]] static void reject_unsupported_tma(
+    const char *reason, const ptx_instruction *pI) {
+  fprintf(stderr, "TMA ERROR: %s\n", reason);
+  pI->print_insn(stderr);
+  fflush(stderr);
+  abort();
+}
+
 // Compute instruction dimension from option
 static unsigned compute_inst_dim(unsigned dim_option) {
   switch (dim_option) {
@@ -1132,7 +1140,17 @@ public:
 
     // Regular TMA copy instruction - queue for async processing
     const auto warp_size = m_shader_ctx->get_warp_size();
-    auto num_transactions_before = issue_queue.size();
+    unsigned active_lane_count = 0;
+    for (unsigned laneid = 0; laneid < warp_size; ++laneid) {
+      if (pI->get_tma_dyn_info(laneid).is_valid()) ++active_lane_count;
+    }
+    if (active_lane_count > 1) {
+      reject_unsupported_tma(
+          "multiple active lanes in one TMA instruction are not supported; "
+          "TMA must be issued by one thread",
+          pI);
+    }
+
     for (unsigned laneid = 0; laneid < warp_size; laneid++) {
       const auto &tma_dyn_info = pI->get_tma_dyn_info(laneid);
       if (tma_dyn_info.is_valid()) {
@@ -1244,10 +1262,6 @@ public:
             tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr, tx_uid,
             tma_static_info.tma_type);
       }
-    }
-    if (issue_queue.size() - num_transactions_before > 1) {
-      printf("Error: Multiple active threads for TMA inst not supported\n");
-      abort();
     }
   }
 
@@ -2578,8 +2592,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
                        size_in_bytes, (unsigned long long)tensormap_addr);
 
   } else {
-    GPPRINTF_INST_EXEC(
-        TMA, "[STUB] Unsupported cp.async.bulk.tensor variant%s\n", "");
+    reject_unsupported_tma("unsupported cp.async.bulk.tensor variant", pI);
   }
 }
 
@@ -2593,9 +2606,7 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
   ptx_instruction *pI = const_cast<ptx_instruction *>(pIin);
 
   if (pI->get_opcode() == TMA_PREFETCH_OP) {
-    GPPRINTF_INST_EXEC(TMA, "[STUB] cp.async.bulk.prefetch treated as nop%s\n",
-                       "");
-    return;
+    reject_unsupported_tma("cp.async.bulk.prefetch is not implemented", pI);
   }
 
   bool is_commit_group = false;
