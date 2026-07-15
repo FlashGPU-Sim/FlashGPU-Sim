@@ -2713,6 +2713,9 @@ void scheduler_unit::cycle() {
         warp(warp_id).set_next_pc(pc);
         warp(warp_id).ibuffer_flush();
       }
+      // A control-hazard flush leaves the local pI non-null. Do not inspect
+      // its operands for tracing unless it still matches the SIMT PC.
+      const bool current_inst = pI != NULL && valid && pc == pI->pc;
       if (warp_inst_issued) {
         issue_trace_log(m_shader, m_id, warp_id, (*iter)->get_dynamic_warp_id(),
                         pI, "ISSUE", "-");
@@ -2725,8 +2728,7 @@ void scheduler_unit::cycle() {
         else
           do_on_warp_issued(warp_id, issued, iter);
         if (warpgroup_inst_issued) break;
-      } else if (pI != NULL && valid &&
-                 !m_scoreboard->checkCollision(warp_id, pI)) {
+      } else if (current_inst && !m_scoreboard->checkCollision(warp_id, pI)) {
         issue_trace_log(m_shader, m_id, warp_id, (*iter)->get_dynamic_warp_id(),
                         pI, "STALL_READY_NO_ISSUE", "-");
       }
@@ -2804,7 +2806,16 @@ void scheduler_unit::cycle() {
     } else {
       const warp_inst_t *pI = warp(wid).ibuffer_next_inst();
       bool valid = warp(wid).ibuffer_next_valid();
-      if (!valid || pI == NULL) {
+      unsigned pc = 0;
+      unsigned rpc = 0;
+      bool current_inst = valid && pI != NULL;
+      if (current_inst) {
+        m_shader->get_pdom_stack_top_info(wid, pI, &pc, &rpc);
+        current_inst = (pc == pI->pc);
+      }
+      // Mirror the issue-path control-hazard gate without mutating the ibuffer
+      // from this statistics-only pass.
+      if (!current_inst) {
         reason = STALL_NO_INSTRUCTION;
       } else if (m_scoreboard->checkCollision(wid, pI)) {
         // Scoreboard stall — classify by producer type

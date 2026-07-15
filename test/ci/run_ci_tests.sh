@@ -135,13 +135,12 @@ run_gtest_group "$SM120_TEST_CONFIG" sm120 unit sm120-unit
 run_gtest_group "$SM120_TEST_CONFIG" sm120 integration sm120-integration "$@"
 run_gtest_group "$SM90_TEST_CONFIG" sm90 instructions sm90-instructions
 run_gtest_group "$SM90_TEST_CONFIG" sm90 fa2-smoke sm90-fa2-smoke
-# The registry's full fa3-smoke group intentionally still includes backward
-# coverage. PR CI gates the currently supported forward paths while the known
-# backward liveness failure remains tracked separately.
 run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-forward-smoke \
   'Fa3PrefillFp16SmokeTest.*'
 run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-fixed-forward \
   'Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase'
+run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-backward-smoke \
+  'Fa3PrefillFp16BackwardSmokeTest.*'
 
 # Preserve the existing no-filter CI scope, including GPT-2 trace smoke tests.
 if [ "$#" -eq 0 ]; then
