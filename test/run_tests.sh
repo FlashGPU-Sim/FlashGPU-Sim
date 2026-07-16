@@ -19,6 +19,7 @@ TEST_TIMEOUT=${TEST_TIMEOUT:-3600}
 TEST_VERBOSE=${TEST_VERBOSE:-1}
 DEBUG_TESTS=${DEBUG_TESTS:-0}
 HOPPER_BUILD_JOBS=${HOPPER_BUILD_JOBS:-${FA2_BUILD_JOBS:-4}}
+GPGPUSIM_BUILD_JOBS=${GPGPUSIM_BUILD_JOBS:-4}
 DEFAULT_GPU_CONFIG=${DEFAULT_GPU_CONFIG:-SM120_RTX5090}
 GPU_CONFIG_EXPLICIT=0
 if [ -n "${GPU_CONFIG:-}" ]; then
@@ -216,7 +217,7 @@ build_gpgpusim() {
 
     if [ -z "$libcudart_path" ] || [ ! -s "$libcudart_path" ] || find src -name "*.cc" -newer "$libcudart_path" 2>/dev/null | grep -q .; then
         print_color $YELLOW "GPGPU-Sim library needs rebuild..."
-        run_command make FLASH=1 -j
+        run_command make FLASH=1 "-j$GPGPUSIM_BUILD_JOBS"
         print_color $GREEN "GPGPU-Sim library built successfully"
     else
         print_color $GREEN "GPGPU-Sim library is up to date"

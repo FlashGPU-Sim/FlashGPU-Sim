@@ -13,12 +13,78 @@ cd "$REPO_ROOT"
 CI_LOG_ROOT="$REPO_ROOT/test/logs/ci"
 mkdir -p "$CI_LOG_ROOT/logs" "$CI_LOG_ROOT/xml"
 
+CI_SHARD="${CI_SHARD:-all}"
+CI_BUILD_JOBS="${CI_BUILD_JOBS:-2}"
+export GPGPUSIM_BUILD_JOBS="${GPGPUSIM_BUILD_JOBS:-$CI_BUILD_JOBS}"
+
+# A single FA2 NVCC translation unit approaches 5 GiB RSS. Keep FA2 builds
+# serial inside the 7 GiB CI cgroup; other Hopper groups may use the common
+# build-job limit (FA3 also has an object-level serialization chain).
+HOPPER_BUILD_JOBS_DEFAULT="$CI_BUILD_JOBS"
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa2 ]; then
+  HOPPER_BUILD_JOBS_DEFAULT=1
+fi
+export HOPPER_BUILD_JOBS="${HOPPER_BUILD_JOBS:-$HOPPER_BUILD_JOBS_DEFAULT}"
+
+case "$CI_SHARD" in
+  all|sm120|sm90-fa2|sm90-fa3) ;;
+  *)
+    echo "ERROR: unsupported CI_SHARD '$CI_SHARD'"
+    echo "Expected one of: all, sm120, sm90-fa2, sm90-fa3"
+    exit 2
+    ;;
+esac
+
 run_logged() {
   local label="$1"
   shift
   echo "Running: $label"
   "$@" 2>&1 | tee "$CI_LOG_ROOT/logs/$label.log"
 }
+
+log_runner_resources() {
+  local phase="$1"
+  local metric
+  local line
+
+  echo "Runner resource snapshot: $phase"
+  echo "  CPUs: $(nproc)"
+  if command -v free >/dev/null; then
+    free -h
+  fi
+  df -h "$REPO_ROOT"
+
+  for metric in memory.max memory.current memory.peak memory.events; do
+    if [ -r "/sys/fs/cgroup/$metric" ]; then
+      while IFS= read -r line; do
+        echo "  cgroup $metric: $line"
+      done < "/sys/fs/cgroup/$metric"
+    fi
+  done
+
+  for metric in memory.limit_in_bytes memory.usage_in_bytes \
+                memory.max_usage_in_bytes memory.failcnt; do
+    if [ -r "/sys/fs/cgroup/memory/$metric" ]; then
+      while IFS= read -r line; do
+        echo "  cgroup v1 $metric: $line"
+      done < "/sys/fs/cgroup/memory/$metric"
+    fi
+  done
+}
+
+log_exit_resources() {
+  local status=$?
+  trap - EXIT
+  set +e
+  log_runner_resources exit | tee "$CI_LOG_ROOT/logs/runner-resources-exit.log"
+  exit "$status"
+}
+
+trap log_exit_resources EXIT
+
+echo "CI shard: $CI_SHARD"
+echo "Build jobs: simulator=$GPGPUSIM_BUILD_JOBS hopper=$HOPPER_BUILD_JOBS"
+log_runner_resources start | tee "$CI_LOG_ROOT/logs/runner-resources-start.log"
 
 run_gtest_group() {
   local config="$1"
@@ -101,7 +167,7 @@ if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
 
   # Force rebuild of GPGPU-Sim library
   echo "Building GPGPU-Sim library..."
-  make FLASH=1 -j
+  run_logged build-gpgpusim make FLASH=1 "-j$GPGPUSIM_BUILD_JOBS"
 
   echo "After build:"
   if [ -f "lib/gcc-$(gcc -dumpversion)/cuda-$(nvcc --version | grep -oP 'release \K[0-9.]+')/release/libcudart.so" ] || find lib -name 'libcudart.so' 2>/dev/null | grep -q .; then
@@ -115,16 +181,22 @@ fi
 # Build correctness and smoke groups. Analysis sweeps and microbenchmarks stay
 # out of PR CI.
 echo "Building tests..."
-run_logged build-sm120-unit \
-  ./test/run_tests.sh build test --target sm120 --group unit
-run_logged build-sm120-integration \
-  ./test/run_tests.sh build test --target sm120 --group integration
-run_logged build-sm90-instructions \
-  ./test/run_tests.sh build test --target sm90 --group instructions
-run_logged build-sm90-fa2-smoke \
-  ./test/run_tests.sh build test --target sm90 --group fa2-smoke
-run_logged build-sm90-fa3-smoke \
-  ./test/run_tests.sh build test --target sm90 --group fa3-smoke
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm120 ]; then
+  run_logged build-sm120-unit \
+    ./test/run_tests.sh build test --target sm120 --group unit
+  run_logged build-sm120-integration \
+    ./test/run_tests.sh build test --target sm120 --group integration
+fi
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa2 ]; then
+  run_logged build-sm90-instructions \
+    ./test/run_tests.sh build test --target sm90 --group instructions
+  run_logged build-sm90-fa2-smoke \
+    ./test/run_tests.sh build test --target sm90 --group fa2-smoke
+fi
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa3 ]; then
+  run_logged build-sm90-fa3-smoke \
+    ./test/run_tests.sh build test --target sm90 --group fa3-smoke
+fi
 
 # Run tests with specified configuration.
 # test/run_tests.sh owns the default exclusion list so CI and local runs stay
@@ -133,19 +205,26 @@ run_logged build-sm90-fa3-smoke \
 echo "Running test suite..."
 
 # Directory-valued GTEST_OUTPUT paths give every binary a distinct XML file.
-run_gtest_group "$SM120_TEST_CONFIG" sm120 unit sm120-unit
-run_gtest_group "$SM120_TEST_CONFIG" sm120 integration sm120-integration "$@"
-run_gtest_group "$SM90_TEST_CONFIG" sm90 instructions sm90-instructions
-run_gtest_group "$SM90_TEST_CONFIG" sm90 fa2-smoke sm90-fa2-smoke
-run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-forward-smoke \
-  'Fa3PrefillFp16SmokeTest.*'
-run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-fixed-forward \
-  'Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase'
-run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-backward-smoke \
-  'Fa3PrefillFp16BackwardSmokeTest.*'
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm120 ]; then
+  run_gtest_group "$SM120_TEST_CONFIG" sm120 unit sm120-unit
+  run_gtest_group "$SM120_TEST_CONFIG" sm120 integration sm120-integration "$@"
+fi
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa2 ]; then
+  run_gtest_group "$SM90_TEST_CONFIG" sm90 instructions sm90-instructions
+  run_gtest_group "$SM90_TEST_CONFIG" sm90 fa2-smoke sm90-fa2-smoke
+fi
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa3 ]; then
+  run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-forward-smoke \
+    'Fa3PrefillFp16SmokeTest.*'
+  run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-fixed-forward \
+    'Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase'
+  run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-backward-smoke \
+    'Fa3PrefillFp16BackwardSmokeTest.*'
+fi
 
 # Preserve the existing no-filter CI scope, including GPT-2 trace smoke tests.
-if [ "$#" -eq 0 ]; then
+if { [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm120 ]; } && \
+   [ "$#" -eq 0 ]; then
   run_logged sm120-gpt2-trace ./test/run_tests.sh -c "$SM120_TEST_CONFIG" \
     run trace --target sm120 --group gpt2
 fi
