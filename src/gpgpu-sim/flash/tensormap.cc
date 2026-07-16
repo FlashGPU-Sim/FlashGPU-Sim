@@ -38,30 +38,6 @@ static uint64_t get_operand_u64(ptx_thread_info *thread,
 // tensormap_descriptor_t Member Functions
 //=============================================================================
 
-uint32_t tensormap_descriptor_t::get_element_size() const {
-  // Element type encoding based on CUDA spec
-  switch (fields.tensorDataType) {
-  case TMA_DTYPE_U8:
-    return 1;
-  case TMA_DTYPE_U16:
-    return 2;
-  case TMA_DTYPE_U32:
-    return 4;
-  case TMA_DTYPE_U64:
-    return 8;
-  case TMA_DTYPE_F16:
-    return 2;
-  case TMA_DTYPE_F32:
-    return 4;
-  case TMA_DTYPE_F64:
-    return 8;
-  case TMA_DTYPE_BF16:
-    return 2;
-  default:
-    return 4; // default to 4 bytes
-  }
-}
-
 uint32_t tensormap_descriptor_t::get_tile_size_bytes() const {
   if (fields.tensorRank > 4)
     return 0;

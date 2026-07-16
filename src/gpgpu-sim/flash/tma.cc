@@ -747,7 +747,6 @@ private:
     }
   }
 };
-
 //=============================================================================
 // Performance Simulation: TMA Unit
 //=============================================================================
@@ -1495,8 +1494,7 @@ public:
         if (tx.m_static_info.dst_space !=
                 inst_t::tma_static_info_t::TMA_SHARED_CTA &&
             tx.m_static_info.dst_space !=
-                inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
-          assert(false && "Unrecognized TMA destination space");
+                inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {          assert(false && "Unrecognized TMA destination space");
         }
       }
 
@@ -2132,8 +2130,7 @@ public:
 // Global static instance (initialized at startup)
 static tma_oob_fill_table_t g_oob_fill_table;
 
-//=============================================================================
-// Functional Simulation: TMA Data Transfer
+//=============================================================================// Functional Simulation: TMA Data Transfer
 //=============================================================================
 
 // Execute TMA data transfer (load or store)
@@ -2147,8 +2144,9 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
   // fill value
   if (is_load) {
     uint32_t tile_size_bytes = tensormap.get_tile_size_bytes();
-    const unsigned char *fill_pattern = g_oob_fill_table.get_pattern(
-        tensormap.fields.oobFill, tensormap.fields.tensorDataType);
+    const unsigned char *fill_pattern =
+        tma_oob_fill_table_t::instance().get_pattern(
+            tensormap.fields.oobFill, tensormap.fields.tensorDataType);
 
     constexpr uint32_t CHUNK_SIZE = tma_oob_fill_table_t::CHUNK_SIZE;
     uint32_t offset = 0;
@@ -2300,8 +2298,8 @@ static void multicast_smem_to_cluster(memory_space *src_smem,
       continue; // issuing SM already written by caller
     memory_space *peer_smem = peer_core->get_cta_smem(hw_cta_id);
     if (peer_smem) {
-      copy_mem(src_smem, smem_addr, peer_smem, smem_addr, size_in_bytes,
-               thread, pI);
+      copy_mem(src_smem, smem_addr, peer_smem, smem_addr, size_in_bytes, thread,
+               pI);
     }
   }
 }
@@ -2386,8 +2384,7 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
   if ((dst_option == CTA_OPTION || dst_option == CLUSTER_OPTION) &&
       src_option == GLOBAL_OPTION &&
       completion_option == TMA_MBAR_COMPLETE_BYTES) {
-    // shared::cta/shared::cluster <- global with MBAR completion.
-    // For .shared::cluster, data is replicated to every SM in the cluster.
+    // shared::cta/shared::cluster <- global with MBAR completion.    // For .shared::cluster, data is replicated to every SM in the cluster.
     auto dst_addr = get_operand_u32(thread, pI->dst());
     auto src_addr = get_operand_u64(thread, pI->src1());
     auto size_in_bytes = get_operand_u32(thread, pI->src2());
@@ -2400,8 +2397,7 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
         .tma_type = inst_t::tma_static_info_t::TMA_NORMAL,
         .dst_space = is_cluster
                          ? inst_t::tma_static_info_t::TMA_SHARED_CLUSTER
-                         : inst_t::tma_static_info_t::TMA_SHARED_CTA,
-        .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
+                         : inst_t::tma_static_info_t::TMA_SHARED_CTA,        .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
     };
     pI->set_tma_static_info(tma_static_info);
 
@@ -2429,7 +2425,7 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
                        is_cluster ? "cluster" : "cta", dst_addr,
                        (unsigned long long)src_addr, size_in_bytes, mbar_addr);
 
- } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION &&
+  } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION &&
              completion_option == BULK_GROUP_OPTION) {
     // global <- shared::cta with bulk group completion
     auto dst_addr = get_operand_u64(thread, pI->dst());
@@ -2569,9 +2565,9 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     tensormap_descriptor_t tensormap;
     int32_t coords[5];
     uint32_t size_in_bytes;
-   setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
-                    pI->get_operands()[2], thread, tensormap, coords,
-                    size_in_bytes);
+    setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
+                     pI->get_operands()[2], thread, tensormap, coords,
+                     size_in_bytes);
 
     bool is_cluster = (dst_option == CLUSTER_OPTION);
     inst_t::tma_static_info_t tma_static_info{
@@ -2580,8 +2576,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
                          ? inst_t::tma_static_info_t::TMA_SHARED_CLUSTER
                          : inst_t::tma_static_info_t::TMA_SHARED_CTA,
         .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
-        .tensor_dim = inst_dim,
-    };
+        .tensor_dim = inst_dim,    };
     pI->set_tma_static_info(tma_static_info);
 
     inst_t::tma_dyn_info_t tma_dyn_info{
@@ -2604,7 +2599,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
                                 pI);
     }
 
- } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION) {
+  } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION) {
     // Tensor store: global <- shared
     assert(completion_option == BULK_GROUP_OPTION &&
            "Only bulk_group completion option is supported for "

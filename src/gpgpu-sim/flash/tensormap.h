@@ -63,7 +63,28 @@ typedef union __attribute__((aligned(128))) tensormap_descriptor_t {
   } fields;
 
   // Helpers
-  uint32_t get_element_size() const;
+  uint32_t get_element_size() const {
+    switch (fields.tensorDataType) {
+    case TMA_DTYPE_U8:
+      return 1;
+    case TMA_DTYPE_U16:
+      return 2;
+    case TMA_DTYPE_U32:
+      return 4;
+    case TMA_DTYPE_U64:
+      return 8;
+    case TMA_DTYPE_F16:
+      return 2;
+    case TMA_DTYPE_F32:
+      return 4;
+    case TMA_DTYPE_F64:
+      return 8;
+    case TMA_DTYPE_BF16:
+      return 2;
+    default:
+      return 4;
+    }
+  }
   uint32_t get_tile_size_bytes() const;
   uint64_t calculate_src_addr(const int32_t coords[5]) const;
   uint32_t num_dims() const { return fields.tensorRank + 1u; }
