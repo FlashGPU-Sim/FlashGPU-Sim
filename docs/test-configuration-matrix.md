@@ -51,16 +51,12 @@ is not caused by reduced/full field synchronization. The test remains active
 and is not added to the default exclusion list; CI should continue to expose
 this performance-simulator correctness issue until it is fixed.
 
-### Known SM90 non-gating coverage
+### SM90 backward smoke coverage
 
 The full `fa3-smoke` registry group continues to include
-`Fa3PrefillFp16BackwardSmokeTest.*`, but that suite is not a PR CI gate yet. Its
-main backward kernel currently reaches the simulator liveness timeout under
-`SM90_H100_REDUCED`; the failure also reproduces after reverting the synchronized
-cp.async, MMA/WGMMA, PTX scheduling, VOQ, and RF-pressure settings. This keeps
-the known simulator issue visible without conflating it with reduced/full
-configuration parity. PR CI runs the FA3 forward smoke suite and the fixed
-forward integration case instead.
+`Fa3PrefillFp16BackwardSmokeTest.*`. PR CI gates the backward smoke cases with
+`SM90_H100_REDUCED` alongside the FA3 forward smoke suite and fixed-forward
+integration case.
 
 ## Pull Request CI Scope
 
@@ -71,12 +67,21 @@ container. The gate checks:
 - PTX scheduler SETP def/use classification;
 - SM120 unit and integration suites with `SM120_RTX5090_REDUCED`;
 - SM90 instruction and FA2 smoke suites with `SM90_H100_REDUCED`;
-- FA3 forward smoke shapes and the fixed forward integration case; and
+- FA3 forward smoke shapes, the fixed-forward integration case, and FA3
+  backward smoke shapes; and
 - the existing SM120 GPT-2 trace smoke tests.
+
+The workflow runs three independent CI-container shards: `sm120`, `sm90-fa2`,
+and `sm90-fa3`. Each shard invokes the same `test/ci/run_ci_tests.sh` entrypoint
+and runs with a 7 GiB container memory limit. Simulator builds use two jobs;
+FA2 kernel compilation uses one because each NVCC translation unit is
+memory-heavy. FA3 standard kernel specializations compile as serial translation
+units so no individual NVCC process exceeds the runner memory budget.
 
 Each build/run group writes a text log under `test/logs/ci/logs/`; gtest groups
 also write XML under `test/logs/ci/xml/`. The workflow uploads the entire
-`test/logs/ci` tree even when a gate fails.
+`test/logs/ci` tree even when a gate fails. Artifact names include the shard and
+workflow attempt.
 
 ## Configuration Reference
 

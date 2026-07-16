@@ -233,8 +233,20 @@ The repository includes a GitHub Actions workflow that runs automated tests on p
 
 **CI configuration:**
 - Uses `SM120_RTX5090_REDUCED` for resource efficiency
+- Uses `SM90_H100_REDUCED` for SM90 instruction, FA2, and FA3 gates
 - Runs in a minimal Docker container (`docker/Dockerfile.ci`)
-- Automatically triggered on PR approval
+- Splits the gate into `sm120`, `sm90-fa2`, and `sm90-fa3` container shards
+- Limits simulator build parallelism to two jobs, FA2 kernel compilation to one
+  job, and container memory to 7 GiB
+- Automatically triggered for pull requests targeting the `flash` branch
+
+`CI_SHARD` can select one shard while keeping the same entrypoint:
+
+```bash
+CI_SHARD=sm90-fa3 ./test/ci/run_ci_tests.sh
+```
+
+When `CI_SHARD` is unset, the script runs the complete gate for local parity.
 
 ### Local Workflow Validation with act
 
