@@ -22,7 +22,10 @@ in `patches/`. CUTLASS/CuTe is provided by that checkout's nested
 
 ## Files
 
-- `fa3_fwd_hdim128_fp16_test.cc` - Google Test wrapper for the fixed FA3 case
+- `fa3_fwd_hdim128_fp16_test.cc` - shared Google Test registration and workload
+  wrapper
+- `fa3_{fwd,bwd}_d{64,128}_{noncausal,causal}_test.cc` - thin, uniquely named
+  standard-build wrappers for one kernel specialization each
 - `fa3_fwd_hdim128_fp16_case.cuh` - shared CUDA workload implementation
 - `prepare_flash_attention.sh` - clones FlashAttention, checks out the pinned
   upstream commit, initializes CUTLASS, and applies local patches
@@ -58,6 +61,11 @@ Then from `test/`:
 
 The generated kernel targets `sm_90a`. It is for GPGPU-Sim/PTX bring-up and
 Hopper inspection; it is not expected to run on non-Hopper hardware.
+
+The standard wrappers compile serially and link into the single existing
+`run_fa3_standard_tests` binary. The split bounds NVCC memory and gives every
+fatbin a unique source-derived PTX name, which GPGPU-Sim requires when loading
+multiple embedded PTX images.
 
 The smoke cases live under `test/sm90`; small, medium, large, and sensitivity
 workloads live under `analysis/fa3`. A filter can select an individual gtest
