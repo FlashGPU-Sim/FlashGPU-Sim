@@ -139,11 +139,11 @@ protected:
     if (use_cluster) {
       tmaLoadKernel<CHUNK_BYTES, true>
           <<<NUM_BLOCKS, THREADS_PER_BLOCK>>>(d_src, d_dst,
-                                                          CHUNK_BYTES);
+                                                          CHUNK_BYTES * NUM_BLOCKS);
     } else {
       tmaLoadKernel<CHUNK_BYTES, false>
           <<<NUM_BLOCKS, THREADS_PER_BLOCK>>>(d_src, d_dst,
-                                                          CHUNK_BYTES);
+                                                          CHUNK_BYTES * NUM_BLOCKS);
     }
 
     ASSERT_EQ(cudaGetLastError(), cudaSuccess)
