@@ -4261,43 +4261,61 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
       selected_version = api->version_filename.rbegin()->first;
     }
 
-    // Determine if there are suffix variants for this selected_version
-    bool has_suffix = false;
+    // Determine which kernel names have suffix variants available.
+    // Naming convention: <kernel_name>.<file_index>.sm_<arch>[suffix].ptx
+    // Match on kernel_name so that files with different indices but the
+    // same kernel name are recognized as variants of each other.
+    auto extract_kernel_name = [](const std::string &filename) -> std::string {
+      // Find "sm_" to locate the arch portion
+      size_t sm_pos = filename.rfind("sm_");
+      if (sm_pos == std::string::npos) return "";
+      // Strip back past ".<N>.sm_": the kernel name is everything before
+      // the file-index dot.
+      size_t prefix_end = sm_pos - 1;  // position of '.' before sm_
+      if (prefix_end >= filename.size() || filename[prefix_end] != '.') return "";
+      size_t dot2 = filename.rfind('.', prefix_end - 1);
+      if (dot2 == std::string::npos) return "";
+      return filename.substr(0, dot2);
+    };
+
+    auto is_suffix_arch = [](const std::string &arch_part) -> bool {
+      for (size_t j = 0; j < arch_part.length(); j++) {
+        if (!isdigit(arch_part[j])) return true;
+      }
+      return false;
+    };
+
+    std::set<std::string> kernels_with_suffix;
     for (auto &check_name : api->version_filename[selected_version]) {
-      size_t sm_pos = check_name.find("sm_");
+      size_t sm_pos = check_name.rfind("sm_");
       if (sm_pos != std::string::npos) {
         size_t dot_pos = check_name.find('.', sm_pos);
-        std::string arch_part =
-            check_name.substr(sm_pos + 3, dot_pos - sm_pos - 3);
-        for (size_t j = 0; j < arch_part.length(); j++) {
-          if (!std::isdigit(static_cast<unsigned char>(arch_part[j]))) {
-            has_suffix = true;
-            break;
+        if (dot_pos != std::string::npos) {
+          std::string arch_part =
+              check_name.substr(sm_pos + 3, dot_pos - sm_pos - 3);
+          if (is_suffix_arch(arch_part)) {
+            std::string kn = extract_kernel_name(check_name);
+            if (!kn.empty()) kernels_with_suffix.insert(kn);
           }
         }
-        if (has_suffix) break;
       }
     }
 
     for (auto &ptx_filename : api->version_filename[selected_version]) {
-      // Skip base version if suffix version exists
-      if (has_suffix) {
-        size_t sm_pos = ptx_filename.find("sm_");
+      // Skip base version if a suffix version exists for the same kernel
+      std::string kernel_name = extract_kernel_name(ptx_filename);
+      if (!kernel_name.empty() && kernels_with_suffix.count(kernel_name) > 0) {
+        size_t sm_pos = ptx_filename.rfind("sm_");
         if (sm_pos != std::string::npos) {
           size_t dot_pos = ptx_filename.find('.', sm_pos);
-          std::string arch_part =
-              ptx_filename.substr(sm_pos + 3, dot_pos - sm_pos - 3);
-          bool is_base = true;
-          for (size_t j = 0; j < arch_part.length(); j++) {
-            if (!std::isdigit(static_cast<unsigned char>(arch_part[j]))) {
-              is_base = false;
-              break;
+          if (dot_pos != std::string::npos) {
+            std::string arch_part =
+                ptx_filename.substr(sm_pos + 3, dot_pos - sm_pos - 3);
+            if (!is_suffix_arch(arch_part)) {
+              printf("GPGPU-Sim PTX: Skipping %s (suffix version available)\n",
+                     ptx_filename.c_str());
+              continue;
             }
-          }
-          if (is_base) {
-            printf("GPGPU-Sim PTX: Skipping %s (suffix version available)\n",
-                   ptx_filename.c_str());
-            continue;
           }
         }
       }
