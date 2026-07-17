@@ -547,35 +547,6 @@ bool was_writeallocate_sent(const std::list<cache_event> &events) {
   }
   return false;
 }
-/****************************************************************** MSHR
- * ******************************************************************/
-
-/// Checks if there is a pending request to the lower memory level already
-bool mshr_table::probe(new_addr_type block_addr) const {
-  table::const_iterator a = m_data.find(block_addr);
-  return a != m_data.end();
-}
-
-/// Checks if there is space for tracking a new memory access
-bool mshr_table::full(new_addr_type block_addr) const {
-  table::const_iterator i = m_data.find(block_addr);
-  if (i != m_data.end())
-    return i->second.m_list.size() >= m_max_merged;
-  else
-    return m_data.size() >= m_num_entries;
-}
-
-/// Add or merge this access
-void mshr_table::add(new_addr_type block_addr, mem_fetch *mf) {
-  m_data[block_addr].m_list.push_back(mf);
-  assert(m_data.size() <= m_num_entries);
-  assert(m_data[block_addr].m_list.size() <= m_max_merged);
-  // indicate that this MSHR entry contains an atomic operation
-  if (mf->isatomic()) {
-    m_data[block_addr].m_has_atomic = true;
-  }
-}
-
 /// check is_read_after_write_pending
 bool mshr_table::is_read_after_write_pending(new_addr_type block_addr) {
   std::list<mem_fetch *> my_list = m_data[block_addr].m_list;
@@ -589,31 +560,6 @@ bool mshr_table::is_read_after_write_pending(new_addr_type block_addr) {
   }
 
   return false;
-}
-
-/// Accept a new cache fill response: mark entry ready for processing
-void mshr_table::mark_ready(new_addr_type block_addr, bool &has_atomic) {
-  assert(!busy());
-  table::iterator a = m_data.find(block_addr);
-  assert(a != m_data.end());
-  m_current_response.push_back(block_addr);
-  has_atomic = a->second.m_has_atomic;
-  assert(m_current_response.size() <= m_data.size());
-}
-
-/// Returns next ready access
-mem_fetch *mshr_table::next_access() {
-  assert(access_ready());
-  new_addr_type block_addr = m_current_response.front();
-  assert(!m_data[block_addr].m_list.empty());
-  mem_fetch *result = m_data[block_addr].m_list.front();
-  m_data[block_addr].m_list.pop_front();
-  if (m_data[block_addr].m_list.empty()) {
-    // release entry
-    m_data.erase(block_addr);
-    m_current_response.pop_front();
-  }
-  return result;
 }
 
 void mshr_table::display(FILE *fp) const {
@@ -1450,13 +1396,21 @@ void baseline_cache::send_read_request(new_addr_type addr,
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
   bool mshr_hit = m_mshrs.probe(mshr_addr);
   bool mshr_avail = !m_mshrs.full(mshr_addr);
-  if (mshr_hit && mshr_avail) {
+  bool ready_forward =
+      m_mshrs.ready_for_forward(mshr_addr) && !wa && !mf->isatomic();
+  if (ready_forward) {
+    // The lower-level response has arrived but older merged accesses are still
+    // draining. Forward that response without allocating another cache line.
+    m_mshrs.add_ready(mshr_addr, mf);
+    m_stats.inc_stats(mf->get_access_type(), MSHR_HIT, mf->get_streamID());
+    do_miss = true;
+  } else if (mshr_hit && mshr_avail) {
     if (read_only)
       m_tag_array->access(block_addr, time, cache_index, mf);
     else
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
 
-    m_mshrs.add(mshr_addr, mf);
+    m_mshrs.add(mshr_addr, mf, mf->isatomic());
     m_stats.inc_stats(mf->get_access_type(), MSHR_HIT, mf->get_streamID());
     do_miss = true;
 
@@ -1467,7 +1421,7 @@ void baseline_cache::send_read_request(new_addr_type addr,
     else
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
 
-    m_mshrs.add(mshr_addr, mf);
+    m_mshrs.add(mshr_addr, mf, mf->isatomic());
     m_extra_mf_fields[mf] = extra_mf_fields(
         mshr_addr, mf->get_addr(), cache_index, mf->get_data_size(), m_config);
     mf->set_data_size(m_config.get_atom_sz());
@@ -1477,7 +1431,7 @@ void baseline_cache::send_read_request(new_addr_type addr,
     if (!wa) events.push_back(cache_event(READ_REQUEST_SENT));
 
     do_miss = true;
-  } else if (mshr_hit && !mshr_avail)
+  } else if ((mshr_hit && !mshr_avail) || m_mshrs.probe_ready(mshr_addr))
     m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENRTY_FAIL,
                            mf->get_streamID());
   else if (!mshr_hit && !mshr_avail)
