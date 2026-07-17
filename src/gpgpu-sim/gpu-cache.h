@@ -1035,10 +1035,16 @@ class mshr_table {
 
   /// Checks if there is a pending request to the lower memory level already
   bool probe(new_addr_type block_addr) const;
+  /// Checks if a returned request is still draining merged accesses
+  bool probe_ready(new_addr_type block_addr) const;
+  /// Checks if a late read can consume the response being drained
+  bool ready_for_forward(new_addr_type block_addr) const;
   /// Checks if there is space for tracking a new memory access
   bool full(new_addr_type block_addr) const;
   /// Add or merge this access
-  void add(new_addr_type block_addr, mem_fetch *mf);
+  void add(new_addr_type block_addr, mem_fetch *mf, bool is_atomic);
+  /// Append a late read to an entry whose response has already arrived
+  void add_ready(new_addr_type block_addr, mem_fetch *mf);
   /// Returns true if cannot accept new fill responses
   bool busy() const { return false; }
   /// Accept a new cache fill response: mark entry ready for processing
@@ -1067,7 +1073,8 @@ class mshr_table {
   struct mshr_entry {
     std::list<mem_fetch *> m_list;
     bool m_has_atomic;
-    mshr_entry() : m_has_atomic(false) {}
+    bool m_ready;
+    mshr_entry() : m_has_atomic(false), m_ready(false) {}
   };
   typedef tr1_hash_map<new_addr_type, mshr_entry> table;
   typedef tr1_hash_map<new_addr_type, mshr_entry> line_table;
