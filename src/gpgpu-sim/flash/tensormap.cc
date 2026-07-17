@@ -55,6 +55,7 @@ tensormap_descriptor_t::calculate_src_addr(const int32_t coords[5]) const {
   // Calculate the base address for the tile starting at given coordinates
   // This is used for simple address calculation (not for generating actual
   // memory requests) fields.tensorRank is 0-based.
+  // Signed coords support OOB tile origins (negative coordinates).
   int64_t byte_offset = 0;
   uint32_t elem_size = get_element_size();
   uint32_t dims = num_dims();
