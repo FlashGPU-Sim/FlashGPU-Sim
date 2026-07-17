@@ -1,0 +1,5 @@
+batch,qheads,kvheads,seqlen,headdim,hidden,intermediate,causal
+1,32,8,128,128,4096,14336,True
+2,32,8,128,128,4096,14336,True
+1,32,8,256,128,4096,14336,True
+2,32,8,256,128,4096,14336,True

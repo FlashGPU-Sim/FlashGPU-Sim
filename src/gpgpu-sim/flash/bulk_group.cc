@@ -142,8 +142,19 @@ bool bulk_group_manager_t::complete_tx(unsigned cta_id, unsigned warp_id,
   assert(it != m_warp_bulk_info.end() &&
          "Completing a tx for a warp with no bulk groups");
 
+  bool was_waiting = it->second.is_waiting;
   it->second.complete_tx(tx_uid);
-  return !it->second.is_waiting;
+  return was_waiting && !it->second.is_waiting;
+}
+
+void bulk_group_manager_t::cleanup_cta(unsigned cta_id) {
+  for (auto it = m_warp_bulk_info.begin(); it != m_warp_bulk_info.end();) {
+    if (it->first.first == cta_id) {
+      it = m_warp_bulk_info.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 bool bulk_group_manager_t::is_waiting(unsigned cta_id, unsigned warp_id) const {
@@ -184,7 +195,7 @@ void barrier_set_t::complete_bulk_tx(unsigned cta_id, unsigned warp_id,
 
   // If the warp was waiting and the wait is now satisfied, release the warp
   if (satisfied) {
-    m_warp_at_barrier.reset(warp_id);
+    clear_warp_waiting(warp_id, BARRIER_WAIT_BULK_GROUP, "bulk-group release");
   }
 }
 
@@ -195,11 +206,23 @@ void barrier_set_t::wait_bulk_group(unsigned cta_id, unsigned warp_id,
 
   // If the wait is not immediately satisfied, mark the warp as blocked
   if (!satisfied) {
+    if (m_warp_at_barrier.test(warp_id)) {
+      printf("GPGPU-Sim ERROR: warp %u reached bulk-group wait while already "
+             "waiting. warp_at_barrier=%s type=%d\n",
+             warp_id, m_warp_at_barrier.to_string().c_str(),
+             (int)m_warp_barrier_type[warp_id]);
+      assert(false && "warp reached bulk-group wait while already waiting");
+    }
     m_warp_at_barrier.set(warp_id);
     m_warp_barrier_type[warp_id] = BARRIER_WAIT_BULK_GROUP;
+    m_warp_named_barrier_id[warp_id] = (unsigned)-1;
   }
 }
 
 void barrier_set_t::commit_bulk_group(unsigned cta_id, unsigned warp_id) {
   m_bulk_group_manager.commit_bulk_group(cta_id, warp_id);
+}
+
+void barrier_set_t::cleanup_cta_bulk_groups(unsigned cta_id) {
+  m_bulk_group_manager.cleanup_cta(cta_id);
 }

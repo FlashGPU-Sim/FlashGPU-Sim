@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #include <list>
 #include <set>
@@ -48,6 +49,151 @@
 #include "mem_fetch.h"
 #include "mem_latency_stat.h"
 #include "shader.h"
+
+const char *mem_sub_partition_full_stat_str(
+    enum mem_sub_partition_full_stat stat) {
+  switch (stat) {
+    case MSP_FULL_ICNT_TO_L2_NOT_ENOUGH_SECTOR_SLOTS:
+      return "ICNT_TO_L2_NOT_ENOUGH_SECTOR_SLOTS";
+    case MSP_FULL_ICNT_TO_L2_QUEUE_FULL:
+      return "ICNT_TO_L2_QUEUE_FULL";
+    case MSP_FULL_ICNT_TO_L2_QUEUE_NEAR_FULL:
+      return "ICNT_TO_L2_QUEUE_NEAR_FULL";
+    case MSP_FULL_L2_DRAM_QUEUE_FULL:
+      return "L2_DRAM_QUEUE_FULL";
+    case MSP_FULL_DRAM_L2_QUEUE_FULL:
+      return "DRAM_L2_QUEUE_FULL";
+    case MSP_FULL_L2_ICNT_QUEUE_FULL:
+      return "L2_ICNT_QUEUE_FULL";
+    case MSP_FULL_L2_DATA_PORT_BUSY:
+      return "L2_DATA_PORT_BUSY";
+    case MSP_FULL_L2_FILL_PORT_BUSY:
+      return "L2_FILL_PORT_BUSY";
+    case MSP_FULL_L2_READY_BLOCKED_BY_L2_ICNT_QUEUE:
+      return "L2_READY_BLOCKED_BY_L2_ICNT_QUEUE";
+    case NUM_MEM_SUB_PARTITION_FULL_STATS:
+      break;
+  }
+  return "UNKNOWN";
+}
+
+namespace {
+
+class l2_request_trace {
+ public:
+  static l2_request_trace &instance() {
+    static l2_request_trace trace;
+    return trace;
+  }
+
+  bool cache_accept_enabled() const { return m_enabled && m_trace_cache_accept; }
+
+  void log(const char *event, unsigned long long cycle, unsigned subpart_id,
+           mem_fetch *mf, const char *status) {
+    if (!m_enabled || !mf || cycle > m_max_cycle) return;
+
+    const mem_access_type access_type = mf->get_access_type();
+    if (m_tma_only && access_type != TMA_ACC_R && access_type != TMA_ACC_W &&
+        access_type != CP_ASYNC_ACC_R)
+      return;
+
+    const mem_fetch *original_mf = mf->get_original_mf();
+    const unsigned original_uid =
+        original_mf ? original_mf->get_request_uid() : mf->get_request_uid();
+    const unsigned long sector_mask =
+        mf->get_access_sector_mask().to_ulong();
+
+    flockfile(m_file);
+    fprintf(m_file,
+            "%llu,%s,%u,%u,0x%llx,0x%llx,%u,%u,%u,%u,%u,%s,%u,%u,%u,0x%lx,%s\n",
+            cycle, event, subpart_id, mf->get_sub_partition_id(),
+            (unsigned long long)mf->get_addr(),
+            (unsigned long long)mf->get_partition_addr(), mf->get_sid(),
+            mf->get_tpc(), mf->get_wid(), mf->get_request_uid(), original_uid,
+            mem_access_type_str(access_type), mf->get_is_write(),
+            mf->get_data_size(), mf->get_access_size(), sector_mask, status);
+    ++m_lines;
+    if ((m_lines & ((1ULL << 20) - 1)) == 0) fflush(m_file);
+    funlockfile(m_file);
+  }
+
+ private:
+  l2_request_trace()
+      : m_enabled(false),
+        m_trace_cache_accept(false),
+        m_tma_only(false),
+        m_max_cycle(ULLONG_MAX),
+        m_file(NULL),
+        m_buffer(NULL),
+        m_lines(0) {
+    const char *path = getenv("FLASHGPU_L2_TRACE_CSV");
+    if (!path || path[0] == '\0') return;
+
+    const char *max_cycle = getenv("FLASHGPU_L2_TRACE_MAX_CYCLE");
+    if (max_cycle && max_cycle[0] != '\0')
+      m_max_cycle = strtoull(max_cycle, NULL, 0);
+
+    const char *cache_accept = getenv("FLASHGPU_L2_TRACE_CACHE_ACCEPT");
+    m_trace_cache_accept =
+        cache_accept && cache_accept[0] != '\0' && strcmp(cache_accept, "0");
+
+    const char *tma_only = getenv("FLASHGPU_L2_TRACE_TMA_ONLY");
+    m_tma_only = tma_only && tma_only[0] != '\0' && strcmp(tma_only, "0");
+
+    m_file = fopen(path, "w");
+    if (!m_file) {
+      perror("FLASHGPU_L2_TRACE_CSV");
+      return;
+    }
+
+    m_buffer = (char *)malloc(16 * 1024 * 1024);
+    if (m_buffer) setvbuf(m_file, m_buffer, _IOFBF, 16 * 1024 * 1024);
+
+    fprintf(m_file,
+            "cycle,event,subpart,mf_subpart,addr,partition_addr,requestor_sm,"
+            "tpc,wid,uid,orig_uid,type,is_write,data_size,access_size,"
+            "sector_mask,status\n");
+    m_enabled = true;
+    printf("FLASHGPU_L2_TRACE_CSV enabled: path=%s max_cycle=%llu "
+           "tma_only=%u cache_accept=%u\n",
+           path, m_max_cycle, m_tma_only ? 1 : 0,
+           m_trace_cache_accept ? 1 : 0);
+  }
+
+  ~l2_request_trace() {
+    if (m_file) {
+      fflush(m_file);
+      fclose(m_file);
+    }
+    free(m_buffer);
+  }
+
+  bool m_enabled;
+  bool m_trace_cache_accept;
+  bool m_tma_only;
+  unsigned long long m_max_cycle;
+  FILE *m_file;
+  char *m_buffer;
+  unsigned long long m_lines;
+};
+
+static void trace_l2_event(const char *event, unsigned long long cycle,
+                           unsigned subpart_id, mem_fetch *mf,
+                           const char *status) {
+  l2_request_trace::instance().log(event, cycle, subpart_id, mf, status);
+}
+
+static unsigned coarse_l2_partition_id(unsigned id, unsigned total,
+                                       unsigned partition_count) {
+  assert(partition_count > 0);
+  assert(total > 0);
+  unsigned long long partition =
+      (static_cast<unsigned long long>(id) * partition_count) / total;
+  if (partition >= partition_count) partition = partition_count - 1;
+  return static_cast<unsigned>(partition);
+}
+
+}  // namespace
 
 mem_fetch *partition_mf_allocator::alloc(new_addr_type addr,
                                          mem_access_type type, unsigned size,
@@ -427,6 +573,10 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
   m_mem_stats = stats;
   m_gpu = gpu;
   m_memcpy_cycle_offset = 0;
+  m_next_rop_sequence = 0;
+  memset(m_full_state_stats, 0, sizeof(m_full_state_stats));
+  m_l2_partition_remote_accesses = 0;
+  m_l2_partition_extra_latency_cycles = 0;
 
   assert(m_id < m_config->m_n_mem_sub_partition);
 
@@ -529,6 +679,12 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
                                   m_memcpy_cycle_offset,
                               events);
+        if (status != RESERVATION_FAIL &&
+            l2_request_trace::instance().cache_accept_enabled()) {
+          trace_l2_event("CACHE_ACCEPT",
+                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, m_id,
+                         mf, cache_request_status_str(status));
+        }
         bool write_sent = was_write_sent(events);
         bool read_sent = was_read_sent(events);
         MEM_SUBPART_GPPRINTF("Probing L2 cache Address=%llx, status=%u\n",
@@ -585,11 +741,10 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
     }
   }
 
-  // ROP delay queue
-  if (!m_rop.empty() && (cycle >= m_rop.front().ready_cycle) &&
-      !m_icnt_L2_queue->full()) {
-    mem_fetch *mf = m_rop.front().req;
-    m_rop.pop();
+  // ROP/L2-partition delay queues. Keep local and remote traffic separate so
+  // a far-L2 request cannot block an already-ready local request.
+  mem_fetch *mf = NULL;
+  if (!m_icnt_L2_queue->full() && pop_ready_rop(cycle, mf)) {
     m_icnt_L2_queue->push(mf);
     mf->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
@@ -600,6 +755,48 @@ bool memory_sub_partition::full() const { return m_icnt_L2_queue->full(); }
 
 bool memory_sub_partition::full(unsigned size) const {
   return m_icnt_L2_queue->is_avilable_size(size);
+}
+
+void memory_sub_partition::record_full_state(unsigned size) {
+  if (!full(size)) return;
+
+  m_full_state_stats[MSP_FULL_ICNT_TO_L2_NOT_ENOUGH_SECTOR_SLOTS]++;
+  if (m_icnt_L2_queue->full()) {
+    m_full_state_stats[MSP_FULL_ICNT_TO_L2_QUEUE_FULL]++;
+  } else {
+    m_full_state_stats[MSP_FULL_ICNT_TO_L2_QUEUE_NEAR_FULL]++;
+  }
+
+  if (m_L2_dram_queue->full())
+    m_full_state_stats[MSP_FULL_L2_DRAM_QUEUE_FULL]++;
+  if (m_dram_L2_queue->full())
+    m_full_state_stats[MSP_FULL_DRAM_L2_QUEUE_FULL]++;
+  if (m_L2_icnt_queue->full())
+    m_full_state_stats[MSP_FULL_L2_ICNT_QUEUE_FULL]++;
+
+  if (!m_config->m_L2_config.disabled()) {
+    if (!m_L2cache->data_port_free())
+      m_full_state_stats[MSP_FULL_L2_DATA_PORT_BUSY]++;
+    if (!m_L2cache->fill_port_free())
+      m_full_state_stats[MSP_FULL_L2_FILL_PORT_BUSY]++;
+    if (m_L2cache->access_ready() && m_L2_icnt_queue->full()) {
+      m_full_state_stats
+          [MSP_FULL_L2_READY_BLOCKED_BY_L2_ICNT_QUEUE]++;
+    }
+  }
+}
+
+void memory_sub_partition::accumulate_full_state_stats(
+    unsigned long long *stats) const {
+  for (unsigned i = 0; i < NUM_MEM_SUB_PARTITION_FULL_STATS; ++i)
+    stats[i] += m_full_state_stats[i];
+}
+
+void memory_sub_partition::accumulate_l2_partition_stats(
+    unsigned long long &remote_accesses,
+    unsigned long long &extra_latency) const {
+  remote_accesses += m_l2_partition_remote_accesses;
+  extra_latency += m_l2_partition_extra_latency_cycles;
 }
 
 bool memory_sub_partition::L2_dram_queue_empty() const {
@@ -714,53 +911,87 @@ unsigned memory_sub_partition::invalidateL2() {
 
 bool memory_sub_partition::busy() const { return !m_request_tracker.empty(); }
 
+unsigned memory_sub_partition::l2_partition_extra_latency(
+    const mem_fetch *mf) const {
+  if (m_config->l2_partition_extra_latency == 0 ||
+      m_config->l2_partition_count <= 1 || mf == NULL)
+    return 0;
+
+  const unsigned sid = mf->get_sid();
+  const unsigned num_sms = m_gpu->get_config().num_shader();
+  if (sid >= num_sms) return 0;
+
+  const unsigned sm_partition =
+      coarse_l2_partition_id(sid, num_sms, m_config->l2_partition_count);
+  const unsigned l2_partition =
+      coarse_l2_partition_id(m_id, m_config->m_n_mem_sub_partition,
+                             m_config->l2_partition_count);
+  if (sm_partition == l2_partition) return 0;
+
+  return m_config->l2_partition_extra_latency;
+}
+
+void memory_sub_partition::push_rop_delay(mem_fetch *mf,
+                                          unsigned long long ready_cycle,
+                                          bool remote) {
+  rop_delay_t r;
+  r.ready_cycle = ready_cycle;
+  r.sequence = m_next_rop_sequence++;
+  r.req = mf;
+  if (remote)
+    m_rop_remote.push(r);
+  else
+    m_rop_local.push(r);
+}
+
+bool memory_sub_partition::pop_ready_rop(unsigned long long cycle,
+                                         mem_fetch *&mf) {
+  const bool local_ready =
+      !m_rop_local.empty() && cycle >= m_rop_local.top().ready_cycle;
+  const bool remote_ready =
+      !m_rop_remote.empty() && cycle >= m_rop_remote.top().ready_cycle;
+  if (!local_ready && !remote_ready) return false;
+
+  rop_delay_queue_t *queue = NULL;
+  if (local_ready && remote_ready) {
+    const rop_delay_t &local = m_rop_local.top();
+    const rop_delay_t &remote = m_rop_remote.top();
+    queue = (local.ready_cycle <= remote.ready_cycle) ? &m_rop_local
+                                                     : &m_rop_remote;
+  } else {
+    queue = local_ready ? &m_rop_local : &m_rop_remote;
+  }
+
+  rop_delay_t r = queue->top();
+  queue->pop();
+  mf = r.req;
+  return true;
+}
+
 std::vector<mem_fetch *>
 memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
   std::vector<mem_fetch *> result;
   mem_access_sector_mask_t sector_mask = mf->get_access_sector_mask();
+
   if (mf->get_data_size() == SECTOR_SIZE &&
       mf->get_access_sector_mask().count() == 1) {
     result.push_back(mf);
-  } else if (mf->get_data_size() == MAX_MEMORY_ACCESS_SIZE) {
-    // break down every sector
-    mem_access_byte_mask_t mask;
-    for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; i++) {
-      for (unsigned k = i * SECTOR_SIZE; k < (i + 1) * SECTOR_SIZE; k++) {
-        mask.set(k);
-      }
-      mem_fetch *n_mf = m_mf_allocator->alloc(
-          mf->get_addr() + SECTOR_SIZE * i, mf->get_access_type(),
-          mf->get_access_warp_mask(), mf->get_access_byte_mask() & mask,
-          std::bitset<SECTOR_CHUNCK_SIZE>().set(i), SECTOR_SIZE, mf->is_write(),
-          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, mf->get_wid(),
-          mf->get_sid(), mf->get_tpc(), mf, mf->get_streamID());
-
-      result.push_back(n_mf);
-    }
-    // This is for constant cache
-  } else if (mf->get_data_size() == 64 &&
-             (mf->get_access_sector_mask().all() ||
-              mf->get_access_sector_mask().none())) {
-    unsigned start;
-    if (mf->get_addr() % MAX_MEMORY_ACCESS_SIZE == 0)
-      start = 0;
-    else
-      start = 2;
-    mem_access_byte_mask_t mask;
-    for (unsigned i = start; i < start + 2; i++) {
-      for (unsigned k = i * SECTOR_SIZE; k < (i + 1) * SECTOR_SIZE; k++) {
-        mask.set(k);
-      }
-      mem_fetch *n_mf = m_mf_allocator->alloc(
-          mf->get_addr(), mf->get_access_type(), mf->get_access_warp_mask(),
-          mf->get_access_byte_mask() & mask,
-          std::bitset<SECTOR_CHUNCK_SIZE>().set(i), SECTOR_SIZE, mf->is_write(),
-          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, mf->get_wid(),
-          mf->get_sid(), mf->get_tpc(), mf, mf->get_streamID());
-
-      result.push_back(n_mf);
-    }
   } else {
+    if (mf->get_data_size() == MAX_MEMORY_ACCESS_SIZE) {
+      sector_mask.set();
+      // This is for constant cache.
+    } else if (mf->get_data_size() == 2 * SECTOR_SIZE &&
+               (sector_mask.all() || sector_mask.none())) {
+      sector_mask.reset();
+      const unsigned start =
+          (mf->get_addr() % MAX_MEMORY_ACCESS_SIZE == 0) ? 0 : 2;
+      sector_mask.set(start);
+      sector_mask.set(start + 1);
+    }
+
+    const new_addr_type line_base =
+        mf->get_addr() - (mf->get_addr() % MAX_MEMORY_ACCESS_SIZE);
+
     for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; i++) {
       if (sector_mask.test(i)) {
         mem_access_byte_mask_t mask;
@@ -768,7 +999,7 @@ memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
           mask.set(k);
         }
         mem_fetch *n_mf = m_mf_allocator->alloc(
-            mf->get_addr() + SECTOR_SIZE * i, mf->get_access_type(),
+            line_base + SECTOR_SIZE * i, mf->get_access_type(),
             mf->get_access_warp_mask(), mf->get_access_byte_mask() & mask,
             std::bitset<SECTOR_CHUNCK_SIZE>().set(i), SECTOR_SIZE,
             mf->is_write(), m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
@@ -795,15 +1026,20 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
     for (unsigned i = 0; i < reqs.size(); ++i) {
       mem_fetch *req = reqs[i];
       m_request_tracker.insert(req);
-      if (req->istexture()) {
+      trace_l2_event("REQ", cycle, m_id, req, "ICNT_TO_L2");
+      const unsigned extra_latency = l2_partition_extra_latency(req);
+      if (extra_latency > 0) {
+        m_l2_partition_remote_accesses++;
+        m_l2_partition_extra_latency_cycles += extra_latency;
+      }
+      if (req->istexture() && extra_latency == 0) {
         m_icnt_L2_queue->push(req);
         req->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       } else {
-        rop_delay_t r;
-        r.req = req;
-        r.ready_cycle = cycle + m_config->rop_latency;
-        m_rop.push(r);
+        unsigned long long ready_cycle = cycle + extra_latency;
+        if (!req->istexture()) ready_cycle += m_config->rop_latency;
+        push_rop_delay(req, ready_cycle, extra_latency > 0);
         req->set_status(IN_PARTITION_ROP_DELAY,
                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       }
@@ -819,6 +1055,10 @@ mem_fetch *memory_sub_partition::pop() {
              mf->get_access_type() == L1_WRBK_ACC)) {
     delete mf;
     mf = NULL;
+  }
+  if (mf) {
+    trace_l2_event("RESP", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
+                   m_id, mf, "L2_TO_ICNT");
   }
   return mf;
 }

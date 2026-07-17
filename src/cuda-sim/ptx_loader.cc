@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include <fstream>
 #include <sstream>
+#include <vector>
 #include "../../libcuda/gpgpu_context.h"
 #include "cuda-sim.h"
 #include "ptx_ir.h"
@@ -57,6 +58,56 @@ extern int ptxinfo_lex_destroy(yyscan_t scanner);
 static bool g_save_embedded_ptx;
 static int g_occupancy_sm_number;
 
+static const char *ptxas_clean_env_prefix() {
+  return "LD_PRELOAD= HEAPPROFILE= HEAPPROFILESIGNAL= HEAPCHECK= "
+         "HEAP_PROFILE_TIME_INTERVAL= HEAP_PROFILE_INUSE_INTERVAL= "
+         "HEAP_PROFILE_ALLOCATION_INTERVAL= HEAP_PROFILE_DEALLOCATION_INTERVAL= "
+         "HEAP_PROFILE_MMAP= HEAP_PROFILE_MMAP_LOG= HEAP_PROFILE_ONLY_MMAP= "
+         "HEAP_PROFILE_CLEANUP= CPUPROFILE= CPUPROFILESIGNAL= "
+         "CPUPROFILE_REALTIME= CPUPROFILE_FREQUENCY= ";
+}
+
+static bool copy_ptxinfo_sidecar(const std::string &ptx_file,
+                                 const std::string &dst_file) {
+  std::vector<std::string> candidates;
+  candidates.push_back(ptx_file + "info");
+  candidates.push_back(ptx_file + ".ptxinfo");
+
+  const std::string ptx_suffix = ".ptx";
+  if (ptx_file.size() > ptx_suffix.size() &&
+      ptx_file.compare(ptx_file.size() - ptx_suffix.size(),
+                       ptx_suffix.size(), ptx_suffix) == 0) {
+    const std::string no_ptx = ptx_file.substr(0, ptx_file.size() -
+                                                        ptx_suffix.size());
+    candidates.push_back(no_ptx + ".ptxinfo");
+
+    // cuobjdump extracts fatbin PTX as <base>.<idx>.sm_<target>.ptx.
+    // Triton traces keep a sidecar at <base>.ptxinfo.
+    const size_t sm_pos = no_ptx.rfind(".sm_");
+    if (sm_pos != std::string::npos && sm_pos > 0) {
+      const size_t idx_pos = no_ptx.rfind('.', sm_pos - 1);
+      if (idx_pos != std::string::npos) {
+        candidates.push_back(no_ptx.substr(0, idx_pos) + ".ptxinfo");
+      }
+    }
+  }
+
+  for (const auto &candidate : candidates) {
+    std::ifstream in(candidate, std::ios::binary);
+    if (!in.good()) {
+      continue;
+    }
+    std::ofstream out(dst_file, std::ios::binary);
+    out << in.rdbuf();
+    if (out.good()) {
+      printf("GPGPU-Sim PTX: using ptxinfo sidecar %s\n",
+             candidate.c_str());
+      return true;
+    }
+  }
+  return false;
+}
+
 bool ptxinfo_data::keep_intermediate_files() {
   return g_keep_intermediate_files;
 }
@@ -78,6 +129,23 @@ void gpgpu_context::ptx_reg_options(option_parser_t opp) {
                          "The SM number to pass to ptxas when getting register "
                          "usage for computing GPU occupancy. "
                          "This parameter is required in the config.",
+                         "0");
+  option_parser_register(opp, "-gpgpu_ptx_register_allocator", OPT_BOOL,
+                         &ptx_register_allocator_enabled,
+                         "Enable conservative PTX virtual register aliasing.",
+                         "0");
+  option_parser_register(opp, "-gpgpu_ptx_register_allocator_stats", OPT_BOOL,
+                         &ptx_register_allocator_stats,
+                         "Print PTX virtual register allocator statistics.",
+                         "0");
+  option_parser_register(opp, "-gpgpu_ptx_reorder", OPT_BOOL,
+                         &ptx_reorder_enabled,
+                         "Enable conservative PTX instruction reordering.",
+                         "0");
+  option_parser_register(opp, "-gpgpu_ptx_reorder_sass_guided", OPT_BOOL,
+                         &ptx_reorder_sass_guided,
+                         "Use auto-extracted SASS PTX-line anchors to guide "
+                         "PTX instruction reordering.",
                          "0");
 }
 
@@ -346,21 +414,23 @@ char *get_app_binary_name() {
 void gpgpu_context::gpgpu_ptx_info_load_from_filename(const char *filename,
                                                       const char *arch_str) {
   std::string ptxas_filename(std::string(filename) + "as");
-  char buff[1024], extra_flags[1024];
+  char buff[4096], extra_flags[1024];
   extra_flags[0] = 0;
   if (!device_runtime->g_cdp_enabled)
     snprintf(extra_flags, 1024, "--gpu-name=%s", arch_str);
   else
     snprintf(extra_flags, 1024, "--compile-only --gpu-name=%s", arch_str);
   snprintf(
-      buff, 1024,
-      "$CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",
-      extra_flags, filename, ptxas_filename.c_str());
+      buff, sizeof(buff),
+      "%s${PTXAS_CUDA_INSTALL_PATH:-$CUDA_INSTALL_PATH}/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",
+      ptxas_clean_env_prefix(), extra_flags, filename, ptxas_filename.c_str());
   int result = system(buff);
   if (result != 0) {
-    printf("GPGPU-Sim PTX: ERROR ** while loading PTX (b) %d\n", result);
-    printf("               Ensure ptxas is in your path.\n");
-    exit(1);
+    if (!copy_ptxinfo_sidecar(filename, ptxas_filename)) {
+      printf("GPGPU-Sim PTX: ERROR ** while loading PTX (b) %d\n", result);
+      printf("               Ensure ptxas is in your path.\n");
+      exit(1);
+    }
   }
 
   FILE *ptxinfo_in;
@@ -441,11 +511,16 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
 #endif
 
     snprintf(commandline, sizeof(commandline),
-             "$PTXAS_CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  "
+             "%s${PTXAS_CUDA_INSTALL_PATH:-$CUDA_INSTALL_PATH}/bin/ptxas %s -v %s --output-file  "
              "/dev/null 2> %s",
-             extra_flags, fname2, tempfile_ptxinfo);
+             ptxas_clean_env_prefix(), extra_flags, fname2, tempfile_ptxinfo);
     printf("GPGPU-Sim PTX: generating ptxinfo using \"%s\"\n", commandline);
     result = system(commandline);
+    if (result != 0) {
+      if (copy_ptxinfo_sidecar(ptx_file, tempfile_ptxinfo)) {
+        result = 0;
+      }
+    }
     if (result != 0) {
       // 65280 = duplicate errors
       if (result == 65280) {
@@ -460,9 +535,9 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
 
         fix_duplicate_errors(fname2);
         snprintf(commandline, sizeof(commandline),
-                 "$CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  "
+                 "%s${PTXAS_CUDA_INSTALL_PATH:-$CUDA_INSTALL_PATH}/bin/ptxas %s -v %s --output-file  "
                  "/dev/null 2> %s",
-                 extra_flags, fname2, tempfile_ptxinfo);
+                 ptxas_clean_env_prefix(), extra_flags, fname2, tempfile_ptxinfo);
         printf("GPGPU-Sim PTX: regenerating ptxinfo using \"%s\"\n",
                commandline);
         result = system(commandline);
@@ -524,15 +599,17 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
 
     snprintf(
         commandline, sizeof(commandline),
-        "$CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",
-        extra_flags, fname2, tempfile_ptxinfo);
+        "%s${PTXAS_CUDA_INSTALL_PATH:-$CUDA_INSTALL_PATH}/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",
+        ptxas_clean_env_prefix(), extra_flags, fname2, tempfile_ptxinfo);
     printf("GPGPU-Sim PTX: generating ptxinfo using \"%s\"\n", commandline);
     fflush(stdout);
     result = system(commandline);
     if (result != 0) {
-      printf("GPGPU-Sim PTX: ERROR ** while loading PTX (b) %d\n", result);
-      printf("               Ensure ptxas is in your path.\n");
-      exit(1);
+      if (!copy_ptxinfo_sidecar(fname2, tempfile_ptxinfo)) {
+        printf("GPGPU-Sim PTX: ERROR ** while loading PTX (b) %d\n", result);
+        printf("               Ensure ptxas is in your path.\n");
+        exit(1);
+      }
     }
   }
 

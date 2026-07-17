@@ -190,7 +190,7 @@ void cycle();
 
 #### `parse_tensor_coords()`
 
-**Signature**: `static void parse_tensor_coords(ptx_thread_info *thread, const operand_info &coord_operand, uint32_t coords[5])`
+**Signature**: `static void parse_tensor_coords(ptx_thread_info *thread, const operand_info &coord_operand, int32_t coords[5])`
 
 **Purpose**: Parse tensor coordinates from vector operand into coordinate array.
 
@@ -271,7 +271,7 @@ void cycle();
 
 #### `do_tma_transfer()`
 
-**Signature**: `static void do_tma_transfer(const tensormap_descriptor_t &tensormap, const uint32_t coords[5], memory_space *shared_mem, memory_space *global_mem, uint64_t shared_addr, ptx_thread_info *thread, const ptx_instruction *pI, bool is_load)`
+**Signature**: `static void do_tma_transfer(const tensormap_descriptor_t &tensormap, const int32_t coords[5], memory_space *shared_mem, memory_space *global_mem, uint64_t shared_addr, ptx_thread_info *thread, const ptx_instruction *pI, bool is_load)`
 
 **Purpose**: Perform functional simulation of TMA transfer between global and shared memory.
 
@@ -319,7 +319,7 @@ void cycle();
 
 #### `init_tensor()`
 
-**Signature**: `void init_tensor(tma_agu_state_t &state, const tensormap_descriptor_t &tensormap, const uint32_t coords[5])`
+**Signature**: `void init_tensor(tma_agu_state_t &state, const tensormap_descriptor_t &tensormap, const int32_t coords[5])`
 
 **Purpose**: Initialize AGU for tensor transfer using tensormap descriptor.
 

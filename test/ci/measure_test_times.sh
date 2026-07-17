@@ -72,7 +72,7 @@ for test_pattern in "${TEST_SUITES[@]}"; do
     filter="$test_pattern"
   fi
 
-  if bash -c "source setup.sh && source setup_environment && timeout ${TIMEOUT_PER_TEST} ./test/run_tests.sh -c '$TEST_CONFIG' run '$filter'" &>/dev/null; then
+  if bash -c "source setup.sh && source setup_environment && timeout ${TIMEOUT_PER_TEST} ./test/run_tests.sh -c '$TEST_CONFIG' run test '$filter'" &>/dev/null; then
     status="PASS"
   else
     exit_code=$?

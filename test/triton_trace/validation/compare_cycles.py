@@ -36,6 +36,8 @@ def read_csv_as_dict(path, val_col):
     The shape key is auto-detected from the header:
       - If 'size' column exists: key = size value
       - If 'm' column exists: key = "m,n,k" composite (GEMM)
+      - If 'batch' and 'qheads' columns exist:
+        key = "batch,qheads,kvheads,seqlen,headdim,causal" (Llama3 GQA mode)
       - If 'batch' column exists: key = "batch,nheads,seqlen,headdim,causal" (flash_attn CSV mode)
       - If 'seq_len' column exists: key = seq_len value (flash_attn legacy)
       - Otherwise: key = first column value
@@ -49,6 +51,10 @@ def read_csv_as_dict(path, val_col):
                 k = row["size"].strip()
             elif "m" in header:
                 k = f"{row['m'].strip()},{row['n'].strip()},{row['k'].strip()}"
+            elif "batch" in header and "qheads" in header:
+                k = (f"{row['batch'].strip()},{row['qheads'].strip()},"
+                     f"{row['kvheads'].strip()},{row['seqlen'].strip()},"
+                     f"{row['headdim'].strip()},{row['causal'].strip()}")
             elif "batch" in header:
                 k = (f"{row['batch'].strip()},{row['nheads'].strip()},"
                      f"{row['seqlen'].strip()},{row['headdim'].strip()},"
@@ -74,6 +80,10 @@ def load_csv_filter(csv_path):
         for row in reader:
             if "m" in header:
                 keys.add(f"{row['m'].strip()},{row['n'].strip()},{row['k'].strip()}")
+            elif "batch" in header and "qheads" in header:
+                keys.add(f"{row['batch'].strip()},{row['qheads'].strip()},"
+                         f"{row['kvheads'].strip()},{row['seqlen'].strip()},"
+                         f"{row['headdim'].strip()},{row['causal'].strip()}")
             elif "batch" in header:
                 keys.add(f"{row['batch'].strip()},{row['nheads'].strip()},"
                          f"{row['seqlen'].strip()},{row['headdim'].strip()},"

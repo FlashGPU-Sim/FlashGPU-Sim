@@ -103,17 +103,24 @@
  */
 
 #include <assert.h>
+#include <cctype>
+#include <dirent.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
+#include <vector>
 #ifdef OPENGL_SUPPORT
 #define GL_GLEXT_PROTOTYPES
 #ifdef __APPLE__
@@ -129,7 +136,18 @@
 #include "builtin_types.h"
 #include "driver_types.h"
 #include "cuda_api.h"
+#if defined(__has_include)
+#if __has_include("cudaProfiler.h")
 #include "cudaProfiler.h"
+#else
+typedef enum CUoutput_mode_enum {
+  CU_OUT_KEY_VALUE_PAIR = 0x00,
+  CU_OUT_CSV = 0x01
+} CUoutput_mode;
+#endif
+#else
+#include "cudaProfiler.h"
+#endif
 // clang-format on
 #if (CUDART_VERSION < 8000)
 #include "__cudaFatFormat.h"
@@ -147,6 +165,8 @@
 #include "gpgpu_context.h"
 
 #include <pthread.h>
+#include <cstdlib>
+#include <algorithm>
 #include <semaphore.h>
 
 #ifdef __APPLE__
@@ -232,7 +252,9 @@ struct _cuda_device_id *gpgpu_context::GPGPUSim_Init() {
     prop->sharedMemPerBlock = the_gpu->shared_mem_per_block();
     prop->regsPerBlock = the_gpu->num_registers_per_block();
     prop->warpSize = the_gpu->wrp_size();
+#if (CUDART_VERSION < 13000)
     prop->clockRate = the_gpu->shader_clock();
+#endif
 #if (CUDART_VERSION >= 2010)
     prop->multiProcessorCount = the_gpu->get_config().num_shader();
 #endif
@@ -620,6 +642,317 @@ static unsigned get_next_fat_bin_handle() {
   return handle;
 }
 
+static bool file_exists(const std::string &path) {
+  std::ifstream file(path.c_str());
+  return file.good();
+}
+
+static std::string sidecar_ptx_for_module(const char *module_path) {
+  std::string path(module_path);
+  const std::string cubin_suffix = ".cubin";
+  if (path.length() <= cubin_suffix.length()) return "";
+  if (path.compare(path.length() - cubin_suffix.length(), cubin_suffix.length(),
+                   cubin_suffix) != 0) {
+    return "";
+  }
+  std::string ptx_path =
+      path.substr(0, path.length() - cubin_suffix.length()) + ".ptx";
+  return file_exists(ptx_path) ? ptx_path : "";
+}
+
+static std::string ptx_target_from_file(const std::string &ptx_path) {
+  std::ifstream file(ptx_path.c_str());
+  std::string line;
+  while (std::getline(file, line)) {
+    size_t target_pos = line.find(".target");
+    if (target_pos == std::string::npos) continue;
+    size_t sm_pos = line.find("sm_", target_pos);
+    if (sm_pos == std::string::npos) continue;
+    size_t end = line.find_first_of(", \t\r\n", sm_pos);
+    return line.substr(sm_pos, end == std::string::npos ? std::string::npos
+                                                        : end - sm_pos);
+  }
+  return "";
+}
+
+static void sass_extract_fatal(const char *message) {
+  fprintf(stderr, "GPGPU-Sim PTX: SASS PTX-line extraction fatal: %s\n",
+          message);
+  std::abort();
+}
+
+static void sass_extract_fatal(const std::string &message) {
+  sass_extract_fatal(message.c_str());
+}
+
+static bool string_ends_with_local(const std::string &text,
+                                   const std::string &suffix) {
+  return text.size() >= suffix.size() &&
+         text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+static bool ensure_directory_local(const std::string &path) {
+  if (path.empty()) return false;
+  struct stat st;
+  if (stat(path.c_str(), &st) == 0) return S_ISDIR(st.st_mode);
+  return mkdir(path.c_str(), 0775) == 0;
+}
+
+static std::string absolute_path_local(const std::string &path) {
+  if (!path.empty() && path[0] == '/') return path;
+  char cwd_buf[4096];
+  const char *cwd = getcwd(cwd_buf, sizeof(cwd_buf));
+  if (cwd == NULL) return path;
+  return std::string(cwd) + "/" + path;
+}
+
+static std::string shell_quote(const std::string &text) {
+  std::string out = "'";
+  for (std::string::const_iterator it = text.begin(); it != text.end(); ++it) {
+    if (*it == '\'')
+      out += "'\\''";
+    else
+      out += *it;
+  }
+  out += "'";
+  return out;
+}
+
+static std::string cuda_tool_path(const char *tool) {
+  const char *cuda_path = getenv("CUDA_INSTALL_PATH");
+  if (cuda_path != NULL && cuda_path[0] != '\0')
+    return std::string(cuda_path) + "/bin/" + tool;
+  return std::string(tool);
+}
+
+static std::string fnv1a_file_hash(const std::string &path) {
+  std::ifstream in(path.c_str(), std::ios::binary);
+  if (!in.good()) {
+    sass_extract_fatal("failed to open binary for hashing: " + path);
+  }
+  unsigned long long hash = 1469598103934665603ull;
+  char buffer[8192];
+  while (in.good()) {
+    in.read(buffer, sizeof(buffer));
+    const std::streamsize got = in.gcount();
+    for (std::streamsize i = 0; i < got; ++i) {
+      hash ^= static_cast<unsigned char>(buffer[i]);
+      hash *= 1099511628211ull;
+    }
+  }
+  std::ostringstream out;
+  out << std::hex << std::setw(16) << std::setfill('0') << hash;
+  return out.str();
+}
+
+static std::string arch_from_ptx_filename(const std::string &ptx_filename) {
+  const std::size_t sm_pos = ptx_filename.find("sm_");
+  if (sm_pos == std::string::npos) return "";
+  const std::size_t dot_pos = ptx_filename.find('.', sm_pos);
+  return ptx_filename.substr(
+      sm_pos, dot_pos == std::string::npos ? std::string::npos
+                                           : dot_pos - sm_pos);
+}
+
+static std::vector<std::string> find_cubins_for_arch(const std::string &dir,
+                                                     const std::string &arch) {
+  std::vector<std::string> out;
+  DIR *dp = opendir(dir.c_str());
+  if (dp == NULL)
+    sass_extract_fatal("failed to open cubin extraction directory: " + dir);
+  while (struct dirent *entry = readdir(dp)) {
+    const std::string name = entry->d_name;
+    if (name == "." || name == "..") continue;
+    if (name.find(arch) == std::string::npos ||
+        !string_ends_with_local(name, ".cubin"))
+      continue;
+    out.push_back(dir + "/" + name);
+  }
+  closedir(dp);
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+static std::string parse_sass_section_name_for_list(const std::string &line) {
+  const std::size_t text_pos = line.find(".text.");
+  if (text_pos == std::string::npos) return "";
+  std::size_t begin = text_pos + 6;
+  std::size_t end = begin;
+  while (end < line.size()) {
+    const char c = line[end];
+    if (std::isspace(static_cast<unsigned char>(c)) || c == ',' || c == '"' ||
+        c == '\'' || c == ':' || c == '(' || c == ')')
+      break;
+    ++end;
+  }
+  if (end <= begin) return "";
+  return line.substr(begin, end - begin);
+}
+
+static void write_functions_from_full_sass(const std::string &full_sass,
+                                           const std::string &functions_path) {
+  std::ifstream in(full_sass.c_str());
+  if (!in.good())
+    sass_extract_fatal("failed to open full SASS for function listing: " +
+                       full_sass);
+  std::ofstream out(functions_path.c_str(), std::ios::trunc);
+  if (!out.good())
+    sass_extract_fatal("failed to write function list: " + functions_path);
+  std::set<std::string> seen;
+  std::string line;
+  while (std::getline(in, line)) {
+    const std::string name = parse_sass_section_name_for_list(line);
+    if (name.empty() || seen.find(name) != seen.end()) continue;
+    seen.insert(name);
+    out << name << "\n";
+  }
+}
+
+void cuda_runtime_api::ensure_sass_ptxline_guide(
+    CUctx_st *context, const std::string &app_binary,
+    const std::vector<std::string> &selected_files) {
+  if (gpgpu_ctx == NULL || !gpgpu_ctx->ptx_reorder_enabled ||
+      !gpgpu_ctx->ptx_reorder_sass_guided)
+    return;
+  if (selected_files.empty())
+    sass_extract_fatal("SASS-guided PTX reorder requires a selected PTX file");
+  if (app_binary.empty())
+    sass_extract_fatal("SASS-guided PTX reorder requires an app binary path");
+  if (context == NULL)
+    sass_extract_fatal("SASS-guided PTX reorder requires a CUDA context");
+
+  std::set<std::string> arches;
+  for (std::vector<std::string>::const_iterator it = selected_files.begin();
+       it != selected_files.end(); ++it) {
+    const std::string arch = arch_from_ptx_filename(*it);
+    if (!arch.empty()) arches.insert(arch);
+  }
+  if (arches.empty())
+    sass_extract_fatal("failed to derive SASS arch from selected PTX files");
+  if (arches.size() != 1) {
+    std::ostringstream msg;
+    msg << "SASS-guided PTX reorder expected one selected arch, found";
+    for (std::set<std::string>::const_iterator it = arches.begin();
+         it != arches.end(); ++it) {
+      msg << " " << *it;
+    }
+    sass_extract_fatal(msg.str());
+  }
+
+  const std::string arch = *arches.begin();
+  if (!gpgpu_ctx->ptx_reorder_sass_ptxline_file.empty() &&
+      gpgpu_ctx->ptx_reorder_sass_ptxline_binary == app_binary &&
+      gpgpu_ctx->ptx_reorder_sass_ptxline_arch == arch)
+    return;
+  const std::string out_dir = "sass_ptxline";
+  if (!ensure_directory_local(out_dir))
+    sass_extract_fatal("failed to create SASS PTX-line directory: " + out_dir);
+
+  const std::string binary_hash = fnv1a_file_hash(app_binary);
+  const std::string label = binary_hash + "." + arch;
+  const std::string extract_dir = out_dir + "/" + label + ".extract";
+  const std::string full_sass = out_dir + "/" + label + ".ptxline.full.sass";
+  const std::string functions_txt = out_dir + "/" + label + ".functions.txt";
+  const std::string cubins_txt = out_dir + "/" + label + ".cubins.txt";
+  const std::string metadata = out_dir + "/" + label + ".metadata.txt";
+  const std::string cuobjdump_log =
+      out_dir + "/" + label + ".cuobjdump-xelf.log";
+  const std::string nvdisasm_log = out_dir + "/" + label + ".nvdisasm.log";
+
+  if (file_exists(full_sass) && file_exists(functions_txt)) {
+    gpgpu_ctx->ptx_reorder_sass_extract_attempted = true;
+    gpgpu_ctx->ptx_reorder_sass_extract_ok = true;
+    gpgpu_ctx->ptx_reorder_sass_ptxline_file = full_sass;
+    gpgpu_ctx->ptx_reorder_sass_ptxline_arch = arch;
+    gpgpu_ctx->ptx_reorder_sass_ptxline_binary = app_binary;
+    printf("GPGPU-Sim PTX: using existing SASS PTX-line full guide %s\n",
+           full_sass.c_str());
+    return;
+  }
+
+  if (!ensure_directory_local(extract_dir))
+    sass_extract_fatal("failed to create cubin extraction directory: " +
+                       extract_dir);
+
+  const std::string cuobjdump = cuda_tool_path("cuobjdump");
+  const std::string nvdisasm = cuda_tool_path("nvdisasm");
+  const std::string cuobjdump_cmd =
+      "cd " + shell_quote(absolute_path_local(extract_dir)) + " && " +
+      shell_quote(cuobjdump) + " -xelf all " + shell_quote(app_binary) +
+      " > " + shell_quote(absolute_path_local(cuobjdump_log)) + " 2>&1";
+  printf("GPGPU-Sim PTX: extracting SASS cubins for %s arch=%s\n",
+         app_binary.c_str(), arch.c_str());
+  if (system(cuobjdump_cmd.c_str()) != 0)
+    sass_extract_fatal("failed command: " + cuobjdump_cmd);
+
+  const std::vector<std::string> cubins =
+      find_cubins_for_arch(extract_dir, arch);
+  if (cubins.empty()) {
+    std::ostringstream msg;
+    msg << "expected at least one " << arch << " cubin, found none in "
+        << extract_dir;
+    sass_extract_fatal(msg.str());
+  }
+
+  {
+    std::ofstream out(full_sass.c_str(), std::ios::trunc);
+    if (!out.good())
+      sass_extract_fatal("failed to create full SASS file: " + full_sass);
+  }
+  {
+    std::ofstream out(nvdisasm_log.c_str(), std::ios::trunc);
+    if (!out.good())
+      sass_extract_fatal("failed to create nvdisasm log: " + nvdisasm_log);
+  }
+  {
+    std::ofstream out(cubins_txt.c_str(), std::ios::trunc);
+    if (!out.good())
+      sass_extract_fatal("failed to write cubin list: " + cubins_txt);
+    for (std::vector<std::string>::const_iterator it = cubins.begin();
+         it != cubins.end(); ++it) {
+      out << *it << "\n";
+    }
+  }
+
+  printf("GPGPU-Sim PTX: dumping merged SASS PTX-line guide %s from %zu "
+         "cubin(s)\n",
+         full_sass.c_str(), cubins.size());
+  for (std::vector<std::string>::const_iterator it = cubins.begin();
+       it != cubins.end(); ++it) {
+    {
+      std::ofstream out(full_sass.c_str(), std::ios::app);
+      out << "\n// GPGPU-Sim SASS cubin: " << *it << "\n";
+    }
+    const std::string nvdisasm_cmd =
+        shell_quote(nvdisasm) + " -gp --print-code " + shell_quote(*it) +
+        " >> " + shell_quote(full_sass) + " 2>> " +
+        shell_quote(nvdisasm_log);
+    if (system(nvdisasm_cmd.c_str()) != 0)
+      sass_extract_fatal("failed command: " + nvdisasm_cmd);
+  }
+
+  write_functions_from_full_sass(full_sass, functions_txt);
+
+  std::ofstream meta(metadata.c_str(), std::ios::trunc);
+  if (meta.good()) {
+    meta << "binary=" << app_binary << "\n";
+    meta << "binary_hash=" << binary_hash << "\n";
+    meta << "arch=" << arch << "\n";
+    meta << "cubin_count=" << cubins.size() << "\n";
+    meta << "cubins=" << cubins_txt << "\n";
+    meta << "full_ptxline_sass=" << full_sass << "\n";
+    meta << "functions=" << functions_txt << "\n";
+    meta << "cuobjdump_log=" << cuobjdump_log << "\n";
+    meta << "nvdisasm_log=" << nvdisasm_log << "\n";
+  }
+
+  gpgpu_ctx->ptx_reorder_sass_extract_attempted = true;
+  gpgpu_ctx->ptx_reorder_sass_extract_ok = true;
+  gpgpu_ctx->ptx_reorder_sass_ptxline_file = full_sass;
+  gpgpu_ctx->ptx_reorder_sass_ptxline_arch = arch;
+  gpgpu_ctx->ptx_reorder_sass_ptxline_binary = app_binary;
+}
+
 // Internal implementation for cudaRegisterFatBiaryInternal
 void **cudaRegisterFatBiaryInternal_impl(
     void *fatCubin, gpgpu_context *gpgpu_ctx, std::string &app_binary_path,
@@ -657,9 +990,13 @@ void **cudaRegisterFatBiaryInternal_impl(
     size_t pos = app_binary_path.find("python");
     if (pos == std::string::npos) {
       // Not pytorch app : checking cuda version
-      assert(
-          app_cuda_version == CUDART_VERSION / 1000 &&
-          "The app must be compiled with same major version as the simulator.");
+      if (app_cuda_version != CUDART_VERSION / 1000) {
+        printf(
+            "GPGPU-Sim PTX: warning -- app CUDA major version %d differs from "
+            "simulator CUDA major version %d; continuing with compatibility "
+            "shim\n",
+            app_cuda_version, CUDART_VERSION / 1000);
+      }
     }
 
     // int app_cuda_version = get_app_cuda_version();
@@ -1086,6 +1423,8 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
       "blockDim = (%u,%u,%u) \n",
       kname.c_str(), stream ? stream->get_uid() : 0, gridDim.x, gridDim.y,
       gridDim.z, blockDim.x, blockDim.y, blockDim.z);
+  printf("GPGPU-Sim PTX: runtime launch kernel mangled='%s'\n",
+         kname.c_str());
   stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
   ctx->the_gpgpusim->g_stream_manager->push(op);
   ctx->api->g_cuda_launch_stack.pop_back();
@@ -1823,7 +2162,11 @@ cudaDeviceGetAttributeInternal(int *value, enum cudaDeviceAttr attr, int device,
         *value = prop->regsPerBlock;
         break;
       case 13:
+#if (CUDART_VERSION >= 13000)
+        *value = dev->get_gpgpu()->shader_clock();
+#else
         *value = prop->clockRate;
+#endif
         printf("GPGPU-Sim: cudaDevAttrClockRate returning %d kHz (%.0f MHz)\n",
                *value, *value / 1000.0);
         break;
@@ -3335,6 +3678,10 @@ void cuda_runtime_api::extract_ptx_files_using_cuobjdump_internal(
     CUctx_st *context, std::string &app_binary) {
   char command[2048];
   char *pytorch_bin = getenv("PYTORCH_BIN");
+  const char *ptx_debug_env = getenv("GPGPUSIM_PTX_DEBUG");
+  const bool ptx_debug =
+      ptx_debug_env != NULL && ptx_debug_env[0] != '\0' &&
+      strcmp(ptx_debug_env, "0") != 0;
 
   char ptx_list_file_name[1024];
   snprintf(ptx_list_file_name, 1024, "_cuobjdump_list_ptx_XXXXXX");
@@ -3344,12 +3691,21 @@ void cuda_runtime_api::extract_ptx_files_using_cuobjdump_internal(
   if (pytorch_bin != NULL && strlen(pytorch_bin) != 0) {
     app_binary = std::string(pytorch_bin);
   }
+  app_binary_path = app_binary;
 
   // only want file names
   snprintf(command, sizeof(command),
            "$CUDA_INSTALL_PATH/bin/cuobjdump -lptx %s  | cut -d \":\" -f 2 | "
            "awk '{$1=$1}1' > %s",
            app_binary.c_str(), ptx_list_file_name);
+  if (ptx_debug) {
+    char cwd_buf[4096];
+    const char *cwd =
+        getcwd(cwd_buf, sizeof(cwd_buf)) ? cwd_buf : "<getcwd failed>";
+    printf("GPGPU-Sim PTX DEBUG: extract cwd=%s app_binary=%s list_file=%s\n",
+           cwd, app_binary.c_str(), ptx_list_file_name);
+    printf("GPGPU-Sim PTX DEBUG: extract command=%s\n", command);
+  }
   if (system(command) != 0) {
     printf("WARNING: Failed to execute cuobjdump to get list of ptx files \n");
     exit(0);
@@ -3885,7 +4241,8 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
                                        ->get_config()
                                        .get_forced_max_capability();
   if (!api->version_filename.empty()) {
-    // pick selected_version: largest version <= forced_max_capability (or largest available)
+    // pick selected_version: largest version <= forced_max_capability (or
+    // largest available)
     unsigned selected_version = 0;
     if (forced_max_capability != 0) {
       for (auto rit = api->version_filename.rbegin();
@@ -3895,7 +4252,8 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
           break;
         }
       }
-      if (selected_version == 0) selected_version = api->version_filename.rbegin()->first;
+      if (selected_version == 0)
+        selected_version = api->version_filename.rbegin()->first;
     } else {
       selected_version = api->version_filename.rbegin()->first;
     }
@@ -3906,9 +4264,10 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
       size_t sm_pos = check_name.find("sm_");
       if (sm_pos != std::string::npos) {
         size_t dot_pos = check_name.find('.', sm_pos);
-        std::string arch_part = check_name.substr(sm_pos + 3, dot_pos - sm_pos - 3);
+        std::string arch_part =
+            check_name.substr(sm_pos + 3, dot_pos - sm_pos - 3);
         for (size_t j = 0; j < arch_part.length(); j++) {
-          if (!isdigit(arch_part[j])) {
+          if (!std::isdigit(static_cast<unsigned char>(arch_part[j]))) {
             has_suffix = true;
             break;
           }
@@ -3923,16 +4282,18 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
         size_t sm_pos = ptx_filename.find("sm_");
         if (sm_pos != std::string::npos) {
           size_t dot_pos = ptx_filename.find('.', sm_pos);
-          std::string arch_part = ptx_filename.substr(sm_pos + 3, dot_pos - sm_pos - 3);
+          std::string arch_part =
+              ptx_filename.substr(sm_pos + 3, dot_pos - sm_pos - 3);
           bool is_base = true;
           for (size_t j = 0; j < arch_part.length(); j++) {
-            if (!isdigit(arch_part[j])) {
+            if (!std::isdigit(static_cast<unsigned char>(arch_part[j]))) {
               is_base = false;
               break;
             }
           }
           if (is_base) {
-            printf("GPGPU-Sim PTX: Skipping %s (suffix version available)\n", ptx_filename.c_str());
+            printf("GPGPU-Sim PTX: Skipping %s (suffix version available)\n",
+                   ptx_filename.c_str());
             continue;
           }
         }
@@ -3941,10 +4302,61 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
     }
   }
 
+  if (ptx_reorder_sass_guided && !ptx_reorder_enabled) {
+    fprintf(stderr,
+            "GPGPU-Sim PTX: -gpgpu_ptx_reorder_sass_guided requires "
+            "-gpgpu_ptx_reorder\n");
+    std::abort();
+  }
+  if (ptx_reorder_sass_guided) {
+    std::string app_binary = api->app_binary_path;
+    if (app_binary.empty()) app_binary = get_app_binary();
+    api->ensure_sass_ptxline_guide(context, app_binary, selected_files);
+  }
+
   // Parse the selected files (if any)
+  const char *selected_ptx_override = getenv("GPGPUSIM_SELECTED_PTX_OVERRIDE");
+  const bool use_selected_ptx_override =
+      selected_ptx_override != NULL && strlen(selected_ptx_override) != 0;
+  const char *ptx_debug_env = getenv("GPGPUSIM_PTX_DEBUG");
+  const bool ptx_debug =
+      ptx_debug_env != NULL && ptx_debug_env[0] != '\0' &&
+      strcmp(ptx_debug_env, "0") != 0;
+  if (ptx_debug) {
+    char cwd_buf[4096];
+    const char *cwd =
+        getcwd(cwd_buf, sizeof(cwd_buf)) ? cwd_buf : "<getcwd failed>";
+    printf("GPGPU-Sim PTX DEBUG: selected-file path cwd=%s fname=%s handle=%u\n",
+           cwd, fname.c_str(), handle);
+    printf("GPGPU-Sim PTX DEBUG: env GPGPUSIM_SELECTED_PTX_OVERRIDE=%s\n",
+           selected_ptx_override ? selected_ptx_override : "<unset>");
+    printf("GPGPU-Sim PTX DEBUG: env PTX_SIM_USE_PTX_FILE=%s\n",
+           getenv("PTX_SIM_USE_PTX_FILE") ? getenv("PTX_SIM_USE_PTX_FILE")
+                                          : "<unset>");
+    printf("GPGPU-Sim PTX DEBUG: env PTX_SIM_KERNELFILE=%s\n",
+           getenv("PTX_SIM_KERNELFILE") ? getenv("PTX_SIM_KERNELFILE")
+                                        : "<unset>");
+    printf("GPGPU-Sim PTX DEBUG: selected_files=%zu override_enabled=%d\n",
+           selected_files.size(), use_selected_ptx_override ? 1 : 0);
+    for (size_t i = 0; i < selected_files.size(); ++i) {
+      printf("GPGPU-Sim PTX DEBUG: selected_files[%zu]=%s\n", i,
+             selected_files[i].c_str());
+    }
+  }
+
   for (auto &ptx_filename : selected_files) {
-    printf("GPGPU-Sim PTX: Parsing %s\n", ptx_filename.c_str());
-    symtab = gpgpu_ptx_sim_load_ptx_from_filename(ptx_filename.c_str());
+    const char *parse_filename =
+        use_selected_ptx_override ? selected_ptx_override : ptx_filename.c_str();
+    if (use_selected_ptx_override) {
+      printf("GPGPU-Sim PTX: overriding selected PTX %s with %s\n",
+             ptx_filename.c_str(), selected_ptx_override);
+    }
+    if (ptx_debug) {
+      printf("GPGPU-Sim PTX DEBUG: parse selected=%s parse_filename=%s\n",
+             ptx_filename.c_str(), parse_filename);
+    }
+    printf("GPGPU-Sim PTX: Parsing %s\n", parse_filename);
+    symtab = gpgpu_ptx_sim_load_ptx_from_filename(parse_filename);
   }
   api->name_symtab[fname] = symtab;
   context->add_binary(symtab, handle);
@@ -3961,8 +4373,14 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
       size_t dot_pos = ptx_filename.find('.', sm_pos);
       arch_str = ptx_filename.substr(sm_pos, dot_pos - sm_pos);
     }
-    printf("GPGPU-Sim PTX: Loading PTXInfo from %s\n", ptx_filename.c_str());
-    gpgpu_ptx_info_load_from_filename(ptx_filename.c_str(), arch_str.c_str());
+    const char *ptxinfo_filename =
+        use_selected_ptx_override ? selected_ptx_override : ptx_filename.c_str();
+    if (ptx_debug) {
+      printf("GPGPU-Sim PTX DEBUG: ptxinfo selected=%s ptxinfo_filename=%s arch=%s\n",
+             ptx_filename.c_str(), ptxinfo_filename, arch_str.c_str());
+    }
+    printf("GPGPU-Sim PTX: Loading PTXInfo from %s\n", ptxinfo_filename);
+    gpgpu_ptx_info_load_from_filename(ptxinfo_filename, arch_str.c_str());
   }
   return;
 #endif
@@ -4066,6 +4484,22 @@ cudaError_t CUDARTAPI __cudaPopCallConfiguration(dim3 *gridDim, dim3 *blockDim,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
+  gpgpu_context *ctx = GPGPU_Context();
+  gpgpusim_ptx_assert(!ctx->api->g_cuda_launch_stack.empty(),
+                      "empty launch stack");
+  kernel_config &config = ctx->api->g_cuda_launch_stack.back();
+  if (gridDim) {
+    *gridDim = config.grid_dim();
+  }
+  if (blockDim) {
+    *blockDim = config.block_dim();
+  }
+  if (sharedMem) {
+    *sharedMem = config.shared_mem();
+  }
+  if (stream) {
+    *reinterpret_cast<cudaStream_t *>(stream) = config.get_stream();
+  }
   return g_last_cudaError = cudaSuccess;
 }
 
@@ -4085,6 +4519,31 @@ void CUDARTAPI __cudaRegisterFunction(void **fatCubinHandle,
                                       dim3 *gDim) {
   cudaRegisterFunctionInternal(fatCubinHandle, hostFun, deviceFun, deviceName,
                                thread_limit, tid, bid, bDim, gDim);
+}
+
+cudaError_t CUDARTAPI __cudaGetKernel(cudaKernel_t *kernelPtr,
+                                      const void *entryFuncAddr) {
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+  *kernelPtr = reinterpret_cast<cudaKernel_t>(const_cast<void *>(entryFuncAddr));
+  return g_last_cudaError = cudaSuccess;
+}
+
+cudaError_t CUDARTAPI __cudaLaunchKernel(cudaKernel_t kernel, dim3 gridDim,
+                                         dim3 blockDim, void **args,
+                                         size_t sharedMem,
+                                         cudaStream_t stream) {
+  return cudaLaunchKernelInternal(
+      reinterpret_cast<const char *>(kernel), gridDim, blockDim,
+      const_cast<const void **>(args), sharedMem, stream);
+}
+
+cudaError_t CUDARTAPI __cudaLaunchKernel_ptsz(cudaKernel_t kernel,
+                                              dim3 gridDim, dim3 blockDim,
+                                              void **args, size_t sharedMem,
+                                              cudaStream_t stream) {
+  return __cudaLaunchKernel(kernel, gridDim, blockDim, args, sharedMem, stream);
 }
 
 extern void __cudaRegisterVar(
@@ -4365,10 +4824,49 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  printf(
-      "GPGPU-Sim PTX: Execution warning: ignoring call to \"%s ( func=%p, "
-      "attr=%d, value=%d )\"\n",
-      __my_func__, func, attr, value);
+
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  function_info *entry = context->get_kernel((const char *)func);
+
+  if (attr == cudaFuncAttributeMaxDynamicSharedMemorySize) {
+    if (value < 0) return g_last_cudaError = cudaErrorInvalidValue;
+    const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
+    unsigned static_smem = kinfo ? kinfo->smem : 0;
+    unsigned max_per_block =
+        context->get_device()->get_gpgpu()->shared_mem_per_block();
+    if (static_smem + (unsigned)value > max_per_block) {
+      printf("GPGPU-Sim PTX: cudaFuncSetAttribute "
+             "MaxDynamicSharedMemorySize invalid for '%s': static=%u, "
+             "dynamic=%u, max_per_block=%u\n",
+             entry->get_name().c_str(), static_smem, (unsigned)value,
+             max_per_block);
+      return g_last_cudaError = cudaErrorInvalidValue;
+    }
+    context->get_device()->get_gpgpu()->set_kernel_max_dynamic_smem(
+        entry->get_name(), (unsigned)value, static_smem);
+    printf("GPGPU-Sim PTX: cudaFuncSetAttribute "
+           "MaxDynamicSharedMemorySize for '%s' = %u bytes\n",
+           entry->get_name().c_str(), (unsigned)value);
+    return g_last_cudaError = cudaSuccess;
+  }
+
+  if (attr == cudaFuncAttributePreferredSharedMemoryCarveout) {
+    if (value != cudaSharedmemCarveoutDefault &&
+        (value < 0 || value > 100)) {
+      return g_last_cudaError = cudaErrorInvalidValue;
+    }
+    context->get_device()->get_gpgpu()->set_kernel_preferred_shared_carveout(
+        entry->get_name(), value);
+    printf("GPGPU-Sim PTX: cudaFuncSetAttribute "
+           "PreferredSharedMemoryCarveout for '%s' = %d\n",
+           entry->get_name().c_str(), value);
+    return g_last_cudaError = cudaSuccess;
+  }
+
+  printf("GPGPU-Sim PTX: Execution warning: ignoring call to \"%s "
+         "( func=%p, attr=%d, value=%d )\"\n",
+         __my_func__, func, attr, value);
   return g_last_cudaError = cudaSuccess;
 }
 #endif
@@ -4846,6 +5344,21 @@ CUresult CUDAAPI cuCtxCreate(CUcontext *pctx, unsigned int flags,
   printf("WARNING: this function has not been implemented yet %s\n", __my_func__);
   return CUDA_SUCCESS;
 }
+
+extern "C" CUresult CUDAAPI cuCtxCreate_v3(CUcontext *pctx, void *paramsArray,
+                                           int numParams, unsigned int flags,
+                                           CUdevice dev) {
+  (void)paramsArray;
+  (void)numParams;
+  return cuCtxCreate(pctx, flags, dev);
+}
+
+extern "C" CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
+                                           void *ctxCreateParams,
+                                           unsigned int flags, CUdevice dev) {
+  (void)ctxCreateParams;
+  return cuCtxCreate(pctx, flags, dev);
+}
 #endif /* CUDART_VERSION >= 3020 */
 
 #if CUDART_VERSION >= 4000
@@ -5020,6 +5533,39 @@ CUresult CUDAAPI cuModuleLoad(CUmodule *module, const char *fname) {
   // cudaRegisterFatBinary
   unsigned module_handle = get_next_fat_bin_handle();
   printf("cuModuleLoad: Allocated module handle %u\n", module_handle);
+
+  std::string sidecar_ptx = sidecar_ptx_for_module(fname);
+  if (!sidecar_ptx.empty()) {
+    printf("cuModuleLoad: Loading sidecar PTX %s\n", sidecar_ptx.c_str());
+    symbol_table *symtab = ctx->gpgpu_ptx_sim_load_ptx_from_filename(
+        sidecar_ptx.c_str());
+    context->add_binary(symtab, module_handle);
+    ctx->api->name_symtab[fname] = symtab;
+    ctx->api->name_symtab[sidecar_ptx] = symtab;
+
+    std::string arch_str = ptx_target_from_file(sidecar_ptx);
+    if (arch_str.empty()) {
+      unsigned forced_capability =
+          context->get_device()
+              ->get_gpgpu()
+              ->get_config()
+              .get_forced_max_capability();
+      if (forced_capability == 0) forced_capability = 20;
+      arch_str = "sm_" + std::to_string(forced_capability);
+    }
+    ctx->gpgpu_ptx_info_load_from_filename(sidecar_ptx.c_str(),
+                                            arch_str.c_str());
+
+    ctx->api->load_static_globals(symtab, STATIC_ALLOC_LIMIT,
+                                  context->get_device()->get_gpgpu());
+    ctx->api->load_constants(symtab, STATIC_ALLOC_LIMIT,
+                             context->get_device()->get_gpgpu());
+
+    *module = (CUmodule)(unsigned long long)module_handle;
+    printf("cuModuleLoad: Successfully loaded sidecar PTX with handle %u\n",
+           module_handle);
+    return CUDA_SUCCESS;
+  }
 
   // 1. INIT: Extract code using cuobjdump on first load (handle == 1)
   if (module_handle == 1) {
@@ -6119,8 +6665,50 @@ CUresult CUDAAPI cuFuncSetAttribute(CUfunction hfunc,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  printf("WARNING: this function has not been implemented yet %s\n",
-         __my_func__);
+  function_info *entry = reinterpret_cast<function_info *>(hfunc);
+  if (entry == NULL) return CUDA_ERROR_INVALID_HANDLE;
+
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
+
+  if (attrib == CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES) {
+    if (value < 0) return CUDA_ERROR_INVALID_VALUE;
+    const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
+    unsigned static_smem = kinfo ? kinfo->smem : 0;
+    unsigned max_per_block =
+        context->get_device()->get_gpgpu()->shared_mem_per_block();
+    if (static_smem + (unsigned)value > max_per_block) {
+      printf("GPGPU-Sim PTX: cuFuncSetAttribute "
+             "MAX_DYNAMIC_SHARED_SIZE_BYTES invalid for '%s': static=%u, "
+             "dynamic=%u, max_per_block=%u\n",
+             entry->get_name().c_str(), static_smem, (unsigned)value,
+             max_per_block);
+      return CUDA_ERROR_INVALID_VALUE;
+    }
+    context->get_device()->get_gpgpu()->set_kernel_max_dynamic_smem(
+        entry->get_name(), (unsigned)value, static_smem);
+    printf("GPGPU-Sim PTX: cuFuncSetAttribute "
+           "MAX_DYNAMIC_SHARED_SIZE_BYTES for '%s' = %u bytes\n",
+           entry->get_name().c_str(), (unsigned)value);
+    return CUDA_SUCCESS;
+  }
+
+  if (attrib == CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT) {
+    if (value != CU_SHAREDMEM_CARVEOUT_DEFAULT &&
+        (value < 0 || value > 100)) {
+      return CUDA_ERROR_INVALID_VALUE;
+    }
+    context->get_device()->get_gpgpu()->set_kernel_preferred_shared_carveout(
+        entry->get_name(), value);
+    printf("GPGPU-Sim PTX: cuFuncSetAttribute "
+           "PREFERRED_SHARED_MEMORY_CARVEOUT for '%s' = %d\n",
+           entry->get_name().c_str(), value);
+    return CUDA_SUCCESS;
+  }
+
+  printf("GPGPU-Sim PTX: Execution warning: ignoring call to \"%s "
+         "( func=%p, attrib=%d, value=%d )\"\n",
+         __my_func__, hfunc, attrib, value);
   return CUDA_SUCCESS;
 }
 
@@ -7819,14 +8407,57 @@ __host__ cudaError_t CUDARTAPI cudaStreamGetCaptureInfo_v2(cudaStream_t stream, 
 __host__ cudaError_t CUDARTAPI cudaGetDriverEntryPoint(
     const char *symbol, void **funcPtr, unsigned long long flags,
     enum cudaDriverEntryPointQueryResult *driverStatus = NULL) {
-  cuda_error_not_impl;
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+
+  (void)flags;
+  if (!symbol || !funcPtr) {
+    if (driverStatus) {
+      *driverStatus = cudaDriverEntryPointSymbolNotFound;
+    }
+    return cudaErrorInvalidValue;
+  }
+
+  if (strcmp(symbol, "cuTensorMapEncodeTiled") == 0) {
+    *funcPtr = reinterpret_cast<void *>(&cuTensorMapEncodeTiled);
+    if (driverStatus) {
+      *driverStatus = cudaDriverEntryPointSuccess;
+    }
+    return cudaSuccess;
+  }
+
+  *funcPtr = NULL;
+  if (driverStatus) {
+    *driverStatus = cudaDriverEntryPointSymbolNotFound;
+  }
+  return cudaSuccess;
 }
 
 __host__ cudaError_t CUDARTAPI cudaGetDriverEntryPointByVersion(
     const char *symbol, void **funcPtr, unsigned int cudaVersion,
     unsigned long long flags,
-    cudaDriverEntryPointQueryResult **driverStatus = NULL) {
-  cuda_error_not_impl;
+    enum cudaDriverEntryPointQueryResult *driverStatus = NULL) {
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+
+  if (!symbol || !funcPtr) {
+    if (driverStatus) {
+      *driverStatus = cudaDriverEntryPointSymbolNotFound;
+    }
+    return cudaErrorInvalidValue;
+  }
+
+  if (strcmp(symbol, "cuTensorMapEncodeTiled") == 0 && cudaVersion < 12000) {
+    *funcPtr = NULL;
+    if (driverStatus) {
+      *driverStatus = cudaDriverEntryPointVersionNotSufficent;
+    }
+    return cudaSuccess;
+  }
+
+  return cudaGetDriverEntryPoint(symbol, funcPtr, flags, driverStatus);
 }
 
 __host__ cudaError_t CUDARTAPI cudaHostUnregister(void *ptr) {

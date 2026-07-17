@@ -4,93 +4,90 @@ Unit and integration tests for GPGPU-Sim using Google Test.
 
 ## Quick Start
 
-### Simulator Mode (Default)
+### Simulator Mode
+
 ```bash
 cd test
-source ../setup.sh && source ../setup_environment  # Required for simulator
-./run_tests.sh setup    # One-time setup
-./run_tests.sh test     # Build and run all tests with GPGPU-Sim
+source ../setup.sh
+source ../setup_environment
+./run_tests.sh setup
+./run_tests.sh run test --target sm120 --group unit
+./run_tests.sh run test --target sm120 --group integration
 ```
 
 ### Native GPU Mode (Test Validation)
+
 ```bash
 cd test
-# In a CLEAN shell (no setup_environment sourced)
-./run_tests.sh setup    # One-time setup
-./run_tests.sh test     # Build and run tests on real GPU
+# Start from a clean shell without setup_environment.
+./run_tests.sh setup
+./run_tests.sh run test --target sm120 --group integration
 ```
 
-**Note:** The test runner automatically detects simulator vs. native mode based on environment variables (`GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN`) and `LD_LIBRARY_PATH` contents.
+The runner detects simulator versus native mode from
+`GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN` and `LD_LIBRARY_PATH`. It also rejects a
+GPU configuration whose compute capability does not match the selected target.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `./run_tests.sh setup` | Download Google Test |
-| `./run_tests.sh build` | Build all tests (auto-creates run directory, skips simulator build in native mode) |
-| `./run_tests.sh test` | Run all tests (auto-creates run directory, skips simulator build in native mode) |
-| `./run_tests.sh test <pattern>` | Run specific test |
-| `./run_tests.sh bench <pattern>` | Run microbenchmark test |
+| `./run_tests.sh build SUITE ...` | Build one selected target/group |
+| `./run_tests.sh run SUITE ... [FILTER]` | Build and run one selected target/group |
 | `./run_tests.sh refresh` | Refresh run directory and configuration |
-| `./run_tests.sh list` | List available tests |
+| `./run_tests.sh list` | List the complete suite/target/group hierarchy and modes |
 | `./run_tests.sh list-configs` | List available GPU configurations |
 | `./run_tests.sh clean` | Clean build files |
 
-**Mode Detection:** The `build`, `test`, and `bench` commands automatically detect whether to operate in simulator mode (requires GPGPU-Sim library) or native GPU mode (skips simulator build) based on:
-- Presence of `GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN` environment variable
-- Absence of simulator library paths in `LD_LIBRARY_PATH`
+The public selection model is:
 
-### GPU Configuration Options
+```text
+action -> suite -> target -> group -> optional mode/filter
+```
 
-| Command | Description |
-|---------|-------------|
-| `./run_tests.sh test --config <name>` | Run tests with specific GPU configuration |
-| `./run_tests.sh test -c <name>` | Short form of --config |
-| `./run_tests.sh list-configs` | Show all available configurations |
+`test`, `microbench`, and `trace` default to target `sm120`; `analysis` always
+requires `--target fa2|fa3`. Every target requires `--group`. Use
+`./run_tests.sh help` for the accepted groups and examples.
 
-## Running Individual Tests
+## Example Invocations
 
 ```bash
-# Run specific test suite
-./run_tests.sh test CudaVectorAdd
+# SM120 correctness
+./run_tests.sh run test --target sm120 --group integration CudaVectorAdd
 
-# Run specific test case
-./run_tests.sh test BasicVectorAddition
+# Hopper instruction and FlashAttention smoke tests
+./run_tests.sh run test --target sm90 --group instructions WgmmaF16
+./run_tests.sh run test --target sm90 --group fa2-smoke
+./run_tests.sh run test --target sm90 --group fa3-smoke
 
-# Run with verbose output
-./run_tests.sh -v test MBarrierTest
+# FA analysis; breakdown/scaling/concurrency require a compile-time mode
+./run_tests.sh run analysis --target fa2 --group breakdown --mode only_mma
+./run_tests.sh build analysis --target fa3 --group scaling --mode all
+
+# Microbench and trace
+./run_tests.sh run microbench --target sm120 --group mbarrier
+./run_tests.sh build microbench --target sm90 --group tma
+./run_tests.sh run trace --target sm120 --group gpt2 flash_attn
+
+# Explicit compatible configuration
+./run_tests.sh -c SM120_RTX5090_REDUCED run test --target sm120 \
+  --group integration CudaVectorAdd
 ```
+
+Standalone calibration groups such as `microbench/sm120/memory` and
+`microbench/sm90/{cp-async,mma,tma}` are build-only in the generic runner.
+Use their local Makefiles to supply benchmark-specific runtime arguments.
 
 ## GPU Configurations
 
-The test framework supports multiple GPU configurations for different testing scenarios:
+- **SM120_RTX5090**: default SM120 configuration.
+- **SM120_RTX5090_REDUCED**: lightweight SM120 configuration for quick tests
+  and CI.
+- **SM90_H100**: default Hopper configuration.
 
-### Available Configurations
-
-- **SM120_RTX5090** (default): Full RTX 5090 configuration with 170 SMs
-- **SM120_RTX5090_REDUCED**: Lightweight configuration with 1 SM, 1 L2, 1 DDR (faster for quick tests)
-
-### Using Different Configurations
-
-```bash
-# Run with default configuration (SM120_RTX5090)
-./run_tests.sh test
-
-# Run with reduced configuration (faster)
-./run_tests.sh test --config SM120_RTX5090_REDUCED
-./run_tests.sh test -c SM120_RTX5090_REDUCED
-
-# List all available configurations
-./run_tests.sh list-configs
-
-# Run specific test with custom config
-./run_tests.sh test -c SM120_RTX5090_REDUCED CudaVectorAdd
-```
-
-### When to Use Each Configuration
-
-- **SM120_RTX5090**: Full validation, performance testing, comprehensive test runs
-- **SM120_RTX5090_REDUCED**: Quick smoke tests, development iterations, CI/CD pipelines
+Additional configuration directories are discovered automatically when they
+contain `gpgpusim.config`. Run `./run_tests.sh list-configs` to list them.
 
 ### Configuration Matrix
 
@@ -101,62 +98,100 @@ For detailed test-to-configuration mapping and test status, see:
 - MMA tests (single-block functionality) → `SM120_RTX5090_REDUCED`
 - Other tests (multi-block validation) → `SM120_RTX5090`
 
-### Adding Custom Configurations
-
-1. Create config directory: `configs/YOUR_CONFIG_NAME/`
-2. Add required files: `gpgpusim.config` and `config_*.icnt`
-3. Configuration will be automatically detected by `./run_tests.sh list-configs`
-
 ## Test Organization
 
-```
-test/src/
-├── unit/              # Unit tests (basic functionality, no simulator interaction)
-│   ├── basic_test.cc
-│   ├── bulk_group_test.cc
-│   └── host_tensormap_test.cc
+The supported runner hierarchy is `suite / target / group / optional mode`:
+
+```text
+run_tests.sh
 │
-├── integration/       # Integration tests (cross-component simulator behavior)
-│   ├── README.md
-│   ├── cuda_vector_add_test.cc
-│   ├── cuda_ld_st_matrix_test.cc
-│   ├── cuda_tma_multidim_test.cc
-│   ├── cuda_tma_test.cc
-│   ├── integration_test.cc
-│   ├── mbarrier_sanity_test.cc
-│   ├── mbarrier_test.cc
-│   └── mma/
-│       ├── README.md
-│       ├── cuda_mma_bf16_test.cc
-│       ├── cuda_mma_f16_test.cc
-│       ├── cuda_mma_s8_test.cc
-│       └── cuda_mma_tf32_test.cc
+├── test
+│   ├── sm120
+│   │   ├── unit
+│   │   │   ├── basic
+│   │   │   ├── bulk-group
+│   │   │   └── host-tensormap
+│   │   └── integration
+│   │       ├── basic-integration
+│   │       ├── vector-add
+│   │       ├── ldmatrix/stmatrix
+│   │       ├── TMA
+│   │       ├── multidimensional-TMA
+│   │       ├── mbarrier
+│   │       ├── mbarrier-sanity
+│   │       └── MMA: F16/BF16/TF32/S8
+│   └── sm90
+│       ├── instructions
+│       │   ├── named-barrier
+│       │   └── WGMMA
+│       ├── fa2-smoke
+│       └── fa3-smoke
 │
-├── standalone/        # Dev tests (decoupled from simulator)
-│   ├── cuda_tensor_mma_test.cc
-│   ├── mbarrier_test.cc
-│   ├── tensor_mma_test.cc
-│   └── tma_swizzle_test.cc
+├── analysis
+│   ├── fa2
+│   │   ├── small
+│   │   ├── medium
+│   │   ├── large
+│   │   ├── breakdown                 [mode required]
+│   │   ├── scaling                   [mode required]
+│   │   └── concurrency               [mode required]
+│   └── fa3
+│       ├── small
+│       ├── medium
+│       ├── large
+│       ├── breakdown                 [mode required]
+│       ├── scaling                   [mode required]
+│       └── concurrency               [mode required]
 │
-└── microbench/        # Performance microbenchmarks (separate binaries)
-    ├── mma/
-    │   ├── README.md
-    │   ├── inst_latency_bench.cc
-    │   └── mma_issue_bench.cc
-    └── mbarrier/
-        ├── README.md
-        └── mbarrier_trywait_latency_bench.cc
+├── microbench
+│   ├── sm120
+│   │   ├── mbarrier
+│   │   │   └── try-wait latency/visibility
+│   │   ├── mma
+│   │   │   ├── instruction-latency
+│   │   │   ├── issue/ILP
+│   │   │   ├── accept-queue
+│   │   │   └── saturation
+│   │   └── memory
+│   │       ├── global-load-bandwidth
+│   │       ├── L2-latency
+│   │       ├── L2/HBM-interleave
+│   │       └── L2-partition-latency
+│   └── sm90
+│       ├── cp-async
+│       │   ├── latency
+│       │   ├── issue-scope
+│       │   └── PTX-probe
+│       ├── mma
+│       │   ├── accept-queue
+│       │   └── saturation
+│       ├── tma
+│       │   ├── completion-latency
+│       │   ├── descriptor-setup
+│       │   └── FA3-M3
+│       └── wgmma
+│           ├── async-latency
+│           ├── FP16-core-sweep
+│           ├── N16-chain
+│           ├── RF-bandwidth
+│           └── softmax-mix
+│
+└── trace
+    └── sm120
+        └── gpt2
+            ├── embedding
+            ├── GELU
+            ├── flash-attention
+            ├── layernorm
+            ├── residual-add
+            └── linear
 ```
 
-**`unit/`** and **`integration/`** are compiled into `run_all_tests` (via `make test`).
-**`standalone/`** dev tests are a separate binary `run_dev_tests` (via `make dev`).
-**`microbench/`** tests are separate binaries (via `make bench`).
-
-Microbenchmarks stay split intentionally: benchmark-specific files rebuild faster,
-one crashing bench does not take down unrelated benches, and each binary can own
-its own output artifacts. `./run_tests.sh bench` hides most of that complexity by
-pre-screening binaries with `--gtest_list_tests` before dispatching a shared
-filter.
+`small`, `medium`, and `large` run directly. Analysis groups marked above
+require one compile-time mode; `mode=all` is build-only. The legacy `dev`
+suite is not part of the supported hierarchy. `test/triton_trace/` remains an
+independent capture and offline-validation tool and is not managed by
+`run_tests.sh`.
 
 ## Writing Tests
 
@@ -204,10 +239,10 @@ Tests run from `test/run/<CONFIG_NAME>/` directory with GPGPU-Sim configuration 
 
 ## Build System
 
-- Unit tests: Compiled with g++
-- Integration tests: Compiled with nvcc for CUDA support
+- Unit, integration, and GPU microbench sources are compiled with NVCC
+- Google Test support objects and final binaries are built with the host C++ compiler
 - Automatic dependency management
-- Links with CUDA runtime for integration tests
+- Test binaries link with the CUDA runtime
 
 ## Requirements
 

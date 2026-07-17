@@ -39,7 +39,7 @@ echo "Multi-Config Support Test Suite"
 echo "========================================="
 echo ""
 
-# Test 1: Backward compatibility - default config should be SM120_RTX5090
+# Test 1: Default config should be SM120_RTX5090
 run_test "Default config is SM120_RTX5090" \
     "$TEST_SCRIPT list-configs 2>&1 | grep -q 'SM120_RTX5090 (default)' || \
      $TEST_SCRIPT list-configs 2>&1 | grep -q 'SM120_RTX5090.*default'"
@@ -54,23 +54,22 @@ run_test "SM120_RTX5090_REDUCED config is available" \
 
 # Test 4: --config flag is recognized
 run_test "--config flag is recognized" \
-    "$TEST_SCRIPT run --config SM120_RTX5090 --help 2>&1 | grep -qv 'Unknown option' || \
-     $TEST_SCRIPT --help 2>&1 | grep -q '\-\-config'"
+    "$TEST_SCRIPT list-configs --config SM120_RTX5090 &>/dev/null"
 
 # Test 5: -c short flag is recognized
 run_test "-c short flag is recognized" \
-    "$TEST_SCRIPT run -c SM120_RTX5090 --help 2>&1 | grep -qv 'Unknown option' || \
-     $TEST_SCRIPT --help 2>&1 | grep -q '\-c'"
+    "$TEST_SCRIPT list-configs -c SM120_RTX5090 &>/dev/null"
 
 # Test 6: Run directory exists for default config
 run_test "Run directory structure for SM120_RTX5090" \
     "[ -d '$SCRIPT_DIR/run/SM120_RTX5090' ] || \
-     ($TEST_SCRIPT build &>/dev/null && [ -d '$SCRIPT_DIR/run/SM120_RTX5090' ])"
+     ($TEST_SCRIPT build test --target sm120 --group unit &>/dev/null && \
+      [ -d '$SCRIPT_DIR/run/SM120_RTX5090' ])"
 
 # Test 7: Test binary is shared (only one copy in build/bin/)
 run_test "Test binary is shared (single location)" \
-    "[ -f '$SCRIPT_DIR/build/bin/run_all_tests' ] && \
-     [ ! -f '$SCRIPT_DIR/run/SM120_RTX5090/run_all_tests' ]"
+    "[ -f '$SCRIPT_DIR/build/bin/sm120/run_unit_tests' ] && \
+     [ ! -f '$SCRIPT_DIR/run/SM120_RTX5090/run_unit_tests' ]"
 
 # Test 8: Config files are copied to run directory
 run_test "Config files copied to run directory" \
@@ -84,8 +83,7 @@ run_test "Reduced config can be set up" \
 
 # Test 10: Invalid config name is rejected
 run_test "Invalid config name is rejected" \
-    "! $TEST_SCRIPT run --config INVALID_CONFIG_NAME 2>&1 | grep -qi 'error\|not found\|invalid' || \
-     $TEST_SCRIPT run --config INVALID_CONFIG_NAME &>/dev/null && false || true"
+    "! $TEST_SCRIPT refresh --config INVALID_CONFIG_NAME &>/dev/null"
 
 # Doc-guard tests for test configuration matrix (issue #28)
 run_test "Test configuration matrix file exists" \
@@ -97,10 +95,10 @@ run_test "Matrix documents SM120_RTX5090 config" \
 run_test "Matrix documents SM120_RTX5090_REDUCED config" \
     "grep -q 'SM120_RTX5090_REDUCED' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
 
-run_test "Matrix documents excluded test CPAsyncMethod" \
+run_test "Matrix documents inactive test CPAsyncMethod" \
     "grep -q 'CPAsyncMethod' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
 
-run_test "Matrix documents excluded test PerformanceComparison" \
+run_test "Matrix documents default-excluded test PerformanceComparison" \
     "grep -q 'PerformanceComparison' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
 
 # Doc-guard tests for build detection and native GPU mode (issue #36)
@@ -112,6 +110,12 @@ run_test "Native mode checks GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN" \
 
 run_test "Native mode checks LD_LIBRARY_PATH for simulator paths" \
     "grep -q 'LD_LIBRARY_PATH' '$TEST_SCRIPT'"
+
+run_test "Reduced config parity checker rejects unapproved fields" \
+    "python3 '$SCRIPT_DIR/scripts/test_reduced_config_parity.py'"
+
+run_test "Reduced configs permit only documented full-config differences" \
+    "python3 '$SCRIPT_DIR/scripts/check_reduced_config_parity.py'"
 
 echo "========================================="
 echo "Test Results: $passed_tests/$total_tests passed"

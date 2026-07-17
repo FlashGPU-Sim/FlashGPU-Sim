@@ -165,17 +165,30 @@ TMA instructions (`cp.async.bulk.tensor`) use the Triton-based test workflow to 
 
 ### TMA Test Workflow (Triton-based)
 
-1. **Setup Environment**:
+1. **Setup Python Environment**:
    ```bash
-   source setup.sh && source setup_environment
-   source test/triton_trace/.venv/bin/activate
+   python3.12 -m venv test/triton_trace/.venv
+   test/triton_trace/.venv/bin/python -m pip install -U pip uv
+
+   UV_CACHE_DIR=/data/wzr/rtl-lib/.uv-cache \
+     test/triton_trace/.venv/bin/uv pip install \
+     --python test/triton_trace/.venv/bin/python \
+     --link-mode hardlink \
+     torch triton numpy nvidia-cuda-nvcc nvidia-cuda-cuobjdump
    ```
+
+   Use the venv CUDA toolkit when Triton emits PTX 9.1 / `sm_120a`; CUDA 12.x
+   `ptxas` cannot assemble those kernels. `setup.sh` prefers the repo-local venv
+   CUDA toolkit when `CUDA_INSTALL_PATH` is not already set, and the validation
+   sweep scripts detect the venv CUDA `nvcc` automatically after activating
+   `.venv`.
 
 2. **Modify Test Kernels**: Edit `test/triton_trace/example_tensor_add.py` with test variants
 
 3. **Extract PTX via Triton Tracker**:
    ```bash
-   python test/triton_trace/triton_kernel_tracking/tracker.py example_tensor_add.py
+   source test/triton_trace/.venv/bin/activate
+   python test/triton_trace/examples/example_tensor_add.py
    ```
    Generates launcher artifacts in `test/triton_trace/triton_kernel_tracking/example_tensor_add/launchers/`
 
@@ -193,6 +206,10 @@ TMA instructions (`cp.async.bulk.tensor`) use the Triton-based test workflow to 
    ```
 
 6. **Validate Output**: Check tensor addition produces correct results
+
+For real-GPU replay or NCU profiling, do not source `setup_environment`. For
+GPGPU-Sim runs, require both `Validation PASSED` and simulator counters such as
+`gpu_tot_sim_cycle`; validation alone can also happen on the real CUDA runtime.
 
 **TMA Test Status** (issue #31):
 - ✅ 1D TMA: PASSED (8,192 elements validated)
@@ -216,8 +233,20 @@ The repository includes a GitHub Actions workflow that runs automated tests on p
 
 **CI configuration:**
 - Uses `SM120_RTX5090_REDUCED` for resource efficiency
+- Uses `SM90_H100_REDUCED` for SM90 instruction, FA2, and FA3 gates
 - Runs in a minimal Docker container (`docker/Dockerfile.ci`)
-- Automatically triggered on PR approval
+- Splits the gate into `sm120`, `sm90-fa2`, and `sm90-fa3` container shards
+- Limits simulator build parallelism to two jobs, FA2 kernel compilation to one
+  job, and container memory to 7 GiB
+- Automatically triggered for pull requests targeting the `flash` branch
+
+`CI_SHARD` can select one shard while keeping the same entrypoint:
+
+```bash
+CI_SHARD=sm90-fa3 ./test/ci/run_ci_tests.sh
+```
+
+When `CI_SHARD` is unset, the script runs the complete gate for local parity.
 
 ### Local Workflow Validation with act
 

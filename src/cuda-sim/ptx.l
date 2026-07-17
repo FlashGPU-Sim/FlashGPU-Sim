@@ -42,6 +42,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "opcodes.h"
 #include "ptx_parser.h"
 #include "ptx.tab.h"
+#include <cstdlib>
 #include <string.h>
 #include "../../libcuda/gpgpu_context.h"
 
@@ -55,6 +56,21 @@ POSSIBILITY OF SUCH DAMAGE.
 #define YY_DECL int ptx_lex \
 	       (YYSTYPE * yylval_param , yyscan_t yyscanner, ptx_recognizer* recognizer)
 int ptx_error( yyscan_t yyscanner, ptx_recognizer* recognizer, const char *s );
+
+static int parse_wgmma_shape_option(const char *text) {
+  int n = 0;
+  int k = 0;
+  if (sscanf(text, ".m64n%dk%d", &n, &k) != 2) {
+    printf("GPGPU-Sim: ERROR ** malformed WGMMA shape '%s'\n", text);
+    abort();
+  }
+  if (n < 8 || n > 256 || (n % 8) != 0 ||
+      !(k == 8 || k == 16 || k == 32 || k == 64 || k == 256)) {
+    printf("GPGPU-Sim: ERROR ** unsupported WGMMA shape '%s'\n", text);
+    abort();
+  }
+  return make_wgmma_shape_option(n, k);
+}
 %}
 
 %s IN_STRING
@@ -75,6 +91,8 @@ bar.warp 	TC; yylval->int_value = NOP_OP; return OPCODE;
 bar 	TC; yylval->int_value = BAR_OP; return OPCODE;
 barrier	TC; yylval->int_value = BAR_OP; return OPCODE;
 mbarrier 	TC; yylval->int_value = MBAR_OP; return OPCODE;
+cp\.reduce\.async\.bulk TC; yylval->int_value = TMA_OP; return OPCODE;
+cp\.async\.bulk\.prefetch TC; yylval->int_value = TMA_PREFETCH_OP; return OPCODE;
 cp\.async\.bulk TC; yylval->int_value = TMA_OP; return OPCODE;
 cp\.async\.commit_group TC; yylval->int_value = CP_ASYNC_COMMIT_OP; return OPCODE;
 cp\.async\.wait_all TC; yylval->int_value = CP_ASYNC_WAIT_OP; return OPCODE;
@@ -93,6 +111,11 @@ wmma\.store 	TC; yylval->int_value = MMA_ST_OP; return OPCODE;
 
 mma\.sync\.aligned	TC; yylval->int_value = TENSOR_MMA_OP; return OPCODE;
 mma\.sync	TC; yylval->int_value = TENSOR_MMA_OP; return OPCODE;
+wgmma\.mma_async\.sp	TC; yylval->int_value = WGMMA_MMA_ASYNC_SP_OP; return OPCODE;
+wgmma\.mma_async	TC; yylval->int_value = WGMMA_MMA_ASYNC_OP; return OPCODE;
+wgmma\.fence	TC; yylval->int_value = WGMMA_FENCE_OP; return OPCODE;
+wgmma\.commit_group	TC; yylval->int_value = WGMMA_COMMIT_GROUP_OP; return OPCODE;
+wgmma\.wait_group	TC; yylval->int_value = WGMMA_WAIT_GROUP_OP; return OPCODE;
 
 call	TC; BEGIN(NOT_OPCODE); yylval->int_value = CALL_OP; return OPCODE; // blocking opcode token in case the callee has the same name as an opcode
 callp   TC; BEGIN(NOT_OPCODE); yylval->int_value = CALLP_OP; return OPCODE;
@@ -111,10 +134,12 @@ ld      TC; yylval->int_value = LD_OP; return OPCODE;
 ld.volatile TC; yylval->int_value = LD_OP; return OPCODE;
 ldu     TC; yylval->int_value = LDU_OP; return OPCODE;
 lg2	TC; yylval->int_value = LG2_OP; return OPCODE;
+griddepcontrol TC; yylval->int_value = GRIDDEPCONTROL_OP; return OPCODE;
 mad24   TC; yylval->int_value = MAD24_OP; return OPCODE;
 mad     TC; yylval->int_value = MAD_OP; return OPCODE;
 madc	TC; yylval->int_value = MADC_OP; return OPCODE;
 madp	TC; yylval->int_value = MADP_OP; return OPCODE;
+mapa	TC; yylval->int_value = MAPA_OP; return OPCODE;
 max     TC; yylval->int_value = MAX_OP; return OPCODE;
 membar  TC; yylval->int_value = MEMBAR_OP; return OPCODE;
 min     TC; yylval->int_value = MIN_OP; return OPCODE;
@@ -142,6 +167,7 @@ sad     TC; yylval->int_value = SAD_OP; return OPCODE;
 selp	TC; yylval->int_value = SELP_OP; return OPCODE;
 setp    TC; yylval->int_value = SETP_OP; return OPCODE;
 set	TC; yylval->int_value = SET_OP; return OPCODE;
+setmaxnreg	TC; yylval->int_value = SETMAXNREG_OP; return OPCODE;
 shfl	TC; yylval->int_value = SHFL_OP; return OPCODE;
 shf	TC; yylval->int_value = SHF_OP; return OPCODE;
 shl     TC; yylval->int_value = SHL_OP; return OPCODE;
@@ -159,6 +185,7 @@ suld	TC; yylval->int_value = SULD_OP; return OPCODE;
 sured	TC; yylval->int_value = SURED_OP; return OPCODE;
 surst	TC; yylval->int_value = SUST_OP; return OPCODE;
 suq	TC; yylval->int_value = SUQ_OP; return OPCODE;
+tanh	TC; yylval->int_value = TANH_OP; return OPCODE;
 tex	TC; BEGIN(NOT_OPCODE); yylval->int_value = TEX_OP; return OPCODE;
 txq	TC; yylval->int_value = TEX_OP; return OPCODE;
 tensormap	TC; yylval->int_value = TENSORMAP_OP; return OPCODE;
@@ -213,6 +240,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.m16n8k64 TC; yylval->int_value = MMA_M16N8K64; return CONFIGURATION;
 \.m8n8k4 TC; yylval->int_value = MMA_M8N8K4; return CONFIGURATION;
 \.m8n8k16 TC; yylval->int_value = MMA_M8N8K16; return CONFIGURATION;
+\.m64n[0-9]+k(8|16|32|64|256) TC; yylval->int_value = parse_wgmma_shape_option(yytext); return WGMMA_SHAPE;
 
 \.f4e TC;  return PRMT_F4E_MODE;
 \.b4e TC;  return PRMT_B4E_MODE;
@@ -270,8 +298,14 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 "%clock" TC; yylval->int_value = CLOCK_REG; return SPECIAL_REGISTER;
 "%halfclock" TC; yylval->int_value = HALFCLOCK_ID; return SPECIAL_REGISTER;
 "%clock64" TC; yylval->int_value = CLOCK64_REG; return SPECIAL_REGISTER;
+"%globaltimer" TC; yylval->int_value = GLOBALTIMER_REG; return SPECIAL_REGISTER;
 "%ctaid" TC; yylval->int_value = CTAID_REG; return SPECIAL_REGISTER;
-"%envreg"[0-9]+ TC; sscanf(yytext+7,"%u",&yylval->int_value); yylval->int_value<<=16; yylval->int_value += ENVREG_REG; return SPECIAL_REGISTER;
+"%envreg"[0-9]+ TC; {
+  unsigned reg = 0;
+  sscanf(yytext+7,"%u",&reg);
+  yylval->int_value = (static_cast<long long>(reg) << 16) + ENVREG_REG;
+  return SPECIAL_REGISTER;
+}
 "%gridid" TC; yylval->int_value = GRIDID_REG; return SPECIAL_REGISTER;
 "%laneid"  TC; yylval->int_value = LANEID_REG; return SPECIAL_REGISTER;
 "%lanemask_eq"  TC; yylval->int_value = LANEMASK_EQ_REG; return SPECIAL_REGISTER;
@@ -283,10 +317,17 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 "%ntid"  TC; yylval->int_value = NTID_REG; return SPECIAL_REGISTER;
 "%nsmid"  TC; yylval->int_value = NSMID_REG; return SPECIAL_REGISTER;
 "%nwarpid"  TC; yylval->int_value = NWARPID_REG; return SPECIAL_REGISTER;
-"%pm"[0-3]  TC; sscanf(yytext+3,"%u",&yylval->int_value); yylval->int_value<<=16; yylval->int_value += PM_REG; return SPECIAL_REGISTER;
+"%pm"[0-3]  TC; {
+  unsigned reg = 0;
+  sscanf(yytext+3,"%u",&reg);
+  yylval->int_value = (static_cast<long long>(reg) << 16) + PM_REG;
+  return SPECIAL_REGISTER;
+}
 "%smid"  TC; yylval->int_value = SMID_REG; return SPECIAL_REGISTER;
 "%tid"  TC; yylval->int_value = TID_REG; return SPECIAL_REGISTER;
 "%warpid"  TC; yylval->int_value = WARPID_REG; return SPECIAL_REGISTER;
+"%cluster_ctaid" TC; yylval->int_value = CLUSTER_CTAID_REG; return SPECIAL_REGISTER;
+"%cluster_ctarank" TC; yylval->int_value = CLUSTER_CTA_RANK_REG; return SPECIAL_REGISTER;
 "WARP_SZ"  TC; yylval->int_value = WARPSZ_REG; return SPECIAL_REGISTER;
 
 [a-zA-Z_][a-zA-Z0-9_$]*  TC; yylval->string_value = strdup(yytext); return IDENTIFIER;
@@ -294,10 +335,10 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 
 [0-9]+\.[0-9]+ 	 TC; sscanf(yytext,"%lf", &yylval->double_value); return DOUBLE_OPERAND;
 	
-0[xX][0-9a-fA-F]+U? TC; CHECK_UNSIGNED; sscanf(yytext,"%x", &yylval->int_value); return INT_OPERAND;
+0[xX][0-9a-fA-F]+U? TC; CHECK_UNSIGNED; yylval->int_value = (long long)strtoull(yytext, NULL, 0); return INT_OPERAND;
 0[0-7]+U?   	TC; printf("GPGPU-Sim: ERROR ** parsing octal not (yet) implemented\n"); abort(); return INT_OPERAND;
 0[bB][01]+U?  	TC; printf("GPGPU-Sim: ERROR ** parsing binary not (yet) implemented\n"); abort(); return INT_OPERAND;
-[-]?[0-9]+U?    TC; CHECK_UNSIGNED; yylval->int_value =  atoi(yytext); return INT_OPERAND;
+[-]?[0-9]+U?    TC; CHECK_UNSIGNED; yylval->int_value = strtoll(yytext, NULL, 10); return INT_OPERAND;
 
 0[fF][0-9a-fA-F]{8}  TC; sscanf(yytext+2,"%x", (unsigned*)(void*)&yylval->float_value); return FLOAT_OPERAND;
 0[dD][0-9a-fA-F]{16}  TC; sscanf(yytext+2,"%Lx", (unsigned long long*)(void*)&yylval->double_value); return DOUBLE_OPERAND;
@@ -314,10 +355,13 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.f16x2  TC;  return F16X2_TYPE;
 \.bf16  TC;  return BF16_TYPE;
 \.tf32  TC;  return TF32_TYPE;
+\.e4m3  TC;  return E4M3_TYPE;
+\.e5m2  TC;  return E5M2_TYPE;
 \.f32x2  TC;  return F32X2_TYPE;
 \.f32  TC;  return F32_TYPE;
 \.f64  TC;  return F64_TYPE;
 \.ff64 TC;  return FF64_TYPE;
+\.b1   TC;  return B1_TYPE;
 \.b8   TC;  return B8_TYPE;
 \.b16  TC;  return B16_TYPE;
 \.b32  TC;  return B32_TYPE;
@@ -346,6 +390,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.num	TC; return NUM_OPTION;
 \.nan	TC; return NAN_OPTION;
 
+\.satfinite	TC; return SATFINITE_OPTION;
 \.sat	TC; return SAT_OPTION;
 
 \.l		TC; return LEFT_OPTION;
@@ -387,6 +432,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.sync TC; return SYNC_OPTION;
 \.arrive TC; return ARRIVE_OPTION;
 \.expect_tx TC; return EXPECT_TX_OPTION;
+\.complete_tx TC; return COMPLETE_TX_OPTION;
 \.red TC; return RED_OPTION;
 
 \.clamp	TC; return CLAMP_OPTION;
@@ -414,9 +460,12 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.x2 TC; return X2_OPTION;
 \.x4 TC; return X4_OPTION;
 \.try_wait TC; return TRY_WAIT_OPTION;
+\.wait TC; return WAIT_OPTION;
 \.parity TC; return PARITY_OPTION;
+\.mbarrier_init TC; return MBARRIER_INIT_OPTION;
 \.shared::cta TC; return CTA_OPTION;
 \.shared::cluster TC; return CLUSTER_OPTION;
+\.cluster TC; return CLUSTER_OPTION;
 \.tensor TC; return TENSOR_OPTION;
 \.1d	TC; return DIM_1D_OPTION;
 \.2d	TC; return DIM_2D_OPTION;
@@ -439,8 +488,12 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.fill_mode TC; return FILL_MODE_OPTION;
 \.cp_fenceproxy TC; return CP_FENCEPROXY_OPTION;
 \.release TC; return RELEASE_OPTION;
+\.relaxed TC; return RELAXED_OPTION;
 \.acquire TC; return ACQUIRE_OPTION;
 \.gpu TC; return GPU_OPTION;
+\.L2::128B TC; return L2_OPTION;
+\.L2::cache_hint TC; return L2_CACHE_HINT_OPTION;
+\.L2 TC; return L2_OPTION;
 \.aligned TC; return ALIGNED_OPTION;
 \.b1024 TC; return B1024_TYPE;
 ::generic TC; return GENERIC_OPTION;
@@ -452,6 +505,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 
 \.commit_group TC; return COMMIT_GROUP_OPTION;
 \.wait_group TC; return WAIT_GROUP_OPTION;
+\.launch_dependents TC; return LAUNCH_DEPENDENTS_OPTION;
 
 \.to	TC; return TO_OPTION;
 

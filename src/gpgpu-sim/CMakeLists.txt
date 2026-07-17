@@ -19,7 +19,8 @@ list(APPEND gpgpusim_SRC addrdec.cc
     stack.cc
     stat-tool.cc
     traffic_breakdown.cc
-    visualizer.cc)
+    visualizer.cc
+    flash/ptx_sched/ptx_scheduler.cc)
 if(NOT GPGPUSIM_USE_POWER_MODEL)
     list(REMOVE_ITEM ${gpgpusim_SRC} power_interface.cc)
 endif()
@@ -33,4 +34,3 @@ if(GPGPUSIM_USE_POWER_MODEL)
 target_compile_definitions(gpgpusim PRIVATE GPGPUSIM_POWER_MODEL)
 target_include_directories(gpgpusim PRIVATE ${GPGPUSIM_POWER_MODEL})
 endif()
-

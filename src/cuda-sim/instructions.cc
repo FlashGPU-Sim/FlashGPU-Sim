@@ -182,13 +182,49 @@ void video_mem_instruction(const ptx_instruction *pI, ptx_thread_info *thread,
 
 void sign_extend(ptx_reg_t &data, unsigned src_size, const operand_info &dst);
 
+static inline float f32_from_bits(uint32_t bits) {
+  float value;
+  memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+static inline uint32_t bits_from_f32(float value) {
+  uint32_t bits;
+  memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+static inline uint16_t f16_bits_from_f32(float value, unsigned rounding_mode) {
+  switch (rounding_mode) {
+    case RZ_OPTION:
+    case RZI_OPTION:
+      return half_float::detail::float2half<std::round_toward_zero>(value);
+    case RM_OPTION:
+    case RMI_OPTION:
+      return half_float::detail::float2half<std::round_toward_neg_infinity>(value);
+    case RP_OPTION:
+    case RPI_OPTION:
+      return half_float::detail::float2half<std::round_toward_infinity>(value);
+    case RN_OPTION:
+    case RNI_OPTION:
+    default:
+      return half_float::detail::float2half<std::round_to_nearest>(value);
+  }
+}
+
+static inline float f32_from_f16_bits(uint16_t bits) {
+  return half_float::detail::half2float<float>(bits);
+}
+
 void ptx_thread_info::set_reg(const symbol *reg, const ptx_reg_t &value) {
   assert(reg != NULL);
   if (reg->name() == "_") return;
   assert(!m_regs.empty());
-  assert(reg->uid() > 0);
-  m_regs.back()[reg] = value;
-  if (m_enable_debug_trace) m_debug_trace_regs_modified.back()[reg] = value;
+  const symbol *mapped_reg = canonicalize_reg(reg);
+  assert(mapped_reg->uid() > 0);
+  m_regs.back()[mapped_reg] = value;
+  if (m_enable_debug_trace)
+    m_debug_trace_regs_modified.back()[mapped_reg] = value;
   m_last_set_operand_value = value;
 }
 
@@ -230,7 +266,7 @@ void ptx_thread_info::resume_reg_thread(char *fname, symbol_table *symtab) {
     data = atoi(pch);
     pch = strtok(NULL, " ");
     pch = strtok(NULL, " ");
-    m_regs.back()[reg] = data;
+    set_reg(reg, data);
   }
   fclose(fp2);
 }
@@ -239,15 +275,18 @@ ptx_reg_t ptx_thread_info::get_reg(const symbol *reg) {
   static bool unfound_register_warned = false;
   assert(reg != NULL);
   assert(!m_regs.empty());
-  reg_map_t::iterator regs_iter = m_regs.back().find(reg);
+  const symbol *logical_reg = reg;
+  const symbol *mapped_reg = canonicalize_reg(reg);
+  reg_map_t::iterator regs_iter = m_regs.back().find(mapped_reg);
   if (regs_iter == m_regs.back().end()) {
-    assert(reg->type()->get_key().is_reg());
-    const std::string &name = reg->name();
+    assert(logical_reg->type()->get_key().is_reg());
+    const std::string &name = logical_reg->name();
     unsigned call_uid = m_callstack.back().m_call_uid;
     ptx_reg_t uninit_reg;
     uninit_reg.u32 = 0x0;
-    set_reg(reg, uninit_reg);  // give it a value since we are going to warn the
-                               // user anyway
+    set_reg(logical_reg,
+            uninit_reg);  // give it a value since we are going to warn the
+                          // user anyway
     std::string file_loc = get_location();
     if (!unfound_register_warned) {
       printf(
@@ -258,10 +297,10 @@ ptx_reg_t ptx_thread_info::get_reg(const symbol *reg) {
           file_loc.c_str(), name.c_str(), call_uid);
       unfound_register_warned = true;
     }
-    regs_iter = m_regs.back().find(reg);
+    regs_iter = m_regs.back().find(mapped_reg);
   }
   if (m_enable_debug_trace)
-    m_debug_trace_regs_read.back()[reg] = regs_iter->second;
+    m_debug_trace_regs_read.back()[mapped_reg] = regs_iter->second;
   return regs_iter->second;
 }
 
@@ -279,9 +318,10 @@ ptx_reg_t ptx_thread_info::get_operand_value(const operand_info &op,
       if (op.is_reg()) {
         result = get_reg(op.get_symbol());
       } else if (op.is_builtin()) {
-        // Check if this is a 64-bit special register (e.g., %clock64)
+        // Check if this is a 64-bit special register (e.g., %clock64).
         int builtin_id = op.get_int();
-        if ((builtin_id & 0xFFFF) == CLOCK64_REG) {
+        if ((builtin_id & 0xFFFF) == CLOCK64_REG ||
+            (builtin_id & 0xFFFF) == GLOBALTIMER_REG) {
           result.u64 = get_builtin_u64(builtin_id, op.get_addr_offset());
         } else {
           result.u32 = get_builtin(builtin_id, op.get_addr_offset());
@@ -309,9 +349,17 @@ ptx_reg_t ptx_thread_info::get_operand_value(const operand_info &op,
         } else if (info.is_const()) {
           result.u64 = sym->get_address() + op.get_addr_offset();
         } else if (op.is_shared()) {
-          result.u64 = op.get_symbol()->get_address() + op.get_addr_offset();
+          const symbol *name = op.get_symbol();
+          if (name->is_reg())
+            result.u64 = get_reg(name).u64 + op.get_addr_offset();
+          else
+            result.u64 = name->get_address() + op.get_addr_offset();
         } else if (op.is_sstarr()) {
-          result.u64 = op.get_symbol()->get_address() + op.get_addr_offset();
+          const symbol *name = op.get_symbol();
+          if (name->is_reg())
+            result.u64 = get_reg(name).u64 + op.get_addr_offset();
+          else
+            result.u64 = name->get_address() + op.get_addr_offset();
         } else {
           const char *name = op.name().c_str();
           printf(
@@ -321,20 +369,28 @@ ptx_reg_t ptx_thread_info::get_operand_value(const operand_info &op,
           abort();
         }
 
+      } else if (op.get_type() == address_t && op.get_symbol()->is_reg()) {
+        const symbol *name = op.get_symbol();
+        result.u64 = get_reg(name).u64 + op.get_addr_offset();
       } else if (op.is_literal()) {
         result = op.get_literal_value();
       } else if (op.is_label()) {
         result.u64 = op.get_symbol()->get_address();
       } else if (op.is_shared()) {
-        result.u64 = op.get_symbol()->get_address();
+        const symbol *name = op.get_symbol();
+        result.u64 = name->is_reg() ? get_reg(name).u64 : name->get_address();
       } else if (op.is_sstarr()) {
-        result.u64 = op.get_symbol()->get_address();
+        const symbol *name = op.get_symbol();
+        result.u64 = name->is_reg() ? get_reg(name).u64 : name->get_address();
       } else if (op.is_const()) {
-        result.u64 = op.get_symbol()->get_address();
+        const symbol *name = op.get_symbol();
+        result.u64 = name->is_reg() ? get_reg(name).u64 : name->get_address();
       } else if (op.is_global()) {
-        result.u64 = op.get_symbol()->get_address();
+        const symbol *name = op.get_symbol();
+        result.u64 = name->is_reg() ? get_reg(name).u64 : name->get_address();
       } else if (op.is_local()) {
-        result.u64 = op.get_symbol()->get_address();
+        const symbol *name = op.get_symbol();
+        result.u64 = name->is_reg() ? get_reg(name).u64 : name->get_address();
       } else if (op.is_function_address()) {
         result.u64 = (size_t)op.get_symbol()->get_pc();
       } else if (op.is_param_kernel()) {
@@ -548,9 +604,7 @@ void ptx_thread_info::get_vector_operand_values(const operand_info &op,
     const symbol *sym = NULL;
     sym = op.vec_symbol(idx);
     if (strcmp(sym->name().c_str(), "_") != 0) {
-      reg_map_t::iterator reg_iter = m_regs.back().find(sym);
-      assert(reg_iter != m_regs.back().end());
-      ptx_regs[idx] = reg_iter->second;
+      ptx_regs[idx] = get_reg(sym);
     }
   }
 }
@@ -585,7 +639,7 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
     ptx_reg_t predValue;
 
     const symbol *sym = dst.vec_symbol(0);
-    predValue.u64 = (m_regs.back()[sym].u64) & ~(0x0C);
+    predValue.u64 = get_reg(sym).u64 & ~(0x0C);
     predValue.u64 |= ((overflow & 0x01) << 3);
     predValue.u64 |= ((carry & 0x01) << 2);
 
@@ -698,9 +752,9 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
 
       if (dst.get_operand_lohi() == 1) {
         setValue.u64 =
-            ((m_regs.back()[regName].u64) & (~(0xFFFF))) + (data.u64 & 0xFFFF);
+            (get_reg(regName).u64 & (~(0xFFFF))) + (data.u64 & 0xFFFF);
       } else if (dst.get_operand_lohi() == 2) {
-        setValue.u64 = ((m_regs.back()[regName].u64) & (~(0xFFFF0000))) +
+        setValue.u64 = (get_reg(regName).u64 & (~(0xFFFF0000))) +
                        ((data.u64 << 16) & 0xFFFF0000);
       }
 
@@ -748,11 +802,11 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
       set_reg(name2, setValue2);
     } else {
       if (dst.get_operand_lohi() == 1) {
-        setValue.u64 = ((m_regs.back()[dst.get_symbol()].u64) & (~(0xFFFF))) +
+        setValue.u64 = (get_reg(dst.get_symbol()).u64 & (~(0xFFFF))) +
                        (data.u64 & 0xFFFF);
       } else if (dst.get_operand_lohi() == 2) {
         setValue.u64 =
-            ((m_regs.back()[dst.get_symbol()].u64) & (~(0xFFFF0000))) +
+            (get_reg(dst.get_symbol()).u64 & (~(0xFFFF0000))) +
             ((data.u64 << 16) & 0xFFFF0000);
       }
       set_reg(dst.get_symbol(), setValue);
@@ -1074,18 +1128,36 @@ void add_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     case F16_TYPE:
       data.f16 = src1_data.f16 + src2_data.f16;
       break;  // assert(0); break;
+    case F16X2_TYPE: {
+      uint16_t s1lo = static_cast<uint16_t>(src1_data.u32 & 0xFFFFu);
+      uint16_t s1hi = static_cast<uint16_t>((src1_data.u32 >> 16) & 0xFFFFu);
+      uint16_t s2lo = static_cast<uint16_t>(src2_data.u32 & 0xFFFFu);
+      uint16_t s2hi = static_cast<uint16_t>((src2_data.u32 >> 16) & 0xFFFFu);
+      float rlo = f32_from_f16_bits(s1lo) + f32_from_f16_bits(s2lo);
+      float rhi = f32_from_f16_bits(s1hi) + f32_from_f16_bits(s2hi);
+      if (pI->saturation_mode()) {
+        rlo = (rlo < 0.0f) ? 0.0f : (rlo > 1.0f) ? 1.0f : rlo;
+        rhi = (rhi < 0.0f) ? 0.0f : (rhi > 1.0f) ? 1.0f : rhi;
+      }
+      uint16_t dlo = f16_bits_from_f32(rlo, rounding_mode);
+      uint16_t dhi = f16_bits_from_f32(rhi, rounding_mode);
+      data.u32 = (static_cast<uint32_t>(dhi) << 16) | static_cast<uint32_t>(dlo);
+      break;
+    }
     case F32X2_TYPE: {
       // packed dual-f32: lo=bits[31:0], hi=bits[63:32]
       uint32_t s1lo = (uint32_t)(src1_data.u64 & 0xFFFFFFFFu);
       uint32_t s1hi = (uint32_t)(src1_data.u64 >> 32);
       uint32_t s2lo = (uint32_t)(src2_data.u64 & 0xFFFFFFFFu);
       uint32_t s2hi = (uint32_t)(src2_data.u64 >> 32);
-      float f1lo, f1hi, f2lo, f2hi, rlo, rhi;
-      memcpy(&f1lo, &s1lo, 4); memcpy(&f1hi, &s1hi, 4);
-      memcpy(&f2lo, &s2lo, 4); memcpy(&f2hi, &s2hi, 4);
+      float f1lo = f32_from_bits(s1lo);
+      float f1hi = f32_from_bits(s1hi);
+      float f2lo = f32_from_bits(s2lo);
+      float f2hi = f32_from_bits(s2hi);
+      float rlo, rhi;
       rlo = f1lo + f2lo; rhi = f1hi + f2hi;
-      uint32_t rlo_b, rhi_b;
-      memcpy(&rlo_b, &rlo, 4); memcpy(&rhi_b, &rhi, 4);
+      uint32_t rlo_b = bits_from_f32(rlo);
+      uint32_t rhi_b = bits_from_f32(rhi);
       data.u64 = ((uint64_t)rhi_b << 32) | (uint64_t)rlo_b;
       break;
     }
@@ -1442,14 +1514,22 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
           op_result.u32 = MY_MIN_I(data.u32, src2_data.u32);
           data_ready = true;
           break;
+        case U64_TYPE:
+          op_result.u64 = MY_MIN_I(data.u64, src2_data.u64);
+          data_ready = true;
+          break;
         case S32_TYPE:
           op_result.s32 = MY_MIN_I(data.s32, src2_data.s32);
+          data_ready = true;
+          break;
+        case S64_TYPE:
+          op_result.s64 = MY_MIN_I(data.s64, src2_data.s64);
           data_ready = true;
           break;
         default:
           printf(
               "Execution error: type mismatch with instruction\natom.MIN only "
-              "accepts u32 and s32\n");
+              "accepts u32, u64, s32, and s64\n");
           assert(0);
           break;
       }
@@ -1463,14 +1543,22 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
           op_result.u32 = MY_MAX_I(data.u32, src2_data.u32);
           data_ready = true;
           break;
+        case U64_TYPE:
+          op_result.u64 = MY_MAX_I(data.u64, src2_data.u64);
+          data_ready = true;
+          break;
         case S32_TYPE:
           op_result.s32 = MY_MAX_I(data.s32, src2_data.s32);
+          data_ready = true;
+          break;
+        case S64_TYPE:
+          op_result.s64 = MY_MAX_I(data.s64, src2_data.s64);
           data_ready = true;
           break;
         default:
           printf(
               "Execution error: type mismatch with instruction\natom.MAX only "
-              "accepts u32 and s32\n");
+              "accepts u32, u64, s32, and s64\n");
           assert(0);
           break;
       }
@@ -1659,8 +1747,13 @@ void fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   GPPRINTF_INST_EXEC(WIP, "[STUB] fence instruction not implemented%s\n", "");
 }
 
-void elect_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  handle_elect_inst(pI, thread);
+void griddepcontrol_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  (void)pI;
+  (void)thread;
+}
+
+void elect_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
+  handle_elect_inst(pI, core, inst);
 }
 
 void ldmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
@@ -1672,22 +1765,48 @@ void stmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
 }
 
 void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  int opcode = pI->get_opcode();
-  if (opcode == CP_ASYNC_COMMIT_OP) {
-    printf(
-        "GPGPU-Sim PTX: ERROR (%s:%u) cp.async.commit_group not yet "
-        "implemented\n",
-        pI->source_file(), pI->source_line());
-    abort();
-  } else if (opcode == CP_ASYNC_WAIT_OP) {
-    printf(
-        "GPGPU-Sim PTX: ERROR (%s:%u) cp.async.wait_all not yet "
-        "implemented\n",
-        pI->source_file(), pI->source_line());
-    abort();
+  const int opcode = pI->get_opcode();
+  if (opcode == CP_ASYNC_COMMIT_OP || opcode == CP_ASYNC_WAIT_OP) return;
+
+  for (int opt : pI->get_options()) {
+    if (opt == COMMIT_GROUP_OPTION || opt == WAIT_GROUP_OPTION) return;
   }
-  // CP_ASYNC_OP: cp.async.shared.global
-  inst_not_implemented(pI);
+
+  const operand_info &dst = pI->dst();
+  const operand_info &src = pI->src1();
+
+  addr_t smem_addr =
+      thread->get_operand_value(dst, dst, U64_TYPE, thread, 1).u64;
+  addr_t gmem_addr =
+      thread->get_operand_value(src, dst, U64_TYPE, thread, 1).u64;
+  smem_addr &= 0x00000000FFFFFFFFULL;
+
+  unsigned cp_size = 16;
+  const operand_info &cp_size_op = pI->src2();
+  if (cp_size_op.is_literal()) {
+    cp_size = (unsigned)cp_size_op.get_literal_value().u64;
+  }
+  assert((cp_size == 4 || cp_size == 8 || cp_size == 16) &&
+         "cp.async cp-size must be 4, 8, or 16 bytes");
+
+  unsigned src_size = cp_size;
+  if (pI->get_num_operands() > 3) {
+    const operand_info &src_size_op = pI->src3();
+    if (src_size_op.is_literal()) {
+      src_size = (unsigned)src_size_op.get_literal_value().u64;
+    }
+  }
+  if (src_size > cp_size) src_size = cp_size;
+
+  memory_space *gmem = thread->get_global_memory();
+  memory_space *smem = thread->m_shared_mem;
+
+  unsigned char buf[16] = {0};
+  if (src_size > 0) gmem->read(gmem_addr, src_size, buf);
+  smem->write(smem_addr, cp_size, buf, thread, pI);
+
+  thread->m_last_effective_address = gmem_addr;
+  thread->m_last_memory_space = global_space;
 }
 
 void bfe_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -3266,6 +3385,10 @@ void cvta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       case global_space:
         to_addr_hw = generic_to_global(from_addr_hw);
         break;
+      case param_space_unclassified:
+      case param_space_kernel:
+        to_addr_hw = from_addr_hw;
+        break;
       default:
         abort();
     }
@@ -3281,6 +3404,10 @@ void cvta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
                 // function call
       case global_space:
         to_addr_hw = global_to_generic(from_addr_hw);
+        break;
+      case param_space_unclassified:
+      case param_space_kernel:
+        to_addr_hw = from_addr_hw;
         break;
       default:
         abort();
@@ -4013,6 +4140,14 @@ void madc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   mad_def(pI, thread, true);
 }
 
+void mapa_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const operand_info &dst = pI->dst();
+  const operand_info &src1 = pI->src1();
+  unsigned i_type = pI->get_type();
+  ptx_reg_t data = thread->get_operand_value(src1, dst, i_type, thread, 1);
+  thread->set_operand_value(dst, data, i_type, thread, pI);
+}
+
 void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
              bool use_carry) {
   const operand_info &dst = pI->dst();
@@ -4025,8 +4160,14 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
   int overflow = 0;
 
   unsigned i_type = pI->get_type();
-  ptx_reg_t a = thread->get_operand_value(src1, dst, i_type, thread, 1);
-  ptx_reg_t b = thread->get_operand_value(src2, dst, i_type, thread, 1);
+  unsigned mul_type = i_type;
+  const std::list<int> scalar_type = pI->get_scalar_type();
+  if (pI->get_opcode() == FMA_OP && scalar_type.size() == 2) {
+    mul_type = scalar_type.back();
+  }
+
+  ptx_reg_t a = thread->get_operand_value(src1, dst, mul_type, thread, 1);
+  ptx_reg_t b = thread->get_operand_value(src2, dst, mul_type, thread, 1);
   ptx_reg_t c = thread->get_operand_value(src3, dst, i_type, thread, 1);
 
   // take the carry bit, it should be the 4th operand
@@ -4149,7 +4290,11 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
           // assert(0);
           break;
       }
-      d.f32 = a.f32 * b.f32 + c.f32;
+      if (mul_type == F16_TYPE) {
+        d.f32 = static_cast<float>(a.f16) * static_cast<float>(b.f16) + c.f32;
+      } else {
+        d.f32 = a.f32 * b.f32 + c.f32;
+      }
       if (pI->saturation_mode()) {
         if (d.f32 < 0)
           d.f32 = 0;
@@ -4611,6 +4756,33 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       fesetround(orig_rm);
       break;
     }
+    case F32X2_TYPE: {
+      int orig_rm = fegetround();
+      switch (rounding_mode) {
+        case RN_OPTION:
+          break;
+        case RZ_OPTION:
+          fesetround(FE_TOWARDZERO);
+          break;
+        default:
+          break;
+      }
+
+      uint32_t alo = static_cast<uint32_t>(a.u64 & 0xFFFFFFFFu);
+      uint32_t ahi = static_cast<uint32_t>(a.u64 >> 32);
+      uint32_t blo = static_cast<uint32_t>(b.u64 & 0xFFFFFFFFu);
+      uint32_t bhi = static_cast<uint32_t>(b.u64 >> 32);
+      float rlo = f32_from_bits(alo) * f32_from_bits(blo);
+      float rhi = f32_from_bits(ahi) * f32_from_bits(bhi);
+      if (pI->saturation_mode()) {
+        rlo = (rlo < 0.0f) ? 0.0f : (rlo > 1.0f) ? 1.0f : rlo;
+        rhi = (rhi < 0.0f) ? 0.0f : (rhi > 1.0f) ? 1.0f : rhi;
+      }
+      d.u64 = (static_cast<uint64_t>(bits_from_f32(rhi)) << 32) |
+              static_cast<uint64_t>(bits_from_f32(rlo));
+      fesetround(orig_rm);
+      break;
+    }
     case F64_TYPE:
     case FF64_TYPE: {
       int orig_rm = fegetround();
@@ -4822,10 +4994,11 @@ void popc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   thread->set_operand_value(dst, data, i_type, thread, pI);
 }
 void prefetch_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  inst_not_implemented(pI);
+  // Functional no-op. Prefetch instructions are cache hints; the simulator
+  // handles the actual data movement through the load/store/TMA instructions.
 }
 void prefetchu_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  inst_not_implemented(pI);
+  // Functional no-op. See prefetch_impl.
 }
 
 int prmt_mode_present(int mode) {
@@ -5623,7 +5796,14 @@ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
         "threads in a warp\n");
     data.u32 = 0;
   }
-  thread->set_operand_value(dst, data, i_type, thread, pI);
+  if (dst.is_vector()) {
+    ptx_reg_t pred;
+    pred.pred = p ? 0 : 1;  // PTXPlus predicate convention: 0=true, 1=false.
+    thread->set_reg(dst.vec_symbol(0), data);
+    thread->set_reg(dst.vec_symbol(1), pred);
+  } else {
+    thread->set_operand_value(dst, data, i_type, thread, pI);
+  }
 
   /*
   TODO: deal with predicates appropriately using the following pseudocode:
@@ -5804,6 +5984,27 @@ void sin_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   switch (i_type) {
     case F32_TYPE:
       d.f32 = sin(a.f32);
+      break;
+    default:
+      printf("Execution error: type mismatch with instruction\n");
+      assert(0);
+      break;
+  }
+
+  thread->set_operand_value(dst, d, i_type, thread, pI);
+}
+
+void tanh_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t a, d;
+  const operand_info &dst = pI->dst();
+  const operand_info &src1 = pI->src1();
+
+  unsigned i_type = pI->get_type();
+  a = thread->get_operand_value(src1, dst, i_type, thread, 1);
+
+  switch (i_type) {
+    case F32_TYPE:
+      d.f32 = tanhf(a.f32);
       break;
     default:
       printf("Execution error: type mismatch with instruction\n");
@@ -6016,7 +6217,11 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
   
   if (!vector_spec) {
-    data = thread->get_operand_value(src1, dst, type, thread, 1);
+    if (src1.is_vector() && src1.get_vect_nelem() == 1) {
+      thread->get_vector_operand_values(src1, &data, 1);
+    } else {
+      data = thread->get_operand_value(src1, dst, type, thread, 1);
+    }
     mem->write(addr, size / 8, &data.s64, thread, pI);
 
     if (type == F32_TYPE) {

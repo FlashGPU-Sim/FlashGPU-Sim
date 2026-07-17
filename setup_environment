@@ -3,7 +3,13 @@
 ps -p $$ | awk '/bash/ || / sh/ || /zsh/ {exit 1;}' && echo "WARNING ** source setup_environment must be run in a bash, zsh or sh shell; see README"
 
 export GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN=
-export GPGPUSIM_ROOT="$( cd "$( dirname "$BASH_SOURCE" )" && pwd )"
+if [ -n "${BASH_SOURCE:-}" ]; then
+	export GPGPUSIM_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+elif [ -n "${ZSH_VERSION:-}" ]; then
+	export GPGPUSIM_ROOT="$( cd "$( dirname "${(%):-%x}" )" && pwd )"
+else
+	export GPGPUSIM_ROOT="$(pwd)"
+fi
 
 GPGPUSIM_VERSION_STRING=`cat $GPGPUSIM_ROOT/version | awk '/Version/ {print $8}'`
 #Detect Git branch and commit #
@@ -168,8 +174,9 @@ fi
 #echo "";
 #echo "----------------------------------------------------------------------------";
 
-# Install pre-commit hook if not present
-if [ ! -e "$GPGPUSIM_ROOT/.git/hooks/pre-commit" ]; then
+# Install pre-commit hook if this checkout has a real .git directory.  Submodule
+# checkouts often use a .git file, so there is no local hooks directory here.
+if [ -d "$GPGPUSIM_ROOT/.git/hooks" ] && [ ! -e "$GPGPUSIM_ROOT/.git/hooks/pre-commit" ]; then
     ln -s ../../scripts/pre-commit "$GPGPUSIM_ROOT/.git/hooks/pre-commit"
     echo "Installed pre-commit hook for Flash module formatting"
 fi

@@ -91,6 +91,11 @@ public:
   bool complete_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
 
   /**
+   * Drop all bulk group state for a hardware CTA when it is deallocated.
+   */
+  void cleanup_cta(unsigned cta_id);
+
+  /**
    * Check if a warp is currently waiting on bulk group completion.
    *
    * @param cta_id CTA identifier

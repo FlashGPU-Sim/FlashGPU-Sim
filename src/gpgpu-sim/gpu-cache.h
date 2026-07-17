@@ -1226,8 +1226,15 @@ class cache_stats {
   cache_stats &operator+=(const cache_stats &cs);
   void print_stats(FILE *fout, unsigned long long streamID,
                    const char *cache_name = "Cache_stats") const;
+  void print_aggregate_stats(FILE *fout,
+                             const char *cache_name = "Cache_stats") const;
   void print_fail_stats(FILE *fout, unsigned long long streamID,
                         const char *cache_name = "Cache_fail_stats") const;
+  void print_aggregate_fail_stats(
+      FILE *fout, const char *cache_name = "Cache_fail_stats") const;
+  void print_fail_reason_stats(
+      FILE *fout, unsigned long long streamID,
+      const char *cache_name = "Cache_fail_reason_stats") const;
 
   unsigned long long get_stats(enum mem_access_type *access_type,
                                unsigned num_access_type,

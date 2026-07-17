@@ -442,9 +442,10 @@ TEST_F(BulkGroupTest, CompleteTxReturnValueNotWaiting) {
   manager.add_tx(CTA_0, WARP_0, 100);
   manager.commit_bulk_group(CTA_0, WARP_0);
 
-  // Not waiting, so should return true
+  // A transaction completion is not a scheduler release unless it satisfies a
+  // pending cp.async.bulk.wait_group.
   bool result = manager.complete_tx(CTA_0, WARP_0, 100);
-  EXPECT_TRUE(result);
+  EXPECT_FALSE(result);
 }
 
 // Test: complete_tx return value when waiting

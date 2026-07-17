@@ -3,15 +3,23 @@
 # Generic sweep script for triton traced workloads.
 #
 # Usage:
-#   ./sweep.sh <workload> [trace|run|ncu] [options...] [sweep_values...]
+#   ./sweep.sh <workload> [trace|run|gem5|ncu] [options...] [sweep_values...]
 #
 # Workloads:
 #   tma_gemm      TMA GEMM — sweep over M=N=K size
 #   flash_attn    Flash Attention — sweep over seq_len
+#   llama3_gqa_attn Llama3-style grouped-query attention
+#   llama3_layer   Triton-only Llama3-style decoder layer
+#   llama3_layer_packed Packed QKV and gate/up decoder layer
+#   llama3_layer_tiled Packed QKV with head-major QKV output
+#   llama3_layer_token_out Tiled QKV with token-major attention output
+#   llama3_layer_blocked Tiled QKV with blocked attention output
+#   llama3_layer_full_tiled Tile-contract layer tensors and GEMMs
 #
 # Modes:
 #   trace  — Generate traces only (requires real GPU, no setup_environment)
 #   run    — Run GPGPU-Sim simulation (default). Auto-traces if missing.
+#   gem5   — Run FlashGPU-Sim + gem5 Ruby. Auto-traces if missing.
 #   ncu    — Profile on real GPU with Nsight Compute
 #
 # Options:
@@ -31,12 +39,15 @@
 #   ./sweep.sh tma_gemm trace 128 512 1024
 #   ./sweep.sh tma_gemm run --shape 512,6000,2560
 #   ./sweep.sh tma_gemm run --csv configs/gemm_shapes_training.csv
+#   ./sweep.sh tma_gemm gem5 --shape 512,512,512
 #   ./sweep.sh tma_gemm ncu --csv configs/gemm_shapes_training.csv
 #   ./sweep.sh tma_gemm run
 #   ./sweep.sh flash_attn trace 256 512 1024
 #   ./sweep.sh flash_attn run 256 512 --head-dim 128
 #   ./sweep.sh flash_attn run --shape 2,4,1024,128,True
 #   ./sweep.sh flash_attn ncu 256 512 --head-dim 64 --causal
+#   ./sweep.sh llama3_gqa_attn run --csv configs/llama3_8b_gqa_attn_shapes_smoke.csv
+#   ./sweep.sh llama3_layer run --csv configs/llama3_layer_shapes_smoke.csv
 #
 
 set -euo pipefail
@@ -44,6 +55,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRITON_TRACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$TRITON_TRACE_DIR/../.." && pwd)"
+TOP_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 VENV_ACTIVATE="$TRITON_TRACE_DIR/.venv/bin/activate"
 GPU_CONFIG_DIR="$REPO_ROOT/configs/SM120_RTX5090"
 CSV_MODE=0
@@ -59,6 +71,7 @@ CSV_FILE=""
 #   wl_kernel_name     — triton kernel function name (determines binary name)
 #   wl_tflops_expr VAL — python expression: TFLOPS from sweep val & duration_us
 #   wl_banner          — display string for the sweep header
+#   wl_multi_launch    — optional: returns true for workloads with many launchers
 # ============================================================================
 
 # --- tma_gemm ---
@@ -123,6 +136,8 @@ FA_HEAD_DIM=128
 FA_BATCH=1
 FA_HEADS=8
 FA_CAUSAL=0
+LLAMA3_BLOCK_S_TILE="${LLAMA3_BLOCK_S_TILE:-64}"
+LLAMA3_BLOCK_H_TILE="${LLAMA3_BLOCK_H_TILE:-4}"
 
 flash_attn_init() {
     TRACKING_SUBDIR="test_flash_attn"
@@ -188,6 +203,183 @@ flash_attn_sweep_label() {
 flash_attn_summary_key() { echo "$1"; }
 flash_attn_summary_label() { echo "$(${WORKLOAD}_sweep_label)"; }
 
+# --- llama3_gqa_attn ---
+llama3_gqa_attn_init() {
+    TRACKING_SUBDIR="test_llama3_gqa_attn"
+    PYTHON_SCRIPT="test_llama3_gqa_attn.py"
+}
+llama3_gqa_attn_defaults() { echo "1,32,8,128,128,True 1,32,8,512,128,True"; }
+llama3_gqa_attn_subdir() {
+    local batch qheads kvheads seqlen headdim causal
+    IFS=',' read -r batch qheads kvheads seqlen headdim causal <<< "$1"
+    local causal_str=""
+    [[ "$causal" == "True" ]] && causal_str="_causal"
+    echo "b${batch}_hq${qheads}_hkv${kvheads}_seq${seqlen}_d${headdim}${causal_str}"
+}
+llama3_gqa_attn_python_args() {
+    local batch qheads kvheads seqlen headdim causal
+    IFS=',' read -r batch qheads kvheads seqlen headdim causal <<< "$1"
+    local args="--seq-len $seqlen --head-dim $headdim --batch $batch --q-heads $qheads --kv-heads $kvheads"
+    [[ "$causal" == "True" ]] && args="$args --causal"
+    echo "$args"
+}
+llama3_gqa_attn_kernel_name() { echo "_llama3_gqa_attn_fwd"; }
+llama3_gqa_attn_tflops_expr() {
+    local batch qheads kvheads seqlen headdim causal
+    IFS=',' read -r batch qheads kvheads seqlen headdim causal <<< "$1"
+    local factor=4
+    [[ "$causal" == "True" ]] && factor=2
+    echo "${factor}.0 * ${batch} * ${qheads} * ${seqlen}**2 * ${headdim} / (float(dur) * 1e-6) / 1e12"
+}
+llama3_gqa_attn_banner() { echo "Llama3 GQA Attention Sweep"; }
+llama3_gqa_attn_sweep_label() { echo "batch,qheads,kvheads,seqlen,headdim,causal"; }
+llama3_gqa_attn_summary_key() { echo "$1"; }
+llama3_gqa_attn_summary_label() { echo "$(${WORKLOAD}_sweep_label)"; }
+
+# --- llama3_layer ---
+llama3_layer_init() {
+    TRACKING_SUBDIR="test_llama3_layer"
+    PYTHON_SCRIPT="test_llama3_layer.py"
+}
+llama3_layer_defaults() { echo "1,32,8,128,128,4096,14336,True"; }
+llama3_layer_subdir() {
+    local batch qheads kvheads seqlen headdim hidden intermediate causal
+    IFS=',' read -r batch qheads kvheads seqlen headdim hidden intermediate causal <<< "$1"
+    local causal_str=""
+    [[ "$causal" == "True" ]] && causal_str="_causal"
+    echo "b${batch}_hq${qheads}_hkv${kvheads}_seq${seqlen}_d${headdim}_h${hidden}_i${intermediate}${causal_str}"
+}
+llama3_layer_python_args() {
+    local batch qheads kvheads seqlen headdim hidden intermediate causal
+    IFS=',' read -r batch qheads kvheads seqlen headdim hidden intermediate causal <<< "$1"
+    local args="--seq-len $seqlen --head-dim $headdim --batch $batch --q-heads $qheads --kv-heads $kvheads --hidden $hidden --intermediate $intermediate"
+    [[ "$causal" == "True" ]] && args="$args --causal"
+    echo "$args"
+}
+llama3_layer_kernel_name() { echo "*"; }
+llama3_layer_tflops_expr() { echo "0.0"; }
+llama3_layer_banner() { echo "Triton Llama3 Layer Sweep"; }
+llama3_layer_sweep_label() { echo "batch,qheads,kvheads,seqlen,headdim,hidden,intermediate,causal"; }
+llama3_layer_summary_key() { echo "$1"; }
+llama3_layer_summary_label() { echo "$(${WORKLOAD}_sweep_label)"; }
+llama3_layer_multi_launch() { return 0; }
+
+llama3_layer_variant_subdir() {
+    local base
+    base="$(llama3_layer_subdir "$1")"
+    if [[ "${LLAMA3_LAYER_VARIANT:-}" == "blocked" ]]; then
+        echo "${base}_st${LLAMA3_BLOCK_S_TILE}_ht${LLAMA3_BLOCK_H_TILE}"
+    elif [[ "${LLAMA3_LAYER_VARIANT:-}" == "full_tiled" ]]; then
+        echo "${base}_mt64_nt128"
+    else
+        echo "$base"
+    fi
+}
+llama3_layer_variant_python_args() {
+    local args
+    args="$(llama3_layer_python_args "$1") --variant ${LLAMA3_LAYER_VARIANT}"
+    if [[ "${LLAMA3_LAYER_VARIANT}" == "blocked" ]]; then
+        args="$args --s-tile ${LLAMA3_BLOCK_S_TILE} --h-tile ${LLAMA3_BLOCK_H_TILE}"
+    fi
+    echo "$args"
+}
+llama3_layer_variant_defaults() { llama3_layer_defaults; }
+llama3_layer_variant_kernel_name() { llama3_layer_kernel_name; }
+llama3_layer_variant_tflops_expr() { llama3_layer_tflops_expr "$1"; }
+llama3_layer_variant_sweep_label() { llama3_layer_sweep_label; }
+llama3_layer_variant_summary_key() { llama3_layer_summary_key "$1"; }
+llama3_layer_variant_summary_label() { llama3_layer_summary_label; }
+llama3_layer_variant_multi_launch() { return 0; }
+
+# --- llama3_layer_packed ---
+llama3_layer_packed_init() {
+    TRACKING_SUBDIR="test_llama3_layer_packed"
+    PYTHON_SCRIPT="test_llama3_layer.py"
+    LLAMA3_LAYER_VARIANT="packed"
+}
+llama3_layer_packed_defaults() { llama3_layer_variant_defaults; }
+llama3_layer_packed_subdir() { llama3_layer_variant_subdir "$1"; }
+llama3_layer_packed_python_args() { llama3_layer_variant_python_args "$1"; }
+llama3_layer_packed_kernel_name() { llama3_layer_variant_kernel_name; }
+llama3_layer_packed_tflops_expr() { llama3_layer_variant_tflops_expr "$1"; }
+llama3_layer_packed_banner() { echo "Triton Llama3 Layer Packed Sweep"; }
+llama3_layer_packed_sweep_label() { llama3_layer_variant_sweep_label; }
+llama3_layer_packed_summary_key() { llama3_layer_variant_summary_key "$1"; }
+llama3_layer_packed_summary_label() { llama3_layer_variant_summary_label; }
+llama3_layer_packed_multi_launch() { return 0; }
+
+# --- llama3_layer_tiled ---
+llama3_layer_tiled_init() {
+    TRACKING_SUBDIR="test_llama3_layer_tiled"
+    PYTHON_SCRIPT="test_llama3_layer.py"
+    LLAMA3_LAYER_VARIANT="tiled"
+}
+llama3_layer_tiled_defaults() { llama3_layer_variant_defaults; }
+llama3_layer_tiled_subdir() { llama3_layer_variant_subdir "$1"; }
+llama3_layer_tiled_python_args() { llama3_layer_variant_python_args "$1"; }
+llama3_layer_tiled_kernel_name() { llama3_layer_variant_kernel_name; }
+llama3_layer_tiled_tflops_expr() { llama3_layer_variant_tflops_expr "$1"; }
+llama3_layer_tiled_banner() { echo "Triton Llama3 Layer Tiled-QKV Sweep"; }
+llama3_layer_tiled_sweep_label() { llama3_layer_variant_sweep_label; }
+llama3_layer_tiled_summary_key() { llama3_layer_variant_summary_key "$1"; }
+llama3_layer_tiled_summary_label() { llama3_layer_variant_summary_label; }
+llama3_layer_tiled_multi_launch() { return 0; }
+
+# --- llama3_layer_token_out ---
+llama3_layer_token_out_init() {
+    TRACKING_SUBDIR="test_llama3_layer_token_out"
+    PYTHON_SCRIPT="test_llama3_layer.py"
+    LLAMA3_LAYER_VARIANT="token_out"
+}
+llama3_layer_token_out_defaults() { llama3_layer_variant_defaults; }
+llama3_layer_token_out_subdir() { llama3_layer_variant_subdir "$1"; }
+llama3_layer_token_out_python_args() { llama3_layer_variant_python_args "$1"; }
+llama3_layer_token_out_kernel_name() { llama3_layer_variant_kernel_name; }
+llama3_layer_token_out_tflops_expr() { llama3_layer_variant_tflops_expr "$1"; }
+llama3_layer_token_out_banner() { echo "Triton Llama3 Layer Token-Out Attention Sweep"; }
+llama3_layer_token_out_sweep_label() { llama3_layer_variant_sweep_label; }
+llama3_layer_token_out_summary_key() { llama3_layer_variant_summary_key "$1"; }
+llama3_layer_token_out_summary_label() { llama3_layer_variant_summary_label; }
+llama3_layer_token_out_multi_launch() { return 0; }
+
+# --- llama3_layer_blocked ---
+llama3_layer_blocked_init() {
+    TRACKING_SUBDIR="test_llama3_layer_blocked"
+    PYTHON_SCRIPT="test_llama3_layer.py"
+    LLAMA3_LAYER_VARIANT="blocked"
+}
+llama3_layer_blocked_defaults() { llama3_layer_variant_defaults; }
+llama3_layer_blocked_subdir() { llama3_layer_variant_subdir "$1"; }
+llama3_layer_blocked_python_args() { llama3_layer_variant_python_args "$1"; }
+llama3_layer_blocked_kernel_name() { llama3_layer_variant_kernel_name; }
+llama3_layer_blocked_tflops_expr() { llama3_layer_variant_tflops_expr "$1"; }
+llama3_layer_blocked_banner() {
+    echo "Triton Llama3 Layer Blocked Attention-Out Sweep (S_TILE=${LLAMA3_BLOCK_S_TILE}, H_TILE=${LLAMA3_BLOCK_H_TILE})"
+}
+llama3_layer_blocked_sweep_label() { llama3_layer_variant_sweep_label; }
+llama3_layer_blocked_summary_key() { llama3_layer_variant_summary_key "$1"; }
+llama3_layer_blocked_summary_label() { llama3_layer_variant_summary_label; }
+llama3_layer_blocked_multi_launch() { return 0; }
+
+# --- llama3_layer_full_tiled ---
+llama3_layer_full_tiled_init() {
+    TRACKING_SUBDIR="test_llama3_layer_full_tiled"
+    PYTHON_SCRIPT="test_llama3_layer.py"
+    LLAMA3_LAYER_VARIANT="full_tiled"
+}
+llama3_layer_full_tiled_defaults() { llama3_layer_variant_defaults; }
+llama3_layer_full_tiled_subdir() { llama3_layer_variant_subdir "$1"; }
+llama3_layer_full_tiled_python_args() { llama3_layer_variant_python_args "$1"; }
+llama3_layer_full_tiled_kernel_name() { llama3_layer_variant_kernel_name; }
+llama3_layer_full_tiled_tflops_expr() { llama3_layer_variant_tflops_expr "$1"; }
+llama3_layer_full_tiled_banner() {
+    echo "Triton Llama3 Layer Full-Tiled Sweep (M_TILE=64, N_TILE=128)"
+}
+llama3_layer_full_tiled_sweep_label() { llama3_layer_variant_sweep_label; }
+llama3_layer_full_tiled_summary_key() { llama3_layer_variant_summary_key "$1"; }
+llama3_layer_full_tiled_summary_label() { llama3_layer_variant_summary_label; }
+llama3_layer_full_tiled_multi_launch() { return 0; }
+
 # ============================================================================
 # Argument Parsing
 # ============================================================================
@@ -195,7 +387,7 @@ flash_attn_summary_label() { echo "$(${WORKLOAD}_sweep_label)"; }
 usage() {
     echo "Usage: $0 <workload> [trace|run|ncu] [options...] [sweep_values...]"
     echo ""
-    echo "Workloads: tma_gemm, flash_attn"
+    echo "Workloads: tma_gemm, flash_attn, llama3_gqa_attn, llama3_layer, llama3_layer_packed, llama3_layer_tiled, llama3_layer_token_out, llama3_layer_blocked, llama3_layer_full_tiled"
     echo ""
     echo "Run '$0 <workload> --help' for workload-specific options."
     exit 1
@@ -209,15 +401,15 @@ WORKLOAD="$1"; shift
 
 # Validate workload
 case "$WORKLOAD" in
-    tma_gemm|flash_attn) ;;
-    *) echo "ERROR: Unknown workload '$WORKLOAD'. Available: tma_gemm, flash_attn"; exit 1 ;;
+    tma_gemm|flash_attn|llama3_gqa_attn|llama3_layer|llama3_layer_packed|llama3_layer_tiled|llama3_layer_token_out|llama3_layer_blocked|llama3_layer_full_tiled) ;;
+    *) echo "ERROR: Unknown workload '$WORKLOAD'. Available: tma_gemm, flash_attn, llama3_gqa_attn, llama3_layer, llama3_layer_packed, llama3_layer_tiled, llama3_layer_token_out, llama3_layer_blocked, llama3_layer_full_tiled"; exit 1 ;;
 esac
 
 # Parse mode
 MODE="run"
 if [[ $# -gt 0 ]]; then
     case "$1" in
-        trace|run|ncu) MODE="$1"; shift ;;
+        trace|run|gem5|ncu) MODE="$1"; shift ;;
     esac
 fi
 
@@ -246,7 +438,9 @@ ${WORKLOAD}_init
 TRACKING_DIR="$TRITON_TRACE_DIR/triton_kernel_tracking/$TRACKING_SUBDIR"
 RESULTS_DIR="$TRACKING_DIR/results"
 SIM_LOG_DIR="$RESULTS_DIR/sim-log"
+GEM5_LOG_DIR="$RESULTS_DIR/gem5-log"
 NCU_REP_DIR="$RESULTS_DIR/ncu-rep"
+NCU_PROFILE_METRICS="${NCU_PROFILE_METRICS:-sm__cycles_elapsed.avg,sm__cycles_elapsed.avg.per_second,gpu__time_duration.avg,sm__throughput.avg.pct_of_peak_sustained_elapsed,sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed,gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed,dram__bytes.sum,dram__bytes_op_read.sum,dram__bytes_op_write.sum,dram__throughput.avg.pct_of_peak_sustained_elapsed}"
 
 # Load sweep values from CSV or apply defaults
 if [[ -n "$CSV_FILE" ]]; then
@@ -289,13 +483,76 @@ trace_exists() {
     local val=$1
     local subdir
     subdir="$(${WORKLOAD}_subdir "$val")"
+    if is_multi_launch; then
+        [[ -f "$TRACKING_DIR/$subdir/tracking_summary.json" ]] && compgen -G "$TRACKING_DIR/$subdir/launchers/*_launch*" > /dev/null
+        return
+    fi
     [[ -f "$TRACKING_DIR/$subdir/launchers/${KERNEL_NAME}_launch1" ]]
+}
+
+is_multi_launch() {
+    if declare -F "${WORKLOAD}_multi_launch" >/dev/null; then
+        "${WORKLOAD}_multi_launch"
+        return
+    fi
+    return 1
+}
+
+launcher_makefiles() {
+    local launcher_dir=$1
+    find "$launcher_dir" -maxdepth 1 -type f -name '*_launch*_Makefile' \
+        | awk 'match($0, /launch[0-9]+/) { print substr($0, RSTART + 6, RLENGTH - 6) "\t" $0 }' \
+        | sort -n | cut -f2-
+}
+
+launcher_executables() {
+    local launcher_dir=$1
+    find "$launcher_dir" -maxdepth 1 -type f -executable -name '*_launch*' ! -name '*.*' \
+        | awk 'match($0, /launch[0-9]+/) { print substr($0, RSTART + 6, RLENGTH - 6) "\t" $0 }' \
+        | sort -n | cut -f2-
 }
 
 require_clean_env() {
     if [[ -n "${GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN:-}" ]]; then
         echo "ERROR: setup_environment is active. This mode requires a clean shell."
         exit 1
+    fi
+}
+
+activate_triton_env() {
+    if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+        return
+    fi
+    if [[ -f "$VENV_ACTIVATE" ]]; then
+        source "$VENV_ACTIVATE"
+        return
+    fi
+    echo "ERROR: Triton venv not found at $VENV_ACTIVATE and no active VIRTUAL_ENV is set."
+    exit 1
+}
+
+install_gpu_config() {
+    local launcher_dir=$1
+    local skip_l1d="${2:-}"
+
+    cp "$GPU_CONFIG_DIR/gpgpusim.config" "$launcher_dir/"
+    cp "$GPU_CONFIG_DIR/config_ampere_islip.icnt" "$launcher_dir/"
+
+    if [[ -n "$skip_l1d" ]]; then
+        case "$skip_l1d" in
+            0|1) ;;
+            *)
+                echo "ERROR: GPGPUSIM_SKIP_L1D must be 0 or 1, got '$skip_l1d'" >&2
+                exit 2
+                ;;
+        esac
+        if ! grep -q '^-gpgpu_gmem_skip_L1D[[:space:]]' "$launcher_dir/gpgpusim.config"; then
+            echo "ERROR: gpgpusim.config does not contain -gpgpu_gmem_skip_L1D" >&2
+            exit 2
+        fi
+        sed -i -E \
+            "s/^-gpgpu_gmem_skip_L1D[[:space:]]+[01]/-gpgpu_gmem_skip_L1D ${skip_l1d}/" \
+            "$launcher_dir/gpgpusim.config"
     fi
 }
 
@@ -313,11 +570,20 @@ do_trace() {
 
     require_clean_env
 
-    if [[ ! -f "$VENV_ACTIVATE" ]]; then
-        echo "ERROR: Triton venv not found at $VENV_ACTIVATE"
-        exit 1
+    activate_triton_env
+    VENV_CUDA_BIN="$(python - <<'PY'
+import site
+from pathlib import Path
+
+for root in site.getsitepackages():
+    for path in sorted(Path(root).glob("nvidia/cu*/bin/nvcc"), reverse=True):
+        print(path.parent)
+        raise SystemExit
+PY
+)"
+    if [[ -n "$VENV_CUDA_BIN" ]]; then
+        export PATH="$VENV_CUDA_BIN:$PATH"
     fi
-    source "$VENV_ACTIVATE"
 
     # Generate trace
     local py_args
@@ -326,13 +592,18 @@ do_trace() {
 
     local launcher_dir="$TRACKING_DIR/$subdir/launchers"
 
-    # Build launcher
-    echo "Building launcher for ${SWEEP_LABEL}=${val} ..."
-    make -C "$launcher_dir" -f "${KERNEL_NAME}_launch1_Makefile"
+    # Build launcher(s)
+    echo "Building launcher(s) for ${SWEEP_LABEL}=${val} ..."
+    if is_multi_launch; then
+        while IFS= read -r makefile; do
+            make -C "$launcher_dir" -f "$(basename "$makefile")"
+        done < <(launcher_makefiles "$launcher_dir")
+    else
+        make -C "$launcher_dir" -f "${KERNEL_NAME}_launch1_Makefile"
+    fi
 
-    # Copy GPU config
-    cp "$GPU_CONFIG_DIR/gpgpusim.config" "$launcher_dir/"
-    cp "$GPU_CONFIG_DIR/config_ampere_islip.icnt" "$launcher_dir/"
+    # Copy default full-GPU config. Run modes may override selected options.
+    install_gpu_config "$launcher_dir"
 
     echo "--- Trace complete for ${SWEEP_LABEL}=${val} ---"
 }
@@ -350,16 +621,251 @@ do_run() {
     echo "--- Running GPGPU-Sim for ${SWEEP_LABEL}=${val} ---"
 
     local launcher_dir="$TRACKING_DIR/$subdir/launchers"
-    local log_file="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
 
     mkdir -p "$SIM_LOG_DIR"
+    install_gpu_config "$launcher_dir" "${GPGPUSIM_SKIP_L1D:-}"
+
+    if [[ -f "$TOP_ROOT/scripts/env.sh" ]]; then
+        export GEM5_ARCH="${GEM5_ARCH:-X86_MESI_Two_Level_Stream}"
+        source "$TOP_ROOT/scripts/env.sh"
+    fi
 
     set +u
     source "$REPO_ROOT/setup.sh"
     source "$REPO_ROOT/setup_environment"
     set -u
 
+    if is_multi_launch; then
+        local shape_log_dir="$SIM_LOG_DIR/${subdir}"
+        local aggregate_log="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
+        local total_cycles=0
+        local total_insn=0
+        local total_sim_time=0
+        local all_passed=1
+        local ran_any=0
+        local start_wall
+        start_wall="$(date +%s)"
+
+        mkdir -p "$shape_log_dir"
+        : > "$aggregate_log"
+
+        while IFS= read -r exe_path; do
+            ran_any=1
+            local exe
+            exe="$(basename "$exe_path")"
+            local log_file="$shape_log_dir/${exe}_gpgpusim.log"
+            echo "=== $exe ===" >> "$aggregate_log"
+            set +e
+            (cd "$launcher_dir" && "./$exe") > "$log_file" 2>&1
+            local status=$?
+            set -e
+            cat "$log_file" >> "$aggregate_log"
+            echo "" >> "$aggregate_log"
+
+            local kernel_sim_time
+            kernel_sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || true)
+            [[ -n "$kernel_sim_time" ]] && total_sim_time=$((total_sim_time + kernel_sim_time))
+
+            if [[ "$status" == "0" ]] && grep -q 'Validation PASSED' "$log_file"; then
+                local cycles insn
+                cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || true)
+                insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || true)
+                [[ -n "$cycles" ]] && total_cycles=$((total_cycles + cycles))
+                [[ -n "$insn" ]] && total_insn=$((total_insn + insn))
+                echo "  ${exe}: PASSED - ${cycles:-N/A} cycles"
+            else
+                all_passed=0
+                echo "  ${exe}: FAILED - check $log_file"
+            fi
+        done < <(launcher_executables "$launcher_dir")
+
+        local end_wall wall_time
+        end_wall="$(date +%s)"
+        wall_time=$((end_wall - start_wall))
+
+        if [[ "$all_passed" == "1" && "$ran_any" == "1" ]]; then
+            {
+                echo "multi_launch_validation PASSED"
+                echo "multi_launch_total_cycles $total_cycles"
+                echo "multi_launch_total_insn $total_insn"
+                echo "multi_launch_total_sim_time_sec $total_sim_time"
+                echo "multi_launch_wall_time_sec $wall_time"
+            } >> "$aggregate_log"
+            echo "  ALL PASSED - aggregate ${total_cycles} cycles, ${total_sim_time}s sim time, ${wall_time}s wall time (log: $aggregate_log)"
+        else
+            {
+                echo "multi_launch_validation FAILED"
+                echo "multi_launch_total_cycles $total_cycles"
+                echo "multi_launch_total_insn $total_insn"
+                echo "multi_launch_total_sim_time_sec $total_sim_time"
+                echo "multi_launch_wall_time_sec $wall_time"
+            } >> "$aggregate_log"
+            echo "  FAILED - aggregate log: $aggregate_log"
+        fi
+        return
+    fi
+
+    local log_file="$SIM_LOG_DIR/${subdir}_gpgpusim.log"
+    local start_wall end_wall
+    start_wall="$(date +%s)"
     (cd "$launcher_dir" && ./${KERNEL_NAME}_launch1) > "$log_file" 2>&1
+    end_wall="$(date +%s)"
+    echo "single_launch_wall_time_sec $((end_wall - start_wall))" >> "$log_file"
+
+    if grep -q 'Validation PASSED' "$log_file"; then
+        local cycles
+        cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || true)
+        if [[ -n "$cycles" ]]; then
+            echo "  PASSED — ${cycles} cycles (log: $log_file)"
+        else
+            echo "  PASSED validation, but no simulator cycle stats found (log: $log_file)"
+        fi
+    else
+        echo "  FAILED — check $log_file"
+    fi
+}
+
+# ============================================================================
+# Run (FlashGPU-Sim + gem5)
+# ============================================================================
+
+do_gem5() {
+    local val=$1
+    local subdir
+    subdir="$(${WORKLOAD}_subdir "$val")"
+
+    echo ""
+    echo "--- Running FlashGPU-Sim + gem5 for ${SWEEP_LABEL}=${val} ---"
+
+    local launcher_dir="$TRACKING_DIR/$subdir/launchers"
+    local log_file="$GEM5_LOG_DIR/${subdir}_gem5.log"
+    local gem5_arch="${GEM5_ARCH:-X86_MESI_Two_Level_Stream}"
+    local gem5_config_name="${FLASHGPU_GEM5_CONFIG_NAME:-example_config_crossbar_garnet.txt}"
+    local skip_l1d="${GPGPUSIM_SKIP_L1D:-1}"
+    local timeout_sec="${GEM5_TIMEOUT:-${TIMEOUT:-3600}}"
+
+    if [[ ! -f "$TOP_ROOT/scripts/env.sh" ]]; then
+        echo "ERROR: gem5 top-level scripts/env.sh not found at $TOP_ROOT/scripts/env.sh" >&2
+        echo "       Run gem5 mode from the flashgpu-gem5-top checkout." >&2
+        exit 2
+    fi
+
+    mkdir -p "$GEM5_LOG_DIR"
+    install_gpu_config "$launcher_dir" "$skip_l1d"
+
+    if [[ "${FLASHGPU_GEM5_BUILD:-0}" == "1" ]]; then
+        make -C "$TOP_ROOT" GEM5_ARCH="$gem5_arch" build
+    fi
+
+    if is_multi_launch; then
+        local shape_log_dir="$GEM5_LOG_DIR/${subdir}"
+        local aggregate_log="$GEM5_LOG_DIR/${subdir}_gem5.log"
+        local total_cycles=0
+        local total_insn=0
+        local total_sim_time=0
+        local all_passed=1
+        local ran_any=0
+        local start_wall
+        start_wall="$(date +%s)"
+
+        mkdir -p "$shape_log_dir"
+        : > "$aggregate_log"
+
+        while IFS= read -r exe_path; do
+            ran_any=1
+            local exe
+            exe="$(basename "$exe_path")"
+            local kernel_log_file="$shape_log_dir/${exe}_gem5.log"
+            echo "=== $exe ===" >> "$aggregate_log"
+            set +e
+            (
+                export GEM5_ARCH="$gem5_arch"
+                export FLASHGPU_GEM5_TOP="$TOP_ROOT"
+                export GEM_FORGE_TOP="$TOP_ROOT"
+                export FLASHGPU_GEM5_ENABLE=1
+                export FLASHGPU_GEM5_CONFIG_NAME="$gem5_config_name"
+
+                source "$TOP_ROOT/scripts/env.sh"
+
+                cd "$REPO_ROOT"
+                set +u
+                source setup.sh
+                source setup_environment
+                set -u
+
+                cd "$launcher_dir"
+                timeout "$timeout_sec" "./$exe"
+            ) > "$kernel_log_file" 2>&1
+            local status=$?
+            set -e
+            cat "$kernel_log_file" >> "$aggregate_log"
+            echo "" >> "$aggregate_log"
+
+            local kernel_sim_time
+            kernel_sim_time=$(grep -oP '\(\K[0-9]+ sec' "$kernel_log_file" | head -1 | awk '{print $1}' || true)
+            [[ -n "$kernel_sim_time" ]] && total_sim_time=$((total_sim_time + kernel_sim_time))
+
+            if [[ "$status" == "0" ]] && grep -q 'Validation PASSED' "$kernel_log_file"; then
+                local cycles insn
+                cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$kernel_log_file" | awk '{print $3}' || true)
+                insn=$(grep -m1 '^gpu_tot_sim_insn' "$kernel_log_file" | awk '{print $3}' || true)
+                [[ -n "$cycles" ]] && total_cycles=$((total_cycles + cycles))
+                [[ -n "$insn" ]] && total_insn=$((total_insn + insn))
+                echo "  ${exe}: PASSED - ${cycles:-N/A} cycles"
+            else
+                all_passed=0
+                echo "  ${exe}: FAILED - check $kernel_log_file"
+            fi
+        done < <(launcher_executables "$launcher_dir")
+
+        local end_wall wall_time
+        end_wall="$(date +%s)"
+        wall_time=$((end_wall - start_wall))
+
+        if [[ "$all_passed" == "1" && "$ran_any" == "1" ]]; then
+            {
+                echo "multi_launch_validation PASSED"
+                echo "multi_launch_total_cycles $total_cycles"
+                echo "multi_launch_total_insn $total_insn"
+                echo "multi_launch_total_sim_time_sec $total_sim_time"
+                echo "multi_launch_wall_time_sec $wall_time"
+            } >> "$aggregate_log"
+            echo "  ALL PASSED - aggregate ${total_cycles} cycles, ${total_sim_time}s sim time, ${wall_time}s wall time (log: $aggregate_log)"
+        else
+            {
+                echo "multi_launch_validation FAILED"
+                echo "multi_launch_total_cycles $total_cycles"
+                echo "multi_launch_total_insn $total_insn"
+                echo "multi_launch_total_sim_time_sec $total_sim_time"
+                echo "multi_launch_wall_time_sec $wall_time"
+            } >> "$aggregate_log"
+            echo "  FAILED - aggregate log: $aggregate_log"
+        fi
+        return
+    fi
+
+    local start_wall end_wall
+    start_wall="$(date +%s)"
+    (
+        export GEM5_ARCH="$gem5_arch"
+        export FLASHGPU_GEM5_TOP="$TOP_ROOT"
+        export GEM_FORGE_TOP="$TOP_ROOT"
+        export FLASHGPU_GEM5_ENABLE=1
+        export FLASHGPU_GEM5_CONFIG_NAME="$gem5_config_name"
+
+        source "$TOP_ROOT/scripts/env.sh"
+
+        cd "$REPO_ROOT"
+        set +u
+        source setup.sh
+        source setup_environment
+        set -u
+
+        cd "$launcher_dir"
+        timeout "$timeout_sec" "./${KERNEL_NAME}_launch1"
+    ) > "$log_file" 2>&1
+    end_wall="$(date +%s)"
+    echo "single_launch_wall_time_sec $((end_wall - start_wall))" >> "$log_file"
 
     if grep -q 'Validation PASSED' "$log_file"; then
         local cycles
@@ -382,6 +888,12 @@ do_ncu() {
     echo ""
     echo "--- Profiling ${SWEEP_LABEL}=${val} with ncu ---"
 
+    if is_multi_launch; then
+        echo "ERROR: ncu mode is not implemented for multi-launch workloads ($WORKLOAD)."
+        echo "       Profile individual generated launchers from $TRACKING_DIR/$subdir/launchers."
+        exit 1
+    fi
+
     require_clean_env
 
     local launcher_dir="$TRACKING_DIR/$subdir/launchers"
@@ -389,14 +901,22 @@ do_ncu() {
 
     mkdir -p "$NCU_REP_DIR"
 
-    ncu -f \
-        -o "$ncu_output" \
-        --set full \
-        --replay-mode application \
-        --cache-control none \
-        --clock-control none \
-        --target-processes all \
-        "$launcher_dir/${KERNEL_NAME}_launch1"
+    local ncu_args=(
+        ncu -f
+        -o "$ncu_output"
+        --replay-mode application
+        --cache-control none
+        --clock-control none
+        --target-processes all
+    )
+
+    if [[ -n "${NCU_SET:-}" ]]; then
+        ncu_args+=(--set "$NCU_SET")
+    else
+        ncu_args+=(--metrics "$NCU_PROFILE_METRICS")
+    fi
+
+    "${ncu_args[@]}" "$launcher_dir/${KERNEL_NAME}_launch1"
 
     echo "--- NCU report saved to ${ncu_output}.ncu-rep ---"
 }
@@ -422,6 +942,10 @@ extract_ncu_metrics() {
     NCU_METRICS+=",sm__throughput.avg.pct_of_peak_sustained_elapsed"
     NCU_METRICS+=",sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed"
     NCU_METRICS+=",gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed"
+    NCU_METRICS+=",dram__bytes.sum"
+    NCU_METRICS+=",dram__bytes_op_read.sum"
+    NCU_METRICS+=",dram__bytes_op_write.sum"
+    NCU_METRICS+=",dram__throughput.avg.pct_of_peak_sustained_elapsed"
 
     local tflops_expr
     tflops_expr="$(${WORKLOAD}_tflops_expr "$val")"
@@ -442,11 +966,21 @@ dur = d.get('gpu__time_duration.avg', 'N/A')
 sm_tp = d.get('sm__throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
 tensor_tp = d.get('sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed', 'N/A')
 dram_tp = d.get('gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
+dram_bytes_kb = d.get('dram__bytes.sum', 'N/A')
+dram_read_kb = d.get('dram__bytes_op_read.sum', 'N/A')
+dram_write_b = d.get('dram__bytes_op_write.sum', 'N/A')
+dram_bw_pct = d.get('dram__throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
 try:
     tflops = f'{${tflops_expr}:.2f}'
 except:
     tflops = 'N/A'
-print(f'${val},{sm_cycles},{sm_freq},{dur},{tflops},{sm_tp},{tensor_tp},{dram_tp}')
+try:
+    total_bytes = float(dram_bytes_kb) * 1000.0
+    dur_s = float(dur) * 1e-6
+    dram_bw_gbs = f'{total_bytes / dur_s / 1e9:.2f}' if dur_s > 0 else 'N/A'
+except:
+    dram_bw_gbs = 'N/A'
+print(f'${val},{sm_cycles},{sm_freq},{dur},{tflops},{dram_bytes_kb},{dram_read_kb},{dram_write_b},{dram_bw_gbs},{dram_tp},{dram_bw_pct},{sm_tp},{tensor_tp}')
 "
 }
 
@@ -458,20 +992,74 @@ extract_sim_metrics() {
     local summary_key
     summary_key="$(${WORKLOAD}_summary_key "$val")"
 
-    local sim_cycles tot_insn ipc sim_time validation
+    local sim_cycles tot_insn ipc sim_time wall_time validation
 
-    sim_cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || echo "N/A")
-    tot_insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || echo "N/A")
-    ipc=$(grep -m1 '^gpu_tot_ipc' "$log_file" | awk '{print $3}' || echo "N/A")
-    sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || echo "N/A")
+    if is_multi_launch; then
+        sim_cycles=$(grep -m1 '^multi_launch_total_cycles' "$log_file" | awk '{print $2}' || echo "N/A")
+        tot_insn=$(grep -m1 '^multi_launch_total_insn' "$log_file" | awk '{print $2}' || echo "N/A")
+        sim_time=$(grep -m1 '^multi_launch_total_sim_time_sec' "$log_file" | awk '{print $2}' || echo "N/A")
+        wall_time=$(grep -m1 '^multi_launch_wall_time_sec' "$log_file" | awk '{print $2}' || echo "N/A")
+        ipc=$(awk -v insn="$tot_insn" -v cyc="$sim_cycles" 'BEGIN { if (cyc > 0) printf "%.4f", insn / cyc; else printf "N/A" }')
+    else
+        sim_cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || echo "N/A")
+        tot_insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || echo "N/A")
+        ipc=$(grep -m1 '^gpu_tot_ipc' "$log_file" | awk '{print $3}' || echo "N/A")
+        sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || echo "N/A")
+        wall_time=$(grep -m1 '^single_launch_wall_time_sec' "$log_file" | awk '{print $2}' || echo "N/A")
+    fi
 
-    if grep -q 'Validation PASSED' "$log_file"; then
+    if is_multi_launch; then
+        if grep -q '^multi_launch_validation PASSED' "$log_file"; then
+            validation="PASSED"
+        else
+            validation="FAILED"
+        fi
+    elif grep -q 'Validation PASSED' "$log_file"; then
         validation="PASSED"
     else
         validation="FAILED"
     fi
 
-    echo "${summary_key},${sim_cycles},${tot_insn},${ipc},${sim_time},${validation}"
+    echo "${summary_key},${sim_cycles},${tot_insn},${ipc},${sim_time},${wall_time},${validation}"
+}
+
+extract_gem5_metrics() {
+    local val=$1
+    local subdir
+    subdir="$(${WORKLOAD}_subdir "$val")"
+    local log_file="$GEM5_LOG_DIR/${subdir}_gem5.log"
+    local summary_key
+    summary_key="$(${WORKLOAD}_summary_key "$val")"
+
+    local sim_cycles tot_insn ipc sim_time wall_time validation
+
+    if is_multi_launch; then
+        sim_cycles=$(grep -m1 '^multi_launch_total_cycles' "$log_file" | awk '{print $2}' || echo "N/A")
+        tot_insn=$(grep -m1 '^multi_launch_total_insn' "$log_file" | awk '{print $2}' || echo "N/A")
+        sim_time=$(grep -m1 '^multi_launch_total_sim_time_sec' "$log_file" | awk '{print $2}' || echo "N/A")
+        wall_time=$(grep -m1 '^multi_launch_wall_time_sec' "$log_file" | awk '{print $2}' || echo "N/A")
+        ipc=$(awk -v insn="$tot_insn" -v cyc="$sim_cycles" 'BEGIN { if (cyc > 0) printf "%.4f", insn / cyc; else printf "N/A" }')
+    else
+        sim_cycles=$(grep -m1 '^gpu_tot_sim_cycle' "$log_file" | awk '{print $3}' || echo "N/A")
+        tot_insn=$(grep -m1 '^gpu_tot_sim_insn' "$log_file" | awk '{print $3}' || echo "N/A")
+        ipc=$(grep -m1 '^gpu_tot_ipc' "$log_file" | awk '{print $3}' || echo "N/A")
+        sim_time=$(grep -oP '\(\K[0-9]+ sec' "$log_file" | head -1 | awk '{print $1}' || echo "N/A")
+        wall_time=$(grep -m1 '^single_launch_wall_time_sec' "$log_file" | awk '{print $2}' || echo "N/A")
+    fi
+
+    if is_multi_launch; then
+        if grep -q '^multi_launch_validation PASSED' "$log_file"; then
+            validation="PASSED"
+        else
+            validation="FAILED"
+        fi
+    elif grep -q 'Validation PASSED' "$log_file"; then
+        validation="PASSED"
+    else
+        validation="FAILED"
+    fi
+
+    echo "${summary_key},${sim_cycles},${tot_insn},${ipc},${sim_time},${wall_time},${validation}"
 }
 
 # ============================================================================
@@ -510,7 +1098,7 @@ if [[ "$MODE" == "ncu" ]]; then
 
     # Generate/update summary (upsert: update existing rows, append new ones)
     NCU_SUMMARY="$NCU_REP_DIR/summary.csv"
-    NCU_HEADER="${SWEEP_LABEL},sm_cycles,sm_freq_ghz,duration_us,tflops,sm_throughput_pct,tensor_pipe_pct,dram_throughput_pct"
+    NCU_HEADER="${SWEEP_LABEL},sm_cycles,sm_freq_ghz,duration_us,tflops,dram_bytes_kb,dram_read_kb,dram_write_b,dram_bw_gbs,gpu_dram_throughput_pct,dram_throughput_pct,sm_throughput_pct,tensor_pipe_pct"
     mkdir -p "$NCU_REP_DIR"
 
     if [[ ! -f "$NCU_SUMMARY" ]]; then
@@ -533,6 +1121,66 @@ if [[ "$MODE" == "ncu" ]]; then
     echo "NCU summary written to $NCU_SUMMARY"
     echo "========================================"
     cat "$NCU_SUMMARY"
+    exit 0
+fi
+
+if [[ "$MODE" == "gem5" ]]; then
+    NEED_TRACE=()
+    for val in "${SWEEP_VALUES[@]}"; do
+        if ! trace_exists "$val"; then
+            NEED_TRACE+=("$val")
+        fi
+    done
+
+    if [[ ${#NEED_TRACE[@]} -gt 0 ]]; then
+        echo ""
+        echo "Missing traces for: ${NEED_TRACE[*]}"
+        echo "Generating traces first..."
+
+        if [[ -n "${GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN:-}" ]]; then
+            echo "ERROR: setup_environment is active but traces need to be generated."
+            echo "       Run '$0 $WORKLOAD trace ${NEED_TRACE[*]}' in a clean shell first."
+            exit 1
+        fi
+
+        for val in "${NEED_TRACE[@]}"; do
+            do_trace "$val"
+        done
+    fi
+
+    for val in "${SWEEP_VALUES[@]}"; do
+        do_gem5 "$val"
+    done
+
+    SUMMARY_FILE="$GEM5_LOG_DIR/summary.csv"
+    SUMMARY_LABEL="$(${WORKLOAD}_summary_label)"
+    HEADER="${SUMMARY_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,wall_time_sec,validation"
+    mkdir -p "$GEM5_LOG_DIR"
+
+    expected_cols=$(awk -F, -v h="$HEADER" 'BEGIN { print split(h, cols, ",") }')
+    if [[ ! -f "$SUMMARY_FILE" ]]; then
+        echo "$HEADER" > "$SUMMARY_FILE"
+    elif [[ "$(head -n1 "$SUMMARY_FILE")" != "$HEADER" ]] || \
+        awk -F, -v n="$expected_cols" 'NR > 1 && NF != n { bad = 1 } END { exit bad ? 0 : 1 }' "$SUMMARY_FILE"; then
+        echo "$HEADER" > "$SUMMARY_FILE"
+    fi
+
+    for val in "${SWEEP_VALUES[@]}"; do
+        new_line="$(extract_gem5_metrics "$val")"
+        summary_key="$(${WORKLOAD}_summary_key "$val")"
+        escaped_key="$(printf '%s' "$summary_key" | sed 's/[.[\*^$()+?{|]/\\&/g')"
+        if grep -q "^${escaped_key}," "$SUMMARY_FILE"; then
+            sed -i "s|^${escaped_key},.*|${new_line}|" "$SUMMARY_FILE"
+        else
+            echo "$new_line" >> "$SUMMARY_FILE"
+        fi
+    done
+
+    echo ""
+    echo "========================================"
+    echo "gem5 summary written to $SUMMARY_FILE"
+    echo "========================================"
+    cat "$SUMMARY_FILE"
     exit 0
 fi
 
@@ -567,10 +1215,14 @@ done
 # Generate/update summary (upsert: update existing rows, append new ones)
 SUMMARY_FILE="$SIM_LOG_DIR/summary.csv"
 SUMMARY_LABEL="$(${WORKLOAD}_summary_label)"
-HEADER="${SUMMARY_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,validation"
+HEADER="${SUMMARY_LABEL},sim_cycles,tot_insn,ipc,sim_time_sec,wall_time_sec,validation"
 mkdir -p "$SIM_LOG_DIR"
 
+expected_cols=$(awk -F, -v h="$HEADER" 'BEGIN { print split(h, cols, ",") }')
 if [[ ! -f "$SUMMARY_FILE" ]]; then
+    echo "$HEADER" > "$SUMMARY_FILE"
+elif [[ "$(head -n1 "$SUMMARY_FILE")" != "$HEADER" ]] || \
+    awk -F, -v n="$expected_cols" 'NR > 1 && NF != n { bad = 1 } END { exit bad ? 0 : 1 }' "$SUMMARY_FILE"; then
     echo "$HEADER" > "$SUMMARY_FILE"
 fi
 

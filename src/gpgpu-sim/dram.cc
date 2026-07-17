@@ -72,6 +72,11 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
   issued_total = 0;
   issued_total_row = 0;
   issued_total_col = 0;
+  last_cmd_cycle = 0;
+  last_col_cycle = 0;
+  last_read_col_cycle = 0;
+  last_write_col_cycle = 0;
+  last_row_cycle = 0;
 
   CCDc = 0;
   RRDc = 0;
@@ -584,6 +589,9 @@ bool dram_t::issue_col_command(int j) {
       bwutil += m_config->BL / m_config->data_command_freq_ratio;
       bwutil_partial += m_config->BL / m_config->data_command_freq_ratio;
       bk[j]->n_access++;
+      last_cmd_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+      last_col_cycle = last_cmd_cycle;
+      last_read_col_cycle = last_cmd_cycle;
 
 #ifdef DRAM_VERIFY
       PRINT_CYCLE = 1;
@@ -618,6 +626,9 @@ bool dram_t::issue_col_command(int j) {
           n_wr++;
         bwutil += m_config->BL / m_config->data_command_freq_ratio;
         bwutil_partial += m_config->BL / m_config->data_command_freq_ratio;
+        last_cmd_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+        last_col_cycle = last_cmd_cycle;
+        last_write_col_cycle = last_cmd_cycle;
 #ifdef DRAM_VERIFY
         PRINT_CYCLE = 1;
         printf(
@@ -661,6 +672,8 @@ bool dram_t::issue_row_command(int j) {
       issued = true;
       n_act_partial++;
       n_act++;
+      last_cmd_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+      last_row_cycle = last_cmd_cycle;
     }
 
     else
@@ -676,6 +689,8 @@ bool dram_t::issue_row_command(int j) {
         issued = true;
         n_pre++;
         n_pre_partial++;
+        last_cmd_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+        last_row_cycle = last_cmd_cycle;
 #ifdef DRAM_VERIFY
         PRINT_CYCLE = 1;
         printf("\tPRE BK:%d Row:%03x \n", j, bk[j]->curr_row);
@@ -705,6 +720,11 @@ void dram_t::print(FILE *simFile) const {
       (float)bwutil / n_cmd);
   fprintf(simFile, "n_activity=%llu dram_eff=%.4g\n", n_activity,
           (float)bwutil / n_activity);
+  fprintf(simFile,
+          "last_cmd_cycle=%llu last_col_cycle=%llu last_read_col_cycle=%llu "
+          "last_write_col_cycle=%llu last_row_cycle=%llu\n",
+          last_cmd_cycle, last_col_cycle, last_read_col_cycle,
+          last_write_col_cycle, last_row_cycle);
   for (i = 0; i < m_config->nbk; i++) {
     fprintf(simFile, "bk%d: %da %di ", i, bk[i]->n_access, bk[i]->n_idle);
   }

@@ -1,8 +1,14 @@
 #include "tma.h"
 #include "tensormap.h"
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
+#include <cstdlib>
 #include <cstring>
+#include <map>
+#include <mutex>
+#include <set>
+#include <unordered_map>
 
 #include "../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
@@ -22,9 +28,350 @@ std::atomic<unsigned int> tma_next_tx_uid = 0;
 
 namespace flash_gpgpu_sim {
 
+static std::atomic<unsigned long long> g_tma_tx_started{0};
+static std::atomic<unsigned long long> g_tma_read_tx_started{0};
+static std::atomic<unsigned long long> g_tma_write_tx_started{0};
+static std::atomic<unsigned long long> g_tma_tx_completed{0};
+static std::atomic<unsigned long long> g_tma_read_tx_completed{0};
+static std::atomic<unsigned long long> g_tma_write_tx_completed{0};
+static std::atomic<unsigned long long> g_tma_mf_issued{0};
+static std::atomic<unsigned long long> g_tma_read_mf_issued{0};
+static std::atomic<unsigned long long> g_tma_write_mf_issued{0};
+static std::atomic<unsigned long long> g_tma_mf_responses{0};
+static std::atomic<unsigned long long> g_tma_read_mf_responses{0};
+static std::atomic<unsigned long long> g_tma_write_mf_responses{0};
+static std::atomic<unsigned long long> g_tma_bytes_issued{0};
+static std::atomic<unsigned long long> g_tma_bytes_completed{0};
+
+static std::atomic<unsigned long long> g_cp_async_tx_started{0};
+static std::atomic<unsigned long long> g_cp_async_tx_completed{0};
+static std::atomic<unsigned long long> g_cp_async_mf_issued{0};
+static std::atomic<unsigned long long> g_cp_async_mf_responses{0};
+static std::atomic<unsigned long long> g_cp_async_bytes_issued{0};
+static std::atomic<unsigned long long> g_cp_async_bytes_completed{0};
+static std::atomic<unsigned long long> g_cp_async_issue_queue_cycles{0};
+static std::atomic<unsigned long long> g_cp_async_issue_active_cycles{0};
+static std::atomic<unsigned long long> g_cp_async_issue_width_limited_cycles{0};
+static std::atomic<unsigned long long> g_cp_async_issue_blocked_inflight_cycles{
+    0};
+static std::atomic<unsigned long long> g_cp_async_issue_blocked_icnt_cycles{0};
+static std::atomic<unsigned long long> g_cp_async_max_issue_queue{0};
+static std::atomic<unsigned long long> g_cp_async_max_inflight{0};
+static std::atomic<unsigned long long> g_cp_async_wait_calls{0};
+static std::atomic<unsigned long long> g_cp_async_wait_immediate{0};
+static std::atomic<unsigned long long> g_cp_async_wait_blocked{0};
+static std::atomic<unsigned long long> g_cp_async_wait_releases{0};
+static std::atomic<unsigned long long> g_cp_async_waiting_warp_cycles{0};
+static std::atomic<unsigned long long> g_cp_async_response_fifo_nonempty_cycles{
+    0};
+static std::atomic<unsigned long long> g_cp_async_response_width_limited_cycles{
+    0};
+static std::atomic<unsigned long long> g_cp_async_max_response_fifo{0};
+
+static void atomic_update_max(std::atomic<unsigned long long> &target,
+                              unsigned long long value) {
+  unsigned long long current = target.load(std::memory_order_relaxed);
+  while (current < value && !target.compare_exchange_weak(
+                                current, value, std::memory_order_relaxed,
+                                std::memory_order_relaxed)) {
+  }
+}
+
+tma_progress_counters_t get_global_tma_progress_counters() {
+  tma_progress_counters_t counters;
+  counters.tx_started = g_tma_tx_started.load(std::memory_order_relaxed);
+  counters.read_tx_started =
+      g_tma_read_tx_started.load(std::memory_order_relaxed);
+  counters.write_tx_started =
+      g_tma_write_tx_started.load(std::memory_order_relaxed);
+  counters.tx_completed = g_tma_tx_completed.load(std::memory_order_relaxed);
+  counters.read_tx_completed =
+      g_tma_read_tx_completed.load(std::memory_order_relaxed);
+  counters.write_tx_completed =
+      g_tma_write_tx_completed.load(std::memory_order_relaxed);
+  counters.mf_issued = g_tma_mf_issued.load(std::memory_order_relaxed);
+  counters.read_mf_issued =
+      g_tma_read_mf_issued.load(std::memory_order_relaxed);
+  counters.write_mf_issued =
+      g_tma_write_mf_issued.load(std::memory_order_relaxed);
+  counters.mf_responses = g_tma_mf_responses.load(std::memory_order_relaxed);
+  counters.read_mf_responses =
+      g_tma_read_mf_responses.load(std::memory_order_relaxed);
+  counters.write_mf_responses =
+      g_tma_write_mf_responses.load(std::memory_order_relaxed);
+  counters.bytes_issued = g_tma_bytes_issued.load(std::memory_order_relaxed);
+  counters.bytes_completed =
+      g_tma_bytes_completed.load(std::memory_order_relaxed);
+  return counters;
+}
+
+cp_async_debug_counters_t get_global_cp_async_debug_counters() {
+  cp_async_debug_counters_t counters;
+  counters.tx_started = g_cp_async_tx_started.load(std::memory_order_relaxed);
+  counters.tx_completed =
+      g_cp_async_tx_completed.load(std::memory_order_relaxed);
+  counters.mf_issued = g_cp_async_mf_issued.load(std::memory_order_relaxed);
+  counters.mf_responses =
+      g_cp_async_mf_responses.load(std::memory_order_relaxed);
+  counters.bytes_issued =
+      g_cp_async_bytes_issued.load(std::memory_order_relaxed);
+  counters.bytes_completed =
+      g_cp_async_bytes_completed.load(std::memory_order_relaxed);
+  counters.issue_queue_cycles =
+      g_cp_async_issue_queue_cycles.load(std::memory_order_relaxed);
+  counters.issue_active_cycles =
+      g_cp_async_issue_active_cycles.load(std::memory_order_relaxed);
+  counters.issue_width_limited_cycles =
+      g_cp_async_issue_width_limited_cycles.load(std::memory_order_relaxed);
+  counters.issue_blocked_inflight_cycles =
+      g_cp_async_issue_blocked_inflight_cycles.load(std::memory_order_relaxed);
+  counters.issue_blocked_icnt_cycles =
+      g_cp_async_issue_blocked_icnt_cycles.load(std::memory_order_relaxed);
+  counters.max_issue_queue =
+      g_cp_async_max_issue_queue.load(std::memory_order_relaxed);
+  counters.max_inflight =
+      g_cp_async_max_inflight.load(std::memory_order_relaxed);
+  counters.wait_calls = g_cp_async_wait_calls.load(std::memory_order_relaxed);
+  counters.wait_immediate =
+      g_cp_async_wait_immediate.load(std::memory_order_relaxed);
+  counters.wait_blocked =
+      g_cp_async_wait_blocked.load(std::memory_order_relaxed);
+  counters.wait_releases =
+      g_cp_async_wait_releases.load(std::memory_order_relaxed);
+  counters.waiting_warp_cycles =
+      g_cp_async_waiting_warp_cycles.load(std::memory_order_relaxed);
+  counters.response_fifo_nonempty_cycles =
+      g_cp_async_response_fifo_nonempty_cycles.load(std::memory_order_relaxed);
+  counters.response_width_limited_cycles =
+      g_cp_async_response_width_limited_cycles.load(std::memory_order_relaxed);
+  counters.max_response_fifo =
+      g_cp_async_max_response_fifo.load(std::memory_order_relaxed);
+  return counters;
+}
+
+static void record_tma_tx_started(bool is_write) {
+  g_tma_tx_started.fetch_add(1, std::memory_order_relaxed);
+  if (is_write) {
+    g_tma_write_tx_started.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    g_tma_read_tx_started.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+static void record_tma_tx_completed(bool is_write) {
+  g_tma_tx_completed.fetch_add(1, std::memory_order_relaxed);
+  if (is_write) {
+    g_tma_write_tx_completed.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    g_tma_read_tx_completed.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+static void record_tma_mf_issued(bool is_write, unsigned bytes) {
+  g_tma_mf_issued.fetch_add(1, std::memory_order_relaxed);
+  g_tma_bytes_issued.fetch_add(bytes, std::memory_order_relaxed);
+  if (is_write) {
+    g_tma_write_mf_issued.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    g_tma_read_mf_issued.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+static void record_tma_mf_response(bool is_write, unsigned bytes) {
+  g_tma_mf_responses.fetch_add(1, std::memory_order_relaxed);
+  g_tma_bytes_completed.fetch_add(bytes, std::memory_order_relaxed);
+  if (is_write) {
+    g_tma_write_mf_responses.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    g_tma_read_mf_responses.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+static void record_tma_bytes_completed(unsigned bytes) {
+  g_tma_bytes_completed.fetch_add(bytes, std::memory_order_relaxed);
+}
+
+static void tma_trace_emit(unsigned long long cycle, const char *event,
+                           unsigned tx_uid, const char *kind, unsigned tma_type,
+                           unsigned long long pc, unsigned cta_id,
+                           unsigned warp_id, unsigned lane_id, unsigned tid,
+                           unsigned long long src, unsigned long long dst,
+                           unsigned size, unsigned mbar, unsigned mf_uid,
+                           unsigned long long mf_addr, unsigned mf_size,
+                           unsigned issued_mf, unsigned received_mf,
+                           unsigned bytes_completed, unsigned tx_inflight,
+                           unsigned global_inflight, unsigned response_fifo) {
+  const char *path = std::getenv("FLASHGPU_TMA_TRACE_CSV");
+  if (path == nullptr || path[0] == '\0')
+    return;
+
+  const char *limit = std::getenv("FLASHGPU_TMA_TRACE_CYCLE_LIMIT");
+  if (limit != nullptr && limit[0] != '\0') {
+    unsigned long long limit_cycle = std::strtoull(limit, nullptr, 0);
+    if (limit_cycle != 0 && cycle > limit_cycle)
+      return;
+  }
+
+  static std::mutex trace_mutex;
+  static FILE *trace_file = nullptr;
+  static bool header_written = false;
+
+  std::lock_guard<std::mutex> lock(trace_mutex);
+  if (trace_file == nullptr) {
+    trace_file = std::strcmp(path, "-") == 0 ? stdout : std::fopen(path, "a");
+    if (trace_file == nullptr)
+      return;
+  }
+  if (!header_written) {
+    std::fprintf(trace_file,
+                 "cycle,event,tx_uid,kind,tma_type,pc,cta,warp,lane,tid,"
+                 "src,dst,size,mbar,mf_uid,mf_addr,mf_size,issued_mf,"
+                 "received_mf,bytes_completed,tx_inflight,global_inflight,"
+                 "response_fifo\n");
+    header_written = true;
+  }
+
+  std::fprintf(trace_file,
+               "%llu,%s,%u,%s,%u,0x%llx,%u,%u,%u,%u,0x%llx,0x%llx,%u,"
+               "0x%x,%u,0x%llx,%u,%u,%u,%u,%u,%u,%u\n",
+               cycle, event, tx_uid, kind, tma_type, pc, cta_id, warp_id,
+               lane_id, tid, src, dst, size, mbar, mf_uid, mf_addr, mf_size,
+               issued_mf, received_mf, bytes_completed, tx_inflight,
+               global_inflight, response_fifo);
+  std::fflush(trace_file);
+}
+
+static bool tma_trace_mf_enabled(unsigned long long cycle) {
+  const char *enabled = std::getenv("FLASHGPU_TMA_TRACE_MF");
+  if (enabled == nullptr || enabled[0] == '\0' ||
+      std::strcmp(enabled, "0") == 0)
+    return false;
+
+  const char *limit = std::getenv("FLASHGPU_TMA_TRACE_MF_CYCLE_LIMIT");
+  if (limit != nullptr && limit[0] != '\0') {
+    unsigned long long limit_cycle = std::strtoull(limit, nullptr, 0);
+    if (limit_cycle != 0 && cycle > limit_cycle)
+      return false;
+  }
+  return true;
+}
+
 //=============================================================================
 // Shared Helper Functions
 //=============================================================================
+
+static uint32_t
+effective_tma_request_granularity(const shader_core_config *config) {
+  unsigned granularity = config->gpgpu_tma_request_granularity;
+  if (granularity >= MAX_MEMORY_ACCESS_SIZE)
+    return MAX_MEMORY_ACCESS_SIZE;
+  if (granularity >= 2 * SECTOR_SIZE)
+    return 2 * SECTOR_SIZE;
+  return SECTOR_SIZE;
+}
+
+static uint32_t
+effective_cp_async_request_granularity(const shader_core_config *config) {
+  unsigned granularity = config->gpgpu_cp_async_request_granularity;
+  if (granularity >= MAX_MEMORY_ACCESS_SIZE)
+    return MAX_MEMORY_ACCESS_SIZE;
+  if (granularity >= 2 * SECTOR_SIZE)
+    return 2 * SECTOR_SIZE;
+  return SECTOR_SIZE;
+}
+
+static new_addr_type align_down(new_addr_type addr, unsigned alignment) {
+  return addr - (addr % alignment);
+}
+
+static bool cp_async_access_merge_candidate(const mem_access_t &access,
+                                            unsigned granularity,
+                                            new_addr_type base) {
+  if (access.get_type() != CP_ASYNC_ACC_R || access.is_write())
+    return false;
+  if (access.get_size() == 0 || access.get_size() > granularity)
+    return false;
+  if ((access.get_addr() % SECTOR_SIZE) != 0 ||
+      (access.get_size() % SECTOR_SIZE) != 0)
+    return false;
+  return access.get_addr() >= base &&
+         access.get_addr() + access.get_size() <= base + granularity;
+}
+
+static void
+append_cp_async_access_group(const std::vector<mem_access_t> &group,
+                             unsigned granularity, gpgpu_context *ctx,
+                             std::vector<mem_access_t> &merged_accesses) {
+  if (group.empty())
+    return;
+  if (group.size() == 1) {
+    merged_accesses.push_back(group.front());
+    return;
+  }
+
+  const new_addr_type base = align_down(group.front().get_addr(), granularity);
+  active_mask_t active_mask;
+  mem_access_byte_mask_t byte_mask;
+  mem_access_sector_mask_t sector_mask;
+
+  for (const auto &access : group) {
+    if (!cp_async_access_merge_candidate(access, granularity, base)) {
+      merged_accesses.insert(merged_accesses.end(), group.begin(), group.end());
+      return;
+    }
+    active_mask |= access.get_warp_mask();
+    byte_mask |= access.get_byte_mask();
+
+    mem_access_sector_mask_t access_sectors = access.get_sector_mask();
+    if (access_sectors.none()) {
+      const unsigned start_sector =
+          (access.get_addr() % MAX_MEMORY_ACCESS_SIZE) / SECTOR_SIZE;
+      const unsigned num_sectors = access.get_size() / SECTOR_SIZE;
+      for (unsigned i = 0; i < num_sectors; ++i)
+        access_sectors.set(start_sector + i);
+    }
+    sector_mask |= access_sectors;
+  }
+
+  mem_access_sector_mask_t required_sectors;
+  const unsigned start_sector = (base % MAX_MEMORY_ACCESS_SIZE) / SECTOR_SIZE;
+  const unsigned num_sectors = granularity / SECTOR_SIZE;
+  for (unsigned i = 0; i < num_sectors; ++i)
+    required_sectors.set(start_sector + i);
+
+  if ((sector_mask & required_sectors) != required_sectors) {
+    merged_accesses.insert(merged_accesses.end(), group.begin(), group.end());
+    return;
+  }
+
+  merged_accesses.emplace_back(CP_ASYNC_ACC_R, base, granularity, false,
+                               active_mask, byte_mask, required_sectors, ctx);
+}
+
+static std::vector<mem_access_t>
+coalesce_cp_async_accesses(std::vector<mem_access_t> accesses,
+                           unsigned granularity, gpgpu_context *ctx) {
+  if (granularity <= SECTOR_SIZE || accesses.size() <= 1)
+    return accesses;
+
+  std::sort(accesses.begin(), accesses.end(),
+            [](const mem_access_t &a, const mem_access_t &b) {
+              return a.get_addr() < b.get_addr();
+            });
+
+  std::vector<mem_access_t> merged_accesses;
+  for (auto it = accesses.begin(); it != accesses.end();) {
+    const new_addr_type base = align_down(it->get_addr(), granularity);
+    std::vector<mem_access_t> group;
+    do {
+      group.push_back(*it);
+      ++it;
+    } while (it != accesses.end() &&
+             align_down(it->get_addr(), granularity) == base);
+    append_cp_async_access_group(group, granularity, ctx, merged_accesses);
+  }
+  return merged_accesses;
+}
 
 // Get a 32-bit unsigned value from an operand
 static uint32_t get_operand_u32(ptx_thread_info *thread,
@@ -38,6 +385,14 @@ static uint64_t get_operand_u64(ptx_thread_info *thread,
                                 const operand_info &op) {
   ptx_reg_t reg = thread->get_operand_value(op, op, U64_TYPE, thread, 0);
   return reg.u64;
+}
+
+[[noreturn]] static void reject_unsupported_tma(
+    const char *reason, const ptx_instruction *pI) {
+  fprintf(stderr, "TMA ERROR: %s\n", reason);
+  pI->print_insn(stderr);
+  fflush(stderr);
+  abort();
 }
 
 // Compute instruction dimension from option
@@ -62,7 +417,7 @@ static unsigned compute_inst_dim(unsigned dim_option) {
 // Parse coordinates from an operand into a coords array
 static void parse_tensor_coords(ptx_thread_info *thread,
                                 const operand_info &coord_operand,
-                                uint32_t coords[5]) {
+                                int32_t coords[5]) {
   // Initialize all coords to 0
   for (int i = 0; i < 5; i++)
     coords[i] = 0;
@@ -73,14 +428,14 @@ static void parse_tensor_coords(ptx_thread_info *thread,
     thread->get_vector_operand_values(coord_operand, coord_regs, n_coords);
 
     for (unsigned i = 0; i < n_coords && i < 5; i++) {
-      coords[i] = coord_regs[i].u32;
+      coords[i] = coord_regs[i].s32;
     }
   } else {
     // Single coordinate (1D case with non-vector operand)
     coords[0] = thread
-                    ->get_operand_value(coord_operand, coord_operand, U32_TYPE,
+                    ->get_operand_value(coord_operand, coord_operand, S32_TYPE,
                                         thread, 0)
-                    .u32;
+                    .s32;
   }
 }
 
@@ -108,6 +463,44 @@ static bool validate_tensormap(uint64_t tensormap_addr,
   return true;
 }
 
+static bool is_valid_tensormap_for_dim(const tensormap_descriptor_t &tensormap,
+                                       unsigned inst_dim) {
+  return tensormap.is_valid() && tensormap.num_dims() == inst_dim;
+}
+
+static bool
+is_valid_tensormap_for_optional_dim(const tensormap_descriptor_t &tensormap,
+                                    unsigned inst_dim) {
+  return inst_dim == 0 ? tensormap.is_valid()
+                       : is_valid_tensormap_for_dim(tensormap, inst_dim);
+}
+
+static void read_tensormap_descriptor(memory_space *global_mem,
+                                      memory_space *param_mem,
+                                      uint64_t tensormap_addr,
+                                      unsigned inst_dim,
+                                      tensormap_descriptor_t &out_tensormap) {
+  if (tensormap_addr < STATIC_ALLOC_LIMIT && param_mem != nullptr) {
+    param_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &out_tensormap);
+    if (is_valid_tensormap_for_optional_dim(out_tensormap, inst_dim)) {
+      return;
+    }
+  }
+
+  global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &out_tensormap);
+}
+
+static void
+cache_tensormap_descriptor(inst_t::tma_dyn_info_t &tma_dyn_info,
+                           const tensormap_descriptor_t &tensormap) {
+  static_assert(inst_t::tma_dyn_info_t::TMA_DESCRIPTOR_BYTES ==
+                    TENSORMAP_DESCRIPTOR_SIZE,
+                "TMA descriptor cache size must match tensor map size");
+  memcpy(tma_dyn_info.tensormap_descriptor, tensormap.raw_bytes,
+         TENSORMAP_DESCRIPTOR_SIZE);
+  tma_dyn_info.has_tensormap_descriptor = true;
+}
+
 //=============================================================================
 // Performance Simulation: TMA AGU (Address Generation Unit)
 //=============================================================================
@@ -123,7 +516,7 @@ struct tma_agu_state_t {
   uint32_t elem_size = 0;           // Element size in bytes
   uint32_t box_dim[5] = {0};        // Tile dimensions [d0, d1, d2, d3, d4]
   uint32_t global_dim[5] = {0};     // Global tensor dimensions
-  uint32_t start_coords[5] = {0};   // Starting coordinates of this tile
+  int32_t start_coords[5] = {0};    // Starting coordinates of this tile
   uint64_t global_strides[5] = {0}; // Strides for each dimension
   uint32_t tile_coords[5] = {0};    // Current position within tile (odometer)
   uint64_t curr_row_addr = 0;       // Base physical address of current row
@@ -131,8 +524,9 @@ struct tma_agu_state_t {
   uint32_t row_bytes = 0;           // Total bytes in a row (dim0 extent)
 
   // Cached OOB state (avoids per-sector dimension traversal)
-  bool row_is_oob = false;      // Higher-dim OOB: entire row is fill
-  uint32_t valid_row_bytes = 0; // Dim0 valid bytes in row (constant per tile)
+  bool row_is_oob = false; // Higher-dim OOB: entire row is fill
+  uint32_t valid_row_start_bytes = 0; // First valid dim0 byte in the tile row
+  uint32_t valid_row_end_bytes = 0;   // One-past-last valid dim0 byte
 
   // Linear mode state (simple 1D address range)
   uint64_t linear_addr = 0;      // Current address
@@ -142,7 +536,7 @@ struct tma_agu_state_t {
 class tma_agu_unit_t {
 public:
   void init_tensor(tma_agu_state_t &state, const tensormap_descriptor_t &tm,
-                   const uint32_t start_coords[5]) {
+                   const int32_t start_coords[5]) {
 
     if (!tm.is_valid()) {
       assert(false && "TMA AGU ERROR: Invalid tensormap in init_tensor");
@@ -171,27 +565,48 @@ public:
       state.tile_coords[i] = 0;
     }
 
-    // Calculate initial row address: base + sum(start_coords[d] * stride[d])
-    state.curr_row_addr = tm.fields.globalAddress;
+    // Calculate initial row address using signed coordinates.  OOB requests
+    // may precede the tensor base when OOB L2 traffic is enabled.
+    int64_t byte_offset = 0;
     for (uint32_t d = 0; d < state.num_dims; d++) {
-      state.curr_row_addr += start_coords[d] * state.global_strides[d];
+      byte_offset += static_cast<int64_t>(start_coords[d]) *
+                     static_cast<int64_t>(state.global_strides[d]);
+    }
+    if (byte_offset < 0) {
+      state.curr_row_addr =
+          tm.fields.globalAddress - static_cast<uint64_t>(-byte_offset);
+    } else {
+      state.curr_row_addr =
+          tm.fields.globalAddress + static_cast<uint64_t>(byte_offset);
     }
 
     state.row_bytes = state.box_dim[0] * state.elem_size;
     state.offset_in_row = 0;
     state.done = false;
 
-    // Precompute dim0 valid bytes (constant for entire tile)
-    uint32_t dim0_remaining = (start_coords[0] < state.global_dim[0])
-                                  ? state.global_dim[0] - start_coords[0]
-                                  : 0;
-    state.valid_row_bytes =
-        std::min(state.box_dim[0], dim0_remaining) * state.elem_size;
+    // Precompute the dim0 intersection with the tensor.  Both boundaries are
+    // tile-relative so a negative start coordinate produces leading fill
+    // bytes followed by valid data.
+    const int64_t row_start = start_coords[0];
+    const int64_t row_end = row_start + state.box_dim[0];
+    const int64_t valid_start = std::max<int64_t>(row_start, 0);
+    const int64_t valid_end =
+        std::min<int64_t>(row_end, state.global_dim[0]);
+    if (valid_start < valid_end) {
+      state.valid_row_start_bytes =
+          static_cast<uint32_t>(valid_start - row_start) * state.elem_size;
+      state.valid_row_end_bytes =
+          static_cast<uint32_t>(valid_end - row_start) * state.elem_size;
+    } else {
+      state.valid_row_start_bytes = state.row_bytes;
+      state.valid_row_end_bytes = state.row_bytes;
+    }
 
     // Precompute higher-dim OOB for first row (tile_coords all zero)
     state.row_is_oob = false;
     for (uint32_t d = 1; d < state.num_dims; d++) {
-      if (start_coords[d] >= state.global_dim[d]) {
+      if (start_coords[d] < 0 ||
+          static_cast<uint32_t>(start_coords[d]) >= state.global_dim[d]) {
         state.row_is_oob = true;
         break;
       }
@@ -213,14 +628,14 @@ public:
    * For tensor mode:
    *   - Traverses tile in row-major order
    *   - Skips OOB coordinates (zero-padding)
-   *   - Breaks rows into 128B-aligned chunks
+   *   - Breaks rows into configured request-granularity chunks
    *
    * For linear mode:
    *   - Simple sequential address generation
-   *   - Aligns to 128B boundaries
+   *   - Aligns to configured request-granularity boundaries
    */
   bool gen_next_req(tma_agu_state_t &state, uint64_t &out_addr,
-                    uint32_t &out_size) {
+                    uint32_t &out_size, uint32_t request_granularity) {
     if (state.done)
       return false;
 
@@ -233,12 +648,10 @@ public:
 
       state.is_fill_request = false; // Linear mode never fills
       out_addr = state.linear_addr;
-      // Size = min(SECTOR_SIZE, remaining, bytes to next sector boundary)
-      // Issue at sector granularity (32B) to match L2 sector size and ensure
-      // 1:1 correspondence between issued requests and received responses.
-      uint32_t to_boundary = SECTOR_SIZE - (state.linear_addr % SECTOR_SIZE);
-      out_size = std::min(
-          {(uint32_t)SECTOR_SIZE, state.linear_remaining, to_boundary});
+      uint32_t to_boundary =
+          request_granularity - (state.linear_addr % request_granularity);
+      out_size =
+          std::min({request_granularity, state.linear_remaining, to_boundary});
 
       state.linear_addr += out_size;
       state.linear_remaining -= out_size;
@@ -254,18 +667,29 @@ public:
         state.is_fill_request = true; // Higher-dim OOB: entire row is fill
       } else {
         state.is_fill_request =
-            (state.offset_in_row >= state.valid_row_bytes); // Dim0 boundary
+            state.offset_in_row < state.valid_row_start_bytes ||
+            state.offset_in_row >= state.valid_row_end_bytes;
       }
 
       // Calculate address: current_row_base + offset_within_row
       out_addr = state.curr_row_addr + state.offset_in_row;
 
-      // Calculate size: min(SECTOR_SIZE, remaining in row, bytes to next sector
-      // boundary). Issue at sector granularity (32B) to match L2 sector cache.
+      // Never mix fill and valid bytes in one request.
       uint32_t row_remaining = state.row_bytes - state.offset_in_row;
-      uint32_t to_sector_boundary = SECTOR_SIZE - (out_addr % SECTOR_SIZE);
-      out_size =
-          std::min({(uint32_t)SECTOR_SIZE, row_remaining, to_sector_boundary});
+      if (!state.row_is_oob) {
+        if (state.offset_in_row < state.valid_row_start_bytes) {
+          row_remaining =
+              std::min(row_remaining, state.valid_row_start_bytes -
+                                          state.offset_in_row);
+        } else if (state.offset_in_row < state.valid_row_end_bytes) {
+          row_remaining =
+              std::min(row_remaining,
+                       state.valid_row_end_bytes - state.offset_in_row);
+        }
+      }
+      uint32_t to_boundary =
+          request_granularity - (out_addr % request_granularity);
+      out_size = std::min({request_granularity, row_remaining, to_boundary});
 
       // Advance position within row
       state.offset_in_row += out_size;
@@ -309,7 +733,9 @@ private:
     // Recompute higher-dim OOB for new row (once per row, not per sector)
     state.row_is_oob = false;
     for (uint32_t d = 1; d < state.num_dims; d++) {
-      if (state.start_coords[d] + state.tile_coords[d] >= state.global_dim[d]) {
+      const int64_t coord = static_cast<int64_t>(state.start_coords[d]) +
+                            state.tile_coords[d];
+      if (coord < 0 || coord >= state.global_dim[d]) {
         state.row_is_oob = true;
         break;
       }
@@ -337,12 +763,28 @@ private:
 
   tma_agu_unit_t m_agu;
   unsigned m_mf_inflight = 0; // Actual mem_fetch in L2 pipeline (not skips)
+  unsigned m_request_byte_credit = 0;
+
+  unsigned long long current_cycle() const {
+    return m_shader_ctx->get_gpu()->gpu_sim_cycle +
+           m_shader_ctx->get_gpu()->gpu_tot_sim_cycle;
+  }
 
   struct tma_transaction_t {
     ptx_thread_info *m_thread = nullptr;
     ptx_instruction *m_inst = nullptr;
     inst_t::tma_static_info_t m_static_info;
     inst_t::tma_dyn_info_t m_dyn_info;
+    unsigned m_cta_id = 0;
+    unsigned m_warp_id = 0;
+    unsigned m_lane_id = 0;
+    unsigned m_tid = 0;
+    unsigned long long m_pc = 0;
+    unsigned long long m_create_cycle = 0;
+    unsigned long long m_first_issue_cycle = 0;
+    unsigned long long m_last_issue_cycle = 0;
+    unsigned long long m_first_response_cycle = 0;
+    unsigned long long m_complete_cycle = 0;
     uint32_t m_bytes_completed = 0;
     tma_agu_state_t agu_state; // AGU state for this transaction
 
@@ -354,6 +796,16 @@ private:
     void reset() {
       m_thread = nullptr;
       m_inst = nullptr;
+      m_cta_id = 0;
+      m_warp_id = 0;
+      m_lane_id = 0;
+      m_tid = 0;
+      m_pc = 0;
+      m_create_cycle = 0;
+      m_first_issue_cycle = 0;
+      m_last_issue_cycle = 0;
+      m_first_response_cycle = 0;
+      m_complete_cycle = 0;
       m_bytes_completed = 0;
       agu_state = tma_agu_state_t(); // Reset to default state
       m_mf_issued_count = 0;
@@ -367,6 +819,88 @@ private:
 
   std::list<unsigned> issue_queue;
   std::unordered_map<unsigned, unsigned> m_mf_to_tx;
+  std::unordered_map<unsigned, uint32_t> m_mf_pending_bytes;
+
+  struct cp_async_transaction_t {
+    mem_access_t access;
+    warp_inst_t inst;
+    unsigned cta_id = 0;
+    unsigned warp_id = 0;
+    unsigned long long pc = 0;
+    unsigned long long stream_id = 0;
+    unsigned long long create_cycle = 0;
+    unsigned long long first_issue_cycle = 0;
+    unsigned long long first_response_cycle = 0;
+    uint32_t bytes_completed = 0;
+    uint32_t mf_issued_count = 0;
+    uint32_t mf_received_count = 0;
+
+    cp_async_transaction_t(gpgpu_context *ctx) : access(ctx) {}
+  };
+
+  struct cp_async_warp_group_info_t {
+    unsigned next_group_id = 1;
+    unsigned wait_allowance = 0;
+    bool is_waiting = false;
+    std::set<unsigned> pending_txs;
+    std::map<unsigned, std::set<unsigned>> pending_groups;
+    std::map<unsigned, unsigned> tx_to_group;
+
+    void add_tx(unsigned tx_uid) { pending_txs.insert(tx_uid); }
+
+    void commit_group() {
+      if (!pending_txs.empty()) {
+        for (unsigned tx_uid : pending_txs) {
+          tx_to_group[tx_uid] = next_group_id;
+        }
+        pending_groups.emplace(next_group_id, pending_txs);
+        pending_txs.clear();
+      }
+      next_group_id++;
+    }
+
+    bool wait_group(unsigned max_pending_groups) {
+      if (pending_groups.size() <= max_pending_groups)
+        return true;
+      assert(!is_waiting && "warp is already waiting on cp.async group");
+      wait_allowance = max_pending_groups;
+      is_waiting = true;
+      return false;
+    }
+
+    bool complete_tx(unsigned tx_uid) {
+      auto tx_it = tx_to_group.find(tx_uid);
+      if (tx_it == tx_to_group.end()) {
+        pending_txs.erase(tx_uid);
+      } else {
+        unsigned group_id = tx_it->second;
+        tx_to_group.erase(tx_it);
+        auto group_it = pending_groups.find(group_id);
+        assert(group_it != pending_groups.end());
+        group_it->second.erase(tx_uid);
+        if (group_it->second.empty())
+          pending_groups.erase(group_it);
+      }
+
+      if (is_waiting && pending_groups.size() <= wait_allowance) {
+        is_waiting = false;
+        return true;
+      }
+      return false;
+    }
+
+    bool has_pending() const {
+      return !pending_txs.empty() || !pending_groups.empty() || is_waiting;
+    }
+  };
+
+  std::unordered_map<unsigned, cp_async_transaction_t> m_cp_transactions;
+  std::list<unsigned> m_cp_issue_queue;
+  std::unordered_map<unsigned, unsigned> m_cp_mf_to_tx;
+  std::unordered_map<unsigned, uint32_t> m_cp_mf_pending_bytes;
+  std::map<std::pair<unsigned, unsigned>, cp_async_warp_group_info_t>
+      m_cp_group_info;
+  unsigned m_cp_mf_inflight = 0;
 
   std::list<mem_fetch *> m_response_fifo;
 
@@ -382,6 +916,10 @@ private:
   };
   std::vector<pending_arrive_t> m_pending_arrives;
 
+  static bool is_write_transaction(const tma_transaction_t &tx) {
+    return tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL;
+  }
+
   // Helper function to finalize a completed transaction
   void finalize_transaction(unsigned tx_uid) {
     auto it = m_transactions.find(tx_uid);
@@ -389,12 +927,20 @@ private:
       return;
 
     auto &tx = it->second;
-    auto thread = tx.m_thread;
-    unsigned cta_id = thread->get_hw_ctaid();
-    unsigned warp_id = thread->get_hw_wid();
+    unsigned cta_id = tx.m_cta_id;
+    unsigned warp_id = tx.m_warp_id;
 
-    bool is_write =
-        (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
+    bool is_write = is_write_transaction(tx);
+    tx.m_complete_cycle = current_cycle();
+    tma_trace_emit(
+        tx.m_complete_cycle, "COMPLETE", tx_uid, is_write ? "WRITE" : "READ",
+        tx.m_static_info.tma_type, tx.m_pc, tx.m_cta_id, tx.m_warp_id,
+        tx.m_lane_id, tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+        tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0, 0, 0,
+        tx.m_mf_issued_count, tx.m_mf_received_count, tx.m_bytes_completed,
+        tx.m_mf_tx_inflight, m_mf_inflight, m_response_fifo.size());
+    m_shader_ctx->inc_tma_tx_completed(is_write);
+    record_tma_tx_completed(is_write);
     GPPRINTF_TMA(
         TMA,
         "[TMA %s COMPLETE] tx_uid=%u, cta_id=%u, warp_id=%u, mbar=0x%x, "
@@ -426,6 +972,14 @@ private:
       } else {
         m_barriers->complete_bulk_tx(cta_id, warp_id, tx_uid);
       }
+      tma_trace_emit(current_cycle(), "ARRIVE", tx_uid,
+                     is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                     tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id, tx.m_tid,
+                     tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                     tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0, 0,
+                     0, tx.m_mf_issued_count, tx.m_mf_received_count,
+                     tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                     m_response_fifo.size());
     }
 
     m_transactions.erase(it);
@@ -438,6 +992,140 @@ private:
         ++map_it;
       }
     }
+    for (auto pending_it = m_mf_pending_bytes.begin();
+         pending_it != m_mf_pending_bytes.end();) {
+      auto map_it = m_mf_to_tx.find(pending_it->first);
+      if (map_it == m_mf_to_tx.end()) {
+        pending_it = m_mf_pending_bytes.erase(pending_it);
+      } else {
+        ++pending_it;
+      }
+    }
+  }
+
+  void finalize_cp_async_transaction(unsigned tx_uid) {
+    auto it = m_cp_transactions.find(tx_uid);
+    if (it == m_cp_transactions.end())
+      return;
+
+    unsigned cta_id = it->second.cta_id;
+    unsigned warp_id = it->second.warp_id;
+    auto group_it = m_cp_group_info.find(std::make_pair(cta_id, warp_id));
+    assert(group_it != m_cp_group_info.end());
+    bool should_release = group_it->second.complete_tx(tx_uid);
+    if (should_release) {
+      g_cp_async_wait_releases.fetch_add(1, std::memory_order_relaxed);
+      m_barriers->release_cp_async_warp(warp_id);
+    }
+
+    g_cp_async_tx_completed.fetch_add(1, std::memory_order_relaxed);
+    m_cp_transactions.erase(it);
+  }
+
+  void process_cp_async_response(mem_fetch *mf) {
+    mem_fetch *parent_mf = mf->get_original_mf() ? mf->get_original_mf() : mf;
+    unsigned parent_uid = parent_mf->get_request_uid();
+    auto mf_it = m_cp_mf_to_tx.find(parent_uid);
+    assert(mf_it != m_cp_mf_to_tx.end() &&
+           "cp.async response has no live transaction");
+    unsigned tx_uid = mf_it->second;
+    auto tx_it = m_cp_transactions.find(tx_uid);
+    assert(tx_it != m_cp_transactions.end());
+    auto &tx = tx_it->second;
+
+    assert(mf->get_access_type() == CP_ASYNC_ACC_R);
+    tx.mf_received_count++;
+    g_cp_async_mf_responses.fetch_add(1, std::memory_order_relaxed);
+    if (tx.first_response_cycle == 0)
+      tx.first_response_cycle = current_cycle();
+
+    unsigned mf_size = mf->get_data_size();
+    unsigned parent_size = parent_mf->get_data_size();
+    unsigned bytes_to_add = (mf_size > parent_size) ? parent_size : mf_size;
+    tx.bytes_completed += bytes_to_add;
+    g_cp_async_bytes_completed.fetch_add(bytes_to_add,
+                                         std::memory_order_relaxed);
+
+    bool parent_complete = false;
+    auto pending_it = m_cp_mf_pending_bytes.find(parent_uid);
+    assert(pending_it != m_cp_mf_pending_bytes.end());
+    if (bytes_to_add >= pending_it->second) {
+      assert(m_cp_mf_inflight > 0);
+      m_cp_mf_inflight--;
+      m_cp_mf_pending_bytes.erase(pending_it);
+      m_cp_mf_to_tx.erase(parent_uid);
+      parent_complete = true;
+    } else {
+      pending_it->second -= bytes_to_add;
+    }
+
+    if (tx.bytes_completed >= tx.access.get_size()) {
+      finalize_cp_async_transaction(tx_uid);
+    }
+
+    mem_fetch *parent_to_delete =
+        (parent_complete && parent_mf != mf) ? parent_mf : NULL;
+    delete mf;
+    delete parent_to_delete;
+  }
+
+  void issue_cp_async_requests() {
+    if (m_cp_issue_queue.empty())
+      return;
+
+    g_cp_async_issue_queue_cycles.fetch_add(1, std::memory_order_relaxed);
+    atomic_update_max(g_cp_async_max_issue_queue, m_cp_issue_queue.size());
+    atomic_update_max(g_cp_async_max_inflight, m_cp_mf_inflight);
+
+    unsigned max_inflight =
+        m_shader_ctx->get_config()->gpgpu_cp_async_max_inflight;
+    unsigned request_width =
+        m_shader_ctx->get_config()->gpgpu_cp_async_request_width
+            ? m_shader_ctx->get_config()->gpgpu_cp_async_request_width
+            : 1;
+    unsigned issued_requests = 0;
+
+    while (issued_requests < request_width && !m_cp_issue_queue.empty()) {
+      if (max_inflight > 0 && m_cp_mf_inflight >= max_inflight) {
+        g_cp_async_issue_blocked_inflight_cycles.fetch_add(
+            1, std::memory_order_relaxed);
+        break;
+      }
+      if (m_icnt->full(READ_PACKET_SIZE, false)) {
+        g_cp_async_issue_blocked_icnt_cycles.fetch_add(
+            1, std::memory_order_relaxed);
+        break;
+      }
+
+      unsigned tx_uid = m_cp_issue_queue.front();
+      auto tx_it = m_cp_transactions.find(tx_uid);
+      assert(tx_it != m_cp_transactions.end());
+      auto &tx = tx_it->second;
+
+      mem_fetch *mf =
+          m_mf_allocator->alloc(tx.inst, tx.access, current_cycle());
+      m_cp_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
+      m_cp_mf_pending_bytes.emplace(mf->get_request_uid(),
+                                    tx.access.get_size());
+
+      if (tx.first_issue_cycle == 0)
+        tx.first_issue_cycle = current_cycle();
+      tx.mf_issued_count++;
+      g_cp_async_mf_issued.fetch_add(1, std::memory_order_relaxed);
+      g_cp_async_bytes_issued.fetch_add(tx.access.get_size(),
+                                        std::memory_order_relaxed);
+      m_icnt->push(mf);
+      m_cp_mf_inflight++;
+      atomic_update_max(g_cp_async_max_inflight, m_cp_mf_inflight);
+      issued_requests++;
+      m_cp_issue_queue.pop_front();
+    }
+
+    if (issued_requests > 0)
+      g_cp_async_issue_active_cycles.fetch_add(1, std::memory_order_relaxed);
+    if (issued_requests >= request_width && !m_cp_issue_queue.empty())
+      g_cp_async_issue_width_limited_cycles.fetch_add(
+          1, std::memory_order_relaxed);
   }
 
 public:
@@ -452,7 +1140,17 @@ public:
 
     // Regular TMA copy instruction - queue for async processing
     const auto warp_size = m_shader_ctx->get_warp_size();
-    auto num_transactions_before = issue_queue.size();
+    unsigned active_lane_count = 0;
+    for (unsigned laneid = 0; laneid < warp_size; ++laneid) {
+      if (pI->get_tma_dyn_info(laneid).is_valid()) ++active_lane_count;
+    }
+    if (active_lane_count > 1) {
+      reject_unsupported_tma(
+          "multiple active lanes in one TMA instruction are not supported; "
+          "TMA must be issued by one thread",
+          pI);
+    }
+
     for (unsigned laneid = 0; laneid < warp_size; laneid++) {
       const auto &tma_dyn_info = pI->get_tma_dyn_info(laneid);
       if (tma_dyn_info.is_valid()) {
@@ -465,6 +1163,12 @@ public:
             .m_inst = pI,
             .m_static_info = tma_static_info,
             .m_dyn_info = tma_dyn_info,
+            .m_cta_id = cta_id,
+            .m_warp_id = warp_id,
+            .m_lane_id = laneid,
+            .m_tid = tid,
+            .m_pc = pI->get_PC(),
+            .m_create_cycle = current_cycle(),
             .m_bytes_completed = 0,
         };
 
@@ -479,12 +1183,24 @@ public:
                               inst_t::tma_static_info_t::TMA_GLOBAL);
           uint64_t tensormap_addr =
               is_write_op ? tma_dyn_info.dst_addr : tma_dyn_info.src_addr;
-          assert((tensormap_addr < LOCAL_GENERIC_START ||
-                  tensormap_addr >= GLOBAL_HEAP_START) &&
-                 "TMA tensor: tensormap address must be in global memory, "
-                 "not shared/local memory");
-          global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE,
-                           &tensormap);
+          if (tma_dyn_info.has_tensormap_descriptor) {
+            memcpy(tensormap.raw_bytes, tma_dyn_info.tensormap_descriptor,
+                   TENSORMAP_DESCRIPTOR_SIZE);
+          } else {
+            read_tensormap_descriptor(global_mem, thread->get_param_memory(),
+                                      tensormap_addr,
+                                      tma_static_info.tensor_dim, tensormap);
+          }
+          if (tma_static_info.tensor_dim != 0) {
+            validate_tensormap(tensormap_addr, tensormap,
+                               tma_static_info.tensor_dim);
+          } else if (!tensormap.is_valid()) {
+            printf("TMA ERROR: Invalid tensormap at 0x%llx\n",
+                   (unsigned long long)tensormap_addr);
+            tensormap.print();
+            fflush(stdout);
+            exit(1);
+          }
           m_agu.init_tensor(tx.agu_state, tensormap, tma_dyn_info.coords);
 
         } else {
@@ -503,14 +1219,21 @@ public:
             tma_next_tx_uid.fetch_add(1, std::memory_order_relaxed);
         m_transactions.emplace(tx_uid, tx);
 
+        bool is_write_op = (tma_static_info.dst_space ==
+                            inst_t::tma_static_info_t::TMA_GLOBAL);
+        record_tma_tx_started(is_write_op);
+        tma_trace_emit(tx.m_create_cycle, "NEW", tx_uid,
+                       is_write_op ? "WRITE" : "READ", tma_static_info.tma_type,
+                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                       tx.m_tid, tma_dyn_info.src_addr, tma_dyn_info.dst_addr,
+                       tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr, 0, 0,
+                       0, 0, 0, 0, 0, m_mf_inflight, m_response_fifo.size());
+
         bool idealized =
             m_shader_ctx->get_config()->gpgpu_tma_idealized_memory != 0;
 
         // For TMA write operations, add transaction to bulk group
-        bool is_write_op = (tma_static_info.dst_space ==
-                            inst_t::tma_static_info_t::TMA_GLOBAL);
         if (is_write_op) {
-          unsigned cta_id = thread->get_hw_ctaid();
           m_barriers->add_bulk_tx(cta_id, warp_id, tx_uid);
         }
 
@@ -540,13 +1263,104 @@ public:
             tma_static_info.tma_type);
       }
     }
-    if (issue_queue.size() - num_transactions_before > 1) {
-      printf("Error: Multiple active threads for TMA inst not supported\n");
-      abort();
+  }
+
+  void warp_reaches_cp_async(unsigned cta_id, unsigned warp_id,
+                             const warp_inst_t &inst,
+                             const ptx_instruction *static_inst) {
+    unsigned cp_size = inst.data_size ? inst.data_size : 16;
+    unsigned src_size = cp_size;
+    if (static_inst != nullptr && static_inst->get_num_operands() > 3) {
+      const operand_info &src_size_op = static_inst->src3();
+      if (src_size_op.is_literal()) {
+        src_size = (unsigned)src_size_op.get_literal_value().u64;
+      }
+    }
+    if (src_size > cp_size)
+      src_size = cp_size;
+    if (src_size == 0)
+      return;
+
+    warp_inst_t access_inst = inst;
+    access_inst.space.set_type(global_space);
+    access_inst.memory_op = memory_load;
+    access_inst.data_size = src_size;
+    access_inst.memory_coalescing_arch(false, CP_ASYNC_ACC_R);
+
+    std::vector<mem_access_t> accesses;
+    while (!access_inst.accessq_empty()) {
+      accesses.push_back(access_inst.accessq_back());
+      access_inst.accessq_pop_back();
+    }
+    accesses = coalesce_cp_async_accesses(
+        accesses,
+        effective_cp_async_request_granularity(m_shader_ctx->get_config()),
+        m_shader_ctx->get_gpu()->gpgpu_ctx);
+
+    auto &group = m_cp_group_info[std::make_pair(cta_id, warp_id)];
+    for (const auto &access : accesses) {
+      unsigned tx_uid = tma_next_tx_uid.fetch_add(1, std::memory_order_relaxed);
+
+      cp_async_transaction_t tx(m_shader_ctx->get_gpu()->gpgpu_ctx);
+      tx.access = access;
+      tx.inst = inst;
+      tx.cta_id = cta_id;
+      tx.warp_id = warp_id;
+      tx.pc = inst.pc;
+      tx.stream_id = inst.get_streamID();
+      tx.create_cycle = current_cycle();
+
+      m_cp_transactions.emplace(tx_uid, tx);
+      g_cp_async_tx_started.fetch_add(1, std::memory_order_relaxed);
+      group.add_tx(tx_uid);
+
+      if (m_shader_ctx->get_config()->gpgpu_cp_async_idealized_memory != 0) {
+        finalize_cp_async_transaction(tx_uid);
+      } else {
+        m_cp_issue_queue.push_back(tx_uid);
+      }
+    }
+  }
+
+  void commit_cp_async_group(unsigned cta_id, unsigned warp_id) {
+    m_cp_group_info[std::make_pair(cta_id, warp_id)].commit_group();
+  }
+
+  void wait_cp_async_group(unsigned cta_id, unsigned warp_id,
+                           unsigned max_pending_groups) {
+    auto key = std::make_pair(cta_id, warp_id);
+    g_cp_async_wait_calls.fetch_add(1, std::memory_order_relaxed);
+    m_barriers->wait_cp_async_group(warp_id);
+    auto it = m_cp_group_info.find(key);
+    if (it == m_cp_group_info.end()) {
+      g_cp_async_wait_immediate.fetch_add(1, std::memory_order_relaxed);
+      m_barriers->release_cp_async_warp(warp_id);
+      return;
+    }
+    bool satisfied = it->second.wait_group(max_pending_groups);
+    if (satisfied) {
+      g_cp_async_wait_immediate.fetch_add(1, std::memory_order_relaxed);
+      m_barriers->release_cp_async_warp(warp_id);
+    } else {
+      g_cp_async_wait_blocked.fetch_add(1, std::memory_order_relaxed);
     }
   }
 
   void cycle() {
+    const auto *config = m_shader_ctx->get_config();
+    const unsigned request_bytes_per_cycle =
+        config->gpgpu_tma_request_bytes_per_cycle;
+    const uint32_t request_granularity =
+        effective_tma_request_granularity(config);
+    if (request_bytes_per_cycle > 0) {
+      const unsigned request_width =
+          config->gpgpu_tma_request_width ? config->gpgpu_tma_request_width : 1;
+      const unsigned credit_cap =
+          std::max(request_bytes_per_cycle,
+                   request_width * static_cast<unsigned>(request_granularity));
+      m_request_byte_credit =
+          std::min(m_request_byte_credit + request_bytes_per_cycle, credit_cap);
+    }
 
     // Process delayed arrive_tx notifications
     if (!m_pending_arrives.empty()) {
@@ -556,6 +1370,11 @@ public:
       for (int i = m_pending_arrives.size() - 1; i >= 0; i--) {
         if (m_pending_arrives[i].remaining == 0) {
           auto &entry = m_pending_arrives[i];
+          tma_trace_emit(current_cycle(), "ARRIVE", entry.tx_uid,
+                         entry.is_write ? "WRITE" : "READ", 0, 0, entry.cta_id,
+                         entry.warp_id, 0, 0, 0, 0, entry.size_in_bytes,
+                         entry.mbar_addr, 0, 0, 0, 0, 0, entry.size_in_bytes, 0,
+                         m_mf_inflight, m_response_fifo.size());
           if (!entry.is_write) {
             m_barriers->complete_tx(entry.cta_id, entry.warp_id,
                                     entry.mbar_addr, entry.size_in_bytes);
@@ -568,28 +1387,90 @@ public:
       }
     }
 
-    // Process pending TMA responses
+    unsigned cp_waiting_warps = 0;
+    for (const auto &entry : m_cp_group_info) {
+      if (entry.second.is_waiting)
+        cp_waiting_warps++;
+    }
+    if (cp_waiting_warps > 0) {
+      g_cp_async_waiting_warp_cycles.fetch_add(cp_waiting_warps,
+                                               std::memory_order_relaxed);
+    }
+
+    // Process pending async-copy/TMA responses.
+    unsigned response_width =
+        m_shader_ctx->get_config()->gpgpu_tma_response_width
+            ? m_shader_ctx->get_config()->gpgpu_tma_response_width
+            : 1;
+    unsigned cp_response_width =
+        m_shader_ctx->get_config()->gpgpu_cp_async_response_width
+            ? m_shader_ctx->get_config()->gpgpu_cp_async_response_width
+            : 1;
+    unsigned tma_responses = 0;
+    unsigned cp_responses = 0;
     if (!m_response_fifo.empty()) {
+      g_cp_async_response_fifo_nonempty_cycles.fetch_add(
+          1, std::memory_order_relaxed);
+      atomic_update_max(g_cp_async_max_response_fifo, m_response_fifo.size());
+    }
+    while (!m_response_fifo.empty()) {
       mem_fetch *mf = m_response_fifo.front();
+      if (mf->get_access_type() == CP_ASYNC_ACC_R) {
+        if (cp_responses >= cp_response_width) {
+          g_cp_async_response_width_limited_cycles.fetch_add(
+              1, std::memory_order_relaxed);
+          break;
+        }
+        m_response_fifo.pop_front();
+        process_cp_async_response(mf);
+        cp_responses++;
+        continue;
+      }
+      if (tma_responses >= response_width)
+        break;
       m_response_fifo.pop_front();
+      tma_responses++;
+      assert((mf->get_access_type() == TMA_ACC_R ||
+              mf->get_access_type() == TMA_ACC_W) &&
+             "unexpected response type in TMA/cp.async unit");
 
       mem_fetch *parent_mf = mf->get_original_mf() ? mf->get_original_mf() : mf;
-      auto mf_it = m_mf_to_tx.find(parent_mf->get_request_uid());
-
-      assert(mf_it != m_mf_to_tx.end());
+      unsigned parent_uid = parent_mf->get_request_uid();
+      auto mf_it = m_mf_to_tx.find(parent_uid);
+      assert(mf_it != m_mf_to_tx.end() &&
+             "TMA response has no live transaction");
       unsigned tx_uid = mf_it->second;
       auto tx_it = m_transactions.find(tx_uid);
 
       assert(tx_it != m_transactions.end());
       auto &tx = tx_it->second;
       tx.m_mf_received_count++;
-      assert(m_mf_inflight > 0);
-      m_mf_inflight--;
-      assert(tx.m_mf_tx_inflight > 0);
-      tx.m_mf_tx_inflight--;
 
-      bool is_write =
-          (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
+      bool is_write = is_write_transaction(tx);
+      unsigned long long response_cycle = current_cycle();
+      if (tma_trace_mf_enabled(response_cycle)) {
+        tma_trace_emit(response_cycle, "MF_RESPONSE", tx_uid,
+                       is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                       tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                       tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+                       parent_uid, parent_mf->get_addr(), mf->get_data_size(),
+                       tx.m_mf_issued_count, tx.m_mf_received_count,
+                       tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                       m_response_fifo.size());
+      }
+      if (tx.m_first_response_cycle == 0) {
+        tx.m_first_response_cycle = response_cycle;
+        tma_trace_emit(tx.m_first_response_cycle, "FIRST_RESPONSE", tx_uid,
+                       is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                       tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                       tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+                       parent_uid, parent_mf->get_addr(), mf->get_data_size(),
+                       tx.m_mf_issued_count, tx.m_mf_received_count,
+                       tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                       m_response_fifo.size());
+      }
 
       GPPRINTF_TMA(TMA,
                    "TMA %s response received for mf uid=%u, tx_uid=%u, "
@@ -605,11 +1486,10 @@ public:
         assert(mf->get_access_type() == TMA_ACC_R);
 
         // Validate destination space
-        if (tx.m_static_info.dst_space ==
-            inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
-          assert(false && "Unsupported TMA destination space: CLUSTER");
-        } else if (tx.m_static_info.dst_space !=
-                   inst_t::tma_static_info_t::TMA_SHARED_CTA) {
+        if (tx.m_static_info.dst_space !=
+                inst_t::tma_static_info_t::TMA_SHARED_CTA &&
+            tx.m_static_info.dst_space !=
+                inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
           assert(false && "Unrecognized TMA destination space");
         }
       }
@@ -620,13 +1500,34 @@ public:
       unsigned parent_size = parent_mf->get_data_size();
       unsigned bytes_to_add = (mf_size > parent_size) ? parent_size : mf_size;
       tx.m_bytes_completed += bytes_to_add;
+      record_tma_mf_response(is_write, bytes_to_add);
+
+      bool parent_complete = false;
+      auto pending_it = m_mf_pending_bytes.find(parent_uid);
+      assert(pending_it != m_mf_pending_bytes.end());
+      if (bytes_to_add >= pending_it->second) {
+        assert(m_mf_inflight > 0);
+        m_mf_inflight--;
+        assert(tx.m_mf_tx_inflight > 0);
+        tx.m_mf_tx_inflight--;
+        m_mf_pending_bytes.erase(pending_it);
+        m_mf_to_tx.erase(parent_uid);
+        parent_complete = true;
+      } else {
+        pending_it->second -= bytes_to_add;
+      }
 
       // Check if transaction is complete
       if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes)
         finalize_transaction(tx_uid);
 
+      mem_fetch *parent_to_delete =
+          (parent_complete && parent_mf != mf) ? parent_mf : NULL;
       delete mf;
+      delete parent_to_delete;
     }
+
+    issue_cp_async_requests();
 
     // Issue memory requests using shadow stride accumulation
     if (!issue_queue.empty()) {
@@ -639,104 +1540,198 @@ public:
       if (max_inflight > 0 && m_mf_inflight >= max_inflight)
         return;
 
-      unsigned tx_uid = issue_queue.front();
-
-      auto it = m_transactions.find(tx_uid);
-      assert(it != m_transactions.end());
-      auto &tx = it->second;
-
-      // Per-transaction quota: limit how many inflight requests a single
-      // transaction can have, so multiple CTAs share bandwidth fairly.
       unsigned tx_quota = m_shader_ctx->get_config()->gpgpu_tma_tx_quota;
-      if (tx_quota > 0 && tx.m_mf_tx_inflight >= tx_quota) {
-        // This transaction hit its quota — try the next one in the queue.
-        // Rotate: move current to back so other transactions get a chance.
+      const unsigned num_candidates = issue_queue.size();
+      bool all_candidates_over_quota = false;
+      unsigned tx_uid = 0;
+      tma_transaction_t *selected_tx = nullptr;
+
+      for (unsigned attempt = 0; attempt < num_candidates; ++attempt) {
+        tx_uid = issue_queue.front();
+        auto it = m_transactions.find(tx_uid);
+        assert(it != m_transactions.end());
+        auto &candidate = it->second;
+
+        bool over_quota =
+            tx_quota > 0 && candidate.m_mf_tx_inflight >= tx_quota;
+        if (!over_quota) {
+          selected_tx = &candidate;
+          break;
+        }
+
         issue_queue.pop_front();
         issue_queue.push_back(tx_uid);
-        return;
       }
+
+      if (selected_tx == nullptr) {
+        // Quota is a fairness hint, not a hard throttle.  If every
+        // transaction is already above quota, keep the TMA unit busy under the
+        // SM-wide max_inflight limit and round-robin the over-quota issuers.
+        all_candidates_over_quota = true;
+        tx_uid = issue_queue.front();
+        auto it = m_transactions.find(tx_uid);
+        assert(it != m_transactions.end());
+        selected_tx = &it->second;
+      }
+      auto &tx = *selected_tx;
 
       bool is_write =
           (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
       unsigned packet_size = is_write ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
+      bool made_progress = false;
+      bool transaction_finalized = false;
 
       if (!m_icnt->full(packet_size, is_write)) {
         uint64_t addr;
         uint32_t size;
         bool oob_l2 = m_shader_ctx->get_config()->gpgpu_tma_oob_l2_traffic;
+        const unsigned request_width =
+            m_shader_ctx->get_config()->gpgpu_tma_request_width
+                ? m_shader_ctx->get_config()->gpgpu_tma_request_width
+                : 1;
+        unsigned issued_requests = 0;
 
         // Loop: batch-consume consecutive skip-OOB requests in one cycle,
-        // then issue at most one mem_fetch to L2 before breaking.
-        while (m_agu.gen_next_req(tx.agu_state, addr, size)) {
+        // then issue up to request_width mem_fetches to L2 before breaking.
+        while (issued_requests < request_width && !transaction_finalized) {
+          if (max_inflight > 0 && m_mf_inflight >= max_inflight)
+            break;
+          if (!all_candidates_over_quota && tx_quota > 0 &&
+              tx.m_mf_tx_inflight >= tx_quota)
+            break;
+          if (m_icnt->full(packet_size, is_write))
+            break;
+          if (request_bytes_per_cycle > 0 &&
+              m_request_byte_credit < request_granularity)
+            break;
 
-          if (tx.m_mf_issued_count == 0) {
-            GPPRINTF_TMA(
-                TMA,
-                "[TMA AGU] tx_uid=%u starting to issue %s mem_fetch requests\n",
-                tx_uid, is_write ? "WRITE" : "READ");
-            fflush(stdout);
-          }
-          tx.m_mf_issued_count++;
+          bool issued_this_iteration = false;
+          while (m_agu.gen_next_req(tx.agu_state, addr, size,
+                                    request_granularity)) {
+            made_progress = true;
 
-          // Determine if this OOB request should skip L2:
-          //   - Writes: always skip OOB (must not write beyond tensor bounds)
-          //   - Reads:  skip OOB only when gpgpu_tma_oob_l2_traffic is off
-          bool skip_l2 = tx.agu_state.is_fill_request && (is_write || !oob_l2);
-
-          if (skip_l2) {
-            // No interconnect needed — just count bytes
-            tx.m_bytes_completed += size;
-            if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
-              finalize_transaction(tx_uid);
-              break;
+            bool first_request = tx.m_mf_issued_count == 0;
+            if (first_request) {
+              GPPRINTF_TMA(TMA,
+                           "[TMA AGU] tx_uid=%u starting to issue %s "
+                           "mem_fetch requests\n",
+                           tx_uid, is_write ? "WRITE" : "READ");
+              fflush(stdout);
             }
-            continue; // Consume next request without waiting for icnt
+            tx.m_mf_issued_count++;
+
+            // Determine if this OOB request should skip L2:
+            //   - Writes: always skip OOB (must not write beyond tensor bounds)
+            //   - Reads:  skip OOB only when gpgpu_tma_oob_l2_traffic is off
+            bool skip_l2 =
+                tx.agu_state.is_fill_request && (is_write || !oob_l2);
+
+            if (skip_l2) {
+              // No interconnect needed; just count bytes.
+              if (request_bytes_per_cycle > 0)
+                m_request_byte_credit -= std::min<unsigned>(
+                    m_request_byte_credit, std::max(size, request_granularity));
+              tx.m_bytes_completed += size;
+              record_tma_bytes_completed(size);
+              if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
+                finalize_transaction(tx_uid);
+                transaction_finalized = true;
+                break;
+              }
+              continue;
+            }
+
+            // Issue mem_fetch to interconnect -> L2.
+            // For OOB fill requests with gpgpu_tma_oob_l2_traffic=1:
+            // Real HW TMA sends full-tile requests to L2 unconditionally,
+            // then zero-fills OOB data after response.
+            mem_access_byte_mask_t byte_mask;
+            mem_access_sector_mask_t sector_mask;
+
+            unsigned start_byte = addr % MAX_MEMORY_ACCESS_SIZE;
+            for (unsigned i = 0; i < size; i++) {
+              byte_mask.set((start_byte + i) % MAX_MEMORY_ACCESS_SIZE);
+            }
+
+            unsigned start_sector = start_byte / SECTOR_SIZE;
+            unsigned end_sector = (start_byte + size - 1) / SECTOR_SIZE;
+            for (unsigned i = start_sector;
+                 i <= end_sector && i < SECTOR_CHUNCK_SIZE; i++) {
+              sector_mask.set(i);
+            }
+
+            active_mask_t active_mask;
+
+            mem_access_type access_type = is_write ? TMA_ACC_W : TMA_ACC_R;
+
+            mem_access_t access(access_type, addr, size, is_write, active_mask,
+                                byte_mask, sector_mask,
+                                m_shader_ctx->get_gpu()->gpgpu_ctx);
+
+            mem_fetch *mf = m_mf_allocator->alloc(
+                access,
+                m_shader_ctx->get_gpu()->gpu_sim_cycle +
+                    m_shader_ctx->get_gpu()->gpu_tot_sim_cycle,
+                (unsigned long long)-1);
+
+            m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
+            m_mf_pending_bytes.emplace(mf->get_request_uid(), size);
+
+            unsigned long long issue_cycle = current_cycle();
+            if (tma_trace_mf_enabled(issue_cycle)) {
+              tma_trace_emit(
+                  issue_cycle, "MF_ISSUE", tx_uid, is_write ? "WRITE" : "READ",
+                  tx.m_static_info.tma_type, tx.m_pc, tx.m_cta_id, tx.m_warp_id,
+                  tx.m_lane_id, tx.m_tid, tx.m_dyn_info.src_addr,
+                  tx.m_dyn_info.dst_addr, tx.m_dyn_info.size_in_bytes,
+                  tx.m_dyn_info.mbar_addr, mf->get_request_uid(), addr, size,
+                  tx.m_mf_issued_count, tx.m_mf_received_count,
+                  tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                  m_response_fifo.size());
+            }
+            if (first_request) {
+              tx.m_first_issue_cycle = issue_cycle;
+              tma_trace_emit(
+                  issue_cycle, "FIRST_MF_ISSUE", tx_uid,
+                  is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                  tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id, tx.m_tid,
+                  tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                  tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+                  mf->get_request_uid(), addr, size, tx.m_mf_issued_count,
+                  tx.m_mf_received_count, tx.m_bytes_completed,
+                  tx.m_mf_tx_inflight, m_mf_inflight, m_response_fifo.size());
+            }
+            tx.m_last_issue_cycle = issue_cycle;
+
+            m_icnt->push(mf);
+            m_mf_inflight++;
+            tx.m_mf_tx_inflight++;
+            record_tma_mf_issued(is_write, size);
+            if (request_bytes_per_cycle > 0)
+              m_request_byte_credit -=
+                  std::min<unsigned>(m_request_byte_credit, size);
+            issued_requests++;
+            issued_this_iteration = true;
+            break;
           }
 
-          // Issue mem_fetch to interconnect → L2.
-          // For OOB fill requests with gpgpu_tma_oob_l2_traffic=1:
-          // Real HW TMA sends full-tile requests to L2 unconditionally,
-          // then zero-fills OOB data after response.
-          mem_access_byte_mask_t byte_mask;
-          mem_access_sector_mask_t sector_mask;
-
-          unsigned start_byte = addr % MAX_MEMORY_ACCESS_SIZE;
-          for (unsigned i = 0; i < size; i++) {
-            byte_mask.set((start_byte + i) % MAX_MEMORY_ACCESS_SIZE);
-          }
-
-          unsigned start_sector = start_byte / SECTOR_SIZE;
-          unsigned end_sector = (start_byte + size - 1) / SECTOR_SIZE;
-          for (unsigned i = start_sector;
-               i <= end_sector && i < SECTOR_CHUNCK_SIZE; i++) {
-            sector_mask.set(i);
-          }
-
-          active_mask_t active_mask;
-
-          mem_access_type access_type = is_write ? TMA_ACC_W : TMA_ACC_R;
-
-          mem_access_t access(access_type, addr, size, is_write, active_mask,
-                              byte_mask, sector_mask,
-                              m_shader_ctx->get_gpu()->gpgpu_ctx);
-
-          mem_fetch *mf = m_mf_allocator->alloc(
-              access,
-              m_shader_ctx->get_gpu()->gpu_sim_cycle +
-                  m_shader_ctx->get_gpu()->gpu_tot_sim_cycle,
-              (unsigned long long)-1);
-
-          m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
-
-          m_icnt->push(mf);
-          m_mf_inflight++;
-          tx.m_mf_tx_inflight++;
-          break; // One mem_fetch per cycle
+          if (!issued_this_iteration)
+            break;
         }
       }
 
       // Remove from issue queue when all requests have been issued
-      if (tx.agu_state.done) {
+      if (transaction_finalized) {
+        issue_queue.pop_front();
+      } else if (tx.agu_state.done) {
+        tma_trace_emit(current_cycle(), "ISSUE_DONE", tx_uid,
+                       is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                       tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                       tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0,
+                       0, 0, tx.m_mf_issued_count, tx.m_mf_received_count,
+                       tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                       m_response_fifo.size());
         GPPRINTF_TMA(TMA,
                      "[TMA AGU DONE] tx_uid=%u issued %u %s mem_fetch requests "
                      "(total bytes: %u)\n",
@@ -744,6 +1739,9 @@ public:
                      tx.m_dyn_info.size_in_bytes);
         fflush(stdout);
         issue_queue.pop_front();
+      } else if (all_candidates_over_quota && made_progress) {
+        issue_queue.pop_front();
+        issue_queue.push_back(tx_uid);
       }
     }
   }
@@ -753,11 +1751,42 @@ public:
                    m_shader_ctx->get_gpu()->gpu_sim_cycle +
                        m_shader_ctx->get_gpu()->gpu_tot_sim_cycle);
     m_response_fifo.push_back(mf);
+    atomic_update_max(g_cp_async_max_response_fifo, m_response_fifo.size());
   }
 
   bool response_buffer_full() const {
     // ! assume infinite buffer for simplicity
     return false;
+  }
+
+  bool has_pending_for_cta(unsigned cta_id) const {
+    for (const auto &entry : m_transactions) {
+      if (entry.second.m_cta_id == cta_id)
+        return true;
+    }
+    for (const auto &entry : m_cp_transactions) {
+      if (entry.second.cta_id == cta_id)
+        return true;
+    }
+    for (const auto &entry : m_pending_arrives) {
+      if (entry.cta_id == cta_id)
+        return true;
+    }
+    for (const auto &entry : m_cp_group_info) {
+      if (entry.first.first == cta_id && entry.second.has_pending())
+        return true;
+    }
+    return false;
+  }
+
+  void cleanup_cta(unsigned cta_id) {
+    for (auto it = m_cp_group_info.begin(); it != m_cp_group_info.end();) {
+      if (it->first.first == cta_id) {
+        it = m_cp_group_info.erase(it);
+      } else {
+        ++it;
+      }
+    }
   }
 };
 
@@ -774,6 +1803,23 @@ void tma_unit_t::warp_reaches_tma(unsigned cta_id, unsigned warp_id,
   m_impl->warp_reaches_tma(cta_id, warp_id, inst);
 }
 
+void tma_unit_t::warp_reaches_cp_async(unsigned cta_id, unsigned warp_id,
+                                       const warp_inst_t &inst,
+                                       const ptx_instruction *static_inst) {
+  m_impl->warp_reaches_cp_async(cta_id, warp_id, inst, static_inst);
+}
+
+void tma_unit_t::commit_cp_async_group(unsigned cta_id, unsigned warp_id) {
+  m_impl->commit_cp_async_group(cta_id, warp_id);
+}
+
+void tma_unit_t::wait_cp_async_group(unsigned cta_id, unsigned warp_id,
+                                     unsigned max_pending_groups) {
+  m_impl->wait_cp_async_group(cta_id, warp_id, max_pending_groups);
+}
+
+void tma_unit_t::cleanup_cta(unsigned cta_id) { m_impl->cleanup_cta(cta_id); }
+
 void tma_unit_t::cycle() { m_impl->cycle(); }
 
 void tma_unit_t::fill(mem_fetch *mf) { m_impl->fill(mf); }
@@ -782,59 +1828,31 @@ bool tma_unit_t::response_buffer_full() const {
   return m_impl->response_buffer_full();
 }
 
+bool tma_unit_t::has_pending_for_cta(unsigned cta_id) const {
+  return m_impl->has_pending_for_cta(cta_id);
+}
+
 } // namespace flash_gpgpu_sim
 
 //=============================================================================
 // Functional Simulation: Helper Functions
 //=============================================================================
 
-// Convert global address offset to tile-local offset
-// Global tensor may have different row stride than tile (based on box
-// dimensions) This function converts (global_addr - base_global_addr) to
-// equivalent tile offset
-static uint64_t global_to_tile_offset(uint64_t global_addr, uint64_t base_addr,
-                                      const tensormap_descriptor_t &tensormap) {
+struct tma_request_t {
+  uint64_t global_addr;
+  uint64_t tile_offset;
+  uint32_t size;
+};
+
+static void compute_tile_strides(const tensormap_descriptor_t &tensormap,
+                                 uint64_t tile_strides[5]) {
   uint32_t elem_size = tensormap.get_element_size();
   uint32_t num_dims = tensormap.num_dims();
 
-  // Calculate the byte offset in global memory space
-  assert(global_addr >= base_addr && "global_addr must be >= base_addr");
-  uint64_t global_byte_offset = global_addr - base_addr;
-
-  if (num_dims == 1) {
-    // 1D: tile offset equals global offset
-    return global_byte_offset;
-  }
-
-  // For 2D and higher, decompose global offset into coordinates
-  // and recompute using tile strides
-
-  // Get global strides (dim 0 uses elem_size, higher dims use globalStrides)
-  uint64_t global_strides[5];
-  global_strides[0] = elem_size;
-  for (uint32_t d = 1; d < num_dims; d++) {
-    global_strides[d] = tensormap.fields.globalStrides[d - 1];
-  }
-
-  // Get tile strides (based on box dimensions)
-  uint64_t tile_strides[5];
   tile_strides[0] = elem_size;
   for (uint32_t d = 1; d < num_dims; d++) {
     tile_strides[d] = tile_strides[d - 1] * tensormap.fields.boxDim[d - 1];
   }
-
-  // Decompose global_byte_offset into coordinates (highest to lowest dimension)
-  // Then recompute offset using tile strides
-  uint64_t tile_offset = 0;
-  uint64_t remaining = global_byte_offset;
-
-  for (int d = num_dims - 1; d >= 0; d--) {
-    uint64_t coord_in_tile = remaining / global_strides[d];
-    remaining = remaining % global_strides[d];
-    tile_offset += coord_in_tile * tile_strides[d];
-  }
-
-  return tile_offset;
 }
 
 // Apply TMA swizzle transformation to shared memory address
@@ -879,14 +1897,15 @@ static uint64_t apply_tma_swizzle(uint64_t linear_offset,
 
 // Generate 128B-aligned memory fetch requests
 // Splits a contiguous memory range into cache-line-aligned requests
-static void
-gen_aligned_req(uint64_t start_addr, uint32_t total_bytes,
-                std::vector<std::pair<uint64_t, uint32_t>> &requests) {
+static void gen_aligned_req(uint64_t start_addr, uint64_t start_tile_offset,
+                            uint32_t total_bytes,
+                            std::vector<tma_request_t> &requests) {
   if (total_bytes == 0)
     return;
 
   constexpr uint32_t CACHE_LINE_SIZE = 128;
   uint64_t current_addr = start_addr;
+  uint64_t current_tile_offset = start_tile_offset;
   uint32_t remaining_bytes = total_bytes;
 
   while (remaining_bytes > 0) {
@@ -901,9 +1920,10 @@ gen_aligned_req(uint64_t start_addr, uint32_t total_bytes,
     uint32_t request_size =
         std::min({remaining_bytes, bytes_to_boundary, CACHE_LINE_SIZE});
 
-    requests.push_back({current_addr, request_size});
+    requests.push_back({current_addr, current_tile_offset, request_size});
 
     current_addr += request_size;
+    current_tile_offset += request_size;
     remaining_bytes -= request_size;
   }
 }
@@ -914,22 +1934,24 @@ gen_aligned_req(uint64_t start_addr, uint32_t total_bytes,
 // base_addr: current physical address
 // tensormap: tensor descriptor
 // requests: output vector of (address, size) pairs
-static void
-traverse_tensor_dim(int dim, const uint32_t current_coords[5],
-                    uint64_t base_addr, const tensormap_descriptor_t &tensormap,
-                    std::vector<std::pair<uint64_t, uint32_t>> &requests) {
+static void traverse_tensor_dim(int dim, const int32_t current_coords[5],
+                                uint64_t base_addr,
+                                const tensormap_descriptor_t &tensormap,
+                                const uint64_t tile_strides[5],
+                                uint64_t tile_offset,
+                                std::vector<tma_request_t> &requests) {
   uint32_t elem_size = tensormap.get_element_size();
 
   if (dim == 0) {
     // Base case: innermost dimension (contiguous)
-    uint32_t start_x = current_coords[0];
+    int64_t start_x = current_coords[0];
     uint32_t box_width = tensormap.fields.boxDim[0];
     uint32_t global_width = tensormap.fields.globalDim[0];
 
     // Calculate valid range intersection: [start_x, start_x + box_width) ∩ [0,
     // global_width)
-    uint32_t valid_start = start_x;
-    uint32_t valid_end = start_x + box_width;
+    int64_t valid_start = start_x;
+    int64_t valid_end = start_x + box_width;
 
     // Check if completely out of bounds
     if (valid_start >= global_width || valid_end <= 0) {
@@ -937,18 +1959,22 @@ traverse_tensor_dim(int dim, const uint32_t current_coords[5],
     }
 
     // Clamp to valid tensor boundaries
-    valid_start = std::max(valid_start, 0u);
-    valid_end = std::min(valid_end, global_width);
+    valid_start = std::max<int64_t>(valid_start, 0);
+    valid_end = std::min<int64_t>(valid_end, global_width);
 
     if (valid_start >= valid_end)
       return;
 
     // Calculate physical start address and total bytes
-    uint64_t phys_start_addr = base_addr + (valid_start * elem_size);
-    uint32_t valid_bytes = (valid_end - valid_start) * elem_size;
+    uint64_t phys_start_addr =
+        base_addr + static_cast<uint64_t>(valid_start) * elem_size;
+    uint64_t valid_tile_offset =
+        tile_offset + static_cast<uint64_t>(valid_start - start_x) * elem_size;
+    uint32_t valid_bytes =
+        static_cast<uint32_t>(valid_end - valid_start) * elem_size;
 
     // Generate aligned memory fetch requests
-    gen_aligned_req(phys_start_addr, valid_bytes, requests);
+    gen_aligned_req(phys_start_addr, valid_tile_offset, valid_bytes, requests);
 
   } else {
     // Recursive case: traverse higher dimensions
@@ -957,19 +1983,22 @@ traverse_tensor_dim(int dim, const uint32_t current_coords[5],
     uint64_t stride = tensormap.fields.globalStrides[dim - 1];
 
     for (uint32_t i = 0; i < box_extent; i++) {
-      uint32_t current_coord = current_coords[dim] + i;
+      int64_t current_coord =
+          static_cast<int64_t>(current_coords[dim]) + i;
 
       // OOB check: skip if outside valid tensor range
-      if (current_coord >= global_extent) {
+      if (current_coord < 0 || current_coord >= global_extent) {
         continue; // Skip this branch (zero-padding)
       }
 
       // Calculate address offset for this coordinate
-      uint64_t next_addr = base_addr + (current_coord * stride);
+      uint64_t next_addr =
+          base_addr + static_cast<uint64_t>(current_coord) * stride;
+      uint64_t next_tile_offset = tile_offset + i * tile_strides[dim];
 
       // Recurse to next lower dimension
       traverse_tensor_dim(dim - 1, current_coords, next_addr, tensormap,
-                          requests);
+                          tile_strides, next_tile_offset, requests);
     }
   }
 }
@@ -977,10 +2006,10 @@ traverse_tensor_dim(int dim, const uint32_t current_coords[5],
 // Generate TMA memory fetch requests for a tensor tile
 // start_coords: starting coordinate for each dimension (e.g., {x, y, z, w, v})
 // Returns: vector of (physical_address, size_in_bytes) pairs
-static std::vector<std::pair<uint64_t, uint32_t>>
+static std::vector<tma_request_t>
 generate_tma_requests(const tensormap_descriptor_t &tensormap,
-                      const uint32_t start_coords[5]) {
-  std::vector<std::pair<uint64_t, uint32_t>> requests;
+                      const int32_t start_coords[5]) {
+  std::vector<tma_request_t> requests;
 
   if (!tensormap.is_valid() || tensormap.fields.tensorRank > 4) {
     return requests; // Empty result for invalid tensormap
@@ -990,9 +2019,11 @@ generate_tma_requests(const tensormap_descriptor_t &tensormap,
   int highest_dim = static_cast<int>(tensormap.num_dims()) -
                     1; // highest dimension index (0-based)
   uint64_t base_addr = tensormap.fields.globalAddress;
+  uint64_t tile_strides[5] = {};
+  compute_tile_strides(tensormap, tile_strides);
 
   traverse_tensor_dim(highest_dim, start_coords, base_addr, tensormap,
-                      requests);
+                      tile_strides, 0, requests);
 
   return requests;
 }
@@ -1091,7 +2122,7 @@ static tma_oob_fill_table_t g_oob_fill_table;
 // Execute TMA data transfer (load or store)
 // is_load=true: global -> shared, is_load=false: shared -> global
 static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
-                            const uint32_t coords[5], memory_space *shared_mem,
+                            const int32_t coords[5], memory_space *shared_mem,
                             memory_space *global_mem, uint32_t smem_addr,
                             ptx_thread_info *thread, const ptx_instruction *pI,
                             bool is_load) {
@@ -1113,8 +2144,6 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
   }
 
   auto memory_requests = generate_tma_requests(tensormap, coords);
-  uint64_t base_global_addr = tensormap.calculate_src_addr(coords);
-
   uint32_t swizzle_mode = tensormap.fields.swizzle;
   uint32_t elem_size = tensormap.get_element_size();
   uint32_t row_bytes = tensormap.fields.boxDim[0] * elem_size;
@@ -1124,11 +2153,9 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
   alignas(16) unsigned char local_data_buf[LOCAL_BUF_SIZE];
 
   for (const auto &req : memory_requests) {
-    uint64_t global_req_addr = req.first;
-    uint32_t req_size = req.second;
-
-    uint64_t tile_offset =
-        global_to_tile_offset(global_req_addr, base_global_addr, tensormap);
+    uint64_t global_req_addr = req.global_addr;
+    uint32_t req_size = req.size;
+    uint64_t tile_offset = req.tile_offset;
 
     unsigned char *data_buffer = (req_size <= LOCAL_BUF_SIZE)
                                      ? local_data_buf
@@ -1140,7 +2167,7 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
 
       GPPRINTF_INST_EXEC(
           TMA,
-          "coord[%u,%u,%u,%u,%u] "
+          "coord[%d,%d,%d,%d,%d] "
           "swizzle_mode %u "
           "gmem=0x%llx -> "
           "smem=0x%x, space=%p, size=%u, tile_offset=0x%llx, "
@@ -1212,6 +2239,26 @@ static void copy_mem(memory_space *src_mem, uint64_t src_addr,
   delete[] buf;
 }
 
+static void reduce_add_f32_mem(memory_space *src_mem, uint64_t src_addr,
+                               memory_space *dst_mem, uint64_t dst_addr,
+                               uint32_t size_in_bytes, ptx_thread_info *thread,
+                               const ptx_instruction *pI) {
+  if (size_in_bytes % sizeof(float) != 0) {
+    printf("TMA ERROR: f32 reduce size must be a multiple of 4, got %u\n",
+           size_in_bytes);
+    abort();
+  }
+
+  std::vector<float> src(size_in_bytes / sizeof(float));
+  std::vector<float> dst(size_in_bytes / sizeof(float));
+  src_mem->read(src_addr, size_in_bytes, src.data());
+  dst_mem->read(dst_addr, size_in_bytes, dst.data());
+  for (size_t i = 0; i < dst.size(); ++i) {
+    dst[i] += src[i];
+  }
+  dst_mem->write(dst_addr, size_in_bytes, dst.data(), thread, pI);
+}
+
 // Check 16-byte alignment for TMA addresses and size
 static void check_tma_alignment(uint64_t dst_addr, uint64_t src_addr,
                                 uint32_t size_in_bytes) {
@@ -1224,14 +2271,17 @@ static void check_tma_alignment(uint64_t dst_addr, uint64_t src_addr,
   }
 }
 
-// Read tensormap from global memory, validate, parse coordinates, compute size
+// Read tensormap from memory, validate, parse coordinates, compute size.
+// FA3/CUTLASS may pass descriptors embedded in kernel .param storage via
+// cvta.param; those addresses are simulator param-memory offsets.
 static void
 setup_tensor_tma(memory_space *global_mem, uint64_t tensormap_addr,
                  unsigned inst_dim, const operand_info &coord_operand,
                  ptx_thread_info *thread, tensormap_descriptor_t &out_tensormap,
-                 uint32_t out_coords[5], uint32_t &out_size_in_bytes) {
+                 int32_t out_coords[5], uint32_t &out_size_in_bytes) {
   using namespace flash_gpgpu_sim;
-  global_mem->read(tensormap_addr, TENSORMAP_DESCRIPTOR_SIZE, &out_tensormap);
+  read_tensormap_descriptor(global_mem, thread->get_param_memory(),
+                            tensormap_addr, inst_dim, out_tensormap);
   validate_tensormap(tensormap_addr, out_tensormap, inst_dim);
 
   out_size_in_bytes = out_tensormap.get_tile_size_bytes();
@@ -1245,25 +2295,51 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
   using namespace flash_gpgpu_sim;
 
   const auto &options = pI->get_options();
-  if (options.size() != 3) {
-    for (auto op : options) {
-      GPPRINTF_INST_EXEC(TMA, "option: %d\n", op);
+  std::vector<int> space_options;
+  int completion_option = 0;
+  bool reduce_add = false;
+
+  for (auto op : options) {
+    switch (op) {
+    case GLOBAL_OPTION:
+    case CTA_OPTION:
+    case CLUSTER_OPTION:
+      space_options.push_back(op);
+      break;
+    case TMA_MBAR_COMPLETE_BYTES:
+    case BULK_GROUP_OPTION:
+      completion_option = op;
+      break;
+    case ATOMIC_ADD:
+      reduce_add = true;
+      break;
+    case L2_CACHE_HINT_OPTION:
+      break;
+    default:
+      break;
     }
   }
-  assert(options.size() >= 3 &&
-         "TMA copy must have at least dst, src, completion_mechanism.");
 
-  auto option_iter = options.begin();
-  auto dst_option = *option_iter++;
-  auto src_option = *option_iter++;
-  auto completion_option = *option_iter++;
+  if (space_options.size() < 2 || completion_option == 0) {
+    printf("TMA ERROR: unsupported linear TMA option list: ");
+    for (auto op : options) {
+      printf("%d ", op);
+    }
+    printf("\n");
+    pI->print_insn();
+    abort();
+  }
+
+  auto dst_option = space_options[0];
+  auto src_option = space_options[1];
 
   memory_space *global_mem = thread->get_global_memory();
   memory_space *shared_mem = thread->m_shared_mem;
 
-  if (dst_option == CTA_OPTION && src_option == GLOBAL_OPTION &&
+  if ((dst_option == CTA_OPTION || dst_option == CLUSTER_OPTION) &&
+      src_option == GLOBAL_OPTION &&
       completion_option == TMA_MBAR_COMPLETE_BYTES) {
-    // shared::cta <- global with MBAR completion
+    // shared::cta/shared::cluster <- global with MBAR completion
     auto dst_addr = get_operand_u32(thread, pI->dst());
     auto src_addr = get_operand_u64(thread, pI->src1());
     auto size_in_bytes = get_operand_u32(thread, pI->src2());
@@ -1273,7 +2349,9 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
 
     inst_t::tma_static_info_t tma_static_info{
         .tma_type = inst_t::tma_static_info_t::TMA_NORMAL,
-        .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+        .dst_space = dst_option == CLUSTER_OPTION
+                         ? inst_t::tma_static_info_t::TMA_SHARED_CLUSTER
+                         : inst_t::tma_static_info_t::TMA_SHARED_CTA,
         .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
     };
     pI->set_tma_static_info(tma_static_info);
@@ -1291,8 +2369,9 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
 
     GPPRINTF_INST_EXEC(TMA,
                        "Functional Sim: "
-                       "TMA shared::cta <- global dst=0x%x, src=0x%llx, "
+                       "TMA shared::%s <- global dst=0x%x, src=0x%llx, "
                        "size_in_bytes=%u, mbar=0x%x\n",
+                       dst_option == CLUSTER_OPTION ? "cluster" : "cta",
                        dst_addr, (unsigned long long)src_addr, size_in_bytes,
                        mbar_addr);
 
@@ -1329,16 +2408,37 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
     };
     pI->set_tma_dyn_info(laneid, tma_dyn_info);
 
-    copy_mem(shared_mem, src_addr, global_mem, dst_addr, size_in_bytes, thread,
-             pI);
+    if (reduce_add) {
+      const auto scalar_types = pI->get_scalar_type();
+      if (scalar_types.empty() || scalar_types.front() != F32_TYPE) {
+        printf("TMA ERROR: only cp.reduce.async.bulk.add.f32 is supported\n");
+        pI->print_insn();
+        abort();
+      }
+      reduce_add_f32_mem(shared_mem, src_addr, global_mem, dst_addr,
+                         size_in_bytes, thread, pI);
+    } else {
+      copy_mem(shared_mem, src_addr, global_mem, dst_addr, size_in_bytes,
+               thread, pI);
+    }
 
     GPPRINTF_INST_EXEC(TMA,
                        "Functional Sim: "
-                       "TMA global <- shared::cta dst=0x%llx, src=0x%x, "
+                       "TMA global <- shared::cta%s dst=0x%llx, src=0x%x, "
                        "size_in_bytes=%u\n",
+                       reduce_add ? " reduce.add.f32" : "",
                        (unsigned long long)dst_addr, src_addr, size_in_bytes);
   } else {
-    assert(false && "Unsupported TMA copy instruction");
+    printf("TMA ERROR: unsupported linear TMA instruction options: dst=%d "
+           "src=%d completion=%d reduce_add=%d\n",
+           dst_option, src_option, completion_option, reduce_add ? 1 : 0);
+    printf("  raw options: ");
+    for (auto op : options) {
+      printf("%d ", op);
+    }
+    printf("\n");
+    pI->print_insn();
+    abort();
   }
 }
 
@@ -1359,16 +2459,24 @@ static void handle_tma_wait_group(ptx_instruction *pI,
                                   ptx_thread_info *thread) {
   using namespace flash_gpgpu_sim;
   unsigned group_num = get_operand_u32(thread, pI->dst());
+  bool read_only = false;
+  for (auto op : pI->get_options()) {
+    if (op == READ_OPTION) {
+      read_only = true;
+      break;
+    }
+  }
 
   inst_t::tma_static_info_t tma_static_info{
       .tma_type = inst_t::tma_static_info_t::TMA_BULK_WAIT,
       .dst_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
       .src_space = inst_t::tma_static_info_t::TMA_SPACE_INVALID,
       .bulk_wait_num = group_num,
+      .bulk_wait_read_only = read_only,
   };
   pI->set_tma_static_info(tma_static_info);
-  GPPRINTF_INST_EXEC(TMA, "Functional Sim: cp.async.bulk.wait_group %u\n",
-                     group_num);
+  GPPRINTF_INST_EXEC(TMA, "Functional Sim: cp.async.bulk.wait_group%s %u\n",
+                     read_only ? ".read" : "", group_num);
 }
 
 // Handle cp.async.bulk.tensor.Nd (tensor load/store)
@@ -1405,7 +2513,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     auto mbar_addr = get_operand_u32(thread, pI->src3());
 
     tensormap_descriptor_t tensormap;
-    uint32_t coords[5];
+    int32_t coords[5];
     uint32_t size_in_bytes;
     setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
                      pI->get_operands()[2], thread, tensormap, coords,
@@ -1413,8 +2521,11 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
 
     inst_t::tma_static_info_t tma_static_info{
         .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
-        .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+        .dst_space = dst_option == CLUSTER_OPTION
+                         ? inst_t::tma_static_info_t::TMA_SHARED_CLUSTER
+                         : inst_t::tma_static_info_t::TMA_SHARED_CTA,
         .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
+        .tensor_dim = inst_dim,
     };
     pI->set_tma_static_info(tma_static_info);
 
@@ -1426,6 +2537,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     };
     for (unsigned i = 0; i < 5; ++i)
       tma_dyn_info.coords[i] = coords[i];
+    cache_tensormap_descriptor(tma_dyn_info, tensormap);
     pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
 
     do_tma_transfer(tensormap, coords, shared_mem, global_mem, dst_addr, thread,
@@ -1441,20 +2553,21 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     auto src_addr = get_operand_u32(thread, pI->src2());
 
     tensormap_descriptor_t tensormap;
-    uint32_t coords[5];
+    int32_t coords[5];
     uint32_t size_in_bytes;
     setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
                      pI->get_operands()[1], thread, tensormap, coords,
                      size_in_bytes);
 
     GPPRINTF_INST_EXEC(
-        TMA, "TMA tensor store Extracted coordinates: [%u, %u, %u, %u, %u]\n",
+        TMA, "TMA tensor store Extracted coordinates: [%d, %d, %d, %d, %d]\n",
         coords[0], coords[1], coords[2], coords[3], coords[4]);
 
     inst_t::tma_static_info_t tma_static_info{
         .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
         .dst_space = inst_t::tma_static_info_t::TMA_GLOBAL,
         .src_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+        .tensor_dim = inst_dim,
     };
     pI->set_tma_static_info(tma_static_info);
 
@@ -1465,6 +2578,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     };
     for (unsigned i = 0; i < 5; ++i)
       tma_dyn_info.coords[i] = coords[i];
+    cache_tensormap_descriptor(tma_dyn_info, tensormap);
     pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
 
     do_tma_transfer(tensormap, coords, shared_mem, global_mem, src_addr, thread,
@@ -1478,8 +2592,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
                        size_in_bytes, (unsigned long long)tensormap_addr);
 
   } else {
-    GPPRINTF_INST_EXEC(
-        TMA, "[STUB] Unsupported cp.async.bulk.tensor variant%s\n", "");
+    reject_unsupported_tma("unsupported cp.async.bulk.tensor variant", pI);
   }
 }
 
@@ -1491,6 +2604,14 @@ void handle_tma_inst(const ptx_instruction *pIin, ptx_thread_info *thread) {
   using namespace flash_gpgpu_sim;
 
   ptx_instruction *pI = const_cast<ptx_instruction *>(pIin);
+
+  if (pI->get_opcode() == TMA_PREFETCH_OP) {
+    // cp.async.bulk.prefetch is a non-binding cache hint with no
+    // architectural result. Accept it as a functional no-op; the
+    // performance pipeline still issues it through the configured TMA unit
+    // and accounts for the instruction latency.
+    return;
+  }
 
   bool is_commit_group = false;
   bool is_wait_group = false;

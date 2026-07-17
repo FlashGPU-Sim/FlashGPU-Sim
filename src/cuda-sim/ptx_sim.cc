@@ -203,6 +203,15 @@ unsigned long long ptx_thread_info::get_builtin_u64(int builtin_id,
     case CLOCK64_REG:
       // Return full 64-bit cycle counter for %clock64 special register
       return m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+    case GLOBALTIMER_REG: {
+      const unsigned long long cycles =
+          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+      const unsigned core_freq_hz = get_gpu()->get_config().get_core_freq();
+      if (core_freq_hz == 0) return cycles;
+      return static_cast<unsigned long long>(
+          (static_cast<long double>(cycles) * 1000000000.0L) /
+          static_cast<long double>(core_freq_hz));
+    }
     default:
       // For other builtins, return 32-bit value zero-extended to 64-bit
       return (unsigned long long)get_builtin(builtin_id, dim_mod);
@@ -218,6 +227,8 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
       // Return lower 32 bits of 64-bit cycle counter
       // For full 64-bit value, use get_builtin_u64()
       return (unsigned)(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+    case GLOBALTIMER_REG:
+      return (unsigned)get_builtin_u64(builtin_id, dim_mod);
     case HALFCLOCK_ID:
       // GPGPUSim clock is 4 times slower - multiply by 4
       // Hardware clock counter is incremented at half the shader clock
@@ -300,8 +311,7 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
       feature_not_implemented("%pm");
       return 0;
     case SMID_REG:
-      feature_not_implemented("%smid");
-      return 0;
+      return m_hw_sid;
     case TID_REG:
       assert(dim_mod < 3);
       if (dim_mod == 0) return m_tid.x;
@@ -309,6 +319,22 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
       if (dim_mod == 2) return m_tid.z;
       abort();
       break;
+    case CLUSTER_CTAID_REG:
+      assert(dim_mod < 3);
+      if (dim_mod == 0) return m_ctaid.x;
+      if (dim_mod == 1) return m_ctaid.y;
+      if (dim_mod == 2) return m_ctaid.z;
+      abort();
+      break;
+    case CLUSTER_CTA_RANK_REG: {
+      static bool warned_cluster_ctarank = false;
+      if (!warned_cluster_ctarank) {
+        printf("GPGPU-Sim PTX: Warning - special register %%cluster_ctarank "
+               "is not modeled; returning 0.\n");
+        warned_cluster_ctarank = true;
+      }
+      return 0;
+    }
     case WARPSZ_REG:
       return m_core->get_warp_size();
     default:
@@ -321,6 +347,11 @@ void ptx_thread_info::set_info(function_info *func) {
   m_symbol_table = func->get_symtab();
   m_func_info = func;
   m_PC = func->get_start_PC();
+}
+
+const symbol *ptx_thread_info::canonicalize_reg(const symbol *reg) const {
+  if (m_func_info == NULL) return reg;
+  return m_func_info->canonicalize_register(reg);
 }
 
 void ptx_thread_info::cpy_tid_to_reg(dim3 tid) {

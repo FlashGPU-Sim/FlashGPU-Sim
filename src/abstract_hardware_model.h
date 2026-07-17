@@ -124,6 +124,8 @@ enum uarch_op_t {
   TENSOR_CORE_LOAD_OP,
   TENSOR_CORE_STORE_OP,
   TENSOR_MEMORY_ACCELERATOR_OP,
+  ASYNC_COPY_OP,
+  TENSOR_MAP_OP,
   STORE_OP,
   BRANCH_OP,
   BARRIER_OP,
@@ -182,6 +184,8 @@ enum operation_pipeline_t {
   INTP__OP,
   SFU__OP,
   TENSOR_CORE__OP,
+  TENSOR_MAP__OP,
+  CP_ASYNC__OP,
   MEM__OP,
   SPECIALIZED__OP,
 };
@@ -222,6 +226,7 @@ class core_config {
     gpgpu_shmem_sizeDefault = (unsigned)-1;
     gpgpu_shmem_sizePrefL1 = (unsigned)-1;
     gpgpu_shmem_sizePrefShared = (unsigned)-1;
+    max_dynamic_smem_prefer_occupancy_carveout = false;
   }
   virtual void init() = 0;
 
@@ -247,6 +252,7 @@ class core_config {
   unsigned gpgpu_shmem_sizeDefault;
   unsigned gpgpu_shmem_sizePrefL1;
   unsigned gpgpu_shmem_sizePrefShared;
+  bool max_dynamic_smem_prefer_occupancy_carveout;
   unsigned mem_unit_ports;
 
   // texture and constant cache line sizes (used to determine number of memory
@@ -628,7 +634,7 @@ typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
       MA_TUP(TEXTURE_ACC_R), MA_TUP(GLOBAL_ACC_W), MA_TUP(LOCAL_ACC_W), \
       MA_TUP(L1_WRBK_ACC), MA_TUP(L2_WRBK_ACC), MA_TUP(INST_ACC_R),     \
       MA_TUP(L1_WR_ALLOC_R), MA_TUP(L2_WR_ALLOC_R),                     \
-      MA_TUP(TMA_ACC_R), MA_TUP(TMA_ACC_W),                             \
+      MA_TUP(TMA_ACC_R), MA_TUP(TMA_ACC_W), MA_TUP(CP_ASYNC_ACC_R),     \
       MA_TUP(NUM_MEM_ACCESS_TYPE) MA_TUP_END(mem_access_type)
 
 #define MA_TUP_BEGIN(X) enum X {
@@ -713,6 +719,9 @@ class mem_access_t {
         break;
       case GLOBAL_ACC_W:
         fprintf(fp, "GLOBAL_W");
+        break;
+      case CP_ASYNC_ACC_R:
+        fprintf(fp, "CP_ASYNC_R");
         break;
       case LOCAL_ACC_W:
         fprintf(fp, "LOCAL_W ");
@@ -816,6 +825,8 @@ class inst_t {
     cache_op = CACHE_UNDEFINED;
     latency = 1;
     initiation_interval = 1;
+    wgmma_compute_latency = 0;
+    wgmma_completion_tail_latency = 0;
     for (unsigned i = 0; i < MAX_REG_OPERANDS; i++) {
       arch_reg.src[i] = -1;
       arch_reg.dst[i] = -1;
@@ -885,17 +896,22 @@ public:
       TMA_SHARED_CLUSTER,
       TMA_GLOBAL,
     };
-    type_t  tma_type;
-    space_t dst_space;
-    space_t src_space;
+    type_t tma_type = TMA_TYPE_INVALID;
+    space_t dst_space = TMA_SPACE_INVALID;
+    space_t src_space = TMA_SPACE_INVALID;
+    unsigned tensor_dim = 0;
     unsigned bulk_wait_num = 0;  // For TMA_BULK_WAIT: number of recent groups to wait for
+    bool bulk_wait_read_only = false;
   };
   struct tma_dyn_info_t {
+    static constexpr unsigned TMA_DESCRIPTOR_BYTES = 128;
     uint64_t dst_addr = 0;
     uint64_t src_addr = 0;
     uint32_t size_in_bytes = 0;
     uint32_t mbar_addr = -1;
-    uint32_t coords[5] = {0, 0, 0, 0, 0};
+    int32_t coords[5] = {0, 0, 0, 0, 0};
+    uint8_t tensormap_descriptor[TMA_DESCRIPTOR_BYTES] = {};
+    bool has_tensormap_descriptor = false;
     bool is_valid() const {
       return mbar_addr != (uint32_t)-1 || size_in_bytes > 0;
     }
@@ -985,6 +1001,8 @@ public:
   // evaluation
   unsigned latency;  // operation latency
   unsigned initiation_interval;
+  unsigned wgmma_compute_latency;
+  unsigned wgmma_completion_tail_latency;
 
   unsigned data_size;  // what is the size of the word being operated on?
   memory_space_t space;
@@ -1007,6 +1025,11 @@ class warp_inst_t : public inst_t {
     m_streamID = (unsigned long long)-1;
     m_empty = true;
     m_config = NULL;
+    m_wgmma_warpgroup = false;
+    m_wgmma_warpgroup_size = 0;
+    m_wgmma_warpgroup_base_warp_id = (unsigned)-1;
+    for (unsigned i = 0; i < 4; ++i)
+      m_wgmma_warpgroup_warp_id[i] = (unsigned)-1;
 
     // Ni:
     m_is_ldgsts = false;
@@ -1028,6 +1051,11 @@ class warp_inst_t : public inst_t {
     m_is_printf = false;
     m_is_cdp = 0;
     should_do_atomic = true;
+    m_wgmma_warpgroup = false;
+    m_wgmma_warpgroup_size = 0;
+    m_wgmma_warpgroup_base_warp_id = (unsigned)-1;
+    for (unsigned i = 0; i < 4; ++i)
+      m_wgmma_warpgroup_warp_id[i] = (unsigned)-1;
 
     // Ni:
     m_is_ldgsts = false;
@@ -1047,6 +1075,23 @@ class warp_inst_t : public inst_t {
   void issue(const active_mask_t &mask, unsigned warp_id,
              unsigned long long cycle, int dynamic_warp_id, int sch_id,
              unsigned long long streamID);
+  void set_wgmma_warpgroup_info(const unsigned *warp_ids, unsigned count) {
+    assert(count > 0 && count <= 4);
+    m_wgmma_warpgroup = true;
+    m_wgmma_warpgroup_size = count;
+    m_wgmma_warpgroup_base_warp_id = warp_ids[0];
+    for (unsigned i = 0; i < 4; ++i)
+      m_wgmma_warpgroup_warp_id[i] = (i < count) ? warp_ids[i] : (unsigned)-1;
+  }
+  bool is_wgmma_warpgroup() const { return m_wgmma_warpgroup; }
+  unsigned wgmma_warpgroup_size() const { return m_wgmma_warpgroup_size; }
+  unsigned wgmma_warpgroup_warp_id(unsigned idx) const {
+    assert(idx < m_wgmma_warpgroup_size);
+    return m_wgmma_warpgroup_warp_id[idx];
+  }
+  unsigned wgmma_warpgroup_base_warp_id() const {
+    return m_wgmma_warpgroup_base_warp_id;
+  }
 
   const active_mask_t &get_active_mask() const { return m_warp_active_mask; }
   void completed(unsigned long long cycle)
@@ -1216,6 +1261,10 @@ class warp_inst_t : public inst_t {
   std::list<mem_access_t> m_accessq;
 
   unsigned m_scheduler_id;  // the scheduler that issues this inst
+  bool m_wgmma_warpgroup;
+  unsigned m_wgmma_warpgroup_size;
+  unsigned m_wgmma_warpgroup_base_warp_id;
+  unsigned m_wgmma_warpgroup_warp_id[4];
 
   // Jin: cdp support
  public:

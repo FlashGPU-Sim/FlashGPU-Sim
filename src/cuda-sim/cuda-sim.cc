@@ -45,6 +45,7 @@ typedef void *yyscan_t;
 #include "../../libcuda/gpgpu_context.h"
 #include "../abstract_hardware_model.h"
 #include "../gpgpu-sim/gpu-sim.h"
+#include "../gpgpu-sim/flash/wgmma/tensor_wgmma.h"
 #include "../gpgpusim_entrypoint.h"
 #include "../statwrapper.h"
 #include "../stream_manager.h"
@@ -62,6 +63,83 @@ typedef void *yyscan_t;
 
 int g_debug_execution = 0;
 // Output debug information to file options
+
+static void parse_wgmma_latency_table(const char *value,
+                                      const char *option_name,
+                                      unsigned table[4]) {
+  int nret = sscanf(value, "%u,%u,%u,%u", &table[0], &table[1], &table[2],
+                    &table[3]);
+  if (nret != 4) {
+    printf("GPGPU-Sim PTX: ERROR parsing %s "
+           "(expected 4 values for m64n8,m64n16,m64n32,m64n64, got %d)\n",
+           option_name, nret);
+    fflush(stdout);
+    exit(1);
+  }
+}
+
+static unsigned wgmma_latency_for_shape(int shape_n,
+                                        const unsigned table[4]) {
+  if (shape_n <= 8) return table[0];
+  if (shape_n <= 16) return table[1];
+  if (shape_n <= 32) return table[2];
+  if (shape_n <= 64) return table[3];
+  return table[3] * ((static_cast<unsigned>(shape_n) + 63) / 64);
+}
+
+static void parse_wgmma_compute_throughput(const char *value,
+                                           unsigned table[5]) {
+  int nret = sscanf(value, "%u,%u,%u,%u,%u", &table[0], &table[1],
+                    &table[2], &table[3], &table[4]);
+  if (nret != 5) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_compute_throughput_wgmma "
+           "(expected 5 values for f16/bf16,tf32,fp8,int8,b1, got %d)\n",
+           nret);
+    fflush(stdout);
+    exit(1);
+  }
+}
+
+static bool wgmma_uses_register_a_operand(const ptx_instruction *inst) {
+  if (inst->get_num_operands() < 2) return false;
+  return inst->operand_lookup(1).is_vector();
+}
+
+static int wgmma_scalar_type_at(const ptx_instruction *inst, unsigned index,
+                                int fallback) {
+  const std::list<int> scalar_types = inst->get_scalar_type();
+  std::list<int>::const_iterator it = scalar_types.begin();
+  for (unsigned i = 0; i < index && it != scalar_types.end(); ++i)
+    ++it;
+  return it == scalar_types.end() ? fallback : *it;
+}
+
+static unsigned wgmma_compute_cycles(int shape_n, int shape_k, int input_type,
+                                     const unsigned throughput[5]) {
+  unsigned work_per_cycle = throughput[0];
+  if (input_type == TF32_TYPE) {
+    work_per_cycle = throughput[1];
+  } else if (input_type == E4M3_TYPE || input_type == E5M2_TYPE) {
+    work_per_cycle = throughput[2];
+  } else if (input_type == S8_TYPE || input_type == U8_TYPE) {
+    work_per_cycle = throughput[3];
+  } else if (input_type == B1_TYPE) {
+    work_per_cycle = throughput[4];
+  }
+  if (work_per_cycle == 0) {
+    printf("GPGPU-Sim PTX: ERROR WGMMA compute throughput must be nonzero\n");
+    fflush(stdout);
+    exit(1);
+  }
+  const unsigned m = 64;
+  const unsigned n = shape_n > 0 ? static_cast<unsigned>(shape_n) : 8;
+  const unsigned k = shape_k > 0 ? static_cast<unsigned>(shape_k) : 16;
+  const unsigned long long work =
+      2ull * static_cast<unsigned long long>(m) * n * k;
+  unsigned cycles =
+      static_cast<unsigned>((work + work_per_cycle - 1) / work_per_cycle);
+  return std::max(1u, cycles);
+}
 
 void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
   option_parser_register(
@@ -91,11 +169,73 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
                          "Opcode latencies for Tensor instructions"
                          "Default 64",
                          "64");
+  option_parser_register(
+      opp, "-ptx_opcode_latency_wgmma_ss", OPT_CSTR,
+      &opcode_latency_wgmma_ss,
+      "WGMMA tensor pipe latencies for SS operands "
+      "<m64n8,m64n16,m64n32,m64n64>. Default 4,4,4,4",
+      "4,4,4,4");
+  option_parser_register(
+      opp, "-ptx_opcode_latency_wgmma_rs", OPT_CSTR,
+      &opcode_latency_wgmma_rs,
+      "WGMMA tensor pipe latencies for RS operands "
+      "<m64n8,m64n16,m64n32,m64n64>. Default 12,12,12,12",
+      "12,12,12,12");
+  option_parser_register(
+      opp, "-ptx_opcode_completion_wgmma_ss", OPT_CSTR,
+      &opcode_completion_wgmma_ss,
+      "WGMMA overlappable completion tail latencies for SS operands "
+      "<m64n8,m64n16,m64n32,m64n64>. Default 66,66,66,66",
+      "66,66,66,66");
+  option_parser_register(
+      opp, "-ptx_opcode_completion_wgmma_rs", OPT_CSTR,
+      &opcode_completion_wgmma_rs,
+      "WGMMA overlappable completion tail latencies for RS operands "
+      "<m64n8,m64n16,m64n32,m64n64>. Default 64,65,64,64",
+      "64,65,64,64");
+  option_parser_register(
+      opp, "-ptx_opcode_completion_wgmma_int_ss", OPT_CSTR,
+      &opcode_completion_wgmma_int_ss,
+      "WGMMA overlappable completion tail latencies for int/b1 SS operands "
+      "<m64n8,m64n16,m64n32,m64n64>. Default 64,64,64,64",
+      "64,64,64,64");
+  option_parser_register(
+      opp, "-ptx_opcode_completion_wgmma_int_rs", OPT_CSTR,
+      &opcode_completion_wgmma_int_rs,
+      "WGMMA overlappable completion tail latencies for int/b1 RS operands "
+      "<m64n8,m64n16,m64n32,m64n64>. Default 62,62,62,61",
+      "62,62,62,61");
+  option_parser_register(
+      opp, "-ptx_opcode_compute_throughput_wgmma", OPT_CSTR,
+      &opcode_compute_throughput_wgmma,
+      "WGMMA non-overlappable compute throughput in work/cycle per SM "
+      "<f16/bf16,tf32,fp8,int8,b1>. Default 4096,2048,8192,8192,65536",
+      "4096,2048,8192,8192,65536");
   option_parser_register(opp, "-ptx_opcode_latency_tma", OPT_CSTR,
                          &opcode_latency_tma,
                          "Opcode latency for TMA (cp.async.bulk) instructions"
                          "Default 33",
                          "33");
+  option_parser_register(
+      opp, "-ptx_opcode_latency_cp_async", OPT_CSTR, &opcode_latency_cp_async,
+      "Opcode latency for ordinary cp.async instructions. Default 7", "7");
+  option_parser_register(
+      opp, "-ptx_opcode_latency_cp_async_commit", OPT_CSTR,
+      &opcode_latency_cp_async_commit,
+      "Opcode latency for ordinary cp.async.commit_group instructions. Default 7",
+      "7");
+  option_parser_register(
+      opp, "-ptx_opcode_latency_cp_async_wait", OPT_CSTR,
+      &opcode_latency_cp_async_wait,
+      "Opcode latency for ordinary cp.async.wait_group/wait_all instructions. "
+      "Default 5",
+      "5");
+  option_parser_register(
+      opp, "-ptx_opcode_latency_tensormap", OPT_CSTR,
+      &opcode_latency_tensormap,
+      "Opcode latencies for tensormap descriptor instructions "
+      "<replace,cp_fenceproxy,fence_proxy_tensormap>Default 1,1,1",
+      "1,1,1");
   option_parser_register(
       opp, "-ptx_opcode_initiation_int", OPT_CSTR, &opcode_initiation_int,
       "Opcode initiation intervals for integers <ADD,MAX,MUL,MAD,DIV,SHFL>"
@@ -123,11 +263,46 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
                          "Opcode initiation intervals for tensor instructions"
                          "Default 64",
                          "64");
+  option_parser_register(
+      opp, "-ptx_opcode_initiation_wgmma_ss", OPT_CSTR,
+      &opcode_initiation_wgmma_ss,
+      "WGMMA initiation intervals for SS operands "
+      "<m64n8,m64n16,m64n32,m64n64>. Default 4,4,4,4",
+      "4,4,4,4");
+  option_parser_register(
+      opp, "-ptx_opcode_initiation_wgmma_rs", OPT_CSTR,
+      &opcode_initiation_wgmma_rs,
+      "WGMMA initiation intervals for RS operands "
+      "<m64n8,m64n16,m64n32,m64n64>. Default 12,12,12,12",
+      "12,12,12,12");
   option_parser_register(opp, "-ptx_opcode_initiation_tma", OPT_CSTR,
                          &opcode_initiation_tma,
                          "Opcode initiation interval for TMA (cp.async.bulk) instructions"
                          "Default 33",
                          "33");
+  option_parser_register(
+      opp, "-ptx_opcode_initiation_cp_async", OPT_CSTR,
+      &opcode_initiation_cp_async,
+      "Opcode initiation interval for ordinary cp.async instructions. Default 7",
+      "7");
+  option_parser_register(
+      opp, "-ptx_opcode_initiation_cp_async_commit", OPT_CSTR,
+      &opcode_initiation_cp_async_commit,
+      "Opcode initiation interval for ordinary cp.async.commit_group "
+      "instructions. Default 7",
+      "7");
+  option_parser_register(
+      opp, "-ptx_opcode_initiation_cp_async_wait", OPT_CSTR,
+      &opcode_initiation_cp_async_wait,
+      "Opcode initiation interval for ordinary cp.async.wait_group/wait_all "
+      "instructions. Default 5",
+      "5");
+  option_parser_register(
+      opp, "-ptx_opcode_initiation_tensormap", OPT_CSTR,
+      &opcode_initiation_tensormap,
+      "Opcode initiation intervals for tensormap descriptor instructions "
+      "<replace,cp_fenceproxy,fence_proxy_tensormap>Default 1,1,1",
+      "1,1,1");
   option_parser_register(opp, "-cdp_latency", OPT_CSTR, &cdp_latency_str,
                          "CDP API latency <cudaStreamCreateWithFlags, \
 cudaGetParameterBufferV2_init_perWarp, cudaGetParameterBufferV2_perKernel, \
@@ -401,6 +576,7 @@ void function_info::ptx_assemble() {
          m_name.c_str());
 
   recognize_dynamic_shared_mem();
+  flash_gpgpu_sim::run_ptx_reorder(this);
 
   fflush(stdout);
   std::list<ptx_instruction *>::iterator i;
@@ -714,8 +890,13 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == BAR_OP) || (m_opcode == RET_OP) || (m_opcode == RETP_OP) ||
       (m_opcode == NOP_OP) || (m_opcode == EXIT_OP) || (m_opcode == CALLP_OP) ||
       (m_opcode == CALL_OP) || (m_opcode == TENSORMAP_OP) || (m_opcode == FENCE_OP) ||
-      (m_opcode == ELECT_OP) || (m_opcode == LDMATRIX_OP) || (m_opcode == STMATRIX_OP) ||
-      (m_opcode == CP_ASYNC_OP)) {
+      (m_opcode == GRIDDEPCONTROL_OP) || (m_opcode == ELECT_OP) ||
+      (m_opcode == LDMATRIX_OP) || (m_opcode == STMATRIX_OP) ||
+      (m_opcode == CP_ASYNC_OP) || (m_opcode == CP_ASYNC_COMMIT_OP) ||
+      (m_opcode == CP_ASYNC_WAIT_OP) || (m_opcode == WGMMA_FENCE_OP) ||
+      (m_opcode == WGMMA_COMMIT_GROUP_OP) || (m_opcode == WGMMA_WAIT_GROUP_OP) ||
+      (m_opcode == SETMAXNREG_OP) || (m_opcode == PREFETCH_OP) ||
+      (m_opcode == PREFETCHU_OP)) {
     // do nothing
   } else if ((m_opcode == CVT_OP || m_opcode == SET_OP ||
               m_opcode == SLCT_OP)) {
@@ -740,8 +921,13 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != BAR_OP) && (m_opcode != EXIT_OP) && (m_opcode != NOP_OP) &&
       (m_opcode != RETP_OP) && (m_opcode != RET_OP) && (m_opcode != CALLP_OP) &&
       (m_opcode != CALL_OP) && (m_opcode != TENSORMAP_OP) && (m_opcode != FENCE_OP) &&
-      (m_opcode != ELECT_OP) && (m_opcode != LDMATRIX_OP) && (m_opcode != STMATRIX_OP) &&
-      (m_opcode != CP_ASYNC_OP)) {
+      (m_opcode != GRIDDEPCONTROL_OP) && (m_opcode != ELECT_OP) &&
+      (m_opcode != LDMATRIX_OP) && (m_opcode != STMATRIX_OP) &&
+      (m_opcode != CP_ASYNC_OP) && (m_opcode != CP_ASYNC_COMMIT_OP) &&
+      (m_opcode != CP_ASYNC_WAIT_OP) && (m_opcode != WGMMA_FENCE_OP) &&
+      (m_opcode != WGMMA_COMMIT_GROUP_OP) && (m_opcode != WGMMA_WAIT_GROUP_OP) &&
+      (m_opcode != SETMAXNREG_OP) && (m_opcode != PREFETCH_OP) &&
+      (m_opcode != PREFETCHU_OP)) {
     if (get_type() == F64_TYPE || get_type() == FF64_TYPE) {
       switch (get_opcode()) {
         case MUL_OP:
@@ -765,6 +951,7 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           break;
         case SIN_OP:
         case COS_OP:
+        case TANH_OP:
           sp_op = FP_SIN_OP;
           break;
         case EX2_OP:
@@ -772,6 +959,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           break;
         case MMA_OP:
         case TENSOR_MMA_OP:
+        case WGMMA_MMA_ASYNC_OP:
+        case WGMMA_MMA_ASYNC_SP_OP:
           sp_op = TENSOR__OP;
           break;
         case TEX_OP:
@@ -804,6 +993,7 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           break;
         case SIN_OP:
         case COS_OP:
+        case TANH_OP:
           sp_op = FP_SIN_OP;
           break;
         case EX2_OP:
@@ -811,6 +1001,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           break;
         case MMA_OP:
         case TENSOR_MMA_OP:
+        case WGMMA_MMA_ASYNC_OP:
+        case WGMMA_MMA_ASYNC_SP_OP:
           sp_op = TENSOR__OP;
           break;
         case TEX_OP:
@@ -841,6 +1033,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           break;
         case MMA_OP:
         case TENSOR_MMA_OP:
+        case WGMMA_MMA_ASYNC_OP:
+        case WGMMA_MMA_ASYNC_SP_OP:
           sp_op = TENSOR__OP;
           break;
         case TEX_OP:
@@ -891,13 +1085,30 @@ void ptx_instruction::set_opcode_and_latency() {
   unsigned dp_latency[5];
   unsigned sfu_latency;
   unsigned tensor_latency[7];
+  unsigned wgmma_ss_latency[4];
+  unsigned wgmma_rs_latency[4];
+  unsigned wgmma_ss_completion[4];
+  unsigned wgmma_rs_completion[4];
+  unsigned wgmma_int_ss_completion[4];
+  unsigned wgmma_int_rs_completion[4];
+  unsigned wgmma_compute_throughput[5];
   unsigned int_init[6];
   unsigned fp_init[5];
   unsigned dp_init[5];
   unsigned sfu_init;
   unsigned tensor_init[7];
+  unsigned wgmma_ss_init[4];
+  unsigned wgmma_rs_init[4];
   unsigned tma_latency_val;
   unsigned tma_init_val;
+  unsigned cp_async_latency_val;
+  unsigned cp_async_commit_latency_val;
+  unsigned cp_async_wait_latency_val;
+  unsigned cp_async_init_val;
+  unsigned cp_async_commit_init_val;
+  unsigned cp_async_wait_init_val;
+  unsigned tensormap_latency[3];
+  unsigned tensormap_init[3];
   /*
    * [0] ADD,SUB
    * [1] MAX,Min
@@ -945,6 +1156,25 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
+  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_latency_wgmma_ss,
+                            "opcode_latency_wgmma_ss", wgmma_ss_latency);
+  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_latency_wgmma_rs,
+                            "opcode_latency_wgmma_rs", wgmma_rs_latency);
+  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_completion_wgmma_ss,
+                            "opcode_completion_wgmma_ss",
+                            wgmma_ss_completion);
+  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_completion_wgmma_rs,
+                            "opcode_completion_wgmma_rs",
+                            wgmma_rs_completion);
+  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_completion_wgmma_int_ss,
+                            "opcode_completion_wgmma_int_ss",
+                            wgmma_int_ss_completion);
+  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_completion_wgmma_int_rs,
+                            "opcode_completion_wgmma_int_rs",
+                            wgmma_int_rs_completion);
+  parse_wgmma_compute_throughput(
+      gpgpu_ctx->func_sim->opcode_compute_throughput_wgmma,
+      wgmma_compute_throughput);
   nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_int, "%u,%u,%u,%u,%u,%u",
                 &int_init[0], &int_init[1], &int_init[2], &int_init[3], &int_init[4],
                 &int_init[5]);
@@ -981,15 +1211,77 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
+  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_initiation_wgmma_ss,
+                            "opcode_initiation_wgmma_ss", wgmma_ss_init);
+  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_initiation_wgmma_rs,
+                            "opcode_initiation_wgmma_rs", wgmma_rs_init);
   nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_tma, "%u", &tma_latency_val);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_tma (expected 1 value, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_cp_async, "%u",
+                &cp_async_latency_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_cp_async (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_cp_async_commit, "%u",
+                &cp_async_commit_latency_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_cp_async_commit (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_cp_async_wait, "%u",
+                &cp_async_wait_latency_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_cp_async_wait (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_tensormap, "%u,%u,%u",
+                &tensormap_latency[0], &tensormap_latency[1],
+                &tensormap_latency[2]);
+  if (nret != 3) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_tensormap (expected 3 values, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
   nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_tma, "%u", &tma_init_val);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_tma (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_cp_async, "%u",
+                &cp_async_init_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_cp_async (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_cp_async_commit, "%u",
+                &cp_async_commit_init_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_cp_async_commit (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_cp_async_wait, "%u",
+                &cp_async_wait_init_val);
+  if (nret != 1) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_cp_async_wait (expected 1 value, got %d)\n", nret);
+    fflush(stdout);
+    exit(1);
+  }
+  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_tensormap, "%u,%u,%u",
+                &tensormap_init[0], &tensormap_init[1],
+                &tensormap_init[2]);
+  if (nret != 3) {
+    printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_tensormap (expected 3 values, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
@@ -1032,6 +1324,23 @@ void ptx_instruction::set_opcode_and_latency() {
     case LDU_OP:
       op = LOAD_OP;
       break;
+    case CP_ASYNC_OP:
+      op = ASYNC_COPY_OP;
+      if (m_is_ldgsts) {
+        latency = cp_async_latency_val;
+        initiation_interval = cp_async_init_val;
+      }
+      break;
+    case CP_ASYNC_COMMIT_OP:
+      op = ASYNC_COPY_OP;
+      latency = cp_async_commit_latency_val;
+      initiation_interval = cp_async_commit_init_val;
+      break;
+    case CP_ASYNC_WAIT_OP:
+      op = ASYNC_COPY_OP;
+      latency = cp_async_wait_latency_val;
+      initiation_interval = cp_async_wait_init_val;
+      break;
     case ST_OP:
       op = STORE_OP;
       break;
@@ -1057,7 +1366,8 @@ void ptx_instruction::set_opcode_and_latency() {
     case MBAR_OP:
       op = MBARRIER_OP;
       break;
-    case TMA_OP: {
+    case TMA_OP:
+    case TMA_PREFETCH_OP: {
       op = TENSOR_MEMORY_ACCELERATOR_OP;
       const auto &opts = get_options();
       bool is_commit = std::find(opts.begin(), opts.end(), COMMIT_GROUP_OPTION) != opts.end();
@@ -1071,11 +1381,36 @@ void ptx_instruction::set_opcode_and_latency() {
       // but use default latency (lightweight control instructions)
       break;
     }
-    case TENSORMAP_OP:
-    case FENCE_OP:
+    case TENSORMAP_OP: {
+      op = TENSOR_MAP_OP;
+      const auto &opts = get_options();
+      bool is_cp_fenceproxy =
+          std::find(opts.begin(), opts.end(), CP_FENCEPROXY_OPTION) !=
+          opts.end();
+      unsigned desc_latency_idx = is_cp_fenceproxy ? 1 : 0;
+      latency = tensormap_latency[desc_latency_idx];
+      initiation_interval = tensormap_init[desc_latency_idx];
+      break;
+    }
+    case FENCE_OP: {
+      const auto &opts = get_options();
+      bool is_tensormap_fence =
+          std::find(opts.begin(), opts.end(), TENSORMAP_OPTION) != opts.end();
+      if (is_tensormap_fence) {
+        op = TENSOR_MAP_OP;
+        latency = tensormap_latency[2];
+        initiation_interval = tensormap_init[2];
+      }
+      break;
+    }
+    case GRIDDEPCONTROL_OP:
     case ELECT_OP:
     case LDMATRIX_OP:
     case STMATRIX_OP:
+    case WGMMA_FENCE_OP:
+    case WGMMA_COMMIT_GROUP_OP:
+    case WGMMA_WAIT_GROUP_OP:
+    case SETMAXNREG_OP:
       break;
     case SST_OP:
       op = BARRIER_OP;
@@ -1243,6 +1578,7 @@ void ptx_instruction::set_opcode_and_latency() {
     case SQRT_OP:
     case SIN_OP:
     case COS_OP:
+    case TANH_OP:
     case EX2_OP:
     case LG2_OP:
     case RSQRT_OP:
@@ -1251,6 +1587,42 @@ void ptx_instruction::set_opcode_and_latency() {
       initiation_interval = sfu_init;
       op = SFU_OP;
       break;
+    case WGMMA_MMA_ASYNC_OP:
+    case WGMMA_MMA_ASYNC_SP_OP: {
+      const bool register_a = wgmma_uses_register_a_operand(this);
+      const int shape_n = get_wgmma_shape_n();
+      const int shape_k = get_wgmma_shape_k();
+      const int input_type = wgmma_scalar_type_at(this, 1, F16_TYPE);
+      const bool int_like =
+          input_type == S8_TYPE || input_type == U8_TYPE || input_type == B1_TYPE;
+      const unsigned *wgmma_latency =
+          register_a ? wgmma_rs_latency : wgmma_ss_latency;
+      const unsigned *wgmma_init =
+          register_a ? wgmma_rs_init : wgmma_ss_init;
+      const unsigned *wgmma_completion = register_a
+                                             ? (int_like ? wgmma_int_rs_completion
+                                                         : wgmma_rs_completion)
+                                             : (int_like ? wgmma_int_ss_completion
+                                                         : wgmma_ss_completion);
+
+      latency = wgmma_latency_for_shape(shape_n, wgmma_latency);
+      initiation_interval = wgmma_latency_for_shape(shape_n, wgmma_init);
+      wgmma_compute_latency =
+          wgmma_compute_cycles(shape_n, shape_k, input_type,
+                               wgmma_compute_throughput);
+      wgmma_completion_tail_latency =
+          wgmma_latency_for_shape(shape_n, wgmma_completion);
+      if (initiation_interval > latency) {
+        printf("GPGPU-Sim PTX: ERROR WGMMA initiation interval (%u) exceeds "
+               "pipe latency (%u) for m64n%dk%d\n",
+               initiation_interval, latency, get_wgmma_shape_n(),
+               get_wgmma_shape_k());
+        fflush(stdout);
+        exit(1);
+      }
+      op = TENSOR_CORE_OP;
+      break;
+    }
     case MMA_OP:
     case TENSOR_MMA_OP:
       {
@@ -1372,7 +1744,33 @@ void ptx_instruction::pre_decode() {
   space = m_space_spec;
   memory_op = no_memory_op;
   data_size = 0;
-  if (has_memory_read() || has_memory_write()) {
+  if (m_opcode == CP_ASYNC_OP || m_opcode == CP_ASYNC_COMMIT_OP ||
+      m_opcode == CP_ASYNC_WAIT_OP) {
+    bool is_commit = (m_opcode == CP_ASYNC_COMMIT_OP);
+    bool is_wait = (m_opcode == CP_ASYNC_WAIT_OP);
+    unsigned wait_n = 0;
+    for (int opt : get_options()) {
+      if (opt == COMMIT_GROUP_OPTION) is_commit = true;
+      if (opt == WAIT_GROUP_OPTION) is_wait = true;
+    }
+
+    if (is_wait) {
+      m_is_depbar = true;
+      if (m_opcode == CP_ASYNC_OP && get_num_operands() > 0 &&
+          operand_lookup(0).is_literal()) {
+        wait_n = (unsigned)operand_lookup(0).get_literal_value().u64;
+      }
+      m_depbar_group_no = wait_n;
+    } else if (is_commit) {
+      m_is_ldgdepbar = true;
+    } else {
+      m_is_ldgsts = true;
+      memory_op = memory_load;
+      if (get_num_operands() > 2 && src2().is_literal()) {
+        data_size = (unsigned)src2().get_literal_value().u64;
+      }
+    }
+  } else if (has_memory_read() || has_memory_write()) {
     unsigned to_type = get_type();
     data_size = datatype2size(to_type);
     memory_op = has_memory_read() ? memory_load : memory_store;
@@ -1458,7 +1856,8 @@ void ptx_instruction::pre_decode() {
         if (num_elem >= 6) out[5] = o.reg6_num();
         if (num_elem >= 7) out[6] = o.reg7_num();
         if (num_elem >= 8) out[7] = o.reg8_num();
-        for (int i = 0; i < num_elem; i++) arch_reg.dst[i] = o.arch_reg_num(i);
+        for (unsigned i = 0; i < num_elem && i < MAX_REG_OPERANDS; i++)
+          arch_reg.dst[i] = o.arch_reg_num(i);
       }
     } else {
       if (o.is_reg() && !o.is_non_arch_reg()) {
@@ -1483,15 +1882,23 @@ void ptx_instruction::pre_decode() {
         // now
         is_vectorout = 1;
         unsigned num_elem = o.get_vect_nelem();
-        if (num_elem >= 1) in[m + 0] = o.reg1_num();
-        if (num_elem >= 2) in[m + 1] = o.reg2_num();
-        if (num_elem >= 3) in[m + 2] = o.reg3_num();
-        if (num_elem >= 4) in[m + 3] = o.reg4_num();
-        if (num_elem >= 5) in[m + 4] = o.reg5_num();
-        if (num_elem >= 6) in[m + 5] = o.reg6_num();
-        if (num_elem >= 7) in[m + 6] = o.reg7_num();
-        if (num_elem >= 8) in[m + 7] = o.reg8_num();
-        for (int i = 0; i < num_elem; i++)
+        if (num_elem >= 1 && m + 0 < MAX_INPUT_VALUES)
+          in[m + 0] = o.reg1_num();
+        if (num_elem >= 2 && m + 1 < MAX_INPUT_VALUES)
+          in[m + 1] = o.reg2_num();
+        if (num_elem >= 3 && m + 2 < MAX_INPUT_VALUES)
+          in[m + 2] = o.reg3_num();
+        if (num_elem >= 4 && m + 3 < MAX_INPUT_VALUES)
+          in[m + 3] = o.reg4_num();
+        if (num_elem >= 5 && m + 4 < MAX_INPUT_VALUES)
+          in[m + 4] = o.reg5_num();
+        if (num_elem >= 6 && m + 5 < MAX_INPUT_VALUES)
+          in[m + 5] = o.reg6_num();
+        if (num_elem >= 7 && m + 6 < MAX_INPUT_VALUES)
+          in[m + 6] = o.reg7_num();
+        if (num_elem >= 8 && m + 7 < MAX_INPUT_VALUES)
+          in[m + 7] = o.reg8_num();
+        for (int i = 0; i < num_elem && m + i < MAX_REG_OPERANDS; i++)
           arch_reg.src[m + i] = o.arch_reg_num(i);
         m += num_elem;
       }
@@ -2067,7 +2474,12 @@ static unsigned get_tex_datasize(const ptx_instruction *pI,
 int tensorcore_op(int inst_opcode) {
   if ((inst_opcode == MMA_OP) || (inst_opcode == MMA_LD_OP) ||
       (inst_opcode == MMA_ST_OP) || (inst_opcode == TENSOR_MMA_OP) ||
-      (inst_opcode == TENSOR_MMA_LD_OP) || (inst_opcode == TENSOR_MMA_ST_OP))
+      (inst_opcode == TENSOR_MMA_LD_OP) || (inst_opcode == TENSOR_MMA_ST_OP) ||
+      (inst_opcode == WGMMA_MMA_ASYNC_OP) ||
+      (inst_opcode == WGMMA_MMA_ASYNC_SP_OP) ||
+      (inst_opcode == WGMMA_FENCE_OP) ||
+      (inst_opcode == WGMMA_COMMIT_GROUP_OP) ||
+      (inst_opcode == WGMMA_WAIT_GROUP_OP) || (inst_opcode == SETMAXNREG_OP))
     return 1;
   else
     return 0;
@@ -2160,6 +2572,12 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
 using flash_gpgpu_sim::tensor_mma_impl;
 using flash_gpgpu_sim::tensor_mma_ld_impl;
 using flash_gpgpu_sim::tensor_mma_st_impl;
+using flash_gpgpu_sim::setmaxnreg_impl;
+using flash_gpgpu_sim::wgmma_commit_group_impl;
+using flash_gpgpu_sim::wgmma_fence_impl;
+using flash_gpgpu_sim::wgmma_mma_async_impl;
+using flash_gpgpu_sim::wgmma_mma_async_sp_impl;
+using flash_gpgpu_sim::wgmma_wait_group_impl;
 #include "opcodes.def"
 #undef OP_DEF
 #undef OP_W_DEF
@@ -2213,8 +2631,12 @@ using flash_gpgpu_sim::tensor_mma_st_impl;
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
         insn_memaddr = last_eaddr();
         insn_space = last_space();
-        unsigned to_type = pI->get_type();
-        insn_data_size = datatype2size(to_type);
+        if (pI->m_is_ldgsts) {
+          insn_data_size = pI->data_size;
+        } else {
+          unsigned to_type = pI->get_type();
+          insn_data_size = datatype2size(to_type);
+        }
         insn_memory_op = pI->has_memory_read() ? memory_load : memory_store;
       }
     }

@@ -1,22 +1,125 @@
 #!/bin/bash
 
 # CI test harness for automated testing
-# This script runs GPGPU-Sim tests with the reduced configuration
+# This script runs GPGPU-Sim tests with reduced SM120 and SM90 configurations
 # for resource-efficient CI/CD pipelines.
 
-set -e
+set -euo pipefail
 
 # Get repository root
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+CI_LOG_ROOT="$REPO_ROOT/test/logs/ci"
+mkdir -p "$CI_LOG_ROOT/logs" "$CI_LOG_ROOT/xml"
+
+CI_SHARD="${CI_SHARD:-all}"
+CI_BUILD_JOBS="${CI_BUILD_JOBS:-2}"
+export GPGPUSIM_BUILD_JOBS="${GPGPUSIM_BUILD_JOBS:-$CI_BUILD_JOBS}"
+
+# A single FA2 NVCC translation unit approaches 5 GiB RSS. Keep FA2 builds
+# serial inside the 7 GiB CI cgroup; other Hopper groups may use the common
+# build-job limit (FA3 also has an object-level serialization chain).
+HOPPER_BUILD_JOBS_DEFAULT="$CI_BUILD_JOBS"
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa2 ]; then
+  HOPPER_BUILD_JOBS_DEFAULT=1
+fi
+export HOPPER_BUILD_JOBS="${HOPPER_BUILD_JOBS:-$HOPPER_BUILD_JOBS_DEFAULT}"
+
+case "$CI_SHARD" in
+  all|sm120|sm90-fa2|sm90-fa3) ;;
+  *)
+    echo "ERROR: unsupported CI_SHARD '$CI_SHARD'"
+    echo "Expected one of: all, sm120, sm90-fa2, sm90-fa3"
+    exit 2
+    ;;
+esac
+
+run_logged() {
+  local label="$1"
+  shift
+  echo "Running: $label"
+  "$@" 2>&1 | tee "$CI_LOG_ROOT/logs/$label.log"
+}
+
+log_runner_resources() {
+  local phase="$1"
+  local metric
+  local line
+
+  echo "Runner resource snapshot: $phase"
+  echo "  CPUs: $(nproc)"
+  if command -v free >/dev/null; then
+    free -h
+  fi
+  df -h "$REPO_ROOT"
+
+  for metric in memory.max memory.current memory.peak memory.events; do
+    if [ -r "/sys/fs/cgroup/$metric" ]; then
+      while IFS= read -r line; do
+        echo "  cgroup $metric: $line"
+      done < "/sys/fs/cgroup/$metric"
+    fi
+  done
+
+  for metric in memory.limit_in_bytes memory.usage_in_bytes \
+                memory.max_usage_in_bytes memory.failcnt; do
+    if [ -r "/sys/fs/cgroup/memory/$metric" ]; then
+      while IFS= read -r line; do
+        echo "  cgroup v1 $metric: $line"
+      done < "/sys/fs/cgroup/memory/$metric"
+    fi
+  done
+}
+
+log_exit_resources() {
+  local status=$?
+  trap - EXIT
+  set +e
+  log_runner_resources exit | tee "$CI_LOG_ROOT/logs/runner-resources-exit.log"
+  exit "$status"
+}
+
+trap log_exit_resources EXIT
+
+echo "CI shard: $CI_SHARD"
+echo "Build jobs: simulator=$GPGPUSIM_BUILD_JOBS hopper=$HOPPER_BUILD_JOBS"
+log_runner_resources start | tee "$CI_LOG_ROOT/logs/runner-resources-start.log"
+
+run_gtest_group() {
+  local config="$1"
+  local target="$2"
+  local group="$3"
+  local label="$4"
+  shift 4
+
+  local xml_dir="$CI_LOG_ROOT/xml/$label"
+  mkdir -p "$xml_dir"
+  export GTEST_OUTPUT="xml:$xml_dir/"
+  run_logged "$label" ./test/run_tests.sh -c "$config" run test \
+    --target "$target" --group "$group" "$@"
+  unset GTEST_OUTPUT
+}
+
+run_logged reduced-config-parity-regression \
+  python3 test/scripts/test_reduced_config_parity.py
+run_logged reduced-config-parity \
+  python3 test/scripts/check_reduced_config_parity.py
+run_logged ptx-scheduler-operand-regression \
+  python3 test/scripts/test_ptx_scheduler_probe_operands.py
+run_logged gtest-discovery-output-regression \
+  python3 test/scripts/test_gtest_discovery_output.py
+
 # Source environment setup
 # Note: In CI Docker, CUDA_INSTALL_PATH is already set via ENV, so we skip setup.sh
 # and only source setup_environment for GPGPU-Sim specific paths
 echo "Setting up GPGPU-Sim environment..."
-if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
+if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
   echo "CI environment detected, skipping setup.sh (CUDA_INSTALL_PATH already set)"
+  # setup_environment is a legacy sourced script and is not nounset-safe.
+  set +u
   source setup_environment
+  set -u
 
   # Verify simulator environment is set up correctly
   if [ -z "$GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN" ]; then
@@ -28,17 +131,22 @@ if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
   echo "  LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
 else
   echo "Local environment detected, sourcing both setup.sh and setup_environment"
+  # The legacy setup scripts intentionally probe optional unset variables.
+  set +u
   source setup.sh
   source setup_environment
+  set -u
 fi
 
-# Use CI_TEST_CONFIG environment variable if set, otherwise default to reduced config
-TEST_CONFIG="${CI_TEST_CONFIG:-SM120_RTX5090_REDUCED}"
+# CI_TEST_CONFIG remains a backward-compatible alias for the SM120 config.
+SM120_TEST_CONFIG="${CI_SM120_TEST_CONFIG:-${CI_TEST_CONFIG:-SM120_RTX5090_REDUCED}}"
+SM90_TEST_CONFIG="${CI_SM90_TEST_CONFIG:-SM90_H100_REDUCED}"
 
-echo "Running tests with configuration: $TEST_CONFIG"
+echo "Running SM120 tests with configuration: $SM120_TEST_CONFIG"
+echo "Running SM90 tests with configuration: $SM90_TEST_CONFIG"
 
 # In CI, clean and force rebuild to ensure we build with container's glibc/toolchain
-if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
+if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
   echo "CI environment detected, cleaning build artifacts..."
 
   # Check what exists before cleaning
@@ -47,7 +155,7 @@ if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
   [ -d "test/build" ] && echo "  test/build/ exists" || echo "  test/build/ does not exist"
 
   # Clean
-  make clean 2>&1 | head -10  # Show first 10 lines of clean output
+  make clean 2>&1 | sed -n '1,10p'  # Show first 10 lines of clean output
   rm -rf test/build
   rm -rf lib
 
@@ -59,7 +167,7 @@ if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
 
   # Force rebuild of GPGPU-Sim library
   echo "Building GPGPU-Sim library..."
-  make FLASH=1 -j
+  run_logged build-gpgpusim make FLASH=1 "-j$GPGPUSIM_BUILD_JOBS"
 
   echo "After build:"
   if [ -f "lib/gcc-$(gcc -dumpversion)/cuda-$(nvcc --version | grep -oP 'release \K[0-9.]+')/release/libcudart.so" ] || find lib -name 'libcudart.so' 2>/dev/null | grep -q .; then
@@ -70,19 +178,55 @@ if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
   fi
 fi
 
-# Build verification tests only (microbenchmarks not needed in CI)
+# Build correctness and smoke groups. Analysis sweeps and microbenchmarks stay
+# out of PR CI.
 echo "Building tests..."
-./test/run_tests.sh build test
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm120 ]; then
+  run_logged build-sm120-unit \
+    ./test/run_tests.sh build test --target sm120 --group unit
+  run_logged build-sm120-integration \
+    ./test/run_tests.sh build test --target sm120 --group integration
+fi
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa2 ]; then
+  run_logged build-sm90-instructions \
+    ./test/run_tests.sh build test --target sm90 --group instructions
+  run_logged build-sm90-fa2-smoke \
+    ./test/run_tests.sh build test --target sm90 --group fa2-smoke
+fi
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa3 ]; then
+  run_logged build-sm90-fa3-smoke \
+    ./test/run_tests.sh build test --target sm90 --group fa3-smoke
+fi
 
 # Run tests with specified configuration.
 # test/run_tests.sh owns the default exclusion list so CI and local runs stay
 # consistent. Microbenchmarks are already excluded because they live in a
-# separate bench binary set.
+# separate microbenchmark binary set.
 echo "Running test suite..."
 
-# Use gtest XML output for structured results (absolute path since tests cd into run dir)
-export GTEST_OUTPUT="xml:$REPO_ROOT/test_results.xml"
+# Directory-valued GTEST_OUTPUT paths give every binary a distinct XML file.
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm120 ]; then
+  run_gtest_group "$SM120_TEST_CONFIG" sm120 unit sm120-unit
+  run_gtest_group "$SM120_TEST_CONFIG" sm120 integration sm120-integration "$@"
+fi
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa2 ]; then
+  run_gtest_group "$SM90_TEST_CONFIG" sm90 instructions sm90-instructions
+  run_gtest_group "$SM90_TEST_CONFIG" sm90 fa2-smoke sm90-fa2-smoke
+fi
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa3 ]; then
+  run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-forward-smoke \
+    'Fa3PrefillFp16SmokeTest.*'
+  run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-fixed-forward \
+    'Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase'
+  run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-backward-smoke \
+    'Fa3PrefillFp16BackwardSmokeTest.*'
+fi
 
-./test/run_tests.sh -c "$TEST_CONFIG" test "$@"
+# Preserve the existing no-filter CI scope, including GPT-2 trace smoke tests.
+if { [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm120 ]; } && \
+   [ "$#" -eq 0 ]; then
+  run_logged sm120-gpt2-trace ./test/run_tests.sh -c "$SM120_TEST_CONFIG" \
+    run trace --target sm120 --group gpt2
+fi
 
 echo "CI tests completed successfully!"

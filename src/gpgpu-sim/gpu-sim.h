@@ -341,6 +341,7 @@ class memory_config {
   bool l2_ideal;
   unsigned gpgpu_frfcfs_dram_sched_queue_size;
   unsigned gpgpu_dram_return_queue_size;
+  unsigned gpgpu_dram_frfcfs_rowhit_first;
   enum dram_ctrl_t scheduler_type;
   bool gpgpu_memlatency_stat;
   unsigned m_n_mem;
@@ -349,6 +350,8 @@ class memory_config {
   unsigned gpu_n_mem_per_ctrlr;
 
   unsigned rop_latency;
+  unsigned l2_partition_count;
+  unsigned l2_partition_extra_latency;
   unsigned dram_latency;
 
   // DRAM parameters
@@ -427,8 +430,12 @@ class gpgpu_sim_config : public power_config,
   void init() {
     gpu_stat_sample_freq = 10000;
     gpu_runtime_stat_flag = 0;
-    sscanf(gpgpu_runtime_stat, "%d:%x", &gpu_stat_sample_freq,
-           &gpu_runtime_stat_flag);
+    int parsed_runtime_stat =
+        sscanf(gpgpu_runtime_stat, "%d:%x", &gpu_stat_sample_freq,
+               &gpu_runtime_stat_flag);
+    if (parsed_runtime_stat == 1) {
+      gpu_runtime_stat_flag = GPU_RSTAT_SHD_INFO;
+    }
     m_shader_config.init();
     ptx_set_tex_cache_linesize(m_shader_config.m_L1T_config.get_line_sz());
     m_memory_config.init();
@@ -744,6 +751,9 @@ class gpgpu_sim : public gpgpu_t {
   unsigned long long last_liveness_message_time;
 
   std::map<std::string, FuncCache> m_special_cache_config;
+  std::map<std::string, unsigned> m_kernel_max_dynamic_smem;
+  std::map<std::string, unsigned> m_kernel_min_smem_for_max_dynamic;
+  std::map<std::string, int> m_kernel_preferred_shared_carveout;
 
   std::vector<std::string>
       m_executed_kernel_names;  //< names of kernel for stat printout
@@ -794,6 +804,16 @@ class gpgpu_sim : public gpgpu_t {
   bool has_special_cache_config(std::string kernel_name);
   void change_cache_config(FuncCache cache_config);
   void set_cache_config(std::string kernel_name);
+  void set_kernel_max_dynamic_smem(std::string kernel_name, unsigned bytes,
+                                   unsigned static_smem = 0);
+  bool has_kernel_max_dynamic_smem(std::string kernel_name);
+  unsigned get_kernel_max_dynamic_smem(std::string kernel_name);
+  void apply_kernel_max_dynamic_smem(std::string kernel_name);
+  void set_kernel_preferred_shared_carveout(std::string kernel_name,
+                                            int carveout);
+  bool has_kernel_preferred_shared_carveout(std::string kernel_name);
+  int get_kernel_preferred_shared_carveout(std::string kernel_name);
+  void apply_kernel_preferred_shared_carveout(std::string kernel_name);
 
   void aggregate_cluster_stats();
 

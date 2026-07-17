@@ -82,6 +82,11 @@ const bool Scoreboard::islongop(unsigned warp_id, unsigned regnum) {
 }
 
 void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
+  reserveRegistersForWarp(inst, inst->warp_id());
+}
+
+void Scoreboard::reserveRegistersForWarp(const class warp_inst_t* inst,
+                                         unsigned warp_id) {
   // Classify producer type for NCU-style stall tracking
   reg_producer_t prod = PROD_OTHER;
   unsigned op = inst->op;
@@ -89,6 +94,8 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
     prod = PROD_TENSOR_CORE;
   } else if (op == TENSOR_MEMORY_ACCELERATOR_OP) {
     prod = PROD_TMA;
+  } else if (op == TENSOR_MAP_OP) {
+    prod = PROD_TENSOR_MAP;
   } else if (op == SFU_OP || op == ALU_SFU_OP || op == DP_OP) {
     prod = PROD_SFU;
   } else if (op == LOAD_OP || op == STORE_OP || op == MEMORY_BARRIER_OP ||
@@ -105,10 +112,10 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
 
   for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
     if (inst->out[r] > 0) {
-      reserveRegister(inst->warp_id(), inst->out[r]);
-      reg_producer[inst->warp_id()][inst->out[r]] = prod;
+      reserveRegister(warp_id, inst->out[r]);
+      reg_producer[warp_id][inst->out[r]] = prod;
       SHADER_GPPRINTF(SCOREBOARD, "Reserved register - warp:%d, reg: %d\n",
-                     inst->warp_id(), inst->out[r]);
+                     warp_id, inst->out[r]);
     }
   }
 
@@ -122,8 +129,8 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
     for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
       if (inst->out[r] > 0) {
         SHADER_GPPRINTF(SCOREBOARD, "New longopreg marked - warp:%d, reg: %d\n",
-                       inst->warp_id(), inst->out[r]);
-        longopregs[inst->warp_id()].insert(inst->out[r]);
+                       warp_id, inst->out[r]);
+        longopregs[warp_id].insert(inst->out[r]);
       }
     }
   }
@@ -131,13 +138,18 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
 
 // Release registers for an instruction
 void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
+  releaseRegistersForWarp(inst, inst->warp_id());
+}
+
+void Scoreboard::releaseRegistersForWarp(const class warp_inst_t* inst,
+                                         unsigned warp_id) {
   for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
     if (inst->out[r] > 0) {
       SHADER_GPPRINTF(SCOREBOARD, "Register Released - warp:%d, reg: %d\n",
-                     inst->warp_id(), inst->out[r]);
-      releaseRegister(inst->warp_id(), inst->out[r]);
-      longopregs[inst->warp_id()].erase(inst->out[r]);
-      reg_producer[inst->warp_id()].erase(inst->out[r]);
+                     warp_id, inst->out[r]);
+      releaseRegister(warp_id, inst->out[r]);
+      longopregs[warp_id].erase(inst->out[r]);
+      reg_producer[warp_id].erase(inst->out[r]);
     }
   }
 }

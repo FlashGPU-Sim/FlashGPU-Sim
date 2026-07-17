@@ -52,6 +52,8 @@ linear_to_raw_address_translation::linear_to_raw_address_translation() {
   addrdec_mask[2] = 0x000000000FFF0000;
   addrdec_mask[3] = 0x000000000000E0FF;
   addrdec_mask[4] = 0x000000000000000F;
+  ipoly_non_power2_balanced = 0;
+  ipoly_channel_stable_l2slice = 0;
 }
 
 void linear_to_raw_address_translation::addrdec_setoption(option_parser_t opp) {
@@ -72,6 +74,20 @@ void linear_to_raw_address_translation::addrdec_setoption(option_parser_t opp) {
       opp, "-gpgpu_memory_partition_indexing", OPT_UINT32,
       &memory_partition_indexing,
       "0 = no indexing, 1 = bitwise xoring, 2 = IPoly, 3 = custom indexing",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_ipoly_non_power2_balanced", OPT_UINT32,
+      &ipoly_non_power2_balanced,
+      "For non-power-of-two memory partitions: 0 = legacy modulo, 1 = map "
+      "IPOLY buckets to channels before subpartitions, 2 = hash into a larger "
+      "virtual partition space then range-reduce to the final partition count.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_ipoly_channel_stable_l2slice", OPT_UINT32,
+      &ipoly_channel_stable_l2slice,
+      "For non-power-of-two channel counts, keep the decoded DRAM channel "
+      "stable and use IPOLY only to choose the L2 subpartition inside that "
+      "channel. This preserves channel/row locality while balancing L2 slices.",
       "0");
 }
 
@@ -144,8 +160,12 @@ void linear_to_raw_address_translation::addrdec_tlx(new_addr_type addr,
     case IPOLY: {
       // assert(!gap);
       unsigned sub_partition_addr_mask = m_n_sub_partition_in_channel - 1;
-      unsigned sub_partition = tlx->chip * m_n_sub_partition_in_channel +
-                               (tlx->bk & sub_partition_addr_mask);
+      const unsigned decoded_channel = tlx->chip;
+      const unsigned decoded_sub_partition_in_channel =
+          tlx->bk & sub_partition_addr_mask;
+      unsigned sub_partition =
+          decoded_channel * m_n_sub_partition_in_channel +
+          decoded_sub_partition_in_channel;
       // Use a lower shift for IPOLY hash input. The original
       // rest_of_addr_high_bits = addr >> (ADDR_CHIP_S + log2channel +
       // log2sub_partition) = addr >> 20, which strips bits that carry
@@ -158,13 +178,44 @@ void linear_to_raw_address_translation::addrdec_tlx(new_addr_type addr,
       const unsigned ipoly_shift = 8;  // 256B interleave granularity
       unsigned long long int ipoly_high_bits =
           gap ? rest_of_addr_high_bits : (addr >> ipoly_shift);
-      sub_partition = ipoly_hash_function(
-          ipoly_high_bits, sub_partition,
-          nextPowerOf2_m_n_channel * m_n_sub_partition_in_channel);
 
-      if (gap)  // if it is not 2^n partitions, then take modular
-        sub_partition =
-            sub_partition % (m_n_channel * m_n_sub_partition_in_channel);
+      if (gap && ipoly_channel_stable_l2slice) {
+        const unsigned slice_hash_seed =
+            ((decoded_channel & 0xf) ^ decoded_sub_partition_in_channel);
+        const unsigned slice_hash =
+            ipoly_hash_function(addr >> ipoly_shift, slice_hash_seed, 16);
+        const unsigned sub_partition_in_channel =
+            slice_hash % m_n_sub_partition_in_channel;
+        sub_partition = decoded_channel * m_n_sub_partition_in_channel +
+                        sub_partition_in_channel;
+      } else {
+        const unsigned total_sub_partitions =
+            m_n_channel * m_n_sub_partition_in_channel;
+        const unsigned virtual_sub_partitions =
+            (gap && ipoly_non_power2_balanced == 2)
+                ? 1024
+                : nextPowerOf2_m_n_channel * m_n_sub_partition_in_channel;
+        sub_partition = ipoly_hash_function(
+            ipoly_high_bits, sub_partition, virtual_sub_partitions);
+
+        if (gap) {  // if it is not 2^n partitions, then take modular
+          if (ipoly_non_power2_balanced == 1) {
+            const unsigned channel = sub_partition % m_n_channel;
+            const unsigned sub_partition_in_channel =
+                (sub_partition / m_n_channel) % m_n_sub_partition_in_channel;
+            sub_partition = channel * m_n_sub_partition_in_channel +
+                            sub_partition_in_channel;
+          } else if (ipoly_non_power2_balanced == 2) {
+            sub_partition =
+                (static_cast<unsigned long long>(sub_partition) *
+                 total_sub_partitions) /
+                virtual_sub_partitions;
+          } else {
+            sub_partition =
+                sub_partition % (m_n_channel * m_n_sub_partition_in_channel);
+          }
+        }
+      }
 
       tlx->chip = sub_partition / m_n_sub_partition_in_channel;
       tlx->sub_partition = sub_partition;

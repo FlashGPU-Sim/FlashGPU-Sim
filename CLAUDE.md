@@ -2,6 +2,19 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Top-Level Docker Rule
+
+When this submodule is used through `/data/wzr/rtl-lib/flashgpu-gem5-top` or
+`/flashgpu-gem5-top`, build and run through the top-level Docker wrapper:
+
+```bash
+./docker/run.sh bash -lc '<command>'
+```
+
+Do not build or run gem5/FlashGPU-Sim integration workloads directly on the
+host. The top-level stack depends on pinned container versions of Python,
+protobuf, grpc, CUDA, SCons, and compiler runtimes.
+
 ## Repository Overview
 
 This is **FlashGPU-Sim**, a fork of GPGPU-Sim that adds modern GPU features (Hopper/Blackwell SM 12.0) and multi-threaded simulation capabilities. It simulates NVIDIA GPUs at the cycle level for CUDA/OpenCL workloads.

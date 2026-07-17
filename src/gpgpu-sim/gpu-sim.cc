@@ -32,6 +32,7 @@
 
 #include "gpu-sim.h"
 
+#include <algorithm>
 #include <math.h>
 #include <signal.h>
 #include <stdio.h>
@@ -69,6 +70,7 @@
 #include "stats.h"
 #include "visualizer.h"
 #include "gpu-sim-profiler.h"
+#include "flash/tma.h"
 
 #ifdef GPGPUSIM_POWER_MODEL
 #include "power_interface.h"
@@ -78,11 +80,30 @@ class gpgpu_sim_wrapper {};
 
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <iostream>
 #include <sstream>
 #include <string>
 
 // #define MAX(a, b) (((a) > (b)) ? (a) : (b)) //redefined
+
+#ifdef FLASH_GEM_FORGE
+namespace {
+
+bool flashgpu_env_bool(const char *name, bool default_value) {
+  const char *value = getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return default_value;
+  }
+  if (strcmp(value, "0") == 0 || strcasecmp(value, "false") == 0 ||
+      strcasecmp(value, "off") == 0 || strcasecmp(value, "no") == 0) {
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
+#endif
 
 bool g_interactive_debugger_enabled = false;
 
@@ -278,6 +299,12 @@ void memory_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_dram_return_queue_size", OPT_INT32,
                          &gpgpu_dram_return_queue_size,
                          "0 = unlimited (default); # entries per chip", "0");
+  option_parser_register(
+      opp, "-gpgpu_dram_frfcfs_rowhit_first", OPT_UINT32,
+      &gpgpu_dram_frfcfs_rowhit_first,
+      "Prefer banks with row-hit requests when assigning FR-FCFS requests to "
+      "banks. 0 = legacy round-robin bank assignment.",
+      "0");
   option_parser_register(opp, "-gpgpu_dram_buswidth", OPT_UINT32, &busW,
                          "default = 4 bytes (8 bytes per cycle at DDR)", "4");
   option_parser_register(
@@ -295,6 +322,17 @@ void memory_config::reg_options(class OptionParser *opp) {
       "4:2:8:12:21:13:34:9:4:5:13:1:0:0");
   option_parser_register(opp, "-gpgpu_l2_rop_latency", OPT_UINT32, &rop_latency,
                          "ROP queue latency (default 85)", "85");
+  option_parser_register(
+      opp, "-gpgpu_l2_partition_count", OPT_UINT32, &l2_partition_count,
+      "Number of coarse L2/NOC locality partitions used for remote L2 latency "
+      "modeling. 1 disables remote partition detection.",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_partition_extra_latency", OPT_UINT32,
+      &l2_partition_extra_latency,
+      "Extra cycles charged when an SM accesses a remote coarse L2 partition "
+      "(default 0)",
+      "0");
   option_parser_register(opp, "-dram_latency", OPT_UINT32, &dram_latency,
                          "DRAM latency (default 30)", "30");
   option_parser_register(opp, "-dram_dual_bus_interface", OPT_UINT32,
@@ -402,6 +440,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_clock_gated_reg_file", OPT_BOOL, &gpgpu_clock_gated_reg_file,
       "enable clock gated reg file for power calculations", "0");
   option_parser_register(
+      opp, "-gpgpu_reg_file_read_bytes_per_cycle", OPT_UINT32,
+      &gpgpu_reg_file_read_bytes_per_cycle,
+      "maximum operand collector register-file read bandwidth per shader core "
+      "cycle in bytes (0=unlimited)",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_clock_gated_lanes", OPT_BOOL, &gpgpu_clock_gated_lanes,
       "enable clock gated lanes for power calculations", "0");
   option_parser_register(opp, "-gpgpu_shader_registers", OPT_UINT32,
@@ -458,6 +502,14 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &gpgpu_shmem_sizePrefShared,
                          "Size of shared memory per shader core (default 16kB)",
                          "16384");
+  option_parser_register(
+      opp, "-gpgpu_max_dynamic_smem_prefer_occupancy_carveout", OPT_BOOL,
+      &max_dynamic_smem_prefer_occupancy_carveout,
+      "When cudaFuncAttributeMaxDynamicSharedMemorySize is set without an "
+      "explicit preferred carveout, model the NVIDIA driver choosing the "
+      "smallest shared/L1 carveout that maximizes shared-memory-limited CTA "
+      "occupancy (default 0)",
+      "0");
   option_parser_register(
       opp, "-gpgpu_shmem_num_banks", OPT_UINT32, &num_shmem_bank,
       "Number of banks in the shared memory in each shader core (default 16)",
@@ -607,7 +659,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Pipeline widths "
       "ID_OC_SP,ID_OC_DP,ID_OC_INT,ID_OC_SFU,ID_OC_MEM,OC_EX_SP,OC_EX_DP,OC_EX_"
       "INT,OC_EX_SFU,OC_EX_MEM,EX_WB,ID_OC_TENSOR_CORE,OC_EX_TENSOR_CORE,"
-      "ID_OC_TMA,OC_EX_TMA",
+      "ID_OC_TMA,OC_EX_TMA,ID_OC_CP_ASYNC,OC_EX_CP_ASYNC,ID_OC_TENSOR_MAP,"
+      "OC_EX_TENSOR_MAP",
       "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1");
   option_parser_register(opp, "-gpgpu_tensor_core_avail", OPT_UINT32,
                          &gpgpu_tensor_core_avail,
@@ -627,15 +680,92 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_num_tensor_core_units", OPT_UINT32,
                          &gpgpu_num_tensor_core_units,
                          "Number of tensor_core units (default=1)", "0");
+  option_parser_register(
+      opp, "-gpgpu_tensor_core_units_per_sub_partition", OPT_UINT32,
+      &gpgpu_tensor_core_units_per_sub_partition,
+      "Tensor core issue units sharing each subpartition issue register "
+      "(default=1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_tensor_core_issue_queue_depth", OPT_UINT32,
+      &gpgpu_tensor_core_issue_queue_depth,
+      "Ideal tensor-core pre-FU issue queue depth. 0 disables the queue.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tensor_core_skip_writeback", OPT_BOOL,
+      &gpgpu_tensor_core_skip_writeback,
+      "Complete tensor-core instructions without using the register-file "
+      "writeback path.",
+      "0");
   option_parser_register(opp, "-gpgpu_num_tma_units", OPT_UINT32,
                          &gpgpu_num_tma_units,
                          "Number of TMA units (default=0)", "0");
+  option_parser_register(opp, "-gpgpu_num_cp_async_units", OPT_UINT32,
+                         &gpgpu_num_cp_async_units,
+                         "Number of ordinary cp.async units (default=0)", "0");
+  option_parser_register(opp, "-gpgpu_num_tensormap_units", OPT_UINT32,
+                         &gpgpu_num_tensormap_units,
+                         "Number of tensor-map descriptor units (default=0)",
+                         "0");
   option_parser_register(opp, "-gpgpu_tma_max_inflight", OPT_UINT32,
                          &gpgpu_tma_max_inflight,
                          "Max in-flight TMA mem_fetch requests per SM (default=0, 0=unlimited)", "0");
   option_parser_register(opp, "-gpgpu_tma_tx_quota", OPT_UINT32,
                          &gpgpu_tma_tx_quota,
                          "Max in-flight mem_fetch per TMA transaction (default=0, 0=unlimited)", "0");
+  option_parser_register(opp, "-gpgpu_tma_response_width", OPT_UINT32,
+                         &gpgpu_tma_response_width,
+                         "TMA response tokens accepted per SM per cycle (default=1)", "1");
+  option_parser_register(
+      opp, "-gpgpu_tma_request_granularity", OPT_UINT32,
+      &gpgpu_tma_request_granularity,
+      "TMA memory request granularity in bytes (32/64/128; default=32)",
+      "32");
+  option_parser_register(
+      opp, "-gpgpu_tma_request_width", OPT_UINT32,
+      &gpgpu_tma_request_width,
+      "TMA memory requests issued per TMA unit per cycle (default=1)", "1");
+  option_parser_register(
+      opp, "-gpgpu_tma_request_bytes_per_cycle", OPT_UINT32,
+      &gpgpu_tma_request_bytes_per_cycle,
+      "TMA request-side byte issue budget per TMA unit per cycle "
+      "(default=0, disabled; e.g. 32 makes one 128B coalesced request consume "
+      "four cycles)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_cp_async_max_inflight", OPT_UINT32,
+      &gpgpu_cp_async_max_inflight,
+      "Maximum in-flight ordinary cp.async memory requests per SM "
+      "(0=unlimited)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_cp_async_request_width", OPT_UINT32,
+      &gpgpu_cp_async_request_width,
+      "Ordinary cp.async memory requests issued per SM per cycle (default=1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_cp_async_response_width", OPT_UINT32,
+      &gpgpu_cp_async_response_width,
+      "Ordinary cp.async memory responses accepted per SM per cycle (default=1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_cp_async_request_granularity", OPT_UINT32,
+      &gpgpu_cp_async_request_granularity,
+      "Ordinary cp.async memory request granularity in bytes "
+      "(32/64/128; default=32)",
+      "32");
+  option_parser_register(
+      opp, "-gpgpu_cp_async_idealized_memory", OPT_UINT32,
+      &gpgpu_cp_async_idealized_memory,
+      "Idealized ordinary cp.async memory: requests complete instantly "
+      "(default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_cp_async_wait_release_latency", OPT_UINT32,
+      &gpgpu_cp_async_wait_release_latency,
+      "Warp release latency for ordinary cp.async.wait_group after the group "
+      "condition is satisfied (default=5)",
+      "5");
   option_parser_register(opp, "-gpgpu_cta_load_balance", OPT_BOOL,
                          &gpgpu_cta_load_balance,
                          "Cap CTAs per core to ceil(total_ctas/n_cores) for load balancing (default=0)", "0");
@@ -651,6 +781,47 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_mbarrier_trywait_latency", OPT_UINT32,
                          &gpgpu_mbarrier_trywait_latency,
                          "Latency (cycles) for mbarrier.try_wait polling before warp release (default=0)", "0");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
+      &gpgpu_wgmma_issue_chain_ss,
+      "Per-SM WGMMA SS issue chain throttle "
+      "<depth,startup_gap,fast_gap,slow_gap,reset_gap>; depth=0 disables",
+      "0,0,0,0,64");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_issue_chain_rs", OPT_CSTR,
+      &gpgpu_wgmma_issue_chain_rs,
+      "Per-SM WGMMA RS issue chain throttle "
+      "<depth,startup_gap,fast_gap,slow_gap,reset_gap>; depth=0 disables",
+      "0,0,0,0,64");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_rf_traffic_enable", OPT_BOOL,
+      &gpgpu_wgmma_rf_traffic_enable,
+      "Model WGMMA accumulator register-file traffic as shared RF read "
+      "bandwidth tokens (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_rf_traffic_bytes_per_cycle", OPT_UINT32,
+      &gpgpu_wgmma_rf_traffic_bytes_per_cycle,
+      "Maximum WGMMA RF traffic drain bytes per shader core cycle; 0 uses "
+      "all pending WGMMA RF traffic or all remaining RF read bandwidth when "
+      "share_read_budget is enabled (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_rf_traffic_share_read_budget", OPT_BOOL,
+      &gpgpu_wgmma_rf_traffic_share_read_budget,
+      "Make WGMMA RF traffic consume the normal operand-collector RF read "
+      "bandwidth budget (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_rf_traffic_assume_accumulate", OPT_BOOL,
+      &gpgpu_wgmma_rf_traffic_assume_accumulate,
+      "Include accumulator reads in WGMMA RF traffic tokens (default=1)", "1");
+  option_parser_register(
+      opp, "-gpgpu_wgmma_rf_traffic_include_rs_a", OPT_BOOL,
+      &gpgpu_wgmma_rf_traffic_include_rs_a,
+      "Include register-A operand reads in WGMMA RF traffic tokens for RS "
+      "WGMMA (default=0)",
+      "0");
   option_parser_register(
       opp, "-gpgpu_num_mem_units", OPT_UINT32, &gpgpu_num_mem_units,
       "Number if ldst units (default=1) WARNING: not hooked up to anything",
@@ -1107,17 +1278,49 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
    * ! GemForge
    */
 #ifdef FLASH_GEM_FORGE
-  std::vector<std::string> gem5_args = {
-      "/gem-forge-stack/gem5/configs/example/gem_forge/example_config.txt"};
-  m_gem5_wrapper = std::make_unique<flash_gpgpu_sim::Gem5Wrapper>(
-      "/gem-forge-stack/gem5/configs/example/gem_forge/run.py", gem5_args);
+  if (flashgpu_env_bool("FLASHGPU_GEM5_ENABLE", false)) {
+    const char *flashgpu_top_env = getenv("FLASHGPU_GEM5_TOP");
+    const char *gem_forge_top_env = getenv("GEM_FORGE_TOP");
+    std::string gem5_top;
+    if (flashgpu_top_env && flashgpu_top_env[0]) {
+      gem5_top = flashgpu_top_env;
+    } else if (gem_forge_top_env && gem_forge_top_env[0]) {
+      gem5_top = gem_forge_top_env;
+    } else {
+      gem5_top = "/gem-forge-stack";
+    }
 
-  m_gem5_wrapper->initialize();
+    const std::string gem5_config_dir =
+        gem5_top + "/gem5/configs/example/gem_forge";
+    const char *gem5_config_file_env = getenv("FLASHGPU_GEM5_CONFIG_FILE");
+    const char *gem5_config_name_env = getenv("FLASHGPU_GEM5_CONFIG_NAME");
+    std::string gem5_config_file;
+    if (gem5_config_file_env && gem5_config_file_env[0]) {
+      gem5_config_file = gem5_config_file_env;
+    } else if (gem5_config_name_env && gem5_config_name_env[0]) {
+      gem5_config_file = gem5_config_dir + "/" + gem5_config_name_env;
+    } else {
+      gem5_config_file =
+          gem5_config_dir + "/example_config_crossbar_garnet.txt";
+    }
+    printf("FLASHGPU_GEM5_ENABLE=1; using gem5 config file: %s\n",
+           gem5_config_file.c_str());
 
-  m_gem5_mem_subsys = std::make_shared<flash_gpgpu_sim::Gem5MemSubsystem>(
-      m_gem5_wrapper->getSystem(), m_gem5_wrapper->getGPGPUSimRequestors());
+    std::vector<std::string> gem5_args = {gem5_config_file};
+    m_gem5_wrapper = std::make_unique<flash_gpgpu_sim::Gem5Wrapper>(
+        gem5_config_dir + "/run.py", gem5_args);
 
-  m_gem5_mem_subsys->registerGPGPUSimInterconnectInterface();
+    m_gem5_wrapper->initialize();
+
+    m_gem5_mem_subsys = std::make_shared<flash_gpgpu_sim::Gem5MemSubsystem>(
+        m_gem5_wrapper->getSystem(), m_gem5_wrapper->getGPGPUSimRequestors(),
+        m_shader_config->gmem_skip_L1D);
+
+    m_gem5_mem_subsys->registerGPGPUSimInterconnectInterface();
+  } else {
+    printf("FLASHGPU_GEM5_ENABLE=0; using FlashGPU-Sim standalone memory "
+           "system.\n");
+  }
 #endif
 
   time_vector_create(NUM_MEM_REQ_STAT);
@@ -1358,6 +1561,12 @@ void gpgpu_sim::print_stats(unsigned long long streamID) {
         "----------------------------END-of-Interconnect-DETAILS---------------"
         "----------\n");
   }
+
+#if defined(FLASH_GEM_FORGE)
+  if (m_gem5_wrapper) {
+    m_gem5_wrapper->dumpStats();
+  }
+#endif
 }
 
 void gpgpu_sim::deadlock_check() {
@@ -1396,6 +1605,13 @@ void gpgpu_sim::deadlock_check() {
     if (icnt_busy()) {
       printf("GPGPU-Sim uArch DEADLOCK:  iterconnect contains traffic\n");
       icnt_display_state(stdout);
+    }
+    const char *deadlock_dump = getenv("FLASHGPU_SIM_DEADLOCK_DUMP");
+    if (deadlock_dump != NULL && deadlock_dump[0] != '\0' &&
+        deadlock_dump[0] != '0') {
+      printf("GPGPU-Sim uArch DEADLOCK: dumping shader pipeline for core %u\n",
+             gpu_sim_insn_last_update_sid);
+      dump_pipeline(1, gpu_sim_insn_last_update_sid, 0);
     }
     printf(
         "\nRe-run the simulator in gdb and use debug routines in .gdbinit to "
@@ -1464,12 +1680,140 @@ bool gpgpu_sim::has_special_cache_config(std::string kernel_name) {
   return false;
 }
 
+void gpgpu_sim::set_kernel_max_dynamic_smem(std::string kernel_name,
+                                            unsigned bytes,
+                                            unsigned static_smem) {
+  m_kernel_max_dynamic_smem[kernel_name] = bytes;
+  m_kernel_min_smem_for_max_dynamic[kernel_name] = static_smem + bytes;
+}
+
+bool gpgpu_sim::has_kernel_max_dynamic_smem(std::string kernel_name) {
+  return m_kernel_max_dynamic_smem.find(kernel_name) !=
+         m_kernel_max_dynamic_smem.end();
+}
+
+unsigned gpgpu_sim::get_kernel_max_dynamic_smem(std::string kernel_name) {
+  std::map<std::string, unsigned>::const_iterator it =
+      m_kernel_max_dynamic_smem.find(kernel_name);
+  if (it == m_kernel_max_dynamic_smem.end()) return 0;
+  return it->second;
+}
+
+void gpgpu_sim::apply_kernel_max_dynamic_smem(std::string kernel_name) {
+  if (!has_kernel_max_dynamic_smem(kernel_name)) return;
+
+  unsigned requested = get_kernel_max_dynamic_smem(kernel_name);
+  unsigned required = requested;
+  std::map<std::string, unsigned>::const_iterator required_it =
+      m_kernel_min_smem_for_max_dynamic.find(kernel_name);
+  if (required_it != m_kernel_min_smem_for_max_dynamic.end()) {
+    required = std::max(required, required_it->second);
+  }
+  unsigned target = std::max(m_shader_config->gpgpu_shmem_size, required);
+  bool applied_occupancy_policy = false;
+  bool has_explicit_carveout =
+      has_kernel_preferred_shared_carveout(kernel_name) &&
+      get_kernel_preferred_shared_carveout(kernel_name) >= 0;
+
+  if (m_shader_config->max_dynamic_smem_prefer_occupancy_carveout &&
+      !has_explicit_carveout && required > 0 &&
+      m_shader_config->adaptive_cache_config &&
+      !m_shader_config->shmem_opt_list.empty()) {
+    unsigned max_carveout = m_shader_config->shmem_opt_list.back();
+    unsigned target_ctas = max_carveout / required;
+    if (target_ctas == 0) target_ctas = 1;
+    target = std::max(target, target_ctas * required);
+    applied_occupancy_policy = true;
+  }
+
+  if (m_shader_config->adaptive_cache_config &&
+      !m_shader_config->shmem_opt_list.empty()) {
+    std::vector<unsigned>::const_iterator it = std::lower_bound(
+        m_shader_config->shmem_opt_list.begin(),
+        m_shader_config->shmem_opt_list.end(), target);
+    if (it != m_shader_config->shmem_opt_list.end()) {
+      target = *it;
+    } else {
+      target = m_shader_config->shmem_opt_list.back();
+    }
+  }
+
+  if (target != m_shader_config->gpgpu_shmem_size) {
+    if (applied_occupancy_policy) {
+      printf("GPGPU-Sim: Apply max dynamic shared memory occupancy carveout "
+             "policy for '%s': requested=%u, required_block_smem=%u, "
+             "shmem_size=%u\n",
+             kernel_name.c_str(), requested, required, target);
+    } else {
+      printf("GPGPU-Sim: Apply kernel max dynamic shared memory opt-in for "
+             "'%s': requested=%u, required_block_smem=%u, shmem_size=%u\n",
+             kernel_name.c_str(), requested, required, target);
+    }
+  }
+  m_shader_config->gpgpu_shmem_size = target;
+}
+
+void gpgpu_sim::set_kernel_preferred_shared_carveout(std::string kernel_name,
+                                                     int carveout) {
+  m_kernel_preferred_shared_carveout[kernel_name] = carveout;
+}
+
+bool gpgpu_sim::has_kernel_preferred_shared_carveout(std::string kernel_name) {
+  return m_kernel_preferred_shared_carveout.find(kernel_name) !=
+         m_kernel_preferred_shared_carveout.end();
+}
+
+int gpgpu_sim::get_kernel_preferred_shared_carveout(std::string kernel_name) {
+  std::map<std::string, int>::const_iterator it =
+      m_kernel_preferred_shared_carveout.find(kernel_name);
+  if (it == m_kernel_preferred_shared_carveout.end()) return -1;
+  return it->second;
+}
+
+void gpgpu_sim::apply_kernel_preferred_shared_carveout(
+    std::string kernel_name) {
+  if (!has_kernel_preferred_shared_carveout(kernel_name)) return;
+
+  int carveout = get_kernel_preferred_shared_carveout(kernel_name);
+  if (carveout < 0) return;
+
+  unsigned max_shared = m_shader_config->gpgpu_shmem_size;
+  if (m_shader_config->adaptive_cache_config &&
+      !m_shader_config->shmem_opt_list.empty()) {
+    max_shared = m_shader_config->shmem_opt_list.back();
+  }
+
+  unsigned target =
+      (unsigned)(((unsigned long long)max_shared * (unsigned)carveout + 99) /
+                 100);
+  if (m_shader_config->adaptive_cache_config &&
+      !m_shader_config->shmem_opt_list.empty()) {
+    std::vector<unsigned>::const_iterator it = std::lower_bound(
+        m_shader_config->shmem_opt_list.begin(),
+        m_shader_config->shmem_opt_list.end(), target);
+    if (it != m_shader_config->shmem_opt_list.end()) {
+      target = *it;
+    } else {
+      target = m_shader_config->shmem_opt_list.back();
+    }
+  }
+
+  if (target != m_shader_config->gpgpu_shmem_size) {
+    printf("GPGPU-Sim: Apply kernel preferred shared memory carveout for "
+           "'%s': carveout=%d%%, shmem_size=%u\n",
+           kernel_name.c_str(), carveout, target);
+  }
+  m_shader_config->gpgpu_shmem_size = target;
+}
+
 void gpgpu_sim::set_cache_config(std::string kernel_name) {
   if (has_special_cache_config(kernel_name)) {
     change_cache_config(get_cache_config(kernel_name));
   } else {
     change_cache_config(FuncCachePreferNone);
   }
+  apply_kernel_preferred_shared_carveout(kernel_name);
+  apply_kernel_max_dynamic_smem(kernel_name);
 }
 
 void gpgpu_sim::change_cache_config(FuncCache cache_config) {
@@ -1556,6 +1900,65 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
 
   // performance counter for stalls due to congestion.
   printf("gpu_stall_dramfull = %d\n", gpu_stall_dramfull);
+  unsigned long long mem_sub_part_full_stats
+      [NUM_MEM_SUB_PARTITION_FULL_STATS] = {};
+  for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
+    m_memory_sub_partition[i]->accumulate_full_state_stats(
+        mem_sub_part_full_stats);
+  }
+  printf("memory_sub_partition_full_breakdown:\n");
+  for (unsigned i = 0; i < NUM_MEM_SUB_PARTITION_FULL_STATS; i++) {
+    printf("\tmemory_sub_partition_full_breakdown[%s] = %llu\n",
+           mem_sub_partition_full_stat_str(
+               static_cast<mem_sub_partition_full_stat>(i)),
+           mem_sub_part_full_stats[i]);
+  }
+  unsigned long long l2_partition_remote_accesses = 0;
+  unsigned long long l2_partition_extra_latency_cycles = 0;
+  for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
+    m_memory_sub_partition[i]->accumulate_l2_partition_stats(
+        l2_partition_remote_accesses, l2_partition_extra_latency_cycles);
+  }
+  printf("l2_partition_remote_accesses = %llu\n",
+         l2_partition_remote_accesses);
+  printf("l2_partition_extra_latency_cycles = %llu\n",
+         l2_partition_extra_latency_cycles);
+  auto cp_async_debug = flash_gpgpu_sim::get_global_cp_async_debug_counters();
+  printf("cp_async_debug_tx_started = %llu\n", cp_async_debug.tx_started);
+  printf("cp_async_debug_tx_completed = %llu\n", cp_async_debug.tx_completed);
+  printf("cp_async_debug_mf_issued = %llu\n", cp_async_debug.mf_issued);
+  printf("cp_async_debug_mf_responses = %llu\n", cp_async_debug.mf_responses);
+  printf("cp_async_debug_bytes_issued = %llu\n", cp_async_debug.bytes_issued);
+  printf("cp_async_debug_bytes_completed = %llu\n",
+         cp_async_debug.bytes_completed);
+  printf("cp_async_debug_issue_queue_cycles = %llu\n",
+         cp_async_debug.issue_queue_cycles);
+  printf("cp_async_debug_issue_active_cycles = %llu\n",
+         cp_async_debug.issue_active_cycles);
+  printf("cp_async_debug_issue_width_limited_cycles = %llu\n",
+         cp_async_debug.issue_width_limited_cycles);
+  printf("cp_async_debug_issue_blocked_inflight_cycles = %llu\n",
+         cp_async_debug.issue_blocked_inflight_cycles);
+  printf("cp_async_debug_issue_blocked_icnt_cycles = %llu\n",
+         cp_async_debug.issue_blocked_icnt_cycles);
+  printf("cp_async_debug_max_issue_queue = %llu\n",
+         cp_async_debug.max_issue_queue);
+  printf("cp_async_debug_max_inflight = %llu\n",
+         cp_async_debug.max_inflight);
+  printf("cp_async_debug_wait_calls = %llu\n", cp_async_debug.wait_calls);
+  printf("cp_async_debug_wait_immediate = %llu\n",
+         cp_async_debug.wait_immediate);
+  printf("cp_async_debug_wait_blocked = %llu\n", cp_async_debug.wait_blocked);
+  printf("cp_async_debug_wait_releases = %llu\n",
+         cp_async_debug.wait_releases);
+  printf("cp_async_debug_waiting_warp_cycles = %llu\n",
+         cp_async_debug.waiting_warp_cycles);
+  printf("cp_async_debug_response_fifo_nonempty_cycles = %llu\n",
+         cp_async_debug.response_fifo_nonempty_cycles);
+  printf("cp_async_debug_response_width_limited_cycles = %llu\n",
+         cp_async_debug.response_width_limited_cycles);
+  printf("cp_async_debug_max_response_fifo = %llu\n",
+         cp_async_debug.max_response_fifo);
   printf("gpu_stall_icnt2sh    = %d\n", gpu_stall_icnt2sh);
 
   // printf("partiton_reqs_in_parallel = %lld\n", partiton_reqs_in_parallel);
@@ -1680,10 +2083,13 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
       printf("L2_total_cache_reservation_fails = %llu\n",
              total_l2_css.res_fails);
       printf("L2_total_cache_breakdown:\n");
-      l2_stats.print_stats(stdout, streamID, "L2_cache_stats_breakdown");
+      l2_stats.print_aggregate_stats(stdout, "L2_cache_stats_breakdown");
+      printf("L2_total_cache_reservation_fail_reason_breakdown:\n");
+      l2_stats.print_fail_reason_stats(stdout, (unsigned long long)-1,
+                                       "L2_cache_stats_fail_reason_breakdown");
       printf("L2_total_cache_reservation_fail_breakdown:\n");
-      l2_stats.print_fail_stats(stdout, streamID,
-                                "L2_cache_stats_fail_breakdown");
+      l2_stats.print_aggregate_fail_stats(stdout,
+                                          "L2_cache_stats_fail_breakdown");
       total_l2_css.print_port_stats(stdout, "L2_cache");
     }
   }
@@ -1908,7 +2314,9 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   else
     max_cta_per_core = m_config->max_cta_per_core;
   for (unsigned i = 0; i < max_cta_per_core; i++) {
-    if (m_cta_status[i] == 0) {
+    if (m_cta_status[i] == 0 &&
+        m_pending_tma_cta_releases.find(i) ==
+            m_pending_tma_cta_releases.end()) {
       free_cta_hw_id = i;
       break;
     }
@@ -2148,6 +2556,7 @@ void gpgpu_sim::cycle() {
       // SECTOR_CHUNCK_SIZE requests, so ensure you have enough buffer for them
       if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
         gpu_stall_dramfull++;
+        m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE);
       } else {
         mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
         m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
@@ -2378,7 +2787,37 @@ void gpgpu_sim::cycle() {
 #endif
     
     profiler.end_step(profiler.total_other_time);
-    profiler.increment_and_check();
+    if (profiler.should_print_next()) {
+      auto tma_progress = flash_gpgpu_sim::get_global_tma_progress_counters();
+      flash_gpgpu_sim::gpgpu_sim_profile_progress_t progress;
+      progress.cycle = gpu_sim_cycle + gpu_tot_sim_cycle;
+      for (kernel_info_t *kernel : m_running_kernels) {
+        if (kernel && !kernel->done()) progress.cta_total += kernel->num_blocks();
+      }
+      if (m_config.gpu_max_cta_opt != 0 &&
+          progress.cta_total > m_config.gpu_max_cta_opt) {
+        progress.cta_total = m_config.gpu_max_cta_opt;
+      }
+      progress.cta_launched = gpu_tot_issued_cta + m_total_cta_launched;
+      progress.cta_completed = gpu_completed_cta;
+      progress.tma_tx_started = tma_progress.tx_started;
+      progress.tma_read_tx_started = tma_progress.read_tx_started;
+      progress.tma_write_tx_started = tma_progress.write_tx_started;
+      progress.tma_tx_completed = tma_progress.tx_completed;
+      progress.tma_read_tx_completed = tma_progress.read_tx_completed;
+      progress.tma_write_tx_completed = tma_progress.write_tx_completed;
+      progress.tma_mf_issued = tma_progress.mf_issued;
+      progress.tma_read_mf_issued = tma_progress.read_mf_issued;
+      progress.tma_write_mf_issued = tma_progress.write_mf_issued;
+      progress.tma_mf_responses = tma_progress.mf_responses;
+      progress.tma_read_mf_responses = tma_progress.read_mf_responses;
+      progress.tma_write_mf_responses = tma_progress.write_mf_responses;
+      progress.tma_bytes_issued = tma_progress.bytes_issued;
+      progress.tma_bytes_completed = tma_progress.bytes_completed;
+      profiler.increment_and_check(&progress);
+    } else {
+      profiler.increment_and_check();
+    }
   }
 }
 

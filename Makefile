@@ -40,8 +40,9 @@ ifeq ($(FLASH_GEM_FORGE), 1)
 ifndef GEM_FORGE_TOP
 $(error FLASH_GEM_FORGE is enabled but GEM_FORGE_TOP is not set)
 endif
+GEM5_ARCH ?= X86
 EXTRA_FLAGS += -DFLASH_GEM_FORGE=1
-EXTRA_FLAGS += -I$(GEM_FORGE_TOP)/gem5/src -I$(GEM_FORGE_TOP)/gem5/build/X86
+EXTRA_FLAGS += -I$(GEM_FORGE_TOP)/gem5/src -I$(GEM_FORGE_TOP)/gem5/build/$(GEM5_ARCH)
 EXTRA_FLAGS += -I$(GEM_FORGE_TOP)/gem5/ext/gpgpusim
 EXTRA_FLAGS += -I$(GEM_FORGE_TOP)/gem5/ext
 GEM5_LDFLAGS = -L$(GEM_FORGE_TOP)/gem5/ext/gpgpusim -lgem5_to_gpgpusim -Wl,-rpath,$(GEM_FORGE_TOP)/gem5/ext/gpgpusim
@@ -189,8 +190,10 @@ $(SIM_LIB_DIR)/libcudart.so: makedirs $(LIBS) cudalib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/*.o \
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
-		$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
-		$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/mma/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/mma/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/wgmma/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/ptx_sched/*.o \
 		$(GEM5_OBJ_FILES) \
 		$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
 		$(SIM_OBJ_FILES_DIR)/*.o -lm -lz $(OPENGL_LIB) -pthread -fopenmp \
@@ -213,6 +216,7 @@ $(SIM_LIB_DIR)/libcudart.so: makedirs $(LIBS) cudalib
 	if [ ! -f $(SIM_LIB_DIR)/libcudart.so.10.1 ]; then ln -s libcudart.so $(SIM_LIB_DIR)/libcudart.so.10.1; fi
 	if [ ! -f $(SIM_LIB_DIR)/libcudart.so.11.0 ]; then ln -s libcudart.so $(SIM_LIB_DIR)/libcudart.so.11.0; fi
 	if [ ! -f $(SIM_LIB_DIR)/libcudart.so.12 ]; then ln -s libcudart.so $(SIM_LIB_DIR)/libcudart.so.12; fi
+	if [ ! -f $(SIM_LIB_DIR)/libcudart.so.13 ]; then ln -s libcudart.so $(SIM_LIB_DIR)/libcudart.so.13; fi
 	if [ ! -f $(SIM_LIB_DIR)/libcudart_mod.so ]; then ln -s libcudart.so $(SIM_LIB_DIR)/libcudart_mod.so; fi
 	if [ ! -f $(SIM_LIB_DIR)/libcuda.so.1 ]; then ln -s libcudart.so $(SIM_LIB_DIR)/libcuda.so.1; fi
 
@@ -223,6 +227,9 @@ $(SIM_LIB_DIR)/libcudart.dylib: makedirs $(LIBS) cudalib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/mma/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/wgmma/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/ptx_sched/*.o \
 			$(GEM5_OBJ_FILES) \
 			$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o  \
 			$(SIM_OBJ_FILES_DIR)/*.o -lm -lz -pthread \
@@ -235,8 +242,10 @@ $(SIM_LIB_DIR)/libOpenCL.so: makedirs $(LIBS) opencllib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/*.o \
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
-		$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
-		$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/mma/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/mma/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/wgmma/*.o \
+			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/ptx_sched/*.o \
 		$(GEM5_OBJ_FILES) \
 		$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
 		$(SIM_OBJ_FILES_DIR)/*.o -lm -lz $(OPENGL_LIB) -pthread \
