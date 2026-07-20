@@ -37,7 +37,7 @@
 #
 # Environment:
 #   TRITON_TRACKING_ROOT
-#                  Absolute output root for flash_attn.
+#                  Absolute output root for tma_gemm and flash_attn.
 #                  Other workloads use test/triton_trace/triton_kernel_tracking.
 #
 # Examples:
@@ -443,7 +443,7 @@ ${WORKLOAD}_init
 TRACKING_ROOT="$TRITON_TRACE_DIR/triton_kernel_tracking"
 if [[ -n "${TRITON_TRACKING_ROOT:-}" ]]; then
     case "$WORKLOAD" in
-        flash_attn)
+        tma_gemm|flash_attn)
             TRACKING_ROOT="$TRITON_TRACKING_ROOT"
             ;;
         *)
@@ -456,7 +456,7 @@ if [[ "$TRACKING_ROOT" != /* ]]; then
     echo "ERROR: TRITON_TRACKING_ROOT must be an absolute path: $TRACKING_ROOT" >&2
     exit 1
 fi
-if [[ "$WORKLOAD" == "flash_attn" ]]; then
+if [[ "$WORKLOAD" == "tma_gemm" || "$WORKLOAD" == "flash_attn" ]]; then
     export TRITON_TRACKING_ROOT="$TRACKING_ROOT"
 fi
 
