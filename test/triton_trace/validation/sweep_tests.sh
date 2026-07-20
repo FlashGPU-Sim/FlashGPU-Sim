@@ -35,6 +35,11 @@
 #   --heads H      Number of heads (default: 4)
 #   --causal       Enable causal masking
 #
+# Environment:
+#   TRITON_TRACKING_ROOT
+#                  Absolute output root for flash_attn.
+#                  Other workloads use test/triton_trace/triton_kernel_tracking.
+#
 # Examples:
 #   ./sweep.sh tma_gemm trace 128 512 1024
 #   ./sweep.sh tma_gemm run --shape 512,6000,2560
@@ -435,7 +440,27 @@ done
 # Initialize workload
 ${WORKLOAD}_init
 
-TRACKING_DIR="$TRITON_TRACE_DIR/triton_kernel_tracking/$TRACKING_SUBDIR"
+TRACKING_ROOT="$TRITON_TRACE_DIR/triton_kernel_tracking"
+if [[ -n "${TRITON_TRACKING_ROOT:-}" ]]; then
+    case "$WORKLOAD" in
+        flash_attn)
+            TRACKING_ROOT="$TRITON_TRACKING_ROOT"
+            ;;
+        *)
+            echo "ERROR: TRITON_TRACKING_ROOT is not supported for workload '$WORKLOAD'" >&2
+            exit 1
+            ;;
+    esac
+fi
+if [[ "$TRACKING_ROOT" != /* ]]; then
+    echo "ERROR: TRITON_TRACKING_ROOT must be an absolute path: $TRACKING_ROOT" >&2
+    exit 1
+fi
+if [[ "$WORKLOAD" == "flash_attn" ]]; then
+    export TRITON_TRACKING_ROOT="$TRACKING_ROOT"
+fi
+
+TRACKING_DIR="$TRACKING_ROOT/$TRACKING_SUBDIR"
 RESULTS_DIR="$TRACKING_DIR/results"
 SIM_LOG_DIR="$RESULTS_DIR/sim-log"
 GEM5_LOG_DIR="$RESULTS_DIR/gem5-log"
@@ -447,9 +472,13 @@ if [[ -n "$CSV_FILE" ]]; then
     if [[ ${#SWEEP_VALUES[@]} -gt 0 ]]; then
         echo "ERROR: --csv and sweep values are mutually exclusive"; exit 1
     fi
-    CSV_PATH="$SCRIPT_DIR/$CSV_FILE"
-    if [[ ! -f "$CSV_PATH" ]]; then
-        CSV_PATH="$TRITON_TRACE_DIR/$CSV_FILE"
+    if [[ "$CSV_FILE" == /* ]]; then
+        CSV_PATH="$CSV_FILE"
+    else
+        CSV_PATH="$SCRIPT_DIR/$CSV_FILE"
+        if [[ ! -f "$CSV_PATH" ]]; then
+            CSV_PATH="$TRITON_TRACE_DIR/$CSV_FILE"
+        fi
     fi
     if [[ ! -f "$CSV_PATH" ]]; then
         echo "ERROR: CSV file not found: $CSV_PATH"; exit 1

@@ -11,6 +11,7 @@ Generates trace data in triton_kernel_tracking/test_flash_attn/seq<S>_d<D>/
 """
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -20,6 +21,12 @@ import triton
 import triton.language as tl
 
 TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
+TRACKING_ROOT = Path(
+    os.environ.get(
+        "TRITON_TRACKING_ROOT",
+        str(TRITON_TRACE_DIR / "triton_kernel_tracking"),
+    )
+).expanduser().resolve()
 sys.path.insert(0, str(TRITON_TRACE_DIR))
 
 from track_triton_kernels import TritonKernelTracker
@@ -216,7 +223,7 @@ def main():
 
     causal_str = "_causal" if causal else ""
     subdir = f"b{batch}_h{heads}_seq{seq_len}_d{head_dim}{causal_str}"
-    output_dir = (TRITON_TRACE_DIR / f"triton_kernel_tracking/test_flash_attn/{subdir}").resolve()
+    output_dir = TRACKING_ROOT / "test_flash_attn" / subdir
     if output_dir.exists():
         shutil.rmtree(output_dir)
 
