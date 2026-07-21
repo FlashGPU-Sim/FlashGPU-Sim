@@ -270,6 +270,14 @@ effective_tma_request_granularity(const shader_core_config *config) {
   return SECTOR_SIZE;
 }
 
+static unsigned response_payload_bytes(const mem_fetch *mf,
+                                       const mem_fetch *parent_mf) {
+  unsigned bytes = std::min(mf->get_data_size(), parent_mf->get_data_size());
+  unsigned valid_bytes = mf->get_access_byte_mask().count();
+  assert(valid_bytes > 0 && "TMA/cp.async response has an empty byte mask");
+  return std::min(bytes, valid_bytes);
+}
+
 static uint32_t
 effective_cp_async_request_granularity(const shader_core_config *config) {
   unsigned granularity = config->gpgpu_cp_async_request_granularity;
@@ -1039,9 +1047,7 @@ private:
     if (tx.first_response_cycle == 0)
       tx.first_response_cycle = current_cycle();
 
-    unsigned mf_size = mf->get_data_size();
-    unsigned parent_size = parent_mf->get_data_size();
-    unsigned bytes_to_add = (mf_size > parent_size) ? parent_size : mf_size;
+    unsigned bytes_to_add = response_payload_bytes(mf, parent_mf);
     tx.bytes_completed += bytes_to_add;
     g_cp_async_bytes_completed.fetch_add(bytes_to_add,
                                          std::memory_order_relaxed);
@@ -1494,11 +1500,9 @@ public:
         }
       }
 
-      // Count bytes: use min(mf_size, parent_size) to handle L2 sector
-      // subdivision
-      unsigned mf_size = mf->get_data_size();
-      unsigned parent_size = parent_mf->get_data_size();
-      unsigned bytes_to_add = (mf_size > parent_size) ? parent_size : mf_size;
+      // L2 returns whole sectors, but edge sectors can contain fewer valid
+      // bytes than their 32-byte packet size.
+      unsigned bytes_to_add = response_payload_bytes(mf, parent_mf);
       tx.m_bytes_completed += bytes_to_add;
       record_tma_mf_response(is_write, bytes_to_add);
 
