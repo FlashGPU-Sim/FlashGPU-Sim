@@ -526,7 +526,7 @@ RESULTS_DIR="$TRACKING_DIR/results"
 SIM_LOG_DIR="$RESULTS_DIR/sim-log"
 GEM5_LOG_DIR="$RESULTS_DIR/gem5-log"
 NCU_REP_DIR="$RESULTS_DIR/ncu-rep"
-NCU_PROFILE_METRICS="${NCU_PROFILE_METRICS:-sm__cycles_elapsed.avg,sm__cycles_elapsed.avg.per_second,gpu__time_duration.avg,sm__throughput.avg.pct_of_peak_sustained_elapsed,sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed,gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed,dram__bytes.sum,dram__bytes_op_read.sum,dram__bytes_op_write.sum,dram__throughput.avg.pct_of_peak_sustained_elapsed}"
+NCU_PROFILE_METRICS="${NCU_PROFILE_METRICS:-sm__cycles_elapsed.avg,sm__cycles_elapsed.avg.per_second,gpu__time_duration.avg,sm__throughput.avg.pct_of_peak_sustained_elapsed,sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed,gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed,dram__bytes.sum,dram__bytes_read.sum,dram__bytes_write.sum,dram__throughput.avg.pct_of_peak_sustained_elapsed}"
 
 # Load sweep values from CSV or apply defaults
 if [[ -n "$CSV_FILE" ]]; then
@@ -1048,7 +1048,7 @@ do_ncu() {
                 continue
             fi
 
-            metric_line=$(ncu --import "${report_base}.ncu-rep" --csv --page raw \
+            metric_line=$(LC_ALL=C ncu --import "${report_base}.ncu-rep" --csv --page raw \
                 --print-units base \
                 --metrics "$NCU_PROFILE_METRICS" 2>/dev/null \
             | python3 -c '
@@ -1065,15 +1065,11 @@ d = dict(zip(header, data))
 
 
 def number(name):
-    try:
-        return float(d[name])
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def raw(name):
     value = d.get(name)
-    return value if value not in (None, "") else "N/A"
+    try:
+        return float(value.replace(",", ""))
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def scaled(name, divisor, digits):
@@ -1085,13 +1081,13 @@ duration_ns = number("gpu__time_duration.avg")
 dram_bytes_b = number("dram__bytes.sum")
 dram_read_b = number("dram__bytes_read.sum")
 dram_write_b = number("dram__bytes_write.sum")
-sm_cycles = raw("sm__cycles_elapsed.avg")
+sm_cycles = scaled("sm__cycles_elapsed.avg", 1, 2)
 sm_freq = scaled("sm__cycles_elapsed.avg.per_second", 1e9, 6)
 duration = scaled("gpu__time_duration.avg", 1e3, 6)
-sm_tp = d.get("sm__throughput.avg.pct_of_peak_sustained_elapsed", "N/A")
-tensor_tp = d.get("sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed", "N/A")
-gpu_dram_tp = d.get("gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed", "N/A")
-dram_tp = d.get("dram__throughput.avg.pct_of_peak_sustained_elapsed", "N/A")
+sm_tp = scaled("sm__throughput.avg.pct_of_peak_sustained_elapsed", 1, 2)
+tensor_tp = scaled("sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed", 1, 2)
+gpu_dram_tp = scaled("gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed", 1, 2)
+dram_tp = scaled("dram__throughput.avg.pct_of_peak_sustained_elapsed", 1, 2)
 dram_bytes = "N/A" if dram_bytes_b is None else f"{dram_bytes_b / 1e3:.3f}"
 dram_read = "N/A" if dram_read_b is None else f"{dram_read_b / 1e3:.3f}"
 dram_write = "N/A" if dram_write_b is None else f"{dram_write_b:.0f}"
@@ -1132,9 +1128,9 @@ print(",".join((sm_cycles, sm_freq, duration, dram_bytes, dram_read,
 
     if [[ -n "${NCU_SET:-}" ]]; then
         ncu_args+=(--set "$NCU_SET")
-    else
-        ncu_args+=(--metrics "$NCU_PROFILE_METRICS")
     fi
+    # Keep the raw summary metrics in reports even when a section set is used.
+    ncu_args+=(--metrics "$NCU_PROFILE_METRICS")
 
     "${ncu_args[@]}" "$launcher_dir/${KERNEL_NAME}_launch1"
 
@@ -1170,8 +1166,8 @@ path, key = sys.argv[1], sys.argv[2]
 
 def number(value):
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        return float(value.replace(",", ""))
+    except (AttributeError, TypeError, ValueError):
         return None
 
 
@@ -1248,7 +1244,7 @@ PY
     fi
 
     if [[ ! -f "$ncu_file" ]]; then
-        echo "${val},N/A,N/A,N/A,N/A,N/A,N/A,N/A"
+        echo "${val},N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A"
         return
     fi
 
@@ -1259,43 +1255,58 @@ PY
     NCU_METRICS+=",sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed"
     NCU_METRICS+=",gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed"
     NCU_METRICS+=",dram__bytes.sum"
-    NCU_METRICS+=",dram__bytes_op_read.sum"
-    NCU_METRICS+=",dram__bytes_op_write.sum"
+    NCU_METRICS+=",dram__bytes_read.sum"
+    NCU_METRICS+=",dram__bytes_write.sum"
     NCU_METRICS+=",dram__throughput.avg.pct_of_peak_sustained_elapsed"
 
     local tflops_expr
     tflops_expr="$(${WORKLOAD}_tflops_expr "$val")"
 
-    ncu --import "$ncu_file" --csv --page raw --metrics "$NCU_METRICS" 2>/dev/null \
+    LC_ALL=C ncu --import "$ncu_file" --csv --page raw --print-units base \
+        --metrics "$NCU_METRICS" 2>/dev/null \
     | python3 -c "
 import csv, sys
 rows = list(csv.reader(sys.stdin))
 if len(rows) < 3:
-    print('${val},N/A,N/A,N/A,N/A,N/A,N/A,N/A')
+    print('${val},N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A')
     sys.exit()
 header = rows[0]
 data = rows[-1]
 d = dict(zip(header, data))
-sm_cycles = d.get('sm__cycles_elapsed.avg', 'N/A')
-sm_freq = d.get('sm__cycles_elapsed.avg.per_second', 'N/A')
-dur = d.get('gpu__time_duration.avg', 'N/A')
-sm_tp = d.get('sm__throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
-tensor_tp = d.get('sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed', 'N/A')
-dram_tp = d.get('gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
-dram_bytes_kb = d.get('dram__bytes.sum', 'N/A')
-dram_read_kb = d.get('dram__bytes_op_read.sum', 'N/A')
-dram_write_b = d.get('dram__bytes_op_write.sum', 'N/A')
-dram_bw_pct = d.get('dram__throughput.avg.pct_of_peak_sustained_elapsed', 'N/A')
+
+def number(name):
+    value = d.get(name)
+    try:
+        return float(value.replace(',', ''))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+def scaled(name, divisor, digits):
+    value = number(name)
+    return 'N/A' if value is None else f'{value / divisor:.{digits}f}'
+
+duration_ns = number('gpu__time_duration.avg')
+dram_bytes_b = number('dram__bytes.sum')
+dram_read_b = number('dram__bytes_read.sum')
+dram_write_value = number('dram__bytes_write.sum')
+sm_cycles = scaled('sm__cycles_elapsed.avg', 1, 2)
+sm_freq = scaled('sm__cycles_elapsed.avg.per_second', 1e9, 6)
+dur = scaled('gpu__time_duration.avg', 1e3, 6)
+sm_tp = scaled('sm__throughput.avg.pct_of_peak_sustained_elapsed', 1, 2)
+tensor_tp = scaled('sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed', 1, 2)
+dram_tp = scaled('gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed', 1, 2)
+dram_bw_pct = scaled('dram__throughput.avg.pct_of_peak_sustained_elapsed', 1, 2)
+dram_bytes_kb = 'N/A' if dram_bytes_b is None else f'{dram_bytes_b / 1e3:.3f}'
+dram_read_kb = 'N/A' if dram_read_b is None else f'{dram_read_b / 1e3:.3f}'
+dram_write_b = 'N/A' if dram_write_value is None else f'{dram_write_value:.0f}'
 try:
     tflops = f'{${tflops_expr}:.2f}'
-except:
+except (TypeError, ValueError, ZeroDivisionError):
     tflops = 'N/A'
-try:
-    total_bytes = float(dram_bytes_kb) * 1000.0
-    dur_s = float(dur) * 1e-6
-    dram_bw_gbs = f'{total_bytes / dur_s / 1e9:.2f}' if dur_s > 0 else 'N/A'
-except:
+if dram_bytes_b is None or duration_ns is None or duration_ns <= 0:
     dram_bw_gbs = 'N/A'
+else:
+    dram_bw_gbs = f'{dram_bytes_b / (duration_ns * 1e-9) / 1e9:.2f}'
 print(f'${val},{sm_cycles},{sm_freq},{dur},{tflops},{dram_bytes_kb},{dram_read_kb},{dram_write_b},{dram_bw_gbs},{dram_tp},{dram_bw_pct},{sm_tp},{tensor_tp}')
 "
 }
