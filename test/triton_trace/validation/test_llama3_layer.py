@@ -10,6 +10,7 @@ reference.
 
 import argparse
 import math
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -20,6 +21,9 @@ import triton
 import triton.language as tl
 
 TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
+TRACKING_ROOT = Path(
+    os.environ.get("TRITON_TRACKING_ROOT", TRITON_TRACE_DIR / "triton_kernel_tracking")
+).expanduser().resolve()
 sys.path.insert(0, str(TRITON_TRACE_DIR))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -330,6 +334,72 @@ def _llama3_layer_matmul_tile(
     tl.store_tensor_descriptor(
         desc_c, [(pid_m * N_BLK + pid_n) * BLOCK_M, 0], acc.to(tl.float16)
     )
+
+
+@triton.jit
+def _llama3_layer_matmul_residual_tile(
+    A_TILE,
+    B_TILE,
+    RESIDUAL_TILE,
+    C_TILE,
+    M_BLK: tl.constexpr,
+    N_BLK: tl.constexpr,
+    K_BLK: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+):
+    pid = tl.program_id(axis=0)
+    num_pid_m = M_BLK
+    num_pid_n = N_BLK
+    num_pid_in_group = GROUP_M * num_pid_n
+    group_id = pid // num_pid_in_group
+    first_pid_m = group_id * GROUP_M
+    group_size_m = tl.minimum(num_pid_m - first_pid_m, GROUP_M)
+    pid_m = first_pid_m + (pid % group_size_m)
+    pid_n = (pid % num_pid_in_group) // group_size_m
+
+    desc_a = tl.make_tensor_descriptor(
+        A_TILE,
+        shape=[M_BLK * K_BLK * BLOCK_M, BLOCK_K],
+        strides=[BLOCK_K, 1],
+        block_shape=[BLOCK_M, BLOCK_K],
+    )
+    desc_b = tl.make_tensor_descriptor(
+        B_TILE,
+        shape=[N_BLK * K_BLK * BLOCK_N, BLOCK_K],
+        strides=[BLOCK_K, 1],
+        block_shape=[BLOCK_N, BLOCK_K],
+    )
+    desc_residual = tl.make_tensor_descriptor(
+        RESIDUAL_TILE,
+        shape=[M_BLK * N_BLK * BLOCK_M, BLOCK_N],
+        strides=[BLOCK_N, 1],
+        block_shape=[BLOCK_M, BLOCK_N],
+    )
+    desc_c = tl.make_tensor_descriptor(
+        C_TILE,
+        shape=[M_BLK * N_BLK * BLOCK_M, BLOCK_N],
+        strides=[BLOCK_N, 1],
+        block_shape=[BLOCK_M, BLOCK_N],
+    )
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    for k_tile in range(0, K_BLK):
+        a = tl.load_tensor_descriptor(
+            desc_a, [(pid_m * K_BLK + k_tile) * BLOCK_M, 0]
+        )
+        b = tl.load_tensor_descriptor(
+            desc_b, [(pid_n * K_BLK + k_tile) * BLOCK_N, 0]
+        )
+        acc = tl.dot(a, b.T, acc)
+
+    residual = tl.load_tensor_descriptor(
+        desc_residual, [(pid_m * N_BLK + pid_n) * BLOCK_M, 0]
+    )
+    out = acc.to(tl.float16) + residual
+    tl.store_tensor_descriptor(desc_c, [(pid_m * N_BLK + pid_n) * BLOCK_M, 0], out)
 
 
 @triton.jit
@@ -754,6 +824,34 @@ def matmul_tile_triton(a_tile, b_tile):
     return c
 
 
+def matmul_residual_tile_triton(a_tile, b_tile, residual_tile):
+    assert a_tile.dim() == 4 and b_tile.dim() == 4 and residual_tile.dim() == 4
+    m_blk, k_blk, m_tile, k_tile = a_tile.shape
+    n_blk, b_k_blk, n_tile, b_k_tile = b_tile.shape
+    assert residual_tile.shape == (m_blk, n_blk, FULL_TILE_M, FULL_TILE_N)
+    assert k_blk == b_k_blk
+    assert m_tile == FULL_TILE_M
+    assert n_tile == FULL_TILE_N
+    assert k_tile == FULL_TILE_N and b_k_tile == FULL_TILE_N
+
+    c = torch.empty_like(residual_tile)
+    grid = (m_blk * n_blk,)
+    _llama3_layer_matmul_residual_tile[grid](
+        a_tile,
+        b_tile,
+        residual_tile,
+        c,
+        M_BLK=m_blk,
+        N_BLK=n_blk,
+        K_BLK=k_blk,
+        BLOCK_M=FULL_TILE_M,
+        BLOCK_N=FULL_TILE_N,
+        BLOCK_K=FULL_TILE_N,
+        GROUP_M=8,
+    )
+    return c
+
+
 def rmsnorm_tile_triton(x_tile, weight, eps=1e-5):
     assert x_tile.dim() == 4
     m_blk, n_blk, m_tile, n_tile = x_tile.shape
@@ -844,16 +942,13 @@ def llama3_layer_full_tiled_triton(
         causal=causal,
         s_tile=s_tile,
     )
-    attn_proj = matmul_tile_triton(attn_tile, weights["wo_tile"])
-    h1 = add_tile_triton(x_tile, attn_proj)
+    h1 = matmul_residual_tile_triton(attn_tile, weights["wo_tile"], x_tile)
 
     norm2 = rmsnorm_tile_triton(h1, weights["rms_mlp"])
     gate_up = matmul_tile_triton(norm2, weights["w_gate_up_tile"])
     assert gate_up.shape[1] == 2 * intermediate_blk
     act = silu_mul_split_tile_triton(gate_up)
-    down = matmul_tile_triton(act, weights["w_down_tile"])
-    out = add_tile_triton(h1, down)
-    return out
+    return matmul_residual_tile_triton(act, weights["w_down_tile"], h1)
 
 
 def llama3_layer_triton(x, weights, *, q_heads, kv_heads, head_dim, causal):
@@ -1206,10 +1301,7 @@ def main():
     elif args.variant == "full_tiled":
         subdir = f"{subdir}_mt{FULL_TILE_M}_nt{FULL_TILE_N}"
     tracker = None
-    output_dir = (
-        TRITON_TRACE_DIR
-        / f"triton_kernel_tracking/{tracking_subdir_for_variant(args.variant)}/{subdir}"
-    ).resolve()
+    output_dir = (TRACKING_ROOT / tracking_subdir_for_variant(args.variant) / subdir).resolve()
     if not args.no_trace:
         if output_dir.exists():
             shutil.rmtree(output_dir)
