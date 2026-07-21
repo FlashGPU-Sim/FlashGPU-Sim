@@ -249,6 +249,9 @@ struct _cuda_device_id *gpgpu_context::GPGPUSim_Init() {
     prop->regsPerMultiprocessor = the_gpu->num_registers_per_core();
     prop->sharedMemPerMultiprocessor = the_gpu->shared_mem_size();
 #endif
+#if (CUDART_VERSION >= 9000)
+    prop->sharedMemPerBlockOptin = the_gpu->shared_mem_per_block_optin();
+#endif
     prop->sharedMemPerBlock = the_gpu->shared_mem_per_block();
     prop->regsPerBlock = the_gpu->num_registers_per_block();
     prop->warpSize = the_gpu->wrp_size();
@@ -2320,7 +2323,7 @@ cudaDeviceGetAttributeInternal(int *value, enum cudaDeviceAttr attr, int device,
         *value = 0;
         break;
       case 97:  // cudaDevAttrMaxSharedMemoryPerBlockOptin
-        *value = prop->sharedMemPerBlock;
+        *value = dev->get_gpgpu()->shared_mem_per_block_optin();
         break;
       case 98:  // cudaDevAttrCanFlushRemoteWrites
         *value = 0;
@@ -4779,6 +4782,17 @@ __host__ cudaError_t CUDARTAPI cudaDeviceSetLimit(enum cudaLimit limit,
 
 #endif
 
+static bool max_dynamic_shared_memory_fits(
+    CUctx_st *context, function_info *entry, unsigned requested_dynamic,
+    unsigned *static_smem, unsigned *max_per_block_optin) {
+  const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
+  *static_smem = kinfo ? kinfo->smem : 0;
+  *max_per_block_optin =
+      context->get_device()->get_gpgpu()->shared_mem_per_block_optin();
+  return static_cast<unsigned long long>(*static_smem) + requested_dynamic <=
+         *max_per_block_optin;
+}
+
 #if CUDART_VERSION >= 9000
 /**
  * \brief Set attributes for a given function
@@ -4831,16 +4845,16 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
 
   if (attr == cudaFuncAttributeMaxDynamicSharedMemorySize) {
     if (value < 0) return g_last_cudaError = cudaErrorInvalidValue;
-    const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
-    unsigned static_smem = kinfo ? kinfo->smem : 0;
-    unsigned max_per_block =
-        context->get_device()->get_gpgpu()->shared_mem_per_block();
-    if (static_smem + (unsigned)value > max_per_block) {
+    unsigned static_smem;
+    unsigned max_per_block_optin;
+    if (!max_dynamic_shared_memory_fits(
+            context, entry, (unsigned)value, &static_smem,
+            &max_per_block_optin)) {
       printf("GPGPU-Sim PTX: cudaFuncSetAttribute "
              "MaxDynamicSharedMemorySize invalid for '%s': static=%u, "
-             "dynamic=%u, max_per_block=%u\n",
+             "dynamic=%u, max_per_block_optin=%u\n",
              entry->get_name().c_str(), static_smem, (unsigned)value,
-             max_per_block);
+             max_per_block_optin);
       return g_last_cudaError = cudaErrorInvalidValue;
     }
     context->get_device()->get_gpgpu()->set_kernel_max_dynamic_smem(
@@ -6673,16 +6687,16 @@ CUresult CUDAAPI cuFuncSetAttribute(CUfunction hfunc,
 
   if (attrib == CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES) {
     if (value < 0) return CUDA_ERROR_INVALID_VALUE;
-    const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
-    unsigned static_smem = kinfo ? kinfo->smem : 0;
-    unsigned max_per_block =
-        context->get_device()->get_gpgpu()->shared_mem_per_block();
-    if (static_smem + (unsigned)value > max_per_block) {
+    unsigned static_smem;
+    unsigned max_per_block_optin;
+    if (!max_dynamic_shared_memory_fits(
+            context, entry, (unsigned)value, &static_smem,
+            &max_per_block_optin)) {
       printf("GPGPU-Sim PTX: cuFuncSetAttribute "
              "MAX_DYNAMIC_SHARED_SIZE_BYTES invalid for '%s': static=%u, "
-             "dynamic=%u, max_per_block=%u\n",
+             "dynamic=%u, max_per_block_optin=%u\n",
              entry->get_name().c_str(), static_smem, (unsigned)value,
-             max_per_block);
+             max_per_block_optin);
       return CUDA_ERROR_INVALID_VALUE;
     }
     context->get_device()->get_gpgpu()->set_kernel_max_dynamic_smem(

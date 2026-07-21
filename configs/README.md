@@ -273,8 +273,12 @@ L1 cache and shared memory share unified space:
 
 Format: `Core:Interconnect:L2:DRAM` (in MHz)
 ```bash
--gpgpu_clock_domains 1836:1836:1836:14001
+-gpgpu_clock_domains 2580:2580:2580:14001
 ```
+
+The RTX 5090 memory clock is reported by the NVIDIA driver as 14001 MHz;
+this is the driver-visible value corresponding to the nominal 14000 MHz
+memory clock used in the paper.
 
 ## Testing Configurations
 
