@@ -719,6 +719,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_tma_tx_quota", OPT_UINT32,
                          &gpgpu_tma_tx_quota,
                          "Max in-flight mem_fetch per TMA transaction (default=0, 0=unlimited)", "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_quota_work_conserving", OPT_BOOL,
+      &gpgpu_tma_quota_work_conserving,
+      "Scan past over-quota TMA transactions and issue another eligible "
+      "transaction (default=1)",
+      "1");
   option_parser_register(opp, "-gpgpu_tma_response_width", OPT_UINT32,
                          &gpgpu_tma_response_width,
                          "TMA response tokens accepted per SM per cycle (default=1)", "1");

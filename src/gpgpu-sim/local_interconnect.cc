@@ -242,6 +242,9 @@ xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
   grant_cycles = m_localinct_config.grant_cycles;
   grant_cycles_count = m_localinct_config.grant_cycles;
   use_voq = m_localinct_config.use_voq != 0;
+  allow_multi_grant =
+      m_type == REQ_NET ? m_localinct_config.multi_grant_request != 0
+                        : m_localinct_config.multi_grant_reply != 0;
   in_buffers.resize(total_nodes);
   const unsigned queues_per_input = use_voq ? total_nodes : 1;
   for (unsigned i = 0; i < total_nodes; ++i) {
@@ -427,10 +430,10 @@ void xbar_router::iSLIP_Advance() {
         unsigned node_id =
             (j + next_node[i]) % active_in_buffers + active_in_buffer_base;
 
-        if (!input_granted[node_id] &&
+        if ((allow_multi_grant || !input_granted[node_id]) &&
             InputHasPacketForOutput(node_id, i)) {
           TransferPacket(node_id, i);
-          input_granted[node_id] = true;
+          if (!allow_multi_grant) input_granted[node_id] = true;
           if (verbose)
             printf("%d : cycle %llu : send req from %d to %d\n", m_id, cycles,
                    node_id, i - _n_shader);

@@ -395,8 +395,8 @@ static uint64_t get_operand_u64(ptx_thread_info *thread,
   return reg.u64;
 }
 
-[[noreturn]] static void reject_unsupported_tma(
-    const char *reason, const ptx_instruction *pI) {
+[[noreturn]] static void reject_unsupported_tma(const char *reason,
+                                                const ptx_instruction *pI) {
   fprintf(stderr, "TMA ERROR: %s\n", reason);
   pI->print_insn(stderr);
   fflush(stderr);
@@ -532,7 +532,7 @@ struct tma_agu_state_t {
   uint32_t row_bytes = 0;           // Total bytes in a row (dim0 extent)
 
   // Cached OOB state (avoids per-sector dimension traversal)
-  bool row_is_oob = false; // Higher-dim OOB: entire row is fill
+  bool row_is_oob = false;            // Higher-dim OOB: entire row is fill
   uint32_t valid_row_start_bytes = 0; // First valid dim0 byte in the tile row
   uint32_t valid_row_end_bytes = 0;   // One-past-last valid dim0 byte
 
@@ -598,8 +598,7 @@ public:
     const int64_t row_start = start_coords[0];
     const int64_t row_end = row_start + state.box_dim[0];
     const int64_t valid_start = std::max<int64_t>(row_start, 0);
-    const int64_t valid_end =
-        std::min<int64_t>(row_end, state.global_dim[0]);
+    const int64_t valid_end = std::min<int64_t>(row_end, state.global_dim[0]);
     if (valid_start < valid_end) {
       state.valid_row_start_bytes =
           static_cast<uint32_t>(valid_start - row_start) * state.elem_size;
@@ -686,13 +685,11 @@ public:
       uint32_t row_remaining = state.row_bytes - state.offset_in_row;
       if (!state.row_is_oob) {
         if (state.offset_in_row < state.valid_row_start_bytes) {
-          row_remaining =
-              std::min(row_remaining, state.valid_row_start_bytes -
-                                          state.offset_in_row);
+          row_remaining = std::min(row_remaining, state.valid_row_start_bytes -
+                                                      state.offset_in_row);
         } else if (state.offset_in_row < state.valid_row_end_bytes) {
-          row_remaining =
-              std::min(row_remaining,
-                       state.valid_row_end_bytes - state.offset_in_row);
+          row_remaining = std::min(row_remaining, state.valid_row_end_bytes -
+                                                      state.offset_in_row);
         }
       }
       uint32_t to_boundary =
@@ -741,8 +738,8 @@ private:
     // Recompute higher-dim OOB for new row (once per row, not per sector)
     state.row_is_oob = false;
     for (uint32_t d = 1; d < state.num_dims; d++) {
-      const int64_t coord = static_cast<int64_t>(state.start_coords[d]) +
-                            state.tile_coords[d];
+      const int64_t coord =
+          static_cast<int64_t>(state.start_coords[d]) + state.tile_coords[d];
       if (coord < 0 || coord >= state.global_dim[d]) {
         state.row_is_oob = true;
         break;
@@ -1148,7 +1145,8 @@ public:
     const auto warp_size = m_shader_ctx->get_warp_size();
     unsigned active_lane_count = 0;
     for (unsigned laneid = 0; laneid < warp_size; ++laneid) {
-      if (pI->get_tma_dyn_info(laneid).is_valid()) ++active_lane_count;
+      if (pI->get_tma_dyn_info(laneid).is_valid())
+        ++active_lane_count;
     }
     if (active_lane_count > 1) {
       reject_unsupported_tma(
@@ -1545,10 +1543,12 @@ public:
         return;
 
       unsigned tx_quota = m_shader_ctx->get_config()->gpgpu_tma_tx_quota;
-      const unsigned num_candidates = issue_queue.size();
       bool all_candidates_over_quota = false;
       unsigned tx_uid = 0;
       tma_transaction_t *selected_tx = nullptr;
+      const bool work_conserving =
+          m_shader_ctx->get_config()->gpgpu_tma_quota_work_conserving;
+      const unsigned num_candidates = work_conserving ? issue_queue.size() : 1;
 
       for (unsigned attempt = 0; attempt < num_candidates; ++attempt) {
         tx_uid = issue_queue.front();
@@ -1556,21 +1556,23 @@ public:
         assert(it != m_transactions.end());
         auto &candidate = it->second;
 
-        bool over_quota =
+        const bool over_quota =
             tx_quota > 0 && candidate.m_mf_tx_inflight >= tx_quota;
-        if (!over_quota) {
-          selected_tx = &candidate;
-          break;
+        if (over_quota) {
+          issue_queue.pop_front();
+          issue_queue.push_back(tx_uid);
+          continue;
         }
-
-        issue_queue.pop_front();
-        issue_queue.push_back(tx_uid);
+        selected_tx = &candidate;
+        break;
       }
 
       if (selected_tx == nullptr) {
-        // Quota is a fairness hint, not a hard throttle.  If every
-        // transaction is already above quota, keep the TMA unit busy under the
-        // SM-wide max_inflight limit and round-robin the over-quota issuers.
+        if (!work_conserving)
+          return;
+        // Quota is a fairness hint, not a hard throttle. If every transaction
+        // is already above quota, keep the TMA unit busy under the SM-wide
+        // max_inflight limit and round-robin the over-quota issuers.
         all_candidates_over_quota = true;
         tx_uid = issue_queue.front();
         auto it = m_transactions.find(tx_uid);
@@ -1987,8 +1989,7 @@ static void traverse_tensor_dim(int dim, const int32_t current_coords[5],
     uint64_t stride = tensormap.fields.globalStrides[dim - 1];
 
     for (uint32_t i = 0; i < box_extent; i++) {
-      int64_t current_coord =
-          static_cast<int64_t>(current_coords[dim]) + i;
+      int64_t current_coord = static_cast<int64_t>(current_coords[dim]) + i;
 
       // OOB check: skip if outside valid tensor range
       if (current_coord < 0 || current_coord >= global_extent) {
