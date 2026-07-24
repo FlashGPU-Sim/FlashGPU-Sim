@@ -1542,12 +1542,25 @@ public:
       if (max_inflight > 0 && m_mf_inflight >= max_inflight)
         return;
 
-      unsigned tx_quota = m_shader_ctx->get_config()->gpgpu_tma_tx_quota;
+      const unsigned tx_quota = m_shader_ctx->get_config()->gpgpu_tma_tx_quota;
+      const unsigned quota_segment_bytes =
+          m_shader_ctx->get_config()->gpgpu_tma_quota_segment_bytes;
+      const auto effective_tx_quota = [tx_quota, quota_segment_bytes](
+                                          const tma_transaction_t &candidate) {
+        if (tx_quota == 0 || quota_segment_bytes == 0)
+          return tx_quota;
+        const unsigned segments = std::max(
+            1u, (candidate.m_dyn_info.size_in_bytes + quota_segment_bytes - 1) /
+                    quota_segment_bytes);
+        return tx_quota * segments;
+      };
       bool all_candidates_over_quota = false;
       unsigned tx_uid = 0;
       tma_transaction_t *selected_tx = nullptr;
       const bool work_conserving =
           m_shader_ctx->get_config()->gpgpu_tma_quota_work_conserving;
+      const bool allow_borrow =
+          m_shader_ctx->get_config()->gpgpu_tma_quota_allow_borrow;
       const unsigned num_candidates = work_conserving ? issue_queue.size() : 1;
 
       for (unsigned attempt = 0; attempt < num_candidates; ++attempt) {
@@ -1557,7 +1570,8 @@ public:
         auto &candidate = it->second;
 
         const bool over_quota =
-            tx_quota > 0 && candidate.m_mf_tx_inflight >= tx_quota;
+            tx_quota > 0 &&
+            candidate.m_mf_tx_inflight >= effective_tx_quota(candidate);
         if (over_quota) {
           issue_queue.pop_front();
           issue_queue.push_back(tx_uid);
@@ -1569,6 +1583,8 @@ public:
 
       if (selected_tx == nullptr) {
         if (!work_conserving)
+          return;
+        if (!allow_borrow)
           return;
         // Quota is a fairness hint, not a hard throttle. If every transaction
         // is already above quota, keep the TMA unit busy under the SM-wide
@@ -1603,7 +1619,7 @@ public:
           if (max_inflight > 0 && m_mf_inflight >= max_inflight)
             break;
           if (!all_candidates_over_quota && tx_quota > 0 &&
-              tx.m_mf_tx_inflight >= tx_quota)
+              tx.m_mf_tx_inflight >= effective_tx_quota(tx))
             break;
           if (m_icnt->full(packet_size, is_write))
             break;
