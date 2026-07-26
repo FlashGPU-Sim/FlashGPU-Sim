@@ -646,10 +646,17 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
                cta_id, warp_id, lane, addr, (unsigned)parity,
                released ? "yes" : "no", active_mask.to_string().c_str());
       }
-      if (!released) {
-        m_warp_at_barrier.set(warp_id);
-        m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
-        m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+      // Always mark the warp as waiting at the barrier first.
+      // - Incomplete: stays blocked until complete_tx/arrive releases it.
+      // - Already complete (immediate success): still pay
+      //   gpgpu_mbarrier_trywait_latency via release_warps(). Without this,
+      //   clock64 microbenches measure only opcode overhead (~15 cycles) vs
+      //   ~130 cycles on real Hopper/Blackwell hardware.
+      m_warp_at_barrier.set(warp_id);
+      m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
+      m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+      if (released) {
+        release_warps({static_cast<int>(warp_id)});
       }
     }
 
