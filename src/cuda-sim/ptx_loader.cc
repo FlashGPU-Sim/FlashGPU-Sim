@@ -142,6 +142,24 @@ void gpgpu_context::ptx_reg_options(option_parser_t opp) {
                          &ptx_reorder_enabled,
                          "Enable conservative PTX instruction reordering.",
                          "0");
+  option_parser_register(opp, "-gpgpu_ptx_reorder_stats", OPT_BOOL,
+                         &ptx_reorder_stats,
+                         "Print PTX instruction reordering statistics.", "0");
+  option_parser_register(
+      opp, "-gpgpu_ptx_reorder_shared_loads", OPT_BOOL,
+      &ptx_reorder_shared_loads,
+      "Allow ordered shared-memory loads to move within PTX reorder segments.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_ptx_reorder_if_convert_max_instructions", OPT_INT32,
+      &ptx_reorder_if_convert_max_instructions,
+      "If-convert single-reference predicated forward branches with at most "
+      "this many side-effect-free instructions before PTX reordering (0=off).",
+      "0");
+  option_parser_register(opp, "-gpgpu_ptx_reorder_ready_slack", OPT_INT32,
+                         &ptx_reorder_ready_slack,
+                         "Extra issue-ready slack for PTX switch reordering.",
+                         "0");
   option_parser_register(opp, "-gpgpu_ptx_reorder_sass_guided", OPT_BOOL,
                          &ptx_reorder_sass_guided,
                          "Use auto-extracted SASS PTX-line anchors to guide "

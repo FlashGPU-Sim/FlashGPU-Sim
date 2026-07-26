@@ -3,6 +3,7 @@
 #include "../../../../libcuda/gpgpu_context.h"
 #include "../../../cuda-sim/opcodes.h"
 #include "../../../cuda-sim/ptx_ir.h"
+#include "../../gpu-sim.h"
 
 #include <algorithm>
 #include <cctype>
@@ -120,6 +121,27 @@ struct reorder_stats_t {
       : segments(0), skipped_segments(0), total_insts(0), moved_slots(0),
         max_segment(0), edges(0), sass_guided_segments(0),
         sass_guided_fallback_segments(0), sass_guide_cursor(0) {}
+};
+
+struct reorder_latency_model_t {
+  unsigned int_latency;
+  unsigned shfl_latency;
+  unsigned fp32_latency;
+  unsigned sfu_latency;
+  unsigned tensor_latency;
+  unsigned ldmatrix_latency;
+  unsigned shared_memory_latency;
+  unsigned const_memory_latency;
+  unsigned global_memory_latency;
+  unsigned cp_async_latency;
+  unsigned tma_latency;
+  unsigned tensormap_latency;
+
+  reorder_latency_model_t()
+      : int_latency(4), shfl_latency(14), fp32_latency(4), sfu_latency(28),
+        tensor_latency(32), ldmatrix_latency(8), shared_memory_latency(8),
+        const_memory_latency(8), global_memory_latency(8), cp_async_latency(1),
+        tma_latency(8), tensormap_latency(8) {}
 };
 
 struct sass_function_guide_t {
@@ -307,6 +329,83 @@ std::string trim_copy(const std::string &in) {
 bool starts_with(const std::string &text, const char *prefix) {
   const std::size_t n = strlen(prefix);
   return text.size() >= n && text.compare(0, n, prefix) == 0;
+}
+
+bool parse_uint_list(const char *text, std::vector<unsigned> *values) {
+  values->clear();
+  if (text == NULL)
+    return false;
+
+  std::string token;
+  std::stringstream ss(text);
+  while (std::getline(ss, token, ',')) {
+    token = trim_copy(token);
+    if (token.empty())
+      return false;
+    char *end = NULL;
+    const unsigned long value = std::strtoul(token.c_str(), &end, 10);
+    if (end == token.c_str() || *end != '\0')
+      return false;
+    values->push_back(static_cast<unsigned>(value));
+  }
+  return !values->empty();
+}
+
+unsigned list_value_or(const std::vector<unsigned> &values, unsigned index,
+                       unsigned fallback) {
+  return index < values.size() ? values[index] : fallback;
+}
+
+unsigned list_max_or(const std::vector<unsigned> &values, unsigned begin,
+                     unsigned end, unsigned fallback) {
+  if (begin >= values.size())
+    return fallback;
+  unsigned result = values[begin];
+  const unsigned capped_end =
+      std::min<unsigned>(end, static_cast<unsigned>(values.size()));
+  for (unsigned i = begin + 1; i < capped_end; ++i)
+    result = std::max(result, values[i]);
+  return result;
+}
+
+reorder_latency_model_t build_latency_model(const gpgpu_context *ctx) {
+  reorder_latency_model_t model;
+  std::vector<unsigned> values;
+
+  if (ctx != NULL && ctx->func_sim != NULL) {
+    if (parse_uint_list(ctx->func_sim->opcode_latency_int, &values)) {
+      model.int_latency = list_max_or(values, 0, 4, model.int_latency);
+      model.shfl_latency = list_value_or(values, 5, model.shfl_latency);
+    }
+    if (parse_uint_list(ctx->func_sim->opcode_latency_fp, &values))
+      model.fp32_latency = list_max_or(values, 0, 4, model.fp32_latency);
+    if (parse_uint_list(ctx->func_sim->opcode_latency_sfu, &values))
+      model.sfu_latency = list_value_or(values, 0, model.sfu_latency);
+    if (parse_uint_list(ctx->func_sim->opcode_latency_tensor, &values))
+      model.tensor_latency =
+          list_max_or(values, 0, values.size(), model.tensor_latency);
+    if (parse_uint_list(ctx->func_sim->opcode_latency_cp_async, &values))
+      model.cp_async_latency = list_value_or(values, 0, model.cp_async_latency);
+    if (parse_uint_list(ctx->func_sim->opcode_latency_tma, &values))
+      model.tma_latency = list_value_or(values, 0, model.tma_latency);
+    if (parse_uint_list(ctx->func_sim->opcode_latency_tensormap, &values))
+      model.tensormap_latency =
+          list_max_or(values, 0, values.size(), model.tensormap_latency);
+  }
+
+  const gpgpu_sim_config *config = ctx != NULL && ctx->the_gpgpusim != NULL
+                                       ? ctx->the_gpgpusim->g_the_gpu_config
+                                       : NULL;
+  if (config != NULL) {
+    const shader_core_config &shader = config->shader_config();
+    const memory_config &memory = config->mem_config();
+    model.shared_memory_latency = std::max(1u, shader.smem_latency);
+    model.const_memory_latency = std::max(1u, shader.m_L1D_config.l1_latency);
+    model.global_memory_latency =
+        std::max(1u, shader.m_L1D_config.l1_latency + memory.rop_latency);
+  }
+
+  return model;
 }
 
 std::string uppercase_copy(const std::string &in) {
@@ -1363,11 +1462,15 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
 }
 
 bool has_unsupported_operand_form(const ptx_instruction *inst,
-                                  bool allow_ldmatrix_memory_operand) {
+                                  bool allow_ldmatrix_memory_operand,
+                                  bool allow_shared_load_memory_operand) {
   if (inst == NULL || inst->is_label())
     return false;
   const bool allow_memory_operand =
-      allow_ldmatrix_memory_operand && inst->get_opcode() == LDMATRIX_OP;
+      (allow_ldmatrix_memory_operand && inst->get_opcode() == LDMATRIX_OP) ||
+      inst->get_opcode() == LD_OP || inst->get_opcode() == LDU_OP ||
+      (allow_shared_load_memory_operand && inst->get_opcode() == LD_OP &&
+       inst->get_space().get_type() == shared_space);
   const std::vector<operand_info> &operands = inst->get_operands();
   for (unsigned i = 0; i < operands.size(); ++i) {
     if (operands[i].is_memory_operand() && !allow_memory_operand)
@@ -1376,15 +1479,145 @@ bool has_unsupported_operand_form(const ptx_instruction *inst,
   return false;
 }
 
+bool reads_timing_register(const ptx_instruction *inst) {
+  if (inst == NULL || inst->is_label())
+    return false;
+  const std::vector<operand_info> &operands = inst->get_operands();
+  for (unsigned i = 0; i < operands.size(); ++i) {
+    if (!operands[i].is_builtin())
+      continue;
+    const int builtin = operands[i].get_int() & 0xFFFF;
+    if (builtin == CLOCK_REG || builtin == CLOCK64_REG ||
+        builtin == GLOBALTIMER_REG)
+      return true;
+  }
+  return false;
+}
+
 bool is_segment_boundary(const ptx_instruction *inst,
-                         bool allow_ldmatrix_memory_operand = false) {
+                         bool allow_ldmatrix_memory_operand = false,
+                         bool allow_shared_load_memory_operand = false) {
   inst_class_t cls = classify_inst(inst);
   return cls == inst_class_t::boundary || cls == inst_class_t::control ||
-         has_unsupported_operand_form(inst, allow_ldmatrix_memory_operand);
+         reads_timing_register(inst) ||
+         has_unsupported_operand_form(inst, allow_ldmatrix_memory_operand,
+                                      allow_shared_load_memory_operand);
+}
+
+bool is_if_convertible_body_inst(const ptx_instruction *inst) {
+  if (inst == NULL || inst->is_label() || inst->has_pred() ||
+      reads_timing_register(inst))
+    return false;
+
+  const inst_class_t cls = classify_inst(inst);
+  if (cls == inst_class_t::intp || cls == inst_class_t::fp32 ||
+      cls == inst_class_t::sfu || cls == inst_class_t::shfl)
+    return true;
+
+  return inst->get_opcode() == LD_OP || inst->get_opcode() == LDU_OP;
+}
+
+void if_convert_short_forward_regions(
+    std::list<ptx_instruction *> &instructions, unsigned max_instructions,
+    unsigned *converted_regions, unsigned *converted_instructions) {
+  *converted_regions = 0;
+  *converted_instructions = 0;
+  if (max_instructions == 0)
+    return;
+
+  std::vector<ptx_instruction *> ordered(instructions.begin(),
+                                         instructions.end());
+  std::map<const symbol *, unsigned> target_references;
+  for (unsigned i = 0; i < ordered.size(); ++i) {
+    ptx_instruction *inst = ordered[i];
+    if (inst != NULL && inst->get_opcode() == BRA_OP &&
+        inst->get_num_operands() != 0) {
+      const operand_info &target = inst->dst();
+      ++target_references[target.get_symbol()];
+    }
+  }
+
+  std::set<ptx_instruction *> removed;
+  for (unsigned i = 0; i < ordered.size(); ++i) {
+    ptx_instruction *branch = ordered[i];
+    if (branch == NULL || branch->get_opcode() != BRA_OP ||
+        !branch->has_pred() || branch->get_num_operands() == 0)
+      continue;
+
+    const symbol *target = branch->dst().get_symbol();
+    if (target_references[target] != 1)
+      continue;
+
+    unsigned target_index = i + 1;
+    while (target_index < ordered.size() &&
+           !(ordered[target_index]->is_label() &&
+             ordered[target_index]->get_label() == target)) {
+      if (ordered[target_index]->is_label() ||
+          target_index - i > max_instructions) {
+        target_index = ordered.size();
+        break;
+      }
+      ++target_index;
+    }
+    if (target_index == ordered.size() || target_index == i + 1 ||
+        target_index - i - 1 > max_instructions)
+      continue;
+
+    bool valid = true;
+    for (unsigned body = i + 1; body < target_index; ++body) {
+      if (!is_if_convertible_body_inst(ordered[body])) {
+        valid = false;
+        break;
+      }
+    }
+    if (!valid)
+      continue;
+
+    const symbol *predicate = branch->get_pred().get_symbol();
+    const bool body_neg_predicate = !branch->get_pred_neg();
+    for (unsigned body = i + 1; body < target_index; ++body)
+      ordered[body]->set_pred(predicate, body_neg_predicate,
+                              branch->get_pred_mod());
+
+    removed.insert(branch);
+    removed.insert(ordered[target_index]);
+    ++*converted_regions;
+    *converted_instructions += target_index - i - 1;
+    i = target_index;
+  }
+
+  if (removed.empty())
+    return;
+
+  std::list<ptx_instruction *> converted;
+  for (std::list<ptx_instruction *>::iterator it = instructions.begin();
+       it != instructions.end(); ++it) {
+    if (removed.find(*it) == removed.end())
+      converted.push_back(*it);
+  }
+  instructions.swap(converted);
 }
 
 bool is_memory_like(inst_class_t cls) {
   return cls == inst_class_t::mem || cls == inst_class_t::ldmatrix;
+}
+
+bool is_load_like_memory_inst(const sched_inst_t &inst) {
+  if (inst.inst == NULL)
+    return false;
+
+  switch (inst.inst->get_opcode()) {
+  case LD_OP:
+  case LDU_OP:
+  case LDMATRIX_OP:
+  case CP_ASYNC_OP:
+  case TMA_OP:
+  case TMA_PREFETCH_OP:
+  case TENSORMAP_OP:
+    return true;
+  default:
+    return false;
+  }
 }
 
 bool is_barrier_inst(const sched_inst_t &inst) {
@@ -1461,6 +1694,70 @@ unsigned inst_latency(const sched_inst_t &inst) {
   case inst_class_t::shfl:
   case inst_class_t::intp:
     return 4;
+  default:
+    return 1;
+  }
+}
+
+unsigned memory_latency(const sched_inst_t &inst,
+                        const reorder_latency_model_t &model) {
+  if (inst.inst == NULL)
+    return model.global_memory_latency;
+
+  switch (inst.inst->get_opcode()) {
+  case CP_ASYNC_OP:
+    return model.cp_async_latency;
+  case TMA_OP:
+  case TMA_PREFETCH_OP:
+    return model.tma_latency;
+  case TENSORMAP_OP:
+    return model.tensormap_latency;
+  case LD_OP:
+  case LDU_OP: {
+    const memory_space_t space = inst.inst->get_space();
+    switch (space.get_type()) {
+    case shared_space:
+      return model.shared_memory_latency;
+    case const_space:
+    case param_space_kernel:
+    case param_space_local:
+    case param_space_unclassified:
+      return model.const_memory_latency;
+    case global_space:
+    case local_space:
+      return model.global_memory_latency;
+    default:
+      return model.global_memory_latency;
+    }
+  }
+  case ATOM_OP:
+  case RED_OP:
+    return model.global_memory_latency;
+  default:
+    return 1;
+  }
+}
+
+unsigned inst_latency(const sched_inst_t &inst,
+                      const reorder_latency_model_t &model) {
+  if (inst.inst->get_opcode() == CP_ASYNC_OP)
+    return model.cp_async_latency;
+
+  switch (inst.cls) {
+  case inst_class_t::tensor:
+    return model.tensor_latency;
+  case inst_class_t::sfu:
+    return model.sfu_latency;
+  case inst_class_t::ldmatrix:
+    return model.ldmatrix_latency;
+  case inst_class_t::mem:
+    return memory_latency(inst, model);
+  case inst_class_t::fp32:
+    return model.fp32_latency;
+  case inst_class_t::shfl:
+    return model.shfl_latency;
+  case inst_class_t::intp:
+    return model.int_latency;
   default:
     return 1;
   }
@@ -1630,9 +1927,10 @@ void add_edge(dep_graph_t &graph,
   graph.edges.push_back(edge);
 }
 
-dep_graph_t build_dependency_graph(const std::vector<sched_inst_t> &chunk,
-                                   bool relax_ldmatrix_order,
-                                   bool relax_barrier_reg) {
+dep_graph_t
+build_dependency_graph(const std::vector<sched_inst_t> &chunk,
+                       bool relax_ldmatrix_order, bool relax_barrier_reg,
+                       const reorder_latency_model_t *model = NULL) {
   dep_graph_t graph;
   graph.succ.resize(chunk.size());
   graph.indeg.assign(chunk.size(), 0);
@@ -1664,7 +1962,9 @@ dep_graph_t build_dependency_graph(const std::vector<sched_inst_t> &chunk,
           last_def.find(*use);
       if (def != last_def.end())
         add_edge(graph, edge_index, def->second, i,
-                 inst_latency(chunk[def->second]), true);
+                 model != NULL ? inst_latency(chunk[def->second], *model)
+                               : inst_latency(chunk[def->second]),
+                 true);
       last_uses[*use].insert(i);
     }
 
@@ -1914,9 +2214,10 @@ double role_signature_similarity(const role_signature_t &candidate,
 
 std::vector<sched_inst_t>
 schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
-                unsigned *edge_count, bool *valid) {
+                const reorder_latency_model_t &model, unsigned *edge_count,
+                bool *valid) {
   *valid = true;
-  dep_graph_t graph = build_dependency_graph(chunk, false, false);
+  dep_graph_t graph = build_dependency_graph(chunk, false, false, &model);
   *edge_count = graph.edges.size();
 
   std::vector<std::vector<dep_edge_t>> edge_by_src(chunk.size());
@@ -1924,11 +2225,15 @@ schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
     edge_by_src[graph.edges[i].src].push_back(graph.edges[i]);
 
   std::vector<unsigned> height(chunk.size(), 1);
+  std::vector<bool> reaches_load_like_memory(chunk.size(), false);
   for (int i = static_cast<int>(chunk.size()) - 1; i >= 0; --i) {
-    height[i] = inst_latency(chunk[i]);
+    height[i] = inst_latency(chunk[i], model);
+    reaches_load_like_memory[i] = is_load_like_memory_inst(chunk[i]);
     for (std::vector<dep_edge_t>::const_iterator edge = edge_by_src[i].begin();
          edge != edge_by_src[i].end(); ++edge) {
       height[i] = std::max(height[i], edge->latency + height[edge->dst]);
+      reaches_load_like_memory[i] =
+          reaches_load_like_memory[i] || reaches_load_like_memory[edge->dst];
     }
   }
 
@@ -1971,7 +2276,11 @@ schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
          it != ready.end(); ++it) {
       const unsigned idx = *it;
       const unsigned issue = issues[idx];
-      if (issue > min_issue + slack)
+      const unsigned candidate_slack =
+          reaches_load_like_memory[idx]
+              ? std::max(slack, model.global_memory_latency)
+              : slack;
+      if (issue > min_issue + candidate_slack)
         continue;
 
       const sched_inst_t &inst = chunk[idx];
@@ -1986,6 +2295,8 @@ schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
       double score = -0.02 * static_cast<double>(issue) +
                      0.001 * static_cast<double>(height[idx]) -
                      0.0001 * static_cast<double>(inst.original_index);
+      if (reaches_load_like_memory[idx])
+        score += is_load_like_memory_inst(inst) ? 200.0 : 100.0;
       if (last_token != 0) {
         score += 0.6 * switch_bonus(last_token, token);
         if ((last_token == 'T' && token == 'L') ||
@@ -2518,8 +2829,8 @@ std::vector<sched_inst_t> schedule_sass_ptxline_guided(
 
 void flush_segment(std::vector<sched_inst_t> &segment,
                    std::list<ptx_instruction *> &out, int ready_slack,
-                   reorder_stats_t &stats, bool sass_guided,
-                   const sass_function_guide_t *sass_guide,
+                   const reorder_latency_model_t &model, reorder_stats_t &stats,
+                   bool sass_guided, const sass_function_guide_t *sass_guide,
                    unsigned guide_lookahead, unsigned *sass_guide_cursor,
                    const ptxline_guide_t *sass_ptxline_guide) {
   if (segment.empty())
@@ -2576,8 +2887,8 @@ void flush_segment(std::vector<sched_inst_t> &segment,
     edge_count = 0;
   } else if (!use_sass_ptxline_guide && (!use_sass_guide || !valid)) {
     bool switch_valid = true;
-    scheduled =
-        schedule_switch(segment, ready_slack, &edge_count, &switch_valid);
+    scheduled = schedule_switch(segment, ready_slack, model, &edge_count,
+                                &switch_valid);
     valid = switch_valid;
   }
   stats.edges += edge_count;
@@ -2614,7 +2925,11 @@ void run_ptx_reorder(function_info *func) {
   ptxline_guide_t sass_ptxline_guide_storage;
   const ptxline_guide_t *sass_ptxline_guide = NULL;
   unsigned sass_guide_cursor = 0;
-  const int ready_slack = 0;
+  unsigned if_converted_regions = 0;
+  unsigned if_converted_instructions = 0;
+  const reorder_latency_model_t latency_model =
+      build_latency_model(func->gpgpu_ctx);
+  const int ready_slack = func->gpgpu_ctx->ptx_reorder_ready_slack;
   const bool sass_ptxline_guided = func->gpgpu_ctx->ptx_reorder_sass_guided;
 
   if (sass_ptxline_guided) {
@@ -2661,6 +2976,18 @@ void run_ptx_reorder(function_info *func) {
            sass_ptxline_guide->source.c_str());
   }
 
+  if_convert_short_forward_regions(
+      func->m_instructions,
+      std::max(0, func->gpgpu_ctx->ptx_reorder_if_convert_max_instructions),
+      &if_converted_regions, &if_converted_instructions);
+  if (if_converted_regions != 0 && func->gpgpu_ctx->ptx_reorder_stats) {
+    printf("GPGPU-Sim PTX: if-converted function '%s': regions=%u "
+           "instructions=%u max_region=%d\n",
+           func->m_name.c_str(), if_converted_regions,
+           if_converted_instructions,
+           func->gpgpu_ctx->ptx_reorder_if_convert_max_instructions);
+  }
+
   for (std::list<ptx_instruction *>::iterator it = func->m_instructions.begin();
        it != func->m_instructions.end(); ++it, ++original_index) {
     ptx_instruction *inst = *it;
@@ -2668,9 +2995,11 @@ void run_ptx_reorder(function_info *func) {
     const bool guide_relaxed_ldmatrix = sass_ptxline_guide != NULL &&
                                         inst != NULL &&
                                         inst->get_opcode() == LDMATRIX_OP;
-    if (is_segment_boundary(inst, guide_relaxed_ldmatrix)) {
-      flush_segment(segment, reordered, ready_slack, stats, false, sass_guide,
-                    1, &sass_guide_cursor, sass_ptxline_guide);
+    if (is_segment_boundary(inst, guide_relaxed_ldmatrix,
+                            func->gpgpu_ctx->ptx_reorder_shared_loads)) {
+      flush_segment(segment, reordered, ready_slack, latency_model, stats,
+                    false, sass_guide, 1, &sass_guide_cursor,
+                    sass_ptxline_guide);
       reordered.push_back(inst);
       continue;
     }
@@ -2682,8 +3011,8 @@ void run_ptx_reorder(function_info *func) {
     collect_inst_regs(inst, sched_inst.uses, sched_inst.defs);
     segment.push_back(sched_inst);
   }
-  flush_segment(segment, reordered, ready_slack, stats, false, sass_guide, 1,
-                &sass_guide_cursor, sass_ptxline_guide);
+  flush_segment(segment, reordered, ready_slack, latency_model, stats, false,
+                sass_guide, 1, &sass_guide_cursor, sass_ptxline_guide);
 
   if (reordered.size() != func->m_instructions.size()) {
     printf("GPGPU-Sim PTX: reorder switch skipped function '%s' due to size "
@@ -2699,16 +3028,22 @@ void run_ptx_reorder(function_info *func) {
 
   const std::size_t guide_total =
       sass_ptxline_guide != NULL ? sass_ptxline_guide->items.size() : 0;
-  printf("GPGPU-Sim PTX: reorder function '%s': mode=%s segments=%u "
-         "skipped=%u insts=%u moved_slots=%u max_segment=%u edges=%u "
-         "slack=%d sass_guided=%u sass_guided_fallback=%u "
-         "sass_cursor=%u/%zu\n",
-         func->m_name.c_str(),
-         sass_ptxline_guide != NULL ? "sass_ptxline" : "plain", stats.segments,
-         stats.skipped_segments, stats.total_insts, stats.moved_slots,
-         stats.max_segment, stats.edges, ready_slack,
-         stats.sass_guided_segments, stats.sass_guided_fallback_segments,
-         stats.sass_guide_cursor, guide_total);
+  printf(
+      "GPGPU-Sim PTX: reorder function '%s': mode=%s segments=%u "
+      "skipped=%u insts=%u moved_slots=%u max_segment=%u edges=%u "
+      "slack=%d sass_guided=%u sass_guided_fallback=%u "
+      "sass_cursor=%u/%zu latencies={global:%u shared:%u const:%u "
+      "ldmatrix:%u fp32:%u int:%u shfl:%u tensor:%u sfu:%u}\n",
+      func->m_name.c_str(),
+      sass_ptxline_guide != NULL ? "sass_ptxline" : "plain", stats.segments,
+      stats.skipped_segments, stats.total_insts, stats.moved_slots,
+      stats.max_segment, stats.edges, ready_slack, stats.sass_guided_segments,
+      stats.sass_guided_fallback_segments, stats.sass_guide_cursor, guide_total,
+      latency_model.global_memory_latency, latency_model.shared_memory_latency,
+      latency_model.const_memory_latency, latency_model.ldmatrix_latency,
+      latency_model.fp32_latency, latency_model.int_latency,
+      latency_model.shfl_latency, latency_model.tensor_latency,
+      latency_model.sfu_latency);
 }
 
 } // namespace flash_gpgpu_sim

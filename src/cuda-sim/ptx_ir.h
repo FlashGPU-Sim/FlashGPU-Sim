@@ -1068,6 +1068,11 @@ class ptx_instruction : public warp_inst_t {
   operand_info get_pred() const;
   bool get_pred_neg() const { return m_neg_pred; }
   int get_pred_mod() const { return m_pred_mod; }
+  void set_pred(const symbol *pred, bool neg_pred, int pred_mod = -1) {
+    m_pred = pred;
+    m_neg_pred = neg_pred;
+    m_pred_mod = pred_mod;
+  }
   const char *get_source() const { return m_source.c_str(); }
 
   const std::list<int> get_scalar_type() const { return m_scalar_type; }

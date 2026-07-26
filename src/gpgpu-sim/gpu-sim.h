@@ -463,6 +463,8 @@ class gpgpu_sim_config : public power_config,
   unsigned num_shader() const { return m_shader_config.num_shader(); }
   unsigned num_cluster() const { return m_shader_config.n_simt_clusters; }
   unsigned get_max_concurrent_kernel() const { return max_concurrent_kernel; }
+  const shader_core_config &shader_config() const { return m_shader_config; }
+  const memory_config &mem_config() const { return m_memory_config; }
 
   /**
    * @brief Check if we are in SST mode

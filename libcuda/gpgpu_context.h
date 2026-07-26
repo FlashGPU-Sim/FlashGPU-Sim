@@ -26,6 +26,10 @@ class gpgpu_context {
     ptx_register_allocator_enabled = false;
     ptx_register_allocator_stats = false;
     ptx_reorder_enabled = false;
+    ptx_reorder_stats = false;
+    ptx_reorder_shared_loads = false;
+    ptx_reorder_if_convert_max_instructions = 0;
+    ptx_reorder_ready_slack = 0;
     ptx_reorder_sass_guided = false;
     ptx_reorder_sass_extract_attempted = false;
     ptx_reorder_sass_extract_ok = false;
@@ -54,6 +58,10 @@ class gpgpu_context {
   bool ptx_register_allocator_enabled;
   bool ptx_register_allocator_stats;
   bool ptx_reorder_enabled;
+  bool ptx_reorder_stats;
+  bool ptx_reorder_shared_loads;
+  int ptx_reorder_if_convert_max_instructions;
+  int ptx_reorder_ready_slack;
   bool ptx_reorder_sass_guided;
   bool ptx_reorder_sass_extract_attempted;
   bool ptx_reorder_sass_extract_ok;
