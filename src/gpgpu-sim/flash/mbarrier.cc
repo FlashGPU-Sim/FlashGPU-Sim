@@ -194,6 +194,24 @@ mbarrier_manager_t::complete_tx(gpgpu_sim *gpu,
   return try_advance(gpu, thread_index, mbarrier);
 }
 
+std::set<int> mbarrier_manager_t::try_complete_tx_if_pending(
+    gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr,
+    int completed_tx_count) {
+  auto key = std::make_pair(thread_index.hw_cta_id, addr);
+  auto it = addr_to_mbarrier_map.find(key);
+  if (it == addr_to_mbarrier_map.end()) {
+    return {};
+  }
+  auto mbarrier = it->second.get();
+  // Only apply peer completion when this CTA still expects TMA bytes.
+  // After a local complete_tx has already advanced the phase, expected_tx
+  // is reset to 0 and a second completion must not re-arm arrived_tx.
+  if (mbarrier->m_expected_tx_count <= mbarrier->m_arrived_tx_count) {
+    return {};
+  }
+  return complete_tx(gpu, thread_index, addr, completed_tx_count);
+}
+
 void mbarrier_manager_t::expect_tx(gpgpu_sim *gpu,
                                    const thread_index_t &thread_index,
                                    uint64_t addr, int expected_tx_count) {
@@ -543,6 +561,34 @@ void barrier_set_t::complete_tx(unsigned cta_id, unsigned warp_id,
       (int)cta_id, (int)warp_id, logical_cta_id, logical_warp_id};
 
   auto released_warps = m_mbarrier_manager.complete_tx(
+      m_shader->get_gpu(), thread_index, mbarrier_addr, completed_tx_count);
+  release_warps(released_warps);
+}
+
+void barrier_set_t::try_complete_tx_if_pending(unsigned cta_id,
+                                               uint32_t mbarrier_addr,
+                                               uint32_t completed_tx_count) {
+  cta_to_warp_t::iterator w = m_cta_to_warps.find(cta_id);
+  if (w == m_cta_to_warps.end())
+    return;
+
+  // Pick any warp in the CTA for logical-id lookup / logging.
+  unsigned warp_id = (unsigned)-1;
+  for (unsigned i = 0; i < m_max_warps_per_core; i++) {
+    if (w->second.test(i)) {
+      warp_id = i;
+      break;
+    }
+  }
+  if (warp_id == (unsigned)-1)
+    return;
+
+  auto logical_cta_id = m_shader->get_logical_cta_id(warp_id);
+  auto logical_warp_id = m_shader->get_cta_warp_id(warp_id);
+  flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{
+      (int)cta_id, (int)warp_id, logical_cta_id, logical_warp_id};
+
+  auto released_warps = m_mbarrier_manager.try_complete_tx_if_pending(
       m_shader->get_gpu(), thread_index, mbarrier_addr, completed_tx_count);
   release_warps(released_warps);
 }

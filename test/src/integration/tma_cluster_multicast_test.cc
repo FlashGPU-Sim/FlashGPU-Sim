@@ -296,7 +296,8 @@ __global__ void tma_tensor_2d_kernel(const float *in, float *out,
         asm volatile("tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [%0], 0x0, %1;" :: "l"(tmap_s), "r"(box_dims[0]));
         asm volatile("tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [%0], 0x1, %1;" :: "l"(tmap_s), "r"(box_dims[1]));
 
-        uint32_t gd0 = static_cast<uint32_t>(rows), gd1 = static_cast<uint32_t>(cols);
+        // D0 = innermost (column), D1 = row — matches coord0/coord1 and stride0.
+        uint32_t gd0 = static_cast<uint32_t>(cols), gd1 = static_cast<uint32_t>(rows);
         asm volatile("tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [%0], 0x0, %1;" :: "l"(tmap_s), "r"(gd0));
         asm volatile("tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [%0], 0x1, %1;" :: "l"(tmap_s), "r"(gd1));
 
@@ -566,7 +567,8 @@ __global__ void tma_oob_kernel(const float *in, float *out,
         asm volatile("tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [%0], 0x0, %1;" :: "l"(tmap_s), "r"(box_dims[0]));
         asm volatile("tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [%0], 0x1, %1;" :: "l"(tmap_s), "r"(box_dims[1]));
 
-        uint32_t gdims[2] = {static_cast<uint32_t>(rows), static_cast<uint32_t>(cols)};
+        // D0 = innermost (column), D1 = row
+        uint32_t gdims[2] = {static_cast<uint32_t>(cols), static_cast<uint32_t>(rows)};
         asm volatile("tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [%0], 0x0, %1;" :: "l"(tmap_s), "r"(gdims[0]));
         asm volatile("tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [%0], 0x1, %1;" :: "l"(tmap_s), "r"(gdims[1]));
 
@@ -641,7 +643,9 @@ __global__ void tma_oob_kernel(const float *in, float *out,
 class TMAClusterMulticastTensor2DTest : public ::testing::Test {
 protected:
     static constexpr int TILE_SIZE = 4;  // 4x4 tile = 16 floats = 64 bytes
-    static constexpr int ROWS = 8;
+    // Non-square on purpose: catches global_dim D0/D1 (cols/rows) swaps.
+    // With COLS=8, block 1 starts at col=4; swapped dims would OOB-clip that tile.
+    static constexpr int ROWS = 4;
     static constexpr int COLS = 8;
     static constexpr int THREADS = 32;
     static constexpr int TILE_ELEMS = TILE_SIZE * TILE_SIZE;
@@ -974,6 +978,86 @@ protected:
     std::vector<float> h_input;
 };
 
+// Stress kernel: each block TMA-loads its own chunk at bid * CHUNK_BYTES
+// (unlike tma_datatype_kernel, which always loads from the base pointer).
+template <int CHUNK_BYTES, bool USE_CLUSTER>
+__global__ void tma_stress_kernel(const uint8_t *global_src, uint8_t *global_dst,
+                                   int total_bytes) {
+    __shared__ uint8_t smem[CHUNK_BYTES + 64];
+    __shared__ unsigned long long bar;
+    __shared__ volatile int done;
+
+    uint8_t *data_buf = smem;
+    int tid = threadIdx.x;
+    int bid = blockIdx.x;
+    int offset = bid * CHUNK_BYTES;
+    if (offset + CHUNK_BYTES > total_bytes) {
+        return;
+    }
+    const uint8_t *src = global_src + offset;
+
+    if (tid == 0) {
+        done = 0;
+        mbarrier_init_impl(&bar, 1);
+    }
+    __syncthreads();
+
+    if (tid == 0) {
+        mbarrier_arrive_expect_tx_impl(&bar, CHUNK_BYTES);
+        if (USE_CLUSTER) {
+            cp_async_bulk_cluster<CHUNK_BYTES>(data_buf, src, &bar);
+        } else {
+            cp_async_bulk_cta<CHUNK_BYTES>(data_buf, src, &bar);
+        }
+    }
+    __syncthreads();
+
+    if (tid == 0) {
+        mbarrier_try_wait_impl(&bar, 0);
+        done = 1;
+    }
+    __syncthreads();
+
+    for (int i = tid; i < CHUNK_BYTES; i += blockDim.x) {
+        global_dst[offset + i] = data_buf[i];
+    }
+}
+
+// One-producer multi-consumer: only block 0 issues .shared::cluster TMA;
+// all blocks wait on their local mbarrier (peer complete_tx must wake them)
+// and write the same tile to their output region.
+template <int CHUNK_BYTES>
+__global__ void tma_one_producer_cluster_kernel(const uint8_t *global_src,
+                                                 uint8_t *global_dst,
+                                                 int *ready_count,
+                                                 int num_blocks) {
+    __shared__ uint8_t smem[CHUNK_BYTES + 64];
+    __shared__ unsigned long long bar;
+    uint8_t *data_buf = smem;
+    int tid = threadIdx.x;
+    int bid = blockIdx.x;
+
+    if (tid == 0) {
+        mbarrier_init_impl(&bar, 1);
+        mbarrier_arrive_expect_tx_impl(&bar, CHUNK_BYTES);
+        // Publish that this CTA's mbarrier is armed before any producer issues.
+        atomicAdd(ready_count, 1);
+        while (atomicAdd(ready_count, 0) < num_blocks) {
+            // spin until every CTA has armed expect_tx
+        }
+        if (bid == 0) {
+            cp_async_bulk_cluster<CHUNK_BYTES>(data_buf, global_src, &bar);
+        }
+        mbarrier_try_wait_impl(&bar, 0);
+    }
+    __syncthreads();
+
+    int offset = bid * CHUNK_BYTES;
+    for (int i = tid; i < CHUNK_BYTES; i += blockDim.x) {
+        global_dst[offset + i] = data_buf[i];
+    }
+}
+
 // --- Stress / Large-Scale Cluster Multicast Test Fixture ---
 class TMAClusterMulticastStressTest : public ::testing::Test {
 protected:
@@ -999,11 +1083,15 @@ protected:
                              cudaMemcpyHostToDevice), cudaSuccess);
         ASSERT_EQ(cudaMemset(d_dst, 0xff, TOTAL_BYTES), cudaSuccess);
 
+        // CTA path: each block loads a distinct bid*CHUNK slice (multi-chunk).
+        // Cluster multi-issuer path must load the *same* tile: peer multicast
+        // writes the same smem offsets on cluster partners, so different chunks
+        // would race. Cluster occupancy is still stressed with NUM_BLOCKS CTAs.
         if (use_cluster) {
             tma_datatype_kernel<CHUNK_BYTES, true>
                 <<<NUM_BLOCKS, THREADS>>>(d_src, d_dst, TOTAL_BYTES);
         } else {
-            tma_datatype_kernel<CHUNK_BYTES, false>
+            tma_stress_kernel<CHUNK_BYTES, false>
                 <<<NUM_BLOCKS, THREADS>>>(d_src, d_dst, TOTAL_BYTES);
         }
 
@@ -1015,13 +1103,30 @@ protected:
                              cudaMemcpyDeviceToHost), cudaSuccess);
 
         int errors = 0;
-        for (int i = 0; i < TOTAL_BYTES; i++) {
-            if (h_out[i] != h_input[i]) {
-                if (errors < 10) {
-                    printf("%s offset %d: expected %u, got %u\n",
-                           name, i, h_input[i], h_out[i]);
+        if (use_cluster) {
+            // Every block should hold a copy of h_input[0:CHUNK_BYTES].
+            for (int b = 0; b < NUM_BLOCKS; b++) {
+                for (int i = 0; i < CHUNK_BYTES; i++) {
+                    uint8_t expected = h_input[i];
+                    uint8_t got = h_out[b * CHUNK_BYTES + i];
+                    if (got != expected) {
+                        if (errors < 10) {
+                            printf("%s block %d offset %d: expected %u, got %u\n",
+                                   name, b, i, expected, got);
+                        }
+                        errors++;
+                    }
                 }
-                errors++;
+            }
+        } else {
+            for (int i = 0; i < TOTAL_BYTES; i++) {
+                if (h_out[i] != h_input[i]) {
+                    if (errors < 10) {
+                        printf("%s offset %d: expected %u, got %u\n",
+                               name, i, h_input[i], h_out[i]);
+                    }
+                    errors++;
+                }
             }
         }
         EXPECT_EQ(errors, 0) << name << ": Total mismatches: " << errors;
@@ -1031,6 +1136,65 @@ protected:
     }
 
     std::vector<uint8_t> h_input;
+};
+
+// One producer (CTA 0) multicasts; peer CTAs only wait/consume.
+class TMAClusterOneProducerTest : public ::testing::Test {
+protected:
+    static constexpr int CHUNK_BYTES = 256;
+    static constexpr int NUM_BLOCKS = 2;
+    static constexpr int THREADS = 32;
+
+    void SetUp() override {
+        h_input.resize(CHUNK_BYTES);
+        for (int i = 0; i < CHUNK_BYTES; i++) {
+            h_input[i] = static_cast<uint8_t>(i * 3 + 5);
+        }
+    }
+
+    std::vector<uint8_t> h_input;
+};
+
+TEST_F(TMAClusterOneProducerTest, OneProducerPeerConsumers) {
+    uint8_t *d_src = nullptr, *d_dst = nullptr;
+    int *d_ready = nullptr;
+    ASSERT_EQ(cudaMalloc(&d_src, CHUNK_BYTES), cudaSuccess);
+    ASSERT_EQ(cudaMalloc(&d_dst, CHUNK_BYTES * NUM_BLOCKS), cudaSuccess);
+    ASSERT_EQ(cudaMalloc(&d_ready, sizeof(int)), cudaSuccess);
+    ASSERT_EQ(cudaMemcpy(d_src, h_input.data(), CHUNK_BYTES,
+                         cudaMemcpyHostToDevice), cudaSuccess);
+    ASSERT_EQ(cudaMemset(d_dst, 0xff, CHUNK_BYTES * NUM_BLOCKS), cudaSuccess);
+    ASSERT_EQ(cudaMemset(d_ready, 0, sizeof(int)), cudaSuccess);
+
+    tma_one_producer_cluster_kernel<CHUNK_BYTES>
+        <<<NUM_BLOCKS, THREADS>>>(d_src, d_dst, d_ready, NUM_BLOCKS);
+
+    ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+    std::vector<uint8_t> h_out(CHUNK_BYTES * NUM_BLOCKS);
+    ASSERT_EQ(cudaMemcpy(h_out.data(), d_dst, CHUNK_BYTES * NUM_BLOCKS,
+                         cudaMemcpyDeviceToHost), cudaSuccess);
+
+    int errors = 0;
+    for (int b = 0; b < NUM_BLOCKS; b++) {
+        for (int i = 0; i < CHUNK_BYTES; i++) {
+            uint8_t expected = h_input[i];
+            uint8_t got = h_out[b * CHUNK_BYTES + i];
+            if (got != expected) {
+                if (errors < 10) {
+                    printf("OneProducer block %d offset %d: expected %u, got %u\n",
+                           b, i, expected, got);
+                }
+                errors++;
+            }
+        }
+    }
+    EXPECT_EQ(errors, 0) << "OneProducer: Total mismatches: " << errors;
+
+    cudaFree(d_src);
+    cudaFree(d_dst);
+    cudaFree(d_ready);
 };
 
 // ============================================================================

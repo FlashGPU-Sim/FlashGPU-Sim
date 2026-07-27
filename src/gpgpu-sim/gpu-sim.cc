@@ -2410,6 +2410,8 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
 
  // Cache the CTA's shared memory pointer for TMA cluster multicast.
  m_cta_smem[free_cta_hw_id] = m_thread[start_thread]->m_shared_mem;
+ // Issue-order cluster group for peer matching (independent of hw slot).
+ set_cta_cluster_group(free_cta_hw_id, m_cluster->allocate_cta_cluster_group());
 
  if (m_gpu->resume_option == 1 && kernel.get_uid() == m_gpu->resume_kernel &&
       ctaid >= m_gpu->resume_CTA && ctaid < m_gpu->checkpoint_CTA_t) {

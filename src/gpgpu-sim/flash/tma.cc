@@ -26,6 +26,13 @@ typedef void *yyscan_t;
 // members are not shared and therefore do not require synchronization.
 std::atomic<unsigned int> tma_next_tx_uid = 0;
 
+// Forward decls for cluster peer helpers (defined with functional TMA
+// handlers).
+static void complete_cluster_peer_mbarriers(shader_core_ctx *core,
+                                            unsigned issuer_hw_cta,
+                                            uint32_t mbar_addr,
+                                            uint32_t size_in_bytes);
+
 namespace flash_gpgpu_sim {
 
 static std::atomic<unsigned long long> g_tma_tx_started{0};
@@ -916,7 +923,8 @@ private:
     uint32_t mbar_addr;
     uint32_t size_in_bytes;
     bool is_write;
-    unsigned tx_uid; // for bulk_group (write path)
+    unsigned tx_uid;      // for bulk_group (write path)
+    bool is_cluster_read; // also complete peer mbarriers for .shared::cluster
   };
   std::vector<pending_arrive_t> m_pending_arrives;
 
@@ -963,16 +971,24 @@ private:
 
     // For TMA read, notify mbarrier of completion
     // For TMA write, use bulk_group completion mechanism
+    const bool is_cluster_read =
+        !is_write && (tx.m_static_info.dst_space ==
+                      inst_t::tma_static_info_t::TMA_SHARED_CLUSTER);
     unsigned arrive_latency =
         m_shader_ctx->get_config()->gpgpu_mbarrier_arrive_latency;
     if (arrive_latency > 0) {
       m_pending_arrives.push_back(
           {arrive_latency, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
-           tx.m_dyn_info.size_in_bytes, is_write, tx_uid});
+           tx.m_dyn_info.size_in_bytes, is_write, tx_uid, is_cluster_read});
     } else {
       if (!is_write) {
         m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
                                 tx.m_dyn_info.size_in_bytes);
+        if (is_cluster_read) {
+          complete_cluster_peer_mbarriers(m_shader_ctx, cta_id,
+                                          tx.m_dyn_info.mbar_addr,
+                                          tx.m_dyn_info.size_in_bytes);
+        }
       } else {
         m_barriers->complete_bulk_tx(cta_id, warp_id, tx_uid);
       }
@@ -1381,6 +1397,11 @@ public:
           if (!entry.is_write) {
             m_barriers->complete_tx(entry.cta_id, entry.warp_id,
                                     entry.mbar_addr, entry.size_in_bytes);
+            if (entry.is_cluster_read) {
+              complete_cluster_peer_mbarriers(m_shader_ctx, entry.cta_id,
+                                              entry.mbar_addr,
+                                              entry.size_in_bytes);
+            }
           } else {
             m_barriers->complete_bulk_tx(entry.cta_id, entry.warp_id,
                                          entry.tx_uid);
@@ -2274,11 +2295,43 @@ static void reduce_add_f32_mem(memory_space *src_mem, uint64_t src_addr,
   dst_mem->write(dst_addr, size_in_bytes, dst.data(), thread, pI);
 }
 
+// Iterate CTAs in the same issue-order cluster group as the issuer (including
+// other slots on the issuer SM). Skips the issuer CTA itself.
+// cluster_group is assigned at CTA issue: consecutive CTAs on a physical
+// simt_core_cluster form groups of size n_cores_per_cluster.
+template <typename Fn>
+static void for_each_cluster_peer_cta(shader_core_ctx *core,
+                                      unsigned issuer_hw_cta, Fn &&fn) {
+  if (!core)
+    return;
+  auto *cluster = core->get_cluster();
+  if (!cluster || cluster->num_cores() <= 1)
+    return;
+
+  unsigned group = core->get_cta_cluster_group(issuer_hw_cta);
+  if (group == (unsigned)-1)
+    return;
+
+  for (unsigned cid = 0; cid < cluster->num_cores(); cid++) {
+    auto *peer_core = cluster->get_core(cid);
+    for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
+      if (peer_core == core && slot == issuer_hw_cta)
+        continue; // issuer already handled by caller
+      if (!peer_core->is_cta_slot_active(slot))
+        continue;
+      if (peer_core->get_cta_cluster_group(slot) != group)
+        continue;
+      fn(peer_core, slot);
+    }
+  }
+}
+
 // Multicast: copy data from the issuing CTA's shared memory to the shared
-// memory of the corresponding CTA on every other SM in the cluster.
+// memory of every other CTA in the same cluster group.
 // This implements TMA .shared::cluster multicast for both linear and tensor
 // TMA loads.  The issuing CTA's smem is already populated by the caller; this
-// function replicates the bytes to peer SMs.
+// function replicates the bytes to peer CTAs (matched by cluster group, not
+// hardware CTA slot index).
 static void multicast_smem_to_cluster(memory_space *src_smem,
                                       uint32_t smem_addr,
                                       uint32_t size_in_bytes,
@@ -2287,21 +2340,41 @@ static void multicast_smem_to_cluster(memory_space *src_smem,
   auto *core = static_cast<shader_core_ctx *>(thread->get_core());
   if (!core)
     return;
-  auto *cluster = core->get_cluster();
-  if (!cluster || cluster->num_cores() <= 1)
-    return;
 
-  unsigned hw_cta_id = thread->get_hw_ctaid();
-  for (unsigned cid = 0; cid < cluster->num_cores(); cid++) {
-    auto *peer_core = cluster->get_core(cid);
-    if (peer_core == core)
-      continue; // issuing SM already written by caller
-    memory_space *peer_smem = peer_core->get_cta_smem(hw_cta_id);
-    if (peer_smem) {
-      copy_mem(src_smem, smem_addr, peer_smem, smem_addr, size_in_bytes, thread,
-               pI);
-    }
+  unsigned issuer_hw_cta = thread->get_hw_ctaid();
+  bool any_peer = false;
+  for_each_cluster_peer_cta(
+      core, issuer_hw_cta, [&](shader_core_ctx *peer_core, unsigned peer_slot) {
+        memory_space *peer_smem = peer_core->get_cta_smem(peer_slot);
+        if (!peer_smem)
+          return;
+        copy_mem(src_smem, smem_addr, peer_smem, smem_addr, size_in_bytes,
+                 thread, pI);
+        any_peer = true;
+      });
+
+  if (!any_peer) {
+    // Not fatal: partial occupancy or single-CTA cluster is valid.
+    GPPRINTF_INST_EXEC(TMA,
+                       "TMA cluster multicast: no peer CTA found for "
+                       "sid=%u hw_cta=%u cluster_group=%u (skipped)\n",
+                       core->get_sid(), issuer_hw_cta,
+                       core->get_cta_cluster_group(issuer_hw_cta));
   }
+}
+
+// Notify peer CTAs' mbarriers that a cluster TMA load completed. Uses
+// try_complete so multi-issuer kernels that already completed locally do not
+// double-count, and unarmed peers are left alone.
+static void complete_cluster_peer_mbarriers(shader_core_ctx *core,
+                                            unsigned issuer_hw_cta,
+                                            uint32_t mbar_addr,
+                                            uint32_t size_in_bytes) {
+  for_each_cluster_peer_cta(
+      core, issuer_hw_cta, [&](shader_core_ctx *peer_core, unsigned peer_slot) {
+        peer_core->try_complete_cluster_peer_mbarrier(peer_slot, mbar_addr,
+                                                      size_in_bytes);
+      });
 }
 
 // Check 16-byte alignment for TMA addresses and size

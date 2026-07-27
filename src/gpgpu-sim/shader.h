@@ -1164,6 +1164,11 @@ class barrier_set_t {
   void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
                    uint32_t completed_tx_count);
 
+  // Peer-side complete for TMA .shared::cluster: no-op if the CTA has no
+  // mbarrier at addr or no outstanding expected_tx.
+  void try_complete_tx_if_pending(unsigned cta_id, uint32_t mbarrier_addr,
+                                  uint32_t completed_tx_count);
+
   // Process delayed mbarrier warp releases each cycle
   void cycle();
 
@@ -2510,6 +2515,18 @@ class shader_core_ctx : public core_t {
   // Cluster TMA multicast: return shared memory of a CTA running on this SM.
   // Returns nullptr if the CTA slot is not currently occupied.
   class memory_space *get_cta_smem(unsigned hw_cta_id) const;
+
+  // Cluster membership for TMA multicast peer matching (issue-order group
+  // within this simt_core_cluster; size = n_cores_per_cluster CTAs per group).
+  unsigned get_cta_cluster_group(unsigned hw_cta_id) const;
+  bool is_cta_slot_active(unsigned hw_cta_id) const;
+  void set_cta_cluster_group(unsigned hw_cta_id, unsigned group);
+
+  // Complete pending mbarrier tx on this SM's CTA if armed (cluster peer path).
+  void try_complete_cluster_peer_mbarrier(unsigned hw_cta_id,
+                                          uint32_t mbarrier_addr,
+                                          uint32_t completed_tx_count);
+
  void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
                         unsigned &dl1_misses);
 
@@ -2993,6 +3010,10 @@ class shader_core_ctx : public core_t {
   // Per-CTA shared memory pointer, indexed by hardware CTA slot.
   // Used by TMA cluster multicast to write data to other SMs' CTAs.
   class memory_space *m_cta_smem[MAX_CTA_PER_SHADER];
+
+  // Per-CTA cluster group id assigned at issue time for multicast peer match.
+  // UINT_MAX means the slot is empty / unassigned.
+  unsigned m_cta_cluster_group[MAX_CTA_PER_SHADER];
 };
 
 class exec_shader_core_ctx : public shader_core_ctx {
@@ -3086,6 +3107,11 @@ class simt_core_cluster {
   }
   unsigned num_cores() const { return m_config->n_simt_cores_per_cluster; }
 
+  // Assign the next issue-order cluster group for a newly launched CTA on
+  // this physical cluster. Groups have size num_cores() (one CTA per SM in
+  // a cooperative cluster of size n_cores_per_cluster).
+  unsigned allocate_cta_cluster_group();
+
  protected:
   unsigned m_cluster_id;
   gpgpu_sim *m_gpu;
@@ -3097,6 +3123,8 @@ class simt_core_cluster {
   const memory_config *m_mem_config;
 
   unsigned m_cta_issue_next_core;
+  // Monotonic CTA issue counter for cluster-group assignment.
+  unsigned m_cluster_cta_seq;
   std::list<unsigned> m_core_sim_order;
   std::list<mem_fetch *> m_response_fifo;
 };

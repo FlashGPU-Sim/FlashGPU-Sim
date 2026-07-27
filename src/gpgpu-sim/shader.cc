@@ -341,6 +341,8 @@ void shader_core_ctx::create_front_pipeline() {
  m_n_active_cta = 0;
  for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_status[i] = 0;
  for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_smem[i] = NULL;
+ for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++)
+   m_cta_cluster_group[i] = (unsigned)-1;
  for (unsigned i = 0; i < m_config->n_thread_per_shader; i++) {
     m_thread[i] = NULL;
     m_threadState[i].m_cta_id = -1;
@@ -871,6 +873,29 @@ int shader_core_ctx::get_logical_cta_id(unsigned warp_id) const {
 memory_space *shader_core_ctx::get_cta_smem(unsigned hw_cta_id) const {
   assert(hw_cta_id < MAX_CTA_PER_SHADER);
   return m_cta_smem[hw_cta_id];
+}
+
+unsigned shader_core_ctx::get_cta_cluster_group(unsigned hw_cta_id) const {
+  assert(hw_cta_id < MAX_CTA_PER_SHADER);
+  return m_cta_cluster_group[hw_cta_id];
+}
+
+bool shader_core_ctx::is_cta_slot_active(unsigned hw_cta_id) const {
+  assert(hw_cta_id < MAX_CTA_PER_SHADER);
+  return m_cta_status[hw_cta_id] > 0 && m_cta_smem[hw_cta_id] != NULL;
+}
+
+void shader_core_ctx::set_cta_cluster_group(unsigned hw_cta_id, unsigned group) {
+  assert(hw_cta_id < MAX_CTA_PER_SHADER);
+  m_cta_cluster_group[hw_cta_id] = group;
+}
+
+void shader_core_ctx::try_complete_cluster_peer_mbarrier(
+    unsigned hw_cta_id, uint32_t mbarrier_addr, uint32_t completed_tx_count) {
+  if (!is_cta_slot_active(hw_cta_id))
+    return;
+  m_barriers.try_complete_tx_if_pending(hw_cta_id, mbarrier_addr,
+                                        completed_tx_count);
 }
 
 int shader_core_ctx::get_cta_warp_id(unsigned warp_id) const {
@@ -4545,6 +4570,7 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
   if (m_tma != nullptr) m_tma->cleanup_cta(cta_num);
   m_wgmma.cleanup_cta(cta_num);
   m_cta_smem[cta_num] = NULL;  // Clear shared memory pointer for TMA multicast
+  m_cta_cluster_group[cta_num] = (unsigned)-1;
   shader_CTA_count_unlog(m_sid, 1);
 
   SHADER_GPPRINTF(
@@ -6371,6 +6397,7 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
   m_config = config;
   m_cta_issue_next_core = m_config->n_simt_cores_per_cluster -
                           1;  // this causes first launch to use hw cta 0
+  m_cluster_cta_seq = 0;
   m_cluster_id = cluster_id;
   m_gpu = gpu;
 #ifdef FLASH_GPGPU_SIM_OMP
@@ -6449,6 +6476,15 @@ unsigned simt_core_cluster::get_n_active_sms() const {
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
     n += m_core[i]->isactive();
   return n;
+}
+
+unsigned simt_core_cluster::allocate_cta_cluster_group() {
+  unsigned n = m_config->n_simt_cores_per_cluster;
+  if (n == 0)
+    n = 1;
+  unsigned group = m_cluster_cta_seq / n;
+  m_cluster_cta_seq++;
+  return group;
 }
 
 unsigned simt_core_cluster::issue_block2core() {
