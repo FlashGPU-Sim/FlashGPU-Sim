@@ -34,8 +34,8 @@ test/build/
 test/run/
 
 # Documentation build
-doc/doxygen/html/
-doc/doxygen/latex/
+docs/legacy/doxygen/html/
+docs/legacy/doxygen/latex/
 
 # Python cache
 __pycache__/

@@ -1,8 +1,13 @@
-# checkpoint documentation #
+# GPGPU-Sim checkpointing (legacy)
+
+> [!NOTE]
+> This document describes the checkpoint/resume support inherited from
+> upstream GPGPU-Sim. It is retained as a historical reference and is not a
+> validated FlashGPU-Sim onboarding workflow.
 
 The following diagram shows the how checkpoiting works and different variables which can be user defined
 
-![Checkpoint](doc/checkpoint.png)
+![Checkpoint](checkpoint.png)
 
 A program can be run in functional simulation mode upto some point and then GPU states are stored in files so that program can be resumed from same point in performance simulation mode
 

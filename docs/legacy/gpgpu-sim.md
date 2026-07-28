@@ -1,3 +1,9 @@
+> [!WARNING]
+> This is the archived upstream GPGPU-Sim README retained for project history
+> and lineage. Its commands and compatibility notes describe the upstream
+> GPGPU-Sim 4.x distribution and may not apply to the current FlashGPU-Sim
+> repository.
+
 Welcome to GPGPU-Sim, a cycle-level simulator modeling contemporary graphics
 processing units (GPUs) running GPU computing workloads written in CUDA or
 OpenCL. Also included in GPGPU-Sim is a performance visualization tool called
@@ -260,7 +266,7 @@ To clean the docs run
 	make cleandocs
 
 
-The documentation resides at doc/doxygen/html.
+The generated documentation resides at `docs/legacy/doxygen/html`.
 
 To run Pytorch applications with the simulator, install the modified Pytorch library as well by following instructions [here](https://github.com/gpgpu-sim/pytorch-gpgpu-sim).
 
@@ -499,4 +505,3 @@ To debug failing GPGPU-Sim regression tests you need to run them locally.  The f
 	. torque.sim
 	```
 	This will put you in at the (gdb) prompt.  Setup any breakpoints needed and run.  
-

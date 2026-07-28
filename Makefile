@@ -310,11 +310,13 @@ makedirs:
 all:
 	$(MAKE) gpgpusim
 
+.PHONY: docs cleandocs
+
 docs:
-	$(MAKE) -C doc/doxygen/
+	$(MAKE) -C docs/legacy/doxygen/
 
 cleandocs:
-	$(MAKE) clean -C doc/doxygen/
+	$(MAKE) clean -C docs/legacy/doxygen/
 
 clean: makedirs
 	$(MAKE) cleangpgpusim

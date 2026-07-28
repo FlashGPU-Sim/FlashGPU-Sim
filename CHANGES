@@ -22,7 +22,7 @@ Version 4.0.0 (development branch) versus 3.2.3
 3- Added parsing support for wmma.load,wmma.mma and wmma.store ptx instructions
 4- Implmented cudaLaunchKernel for CUTLASS library
 5- Added support for cuDNN and Pytorch library
-6- Added checkpoint support ([Fore more details](checkpoint.md))
+6- Added checkpoint support ([For more details](docs/legacy/checkpointing.md))
 -GPU Core Functional Simulation
 1- Implemented bfe, d4pa, bfi and prmt instruction 
 2- Implemented wmma.load and wmma.store supporting all the layout configuration for TITANV GPU
