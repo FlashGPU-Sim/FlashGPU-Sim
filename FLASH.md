@@ -298,15 +298,21 @@ Lane 28-31: Row 7
    - **Note**: These stubbed instructions are explicitly allowed during PTX inspection for TMA tests (see docs/testing-instructions.md TMA Testing section)
 3. **Tensormap options**: Some tensormap manipulation options not validated (src/gpgpu-sim/flash/tma.cc:1273)
 4. **Multi-dimensional testing**: Full test coverage for 1D and 3D-5D tensor operations documented in docs/testing-instructions.md TMA Testing section
+5. **Cluster destination**: `.shared::cluster` is functionally supported; timing is idealized (see Cluster / TMA multicast below)
 
 **Mbarrier Subsystem**:
 1. **Idealized implementation**: Barriers reside in simulator memory rather than GPU shared memory
-2. **CTA-level only**: No support for cluster-level synchronization
+2. **CTA-level storage**: No full cluster-scope mbarrier object; cluster TMA can still `try_complete` peer CTAs’ barriers at the same smem offset
 3. **Thread-level granularity**: Blocked threads stall entire warp (GPGPU-Sim limitation)
 4. **Timeout feature**: `mbarrier.try_wait` timeout not implemented (src/gpgpu-sim/flash/mbarrier.cc:269)
 5. **Incomplete operations**: Some mbarrier variants assert as unimplemented (src/gpgpu-sim/flash/mbarrier.cc:357)
+6. **Calibration knobs**: `gpgpu_mbarrier_arrive_latency` / `trywait_latency` (200/120 on SM120) are end-to-end TMA+mbarrier fits, not pure HW barrier cost
+
+**Cluster / TMA multicast**:
+1. **Topology model**: multi-SM `simt_core_cluster` + issue-order `cluster_group` peer matching — not CUDA cooperative Thread Block Cluster launch APIs
+2. **Idealized timing**: `.shared::cluster` loads use one issuer L2/TMA stream; functional multicast to peers is free (TODO: no DSM hop / peer mem_fetches)
+3. Prefer `SM120_RTX5090_REDUCED_CLUSTER2` for functional multicast tests
 
 **General**:
 - Flash mode multi-threading may have race conditions in certain edge cases
 - Validation primarily focused on basic usage patterns; complex corner cases may exhibit deviations from hardware behavior
-

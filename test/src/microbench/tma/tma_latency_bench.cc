@@ -581,7 +581,7 @@ TEST_F(TMALatencyTest, SummaryTable) {
          gmem4k.p90, gmem4k.max);
   printf("================================================================\n");
   printf(" Config knobs (sim) for reference:\n");
-  printf("   ptx_opcode_latency_tma=32  mbarrier_arrive=29  trywait=32\n");
+  printf("   ptx_opcode_latency_tma=32  mbarrier_arrive=200  trywait=120\n");
   printf("   gpgpu_l2_rop_latency=260   dram_latency=254\n");
   printf(" Interpretation:\n");
   printf("   TMALoad - MBarrierOnly ≈ TMA data-path latency\n");

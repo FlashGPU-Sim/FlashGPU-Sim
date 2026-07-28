@@ -3,6 +3,16 @@
 #include <gtest/gtest.h>
 #include <vector>
 
+// TMA cluster multicast integration tests.
+// Prefer config SM120_RTX5090_REDUCED_CLUSTER2.
+//
+// TODO: These use plain grid launches (<<<N, threads>>>), not CUDA cooperative
+// Thread Block Clusters. They validate GPGPU-Sim multi-SM-per-cluster
+// topology, issue-order cluster_group peer matching, functional
+// .shared::cluster multicast, and peer mbarrier try_complete — not
+// cudaLaunchKernelEx / __cluster_dims__. Cluster TMA timing is idealized
+// (free multicast after one L2/TMA path); see docs/cluster_cta2_explain.md.
+
 // Inline mbarrier helpers matching cp_kernels.cuh patterns.
 __device__ inline void mbarrier_init_impl(unsigned long long *bar_addr,
                                            unsigned expected_arrivals) {
@@ -135,7 +145,7 @@ protected:
               cudaSuccess);
     ASSERT_EQ(cudaMemset(d_dst, 0xff, CHUNK_BYTES * NUM_BLOCKS), cudaSuccess);
 
-    
+
     if (use_cluster) {
       tmaLoadKernel<CHUNK_BYTES, true>
           <<<NUM_BLOCKS, THREADS_PER_BLOCK>>>(d_src, d_dst,

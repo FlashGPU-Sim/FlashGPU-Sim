@@ -1,3 +1,10 @@
+// SM120_RTX5090_CLUSTER2 interconnect (BookSim fly template).
+// GPU topology: 85 clusters x 2 SMs = 170 SMs (plus memory controllers).
+//
+// NOTE: gpgpusim.config uses -network_mode 2 (local interconnect/xbar).
+// This BookSim file is unused unless network_mode is changed to BookSim.
+// k=78 is inherited from the single-core-per-cluster SM120 layout and may not
+// match cluster=2 BookSim node counts — regenerate before enabling BookSim.
 //21*1 fly with 32 flits per packet under gpgpusim injection mode
 use_map = 0;
 flit_size = 40; 

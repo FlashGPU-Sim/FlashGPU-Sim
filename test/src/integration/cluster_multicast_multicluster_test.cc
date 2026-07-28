@@ -7,10 +7,14 @@
 // Multi-cluster TMA multicast tests
 //
 // Verifies that cluster multicast works correctly when multiple clusters are
-// active simultaneously. Each cluster should independently replicate TMA
-// load data across its SMs without data leaking across cluster boundaries.
+// active simultaneously. Each physical simt_core_cluster should independently
+// replicate TMA load data across its SMs without data leaking across cluster
+// boundaries (issue-order cluster_group matching).
 //
 // Requires a multi-cluster config (e.g., SM120_RTX5090_REDUCED_CLUSTER2x2).
+//
+// Note: plain grid launches only — validates multi-cluster topology + the
+// simulator's TMA multicast model, not CUDA cooperative cluster launch APIs.
 // ============================================================================
 
 // --- Inline mbarrier helpers ---

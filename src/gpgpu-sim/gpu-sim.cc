@@ -2406,14 +2406,14 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
          nthreads_in_block <=
              m_config->n_thread_per_shader);  // should be at least one, but
                                               // less than max
- m_cta_status[free_cta_hw_id] = nthreads_in_block;
+  m_cta_status[free_cta_hw_id] = nthreads_in_block;
 
- // Cache the CTA's shared memory pointer for TMA cluster multicast.
- m_cta_smem[free_cta_hw_id] = m_thread[start_thread]->m_shared_mem;
- // Issue-order cluster group for peer matching (independent of hw slot).
- set_cta_cluster_group(free_cta_hw_id, m_cluster->allocate_cta_cluster_group());
+  // Cache the CTA's shared memory pointer for TMA cluster multicast.
+  m_cta_smem[free_cta_hw_id] = m_thread[start_thread]->m_shared_mem;
+  // Issue-order cluster group for peer matching (independent of hw slot).
+  set_cta_cluster_group(free_cta_hw_id, m_cluster->allocate_cta_cluster_group());
 
- if (m_gpu->resume_option == 1 && kernel.get_uid() == m_gpu->resume_kernel &&
+  if (m_gpu->resume_option == 1 && kernel.get_uid() == m_gpu->resume_kernel &&
       ctaid >= m_gpu->resume_CTA && ctaid < m_gpu->checkpoint_CTA_t) {
     char f1name[2048];
     snprintf(f1name, 2048, "checkpoint_files/shared_mem_%d.txt", ctaid);

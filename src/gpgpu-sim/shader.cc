@@ -338,12 +338,12 @@ void shader_core_ctx::create_front_pipeline() {
 
   m_not_completed = 0;
   m_active_threads.reset();
- m_n_active_cta = 0;
- for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_status[i] = 0;
- for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_smem[i] = NULL;
- for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++)
-   m_cta_cluster_group[i] = (unsigned)-1;
- for (unsigned i = 0; i < m_config->n_thread_per_shader; i++) {
+  m_n_active_cta = 0;
+  for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_status[i] = 0;
+  for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_smem[i] = NULL;
+  for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++)
+    m_cta_cluster_group[i] = (unsigned)-1;
+  for (unsigned i = 0; i < m_config->n_thread_per_shader; i++) {
     m_thread[i] = NULL;
     m_threadState[i].m_cta_id = -1;
     m_threadState[i].m_active = false;

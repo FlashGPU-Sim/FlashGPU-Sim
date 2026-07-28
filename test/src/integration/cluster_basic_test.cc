@@ -4,7 +4,11 @@
 
  // Each thread writes a deterministic value derived from its block and thread
  // indices. With 2 blocks and a 2-SM-per-cluster reduced config, this exercises
- // round-robin CTA issuance across the two cores in the cluster.
+ // round-robin CTA issuance across the two cores in the simt_core_cluster.
+ //
+ // Topology / scheduling only: plain <<<N, threads>>> launches — not CUDA
+ // Thread Block Clusters (no cudaLaunchKernelEx / __cluster_dims__). Prefer
+ // SM120_RTX5090_REDUCED_CLUSTER2 when running this test.
  __global__ void clusterBasicKernel(int* output) {
    int idx = blockIdx.x * blockDim.x + threadIdx.x;
    output[idx] = blockIdx.x * 1000 + threadIdx.x;

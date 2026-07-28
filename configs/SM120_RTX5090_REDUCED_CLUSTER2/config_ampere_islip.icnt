@@ -1,4 +1,10 @@
-//REDUCED CONFIG: 2x1 fly with 32 flits per packet (1 SM + 1 memory controller)
+// SM120_RTX5090_REDUCED_CLUSTER2 interconnect (BookSim fly template).
+// GPU topology: 1 cluster x 2 SMs = 2 SMs (plus memory controllers).
+//
+// NOTE: gpgpusim.config uses -network_mode 2 (local interconnect/xbar).
+// This BookSim file is unused unless network_mode is changed to BookSim.
+// Do not enable BookSim without regenerating k/topology for actual node count.
+//REDUCED CONFIG: fly with 32 flits per packet
 use_map = 0;
 flit_size = 40;
 

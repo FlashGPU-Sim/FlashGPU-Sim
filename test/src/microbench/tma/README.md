@@ -49,11 +49,15 @@ Sim config knobs (calibrated from this suite on RTX 5090, 2026-07):
 
 ```
 -ptx_opcode_latency_tma 32
--gpgpu_mbarrier_arrive_latency 200   # was 29; TMA complete_tx delay
+-gpgpu_mbarrier_arrive_latency 200   # was 29; TMA complete_tx delay (end-to-end fit)
 -gpgpu_mbarrier_trywait_latency 120  # was 32; also applied on immediate try_wait success
 -gpgpu_l2_rop_latency 260
 -dram_latency 254
 ```
+
+These mbarrier knobs are **end-to-end TMA+mbarrier** fits (residual path
+folded into fixed latency), not pure hardware barrier cost. They are shared
+across all SM120 configs; pure mbarrier-only or non-TMA waiters may look slow.
 
 Code fix (minimal, flash-only): `src/gpgpu-sim/flash/mbarrier.cc` applies
 `trywait_latency` even when `try_wait` succeeds immediately (already-complete

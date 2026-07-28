@@ -1509,13 +1509,17 @@ public:
         // TMA Read (global → shared): response contains read data
         assert(mf->get_access_type() == TMA_ACC_R);
 
-        // Validate destination space. TMA_SHARED_CLUSTER is accepted: the
-        // functional path already multicasts to peer SMs; timing still uses a
-        // single L2 fetch (multicast hop is free).
-        if (tx.m_static_info.dst_space !=
-                inst_t::tma_static_info_t::TMA_SHARED_CTA &&
-            tx.m_static_info.dst_space !=
-                inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {          assert(false && "Unrecognized TMA destination space");
+        // Validate destination space
+        if (tx.m_static_info.dst_space ==
+            inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
+          // TMA cluster multicast: functional sim already replicated data to
+          // peer CTAs in the same cluster_group. Timing deliberately matches
+          // TMA_SHARED_CTA (one L2/TMA stream; no DSM hop / peer mem_fetches).
+          // Peer mbarriers get try_complete_tx_if_pending on finalize.
+          // TODO: not a full DSM model.
+        } else if (tx.m_static_info.dst_space !=
+                   inst_t::tma_static_info_t::TMA_SHARED_CTA) {
+          assert(false && "Unrecognized TMA destination space");
         }
       }
 
