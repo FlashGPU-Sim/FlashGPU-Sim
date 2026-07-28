@@ -726,18 +726,6 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "segment bytes), modeling independently credited internal transfer "
       "segments (default=0, 0=disabled)",
       "0");
-  option_parser_register(
-      opp, "-gpgpu_tma_quota_work_conserving", OPT_BOOL,
-      &gpgpu_tma_quota_work_conserving,
-      "Scan past over-quota TMA transactions and issue another eligible "
-      "transaction (default=1)",
-      "1");
-  option_parser_register(
-      opp, "-gpgpu_tma_quota_allow_borrow", OPT_BOOL,
-      &gpgpu_tma_quota_allow_borrow,
-      "If every queued TMA transaction is at its per-transaction quota, "
-      "allow issuing above that quota under the SM-wide limit (default=1)",
-      "1");
   option_parser_register(opp, "-gpgpu_tma_response_width", OPT_UINT32,
                          &gpgpu_tma_response_width,
                          "TMA response tokens accepted per SM per cycle (default=1)", "1");

@@ -1554,14 +1554,10 @@ public:
                     quota_segment_bytes);
         return tx_quota * segments;
       };
-      bool all_candidates_over_quota = false;
+      bool borrowing_quota = false;
       unsigned tx_uid = 0;
       tma_transaction_t *selected_tx = nullptr;
-      const bool work_conserving =
-          m_shader_ctx->get_config()->gpgpu_tma_quota_work_conserving;
-      const bool allow_borrow =
-          m_shader_ctx->get_config()->gpgpu_tma_quota_allow_borrow;
-      const unsigned num_candidates = work_conserving ? issue_queue.size() : 1;
+      const unsigned num_candidates = issue_queue.size();
 
       for (unsigned attempt = 0; attempt < num_candidates; ++attempt) {
         tx_uid = issue_queue.front();
@@ -1582,14 +1578,12 @@ public:
       }
 
       if (selected_tx == nullptr) {
-        if (!work_conserving)
+        // Legacy unsegmented quotas are soft fairness targets: once every
+        // transaction reaches its quota, keep the TMA unit busy under the
+        // SM-wide limit. Segmented quotas model hard transaction credits.
+        if (quota_segment_bytes > 0)
           return;
-        if (!allow_borrow)
-          return;
-        // Quota is a fairness hint, not a hard throttle. If every transaction
-        // is already above quota, keep the TMA unit busy under the SM-wide
-        // max_inflight limit and round-robin the over-quota issuers.
-        all_candidates_over_quota = true;
+        borrowing_quota = true;
         tx_uid = issue_queue.front();
         auto it = m_transactions.find(tx_uid);
         assert(it != m_transactions.end());
@@ -1618,7 +1612,7 @@ public:
         while (issued_requests < request_width && !transaction_finalized) {
           if (max_inflight > 0 && m_mf_inflight >= max_inflight)
             break;
-          if (!all_candidates_over_quota && tx_quota > 0 &&
+          if (!borrowing_quota && tx_quota > 0 &&
               tx.m_mf_tx_inflight >= effective_tx_quota(tx))
             break;
           if (m_icnt->full(packet_size, is_write))
@@ -1761,7 +1755,7 @@ public:
                      tx.m_dyn_info.size_in_bytes);
         fflush(stdout);
         issue_queue.pop_front();
-      } else if (all_candidates_over_quota && made_progress) {
+      } else if (borrowing_quota && made_progress) {
         issue_queue.pop_front();
         issue_queue.push_back(tx_uid);
       }
