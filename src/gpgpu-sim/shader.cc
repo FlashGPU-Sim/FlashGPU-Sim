@@ -4079,6 +4079,16 @@ pipelined_simd_unit::pipelined_simd_unit(register_set *result_port,
 
 void pipelined_simd_unit::cycle() {
   if (!m_pipeline_reg[0]->empty()) {
+    // Stallable units do not reserve a result bus when they issue.  Their
+    // completion can therefore coincide with enough reserved completions to
+    // fill EX_WB.  Keep the completed instruction in the final pipeline stage
+    // until writeback makes room instead of overflowing the register set.
+    if (!m_result_port->has_free()) {
+      assert(stallable() &&
+             "unstallable execution unit overflowed its result port");
+      occupied >>= 1;
+      return;
+    }
     m_result_port->move_in(m_pipeline_reg[0]);
     assert(active_insts_in_pipeline > 0);
     active_insts_in_pipeline--;

@@ -44,8 +44,8 @@ This prevents test failures from stale library builds. In native GPU mode, the s
 # Run all tests with default configuration (SM120_RTX5090)
 source setup.sh && source setup_environment && ./test/run_tests.sh test
 
-# Run tests with reduced configuration (faster, less memory)
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED test
+# Run tests with the full SM120 configuration explicitly
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090 test
 
 # List available GPU configurations
 source setup.sh && source setup_environment && ./test/run_tests.sh list-configs
@@ -59,17 +59,16 @@ The test framework supports multiple GPU configurations:
   - Use for: Complete validation, performance testing, final verification
   - Resource usage: High memory and time
 
-- **SM120_RTX5090_REDUCED**: Lightweight configuration (1 SM, 1 L2, 1 DDR)
-  - Use for: Quick tests, development iterations, continuous integration
-  - Resource usage: Low memory and time
+- **SM90_H100**: Full Hopper H100 simulation (132 SMs, 80 memory controllers)
+  - Use for: SM90 instruction, FA2, and FA3 tests
 
 **Selecting a configuration:**
 ```bash
 # Explicit config selection
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED test
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090 test
 
 # Run specific test with config
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED test CudaVectorAdd
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090 test CudaVectorAdd
 ```
 
 ## Listing Available Tests
@@ -85,7 +84,7 @@ This displays the actual test suite and test case names from the compiled test b
 
 **Note:** You can pass test name (with regex matches), which will be passed to the test binary as `--gtest_filter`. No need to pass in `--gtest_filter` in the command line of `run_tests.sh`.
 ```bash
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED test "*MMA*"
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090 test "*MMA*"
 ```
 
 ## Native GPU Mode (Test Validation)
@@ -117,8 +116,8 @@ For a comprehensive view of all test suites, their recommended configurations, a
 - **[Test Configuration Matrix](test-configuration-matrix.md)** - Complete test suite reference
 
 **Quick reference:**
-- MMA tests → Use `SM120_RTX5090_REDUCED` (single-block functionality tests)
-- Other tests → Use `SM120_RTX5090` (full validation)
+- SM120 tests → Use `SM120_RTX5090`
+- Hopper tests → Use `SM90_H100`
 
 **Excluded tests:** Currently, 2 tests are excluded due to unimplemented features:
 - `TMA.CPAsyncMethod` - Uses unimplemented `cp.async` instruction
@@ -224,7 +223,8 @@ GPGPU-Sim runs, require both `Validation PASSED` and simulator counters such as
 
 ### Continuous Integration
 
-The repository includes a GitHub Actions workflow that runs automated tests on pull requests. The CI workflow uses the reduced GPU configuration for fast feedback:
+The repository includes a GitHub Actions workflow that runs automated tests on
+pull requests. The CI workflow uses the full SM120 and SM90 configurations:
 
 ```bash
 # CI workflow runs this command
@@ -232,8 +232,8 @@ The repository includes a GitHub Actions workflow that runs automated tests on p
 ```
 
 **CI configuration:**
-- Uses `SM120_RTX5090_REDUCED` for resource efficiency
-- Uses `SM90_H100_REDUCED` for SM90 instruction, FA2, and FA3 gates
+- Uses `SM120_RTX5090` for SM120 unit and integration gates
+- Uses `SM90_H100` for SM90 instruction, FA2, and FA3 gates
 - Runs in a minimal Docker container (`docker/Dockerfile.ci`)
 - Splits the gate into `sm120`, `sm90-fa2`, and `sm90-fa3` container shards
 - Limits simulator build parallelism to two jobs, FA2 kernel compilation to one

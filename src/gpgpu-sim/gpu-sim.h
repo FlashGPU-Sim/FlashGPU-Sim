@@ -623,6 +623,7 @@ class gpgpu_sim : public gpgpu_t {
 
   int shared_mem_size() const;
   int shared_mem_per_block() const;
+  int shared_mem_per_block_optin() const;
   int compute_capability_major() const;
   int compute_capability_minor() const;
   int num_registers_per_core() const;

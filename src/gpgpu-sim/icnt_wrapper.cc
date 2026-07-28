@@ -168,6 +168,16 @@ void icnt_reg_options(class OptionParser* opp) {
                          &g_inct_config.grant_cycles, "grant_cycles", "1");
   option_parser_register(opp, "-icnt_use_voq", OPT_UINT32,
                          &g_inct_config.use_voq, "use_voq", "0");
+  option_parser_register(
+      opp, "-icnt_multi_grant_request", OPT_UINT32,
+      &g_inct_config.multi_grant_request,
+      "Allow one request-network input to grant multiple outputs per cycle",
+      "0");
+  option_parser_register(
+      opp, "-icnt_multi_grant_reply", OPT_UINT32,
+      &g_inct_config.multi_grant_reply,
+      "Allow one reply-network input to grant multiple outputs per cycle",
+      "0");
 }
 
 void icnt_wrapper_init() {

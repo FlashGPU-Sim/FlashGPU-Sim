@@ -1292,7 +1292,7 @@ int main(int argc, char** argv) {{{{
     CUdevice device;
     CUcontext context;
     cuDeviceGet(&device, 0);
-#if CUDA_VERSION >= 12050
+#if CUDA_VERSION >= 13000
     cuCtxCreate(&context, NULL, 0, device);
 #else
     cuCtxCreate(&context, 0, device);
@@ -1565,7 +1565,7 @@ int main(int argc, char** argv) {{
     CUdevice device;
     CUcontext context;
     CUDA_CHECK(cuDeviceGet(&device, 0));
-#if CUDA_VERSION >= 12050
+#if CUDA_VERSION >= 13000
     CUDA_CHECK(cuCtxCreate(&context, NULL, 0, device));
 #else
     CUDA_CHECK(cuCtxCreate(&context, 0, device));

@@ -11,6 +11,7 @@ Generates trace data in triton_kernel_tracking/test_flash_attn/seq<S>_d<D>/
 """
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -20,6 +21,12 @@ import triton
 import triton.language as tl
 
 TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
+TRACKING_ROOT = Path(
+    os.environ.get(
+        "TRITON_TRACKING_ROOT",
+        str(TRITON_TRACE_DIR / "triton_kernel_tracking"),
+    )
+).expanduser().resolve()
 sys.path.insert(0, str(TRITON_TRACE_DIR))
 
 from track_triton_kernels import TritonKernelTracker
@@ -31,19 +38,6 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 # Flash Attention Forward Kernel (TMA-based)
 # ============================================================================
 
-def get_fa_autotune_config():
-    return [
-        triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_stages=2, num_warps=8),
-        triton.Config({"BLOCK_M": 128, "BLOCK_N": 32}, num_stages=2, num_warps=8),
-        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_stages=2, num_warps=4),
-        triton.Config({"BLOCK_M": 64, "BLOCK_N": 32}, num_stages=2, num_warps=4),
-    ]
-
-
-@triton.autotune(
-    configs=get_fa_autotune_config(),
-    key=["SEQ_LEN", "HEAD_DIM"],
-)
 @triton.jit
 def _flash_attn_fwd(
     Q, K, V, Out,
@@ -159,13 +153,17 @@ def flash_attention_forward(q, k, v, causal=False, sm_scale=None):
     v_r = v.view(batch * heads, seq_len, head_dim)
     o_r = torch.empty_like(q_r)
 
-    grid = lambda META: (triton.cdiv(seq_len, META["BLOCK_M"]), batch * heads)
+    BLOCK_M = 64
+    BLOCK_N = 64
+    grid = (triton.cdiv(seq_len, BLOCK_M), batch * heads)
 
     _flash_attn_fwd[grid](
         q_r, k_r, v_r, o_r,
         sm_scale,
         SEQ_LEN=seq_len,
         HEAD_DIM=head_dim,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
         CAUSAL=causal,
     )
 
@@ -216,7 +214,7 @@ def main():
 
     causal_str = "_causal" if causal else ""
     subdir = f"b{batch}_h{heads}_seq{seq_len}_d{head_dim}{causal_str}"
-    output_dir = (TRITON_TRACE_DIR / f"triton_kernel_tracking/test_flash_attn/{subdir}").resolve()
+    output_dir = TRACKING_ROOT / "test_flash_attn" / subdir
     if output_dir.exists():
         shutil.rmtree(output_dir)
 
@@ -230,7 +228,7 @@ def main():
     k = torch.randn(batch, heads, seq_len, head_dim, device="cuda", dtype=torch.float16)
     v = torch.randn(batch, heads, seq_len, head_dim, device="cuda", dtype=torch.float16)
 
-    # Warmup + autotune + validate
+    # Warmup + validate
     print(f"\nLaunching Flash Attention kernel...")
     tri_out = flash_attention_forward(q, k, v, causal=causal)
     ref_out = reference_attention(q, k, v, causal=causal)

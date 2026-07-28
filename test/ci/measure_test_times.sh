@@ -17,8 +17,8 @@ echo "Timeout per test: ${TIMEOUT_PER_TEST}s"
 echo "========================================================"
 echo ""
 
-# Use reduced config for faster testing
-TEST_CONFIG="${CI_TEST_CONFIG:-SM120_RTX5090_REDUCED}"
+# Use the same full SM120 configuration as CI by default
+TEST_CONFIG="${CI_TEST_CONFIG:-SM120_RTX5090}"
 
 # Array of test patterns to run (focusing on major test suites)
 TEST_SUITES=(

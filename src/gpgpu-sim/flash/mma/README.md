@@ -62,7 +62,7 @@ Integration tests are located in `test/src/integration/mma/`:
 
 Run MMA tests with:
 ```bash
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*MMA*"
+./test/run_tests.sh -c SM120_RTX5090 run "*MMA*"
 ```
 
 ## References

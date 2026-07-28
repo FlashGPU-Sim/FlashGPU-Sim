@@ -48,6 +48,8 @@ struct inct_config {
   unsigned verbose;
   unsigned grant_cycles;
   unsigned use_voq;
+  unsigned multi_grant_request;
+  unsigned multi_grant_reply;
 };
 
 class xbar_router {
@@ -138,6 +140,7 @@ class xbar_router {
   unsigned grant_cycles;
   unsigned grant_cycles_count;
   bool use_voq;
+  bool allow_multi_grant;
 
   friend class LocalInterconnect;
 };

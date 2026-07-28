@@ -31,26 +31,6 @@ Full RTX 5090 configuration with 170 streaming multiprocessors.
 - PTX register allocation/reorder enabled; SASS-guided reorder is opt-in
 - Includes `sass_primary_hints.rules` for auto-extracted full-SASS guides
 
-### SM120_RTX5090_REDUCED
-Lightweight configuration with 1 streaming multiprocessor.
-
-**Use for:**
-- Quick simulator-correctness tests
-- Development and debugging
-- Continuous integration (CI/CD)
-- Rapid iteration workflows
-
-**Characteristics:**
-- 1 SM cluster (1 core per cluster = 1 total SM)
-- 16 memory controllers, matching the full RTX 5090 config
-- Every `gpgpusim.config` field matches the full config except
-  `-gpgpu_n_clusters`
-- Exercises the same functional- and performance-simulator mechanisms
-- Lower SM state; wall-time speedup depends on workload size and shape
-- Not suitable for performance or multi-SM scaling conclusions
-- Full/reduced field parity is enforced by
-  `test/scripts/check_reduced_config_parity.py`
-
 ### SM90_H100
 Full Hopper H100 configuration with 132 streaming multiprocessors.
 
@@ -117,29 +97,9 @@ separate RF write path, and the focused H100 microbenchmarks did not show a
 large enough accumulate/overwrite split to justify a more invasive model.
 
 Intermediate parameter sweeps for cp.async, TMA response width, WGMMA/MMA queue
-experiments, and most temporary `_TMP` configs are intentionally not kept here.
-`TMP_FA2_CPASYNC_FORMAL_IPOLY1024_RANGE_MAP9` is retained only as a baseline
-reference. The final raw logs and reports are archived outside this repository
-in `flashgpu_sim_micro26_rebuttal`.
-
-### SM90_H100_REDUCED
-Lightweight Hopper H100 configuration with 1 streaming multiprocessor.
-
-**Use for:**
-- FA3 deadlock/debug iterations
-- Reduced log volume
-- Hopper instruction semantics debugging
-
-**Characteristics:**
-- 1 SM cluster (1 core per cluster = 1 total SM)
-- 16 memory controllers in the reduced H100 memory model
-- Full H100 per-SM FlashAttention execution features, including ordinary
-  `cp.async`, calibrated MMA/WGMMA issue, PTX transforms, VOQ, and WGMMA RF
-  pressure
-- Reduced memory topology and timing remain unsuitable for performance/scaling
-  comparisons
-- Full/reduced feature parity is enforced by
-  `test/scripts/check_reduced_config_parity.py`
+experiments, and temporary `_TMP` configs are not kept here. The final raw logs
+and reports are archived outside this repository in
+`flashgpu_sim_micro26_rebuttal`.
 
 ### deprecated-cfgs/
 Legacy configurations maintained for reference.
@@ -186,11 +146,8 @@ mkdir configs/MY_CUSTOM_CONFIG
 Start from an existing configuration:
 
 ```bash
-# For full-featured config
+# Copy a known-good architecture template
 cp configs/SM120_RTX5090/* configs/MY_CUSTOM_CONFIG/
-
-# For lightweight config
-cp configs/SM120_RTX5090_REDUCED/* configs/MY_CUSTOM_CONFIG/
 ```
 
 ### Step 3: Modify Configuration Parameters
@@ -225,8 +182,8 @@ Edit `configs/MY_CUSTOM_CONFIG/gpgpusim.config`:
 Edit `configs/MY_CUSTOM_CONFIG/config_*.icnt` to match SM count:
 
 The interconnect endpoint encoding is configuration-specific. Start from a
-known-good full or reduced config and update its topology consistently with the
-SM and memory topology; do not infer `k` from a universal formula.
+known-good config and update its topology consistently with the SM and memory
+topology; do not infer `k` from a universal formula.
 
 ### Step 5: Verify Configuration
 
@@ -251,12 +208,11 @@ SM and memory topology; do not infer `k` from a universal formula.
 
 There is no universal 16-controller minimum in GPGPU-Sim. Controller count,
 sub-partitions, address mapping, L2 geometry, and interconnect topology must be
-configured as one consistent model. The RTX 5090 full/reduced pair keeps 16 in
-both configs; the H100 reduced config intentionally models fewer controllers
-than full H100.
+configured as one consistent model. The RTX 5090 config uses 16 controllers,
+while the H100 config uses 80.
 
 ```bash
--gpgpu_n_mem 16  # RTX 5090 full/reduced value
+-gpgpu_n_mem 16  # RTX 5090 value
 ```
 
 ### Cache Configuration
@@ -273,8 +229,12 @@ L1 cache and shared memory share unified space:
 
 Format: `Core:Interconnect:L2:DRAM` (in MHz)
 ```bash
--gpgpu_clock_domains 1836:1836:1836:14001
+-gpgpu_clock_domains 2580:2580:2580:14001
 ```
+
+The RTX 5090 memory clock is reported by the NVIDIA driver as 14001 MHz;
+this is the driver-visible value corresponding to the nominal 14000 MHz
+memory clock used in the paper.
 
 ## Testing Configurations
 
@@ -300,7 +260,7 @@ After creating a new configuration:
 
 ### Performance issues
 - Reduce SM count for faster simulation
-- Use SM120_RTX5090_REDUCED for development
+- Create a purpose-specific configuration with a consistently scaled topology
 - Check memory subsystem configuration
 
 ## References

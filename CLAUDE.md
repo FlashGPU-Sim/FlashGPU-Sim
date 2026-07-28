@@ -74,8 +74,8 @@ To run tests on real GPU hardware without simulator overhead:
 ./test/run_tests.sh test "*MMA*"              # All MMA tests
 ./test/run_tests.sh test "cuda_mma_s8_test"   # Specific test suite
 
-# Use reduced configuration for faster iteration
-./test/run_tests.sh -c SM120_RTX5090_REDUCED test "*MMA*"
+# Select the full SM120 configuration explicitly
+./test/run_tests.sh -c SM120_RTX5090 test "*MMA*"
 
 # Run microbenchmarks (separate binaries, not included in 'test')
 ./test/run_tests.sh bench "*MMAIssue*"         # MMA issue gap benchmarks
@@ -101,12 +101,11 @@ To run tests on real GPU hardware without simulator overhead:
 
 **GPU configurations**:
 - `SM120_RTX5090` (default): Full simulation, high memory/time
-- `SM120_RTX5090_REDUCED`: Lightweight (1 SM), fast iteration
 
 ### Running Single Tests During Development
 ```bash
 # Pattern: ./test/run_tests.sh -c <config> test "<pattern>"
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090_REDUCED test "MMAS8M16N8K16*"
+source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090 test "MMAS8M16N8K16*"
 ```
 
 ## Code Architecture
@@ -294,7 +293,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 - Forget to source `setup.sh && setup_environment` before building/testing
 
 ### DO
-- Use reduced GPU configs for development iterations
+- Run focused test patterns for development iterations
 - Run specific test patterns matching your changes
 - Add comprehensive tests for new features
 - Update documentation when modifying interfaces
@@ -423,7 +422,7 @@ make FLASH=1 -j$(nproc)
 ./test/run_tests.sh build test         # Build verification tests only
 ./test/run_tests.sh build bench        # Build microbenchmarks only
 ./test/run_tests.sh build dev          # Build standalone dev tests only
-./test/run_tests.sh -c SM120_RTX5090_REDUCED test "MMAS8*"
+./test/run_tests.sh -c SM120_RTX5090 test "MMAS8*"
 ./test/run_tests.sh bench "*MMAIssue*" # Run microbenchmarks
 ./test/run_tests.sh dev                # Run standalone dev tests
 

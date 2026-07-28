@@ -1893,6 +1893,7 @@ class shader_core_config : public core_config {
   unsigned max_barriers_per_cta;
   char *gpgpu_scheduler_string;
   unsigned gpgpu_shmem_per_block;
+  unsigned gpgpu_shmem_per_block_optin;
   unsigned gpgpu_registers_per_block;
   char *pipeline_widths_string;
   int pipe_widths[N_PIPELINE_STAGES];
@@ -1949,6 +1950,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_num_tensormap_units;
   unsigned int gpgpu_tma_max_inflight;
   unsigned int gpgpu_tma_tx_quota;
+  unsigned int gpgpu_tma_quota_segment_bytes;
   unsigned int gpgpu_tma_response_width;
   unsigned int gpgpu_tma_request_granularity;
   unsigned int gpgpu_tma_request_width;
