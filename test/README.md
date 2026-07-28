@@ -71,7 +71,7 @@ requires `--target fa2|fa3`. Every target requires `--group`. Use
 ./run_tests.sh run trace --target sm120 --group gpt2 flash_attn
 
 # Explicit compatible configuration
-./run_tests.sh -c SM120_RTX5090_REDUCED run test --target sm120 \
+./run_tests.sh -c SM120_RTX5090 run test --target sm120 \
   --group integration CudaVectorAdd
 ```
 
@@ -82,8 +82,6 @@ Use their local Makefiles to supply benchmark-specific runtime arguments.
 ## GPU Configurations
 
 - **SM120_RTX5090**: default SM120 configuration.
-- **SM120_RTX5090_REDUCED**: lightweight SM120 configuration for quick tests
-  and CI.
 - **SM90_H100**: default Hopper configuration.
 
 Additional configuration directories are discovered automatically when they
@@ -94,9 +92,8 @@ contain `gpgpusim.config`. Run `./run_tests.sh list-configs` to list them.
 For detailed test-to-configuration mapping and test status, see:
 - **[docs/test-configuration-matrix.md](../docs/test-configuration-matrix.md)** - Complete test suite reference
 
-**Recommended config rule:**
-- MMA tests (single-block functionality) → `SM120_RTX5090_REDUCED`
-- Other tests (multi-block validation) → `SM120_RTX5090`
+Use `SM120_RTX5090` for SM120 tests and `SM90_H100` for Hopper tests unless
+an experiment explicitly requires another architecture-specific configuration.
 
 ## Test Organization
 

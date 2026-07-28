@@ -359,7 +359,7 @@ When developing with generic addressing:
    - Kernels with maximum shared memory
    - Configurations with many SMs
    - Large global memory allocations
-4. **Use reduced configs for iteration**: `SM120_RTX5090_REDUCED` for faster debugging
+4. **Run focused tests while iterating**: avoid unrelated suites during debugging
 
 ## References
 

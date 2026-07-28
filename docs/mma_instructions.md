@@ -297,14 +297,14 @@ mma.store.d.sync.aligned.m16n8k16.s32 [addr_d], {r4, r5, r6, r7};
 source setup.sh
 source setup_environment
 
-# Run all tests with reduced configuration
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run
+# Run all tests with the full SM120 configuration
+./test/run_tests.sh -c SM120_RTX5090 run
 
 # Run specific MMA test files
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaMmaF16Test
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaMmaBf16Test
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaMmaTf32Test
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run CudaMmaS8Test
+./test/run_tests.sh -c SM120_RTX5090 run CudaMmaF16Test
+./test/run_tests.sh -c SM120_RTX5090 run CudaMmaBf16Test
+./test/run_tests.sh -c SM120_RTX5090 run CudaMmaTf32Test
+./test/run_tests.sh -c SM120_RTX5090 run CudaMmaS8Test
 ```
 
 ### Coverage Goals

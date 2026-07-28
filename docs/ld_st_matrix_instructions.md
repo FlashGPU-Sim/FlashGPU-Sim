@@ -257,11 +257,11 @@ source setup.sh && source setup_environment
 ./test/run_tests.sh build
 
 # Run all ldmatrix/stmatrix tests (8 tests total: 6 non-transpose + 2 transpose)
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*LdMatrix*"
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*StMatrix*"
+./test/run_tests.sh -c SM120_RTX5090 run "*LdMatrix*"
+./test/run_tests.sh -c SM120_RTX5090 run "*StMatrix*"
 
 # Run only transpose tests (2 tests)
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*Trans*"
+./test/run_tests.sh -c SM120_RTX5090 run "*Trans*"
 ```
 
 ## References

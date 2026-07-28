@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # CI test harness for automated testing
-# This script runs GPGPU-Sim tests with reduced SM120 and SM90 configurations
-# for resource-efficient CI/CD pipelines.
+# This script runs GPGPU-Sim tests with full SM120 and SM90 configurations
+# by default; CI_* environment variables can override them when needed.
 
 set -euo pipefail
 
@@ -101,10 +101,6 @@ run_gtest_group() {
   unset GTEST_OUTPUT
 }
 
-run_logged reduced-config-parity-regression \
-  python3 test/scripts/test_reduced_config_parity.py
-run_logged reduced-config-parity \
-  python3 test/scripts/check_reduced_config_parity.py
 run_logged ptx-scheduler-operand-regression \
   python3 test/scripts/test_ptx_scheduler_probe_operands.py
 run_logged gtest-discovery-output-regression \
@@ -139,8 +135,8 @@ else
 fi
 
 # CI_TEST_CONFIG remains a backward-compatible alias for the SM120 config.
-SM120_TEST_CONFIG="${CI_SM120_TEST_CONFIG:-${CI_TEST_CONFIG:-SM120_RTX5090_REDUCED}}"
-SM90_TEST_CONFIG="${CI_SM90_TEST_CONFIG:-SM90_H100_REDUCED}"
+SM120_TEST_CONFIG="${CI_SM120_TEST_CONFIG:-${CI_TEST_CONFIG:-SM120_RTX5090}}"
+SM90_TEST_CONFIG="${CI_SM90_TEST_CONFIG:-SM90_H100}"
 
 echo "Running SM120 tests with configuration: $SM120_TEST_CONFIG"
 echo "Running SM90 tests with configuration: $SM90_TEST_CONFIG"

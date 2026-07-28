@@ -11,7 +11,7 @@ PTX_DIR = $(TRACE_DIR)ptx
 DATA_ARCHIVE = $(TRACE_DIR)gpt2_trace_data.tar.gz
 
 # GPU config (set via run_tests.sh -c or default)
-GPU_CONFIG ?= SM120_RTX5090_REDUCED
+GPU_CONFIG ?= SM120_RTX5090
 CONFIGS_DIR = $(TRACE_DIR)../../../configs
 
 # Build output goes to test/build/trace/

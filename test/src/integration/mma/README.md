@@ -59,45 +59,26 @@ Tests S8 (signed 8-bit integer) MMA operations with M16N8K16 and M16N8K32 shapes
 
 ## Running Tests
 
-### Quick Test (Recommended for Development)
-
-Use reduced GPU configuration for fast iteration:
+Use the full SM120 configuration:
 
 ```bash
 # Run all MMA tests
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*MMA*"
+./test/run_tests.sh -c SM120_RTX5090 run "*MMA*"
 
 # Run specific data type tests
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "CudaMmaF16Test*"
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "CudaMmaBf16Test*"
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "CudaMmaTf32Test*"
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "CudaMmaS8Test*"
+./test/run_tests.sh -c SM120_RTX5090 run "CudaMmaF16Test*"
+./test/run_tests.sh -c SM120_RTX5090 run "CudaMmaBf16Test*"
+./test/run_tests.sh -c SM120_RTX5090 run "CudaMmaTf32Test*"
+./test/run_tests.sh -c SM120_RTX5090 run "CudaMmaS8Test*"
 
 # Run specific test case
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "CudaMmaF16Test.AllOnesTest"
-```
-
-**Configuration**: `SM120_RTX5090_REDUCED`
-- 1 SM (streaming multiprocessor)
-- 1 L2 cache partition
-- 1 DDR memory controller
-- Fast execution, low memory usage
-- Ideal for functional validation
-
-### Full Validation
-
-Use full GPU configuration for comprehensive testing:
-
-```bash
-./test/run_tests.sh -c SM120_RTX5090 run "*MMA*"
+./test/run_tests.sh -c SM120_RTX5090 run "CudaMmaF16Test.AllOnesTest"
 ```
 
 **Configuration**: `SM120_RTX5090` (default)
 - 170 SMs
 - 16 memory controllers
 - Complete hardware simulation
-- High memory and time requirements
-- Use for final verification before merge
 
 ## Test Structure
 
