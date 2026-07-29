@@ -192,7 +192,6 @@ runs directly in PR CI.
 
 - [Testing Instructions](testing-instructions.md) - How to run tests
 - [Test Framework README](../test/README.md) - Test framework overview
-- [CLAUDE.md](../CLAUDE.md) - Quick reference for Claude Code
 
 ---
 

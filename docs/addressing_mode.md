@@ -365,7 +365,6 @@ When developing with generic addressing:
 
 - PTX ISA Specification: Generic Addressing (Section 3.1.4)
 - CUDA Programming Guide: Memory Hierarchy (Chapter 4)
-- FlashGPU-Sim: `CLAUDE.md` (build and test instructions)
 - Source Files:
   - `src/abstract_hardware_model.h` (address space constants)
   - `src/cuda-sim/cuda-sim.cc` (address translation functions)
