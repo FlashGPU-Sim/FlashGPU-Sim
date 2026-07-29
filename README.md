@@ -3,16 +3,15 @@
 FlashGPU-Sim is a cycle-accurate simulator for modern GPU architectures
 and AI workloads.
 
-[Getting Started](#getting-started) · [Tutorials](#tutorials) ·
+[Quick Start](#quick-start) · [Tutorials](#tutorials) ·
 [Documentation](#documentation) · [Citation](#citation)
 
 ## Overview
 
-<!-- Briefly introduce the problems FlashGPU-Sim addresses, its target
-architectures and workloads, and its main differences from conventional
-GPGPU-Sim workflows. -->
-
-## Key Capabilities
+FlashGPU-Sim is an execution-driven, cycle-accurate simulator for modern GPU
+architectures and AI workloads, built upon GPGPU-Sim. The project includes
+updated GPU execution models and configurations, Triton capture-and-replay
+tools, validation infrastructure, and multi-threaded simulation support.
 
 <!-- Summarize the major capabilities in a compact status table. Distinguish
 Hopper/SM90 from Blackwell/SM120 and use conservative status labels such as
@@ -32,27 +31,74 @@ Supported, Partial, and Experimental. -->
 <!-- List a small number of high-level development directions. Keep detailed
 tasks and rapidly changing feature status outside the root README. -->
 
-## Getting Started
+## Quick Start
 
-### Prerequisites
+### Dependencies
 
-<!-- Summarize the supported host platform, compiler, CUDA toolkit, and other
-required dependencies. -->
+FlashGPU-Sim is developed and tested on Linux. A host build requires:
 
-### Docker Setup
+- CUDA Toolkit
+- GCC/G++ with C++17 and OpenMP support
+- GNU Make, Flex, Bison, zlib development headers, and X11/OpenGL development
+  headers
 
-<!-- Provide the shortest supported Docker workflow and link to the detailed
-Docker documentation. -->
+The current build and CI environments use CUDA 12.8. A physical GPU is not
+required to build or run the simulator, but is required to capture Triton
+workloads or collect Nsight Compute measurements. See the
+[build instructions](docs/build-instructions.md) for additional details.
 
-### Host Setup
+### Build
 
-<!-- Provide the shortest supported host build workflow. Flash mode is enabled
-by default. -->
+Configure the environment and build the simulator from the repository root:
 
-### Verify the Installation
+```bash
+export CUDA_INSTALL_PATH=/path/to/cuda
+source setup_environment
+make -j"$(nproc)"
+```
 
-<!-- Provide one lightweight command that confirms the simulator was built and
-used successfully. -->
+> Remember to export `CUDA_INSTALL_PATH` and re-source `setup_environment`
+> whenever you open a new shell.
+
+### Run a Simulation
+
+Using the environment configured above:
+
+1. Compile the application with the shared CUDA runtime and retain PTX for the
+   target architecture. For example, to target the SM120 configuration:
+
+   ```bash
+   nvcc -std=c++17 -cudart shared \
+     -gencode arch=compute_120a,code=sm_120a \
+     -gencode arch=compute_120a,code=compute_120a \
+     application.cu -o application
+   ```
+
+   The executable must link against the shared CUDA runtime:
+
+   - When `nvcc` performs the final link, use `-cudart shared`.
+   - When `g++` performs the final link, use
+     `-L"$CUDA_INSTALL_PATH/lib64" -lcudart`.
+
+   Do not link `libcudart_static`. A statically linked CUDA runtime bypasses
+   FlashGPU-Sim's replacement runtime and invokes the real NVIDIA driver, so
+   the application is not intercepted by the simulator. The PTX target must
+   match the selected simulator configuration.
+
+2. Create a run directory containing the executable and the complete GPU
+   configuration, then run the application from that directory:
+
+   ```bash
+   mkdir -p run/application
+   cp -a configs/SM120_RTX5090/. run/application/
+   cp application run/application/
+   cd run/application
+   ./application
+   ```
+
+FlashGPU-Sim reads `gpgpusim.config` from the current working directory, along
+with any files referenced by that configuration. A successful simulation
+prints `gpu_tot_sim_cycle` in its output.
 
 ## Tutorials
 
