@@ -149,7 +149,8 @@ When adding support for new MMA shapes or data types:
 
 ```bash
 # Verify environment setup
-source setup.sh && source setup_environment
+export CUDA_INSTALL_PATH=/path/to/cuda
+source setup_environment
 
 # Rebuild tests
 ./test/run_tests.sh build test --target sm120 --group integration

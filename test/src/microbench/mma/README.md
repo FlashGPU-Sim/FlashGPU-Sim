@@ -69,7 +69,7 @@ python3 src/microbench/mma/run_calibration.py
 
 This script:
 1. Runs `MMAIssueTest.ILPMinimal` and `MMAIssueTest.MultiWarpMinimal` on native hardware.
-2. Sources `setup.sh` and `setup_environment`, then reruns the same cases on GPGPU-Sim.
+2. Sources `setup_environment`, then reruns the same cases on GPGPU-Sim.
 3. Captures the per-variant outputs and generates comparison plots/CSVs in `test/calibration_results/`.
 
 **Output:**

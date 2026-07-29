@@ -20,8 +20,8 @@ GPGPUSIM_BUILD_STRING="gpgpu-sim_git-commit-$GIT_COMMIT-modified_$GIT_FILES_CHAN
 
 echo -n "GPGPU-Sim version $GPGPUSIM_VERSION_STRING (build $GPGPUSIM_BUILD_STRING) ";
 
-if [ ! -n "$CUDA_INSTALL_PATH" ]; then
-	echo "ERROR ** Install CUDA Toolkit and set CUDA_INSTALL_PATH.";
+if [ -z "${CUDA_INSTALL_PATH:-}" ]; then
+	echo "ERROR ** Install CUDA Toolkit and set CUDA_INSTALL_PATH to its root directory.";
 	return 1;
 fi
 

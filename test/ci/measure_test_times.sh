@@ -9,6 +9,12 @@ set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+if [ -z "${CUDA_INSTALL_PATH:-}" ]; then
+  echo "ERROR: set CUDA_INSTALL_PATH to the CUDA Toolkit root before measuring tests"
+  exit 1
+fi
+source setup_environment
+
 # Default timeout per test (10 minutes)
 TIMEOUT_PER_TEST="${1:-600}"
 
@@ -72,7 +78,7 @@ for test_pattern in "${TEST_SUITES[@]}"; do
     filter="$test_pattern"
   fi
 
-  if bash -c "source setup.sh && source setup_environment && timeout ${TIMEOUT_PER_TEST} ./test/run_tests.sh -c '$TEST_CONFIG' run test '$filter'" &>/dev/null; then
+  if timeout "$TIMEOUT_PER_TEST" ./test/run_tests.sh -c "$TEST_CONFIG" run test "$filter" &>/dev/null; then
     status="PASS"
   else
     exit_code=$?

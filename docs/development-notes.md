@@ -12,7 +12,7 @@ From the repository root, configure the CUDA and simulator environment before
 building or running simulator-backed tests:
 
 ```bash
-source setup.sh
+export CUDA_INSTALL_PATH=/path/to/cuda
 source setup_environment
 make FLASH=1 -j"$(nproc)"
 ```

@@ -50,36 +50,29 @@ make docker-shell
 cd flashgpu-sim/test/triton_trace/validation
 ```
 
-That container already provides CUDA 13 tooling plus a Python 3.12 venv with
-`uv`, PyTorch, Triton, NumPy, and SCons. The manual host-side venv setup below
-is only for working outside Docker.
+That container provides the CUDA and Python tooling used by this workflow,
+including a Python 3.12 venv with `uv`, PyTorch, Triton, NumPy, and SCons. The
+manual host-side venv setup below is only for working outside Docker.
 
 Create the local Python environment first. Use Python 3.12 for the current
 Torch/Triton wheels; the host default Python may be newer than supported wheels.
 Install `uv` inside the venv, then use `uv pip` for the large packages:
 
 ```bash
-cd /data/wzr/rtl-lib/flashgpu-gem5-top/flashgpu-sim
-python3.12 -m venv test/triton_trace/.venv
-test/triton_trace/.venv/bin/python -m pip install -U pip uv
-
-UV_CACHE_DIR=/data/wzr/rtl-lib/.uv-cache \
-  test/triton_trace/.venv/bin/uv pip install \
-  --python test/triton_trace/.venv/bin/python \
-  --link-mode hardlink \
-  torch triton numpy nvidia-cuda-nvcc nvidia-cuda-cuobjdump
+cd test/triton_trace
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -U pip uv
+.venv/bin/uv pip install --python .venv/bin/python torch triton numpy
 ```
 
-`nvidia-cuda-nvcc` and `nvidia-cuda-cuobjdump` are required on RTX 5090/SM120
-flows because recent Triton emits PTX 9.1 with `sm_120a`; the system CUDA 12.x
-`ptxas` cannot assemble it. `setup.sh` prefers the repo-local venv CUDA toolkit
-when `CUDA_INSTALL_PATH` is not already set, and the validation sweep scripts put
-the venv CUDA `nvcc` before the system CUDA toolkit when building generated
-launchers.
+Select a CUDA Toolkit compatible with the PTX version and target emitted by
+the installed Triton release. Generated artifacts normally include a captured
+CUBIN and a PTX sidecar. CUDA tool packages installed through pip are optional
+fallbacks when equivalent system Toolkit tools are unavailable.
 
 ```bash
 # Run the example
-source test/triton_trace/.venv/bin/activate
+source .venv/bin/activate
 python examples/example_vector_add.py
 
 # Build and run the generated harness
@@ -244,15 +237,14 @@ confirm that `setup_environment` has selected the simulator `libcudart` and that
 the run log contains `gpu_tot_sim_cycle`. If validation passes but the log has no
 simulator cycle counters, the executable ran through the real CUDA runtime.
 
-Current SM120/Triton 3.7 launchers use CUDA 13 user-space libraries for real-GPU
-replay. Build FlashGPU-Sim after `source setup.sh && source setup_environment`
-so the simulator runtime uses the venv CUDA 13 toolkit. Generated Triton
-launchers load a cubin through `cuModuleLoad`; for simulation, the runtime uses
-the captured sidecar PTX next to that cubin.
+Generated Triton launchers load a CUBIN through `cuModuleLoad`; for simulation,
+the runtime uses the captured PTX sidecar next to that CUBIN. Build
+FlashGPU-Sim with a CUDA Toolkit compatible with the captured artifacts.
 
 ```bash
-source setup.sh && source setup_environment
-cd triton_kernel_tracking/<test>/.../launchers
+export CUDA_INSTALL_PATH=/path/to/cuda
+source setup_environment
+cd test/triton_trace/triton_kernel_tracking/<test>/.../launchers
 ./<kernel>_launch1
 ```
 

@@ -7,8 +7,8 @@
 Before running tests with GPGPU-Sim simulation, ensure the environment is properly configured:
 
 ```bash
-# Source environment setup scripts (REQUIRED for simulator mode)
-source setup.sh
+# Select a CUDA Toolkit and configure simulator paths (REQUIRED for simulator mode)
+export CUDA_INSTALL_PATH=/path/to/cuda
 source setup_environment
 ```
 
@@ -26,7 +26,7 @@ To run tests on real GPU hardware (for test validation), ensure:
 ## Building Tests
 
 ```
-source setup.sh && source setup_environment && ./test/run_tests.sh build
+./test/run_tests.sh build
 ```
 
 **Note:** Never directly invoke the built test binary as it does not have GPU configuration files! Always use `run_tests.sh` as the driver.
@@ -42,13 +42,13 @@ This prevents test failures from stale library builds. In native GPU mode, the s
 
 ```bash
 # Run all tests with default configuration (SM120_RTX5090)
-source setup.sh && source setup_environment && ./test/run_tests.sh test
+./test/run_tests.sh test
 
 # Run tests with the full SM120 configuration explicitly
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090 test
+./test/run_tests.sh -c SM120_RTX5090 test
 
 # List available GPU configurations
-source setup.sh && source setup_environment && ./test/run_tests.sh list-configs
+./test/run_tests.sh list-configs
 ```
 
 ## GPU Configurations
@@ -65,17 +65,17 @@ The test framework supports multiple GPU configurations:
 **Selecting a configuration:**
 ```bash
 # Explicit config selection
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090 test
+./test/run_tests.sh -c SM120_RTX5090 test
 
 # Run specific test with config
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090 test CudaVectorAdd
+./test/run_tests.sh -c SM120_RTX5090 test CudaVectorAdd
 ```
 
 ## Listing Available Tests
 
 List all available test cases using GoogleTest's `--gtest_list_tests`:
 ```bash
-source setup.sh && source setup_environment && ./test/run_tests.sh list
+./test/run_tests.sh list
 ```
 
 This displays the actual test suite and test case names from the compiled test binary.
@@ -84,7 +84,7 @@ This displays the actual test suite and test case names from the compiled test b
 
 **Note:** You can pass test name (with regex matches), which will be passed to the test binary as `--gtest_filter`. No need to pass in `--gtest_filter` in the command line of `run_tests.sh`.
 ```bash
-source setup.sh && source setup_environment && ./test/run_tests.sh -c SM120_RTX5090 test "*MMA*"
+./test/run_tests.sh -c SM120_RTX5090 test "*MMA*"
 ```
 
 ## Native GPU Mode (Test Validation)
@@ -169,18 +169,15 @@ TMA instructions (`cp.async.bulk.tensor`) use the Triton-based test workflow to 
    python3.12 -m venv test/triton_trace/.venv
    test/triton_trace/.venv/bin/python -m pip install -U pip uv
 
-   UV_CACHE_DIR=/data/wzr/rtl-lib/.uv-cache \
-     test/triton_trace/.venv/bin/uv pip install \
+   test/triton_trace/.venv/bin/uv pip install \
      --python test/triton_trace/.venv/bin/python \
-     --link-mode hardlink \
-     torch triton numpy nvidia-cuda-nvcc nvidia-cuda-cuobjdump
+     torch triton numpy
    ```
 
-   Use the venv CUDA toolkit when Triton emits PTX 9.1 / `sm_120a`; CUDA 12.x
-   `ptxas` cannot assemble those kernels. `setup.sh` prefers the repo-local venv
-   CUDA toolkit when `CUDA_INSTALL_PATH` is not already set, and the validation
-   sweep scripts detect the venv CUDA `nvcc` automatically after activating
-   `.venv`.
+   Select a CUDA Toolkit compatible with the PTX version and target emitted by
+   the installed Triton release. The generated artifacts normally include a
+   captured CUBIN and a PTX sidecar; CUDA tool packages installed through pip
+   are optional fallbacks when equivalent system Toolkit tools are unavailable.
 
 2. **Modify Test Kernels**: Edit `test/triton_trace/example_tensor_add.py` with test variants
 
@@ -199,7 +196,8 @@ TMA instructions (`cp.async.bulk.tensor`) use the Triton-based test workflow to 
 5. **Execute Under GPGPU-Sim**:
    ```bash
    # CRITICAL: Source environment first (otherwise runs on real GPU!)
-   source setup.sh && source setup_environment
+   export CUDA_INSTALL_PATH=/path/to/cuda
+   source setup_environment
    cd test/triton_trace/triton_kernel_tracking/example_tensor_add/launchers
    ./kernel_add_1d_launch2
    ```

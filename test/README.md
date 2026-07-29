@@ -7,9 +7,9 @@ Unit and integration tests for GPGPU-Sim using Google Test.
 ### Simulator Mode
 
 ```bash
+export CUDA_INSTALL_PATH=/path/to/cuda
+source setup_environment
 cd test
-source ../setup.sh
-source ../setup_environment
 ./run_tests.sh setup
 ./run_tests.sh run test --target sm120 --group unit
 ./run_tests.sh run test --target sm120 --group integration

@@ -40,6 +40,8 @@
 #   --causal       Enable causal masking
 #
 # Environment:
+#   CUDA_INSTALL_PATH
+#                  CUDA Toolkit root used for simulator builds and replay.
 #   TRITON_TRACKING_ROOT
 #                  Absolute output root for supported trace generators.
 #   GPGPUSIM_CLOCK_DOMAINS_OVERRIDE
@@ -611,6 +613,18 @@ require_clean_env() {
     fi
 }
 
+source_simulator_environment() {
+    if [[ -z "${CUDA_INSTALL_PATH:-}" ]]; then
+        echo "ERROR: set CUDA_INSTALL_PATH to the CUDA Toolkit root before simulator replay."
+        exit 1
+    fi
+
+    # setup_environment is a legacy sourced script and is not nounset-safe.
+    set +u
+    source "$REPO_ROOT/setup_environment"
+    set -u
+}
+
 activate_triton_env() {
     if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
         return
@@ -680,19 +694,6 @@ do_trace() {
     require_clean_env
 
     activate_triton_env
-    VENV_CUDA_BIN="$(python - <<'PY'
-import site
-from pathlib import Path
-
-for root in site.getsitepackages():
-    for path in sorted(Path(root).glob("nvidia/cu*/bin/nvcc"), reverse=True):
-        print(path.parent)
-        raise SystemExit
-PY
-)"
-    if [[ -n "$VENV_CUDA_BIN" ]]; then
-        export PATH="$VENV_CUDA_BIN:$PATH"
-    fi
 
     # Generate trace
     local py_args
@@ -739,10 +740,7 @@ do_run() {
         source "$TOP_ROOT/scripts/env.sh"
     fi
 
-    set +u
-    source "$REPO_ROOT/setup.sh"
-    source "$REPO_ROOT/setup_environment"
-    set -u
+    source_simulator_environment
 
     if is_multi_launch; then
         local shape_log_dir="$SIM_LOG_DIR/${subdir}"
@@ -897,10 +895,7 @@ do_gem5() {
                 source "$TOP_ROOT/scripts/env.sh"
 
                 cd "$REPO_ROOT"
-                set +u
-                source setup.sh
-                source setup_environment
-                set -u
+                source_simulator_environment
 
                 cd "$launcher_dir"
                 timeout "$timeout_sec" "./$exe"
@@ -965,10 +960,7 @@ do_gem5() {
         source "$TOP_ROOT/scripts/env.sh"
 
         cd "$REPO_ROOT"
-        set +u
-        source setup.sh
-        source setup_environment
-        set -u
+        source_simulator_environment
 
         cd "$launcher_dir"
         timeout "$timeout_sec" "./${KERNEL_NAME}_launch1"

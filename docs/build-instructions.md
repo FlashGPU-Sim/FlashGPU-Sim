@@ -8,12 +8,14 @@ Before building, ensure the environment is properly configured.
 
 ## Build Steps
 
-### 1. Source Setup Scripts
+### 1. Configure the Environment
 
 ```bash
-source setup.sh
+export CUDA_INSTALL_PATH=/path/to/cuda
 source setup_environment
 ```
+
+`CUDA_INSTALL_PATH` must name the CUDA Toolkit root containing `bin/nvcc`.
 
 ### 2. Build the Project
 

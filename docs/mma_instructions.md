@@ -294,7 +294,7 @@ mma.store.d.sync.aligned.m16n8k16.s32 [addr_d], {r4, r5, r6, r7};
 
 ```bash
 # Setup environment (REQUIRED before testing)
-source setup.sh
+export CUDA_INSTALL_PATH=/path/to/cuda
 source setup_environment
 
 # Run all tests with the full SM120 configuration

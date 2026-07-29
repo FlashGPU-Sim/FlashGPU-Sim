@@ -23,7 +23,7 @@ Integration tests validate end-to-end functionality by:
 
 Source environment setup before running tests:
 ```bash
-source setup.sh
+export CUDA_INSTALL_PATH=/path/to/cuda
 source setup_environment
 ```
 
@@ -186,7 +186,7 @@ Current status: **25/25 tests passing** (F16: 16, BF16: 5, TF32: 5, S8: 4)
 
 If tests fail to compile:
 - Verify CUDA_INSTALL_PATH is set: `echo $CUDA_INSTALL_PATH`
-- Source environment: `source setup.sh && source setup_environment`
+- Source environment: `source setup_environment`
 - Check CUDA toolkit version supports architecture (sm90 for TF32 M16N8K4)
 
 ### Test Execution Failures

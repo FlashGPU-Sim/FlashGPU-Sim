@@ -251,7 +251,8 @@ Run ldmatrix/stmatrix tests:
 
 ```bash
 # Setup environment
-source setup.sh && source setup_environment
+export CUDA_INSTALL_PATH=/path/to/cuda
+source setup_environment
 
 # Build tests
 ./test/run_tests.sh build
