@@ -5,7 +5,8 @@ architectures and AI workloads, built upon GPGPU-Sim. The project includes
 updated GPU execution models and configurations, Triton capture-and-replay
 tools, validation infrastructure, and multi-threaded simulation support.
 
-[Simulator Setup](#simulator-setup) · [Tutorials](#tutorials) ·
+[Quick Start](#quick-start) ·
+[Tutorials](#tutorials) ·
 [Documentation](#documentation) · [Citation](#citation)
 
 <!-- Summarize the major capabilities in a compact status table. Distinguish
@@ -41,7 +42,7 @@ The current build and CI environments use CUDA 12.8. A physical GPU is not
 required to build or run the simulator, but is required to capture Triton
 workloads or collect Nsight Compute measurements.
 
-### Build
+### Build the Simulator
 
 Configure the environment and build the simulator from the repository root:
 
@@ -63,58 +64,76 @@ cd tutorial/vectorAdd
 ./run.sh
 ```
 
-The script builds the workload, prepares the `SM120_RTX5090` configuration in
-`tutorial/vectorAdd/run/`, verifies that the executable uses FlashGPU-Sim's
-CUDA runtime, and starts the simulation. Output is displayed in the terminal
-and saved to `tutorial/vectorAdd/run/simulation.log`. A successful run prints
-`Test PASSED` for functional correctness. Inspect the simulated cycle count
-with:
+A successful run prints `Test PASSED` for functional correctness.
+Inspect the simulated cycle count with:
 
 ```bash
 grep gpu_tot_sim_cycle run/simulation.log
 ```
 
+For Triton capture and replay, see the
+[Triton GEMM tutorial](tutorial/triton-gemm/).
+
 ## Tutorials
 
-### CUDA Vector Addition
+The bundled scripts automate each example end to end; the sections below
+break down the same workflows for adaptation to custom CUDA and Triton
+workloads.
 
-1. Compile the application with the shared CUDA runtime and retain PTX for the
-   target architecture. For example, to target the SM120 configuration:
+### Run with CUDA
 
-   ```bash
-   nvcc -std=c++17 -cudart shared \
-     -gencode arch=compute_120a,code=sm_120a \
-     -gencode arch=compute_120a,code=compute_120a \
-     application.cu -o application
-   ```
+This workflow manually steps through the bundled `vectorAdd` example.  
+Prerequisites: Ensure FlashGPU-Sim is built, and `setup_environment` is sourced.  
+From the repository root, enter the example directory:  
 
-   The executable must link against the shared CUDA runtime:
+```bash
+cd tutorial/vectorAdd
+```
 
-   - When `nvcc` performs the final link, use `-cudart shared`.
-   - When `g++` performs the final link, use
-     `-L"$CUDA_INSTALL_PATH/lib64" -lcudart`.
+#### Step 1: Compile the CUDA Workload
 
-   Do not link `libcudart_static`. A statically linked CUDA runtime bypasses
-   FlashGPU-Sim's replacement runtime and invokes the real NVIDIA driver, so
-   the application is not intercepted by the simulator. The PTX target must
-   match the selected simulator configuration.
+Create a `run/` directory and compile `vectorAdd.cu` with the shared CUDA runtime, 
+generating a code image and retaining PTX for the target
+architecture. The following example targets SM120:
 
-2. Create a run directory containing the executable and the complete GPU
-   configuration, then run the application from that directory:
+```bash
+mkdir -p run
+nvcc -std=c++17 -cudart shared \
+  -gencode arch=compute_120a,code=sm_120a \
+  -gencode arch=compute_120a,code=compute_120a \
+  vectorAdd.cu -o run/vectorAdd
+```
 
-   ```bash
-   mkdir -p run/application
-   cp -a configs/SM120_RTX5090/. run/application/
-   cp application run/application/
-   cd run/application
-   ./application
-   ```
+The `compute_120a` and `sm_120a` targets match the bundled
+`configs/SM120_RTX5090/` configuration. When selecting another simulator
+configuration, adjust both targets to its compute capability.
+
+> [!IMPORTANT]
+> FlashGPU-Sim intercepts CUDA runtime calls by loading its replacement
+> `libcudart` through the library path set by `setup_environment`. The
+> executable must therefore depend on the shared CUDA runtime.
+>
+> - When `nvcc` performs the final link, use `-cudart shared`.
+> - When `g++` performs the final link, use
+>   `-L"$CUDA_INSTALL_PATH/lib64" -lcudart`.
+> - Do not link `libcudart_static.a`; embedding the CUDA runtime in the
+>   executable prevents FlashGPU-Sim's replacement library from being loaded.
+
+#### Step 2: Prepare the Configuration and Execute
+
+Copy the GPU configuration into the `run/` directory and start the simulation:
+
+```bash
+cp -a ../../configs/SM120_RTX5090/. run/
+cd run && ./vectorAdd 2>&1 | tee simulation.log
+```
 
 FlashGPU-Sim reads `gpgpusim.config` from the current working directory, along
-with any files referenced by that configuration. A successful simulation
-prints `gpu_tot_sim_cycle` in its output.
+with any files referenced by that configuration. A successful run reports
+`Test PASSED` for functional correctness and `gpu_tot_sim_cycle` for the
+simulated cycle count; the complete output is saved to `simulation.log`.
 
-### Triton Kernel Capture and Replay
+### Run with Triton
 
 <!-- Introduce and link to the standalone Triton tutorial under tutorial/.
 Clearly separate native-GPU capture from simulator replay. -->

@@ -10,18 +10,18 @@ RUN_DIR="${SCRIPT_DIR}/run"
 APP="${RUN_DIR}/vectorAdd"
 LOG_FILE="${RUN_DIR}/simulation.log"
 
-echo "[1/4] Checking the FlashGPU-Sim environment"
+echo "[1/4] Configuring FlashGPU-Sim"
 
 if [[ "${GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN:-}" != "1" ]]; then
-  echo "Error: FlashGPU-Sim environment is not configured." >&2
-  echo "Run 'source setup_environment' from the repository root." >&2
-  exit 1
+  set +u
+  source "${REPO_ROOT}/setup_environment"
+  set -u
 fi
 
 if [[ -z "${GPGPUSIM_ROOT:-}" ]] ||
   [[ "$(cd -- "${GPGPUSIM_ROOT}" && pwd -P)" != "${REPO_ROOT}" ]]; then
   echo "Error: GPGPUSIM_ROOT does not point to this FlashGPU-Sim checkout." >&2
-  echo "Run 'source setup_environment' from ${REPO_ROOT}." >&2
+  echo "Open a new shell and run this script again." >&2
   exit 1
 fi
 
@@ -33,7 +33,7 @@ fi
 SIM_LIB_DIR="${REPO_ROOT}/lib/${GPGPUSIM_CONFIG}"
 if [[ ! -f "${SIM_LIB_DIR}/libcudart.so" ]]; then
   echo "Error: FlashGPU-Sim has not been built for the current environment." >&2
-  echo "Run 'make -j $(nproc)' from ${REPO_ROOT}." >&2
+  echo "Complete the Quick Start build before running this tutorial." >&2
   exit 1
 fi
 
