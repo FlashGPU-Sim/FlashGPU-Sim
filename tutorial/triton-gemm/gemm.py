@@ -14,20 +14,15 @@ C = A @ B where:
 
 import argparse
 import shutil
-import sys
 from pathlib import Path
 
 import torch
 import triton
 import triton.language as tl
+import tritontrace
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent.parent
-TRITON_TRACE_DIR = REPO_ROOT / "test" / "triton_trace"
 OUTPUT_DIR = SCRIPT_DIR / "run" / "tracking"
-sys.path.insert(0, str(TRITON_TRACE_DIR))
-
-from track_triton_kernels import TritonKernelTracker
 
 
 def positive_int(value):
@@ -268,7 +263,7 @@ def main(args):
     if output_dir.exists():
         shutil.rmtree(output_dir)
 
-    tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)
+    tracker = tritontrace.Tracker(output_dir, save_binaries=True, capture_args=True)
     tracker.disable()  # Disable during warmup/perf runs
     print(f"\nOutput directory: {output_dir}")
 

@@ -7,6 +7,7 @@ _app_cuda_version_*
 
 test/triton_trace/triton_kernel_tracking/*
 __pycache__
+*.egg-info/
 
 src/intersim2/lex.yy.c
 src/intersim2/y.tab.c
@@ -37,7 +38,7 @@ cuobjdump_to_ptxplus/sass_parser.cc
 cuobjdump_to_ptxplus/sass_parser.hh
 cuobjdump_to_ptxplus/sass_parser.output
 
-build/*
+build/
 tags
 *.swp
 *~

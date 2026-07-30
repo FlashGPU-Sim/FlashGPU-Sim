@@ -17,8 +17,6 @@ if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
   PYTHON="${VIRTUAL_ENV}/bin/python"
 elif [[ -x "${REPO_ROOT}/tutorial/.venv/bin/python" ]]; then
   PYTHON="${REPO_ROOT}/tutorial/.venv/bin/python"
-elif [[ -x "${REPO_ROOT}/test/triton_trace/.venv/bin/python" ]]; then
-  PYTHON="${REPO_ROOT}/test/triton_trace/.venv/bin/python"
 else
   PYTHON="$(command -v python3 || true)"
 fi
@@ -49,13 +47,14 @@ if ! "${PYTHON}" -c "import numpy, torch, triton" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! "${PYTHON}" -c "import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)"; then
-  echo "Error: PyTorch cannot access a CUDA-capable GPU." >&2
+if ! "${PYTHON}" -c "import tritontrace" >/dev/null 2>&1; then
+  echo "Error: TritonTrace is not installed in the selected Python environment." >&2
+  echo "Install it with: ${PYTHON} -m pip install -e ${REPO_ROOT}/tools" >&2
   exit 1
 fi
 
-if [[ ! -f "${REPO_ROOT}/test/triton_trace/track_triton_kernels.py" ]]; then
-  echo "Error: Triton extraction frontend not found." >&2
+if ! "${PYTHON}" -c "import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)"; then
+  echo "Error: PyTorch cannot access a CUDA-capable GPU." >&2
   exit 1
 fi
 
