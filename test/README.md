@@ -183,7 +183,8 @@ run_tests.sh
 require one compile-time mode; `mode=all` is build-only. The legacy `dev`
 suite is not part of the supported hierarchy. `test/triton_trace/` remains an
 independent Triton example and offline-validation suite and is not managed by
-`run_tests.sh`; its tracker implementation lives in `tools/tritontrace.py`.
+`run_tests.sh`; see the [TritonTrace documentation](../tools/README.md) for the
+tracker and standalone replay workflow.
 
 ## Writing Tests
 
