@@ -78,14 +78,21 @@ cd tutorials/vectorAdd
 ./run.sh
 ```
 
-A successful run prints `Test PASSED` for functional correctness.
-Inspect the simulated cycle count with:
+To capture and simulate the bundled Triton GEMM, open a clean shell with access
+to a physical GPU and a Python environment providing PyTorch, Triton, and
+NumPy:
 
 ```bash
-grep gpu_tot_sim_cycle run/simulation.log
+cd tutorials/triton-gemm
+python -m pip install -e ../../tools
+./capture.sh
+./run.sh
 ```
 
-For Triton capture and replay, see the [Triton GEMM tutorial](#run-with-triton).
+Both workflows write simulator output to `run/simulation.log` in their respective tutorial directories.  
+A successful CUDA run reports `Test PASSED`, while a successful Triton replay reports `Validation PASSED`.  
+In both cases, `gpu_tot_sim_cycle` confirms that the workload ran with FlashGPU-Sim.
+Triton capture output is saved separately to `run/capture.log`.
 
 ## Tutorials
 
@@ -228,6 +235,9 @@ Kernel execution completed successfully
 Validation PASSED for arg[2]: all 65536 elements match
 Done!
 ```
+
+A Triton [FlashAttention example](tutorials/triton-flash-attention/) is also
+provided with automated capture and simulation scripts.
 
 ### Update Configuration
 
