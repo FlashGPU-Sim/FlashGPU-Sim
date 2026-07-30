@@ -244,7 +244,9 @@ Important components include:
 - `tma.*` and `tensormap.*`: Tensor Memory Accelerator operations and tensor
   descriptors.
 - `mbarrier.*` and `bulk_group.*`: asynchronous completion and synchronization
-  support.
+  support. See the
+  [`mbarrier` implementation notes](../src/gpgpu-sim/flash/mbarrier.md) for the
+  modeled state and current scope.
 - `ld_st_matrix.*`: matrix-oriented shared-memory load and store operations.
 - `elect.*`: warp leader election.
 - `ptx_sched/` and `reg_alloc.*`: PTX scheduling and register-allocation
@@ -266,16 +268,30 @@ the PTX definition and the existing dispatch path.
 
 ## Parallel Simulation
 
-Flash mode uses OpenMP in selected simulation paths, including SM-level work in
-the GPU cycle. Per-core work can proceed in parallel, while shared simulator
-state and memory-system interactions require explicit coordination.
+Flash mode uses OpenMP in selected simulation paths. During a core clock cycle,
+the simulator distributes `simt_core_cluster::core_cycle()` calls across
+OpenMP threads. The local interconnect also advances independent subnets in
+parallel.
+
+State that is naturally scoped to one cluster or worker is kept separate where
+practical:
+
+- Each SIMT core cluster records `shader_core_stats` independently and the GPU
+  aggregates those statistics at reporting and simulation-completion
+  boundaries.
+- PTX source-line statistics and mutable dynamic PTX instruction objects use
+  per-OpenMP-thread storage.
+- The shared `gpu_sim_insn` instruction counter uses atomic updates.
+- The simulator memory block map uses a shared mutex to protect concurrent
+  lookup and allocation.
+
+OpenMP worker-local containers are currently sized for at most
+`FLASH_GPGPU_SIM_OMP_MAX_THREADS` (32) threads. Configurations that set
+`OMP_NUM_THREADS` above this limit are unsupported.
 
 Changes to global statistics, shared queues, memory requests, or cross-SM state
 must therefore be reviewed for ordering and data-race implications. Do not
 assume that code inherited from a serial path is safe when called concurrently.
-
-See [FLASH.md](../FLASH.md) for the feature overview and the current
-multi-threading implementation notes.
 
 ## Adding or Extending a PTX Instruction
 

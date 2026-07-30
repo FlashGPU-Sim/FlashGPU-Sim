@@ -1,4 +1,10 @@
-LOG:
+# GPGPU-Sim Change Log (legacy)
+
+> [!NOTE]
+> This is the archived upstream GPGPU-Sim change log, retained for project
+> history and lineage. It ends with GPGPU-Sim 4.2.0 and does not describe
+> subsequent FlashGPU-Sim development.
+
 Version 4.2.0 vs 4.1.0 
 - Added AccelWattch power model v1.0 which replaces GPUWattch. 
 - Added AccelWattch XML configuration files for SM7_QV100, SM7_TITANV, SM75_RTX2060_S, SM6_TITANX. Note that all these AccelWattch XML configuration files are tuned only for SM7_QV100. 
@@ -22,7 +28,7 @@ Version 4.0.0 (development branch) versus 3.2.3
 3- Added parsing support for wmma.load,wmma.mma and wmma.store ptx instructions
 4- Implmented cudaLaunchKernel for CUTLASS library
 5- Added support for cuDNN and Pytorch library
-6- Added checkpoint support ([For more details](docs/legacy/checkpointing.md))
+6- Added checkpoint support ([For more details](checkpointing.md))
 -GPU Core Functional Simulation
 1- Implemented bfe, d4pa, bfi and prmt instruction 
 2- Implemented wmma.load and wmma.store supporting all the layout configuration for TITANV GPU

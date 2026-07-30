@@ -373,10 +373,8 @@ void cycle();
 
 ## Known Limitations
 
-**Documented in FLASH.md:295-299**:
 1. **CP.ASYNC sector masking**: Corner cases with non-cacheline-aligned sizes not fully handled
-2. **Commit/wait groups**: `cp.async.bulk.commit_group` and `cp.async.bulk.wait_group` treated as NOPs (allowed during PTX inspection)
-3. **Tensormap options**: Some tensormap manipulation options not fully validated
+2. **Tensormap options**: Some tensormap manipulation options not fully validated
 
 **Multi-dimensional testing**: Full test coverage for 1D and 3D-5D tensor
 operations is implemented in

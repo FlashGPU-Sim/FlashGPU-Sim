@@ -78,7 +78,8 @@ To submit a bug report, go here: http://www.gpgpu-sim.org/bugs/
 
 See Section 2 "INSTALLING, BUILDING and RUNNING GPGPU-Sim" below to get started.
 
-See file CHANGES for updates in this and earlier versions.
+See the [legacy change log](changes.md) for updates in this and earlier
+versions.
 
 # CONTRIBUTIONS and HISTORY
 
@@ -378,9 +379,9 @@ assume that you ran the following command to get the source code of GPGPU-Sim:
 
 Since running the above command you have made local changes and we have
 published changes to GPGPU-Sim on the above git server. You have looked at the
-changes we made, looking at both the new CHANGES file and probably even the
-source code differences. You decide you want to incorporate our changes into
-your modified version of GPGPU-Sim.
+changes we made, looking at both the new [CHANGES file](changes.md) and probably
+even the source code differences. You decide you want to incorporate our
+changes into your modified version of GPGPU-Sim.
 
 Before updating your source code, we recommend you remove any object files:
 
