@@ -12,7 +12,7 @@
   - [Run with Triton](#run-with-triton)
     - [Step 1: Add Triton Kernel Tracking](#step-1-add-triton-kernel-tracking)
     - [Step 2: Capture the Triton Workload](#step-2-capture-the-triton-workload)
-    - [Step 3: Build the Standalone Launcher](#step-3-build-the-standalone-launcher)
+    - [Step 3: Build the Standalone Harness](#step-3-build-the-standalone-harness)
     - [Step 4: Simulate the Captured Kernel](#step-4-simulate-the-captured-kernel)
   - [Update Configuration](#update-configuration)
   - [Set CPU Threads](#set-cpu-threads)
@@ -83,7 +83,7 @@ make -j $(nproc)
 Using the environment configured above, run the bundled CUDA vector addition example:
 
 ```bash
-cd tutorial/vectorAdd
+cd tutorials/vectorAdd
 ./run.sh
 ```
 
@@ -109,7 +109,7 @@ Prerequisites: Ensure FlashGPU-Sim is built, and `setup_environment` is sourced.
 From the repository root, enter the example directory:  
 
 ```bash
-cd tutorial/vectorAdd
+cd tutorials/vectorAdd
 ```
 
 #### Step 1: Compile the CUDA Workload
@@ -159,14 +159,12 @@ simulated cycle count; the complete output is saved to `simulation.log`.
 
 This workflow manually captures the `triton-gemm` example on a physical GPU
 and replays it with FlashGPU-Sim.
-
 Prerequisites: A physical GPU, and a Python environment with PyTorch, Triton,
 and NumPy.
-
 From the repository root, enter the example directory:
 
 ```bash
-cd tutorial/triton-gemm
+cd tutorials/triton-gemm
 ```
 
 #### Step 1: Add Triton Kernel Tracking
@@ -199,10 +197,6 @@ this sequence, so no code changes are needed for this example.
 
 #### Step 2: Capture the Triton Workload
 
-> [!IMPORTANT]
-> **Do NOT source `setup_environment` before capture.** Open a new shell and
-> run the capture with the native CUDA stack on the physical GPU.
-
 Run the capture:
 
 ```bash
@@ -211,21 +205,31 @@ python gemm.py
 
 The default workload is a `256 x 256 x 256` GEMM. It runs Triton autotuning,
 checks the result against PyTorch, and captures one kernel launch under
-`run/tracking/`.
+`run/tracking/`. The captured launch is materialized as a standalone CUDA C++
+harness, the compiled kernel in PTX and CUBIN form, launch metadata, serialized
+arguments, and reference outputs.
 
-#### Step 3: Build the Standalone Launcher
+> [!IMPORTANT]
+> **Do NOT source `setup_environment` before capture.** Open a new shell and
+> run the capture with the native CUDA stack on the physical GPU.
+
+#### Step 3: Build the Standalone Harness
 
 ```bash
 make -C run/tracking/launchers \
   -f kernel_tma_gemm_launch1_Makefile
 ```
 
-The generated launcher reconstructs the captured arguments and validates its
+The generated harness reconstructs the captured arguments and validates its
 output against the values recorded during capture.
 
 #### Step 4: Simulate the Captured Kernel
 
-Copy the matching configuration, configure FlashGPU-Sim, and run the launcher:
+The harness replaces the original Python/Triton program during replay. It
+restores the captured arguments and reissues the recorded kernel launch;
+FlashGPU-Sim uses the captured PTX sidecar to simulate the kernel.
+
+Copy the matching configuration, configure FlashGPU-Sim, and run the harness:
 
 ```bash
 cp -a ../../configs/SM120_RTX5090/. run/tracking/launchers/

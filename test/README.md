@@ -182,8 +182,8 @@ run_tests.sh
 `small`, `medium`, and `large` run directly. Analysis groups marked above
 require one compile-time mode; `mode=all` is build-only. The legacy `dev`
 suite is not part of the supported hierarchy. `test/triton_trace/` remains an
-independent capture and offline-validation tool and is not managed by
-`run_tests.sh`.
+independent Triton example and offline-validation suite and is not managed by
+`run_tests.sh`; its tracker implementation lives in `tools/tritontrace.py`.
 
 ## Writing Tests
 

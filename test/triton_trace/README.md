@@ -1,6 +1,8 @@
-# Triton Kernel Tracker
+# TritonTrace Examples and Validation
 
-Track Triton kernel compilation and invocation, extract binaries, capture inputs/outputs, and generate standalone validation harnesses for GPGPU-Sim simulation.
+This directory contains examples and validation workloads for
+[TritonTrace](../../tools/tritontrace.py), the repository's Triton kernel
+capture and launcher-generation tool.
 
 ## Features
 
@@ -12,7 +14,8 @@ Track Triton kernel compilation and invocation, extract binaries, capture inputs
 
 ## Files
 
-- `track_triton_kernels.py` - Main tracking tool with output validation
+- [`tools/tritontrace.py`](../../tools/tritontrace.py) - TritonTrace
+  implementation
 - `examples/` - Single-workload examples that demonstrate tracker usage
 - `validation/` - Systematic sweep tests, reference CSVs, and comparison tools
 - `triton_kernel_tracking/` - Generated artifacts for both examples and validation sweeps
@@ -63,6 +66,7 @@ cd test/triton_trace
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -U pip uv
 .venv/bin/uv pip install --python .venv/bin/python torch triton numpy
+.venv/bin/python -m pip install -e ../../tools
 ```
 
 Select a CUDA Toolkit compatible with the PTX version and target emitted by
@@ -194,10 +198,10 @@ For each kernel launch, generates:
 
 ```python
 from pathlib import Path
-from track_triton_kernels import TritonKernelTracker
+import tritontrace
 
 # Initialize tracker
-tracker = TritonKernelTracker(
+tracker = tritontrace.Tracker(
     output_dir=Path("./triton_tracking"),
     save_binaries=True,
     capture_args=True

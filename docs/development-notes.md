@@ -120,7 +120,8 @@ authoritative sources for the current shard layout and test scope.
 - `configs/`: GPU model configurations.
 - `test/`: unit tests, integration tests, microbenchmarks, analysis workloads,
   and the public test runner.
-- `test/triton_trace/`: Triton kernel capture and standalone replay tools.
+- `tools/tritontrace.py`: Triton kernel capture and launcher-generation tool.
+- `test/triton_trace/`: Triton examples and offline validation workloads.
 - `docs/`: build, testing, development, and instruction documentation.
 
 ### Core Types
@@ -344,5 +345,7 @@ Keep changes focused and avoid unrelated formatting or generated-file churn.
   [Tensor MMA Interface](../src/gpgpu-sim/flash/mma/tensor_mma.md)
 - TMA implementation interface:
   [TMA Documentation](../src/gpgpu-sim/flash/tma.md)
-- Triton capture and replay:
-  [Triton Kernel Tracker](../test/triton_trace/README.md)
+- Triton capture implementation:
+  [TritonTrace](../tools/tritontrace.py)
+- Triton examples and validation:
+  [TritonTrace Examples and Validation](../test/triton_trace/README.md)

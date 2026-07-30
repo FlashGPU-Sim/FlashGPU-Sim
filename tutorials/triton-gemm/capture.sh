@@ -15,8 +15,8 @@ K="${GEMM_K:-256}"
 
 if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
   PYTHON="${VIRTUAL_ENV}/bin/python"
-elif [[ -x "${REPO_ROOT}/tutorial/.venv/bin/python" ]]; then
-  PYTHON="${REPO_ROOT}/tutorial/.venv/bin/python"
+elif [[ -x "${REPO_ROOT}/tutorials/.venv/bin/python" ]]; then
+  PYTHON="${REPO_ROOT}/tutorials/.venv/bin/python"
 else
   PYTHON="$(command -v python3 || true)"
 fi
