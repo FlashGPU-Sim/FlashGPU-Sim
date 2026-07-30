@@ -1,17 +1,12 @@
 # FlashGPU-Sim
 
-FlashGPU-Sim is a cycle-accurate simulator for modern GPU architectures
-and AI workloads.
-
-[Quick Start](#quick-start) · [Tutorials](#tutorials) ·
-[Documentation](#documentation) · [Citation](#citation)
-
-## Overview
-
 FlashGPU-Sim is an execution-driven, cycle-accurate simulator for modern GPU
 architectures and AI workloads, built upon GPGPU-Sim. The project includes
 updated GPU execution models and configurations, Triton capture-and-replay
 tools, validation infrastructure, and multi-threaded simulation support.
+
+[Simulator Setup](#simulator-setup) · [Tutorials](#tutorials) ·
+[Documentation](#documentation) · [Citation](#citation)
 
 <!-- Summarize the major capabilities in a compact status table. Distinguish
 Hopper/SM90 from Blackwell/SM120 and use conservative status labels such as
@@ -44,8 +39,7 @@ FlashGPU-Sim is developed and tested on Linux. A host build requires:
 
 The current build and CI environments use CUDA 12.8. A physical GPU is not
 required to build or run the simulator, but is required to capture Triton
-workloads or collect Nsight Compute measurements. See the
-[build instructions](docs/build-instructions.md) for additional details.
+workloads or collect Nsight Compute measurements.
 
 ### Build
 
@@ -54,15 +48,35 @@ Configure the environment and build the simulator from the repository root:
 ```bash
 export CUDA_INSTALL_PATH=/path/to/cuda
 source setup_environment
-make -j"$(nproc)"
+make -j $(nproc)
 ```
 
-> Remember to export `CUDA_INSTALL_PATH` and re-source `setup_environment`
+> Remember to export `CUDA_INSTALL_PATH` and source `setup_environment`
 > whenever you open a new shell.
 
 ### Run a Simulation
 
-Using the environment configured above:
+Using the environment configured above, run the bundled CUDA vector addition example:
+
+```bash
+cd tutorial/vectorAdd
+./run.sh
+```
+
+The script builds the workload, prepares the `SM120_RTX5090` configuration in
+`tutorial/vectorAdd/run/`, verifies that the executable uses FlashGPU-Sim's
+CUDA runtime, and starts the simulation. Output is displayed in the terminal
+and saved to `tutorial/vectorAdd/run/simulation.log`. A successful run prints
+`Test PASSED` for functional correctness. Inspect the simulated cycle count
+with:
+
+```bash
+grep gpu_tot_sim_cycle run/simulation.log
+```
+
+## Tutorials
+
+### CUDA Vector Addition
 
 1. Compile the application with the shared CUDA runtime and retain PTX for the
    target architecture. For example, to target the SM120 configuration:
@@ -100,13 +114,6 @@ FlashGPU-Sim reads `gpgpusim.config` from the current working directory, along
 with any files referenced by that configuration. A successful simulation
 prints `gpu_tot_sim_cycle` in its output.
 
-## Tutorials
-
-### CUDA Vector Addition
-
-<!-- Introduce and link to the standalone CUDA vector-add tutorial under
-tutorial/. -->
-
 ### Triton Kernel Capture and Replay
 
 <!-- Introduce and link to the standalone Triton tutorial under tutorial/.
@@ -130,14 +137,20 @@ reference, and developer documentation. -->
 
 ## Citation
 
-If FlashGPU-sim helps you in your research, you are encouraged to cite our paper. Here is an example:
+We hope FlashGPU-Sim benefits your research! If you use it in your work, please cite our paper:
 
+```text
+Siying Yu, Yixun Hong, Guozhi Qiu, Feng Gu, Chenbo Geng, Zhengrong Wang, Chen Zhang, Bei Yu,
+FlashGPU-sim: Enabling GPU Modeling for Modern Architectures and AI Workloads,
+in 2026 IEEE/ACM 59th International Symposium on Microarchitecture (MICRO)
+```
+
+BibTeX:
 ```bibtex
-@inproceedings{flashgpusim-micro,
+@inproceedings{flashgpusim,
   author    = {Yu, Siying and Hong, Yixun and Qiu, Guozhi and Gu, Feng
                and Geng, Chenbo and Wang, Zhengrong and Zhang, Chen and Yu, Bei},
-  title     = {{FlashGPU-sim}: Enabling GPU Modeling for Modern
-               Architectures and AI Workloads},
+  title     = {{FlashGPU-sim}: Enabling GPU Modeling for Modern Architectures and AI Workloads},
   booktitle = {IEEE/ACM 59th International Symposium on Microarchitecture (MICRO)},
   year      = {2026}
 }
