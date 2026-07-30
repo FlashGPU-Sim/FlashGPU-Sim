@@ -71,8 +71,7 @@ Inspect the simulated cycle count with:
 grep gpu_tot_sim_cycle run/simulation.log
 ```
 
-For Triton capture and replay, see the
-[Triton GEMM tutorial](tutorial/triton-gemm/).
+For Triton capture and replay, see the [Triton GEMM tutorial](#run-with-triton).
 
 ## Tutorials
 
@@ -135,8 +134,59 @@ simulated cycle count; the complete output is saved to `simulation.log`.
 
 ### Run with Triton
 
-<!-- Introduce and link to the standalone Triton tutorial under tutorial/.
-Clearly separate native-GPU capture from simulator replay. -->
+This workflow manually captures the `triton-gemm` example on a physical GPU
+and replays the captured launch with FlashGPU-Sim. The Python environment used
+for capture must provide PyTorch, Triton, and NumPy.
+
+```bash
+cd tutorial/triton-gemm
+```
+
+#### Step 1: Capture the Triton Workload
+
+> [!IMPORTANT]
+> **Do NOT source `setup_environment` before capture.** Open a new shell and
+> run the capture with the native CUDA stack on the physical GPU.
+
+Run the capture:
+
+```bash
+python gemm.py
+```
+
+The default workload is a `256 x 256 x 256` GEMM. It runs Triton autotuning,
+checks the result against PyTorch, and captures one kernel launch under
+`run/tracking/`.
+
+#### Step 2: Build the Standalone Launcher
+
+```bash
+make -C run/tracking/launchers \
+  -f kernel_tma_gemm_launch1_Makefile
+```
+
+The generated launcher reconstructs the captured arguments and validates its
+output against the values recorded during capture.
+
+#### Step 3: Simulate the Captured Kernel
+
+Copy the matching configuration, configure FlashGPU-Sim, and run the launcher:
+
+```bash
+cp -a ../../configs/SM120_RTX5090/. run/tracking/launchers/
+source ../../setup_environment
+cd run/tracking/launchers
+./kernel_tma_gemm_launch1 2>&1 | tee ../../simulation.log
+```
+
+A successful run compares every element of the simulated GEMM output with the
+output recorded during capture and finishes with:
+
+```text
+Kernel execution completed successfully
+Validation PASSED for arg[2]: all 65536 elements match
+Done!
+```
 
 ## Example Results
 
