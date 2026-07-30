@@ -11,14 +11,13 @@ else
 	export GPGPUSIM_ROOT="$(pwd)"
 fi
 
-GPGPUSIM_VERSION_STRING=`cat $GPGPUSIM_ROOT/version | awk '/Version/ {print $8}'`
 #Detect Git branch and commit #
 GIT_COMMIT=`git --git-dir=$GPGPUSIM_ROOT/.git log --abbrev-commit -n 1 | head -1 | sed -re 's/commit (.*)/\1/'`
 GIT_FILES_CHANGED=`git --git-dir=$GPGPUSIM_ROOT/.git diff --numstat | wc | sed -re 's/^\s+([0-9]+).*/\1./'`
 GIT_FILES_CHANGED+=`git --git-dir=$GPGPUSIM_ROOT/.git diff --numstat --cached | wc | sed -re 's/^\s+([0-9]+).*/\1/'`
-GPGPUSIM_BUILD_STRING="gpgpu-sim_git-commit-$GIT_COMMIT-modified_$GIT_FILES_CHANGED"
+GPGPUSIM_BUILD_STRING="flashgpu-sim_git-commit-$GIT_COMMIT-modified_$GIT_FILES_CHANGED"
 
-echo -n "GPGPU-Sim version $GPGPUSIM_VERSION_STRING (build $GPGPUSIM_BUILD_STRING) ";
+echo -n "FlashGPU-Sim (build $GPGPUSIM_BUILD_STRING) ";
 
 if [ -z "${CUDA_INSTALL_PATH:-}" ]; then
 	echo "ERROR ** Install CUDA Toolkit and set CUDA_INSTALL_PATH to its root directory.";
@@ -31,7 +30,7 @@ if [ ! -d "$CUDA_INSTALL_PATH" ]; then
 fi
 
 if [ ! `uname` = "Linux" -a  ! `uname` = "Darwin" ]; then
-	echo "ERROR ** Unsupported platform: GPGPU-Sim $GPGPUSIM_VERSION_STRING developed and tested on Linux."
+	echo "ERROR ** Unsupported platform: FlashGPU-Sim is developed and tested on Linux."
 	return 1;
 fi
 
@@ -55,7 +54,7 @@ CC_VERSION=$(gcc --version | head -1 | awk '{for(i=1;i<=NF;i++){ if(match($i,/^[
 CUDA_VERSION_STRING=`$CUDA_INSTALL_PATH/bin/nvcc --version | awk '/release/ {print $5;}' | sed 's/,//'`;
 export CUDA_VERSION_NUMBER=`echo $CUDA_VERSION_STRING | sed 's/\./ /' | awk '{printf("%02u%02u", 10*int($1), 10*$2);}'`
 if [ $CUDA_VERSION_NUMBER -gt 12800 -o $CUDA_VERSION_NUMBER -lt 2030  ]; then
-	echo "WARNING ** GPGPU-Sim version $GPGPUSIM_VERSION_STRING not tested with CUDA version $CUDA_VERSION_STRING (please see README)";
+	echo "WARNING ** FlashGPU-Sim has not been tested with CUDA version $CUDA_VERSION_STRING (please see README)";
 	echo $CUDA_VERSION_NUMBER
 fi
 
