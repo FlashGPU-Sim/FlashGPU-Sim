@@ -145,9 +145,11 @@ counters indicates that the harness used the physical GPU runtime instead.
 ## Requirements
 
 - Linux
-- Python 3.10 or later
-- PyTorch, Triton, and NumPy
+- Python, PyTorch, Triton, and NumPy
 - CUDA Toolkit tools, including `nvcc` and `cuobjdump`
+
+TritonTrace is developed and tested with Python 3.12.3, PyTorch 2.9.0,
+Triton 3.5.0, and NumPy 2.4.0.
 
 ## Limitations
 
