@@ -1,6 +1,9 @@
 # Tensor MMA Implementation Interface
 
-This document describes the C++ implementation interface for PTX MMA (Matrix Multiply-Accumulate) instructions in GPGPU-Sim. For PTX instruction semantics and formats, see `docs/mma_instructions.md`.
+This document describes the C++ implementation interface for PTX MMA
+(Matrix Multiply-Accumulate) instructions in GPGPU-Sim. For instruction
+semantics and formats, see the
+[PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma).
 
 ## External Interface
 

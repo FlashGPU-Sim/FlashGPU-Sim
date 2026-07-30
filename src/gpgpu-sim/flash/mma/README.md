@@ -68,6 +68,5 @@ Run MMA tests with:
 ## References
 
 - Parent directory documentation: `../README.md`
-- Design documentation: `docs/mma_instructions.md`
-- Testing instructions: `docs/testing-instructions.md`
+- Integration tests: `../../../../test/src/integration/mma/README.md`
 - PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)

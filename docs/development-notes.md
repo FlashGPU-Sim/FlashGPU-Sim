@@ -17,8 +17,43 @@ source setup_environment
 make FLASH=1 -j"$(nproc)"
 ```
 
-See [Build Instructions](build-instructions.md) for prerequisites, artifacts,
-incremental builds, and troubleshooting.
+## Build System
+
+### Generated Sources
+
+#### PTX Parser
+
+The PTX parser (`src/cuda-sim/ptx.tab.c`, `ptx.tab.h`) is generated from:
+
+- `src/cuda-sim/ptx.l` (lexer)
+- `src/cuda-sim/ptx.y` (parser grammar)
+
+The parser is normally regenerated when these files change.
+
+#### Opcode Definitions
+
+Changes to `src/cuda-sim/opcodes.def` affect generated:
+
+- Opcode switch statements in various files
+- Instruction dispatcher logic
+
+#### Regeneration Failures
+
+The build normally refreshes generated sources automatically. If changes to
+the PTX lexer/parser inputs or opcode definitions leave stale generated code
+or cause compilation errors, perform a clean rebuild:
+
+```bash
+make clean
+make -j"$(nproc)"
+```
+
+### Build Artifacts
+
+On Linux, a successful simulator build places the replacement CUDA runtime at
+`lib/gcc-*/cuda-*/release/libcudart.so` (or the corresponding `debug`
+directory). Intermediate object files use the matching hierarchy under
+`build/gcc-*/cuda-*/`.
 
 ## Running Tests
 
@@ -41,13 +76,37 @@ action -> suite -> target -> group -> optional mode/filter
 
 Use focused targets and filters while developing. Run the broader relevant
 group before submitting a change. See the [Test Framework Guide](../test/README.md)
-for supported suites and examples, and the
-[Test Configuration Matrix](test-configuration-matrix.md) for
-architecture-specific coverage.
+for supported suites and examples.
 
 Native-GPU validation must run from a clean shell in which
 `setup_environment` has not been sourced. The test guide explains how the
 runner distinguishes native and simulator environments.
+
+## Continuous Integration
+
+Pull requests targeting `flash` run
+[`test/ci/run_ci_tests.sh`](../test/ci/run_ci_tests.sh) in the CI container.
+The current gate covers:
+
+- PTX scheduler and gtest discovery regression checks;
+- SM120 unit and integration suites with `SM120_RTX5090`;
+- SM90 instruction and FA2 smoke suites with `SM90_H100`;
+- FA3 forward smoke shapes, the fixed-forward integration case, and backward
+  smoke shapes with `SM90_H100`; and
+- SM120 GPT-2 trace smoke tests.
+
+The workflow divides this work into three independent shards: `sm120`,
+`sm90-fa2`, and `sm90-fa3`. Each shard has a 7 GiB container memory limit and
+no additional swap allowance. Simulator builds use two jobs by default. FA2
+kernel compilation is serial because a single NVCC translation unit approaches
+5 GiB of resident memory; FA3 specializations also use an object-level
+serialization chain to stay within the same budget.
+
+Build and run logs are written under `test/logs/ci/logs/`, and gtest XML is
+written under `test/logs/ci/xml/`. The workflow uploads the complete
+`test/logs/ci/` tree even when a gate fails. The
+[PR workflow](../.github/workflows/pr-tests.yml) and CI runner are the
+authoritative sources for the current shard layout and test scope.
 
 ## Repository Map
 
@@ -262,13 +321,9 @@ Keep changes focused and avoid unrelated formatting or generated-file churn.
 
 ## Further Reading
 
-- Build and environment setup: [Build Instructions](build-instructions.md)
 - Test runner and suite hierarchy: [Test Framework](../test/README.md)
-- Test-to-configuration mapping:
-  [Test Configuration Matrix](test-configuration-matrix.md)
 - Flash extension overview:
   [Flash README](../src/gpgpu-sim/flash/README.md)
-- MMA design: [MMA Instructions](mma_instructions.md)
 - MMA implementation interface:
   [Tensor MMA Interface](../src/gpgpu-sim/flash/mma/tensor_mma.md)
 - TMA implementation interface:

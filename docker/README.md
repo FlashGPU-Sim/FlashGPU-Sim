@@ -24,7 +24,8 @@ The `Dockerfile.ci` provides a lightweight container optimized for continuous in
 - Runs the same full GPU configurations as pull-request CI
 - No interactive development tools
 
-**Usage:** The CI image is built automatically by `.github/workflows/pr-tests.yml` and can be tested locally using `act` (see `docs/testing-instructions.md`).
+**Usage:** The CI image is built automatically by `.github/workflows/pr-tests.yml`
+and can be tested locally using `act`.
 
 ## Usage
 

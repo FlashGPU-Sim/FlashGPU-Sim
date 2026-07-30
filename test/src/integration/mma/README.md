@@ -175,6 +175,4 @@ If test results are all zeros:
 
 - Test framework documentation: `../README.md`
 - MMA implementation: `src/gpgpu-sim/flash/mma/`
-- MMA design documentation: `docs/mma_instructions.md`
-- Testing instructions: `docs/testing-instructions.md`
 - PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)

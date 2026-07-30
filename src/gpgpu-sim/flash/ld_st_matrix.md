@@ -1,8 +1,22 @@
-# ldmatrix/stmatrix C++ Implementation Interface
+# ldmatrix/stmatrix Implementation
 
-This document describes the C++ implementation interface for ldmatrix and stmatrix instruction handlers in GPGPU-Sim.
+This document describes FlashGPU-Sim's implementation of the PTX `ldmatrix`
+and `stmatrix` instruction handlers. Refer to the
+[NVIDIA PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-execution/)
+for the normative instruction syntax and fragment layout.
 
-**For PTX instruction documentation**, see `docs/ld_st_matrix_instructions.md`.
+## Supported and Validated Variants
+
+The integration tests validate both load and store operations for:
+
+- `m8n8.b16` without `.trans`: `x1`, `x2`, and `x4`
+- `m8n8.b16` with `.trans`: `x1`
+
+The transpose implementation is shared by all matrix-count variants, but
+`.trans.x2` and `.trans.x4` do not currently have integration coverage and are
+not part of the validated support set. Other shapes and element types are also
+not part of the validated support set; the handler aborts for shapes other than
+`m8n8`.
 
 ## Overview
 
@@ -27,7 +41,7 @@ Entry point for executing ldmatrix (load matrix) PTX instructions.
 
 **Behavior:**
 - Parses instruction options (shape, num matrices, transpose, scalar type)
-- Validates option combinations per PTX specification
+- Validates required options, operand count, and register-vector size
 - Loads matrix fragments from shared memory to thread registers
 - Distributes matrix elements across warp threads according to fragment layout
 
@@ -38,7 +52,7 @@ Entry point for executing ldmatrix (load matrix) PTX instructions.
 
 **Thread Requirements:**
 - Must be called in warp-level context (all 32 threads participate)
-- Requires valid shared memory pointer operand with 128-byte alignment
+- Requires the mandatory PTX `.sync` and `.aligned` qualifiers
 
 ---
 
@@ -57,7 +71,7 @@ Entry point for executing stmatrix (store matrix) PTX instructions.
 
 **Behavior:**
 - Parses instruction options (shape, num matrices, transpose, scalar type)
-- Validates option combinations per PTX specification
+- Validates required options, operand count, and register-vector size
 - Stores matrix fragments from thread registers to shared memory
 - Uses same fragment distribution as ldmatrix (symmetric operation)
 
@@ -66,7 +80,7 @@ Entry point for executing stmatrix (store matrix) PTX instructions.
 
 **Thread Requirements:**
 - Must be called in warp-level context
-- Requires valid shared memory pointer operand with 128-byte alignment
+- Requires the mandatory PTX `.sync` and `.aligned` qualifiers
 
 ---
 
@@ -194,12 +208,14 @@ matrix_col_id = (lane_id % spec.lanes_per_row) * spec.cols_per_lane;
 ```
 
 **Transpose Semantics:**
-- **Non-transpose**: Thread accesses consecutive columns in same row
-  - Address: `base + row*N + col`
+- **Non-transpose**: Thread accesses consecutive columns from the row base
+  supplied by the address-provider lane
+  - Address: `row_base + col * element_size`
   - Single contiguous read/write of `cols_per_lane * element_size` bytes
 
-- **Transpose**: Thread accesses same column in different rows
-  - Address: `base + col*M + row` (for each element separately)
+- **Transpose**: Each element selects a different address-provider row
+  (`target_row = col + element`) and applies the fragment row as its offset
+  - Address: `target_row_base + row * element_size`
   - Separate read/write per element (elements are strided, not contiguous)
 
 **Symmetry Guarantee:**
@@ -236,51 +252,24 @@ The template design ensures ldmatrix and stmatrix use identical fragment distrib
 
 **Address Provider Threads:**
 - For m8n8: Threads providing row addresses depend on matrix_id and num matrices
-- Thread addressing matrix M provides base address for row R of that matrix
+- The lane providing row `R` of matrix `M` is `M * 8 + R`
 - Other threads use these addresses to calculate element positions
 
 ### Memory Access Patterns
 
 **Alignment Requirements:**
-- PTX `.aligned` modifier requires 128-byte alignment
-- Implementation assumes shared memory operand meets this requirement
-- Simulator does not currently validate alignment (assumed correct from PTX)
+- The PTX `.aligned` qualifier is a warp-convergence requirement; it does not
+  mean that the address must be aligned to 128 bytes.
+- For `m8n8.b16`, each group of four lanes transfers a 16-byte row fragment,
+  which must be naturally aligned.
+- The handler does not validate address alignment. Integration tests use
+  16-byte-aligned shared storage.
 
-**Coalescing:**
-- Non-transpose accesses are naturally coalesced (contiguous addresses)
-- Transpose accesses are strided (8 elements apart for m8n8.b16)
-- Hardware memory subsystem handles actual coalescing in timing simulation
-
-### Future Extensions
-
-**Adding New Shapes:**
-1. Add shape option constant to `src/cuda-sim/opcodes.h`
-2. Add lexer token to `src/cuda-sim/ptx.l`
-3. Add parser mapping in `src/cuda-sim/ptx_ir.cc`
-4. Add case to `get_shape_spec()` with correct distribution parameters
-5. Update validation assertions if needed
-6. Add test cases in `test/src/integration/cuda_ld_st_matrix_test.cc`
-
-**Example (hypothetical m16n16):**
-```cpp
-case M16N16_OPTION:
-  return {16, 16, 2, 8};  // 16x16 matrix, 2 lanes/row, 8 cols/lane
-```
-
----
+**Access granularity:**
+- Non-transpose accesses transfer two adjacent `b16` elements at once.
+- Transpose accesses transfer the two `b16` elements separately.
 
 ## Related Documentation
 
-- **PTX Instruction Semantics**: `docs/ld_st_matrix_instructions.md`
 - **Test Coverage**: `test/src/integration/cuda_ld_st_matrix_test.cc`
 - **Flash Module Overview**: `src/gpgpu-sim/flash/README.md`
-- **MMA Instructions**: `docs/mma_instructions.md` (compute operations using these fragments)
-
----
-
-## Change History
-
-This implementation follows a design-first test-driven development (TDD) approach:
-- Fragment distribution derived from PTX ISA specification
-- Shape-spec abstraction enables extensibility
-- Transpose support added via separate memory access paths

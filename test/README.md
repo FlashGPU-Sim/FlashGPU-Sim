@@ -87,11 +87,6 @@ Use their local Makefiles to supply benchmark-specific runtime arguments.
 Additional configuration directories are discovered automatically when they
 contain `gpgpusim.config`. Run `./run_tests.sh list-configs` to list them.
 
-### Configuration Matrix
-
-For detailed test-to-configuration mapping and test status, see:
-- **[docs/test-configuration-matrix.md](../docs/test-configuration-matrix.md)** - Complete test suite reference
-
 Use `SM120_RTX5090` for SM120 tests and `SM90_H100` for Hopper tests unless
 an experiment explicitly requires another architecture-specific configuration.
 

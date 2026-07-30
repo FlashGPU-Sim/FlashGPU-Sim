@@ -216,7 +216,7 @@ When adding support for new MMA shapes or data types:
 
 ## References
 
-- Test execution: `docs/testing-instructions.md`
+- Test execution: [`test/README.md`](../../README.md)
 - MMA implementation: `src/gpgpu-sim/flash/mma/tensor_mma.{h,cc,md}`
 - PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)
 - Google Test: [Testing framework documentation](https://google.github.io/googletest/)
