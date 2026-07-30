@@ -10,10 +10,9 @@
     - [Step 1: Compile the CUDA Workload](#step-1-compile-the-cuda-workload)
     - [Step 2: Prepare the Configuration and Execute](#step-2-prepare-the-configuration-and-execute)
   - [Run with Triton](#run-with-triton)
-    - [Step 1: Add Triton Kernel Tracking](#step-1-add-triton-kernel-tracking)
-    - [Step 2: Capture the Triton Workload](#step-2-capture-the-triton-workload)
-    - [Step 3: Build the Standalone Harness](#step-3-build-the-standalone-harness)
-    - [Step 4: Simulate the Captured Kernel](#step-4-simulate-the-captured-kernel)
+    - [Step 1: Capture the Triton Workload](#step-1-capture-the-triton-workload)
+    - [Step 2: Build the Standalone Harness](#step-2-build-the-standalone-harness)
+    - [Step 3: Simulate the Captured Kernel](#step-3-simulate-the-captured-kernel)
   - [Update Configuration](#update-configuration)
   - [Set CPU Threads](#set-cpu-threads)
   - [Inspect Statistics](#inspect-statistics)
@@ -29,26 +28,18 @@ tools, validation infrastructure, and multi-threaded simulation support.
 | --- | --- |
 | Architectures | Hopper/SM90 ([`SM90_H100`](configs/SM90_H100/gpgpusim.config)) and Blackwell/SM120 ([`SM120_RTX5090`](configs/SM120_RTX5090/gpgpusim.config)) configurations |
 | GPU features | TMA, `mbarrier`, `mma`, `wgmma`, `ldmatrix`/`stmatrix`, etc. |
-| Workload tooling | Triton kernel capture and standalone replay |
+| Workload tooling | [TritonTrace](tools/README.md) kernel capture and standalone replay ([examples and validation](test/triton_trace/README.md)) |
 | Simulation | Execution-driven functional simulation and cycle-level timing simulation |
 | Parallelism | OpenMP-based multi-threaded SM simulation |
 
 ## Roadmap
 
-Near-term priorities:
-
-- **Blackwell architecture features:** Extend beyond the current
-  SM120/RTX 5090 configuration toward Blackwell features used by
-  FlashAttention-4, including `tcgen05`.
-- **Distributed shared memory:** Model thread-block cluster features,
-  such as remote shared-memory addressing and access.
-
-Longer-term directions:
-
-- **gem5 Integration:** Integrate gem5 as an alternative memory-system backend.
-- **Scale-up multi-GPU simulation:** Model native load/store access to remote
-  GPU memory, including transaction processing, fabric transport, unified
-  addressing, and memory-model behavior.
+| Direction | Status | Planned work |
+| --- | --- | --- |
+| Blackwell features | In progress | Extend the SM120/RTX 5090 model with features used by FlashAttention-4, including `tcgen05` |
+| Distributed shared memory | In progress | Model thread-block clusters, remote shared-memory addressing, and remote accesses |
+| gem5 integration | Prototype | Stabilize gem5 as an alternative memory-system backend |
+| Scale-up multi-GPU simulation | Planned | Model native remote-memory loads/stores, fabric transport, unified addressing, and memory consistency |
 
 ## Quick Start
 
@@ -105,7 +96,7 @@ workloads.
 ### Run with CUDA
 
 This workflow manually steps through the bundled `vectorAdd` example.  
-Prerequisites: Ensure FlashGPU-Sim is built, and `setup_environment` is sourced.  
+**Prerequisites**: Ensure FlashGPU-Sim is built, and `setup_environment` is sourced.  
 From the repository root, enter the example directory:  
 
 ```bash
@@ -143,7 +134,9 @@ configuration, adjust both targets to its compute capability.
 
 #### Step 2: Prepare the Configuration and Execute
 
-Copy the GPU configuration into the `run/` directory and start the simulation:
+Copy the selected GPU configuration into the `run/` directory. See the
+[configuration guide](configs/README.md) for available GPU models, common
+parameters, and FlashGPU-Sim-specific options.
 
 ```bash
 cp -a ../../configs/SM120_RTX5090/. run/
@@ -158,16 +151,16 @@ simulated cycle count; the complete output is saved to `simulation.log`.
 ### Run with Triton
 
 This workflow manually captures the `triton-gemm` example on a physical GPU
-and replays it with FlashGPU-Sim.
-Prerequisites: A physical GPU, and a Python environment with PyTorch, Triton,
-and NumPy.
+and replays it with FlashGPU-Sim.  
+**Prerequisites**: A physical GPU, and a Python environment with PyTorch, Triton,
+and NumPy.  
 From the repository root, enter the example directory:
 
 ```bash
 cd tutorials/triton-gemm
 ```
 
-#### Step 1: Add Triton Kernel Tracking
+#### Step 1: Capture the Triton Workload
 
 Install TritonTrace in the active Python environment:
 
@@ -175,27 +168,16 @@ Install TritonTrace in the active Python environment:
 python -m pip install -e ../../tools
 ```
 
-Instrument a Triton workload with the following tracking sequence:
+Capturing another Triton workload requires minor instrumentation to import
+TritonTrace, create a tracker, and enable it around the target kernel launch.
+The bundled `gemm.py` already includes this instrumentation, so no code changes
+are needed for this example. See the
+[TritonTrace documentation](tools/README.md) for integration details, capture
+internals, generated artifacts, replay workflow, and limitations.
 
-```python
-import tritontrace
-
-tracker = tritontrace.Tracker(
-    "run/tracking", save_binaries=True, capture_args=True
-)
-tracker.disable()
-run_warmup_and_autotuning()
-
-tracker.enable()
-run_kernel_once()
-tracker.save_summary()
-```
-
-Keep tracking disabled during compilation, warmup, and autotuning, then enable
-it for the kernel launch to simulate. The bundled `gemm.py` already implements
-this sequence, so no code changes are needed for this example.
-
-#### Step 2: Capture the Triton Workload
+> [!IMPORTANT]
+> **Do NOT source `setup_environment` before capture.** Open a new shell and
+> run the capture with the native CUDA stack on the physical GPU.
 
 Run the capture:
 
@@ -205,15 +187,13 @@ python gemm.py
 
 The default workload is a `256 x 256 x 256` GEMM. It runs Triton autotuning,
 checks the result against PyTorch, and captures one kernel launch under
-`run/tracking/`. The captured launch is materialized as a standalone CUDA C++
-harness, the compiled kernel in PTX and CUBIN form, launch metadata, serialized
-arguments, and reference outputs.
+`run/tracking/`. The capture generates the following artifacts:
+  - A standalone CUDA C++ harness
+  - The compiled kernel in PTX and CUBIN formats
+  - Launch metadata and serialized arguments
+  - Reference outputs for validation
 
-> [!IMPORTANT]
-> **Do NOT source `setup_environment` before capture.** Open a new shell and
-> run the capture with the native CUDA stack on the physical GPU.
-
-#### Step 3: Build the Standalone Harness
+#### Step 2: Build the Standalone Harness
 
 ```bash
 make -C run/tracking/launchers \
@@ -223,13 +203,15 @@ make -C run/tracking/launchers \
 The generated harness reconstructs the captured arguments and validates its
 output against the values recorded during capture.
 
-#### Step 4: Simulate the Captured Kernel
+#### Step 3: Simulate the Captured Kernel
 
 The harness replaces the original Python/Triton program during replay. It
 restores the captured arguments and reissues the recorded kernel launch;
-FlashGPU-Sim uses the captured PTX sidecar to simulate the kernel.
+FlashGPU-Sim uses the captured PTX file to simulate the kernel.
 
-Copy the matching configuration, configure FlashGPU-Sim, and run the harness:
+Copy the matching GPU configuration described in the
+[configuration guide](configs/README.md), configure FlashGPU-Sim, and run the
+harness:
 
 ```bash
 cp -a ../../configs/SM120_RTX5090/. run/tracking/launchers/
@@ -249,9 +231,39 @@ Done!
 
 ### Update Configuration
 
+FlashGPU-Sim reads `gpgpusim.config` from the workload's current directory at
+startup. Configuration changes take effect on the next simulation without
+rebuilding FlashGPU-Sim.
+
+See the [Configuration Guide](configs/README.md) for common parameters,
+FlashGPU-Sim-specific options, and experimental controls.
+
 ### Set CPU Threads
 
+Set the number of CPU threads used by FlashGPU-Sim with `OMP_NUM_THREADS`:
+
+```bash
+export OMP_NUM_THREADS=8
+```
+
+We recommend using 4 or 8 threads, because higher thread counts provided limited
+additional speedup in our testing. Use no more than 32 threads. See
+[Parallel Simulation](docs/development-notes.md#parallel-simulation) for
+implementation details.
+
 ### Inspect Statistics
+
+FlashGPU-Sim prints detailed simulation statistics to the run log. Use the
+provided helper from the repository root to summarize the final statistics
+report:
+
+```bash
+python3 test/scripts/extract_sim_stats.py tutorials/vectorAdd/run/simulation.log
+```
+
+The summary includes `simulated cycles`, `instructions`, `IPC`, `occupancy`,
+`cache statistics`, and `DRAM command counts`. Pass `--all` to inspect every
+statistics report or `--csv output.csv` to export the results.
 
 ## Citation
 
