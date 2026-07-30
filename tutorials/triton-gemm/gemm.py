@@ -37,13 +37,13 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Capture a Triton TMA GEMM kernel for FlashGPU-Sim replay."
     )
-    parser.add_argument("--m", type=positive_int, default=256)
-    parser.add_argument("--n", type=positive_int, default=256)
-    parser.add_argument("--k", type=positive_int, default=256)
+    parser.add_argument("--m", type=positive_int, default=2560)
+    parser.add_argument("--n", type=positive_int, default=64)
+    parser.add_argument("--k", type=positive_int, default=2560)
     args = parser.parse_args()
 
-    if args.m % 128 or args.n % 128 or args.k % 64:
-        parser.error("M and N must be multiples of 128; K must be a multiple of 64")
+    if args.m % 8 or args.n % 8 or args.k % 8:
+        parser.error("M, N, and K must be multiples of 8 for TMA alignment")
 
     return args
 

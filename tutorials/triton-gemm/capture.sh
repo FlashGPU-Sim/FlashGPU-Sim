@@ -9,9 +9,9 @@ TRACKING_DIR="${RUN_DIR}/tracking"
 LAUNCHER_DIR="${TRACKING_DIR}/launchers"
 CAPTURE_LOG="${RUN_DIR}/capture.log"
 
-M="${GEMM_M:-256}"
-N="${GEMM_N:-256}"
-K="${GEMM_K:-256}"
+M="${GEMM_M:-2560}"
+N="${GEMM_N:-64}"
+K="${GEMM_K:-2560}"
 
 if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
   PYTHON="${VIRTUAL_ENV}/bin/python"

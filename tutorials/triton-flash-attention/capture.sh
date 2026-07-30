@@ -9,11 +9,11 @@ TRACKING_DIR="${RUN_DIR}/tracking"
 LAUNCHER_DIR="${TRACKING_DIR}/launchers"
 CAPTURE_LOG="${RUN_DIR}/capture.log"
 
-BATCH="${FLASH_ATTN_BATCH:-1}"
-HEADS="${FLASH_ATTN_HEADS:-1}"
-SEQ_LEN="${FLASH_ATTN_SEQ_LEN:-128}"
+BATCH="${FLASH_ATTN_BATCH:-32}"
+HEADS="${FLASH_ATTN_HEADS:-32}"
+SEQ_LEN="${FLASH_ATTN_SEQ_LEN:-512}"
 HEAD_DIM="${FLASH_ATTN_HEAD_DIM:-64}"
-CAUSAL="${FLASH_ATTN_CAUSAL:-0}"
+CAUSAL="${FLASH_ATTN_CAUSAL:-1}"
 
 if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
   PYTHON="${VIRTUAL_ENV}/bin/python"
@@ -62,7 +62,7 @@ fi
 
 case "${CAUSAL}" in
   0)
-    CAUSAL_ARGS=()
+    CAUSAL_ARGS=(--no-causal)
     ;;
   1)
     CAUSAL_ARGS=(--causal)

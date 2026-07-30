@@ -30,11 +30,13 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Capture a Triton FlashAttention kernel for FlashGPU-Sim replay."
     )
-    parser.add_argument("--batch", type=positive_int, default=1)
-    parser.add_argument("--heads", type=positive_int, default=1)
-    parser.add_argument("--seq-len", type=positive_int, default=128)
+    parser.add_argument("--batch", type=positive_int, default=32)
+    parser.add_argument("--heads", type=positive_int, default=32)
+    parser.add_argument("--seq-len", type=positive_int, default=512)
     parser.add_argument("--head-dim", type=positive_int, default=64)
-    parser.add_argument("--causal", action="store_true")
+    parser.add_argument(
+        "--causal", action=argparse.BooleanOptionalAction, default=True
+    )
     args = parser.parse_args()
 
     if args.seq_len % BLOCK_M:

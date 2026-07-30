@@ -5,6 +5,7 @@
   - [Dependencies](#dependencies)
   - [Build the Simulator](#build-the-simulator)
   - [Run a Simulation](#run-a-simulation)
+  - [Cycle Validation](#cycle-validation)
 - [Tutorials](#tutorials)
   - [Run with CUDA](#run-with-cuda)
     - [Step 1: Compile the CUDA Workload](#step-1-compile-the-cuda-workload)
@@ -20,9 +21,7 @@
 - [License and Acknowledgements](#license-and-acknowledgements)
 
 FlashGPU-Sim is an execution-driven, cycle-accurate simulator for modern GPU
-architectures and AI workloads, built upon GPGPU-Sim. The project includes
-updated GPU execution models and configurations, Triton capture-and-replay
-tools, validation infrastructure, and multi-threaded simulation support.
+architectures and AI workloads, built upon GPGPU-Sim.
 
 | Area | Supported capabilities |
 | --- | --- |
@@ -38,7 +37,7 @@ tools, validation infrastructure, and multi-threaded simulation support.
 | --- | --- | --- |
 | Blackwell features | In progress | Extend the SM120/RTX 5090 model with features used by FlashAttention-4, including `tcgen05` |
 | Distributed shared memory | In progress | Model thread-block clusters, remote shared-memory addressing, and remote accesses |
-| gem5 integration | Prototype | Stabilize gem5 as an alternative memory-system backend |
+| gem5 integration | Experimental | Stabilize gem5 as an alternative memory-system backend |
 | Scale-up multi-GPU simulation | Planned | Model native remote-memory loads/stores, fabric transport, unified addressing, and memory consistency |
 
 ## Quick Start
@@ -93,6 +92,32 @@ Both workflows write simulator output to `run/simulation.log` in their respectiv
 A successful CUDA run reports `Test PASSED`, while a successful Triton replay reports `Validation PASSED`.  
 In both cases, `gpu_tot_sim_cycle` confirms that the workload ran with FlashGPU-Sim.
 Triton capture output is saved separately to `run/capture.log`.
+
+### Cycle Validation
+
+The table below compares `gpu_tot_sim_cycle` with
+`sm__cycles_elapsed.avg` reported by Nsight Compute on an RTX 5090.
+Difference is calculated as `(Sim - NCU) / NCU`.
+
+| Workload | Shape | NCU cycles | Sim cycles | Difference |
+| --- | --- | ---: | ---: | ---: |
+| CUDA vector addition | 2,000,000 elements | 29,642.67 | 30,133 | +1.65% |
+| Triton GEMM | `M=2560, N=64, K=2560` | 77,190.74 | 78,989 | +2.33% |
+| Triton FlashAttention | `B=32, H=32, S=512, D=64, causal` | 797,247.12 | 794,076 | -0.40% |
+
+> [!TIP]
+> We provide RTX 5090 Nsight Compute reports and CSVs for
+> [CUDA vector addition](tutorials/vectorAdd/reference/),
+> [Triton GEMM](tutorials/triton-gemm/reference/), and
+> [Triton FlashAttention](tutorials/triton-flash-attention/reference/).
+> This enables direct validation of simulator results 
+> without requiring physical access to an RTX 5090.
+>
+> To regenerate the provided data on compatible hardware, lock the GPU clocks
+> and run
+> `./tutorials/profile_ncu.sh --gpu 0 <workload>`
+> (where `<workload>` can be `all`, `vectorAdd`, `triton-gemm`, or
+> `triton-flash-attention`).
 
 ## Tutorials
 
@@ -192,7 +217,7 @@ Run the capture:
 python gemm.py
 ```
 
-The default workload is a `256 x 256 x 256` GEMM. It runs Triton autotuning,
+The default workload is a `2560 x 64 x 2560` GEMM. It runs Triton autotuning,
 checks the result against PyTorch, and captures one kernel launch under
 `run/tracking/`. The capture generates the following artifacts:
   - A standalone CUDA C++ harness
@@ -232,12 +257,15 @@ output recorded during capture and finishes with:
 
 ```text
 Kernel execution completed successfully
-Validation PASSED for arg[2]: all 65536 elements match
+Validation PASSED for arg[2]: all 163840 elements match
 Done!
 ```
 
-A Triton [FlashAttention example](tutorials/triton-flash-attention/) is also
-provided with automated capture and simulation scripts.
+> [!NOTE]
+> A Triton [FlashAttention example](tutorials/triton-flash-attention/) is also
+> provided with automated capture and simulation scripts. In our testing, its
+> default workload took approximately 50 minutes to simulate with
+> `OMP_NUM_THREADS=4` on an Intel Core i9-14900K.
 
 ### Update Configuration
 
