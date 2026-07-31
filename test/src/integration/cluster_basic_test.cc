@@ -8,7 +8,7 @@
  //
  // Topology / scheduling only: plain <<<N, threads>>> launches — not CUDA
  // Thread Block Clusters (no cudaLaunchKernelEx / __cluster_dims__). Prefer
- // SM120_RTX5090_REDUCED_CLUSTER2 when running this test.
+ // SM120_RTX5090_REDUCED_CLUSTER2x1 when running this test.
  __global__ void clusterBasicKernel(int* output) {
    int idx = blockIdx.x * blockDim.x + threadIdx.x;
    output[idx] = blockIdx.x * 1000 + threadIdx.x;

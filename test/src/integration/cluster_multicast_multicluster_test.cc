@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 #include <vector>
 
+#include "common/gpgpusim_config_topology.h"
+
 // ============================================================================
 // Multi-cluster TMA multicast tests
 //
@@ -281,6 +283,13 @@ protected:
 };
 
 TEST_F(MultiClusterClusterTest, ClusterMulticastWithMultipleClusters) {
+  // Distinct per-block tiles + .shared::cluster multicast only isolate when
+  // blocks land in different physical clusters. On a single-cluster config
+  // both blocks share one cluster_group domain and peer-multicast each other.
+  SKIP_IF_N_CLUSTERS_LT(2);
+  // Cluster multicast peer path also requires multi-SM clusters.
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+
   const int total_bytes = NUM_BLOCKS * CHUNK_BYTES;
   uint8_t *d_src = nullptr;
   uint8_t *d_dst = nullptr;

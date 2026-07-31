@@ -3,15 +3,18 @@
 #include <gtest/gtest.h>
 #include <vector>
 
+#include "common/cluster_launch.h"
+#include "common/gpgpusim_config_topology.h"
+
 // TMA cluster multicast integration tests.
-// Prefer config SM120_RTX5090_REDUCED_CLUSTER2.
+// Prefer config SM120_RTX5090_REDUCED_CLUSTER2x1 (or REDUCED_CLUSTER2x2 with
+// cudaLaunchKernelEx for OneProducer).
 //
-// TODO: These use plain grid launches (<<<N, threads>>>), not CUDA cooperative
-// Thread Block Clusters. They validate GPGPU-Sim multi-SM-per-cluster
-// topology, issue-order cluster_group peer matching, functional
-// .shared::cluster multicast, and peer mbarrier try_complete — not
-// cudaLaunchKernelEx / __cluster_dims__. Cluster TMA timing is idealized
-// (free multicast after one L2/TMA path); see docs/cluster_cta2_explain.md.
+// Most cases still use plain grid launches (<<<N, threads>>>) to exercise
+// topology + issue-order cluster_group peers. OneProducer uses
+// cudaLaunchKernelEx + clusterDim so co-residency holds on multi-cluster
+// configs. Cluster TMA timing is idealized (free multicast after one L2/TMA
+// path); see docs/cluster_cta2_explain.md.
 
 // Inline mbarrier helpers matching cp_kernels.cuh patterns.
 __device__ inline void mbarrier_init_impl(unsigned long long *bar_addr,
@@ -1166,6 +1169,11 @@ protected:
 };
 
 TEST_F(TMAClusterOneProducerTest, OneProducerPeerConsumers) {
+    // Peer multicast + peer mbarrier complete require multi-SM clusters.
+    // On n_cores_per_cluster==1, for_each_cluster_peer_cta is a no-op and the
+    // consumer CTA deadlocks in mbarrier.try_wait (no local TMA to complete_tx).
+    SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+
     uint8_t *d_src = nullptr, *d_dst = nullptr;
     int *d_ready = nullptr;
     ASSERT_EQ(cudaMalloc(&d_src, CHUNK_BYTES), cudaSuccess);
@@ -1176,9 +1184,14 @@ TEST_F(TMAClusterOneProducerTest, OneProducerPeerConsumers) {
     ASSERT_EQ(cudaMemset(d_dst, 0xff, CHUNK_BYTES * NUM_BLOCKS), cudaSuccess);
     ASSERT_EQ(cudaMemset(d_ready, 0, sizeof(int)), cudaSuccess);
 
-    tma_one_producer_cluster_kernel<CHUNK_BYTES>
-        <<<NUM_BLOCKS, THREADS>>>(d_src, d_dst, d_ready, NUM_BLOCKS);
-
+    // Explicit TB-cluster launch so both CTAs co-reside on one physical
+    // cluster even under multi-cluster RR configs (e.g. REDUCED_CLUSTER2x2).
+    int num_blocks = NUM_BLOCKS;
+    void *launch_args[] = {&d_src, &d_dst, &d_ready, &num_blocks};
+    ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                  (const void *)tma_one_producer_cluster_kernel<CHUNK_BYTES>,
+                  dim3(NUM_BLOCKS), dim3(THREADS), dim3(2, 1, 1), launch_args),
+              cudaSuccess);
     ASSERT_EQ(cudaGetLastError(), cudaSuccess);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
 
