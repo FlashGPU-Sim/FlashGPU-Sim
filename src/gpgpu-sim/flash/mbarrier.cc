@@ -197,16 +197,17 @@ mbarrier_manager_t::complete_tx(gpgpu_sim *gpu,
 std::set<int> mbarrier_manager_t::try_complete_tx_if_pending(
     gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr,
     int completed_tx_count) {
-  auto key = std::make_pair(thread_index.hw_cta_id, addr);
+  // Map is keyed by sw_cta_id (same as init / complete_tx / expect_tx).
+  auto key = std::make_pair(thread_index.sw_cta_id, addr);
   auto it = addr_to_mbarrier_map.find(key);
   if (it == addr_to_mbarrier_map.end()) {
     return {};
   }
   auto mbarrier = it->second.get();
-  // Only apply peer completion when this CTA still expects TMA bytes.
-  // After a local complete_tx has already advanced the phase, expected_tx
-  // is reset to 0 and a second completion must not re-arm arrived_tx.
-  if (mbarrier->m_expected_tx_count <= mbarrier->m_arrived_tx_count) {
+  // Only apply peer completion when this CTA still has outstanding TMA
+  // transaction bytes (m_tx_count). After a local complete_tx has drained
+  // m_tx_count to 0, a second completion must not re-apply.
+  if (mbarrier->m_tx_count <= 0) {
     return {};
   }
   return complete_tx(gpu, thread_index, addr, completed_tx_count);
