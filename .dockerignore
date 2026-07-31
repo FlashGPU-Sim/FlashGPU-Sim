@@ -1,14 +1,13 @@
-# Docker ignore file for GPGPU-Sim
+# Docker ignore file for FlashGPU-Sim
 
 # Git
 .git
 .gitignore
 .gitmodules
 
-# Build artifacts (when building outside container)
-# Comment these out if you want to include pre-built binaries
-# build/
-# lib/
+# Build artifacts
+build/
+lib/
 
 # IDE and editor files
 .vscode/
@@ -32,6 +31,8 @@ Thumbs.db
 test/gtest/
 test/build/
 test/run/
+test/logs/
+tutorials/**/run/
 
 # Documentation build
 docs/legacy/doxygen/html/

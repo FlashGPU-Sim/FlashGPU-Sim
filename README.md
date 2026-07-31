@@ -58,6 +58,9 @@ Triton Capture:
 A physical GPU is not required to build or run the simulator, but is required
 to capture Triton workloads or collect Nsight Compute measurements.
 
+> An experimental [Docker development environment](docker/README.md) is also
+> available.
+
 ### Build the Simulator
 
 Configure the environment and build the simulator from the repository root:
@@ -112,7 +115,7 @@ Difference is calculated as `(Sim - NCU) / NCU`.
 > [CUDA vector addition](tutorials/vectorAdd/reference/),
 > [Triton GEMM](tutorials/triton-gemm/reference/), and
 > [Triton FlashAttention](tutorials/triton-flash-attention/reference/)
-> for validation without a physical RTX 5090.
+> to support validation without a physical RTX 5090.
 >
 > To regenerate the provided data on compatible hardware, lock the GPU clocks
 > and run
@@ -216,8 +219,7 @@ python -m pip install -e ../../tools
 Capturing custom Triton workloads requires minor instrumentation: import
 `tritontrace`, create a tracker, and enable it around the target kernel launch.
 The `gemm.py` example is already instrumented. See the
-[TritonTrace documentation](tools/README.md) for integration details, capture
-internals, generated artifacts, replay workflow, and limitations.
+[TritonTrace documentation](tools/README.md) for full integration details.
 
 > [!IMPORTANT]
 > **Do NOT source `setup_environment` before capture.** Open a new shell and
@@ -231,11 +233,7 @@ python gemm.py
 
 The default workload is a `2560 x 64 x 2560` GEMM. It runs Triton autotuning,
 checks the result against PyTorch, and captures one kernel launch under
-`run/tracking/`. The capture generates the following artifacts:
-  - A standalone CUDA C++ harness
-  - The compiled kernel in PTX and CUBIN formats
-  - Launch metadata and serialized arguments
-  - Reference outputs for validation
+`run/tracking/`.
 
 #### Step 2: Build the Standalone Harness
 
