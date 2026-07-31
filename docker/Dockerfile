@@ -1,78 +1,83 @@
-# GPGPU-Sim Development Docker Image
-# Based on NVIDIA CUDA 12.8 Official Image
+# FlashGPU-Sim development image
 
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
+ARG CUDA_IMAGE=nvidia/cuda:12.8.0-devel-ubuntu22.04
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.8.0
 
-LABEL maintainer="GPGPU-Sim Development Team"
-LABEL description="GPGPU-Sim development environment with CUDA 12.8"
+FROM ${UV_IMAGE} AS uv
+FROM ${CUDA_IMAGE}
 
-# Prevent interactive prompts during package installation
+LABEL org.opencontainers.image.title="FlashGPU-Sim development environment"
+LABEL org.opencontainers.image.description="CUDA 12.8 development environment for FlashGPU-Sim and TritonTrace"
+
+ARG DEV_USER=flashgpusim
+ARG DEV_UID=1000
+ARG DEV_GID=1000
+
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Set CUDA environment variables
-ENV CUDA_INSTALL_PATH=/usr/local/cuda
-ENV PATH="${CUDA_INSTALL_PATH}/bin:${PATH}"
-ENV LD_LIBRARY_PATH="${CUDA_INSTALL_PATH}/lib64:${LD_LIBRARY_PATH}"
-
-# Install GPGPU-Sim dependencies (versions pinned for Ubuntu 22.04)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Build essentials
-    build-essential=12.9ubuntu3 \
-    g++=4:11.2.0-1ubuntu1 \
-    gcc=4:11.2.0-1ubuntu1 \
-    make=4.3-4.1build1 \
-    cmake=3.22.1-1ubuntu1.22.04.2 \
-    # Required by GPGPU-Sim
-    xutils-dev=1:7.7+6ubuntu1 \
-    bison=2:3.8.2+dfsg-1build1 \
-    flex=2.6.4-8build2 \
-    zlib1g-dev=1:1.2.11.dfsg-2ubuntu9.2 \
-    libglu1-mesa-dev=9.0.2-1 \
-    # Documentation
-    doxygen=1.9.1-2ubuntu2 \
-    graphviz=2.42.2-6ubuntu0.1 \
-    # Version control
-    git=1:2.34.1-1ubuntu1.15 \
-    # Additional utilities
-    wget=1.21.2-2ubuntu1.1 \
-    curl=7.81.0-1ubuntu1.21 \
-    vim=2:8.2.3995-1ubuntu2.24 \
-    nano \
-    gdb=12.1-0ubuntu1~22.04.2 \
-    valgrind=1:3.18.1-1ubuntu2 \
-    # Python for scripts
-    python3=3.10.6-1~22.04.1 \
-    python3-pip=22.0.2+dfsg-1ubuntu0.7 \
-    python3-dev=3.10.6-1~22.04.1 \
-    # AerialVision dependencies (optional)
-    python3-numpy=1:1.21.5-1ubuntu22.04.1 \
-    python3-matplotlib=3.5.1-2build1 \
-    libpng-dev=1.6.37-3ubuntu0.1 \
-    # Debugging and utilities
-    htop=3.0.5-7build2 \
+    bison \
+    build-essential \
+    ca-certificates \
+    cmake \
+    curl \
+    flex \
+    gdb \
+    git \
+    htop \
     less \
+    libglu1-mesa-dev \
+    ninja-build \
+    pkg-config \
+    sudo \
     tree \
+    valgrind \
+    vim \
+    xutils-dev \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages for AerialVision
-RUN pip3 install --no-cache-dir \
-    ply \
-    pmw || true
+COPY --from=uv /uv /uvx /usr/local/bin/
 
-# Create working directory
-WORKDIR /gpgpu-sim
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+ENV UV_LINK_MODE=copy
+ENV VIRTUAL_ENV=/opt/flashgpusim-venv
 
-# Set up environment variables for GPGPU-Sim
-ENV GPGPUSIM_ROOT=/gpgpu-sim
-ENV PTXAS_CUDA_INSTALL_PATH=${CUDA_INSTALL_PATH}
+RUN uv python install 3.12.3 \
+    && uv venv --python 3.12.3 --seed "${VIRTUAL_ENV}" \
+    && uv pip install --python "${VIRTUAL_ENV}/bin/python" \
+        numpy==2.4.0 \
+        torch==2.9.0 \
+        triton==3.5.0 \
+    && uv cache clean
 
-# Create necessary directories
-RUN mkdir -p /gpgpu-sim/lib /gpgpu-sim/build
+RUN if ! getent group "${DEV_GID}" >/dev/null; then \
+        groupadd --gid "${DEV_GID}" "${DEV_USER}"; \
+    fi \
+    && useradd --uid "${DEV_UID}" --gid "${DEV_GID}" \
+        --create-home --shell /bin/bash "${DEV_USER}" \
+    && printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${DEV_USER}" \
+        > "/etc/sudoers.d/${DEV_USER}" \
+    && chmod 0440 "/etc/sudoers.d/${DEV_USER}" \
+    && install -d -o "${DEV_UID}" -g "${DEV_GID}" \
+        "/home/${DEV_USER}/.cache" \
+        /workspace/flashgpu-sim
 
-# Copy entrypoint script
-COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+ENV CUDA_INSTALL_PATH=/usr/local/cuda
+ENV PTXAS_CUDA_INSTALL_PATH=/usr/local/cuda
+ENV PATH="${VIRTUAL_ENV}/bin:/usr/local/cuda/bin:${PATH}"
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64
+ENV HOME="/home/${DEV_USER}"
+ENV XDG_CACHE_HOME="/home/${DEV_USER}/.cache"
+ENV TRITON_CACHE_DIR="/home/${DEV_USER}/.cache/triton"
+ENV TORCH_HOME="/home/${DEV_USER}/.cache/torch"
+ENV PYTHONPATH=/workspace/flashgpu-sim/tools
+ENV FLASHGPUSIM_WORKSPACE=/workspace/flashgpu-sim
 
-# Default command
-ENTRYPOINT ["/entrypoint.sh"]
+COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/flashgpusim-entrypoint
+
+USER ${DEV_USER}
+WORKDIR /workspace/flashgpu-sim
+
+ENTRYPOINT ["/usr/local/bin/flashgpusim-entrypoint"]
 CMD ["bash"]

@@ -7,9 +7,9 @@ Unit and integration tests for GPGPU-Sim using Google Test.
 ### Simulator Mode
 
 ```bash
+export CUDA_INSTALL_PATH=/path/to/cuda
+source setup_environment
 cd test
-source ../setup.sh
-source ../setup_environment
 ./run_tests.sh setup
 ./run_tests.sh run test --target sm120 --group unit
 ./run_tests.sh run test --target sm120 --group integration
@@ -86,11 +86,6 @@ Use their local Makefiles to supply benchmark-specific runtime arguments.
 
 Additional configuration directories are discovered automatically when they
 contain `gpgpusim.config`. Run `./run_tests.sh list-configs` to list them.
-
-### Configuration Matrix
-
-For detailed test-to-configuration mapping and test status, see:
-- **[docs/test-configuration-matrix.md](../docs/test-configuration-matrix.md)** - Complete test suite reference
 
 Use `SM120_RTX5090` for SM120 tests and `SM90_H100` for Hopper tests unless
 an experiment explicitly requires another architecture-specific configuration.
@@ -187,8 +182,9 @@ run_tests.sh
 `small`, `medium`, and `large` run directly. Analysis groups marked above
 require one compile-time mode; `mode=all` is build-only. The legacy `dev`
 suite is not part of the supported hierarchy. `test/triton_trace/` remains an
-independent capture and offline-validation tool and is not managed by
-`run_tests.sh`.
+independent Triton example and offline-validation suite and is not managed by
+`run_tests.sh`; see the [TritonTrace documentation](../tools/README.md) for the
+tracker and standalone replay workflow.
 
 ## Writing Tests
 

@@ -9,9 +9,7 @@ typedef void *yyscan_t;
 #include "../../trace.h"
 #include "ptx.tab.h"
 
-// Documentation:
-// - PTX instruction semantics: docs/ld_st_matrix_instructions.md
-// - C++ implementation API: ld_st_matrix.md (this directory)
+// Implementation documentation: ld_st_matrix.md
 
 // Direction enum for load vs store
 enum class MatrixDirection { LOAD, STORE };

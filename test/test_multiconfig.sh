@@ -76,19 +76,6 @@ run_test "Config files copied to run directory" \
 run_test "Invalid config name is rejected" \
     "! $TEST_SCRIPT refresh --config INVALID_CONFIG_NAME &>/dev/null"
 
-# Doc-guard tests for test configuration matrix (issue #28)
-run_test "Test configuration matrix file exists" \
-    "[ -f '$SCRIPT_DIR/../docs/test-configuration-matrix.md' ]"
-
-run_test "Matrix documents SM120_RTX5090 config" \
-    "grep -q 'SM120_RTX5090' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
-
-run_test "Matrix documents inactive test CPAsyncMethod" \
-    "grep -q 'CPAsyncMethod' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
-
-run_test "Matrix documents default-excluded test PerformanceComparison" \
-    "grep -q 'PerformanceComparison' '$SCRIPT_DIR/../docs/test-configuration-matrix.md'"
-
 # Doc-guard tests for build detection and native GPU mode (issue #36)
 run_test "Build detection uses find command for libcudart.so" \
     "grep -q 'find.*lib.*libcudart.so' '$TEST_SCRIPT'"

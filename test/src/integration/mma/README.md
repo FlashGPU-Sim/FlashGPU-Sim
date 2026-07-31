@@ -149,7 +149,8 @@ When adding support for new MMA shapes or data types:
 
 ```bash
 # Verify environment setup
-source setup.sh && source setup_environment
+export CUDA_INSTALL_PATH=/path/to/cuda
+source setup_environment
 
 # Rebuild tests
 ./test/run_tests.sh build test --target sm120 --group integration
@@ -174,6 +175,4 @@ If test results are all zeros:
 
 - Test framework documentation: `../README.md`
 - MMA implementation: `src/gpgpu-sim/flash/mma/`
-- MMA design documentation: `docs/mma_instructions.md`
-- Testing instructions: `docs/testing-instructions.md`
 - PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)

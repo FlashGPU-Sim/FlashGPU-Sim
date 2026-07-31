@@ -8,16 +8,14 @@ the argument count mismatch issue by not passing stride parameters explicitly.
 Triton will automatically infer strides for contiguous tensors.
 """
 
-import sys
 from pathlib import Path
 import torch
 import triton
 import triton.language as tl
 
 TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(TRITON_TRACE_DIR))
 
-from track_triton_kernels import TritonKernelTracker
+import tritontrace
 
 
 # ============================================================================
@@ -360,7 +358,7 @@ def main():
 
     # Initialize tracker
     output_dir = (TRITON_TRACE_DIR / "triton_kernel_tracking/example_flash_attention").resolve()
-    tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)
+    tracker = tritontrace.Tracker(output_dir, save_binaries=True, capture_args=True)
     tracker.disable()  # Disable during warmup
     print(f"\nOutput directory: {output_dir}")
 

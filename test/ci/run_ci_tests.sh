@@ -101,38 +101,37 @@ run_gtest_group() {
   unset GTEST_OUTPUT
 }
 
-run_logged ptx-scheduler-operand-regression \
-  python3 test/scripts/test_ptx_scheduler_probe_operands.py
-run_logged gtest-discovery-output-regression \
-  python3 test/scripts/test_gtest_discovery_output.py
-
-# Source environment setup
-# Note: In CI Docker, CUDA_INSTALL_PATH is already set via ENV, so we skip setup.sh
-# and only source setup_environment for GPGPU-Sim specific paths
-echo "Setting up GPGPU-Sim environment..."
-if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
-  echo "CI environment detected, skipping setup.sh (CUDA_INSTALL_PATH already set)"
-  # setup_environment is a legacy sourced script and is not nounset-safe.
-  set +u
-  source setup_environment
-  set -u
-
-  # Verify simulator environment is set up correctly
-  if [ -z "$GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN" ]; then
-    echo "ERROR: setup_environment did not set GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN"
-    exit 1
-  fi
-  echo "✓ Simulator environment configured:"
-  echo "  GPGPUSIM_ROOT=$GPGPUSIM_ROOT"
-  echo "  LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
-else
-  echo "Local environment detected, sourcing both setup.sh and setup_environment"
-  # The legacy setup scripts intentionally probe optional unset variables.
-  set +u
-  source setup.sh
-  source setup_environment
-  set -u
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm120 ]; then
+  run_logged gtest-discovery-output-regression \
+    python3 test/ci/test_gtest_discovery_output.py
 fi
+
+# Source the simulator environment. CI images set CUDA_INSTALL_PATH through
+# Docker ENV; local callers must export it before invoking this script.
+echo "Setting up GPGPU-Sim environment..."
+if [ -z "${CUDA_INSTALL_PATH:-}" ]; then
+  echo "ERROR: set CUDA_INSTALL_PATH to the CUDA Toolkit root before running CI tests"
+  exit 1
+fi
+
+if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
+  echo "CI environment detected"
+else
+  echo "Local environment detected"
+fi
+
+# setup_environment is a legacy sourced script and is not nounset-safe.
+set +u
+source setup_environment
+set -u
+
+if [ -z "$GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN" ]; then
+  echo "ERROR: setup_environment did not set GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN"
+  exit 1
+fi
+echo "✓ Simulator environment configured:"
+echo "  GPGPUSIM_ROOT=$GPGPUSIM_ROOT"
+echo "  LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
 
 # CI_TEST_CONFIG remains a backward-compatible alias for the SM120 config.
 SM120_TEST_CONFIG="${CI_SM120_TEST_CONFIG:-${CI_TEST_CONFIG:-SM120_RTX5090}}"

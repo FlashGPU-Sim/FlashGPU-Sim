@@ -153,7 +153,7 @@ check_setup_environment:
 			echo ""; \
 			exit 102; \
 		else \
-			echo; echo "	Building GPGPU-Sim version $(GPGPUSIM_VERSION) (build $(GPGPUSIM_BUILD)) with CUDA version $(CUDA_VERSION_STRING)"; echo; \
+			echo; echo "	Building FlashGPU-Sim (build $(GPGPUSIM_BUILD)) with CUDA version $(CUDA_VERSION_STRING)"; echo; \
 	 		true; \
 		fi \
 	 fi 
@@ -310,11 +310,13 @@ makedirs:
 all:
 	$(MAKE) gpgpusim
 
+.PHONY: docs cleandocs
+
 docs:
-	$(MAKE) -C doc/doxygen/
+	$(MAKE) -C docs/legacy/doxygen/
 
 cleandocs:
-	$(MAKE) clean -C doc/doxygen/
+	$(MAKE) clean -C docs/legacy/doxygen/
 
 clean: makedirs
 	$(MAKE) cleangpgpusim

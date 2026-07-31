@@ -1,6 +1,8 @@
 # TMA (Tensor Memory Accelerator) Implementation Interface
 
-This document describes the C++ implementation interface for PTX TMA (Tensor Memory Accelerator) instructions in GPGPU-Sim. For TMA testing workflow and validation procedures, see `docs/testing-instructions.md` TMA Testing section.
+This document describes the C++ implementation interface for PTX TMA (Tensor
+Memory Accelerator) instructions in GPGPU-Sim. See the
+[test framework guide](../../../test/README.md) for test execution.
 
 ## External Interface
 
@@ -371,12 +373,13 @@ void cycle();
 
 ## Known Limitations
 
-**Documented in FLASH.md:295-299**:
 1. **CP.ASYNC sector masking**: Corner cases with non-cacheline-aligned sizes not fully handled
-2. **Commit/wait groups**: `cp.async.bulk.commit_group` and `cp.async.bulk.wait_group` treated as NOPs (allowed during PTX inspection)
-3. **Tensormap options**: Some tensormap manipulation options not fully validated
+2. **Tensormap options**: Some tensormap manipulation options not fully validated
 
-**Multi-dimensional testing**: Full test coverage for 1D and 3D-5D tensor operations documented in `docs/testing-instructions.md` TMA Testing section (all tests passing as of issue #31).
+**Multi-dimensional testing**: Full test coverage for 1D and 3D-5D tensor
+operations is implemented in
+[`cuda_tma_multidim_test.cc`](../../../test/src/integration/cuda_tma_multidim_test.cc)
+(all tests passing as of issue #31).
 
 ---
 

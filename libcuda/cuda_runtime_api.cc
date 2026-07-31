@@ -221,7 +221,8 @@ struct _cuda_device_id *gpgpu_context::GPGPUSim_Init() {
     gpgpu_sim *the_gpu = gpgpu_ptx_sim_init_perf();
 
     cudaDeviceProp *prop = (cudaDeviceProp *)calloc(sizeof(cudaDeviceProp), 1);
-    snprintf(prop->name, 256, "GPGPU-Sim_v%s", g_gpgpusim_version_string);
+    snprintf(prop->name, sizeof(prop->name), "%s",
+             g_gpgpusim_version_string);
     prop->major = the_gpu->compute_capability_major();
     prop->minor = the_gpu->compute_capability_minor();
     prop->totalGlobalMem = 0x80000000 /* 2 GB */;

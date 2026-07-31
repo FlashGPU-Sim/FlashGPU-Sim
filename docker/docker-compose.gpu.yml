@@ -1,0 +1,5 @@
+services:
+  flashgpusim:
+    gpus: all
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility

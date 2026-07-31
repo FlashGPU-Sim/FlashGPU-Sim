@@ -59,6 +59,19 @@ Then from `test/`:
 ./run_tests.sh build analysis --target fa3 --group concurrency --mode all
 ```
 
+For native H100 runs with Nsight Compute collection, use the registry-backed
+hardware entry point from the repository root:
+
+```bash
+./test/scripts/run_fa3_ncu.sh \
+  --group breakdown:qk_pv_only_no_tma \
+  --group breakdown:qk_pv_only_no_tma_reg_timeline
+```
+
+The command accepts repeated `--group GROUP:MODE` selectors and uses each
+group's registry-owned case list. See `test/scripts/README.md` for case
+overrides, output layout, prerequisites, and migration notes.
+
 The generated kernel targets `sm_90a`. It is for GPGPU-Sim/PTX bring-up and
 Hopper inspection; it is not expected to run on non-Hopper hardware.
 

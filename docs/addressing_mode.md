@@ -77,13 +77,13 @@ const unsigned long long TOTAL_LOCAL_MEM =
     MAX_STREAMING_MULTIPROCESSORS * TOTAL_LOCAL_MEM_PER_SM;  // 32 GB
 
 const unsigned long long SHARED_GENERIC_START =
-    GLOBAL_HEAP_START - TOTAL_SHARED_MEM;  // 0xBFFFFFC00
+    GLOBAL_HEAP_START - TOTAL_SHARED_MEM;  // 0xBC0000000
 
 const unsigned long long LOCAL_GENERIC_START =
-    SHARED_GENERIC_START - TOTAL_LOCAL_MEM;  // 0xBFFFFF400
+    SHARED_GENERIC_START - TOTAL_LOCAL_MEM;  // 0x3C0000000
 
 const unsigned long long STATIC_ALLOC_LIMIT =
-    GLOBAL_HEAP_START - (TOTAL_LOCAL_MEM + TOTAL_SHARED_MEM);  // 0xBFFFFF400
+    GLOBAL_HEAP_START - (TOTAL_LOCAL_MEM + TOTAL_SHARED_MEM);  // 0x3C0000000
 ```
 
 ## Address Translation Functions
@@ -172,7 +172,8 @@ TOTAL            = 33 GB > 3 GB (old GLOBAL_HEAP_START)
 ```
 
 **Impact**:
-- `SHARED_GENERIC_START` would be negative (0xC0000000 - 1 GB < 0)
+- `LOCAL_GENERIC_START` and `STATIC_ALLOC_LIMIT` would underflow
+  (3 GB - 1 GB - 32 GB < 0)
 - Overlap between shared memory and global heap regions
 - Catastrophic memory corruption
 
@@ -292,22 +293,22 @@ For RTX 5090 with 170 SMs:
 
 ```
 LOCAL_GENERIC_START   = 0xC00000000 - 1 GB - 32 GB
-                      = 0xBFFFFFC00 (not shown, simplify)
+                      = 0x3C0000000
 
 SHARED_GENERIC_START  = 0xC00000000 - 1 GB
-                      = 0xBFFFFFC00
+                      = 0xBC0000000
 
 GLOBAL_HEAP_START     = 0xC00000000
 
 Shared memory for SM 42:
-  Start: 0xBFFFFFC00 + 42 * 1 MB = 0xC00002A00
-  End:   0xC00002A00 + 1 MB      = 0xC00003A00
+  Start: 0xBC0000000 + 42 * 1 MB = 0xBC2A00000
+  End:   0xBC2A00000 + 1 MB      = 0xBC2B00000
 
 Local memory for SM 42, thread 100:
   Address = LOCAL_GENERIC_START + (42 * 2048 + 100) * 16 KB
-          = 0xBFFFFFC00 + (86116) * 16384
-          = 0xBFFFFFC00 + 0x54A4000
-          = 0xC00054A4000
+          = 0x3C0000000 + (86116) * 16384
+          = 0x3C0000000 + 0x54190000
+          = 0x414190000
 ```
 
 **Key Point**: All these addresses exceed 32-bit range (> 0xFFFFFFFF), demonstrating why 64-bit addressing is mandatory.
@@ -365,7 +366,6 @@ When developing with generic addressing:
 
 - PTX ISA Specification: Generic Addressing (Section 3.1.4)
 - CUDA Programming Guide: Memory Hierarchy (Chapter 4)
-- FlashGPU-Sim: `CLAUDE.md` (build and test instructions)
 - Source Files:
   - `src/abstract_hardware_model.h` (address space constants)
   - `src/cuda-sim/cuda-sim.cc` (address translation functions)

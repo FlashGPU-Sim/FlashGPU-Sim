@@ -1,77 +1,91 @@
-# GPGPU-Sim Docker Environment
+# FlashGPU-Sim Development Container
 
-This directory contains Docker configuration files for the GPGPU-Sim development environment.
+The development image provides CUDA 12.8, the simulator build dependencies,
+and the Python stack used to develop TritonTrace:
 
-## Files
+- Python 3.12.3
+- PyTorch 2.9.0
+- Triton 3.5.0
+- NumPy 2.4.0
 
-- `Dockerfile` - Development Docker image with full dependencies (NVIDIA CUDA 12.8)
-- `Dockerfile.ci` - Minimal CI Docker image for automated testing
-- `docker-compose.yml` - Docker Compose service configurations
-- `entrypoint.sh` - Container entrypoint script
+The repository is mounted at `/workspace/flashgpu-sim`. The container user
+uses the host user's UID and GID, so files created in the mounted repository
+remain owned by the host user.
 
-## CI Docker Image
+## Prerequisites
 
-The `Dockerfile.ci` provides a lightweight container optimized for continuous integration:
+Install Docker with the Compose plugin. GPU-enabled containers additionally
+require an NVIDIA driver and the NVIDIA Container Toolkit on the host.
 
-**Purpose:**
-- Minimal dependencies for CI/CD pipelines
-- Fast build times for GitHub Actions workflows
-- Consistent test environment across local and remote runs
+## Build the Image
 
-**Differences from Development Dockerfile:**
-- Uses same CUDA base version for compatibility
-- Includes only build essentials and test dependencies
-- Runs the same full GPU configurations as pull-request CI
-- No interactive development tools
-
-**Usage:** The CI image is built automatically by `.github/workflows/pr-tests.yml` and can be tested locally using `act` (see `docs/testing-instructions.md`).
-
-## Usage
-
-All commands should be run from the **project root directory** using `docker.sh`:
+Run all commands from the repository root:
 
 ```bash
-./docker.sh <command>
-```
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `build` | Build Docker image |
-| `start` | Start container |
-| `stop` | Stop all containers |
-| `shell` | Open shell in container (starts if not running) |
-| `logs` | Show container logs |
-| `clean` | Remove containers and images |
-
-## Quick Start
-
-```bash
-# Build Docker image
 ./docker.sh build
-
-# Enter container shell (environment auto-configured)
-./docker.sh shell
-
-# Inside container: build directly
-make -j$(nproc)                 # Standard build
-# or
-make FLASH=1 -j$(nproc)         # Flash mode build
-
-# Run tests (inside container)
-cd test
-./run_tests.sh setup
-./run_tests.sh test
 ```
 
-## Environment Variables
+## Open a Development Shell
 
-You can customize the container by editing `docker-compose.yml`:
+Start a disposable shell without GPU access:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CUDA_INSTALL_PATH` | `/usr/local/cuda` | CUDA installation path |
-| `PTXAS_CUDA_INSTALL_PATH` | `/usr/local/cuda` | PTXAS CUDA path |
-| `GPGPUSIM_BUILD_TYPE` | `release` | Build type (release/debug) |
-| `OMP_NUM_THREADS` | `8` | OpenMP threads for Flash mode |
+```bash
+./docker.sh shell
+```
+
+The shell starts in the native CUDA environment. Configure FlashGPU-Sim only
+when building or running the simulator:
+
+```bash
+source setup_environment
+make -j "$(nproc)"
+```
+
+For example, run the CUDA VectorAdd tutorial:
+
+```bash
+./tutorials/vectorAdd/run.sh
+```
+
+## Use a GPU
+
+Expose all available GPUs:
+
+```bash
+./docker.sh shell --gpu
+```
+
+Select one host GPU for CUDA applications:
+
+```bash
+./docker.sh shell --gpu 1
+```
+
+The latter still attaches the GPU resources requested by Compose and sets
+`CUDA_VISIBLE_DEVICES=1` inside the container.
+
+For example, capture the Triton GEMM tutorial from a GPU-enabled shell:
+
+```bash
+cd tutorials/triton-gemm
+./capture.sh
+```
+
+## Persistent Data
+
+The source tree is a host bind mount. Python, Triton, and PyTorch caches use
+the `flashgpusim-cache` Docker volume and persist across disposable shells.
+Containers themselves are removed when their shells exit.
+
+## Nsight Compute
+
+Nsight Compute is not installed in the image. Install a version compatible
+with the host GPU and driver on the host, then use
+[`tutorials/profile_ncu.sh`](../tutorials/profile_ncu.sh) outside the
+container.
+
+## CI Image
+
+[`Dockerfile.ci`](Dockerfile.ci) is a separate minimal image used by the
+GitHub Actions workflow. The development image and helper do not replace or
+modify the CI environment.

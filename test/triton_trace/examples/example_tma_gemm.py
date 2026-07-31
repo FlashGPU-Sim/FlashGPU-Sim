@@ -12,16 +12,14 @@ C = A @ B where:
 - C has shape (M, N)
 """
 
-import sys
 from pathlib import Path
 import torch
 import triton
 import triton.language as tl
 
 TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(TRITON_TRACE_DIR))
 
-from track_triton_kernels import TritonKernelTracker
+import tritontrace
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -242,7 +240,7 @@ def main():
     if output_dir.exists():
         shutil.rmtree(output_dir)
     
-    tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)
+    tracker = tritontrace.Tracker(output_dir, save_binaries=True, capture_args=True)
     tracker.disable()  # Disable during warmup/perf runs
     print(f"\nOutput directory: {output_dir}")
     

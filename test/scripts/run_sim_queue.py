@@ -57,7 +57,7 @@ STATUS_FIELDS = [
 
 
 EXAMPLE_JOBS_TSV = """job_id\tstage\tcase\tbinary\tgtest_filter\tconfig\targs\tskip
-example_smoke\tsmoke\tExampleCase\ttest/build/bin/hopper/run_example_tests\tExampleSuite.ExampleCase\tSM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700\t\t0
+example_smoke\tsmoke\tExampleCase\ttest/build/bin/hopper/run_example_tests\tExampleSuite.ExampleCase\tSM90_H100\t\t0
 """
 
 
@@ -148,21 +148,30 @@ def rss_mb_for_pids(pids: Iterable[int]) -> float:
 def read_jobs(path: Path, root: Path) -> list[Job]:
     with path.open(newline="") as f:
         reader = csv.DictReader(f, delimiter="\t")
-        required = {"stage", "case", "binary", "gtest_filter"}
+        required = {"job_id", "stage", "case", "binary", "gtest_filter"}
         if reader.fieldnames is None or not required.issubset(set(reader.fieldnames)):
             raise SystemExit(f"jobs file must contain columns: {', '.join(sorted(required))}")
         jobs: list[Job] = []
+        seen_job_ids: set[str] = set()
         for index, row in enumerate(reader):
             if not any((value or "").strip() for value in row.values()):
                 continue
+            for field in required:
+                if not (row.get(field) or "").strip():
+                    raise SystemExit(f"row {index + 2}: {field} must not be empty")
             binary = Path(row["binary"])
             if not binary.is_absolute():
                 binary = root / binary
-            job_id = row.get("job_id") or f"{index:03d}_{row['stage']}_{row['case']}"
+            job_id = sanitize(row["job_id"])
+            if not job_id:
+                raise SystemExit(f"row {index + 2}: job_id has no usable characters")
+            if job_id in seen_job_ids:
+                raise SystemExit(f"row {index + 2}: duplicate job_id {job_id!r}")
+            seen_job_ids.add(job_id)
             jobs.append(
                 Job(
                     index=index,
-                    job_id=sanitize(job_id),
+                    job_id=job_id,
                     stage=row["stage"].strip(),
                     case=row["case"].strip(),
                     binary=binary,
@@ -575,15 +584,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--jobs", type=Path)
     parser.add_argument("--config", default="SM90_H100")
     parser.add_argument("--max-parallel", type=int, default=4)
-    parser.add_argument("--cpu-sets", nargs="*", default=["0,2,4,6", "8,10,12,14", "16-19", "20-23"])
+    parser.add_argument(
+        "--cpu-sets",
+        nargs="*",
+        default=[],
+        help="Optional taskset CPU lists, one per worker slot",
+    )
     parser.add_argument("--threads-per-job", type=int, default=4)
     parser.add_argument("--timeout", type=int, default=7200)
     parser.add_argument("--heartbeat-interval", type=int, default=30)
     parser.add_argument("--max-rss-gb", type=float, default=0.0)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--cuda-path", type=Path, default=Path("/usr/local/cuda-12.8"))
-    parser.add_argument("--cuda-version-number", default="12080")
-    parser.add_argument("--gpgpusim-config", default="gcc-13.3.0/cuda-12080/release")
+    parser.add_argument(
+        "--cuda-path",
+        type=Path,
+        default=Path(os.environ["CUDA_INSTALL_PATH"])
+        if os.environ.get("CUDA_INSTALL_PATH")
+        else None,
+        help="CUDA Toolkit root (defaults to CUDA_INSTALL_PATH)",
+    )
+    parser.add_argument(
+        "--cuda-version-number",
+        default=os.environ.get("CUDA_VERSION_NUMBER", "12080"),
+    )
+    parser.add_argument(
+        "--gpgpusim-config",
+        default=os.environ.get(
+            "GPGPUSIM_CONFIG", "gcc-13.3.0/cuda-12080/release"
+        ),
+    )
     parser.add_argument("--ptx-sim-use-ptx-file", default=None)
     parser.add_argument("--ptx-sim-kernelfile", default=None)
     parser.add_argument("--cuobjdump-sim-file", default="jj")
@@ -600,6 +629,8 @@ def parse_args() -> argparse.Namespace:
         raise SystemExit("--run-root is required")
     if args.jobs is None:
         raise SystemExit("--jobs is required")
+    if args.cuda_path is None:
+        raise SystemExit("--cuda-path is required when CUDA_INSTALL_PATH is not set")
     args.run_root = args.run_root.resolve()
     args.jobs = args.jobs.resolve()
     args.config_dir = args.root / "configs" / args.config

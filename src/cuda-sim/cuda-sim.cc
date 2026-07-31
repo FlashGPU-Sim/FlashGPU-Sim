@@ -2965,8 +2965,11 @@ kernel_info_t *cuda_sim::gpgpu_opencl_ptx_sim_init_grid(
   return result;
 }
 
-#include "../../version"
 #include "detailed_version"
+
+// Retain the legacy symbol for compatibility with existing integrations. It
+// now identifies the project without claiming an upstream release version.
+const char *g_gpgpusim_version_string = "FlashGPU-Sim";
 
 void print_splash() {
   static int splash_printed = 0;

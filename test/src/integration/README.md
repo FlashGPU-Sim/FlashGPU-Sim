@@ -23,7 +23,7 @@ Integration tests validate end-to-end functionality by:
 
 Source environment setup before running tests:
 ```bash
-source setup.sh
+export CUDA_INSTALL_PATH=/path/to/cuda
 source setup_environment
 ```
 
@@ -186,7 +186,7 @@ Current status: **25/25 tests passing** (F16: 16, BF16: 5, TF32: 5, S8: 4)
 
 If tests fail to compile:
 - Verify CUDA_INSTALL_PATH is set: `echo $CUDA_INSTALL_PATH`
-- Source environment: `source setup.sh && source setup_environment`
+- Source environment: `source setup_environment`
 - Check CUDA toolkit version supports architecture (sm90 for TF32 M16N8K4)
 
 ### Test Execution Failures
@@ -216,7 +216,7 @@ When adding support for new MMA shapes or data types:
 
 ## References
 
-- Test execution: `docs/testing-instructions.md`
+- Test execution: [`test/README.md`](../../README.md)
 - MMA implementation: `src/gpgpu-sim/flash/mma/tensor_mma.{h,cc,md}`
 - PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)
 - Google Test: [Testing framework documentation](https://google.github.io/googletest/)

@@ -3,7 +3,7 @@
 # Generic sweep script for triton traced workloads.
 #
 # Usage:
-#   ./sweep.sh <workload> [trace|run|gem5|ncu] [options...] [sweep_values...]
+#   ./sweep_tests.sh <workload> [trace|run|gem5|ncu] [options...] [sweep_values...]
 #
 # Workloads:
 #   tma_gemm      TMA GEMM — sweep over M=N=K size
@@ -40,6 +40,8 @@
 #   --causal       Enable causal masking
 #
 # Environment:
+#   CUDA_INSTALL_PATH
+#                  CUDA Toolkit root used for simulator builds and replay.
 #   TRITON_TRACKING_ROOT
 #                  Absolute output root for supported trace generators.
 #   GPGPUSIM_CLOCK_DOMAINS_OVERRIDE
@@ -47,19 +49,19 @@
 #                  1800:1800:1800:14001. Only copied launcher configs change.
 #
 # Examples:
-#   ./sweep.sh tma_gemm trace 128 512 1024
-#   ./sweep.sh tma_gemm run --shape 512,6000,2560
-#   ./sweep.sh tma_gemm run --csv configs/gemm_shapes_training.csv
-#   ./sweep.sh tma_gemm gem5 --shape 512,512,512
-#   ./sweep.sh tma_gemm ncu --csv configs/gemm_shapes_training.csv
-#   ./sweep.sh tma_gemm run
-#   ./sweep.sh flash_attn trace 256 512 1024
-#   ./sweep.sh flash_attn run 256 512 --head-dim 128
-#   ./sweep.sh flash_attn run --shape 2,4,1024,128,True
-#   ./sweep.sh flash_attn ncu 256 512 --head-dim 64 --causal
-#   ./sweep.sh llama3_gqa_attn run --csv configs/llama3_8b_gqa_attn_shapes_smoke.csv
-#   ./sweep.sh llama3_layer run --csv configs/llama3_layer_shapes_smoke.csv
-#   ./sweep.sh llama3_decode_layer_full_tiled run --csv configs/llama3_decode_layer_full_tiled_shapes_smoke.csv
+#   ./sweep_tests.sh tma_gemm trace 128 512 1024
+#   ./sweep_tests.sh tma_gemm run --shape 512,6000,2560
+#   ./sweep_tests.sh tma_gemm run --csv configs/gemm_shapes_training.csv
+#   ./sweep_tests.sh tma_gemm gem5 --shape 512,512,512
+#   ./sweep_tests.sh tma_gemm ncu --csv configs/gemm_shapes_training.csv
+#   ./sweep_tests.sh tma_gemm run
+#   ./sweep_tests.sh flash_attn trace 256 512 1024
+#   ./sweep_tests.sh flash_attn run 256 512 --head-dim 128
+#   ./sweep_tests.sh flash_attn run --shape 2,4,1024,128,True
+#   ./sweep_tests.sh flash_attn ncu 256 512 --head-dim 64 --causal
+#   ./sweep_tests.sh llama3_gqa_attn run --csv configs/llama3_8b_gqa_attn_shapes_smoke.csv
+#   ./sweep_tests.sh llama3_layer run --csv configs/llama3_layer_shapes_smoke.csv
+#   ./sweep_tests.sh llama3_decode_layer_full_tiled run --csv configs/llama3_decode_layer_full_tiled_shapes_smoke.csv
 #
 
 set -euo pipefail
@@ -611,6 +613,18 @@ require_clean_env() {
     fi
 }
 
+source_simulator_environment() {
+    if [[ -z "${CUDA_INSTALL_PATH:-}" ]]; then
+        echo "ERROR: set CUDA_INSTALL_PATH to the CUDA Toolkit root before simulator replay."
+        exit 1
+    fi
+
+    # setup_environment is a legacy sourced script and is not nounset-safe.
+    set +u
+    source "$REPO_ROOT/setup_environment"
+    set -u
+}
+
 activate_triton_env() {
     if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
         return
@@ -680,19 +694,6 @@ do_trace() {
     require_clean_env
 
     activate_triton_env
-    VENV_CUDA_BIN="$(python - <<'PY'
-import site
-from pathlib import Path
-
-for root in site.getsitepackages():
-    for path in sorted(Path(root).glob("nvidia/cu*/bin/nvcc"), reverse=True):
-        print(path.parent)
-        raise SystemExit
-PY
-)"
-    if [[ -n "$VENV_CUDA_BIN" ]]; then
-        export PATH="$VENV_CUDA_BIN:$PATH"
-    fi
 
     # Generate trace
     local py_args
@@ -739,10 +740,7 @@ do_run() {
         source "$TOP_ROOT/scripts/env.sh"
     fi
 
-    set +u
-    source "$REPO_ROOT/setup.sh"
-    source "$REPO_ROOT/setup_environment"
-    set -u
+    source_simulator_environment
 
     if is_multi_launch; then
         local shape_log_dir="$SIM_LOG_DIR/${subdir}"
@@ -897,10 +895,7 @@ do_gem5() {
                 source "$TOP_ROOT/scripts/env.sh"
 
                 cd "$REPO_ROOT"
-                set +u
-                source setup.sh
-                source setup_environment
-                set -u
+                source_simulator_environment
 
                 cd "$launcher_dir"
                 timeout "$timeout_sec" "./$exe"
@@ -965,10 +960,7 @@ do_gem5() {
         source "$TOP_ROOT/scripts/env.sh"
 
         cd "$REPO_ROOT"
-        set +u
-        source setup.sh
-        source setup_environment
-        set -u
+        source_simulator_environment
 
         cd "$launcher_dir"
         timeout "$timeout_sec" "./${KERNEL_NAME}_launch1"

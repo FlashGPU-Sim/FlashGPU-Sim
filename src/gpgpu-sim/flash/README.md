@@ -119,6 +119,6 @@ See `docs/workflows/code-formatting.md` for details.
 ## References
 
 - PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)
-- Design documentation: `docs/mma_instructions.md`
-- Interface documentation: `tensor_mma.md`
+- Implementation overview: [`mma/README.md`](mma/README.md)
+- Interface documentation: [`mma/tensor_mma.md`](mma/tensor_mma.md)
 - Issue tracking: Issue #18
