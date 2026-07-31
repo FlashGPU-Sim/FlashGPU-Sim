@@ -170,12 +170,16 @@ class kernel_config {
     m_BlockDim = BlockDim;
     m_sharedMem = sharedMem;
     m_stream = stream;
+    m_is_cluster_launch = false;
+    m_cluster_dim = dim3(0, 0, 0);
   }
   kernel_config() {
     m_GridDim = dim3(-1, -1, -1);
     m_BlockDim = dim3(-1, -1, -1);
     m_sharedMem = 0;
     m_stream = NULL;
+    m_is_cluster_launch = false;
+    m_cluster_dim = dim3(0, 0, 0);
   }
   void set_arg(const void *arg, size_t size, size_t offset) {
     m_args.push_front(gpgpu_ptx_sim_arg(arg, size, offset));
@@ -188,12 +192,27 @@ class kernel_config {
   gpgpu_ptx_sim_arg_list_t get_args() { return m_args; }
   struct CUstream_st *get_stream() { return m_stream; }
 
+  // Thread Block Cluster launch (cudaLaunchKernelEx / __cluster_dims__).
+  void set_cluster_dim(dim3 cluster_dim) {
+    m_is_cluster_launch = true;
+    m_cluster_dim = cluster_dim;
+  }
+  bool is_cluster_launch() const { return m_is_cluster_launch; }
+  dim3 cluster_dim() const { return m_cluster_dim; }
+  unsigned ctas_per_cluster() const {
+    if (!m_is_cluster_launch) return 1;
+    unsigned p = m_cluster_dim.x * m_cluster_dim.y * m_cluster_dim.z;
+    return p > 0 ? p : 1;
+  }
+
  private:
   dim3 m_GridDim;
   dim3 m_BlockDim;
   size_t m_sharedMem;
   struct CUstream_st *m_stream;
   gpgpu_ptx_sim_arg_list_t m_args;
+  bool m_is_cluster_launch;
+  dim3 m_cluster_dim;
 };
 
 class cuda_runtime_api {

@@ -1,4 +1,4 @@
-// SM120_RTX5090_REDUCED_CLUSTER2 interconnect (BookSim fly template).
+// SM120_RTX5090_REDUCED_CLUSTER2x1 interconnect (BookSim fly template).
 // GPU topology: 1 cluster x 2 SMs = 2 SMs (plus memory controllers).
 //
 // NOTE: gpgpusim.config uses -network_mode 2 (local interconnect/xbar).

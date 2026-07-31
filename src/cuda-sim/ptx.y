@@ -75,6 +75,8 @@ class ptx_recognizer;
 %token  PRAGMA_DIRECTIVE
 %token  REG_DIRECTIVE
 %token  REQNTID_DIRECTIVE
+%token  EXPLICITCLUSTER_DIRECTIVE
+%token  REQNCTAPERCLUSTER_DIRECTIVE
 %token  SECTION_DIRECTIVE
 %token  DEBUG_DIRECTIVE
 %token  SHARED_DIRECTIVE
@@ -320,6 +322,13 @@ block_spec: MAXNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND {r
 	| MINNCTAPERSM_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".minnctapersm", $2); printf("GPGPU-Sim PTX: Warning: .minnctapersm ignored. \n"); }
 	| MAXNCTAPERSM_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".maxnctapersm", $2); printf("GPGPU-Sim PTX: Warning: .maxnctapersm ignored. \n"); }
 	| REQNTID_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".reqntid", $2); printf("GPGPU-Sim PTX: Warning: .reqntid ignored. \n"); }
+	| EXPLICITCLUSTER_DIRECTIVE { recognizer->func_header_info(".explicitcluster"); recognizer->set_explicit_cluster(); }
+	| REQNCTAPERCLUSTER_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND {
+	    recognizer->func_header_info_int(".reqnctapercluster", $2);
+	    recognizer->func_header_info_int(",", $4);
+	    recognizer->func_header_info_int(",", $6);
+	    recognizer->set_req_cluster_dim($2, $4, $6);
+	  }
 	;
 
 block_spec_list: block_spec

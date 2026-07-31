@@ -2410,8 +2410,15 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
 
   // Cache the CTA's shared memory pointer for TMA cluster multicast.
   m_cta_smem[free_cta_hw_id] = m_thread[start_thread]->m_shared_mem;
-  // Issue-order cluster group for peer matching (independent of hw slot).
-  set_cta_cluster_group(free_cta_hw_id, m_cluster->allocate_cta_cluster_group());
+  // Cluster group for peer matching: explicit TB-cluster group when set by
+  // co-resident issuer, else issue-order groups of size n_cores_per_cluster.
+  {
+    unsigned force_group = m_cluster->pending_issue_cluster_group();
+    unsigned group_size = m_cluster->pending_issue_group_size();
+    set_cta_cluster_group(
+        free_cta_hw_id,
+        m_cluster->allocate_cta_cluster_group(group_size, force_group));
+  }
 
   if (m_gpu->resume_option == 1 && kernel.get_uid() == m_gpu->resume_kernel &&
       ctaid >= m_gpu->resume_CTA && ctaid < m_gpu->checkpoint_CTA_t) {
@@ -2475,6 +2482,53 @@ int gpgpu_sim::next_clock_domain(void) {
 }
 
 void gpgpu_sim::issue_block2core() {
+  // 1) Co-resident issue for Thread Block Cluster launches.
+  // Prefer completing an open TB cluster, else start a new one on a physical
+  // cluster that can fit the whole TB cluster (never split across physical
+  // clusters).
+  kernel_info_t *ckernel = select_kernel();
+  if (ckernel && ckernel->is_cluster_launch() &&
+      kernel_more_cta_left(ckernel)) {
+    unsigned ctas_per = ckernel->get_ctas_per_cluster();
+    if (ctas_per == 0) ctas_per = 1;
+
+    if (ckernel->has_open_tb_cluster()) {
+      unsigned phys = ckernel->open_tb_phys_cluster();
+      unsigned group = ckernel->open_tb_cluster_group();
+      if (phys < m_shader_config->n_simt_clusters) {
+        unsigned num =
+            m_cluster[phys]->issue_block2core_for_kernel(ckernel, group);
+        if (num) {
+          ckernel->consume_open_tb_cta();
+          m_last_cluster_issue = phys;
+          m_total_cta_launched += num;
+        }
+      }
+    } else {
+      // Start a new TB cluster: find a physical cluster with enough free slots.
+      unsigned last_issued = m_last_cluster_issue;
+      for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+        unsigned idx =
+            (i + last_issued + 1) % m_shader_config->n_simt_clusters;
+        if (m_cluster[idx]->count_free_cta_slots(*ckernel) < ctas_per) {
+          continue;
+        }
+        // Reserve one unique group id for the whole TB cluster.
+        unsigned group =
+            m_cluster[idx]->allocate_cta_cluster_group(ctas_per, (unsigned)-1);
+        unsigned num =
+            m_cluster[idx]->issue_block2core_for_kernel(ckernel, group);
+        if (num) {
+          ckernel->open_tb_cluster(idx, group, ctas_per - num);
+          m_last_cluster_issue = idx;
+          m_total_cta_launched += num;
+        }
+        break;
+      }
+    }
+  }
+
+  // 2) Ordinary (non-cluster) launch path: RR across physical clusters.
   unsigned last_issued = m_last_cluster_issue;
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
     unsigned idx = (i + last_issued + 1) % m_shader_config->n_simt_clusters;

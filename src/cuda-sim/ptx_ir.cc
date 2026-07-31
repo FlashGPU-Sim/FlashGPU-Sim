@@ -1780,6 +1780,11 @@ function_info::function_info(int entry_point, gpgpu_context *ctx) {
   m_local_mem_framesize = 0;
   m_args_aligned_size = -1;
   pdom_done = false;  // initialize it to false
+  m_explicit_cluster = false;
+  m_req_cluster_dim = dim3(0, 0, 0);
+  m_cluster_dim_must_be_set = false;
+  m_nonportable_cluster_size_allowed = false;
+  m_cluster_sched_policy = 0;
 }
 
 unsigned function_info::print_insn(unsigned pc, FILE *fp) const {

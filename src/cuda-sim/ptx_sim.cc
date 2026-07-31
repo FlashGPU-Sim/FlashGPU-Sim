@@ -27,6 +27,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include "ptx_sim.h"
+#include "../kernel_info.h"
 #include <string>
 #include "ptx_ir.h"
 class ptx_recognizer;
@@ -319,24 +320,85 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
       if (dim_mod == 2) return m_tid.z;
       abort();
       break;
+    case WARPSZ_REG:
+      return m_core->get_warp_size();
     case CLUSTER_CTAID_REG:
-      assert(dim_mod < 3);
-      if (dim_mod == 0) return m_ctaid.x;
-      if (dim_mod == 1) return m_ctaid.y;
-      if (dim_mod == 2) return m_ctaid.z;
-      abort();
-      break;
-    case CLUSTER_CTA_RANK_REG: {
-      static bool warned_cluster_ctarank = false;
-      if (!warned_cluster_ctarank) {
-        printf("GPGPU-Sim PTX: Warning - special register %%cluster_ctarank "
-               "is not modeled; returning 0.\n");
-        warned_cluster_ctarank = true;
+    case CLUSTER_NCTAID_REG:
+    case CLUSTER_CTA_RANK_REG:
+    case CLUSTER_NCTARANK_REG:
+    case CLUSTERID_REG:
+    case NCLUSTERID_REG:
+    case IS_EXPLICIT_CLUSTER_REG: {
+      // Derive TB-cluster identity from global blockIdx and clusterDim.
+      kernel_info_t *kinfo =
+          m_core ? m_core->get_kernel_info() : NULL;
+      const bool is_cluster =
+          kinfo && kinfo->is_cluster_launch();
+      dim3 cdim = is_cluster ? kinfo->get_cluster_dim() : dim3(1, 1, 1);
+      if (cdim.x == 0) cdim.x = 1;
+      if (cdim.y == 0) cdim.y = 1;
+      if (cdim.z == 0) cdim.z = 1;
+      dim3 gdim = m_nctaid;
+      // Relative CTA id within the TB cluster
+      unsigned rel_x = m_ctaid.x % cdim.x;
+      unsigned rel_y = m_ctaid.y % cdim.y;
+      unsigned rel_z = m_ctaid.z % cdim.z;
+      // Cluster id in the grid of clusters
+      unsigned cid_x = m_ctaid.x / cdim.x;
+      unsigned cid_y = m_ctaid.y / cdim.y;
+      unsigned cid_z = m_ctaid.z / cdim.z;
+      unsigned ncid_x = gdim.x / cdim.x;
+      unsigned ncid_y = gdim.y / cdim.y;
+      unsigned ncid_z = gdim.z / cdim.z;
+      unsigned rank = rel_x + cdim.x * (rel_y + cdim.y * rel_z);
+      unsigned nrank = cdim.x * cdim.y * cdim.z;
+      switch (builtin_id & 0xFFFF) {
+        case IS_EXPLICIT_CLUSTER_REG:
+          return is_cluster ? 1 : 0;
+        case CLUSTER_CTA_RANK_REG:
+          return is_cluster ? rank : 0;
+        case CLUSTER_NCTARANK_REG:
+          return is_cluster ? nrank : 1;
+        case CLUSTER_CTAID_REG:
+          assert(dim_mod < 3);
+          if (!is_cluster) return 0;
+          if (dim_mod == 0) return rel_x;
+          if (dim_mod == 1) return rel_y;
+          return rel_z;
+        case CLUSTER_NCTAID_REG:
+          assert(dim_mod < 3);
+          if (!is_cluster) {
+            if (dim_mod == 0) return 1;
+            return 1;
+          }
+          if (dim_mod == 0) return cdim.x;
+          if (dim_mod == 1) return cdim.y;
+          return cdim.z;
+        case CLUSTERID_REG:
+          assert(dim_mod < 3);
+          if (!is_cluster) {
+            if (dim_mod == 0) return m_ctaid.x;
+            if (dim_mod == 1) return m_ctaid.y;
+            return m_ctaid.z;
+          }
+          if (dim_mod == 0) return cid_x;
+          if (dim_mod == 1) return cid_y;
+          return cid_z;
+        case NCLUSTERID_REG:
+          assert(dim_mod < 3);
+          if (!is_cluster) {
+            if (dim_mod == 0) return gdim.x;
+            if (dim_mod == 1) return gdim.y;
+            return gdim.z;
+          }
+          if (dim_mod == 0) return ncid_x;
+          if (dim_mod == 1) return ncid_y;
+          return ncid_z;
+        default:
+          break;
       }
       return 0;
     }
-    case WARPSZ_REG:
-      return m_core->get_warp_size();
     default:
       assert(0);
   }

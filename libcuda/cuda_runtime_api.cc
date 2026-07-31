@@ -1361,9 +1361,79 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
          (ctx->func_sim->g_ptx_sim_mode) ? "functional simulation"
                                          : "performance simulation",
          stream ? stream->get_uid() : 0);
+
+  // Resolve Thread Block Cluster dimensions:
+  // 1) Explicit launch attribute (cudaLaunchKernelEx) on kernel_config
+  // 2) Else required dims from function_info (PTX .reqnctapercluster /
+  //    cudaFuncSetAttribute RequiredCluster*)
+  function_info *entry_for_cluster = context->get_kernel(hostFun);
+  bool cluster_launch = config.is_cluster_launch();
+  dim3 cluster_dim = config.cluster_dim();
+  if (!cluster_launch && entry_for_cluster &&
+      entry_for_cluster->has_explicit_cluster()) {
+    cluster_launch = true;
+    cluster_dim = entry_for_cluster->get_req_cluster_dim();
+  }
+  if (entry_for_cluster && entry_for_cluster->cluster_dim_must_be_set() &&
+      !cluster_launch) {
+    printf(
+        "GPGPU-Sim PTX: ERROR ** cluster dimension must be set for kernel "
+        "0x%p (cudaFuncAttributeClusterDimMustBeSet)\n",
+        hostFun);
+    ctx->api->g_cuda_launch_stack.pop_back();
+    return g_last_cudaError = cudaErrorInvalidClusterSize;
+  }
+  if (cluster_launch) {
+    if (cluster_dim.x == 0 || cluster_dim.y == 0 || cluster_dim.z == 0) {
+      printf(
+          "GPGPU-Sim PTX: ERROR ** invalid clusterDim=(%u,%u,%u) for 0x%p\n",
+          cluster_dim.x, cluster_dim.y, cluster_dim.z, hostFun);
+      ctx->api->g_cuda_launch_stack.pop_back();
+      return g_last_cudaError = cudaErrorInvalidClusterSize;
+    }
+    dim3 gd = config.grid_dim();
+    if ((gd.x % cluster_dim.x) != 0 || (gd.y % cluster_dim.y) != 0 ||
+        (gd.z % cluster_dim.z) != 0) {
+      printf(
+          "GPGPU-Sim PTX: ERROR ** gridDim=(%u,%u,%u) not a multiple of "
+          "clusterDim=(%u,%u,%u)\n",
+          gd.x, gd.y, gd.z, cluster_dim.x, cluster_dim.y, cluster_dim.z);
+      ctx->api->g_cuda_launch_stack.pop_back();
+      return g_last_cudaError = cudaErrorInvalidClusterSize;
+    }
+    // Capacity: TB cluster size must fit physical cluster packing
+    // (n_cores_per_cluster).
+    gpgpu_sim *gpu_for_check =
+        context->get_device()->get_gpgpu();
+    unsigned n_cores = 1;
+    if (gpu_for_check) {
+      n_cores = gpu_for_check->getShaderCoreConfig()
+                    ->n_simt_cores_per_cluster;
+      if (n_cores == 0) n_cores = 1;
+    }
+    unsigned ctas = cluster_dim.x * cluster_dim.y * cluster_dim.z;
+    if (ctas > n_cores) {
+      printf(
+          "GPGPU-Sim PTX: ERROR ** cluster size %u exceeds "
+          "n_cores_per_cluster %u (config capacity)\n",
+          ctas, n_cores);
+      ctx->api->g_cuda_launch_stack.pop_back();
+      return g_last_cudaError = cudaErrorInvalidClusterSize;
+    }
+  }
+
   kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
       hostFun, config.get_args(), config.grid_dim(), config.block_dim(),
       context);
+
+  if (cluster_launch) {
+    grid->set_cluster_launch(cluster_dim);
+    printf(
+        "GPGPU-Sim PTX: Thread Block Cluster launch clusterDim=(%u,%u,%u) "
+        "ctas_per_cluster=%u\n",
+        cluster_dim.x, cluster_dim.y, cluster_dim.z,
+        grid->get_ctas_per_cluster());
+  }
 
   // Handle dynamic shared memory for extern shared symbols and record the
   // per-launch dynamic shared memory size on the kernel grid object
@@ -4862,6 +4932,7 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
   function_info *entry = context->get_kernel((const char *)func);
 
   if (attr == cudaFuncAttributeMaxDynamicSharedMemorySize) {
+    if (!entry) return g_last_cudaError = cudaErrorInvalidDeviceFunction;
     if (value < 0) return g_last_cudaError = cudaErrorInvalidValue;
     unsigned static_smem;
     unsigned max_per_block_optin;
@@ -4884,6 +4955,7 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
   }
 
   if (attr == cudaFuncAttributePreferredSharedMemoryCarveout) {
+    if (!entry) return g_last_cudaError = cudaErrorInvalidDeviceFunction;
     if (value != cudaSharedmemCarveoutDefault &&
         (value < 0 || value > 100)) {
       return g_last_cudaError = cudaErrorInvalidValue;
@@ -4896,9 +4968,57 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
     return g_last_cudaError = cudaSuccess;
   }
 
-  printf("GPGPU-Sim PTX: Execution warning: ignoring call to \"%s "
-         "( func=%p, attr=%d, value=%d )\"\n",
-         __my_func__, func, attr, value);
+  if (!entry) {
+    printf(
+        "GPGPU-Sim PTX: cudaFuncSetAttribute: no kernel for %p (attr=%d "
+        "value=%d); ignoring\n",
+        func, (int)attr, value);
+    return g_last_cudaError = cudaSuccess;
+  }
+
+  switch (attr) {
+#if CUDART_VERSION >= 11040
+    case cudaFuncAttributeRequiredClusterWidth: {
+      dim3 d = entry->get_req_cluster_dim();
+      d.x = (unsigned)value;
+      if (d.y == 0) d.y = 1;
+      if (d.z == 0) d.z = 1;
+      entry->set_req_cluster_dim(d.x, d.y, d.z);
+      break;
+    }
+    case cudaFuncAttributeRequiredClusterHeight: {
+      dim3 d = entry->get_req_cluster_dim();
+      if (d.x == 0) d.x = 1;
+      d.y = (unsigned)value;
+      if (d.z == 0) d.z = 1;
+      entry->set_req_cluster_dim(d.x, d.y, d.z);
+      break;
+    }
+    case cudaFuncAttributeRequiredClusterDepth: {
+      dim3 d = entry->get_req_cluster_dim();
+      if (d.x == 0) d.x = 1;
+      if (d.y == 0) d.y = 1;
+      d.z = (unsigned)value;
+      entry->set_req_cluster_dim(d.x, d.y, d.z);
+      break;
+    }
+    case cudaFuncAttributeClusterDimMustBeSet:
+      entry->set_cluster_dim_must_be_set(value != 0);
+      break;
+    case cudaFuncAttributeNonPortableClusterSizeAllowed:
+      entry->set_nonportable_cluster_size_allowed(value != 0);
+      break;
+    case cudaFuncAttributeClusterSchedulingPolicyPreference:
+      entry->set_cluster_sched_policy(value);
+      break;
+#endif
+    default:
+      printf(
+          "GPGPU-Sim PTX: Execution warning: ignoring call to \"%s ( "
+          "func=%p, attr=%d, value=%d )\"\n",
+          __my_func__, func, attr, value);
+      break;
+  }
   return g_last_cudaError = cudaSuccess;
 }
 #endif
@@ -8496,8 +8616,85 @@ __host__ cudaError_t CUDARTAPI cudaHostUnregister(void *ptr) {
   cuda_error_not_impl;
 }
 
-__host__ cudaError_t CUDARTAPI cudaLaunchKernelExC(const cudaLaunchConfig_t *config, const void *func, void **args) {
-  cuda_error_not_impl;
+__host__ cudaError_t CUDARTAPI cudaLaunchKernelExC(
+    const cudaLaunchConfig_t *config, const void *func, void **args) {
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+  if (!config || !func) {
+    return g_last_cudaError = cudaErrorInvalidValue;
+  }
+
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  function_info *entry = context->get_kernel((const char *)func);
+  if (!entry) {
+    printf(
+        "GPGPU-Sim PTX: ERROR cudaLaunchKernelExC -- no PTX implementation "
+        "found for %p\n",
+        func);
+    return g_last_cudaError = cudaErrorInvalidDeviceFunction;
+  }
+
+  dim3 gridDim = config->gridDim;
+  dim3 blockDim = config->blockDim;
+  size_t sharedMem = config->dynamicSmemBytes;
+  cudaStream_t stream = config->stream;
+
+  // Parse launch attributes for cluster dimension (and ignore others with log).
+  bool have_cluster_attr = false;
+  dim3 cluster_dim(0, 0, 0);
+  for (unsigned i = 0; i < config->numAttrs; i++) {
+    const cudaLaunchAttribute &attr = config->attrs[i];
+    switch (attr.id) {
+#if CUDART_VERSION >= 11040
+      case cudaLaunchAttributeClusterDimension:
+        have_cluster_attr = true;
+        cluster_dim.x = attr.val.clusterDim.x;
+        cluster_dim.y = attr.val.clusterDim.y;
+        cluster_dim.z = attr.val.clusterDim.z;
+        break;
+      case cudaLaunchAttributeClusterSchedulingPolicyPreference:
+        // Stored on function for issuer; no full spread model yet.
+        entry->set_cluster_sched_policy(
+            (int)attr.val.clusterSchedulingPolicyPreference);
+        break;
+      case cudaLaunchAttributePreferredClusterDimension:
+        printf(
+            "GPGPU-Sim PTX: WARNING cudaLaunchKernelExC: "
+            "PreferredClusterDimension not fully modeled; ignoring\n");
+        break;
+#endif
+      case cudaLaunchAttributeIgnore:
+        break;
+      default:
+        // Accept other attrs without error (cooperative, priority, ...).
+        break;
+    }
+  }
+
+  // Fall back to required cluster dims on the function if no launch attr.
+  if (!have_cluster_attr && entry->has_explicit_cluster()) {
+    have_cluster_attr = true;
+    cluster_dim = entry->get_req_cluster_dim();
+  }
+
+  // Push config (with optional cluster metadata) then set up args + launch.
+  struct CUstream_st *s = (struct CUstream_st *)stream;
+  kernel_config kcfg(gridDim, blockDim, sharedMem, s);
+  if (have_cluster_attr) {
+    kcfg.set_cluster_dim(cluster_dim);
+  }
+  ctx->api->g_cuda_launch_stack.push_back(kcfg);
+
+  for (unsigned i = 0; i < entry->num_args(); i++) {
+    std::pair<size_t, unsigned> p = entry->get_param_config(i);
+    if (args && args[i]) {
+      cudaSetupArgumentInternal(args[i], p.first, p.second, ctx);
+    }
+  }
+
+  return cudaLaunchInternal((const char *)func, ctx);
 }
 
 __host__ cudaError_t CUDARTAPI cudaLaunchHostFunc(cudaStream_t stream, cudaHostFn_t fn, void *userData) {

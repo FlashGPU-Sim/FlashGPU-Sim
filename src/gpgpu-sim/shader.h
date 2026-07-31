@@ -3108,9 +3108,22 @@ class simt_core_cluster {
   unsigned num_cores() const { return m_config->n_simt_cores_per_cluster; }
 
   // Assign the next issue-order cluster group for a newly launched CTA on
-  // this physical cluster. Groups have size num_cores() (one CTA per SM in
-  // a cooperative cluster of size n_cores_per_cluster).
-  unsigned allocate_cta_cluster_group();
+  // this physical cluster. Groups have size num_cores() by default (legacy
+  // proxy for non-cluster launches). When group_size > 0, use that size
+  // (explicit TB cluster). When force_group != (unsigned)-1, return that
+  // group id without advancing (remaining CTAs of an open TB cluster).
+  unsigned allocate_cta_cluster_group(unsigned group_size = 0,
+                                      unsigned force_group = (unsigned)-1);
+
+  // Count free CTA slots across all SMs in this physical cluster that can
+  // accept a block of the given kernel (for TB-cluster co-residency checks).
+  unsigned count_free_cta_slots(kernel_info_t &kernel) const;
+
+  // Issue up to one CTA of kernel onto this physical cluster. When
+  // force_group is set, assign that cluster_group to the issued CTA.
+  // Returns number of CTAs issued (0 or 1).
+  unsigned issue_block2core_for_kernel(kernel_info_t *kernel,
+                                       unsigned force_group = (unsigned)-1);
 
  protected:
   unsigned m_cluster_id;
@@ -3125,8 +3138,20 @@ class simt_core_cluster {
   unsigned m_cta_issue_next_core;
   // Monotonic CTA issue counter for cluster-group assignment.
   unsigned m_cluster_cta_seq;
+  // Transient state while issuing a CTA: force group id / group size for
+  // allocate_cta_cluster_group (consumed by shader_core_ctx::issue_block2core).
+  unsigned m_pending_issue_cluster_group;
+  unsigned m_pending_issue_group_size;
   std::list<unsigned> m_core_sim_order;
   std::list<mem_fetch *> m_response_fifo;
+
+ public:
+  unsigned pending_issue_cluster_group() const {
+    return m_pending_issue_cluster_group;
+  }
+  unsigned pending_issue_group_size() const {
+    return m_pending_issue_group_size;
+  }
 };
 
 class exec_simt_core_cluster : public simt_core_cluster {

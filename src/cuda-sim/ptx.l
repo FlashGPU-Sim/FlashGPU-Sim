@@ -272,6 +272,8 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.pragma TC; return PRAGMA_DIRECTIVE;
 \.reg    TC; return REG_DIRECTIVE;
 \.reqntid TC; return REQNTID_DIRECTIVE;
+\.explicitcluster TC; return EXPLICITCLUSTER_DIRECTIVE;
+\.reqnctapercluster TC; return REQNCTAPERCLUSTER_DIRECTIVE;
 \.section TC; return SECTION_DIRECTIVE;
 \.section[ \t]+\.debug_[a-z]+ TC; BEGIN(IN_DEBUG_SECTION); /* skip debug sections */
 \.debug_abbrev TC; return DEBUG_DIRECTIVE;
@@ -300,6 +302,13 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 "%clock64" TC; yylval->int_value = CLOCK64_REG; return SPECIAL_REGISTER;
 "%globaltimer" TC; yylval->int_value = GLOBALTIMER_REG; return SPECIAL_REGISTER;
 "%ctaid" TC; yylval->int_value = CTAID_REG; return SPECIAL_REGISTER;
+"%cluster_ctaid" TC; yylval->int_value = CLUSTER_CTAID_REG; return SPECIAL_REGISTER;
+"%cluster_nctaid" TC; yylval->int_value = CLUSTER_NCTAID_REG; return SPECIAL_REGISTER;
+"%cluster_ctarank" TC; yylval->int_value = CLUSTER_CTA_RANK_REG; return SPECIAL_REGISTER;
+"%cluster_nctarank" TC; yylval->int_value = CLUSTER_NCTARANK_REG; return SPECIAL_REGISTER;
+"%clusterid" TC; yylval->int_value = CLUSTERID_REG; return SPECIAL_REGISTER;
+"%nclusterid" TC; yylval->int_value = NCLUSTERID_REG; return SPECIAL_REGISTER;
+"%is_explicit_cluster" TC; yylval->int_value = IS_EXPLICIT_CLUSTER_REG; return SPECIAL_REGISTER;
 "%envreg"[0-9]+ TC; {
   unsigned reg = 0;
   sscanf(yytext+7,"%u",&reg);
@@ -326,8 +335,6 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 "%smid"  TC; yylval->int_value = SMID_REG; return SPECIAL_REGISTER;
 "%tid"  TC; yylval->int_value = TID_REG; return SPECIAL_REGISTER;
 "%warpid"  TC; yylval->int_value = WARPID_REG; return SPECIAL_REGISTER;
-"%cluster_ctaid" TC; yylval->int_value = CLUSTER_CTAID_REG; return SPECIAL_REGISTER;
-"%cluster_ctarank" TC; yylval->int_value = CLUSTER_CTA_RANK_REG; return SPECIAL_REGISTER;
 "WARP_SZ"  TC; yylval->int_value = WARPSZ_REG; return SPECIAL_REGISTER;
 
 [a-zA-Z_][a-zA-Z0-9_$]*  TC; yylval->string_value = strdup(yytext); return IDENTIFIER;

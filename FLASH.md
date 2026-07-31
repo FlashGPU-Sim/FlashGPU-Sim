@@ -309,9 +309,10 @@ Lane 28-31: Row 7
 6. **Calibration knobs**: `gpgpu_mbarrier_arrive_latency` / `trywait_latency` (200/120 on SM120) are end-to-end TMA+mbarrier fits, not pure HW barrier cost
 
 **Cluster / TMA multicast**:
-1. **Topology model**: multi-SM `simt_core_cluster` + issue-order `cluster_group` peer matching — not CUDA cooperative Thread Block Cluster launch APIs
-2. **Idealized timing**: `.shared::cluster` loads use one issuer L2/TMA stream; functional multicast to peers is free (TODO: no DSM hop / peer mem_fetches)
-3. Prefer `SM120_RTX5090_REDUCED_CLUSTER2` for functional multicast tests
+1. **TB cluster launch**: `cudaLaunchKernelExC` / `__cluster_dims__` / required func attrs co-schedule CTAs of a Thread Block Cluster onto one physical `simt_core_cluster`. Ordinary `<<<>>>` keeps global RR (no forced co-residency). See `docs/cluster_cta2_realLaunch.md`.
+2. **Peer model**: `.shared::cluster` peers are active CTAs with the same `cluster_group` in the same physical cluster (launch-defined for cluster launches; issue-order proxy for ordinary launches).
+3. **Idealized timing**: `.shared::cluster` loads use one issuer L2/TMA stream; functional multicast to peers is free (see `docs/cluster_cta2_todo.md` for DSM hop follow-up).
+4. Prefer `SM120_RTX5090_REDUCED_CLUSTER2x1` (m=2,n=1) for functional multicast; `REDUCED_CLUSTER2x2` for multi-cluster isolation + Ex co-residency tests.
 
 **General**:
 - Flash mode multi-threading may have race conditions in certain edge cases

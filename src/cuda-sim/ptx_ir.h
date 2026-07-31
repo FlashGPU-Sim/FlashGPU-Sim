@@ -1552,6 +1552,32 @@ class function_info {
   friend void flash_gpgpu_sim::run_ptx_register_allocation(function_info *func);
   friend void flash_gpgpu_sim::run_ptx_reorder(function_info *func);
 
+  // Thread Block Cluster requirements (.explicitcluster / .reqnctapercluster
+  // from __cluster_dims__, or cudaFuncSetAttribute RequiredCluster*).
+  void set_req_cluster_dim(unsigned x, unsigned y, unsigned z) {
+    m_explicit_cluster = true;
+    m_req_cluster_dim.x = x;
+    m_req_cluster_dim.y = y;
+    m_req_cluster_dim.z = z;
+  }
+  void set_explicit_cluster(bool v) { m_explicit_cluster = v; }
+  bool has_explicit_cluster() const { return m_explicit_cluster; }
+  dim3 get_req_cluster_dim() const { return m_req_cluster_dim; }
+  unsigned get_req_ctas_per_cluster() const {
+    if (!m_explicit_cluster) return 0;
+    return m_req_cluster_dim.x * m_req_cluster_dim.y * m_req_cluster_dim.z;
+  }
+  void set_cluster_dim_must_be_set(bool v) { m_cluster_dim_must_be_set = v; }
+  bool cluster_dim_must_be_set() const { return m_cluster_dim_must_be_set; }
+  void set_nonportable_cluster_size_allowed(bool v) {
+    m_nonportable_cluster_size_allowed = v;
+  }
+  bool nonportable_cluster_size_allowed() const {
+    return m_nonportable_cluster_size_allowed;
+  }
+  void set_cluster_sched_policy(int p) { m_cluster_sched_policy = p; }
+  int get_cluster_sched_policy() const { return m_cluster_sched_policy; }
+
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
 
@@ -1562,6 +1588,11 @@ class function_info {
 
  private:
   unsigned maxnt_id;
+  bool m_explicit_cluster;
+  dim3 m_req_cluster_dim;
+  bool m_cluster_dim_must_be_set;
+  bool m_nonportable_cluster_size_allowed;
+  int m_cluster_sched_policy;
   unsigned m_uid;
   unsigned m_local_mem_framesize;
   bool m_entry_point;

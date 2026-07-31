@@ -1,4 +1,4 @@
-// SM120_RTX5090_CLUSTER2 interconnect (BookSim fly template).
+// SM120_RTX5090_CLUSTER2x85 interconnect (BookSim fly template).
 // GPU topology: 85 clusters x 2 SMs = 170 SMs (plus memory controllers).
 //
 // NOTE: gpgpusim.config uses -network_mode 2 (local interconnect/xbar).

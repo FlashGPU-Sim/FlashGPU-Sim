@@ -6398,6 +6398,8 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
   m_cta_issue_next_core = m_config->n_simt_cores_per_cluster -
                           1;  // this causes first launch to use hw cta 0
   m_cluster_cta_seq = 0;
+  m_pending_issue_cluster_group = (unsigned)-1;
+  m_pending_issue_group_size = 0;
   m_cluster_id = cluster_id;
   m_gpu = gpu;
 #ifdef FLASH_GPGPU_SIM_OMP
@@ -6478,13 +6480,81 @@ unsigned simt_core_cluster::get_n_active_sms() const {
   return n;
 }
 
-unsigned simt_core_cluster::allocate_cta_cluster_group() {
+unsigned simt_core_cluster::allocate_cta_cluster_group(unsigned group_size,
+                                                       unsigned force_group) {
+  if (force_group != (unsigned)-1) {
+    return force_group;
+  }
+  // group_size > 0: reserve a unique group id for an entire TB cluster
+  // (one id per TB cluster, independent of per-CTA issue count).
+  if (group_size > 0) {
+    unsigned group = m_cluster_cta_seq;
+    m_cluster_cta_seq++;
+    return group;
+  }
+  // Legacy proxy: consecutive CTAs form groups of size n_cores_per_cluster.
   unsigned n = m_config->n_simt_cores_per_cluster;
-  if (n == 0)
-    n = 1;
+  if (n == 0) n = 1;
   unsigned group = m_cluster_cta_seq / n;
   m_cluster_cta_seq++;
   return group;
+}
+
+unsigned simt_core_cluster::count_free_cta_slots(kernel_info_t &kernel) const {
+  unsigned free_slots = 0;
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
+    if (m_core[i]->can_issue_1block(kernel)) free_slots++;
+  }
+  return free_slots;
+}
+
+unsigned simt_core_cluster::issue_block2core_for_kernel(
+    kernel_info_t *kernel, unsigned force_group) {
+  if (!kernel || !m_gpu->kernel_more_cta_left(kernel)) return 0;
+
+  unsigned num_blocks_issued = 0;
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
+    unsigned core =
+        (i + m_cta_issue_next_core + 1) % m_config->n_simt_cores_per_cluster;
+
+    // Bind kernel to the core if needed (non-concurrent path).
+    if (!m_config->gpgpu_concurrent_kernel_sm) {
+      kernel_info_t *core_k = m_core[core]->get_kernel();
+      if (!m_gpu->kernel_more_cta_left(core_k)) {
+        if (m_core[core]->get_not_completed() == 0) {
+          m_core[core]->set_kernel(kernel);
+        } else {
+          continue;
+        }
+      } else if (core_k && core_k != kernel) {
+        continue;  // core busy with another kernel
+      }
+    }
+
+    if (m_core[core]->can_issue_1block(*kernel)) {
+      if (m_config->gpgpu_cta_load_balance && !kernel->is_cluster_launch()) {
+        unsigned n_cores =
+            m_config->n_simt_clusters * m_config->n_simt_cores_per_cluster;
+        unsigned total_ctas = kernel->num_blocks();
+        unsigned max_ctas_per_core = (total_ctas + n_cores - 1) / n_cores;
+        if (m_core[core]->get_total_ctas_issued() >= max_ctas_per_core) {
+          continue;
+        }
+      }
+      // Stash force group for issue_block2core via a thread-local/side channel:
+      // set pending group on the cluster, consumed in shader_core_ctx::issue_block2core.
+      m_pending_issue_cluster_group = force_group;
+      m_pending_issue_group_size =
+          kernel->is_cluster_launch() ? kernel->get_ctas_per_cluster() : 0;
+      m_core[core]->issue_block2core(*kernel);
+      m_pending_issue_cluster_group = (unsigned)-1;
+      m_pending_issue_group_size = 0;
+      num_blocks_issued++;
+      m_cta_issue_next_core = core;
+      break;
+    }
+  }
+  return num_blocks_issued;
 }
 
 unsigned simt_core_cluster::issue_block2core() {
@@ -6513,9 +6583,13 @@ unsigned simt_core_cluster::issue_block2core() {
       }
     }
 
+    // TB-cluster launches are issued via gpgpu_sim::issue_block2core's
+    // co-residency path, not per-SM RR here.
+    if (kernel && kernel->is_cluster_launch()) {
+      continue;
+    }
+
     if (m_gpu->kernel_more_cta_left(kernel) &&
-        //            (m_core[core]->get_n_active_cta() <
-        //            m_config->max_cta(*kernel)) ) {
         m_core[core]->can_issue_1block(*kernel)) {
       if (m_config->gpgpu_cta_load_balance) {
         unsigned n_cores = m_config->n_simt_clusters * m_config->n_simt_cores_per_cluster;
@@ -6525,6 +6599,8 @@ unsigned simt_core_cluster::issue_block2core() {
           continue;
         }
       }
+      m_pending_issue_cluster_group = (unsigned)-1;
+      m_pending_issue_group_size = 0;
       m_core[core]->issue_block2core(*kernel);
       num_blocks_issued++;
       m_cta_issue_next_core = core;
