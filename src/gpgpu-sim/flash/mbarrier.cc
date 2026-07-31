@@ -671,6 +671,13 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     return;
 
   } else if (bar_op == TRY_WAIT_OPTION) {
+    // Aggregate per-lane results: SIMT warp waits if any active lane is not
+    // released. Call release_warps at most once (multiple lanes must not
+    // re-queue the same warp — that trips assert_warp_waiting on delayed
+    // clear).
+    bool any_active = false;
+    bool any_blocking = false;
+    bool any_released = false;
 
     for (unsigned lane = 0; lane < warp_size; lane++) {
       if (!active_mask.test(lane))
@@ -680,6 +687,7 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       if (!is_valid_mbarrier_info(mbar_info))
         continue;
 
+      any_active = true;
       unsigned addr = mbar_info.bar_id;
       bool parity = mbar_info.bar_parity;
 
@@ -693,6 +701,14 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
                cta_id, warp_id, lane, addr, (unsigned)parity,
                released ? "yes" : "no", active_mask.to_string().c_str());
       }
+      if (released) {
+        any_released = true;
+      } else {
+        any_blocking = true;
+      }
+    }
+
+    if (any_active) {
       // Always mark the warp as waiting at the barrier first.
       // - Incomplete: stays blocked until complete_tx/arrive releases it.
       // - Already complete (immediate success): still pay
@@ -702,7 +718,7 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       m_warp_at_barrier.set(warp_id);
       m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
       m_warp_named_barrier_id[warp_id] = (unsigned)-1;
-      if (released) {
+      if (any_released && !any_blocking) {
         release_warps({static_cast<int>(warp_id)});
       }
     }

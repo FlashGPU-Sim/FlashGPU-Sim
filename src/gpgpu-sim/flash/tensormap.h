@@ -85,8 +85,36 @@ typedef union __attribute__((aligned(128))) tensormap_descriptor_t {
       return 4;
     }
   }
-  uint32_t get_tile_size_bytes() const;
-  uint64_t calculate_src_addr(const int32_t coords[5]) const;
+  // Pure helpers (inline so unit tests can use them without linking
+  // tensormap.cc).
+  uint32_t get_tile_size_bytes() const {
+    if (fields.tensorRank > 4)
+      return 0;
+    uint32_t total_elements = 1;
+    uint32_t dims = num_dims();
+    for (uint32_t i = 0; i < dims; i++) {
+      total_elements *= fields.boxDim[i];
+    }
+    return total_elements * get_element_size();
+  }
+  // Signed coords support OOB tile origins (negative coordinates).
+  uint64_t calculate_src_addr(const int32_t coords[5]) const {
+    int64_t byte_offset = 0;
+    uint32_t elem_size = get_element_size();
+    uint32_t dims = num_dims();
+    for (uint32_t i = 0; i < dims; i++) {
+      if (i == 0) {
+        byte_offset += static_cast<int64_t>(coords[i]) * elem_size;
+      } else {
+        byte_offset += static_cast<int64_t>(coords[i]) *
+                       static_cast<int64_t>(fields.globalStrides[i - 1]);
+      }
+    }
+    if (byte_offset < 0) {
+      return fields.globalAddress - static_cast<uint64_t>(-byte_offset);
+    }
+    return fields.globalAddress + static_cast<uint64_t>(byte_offset);
+  }
   uint32_t num_dims() const { return fields.tensorRank + 1u; }
   bool is_valid() const {
     return fields.tensorRank <= 4 && fields.globalAddress != 0;

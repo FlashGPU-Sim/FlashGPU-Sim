@@ -38,43 +38,6 @@ static uint64_t get_operand_u64(ptx_thread_info *thread,
 // tensormap_descriptor_t Member Functions
 //=============================================================================
 
-uint32_t tensormap_descriptor_t::get_tile_size_bytes() const {
-  if (fields.tensorRank > 4)
-    return 0;
-
-  uint32_t total_elements = 1;
-  uint32_t dims = num_dims();
-  for (uint32_t i = 0; i < dims; i++) {
-    total_elements *= fields.boxDim[i];
-  }
-  return total_elements * get_element_size();
-}
-
-uint64_t
-tensormap_descriptor_t::calculate_src_addr(const int32_t coords[5]) const {
-  // Calculate the base address for the tile starting at given coordinates
-  // This is used for simple address calculation (not for generating actual
-  // memory requests) fields.tensorRank is 0-based.
-  // Signed coords support OOB tile origins (negative coordinates).
-  int64_t byte_offset = 0;
-  uint32_t elem_size = get_element_size();
-  uint32_t dims = num_dims();
-
-  for (uint32_t i = 0; i < dims; i++) {
-    // For dimension 0, use element size; for others, use stride
-    if (i == 0) {
-      byte_offset += static_cast<int64_t>(coords[i]) * elem_size;
-    } else {
-      byte_offset += static_cast<int64_t>(coords[i]) *
-                     static_cast<int64_t>(fields.globalStrides[i - 1]);
-    }
-  }
-  if (byte_offset < 0) {
-    return fields.globalAddress - static_cast<uint64_t>(-byte_offset);
-  }
-  return fields.globalAddress + static_cast<uint64_t>(byte_offset);
-}
-
 void tensormap_descriptor_t::print() const {
   char buf[1024];
   size_t pos = 0;
