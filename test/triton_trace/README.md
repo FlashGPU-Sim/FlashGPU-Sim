@@ -67,7 +67,6 @@ The `validation/` directory contains:
 - `compare_cycles.py`: compare NCU and FlashGPU-Sim cycle summaries.
 - `extract_metrics.py`: extract simulator and NCU memory/cache metrics.
 - `plot_cta_lifecycle.py`: plot CTA lifecycle timelines from simulation logs.
-- `kernel-validation.csv`: reference validation results.
 - `configs/`: workload-shape CSV files.
 
 Typical commands:

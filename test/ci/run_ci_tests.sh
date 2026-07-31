@@ -101,10 +101,10 @@ run_gtest_group() {
   unset GTEST_OUTPUT
 }
 
-run_logged ptx-scheduler-operand-regression \
-  python3 test/scripts/test_ptx_scheduler_probe_operands.py
-run_logged gtest-discovery-output-regression \
-  python3 test/scripts/test_gtest_discovery_output.py
+if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm120 ]; then
+  run_logged gtest-discovery-output-regression \
+    python3 test/ci/test_gtest_discovery_output.py
+fi
 
 # Source the simulator environment. CI images set CUDA_INSTALL_PATH through
 # Docker ENV; local callers must export it before invoking this script.

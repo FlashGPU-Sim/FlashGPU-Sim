@@ -30,8 +30,6 @@ TEST_CONFIG="${CI_TEST_CONFIG:-SM120_RTX5090}"
 TEST_SUITES=(
   "GPGPUSimBasicTest.*"
   "MathTest.*"
-  "MBarrierTest.*"
-  "TensorMMATest.*"
   "LdMatrixX1Test.*"
   "LdMatrixX2Test.*"
   "LdMatrixX4Test.*"
@@ -53,10 +51,10 @@ TEST_SUITES=(
   "MMABF16M16N8K8IntegrationTest.*"
   "MMABF16M16N8K16Test.*"
   "MBarrierThreadLevelTest.*"
+  "MBarrierSanityTest.*"
   "GPGPUSimIntegrationTest.*"
   "CudaTMATest.*"
   "BasicValues/ParameterizedTest.*"
-  "AllMMAShapes/MMAShapeTest.*"
   "VariousSizes/CudaVectorAddParameterizedTest.*"
 )
 
@@ -69,6 +67,16 @@ for test_pattern in "${TEST_SUITES[@]}"; do
   echo "Running: $test_pattern"
 
   start_time=$(date +%s)
+  group="unit"
+
+  # The current runner requires an explicit registry group. CUDA integration
+  # suites and the standalone MMA integration cases live in the integration
+  # binary; the remaining instruction/unit suites live in the unit binary.
+  case "$test_pattern" in
+    Cuda*|GPGPUSimIntegrationTest.*|MMA*|MBarrier*|LdMatrix*|StMatrix*|VariousSizes/*)
+      group="integration"
+      ;;
+  esac
 
   # Run test in a subshell with proper environment and capture result
   # Skip CudaTMATest.PerformanceComparison for CudaTMATest suite
@@ -78,7 +86,8 @@ for test_pattern in "${TEST_SUITES[@]}"; do
     filter="$test_pattern"
   fi
 
-  if timeout "$TIMEOUT_PER_TEST" ./test/run_tests.sh -c "$TEST_CONFIG" run test "$filter" &>/dev/null; then
+  if timeout "$TIMEOUT_PER_TEST" ./test/run_tests.sh -c "$TEST_CONFIG" \
+      run test --target sm120 --group "$group" "$filter" &>/dev/null; then
     status="PASS"
   else
     exit_code=$?

@@ -41,9 +41,21 @@ make prepare-fa3-flash-attention
 ./run_tests.sh build analysis --target fa2 --group scaling --mode all
 ```
 
-To prepare a CUDA 12.8 prebuilt bundle for H100 NCU collection:
+To prepare a CUDA prebuilt bundle and collect NCU results on H100 or RTX 5090,
+use the registry-backed tools from the repository root:
 
 ```bash
-CUDA_INSTALL_PATH=/usr/local/cuda-12.8 ./scripts/prepare_fa2_sensitivity_prebuilt.sh
-CUDA_INSTALL_PATH=/usr/local/cuda-12.8 ./scripts/prepare_fa2_sensitivity_h1d128_prebuilt.sh
+./test/scripts/prepare_fa2_prebuilt.sh \
+  --device h100 \
+  --cuda-root /usr/local/cuda-12.8 \
+  --group full --group breakdown --group scaling
+
+./test/scripts/run_fa2_ncu.sh \
+  --device h100 \
+  --prebuilt-root test/run/fa2-prebuilt
 ```
+
+Both commands accept repeated `--group` selectors. Use
+`--group breakdown:only_mma` to select one mode, or `--group all` to include
+all registry-owned FA2 groups. See `test/scripts/README.md` for the complete
+interface and migration notes.

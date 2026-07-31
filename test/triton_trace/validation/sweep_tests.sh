@@ -3,7 +3,7 @@
 # Generic sweep script for triton traced workloads.
 #
 # Usage:
-#   ./sweep.sh <workload> [trace|run|gem5|ncu] [options...] [sweep_values...]
+#   ./sweep_tests.sh <workload> [trace|run|gem5|ncu] [options...] [sweep_values...]
 #
 # Workloads:
 #   tma_gemm      TMA GEMM — sweep over M=N=K size
@@ -49,19 +49,19 @@
 #                  1800:1800:1800:14001. Only copied launcher configs change.
 #
 # Examples:
-#   ./sweep.sh tma_gemm trace 128 512 1024
-#   ./sweep.sh tma_gemm run --shape 512,6000,2560
-#   ./sweep.sh tma_gemm run --csv configs/gemm_shapes_training.csv
-#   ./sweep.sh tma_gemm gem5 --shape 512,512,512
-#   ./sweep.sh tma_gemm ncu --csv configs/gemm_shapes_training.csv
-#   ./sweep.sh tma_gemm run
-#   ./sweep.sh flash_attn trace 256 512 1024
-#   ./sweep.sh flash_attn run 256 512 --head-dim 128
-#   ./sweep.sh flash_attn run --shape 2,4,1024,128,True
-#   ./sweep.sh flash_attn ncu 256 512 --head-dim 64 --causal
-#   ./sweep.sh llama3_gqa_attn run --csv configs/llama3_8b_gqa_attn_shapes_smoke.csv
-#   ./sweep.sh llama3_layer run --csv configs/llama3_layer_shapes_smoke.csv
-#   ./sweep.sh llama3_decode_layer_full_tiled run --csv configs/llama3_decode_layer_full_tiled_shapes_smoke.csv
+#   ./sweep_tests.sh tma_gemm trace 128 512 1024
+#   ./sweep_tests.sh tma_gemm run --shape 512,6000,2560
+#   ./sweep_tests.sh tma_gemm run --csv configs/gemm_shapes_training.csv
+#   ./sweep_tests.sh tma_gemm gem5 --shape 512,512,512
+#   ./sweep_tests.sh tma_gemm ncu --csv configs/gemm_shapes_training.csv
+#   ./sweep_tests.sh tma_gemm run
+#   ./sweep_tests.sh flash_attn trace 256 512 1024
+#   ./sweep_tests.sh flash_attn run 256 512 --head-dim 128
+#   ./sweep_tests.sh flash_attn run --shape 2,4,1024,128,True
+#   ./sweep_tests.sh flash_attn ncu 256 512 --head-dim 64 --causal
+#   ./sweep_tests.sh llama3_gqa_attn run --csv configs/llama3_8b_gqa_attn_shapes_smoke.csv
+#   ./sweep_tests.sh llama3_layer run --csv configs/llama3_layer_shapes_smoke.csv
+#   ./sweep_tests.sh llama3_decode_layer_full_tiled run --csv configs/llama3_decode_layer_full_tiled_shapes_smoke.csv
 #
 
 set -euo pipefail
