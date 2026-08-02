@@ -1,4 +1,4 @@
-# FlashGPU-Sim <!-- omit from toc -->
+<img src="docs/figs/logo.png" alt="FlashGPU-Sim Logo">
 
 - [Roadmap](#roadmap)
 - [Quick Start](#quick-start)
