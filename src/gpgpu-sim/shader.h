@@ -1163,6 +1163,12 @@ class barrier_set_t {
   void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
                    uint32_t completed_tx_count);
 
+  void prepare_mbarrier_async_arrival(unsigned cta_id, unsigned warp_id,
+                                      uint32_t mbarrier_addr,
+                                      bool increment_pending);
+  void arrive_mbarrier_async(unsigned cta_id, unsigned warp_id,
+                             uint32_t mbarrier_addr);
+
   // Process delayed mbarrier warp releases each cycle
   void cycle();
 

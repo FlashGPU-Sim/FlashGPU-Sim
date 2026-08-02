@@ -1311,6 +1311,7 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case FENCE_OP:
   case CP_ASYNC_COMMIT_OP:
   case CP_ASYNC_WAIT_OP:
+  case CP_ASYNC_MBARRIER_ARRIVE_OP:
   case WGMMA_MMA_ASYNC_OP:
   case WGMMA_MMA_ASYNC_SP_OP:
   case WGMMA_FENCE_OP:

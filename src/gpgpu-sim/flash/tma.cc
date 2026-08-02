@@ -9,6 +9,7 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <utility>
 
 #include "../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
@@ -839,8 +840,16 @@ private:
     uint32_t bytes_completed = 0;
     uint32_t mf_issued_count = 0;
     uint32_t mf_received_count = 0;
+    std::set<unsigned> dependent_arrival_uids;
 
     cp_async_transaction_t(gpgpu_context *ctx) : access(ctx) {}
+  };
+
+  struct cp_async_mbarrier_arrival_t {
+    unsigned cta_id;
+    unsigned warp_id;
+    uint32_t mbarrier_addr;
+    std::set<unsigned> pending_tx_uids;
   };
 
   struct cp_async_warp_group_info_t {
@@ -905,6 +914,9 @@ private:
   std::unordered_map<unsigned, uint32_t> m_cp_mf_pending_bytes;
   std::map<std::pair<unsigned, unsigned>, cp_async_warp_group_info_t>
       m_cp_group_info;
+  std::unordered_map<unsigned, cp_async_mbarrier_arrival_t>
+      m_cp_mbarrier_arrivals;
+  unsigned m_next_cp_mbarrier_arrival_uid = 0;
   unsigned m_cp_mf_inflight = 0;
 
   std::list<mem_fetch *> m_response_fifo;
@@ -1021,6 +1033,19 @@ private:
     if (should_release) {
       g_cp_async_wait_releases.fetch_add(1, std::memory_order_relaxed);
       m_barriers->release_cp_async_warp(warp_id);
+    }
+
+    for (unsigned arrival_uid : it->second.dependent_arrival_uids) {
+      auto arrival_it = m_cp_mbarrier_arrivals.find(arrival_uid);
+      assert(arrival_it != m_cp_mbarrier_arrivals.end());
+      auto &arrival = arrival_it->second;
+      const size_t erased = arrival.pending_tx_uids.erase(tx_uid);
+      assert(erased == 1);
+      if (arrival.pending_tx_uids.empty()) {
+        m_barriers->arrive_mbarrier_async(arrival.cta_id, arrival.warp_id,
+                                          arrival.mbarrier_addr);
+        m_cp_mbarrier_arrivals.erase(arrival_it);
+      }
     }
 
     g_cp_async_tx_completed.fetch_add(1, std::memory_order_relaxed);
@@ -1322,6 +1347,56 @@ public:
         finalize_cp_async_transaction(tx_uid);
       } else {
         m_cp_issue_queue.push_back(tx_uid);
+      }
+    }
+  }
+
+  void
+  warp_reaches_cp_async_mbarrier_arrive(unsigned cta_id, unsigned warp_id,
+                                        const warp_inst_t &inst,
+                                        const ptx_instruction &dynamic_inst) {
+    bool increment_pending = true;
+    for (int option : dynamic_inst.get_options()) {
+      if (option == NOINC_OPTION)
+        increment_pending = false;
+    }
+
+    const active_mask_t &active_mask = inst.get_active_mask();
+    const unsigned warp_size = m_shader_ctx->get_warp_size();
+    for (unsigned lane = 0; lane < warp_size; ++lane) {
+      if (!active_mask.test(lane))
+        continue;
+
+      const auto &mbarrier_info = dynamic_inst.get_mbarrier_info(lane);
+      assert(mbarrier_info.bar_id != (unsigned)-1);
+      const uint32_t mbarrier_addr = mbarrier_info.bar_id;
+      m_barriers->prepare_mbarrier_async_arrival(cta_id, warp_id, mbarrier_addr,
+                                                 increment_pending);
+
+      std::set<unsigned> pending_tx_uids;
+      // ponytail: Scan live transactions here; add a per-lane index only if
+      // profiling shows this marker becoming a bottleneck.
+      for (const auto &entry : m_cp_transactions) {
+        const auto &tx = entry.second;
+        if (tx.cta_id == cta_id && tx.warp_id == warp_id &&
+            tx.access.get_warp_mask().test(lane)) {
+          pending_tx_uids.insert(entry.first);
+        }
+      }
+
+      if (pending_tx_uids.empty()) {
+        m_barriers->arrive_mbarrier_async(cta_id, warp_id, mbarrier_addr);
+        continue;
+      }
+
+      const unsigned arrival_uid = m_next_cp_mbarrier_arrival_uid++;
+      auto inserted = m_cp_mbarrier_arrivals.emplace(
+          arrival_uid,
+          cp_async_mbarrier_arrival_t{cta_id, warp_id, mbarrier_addr,
+                                      std::move(pending_tx_uids)});
+      assert(inserted.second);
+      for (unsigned tx_uid : inserted.first->second.pending_tx_uids) {
+        m_cp_transactions.at(tx_uid).dependent_arrival_uids.insert(arrival_uid);
       }
     }
   }
@@ -1823,6 +1898,13 @@ void tma_unit_t::warp_reaches_cp_async(unsigned cta_id, unsigned warp_id,
                                        const warp_inst_t &inst,
                                        const ptx_instruction *static_inst) {
   m_impl->warp_reaches_cp_async(cta_id, warp_id, inst, static_inst);
+}
+
+void tma_unit_t::warp_reaches_cp_async_mbarrier_arrive(
+    unsigned cta_id, unsigned warp_id, const warp_inst_t &inst,
+    const ptx_instruction &dynamic_inst) {
+  m_impl->warp_reaches_cp_async_mbarrier_arrive(cta_id, warp_id, inst,
+                                                dynamic_inst);
 }
 
 void tma_unit_t::commit_cp_async_group(unsigned cta_id, unsigned warp_id) {

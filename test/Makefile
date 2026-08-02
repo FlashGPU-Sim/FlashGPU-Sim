@@ -56,6 +56,9 @@ INCLUDES = -I$(GTEST_DIR)/include \
            -I$(CUDA_INSTALL_PATH)/include
 
 GPGPUSIM_FLAGS = -DDEBUG=0
+MBARRIER_SELFCHECK = $(BIN_DIR)/mbarrier_manager_selfcheck
+SIM_CUDART = $(firstword $(wildcard ../lib/$(GPGPUSIM_CONFIG)/libcudart.so ../lib/*/*/*/libcudart.so))
+SIM_PTX_INCLUDE = $(firstword $(wildcard ../build/$(GPGPUSIM_CONFIG)/cuda-sim ../build/*/*/*/cuda-sim))
 
 TOP_MAKEFILE := $(firstword $(MAKEFILE_LIST))
 .DEFAULT_GOAL := help
@@ -71,7 +74,16 @@ include make/fa2.mk
 include make/microbench.mk
 include make/registry.mk
 
-.PHONY: clean clean-all debug
+.PHONY: clean clean-all debug mbarrier-manager-selfcheck
+
+mbarrier-manager-selfcheck: $(MBARRIER_SELFCHECK)
+	LD_LIBRARY_PATH=$(abspath $(dir $(SIM_CUDART))):$(LD_LIBRARY_PATH) $(MBARRIER_SELFCHECK)
+
+$(MBARRIER_SELFCHECK): $(TEST_SRC_DIR)/unit/mbarrier_manager_selfcheck.cc \
+$(SRC_DIR)/gpgpu-sim/flash/mbarrier.cc | $(BIN_DIR)
+	@test -n "$(SIM_CUDART)" || { echo "Build GPGPU-Sim before this self-check"; exit 1; }
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -I$(SIM_PTX_INCLUDE) $^ $(SIM_CUDART) \
+		-Wl,-rpath,$(abspath $(dir $(SIM_CUDART))) -o $@
 
 clean:
 	rm -rf $(BUILD_DIR)

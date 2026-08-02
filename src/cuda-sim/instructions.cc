@@ -1766,6 +1766,20 @@ void stmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
 
 void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const int opcode = pI->get_opcode();
+  if (opcode == CP_ASYNC_MBARRIER_ARRIVE_OP) {
+    assert(pI->get_num_operands() == 1);
+    assert(pI->membar_level() == CTA_OPTION);
+    assert(pI->get_type() == B64_TYPE);
+    const operand_info &addr_op = pI->operand_lookup(0);
+    const uint32_t addr =
+        thread->get_operand_value(addr_op, addr_op, U32_TYPE, thread, 0).u32;
+    inst_t::mbarrier_info_t info;
+    info.bar_id = addr;
+    const_cast<ptx_instruction *>(pI)->set_mbarrier_info(
+        thread->get_laneid(), info);
+    return;
+  }
+
   if (opcode == CP_ASYNC_COMMIT_OP || opcode == CP_ASYNC_WAIT_OP) return;
 
   for (int opt : pI->get_options()) {

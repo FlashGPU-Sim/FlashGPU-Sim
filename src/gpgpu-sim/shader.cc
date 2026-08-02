@@ -1967,7 +1967,8 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   // a copy made before execution.
   ptx_instruction *dyn_inst = nullptr;
   ptx_instruction *mbarrier_dyn_inst = nullptr;
-  if (next_inst->op == MBARRIER_OP) {
+  if (next_inst->op == MBARRIER_OP ||
+      next_inst->m_is_cp_async_mbarrier_arrive) {
     mbarrier_dyn_inst = const_cast<ptx_instruction *>(
         flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(
             next_inst->pc, static_cast<const ptx_instruction *>(next_inst)));
@@ -2043,7 +2044,19 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     const ptx_instruction *static_inst =
         dynamic_cast<const ptx_instruction *>(next_inst);
     unsigned cta_id = m_warp[warp_id]->get_cta_id();
-    if (next_inst->m_is_ldgsts) {
+    assert(static_cast<unsigned>(next_inst->m_is_ldgsts) +
+               static_cast<unsigned>(next_inst->m_is_ldgdepbar) +
+               static_cast<unsigned>(next_inst->m_is_depbar) +
+               static_cast<unsigned>(
+                   next_inst->m_is_cp_async_mbarrier_arrive) ==
+           1);
+    if (next_inst->m_is_cp_async_mbarrier_arrive) {
+      if ((*pipe_reg)->get_active_mask().any()) {
+        assert(mbarrier_dyn_inst);
+        m_tma->warp_reaches_cp_async_mbarrier_arrive(
+            cta_id, warp_id, **pipe_reg, *mbarrier_dyn_inst);
+      }
+    } else if (next_inst->m_is_ldgsts) {
       if ((*pipe_reg)->get_active_mask().any()) {
         m_tma->warp_reaches_cp_async(cta_id, warp_id, **pipe_reg,
                                      static_inst);

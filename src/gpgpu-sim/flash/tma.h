@@ -78,6 +78,10 @@ public:
   void warp_reaches_cp_async(unsigned cta_id, unsigned warp_id,
                              const warp_inst_t &inst,
                              const ptx_instruction *static_inst);
+  void
+  warp_reaches_cp_async_mbarrier_arrive(unsigned cta_id, unsigned warp_id,
+                                        const warp_inst_t &inst,
+                                        const ptx_instruction &dynamic_inst);
   void commit_cp_async_group(unsigned cta_id, unsigned warp_id);
   void wait_cp_async_group(unsigned cta_id, unsigned warp_id,
                            unsigned max_pending_groups);

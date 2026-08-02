@@ -186,6 +186,7 @@ class ptx_recognizer;
 %token SYNC_OPTION
 %token RED_OPTION
 %token ARRIVE_OPTION
+%token NOINC_OPTION
 %token EXPECT_TX_OPTION
 %token COMPLETE_TX_OPTION
 %token INIT_OPTION
@@ -591,6 +592,7 @@ option: type_spec
 	| prmt_spec 
 	| SYNC_OPTION { recognizer->add_option(SYNC_OPTION); }
 	| ARRIVE_OPTION { recognizer->add_option(ARRIVE_OPTION); }
+	| NOINC_OPTION { recognizer->add_option(NOINC_OPTION); }
 	| EXPECT_TX_OPTION { recognizer->add_option(EXPECT_TX_OPTION); }
 	| COMPLETE_TX_OPTION { recognizer->add_option(COMPLETE_TX_OPTION); }
 	| RED_OPTION { recognizer->add_option(RED_OPTION); }

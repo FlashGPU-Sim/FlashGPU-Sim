@@ -893,7 +893,9 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == GRIDDEPCONTROL_OP) || (m_opcode == ELECT_OP) ||
       (m_opcode == LDMATRIX_OP) || (m_opcode == STMATRIX_OP) ||
       (m_opcode == CP_ASYNC_OP) || (m_opcode == CP_ASYNC_COMMIT_OP) ||
-      (m_opcode == CP_ASYNC_WAIT_OP) || (m_opcode == WGMMA_FENCE_OP) ||
+      (m_opcode == CP_ASYNC_WAIT_OP) ||
+      (m_opcode == CP_ASYNC_MBARRIER_ARRIVE_OP) ||
+      (m_opcode == WGMMA_FENCE_OP) ||
       (m_opcode == WGMMA_COMMIT_GROUP_OP) || (m_opcode == WGMMA_WAIT_GROUP_OP) ||
       (m_opcode == SETMAXNREG_OP) || (m_opcode == PREFETCH_OP) ||
       (m_opcode == PREFETCHU_OP)) {
@@ -924,7 +926,9 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != GRIDDEPCONTROL_OP) && (m_opcode != ELECT_OP) &&
       (m_opcode != LDMATRIX_OP) && (m_opcode != STMATRIX_OP) &&
       (m_opcode != CP_ASYNC_OP) && (m_opcode != CP_ASYNC_COMMIT_OP) &&
-      (m_opcode != CP_ASYNC_WAIT_OP) && (m_opcode != WGMMA_FENCE_OP) &&
+      (m_opcode != CP_ASYNC_WAIT_OP) &&
+      (m_opcode != CP_ASYNC_MBARRIER_ARRIVE_OP) &&
+      (m_opcode != WGMMA_FENCE_OP) &&
       (m_opcode != WGMMA_COMMIT_GROUP_OP) && (m_opcode != WGMMA_WAIT_GROUP_OP) &&
       (m_opcode != SETMAXNREG_OP) && (m_opcode != PREFETCH_OP) &&
       (m_opcode != PREFETCHU_OP)) {
@@ -1332,6 +1336,7 @@ void ptx_instruction::set_opcode_and_latency() {
       }
       break;
     case CP_ASYNC_COMMIT_OP:
+    case CP_ASYNC_MBARRIER_ARRIVE_OP:
       op = ASYNC_COPY_OP;
       latency = cp_async_commit_latency_val;
       initiation_interval = cp_async_commit_init_val;
@@ -1745,7 +1750,8 @@ void ptx_instruction::pre_decode() {
   memory_op = no_memory_op;
   data_size = 0;
   if (m_opcode == CP_ASYNC_OP || m_opcode == CP_ASYNC_COMMIT_OP ||
-      m_opcode == CP_ASYNC_WAIT_OP) {
+      m_opcode == CP_ASYNC_WAIT_OP ||
+      m_opcode == CP_ASYNC_MBARRIER_ARRIVE_OP) {
     bool is_commit = (m_opcode == CP_ASYNC_COMMIT_OP);
     bool is_wait = (m_opcode == CP_ASYNC_WAIT_OP);
     unsigned wait_n = 0;
@@ -1754,7 +1760,9 @@ void ptx_instruction::pre_decode() {
       if (opt == WAIT_GROUP_OPTION) is_wait = true;
     }
 
-    if (is_wait) {
+    if (m_opcode == CP_ASYNC_MBARRIER_ARRIVE_OP) {
+      m_is_cp_async_mbarrier_arrive = true;
+    } else if (is_wait) {
       m_is_depbar = true;
       if (m_opcode == CP_ASYNC_OP && get_num_operands() > 0 &&
           operand_lookup(0).is_literal()) {
@@ -1922,7 +1930,8 @@ void ptx_instruction::pre_decode() {
   // Get address registers inside memory operands.
   // Assuming only one memory operand per instruction,
   //  and maximum of two address registers for one memory operand.
-  if (has_memory_read() || has_memory_write()) {
+  if (has_memory_read() || has_memory_write() ||
+      m_opcode == CP_ASYNC_MBARRIER_ARRIVE_OP) {
     ptx_instruction::const_iterator op = op_iter_begin();
     for (; op != op_iter_end(); op++, n++) {  // process operands
       const operand_info &o = *op;
@@ -2627,7 +2636,8 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
     memory_space_t insn_space = undefined_space;
     _memory_op_t insn_memory_op = no_memory_op;
     unsigned insn_data_size = 0;
-    if ((pI->has_memory_read() || pI->has_memory_write())) {
+    if (inst_opcode != CP_ASYNC_MBARRIER_ARRIVE_OP &&
+        (pI->has_memory_read() || pI->has_memory_write())) {
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
         insn_memaddr = last_eaddr();
         insn_space = last_space();

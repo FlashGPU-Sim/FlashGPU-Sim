@@ -169,6 +169,28 @@ std::set<int> mbarrier_manager_t::arrive(gpgpu_sim *gpu,
   return try_advance(gpu, thread_index, mbarrier);
 }
 
+void mbarrier_manager_t::prepare_async_arrival(
+    gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr,
+    bool increment_pending) {
+  auto key = std::make_pair(thread_index.sw_cta_id, addr);
+  auto it = addr_to_mbarrier_map.find(key);
+  assert(it != addr_to_mbarrier_map.end() &&
+         "mbarrier for asynchronous arrival does not exist");
+
+  auto *mbarrier = it->second.get();
+  if (increment_pending) {
+    assert(mbarrier->m_pending_arrival_count < (1 << 20) - 1);
+    mbarrier->m_pending_arrival_count++;
+  }
+
+  GPPRINTF_GPU(gpu, MBAR,
+               "CTA %d Warp %d prepared asynchronous arrival at 0x%x "
+               "increment_pending=%d pending arrivals %d/%d\n",
+               thread_index.sw_cta_id, thread_index.sw_warp_id, (unsigned)addr,
+               (int)increment_pending, mbarrier->m_pending_arrival_count,
+               mbarrier->m_expected_count);
+}
+
 std::set<int>
 mbarrier_manager_t::complete_tx(gpgpu_sim *gpu,
                                 const thread_index_t &thread_index,
@@ -545,6 +567,26 @@ void barrier_set_t::complete_tx(unsigned cta_id, unsigned warp_id,
   auto released_warps = m_mbarrier_manager.complete_tx(
       m_shader->get_gpu(), thread_index, mbarrier_addr, completed_tx_count);
   release_warps(released_warps);
+}
+
+void barrier_set_t::prepare_mbarrier_async_arrival(unsigned cta_id,
+                                                   unsigned warp_id,
+                                                   uint32_t mbarrier_addr,
+                                                   bool increment_pending) {
+  flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{
+      (int)cta_id, (int)warp_id, m_shader->get_logical_cta_id(warp_id),
+      m_shader->get_cta_warp_id(warp_id)};
+  m_mbarrier_manager.prepare_async_arrival(m_shader->get_gpu(), thread_index,
+                                           mbarrier_addr, increment_pending);
+}
+
+void barrier_set_t::arrive_mbarrier_async(unsigned cta_id, unsigned warp_id,
+                                          uint32_t mbarrier_addr) {
+  flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{
+      (int)cta_id, (int)warp_id, m_shader->get_logical_cta_id(warp_id),
+      m_shader->get_cta_warp_id(warp_id)};
+  release_warps(m_mbarrier_manager.arrive(m_shader->get_gpu(), thread_index,
+                                          mbarrier_addr, 1));
 }
 
 void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
