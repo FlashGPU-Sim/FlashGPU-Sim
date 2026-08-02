@@ -1,8 +1,10 @@
 name: PR Tests
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [flash]
+    types: [opened, ready_for_review, reopened]
 
 jobs:
   simulation-test-shards:
