@@ -522,6 +522,11 @@ void warp_inst_t::memory_coalescing_arch(bool is_write,
       unsigned data_size_coales = data_size;
       unsigned num_accesses = 1;
 
+      if (m_per_scalar_thread[thread].memory_access_size_valid) {
+        data_size_coales = m_per_scalar_thread[thread].memory_access_size;
+      }
+      if (data_size_coales == 0) continue;
+
       if (space.get_type() == local_space ||
           space.get_type() == param_space_local) {
         // Local memory accesses >4B were split into 4B chunks

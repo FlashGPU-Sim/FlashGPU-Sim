@@ -1069,7 +1069,11 @@ private:
     if (tx.first_response_cycle == 0)
       tx.first_response_cycle = current_cycle();
 
-    unsigned bytes_to_add = response_payload_bytes(mf, parent_mf);
+    // cp.async transactions track physical request bytes. A sparse per-lane
+    // byte mask still returns every requested cache sector.
+    unsigned mf_size = mf->get_data_size();
+    unsigned parent_size = parent_mf->get_data_size();
+    unsigned bytes_to_add = std::min(mf_size, parent_size);
     tx.bytes_completed += bytes_to_add;
     g_cp_async_bytes_completed.fetch_add(bytes_to_add,
                                          std::memory_order_relaxed);
