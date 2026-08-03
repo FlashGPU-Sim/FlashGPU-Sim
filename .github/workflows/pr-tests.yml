@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [flash]
-    types: [opened, ready_for_review, reopened]
+    types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
   simulation-test-shards:
