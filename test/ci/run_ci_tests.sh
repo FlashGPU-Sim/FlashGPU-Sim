@@ -191,6 +191,8 @@ fi
 if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa3 ]; then
   run_logged build-sm90-fa3-smoke \
     ./test/run_tests.sh build test --target sm90 --group fa3-smoke
+  run_logged build-sm90-fa3-packgqa \
+    ./test/run_tests.sh build test --target sm90 --group fa3-packgqa
 fi
 
 # Run tests with specified configuration.
@@ -215,6 +217,8 @@ if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa3 ]; then
     'Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase'
   run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-smoke sm90-fa3-backward-smoke \
     'Fa3PrefillFp16BackwardSmokeTest.*'
+  run_gtest_group "$SM90_TEST_CONFIG" sm90 fa3-packgqa sm90-fa3-packgqa \
+    'Fa3FwdPackGqaFp16IntegrationTest.Smoke'
 fi
 
 # Preserve the existing no-filter CI scope, including GPT-2 trace smoke tests.

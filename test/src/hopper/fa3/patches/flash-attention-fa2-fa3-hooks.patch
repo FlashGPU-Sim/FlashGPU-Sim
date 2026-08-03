@@ -1117,7 +1117,7 @@ index 536ff85..94a784a 100644
                  }
              }
          } else {  // Load Q with cp.async
-@@ -830,15 +919,19 @@ struct CollectiveMainloopFwdSm90 {
+@@ -830,17 +919,29 @@ struct CollectiveMainloopFwdSm90 {
              Tensor mQ = make_tensor(make_gmem_ptr(params.ptr_Q + seqlen_info.offset_q * get<0>(params.stride_Q)), params.shape_Q_packed, params.stride_Q_packed)(_, _, bidh, !is_varlen_q ? bidb : 0);
              Tensor sQ_pi = cute::as_position_independent_swizzle_tensor(sQ);
              using PackGQAt = flash::PackGQAManager<get<0>(TileShape_MNK{}), get<2>(TileShape_MNK{}), NumProducerThreads, Element>;
@@ -1126,8 +1126,12 @@ index 536ff85..94a784a 100644
 +                PackGQAt::load_Q(mQ, sQ_pi, params.qhead_per_khead_divmod, thread_idx, seqlen_info.seqlen_q, m_block);
 +            }
              auto &barrier_Q = shared_storage.pipelines.barrier_Q;
++#if defined(FLASH_FWD_PACKGQA_CPASYNC_NOINC)
++            cutlass::arch::cpasync_barrier_arrive_noinc(reinterpret_cast<uint64_t*>(&barrier_Q));
++#else
              cutlass::arch::cpasync_barrier_arrive(reinterpret_cast<uint64_t*>(&barrier_Q));
              barrier_Q.arrive();
++#endif
              if constexpr (HasQv) {
                  Tensor mQv = make_tensor(make_gmem_ptr(params.ptr_Qv + seqlen_info.offset_q * get<0>(params.stride_Qv)), params.shape_Qv_packed, params.stride_Qv_packed)(_, _, bidh, !is_varlen_q ? bidb : 0);
                  Tensor sQv_pi = cute::as_position_independent_swizzle_tensor(sQv);
@@ -1138,9 +1142,15 @@ index 536ff85..94a784a 100644
 +                    PackGQAvt::load_Q(mQv, sQv_pi, params.qhead_per_khead_divmod, thread_idx, seqlen_info.seqlen_q, m_block);
 +                }
                  auto &barrier_Qv = shared_storage.pipelines.barrier_Qv;
++#if defined(FLASH_FWD_PACKGQA_CPASYNC_NOINC)
++                cutlass::arch::cpasync_barrier_arrive_noinc(reinterpret_cast<uint64_t*>(&barrier_Qv));
++#else
                  cutlass::arch::cpasync_barrier_arrive(reinterpret_cast<uint64_t*>(&barrier_Qv));
                  barrier_Qv.arrive();
-@@ -849,7 +942,11 @@ struct CollectiveMainloopFwdSm90 {
++#endif
+             }
+         }
+@@ -849,7 +950,11 @@ struct CollectiveMainloopFwdSm90 {
          // Need ClusterBarrier, not just NamedBarrier. Otherwise we might have CTA 0 finishing the
          // TMA store on O first, call TMA multicast load on V, before CTA 1 can finishing TMA store on O.
          // if (thread_idx == 0) { printf("Producer: main load, before barrier_O, work_idx = %d\n", work_idx);}
@@ -1152,7 +1162,7 @@ index 536ff85..94a784a 100644
          // if (thread_idx == 0) { printf("Producer: main load, after barrier_O\n");}
 
          if constexpr (!Transpose_V && !IntraWGOverlap) {
-@@ -893,7 +990,24 @@ struct CollectiveMainloopFwdSm90 {
+@@ -893,7 +998,24 @@ struct CollectiveMainloopFwdSm90 {
      template <typename SharedStorage>
      CUTLASS_DEVICE void
      load_tail(MainloopPipelineK pipeline_k, MainloopPipelineV pipeline_v, MainloopPipelineVt pipeline_vt,
@@ -1178,7 +1188,7 @@ index 536ff85..94a784a 100644
          // If we don't wait for barrier_O here, when using Cluster, CTA0 might exit early and CTA1 will
          // try to arrive on barrier_O of CTA0, causing "unspecified launch failure".
          shared_storage.pipelines.barrier_O.wait((work_idx + 1) % 2);
-@@ -909,6 +1023,18 @@ struct CollectiveMainloopFwdSm90 {
+@@ -909,6 +1031,18 @@ struct CollectiveMainloopFwdSm90 {
              pipeline_v.producer_tail(smem_pipe_write);
              if constexpr (Transpose_V) { pipeline_vt.producer_tail(smem_pipe_write); }
          }
@@ -1197,7 +1207,7 @@ index 536ff85..94a784a 100644
      }
 
      CUTLASS_DEVICE void
-@@ -963,6 +1089,10 @@ struct CollectiveMainloopFwdSm90 {
+@@ -963,6 +1097,10 @@ struct CollectiveMainloopFwdSm90 {
          SeqlenInfo_t const& seqlen_info,
          cute::tuple<int32_t, int32_t, int32_t, int32_t> block_coord,
          SharedStorage& shared_storage
@@ -1208,7 +1218,7 @@ index 536ff85..94a784a 100644
          ) {
          static_assert(is_rmem<FrgTensorO>::value, "O tensor must be rmem resident.");
          static constexpr int kBlockM = get<0>(TileShape_MNK{});
-@@ -1054,6 +1184,192 @@ struct CollectiveMainloopFwdSm90 {
+@@ -1054,6 +1192,192 @@ struct CollectiveMainloopFwdSm90 {
              auto barrier_token = pipeline.consumer_try_wait(smem_pipe_read);
              pipeline.consumer_wait(smem_pipe_read, barrier_token);
          };
@@ -1401,7 +1411,7 @@ index 536ff85..94a784a 100644
 
          int const seqlen_q = seqlen_info.seqlen_q;
          int const seqlen_k = seqlen_info.seqlen_k;
-@@ -1137,29 +1453,85 @@ struct CollectiveMainloopFwdSm90 {
+@@ -1137,29 +1461,85 @@ struct CollectiveMainloopFwdSm90 {
 
          if constexpr (IntraWGOverlap) {
              Tensor tSrS = partition_fragment_C(tiled_mma_qk, select<0, 1>(TileShape_MNK{}));
@@ -1500,7 +1510,7 @@ index 536ff85..94a784a 100644
              --n_block;
 
              // Need to initialize tOrO in the case of RescaleOBeforeGemm where we will scale tOrO even in the 1st iter
-@@ -1172,38 +1544,162 @@ struct CollectiveMainloopFwdSm90 {
+@@ -1172,38 +1552,162 @@ struct CollectiveMainloopFwdSm90 {
                  PipelineState smem_pipe_read_v(smem_pipe_read.index(), smem_pipe_read.phase(), smem_pipe_read.count());
                  ++smem_pipe_read;
                  Tensor tSrS = partition_fragment_C(tiled_mma_qk, select<0, 1>(TileShape_MNK{}));
@@ -1677,7 +1687,7 @@ index 536ff85..94a784a 100644
              };
 
              if constexpr (Is_causal || Is_local) { // Separate iterations with causal or local masking
-@@ -1236,19 +1732,67 @@ struct CollectiveMainloopFwdSm90 {
+@@ -1236,19 +1740,67 @@ struct CollectiveMainloopFwdSm90 {
              // Tell producers that smem_q is ready
              cutlass::arch::NamedBarrier::arrive(NumMmaThreadsQK + (Use_TMA_Q ? cutlass::NumThreadsPerWarp : NumProducerThreads), static_cast<uint32_t>(FwdNamedBarriers::QueryEmpty) /*id*/);
              if constexpr (RescaleOBeforeGemm) { softmax.rescale_o(tOrO, scores_scale); }
@@ -1754,7 +1764,7 @@ index 536ff85..94a784a 100644
              ++smem_pipe_read;
 
          } else {  // No intra-WG overlap
-@@ -1347,6 +1891,13 @@ struct CollectiveMainloopFwdSm90 {
+@@ -1347,6 +1899,13 @@ struct CollectiveMainloopFwdSm90 {
              if constexpr (Is_FP8 && !V_colmajor) { flash::permute_output_fp8(tOrO); }
              ++smem_pipe_read;
          }

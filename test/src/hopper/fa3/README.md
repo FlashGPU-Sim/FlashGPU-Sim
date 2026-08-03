@@ -27,6 +27,8 @@ in `patches/`. CUTLASS/CuTe is provided by that checkout's nested
 - `fa3_{fwd,bwd}_d{64,128}_{noncausal,causal}_test.cc` - thin, uniquely named
   standard-build wrappers for one kernel specialization each
 - `fa3_fwd_hdim128_fp16_case.cuh` - shared CUDA workload implementation
+- `fa3_fwd_packgqa_{case.cuh,test.cc}` - one-tile GQA forward case that
+  validates the default and `.noinc` `cp.async.mbarrier.arrive` forms
 - `prepare_flash_attention.sh` - clones FlashAttention, checks out the pinned
   upstream commit, initializes CUTLASS, and applies local patches
 - `patches/flash-attention-fa2-fa3-hooks.patch` - FA2/FA3 profiling hooks,
@@ -51,6 +53,7 @@ Then from `test/`:
 
 ```bash
 ./run_tests.sh run test --target sm90 --group fa3-smoke
+./run_tests.sh run test --target sm90 --group fa3-packgqa
 ./run_tests.sh run test --target sm90 --group fa3-smoke \
   Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase
 ./run_tests.sh run analysis --target fa3 --group large \
