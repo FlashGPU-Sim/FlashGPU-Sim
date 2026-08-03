@@ -94,6 +94,7 @@ mbarrier 	TC; yylval->int_value = MBAR_OP; return OPCODE;
 cp\.reduce\.async\.bulk TC; yylval->int_value = TMA_OP; return OPCODE;
 cp\.async\.bulk\.prefetch TC; yylval->int_value = TMA_PREFETCH_OP; return OPCODE;
 cp\.async\.bulk TC; yylval->int_value = TMA_OP; return OPCODE;
+cp\.async\.mbarrier\.arrive TC; yylval->int_value = CP_ASYNC_MBARRIER_ARRIVE_OP; return OPCODE;
 cp\.async\.commit_group TC; yylval->int_value = CP_ASYNC_COMMIT_OP; return OPCODE;
 cp\.async\.wait_all TC; yylval->int_value = CP_ASYNC_WAIT_OP; return OPCODE;
 cp\.async 		TC; yylval->int_value = CP_ASYNC_OP; return OPCODE;
@@ -431,6 +432,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 
 \.sync TC; return SYNC_OPTION;
 \.arrive TC; return ARRIVE_OPTION;
+\.noinc TC; return NOINC_OPTION;
 \.expect_tx TC; return EXPECT_TX_OPTION;
 \.complete_tx TC; return COMPLETE_TX_OPTION;
 \.red TC; return RED_OPTION;

@@ -1035,6 +1035,7 @@ class warp_inst_t : public inst_t {
     m_is_ldgsts = false;
     m_is_ldgdepbar = false;
     m_is_depbar = false;
+    m_is_cp_async_mbarrier_arrive = false;
 
     m_depbar_group_no = 0;
   }
@@ -1061,6 +1062,7 @@ class warp_inst_t : public inst_t {
     m_is_ldgsts = false;
     m_is_ldgdepbar = false;
     m_is_depbar = false;
+    m_is_cp_async_mbarrier_arrive = false;
 
     m_depbar_group_no = 0;
   }
@@ -1274,6 +1276,7 @@ class warp_inst_t : public inst_t {
   bool m_is_ldgsts;
   bool m_is_ldgdepbar;
   bool m_is_depbar;
+  bool m_is_cp_async_mbarrier_arrive;
 
   unsigned int m_depbar_group_no;
 };

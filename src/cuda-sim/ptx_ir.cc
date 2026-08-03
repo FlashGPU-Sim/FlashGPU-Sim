@@ -1464,6 +1464,7 @@ ptx_instruction::ptx_instruction(
         m_parity_op = true;
         break;
       case TMA_MBAR_COMPLETE_BYTES:
+      case NOINC_OPTION:
       case COMMIT_GROUP_OPTION:
       case WAIT_GROUP_OPTION:
       case LAUNCH_DEPENDENTS_OPTION:

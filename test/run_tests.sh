@@ -82,7 +82,7 @@ usage() {
     echo ""
     echo "Groups:"
     echo "  test/sm120:       unit, integration"
-    echo "  test/sm90:        instructions, fa2-smoke, fa3-smoke"
+    echo "  test/sm90:        instructions, fa2-smoke, fa3-smoke, fa3-packgqa"
     echo "  analysis/fa2|fa3: small, medium, large, breakdown, scaling, concurrency"
     echo "  microbench/sm120: mbarrier, mma, memory"
     echo "  microbench/sm90:  cp-async, mma, tma, wgmma"

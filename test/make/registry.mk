@@ -15,6 +15,7 @@ BINARY_GROUPS = \
 	fa2-scaling \
 	fa2-concurrency \
 	fa3-standard \
+	fa3-packgqa \
 	fa3-modes \
 	microbench-sm120-mbarrier \
 	microbench-sm120-mma \
@@ -36,6 +37,7 @@ BINARY_GROUP_BINARIES_fa2-breakdown = $(HOPPER_FA2_BREAKDOWN_TARGETS)
 BINARY_GROUP_BINARIES_fa2-scaling = $(HOPPER_FA2_SCALING_TARGETS)
 BINARY_GROUP_BINARIES_fa2-concurrency = $(HOPPER_FA2_CONCURRENCY_TARGETS)
 BINARY_GROUP_BINARIES_fa3-standard = $(HOPPER_FA3_STANDARD_TARGET)
+BINARY_GROUP_BINARIES_fa3-packgqa = $(HOPPER_FA3_PACKGQA_TARGETS)
 BINARY_GROUP_BINARIES_fa3-modes = $(HOPPER_FA3_MODE_TARGETS)
 BINARY_GROUP_BINARIES_microbench-sm120-mbarrier = $(MICROBENCH_SM120_MBAR_TARGETS)
 BINARY_GROUP_BINARIES_microbench-sm120-mma = $(MICROBENCH_SM120_MMA_TARGETS)
@@ -76,7 +78,7 @@ $(eval $(call REGISTER_SUITE_TARGET,microbench,sm90,SM90_H100,9.0,sm_90a))
 $(eval $(call REGISTER_SUITE_TARGET,trace,sm120,SM120_RTX5090,12.0,sm_120a))
 
 TARGET_GROUPS_test_sm120 = unit integration
-TARGET_GROUPS_test_sm90 = instructions fa2-smoke fa3-smoke
+TARGET_GROUPS_test_sm90 = instructions fa2-smoke fa3-smoke fa3-packgqa
 TARGET_GROUPS_analysis_fa2 = small medium large breakdown scaling concurrency
 TARGET_GROUPS_analysis_fa3 = small medium large breakdown scaling concurrency
 TARGET_GROUPS_microbench_sm120 = mbarrier mma memory
@@ -109,6 +111,11 @@ TARGET_GROUP_BUILD_GROUP_test_sm90_fa3-smoke = fa3-standard
 TARGET_GROUP_BINARY_GROUP_test_sm90_fa3-smoke = fa3-standard
 TARGET_GROUP_EXECUTOR_test_sm90_fa3-smoke = gtest-single
 TARGET_GROUP_FILTER_test_sm90_fa3-smoke = Fa3PrefillFp16SmokeTest.*:Fa3PrefillFp16BackwardSmokeTest.*:Fa3FwdHdim128Fp16IntegrationTest.*
+
+TARGET_GROUP_BUILD_GROUP_test_sm90_fa3-packgqa = fa3-packgqa
+TARGET_GROUP_BINARY_GROUP_test_sm90_fa3-packgqa = fa3-packgqa
+TARGET_GROUP_EXECUTOR_test_sm90_fa3-packgqa = gtest-multi
+TARGET_GROUP_FILTER_test_sm90_fa3-packgqa = Fa3FwdPackGqaFp16IntegrationTest.*
 
 # FA2 functional sizes and compile-time analysis modes.
 define REGISTER_FA2_STANDARD_GROUP
@@ -337,7 +344,7 @@ print-target-group-metadata:
 help:
 	@echo "Supported runner hierarchy"
 	@echo "=========================="
-	@echo "  test:      sm120/{unit,integration}; sm90/{instructions,fa2-smoke,fa3-smoke}"
+	@echo "  test:      sm120/{unit,integration}; sm90/{instructions,fa2-smoke,fa3-smoke,fa3-packgqa}"
 	@echo "  analysis:  fa2|fa3/{small,medium,large,breakdown,scaling,concurrency}"
 	@echo "  microbench: sm120/{mbarrier,mma,memory}; sm90/{cp-async,mma,tma,wgmma}"
 	@echo "  trace:     sm120/gpt2"
