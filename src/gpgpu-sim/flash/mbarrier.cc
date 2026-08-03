@@ -176,7 +176,15 @@ mbarrier_manager_t::complete_tx(gpgpu_sim *gpu,
   auto key = std::make_pair(thread_index.sw_cta_id, addr);
   auto it = addr_to_mbarrier_map.find(key);
   if (it == addr_to_mbarrier_map.end()) {
-    assert(false && "mbarrier to complete tx at does not exist");
+    // Delayed TMA complete_tx can race with mbarrier.inval after the phase
+    // already advanced (e.g. peer try_complete or prior local complete).
+    // Treat as a no-op rather than hard-failing the simulator.
+    GPPRINTF_GPU(gpu, MBAR,
+                 "CTA %d Warp %d mbarrier.complete_tx at 0x%x: barrier gone "
+                 "(already inval'd or never armed); ignoring\n",
+                 thread_index.sw_cta_id, thread_index.sw_warp_id,
+                 (unsigned)addr);
+    return {};
   }
   auto mbarrier = it->second.get();
 

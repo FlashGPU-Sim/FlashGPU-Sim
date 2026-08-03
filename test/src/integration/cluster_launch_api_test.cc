@@ -5,10 +5,13 @@
 // Prefer configs:
 //   SM120_RTX5090_REDUCED_CLUSTER2x1  (m=2, n=1)
 //   SM120_RTX5090_REDUCED_CLUSTER2x2  (m=2, n=2)
+//   SM120_RTX5090_REDUCED_CLUSTER4x4  (m=4, n=4)  -- primary m>2 multi-cluster
+//   SM120_RTX5090_CLUSTER16x11        (m=16, n=11) -- full GPC-aligned smoke
 //
 // Run:
 //   ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 test "*ClusterLaunch*"
 //   ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x2 test "*ClusterLaunch*"
+//   ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER4x4 test "*ClusterLaunch*"
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -226,4 +229,81 @@ TEST_F(ClusterLaunchApiTest, ExLaunch_MultiClusterConfig_TwoCtasComplete) {
       cudaSuccess);
   EXPECT_EQ(h, 2);
   cudaFree(d_ready);
+}
+
+// --- m>2 packing (e.g. REDUCED_CLUSTER4x4, CLUSTER16x11) ---
+
+TEST_F(ClusterLaunchApiTest, ExLaunch_ClusterDim4_Succeeds) {
+  // Functional check: TB cluster size 4 issues and all CTAs complete when
+  // physical packing m >= 4.
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(4);
+
+  constexpr int N = 4;
+  int *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, N * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, N * sizeof(int)), cudaSuccess);
+
+  int n = N;
+  void *args[] = {&d_out, &n};
+
+  cudaError_t err = flash_test::launch_kernel_with_cluster(
+      (const void *)cluster_launch_write_blockidx, dim3(N), dim3(32),
+      dim3(4, 1, 1), args);
+  ASSERT_EQ(err, cudaSuccess) << "cudaLaunchKernelExC clusterDim=4 failed: "
+                              << cudaGetErrorString(err);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  std::vector<int> h(N, -1);
+  ASSERT_EQ(cudaMemcpy(h.data(), d_out, N * sizeof(int), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  for (int i = 0; i < N; i++) {
+    EXPECT_EQ(h[i], i) << "block " << i;
+  }
+  cudaFree(d_out);
+}
+
+TEST_F(ClusterLaunchApiTest, ExLaunch_ClusterDim4_AllCtasMarkReady) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(4);
+
+  int *d_ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_ready, sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_ready, 0, sizeof(int)), cudaSuccess);
+
+  int n = 4;
+  void *args[] = {&d_ready, &n};
+  cudaError_t err = flash_test::launch_kernel_with_cluster(
+      (const void *)cluster_launch_mark_ready, dim3(4), dim3(32), dim3(4, 1, 1),
+      args);
+  ASSERT_EQ(err, cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  int h = 0;
+  ASSERT_EQ(
+      cudaMemcpy(&h, d_ready, sizeof(int), cudaMemcpyDeviceToHost),
+      cudaSuccess);
+  EXPECT_EQ(h, 4);
+  cudaFree(d_ready);
+}
+
+TEST_F(ClusterLaunchApiTest, ExLaunch_ClusterLargerThanPhysical_m_Fails) {
+  // On any topology, product(clusterDim) > m must be rejected.
+  const auto topo = flash_test::read_gpgpusim_topology();
+  if (!topo.found_config) {
+    GTEST_SKIP() << "Could not parse gpgpusim.config topology";
+  }
+  const unsigned m = topo.n_cores_per_cluster;
+  const unsigned bad = m + 1;
+
+  int *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, bad * sizeof(int)), cudaSuccess);
+  int n = static_cast<int>(bad);
+  void *args[] = {&d_out, &n};
+
+  cudaError_t err = flash_test::launch_kernel_with_cluster(
+      (const void *)cluster_launch_write_blockidx, dim3(bad), dim3(32),
+      dim3(bad, 1, 1), args);
+  EXPECT_NE(err, cudaSuccess)
+      << "cluster size " << bad << " should exceed physical m=" << m;
+  (void)cudaGetLastError();
+  cudaFree(d_out);
 }

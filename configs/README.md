@@ -14,7 +14,7 @@ Configuration files define the simulated GPU architecture, including:
 ## Available Configurations
 
 ### SM120_RTX5090
-Full RTX 5090 configuration with 170 streaming multiprocessors.
+Full RTX 5090 configuration with 170 streaming multiprocessors (flat packing).
 
 **Use for:**
 - Performance analysis and benchmarking
@@ -30,6 +30,26 @@ Full RTX 5090 configuration with 170 streaming multiprocessors.
 - Accurate performance modeling
 - PTX register allocation/reorder enabled; SASS-guided reorder is opt-in
 - Includes `sass_primary_hints.rules` for auto-extracted full-SASS guides
+
+### SM120 cluster packing configs (Thread Block Cluster / TMA)
+
+Naming: `CLUSTERmxn` means **m** = `-gpgpu_n_cores_per_cluster`,
+**n** = `-gpgpu_n_clusters`. TB cluster size is a **launch** attribute
+(`product(clusterDim) ≤ m`), not part of the config name.
+
+| Config | m × n | Total SMs | Role |
+|--------|-------|-----------|------|
+| `SM120_RTX5090_CLUSTER16x11` | 16 × 11 | 176 | **GPC-aligned full** (ideal Blackwell GPC = 16 SMs; product 5090 is floorswept to 170) |
+| `SM120_RTX5090_CLUSTER2x85` | 2 × 85 | 170 | **TPC packing** (2 SMs/TPC); TB cluster size ≤ 2 |
+| `SM120_RTX5090_REDUCED_CLUSTER4x4` | 4 × 4 | 16 | **Primary m>2 multi-cluster** functional iteration |
+| `SM120_RTX5090_REDUCED_CLUSTER2x2` | 2 × 2 | 4 | Multi-cluster isolation (m=2) |
+| `SM120_RTX5090_REDUCED_CLUSTER2x1` | 2 × 1 | 2 | Fast single-cluster peer multicast (m=2) |
+
+Hardware reference (NVIDIA RTX Blackwell whitepaper): RTX 5090 has **11 GPCs**,
+**85 TPCs**, **170 SMs**; a full GPC is 8 TPCs × 2 SMs = **16 SMs**.
+
+Prefer `REDUCED_CLUSTER4x4` for functional cluster/TMA work with m>2.
+Use `CLUSTER16x11` only for full-scale smoke (heavy).
 
 ### SM90_H100
 Full Hopper H100 configuration with 132 streaming multiprocessors.
@@ -157,10 +177,10 @@ Edit `configs/MY_CUSTOM_CONFIG/gpgpusim.config`:
 **Key parameters to adjust:**
 
 ```bash
-# Number of SM clusters (e.g., 1, 10, 85, 170)
+# Number of physical clusters (e.g., 1, 4, 11, 85, 170)
 -gpgpu_n_clusters 10
 
-# Cores per cluster (typically 1)
+# Cores (SMs) per cluster. For example: 1=flat, 2=TPC, 4=reduced multi-SM, 16=GPC-aligned
 -gpgpu_n_cores_per_cluster 1
 
 # Memory controllers (match the selected architecture and address mapping)

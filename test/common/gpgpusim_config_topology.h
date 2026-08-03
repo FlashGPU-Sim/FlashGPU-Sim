@@ -5,12 +5,14 @@
 // Use with GTEST_SKIP() when a test requires multi-SM clusters or multi-cluster
 // isolation and would hang or give false failures on the wrong config.
 //
-// Documented skip matrix (which tests skip on REDUCED / CLUSTER2x1 / 2x2):
+// Documented skip matrix (which tests skip on REDUCED / CLUSTER2x1 / 2x2 / 4x4):
 //   docs/cluster_cta2_explain.md §19.1
 //   docs/cluster_cta2_realLaunch.md §5 (Tests / topology skips)
 //
 // Naming: physical packing is CLUSTERmxn (m = n_cores_per_cluster,
 // n = n_clusters). TB cluster size is a launch attribute, not the config name.
+// GPC-aligned full: SM120_RTX5090_CLUSTER16x11 (m=16, n=11).
+// Reduced m>2:     SM120_RTX5090_REDUCED_CLUSTER4x4 (m=4, n=4).
 //
 // Note: some negative tests (e.g. cluster size > physical m) use a manual
 // GTEST_SKIP when m is *too large*, not these LT macros.
@@ -78,7 +80,8 @@ inline GpgpuSimTopology read_gpgpusim_topology(
         __topo.n_cores_per_cluster < static_cast<unsigned>(min_cores)) {       \
       GTEST_SKIP() << "Requires -gpgpu_n_cores_per_cluster >= " << (min_cores) \
                    << " (got " << __topo.n_cores_per_cluster                    \
-                   << "). Use SM120_RTX5090_REDUCED_CLUSTER2x1 (or similar).";   \
+                   << "). Use SM120_RTX5090_REDUCED_CLUSTER2x1 / 4x4 "         \
+                      "(or CLUSTER16x11).";                                   \
     }                                                                          \
   } while (0)
 
@@ -90,7 +93,8 @@ inline GpgpuSimTopology read_gpgpusim_topology(
         __topo.n_clusters < static_cast<unsigned>(min_clusters)) {             \
       GTEST_SKIP() << "Requires -gpgpu_n_clusters >= " << (min_clusters)       \
                    << " (got " << __topo.n_clusters                            \
-                   << "). Use SM120_RTX5090_REDUCED_CLUSTER2x2 (or similar)."; \
+                   << "). Use SM120_RTX5090_REDUCED_CLUSTER2x2 / 4x4 "         \
+                      "(or similar).";                                        \
     }                                                                          \
   } while (0)
 

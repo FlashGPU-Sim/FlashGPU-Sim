@@ -7,14 +7,14 @@
 #include "common/gpgpusim_config_topology.h"
 
 // TMA cluster multicast integration tests.
-// Prefer config SM120_RTX5090_REDUCED_CLUSTER2x1 (or REDUCED_CLUSTER2x2 with
-// cudaLaunchKernelEx for OneProducer).
+// Prefer config SM120_RTX5090_REDUCED_CLUSTER2x1 / 2x2 / 4x4.
 //
-// Most cases still use plain grid launches (<<<N, threads>>>) to exercise
-// topology + issue-order cluster_group peers. OneProducer uses
-// cudaLaunchKernelEx + clusterDim so co-residency holds on multi-cluster
-// configs. Cluster TMA timing is idealized (free multicast after one L2/TMA
-// path); see docs/cluster_cta2_explain.md.
+// Peer .shared::cluster multicast requires co-residency: multi-block cluster
+// cases use cudaLaunchKernelEx + clusterDim. Ordinary <<<>>> launches no
+// longer form issue-order peer groups (each CTA is its own group) so
+// independent multi-issuer kernels are not falsely coupled on m>1 packs.
+// OneProducer also uses Ex launch. Cluster TMA timing is idealized; see
+// docs/cluster_cta2_explain.md.
 
 // Inline mbarrier helpers matching cp_kernels.cuh patterns.
 __device__ inline void mbarrier_init_impl(unsigned long long *bar_addr,
@@ -138,6 +138,11 @@ protected:
   }
 
   void runTest(bool use_cluster, const char *name) {
+    if (use_cluster) {
+      // Peer multicast needs co-resident CTAs (TB cluster size == NUM_BLOCKS).
+      SKIP_IF_N_CORES_PER_CLUSTER_LT(NUM_BLOCKS);
+    }
+
     uint8_t *d_src = nullptr;
     uint8_t *d_dst = nullptr;
 
@@ -148,19 +153,21 @@ protected:
               cudaSuccess);
     ASSERT_EQ(cudaMemset(d_dst, 0xff, CHUNK_BYTES * NUM_BLOCKS), cudaSuccess);
 
-
+    int total_bytes = CHUNK_BYTES * NUM_BLOCKS;
     if (use_cluster) {
-      tmaLoadKernel<CHUNK_BYTES, true>
-          <<<NUM_BLOCKS, THREADS_PER_BLOCK>>>(d_src, d_dst,
-                                                          CHUNK_BYTES * NUM_BLOCKS);
+      void *args[] = {&d_src, &d_dst, &total_bytes};
+      cudaError_t err = flash_test::launch_kernel_with_cluster(
+          (const void *)tmaLoadKernel<CHUNK_BYTES, true>, dim3(NUM_BLOCKS),
+          dim3(THREADS_PER_BLOCK), dim3(NUM_BLOCKS, 1, 1), args);
+      ASSERT_EQ(err, cudaSuccess) << name << ": cluster Ex launch failed: "
+                                  << cudaGetErrorString(err);
     } else {
       tmaLoadKernel<CHUNK_BYTES, false>
-          <<<NUM_BLOCKS, THREADS_PER_BLOCK>>>(d_src, d_dst,
-                                                          CHUNK_BYTES * NUM_BLOCKS);
+          <<<NUM_BLOCKS, THREADS_PER_BLOCK>>>(d_src, d_dst, total_bytes);
+      ASSERT_EQ(cudaGetLastError(), cudaSuccess)
+          << name << ": Kernel launch failed";
     }
 
-    ASSERT_EQ(cudaGetLastError(), cudaSuccess)
-        << name << ": Kernel launch failed";
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess)
         << name << ": Kernel execution failed";
 
@@ -859,6 +866,10 @@ protected:
     static constexpr int THREADS = 32;
 
     void runDataTypeTest(bool use_cluster, const char* name) {
+        if (use_cluster) {
+            SKIP_IF_N_CORES_PER_CLUSTER_LT(NUM_BLOCKS);
+        }
+
         std::vector<uint8_t> h_in(CHUNK_BYTES);
         for (int i = 0; i < CHUNK_BYTES; i++) {
             h_in[i] = static_cast<uint8_t>(i);
@@ -870,15 +881,20 @@ protected:
         ASSERT_EQ(cudaMemcpy(d_src, h_in.data(), CHUNK_BYTES, cudaMemcpyHostToDevice), cudaSuccess);
         ASSERT_EQ(cudaMemset(d_dst, 0xff, CHUNK_BYTES * NUM_BLOCKS), cudaSuccess);
 
+        int total_bytes = CHUNK_BYTES * NUM_BLOCKS;
         if (use_cluster) {
-            tma_datatype_kernel<CHUNK_BYTES, true>
-                <<<NUM_BLOCKS, THREADS>>>(d_src, d_dst, CHUNK_BYTES * NUM_BLOCKS);
+            void *args[] = {&d_src, &d_dst, &total_bytes};
+            cudaError_t err = flash_test::launch_kernel_with_cluster(
+                (const void *)tma_datatype_kernel<CHUNK_BYTES, true>,
+                dim3(NUM_BLOCKS), dim3(THREADS), dim3(NUM_BLOCKS, 1, 1), args);
+            ASSERT_EQ(err, cudaSuccess) << name << ": cluster Ex launch failed: "
+                                        << cudaGetErrorString(err);
         } else {
             tma_datatype_kernel<CHUNK_BYTES, false>
-                <<<NUM_BLOCKS, THREADS>>>(d_src, d_dst, CHUNK_BYTES * NUM_BLOCKS);
+                <<<NUM_BLOCKS, THREADS>>>(d_src, d_dst, total_bytes);
+            ASSERT_EQ(cudaGetLastError(), cudaSuccess) << name << ": Launch failed";
         }
 
-        ASSERT_EQ(cudaGetLastError(), cudaSuccess) << name << ": Launch failed";
         ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess) << name << ": Kernel failed";
 
         std::vector<uint8_t> h_out(CHUNK_BYTES * NUM_BLOCKS);

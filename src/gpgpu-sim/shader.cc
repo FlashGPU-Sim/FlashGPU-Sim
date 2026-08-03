@@ -6492,10 +6492,15 @@ unsigned simt_core_cluster::allocate_cta_cluster_group(unsigned group_size,
     m_cluster_cta_seq++;
     return group;
   }
-  // Legacy proxy: consecutive CTAs form groups of size n_cores_per_cluster.
-  unsigned n = m_config->n_simt_cores_per_cluster;
-  if (n == 0) n = 1;
-  unsigned group = m_cluster_cta_seq / n;
+  // Ordinary (non-cluster) launches: each CTA gets its own group so
+  // .shared::cluster peer multicast / peer try_complete do not couple
+  // independent multi-issuer CTAs that happen to share a physical
+  // simt_core_cluster. True co-residency + peer matching requires a
+  // Thread Block Cluster launch (group_size / force_group path above).
+  // Previously grouped consecutive CTAs by n_cores_per_cluster, which
+  // caused false peers on m>1 configs (mbarrier complete after inval,
+  // tile clobber for distinct per-block loads).
+  unsigned group = m_cluster_cta_seq;
   m_cluster_cta_seq++;
   return group;
 }
