@@ -1737,6 +1737,24 @@ ptx_instruction::ptx_instruction(
   }
 }
 
+const operand_info *ptx_instruction::cp_async_source_control_operand() const {
+  assert(m_opcode == CP_ASYNC_OP);
+
+  unsigned trailing_cache_policy_operands = 0;
+  for (int option : m_options) {
+    if (option == L2_CACHE_HINT_OPTION) {
+      trailing_cache_policy_operands = 1;
+      break;
+    }
+  }
+
+  const unsigned base_operands = 3;
+  if (m_operands.size() <= base_operands + trailing_cache_policy_operands) {
+    return nullptr;
+  }
+  return &m_operands[base_operands];
+}
+
 void ptx_instruction::print_insn() const {
   print_insn(stdout);
   fflush(stdout);

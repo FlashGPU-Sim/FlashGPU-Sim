@@ -2,7 +2,8 @@
 
 SM90_MK := $(lastword $(MAKEFILE_LIST))
 
-SM90_INSTRUCTION_SOURCES = $(HOPPER_SRC_DIR)/named_barrier_test.cc \
+SM90_INSTRUCTION_SOURCES = $(HOPPER_SRC_DIR)/cp_async_src_size_test.cc \
+                           $(HOPPER_SRC_DIR)/named_barrier_test.cc \
                            $(sort $(wildcard $(HOPPER_SRC_DIR)/wgmma/*_test.cc))
 SM90_INSTRUCTION_CUH_HEADERS = $(shell find $(TEST_COMMON_DIR) $(SRC_DIR) -name '*.cuh' 2>/dev/null) \
                                $(wildcard $(HOPPER_SRC_DIR)/wgmma/*.cuh)

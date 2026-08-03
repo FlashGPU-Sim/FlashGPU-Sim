@@ -1804,22 +1804,23 @@ void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
          "cp.async cp-size must be 4, 8, or 16 bytes");
 
   unsigned source_bytes = cp_size;
-  if (pI->get_num_operands() > 3) {
-    const operand_info &source_size_op = pI->src3();
+  if (const operand_info *source_size_op =
+          pI->cp_async_source_control_operand()) {
     bool is_ignore_src = false;
-    if (source_size_op.is_reg()) {
+    if (source_size_op->is_reg()) {
       const type_info_key &type =
-          source_size_op.get_symbol()->type()->get_key();
+          source_size_op->get_symbol()->type()->get_key();
       is_ignore_src = type.scalar_type() == PRED_TYPE;
     }
 
     if (is_ignore_src) {
       const ptx_reg_t value = thread->get_operand_value(
-          source_size_op, source_size_op, PRED_TYPE, thread, 0);
+          *source_size_op, *source_size_op, PRED_TYPE, thread, 0);
+      // Predicate bit 0 is the inverted zero flag: zero represents true.
       source_bytes = (value.pred & 0x1) ? cp_size : 0;
     } else {
       source_bytes = thread
-                         ->get_operand_value(source_size_op, source_size_op,
+                         ->get_operand_value(*source_size_op, *source_size_op,
                                              U32_TYPE, thread, 0)
                          .u32;
     }

@@ -1073,6 +1073,10 @@ class ptx_instruction : public warp_inst_t {
   const std::list<int> get_scalar_type() const { return m_scalar_type; }
   const std::list<int> get_options() const { return m_options; }
 
+  // The optional fourth operand is source control unless cache-policy is the
+  // only trailing operand.
+  const operand_info *cp_async_source_control_operand() const;
+
   typedef std::vector<operand_info>::const_iterator const_iterator;
 
   const std::vector<operand_info> &get_operands() const {
