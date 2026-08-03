@@ -2411,13 +2411,35 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   // Cache the CTA's shared memory pointer for TMA cluster multicast.
   m_cta_smem[free_cta_hw_id] = m_thread[start_thread]->m_shared_mem;
   // Cluster group for peer matching: explicit TB-cluster group when set by
-  // co-resident issuer, else issue-order groups of size n_cores_per_cluster.
+  // co-resident issuer, else per-CTA groups for ordinary launches.
   {
     unsigned force_group = m_cluster->pending_issue_cluster_group();
     unsigned group_size = m_cluster->pending_issue_group_size();
     set_cta_cluster_group(
         free_cta_hw_id,
         m_cluster->allocate_cta_cluster_group(group_size, force_group));
+    // TB-cluster relative rank for .multicast::cluster ctaMask (bit = rank).
+    // Matches %cluster_ctarank: rank within product(clusterDim).
+    // `ctaid` was captured before sim_init_thread advanced the next-CTA cursor.
+    unsigned rank = 0;
+    if (kernel.is_cluster_launch()) {
+      dim3 cdim = kernel.get_cluster_dim();
+      if (cdim.x == 0) cdim.x = 1;
+      if (cdim.y == 0) cdim.y = 1;
+      if (cdim.z == 0) cdim.z = 1;
+      unsigned gx = kernel.get_grid_dim().x;
+      unsigned gy = kernel.get_grid_dim().y;
+      if (gx == 0) gx = 1;
+      if (gy == 0) gy = 1;
+      unsigned cx = ctaid % gx;
+      unsigned cy = (ctaid / gx) % gy;
+      unsigned cz = ctaid / (gx * gy);
+      unsigned rel_x = cx % cdim.x;
+      unsigned rel_y = cy % cdim.y;
+      unsigned rel_z = cz % cdim.z;
+      rank = rel_x + cdim.x * (rel_y + cdim.y * rel_z);
+    }
+    set_cta_cluster_rank(free_cta_hw_id, rank);
   }
 
   if (m_gpu->resume_option == 1 && kernel.get_uid() == m_gpu->resume_kernel &&

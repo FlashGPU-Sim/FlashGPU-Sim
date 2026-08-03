@@ -1667,6 +1667,7 @@ ptx_instruction::ptx_instruction(
       case READ_OPTION:
       case BULK_GROUP_OPTION:
       case CLUSTER_OPTION:
+      case MULTICAST_CLUSTER_OPTION:
       case M8N8_OPTION:
       case MBARRIER_INIT_OPTION:
       case TRANS_OPTION:

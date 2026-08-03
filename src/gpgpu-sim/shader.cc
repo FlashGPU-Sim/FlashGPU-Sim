@@ -343,6 +343,7 @@ void shader_core_ctx::create_front_pipeline() {
   for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_smem[i] = NULL;
   for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++)
     m_cta_cluster_group[i] = (unsigned)-1;
+  for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_cluster_rank[i] = 0;
   for (unsigned i = 0; i < m_config->n_thread_per_shader; i++) {
     m_thread[i] = NULL;
     m_threadState[i].m_cta_id = -1;
@@ -888,6 +889,16 @@ bool shader_core_ctx::is_cta_slot_active(unsigned hw_cta_id) const {
 void shader_core_ctx::set_cta_cluster_group(unsigned hw_cta_id, unsigned group) {
   assert(hw_cta_id < MAX_CTA_PER_SHADER);
   m_cta_cluster_group[hw_cta_id] = group;
+}
+
+unsigned shader_core_ctx::get_cta_cluster_rank(unsigned hw_cta_id) const {
+  assert(hw_cta_id < MAX_CTA_PER_SHADER);
+  return m_cta_cluster_rank[hw_cta_id];
+}
+
+void shader_core_ctx::set_cta_cluster_rank(unsigned hw_cta_id, unsigned rank) {
+  assert(hw_cta_id < MAX_CTA_PER_SHADER);
+  m_cta_cluster_rank[hw_cta_id] = rank;
 }
 
 void shader_core_ctx::try_complete_cluster_peer_mbarrier(
@@ -4571,6 +4582,7 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
   m_wgmma.cleanup_cta(cta_num);
   m_cta_smem[cta_num] = NULL;  // Clear shared memory pointer for TMA multicast
   m_cta_cluster_group[cta_num] = (unsigned)-1;
+  m_cta_cluster_rank[cta_num] = 0;
   shader_CTA_count_unlog(m_sid, 1);
 
   SHADER_GPPRINTF(

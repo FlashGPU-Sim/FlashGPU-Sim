@@ -2521,6 +2521,9 @@ class shader_core_ctx : public core_t {
   unsigned get_cta_cluster_group(unsigned hw_cta_id) const;
   bool is_cta_slot_active(unsigned hw_cta_id) const;
   void set_cta_cluster_group(unsigned hw_cta_id, unsigned group);
+  // TB-cluster relative rank (%cluster_ctarank); used by ctaMask filtering.
+  unsigned get_cta_cluster_rank(unsigned hw_cta_id) const;
+  void set_cta_cluster_rank(unsigned hw_cta_id, unsigned rank);
 
   // Complete pending mbarrier tx on this SM's CTA if armed (cluster peer path).
   void try_complete_cluster_peer_mbarrier(unsigned hw_cta_id,
@@ -3014,6 +3017,8 @@ class shader_core_ctx : public core_t {
   // Per-CTA cluster group id assigned at issue time for multicast peer match.
   // UINT_MAX means the slot is empty / unassigned.
   unsigned m_cta_cluster_group[MAX_CTA_PER_SHADER];
+  // Per-CTA TB-cluster relative rank (for .multicast::cluster ctaMask bits).
+  unsigned m_cta_cluster_rank[MAX_CTA_PER_SHADER];
 };
 
 class exec_shader_core_ctx : public shader_core_ctx {

@@ -311,8 +311,9 @@ Lane 28-31: Row 7
 **Cluster / TMA multicast**:
 1. **TB cluster launch**: `cudaLaunchKernelExC` / `__cluster_dims__` / required func attrs co-schedule CTAs of a Thread Block Cluster onto one physical `simt_core_cluster`. Ordinary `<<<>>>` keeps global RR (no forced co-residency). See `docs/cluster_cta2_realLaunch.md`.
 2. **Peer model**: `.shared::cluster` peers are active CTAs with the same `cluster_group` in the same physical cluster. For **cluster launches**, the whole TB cluster shares one group. Ordinary launches assign **one group per CTA** (no false peers on multi-SM packs).
-3. **Idealized timing**: `.shared::cluster` loads use one issuer L2/TMA stream; functional multicast to peers is free (see `docs/cluster_cta2_todo.md` for DSM hop follow-up). Functional correctness is the goal for packing configs; cycle-accurate GPC interconnect is not required.
-4. Prefer `SM120_RTX5090_REDUCED_CLUSTER4x4` (SMs per cluster=4,cluster=4) for multi-cluster + SMs per cluster>2 functional tests; `REDUCED_CLUSTER2x1` for Sms per cluster=2 peer smoke; `CLUSTER16x11` for full GPC-aligned topology smoke.
+3. **Selective multicast (PTX-accurate)**: `.multicast::cluster` + 16-bit **`ctaMask`** (bit *i* = TB-cluster rank *i*) selects destinations for **data and mbarrier `complete_tx`**. Cluster-level only (not `shared::cta`). Issuer receives only if its rank bit is set. Bare `.shared::cluster` without multicast keeps legacy all-peer fan-out for existing tests. See `tma_multicast_mask_test.cc`.
+4. **Idealized timing**: `.shared::cluster` loads use one issuer L2/TMA stream; functional multicast to peers is free (see `docs/cluster_cta2_todo.md` for DSM hop follow-up). Functional correctness is the goal for packing configs; cycle-accurate GPC interconnect is not required.
+5. Prefer `SM120_RTX5090_REDUCED_CLUSTER4x4` for multi-cluster + m>2 functional tests; `REDUCED_CLUSTER2x1` for m=2 peer smoke; `CLUSTER16x11` for full GPC-aligned topology smoke.
 
 **General**:
 - Flash mode multi-threading may have race conditions in certain edge cases

@@ -473,6 +473,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.shared::cta TC; return CTA_OPTION;
 \.shared::cluster TC; return CLUSTER_OPTION;
 \.cluster TC; return CLUSTER_OPTION;
+\.multicast::cluster TC; return MULTICAST_CLUSTER_OPTION;
 \.tensor TC; return TENSOR_OPTION;
 \.1d	TC; return DIM_1D_OPTION;
 \.2d	TC; return DIM_2D_OPTION;

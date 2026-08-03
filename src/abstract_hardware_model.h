@@ -902,6 +902,8 @@ public:
     unsigned tensor_dim = 0;
     unsigned bulk_wait_num = 0;  // For TMA_BULK_WAIT: number of recent groups to wait for
     bool bulk_wait_read_only = false;
+    // PTX .multicast::cluster (cluster-level selective destination only).
+    bool multicast_cluster = false;
   };
   struct tma_dyn_info_t {
     static constexpr unsigned TMA_DESCRIPTOR_BYTES = 128;
@@ -912,6 +914,10 @@ public:
     int32_t coords[5] = {0, 0, 0, 0, 0};
     uint8_t tensormap_descriptor[TMA_DESCRIPTOR_BYTES] = {};
     bool has_tensormap_descriptor = false;
+    // 16-bit CTA rank mask for .multicast::cluster (bit i = cluster rank i).
+    // When has_cta_mask is false, legacy shared::cluster peers use full group.
+    uint16_t cta_mask = 0xFFFF;
+    bool has_cta_mask = false;
     bool is_valid() const {
       return mbar_addr != (uint32_t)-1 || size_in_bytes > 0;
     }

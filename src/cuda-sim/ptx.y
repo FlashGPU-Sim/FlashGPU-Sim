@@ -281,6 +281,7 @@ class ptx_recognizer;
 %token	READ_OPTION;
 %token	BULK_GROUP_OPTION;
 %token	CLUSTER_OPTION;
+%token	MULTICAST_CLUSTER_OPTION;
 %token	INVAL_OPTION;
 %token	MBARRIER_INIT_OPTION;
 %token	M8N8_OPTION;
@@ -686,6 +687,7 @@ option: type_spec
 	| READ_OPTION { recognizer->add_option(READ_OPTION); }
 	| BULK_GROUP_OPTION { recognizer->add_option(BULK_GROUP_OPTION); }
 	| CLUSTER_OPTION { recognizer->add_option(CLUSTER_OPTION); }
+	| MULTICAST_CLUSTER_OPTION { recognizer->add_option(MULTICAST_CLUSTER_OPTION); }
 	| INVAL_OPTION { recognizer->add_option(INVAL_OPTION); }
 	| MBARRIER_INIT_OPTION { recognizer->add_option(MBARRIER_INIT_OPTION); }
 	| M8N8_OPTION { recognizer->add_option(M8N8_OPTION); }
