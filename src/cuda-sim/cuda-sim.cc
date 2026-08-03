@@ -2756,6 +2756,10 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
         inst.space = insn_space;
         inst.set_addr(lane_id, insn_memaddr);
+        if (pI->m_is_ldgsts) {
+          inst.set_per_thread_memory_access_size(
+              lane_id, last_memory_access_size());
+        }
         inst.data_size = insn_data_size;  // simpleAtomicIntrinsics
         assert(inst.memory_op == insn_memory_op);
       }

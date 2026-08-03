@@ -160,6 +160,7 @@ ptx_thread_info::ptx_thread_info(kernel_info_t &kernel) : m_kernel(kernel) {
   m_icount = 0;
   m_last_effective_address = 0;
   m_last_memory_space = undefined_space;
+  m_last_memory_access_size = 0;
   m_branch_taken = 0;
   m_shared_mem = NULL;
   m_sstarr_mem = NULL;

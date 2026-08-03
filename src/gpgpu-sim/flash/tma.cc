@@ -1069,7 +1069,11 @@ private:
     if (tx.first_response_cycle == 0)
       tx.first_response_cycle = current_cycle();
 
-    unsigned bytes_to_add = response_payload_bytes(mf, parent_mf);
+    // cp.async transactions track physical request bytes. A sparse per-lane
+    // byte mask still returns every requested cache sector.
+    unsigned mf_size = mf->get_data_size();
+    unsigned parent_size = parent_mf->get_data_size();
+    unsigned bytes_to_add = std::min(mf_size, parent_size);
     tx.bytes_completed += bytes_to_add;
     g_cp_async_bytes_completed.fetch_add(bytes_to_add,
                                          std::memory_order_relaxed);
@@ -1299,10 +1303,11 @@ public:
                              const ptx_instruction *static_inst) {
     unsigned cp_size = inst.data_size ? inst.data_size : 16;
     unsigned src_size = cp_size;
-    if (static_inst != nullptr && static_inst->get_num_operands() > 3) {
-      const operand_info &src_size_op = static_inst->src3();
-      if (src_size_op.is_literal()) {
-        src_size = (unsigned)src_size_op.get_literal_value().u64;
+    if (static_inst != nullptr) {
+      const operand_info *src_size_op =
+          static_inst->cp_async_source_control_operand();
+      if (src_size_op != nullptr && src_size_op->is_literal()) {
+        src_size = (unsigned)src_size_op->get_literal_value().u64;
       }
     }
     if (src_size > cp_size)

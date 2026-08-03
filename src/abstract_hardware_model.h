@@ -1115,6 +1115,14 @@ class warp_inst_t : public inst_t {
     for (unsigned i = 0; i < num_addrs; i++)
       m_per_scalar_thread[n].memreqaddr[i] = addr[i];
   }
+  void set_per_thread_memory_access_size(unsigned n, unsigned size) {
+    if (!m_per_scalar_thread_valid) {
+      m_per_scalar_thread.resize(m_config->warp_size);
+      m_per_scalar_thread_valid = true;
+    }
+    m_per_scalar_thread[n].memory_access_size = size;
+    m_per_scalar_thread[n].memory_access_size_valid = true;
+  }
   void print_m_accessq() {
     if (accessq_empty())
       return;
@@ -1248,8 +1256,12 @@ class warp_inst_t : public inst_t {
     per_thread_info() {
       for (unsigned i = 0; i < MAX_ACCESSES_PER_INSN_PER_THREAD; i++)
         memreqaddr[i] = 0;
+      memory_access_size = 0;
+      memory_access_size_valid = false;
     }
     dram_callback_t callback;
+    unsigned memory_access_size;
+    bool memory_access_size_valid;
     new_addr_type
         memreqaddr[MAX_ACCESSES_PER_INSN_PER_THREAD];  // effective address,
                                                        // upto 8 different

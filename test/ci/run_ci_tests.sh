@@ -208,6 +208,9 @@ if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm120 ]; then
 fi
 if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa2 ]; then
   run_gtest_group "$SM90_TEST_CONFIG" sm90 instructions sm90-instructions
+  run_logged sm90-cp-async-src-size-stats \
+    python3 test/src/hopper/check_cp_async_src_size_stats.py \
+    "$CI_LOG_ROOT/logs/sm90-instructions.log"
   run_gtest_group "$SM90_TEST_CONFIG" sm90 fa2-smoke sm90-fa2-smoke
 fi
 if [ "$CI_SHARD" = all ] || [ "$CI_SHARD" = sm90-fa3 ]; then
