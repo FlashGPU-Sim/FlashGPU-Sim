@@ -1,40 +1,64 @@
 # TritonTrace
 
-TritonTrace captures selected Triton kernel launches and generates standalone
-CUDA C++ harnesses that can be replayed on a physical GPU or with
-FlashGPU-Sim. The implementation lives in the
-[`TritonTrace`](TritonTrace/) package.
+TritonTrace records Triton CUDA kernel compilation and launch state and generates standalone CUDA C++ harnesses. The generated harnesses can replay a captured launch on a compatible physical GPU or with FlashGPU-Sim. The public API is [`TritonTrace.Tracker`](TritonTrace/tracker.py).
 
-For bundled examples and validation sweeps, see
-[`test/triton_trace/`](../test/triton_trace/README.md).
+## Package Structure
 
-## Capabilities
-
-- Capture PTX and CUBIN images from Triton's kernel cache.
-- Record launch parameters, including grid and block dimensions and dynamic
-  shared-memory size.
-- Serialize tensor and scalar arguments.
-- Detect modified tensor arguments and save their post-launch values as
-  reference outputs.
-- Generate standalone CUDA C++ harnesses that replay launches and validate
-  captured outputs.
+- `tracker.py` provides the public `Tracker` facade, selects the Online or Offline backend, controls capture with `enable()` and `disable()`, and saves the session summary.
+- `online.py` observes normal Triton compilation and GPU execution through runtime hooks.
+- `offline.py` intercepts Triton launches and compiles them for an explicit CUDA target without accessing a GPU driver.
+- `session.py` owns kernel and launch records, serializes arguments, captures Online reference outputs, and writes reports.
+- `harness.py` generates standalone launchers, Makefiles, and FlashGPU-Sim resource sidecars.
+- `templates/` contains the text used by the harness generator. Files ending in `.tpl` are complete generated-file templates; files ending in `.inc` are C++ fragments inserted into those templates.
 
 ## Installation
 
-From the repository root, install TritonTrace into the active Python
-environment:
+Install TritonTrace from the repository root into the active Python environment:
 
 ```bash
 python -m pip install -e tools
 ```
 
-The capture environment must also provide PyTorch, Triton, and NumPy. Select a
-CUDA Toolkit compatible with the PTX version and target emitted by the
-installed Triton release.
+The Python environment must provide PyTorch, Triton, and NumPy. Building a generated harness also requires a CUDA Toolkit compatible with the PTX version and target emitted by Triton.
 
-## Capture a Kernel Launch
+## Tracker API
 
-Create a tracker around the Triton launch to capture:
+```python
+tracker = TritonTrace.Tracker(
+    output_dir,
+    save_binaries=True,
+    capture_args=True,
+    enabled=True,
+    mode="online",
+    target=None,
+)
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `output_dir` | Directory that receives captured artifacts and reports. |
+| `save_binaries` | Copies compiler artifacts and generates launcher files. Keep this enabled when capturing arguments. |
+| `capture_args` | Serializes tensor and scalar launch arguments and enables launch-specific harness generation. |
+| `enabled` | Sets the initial launch-capture state. Its effect on a disabled launch depends on the selected mode. |
+| `mode` | Selects `"online"` or `"offline"`; Online is the default. |
+| `target` | Supplies the CUDA architecture for Offline mode, such as `"sm90"` or `"sm120"`. Online mode rejects this argument. |
+
+`enable()` and `disable()` change the launch-capture state, `is_enabled()` returns it, and `save_summary()` writes `tracking_summary.json` and `tracking_report.txt`.
+
+## Capture Modes
+
+| Behavior | Online | Offline |
+| --- | --- | --- |
+| GPU required during tracking | Yes | No |
+| CUDA target | Detected by Triton | Supplied through `target` |
+| Kernel execution | Normal Triton execution | Compilation stops before execution |
+| Autotuning | Triton can benchmark normally | One fixed `triton.Config` only |
+| Reference outputs | Captured from modified tensors | Unavailable |
+| Disabled kernel call | Executes without recording the launch | Is skipped |
+
+### Online Capture
+
+Online mode lets Triton compile and execute normally. TritonTrace registers kernel-load, launch-enter, and launch-exit hooks, and observes the Python arguments and grid passed through `JITFunction.run`. Triton evaluates callable grids with its fully bound arguments, and TritonTrace records the resulting numeric grid.
 
 ```python
 from pathlib import Path
@@ -43,11 +67,9 @@ import TritonTrace
 
 tracker = TritonTrace.Tracker(
     output_dir=Path("run/tracking"),
-    save_binaries=True,
-    capture_args=True,
+    enabled=False,
 )
 
-tracker.disable()
 run_warmup_and_autotuning()
 
 tracker.enable()
@@ -55,142 +77,95 @@ run_kernel_once()
 tracker.save_summary()
 ```
 
-Keep tracking disabled during compilation, warmup, and autotuning. Enable it
-only for the launch that will be replayed; otherwise the tracker may capture
-multiple candidate kernels or autotuning launches.
+Disabling Online tracking suppresses launch and argument capture while the original kernel call continues to execute. Kernel-load events remain active, so compiled kernels created during warmup or autotuning are still registered and their artifacts are copied when `save_binaries=True`. Enabling the tracker for a selected launch records its grid, block dimensions, shared-memory and scratch requirements, and arguments.
 
-## Compile a Kernel without a GPU
+Before an enabled launch, TritonTrace serializes tensor inputs and keeps tensor snapshots. After the launch, it synchronizes the device and compares each tensor with its snapshot. Modified tensors are saved as reference outputs and included in the launch-specific validation harness.
 
-Offline mode intercepts the same `kernel[grid](*args)` call and stops after
-Triton produces the compiled kernel. The target architecture must be supplied
-because Triton cannot discover it from a local device:
+### Offline Capture
+
+Offline mode intercepts the same `kernel[grid](*args)` call and compiles it for an explicit CUDA architecture before Triton queries an active device:
 
 ```python
+from pathlib import Path
+
+import TritonTrace
+
 tracker = TritonTrace.Tracker(
     output_dir=Path("run/tracking"),
     mode="offline",
-    target="sm90",
+    target="sm120",
 )
 
-tracker.enable()
 run_kernel_once_with_cpu_tensors()
 tracker.save_summary()
 ```
 
-The tracker derives the signature, constexpr values, compiler options, and
-numeric grid from the Python invocation. It records PTX, CUBIN, compiler
-metadata, launch dimensions, scratch requirements, and serializable CPU tensor
-arguments without initializing the CUDA driver. Calls made while tracking is
-disabled are skipped.
+The Offline backend binds the Python arguments, derives the signature, constexpr values, compiler options, and numeric grid, and calls `triton.compile` with the selected target. It records the compiled PTX, CUBIN, compiler metadata, launch dimensions, scratch requirements, CPU tensor data, and scalar values without initializing the CUDA driver.
 
-Offline mode currently requires a plain `@triton.jit` kernel or an Autotuner
-with one fixed `triton.Config`. It does not execute the kernel, run autotuning,
-invoke runtime pre-hooks, or produce reference outputs. Its launch-specific
-harness can replay the recorded inputs but does not validate the result.
+A plain `@triton.jit` kernel works directly. An `@triton.autotune` kernel must contain exactly one `triton.Config`, because Offline mode cannot benchmark candidate configurations. Offline capture does not execute the kernel, run runtime pre-hooks, or create reference outputs. Its launch-specific harness restores the recorded inputs and reports whether the replay completes; it has no result validation.
 
-## How Capture Works
-
-Online mode registers three hooks with Triton's runtime:
-
-```python
-triton.knobs.runtime.kernel_load_end_hook.add(self._on_kernel_load)
-triton.knobs.runtime.launch_enter_hook.add(self._on_launch_enter)
-triton.knobs.runtime.launch_exit_hook.add(self._on_launch_exit)
-```
-
-At kernel load, TritonTrace records the compiled kernel images. Immediately
-before launch, it saves the launch parameters and argument values and snapshots
-tensor arguments. After launch, it compares each tensor with its snapshot.
-Modified tensors are recorded as reference outputs and included in generated
-validation code.
-
-Offline mode replaces the launch path before Triton queries the active CUDA
-device. It binds the Python arguments with the selected CUDA compiler backend,
-calls `triton.compile` with the explicit target, records the returned
-`CompiledKernel`, and leaves its CUDA module and function handles uninitialized.
+Offline mode can generate a launch-specific harness for PyTorch tensor arguments and `int`, `float`, or `bool` scalars. Tensor contents are saved in `.bin` files, and scalar values are written into the generated C++ code. If a call contains another Python object or pointer-like value, TritonTrace cannot recreate that argument after Python exits and skips the launch-specific harness.
 
 ## Generated Artifacts
 
-For each captured launch, TritonTrace generates:
-
-- `{kernel}_launch{N}_harness.cu`: standalone CUDA C++ harness with validation.
-- `{kernel}_launch{N}_kernel.ptx`: PTX captured from Triton.
-- `{kernel}_launch{N}_kernel.cubin`: CUBIN used for native-GPU replay.
-- `{kernel}_launch{N}_arg{M}.bin`: serialized argument data.
-- `{kernel}_launch{N}_arg{M}_output.bin`: reference data for a modified tensor.
-- `{kernel}_launch{N}_Makefile`: harness build rules.
-
-A typical output directory has this structure:
+With binary and argument capture enabled, an output directory typically contains:
 
 ```text
 tracking/
 ├── binaries/
-│   └── kernel_*/
-│       ├── kernel.cubin
-│       ├── kernel.ptx
-│       └── kernel_metadata.json
+│   └── <kernel>_<hash>/
+│       ├── <kernel>.cubin
+│       ├── <kernel>.ptx
+│       └── <kernel>_metadata.json
 ├── data/
-│   ├── kernel_launch1_arg0.bin
-│   └── kernel_launch1_arg1_output.bin
+│   ├── <kernel>_launch<N>_arg<M>.bin
+│   └── <kernel>_launch<N>_arg<M>_output.bin
 ├── launchers/
-│   ├── kernel_launch1_harness.cu
-│   ├── kernel_launch1_kernel.cubin
-│   ├── kernel_launch1_kernel.ptx
-│   └── kernel_launch1_Makefile
+│   ├── <kernel>_<hash>_template.cu
+│   ├── <kernel>_launch<N>_harness.cu
+│   ├── <kernel>_launch<N>_kernel.cubin
+│   ├── <kernel>_launch<N>_kernel.ptx
+│   ├── <kernel>_launch<N>_kernel.ptxinfo
+│   └── <kernel>_launch<N>_Makefile
 ├── tracking_report.txt
 └── tracking_summary.json
 ```
 
-## Build and Replay a Harness
+The exact set depends on the compiler artifacts and capture mode. The hash-specific `template.cu` is created as soon as a compiled kernel is registered and contains no launch arguments. The launch-specific harness is the replay entry point. An `_output.bin` file is created only by Online capture for a tensor modified by the selected launch. The `.ptxinfo` sidecar records resource usage for FlashGPU-Sim; TritonTrace uses `cuobjdump` when available and falls back to a PTX register estimate.
 
-Build the generated harness from its `launchers/` directory:
+Triton may remove unused Python arguments from PTX. TritonTrace cannot tell which arguments were removed, so launch-specific harness generation stops with `Argument count mismatch` when the Python and PTX argument counts differ.
+
+`tracking_summary.json` is the machine-readable record of kernels, launches, metadata, and arguments. `tracking_report.txt` presents the same session in a compact human-readable form. Both files are written when `save_summary()` is called.
+
+## Build and Replay
+
+Build a launch-specific harness from the generated `launchers/` directory:
 
 ```bash
-make -f kernel_launch1_Makefile
-./kernel_launch1
+make -f kernel_name_launch1_Makefile
+./kernel_name_launch1
 ```
 
-The harness:
+Replace `kernel_name` with the captured kernel name. The Makefile packages the captured PTX and CUBIN into `kernel_name_launch1_kernel.fatbin` and builds the `kernel_name_launch1` executable. These two files are build products and are not present immediately after tracking.
 
-- loads the captured CUBIN with `cuModuleLoad`;
-- restores tensor arguments from the generated binary files;
-- launches the kernel with the captured parameters; and
-- compares modified outputs against the captured reference values.
+At runtime, the harness resolves its own directory through `/proc/self/exe`, loads the fatbin, restores tensor arguments from `data/`, allocates Triton scratch buffers, and launches the kernel with the captured grid, block, and shared-memory settings. An Online harness also compares modified tensors with the captured reference files. An Offline harness reports execution completion without checking kernel results.
 
-The generated harness should first be run on a compatible physical GPU to
-confirm that the captured launch can be reconstructed correctly.
-
-## Replay with FlashGPU-Sim
-
-To replay with FlashGPU-Sim, copy a matching simulator configuration into the
-generated `launchers/` directory and select the simulator CUDA runtime:
+To replay through FlashGPU-Sim, place a matching simulator configuration in the generated `launchers/` directory and select the simulator CUDA runtime before running the executable:
 
 ```bash
-cp -a /path/to/flashgpu-sim/configs/<config>/. .
+cp -a /path/to/flashgpu-sim/configs/SM90/. .
 source /path/to/flashgpu-sim/setup_environment
-./kernel_launch1
+./kernel_name_launch1
 ```
 
-The harness loads the captured module through `cuModuleLoad`; during simulation,
-FlashGPU-Sim uses the captured PTX file next to the CUBIN. Confirm that the run
-log contains `gpu_tot_sim_cycle`. A validation result without simulator cycle
-counters indicates that the harness used the physical GPU runtime instead.
+FlashGPU-Sim consumes the PTX and `.ptxinfo` files next to the captured module. A simulator run should report `gpu_tot_sim_cycle` in its log.
 
 ## Requirements
 
 - Linux
-- Python, PyTorch, Triton, and NumPy
-- CUDA Toolkit tools, including `nvcc` and `cuobjdump`
+- Python 3.10 or newer
+- PyTorch, Triton, and NumPy
+- CUDA Toolkit tools used to build a harness, including `nvcc` and `fatbinary`; `cuobjdump` improves the generated resource sidecar when available
+- A compatible NVIDIA GPU and driver for Online capture or physical-GPU replay
 
-TritonTrace is developed and tested with Python 3.12.3, PyTorch 2.9.0,
-Triton 3.5.0, and NumPy 2.4.0.
-
-## Limitations
-
-- CUDA only; ROCm is not supported.
-- Generated harnesses use `/proc/self/exe` for path resolution.
-- `constexpr` arguments are not fully captured.
-- Grid evaluation may fail for complex lambda expressions.
-- Offline mode accepts CPU tensors or Triton mock tensors; CUDA tensor creation
-  still requires a physical GPU.
-- Offline launch harnesses do not contain reference-output validation.
+TritonTrace is developed and tested with Python 3.12.3, PyTorch 2.9.0, Triton 3.5.0, and NumPy 2.4.0.
