@@ -554,10 +554,10 @@ def benchmark_square():
 
 def simple_test():
 
-    import tritontrace
+    import TritonTrace
 
     output_dir = (TRITON_TRACE_DIR / "triton_kernel_tracking/example_gemm").resolve()
-    tracker = tritontrace.Tracker(output_dir, save_binaries=True, capture_args=True)
+    tracker = TritonTrace.Tracker(output_dir, save_binaries=True, capture_args=True)
     tracker.disable()
     print(f"\nOutput directory: {output_dir}")
 

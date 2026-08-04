@@ -49,7 +49,7 @@ if ! "${PYTHON}" -c "import numpy, torch, triton" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! "${PYTHON}" -c "import tritontrace" >/dev/null 2>&1; then
+if ! "${PYTHON}" -c "import TritonTrace" >/dev/null 2>&1; then
   echo "Error: TritonTrace is not installed in the selected Python environment." >&2
   echo "Install it with: ${PYTHON} -m pip install -e ${REPO_ROOT}/tools" >&2
   exit 1

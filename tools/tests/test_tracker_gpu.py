@@ -13,7 +13,7 @@ import triton.language as tl
 TOOLS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS_DIR))
 
-import tritontrace
+import TritonTrace
 
 
 TMA_GEMM_CONFIGS = [
@@ -167,7 +167,7 @@ def check_gpu_tracking(tracking_dir, cache_dir):
                 size, device=device, dtype=torch.uint8
             )
         )
-        tracker = tritontrace.Tracker(tracking_dir, enabled=False)
+        tracker = TritonTrace.Tracker(tracking_dir, enabled=False)
         assert tracker.mode == "online"
         assert tracker.target_name is None
 

@@ -2,8 +2,8 @@
 
 TritonTrace captures selected Triton kernel launches and generates standalone
 CUDA C++ harnesses that can be replayed on a physical GPU or with
-FlashGPU-Sim. The implementation is provided by
-[`tritontrace.py`](tritontrace.py).
+FlashGPU-Sim. The implementation lives in the
+[`TritonTrace`](TritonTrace/) package.
 
 For bundled examples and validation sweeps, see
 [`test/triton_trace/`](../test/triton_trace/README.md).
@@ -39,9 +39,9 @@ Create a tracker around the Triton launch to capture:
 ```python
 from pathlib import Path
 
-import tritontrace
+import TritonTrace
 
-tracker = tritontrace.Tracker(
+tracker = TritonTrace.Tracker(
     output_dir=Path("run/tracking"),
     save_binaries=True,
     capture_args=True,
@@ -66,7 +66,7 @@ Triton produces the compiled kernel. The target architecture must be supplied
 because Triton cannot discover it from a local device:
 
 ```python
-tracker = tritontrace.Tracker(
+tracker = TritonTrace.Tracker(
     output_dir=Path("run/tracking"),
     mode="offline",
     target="sm90",

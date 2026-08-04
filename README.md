@@ -217,7 +217,7 @@ python -m pip install -e ../../tools
 ```
 
 Capturing custom Triton workloads requires minor instrumentation: import
-`tritontrace`, create a tracker, and enable it around the target kernel launch.
+`TritonTrace`, create a tracker, and enable it around the target kernel launch.
 The `gemm.py` example is already instrumented. See the
 [TritonTrace documentation](tools/README.md) for full integration details.
 

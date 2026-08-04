@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 import triton
 import triton.language as tl
-import tritontrace
+import TritonTrace
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -215,7 +215,7 @@ def main(args):
     if output_dir.exists():
         shutil.rmtree(output_dir)
 
-    tracker = tritontrace.Tracker(
+    tracker = TritonTrace.Tracker(
         output_dir, save_binaries=True, capture_args=True
     )
     tracker.disable()

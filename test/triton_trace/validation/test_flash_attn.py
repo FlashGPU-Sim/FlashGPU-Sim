@@ -27,7 +27,7 @@ TRACKING_ROOT = Path(
     )
 ).expanduser().resolve()
 
-import tritontrace
+import TritonTrace
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -216,7 +216,7 @@ def main():
     if output_dir.exists():
         shutil.rmtree(output_dir)
 
-    tracker = tritontrace.Tracker(output_dir, save_binaries=True, capture_args=True)
+    tracker = TritonTrace.Tracker(output_dir, save_binaries=True, capture_args=True)
     tracker.disable()
     print(f"\nOutput directory: {output_dir}")
 

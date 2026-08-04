@@ -19,7 +19,7 @@ import triton.language as tl
 
 TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
 
-import tritontrace
+import TritonTrace
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -240,7 +240,7 @@ def main():
     if output_dir.exists():
         shutil.rmtree(output_dir)
     
-    tracker = tritontrace.Tracker(output_dir, save_binaries=True, capture_args=True)
+    tracker = TritonTrace.Tracker(output_dir, save_binaries=True, capture_args=True)
     tracker.disable()  # Disable during warmup/perf runs
     print(f"\nOutput directory: {output_dir}")
     

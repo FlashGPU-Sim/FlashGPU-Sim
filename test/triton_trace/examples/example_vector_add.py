@@ -13,7 +13,7 @@ import triton.language as tl
 
 TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
 
-import tritontrace
+import TritonTrace
 
 
 @triton.jit
@@ -36,7 +36,7 @@ def main():
     
     # Initialize tracker
     output_dir = (TRITON_TRACE_DIR / "triton_kernel_tracking/example_vector_add").resolve()
-    tracker = tritontrace.Tracker(output_dir, save_binaries=True, capture_args=True)
+    tracker = TritonTrace.Tracker(output_dir, save_binaries=True, capture_args=True)
     print(f"\nOutput directory: {output_dir}")
     
     # Prepare data

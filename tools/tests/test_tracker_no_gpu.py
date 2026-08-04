@@ -15,7 +15,7 @@ import triton.language as tl
 TOOLS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS_DIR))
 
-import tritontrace
+import TritonTrace
 
 
 TMA_GEMM_CONFIGS = [
@@ -187,7 +187,7 @@ def check_online_default(output_dir):
 
     JITFunction.run = fake_online_run
     try:
-        tracker = tritontrace.Tracker(
+        tracker = TritonTrace.Tracker(
             output_dir,
             save_binaries=False,
             capture_args=False,
@@ -215,12 +215,12 @@ def check_target_validation(output_dir):
     assert_raises(
         ValueError,
         "requires an explicit CUDA target",
-        lambda: tritontrace.Tracker(output_dir, mode="offline"),
+        lambda: TritonTrace.Tracker(output_dir, mode="offline"),
     )
     assert_raises(
         ValueError,
         "Invalid CUDA target",
-        lambda: tritontrace.Tracker(output_dir, mode="offline", target="gfx942"),
+        lambda: TritonTrace.Tracker(output_dir, mode="offline", target="gfx942"),
     )
 
 
@@ -239,7 +239,7 @@ def check_offline_compilation(tracking_dir, cache_dir):
     driver._default = DriverAccessError()
 
     try:
-        tracker = tritontrace.Tracker(
+        tracker = TritonTrace.Tracker(
             tracking_dir,
             mode="offline",
             target="sm120",
