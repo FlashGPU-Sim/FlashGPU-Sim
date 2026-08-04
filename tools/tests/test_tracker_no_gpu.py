@@ -208,6 +208,7 @@ def check_online_default(output_dir):
         JITFunction.run = original_jit_run
         for hook, calls in hook_snapshots.items():
             hook.calls[:] = calls
+        shutil.rmtree(output_dir, ignore_errors=True)
 
 
 def check_target_validation(output_dir):
@@ -223,12 +224,13 @@ def check_target_validation(output_dir):
     )
 
 
-def check_offline_compilation(run_dir):
+def check_offline_compilation(tracking_dir, cache_dir):
     from triton.runtime.autotuner import Autotuner
     from triton.runtime.driver import driver
     from triton.runtime.jit import JITFunction
 
-    os.environ["TRITON_CACHE_DIR"] = str(run_dir / "triton-cache")
+    original_cache_dir = os.environ.get("TRITON_CACHE_DIR")
+    os.environ["TRITON_CACHE_DIR"] = str(cache_dir)
     original_driver_active = driver._active
     original_driver_default = driver._default
     original_jit_run = JITFunction.run
@@ -238,7 +240,7 @@ def check_offline_compilation(run_dir):
 
     try:
         tracker = tritontrace.Tracker(
-            run_dir / "tracking",
+            tracking_dir,
             mode="offline",
             target="sm120",
         )
@@ -353,22 +355,29 @@ def check_offline_compilation(run_dir):
         driver._default = original_driver_default
         JITFunction.run = original_jit_run
         Autotuner.run = original_autotuner_run
+        if original_cache_dir is None:
+            os.environ.pop("TRITON_CACHE_DIR", None)
+        else:
+            os.environ["TRITON_CACHE_DIR"] = original_cache_dir
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
 
-def test_offline_tracker():
-    run_dir = Path(__file__).resolve().parent / "run"
-    if run_dir.exists():
-        shutil.rmtree(run_dir)
-    run_dir.mkdir(parents=True)
-    print(f"Test output: {run_dir}")
-    check_online_default(run_dir / "online-default")
-    check_target_validation(run_dir / "target-validation")
-    check_offline_compilation(run_dir)
-    print("TritonTrace offline test PASSED")
+def test_tracker_no_gpu():
+    run_root = Path(__file__).resolve().parent / "run"
+    tracking_dir = run_root / "no-gpu-tracking"
+    cache_dir = run_root / "no-gpu-triton-cache"
+    shutil.rmtree(tracking_dir, ignore_errors=True)
+    run_root.mkdir(parents=True, exist_ok=True)
+    print(f"Test output: {tracking_dir}")
+    check_online_default(run_root / "no-gpu-online-default")
+    check_target_validation(run_root / "no-gpu-target-validation")
+    check_offline_compilation(tracking_dir, cache_dir)
+    assert not cache_dir.exists()
+    print("TritonTrace no-GPU test PASSED")
 
 
 def main():
-    test_offline_tracker()
+    test_tracker_no_gpu()
     return 0
 
 
