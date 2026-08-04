@@ -6,6 +6,7 @@ standalone binaries for simulation with FlashGPU-Sim.
 
 Features:
     - Tracks all kernel compilations
+    - Compiles kernels for an explicit CUDA target without a physical GPU
     - Captures kernel binaries (CUBIN/PTX)
     - Records launch parameters (grid, block, args)
     - Generates standalone launcher code
@@ -13,10 +14,13 @@ Features:
 
 """
 
+from __future__ import annotations
+
 import json
 import shutil
 import sys
 import os
+import re
 import struct
 import numpy as np
 from pathlib import Path
@@ -87,7 +91,16 @@ class KernelBinaryInfo:
 class Tracker:
     """Tracks Triton kernel compilation and invocation"""
 
-    def __init__(self, output_dir, save_binaries: bool = True, capture_args: bool = True, enabled: bool = True):
+    def __init__(self, output_dir, save_binaries: bool = True, capture_args: bool = True,
+                 enabled: bool = True, mode: str = "online", target: Optional[str] = None):
+        self.mode = mode.lower()
+        if self.mode not in {"online", "offline"}:
+            raise ValueError(f"Unsupported tracking mode '{mode}'; expected 'online' or 'offline'")
+        if self.mode == "online" and target is not None:
+            raise ValueError("target is only valid when mode='offline'")
+
+        self.offline_target = self._parse_offline_target(target) if self.mode == "offline" else None
+        self.target_name = f"sm{self.offline_target.arch}" if self.offline_target is not None else None
         self.output_dir = Path(output_dir)
         self.save_binaries = save_binaries
         self.capture_args = capture_args
@@ -102,16 +115,15 @@ class Tracker:
         self.pending_grid: Optional[tuple] = None  # Store grid from JIT wrapper
         self.pending_args_snapshots: Optional[List[torch.Tensor]] = None  # Store pre-launch tensor snapshots
         self.function_to_hash: Dict[int, str] = {}  # Map function pointers to kernel hashes
+        self._offline_binders: Dict[tuple, Any] = {}
 
         # Create subdirectories
         self.binaries_dir = self.output_dir / "binaries"
-        self.metadata_dir = self.output_dir / "metadata"
         self.launchers_dir = self.output_dir / "launchers"
         self.data_dir = self.output_dir / "data"  # For argument data
 
         if save_binaries:
             self.binaries_dir.mkdir(exist_ok=True)
-            self.metadata_dir.mkdir(exist_ok=True)
             self.launchers_dir.mkdir(exist_ok=True)
             self.data_dir.mkdir(exist_ok=True)
 
@@ -123,6 +135,24 @@ class Tracker:
         print(f"  Save binaries: {self.save_binaries}")
         print(f"  Capture arguments: {self.capture_args}")
         print(f"  Tracking enabled: {self.enabled}")
+        print(f"  Mode: {self.mode}")
+        if self.target_name is not None:
+            print(f"  Target: {self.target_name}")
+
+    @staticmethod
+    def _parse_offline_target(target):
+        """Convert a CUDA architecture name into Triton's explicit target."""
+        from triton.backends.compiler import GPUTarget
+
+        if target is None:
+            raise ValueError("mode='offline' requires an explicit CUDA target such as 'sm90'")
+        if not isinstance(target, str):
+            raise TypeError("offline target must be a string such as 'sm90'")
+
+        match = re.fullmatch(r"sm_?(\d+)(?:a)?", target.lower())
+        if match is None:
+            raise ValueError(f"Invalid CUDA target '{target}'; expected a value such as 'sm90'")
+        return GPUTarget("cuda", int(match.group(1)), 32)
 
     def enable(self):
         """Enable tracking"""
@@ -140,19 +170,25 @@ class Tracker:
 
     def _install_hooks(self):
         """Install Triton runtime hooks"""
-        # Hook for kernel loading (captures binaries)
-        triton.knobs.runtime.kernel_load_end_hook.add(self._on_kernel_load)
+        if self.mode == "online":
+            # Hook for kernel loading (captures binaries)
+            triton.knobs.runtime.kernel_load_end_hook.add(self._on_kernel_load)
 
-        # Hook for kernel launch (captures invocations)
-        triton.knobs.runtime.launch_enter_hook.add(self._on_launch_enter)
+            # Hook for kernel launch (captures invocations)
+            triton.knobs.runtime.launch_enter_hook.add(self._on_launch_enter)
 
-        # Hook for kernel exit (captures outputs after execution)
-        triton.knobs.runtime.launch_exit_hook.add(self._on_launch_exit)
+            # Hook for kernel exit (captures outputs after execution)
+            triton.knobs.runtime.launch_exit_hook.add(self._on_launch_exit)
 
         # We use a custom pre_run_hook approach by monkey-patching
         self._patch_jit_run()
+        if self.mode == "offline":
+            self._patch_autotuner_run()
 
-        print("[TritonTracker] Hooks installed")
+        if self.mode == "online":
+            print("[TritonTracker] Runtime hooks installed")
+        else:
+            print("[TritonTracker] Offline compilation interception installed")
 
     @staticmethod
     def _normalize_grid(grid) -> tuple:
@@ -170,13 +206,18 @@ class Tracker:
             return (grid, 1, 1)
 
     def _patch_jit_run(self):
-        """Patch JITFunction.run to capture arguments and grid"""
+        """Patch JITFunction.run to capture or compile a kernel invocation."""
         # Store original run method
         from triton.runtime.jit import JITFunction
         original_run = JITFunction.run
         tracker_self = self
 
         def patched_run(jit_self, *args, **kwargs):
+            if tracker_self.mode == "offline":
+                if not tracker_self.enabled:
+                    return None
+                return tracker_self._compile_offline(jit_self, args, kwargs)
+
             # Capture arguments and grid before running
             warmup = kwargs.get('warmup', False)
             if tracker_self.enabled and tracker_self.capture_args and not warmup:
@@ -222,17 +263,141 @@ class Tracker:
 
         # Replace the run method
         JITFunction.run = patched_run
-        print("[TritonTracker] Patched JITFunction.run to capture arguments and grid")
+        print("[TritonTracker] Patched JITFunction.run")
+
+    def _patch_autotuner_run(self):
+        """Prevent GPU benchmarking when an offline launch uses an Autotuner."""
+        from triton.runtime.autotuner import Autotuner
+        original_run = Autotuner.run
+        tracker_self = self
+
+        def patched_run(autotuner_self, *args, **kwargs):
+            if tracker_self.mode == "offline":
+                if not tracker_self.enabled:
+                    return None
+                if len(autotuner_self.configs) > 1:
+                    raise RuntimeError(
+                        "Offline tracking cannot benchmark multiple @triton.autotune configurations. "
+                        "Select one fixed triton.Config before invoking the kernel."
+                    )
+                config = autotuner_self.configs[0]
+                autotuner_self.best_config = config
+                return autotuner_self.fn.run(
+                    *args,
+                    **kwargs,
+                    **config.all_kwargs(),
+                )
+            return original_run(autotuner_self, *args, **kwargs)
+
+        Autotuner.run = patched_run
+        print("[TritonTracker] Patched Autotuner.run for offline configuration checks")
+
+    def _compile_offline(self, jit_function, args: tuple, kwargs: Dict[str, Any]):
+        """Compile one intercepted JITFunction invocation without using a GPU driver."""
+        from triton.compiler import ASTSource, make_backend
+        from triton.runtime.jit import create_function_from_signature
+
+        compile_kwargs = dict(kwargs)
+        grid = compile_kwargs.pop("grid", None)
+        warmup = compile_kwargs.pop("warmup", False)
+        if grid is None:
+            raise ValueError("Offline tracking requires a grid for each kernel invocation")
+
+        compile_kwargs["debug"] = (
+            compile_kwargs.get("debug", jit_function.debug) or triton.knobs.runtime.debug
+        )
+
+        backend = make_backend(self.offline_target)
+        binder_key = (id(jit_function), self.target_name)
+        binder_entry = self._offline_binders.get(binder_key)
+        if binder_entry is None:
+            binder = create_function_from_signature(
+                jit_function.signature, jit_function.params, backend
+            )
+            self._offline_binders[binder_key] = (jit_function, binder)
+        else:
+            _, binder = binder_entry
+
+        bound_args, specialization, binder_options = binder(*args, **compile_kwargs)
+        options, signature, constexprs, attrs = jit_function._pack_args(
+            backend, compile_kwargs, bound_args, specialization, binder_options
+        )
+        source = ASTSource(jit_function, signature, constexprs, attrs)
+        compiled = triton.compile(
+            source,
+            target=self.offline_target,
+            options=options.__dict__,
+        )
+
+        kernel_info = self._record_kernel_binary(
+            compiled.name,
+            compiled.metadata_group,
+            compiled.hash,
+            event="compiled offline",
+        )
+        if kernel_info is None:
+            raise RuntimeError(f"Offline compilation produced no binary for '{compiled.name}'")
+
+        if not warmup:
+            if callable(grid):
+                grid = grid(bound_args)
+            grid = self._normalize_grid(grid)
+            runtime_args = tuple(
+                bound_args[name]
+                for name, arg_type in signature.items()
+                if arg_type != "constexpr"
+            )
+            launch_info = self._record_kernel_launch(
+                kernel_info,
+                grid,
+                runtime_args,
+                snapshot_tensors=False,
+            )
+            if self.save_binaries and self.capture_args:
+                unsupported_args = [
+                    arg.index
+                    for arg in launch_info.args_info
+                    if arg.arg_type not in {"tensor", "scalar"}
+                    or (arg.arg_type == "tensor" and not arg.data_file)
+                ]
+                if unsupported_args:
+                    print(
+                        "  [WARNING] Launch-specific harness skipped because "
+                        f"arguments {unsupported_args} cannot be serialized"
+                    )
+                else:
+                    self._generate_launch_specific_harness(
+                        kernel_info=kernel_info,
+                        launch_info=launch_info,
+                        validate_outputs=False,
+                    )
+
+        return compiled
 
     def _on_kernel_load(self, module, function, name, metadata_group, hash_val):
         """Called when a kernel binary is loaded"""
 
         # We always track the kernel compilation.
+        self._record_kernel_binary(
+            name,
+            metadata_group,
+            hash_val,
+            function=function,
+            event="loaded",
+        )
+
+    def _record_kernel_binary(self, name, metadata_group, hash_val,
+                              function=None, event="compiled"):
+        """Record compiler cache artifacts shared by online and offline modes."""
+
+        # We always track the kernel compilation.
 
         if hash_val in self.compiled_kernels:
-            return  # Already tracked
+            if function is not None:
+                self.function_to_hash[function] = hash_val
+            return self.compiled_kernels[hash_val]
 
-        print(f"\n[TritonTracker] Kernel loaded: {name} (hash: {hash_val[:8]}...)")
+        print(f"\n[TritonTracker] Kernel {event}: {name} (hash: {hash_val[:8]}...)")
 
         # Extract binary and metadata files from cache
         binary_path = None
@@ -249,7 +414,7 @@ class Tracker:
 
         if not binary_path and not ptx_path:
             print(f"  [WARNING] No binary found for {name}")
-            return
+            return None
 
         # Read metadata
         metadata = {}
@@ -297,11 +462,14 @@ class Tracker:
         # Store function pointer to hash mapping for launch-time lookup
         # The function parameter is already a CUDA function pointer (CUfunction, an integer)
         # Store this integer directly as the key
-        self.function_to_hash[function] = hash_val
+        if function is not None:
+            self.function_to_hash[function] = hash_val
 
         # Generate standalone launcher
         if self.save_binaries:
             self._generate_launcher(kernel_info)
+
+        return kernel_info
 
     def _serialize_tensor(self, tensor, launch_id: int, arg_idx: int, kernel_name: str) -> Tuple[str, Dict[str, Any]]:
         """Serialize a PyTorch tensor to a binary file with metadata"""
@@ -332,7 +500,8 @@ class Tracker:
 
         return str(tensor_path), metadata
 
-    def _capture_arguments(self, args: tuple, kernel_name: str, launch_id: int) -> List[ArgumentInfo]:
+    def _capture_arguments(self, args: tuple, kernel_name: str, launch_id: int,
+                           snapshot_tensors: bool = True) -> List[ArgumentInfo]:
         """Capture and serialize kernel arguments
 
         NOTE: This captures arguments at the Python call level. Triton may optimize away
@@ -343,7 +512,7 @@ class Tracker:
         arg_infos = []
 
         # Also store snapshots of tensor arguments for later comparison
-        if HAS_TORCH:
+        if HAS_TORCH and snapshot_tensors:
             self.pending_args_snapshots = []
 
         for idx, arg in enumerate(args):
@@ -360,8 +529,9 @@ class Tracker:
 
                 # Store a snapshot for comparison after execution
                 # Clone to capture current state before kernel modifies it
-                snapshot = arg.detach().clone()
-                self.pending_args_snapshots.append(snapshot)
+                if snapshot_tensors:
+                    snapshot = arg.detach().clone()
+                    self.pending_args_snapshots.append(snapshot)
 
             elif isinstance(arg, (int, float, bool)):
                 # Scalar value
@@ -488,8 +658,6 @@ class Tracker:
         if not self.enabled:
             return  # Tracking disabled
 
-        self.launch_counter += 1
-
         # Extract metadata (LazyDict)
         metadata = launch_metadata.get() if hasattr(launch_metadata, 'get') else launch_metadata
 
@@ -522,7 +690,6 @@ class Tracker:
             )
 
         matching_kernel = self.compiled_kernels[kernel_hash]
-        print(f"[TritonTracker] Launch #{self.launch_counter}: {kernel_name} (hash: {kernel_hash[:8]}...)")
 
         # Extract launch parameters
         # Get grid from pending_grid (already evaluated)
@@ -535,10 +702,21 @@ class Tracker:
                 f"Available metadata keys: {list(metadata.keys())}"
             )
 
-        # Normalize grid to 3-tuple (should already be done, but just in case)
-        grid = self._normalize_grid(grid)
+        self._record_kernel_launch(
+            matching_kernel,
+            grid,
+            self.pending_args or (),
+            snapshot_tensors=True,
+        )
 
-        meta_dict = matching_kernel.metadata
+    def _record_kernel_launch(self, kernel_info: KernelBinaryInfo, grid, args: tuple,
+                              snapshot_tensors: bool) -> KernelLaunchInfo:
+        """Record launch configuration shared by online and offline modes."""
+        self.launch_counter += 1
+        grid = self._normalize_grid(grid)
+        kernel_name = kernel_info.kernel_name
+
+        meta_dict = kernel_info.metadata
         num_warps = meta_dict.get('num_warps', 1)
         num_ctas = meta_dict.get('num_ctas', 1)
         shared_memory = meta_dict.get('shared', 0)
@@ -550,9 +728,14 @@ class Tracker:
 
         # Capture arguments if available
         args_info = []
-        if self.capture_args and self.pending_args is not None:
-            print(f"  Capturing {len(self.pending_args)} arguments...")
-            args_info = self._capture_arguments(self.pending_args, kernel_name, self.launch_counter)
+        if self.capture_args:
+            print(f"  Capturing {len(args)} arguments...")
+            args_info = self._capture_arguments(
+                args,
+                kernel_name,
+                self.launch_counter,
+                snapshot_tensors=snapshot_tensors,
+            )
 
         # Extract scratch memory metadata (per-CTA sizes)
         per_cta_global_scratch = meta_dict.get('global_scratch_size', 0)
@@ -570,7 +753,7 @@ class Tracker:
         launch_info = KernelLaunchInfo(
             timestamp=datetime.now().isoformat(),
             kernel_name=kernel_name,
-            kernel_hash=matching_kernel.kernel_hash,
+            kernel_hash=kernel_info.kernel_hash,
             grid=grid,
             block=block,
             shared_memory=shared_memory,
@@ -592,8 +775,10 @@ class Tracker:
         print(f"  Shared memory: {shared_memory} bytes")
         print(f"  Num warps: {num_warps}, Num CTAs: {num_ctas}")
 
-    def _generate_helper_functions(self):
-        """Generate reusable helper functions for data loading and validation"""
+        return launch_info
+
+    def _generate_input_helper_functions(self):
+        """Generate the tensor input-loading helper."""
         return """
 // Helper function to load tensor from binary file
 void* load_tensor_arg(const char* exe_path, const char* rel_path, size_t size, int arg_idx,
@@ -625,6 +810,11 @@ void* load_tensor_arg(const char* exe_path, const char* rel_path, size_t size, i
     return d_ptr;
 }
 
+"""
+
+    def _generate_validation_helper_functions(self):
+        """Generate reference-output validation helpers."""
+        return """
 // Helper to convert FP16 to float for comparison
 float fp16_to_fp32(uint16_t h) {
     uint32_t sign = (h >> 15) & 0x1;
@@ -927,6 +1117,12 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
 }
 """
 
+    def _generate_helper_functions(self, include_validation: bool):
+        """Generate helpers required by a launch-specific harness."""
+        helpers = self._generate_input_helper_functions()
+        if include_validation:
+            helpers += self._generate_validation_helper_functions()
+        return helpers
 
     def _parse_ptx_signature(self, ptx_path: Path, kernel_name: str) -> int:
         """Parse PTX file to count actual kernel parameters
@@ -1118,7 +1314,9 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
 
         return ''.join(code_lines)
 
-    def _generate_launch_specific_harness(self, kernel_info: KernelBinaryInfo, launch_info: KernelLaunchInfo):
+    def _generate_launch_specific_harness(self, kernel_info: KernelBinaryInfo,
+                                          launch_info: KernelLaunchInfo,
+                                          validate_outputs: bool = True):
         """Generate a harness for a specific launch with actual argument data"""
         kernel_name = kernel_info.kernel_name
         launch_id = launch_info.launch_id
@@ -1198,7 +1396,7 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
                 cleanup_code.append(f"    cudaFree(d_arg{idx});")
 
                 # Add validation call if we have expected output
-                if arg_info.output_file:
+                if validate_outputs and arg_info.output_file:
                     output_file_path = Path(arg_info.output_file)
                     if not output_file_path.is_absolute():
                         output_file_path = (Path.cwd() / output_file_path).resolve()
@@ -1229,7 +1427,15 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
         # Generate harness with helper functions
         if ptx_string:
             fatbin_filename = f"{kernel_name}_launch{launch_id}_kernel.fatbin"
-            helper_functions = self._generate_helper_functions()
+            helper_functions = self._generate_helper_functions(validate_outputs)
+            validation_include = "#include <math.h>" if validate_outputs else ""
+            validation_code = ""
+            if validate_outputs:
+                validation_code = f"""
+    // Validate outputs
+    printf("\\nValidating outputs...\\n");
+{chr(10).join(validation_calls)}
+"""
 
             # Check if kernel uses dynamic shared memory
             uses_dynamic_smem = self._check_dynamic_shared_memory(ptx_path)
@@ -1270,7 +1476,7 @@ int validate_tensor_output(void* d_actual, const char* exe_path, const char* rel
 #include <string.h>
 #include <stdint.h>
 #include <unistd.h>
-#include <math.h>
+{validation_include}
 
 {helper_functions}
 
@@ -1360,10 +1566,7 @@ int main(int argc, char** argv) {{{{
 
     cuCtxSynchronize();
     printf("Kernel execution completed successfully\\n");
-
-    // Validate outputs
-    printf("\\nValidating outputs...\\n");
-{chr(10).join(validation_calls)}
+{validation_code}
 
     // Cleanup
     printf("\\nCleaning up...\\n");
@@ -1607,6 +1810,8 @@ int main(int argc, char** argv) {{
             'tracking_session': {
                 'timestamp': datetime.now().isoformat(),
                 'output_dir': str(self.output_dir),
+                'mode': self.mode,
+                'target': self.target_name,
                 'total_kernels_compiled': len(self.compiled_kernels),
                 'total_launches': len(self.kernel_launches),
                 'argument_capture_enabled': self.capture_args
@@ -1633,6 +1838,9 @@ int main(int argc, char** argv) {{
             f.write("=" * 80 + "\n\n")
             f.write(f"Timestamp: {datetime.now().isoformat()}\n")
             f.write(f"Output directory: {self.output_dir}\n")
+            f.write(f"Mode: {self.mode}\n")
+            if self.target_name is not None:
+                f.write(f"Target: {self.target_name}\n")
             f.write(f"Total kernels compiled: {len(self.compiled_kernels)}\n")
             f.write(f"Total kernel launches: {len(self.kernel_launches)}\n\n")
 

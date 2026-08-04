@@ -59,9 +59,38 @@ Keep tracking disabled during compilation, warmup, and autotuning. Enable it
 only for the launch that will be replayed; otherwise the tracker may capture
 multiple candidate kernels or autotuning launches.
 
+## Compile a Kernel without a GPU
+
+Offline mode intercepts the same `kernel[grid](*args)` call and stops after
+Triton produces the compiled kernel. The target architecture must be supplied
+because Triton cannot discover it from a local device:
+
+```python
+tracker = tritontrace.Tracker(
+    output_dir=Path("run/tracking"),
+    mode="offline",
+    target="sm90",
+)
+
+tracker.enable()
+run_kernel_once_with_cpu_tensors()
+tracker.save_summary()
+```
+
+The tracker derives the signature, constexpr values, compiler options, and
+numeric grid from the Python invocation. It records PTX, CUBIN, compiler
+metadata, launch dimensions, scratch requirements, and serializable CPU tensor
+arguments without initializing the CUDA driver. Calls made while tracking is
+disabled are skipped.
+
+Offline mode currently requires a plain `@triton.jit` kernel or an Autotuner
+with one fixed `triton.Config`. It does not execute the kernel, run autotuning,
+invoke runtime pre-hooks, or produce reference outputs. Its launch-specific
+harness can replay the recorded inputs but does not validate the result.
+
 ## How Capture Works
 
-TritonTrace registers three hooks with Triton's runtime:
+Online mode registers three hooks with Triton's runtime:
 
 ```python
 triton.knobs.runtime.kernel_load_end_hook.add(self._on_kernel_load)
@@ -74,6 +103,11 @@ before launch, it saves the launch parameters and argument values and snapshots
 tensor arguments. After launch, it compares each tensor with its snapshot.
 Modified tensors are recorded as reference outputs and included in generated
 validation code.
+
+Offline mode replaces the launch path before Triton queries the active CUDA
+device. It binds the Python arguments with the selected CUDA compiler backend,
+calls `triton.compile` with the explicit target, records the returned
+`CompiledKernel`, and leaves its CUDA module and function handles uninitialized.
 
 ## Generated Artifacts
 
@@ -157,3 +191,6 @@ Triton 3.5.0, and NumPy 2.4.0.
 - Generated harnesses use `/proc/self/exe` for path resolution.
 - `constexpr` arguments are not fully captured.
 - Grid evaluation may fail for complex lambda expressions.
+- Offline mode accepts CPU tensors or Triton mock tensors; CUDA tensor creation
+  still requires a physical GPU.
+- Offline launch harnesses do not contain reference-output validation.

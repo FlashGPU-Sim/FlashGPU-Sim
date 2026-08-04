@@ -78,6 +78,7 @@ scripts/pre-commit
 
 # temporary files
 temp/
+run/
 
 # Docker
 .env
