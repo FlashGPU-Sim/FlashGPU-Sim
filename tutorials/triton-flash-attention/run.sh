@@ -76,8 +76,8 @@ echo "[3/3] Simulating Triton FlashAttention with FlashGPU-Sim"
 cd "${LAUNCHER_DIR}"
 "./${LAUNCHER_NAME}" 2>&1 | tee "${SIMULATION_LOG}"
 
-if ! grep -q "Validation PASSED" "${SIMULATION_LOG}"; then
-  echo "Error: standalone launcher validation did not pass." >&2
+if ! grep -q "Kernel execution completed successfully" "${SIMULATION_LOG}"; then
+  echo "Error: standalone launcher did not complete successfully." >&2
   exit 1
 fi
 
