@@ -43,22 +43,20 @@ class OnlineTracker:
                 grid = kwargs.get("grid")
                 if grid is not None:
                     if callable(grid):
-                        metadata = {
-                            key: value
-                            for key, value in kwargs.items()
-                            if key.isupper() or key == "grid"
-                        }
-                        metadata.pop("grid", None)
-                        try:
-                            grid = grid(metadata)
-                        except Exception as error:
-                            raise RuntimeError(
-                                f"Failed to evaluate grid function: {error}\n"
-                                f"Grid function: {grid}\n"
-                                f"Available meta keys: {list(metadata.keys())}\n"
-                                "This may indicate missing constexpr values in kwargs."
-                            ) from error
-                    online_tracker.pending_grid = TrackingSession.normalize_grid(grid)
+                        original_grid = grid
+
+                        def tracked_grid(bound_args):
+                            resolved_grid = original_grid(bound_args)
+                            online_tracker.pending_grid = TrackingSession.normalize_grid(
+                                resolved_grid
+                            )
+                            return resolved_grid
+
+                        kwargs["grid"] = tracked_grid
+                    else:
+                        online_tracker.pending_grid = TrackingSession.normalize_grid(
+                            grid
+                        )
 
             result = original_run(jit_function, *args, **kwargs)
             if warmup or not online_tracker.tracker.enabled:

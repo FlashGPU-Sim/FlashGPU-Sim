@@ -183,6 +183,8 @@ def check_online_default(output_dir):
     sentinel = object()
 
     def fake_online_run(jit_function, *args, **kwargs):
+        grid = kwargs["grid"]
+        assert grid({"M": args[3]}) == (args[3],)
         return sentinel
 
     JITFunction.run = fake_online_run
@@ -192,7 +194,8 @@ def check_online_default(output_dir):
             save_binaries=False,
             capture_args=False,
         )
-        result = kernel_tma_gemm[(1,)](
+        grid = lambda bound_args: (bound_args["M"],)
+        result = kernel_tma_gemm[grid](
             None,
             None,
             None,
@@ -203,6 +206,7 @@ def check_online_default(output_dir):
         )
         assert tracker.mode == "online"
         assert tracker.target_name is None
+        assert tracker.backend.pending_grid == (1, 1, 1)
         assert result is sentinel
     finally:
         JITFunction.run = original_jit_run
