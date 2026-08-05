@@ -26,7 +26,7 @@ TRACKING_ROOT = Path(
 ).expanduser().resolve()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import tritontrace
+import TritonTrace
 from test_llama3_gqa_attn import (
     llama3_gqa_attention,
     llama3_gqa_attention_blocked_out,
@@ -1305,7 +1305,7 @@ def main():
         if output_dir.exists():
             shutil.rmtree(output_dir)
 
-        tracker = tritontrace.Tracker(output_dir, save_binaries=True, capture_args=True)
+        tracker = TritonTrace.Tracker(output_dir, save_binaries=True, capture_args=True)
         tracker.disable()
         print(f"\nOutput directory: {output_dir}")
 

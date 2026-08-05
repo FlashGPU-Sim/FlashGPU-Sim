@@ -33,7 +33,7 @@ from transformers import GPT2Tokenizer, GPT2Model
 
 TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
 
-import tritontrace
+import TritonTrace
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -494,7 +494,7 @@ def main():
     output_dir = (TRITON_TRACE_DIR / "triton_kernel_tracking/gpt2_small").resolve()
     if output_dir.exists():
         shutil.rmtree(output_dir)
-    tracker = tritontrace.Tracker(output_dir, save_binaries=True, capture_args=True)
+    tracker = TritonTrace.Tracker(output_dir, save_binaries=True, capture_args=True)
     print(f"Output directory: {output_dir}")
 
     with torch.no_grad():

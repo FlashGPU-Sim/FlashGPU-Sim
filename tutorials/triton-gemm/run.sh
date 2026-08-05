@@ -7,29 +7,37 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
 RUN_DIR="${SCRIPT_DIR}/run"
 TRACKING_DIR="${RUN_DIR}/tracking"
 LAUNCHER_DIR="${TRACKING_DIR}/launchers"
+BUNDLED_TRACE_DIR="${SCRIPT_DIR}/trace"
 CONFIG_DIR="${REPO_ROOT}/configs/SM120_RTX5090"
 SIMULATION_LOG="${RUN_DIR}/simulation.log"
+LAUNCHER_NAME="kernel_tma_gemm_launch1"
+LAUNCHER_MAKEFILE="${LAUNCHER_NAME}_Makefile"
+LAUNCHER="${LAUNCHER_DIR}/${LAUNCHER_NAME}"
 
 if [[ ! -d "${CONFIG_DIR}" ]]; then
   echo "Error: GPU configuration not found: ${CONFIG_DIR}" >&2
   exit 1
 fi
 
-LAUNCHER_NAME="kernel_tma_gemm_launch1"
-LAUNCHER="${LAUNCHER_DIR}/${LAUNCHER_NAME}"
-
-if [[ ! -x "${LAUNCHER}" ]]; then
-  echo "Error: captured launcher not found: ${LAUNCHER}" >&2
-  echo "Run ${SCRIPT_DIR}/capture.sh first." >&2
-  exit 1
+echo "[1/4] Preparing the Triton GEMM replay"
+if [[ ! -f "${LAUNCHER_DIR}/${LAUNCHER_MAKEFILE}" ]]; then
+  if [[ ! -f "${BUNDLED_TRACE_DIR}/launchers/${LAUNCHER_MAKEFILE}" ]]; then
+    echo "Error: bundled GEMM replay is incomplete: ${BUNDLED_TRACE_DIR}" >&2
+    exit 1
+  fi
+  mkdir -p "${TRACKING_DIR}/data" "${LAUNCHER_DIR}"
+  cp -a "${BUNDLED_TRACE_DIR}/data/." "${TRACKING_DIR}/data/"
+  cp -a "${BUNDLED_TRACE_DIR}/launchers/." "${LAUNCHER_DIR}/"
+  echo "  Staged the checked-in online capture."
+else
+  echo "  Using the existing capture under ${TRACKING_DIR}."
 fi
 
 mkdir -p "${RUN_DIR}"
 
-echo "[1/3] Preparing the SM120_RTX5090 configuration"
+echo "[2/4] Configuring FlashGPU-Sim for SM120_RTX5090"
 cp -a "${CONFIG_DIR}/." "${LAUNCHER_DIR}/"
 
-echo "[2/3] Configuring FlashGPU-Sim"
 if [[ "${GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN:-}" != "1" ]]; then
   set +u
   source "${REPO_ROOT}/setup_environment"
@@ -49,6 +57,14 @@ if [[ ! -f "${SIM_LIB_DIR}/libcudart.so" ]]; then
   exit 1
 fi
 
+echo "[3/4] Building the standalone launcher"
+make --no-print-directory -C "${LAUNCHER_DIR}" -f "${LAUNCHER_MAKEFILE}"
+
+if [[ ! -x "${LAUNCHER}" ]]; then
+  echo "Error: launcher build did not produce ${LAUNCHER}." >&2
+  exit 1
+fi
+
 LDD_OUTPUT="$(ldd "${LAUNCHER}")"
 CUDART_PATH="$(awk '$1 ~ /^libcudart/ {print $3; exit}' <<<"${LDD_OUTPUT}")"
 CUDA_DRIVER_PATH="$(awk '$1 ~ /^libcuda\.so/ {print $3; exit}' <<<"${LDD_OUTPUT}")"
@@ -61,7 +77,7 @@ if [[ "${CUDART_PATH}" != "${SIM_LIB_DIR}/"* ]] ||
   exit 1
 fi
 
-echo "[3/3] Replaying Triton GEMM with FlashGPU-Sim"
+echo "[4/4] Replaying Triton GEMM with FlashGPU-Sim"
 (
   cd "${LAUNCHER_DIR}"
   "./${LAUNCHER_NAME}" 2>&1 | tee "${SIMULATION_LOG}"

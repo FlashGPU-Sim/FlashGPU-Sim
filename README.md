@@ -55,8 +55,8 @@ Triton Capture:
 
 - Tested with Python 3.12.3, PyTorch 2.9.0, Triton 3.5.0, and NumPy 2.4.0
 
-A physical GPU is not required to build or run the simulator, but is required
-to capture Triton workloads or collect Nsight Compute measurements.
+A physical GPU is not required to build or run FlashGPU-Sim;
+it is only needed for Triton autotuning, reference-output capture, and Nsight Compute measurements.
 
 > An experimental [Docker development environment](docker/README.md) is also
 > available.
@@ -84,7 +84,8 @@ cd tutorials/vectorAdd
 ```
 
 To capture and simulate the bundled Triton GEMM, open a **CLEAN** shell with
-access to a physical GPU and the [Triton capture dependencies](#dependencies):
+access to an RTX 5090 and the [Triton capture dependencies](#dependencies).
+If no RTX 5090 is available, run only `cd tutorials/triton-gemm` and `./run.sh`; it will use the pre-captured files.
 
 ```bash
 cd tutorials/triton-gemm
@@ -131,7 +132,7 @@ workloads.
 
 ### Run with CUDA
 
-This workflow manually steps through the `vectorAdd` example.
+This workflow manually steps through the [CUDA vector addition](tutorials/vectorAdd/) example.
 
 **Prerequisite**: Ensure FlashGPU-Sim is built.
 
@@ -199,8 +200,7 @@ simulated cycle count; the complete output is saved to `simulation.log`.
 This workflow manually steps through capture and simulation of the
 `triton-gemm` example.
 
-**Prerequisites**: FlashGPU-Sim is built; a physical GPU and the Triton
-capture dependencies are available.
+**Prerequisites**: FlashGPU-Sim is built and the [Triton capture dependencies](#dependencies) are available. The main workflow requires an RTX 5090. Without one, use [Offline Mode](#offline-mode) at the end of this section.
 
 From the repository root, enter the example directory:
 
@@ -217,9 +217,9 @@ python -m pip install -e ../../tools
 ```
 
 Capturing custom Triton workloads requires minor instrumentation: import
-`tritontrace`, create a tracker, and enable it around the target kernel launch.
-The `gemm.py` example is already instrumented. See the
-[TritonTrace documentation](tools/README.md) for full integration details.
+`TritonTrace`, create a tracker, and enable it around the target kernel launch.
+The `gemm.py` example is already instrumented. To capture your own Triton program,
+follow the [Online Capture guide](tools/README.md#online-capture).
 
 > [!IMPORTANT]
 > **Do NOT source `setup_environment` before capture.** Open a new shell and
@@ -259,8 +259,8 @@ cd run/tracking/launchers
 ./kernel_tma_gemm_launch1 2>&1 | tee ../../simulation.log
 ```
 
-A successful run compares every element of the simulated GEMM output with the
-output recorded during capture and finishes with:
+For the GEMM path, a successful run compares every element of the simulated
+output with the output recorded during capture and finishes with:
 
 ```text
 Kernel execution completed successfully
@@ -268,11 +268,25 @@ Validation PASSED for arg[2]: all 163840 elements match
 Done!
 ```
 
+<a id="offline-mode"></a>
+
 > [!NOTE]
-> A Triton [FlashAttention example](tutorials/triton-flash-attention/) is also
-> provided with automated capture and simulation scripts. In our testing, it
-> took approximately 50 minutes to simulate with
-> `OMP_NUM_THREADS=4` on an Intel Core i9-14900K.
+> **Offline Mode:** GEMM uses Triton autotuning, which needs a physical GPU to
+> benchmark its candidate configurations. If no GPU is available, replace Step 1 with
+> the fixed-configuration [Triton FlashAttention](tutorials/triton-flash-attention/) example:
+>
+> ```bash
+> cd tutorials/triton-flash-attention
+> python -m pip install -e ../../tools
+> python flash_attention.py
+> ```
+>
+> For Steps 2 and 3, use the corresponding FlashAttention Makefile and launcher.
+> Since Offline Mode does not execute the kernel on a GPU, no reference output is generated.
+> A successful replay only reports `Kernel execution completed successfully`.
+>
+> See [Offline Capture guide](tools/README.md#offline-capture) for details
+> on capturing a Triton kernel without GPU execution.
 
 ### Update Configuration
 

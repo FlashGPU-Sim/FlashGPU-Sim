@@ -9,4 +9,11 @@ description = "Triton kernel capture and standalone launcher generation for Flas
 requires-python = ">=3.10"
 
 [tool.setuptools]
-py-modules = ["tritontrace"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["TritonTrace*"]
+
+[tool.setuptools.package-data]
+TritonTrace = ["templates/*.tpl", "templates/*.inc"]

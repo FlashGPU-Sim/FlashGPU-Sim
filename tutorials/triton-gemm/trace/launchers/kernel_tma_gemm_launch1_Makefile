@@ -1,0 +1,45 @@
+
+# Makefile for kernel_tma_gemm launch 1
+# Packages Triton's generated binary into a fatbinary loaded at runtime.
+# PTX is kept alongside it for inspection and trace tooling.
+
+NVCC = nvcc
+FATBINARY = fatbinary
+NVCC_BIN := $(shell command -v $(NVCC))
+CUDA_LIB_DIR := $(abspath $(dir $(NVCC_BIN))/../lib)
+CUDART_FLAG := $(shell if [ -f "$(CUDA_LIB_DIR)/libcudart.so.13" ]; then echo "-l:libcudart.so.13"; else echo "-lcudart"; fi)
+CUDA_FLAGS = -L$(CUDA_LIB_DIR) -Xlinker -rpath -Xlinker $(CUDA_LIB_DIR) $(CUDART_FLAG) -lcuda
+TARGET = kernel_tma_gemm_launch1
+PTX_FILE = kernel_tma_gemm_launch1_kernel.ptx
+CUBIN_FILE = kernel_tma_gemm_launch1_kernel.cubin
+FATBIN_FILE = kernel_tma_gemm_launch1_kernel.fatbin
+FATBIN_DEPS = $(CUBIN_FILE) $(PTX_FILE)
+FATBINARY_IMAGES_LEGACY = --image=profile=$(ARCH),file=$(CUBIN_FILE) --image=profile=$(PTX_PROFILE),file=$(PTX_FILE)
+FATBINARY_IMAGES_IMAGE3 = --image3=kind=elf,sm=$(ARCH_NUM),file=$(CUBIN_FILE) --image3=kind=ptx,sm=$(ARCH_NUM),file=$(PTX_FILE)
+
+# Auto-detect architecture from PTX .target directive. CUBIN comes from the
+# same Triton compile, so this profile also matches the CUBIN payload.
+ARCH := $(shell grep '^\.target' $(PTX_FILE) | head -1 | awk '{print $$2}')
+ARCH_NUM := $(patsubst sm_%,%,$(ARCH))
+PTX_PROFILE := $(patsubst sm_%,compute_%,$(ARCH))
+
+all: $(TARGET) $(FATBIN_FILE)
+
+# Package Triton's CUBIN when available. Falling back to PTX-only avoids ptxas,
+# but may require a driver that understands the PTX version emitted by Triton.
+$(FATBIN_FILE): $(FATBIN_DEPS)
+	@echo "Detected architecture: $(ARCH)"
+	@if $(FATBINARY) --help 2>&1 | grep -q -- '--image3'; then \
+		$(FATBINARY) --create=$(FATBIN_FILE) $(FATBINARY_IMAGES_IMAGE3); \
+	else \
+		$(FATBINARY) --create=$(FATBIN_FILE) $(FATBINARY_IMAGES_LEGACY); \
+	fi
+
+# Compile harness (fatbin is loaded from file at runtime)
+$(TARGET): kernel_tma_gemm_launch1_harness.cu
+	$(NVCC) -arch=$(ARCH) -o $(TARGET) kernel_tma_gemm_launch1_harness.cu $(CUDA_FLAGS)
+
+clean:
+	rm -f $(TARGET) $(FATBIN_FILE)
+
+.PHONY: all clean

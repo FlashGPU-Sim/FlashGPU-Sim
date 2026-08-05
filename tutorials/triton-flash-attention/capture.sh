@@ -14,6 +14,7 @@ HEADS="${FLASH_ATTN_HEADS:-32}"
 SEQ_LEN="${FLASH_ATTN_SEQ_LEN:-512}"
 HEAD_DIM="${FLASH_ATTN_HEAD_DIM:-64}"
 CAUSAL="${FLASH_ATTN_CAUSAL:-1}"
+TRITON_TARGET="${TRITON_TARGET:-sm120}"
 
 if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
   PYTHON="${VIRTUAL_ENV}/bin/python"
@@ -23,18 +24,11 @@ else
   PYTHON="$(command -v python3 || true)"
 fi
 
-echo "[1/3] Checking the native GPU environment"
+echo "[1/3] Checking the offline Triton environment"
 
 if [[ -z "${CUDA_INSTALL_PATH:-}" ]] ||
   [[ ! -x "${CUDA_INSTALL_PATH}/bin/nvcc" ]]; then
   echo "Error: CUDA_INSTALL_PATH must point to a CUDA Toolkit containing nvcc." >&2
-  exit 1
-fi
-
-if [[ -n "${GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN:-}" ]] ||
-  [[ "${LD_LIBRARY_PATH:-}" == *"${REPO_ROOT}/lib/"* ]]; then
-  echo "Error: Triton capture requires a clean shell using the real GPU." >&2
-  echo "Open a new shell, set CUDA_INSTALL_PATH, and run this script again." >&2
   exit 1
 fi
 
@@ -49,14 +43,9 @@ if ! "${PYTHON}" -c "import numpy, torch, triton" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! "${PYTHON}" -c "import tritontrace" >/dev/null 2>&1; then
+if ! "${PYTHON}" -c "import TritonTrace" >/dev/null 2>&1; then
   echo "Error: TritonTrace is not installed in the selected Python environment." >&2
   echo "Install it with: ${PYTHON} -m pip install -e ${REPO_ROOT}/tools" >&2
-  exit 1
-fi
-
-if ! "${PYTHON}" -c "import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)"; then
-  echo "Error: PyTorch cannot access a CUDA-capable GPU." >&2
   exit 1
 fi
 
@@ -76,12 +65,13 @@ esac
 export PATH="${CUDA_INSTALL_PATH}/bin:${PATH}"
 mkdir -p "${RUN_DIR}"
 
-echo "[2/3] Capturing Triton FlashAttention"
+echo "[2/3] Compiling Triton FlashAttention for ${TRITON_TARGET}"
 "${PYTHON}" "${SCRIPT_DIR}/flash_attention.py" \
   --batch "${BATCH}" \
   --heads "${HEADS}" \
   --seq-len "${SEQ_LEN}" \
   --head-dim "${HEAD_DIM}" \
+  --target "${TRITON_TARGET}" \
   "${CAUSAL_ARGS[@]}" \
   2>&1 | tee "${CAPTURE_LOG}"
 
