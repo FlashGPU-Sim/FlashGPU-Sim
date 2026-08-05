@@ -1,11 +1,12 @@
 #!/bin/bash
-# Test script for multi-configuration support in run_tests.sh
+# Test script for multi-configuration support in run_tests.py
 # Validates issue #22 implementation
 
 set -e  # Exit on any error
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEST_SCRIPT="$SCRIPT_DIR/run_tests.sh"
+TEST_SCRIPT="$SCRIPT_DIR/run_tests.py"
+RUNNER_BUILD_MODULE="$SCRIPT_DIR/runner/build.py"
 
 # Color output for better readability
 RED='\033[0;31m'
@@ -59,13 +60,13 @@ run_test "-c short flag is recognized" \
 # Test 5: Run directory exists for default config
 run_test "Run directory structure for SM120_RTX5090" \
     "[ -d '$SCRIPT_DIR/run/SM120_RTX5090' ] || \
-     ($TEST_SCRIPT build test --target sm120 --group unit &>/dev/null && \
+     ($TEST_SCRIPT build --arch sm120 --test-group unit &>/dev/null && \
       [ -d '$SCRIPT_DIR/run/SM120_RTX5090' ])"
 
 # Test 6: Test binary is shared (only one copy in build/bin/)
 run_test "Test binary is shared (single location)" \
-    "[ -f '$SCRIPT_DIR/build/bin/sm120/run_unit_tests' ] && \
-     [ ! -f '$SCRIPT_DIR/run/SM120_RTX5090/run_unit_tests' ]"
+    "[ -f '$SCRIPT_DIR/build/bin/sm120/unit_tests' ] && \
+     [ ! -f '$SCRIPT_DIR/run/SM120_RTX5090/unit_tests' ]"
 
 # Test 7: Config files are copied to run directory
 run_test "Config files copied to run directory" \
@@ -77,14 +78,14 @@ run_test "Invalid config name is rejected" \
     "! $TEST_SCRIPT refresh --config INVALID_CONFIG_NAME &>/dev/null"
 
 # Doc-guard tests for build detection and native GPU mode (issue #36)
-run_test "Build detection uses find command for libcudart.so" \
-    "grep -q 'find.*lib.*libcudart.so' '$TEST_SCRIPT'"
+run_test "Build detection searches for libcudart.so" \
+    "grep -q 'rglob(\"libcudart.so\")' '$RUNNER_BUILD_MODULE'"
 
 run_test "Native mode checks GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN" \
-    "grep -q 'GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN' '$TEST_SCRIPT'"
+    "grep -q 'GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN' '$RUNNER_BUILD_MODULE'"
 
 run_test "Native mode checks LD_LIBRARY_PATH for simulator paths" \
-    "grep -q 'LD_LIBRARY_PATH' '$TEST_SCRIPT'"
+    "grep -q 'LD_LIBRARY_PATH' '$RUNNER_BUILD_MODULE'"
 
 echo "========================================="
 echo "Test Results: $passed_tests/$total_tests passed"

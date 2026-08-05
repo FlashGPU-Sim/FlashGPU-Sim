@@ -318,7 +318,8 @@ def run_hardware_phase(config_name: str, run_dir: Path) -> None:
 
     for target in RUN_TARGETS:
         run_command(
-            f"./run_tests.sh -c {config_name} run microbench \"{target['pattern']}\"",
+            f"./run_tests.py -c {config_name} run --arch sm120 "
+            f"--test-group microbench --profile mma \"{target['pattern']}\"",
             env=native_env(),
         )
 
@@ -332,8 +333,8 @@ def run_sim_phase(config_name: str, run_dir: Path) -> None:
     setup_cmd = f"source {shell_quote(SETUP_ENVIRONMENT)}"
     for target in RUN_TARGETS:
         run_command(
-            f"{setup_cmd} && ./run_tests.sh -c {config_name} run microbench "
-            f"\"{target['pattern']}\""
+            f"{setup_cmd} && ./run_tests.py -c {config_name} run --arch sm120 "
+            f"--test-group microbench --profile mma \"{target['pattern']}\""
         )
 
     capture_outputs(run_dir, "SIM")
@@ -364,7 +365,7 @@ def main() -> None:
     config_name = args.config
     run_dir = run_dir_for_config(config_name)
 
-    run_command(f"./run_tests.sh -c {config_name} refresh", env=native_env())
+    run_command(f"./run_tests.py -c {config_name} refresh", env=native_env())
     run_hardware_phase(config_name, run_dir)
     run_sim_phase(config_name, run_dir)
 
