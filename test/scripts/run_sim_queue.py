@@ -57,7 +57,7 @@ STATUS_FIELDS = [
 
 
 EXAMPLE_JOBS_TSV = """job_id\tstage\tcase\tbinary\tgtest_filter\tconfig\targs\tskip
-example_smoke\tsmoke\tExampleCase\ttest/build/bin/hopper/run_example_tests\tExampleSuite.ExampleCase\tSM90_H100\t\t0
+cp_async_src_size\tsmoke\tCpAsyncSrcSizeTest\ttest/build/bin/sm90/integration_tests\tCpAsyncSrcSizeTest.*\tSM90_H100\t\t0
 """
 
 

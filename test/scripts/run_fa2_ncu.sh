@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREBUILT_ROOT=""
 OUT_DIR=""
 DEVICE=""
+EXPECTED_NVCC_TARGET=""
 CUDA_ROOT="${CUDA_INSTALL_PATH:-${CUDA_HOME:-}}"
 NCU="${NCU:-ncu}"
 NCU_SET="${NCU_SET:-full}"
@@ -149,8 +150,9 @@ done
 [[ "$FORCE" =~ ^[01]$ ]] || { echo "FORCE must be 0 or 1" >&2; exit 2; }
 
 case "$DEVICE" in
-  h100) ;;
+  h100) EXPECTED_NVCC_TARGET=sm_90a ;;
   rtx5090)
+    EXPECTED_NVCC_TARGET=sm_120a
     if [[ -z "$NCU_CLOCK_CONTROL" ]]; then
       NCU_CLOCK_CONTROL=none
     fi
@@ -179,13 +181,21 @@ PACKAGE_METADATA="$PREBUILT_ROOT/provenance/package.txt"
   exit 2
 }
 PACKAGE_DEVICE="$(awk -F= '$1 == "device" { print $2; exit }' "$PACKAGE_METADATA")"
-PACKAGE_ARCH="$(awk -F= '$1 == "cuda_arch" { print $2; exit }' "$PACKAGE_METADATA")"
-[[ -n "$PACKAGE_DEVICE" && -n "$PACKAGE_ARCH" ]] || {
-  echo "Package metadata does not declare device and cuda_arch" >&2
+PACKAGE_NVCC_TARGET="$(awk -F= '$1 == "nvcc_target" { print $2; exit }' "$PACKAGE_METADATA")"
+# Keep packages produced before the manifest refactor readable.
+if [[ -z "$PACKAGE_NVCC_TARGET" ]]; then
+  PACKAGE_NVCC_TARGET="$(awk -F= '$1 == "cuda_arch" { print $2; exit }' "$PACKAGE_METADATA")"
+fi
+[[ -n "$PACKAGE_DEVICE" && -n "$PACKAGE_NVCC_TARGET" ]] || {
+  echo "Package metadata does not declare device and nvcc_target" >&2
   exit 2
 }
 [[ "$PACKAGE_DEVICE" == "$DEVICE" ]] || {
-  echo "Package targets $PACKAGE_DEVICE ($PACKAGE_ARCH), not requested device $DEVICE" >&2
+  echo "Package targets $PACKAGE_DEVICE ($PACKAGE_NVCC_TARGET), not requested device $DEVICE" >&2
+  exit 2
+}
+[[ "$PACKAGE_NVCC_TARGET" == "$EXPECTED_NVCC_TARGET" ]] || {
+  echo "Package NVCC target is $PACKAGE_NVCC_TARGET, expected $EXPECTED_NVCC_TARGET for $DEVICE" >&2
   exit 2
 }
 
@@ -346,7 +356,7 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     echo "prebuilt_root=$PREBUILT_ROOT"
     echo "manifest=$MANIFEST"
     echo "package_device=$PACKAGE_DEVICE"
-    echo "package_cuda_arch=$PACKAGE_ARCH"
+    echo "package_nvcc_target=$PACKAGE_NVCC_TARGET"
     echo "groups=${REQUESTED_GROUPS[*]:-<all-packaged>}"
     echo "case_filters=${CASE_FILTERS[*]:-<none>}"
     echo "run_native=$RUN_NATIVE"

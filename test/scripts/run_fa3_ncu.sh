@@ -30,13 +30,13 @@ usage() {
   cat <<'EOF'
 Usage: run_fa3_ncu.sh --group GROUP:MODE [OPTIONS]
 
-Build and profile one or more registry-owned FA3 experiment groups on H100.
+Build and profile one or more manifest-owned FA3 experiment profiles on H100.
 
 Options:
   --group GROUP:MODE   breakdown, scaling, or concurrency selector; repeatable.
                        MODE must be explicit. Example: breakdown:qk_pv_only_no_tma
   --mode MODE          Convenience mode for one mode-less --group.
-  --case NAME          Override registry cases; repeatable and applied to all groups.
+  --case NAME          Override manifest cases; repeatable and applied to all groups.
   --cuda-root PATH     CUDA Toolkit root. Defaults to CUDA_INSTALL_PATH or CUDA_HOME.
   --out-dir PATH       Output directory. Defaults to test/run/H100_FA3_NCU_<time>.
   --jobs N             Build parallelism. Defaults to JOBS or 4.
@@ -51,7 +51,7 @@ Options:
   --no-resume          Ignore completion markers.
   --force              Rerun cases and replace existing completion markers.
   --dump-sass          Save cuobjdump --dump-sass output for each binary.
-  --print-cases        Print resolved registry cases as CSV and exit.
+  --print-cases        Print resolved manifest cases as CSV and exit.
   --dry-run            Print build/run commands without executing them.
   -h, --help           Show this help.
 
@@ -207,12 +207,12 @@ for selector in "${REQUESTED_GROUPS[@]}"; do
   [[ "$duplicate" -eq 1 ]] || SELECTORS+=("$selector")
 done
 
-registry_metadata() {
+manifest_metadata() {
   local selector="$1"
   local group="${selector%%:*}"
   local mode="${selector#*:}"
-  make -s --no-print-directory -C "$TEST_DIR" print-target-group-metadata \
-    SUITE=analysis SUITE_TARGET=fa3 TARGET_GROUP="$group" TARGET_MODE="$mode"
+  make -s --no-print-directory -C "$TEST_DIR" print-test-group-metadata \
+    ARCH=sm90 TEST_GROUP=fa3 PROFILE="$group" MODE="$mode"
 }
 
 binary_group_binaries() {
@@ -222,19 +222,19 @@ binary_group_binaries() {
 
 declare -a ROW_GROUPS=()
 declare -a ROW_MODES=()
-declare -a ROW_BUILD_GROUPS=()
+declare -a ROW_BUILD_TARGETS=()
 declare -a ROW_BINARIES=()
 declare -a ROW_FILTERS=()
 declare -a ROW_CASES=()
 declare -A SEEN_ROWS=()
 
 for selector in "${SELECTORS[@]}"; do
-  metadata="$(registry_metadata "$selector")" || {
-    echo "Unable to resolve registry selector: $selector" >&2
+  metadata="$(manifest_metadata "$selector")" || {
+    echo "Unable to resolve manifest selector: $selector" >&2
     exit 2
   }
-  IFS='|' read -r build_group binary_group executor default_filter case_list <<<"$metadata"
-  [[ -n "$build_group" && -n "$binary_group" && "$executor" == fa3-profile ]] || {
+  IFS='|' read -r build_target binary_group executor default_filter case_list <<<"$metadata"
+  [[ -n "$build_target" && -n "$binary_group" && "$executor" == fa3-profile ]] || {
     echo "Selector is not an executable FA3 profile target: $selector" >&2
     exit 2
   }
@@ -264,7 +264,7 @@ for selector in "${SELECTORS[@]}"; do
     SEEN_ROWS[$key]=1
     ROW_GROUPS+=("$group")
     ROW_MODES+=("$mode")
-    ROW_BUILD_GROUPS+=("$build_group")
+    ROW_BUILD_TARGETS+=("$build_target")
     ROW_BINARIES+=("${binaries[0]}")
     ROW_FILTERS+=("$default_filter")
     ROW_CASES+=("$case_name")
@@ -314,27 +314,27 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 fi
 
-declare -A BUILD_GROUPS=()
-declare -a UNIQUE_BUILD_GROUPS=()
-for build_group in "${ROW_BUILD_GROUPS[@]}"; do
-  if [[ -z "${BUILD_GROUPS[$build_group]:-}" ]]; then
-    BUILD_GROUPS[$build_group]=1
-    UNIQUE_BUILD_GROUPS+=("$build_group")
+declare -A BUILD_TARGETS=()
+declare -a UNIQUE_BUILD_TARGETS=()
+for build_target in "${ROW_BUILD_TARGETS[@]}"; do
+  if [[ -z "${BUILD_TARGETS[$build_target]:-}" ]]; then
+    BUILD_TARGETS[$build_target]=1
+    UNIQUE_BUILD_TARGETS+=("$build_target")
   fi
 done
 
-for build_group in "${UNIQUE_BUILD_GROUPS[@]}"; do
+for build_target in "${UNIQUE_BUILD_TARGETS[@]}"; do
   build_cmd=(
     make -C "$TEST_DIR" "-j$JOBS"
     "CUDA_INSTALL_PATH=$CUDA_ROOT" "CUDA_HOME=$CUDA_ROOT" "CUDA_PATH=$CUDA_ROOT"
-    HOPPER_CUDA_ARCH=sm_90a CUDA_ARCH=sm_90a "$build_group"
+    ARCH=sm90 "$build_target"
   )
   if [[ "$NO_BUILD" -eq 0 ]]; then
     printf 'build:'
     printf ' %q' "${build_cmd[@]}"
     printf '\n'
     if [[ "$DRY_RUN" -eq 0 ]]; then
-      "${build_cmd[@]}" 2>&1 | tee "$OUT_DIR/logs/build_${build_group}.log"
+      "${build_cmd[@]}" 2>&1 | tee "$OUT_DIR/logs/build_${build_target}.log"
     fi
   fi
 done
@@ -356,7 +356,7 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     echo "commit=$(git -C "$REPO_ROOT" rev-parse HEAD)"
     echo "cuda_root=$CUDA_ROOT"
     echo "selectors=${SELECTORS[*]}"
-    echo "case_overrides=${CASE_OVERRIDES[*]:-<registry>}"
+    echo "case_overrides=${CASE_OVERRIDES[*]:-<manifest>}"
     echo "jobs=$JOBS"
     echo "run_native=$RUN_NATIVE"
     echo "run_ncu=$RUN_NCU"

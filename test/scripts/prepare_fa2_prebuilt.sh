@@ -9,7 +9,8 @@ CUDA_ROOT="${CUDA_INSTALL_PATH:-${CUDA_HOME:-}}"
 OUT_DIR="${TEST_DIR}/run/fa2-prebuilt"
 JOBS="${JOBS:-4}"
 DEVICE="h100"
-CUDA_ARCH=""
+ARCH_NAME=""
+NVCC_TARGET=""
 BUILD_DIR=""
 declare -a REQUESTED_GROUPS=()
 declare -a SELECTORS=()
@@ -18,11 +19,11 @@ usage() {
   cat <<'EOF'
 Usage: prepare_fa2_prebuilt.sh [OPTIONS]
 
-Build and package one or more registry-owned FA2 experiment groups.
+Build and package one or more manifest-owned FA2 experiment profiles.
 
 Options:
-  --device NAME         Build for h100 (sm_90a) or rtx5090 (sm_120a).
-                       Defaults to h100.
+  --device NAME         Use h100/sm90 or rtx5090/sm120. The selected
+                       architecture manifest must include FA2. Defaults to h100.
   --group NAME[:MODE]  Group to package; repeatable. Defaults to full.
                        full = smoke + small + medium + large
                        all  = full + breakdown + scaling + concurrency
@@ -80,14 +81,26 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$DEVICE" in
-  h100) CUDA_ARCH=sm_90a ;;
-  rtx5090) CUDA_ARCH=sm_120a ;;
+  h100) ARCH_NAME=sm90 ;;
+  rtx5090) ARCH_NAME=sm120 ;;
   *)
     echo "--device must be h100 or rtx5090" >&2
     exit 2
     ;;
 esac
-BUILD_DIR="build_prebuilt_${CUDA_ARCH}"
+
+ARCH_METADATA="$(make -s --no-print-directory -C "$TEST_DIR" \
+  print-architecture-metadata ARCH="$ARCH_NAME")" || {
+  echo "Unable to resolve architecture manifest: $ARCH_NAME" >&2
+  exit 2
+}
+IFS='|' read -r DEFAULT_CONFIG NVCC_TARGET <<<"$ARCH_METADATA"
+if ! make -s --no-print-directory -C "$TEST_DIR" \
+    list-test-groups ARCH="$ARCH_NAME" | grep -Fxq fa2; then
+  echo "FA2 is not supported by the $ARCH_NAME architecture manifest" >&2
+  exit 2
+fi
+BUILD_DIR="build_prebuilt_${NVCC_TARGET}"
 
 [[ -n "$CUDA_ROOT" ]] || {
   echo "Set --cuda-root, CUDA_INSTALL_PATH, or CUDA_HOME" >&2
@@ -146,24 +159,16 @@ for group in "${REQUESTED_GROUPS[@]}"; do
   expand_group "$group"
 done
 
-registry_metadata() {
+manifest_metadata() {
   local selector="$1"
   local group="${selector%%:*}"
   local mode=""
-  local suite="analysis"
-  local target="fa2"
   if [[ "$selector" == *:* ]]; then
     mode="${selector#*:}"
   fi
-  if [[ "$group" == smoke ]]; then
-    suite="test"
-    target="sm90"
-    group="fa2-smoke"
-  fi
 
-  make -s --no-print-directory -C "$TEST_DIR" print-target-group-metadata \
-    SUITE="$suite" SUITE_TARGET="$target" TARGET_GROUP="$group" \
-    TARGET_MODE="$mode"
+  make -s --no-print-directory -C "$TEST_DIR" print-test-group-metadata \
+    ARCH="$ARCH_NAME" TEST_GROUP=fa2 PROFILE="$group" MODE="$mode"
 }
 
 binary_group_binaries() {
@@ -174,7 +179,7 @@ binary_group_binaries() {
 mode_for_binary() {
   local group="$1"
   local binary_name="$2"
-  local prefix="run_fa2_${group}_"
+  local prefix="${group}_"
   if [[ "$group" == breakdown || "$group" == scaling || "$group" == concurrency ]]; then
     local mode="${binary_name#"$prefix"}"
     printf '%s\n' "${mode%_tests}"
@@ -221,28 +226,27 @@ FINAL_MANIFEST="$MANIFEST_DIR/fa2_cases.tsv"
 : >"$RAW_MANIFEST"
 printf 'selector\tgroup\tmode\tbinary\ttest\n' >"$FINAL_MANIFEST"
 
-declare -A BUILT_GROUPS=()
+declare -A BUILT_TARGETS=()
 declare -A COPIED_BINARIES=()
 
 for selector in "${SELECTORS[@]}"; do
-  metadata="$(registry_metadata "$selector")" || {
-    echo "Unable to resolve registry selector: $selector" >&2
+  metadata="$(manifest_metadata "$selector")" || {
+    echo "Unable to resolve manifest selector: $selector" >&2
     exit 2
   }
-  IFS='|' read -r build_group binary_group executor default_filter case_list <<<"$metadata"
-  [[ -n "$build_group" && -n "$binary_group" ]] || {
-    echo "Incomplete registry metadata for: $selector" >&2
+  IFS='|' read -r build_target binary_group executor default_filter case_list <<<"$metadata"
+  [[ -n "$build_target" && -n "$binary_group" ]] || {
+    echo "Incomplete manifest metadata for: $selector" >&2
     exit 2
   }
 
-  if [[ -z "${BUILT_GROUPS[$build_group]:-}" ]]; then
-    echo "Building FA2 selector=$selector target=$build_group"
+  if [[ -z "${BUILT_TARGETS[$build_target]:-}" ]]; then
+    echo "Building FA2 selector=$selector target=$build_target"
     make -C "$TEST_DIR" "-j$JOBS" \
       CUDA_INSTALL_PATH="$CUDA_ROOT" CUDA_HOME="$CUDA_ROOT" CUDA_PATH="$CUDA_ROOT" \
-      BUILD_DIR="$BUILD_DIR" \
-      HOPPER_CUDA_ARCH="$CUDA_ARCH" CUDA_ARCH="$CUDA_ARCH" "$build_group" \
-      2>&1 | tee "$LOG_DIR/build_${build_group}.log"
-    BUILT_GROUPS[$build_group]=1
+      BUILD_DIR="$BUILD_DIR" ARCH="$ARCH_NAME" "$build_target" \
+      2>&1 | tee "$LOG_DIR/build_${build_target}.log"
+    BUILT_TARGETS[$build_target]=1
   fi
 
   group="${selector%%:*}"
@@ -299,7 +303,9 @@ chmod +x "$PREBUILT_ROOT/run_fa2_ncu.sh"
   echo "commit=$(git -C "$REPO_ROOT" rev-parse HEAD)"
   echo "cuda_root=$CUDA_ROOT"
   echo "device=$DEVICE"
-  echo "cuda_arch=$CUDA_ARCH"
+  echo "architecture=$ARCH_NAME"
+  echo "nvcc_target=$NVCC_TARGET"
+  echo "config=$DEFAULT_CONFIG"
   echo "build_dir=$TEST_DIR/$BUILD_DIR"
   echo "jobs=$JOBS"
   echo "selectors=${SELECTORS[*]}"
@@ -316,9 +322,10 @@ FA2 prebuilt package
 ====================
 
 Selectors: ${SELECTORS[*]}
-Device:    ${DEVICE}
-CUDA arch: ${CUDA_ARCH}
-Manifest:  manifest/fa2_cases.tsv
+Device:      ${DEVICE}
+Architecture: ${ARCH_NAME}
+NVCC target: ${NVCC_TARGET}
+Manifest:    manifest/fa2_cases.tsv
 
 Inspect without a GPU:
   ./run_fa2_ncu.sh --device ${DEVICE} --print-cases
