@@ -95,6 +95,7 @@ class GTest:
         binaries: Sequence[Path],
         config_dir: Path,
         default_filter: str = "*",
+        requested_filter: str = "*",
     ) -> list[str]:
         if not binaries:
             raise RunnerError("Binary group contains no GTest binaries")
@@ -102,9 +103,15 @@ class GTest:
         cases: list[str] = []
         for binary in binaries:
             for test_name in self.list_cases(binary, config_dir):
-                if name_matches_filter(test_name, default_filter):
+                if name_matches_filter(
+                    test_name, default_filter
+                ) and name_matches_filter(test_name, requested_filter):
                     cases.append(test_name)
         if not cases:
+            if requested_filter != "*":
+                raise RunnerError(
+                    f"No GTest cases matched filter: {requested_filter}"
+                )
             raise RunnerError("No GTest cases matched the selected profile")
         return cases
 

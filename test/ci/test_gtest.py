@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for Python-runner GoogleTest discovery."""
+"""Regression tests for the runner's GoogleTest integration."""
 
 from __future__ import annotations
 
@@ -145,6 +145,15 @@ class GTestDiscoveryOutputTest(unittest.TestCase):
                     ),
                     ["PositiveSuite.Passes", "SecondSuite.Other"],
                 )
+                self.assertEqual(
+                    gtest.group_cases(
+                        [fake_gtest, fake_gtest_second],
+                        config_dir,
+                        "PositiveSuite.*:SecondSuite.*",
+                        "*Other",
+                    ),
+                    ["SecondSuite.Other"],
+                )
                 self.assertEqual(list(xml_dir.glob("*.xml")), [])
                 environment = os.environ.copy()
                 return_code = gtest.run_binary(
@@ -200,7 +209,8 @@ class GTestDiscoveryOutputTest(unittest.TestCase):
             )
 
             self.assertEqual(
-                executors.list_cases(selection), ["PositiveSuite.Passes"]
+                executors.list_cases(selection, "*Passes"),
+                ["PositiveSuite.Passes"],
             )
             self.assertEqual(fake_builder.setup_calls, 1)
             self.assertEqual(fake_builder.build_calls, 1)

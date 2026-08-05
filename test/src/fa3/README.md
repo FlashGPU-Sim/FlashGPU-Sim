@@ -52,14 +52,14 @@ This prepares:
 Then from `test/`:
 
 ```bash
-./run_tests.py run --arch sm90 --test-group fa3 --profile smoke
-./run_tests.py run --arch sm90 --test-group fa3 --profile packgqa
-./run_tests.py run --arch sm90 --test-group fa3 --profile smoke \
+./run_tests.py run --arch sm90 --group fa3 --profile smoke
+./run_tests.py run --arch sm90 --group fa3 --profile packgqa
+./run_tests.py run --arch sm90 --group fa3 --profile smoke \
   Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase
-./run_tests.py run --arch sm90 --test-group fa3 --profile large \
+./run_tests.py run --arch sm90 --group fa3 --profile large \
   Fa3PrefillFp16IntegrationTest.H16D128FullB64S512
-./run_tests.py run --arch sm90 --test-group fa3 --profile breakdown --mode baseline
-./run_tests.py build --arch sm90 --test-group fa3 --profile concurrency --mode all
+./run_tests.py run --arch sm90 --group fa3 --profile breakdown --mode baseline
+./run_tests.py build --arch sm90 --group fa3 --profile concurrency --mode all
 ```
 
 For native H100 runs with Nsight Compute collection, use the manifest-backed

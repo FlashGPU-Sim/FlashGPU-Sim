@@ -151,7 +151,7 @@ experiment.
 
 | Removed or moved entry | Replacement or status |
 | --- | --- |
-| `test_gtest_discovery_output.py` | Moved to `test/ci/test_gtest_discovery_output.py`; CI runs it once in the SM120/core job. |
+| `test_gtest_discovery_output.py` | Moved to `test/ci/test_gtest.py`; CI runs it once in the SM120/core job. |
 | `test_ptx_scheduler_probe_operands.py` | Removed with the Python-only PTX/SASS probes; no production scheduler test was lost. |
 | `ptx_sass_guided_scheduler_probe.py` | Removed; no supported replacement. |
 | `ptx_window_scheduler_probe.py` | Removed; no supported replacement. |

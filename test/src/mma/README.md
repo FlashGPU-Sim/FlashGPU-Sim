@@ -64,21 +64,21 @@ Use the full SM120 configuration:
 ```bash
 # Run all MMA tests
 ./test/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --test-group mma "*MMA*"
+  --arch sm120 --group mma "*MMA*"
 
 # Run specific data type tests
 ./test/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --test-group mma "MMAF16*"
+  --arch sm120 --group mma "MMAF16*"
 ./test/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --test-group mma "MMABF16*"
+  --arch sm120 --group mma "MMABF16*"
 ./test/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --test-group mma "MMATF32*"
+  --arch sm120 --group mma "MMATF32*"
 ./test/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --test-group mma "MMAS8*"
+  --arch sm120 --group mma "MMAS8*"
 
 # Run specific test case
 ./test/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --test-group mma \
+  --arch sm120 --group mma \
   "MMAF16M16N8K8IntegrationTest.AllOnesTest"
 ```
 
@@ -160,7 +160,7 @@ export CUDA_INSTALL_PATH=/path/to/cuda
 source setup_environment
 
 # Rebuild tests
-./test/run_tests.py build --arch sm120 --test-group mma
+./test/run_tests.py build --arch sm120 --group mma
 ```
 
 ### Test Execution Failures

@@ -60,7 +60,7 @@ run_test "-c short flag is recognized" \
 # Test 5: Run directory exists for default config
 run_test "Run directory structure for SM120_RTX5090" \
     "[ -d '$SCRIPT_DIR/run/SM120_RTX5090' ] || \
-     ($TEST_SCRIPT build --arch sm120 --test-group unit &>/dev/null && \
+     ($TEST_SCRIPT build --arch sm120 --group unit &>/dev/null && \
       [ -d '$SCRIPT_DIR/run/SM120_RTX5090' ])"
 
 # Test 6: Test binary is shared (only one copy in build/bin/)

@@ -26,8 +26,8 @@ Current sources:
 Run the test group with:
 
 ```bash
-test/run_tests.py run --arch sm120 --test-group integration
-test/run_tests.py run --arch sm90 --test-group integration CpAsyncSrcSizeTest
+test/run_tests.py run --arch sm120 --group integration
+test/run_tests.py run --arch sm90 --group integration CpAsyncSrcSizeTest
 ```
 
 Feature families that require multiple sources, shared headers, special build

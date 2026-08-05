@@ -1,4 +1,4 @@
-# GPGPU-Sim Tests
+# FlashGPU-Sim Tests
 
 The test system keeps hardware architecture selection separate from test
 organization. Test sources describe workloads; architecture manifests select
@@ -11,10 +11,13 @@ export CUDA_INSTALL_PATH=/usr/local/cuda
 source setup_environment
 
 ./test/run_tests.py list
-./test/run_tests.py list-cases --arch sm120 --test-group integration
-./test/run_tests.py build --arch sm120 --test-group integration
-./test/run_tests.py run --arch sm120 --test-group integration
-./test/run_tests.py run --arch sm90 --test-group wgmma \
+./test/run_tests.py list --arch sm90 --group fa3 --profile breakdown
+./test/run_tests.py list-cases --arch sm120 --group integration
+./test/run_tests.py list-cases --arch sm120 --group integration \
+  --gtest-filter '*VectorAdd*'
+./test/run_tests.py build --arch sm120 --group integration
+./test/run_tests.py run --arch sm120 --group integration
+./test/run_tests.py run --arch sm90 --group wgmma \
   --gtest-filter 'WgmmaF16*'
 ```
 
@@ -39,22 +42,25 @@ architecture manifest
 The public selectors are:
 
 - `--arch`: an architecture manifest, currently `sm90` or `sm120`;
-- `--test-group`: the first directory component below `test/src/`;
+- `--group`: the first directory component below `test/src/`;
 - `--profile`: an optional build/run profile for a complex test group;
 - `--mode`: an optional compile-time variant inside a profile; and
 - `--gtest-filter`: an exact GoogleTest filter expression.
 
 A positional filter remains available as a convenient substring search.
 
+`list` uses progressive discovery: without `--profile` it stops at the profile
+level; selecting one profile expands its compile-time modes.
+
 ```bash
-./run_tests.py run --arch sm120 --test-group unit
-./run_tests.py run --arch sm120 --test-group tma CudaTMATest
-./run_tests.py run --arch sm90 --test-group fa2 --profile smoke
-./run_tests.py run --arch sm120 --test-group fa2 --profile smoke
-./run_tests.py run --arch sm90 --test-group fa3 \
+./run_tests.py run --arch sm120 --group unit
+./run_tests.py run --arch sm120 --group tma CudaTMATest
+./run_tests.py run --arch sm90 --group fa2 --profile smoke
+./run_tests.py run --arch sm120 --group fa2 --profile smoke
+./run_tests.py run --arch sm90 --group fa3 \
   --profile breakdown --mode baseline
-./run_tests.py build --arch sm90 --test-group microbench --profile tma
-./run_tests.py run --arch sm120 --test-group trace \
+./run_tests.py build --arch sm90 --group microbench --profile tma
+./run_tests.py run --arch sm120 --group trace \
   --profile gpt2 flash_attn
 ```
 
@@ -63,8 +69,8 @@ Mode `all` and standalone calibration microbenchmarks are build-only.
 Build every selection supported by one architecture:
 
 ```bash
-./test/run_tests.py build --arch sm120 --test-group all
-./test/run_tests.py build --arch sm90 --test-group all
+./test/run_tests.py build --arch sm120 --group all
+./test/run_tests.py build --arch sm90 --group all
 ```
 
 `all` is a runner-level aggregate, not a test group stored in the TOML
@@ -173,29 +179,35 @@ List every fully qualified GoogleTest case registered by one runner selection:
 ```bash
 ./test/run_tests.py list-cases \
   --arch sm120 \
-  --test-group integration
+  --group integration
 
 ./test/run_tests.py list-cases \
   --arch sm120 \
-  --test-group fa2 \
+  --group integration \
+  --gtest-filter '*VectorAdd*'
+
+./test/run_tests.py list-cases \
+  --arch sm120 \
+  --group fa2 \
   --profile smoke
 ```
 
 `list-cases` builds the selected binary set when necessary, merges discovery
-output from all of its binaries, applies the profile's default filter, and
-prints one `Suite.Case` name per line. Parameterized names retain their full
-GTest prefix and parameter suffix. Trace selections and build-only selections
-without a GTest binary manifest do not have a case list; a mode such as `all`
-can still be listed when its metadata identifies the generated GTest binaries.
-Case names are written to stdout; configuration and build progress are written
-to stderr, so the output can be redirected or piped without extra filtering.
+output from all of its binaries, intersects `--gtest-filter` with the profile's
+default filter, and prints one `Suite.Case` name per line. Parameterized names
+retain their full GTest prefix and parameter suffix. Trace selections and
+build-only selections without a GTest binary manifest do not have a case list;
+a mode such as `all` can still be listed when its metadata identifies the
+generated GTest binaries. Case names are written to stdout; configuration and
+build progress are written to stderr, so the output can be redirected or piped
+without extra filtering.
 
 Use one of those names as an exact runtime selection:
 
 ```bash
 ./test/run_tests.py run \
   --arch sm120 \
-  --test-group integration \
+  --group integration \
   --gtest-filter 'CudaVectorAddTest.BasicVectorAddition'
 ```
 

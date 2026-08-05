@@ -29,11 +29,11 @@ Run these tests from `test/` through `microbench/sm120/mbarrier`.
 ## Example Commands
 
 ```bash
-./run_tests.py run --arch sm120 --test-group microbench --profile mbarrier \
+./run_tests.py run --arch sm120 --group microbench --profile mbarrier \
   "MBarrierLatencyTest.WaitFalse"
-./run_tests.py run --arch sm120 --test-group microbench --profile mbarrier \
+./run_tests.py run --arch sm120 --group microbench --profile mbarrier \
   "MBarrierLatencyTest.Arrive*"
-./run_tests.py run --arch sm120 --test-group microbench --profile mbarrier
+./run_tests.py run --arch sm120 --group microbench --profile mbarrier
 ```
 
 ## Notes

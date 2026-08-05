@@ -87,7 +87,7 @@ class BuildManager:
         self.ui.success(f"Synced {config_name} configuration to run directory")
 
     def setup_environment(self) -> None:
-        self.ui.info("Setting up GPGPU-Sim test environment...")
+        self.ui.info("Setting up FlashGPU-Sim test environment...")
         for prerequisite in ("g++", "make", "git"):
             if shutil.which(prerequisite) is None:
                 raise RunnerError(f"Error: {prerequisite} not found")
@@ -118,11 +118,11 @@ class BuildManager:
     def build_gpgpusim(self) -> None:
         if self.is_native_mode():
             self.ui.info(
-                "Native GPU mode detected - skipping GPGPU-Sim library build"
+                "Native GPU mode detected - skipping FlashGPU-Sim library build"
             )
             return
 
-        self.ui.info("Building GPGPU-Sim library...")
+        self.ui.info("Building FlashGPU-Sim library...")
         libraries = sorted((self.repo_root / "lib").rglob("libcudart.so"))
         library = libraries[0] if libraries else None
         needs_rebuild = library is None or library.stat().st_size == 0
@@ -134,17 +134,17 @@ class BuildManager:
             )
 
         if needs_rebuild:
-            self.ui.warning("GPGPU-Sim library needs rebuild...")
+            self.ui.warning("FlashGPU-Sim library needs rebuild...")
             command = [
                 "make",
                 "FLASH=1",
                 f"-j{self.settings.simulator_build_jobs}",
             ]
             if self.ui.run(command, cwd=self.repo_root) != 0:
-                raise RunnerError("GPGPU-Sim library build failed")
-            self.ui.success("GPGPU-Sim library built successfully")
+                raise RunnerError("FlashGPU-Sim library build failed")
+            self.ui.success("FlashGPU-Sim library built successfully")
         else:
-            self.ui.success("GPGPU-Sim library is up to date")
+            self.ui.success("FlashGPU-Sim library is up to date")
 
     def build(self, selection: Selection, *, parallel: bool | None = None) -> None:
         self.build_gpgpusim()
@@ -222,9 +222,9 @@ class BuildManager:
         self.ui.info("To use a config:")
         self.ui.plain(
             f"  {program} -c CONFIG_NAME run --arch sm120 "
-            "--test-group integration"
+            "--group integration"
         )
         self.ui.plain(
             f"  {program} --config CONFIG_NAME run --arch sm90 "
-            "--test-group wgmma"
+            "--group wgmma"
         )

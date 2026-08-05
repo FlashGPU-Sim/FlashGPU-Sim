@@ -201,7 +201,7 @@ run_gtest_selection() {
   mkdir -p "$xml_dir"
   export GTEST_OUTPUT="xml:$xml_dir/"
   run_logged "$label" ./test/run_tests.py -c "$config" run \
-    --arch "$arch" --test-group "$test_group" "$@"
+    --arch "$arch" --group "$test_group" "$@"
   unset GTEST_OUTPUT
 }
 
@@ -211,7 +211,7 @@ build_selection() {
   local label="$3"
   shift 3
   run_logged "$label" ./test/run_tests.py build \
-    --arch "$arch" --test-group "$test_group" "$@"
+    --arch "$arch" --group "$test_group" "$@"
 }
 
 # Run repository-level planner and discovery regressions once per normal matrix.
@@ -221,13 +221,11 @@ if { [ "$CI_ARCH" = all ] || [ "$CI_ARCH" = sm120 ]; } && \
     python3 test/ci/test_arch_manifest.py
   run_logged ci-planner-regression \
     python3 test/ci/test_ci_planner.py
-  run_logged runner-all-build-regression \
-    python3 test/ci/test_runner_all_build.py
-  run_logged gtest-discovery-output-regression \
-    python3 test/ci/test_gtest_discovery_output.py
+  run_logged gtest-regression \
+    python3 test/ci/test_gtest.py
 fi
 
-echo "Setting up GPGPU-Sim environment..."
+echo "Setting up FlashGPU-Sim environment..."
 if [ -z "${CUDA_INSTALL_PATH:-}" ]; then
   echo "ERROR: set CUDA_INSTALL_PATH to the CUDA Toolkit root before running CI tests"
   exit 1
@@ -263,7 +261,7 @@ if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
   rm -rf test/build
   rm -rf lib
 
-  run_logged build-gpgpusim make FLASH=1 "-j$GPGPUSIM_BUILD_JOBS"
+  run_logged build-flashgpu-sim make FLASH=1 "-j$GPGPUSIM_BUILD_JOBS"
   if ! find lib -name 'libcudart.so' 2>/dev/null | grep -q .; then
     echo "ERROR: libcudart.so not found after build"
     exit 1
@@ -279,7 +277,7 @@ run_core_test_group() {
 
   if [ "$test_group" = trace ]; then
     run_logged "$label" ./test/run_tests.py -c "$config" run \
-      --arch "$arch" --test-group trace --profile gpt2
+      --arch "$arch" --group trace --profile gpt2
     return
   fi
 

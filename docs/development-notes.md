@@ -65,7 +65,7 @@ For example, from the repository root:
 
 ```bash
 ./test/run_tests.py setup
-./test/run_tests.py run --arch sm120 --test-group integration CudaVectorAdd
+./test/run_tests.py run --arch sm120 --group integration CudaVectorAdd
 ```
 
 The selection hierarchy is:

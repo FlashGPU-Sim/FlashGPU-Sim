@@ -1,4 +1,4 @@
-"""Command-line interface for the GPGPU-Sim test runner."""
+"""Command-line interface for the FlashGPU-Sim test runner."""
 
 from __future__ import annotations
 
@@ -40,15 +40,16 @@ class Arguments:
 
 def usage(program: str, stream: object = sys.stdout) -> None:
     print(
-        f"""GPGPU-Sim Test Runner
+        f"""FlashGPU-Sim Test Runner
 Usage: {program} [OPTIONS] ACTION [FILTER]
 
 Actions:
-  build --arch ARCH --test-group NAME [--profile NAME] [--mode NAME|all]
-  build --arch ARCH --test-group all
-  run   --arch ARCH --test-group NAME [--profile NAME] [--mode NAME] [filter]
-  list-cases --arch ARCH --test-group NAME [--profile NAME] [--mode NAME]
-  list [--arch ARCH [--test-group NAME [--profile NAME]]]
+  build --arch ARCH --group NAME [--profile NAME] [--mode NAME|all]
+  build --arch ARCH --group all
+  run   --arch ARCH --group NAME [--profile NAME] [--mode NAME] [filter]
+  list-cases --arch ARCH --group NAME [--profile NAME] [--mode NAME]
+             [--gtest-filter EXPR]
+  list [--arch ARCH [--group NAME [--profile NAME]]]
 
 Use '{program} list' for the manifest-derived architecture/test-group hierarchy.
 
@@ -67,23 +68,24 @@ Options:
   -t, --timeout SEC  Set test timeout
   -c, --config NAME  Use specific GPU configuration
   --arch NAME        Select the hardware architecture
-  --test-group NAME  Select one source/binary group; build also accepts all
+  --group NAME       Select one source/binary group; build also accepts all
   --profile NAME     Select a profile within a complex test group
   --mode NAME        Select a compile-time analysis mode
-  --gtest-filter EXPR Use an exact GoogleTest filter expression
+  --gtest-filter EXPR Filter GoogleTest cases for run or list-cases
   -h, --help         Show this help
   Options may appear before or after the command.
 
 Examples:
-  {program} build --arch sm120 --test-group all
-  {program} list-cases --arch sm120 --test-group integration
-  {program} run --arch sm120 --test-group integration CudaVectorAdd
-  {program} run --arch sm90 --test-group wgmma --gtest-filter 'WgmmaF16*'
-  {program} run --arch sm90 --test-group fa2 --profile smoke
-  {program} run --arch sm90 --test-group fa2 --profile breakdown --mode only_mma
-  {program} run --arch sm90 --test-group fa3 --profile scaling --mode baseline
-  {program} build --arch sm120 --test-group microbench --profile memory
-  {program} run --arch sm120 --test-group trace --profile gpt2 flash_attn
+  {program} build --arch sm120 --group all
+  {program} list-cases --arch sm120 --group integration
+  {program} list-cases --arch sm120 --group integration --gtest-filter '*VectorAdd*'
+  {program} run --arch sm120 --group integration CudaVectorAdd
+  {program} run --arch sm90 --group wgmma --gtest-filter 'WgmmaF16*'
+  {program} run --arch sm90 --group fa2 --profile smoke
+  {program} run --arch sm90 --group fa2 --profile breakdown --mode only_mma
+  {program} run --arch sm90 --group fa3 --profile scaling --mode baseline
+  {program} build --arch sm120 --group microbench --profile memory
+  {program} run --arch sm120 --group trace --profile gpt2 flash_attn
 
 Standalone calibration groups are build-only; use their local Makefiles
 for benchmark-specific runtime arguments. Mode 'all' is also build-only.""",
@@ -145,12 +147,12 @@ def parse_arguments(argv: Sequence[str]) -> Arguments:
             )
             index += 2
             continue
-        if not positional_only and token == "--test-group":
+        if not positional_only and token == "--group":
             _set_once(
                 arguments,
                 "test_group",
-                _require_value(argv, index, "--test-group"),
-                "--test-group",
+                _require_value(argv, index, "--group"),
+                "--group",
             )
             index += 2
             continue
@@ -229,29 +231,31 @@ def validate_arguments(arguments: Arguments) -> None:
     selection_actions = {"build", "run", "list", "list-cases"}
     if selectors and action not in selection_actions:
         raise RunnerError(
-            "--test-group, --profile, and --mode are only valid with "
+            "--group, --profile, and --mode are only valid with "
             "build, run, list, or list-cases"
         )
     if arguments.architecture and action not in selection_actions:
         raise RunnerError(
             "--arch is only valid with build, run, list, or list-cases"
         )
-    if arguments.gtest_filter and action != "run":
-        raise RunnerError("--gtest-filter is only valid with run")
+    if arguments.gtest_filter and action not in {"run", "list-cases"}:
+        raise RunnerError(
+            "--gtest-filter is only valid with run or list-cases"
+        )
     if arguments.gtest_filter and arguments.positional:
         raise RunnerError(
             "--gtest-filter cannot be combined with a positional filter"
         )
     if arguments.test_group and not arguments.architecture:
-        raise RunnerError("--test-group requires --arch")
+        raise RunnerError("--group requires --arch")
     if arguments.profile and not arguments.test_group:
-        raise RunnerError("--profile requires --test-group")
+        raise RunnerError("--profile requires --group")
     if arguments.test_group == "all":
         if action != "build":
-            raise RunnerError("--test-group all is only valid with build")
+            raise RunnerError("--group all is only valid with build")
         if arguments.profile or arguments.mode:
             raise RunnerError(
-                "--test-group all does not accept --profile or --mode"
+                "--group all does not accept --profile or --mode"
             )
     if arguments.mode and action == "list":
         raise RunnerError("list does not accept --mode")
@@ -355,9 +359,12 @@ def list_hierarchy(
             for profile in make.profiles(architecture, test_group):
                 if arguments.profile and profile != arguments.profile:
                     continue
-                modes = make.modes(architecture, test_group, profile)
-                suffix = f" [modes: {' '.join(modes)}]" if modes else ""
-                ui.plain(f"    {profile}{suffix}")
+                ui.plain(f"    {profile}")
+                if arguments.profile:
+                    for mode in make.modes(
+                        architecture, test_group, profile
+                    ):
+                        ui.plain(f"      {mode}")
 
 
 def execute(arguments: Arguments, program: str) -> int:
@@ -414,7 +421,9 @@ def execute(arguments: Arguments, program: str) -> int:
         builder.build(selection)
         return 0
     if arguments.action == "list-cases":
-        for test_name in executors.list_cases(selection):
+        for test_name in executors.list_cases(
+            selection, arguments.gtest_filter
+        ):
             print(test_name, flush=True)
         return 0
     if arguments.action == "run":

@@ -32,14 +32,14 @@ From `test/`:
 
 ```bash
 make prepare-fa3-flash-attention
-./run_tests.py run --arch sm90 --test-group fa2 --profile smoke
-./run_tests.py run --arch sm90 --test-group fa2 --profile small
-./run_tests.py run --arch sm90 --test-group fa2 --profile medium
-./run_tests.py run --arch sm90 --test-group fa2 --profile large \
+./run_tests.py run --arch sm90 --group fa2 --profile smoke
+./run_tests.py run --arch sm90 --group fa2 --profile small
+./run_tests.py run --arch sm90 --group fa2 --profile medium
+./run_tests.py run --arch sm90 --group fa2 --profile large \
   Fa2PrefillFp16IntegrationTest.H32D64FullB64S512
-./run_tests.py run --arch sm90 --test-group fa2 --profile breakdown --mode only_mma
-./run_tests.py build --arch sm90 --test-group fa2 --profile scaling --mode all
-./run_tests.py run --arch sm120 --test-group fa2 --profile smoke
+./run_tests.py run --arch sm90 --group fa2 --profile breakdown --mode only_mma
+./run_tests.py build --arch sm90 --group fa2 --profile scaling --mode all
+./run_tests.py run --arch sm120 --group fa2 --profile smoke
 ```
 
 To prepare a CUDA prebuilt bundle and collect NCU results on H100 or RTX 5090,

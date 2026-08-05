@@ -1,1 +1,1 @@
-"""Implementation modules for the GPGPU-Sim test runner."""
+"""Implementation modules for the FlashGPU-Sim test runner."""

@@ -52,10 +52,10 @@ adding tests that depend on the full GMMA accumulator-to-matrix layout.
 WGMMA requires an architecture-accelerated Hopper build. From `test/`:
 
 ```bash
-./run_tests.py build --arch sm90 --test-group wgmma
-./run_tests.py run --arch sm90 --test-group wgmma \
+./run_tests.py build --arch sm90 --group wgmma
+./run_tests.py run --arch sm90 --group wgmma \
   WgmmaF16M64N8K16IntegrationTest
-./run_tests.py run --arch sm90 --test-group wgmma \
+./run_tests.py run --arch sm90 --group wgmma \
   WgmmaF16M64N8K16IntegrationTest.AllOnesTest
 ```
 

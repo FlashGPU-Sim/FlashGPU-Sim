@@ -251,7 +251,7 @@ from the repository root and run a matching integration test:
 ```bash
 ./test/run_tests.py list-configs
 ./test/run_tests.py -c MY_CUSTOM_CONFIG run \
-  --arch sm120 --test-group integration CudaVectorAdd
+  --arch sm120 --group integration CudaVectorAdd
 ```
 
 Use `--arch sm90` and an SM90 test group for a Hopper configuration. See the

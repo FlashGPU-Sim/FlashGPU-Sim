@@ -63,7 +63,7 @@ Integration tests are located in `test/src/mma/`:
 Run MMA tests with:
 ```bash
 ./test/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --test-group mma "*MMA*"
+  --arch sm120 --group mma "*MMA*"
 ```
 
 ## References

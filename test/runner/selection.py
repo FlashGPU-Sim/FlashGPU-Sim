@@ -55,7 +55,7 @@ class SelectionResolver:
         mode: str = "",
     ) -> Selection:
         if not test_group:
-            raise RunnerError("--test-group is required")
+            raise RunnerError("--group is required")
 
         test_groups = self.make.test_groups(architecture.name)
         if test_group not in test_groups:

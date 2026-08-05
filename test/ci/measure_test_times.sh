@@ -92,7 +92,7 @@ for test_pattern in "${TEST_SUITES[@]}"; do
   fi
 
   if timeout "$TIMEOUT_PER_TEST" ./test/run_tests.py -c "$TEST_CONFIG" \
-      run --arch sm120 --test-group "$test_group" \
+      run --arch sm120 --group "$test_group" \
       --gtest-filter "$filter" &>/dev/null; then
     status="PASS"
   else

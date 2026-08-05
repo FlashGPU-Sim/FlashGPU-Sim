@@ -51,7 +51,9 @@ class TestExecutors:
         environment.update(updates)
         return environment
 
-    def list_cases(self, selection: Selection) -> list[str]:
+    def list_cases(
+        self, selection: Selection, requested_filter: str = ""
+    ) -> list[str]:
         if selection.executor == "trace":
             raise RunnerError(
                 f"{selection.architecture.name}/{selection.test_group} "
@@ -79,6 +81,7 @@ class TestExecutors:
             self._binary_paths(selection.binary_group),
             self.builder.config_dir,
             selection.default_filter,
+            requested_filter or "*",
         )
 
     def run(
