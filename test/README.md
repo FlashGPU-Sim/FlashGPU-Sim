@@ -1,245 +1,223 @@
-# GPGPU-Sim Test Framework
+# GPGPU-Sim Tests
 
-Unit and integration tests for GPGPU-Sim using Google Test.
+The test system keeps hardware architecture selection separate from test
+organization. Test sources describe workloads; architecture manifests select
+the sources supported by each GPU target.
 
-## Quick Start
-
-### Simulator Mode
+## Quick start
 
 ```bash
-export CUDA_INSTALL_PATH=/path/to/cuda
+export CUDA_INSTALL_PATH=/usr/local/cuda
 source setup_environment
-cd test
-./run_tests.sh setup
-./run_tests.sh run test --target sm120 --group unit
-./run_tests.sh run test --target sm120 --group integration
+
+./test/run_tests.py list
+./test/run_tests.py list-cases --arch sm120 --test-group integration
+./test/run_tests.py build --arch sm120 --test-group integration
+./test/run_tests.py run --arch sm120 --test-group integration
+./test/run_tests.py run --arch sm90 --test-group wgmma \
+  --gtest-filter 'WgmmaF16*'
 ```
 
-### Native GPU Mode (Test Validation)
+The runner resolves repository paths internally, so it works from either the
+repository root or the `test/` directory.
 
-```bash
-cd test
-# Start from a clean shell without setup_environment.
-./run_tests.sh setup
-./run_tests.sh run test --target sm120 --group integration
-```
+`run_tests.py` is the only public entry point. Its implementation is split by
+responsibility under `test/runner/`: selection resolution, Make orchestration,
+GoogleTest discovery/filtering, and runtime executors. CI invokes the same
+Python entry point directly; there is no shell compatibility wrapper.
 
-The runner detects simulator versus native mode from
-`GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN` and `LD_LIBRARY_PATH`. It also rejects a
-GPU configuration whose compute capability does not match the selected target.
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `./run_tests.sh setup` | Download Google Test |
-| `./run_tests.sh build SUITE ...` | Build one selected target/group |
-| `./run_tests.sh run SUITE ... [FILTER]` | Build and run one selected target/group |
-| `./run_tests.sh refresh` | Refresh run directory and configuration |
-| `./run_tests.sh list` | List the complete suite/target/group hierarchy and modes |
-| `./run_tests.sh list-configs` | List available GPU configurations |
-| `./run_tests.sh clean` | Clean build files |
-
-The public selection model is:
+## Public hierarchy
 
 ```text
-action -> suite -> target -> group -> optional mode/filter
+architecture manifest
+└── selected test sources
+    └── test group / binary
+        └── GoogleTest suite
+            └── GoogleTest case
 ```
 
-`test`, `microbench`, and `trace` default to target `sm120`; `analysis` always
-requires `--target fa2|fa3`. Every target requires `--group`. Use
-`./run_tests.sh help` for the accepted groups and examples.
+The public selectors are:
 
-## Example Invocations
+- `--arch`: an architecture manifest, currently `sm90` or `sm120`;
+- `--test-group`: the first directory component below `test/src/`;
+- `--profile`: an optional build/run profile for a complex test group;
+- `--mode`: an optional compile-time variant inside a profile; and
+- `--gtest-filter`: an exact GoogleTest filter expression.
+
+A positional filter remains available as a convenient substring search.
 
 ```bash
-# SM120 correctness
-./run_tests.sh run test --target sm120 --group integration CudaVectorAdd
-
-# Hopper instruction and FlashAttention smoke tests
-./run_tests.sh run test --target sm90 --group instructions WgmmaF16
-./run_tests.sh run test --target sm90 --group fa2-smoke
-./run_tests.sh run test --target sm90 --group fa3-smoke
-
-# FA analysis; breakdown/scaling/concurrency require a compile-time mode
-./run_tests.sh run analysis --target fa2 --group breakdown --mode only_mma
-./run_tests.sh build analysis --target fa3 --group scaling --mode all
-
-# Microbench and trace
-./run_tests.sh run microbench --target sm120 --group mbarrier
-./run_tests.sh build microbench --target sm90 --group tma
-./run_tests.sh run trace --target sm120 --group gpt2 flash_attn
-
-# Explicit compatible configuration
-./run_tests.sh -c SM120_RTX5090 run test --target sm120 \
-  --group integration CudaVectorAdd
+./run_tests.py run --arch sm120 --test-group unit
+./run_tests.py run --arch sm120 --test-group tma CudaTMATest
+./run_tests.py run --arch sm90 --test-group fa2 --profile smoke
+./run_tests.py run --arch sm120 --test-group fa2 --profile smoke
+./run_tests.py run --arch sm90 --test-group fa3 \
+  --profile breakdown --mode baseline
+./run_tests.py build --arch sm90 --test-group microbench --profile tma
+./run_tests.py run --arch sm120 --test-group trace \
+  --profile gpt2 flash_attn
 ```
 
-Standalone calibration groups such as `microbench/sm120/memory` and
-`microbench/sm90/{cp-async,mma,tma}` are build-only in the generic runner.
-Use their local Makefiles to supply benchmark-specific runtime arguments.
+Mode `all` and standalone calibration microbenchmarks are build-only.
 
-## GPU Configurations
+Build every selection supported by one architecture:
 
-- **SM120_RTX5090**: default SM120 configuration.
-- **SM90_H100**: default Hopper configuration.
+```bash
+./test/run_tests.py build --arch sm120 --test-group all
+./test/run_tests.py build --arch sm90 --test-group all
+```
 
-Additional configuration directories are discovered automatically when they
-contain `gpgpusim.config`. Run `./run_tests.sh list-configs` to list them.
+`all` is a runner-level aggregate, not a test group stored in the TOML
+manifest. The runner discovers the architecture's groups dynamically, builds
+every profile, selects `mode=all` for profiles that provide an aggregate mode,
+and deduplicates selections that resolve to the same Make target. It builds but
+does not run the resulting tests. Because this includes FA2/FA3 analysis modes,
+microbenchmarks, and trace programs, it can be substantially heavier than a
+focused test-group build.
 
-Use `SM120_RTX5090` for SM120 tests and `SM90_H100` for Hopper tests unless
-an experiment explicitly requires another architecture-specific configuration.
+## Source layout
 
-## Test Organization
-
-The supported runner hierarchy is `suite / target / group / optional mode`:
+The common path form is:
 
 ```text
-run_tests.sh
-│
-├── test
-│   ├── sm120
-│   │   ├── unit
-│   │   │   ├── basic
-│   │   │   ├── bulk-group
-│   │   │   └── host-tensormap
-│   │   └── integration
-│   │       ├── basic-integration
-│   │       ├── vector-add
-│   │       ├── ldmatrix/stmatrix
-│   │       ├── TMA
-│   │       ├── multidimensional-TMA
-│   │       ├── mbarrier
-│   │       ├── mbarrier-sanity
-│   │       └── MMA: F16/BF16/TF32/S8
-│   └── sm90
-│       ├── instructions
-│       │   ├── named-barrier
-│       │   └── WGMMA
-│       ├── fa2-smoke
-│       └── fa3-smoke
-│
-├── analysis
-│   ├── fa2
-│   │   ├── small
-│   │   ├── medium
-│   │   ├── large
-│   │   ├── breakdown                 [mode required]
-│   │   ├── scaling                   [mode required]
-│   │   └── concurrency               [mode required]
-│   └── fa3
-│       ├── small
-│       ├── medium
-│       ├── large
-│       ├── breakdown                 [mode required]
-│       ├── scaling                   [mode required]
-│       └── concurrency               [mode required]
-│
-├── microbench
-│   ├── sm120
-│   │   ├── mbarrier
-│   │   │   └── try-wait latency/visibility
-│   │   ├── mma
-│   │   │   ├── instruction-latency
-│   │   │   ├── issue/ILP
-│   │   │   ├── accept-queue
-│   │   │   └── saturation
-│   │   └── memory
-│   │       ├── global-load-bandwidth
-│   │       ├── L2-latency
-│   │       ├── L2/HBM-interleave
-│   │       └── L2-partition-latency
-│   └── sm90
-│       ├── cp-async
-│       │   ├── latency
-│       │   ├── issue-scope
-│       │   └── PTX-probe
-│       ├── mma
-│       │   ├── accept-queue
-│       │   └── saturation
-│       ├── tma
-│       │   ├── completion-latency
-│       │   ├── descriptor-setup
-│       │   └── FA3-M3
-│       └── wgmma
-│           ├── async-latency
-│           ├── FP16-core-sweep
-│           ├── N16-chain
-│           ├── RF-bandwidth
-│           └── softmax-mix
-│
-└── trace
-    └── sm120
-        └── gpt2
-            ├── embedding
-            ├── GELU
-            ├── flash-attention
-            ├── layernorm
-            ├── residual-add
-            └── linear
+test/src/<test_group>/<test>.cu
 ```
 
-`small`, `medium`, and `large` run directly. Analysis groups marked above
-require one compile-time mode; `mode=all` is build-only. The legacy `dev`
-suite is not part of the supported hierarchy. `test/triton_trace/` remains an
-independent Triton example and offline-validation suite and is not managed by
-`run_tests.sh`; see the [TritonTrace documentation](../tools/README.md) for the
-tracker and standalone replay workflow.
+Pure host-side C++ tests use `.cc` instead. A test group is a source and
+default binary boundary; it may contain many independent workloads and many
+GoogleTest cases.
 
-## Writing Tests
-
-### Basic Test
-```cpp
-#include <gtest/gtest.h>
-
-TEST(TestSuite, TestName) {
-    EXPECT_EQ(expected, actual);
-    ASSERT_TRUE(condition);
-}
+```text
+src/
+├── unit/          host-side simulator component tests
+├── integration/   cross-architecture standalone CUDA tests
+├── barrier/       named barrier and mbarrier tests
+├── tma/           TMA and tensor-map tests
+├── mma/           mma.sync tests
+├── wgmma/         WGMMA tests
+├── fa2/           FlashAttention 2 tests and build variants
+├── fa3/           FlashAttention 3 tests and build variants
+├── microbench/    existing microbenchmark layout
+└── trace/         existing trace-driven GPT-2 tests
 ```
 
-### Test Fixture
-```cpp
-class MyTest : public ::testing::Test {
-protected:
-    void SetUp() override { /* setup */ }
-    void TearDown() override { /* cleanup */ }
-};
+`integration/` admits only standalone sources that compile for every supported
+architecture without test-specific compiler flags or link dependencies.
 
-TEST_F(MyTest, TestName) {
-    EXPECT_TRUE(some_condition);
-}
+## Architecture manifests
+
+Architecture support is declared in readable TOML files:
+
+```text
+arch/
+├── sm90.toml
+└── sm120.toml
 ```
 
-### CUDA Integration Test
-```cpp
-// Use real CUDA runtime API
-float* d_ptr;
-ASSERT_TRUE(cudaSafeMalloc((void**)&d_ptr, size));
-ASSERT_TRUE(cudaSafeMemcpy(d_ptr, h_ptr, size, cudaMemcpyHostToDevice));
-// Launch kernel and verify results
-cudaSafeFree(d_ptr);
+Each file contains only one NVCC target, one simulator configuration, and an
+explicit source list:
+
+```toml
+[arch]
+nvcc_target = "sm_90a"
+config = "SM90_H100"
+
+[workloads]
+sources = [
+  "integration/cp_async_src_size_test.cu",
+  "barrier/named_barrier_test.cu",
+  "wgmma/wgmma_b1_test.cu",
+]
 ```
 
-## Test Environment
+There is no per-test target override. The manifest reader derives compute
+capability from `nvcc_target`, verifies the simulator configuration, checks
+every source path, and requires every architecture to include the complete
+portable `integration/` source set.
 
-Tests run from `test/run/<CONFIG_NAME>/` directory with GPGPU-Sim configuration files. The run directory and configuration are automatically created when building or running tests.
+The first path component is the test group. Ordinary groups are built with
+shared rules into architecture-isolated artifacts:
 
-- Default configuration: `SM120_RTX5090`
-- Configuration files are copied from `configs/<CONFIG_NAME>/` to the run directory
-- Test binaries are shared across all configurations (no duplication)
-- Each configuration has its own isolated run directory
+```text
+build/obj/<arch>/<test_group>/...
+build/bin/<arch>/<test_group>_tests
+```
 
-## Build System
+FA2, FA3, microbenchmarks, and trace tests retain specialized recipes under
+`make/workloads/` when they require repeated compilation, profiles, multiple
+binaries, or a non-GTest executor. Those recipes do not own architecture
+membership and cannot override the manifest's NVCC target.
 
-- Unit, integration, and GPU microbench sources are compiled with NVCC
-- Google Test support objects and final binaries are built with the host C++ compiler
-- Automatic dependency management
-- Test binaries link with the CUDA runtime
+Useful machine-readable queries include:
 
-## Requirements
+```bash
+make -s list-architectures
+make -s list-test-groups ARCH=sm90
+make -s print-architecture-metadata ARCH=sm90
+make -s print-test-group-sources ARCH=sm90 TEST_GROUP=wgmma
+make -s list-test-group-profiles ARCH=sm90 TEST_GROUP=fa3
+make -s list-test-group-modes \
+  ARCH=sm90 TEST_GROUP=fa3 PROFILE=scaling
+```
 
-- C++17 compiler
-- NVCC (for CUDA tests)
-- Google Test (auto-downloaded)
-- CUDA runtime library
+## GoogleTest and the repository runner
+
+GoogleTest owns fixtures, assertions, parameterized cases (`TEST_P`), filters,
+discovery, and XML output inside each binary. It does not coordinate multiple
+binaries or hardware platforms. The repository runner reads the architecture
+selection, builds the required binary set, prepares the simulator
+configuration, and launches the binaries.
+
+List every fully qualified GoogleTest case registered by one runner selection:
+
+```bash
+./test/run_tests.py list-cases \
+  --arch sm120 \
+  --test-group integration
+
+./test/run_tests.py list-cases \
+  --arch sm120 \
+  --test-group fa2 \
+  --profile smoke
+```
+
+`list-cases` builds the selected binary set when necessary, merges discovery
+output from all of its binaries, applies the profile's default filter, and
+prints one `Suite.Case` name per line. Parameterized names retain their full
+GTest prefix and parameter suffix. Trace selections and build-only selections
+without a GTest binary manifest do not have a case list; a mode such as `all`
+can still be listed when its metadata identifies the generated GTest binaries.
+Case names are written to stdout; configuration and build progress are written
+to stderr, so the output can be redirected or piped without extra filtering.
+
+Use one of those names as an exact runtime selection:
+
+```bash
+./test/run_tests.py run \
+  --arch sm120 \
+  --test-group integration \
+  --gtest-filter 'CudaVectorAddTest.BasicVectorAddition'
+```
+
+## CI
+
+CI receives architecture and test-set dimensions independently:
+
+```bash
+CI_ARCH=sm120 CI_TEST_SET=core ./test/ci/run_ci_tests.sh
+CI_ARCH=sm90 CI_TEST_SET=core ./test/ci/run_ci_tests.sh
+CI_ARCH=sm90 CI_TEST_SET=fa2 ./test/ci/run_ci_tests.sh
+CI_ARCH=sm90 CI_TEST_SET=fa3 ./test/ci/run_ci_tests.sh
+```
+
+The `core` test set is an architecture-neutral union of test groups. The CI
+planner intersects it with the selected architecture manifest, so unsupported
+groups never become jobs. Logs and GoogleTest XML results are written below
+`test/logs/ci/`.
+
+The planner can be inspected without building or running tests:
+
+```bash
+CI_ARCH=all CI_TEST_SET=core CI_LIST_JOBS=1 \
+  ./test/ci/run_ci_tests.sh
+```

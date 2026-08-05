@@ -17,8 +17,8 @@ live in `wgmma_async_latency_bench.cc`.
 Build examples from `test/`:
 
 ```bash
-./run_tests.sh build microbench --target sm90 --group wgmma
-./run_tests.sh run microbench --target sm90 --group wgmma \
+./run_tests.py build --arch sm90 --test-group microbench --profile wgmma
+./run_tests.py run --arch sm90 --test-group microbench --profile wgmma \
   WgmmaN16Chain
 ```
 

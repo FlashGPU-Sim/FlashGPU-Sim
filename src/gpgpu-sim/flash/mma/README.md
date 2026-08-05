@@ -54,19 +54,20 @@ This implementation integrates with the GPGPU-Sim PTX parser and execution pipel
 
 ## Testing
 
-Integration tests are located in `test/src/integration/mma/`:
-- F16 tests: `cuda_mma_f16_test.cc`
-- BF16 tests: `cuda_mma_bf16_test.cc`
-- TF32 tests: `cuda_mma_tf32_test.cc`
-- S8/U8 tests: `cuda_mma_s8_test.cc`
+Integration tests are located in `test/src/mma/`:
+- F16 tests: `mma_f16_test.cu`
+- BF16 tests: `mma_bf16_test.cu`
+- TF32 tests: `mma_tf32_test.cu`
+- S8/U8 tests: `mma_s8_test.cu`
 
 Run MMA tests with:
 ```bash
-./test/run_tests.sh -c SM120_RTX5090 run "*MMA*"
+./test/run_tests.py -c SM120_RTX5090 run \
+  --arch sm120 --test-group mma "*MMA*"
 ```
 
 ## References
 
 - Parent directory documentation: `../README.md`
-- Integration tests: `../../../../test/src/integration/mma/README.md`
+- Integration tests: `../../../../test/src/mma/README.md`
 - PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)

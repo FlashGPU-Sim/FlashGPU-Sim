@@ -1,9 +1,8 @@
 # Supported Test Utilities
 
-This directory contains the small set of maintained test-side command-line
-tools. Test ownership, build targets, binaries, filters, modes, and FA2/FA3
-case lists remain in `test/make/registry.mk`; the hardware wrappers query that
-registry instead of carrying a second experiment table.
+This directory contains the maintained test-side command-line tools.
+Architecture and source membership live in `test/arch/*.toml`; build helpers
+consume the same manifests instead of carrying a second compatibility table.
 
 ## Simulator utilities
 
@@ -64,7 +63,8 @@ The FA2 flow has two entry points:
 2. `run_fa2_ncu.sh` runs selected packaged cases and collects native logs and
    Nsight Compute reports.
 
-Build one package per destination architecture:
+Build a package for an architecture whose manifest includes the FA2 test
+group:
 
 ```bash
 ./test/scripts/prepare_fa2_prebuilt.sh \
@@ -82,9 +82,10 @@ Build one package per destination architecture:
   --group full
 ```
 
-`h100` builds `sm_90a`; `rtx5090` builds `sm_120a`. The runner rejects a
-package created for the other device. Architecture-specific build directories
-prevent one package build from reusing objects compiled for the other GPU.
+`h100` resolves `sm90.toml` and its `sm_90a` target; `rtx5090` resolves
+`sm120.toml` and its `sm_120a` target. Both manifests include FA2, so neither
+path needs a hidden compiler-target override. The runner rejects a package
+created for another device.
 
 Selectors are repeatable. `full` expands to `smoke`, `small`, `medium`, and
 `large`; `all` additionally includes every breakdown, scaling, and
@@ -120,7 +121,7 @@ NVIDIA driver and GPU; NCU collection additionally needs Nsight Compute.
 
 ## FA3 hardware profiling
 
-`run_fa3_ncu.sh` builds and runs registry-owned FA3 profile modes on H100:
+`run_fa3_ncu.sh` builds and runs manifest-owned FA3 profile modes on H100:
 
 ```bash
 ./test/scripts/run_fa3_ncu.sh \
@@ -134,8 +135,8 @@ NVIDIA driver and GPU; NCU collection additionally needs Nsight Compute.
 ```
 
 Each selector must name `breakdown`, `scaling`, or `concurrency` and an
-explicit registry mode. Repeating `--group` supports comparisons across
-experiment groups or modes. The registry supplies the binary, GTest filter,
+explicit manifest mode. Repeating `--group` supports comparisons across
+experiment groups or modes. The manifest supplies the binary, GTest filter,
 and default case list. Repeated `--case` arguments replace those case lists.
 Use `--print-cases` to inspect the resolved plan, `--dry-run` to inspect
 commands, and `--dump-sass` when SASS is part of the experiment. Resume and
@@ -150,7 +151,7 @@ experiment.
 
 | Removed or moved entry | Replacement or status |
 | --- | --- |
-| `test_gtest_discovery_output.py` | Moved to `test/ci/test_gtest_discovery_output.py`; CI runs it once in the `sm120` shard (`all` also includes it). |
+| `test_gtest_discovery_output.py` | Moved to `test/ci/test_gtest_discovery_output.py`; CI runs it once in the SM120/core job. |
 | `test_ptx_scheduler_probe_operands.py` | Removed with the Python-only PTX/SASS probes; no production scheduler test was lost. |
 | `ptx_sass_guided_scheduler_probe.py` | Removed; no supported replacement. |
 | `ptx_window_scheduler_probe.py` | Removed; no supported replacement. |
@@ -174,4 +175,4 @@ experiment.
 | `run_l2_hbm_interleave_h100.sh` | Removed with the narrow L2 calibration flow. |
 | `summarize_l2_hbm_interleave_ncu.py` | Removed with the narrow L2 calibration flow. |
 | `analyze_l2_partition_latency.py` | Removed; no supported replacement. |
-| `run_mma_saturation_h100.sh` | Removed; maintained MMA benchmarks remain available through the test registry. |
+| `run_mma_saturation_h100.sh` | Removed; maintained MMA benchmarks remain available through the test manifest. |

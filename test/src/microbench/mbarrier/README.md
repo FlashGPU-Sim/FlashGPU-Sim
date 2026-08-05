@@ -29,11 +29,11 @@ Run these tests from `test/` through `microbench/sm120/mbarrier`.
 ## Example Commands
 
 ```bash
-./run_tests.sh run microbench --target sm120 --group mbarrier \
+./run_tests.py run --arch sm120 --test-group microbench --profile mbarrier \
   "MBarrierLatencyTest.WaitFalse"
-./run_tests.sh run microbench --target sm120 --group mbarrier \
+./run_tests.py run --arch sm120 --test-group microbench --profile mbarrier \
   "MBarrierLatencyTest.Arrive*"
-./run_tests.sh run microbench --target sm120 --group mbarrier
+./run_tests.py run --arch sm120 --test-group microbench --profile mbarrier
 ```
 
 ## Notes
@@ -42,6 +42,6 @@ Run these tests from `test/` through `microbench/sm120/mbarrier`.
   they skip because the timing interpretation and some `try_wait` behaviors are
   not reliable there.
 - All CSV files are written into the active `test/run/<GPU_CONFIG>/` directory
-  because `run_tests.sh` executes each bench from inside that config directory.
+  because `run_tests.py` executes each bench from inside that config directory.
 - Shared helpers live under `test/common/mbarrier/` and are reused by both the
   microbench and integration sanity tests.

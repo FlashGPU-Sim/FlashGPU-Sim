@@ -41,13 +41,13 @@ for every supported MMA op in one build. There is no longer a manual
 ## Example Commands
 
 ```bash
-./run_tests.sh run microbench --target sm120 --group mma \
+./run_tests.py run --arch sm120 --test-group microbench --profile mma \
   "MMAIssueTest.ILPMinimal"
-./run_tests.sh run microbench --target sm120 --group mma \
+./run_tests.py run --arch sm120 --test-group microbench --profile mma \
   "MMAIssueSummary.AllVariants"
-./run_tests.sh run microbench --target sm120 --group mma \
+./run_tests.py run --arch sm120 --test-group microbench --profile mma \
   "InstLatencyTest.FullCalibrationSuite"
-./run_tests.sh build microbench --target sm90 --group mma
+./run_tests.py build --arch sm90 --test-group microbench --profile mma
 ```
 
 For `MMAPeak.AllVariants`, `BestILP` and `Blocks/SM` are chosen by sweeping
