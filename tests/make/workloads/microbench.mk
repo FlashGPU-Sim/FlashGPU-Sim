@@ -91,13 +91,13 @@ microbench-sm90-tma:
 microbench-sm90-wgmma: setup-gtest $(MICROBENCH_SM90_WGMMA_TARGETS)
 
 $(OBJ_DIR)/sm120/microbench/%.cu.o: $(TEST_SRC_DIR)/microbench/%.cc \
-$(CUH_HEADERS) $(TOP_MAKEFILE) $(MICROBENCH_MK) arch/sm120.toml
+$(TEST_HEADERS) $(TOP_MAKEFILE) $(MICROBENCH_MK) arch/sm120.toml
 	@mkdir -p $(dir $@)
 	$(NVCC) $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_sm120) \
 		$(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
 $(OBJ_DIR)/sm90/microbench/wgmma/%.cu.o: \
-$(TEST_SRC_DIR)/microbench/wgmma/%.cc $(CUH_HEADERS) \
+$(TEST_SRC_DIR)/microbench/wgmma/%.cc $(TEST_HEADERS) \
 $(TOP_MAKEFILE) $(MICROBENCH_MK) arch/sm90.toml
 	@mkdir -p $(dir $@)
 	$(NVCC) $(SM90_NVCCFLAGS) $(WGMMA_EXTRA_NVCCFLAGS) \

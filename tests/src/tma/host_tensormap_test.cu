@@ -13,34 +13,15 @@
 #include <vector>
 #include <cstring>
 
+#include "ptx/mbarrier.cuh"
+
+using flashgpu::test::ptx::mbarrier_arrive_expect_tx;
+using flashgpu::test::ptx::mbarrier_init;
+using flashgpu::test::ptx::mbarrier_inval;
+using flashgpu::test::ptx::mbarrier_wait_parity;
+
 // CUtensorMap is an opaque 128-byte structure
 static_assert(sizeof(CUtensorMap) == 128, "CUtensorMap must be 128 bytes");
-
-// PTX Helper: mbarrier operations
-__device__ inline void mbarrier_init(uint64_t *bar, uint32_t count) {
-    uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(bar));
-    asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;\n" :: "r"(p), "r"(count));
-}
-
-__device__ inline void mbarrier_arrive_expect_tx(uint64_t *bar, uint32_t bytes) {
-    uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(bar));
-    asm volatile("mbarrier.arrive.expect_tx.shared.b64 _, [%0], %1;\n" :: "r"(p), "r"(bytes));
-}
-
-__device__ inline void mbarrier_wait_parity(uint64_t *bar, uint32_t parity) {
-    uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(bar));
-    asm volatile("{\n"
-                 ".reg .pred complete;\n"
-                 "waitLoop:\n"
-                 "mbarrier.try_wait.parity.shared.b64 complete, [%0], %1;\n"
-                 "@!complete bra.uni waitLoop;\n"
-                 "}\n" :: "r"(p), "r"(parity));
-}
-
-__device__ inline void mbarrier_inval(uint64_t *bar) {
-    uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(bar));
-    asm volatile("mbarrier.inval.shared::cta.b64 [%0];\n" :: "r"(p));
-}
 
 // Fence for TMA operations
 __device__ inline void fence_proxy_async() {

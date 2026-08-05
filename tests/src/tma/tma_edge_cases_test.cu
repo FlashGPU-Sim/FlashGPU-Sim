@@ -4,9 +4,21 @@
 #include <array>
 #include <cstdint>
 
-#include "common/mbarrier/device_kernels.cuh"
+#include "ptx/mbarrier.cuh"
+#include "ptx/tma.cuh"
 
 namespace {
+
+using flashgpu::test::ptx::cp_async_bulk_tensor_1d_load;
+using flashgpu::test::ptx::fence_proxy_tensormap_acquire;
+using flashgpu::test::ptx::mbarrier_arrive_expect_tx;
+using flashgpu::test::ptx::mbarrier_init;
+using flashgpu::test::ptx::mbarrier_inval;
+using flashgpu::test::ptx::mbarrier_wait_parity;
+using flashgpu::test::ptx::smem_u32_addr;
+using flashgpu::test::ptx::smem_u64_addr;
+using flashgpu::test::ptx::tensormap_cp_fenceproxy;
+using flashgpu::test::ptx::tensormap_set_global_address;
 
 constexpr unsigned kTensorMapBytes = 128;
 constexpr unsigned kTileElements = 4;

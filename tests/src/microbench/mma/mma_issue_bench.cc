@@ -21,13 +21,12 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <numeric>
 #include <vector>
-
-#include "common/microbench_utils.cuh"
 
 // ============================================================================
 // MMA Instruction Traits (Strategy Pattern)
@@ -568,6 +567,31 @@ static double median_of(std::vector<double> values) {
   return values[mid];
 }
 
+static double median_without_iqr_outliers(std::vector<uint64_t> values) {
+  if (values.empty()) return 0.0;
+
+  std::sort(values.begin(), values.end());
+  if (values.size() >= 4) {
+    const uint64_t q1 = values[values.size() / 4];
+    const uint64_t q3 = values[(values.size() * 3) / 4];
+    const uint64_t iqr = q3 - q1;
+    const double lower_bound =
+        static_cast<double>(q1) - 1.5 * static_cast<double>(iqr);
+    const double upper_bound =
+        static_cast<double>(q3) + 1.5 * static_cast<double>(iqr);
+
+    values.erase(
+        std::remove_if(values.begin(), values.end(), [&](uint64_t value) {
+          const double sample = static_cast<double>(value);
+          return sample < lower_bound || sample > upper_bound;
+        }),
+        values.end());
+  }
+
+  if (values.empty()) return 0.0;
+  return static_cast<double>(values[values.size() / 2]);
+}
+
 template <typename MmaOp>
 static bool run_peak_config(int ilp, int grid_blocks, int threads_per_block,
                             int total_warps, int mma_count, int warmup,
@@ -675,14 +699,14 @@ static bool run_peak_config(int ilp, int grid_blocks, int threads_per_block,
 
   if (launch_failed || elapsed_ns.empty()) return false;
 
-  BenchmarkStats stats = calculate_stats(elapsed_ns, true);
-  if (stats.median <= 0.0) return false;
+  const double median_ns = median_without_iqr_outliers(elapsed_ns);
+  if (median_ns <= 0.0) return false;
 
-  double elapsed_s = stats.median * 1e-9;
+  double elapsed_s = median_ns * 1e-9;
   double total_ops = MmaOp::kOpsPerMma * static_cast<double>(mma_count) *
                      static_cast<double>(ilp) *
                      static_cast<double>(total_warps);
-  out->median_us = stats.median * 1e-3;
+  out->median_us = median_ns * 1e-3;
   out->throughput = total_ops / elapsed_s / 1e12;
   out->measured_clock_ghz =
       collect_measured_clock ? median_of(measured_clock_ghz) : 0.0;

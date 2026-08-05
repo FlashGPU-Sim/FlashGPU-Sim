@@ -3,10 +3,20 @@
 #include <cstdint>
 #include <vector>
 
-#include "common/mbarrier/bench_utils.cuh"
-#include "common/mbarrier/device_kernels.cuh"
+#include "execution_mode.h"
+#include "ptx/mbarrier.cuh"
+#include "ptx/tma.cuh"
 
 namespace {
+
+using flashgpu::test::ptx::cp_async_bulk_tensor_1d_load;
+using flashgpu::test::ptx::fence_proxy_tensormap_acquire;
+using flashgpu::test::ptx::mbarrier_arrive_expect_tx;
+using flashgpu::test::ptx::mbarrier_init;
+using flashgpu::test::ptx::mbarrier_try_wait_parity;
+using flashgpu::test::ptx::smem_u32_addr;
+using flashgpu::test::ptx::tensormap_cp_fenceproxy;
+using flashgpu::test::ptx::tensormap_set_global_address;
 
 constexpr int kOutputSize = 64;
 constexpr int kPollLimit = 4096;
@@ -334,7 +344,7 @@ TEST_F(MBarrierSanityTest, Arrive) {
 }
 
 TEST_F(MBarrierSanityTest, TMA) {
-  if (!mbarrier_running_in_native_mode()) {
+  if (!flashgpu::test::running_on_native_gpu()) {
     GTEST_SKIP() << "TMA mbarrier sanity requires native GPU mode.";
   }
 

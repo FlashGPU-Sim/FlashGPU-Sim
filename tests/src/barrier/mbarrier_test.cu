@@ -14,7 +14,15 @@
 #include <gtest/gtest.h>
 #include <vector>
 #include <cstdint>
-#include "common/mbarrier/device_kernels.cuh"
+
+#include "ptx/mbarrier.cuh"
+
+using flashgpu::test::ptx::mbarrier_arrive;
+using flashgpu::test::ptx::mbarrier_arrive_count;
+using flashgpu::test::ptx::mbarrier_arrive_expect_tx;
+using flashgpu::test::ptx::mbarrier_init;
+using flashgpu::test::ptx::mbarrier_inval;
+using flashgpu::test::ptx::mbarrier_wait_parity;
 
 // ============================================================================
 // Test Kernels
@@ -68,10 +76,10 @@ __global__ void test_different_threads_init_different_addresses(
   
   // Each thread waits on its own barrier (parity 0 for first phase)
   if (lane_id == 0) {
-    mbarrier_wait(&barriers[0], 0);
+    mbarrier_wait_parity(&barriers[0], 0);
     output[0] = sync_values[0];  // Should be 100
   } else if (lane_id == 1) {
-    mbarrier_wait(&barriers[1], 0);
+    mbarrier_wait_parity(&barriers[1], 0);
     output[1] = sync_values[1];  // Should be 200
   }
 }
@@ -110,7 +118,7 @@ __global__ void test_different_threads_arrive_same_barrier(uint32_t *output) {
   
   // Thread 0 waits and verifies
   if (lane_id == 0) {
-    mbarrier_wait(&barrier, 0);
+    mbarrier_wait_parity(&barrier, 0);
     output[0] = shared_counter;  // Should be 2
   }
 }
@@ -152,7 +160,7 @@ __global__ void test_predicated_mbarrier_operations(uint32_t *output,
   
   // Thread 0 waits and reports
   if (lane_id == 0) {
-    mbarrier_wait(&barrier, 0);
+    mbarrier_wait_parity(&barrier, 0);
     output[0] = participation_count;  // Should equal num_participants
   }
 }
@@ -198,10 +206,10 @@ __global__ void test_mixed_arrive_addresses(uint32_t *output) {
   
   // Thread 0 waits on barrier 0, thread 1 waits on barrier 1
   if (lane_id == 0) {
-    mbarrier_wait(&barriers[0], 0);
+    mbarrier_wait_parity(&barriers[0], 0);
     output[0] = counters[0];  // Should be 16
   } else if (lane_id == 1) {
-    mbarrier_wait(&barriers[1], 0);
+    mbarrier_wait_parity(&barriers[1], 0);
     output[1] = counters[1];  // Should be 16
   }
 }
@@ -244,7 +252,7 @@ __global__ void test_different_arrival_counts(uint32_t *output) {
   
   // Thread 0 waits and verifies
   if (lane_id == 0) {
-    mbarrier_wait(&barrier, 0);
+    mbarrier_wait_parity(&barrier, 0);
     output[0] = verification;  // Should be 10
   }
 }
@@ -315,7 +323,7 @@ __global__ void test_single_thread_barrier(uint32_t *output) {
     __syncwarp();  // Make sure init is visible
     
     mbarrier_arrive(&barrier);
-    mbarrier_wait(&barrier, 0);
+    mbarrier_wait_parity(&barrier, 0);
     
     output[0] = 0xDEADBEEF;  // Success marker
   }
@@ -367,10 +375,10 @@ __global__ void test_multi_warp_thread_level(uint32_t *output) {
   
   // Verify
   if (lane_id == 0) {
-    mbarrier_wait(&barriers[my_barrier_base], 0);
+    mbarrier_wait_parity(&barriers[my_barrier_base], 0);
     output[my_barrier_base] = results[my_barrier_base];  // Should be 16
   } else if (lane_id == 1) {
-    mbarrier_wait(&barriers[my_barrier_base + 1], 0);
+    mbarrier_wait_parity(&barriers[my_barrier_base + 1], 0);
     output[my_barrier_base + 1] = results[my_barrier_base + 1];  // Should be 16
   }
 }
@@ -416,7 +424,7 @@ __global__ void test_producer_consumer_thread_level(uint32_t *output) {
     
     // Thread 0 waits for data and consumes
     if (lane_id == 0) {
-      mbarrier_wait(&fwd_barrier, 0);
+      mbarrier_wait_parity(&fwd_barrier, 0);
       output[0] = shared_data;  // Should be 42
       mbarrier_arrive(&bwd_barrier);
     }
@@ -426,7 +434,7 @@ __global__ void test_producer_consumer_thread_level(uint32_t *output) {
   
   // Producer waits for consumer acknowledgment
   if (warp_id == 0 && lane_id == 0) {
-    mbarrier_wait(&bwd_barrier, 0);
+    mbarrier_wait_parity(&bwd_barrier, 0);
     output[1] = 1;  // Success marker
   }
 }
@@ -459,7 +467,7 @@ __global__ void test_inval_thread_level(uint32_t *output) {
   // Each thread 0-3 arrives and waits on its barrier
   if (lane_id < 4) {
     mbarrier_arrive(&barriers[lane_id]);
-    mbarrier_wait(&barriers[lane_id], 0);
+    mbarrier_wait_parity(&barriers[lane_id], 0);
   }
   __syncwarp();
   
@@ -660,7 +668,7 @@ __global__ void test_32_thread_divergent_barriers(uint32_t *output) {
   __syncwarp();
   
   // Each thread waits on its own barrier
-  mbarrier_wait(&barriers[lane_id], 0);
+  mbarrier_wait_parity(&barriers[lane_id], 0);
   
   // Each thread writes its lane_id as success marker
   output[lane_id] = lane_id + 1;
@@ -716,9 +724,9 @@ __global__ void test_multi_phase_thread_divergent(uint32_t *output) {
     
     // Wait on my barrier
     if (lane_id == 0) {
-      mbarrier_wait(&barriers[0], phase % 2);
+      mbarrier_wait_parity(&barriers[0], phase % 2);
     } else if (lane_id == 1) {
-      mbarrier_wait(&barriers[1], phase % 2);
+      mbarrier_wait_parity(&barriers[1], phase % 2);
     }
     __syncwarp();
   }

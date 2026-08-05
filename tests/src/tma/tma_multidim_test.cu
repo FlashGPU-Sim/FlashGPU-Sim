@@ -10,39 +10,26 @@
 #include <cmath>
 #include <vector>
 
+#include "ptx/mbarrier.cuh"
+#include "ptx/tma.cuh"
+
+using flashgpu::test::ptx::cp_async_bulk_tensor_1d_load;
+using flashgpu::test::ptx::cp_async_bulk_tensor_2d_load;
+using flashgpu::test::ptx::cp_async_bulk_tensor_3d_load;
+using flashgpu::test::ptx::cp_async_bulk_tensor_4d_load;
+using flashgpu::test::ptx::cp_async_bulk_tensor_5d_load;
+using flashgpu::test::ptx::fence_proxy_tensormap_acquire;
+using flashgpu::test::ptx::mbarrier_arrive_expect_tx;
+using flashgpu::test::ptx::mbarrier_init;
+using flashgpu::test::ptx::mbarrier_inval;
+using flashgpu::test::ptx::mbarrier_wait_parity;
+using flashgpu::test::ptx::tensormap_cp_fenceproxy;
+using flashgpu::test::ptx::tensormap_set_global_address;
+
 // ============================================================================
 // Tensormap size: 128 bytes (1024 bits)
 // ============================================================================
 constexpr int TENSORMAP_SIZE = 128;
-
-// ============================================================================
-// PTX Helper Functions - mbarrier operations  
-// ============================================================================
-
-__device__ inline void mbarrier_init(uint64_t *bar, uint32_t count) {
-    uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(bar));
-    asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;\n" :: "r"(p), "r"(count));
-}
-
-__device__ inline void mbarrier_arrive_expect_tx(uint64_t *bar, uint32_t bytes) {
-    uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(bar));
-    asm volatile("mbarrier.arrive.expect_tx.shared.b64 _, [%0], %1;\n" :: "r"(p), "r"(bytes));
-}
-
-__device__ inline void mbarrier_wait_parity(uint64_t *bar, uint32_t parity) {
-    uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(bar));
-    asm volatile("{\n"
-                 ".reg .pred complete;\n"
-                 "waitLoop:\n"
-                 "mbarrier.try_wait.parity.shared.b64 complete, [%0], %1;\n"
-                 "@!complete bra.uni waitLoop;\n"
-                 "}\n" :: "r"(p), "r"(parity));
-}
-
-__device__ inline void mbarrier_inval(uint64_t *bar) {
-    uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(bar));
-    asm volatile("mbarrier.inval.shared::cta.b64 [%0];\n" :: "r"(p));
-}
 
 // ============================================================================
 // Tensormap helper - initialize to zeros in shared memory
@@ -57,76 +44,9 @@ __device__ inline void tensormap_init_smem(void* tmap_smem, int tid) {
     asm volatile("bar.warp.sync -1;");
 }
 
-// ============================================================================
-// Tensormap field setters using tensormap.replace.* PTX instructions
-// ============================================================================
-
-__device__ inline void tensormap_set_global_address(uint64_t tmap_smem, uint64_t addr) {
-    asm volatile("tensormap.replace.tile.global_address.shared::cta.b1024.b64 [%0], %1;"
-                 :: "l"(tmap_smem), "l"(addr));
-}
-
 // Note: Other tensormap fields (rank, box_dim, global_dim, etc.) must use 
 // immediate values in inline asm since PTX requires compile-time constants
 // for the second operand. See kernel implementations below for usage.
-
-// ============================================================================
-// Tensormap copy to global with fence
-// ============================================================================
-
-__device__ inline void tensormap_cp_fenceproxy(uint64_t global_tmap, uint64_t smem_tmap) {
-    asm volatile("tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [%0], [%1], 0x80;"
-                 :: "l"(global_tmap), "l"(smem_tmap));
-}
-
-__device__ inline void fence_proxy_tensormap_acquire(uint64_t global_tmap) {
-    asm volatile("fence.proxy.tensormap::generic.acquire.gpu [%0], 0x80;\n"
-                 "cp.async.bulk.commit_group;\n"
-                 "cp.async.bulk.wait_group.read 0;\n"
-                 :: "l"(global_tmap));
-}
-
-// ============================================================================
-// cp.async.bulk.tensor wrappers
-// ============================================================================
-
-__device__ inline void cp_async_bulk_tensor_1d_load(
-    uint32_t smem_addr, uint64_t tmap_addr, int32_t coord0, uint32_t mbar_addr) {
-    asm volatile("cp.async.bulk.tensor.1d.shared::cluster.global.mbarrier::complete_tx::bytes "
-                 "[%0], [%1, {%2}], [%3];"
-                 :: "r"(smem_addr), "l"(tmap_addr), "r"(coord0), "r"(mbar_addr));
-}
-
-__device__ inline void cp_async_bulk_tensor_2d_load(
-    uint32_t smem_addr, uint64_t tmap_addr, int32_t coord0, int32_t coord1, uint32_t mbar_addr) {
-    asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes "
-                 "[%0], [%1, {%2, %3}], [%4];"
-                 :: "r"(smem_addr), "l"(tmap_addr), "r"(coord0), "r"(coord1), "r"(mbar_addr));
-}
-
-__device__ inline void cp_async_bulk_tensor_3d_load(
-    uint32_t smem_addr, uint64_t tmap_addr, 
-    int32_t coord0, int32_t coord1, int32_t coord2, uint32_t mbar_addr) {
-    asm volatile("cp.async.bulk.tensor.3d.shared::cluster.global.mbarrier::complete_tx::bytes "
-                 "[%0], [%1, {%2, %3, %4}], [%5];"
-                 :: "r"(smem_addr), "l"(tmap_addr), "r"(coord0), "r"(coord1), "r"(coord2), "r"(mbar_addr));
-}
-
-__device__ inline void cp_async_bulk_tensor_4d_load(
-    uint32_t smem_addr, uint64_t tmap_addr,
-    int32_t coord0, int32_t coord1, int32_t coord2, int32_t coord3, uint32_t mbar_addr) {
-    asm volatile("cp.async.bulk.tensor.4d.shared::cluster.global.mbarrier::complete_tx::bytes "
-                 "[%0], [%1, {%2, %3, %4, %5}], [%6];"
-                 :: "r"(smem_addr), "l"(tmap_addr), "r"(coord0), "r"(coord1), "r"(coord2), "r"(coord3), "r"(mbar_addr));
-}
-
-__device__ inline void cp_async_bulk_tensor_5d_load(
-    uint32_t smem_addr, uint64_t tmap_addr,
-    int32_t coord0, int32_t coord1, int32_t coord2, int32_t coord3, int32_t coord4, uint32_t mbar_addr) {
-    asm volatile("cp.async.bulk.tensor.5d.shared::cluster.global.mbarrier::complete_tx::bytes "
-                 "[%0], [%1, {%2, %3, %4, %5, %6}], [%7];"
-                 :: "r"(smem_addr), "l"(tmap_addr), "r"(coord0), "r"(coord1), "r"(coord2), "r"(coord3), "r"(coord4), "r"(mbar_addr));
-}
 
 // ============================================================================
 // 1D TMA Kernel using cp.async.bulk.tensor.1d
@@ -916,5 +836,4 @@ protected:
 TEST_F(TMA5DTest, Small_4x4x4x4x4) { Run(4, 4, 4, 4, 4); }
 TEST_F(TMA5DTest, Mixed_8x4x4x4x2) { Run(8, 4, 4, 4, 2, 123); }
 TEST_F(TMA5DTest, Large_8x8x4x4x4) { Run(8, 8, 4, 4, 4, 456); }
-
 

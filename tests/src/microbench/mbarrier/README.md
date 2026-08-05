@@ -43,5 +43,6 @@ Run these tests from `tests/` through `microbench/sm120/mbarrier`.
   not reliable there.
 - All CSV files are written into the active `tests/run/<GPU_CONFIG>/` directory
   because `run_tests.py` executes each bench from inside that config directory.
-- Shared helpers live under `tests/common/mbarrier/` and are reused by both the
-  microbench and integration sanity tests.
+- `benchmark_harness.cuh` contains this suite's private sampling, statistics,
+  and CSV support. Cross-group execution and PTX helpers live under
+  `tests/src/include/`.

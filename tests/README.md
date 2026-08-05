@@ -95,6 +95,7 @@ GoogleTest cases.
 
 ```text
 src/
+├── include/       shared test-only headers (not a test group)
 ├── unit/          host-side simulator component tests
 ├── integration/   cross-architecture standalone CUDA tests
 ├── barrier/       named barrier and mbarrier tests
@@ -106,6 +107,10 @@ src/
 ├── microbench/    existing microbenchmark layout
 └── trace/         existing trace-driven GPT-2 tests
 ```
+
+Executable sources follow `tests/src/<test_group>/<test>.cu`; shared headers
+under `tests/src/include/` are included by those sources but are not workloads,
+test groups, or architecture-manifest entries.
 
 `integration/` admits only standalone sources that compile for every supported
 architecture without test-specific compiler flags or link dependencies.

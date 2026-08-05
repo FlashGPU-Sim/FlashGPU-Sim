@@ -32,7 +32,7 @@ GTEST_DIR = gtest/googletest
 SRC_DIR = ../src
 BUILD_DIR = build
 TEST_SRC_DIR = src
-TEST_COMMON_DIR = common
+TEST_INCLUDE_DIR = $(TEST_SRC_DIR)/include
 OBJ_DIR = $(BUILD_DIR)/obj
 BIN_DIR = $(BUILD_DIR)/bin
 SM90_OBJ_DIR = $(OBJ_DIR)/sm90
@@ -43,11 +43,14 @@ GTEST_SRCS_ = $(wildcard $(GTEST_DIR)/src/*.cc) \
               $(wildcard $(GTEST_DIR)/src/*.h) \
               $(GTEST_HEADERS)
 
-# Track CUDA headers shared across test domains.
-CUH_HEADERS = $(shell find $(TEST_SRC_DIR) $(TEST_COMMON_DIR) $(SRC_DIR) -name '*.cuh' 2>/dev/null)
+# Track headers shared across test domains.
+TEST_HEADERS = $(shell find $(TEST_SRC_DIR) \
+                 \( -name '*.h' -o -name '*.cuh' \) 2>/dev/null) \
+               $(shell find $(SRC_DIR) -name '*.cuh' 2>/dev/null)
 
 INCLUDES = -I$(GTEST_DIR)/include \
            -I. \
+           -I$(TEST_INCLUDE_DIR) \
            -I$(SRC_DIR) \
            -I$(SRC_DIR)/gpgpu-sim \
            -I$(SRC_DIR)/cuda-sim \
@@ -96,4 +99,4 @@ debug:
 	@echo "SM120_TEST_GROUPS: $(ARCH_TEST_GROUPS_sm120)"
 	@echo "SM90_INTEGRATION_SOURCES: $(TEST_GROUP_SOURCES_sm90_integration)"
 	@echo "SM120_INTEGRATION_SOURCES: $(TEST_GROUP_SOURCES_sm120_integration)"
-	@echo "CUH_HEADERS: $(CUH_HEADERS)"
+	@echo "TEST_HEADERS: $(TEST_HEADERS)"

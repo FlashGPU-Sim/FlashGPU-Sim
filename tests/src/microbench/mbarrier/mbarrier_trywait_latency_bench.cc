@@ -5,10 +5,17 @@
 #include <fstream>
 #include <vector>
 
-#include "common/mbarrier/bench_utils.cuh"
-#include "common/mbarrier/device_kernels.cuh"
+#include "benchmark_harness.cuh"
+#include "execution_mode.h"
+#include "ptx/mbarrier.cuh"
 
 namespace {
+
+using flashgpu::test::ptx::mbarrier_arrive;
+using flashgpu::test::ptx::mbarrier_arrive_expect_tx;
+using flashgpu::test::ptx::mbarrier_init;
+using flashgpu::test::ptx::mbarrier_try_wait_parity;
+using flashgpu::test::ptx::smem_u32_addr;
 
 constexpr uint32_t kChainLength = 256;
 
@@ -713,41 +720,17 @@ class MBarrierLatencyTest : public MBarrierBenchmarkFixture {
     const MBarrierBenchOptions options = default_bench_options();
     const std::vector<uint32_t> instruction_counts = default_instruction_counts();
 
-    const auto summary = measure_with_sweep(
+    const auto summary = measure_sweep(
         [&](uint32_t instruction_count) {
           launch_for_count(instruction_count);
         },
-        instruction_counts, options, clock_overhead, spec.test_name,
-        spec.description);
+        instruction_counts, options, clock_overhead);
 
     expect_valid_sweep_summary(summary, instruction_counts, options);
+    print_mbarrier_sweep(spec.test_name, spec.description, summary);
     export_mbarrier_sweep_csv(spec.csv_file, spec.test_name, spec.description,
                               summary, options);
     print_csv_path(spec.csv_file);
-  }
-
-  template <typename LaunchForCountFn>
-  MBarrierSweepSummary measure_sweep_silent(LaunchForCountFn&& launch_for_count,
-                                            const MBarrierBenchOptions& options,
-                                            uint64_t clock_overhead) {
-    MBarrierSweepSummary summary;
-    summary.clock_overhead = clock_overhead;
-
-    const std::vector<uint32_t> instruction_counts = default_instruction_counts();
-    std::vector<double> medians;
-    medians.reserve(instruction_counts.size());
-    summary.points.reserve(instruction_counts.size());
-
-    for (const uint32_t instruction_count : instruction_counts) {
-      const MBarrierCycleSummary cycles = measure_summary(
-          [&] { launch_for_count(instruction_count); }, options,
-          clock_overhead);
-      summary.points.push_back({instruction_count, cycles});
-      medians.push_back(cycles.median);
-    }
-
-    summary.fit = mbarrier_linear_regression(instruction_counts, medians);
-    return summary;
   }
 
   void export_scalar_case(const ScalarBenchSpec& spec,
@@ -767,7 +750,7 @@ class MBarrierLatencyTest : public MBarrierBenchmarkFixture {
 };
 
 TEST_F(MBarrierLatencyTest, WaitFalse) {
-  if (!mbarrier_running_in_native_mode()) {
+  if (!flashgpu::test::running_on_native_gpu()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
@@ -781,7 +764,7 @@ TEST_F(MBarrierLatencyTest, WaitFalse) {
 }
 
 TEST_F(MBarrierLatencyTest, WaitTrue) {
-  if (!mbarrier_running_in_native_mode()) {
+  if (!flashgpu::test::running_on_native_gpu()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
@@ -795,7 +778,7 @@ TEST_F(MBarrierLatencyTest, WaitTrue) {
 }
 
 TEST_F(MBarrierLatencyTest, LoadChase) {
-  if (!mbarrier_running_in_native_mode()) {
+  if (!flashgpu::test::running_on_native_gpu()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
@@ -809,7 +792,7 @@ TEST_F(MBarrierLatencyTest, LoadChase) {
 }
 
 TEST_F(MBarrierLatencyTest, PredGate) {
-  if (!mbarrier_running_in_native_mode()) {
+  if (!flashgpu::test::running_on_native_gpu()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
@@ -823,7 +806,7 @@ TEST_F(MBarrierLatencyTest, PredGate) {
 }
 
 TEST_F(MBarrierLatencyTest, PredChain) {
-  if (!mbarrier_running_in_native_mode()) {
+  if (!flashgpu::test::running_on_native_gpu()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
@@ -837,43 +820,43 @@ TEST_F(MBarrierLatencyTest, PredChain) {
 }
 
 TEST_F(MBarrierLatencyTest, Breakdown) {
-  if (!mbarrier_running_in_native_mode()) {
+  if (!flashgpu::test::running_on_native_gpu()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
   const uint64_t clock_overhead = measure_clock_overhead();
   const MBarrierBenchOptions options = default_bench_options();
 
-  const auto load_chase = measure_sweep_silent(
+  const auto load_chase = measure_sweep(
       [&](uint32_t instruction_count) {
         launch_smem_chase_latency(instruction_count, cycle_start_ptr(),
                                   cycle_end_ptr(), sink_ptr());
       },
-      options, clock_overhead);
-  const auto pred_gate = measure_sweep_silent(
+      default_instruction_counts(), options, clock_overhead);
+  const auto pred_gate = measure_sweep(
       [&](uint32_t instruction_count) {
         launch_pred_chase_latency(instruction_count, cycle_start_ptr(),
                                   cycle_end_ptr(), sink_ptr());
       },
-      options, clock_overhead);
-  const auto pred_chain = measure_sweep_silent(
+      default_instruction_counts(), options, clock_overhead);
+  const auto pred_chain = measure_sweep(
       [&](uint32_t instruction_count) {
         launch_manual_pred_latency(instruction_count, cycle_start_ptr(),
                                    cycle_end_ptr(), sink_ptr());
       },
-      options, clock_overhead);
-  const auto wait_false = measure_sweep_silent(
+      default_instruction_counts(), options, clock_overhead);
+  const auto wait_false = measure_sweep(
       [&](uint32_t instruction_count) {
         launch_try_wait_false_latency(instruction_count, cycle_start_ptr(),
                                       cycle_end_ptr(), sink_ptr());
       },
-      options, clock_overhead);
-  const auto wait_true = measure_sweep_silent(
+      default_instruction_counts(), options, clock_overhead);
+  const auto wait_true = measure_sweep(
       [&](uint32_t instruction_count) {
         launch_try_wait_true_latency(instruction_count, cycle_start_ptr(),
                                      cycle_end_ptr(), sink_ptr());
       },
-      options, clock_overhead);
+      default_instruction_counts(), options, clock_overhead);
 
   const double base_slope = load_chase.fit.slope;
   const std::vector<BreakdownRow> rows = {
@@ -899,7 +882,7 @@ TEST_F(MBarrierLatencyTest, Breakdown) {
 }
 
 TEST_F(MBarrierLatencyTest, ArriveLocal) {
-  if (!mbarrier_running_in_native_mode()) {
+  if (!flashgpu::test::running_on_native_gpu()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 
@@ -931,7 +914,7 @@ TEST_F(MBarrierLatencyTest, ArriveLocal) {
 }
 
 TEST_F(MBarrierLatencyTest, ArriveWarp) {
-  if (!mbarrier_running_in_native_mode()) {
+  if (!flashgpu::test::running_on_native_gpu()) {
     GTEST_SKIP() << "MBarrierLatencyTest requires native GPU mode.";
   }
 

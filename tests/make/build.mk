@@ -23,13 +23,13 @@ $(patsubst $(TEST_SRC_DIR)/%.cc,$(OBJ_DIR)/$(1)/%.cc.o,$(filter %.cc,$(2)))
 endef
 
 define REGISTER_ARCH_COMPILE_RULES
-$(OBJ_DIR)/$(1)/%.cu.o: $(TEST_SRC_DIR)/%.cu $(CUH_HEADERS) \
+$(OBJ_DIR)/$(1)/%.cu.o: $(TEST_SRC_DIR)/%.cu $(TEST_HEADERS) \
 $(TOP_MAKEFILE) $(BUILD_MK) arch/$(1).toml $(ARCH_MANIFEST_SCRIPT)
 	@mkdir -p $$(dir $$@)
 	$$(NVCC) $$(NVCC_COMPILE_FLAGS) $$(INCLUDES) $$(GPGPUSIM_FLAGS) \
 		-c $$< -o $$@
 
-$(OBJ_DIR)/$(1)/%.cc.o: $(TEST_SRC_DIR)/%.cc $(TOP_MAKEFILE) \
+$(OBJ_DIR)/$(1)/%.cc.o: $(TEST_SRC_DIR)/%.cc $(TEST_HEADERS) $(TOP_MAKEFILE) \
 $(BUILD_MK) arch/$(1).toml $(ARCH_MANIFEST_SCRIPT)
 	@mkdir -p $$(dir $$@)
 	$$(CXX) $$(CXXFLAGS) $$(INCLUDES) $$(GPGPUSIM_FLAGS) -c $$< -o $$@
