@@ -46,12 +46,17 @@ uint32_t tensormap_descriptor_t::get_element_size() const {
   case TMA_DTYPE_U16:
     return 2;
   case TMA_DTYPE_U32:
+  case TMA_DTYPE_S32:
     return 4;
   case TMA_DTYPE_U64:
+  case TMA_DTYPE_S64:
     return 8;
   case TMA_DTYPE_F16:
     return 2;
   case TMA_DTYPE_F32:
+  case TMA_DTYPE_F32_FTZ:
+  case TMA_DTYPE_TF32:
+  case TMA_DTYPE_TF32_FTZ:
     return 4;
   case TMA_DTYPE_F64:
     return 8;

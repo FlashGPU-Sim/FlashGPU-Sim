@@ -16,9 +16,11 @@ INTEGRATION_MMA_OBJ_DIR = $(OBJ_DIR)/integration/mma
 FLASH_OBJ_DIR = $(OBJ_DIR)/flash
 GPGPUSIM_OBJ_DIR = $(OBJ_DIR)/gpgpu-sim
 
-# bulk_group_test exercises this implementation directly.
-FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc
-FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o
+# Unit tests exercise these implementations directly.
+FLASH_SOURCES = \
+	$(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc \
+	$(SRC_DIR)/gpgpu-sim/flash/tma_reduction.cc
+FLASH_OBJECTS = $(FLASH_SOURCES:$(SRC_DIR)/gpgpu-sim/flash/%.cc=$(OBJ_DIR)/flash/%.cu.o)
 LOCAL_INTERCONNECT_OBJECT = $(OBJ_DIR)/unit/local_interconnect.cc.o
 MSHR_TABLE_OBJECT = $(GPGPUSIM_OBJ_DIR)/mshr-table.cu.o
 

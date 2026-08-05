@@ -14,11 +14,16 @@ class ptx_instruction;
 #define TMA_DTYPE_U8 0u
 #define TMA_DTYPE_U16 1u
 #define TMA_DTYPE_U32 2u
+#define TMA_DTYPE_S32 3u
 #define TMA_DTYPE_U64 4u
+#define TMA_DTYPE_S64 5u
 #define TMA_DTYPE_F16 6u
 #define TMA_DTYPE_F32 7u
-#define TMA_DTYPE_F64 9u
-#define TMA_DTYPE_BF16 10u
+#define TMA_DTYPE_F64 8u
+#define TMA_DTYPE_BF16 9u
+#define TMA_DTYPE_F32_FTZ 10u
+#define TMA_DTYPE_TF32 11u
+#define TMA_DTYPE_TF32_FTZ 12u
 
 // Interleave layout modes (in bytes)
 #define TMA_INTERLEAVE_NONE 0u
