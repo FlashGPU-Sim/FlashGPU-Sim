@@ -28,10 +28,10 @@ Thumbs.db
 *.bak
 
 # Test artifacts (can be regenerated)
-test/gtest/
-test/build/
-test/run/
-test/logs/
+tests/gtest/
+tests/build/
+tests/run/
+tests/logs/
 tutorials/**/run/
 
 # Documentation build

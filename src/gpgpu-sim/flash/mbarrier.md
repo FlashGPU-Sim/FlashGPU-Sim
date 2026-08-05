@@ -103,10 +103,10 @@ The timing model exposes:
 
 Integration coverage is located in:
 
-- `test/src/barrier/mbarrier_sanity_test.cu`
-- `test/src/barrier/mbarrier_test.cu`
-- `test/src/tma/tma_test.cu`
-- `test/src/tma/tma_multidim_test.cu`
+- `tests/src/barrier/mbarrier_sanity_test.cu`
+- `tests/src/barrier/mbarrier_test.cu`
+- `tests/src/tma/tma_test.cu`
+- `tests/src/tma/tma_multidim_test.cu`
 
 Latency-focused tests and usage notes are under
-`test/src/microbench/mbarrier/`.
+`tests/src/microbench/mbarrier/`.

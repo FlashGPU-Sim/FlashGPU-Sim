@@ -58,14 +58,14 @@ jobs:
             -v ${{ github.workspace }}:/gpgpu-sim \
             -w /gpgpu-sim \
             gpgpu-sim-ci:latest \
-            bash -c "./test/ci/run_ci_tests.sh"
+            bash -c "./tests/ci/run_ci_tests.sh"
 
       - name: Upload simulation test logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: simulation-test-results-${{ matrix.arch }}-${{ matrix.test_set }}-attempt-${{ github.run_attempt }}
-          path: test/logs/ci
+          path: tests/logs/ci
           if-no-files-found: warn
 
   simulation-tests:
