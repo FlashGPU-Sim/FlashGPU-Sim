@@ -26,16 +26,15 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-# Detect GPGPU-Sim Version
+# Detect build identity
 ifeq ($(GPGPUSIM_ROOT),)
 else
-GPGPUSIM_VERSION=$(shell cat $(GPGPUSIM_ROOT)/version | awk '/Version/ {print $$8}' )
 
-#Detect Git branch and commit #
+# Detect Git commit and working-tree state
 GIT_COMMIT := $(shell git log --abbrev-commit -n 1 | head -1 | sed -re 's/commit (.*)/\1/')
 GIT_FILES_CHANGED_A:=$(shell git diff --numstat | wc | sed -re 's/^\s+([0-9]+).*/\1./')
 GIT_FILES_CHANGED:= $(GIT_FILES_CHANGED_A)$(shell git diff --numstat --cached | wc | sed -re 's/^\s+([0-9]+).*/\1/')
-GPGPUSIM_BUILD := gpgpu-sim_git-commit-$(GIT_COMMIT)_modified_$(GIT_FILES_CHANGED)
+GPGPUSIM_BUILD := flashgpu-sim_git-commit-$(GIT_COMMIT)_modified_$(GIT_FILES_CHANGED)
 endif
 
 # Detect CUDA Runtime Version 

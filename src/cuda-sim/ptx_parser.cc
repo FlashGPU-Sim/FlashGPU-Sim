@@ -805,13 +805,11 @@ void ptx_recognizer::add_vector_operand(
   PTX_PARSE_GPPRINTF("add_vector_operand");
   parse_assert(!components.empty(), "empty vector operand is not allowed.");
 
-  const symbol *null_op = g_current_symbol_table->lookup("_");
   std::vector<const symbol *> symbols;
   symbols.reserve(components.size());
-  for (size_t i = 0; i < components.size(); ++i) {
-    const symbol *s = g_current_symbol_table->lookup(components[i]);
+  for (const char *component : components) {
+    const symbol *s = g_current_symbol_table->lookup(component);
     parse_assert(s != NULL, "vector component(s) missing declarations.");
-    if (i != 0 && s == null_op) s = NULL;
     symbols.push_back(s);
   }
   g_operands.push_back(operand_info(symbols, gpgpu_ctx));
@@ -975,7 +973,8 @@ void ptx_recognizer::add_neg_pred_operand(const char *identifier) {
   g_operands.push_back(op);
 }
 
-void ptx_recognizer::add_address_operand(const char *identifier, int offset) {
+void ptx_recognizer::add_address_operand(const char *identifier,
+                                         long long offset) {
   PTX_PARSE_GPPRINTF("add_address_operand");
   const symbol *s = g_current_symbol_table->lookup(identifier);
   if (s == NULL) {
@@ -986,9 +985,10 @@ void ptx_recognizer::add_address_operand(const char *identifier, int offset) {
   g_operands.push_back(operand_info(s, offset, gpgpu_ctx));
 }
 
-void ptx_recognizer::add_address_operand2(int offset) {
+void ptx_recognizer::add_address_operand2(long long offset) {
   PTX_PARSE_GPPRINTF("add_address_operand");
-  g_operands.push_back(operand_info((unsigned)offset, gpgpu_ctx));
+  g_operands.push_back(
+      operand_info(static_cast<unsigned long long>(offset), gpgpu_ctx));
 }
 
 void ptx_recognizer::add_array_initializer() {

@@ -1693,7 +1693,15 @@ bool shader_core_ctx::can_issue_wgmma_warpgroup(
     const unsigned *warp_ids, unsigned count, register_set &pipe_reg_set,
     const warp_inst_t *inst) const {
   if (count != WGMMA_WARPGROUP_SIZE) return false;
-  if (m_config->gpgpu_num_sched_per_core != WGMMA_WARPGROUP_SIZE) return false;
+  if (m_config->gpgpu_num_sched_per_core != WGMMA_WARPGROUP_SIZE) {
+    fprintf(stderr,
+            "\nGPGPU-Sim configuration error: WGMMA requires exactly %u "
+            "warp schedulers per core, but -gpgpu_num_sched_per_core is %u.\n",
+            WGMMA_WARPGROUP_SIZE,
+            m_config->gpgpu_num_sched_per_core);
+    fflush(stderr);
+    abort();
+  }
   if (m_wgmma_issued_this_cycle || m_subpartition_issue_mask != 0) return false;
   const unsigned long long now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
   if (!m_wgmma.issue_chain_ready(inst, now)) return false;
@@ -1963,7 +1971,8 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       dynamic_cast<const ptx_instruction *>(next_inst);
   const bool is_tcgen05_commit =
       next_ptx_inst && next_ptx_inst->get_opcode() == TCGEN05_COMMIT_OP;
-  if (next_inst->op == MBARRIER_OP || is_tcgen05_commit) {
+  if (next_inst->op == MBARRIER_OP || is_tcgen05_commit ||
+      next_inst->m_is_cp_async_mbarrier_arrive) {
     mbarrier_dyn_inst = const_cast<ptx_instruction *>(
         flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(
             next_inst->pc, static_cast<const ptx_instruction *>(next_inst)));
@@ -2008,41 +2017,51 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                        pI, pI,
                                        (*pipe_reg)->get_active_mask());
     }
-  } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
-    // Functional TMA decoding writes the static/dynamic TMA metadata into the
-    // per-PC dynamic PTX instruction.  The fetch-side next_inst is only the
-    // predecoded template and may still carry the default INVALID TMA type.
+  } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP &&
+             (*pipe_reg)->get_active_mask().any()) {
+    // Functional execution populates TMA metadata in the per-PC dynamic PTX
+    // instruction. The pipeline register was copied before that execution.
     assert(dyn_inst != nullptr);
-    if ((*pipe_reg)->get_active_mask().any()) {
-      // Check if this is a bulk group operation.
-      const auto &tma_info = dyn_inst->get_tma_static_info();
-      if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_COMMIT) {
-        // cp.async.bulk.commit_group
-        m_barriers.commit_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id);
-      } else if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_WAIT) {
-        // cp.async.bulk.wait_group N
-        //
-        // The .read modifier only waits for tensormap/source reads.  This TMA
-        // model reads source data during functional execution before queuing the
-        // asynchronous destination-side traffic, so the read phase is complete at
-        // issue time.
-        if (!tma_info.bulk_wait_read_only) {
-          unsigned group_num = tma_info.bulk_wait_num;
-          m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
-          m_barriers.wait_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id,
-                                     group_num);
-        }
-      } else {
-        // Regular TMA operation (load/store).
-        m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id,
-                                dyn_inst);
+    // Check if this is a bulk group operation.
+    const auto &tma_info = dyn_inst->get_tma_static_info();
+    if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_COMMIT) {
+      // cp.async.bulk.commit_group
+      m_barriers.commit_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id);
+    } else if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_WAIT) {
+      // cp.async.bulk.wait_group N
+      //
+      // The .read modifier only waits for tensormap/source reads.  This TMA
+      // model reads source data during functional execution before queuing the
+      // asynchronous destination-side traffic, so the read phase is complete at
+      // issue time.
+      if (!tma_info.bulk_wait_read_only) {
+        unsigned group_num = tma_info.bulk_wait_num;
+        m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
+        m_barriers.wait_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id,
+                                   group_num);
       }
+    } else {
+      // Regular TMA operation (load/store).
+      m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id,
+                              dyn_inst);
     }
   } else if (next_inst->op == ASYNC_COPY_OP) {
     const ptx_instruction *static_inst =
         dynamic_cast<const ptx_instruction *>(next_inst);
     unsigned cta_id = m_warp[warp_id]->get_cta_id();
-    if (next_inst->m_is_ldgsts) {
+    assert(static_cast<unsigned>(next_inst->m_is_ldgsts) +
+               static_cast<unsigned>(next_inst->m_is_ldgdepbar) +
+               static_cast<unsigned>(next_inst->m_is_depbar) +
+               static_cast<unsigned>(
+                   next_inst->m_is_cp_async_mbarrier_arrive) ==
+           1);
+    if (next_inst->m_is_cp_async_mbarrier_arrive) {
+      if ((*pipe_reg)->get_active_mask().any()) {
+        assert(mbarrier_dyn_inst);
+        m_tma->warp_reaches_cp_async_mbarrier_arrive(
+            cta_id, warp_id, **pipe_reg, *mbarrier_dyn_inst);
+      }
+    } else if (next_inst->m_is_ldgsts) {
       if ((*pipe_reg)->get_active_mask().any()) {
         m_tma->warp_reaches_cp_async(cta_id, warp_id, **pipe_reg,
                                      static_inst);
@@ -2398,6 +2417,20 @@ void scheduler_unit::cycle() {
           warp(warp_id).ibuffer_flush();
         } else {
           valid_inst = true;
+          if (pI->op == ASYNC_COPY_OP &&
+              m_shader->m_config->gpgpu_num_cp_async_units == 0) {
+            fprintf(
+                stderr,
+                "\nGPGPU-Sim configuration error: shader %u warp %u "
+                "encountered ordinary cp.async at PC 0x%llx, but "
+                "-gpgpu_num_cp_async_units is 0. Enable at least one "
+                "cp.async issue unit and provide the ID_OC_CP_ASYNC and "
+                "OC_EX_CP_ASYNC pipeline widths.\n",
+                m_shader->get_sid(), warp_id,
+                static_cast<unsigned long long>(pI->pc));
+            fflush(stderr);
+            abort();
+          }
           if (!m_scoreboard->checkCollision(warp_id, pI)) {
             SCHED_GPPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
@@ -2698,6 +2731,9 @@ void scheduler_unit::cycle() {
         warp(warp_id).set_next_pc(pc);
         warp(warp_id).ibuffer_flush();
       }
+      // A control-hazard flush leaves the local pI non-null. Do not inspect
+      // its operands for tracing unless it still matches the SIMT PC.
+      const bool current_inst = pI != NULL && valid && pc == pI->pc;
       if (warp_inst_issued) {
         issue_trace_log(m_shader, m_id, warp_id, (*iter)->get_dynamic_warp_id(),
                         pI, "ISSUE", "-");
@@ -2710,8 +2746,7 @@ void scheduler_unit::cycle() {
         else
           do_on_warp_issued(warp_id, issued, iter);
         if (warpgroup_inst_issued) break;
-      } else if (pI != NULL && valid &&
-                 !m_scoreboard->checkCollision(warp_id, pI)) {
+      } else if (current_inst && !m_scoreboard->checkCollision(warp_id, pI)) {
         issue_trace_log(m_shader, m_id, warp_id, (*iter)->get_dynamic_warp_id(),
                         pI, "STALL_READY_NO_ISSUE", "-");
       }
@@ -2789,7 +2824,16 @@ void scheduler_unit::cycle() {
     } else {
       const warp_inst_t *pI = warp(wid).ibuffer_next_inst();
       bool valid = warp(wid).ibuffer_next_valid();
-      if (!valid || pI == NULL) {
+      unsigned pc = 0;
+      unsigned rpc = 0;
+      bool current_inst = valid && pI != NULL;
+      if (current_inst) {
+        m_shader->get_pdom_stack_top_info(wid, pI, &pc, &rpc);
+        current_inst = (pc == pI->pc);
+      }
+      // Mirror the issue-path control-hazard gate without mutating the ibuffer
+      // from this statistics-only pass.
+      if (!current_inst) {
         reason = STALL_NO_INSTRUCTION;
       } else if (m_scoreboard->checkCollision(wid, pI)) {
         // Scoreboard stall — classify by producer type
@@ -4053,6 +4097,16 @@ pipelined_simd_unit::pipelined_simd_unit(register_set *result_port,
 
 void pipelined_simd_unit::cycle() {
   if (!m_pipeline_reg[0]->empty()) {
+    // Stallable units do not reserve a result bus when they issue.  Their
+    // completion can therefore coincide with enough reserved completions to
+    // fill EX_WB.  Keep the completed instruction in the final pipeline stage
+    // until writeback makes room instead of overflowing the register set.
+    if (!m_result_port->has_free()) {
+      assert(stallable() &&
+             "unstallable execution unit overflowed its result port");
+      occupied >>= 1;
+      return;
+    }
     m_result_port->move_in(m_pipeline_reg[0]);
     assert(active_insts_in_pipeline > 0);
     active_insts_in_pipeline--;

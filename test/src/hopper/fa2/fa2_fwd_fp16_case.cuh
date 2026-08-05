@@ -131,40 +131,40 @@ static constexpr int kFa2PrefillSmallCaseCount = 4;
 
 static constexpr int kFa2PrefillMediumCaseCount = 4;
 
-#define FA2_PREFILL_SENSITIVITY_CASE_LIST(X)       \
+#define FA2_PREFILL_BREAKDOWN_CASE_LIST(X)         \
   X(H1D128FullB1S256, 1, 256, 1, 128, false)
 
-static constexpr int kFa2PrefillSensitivityCaseCount = 1;
+static constexpr int kFa2PrefillBreakdownCaseCount = 1;
 
-#define FA2_PREFILL_SENSITIVITY_H1D128_FULL_CASE_LIST(X) \
+#define FA2_PREFILL_SCALING_H1D128_FULL_CASE_LIST(X)     \
   X(H1D128FullB1S256, 1, 256, 1, 128, false)             \
   X(H1D128FullB1S512, 1, 512, 1, 128, false)             \
   X(H1D128FullB1S1024, 1, 1024, 1, 128, false)           \
   X(H1D128FullB1S2048, 1, 2048, 1, 128, false)           \
   X(H1D128FullB1S4096, 1, 4096, 1, 128, false)
 
-#define FA2_PREFILL_SENSITIVITY_H1D128_CAUSAL_CASE_LIST(X) \
+#define FA2_PREFILL_SCALING_H1D128_CAUSAL_CASE_LIST(X)     \
   X(H1D128CausalB1S256, 1, 256, 1, 128, true)              \
   X(H1D128CausalB1S512, 1, 512, 1, 128, true)              \
   X(H1D128CausalB1S1024, 1, 1024, 1, 128, true)            \
   X(H1D128CausalB1S2048, 1, 2048, 1, 128, true)            \
   X(H1D128CausalB1S4096, 1, 4096, 1, 128, true)
 
-#define FA2_PREFILL_SENSITIVITY_H1D128_CASE_LIST(X)     \
-  FA2_PREFILL_SENSITIVITY_H1D128_FULL_CASE_LIST(X)      \
-  FA2_PREFILL_SENSITIVITY_H1D128_CAUSAL_CASE_LIST(X)
+#define FA2_PREFILL_SCALING_H1D128_CASE_LIST(X)     \
+  FA2_PREFILL_SCALING_H1D128_FULL_CASE_LIST(X)      \
+  FA2_PREFILL_SCALING_H1D128_CAUSAL_CASE_LIST(X)
 
-static constexpr int kFa2PrefillSensitivityH1D128CaseCount = 10;
+static constexpr int kFa2PrefillScalingH1D128CaseCount = 10;
 
-#if defined(FA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_BH_HALF)
-#define FA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_CASE_LIST(X) \
+#if defined(FA2_PREFILL_CONCURRENCY_BH_HALF)
+#define FA2_PREFILL_CONCURRENCY_D128_FULL_CASE_LIST(X) \
   X(H8D128FullB32S512, 32, 512, 8, 128, false)
 #else
-#define FA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_CASE_LIST(X) \
+#define FA2_PREFILL_CONCURRENCY_D128_FULL_CASE_LIST(X) \
   X(H16D128FullB64S512, 64, 512, 16, 128, false)
 #endif
 
-static constexpr int kFa2PrefillSensitivityLargeD128FullCaseCount = 1;
+static constexpr int kFa2PrefillConcurrencyD128FullCaseCount = 1;
 
 #define FA2_PREFILL_CASE_ENTRY(name, batch, seqlen, heads, head_dim, causal) \
   Fa2PrefillCase{#name, batch, seqlen, heads, head_dim, causal},
@@ -176,12 +176,12 @@ static constexpr Fa2PrefillCase kFa2PrefillSmallCases[] = {
     FA2_PREFILL_SMALL_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
 static constexpr Fa2PrefillCase kFa2PrefillMediumCases[] = {
     FA2_PREFILL_MEDIUM_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
-static constexpr Fa2PrefillCase kFa2PrefillSensitivityCases[] = {
-    FA2_PREFILL_SENSITIVITY_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
-static constexpr Fa2PrefillCase kFa2PrefillSensitivityH1D128Cases[] = {
-    FA2_PREFILL_SENSITIVITY_H1D128_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
-static constexpr Fa2PrefillCase kFa2PrefillSensitivityLargeD128FullCases[] = {
-    FA2_PREFILL_SENSITIVITY_LARGE_D128_FULL_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
+static constexpr Fa2PrefillCase kFa2PrefillBreakdownCases[] = {
+    FA2_PREFILL_BREAKDOWN_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
+static constexpr Fa2PrefillCase kFa2PrefillScalingH1D128Cases[] = {
+    FA2_PREFILL_SCALING_H1D128_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
+static constexpr Fa2PrefillCase kFa2PrefillConcurrencyD128FullCases[] = {
+    FA2_PREFILL_CONCURRENCY_D128_FULL_CASE_LIST(FA2_PREFILL_CASE_ENTRY)};
 #undef FA2_PREFILL_CASE_ENTRY
 
 static_assert(sizeof(kFa2PrefillCases) / sizeof(kFa2PrefillCases[0]) ==
@@ -199,18 +199,18 @@ static_assert(sizeof(kFa2PrefillMediumCases) /
                       sizeof(kFa2PrefillMediumCases[0]) ==
                   kFa2PrefillMediumCaseCount,
               "FA2 prefill medium case list must contain 4 cases");
-static_assert(sizeof(kFa2PrefillSensitivityCases) /
-                      sizeof(kFa2PrefillSensitivityCases[0]) ==
-                  kFa2PrefillSensitivityCaseCount,
-              "FA2 prefill sensitivity case list must contain 1 case");
-static_assert(sizeof(kFa2PrefillSensitivityH1D128Cases) /
-                      sizeof(kFa2PrefillSensitivityH1D128Cases[0]) ==
-                  kFa2PrefillSensitivityH1D128CaseCount,
-              "FA2 prefill H1D128 sensitivity case list must contain 10 cases");
-static_assert(sizeof(kFa2PrefillSensitivityLargeD128FullCases) /
-                      sizeof(kFa2PrefillSensitivityLargeD128FullCases[0]) ==
-                  kFa2PrefillSensitivityLargeD128FullCaseCount,
-              "FA2 prefill large D128 full sensitivity case list must contain 1 case");
+static_assert(sizeof(kFa2PrefillBreakdownCases) /
+                      sizeof(kFa2PrefillBreakdownCases[0]) ==
+                  kFa2PrefillBreakdownCaseCount,
+              "FA2 prefill breakdown case list must contain 1 case");
+static_assert(sizeof(kFa2PrefillScalingH1D128Cases) /
+                      sizeof(kFa2PrefillScalingH1D128Cases[0]) ==
+                  kFa2PrefillScalingH1D128CaseCount,
+              "FA2 prefill H1D128 scaling case list must contain 10 cases");
+static_assert(sizeof(kFa2PrefillConcurrencyD128FullCases) /
+                      sizeof(kFa2PrefillConcurrencyD128FullCases[0]) ==
+                  kFa2PrefillConcurrencyD128FullCaseCount,
+              "FA2 prefill D128 concurrency case list must contain 1 case");
 
 struct Fa2RunResult {
   cudaError_t error = cudaSuccess;
@@ -253,19 +253,18 @@ inline bool is_valid_fa2_prefill_tuning_case(const Fa2PrefillCase &cfg) {
   return is_supported_fa2_prefill_case(cfg) && cfg.seqlen % 128 == 0;
 }
 
-inline bool is_valid_fa2_prefill_sensitivity_case(
-    const Fa2PrefillCase &cfg) {
+inline bool is_valid_fa2_prefill_breakdown_case(const Fa2PrefillCase &cfg) {
   return cfg.batch == 1 && cfg.seqlen == 256 && cfg.heads == 1 &&
          cfg.head_dim == 128 && !cfg.causal;
 }
 
-inline bool is_valid_fa2_prefill_sensitivity_h1d128_case(
+inline bool is_valid_fa2_prefill_scaling_h1d128_case(
     const Fa2PrefillCase &cfg) {
   return cfg.batch == 1 && cfg.heads == 1 && cfg.head_dim == 128 &&
          cfg.seqlen >= 256 && cfg.seqlen <= 4096 && cfg.seqlen % 128 == 0;
 }
 
-inline bool is_valid_fa2_prefill_sensitivity_large_d128_full_case(
+inline bool is_valid_fa2_prefill_concurrency_d128_full_case(
     const Fa2PrefillCase &cfg) {
   return cfg.seqlen == 512 && cfg.head_dim == 128 && !cfg.causal &&
          ((cfg.batch == 64 && cfg.heads == 16) ||
@@ -675,10 +674,10 @@ inline Fa2RunResult run_fa2_prefill_fp16(const Fa2PrefillCase &cfg,
   return make_fa2_invalid_result("Fa2PrefillVariantDisabled");
 }
 
-#if defined(FA2_PREFILL_GROUP_SENSITIVITY)
-inline Fa2RunResult run_fa2_sensitivity_fp16(const Fa2PrefillCase &cfg) {
-  if (!is_valid_fa2_prefill_sensitivity_case(cfg)) {
-    return make_fa2_invalid_result("Fa2SensitivityCase");
+#if defined(FA2_PREFILL_GROUP_BREAKDOWN)
+inline Fa2RunResult run_fa2_breakdown_fp16(const Fa2PrefillCase &cfg) {
+  if (!is_valid_fa2_prefill_breakdown_case(cfg)) {
+    return make_fa2_invalid_result("Fa2BreakdownCase");
   }
 
   return run_fa2_fwd_fp16_typed<128, false>(cfg.batch, cfg.seqlen,
@@ -686,11 +685,11 @@ inline Fa2RunResult run_fa2_sensitivity_fp16(const Fa2PrefillCase &cfg) {
 }
 #endif
 
-#if defined(FA2_PREFILL_GROUP_SENSITIVITY_H1D128)
-inline Fa2RunResult run_fa2_sensitivity_h1d128_fp16(
+#if defined(FA2_PREFILL_GROUP_SCALING)
+inline Fa2RunResult run_fa2_scaling_h1d128_fp16(
     const Fa2PrefillCase &cfg) {
-  if (!is_valid_fa2_prefill_sensitivity_h1d128_case(cfg)) {
-    return make_fa2_invalid_result("Fa2SensitivityH1D128Case");
+  if (!is_valid_fa2_prefill_scaling_h1d128_case(cfg)) {
+    return make_fa2_invalid_result("Fa2ScalingH1D128Case");
   }
 
   if (cfg.causal) {
@@ -702,11 +701,11 @@ inline Fa2RunResult run_fa2_sensitivity_h1d128_fp16(
 }
 #endif
 
-#if defined(FA2_PREFILL_GROUP_SENSITIVITY_LARGE_D128_FULL)
-inline Fa2RunResult run_fa2_sensitivity_large_d128_full_fp16(
+#if defined(FA2_PREFILL_GROUP_CONCURRENCY)
+inline Fa2RunResult run_fa2_concurrency_d128_full_fp16(
     const Fa2PrefillCase &cfg) {
-  if (!is_valid_fa2_prefill_sensitivity_large_d128_full_case(cfg)) {
-    return make_fa2_invalid_result("Fa2SensitivityLargeD128FullCase");
+  if (!is_valid_fa2_prefill_concurrency_d128_full_case(cfg)) {
+    return make_fa2_invalid_result("Fa2ConcurrencyD128FullCase");
   }
 
   return run_fa2_fwd_fp16_typed<128, false>(cfg.batch, cfg.seqlen,

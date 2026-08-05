@@ -22,8 +22,13 @@ in `patches/`. CUTLASS/CuTe is provided by that checkout's nested
 
 ## Files
 
-- `fa3_fwd_hdim128_fp16_test.cc` - Google Test wrapper for the fixed FA3 case
+- `fa3_fwd_hdim128_fp16_test.cc` - shared Google Test registration and workload
+  wrapper
+- `fa3_{fwd,bwd}_d{64,128}_{noncausal,causal}_test.cc` - thin, uniquely named
+  standard-build wrappers for one kernel specialization each
 - `fa3_fwd_hdim128_fp16_case.cuh` - shared CUDA workload implementation
+- `fa3_fwd_packgqa_{case.cuh,test.cc}` - one-tile GQA forward case that
+  validates the default and `.noinc` `cp.async.mbarrier.arrive` forms
 - `prepare_flash_attention.sh` - clones FlashAttention, checks out the pinned
   upstream commit, initializes CUTLASS, and applies local patches
 - `patches/flash-attention-fa2-fa3-hooks.patch` - FA2/FA3 profiling hooks,
@@ -47,22 +52,40 @@ This prepares:
 Then from `test/`:
 
 ```bash
-./run_tests.sh build hopper
-./run_tests.sh hopper Fa3FwdHdim128Fp16IntegrationTest
-./run_tests.sh hopper Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase
-./run_tests.sh hopper Fa3PrefillFp16SmokeTest.H32D64FullB2S128
-./run_tests.sh hopper Fa3PrefillFp16BackwardSmokeTest.H32D64FullB2S128
-./run_tests.sh hopper Fa3PrefillFp16IntegrationTest.H16D128FullB64S512
-./run_tests.sh hopper Fa3PrefillFp16BackwardIntegrationTest.H16D128FullB64S512
+./run_tests.sh run test --target sm90 --group fa3-smoke
+./run_tests.sh run test --target sm90 --group fa3-packgqa
+./run_tests.sh run test --target sm90 --group fa3-smoke \
+  Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase
+./run_tests.sh run analysis --target fa3 --group large \
+  Fa3PrefillFp16IntegrationTest.H16D128FullB64S512
+./run_tests.sh run analysis --target fa3 --group breakdown --mode baseline
+./run_tests.sh build analysis --target fa3 --group concurrency --mode all
 ```
+
+For native H100 runs with Nsight Compute collection, use the registry-backed
+hardware entry point from the repository root:
+
+```bash
+./test/scripts/run_fa3_ncu.sh \
+  --group breakdown:qk_pv_only_no_tma \
+  --group breakdown:qk_pv_only_no_tma_reg_timeline
+```
+
+The command accepts repeated `--group GROUP:MODE` selectors and uses each
+group's registry-owned case list. See `test/scripts/README.md` for case
+overrides, output layout, prerequisites, and migration notes.
 
 The generated kernel targets `sm_90a`. It is for GPGPU-Sim/PTX bring-up and
 Hopper inspection; it is not expected to run on non-Hopper hardware.
 
-The generated FA3 prefill forward and backward launch cases are excluded from
-the default Hopper suite because they run the simulator path. Run an individual
-case by passing its gtest name to `run_tests.sh hopper`; no extra environment
-variable is required.
+The standard wrappers compile serially and link into the single existing
+`run_fa3_standard_tests` binary. The split bounds NVCC memory and gives every
+fatbin a unique source-derived PTX name, which GPGPU-Sim requires when loading
+multiple embedded PTX images.
+
+The smoke cases live under `test/sm90`; small, medium, large, and sensitivity
+workloads live under `analysis/fa3`. A filter can select an individual gtest
+case without escaping the selected group.
 
 ## Notes
 

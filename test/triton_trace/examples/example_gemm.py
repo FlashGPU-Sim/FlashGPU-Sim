@@ -2,7 +2,6 @@
 Adopted from Triton tutorial: https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html#sphx-glr-getting-started-tutorials-03-matrix-multiplication-py
 """
 
-import sys
 from pathlib import Path
 
 import torch
@@ -11,7 +10,6 @@ import triton
 import triton.language as tl
 
 TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(TRITON_TRACE_DIR))
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -556,10 +554,10 @@ def benchmark_square():
 
 def simple_test():
 
-    from track_triton_kernels import TritonKernelTracker
+    import TritonTrace
 
     output_dir = (TRITON_TRACE_DIR / "triton_kernel_tracking/example_gemm").resolve()
-    tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)
+    tracker = TritonTrace.Tracker(output_dir, save_binaries=True, capture_args=True)
     tracker.disable()
     print(f"\nOutput directory: {output_dir}")
 

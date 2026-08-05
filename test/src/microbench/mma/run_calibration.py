@@ -25,7 +25,6 @@ TEST_DIR = SCRIPT_DIR.parents[2]
 PROJECT_ROOT = TEST_DIR.parent
 OUTPUT_DIR = TEST_DIR / "calibration_results"
 RUN_BASE_DIR = TEST_DIR / "run"
-SETUP_SH = PROJECT_ROOT / "setup.sh"
 SETUP_ENVIRONMENT = PROJECT_ROOT / "setup_environment"
 DEFAULT_CONFIG = "SM120_RTX5090"
 
@@ -319,7 +318,7 @@ def run_hardware_phase(config_name: str, run_dir: Path) -> None:
 
     for target in RUN_TARGETS:
         run_command(
-            f"./run_tests.sh -c {config_name} bench \"{target['pattern']}\"",
+            f"./run_tests.sh -c {config_name} run microbench \"{target['pattern']}\"",
             env=native_env(),
         )
 
@@ -330,13 +329,10 @@ def run_sim_phase(config_name: str, run_dir: Path) -> None:
     print("\n[Phase 2] Running GPGPU-Sim Tests...")
     clear_run_outputs(run_dir)
 
-    setup_cmd = (
-        f"source {shell_quote(SETUP_SH)} && "
-        f"source {shell_quote(SETUP_ENVIRONMENT)}"
-    )
+    setup_cmd = f"source {shell_quote(SETUP_ENVIRONMENT)}"
     for target in RUN_TARGETS:
         run_command(
-            f"{setup_cmd} && ./run_tests.sh -c {config_name} bench "
+            f"{setup_cmd} && ./run_tests.sh -c {config_name} run microbench "
             f"\"{target['pattern']}\""
         )
 
@@ -356,6 +352,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    if not os.environ.get("CUDA_INSTALL_PATH"):
+        raise SystemExit(
+            "Set CUDA_INSTALL_PATH to the CUDA Toolkit root before running calibration."
+        )
 
     ensure_dir(OUTPUT_DIR)
     clear_captured_outputs()

@@ -1,286 +1,269 @@
-# GPGPU-Sim Configuration Directory
+# FlashGPU-Sim Configuration Guide
 
-This directory contains GPU hardware configurations for GPGPU-Sim simulations.
-
-## Purpose
-
-Configuration files define the simulated GPU architecture, including:
-- Number and organization of streaming multiprocessors (SMs)
-- Memory hierarchy (caches, shared memory, DRAM controllers)
-- Pipeline parameters and instruction latencies
-- Interconnect network topology and routing
-- Clock domains and timing characteristics
+FlashGPU-Sim loads its GPU model from `gpgpusim.config` in the workload's
+working directory. The configurations in this directory are the supported
+starting points for simulation and architecture studies.
 
 ## Available Configurations
 
-### SM120_RTX5090
-Full RTX 5090 configuration with 170 streaming multiprocessors.
-
-**Use for:**
-- Performance analysis and benchmarking
-- Multi-SM workload validation
-- Scalability testing
-- Production-equivalent simulations
-
-**Characteristics:**
-- 170 SM clusters (1 core per cluster = 170 total SMs)
-- 16 memory controllers
-- High memory and time requirements
-- Accurate performance modeling
-
-### SM120_RTX5090_REDUCED
-Lightweight configuration with 1 streaming multiprocessor.
-
-**Use for:**
-- Quick functional tests
-- Development and debugging
-- Continuous integration (CI/CD)
-- Rapid iteration workflows
-
-**Characteristics:**
-- 1 SM cluster (1 core per cluster = 1 total SM)
-- 16 memory controllers (GPGPU-Sim minimum)
-- Low memory and time requirements
-- Functionally equivalent for single-SM workloads
-
 ### SM90_H100
-Full Hopper H100 configuration with 132 streaming multiprocessors.
 
-**Use for:**
-- Hopper/FA3 final validation
-- WGMMA and TMA behavior with full H100 SM count
-- Performance-oriented H100 experiments
+[`SM90_H100`](SM90_H100/gpgpusim.config) models an H100 GPU with:
 
-**Characteristics:**
-- 132 SM clusters (1 core per cluster = 132 total SMs)
-- 16 memory controllers
-- Full H100 shared memory sizing
+- **Compute capability:** 9.0
+- **Resources:** 132 SMs, 80 memory channels, and 160 L2/memory subpartitions
+- **Timing models:** TMA, ordinary `cp.async`, `mbarrier`, MMA, and WGMMA
+- **PTX transformation:** Register allocation and conservative instruction
+  reordering
+- **Clock domains (MHz):** `1500:1700:1700:2617`
+  (core:interconnect:L2:DRAM)
 
-### SM90_H100_1500MHZ
-Full Hopper H100 configuration with core, interconnect, and L2 clocks fixed at
-1.5 GHz.
+### SM120_RTX5090
 
-**Use for:**
-- H100/NCU comparisons when the measured SM clock is near 1.5 GHz
-- FA3 performance tuning runs that should not mutate the default H100 config
+[`SM120_RTX5090`](SM120_RTX5090/gpgpusim.config) models an RTX 5090 GPU with:
 
-**Characteristics:**
-- Same SM count, memory hierarchy, and TMA/WGMMA settings as `SM90_H100`
-- `-gpgpu_clock_domains 1500:1500:1500:14000`
+- **Compute capability:** 12.0
+- **Resources:** 170 SMs, 16 memory channels, and 128 L2/memory subpartitions
+- **Timing models:** TMA, ordinary `cp.async`, `mbarrier`, MMA, and TensorMap
+- **PTX transformation:** Register allocation enabled; instruction reordering
+  disabled
+- **Clock domains (MHz):** `2580:2580:2580:14001`
+  (core:interconnect:L2:DRAM)
 
-### FlashAttention H100 result configs
-The current FlashAttention H100 result set uses these primary configs:
+Both configuration directories include `sass_primary_hints.rules` for
+experiments that explicitly enable SASS-guided PTX reordering.
 
-- `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700`
-  - FA3 baseline and generic H100 baseline.
-- `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA3_WGMMA_RF`
-  - Current FA3 large-run config. Starts from the shared FA register-allocation/PTX-scheduling config, uses TMA 128-byte request granularity with OOB read traffic, and models pending WGMMA accumulator RF pressure as shared operand-collector read traffic.
-- `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA3_TMA128_OOB_READ`
-  - Previous FA3 large-run config without the WGMMA RF pressure model. Starts from the FA3 baseline, uses TMA 128-byte request granularity, and models OOB TMA reads as L2 traffic while OOB writes are skipped.
-- `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA2_REGALLOC`
-  - FA2 baseline. Enables PTX register allocation and PTX scheduling.
-- `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA2_IDEAL`
-  - FA2 sensitivity config. Enables PTX register allocation/scheduling, idealized tensor-core issue queue, tensor-core init 4, and ideal cp.async frontend latency. Backend memory latency is still modeled.
-- `SM90_H100_1500MHZ_HBM80_L2S160_MSHR512_L2NOC1700_FA3_TMA128_NO_OOB`
-  - FA3 sensitivity config from the final rebuttal archive. Uses TMA 128-byte request granularity and disables synthetic OOB L2 traffic.
+### Legacy Configurations
 
-The FA3 WGMMA RF config uses an intentionally compact pressure model. Each
-WGMMA MMA injects one accumulator-sized RF-read-equivalent token:
+`tested-cfgs/` contains configurations validated by earlier GPGPU-Sim
+releases. `deprecated-cfgs/` contains older configurations retained for
+reference. They are not maintained as FlashGPU-Sim release configurations.
 
-```
-4 warps * 32 lanes * accumulator registers per thread * accumulator bytes
-```
+## Common Parameters
 
-For the common FA3 fp16->fp32 WGMMA shapes, the accumulator footprint is derived
-from the destination vector width, falling back to `N/2` registers per thread
-when the vector width is unavailable. With fp32 accumulators this is `128 *
-(N/2) * 4` bytes per WGMMA, e.g. 32 KiB for `n128` and 44 KiB for `n176`.
-The model drains those tokens at 512 B/cycle/SM from the same 1024 B/cycle/SM
-effective RF read budget used by the normal operand collector. This is not a
-full RF read/write bandwidth model for WGMMA itself; calibrated WGMMA issue,
-compute, and completion timing still determine tensor throughput. The token
-drain models the observed extra RF/collector pressure that pending WGMMA
-accumulator traffic places on independent fp/int instructions. Accumulate and
-overwrite forms are charged the same because the simulator does not yet model a
-separate RF write path, and the focused H100 microbenchmarks did not show a
-large enough accumulate/overwrite split to justify a more invasive model.
+The options below are inherited from GPGPU-Sim and are common starting points
+for architecture studies. Parameters that describe topology, caches, address
+mapping, and interconnects must be changed consistently.
 
-Intermediate parameter sweeps for cp.async, TMA response width, WGMMA/MMA queue experiments, and temporary `_TMP` configs are intentionally not kept here. The final raw logs and reports are archived outside this repository in `flashgpu_sim_micro26_rebuttal`.
+### GPU Topology and Clock Domains
 
-### SM90_H100_REDUCED
-Lightweight Hopper H100 configuration with 1 streaming multiprocessor.
+| Option | Meaning |
+| --- | --- |
+| `-gpgpu_compute_capability_major`, `-gpgpu_compute_capability_minor` | Compute capability exposed by the simulated device |
+| `-gpgpu_n_clusters` | Number of processing clusters |
+| `-gpgpu_n_cores_per_cluster` | SMs per cluster; total SMs are the product of this value and `-gpgpu_n_clusters` |
+| `-gpgpu_clock_domains` | Core, interconnect, L2, and DRAM clocks in MHz |
 
-**Use for:**
-- FA3 deadlock/debug iterations
-- Reduced log volume
-- Hopper instruction semantics debugging
+Changing the compute capability also requires compiling the workload for the
+matching SM architecture.
 
-**Characteristics:**
-- 1 SM cluster (1 core per cluster = 1 total SM)
-- 16 memory controllers (GPGPU-Sim minimum)
-- Full H100 per-SM shared memory and TMA settings
+### Execution Resources
 
-### deprecated-cfgs/
-Legacy configurations maintained for reference.
+| Option | Meaning |
+| --- | --- |
+| `-gpgpu_shader_core_pipeline` | Maximum threads per SM and warp size, encoded as `<threads>:<warp_size>` |
+| `-gpgpu_shader_cta` | Maximum resident CTAs per SM |
+| `-gpgpu_num_sched_per_core` | Warp schedulers per SM |
+| `-gpgpu_num_sp_units`, `-gpgpu_num_dp_units`, `-gpgpu_num_int_units`, `-gpgpu_num_sfu_units` | Scalar execution units per SM |
+| `-gpgpu_num_tensor_core_units` | Tensor-core execution units per SM |
+| `-gpgpu_pipeline_widths` | Widths of the issue and execution paths, including the FlashGPU-Sim TMA, `cp.async`, and TensorMap paths when present |
 
-### tested-cfgs/
-Validated configurations from previous GPGPU-Sim versions.
+The order of `-gpgpu_pipeline_widths` is documented immediately above the
+option in each `gpgpusim.config`.
 
-## Configuration File Format
+### Cache and Shared Memory
 
-Each configuration directory must contain at minimum:
+| Option | Meaning |
+| --- | --- |
+| `-gpgpu_unified_l1d_size` | Unified L1 data cache and shared-memory capacity in KiB per SM |
+| `-gpgpu_cache:dl1` | L1 data-cache geometry, policy, MSHRs, queues, and data-port width |
+| `-gpgpu_cache:dl2` | L2 cache geometry and policy per subpartition |
+| `-gpgpu_shmem_size` | Shared-memory capacity in bytes per SM |
+| `-gpgpu_shmem_per_block` | Default shared-memory limit in bytes per CTA |
+| `-gpgpu_adaptive_cache_config` | Enable runtime selection among supported shared-memory/L1 carveouts |
 
-### Required Files
+Cache configuration strings encode several mutually dependent fields. Start
+from a supported configuration rather than constructing one field at a time.
 
-1. **gpgpusim.config** - Main GPU architecture configuration
-   - GPU architecture parameters (SM count, memory, caches)
-   - Pipeline widths and functional unit counts
-   - Instruction latencies and initiation intervals
-   - Memory hierarchy configuration
-   - Clock domains
+### Memory System
 
-2. **config_*.icnt** - Interconnect network configuration
-   - Network topology (butterfly fly, mesh, etc.)
-   - Routing algorithm
-   - Virtual channels and buffer sizes
-   - Router architecture and arbitration
+| Option | Meaning |
+| --- | --- |
+| `-gpgpu_n_mem` | Number of memory channels |
+| `-gpgpu_n_sub_partition_per_mchannel` | L2/memory subpartitions per memory channel |
+| `-gpgpu_mem_addr_mapping` | Mapping from physical-address bits to channels, banks, rows, columns, and bursts |
+| `-gpgpu_memory_partition_indexing` | Memory-partition indexing policy |
+| `-gpgpu_dram_buswidth`, `-gpgpu_dram_burst_length` | DRAM interface width and burst length |
+| `-gpgpu_dram_timing_opt` | DRAM bank, row, column, and bus timing |
+| `-network_mode`, `-inter_config_file` | Interconnect backend and its optional configuration file |
 
-### Detection Requirements
+The number of channels, subpartitions, L2 geometry, address mapping, and
+interconnect endpoints form one model and should not be scaled independently.
 
-For automatic detection by `test/run_tests.sh list-configs`:
-- Directory must be in `configs/`
-- Must contain `gpgpusim.config` file
-- Directory name becomes the configuration name
+## FlashGPU-Sim-Specific Parameters
 
-## Adding Custom Configurations
+`Code default` is the fallback used when an option is absent. It is not a
+calibrated GPU configuration. In the tables below, `default` means that the
+configuration omits the option and therefore uses the code default.
 
-### Step 1: Create Configuration Directory
+The meaning of zero is option-specific: it can mean disabled, unlimited, or
+inherit another limit.
+
+### Data Movement and Synchronization
+
+| Option | Code default | SM90_H100 | SM120_RTX5090 | Meaning |
+| --- | ---: | ---: | ---: | --- |
+| `-gpgpu_num_tma_units` | `0` | `1` | `1` | TMA execution units per SM; `0` disables the TMA pipeline |
+| `-gpgpu_tma_max_inflight` | `0` | `384` | `384` | Maximum in-flight TMA memory requests per SM; `0` is unlimited |
+| `-gpgpu_tma_tx_quota` | `0` | `48` | `48` | Base in-flight request quota per TMA transaction; `0` is unlimited |
+| `-gpgpu_tma_quota_segment_bytes` | `0` | default | `8192` | Scale the transaction quota by `ceil(transaction_bytes / segment_bytes)`; `0` disables scaling |
+| `-gpgpu_tma_request_granularity` | `32` | `128` | `32` | Bytes represented by one TMA memory request |
+| `-gpgpu_tma_request_width` | `1` | default | default | TMA memory requests issued per TMA unit per cycle |
+| `-gpgpu_tma_response_width` | `1` | default | default | TMA response tokens accepted per SM per cycle |
+| `-gpgpu_tma_oob_l2_traffic` | `1` | `1` | `1` | Route out-of-bounds TMA fill traffic through L2 |
+| `-ptx_opcode_latency_tma` | `33` | `32` | `32` | TMA instruction latency in SM cycles |
+| `-ptx_opcode_initiation_tma` | `33` | `32` | `32` | Minimum TMA issue interval in SM cycles |
+| `-gpgpu_num_cp_async_units` | `0` | `1` | `1` | Ordinary `cp.async` execution units per SM; `0` disables this pipeline |
+| `-gpgpu_cp_async_max_inflight` | `0` | `256` | `192` | Maximum in-flight ordinary `cp.async` requests per SM; `0` is unlimited |
+| `-gpgpu_cp_async_request_width` | `1` | `4` | `4` | Ordinary `cp.async` requests issued per SM per cycle |
+| `-gpgpu_cp_async_response_width` | `1` | `4` | `4` | Ordinary `cp.async` responses accepted per SM per cycle |
+| `-gpgpu_cp_async_request_granularity` | `32` | `128` | default | Bytes represented by one ordinary `cp.async` request |
+| `-gpgpu_cp_async_wait_release_latency` | `5` | `5` | `5` | Warp-release latency after a `cp.async.wait_group` condition is satisfied |
+| `-ptx_opcode_latency_cp_async`, `-ptx_opcode_initiation_cp_async` | `7` | `7` | `7` | Ordinary `cp.async` latency and issue interval |
+| `-ptx_opcode_latency_cp_async_commit`, `-ptx_opcode_initiation_cp_async_commit` | `7` | `7` | `7` | `cp.async.commit_group` latency and issue interval |
+| `-ptx_opcode_latency_cp_async_wait`, `-ptx_opcode_initiation_cp_async_wait` | `5` | `5` | `5` | `cp.async.wait_group` and `wait_all` latency and issue interval |
+| `-gpgpu_num_tensormap_units` | `0` | default | `1` | TensorMap descriptor execution units per SM |
+| `-ptx_opcode_latency_tensormap`, `-ptx_opcode_initiation_tensormap` | `1,1,1` | default | `1,1,1` | Latency and issue interval for replace, `cp_fenceproxy`, and TensorMap fence operations |
+| `-gpgpu_mbarrier_arrive_latency` | `0` | `29` | `29` | Delay before an arrive operation updates the barrier |
+| `-gpgpu_mbarrier_trywait_latency` | `0` | `32` | `32` | Warp-release latency for `mbarrier.try_wait` |
+| `-gpgpu_shmem_per_block_optin` | `0` | default | `101376` | Opt-in shared-memory limit per CTA; `0` inherits `-gpgpu_shmem_per_block` |
+| `-gpgpu_max_dynamic_smem_prefer_occupancy_carveout` | `0` | `1` | default | Model the driver selecting an occupancy-oriented shared-memory/L1 carveout when no explicit preference is supplied |
+
+### Matrix Execution
+
+> [!NOTE]
+> The comma-separated MMA latency and initiation lists follow this shape/type
+> order: `m16n8k16.f16`, `m16n8k8.tf32`, `m16n8k32.int8`, `m16n8k8.f16`,
+> `m16n8k8.bf16`, `m16n8k4.tf32`, and `m16n8k16.int8`.
+
+| Option | Code default | SM90_H100 | SM120_RTX5090 | Meaning |
+| --- | ---: | ---: | ---: | --- |
+| `-ptx_opcode_latency_tensor` | `64` | `22,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA result latency by shape and type |
+| `-ptx_opcode_initiation_tensor` | `64` | `6,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA issue interval by shape and type |
+| `-gpgpu_cta_load_balance` | `0` | `1` | `1` | Cap CTAs per SM for uniform kernels using `ceil(total_ctas / total_sms)` |
+
+The public SM90 configuration also models asynchronous WGMMA execution. SS
+uses shared-memory operands for A and B; RS uses registers for A and shared
+memory for B. SM120 does not set the WGMMA-specific options.
+
+| Option | Code default | SM90_H100 | Meaning |
+| --- | ---: | ---: | --- |
+| `-ptx_opcode_latency_wgmma_ss`, `-ptx_opcode_initiation_wgmma_ss` | `4,4,4,4` | `4,4,4,4` | Non-overlappable SS tensor-pipe latency and issue interval for N = 8, 16, 32, and 64 |
+| `-ptx_opcode_latency_wgmma_rs`, `-ptx_opcode_initiation_wgmma_rs` | `12,12,12,12` | `3,3,3,3` | Non-overlappable RS tensor-pipe latency and issue interval |
+| `-ptx_opcode_completion_wgmma_ss` | `66,66,66,66` | `66,66,66,66` | Overlappable SS completion tail |
+| `-ptx_opcode_completion_wgmma_rs` | `64,65,64,64` | `64,65,64,64` | Overlappable RS completion tail |
+| `-ptx_opcode_completion_wgmma_int_ss` | `64,64,64,64` | `64,64,64,64` | Overlappable INT/B1 SS completion tail |
+| `-ptx_opcode_completion_wgmma_int_rs` | `62,62,62,61` | `62,62,62,61` | Overlappable INT/B1 RS completion tail |
+| `-ptx_opcode_compute_throughput_wgmma` | `4096,2048,8192,8192,65536` | `4096,2048,8192,8192,65536` | Per-SM work/cycle for FP16/BF16, TF32, FP8, INT8, and B1 |
+| `-gpgpu_wgmma_issue_chain_ss` | `0,0,0,0,64` | `7,0,4,20,64` | SS issue-chain throttle encoded as `depth,startup_gap,fast_gap,slow_gap,reset_gap`; depth `0` disables it |
+| `-gpgpu_wgmma_issue_chain_rs` | `0,0,0,0,64` | `7,0,3,13,64` | RS issue-chain throttle using the same encoding |
+
+WGMMA register-file pressure is represented by pending traffic tokens sharing
+the normal operand-collector read budget:
+
+| Option | Code default | SM90_H100 | Meaning |
+| --- | ---: | ---: | --- |
+| `-gpgpu_reg_file_read_bytes_per_cycle` | `0` | `1024` | Total register-file read budget per SM cycle; `0` is unlimited |
+| `-gpgpu_wgmma_rf_traffic_enable` | `0` | `1` | Enable WGMMA register-file traffic tokens |
+| `-gpgpu_wgmma_rf_traffic_bytes_per_cycle` | `0` | `512` | Maximum WGMMA traffic drained per SM cycle |
+| `-gpgpu_wgmma_rf_traffic_share_read_budget` | `0` | `1` | Charge WGMMA traffic against the normal register-file read budget |
+| `-gpgpu_wgmma_rf_traffic_assume_accumulate` | `1` | `0` | Include accumulator reads in the WGMMA traffic tokens |
+| `-gpgpu_wgmma_rf_traffic_include_rs_a` | `0` | `0` | Include register-A operand reads for RS WGMMA |
+
+### PTX Transformation
+
+| Option | Code default | SM90_H100 | SM120_RTX5090 | Meaning |
+| --- | ---: | ---: | ---: | --- |
+| `-gpgpu_ptx_register_allocator` | `0` | `1` | `1` | Enable conservative PTX virtual-register aliasing |
+| `-gpgpu_ptx_register_allocator_stats` | `0` | `0` | `0` | Print register-allocation statistics |
+| `-gpgpu_ptx_reorder` | `0` | `1` | `0` | Enable conservative PTX instruction reordering |
+| `-gpgpu_ptx_reorder_sass_guided` | `0` | `0` | `0` | Guide PTX reordering with auto-extracted SASS/PTX-line anchors |
+
+When SASS-guided reordering is enabled, FlashGPU-Sim loads the single
+`*.rules` file in the run directory. The supplied configurations include
+`sass_primary_hints.rules`, but the feature remains opt-in.
+
+### Memory-System Calibration
+
+These controls describe architecture-specific memory locality and local
+interconnect behavior. They should be changed together with the corresponding
+topology and address mapping.
+
+| Option | Code default | SM90_H100 | SM120_RTX5090 | Meaning |
+| --- | ---: | ---: | ---: | --- |
+| `-gpgpu_ipoly_non_power2_balanced` | `0` | `2` | default | Balance IPOLY mapping for non-power-of-two memory-channel counts |
+| `-gpgpu_ipoly_channel_stable_l2slice` | `0` | `0` | default | Keep the decoded DRAM channel stable while hashing the L2 slice |
+| `-gpgpu_l2_partition_count` | `1` | `2` | default | Coarse L2/locality partitions; `1` disables remote-partition detection |
+| `-gpgpu_l2_partition_extra_latency` | `0` | `150` | default | Extra cycles for an access to a remote coarse L2 partition |
+| `-icnt_use_voq` | `0` | `1` | default | Use virtual output queues in the local crossbar |
+| `-icnt_multi_grant_request` | `0` | default | `1` | Permit one request-network input to grant multiple outputs per cycle |
+| `-icnt_multi_grant_reply` | `0` | default | `1` | Permit one reply-network input to grant multiple outputs per cycle |
+
+### Experimental Controls
+
+The supported configurations leave the following sensitivity controls at
+their code defaults. They are useful for isolating bottlenecks, but do not
+represent the calibrated default models.
+
+| Option | Code default | Meaning |
+| --- | ---: | --- |
+| `-gpgpu_tma_idealized_memory` | `0` | Complete TMA memory requests immediately |
+| `-gpgpu_cp_async_idealized_memory` | `0` | Complete ordinary `cp.async` requests immediately |
+| `-gpgpu_tensor_core_issue_queue_depth` | `0` | Add an ideal pre-functional-unit tensor-core queue; `0` disables it |
+| `-gpgpu_tensor_core_skip_writeback` | `0` | Complete tensor-core instructions without the register-file writeback path |
+| `-gpgpu_tensor_core_units_per_sub_partition` | `1` | Tensor issue units sharing each ideal queue subpartition |
+| `-gpgpu_tma_request_bytes_per_cycle` | `0` | Apply a TMA request-side byte budget; `0` disables the budget |
+| `-gpgpu_dram_frfcfs_rowhit_first` | `0` | Prefer row-hit banks during FR-FCFS bank assignment |
+
+## Custom Configurations
+
+Create a custom configuration by copying the closest supported model as a
+complete directory:
 
 ```bash
-mkdir configs/MY_CUSTOM_CONFIG
+cp -a configs/SM120_RTX5090 configs/MY_CUSTOM_CONFIG
+$EDITOR configs/MY_CUSTOM_CONFIG/gpgpusim.config
 ```
 
-### Step 2: Copy Template Files
+The directory must contain `gpgpusim.config`. A configuration may also include
+an interconnect file used by the selected network backend and a
+`sass_primary_hints.rules` file for SASS-guided PTX reordering. Keeping these
+files together makes the directory self-contained when it is copied into a
+workload's run directory.
 
-Start from an existing configuration:
+When changing topology, update the SM count, memory channels, subpartitions,
+L2 geometry, address mapping, and interconnect endpoints as one consistent
+model. Do not infer an interconnect topology from the SM count alone.
+
+After building FlashGPU-Sim and sourcing `setup_environment`, verify discovery
+from the repository root and run a matching integration test:
 
 ```bash
-# For full-featured config
-cp configs/SM120_RTX5090/* configs/MY_CUSTOM_CONFIG/
-
-# For lightweight config
-cp configs/SM120_RTX5090_REDUCED/* configs/MY_CUSTOM_CONFIG/
-```
-
-### Step 3: Modify Configuration Parameters
-
-Edit `configs/MY_CUSTOM_CONFIG/gpgpusim.config`:
-
-**Key parameters to adjust:**
-
-```bash
-# Number of SM clusters (e.g., 1, 10, 85, 170)
--gpgpu_n_clusters 10
-
-# Cores per cluster (typically 1)
--gpgpu_n_cores_per_cluster 1
-
-# Memory controllers (must be 16 - GPGPU-Sim minimum)
--gpgpu_n_mem 16
-
-# Memory partitions per controller
--gpgpu_n_sub_partition_per_mchannel 8
-
-# Cache sizes (L1, L2)
--gpgpu_unified_l1d_size 128
--gpgpu_cache:dl2 S:256:128:24,L:B:m:L:P,A:192:4,32:0,32
-
-# Shared memory size per SM
--gpgpu_shmem_size 102400
-```
-
-### Step 4: Update Interconnect Topology
-
-Edit `configs/MY_CUSTOM_CONFIG/config_*.icnt` to match SM count:
-
-For N SMs with 16 memory controllers, use topology:
-```
-topology = fly;
-k = N + 16;  # Total endpoints (SMs + memory)
-n = 1;       # Dimensions
-```
-
-### Step 5: Verify Configuration
-
-```bash
-# Check configuration is detected
 ./test/run_tests.sh list-configs
-
-# Test with new configuration
-./test/run_tests.sh test -c MY_CUSTOM_CONFIG
+./test/run_tests.sh -c MY_CUSTOM_CONFIG run test \
+  --target sm120 --group integration CudaVectorAdd
 ```
 
-## Configuration Guidelines
+Use `--target sm90` and an SM90 test group for a Hopper configuration. See the
+[test guide](../test/README.md) for the supported target and group hierarchy.
 
-### SM Count Selection
+When troubleshooting a custom configuration:
 
-- **1 SM**: Functional testing, fast iteration
-- **10-20 SMs**: Development testing with some parallelism
-- **85 SMs**: Half-scale testing
-- **170 SMs**: Full RTX 5090 simulation
-
-### Memory Controller Constraints
-
-GPGPU-Sim requires minimum 16 memory controllers:
-```bash
--gpgpu_n_mem 16  # Fixed minimum
-```
-
-### Cache Configuration
-
-L1 cache and shared memory share unified space:
-```bash
-# Adaptive: dynamically allocate between L1 and shared memory
--gpgpu_adaptive_cache_config 1
--gpgpu_unified_l1d_size 128  # KB per SM
--gpgpu_shmem_size 102400     # Bytes per SM
-```
-
-### Clock Domains
-
-Format: `Core:Interconnect:L2:DRAM` (in MHz)
-```bash
--gpgpu_clock_domains 2010:2010:2010:14000
-```
-
-## Testing Configurations
-
-After creating a new configuration:
-
-1. **Verify detection**: `./test/run_tests.sh list-configs`
-2. **Run basic test**: `./test/run_tests.sh test -c MY_CONFIG CudaVectorAdd`
-3. **Validate output**: Check simulation completes without errors
-4. **Document**: Add README.md in config directory describing purpose and specs
-
-## Troubleshooting
-
-### Configuration not detected
-- Verify `gpgpusim.config` exists in directory
-- Check file permissions (must be readable)
-- Ensure directory is directly under `configs/`
-
-### Simulation fails to start
-- Verify memory controller count is 16
-- Check interconnect topology matches SM count
-- Validate cache configuration syntax
-
-### Performance issues
-- Reduce SM count for faster simulation
-- Use SM120_RTX5090_REDUCED for development
-- Check memory subsystem configuration
-
-## References
-
-- [GPGPU-Sim Manual](https://github.com/gpgpu-sim/gpgpu-sim_distribution)
-- RTX 5090 Architecture: Ampere (compute capability 8.6)
-- Interconnect: Booksim-based network simulator
+- **Configuration not discovered:** Confirm that it is a direct child of
+  `configs/` and contains a readable `gpgpusim.config`.
+- **Simulation fails at startup:** Check compute-capability compatibility,
+  then verify the memory topology, cache geometry, address mapping, and
+  interconnect as one consistent model.
+- **Unexpected performance:** Compare the complete run directory with its base
+  configuration and confirm that an automation script has not recopied the
+  bundled default configuration over local edits.

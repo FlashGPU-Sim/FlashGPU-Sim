@@ -10,19 +10,81 @@
 
 #include "fa3_fwd_hdim128_fp16_case.cuh"
 
+#if defined(FA3_STANDARD_FORWARD_TU) || \
+    defined(FA3_STANDARD_BACKWARD_TU)
+#if !defined(FA3_STANDARD_HEAD_DIM) || !defined(FA3_STANDARD_CAUSAL)
+#error "FA3 standard split TU requires HEAD_DIM and CAUSAL selectors"
+#endif
+#if FA3_STANDARD_CAUSAL != 0 && FA3_STANDARD_CAUSAL != 1
+#error "FA3_STANDARD_CAUSAL must be 0 or 1"
+#endif
+#if FA3_STANDARD_HEAD_DIM == 64 && FA3_STANDARD_CAUSAL == 0
+#define FA3_STANDARD_PREFILL_CASE_LIST(X) \
+  FA3_PREFILL_D64_NONCAUSAL_CASE_LIST(X)
+#define FA3_STANDARD_SMOKE_CASE_LIST(X) \
+  FA3_PREFILL_SMOKE_D64_NONCAUSAL_CASE_LIST(X)
+#define FA3_STANDARD_SMALL_CASE_LIST(X) \
+  FA3_PREFILL_SMALL_D64_NONCAUSAL_CASE_LIST(X)
+#define FA3_STANDARD_MEDIUM_CASE_LIST(X) \
+  FA3_PREFILL_MEDIUM_D64_NONCAUSAL_CASE_LIST(X)
+#elif FA3_STANDARD_HEAD_DIM == 64 && FA3_STANDARD_CAUSAL == 1
+#define FA3_STANDARD_PREFILL_CASE_LIST(X) \
+  FA3_PREFILL_D64_CAUSAL_CASE_LIST(X)
+#define FA3_STANDARD_SMOKE_CASE_LIST(X) \
+  FA3_PREFILL_SMOKE_D64_CAUSAL_CASE_LIST(X)
+#define FA3_STANDARD_SMALL_CASE_LIST(X) \
+  FA3_PREFILL_SMALL_D64_CAUSAL_CASE_LIST(X)
+#define FA3_STANDARD_MEDIUM_CASE_LIST(X) \
+  FA3_PREFILL_MEDIUM_D64_CAUSAL_CASE_LIST(X)
+#elif FA3_STANDARD_HEAD_DIM == 128 && FA3_STANDARD_CAUSAL == 0
+#define FA3_STANDARD_PREFILL_CASE_LIST(X) \
+  FA3_PREFILL_D128_NONCAUSAL_CASE_LIST(X)
+#define FA3_STANDARD_SMOKE_CASE_LIST(X) \
+  FA3_PREFILL_SMOKE_D128_NONCAUSAL_CASE_LIST(X)
+#define FA3_STANDARD_SMALL_CASE_LIST(X) \
+  FA3_PREFILL_SMALL_D128_NONCAUSAL_CASE_LIST(X)
+#define FA3_STANDARD_MEDIUM_CASE_LIST(X) \
+  FA3_PREFILL_MEDIUM_D128_NONCAUSAL_CASE_LIST(X)
+#elif FA3_STANDARD_HEAD_DIM == 128 && FA3_STANDARD_CAUSAL == 1
+#define FA3_STANDARD_PREFILL_CASE_LIST(X) \
+  FA3_PREFILL_D128_CAUSAL_CASE_LIST(X)
+#define FA3_STANDARD_SMOKE_CASE_LIST(X) \
+  FA3_PREFILL_SMOKE_D128_CAUSAL_CASE_LIST(X)
+#define FA3_STANDARD_SMALL_CASE_LIST(X) \
+  FA3_PREFILL_SMALL_D128_CAUSAL_CASE_LIST(X)
+#define FA3_STANDARD_MEDIUM_CASE_LIST(X) \
+  FA3_PREFILL_MEDIUM_D128_CAUSAL_CASE_LIST(X)
+#else
+#error "FA3_STANDARD_HEAD_DIM must be 64 or 128"
+#endif
+#else
+#define FA3_STANDARD_PREFILL_CASE_LIST(X) FA3_PREFILL_CASE_LIST(X)
+#define FA3_STANDARD_SMOKE_CASE_LIST(X) FA3_PREFILL_SMOKE_CASE_LIST(X)
+#define FA3_STANDARD_SMALL_CASE_LIST(X) FA3_PREFILL_SMALL_CASE_LIST(X)
+#define FA3_STANDARD_MEDIUM_CASE_LIST(X) FA3_PREFILL_MEDIUM_CASE_LIST(X)
+#define FA3_STANDARD_SHAPE_TESTS
+#define FA3_STANDARD_FIXED_TESTS
+#endif
+
 namespace fa3_hopper_test {
 
+#if !defined(FA3_STANDARD_BACKWARD_TU)
 class Fa3PrefillFp16IntegrationTest : public ::testing::Test {};
-class Fa3PrefillFp16BackwardIntegrationTest : public ::testing::Test {};
 class Fa3PrefillFp16SmokeTest : public ::testing::Test {};
-class Fa3PrefillFp16BackwardSmokeTest : public ::testing::Test {};
 class Fa3PrefillFp16SmallTest : public ::testing::Test {};
-class Fa3PrefillFp16BackwardSmallTest : public ::testing::Test {};
 class Fa3PrefillFp16MediumTest : public ::testing::Test {};
-class Fa3PrefillFp16BackwardMediumTest : public ::testing::Test {};
 class Fa3FwdHdim128Fp16IntegrationTest : public ::testing::Test {};
+#endif
 
-#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
+#if !defined(FA3_STANDARD_FORWARD_TU)
+class Fa3PrefillFp16BackwardIntegrationTest : public ::testing::Test {};
+class Fa3PrefillFp16BackwardSmokeTest : public ::testing::Test {};
+class Fa3PrefillFp16BackwardSmallTest : public ::testing::Test {};
+class Fa3PrefillFp16BackwardMediumTest : public ::testing::Test {};
+#endif
+
+#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK) && \
+    !defined(FA3_STANDARD_BACKWARD_TU)
 class Fa3SingleTileProfileTest : public ::testing::Test {};
 class Fa3PrefillProfileTest : public ::testing::Test {};
 
@@ -264,7 +326,17 @@ inline void WriteSingleTileProfileCsv(
 }
 #endif
 
-inline void RunFa3PrefillCase(const Fa3PrefillCase &cfg) {
+#if !defined(FA3_STANDARD_BACKWARD_TU)
+static Fa3RunResult RunFa3ForwardKernel(const Fa3PrefillCase &cfg) {
+#if defined(FA3_STANDARD_FORWARD_TU)
+  return run_fa3_prefill_fp16_typed<FA3_STANDARD_HEAD_DIM,
+                                    FA3_STANDARD_CAUSAL != 0>(cfg);
+#else
+  return run_fa3_prefill_fp16(cfg);
+#endif
+}
+
+static void RunFa3PrefillCase(const Fa3PrefillCase &cfg) {
   SCOPED_TRACE(::testing::Message()
                << "case=" << cfg.name
                << " batch=" << cfg.batch
@@ -275,12 +347,12 @@ inline void RunFa3PrefillCase(const Fa3PrefillCase &cfg) {
 
   ASSERT_TRUE(is_valid_fa3_prefill_case(cfg));
 
-  Fa3RunResult result = run_fa3_prefill_fp16(cfg);
+  Fa3RunResult result = RunFa3ForwardKernel(cfg);
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
 
-inline void RunFa3PrefillSmokeCase(const Fa3PrefillCase &cfg) {
+static void RunFa3PrefillSmokeCase(const Fa3PrefillCase &cfg) {
   SCOPED_TRACE(::testing::Message()
                << "case=" << cfg.name
                << " batch=" << cfg.batch
@@ -291,12 +363,23 @@ inline void RunFa3PrefillSmokeCase(const Fa3PrefillCase &cfg) {
 
   ASSERT_TRUE(is_valid_fa3_prefill_smoke_case(cfg));
 
-  Fa3RunResult result = run_fa3_prefill_fp16(cfg);
+  Fa3RunResult result = RunFa3ForwardKernel(cfg);
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
+#endif
 
-inline void RunFa3PrefillBackwardCase(const Fa3PrefillCase &cfg) {
+#if !defined(FA3_STANDARD_FORWARD_TU)
+static Fa3RunResult RunFa3BackwardKernel(const Fa3PrefillCase &cfg) {
+#if defined(FA3_STANDARD_BACKWARD_TU)
+  return run_fa3_prefill_fp16_bwd_typed<FA3_STANDARD_HEAD_DIM,
+                                        FA3_STANDARD_CAUSAL != 0>(cfg);
+#else
+  return run_fa3_prefill_fp16_bwd(cfg);
+#endif
+}
+
+static void RunFa3PrefillBackwardCase(const Fa3PrefillCase &cfg) {
   SCOPED_TRACE(::testing::Message()
                << "case=" << cfg.name
                << " batch=" << cfg.batch
@@ -307,12 +390,12 @@ inline void RunFa3PrefillBackwardCase(const Fa3PrefillCase &cfg) {
 
   ASSERT_TRUE(is_valid_fa3_prefill_case(cfg));
 
-  Fa3RunResult result = run_fa3_prefill_fp16_bwd(cfg);
+  Fa3RunResult result = RunFa3BackwardKernel(cfg);
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
 
-inline void RunFa3PrefillBackwardSmokeCase(const Fa3PrefillCase &cfg) {
+static void RunFa3PrefillBackwardSmokeCase(const Fa3PrefillCase &cfg) {
   SCOPED_TRACE(::testing::Message()
                << "case=" << cfg.name
                << " batch=" << cfg.batch
@@ -323,12 +406,14 @@ inline void RunFa3PrefillBackwardSmokeCase(const Fa3PrefillCase &cfg) {
 
   ASSERT_TRUE(is_valid_fa3_prefill_smoke_case(cfg));
 
-  Fa3RunResult result = run_fa3_prefill_fp16_bwd(cfg);
+  Fa3RunResult result = RunFa3BackwardKernel(cfg);
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
+#endif
 
-inline void RunFa3PrefillTuningCase(const Fa3PrefillCase &cfg) {
+#if !defined(FA3_STANDARD_BACKWARD_TU)
+static void RunFa3PrefillTuningCase(const Fa3PrefillCase &cfg) {
   SCOPED_TRACE(::testing::Message()
                << "case=" << cfg.name
                << " batch=" << cfg.batch
@@ -339,12 +424,14 @@ inline void RunFa3PrefillTuningCase(const Fa3PrefillCase &cfg) {
 
   ASSERT_TRUE(is_valid_fa3_prefill_tuning_case(cfg));
 
-  Fa3RunResult result = run_fa3_prefill_fp16(cfg);
+  Fa3RunResult result = RunFa3ForwardKernel(cfg);
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
+#endif
 
-inline void RunFa3PrefillBackwardTuningCase(const Fa3PrefillCase &cfg) {
+#if !defined(FA3_STANDARD_FORWARD_TU)
+static void RunFa3PrefillBackwardTuningCase(const Fa3PrefillCase &cfg) {
   SCOPED_TRACE(::testing::Message()
                << "case=" << cfg.name
                << " batch=" << cfg.batch
@@ -355,11 +442,14 @@ inline void RunFa3PrefillBackwardTuningCase(const Fa3PrefillCase &cfg) {
 
   ASSERT_TRUE(is_valid_fa3_prefill_tuning_case(cfg));
 
-  Fa3RunResult result = run_fa3_prefill_fp16_bwd(cfg);
+  Fa3RunResult result = RunFa3BackwardKernel(cfg);
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
+#endif
 
+#if !defined(FA3_STANDARD_BACKWARD_TU) && \
+    defined(FA3_STANDARD_SHAPE_TESTS)
 TEST_F(Fa3PrefillFp16IntegrationTest, ShapeTableHas20PrefillCases) {
   ASSERT_EQ(sizeof(kFa3PrefillCases) / sizeof(kFa3PrefillCases[0]),
             size_t{kFa3PrefillCaseCount});
@@ -369,7 +459,10 @@ TEST_F(Fa3PrefillFp16IntegrationTest, ShapeTableHas20PrefillCases) {
         << cfg.name << " is not a valid 32Ki-token prefill case";
   }
 }
+#endif
 
+#if !defined(FA3_STANDARD_FORWARD_TU) && \
+    defined(FA3_STANDARD_SHAPE_TESTS)
 TEST_F(Fa3PrefillFp16BackwardIntegrationTest, ShapeTableHas20PrefillCases) {
   ASSERT_EQ(sizeof(kFa3PrefillCases) / sizeof(kFa3PrefillCases[0]),
             size_t{kFa3PrefillCaseCount});
@@ -379,7 +472,10 @@ TEST_F(Fa3PrefillFp16BackwardIntegrationTest, ShapeTableHas20PrefillCases) {
         << cfg.name << " is not a valid 32Ki-token prefill backward case";
   }
 }
+#endif
 
+#if !defined(FA3_STANDARD_BACKWARD_TU) && \
+    defined(FA3_STANDARD_SHAPE_TESTS)
 TEST_F(Fa3PrefillFp16SmokeTest, ShapeTableHas4SmokeCases) {
   ASSERT_EQ(sizeof(kFa3PrefillSmokeCases) /
                 sizeof(kFa3PrefillSmokeCases[0]),
@@ -390,7 +486,10 @@ TEST_F(Fa3PrefillFp16SmokeTest, ShapeTableHas4SmokeCases) {
         << cfg.name << " is not a valid FA3 smoke case";
   }
 }
+#endif
 
+#if !defined(FA3_STANDARD_FORWARD_TU) && \
+    defined(FA3_STANDARD_SHAPE_TESTS)
 TEST_F(Fa3PrefillFp16BackwardSmokeTest, ShapeTableHas4SmokeCases) {
   ASSERT_EQ(sizeof(kFa3PrefillSmokeCases) /
                 sizeof(kFa3PrefillSmokeCases[0]),
@@ -401,7 +500,10 @@ TEST_F(Fa3PrefillFp16BackwardSmokeTest, ShapeTableHas4SmokeCases) {
         << cfg.name << " is not a valid FA3 backward smoke case";
   }
 }
+#endif
 
+#if !defined(FA3_STANDARD_BACKWARD_TU) && \
+    defined(FA3_STANDARD_SHAPE_TESTS)
 TEST_F(Fa3PrefillFp16SmallTest, ShapeTableHas4SmallCases) {
   ASSERT_EQ(sizeof(kFa3PrefillSmallCases) / sizeof(kFa3PrefillSmallCases[0]),
             size_t{kFa3PrefillSmallCaseCount});
@@ -411,7 +513,10 @@ TEST_F(Fa3PrefillFp16SmallTest, ShapeTableHas4SmallCases) {
         << cfg.name << " is not a valid FA3 small case";
   }
 }
+#endif
 
+#if !defined(FA3_STANDARD_FORWARD_TU) && \
+    defined(FA3_STANDARD_SHAPE_TESTS)
 TEST_F(Fa3PrefillFp16BackwardSmallTest, ShapeTableHas4SmallCases) {
   ASSERT_EQ(sizeof(kFa3PrefillSmallCases) / sizeof(kFa3PrefillSmallCases[0]),
             size_t{kFa3PrefillSmallCaseCount});
@@ -421,7 +526,10 @@ TEST_F(Fa3PrefillFp16BackwardSmallTest, ShapeTableHas4SmallCases) {
         << cfg.name << " is not a valid FA3 backward small case";
   }
 }
+#endif
 
+#if !defined(FA3_STANDARD_BACKWARD_TU) && \
+    defined(FA3_STANDARD_SHAPE_TESTS)
 TEST_F(Fa3PrefillFp16MediumTest, ShapeTableHas4MediumCases) {
   ASSERT_EQ(sizeof(kFa3PrefillMediumCases) /
                 sizeof(kFa3PrefillMediumCases[0]),
@@ -432,7 +540,10 @@ TEST_F(Fa3PrefillFp16MediumTest, ShapeTableHas4MediumCases) {
         << cfg.name << " is not a valid FA3 medium case";
   }
 }
+#endif
 
+#if !defined(FA3_STANDARD_FORWARD_TU) && \
+    defined(FA3_STANDARD_SHAPE_TESTS)
 TEST_F(Fa3PrefillFp16BackwardMediumTest, ShapeTableHas4MediumCases) {
   ASSERT_EQ(sizeof(kFa3PrefillMediumCases) /
                 sizeof(kFa3PrefillMediumCases[0]),
@@ -443,57 +554,69 @@ TEST_F(Fa3PrefillFp16BackwardMediumTest, ShapeTableHas4MediumCases) {
         << cfg.name << " is not a valid FA3 backward medium case";
   }
 }
+#endif
 
+#if !defined(FA3_STANDARD_BACKWARD_TU)
 #define FA3_PREFILL_TEST(name, batch, seqlen, heads, head_dim, causal) \
   TEST_F(Fa3PrefillFp16IntegrationTest, name) {                        \
     RunFa3PrefillCase(                                                 \
         Fa3PrefillCase{#name, batch, seqlen, heads, head_dim, causal}); \
   }
 
-FA3_PREFILL_CASE_LIST(FA3_PREFILL_TEST)
+FA3_STANDARD_PREFILL_CASE_LIST(FA3_PREFILL_TEST)
 
 #undef FA3_PREFILL_TEST
+#endif
 
+#if !defined(FA3_STANDARD_FORWARD_TU)
 #define FA3_PREFILL_BWD_TEST(name, batch, seqlen, heads, head_dim, causal) \
   TEST_F(Fa3PrefillFp16BackwardIntegrationTest, name) {                    \
     RunFa3PrefillBackwardCase(                                             \
         Fa3PrefillCase{#name, batch, seqlen, heads, head_dim, causal});     \
   }
 
-FA3_PREFILL_CASE_LIST(FA3_PREFILL_BWD_TEST)
+FA3_STANDARD_PREFILL_CASE_LIST(FA3_PREFILL_BWD_TEST)
 
 #undef FA3_PREFILL_BWD_TEST
+#endif
 
+#if !defined(FA3_STANDARD_BACKWARD_TU)
 #define FA3_PREFILL_SMOKE_TEST(name, batch, seqlen, heads, head_dim, causal) \
   TEST_F(Fa3PrefillFp16SmokeTest, name) {                                    \
     RunFa3PrefillSmokeCase(                                                  \
         Fa3PrefillCase{#name, batch, seqlen, heads, head_dim, causal});       \
   }
 
-FA3_PREFILL_SMOKE_CASE_LIST(FA3_PREFILL_SMOKE_TEST)
+FA3_STANDARD_SMOKE_CASE_LIST(FA3_PREFILL_SMOKE_TEST)
 
 #undef FA3_PREFILL_SMOKE_TEST
+#endif
 
+#if !defined(FA3_STANDARD_FORWARD_TU)
 #define FA3_PREFILL_BWD_SMOKE_TEST(name, batch, seqlen, heads, head_dim, causal) \
   TEST_F(Fa3PrefillFp16BackwardSmokeTest, name) {                                \
     RunFa3PrefillBackwardSmokeCase(                                              \
         Fa3PrefillCase{#name, batch, seqlen, heads, head_dim, causal});           \
   }
 
-FA3_PREFILL_SMOKE_CASE_LIST(FA3_PREFILL_BWD_SMOKE_TEST)
+FA3_STANDARD_SMOKE_CASE_LIST(FA3_PREFILL_BWD_SMOKE_TEST)
 
 #undef FA3_PREFILL_BWD_SMOKE_TEST
+#endif
 
+#if !defined(FA3_STANDARD_BACKWARD_TU)
 #define FA3_PREFILL_SMALL_TEST(name, batch, seqlen, heads, head_dim, causal) \
   TEST_F(Fa3PrefillFp16SmallTest, name) {                                    \
     RunFa3PrefillTuningCase(                                                 \
         Fa3PrefillCase{#name, batch, seqlen, heads, head_dim, causal});       \
   }
 
-FA3_PREFILL_SMALL_CASE_LIST(FA3_PREFILL_SMALL_TEST)
+FA3_STANDARD_SMALL_CASE_LIST(FA3_PREFILL_SMALL_TEST)
 
 #undef FA3_PREFILL_SMALL_TEST
+#endif
 
+#if !defined(FA3_STANDARD_FORWARD_TU)
 #define FA3_PREFILL_BWD_SMALL_TEST(name, batch, seqlen, heads, head_dim, \
                                    causal)                              \
   TEST_F(Fa3PrefillFp16BackwardSmallTest, name) {                       \
@@ -501,20 +624,24 @@ FA3_PREFILL_SMALL_CASE_LIST(FA3_PREFILL_SMALL_TEST)
         Fa3PrefillCase{#name, batch, seqlen, heads, head_dim, causal});  \
   }
 
-FA3_PREFILL_SMALL_CASE_LIST(FA3_PREFILL_BWD_SMALL_TEST)
+FA3_STANDARD_SMALL_CASE_LIST(FA3_PREFILL_BWD_SMALL_TEST)
 
 #undef FA3_PREFILL_BWD_SMALL_TEST
+#endif
 
+#if !defined(FA3_STANDARD_BACKWARD_TU)
 #define FA3_PREFILL_MEDIUM_TEST(name, batch, seqlen, heads, head_dim, causal) \
   TEST_F(Fa3PrefillFp16MediumTest, name) {                                    \
     RunFa3PrefillTuningCase(                                                  \
         Fa3PrefillCase{#name, batch, seqlen, heads, head_dim, causal});        \
   }
 
-FA3_PREFILL_MEDIUM_CASE_LIST(FA3_PREFILL_MEDIUM_TEST)
+FA3_STANDARD_MEDIUM_CASE_LIST(FA3_PREFILL_MEDIUM_TEST)
 
 #undef FA3_PREFILL_MEDIUM_TEST
+#endif
 
+#if !defined(FA3_STANDARD_FORWARD_TU)
 #define FA3_PREFILL_BWD_MEDIUM_TEST(name, batch, seqlen, heads, head_dim, \
                                     causal)                              \
   TEST_F(Fa3PrefillFp16BackwardMediumTest, name) {                       \
@@ -522,18 +649,22 @@ FA3_PREFILL_MEDIUM_CASE_LIST(FA3_PREFILL_MEDIUM_TEST)
         Fa3PrefillCase{#name, batch, seqlen, heads, head_dim, causal});   \
   }
 
-FA3_PREFILL_MEDIUM_CASE_LIST(FA3_PREFILL_BWD_MEDIUM_TEST)
+FA3_STANDARD_MEDIUM_CASE_LIST(FA3_PREFILL_BWD_MEDIUM_TEST)
 
 #undef FA3_PREFILL_BWD_MEDIUM_TEST
+#endif
 
+#if defined(FA3_STANDARD_FIXED_TESTS)
 TEST_F(Fa3FwdHdim128Fp16IntegrationTest, FixedForwardCase) {
   Fa3RunResult result = run_fa3_fwd_hdim128_fp16();
 
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
 }
+#endif
 
-#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
+#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK) && \
+    !defined(FA3_STANDARD_BACKWARD_TU)
 TEST_F(Fa3SingleTileProfileTest, H16D128FullSq128Sweep) {
   std::vector<Fa3SingleTileProfileResult> results;
   for (int seqlen_k : ParseSingleTileSkList()) {

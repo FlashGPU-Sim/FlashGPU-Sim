@@ -477,6 +477,9 @@ class ptx_thread_info {
   void set_valid() { m_valid = true; }
   addr_t last_eaddr() const { return m_last_effective_address; }
   memory_space_t last_space() const { return m_last_memory_space; }
+  unsigned last_memory_access_size() const {
+    return m_last_memory_access_size;
+  }
   dram_callback_t last_callback() const { return m_last_dram_callback; }
   unsigned long long get_cta_uid() { return m_cta_info->get_sm_idx(); }
 
@@ -591,6 +594,7 @@ class ptx_thread_info {
   addr_t m_last_effective_address;
   bool m_branch_taken;
   memory_space_t m_last_memory_space;
+  unsigned m_last_memory_access_size;
   dram_callback_t m_last_dram_callback;
   memory_space *m_shared_mem;
   memory_space *m_sstarr_mem;

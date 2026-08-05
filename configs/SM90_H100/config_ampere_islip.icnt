@@ -1,6 +1,6 @@
 //21*1 fly with 32 flits per packet under gpgpusim injection mode
 use_map = 0;
-flit_size = 40; 
+flit_size = 40;
 
 // currently we do not use this, see subnets below
 network_count = 2;
@@ -71,4 +71,3 @@ read_reply_begin_vc = 0;
 read_reply_end_vc = 0;
 write_reply_begin_vc = 0;
 write_reply_end_vc = 0;
-

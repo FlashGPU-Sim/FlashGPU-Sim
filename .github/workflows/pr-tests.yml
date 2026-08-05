@@ -1,13 +1,23 @@
 name: PR Tests
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [flash]
+    types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
-  simulation-tests:
+  simulation-test-shards:
+
+    name: simulation-tests (${{ matrix.shard }})
 
     runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [sm120, sm90-fa2, sm90-fa3]
 
     steps:
       - name: Checkout repository
@@ -27,11 +37,38 @@ jobs:
           echo "CI Docker image size: $IMAGE_SIZE"
 
       - name: Run simulation tests in container
+        timeout-minutes: 50
         run: |
           docker run --rm \
+            --memory=7g \
+            --memory-swap=7g \
             -e CI=true \
             -e GITHUB_ACTIONS=true \
+            -e CI_SHARD=${{ matrix.shard }} \
+            -e CI_BUILD_JOBS=2 \
             -v ${{ github.workspace }}:/gpgpu-sim \
             -w /gpgpu-sim \
             gpgpu-sim-ci:latest \
             bash -c "./test/ci/run_ci_tests.sh"
+
+      - name: Upload simulation test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulation-test-results-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: test/logs/ci
+          if-no-files-found: warn
+
+  simulation-tests:
+
+    name: simulation-tests
+    if: always()
+    needs: simulation-test-shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Verify simulation test shards
+        env:
+          SHARD_RESULT: ${{ needs.simulation-test-shards.result }}
+        run: test "$SHARD_RESULT" = success

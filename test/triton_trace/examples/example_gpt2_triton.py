@@ -4,7 +4,7 @@ GPT-2 Small — Full LLM Inference with Real Pretrained Weights (Pure Triton Ker
 ======================================================================================
 Loads GPT-2 small weights from HuggingFace, tokenizes input, runs the complete
 forward pass through custom Triton kernels, and tracks every kernel launch with
-TritonKernelTracker for GPGPU-Sim simulation.
+TritonTrace for GPGPU-Sim simulation.
 
 Architecture (GPT-2 small):
   vocab_size=50257, n_embd=768, n_heads=12, n_layers=12, ffn_dim=3072, max_seq=1024
@@ -23,7 +23,6 @@ Row/tile selection goes in the offset list of load/store_tensor_descriptor.
 
 import math
 import shutil
-import sys
 from pathlib import Path
 
 import torch
@@ -33,9 +32,8 @@ import triton.language as tl
 from transformers import GPT2Tokenizer, GPT2Model
 
 TRITON_TRACE_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(TRITON_TRACE_DIR))
 
-from track_triton_kernels import TritonKernelTracker
+import TritonTrace
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -496,7 +494,7 @@ def main():
     output_dir = (TRITON_TRACE_DIR / "triton_kernel_tracking/gpt2_small").resolve()
     if output_dir.exists():
         shutil.rmtree(output_dir)
-    tracker = TritonKernelTracker(output_dir, save_binaries=True, capture_args=True)
+    tracker = TritonTrace.Tracker(output_dir, save_binaries=True, capture_args=True)
     print(f"Output directory: {output_dir}")
 
     with torch.no_grad():

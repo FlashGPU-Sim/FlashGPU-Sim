@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "builtin_types.h"
 
@@ -212,6 +213,7 @@ class cuda_runtime_api {
   std::map<unsigned long long, size_t> g_mallocPtr_Size;
   // maps sm version number to set of filenames
   std::map<unsigned, std::set<std::string> > version_filename;
+  std::string app_binary_path;
   std::map<void *, void **> pinned_memory;  // support for pinned memories added
   std::map<void *, size_t> pinned_memory_size;
   glbmap_entry_t *g_glbmap;
@@ -237,6 +239,9 @@ class cuda_runtime_api {
       std::function<void(CUctx_st *)> ctx_extract_ptx_func);
   void extract_ptx_files_using_cuobjdump_internal(CUctx_st *context,
                                                   std::string &app_binary);
+  void ensure_sass_ptxline_guide(
+      CUctx_st *context, const std::string &app_binary,
+      const std::vector<std::string> &selected_files);
 
   std::list<cuobjdumpSection *> pruneSectionList(CUctx_st *context);
   std::list<cuobjdumpSection *> mergeMatchingSections(std::string identifier);

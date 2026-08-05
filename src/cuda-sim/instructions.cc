@@ -2285,6 +2285,20 @@ void tcgen05_fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
 void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const int opcode = pI->get_opcode();
+  if (opcode == CP_ASYNC_MBARRIER_ARRIVE_OP) {
+    assert(pI->get_num_operands() == 1);
+    assert(pI->membar_level() == CTA_OPTION);
+    assert(pI->get_type() == B64_TYPE);
+    const operand_info &addr_op = pI->operand_lookup(0);
+    const uint32_t addr =
+        thread->get_operand_value(addr_op, addr_op, U32_TYPE, thread, 0).u32;
+    inst_t::mbarrier_info_t info;
+    info.bar_id = addr;
+    const_cast<ptx_instruction *>(pI)->set_mbarrier_info(
+        thread->get_laneid(), info);
+    return;
+  }
+
   if (opcode == CP_ASYNC_COMMIT_OP || opcode == CP_ASYNC_WAIT_OP) return;
 
   for (int opt : pI->get_options()) {
@@ -2308,24 +2322,45 @@ void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   assert((cp_size == 4 || cp_size == 8 || cp_size == 16) &&
          "cp.async cp-size must be 4, 8, or 16 bytes");
 
-  unsigned src_size = cp_size;
-  if (pI->get_num_operands() > 3) {
-    const operand_info &src_size_op = pI->src3();
-    if (src_size_op.is_literal()) {
-      src_size = (unsigned)src_size_op.get_literal_value().u64;
+  unsigned source_bytes = cp_size;
+  if (const operand_info *source_size_op =
+          pI->cp_async_source_control_operand()) {
+    bool is_ignore_src = false;
+    if (source_size_op->is_reg()) {
+      const type_info_key &type =
+          source_size_op->get_symbol()->type()->get_key();
+      is_ignore_src = type.scalar_type() == PRED_TYPE;
+    }
+
+    if (is_ignore_src) {
+      const ptx_reg_t value = thread->get_operand_value(
+          *source_size_op, *source_size_op, PRED_TYPE, thread, 0);
+      // Predicate bit 0 is the inverted zero flag: zero represents true.
+      source_bytes = (value.pred & 0x1) ? cp_size : 0;
+    } else {
+      source_bytes = thread
+                         ->get_operand_value(*source_size_op, *source_size_op,
+                                             U32_TYPE, thread, 0)
+                         .u32;
     }
   }
-  if (src_size > cp_size) src_size = cp_size;
+  if (source_bytes > cp_size) {
+    fprintf(stderr,
+            "GPGPU-Sim PTX: cp.async source size %u exceeds copy size %u\n",
+            source_bytes, cp_size);
+    abort();
+  }
 
   memory_space *gmem = thread->get_global_memory();
   memory_space *smem = thread->m_shared_mem;
 
   unsigned char buf[16] = {0};
-  if (src_size > 0) gmem->read(gmem_addr, src_size, buf);
+  if (source_bytes > 0) gmem->read(gmem_addr, source_bytes, buf);
   smem->write(smem_addr, cp_size, buf, thread, pI);
 
   thread->m_last_effective_address = gmem_addr;
   thread->m_last_memory_space = global_space;
+  thread->m_last_memory_access_size = source_bytes;
 }
 
 void bfe_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

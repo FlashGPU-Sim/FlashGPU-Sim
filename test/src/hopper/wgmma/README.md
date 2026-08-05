@@ -52,11 +52,12 @@ adding tests that depend on the full GMMA accumulator-to-matrix layout.
 WGMMA requires an architecture-accelerated Hopper build. From `test/`:
 
 ```bash
-./run_tests.sh build hopper
-./run_tests.sh hopper WgmmaF16M64N8K16IntegrationTest
-./run_tests.sh hopper WgmmaF16M64N8K16IntegrationTest.AllOnesTest
+./run_tests.sh build test --target sm90 --group instructions
+./run_tests.sh run test --target sm90 --group instructions \
+  WgmmaF16M64N8K16IntegrationTest
+./run_tests.sh run test --target sm90 --group instructions \
+  WgmmaF16M64N8K16IntegrationTest.AllOnesTest
 ```
 
-The `hopper` command builds Hopper workloads with `HOPPER_CUDA_ARCH=sm_90a`
-and uses `SM90_H100` as the default simulation config unless `-c/--config` is
-specified.
+The `sm90` target forces `sm_90a` code generation and uses `SM90_H100` unless
+a compatible configuration is selected with `-c/--config`.

@@ -24,6 +24,13 @@ namespace flash_gpgpu_sim {
 
 namespace {
 
+[[noreturn]] void fail_unsupported_sparse_wgmma() {
+  fprintf(stderr,
+          "GPGPU-Sim ERROR: sparse WGMMA is not functionally supported\n");
+  fflush(stderr);
+  std::abort();
+}
+
 unsigned wgmma_warp_base_tid(core_t *core, const warp_inst_t &inst) {
   if (core->get_gpu()->is_functional_sim())
     return inst.warp_id_func() * core->get_warp_size();
@@ -404,9 +411,7 @@ void wgmma_m64n8_accumulator_coord(unsigned lane, int reg, int &row, int &col) {
 void tensor_wgmma_impl(const ptx_instruction *pI, core_t *core,
                        warp_inst_t &inst) {
   if (pI->is_wgmma_sparse()) {
-    fprintf(stderr,
-            "GPGPU-Sim: ERROR - sparse WGMMA is not functionally supported\n");
-    return;
+    fail_unsupported_sparse_wgmma();
   }
 
   int accumulator_type = wgmma_scalar_type_at(pI, 0, F32_TYPE);
@@ -478,8 +483,7 @@ void wgmma_mma_async_sp_impl(const ptx_instruction *pI, core_t *core,
   (void)pI;
   (void)core;
   (void)inst;
-  fprintf(stderr,
-          "GPGPU-Sim: ERROR - sparse WGMMA is not functionally supported\n");
+  fail_unsupported_sparse_wgmma();
 }
 
 void wgmma_fence_impl(const ptx_instruction *pI, core_t *core,

@@ -1,6 +1,7 @@
 #ifndef __gpgpu_context_h__
 #define __gpgpu_context_h__
 #include <atomic>
+#include <string>
 #include "../src/cuda-sim/cuda-sim.h"
 #include "../src/cuda-sim/cuda_device_runtime.h"
 #include "../src/cuda-sim/ptx-stats.h"
@@ -25,13 +26,9 @@ class gpgpu_context {
     ptx_register_allocator_enabled = false;
     ptx_register_allocator_stats = false;
     ptx_reorder_enabled = false;
-    ptx_reorder_stats = false;
-    ptx_reorder_ready_slack = 0;
-    ptx_reorder_dump = false;
-    ptx_reorder_dump_dir = NULL;
     ptx_reorder_sass_guided = false;
-    ptx_reorder_sass_file = NULL;
-    ptx_reorder_sass_guide_lookahead = 256;
+    ptx_reorder_sass_extract_attempted = false;
+    ptx_reorder_sass_extract_ok = false;
     api = new cuda_runtime_api(this);
     ptxinfo = new ptxinfo_data(this);
     ptx_parser = new ptx_recognizer(this);
@@ -57,13 +54,12 @@ class gpgpu_context {
   bool ptx_register_allocator_enabled;
   bool ptx_register_allocator_stats;
   bool ptx_reorder_enabled;
-  bool ptx_reorder_stats;
-  int ptx_reorder_ready_slack;
-  bool ptx_reorder_dump;
-  char *ptx_reorder_dump_dir;
   bool ptx_reorder_sass_guided;
-  char *ptx_reorder_sass_file;
-  int ptx_reorder_sass_guide_lookahead;
+  bool ptx_reorder_sass_extract_attempted;
+  bool ptx_reorder_sass_extract_ok;
+  std::string ptx_reorder_sass_ptxline_file;
+  std::string ptx_reorder_sass_ptxline_arch;
+  std::string ptx_reorder_sass_ptxline_binary;
 
   // SST related
   bool requested_synchronize = false;

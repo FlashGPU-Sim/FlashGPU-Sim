@@ -17,7 +17,8 @@
 #   ./run_multi_launch_workload.sh triton_kernel_tracking/gpt2_small run
 #
 #   # Run on GPGPU-Sim (source setup_environment first)
-#   source setup.sh && source setup_environment
+#   export CUDA_INSTALL_PATH=/path/to/cuda
+#   source setup_environment
 #   ./run_multi_launch_workload.sh triton_kernel_tracking/gpt2_small both --config SM120_RTX5090
 #
 #   # NCU profiling (clean shell, no setup_environment)

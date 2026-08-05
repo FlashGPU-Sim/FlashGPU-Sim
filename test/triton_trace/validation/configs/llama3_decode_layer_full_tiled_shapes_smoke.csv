@@ -1,0 +1,2 @@
+batch,qheads,kvheads,qlen,kvlen,headdim,hidden,intermediate
+256,32,8,1,128,128,4096,14336

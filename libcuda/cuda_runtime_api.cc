@@ -103,6 +103,8 @@
  */
 
 #include <assert.h>
+#include <cctype>
+#include <dirent.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -111,10 +113,14 @@
 #include <unistd.h>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
+#include <vector>
 #ifdef OPENGL_SUPPORT
 #define GL_GLEXT_PROTOTYPES
 #ifdef __APPLE__
@@ -161,6 +167,8 @@ typedef enum CUoutput_mode_enum {
 typedef cudaKernel_t CUkernel;
 
 #include <pthread.h>
+#include <cstdlib>
+#include <algorithm>
 #include <semaphore.h>
 
 #ifdef __APPLE__
@@ -215,7 +223,8 @@ struct _cuda_device_id *gpgpu_context::GPGPUSim_Init() {
     gpgpu_sim *the_gpu = gpgpu_ptx_sim_init_perf();
 
     cudaDeviceProp *prop = (cudaDeviceProp *)calloc(sizeof(cudaDeviceProp), 1);
-    snprintf(prop->name, 256, "GPGPU-Sim_v%s", g_gpgpusim_version_string);
+    snprintf(prop->name, sizeof(prop->name), "%s",
+             g_gpgpusim_version_string);
     prop->major = the_gpu->compute_capability_major();
     prop->minor = the_gpu->compute_capability_minor();
     prop->totalGlobalMem = 0x80000000 /* 2 GB */;
@@ -242,6 +251,9 @@ struct _cuda_device_id *gpgpu_context::GPGPUSim_Init() {
 #if (CUDART_VERSION > 5050)
     prop->regsPerMultiprocessor = the_gpu->num_registers_per_core();
     prop->sharedMemPerMultiprocessor = the_gpu->shared_mem_size();
+#endif
+#if (CUDART_VERSION >= 9000)
+    prop->sharedMemPerBlockOptin = the_gpu->shared_mem_per_block_optin();
 #endif
     prop->sharedMemPerBlock = the_gpu->shared_mem_per_block();
     prop->regsPerBlock = the_gpu->num_registers_per_block();
@@ -738,6 +750,284 @@ static CUresult load_module_from_cuda_library_ptx(CUmodule *module,
   return load_module_from_ptx_file(module, ptx_path, caller);
 }
 
+static void sass_extract_fatal(const char *message) {
+  fprintf(stderr, "GPGPU-Sim PTX: SASS PTX-line extraction fatal: %s\n",
+          message);
+  std::abort();
+}
+
+static void sass_extract_fatal(const std::string &message) {
+  sass_extract_fatal(message.c_str());
+}
+
+static bool string_ends_with_local(const std::string &text,
+                                   const std::string &suffix) {
+  return text.size() >= suffix.size() &&
+         text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+static bool ensure_directory_local(const std::string &path) {
+  if (path.empty()) return false;
+  struct stat st;
+  if (stat(path.c_str(), &st) == 0) return S_ISDIR(st.st_mode);
+  return mkdir(path.c_str(), 0775) == 0;
+}
+
+static std::string absolute_path_local(const std::string &path) {
+  if (!path.empty() && path[0] == '/') return path;
+  char cwd_buf[4096];
+  const char *cwd = getcwd(cwd_buf, sizeof(cwd_buf));
+  if (cwd == NULL) return path;
+  return std::string(cwd) + "/" + path;
+}
+
+static std::string shell_quote(const std::string &text) {
+  std::string out = "'";
+  for (std::string::const_iterator it = text.begin(); it != text.end(); ++it) {
+    if (*it == '\'')
+      out += "'\\''";
+    else
+      out += *it;
+  }
+  out += "'";
+  return out;
+}
+
+static std::string cuda_tool_path(const char *tool) {
+  const char *cuda_path = getenv("CUDA_INSTALL_PATH");
+  if (cuda_path != NULL && cuda_path[0] != '\0')
+    return std::string(cuda_path) + "/bin/" + tool;
+  return std::string(tool);
+}
+
+static std::string fnv1a_file_hash(const std::string &path) {
+  std::ifstream in(path.c_str(), std::ios::binary);
+  if (!in.good()) {
+    sass_extract_fatal("failed to open binary for hashing: " + path);
+  }
+  unsigned long long hash = 1469598103934665603ull;
+  char buffer[8192];
+  while (in.good()) {
+    in.read(buffer, sizeof(buffer));
+    const std::streamsize got = in.gcount();
+    for (std::streamsize i = 0; i < got; ++i) {
+      hash ^= static_cast<unsigned char>(buffer[i]);
+      hash *= 1099511628211ull;
+    }
+  }
+  std::ostringstream out;
+  out << std::hex << std::setw(16) << std::setfill('0') << hash;
+  return out.str();
+}
+
+static std::string arch_from_ptx_filename(const std::string &ptx_filename) {
+  const std::size_t sm_pos = ptx_filename.find("sm_");
+  if (sm_pos == std::string::npos) return "";
+  const std::size_t dot_pos = ptx_filename.find('.', sm_pos);
+  return ptx_filename.substr(
+      sm_pos, dot_pos == std::string::npos ? std::string::npos
+                                           : dot_pos - sm_pos);
+}
+
+static std::vector<std::string> find_cubins_for_arch(const std::string &dir,
+                                                     const std::string &arch) {
+  std::vector<std::string> out;
+  DIR *dp = opendir(dir.c_str());
+  if (dp == NULL)
+    sass_extract_fatal("failed to open cubin extraction directory: " + dir);
+  while (struct dirent *entry = readdir(dp)) {
+    const std::string name = entry->d_name;
+    if (name == "." || name == "..") continue;
+    if (name.find(arch) == std::string::npos ||
+        !string_ends_with_local(name, ".cubin"))
+      continue;
+    out.push_back(dir + "/" + name);
+  }
+  closedir(dp);
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+static std::string parse_sass_section_name_for_list(const std::string &line) {
+  const std::size_t text_pos = line.find(".text.");
+  if (text_pos == std::string::npos) return "";
+  std::size_t begin = text_pos + 6;
+  std::size_t end = begin;
+  while (end < line.size()) {
+    const char c = line[end];
+    if (std::isspace(static_cast<unsigned char>(c)) || c == ',' || c == '"' ||
+        c == '\'' || c == ':' || c == '(' || c == ')')
+      break;
+    ++end;
+  }
+  if (end <= begin) return "";
+  return line.substr(begin, end - begin);
+}
+
+static void write_functions_from_full_sass(const std::string &full_sass,
+                                           const std::string &functions_path) {
+  std::ifstream in(full_sass.c_str());
+  if (!in.good())
+    sass_extract_fatal("failed to open full SASS for function listing: " +
+                       full_sass);
+  std::ofstream out(functions_path.c_str(), std::ios::trunc);
+  if (!out.good())
+    sass_extract_fatal("failed to write function list: " + functions_path);
+  std::set<std::string> seen;
+  std::string line;
+  while (std::getline(in, line)) {
+    const std::string name = parse_sass_section_name_for_list(line);
+    if (name.empty() || seen.find(name) != seen.end()) continue;
+    seen.insert(name);
+    out << name << "\n";
+  }
+}
+
+void cuda_runtime_api::ensure_sass_ptxline_guide(
+    CUctx_st *context, const std::string &app_binary,
+    const std::vector<std::string> &selected_files) {
+  if (gpgpu_ctx == NULL || !gpgpu_ctx->ptx_reorder_enabled ||
+      !gpgpu_ctx->ptx_reorder_sass_guided)
+    return;
+  if (selected_files.empty())
+    sass_extract_fatal("SASS-guided PTX reorder requires a selected PTX file");
+  if (app_binary.empty())
+    sass_extract_fatal("SASS-guided PTX reorder requires an app binary path");
+  if (context == NULL)
+    sass_extract_fatal("SASS-guided PTX reorder requires a CUDA context");
+
+  std::set<std::string> arches;
+  for (std::vector<std::string>::const_iterator it = selected_files.begin();
+       it != selected_files.end(); ++it) {
+    const std::string arch = arch_from_ptx_filename(*it);
+    if (!arch.empty()) arches.insert(arch);
+  }
+  if (arches.empty())
+    sass_extract_fatal("failed to derive SASS arch from selected PTX files");
+  if (arches.size() != 1) {
+    std::ostringstream msg;
+    msg << "SASS-guided PTX reorder expected one selected arch, found";
+    for (std::set<std::string>::const_iterator it = arches.begin();
+         it != arches.end(); ++it) {
+      msg << " " << *it;
+    }
+    sass_extract_fatal(msg.str());
+  }
+
+  const std::string arch = *arches.begin();
+  if (!gpgpu_ctx->ptx_reorder_sass_ptxline_file.empty() &&
+      gpgpu_ctx->ptx_reorder_sass_ptxline_binary == app_binary &&
+      gpgpu_ctx->ptx_reorder_sass_ptxline_arch == arch)
+    return;
+  const std::string out_dir = "sass_ptxline";
+  if (!ensure_directory_local(out_dir))
+    sass_extract_fatal("failed to create SASS PTX-line directory: " + out_dir);
+
+  const std::string binary_hash = fnv1a_file_hash(app_binary);
+  const std::string label = binary_hash + "." + arch;
+  const std::string extract_dir = out_dir + "/" + label + ".extract";
+  const std::string full_sass = out_dir + "/" + label + ".ptxline.full.sass";
+  const std::string functions_txt = out_dir + "/" + label + ".functions.txt";
+  const std::string cubins_txt = out_dir + "/" + label + ".cubins.txt";
+  const std::string metadata = out_dir + "/" + label + ".metadata.txt";
+  const std::string cuobjdump_log =
+      out_dir + "/" + label + ".cuobjdump-xelf.log";
+  const std::string nvdisasm_log = out_dir + "/" + label + ".nvdisasm.log";
+
+  if (file_exists(full_sass) && file_exists(functions_txt)) {
+    gpgpu_ctx->ptx_reorder_sass_extract_attempted = true;
+    gpgpu_ctx->ptx_reorder_sass_extract_ok = true;
+    gpgpu_ctx->ptx_reorder_sass_ptxline_file = full_sass;
+    gpgpu_ctx->ptx_reorder_sass_ptxline_arch = arch;
+    gpgpu_ctx->ptx_reorder_sass_ptxline_binary = app_binary;
+    printf("GPGPU-Sim PTX: using existing SASS PTX-line full guide %s\n",
+           full_sass.c_str());
+    return;
+  }
+
+  if (!ensure_directory_local(extract_dir))
+    sass_extract_fatal("failed to create cubin extraction directory: " +
+                       extract_dir);
+
+  const std::string cuobjdump = cuda_tool_path("cuobjdump");
+  const std::string nvdisasm = cuda_tool_path("nvdisasm");
+  const std::string cuobjdump_cmd =
+      "cd " + shell_quote(absolute_path_local(extract_dir)) + " && " +
+      shell_quote(cuobjdump) + " -xelf all " + shell_quote(app_binary) +
+      " > " + shell_quote(absolute_path_local(cuobjdump_log)) + " 2>&1";
+  printf("GPGPU-Sim PTX: extracting SASS cubins for %s arch=%s\n",
+         app_binary.c_str(), arch.c_str());
+  if (system(cuobjdump_cmd.c_str()) != 0)
+    sass_extract_fatal("failed command: " + cuobjdump_cmd);
+
+  const std::vector<std::string> cubins =
+      find_cubins_for_arch(extract_dir, arch);
+  if (cubins.empty()) {
+    std::ostringstream msg;
+    msg << "expected at least one " << arch << " cubin, found none in "
+        << extract_dir;
+    sass_extract_fatal(msg.str());
+  }
+
+  {
+    std::ofstream out(full_sass.c_str(), std::ios::trunc);
+    if (!out.good())
+      sass_extract_fatal("failed to create full SASS file: " + full_sass);
+  }
+  {
+    std::ofstream out(nvdisasm_log.c_str(), std::ios::trunc);
+    if (!out.good())
+      sass_extract_fatal("failed to create nvdisasm log: " + nvdisasm_log);
+  }
+  {
+    std::ofstream out(cubins_txt.c_str(), std::ios::trunc);
+    if (!out.good())
+      sass_extract_fatal("failed to write cubin list: " + cubins_txt);
+    for (std::vector<std::string>::const_iterator it = cubins.begin();
+         it != cubins.end(); ++it) {
+      out << *it << "\n";
+    }
+  }
+
+  printf("GPGPU-Sim PTX: dumping merged SASS PTX-line guide %s from %zu "
+         "cubin(s)\n",
+         full_sass.c_str(), cubins.size());
+  for (std::vector<std::string>::const_iterator it = cubins.begin();
+       it != cubins.end(); ++it) {
+    {
+      std::ofstream out(full_sass.c_str(), std::ios::app);
+      out << "\n// GPGPU-Sim SASS cubin: " << *it << "\n";
+    }
+    const std::string nvdisasm_cmd =
+        shell_quote(nvdisasm) + " -gp --print-code " + shell_quote(*it) +
+        " >> " + shell_quote(full_sass) + " 2>> " +
+        shell_quote(nvdisasm_log);
+    if (system(nvdisasm_cmd.c_str()) != 0)
+      sass_extract_fatal("failed command: " + nvdisasm_cmd);
+  }
+
+  write_functions_from_full_sass(full_sass, functions_txt);
+
+  std::ofstream meta(metadata.c_str(), std::ios::trunc);
+  if (meta.good()) {
+    meta << "binary=" << app_binary << "\n";
+    meta << "binary_hash=" << binary_hash << "\n";
+    meta << "arch=" << arch << "\n";
+    meta << "cubin_count=" << cubins.size() << "\n";
+    meta << "cubins=" << cubins_txt << "\n";
+    meta << "full_ptxline_sass=" << full_sass << "\n";
+    meta << "functions=" << functions_txt << "\n";
+    meta << "cuobjdump_log=" << cuobjdump_log << "\n";
+    meta << "nvdisasm_log=" << nvdisasm_log << "\n";
+  }
+
+  gpgpu_ctx->ptx_reorder_sass_extract_attempted = true;
+  gpgpu_ctx->ptx_reorder_sass_extract_ok = true;
+  gpgpu_ctx->ptx_reorder_sass_ptxline_file = full_sass;
+  gpgpu_ctx->ptx_reorder_sass_ptxline_arch = arch;
+  gpgpu_ctx->ptx_reorder_sass_ptxline_binary = app_binary;
+}
+
 // Internal implementation for cudaRegisterFatBiaryInternal
 void **cudaRegisterFatBiaryInternal_impl(
     void *fatCubin, gpgpu_context *gpgpu_ctx, std::string &app_binary_path,
@@ -1208,6 +1498,8 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
       "blockDim = (%u,%u,%u) \n",
       kname.c_str(), stream ? stream->get_uid() : 0, gridDim.x, gridDim.y,
       gridDim.z, blockDim.x, blockDim.y, blockDim.z);
+  printf("GPGPU-Sim PTX: runtime launch kernel mangled='%s'\n",
+         kname.c_str());
   stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
   ctx->the_gpgpusim->g_stream_manager->push(op);
   ctx->api->g_cuda_launch_stack.pop_back();
@@ -2103,7 +2395,7 @@ cudaDeviceGetAttributeInternal(int *value, enum cudaDeviceAttr attr, int device,
         *value = 0;
         break;
       case 97:  // cudaDevAttrMaxSharedMemoryPerBlockOptin
-        *value = prop->sharedMemPerBlock;
+        *value = dev->get_gpgpu()->shared_mem_per_block_optin();
         break;
       case 98:  // cudaDevAttrCanFlushRemoteWrites
         *value = 0;
@@ -3474,6 +3766,7 @@ void cuda_runtime_api::extract_ptx_files_using_cuobjdump_internal(
   if (pytorch_bin != NULL && strlen(pytorch_bin) != 0) {
     app_binary = std::string(pytorch_bin);
   }
+  app_binary_path = app_binary;
 
   // only want file names
   snprintf(command, sizeof(command),
@@ -4023,7 +4316,8 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
                                        ->get_config()
                                        .get_forced_max_capability();
   if (!api->version_filename.empty()) {
-    // pick selected_version: largest version <= forced_max_capability (or largest available)
+    // pick selected_version: largest version <= forced_max_capability (or
+    // largest available)
     unsigned selected_version = 0;
     if (forced_max_capability != 0) {
       for (auto rit = api->version_filename.rbegin();
@@ -4033,7 +4327,8 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
           break;
         }
       }
-      if (selected_version == 0) selected_version = api->version_filename.rbegin()->first;
+      if (selected_version == 0)
+        selected_version = api->version_filename.rbegin()->first;
     } else {
       selected_version = api->version_filename.rbegin()->first;
     }
@@ -4044,9 +4339,10 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
       size_t sm_pos = check_name.find("sm_");
       if (sm_pos != std::string::npos) {
         size_t dot_pos = check_name.find('.', sm_pos);
-        std::string arch_part = check_name.substr(sm_pos + 3, dot_pos - sm_pos - 3);
+        std::string arch_part =
+            check_name.substr(sm_pos + 3, dot_pos - sm_pos - 3);
         for (size_t j = 0; j < arch_part.length(); j++) {
-          if (!isdigit(arch_part[j])) {
+          if (!std::isdigit(static_cast<unsigned char>(arch_part[j]))) {
             has_suffix = true;
             break;
           }
@@ -4061,22 +4357,36 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
         size_t sm_pos = ptx_filename.find("sm_");
         if (sm_pos != std::string::npos) {
           size_t dot_pos = ptx_filename.find('.', sm_pos);
-          std::string arch_part = ptx_filename.substr(sm_pos + 3, dot_pos - sm_pos - 3);
+          std::string arch_part =
+              ptx_filename.substr(sm_pos + 3, dot_pos - sm_pos - 3);
           bool is_base = true;
           for (size_t j = 0; j < arch_part.length(); j++) {
-            if (!isdigit(arch_part[j])) {
+            if (!std::isdigit(static_cast<unsigned char>(arch_part[j]))) {
               is_base = false;
               break;
             }
           }
           if (is_base) {
-            printf("GPGPU-Sim PTX: Skipping %s (suffix version available)\n", ptx_filename.c_str());
+            printf("GPGPU-Sim PTX: Skipping %s (suffix version available)\n",
+                   ptx_filename.c_str());
             continue;
           }
         }
       }
       selected_files.push_back(ptx_filename);
     }
+  }
+
+  if (ptx_reorder_sass_guided && !ptx_reorder_enabled) {
+    fprintf(stderr,
+            "GPGPU-Sim PTX: -gpgpu_ptx_reorder_sass_guided requires "
+            "-gpgpu_ptx_reorder\n");
+    std::abort();
+  }
+  if (ptx_reorder_sass_guided) {
+    std::string app_binary = api->app_binary_path;
+    if (app_binary.empty()) app_binary = get_app_binary();
+    api->ensure_sass_ptxline_guide(context, app_binary, selected_files);
   }
 
   // Parse the selected files (if any)
@@ -4544,6 +4854,17 @@ __host__ cudaError_t CUDARTAPI cudaDeviceSetLimit(enum cudaLimit limit,
 
 #endif
 
+static bool max_dynamic_shared_memory_fits(
+    CUctx_st *context, function_info *entry, unsigned requested_dynamic,
+    unsigned *static_smem, unsigned *max_per_block_optin) {
+  const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
+  *static_smem = kinfo ? kinfo->smem : 0;
+  *max_per_block_optin =
+      context->get_device()->get_gpgpu()->shared_mem_per_block_optin();
+  return static_cast<unsigned long long>(*static_smem) + requested_dynamic <=
+         *max_per_block_optin;
+}
+
 #if CUDART_VERSION >= 9000
 /**
  * \brief Set attributes for a given function
@@ -4596,16 +4917,16 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
 
   if (attr == cudaFuncAttributeMaxDynamicSharedMemorySize) {
     if (value < 0) return g_last_cudaError = cudaErrorInvalidValue;
-    const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
-    unsigned static_smem = kinfo ? kinfo->smem : 0;
-    unsigned max_per_block =
-        context->get_device()->get_gpgpu()->shared_mem_per_block();
-    if (static_smem + (unsigned)value > max_per_block) {
+    unsigned static_smem;
+    unsigned max_per_block_optin;
+    if (!max_dynamic_shared_memory_fits(
+            context, entry, (unsigned)value, &static_smem,
+            &max_per_block_optin)) {
       printf("GPGPU-Sim PTX: cudaFuncSetAttribute "
              "MaxDynamicSharedMemorySize invalid for '%s': static=%u, "
-             "dynamic=%u, max_per_block=%u\n",
+             "dynamic=%u, max_per_block_optin=%u\n",
              entry->get_name().c_str(), static_smem, (unsigned)value,
-             max_per_block);
+             max_per_block_optin);
       return g_last_cudaError = cudaErrorInvalidValue;
     }
     context->get_device()->get_gpgpu()->set_kernel_max_dynamic_smem(
@@ -6533,16 +6854,16 @@ CUresult CUDAAPI cuFuncSetAttribute(CUfunction hfunc,
 
   if (attrib == CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES) {
     if (value < 0) return CUDA_ERROR_INVALID_VALUE;
-    const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
-    unsigned static_smem = kinfo ? kinfo->smem : 0;
-    unsigned max_per_block =
-        context->get_device()->get_gpgpu()->shared_mem_per_block();
-    if (static_smem + (unsigned)value > max_per_block) {
+    unsigned static_smem;
+    unsigned max_per_block_optin;
+    if (!max_dynamic_shared_memory_fits(
+            context, entry, (unsigned)value, &static_smem,
+            &max_per_block_optin)) {
       printf("GPGPU-Sim PTX: cuFuncSetAttribute "
              "MAX_DYNAMIC_SHARED_SIZE_BYTES invalid for '%s': static=%u, "
-             "dynamic=%u, max_per_block=%u\n",
+             "dynamic=%u, max_per_block_optin=%u\n",
              entry->get_name().c_str(), static_smem, (unsigned)value,
-             max_per_block);
+             max_per_block_optin);
       return CUDA_ERROR_INVALID_VALUE;
     }
     context->get_device()->get_gpgpu()->set_kernel_max_dynamic_smem(

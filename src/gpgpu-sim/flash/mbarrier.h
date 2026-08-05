@@ -85,6 +85,10 @@ public:
   std::set<int> arrive(gpgpu_sim *gpu, const thread_index_t &thread_index,
                        uint64_t addr, int arrival_count);
 
+  // The default form reserves one pending arrival; .noinc only validates it.
+  void prepare_async_arrival(gpgpu_sim *gpu, const thread_index_t &thread_index,
+                             uint64_t addr, bool increment_pending);
+
   /**
    * Complete transaction at the mbarrier at addr with completed_tx_count for
    * warp warp_id.

@@ -8,4 +8,6 @@ Patch:
 - `flash-attention-fa2-fa3-hooks.patch`
 
 The patch preserves the local FA2/FA3 profiling hooks, sensitivity macros, and
-task/globaltimer tracing used by the isolated debug targets.
+task/globaltimer tracing used by the isolated debug targets. It also exposes
+`FLASH_FWD_PACKGQA_CPASYNC_NOINC`, which lets the PackGQA regression build the
+PTX `.noinc` form while accounting for its arrival in the barrier init count.

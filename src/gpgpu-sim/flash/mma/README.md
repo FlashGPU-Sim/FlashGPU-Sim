@@ -62,12 +62,11 @@ Integration tests are located in `test/src/integration/mma/`:
 
 Run MMA tests with:
 ```bash
-./test/run_tests.sh -c SM120_RTX5090_REDUCED run "*MMA*"
+./test/run_tests.sh -c SM120_RTX5090 run "*MMA*"
 ```
 
 ## References
 
 - Parent directory documentation: `../README.md`
-- Design documentation: `docs/mma_instructions.md`
-- Testing instructions: `docs/testing-instructions.md`
+- Integration tests: `../../../../test/src/integration/mma/README.md`
 - PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)

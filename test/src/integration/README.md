@@ -23,7 +23,7 @@ Integration tests validate end-to-end functionality by:
 
 Source environment setup before running tests:
 ```bash
-source setup.sh
+export CUDA_INSTALL_PATH=/path/to/cuda
 source setup_environment
 ```
 
@@ -31,7 +31,7 @@ source setup_environment
 
 ```bash
 # From project root
-test/run_tests.sh test
+test/run_tests.sh run test --target sm120 --group integration
 ```
 
 ### Run Specific Test Suites
@@ -40,19 +40,21 @@ The test runner accepts Google Test filter patterns:
 
 ```bash
 # Run only F16 MMA tests
-test/run_tests.sh test '*F16*'
+test/run_tests.sh run test --target sm120 --group integration '*F16*'
 
 # Run only TF32 MMA tests
-test/run_tests.sh test '*TF32*'
+test/run_tests.sh run test --target sm120 --group integration '*TF32*'
 
 # Run all MMA tests (F16, BF16, TF32, S8)
-test/run_tests.sh test '*MMA*'
+test/run_tests.sh run test --target sm120 --group integration '*MMA*'
 
 # Run specific test case
-test/run_tests.sh test 'MMAF16M16N8K8IntegrationTest.AllOnesTest'
+test/run_tests.sh run test --target sm120 --group integration \
+  'MMAF16M16N8K8IntegrationTest.AllOnesTest'
 ```
 
-**Note**: Pass filter pattern directly to `test` command without `--gtest_filter` prefix. The script handles the proper formatting.
+**Note**: Pass the filter directly after the suite without a
+`--gtest_filter` prefix. The runner handles Google Test formatting.
 
 ## Test Organization
 
@@ -184,7 +186,7 @@ Current status: **25/25 tests passing** (F16: 16, BF16: 5, TF32: 5, S8: 4)
 
 If tests fail to compile:
 - Verify CUDA_INSTALL_PATH is set: `echo $CUDA_INSTALL_PATH`
-- Source environment: `source setup.sh && source setup_environment`
+- Source environment: `source setup_environment`
 - Check CUDA toolkit version supports architecture (sm90 for TF32 M16N8K4)
 
 ### Test Execution Failures
@@ -214,7 +216,7 @@ When adding support for new MMA shapes or data types:
 
 ## References
 
-- Test execution: `docs/testing-instructions.md`
+- Test execution: [`test/README.md`](../../README.md)
 - MMA implementation: `src/gpgpu-sim/flash/mma/tensor_mma.{h,cc,md}`
 - PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)
 - Google Test: [Testing framework documentation](https://google.github.io/googletest/)

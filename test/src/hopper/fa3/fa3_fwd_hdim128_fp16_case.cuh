@@ -12,8 +12,17 @@
 #include <vector>
 
 #include "flash.h"
+#if !defined(FA3_STANDARD_FORWARD_TU)
 #include "flash_bwd_launch_template.h"
+#endif
+#if !defined(FA3_STANDARD_BACKWARD_TU)
 #include "flash_fwd_launch_template.h"
+#endif
+
+#if defined(FA3_STANDARD_FORWARD_TU) && \
+    defined(FA3_STANDARD_BACKWARD_TU)
+#error "FA3 standard split TU must select exactly one direction"
+#endif
 
 namespace fa3_hopper_test {
 
@@ -26,51 +35,90 @@ struct Fa3PrefillCase {
   bool causal;
 };
 
-#define FA3_PREFILL_CASE_LIST(X)                    \
+#define FA3_PREFILL_D64_NONCAUSAL_CASE_LIST(X)      \
   X(H32D64FullB64S512, 64, 512, 32, 64, false)      \
   X(H32D64FullB32S1024, 32, 1024, 32, 64, false)    \
   X(H32D64FullB16S2048, 16, 2048, 32, 64, false)    \
   X(H32D64FullB8S4096, 8, 4096, 32, 64, false)      \
-  X(H32D64FullB4S8192, 4, 8192, 32, 64, false)      \
+  X(H32D64FullB4S8192, 4, 8192, 32, 64, false)
+
+#define FA3_PREFILL_D64_CAUSAL_CASE_LIST(X)         \
   X(H32D64CausalB64S512, 64, 512, 32, 64, true)     \
   X(H32D64CausalB32S1024, 32, 1024, 32, 64, true)   \
   X(H32D64CausalB16S2048, 16, 2048, 32, 64, true)   \
   X(H32D64CausalB8S4096, 8, 4096, 32, 64, true)     \
-  X(H32D64CausalB4S8192, 4, 8192, 32, 64, true)     \
+  X(H32D64CausalB4S8192, 4, 8192, 32, 64, true)
+
+#define FA3_PREFILL_D128_NONCAUSAL_CASE_LIST(X)     \
   X(H16D128FullB64S512, 64, 512, 16, 128, false)    \
   X(H16D128FullB32S1024, 32, 1024, 16, 128, false)  \
   X(H16D128FullB16S2048, 16, 2048, 16, 128, false)  \
   X(H16D128FullB8S4096, 8, 4096, 16, 128, false)    \
-  X(H16D128FullB4S8192, 4, 8192, 16, 128, false)    \
+  X(H16D128FullB4S8192, 4, 8192, 16, 128, false)
+
+#define FA3_PREFILL_D128_CAUSAL_CASE_LIST(X)        \
   X(H16D128CausalB64S512, 64, 512, 16, 128, true)   \
   X(H16D128CausalB32S1024, 32, 1024, 16, 128, true) \
   X(H16D128CausalB16S2048, 16, 2048, 16, 128, true) \
   X(H16D128CausalB8S4096, 8, 4096, 16, 128, true)   \
   X(H16D128CausalB4S8192, 4, 8192, 16, 128, true)
 
+#define FA3_PREFILL_CASE_LIST(X)                \
+  FA3_PREFILL_D64_NONCAUSAL_CASE_LIST(X)        \
+  FA3_PREFILL_D64_CAUSAL_CASE_LIST(X)           \
+  FA3_PREFILL_D128_NONCAUSAL_CASE_LIST(X)       \
+  FA3_PREFILL_D128_CAUSAL_CASE_LIST(X)
+
 static constexpr int kFa3PrefillCaseCount = 20;
 
-#define FA3_PREFILL_SMOKE_CASE_LIST(X)              \
-  X(H32D64FullB2S128, 2, 128, 32, 64, false)        \
-  X(H32D64CausalB2S128, 2, 128, 32, 64, true)       \
-  X(H16D128FullB2S128, 2, 128, 16, 128, false)      \
+#define FA3_PREFILL_SMOKE_D64_NONCAUSAL_CASE_LIST(X) \
+  X(H32D64FullB2S128, 2, 128, 32, 64, false)
+#define FA3_PREFILL_SMOKE_D64_CAUSAL_CASE_LIST(X) \
+  X(H32D64CausalB2S128, 2, 128, 32, 64, true)
+#define FA3_PREFILL_SMOKE_D128_NONCAUSAL_CASE_LIST(X) \
+  X(H16D128FullB2S128, 2, 128, 16, 128, false)
+#define FA3_PREFILL_SMOKE_D128_CAUSAL_CASE_LIST(X) \
   X(H16D128CausalB2S128, 2, 128, 16, 128, true)
+
+#define FA3_PREFILL_SMOKE_CASE_LIST(X)          \
+  FA3_PREFILL_SMOKE_D64_NONCAUSAL_CASE_LIST(X)  \
+  FA3_PREFILL_SMOKE_D64_CAUSAL_CASE_LIST(X)     \
+  FA3_PREFILL_SMOKE_D128_NONCAUSAL_CASE_LIST(X) \
+  FA3_PREFILL_SMOKE_D128_CAUSAL_CASE_LIST(X)
 
 static constexpr int kFa3PrefillSmokeCaseCount = 4;
 
-#define FA3_PREFILL_SMALL_CASE_LIST(X)              \
-  X(H32D64FullB32S256, 32, 256, 32, 64, false)      \
-  X(H32D64CausalB32S256, 32, 256, 32, 64, true)     \
-  X(H16D128FullB32S256, 32, 256, 16, 128, false)    \
+#define FA3_PREFILL_SMALL_D64_NONCAUSAL_CASE_LIST(X) \
+  X(H32D64FullB32S256, 32, 256, 32, 64, false)
+#define FA3_PREFILL_SMALL_D64_CAUSAL_CASE_LIST(X) \
+  X(H32D64CausalB32S256, 32, 256, 32, 64, true)
+#define FA3_PREFILL_SMALL_D128_NONCAUSAL_CASE_LIST(X) \
+  X(H16D128FullB32S256, 32, 256, 16, 128, false)
+#define FA3_PREFILL_SMALL_D128_CAUSAL_CASE_LIST(X) \
   X(H16D128CausalB32S256, 32, 256, 16, 128, true)
+
+#define FA3_PREFILL_SMALL_CASE_LIST(X)          \
+  FA3_PREFILL_SMALL_D64_NONCAUSAL_CASE_LIST(X)  \
+  FA3_PREFILL_SMALL_D64_CAUSAL_CASE_LIST(X)     \
+  FA3_PREFILL_SMALL_D128_NONCAUSAL_CASE_LIST(X) \
+  FA3_PREFILL_SMALL_D128_CAUSAL_CASE_LIST(X)
 
 static constexpr int kFa3PrefillSmallCaseCount = 4;
 
-#define FA3_PREFILL_MEDIUM_CASE_LIST(X)             \
-  X(H32D64FullB16S512, 16, 512, 32, 64, false)      \
-  X(H32D64CausalB16S512, 16, 512, 32, 64, true)     \
-  X(H16D128FullB16S512, 16, 512, 16, 128, false)    \
+#define FA3_PREFILL_MEDIUM_D64_NONCAUSAL_CASE_LIST(X) \
+  X(H32D64FullB16S512, 16, 512, 32, 64, false)
+#define FA3_PREFILL_MEDIUM_D64_CAUSAL_CASE_LIST(X) \
+  X(H32D64CausalB16S512, 16, 512, 32, 64, true)
+#define FA3_PREFILL_MEDIUM_D128_NONCAUSAL_CASE_LIST(X) \
+  X(H16D128FullB16S512, 16, 512, 16, 128, false)
+#define FA3_PREFILL_MEDIUM_D128_CAUSAL_CASE_LIST(X) \
   X(H16D128CausalB16S512, 16, 512, 16, 128, true)
+
+#define FA3_PREFILL_MEDIUM_CASE_LIST(X)          \
+  FA3_PREFILL_MEDIUM_D64_NONCAUSAL_CASE_LIST(X)  \
+  FA3_PREFILL_MEDIUM_D64_CAUSAL_CASE_LIST(X)     \
+  FA3_PREFILL_MEDIUM_D128_NONCAUSAL_CASE_LIST(X) \
+  FA3_PREFILL_MEDIUM_D128_CAUSAL_CASE_LIST(X)
 
 static constexpr int kFa3PrefillMediumCaseCount = 4;
 
@@ -590,6 +638,7 @@ inline void set_fa3_prefill_base_params(Params &params,
   params.num_sm = 0;
 }
 
+#if !defined(FA3_STANDARD_BACKWARD_TU)
 template <int HeadDim, bool IsCausal>
 inline Fa3RunResult run_fa3_prefill_fp16_typed(const Fa3PrefillCase &cfg) {
   constexpr int D = HeadDim;
@@ -695,7 +744,9 @@ inline Fa3RunResult run_fa3_prefill_fp16_typed(const Fa3PrefillCase &cfg) {
 
 #undef FA3_RETURN_IF_CUDA_ERROR
 }
+#endif
 
+#if !defined(FA3_STANDARD_FORWARD_TU)
 template <int HeadDim, bool IsCausal>
 inline Fa3RunResult run_fa3_prefill_fp16_bwd_typed(const Fa3PrefillCase &cfg) {
   constexpr int D = HeadDim;
@@ -875,7 +926,10 @@ inline Fa3RunResult run_fa3_prefill_fp16_bwd_typed(const Fa3PrefillCase &cfg) {
 
 #undef FA3_RETURN_IF_CUDA_ERROR
 }
+#endif
 
+#if !defined(FA3_STANDARD_FORWARD_TU) && \
+    !defined(FA3_STANDARD_BACKWARD_TU)
 inline Fa3RunResult run_fa3_prefill_fp16(const Fa3PrefillCase &cfg) {
   if (cfg.head_dim == 64 && !cfg.causal) {
     return run_fa3_prefill_fp16_typed<64, false>(cfg);
@@ -915,8 +969,10 @@ inline Fa3RunResult run_fa3_prefill_fp16_bwd(const Fa3PrefillCase &cfg) {
   result.where = "Fa3PrefillCase";
   return result;
 }
+#endif
 
-#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
+#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK) && \
+    !defined(FA3_STANDARD_BACKWARD_TU)
 template <int HeadDim, bool IsCausal>
 inline Fa3PrefillProfileResult run_fa3_prefill_profile_fp16_typed(
     const Fa3PrefillCase &cfg) {
@@ -1124,6 +1180,9 @@ inline Fa3PrefillProfileResult run_fa3_prefill_profile_fp16(
 }
 #endif
 
+#if !defined(FA3_STANDARD_BACKWARD_TU) && \
+    (!defined(FA3_STANDARD_FORWARD_TU) || \
+     defined(FA3_STANDARD_FIXED_TESTS))
 inline Fa3RunResult run_fa3_fwd_hdim128_fp16() {
   constexpr int B = 9;
   constexpr int M = 64;
@@ -1291,8 +1350,10 @@ inline Fa3RunResult run_fa3_fwd_hdim128_fp16() {
 
 #undef FA3_RETURN_IF_CUDA_ERROR
 }
+#endif
 
-#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
+#if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK) && \
+    !defined(FA3_STANDARD_BACKWARD_TU)
 inline Fa3SingleTileProfileResult run_fa3_single_tile_hdim128_fp16_full(
     int seqlen_k) {
   constexpr int B = 1;

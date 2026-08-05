@@ -169,6 +169,28 @@ std::set<int> mbarrier_manager_t::arrive(gpgpu_sim *gpu,
   return try_advance(gpu, thread_index, mbarrier);
 }
 
+void mbarrier_manager_t::prepare_async_arrival(
+    gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr,
+    bool increment_pending) {
+  auto key = std::make_pair(thread_index.sw_cta_id, addr);
+  auto it = addr_to_mbarrier_map.find(key);
+  assert(it != addr_to_mbarrier_map.end() &&
+         "mbarrier for asynchronous arrival does not exist");
+
+  auto *mbarrier = it->second.get();
+  if (increment_pending) {
+    assert(mbarrier->m_pending_arrival_count < (1 << 20) - 1);
+    mbarrier->m_pending_arrival_count++;
+  }
+
+  GPPRINTF_GPU(gpu, MBAR,
+               "CTA %d Warp %d prepared asynchronous arrival at 0x%x "
+               "increment_pending=%d pending arrivals %d/%d\n",
+               thread_index.sw_cta_id, thread_index.sw_warp_id, (unsigned)addr,
+               (int)increment_pending, mbarrier->m_pending_arrival_count,
+               mbarrier->m_expected_count);
+}
+
 std::set<int>
 mbarrier_manager_t::complete_tx(gpgpu_sim *gpu,
                                 const thread_index_t &thread_index,
@@ -555,6 +577,26 @@ void barrier_set_t::complete_tx(unsigned cta_id, unsigned warp_id,
   release_warps(released_warps);
 }
 
+void barrier_set_t::prepare_mbarrier_async_arrival(unsigned cta_id,
+                                                   unsigned warp_id,
+                                                   uint32_t mbarrier_addr,
+                                                   bool increment_pending) {
+  flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{
+      (int)cta_id, (int)warp_id, m_shader->get_logical_cta_id(warp_id),
+      m_shader->get_cta_warp_id(warp_id)};
+  m_mbarrier_manager.prepare_async_arrival(m_shader->get_gpu(), thread_index,
+                                           mbarrier_addr, increment_pending);
+}
+
+void barrier_set_t::arrive_mbarrier_async(unsigned cta_id, unsigned warp_id,
+                                          uint32_t mbarrier_addr) {
+  flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{
+      (int)cta_id, (int)warp_id, m_shader->get_logical_cta_id(warp_id),
+      m_shader->get_cta_warp_id(warp_id)};
+  release_warps(m_mbarrier_manager.arrive(m_shader->get_gpu(), thread_index,
+                                          mbarrier_addr, 1));
+}
+
 void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
                                           const ptx_instruction *pI,
                                           const warp_inst_t *dynamic_inst,
@@ -589,9 +631,9 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
   unsigned warp_size = m_shader->get_config()->warp_size;
   const bool trace_mbarrier = mbarrier_trace_enabled();
 
-  // The simulator can only stall/release a whole warp on mbarrier waits. Treat
-  // one dynamic warp instruction as one timing-side mbarrier transaction, but
-  // only when participating active lanes agree on the mbarrier parameters.
+  // mbarrier.complete_tx is modeled once per warp and therefore requires one
+  // uniform set of lane parameters. Other mbarrier operations are thread-level
+  // and are handled per lane below.
   auto get_uniform_mbarrier_info = [&](inst_t::mbarrier_info_t &mbar_info,
                                        unsigned &mbar_lane) -> bool {
     bool found = false;
@@ -630,63 +672,52 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     return found;
   };
 
-  auto count_uniform_mbarrier_lanes =
-      [&](const inst_t::mbarrier_info_t &mbar_info) -> unsigned {
-    unsigned lanes = 0;
+  if (bar_op == INIT_OPTION) {
+
     for (unsigned lane = 0; lane < warp_size; lane++) {
       if (!active_mask.test(lane))
         continue;
 
-      const auto &info = dynamic_inst->get_mbarrier_info(lane);
-      if (!is_valid_mbarrier_info(info))
+      const auto &mbar_info = dynamic_inst->get_mbarrier_info(lane);
+      if (!is_valid_mbarrier_info(mbar_info))
         continue;
 
-      assert(info.bar_id == mbar_info.bar_id &&
-             info.bar_count == mbar_info.bar_count &&
-             info.bar_parity == mbar_info.bar_parity);
-      lanes++;
+      auto addr = mbar_info.bar_id;
+      auto expected_count = mbar_info.bar_count;
+
+      m_mbarrier_manager.init(m_shader->get_gpu(), thread_index, addr,
+                              expected_count);
     }
-    return lanes;
-  };
-
-  if (bar_op == INIT_OPTION) {
-
-    inst_t::mbarrier_info_t mbar_info;
-    unsigned lane = 0;
-    if (!get_uniform_mbarrier_info(mbar_info, lane))
-      return;
-
-    auto addr = mbar_info.bar_id;
-    auto expected_count = mbar_info.bar_count;
-
-    m_mbarrier_manager.init(m_shader->get_gpu(), thread_index, addr,
-                            expected_count);
     return;
 
   } else if (bar_op == TRY_WAIT_OPTION) {
 
-    inst_t::mbarrier_info_t mbar_info;
-    unsigned lane = 0;
-    if (!get_uniform_mbarrier_info(mbar_info, lane))
-      return;
+    for (unsigned lane = 0; lane < warp_size; lane++) {
+      if (!active_mask.test(lane))
+        continue;
 
-    unsigned addr = mbar_info.bar_id;
-    bool parity = mbar_info.bar_parity;
+      const auto &mbar_info = dynamic_inst->get_mbarrier_info(lane);
+      if (!is_valid_mbarrier_info(mbar_info))
+        continue;
 
-    bool released = m_mbarrier_manager.try_wait(m_shader->get_gpu(),
-                                                thread_index, addr, parity);
-    if (trace_mbarrier) {
-      printf("GPGPU-Sim Cycle %llu: MBAR_TRY_WAIT - CTA %u Warp %u lane=%u "
-             "addr=0x%x parity=%u released=%s active=%s\n",
-             m_shader->get_gpu()->gpu_sim_cycle +
-                 m_shader->get_gpu()->gpu_tot_sim_cycle,
-             cta_id, warp_id, lane, addr, (unsigned)parity,
-             released ? "yes" : "no", active_mask.to_string().c_str());
-    }
-    if (!released) {
-      m_warp_at_barrier.set(warp_id);
-      m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
-      m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+      unsigned addr = mbar_info.bar_id;
+      bool parity = mbar_info.bar_parity;
+
+      bool released = m_mbarrier_manager.try_wait(m_shader->get_gpu(),
+                                                  thread_index, addr, parity);
+      if (trace_mbarrier) {
+        printf("GPGPU-Sim Cycle %llu: MBAR_TRY_WAIT - CTA %u Warp %u lane=%u "
+               "addr=0x%x parity=%u released=%s active=%s\n",
+               m_shader->get_gpu()->gpu_sim_cycle +
+                   m_shader->get_gpu()->gpu_tot_sim_cycle,
+               cta_id, warp_id, lane, addr, (unsigned)parity,
+               released ? "yes" : "no", active_mask.to_string().c_str());
+      }
+      if (!released) {
+        m_warp_at_barrier.set(warp_id);
+        m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
+        m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+      }
     }
 
     return;
@@ -710,48 +741,52 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     auto [is_arrive, is_expect_tx] =
         parse_mbarrier_arrive_expect_tx_options(pI);
 
-    inst_t::mbarrier_info_t mbar_info;
-    unsigned lane = 0;
-    if (!get_uniform_mbarrier_info(mbar_info, lane))
-      return;
+    for (unsigned lane = 0; lane < warp_size; lane++) {
+      if (!active_mask.test(lane))
+        continue;
 
-    auto addr = mbar_info.bar_id;
-    auto count = mbar_info.bar_count;
+      const auto &mbar_info = dynamic_inst->get_mbarrier_info(lane);
+      if (!is_valid_mbarrier_info(mbar_info))
+        continue;
 
-    if (is_expect_tx && is_arrive) {
+      auto addr = mbar_info.bar_id;
+      auto count = mbar_info.bar_count;
 
-      // We have to do expect_tx first, in case arrive releases the barrier.
-      auto arrival_count = count_uniform_mbarrier_lanes(mbar_info);
-      m_mbarrier_manager.expect_tx(m_shader->get_gpu(), thread_index, addr,
-                                   count);
+      if (is_expect_tx && is_arrive) {
+        // We have to do expect_tx first, in case arrive releases the barrier.
+        auto arrival_count = 1;
+        m_mbarrier_manager.expect_tx(m_shader->get_gpu(), thread_index, addr,
+                                     count);
 
-      auto released_warps = m_mbarrier_manager.arrive(
-          m_shader->get_gpu(), thread_index, addr, arrival_count);
-      release_warps(released_warps);
+        auto released_warps = m_mbarrier_manager.arrive(
+            m_shader->get_gpu(), thread_index, addr, arrival_count);
+        release_warps(released_warps);
 
-    } else if (is_arrive) {
+      } else if (is_arrive) {
+        auto released_warps = m_mbarrier_manager.arrive(
+            m_shader->get_gpu(), thread_index, addr, count);
+        release_warps(released_warps);
 
-      auto arrival_count = count * count_uniform_mbarrier_lanes(mbar_info);
-      auto released_warps = m_mbarrier_manager.arrive(
-          m_shader->get_gpu(), thread_index, addr, arrival_count);
-      release_warps(released_warps);
-
-    } else if (is_expect_tx) {
-      m_mbarrier_manager.expect_tx(m_shader->get_gpu(), thread_index, addr,
-                                   count);
+      } else if (is_expect_tx) {
+        m_mbarrier_manager.expect_tx(m_shader->get_gpu(), thread_index, addr,
+                                     count);
+      }
     }
 
     return;
   } else if (bar_op == INVAL_OPTION) {
 
-    inst_t::mbarrier_info_t mbar_info;
-    unsigned lane = 0;
-    if (!get_uniform_mbarrier_info(mbar_info, lane))
-      return;
+    for (unsigned lane = 0; lane < warp_size; lane++) {
+      if (!active_mask.test(lane))
+        continue;
 
-    auto addr = mbar_info.bar_id;
+      const auto &mbar_info = dynamic_inst->get_mbarrier_info(lane);
+      if (!is_valid_mbarrier_info(mbar_info))
+        continue;
 
-    m_mbarrier_manager.inval(m_shader->get_gpu(), thread_index, addr);
+      auto addr = mbar_info.bar_id;
+      m_mbarrier_manager.inval(m_shader->get_gpu(), thread_index, addr);
+    }
     return;
   }
 

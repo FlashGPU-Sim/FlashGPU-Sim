@@ -1,132 +1,122 @@
-#!/bin/bash
-# GPGPU-Sim Docker Helper Script
-# Simplifies common Docker operations for GPGPU-Sim development
+#!/usr/bin/env bash
 
-set -e
+set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+compose_file="${repo_root}/docker/docker-compose.yml"
+gpu_compose_file="${repo_root}/docker/docker-compose.gpu.yml"
+service="flashgpusim"
+image="flashgpu-sim-dev:cuda12.8"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+export FLASHGPUSIM_UID="${FLASHGPUSIM_UID:-$(id -u)}"
+export FLASHGPUSIM_GID="${FLASHGPUSIM_GID:-$(id -g)}"
 
-# Default values
-SERVICE="${SERVICE:-gpgpusim}"
-COMPOSE_FILE="docker/docker-compose.yml"
+usage() {
+  cat <<EOF
+Usage:
+  ./docker.sh build
+  ./docker.sh shell
+  ./docker.sh shell --gpu [DEVICE]
 
-print_banner() {
-    echo -e "${CYAN}"
-    echo "╔═══════════════════════════════════════════════════════════════╗"
-    echo "║           GPGPU-Sim Docker Development Environment            ║"
-    echo "╚═══════════════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
+Commands:
+  build                 Build the development image.
+  shell                 Start a disposable CPU-only development shell.
+  shell --gpu           Start a shell with all NVIDIA GPUs available.
+  shell --gpu DEVICE    Start a GPU-enabled shell and select DEVICE with
+                        CUDA_VISIBLE_DEVICES.
+EOF
 }
 
-print_help() {
-    print_banner
-    echo "Usage: $0 <command> [options]"
-    echo ""
-    echo "Commands:"
-    echo "  build              Build Docker image"
-    echo "  start              Start container"
-    echo "  stop               Stop all containers"
-    echo "  shell              Open shell in container (starts if not running)"
-    echo "  logs               Show container logs"
-    echo "  clean              Remove containers and images"
-    echo ""
-    echo "Examples:"
-    echo "  $0 build           # Build Docker image"
-    echo "  $0 shell           # Enter container shell"
-    echo "  $0 stop            # Stop container"
-    echo "  $0 clean           # Remove all containers and images"
-    echo ""
-    echo "Inside container:"
-    echo "  source setup_environment        # Setup environment"
-    echo "  make -j\$(nproc)                 # Build standard version"
-    echo "  make FLASH=1 -j\$(nproc)         # Build Flash mode"
-    echo ""
+require_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Error: Docker is not installed." >&2
+    exit 1
+  fi
+
+  if ! docker info >/dev/null 2>&1; then
+    echo "Error: the Docker daemon is unavailable." >&2
+    exit 1
+  fi
 }
 
-cmd_build() {
-    echo -e "${BLUE}Building Docker image...${NC}"
-    docker compose -f "$COMPOSE_FILE" build
-    echo -e "${GREEN}✓ Build complete${NC}"
+build_image() {
+  require_docker
+  docker compose -f "${compose_file}" build "${service}"
 }
 
-cmd_start() {
-    echo -e "${BLUE}Starting container...${NC}"
-    docker compose -f "$COMPOSE_FILE" up -d "$SERVICE"
-    echo -e "${GREEN}✓ Container started${NC}"
-    echo -e "${YELLOW}Run '$0 shell' to enter the container${NC}"
-}
+open_shell() {
+  local use_gpu=false
+  local device=""
 
-cmd_stop() {
-    echo -e "${BLUE}Stopping containers...${NC}"
-    docker compose -f "$COMPOSE_FILE" down
-    echo -e "${GREEN}✓ Containers stopped${NC}"
-}
-
-cmd_shell() {
-    echo -e "${BLUE}Opening shell...${NC}"
-    
-    # Check if container is running
-    if ! docker compose -f "$COMPOSE_FILE" ps --status=running "$SERVICE" | grep -q "$SERVICE"; then
-        echo -e "${YELLOW}Container not running, starting it first...${NC}"
-        docker compose -f "$COMPOSE_FILE" up -d "$SERVICE"
-        sleep 2
+  if [[ $# -gt 0 ]]; then
+    if [[ "$1" != "--gpu" ]]; then
+      echo "Error: unknown shell option '$1'." >&2
+      usage >&2
+      exit 2
     fi
-    
-    docker compose -f "$COMPOSE_FILE" exec "$SERVICE" bash
-}
+    use_gpu=true
+    shift
 
-cmd_logs() {
-    echo -e "${BLUE}Showing logs...${NC}"
-    docker compose -f "$COMPOSE_FILE" logs -f "$SERVICE"
-}
-
-cmd_clean() {
-    echo -e "${YELLOW}This will remove all GPGPU-Sim containers and images.${NC}"
-    read -p "Are you sure? (y/N) " confirm
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        echo -e "${BLUE}Cleaning up...${NC}"
-        docker compose -f "$COMPOSE_FILE" down -v --rmi all 2>/dev/null || true
-        echo -e "${GREEN}✓ Cleanup complete${NC}"
-    else
-        echo -e "${YELLOW}Cancelled${NC}"
+    if [[ $# -gt 0 ]]; then
+      device="$1"
+      shift
+      if [[ ! "${device}" =~ ^[0-9]+$ ]]; then
+        echo "Error: GPU device must be a non-negative integer." >&2
+        exit 2
+      fi
     fi
+  fi
+
+  if [[ $# -gt 0 ]]; then
+    echo "Error: too many shell arguments." >&2
+    usage >&2
+    exit 2
+  fi
+
+  require_docker
+
+  if ! docker image inspect "${image}" >/dev/null 2>&1; then
+    echo "Error: development image '${image}' was not found." >&2
+    echo "Run './docker.sh build' first." >&2
+    exit 1
+  fi
+
+  local -a compose=(docker compose -f "${compose_file}")
+  local -a run_args=(run --rm)
+
+  if [[ "${use_gpu}" == true ]]; then
+    compose+=(-f "${gpu_compose_file}")
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+      echo "Warning: nvidia-smi was not found on the host." >&2
+    fi
+  fi
+
+  if [[ -n "${device}" ]]; then
+    run_args+=(-e "CUDA_VISIBLE_DEVICES=${device}")
+  fi
+
+  "${compose[@]}" "${run_args[@]}" "${service}" bash
 }
 
-# Main
 case "${1:-help}" in
-    build)
-        cmd_build
-        ;;
-    start)
-        cmd_start
-        ;;
-    stop)
-        cmd_stop
-        ;;
-    shell)
-        cmd_shell
-        ;;
-    logs)
-        cmd_logs
-        ;;
-    clean)
-        cmd_clean
-        ;;
-    help|--help|-h)
-        print_help
-        ;;
-    *)
-        echo -e "${RED}Unknown command: $1${NC}"
-        print_help
-        exit 1
-        ;;
+  build)
+    shift
+    if [[ $# -ne 0 ]]; then
+      echo "Error: build does not accept arguments." >&2
+      exit 2
+    fi
+    build_image
+    ;;
+  shell)
+    shift
+    open_shell "$@"
+    ;;
+  help | --help | -h)
+    usage
+    ;;
+  *)
+    echo "Error: unknown command '${1}'." >&2
+    usage >&2
+    exit 2
+    ;;
 esac

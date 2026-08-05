@@ -75,23 +75,27 @@ uint32_t tensormap_descriptor_t::get_tile_size_bytes() const {
 }
 
 uint64_t
-tensormap_descriptor_t::calculate_src_addr(const uint32_t coords[5]) const {
+tensormap_descriptor_t::calculate_src_addr(const int32_t coords[5]) const {
   // Calculate the base address for the tile starting at given coordinates
   // This is used for simple address calculation (not for generating actual
   // memory requests) fields.tensorRank is 0-based.
-  uint64_t addr = fields.globalAddress;
+  int64_t byte_offset = 0;
   uint32_t elem_size = get_element_size();
   uint32_t dims = num_dims();
 
   for (uint32_t i = 0; i < dims; i++) {
     // For dimension 0, use element size; for others, use stride
     if (i == 0) {
-      addr += coords[i] * elem_size;
+      byte_offset += static_cast<int64_t>(coords[i]) * elem_size;
     } else {
-      addr += coords[i] * fields.globalStrides[i - 1];
+      byte_offset += static_cast<int64_t>(coords[i]) *
+                     static_cast<int64_t>(fields.globalStrides[i - 1]);
     }
   }
-  return addr;
+  if (byte_offset < 0) {
+    return fields.globalAddress - static_cast<uint64_t>(-byte_offset);
+  }
+  return fields.globalAddress + static_cast<uint64_t>(byte_offset);
 }
 
 void tensormap_descriptor_t::print() const {
