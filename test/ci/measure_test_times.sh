@@ -28,8 +28,9 @@ TEST_CONFIG="${CI_TEST_CONFIG:-SM120_RTX5090}"
 
 # Array of test patterns to run (focusing on major test suites)
 TEST_SUITES=(
-  "GPGPUSimBasicTest.*"
-  "MathTest.*"
+  "BulkGroupTest.*"
+  "LocalInterconnectTest.*"
+  "MshrTableTest.*"
   "LdMatrixX1Test.*"
   "LdMatrixX2Test.*"
   "LdMatrixX4Test.*"
@@ -52,9 +53,7 @@ TEST_SUITES=(
   "MMABF16M16N8K16Test.*"
   "MBarrierThreadLevelTest.*"
   "MBarrierSanityTest.*"
-  "GPGPUSimIntegrationTest.*"
   "CudaTMATest.*"
-  "BasicValues/ParameterizedTest.*"
   "VariousSizes/CudaVectorAddParameterizedTest.*"
 )
 
@@ -67,27 +66,34 @@ for test_pattern in "${TEST_SUITES[@]}"; do
   echo "Running: $test_pattern"
 
   start_time=$(date +%s)
-  group="unit"
+  test_group="unit"
 
-  # The current runner requires an explicit registry group. CUDA integration
-  # suites and the standalone MMA integration cases live in the integration
-  # binary; the remaining instruction/unit suites live in the unit binary.
   case "$test_pattern" in
-    Cuda*|GPGPUSimIntegrationTest.*|MMA*|MBarrier*|LdMatrix*|StMatrix*|VariousSizes/*)
-      group="integration"
+    MMA*)
+      test_group="mma"
+      ;;
+    MBarrier*)
+      test_group="barrier"
+      ;;
+    CudaTMA*)
+      test_group="tma"
+      ;;
+    Cuda*|LdMatrix*|StMatrix*|VariousSizes/*)
+      test_group="integration"
       ;;
   esac
 
   # Run test in a subshell with proper environment and capture result
   # Skip CudaTMATest.PerformanceComparison for CudaTMATest suite
   if [[ "$test_pattern" == "CudaTMATest.*" ]]; then
-    filter="CudaTMATest.*:-CudaTMATest.PerformanceComparison"
+    filter="CudaTMATest.*-CudaTMATest.PerformanceComparison"
   else
     filter="$test_pattern"
   fi
 
-  if timeout "$TIMEOUT_PER_TEST" ./test/run_tests.sh -c "$TEST_CONFIG" \
-      run test --target sm120 --group "$group" "$filter" &>/dev/null; then
+  if timeout "$TIMEOUT_PER_TEST" ./test/run_tests.py -c "$TEST_CONFIG" \
+      run --arch sm120 --test-group "$test_group" \
+      --gtest-filter "$filter" &>/dev/null; then
     status="PASS"
   else
     exit_code=$?

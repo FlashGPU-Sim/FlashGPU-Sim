@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     make \
     python3 \
+    python3-tomli \
     # Required by GPGPU-Sim build
     xutils-dev \
     bison \

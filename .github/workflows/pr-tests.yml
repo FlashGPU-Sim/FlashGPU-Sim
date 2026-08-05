@@ -7,9 +7,9 @@ on:
     types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
-  simulation-test-shards:
+  simulation-test-jobs:
 
-    name: simulation-tests (${{ matrix.shard }})
+    name: simulation-tests (${{ matrix.arch }}, ${{ matrix.test_set }})
 
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -17,7 +17,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [sm120, sm90-fa2, sm90-fa3]
+        include:
+          - arch: sm120
+            test_set: core
+          - arch: sm90
+            test_set: core
+          - arch: sm90
+            test_set: fa2
+          - arch: sm90
+            test_set: fa3
 
     steps:
       - name: Checkout repository
@@ -44,7 +52,8 @@ jobs:
             --memory-swap=7g \
             -e CI=true \
             -e GITHUB_ACTIONS=true \
-            -e CI_SHARD=${{ matrix.shard }} \
+            -e CI_ARCH=${{ matrix.arch }} \
+            -e CI_TEST_SET=${{ matrix.test_set }} \
             -e CI_BUILD_JOBS=2 \
             -v ${{ github.workspace }}:/gpgpu-sim \
             -w /gpgpu-sim \
@@ -55,7 +64,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: simulation-test-results-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          name: simulation-test-results-${{ matrix.arch }}-${{ matrix.test_set }}-attempt-${{ github.run_attempt }}
           path: test/logs/ci
           if-no-files-found: warn
 
@@ -63,12 +72,12 @@ jobs:
 
     name: simulation-tests
     if: always()
-    needs: simulation-test-shards
+    needs: simulation-test-jobs
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
-      - name: Verify simulation test shards
+      - name: Verify simulation test jobs
         env:
-          SHARD_RESULT: ${{ needs.simulation-test-shards.result }}
-        run: test "$SHARD_RESULT" = success
+          JOB_RESULT: ${{ needs.simulation-test-jobs.result }}
+        run: test "$JOB_RESULT" = success
