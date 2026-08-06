@@ -23,7 +23,8 @@ for B200.
 ## Usage
 
 ```bash
-./test/run_tests.sh -c SM100_B200_REDUCED test "*Tcgen05*"
+./tests/run_tests.py -c SM100_B200_REDUCED run --arch sm100 --group unit \
+  --gtest-filter 'Tcgen05TmemTest.*'
 ```
 
 For CUDA integration tests that emit `sm_100a` code, point

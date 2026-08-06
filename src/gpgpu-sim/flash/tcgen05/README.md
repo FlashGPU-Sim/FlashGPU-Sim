@@ -11,7 +11,7 @@ Current scope:
 - Parser coverage for the common TCGen05 instruction family needed during FA4
   bring-up.
 - Optional inline-PTX surface validation through
-  `test/run_tcgen05_phase1_smoke.sh --check-inline`, which requires a
+  `tests/dev/tcgen05/run_phase1_smoke.sh --check-inline`, which requires a
   Blackwell-capable CUDA toolchain.
 
 Not calibrated yet:

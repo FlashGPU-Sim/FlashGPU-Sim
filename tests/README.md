@@ -12,13 +12,12 @@ source setup_environment
 
 ./tests/run_tests.py list
 ./tests/run_tests.py list --arch sm90 --group fa3 --profile breakdown
-./tests/run_tests.py list-cases --arch sm100 --group tcgen05
+./tests/run_tests.py list-cases --arch sm100 --group unit
 ./tests/run_tests.py list-cases --arch sm120 --group integration
 ./tests/run_tests.py list-cases --arch sm120 --group integration \
   --gtest-filter '*VectorAdd*'
 ./tests/run_tests.py build --arch sm120 --group integration
-./tests/run_tests.py run --arch sm100 --group fa4
-./tests/run_tests.py run --arch sm100 --group tcgen05
+./tests/run_tests.py run --arch sm100 --group unit
 ./tests/run_tests.py run --arch sm120 --group integration
 ./tests/run_tests.py run --arch sm90 --group wgmma \
   --gtest-filter 'WgmmaF16*'
@@ -56,7 +55,7 @@ A positional filter remains available as a convenient substring search.
 level; selecting one profile expands its compile-time modes.
 
 ```bash
-./run_tests.py run --arch sm100 --group tcgen05
+./run_tests.py run --arch sm100 --group unit
 ./run_tests.py run --arch sm120 --group unit
 ./run_tests.py run --arch sm120 --group tma CudaTMATest
 ./run_tests.py run --arch sm90 --group fa2 --profile smoke
@@ -101,7 +100,7 @@ GoogleTest cases.
 ```text
 src/
 ├── include/       shared test-only headers (not a test group)
-├── unit/          host-side simulator component tests
+├── unit/          host-side tests that directly exercise simulator components
 ├── integration/   cross-architecture standalone CUDA tests
 ├── barrier/       named barrier and mbarrier tests
 ├── tma/           TMA and tensor-map tests
@@ -109,8 +108,6 @@ src/
 ├── wgmma/         WGMMA tests
 ├── fa2/           FlashAttention 2 tests and build variants
 ├── fa3/           FlashAttention 3 tests and build variants
-├── fa4/           FlashAttention 4 host-side correctness tests
-├── tcgen05/       TCGen05 host-side component tests
 ├── microbench/    existing microbenchmark layout
 └── trace/         existing trace-driven GPT-2 tests
 ```
@@ -119,8 +116,17 @@ Executable sources follow `tests/src/<test_group>/<test>.cu`; shared headers
 under `tests/src/include/` are included by those sources but are not workloads,
 test groups, or architecture-manifest entries.
 
+`unit/` contains tests that call simulator component APIs directly without
+loading or launching device code through the simulator. Architecture-specific
+component tests still belong here; architecture manifests select the relevant
+sources and support objects.
+
 `integration/` admits only standalone sources that compile for every supported
 architecture without test-specific compiler flags or link dependencies.
+Device-launch tests that need shared support, multiple sources, special flags,
+or architecture-specific handling use a feature-specific sibling group.
+Unstable bring-up programs and toolchain-specific probes live under
+`tests/dev/` and are outside the manifest-driven runner.
 
 ## Architecture manifests
 

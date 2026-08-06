@@ -22,18 +22,18 @@ calibrated against B200 hardware counters.
 ## Usage
 
 ```bash
-./test/run_tests.sh -c SM100_B200 test "*Tcgen05*"
-./test/run_fa4_b200_cases.sh --config SM100_B200 --suite smoke
-./test/run_fa4_b200_cases.sh --config SM100_B200 --suite smoke --non-causal
-./test/run_fa4_b200_cases.sh --config SM100_B200 --suite smoke --artifact-head-dim 128
-./test/run_fa4_b200_suite_matrix.sh --config SM100_B200 --suite smoke
-./test/run_fa4_b200_suite_matrix.sh --config SM100_B200 --suite medium
+./tests/run_tests.py -c SM100_B200 run --arch sm100 --group unit
+./tests/dev/fa4/run_fa4_b200_cases.sh --config SM100_B200 --suite smoke
+./tests/dev/fa4/run_fa4_b200_cases.sh --config SM100_B200 --suite smoke --non-causal
+./tests/dev/fa4/run_fa4_b200_cases.sh --config SM100_B200 --suite smoke --artifact-head-dim 128
+./tests/dev/fa4/run_fa4_b200_suite_matrix.sh --config SM100_B200 --suite smoke
+./tests/dev/fa4/run_fa4_b200_suite_matrix.sh --config SM100_B200 --suite medium
 ```
 
-`test/fa4_b200_cases.csv` follows the FA2/FA3 prefill workload groups:
+`tests/dev/fa4/fa4_b200_cases.csv` follows the FA2/FA3 prefill workload groups:
 `smoke`, `small`, `medium`, and `large`.  Each generated FA4 artifact is still
 specialized by head dimension, dtype, and causal mode, so mismatched rows are
-reported as `SKIP`; use `test/run_fa4_b200_suite_matrix.sh` to run every
+reported as `SKIP`; use `tests/dev/fa4/run_fa4_b200_suite_matrix.sh` to run every
 artifact variant in a suite automatically.  The matrix runner also supports
 `--direction bwd`; backward defaults to export-only coverage to keep routine
 runs short, and `--run-bwd` enables the launch smoke.  Forward keeps the simple

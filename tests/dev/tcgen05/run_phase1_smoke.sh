@@ -9,7 +9,7 @@ usage: $(basename "$0") [--check-inline] [ptx-file]
 
 Validates TCGen05 parser coverage on a checked-in PTX file. With
 --check-inline, also compiles
-tests/src/tcgen05/fixtures/tcgen05_instruction_surface_inline.cu
+tests/dev/tcgen05/fixtures/tcgen05_instruction_surface_inline.cu
 with a Blackwell-capable CUDA toolchain and validates the generated PTX.
 
 Environment:
@@ -58,7 +58,7 @@ if [[ $# -gt 0 ]]; then
   PTX_FILE="$1"
 fi
 
-PTX_FILE="${PTX_FILE:-${ROOT_DIR}/tests/src/tcgen05/fixtures/tcgen05_phase1_smoke.ptx}"
+PTX_FILE="${PTX_FILE:-${ROOT_DIR}/tests/dev/tcgen05/fixtures/tcgen05_phase1_smoke.ptx}"
 PTX_FILE="$(readlink -f "${PTX_FILE}")"
 BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/tests/build/tcgen05_phase1}"
 GPGPUSIM_CONFIG="${GPGPUSIM_CONFIG:-gcc-13.3.0/cuda-12080/release}"
@@ -139,7 +139,7 @@ cp "${GPU_CONFIG_DIR}"/config_*.icnt "${BUILD_DIR}/" 2>/dev/null || true
   -I"${SIM_BUILD_DIR}/cuda-sim" \
   -I"${ROOT_DIR}/libcuda" \
   -I"${CUDA_HOME}/include" \
-  "${ROOT_DIR}/tests/src/tcgen05/tcgen05_parser_smoke.cc" \
+  "${ROOT_DIR}/tests/dev/tcgen05/tcgen05_parser_smoke.cc" \
   -L"${SIM_LIB_DIR}" \
   -Wl,-rpath,"${SIM_LIB_DIR}" \
   -lcudart \
@@ -153,7 +153,7 @@ if [[ "${CHECK_INLINE}" -eq 1 ]]; then
     echo "missing Blackwell-capable nvcc for --check-inline" >&2
     exit 1
   fi
-  INLINE_SRC="${ROOT_DIR}/tests/src/tcgen05/fixtures/tcgen05_instruction_surface_inline.cu"
+  INLINE_SRC="${ROOT_DIR}/tests/dev/tcgen05/fixtures/tcgen05_instruction_surface_inline.cu"
   INLINE_PTX="${BUILD_DIR}/tcgen05_instruction_surface_inline.generated.ptx"
   "${INLINE_NVCC}" -std=c++17 -arch=sm_100a -ptx "${INLINE_SRC}" \
     -o "${INLINE_PTX}"

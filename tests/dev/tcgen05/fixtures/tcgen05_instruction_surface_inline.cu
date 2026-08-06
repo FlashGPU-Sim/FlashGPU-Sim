@@ -1,9 +1,9 @@
-// Canonical inline-PTX source for tests/src/tcgen05/fixtures/
+// Canonical inline-PTX source for tests/dev/tcgen05/fixtures/
 // tcgen05_instruction_surface_smoke.ptx.
 //
-// This file intentionally is not part of the default test build. It requires a
-// Blackwell-capable CUDA toolchain, and the checked-in PTX is the parser smoke
-// input used by normal CI/developer builds.
+// This file intentionally is not part of the manifest-driven test build. It
+// requires a Blackwell-capable CUDA toolchain and is used only by the
+// standalone parser-smoke development flow.
 
 #include <cstdint>
 

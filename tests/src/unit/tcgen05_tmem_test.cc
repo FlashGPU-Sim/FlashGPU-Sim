@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../../../src/gpgpu-sim/flash/tcgen05.h"
+#include "gpgpu-sim/flash/tcgen05.h"
 
 #include <cstring>
 

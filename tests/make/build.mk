@@ -17,7 +17,7 @@ TEST_GROUP_EXTRA_OBJECTS_sm120_unit := \
 	$(OBJ_DIR)/sm120/support/local_interconnect.cc.o \
 	$(OBJ_DIR)/sm120/support/mshr-table.cu.o
 
-TEST_GROUP_EXTRA_OBJECTS_sm100_tcgen05 := \
+TEST_GROUP_EXTRA_OBJECTS_sm100_unit := \
 	$(OBJ_DIR)/sm100/support/tcgen05/descriptor.cu.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/mma.cu.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/tmem.cu.o
@@ -73,7 +73,7 @@ $(foreach arch,$(ARCHITECTURES),\
   $(foreach test_group,$(STANDARD_TEST_GROUPS_$(arch)),\
     $(eval $(call REGISTER_STANDARD_TEST_GROUP,$(arch),$(test_group)))))
 
-# Host-side TCGen05 model objects required only by the SM100 TCGen05 tests.
+# Host-side TCGen05 model objects required by the SM100 unit test group.
 $(OBJ_DIR)/sm100/support/tcgen05/%.cu.o: \
 $(SRC_DIR)/gpgpu-sim/flash/tcgen05/%.cc \
 $(wildcard $(SRC_DIR)/gpgpu-sim/flash/tcgen05/*.h) \

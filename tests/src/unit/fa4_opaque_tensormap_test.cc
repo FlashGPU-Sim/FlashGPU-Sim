@@ -1,3 +1,4 @@
+// Host-side unit coverage for the SM100 opaque TensorMap decoder.
 #include <gtest/gtest.h>
 
 #include <cuda.h>
