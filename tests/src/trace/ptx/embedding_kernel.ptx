@@ -1,0 +1,496 @@
+
+//
+//
+
+.version 8.7
+.target sm_120a
+.address_size 64
+
+//
+.extern .shared .align 16 .b8 global_smem[];
+//
+.visible .entry embedding_kernel(
+.param .u64 .ptr .global .align 1 embedding_kernel_param_0,
+.param .u64 .ptr .global .align 1 embedding_kernel_param_1,
+.param .u64 .ptr .global .align 1 embedding_kernel_param_2,
+.param .u64 .ptr .global .align 1 embedding_kernel_param_3,
+.param .u32 embedding_kernel_param_4,
+.param .u32 embedding_kernel_param_5,
+.param .u32 embedding_kernel_param_6,
+.param .u64 .ptr .global .align 1 embedding_kernel_param_7,
+.param .u64 .ptr .global .align 1 embedding_kernel_param_8
+)
+.reqntid 128
+{
+.reg .pred %p<68>;
+.reg .b16 %rs<25>;
+.reg .b32 %r<71>;
+.reg .b64 %rd<64>;
+.loc	1 58 0 //
+$L__func_begin0:
+.loc	1 58 0 //
+
+//
+ld.param.b64 %rd59, [embedding_kernel_param_0];
+ld.param.b64 %rd3, [embedding_kernel_param_1];
+$L__tmp0:
+.loc	1 66 24 //
+mov.u32 %r45, %ctaid.x;
+ld.param.b64 %rd21, [embedding_kernel_param_2];
+.loc	1 67 31 //
+mad.wide.u32 %rd1, %r45, 4, %rd59;
+ld.param.b64 %rd39, [embedding_kernel_param_3];
+.loc	1 67 18 //
+//
+mov.u32 %r30, 0x0;
+ld.global.b32 { %r30 }, [ %rd1 + 0 ];
+//
+ld.param.b32 %r23, [embedding_kernel_param_4];
+ld.param.b32 %r14, [embedding_kernel_param_5];
+ld.param.b32 %r7, [embedding_kernel_param_6];
+.loc	1 70 56 //
+mov.u32 %r47, %ctaid.y;
+ld.param.b64 %rd60, [embedding_kernel_param_7];
+mov.u32 %r48, %ctaid.z;
+mov.u32 %r49, %nctaid.x;
+mov.u32 %r50, %nctaid.y;
+mad.lo.s32 %r51, %r48, %r50, %r47;
+mad.lo.s32 %r52, %r51, %r49, %r45;
+mul.lo.s32 %r53, %r52, 384;
+cvt.s64.s32 %rd61, %r53;
+add.s64 %rd17, %rd60, %rd61;
+mul.wide.s32 %rd28, %r14, 2;
+mov.u32 %r54, %tid.x;
+setp.lt.u32 %p1, %r54, 32;
+shl.b32 %r55, %r54, 2;
+mov.b32 %r56, global_smem;
+add.s32 %r2, %r56, %r55;
+mov.b32 %r11, 0;
+//
+@%p1 st.shared.b32 [ %r2 + 0 ], %r11;
+//
+bar.warp.sync -1;
+setp.eq.b32 %p2, %r54, 0;
+cvt.u64.u32 %rd2, %r56;
+//
+@%p2 tensormap.replace.tile.global_address.shared::cta.b1024.b64 [ %rd2 + 0 ], %rd3;
+//
+//
+@%p2 tensormap.replace.tile.rank.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x1;
+//
+mov.b32 %r4, 256;
+//
+@%p2 tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0, %r4;
+//
+mov.b32 %r5, 1;
+//
+@%p2 tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x1, %r5;
+//
+//
+@%p2 tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0, %r14;
+//
+//
+@%p2 tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x1, %r7;
+//
+//
+@%p2 tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [ %rd2 + 0 ], 0x0, %rd28;
+//
+//
+@%p2 tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0, %r5;
+//
+//
+@%p2 tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x1, %r5;
+//
+//
+@%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x6;
+//
+//
+@%p2 tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0;
+//
+//
+@%p2 tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0;
+//
+//
+@%p2 tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0;
+//
+//
+@%p1 tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [ %rd17 + 0 ], [ %rd2 + 0 ], 0x80;
+//
+//
+@%p1 fence.proxy.tensormap::generic.acquire.gpu [ %rd17 + 0 ], 0x80;
+@%p1 cp.async.bulk.commit_group ;
+@%p1 cp.async.bulk.wait_group.read 0 ;
+//
+bar.sync 0;
+cvta.global.u64 %rd56, %rd17;
+.loc	1 72 56 //
+add.s32 %r57, %r53, 128;
+cvt.s64.s32 %rd62, %r57;
+add.s64 %rd35, %rd60, %rd62;
+bar.sync 0;
+//
+@%p1 st.shared.b32 [ %r2 + 0 ], %r11;
+//
+bar.warp.sync -1;
+//
+@%p2 tensormap.replace.tile.global_address.shared::cta.b1024.b64 [ %rd2 + 0 ], %rd21;
+//
+//
+@%p2 tensormap.replace.tile.rank.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x1;
+//
+//
+@%p2 tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0, %r4;
+//
+//
+@%p2 tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x1, %r5;
+//
+//
+@%p2 tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0, %r14;
+//
+//
+@%p2 tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x1, %r23;
+//
+//
+@%p2 tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [ %rd2 + 0 ], 0x0, %rd28;
+//
+//
+@%p2 tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0, %r5;
+//
+//
+@%p2 tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x1, %r5;
+//
+//
+@%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x6;
+//
+//
+@%p2 tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0;
+//
+//
+@%p2 tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0;
+//
+//
+@%p2 tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0;
+//
+//
+@%p1 tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [ %rd35 + 0 ], [ %rd2 + 0 ], 0x80;
+//
+//
+@%p1 fence.proxy.tensormap::generic.acquire.gpu [ %rd35 + 0 ], 0x80;
+@%p1 cp.async.bulk.commit_group ;
+@%p1 cp.async.bulk.wait_group.read 0 ;
+//
+bar.sync 0;
+cvta.global.u64 %rd57, %rd35;
+.loc	1 74 52 //
+add.s32 %r58, %r53, 256;
+cvt.s64.s32 %rd63, %r58;
+add.s64 %rd53, %rd60, %rd63;
+bar.sync 0;
+//
+@%p1 st.shared.b32 [ %r2 + 0 ], %r11;
+//
+bar.warp.sync -1;
+//
+@%p2 tensormap.replace.tile.global_address.shared::cta.b1024.b64 [ %rd2 + 0 ], %rd39;
+//
+//
+@%p2 tensormap.replace.tile.rank.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x1;
+//
+//
+@%p2 tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0, %r4;
+//
+//
+@%p2 tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x1, %r5;
+//
+//
+@%p2 tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0, %r14;
+//
+//
+@%p2 tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x1, %r23;
+//
+//
+@%p2 tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [ %rd2 + 0 ], 0x0, %rd28;
+//
+//
+@%p2 tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0, %r5;
+//
+//
+@%p2 tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x1, %r5;
+//
+//
+@%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x6;
+//
+//
+@%p2 tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0;
+//
+//
+@%p2 tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0;
+//
+//
+@%p2 tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [ %rd2 + 0 ], 0x0;
+//
+//
+@%p1 tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [ %rd53 + 0 ], [ %rd2 + 0 ], 0x80;
+//
+//
+@%p1 fence.proxy.tensormap::generic.acquire.gpu [ %rd53 + 0 ], 0x80;
+@%p1 cp.async.bulk.commit_group ;
+@%p1 cp.async.bulk.wait_group.read 0 ;
+//
+bar.sync 0;
+cvta.global.u64 %rd58, %rd53;
+.loc	1 76 55 //
+add.s32 %r26, %r56, 2048;
+//
+@%p2 mbarrier.init.shared::cta.b64 [%r26], 1;
+//
+bar.sync 0;
+//
+@%p2 mbarrier.arrive.expect_tx.shared.b64 _, [%r26], 2048;
+//
+//
+fence.proxy.async.shared::cta;
+//
+bar.sync 0;
+shr.u32 %r59, %r54, 5;
+shfl.sync.idx.b32 %r60, %r59, 0, 31, -1;
+elect.sync %r61|%p64, -1;
+setp.lt.u32 %p65, %r54, 128;
+and.pred %p57, %p65, %p64;
+shl.b32 %r62, %r60, 8;
+and.b32 %r29, %r62, 768;
+shl.b32 %r63, %r29, 1;
+add.s32 %r28, %r56, %r63;
+//
+@%p57 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%r28], [%rd56, {%r29, %r30}], [%r26];
+//
+bar.sync 0;
+//
+
+{
+.reg .pred complete;
+waitLoop:
+mbarrier.try_wait.parity.shared.b64 complete, [%r26], %r11;
+@!complete bra.uni waitLoop;
+}
+
+//
+bar.sync 0;
+//
+@%p2 mbarrier.inval.shared::cta.b64 [%r26];
+//
+shl.b32 %r64, %r54, 1;
+and.b32 %r65, %r64, 254;
+add.s32 %r66, %r56, %r65;
+ld.shared.b16 %rs1, [%r66];
+ld.shared.b16 %rs2, [%r66+256];
+ld.shared.b16 %rs3, [%r66+512];
+ld.shared.b16 %rs4, [%r66+768];
+ld.shared.b16 %rs5, [%r66+1024];
+ld.shared.b16 %rs6, [%r66+1280];
+ld.shared.b16 %rs7, [%r66+1536];
+or.b32 %r67, %r64, 1792;
+add.s32 %r68, %r56, %r67;
+ld.shared.b16 %rs8, [%r68];
+.loc	1 77 55 //
+bar.sync 0;
+//
+@%p2 mbarrier.init.shared::cta.b64 [%r26], 1;
+//
+bar.sync 0;
+//
+@%p2 mbarrier.arrive.expect_tx.shared.b64 _, [%r26], 2048;
+//
+//
+fence.proxy.async.shared::cta;
+//
+bar.sync 0;
+elect.sync %r69|%p66, -1;
+and.pred %p61, %p65, %p66;
+//
+@%p61 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%r28], [%rd57, {%r29, %r45}], [%r26];
+//
+bar.sync 0;
+//
+
+{
+.reg .pred complete;
+waitLoop:
+mbarrier.try_wait.parity.shared.b64 complete, [%r26], %r11;
+@!complete bra.uni waitLoop;
+}
+
+//
+bar.sync 0;
+//
+@%p2 mbarrier.inval.shared::cta.b64 [%r26];
+//
+ld.shared.b16 %rs9, [%r66];
+ld.shared.b16 %rs10, [%r66+256];
+ld.shared.b16 %rs11, [%r66+512];
+ld.shared.b16 %rs12, [%r66+768];
+ld.shared.b16 %rs13, [%r66+1024];
+ld.shared.b16 %rs14, [%r66+1280];
+ld.shared.b16 %rs15, [%r66+1536];
+ld.shared.b16 %rs16, [%r68];
+.loc	1 78 65 //
+add.f16 %rs17, %rs1, %rs9;
+add.f16 %rs18, %rs2, %rs10;
+add.f16 %rs19, %rs3, %rs11;
+add.f16 %rs20, %rs4, %rs12;
+add.f16 %rs21, %rs5, %rs13;
+add.f16 %rs22, %rs6, %rs14;
+add.f16 %rs23, %rs7, %rs15;
+add.f16 %rs24, %rs8, %rs16;
+.loc	1 78 49 //
+bar.sync 0;
+st.shared.b16 [%r66], %rs17;
+st.shared.b16 [%r66+256], %rs18;
+st.shared.b16 [%r66+512], %rs19;
+st.shared.b16 [%r66+768], %rs20;
+st.shared.b16 [%r66+1024], %rs21;
+st.shared.b16 [%r66+1280], %rs22;
+st.shared.b16 [%r66+1536], %rs23;
+st.shared.b16 [%r68], %rs24;
+//
+fence.proxy.async.shared::cta;
+//
+bar.sync 0;
+elect.sync %r70|%p67, -1;
+and.pred %p63, %p65, %p67;
+//
+@%p63 cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd58, {%r29, %r45}], [%r28];
+//
+cp.async.bulk.commit_group;
+cp.async.bulk.wait_group.read 0;
+bar.sync 0;
+.loc	1 78 4 //
+ret;
+$L__tmp1:
+$L__func_end0:
+//
+}
+.file	1 "/home/syyu/Workspace/arch/exp-gpgpusim-llm/tests/triton_trace/example_gpt2_triton.py"
+.section	.debug_abbrev
+{
+.b8 1 //
+.b8 17 //
+.b8 0 //
+.b8 37 //
+.b8 8 //
+.b8 19 //
+.b8 5 //
+.b8 3 //
+.b8 8 //
+.b8 16 //
+.b8 6 //
+.b8 27 //
+.b8 8 //
+.b8 0 //
+.b8 0 //
+.b8 0 //
+}
+.section	.debug_info
+{
+.b32 105 //
+.b8 2 //
+.b8 0
+.b32 .debug_abbrev //
+.b8 8 //
+.b8 1 //
+.b8 116 //
+.b8 114
+.b8 105
+.b8 116
+.b8 111
+.b8 110
+.b8 0
+.b8 2 //
+.b8 0
+.b8 101 //
+.b8 120
+.b8 97
+.b8 109
+.b8 112
+.b8 108
+.b8 101
+.b8 95
+.b8 103
+.b8 112
+.b8 116
+.b8 50
+.b8 95
+.b8 116
+.b8 114
+.b8 105
+.b8 116
+.b8 111
+.b8 110
+.b8 46
+.b8 112
+.b8 121
+.b8 0
+.b32 .debug_line //
+.b8 47 //
+.b8 104
+.b8 111
+.b8 109
+.b8 101
+.b8 47
+.b8 115
+.b8 121
+.b8 121
+.b8 117
+.b8 47
+.b8 87
+.b8 111
+.b8 114
+.b8 107
+.b8 115
+.b8 112
+.b8 97
+.b8 99
+.b8 101
+.b8 47
+.b8 97
+.b8 114
+.b8 99
+.b8 104
+.b8 47
+.b8 101
+.b8 120
+.b8 112
+.b8 45
+.b8 103
+.b8 112
+.b8 103
+.b8 112
+.b8 117
+.b8 115
+.b8 105
+.b8 109
+.b8 45
+.b8 108
+.b8 108
+.b8 109
+.b8 47
+.b8 116
+.b8 101
+.b8 115
+.b8 116
+.b8 47
+.b8 116
+.b8 114
+.b8 105
+.b8 116
+.b8 111
+.b8 110
+.b8 95
+.b8 116
+.b8 114
+.b8 97
+.b8 99
+.b8 101
+.b8 0
+}
+.section	.debug_macinfo	{	}

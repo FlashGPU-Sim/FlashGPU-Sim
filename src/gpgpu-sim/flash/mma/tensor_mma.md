@@ -318,6 +318,6 @@ MMA opcodes defined in `opcodes.def` and parsed in `ptx.l`:
 
 ## Testing
 
-See `test/src/integration/mma/cuda_mma_*_test.cc` for:
+See `tests/src/mma/mma_*_test.cu` for:
 - Integration tests for full MMA instruction execution
 - Test coverage for all supported shapes and data types (F16, BF16, TF32, S8/U8)

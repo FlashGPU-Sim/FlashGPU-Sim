@@ -271,5 +271,5 @@ The template design ensures ldmatrix and stmatrix use identical fragment distrib
 
 ## Related Documentation
 
-- **Test Coverage**: `test/src/integration/cuda_ld_st_matrix_test.cc`
+- **Test Coverage**: `tests/src/integration/ldst_matrix_test.cu`
 - **Flash Module Overview**: `src/gpgpu-sim/flash/README.md`

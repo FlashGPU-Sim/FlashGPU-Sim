@@ -2,7 +2,7 @@
 
 This document describes the C++ implementation interface for PTX TMA (Tensor
 Memory Accelerator) instructions in GPGPU-Sim. See the
-[test framework guide](../../../test/README.md) for test execution.
+[test framework guide](../../../tests/README.md) for test execution.
 
 ## External Interface
 
@@ -378,7 +378,7 @@ void cycle();
 
 **Multi-dimensional testing**: Full test coverage for 1D and 3D-5D tensor
 operations is implemented in
-[`cuda_tma_multidim_test.cc`](../../../test/src/integration/cuda_tma_multidim_test.cc)
+[`tma_multidim_test.cu`](../../../tests/src/tma/tma_multidim_test.cu)
 (all tests passing as of issue #31).
 
 ---

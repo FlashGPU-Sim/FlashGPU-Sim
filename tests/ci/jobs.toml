@@ -1,0 +1,40 @@
+# PR CI jobs. Architecture manifests own source membership; this file owns
+# which manifest selections CI builds and runs.
+
+[jobs.sm120-core]
+arch = "sm120"
+pre_checks = [
+  "tests/ci/tests/test_arch_manifest.py",
+  "tests/ci/tests/test_gtest.py",
+]
+tests = [
+  { name = "unit", group = "unit" },
+  { name = "integration", group = "integration" },
+  { name = "barrier", group = "barrier", gtest_filter = "*-MBarrierSanityTest.*" },
+  { name = "tma", group = "tma", gtest_filter = "*-*CPAsyncMethod*:*PerformanceComparison*" },
+  { name = "mma", group = "mma" },
+  { name = "trace", group = "trace", profile = "gpt2" },
+]
+
+[jobs.sm90-core]
+arch = "sm90"
+tests = [
+  { name = "integration", group = "integration", post_check = "tests/scripts/check_cp_async_size.py" },
+  { name = "barrier", group = "barrier" },
+  { name = "wgmma", group = "wgmma" },
+]
+
+[jobs.sm90-fa2]
+arch = "sm90"
+tests = [
+  { name = "smoke", group = "fa2", profile = "smoke" },
+]
+
+[jobs.sm90-fa3]
+arch = "sm90"
+tests = [
+  { name = "forward-smoke", group = "fa3", profile = "smoke", gtest_filter = "Fa3PrefillFp16SmokeTest.*" },
+  { name = "fixed-forward", group = "fa3", profile = "smoke", gtest_filter = "Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase" },
+  { name = "backward-smoke", group = "fa3", profile = "smoke", gtest_filter = "Fa3PrefillFp16BackwardSmokeTest.*" },
+  { name = "packgqa", group = "fa3", profile = "packgqa", gtest_filter = "Fa3FwdPackGqaFp16IntegrationTest.Smoke" },
+]

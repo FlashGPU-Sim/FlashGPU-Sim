@@ -7,17 +7,37 @@ on:
     types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
-  simulation-test-shards:
+  plan:
 
-    name: simulation-tests (${{ matrix.shard }})
+    name: plan-tests
 
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Read CI job manifest
+        id: matrix
+        run: |
+          matrix="$(python3 tests/ci/planner.py matrix)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  run-tests:
+
+    name: run-tests (${{ matrix.job }})
+
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 75
 
     strategy:
       fail-fast: false
-      matrix:
-        shard: [sm120, sm90-fa2, sm90-fa3]
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - name: Checkout repository
@@ -44,31 +64,31 @@ jobs:
             --memory-swap=7g \
             -e CI=true \
             -e GITHUB_ACTIONS=true \
-            -e CI_SHARD=${{ matrix.shard }} \
+            -e CI_JOB=${{ matrix.job }} \
             -e CI_BUILD_JOBS=2 \
             -v ${{ github.workspace }}:/gpgpu-sim \
             -w /gpgpu-sim \
             gpgpu-sim-ci:latest \
-            bash -c "./test/ci/run_ci_tests.sh"
+            bash -c "./tests/ci/run_ci_tests.sh"
 
       - name: Upload simulation test logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: simulation-test-results-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
-          path: test/logs/ci
+          name: simulation-test-results-${{ matrix.job }}-attempt-${{ github.run_attempt }}
+          path: tests/logs/ci
           if-no-files-found: warn
 
-  simulation-tests:
+  verify-status:
 
     name: simulation-tests
     if: always()
-    needs: simulation-test-shards
+    needs: run-tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
-      - name: Verify simulation test shards
+      - name: Verify status
         env:
-          SHARD_RESULT: ${{ needs.simulation-test-shards.result }}
-        run: test "$SHARD_RESULT" = success
+          JOB_RESULT: ${{ needs.run-tests.result }}
+        run: test "$JOB_RESULT" = success
