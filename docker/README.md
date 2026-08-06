@@ -87,5 +87,36 @@ container.
 ## CI Image
 
 [`Dockerfile.ci`](Dockerfile.ci) is a separate minimal image used by the
-GitHub Actions workflow. The development image and helper do not replace or
-modify the CI environment.
+GitHub Actions workflow. It contains the CUDA toolchain, simulator build
+dependencies, and GoogleTest 1.12.1 under `/opt/googletest`. Repository source
+and test binaries are not included; CI mounts and builds the selected commit at
+runtime.
+
+The maintained image is published as:
+
+```text
+ghcr.io/flashgpu-sim/flashgpu-sim-ci:cuda12.8-gtest1.12.1-v1
+```
+
+The initial `v1` publication has this immutable reference:
+
+```text
+ghcr.io/flashgpu-sim/flashgpu-sim-ci@sha256:502e8c96182dbfab43d861b956957ddaa51bdb6b975845da44905f1ccc24a404
+```
+
+`.github/workflows/ci-image.yml` publishes both that versioned tag and a
+commit-scoped `sha-<commit>` tag after a smoke test. The package is private;
+GitHub Actions pulls it with the job-scoped `GITHUB_TOKEN` and `packages: read`
+permission. Consumers should pin its immutable digest.
+
+Build and inspect the image locally:
+
+```bash
+docker build -f docker/Dockerfile.ci \
+  -t ghcr.io/flashgpu-sim/flashgpu-sim-ci:cuda12.8-gtest1.12.1-v1 .
+docker run --rm \
+  ghcr.io/flashgpu-sim/flashgpu-sim-ci:cuda12.8-gtest1.12.1-v1 \
+  bash -c 'test -f "$GTEST_DIR/include/gtest/gtest.h" && nvcc --version'
+```
+
+The development image and helper do not replace or modify the CI environment.

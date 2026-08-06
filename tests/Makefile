@@ -27,8 +27,9 @@ ifneq ($(origin CUDA_INSTALL_PATH),command line)
 endif
 CUDA_LIBS = -L$(CUDA_INSTALL_PATH)/lib64 -lcudart -lcuda
 
-GTEST_CLONE_DIR = gtest
-GTEST_DIR = gtest/googletest
+LOCAL_GTEST_CLONE_DIR := gtest
+LOCAL_GTEST_DIR := $(LOCAL_GTEST_CLONE_DIR)/googletest
+GTEST_DIR ?= $(LOCAL_GTEST_DIR)
 SRC_DIR = ../src
 BUILD_DIR = build
 TEST_SRC_DIR = src
@@ -90,8 +91,8 @@ clean:
 	@echo "Cleaned build directory"
 
 clean-all: clean
-	rm -rf $(GTEST_DIR)
-	@echo "Cleaned everything including Google Test"
+	rm -rf $(LOCAL_GTEST_CLONE_DIR)
+	@echo "Cleaned build directory and repository-local Google Test"
 
 debug:
 	@echo "ARCHITECTURES: $(ARCHITECTURES)"

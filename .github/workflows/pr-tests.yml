@@ -6,6 +6,9 @@ on:
     branches: [flash]
     types: [opened, synchronize, ready_for_review, reopened]
 
+env:
+  CI_IMAGE: ghcr.io/flashgpu-sim/flashgpu-sim-ci@sha256:502e8c96182dbfab43d861b956957ddaa51bdb6b975845da44905f1ccc24a404
+
 jobs:
   plan:
 
@@ -13,6 +16,9 @@ jobs:
 
     runs-on: ubuntu-latest
     timeout-minutes: 5
+
+    permissions:
+      contents: read
 
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -35,6 +41,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
 
+    permissions:
+      contents: read
+      packages: read
+
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -45,16 +55,15 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build CI Docker image
-        run: |
-          docker build -f docker/Dockerfile.ci -t gpgpu-sim-ci:latest .
-
-          # Log image size for documentation accuracy
-          IMAGE_SIZE=$(docker images gpgpu-sim-ci:latest --format "{{.Size}}")
-          echo "CI Docker image size: $IMAGE_SIZE"
+      - name: Pull CI Docker image
+        run: docker pull "$CI_IMAGE"
 
       - name: Run simulation tests in container
         timeout-minutes: 50
@@ -68,7 +77,7 @@ jobs:
             -e CI_BUILD_JOBS=2 \
             -v ${{ github.workspace }}:/gpgpu-sim \
             -w /gpgpu-sim \
-            gpgpu-sim-ci:latest \
+            "$CI_IMAGE" \
             bash -c "./tests/ci/run_ci_tests.sh"
 
       - name: Upload simulation test logs
@@ -81,11 +90,13 @@ jobs:
 
   verify-status:
 
-    name: simulation-tests
+    name: verify-status
     if: always()
     needs: run-tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
+
+    permissions: {}
 
     steps:
       - name: Verify status

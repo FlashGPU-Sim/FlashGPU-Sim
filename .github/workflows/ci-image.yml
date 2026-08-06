@@ -1,0 +1,86 @@
+name: CI Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [flash]
+    paths:
+      - docker/Dockerfile.ci
+      - .github/workflows/ci-image.yml
+
+env:
+  CI_IMAGE: ghcr.io/flashgpu-sim/flashgpu-sim-ci
+  CI_IMAGE_TAG: cuda12.8-gtest1.12.1-v1
+
+concurrency:
+  group: ci-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+
+    name: publish-ci-image
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Log in to the container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build CI image
+        run: |
+          docker build \
+            -f docker/Dockerfile.ci \
+            -t "$CI_IMAGE:$CI_IMAGE_TAG" \
+            .
+
+      - name: Smoke test CI image
+        run: |
+          docker run --rm "$CI_IMAGE:$CI_IMAGE_TAG" \
+            bash -euo pipefail -c '
+              test "$GTEST_DIR" = /opt/googletest
+              test "$FLASHGPU_GTEST_VERSION" = 1.12.1
+              test -f "$GTEST_DIR/include/gtest/gtest.h"
+              test -f "$GTEST_DIR/src/gtest-all.cc"
+              python3 -c "import tomli"
+              nvcc --version
+              g++ --version
+              printf "#include <gtest/gtest.h>\n" |
+                g++ -std=c++17 -I"$GTEST_DIR/include" \
+                  -x c++ -c -o /tmp/gtest-smoke.o -
+              g++ -std=c++17 -pthread \
+                -I"$GTEST_DIR" -I"$GTEST_DIR/include" \
+                -c "$GTEST_DIR/src/gtest-all.cc" \
+                -o /tmp/gtest-all.o
+            '
+
+      - name: Publish CI image
+        run: |
+          sha_tag="sha-$GITHUB_SHA"
+          docker tag "$CI_IMAGE:$CI_IMAGE_TAG" "$CI_IMAGE:$sha_tag"
+          docker push "$CI_IMAGE:$sha_tag"
+          docker push "$CI_IMAGE:$CI_IMAGE_TAG"
+          docker pull "$CI_IMAGE:$CI_IMAGE_TAG"
+
+          image_digest="$(
+            docker inspect \
+              --format='{{index .RepoDigests 0}}' \
+              "$CI_IMAGE:$CI_IMAGE_TAG"
+          )"
+          echo "Published $image_digest"
+          echo "### Published CI image" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          echo "$image_digest" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

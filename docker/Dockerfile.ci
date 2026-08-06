@@ -1,12 +1,15 @@
-# GPGPU-Sim CI Docker Image
-# Minimal container for automated testing in CI/CD pipelines
-# Based on NVIDIA CUDA 12.8 (aligned with docker/Dockerfile)
+# FlashGPU-Sim CI base image.
+# Branch sources are mounted at runtime and are never baked into this image.
 
 ARG CUDA_IMAGE=nvidia/cuda:12.8.0-devel-ubuntu22.04
 FROM ${CUDA_IMAGE}
 
-LABEL maintainer="GPGPU-Sim CI"
-LABEL description="Minimal GPGPU-Sim CI environment for automated testing"
+ARG GTEST_VERSION=1.12.1
+
+LABEL org.opencontainers.image.title="FlashGPU-Sim CI"
+LABEL org.opencontainers.image.description="CUDA toolchain and test dependencies for FlashGPU-Sim"
+LABEL org.opencontainers.image.source="https://github.com/FlashGPU-Sim/FlashGPU-Sim"
+LABEL org.opencontainers.image.version="cuda12.8-gtest${GTEST_VERSION}"
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -36,12 +39,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Keep the upstream repository layout out of the public image contract. Tests
+# consume only the GoogleTest component rooted at /opt/googletest.
+RUN git clone --depth 1 --branch "release-${GTEST_VERSION}" \
+        https://github.com/google/googletest.git /tmp/googletest \
+    && mkdir -p /opt/googletest \
+    && cp -a /tmp/googletest/googletest/. /opt/googletest/ \
+    && rm -rf /tmp/googletest \
+    && test -f /opt/googletest/include/gtest/gtest.h \
+    && test -f /opt/googletest/src/gtest-all.cc
+
 # Create working directory
 WORKDIR /gpgpu-sim
 
 # Set up environment variables for GPGPU-Sim
 ENV GPGPUSIM_ROOT=/gpgpu-sim
 ENV PTXAS_CUDA_INSTALL_PATH=${CUDA_INSTALL_PATH}
+ENV GTEST_DIR=/opt/googletest
+ENV FLASHGPU_GTEST_VERSION=${GTEST_VERSION}
+
+# Git commands in the simulator build inspect the bind-mounted checkout.
+RUN git config --system --add safe.directory /gpgpu-sim
 
 # Create necessary directories
 RUN mkdir -p /gpgpu-sim/lib /gpgpu-sim/build
