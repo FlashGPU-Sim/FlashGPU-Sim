@@ -9,6 +9,7 @@ cd "$REPO_ROOT"
 
 CI_LOG_ROOT="$REPO_ROOT/tests/logs/ci"
 CI_PLANNER="$REPO_ROOT/tests/ci/planner.py"
+CI_FAILURE_CONTEXT="$CI_LOG_ROOT/failure-context.txt"
 
 CI_JOB="${CI_JOB:-all}"
 CI_LIST_JOBS="${CI_LIST_JOBS:-0}"
@@ -46,12 +47,31 @@ done <<< "$PLANNED_TESTS"
 export TEST_BUILD_JOBS="${TEST_BUILD_JOBS:-$TEST_BUILD_JOBS_DEFAULT}"
 
 mkdir -p "$CI_LOG_ROOT/logs" "$CI_LOG_ROOT/xml"
+rm -f "$CI_FAILURE_CONTEXT"
 
 run_logged() {
   local label="$1"
-  shift
+  local failure_group="$2"
+  local status
+  local -a pipeline_status
+  shift 2
   echo "Running: $label"
-  "$@" 2>&1 | tee "$CI_LOG_ROOT/logs/$label.log"
+  if "$@" 2>&1 | tee "$CI_LOG_ROOT/logs/$label.log"; then
+    return 0
+  else
+    pipeline_status=("${PIPESTATUS[@]}")
+    status="${pipeline_status[0]}"
+    if [ "$status" -eq 0 ]; then
+      status="${pipeline_status[1]}"
+    fi
+    {
+      printf 'phase=%s\nexit_code=%s\n' "$label" "$status"
+      if [ -n "$failure_group" ]; then
+        printf 'group=%s\n' "$failure_group"
+      fi
+    } > "$CI_FAILURE_CONTEXT"
+    return "$status"
+  fi
 }
 
 log_runner_resources() {
@@ -126,7 +146,7 @@ log_runner_resources start | tee "$CI_LOG_ROOT/logs/runner-resources-start.log"
 
 for check_script in "${PRE_CHECKS[@]}"; do
   check_name="$(basename "$check_script" .py)"
-  run_logged "${check_name//_/-}" python3 "$check_script"
+  run_logged "${check_name//_/-}" "" python3 "$check_script"
 done
 
 echo "Setting up FlashGPU-Sim environment..."
@@ -165,7 +185,7 @@ if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
   rm -rf tests/build
   rm -rf lib
 
-  run_logged build-flashgpu-sim make FLASH=1 "-j$GPGPUSIM_BUILD_JOBS"
+  run_logged build-flashgpu-sim "" make FLASH=1 "-j$GPGPUSIM_BUILD_JOBS"
   if ! find lib -name 'libcudart.so' 2>/dev/null | grep -q .; then
     echo "ERROR: libcudart.so not found after build"
     exit 1
@@ -199,12 +219,13 @@ run_ci_test() {
 
   mkdir -p "$CI_LOG_ROOT/xml/$label"
   export GTEST_OUTPUT="xml:$CI_LOG_ROOT/xml/$label/"
-  run_logged "$label" ./tests/run_tests.py -c "$config" run "${selectors[@]}"
+  run_logged "$label" "$test_group" \
+    ./tests/run_tests.py -c "$config" run "${selectors[@]}"
   unset GTEST_OUTPUT
 
   if [ -n "$post_check" ]; then
     post_name="$(basename "$post_check" .py)"
-    run_logged "$label-${post_name//_/-}" \
+    run_logged "$label-${post_name//_/-}" "$test_group" \
       python3 "$post_check" "$CI_LOG_ROOT/logs/$label.log"
   fi
 }

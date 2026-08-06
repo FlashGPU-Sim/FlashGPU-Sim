@@ -247,7 +247,12 @@ CI_JOB=sm90-fa3 ./tests/ci/run_ci_tests.sh
 CI_JOB=all ./tests/ci/run_ci_tests.sh
 ```
 
-Logs and GoogleTest XML results are written below `tests/logs/ci/`.
+Logs and GoogleTest XML results are written below `tests/logs/ci/`. GitHub
+Actions uploads them only when a `run-tests` job fails. Failed jobs also parse
+the available XML into a compact job summary that lists failed cases only. If
+a test process aborts before writing XML, the summary recovers the active
+GoogleTest case from its log and reports it as `Aborted`. Successful jobs
+produce neither an artifact nor a test summary.
 
 The planner can be inspected without building or running tests:
 

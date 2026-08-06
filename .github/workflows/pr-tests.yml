@@ -66,6 +66,7 @@ jobs:
         run: docker pull "$CI_IMAGE"
 
       - name: Run simulation tests in container
+        id: tests
         timeout-minutes: 50
         run: |
           docker run --rm \
@@ -81,12 +82,20 @@ jobs:
             bash -c "./tests/ci/run_ci_tests.sh"
 
       - name: Upload simulation test logs
-        if: always()
+        if: always() && steps.tests.outcome == 'failure'
         uses: actions/upload-artifact@v7
         with:
-          name: simulation-test-results-${{ matrix.job }}-attempt-${{ github.run_attempt }}
+          name: logs-${{ matrix.job }}-${{ github.run_attempt }}
           path: tests/logs/ci
           if-no-files-found: warn
+
+      - name: Report test failures
+        if: always() && steps.tests.outcome == 'failure'
+        env:
+          CI_JOB: ${{ matrix.job }}
+        run: |
+          python3 tests/ci/report.py tests/logs/ci \
+            >> "$GITHUB_STEP_SUMMARY"
 
   verify-status:
 
