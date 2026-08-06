@@ -189,33 +189,6 @@ protected:
     }
   }
 
-  // Print loaded values for debugging
-  void printResults() {
-    printf("\nldmatrix.x%d loaded values:\n", N);
-    if (N == 1) {
-      printf("Thread | Register Value | Lo (16-bit) | Hi (16-bit)\n");
-      printf("-------+----------------+-------------+------------\n");
-    } else {
-      printf("Thread | Reg | Register Value | Lo (16-bit) | Hi (16-bit)\n");
-      printf("-------+-----+----------------+-------------+------------\n");
-    }
-
-    for (int i = 0; i < WARP_SIZE; ++i) {
-      for (int reg = 0; reg < N; ++reg) {
-        int idx = i * N + reg;
-        uint16_t lo = h_output[idx] & 0xFFFF;
-        uint16_t hi = (h_output[idx] >> 16) & 0xFFFF;
-        if (N == 1) {
-          printf("  %2d   |   0x%08x   |    %5u    |    %5u\n", i,
-                 h_output[idx], lo, hi);
-        } else {
-          printf("  %2d   |  %d  |   0x%08x   |    %5u    |    %5u\n", i, reg,
-                 h_output[idx], lo, hi);
-        }
-      }
-    }
-  }
-
   std::vector<uint32_t> h_output;
   uint32_t *d_output = nullptr;
 };
@@ -234,11 +207,6 @@ TEST_F(LdMatrixX1Test, BasicLdMatrixX1) {
   compareResults(expected);
 }
 
-TEST_F(LdMatrixX1Test, PrintLoadedValuesX1) {
-  runKernelAndCopyBack();
-  printResults();
-}
-
 // ============== X2 Tests ==============
 TEST_F(LdMatrixX2Test, BasicLdMatrixX2) {
   runKernelAndCopyBack();
@@ -248,11 +216,6 @@ TEST_F(LdMatrixX2Test, BasicLdMatrixX2) {
   compareResults(expected);
 }
 
-TEST_F(LdMatrixX2Test, PrintLoadedValuesX2) {
-  runKernelAndCopyBack();
-  printResults();
-}
-
 // ============== X4 Tests ==============
 TEST_F(LdMatrixX4Test, BasicLdMatrixX4) {
   runKernelAndCopyBack();
@@ -260,11 +223,6 @@ TEST_F(LdMatrixX4Test, BasicLdMatrixX4) {
   std::vector<uint32_t> expected;
   computeExpectedOutput(expected);
   compareResults(expected);
-}
-
-TEST_F(LdMatrixX4Test, PrintLoadedValuesX4) {
-  runKernelAndCopyBack();
-  printResults();
 }
 
 // ============================================================================
@@ -471,34 +429,6 @@ protected:
     }
   }
 
-  // Print stored values for debugging
-  void printResults() {
-    printf("\nstmatrix.x%d stored values (shared memory content):\n", N);
-    for (int matrix_idx = 0; matrix_idx < N; ++matrix_idx) {
-      printf("Matrix %d:\n", matrix_idx);
-      printf("     ");
-      for (int col = 0; col < MATRIX_DIM; ++col) {
-        printf(" %5d", col);
-      }
-      printf("\n");
-      printf("     ");
-      for (int col = 0; col < MATRIX_DIM; ++col) {
-        printf(" -----");
-      }
-      printf("\n");
-      
-      for (int row = 0; row < MATRIX_DIM; ++row) {
-        printf("%3d |", row);
-        for (int col = 0; col < MATRIX_DIM; ++col) {
-          int idx = matrix_idx * MATRIX_ELEMENTS + row * MATRIX_DIM + col;
-          printf(" %5u", h_output[idx]);
-        }
-        printf("\n");
-      }
-      printf("\n");
-    }
-  }
-
   std::vector<uint32_t> h_input;
   std::vector<uint16_t> h_output;
   uint32_t *d_input = nullptr;
@@ -520,12 +450,6 @@ TEST_F(StMatrixX1Test, BasicStMatrixX1) {
   compareResults(expected);
 }
 
-TEST_F(StMatrixX1Test, PrintStoredValuesX1) {
-  prepareInput();
-  runKernelAndCopyBack();
-  printResults();
-}
-
 // ============== StMatrix X2 Tests ==============
 TEST_F(StMatrixX2Test, BasicStMatrixX2) {
   prepareInput();
@@ -536,12 +460,6 @@ TEST_F(StMatrixX2Test, BasicStMatrixX2) {
   compareResults(expected);
 }
 
-TEST_F(StMatrixX2Test, PrintStoredValuesX2) {
-  prepareInput();
-  runKernelAndCopyBack();
-  printResults();
-}
-
 // ============== StMatrix X4 Tests ==============
 TEST_F(StMatrixX4Test, BasicStMatrixX4) {
   prepareInput();
@@ -550,12 +468,6 @@ TEST_F(StMatrixX4Test, BasicStMatrixX4) {
   std::vector<uint16_t> expected;
   computeExpectedOutput(expected);
   compareResults(expected);
-}
-
-TEST_F(StMatrixX4Test, PrintStoredValuesX4) {
-  prepareInput();
-  runKernelAndCopyBack();
-  printResults();
 }
 
 // ============================================================================
@@ -740,4 +652,3 @@ TEST_F(StMatrixM8N8TransTest, TransposeStoreSanity) {
         << ", got " << h_output[i];
   }
 }
-
