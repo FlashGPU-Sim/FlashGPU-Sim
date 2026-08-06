@@ -67,6 +67,34 @@ Full Hopper H100 configuration with 132 streaming multiprocessors.
 - PTX register allocation/reorder enabled; SASS-guided reorder is opt-in
 - Includes `sass_primary_hints.rules` for auto-extracted full-SASS guides
 
+### SM90_H200
+Full Hopper H200 SXM/NVL configuration (same GH100 compute as H100, HBM3e memory).
+
+**Use for:**
+- H200-oriented Hopper/WGMMA/TMA experiments
+- Memory-bandwidth sensitivity vs `SM90_H100` (HBM3e class BW)
+- Full 132-SM H200 performance runs
+
+**Characteristics:**
+- Same 132 SMs / 8 GPCs / 66 TPCs topology as H100 SXM5 product
+- Same 50 MiB L2 model and 80 HBM channels → 160 L2/HBM subpartitions
+- Clocks from H200 NVL: core **1785 MHz**, DRAM **3201 MHz**
+- Latency knobs calibrated from `H200_profiling` job **2034797** (see config README)
+- Includes `sass_primary_hints.rules` (H200 label, same sm_90a rules as H100)
+
+### SM90_H200_REDUCED_CLUSTER4x4
+Reduced multi-cluster H200 profile for functional iteration.
+
+**Use for:**
+- Fast Hopper multi-cluster / TB-cluster (m>2) functional tests
+- TMA + mbarrier development without full 132-SM cost
+
+**Characteristics:**
+- 4 clusters × 4 SMs/cluster = 16 total SMs
+- Same H200 SM / memory / WGMMA / latency knobs as `SM90_H200` (job 2034797)
+- Local interconnect (`-network_mode 2`) and idealized TMA memory
+- Prefer over full `SM90_H200` for day-to-day functional work
+
 ### SM90_H100_1500MHZ
 Full Hopper H100 configuration with core, interconnect, and L2 clocks fixed at
 1.5 GHz.
