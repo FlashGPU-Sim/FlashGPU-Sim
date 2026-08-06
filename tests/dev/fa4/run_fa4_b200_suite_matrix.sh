@@ -8,13 +8,14 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CONFIG="SM100_B200"
 SUITE="smoke"
 DIRECTION="fwd"
-RUN_DIR="$ROOT_DIR/../fa4-b200-suite-matrix"
+RUN_DIR="$ROOT_DIR/temp/fa4-b200-suite-matrix"
 TIMEOUT_SECONDS=300
 DRY_RUN=0
 LIST_ONLY=0
 REBUILD_LAUNCHER=0
 RUN_BWD=0
-FA4_PYTHON=""
+FA4_PYTHON="${FA4_PYTHON:-}"
+VERBOSE=0
 
 usage() {
   cat <<'EOF'
@@ -36,6 +37,7 @@ options:
   --timeout SECONDS      Per-case timeout passed to run_fa4_b200_cases.sh
   --fa4-python PATH      Python interpreter with FA4 installed
   --rebuild-launcher     Re-export each generated launcher
+  --verbose              Stream delegated exporter/build/simulator logs
   --list                 Print grouped artifact variants and exit
   --dry-run              Print delegated commands without running them
   -h, --help             Show this help
@@ -71,6 +73,10 @@ parse_args() {
         ;;
       --rebuild-launcher)
         REBUILD_LAUNCHER=1
+        shift
+        ;;
+      --verbose)
+        VERBOSE=1
         shift
         ;;
       --run-bwd)
@@ -190,6 +196,9 @@ main() {
     fi
     if [[ "$DRY_RUN" -eq 1 ]]; then
       cmd+=(--dry-run)
+    fi
+    if [[ "$VERBOSE" -eq 1 ]]; then
+      cmd+=(--verbose)
     fi
 
     echo "=== FA4 $DIRECTION $SUITE dtype=$dtype head_dim=$head_dim head_dim_v=$head_dim_v causal=$causal ==="

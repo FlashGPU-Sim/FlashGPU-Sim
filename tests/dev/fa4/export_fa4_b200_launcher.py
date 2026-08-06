@@ -9,10 +9,15 @@ shared memory, and kernel argument packing.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import math
 import os
+import platform
+import re
 import shutil
+import subprocess
+import sys
 import sysconfig
 from pathlib import Path
 
@@ -42,7 +47,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def configure_environment(args: argparse.Namespace, dump_dir: Path) -> None:
+def tool_version(path: str) -> str | None:
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None
+
+
+def configure_environment(
+    args: argparse.Namespace, dump_dir: Path
+) -> dict[str, object]:
     os.environ["CUTE_DSL_ARCH"] = args.arch
     os.environ["FLASH_ATTENTION_ARCH"] = args.flash_attn_arch
     os.environ["CUTE_DSL_KEEP"] = "ptx,cubin,ir"
@@ -52,14 +74,13 @@ def configure_environment(args: argparse.Namespace, dump_dir: Path) -> None:
     if args.disable_2cta:
         os.environ["FA_DISABLE_2CTA"] = "1"
 
-    cu13_root = (
-        Path(sysconfig.get_paths()["purelib"])
-        / "nvidia"
-        / "cu13"
-    )
+    default_cu13_root = Path(sysconfig.get_paths()["purelib"]) / "nvidia" / "cu13"
+    cu13_root = Path(os.environ.get("FA4_CU13_ROOT", default_cu13_root))
     if cu13_root.exists():
-        os.environ.setdefault("CUDA_HOME", str(cu13_root))
-        os.environ.setdefault("CUDA_PATH", str(cu13_root))
+        # This is local to the exporter child process.  The simulator build
+        # keeps using CUDA_INSTALL_PATH (normally CUDA 12.8).
+        os.environ["CUDA_HOME"] = str(cu13_root)
+        os.environ["CUDA_PATH"] = str(cu13_root)
         os.environ["PATH"] = (
             str(cu13_root / "bin") + os.pathsep + os.environ.get("PATH", "")
         )
@@ -68,6 +89,13 @@ def configure_environment(args: argparse.Namespace, dump_dir: Path) -> None:
             + os.pathsep
             + os.environ.get("LD_LIBRARY_PATH", "")
         )
+    ptxas = shutil.which("ptxas")
+    return {
+        "cuda_home": os.environ.get("CUDA_HOME"),
+        "cuda_path": os.environ.get("CUDA_PATH"),
+        "ptxas": ptxas,
+        "ptxas_version": tool_version(ptxas) if ptxas else None,
+    }
 
 
 def first_artifact(dump_dir: Path, suffix: str) -> Path | None:
@@ -88,6 +116,109 @@ def function_artifact(dump_dir: Path, suffix: str, function_name: str) -> Path |
     if matches:
         return matches[0]
     return first_artifact(dump_dir, suffix)
+
+
+def distribution_info(
+    module_name: str, fallback_distributions: tuple[str, ...] = ()
+) -> dict[str, object]:
+    """Return package provenance without importing another runtime module."""
+    distributions = importlib.metadata.packages_distributions().get(module_name, [])
+    distributions = [*distributions, *fallback_distributions]
+    if not distributions:
+        return {}
+    distribution_name = distributions[0]
+    try:
+        distribution = importlib.metadata.distribution(distribution_name)
+    except importlib.metadata.PackageNotFoundError:
+        return {"distribution": distribution_name}
+    info: dict[str, object] = {
+        "distribution": distribution_name,
+        "version": distribution.version,
+    }
+    direct_url = distribution.read_text("direct_url.json")
+    if direct_url:
+        try:
+            info["direct_url"] = json.loads(direct_url)
+        except json.JSONDecodeError:
+            info["direct_url"] = direct_url
+    return info
+
+
+def ptx_contract(ptx_path: Path) -> dict[str, object]:
+    text = ptx_path.read_text(encoding="utf-8", errors="replace")
+    entries = re.findall(r"\.visible\s+\.entry\s+([^\s(]+)", text)
+    version = re.search(r"^\.version\s+([^\s]+)", text, re.MULTILINE)
+    target = re.search(r"^\.target\s+(.+)$", text, re.MULTILINE)
+    reqntid = re.search(
+        r"^\.reqntid\s+(\d+)\s*,\s*(\d+)\s*,\s*(\d+)",
+        text,
+        re.MULTILINE,
+    )
+    minnctapersm = re.search(r"^\.minnctapersm\s+(\d+)", text, re.MULTILINE)
+    return {
+        "version": version.group(1) if version else None,
+        "target": target.group(1).strip() if target else None,
+        "entries": entries,
+        "reqntid": [int(value) for value in reqntid.groups()] if reqntid else None,
+        "minnctapersm": int(minnctapersm.group(1)) if minnctapersm else None,
+    }
+
+
+def launch_contract(mlir_path: Path | None) -> dict[str, object]:
+    if mlir_path is None:
+        return {}
+    text = mlir_path.read_text(encoding="utf-8", errors="replace")
+    line = next(
+        (line.strip() for line in text.splitlines() if "cuda.launch_cfg.create" in line),
+        None,
+    )
+    if line is None:
+        return {"source_mlir": str(mlir_path)}
+    block = re.search(
+        r"blockDim\s*=\s*\(%c(\d+)_i32,\s*%c(\d+)_i32,\s*%c(\d+)_i32\)",
+        line,
+    )
+    dynamic_smem = re.search(r"dynamicSmemBytes\s*=\s*%c(\d+)_i64", line)
+    return {
+        "block": [int(value) for value in block.groups()] if block else None,
+        "dynamic_smem_bytes": int(dynamic_smem.group(1)) if dynamic_smem else None,
+        "grid_formula": "computed by the generated wrapper from runtime tensor shapes",
+        "source_mlir": str(mlir_path),
+        "source_operation": line,
+    }
+
+
+def wrapper_abi(direction: str) -> dict[str, object]:
+    if direction == "fwd":
+        parameters = [
+            "module",
+            "mQ",
+            "mK",
+            "mV",
+            "mO",
+            "softmax_scale",
+            "stream",
+        ]
+    else:
+        parameters = [
+            "module",
+            "mQ",
+            "mK",
+            "mV",
+            "mdO",
+            "mLSE",
+            "mdPsum",
+            "mdQaccum",
+            "mdK",
+            "mdV",
+            "softmax_scale",
+            "stream",
+        ]
+    return {
+        "parameters": parameters,
+        "return": "int32 CUDA status",
+        "authority": "CuTe DSL export_to_c generated header",
+    }
 
 
 def select_compiled_function(compiled_functions, direction: str):
@@ -123,7 +254,7 @@ def main() -> int:
         shutil.rmtree(dump_dir, ignore_errors=True)
     export_dir.mkdir(parents=True, exist_ok=True)
     dump_dir.mkdir(parents=True, exist_ok=True)
-    configure_environment(args, dump_dir)
+    compiler_toolchain = configure_environment(args, dump_dir)
 
     import torch
     from torch._subclasses.fake_tensor import FakeTensorMode
@@ -213,6 +344,7 @@ def main() -> int:
 
     ptx_path = function_artifact(dump_dir, "ptx", fn.function_name)
     cubin_path = function_artifact(dump_dir, "cubin", fn.function_name)
+    mlir_path = function_artifact(dump_dir, "mlir", fn.function_name)
     canonical_ptx = export_dir / f"{args.export_name}.ptx"
     canonical_cubin = export_dir / f"{args.export_name}.cubin"
     if ptx_path is not None:
@@ -231,6 +363,24 @@ def main() -> int:
         "export_name": args.export_name,
         "function_name": fn.function_name,
         "captured_compiles": [cls_name for cls_name, _ in compiled_functions],
+        "compiler_toolchain": compiler_toolchain,
+        "software": {
+            "python": {
+                "version": platform.python_version(),
+                "executable": sys.executable,
+            },
+            "torch": {
+                **distribution_info("torch"),
+                "version": torch.__version__,
+            },
+            "cutlass_dsl": distribution_info(
+                "cutlass", ("nvidia-cutlass-dsl",)
+            ),
+            "flash_attn": distribution_info("flash_attn"),
+        },
+        "wrapper_abi": wrapper_abi(args.direction),
+        "ptx_contract": ptx_contract(canonical_ptx),
+        "launch": launch_contract(mlir_path),
         "shape": {
             "batch": args.batch,
             "seqlen_q": args.seqlen_q,
@@ -252,6 +402,7 @@ def main() -> int:
             "object": str(object_path),
             "ptx": str(canonical_ptx) if canonical_ptx.exists() else None,
             "cubin": str(canonical_cubin) if canonical_cubin.exists() else None,
+            "source_mlir": str(mlir_path) if mlir_path is not None else None,
             "dump_dir": str(dump_dir),
         },
     }
