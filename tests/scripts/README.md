@@ -4,6 +4,24 @@ This directory contains the maintained test-side command-line tools.
 Architecture and source membership live in `tests/arch/*.toml`; build helpers
 consume the same manifests instead of carrying a second compatibility table.
 
+## CI log validation
+
+`check_cp_async_size.py` validates the per-case transaction and byte
+counters emitted by the SM90 `CpAsyncSrcSizeTest` CI run:
+
+```bash
+python3 tests/scripts/check_cp_async_size.py path/to/integration.log
+```
+
+## CI runtime measurement
+
+`test_ci_runtime.sh` runs selected SM120 test suites individually and records
+their simulator runtime:
+
+```bash
+./tests/scripts/test_ci_runtime.sh 600
+```
+
 ## Simulator utilities
 
 ### Extract statistics
@@ -151,7 +169,7 @@ experiment.
 
 | Removed or moved entry | Replacement or status |
 | --- | --- |
-| `test_gtest_discovery_output.py` | Moved to `tests/ci/test_gtest.py`; CI runs it once in the SM120/core job. |
+| `test_gtest_discovery_output.py` | Moved to `tests/ci/tests/test_gtest.py`; CI runs it once in the `sm120-core` job. |
 | `test_ptx_scheduler_probe_operands.py` | Removed with the Python-only PTX/SASS probes; no production scheduler test was lost. |
 | `ptx_sass_guided_scheduler_probe.py` | Removed; no supported replacement. |
 | `ptx_window_scheduler_probe.py` | Removed; no supported replacement. |

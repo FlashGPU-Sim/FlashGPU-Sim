@@ -7,25 +7,37 @@ on:
     types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
-  simulation-test-jobs:
+  plan:
 
-    name: simulation-tests (${{ matrix.arch }}, ${{ matrix.test_set }})
+    name: plan-tests
 
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Read CI job manifest
+        id: matrix
+        run: |
+          matrix="$(python3 tests/ci/planner.py matrix)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  run-tests:
+
+    name: run-tests (${{ matrix.job }})
+
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 75
 
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: sm120
-            test_set: core
-          - arch: sm90
-            test_set: core
-          - arch: sm90
-            test_set: fa2
-          - arch: sm90
-            test_set: fa3
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - name: Checkout repository
@@ -52,8 +64,7 @@ jobs:
             --memory-swap=7g \
             -e CI=true \
             -e GITHUB_ACTIONS=true \
-            -e CI_ARCH=${{ matrix.arch }} \
-            -e CI_TEST_SET=${{ matrix.test_set }} \
+            -e CI_JOB=${{ matrix.job }} \
             -e CI_BUILD_JOBS=2 \
             -v ${{ github.workspace }}:/gpgpu-sim \
             -w /gpgpu-sim \
@@ -64,20 +75,20 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: simulation-test-results-${{ matrix.arch }}-${{ matrix.test_set }}-attempt-${{ github.run_attempt }}
+          name: simulation-test-results-${{ matrix.job }}-attempt-${{ github.run_attempt }}
           path: tests/logs/ci
           if-no-files-found: warn
 
-  simulation-tests:
+  verify-status:
 
     name: simulation-tests
     if: always()
-    needs: simulation-test-jobs
+    needs: run-tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
-      - name: Verify simulation test jobs
+      - name: Verify status
         env:
-          JOB_RESULT: ${{ needs.simulation-test-jobs.result }}
+          JOB_RESULT: ${{ needs.run-tests.result }}
         run: test "$JOB_RESULT" = success

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate timing traffic for the SM90 cp.async source-size tests."""
+"""Check timing traffic for the SM90 cp.async source-size tests."""
 
 from __future__ import annotations
 

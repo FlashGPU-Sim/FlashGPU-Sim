@@ -218,23 +218,41 @@ Use one of those names as an exact runtime selection:
 
 ## CI
 
-CI receives architecture and test-set dimensions independently:
+PR CI jobs and their runner selections live in `tests/ci/jobs.toml`. Each job
+selects one architecture manifest and an explicit list of test-group,
+profile, mode, and optional GoogleTest-filter combinations:
 
-```bash
-CI_ARCH=sm120 CI_TEST_SET=core ./tests/ci/run_ci_tests.sh
-CI_ARCH=sm90 CI_TEST_SET=core ./tests/ci/run_ci_tests.sh
-CI_ARCH=sm90 CI_TEST_SET=fa2 ./tests/ci/run_ci_tests.sh
-CI_ARCH=sm90 CI_TEST_SET=fa3 ./tests/ci/run_ci_tests.sh
+```toml
+[jobs.sm120-core]
+arch = "sm120"
+tests = [
+  { name = "unit", group = "unit" },
+  { name = "integration", group = "integration" },
+  { name = "trace", group = "trace", profile = "gpt2" },
+]
 ```
 
-The `core` test set is an architecture-neutral union of test groups. The CI
-planner intersects it with the selected architecture manifest, so unsupported
-groups never become jobs. Logs and GoogleTest XML results are written below
-`tests/logs/ci/`.
+The architecture TOML remains the only source-membership list. The CI manifest
+references its groups rather than repeating source paths, and the planner
+rejects a job whose group/profile/mode is unsupported by that architecture.
+GitHub Actions obtains its dynamic job matrix from the same file.
+
+Run one CI job locally, or run the complete manifest:
+
+```bash
+CI_JOB=sm120-core ./tests/ci/run_ci_tests.sh
+CI_JOB=sm90-core ./tests/ci/run_ci_tests.sh
+CI_JOB=sm90-fa2 ./tests/ci/run_ci_tests.sh
+CI_JOB=sm90-fa3 ./tests/ci/run_ci_tests.sh
+CI_JOB=all ./tests/ci/run_ci_tests.sh
+```
+
+Logs and GoogleTest XML results are written below `tests/logs/ci/`.
 
 The planner can be inspected without building or running tests:
 
 ```bash
-CI_ARCH=all CI_TEST_SET=core CI_LIST_JOBS=1 \
-  ./tests/ci/run_ci_tests.sh
+./tests/ci/planner.py list-jobs
+./tests/ci/planner.py plan --job sm90-fa3
+CI_JOB=all CI_LIST_JOBS=1 ./tests/ci/run_ci_tests.sh
 ```

@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 TEST_DIR = REPO_ROOT / "tests"
 sys.path.insert(0, str(TEST_DIR))
 

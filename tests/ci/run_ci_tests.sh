@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# CI planner driven by independent architecture and test-set selections.
+# Execute one TOML-defined CI job, or every job for local validation.
 
 set -euo pipefail
 
@@ -8,61 +8,44 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 CI_LOG_ROOT="$REPO_ROOT/tests/logs/ci"
+CI_PLANNER="$REPO_ROOT/tests/ci/planner.py"
 
-CI_ARCH="${CI_ARCH:-all}"
-CI_TEST_SET="${CI_TEST_SET:-all}"
+CI_JOB="${CI_JOB:-all}"
 CI_LIST_JOBS="${CI_LIST_JOBS:-0}"
 CI_BUILD_JOBS="${CI_BUILD_JOBS:-2}"
 export GPGPUSIM_BUILD_JOBS="${GPGPUSIM_BUILD_JOBS:-$CI_BUILD_JOBS}"
-
-# A single FA2 translation unit approaches 5 GiB RSS. Keep FA2 serial in the
-# 7 GiB CI cgroup; other test sets may use the common build-job limit.
-TEST_BUILD_JOBS_DEFAULT="$CI_BUILD_JOBS"
-if [ "$CI_TEST_SET" = all ] || [ "$CI_TEST_SET" = fa2 ]; then
-  TEST_BUILD_JOBS_DEFAULT=1
-fi
-export TEST_BUILD_JOBS="${TEST_BUILD_JOBS:-$TEST_BUILD_JOBS_DEFAULT}"
-
-case "$CI_TEST_SET" in
-  all|core|fa2|fa3) ;;
-  *)
-    echo "ERROR: unsupported CI_TEST_SET '$CI_TEST_SET'"
-    echo "Expected one of: all, core, fa2, fa3"
-    exit 2
-    ;;
-esac
 
 if [[ ! "$CI_LIST_JOBS" =~ ^[01]$ ]]; then
   echo "ERROR: CI_LIST_JOBS must be 0 or 1"
   exit 2
 fi
 
-CORE_TEST_GROUPS=(unit integration barrier tma mma wgmma trace)
+PLANNED_TESTS="$(python3 "$CI_PLANNER" plan --job "$CI_JOB")"
 
-mapfile -t MANIFEST_ARCHITECTURES < <(
-  make -s --no-print-directory -C tests list-architectures
+if [ "$CI_LIST_JOBS" -eq 1 ]; then
+  printf '%s\n' "$PLANNED_TESTS"
+  exit 0
+fi
+
+mapfile -t SELECTED_ARCHITECTURES < <(
+  python3 "$CI_PLANNER" architectures --job "$CI_JOB"
+)
+mapfile -t PRE_CHECKS < <(
+  python3 "$CI_PLANNER" checks --job "$CI_JOB"
 )
 
-line_array_contains() {
-  local expected="$1"
-  shift
-  local item=""
-  for item in "$@"; do
-    [ "$item" != "$expected" ] || return 0
-  done
-  return 1
-}
+# A single FA2 translation unit approaches 5 GiB RSS. Keep any job containing
+# FA2 serial in the 7 GiB CI cgroup; other jobs use the common build limit.
+TEST_BUILD_JOBS_DEFAULT="$CI_BUILD_JOBS"
+while IFS='|' read -r planned_job planned_arch planned_name test_group remainder; do
+  if [ "$test_group" = fa2 ]; then
+    TEST_BUILD_JOBS_DEFAULT=1
+    break
+  fi
+done <<< "$PLANNED_TESTS"
+export TEST_BUILD_JOBS="${TEST_BUILD_JOBS:-$TEST_BUILD_JOBS_DEFAULT}"
 
-declare -a SELECTED_ARCHITECTURES=()
-if [ "$CI_ARCH" = all ]; then
-  SELECTED_ARCHITECTURES=("${MANIFEST_ARCHITECTURES[@]}")
-elif line_array_contains "$CI_ARCH" "${MANIFEST_ARCHITECTURES[@]}"; then
-  SELECTED_ARCHITECTURES=("$CI_ARCH")
-else
-  echo "ERROR: unsupported CI_ARCH '$CI_ARCH'"
-  echo "Available architectures: ${MANIFEST_ARCHITECTURES[*]}"
-  exit 2
-fi
+mkdir -p "$CI_LOG_ROOT/logs" "$CI_LOG_ROOT/xml"
 
 run_logged() {
   local label="$1"
@@ -130,100 +113,21 @@ architecture_config() {
   esac
 }
 
-test_group_supported() {
-  local arch="$1"
-  local expected="$2"
-  local test_group=""
-
-  while IFS= read -r test_group; do
-    [ "$test_group" != "$expected" ] || return 0
-  done < <(make -s --no-print-directory -C tests list-test-groups ARCH="$arch")
-  return 1
-}
-
-plan_ci_jobs() {
-  local arch=""
-  local test_group=""
-
-  for arch in "${SELECTED_ARCHITECTURES[@]}"; do
-    if [ "$CI_TEST_SET" = all ] || [ "$CI_TEST_SET" = core ]; then
-      for test_group in "${CORE_TEST_GROUPS[@]}"; do
-        if test_group_supported "$arch" "$test_group"; then
-          printf '%s|core|%s\n' "$arch" "$test_group"
-        fi
-      done
-    fi
-
-    if { [ "$CI_TEST_SET" = all ] || [ "$CI_TEST_SET" = fa2 ]; } && \
-       test_group_supported "$arch" fa2; then
-      printf '%s|fa2|fa2\n' "$arch"
-    fi
-
-    if { [ "$CI_TEST_SET" = all ] || [ "$CI_TEST_SET" = fa3 ]; } && \
-       test_group_supported "$arch" fa3; then
-      printf '%s|fa3|fa3\n' "$arch"
-    fi
-  done
-}
-
-PLANNED_JOBS="$(plan_ci_jobs)"
-if [ -z "$PLANNED_JOBS" ]; then
-  echo "ERROR: test set '$CI_TEST_SET' has no jobs for architecture selector '$CI_ARCH'"
-  exit 2
-fi
-
-if [ "$CI_LIST_JOBS" -eq 1 ]; then
-  printf '%s\n' "$PLANNED_JOBS"
-  exit 0
-fi
-
-mkdir -p "$CI_LOG_ROOT/logs" "$CI_LOG_ROOT/xml"
 trap log_exit_resources EXIT
 
-echo "CI architecture selector: $CI_ARCH"
-echo "CI test set: $CI_TEST_SET"
+echo "CI job selector: $CI_JOB"
 echo "Resolved architectures: ${SELECTED_ARCHITECTURES[*]}"
 echo "Build jobs: simulator=$GPGPUSIM_BUILD_JOBS tests=$TEST_BUILD_JOBS"
-echo "Planned jobs:"
-while IFS= read -r planned_job; do
-  printf '  %s\n' "$planned_job"
-done <<< "$PLANNED_JOBS"
+echo "Planned tests:"
+while IFS= read -r planned_test; do
+  printf '  %s\n' "$planned_test"
+done <<< "$PLANNED_TESTS"
 log_runner_resources start | tee "$CI_LOG_ROOT/logs/runner-resources-start.log"
 
-run_gtest_selection() {
-  local config="$1"
-  local arch="$2"
-  local test_group="$3"
-  local label="$4"
-  shift 4
-
-  local xml_dir="$CI_LOG_ROOT/xml/$label"
-  mkdir -p "$xml_dir"
-  export GTEST_OUTPUT="xml:$xml_dir/"
-  run_logged "$label" ./tests/run_tests.py -c "$config" run \
-    --arch "$arch" --group "$test_group" "$@"
-  unset GTEST_OUTPUT
-}
-
-build_selection() {
-  local arch="$1"
-  local test_group="$2"
-  local label="$3"
-  shift 3
-  run_logged "$label" ./tests/run_tests.py build \
-    --arch "$arch" --group "$test_group" "$@"
-}
-
-# Run repository-level planner and discovery regressions once per normal matrix.
-if { [ "$CI_ARCH" = all ] || [ "$CI_ARCH" = sm120 ]; } && \
-   { [ "$CI_TEST_SET" = all ] || [ "$CI_TEST_SET" = core ]; }; then
-  run_logged architecture-manifest-regression \
-    python3 tests/ci/test_arch_manifest.py
-  run_logged ci-planner-regression \
-    python3 tests/ci/test_ci_planner.py
-  run_logged gtest-regression \
-    python3 tests/ci/test_gtest.py
-fi
+for check_script in "${PRE_CHECKS[@]}"; do
+  check_name="$(basename "$check_script" .py)"
+  run_logged "${check_name//_/-}" python3 "$check_script"
+done
 
 echo "Setting up FlashGPU-Sim environment..."
 if [ -z "${CUDA_INSTALL_PATH:-}" ]; then
@@ -268,79 +172,47 @@ if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
   fi
 fi
 
-run_core_test_group() {
-  local arch="$1"
-  local test_group="$2"
+run_ci_test() {
+  local job_name="$1"
+  local arch="$2"
+  local test_name="$3"
+  local test_group="$4"
+  local profile="$5"
+  local mode="$6"
+  local gtest_filter="$7"
+  local post_check="$8"
   local config=""
-  local label="$arch-$test_group"
-  config="$(architecture_config "$arch")"
+  local label="$job_name-$test_name"
+  local post_name=""
+  local -a selectors=(--arch "$arch" --group "$test_group")
 
-  if [ "$test_group" = trace ]; then
-    run_logged "$label" ./tests/run_tests.py -c "$config" run \
-      --arch "$arch" --group trace --profile gpt2
-    return
+  config="$(architecture_config "$arch")"
+  if [ -n "$profile" ]; then
+    selectors+=(--profile "$profile")
+  fi
+  if [ -n "$mode" ]; then
+    selectors+=(--mode "$mode")
+  fi
+  if [ -n "$gtest_filter" ]; then
+    selectors+=(--gtest-filter "$gtest_filter")
   fi
 
-  build_selection "$arch" "$test_group" "build-$label"
-  case "$test_group" in
-    barrier)
-      run_gtest_selection "$config" "$arch" "$test_group" "$label" \
-        --gtest-filter '*-MBarrierSanityTest.*'
-      ;;
-    tma)
-      run_gtest_selection "$config" "$arch" "$test_group" "$label" \
-        --gtest-filter '*-*CPAsyncMethod*:*PerformanceComparison*'
-      ;;
-    *)
-      run_gtest_selection "$config" "$arch" "$test_group" "$label"
-      ;;
-  esac
+  mkdir -p "$CI_LOG_ROOT/xml/$label"
+  export GTEST_OUTPUT="xml:$CI_LOG_ROOT/xml/$label/"
+  run_logged "$label" ./tests/run_tests.py -c "$config" run "${selectors[@]}"
+  unset GTEST_OUTPUT
 
-  if [ "$arch" = sm90 ] && [ "$test_group" = integration ]; then
-    run_logged sm90-cp-async-src-size-stats \
-      python3 tests/validators/cp_async_src_size_stats.py \
-      "$CI_LOG_ROOT/logs/$label.log"
+  if [ -n "$post_check" ]; then
+    post_name="$(basename "$post_check" .py)"
+    run_logged "$label-${post_name//_/-}" \
+      python3 "$post_check" "$CI_LOG_ROOT/logs/$label.log"
   fi
 }
 
-run_fa2_test_set() {
-  local arch="$1"
-  local config=""
-  config="$(architecture_config "$arch")"
-  build_selection "$arch" fa2 "build-$arch-fa2-smoke" --profile smoke
-  run_gtest_selection "$config" "$arch" fa2 "$arch-fa2-smoke" \
-    --profile smoke
-}
-
-run_fa3_test_set() {
-  local arch="$1"
-  local config=""
-  config="$(architecture_config "$arch")"
-  build_selection "$arch" fa3 "build-$arch-fa3-smoke" --profile smoke
-  build_selection "$arch" fa3 "build-$arch-fa3-packgqa" --profile packgqa
-
-  run_gtest_selection "$config" "$arch" fa3 "$arch-fa3-forward-smoke" \
-    --profile smoke --gtest-filter 'Fa3PrefillFp16SmokeTest.*'
-  run_gtest_selection "$config" "$arch" fa3 "$arch-fa3-fixed-forward" \
-    --profile smoke \
-    --gtest-filter 'Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase'
-  run_gtest_selection "$config" "$arch" fa3 "$arch-fa3-backward-smoke" \
-    --profile smoke --gtest-filter 'Fa3PrefillFp16BackwardSmokeTest.*'
-  run_gtest_selection "$config" "$arch" fa3 "$arch-fa3-packgqa" \
-    --profile packgqa \
-    --gtest-filter 'Fa3FwdPackGqaFp16IntegrationTest.Smoke'
-}
-
-while IFS='|' read -r arch planned_test_set test_group; do
-  case "$planned_test_set" in
-    core) run_core_test_group "$arch" "$test_group" ;;
-    fa2) run_fa2_test_set "$arch" ;;
-    fa3) run_fa3_test_set "$arch" ;;
-    *)
-      echo "ERROR: internal planner emitted unknown test set '$planned_test_set'"
-      exit 2
-      ;;
-  esac
-done <<< "$PLANNED_JOBS"
+while IFS='|' read -r job_name arch test_name test_group profile mode \
+  gtest_filter post_check; do
+  run_ci_test "$job_name" "$arch" "$test_name" "$test_group" "$profile" \
+    "$mode" "$gtest_filter" "$post_check"
+done <<< "$PLANNED_TESTS"
 
 echo "CI tests completed successfully!"

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Measure individual test execution times in simulator mode
-# Usage: ./measure_test_times.sh [timeout_per_test_seconds]
+# Usage: ./tests/scripts/test_ci_runtime.sh [timeout_per_test_seconds]
 
 set -e
 
