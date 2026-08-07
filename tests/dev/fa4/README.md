@@ -41,13 +41,38 @@ tests/dev/fa4/run_fa4_b200_suite_matrix.sh \
   --suite smoke
 ```
 
+The two FA4 scripts remain the user-facing entry points: use
+`run_fa4_b200_cases.sh` for one case and `run_fa4_b200_suite_matrix.sh` for a
+suite. The suite script builds the task list and calls the generic queue
+internally.
+
+By default, each workload is pinned to four idle physical cores and a suite
+runs at most four workloads at once. Use `--max-parallel N`,
+`--cpus-per-job N`, and `--threads-per-job N` to tune the suite. Use
+`--cpu-sets LIST...` for manual worker slots or `--no-pin` to let each workload
+use all CPUs allowed to the suite process. A direct case accepts the same core
+and thread counts, singular `--cpu-set LIST`, and `--no-pin`.
+Press `Ctrl+C` once to stop the queue and every active workload; press it again
+to force termination if a workload does not respond to `SIGTERM`.
+
+Run the complete small suite. Simulations have no timeout by default:
+
+```bash
+tests/dev/fa4/run_fa4_b200_suite_matrix.sh \
+  --config SM100_B200_REDUCED \
+  --suite small
+```
+
+Pass `--timeout SECONDS` when a finite per-case limit is needed.
+
 Add `--rebuild-launcher` to `run` or `export` only when the FA4/CuTe DSL
 export must be regenerated. Add `--verbose` to stream full tool output.
 
 Single-case results are stored under
-`temp/fa4-b200-runs/<case>/<config>/`. Suite results are stored under
-`temp/fa4-b200-suite-matrix/`. Each run directory contains logs and a latest
-`run-manifest.json`.
+`temp/fa4-b200-runs/<case>/<config>/`. Suite case results and queue summaries
+are stored under `temp/fa4-b200-suite-matrix/`. Each case directory contains
+logs and a latest `run-manifest.json`; `latest-queue.txt` identifies the latest
+suite queue.
 
 Print the simulation cycles from the latest smoke run:
 
@@ -56,12 +81,16 @@ jq -r '
   .cases[]
   | select(.result.status == "pass")
   | "\(.name)\t\(.result.statistics.cycles)"
-' temp/fa4-b200-suite-matrix/fwd_smoke_*/run-manifest.json
+' temp/fa4-b200-suite-matrix/fwd_smoke_*/*/run-manifest.json
 ```
 
 ## Call Flow
 
 ```text
+run_fa4_b200_suite_matrix.sh
+  -> run_sim_queue.py: default four CPU-pinned case workers
+  -> run_fa4_b200_cases.sh for each selected CSV row
+
 run_fa4_b200_cases.sh
   -> export_fa4_b200_launcher.py
        -> CuTe DSL export_to_c
@@ -75,7 +104,7 @@ run_fa4_b200_cases.sh
        -> load the sidecar PTX instead of the embedded cubin
        -> simulate using the selected gpgpusim.config
   -> write_fa4_b200_run_manifest.py
-       -> record artifacts, logs, checks, and simulator statistics
+       -> record artifacts, CPU affinity, logs, checks, and simulator statistics
 ```
 
 `fa4_b200_cases.csv` is the workload table used by both the single-case driver

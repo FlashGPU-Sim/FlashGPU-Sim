@@ -16,10 +16,17 @@ ARTIFACT_DIRECTION="fwd"
 FATBIN=""
 PTX=""
 KERNEL=""
-TIMEOUT_SECONDS=300
+TIMEOUT_SECONDS=0
 EXPORT_TIMEOUT_SECONDS=600
 DRY_RUN=0
 VERBOSE=0
+PIN_CPU=1
+CPU_SET="${FA4_CPU_SET:-}"
+CPUS_PER_JOB="${FA4_CPUS_PER_JOB:-}"
+THREADS_PER_JOB="${FA4_THREADS_PER_JOB:-}"
+AFFINITY_MODE="${FA4_AFFINITY_MODE:-}"
+CPU_SET_EXPLICIT=0
+NO_PIN_EXPLICIT=0
 LIST_ONLY=0
 REBUILD_LAUNCHER=0
 RUN_BWD=0
@@ -108,7 +115,7 @@ options:
   --fatbin PATH             FA4 fatbin path
   --ptx PATH                PTX path used to auto-detect the kernel name
   --kernel NAME             Kernel symbol name
-  --timeout SECONDS         Per-case timeout (default: 300)
+  --timeout SECONDS         Per-case timeout (default: 0, disabled)
   --export-timeout SECONDS  CuTe DSL export timeout (default: 600)
   --artifact-head-dim N     Head dimension compiled into the artifact
                             (default: 64)
@@ -128,6 +135,12 @@ options:
   --list                    Print selected cases and exit
   --dry-run                 Print commands without running them
   --verbose                 Stream full exporter/build/simulator logs
+  --cpus-per-job N          Physical cores selected for a direct run
+                            (default: 4)
+  --threads-per-job N       Thread-library limit (default: cpus-per-job)
+  --cpu-set LIST            Manually bind the whole workload to this CPU list;
+                            otherwise idle physical cores are selected
+  --no-pin                  Let the whole workload run on all allowed CPUs
   -h, --help                Show this help
 
 The default terminal output is a stage summary. Full output is kept under
@@ -254,6 +267,25 @@ parse_args() {
         VERBOSE=1
         shift
         ;;
+      --cpu-set)
+        CPU_SET="$2"
+        CPU_SET_EXPLICIT=1
+        PIN_CPU=1
+        shift 2
+        ;;
+      --cpus-per-job)
+        CPUS_PER_JOB="$2"
+        shift 2
+        ;;
+      --threads-per-job)
+        THREADS_PER_JOB="$2"
+        shift 2
+        ;;
+      --no-pin)
+        PIN_CPU=0
+        NO_PIN_EXPLICIT=1
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -302,6 +334,121 @@ parse_args() {
       exit 2
       ;;
   esac
+  if [[ "$CPU_SET_EXPLICIT" -eq 1 && "$NO_PIN_EXPLICIT" -eq 1 ]]; then
+    echo "--cpu-set and --no-pin are mutually exclusive" >&2
+    exit 2
+  fi
+  if [[ -n "$CPUS_PER_JOB" && ! "$CPUS_PER_JOB" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--cpus-per-job must be a positive integer" >&2
+    exit 2
+  fi
+  if [[ -n "$THREADS_PER_JOB" && ! "$THREADS_PER_JOB" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--threads-per-job must be a positive integer" >&2
+    exit 2
+  fi
+  if [[ ! "$TIMEOUT_SECONDS" =~ ^[0-9]+$ ]]; then
+    echo "--timeout must be a non-negative integer" >&2
+    exit 2
+  fi
+  if [[ ! "$EXPORT_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--export-timeout must be a positive integer" >&2
+    exit 2
+  fi
+}
+
+export_thread_limits() {
+  export OMP_NUM_THREADS="$THREADS_PER_JOB"
+  export OPENBLAS_NUM_THREADS="$THREADS_PER_JOB"
+  export MKL_NUM_THREADS="$THREADS_PER_JOB"
+  export NUMEXPR_NUM_THREADS="$THREADS_PER_JOB"
+}
+
+resolve_cpu_affinity() {
+  # A queue worker applies taskset to this entire script and communicates the
+  # resolved resources through RUN_QUEUE_*.  Do not create a nested policy.
+  if [[ -n "${RUN_QUEUE_JOB_ID:-}" ]]; then
+    AFFINITY_MODE="${RUN_QUEUE_AFFINITY_MODE:-unpinned}"
+    CPU_SET="${RUN_QUEUE_CPU_SET:-}"
+    CPUS_PER_JOB="${RUN_QUEUE_CPUS_PER_JOB:-${CPUS_PER_JOB:-4}}"
+    THREADS_PER_JOB="${RUN_QUEUE_THREADS_PER_JOB:-${THREADS_PER_JOB:-$CPUS_PER_JOB}}"
+    if [[ "$AFFINITY_MODE" == "unpinned" ]]; then
+      PIN_CPU=0
+      CPU_SET=""
+    elif [[ -z "$CPU_SET" ]]; then
+      echo "queue affinity mode '$AFFINITY_MODE' did not provide RUN_QUEUE_CPU_SET" >&2
+      exit 2
+    else
+      PIN_CPU=1
+    fi
+    export_thread_limits
+    return
+  fi
+
+  if [[ "$PIN_CPU" -eq 0 ]]; then
+    AFFINITY_MODE="unpinned"
+    CPU_SET=""
+    CPUS_PER_JOB="${CPUS_PER_JOB:-4}"
+    THREADS_PER_JOB="${THREADS_PER_JOB:-$CPUS_PER_JOB}"
+    export_thread_limits
+    return
+  fi
+
+  if [[ "${FA4_AFFINITY_APPLIED:-0}" == "1" ]]; then
+    AFFINITY_MODE="${AFFINITY_MODE:-auto}"
+    CPUS_PER_JOB="${CPUS_PER_JOB:-4}"
+    THREADS_PER_JOB="${THREADS_PER_JOB:-$CPUS_PER_JOB}"
+    export_thread_limits
+    return
+  fi
+
+  if ! command -v taskset >/dev/null 2>&1; then
+    echo "taskset is required for CPU affinity; use --no-pin to disable it" >&2
+    exit 2
+  fi
+
+  local selected_width
+  if [[ -n "$CPU_SET" ]]; then
+    AFFINITY_MODE="manual"
+    if ! selected_width="$(taskset -c "$CPU_SET" nproc 2>/dev/null)"; then
+      echo "invalid or unavailable --cpu-set: $CPU_SET" >&2
+      exit 2
+    fi
+    if [[ -z "$CPUS_PER_JOB" ]]; then
+      CPUS_PER_JOB="$selected_width"
+    elif [[ "$CPUS_PER_JOB" -ne "$selected_width" ]]; then
+      echo "--cpus-per-job=$CPUS_PER_JOB does not match --cpu-set width $selected_width" >&2
+      exit 2
+    fi
+  else
+    AFFINITY_MODE="auto"
+    CPUS_PER_JOB="${CPUS_PER_JOB:-4}"
+    local affinity_helper="$ROOT_DIR/tests/scripts/cpu_affinity.py"
+    if [[ ! -f "$affinity_helper" ]]; then
+      echo "CPU affinity helper not found: $affinity_helper" >&2
+      exit 2
+    fi
+    if ! CPU_SET="$(python3 "$affinity_helper" --workers 1 --cpus-per-job "$CPUS_PER_JOB")"; then
+      echo "failed to select $CPUS_PER_JOB idle physical CPUs" >&2
+      exit 2
+    fi
+    if [[ -z "$CPU_SET" ]]; then
+      echo "CPU affinity helper returned an empty CPU set" >&2
+      exit 2
+    fi
+  fi
+
+  THREADS_PER_JOB="${THREADS_PER_JOB:-$CPUS_PER_JOB}"
+  export_thread_limits
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    return
+  fi
+
+  export FA4_AFFINITY_APPLIED=1
+  export FA4_AFFINITY_MODE="$AFFINITY_MODE"
+  export FA4_CPU_SET="$CPU_SET"
+  export FA4_CPUS_PER_JOB="$CPUS_PER_JOB"
+  export FA4_THREADS_PER_JOB="$THREADS_PER_JOB"
+  exec taskset -c "$CPU_SET" "$SCRIPT_DIR/run_fa4_b200_cases.sh" "${ORIGINAL_ARGV[@]:1}"
 }
 
 ceil_div() {
@@ -939,9 +1086,8 @@ run_case() {
       cmd+=(--legacy-coord-pointers)
     fi
   fi
-
   ((++RUN_COUNT))
-  stage "SIM" "START $name B=$batch Sq=$seqlen_q Sk=$seqlen_k H=$heads grid_x=$grid_x"
+  stage "SIM" "START $name B=$batch Sq=$seqlen_q Sk=$seqlen_k H=$heads grid_x=$grid_x cpu=${CPU_SET:-unbound}"
   if [[ "$DRY_RUN" -eq 1 ]]; then
     if [[ "$LAUNCHER" == "generated" ]]; then
       printf '          command: GPGPUSIM_CUDA_LIBRARY_PTX=%q' "$GENERATED_PTX"
@@ -1055,6 +1201,7 @@ show_plan() {
   stage "PLAN" "action=$ACTION launcher=$LAUNCHER config=$CONFIG run_dir=$RUN_DIR"
   stage "PLAN" "artifact=$ARTIFACT_DIRECTION/$ARTIFACT_DTYPE d=$ARTIFACT_HEAD_DIM/$ARTIFACT_HEAD_DIM_V $mode"
   stage "PLAN" "cases=${#SELECTED_CASE_ROWS[@]} [${names[*]}]"
+  stage "PLAN" "affinity=$AFFINITY_MODE cpu_set=${CPU_SET:-all-allowed} cpus_per_job=$CPUS_PER_JOB threads_per_job=$THREADS_PER_JOB"
   stage "PLAN" "run_id=$RUN_ID logs=$LOG_DIR"
 }
 
@@ -1092,6 +1239,9 @@ write_run_manifest() {
     --dtype "$ARTIFACT_DTYPE"
     --causal "$causal"
     --dynamic-smem "$DYNAMIC_SMEM"
+    --affinity-mode "$AFFINITY_MODE"
+    --cpus-per-job "$CPUS_PER_JOB"
+    --threads-per-job "$THREADS_PER_JOB"
     --cases-file "$CASES_FILE"
   )
   if [[ -n "$CASE_NAME" ]]; then
@@ -1105,6 +1255,15 @@ write_run_manifest() {
   fi
   if [[ -n "${PTXAS_CUDA_INSTALL_PATH:-}" ]]; then
     manifest_args+=(--ptxas-root "$PTXAS_CUDA_INSTALL_PATH")
+  fi
+  if [[ "$PIN_CPU" -eq 1 ]]; then
+    manifest_args+=(--cpu-set "$CPU_SET")
+  fi
+  if [[ -n "${RUN_QUEUE_JOB_ID:-}" ]]; then
+    manifest_args+=(--queue-job-id "$RUN_QUEUE_JOB_ID")
+  fi
+  if [[ -n "${RUN_QUEUE_SLOT:-}" ]]; then
+    manifest_args+=(--queue-slot "$RUN_QUEUE_SLOT")
   fi
   if [[ "$LAUNCHER" == "generated" ]]; then
     runner="$RUN_DIR/fa4_b200_cute_launcher_runner"
@@ -1167,6 +1326,7 @@ main() {
     exit 0
   fi
   resolve_run_dir
+  resolve_cpu_affinity
 
   if [[ "$ACTION" == "export" && "$LAUNCHER" != "generated" ]]; then
     echo "the export action is only available with --launcher generated" >&2

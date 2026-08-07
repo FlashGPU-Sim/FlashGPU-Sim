@@ -37,41 +37,45 @@ python3 tests/scripts/extract_sim_stats.py --csv stats.csv tests/run/*.log
 
 ### Run a simulator queue
 
-`run_sim_queue.py` executes independent simulator GTest jobs with a bounded
-worker pool. It requires a dedicated output directory and a tab-separated job
-manifest:
+`run_sim_queue.py` executes independent commands with a bounded worker pool.
+It reads CSV or TSV from a file (format is auto-detected) or from stdin with
+`--jobs -`:
 
 ```bash
-python3 tests/scripts/run_sim_queue.py --print-example-jobs > jobs.tsv
+python3 tests/scripts/run_sim_queue.py --print-example-jobs > jobs.csv
 
-CUDA_INSTALL_PATH=/usr/local/cuda-12.8 \
 python3 tests/scripts/run_sim_queue.py \
-  --jobs jobs.tsv \
+  --jobs jobs.csv \
   --run-root tests/run/my-queue \
   --max-parallel 4
 ```
 
-The required TSV columns are:
+The minimal manifest fields are:
 
 | Column | Meaning |
 | --- | --- |
 | `job_id` | Unique stable identifier used for status and resume files. |
-| `stage` | User-defined phase label. |
-| `case` | User-defined case label. |
-| `binary` | Absolute path or path relative to the repository root. |
-| `gtest_filter` | Exact GTest filter passed to the binary. |
+| `executable` | Absolute path or path relative to `--root`. |
 
-Optional columns are `args` (shell-split arguments), `config` (a directory
-under `configs/`, default `SM90_H100`), and `skip` (`1`, `true`, or `yes`).
-Use `--config` for the queue-wide simulator config and `--env KEY=VALUE` for
-extra environment variables. `--cuda-path` defaults to
-`CUDA_INSTALL_PATH`. `--cpu-sets` is optional; without it, jobs are not pinned
-with `taskset`.
+Generic optional fields are `args` (shell-split), `cwd`, `env` (JSON object or
+shell-split `KEY=VALUE` entries), `timeout`, and `enabled`. Every other column
+is opaque metadata copied into per-job status and summaries; it never changes
+execution. The old `binary`/`gtest_filter`/`config`/`skip` simulator manifest
+continues to work as a compatibility format.
 
-The output contains per-job logs and work directories plus
-`status/summary.tsv`. `--resume` skips jobs whose existing status is `done`.
-Use a run directory dedicated to this command: a rerun recreates the work
-directory of every job that it executes.
+By default, the queue selects four idle physical cores per worker and runs at
+most four workers. Change these independently with `--cpus-per-job` and
+`--max-parallel`; `--threads-per-job` controls OMP/BLAS thread limits. Use
+`--cpu-sets 0-3 4-7` for manual worker affinity, or `--no-pin` to let every
+worker use all CPUs allowed to the queue process. `--cpu-sets` and `--no-pin`
+are mutually exclusive. GPGPU-Sim setup is opt-in for new manifests through
+`--config`; generic jobs do not receive an implicit simulator config.
+
+`--run-root` owns `queue.json`, per-job logs/work/status, and both CSV and TSV
+summaries. An existing queue root requires `--resume` (skip completed jobs) or
+`--overwrite` (replace queue-managed output). `Ctrl+C` stops dispatch,
+terminates active job process groups, records unfinished jobs as interrupted,
+and returns 130; a second `Ctrl+C` escalates to `SIGKILL`.
 
 ## FA2 hardware profiling
 

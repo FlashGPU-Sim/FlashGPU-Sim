@@ -454,6 +454,14 @@ def write_manifest(args: argparse.Namespace) -> int:
             "ptxas_cuda_install_path": args.ptxas_root or None,
             "ptxas_version": ptxas_version,
         },
+        "execution": {
+            "affinity_mode": args.affinity_mode,
+            "cpu_set": args.cpu_set or None,
+            "cpus_per_job": args.cpus_per_job,
+            "threads_per_job": args.threads_per_job,
+            "queue_job_id": args.queue_job_id or None,
+            "queue_slot": args.queue_slot,
+        },
         "artifact": {
             "specialization": artifact_shape,
             "function_name": metadata.get("function_name"),
@@ -505,6 +513,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fa4-python")
     parser.add_argument("--cuda-root")
     parser.add_argument("--ptxas-root")
+    parser.add_argument("--affinity-mode", required=True)
+    parser.add_argument("--cpu-set")
+    parser.add_argument("--cpus-per-job", type=int, required=True)
+    parser.add_argument("--threads-per-job", type=int, required=True)
+    parser.add_argument("--queue-job-id")
+    parser.add_argument("--queue-slot", type=int)
     parser.add_argument("--cases-file", required=True)
     parser.add_argument("--metadata")
     parser.add_argument("--header")
