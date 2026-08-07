@@ -147,7 +147,8 @@ $(foreach mode,$(FA3_MODES),$(eval $(call REGISTER_FA3_BUILD_TARGET,$(mode))))
 
 $(FA3_STANDARD_OBJECTS): TEST_GROUP_EXTRA_NVCCFLAGS = $(FA3_EXTENDED_FLAGS)
 $(OBJ_DIR)/sm90/fa3/standard/%.cu.o: $(FA3_DIR)/%.cu \
-$(FA3_DIR)/fa3_fwd_hdim128_fp16_test.cu $(TEST_HEADERS) \
+$(FA3_DIR)/fa3_fwd_hdim128_fp16_test.cu \
+$(FA3_DIR)/fa3_reference.cuh $(TEST_HEADERS) \
 $(TOP_MAKEFILE) $(FA3_MK) $(FA3_PREPARED_STAMP) | $(SM90_OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(SM90_NVCCFLAGS) $(TEST_GROUP_EXTRA_NVCCFLAGS) \

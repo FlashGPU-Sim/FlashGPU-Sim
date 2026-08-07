@@ -28,7 +28,7 @@ tests = [
 [jobs.sm90-fa2]
 arch = "sm90"
 tests = [
-  { name = "smoke", group = "fa2", profile = "smoke" },
+  { name = "smoke", group = "fa2", profile = "smoke", gtest_filter = "Fa2PrefillFp16SmokeTest.*" },
 ]
 
 [jobs.sm90-fa3]

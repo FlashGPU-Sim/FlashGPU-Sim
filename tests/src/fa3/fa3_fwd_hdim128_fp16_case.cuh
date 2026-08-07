@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "fa3_reference.cuh"
 #include "flash.h"
 #if !defined(FA3_STANDARD_FORWARD_TU)
 #include "flash_bwd_launch_template.h"
@@ -72,13 +73,13 @@ struct Fa3PrefillCase {
 static constexpr int kFa3PrefillCaseCount = 20;
 
 #define FA3_PREFILL_SMOKE_D64_NONCAUSAL_CASE_LIST(X) \
-  X(H32D64FullB2S128, 2, 128, 32, 64, false)
+  X(H2D64FullB2S128, 2, 128, 2, 64, false)
 #define FA3_PREFILL_SMOKE_D64_CAUSAL_CASE_LIST(X) \
-  X(H32D64CausalB2S128, 2, 128, 32, 64, true)
+  X(H1D64CausalB1S256, 1, 256, 1, 64, true)
 #define FA3_PREFILL_SMOKE_D128_NONCAUSAL_CASE_LIST(X) \
-  X(H16D128FullB2S128, 2, 128, 16, 128, false)
+  X(H1D128FullB1S256, 1, 256, 1, 128, false)
 #define FA3_PREFILL_SMOKE_D128_CAUSAL_CASE_LIST(X) \
-  X(H16D128CausalB2S128, 2, 128, 16, 128, true)
+  X(H1D128CausalB1S256, 1, 256, 1, 128, true)
 
 #define FA3_PREFILL_SMOKE_CASE_LIST(X)          \
   FA3_PREFILL_SMOKE_D64_NONCAUSAL_CASE_LIST(X)  \
@@ -160,6 +161,12 @@ struct Fa3RunResult {
   const char *where = "success";
   float output0 = 0.0f;
   float lse0 = 0.0f;
+  bool reference_checked = false;
+  Fa3TensorComparison output_comparison;
+  Fa3TensorComparison lse_comparison;
+  Fa3TensorComparison dq_comparison;
+  Fa3TensorComparison dk_comparison;
+  Fa3TensorComparison dv_comparison;
 };
 
 #if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK)
@@ -523,8 +530,12 @@ inline bool is_valid_fa3_prefill_case(const Fa3PrefillCase &cfg) {
 }
 
 inline bool is_valid_fa3_prefill_smoke_case(const Fa3PrefillCase &cfg) {
+  const bool multi_batch_head =
+      cfg.batch == 2 && cfg.seqlen == 128 && cfg.heads == 2;
+  const bool multi_tile =
+      cfg.batch == 1 && cfg.seqlen == 256 && cfg.heads == 1;
   return is_supported_fa3_prefill_case(cfg) &&
-         cfg.batch == 2 && cfg.seqlen == 128;
+         (multi_batch_head || multi_tile);
 }
 
 inline bool is_valid_fa3_prefill_tuning_case(const Fa3PrefillCase &cfg) {
@@ -548,6 +559,13 @@ inline std::vector<cutlass::half_t> make_fa3_collect_half_data(
   }
   return data;
 }
+
+static constexpr float kFa3OutputAbsTolerance = 5.0e-2f;
+static constexpr float kFa3OutputRelTolerance = 5.0e-2f;
+static constexpr float kFa3LseAbsTolerance = 5.0e-2f;
+static constexpr float kFa3LseRelTolerance = 1.0e-2f;
+static constexpr float kFa3GradientAbsTolerance = 5.0e-2f;
+static constexpr float kFa3GradientRelTolerance = 5.0e-2f;
 
 inline int fa3_round_up(int value, int multiple) {
   return ((value + multiple - 1) / multiple) * multiple;
@@ -640,7 +658,8 @@ inline void set_fa3_prefill_base_params(Params &params,
 
 #if !defined(FA3_STANDARD_BACKWARD_TU)
 template <int HeadDim, bool IsCausal>
-inline Fa3RunResult run_fa3_prefill_fp16_typed(const Fa3PrefillCase &cfg) {
+inline Fa3RunResult run_fa3_prefill_fp16_typed(
+    const Fa3PrefillCase &cfg, bool validate_reference = false) {
   constexpr int D = HeadDim;
   constexpr int DV = HeadDim;
   const int B = cfg.batch;
@@ -661,6 +680,9 @@ inline Fa3RunResult run_fa3_prefill_fp16_typed(const Fa3PrefillCase &cfg) {
   cutlass::half_t *d_o = nullptr;
   float *d_lse = nullptr;
   int *d_tile_count_semaphore = nullptr;
+  std::vector<cutlass::half_t> h_q;
+  std::vector<cutlass::half_t> h_k;
+  std::vector<cutlass::half_t> h_v;
 
   Fa3RunResult result;
   auto finish = [&](cudaError_t error, const char *where) {
@@ -703,6 +725,12 @@ inline Fa3RunResult run_fa3_prefill_fp16_typed(const Fa3PrefillCase &cfg) {
 
   FA3_RETURN_IF_CUDA_ERROR(cudaSetDevice(0));
 
+  if (validate_reference) {
+    h_q = make_fa3_collect_half_data(q_elems, 1, 0.50f);
+    h_k = make_fa3_collect_half_data(k_elems, 2, 0.45f);
+    h_v = make_fa3_collect_half_data(v_elems, 3, 0.40f);
+  }
+
   FA3_RETURN_IF_CUDA_ERROR(cudaMalloc(&d_q, q_elems * sizeof(cutlass::half_t)));
   FA3_RETURN_IF_CUDA_ERROR(cudaMalloc(&d_k, k_elems * sizeof(cutlass::half_t)));
   FA3_RETURN_IF_CUDA_ERROR(cudaMalloc(&d_v, v_elems * sizeof(cutlass::half_t)));
@@ -712,9 +740,24 @@ inline Fa3RunResult run_fa3_prefill_fp16_typed(const Fa3PrefillCase &cfg) {
     FA3_RETURN_IF_CUDA_ERROR(cudaMalloc(&d_tile_count_semaphore, sizeof(int)));
   }
 
-  FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_q, 0, q_elems * sizeof(cutlass::half_t)));
-  FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_k, 0, k_elems * sizeof(cutlass::half_t)));
-  FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_v, 0, v_elems * sizeof(cutlass::half_t)));
+  if (validate_reference) {
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(d_q, h_q.data(),
+                                        q_elems * sizeof(cutlass::half_t),
+                                        cudaMemcpyHostToDevice));
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(d_k, h_k.data(),
+                                        k_elems * sizeof(cutlass::half_t),
+                                        cudaMemcpyHostToDevice));
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(d_v, h_v.data(),
+                                        v_elems * sizeof(cutlass::half_t),
+                                        cudaMemcpyHostToDevice));
+  } else {
+    FA3_RETURN_IF_CUDA_ERROR(
+        cudaMemset(d_q, 0, q_elems * sizeof(cutlass::half_t)));
+    FA3_RETURN_IF_CUDA_ERROR(
+        cudaMemset(d_k, 0, k_elems * sizeof(cutlass::half_t)));
+    FA3_RETURN_IF_CUDA_ERROR(
+        cudaMemset(d_v, 0, v_elems * sizeof(cutlass::half_t)));
+  }
   FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_o, 0, o_elems * sizeof(cutlass::half_t)));
   FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_lse, 0, lse_elems * sizeof(float)));
   if constexpr (IsCausal) {
@@ -740,6 +783,26 @@ inline Fa3RunResult run_fa3_prefill_fp16_typed(const Fa3PrefillCase &cfg) {
                                       cudaMemcpyDeviceToHost));
   result.output0 = float(output0);
 
+  if (validate_reference) {
+    std::vector<cutlass::half_t> h_o(o_elems);
+    std::vector<float> h_lse(lse_elems);
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(h_o.data(), d_o,
+                                        o_elems * sizeof(cutlass::half_t),
+                                        cudaMemcpyDeviceToHost));
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(h_lse.data(), d_lse,
+                                        lse_elems * sizeof(float),
+                                        cudaMemcpyDeviceToHost));
+    const Fa3ForwardReference reference =
+        compute_fa3_forward_reference<HeadDim, IsCausal>(
+            h_q, h_k, h_v, B, M, N, H);
+    result.reference_checked = true;
+    result.output_comparison = compare_fa3_tensor(
+        h_o, reference.output, kFa3OutputAbsTolerance,
+        kFa3OutputRelTolerance);
+    result.lse_comparison = compare_fa3_tensor(
+        h_lse, reference.lse, kFa3LseAbsTolerance, kFa3LseRelTolerance);
+  }
+
   return finish(cudaSuccess, "success");
 
 #undef FA3_RETURN_IF_CUDA_ERROR
@@ -748,7 +811,8 @@ inline Fa3RunResult run_fa3_prefill_fp16_typed(const Fa3PrefillCase &cfg) {
 
 #if !defined(FA3_STANDARD_FORWARD_TU)
 template <int HeadDim, bool IsCausal>
-inline Fa3RunResult run_fa3_prefill_fp16_bwd_typed(const Fa3PrefillCase &cfg) {
+inline Fa3RunResult run_fa3_prefill_fp16_bwd_typed(
+    const Fa3PrefillCase &cfg, bool validate_reference = false) {
   constexpr int D = HeadDim;
   constexpr int DV = HeadDim;
   constexpr int kBlockM = D <= 64 ? 128 : (IsCausal ? 64 : 80);
@@ -785,6 +849,11 @@ inline Fa3RunResult run_fa3_prefill_fp16_bwd_typed(const Fa3PrefillCase &cfg) {
   float *d_dsoftmax = nullptr;
   float *d_dq_accum = nullptr;
   int *d_dq_semaphore = nullptr;
+  std::vector<cutlass::half_t> h_q;
+  std::vector<cutlass::half_t> h_k;
+  std::vector<cutlass::half_t> h_v;
+  std::vector<cutlass::half_t> h_do;
+  Fa3ForwardReference forward_reference;
 
   Fa3RunResult result;
   auto finish = [&](cudaError_t error, const char *where) {
@@ -834,6 +903,15 @@ inline Fa3RunResult run_fa3_prefill_fp16_bwd_typed(const Fa3PrefillCase &cfg) {
 
   FA3_RETURN_IF_CUDA_ERROR(cudaSetDevice(0));
 
+  if (validate_reference) {
+    h_q = make_fa3_collect_half_data(q_elems, 1, 0.50f);
+    h_k = make_fa3_collect_half_data(k_elems, 2, 0.45f);
+    h_v = make_fa3_collect_half_data(v_elems, 3, 0.40f);
+    h_do = make_fa3_collect_half_data(o_elems, 4, 0.35f);
+    forward_reference = compute_fa3_forward_reference<HeadDim, IsCausal>(
+        h_q, h_k, h_v, B, M, N, H);
+  }
+
   FA3_RETURN_IF_CUDA_ERROR(cudaMalloc(&d_q, q_elems * sizeof(cutlass::half_t)));
   FA3_RETURN_IF_CUDA_ERROR(cudaMalloc(&d_k, k_elems * sizeof(cutlass::half_t)));
   FA3_RETURN_IF_CUDA_ERROR(cudaMalloc(&d_v, v_elems * sizeof(cutlass::half_t)));
@@ -852,15 +930,41 @@ inline Fa3RunResult run_fa3_prefill_fp16_bwd_typed(const Fa3PrefillCase &cfg) {
   FA3_RETURN_IF_CUDA_ERROR(cudaMalloc(&d_dq_semaphore,
                                       dq_semaphore_elems * sizeof(int)));
 
-  FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_q, 0, q_elems * sizeof(cutlass::half_t)));
-  FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_k, 0, k_elems * sizeof(cutlass::half_t)));
-  FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_v, 0, v_elems * sizeof(cutlass::half_t)));
-  FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_o, 0, o_elems * sizeof(cutlass::half_t)));
-  FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_do, 0, o_elems * sizeof(cutlass::half_t)));
+  if (validate_reference) {
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(d_q, h_q.data(),
+                                        q_elems * sizeof(cutlass::half_t),
+                                        cudaMemcpyHostToDevice));
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(d_k, h_k.data(),
+                                        k_elems * sizeof(cutlass::half_t),
+                                        cudaMemcpyHostToDevice));
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(d_v, h_v.data(),
+                                        v_elems * sizeof(cutlass::half_t),
+                                        cudaMemcpyHostToDevice));
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(
+        d_o, forward_reference.output_half.data(),
+        o_elems * sizeof(cutlass::half_t), cudaMemcpyHostToDevice));
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(d_do, h_do.data(),
+                                        o_elems * sizeof(cutlass::half_t),
+                                        cudaMemcpyHostToDevice));
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(
+        d_lse, forward_reference.lse.data(), lse_elems * sizeof(float),
+        cudaMemcpyHostToDevice));
+  } else {
+    FA3_RETURN_IF_CUDA_ERROR(
+        cudaMemset(d_q, 0, q_elems * sizeof(cutlass::half_t)));
+    FA3_RETURN_IF_CUDA_ERROR(
+        cudaMemset(d_k, 0, k_elems * sizeof(cutlass::half_t)));
+    FA3_RETURN_IF_CUDA_ERROR(
+        cudaMemset(d_v, 0, v_elems * sizeof(cutlass::half_t)));
+    FA3_RETURN_IF_CUDA_ERROR(
+        cudaMemset(d_o, 0, o_elems * sizeof(cutlass::half_t)));
+    FA3_RETURN_IF_CUDA_ERROR(
+        cudaMemset(d_do, 0, o_elems * sizeof(cutlass::half_t)));
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_lse, 0, lse_elems * sizeof(float)));
+  }
   FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_dq, 0, q_elems * sizeof(cutlass::half_t)));
   FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_dk, 0, k_elems * sizeof(cutlass::half_t)));
   FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_dv, 0, v_elems * sizeof(cutlass::half_t)));
-  FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_lse, 0, lse_elems * sizeof(float)));
   FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_lse_log2, 0,
                                       lse_log2_elems * sizeof(float)));
   FA3_RETURN_IF_CUDA_ERROR(cudaMemset(d_dsoftmax, 0,
@@ -922,6 +1026,34 @@ inline Fa3RunResult run_fa3_prefill_fp16_bwd_typed(const Fa3PrefillCase &cfg) {
                                       cudaMemcpyDeviceToHost));
   result.output0 = float(dq0);
 
+  if (validate_reference) {
+    std::vector<cutlass::half_t> h_dq(q_elems);
+    std::vector<cutlass::half_t> h_dk(k_elems);
+    std::vector<cutlass::half_t> h_dv(v_elems);
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(h_dq.data(), d_dq,
+                                        q_elems * sizeof(cutlass::half_t),
+                                        cudaMemcpyDeviceToHost));
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(h_dk.data(), d_dk,
+                                        k_elems * sizeof(cutlass::half_t),
+                                        cudaMemcpyDeviceToHost));
+    FA3_RETURN_IF_CUDA_ERROR(cudaMemcpy(h_dv.data(), d_dv,
+                                        v_elems * sizeof(cutlass::half_t),
+                                        cudaMemcpyDeviceToHost));
+    const Fa3BackwardReference reference =
+        compute_fa3_backward_reference<HeadDim, IsCausal>(
+            h_q, h_k, h_v, forward_reference.output_half, h_do, B, M, N, H);
+    result.reference_checked = true;
+    result.dq_comparison = compare_fa3_tensor(
+        h_dq, reference.dq, kFa3GradientAbsTolerance,
+        kFa3GradientRelTolerance);
+    result.dk_comparison = compare_fa3_tensor(
+        h_dk, reference.dk, kFa3GradientAbsTolerance,
+        kFa3GradientRelTolerance);
+    result.dv_comparison = compare_fa3_tensor(
+        h_dv, reference.dv, kFa3GradientAbsTolerance,
+        kFa3GradientRelTolerance);
+  }
+
   return finish(cudaSuccess, "success");
 
 #undef FA3_RETURN_IF_CUDA_ERROR
@@ -930,18 +1062,19 @@ inline Fa3RunResult run_fa3_prefill_fp16_bwd_typed(const Fa3PrefillCase &cfg) {
 
 #if !defined(FA3_STANDARD_FORWARD_TU) && \
     !defined(FA3_STANDARD_BACKWARD_TU)
-inline Fa3RunResult run_fa3_prefill_fp16(const Fa3PrefillCase &cfg) {
+inline Fa3RunResult run_fa3_prefill_fp16(
+    const Fa3PrefillCase &cfg, bool validate_reference = false) {
   if (cfg.head_dim == 64 && !cfg.causal) {
-    return run_fa3_prefill_fp16_typed<64, false>(cfg);
+    return run_fa3_prefill_fp16_typed<64, false>(cfg, validate_reference);
   }
   if (cfg.head_dim == 64 && cfg.causal) {
-    return run_fa3_prefill_fp16_typed<64, true>(cfg);
+    return run_fa3_prefill_fp16_typed<64, true>(cfg, validate_reference);
   }
   if (cfg.head_dim == 128 && !cfg.causal) {
-    return run_fa3_prefill_fp16_typed<128, false>(cfg);
+    return run_fa3_prefill_fp16_typed<128, false>(cfg, validate_reference);
   }
   if (cfg.head_dim == 128 && cfg.causal) {
-    return run_fa3_prefill_fp16_typed<128, true>(cfg);
+    return run_fa3_prefill_fp16_typed<128, true>(cfg, validate_reference);
   }
 
   Fa3RunResult result;
@@ -950,18 +1083,23 @@ inline Fa3RunResult run_fa3_prefill_fp16(const Fa3PrefillCase &cfg) {
   return result;
 }
 
-inline Fa3RunResult run_fa3_prefill_fp16_bwd(const Fa3PrefillCase &cfg) {
+inline Fa3RunResult run_fa3_prefill_fp16_bwd(
+    const Fa3PrefillCase &cfg, bool validate_reference = false) {
   if (cfg.head_dim == 64 && !cfg.causal) {
-    return run_fa3_prefill_fp16_bwd_typed<64, false>(cfg);
+    return run_fa3_prefill_fp16_bwd_typed<64, false>(cfg,
+                                                      validate_reference);
   }
   if (cfg.head_dim == 64 && cfg.causal) {
-    return run_fa3_prefill_fp16_bwd_typed<64, true>(cfg);
+    return run_fa3_prefill_fp16_bwd_typed<64, true>(cfg,
+                                                     validate_reference);
   }
   if (cfg.head_dim == 128 && !cfg.causal) {
-    return run_fa3_prefill_fp16_bwd_typed<128, false>(cfg);
+    return run_fa3_prefill_fp16_bwd_typed<128, false>(cfg,
+                                                       validate_reference);
   }
   if (cfg.head_dim == 128 && cfg.causal) {
-    return run_fa3_prefill_fp16_bwd_typed<128, true>(cfg);
+    return run_fa3_prefill_fp16_bwd_typed<128, true>(cfg,
+                                                      validate_reference);
   }
 
   Fa3RunResult result;
