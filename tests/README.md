@@ -261,3 +261,29 @@ The planner can be inspected without building or running tests:
 ./tests/ci/planner.py plan --job sm90-fa3
 CI_JOB=all CI_LIST_JOBS=1 ./tests/ci/run_ci_tests.sh
 ```
+
+Cycle-validation jobs are defined separately in `ci/perf/cases.toml`. Each
+top-level table names one simulator configuration and therefore one GitHub
+Actions job; its cases run sequentially in that job. A case provides a stable
+ID, a summary label, one or more repository-relative scripts, and its NCU cycle
+reference:
+
+```toml
+[SM120_RTX5090.cases.cuda-vector-add-2m]
+label = "Tutorial - CUDA Vector Add"
+scripts = ["tutorials/vectorAdd/run.sh"]
+ncu_cycles = 29642.67
+```
+
+Inspect the performance plan without building or simulating:
+
+```bash
+python3 tests/ci/perf/perf.py validate
+python3 tests/ci/perf/perf.py matrix
+```
+
+GitHub Actions builds the simulator once per configured performance job, runs
+its cases in manifest order, and compares `gpu_tot_sim_cycle` with the stored
+NCU value. The config jobs are informational and do not feed `verify-status`.
+Their small JSON results are combined by `cycle-validation-report`; complete
+logs are uploaded only for failed config jobs.

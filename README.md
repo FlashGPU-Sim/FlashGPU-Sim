@@ -105,11 +105,11 @@ The table below compares `gpu_tot_sim_cycle` with
 `sm__cycles_elapsed.avg` reported by Nsight Compute on an RTX 5090.
 Difference is calculated as `(Sim - NCU) / NCU`.
 
-| Workload | Shape | NCU cycles | Sim cycles | Difference |
-| --- | --- | ---: | ---: | ---: |
-| CUDA vector addition | 2,000,000 elements | 29,642.67 | 30,133 | +1.65% |
-| Triton GEMM | `M=2560, N=64, K=2560` | 77,190.74 | 78,989 | +2.33% |
-| Triton FlashAttention | `B=32, H=32, S=512, D=64, causal` | 797,247.12 | 794,076 | -0.40% |
+| Config | Workload | Shape | NCU cycles | Sim cycles | Difference |
+| --- | --- | --- | ---: | ---: | ---: |
+| SM120_RTX5090 | Tutorial - CUDA Vector Add | 2,000,000 elements | 29,642.67 | 30,133 | +1.65% |
+| SM120_RTX5090 | Tutorial - Triton GEMM | `M=2560, N=64, K=2560` | 77,190.74 | 78,989 | +2.33% |
+| SM120_RTX5090 | Tutorial - Triton FlashAttention | `B=32, H=32, S=512, D=64, causal` | 797,247.12 | 794,076 | -0.40% |
 
 > [!TIP]
 > We provide RTX 5090 Nsight Compute reports and CSVs for

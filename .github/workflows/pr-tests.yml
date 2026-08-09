@@ -7,7 +7,7 @@ on:
     types: [opened, synchronize, ready_for_review, reopened]
 
 env:
-  CI_IMAGE: ghcr.io/flashgpu-sim/flashgpu-sim-ci@sha256:502e8c96182dbfab43d861b956957ddaa51bdb6b975845da44905f1ccc24a404
+  CI_IMAGE: ghcr.io/flashgpu-sim/flashgpu-sim-ci@sha256:c8c03b52d4e61d0a36b1fa2bd3aecced2919c66aeff45aad4a1a8b1c62188b83
 
 jobs:
   plan:
@@ -22,16 +22,19 @@ jobs:
 
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      perf_matrix: ${{ steps.matrix.outputs.perf_matrix }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Read CI job manifest
+      - name: Read CI job manifests
         id: matrix
         run: |
           matrix="$(python3 tests/ci/planner.py matrix)"
+          perf_matrix="$(python3 tests/ci/perf/perf.py matrix)"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "perf_matrix=$perf_matrix" >> "$GITHUB_OUTPUT"
 
   run-tests:
 
@@ -95,6 +98,104 @@ jobs:
           CI_JOB: ${{ matrix.job }}
         run: |
           python3 tests/ci/report.py tests/logs/ci \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  perf-run:
+
+    name: cycle-validation (${{ matrix.config }})
+
+    needs: plan
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    permissions:
+      contents: read
+      packages: read
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.perf_matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull performance CI image
+        run: docker pull "$CI_IMAGE"
+
+      - name: Run cycle validation in container
+        id: perf
+        timeout-minutes: 75
+        run: |
+          docker run --rm \
+            --memory=7g \
+            --memory-swap=7g \
+            -e CI=true \
+            -e GITHUB_ACTIONS=true \
+            -e CI_BUILD_JOBS=2 \
+            -v ${{ github.workspace }}:/gpgpu-sim \
+            -w /gpgpu-sim \
+            "$CI_IMAGE" \
+            bash tests/ci/perf/run.sh "${{ matrix.config }}"
+
+      - name: Upload cycle results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-results-${{ matrix.config }}-${{ github.run_attempt }}
+          path: tests/logs/ci/perf/results/${{ matrix.config }}.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload failed cycle-validation logs
+        if: always() && steps.perf.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-logs-${{ matrix.config }}-${{ github.run_attempt }}
+          path: tests/logs/ci/perf/${{ matrix.config }}
+          if-no-files-found: warn
+          retention-days: 7
+
+  perf-report:
+
+    name: cycle-validation-report
+
+    if: always()
+    needs: perf-run
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Download cycle results
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: perf-results-*-${{ github.run_attempt }}
+          path: tests/logs/ci/perf/results
+          merge-multiple: true
+
+      - name: Report cycle validation
+        if: always()
+        run: |
+          python3 tests/ci/perf/perf.py report \
             >> "$GITHUB_STEP_SUMMARY"
 
   verify-status:

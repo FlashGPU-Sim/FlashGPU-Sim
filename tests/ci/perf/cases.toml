@@ -1,0 +1,21 @@
+[SM120_RTX5090.cases.cuda-vector-add-2m]
+label = "Tutorial - CUDA Vector Add"
+scripts = [
+  "tutorials/vectorAdd/run.sh",
+]
+ncu_cycles = 29642.67
+
+[SM120_RTX5090.cases.triton-gemm-m2560-n64-k2560]
+label = "Tutorial - Triton GEMM"
+scripts = [
+  "tutorials/triton-gemm/run.sh",
+]
+ncu_cycles = 77190.74
+
+[SM120_RTX5090.cases.triton-fa-b32-h32-s512-d64-causal]
+label = "Tutorial - Triton FlashAttention"
+scripts = [
+  "tutorials/triton-flash-attention/capture.sh",
+  "tutorials/triton-flash-attention/run.sh",
+]
+ncu_cycles = 797247.12

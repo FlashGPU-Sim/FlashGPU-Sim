@@ -6,6 +6,7 @@ arch = "sm120"
 pre_checks = [
   "tests/ci/tests/test_arch_manifest.py",
   "tests/ci/tests/test_gtest.py",
+  "tests/ci/tests/test_perf.py",
   "tests/ci/tests/test_report.py",
 ]
 tests = [

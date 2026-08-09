@@ -10,7 +10,7 @@ on:
 
 env:
   CI_IMAGE: ghcr.io/flashgpu-sim/flashgpu-sim-ci
-  CI_IMAGE_TAG: cuda12.8-gtest1.12.1-v1
+  CI_IMAGE_TAG: cuda12.8-gtest1.12.1-triton3.5.0-v2
 
 concurrency:
   group: ci-image
@@ -22,7 +22,7 @@ jobs:
     name: publish-ci-image
 
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     permissions:
       contents: read
@@ -48,22 +48,33 @@ jobs:
 
       - name: Smoke test CI image
         run: |
-          docker run --rm "$CI_IMAGE:$CI_IMAGE_TAG" \
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/gpgpu-sim:ro" \
+            -w /gpgpu-sim \
+            "$CI_IMAGE:$CI_IMAGE_TAG" \
             bash -euo pipefail -c '
               test "$GTEST_DIR" = /opt/googletest
               test "$FLASHGPU_GTEST_VERSION" = 1.12.1
               test -f "$GTEST_DIR/include/gtest/gtest.h"
               test -f "$GTEST_DIR/src/gtest-all.cc"
-              python3 -c "import tomli"
+              test "$PYTHONPATH" = /gpgpu-sim/tools
+              python3 -c "import sys, numpy, torch, triton, TritonTrace; assert sys.version_info[:3] == (3, 12, 3); assert numpy.__version__ == \"2.4.0\"; assert torch.__version__ == \"2.9.0+cpu\"; assert triton.__version__ == \"3.5.0\""
               nvcc --version
+              ptxas --version
+              cuobjdump --version
+              nvdisasm --version
+              test -f "$CUDA_INSTALL_PATH/include/cuda_runtime.h"
+              test -f "$CUDA_INSTALL_PATH/lib64/stubs/libcuda.so"
+              printf "__global__ void kernel() {}\n" |
+                nvcc -arch=sm_120a -x cu -c -o /tmp/cuda-smoke.o -
               g++ --version
               printf "#include <gtest/gtest.h>\n" |
                 g++ -std=c++17 -I"$GTEST_DIR/include" \
                   -x c++ -c -o /tmp/gtest-smoke.o -
               g++ -std=c++17 -pthread \
                 -I"$GTEST_DIR" -I"$GTEST_DIR/include" \
-                -c "$GTEST_DIR/src/gtest-all.cc" \
-                -o /tmp/gtest-all.o
+                  -c "$GTEST_DIR/src/gtest-all.cc" \
+                  -o /tmp/gtest-all.o
             '
 
       - name: Publish CI image
