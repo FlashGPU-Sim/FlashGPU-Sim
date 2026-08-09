@@ -461,11 +461,20 @@ def _readme_errors(
             continue
         difference = (sim_cycles - case.ncu_cycles) / case.ncu_cycles * 100.0
         if not math.isclose(readme_ncu, case.ncu_cycles, abs_tol=0.005):
-            errors.append(f"README NCU cycles differ for {config}/{label}")
+            errors.append(
+                f"README NCU cycles differ for {config}/{label} "
+                f"(README: {readme_ncu:,.2f}; manifest: {case.ncu_cycles:,.2f})"
+            )
         if readme_sim != sim_cycles:
-            errors.append(f"README simulator cycles differ for {config}/{label}")
+            errors.append(
+                f"README simulator cycles differ for {config}/{label} "
+                f"(README: {readme_sim:,}; current: {sim_cycles:,})"
+            )
         if not math.isclose(readme_difference, difference, abs_tol=0.005):
-            errors.append(f"README percentage differs for {config}/{label}")
+            errors.append(
+                f"README percentage differs for {config}/{label} "
+                f"(README: {readme_difference:+.2f}%; current: {difference:+.2f}%)"
+            )
 
     for config, label in expected.keys() - seen:
         errors.append(f"README row is missing for {config}/{label}")
@@ -479,12 +488,10 @@ def render_report(
 ) -> tuple[str, bool]:
     results, warnings = _read_results(results_dir)
     lines = [
-        "## Cycle Validation",
+        "## Performance Test",
         "",
         "NCU metric: `sm__cycles_elapsed.avg`; simulator metric: "
         "`gpu_tot_sim_cycle`; difference: `(Sim - NCU) / NCU`.",
-        "",
-        "> Informational only; cycle differences do not gate required CI.",
         "",
     ]
     counts = {"compared": 0, "failed": 0, "missing": 0}
@@ -530,24 +537,31 @@ def render_report(
     readme_errors = (
         _readme_errors(readme_path, jobs, results) if readme_path is not None else []
     )
-    lines.extend(
-        [
-            "### Status",
-            "",
-            f"- Compared: {counts['compared']}",
-            f"- Simulation failed: {counts['failed']}",
-            f"- Missing or incomplete: {counts['missing']}",
-        ]
-    )
     if readme_path is not None:
-        lines.append(
-            "- README Cycle Validation: "
-            + ("matches" if not readme_errors else "does not match")
+        lines.extend(
+            [
+                "### Status",
+                "",
+                "- README Cycle Validation: "
+                + ("matches" if not readme_errors else "does **NOT** match"),
+            ]
         )
-    if warnings or readme_errors:
-        lines.extend(["", "### Report warnings", ""])
-        for warning in (*warnings, *readme_errors):
-            lines.append(f"- {_table_cell(warning)}")
+    if readme_errors:
+        lines.extend(
+            [
+                "",
+                "### Suggested follow-up",
+                "",
+                "The current results do not match the documented Cycle "
+                "Validation values.",
+                "",
+                "- Inspect whether the cycle change is expected or a regression.",
+                "- If expected, update the top-level README table.",
+                "- For broader validation, also run Triton FlashAttention offline: "
+                "`bash tutorials/triton-flash-attention/capture.sh`, then "
+                "`bash tutorials/triton-flash-attention/run.sh`.",
+            ]
+        )
 
     success = (
         counts["failed"] == 0

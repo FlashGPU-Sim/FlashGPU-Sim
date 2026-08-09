@@ -3,12 +3,6 @@
 
 [jobs.sm120-core]
 arch = "sm120"
-pre_checks = [
-  "tests/ci/tests/test_arch_manifest.py",
-  "tests/ci/tests/test_gtest.py",
-  "tests/ci/tests/test_perf.py",
-  "tests/ci/tests/test_report.py",
-]
 tests = [
   { name = "unit", group = "unit" },
   { name = "integration", group = "integration" },

@@ -248,7 +248,7 @@ CI_JOB=all ./tests/ci/run_ci_tests.sh
 ```
 
 Logs and GoogleTest XML results are written below `tests/logs/ci/`. GitHub
-Actions uploads them only when a `run-tests` job fails. Failed jobs also parse
+Actions uploads them only when a `func-tests` job fails. Failed jobs also parse
 the available XML into a compact job summary that lists failed cases only. If
 a test process aborts before writing XML, the summary recovers the active
 GoogleTest case from its log and reports it as `Aborted`. Successful jobs
@@ -283,7 +283,18 @@ python3 tests/ci/perf/perf.py matrix
 ```
 
 GitHub Actions builds the simulator once per configured performance job, runs
-its cases in manifest order, and compares `gpu_tot_sim_cycle` with the stored
-NCU value. The config jobs are informational and do not feed `verify-status`.
-Their small JSON results are combined by `cycle-validation-report`; complete
-logs are uploaded only for failed config jobs.
+its cases in manifest order, and reports `gpu_tot_sim_cycle` beside the stored
+NCU value. The report also checks that current simulator cycles match the
+top-level README exactly. A mismatch asks the developer to inspect the change
+and update the documentation when it is expected. The config jobs are
+informational and do not feed `verify-status`. Their small JSON results are
+combined by `cycle-validation-report`; complete logs are uploaded only for
+failed config jobs.
+
+The long-running Triton FlashAttention case is not part of PR CI. For broader
+offline validation after building FlashGPU-Sim, run:
+
+```bash
+bash tutorials/triton-flash-attention/capture.sh
+bash tutorials/triton-flash-attention/run.sh
+```
