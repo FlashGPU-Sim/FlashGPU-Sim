@@ -120,8 +120,7 @@ FA2_COMMON_FLAGS = --ftemplate-backtrace-limit=0 -O3 \
                           -DNDEBUG \
                           -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED \
                           -I$(FA2_DIR) \
-                          -I$(FA3_DIR)/flash-attention/csrc/flash_attn/src \
-                          -I$(FA3_DIR)/flash-attention/csrc/cutlass/include
+                          $(FLASH_ATTENTION_FA2_INCLUDES)
 FA2_FLAGS = $(FA2_COMMON_FLAGS)
 
 # Each standard object instantiates one D/full-causal kernel family.
@@ -177,7 +176,8 @@ $(call FA2_CASE_OBJECTS,concurrency_qk_softmax_pv_only): TEST_GROUP_EXTRA_NVCCFL
 $(call FA2_CASE_OBJECTS,concurrency_qk_pv_only): TEST_GROUP_EXTRA_NVCCFLAGS = $(FA2_CONCURRENCY_FLAGS) -DFA2_FWD_SENS_SKIP_CP_ASYNC -DFA2_FWD_SENS_SKIP_SOFTMAX
 
 $(FA2_ALL_OBJECTS): $(FA2_TEST_SOURCE) $(TEST_HEADERS) \
-$(TOP_MAKEFILE) $(FA2_MK) $(FA3_PREPARED_STAMP) | $(OBJ_DIR)
+$(TOP_MAKEFILE) $(FA_MK) $(FA2_MK) \
+$(FLASH_ATTENTION_PREPARED_STAMP) | $(OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(FA2_NVCCFLAGS) $(TEST_GROUP_EXTRA_NVCCFLAGS) \
 		$(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@

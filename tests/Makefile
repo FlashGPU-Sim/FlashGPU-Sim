@@ -78,8 +78,9 @@ $(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(SM90_OBJ_DIR):
 
 include make/gtest.mk
 include make/build.mk
-include make/workloads/fa3.mk
+include make/workloads/fa.mk
 include make/workloads/fa2.mk
+include make/workloads/fa3.mk
 include make/workloads/microbench.mk
 include make/workloads/trace.mk
 include make/runner.mk

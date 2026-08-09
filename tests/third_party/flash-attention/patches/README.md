@@ -1,6 +1,6 @@
 # FlashAttention Patches
 
-`prepare_flash_attention.sh` applies this patch on top of upstream
+`../prepare.sh` applies this patch on top of upstream
 FlashAttention commit `d80a77103021c4e980f8cbbf85774f6a19e6474a`.
 
 Patch:

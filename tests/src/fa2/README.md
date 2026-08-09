@@ -1,9 +1,9 @@
 # FA2 Forward Cases
 
 This directory contains standalone FlashAttention-2 forward gtests for
-GPGPU-Sim bring-up. The CUDA kernel templates come from the existing
-`tests/src/fa3/flash-attention/csrc/flash_attn/src` checkout prepared by
-`tests/src/fa3/prepare_flash_attention.sh`.
+GPGPU-Sim bring-up. The CUDA kernel templates come from the shared checkout
+under `tests/third_party/flash-attention/`. FA2 builds prepare the pinned
+checkout and apply the local patches automatically.
 
 ## Cases
 
@@ -31,7 +31,6 @@ architecture manifests expose the same profiles through `sm90/fa2` and
 From `tests/`:
 
 ```bash
-make prepare-fa3-flash-attention
 ./run_tests.py run --arch sm90 --group fa2 --profile smoke
 ./run_tests.py run --arch sm90 --group fa2 --profile small
 ./run_tests.py run --arch sm90 --group fa2 --profile medium

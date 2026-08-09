@@ -3,10 +3,10 @@
 This directory contains a standalone FlashAttention-3 Hopper forward test case
 for GPGPU-Sim bring-up.
 
-The test wrapper is local, while FA3 kernel headers come from a generated
-`flash-attention/` checkout built from upstream FlashAttention plus the patches
-in `patches/`. CUTLASS/CuTe is provided by that checkout's nested
-`csrc/cutlass` submodule.
+The test wrapper is local, while FA3 kernel headers come from the shared
+checkout under `tests/third_party/flash-attention/`. FA3 builds prepare the
+pinned checkout and apply the local patches automatically. CUTLASS/CuTe is
+provided by that checkout's nested `csrc/cutlass` submodule.
 
 ## Case
 
@@ -29,27 +29,13 @@ in `patches/`. CUTLASS/CuTe is provided by that checkout's nested
 - `fa3_fwd_hdim128_fp16_case.cuh` - shared CUDA workload implementation
 - `fa3_fwd_packgqa_{case.cuh,test.cu}` - one-tile GQA forward case that
   validates the default and `.noinc` `cp.async.mbarrier.arrive` forms
-- `prepare_flash_attention.sh` - clones FlashAttention, checks out the pinned
-  upstream commit, initializes CUTLASS, and applies local patches
-- `patches/flash-attention-fa2-fa3-hooks.patch` - FA2/FA3 profiling hooks,
-  sensitivity macro hooks, and task/globaltimer tracing used by isolated debug
-  targets
+
+The shared checkout, preparation script, pinned revisions, and patch bundle are
+documented in `tests/third_party/flash-attention/README.md`.
 
 ## Build
 
-From the GPGPU-Sim repository root:
-
-```bash
-cd tests
-make prepare-fa3-flash-attention
-```
-
-This prepares:
-
-- FlashAttention base commit: `d80a77103021c4e980f8cbbf85774f6a19e6474a`
-- CUTLASS commit: `7127592069c2fe01b041e174ba4345ef9b279671`
-
-Then from `tests/`:
+From `tests/`; the first FA3 build prepares the shared dependency automatically:
 
 ```bash
 ./run_tests.py run --arch sm90 --group fa3 --profile smoke
