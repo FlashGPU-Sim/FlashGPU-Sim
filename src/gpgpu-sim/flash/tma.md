@@ -273,7 +273,7 @@ void cycle();
 
 #### `do_tma_transfer()`
 
-**Signature**: `static void do_tma_transfer(const tensormap_descriptor_t &tensormap, const int32_t coords[5], memory_space *shared_mem, memory_space *global_mem, uint64_t shared_addr, ptx_thread_info *thread, const ptx_instruction *pI, bool is_load)`
+**Signature**: `static void do_tma_transfer(const tensormap_descriptor_t &tensormap, const int32_t coords[5], memory_space *shared_mem, memory_space *global_mem, uint64_t shared_addr, ptx_thread_info *thread, const ptx_instruction *pI, bool is_load, tma_reduction_op_t reduction_op)`
 
 **Purpose**: Perform functional simulation of TMA transfer between global and shared memory.
 
@@ -285,6 +285,7 @@ void cycle();
 - `thread`: Thread context
 - `pI`: Instruction pointer (for error reporting)
 - `is_load`: True for load (global→shared), false for store (shared→global)
+- `reduction_op`: Optional element-wise reduction for tensor stores
 
 **Behavior**:
 1. Calculate global base address from coordinates and tensormap
@@ -297,6 +298,32 @@ void cycle();
 5. Verify all bytes transferred
 
 **Multi-Dimensional Support**: Handles 1D-5D tensors with proper coordinate-to-address mapping.
+
+### Tensor Reduction Stores
+
+`cp.reduce.async.bulk.tensor` uses the normal tensor-store address generation
+and reverse-swizzle path, then atomically reduces each shared-memory element
+into its corresponding global-memory element in functional simulation. The
+supported operation/type pairs follow the PTX ISA:
+
+- `add`: `u32`, `s32`, `u64`, `f16`, `bf16`, `f32`
+- `min`, `max`: `u32`, `s32`, `u64`, `s64`, `f16`, `bf16`
+- `inc`, `dec`: `u32`
+- `and`, `or`, `xor`: 32-bit and 64-bit integer tensor-map types
+
+`FLOAT32` preserves subnormal inputs and results, while `FLOAT32_FTZ` flushes
+them to signed zero. This distinction is preserved by both the host tensor-map
+encoder and the functional reduction path.
+
+Only the `.tile` addressing mode is currently implemented. The functional
+read-modify-write is indivisible in the simulator execution path and therefore
+preserves the PTX element-wise atomic result.
+
+The timing model is not calibrated for `UTMAREDG`. It currently reuses normal
+TMA tensor-store requests and completion. In particular, it does not model the
+atomic destination read, same-address serialization, or a dedicated reduction
+backend resource. Timing results for tensor reduction stores must be treated as
+uncalibrated until a hardware microbenchmark supplies those parameters.
 
 ---
 
@@ -375,6 +402,8 @@ void cycle();
 
 1. **CP.ASYNC sector masking**: Corner cases with non-cacheline-aligned sizes not fully handled
 2. **Tensormap options**: Some tensormap manipulation options not fully validated
+3. **Tensor reduction timing**: Functional semantics are implemented, but the
+   `UTMAREDG` atomic timing path is not calibrated
 
 **Multi-dimensional testing**: Full test coverage for 1D and 3D-5D tensor
 operations is implemented in

@@ -8,6 +8,7 @@ sources = [
   "unit/bulk_group_test.cc",
   "unit/local_interconnect_test.cc",
   "unit/mshr_table_test.cc",
+  "unit/tma_reduction_test.cc",
 
   # Portable integration tests.
   "integration/address_operand_test.cu",
@@ -24,6 +25,7 @@ sources = [
   "tma/tma_test.cu",
   "tma/tma_multidim_test.cu",
   "tma/tma_edge_cases_test.cu",
+  "tma/tma_tensor_reduce_test.cu",
   "mma/mma_f16_test.cu",
   "mma/mma_bf16_test.cu",
   "mma/mma_tf32_test.cu",
