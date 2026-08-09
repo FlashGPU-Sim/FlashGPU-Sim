@@ -1,5 +1,6 @@
 #include "tma.h"
 #include "tensormap.h"
+#include "tma_reduction.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdarg>
@@ -2223,11 +2224,11 @@ static tma_oob_fill_table_t g_oob_fill_table;
 
 // Execute TMA data transfer (load or store)
 // is_load=true: global -> shared, is_load=false: shared -> global
-static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
-                            const int32_t coords[5], memory_space *shared_mem,
-                            memory_space *global_mem, uint32_t smem_addr,
-                            ptx_thread_info *thread, const ptx_instruction *pI,
-                            bool is_load) {
+static void do_tma_transfer(
+    const tensormap_descriptor_t &tensormap, const int32_t coords[5],
+    memory_space *shared_mem, memory_space *global_mem, uint32_t smem_addr,
+    ptx_thread_info *thread, const ptx_instruction *pI, bool is_load,
+    tma_reduction_op_t reduction_op = tma_reduction_op_t::NONE) {
   // For load operations, pre-fill the entire tile in shared memory with OOB
   // fill value
   if (is_load) {
@@ -2318,11 +2319,56 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
         shared_mem->read(smem_addr + tile_offset, req_size, data_buffer);
       }
 
-      global_mem->write(global_req_addr, req_size, data_buffer, thread, pI);
+      if (reduction_op == tma_reduction_op_t::NONE) {
+        global_mem->write(global_req_addr, req_size, data_buffer, thread, pI);
+      } else {
+        const uint32_t element_size = tensormap.get_element_size();
+        if (req_size % element_size != 0) {
+          printf("TMA ERROR: tensor reduction request size %u is not a "
+                 "multiple of element size %u\n",
+                 req_size, element_size);
+          abort();
+        }
+        std::vector<uint8_t> destination(req_size);
+        global_mem->read(global_req_addr, req_size, destination.data());
+        apply_tma_tensor_reduction(reduction_op,
+                                   tensormap.fields.tensorDataType,
+                                   destination.data(), data_buffer, req_size);
+        global_mem->write(global_req_addr, req_size, destination.data(), thread,
+                          pI);
+      }
     }
 
     if (req_size > LOCAL_BUF_SIZE)
       delete[] data_buffer;
+  }
+}
+
+static tma_reduction_op_t decode_tma_reduction_op(const ptx_instruction *pI) {
+  switch (pI->get_atomic()) {
+  case 0:
+    return tma_reduction_op_t::NONE;
+  case ATOMIC_ADD:
+    return tma_reduction_op_t::ADD;
+  case ATOMIC_MIN:
+    return tma_reduction_op_t::MIN;
+  case ATOMIC_MAX:
+    return tma_reduction_op_t::MAX;
+  case ATOMIC_INC:
+    return tma_reduction_op_t::INC;
+  case ATOMIC_DEC:
+    return tma_reduction_op_t::DEC;
+  case ATOMIC_AND:
+    return tma_reduction_op_t::BIT_AND;
+  case ATOMIC_OR:
+    return tma_reduction_op_t::BIT_OR;
+  case ATOMIC_XOR:
+    return tma_reduction_op_t::BIT_XOR;
+  default:
+    printf("TMA ERROR: unsupported tensor reduction operation %u\n",
+           pI->get_atomic());
+    pI->print_insn();
+    abort();
   }
 }
 
@@ -2586,21 +2632,56 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
   using namespace flash_gpgpu_sim;
 
   const auto &options = pI->get_options();
-  if (options.size() != 5) {
-    for (auto op : options) {
-      GPPRINTF_INST_EXEC(TMA, "  option: %d\n", op);
+  int dim_option = 0;
+  int completion_option = 0;
+  std::vector<int> space_options;
+  for (auto op : options) {
+    switch (op) {
+    case DIM_1D_OPTION:
+    case DIM_2D_OPTION:
+    case DIM_3D_OPTION:
+    case DIM_4D_OPTION:
+    case DIM_5D_OPTION:
+      dim_option = op;
+      break;
+    case GLOBAL_OPTION:
+    case CTA_OPTION:
+    case CLUSTER_OPTION:
+      space_options.push_back(op);
+      break;
+    case TMA_MBAR_COMPLETE_BYTES:
+    case BULK_GROUP_OPTION:
+      completion_option = op;
+      break;
+    case TENSOR_OPTION:
+    case TILE_OPTION:
+    case L2_CACHE_HINT_OPTION:
+    case ATOMIC_ADD:
+    case ATOMIC_MIN:
+    case ATOMIC_MAX:
+    case ATOMIC_INC:
+    case ATOMIC_DEC:
+    case ATOMIC_AND:
+    case ATOMIC_OR:
+    case ATOMIC_XOR:
+      break;
+    default:
+      break;
     }
   }
-  assert(
-      options.size() >= 5 &&
-      "TMA tensor copy must have: TENSOR_OPTION, dim, dst, src, completion.");
 
-  auto option_iter = options.begin();
-  ++option_iter; // Skip TENSOR_OPTION
-  auto dim_option = *option_iter++;
-  auto dst_option = *option_iter++;
-  auto src_option = *option_iter++;
-  auto completion_option = *option_iter++;
+  if (dim_option == 0 || space_options.size() < 2 || completion_option == 0) {
+    printf("TMA ERROR: unsupported tensor TMA option list: ");
+    for (auto op : options)
+      printf("%d ", op);
+    printf("\n");
+    pI->print_insn();
+    abort();
+  }
+
+  auto dst_option = space_options[0];
+  auto src_option = space_options[1];
+  const tma_reduction_op_t reduction_op = decode_tma_reduction_op(pI);
 
   memory_space *shared_mem = thread->m_shared_mem;
   memory_space *global_mem = thread->get_global_memory();
@@ -2609,6 +2690,11 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
   if ((dst_option == CTA_OPTION || dst_option == CLUSTER_OPTION) &&
       src_option == GLOBAL_OPTION &&
       completion_option == TMA_MBAR_COMPLETE_BYTES) {
+    if (reduction_op != tma_reduction_op_t::NONE) {
+      printf("TMA ERROR: tensor reduction is only supported for stores\n");
+      pI->print_insn();
+      abort();
+    }
     // Tensor load: shared <- global
     auto dst_addr = get_operand_u32(thread, pI->dst());
     uint64_t tensormap_addr = get_operand_u64(thread, pI->src1());
@@ -2660,6 +2746,16 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
                      pI->get_operands()[1], thread, tensormap, coords,
                      size_in_bytes);
+    if (reduction_op != tma_reduction_op_t::NONE &&
+        !tma_tensor_reduction_supported(reduction_op,
+                                        tensormap.fields.tensorDataType)) {
+      printf("TMA ERROR: tensor reduction %s does not support tensor-map "
+             "data type %u\n",
+             tma_reduction_op_name(reduction_op),
+             tensormap.fields.tensorDataType);
+      pI->print_insn();
+      abort();
+    }
 
     GPPRINTF_INST_EXEC(
         TMA, "TMA tensor store Extracted coordinates: [%d, %d, %d, %d, %d]\n",
@@ -2684,12 +2780,17 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
 
     do_tma_transfer(tensormap, coords, shared_mem, global_mem, src_addr, thread,
-                    pI, false);
+                    pI, false, reduction_op);
 
     uint64_t base_dst_addr = tensormap.calculate_src_addr(coords);
     GPPRINTF_INST_EXEC(TMA,
-                       "Functional Sim: TMA tensor store dst=0x%llx, src=0x%x, "
-                       "size=%u, tensormap=0x%llx\n",
+                       "Functional Sim: TMA tensor store%s%s dst=0x%llx, "
+                       "src=0x%x, size=%u, tensormap=0x%llx\n",
+                       reduction_op == tma_reduction_op_t::NONE ? ""
+                                                                : " reduce.",
+                       reduction_op == tma_reduction_op_t::NONE
+                           ? ""
+                           : tma_reduction_op_name(reduction_op),
                        (unsigned long long)base_dst_addr, src_addr,
                        size_in_bytes, (unsigned long long)tensormap_addr);
 
