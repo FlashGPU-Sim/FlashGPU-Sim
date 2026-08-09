@@ -262,18 +262,23 @@ The planner can be inspected without building or running tests:
 CI_JOB=all CI_LIST_JOBS=1 ./tests/ci/run_ci_tests.sh
 ```
 
-Cycle-validation jobs are defined separately in `ci/perf/cases.toml`. Each
-top-level table names one simulator configuration and therefore one GitHub
-Actions job; its cases run sequentially in that job. A case provides a stable
-ID, a summary label, one or more repository-relative scripts, and its NCU cycle
-reference:
+Cycle-validation jobs are defined separately in `ci/perf/cases.toml`. Tables
+use the path `[CONFIG.job.case-id]`; each `CONFIG.job` pair becomes one GitHub
+Actions job, and its cases run sequentially. A case provides a stable ID, a
+summary label, an NCU cycle reference, and either repository-relative scripts
+or a frozen TritonTrace launcher:
 
 ```toml
-[SM120_RTX5090.cases.cuda-vector-add-2m]
+[SM120_RTX5090.tutorial.cuda-vector-add-2m]
 label = "Tutorial - CUDA Vector Add"
 scripts = ["tutorials/vectorAdd/run.sh"]
 ncu_cycles = 29642.67
 ```
+
+The current SM120 plan has three jobs: `tutorial` runs the two quick examples
+whose simulator cycles are synchronized with the top-level README; `gemm`
+replays two TMA GEMM launches; and `llama3` replays prefill QKV, prefill GQA,
+and decode output-residual launches.
 
 Inspect the performance plan without building or simulating:
 

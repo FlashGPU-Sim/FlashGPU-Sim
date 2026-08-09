@@ -9,8 +9,8 @@ checkout and apply the local patches automatically.
 
 - 20 opt-in 32Ki-token prefill cases matching the FA3 shape table:
   `H32D64/H16D128 x full/causal x B,S`.
-- 4 smoke cases matching FA3 smoke: `B=2`, `S=128`,
-  `H32D64/H16D128 x full/causal`.
+- 4 smoke cases matching FA3 smoke: `H32D64` full/causal at `B=2, S=128`,
+  `H1D128` full at `B=1, S=256`, and `H16D128` causal at `B=2, S=128`.
 - 4 small cases matching FA3 small: `B=32`, `S=256`,
   `H32D64/H16D128 x full/causal`.
 - 4 medium cases matching FA3 medium: `B=16`, `S=512`,
@@ -25,6 +25,11 @@ Each size profile is compiled as split binaries by `D x full/causal`, so each
 translation unit only instantiates one FA2 kernel family. The SM90 and SM120
 architecture manifests expose the same profiles through `sm90/fa2` and
 `sm120/fa2`; each build uses its manifest's NVCC target.
+
+The smoke profile initializes deterministic inputs and compares every output
+and LSE value with a CPU attention reference. Its `H1D128FullB1S256` case also
+exercises a multi-tile forward launch. This numerically checked profile is the
+FA2 coverage selected by PR CI.
 
 ## Run
 

@@ -1,14 +1,14 @@
-# FA3 Fixed Forward Case
+# FA3 Forward and Backward Cases
 
-This directory contains a standalone FlashAttention-3 Hopper forward test case
-for GPGPU-Sim bring-up.
+This directory contains standalone FlashAttention-3 Hopper forward and
+backward tests for GPGPU-Sim bring-up.
 
 The test wrapper is local, while FA3 kernel headers come from the shared
 checkout under `tests/third_party/flash-attention/`. FA3 builds prepare the
 pinned checkout and apply the local patches automatically. CUTLASS/CuTe is
 provided by that checkout's nested `csrc/cutlass` submodule.
 
-## Case
+## Fixed Forward Case
 
 - `B = 9`
 - `seqlen_q = 64`
@@ -19,6 +19,15 @@ provided by that checkout's nested `csrc/cutlass` submodule.
 - `dtype = fp16`
 - `causal = false`
 - `cluster_dims = (1, 1, 1)`
+
+## CI Correctness Coverage
+
+The smoke profile contains four shapes spanning head dimensions 64 and 128,
+causal and noncausal attention, and `S=128` and `S=256`. PR CI runs both the
+forward and backward variants. Deterministic inputs are checked elementwise
+against a CPU attention reference: forward validates output and LSE, while
+backward validates dQ, dK, and dV. The `S=256` cases exercise multi-tile
+launches. CI also runs the fixed forward case above and the PackGQA smoke case.
 
 ## Files
 
