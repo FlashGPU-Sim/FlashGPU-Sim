@@ -15,6 +15,8 @@ FA2_CONCURRENCY_MODES = only_cp_async only_cp_async_bhhalf qk_softmax_pv_only qk
 # A workload recipe is instantiated only for architectures whose TOML manifest
 # lists the FA2 source. The compiler target always comes from that manifest.
 FA2_ARCHITECTURES := $(foreach arch,$(ARCHITECTURES),$(if $(filter fa2,$(ARCH_TEST_GROUPS_$(arch))),$(arch)))
+$(foreach arch,$(FA2_ARCHITECTURES),\
+  $(eval WORKLOAD_MANAGED_TEST_GROUPS_$(arch) += fa2))
 FA2_NVCCFLAGS = $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_$(FA2_TARGET_ARCH))
 
 define FA2_STANDARD_OBJECTS_FOR
@@ -109,6 +111,8 @@ $(foreach arch,$(FA2_ARCHITECTURES), \
   $(eval $(call REGISTER_FA2_ALL_MODE,$(arch),breakdown,BREAKDOWN)) \
   $(eval $(call REGISTER_FA2_ALL_MODE,$(arch),scaling,SCALING)) \
   $(eval $(call REGISTER_FA2_ALL_MODE,$(arch),concurrency,CONCURRENCY)))
+
+BINARY_GROUPS += $(FA2_BINARY_GROUPS)
 
 FA2_ALL_OBJECTS := $(foreach arch,$(FA2_ARCHITECTURES),$(FA2_OBJECTS_$(arch)))
 $(foreach arch,$(FA2_ARCHITECTURES),$(eval $(FA2_OBJECTS_$(arch)): FA2_TARGET_ARCH := $(arch)))

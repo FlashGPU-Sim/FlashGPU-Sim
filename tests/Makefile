@@ -9,10 +9,6 @@ NVCC = nvcc
 CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -g -O2
 BASE_NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu
 SM90_NVCCFLAGS = $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_sm90)
-WGMMA_PTX_NVCCFLAGS = \
-    -gencode arch=$(ARCH_COMPUTE_TARGET_sm90),code=$(ARCH_COMPUTE_TARGET_sm90)
-WGMMA_EXTRA_NVCCFLAGS = \
-    -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED $(WGMMA_PTX_NVCCFLAGS)
 TEST_GROUP_EXTRA_NVCCFLAGS =
 
 CUDA_ENV_PATH := $(if $(CUDA_HOME),$(CUDA_HOME),$(CUDA_PATH))
@@ -76,13 +72,16 @@ include $(ARCH_MANIFEST_MK)
 $(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(SM90_OBJ_DIR):
 	mkdir -p $@
 
+# Workload fragments declare custom groups and runner metadata before the
+# generic GoogleTest build graph is registered.
 include make/gtest.mk
-include make/build.mk
 include make/workloads/fa.mk
 include make/workloads/fa2.mk
 include make/workloads/fa3.mk
 include make/workloads/microbench.mk
 include make/workloads/trace.mk
+include make/workloads/unit.mk
+include make/build.mk
 include make/runner.mk
 
 .PHONY: clean clean-all debug

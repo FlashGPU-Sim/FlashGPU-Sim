@@ -1,4 +1,4 @@
-# GoogleTest setup and host-side support objects.
+# GoogleTest checkout and library build rules.
 
 GTEST_MK := $(lastword $(MAKEFILE_LIST))
 

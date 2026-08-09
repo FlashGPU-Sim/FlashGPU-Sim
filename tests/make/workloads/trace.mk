@@ -1,6 +1,8 @@
 # Trace test runner metadata. The existing local Makefile remains responsible
 # for generating and executing trace binaries.
 
+WORKLOAD_MANAGED_TEST_GROUPS_sm120 += trace
+
 TEST_GROUP_PROFILES_sm120_trace := gpt2
 TEST_GROUP_BUILD_TARGET_sm120_trace_gpt2 := trace-sm120-gpt2
 TEST_GROUP_BINARY_GROUP_sm120_trace_gpt2 := none

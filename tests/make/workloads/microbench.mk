@@ -1,6 +1,8 @@
 # Architecture- and mechanism-scoped microbenchmarks.
 
 MICROBENCH_MK := $(lastword $(MAKEFILE_LIST))
+WORKLOAD_MANAGED_TEST_GROUPS_sm90 += microbench
+WORKLOAD_MANAGED_TEST_GROUPS_sm120 += microbench
 
 # Microbenchmark profiles retain their existing local source/build layouts.
 TEST_GROUP_PROFILES_sm90_microbench := cp-async mma tma wgmma
@@ -48,6 +50,13 @@ MICROBENCH_SM120_GTEST_OBJECTS = $(MICROBENCH_SM120_GTEST_SOURCES:$(TEST_SRC_DIR
 MICROBENCH_SM90_GTEST_OBJECTS = $(MICROBENCH_SM90_GTEST_SOURCES:$(TEST_SRC_DIR)/microbench/%.cc=$(OBJ_DIR)/sm90/microbench/%.cu.o)
 MICROBENCH_SM120_ARCH_TAG = $(subst _,,$(ARCH_NVCC_TARGET_sm120))
 MICROBENCH_SM90_ARCH_TAG = $(subst _,,$(ARCH_NVCC_TARGET_sm90))
+
+BINARY_GROUPS += \
+	microbench-sm120-mbarrier microbench-sm120-mma \
+	microbench-sm90-wgmma
+BINARY_GROUP_BINARIES_microbench-sm120-mbarrier = $(MICROBENCH_SM120_MBAR_TARGETS)
+BINARY_GROUP_BINARIES_microbench-sm120-mma = $(MICROBENCH_SM120_MMA_TARGETS)
+BINARY_GROUP_BINARIES_microbench-sm90-wgmma = $(MICROBENCH_SM90_WGMMA_TARGETS)
 
 .SECONDARY: $(MICROBENCH_SM120_GTEST_OBJECTS) $(MICROBENCH_SM90_GTEST_OBJECTS)
 
@@ -100,8 +109,7 @@ $(OBJ_DIR)/sm90/microbench/wgmma/%.cu.o: \
 $(TEST_SRC_DIR)/microbench/wgmma/%.cc $(TEST_HEADERS) \
 $(TOP_MAKEFILE) $(MICROBENCH_MK) arch/sm90.toml
 	@mkdir -p $(dir $@)
-	$(NVCC) $(SM90_NVCCFLAGS) $(WGMMA_EXTRA_NVCCFLAGS) \
-		$(INCLUDES) $(GPGPUSIM_FLAGS) \
+	$(NVCC) $(SM90_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) \
 		-c $< -o $@
 
 $(BIN_DIR)/sm120/microbench/%_bench: \
