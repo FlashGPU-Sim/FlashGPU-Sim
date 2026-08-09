@@ -10,6 +10,8 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -34,6 +36,7 @@ README_FILE = REPO_ROOT / "README.md"
 
 CONFIG_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 CASE_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+LAUNCHER_RE = re.compile(r"^[_A-Za-z0-9]+_launch[1-9][0-9]*$")
 SIM_CYCLES_RE = re.compile(r"^gpu_tot_sim_cycle\s*=\s*([0-9]+)\s*$", re.M)
 README_HEADER = (
     "Config",
@@ -54,12 +57,16 @@ class PerfCase:
     id: str
     label: str
     scripts: tuple[str, ...]
+    launcher: str | None
     ncu_cycles: float
+    readme: bool
 
 
 @dataclass(frozen=True)
 class PerfJob:
+    id: str
     config: str
+    label: str
     cases: tuple[PerfCase, ...]
 
 
@@ -114,6 +121,56 @@ def _script_path(
     return path.as_posix()
 
 
+def _launcher_path(
+    value: Any,
+    label: str,
+    manifest_path: Path,
+    repo_root: Path,
+    config: str,
+) -> str:
+    if not isinstance(value, str):
+        raise PerfError(f"{manifest_path}: {label} must be a string")
+    path = PurePosixPath(value)
+    if not value or path.is_absolute() or ".." in path.parts:
+        raise PerfError(
+            f"{manifest_path}: {label} must be a repository-relative path"
+        )
+    if not LAUNCHER_RE.fullmatch(path.name):
+        raise PerfError(
+            f"{manifest_path}: {label} must end with a generated launcher name"
+        )
+
+    root = repo_root.resolve()
+    resolved = root.joinpath(*path.parts).resolve()
+    fixture_root = (repo_root / "tests" / "ci" / "perf" / "traces" / config).resolve()
+    try:
+        resolved.relative_to(fixture_root)
+    except ValueError as error:
+        raise PerfError(
+            f"{manifest_path}: {label} must be under "
+            f"tests/ci/perf/traces/{config}"
+        ) from error
+
+    required_suffixes = (
+        "_Makefile",
+        "_harness.cu",
+        "_kernel.cubin",
+        "_kernel.ptx",
+        "_kernel.ptxinfo",
+    )
+    missing = [
+        suffix
+        for suffix in required_suffixes
+        if not resolved.with_name(resolved.name + suffix).is_file()
+    ]
+    if missing:
+        missing_text = ", ".join(resolved.name + suffix for suffix in missing)
+        raise PerfError(
+            f"{manifest_path}: {label} replay is incomplete; missing: {missing_text}"
+        )
+    return path.as_posix()
+
+
 def load_manifest(
     path: Path = MANIFEST_FILE, repo_root: Path = REPO_ROOT
 ) -> tuple[PerfJob, ...]:
@@ -127,21 +184,14 @@ def load_manifest(
         raise PerfError(f"{path}: define at least one [<config>] table")
 
     jobs: list[PerfJob] = []
-    for config, raw_job in data.items():
+    for config, raw_config in data.items():
         if not CONFIG_RE.fullmatch(config):
             raise PerfError(
                 f"{path}: config key must use uppercase letters, digits, and "
                 f"underscores: {config}"
             )
-        if not isinstance(raw_job, dict):
+        if not isinstance(raw_config, dict) or not raw_config:
             raise PerfError(f"{path}: [{config}] must be a table")
-        _exact_keys(
-            raw_job,
-            {"cases"},
-            {"cases"},
-            f"[{config}]",
-            path,
-        )
 
         config_file = repo_root / "configs" / config / "gpgpusim.config"
         if not config_file.is_file():
@@ -149,91 +199,146 @@ def load_manifest(
                 f"{path}: [{config}] has no simulator configuration at "
                 f"{config_file}"
             )
-        raw_cases = raw_job["cases"]
-        if not isinstance(raw_cases, dict) or not raw_cases:
-            raise PerfError(f"{path}: [{config}.cases] must define at least one case")
-
-        cases: list[PerfCase] = []
+        case_ids: set[str] = set()
         labels: set[str] = set()
-        for case_id, raw_case in raw_cases.items():
-            case_label = f"[{config}.cases.{case_id}]"
-            if not CASE_RE.fullmatch(case_id):
+        for job_id, raw_cases in raw_config.items():
+            job_path = f"[{config}.{job_id}]"
+            if not CASE_RE.fullmatch(job_id):
                 raise PerfError(
-                    f"{path}: case key must use lowercase kebab-case: {case_id}"
+                    f"{path}: job key must use lowercase kebab-case: {job_id}"
                 )
-            if not isinstance(raw_case, dict):
-                raise PerfError(f"{path}: {case_label} must be a table")
-            _exact_keys(
-                raw_case,
-                {"label", "scripts", "ncu_cycles"},
-                {"label", "scripts", "ncu_cycles"},
-                case_label,
-                path,
-            )
-            label = _nonempty_string(raw_case["label"], f"{case_label}.label", path)
-            if label in labels:
-                raise PerfError(
-                    f"{path}: [{config}] contains duplicate case label: {label}"
-                )
-            labels.add(label)
+            if not isinstance(raw_cases, dict) or not raw_cases:
+                raise PerfError(f"{path}: {job_path} must define at least one case")
 
-            raw_scripts = raw_case["scripts"]
-            if not isinstance(raw_scripts, list) or not raw_scripts:
-                raise PerfError(
-                    f"{path}: {case_label}.scripts must be a non-empty array"
-                )
-            scripts = tuple(
-                _script_path(
-                    script,
-                    f"{case_label}.scripts[{index}]",
+            cases: list[PerfCase] = []
+            for case_id, raw_case in raw_cases.items():
+                case_path = f"[{config}.{job_id}.{case_id}]"
+                if not CASE_RE.fullmatch(case_id):
+                    raise PerfError(
+                        f"{path}: case key must use lowercase kebab-case: {case_id}"
+                    )
+                if case_id in case_ids:
+                    raise PerfError(
+                        f"{path}: [{config}] contains duplicate case key: {case_id}"
+                    )
+                case_ids.add(case_id)
+                if not isinstance(raw_case, dict):
+                    raise PerfError(f"{path}: {case_path} must be a table")
+                _exact_keys(
+                    raw_case,
+                    {"label", "scripts", "launcher", "ncu_cycles", "readme"},
+                    {"label", "ncu_cycles"},
+                    case_path,
                     path,
-                    repo_root,
                 )
-                for index, script in enumerate(raw_scripts)
-            )
-            if len(scripts) != len(set(scripts)):
-                raise PerfError(f"{path}: {case_label}.scripts contains duplicates")
+                label = _nonempty_string(
+                    raw_case["label"], f"{case_path}.label", path
+                )
+                if label in labels:
+                    raise PerfError(
+                        f"{path}: [{config}] contains duplicate case label: {label}"
+                    )
+                labels.add(label)
 
-            raw_cycles = raw_case["ncu_cycles"]
-            if (
-                isinstance(raw_cycles, bool)
-                or not isinstance(raw_cycles, (int, float))
-                or not math.isfinite(float(raw_cycles))
-                or raw_cycles <= 0
-            ):
-                raise PerfError(
-                    f"{path}: {case_label}.ncu_cycles must be a finite positive number"
+                execution_keys = {"scripts", "launcher"} & set(raw_case)
+                if len(execution_keys) != 1:
+                    raise PerfError(
+                        f"{path}: {case_path} must define exactly one of "
+                        "scripts or launcher"
+                    )
+
+                scripts: tuple[str, ...] = ()
+                launcher: str | None = None
+                if "scripts" in raw_case:
+                    raw_scripts = raw_case["scripts"]
+                    if not isinstance(raw_scripts, list) or not raw_scripts:
+                        raise PerfError(
+                            f"{path}: {case_path}.scripts must be a non-empty array"
+                        )
+                    scripts = tuple(
+                        _script_path(
+                            script,
+                            f"{case_path}.scripts[{index}]",
+                            path,
+                            repo_root,
+                        )
+                        for index, script in enumerate(raw_scripts)
+                    )
+                    if len(scripts) != len(set(scripts)):
+                        raise PerfError(
+                            f"{path}: {case_path}.scripts contains duplicates"
+                        )
+                else:
+                    launcher = _launcher_path(
+                        raw_case["launcher"],
+                        f"{case_path}.launcher",
+                        path,
+                        repo_root,
+                        config,
+                    )
+
+                raw_cycles = raw_case["ncu_cycles"]
+                if (
+                    isinstance(raw_cycles, bool)
+                    or not isinstance(raw_cycles, (int, float))
+                    or not math.isfinite(float(raw_cycles))
+                    or raw_cycles <= 0
+                ):
+                    raise PerfError(
+                        f"{path}: {case_path}.ncu_cycles must be a finite "
+                        "positive number"
+                    )
+
+                readme = raw_case.get("readme", False)
+                if not isinstance(readme, bool):
+                    raise PerfError(f"{path}: {case_path}.readme must be a boolean")
+                cases.append(
+                    PerfCase(
+                        id=case_id,
+                        label=label,
+                        scripts=scripts,
+                        launcher=launcher,
+                        ncu_cycles=float(raw_cycles),
+                        readme=readme,
+                    )
                 )
-            cases.append(
-                PerfCase(
-                    id=case_id,
-                    label=label,
-                    scripts=scripts,
-                    ncu_cycles=float(raw_cycles),
+            architecture = config.split("_", 1)[0].lower()
+            jobs.append(
+                PerfJob(
+                    id=job_id,
+                    config=config,
+                    label=f"{architecture}({job_id})",
+                    cases=tuple(cases),
                 )
             )
-        jobs.append(PerfJob(config=config, cases=tuple(cases)))
 
     return tuple(jobs)
 
 
 def matrix_json(jobs: tuple[PerfJob, ...]) -> str:
     return json.dumps(
-        {"config": [job.config for job in jobs]},
+        {
+            "include": [
+                {"config": job.config, "job": job.id, "label": job.label}
+                for job in jobs
+            ]
+        },
         separators=(",", ":"),
     )
 
 
-def select_job(jobs: tuple[PerfJob, ...], config: str) -> PerfJob:
+def select_job(jobs: tuple[PerfJob, ...], config: str, job_id: str) -> PerfJob:
     for job in jobs:
-        if job.config == config:
+        if job.config == config and job.id == job_id:
             return job
-    available = " ".join(job.config for job in jobs)
-    raise PerfError(f"unknown performance config '{config}'; available: {available}")
+    available = " ".join(f"{job.config}/{job.id}" for job in jobs)
+    raise PerfError(
+        f"unknown performance job '{config}/{job_id}'; available: {available}"
+    )
 
 
-def _result_file(log_root: Path, config: str) -> Path:
-    return log_root / "results" / f"{config}.json"
+def _result_file(log_root: Path, job: PerfJob) -> Path:
+    return log_root / "results" / f"{job.config}-{job.id}.json"
 
 
 def _initial_results(job: PerfJob, log_root: Path) -> dict[str, Any]:
@@ -245,6 +350,7 @@ def _initial_results(job: PerfJob, log_root: Path) -> dict[str, Any]:
 
     return {
         "config": job.config,
+        "job": job.id,
         "cases": [
             {
                 "id": case.id,
@@ -252,7 +358,9 @@ def _initial_results(job: PerfJob, log_root: Path) -> dict[str, Any]:
                 "sim_cycles": None,
                 "exit_code": None,
                 "seconds": 0.0,
-                "log": display_path(log_root / job.config / f"{case.id}.log"),
+                "log": display_path(
+                    log_root / job.config / job.id / f"{case.id}.log"
+                ),
             }
             for case in job.cases
         ],
@@ -269,23 +377,25 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def initialize_results(job: PerfJob, log_root: Path = LOG_ROOT) -> Path:
-    path = _result_file(log_root, job.config)
+    path = _result_file(log_root, job)
     _write_json(path, _initial_results(job, log_root))
     return path
 
 
-def _stream_script(
-    script: str, repo_root: Path, environment: dict[str, str], log_file: Any
+def _stream_command(
+    command: Sequence[str],
+    cwd: Path,
+    environment: dict[str, str],
+    log_file: Any,
 ) -> int:
-    command = ["bash", script]
-    banner = f"\n$ {' '.join(command)}\n"
+    banner = f"\n$ {shlex.join(command)}\n"
     print(banner, end="", flush=True)
     log_file.write(banner)
     log_file.flush()
     try:
         process = subprocess.Popen(
             command,
-            cwd=repo_root,
+            cwd=cwd,
             env=environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -295,7 +405,7 @@ def _stream_script(
             bufsize=1,
         )
     except OSError as error:
-        message = f"Unable to start {script}: {error}\n"
+        message = f"Unable to start {command[0]}: {error}\n"
         print(message, end="", flush=True)
         log_file.write(message)
         return 127
@@ -308,30 +418,102 @@ def _stream_script(
     return process.wait()
 
 
+def _run_replay(
+    case: PerfCase,
+    config: str,
+    job_id: str,
+    repo_root: Path,
+    log_root: Path,
+    environment: dict[str, str],
+    log_file: Any,
+) -> int:
+    assert case.launcher is not None
+    if environment.get("GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN") != "1":
+        message = "FlashGPU-Sim environment is not active for replay\n"
+        print(message, end="", flush=True)
+        log_file.write(message)
+        return 2
+
+    launcher_path = repo_root.joinpath(*PurePosixPath(case.launcher).parts)
+    launcher_name = launcher_path.name
+    work_root = (log_root / "work").resolve()
+    work_dir = work_root / config / job_id / case.id
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    shutil.copytree(launcher_path.parent, work_dir)
+    shutil.copytree(
+        repo_root / "configs" / config,
+        work_dir,
+        dirs_exist_ok=True,
+    )
+
+    exit_code = _stream_command(
+        [
+            "make",
+            "--no-print-directory",
+            "-C",
+            str(work_dir),
+            "-f",
+            f"{launcher_name}_Makefile",
+        ],
+        repo_root,
+        environment,
+        log_file,
+    )
+    if exit_code != 0:
+        return exit_code
+    return _stream_command(
+        [f"./{launcher_name}"],
+        work_dir,
+        environment,
+        log_file,
+    )
+
+
 def run_job(
     job: PerfJob,
     repo_root: Path = REPO_ROOT,
     log_root: Path = LOG_ROOT,
 ) -> int:
     payload = _initial_results(job, log_root)
-    result_path = _result_file(log_root, job.config)
+    result_path = _result_file(log_root, job)
     _write_json(result_path, payload)
     failed = False
 
     environment = os.environ.copy()
     environment["PERF_SIM_CONFIG"] = job.config
+    environment["PERF_JOB"] = job.id
 
     for case, result in zip(job.cases, payload["cases"]):
-        log_path = log_root / job.config / f"{case.id}.log"
+        log_path = log_root / job.config / job.id / f"{case.id}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        print(f"Running performance case: {job.config}/{case.id}", flush=True)
+        print(
+            f"Running performance case: {job.config}/{job.id}/{case.id}",
+            flush=True,
+        )
         started = time.monotonic()
         exit_code = 0
         with log_path.open("w", encoding="utf-8") as log_file:
-            for script in case.scripts:
-                exit_code = _stream_script(script, repo_root, environment, log_file)
-                if exit_code != 0:
-                    break
+            if case.launcher is not None:
+                exit_code = _run_replay(
+                    case,
+                    job.config,
+                    job.id,
+                    repo_root,
+                    log_root,
+                    environment,
+                    log_file,
+                )
+            else:
+                for script in case.scripts:
+                    exit_code = _stream_command(
+                        ["bash", script],
+                        repo_root,
+                        environment,
+                        log_file,
+                    )
+                    if exit_code != 0:
+                        break
 
         elapsed = time.monotonic() - started
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
@@ -355,7 +537,8 @@ def run_job(
         )
         _write_json(result_path, payload)
         print(
-            f"Completed performance case: {job.config}/{case.id} status={status}",
+            f"Completed performance case: "
+            f"{job.config}/{job.id}/{case.id} status={status}",
             flush=True,
         )
 
@@ -420,6 +603,8 @@ def _readme_errors(
     expected: dict[tuple[str, str], tuple[PerfCase, dict[str, Any] | None]] = {}
     for job in jobs:
         for case in job.cases:
+            if not case.readme:
+                continue
             expected[(job.config, case.label)] = (
                 case,
                 results.get((job.config, case.id)),
@@ -496,42 +681,44 @@ def render_report(
     ]
     counts = {"compared": 0, "failed": 0, "missing": 0}
 
-    for job in jobs:
+    configs = tuple(dict.fromkeys(job.config for job in jobs))
+    for config in configs:
         lines.extend(
             [
-                f"### `{job.config}`",
+                f"### `{config}`",
                 "",
                 "| Result | Case | NCU cycles | Sim cycles | Δ cycles | Difference |",
                 "|---|---|---:|---:|---:|---:|",
             ]
         )
-        for case in job.cases:
-            result = results.get((job.config, case.id))
-            status = result.get("status") if result else "missing-result"
-            sim_cycles = result.get("sim_cycles") if result else None
-            if status == "compared" and isinstance(sim_cycles, int):
-                result_text = "Compared"
-                delta = sim_cycles - case.ncu_cycles
-                difference = delta / case.ncu_cycles * 100.0
-                sim_text = f"{sim_cycles:,}"
-                delta_text = f"{delta:+,.2f}"
-                difference_text = f"{difference:+.2f}%"
-                counts["compared"] += 1
-            else:
-                result_text = {
-                    "failed": "Simulation failed",
-                    "missing-cycles": "Missing cycles",
-                    "not-run": "Not run",
-                }.get(str(status), "Missing result")
-                sim_text = "—"
-                delta_text = "—"
-                difference_text = "—"
-                counts["failed" if status == "failed" else "missing"] += 1
-            lines.append(
-                f"| {result_text} | {_table_cell(case.label)} | "
-                f"{case.ncu_cycles:,.2f} | {sim_text} | {delta_text} | "
-                f"{difference_text} |"
-            )
+        for job in (job for job in jobs if job.config == config):
+            for case in job.cases:
+                result = results.get((job.config, case.id))
+                status = result.get("status") if result else "missing-result"
+                sim_cycles = result.get("sim_cycles") if result else None
+                if status == "compared" and isinstance(sim_cycles, int):
+                    result_text = "Compared"
+                    delta = sim_cycles - case.ncu_cycles
+                    difference = delta / case.ncu_cycles * 100.0
+                    sim_text = f"{sim_cycles:,}"
+                    delta_text = f"{delta:+,.2f}"
+                    difference_text = f"{difference:+.2f}%"
+                    counts["compared"] += 1
+                else:
+                    result_text = {
+                        "failed": "Simulation failed",
+                        "missing-cycles": "Missing cycles",
+                        "not-run": "Not run",
+                    }.get(str(status), "Missing result")
+                    sim_text = "—"
+                    delta_text = "—"
+                    difference_text = "—"
+                    counts["failed" if status == "failed" else "missing"] += 1
+                lines.append(
+                    f"| {result_text} | {_table_cell(case.label)} | "
+                    f"{case.ncu_cycles:,.2f} | {sim_text} | {delta_text} | "
+                    f"{difference_text} |"
+                )
         lines.append("")
 
     readme_errors = (
@@ -582,6 +769,7 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     for command in ("init", "run"):
         child = subparsers.add_parser(command)
         child.add_argument("--config", required=True)
+        child.add_argument("--job", required=True)
         child.add_argument("--log-root", type=Path, default=LOG_ROOT)
 
     report = subparsers.add_parser("report", help="render the combined job summary")
@@ -597,14 +785,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         jobs = load_manifest(args.manifest)
         if args.command == "validate":
             for job in jobs:
-                print(f"{job.config}: {len(job.cases)} cases")
+                print(f"{job.config}/{job.id}: {len(job.cases)} cases")
         elif args.command == "matrix":
             print(matrix_json(jobs))
         elif args.command == "init":
-            path = initialize_results(select_job(jobs, args.config), args.log_root)
+            path = initialize_results(
+                select_job(jobs, args.config, args.job), args.log_root
+            )
             print(path)
         elif args.command == "run":
-            return run_job(select_job(jobs, args.config), log_root=args.log_root)
+            return run_job(
+                select_job(jobs, args.config, args.job), log_root=args.log_root
+            )
         elif args.command == "report":
             report, success = render_report(
                 jobs,

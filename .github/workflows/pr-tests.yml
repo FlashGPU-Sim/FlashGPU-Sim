@@ -38,7 +38,7 @@ jobs:
 
   func-tests:
 
-    name: func-tests(${{ matrix.job }})
+    name: ${{ matrix.label }}
 
     needs: plan
     runs-on: ubuntu-latest
@@ -102,12 +102,12 @@ jobs:
 
   perf-tests:
 
-    name: tutorial(sm120)
+    name: ${{ matrix.label }}
 
     needs: plan
     continue-on-error: true
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     permissions:
       contents: read
@@ -135,7 +135,6 @@ jobs:
 
       - name: Run cycle validation in container
         id: perf
-        timeout-minutes: 75
         run: |
           docker run --rm \
             --memory=7g \
@@ -146,14 +145,16 @@ jobs:
             -v ${{ github.workspace }}:/gpgpu-sim \
             -w /gpgpu-sim \
             "$CI_IMAGE" \
-            bash tests/ci/perf/run.sh "${{ matrix.config }}"
+            bash tests/ci/perf/run.sh \
+              "${{ matrix.config }}" \
+              "${{ matrix.job }}"
 
       - name: Upload cycle results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: perf-results-${{ matrix.config }}-${{ github.run_attempt }}
-          path: tests/logs/ci/perf/results/${{ matrix.config }}.json
+          name: perf-results-${{ matrix.config }}-${{ matrix.job }}-${{ github.run_attempt }}
+          path: tests/logs/ci/perf/results/${{ matrix.config }}-${{ matrix.job }}.json
           if-no-files-found: warn
           retention-days: 7
 
@@ -161,8 +162,8 @@ jobs:
         if: always() && steps.perf.outcome == 'failure'
         uses: actions/upload-artifact@v7
         with:
-          name: perf-logs-${{ matrix.config }}-${{ github.run_attempt }}
-          path: tests/logs/ci/perf/${{ matrix.config }}
+          name: perf-logs-${{ matrix.config }}-${{ matrix.job }}-${{ github.run_attempt }}
+          path: tests/logs/ci/perf/${{ matrix.config }}/${{ matrix.job }}
           if-no-files-found: warn
           retention-days: 7
 

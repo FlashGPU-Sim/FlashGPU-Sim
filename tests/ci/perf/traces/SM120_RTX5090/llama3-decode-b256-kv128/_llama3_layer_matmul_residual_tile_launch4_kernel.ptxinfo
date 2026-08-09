@@ -1,0 +1,5 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_llama3_layer_matmul_residual_tile' for 'sm_120a'
+ptxas info    : Function properties for _llama3_layer_matmul_residual_tile
+    8 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 129 registers, 1024 bytes smem, 944 bytes cmem[0], 0 bytes lmem
