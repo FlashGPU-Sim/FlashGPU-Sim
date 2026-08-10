@@ -261,6 +261,24 @@ void memory_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_simple_dram_model", OPT_BOOL,
                          &simple_dram_model,
                          "simple_dram_model with fixed latency and BW", "0");
+  option_parser_register(
+      opp, "-gpgpu_simple_dram_service_rate_num", OPT_UINT32,
+      &simple_dram_service_rate_num,
+      "simple DRAM service-rate numerator in DRAM atoms per partition per "
+      "DRAM tick",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_simple_dram_service_rate_den", OPT_UINT32,
+      &simple_dram_service_rate_den,
+      "simple DRAM service-rate denominator in DRAM atoms per partition per "
+      "DRAM tick",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_simple_dram_max_inflight", OPT_UINT32,
+      &simple_dram_max_inflight,
+      "maximum in-flight requests per memory partition in the simple DRAM "
+      "model (0 derives the limit from detailed DRAM queue sizes)",
+      "0");
   option_parser_register(opp, "-gpgpu_dram_scheduler", OPT_INT32,
                          &scheduler_type, "0 = fifo, 1 = FR-FCFS (defaul)",
                          "1");

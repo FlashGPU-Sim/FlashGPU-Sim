@@ -103,7 +103,7 @@ class memory_partition_unit {
   void set_done(mem_fetch *mf);
 
   void visualizer_print(gzFile visualizer_file) const;
-  void print_stat(FILE *fp) { m_dram->print_stat(fp); }
+  void print_stat(FILE *fp) const;
   void visualize() const { m_dram->visualize(); }
   void print(FILE *fp) const;
   void handle_memcpy_to_gpu(size_t dst_start_addr, unsigned subpart_id,
@@ -170,6 +170,22 @@ class memory_partition_unit {
     class mem_fetch *req;
   };
   std::list<dram_delay_t> m_dram_latency_queue;
+
+  // Fixed-latency aggregate-service state. Credits are represented in units
+  // of the configured service-rate denominator to avoid floating-point drift.
+  unsigned long long m_simple_dram_issue_credit;
+  unsigned long long m_simple_dram_return_credit;
+  unsigned long long m_simple_dram_cycles;
+  unsigned long long m_simple_dram_issue_requests;
+  unsigned long long m_simple_dram_issue_atoms;
+  unsigned long long m_simple_dram_return_requests;
+  unsigned long long m_simple_dram_return_atoms;
+  unsigned long long m_simple_dram_issue_no_request_cycles;
+  unsigned long long m_simple_dram_issue_backpressure_cycles;
+  unsigned long long m_simple_dram_return_not_ready_cycles;
+  unsigned long long m_simple_dram_return_backpressure_cycles;
+  unsigned long long m_simple_dram_queue_length_sum;
+  unsigned long long m_simple_dram_queue_length_max;
 
   class gpgpu_sim *m_gpu;
 };

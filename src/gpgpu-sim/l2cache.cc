@@ -34,6 +34,7 @@
 #include <string.h>
 #include <limits.h>
 
+#include <algorithm>
 #include <list>
 #include <set>
 
@@ -227,6 +228,19 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
       m_config(config),
       m_mem_stats(stats),
       m_arbitration_metadata(config),
+      m_simple_dram_issue_credit(0),
+      m_simple_dram_return_credit(0),
+      m_simple_dram_cycles(0),
+      m_simple_dram_issue_requests(0),
+      m_simple_dram_issue_atoms(0),
+      m_simple_dram_return_requests(0),
+      m_simple_dram_return_atoms(0),
+      m_simple_dram_issue_no_request_cycles(0),
+      m_simple_dram_issue_backpressure_cycles(0),
+      m_simple_dram_return_not_ready_cycles(0),
+      m_simple_dram_return_backpressure_cycles(0),
+      m_simple_dram_queue_length_sum(0),
+      m_simple_dram_queue_length_max(0),
       m_gpu(gpu) {
   m_dram = new dram_t(m_id, m_config, stats, this, gpu);
 
@@ -281,6 +295,12 @@ memory_partition_unit::arbitration_metadata::arbitration_metadata(
     m_shared_credit_limit =
         0;  // no limit if either of the queue has no limit in size
   }
+  if (config->simple_dram_model && config->simple_dram_max_inflight != 0) {
+    // One private credit is reserved for each subpartition. The remainder is
+    // shared, keeping the configured value equal to the total in-flight cap.
+    m_shared_credit_limit = config->simple_dram_max_inflight -
+                            config->m_n_sub_partition_per_memory_channel;
+  }
   assert(m_shared_credit_limit >= 0);
 }
 
@@ -334,7 +354,7 @@ void memory_partition_unit::arbitration_metadata::print(FILE *fp) const {
 }
 
 bool memory_partition_unit::busy() const {
-  bool busy = false;
+  bool busy = !m_dram_latency_queue.empty();
   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
        p++) {
     if (m_sub_partition[p]->busy()) {
@@ -380,56 +400,112 @@ int memory_partition_unit::global_sub_partition_id_to_local_id(
 }
 
 void memory_partition_unit::simple_dram_model_cycle() {
-  // pop completed memory request from dram and push it to dram-to-L2 queue
-  // of the original sub partition
-  if (!m_dram_latency_queue.empty() &&
-      ((m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) >=
-       m_dram_latency_queue.front().ready_cycle)) {
-    mem_fetch *mf_return = m_dram_latency_queue.front().req;
-    if (mf_return->get_access_type() != L1_WRBK_ACC &&
-        mf_return->get_access_type() != L2_WRBK_ACC) {
-      mf_return->set_reply();
+  const unsigned long long now =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  const unsigned long long numerator = m_config->simple_dram_service_rate_num;
+  const unsigned long long denominator = m_config->simple_dram_service_rate_den;
+  const unsigned long long max_request_atoms =
+      (MAX_MEMORY_ACCESS_SIZE + m_config->dram_atom_size - 1) /
+      m_config->dram_atom_size;
+  const unsigned long long max_service_atoms =
+      (numerator + denominator - 1) / denominator;
+  const unsigned long long max_credit_atoms =
+      std::max(max_service_atoms, max_request_atoms);
+  const unsigned long long whole_credit_cap = max_credit_atoms * denominator;
+  const unsigned long long credit_cap = whole_credit_cap + denominator - 1;
 
-      unsigned dest_global_spid = mf_return->get_sub_partition_id();
-      int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
+  m_simple_dram_cycles++;
+  m_simple_dram_issue_credit += numerator;
+  m_simple_dram_return_credit += numerator;
+  if (m_simple_dram_issue_credit > credit_cap) {
+    m_simple_dram_issue_credit =
+        whole_credit_cap + m_simple_dram_issue_credit % denominator;
+  }
+  if (m_simple_dram_return_credit > credit_cap) {
+    m_simple_dram_return_credit =
+        whole_credit_cap + m_simple_dram_return_credit % denominator;
+  }
+
+  // Complete as many fixed-latency requests as the return service permits.
+  bool saw_ready_return = false;
+  bool return_blocked = false;
+  while (!m_dram_latency_queue.empty() &&
+         now >= m_dram_latency_queue.front().ready_cycle) {
+    mem_fetch *mf_return = m_dram_latency_queue.front().req;
+    const unsigned long long atoms = std::max(
+        1ull, (static_cast<unsigned long long>(mf_return->get_data_size()) +
+               m_config->dram_atom_size - 1) /
+                  m_config->dram_atom_size);
+    const unsigned long long cost = atoms * denominator;
+    saw_ready_return = true;
+    if (m_simple_dram_return_credit < cost) break;
+
+    const bool is_writeback = mf_return->get_access_type() == L1_WRBK_ACC ||
+                              mf_return->get_access_type() == L2_WRBK_ACC;
+    if (!is_writeback) {
+      const unsigned dest_global_spid = mf_return->get_sub_partition_id();
+      const int dest_spid =
+          global_sub_partition_id_to_local_id(dest_global_spid);
       assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
-      if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
-        if (mf_return->get_access_type() == L1_WRBK_ACC) {
-          m_sub_partition[dest_spid]->set_done(mf_return);
-          delete mf_return;
-        } else {
-          m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
-          mf_return->set_status(
-              IN_PARTITION_DRAM_TO_L2_QUEUE,
-              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-          m_arbitration_metadata.return_credit(dest_spid);
-          MEMPART_GPPRINTF(
-              "mem_fetch request %p return from dram to sub partition %d\n",
-              mf_return, dest_spid);
-        }
-        m_dram_latency_queue.pop_front();
+      if (m_sub_partition[dest_spid]->dram_L2_queue_full()) {
+        return_blocked = true;
+        break;
       }
 
+      mf_return->set_reply();
+      m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
+      mf_return->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE, now);
+      m_arbitration_metadata.return_credit(dest_spid);
+      MEMPART_GPPRINTF(
+          "mem_fetch request %p return from dram to sub partition %d\n",
+          mf_return, dest_spid);
     } else {
       this->set_done(mf_return);
       delete mf_return;
-      m_dram_latency_queue.pop_front();
     }
+
+    m_dram_latency_queue.pop_front();
+    m_simple_dram_return_credit -= cost;
+    m_simple_dram_return_requests++;
+    m_simple_dram_return_atoms += atoms;
+  }
+  if (return_blocked) {
+    m_simple_dram_return_backpressure_cycles++;
+  } else if (!saw_ready_return) {
+    m_simple_dram_return_not_ready_cycles++;
+    // Do not accumulate an unbounded burst while the fixed-latency pipeline is
+    // empty. Preserve only the fractional phase of the configured rate.
+    m_simple_dram_return_credit %= denominator;
   }
 
-  // mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
-  // if( !m_dram->full(mf->is_write()) ) {
-  // L2->DRAM queue to DRAM latency queue
-  // Arbitrate among multiple L2 subpartitions
-  int last_issued_partition = m_arbitration_metadata.last_borrower();
-  for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
-       p++) {
-    int spid = (p + last_issued_partition + 1) %
-               m_config->m_n_sub_partition_per_memory_channel;
-    if (!m_sub_partition[spid]->L2_dram_queue_empty() &&
-        can_issue_to_dram(spid)) {
+  // Admit requests from L2 in round-robin order until the aggregate service
+  // credit is exhausted. Each request consumes ceil(bytes / atom_size) atoms.
+  bool saw_issue_request = false;
+  bool issue_backpressured = false;
+  while (true) {
+    bool issued = false;
+    int last_issued_partition = m_arbitration_metadata.last_borrower();
+    for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
+         p++) {
+      const int spid = (p + last_issued_partition + 1) %
+                       m_config->m_n_sub_partition_per_memory_channel;
+      if (m_sub_partition[spid]->L2_dram_queue_empty()) continue;
+      saw_issue_request = true;
+      if (!can_issue_to_dram(spid)) {
+        issue_backpressured = true;
+        continue;
+      }
+
       mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
-      if (m_dram->full(mf->is_write())) break;
+      const unsigned long long atoms =
+          std::max(1ull, (static_cast<unsigned long long>(mf->get_data_size()) +
+                          m_config->dram_atom_size - 1) /
+                             m_config->dram_atom_size);
+      const unsigned long long cost = atoms * denominator;
+      // Preserve round-robin fairness across mixed request sizes. Skipping a
+      // large request here would let a continuous stream of one-atom requests
+      // consume every new credit and starve it indefinitely.
+      if (m_simple_dram_issue_credit < cost) break;
 
       m_sub_partition[spid]->L2_dram_queue_pop();
       MEMPART_GPPRINTF(
@@ -437,16 +513,71 @@ void memory_partition_unit::simple_dram_model_cycle() {
           spid);
       dram_delay_t d;
       d.req = mf;
-      d.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
-                      m_config->dram_latency;
+      d.ready_cycle = now + m_config->dram_latency;
       m_dram_latency_queue.push_back(d);
-      mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
-                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+      mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE, now);
       m_arbitration_metadata.borrow_credit(spid);
-      break;  // the DRAM should only accept one request per cycle
+      m_mem_stats->get_stats()->memlatstat_dram_access(mf);
+      m_simple_dram_issue_credit -= cost;
+      m_simple_dram_issue_requests++;
+      m_simple_dram_issue_atoms += atoms;
+      issued = true;
+      break;
     }
+    if (!issued) break;
   }
-  //}
+  if (!saw_issue_request) {
+    m_simple_dram_issue_no_request_cycles++;
+    m_simple_dram_issue_credit %= denominator;
+  } else if (issue_backpressured) {
+    m_simple_dram_issue_backpressure_cycles++;
+  }
+
+  const unsigned long long queue_length = m_dram_latency_queue.size();
+  m_simple_dram_queue_length_sum += queue_length;
+  m_simple_dram_queue_length_max =
+      std::max(m_simple_dram_queue_length_max, queue_length);
+}
+
+void memory_partition_unit::print_stat(FILE *fp) const {
+  if (!m_config->simple_dram_model) {
+    m_dram->print_stat(fp);
+    return;
+  }
+
+  const double issue_util =
+      m_simple_dram_cycles == 0
+          ? 0.0
+          : 100.0 * m_simple_dram_issue_atoms *
+                m_config->simple_dram_service_rate_den /
+                (m_simple_dram_cycles * m_config->simple_dram_service_rate_num);
+  const double return_util =
+      m_simple_dram_cycles == 0
+          ? 0.0
+          : 100.0 * m_simple_dram_return_atoms *
+                m_config->simple_dram_service_rate_den /
+                (m_simple_dram_cycles * m_config->simple_dram_service_rate_num);
+  const double queue_avg =
+      m_simple_dram_cycles == 0
+          ? 0.0
+          : static_cast<double>(m_simple_dram_queue_length_sum) /
+                m_simple_dram_cycles;
+  fprintf(fp,
+          "simple_dram_service[%u] rate=%u/%u cycles=%llu "
+          "issue_requests=%llu issue_atoms=%llu issue_util=%.4f%% "
+          "return_requests=%llu return_atoms=%llu return_util=%.4f%% "
+          "issue_no_request_cycles=%llu issue_backpressure_cycles=%llu "
+          "return_not_ready_cycles=%llu return_backpressure_cycles=%llu "
+          "queue_avg=%.4f queue_max=%llu\n",
+          m_id, m_config->simple_dram_service_rate_num,
+          m_config->simple_dram_service_rate_den, m_simple_dram_cycles,
+          m_simple_dram_issue_requests, m_simple_dram_issue_atoms, issue_util,
+          m_simple_dram_return_requests, m_simple_dram_return_atoms,
+          return_util, m_simple_dram_issue_no_request_cycles,
+          m_simple_dram_issue_backpressure_cycles,
+          m_simple_dram_return_not_ready_cycles,
+          m_simple_dram_return_backpressure_cycles, queue_avg,
+          m_simple_dram_queue_length_max);
 }
 
 void memory_partition_unit::dram_cycle() {

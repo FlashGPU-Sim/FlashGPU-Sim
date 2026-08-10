@@ -107,3 +107,7 @@ tests/src/microbench/tma/run_*/
 tests/src/microbench/tma/gem5_pair48_*_20*/
 tests/src/microbench/tma/results/*_rerun_*.csv
 tests/build_sm120a/
+
+# Local Blackwell calibration planning
+/tests/dev/calibration-todo.md
+/tests/dev/calibration/

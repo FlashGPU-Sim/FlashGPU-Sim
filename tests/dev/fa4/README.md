@@ -84,6 +84,43 @@ jq -r '
 ' temp/fa4-b200-suite-matrix/fwd_smoke_*/*/run-manifest.json
 ```
 
+## B200 Hardware Profiling
+
+Build the upload bundle locally. Portable mode uses a Debian 11 build container
+so the AOT runners do not inherit the development host's newer glibc:
+
+```bash
+tests/dev/calibration/prepare_b200_profiling/prepare_fa4_b200_ncu_bundle.sh \
+  --output temp/fa4-b200-ncu-bundle
+```
+
+Upload the printed `.tar.gz` and its `.sha256` to an x86_64 host with a full,
+idle B200, a compatible driver, `nvidia-smi`, and `ncu` (preferably 2026.1.1).
+No Python, CUDA toolkit, compiler, or headers are required remotely. Unpack it
+and run all 32 cases serially:
+
+```bash
+sha256sum -c fa4-b200-ncu-*.tar.gz.sha256
+mkdir -p ~/fa4-b200-profile
+tar -xzf fa4-b200-ncu-*.tar.gz \
+  -C ~/fa4-b200-profile --strip-components=1
+cd ~/fa4-b200-profile
+./run_remote.sh all --device 0
+```
+
+Copy the uncompressed result `.tar` and `.sha256` paths printed by the remote
+script back to this machine, then summarize cycles and the measured base clock:
+
+```bash
+tests/dev/calibration/prepare_b200_profiling/analyze_fa4_b200_ncu.py \
+  --archive temp/fa4-b200-hardware-archive/fa4-b200-profile-*.tar \
+  --output temp/fa4-b200-hardware-archive/derived
+```
+
+The remote sweep has no timeout by default and is resumable. Each case retains
+its `.ncu-rep`, raw/session CSV, detailed text export, CUDA-event timing, output
+check, GPU snapshots, and checksums.
+
 ## Call Flow
 
 ```text

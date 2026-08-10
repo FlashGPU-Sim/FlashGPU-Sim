@@ -306,6 +306,11 @@ class memory_config {
         BL * busW * gpu_n_mem_per_ctrlr;  // burst length x bus width x # chips
                                           // per partition
 
+    assert(simple_dram_service_rate_num > 0);
+    assert(simple_dram_service_rate_den > 0);
+    assert(simple_dram_max_inflight == 0 ||
+           simple_dram_max_inflight > m_n_sub_partition_per_memory_channel);
+
     assert(m_n_sub_partition_per_memory_channel > 0);
     assert((nbk % m_n_sub_partition_per_memory_channel == 0) &&
            "Number of DRAM banks must be a perfect multiple of memory sub "
@@ -413,6 +418,13 @@ class memory_config {
   unsigned write_low_watermark;
   bool m_perf_sim_memcpy;
   bool simple_dram_model;
+  // Aggregate DRAM service capacity in dram_atom_size units per memory
+  // partition per DRAM clock tick. This only affects simple_dram_model.
+  unsigned simple_dram_service_rate_num;
+  unsigned simple_dram_service_rate_den;
+  // Optional total in-flight request cap per memory partition. Zero preserves
+  // the legacy queue-derived arbitration limit.
+  unsigned simple_dram_max_inflight;
   bool SST_mode;
   gpgpu_context *gpgpu_ctx;
 };

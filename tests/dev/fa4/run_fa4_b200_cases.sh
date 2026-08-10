@@ -70,6 +70,7 @@ COLOR_BRIGHT_RED=""
 COLOR_BRIGHT_GREEN=""
 COLOR_BRIGHT_YELLOW=""
 COLOR_BRIGHT_MAGENTA=""
+COLOR_BLUE=""
 COLOR_BRIGHT_CYAN=""
 COLOR_BRIGHT_WHITE=""
 if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
@@ -80,6 +81,7 @@ if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
   COLOR_BRIGHT_GREEN=$'\033[92m'
   COLOR_BRIGHT_YELLOW=$'\033[93m'
   COLOR_BRIGHT_MAGENTA=$'\033[95m'
+  COLOR_BLUE=$'\033[34m'
   COLOR_BRIGHT_CYAN=$'\033[96m'
   COLOR_BRIGHT_WHITE=$'\033[97m'
 fi
@@ -587,7 +589,7 @@ stage() {
       label_color="$COLOR_DIM"
       ;;
     EXPORT|ENV|CONFIG|BUILD)
-      label_color="$COLOR_BRIGHT_CYAN"
+      label_color="$COLOR_BLUE"
       ;;
     SIM)
       label_color="$COLOR_BRIGHT_MAGENTA"
