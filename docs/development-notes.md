@@ -57,26 +57,26 @@ directory). Intermediate object files use the matching hierarchy under
 
 ## Running Tests
 
-Use `test/run_tests.sh` rather than invoking generated test binaries directly.
+Use `tests/run_tests.py` rather than invoking generated test binaries directly.
 The runner installs the selected GPU configuration, builds the required
-targets, and distinguishes simulator execution from native-GPU validation.
+test groups, and distinguishes simulator execution from native-GPU validation.
 
 For example, from the repository root:
 
 ```bash
-./test/run_tests.sh setup
-./test/run_tests.sh run test --target sm120 --group integration CudaVectorAdd
+./tests/run_tests.py setup
+./tests/run_tests.py run --arch sm120 --group integration CudaVectorAdd
 ```
 
 The selection hierarchy is:
 
 ```text
-action -> suite -> target -> group -> optional mode/filter
+action -> architecture -> test group -> optional profile/mode/filter
 ```
 
-Use focused targets and filters while developing. Run the broader relevant
-group before submitting a change. See the [Test Framework Guide](../test/README.md)
-for supported suites and examples.
+Use focused test groups and filters while developing. Run the broader relevant
+test group before submitting a change. See the
+[Test Framework Guide](../tests/README.md) for supported groups and examples.
 
 Native-GPU validation must run from a clean shell in which
 `setup_environment` has not been sourced. The test guide explains how the
@@ -85,28 +85,35 @@ runner distinguishes native and simulator environments.
 ## Continuous Integration
 
 Pull requests targeting `flash` run
-[`test/ci/run_ci_tests.sh`](../test/ci/run_ci_tests.sh) in the CI container.
+[`tests/ci/run_ci_tests.sh`](../tests/ci/run_ci_tests.sh) in the CI container.
 The current gate covers:
 
-- PTX scheduler and gtest discovery regression checks;
-- SM120 unit and integration suites with `SM120_RTX5090`;
-- SM90 instruction and FA2 smoke suites with `SM90_H100`;
-- FA3 forward smoke shapes, the fixed-forward integration case, and backward
-  smoke shapes with `SM90_H100`; and
+- architecture manifest, test-group build metadata, PTX scheduler, and gtest discovery
+  regression checks;
+- SM120 unit, integration, barrier, TMA, and MMA test groups with `SM120_RTX5090`;
+- SM90 integration, barrier, WGMMA, and numerically checked FA2 forward smoke
+  tests with `SM90_H100`;
+- numerically checked FA3 forward/backward smoke shapes, the fixed-forward
+  integration case, and PackGQA smoke with `SM90_H100`; and
 - SM120 GPT-2 trace smoke tests.
 
-The workflow divides this work into three independent shards: `sm120`,
-`sm90-fa2`, and `sm90-fa3`. Each shard has a 7 GiB container memory limit and
-no additional swap allowance. Simulator builds use two jobs by default. FA2
+The workflow carries architecture and test set as independent matrix fields: SM120
+core, SM90 core, SM90 FA2, and SM90 FA3. Each job has a 7 GiB container memory
+limit and no additional swap allowance. Simulator builds use two jobs by default. FA2
 kernel compilation is serial because a single NVCC translation unit approaches
 5 GiB of resident memory; FA3 specializations also use an object-level
 serialization chain to stay within the same budget.
 
-Build and run logs are written under `test/logs/ci/logs/`, and gtest XML is
-written under `test/logs/ci/xml/`. The workflow uploads the complete
-`test/logs/ci/` tree even when a gate fails. The
+Separate, non-required SM120 performance jobs run the tutorial checks and
+frozen TritonTrace GEMM/Llama3 launchers. `cycle-validation-report` compares
+their simulator cycles with stored NCU references and checks the tutorial rows
+in the top-level README. These jobs do not feed `verify-status`.
+
+Build and run logs are written under `tests/logs/ci/logs/`, and gtest XML is
+written under `tests/logs/ci/xml/`. The workflow uploads the complete
+`tests/logs/ci/` tree even when a gate fails. The
 [PR workflow](../.github/workflows/pr-tests.yml) and CI runner are the
-authoritative sources for the current shard layout and test scope.
+authoritative sources for the current matrix layout and test scope.
 
 ## Repository Map
 
@@ -118,11 +125,11 @@ authoritative sources for the current shard layout and test scope.
   barriers, MMA/WGMMA, matrix load/store, PTX scheduling, and register
   allocation support.
 - `configs/`: GPU model configurations.
-- `test/`: unit tests, integration tests, microbenchmarks, analysis workloads,
+- `tests/`: unit tests, integration tests, microbenchmarks, analysis workloads,
   and the public test runner.
 - `tools/`: Triton kernel capture and standalone harness-generation tool and
   documentation.
-- `test/triton_trace/`: Triton examples and offline validation workloads.
+- `tests/triton_trace/`: Triton examples and offline validation workloads.
 - `docs/`: build, testing, development, and instruction documentation.
 
 ### Core Types
@@ -308,7 +315,7 @@ PTX instruction support usually crosses several layers:
    `src/gpgpu-sim/flash/` component.
 5. Add timing behavior when the instruction has pipeline, latency, resource,
    synchronization, or memory-system effects.
-6. Add focused unit or integration coverage under `test/`.
+6. Add focused unit or integration coverage under `tests/`.
 7. Update the relevant instruction or component documentation.
 
 Do not assume that similar PTX spellings share an implementation. For example,
@@ -339,7 +346,8 @@ Keep changes focused and avoid unrelated formatting or generated-file churn.
 
 ## Further Reading
 
-- Test runner and suite hierarchy: [Test Framework](../test/README.md)
+- Test runner and architecture/test-group hierarchy:
+  [Test Framework](../tests/README.md)
 - Flash extension overview:
   [Flash README](../src/gpgpu-sim/flash/README.md)
 - MMA implementation interface:
@@ -349,4 +357,4 @@ Keep changes focused and avoid unrelated formatting or generated-file churn.
 - Triton capture and replay:
   [TritonTrace](../tools/README.md)
 - Triton examples and validation:
-  [TritonTrace Examples and Validation](../test/triton_trace/README.md)
+  [TritonTrace Examples and Validation](../tests/triton_trace/README.md)

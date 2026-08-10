@@ -6,18 +6,51 @@ on:
     branches: [flash]
     types: [opened, synchronize, ready_for_review, reopened]
 
+env:
+  CI_IMAGE: ghcr.io/flashgpu-sim/flashgpu-sim-ci@sha256:c8c03b52d4e61d0a36b1fa2bd3aecced2919c66aeff45aad4a1a8b1c62188b83
+
 jobs:
-  simulation-test-shards:
+  plan:
 
-    name: simulation-tests (${{ matrix.shard }})
+    name: plan-tests
 
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      perf_matrix: ${{ steps.matrix.outputs.perf_matrix }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Read CI job manifests
+        id: matrix
+        run: |
+          matrix="$(python3 tests/ci/planner.py matrix)"
+          perf_matrix="$(python3 tests/ci/perf/perf.py matrix)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "perf_matrix=$perf_matrix" >> "$GITHUB_OUTPUT"
+
+  func-tests:
+
+    name: ${{ matrix.label }}
+
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 75
 
+    permissions:
+      contents: read
+      packages: read
+
     strategy:
       fail-fast: false
-      matrix:
-        shard: [sm120, sm90-fa2, sm90-fa3]
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - name: Checkout repository
@@ -25,18 +58,18 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build CI Docker image
-        run: |
-          docker build -f docker/Dockerfile.ci -t gpgpu-sim-ci:latest .
-
-          # Log image size for documentation accuracy
-          IMAGE_SIZE=$(docker images gpgpu-sim-ci:latest --format "{{.Size}}")
-          echo "CI Docker image size: $IMAGE_SIZE"
+      - name: Pull CI Docker image
+        run: docker pull "$CI_IMAGE"
 
       - name: Run simulation tests in container
+        id: tests
         timeout-minutes: 50
         run: |
           docker run --rm \
@@ -44,31 +77,165 @@ jobs:
             --memory-swap=7g \
             -e CI=true \
             -e GITHUB_ACTIONS=true \
-            -e CI_SHARD=${{ matrix.shard }} \
+            -e CI_JOB=${{ matrix.job }} \
             -e CI_BUILD_JOBS=2 \
             -v ${{ github.workspace }}:/gpgpu-sim \
             -w /gpgpu-sim \
-            gpgpu-sim-ci:latest \
-            bash -c "./test/ci/run_ci_tests.sh"
+            "$CI_IMAGE" \
+            bash -c "./tests/ci/run_ci_tests.sh"
 
       - name: Upload simulation test logs
-        if: always()
-        uses: actions/upload-artifact@v4
+        if: always() && steps.tests.outcome == 'failure'
+        uses: actions/upload-artifact@v7
         with:
-          name: simulation-test-results-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
-          path: test/logs/ci
+          name: logs-${{ matrix.job }}-${{ github.run_attempt }}
+          path: tests/logs/ci
           if-no-files-found: warn
 
-  simulation-tests:
+      - name: Report test failures
+        if: always() && steps.tests.outcome == 'failure'
+        env:
+          CI_JOB: ${{ matrix.job }}
+        run: |
+          python3 tests/ci/report.py tests/logs/ci \
+            >> "$GITHUB_STEP_SUMMARY"
 
-    name: simulation-tests
+  perf-tests:
+
+    name: ${{ matrix.label }}
+
+    needs: plan
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    permissions:
+      contents: read
+      packages: read
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.perf_matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull performance CI image
+        run: docker pull "$CI_IMAGE"
+
+      - name: Run cycle validation in container
+        id: perf
+        run: |
+          docker run --rm \
+            --memory=7g \
+            --memory-swap=7g \
+            -e CI=true \
+            -e GITHUB_ACTIONS=true \
+            -e CI_BUILD_JOBS=2 \
+            -v ${{ github.workspace }}:/gpgpu-sim \
+            -w /gpgpu-sim \
+            "$CI_IMAGE" \
+            bash tests/ci/perf/run.sh \
+              "${{ matrix.config }}" \
+              "${{ matrix.job }}"
+
+      - name: Upload cycle results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-results-${{ matrix.config }}-${{ matrix.job }}-${{ github.run_attempt }}
+          path: tests/logs/ci/perf/results/${{ matrix.config }}-${{ matrix.job }}.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload failed cycle-validation logs
+        if: always() && steps.perf.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-logs-${{ matrix.config }}-${{ matrix.job }}-${{ github.run_attempt }}
+          path: tests/logs/ci/perf/${{ matrix.config }}/${{ matrix.job }}
+          if-no-files-found: warn
+          retention-days: 7
+
+  perf-report:
+
+    name: cycle-validation-report
+
     if: always()
-    needs: simulation-test-shards
+    needs: perf-tests
+    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
+    permissions:
+      actions: write
+      contents: read
+
     steps:
-      - name: Verify simulation test shards
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Download cycle results
+        id: download-results
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: perf-results-*-${{ github.run_attempt }}
+          path: tests/logs/ci/perf/results
+          merge-multiple: true
+
+      - name: Report cycle validation
+        if: always()
+        run: |
+          python3 tests/ci/perf/perf.py report \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete temporary cycle results
+        if: always() && steps.download-results.outcome == 'success'
+        continue-on-error: true
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.runId,
+                per_page: 100,
+              },
+            );
+            for (const artifact of artifacts) {
+              if (!artifact.name.startsWith("perf-results-")) continue;
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id,
+              });
+            }
+
+  verify-status:
+
+    name: verify-status
+    if: always()
+    needs: func-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions: {}
+
+    steps:
+      - name: Verify status
         env:
-          SHARD_RESULT: ${{ needs.simulation-test-shards.result }}
-        run: test "$SHARD_RESULT" = success
+          JOB_RESULT: ${{ needs.func-tests.result }}
+        run: test "$JOB_RESULT" = success

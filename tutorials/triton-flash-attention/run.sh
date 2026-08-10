@@ -7,7 +7,8 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
 RUN_DIR="${SCRIPT_DIR}/run"
 TRACKING_DIR="${RUN_DIR}/tracking"
 LAUNCHER_DIR="${TRACKING_DIR}/launchers"
-CONFIG_DIR="${REPO_ROOT}/configs/SM120_RTX5090"
+CONFIG_NAME="${PERF_SIM_CONFIG:-SM120_RTX5090}"
+CONFIG_DIR="${REPO_ROOT}/configs/${CONFIG_NAME}"
 SIMULATION_LOG="${RUN_DIR}/simulation.log"
 
 if [[ ! -d "${CONFIG_DIR}" ]]; then
@@ -37,7 +38,7 @@ fi
 
 mkdir -p "${RUN_DIR}"
 
-echo "[1/3] Preparing the SM120_RTX5090 configuration"
+echo "[1/3] Preparing the ${CONFIG_NAME} configuration"
 cp -a "${CONFIG_DIR}/." "${LAUNCHER_DIR}/"
 
 echo "[2/3] Configuring FlashGPU-Sim"

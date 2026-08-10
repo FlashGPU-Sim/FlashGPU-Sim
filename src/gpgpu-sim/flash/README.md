@@ -97,13 +97,13 @@ This separation ensures:
 
 ## Testing
 
-Integration tests are located in `test/src/integration/mma/`:
-- `cuda_mma_f16_test.cc` - F16 M16N8K8 tests
-- `cuda_mma_bf16_test.cc` - BF16 M16N8K8 tests
-- `cuda_mma_tf32_test.cc` - TF32 M16N8K4 tests
-- `cuda_mma_s8_test.cc` - S8 M16N8K16 tests
+Integration tests are located in `tests/src/mma/`:
+- `mma_f16_test.cu` - F16 M16N8K8 tests
+- `mma_bf16_test.cu` - BF16 M16N8K8 tests
+- `mma_tf32_test.cu` - TF32 M16N8K4 tests
+- `mma_s8_test.cu` - S8 M16N8K16 tests
 
-See `test/src/integration/README.md` for test execution instructions.
+See `tests/src/mma/README.md` for test execution instructions.
 
 ## Code Formatting
 

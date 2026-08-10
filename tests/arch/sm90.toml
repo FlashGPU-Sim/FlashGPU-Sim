@@ -1,0 +1,57 @@
+[arch]
+nvcc_target = "sm_90a"
+config = "SM90_H100"
+
+[workloads]
+sources = [
+  # Portable integration tests.
+  "integration/address_operand_test.cu",
+  "integration/vector_operand_test.cu",
+  "integration/vector_add_test.cu",
+  "integration/shared_memory_optin_test.cu",
+  "integration/ldst_matrix_test.cu",
+  "integration/cp_async_src_size_test.cu",
+
+  # SM90 correctness groups.
+  "barrier/named_barrier_test.cu",
+  "wgmma/wgmma_b1_test.cu",
+  "wgmma/wgmma_bf16_test.cu",
+  "wgmma/wgmma_f16_test.cu",
+  "wgmma/wgmma_fp8_test.cu",
+  "wgmma/wgmma_s8_test.cu",
+  "wgmma/wgmma_tf32_test.cu",
+
+  # FlashAttention build variants.
+  "fa2/fa2_fwd_fp16_test.cu",
+  "fa3/fa3_fwd_d64_noncausal_test.cu",
+  "fa3/fa3_fwd_d64_causal_test.cu",
+  "fa3/fa3_fwd_d128_noncausal_test.cu",
+  "fa3/fa3_fwd_d128_causal_test.cu",
+  "fa3/fa3_bwd_d64_noncausal_test.cu",
+  "fa3/fa3_bwd_d64_causal_test.cu",
+  "fa3/fa3_bwd_d128_noncausal_test.cu",
+  "fa3/fa3_bwd_d128_causal_test.cu",
+  "fa3/fa3_fwd_hdim128_fp16_test.cu",
+  "fa3/fa3_fwd_h1d128_profile_test.cu",
+  "fa3/fa3_fwd_packgqa_test.cu",
+
+  # Microbenchmark workloads.
+  "microbench/cp_async/cp_async_issue_scope_bench.cu",
+  "microbench/cp_async/cp_async_latency_bench.cu",
+  "microbench/cp_async/cp_async_ptx_bench.cu",
+  "microbench/mma/mma_accept_queue_bench.cu",
+  "microbench/mma/mma_saturation_bench.cu",
+  "microbench/tma/tma_completion_latency_bench.cu",
+  "microbench/tma/tma_descriptor_setup_bench.cu",
+  "microbench/tma/tma_fa3_m3_bench.cu",
+  "microbench/wgmma/wgmma_async_latency_bench.cc",
+  "microbench/wgmma/wgmma_fp16_rs_g1_bench.cc",
+  "microbench/wgmma/wgmma_fp16_rs_g2_bench.cc",
+  "microbench/wgmma/wgmma_fp16_rs_g4_bench.cc",
+  "microbench/wgmma/wgmma_fp16_ss_g1_bench.cc",
+  "microbench/wgmma/wgmma_fp16_ss_g2_bench.cc",
+  "microbench/wgmma/wgmma_fp16_ss_g4_bench.cc",
+  "microbench/wgmma/wgmma_n16_chain_bench.cc",
+  "microbench/wgmma/wgmma_rf_bandwidth_bench.cc",
+  "microbench/wgmma/wgmma_softmax_mix_bench.cc",
+]

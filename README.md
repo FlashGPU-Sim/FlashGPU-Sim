@@ -27,7 +27,7 @@ architectures and AI workloads, built upon GPGPU-Sim.
 | --- | --- |
 | Architectures | Hopper/SM90 ([`SM90_H100`](configs/SM90_H100/gpgpusim.config)) and Blackwell/SM120 ([`SM120_RTX5090`](configs/SM120_RTX5090/gpgpusim.config)) configurations |
 | GPU features | TMA, `mbarrier`, `mma`, `wgmma`, `ldmatrix`/`stmatrix`, etc. |
-| Workload tooling | [TritonTrace](tools/README.md) kernel capture and standalone replay ([examples and validation](test/triton_trace/README.md)) |
+| Workload tooling | [TritonTrace](tools/README.md) kernel capture and standalone replay ([examples and validation](tests/triton_trace/README.md)) |
 | Simulation | Execution-driven functional simulation and cycle-level timing simulation |
 | Parallelism | OpenMP-based multi-threaded SM simulation |
 
@@ -101,15 +101,15 @@ output is saved separately to `run/capture.log`.
 
 ### Cycle Validation
 
-The table below compares `gpu_tot_sim_cycle` with
-`sm__cycles_elapsed.avg` reported by Nsight Compute on an RTX 5090.
-Difference is calculated as `(Sim - NCU) / NCU`.
+The quick PR checks keep the documented simulator cycles below synchronized
+with `gpu_tot_sim_cycle`. The table also compares them with
+`sm__cycles_elapsed.avg` reported by Nsight Compute on an RTX 5090. Difference
+is calculated as `(Sim - NCU) / NCU`.
 
-| Workload | Shape | NCU cycles | Sim cycles | Difference |
-| --- | --- | ---: | ---: | ---: |
-| CUDA vector addition | 2,000,000 elements | 29,642.67 | 30,133 | +1.65% |
-| Triton GEMM | `M=2560, N=64, K=2560` | 77,190.74 | 78,989 | +2.33% |
-| Triton FlashAttention | `B=32, H=32, S=512, D=64, causal` | 797,247.12 | 794,076 | -0.40% |
+| Config | Workload | Shape | NCU cycles | Sim cycles | Difference |
+| --- | --- | --- | ---: | ---: | ---: |
+| SM120_RTX5090 | Tutorial - CUDA Vector Add | 2,000,000 elements | 29,642.67 | 30,133 | +1.65% |
+| SM120_RTX5090 | Tutorial - Triton GEMM | `M=2560, N=64, K=2560` | 77,190.74 | 78,989 | +2.33% |
 
 > [!TIP]
 > We provide RTX 5090 Nsight Compute reports and CSVs for
@@ -123,6 +123,16 @@ Difference is calculated as `(Sim - NCU) / NCU`.
 > `./tutorials/profile_ncu.sh --gpu 0 <workload>`,
 > where `<workload>` can be `all`, `vectorAdd`, `triton-gemm`, or
 > `triton-flash-attention`.
+
+The full Triton FlashAttention cycle check is intentionally omitted from PR
+CI because of its simulation runtime. After completing the Quick Start build,
+run the offline capture and simulation locally when broader validation is
+needed:
+
+```bash
+bash tutorials/triton-flash-attention/capture.sh
+bash tutorials/triton-flash-attention/run.sh
+```
 
 ## Tutorials
 
@@ -317,7 +327,7 @@ provided helper from the repository root to summarize the final statistics
 report:
 
 ```bash
-python3 test/scripts/extract_sim_stats.py tutorials/vectorAdd/run/simulation.log
+python3 tests/scripts/extract_sim_stats.py tutorials/vectorAdd/run/simulation.log
 ```
 
 The summary includes `simulated cycles`, `instructions`, `IPC`, `occupancy`,

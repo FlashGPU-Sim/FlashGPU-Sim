@@ -249,13 +249,13 @@ After building FlashGPU-Sim and sourcing `setup_environment`, verify discovery
 from the repository root and run a matching integration test:
 
 ```bash
-./test/run_tests.sh list-configs
-./test/run_tests.sh -c MY_CUSTOM_CONFIG run test \
-  --target sm120 --group integration CudaVectorAdd
+./tests/run_tests.py list-configs
+./tests/run_tests.py -c MY_CUSTOM_CONFIG run \
+  --arch sm120 --group integration CudaVectorAdd
 ```
 
-Use `--target sm90` and an SM90 test group for a Hopper configuration. See the
-[test guide](../test/README.md) for the supported target and group hierarchy.
+Use `--arch sm90` and an SM90 test group for a Hopper configuration. See the
+[test guide](../tests/README.md) for the supported architecture/test-group hierarchy.
 
 When troubleshooting a custom configuration:
 
