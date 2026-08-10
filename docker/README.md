@@ -102,33 +102,18 @@ are not included; CI mounts and builds the selected commit at runtime. The
 in-tree `TritonTrace` package is exposed from the mounted checkout through
 `PYTHONPATH=/gpgpu-sim/tools`.
 
-The current image is published under this versioned tag:
+The [PR workflow](../.github/workflows/pr-tests.yml) pins the prebuilt image by
+immutable digest. The workflow is the source of truth for the image selected
+by CI.
 
-```text
-ghcr.io/flashgpu-sim/flashgpu-sim-ci:cuda12.8-gtest1.12.1-triton3.5.0-v2
-```
-
-CI consumers use its immutable digest:
-
-```text
-ghcr.io/flashgpu-sim/flashgpu-sim-ci@sha256:c8c03b52d4e61d0a36b1fa2bd3aecced2919c66aeff45aad4a1a8b1c62188b83
-```
-
-`.github/workflows/ci-image.yml` publishes both the current versioned tag and a
-commit-scoped `sha-<commit>` tag after smoke-testing the build, Python compiler
-stack, in-tree `TritonTrace` import, and GoogleTest. The package is private;
-GitHub Actions pulls it with the job-scoped `GITHUB_TOKEN` and `packages: read`
-permission. Consumers should replace the versioned tag with the immutable
-digest emitted by the publication workflow.
-
-Build and inspect the image locally:
+Build and smoke-test the equivalent environment locally:
 
 ```bash
 docker build -f docker/Dockerfile.ci \
-  -t ghcr.io/flashgpu-sim/flashgpu-sim-ci:cuda12.8-gtest1.12.1-triton3.5.0-v2 .
+  -t flashgpu-sim-ci:local .
 docker run --rm \
   -v "$PWD:/gpgpu-sim:ro" \
-  ghcr.io/flashgpu-sim/flashgpu-sim-ci:cuda12.8-gtest1.12.1-triton3.5.0-v2 \
+  flashgpu-sim-ci:local \
   bash -c 'python3 -c "import torch, triton, TritonTrace" && nvcc --version'
 ```
 
