@@ -34,7 +34,7 @@ sources = [
   # FlashAttention build variants.
   "fa2/fa2_fwd_fp16_test.cu",
 
-  # Existing microbenchmark and trace layouts remain unchanged.
+  # Microbenchmark and trace workloads.
   "microbench/mbarrier/mbarrier_trywait_latency_bench.cc",
   "microbench/mma/inst_latency_bench.cc",
   "microbench/mma/mma_issue_bench.cc",

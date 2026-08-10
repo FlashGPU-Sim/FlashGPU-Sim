@@ -104,8 +104,8 @@ src/
 ├── wgmma/         WGMMA tests
 ├── fa2/           FlashAttention 2 tests and build variants
 ├── fa3/           FlashAttention 3 tests and build variants
-├── microbench/    existing microbenchmark layout
-└── trace/         existing trace-driven GPT-2 tests
+├── microbench/    architecture-specific performance microbenchmarks
+└── trace/         trace-driven GPT-2 tests
 ```
 
 Executable sources follow `tests/src/<test_group>/<test>.cu`; shared headers
@@ -114,6 +114,10 @@ test groups, or architecture-manifest entries.
 
 `integration/` admits only standalone sources that compile for every supported
 architecture without test-specific compiler flags or link dependencies.
+
+Downloaded dependencies are isolated below `tests/third_party/`. The test
+build fetches GoogleTest into `tests/third_party/gtest/` on demand, while the
+FlashAttention checkout is managed by `tests/third_party/flash-attention/`.
 
 ## Architecture manifests
 

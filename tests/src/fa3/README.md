@@ -57,26 +57,13 @@ From `tests/`; the first FA3 build prepares the shared dependency automatically:
 ./run_tests.py build --arch sm90 --group fa3 --profile concurrency --mode all
 ```
 
-For native H100 runs with Nsight Compute collection, use the manifest-backed
-hardware entry point from the repository root:
-
-```bash
-./tests/scripts/run_fa3_ncu.sh \
-  --group breakdown:qk_pv_only_no_tma \
-  --group breakdown:qk_pv_only_no_tma_reg_timeline
-```
-
-The command accepts repeated `--group GROUP:MODE` selectors and uses each
-profile's manifest-owned case list. See `tests/scripts/README.md` for case
-overrides, output layout, prerequisites, and migration notes.
-
 The generated kernel targets `sm_90a`. It is for GPGPU-Sim/PTX bring-up and
 Hopper inspection; it is not expected to run on non-Hopper hardware.
 
 The standard wrappers compile serially and link into
-`tests/build/bin/sm90/fa3/standard_tests`. The split bounds NVCC memory and gives every
-fatbin a unique source-derived PTX name, which GPGPU-Sim requires when loading
-multiple embedded PTX images.
+`tests/build/bin/sm90/fa3/standard_tests`. The split bounds NVCC memory and
+gives every fatbin a unique source-derived PTX name, which GPGPU-Sim requires
+when loading multiple embedded PTX images.
 
 Smoke, packgqa, size, and sensitivity profiles are all exposed through the
 `sm90/fa3` test group. A filter can select an individual GoogleTest case

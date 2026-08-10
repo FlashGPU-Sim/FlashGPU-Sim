@@ -11,9 +11,6 @@ The WGMMA microbenchmarks are gtest binaries built by the top-level
   independent compilation by operand kind and groups-before-wait.
 - `wgmma_n16_chain_bench.cc`: focused `m64n16k16` chain/count sweeps.
 
-The old standalone mixed-softmax file was removed because the same probes now
-live in `wgmma_async_latency_bench.cc`.
-
 Build examples from `tests/`:
 
 ```bash

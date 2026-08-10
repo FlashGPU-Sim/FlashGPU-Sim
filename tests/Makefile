@@ -23,7 +23,7 @@ ifneq ($(origin CUDA_INSTALL_PATH),command line)
 endif
 CUDA_LIBS = -L$(CUDA_INSTALL_PATH)/lib64 -lcudart -lcuda
 
-LOCAL_GTEST_CLONE_DIR := gtest
+LOCAL_GTEST_CLONE_DIR := third_party/gtest
 LOCAL_GTEST_DIR := $(LOCAL_GTEST_CLONE_DIR)/googletest
 GTEST_DIR ?= $(LOCAL_GTEST_DIR)
 SRC_DIR = ../src
@@ -59,7 +59,7 @@ GPGPUSIM_FLAGS = -DDEBUG=0
 TOP_MAKEFILE := $(firstword $(MAKEFILE_LIST))
 .DEFAULT_GOAL := help
 
-ARCH_MANIFEST_SCRIPT := scripts/arch_manifest.py
+ARCH_MANIFEST_SCRIPT := scripts/arch_manifests_to_make.py
 ARCH_MANIFESTS := $(wildcard arch/*.toml)
 ARCH_MANIFEST_MK := $(BUILD_DIR)/generated/arch.mk
 

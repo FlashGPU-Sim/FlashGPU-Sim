@@ -4,8 +4,8 @@ build/
 *.a
 *.so
 
-# Google Test
-gtest/
+# Google Test checkout
+third_party/gtest/
 
 # Test executables
 *_test
