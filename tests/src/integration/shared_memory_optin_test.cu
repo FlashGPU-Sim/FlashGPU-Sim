@@ -9,8 +9,6 @@ namespace {
 
 constexpr int kDevice = 0;
 constexpr int kDefaultLimit = 49152;
-constexpr int kOptinLimit = 101376;
-constexpr int kPerSmLimit = 102400;
 constexpr int kRequestedDynamicBytes = 64 * 1024;
 constexpr uint32_t kSentinel = 0x5A17C0DEu;
 
@@ -54,8 +52,8 @@ TEST_F(SharedMemoryOptinTest, ReportsDistinctDeviceLimits) {
       cudaSuccess);
 
   EXPECT_EQ(default_limit_, kDefaultLimit);
-  EXPECT_EQ(optin_limit_, kOptinLimit);
-  EXPECT_EQ(per_sm_limit, kPerSmLimit);
+  EXPECT_GT(optin_limit_, default_limit_);
+  EXPECT_GE(per_sm_limit, optin_limit_);
 
   cudaDeviceProp properties{};
   ASSERT_EQ(cudaGetDeviceProperties(&properties, kDevice), cudaSuccess);

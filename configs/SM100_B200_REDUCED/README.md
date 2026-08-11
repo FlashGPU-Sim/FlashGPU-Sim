@@ -14,7 +14,8 @@ small parser, TMEM, mbarrier, and MMA tests run quickly.
 - PTX force-max capability: 100
 - SM count: 1
 - Shared memory per SM: 228 KB
-- Shared memory per block: 227 KB
+- Default shared memory per block: 48 KB
+- Maximum opt-in shared memory per block: 227 KB
 
 The memory hierarchy and timing values are inherited from the existing reduced
 Blackwell config as functional placeholders. They are not performance-calibrated
