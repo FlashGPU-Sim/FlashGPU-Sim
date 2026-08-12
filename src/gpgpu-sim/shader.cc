@@ -3666,7 +3666,6 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
   if (inst.accessq_empty()) return true;
 
   mem_stage_stall_type stall_cond = NO_RC_FAIL;
-  const mem_access_t &access = inst.accessq_back();
 
   bool bypassL1D = false;
   if (CACHE_GLOBAL == inst.cache_op || (m_L1D == NULL)) {
@@ -3677,22 +3676,44 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
       bypassL1D = true;
   }
   if (bypassL1D) {
-    // bypass L1 cache
-    unsigned control_size =
-        inst.is_store() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
-    unsigned size = access.get_size() + control_size;
-    // printf("Interconnect:Addr: %x, size=%d\n",access.get_addr(),size);
-    if (m_memory_config->SST_mode &&
-        (static_cast<sst_memory_interface *>(m_icnt)->full(
-            size, inst.is_store() || inst.isatomic(), access.get_type()))) {
-      // SST need mf type here
-      // Cast it to sst_memory_interface pointer first as this full() method
-      // is not a virtual method in parent class
-      stall_cond = ICNT_RC_FAIL;
-    } else if (!m_memory_config->SST_mode &&
-               (m_icnt->full(size, inst.is_store() || inst.isatomic()))) {
-      stall_cond = ICNT_RC_FAIL;
-    } else {
+    // Only ordinary requests which already bypass L1D are widened here. The
+    // shared/constant/texture/L1D/response/writeback paths retain their legacy
+    // cadence.
+    const unsigned request_width = m_config->gpgpu_ldst_request_width;
+
+    auto downstream_full = [&]() {
+      const mem_access_t &access = inst.accessq_back();
+      if (request_width > 1) {
+        // SM100's coalesce_arch=100 creates one 32-byte sector child per
+        // accessq entry. Refuse ambiguous widening if another architecture
+        // produces a larger coalesced entry.
+        assert(access.get_size() == SECTOR_SIZE);
+      }
+      const unsigned control_size =
+          inst.is_store() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
+      const unsigned size = access.get_size() + control_size;
+      if (m_memory_config->SST_mode) {
+        return static_cast<sst_memory_interface *>(m_icnt)->full(
+            size, inst.is_store() || inst.isatomic(), access.get_type());
+      }
+      return m_icnt->full(size, inst.is_store() || inst.isatomic());
+    };
+
+    auto inject_one = [&]() -> unsigned {
+      const mem_access_t &access = inst.accessq_back();
+      const unsigned data_sectors =
+          memory_transport_data_sectors(READ_REQUEST, access.get_size());
+      if (m_config->gpgpu_ldst_response_sectors_per_cycle != 0 &&
+          inst.is_load() &&
+          !m_global_response_retirement.has_pending_responses(
+              inst.get_uid())) {
+        // This is the first successfully injected request for an uncached
+        // dynamic load.  All remaining accesses bypass L1D and therefore
+        // return through the explicit-width ordinary-response retirement
+        // path.
+        m_global_response_retirement.expect_responses(
+            inst.get_uid(), inst.accessq_count(), inst);
+      }
       mem_fetch *mf =
           m_mf_allocator->alloc(inst, access,
                                 m_core->get_gpu()->gpu_sim_cycle +
@@ -3706,6 +3727,38 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
             assert(m_pending_writes[inst.warp_id()][inst.out[r]] > 0);
       } else if (inst.is_store())
         m_core->inc_store_req(inst.warp_id());
+
+      return data_sectors;
+    };
+
+    if (request_width == 0) {
+      // Preserve the original one-head action per ldst_unit::cycle() call.
+      // If an existing configuration repeats the complete LD/ST cycle through
+      // mem_unit_ports, every repeated call retains that same legacy action.
+      if (downstream_full()) {
+        stall_cond = ICNT_RC_FAIL;
+        m_ldst_legacy_request_downstream_full = true;
+      } else {
+        const unsigned sectors = inject_one();
+        m_ldst_request_stats.record_accept(sectors);
+        m_ldst_legacy_request_service_slots +=
+            memory_transport_service_slots(sectors);
+      }
+    } else {
+      if (!m_ldst_request_budget_active) {
+        m_ldst_request_budget.begin_tick(request_width);
+        m_ldst_request_budget_active = true;
+      }
+      const ldst_request_issue_result issue_result =
+          memory_transport_issue_ldst_sector_children(
+              &m_ldst_request_budget, &m_ldst_request_stats,
+              [&]() { return inst.accessq_count(); }, downstream_full,
+              inject_one);
+      if (issue_result.reason == LDST_REQUEST_DOWNSTREAM_FULL) {
+        stall_cond = ICNT_RC_FAIL;
+      } else if (issue_result.reason == LDST_REQUEST_WIDTH_LIMITED) {
+        stall_cond = COAL_STALL;
+      }
     }
   } else {
     assert(CACHE_UNDEFINED != inst.cache_op);
@@ -4181,6 +4234,13 @@ void ldst_unit::init(mem_fetch_interface *icnt,
       5;  // = shared memory, global/local (uncached), L1D, L1T, L1C
   m_writeback_arb = 0;
   m_next_global = NULL;
+  m_next_wb_is_retired_global_response = false;
+  m_ldst_request_budget_active = false;
+  m_ldst_legacy_request_service_slots = 0;
+  m_ldst_legacy_request_downstream_full = false;
+  m_ldst_response_budget_active = false;
+  m_ldst_legacy_response_service_slots = 0;
+  m_ldst_legacy_response_downstream_full = false;
   m_last_inst_gpu_sim_cycle = 0;
   m_last_inst_gpu_tot_sim_cycle = 0;
 }
@@ -4254,38 +4314,98 @@ void ldst_unit::issue(register_set &reg_set) {
   pipelined_simd_unit::issue(reg_set);
 }
 
+void ldst_unit::retire_bypass_response(mem_fetch *mf) {
+  const warp_inst_t &inst = mf->get_inst();
+  const unsigned warp_id = inst.warp_id();
+  bool has_output = false;
+  bool all_outputs_ready = true;
+
+  for (unsigned r = 0; r < MAX_OUTPUT_VALUES; ++r) {
+    const unsigned reg_id = inst.out[r];
+    if (reg_id == 0) continue;
+    has_output = true;
+    std::map<unsigned, std::map<unsigned, unsigned>>::iterator warp_pending =
+        m_pending_writes.find(warp_id);
+    assert(warp_pending != m_pending_writes.end());
+    std::map<unsigned, unsigned>::iterator reg_pending =
+        warp_pending->second.find(reg_id);
+    assert(reg_pending != warp_pending->second.end());
+    assert(reg_pending->second != 0);
+    if (--reg_pending->second == 0) {
+      warp_pending->second.erase(reg_pending);
+    } else {
+      all_outputs_ready = false;
+    }
+  }
+
+  bool ldgsts_ready = false;
+  if (inst.m_is_ldgsts) {
+    if (inst.active_count() == 0) {
+      ldgsts_ready = true;
+    } else {
+      ldgsts_ready = dec_pending_ldgsts(inst) == 0;
+    }
+  }
+
+  const bool instruction_ready =
+      m_global_response_retirement.retire_response(inst.get_uid());
+  if (has_output) assert(all_outputs_ready == instruction_ready);
+  if (inst.m_is_ldgsts) assert(ldgsts_ready == instruction_ready);
+
+  if (mf->isatomic()) {
+    m_core->decrement_atomic_count(mf->get_wid(),
+                                   mf->get_access_warp_mask().count());
+  }
+  delete mf;
+}
+
 void ldst_unit::writeback() {
   // process next instruction that is going to writeback
   if (!m_next_wb.empty()) {
     if (m_operand_collector->writeback(m_next_wb)) {
       bool insn_completed = false;
-      for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
-        if (m_next_wb.out[r] > 0) {
-          if (m_next_wb.space.get_type() != shared_space) {
-            assert(m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]] > 0);
-            unsigned still_pending =
-                --m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]];
-            if (!still_pending) {
-              m_pending_writes[m_next_wb.warp_id()].erase(m_next_wb.out[r]);
+      if (m_next_wb_is_retired_global_response) {
+        // The response packets and their per-access pending counts were
+        // retired at transport width.  The final response generated this one
+        // instruction-level RF/scoreboard completion.
+        for (unsigned r = 0; r < MAX_OUTPUT_VALUES; ++r) {
+          if (m_next_wb.out[r] > 0) {
+            m_scoreboard->releaseRegister(m_next_wb.warp_id(),
+                                          m_next_wb.out[r]);
+          }
+        }
+        insn_completed = true;
+      } else {
+        for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+          if (m_next_wb.out[r] > 0) {
+            if (m_next_wb.space.get_type() != shared_space) {
+              assert(m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]] >
+                     0);
+              unsigned still_pending =
+                  --m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]];
+              if (!still_pending) {
+                m_pending_writes[m_next_wb.warp_id()].erase(m_next_wb.out[r]);
+                m_scoreboard->releaseRegister(m_next_wb.warp_id(),
+                                              m_next_wb.out[r]);
+                insn_completed = true;
+              }
+            } else {  // shared
               m_scoreboard->releaseRegister(m_next_wb.warp_id(),
                                             m_next_wb.out[r]);
               insn_completed = true;
             }
-          } else {  // shared
-            m_scoreboard->releaseRegister(m_next_wb.warp_id(),
-                                          m_next_wb.out[r]);
-            insn_completed = true;
-          }
-        } else if (m_next_wb.m_is_ldgsts) {  // for LDGSTS instructions where no
-                                             // output register is used
-          if (m_next_wb.active_count() == 0) {
-            insn_completed = true;
-          } else {
-            if (dec_pending_ldgsts(m_next_wb) == 0) {
+          } else if (m_next_wb.m_is_ldgsts) {
+            // LDGSTS has no output register.  The explicit-width global path
+            // already retired this count; legacy/cache clients retire it here.
+            if (m_next_wb.active_count() == 0) {
               insn_completed = true;
+            } else {
+              if (dec_pending_ldgsts(m_next_wb) == 0) {
+                insn_completed = true;
+              }
             }
+            break;
           }
-          break;
         }
       }
       if (insn_completed) {
@@ -4296,6 +4416,7 @@ void ldst_unit::writeback() {
       }
 
       m_next_wb.clear();
+      m_next_wb_is_retired_global_response = false;
       m_last_inst_gpu_sim_cycle = m_core->get_gpu()->gpu_sim_cycle;
       m_last_inst_gpu_tot_sim_cycle = m_core->get_gpu()->gpu_tot_sim_cycle;
     }
@@ -4309,6 +4430,7 @@ void ldst_unit::writeback() {
       case 0:  // shared memory
         if (!m_pipeline_reg[0]->empty()) {
           m_next_wb = *m_pipeline_reg[0];
+          m_next_wb_is_retired_global_response = false;
           if (m_next_wb.isatomic()) {
             m_next_wb.do_atomic();
             m_core->decrement_atomic_count(m_next_wb.warp_id(),
@@ -4323,6 +4445,7 @@ void ldst_unit::writeback() {
         if (m_L1T->access_ready()) {
           mem_fetch *mf = m_L1T->next_access();
           m_next_wb = mf->get_inst();
+          m_next_wb_is_retired_global_response = false;
           delete mf;
           serviced_client = next_client;
         }
@@ -4331,13 +4454,20 @@ void ldst_unit::writeback() {
         if (m_L1C->access_ready()) {
           mem_fetch *mf = m_L1C->next_access();
           m_next_wb = mf->get_inst();
+          m_next_wb_is_retired_global_response = false;
           delete mf;
           serviced_client = next_client;
         }
         break;
       case 3:  // global/local
-        if (m_next_global) {
+        if (m_global_response_retirement.completion_ready()) {
+          m_next_wb = m_global_response_retirement.next_completion();
+          m_global_response_retirement.pop_completion();
+          m_next_wb_is_retired_global_response = true;
+          serviced_client = next_client;
+        } else if (m_next_global) {
           m_next_wb = m_next_global->get_inst();
+          m_next_wb_is_retired_global_response = false;
           if (m_next_global->isatomic()) {
             m_core->decrement_atomic_count(
                 m_next_global->get_wid(),
@@ -4352,6 +4482,7 @@ void ldst_unit::writeback() {
         if (m_L1D && m_L1D->access_ready()) {
           mem_fetch *mf = m_L1D->next_access();
           m_next_wb = mf->get_inst();
+          m_next_wb_is_retired_global_response = false;
           delete mf;
           serviced_client = next_client;
         }
@@ -4404,60 +4535,127 @@ void ldst_unit::cycle() {
     if (m_pipeline_reg[stage]->empty() && !m_pipeline_reg[stage + 1]->empty())
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
 
-  if (!m_response_fifo.empty()) {
+  const unsigned response_width =
+      m_config->gpgpu_ldst_response_sectors_per_cycle;
+
+  auto response_bypasses_l1d = [&](mem_fetch *mf) {
+    if (CACHE_GLOBAL == mf->get_inst().cache_op || m_L1D == NULL) return true;
+    return (mf->get_access_type() == GLOBAL_ACC_R ||
+            mf->get_access_type() == GLOBAL_ACC_W) &&
+           m_core->get_config()->gmem_skip_L1D;
+  };
+
+  auto response_uses_explicit_width = [&](mem_fetch *mf) {
+    if (mf->get_access_type() == TEXTURE_ACC_R ||
+        mf->get_access_type() == CONST_ACC_R)
+      return false;
+    if (mf->get_type() == WRITE_ACK ||
+        ((m_config->gpgpu_perfect_mem || m_memory_config->SST_mode) &&
+         mf->get_is_write()))
+      return true;
+    return response_bypasses_l1d(mf);
+  };
+
+  auto response_head_ready = [&]() {
+    if (m_response_fifo.empty()) return false;
+    mem_fetch *mf = m_response_fifo.front();
+    if (mf->get_access_type() == TEXTURE_ACC_R) return m_L1T->fill_port_free();
+    if (mf->get_access_type() == CONST_ACC_R) return m_L1C->fill_port_free();
+    if (mf->get_type() == WRITE_ACK ||
+        ((m_config->gpgpu_perfect_mem || m_memory_config->SST_mode) &&
+         mf->get_is_write()))
+      return true;
+
+    assert(!mf->get_is_write());  // L1 cache only allocates on load misses.
+    if (!response_bypasses_l1d(mf)) return m_L1D->fill_port_free();
+    return response_width != 0 || m_next_global == NULL;
+  };
+
+  auto advance_response_head = [&]() {
+    assert(!m_response_fifo.empty());
     mem_fetch *mf = m_response_fifo.front();
     if (mf->get_access_type() == TEXTURE_ACC_R) {
-      if (m_L1T->fill_port_free()) {
-        m_L1T->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
-                            m_core->get_gpu()->gpu_tot_sim_cycle);
-        m_response_fifo.pop_front();
-      }
+      m_L1T->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
+                          m_core->get_gpu()->gpu_tot_sim_cycle);
+      m_response_fifo.pop_front();
     } else if (mf->get_access_type() == CONST_ACC_R) {
-      if (m_L1C->fill_port_free()) {
-        mf->set_status(IN_SHADER_FETCHED,
-                       m_core->get_gpu()->gpu_sim_cycle +
-                           m_core->get_gpu()->gpu_tot_sim_cycle);
-        m_L1C->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
-                            m_core->get_gpu()->gpu_tot_sim_cycle);
-        m_response_fifo.pop_front();
+      mf->set_status(IN_SHADER_FETCHED,
+                     m_core->get_gpu()->gpu_sim_cycle +
+                         m_core->get_gpu()->gpu_tot_sim_cycle);
+      m_L1C->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
+                          m_core->get_gpu()->gpu_tot_sim_cycle);
+      m_response_fifo.pop_front();
+    } else if (mf->get_type() == WRITE_ACK ||
+               ((m_config->gpgpu_perfect_mem || m_memory_config->SST_mode) &&
+                mf->get_is_write())) {
+      // SST memory is handled by SST mem hierarchy; perfect-memory writes use
+      // the same acknowledgement path.
+      m_core->store_ack(mf);
+      m_response_fifo.pop_front();
+      delete mf;
+    } else if (response_bypasses_l1d(mf)) {
+      mf->set_status(IN_SHADER_FETCHED,
+                     m_core->get_gpu()->gpu_sim_cycle +
+                         m_core->get_gpu()->gpu_tot_sim_cycle);
+      m_response_fifo.pop_front();
+      if (response_width == 0) {
+        assert(m_next_global == NULL);
+        m_next_global = mf;
+      } else {
+        retire_bypass_response(mf);
       }
     } else {
-      if (mf->get_type() == WRITE_ACK ||
-          ((m_config->gpgpu_perfect_mem || m_memory_config->SST_mode) &&
-           mf->get_is_write())) {
-        // SST memory is handled by SST mem hierarchy
-        // Perfect mem
-        m_core->store_ack(mf);
-        m_response_fifo.pop_front();
-        delete mf;
-      } else {
-        assert(!mf->get_is_write());  // L1 cache is write evict, allocate line
-                                      // on load miss only
+      m_L1D->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
+                          m_core->get_gpu()->gpu_tot_sim_cycle);
+      m_response_fifo.pop_front();
+    }
+  };
 
-        bool bypassL1D = false;
-        if (CACHE_GLOBAL == mf->get_inst().cache_op || (m_L1D == NULL)) {
-          bypassL1D = true;
-        } else if (mf->get_access_type() == GLOBAL_ACC_R ||
-                   mf->get_access_type() ==
-                       GLOBAL_ACC_W) {  // global memory access
-          if (m_core->get_config()->gmem_skip_L1D) bypassL1D = true;
+  if (response_width == 0) {
+    if (!m_response_fifo.empty()) {
+      mem_fetch *mf = m_response_fifo.front();
+      const bool ordinary_response = response_uses_explicit_width(mf);
+      const unsigned sectors = memory_transport_data_sectors(mf);
+      if (response_head_ready()) {
+        advance_response_head();
+        if (ordinary_response) {
+          m_ldst_response_stats.record_accept(sectors);
+          m_ldst_legacy_response_service_slots +=
+              memory_transport_service_slots(sectors);
         }
-        if (bypassL1D) {
-          if (m_next_global == NULL) {
-            mf->set_status(IN_SHADER_FETCHED,
-                           m_core->get_gpu()->gpu_sim_cycle +
-                               m_core->get_gpu()->gpu_tot_sim_cycle);
-            m_response_fifo.pop_front();
-            m_next_global = mf;
-          }
-        } else {
-          if (m_L1D->fill_port_free()) {
-            m_L1D->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
-                                m_core->get_gpu()->gpu_tot_sim_cycle);
-            m_response_fifo.pop_front();
-          }
-        }
+      } else if (ordinary_response) {
+        m_ldst_legacy_response_downstream_full = true;
       }
+    }
+  } else if (!m_response_fifo.empty() &&
+             !response_uses_explicit_width(m_response_fifo.front())) {
+    // This option widens only ordinary bypass replies and acknowledgements.
+    // Cached L1D, texture, and constant fills keep the pre-existing one-head
+    // service path; in particular, a sector-cache fill which does not occupy
+    // the fill port must not make the loop consume another cached response.
+    if (response_head_ready()) {
+      advance_response_head();
+    }
+  } else if (!m_response_fifo.empty()) {
+    if (!m_ldst_response_budget_active) {
+      m_ldst_response_budget.begin_tick(response_width);
+      m_ldst_response_budget_active = true;
+    }
+    while (!m_response_fifo.empty() &&
+           response_uses_explicit_width(m_response_fifo.front())) {
+      const unsigned sectors =
+          memory_transport_data_sectors(m_response_fifo.front());
+      if (!response_head_ready()) {
+        m_ldst_response_budget.note_downstream_full();
+        break;
+      }
+      if (!m_ldst_response_budget.can_accept(sectors)) {
+        m_ldst_response_budget.note_width_limited(sectors);
+        break;
+      }
+      advance_response_head();
+      m_ldst_response_budget.consume(sectors);
+      m_ldst_response_stats.record_accept(sectors);
     }
   }
 
@@ -4537,6 +4735,32 @@ void ldst_unit::cycle() {
       m_core->warp_inst_complete(*m_dispatch_reg);
       m_dispatch_reg->clear();
     }
+  }
+}
+
+void ldst_unit::end_memory_transport_cycle() {
+  if (m_config->gpgpu_ldst_request_width == 0) {
+    if (m_ldst_legacy_request_downstream_full)
+      ++m_ldst_request_stats.downstream_full_ticks;
+    m_ldst_request_stats.record_tick_service(
+        m_ldst_legacy_request_service_slots);
+    m_ldst_legacy_request_service_slots = 0;
+    m_ldst_legacy_request_downstream_full = false;
+  } else if (m_ldst_request_budget_active) {
+    m_ldst_request_budget.end_tick(&m_ldst_request_stats);
+    m_ldst_request_budget_active = false;
+  }
+
+  if (m_config->gpgpu_ldst_response_sectors_per_cycle == 0) {
+    if (m_ldst_legacy_response_downstream_full)
+      ++m_ldst_response_stats.downstream_full_ticks;
+    m_ldst_response_stats.record_tick_service(
+        m_ldst_legacy_response_service_slots);
+    m_ldst_legacy_response_service_slots = 0;
+    m_ldst_legacy_response_downstream_full = false;
+  } else if (m_ldst_response_budget_active) {
+    m_ldst_response_budget.end_tick(&m_ldst_response_stats);
+    m_ldst_response_budget_active = false;
   }
 }
 
@@ -5027,6 +5251,13 @@ void ldst_unit::print(FILE *fout) const {
   }
 }
 
+void ldst_unit::accumulate_memory_transport_stats(
+    memory_transport_service_stats &request_stats,
+    memory_transport_service_stats &response_stats) const {
+  request_stats.add(m_ldst_request_stats);
+  response_stats.add(m_ldst_response_stats);
+}
+
 void shader_core_ctx::display_pipeline(FILE *fout, int print_mem,
                                        int mask) const {
   fprintf(fout, "=================================================\n");
@@ -5340,6 +5571,7 @@ void shader_core_ctx::cycle() {
   m_stats->shader_cycles[m_sid]++;
   writeback();
   execute();
+  m_ldst_unit->end_memory_transport_cycle();
   read_operands();
   issue();
   for (unsigned int i = 0; i < m_config->inst_fetch_throughput; ++i) {
@@ -5903,6 +6135,12 @@ bool shader_core_ctx::ldst_unit_response_buffer_full() const {
 
 void shader_core_ctx::accept_ldst_unit_response(mem_fetch *mf) {
   m_ldst_unit->fill(mf);
+}
+
+void shader_core_ctx::accumulate_ldst_transport_stats(
+    memory_transport_service_stats &ldst_request,
+    memory_transport_service_stats &ldst_response) const {
+  m_ldst_unit->accumulate_memory_transport_stats(ldst_request, ldst_response);
 }
 
 void shader_core_ctx::store_ack(class mem_fetch *mf) {
@@ -6969,6 +7207,14 @@ void simt_core_cluster::accumulate_response_transport_stats(
   for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid) {
     response_ingress.add(m_response_ingress_stats[cid]);
     response_dispatch.add(m_response_dispatch_stats[cid]);
+  }
+}
+
+void simt_core_cluster::accumulate_ldst_transport_stats(
+    memory_transport_service_stats &ldst_request,
+    memory_transport_service_stats &ldst_response) const {
+  for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid) {
+    m_core[cid]->accumulate_ldst_transport_stats(ldst_request, ldst_response);
   }
 }
 

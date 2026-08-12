@@ -1563,6 +1563,7 @@ class ldst_unit : public pipelined_simd_unit {
   virtual void issue(register_set &inst);
   bool is_issue_partitioned() { return false; }
   virtual void cycle();
+  void end_memory_transport_cycle();
 
   void fill(mem_fetch *mf);
   void flush();
@@ -1594,6 +1595,9 @@ class ldst_unit : public pipelined_simd_unit {
   virtual bool stallable() const { return true; }
   bool response_buffer_full() const;
   void print(FILE *fout) const;
+  void accumulate_memory_transport_stats(
+      memory_transport_service_stats &request_stats,
+      memory_transport_service_stats &response_stats) const;
   void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
                          unsigned &dl1_misses);
   void get_cache_stats(unsigned &read_accesses, unsigned &write_accesses,
@@ -1635,6 +1639,7 @@ class ldst_unit : public pipelined_simd_unit {
       enum cache_request_status status);
   unsigned dec_pending_ldgsts(const warp_inst_t &inst);
   unsigned pending_ldgsts_count(const warp_inst_t &inst) const;
+  void retire_bypass_response(mem_fetch *mf);
   mem_stage_stall_type process_memory_access_queue(cache_t *cache,
                                                    warp_inst_t &inst);
   mem_stage_stall_type process_memory_access_queue_l1cache(l1_cache *cache,
@@ -1657,7 +1662,20 @@ class ldst_unit : public pipelined_simd_unit {
   Scoreboard *m_scoreboard;
 
   mem_fetch *m_next_global;
+  memory_transport_response_retirement_queue<unsigned, warp_inst_t>
+      m_global_response_retirement;
   warp_inst_t m_next_wb;
+  bool m_next_wb_is_retired_global_response;
+  memory_transport_service_budget m_ldst_request_budget;
+  memory_transport_service_stats m_ldst_request_stats;
+  bool m_ldst_request_budget_active;
+  unsigned m_ldst_legacy_request_service_slots;
+  bool m_ldst_legacy_request_downstream_full;
+  memory_transport_service_budget m_ldst_response_budget;
+  memory_transport_service_stats m_ldst_response_stats;
+  bool m_ldst_response_budget_active;
+  unsigned m_ldst_legacy_response_service_slots;
+  bool m_ldst_legacy_response_downstream_full;
   gpgpu_sim *m_gpu;
   unsigned m_writeback_arb;  // round-robin arbiter for writeback contention
                              // between L1T, L1C, shared
@@ -2008,6 +2026,8 @@ class shader_core_config : public core_config {
   unsigned ldst_unit_response_queue_size;
   unsigned gpgpu_cluster_response_ingress_sectors_per_cycle;
   unsigned gpgpu_cluster_response_dispatch_sectors_per_cycle;
+  unsigned gpgpu_ldst_request_width;
+  unsigned gpgpu_ldst_response_sectors_per_cycle;
 
   int simt_core_sim_order;
 
@@ -2447,6 +2467,9 @@ class shader_core_ctx : public core_t {
   void accept_tma_response(mem_fetch *mf);
   void accept_fetch_response(mem_fetch *mf);
   void accept_ldst_unit_response(class mem_fetch *mf);
+  void accumulate_ldst_transport_stats(
+      memory_transport_service_stats &ldst_request,
+      memory_transport_service_stats &ldst_response) const;
   void broadcast_barrier_reduction(unsigned cta_id, unsigned bar_id,
                                    warp_set_t warps);
   void set_kernel(kernel_info_t *k) {
@@ -3080,6 +3103,9 @@ class simt_core_cluster {
   void accumulate_response_transport_stats(
       memory_transport_service_stats &response_ingress,
       memory_transport_service_stats &response_dispatch) const;
+  void accumulate_ldst_transport_stats(
+      memory_transport_service_stats &ldst_request,
+      memory_transport_service_stats &ldst_response) const;
 
  protected:
   struct response_transport_tick_state {

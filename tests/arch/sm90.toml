@@ -10,6 +10,7 @@ sources = [
   "integration/vector_add_test.cu",
   "integration/shared_memory_optin_test.cu",
   "integration/ldst_matrix_test.cu",
+  "integration/ordinary_ldst_request_width_test.cu",
   "integration/cp_async_src_size_test.cu",
 
   # SM90 correctness groups.
