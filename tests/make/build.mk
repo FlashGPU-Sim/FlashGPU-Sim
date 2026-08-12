@@ -20,6 +20,7 @@ TEST_GROUP_EXTRA_OBJECTS_sm120_unit := \
 TEST_GROUP_EXTRA_OBJECTS_sm100_unit := \
 	$(OBJ_DIR)/sm100/support/addrdec.cc.o \
 	$(OBJ_DIR)/sm100/support/hashing.cc.o \
+	$(OBJ_DIR)/sm100/support/local_interconnect.cc.o \
 	$(OBJ_DIR)/sm100/support/mshr-table.cc.o \
 	$(OBJ_DIR)/sm100/support/option_parser.cc.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/descriptor.cu.o \
@@ -45,6 +46,16 @@ $(BUILD_MK) arch/$(1).toml $(ARCH_MANIFEST_SCRIPT)
 endef
 
 $(foreach arch,$(ARCHITECTURES),$(eval $(call REGISTER_ARCH_COMPILE_RULES,$(arch))))
+
+# These host tests include simulator headers outside TEST_HEADERS. Keep their
+# object layouts in lockstep with memory_transport_service_stats so an
+# incremental build cannot link a stale test object against a rebuilt xbar.
+$(OBJ_DIR)/sm100/unit/local_interconnect_test.cc.o \
+$(OBJ_DIR)/sm100/unit/memory_transport_test.cc.o \
+$(OBJ_DIR)/sm120/unit/local_interconnect_test.cc.o \
+$(OBJ_DIR)/sm120/unit/memory_transport_test.cc.o: \
+$(SRC_DIR)/gpgpu-sim/local_interconnect.h \
+$(SRC_DIR)/gpgpu-sim/memory_transport.h
 
 define REGISTER_STANDARD_TEST_GROUP
 TEST_GROUP_OBJECTS_$(1)_$(2) := $$(call TEST_SOURCE_OBJECTS,$(1),$$(TEST_GROUP_SOURCES_$(1)_$(2)))
@@ -109,7 +120,7 @@ $(SRC_DIR)/option_parser.h $(TOP_MAKEFILE) $(BUILD_MK)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
-# Host-side simulator objects required only by the SM120 unit test group.
+# Host-side simulator objects required by architecture unit test groups.
 $(OBJ_DIR)/sm120/support/bulk_group.cu.o: $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc \
 $(SRC_DIR)/gpgpu-sim/flash/bulk_group.h $(TOP_MAKEFILE) $(BUILD_MK)
 	@mkdir -p $(dir $@)
@@ -118,7 +129,15 @@ $(SRC_DIR)/gpgpu-sim/flash/bulk_group.h $(TOP_MAKEFILE) $(BUILD_MK)
 
 $(OBJ_DIR)/sm120/support/local_interconnect.cc.o: \
 $(SRC_DIR)/gpgpu-sim/local_interconnect.cc \
-$(SRC_DIR)/gpgpu-sim/local_interconnect.h $(TOP_MAKEFILE) $(BUILD_MK)
+$(SRC_DIR)/gpgpu-sim/local_interconnect.h \
+$(SRC_DIR)/gpgpu-sim/memory_transport.h $(TOP_MAKEFILE) $(BUILD_MK)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
+$(OBJ_DIR)/sm100/support/local_interconnect.cc.o: \
+$(SRC_DIR)/gpgpu-sim/local_interconnect.cc \
+$(SRC_DIR)/gpgpu-sim/local_interconnect.h \
+$(SRC_DIR)/gpgpu-sim/memory_transport.h $(TOP_MAKEFILE) $(BUILD_MK)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 

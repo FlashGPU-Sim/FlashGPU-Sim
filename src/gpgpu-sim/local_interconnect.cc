@@ -245,6 +245,12 @@ xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
   allow_multi_grant =
       m_type == REQ_NET ? m_localinct_config.multi_grant_request != 0
                         : m_localinct_config.multi_grant_reply != 0;
+  input_sector_width = m_type == REQ_NET
+                           ? m_localinct_config.request_input_sectors_per_cycle
+                           : m_localinct_config.reply_input_sectors_per_cycle;
+  output_sector_width =
+      m_type == REQ_NET ? m_localinct_config.request_output_sectors_per_cycle
+                        : m_localinct_config.reply_output_sectors_per_cycle;
   in_buffers.resize(total_nodes);
   const unsigned queues_per_input = use_voq ? total_nodes : 1;
   for (unsigned i = 0; i < total_nodes; ++i) {
@@ -253,10 +259,12 @@ xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
   out_buffers.resize(total_nodes);
   in_buffer_occupancy.assign(total_nodes, 0);
   next_node.resize(total_nodes, 0);
+  next_output.resize(total_nodes, 0);
   in_buffer_limit = m_localinct_config.in_buffer_limit;
   out_buffer_limit = m_localinct_config.out_buffer_limit;
   arbit_type = m_localinct_config.arbiter_algo;
   next_node_id = 0;
+  next_output_id = 0;
   if (m_type == REQ_NET) {
     active_in_buffers = n_shader;
     active_out_buffers = n_mem;
@@ -287,16 +295,22 @@ xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
   output_full_events.assign(total_nodes, 0);
   max_input_occupancy.assign(total_nodes, 0);
   max_output_occupancy.assign(total_nodes, 0);
+  input_service_stats.resize(total_nodes);
+  output_service_stats.resize(total_nodes);
+  input_budgets.resize(total_nodes);
+  output_budgets.resize(total_nodes);
+  input_tick_service_slots.assign(total_nodes, 0);
+  output_tick_service_slots.assign(total_nodes, 0);
 }
 
 xbar_router::~xbar_router() {}
 
 void xbar_router::Push(unsigned input_deviceID, unsigned output_deviceID,
-                       void *data, unsigned int size) {
+                       void *data, unsigned int size, unsigned data_sectors) {
   assert(input_deviceID < total_nodes);
   assert(output_deviceID < total_nodes);
   in_buffers[input_deviceID][InputQueueIndex(output_deviceID)].push_back(
-      Packet(data, output_deviceID, size));
+      Packet(data, output_deviceID, size, data_sectors));
   in_buffer_occupancy[input_deviceID]++;
   packets_num++;
   input_pushes[input_deviceID]++;
@@ -326,6 +340,12 @@ void *xbar_router::Pop(unsigned ouput_deviceID) {
   return data;
 }
 
+void *xbar_router::Top(unsigned output_deviceID) const {
+  assert(output_deviceID < total_nodes);
+  if (out_buffers[output_deviceID].empty()) return NULL;
+  return out_buffers[output_deviceID].front().data;
+}
+
 bool xbar_router::Has_Buffer_In(unsigned input_deviceID, unsigned size,
                                 bool update_counter) {
   assert(input_deviceID < total_nodes);
@@ -345,12 +365,303 @@ bool xbar_router::Has_Buffer_Out(unsigned output_deviceID, unsigned size) {
 }
 
 void xbar_router::Advance() {
+  std::fill(input_tick_service_slots.begin(), input_tick_service_slots.end(), 0);
+  std::fill(output_tick_service_slots.begin(), output_tick_service_slots.end(),
+            0);
+  if (input_sector_width != 0 || output_sector_width != 0) {
+    NumericAdvance(arbit_type == iSLIP);
+    return;
+  }
   if (arbit_type == NAIVE_RR)
     RR_Advance();
   else if (arbit_type == iSLIP)
     iSLIP_Advance();
   else
     assert(0);
+  FinalizeLegacyServiceStats();
+}
+
+void xbar_router::NumericAdvance(bool is_islip) {
+  assert(arbit_type == NAIVE_RR || arbit_type == iSLIP);
+
+  bool active = false;
+  unsigned conflict_sub = 0;
+  unsigned reqs = 0;
+  CollectRequestStats(&active, &conflict_sub);
+
+  vector<unsigned> legacy_input_grants(total_nodes, 0);
+  vector<unsigned> legacy_output_grants(total_nodes, 0);
+  vector<vector<bool> > legacy_pairs;
+  if (input_sector_width == 0 && allow_multi_grant && is_islip)
+    legacy_pairs.assign(total_nodes, vector<bool>(total_nodes));
+  vector<bool> downstream_seen(total_nodes, false);
+  // A full destination is an input-side stall statistic, but it must not clear
+  // credit accumulated for an independent VOQ on the same input.
+  vector<bool> input_downstream_seen(total_nodes, false);
+  vector<bool> input_credit_reserved(total_nodes, false);
+  vector<bool> output_credit_reserved(total_nodes, false);
+
+  unsigned queued_packets = 0;
+  for (unsigned input = active_in_buffer_base;
+       input < active_in_buffer_base + active_in_buffers; ++input) {
+    input_budgets[input].begin_tick(input_sector_width);
+    queued_packets += in_buffer_occupancy[input];
+  }
+  for (unsigned output = active_out_buffer_base;
+       output < active_out_buffer_base + active_out_buffers; ++output) {
+    output_budgets[output].begin_tick(output_sector_width);
+  }
+
+  // Each round transfers at least one packet or terminates.  Bounding the
+  // rounds by the number present at tick start makes the arbitration finite
+  // without imposing a separate packet-count constant.
+  for (unsigned round = 0; round < queued_packets; ++round) {
+    bool progress = false;
+
+    if (is_islip) {
+      for (unsigned output_offset = 0; output_offset < active_out_buffers;
+           ++output_offset) {
+        const unsigned output =
+            active_out_buffer_base +
+            (output_offset + next_output_id + round) % active_out_buffers;
+        if (output_credit_reserved[output]) continue;
+
+        if (!Has_Buffer_Out(output, 1)) {
+          bool requested = false;
+          for (unsigned input = active_in_buffer_base;
+               input < active_in_buffer_base + active_in_buffers; ++input) {
+            if (InputHasPacketForOutput(input, output)) {
+              requested = true;
+              input_downstream_seen[input] = true;
+            }
+          }
+          if (requested && !downstream_seen[output]) {
+            downstream_seen[output] = true;
+            output_budgets[output].note_downstream_full();
+            ++out_buffer_full;
+            ++output_full_events[output];
+          }
+          continue;
+        }
+
+        for (unsigned input_offset = 0; input_offset < active_in_buffers;
+             ++input_offset) {
+          const unsigned input =
+              active_in_buffer_base +
+              (input_offset + next_node[output]) % active_in_buffers;
+          if (input_credit_reserved[input]) continue;
+          const Packet *packet = InputPacketForOutput(input, output);
+          if (!packet) continue;
+          const unsigned slots =
+              memory_transport_service_slots(packet->data_sectors);
+          const bool input_needs_credit =
+              input_sector_width != 0 && slots > input_sector_width &&
+              !input_budgets[input].can_accept(packet->data_sectors);
+          const bool output_needs_credit =
+              output_sector_width != 0 && slots > output_sector_width &&
+              !output_budgets[output].can_accept(packet->data_sectors);
+          if (input_needs_credit || output_needs_credit) {
+            if (input_needs_credit) {
+              input_budgets[input].note_width_limited(packet->data_sectors);
+              input_credit_reserved[input] = true;
+            }
+            if (output_needs_credit) {
+              output_budgets[output].note_width_limited(packet->data_sectors);
+              output_credit_reserved[output] = true;
+              break;
+            }
+            continue;
+          }
+          if (!InputCanGrant(input, output, *packet, legacy_input_grants,
+                             legacy_pairs) ||
+              !OutputCanGrant(output, *packet, legacy_output_grants)) {
+            continue;
+          }
+
+          if (input_sector_width != 0)
+            input_budgets[input].consume(packet->data_sectors);
+          if (output_sector_width != 0)
+            output_budgets[output].consume(packet->data_sectors);
+          TransferPacket(input, output);
+          ++legacy_input_grants[input];
+          ++legacy_output_grants[output];
+          if (!legacy_pairs.empty()) legacy_pairs[input][output] = true;
+          if (grant_cycles_count == 1)
+            next_node[output] =
+                (input - active_in_buffer_base + 1) % active_in_buffers;
+          ++reqs;
+          progress = true;
+          break;
+        }
+      }
+    } else {
+      for (unsigned input_offset = 0; input_offset < active_in_buffers;
+           ++input_offset) {
+        const unsigned input =
+            active_in_buffer_base +
+            (input_offset + next_node_id + round) % active_in_buffers;
+        if (input_credit_reserved[input]) continue;
+        if (!InputHasPackets(input)) continue;
+
+        for (unsigned output_offset = 0; output_offset < active_out_buffers;
+             ++output_offset) {
+          unsigned output = 0;
+          if (use_voq) {
+            output = active_out_buffer_base +
+                     (output_offset + next_output[input]) % active_out_buffers;
+          } else {
+            output = FirstReadyOutput(input);
+            if (output_offset != 0) break;
+          }
+
+          const Packet *packet = InputPacketForOutput(input, output);
+          if (!packet) continue;
+          if (output_credit_reserved[output]) continue;
+          if (!Has_Buffer_Out(output, 1)) {
+            input_downstream_seen[input] = true;
+            if (!downstream_seen[output]) {
+              downstream_seen[output] = true;
+              output_budgets[output].note_downstream_full();
+              ++out_buffer_full;
+              ++output_full_events[output];
+            }
+            continue;
+          }
+          const unsigned slots =
+              memory_transport_service_slots(packet->data_sectors);
+          const bool input_needs_credit =
+              input_sector_width != 0 && slots > input_sector_width &&
+              !input_budgets[input].can_accept(packet->data_sectors);
+          const bool output_needs_credit =
+              output_sector_width != 0 && slots > output_sector_width &&
+              !output_budgets[output].can_accept(packet->data_sectors);
+          if (input_needs_credit || output_needs_credit) {
+            if (input_needs_credit) {
+              input_budgets[input].note_width_limited(packet->data_sectors);
+              input_credit_reserved[input] = true;
+            }
+            if (output_needs_credit) {
+              output_budgets[output].note_width_limited(packet->data_sectors);
+              output_credit_reserved[output] = true;
+            }
+            // An output-only credit wait must not head-of-line block the
+            // input's other VOQs.  Input credit, in contrast, reserves the
+            // shared input budget and therefore stops this input for the tick.
+            if (input_needs_credit) break;
+            continue;
+          }
+          if (!InputCanGrant(input, output, *packet, legacy_input_grants,
+                             legacy_pairs) ||
+              !OutputCanGrant(output, *packet, legacy_output_grants)) {
+            continue;
+          }
+
+          if (input_sector_width != 0)
+            input_budgets[input].consume(packet->data_sectors);
+          if (output_sector_width != 0)
+            output_budgets[output].consume(packet->data_sectors);
+          TransferPacket(input, output);
+          ++legacy_input_grants[input];
+          ++legacy_output_grants[output];
+          if (!legacy_pairs.empty()) legacy_pairs[input][output] = true;
+          next_output[input] =
+              (output - active_out_buffer_base + 1) % active_out_buffers;
+          ++reqs;
+          progress = true;
+          break;
+        }
+      }
+    }
+
+    if (!progress) break;
+  }
+
+  // Identify resources whose remaining budget, rather than backpressure,
+  // leaves a packet queued.  The remaining credit is retained only in this
+  // case so an oversized head packet eventually advances.
+  for (unsigned input = active_in_buffer_base;
+       input < active_in_buffer_base + active_in_buffers; ++input) {
+    if (!InputHasPackets(input)) continue;
+    if (input_sector_width == 0) {
+      const bool one_grant_per_tick =
+          arbit_type == NAIVE_RR || !allow_multi_grant;
+      if ((one_grant_per_tick && legacy_input_grants[input] != 0) ||
+          (!one_grant_per_tick &&
+           legacy_input_grants[input] >= active_out_buffers))
+        input_budgets[input].note_width_limited(0);
+    } else if (use_voq) {
+      for (unsigned output = active_out_buffer_base;
+           output < active_out_buffer_base + active_out_buffers; ++output) {
+        const Packet *packet = InputPacketForOutput(input, output);
+        if (packet && (!input_budgets[input].can_accept(packet->data_sectors) ||
+                       memory_transport_service_slots(packet->data_sectors) >
+                           input_sector_width))
+          input_budgets[input].note_width_limited(packet->data_sectors);
+      }
+    } else {
+      const unsigned output = FirstReadyOutput(input);
+      const Packet *packet = InputPacketForOutput(input, output);
+      if (packet && (!input_budgets[input].can_accept(packet->data_sectors) ||
+                     memory_transport_service_slots(packet->data_sectors) >
+                         input_sector_width))
+        input_budgets[input].note_width_limited(packet->data_sectors);
+    }
+  }
+
+  for (unsigned output = active_out_buffer_base;
+       output < active_out_buffer_base + active_out_buffers; ++output) {
+    bool pending = false;
+    for (unsigned input = active_in_buffer_base;
+         input < active_in_buffer_base + active_in_buffers; ++input) {
+      const Packet *packet = InputPacketForOutput(input, output);
+      if (!packet) continue;
+      pending = true;
+      if (output_sector_width != 0 &&
+          (!output_budgets[output].can_accept(packet->data_sectors) ||
+           memory_transport_service_slots(packet->data_sectors) >
+               output_sector_width))
+        output_budgets[output].note_width_limited(packet->data_sectors);
+    }
+    if (pending && output_sector_width == 0 &&
+        legacy_output_grants[output] != 0)
+      output_budgets[output].note_width_limited(0);
+  }
+
+  for (unsigned input = active_in_buffer_base;
+       input < active_in_buffer_base + active_in_buffers; ++input) {
+    input_budgets[input].end_tick(&input_service_stats[input]);
+    if (input_sector_width == 0)
+      input_service_stats[input].record_tick_service(
+          input_tick_service_slots[input]);
+    if (input_downstream_seen[input])
+      ++input_service_stats[input].downstream_full_ticks;
+  }
+  for (unsigned output = active_out_buffer_base;
+       output < active_out_buffer_base + active_out_buffers; ++output) {
+    output_budgets[output].end_tick(&output_service_stats[output]);
+    if (output_sector_width == 0)
+      output_service_stats[output].record_tick_service(
+          output_tick_service_slots[output]);
+  }
+
+  next_node_id = (next_node_id + 1) % active_in_buffers;
+  next_output_id = (next_output_id + 1) % active_out_buffers;
+  conflicts += conflict_sub;
+  if (active) {
+    conflicts_util += conflict_sub;
+    ++cycles_util;
+    reqs_util += reqs;
+  }
+  if (active && grant_cycles_count == 1)
+    grant_cycles_count = grant_cycles;
+  else if (active)
+    --grant_cycles_count;
+
+  for (unsigned i = 0; i < total_nodes; ++i) {
+    in_buffer_util += in_buffer_occupancy[i];
+    out_buffer_util += out_buffers[i].size();
+  }
+  ++cycles;
 }
 
 void xbar_router::RR_Advance() {
@@ -532,6 +843,44 @@ unsigned xbar_router::InputQueueIndex(unsigned output_deviceID) const {
   return use_voq ? output_deviceID : 0;
 }
 
+const xbar_router::Packet *xbar_router::InputPacketForOutput(
+    unsigned input_deviceID, unsigned output_deviceID) const {
+  if (!InputHasPacketForOutput(input_deviceID, output_deviceID)) return NULL;
+  const deque<Packet> &queue =
+      in_buffers[input_deviceID][InputQueueIndex(output_deviceID)];
+  return &queue.front();
+}
+
+bool xbar_router::InputCanGrant(
+    unsigned input_deviceID, unsigned output_deviceID, const Packet &packet,
+    const std::vector<unsigned> &legacy_input_grants,
+    const std::vector<std::vector<bool> > &legacy_pairs) const {
+  if (input_sector_width != 0) {
+    if (input_budgets[input_deviceID].has_reserved_credit() &&
+        memory_transport_service_slots(packet.data_sectors) <=
+            input_sector_width)
+      return false;
+    return input_budgets[input_deviceID].can_accept(packet.data_sectors);
+  }
+  if (arbit_type == NAIVE_RR || !allow_multi_grant)
+    return legacy_input_grants[input_deviceID] == 0;
+  assert(!legacy_pairs.empty());
+  return !legacy_pairs[input_deviceID][output_deviceID];
+}
+
+bool xbar_router::OutputCanGrant(
+    unsigned output_deviceID, const Packet &packet,
+    const std::vector<unsigned> &legacy_output_grants) const {
+  if (output_sector_width != 0) {
+    if (output_budgets[output_deviceID].has_reserved_credit() &&
+        memory_transport_service_slots(packet.data_sectors) <=
+            output_sector_width)
+      return false;
+    return output_budgets[output_deviceID].can_accept(packet.data_sectors);
+  }
+  return legacy_output_grants[output_deviceID] == 0;
+}
+
 void xbar_router::TransferPacket(unsigned input_deviceID,
                                  unsigned output_deviceID) {
   assert(input_deviceID < total_nodes);
@@ -556,8 +905,73 @@ void xbar_router::TransferPacket(unsigned input_deviceID,
                          out_buffers[output_deviceID].size());
   input_grants[input_deviceID]++;
   output_grants[output_deviceID]++;
+  input_service_stats[input_deviceID].record_accept(packet.data_sectors);
+  output_service_stats[output_deviceID].record_accept(packet.data_sectors);
+  const unsigned service_slots =
+      memory_transport_service_slots(packet.data_sectors);
+  input_tick_service_slots[input_deviceID] += service_slots;
+  output_tick_service_slots[output_deviceID] += service_slots;
   input_queue.pop_front();
   in_buffer_occupancy[input_deviceID]--;
+}
+
+void xbar_router::FinalizeLegacyServiceStats() {
+  vector<bool> input_width_limited(total_nodes, false);
+  vector<bool> input_downstream_full(total_nodes, false);
+  vector<bool> output_width_limited(total_nodes, false);
+  vector<bool> output_downstream_full(total_nodes, false);
+
+  for (unsigned input = active_in_buffer_base;
+       input < active_in_buffer_base + active_in_buffers; ++input) {
+    if (!InputHasPackets(input)) continue;
+    if (use_voq) {
+      for (unsigned output = active_out_buffer_base;
+           output < active_out_buffer_base + active_out_buffers; ++output) {
+        if (!InputHasPacketForOutput(input, output)) continue;
+        if (Has_Buffer_Out(output, 1)) {
+          if ((arbit_type == NAIVE_RR || !allow_multi_grant) &&
+              input_tick_service_slots[input] != 0)
+            input_width_limited[input] = true;
+          if (output_tick_service_slots[output] != 0)
+            output_width_limited[output] = true;
+        } else {
+          input_downstream_full[input] = true;
+          output_downstream_full[output] = true;
+        }
+      }
+    } else {
+      const unsigned output = FirstReadyOutput(input);
+      if (Has_Buffer_Out(output, 1)) {
+        if ((arbit_type == NAIVE_RR || !allow_multi_grant) &&
+            input_tick_service_slots[input] != 0)
+          input_width_limited[input] = true;
+        if (output_tick_service_slots[output] != 0)
+          output_width_limited[output] = true;
+      } else {
+        input_downstream_full[input] = true;
+        output_downstream_full[output] = true;
+      }
+    }
+  }
+
+  for (unsigned input = active_in_buffer_base;
+       input < active_in_buffer_base + active_in_buffers; ++input) {
+    input_service_stats[input].record_tick_service(
+        input_tick_service_slots[input]);
+    if (input_width_limited[input])
+      ++input_service_stats[input].width_limited_ticks;
+    if (input_downstream_full[input])
+      ++input_service_stats[input].downstream_full_ticks;
+  }
+  for (unsigned output = active_out_buffer_base;
+       output < active_out_buffer_base + active_out_buffers; ++output) {
+    output_service_stats[output].record_tick_service(
+        output_tick_service_slots[output]);
+    if (output_width_limited[output])
+      ++output_service_stats[output].width_limited_ticks;
+    if (output_downstream_full[output])
+      ++output_service_stats[output].downstream_full_ticks;
+  }
 }
 
 void xbar_router::CollectRequestStats(bool *active,
@@ -718,6 +1132,19 @@ void xbar_router::DisplayStats(const char *name) const {
                      active_in_buffer_base, active_in_buffers);
   print_top_unsigned("max_output_occupancy", max_output_occupancy,
                      active_out_buffer_base, active_out_buffers);
+
+  memory_transport_service_stats input_total;
+  memory_transport_service_stats output_total;
+  for (unsigned input = active_in_buffer_base;
+       input < active_in_buffer_base + active_in_buffers; ++input)
+    input_total.add(input_service_stats[input]);
+  for (unsigned output = active_out_buffer_base;
+       output < active_out_buffer_base + active_out_buffers; ++output)
+    output_total.add(output_service_stats[output]);
+  std::string input_name = std::string(name) + "_input_transport";
+  std::string output_name = std::string(name) + "_output_transport";
+  input_total.print(stdout, input_name.c_str());
+  output_total.print(stdout, output_name.c_str());
 }
 
 bool xbar_router::Busy() const {
@@ -793,7 +1220,10 @@ void LocalInterconnect::Push(unsigned input_deviceID, unsigned output_deviceID,
   // no flits are implemented
   assert(net[subnet]->Has_Buffer_In(input_deviceID, 1));
 
-  net[subnet]->Push(input_deviceID, output_deviceID, data, size);
+  assert(data != NULL);
+  const mem_fetch *mf = static_cast<const mem_fetch *>(data);
+  net[subnet]->Push(input_deviceID, output_deviceID, data, size,
+                    memory_transport_data_sectors(mf));
 }
 
 void *LocalInterconnect::Pop(unsigned ouput_deviceID) {
@@ -803,6 +1233,11 @@ void *LocalInterconnect::Pop(unsigned ouput_deviceID) {
     subnet = 1;
 
   return net[subnet]->Pop(ouput_deviceID);
+}
+
+void *LocalInterconnect::Top(unsigned output_deviceID) const {
+  int subnet = output_deviceID < n_shader ? REPLY_NET : REQ_NET;
+  return net[subnet]->Top(output_deviceID);
 }
 
 void LocalInterconnect::Advance() {

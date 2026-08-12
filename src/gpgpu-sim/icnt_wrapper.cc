@@ -178,6 +178,22 @@ void icnt_reg_options(class OptionParser* opp) {
       &g_inct_config.multi_grant_reply,
       "Allow one reply-network input to grant multiple outputs per cycle",
       "0");
+  option_parser_register(
+      opp, "-icnt_request_input_sectors_per_cycle", OPT_UINT32,
+      &g_inct_config.request_input_sectors_per_cycle,
+      "Request-network sector slots per input and ICNT tick (0=legacy)", "0");
+  option_parser_register(
+      opp, "-icnt_request_output_sectors_per_cycle", OPT_UINT32,
+      &g_inct_config.request_output_sectors_per_cycle,
+      "Request-network sector slots per output and ICNT tick (0=legacy)", "0");
+  option_parser_register(
+      opp, "-icnt_reply_input_sectors_per_cycle", OPT_UINT32,
+      &g_inct_config.reply_input_sectors_per_cycle,
+      "Reply-network sector slots per input and ICNT tick (0=legacy)", "0");
+  option_parser_register(
+      opp, "-icnt_reply_output_sectors_per_cycle", OPT_UINT32,
+      &g_inct_config.reply_output_sectors_per_cycle,
+      "Reply-network sector slots per output and ICNT tick (0=legacy)", "0");
 }
 
 void icnt_wrapper_init() {
