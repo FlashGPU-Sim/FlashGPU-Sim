@@ -33,6 +33,18 @@ physical-port counts. Legacy cache-port utilization statistics apply only to
 the legacy port model; the multi-issue model reports accepted sector work and
 width stalls separately.
 
+Ready requests leave the fixed-latency ROP-delay queues through the same
+separate three-sector-per-L2-tick service candidate as the full model. This
+does not alter any child's ready cycle. It only controls ready 32-byte sector
+children entering the bounded L2 input FIFO, and it is a deterministic
+sensitivity assumption rather than a documented B200 physical-port count.
+
+The reduced model also matches the full model's local TMA and ordinary
+`cp.async` limits: 32-byte requests with width four on both the request and
+response sides. Each type can therefore use the complete shared four-sector
+budget when it runs alone, while mixed responses still share one cluster
+dispatch budget.
+
 Detailed DRAM timing and physical address-to-bank mapping are inherited from
 the reduced Blackwell configuration and remain functional placeholders; those
 parts are not performance-calibrated for B200.

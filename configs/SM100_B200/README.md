@@ -32,6 +32,20 @@ cache-port utilization statistics apply only when the legacy port model is
 selected; the multi-issue model reports accepted sector work and width stalls
 separately for lookup, data, and fill.
 
+Ready requests leave the fixed-latency ROP-delay queues through a separate
+three-sector-per-L2-tick service model. The latency and output width remain
+independent: each child keeps its assigned ready cycle, while the width only
+controls ready 32-byte sector children entering the bounded L2 input FIFO.
+Three is a candidate chosen for sensitivity testing alongside lookup width
+three, not a publicly documented B200 ROP-port count.
+
+Across the wider transport path, ordinary LD/ST, TMA, and ordinary
+`cp.async` retain separate local producer/consumer limits. The TMA and
+`cp.async` configurations use 32-byte requests with width four, so either type
+can use the full shared four-sector request or response budget when it runs
+alone. Mixed responses still arbitrate within one four-sector cluster-dispatch
+budget.
+
 Detailed DRAM timing and physical address-to-bank mapping remain functional
 placeholders; those parts are not calibrated against B200 hardware counters.
 

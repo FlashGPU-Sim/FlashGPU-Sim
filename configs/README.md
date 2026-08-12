@@ -82,6 +82,7 @@ option in each `gpgpusim.config`.
 | `-gpgpu_l2_lookup_sectors_per_cycle` | Lookup width in 32-byte sector work packages when the multi-issue port model is enabled |
 | `-gpgpu_l2_data_port_sectors_per_cycle` | Data-port width for hits and dirty-eviction reads in 32-byte sector work packages when the multi-issue model is enabled |
 | `-gpgpu_l2_fill_port_sectors_per_cycle` | Independent fill-port width in 32-byte sector work packages when the multi-issue model is enabled |
+| `-gpgpu_l2_rop_delay_output_sectors_per_cycle` | Ready ROP-delay output service width per L2 instance and L2 tick; `1` preserves the legacy one-item cadence |
 | `-gpgpu_shmem_size` | Shared-memory capacity in bytes per SM |
 | `-gpgpu_shmem_per_block` | Default shared-memory limit in bytes per CTA |
 | `-gpgpu_adaptive_cache_config` | Enable runtime selection among supported shared-memory/L1 carveouts |
@@ -213,6 +214,57 @@ topology and address mapping.
 | `-icnt_use_voq` | `0` | `1` | default | Use virtual output queues in the local crossbar |
 | `-icnt_multi_grant_request` | `0` | default | `1` | Permit one request-network input to grant multiple outputs per cycle |
 | `-icnt_multi_grant_reply` | `0` | default | `1` | Permit one reply-network input to grant multiple outputs per cycle |
+
+The B200 transport model uses the following independent integer service widths.
+For the sector-service options, `0` preserves the legacy packet-per-tick path;
+a positive value is a 32-byte sector budget for the stated local tick. The
+ordinary LD/ST request option follows the same convention: `0` preserves the
+legacy LD/ST-cycle path, while a positive value counts coalescer children.
+Under B200's `coalesce_arch=100`, every such child is one 32-byte sector.
+
+The B200 configurations leave `-gpgpu_mem_unit_ports` at its code default of
+one. Raising that older option repeats the complete LD/ST-unit cycle, including
+request generation, shared-memory and L1 cache activity, response handling,
+and writeback. The dedicated request width below drains multiple children only
+for ordinary global/local operations which already bypass L1D (`.cg`, no L1D,
+or the existing global skip-L1 policy); it does not repeat or widen an L1D
+access. These 32-byte `m_accessq` entries are internal sector children: one
+physical L2 request may cover one to four sectors of the same 128-byte line, so
+the model does not claim that each child is a distinct physical request.
+
+The dedicated LD/ST response width applies a sector budget only to ordinary
+global/local response staging and packet retirement. The final sector enqueues
+one instruction-level RF/scoreboard completion through the legacy writeback
+arbiter; shared, texture, constant, L1D, and writeback behavior keep their
+legacy cadence.
+
+TMA and ordinary `cp.async` keep their existing local producer and consumer
+limits rather than borrowing the ordinary LD/ST width. B200 makes their
+32-byte request granularity and width of four explicit, so either type can use
+the complete four-sector shared transport budget when it runs alone. A mixed
+response stream still shares the single cluster-dispatch budget shown below.
+`-gpgpu_tma_request_bytes_per_cycle` remains at its code default of `0`, which
+disables the additional byte-credit limiter instead of restricting service.
+
+| Option | Code default | SM100_B200 | SM100_B200_REDUCED | Meaning |
+| --- | ---: | ---: | ---: | --- |
+| `-icnt_request_input_sectors_per_cycle` | `0` | `4` | `4` | Request sectors per local-xbar input and ICNT tick |
+| `-icnt_request_output_sectors_per_cycle` | `0` | `4` | `4` | Request sectors per local-xbar output and ICNT tick |
+| `-gpgpu_l2_request_ingress_sectors_per_cycle` | `0` | `4` | `4` | Request sectors entering each memory subpartition and L2 tick |
+| `-gpgpu_l2_rop_delay_output_sectors_per_cycle` | `1` | `3` | `3` | Ready 32-byte sector children leaving each ROP-delay queue per L2 instance and L2 tick |
+| `-gpgpu_l2_response_egress_sectors_per_cycle` | `0` | `4` | `4` | Response sectors leaving each memory subpartition and ICNT tick |
+| `-icnt_reply_input_sectors_per_cycle` | `0` | `4` | `4` | Reply sectors per local-xbar input and ICNT tick |
+| `-icnt_reply_output_sectors_per_cycle` | `0` | `4` | `4` | Reply sectors per local-xbar output and ICNT tick |
+| `-gpgpu_cluster_response_ingress_sectors_per_cycle` | `0` | `4` | `4` | Reply sectors entering a cluster FIFO per target SM and core tick |
+| `-gpgpu_cluster_response_dispatch_sectors_per_cycle` | `0` | `4` | `4` | Shared response sectors dispatched per target SM and core tick |
+| `-gpgpu_ldst_request_width` | `0` | `4` | `4` | Internal 32-byte ordinary global/local bypass children injected per SM and core tick; `0` preserves the legacy LD/ST-cycle path |
+| `-gpgpu_ldst_response_sectors_per_cycle` | `0` | `4` | `4` | Ordinary LD/ST response sectors advanced per SM and core tick |
+| `-gpgpu_tma_request_granularity` | `32` | `32` | `32` | Bytes represented by one TMA request |
+| `-gpgpu_tma_request_width` | `1` | `4` | `4` | TMA requests issued per TMA unit and core tick |
+| `-gpgpu_tma_response_width` | `1` | `4` | `4` | TMA response tokens consumed per SM and core tick |
+| `-gpgpu_cp_async_request_granularity` | `32` | `32` | `32` | Bytes represented by one ordinary `cp.async` request |
+| `-gpgpu_cp_async_request_width` | `1` | `4` | `4` | Ordinary `cp.async` requests issued per SM and core tick |
+| `-gpgpu_cp_async_response_width` | `1` | `4` | `4` | Ordinary `cp.async` response tokens consumed per SM and core tick |
 
 ### Experimental Controls
 
