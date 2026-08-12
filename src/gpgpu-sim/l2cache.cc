@@ -711,7 +711,6 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
   m_mem_stats = stats;
   m_gpu = gpu;
   m_memcpy_cycle_offset = 0;
-  m_next_rop_sequence = 0;
   memset(m_full_state_stats, 0, sizeof(m_full_state_stats));
   m_l2_partition_remote_accesses = 0;
   m_l2_partition_extra_latency_cycles = 0;
@@ -1051,14 +1050,25 @@ void memory_sub_partition::cycle_multi_issue_l2_port_model() {
 }
 
 void memory_sub_partition::enqueue_ready_rop(unsigned cycle) {
-  // Keep local and remote traffic separate so a far-L2 request cannot block an
-  // already-ready local request.
-  mem_fetch *mf = NULL;
-  if (!m_icnt_L2_queue->full() && pop_ready_rop(cycle, mf)) {
-    m_icnt_L2_queue->push(mf);
-    mf->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
-                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-  }
+  // Preserve each request's fixed ready cycle while independently servicing
+  // multiple ready 32-byte sector children into the bounded icnt-to-L2 FIFO.
+  // No service credit is accumulated across idle or blocked ticks.
+  const rop_delay_output_service_result rop_output =
+      m_rop_delay_output.service(
+          cycle, m_config->l2_rop_delay_output_sectors_per_cycle,
+          [](const mem_fetch *mf) {
+            const unsigned bytes = mf->get_data_size();
+            assert(bytes > 0);
+            return (bytes + SECTOR_SIZE - 1) / SECTOR_SIZE;
+          },
+          [this]() { return m_icnt_L2_queue->full(); },
+          [this](mem_fetch *mf) {
+            m_icnt_L2_queue->push(mf);
+            mf->set_status(
+                IN_PARTITION_ICNT_TO_L2_QUEUE,
+                m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+          });
+  m_rop_delay_output_stats.record(rop_output);
 }
 
 void memory_sub_partition::cache_cycle(unsigned cycle) {
@@ -1141,6 +1151,11 @@ void memory_sub_partition::accumulate_full_state_stats(
 void memory_sub_partition::accumulate_l2_multi_issue_port_stats(
     l2_multi_issue_port_stats &stats) const {
   stats += m_l2_multi_issue_ports.stats();
+}
+
+void memory_sub_partition::accumulate_rop_delay_output_stats(
+    rop_delay_output_service_stats &stats) const {
+  stats += m_rop_delay_output_stats;
 }
 
 void memory_sub_partition::accumulate_l2_partition_stats(
@@ -1287,38 +1302,7 @@ unsigned memory_sub_partition::l2_partition_extra_latency(
 void memory_sub_partition::push_rop_delay(mem_fetch *mf,
                                           unsigned long long ready_cycle,
                                           bool remote) {
-  rop_delay_t r;
-  r.ready_cycle = ready_cycle;
-  r.sequence = m_next_rop_sequence++;
-  r.req = mf;
-  if (remote)
-    m_rop_remote.push(r);
-  else
-    m_rop_local.push(r);
-}
-
-bool memory_sub_partition::pop_ready_rop(unsigned long long cycle,
-                                         mem_fetch *&mf) {
-  const bool local_ready =
-      !m_rop_local.empty() && cycle >= m_rop_local.top().ready_cycle;
-  const bool remote_ready =
-      !m_rop_remote.empty() && cycle >= m_rop_remote.top().ready_cycle;
-  if (!local_ready && !remote_ready) return false;
-
-  rop_delay_queue_t *queue = NULL;
-  if (local_ready && remote_ready) {
-    const rop_delay_t &local = m_rop_local.top();
-    const rop_delay_t &remote = m_rop_remote.top();
-    queue = (local.ready_cycle <= remote.ready_cycle) ? &m_rop_local
-                                                     : &m_rop_remote;
-  } else {
-    queue = local_ready ? &m_rop_local : &m_rop_remote;
-  }
-
-  rop_delay_t r = queue->top();
-  queue->pop();
-  mf = r.req;
-  return true;
+  m_rop_delay_output.push(mf, ready_cycle, remote);
 }
 
 std::vector<mem_fetch *>

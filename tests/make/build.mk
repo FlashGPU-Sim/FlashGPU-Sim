@@ -57,6 +57,10 @@ $(OBJ_DIR)/sm120/unit/memory_transport_test.cc.o: \
 $(SRC_DIR)/gpgpu-sim/local_interconnect.h \
 $(SRC_DIR)/gpgpu-sim/memory_transport.h
 
+$(OBJ_DIR)/sm100/unit/rop_delay_output_test.cc.o \
+$(OBJ_DIR)/sm120/unit/rop_delay_output_test.cc.o: \
+$(SRC_DIR)/gpgpu-sim/memory_transport.h
+
 define REGISTER_STANDARD_TEST_GROUP
 TEST_GROUP_OBJECTS_$(1)_$(2) := $$(call TEST_SOURCE_OBJECTS,$(1),$$(TEST_GROUP_SOURCES_$(1)_$(2)))
 TEST_GROUP_TARGET_$(1)_$(2) := $$(BIN_DIR)/$(1)/$(2)_tests

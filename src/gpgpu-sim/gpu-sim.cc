@@ -341,6 +341,12 @@ void memory_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_l2_rop_latency", OPT_UINT32, &rop_latency,
                          "ROP queue latency (default 85)", "85");
   option_parser_register(
+      opp, "-gpgpu_l2_rop_delay_output_sectors_per_cycle", OPT_UINT32,
+      &l2_rop_delay_output_sectors_per_cycle,
+      "Ready ROP-delay output service per memory subpartition and L2 tick, "
+      "in 32-byte sector work packages (default 1 preserves legacy)",
+      "1");
+  option_parser_register(
       opp, "-gpgpu_l2_partition_count", OPT_UINT32, &l2_partition_count,
       "Number of coarse L2/NOC locality partitions used for remote L2 latency "
       "modeling. 1 disables remote partition detection.",
@@ -1999,14 +2005,18 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   }
   unsigned long long l2_partition_remote_accesses = 0;
   unsigned long long l2_partition_extra_latency_cycles = 0;
+  rop_delay_output_service_stats rop_delay_output_total;
   for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
     m_memory_sub_partition[i]->accumulate_l2_partition_stats(
         l2_partition_remote_accesses, l2_partition_extra_latency_cycles);
+    m_memory_sub_partition[i]->accumulate_rop_delay_output_stats(
+        rop_delay_output_total);
   }
   printf("l2_partition_remote_accesses = %llu\n",
          l2_partition_remote_accesses);
   printf("l2_partition_extra_latency_cycles = %llu\n",
          l2_partition_extra_latency_cycles);
+  rop_delay_output_total.print(statfout, "gpgpu_l2_rop_delay_output");
   auto cp_async_debug = flash_gpgpu_sim::get_global_cp_async_debug_counters();
   printf("cp_async_debug_tx_started = %llu\n", cp_async_debug.tx_started);
   printf("cp_async_debug_tx_completed = %llu\n", cp_async_debug.tx_completed);

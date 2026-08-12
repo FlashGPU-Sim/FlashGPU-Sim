@@ -231,6 +231,7 @@ class memory_config {
   void init() {
     assert(gpgpu_dram_timing_opt);
     assert(l2_multi_issue_port_model <= 1);
+    assert(l2_rop_delay_output_sectors_per_cycle > 0);
     if (l2_multi_issue_port_model == 1) {
       assert(l2_lookup_sectors_per_cycle > 0);
       assert(l2_data_port_sectors_per_cycle > 0);
@@ -334,6 +335,10 @@ class memory_config {
 
     m_address_mapping.init(m_n_mem, m_n_sub_partition_per_memory_channel);
     m_L2_config.init(&m_address_mapping);
+    if (l2_rop_delay_output_sectors_per_cycle > 1)
+      assert(!m_L2_config.disabled() &&
+             m_L2_config.get_cache_type() == SECTOR &&
+             "multi-issue ROP output requires a sector cache");
 
     m_valid = true;
 
@@ -369,6 +374,7 @@ class memory_config {
   unsigned gpu_n_mem_per_ctrlr;
 
   unsigned rop_latency;
+  unsigned l2_rop_delay_output_sectors_per_cycle;
   unsigned l2_partition_count;
   unsigned l2_partition_extra_latency;
   unsigned l2_multi_issue_port_model;

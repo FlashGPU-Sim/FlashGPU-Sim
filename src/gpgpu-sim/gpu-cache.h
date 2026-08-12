@@ -777,6 +777,10 @@ class cache_config {
     assert(m_valid);
     return m_atom_sz;
   }
+  enum cache_type get_cache_type() const {
+    assert(m_valid);
+    return m_cache_type;
+  }
   unsigned get_num_lines() const {
     assert(m_valid);
     return m_nset * m_assoc;

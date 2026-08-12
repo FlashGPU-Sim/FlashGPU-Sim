@@ -34,6 +34,7 @@
 
 #include "../abstract_hardware_model.h"
 #include "dram.h"
+#include "memory_transport.h"
 
 #include <algorithm>
 #include <cassert>
@@ -414,6 +415,8 @@ class memory_sub_partition {
   void accumulate_full_state_stats(unsigned long long *stats) const;
   void accumulate_l2_multi_issue_port_stats(
       l2_multi_issue_port_stats &stats) const;
+  void accumulate_rop_delay_output_stats(
+      rop_delay_output_service_stats &stats) const;
   void accumulate_l2_partition_stats(unsigned long long &remote_accesses,
                                      unsigned long long &extra_latency) const;
   void push(class mem_fetch *mf, unsigned long long clock_cycle);
@@ -460,25 +463,12 @@ class memory_sub_partition {
   class gpgpu_sim *m_gpu;
   partition_mf_allocator *m_mf_allocator;
 
-  // model delay of ROP units with a fixed latency
-  struct rop_delay_t {
-    unsigned long long ready_cycle;
-    unsigned long long sequence;
-    class mem_fetch *req;
-  };
-  struct rop_delay_compare {
-    bool operator()(const rop_delay_t &lhs, const rop_delay_t &rhs) const {
-      if (lhs.ready_cycle != rhs.ready_cycle)
-        return lhs.ready_cycle > rhs.ready_cycle;
-      return lhs.sequence > rhs.sequence;
-    }
-  };
-  typedef std::priority_queue<rop_delay_t, std::vector<rop_delay_t>,
-                              rop_delay_compare>
-      rop_delay_queue_t;
-  rop_delay_queue_t m_rop_local;
-  rop_delay_queue_t m_rop_remote;
-  unsigned long long m_next_rop_sequence;
+  // Fixed-ready-cycle ROP delay and its independently configured output
+  // service. Local/remote entries retain separate FIFO queues; the earlier
+  // ready cycle wins across queues and equal cycles retain legacy local-first
+  // arbitration.
+  rop_delay_output_queue<class mem_fetch *> m_rop_delay_output;
+  rop_delay_output_service_stats m_rop_delay_output_stats;
 
   // these are various FIFOs between units within a memory partition
   fifo_pipeline<mem_fetch> *m_icnt_L2_queue;
@@ -508,7 +498,6 @@ class memory_sub_partition {
   std::vector<mem_fetch *> breakdown_request_to_sector_requests(mem_fetch *mf);
   void push_rop_delay(mem_fetch *mf, unsigned long long ready_cycle,
                       bool remote);
-  bool pop_ready_rop(unsigned long long cycle, mem_fetch *&mf);
   void process_l2_access_result(mem_fetch *mf, cache_request_status status,
                                 const std::list<cache_event> &events);
   void service_ready_l2_response();
