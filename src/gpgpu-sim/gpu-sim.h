@@ -43,6 +43,7 @@
 #include "addrdec.h"
 #include "flash/tcgen05.h"
 #include "gpu-cache.h"
+#include "memory_transport.h"
 #include "shader.h"
 
 // constants for statistics printouts
@@ -429,6 +430,8 @@ class memory_config {
   linear_to_raw_address_translation m_address_mapping;
 
   unsigned icnt_flit_size;
+  unsigned gpgpu_l2_request_ingress_sectors_per_cycle;
+  unsigned gpgpu_l2_response_egress_sectors_per_cycle;
 
   unsigned dram_bnk_indexing_policy;
   unsigned dram_bnkgrp_indexing_policy;
@@ -791,6 +794,10 @@ class gpgpu_sim : public gpgpu_t {
   memory_stats_manager_t *m_mem_stats;
   // class memory_stats_t *m_memory_stats;
   class power_stat_t *m_power_stats;
+  std::vector<memory_transport_service_budget> m_l2_request_ingress_budgets;
+  std::vector<memory_transport_service_budget> m_l2_response_egress_budgets;
+  std::vector<memory_transport_service_stats> m_l2_request_ingress_stats;
+  std::vector<memory_transport_service_stats> m_l2_response_egress_stats;
   class gpgpu_sim_wrapper *m_gpgpusim_wrapper;
   unsigned long long last_gpu_sim_insn;
 

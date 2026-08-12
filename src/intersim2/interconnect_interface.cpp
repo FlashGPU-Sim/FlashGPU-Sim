@@ -227,6 +227,24 @@ void* InterconnectInterface::Pop(unsigned deviceID)
 
 }
 
+void* InterconnectInterface::Top(unsigned deviceID) const {
+  map<unsigned, unsigned>::const_iterator mapped = _node_map.find(deviceID);
+  assert(mapped != _node_map.end());
+  int icntID = mapped->second;
+
+  int subnet = 0;
+  if (deviceID < _n_shader) subnet = 1;
+
+  int turn = _round_robin_turn[subnet][icntID];
+  for (int vc = 0; vc < _vcs; ++vc) {
+    if (_boundary_buffer[subnet][icntID][turn].HasPacket())
+      return _boundary_buffer[subnet][icntID][turn].TopPacket();
+    turn++;
+    if (turn == _vcs) turn = 0;
+  }
+  return NULL;
+}
+
 void InterconnectInterface::Advance()
 {
   _traffic_manager->_Step();

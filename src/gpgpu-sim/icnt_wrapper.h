@@ -40,6 +40,7 @@ typedef bool (*icnt_has_buffer_p)(unsigned input, unsigned int size);
 typedef std::function<void(unsigned input, unsigned output, void* data,
                             unsigned int size)> icnt_push_p;
 typedef std::function<void*(unsigned output)> icnt_pop_p;
+typedef std::function<void*(unsigned output)> icnt_top_p;
 typedef void (*icnt_transfer_p)();
 typedef bool (*icnt_busy_p)();
 typedef void (*icnt_drain_p)();
@@ -53,6 +54,7 @@ extern icnt_init_p icnt_init;
 extern icnt_has_buffer_p icnt_has_buffer;
 extern icnt_push_p icnt_push;
 extern icnt_pop_p icnt_pop;
+extern icnt_top_p icnt_top;
 extern icnt_transfer_p icnt_transfer;
 extern icnt_busy_p icnt_busy;
 extern icnt_drain_p icnt_drain;

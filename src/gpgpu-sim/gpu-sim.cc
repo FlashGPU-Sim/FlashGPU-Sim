@@ -406,6 +406,18 @@ void memory_config::reg_options(class OptionParser *opp) {
       "elimnate_rw_turnaround i.e set tWTR and tRTW = 0", "0");
   option_parser_register(opp, "-icnt_flit_size", OPT_UINT32, &icnt_flit_size,
                          "icnt_flit_size", "32");
+  option_parser_register(
+      opp, "-gpgpu_l2_request_ingress_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_l2_request_ingress_sectors_per_cycle,
+      "Request sector slots entering each L2 subpartition per L2 tick "
+      "(0=legacy)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_l2_response_egress_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_l2_response_egress_sectors_per_cycle,
+      "Response sector slots leaving each L2 subpartition per ICNT tick "
+      "(0=legacy)",
+      "0");
   // SST mode activate
   option_parser_register(opp, "-SST_mode", OPT_BOOL, &SST_mode, "SST mode",
                          "0");
@@ -1307,6 +1319,10 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   gpu_tot_sim_cycle_parition_util = 0;
   partiton_replys_in_parallel = 0;
   partiton_replys_in_parallel_total = 0;
+  m_l2_request_ingress_budgets.resize(m_memory_config->m_n_mem_sub_partition);
+  m_l2_response_egress_budgets.resize(m_memory_config->m_n_mem_sub_partition);
+  m_l2_request_ingress_stats.resize(m_memory_config->m_n_mem_sub_partition);
+  m_l2_response_egress_stats.resize(m_memory_config->m_n_mem_sub_partition);
   last_streamID = -1;
 
   gpu_kernel_time.clear();
@@ -2017,6 +2033,16 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   printf("l2_partition_extra_latency_cycles = %llu\n",
          l2_partition_extra_latency_cycles);
   rop_delay_output_total.print(statfout, "gpgpu_l2_rop_delay_output");
+  memory_transport_service_stats l2_request_ingress_total;
+  memory_transport_service_stats l2_response_egress_total;
+  for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; ++i) {
+    l2_request_ingress_total.add(m_l2_request_ingress_stats[i]);
+    l2_response_egress_total.add(m_l2_response_egress_stats[i]);
+  }
+  l2_request_ingress_total.print(statfout,
+                                 "gpgpu_l2_request_ingress_transport");
+  l2_response_egress_total.print(statfout,
+                                 "gpgpu_l2_response_egress_transport");
   auto cp_async_debug = flash_gpgpu_sim::get_global_cp_async_debug_counters();
   printf("cp_async_debug_tx_started = %llu\n", cp_async_debug.tx_started);
   printf("cp_async_debug_tx_completed = %llu\n", cp_async_debug.tx_completed);
@@ -2080,13 +2106,13 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   // partiton_replys_in_parallel); printf("partiton_replys_in_parallel_total =
   // %lld\n", partiton_replys_in_parallel_total );
   printf("L2_BW  = %12.4f GB/Sec\n",
-         ((float)(partiton_replys_in_parallel * 32) /
+         ((float)(partiton_replys_in_parallel * SECTOR_SIZE) /
           (gpu_sim_cycle * m_config.core_period)) /
              1000000000);
   printf("L2_BW_total  = %12.4f GB/Sec\n",
          ((float)((partiton_replys_in_parallel +
                    partiton_replys_in_parallel_total) *
-                  32) /
+                  SECTOR_SIZE) /
           ((gpu_tot_sim_cycle + gpu_sim_cycle) * m_config.core_period)) /
              1000000000);
 
@@ -2594,23 +2620,69 @@ void gpgpu_sim::cycle() {
     profiler.start_step();
     // pop from memory controller to interconnect
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
-      mem_fetch *mf = m_memory_sub_partition[i]->top();
-      if (mf) {
-        unsigned response_size =
-            mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
-        if (::icnt_has_buffer(m_shader_config->mem2device(i), response_size)) {
-          // if (!mf->get_is_write())
+      const unsigned width =
+          m_memory_config->gpgpu_l2_response_egress_sectors_per_cycle;
+      if (width == 0) {
+        mem_fetch *mf = m_memory_sub_partition[i]->top();
+        if (mf) {
+          unsigned response_size =
+              mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
+          if (::icnt_has_buffer(m_shader_config->mem2device(i),
+                                response_size)) {
+            // if (!mf->get_is_write())
+            mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
+            mf->set_status(IN_ICNT_TO_SHADER,
+                           gpu_sim_cycle + gpu_tot_sim_cycle);
+            ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
+                        response_size);
+            m_memory_sub_partition[i]->pop();
+            const unsigned sectors = memory_transport_data_sectors(mf);
+            m_l2_response_egress_stats[i].record_accept(sectors);
+            m_l2_response_egress_stats[i].record_tick_service(
+                memory_transport_service_slots(sectors));
+            partiton_replys_in_parallel_per_cycle += sectors;
+          } else {
+            gpu_stall_icnt2sh++;
+            ++m_l2_response_egress_stats[i].downstream_full_ticks;
+          }
+        } else {
+          m_memory_sub_partition[i]->pop();
+        }
+      } else {
+        memory_transport_service_budget &budget =
+            m_l2_response_egress_budgets[i];
+        memory_transport_service_stats &stats = m_l2_response_egress_stats[i];
+        budget.begin_tick(width);
+        while (true) {
+          mem_fetch *mf = m_memory_sub_partition[i]->top();
+          // top() already consumes internal writeback entries.  Unlike the
+          // legacy path, do not pop a second entry after that null return.
+          if (!mf) break;
+          const unsigned sectors = memory_transport_data_sectors(mf);
+          if (!budget.can_accept(sectors)) {
+            budget.note_width_limited(sectors);
+            break;
+          }
+          const unsigned response_size =
+              mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
+          if (!::icnt_has_buffer(m_shader_config->mem2device(i),
+                                 response_size)) {
+            budget.note_downstream_full();
+            ++gpu_stall_icnt2sh;
+            break;
+          }
+
           mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
           mf->set_status(IN_ICNT_TO_SHADER, gpu_sim_cycle + gpu_tot_sim_cycle);
           ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
                       response_size);
-          m_memory_sub_partition[i]->pop();
-          partiton_replys_in_parallel_per_cycle++;
-        } else {
-          gpu_stall_icnt2sh++;
+          mem_fetch *popped = m_memory_sub_partition[i]->pop();
+          assert(popped == mf);
+          budget.consume(sectors);
+          stats.record_accept(sectors);
+          partiton_replys_in_parallel_per_cycle += sectors;
         }
-      } else {
-        m_memory_sub_partition[i]->pop();
+        budget.end_tick(&stats);
       }
     }
     profiler.end_step(profiler.total_mem_to_icnt_time);
@@ -2650,13 +2722,54 @@ void gpgpu_sim::cycle() {
       // backed up) Note:This needs to be called in DRAM clock domain if there
       // is no L2 cache in the system In the worst case, we may need to push
       // SECTOR_CHUNCK_SIZE requests, so ensure you have enough buffer for them
-      if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
-        gpu_stall_dramfull++;
-        m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE);
+      const unsigned width =
+          m_memory_config->gpgpu_l2_request_ingress_sectors_per_cycle;
+      if (width == 0) {
+        if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
+          gpu_stall_dramfull++;
+          ++m_l2_request_ingress_stats[i].downstream_full_ticks;
+          m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE);
+        } else {
+          mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
+          m_memory_sub_partition[i]->push(mf,
+                                          gpu_sim_cycle + gpu_tot_sim_cycle);
+          if (mf) {
+            const unsigned sectors = memory_transport_data_sectors(mf);
+            m_l2_request_ingress_stats[i].record_accept(sectors);
+            m_l2_request_ingress_stats[i].record_tick_service(
+                memory_transport_service_slots(sectors));
+            partiton_reqs_in_parallel_per_cycle++;
+          }
+        }
       } else {
-        mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
-        m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
-        if (mf) partiton_reqs_in_parallel_per_cycle++;
+        memory_transport_service_budget &budget =
+            m_l2_request_ingress_budgets[i];
+        memory_transport_service_stats &stats = m_l2_request_ingress_stats[i];
+        budget.begin_tick(width);
+        while (true) {
+          mem_fetch *mf = (mem_fetch *)icnt_top(m_shader_config->mem2device(i));
+          if (!mf) break;
+          const unsigned sectors = memory_transport_data_sectors(mf);
+          if (!budget.can_accept(sectors)) {
+            budget.note_width_limited(sectors);
+            break;
+          }
+          if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
+            ++gpu_stall_dramfull;
+            budget.note_downstream_full();
+            m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE);
+            break;
+          }
+          mem_fetch *popped =
+              (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
+          assert(popped == mf);
+          m_memory_sub_partition[i]->push(mf,
+                                          gpu_sim_cycle + gpu_tot_sim_cycle);
+          budget.consume(sectors);
+          stats.record_accept(sectors);
+          ++partiton_reqs_in_parallel_per_cycle;
+        }
+        budget.end_tick(&stats);
       }
       m_memory_sub_partition[i]->cache_cycle(gpu_sim_cycle + gpu_tot_sim_cycle);
       if (m_config.g_power_simulation_enabled) {
