@@ -65,24 +65,30 @@ struct l2_multi_issue_port_stats {
   unsigned long long data_port_accepted_sectors;
   unsigned long long data_port_hit_sectors;
   unsigned long long data_port_dirty_eviction_sectors;
+  unsigned long long fill_port_accepted_sectors;
   unsigned long long lookup_width_stall_cycles;
   unsigned long long data_port_width_stall_cycles;
+  unsigned long long fill_port_width_stall_cycles;
 
   l2_multi_issue_port_stats()
       : lookup_accepted_sectors(0),
         data_port_accepted_sectors(0),
         data_port_hit_sectors(0),
         data_port_dirty_eviction_sectors(0),
+        fill_port_accepted_sectors(0),
         lookup_width_stall_cycles(0),
-        data_port_width_stall_cycles(0) {}
+        data_port_width_stall_cycles(0),
+        fill_port_width_stall_cycles(0) {}
 
   l2_multi_issue_port_stats &operator+=(const l2_multi_issue_port_stats &rhs) {
     lookup_accepted_sectors += rhs.lookup_accepted_sectors;
     data_port_accepted_sectors += rhs.data_port_accepted_sectors;
     data_port_hit_sectors += rhs.data_port_hit_sectors;
     data_port_dirty_eviction_sectors += rhs.data_port_dirty_eviction_sectors;
+    fill_port_accepted_sectors += rhs.fill_port_accepted_sectors;
     lookup_width_stall_cycles += rhs.lookup_width_stall_cycles;
     data_port_width_stall_cycles += rhs.data_port_width_stall_cycles;
+    fill_port_width_stall_cycles += rhs.fill_port_width_stall_cycles;
     return *this;
   }
 };
@@ -96,24 +102,32 @@ class l2_multi_issue_ports {
   l2_multi_issue_ports()
       : m_lookup_width(1),
         m_data_width(1),
+        m_fill_width(1),
         m_lookup_remaining(1),
         m_data_remaining(1),
+        m_fill_remaining(1),
         m_lookup_stall_recorded(false),
-        m_data_stall_recorded(false) {}
+        m_data_stall_recorded(false),
+        m_fill_stall_recorded(false) {}
 
-  void configure(unsigned lookup_width, unsigned data_width) {
+  void configure(unsigned lookup_width, unsigned data_width,
+                 unsigned fill_width) {
     assert(lookup_width > 0);
     assert(data_width > 0);
+    assert(fill_width > 0);
     m_lookup_width = lookup_width;
     m_data_width = data_width;
+    m_fill_width = fill_width;
     begin_cycle();
   }
 
   void begin_cycle() {
     m_lookup_remaining = m_lookup_width;
     m_data_remaining = m_data_width;
+    m_fill_remaining = m_fill_width;
     m_lookup_stall_recorded = false;
     m_data_stall_recorded = false;
+    m_fill_stall_recorded = false;
   }
 
   bool can_accept_lookup(unsigned sectors) {
@@ -150,8 +164,19 @@ class l2_multi_issue_ports {
     return accepted;
   }
 
+  unsigned accept_fill(unsigned pending_sectors) {
+    assert(pending_sectors > 0);
+    const unsigned accepted = std::min(pending_sectors, m_fill_remaining);
+    m_fill_remaining -= accepted;
+    m_stats.fill_port_accepted_sectors += accepted;
+    if (accepted < pending_sectors)
+      record_once(m_stats.fill_port_width_stall_cycles, m_fill_stall_recorded);
+    return accepted;
+  }
+
   unsigned lookup_remaining() const { return m_lookup_remaining; }
   unsigned data_remaining() const { return m_data_remaining; }
+  unsigned fill_remaining() const { return m_fill_remaining; }
   const l2_multi_issue_port_stats &stats() const { return m_stats; }
 
  private:
@@ -163,10 +188,13 @@ class l2_multi_issue_ports {
 
   unsigned m_lookup_width;
   unsigned m_data_width;
+  unsigned m_fill_width;
   unsigned m_lookup_remaining;
   unsigned m_data_remaining;
+  unsigned m_fill_remaining;
   bool m_lookup_stall_recorded;
   bool m_data_stall_recorded;
+  bool m_fill_stall_recorded;
   l2_multi_issue_port_stats m_stats;
 };
 
@@ -184,6 +212,12 @@ class l2_multi_issue_pending_operation {
                     l2_multi_issue_data_work work) {
     assert(active());
     m_remaining_sectors -= ports.accept_data(m_remaining_sectors, work);
+    return !active();
+  }
+
+  bool service_fill(l2_multi_issue_ports &ports) {
+    assert(active());
+    m_remaining_sectors -= ports.accept_fill(m_remaining_sectors);
     return !active();
   }
 
@@ -439,6 +473,8 @@ class memory_sub_partition {
   l2_multi_issue_ports m_l2_multi_issue_ports;
   mem_fetch *m_pending_l2_writeback;
   l2_multi_issue_pending_operation m_pending_l2_writeback_work;
+  mem_fetch *m_pending_l2_fill;
+  l2_multi_issue_pending_operation m_pending_l2_fill_work;
   unsigned long long m_l2_partition_remote_accesses;
   unsigned long long m_l2_partition_extra_latency_cycles;
 

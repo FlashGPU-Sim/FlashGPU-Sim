@@ -194,6 +194,11 @@ static unsigned coarse_l2_partition_id(unsigned id, unsigned total,
   return static_cast<unsigned>(partition);
 }
 
+static unsigned l2_sector_work_packages(unsigned bytes) {
+  assert(bytes > 0);
+  return (bytes + SECTOR_SIZE - 1) / SECTOR_SIZE;
+}
+
 }  // namespace
 
 mem_fetch *partition_mf_allocator::alloc(new_addr_type addr,
@@ -709,11 +714,13 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
   m_l2_partition_remote_accesses = 0;
   m_l2_partition_extra_latency_cycles = 0;
   m_pending_l2_writeback = NULL;
+  m_pending_l2_fill = NULL;
   if (l2_multi_issue_port_model_enabled(m_config->l2_multi_issue_port_model)) {
     assert(!m_config->m_L2_config.disabled());
     assert(m_config->m_L2_config.m_cache_type == SECTOR);
     m_l2_multi_issue_ports.configure(m_config->l2_lookup_sectors_per_cycle,
-                                     m_config->l2_data_port_sectors_per_cycle);
+                                     m_config->l2_data_port_sectors_per_cycle,
+                                     m_config->l2_fill_port_sectors_per_cycle);
   }
 
   assert(m_id < m_config->m_n_mem_sub_partition);
@@ -836,31 +843,76 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
       l2_multi_issue_port_model_enabled(m_config->l2_multi_issue_port_model);
   if (multi_issue_port_model) m_l2_multi_issue_ports.begin_cycle();
 
-  // DRAM to L2 (texture) and icnt (not texture). Fill continues to use the
-  // legacy single-response and busy-delay model in both port modes.
-  if (!m_dram_L2_queue->empty()) {
-    mem_fetch *mf = m_dram_L2_queue->top();
-    if (!m_config->m_L2_config.disabled() && m_L2cache->waiting_for_fill(mf)) {
-      if (m_L2cache->fill_port_free()) {
-        mf->set_status(IN_PARTITION_L2_FILL_QUEUE,
-                       m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-        m_L2cache->fill(mf, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
-                                m_memcpy_cycle_offset);
+  // DRAM to L2 (texture) and icnt (not texture). Mode 0 retains the original
+  // single-response/fill-busy-delay behavior exactly.
+  if (!multi_issue_port_model) {
+    if (!m_dram_L2_queue->empty()) {
+      mem_fetch *mf = m_dram_L2_queue->top();
+      if (!m_config->m_L2_config.disabled() &&
+          m_L2cache->waiting_for_fill(mf)) {
+        if (m_L2cache->fill_port_free()) {
+          mf->set_status(IN_PARTITION_L2_FILL_QUEUE,
+                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+          m_L2cache->fill(mf, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
+                                  m_memcpy_cycle_offset);
+          m_dram_L2_queue->pop();
+        }
+      } else if (!m_L2_icnt_queue->full()) {
+        if (mf->is_write() && mf->get_type() == WRITE_ACK)
+          mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
+                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+        m_L2_icnt_queue->push(mf);
         m_dram_L2_queue->pop();
       }
-    } else if (!m_L2_icnt_queue->full()) {
-      if (mf->is_write() && mf->get_type() == WRITE_ACK)
-        mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
+    }
+  } else {
+    bool continue_fill_service = true;
+    while (continue_fill_service && !m_dram_L2_queue->empty()) {
+      mem_fetch *mf = m_dram_L2_queue->top();
+      if (m_L2cache->waiting_for_fill(mf)) {
+        if (m_pending_l2_fill == NULL) {
+          m_pending_l2_fill = mf;
+          m_pending_l2_fill_work.start(
+              l2_sector_work_packages(mf->get_data_size()));
+        } else {
+          assert(m_pending_l2_fill == mf);
+          assert(m_pending_l2_fill_work.active());
+        }
+
+        if (!m_pending_l2_fill_work.service_fill(m_l2_multi_issue_ports)) break;
+
+        mf->set_status(IN_PARTITION_L2_FILL_QUEUE,
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-      m_L2_icnt_queue->push(mf);
-      m_dram_L2_queue->pop();
+        m_L2cache->fill_multi_issue_port_model(
+            mf, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
+                    m_memcpy_cycle_offset);
+        m_dram_L2_queue->pop();
+        m_pending_l2_fill = NULL;
+        assert(!m_pending_l2_fill_work.active());
+      } else {
+        assert(m_pending_l2_fill == NULL);
+        assert(!m_pending_l2_fill_work.active());
+        if (m_L2_icnt_queue->full()) break;
+        if (mf->is_write() && mf->get_type() == WRITE_ACK)
+          mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
+                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+        m_L2_icnt_queue->push(mf);
+        m_dram_L2_queue->pop();
+        // The bypass path is not an L2 fill-port operation. Preserve its
+        // legacy single-response-per-tick behavior.
+        continue_fill_service = false;
+      }
     }
   }
 
-  // Prior L2 misses are inserted into m_L2_dram_queue here. Multi-issue data
-  // accesses bypass legacy data-port accounting individually, while cycle()
-  // keeps the still-legacy fill-port delay progressing.
-  if (!m_config->m_L2_config.disabled()) m_L2cache->cycle();
+  // Prior L2 misses are inserted into m_L2_dram_queue here. The multi-issue
+  // path bypasses legacy port utilization and busy-delay accounting.
+  if (!m_config->m_L2_config.disabled()) {
+    if (multi_issue_port_model)
+      m_L2cache->cycle_multi_issue_port_model();
+    else
+      m_L2cache->cycle();
+  }
 
   // Mode 0 keeps the legacy one-request/busy-delay path. Mode 1 uses separate
   // lookup and data-sector budgets and may service multiple FIFO entries.
@@ -1037,9 +1089,13 @@ void memory_sub_partition::record_full_state(unsigned size) {
             ? (m_pending_l2_writeback != NULL ||
                m_l2_multi_issue_ports.data_remaining() == 0)
             : !m_L2cache->data_port_free();
+    const bool fill_port_busy =
+        m_config->l2_multi_issue_port_model == 1
+            ? (m_pending_l2_fill != NULL ||
+               m_l2_multi_issue_ports.fill_remaining() == 0)
+            : !m_L2cache->fill_port_free();
     if (data_port_busy) m_full_state_stats[MSP_FULL_L2_DATA_PORT_BUSY]++;
-    if (!m_L2cache->fill_port_free())
-      m_full_state_stats[MSP_FULL_L2_FILL_PORT_BUSY]++;
+    if (fill_port_busy) m_full_state_stats[MSP_FULL_L2_FILL_PORT_BUSY]++;
     if (m_L2cache->access_ready() && m_L2_icnt_queue->full()) {
       m_full_state_stats
           [MSP_FULL_L2_READY_BLOCKED_BY_L2_ICNT_QUEUE]++;

@@ -355,7 +355,7 @@ void memory_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_l2_multi_issue_port_model", OPT_UINT32,
       &l2_multi_issue_port_model,
       "L2 internal port model: 0 = legacy single-request busy-delay data/fill "
-      "ports, 1 = multi-issue lookup/data sector ports with legacy fill",
+      "ports, 1 = independent multi-issue lookup/data/fill sector ports",
       "0");
   option_parser_register(
       opp, "-gpgpu_l2_lookup_sectors_per_cycle", OPT_UINT32,
@@ -367,6 +367,12 @@ void memory_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_l2_data_port_sectors_per_cycle", OPT_UINT32,
       &l2_data_port_sectors_per_cycle,
       "Multi-issue L2 data-port width per memory subpartition and L2 cycle, "
+      "in 32-byte sector work packages (used only when port model = 1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_fill_port_sectors_per_cycle", OPT_UINT32,
+      &l2_fill_port_sectors_per_cycle,
+      "Multi-issue L2 fill-port width per memory subpartition and L2 cycle, "
       "in 32-byte sector work packages (used only when port model = 1)",
       "1");
   option_parser_register(opp, "-dram_latency", OPT_UINT32, &dram_latency,
@@ -1981,10 +1987,14 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
            l2_port_stats.data_port_hit_sectors);
     printf("L2_multi_issue_data_port_dirty_eviction_sectors = %llu\n",
            l2_port_stats.data_port_dirty_eviction_sectors);
+    printf("L2_multi_issue_fill_port_accepted_sectors = %llu\n",
+           l2_port_stats.fill_port_accepted_sectors);
     printf("L2_multi_issue_lookup_width_stall_cycles = %llu\n",
            l2_port_stats.lookup_width_stall_cycles);
     printf("L2_multi_issue_data_port_width_stall_cycles = %llu\n",
            l2_port_stats.data_port_width_stall_cycles);
+    printf("L2_multi_issue_fill_port_width_stall_cycles = %llu\n",
+           l2_port_stats.fill_port_width_stall_cycles);
   }
   unsigned long long l2_partition_remote_accesses = 0;
   unsigned long long l2_partition_extra_latency_cycles = 0;
@@ -2163,7 +2173,8 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
       printf("L2_total_cache_reservation_fail_breakdown:\n");
       l2_stats.print_aggregate_fail_stats(stdout,
                                           "L2_cache_stats_fail_breakdown");
-      total_l2_css.print_port_stats(stdout, "L2_cache");
+      if (m_memory_config->l2_multi_issue_port_model == 0)
+        total_l2_css.print_port_stats(stdout, "L2_cache");
     }
   }
 

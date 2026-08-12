@@ -1795,6 +1795,8 @@ class l2_cache : public data_cache {
       std::list<cache_event> &events, mem_fetch *&deferred_writeback,
       unsigned &deferred_writeback_sectors);
   void release_deferred_writeback(mem_fetch *writeback);
+  void cycle_multi_issue_port_model();
+  void fill_multi_issue_port_model(mem_fetch *mf, unsigned time);
 };
 
 /*****************************************************************************/

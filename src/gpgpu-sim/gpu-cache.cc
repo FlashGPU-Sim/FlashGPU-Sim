@@ -2151,6 +2151,12 @@ void l2_cache::release_deferred_writeback(mem_fetch *writeback) {
   m_miss_queue.push_back(writeback);
 }
 
+void l2_cache::cycle_multi_issue_port_model() { baseline_cache::cycle(false); }
+
+void l2_cache::fill_multi_issue_port_model(mem_fetch *mf, unsigned time) {
+  baseline_cache::fill(mf, time, false);
+}
+
 /// Access function for tex_cache
 /// return values: RESERVATION_FAIL if request could not be accepted
 /// otherwise returns HIT_RESERVED or MISS; NOTE: *never* returns HIT

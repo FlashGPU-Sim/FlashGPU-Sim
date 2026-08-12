@@ -26,7 +26,7 @@ TEST(L2PortModelSelectionTest, LegacyAndMultiIssueModesAreMutuallyExclusive) {
 TEST(L2PortModelSelectionTest,
      LegacyModeDoesNotActivateMultiIssueSectorAccounting) {
   l2_multi_issue_ports ports;
-  ports.configure(3, 3);
+  ports.configure(3, 3, 3);
 
   if (l2_multi_issue_port_model_enabled(0)) {
     AcceptHit(ports);
@@ -34,12 +34,13 @@ TEST(L2PortModelSelectionTest,
 
   EXPECT_EQ(ports.stats().lookup_accepted_sectors, 0u);
   EXPECT_EQ(ports.stats().data_port_accepted_sectors, 0u);
+  EXPECT_EQ(ports.stats().fill_port_accepted_sectors, 0u);
 }
 
 TEST(L2MultiIssuePortsTest, DataWidthsOneTwoAndThreeAcceptThatManySectors) {
   for (unsigned width = 1; width <= 3; ++width) {
     l2_multi_issue_ports ports;
-    ports.configure(/*lookup_width=*/4, width);
+    ports.configure(/*lookup_width=*/4, width, /*fill_width=*/1);
     EXPECT_EQ(ports.accept_data(/*pending_sectors=*/4, L2_MULTI_ISSUE_HIT_DATA),
               width);
     EXPECT_EQ(ports.data_remaining(), 0u);
@@ -49,7 +50,7 @@ TEST(L2MultiIssuePortsTest, DataWidthsOneTwoAndThreeAcceptThatManySectors) {
 
 TEST(L2MultiIssuePortsTest, ThreeIndependentSectorHitsIssueInOneTick) {
   l2_multi_issue_ports ports;
-  ports.configure(/*lookup_width=*/3, /*data_width=*/3);
+  ports.configure(/*lookup_width=*/3, /*data_width=*/3, /*fill_width=*/1);
 
   AcceptHit(ports);
   AcceptHit(ports);
@@ -63,7 +64,7 @@ TEST(L2MultiIssuePortsTest, ThreeIndependentSectorHitsIssueInOneTick) {
 
 TEST(L2MultiIssuePortsTest, ThreeSectorDemandUsesTwoPlusOneAtWidthTwo) {
   l2_multi_issue_ports ports;
-  ports.configure(/*lookup_width=*/2, /*data_width=*/2);
+  ports.configure(/*lookup_width=*/2, /*data_width=*/2, /*fill_width=*/1);
 
   AcceptHit(ports);
   AcceptHit(ports);
@@ -78,7 +79,7 @@ TEST(L2MultiIssuePortsTest, ThreeSectorDemandUsesTwoPlusOneAtWidthTwo) {
 
 TEST(L2MultiIssuePortsTest, ThreeSectorOperationCompletesAtWidthThree) {
   l2_multi_issue_ports ports;
-  ports.configure(/*lookup_width=*/1, /*data_width=*/3);
+  ports.configure(/*lookup_width=*/1, /*data_width=*/3, /*fill_width=*/1);
   l2_multi_issue_pending_operation operation;
   operation.start(3);
 
@@ -89,7 +90,7 @@ TEST(L2MultiIssuePortsTest, ThreeSectorOperationCompletesAtWidthThree) {
 
 TEST(L2MultiIssuePortsTest, ThreeSectorOperationUsesTwoPlusOneAtWidthTwo) {
   l2_multi_issue_ports ports;
-  ports.configure(/*lookup_width=*/1, /*data_width=*/2);
+  ports.configure(/*lookup_width=*/1, /*data_width=*/2, /*fill_width=*/1);
   l2_multi_issue_pending_operation operation;
   operation.start(3);
 
@@ -100,9 +101,25 @@ TEST(L2MultiIssuePortsTest, ThreeSectorOperationUsesTwoPlusOneAtWidthTwo) {
   EXPECT_EQ(ports.stats().data_port_dirty_eviction_sectors, 3u);
 }
 
+TEST(L2MultiIssuePortsTest, DataAndFillPortsProgressIndependentlyInOneTick) {
+  l2_multi_issue_ports ports;
+  ports.configure(/*lookup_width=*/1, /*data_width=*/2, /*fill_width=*/3);
+  l2_multi_issue_pending_operation data;
+  l2_multi_issue_pending_operation fill;
+  data.start(2);
+  fill.start(3);
+
+  EXPECT_TRUE(data.service_data(ports, L2_MULTI_ISSUE_HIT_DATA));
+  EXPECT_TRUE(fill.service_fill(ports));
+  EXPECT_EQ(ports.data_remaining(), 0u);
+  EXPECT_EQ(ports.fill_remaining(), 0u);
+  EXPECT_EQ(ports.stats().data_port_accepted_sectors, 2u);
+  EXPECT_EQ(ports.stats().fill_port_accepted_sectors, 3u);
+}
+
 TEST(L2MultiIssuePortsTest, HitAndDirtyEvictionShareTheDataWidth) {
   l2_multi_issue_ports ports;
-  ports.configure(/*lookup_width=*/3, /*data_width=*/3);
+  ports.configure(/*lookup_width=*/3, /*data_width=*/3, /*fill_width=*/1);
 
   AcceptHit(ports);
   l2_multi_issue_pending_operation dirty_eviction;
@@ -117,7 +134,7 @@ TEST(L2MultiIssuePortsTest, HitAndDirtyEvictionShareTheDataWidth) {
 TEST(L2MultiIssuePortsTest,
      FourSectorDirtyEvictionAtWidthThreeIsNotVisibleEarly) {
   l2_multi_issue_ports ports;
-  ports.configure(/*lookup_width=*/3, /*data_width=*/3);
+  ports.configure(/*lookup_width=*/3, /*data_width=*/3, /*fill_width=*/1);
   l2_multi_issue_pending_operation dirty_eviction;
   dirty_eviction.start(4);
   bool downstream_visible = false;
@@ -137,7 +154,7 @@ TEST(L2MultiIssuePortsTest,
 
 TEST(L2MultiIssuePortsTest, CleanMissConsumesOnlyLookupSectorWork) {
   l2_multi_issue_ports ports;
-  ports.configure(/*lookup_width=*/3, /*data_width=*/3);
+  ports.configure(/*lookup_width=*/3, /*data_width=*/3, /*fill_width=*/3);
 
   ASSERT_TRUE(ports.can_accept_lookup(1));
   ports.accept_lookup(1);
@@ -176,7 +193,7 @@ TEST(L2MultiIssuePortsTest,
       mshrs, kAddress, /*is_write=*/false, /*is_atomic=*/true, MISS));
 
   l2_multi_issue_ports ports;
-  ports.configure(/*lookup_width=*/2, /*data_width=*/1);
+  ports.configure(/*lookup_width=*/2, /*data_width=*/1, /*fill_width=*/1);
 
   AcceptHit(ports);
   ASSERT_EQ(ports.data_remaining(), 0u);
@@ -209,37 +226,44 @@ TEST(L2MultiIssuePortsTest,
 
 TEST(L2MultiIssuePortsTest, WidthStallsCountOncePerPortPerTick) {
   l2_multi_issue_ports ports;
-  ports.configure(/*lookup_width=*/1, /*data_width=*/1);
+  ports.configure(/*lookup_width=*/1, /*data_width=*/1, /*fill_width=*/1);
   AcceptHit(ports);
+  l2_multi_issue_pending_operation fill;
+  fill.start(2);
 
   EXPECT_FALSE(ports.can_accept_lookup(1));
   EXPECT_FALSE(ports.can_accept_lookup(1));
   EXPECT_FALSE(ports.data_port_has_capacity());
   EXPECT_FALSE(ports.data_port_has_capacity());
+  EXPECT_FALSE(fill.service_fill(ports));
   EXPECT_EQ(ports.stats().lookup_width_stall_cycles, 1u);
   EXPECT_EQ(ports.stats().data_port_width_stall_cycles, 1u);
+  EXPECT_EQ(ports.stats().fill_port_width_stall_cycles, 1u);
 
   ports.begin_cycle();
-  EXPECT_TRUE(ports.can_accept_lookup(1));
-  EXPECT_TRUE(ports.data_port_has_capacity());
-  EXPECT_EQ(ports.stats().lookup_width_stall_cycles, 1u);
-  EXPECT_EQ(ports.stats().data_port_width_stall_cycles, 1u);
+  EXPECT_TRUE(fill.service_fill(ports));
+  EXPECT_EQ(ports.stats().fill_port_width_stall_cycles, 1u);
 }
 
 TEST(L2MultiIssuePortsTest, AcceptedSectorStatisticsAreConservative) {
   l2_multi_issue_ports ports;
-  ports.configure(/*lookup_width=*/4, /*data_width=*/4);
+  ports.configure(/*lookup_width=*/4, /*data_width=*/4, /*fill_width=*/2);
   ports.accept_lookup(1);  // clean miss
   AcceptHit(ports);
   l2_multi_issue_pending_operation dirty;
   dirty.start(2);
   EXPECT_TRUE(dirty.service_data(ports, L2_MULTI_ISSUE_DIRTY_EVICTION));
+  l2_multi_issue_pending_operation fill;
+  fill.start(2);
+  EXPECT_TRUE(fill.service_fill(ports));
+
   const l2_multi_issue_port_stats &stats = ports.stats();
   EXPECT_EQ(stats.lookup_accepted_sectors, 2u);
   EXPECT_EQ(stats.data_port_accepted_sectors, 3u);
   EXPECT_EQ(
       stats.data_port_accepted_sectors,
       stats.data_port_hit_sectors + stats.data_port_dirty_eviction_sectors);
+  EXPECT_EQ(stats.fill_port_accepted_sectors, 2u);
 }
 
 }  // namespace
