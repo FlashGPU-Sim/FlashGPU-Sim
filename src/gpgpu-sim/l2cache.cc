@@ -743,6 +743,59 @@ memory_sub_partition::~memory_sub_partition() {
   delete m_L2interface;
 }
 
+void memory_sub_partition::process_l2_access_result(
+    mem_fetch *mf, cache_request_status status,
+    const std::list<cache_event> &events) {
+  if (status != RESERVATION_FAIL &&
+      l2_request_trace::instance().cache_accept_enabled()) {
+    trace_l2_event("CACHE_ACCEPT",
+                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, m_id, mf,
+                   cache_request_status_str(status));
+  }
+  const bool write_sent = was_write_sent(events);
+  const bool read_sent = was_read_sent(events);
+  MEM_SUBPART_GPPRINTF("Probing L2 cache Address=%llx, status=%u\n",
+                      mf->get_addr(), status);
+
+  if (status == HIT) {
+    if (!write_sent) {
+      assert(!read_sent);
+      if (mf->get_access_type() == L1_WRBK_ACC) {
+        m_request_tracker.erase(mf);
+        delete mf;
+      } else {
+        mf->set_reply();
+        mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
+                       m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+        m_L2_icnt_queue->push(mf);
+      }
+      m_icnt_L2_queue->pop();
+    } else {
+      assert(write_sent);
+      m_icnt_L2_queue->pop();
+    }
+  } else if (status != RESERVATION_FAIL) {
+    if (mf->is_write() &&
+        (m_config->m_L2_config.m_write_alloc_policy == FETCH_ON_WRITE ||
+         m_config->m_L2_config.m_write_alloc_policy == LAZY_FETCH_ON_READ) &&
+        !was_writeallocate_sent(events)) {
+      if (mf->get_access_type() == L1_WRBK_ACC) {
+        m_request_tracker.erase(mf);
+        delete mf;
+      } else if (m_config->m_L2_config.get_write_policy() == WRITE_BACK) {
+        mf->set_reply();
+        mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
+                       m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+        m_L2_icnt_queue->push(mf);
+      }
+    }
+    m_icnt_L2_queue->pop();
+  } else {
+    assert(!write_sent);
+    assert(!read_sent);
+  }
+}
+
 void memory_sub_partition::cache_cycle(unsigned cycle) {
   // L2 fill responses
   if (!m_config->m_L2_config.disabled()) {
@@ -810,58 +863,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
                                   m_memcpy_cycle_offset,
                               events);
-        if (status != RESERVATION_FAIL &&
-            l2_request_trace::instance().cache_accept_enabled()) {
-          trace_l2_event("CACHE_ACCEPT",
-                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, m_id,
-                         mf, cache_request_status_str(status));
-        }
-        bool write_sent = was_write_sent(events);
-        bool read_sent = was_read_sent(events);
-        MEM_SUBPART_GPPRINTF("Probing L2 cache Address=%llx, status=%u\n",
-                            mf->get_addr(), status);
-
-        if (status == HIT) {
-          if (!write_sent) {
-            // L2 cache replies
-            assert(!read_sent);
-            if (mf->get_access_type() == L1_WRBK_ACC) {
-              m_request_tracker.erase(mf);
-              delete mf;
-            } else {
-              mf->set_reply();
-              mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
-                             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-              m_L2_icnt_queue->push(mf);
-            }
-            m_icnt_L2_queue->pop();
-          } else {
-            assert(write_sent);
-            m_icnt_L2_queue->pop();
-          }
-        } else if (status != RESERVATION_FAIL) {
-          if (mf->is_write() &&
-              (m_config->m_L2_config.m_write_alloc_policy == FETCH_ON_WRITE ||
-               m_config->m_L2_config.m_write_alloc_policy ==
-                   LAZY_FETCH_ON_READ) &&
-              !was_writeallocate_sent(events)) {
-            if (mf->get_access_type() == L1_WRBK_ACC) {
-              m_request_tracker.erase(mf);
-              delete mf;
-            } else if (m_config->m_L2_config.get_write_policy() == WRITE_BACK) {
-              mf->set_reply();
-              mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
-                             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-              m_L2_icnt_queue->push(mf);
-            }
-          }
-          // L2 cache accepted request
-          m_icnt_L2_queue->pop();
-        } else {
-          assert(!write_sent);
-          assert(!read_sent);
-          // L2 cache lock-up: will try again next cycle
-        }
+        process_l2_access_result(mf, status, events);
       }
     } else {
       // L2 is disabled or non-texture access to texture-only L2

@@ -1248,6 +1248,10 @@ bool baseline_cache::bandwidth_management::fill_port_free() const {
 
 /// Sends next request to lower level of memory
 void baseline_cache::cycle() {
+  cycle(true);
+}
+
+void baseline_cache::cycle(bool account_legacy_port_model) {
   if (!m_miss_queue.empty()) {
     mem_fetch *mf = m_miss_queue.front();
     if (!m_memport->full(mf->size(), mf->get_is_write())) {
@@ -1255,15 +1259,22 @@ void baseline_cache::cycle() {
       m_memport->push(mf);
     }
   }
-  bool data_port_busy = !m_bandwidth_management.data_port_free();
-  bool fill_port_busy = !m_bandwidth_management.fill_port_free();
-  m_stats.sample_cache_port_utility(data_port_busy, fill_port_busy);
-  m_bandwidth_management.replenish_port_bandwidth();
+  if (account_legacy_port_model) {
+    bool data_port_busy = !m_bandwidth_management.data_port_free();
+    bool fill_port_busy = !m_bandwidth_management.fill_port_free();
+    m_stats.sample_cache_port_utility(data_port_busy, fill_port_busy);
+    m_bandwidth_management.replenish_port_bandwidth();
+  }
 }
 
 /// Interface for response from lower memory level (model bandwidth restictions
 /// in caller)
 void baseline_cache::fill(mem_fetch *mf, unsigned time) {
+  fill(mf, time, true);
+}
+
+void baseline_cache::fill(mem_fetch *mf, unsigned time,
+                          bool account_legacy_fill_port) {
   if (m_config.m_mshr_type == SECTOR_ASSOC) {
     assert(mf->get_original_mf());
     extra_mf_fields_lookup::iterator e =
@@ -1307,7 +1318,7 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
     block->set_byte_mask(mf);
   }
   m_extra_mf_fields.erase(mf);
-  m_bandwidth_management.use_fill_port(mf);
+  if (account_legacy_fill_port) m_bandwidth_management.use_fill_port(mf);
 }
 
 /// Checks if mf is waiting to be filled by lower memory level
@@ -1972,7 +1983,7 @@ enum cache_request_status read_only_cache::access(
 enum cache_request_status data_cache::process_tag_probe(
     bool wr, enum cache_request_status probe_status, new_addr_type addr,
     unsigned cache_index, mem_fetch *mf, unsigned time,
-    std::list<cache_event> &events) {
+    std::list<cache_event> &events, bool account_legacy_data_port) {
   // Each function pointer ( m_[rd/wr]_[hit/miss] ) is set in the
   // data_cache constructor to reflect the corresponding cache configuration
   // options. Function pointers were used to avoid many long conditional
@@ -2008,7 +2019,8 @@ enum cache_request_status data_cache::process_tag_probe(
     }
   }
 
-  m_bandwidth_management.use_data_port(mf, access_status, events);
+  if (account_legacy_data_port)
+    m_bandwidth_management.use_data_port(mf, access_status, events);
   return access_status;
 }
 
@@ -2020,14 +2032,22 @@ enum cache_request_status data_cache::process_tag_probe(
 enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
                                              unsigned time,
                                              std::list<cache_event> &events) {
+  return access(addr, mf, time, events, true);
+}
+
+enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
+                                             unsigned time,
+                                             std::list<cache_event> &events,
+                                             bool account_legacy_data_port) {
   assert(mf->get_data_size() <= m_config.get_atom_sz());
   bool wr = mf->get_is_write();
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
   enum cache_request_status probe_status =
       m_tag_array->probe(block_addr, cache_index, mf, mf->is_write(), true);
-  enum cache_request_status access_status =
-      process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events);
+  enum cache_request_status access_status = process_tag_probe(
+      wr, probe_status, addr, cache_index, mf, time, events,
+      account_legacy_data_port);
   m_stats.inc_stats(mf->get_access_type(),
                     m_stats.select_stats_status(probe_status, access_status),
                     mf->get_streamID());

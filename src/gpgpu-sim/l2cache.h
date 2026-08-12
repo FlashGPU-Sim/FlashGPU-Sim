@@ -296,6 +296,8 @@ class memory_sub_partition {
   void push_rop_delay(mem_fetch *mf, unsigned long long ready_cycle,
                       bool remote);
   bool pop_ready_rop(unsigned long long cycle, mem_fetch *&mf);
+  void process_l2_access_result(mem_fetch *mf, cache_request_status status,
+                                const std::list<cache_event> &events);
 
   // This is a cycle offset that has to be applied to the l2 accesses to account
   // for the cudamemcpy read/writes. We want GPGPU-Sim to only count cycles for

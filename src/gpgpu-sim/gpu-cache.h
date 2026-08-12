@@ -1328,9 +1328,11 @@ class baseline_cache : public cache_t {
                                            std::list<cache_event> &events) = 0;
   /// Sends next request to lower level of memory
   void cycle();
+  void cycle(bool account_legacy_port_model);
   /// Interface for response from lower memory level (model bandwidth
   /// restictions in caller)
   void fill(mem_fetch *mf, unsigned time);
+  void fill(mem_fetch *mf, unsigned time, bool account_legacy_fill_port);
   /// Checks if mf is waiting to be filled by lower memory level
   bool waiting_for_fill(mem_fetch *mf);
   /// Are any (accepted) accesses that had to wait for memory now ready? (does
@@ -1616,12 +1618,15 @@ class data_cache : public baseline_cache {
   //! A general function that takes the result of a tag_array probe
   //  and performs the correspding functions based on the cache configuration
   //  The access fucntion calls this function
-  enum cache_request_status process_tag_probe(bool wr,
-                                              enum cache_request_status status,
-                                              new_addr_type addr,
-                                              unsigned cache_index,
-                                              mem_fetch *mf, unsigned time,
-                                              std::list<cache_event> &events);
+  enum cache_request_status process_tag_probe(
+      bool wr, enum cache_request_status status, new_addr_type addr,
+      unsigned cache_index, mem_fetch *mf, unsigned time,
+      std::list<cache_event> &events, bool account_legacy_data_port);
+
+  enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
+                                   unsigned time,
+                                   std::list<cache_event> &events,
+                                   bool account_legacy_data_port);
 
  protected:
   mem_fetch_allocator *m_memfetch_creator;
