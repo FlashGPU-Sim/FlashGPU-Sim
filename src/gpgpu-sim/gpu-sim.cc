@@ -351,6 +351,24 @@ void memory_config::reg_options(class OptionParser *opp) {
       "Extra cycles charged when an SM accesses a remote coarse L2 partition "
       "(default 0)",
       "0");
+  option_parser_register(
+      opp, "-gpgpu_l2_multi_issue_port_model", OPT_UINT32,
+      &l2_multi_issue_port_model,
+      "L2 internal port model: 0 = legacy single-request busy-delay data/fill "
+      "ports, 1 = multi-issue lookup/data sector ports with legacy fill",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_l2_lookup_sectors_per_cycle", OPT_UINT32,
+      &l2_lookup_sectors_per_cycle,
+      "Multi-issue L2 tag lookup width per memory subpartition and L2 cycle, "
+      "in 32-byte sector work packages (used only when port model = 1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_data_port_sectors_per_cycle", OPT_UINT32,
+      &l2_data_port_sectors_per_cycle,
+      "Multi-issue L2 data-port width per memory subpartition and L2 cycle, "
+      "in 32-byte sector work packages (used only when port model = 1)",
+      "1");
   option_parser_register(opp, "-dram_latency", OPT_UINT32, &dram_latency,
                          "DRAM latency (default 30)", "30");
   option_parser_register(opp, "-dram_dual_bus_interface", OPT_UINT32,
@@ -1948,6 +1966,25 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
            mem_sub_partition_full_stat_str(
                static_cast<mem_sub_partition_full_stat>(i)),
            mem_sub_part_full_stats[i]);
+  }
+  if (m_memory_config->l2_multi_issue_port_model == 1) {
+    l2_multi_issue_port_stats l2_port_stats;
+    for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
+      m_memory_sub_partition[i]->accumulate_l2_multi_issue_port_stats(
+          l2_port_stats);
+    }
+    printf("L2_multi_issue_lookup_accepted_sectors = %llu\n",
+           l2_port_stats.lookup_accepted_sectors);
+    printf("L2_multi_issue_data_port_accepted_sectors = %llu\n",
+           l2_port_stats.data_port_accepted_sectors);
+    printf("L2_multi_issue_data_port_hit_sectors = %llu\n",
+           l2_port_stats.data_port_hit_sectors);
+    printf("L2_multi_issue_data_port_dirty_eviction_sectors = %llu\n",
+           l2_port_stats.data_port_dirty_eviction_sectors);
+    printf("L2_multi_issue_lookup_width_stall_cycles = %llu\n",
+           l2_port_stats.lookup_width_stall_cycles);
+    printf("L2_multi_issue_data_port_width_stall_cycles = %llu\n",
+           l2_port_stats.data_port_width_stall_cycles);
   }
   unsigned long long l2_partition_remote_accesses = 0;
   unsigned long long l2_partition_extra_latency_cycles = 0;

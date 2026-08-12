@@ -20,6 +20,7 @@ TEST_GROUP_EXTRA_OBJECTS_sm120_unit := \
 TEST_GROUP_EXTRA_OBJECTS_sm100_unit := \
 	$(OBJ_DIR)/sm100/support/addrdec.cc.o \
 	$(OBJ_DIR)/sm100/support/hashing.cc.o \
+	$(OBJ_DIR)/sm100/support/mshr-table.cc.o \
 	$(OBJ_DIR)/sm100/support/option_parser.cc.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/descriptor.cu.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/mma.cu.o \
@@ -93,6 +94,12 @@ $(SRC_DIR)/option_parser.h $(TOP_MAKEFILE) $(BUILD_MK)
 
 $(OBJ_DIR)/sm100/support/hashing.cc.o: $(SRC_DIR)/gpgpu-sim/hashing.cc \
 $(SRC_DIR)/gpgpu-sim/hashing.h $(SRC_DIR)/gpgpu-sim/gpu-cache.h \
+$(TOP_MAKEFILE) $(BUILD_MK)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
+$(OBJ_DIR)/sm100/support/mshr-table.cc.o: \
+$(SRC_DIR)/gpgpu-sim/mshr-table.cc $(SRC_DIR)/gpgpu-sim/gpu-cache.h \
 $(TOP_MAKEFILE) $(BUILD_MK)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@

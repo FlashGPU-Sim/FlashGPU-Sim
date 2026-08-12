@@ -35,9 +35,164 @@
 #include "../abstract_hardware_model.h"
 #include "dram.h"
 
+#include <algorithm>
+#include <cassert>
 #include <list>
 #include <queue>
 #include <vector>
+
+enum l2_multi_issue_data_work {
+  L2_MULTI_ISSUE_HIT_DATA = 0,
+  L2_MULTI_ISSUE_DIRTY_EVICTION,
+};
+
+inline bool l2_multi_issue_port_model_enabled(unsigned mode) {
+  assert(mode <= 1);
+  return mode == 1;
+}
+
+inline bool l2_multi_issue_needs_data_port(
+    cache_request_status tag_probe_status,
+    unsigned prospective_dirty_eviction_sectors, bool ready_read_forward) {
+  assert(!ready_read_forward ||
+         (tag_probe_status != HIT && tag_probe_status != RESERVATION_FAIL));
+  return !ready_read_forward &&
+         (tag_probe_status == HIT || prospective_dirty_eviction_sectors > 0);
+}
+
+struct l2_multi_issue_port_stats {
+  unsigned long long lookup_accepted_sectors;
+  unsigned long long data_port_accepted_sectors;
+  unsigned long long data_port_hit_sectors;
+  unsigned long long data_port_dirty_eviction_sectors;
+  unsigned long long lookup_width_stall_cycles;
+  unsigned long long data_port_width_stall_cycles;
+
+  l2_multi_issue_port_stats()
+      : lookup_accepted_sectors(0),
+        data_port_accepted_sectors(0),
+        data_port_hit_sectors(0),
+        data_port_dirty_eviction_sectors(0),
+        lookup_width_stall_cycles(0),
+        data_port_width_stall_cycles(0) {}
+
+  l2_multi_issue_port_stats &operator+=(const l2_multi_issue_port_stats &rhs) {
+    lookup_accepted_sectors += rhs.lookup_accepted_sectors;
+    data_port_accepted_sectors += rhs.data_port_accepted_sectors;
+    data_port_hit_sectors += rhs.data_port_hit_sectors;
+    data_port_dirty_eviction_sectors += rhs.data_port_dirty_eviction_sectors;
+    lookup_width_stall_cycles += rhs.lookup_width_stall_cycles;
+    data_port_width_stall_cycles += rhs.data_port_width_stall_cycles;
+    return *this;
+  }
+};
+
+// Per-L2-instance sector service for the optional multi-issue port model.
+// A sector is a 32-byte L2 work package. These counters describe internal
+// sector service, not physical or logical request counts; callers retain all
+// mem_fetch ownership and completion semantics.
+class l2_multi_issue_ports {
+ public:
+  l2_multi_issue_ports()
+      : m_lookup_width(1),
+        m_data_width(1),
+        m_lookup_remaining(1),
+        m_data_remaining(1),
+        m_lookup_stall_recorded(false),
+        m_data_stall_recorded(false) {}
+
+  void configure(unsigned lookup_width, unsigned data_width) {
+    assert(lookup_width > 0);
+    assert(data_width > 0);
+    m_lookup_width = lookup_width;
+    m_data_width = data_width;
+    begin_cycle();
+  }
+
+  void begin_cycle() {
+    m_lookup_remaining = m_lookup_width;
+    m_data_remaining = m_data_width;
+    m_lookup_stall_recorded = false;
+    m_data_stall_recorded = false;
+  }
+
+  bool can_accept_lookup(unsigned sectors) {
+    assert(sectors > 0);
+    if (sectors <= m_lookup_remaining) return true;
+    record_once(m_stats.lookup_width_stall_cycles, m_lookup_stall_recorded);
+    return false;
+  }
+
+  void accept_lookup(unsigned sectors) {
+    assert(sectors > 0 && sectors <= m_lookup_remaining);
+    m_lookup_remaining -= sectors;
+    m_stats.lookup_accepted_sectors += sectors;
+  }
+
+  bool data_port_has_capacity() {
+    if (m_data_remaining > 0) return true;
+    record_once(m_stats.data_port_width_stall_cycles, m_data_stall_recorded);
+    return false;
+  }
+
+  unsigned accept_data(unsigned pending_sectors,
+                       l2_multi_issue_data_work work) {
+    assert(pending_sectors > 0);
+    const unsigned accepted = std::min(pending_sectors, m_data_remaining);
+    m_data_remaining -= accepted;
+    m_stats.data_port_accepted_sectors += accepted;
+    if (work == L2_MULTI_ISSUE_HIT_DATA)
+      m_stats.data_port_hit_sectors += accepted;
+    else
+      m_stats.data_port_dirty_eviction_sectors += accepted;
+    if (accepted < pending_sectors)
+      record_once(m_stats.data_port_width_stall_cycles, m_data_stall_recorded);
+    return accepted;
+  }
+
+  unsigned lookup_remaining() const { return m_lookup_remaining; }
+  unsigned data_remaining() const { return m_data_remaining; }
+  const l2_multi_issue_port_stats &stats() const { return m_stats; }
+
+ private:
+  static void record_once(unsigned long long &counter, bool &recorded) {
+    if (recorded) return;
+    ++counter;
+    recorded = true;
+  }
+
+  unsigned m_lookup_width;
+  unsigned m_data_width;
+  unsigned m_lookup_remaining;
+  unsigned m_data_remaining;
+  bool m_lookup_stall_recorded;
+  bool m_data_stall_recorded;
+  l2_multi_issue_port_stats m_stats;
+};
+
+class l2_multi_issue_pending_operation {
+ public:
+  l2_multi_issue_pending_operation() : m_remaining_sectors(0) {}
+
+  void start(unsigned sectors) {
+    assert(!active());
+    assert(sectors > 0);
+    m_remaining_sectors = sectors;
+  }
+
+  bool service_data(l2_multi_issue_ports &ports,
+                    l2_multi_issue_data_work work) {
+    assert(active());
+    m_remaining_sectors -= ports.accept_data(m_remaining_sectors, work);
+    return !active();
+  }
+
+  bool active() const { return m_remaining_sectors != 0; }
+  unsigned remaining_sectors() const { return m_remaining_sectors; }
+
+ private:
+  unsigned m_remaining_sectors;
+};
 
 class mem_fetch;
 
@@ -206,6 +361,8 @@ class memory_sub_partition {
   bool full(unsigned size) const;
   void record_full_state(unsigned size);
   void accumulate_full_state_stats(unsigned long long *stats) const;
+  void accumulate_l2_multi_issue_port_stats(
+      l2_multi_issue_port_stats &stats) const;
   void accumulate_l2_partition_stats(unsigned long long &remote_accesses,
                                      unsigned long long &extra_latency) const;
   void push(class mem_fetch *mf, unsigned long long clock_cycle);
@@ -279,6 +436,9 @@ class memory_sub_partition {
 
   unsigned long long
       m_full_state_stats[NUM_MEM_SUB_PARTITION_FULL_STATS];
+  l2_multi_issue_ports m_l2_multi_issue_ports;
+  mem_fetch *m_pending_l2_writeback;
+  l2_multi_issue_pending_operation m_pending_l2_writeback_work;
   unsigned long long m_l2_partition_remote_accesses;
   unsigned long long m_l2_partition_extra_latency_cycles;
 

@@ -1407,8 +1407,7 @@ void baseline_cache::send_read_request(new_addr_type addr,
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
   bool mshr_hit = m_mshrs.probe(mshr_addr);
   bool mshr_avail = !m_mshrs.full(mshr_addr);
-  bool ready_forward =
-      m_mshrs.ready_for_forward(mshr_addr) && !wa && !mf->isatomic();
+  bool ready_forward = ready_forward_eligible(mf, wa);
   if (ready_forward) {
     // The lower-level response has arrived but older merged accesses are still
     // draining. Forward that response without allocating another cache line.
@@ -1450,6 +1449,13 @@ void baseline_cache::send_read_request(new_addr_type addr,
                            mf->get_streamID());
   else
     assert(0);
+}
+
+bool baseline_cache::ready_forward_eligible(const mem_fetch *mf,
+                                            bool wa) const {
+  assert(mf != NULL);
+  const new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
+  return ready_forward_eligible(m_mshrs, mshr_addr, wa, mf->isatomic());
 }
 
 /// Sends write request to lower level memory (write or writeback)
@@ -2074,6 +2080,75 @@ enum cache_request_status l2_cache::access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events) {
   return data_cache::access(addr, mf, time, events);
+}
+
+enum cache_request_status l2_cache::access(new_addr_type addr, mem_fetch *mf,
+                                           unsigned time,
+                                           std::list<cache_event> &events,
+                                           bool account_legacy_data_port) {
+  return data_cache::access(addr, mf, time, events, account_legacy_data_port);
+}
+
+enum cache_request_status l2_cache::probe(
+    new_addr_type addr, mem_fetch *mf, unsigned &dirty_eviction_sectors) const {
+  const new_addr_type block_addr = m_config.block_addr(addr);
+  unsigned cache_index = (unsigned)-1;
+  const cache_request_status status =
+      m_tag_array->probe(block_addr, cache_index, mf, mf->is_write(), true);
+  dirty_eviction_sectors = 0;
+  const bool no_write_allocate_miss =
+      mf->is_write() && m_config.m_write_alloc_policy == NO_WRITE_ALLOCATE;
+  if (status == MISS && !no_write_allocate_miss &&
+      m_config.m_write_policy != WRITE_THROUGH) {
+    cache_block_t *replacement = m_tag_array->get_block(cache_index);
+    if (replacement->is_modified_line()) {
+      const unsigned modified_bytes = replacement->get_modified_size();
+      dirty_eviction_sectors = (modified_bytes + SECTOR_SIZE - 1) / SECTOR_SIZE;
+      assert(dirty_eviction_sectors > 0);
+    }
+  }
+  return status;
+}
+
+bool l2_cache::ready_read_forward_eligible(
+    const mem_fetch *mf, cache_request_status tag_probe_status) const {
+  assert(mf != NULL);
+  return ready_read_forward_eligible(
+      m_mshrs, m_config.mshr_addr(mf->get_addr()), mf->get_is_write(),
+      mf->isatomic(), tag_probe_status);
+}
+
+enum cache_request_status l2_cache::access_multi_issue(
+    new_addr_type addr, mem_fetch *mf, unsigned time,
+    std::list<cache_event> &events, mem_fetch *&deferred_writeback,
+    unsigned &deferred_writeback_sectors) {
+  deferred_writeback = NULL;
+  deferred_writeback_sectors = 0;
+  const size_t miss_queue_size_before = m_miss_queue.size();
+  const cache_request_status status =
+      data_cache::access(addr, mf, time, events, false);
+
+  cache_event writeback_event(WRITE_BACK_REQUEST_SENT);
+  if (was_writeback_sent(events, writeback_event)) {
+    assert(status != RESERVATION_FAIL);
+    assert(m_miss_queue.size() > miss_queue_size_before);
+    deferred_writeback = m_miss_queue.back();
+    assert(deferred_writeback->get_access_type() == L2_WRBK_ACC);
+    const unsigned modified_bytes = deferred_writeback->get_data_size();
+    assert(modified_bytes > 0 && modified_bytes <= m_config.get_line_sz());
+    assert(writeback_event.m_evicted_block.m_modified_size == 0 ||
+           writeback_event.m_evicted_block.m_modified_size == modified_bytes);
+    deferred_writeback_sectors =
+        (modified_bytes + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    m_miss_queue.pop_back();
+  }
+  return status;
+}
+
+void l2_cache::release_deferred_writeback(mem_fetch *writeback) {
+  assert(writeback);
+  assert(writeback->get_access_type() == L2_WRBK_ACC);
+  m_miss_queue.push_back(writeback);
 }
 
 /// Access function for tex_cache

@@ -1462,6 +1462,15 @@ class baseline_cache : public cache_t {
                          std::list<cache_event> &events, bool read_only,
                          bool wa);
 
+  // Single side-effect-free ready-MSHR forwarding rule shared by the actual
+  // send_read_request branch and L2 multi-issue admission.
+  static bool ready_forward_eligible(const mshr_table &mshrs,
+                                     new_addr_type mshr_addr,
+                                     bool write_allocate, bool atomic) {
+    return mshrs.ready_for_forward(mshr_addr) && !write_allocate && !atomic;
+  }
+  bool ready_forward_eligible(const mem_fetch *mf, bool wa) const;
+
   /// Sub-class containing all metadata for port bandwidth management
   class bandwidth_management {
    public:
@@ -1758,6 +1767,34 @@ class l2_cache : public data_cache {
   virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events);
+
+  enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
+                                   unsigned time,
+                                   std::list<cache_event> &events,
+                                   bool account_legacy_data_port);
+
+  enum cache_request_status probe(new_addr_type addr, mem_fetch *mf,
+                                  unsigned &dirty_eviction_sectors) const;
+
+  // Ordinary L2 reads dispatch to rd_miss_base with wa=false. Use the same
+  // MSHR predicate as that path before tag-based port admission.
+  static bool ready_read_forward_eligible(
+      const mshr_table &mshrs, new_addr_type mshr_addr, bool is_write,
+      bool is_atomic, cache_request_status tag_probe_status) {
+    if (is_write || tag_probe_status == HIT ||
+        tag_probe_status == RESERVATION_FAIL)
+      return false;
+    return ready_forward_eligible(mshrs, mshr_addr, /*write_allocate=*/false,
+                                  is_atomic);
+  }
+  bool ready_read_forward_eligible(const mem_fetch *mf,
+                                   cache_request_status tag_probe_status) const;
+
+  enum cache_request_status access_multi_issue(
+      new_addr_type addr, mem_fetch *mf, unsigned time,
+      std::list<cache_event> &events, mem_fetch *&deferred_writeback,
+      unsigned &deferred_writeback_sectors);
+  void release_deferred_writeback(mem_fetch *writeback);
 };
 
 /*****************************************************************************/

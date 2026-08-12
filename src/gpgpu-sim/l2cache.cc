@@ -708,6 +708,13 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
   memset(m_full_state_stats, 0, sizeof(m_full_state_stats));
   m_l2_partition_remote_accesses = 0;
   m_l2_partition_extra_latency_cycles = 0;
+  m_pending_l2_writeback = NULL;
+  if (l2_multi_issue_port_model_enabled(m_config->l2_multi_issue_port_model)) {
+    assert(!m_config->m_L2_config.disabled());
+    assert(m_config->m_L2_config.m_cache_type == SECTOR);
+    m_l2_multi_issue_ports.configure(m_config->l2_lookup_sectors_per_cycle,
+                                     m_config->l2_data_port_sectors_per_cycle);
+  }
 
   assert(m_id < m_config->m_n_mem_sub_partition);
 
@@ -735,6 +742,7 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
 }
 
 memory_sub_partition::~memory_sub_partition() {
+  delete m_pending_l2_writeback;
   delete m_icnt_L2_queue;
   delete m_L2_dram_queue;
   delete m_dram_L2_queue;
@@ -824,7 +832,12 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
     }
   }
 
-  // DRAM to L2 (texture) and icnt (not texture)
+  const bool multi_issue_port_model =
+      l2_multi_issue_port_model_enabled(m_config->l2_multi_issue_port_model);
+  if (multi_issue_port_model) m_l2_multi_issue_ports.begin_cycle();
+
+  // DRAM to L2 (texture) and icnt (not texture). Fill continues to use the
+  // legacy single-response and busy-delay model in both port modes.
   if (!m_dram_L2_queue->empty()) {
     mem_fetch *mf = m_dram_L2_queue->top();
     if (!m_config->m_L2_config.disabled() && m_L2cache->waiting_for_fill(mf)) {
@@ -844,21 +857,25 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
     }
   }
 
-  // prior L2 misses inserted into m_L2_dram_queue here
+  // Prior L2 misses are inserted into m_L2_dram_queue here. Multi-issue data
+  // accesses bypass legacy data-port accounting individually, while cycle()
+  // keeps the still-legacy fill-port delay progressing.
   if (!m_config->m_L2_config.disabled()) m_L2cache->cycle();
 
-  // new L2 texture accesses and/or non-texture accesses
-  if (!m_L2_dram_queue->full() && !m_icnt_L2_queue->empty()) {
+  // Mode 0 keeps the legacy one-request/busy-delay path. Mode 1 uses separate
+  // lookup and data-sector budgets and may service multiple FIFO entries.
+  if (!multi_issue_port_model && !m_L2_dram_queue->full() &&
+      !m_icnt_L2_queue->empty()) {
     mem_fetch *mf = m_icnt_L2_queue->top();
     if (!m_config->m_L2_config.disabled() &&
         ((m_config->m_L2_texure_only && mf->istexture()) ||
          (!m_config->m_L2_texure_only))) {
       // L2 is enabled and access is for L2
-      bool output_full = m_L2_icnt_queue->full();
-      bool port_free = m_L2cache->data_port_free();
+      const bool output_full = m_L2_icnt_queue->full();
+      const bool port_free = m_L2cache->data_port_free();
       if (!output_full && port_free) {
         std::list<cache_event> events;
-        enum cache_request_status status =
+        const cache_request_status status =
             m_L2cache->access(mf->get_addr(), mf,
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
                                   m_memcpy_cycle_offset,
@@ -871,6 +888,113 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
                      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       m_L2_dram_queue->push(mf);
       m_icnt_L2_queue->pop();
+    }
+  }
+
+  if (multi_issue_port_model) {
+    bool continue_l2_service = true;
+
+    // A dirty victim is removed from the cache's miss queue when generated.
+    // It becomes visible to the downstream queue only after every dirty
+    // sector has used the multi-issue data port.
+    if (m_pending_l2_writeback != NULL) {
+      assert(m_pending_l2_writeback_work.active());
+      if (m_pending_l2_writeback_work.service_data(
+              m_l2_multi_issue_ports, L2_MULTI_ISSUE_DIRTY_EVICTION)) {
+        m_L2cache->release_deferred_writeback(m_pending_l2_writeback);
+        m_pending_l2_writeback = NULL;
+        assert(!m_pending_l2_writeback_work.active());
+      } else {
+        continue_l2_service = false;
+      }
+    }
+
+    while (continue_l2_service && !m_L2_dram_queue->full() &&
+           !m_icnt_L2_queue->empty()) {
+      mem_fetch *mf = m_icnt_L2_queue->top();
+      if (!m_config->m_L2_config.disabled() &&
+          ((m_config->m_L2_texure_only && mf->istexture()) ||
+           !m_config->m_L2_texure_only)) {
+        if (m_L2_icnt_queue->full()) break;
+
+        // push() breaks a sector-L2 demand into 32-byte internal mem_fetch
+        // children. They remain associated with their parent; these issue
+        // counters represent sector work packages rather than request counts.
+        assert(mf->get_data_size() == SECTOR_SIZE);
+        unsigned prospective_dirty_eviction_sectors = 0;
+        const cache_request_status probe_status = m_L2cache->probe(
+            mf->get_addr(), mf, prospective_dirty_eviction_sectors);
+        const bool ready_read_forward =
+            m_L2cache->ready_read_forward_eligible(mf, probe_status);
+        const bool needs_data_port = l2_multi_issue_needs_data_port(
+            probe_status, prospective_dirty_eviction_sectors,
+            ready_read_forward);
+        const bool lookup_available =
+            m_l2_multi_issue_ports.can_accept_lookup(1);
+        bool data_port_available = true;
+        if (needs_data_port)
+          data_port_available = m_l2_multi_issue_ports.data_port_has_capacity();
+        if (!lookup_available || !data_port_available) break;
+
+        std::list<cache_event> events;
+        mem_fetch *deferred_writeback = NULL;
+        unsigned deferred_writeback_sectors = 0;
+        const cache_request_status status = m_L2cache->access_multi_issue(
+            mf->get_addr(), mf,
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
+                m_memcpy_cycle_offset,
+            events, deferred_writeback, deferred_writeback_sectors);
+        m_l2_multi_issue_ports.accept_lookup(1);
+
+        if (probe_status == HIT)
+          assert(status == HIT || status == RESERVATION_FAIL);
+        if (ready_read_forward) {
+          // The authoritative predicate is shared with send_read_request(),
+          // so this access joins the ready MSHR without touching the tag
+          // replacement candidate. Actual events remain the final guard
+          // against charging a fictional dirty eviction.
+          assert(status != RESERVATION_FAIL);
+          assert(status != HIT);
+          assert(deferred_writeback == NULL);
+          assert(deferred_writeback_sectors == 0);
+          assert(events.empty());
+        }
+        if (status == HIT) {
+          const unsigned accepted =
+              m_l2_multi_issue_ports.accept_data(1, L2_MULTI_ISSUE_HIT_DATA);
+          assert(accepted == 1);
+          assert(deferred_writeback == NULL);
+        }
+
+        if (deferred_writeback != NULL) {
+          assert(status != RESERVATION_FAIL);
+          assert(m_pending_l2_writeback == NULL);
+          m_pending_l2_writeback = deferred_writeback;
+          assert(deferred_writeback_sectors ==
+                 prospective_dirty_eviction_sectors);
+          m_pending_l2_writeback_work.start(deferred_writeback_sectors);
+          if (m_pending_l2_writeback_work.service_data(
+                  m_l2_multi_issue_ports, L2_MULTI_ISSUE_DIRTY_EVICTION)) {
+            m_L2cache->release_deferred_writeback(m_pending_l2_writeback);
+            m_pending_l2_writeback = NULL;
+            assert(!m_pending_l2_writeback_work.active());
+          } else {
+            continue_l2_service = false;
+          }
+        } else if (status != RESERVATION_FAIL && !ready_read_forward) {
+          assert(prospective_dirty_eviction_sectors == 0);
+          assert(deferred_writeback_sectors == 0);
+        }
+
+        process_l2_access_result(mf, status, events);
+        if (status == RESERVATION_FAIL) continue_l2_service = false;
+      } else {
+        mf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE,
+                       m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+        m_L2_dram_queue->push(mf);
+        m_icnt_L2_queue->pop();
+        continue_l2_service = false;
+      }
     }
   }
 
@@ -908,8 +1032,12 @@ void memory_sub_partition::record_full_state(unsigned size) {
     m_full_state_stats[MSP_FULL_L2_ICNT_QUEUE_FULL]++;
 
   if (!m_config->m_L2_config.disabled()) {
-    if (!m_L2cache->data_port_free())
-      m_full_state_stats[MSP_FULL_L2_DATA_PORT_BUSY]++;
+    const bool data_port_busy =
+        m_config->l2_multi_issue_port_model == 1
+            ? (m_pending_l2_writeback != NULL ||
+               m_l2_multi_issue_ports.data_remaining() == 0)
+            : !m_L2cache->data_port_free();
+    if (data_port_busy) m_full_state_stats[MSP_FULL_L2_DATA_PORT_BUSY]++;
     if (!m_L2cache->fill_port_free())
       m_full_state_stats[MSP_FULL_L2_FILL_PORT_BUSY]++;
     if (m_L2cache->access_ready() && m_L2_icnt_queue->full()) {
@@ -923,6 +1051,11 @@ void memory_sub_partition::accumulate_full_state_stats(
     unsigned long long *stats) const {
   for (unsigned i = 0; i < NUM_MEM_SUB_PARTITION_FULL_STATS; ++i)
     stats[i] += m_full_state_stats[i];
+}
+
+void memory_sub_partition::accumulate_l2_multi_issue_port_stats(
+    l2_multi_issue_port_stats &stats) const {
+  stats += m_l2_multi_issue_ports.stats();
 }
 
 void memory_sub_partition::accumulate_l2_partition_stats(
@@ -1042,7 +1175,9 @@ unsigned memory_sub_partition::invalidateL2() {
   return 0;
 }
 
-bool memory_sub_partition::busy() const { return !m_request_tracker.empty(); }
+bool memory_sub_partition::busy() const {
+  return !m_request_tracker.empty() || m_pending_l2_writeback != NULL;
+}
 
 unsigned memory_sub_partition::l2_partition_extra_latency(
     const mem_fetch *mf) const {

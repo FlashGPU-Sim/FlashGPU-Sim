@@ -230,6 +230,11 @@ class memory_config {
   }
   void init() {
     assert(gpgpu_dram_timing_opt);
+    assert(l2_multi_issue_port_model <= 1);
+    if (l2_multi_issue_port_model == 1) {
+      assert(l2_lookup_sectors_per_cycle > 0);
+      assert(l2_data_port_sectors_per_cycle > 0);
+    }
     if (strchr(gpgpu_dram_timing_opt, '=') == NULL) {
       // dram timing option in ordered variables (legacy)
       // Disabling bank groups if their values are not specified
@@ -365,6 +370,9 @@ class memory_config {
   unsigned rop_latency;
   unsigned l2_partition_count;
   unsigned l2_partition_extra_latency;
+  unsigned l2_multi_issue_port_model;
+  unsigned l2_lookup_sectors_per_cycle;
+  unsigned l2_data_port_sectors_per_cycle;
   unsigned dram_latency;
 
   // DRAM parameters
