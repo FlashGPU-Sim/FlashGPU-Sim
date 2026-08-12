@@ -13,6 +13,7 @@ sources = [
   "integration/cp_async_src_size_test.cu",
 
   # SM100 host-side component tests.
+  "unit/addrdec_l2_slice_test.cc",
   "unit/fa4_opaque_tensormap_test.cc",
   "unit/tcgen05_tmem_test.cc",
 ]

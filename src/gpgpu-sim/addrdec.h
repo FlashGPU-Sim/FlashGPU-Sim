@@ -45,6 +45,21 @@ enum partition_index_function {
   CUSTOM
 };
 
+enum non_power2_l2_slice_mapping_policy {
+  NON_POWER2_L2_SLICE_PLAIN = 0,
+  NON_POWER2_L2_SLICE_STABLE_ROTATION = 1,
+};
+
+namespace l2_slice_mapping {
+
+bool is_power_of_two(unsigned value);
+unsigned slice_index(new_addr_type channel_address, unsigned slice_count,
+                     bool balanced);
+new_addr_type partition_address(new_addr_type channel_address,
+                                unsigned slice_count);
+
+}  // namespace l2_slice_mapping
+
 struct addrdec_t {
   void print(FILE *fp) const;
 
@@ -70,6 +85,7 @@ class linear_to_raw_address_translation {
  private:
   void addrdec_parseoption(const char *option);
   void sweep_test() const;  // sanity check to ensure no overlapping
+  new_addr_type channel_address(new_addr_type addr) const;
 
   enum { CHIP = 0, BK = 1, ROW = 2, COL = 3, BURST = 4, N_ADDRDEC };
 
@@ -93,6 +109,7 @@ class linear_to_raw_address_translation {
   unsigned nextPowerOf2_m_n_channel;
   unsigned ipoly_non_power2_balanced;
   unsigned ipoly_channel_stable_l2slice;
+  non_power2_l2_slice_mapping_policy non_power2_l2_slice_mapping;
 };
 
 #endif

@@ -312,9 +312,16 @@ class memory_config {
            simple_dram_max_inflight > m_n_sub_partition_per_memory_channel);
 
     assert(m_n_sub_partition_per_memory_channel > 0);
-    assert((nbk % m_n_sub_partition_per_memory_channel == 0) &&
-           "Number of DRAM banks must be a perfect multiple of memory sub "
-           "partition");
+    // The legacy power-of-two mapping selects the L2 subpartition from DRAM
+    // bank bits, so retain its reachability/balance constraint. The explicit
+    // non-power-of-two mapping selects the L2 slice independently of DRAM
+    // banks and therefore does not require this divisibility.
+    if ((m_n_sub_partition_per_memory_channel &
+         (m_n_sub_partition_per_memory_channel - 1)) == 0) {
+      assert((nbk % m_n_sub_partition_per_memory_channel == 0) &&
+             "Number of DRAM banks must be a perfect multiple of memory sub "
+             "partition for the legacy power-of-two slice mapping");
+    }
     m_n_mem_sub_partition = m_n_mem * m_n_sub_partition_per_memory_channel;
     fprintf(stdout, "Total number of memory sub partition = %u\n",
             m_n_mem_sub_partition);

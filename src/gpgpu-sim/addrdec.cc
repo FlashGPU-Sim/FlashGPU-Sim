@@ -42,6 +42,45 @@ static new_addr_type addrdec_packbits(new_addr_type mask, new_addr_type val,
 static void addrdec_getmasklimit(new_addr_type mask, unsigned char *high,
                                  unsigned char *low);
 
+namespace l2_slice_mapping {
+
+bool is_power_of_two(unsigned value) {
+  return value != 0 && (value & (value - 1)) == 0;
+}
+
+// SplitMix64's finalizer selects a deterministic rotation of an otherwise
+// one-to-one quotient/remainder mapping. It is not a throughput multiplier.
+static new_addr_type stable_mix(new_addr_type value) {
+  value ^= value >> 30;
+  value *= 0xbf58476d1ce4e5b9ULL;
+  value ^= value >> 27;
+  value *= 0x94d049bb133111ebULL;
+  value ^= value >> 31;
+  return value;
+}
+
+unsigned slice_index(new_addr_type channel_address, unsigned slice_count,
+                     bool balanced) {
+  assert(slice_count > 0);
+  const new_addr_type line = channel_address / MAX_MEMORY_ACCESS_SIZE;
+  const unsigned remainder = line % slice_count;
+  if (!balanced || slice_count == 1) return remainder;
+
+  const new_addr_type quotient = line / slice_count;
+  const unsigned rotation = stable_mix(quotient) % slice_count;
+  return (remainder + rotation) % slice_count;
+}
+
+new_addr_type partition_address(new_addr_type channel_address,
+                                unsigned slice_count) {
+  assert(slice_count > 0);
+  const new_addr_type line = channel_address / MAX_MEMORY_ACCESS_SIZE;
+  const new_addr_type line_offset = channel_address % MAX_MEMORY_ACCESS_SIZE;
+  return (line / slice_count) * MAX_MEMORY_ACCESS_SIZE + line_offset;
+}
+
+}  // namespace l2_slice_mapping
+
 linear_to_raw_address_translation::linear_to_raw_address_translation() {
   addrdec_option = NULL;
   ADDR_CHIP_S = 10;
@@ -54,6 +93,7 @@ linear_to_raw_address_translation::linear_to_raw_address_translation() {
   addrdec_mask[4] = 0x000000000000000F;
   ipoly_non_power2_balanced = 0;
   ipoly_channel_stable_l2slice = 0;
+  non_power2_l2_slice_mapping = NON_POWER2_L2_SLICE_PLAIN;
 }
 
 void linear_to_raw_address_translation::addrdec_setoption(option_parser_t opp) {
@@ -89,10 +129,36 @@ void linear_to_raw_address_translation::addrdec_setoption(option_parser_t opp) {
       "stable and use IPOLY only to choose the L2 subpartition inside that "
       "channel. This preserves channel/row locality while balancing L2 slices.",
       "0");
+  option_parser_register(
+      opp, "-gpgpu_non_power2_l2_slice_mapping", OPT_UINT32,
+      &non_power2_l2_slice_mapping,
+      "Direct per-channel mapping for non-power-of-two L2-slice counts under "
+      "consecutive memory-partition indexing: 0 = plain quotient/remainder, "
+      "1 = quotient/remainder with a deterministic stable rotation. This "
+      "selection is independent of the detailed DRAM-bank count.",
+      "0");
+}
+
+new_addr_type linear_to_raw_address_translation::channel_address(
+    new_addr_type addr) const {
+  if (!gap) {
+    return addrdec_packbits(~addrdec_mask[CHIP], addr, 64, 0);
+  }
+
+  // For a non-power-of-two channel count, channel selection uses the modulus
+  // of the high part and the quotient is the channel-local address.
+  new_addr_type result = ((addr >> ADDR_CHIP_S) / m_n_channel) << ADDR_CHIP_S;
+  result |= addr & ((1ULL << ADDR_CHIP_S) - 1);
+  return result;
 }
 
 new_addr_type linear_to_raw_address_translation::partition_address(
     new_addr_type addr) const {
+  if (!l2_slice_mapping::is_power_of_two(m_n_sub_partition_in_channel)) {
+    return l2_slice_mapping::partition_address(channel_address(addr),
+                                               m_n_sub_partition_in_channel);
+  }
+
   if (!gap) {
     return addrdec_packbits(~(addrdec_mask[CHIP] | sub_partition_id_mask), addr,
                             64, 0);
@@ -144,6 +210,24 @@ void linear_to_raw_address_translation::addrdec_tlx(new_addr_type addr,
                                 addrdec_mkhigh[COL], addrdec_mklow[COL]);
     tlx->burst = addrdec_packbits(addrdec_mask[BURST], rest_of_addr,
                                   addrdec_mkhigh[BURST], addrdec_mklow[BURST]);
+  }
+
+  // A non-power-of-two L2-slice topology has its own explicit mapping policy;
+  // it is not an IPOLY mode. Keep the decoded DRAM channel and all detailed
+  // DRAM fields intact, then choose only the channel-local L2 slice.
+  if (!l2_slice_mapping::is_power_of_two(m_n_sub_partition_in_channel)) {
+    assert(memory_partition_indexing == CONSECUTIVE &&
+           "Non-power-of-two per-channel L2-slice counts require "
+           "-gpgpu_memory_partition_indexing 0; select their mapping with "
+           "-gpgpu_non_power2_l2_slice_mapping");
+    const bool balanced =
+        non_power2_l2_slice_mapping == NON_POWER2_L2_SLICE_STABLE_ROTATION;
+    const unsigned sub_partition_in_channel = l2_slice_mapping::slice_index(
+        channel_address(addr), m_n_sub_partition_in_channel, balanced);
+    tlx->sub_partition =
+        tlx->chip * m_n_sub_partition_in_channel + sub_partition_in_channel;
+    assert(tlx->sub_partition < m_n_channel * m_n_sub_partition_in_channel);
+    return;
   }
 
   switch (memory_partition_indexing) {
@@ -344,11 +428,21 @@ void linear_to_raw_address_translation::addrdec_parseoption(
 
 void linear_to_raw_address_translation::init(
     unsigned int n_channel, unsigned int n_sub_partition_in_channel) {
+  assert(n_channel > 0);
+  assert(n_sub_partition_in_channel > 0);
+  assert(non_power2_l2_slice_mapping >= NON_POWER2_L2_SLICE_PLAIN &&
+         non_power2_l2_slice_mapping <= NON_POWER2_L2_SLICE_STABLE_ROTATION);
+  assert((l2_slice_mapping::is_power_of_two(n_sub_partition_in_channel) ||
+          memory_partition_indexing == CONSECUTIVE) &&
+         "Non-power-of-two per-channel L2-slice counts require "
+         "-gpgpu_memory_partition_indexing 0");
   unsigned i;
   unsigned long long int mask;
   unsigned int nchipbits = ::LOGB2_32(n_channel);
   log2channel = nchipbits;
   log2sub_partition = ::LOGB2_32(n_sub_partition_in_channel);
+  if (!l2_slice_mapping::is_power_of_two(n_sub_partition_in_channel))
+    ++log2sub_partition;
   m_n_channel = n_channel;
   m_n_sub_partition_in_channel = n_sub_partition_in_channel;
   nextPowerOf2_m_n_channel = ::next_powerOf2(n_channel);
@@ -480,10 +574,6 @@ void linear_to_raw_address_translation::init(
     // make sure n_channel is power of two when explicit dram id mask is used
     assert((n_channel & (n_channel - 1)) == 0);
   }
-  // make sure m_n_sub_partition_in_channel is power of two
-  assert((m_n_sub_partition_in_channel & (m_n_sub_partition_in_channel - 1)) ==
-         0);
-
   addrdec_getmasklimit(addrdec_mask[CHIP], &addrdec_mkhigh[CHIP],
                        &addrdec_mklow[CHIP]);
   addrdec_getmasklimit(addrdec_mask[BK], &addrdec_mkhigh[BK],
@@ -509,8 +599,9 @@ void linear_to_raw_address_translation::init(
   // create the sub partition ID mask (for removing the sub partition ID from
   // the partition address)
   sub_partition_id_mask = 0;
-  if (m_n_sub_partition_in_channel > 1) {
-    unsigned n_sub_partition_log2 = LOGB2_32(m_n_sub_partition_in_channel);
+  if (m_n_sub_partition_in_channel > 1 &&
+      l2_slice_mapping::is_power_of_two(m_n_sub_partition_in_channel)) {
+    const unsigned n_sub_partition_log2 = log2sub_partition;
     unsigned pos = 0;
     for (unsigned i = addrdec_mklow[BK]; i < addrdec_mkhigh[BK]; i++) {
       if ((addrdec_mask[BK] & ((unsigned long long int)1 << i)) != 0) {

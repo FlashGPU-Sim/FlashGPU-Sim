@@ -93,6 +93,7 @@ from a supported configuration rather than constructing one field at a time.
 | `-gpgpu_n_sub_partition_per_mchannel` | L2/memory subpartitions per memory channel |
 | `-gpgpu_mem_addr_mapping` | Mapping from physical-address bits to channels, banks, rows, columns, and bursts |
 | `-gpgpu_memory_partition_indexing` | Memory-partition indexing policy |
+| `-gpgpu_non_power2_l2_slice_mapping` | Direct per-channel policy for a non-power-of-two L2-slice count under consecutive indexing: `0` plain quotient/remainder, `1` deterministic stable rotation |
 | `-gpgpu_dram_buswidth`, `-gpgpu_dram_burst_length` | DRAM interface width and burst length |
 | `-gpgpu_dram_timing_opt` | DRAM bank, row, column, and bus timing |
 | `-network_mode`, `-inter_config_file` | Interconnect backend and its optional configuration file |
