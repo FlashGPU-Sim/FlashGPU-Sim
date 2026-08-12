@@ -53,6 +53,7 @@
 #include "dram.h"
 #include "gpu-cache.h"
 #include "mem_fetch.h"
+#include "memory_transport.h"
 #include "scoreboard.h"
 #include "stack.h"
 #include "stats.h"
@@ -2005,6 +2006,8 @@ class shader_core_config : public core_config {
   unsigned n_simt_clusters;
   unsigned n_simt_ejection_buffer_size;
   unsigned ldst_unit_response_queue_size;
+  unsigned gpgpu_cluster_response_ingress_sectors_per_cycle;
+  unsigned gpgpu_cluster_response_dispatch_sectors_per_cycle;
 
   int simt_core_sim_order;
 
@@ -3074,8 +3077,29 @@ class simt_core_cluster {
   virtual void create_shader_core_ctx() = 0;
 
   void aggregate_stats();
+  void accumulate_response_transport_stats(
+      memory_transport_service_stats &response_ingress,
+      memory_transport_service_stats &response_dispatch) const;
 
  protected:
+  struct response_transport_tick_state {
+    response_transport_tick_state() { reset(); }
+
+    void reset() {
+      tma_dispatches = 0;
+      cp_async_dispatches = 0;
+      instruction_dispatches = 0;
+      dispatch_service_slots = 0;
+      ingress_service_slots = 0;
+    }
+
+    unsigned tma_dispatches;
+    unsigned cp_async_dispatches;
+    unsigned instruction_dispatches;
+    unsigned dispatch_service_slots;
+    unsigned ingress_service_slots;
+  };
+
   unsigned m_cluster_id;
   gpgpu_sim *m_gpu;
   const shader_core_config *m_config;
@@ -3088,6 +3112,11 @@ class simt_core_cluster {
   unsigned m_cta_issue_next_core;
   std::list<unsigned> m_core_sim_order;
   std::list<mem_fetch *> m_response_fifo;
+  std::vector<memory_transport_service_budget> m_response_ingress_budgets;
+  std::vector<memory_transport_service_budget> m_response_dispatch_budgets;
+  std::vector<memory_transport_service_stats> m_response_ingress_stats;
+  std::vector<memory_transport_service_stats> m_response_dispatch_stats;
+  std::vector<response_transport_tick_state> m_response_tick_state;
 };
 
 class exec_simt_core_cluster : public simt_core_cluster {

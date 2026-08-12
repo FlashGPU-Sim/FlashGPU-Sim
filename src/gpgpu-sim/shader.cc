@@ -6392,6 +6392,11 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
 #endif
   m_mem_stats = mstats;
   m_mem_config = mem_config;
+  m_response_ingress_budgets.resize(m_config->n_simt_cores_per_cluster);
+  m_response_dispatch_budgets.resize(m_config->n_simt_cores_per_cluster);
+  m_response_ingress_stats.resize(m_config->n_simt_cores_per_cluster);
+  m_response_dispatch_stats.resize(m_config->n_simt_cores_per_cluster);
+  m_response_tick_state.resize(m_config->n_simt_cores_per_cluster);
 }
 
 void simt_core_cluster::aggregate_stats() {
@@ -6654,81 +6659,219 @@ void sst_simt_core_cluster::icnt_inject_request_packet_to_SST(
 }
 
 void simt_core_cluster::icnt_cycle() {
+  for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+    m_response_tick_state[cid].reset();
+
   unsigned tma_response_width =
       m_config->gpgpu_tma_response_width ? m_config->gpgpu_tma_response_width : 1;
   unsigned cp_async_response_width =
       m_config->gpgpu_cp_async_response_width
           ? m_config->gpgpu_cp_async_response_width
           : 1;
-  unsigned tma_responses_accepted = 0;
-  unsigned cp_async_responses_accepted = 0;
+  const unsigned dispatch_width =
+      m_config->gpgpu_cluster_response_dispatch_sectors_per_cycle;
+  if (dispatch_width == 0) {
+    unsigned tma_responses_accepted = 0;
+    unsigned cp_async_responses_accepted = 0;
+    while (!m_response_fifo.empty()) {
+      mem_fetch *mf = m_response_fifo.front();
+      unsigned cid = m_config->sid_to_cid(mf->get_sid());
+      const unsigned sectors = memory_transport_data_sectors(mf);
+      const bool is_movement_response =
+          mf->get_access_type() == TMA_ACC_R ||
+          mf->get_access_type() == TMA_ACC_W ||
+          mf->get_access_type() == CP_ASYNC_ACC_R;
+      bool accepted_response = false;
+      if (is_movement_response) {
+        bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
+        unsigned &accepted =
+            is_cp_async ? cp_async_responses_accepted : tma_responses_accepted;
+        unsigned width =
+            is_cp_async ? cp_async_response_width : tma_response_width;
+        if (accepted < width && !m_core[cid]->tma_response_buffer_full()) {
+          m_response_fifo.pop_front();
+          m_core[cid]->accept_tma_response(mf);
+          accepted++;
+          accepted_response = true;
+        } else {
+          ++m_response_dispatch_stats[cid].downstream_full_ticks;
+          break;
+        }
+      } else if (mf->get_access_type() == INST_ACC_R) {
+        if (!m_core[cid]->fetch_unit_response_buffer_full()) {
+          m_response_fifo.pop_front();
+          m_core[cid]->accept_fetch_response(mf);
+          accepted_response = true;
+        } else {
+          ++m_response_dispatch_stats[cid].downstream_full_ticks;
+        }
+      } else {
+        if (!m_core[cid]->ldst_unit_response_buffer_full()) {
+          m_response_fifo.pop_front();
+          m_mem_stats->get_stats()->memlatstat_read_done(mf);
+          m_core[cid]->accept_ldst_unit_response(mf);
+          accepted_response = true;
+        } else {
+          ++m_response_dispatch_stats[cid].downstream_full_ticks;
+        }
+      }
+      if (accepted_response) {
+        m_response_dispatch_stats[cid].record_accept(sectors);
+        m_response_tick_state[cid].dispatch_service_slots +=
+            memory_transport_service_slots(sectors);
+      }
+      // accept_*() transfers ownership of mf to the target consumer.  Decide
+      // whether the legacy loop may continue from the classification cached
+      // before that hand-off, rather than reading mf afterwards.
+      if (!(accepted_response && is_movement_response))
+        break;
+    }
+    for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+      m_response_dispatch_stats[cid].record_tick_service(
+          m_response_tick_state[cid].dispatch_service_slots);
+  } else {
+    for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+      m_response_dispatch_budgets[cid].begin_tick(dispatch_width);
 
-  while (!m_response_fifo.empty()) {
-    mem_fetch *mf = m_response_fifo.front();
-    unsigned cid = m_config->sid_to_cid(mf->get_sid());
-    if (mf->get_access_type() == TMA_ACC_R ||
-        mf->get_access_type() == TMA_ACC_W ||
-        mf->get_access_type() == CP_ASYNC_ACC_R) {
-      bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
-      unsigned &accepted =
-          is_cp_async ? cp_async_responses_accepted : tma_responses_accepted;
-      unsigned width = is_cp_async ? cp_async_response_width : tma_response_width;
-      if (accepted < width &&
-          !m_core[cid]->tma_response_buffer_full()) {
-        m_response_fifo.pop_front();
+    while (!m_response_fifo.empty()) {
+      mem_fetch *mf = m_response_fifo.front();
+      unsigned cid = m_config->sid_to_cid(mf->get_sid());
+      const unsigned sectors = memory_transport_data_sectors(mf);
+      memory_transport_service_budget &budget =
+          m_response_dispatch_budgets[cid];
+      const bool is_tma_response = mf->get_access_type() == TMA_ACC_R ||
+                                   mf->get_access_type() == TMA_ACC_W ||
+                                   mf->get_access_type() == CP_ASYNC_ACC_R;
+      const bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
+
+      bool consumer_ready = false;
+      if (is_tma_response) {
+        response_transport_tick_state &state = m_response_tick_state[cid];
+        unsigned &accepted = is_cp_async ? state.cp_async_dispatches
+                                         : state.tma_dispatches;
+        const unsigned local_width =
+            is_cp_async ? cp_async_response_width : tma_response_width;
+        consumer_ready =
+            accepted < local_width && !m_core[cid]->tma_response_buffer_full();
+      } else if (mf->get_access_type() == INST_ACC_R) {
+        // The explicit transport budget widens ordinary data, TMA, and
+        // cp.async responses only.  L1I retains its legacy one-response per
+        // target core per tick cadence.
+        consumer_ready =
+            m_response_tick_state[cid].instruction_dispatches == 0 &&
+            !m_core[cid]->fetch_unit_response_buffer_full();
+      } else {
+        consumer_ready = !m_core[cid]->ldst_unit_response_buffer_full();
+      }
+      if (!consumer_ready) {
+        budget.note_downstream_full();
+        break;
+      }
+      if (!budget.can_accept(sectors)) {
+        budget.note_width_limited(sectors);
+        break;
+      }
+
+      m_response_fifo.pop_front();
+      if (is_tma_response) {
+        response_transport_tick_state &state = m_response_tick_state[cid];
+        unsigned &accepted = is_cp_async ? state.cp_async_dispatches
+                                         : state.tma_dispatches;
         m_core[cid]->accept_tma_response(mf);
-        accepted++;
-        continue;
-      }
-      break;
-    } else if (mf->get_access_type() == INST_ACC_R) {
-      // instruction fetch response
-      if (!m_core[cid]->fetch_unit_response_buffer_full()) {
-        m_response_fifo.pop_front();
+        ++accepted;
+      } else if (mf->get_access_type() == INST_ACC_R) {
         m_core[cid]->accept_fetch_response(mf);
-      }
-    } else {
-      // data response
-      if (!m_core[cid]->ldst_unit_response_buffer_full()) {
-        m_response_fifo.pop_front();
+        ++m_response_tick_state[cid].instruction_dispatches;
+      } else {
         m_mem_stats->get_stats()->memlatstat_read_done(mf);
         m_core[cid]->accept_ldst_unit_response(mf);
       }
+      budget.consume(sectors);
+      m_response_dispatch_stats[cid].record_accept(sectors);
     }
-    break;
+    for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+      m_response_dispatch_budgets[cid].end_tick(
+          &m_response_dispatch_stats[cid]);
   }
 
-  unsigned tma_responses_popped = 0;
-  unsigned cp_async_responses_popped = 0;
-  while (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
-    mem_fetch *mf = (mem_fetch *)::icnt_pop(m_cluster_id);
-    if (!mf) break;
-    assert(mf->get_tpc() == m_cluster_id);
-    assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
+  const unsigned ingress_width =
+      m_config->gpgpu_cluster_response_ingress_sectors_per_cycle;
+  if (ingress_width == 0) {
+    unsigned tma_responses_popped = 0;
+    unsigned cp_async_responses_popped = 0;
+    while (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
+      mem_fetch *mf = (mem_fetch *)::icnt_pop(m_cluster_id);
+      if (!mf) break;
+      assert(mf->get_tpc() == m_cluster_id);
+      assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
+      unsigned cid = m_config->sid_to_cid(mf->get_sid());
 
-    // The packet size varies depending on the type of request:
-    // - For read request and atomic request, the packet contains the data
-    // - For write-ack, the packet only has control metadata
-    unsigned int packet_size =
-        (mf->get_is_write()) ? mf->get_ctrl_size() : mf->size();
-    m_stats->m_incoming_traffic_stats->record_traffic(mf, packet_size);
-    mf->set_status(IN_CLUSTER_TO_SHADER_QUEUE,
-                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-    m_response_fifo.push_back(mf);
-    m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+      unsigned int packet_size =
+          (mf->get_is_write()) ? mf->get_ctrl_size() : mf->size();
+      m_stats->m_incoming_traffic_stats->record_traffic(mf, packet_size);
+      mf->set_status(IN_CLUSTER_TO_SHADER_QUEUE,
+                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+      m_response_fifo.push_back(mf);
+      m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+      const unsigned sectors = memory_transport_data_sectors(mf);
+      m_response_ingress_stats[cid].record_accept(sectors);
+      m_response_tick_state[cid].ingress_service_slots +=
+          memory_transport_service_slots(sectors);
 
-    if (mf->get_access_type() == TMA_ACC_R ||
-        mf->get_access_type() == TMA_ACC_W ||
-        mf->get_access_type() == CP_ASYNC_ACC_R) {
-      bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
-      unsigned &popped =
-          is_cp_async ? cp_async_responses_popped : tma_responses_popped;
-      unsigned width = is_cp_async ? cp_async_response_width : tma_response_width;
-      popped++;
-      if (popped < width)
-        continue;
+      if (mf->get_access_type() == TMA_ACC_R ||
+          mf->get_access_type() == TMA_ACC_W ||
+          mf->get_access_type() == CP_ASYNC_ACC_R) {
+        bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
+        unsigned &popped =
+            is_cp_async ? cp_async_responses_popped : tma_responses_popped;
+        unsigned width =
+            is_cp_async ? cp_async_response_width : tma_response_width;
+        popped++;
+        if (popped < width) continue;
+      }
+      break;
     }
-    break;
+    for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+      m_response_ingress_stats[cid].record_tick_service(
+          m_response_tick_state[cid].ingress_service_slots);
+  } else {
+    for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+      m_response_ingress_budgets[cid].begin_tick(ingress_width);
+
+    while (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
+      mem_fetch *mf = (mem_fetch *)::icnt_top(m_cluster_id);
+      if (!mf) break;
+      assert(mf->get_tpc() == m_cluster_id);
+      assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
+      unsigned cid = m_config->sid_to_cid(mf->get_sid());
+      const unsigned sectors = memory_transport_data_sectors(mf);
+      memory_transport_service_budget &budget = m_response_ingress_budgets[cid];
+      if (!budget.can_accept(sectors)) {
+        budget.note_width_limited(sectors);
+        break;
+      }
+
+      mem_fetch *popped = (mem_fetch *)::icnt_pop(m_cluster_id);
+      assert(popped == mf);
+      unsigned int packet_size =
+          (mf->get_is_write()) ? mf->get_ctrl_size() : mf->size();
+      m_stats->m_incoming_traffic_stats->record_traffic(mf, packet_size);
+      mf->set_status(IN_CLUSTER_TO_SHADER_QUEUE,
+                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+      m_response_fifo.push_back(mf);
+      m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+      budget.consume(sectors);
+      m_response_ingress_stats[cid].record_accept(sectors);
+    }
+    if (m_response_fifo.size() >= m_config->n_simt_ejection_buffer_size) {
+      mem_fetch *mf = (mem_fetch *)::icnt_top(m_cluster_id);
+      if (mf) {
+        unsigned cid = m_config->sid_to_cid(mf->get_sid());
+        m_response_ingress_budgets[cid].note_downstream_full();
+      }
+    }
+    for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+      m_response_ingress_budgets[cid].end_tick(&m_response_ingress_stats[cid]);
   }
 }
 
@@ -6818,6 +6961,15 @@ void simt_core_cluster::get_icnt_stats(long &n_simt_to_mem,
   }
   n_simt_to_mem = simt_to_mem;
   n_mem_to_simt = mem_to_simt;
+}
+
+void simt_core_cluster::accumulate_response_transport_stats(
+    memory_transport_service_stats &response_ingress,
+    memory_transport_service_stats &response_dispatch) const {
+  for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid) {
+    response_ingress.add(m_response_ingress_stats[cid]);
+    response_dispatch.add(m_response_dispatch_stats[cid]);
+  }
 }
 
 void simt_core_cluster::get_cache_stats(cache_stats &cs) const {

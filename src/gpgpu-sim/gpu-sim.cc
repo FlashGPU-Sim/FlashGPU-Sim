@@ -538,6 +538,18 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       &ldst_unit_response_queue_size,
       "number of response packets in ld/st unit ejection buffer", "2");
   option_parser_register(
+      opp, "-gpgpu_cluster_response_ingress_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_cluster_response_ingress_sectors_per_cycle,
+      "Reply sectors ejected into the cluster per target SM and core tick "
+      "(0=legacy)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_cluster_response_dispatch_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_cluster_response_dispatch_sectors_per_cycle,
+      "Shared response sectors dispatched per target SM and core tick "
+      "(0=legacy)",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_shmem_per_block", OPT_UINT32, &gpgpu_shmem_per_block,
       "Size of shared memory per thread block or CTA (default 48kB)", "49152");
   option_parser_register(
@@ -2035,6 +2047,8 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   rop_delay_output_total.print(statfout, "gpgpu_l2_rop_delay_output");
   memory_transport_service_stats l2_request_ingress_total;
   memory_transport_service_stats l2_response_egress_total;
+  memory_transport_service_stats cluster_response_ingress_total;
+  memory_transport_service_stats cluster_response_dispatch_total;
   for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; ++i) {
     l2_request_ingress_total.add(m_l2_request_ingress_stats[i]);
     l2_response_egress_total.add(m_l2_response_egress_stats[i]);
@@ -2043,6 +2057,14 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
                                  "gpgpu_l2_request_ingress_transport");
   l2_response_egress_total.print(statfout,
                                  "gpgpu_l2_response_egress_transport");
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i) {
+    m_cluster[i]->accumulate_response_transport_stats(
+        cluster_response_ingress_total, cluster_response_dispatch_total);
+  }
+  cluster_response_ingress_total.print(
+      statfout, "gpgpu_cluster_response_ingress_transport");
+  cluster_response_dispatch_total.print(
+      statfout, "gpgpu_cluster_response_dispatch_transport");
   auto cp_async_debug = flash_gpgpu_sim::get_global_cp_async_debug_counters();
   printf("cp_async_debug_tx_started = %llu\n", cp_async_debug.tx_started);
   printf("cp_async_debug_tx_completed = %llu\n", cp_async_debug.tx_completed);
