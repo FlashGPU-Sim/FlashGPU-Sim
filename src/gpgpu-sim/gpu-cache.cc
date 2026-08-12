@@ -1248,10 +1248,14 @@ bool baseline_cache::bandwidth_management::fill_port_free() const {
 
 /// Sends next request to lower level of memory
 void baseline_cache::cycle() {
-  cycle(true);
+  advance_miss_queue();
+  bool data_port_busy = !m_bandwidth_management.data_port_free();
+  bool fill_port_busy = !m_bandwidth_management.fill_port_free();
+  m_stats.sample_cache_port_utility(data_port_busy, fill_port_busy);
+  m_bandwidth_management.replenish_port_bandwidth();
 }
 
-void baseline_cache::cycle(bool account_legacy_port_model) {
+void baseline_cache::advance_miss_queue() {
   if (!m_miss_queue.empty()) {
     mem_fetch *mf = m_miss_queue.front();
     if (!m_memport->full(mf->size(), mf->get_is_write())) {
@@ -1259,22 +1263,16 @@ void baseline_cache::cycle(bool account_legacy_port_model) {
       m_memport->push(mf);
     }
   }
-  if (account_legacy_port_model) {
-    bool data_port_busy = !m_bandwidth_management.data_port_free();
-    bool fill_port_busy = !m_bandwidth_management.fill_port_free();
-    m_stats.sample_cache_port_utility(data_port_busy, fill_port_busy);
-    m_bandwidth_management.replenish_port_bandwidth();
-  }
 }
 
 /// Interface for response from lower memory level (model bandwidth restictions
 /// in caller)
 void baseline_cache::fill(mem_fetch *mf, unsigned time) {
-  fill(mf, time, true);
+  mem_fetch *filled_mf = fill_cache_state(mf, time);
+  if (filled_mf != NULL) m_bandwidth_management.use_fill_port(filled_mf);
 }
 
-void baseline_cache::fill(mem_fetch *mf, unsigned time,
-                          bool account_legacy_fill_port) {
+mem_fetch *baseline_cache::fill_cache_state(mem_fetch *mf, unsigned time) {
   if (m_config.m_mshr_type == SECTOR_ASSOC) {
     assert(mf->get_original_mf());
     extra_mf_fields_lookup::iterator e =
@@ -1285,7 +1283,7 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time,
     if (e->second.pending_read > 0) {
       // wait for the other requests to come back
       delete mf;
-      return;
+      return NULL;
     } else {
       mem_fetch *temp = mf;
       mf = mf->get_original_mf();
@@ -1318,7 +1316,7 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time,
     block->set_byte_mask(mf);
   }
   m_extra_mf_fields.erase(mf);
-  if (account_legacy_fill_port) m_bandwidth_management.use_fill_port(mf);
+  return mf;
 }
 
 /// Checks if mf is waiting to be filled by lower memory level
@@ -1989,7 +1987,7 @@ enum cache_request_status read_only_cache::access(
 enum cache_request_status data_cache::process_tag_probe(
     bool wr, enum cache_request_status probe_status, new_addr_type addr,
     unsigned cache_index, mem_fetch *mf, unsigned time,
-    std::list<cache_event> &events, bool account_legacy_data_port) {
+    std::list<cache_event> &events) {
   // Each function pointer ( m_[rd/wr]_[hit/miss] ) is set in the
   // data_cache constructor to reflect the corresponding cache configuration
   // options. Function pointers were used to avoid many long conditional
@@ -2025,8 +2023,6 @@ enum cache_request_status data_cache::process_tag_probe(
     }
   }
 
-  if (account_legacy_data_port)
-    m_bandwidth_management.use_data_port(mf, access_status, events);
   return access_status;
 }
 
@@ -2038,29 +2034,36 @@ enum cache_request_status data_cache::process_tag_probe(
 enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
                                              unsigned time,
                                              std::list<cache_event> &events) {
-  return access(addr, mf, time, events, true);
+  cache_request_status probe_status = RESERVATION_FAIL;
+  const cache_request_status access_status =
+      access_cache_state(addr, mf, time, events, probe_status);
+  m_bandwidth_management.use_data_port(mf, access_status, events);
+  record_access_stats(mf, probe_status, access_status);
+  return access_status;
 }
 
-enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
-                                             unsigned time,
-                                             std::list<cache_event> &events,
-                                             bool account_legacy_data_port) {
+enum cache_request_status data_cache::access_cache_state(
+    new_addr_type addr, mem_fetch *mf, unsigned time,
+    std::list<cache_event> &events, cache_request_status &probe_status) {
   assert(mf->get_data_size() <= m_config.get_atom_sz());
   bool wr = mf->get_is_write();
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
-  enum cache_request_status probe_status =
+  probe_status =
       m_tag_array->probe(block_addr, cache_index, mf, mf->is_write(), true);
-  enum cache_request_status access_status = process_tag_probe(
-      wr, probe_status, addr, cache_index, mf, time, events,
-      account_legacy_data_port);
+  return process_tag_probe(wr, probe_status, addr, cache_index, mf, time,
+                           events);
+}
+
+void data_cache::record_access_stats(mem_fetch *mf,
+                                     cache_request_status probe_status,
+                                     cache_request_status access_status) {
   m_stats.inc_stats(mf->get_access_type(),
                     m_stats.select_stats_status(probe_status, access_status),
                     mf->get_streamID());
   m_stats.inc_stats_pw(mf->get_access_type(),
                        m_stats.select_stats_status(probe_status, access_status),
                        mf->get_streamID());
-  return access_status;
 }
 
 /// This is meant to model the first level data cache in Fermi.
@@ -2080,13 +2083,6 @@ enum cache_request_status l2_cache::access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events) {
   return data_cache::access(addr, mf, time, events);
-}
-
-enum cache_request_status l2_cache::access(new_addr_type addr, mem_fetch *mf,
-                                           unsigned time,
-                                           std::list<cache_event> &events,
-                                           bool account_legacy_data_port) {
-  return data_cache::access(addr, mf, time, events, account_legacy_data_port);
 }
 
 enum cache_request_status l2_cache::probe(
@@ -2125,8 +2121,10 @@ enum cache_request_status l2_cache::access_multi_issue(
   deferred_writeback = NULL;
   deferred_writeback_sectors = 0;
   const size_t miss_queue_size_before = m_miss_queue.size();
+  cache_request_status probe_status = RESERVATION_FAIL;
   const cache_request_status status =
-      data_cache::access(addr, mf, time, events, false);
+      access_cache_state(addr, mf, time, events, probe_status);
+  record_access_stats(mf, probe_status, status);
 
   cache_event writeback_event(WRITE_BACK_REQUEST_SENT);
   if (was_writeback_sent(events, writeback_event)) {
@@ -2151,10 +2149,10 @@ void l2_cache::release_deferred_writeback(mem_fetch *writeback) {
   m_miss_queue.push_back(writeback);
 }
 
-void l2_cache::cycle_multi_issue_port_model() { baseline_cache::cycle(false); }
+void l2_cache::cycle_multi_issue_port_model() { advance_miss_queue(); }
 
 void l2_cache::fill_multi_issue_port_model(mem_fetch *mf, unsigned time) {
-  baseline_cache::fill(mf, time, false);
+  fill_cache_state(mf, time);
 }
 
 /// Access function for tex_cache

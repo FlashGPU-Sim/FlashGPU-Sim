@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
 #include <list>
 #include <queue>
 #include <vector>
@@ -46,9 +47,25 @@ enum l2_multi_issue_data_work {
   L2_MULTI_ISSUE_DIRTY_EVICTION,
 };
 
+enum class l2_port_model_kind {
+  legacy = 0,
+  multi_issue,
+};
+
+inline l2_port_model_kind l2_port_model_from_config(unsigned mode) {
+  switch (mode) {
+    case 0:
+      return l2_port_model_kind::legacy;
+    case 1:
+      return l2_port_model_kind::multi_issue;
+    default:
+      assert(mode <= 1);
+      std::abort();
+  }
+}
+
 inline bool l2_multi_issue_port_model_enabled(unsigned mode) {
-  assert(mode <= 1);
-  return mode == 1;
+  return l2_port_model_from_config(mode) == l2_port_model_kind::multi_issue;
 }
 
 inline bool l2_multi_issue_needs_data_port(
@@ -437,6 +454,7 @@ class memory_sub_partition {
   // data
   unsigned m_id;  //< the global sub partition ID
   const memory_config *m_config;
+  const l2_port_model_kind m_l2_port_model;
   class l2_cache *m_L2cache;
   class L2interface *m_L2interface;
   class gpgpu_sim *m_gpu;
@@ -468,8 +486,7 @@ class memory_sub_partition {
   fifo_pipeline<mem_fetch> *m_dram_L2_queue;
   fifo_pipeline<mem_fetch> *m_L2_icnt_queue;  // L2 cache hit response queue
 
-  unsigned long long
-      m_full_state_stats[NUM_MEM_SUB_PARTITION_FULL_STATS];
+  unsigned long long m_full_state_stats[NUM_MEM_SUB_PARTITION_FULL_STATS];
   l2_multi_issue_ports m_l2_multi_issue_ports;
   mem_fetch *m_pending_l2_writeback;
   l2_multi_issue_pending_operation m_pending_l2_writeback_work;
@@ -494,6 +511,16 @@ class memory_sub_partition {
   bool pop_ready_rop(unsigned long long cycle, mem_fetch *&mf);
   void process_l2_access_result(mem_fetch *mf, cache_request_status status,
                                 const std::list<cache_event> &events);
+  void service_ready_l2_response();
+  void cycle_legacy_l2_port_model();
+  void cycle_multi_issue_l2_port_model();
+  void service_dram_to_l2_legacy();
+  void service_dram_to_l2_multi_issue();
+  void service_l2_requests_legacy();
+  void service_l2_requests_multi_issue();
+  void enqueue_ready_rop(unsigned cycle);
+  bool l2_data_port_busy() const;
+  bool l2_fill_port_busy() const;
 
   // This is a cycle offset that has to be applied to the l2 accesses to account
   // for the cudamemcpy read/writes. We want GPGPU-Sim to only count cycles for

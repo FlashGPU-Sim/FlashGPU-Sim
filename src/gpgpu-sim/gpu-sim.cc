@@ -1973,7 +1973,8 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
                static_cast<mem_sub_partition_full_stat>(i)),
            mem_sub_part_full_stats[i]);
   }
-  if (m_memory_config->l2_multi_issue_port_model == 1) {
+  if (l2_multi_issue_port_model_enabled(
+          m_memory_config->l2_multi_issue_port_model)) {
     l2_multi_issue_port_stats l2_port_stats;
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
       m_memory_sub_partition[i]->accumulate_l2_multi_issue_port_stats(
@@ -2173,7 +2174,8 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
       printf("L2_total_cache_reservation_fail_breakdown:\n");
       l2_stats.print_aggregate_fail_stats(stdout,
                                           "L2_cache_stats_fail_breakdown");
-      if (m_memory_config->l2_multi_issue_port_model == 0)
+      if (!l2_multi_issue_port_model_enabled(
+              m_memory_config->l2_multi_issue_port_model))
         total_l2_css.print_port_stats(stdout, "L2_cache");
     }
   }
