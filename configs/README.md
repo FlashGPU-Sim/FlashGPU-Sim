@@ -78,6 +78,10 @@ option in each `gpgpusim.config`.
 | `-gpgpu_unified_l1d_size` | Unified L1 data cache and shared-memory capacity in KiB per SM |
 | `-gpgpu_cache:dl1` | L1 data-cache geometry, policy, MSHRs, queues, and data-port width |
 | `-gpgpu_cache:dl2` | L2 cache geometry and policy per subpartition |
+| `-gpgpu_l2_multi_issue_port_model` | Select `0` for the legacy single-request data/fill busy-delay model or `1` for independent multi-issue lookup, data, and fill sector ports |
+| `-gpgpu_l2_lookup_sectors_per_cycle` | Lookup width in 32-byte sector work packages when the multi-issue port model is enabled |
+| `-gpgpu_l2_data_port_sectors_per_cycle` | Data-port width for hits and dirty-eviction reads in 32-byte sector work packages when the multi-issue model is enabled |
+| `-gpgpu_l2_fill_port_sectors_per_cycle` | Independent fill-port width in 32-byte sector work packages when the multi-issue model is enabled |
 | `-gpgpu_shmem_size` | Shared-memory capacity in bytes per SM |
 | `-gpgpu_shmem_per_block` | Default shared-memory limit in bytes per CTA |
 | `-gpgpu_adaptive_cache_config` | Enable runtime selection among supported shared-memory/L1 carveouts |

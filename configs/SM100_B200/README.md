@@ -15,10 +15,25 @@ keeps the B200 shared-memory limits visible to the simulator:
 - Default shared memory per block: 48 KB
 - Maximum opt-in shared memory per block: 227 KB
 - Unified L1/shared capacity: 256 KB
-- Approximate L2 capacity: 128 MB
+- L2 topology: 16 memory channels x 12 slices = 192 instances
+- Modeled L2 capacity: 126 MiB (approximately 128 MiB)
 
-The memory hierarchy and timing values are functional placeholders. They are not
-calibrated against B200 hardware counters.
+The 12 slices in each channel use consecutive channel indexing plus the
+explicit stable-rotation policy (`-gpgpu_non_power2_l2_slice_mapping 1`). This
+mapping is independent of the detailed DRAM-bank count and is not an IPOLY
+mode. In the absence of public hardware evidence for the B200 L2-slice hash,
+the stable rotation is a deterministic modeling assumption.
+
+The L2 uses the optional multi-issue sector-port model with independent
+lookup, hit/dirty-eviction data, and fill widths of three 32-byte sector work
+packages per L2 instance and L2 tick. These widths are current deterministic
+model values, not publicly documented B200 physical-port counts. Legacy
+cache-port utilization statistics apply only when the legacy port model is
+selected; the multi-issue model reports accepted sector work and width stalls
+separately for lookup, data, and fill.
+
+Detailed DRAM timing and physical address-to-bank mapping remain functional
+placeholders; those parts are not calibrated against B200 hardware counters.
 
 ## Usage
 
