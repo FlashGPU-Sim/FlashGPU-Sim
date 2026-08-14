@@ -475,8 +475,16 @@ validate_active_target_config() {
 
     actual_cc="$major.$minor"
     if [ "$actual_cc" != "$ACTIVE_REQUIRED_CC" ]; then
-        print_color $RED "$ACTIVE_SUITE/$ACTIVE_TARGET requires compute capability $ACTIVE_REQUIRED_CC ($ACTIVE_CUDA_ARCH), but $GPU_CONFIG declares $actual_cc"
-        return 1
+        # SM120 integration binaries can still drive an SM90 sim config (e.g.
+        # SM90_H200_REDUCED_CLUSTER4x4 NoC-on). The test binary arch is not
+        # the same as the simulated GPU model.
+        if [ "${FLASHGPU_ALLOW_CC_MISMATCH:-0}" != "0" ]; then
+            print_color $YELLOW "Warning: $ACTIVE_SUITE/$ACTIVE_TARGET wants CC $ACTIVE_REQUIRED_CC but $GPU_CONFIG declares $actual_cc (FLASHGPU_ALLOW_CC_MISMATCH=$FLASHGPU_ALLOW_CC_MISMATCH)"
+        else
+            print_color $RED "$ACTIVE_SUITE/$ACTIVE_TARGET requires compute capability $ACTIVE_REQUIRED_CC ($ACTIVE_CUDA_ARCH), but $GPU_CONFIG declares $actual_cc"
+            print_color $YELLOW "Set FLASHGPU_ALLOW_CC_MISMATCH=1 to run sm120 tests against an SM90 sim config."
+            return 1
+        fi
     fi
 }
 

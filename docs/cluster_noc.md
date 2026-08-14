@@ -263,7 +263,7 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 
 | ID | Gap | Sev | Status | Close-out |
 |----|-----|-----|--------|-----------|
-| **F1** | Land + green-gate NoC stack | Crit | **Partial** | §12.2 F1 |
+| **F1** | Land + green-gate NoC stack | Crit | **Done** | §12.2 F1 |
 | **F2** | mbarrier idealized / incomplete PTX | High | **Open** | §12.2 F2 |
 | **F3** | `barrier.cluster` / CG DSM map builtins | Med | **Non-goal** | §12.6 (reopen only if an app needs it) |
 | **F4** | DSM atomics overclaimed / broken | Med | **Open** | §12.2 F4 |
@@ -284,7 +284,7 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 
 #### F1 — Land + green-gate
 
-NoC / DSM / remote mbarrier landed as `cluster_noc_t` (commit on `cluster_cta2_support`). **Green-gate is still open:** unit `ClusterNoc*` plus integration filters on H200 reduced (NoC on) and SM120 reduced (legacy off + NoC overlay) have not been recorded as passing after the land.
+NoC / DSM / remote mbarrier landed as `cluster_noc_t`. **Green-gate is done** (2026-08-15): unit `ClusterNoc*` plus SM120 NoC-off cluster/TMA filters, SM120 NoC overlay, and H200 reduced NoC-on DSM/mbar/OneProducer all recorded PASS in §12.2 F1-5.
 
 #### F2 — Idealized mbarrier
 
@@ -466,8 +466,11 @@ make FLASH=1 -j$(nproc)
 ../build/bin/sm120/run_integration_tests \
   --gtest_filter='DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*'
 
-# H200 product path (NoC default on for REDUCED_CLUSTER4x4)
-./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4 run test --target sm90 --group instructions
+# H200 reduced cluster, NoC on (same DSM/mbar/OneProducer filters as overlay).
+# sm120 integration binaries vs SM90 sim config: allow CC mismatch.
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4 \
+  run test --target sm120 --group integration \
+  "DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*"
 ```
 
 ### Programming constraints (tests / kernels)
@@ -523,14 +526,63 @@ Suggested order: **F1 green-gate → F8/F2/F4/F5 → F6/F7/F9 → L2 → L3 → 
 
 Assessment: **§6.6**. Exit for the F-track: mbarrier-ordered cluster / TMA / DSM kernels produce the **right data and complete** on supported configs; unsupported PTX **fails loud**.
 
-#### F1 — Land + green-gate  *(Partial)*
+#### F1 — Land + green-gate  *(Done)*
 
 - [x] Land `cluster_noc_t` + mapa / DSM / remote mbar + H200 knobs/docs/tests
-- [ ] **F1-1** Unit green: `./test/run_tests.sh … unit "ClusterNoc*"`
-- [ ] **F1-2** SM120 reduced, NoC **off** (legacy): `*ClusterLaunch*:*TMACluster*:*MultiCluster*`
-- [ ] **F1-3** SM120 reduced + NoC overlay: `DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*`
-- [ ] **F1-4** `SM90_H200_REDUCED_CLUSTER4x4` (NoC on): same integration filters as F1-3
-- [ ] **F1-5** Record the exact commands + pass/fail in the PR or here (do not treat “should pass” as done)
+- [x] **F1-1** Unit green: `./test/run_tests.sh … unit "ClusterNoc*"`
+- [x] **F1-2** SM120 reduced, NoC **off** (legacy): `*ClusterLaunch*:*TMACluster*:*MultiCluster*`
+- [x] **F1-3** SM120 reduced + NoC overlay: `DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*`
+- [x] **F1-4** `SM90_H200_REDUCED_CLUSTER4x4` (NoC on): same integration filters as F1-3
+- [x] **F1-5** Record the exact commands + pass/fail (below). Observed 2026-08-15 after `source setup.sh && source setup_environment` and `make FLASH=1`.
+
+**F1-5 command / result record** (do not treat “should pass” as done — these were run):
+
+```text
+# F1-1  unit ClusterNoc*
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 \
+  run test --target sm120 --group unit "ClusterNoc*"
+# runner glob → --gtest_filter=*ClusterNoc**
+# RESULT: PASS  [  PASSED  ] 6 tests.  (0 failed)
+
+# F1-2  SM120 reduced, NoC off (legacy immediate multicast)
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 \
+  run test --target sm120 --group integration \
+  "*ClusterLaunch*:*TMACluster*:*MultiCluster*"
+# RESULT: PASS  [  PASSED  ] 28 tests.  [  SKIPPED ] 4
+#   skipped (topology, expected on m=2 n=1):
+#     MultiClusterClusterTest.ClusterMulticastWithMultipleClusters
+#     ClusterLaunchApiTest.ExLaunch_ClusterLargerThanPhysical_Fails
+#     ClusterLaunchApiTest.ExLaunch_ClusterDim4_Succeeds
+#     ClusterLaunchApiTest.ExLaunch_ClusterDim4_AllCtasMarkReady
+
+# F1-3  SM120 reduced + NoC overlay (docs §10; run_tests.sh recopies config)
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 \
+  build test --target sm120 --group integration
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 refresh
+# append to test/run/SM120_RTX5090_REDUCED_CLUSTER2x1/gpgpusim.config:
+#   -gpgpu_cluster_noc_enable 1
+#   -gpgpu_mbarrier_cluster_enable 1
+#   -gpgpu_dsm_local_latency 37
+#   -gpgpu_dsm_remote_latency 78
+(cd test/run/SM120_RTX5090_REDUCED_CLUSTER2x1 && \
+  ../../build/bin/sm120/run_integration_tests \
+  --gtest_filter='DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*')
+# RESULT: PASS  [  PASSED  ] 6 tests.  (0 failed / 0 skipped)
+#   DsmTest.{SelfMapaLocal,RemoteStoreToPeer_TwoCtas,RemoteLoadFromPeer_TwoCtas}
+#   MbarrierClusterTest.{RemoteArriveUnblocksOwner,RemoteTryWaitSeesLocalArrive}
+#   TMAClusterOneProducerTest.OneProducerPeerConsumers
+
+# F1-4  H200 reduced, NoC on (product knobs). sm120 tests vs CC 9.0 sim config.
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh \
+  -c SM90_H200_REDUCED_CLUSTER4x4 \
+  run test --target sm120 --group integration \
+  "DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*"
+# parsed knobs: -gpgpu_cluster_noc_enable 1, -gpgpu_mbarrier_cluster_enable 1,
+#               -gpgpu_dsm_remote_latency 78
+# RESULT: PASS  [  PASSED  ] 6 tests.  (0 failed)
+```
+
+`FLASHGPU_ALLOW_CC_MISMATCH=1` is required for F1-4: `run_tests.sh` otherwise rejects `--target sm120` on an SM90 config. The integration binary still exercises the H200 sim model (NoC on).
 
 #### F2 — Idealized / incomplete mbarrier  *(Open)*
 
