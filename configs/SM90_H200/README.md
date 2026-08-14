@@ -52,15 +52,30 @@ Prior calibration: job 2032656 (superseded by 2034797 for most knobs).
 | far-L2 extra | 150 (H100 inherit) | **23** (measured spread) |
 | DRAM residual | 360 | **360** (kept; cold RTT not isolated) |
 | HBM STREAM copy | n/a | **~2909 GB/s** (validate peak) |
-| DSM remote (future) | 193 / +156 | **196 / +159** |
-| TMA multicast (future) | n/a | mask extras **≈ 0** (free in sim) |
+| DSM remote (e2e / fabric) | 193 / +156 | See job **2046238** below |
+| TMA multicast | n/a | See job **2046238** below |
+
+### DSM / NoC calibration (job **2046238**, supersedes 2034797 for NoC)
+
+Source: `H200_profiling/output-2046238-H200Profiling.txt` (suite includes `dsm` + `tma_mc`).
+
+| Metric | Value | Sim |
+|--------|------:|-----|
+| DSM local mean | ~37.05 cyc | `gpgpu_dsm_local_latency=37` |
+| DSM remote e2e mean | ~193.41 cyc | load ≈ local + 2×hop |
+| One-way hop | ~78 cyc | matrix / `gpgpu_dsm_remote_latency=78` |
+| Stride ratio | **1.001** | **flat** all-to-all (not multi-hop tree) |
+| TMA mcast−unicast e2e | ~**135** cyc | `gpgpu_tma_mcast_hop_latency=135` |
+| Matrix file | 16×16 one-way | `dsm_latency_matrix_16.csv` |
+
+See `docs/cluster_noc.md` and `H200_profiling/TODO.md` for remaining BW/scoreboard knobs.
 
 ### Still open
 
 - HBM **bank** timings (CCD/RRD/…) — not invertible from BW alone  
 - Cold DRAM RTT under exclusive GPU (this job had co-resident python)  
 - int-WGMMA completion; RF-pressure byte/cycle budgets  
-- Cycle-accurate TMA multicast / DSM NoC knobs (documented only)
+- DSM BW fit (`gpgpu_dsm_bytes_per_cycle`); optional DSM_LOAD_RSP scoreboard
 
 ## Usage
 

@@ -42,9 +42,13 @@
 #include <deque>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <utility>
 #include <vector>
+
+// Complete type required for std::unique_ptr destructor of cluster_noc_t.
+#include "flash/cluster_noc.h"
 
 // #include "../cuda-sim/ptx.tab.h"
 
@@ -1169,6 +1173,20 @@ class barrier_set_t {
   void try_complete_tx_if_pending(unsigned cta_id, uint32_t mbarrier_addr,
                                   uint32_t completed_tx_count);
 
+  // Remote arrive / expect_tx applied on the owner CTA (cluster NoC path).
+  void remote_arrive(unsigned cta_id, uint32_t mbarrier_addr,
+                     uint32_t arrival_count);
+  void remote_expect_tx(unsigned cta_id, uint32_t mbarrier_addr,
+                        uint32_t expected_tx_count);
+  // Remote try_wait interest list; returns true if already satisfied.
+  bool register_remote_wait(unsigned cta_id, uint32_t mbarrier_addr, int parity,
+                            unsigned src_cid, unsigned src_hw_cta,
+                            unsigned src_warp_id);
+  // After phase advance: inject WAIT_DONE to satisfied remote waiters.
+  void notify_remote_waiters(unsigned cta_id, uint32_t mbarrier_addr);
+  // Release a local warp that was blocked on remote try_wait.
+  void release_remote_waiter(unsigned warp_id);
+
   // Process delayed mbarrier warp releases each cycle
   void cycle();
 
@@ -1972,6 +1990,22 @@ class shader_core_config : public core_config {
   bool gpgpu_tma_oob_l2_traffic;
   unsigned int gpgpu_mbarrier_arrive_latency;
   unsigned int gpgpu_mbarrier_trywait_latency;
+
+  // Intra-cluster NoC / DSM / TMA multicast hop (see docs/cluster_noc.md).
+  bool gpgpu_cluster_noc_enable;
+  unsigned int gpgpu_dsm_local_latency;
+  // One-way remote hop default when matrix missing (H200~78). Load RTT ≈ 2×hop.
+  unsigned int gpgpu_dsm_remote_latency;
+  char *gpgpu_dsm_latency_matrix_file;
+  // Simple DSM BW: extra NoC cycles ceil(bytes/BPC)-1 (0=unlimited).
+  unsigned int gpgpu_dsm_bytes_per_cycle;
+  bool gpgpu_tma_mcast_enable_timing;
+  unsigned int gpgpu_tma_mcast_hop_latency;
+  bool gpgpu_tma_mcast_use_dsm_matrix;
+  unsigned int gpgpu_tma_mcast_bytes_per_cycle;
+  bool gpgpu_tma_mcast_mbar_after_data;
+  unsigned int gpgpu_mbarrier_remote_hop_latency;
+  bool gpgpu_mbarrier_cluster_enable;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;
   unsigned gpgpu_wgmma_issue_chain_ss_config[5];
@@ -2529,6 +2563,17 @@ class shader_core_ctx : public core_t {
   void try_complete_cluster_peer_mbarrier(unsigned hw_cta_id,
                                           uint32_t mbarrier_addr,
                                           uint32_t completed_tx_count);
+  // Remote mbarrier ops delivered via cluster NoC (owner CTA is local).
+  void remote_mbarrier_arrive(unsigned hw_cta_id, uint32_t mbarrier_addr,
+                              uint32_t arrival_count);
+  void remote_mbarrier_expect_tx(unsigned hw_cta_id, uint32_t mbarrier_addr,
+                                 uint32_t expected_tx_count);
+  bool register_remote_mbarrier_wait(unsigned hw_cta_id, uint32_t mbarrier_addr,
+                                     int parity, unsigned src_cid,
+                                     unsigned src_hw_cta, unsigned src_warp_id);
+  void notify_remote_mbarrier_waiters(unsigned hw_cta_id,
+                                      uint32_t mbarrier_addr);
+  void release_remote_mbarrier_waiter(unsigned warp_id);
 
  void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
                         unsigned &dl1_misses);
@@ -3062,6 +3107,8 @@ class simt_core_cluster {
 
   void core_cycle();
   void icnt_cycle();
+  // Advance intra-cluster NoC (deliver SM↔SM messages). Call after core_cycle.
+  void cluster_noc_cycle();
 
   void reinit();
   unsigned issue_block2core();
@@ -3070,6 +3117,11 @@ class simt_core_cluster {
   bool icnt_injection_buffer_full(unsigned size, bool write);
   void icnt_inject_request_packet(class mem_fetch *mf);
   void update_icnt_stats(class mem_fetch *mf);
+
+  // Intra-cluster NoC (may be nullptr if not constructed).
+  class flash_gpgpu_sim::cluster_noc_t *get_cluster_noc() const {
+    return m_cluster_noc.get();
+  }
 
   // for perfect memory interface
   bool response_queue_full() {
@@ -3149,6 +3201,7 @@ class simt_core_cluster {
   unsigned m_pending_issue_group_size;
   std::list<unsigned> m_core_sim_order;
   std::list<mem_fetch *> m_response_fifo;
+  std::unique_ptr<flash_gpgpu_sim::cluster_noc_t> m_cluster_noc;
 
  public:
   unsigned pending_issue_cluster_group() const {

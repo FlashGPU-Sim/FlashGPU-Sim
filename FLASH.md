@@ -302,18 +302,19 @@ Lane 28-31: Row 7
 
 **Mbarrier Subsystem**:
 1. **Idealized implementation**: Barriers reside in simulator memory rather than GPU shared memory
-2. **CTA-level storage**: No full cluster-scope mbarrier object; cluster TMA can still `try_complete` peer CTAs’ barriers at the same smem offset
+2. **CTA-level storage**: Barriers are per-CTA; remote (mapa) arrive/try_wait go through cluster NoC when `-gpgpu_mbarrier_cluster_enable 1`
 3. **Thread-level granularity**: Blocked threads stall entire warp (GPGPU-Sim limitation)
-4. **Timeout feature**: `mbarrier.try_wait` timeout not implemented (src/gpgpu-sim/flash/mbarrier.cc:269)
-5. **Incomplete operations**: Some mbarrier variants assert as unimplemented (src/gpgpu-sim/flash/mbarrier.cc:357)
-6. **Calibration knobs**: `gpgpu_mbarrier_arrive_latency` / `trywait_latency` (200/120 on SM120) are end-to-end TMA+mbarrier fits, not pure HW barrier cost
+4. **Timeout feature**: `mbarrier.try_wait` timeout not implemented
+5. **Incomplete operations**: Some mbarrier variants assert as unimplemented
+6. **Calibration knobs**: `gpgpu_mbarrier_arrive_latency` / `trywait_latency` are end-to-end TMA+mbarrier fits, not pure HW barrier cost
 
-**Cluster / TMA multicast**:
-1. **TB cluster launch**: `cudaLaunchKernelExC` / `__cluster_dims__` / required func attrs co-schedule CTAs of a Thread Block Cluster onto one physical `simt_core_cluster`. Ordinary `<<<>>>` keeps global RR (no forced co-residency). See `docs/cluster_cta2_realLaunch.md`.
-2. **Peer model**: `.shared::cluster` peers are active CTAs with the same `cluster_group` in the same physical cluster. For **cluster launches**, the whole TB cluster shares one group. Ordinary launches assign **one group per CTA** (no false peers on multi-SM packs).
-3. **Selective multicast (PTX-accurate)**: `.multicast::cluster` + 16-bit **`ctaMask`** (bit *i* = TB-cluster rank *i*) selects destinations for **data and mbarrier `complete_tx`**. Cluster-level only (not `shared::cta`). Issuer receives only if its rank bit is set. Bare `.shared::cluster` without multicast keeps legacy all-peer fan-out for existing tests. See `tma_multicast_mask_test.cc`.
-4. **Idealized timing**: `.shared::cluster` loads use one issuer L2/TMA stream; functional multicast to peers is free (see `docs/cluster_cta2_todo.md` for DSM hop follow-up). Functional correctness is the goal for packing configs; cycle-accurate GPC interconnect is not required.
-5. Prefer `SM120_RTX5090_REDUCED_CLUSTER4x4` for multi-cluster + m>2 functional tests; `REDUCED_CLUSTER2x1` for m=2 peer smoke; `CLUSTER16x11` for full GPC-aligned topology smoke.
+**Cluster / TMA multicast / DSM / NoC** (unified branch — see **`docs/cluster.md`**):
+1. **TB cluster launch**: `cudaLaunchKernelExC` / `__cluster_dims__` co-schedule CTAs onto one physical `simt_core_cluster`. Details: `docs/cluster_cta2_realLaunch.md`.
+2. **Peer model**: `.shared::cluster` peers share `cluster_group` / ranks on the same physical cluster.
+3. **Selective multicast**: `.multicast::cluster` + `ctaMask` for data and mbarrier `complete_tx`.
+4. **Intra-cluster NoC**: TMA peer data/mbar, DSM, remote mbarrier via `cluster_noc_t` when `-gpgpu_cluster_noc_enable 1` (`docs/cluster_noc.md`). Default on for `SM90_H200_REDUCED_CLUSTER4x4`.
+5. Prefer `SM120_*_REDUCED_CLUSTER*` for functional tests; H200 reduced for NoC-on calibration path.
+6. **Maturity:** `docs/cluster_noc.md` §6.4–§6.5 (functional usefulness + L0–L4). **Sim backlog:** §12. Short version: functionally useful for mbarrier-ordered cluster/TMA/DSM kernels; SM↔SM timing is **L1** (flat hop, job 2046238), climbing toward cycle-accurate via §12 + profiling microbenches.
 
 **General**:
 - Flash mode multi-threading may have race conditions in certain edge cases

@@ -949,14 +949,21 @@ public:
   // Note: Whether a thread participates is determined by inst->active(lane)
   // at warp_reaches_mbarrier time, not stored in this struct.
   struct mbarrier_info_t {
-    unsigned bar_id = (unsigned)-1;     // mbarrier address in shared memory
+    unsigned bar_id = (unsigned)-1;     // mbarrier address (smem offset on owner)
     unsigned bar_count = (unsigned)-1;  // expected count or arrival count
     bool bar_parity = false;            // parity for try_wait
-    
+    // Remote (mapa / DSM) target; when is_remote, bar_id is offset on owner CTA.
+    bool is_remote = false;
+    unsigned remote_cid = 0;
+    unsigned remote_hw_cta = 0;
+
     void reset() {
       bar_id = (unsigned)-1;
       bar_count = (unsigned)-1;
       bar_parity = false;
+      is_remote = false;
+      remote_cid = 0;
+      remote_hw_cta = 0;
     }
   };
   void set_mbarrier_info(int laneid, const mbarrier_info_t &info) {
@@ -1043,6 +1050,8 @@ class warp_inst_t : public inst_t {
     m_is_depbar = false;
 
     m_depbar_group_no = 0;
+    m_dsm_remote = false;
+    m_dsm_hop = 0;
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
@@ -1069,6 +1078,8 @@ class warp_inst_t : public inst_t {
     m_is_depbar = false;
 
     m_depbar_group_no = 0;
+    m_dsm_remote = false;
+    m_dsm_hop = 0;
   }
   virtual ~warp_inst_t() {}
 
@@ -1223,6 +1234,12 @@ class warp_inst_t : public inst_t {
 
   bool has_dispatch_delay() { return cycles > 0; }
 
+  // Arm shared-unit dispatch delay (e.g. DSM hop). Max with existing cycles.
+  void set_issue_cycle_delay(unsigned n) {
+    if (n > cycles)
+      cycles = n;
+  }
+
   void print(FILE *fout) const;
   unsigned get_uid() const { return m_uid; }
   unsigned long long get_streamID() const { return m_streamID; }
@@ -1282,6 +1299,16 @@ class warp_inst_t : public inst_t {
   bool m_is_depbar;
 
   unsigned int m_depbar_group_no;
+
+  // Intra-cluster DSM: hop latency for remote shared accesses (cycles).
+  bool m_dsm_remote;
+  unsigned m_dsm_hop;
+  bool is_dsm_remote() const { return m_dsm_remote; }
+  unsigned dsm_hop() const { return m_dsm_hop; }
+  void set_dsm_remote(bool remote, unsigned hop) {
+    m_dsm_remote = remote;
+    m_dsm_hop = hop;
+  }
 };
 
 #ifdef FLASH_GPGPU_SIM

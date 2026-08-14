@@ -56,6 +56,7 @@ class ptx_recognizer;
 #include "../gpgpu-sim/flash/mbarrier.h"
 #include "../gpgpu-sim/flash/ld_st_matrix.h"
 #include "../gpgpu-sim/flash/tma.h"
+#include "../gpgpu-sim/flash/cluster_noc.h"
 #include "../trace.h"
 #include "cuda-math.h"
 #include "cuda_device_printf.h"
@@ -3623,10 +3624,99 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
             mem = thread->m_local_mem;
             addr = generic_to_local(smid, hwtid, addr);
             break;
-          case shared_space:
-            mem = thread->m_shared_mem;
-            addr = generic_to_shared(smid, addr);
+          case shared_space: {
+            // Local or remote (DSM via mapa) shared window.
+            thread->m_dsm_remote = false;
+            thread->m_dsm_hop = 0;
+            // Drain due NoC messages so delayed remote stores are visible to
+            // local smem loads on the destination CTA.
+            {
+              auto *core =
+                  dynamic_cast<shader_core_ctx *>(thread->get_core());
+              if (core && core->get_cluster() &&
+                  core->get_cluster()->get_cluster_noc() &&
+                  core->get_cluster()->get_cluster_noc()->enabled()) {
+                core->get_cluster()->get_cluster_noc()->deliver_ready();
+              }
+            }
+            unsigned owner_smid = smid;
+            addr_t offset = 0;
+            if (flash_gpgpu_sim::decode_shared_generic(addr, &owner_smid,
+                                                      &offset)) {
+              if (owner_smid == smid) {
+                mem = thread->m_shared_mem;
+                addr = offset;
+              } else {
+                // Remote DSM: resolve peer CTA smem on owner SM.
+                mem = nullptr;
+                auto *core =
+                    dynamic_cast<shader_core_ctx *>(thread->get_core());
+                if (core && core->get_cluster()) {
+                  auto *cluster = core->get_cluster();
+                  for (unsigned cid = 0; cid < cluster->num_cores(); cid++) {
+                    auto *peer = cluster->get_core(cid);
+                    if (peer->get_sid() != owner_smid)
+                      continue;
+                    unsigned group =
+                        core->get_cta_cluster_group(thread->get_hw_ctaid());
+                    unsigned found_slot = (unsigned)-1;
+                    for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
+                      if (!peer->is_cta_slot_active(slot))
+                        continue;
+                      if (group != (unsigned)-1 &&
+                          peer->get_cta_cluster_group(slot) != group)
+                        continue;
+                      mem = peer->get_cta_smem(slot);
+                      if (mem) {
+                        found_slot = slot;
+                        break;
+                      }
+                    }
+                    if (!mem) {
+                      for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER;
+                           slot++) {
+                        if (peer->is_cta_slot_active(slot)) {
+                          mem = peer->get_cta_smem(slot);
+                          if (mem) {
+                            found_slot = slot;
+                            break;
+                          }
+                        }
+                      }
+                    }
+                    if (mem) {
+                      thread->m_dsm_remote = true;
+                      thread->m_dsm_owner_smid = owner_smid;
+                      thread->m_dsm_dst_cid = cid;
+                      thread->m_dsm_dst_hw_cta = found_slot;
+                      thread->m_dsm_offset = offset;
+                      auto *noc = cluster->get_cluster_noc();
+                      if (noc && noc->enabled()) {
+                        const unsigned src_cid =
+                            core->get_config()->sid_to_cid(core->get_sid());
+                        thread->m_dsm_hop =
+                            noc->hop_latency(src_cid, cid);
+                        // Apply any due stores before a remote load reads.
+                        noc->deliver_ready();
+                      }
+                    }
+                    break;
+                  }
+                }
+                if (!mem) {
+                  printf("GPGPU-Sim ERROR: DSM remote shared access to smid=%u "
+                         "failed (addr=0x%llx)\n",
+                         owner_smid, (unsigned long long)addr);
+                  abort();
+                }
+                addr = offset;
+              }
+            } else {
+              mem = thread->m_shared_mem;
+              addr = generic_to_shared(smid, addr);
+            }
             break;
+          }
           default:
             abort();
         }
@@ -4141,11 +4231,69 @@ void madc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void mapa_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  // mapa{.shared::cluster}.type d, a, b
+  // Map shared address `a` into the CTA of cluster rank `b`.
+  // Destination is a generic shared address in the target SM's window so
+  // subsequent ld/st.generic can resolve remote DSM (see cluster_noc).
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();
+  const operand_info &src2 = pI->src2();
   unsigned i_type = pI->get_type();
-  ptx_reg_t data = thread->get_operand_value(src1, dst, i_type, thread, 1);
-  thread->set_operand_value(dst, data, i_type, thread, pI);
+
+  ptx_reg_t a = thread->get_operand_value(src1, dst, i_type, thread, 1);
+  ptx_reg_t b = thread->get_operand_value(src2, dst, U32_TYPE, thread, 1);
+  const unsigned target_rank = b.u32;
+  const unsigned local_smid = thread->get_hw_sid();
+
+  // Resolve local shared offset from operand a.
+  addr_t local_offset = 0;
+  addr_t a_addr = (i_type == U64_TYPE || i_type == B64_TYPE) ? a.u64 : a.u32;
+  unsigned owner = 0;
+  addr_t off = 0;
+  if (flash_gpgpu_sim::decode_shared_generic(a_addr, &owner, &off) &&
+      owner == local_smid) {
+    local_offset = off;
+  } else if (a_addr < SHARED_MEM_SIZE_MAX) {
+    // Shared-relative address (mapa.shared::cluster.u32 form).
+    local_offset = a_addr;
+  } else {
+    // Treat as local shared offset truncated (legacy).
+    local_offset = a_addr & (SHARED_MEM_SIZE_MAX - 1);
+  }
+
+  auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+  ptx_reg_t result;
+  result.u64 = shared_to_generic(local_smid, local_offset);  // default: local
+
+  if (core && core->get_cluster()) {
+    auto *cluster = core->get_cluster();
+    const unsigned issuer_hw = thread->get_hw_ctaid();
+    const unsigned group = core->get_cta_cluster_group(issuer_hw);
+    bool found = false;
+    // Pass 1: same cluster_group + rank (TB-cluster peers).
+    // Pass 2: rank only (if group tagging missed a co-resident peer).
+    for (int pass = 0; pass < 2 && !found; pass++) {
+      for (unsigned cid = 0; cid < cluster->num_cores() && !found; cid++) {
+        auto *peer = cluster->get_core(cid);
+        for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
+          if (!peer->is_cta_slot_active(slot))
+            continue;
+          if (pass == 0 && group != (unsigned)-1 &&
+              peer->get_cta_cluster_group(slot) != group)
+            continue;
+          if (peer->get_cta_cluster_rank(slot) != target_rank)
+            continue;
+          result.u64 = shared_to_generic(peer->get_sid(), local_offset);
+          found = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (i_type == U32_TYPE || i_type == B32_TYPE)
+    result.u32 = (unsigned)result.u64;
+  thread->set_operand_value(dst, result, i_type, thread, pI);
 }
 
 void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
@@ -6215,6 +6363,36 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (space == shared_space) {
     addr &= 0x00000000FFFFFFFF;
   }
+
+  // Remote DSM store via cluster NoC when enabled.
+  // Dual-path (functional + timing):
+  //   1. Inject NoC message so hop latency is modeled for the issuer.
+  //   2. Also write peer smem immediately so subsequent remote mbarrier
+  //      arrive (same warp, after hop delay) observes the data, and so
+  //      mbarrier-coordinated peers are not racing a pure delayed deliver.
+  // Pure delayed-only visibility is still available when hop>0 if the
+  // consumer waits long enough without mbarrier; mbarrier-ordered code is
+  // the supported pattern (see docs/cluster_noc.md).
+  auto try_noc_dsm_store = [&](const void *bytes, size_t nbytes) -> bool {
+    if (!thread->m_dsm_remote || nbytes == 0)
+      return false;
+    auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+    if (!core || !core->get_cluster() || !core->get_cluster()->get_cluster_noc())
+      return false;
+    auto *noc = core->get_cluster()->get_cluster_noc();
+    if (!noc->enabled())
+      return false;
+    const unsigned src_cid = core->get_config()->sid_to_cid(core->get_sid());
+    const bool injected =
+        noc->inject_dsm_store(src_cid, thread->m_dsm_dst_cid,
+                              thread->m_dsm_dst_hw_cta, (uint32_t)addr, bytes,
+                              (uint32_t)nbytes);
+    if (injected && mem && bytes && nbytes > 0) {
+      // Immediate functional peer write (idempotent with later NoC deliver).
+      mem->write(addr, nbytes, bytes, thread, pI);
+    }
+    return injected;
+  };
   
   if (!vector_spec) {
     if (src1.is_vector() && src1.get_vect_nelem() == 1) {
@@ -6222,7 +6400,9 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     } else {
       data = thread->get_operand_value(src1, dst, type, thread, 1);
     }
-    mem->write(addr, size / 8, &data.s64, thread, pI);
+    if (!try_noc_dsm_store(&data.s64, size / 8)) {
+      mem->write(addr, size / 8, &data.s64, thread, pI);
+    }
 
     if (type == F32_TYPE) {
       GPPRINTF_INST_EXEC(
@@ -6238,25 +6418,38 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     if (vector_spec == V2_TYPE) {
       ptx_reg_t *ptx_regs = new ptx_reg_t[2];
       thread->get_vector_operand_values(src1, ptx_regs, 2);
-      mem->write(addr, size / 8, &ptx_regs[0].s64, thread, pI);
-      mem->write(addr + size / 8, size / 8, &ptx_regs[1].s64, thread, pI);
+      uint8_t buf[2 * 8];
+      memcpy(buf, &ptx_regs[0].s64, size / 8);
+      memcpy(buf + size / 8, &ptx_regs[1].s64, size / 8);
+      if (!try_noc_dsm_store(buf, 2 * (size / 8))) {
+        mem->write(addr, size / 8, &ptx_regs[0].s64, thread, pI);
+        mem->write(addr + size / 8, size / 8, &ptx_regs[1].s64, thread, pI);
+      }
       delete[] ptx_regs;
     }
     if (vector_spec == V3_TYPE) {
       ptx_reg_t *ptx_regs = new ptx_reg_t[3];
       thread->get_vector_operand_values(src1, ptx_regs, 3);
-      mem->write(addr, size / 8, &ptx_regs[0].s64, thread, pI);
-      mem->write(addr + size / 8, size / 8, &ptx_regs[1].s64, thread, pI);
-      mem->write(addr + 2 * size / 8, size / 8, &ptx_regs[2].s64, thread, pI);
+      if (!try_noc_dsm_store(&ptx_regs[0].s64, 3 * (size / 8))) {
+        // Note: multi-chunk vector may need contiguous snapshot; fall back.
+        mem->write(addr, size / 8, &ptx_regs[0].s64, thread, pI);
+        mem->write(addr + size / 8, size / 8, &ptx_regs[1].s64, thread, pI);
+        mem->write(addr + 2 * size / 8, size / 8, &ptx_regs[2].s64, thread, pI);
+      }
       delete[] ptx_regs;
     }
     if (vector_spec == V4_TYPE) {
       ptx_reg_t *ptx_regs = new ptx_reg_t[4];
       thread->get_vector_operand_values(src1, ptx_regs, 4);
-      mem->write(addr, size / 8, &ptx_regs[0].s64, thread, pI);
-      mem->write(addr + size / 8, size / 8, &ptx_regs[1].s64, thread, pI);
-      mem->write(addr + 2 * size / 8, size / 8, &ptx_regs[2].s64, thread, pI);
-      mem->write(addr + 3 * size / 8, size / 8, &ptx_regs[3].s64, thread, pI);
+      uint8_t buf[4 * 8];
+      for (int i = 0; i < 4; i++)
+        memcpy(buf + i * (size / 8), &ptx_regs[i].s64, size / 8);
+      if (!try_noc_dsm_store(buf, 4 * (size / 8))) {
+        mem->write(addr, size / 8, &ptx_regs[0].s64, thread, pI);
+        mem->write(addr + size / 8, size / 8, &ptx_regs[1].s64, thread, pI);
+        mem->write(addr + 2 * size / 8, size / 8, &ptx_regs[2].s64, thread, pI);
+        mem->write(addr + 3 * size / 8, size / 8, &ptx_regs[3].s64, thread, pI);
+      }
 
       GPPRINTF_INST_EXEC(PTX_INST_EXEC,
                         "st.v4: space %p type %s addr %llx data %llu %llu %llu "

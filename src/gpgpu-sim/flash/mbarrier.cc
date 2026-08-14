@@ -1,4 +1,5 @@
 #include "mbarrier.h"
+#include "cluster_noc.h"
 
 #include "../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
@@ -143,13 +144,80 @@ std::set<int> mbarrier_manager_t::try_advance(
   }
 }
 
+bool mbarrier_manager_t::register_remote_wait(
+    gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr,
+    int parity, unsigned src_cid, unsigned src_hw_cta, unsigned src_warp_id) {
+  auto key = std::make_pair(thread_index.sw_cta_id, addr);
+  auto it = addr_to_mbarrier_map.find(key);
+  if (it == addr_to_mbarrier_map.end()) {
+    // Barrier not yet inited / already cleaned: treat as not satisfied so
+    // waiter stays blocked (caller may retry) — or success if gone after
+    // complete? Prefer false (keep waiting) only if we expect late init.
+    // If barrier is gone after phase done, success is safer for try_wait.
+    GPPRINTF_GPU(gpu, MBAR,
+                 "remote try_wait: no barrier at sw_cta=%d addr=0x%llx "
+                 "(treat as satisfied)\n",
+                 thread_index.sw_cta_id, (unsigned long long)addr);
+    return true;
+  }
+  auto *mbarrier = it->second.get();
+  const int current_parity = mbarrier->m_phase & 1;
+  if (parity != current_parity) {
+    return true; // already advanced past this parity
+  }
+  remote_waiter_t w;
+  w.src_cid = src_cid;
+  w.src_hw_cta = src_hw_cta;
+  w.src_warp_id = src_warp_id;
+  w.parity = parity;
+  mbarrier->m_remote_waiters.push_back(w);
+  GPPRINTF_GPU(gpu, MBAR,
+               "remote try_wait registered: owner sw_cta=%d addr=0x%llx "
+               "from cid=%u warp=%u parity=%d\n",
+               thread_index.sw_cta_id, (unsigned long long)addr, src_cid,
+               src_warp_id, parity);
+  return false;
+}
+
+std::vector<mbarrier_manager_t::remote_waiter_t>
+mbarrier_manager_t::take_satisfied_remote_waiters(int sw_cta_id,
+                                                  uint64_t addr) {
+  std::vector<remote_waiter_t> out;
+  auto key = std::make_pair(sw_cta_id, addr);
+  auto it = addr_to_mbarrier_map.find(key);
+  if (it == addr_to_mbarrier_map.end())
+    return out;
+  auto *mbarrier = it->second.get();
+  const int current_parity = mbarrier->m_phase & 1;
+  for (auto wit = mbarrier->m_remote_waiters.begin();
+       wit != mbarrier->m_remote_waiters.end();) {
+    if (wit->parity != current_parity) {
+      out.push_back(*wit);
+      wit = mbarrier->m_remote_waiters.erase(wit);
+    } else {
+      ++wit;
+    }
+  }
+  return out;
+}
+
 std::set<int> mbarrier_manager_t::arrive(gpgpu_sim *gpu,
                                          const thread_index_t &thread_index,
                                          uint64_t addr, int arrival_count) {
   auto key = std::make_pair(thread_index.sw_cta_id, addr);
   auto it = addr_to_mbarrier_map.find(key);
   if (it == addr_to_mbarrier_map.end()) {
-    assert(false && "mbarrier to arrive at does not exist");
+    // Remote NoC arrives can race ahead of init visibility across SMs.
+    // Soft-fail rather than aborting the whole simulation.
+    GPPRINTF_GPU(gpu, MBAR,
+                 "CTA %d Warp %d mbarrier.arrive at 0x%llx: barrier missing "
+                 "(ignored)\n",
+                 thread_index.sw_cta_id, thread_index.sw_warp_id,
+                 (unsigned long long)addr);
+    printf("GPGPU-Sim WARNING: mbarrier.arrive at missing barrier "
+           "sw_cta=%d addr=0x%llx (ignored)\n",
+           thread_index.sw_cta_id, (unsigned long long)addr);
+    return {};
   }
   auto mbarrier = it->second.get();
 
@@ -301,25 +369,83 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
       // Convert relative shared memory offset to absolute generic address
       addr_t absolute_addr = shared_to_generic(thread->get_hw_sid(), *addr);
       if (!isspace_shared(thread->get_hw_sid(), absolute_addr)) {
-        printf("GPGPU-Sim ERROR: mbarrier address 0x%x (absolute 0x%llx) is "
-               "not in SM %u's shared memory.\n"
-               "Distributed shared memory for mbarrier is not supported.\n",
-               *addr, (unsigned long long)absolute_addr, thread->get_hw_sid());
-        fflush(stdout);
-        abort();
+        // Remote DSM mbarrier: allowed when cluster mbarrier is enabled.
+        unsigned owner = 0;
+        addr_t off = 0;
+        const bool remote = flash_gpgpu_sim::decode_shared_generic(
+                                absolute_addr, &owner, &off) &&
+                            owner != thread->get_hw_sid();
+        const auto *cfg =
+            thread->get_core()
+                ? static_cast<shader_core_ctx *>(thread->get_core())
+                      ->get_config()
+                : nullptr;
+        if (!(remote && cfg && cfg->gpgpu_mbarrier_cluster_enable &&
+              cfg->gpgpu_cluster_noc_enable)) {
+          printf("GPGPU-Sim ERROR: mbarrier address 0x%x (absolute 0x%llx) is "
+                 "not in SM %u's shared memory.\n"
+                 "Enable -gpgpu_cluster_noc_enable and "
+                 "-gpgpu_mbarrier_cluster_enable for remote mbarrier.\n",
+                 *addr, (unsigned long long)absolute_addr,
+                 thread->get_hw_sid());
+          fflush(stdout);
+          abort();
+        }
+        // Remote path is allowed; timing routes via cluster NoC.
       }
     }
     return is_shared;
   };
 
-  // Helper to set per-thread mbarrier info
-  auto set_thread_mbarrier_info = [&](unsigned addr, unsigned count,
-                                      bool parity) {
+  // Resolve mbarrier address: local smem offset, or remote via generic mapa
+  // addr. Sets remote_* fields when the barrier lives on a peer CTA.
+  auto resolve_and_fill_mbar_info = [&](uint64_t raw_addr, unsigned count,
+                                        bool parity) {
     inst_t::mbarrier_info_t info;
-    info.bar_id = addr;
     info.bar_count = count;
     info.bar_parity = parity;
+    info.is_remote = false;
+    info.bar_id = static_cast<unsigned>(raw_addr);
+
+    auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+    const auto *cfg = core ? core->get_config() : nullptr;
+    if (core && cfg && cfg->gpgpu_cluster_noc_enable &&
+        cfg->gpgpu_mbarrier_cluster_enable && core->get_cluster()) {
+      unsigned owner_smid = 0;
+      addr_t offset = 0;
+      // Prefer full generic (mapa.u64 result). Fallback: local-relative only.
+      if (flash_gpgpu_sim::decode_shared_generic(raw_addr, &owner_smid,
+                                                 &offset) &&
+          owner_smid != thread->get_hw_sid()) {
+        auto *cluster = core->get_cluster();
+        for (unsigned cid = 0; cid < cluster->num_cores(); cid++) {
+          auto *peer = cluster->get_core(cid);
+          if (peer->get_sid() != owner_smid)
+            continue;
+          unsigned group = core->get_cta_cluster_group(thread->get_hw_ctaid());
+          for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
+            if (!peer->is_cta_slot_active(slot))
+              continue;
+            if (group != (unsigned)-1 &&
+                peer->get_cta_cluster_group(slot) != group)
+              continue;
+            info.is_remote = true;
+            info.remote_cid = cid;
+            info.remote_hw_cta = slot;
+            info.bar_id = static_cast<unsigned>(offset);
+            break;
+          }
+          break;
+        }
+      }
+    }
     pI->set_mbarrier_info(laneid, info);
+  };
+
+  // Helper to set per-thread mbarrier info (local)
+  auto set_thread_mbarrier_info = [&](unsigned addr, unsigned count,
+                                      bool parity) {
+    resolve_and_fill_mbar_info(addr, count, parity);
   };
 
   if (bar_op == INIT_OPTION) {
@@ -331,14 +457,18 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     assert(is_shared_level(&addr) && "Only support shared mbarrier");
     auto expected_count = get_u32_value(expected_count_op);
     assert(expected_count > 0 && "expected count must be positive");
+    resolve_and_fill_mbar_info(addr, expected_count, false);
+    if (pI->get_mbarrier_info(laneid).is_remote) {
+      printf("GPGPU-Sim ERROR: mbarrier.init on remote DSM address is not "
+             "supported (init must run on the owner CTA).\n");
+      abort();
+    }
     GPPRINTF_GPU(thread->get_gpu(), MBAR,
                  "CTA %d Thread %d (lane %u) mbarrier init at address 0x%x "
                  "with expected "
                  "count %u\n",
                  ctaid, hw_tid, laneid, addr, expected_count);
     fflush(stdout);
-    // Set per-thread info
-    set_thread_mbarrier_info(addr, expected_count, false);
   } else if (bar_op == TRY_WAIT_OPTION) {
 
     assert(pI->parity_op() && "Only support parity op of mbarrier.try_wait");
@@ -349,16 +479,28 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
 
     const operand_info &addr_op = pI->src1();
     const operand_info &parity_op = pI->src2();
-    auto addr = get_u32_value(addr_op);
-    assert(is_shared_level(&addr) && "Only support shared mbarrier");
+    // Prefer u64 so mapa.u64 generic remote addresses are preserved.
+    uint64_t raw_addr =
+        thread->get_operand_value(addr_op, addr_op, U64_TYPE, thread, 0).u64;
+    uint32_t addr32 = static_cast<uint32_t>(raw_addr);
+    // Local-offset path still validates shared level when not remote-generic.
+    unsigned owner = 0;
+    addr_t off = 0;
+    const bool looks_remote =
+        flash_gpgpu_sim::decode_shared_generic(raw_addr, &owner, &off) &&
+        owner != thread->get_hw_sid();
+    if (!looks_remote) {
+      assert(is_shared_level(&addr32) && "Only support shared mbarrier");
+      raw_addr = addr32;
+    }
     auto parity = get_u32_value(parity_op) & 1;
 
-    GPPRINTF_GPU(thread->get_gpu(), MBAR,
-                 "CTA %d Thread %d (lane %u) mbarrier.try_wait at address 0x%x "
-                 "with parity %u\n",
-                 ctaid, hw_tid, laneid, addr, parity);
-    // Set per-thread info
-    set_thread_mbarrier_info(addr, (unsigned)-1, parity);
+    GPPRINTF_GPU(
+        thread->get_gpu(), MBAR,
+        "CTA %d Thread %d (lane %u) mbarrier.try_wait at address 0x%llx "
+        "with parity %u\n",
+        ctaid, hw_tid, laneid, (unsigned long long)raw_addr, parity);
+    resolve_and_fill_mbar_info(raw_addr, (unsigned)-1, parity);
 
     /**
      * Inline PTX commonly lowers mbarrier waits to an explicit software loop:
@@ -381,7 +523,8 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     assert(pI->get_num_operands() == 2);
     const operand_info &addr_op = pI->dst();
     const operand_info &tx_count_op = pI->src1();
-    auto addr = get_u32_value(addr_op);
+    uint64_t raw_addr =
+        thread->get_operand_value(addr_op, addr_op, U64_TYPE, thread, 0).u64;
     auto completed_tx_count = get_u32_value(tx_count_op);
     if (completed_tx_count == 0) {
       printf("GPGPU-Sim: mbarrier.complete_tx with completed_tx_count 0\n");
@@ -390,11 +533,12 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
 
     GPPRINTF_GPU(
         thread->get_gpu(), MBAR,
-        "CTA %d Thread %d (lane %u) mbarrier.complete_tx at address 0x%x "
+        "CTA %d Thread %d (lane %u) mbarrier.complete_tx at address 0x%llx "
         "with completed_tx_count %u\n",
-        ctaid, hw_tid, laneid, addr, completed_tx_count);
+        ctaid, hw_tid, laneid, (unsigned long long)raw_addr,
+        completed_tx_count);
 
-    set_thread_mbarrier_info(addr, completed_tx_count, false);
+    resolve_and_fill_mbar_info(raw_addr, completed_tx_count, false);
 
   } else if (bar_op == ARRIVE_OPTION || bar_op == EXPECT_TX_OPTION) {
 
@@ -404,8 +548,8 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     auto [is_arrive, is_expect_tx] =
         parse_mbarrier_arrive_expect_tx_options(pI);
 
-    // Now parse the operands.
-    auto addr = 0;
+    // Now parse the operands (u64 preserves mapa generic addresses).
+    uint64_t raw_addr = 0;
     auto arrival_count = 1;
     auto expected_tx_count = 0;
     if (is_arrive && is_expect_tx) {
@@ -414,17 +558,18 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
       assert(phase_op.name() == "_" &&
              "Only support sink reg for mbarrier.arrive");
 
-      addr = get_u32_value(pI->src1());
+      raw_addr =
+          thread->get_operand_value(pI->src1(), pI->src1(), U64_TYPE, thread, 0)
+              .u64;
       expected_tx_count = get_u32_value(pI->src2());
 
       GPPRINTF_GPU(thread->get_gpu(), MBAR,
                    "CTA %d Thread %d (lane %u) mbarrier.arrive.expect_tx at "
-                   "address 0x%x "
+                   "address 0x%llx "
                    "with expected_tx_count %u\n",
-                   ctaid, hw_tid, laneid, addr, expected_tx_count);
-      // Set per-thread info (for arrive.expect_tx, store expected_tx_count in
-      // bar_count)
-      set_thread_mbarrier_info(addr, expected_tx_count, false);
+                   ctaid, hw_tid, laneid, (unsigned long long)raw_addr,
+                   expected_tx_count);
+      resolve_and_fill_mbar_info(raw_addr, expected_tx_count, false);
 
     } else if (is_arrive) {
       assert(pI->get_num_operands() == 3 || pI->get_num_operands() == 2);
@@ -432,7 +577,9 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
       assert(phase_op.name() == "_" &&
              "Only support sink reg for mbarrier.arrive");
 
-      addr = get_u32_value(pI->src1());
+      raw_addr =
+          thread->get_operand_value(pI->src1(), pI->src1(), U64_TYPE, thread, 0)
+              .u64;
       if (pI->get_num_operands() == 3) {
         arrival_count = get_u32_value(pI->src2());
       }
@@ -444,25 +591,26 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
 
       GPPRINTF_GPU(
           thread->get_gpu(), MBAR,
-          "CTA %d Thread %d (lane %u) mbarrier.arrive at address 0x%x with "
+          "CTA %d Thread %d (lane %u) mbarrier.arrive at address 0x%llx with "
           "arrival_count %u\n",
-          ctaid, hw_tid, laneid, addr, arrival_count);
-      // Set per-thread info
-      set_thread_mbarrier_info(addr, arrival_count, false);
+          ctaid, hw_tid, laneid, (unsigned long long)raw_addr, arrival_count);
+      resolve_and_fill_mbar_info(raw_addr, arrival_count, false);
 
     } else if (is_expect_tx) {
       assert(pI->get_num_operands() == 2);
 
-      addr = get_u32_value(pI->dst());
+      raw_addr =
+          thread->get_operand_value(pI->dst(), pI->dst(), U64_TYPE, thread, 0)
+              .u64;
       expected_tx_count = get_u32_value(pI->src1());
 
       GPPRINTF_GPU(
           thread->get_gpu(), MBAR,
-          "CTA %d Thread %d (lane %u) mbarrier.expect_tx at address 0x%x "
+          "CTA %d Thread %d (lane %u) mbarrier.expect_tx at address 0x%llx "
           "with expected_tx_count %u\n",
-          ctaid, hw_tid, laneid, addr, expected_tx_count);
-      // Set per-thread info
-      set_thread_mbarrier_info(addr, expected_tx_count, false);
+          ctaid, hw_tid, laneid, (unsigned long long)raw_addr,
+          expected_tx_count);
+      resolve_and_fill_mbar_info(raw_addr, expected_tx_count, false);
 
     } else {
       printf("GPGPU-Sim: mbarrier.arrive/expect_tx inst invalid options\n");
@@ -600,6 +748,101 @@ void barrier_set_t::try_complete_tx_if_pending(unsigned cta_id,
   auto released_warps = m_mbarrier_manager.try_complete_tx_if_pending(
       m_shader->get_gpu(), thread_index, mbarrier_addr, completed_tx_count);
   release_warps(released_warps);
+  notify_remote_waiters(cta_id, mbarrier_addr);
+}
+
+// Helper: build thread_index for a CTA using any live warp in that CTA.
+static bool barrier_pick_cta_thread_index(
+    barrier_set_t *self, shader_core_ctx *shader, unsigned cta_id,
+    unsigned max_warps_per_core,
+    const std::map<unsigned, warp_set_t> &cta_to_warps,
+    flash_gpgpu_sim::mbarrier_manager_t::thread_index_t *out) {
+  auto w = cta_to_warps.find(cta_id);
+  if (w == cta_to_warps.end())
+    return false;
+  unsigned warp_id = (unsigned)-1;
+  for (unsigned i = 0; i < max_warps_per_core; i++) {
+    if (w->second.test(i)) {
+      warp_id = i;
+      break;
+    }
+  }
+  if (warp_id == (unsigned)-1)
+    return false;
+  out->hw_cta_id = (int)cta_id;
+  out->hw_warp_id = (int)warp_id;
+  out->sw_cta_id = shader->get_logical_cta_id(warp_id);
+  out->sw_warp_id = shader->get_cta_warp_id(warp_id);
+  return true;
+}
+
+void barrier_set_t::remote_arrive(unsigned cta_id, uint32_t mbarrier_addr,
+                                  uint32_t arrival_count) {
+  flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{};
+  if (!barrier_pick_cta_thread_index(this, m_shader, cta_id,
+                                     m_max_warps_per_core, m_cta_to_warps,
+                                     &thread_index))
+    return;
+  auto released = m_mbarrier_manager.arrive(m_shader->get_gpu(), thread_index,
+                                            mbarrier_addr, (int)arrival_count);
+  release_warps(released);
+  notify_remote_waiters(cta_id, mbarrier_addr);
+}
+
+void barrier_set_t::remote_expect_tx(unsigned cta_id, uint32_t mbarrier_addr,
+                                     uint32_t expected_tx_count) {
+  flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{};
+  if (!barrier_pick_cta_thread_index(this, m_shader, cta_id,
+                                     m_max_warps_per_core, m_cta_to_warps,
+                                     &thread_index))
+    return;
+  m_mbarrier_manager.expect_tx(m_shader->get_gpu(), thread_index, mbarrier_addr,
+                               (int)expected_tx_count);
+}
+
+bool barrier_set_t::register_remote_wait(unsigned cta_id,
+                                         uint32_t mbarrier_addr, int parity,
+                                         unsigned src_cid, unsigned src_hw_cta,
+                                         unsigned src_warp_id) {
+  flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{};
+  if (!barrier_pick_cta_thread_index(this, m_shader, cta_id,
+                                     m_max_warps_per_core, m_cta_to_warps,
+                                     &thread_index))
+    return true;
+  return m_mbarrier_manager.register_remote_wait(
+      m_shader->get_gpu(), thread_index, mbarrier_addr, parity, src_cid,
+      src_hw_cta, src_warp_id);
+}
+
+void barrier_set_t::notify_remote_waiters(unsigned cta_id,
+                                          uint32_t mbarrier_addr) {
+  flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{};
+  if (!barrier_pick_cta_thread_index(this, m_shader, cta_id,
+                                     m_max_warps_per_core, m_cta_to_warps,
+                                     &thread_index))
+    return;
+  auto waiters = m_mbarrier_manager.take_satisfied_remote_waiters(
+      thread_index.sw_cta_id, mbarrier_addr);
+  if (waiters.empty())
+    return;
+  auto *cluster = m_shader->get_cluster();
+  auto *noc = cluster ? cluster->get_cluster_noc() : nullptr;
+  if (!noc || !noc->enabled())
+    return;
+  const unsigned owner_cid =
+      m_shader->get_config()->sid_to_cid(m_shader->get_sid());
+  for (const auto &w : waiters) {
+    noc->inject_mbar_remote(owner_cid, w.src_cid, w.src_hw_cta, mbarrier_addr,
+                            flash_gpgpu_sim::cluster_mbar_op::WAIT_DONE, 1,
+                            w.src_hw_cta, w.src_warp_id, /*parity=*/1);
+  }
+}
+
+void barrier_set_t::release_remote_waiter(unsigned warp_id) {
+  if (warp_id >= m_max_warps_per_core)
+    return;
+  // Pay trywait observation latency like a local successful try_wait.
+  release_warps({static_cast<int>(warp_id)});
 }
 
 void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
@@ -642,7 +885,10 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
 
       const bool matches = info.bar_id == mbar_info.bar_id &&
                            info.bar_count == mbar_info.bar_count &&
-                           info.bar_parity == mbar_info.bar_parity;
+                           info.bar_parity == mbar_info.bar_parity &&
+                           info.is_remote == mbar_info.is_remote &&
+                           info.remote_cid == mbar_info.remote_cid &&
+                           info.remote_hw_cta == mbar_info.remote_hw_cta;
       if (!matches) {
         fprintf(stderr,
                 "GPGPU-Sim ERROR: non-uniform mbarrier params in CTA %u "
@@ -686,6 +932,12 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     bool any_active = false;
     bool any_blocking = false;
     bool any_released = false;
+    bool any_remote = false;
+
+    auto *cluster = m_shader->get_cluster();
+    auto *noc = cluster ? cluster->get_cluster_noc() : nullptr;
+    const unsigned src_cid =
+        m_shader->get_config()->sid_to_cid(m_shader->get_sid());
 
     for (unsigned lane = 0; lane < warp_size; lane++) {
       if (!active_mask.test(lane))
@@ -698,6 +950,26 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       any_active = true;
       unsigned addr = mbar_info.bar_id;
       bool parity = mbar_info.bar_parity;
+
+      if (mbar_info.is_remote) {
+        any_remote = true;
+        any_blocking = true; // always wait for NoC DONE (or hop if immediate)
+        if (noc && noc->enabled()) {
+          noc->inject_mbar_remote(src_cid, mbar_info.remote_cid,
+                                  mbar_info.remote_hw_cta, addr,
+                                  flash_gpgpu_sim::cluster_mbar_op::WAIT_REG,
+                                  /*count=*/0, cta_id, warp_id, parity ? 1 : 0);
+        } else {
+          // NoC off: fall back to local try_wait (will assert if bar missing).
+          bool released = m_mbarrier_manager.try_wait(
+              m_shader->get_gpu(), thread_index, addr, parity);
+          if (released)
+            any_released = true;
+          else
+            any_blocking = true;
+        }
+        continue;
+      }
 
       bool released = m_mbarrier_manager.try_wait(m_shader->get_gpu(),
                                                   thread_index, addr, parity);
@@ -723,10 +995,11 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       //   gpgpu_mbarrier_trywait_latency via release_warps(). Without this,
       //   clock64 microbenches measure only opcode overhead (~15 cycles) vs
       //   ~130 cycles on real Hopper/Blackwell hardware.
+      // - Remote: released when WAIT_DONE arrives (release_remote_waiter).
       m_warp_at_barrier.set(warp_id);
       m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
       m_warp_named_barrier_id[warp_id] = (unsigned)-1;
-      if (any_released && !any_blocking) {
+      if (!any_remote && any_released && !any_blocking) {
         release_warps({static_cast<int>(warp_id)});
       }
     }
@@ -742,15 +1015,34 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     auto addr = mbar_info.bar_id;
     auto completed_tx_count = mbar_info.bar_count;
 
+    if (mbar_info.is_remote) {
+      auto *cluster = m_shader->get_cluster();
+      auto *noc = cluster ? cluster->get_cluster_noc() : nullptr;
+      if (noc && noc->enabled()) {
+        const unsigned src_cid =
+            m_shader->get_config()->sid_to_cid(m_shader->get_sid());
+        noc->inject_mbar_remote(
+            src_cid, mbar_info.remote_cid, mbar_info.remote_hw_cta, addr,
+            flash_gpgpu_sim::cluster_mbar_op::COMPLETE_TX, completed_tx_count);
+      }
+      return;
+    }
+
     auto released_warps = m_mbarrier_manager.complete_tx(
         m_shader->get_gpu(), thread_index, addr, completed_tx_count);
     release_warps(released_warps);
+    notify_remote_waiters(cta_id, addr);
 
     return;
   } else if (bar_op == ARRIVE_OPTION || bar_op == EXPECT_TX_OPTION) {
 
     auto [is_arrive, is_expect_tx] =
         parse_mbarrier_arrive_expect_tx_options(pI);
+
+    auto *cluster = m_shader->get_cluster();
+    auto *noc = cluster ? cluster->get_cluster_noc() : nullptr;
+    const unsigned src_cid =
+        m_shader->get_config()->sid_to_cid(m_shader->get_sid());
 
     for (unsigned lane = 0; lane < warp_size; lane++) {
       if (!active_mask.test(lane))
@@ -763,6 +1055,28 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       auto addr = mbar_info.bar_id;
       auto count = mbar_info.bar_count;
 
+      if (mbar_info.is_remote) {
+        if (noc && noc->enabled()) {
+          if (is_expect_tx && is_arrive) {
+            noc->inject_mbar_remote(
+                src_cid, mbar_info.remote_cid, mbar_info.remote_hw_cta, addr,
+                flash_gpgpu_sim::cluster_mbar_op::EXPECT_TX, count);
+            noc->inject_mbar_remote(
+                src_cid, mbar_info.remote_cid, mbar_info.remote_hw_cta, addr,
+                flash_gpgpu_sim::cluster_mbar_op::ARRIVE, 1);
+          } else if (is_arrive) {
+            noc->inject_mbar_remote(
+                src_cid, mbar_info.remote_cid, mbar_info.remote_hw_cta, addr,
+                flash_gpgpu_sim::cluster_mbar_op::ARRIVE, count);
+          } else if (is_expect_tx) {
+            noc->inject_mbar_remote(
+                src_cid, mbar_info.remote_cid, mbar_info.remote_hw_cta, addr,
+                flash_gpgpu_sim::cluster_mbar_op::EXPECT_TX, count);
+          }
+        }
+        continue;
+      }
+
       if (is_expect_tx && is_arrive) {
         // We have to do expect_tx first, in case arrive releases the barrier.
         auto arrival_count = 1;
@@ -772,11 +1086,13 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
         auto released_warps = m_mbarrier_manager.arrive(
             m_shader->get_gpu(), thread_index, addr, arrival_count);
         release_warps(released_warps);
+        notify_remote_waiters(cta_id, addr);
 
       } else if (is_arrive) {
         auto released_warps = m_mbarrier_manager.arrive(
             m_shader->get_gpu(), thread_index, addr, count);
         release_warps(released_warps);
+        notify_remote_waiters(cta_id, addr);
 
       } else if (is_expect_tx) {
         m_mbarrier_manager.expect_tx(m_shader->get_gpu(), thread_index, addr,

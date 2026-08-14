@@ -599,6 +599,16 @@ class ptx_thread_info {
   ptx_cta_info *m_cta_info;
   ptx_reg_t m_last_set_operand_value;
 
+  // Intra-cluster DSM (set by decode_space for remote shared accesses).
+  // When m_dsm_remote is true, st may inject via cluster NoC instead of
+  // immediate peer write (delayed visibility).
+  bool m_dsm_remote = false;
+  unsigned m_dsm_owner_smid = 0;
+  unsigned m_dsm_dst_cid = 0;
+  unsigned m_dsm_dst_hw_cta = 0;
+  addr_t m_dsm_offset = 0;
+  unsigned m_dsm_hop = 0;
+
  private:
   bool m_functionalSimulationMode;
   unsigned m_uid;

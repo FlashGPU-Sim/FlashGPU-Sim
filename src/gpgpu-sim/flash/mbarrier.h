@@ -6,12 +6,23 @@
 #include <memory>
 #include <set>
 #include <unordered_map>
+#include <vector>
 
 class gpgpu_sim;
 namespace flash_gpgpu_sim {
 
 class mbarrier_manager_t {
 
+public:
+  // Remote try_wait interest (other SM waiting on this barrier).
+  struct remote_waiter_t {
+    unsigned src_cid;
+    unsigned src_hw_cta;
+    unsigned src_warp_id;
+    int parity;
+  };
+
+private:
   /**
    * Implement the mbarrier instruction.
    * NOTE: So far, this is more like a idealized implementation with some
@@ -39,6 +50,7 @@ class mbarrier_manager_t {
     int m_tx_count;
     int m_phase;
     std::set<int> m_waiting_warps;
+    std::vector<remote_waiter_t> m_remote_waiters;
   };
 
 public:
@@ -110,6 +122,22 @@ public:
    */
   void expect_tx(gpgpu_sim *gpu, const thread_index_t &thread_index,
                  uint64_t addr, int expected_tx_count);
+
+  /**
+   * Register a remote try_wait interest on the barrier at addr.
+   * @return true if the wait is already satisfied (parity advanced).
+   * If false, waiter is stored and will be notified on phase advance.
+   */
+  bool register_remote_wait(gpgpu_sim *gpu, const thread_index_t &thread_index,
+                            uint64_t addr, int parity, unsigned src_cid,
+                            unsigned src_hw_cta, unsigned src_warp_id);
+
+  /**
+   * After a phase advance, return and clear remote waiters whose parity is
+   * now satisfied (waiting for previous phase).
+   */
+  std::vector<remote_waiter_t> take_satisfied_remote_waiters(int sw_cta_id,
+                                                             uint64_t addr);
 
   /**
    * Clean up all mbarriers for a given hw_cta_id when the CTA completes.

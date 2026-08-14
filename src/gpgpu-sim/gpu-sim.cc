@@ -794,6 +794,59 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_mbarrier_trywait_latency", OPT_UINT32,
                          &gpgpu_mbarrier_trywait_latency,
                          "Latency (cycles) for mbarrier.try_wait polling before warp release (default=0)", "0");
+
+  // Intra-cluster NoC / DSM / TMA multicast (docs/cluster_noc.md)
+  option_parser_register(opp, "-gpgpu_cluster_noc_enable", OPT_BOOL,
+                         &gpgpu_cluster_noc_enable,
+                         "Enable intra-cluster SM↔SM NoC for TMA mcast/DSM/remote mbarrier (default=0)",
+                         "0");
+  option_parser_register(opp, "-gpgpu_dsm_local_latency", OPT_UINT32,
+                         &gpgpu_dsm_local_latency,
+                         "Local shared-memory latency via DSM path (cycles; H200~37)",
+                         "37");
+  option_parser_register(opp, "-gpgpu_dsm_remote_latency", OPT_UINT32,
+                         &gpgpu_dsm_remote_latency,
+                         "Default remote DSM one-way hop when matrix missing "
+                         "(cycles; H200~78; load RTT≈2×hop≈156 fabric)",
+                         "78");
+  option_parser_register(opp, "-gpgpu_dsm_latency_matrix_file", OPT_CSTR,
+                         &gpgpu_dsm_latency_matrix_file,
+                         "Path to N×N DSM one-way hop matrix CSV (cluster-local core ids)",
+                         "");
+  option_parser_register(opp, "-gpgpu_dsm_bytes_per_cycle", OPT_UINT32,
+                         &gpgpu_dsm_bytes_per_cycle,
+                         "DSM NoC BW: extra cycles ceil(bytes/BPC)-1 on DSM msgs "
+                         "(0=unlimited; H200 pair BW is multi-cluster aggregate)",
+                         "0");
+  option_parser_register(opp, "-gpgpu_tma_mcast_enable_timing", OPT_BOOL,
+                         &gpgpu_tma_mcast_enable_timing,
+                         "Route TMA cluster multicast data/mbar through NoC when NoC enabled (default=1)",
+                         "1");
+  option_parser_register(opp, "-gpgpu_tma_mcast_hop_latency", OPT_UINT32,
+                         &gpgpu_tma_mcast_hop_latency,
+                         "Fixed TMA multicast peer hop when not using DSM matrix "
+                         "(default=0; H200 mcast−unicast e2e ~135)",
+                         "0");
+  option_parser_register(opp, "-gpgpu_tma_mcast_use_dsm_matrix", OPT_BOOL,
+                         &gpgpu_tma_mcast_use_dsm_matrix,
+                         "Use DSM SM×SM matrix for TMA mcast hop (default=0; TMA often cheaper)",
+                         "0");
+  option_parser_register(opp, "-gpgpu_tma_mcast_bytes_per_cycle", OPT_UINT32,
+                         &gpgpu_tma_mcast_bytes_per_cycle,
+                         "Simple TMA mcast BW model: extra cycles ceil(bytes/BPC)-1 (0=unlimited)",
+                         "0");
+  option_parser_register(opp, "-gpgpu_tma_mcast_mbar_after_data", OPT_BOOL,
+                         &gpgpu_tma_mcast_mbar_after_data,
+                         "Deliver peer mbarrier complete only after peer data (default=1)",
+                         "1");
+  option_parser_register(opp, "-gpgpu_mbarrier_remote_hop_latency", OPT_UINT32,
+                         &gpgpu_mbarrier_remote_hop_latency,
+                         "Remote mbarrier hop; 0 means use DSM matrix (default=0)",
+                         "0");
+  option_parser_register(opp, "-gpgpu_mbarrier_cluster_enable", OPT_BOOL,
+                         &gpgpu_mbarrier_cluster_enable,
+                         "Allow mbarrier ops on remote (DSM-mapped) shared addresses (default=0)",
+                         "0");
   option_parser_register(
       opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
       &gpgpu_wgmma_issue_chain_ss,
@@ -2711,6 +2764,7 @@ void gpgpu_sim::cycle() {
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
+        m_cluster[i]->cluster_noc_cycle();
         active_sms_local += m_cluster[i]->get_n_active_sms();
       }
     }
@@ -2732,6 +2786,7 @@ void gpgpu_sim::cycle() {
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
+        m_cluster[i]->cluster_noc_cycle();
         *active_sms += m_cluster[i]->get_n_active_sms();
       }
       // Update core icnt/cache stats for AccelWattch

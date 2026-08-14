@@ -48,6 +48,7 @@
 #include "dram.h"
 #include "gpu-misc.h"
 #include "gpu-sim.h"
+#include "flash/cluster_noc.h"
 #include "icnt_wrapper.h"
 #include "mem_fetch.h"
 #include "mem_latency_stat.h"
@@ -909,6 +910,42 @@ void shader_core_ctx::try_complete_cluster_peer_mbarrier(
                                         completed_tx_count);
 }
 
+void shader_core_ctx::remote_mbarrier_arrive(unsigned hw_cta_id,
+                                             uint32_t mbarrier_addr,
+                                             uint32_t arrival_count) {
+  if (!is_cta_slot_active(hw_cta_id))
+    return;
+  m_barriers.remote_arrive(hw_cta_id, mbarrier_addr, arrival_count);
+}
+
+void shader_core_ctx::remote_mbarrier_expect_tx(unsigned hw_cta_id,
+                                                uint32_t mbarrier_addr,
+                                                uint32_t expected_tx_count) {
+  if (!is_cta_slot_active(hw_cta_id))
+    return;
+  m_barriers.remote_expect_tx(hw_cta_id, mbarrier_addr, expected_tx_count);
+}
+
+bool shader_core_ctx::register_remote_mbarrier_wait(
+    unsigned hw_cta_id, uint32_t mbarrier_addr, int parity, unsigned src_cid,
+    unsigned src_hw_cta, unsigned src_warp_id) {
+  if (!is_cta_slot_active(hw_cta_id))
+    return true;
+  return m_barriers.register_remote_wait(hw_cta_id, mbarrier_addr, parity,
+                                         src_cid, src_hw_cta, src_warp_id);
+}
+
+void shader_core_ctx::notify_remote_mbarrier_waiters(unsigned hw_cta_id,
+                                                     uint32_t mbarrier_addr) {
+  if (!is_cta_slot_active(hw_cta_id))
+    return;
+  m_barriers.notify_remote_waiters(hw_cta_id, mbarrier_addr);
+}
+
+void shader_core_ctx::release_remote_mbarrier_waiter(unsigned warp_id) {
+  m_barriers.release_remote_waiter(warp_id);
+}
+
 int shader_core_ctx::get_cta_warp_id(unsigned warp_id) const {
   unsigned hw_thread_id = warp_id * m_config->warp_size;
   if (m_thread[hw_thread_id] != NULL) {
@@ -1601,9 +1638,40 @@ void shader_core_ctx::fetch() {
 
 void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
   execute_warp_inst_t(inst);
+  // Propagate remote DSM hop from active threads (set in decode_space / st/ld).
   if (inst.is_load() || inst.is_store()) {
-    inst.generate_mem_accesses();
-    // inst.print_m_accessq();
+    unsigned max_hop = 0;
+    bool any_remote = false;
+    for (unsigned t = 0; t < m_config->warp_size; t++) {
+      if (!inst.active(t))
+        continue;
+      unsigned tid = m_config->warp_size * inst.warp_id() + t;
+      ptx_thread_info *thd = m_thread[tid];
+      if (thd && thd->m_dsm_remote) {
+        any_remote = true;
+        if (thd->m_dsm_hop > max_hop)
+          max_hop = thd->m_dsm_hop;
+      }
+    }
+    inst.set_dsm_remote(any_remote, max_hop);
+    if (any_remote) {
+      // Remote DSM: functional data is applied in st_impl / ld_impl (peer
+      // smem). Do NOT generate conventional L1/global mem accesses for the
+      // generic peer window — those never complete and hang the warp.
+      //
+      // Model hop as shared-unit dispatch_delay; keep op as load/store so the
+      // instruction still routes through the LD/ST unit, but mark space as
+      // shared with an empty access queue so shared_cycle just burns the hop
+      // and then completes (accessq_empty).
+      unsigned delay = inst.is_load() ? (2 * max_hop) : max_hop;
+      if (delay == 0)
+        delay = 1;
+      inst.set_issue_cycle_delay(delay);
+      inst.space = memory_space_t(shared_space);
+      // Leave accessq empty: shared_cycle stalls on dispatch_delay only.
+    } else {
+      inst.generate_mem_accesses();
+    }
   }
 }
 
@@ -4515,7 +4583,8 @@ void ldst_unit::cycle() {
     if (pipe_reg.is_load()) {
       if (pipe_reg.space.get_type() == shared_space) {
         if (m_pipeline_reg[m_config->smem_latency - 1]->empty()) {
-          // new shared memory request
+          // new shared memory request (DSM hop charged earlier as
+          // dispatch_delay in shared_cycle via set_issue_cycle_delay)
           move_warp(m_pipeline_reg[m_config->smem_latency - 1], m_dispatch_reg);
           m_dispatch_reg->clear();
         }
@@ -4580,6 +4649,12 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
   m_barriers.cleanup_cta_bulk_groups(cta_num);
   if (m_tma != nullptr) m_tma->cleanup_cta(cta_num);
   m_wgmma.cleanup_cta(cta_num);
+  // Drop in-flight intra-cluster NoC messages targeting this CTA (race-safe
+  // lifecycle: no late deliver into freed smem / recycled slots).
+  if (m_cluster && m_cluster->get_cluster_noc()) {
+    const unsigned cid = m_config->sid_to_cid(m_sid);
+    m_cluster->get_cluster_noc()->drop_messages_to_cta(cid, cta_num);
+  }
   m_cta_smem[cta_num] = NULL;  // Clear shared memory pointer for TMA multicast
   m_cta_cluster_group[cta_num] = (unsigned)-1;
   m_cta_cluster_rank[cta_num] = 0;
@@ -6422,6 +6497,7 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
 #endif
   m_mem_stats = mstats;
   m_mem_config = mem_config;
+  m_cluster_noc = std::make_unique<flash_gpgpu_sim::cluster_noc_t>(this, config);
 }
 
 void simt_core_cluster::aggregate_stats() {
@@ -6443,6 +6519,11 @@ void simt_core_cluster::core_cycle() {
     m_core_sim_order.splice(m_core_sim_order.end(), m_core_sim_order,
                             m_core_sim_order.begin());
   }
+}
+
+void simt_core_cluster::cluster_noc_cycle() {
+  if (m_cluster_noc)
+    m_cluster_noc->cycle();
 }
 
 void simt_core_cluster::reinit() {
