@@ -19,7 +19,7 @@ This is **not** a stack of separate “launch-only” / “TMA-only” / “NoC-
 | Doc | Role |
 |-----|------|
 | **`docs/cluster.md` (this file)** | Branch/PR overview, feature matrix, non-goals, reading order |
-| **`docs/cluster_noc.md`** | NoC / DSM / remote mbar **design authority**; **§6.4–§6.5** maturity; **§12** sim TODO (L2–L4) |
+| **`docs/cluster_noc.md`** | NoC / DSM / remote mbar **design authority**; **§6.4–§6.6** maturity (F1–F9 + L0–L4); **§12** living checklist |
 | **`docs/cluster_cta2_realLaunch.md`** | Launch API, co-residency, configs `CLUSTERmxn`, tests |
 | **`FLASH.md`** | Product feature list + limitations (short) |
 | **`configs/SM90_H200/README.md`** | H200 calibration numbers |
@@ -44,9 +44,9 @@ This is **not** a stack of separate “launch-only” / “TMA-only” / “NoC-
 | DSM mapa + remote ld/st | Yes (tested patterns) | Flat hop L1; load RTT≈2×hop; dual-path store |
 | Intra-cluster NoC | Yes | **L1** flat hop (H200); L2–L4 in §12 of `cluster_noc.md` |
 
-**Maturity (detailed tables):** `docs/cluster_noc.md` **§6.4** (functional usefulness) and **§6.5** (cycle levels L0–L4).
+**Maturity (detailed tables):** `docs/cluster_noc.md` **§6.4** (functional usefulness), **§6.5** (cycle levels L0–L4), **§6.6** (functional gaps F1–F9). Living TODO: **§12**.
 
-**Target for this PR:** ship **functional correctness** for mbarrier-ordered cluster/TMA/DSM kernels **and** an honest **L1 cycle-tunable** SM↔SM fabric (not “free multicast”). Remaining scoreboard/BW work is tracked as **in-branch / follow-on checklist** in `cluster_noc.md` §12, not as separate feature PRs.
+**Target for this PR:** ship **functional correctness** for mbarrier-ordered cluster/TMA/DSM kernels **and** an honest **L1 cycle-tunable** SM↔SM fabric (not “free multicast”). Remaining F-items and L2–L4 work are the **in-branch checklist** in `cluster_noc.md` §12, not separate feature PRs.
 
 ---
 
