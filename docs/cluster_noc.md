@@ -266,12 +266,12 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 | **F1** | Land + green-gate NoC stack | Crit | **Done** | §12.2 F1 |
 | **F2** | mbarrier idealized / incomplete PTX | High | **Open** | §12.2 F2 |
 | **F3** | `barrier.cluster` / CG DSM map builtins | Med | **Non-goal** | §12.6 (reopen only if an app needs it) |
-| **F4** | DSM atomics overclaimed / broken | Med | **Open** | §12.2 F4 |
+| **F4** | DSM `atom`/`red` overclaimed / broken | Med | **Open** | §12.2 F4 |
 | **F5** | `mapa` lifetime: exited producer → local fallback | Med | **Open** | §12.2 F5 |
 | **F6** | TMA corners stubbed (swizzle, tensormap, bulk group) | Med | **Open** | §12.2 F6 |
 | **F7** | Programming-model fragility (spin / `bar.sync`+`try_wait`) | Med | **Open** | §12.2 F7 |
-| **F8** | Thin DSM / remote-mbar / compose tests | High | **Open** | §12.2 F8 |
-| **F9** | Dual-path store (immediate peer write + issuer hop) | Med | **Open** | §12.2 F9 · L2-2 |
+| **F8** | Thin DSM / remote-mbar / compose / isolation tests | High | **Open** | §12.2 F8 |
+| **F9** | Dual-path store (immediate peer write + issuer hop) | Med | **Partial** | §12.2 F9 · L2-2 |
 
 **How to read statuses**
 
@@ -296,7 +296,7 @@ Special regs + `mapa` are the supported cluster discovery path. Full `barrier.cl
 
 #### F4 — DSM atomics
 
-`cluster_noc.h` mentions atomics. `atom_impl` still converts generic→shared with the **local** `smid` only, so mapa’d remote atomics are wrong or undefined. Either implement via the same decode/NoC path or reject loudly.
+`cluster_noc.h` mentions atomics. `atom_impl` converts generic→shared with the **local** `smid` only, so mapa’d remote `atom` is wrong or undefined. `red_impl` is already `inst_not_implemented` (global). Either implement remote atom via the same decode/NoC path or reject loudly.
 
 #### F5 — `mapa` lifetime
 
@@ -317,11 +317,11 @@ Correct CUDA cluster code usually avoids both. The sim should **assert or docume
 
 #### F8 — Thin tests
 
-Happy-path only today: `DsmTest` (self-mapa, 2-CTA store, 2-CTA load) and `MbarrierClusterTest` (remote arrive, remote try_wait). Missing: clusterDim=4, multi-peer fan-out, drop-on-CTA-exit, `mapa.u32` vs `u64`, ordering/FIFO, mixed TMA+DSM+mbar, and one real-shaped kernel.
+Happy-path only today: `DsmTest` (self-mapa, 2-CTA store, 2-CTA load) and `MbarrierClusterTest` (remote arrive, remote try_wait). Missing items are **F8-1…F8-11** (clusterDim=4, fan-out, drop-on-exit, mapa width, TMA order, compose, real-shaped kernel, remote expect/complete, multi-cluster isolation with NoC on, shipped unit tests, mask + NoC).
 
 #### F9 — Dual-path store
 
-When NoC is on, a remote `st` **injects a hop for the issuer and writes peer smem immediately**. Safe for mbarrier-ordered kernels (the supported model). Incorrect for algorithms that rely on delayed visibility without a barrier. Timing studies need `-gpgpu_dsm_store_immediate 0` (**L2-2**).
+When NoC is on, a remote `st` **injects a hop for the issuer and writes peer smem immediately**. Safe for mbarrier-ordered kernels (the supported model — **F9-1** documented). Incorrect for algorithms that rely on delayed visibility without a barrier. Timing studies need `-gpgpu_dsm_store_immediate 0` (**F9-2** / **L2-2**).
 
 ---
 
@@ -509,7 +509,43 @@ FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4
 **Branch/PR scope:** still the **same** unified cluster PR/branch (`docs/cluster.md`). F-items and L2–L4 are in-branch / follow-on checklist work, not separate “feature PRs.”  
 **Profiling / new microbenchmarks:** `../H200_profiling/TODO.md` (separate agent, separate tree).
 
-Suggested order: **F1 green-gate → F8/F2/F4/F5 → F6/F7/F9 → L2 → L3 → L4**.
+Suggested order (F1 is **done**): **F8 + F4 + F5 → F2 → F6/F7/F9 → L2 → L3 → L4**.
+
+### Task contract (how to write / close an item)
+
+Every **F\*** / **L\*** checkbox must be closable by a later agent without guessing. Use this shape:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| **ID** | yes | Stable (`F8-3`, `L2-1`). Do not reuse IDs. |
+| **Title** | yes | One line: *what* to do |
+| **Files** | yes | Code / test / doc paths that change or prove it |
+| **Exit** | yes | Observable done: test name + PASS, knob exists, abort message, etc. |
+| **Deps** | if any | Blocked-by ID |
+| **Note** | optional | Decision, non-goal, or “same as X” |
+
+**Standing rules** (F5-3, F7-3, F6-5 “only if hit”) are **notes**, not checkboxes — they never go `[x]`.  
+**Decision forks** (F4 implement vs reject) have exactly **one** surviving implementation checkbox after F4-1.  
+Do not open a new ID for work already owned by another ID (F9-2 ≡ L2-2).
+
+### Coverage map (feature → checklist)
+
+Nothing in the cluster/NoC pillar should sit outside this table. If you find a hole, add an ID here **and** in §12.2/§12.3.
+
+| Feature | Functional IDs | Timing IDs | Status |
+|---------|----------------|------------|--------|
+| Cluster launch + co-residency + specials | (landed; F1-2 regression) | idealized schedule (non-goal) | OK |
+| TMA `.shared::cluster` / mask / OneProducer | F6, F8-5, F8-6, F8-11 | L1 done; L3-2, L3-4 | corners open |
+| DSM `mapa` + remote ld/st | F5, F8-1…F8-4, F8-10 | L2-1, L2-3, L2-5; L3-1 | happy path only |
+| DSM / shared `atom` + `red` | **F4** | after F4 implement | **broken / overclaimed** |
+| Remote mbarrier | F2, F8-8 | hop via L1; L2 not needed | main ops only |
+| Dual-path store visibility | F9 | **L2-2** (= F9-2) | default documented |
+| Intra-cluster NoC fabric | F1 (done), F8-3 | L1 done; L3, L4 | L1 |
+| Programming-model hangs | F7 | — | docs only |
+| `barrier.cluster` / CG map | **F3** | — | non-goal |
+| Cross-cluster DSM / TMA | §12.6 | — | non-goal |
+| OpenMP × NoC races | — | L4-2 | un-audited |
+| Silicon e2e cycles | — | L4-1 | far |
 
 ### 12.1 Done (do not re-open without new evidence)
 
@@ -521,6 +557,8 @@ Suggested order: **F1 green-gate → F8/F2/F4/F5 → F6/F7/F9 → L2 → L3 → 
 - [x] H200 knobs/matrices from **2046238** (local ~37, one-way ~78, flat; TMA mcast hop ~135)
 - [x] Knobs: `-gpgpu_dsm_bytes_per_cycle`, TMA BPC (default **0** = unlimited)
 - [x] Docs: flat NoC intentional; §6.4 functional / §6.5 L0–L4 / §6.6 F1–F9
+- [x] **L1-1** Flat hop matrix + scalars (job 2046238): local 37, one-way 78, TMA mcast hop 135
+- [x] **L1-2** Load issue delay ≈ 2×hop; store ≈ 1×hop; no phantom L1 on remote DSM
 
 ### 12.2 Checklist — F1–F9 functional correctness
 
@@ -586,79 +624,180 @@ FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh \
 
 #### F2 — Idealized / incomplete mbarrier  *(Open)*
 
-- [ ] **F2-1** Inventory mbarrier PTX used by target kernels (arrive / arrive_drop / expect_tx / complete_tx / try_wait ± timeout)
-- [ ] **F2-2** Implement missing **used** variants; keep unused variants as hard-fail (no silent NOP)
-- [ ] **F2-3** `try_wait` timeout: implement or reject with a clear error (today: unimplemented)
-- [ ] **F2-4** Document remaining “barriers not in smem” idealization in `FLASH.md` (keep honest)
+Implemented today (local + remote when NoC + cluster-mbar on): `init`, `arrive`, `expect_tx`, `arrive.expect_tx`, `complete_tx`, `try_wait.parity` (no timeout), `inval` (partial). Unknown `bar_op` → `assert`. Storage is **simulator state**, not smem contents.
+
+- [ ] **F2-1** Inventory mbarrier PTX actually used by cluster tests + target traces.  
+  Files: `src/gpgpu-sim/flash/mbarrier.cc`, `test/src/integration/*mbarrier*`, `test/triton_trace/**/*.ptx`.  
+  Exit: table in this subsection: opcode → used? → sim status (ok / assert / NOP / missing).
+- [ ] **F2-2** For every **used** opcode from F2-1 that is not ok: implement. Unused opcodes stay hard-fail (no silent NOP).  
+  Files: `mbarrier.cc`, matching gtest.  
+  Exit: F2-1 table has no “used + missing”; new/updated test PASS. Deps: F2-1.
+- [ ] **F2-3** `mbarrier.try_wait` **timeout** operand: implement **or** reject with a clear runtime error (today: ignored / unimplemented).  
+  Files: `mbarrier.cc`, `FLASH.md`.  
+  Exit: either a timeout test PASS, or a kernel using timeout aborts with a message naming the missing feature.
+- [ ] **F2-4** Keep `FLASH.md` honest: barriers are not GPU smem objects; cluster remote is NoC-only.  
+  Files: `FLASH.md` *Mbarrier Subsystem*.  
+  Exit: limitation bullets match F2-1 table (no stale “CTA-level only” / wrong line numbers).
+
+Note: making barriers live in real smem is **out of scope** unless F2-1 shows a kernel that inspects barrier bytes.
 
 #### F3 — `barrier.cluster` / CG DSM map  *(Non-goal)*
 
-- [x] Explicitly out of scope (`docs/cluster.md` §4). Reopen only if a target kernel requires it.
+- [x] Explicitly out of scope (`docs/cluster.md` §4). Reopen only if a target kernel requires it — then add **F3-1** here, do not hide it under F2.
 
-#### F4 — DSM atomics  *(Open)*
+#### F4 — DSM atomics / reductions  *(Open)*
 
-- [ ] **F4-1** Decide: implement remote `atom` via `decode_space` + NoC **or** reject
-- [ ] **F4-2** If reject: `atom_impl` must abort on remote generic shared (stop using local `smid`)
-- [ ] **F4-3** If implement: functional test (2-CTA remote atomic add/cas) + update `cluster_noc.h` comment
-- [ ] **F4-4** Stop claiming atomics in headers/docs until F4-2 or F4-3 is done
+`cluster_noc.h` claims atomics. `atom_impl` (`instructions.cc`) converts generic→shared with the **local** `smid` only — mapa’d remote `atom` is wrong or undefined. `red_impl` is already `inst_not_implemented` (not a silent DSM bug).
+
+- [ ] **F4-1** Decision (record the choice as a one-line note under this item): **reject** (F4-2) **or** **implement** (F4-3). Default recommendation: **reject** until a target kernel needs remote atom/red.  
+  Exit: note says “reject” or “implement”.
+- [ ] **F4-2** *(only if F4-1 = reject)* `atom_impl` aborts on remote generic shared (use `decode_shared_generic` / `is_remote_shared_generic`; stop using local `smid`).  
+  Files: `src/cuda-sim/instructions.cc`, `src/gpgpu-sim/flash/cluster_noc.h` (drop atomics claim).  
+  Exit: a 2-CTA mapa+`atom.add` test **aborts with a named error** (not wrong data). Deps: F4-1 reject.
+- [ ] **F4-3** *(only if F4-1 = implement)* Remote `atom` via same decode + NoC/owner path as ld/st (owner SM mutates smem). Leave `red` unimplemented unless a kernel needs it (then add **F4-5**).  
+  Files: `instructions.cc`, `cluster_noc.{h,cc}`, `test/src/integration/dsm_test.cc`.  
+  Exit: `DsmTest.RemoteAtomicAdd_TwoCtas` (or equivalent) PASS on NoC-on. Deps: F4-1 implement.
+- [ ] **F4-4** Header/docs do not claim DSM atomics until F4-2 or F4-3 is `[x]`.  
+  Files: `cluster_noc.h` line-5 comment, this doc §4 / §6.2.  
+  Exit: grep `atomic` in those files matches the chosen policy.
 
 #### F5 — `mapa` lifetime / exited producer  *(Open)*
 
-- [ ] **F5-1** If target rank CTA is gone: **fail loud** (do not fall back to local smem)
-- [ ] **F5-2** Integration test: consumer `mapa` after producer exit must not return local alias
-- [ ] **F5-3** Keep “producer stays alive until consumer `mapa`” as a kernel rule in §10 until F5-1 ships
+- [ ] **F5-1** If target rank CTA is inactive: **fail loud** (printf + abort). Do not fall back to local smem.  
+  Files: `src/cuda-sim/instructions.cc` `mapa_impl`.  
+  Exit: missing-rank path no longer writes `shared_to_generic(local_smid, …)` as success.
+- [ ] **F5-2** Integration test: consumer `mapa` after producer exit must not return a local alias.  
+  Files: `test/src/integration/dsm_test.cc`.  
+  Exit: `DsmTest.MapaAfterProducerExit_FailsLoud` (or equivalent) PASS (death/abort test). Deps: F5-1.
+
+Note (standing, not a checkbox): until F5-1 ships, kernels must keep the producer CTA alive until consumers finish `mapa` (§10 rule 3).
 
 #### F6 — TMA corners  *(Open)*
 
-- [ ] **F6-1** Audit PTX from target cluster kernels / Triton traces (only implement what they use)
-- [ ] **F6-2** 96B swizzle: implement or reject (today: error print)
-- [ ] **F6-3** Stubbed `tensormap.*` variants: implement or reject
-- [ ] **F6-4** `cp.async.bulk.commit_group` / `wait_group`: real bulk-group wait if kernels use it; else keep NOP **and** list them as allowed stubs in test docs
-- [ ] **F6-5** Sector / OOB edges only if a kernel hits them (`FLASH.md` TMA limitations)
+Scope is **cluster/TMA PTX that real kernels execute**, not the full ISA.
+
+- [ ] **F6-1** Audit PTX from cluster tests + `test/triton_trace/**` cluster/TMA kernels.  
+  Files: those PTX dumps; write the table under this item.  
+  Exit: table opcode/option → used? → sim (ok / stub / error / missing).
+- [ ] **F6-2** 96B swizzle: implement **or** reject (today: `ERROR: TMA 96B swizzle…`).  
+  Files: `tma_helpers.cc` / `tma.cc`.  
+  Exit: F6-1 says unused → keep reject; used → functional test PASS. Deps: F6-1.
+- [ ] **F6-3** Stubbed `tensormap.*` variants (`[STUB]` in `tensormap.cc`): same implement-or-reject as F6-2.  
+  Files: `tensormap.cc`, `FLASH.md`. Deps: F6-1.
+- [ ] **F6-4** `cp.async.bulk.commit_group` / `wait_group`: if F6-1 shows use, wire real `bulk_group` wait; else keep NOP **and** list them as allowed stubs in `docs/testing-instructions.md`.  
+  Files: `tma.cc` `handle_tma_commit_group` / `wait_group`, test docs. Deps: F6-1.
+
+Note (standing): sector / OOB / other `FLASH.md` TMA limits — if a kernel hits one, add **F6-6+** with a failing PTX snippet; do not grow F6-5 as a grab-bag.
 
 #### F7 — Programming-model fragility  *(Open)*
 
-- [ ] **F7-1** Detect / abort (or bounded timeout) on bare peer-smem spin with no mbarrier wait
-- [ ] **F7-2** Detect / abort mixing `bar.sync` / `__syncthreads` with single-thread `try_wait` in the same CTA
-- [ ] **F7-3** Keep §10 programming constraints until F7-1/F7-2 exist; point tests at the abort message
+These are **sim hang preventers**, not HW-faithful detectors. Prefer fail-loud over silent deadlock.
+
+- [ ] **F7-1** Watchdog (optional, best-effort): if a warp sits on the same PC for `N` cycles while the last DSM/TMA peer access has **no** mbarrier interest registered, abort with a message pointing at §10 rule 1.  
+  Files: `shader.cc` or `mbarrier.cc`.  
+  Exit: a **deliberate** bare-spin test aborts with that message (not a hang until `TEST_TIMEOUT`). If judged infeasible, mark this `[x]` with a note “wontfix — §10 only” — do not leave it Open forever.
+- [ ] **F7-2** Detect mixing `bar.sync` / `__syncthreads` with a single-thread `try_wait` in the same CTA; abort naming §10 rule 2.  
+  Files: `mbarrier.cc` / `shader.cc` barrier wait types.  
+  Exit: a small death test PASS.
+
+Note (standing): keep §10 constraints in tests until F7-1/F7-2 exist; do not “fix” hangs by weakening kernels only.
 
 #### F8 — Test surface  *(Open)*
 
-- [ ] **F8-1** `DsmTest`: clusterDim=4 (needs m≥4)
-- [ ] **F8-2** Multi-peer DSM fan-out (one producer, two+ consumers)
-- [ ] **F8-3** Drop-on-CTA-exit: inflight NoC msgs to a recycled slot must not corrupt the next occupant
-- [ ] **F8-4** `mapa.u32` vs `mapa.u64` (u32 truncation on large generic windows)
-- [ ] **F8-5** TMA data-before-mbar with NoC on (ordering / FIFO)
-- [ ] **F8-6** One **compose** kernel: cluster launch + TMA mcast **or** DSM + remote mbar in the same test
-- [ ] **F8-7** One **real-shaped** path (FA / Triton cluster / one-producer GEMM-style) functional pass
+Happy path today: `DsmTest` ×3, `MbarrierClusterTest` ×2, TMA cluster suite (F1-2 NoC-off), OneProducer (F1-3/F1-4 NoC-on). Close F8 before calling the pillar “functionally complete.”
 
-#### F9 — Dual-path store semantic  *(Open; pairs with L2-2)*
+- [ ] **F8-1** `DsmTest` clusterDim=4 (needs m≥4).  
+  Files: `dsm_test.cc`. Config: `SM90_H200_REDUCED_CLUSTER4x4` or `SM120_*_CLUSTER4x4`.  
+  Exit: `DsmTest.*Cluster4*` (name flexible) PASS with NoC on.
+- [ ] **F8-2** Multi-peer DSM fan-out (1 producer, ≥2 consumers) + mbarrier.  
+  Files: `dsm_test.cc`. Exit: test PASS on m≥3 (4x4).
+- [ ] **F8-3** Drop-on-CTA-exit: inflight NoC msgs to a recycled hw CTA slot must not corrupt the next occupant.  
+  Files: `cluster_noc.cc` `drop_messages_to_cta`, `shader.cc` (already called), new gtest.  
+  Exit: test PASS that writes, exits producer, relaunches occupant, asserts no stale payload.
+- [ ] **F8-4** `mapa.u32` vs `mapa.u64`: u32 must not silently alias on a large generic window (document + test).  
+  Files: `dsm_test.cc`, §10 rule 4.  
+  Exit: u64 path PASS; u32 either PASS with truncated-window caveat or fails loud (match F5 policy).
+- [ ] **F8-5** TMA data-before-mbar with NoC on (`gpgpu_tma_mcast_mbar_after_data=1`): peer `try_wait` must not fire before data bytes are visible.  
+  Files: `tma.cc` `inject_tma_mcast_to_peer`, `tma_cluster_multicast_test.cc` or unit inject order.  
+  Exit: existing TMA cluster filter PASS with NoC on **and** a comment/assert that data msg `seq` < mbar msg `seq` for the same stream.
+- [ ] **F8-6** **Compose** (AND, not OR): one test kernel uses cluster launch **and** (TMA mcast **or** DSM) **and** remote/peer mbarrier.  
+  Files: new or extended integration test.  
+  Exit: that test PASS on H200 reduced (NoC on).  
+  Note: `TMAClusterOneProducer` already almost this — count it `[x]` only if the write-up here names that test as the compose proof.
+- [ ] **F8-7** One **real-shaped** path beyond micro-gtests: Triton cluster kernel **or** FA producer-consumer.  
+  Files: `test/triton_trace/…` launcher or hopper FA case.  
+  Exit: `Validation PASSED` / gtest PASS on a reduced cluster config with NoC policy documented.
+- [ ] **F8-8** Remote `expect_tx` / `complete_tx` (not only arrive / try_wait).  
+  Files: `mbarrier_cluster_test.cc`.  
+  Exit: `MbarrierClusterTest.RemoteExpectAndCompleteTx` (or equivalent) PASS NoC-on.
+- [ ] **F8-9** Multi-cluster **isolation** with NoC on: ordinary `<<<>>>` on `REDUCED_CLUSTER2x2` must not deliver TMA/DSM to the other physical cluster.  
+  Files: `cluster_multicast_multicluster_test.cc`. Config: `SM120_RTX5090_REDUCED_CLUSTER2x2` + overlay.  
+  Exit: `MultiCluster*` PASS with NoC knobs on (F1-2 skipped this on 2x1).
+- [ ] **F8-10** Unit tests call **shipped** `cluster_noc_latency_matrix` / `decode_shared_generic` (today `cluster_noc_test.cc` reimplements both).  
+  Files: `test/src/unit/cluster_noc_test.cc`, `test/make/sm120.mk` if a thin link is needed.  
+  Exit: `ClusterNoc*` still PASS and the test file `#include`s `cluster_noc.h` (no local `class LatencyMatrix`).
+- [ ] **F8-11** TMA **mask** tests with NoC on (`tma_multicast_mask_test.cc`).  
+  Exit: `*MulticastMask*` PASS under the F1-3 overlay (or H200 reduced).
 
-- [ ] **F9-1** Document the default (immediate peer write + issuer hop) as the **supported** functional model
-- [ ] **F9-2** Implement `-gpgpu_dsm_store_immediate` (default 1). `0` = write only on NoC deliver — **same item as L2-2**
-- [ ] **F9-3** Test: with immediacy=0, consumer `try_wait` still sees data (mbar after hop); without wait, must not assume instant visibility
+#### F9 — Dual-path store semantic  *(Partial; pairs with L2-2)*
+
+- [x] **F9-1** Document the default (immediate peer write + issuer hop) as the **supported** functional model.  
+  Done in §6.6 F9, §10 rule 5, `st_impl` comment. Re-open only if the default changes.
+- [ ] **F9-2** Implement `-gpgpu_dsm_store_immediate` (default 1). `0` = write only on NoC deliver. **Same close-out as L2-2** — flip both when the knob lands.  
+  Files: `gpu-sim.cc` `reg_options`, `instructions.cc` `try_noc_dsm_store`, `shader.h`.  
+  Exit: knob parsed; immediacy=1 matches today’s tests; immediacy=0 used by F9-3.
+- [ ] **F9-3** Test: immediacy=0 + consumer `try_wait` still sees data (mbar after hop); without wait, test must **not** assume instant visibility.  
+  Files: `dsm_test.cc`. Deps: F9-2.  
+  Exit: both cases PASS on NoC-on.
 
 ### 12.3 Checklist — L2 pipeline fidelity
 
-Assessment: **§6.5**. Do not start until F1 green-gate is `[x]` (wrong-data bugs will look like timing bugs).
+Assessment: **§6.5**. Do not start until F1 is Done (wrong-data bugs look like timing bugs). Prefer F4/F5/F8 green first.
 
-- [ ] **L2-1** **DSM_LOAD_RSP → RF / scoreboard.** On inject of remote load: mark dest regs pending. On `DSM_LOAD_RSP` deliver: write RF + clear scoreboard. Today RF is filled at functional execute; issue delay only approximates RTT.
-- [ ] **L2-2** **`-gpgpu_dsm_store_immediate` (0/1).** Default 1 (current dual-path). `0` = peer write only on NoC deliver. Same close-out as **F9-2**.
-- [ ] **L2-3** **Load path uses REQ/RSP end-to-end** when NoC is on; complete only on RSP (pairs with L2-1).
-- [ ] **L2-4** **Regression.** `DsmTest.*` + `MbarrierClusterTest.*` + TMA cluster filters still green with NoC on. Remote-load microbench ≈ local + 2×hop.
+- [ ] **L2-1** **DSM_LOAD_RSP → RF / scoreboard.** On remote-load issue: mark dest regs pending. On `DSM_LOAD_RSP` deliver: write RF + clear scoreboard.  
+  Files: `cluster_noc.cc` `deliver` `DSM_LOAD_RSP` (today a no-op), `scoreboard.cc`, `shader.cc` `func_exec_inst`.  
+  Exit: a remote load that is scoreboard-blocked cannot be consumed by the next ALU until RSP deliver; `DsmTest.RemoteLoad*` still PASS. Deps: L2-3 (or do them together).
+- [ ] **L2-2** **`-gpgpu_dsm_store_immediate` (0/1).** Default 1. `0` = peer write only on deliver. Same item as **F9-2**.  
+  Exit: see F9-2 / F9-3.
+- [ ] **L2-3** When NoC is on, remote loads **always** inject `DSM_LOAD_REQ` and complete only on `DSM_LOAD_RSP` (stop filling RF in `ld_impl` at functional execute).  
+  Files: `instructions.cc` ld path, `cluster_noc.cc` `inject_dsm_load_req` / `deliver_dsm_load_req`.  
+  Exit: with NoC on, a unit/integration test observes REQ then RSP in NoC stats; functional data still correct. Pairs with L2-1.
+- [ ] **L2-4** **Regression** after L2-1…L2-3: F1-3 + F1-4 filters still PASS.  
+  Exit: same commands as F1-5 F1-3/F1-4, recorded here with date.
+- [ ] **L2-5** **Local DSM latency.** `gpgpu_dsm_local_latency` (37) is today only a matrix-diagonal default; self-mapa / local generic-shared still use ordinary smem latency (~30). Apply the knob to local DSM issue/dispatch so e2e remote ≈ local + 2×hop ≈ 193.  
+  Files: `shader.cc` `func_exec_inst`, maybe shared_cycle.  
+  Exit: a local self-mapa load microbench / gtest delay is ~37 (not ~30) when the knob is 37; remote e2e ≈ 193 ± slop. Source: H200 job 2046238.
+- [ ] **L2-6** Optional **remote-load RTT check** (can live in unit or microbench): measured issue stall or e2e ≈ `gpgpu_dsm_local_latency + 2 * hop`.  
+  Exit: assertion or printed measurement in the F1-4 log / a small bench. Deps: L2-1 or today’s dispatch_delay approximation (document which).
 
 ### 12.4 Checklist — L3 BW / contention
 
-- [ ] **L3-1** **Fit non-zero `-gpgpu_dsm_bytes_per_cycle`.** Use **single-cluster** microbench numbers from the profiling suite (not multi-cluster aggregate GB/s). Leave 0 until a fit exists.
-- [ ] **L3-2** **Fit non-zero `-gpgpu_tma_mcast_bytes_per_cycle`.** From TMA size-sweep e2e growth if useful.
-- [ ] **L3-3** **Optional: credits / ingress queue.** Only if profiling provides queue-depth or multi-issuer contention data.
-- [ ] **L3-4** **Optional: bcast fan-out tax.** HW shows bcast GB/s collapse with cluster size; not multi-hop. Model as a separate tax if needed.
+Leave BPC at **0** until a **single-cluster** fit exists (`../H200_profiling/TODO.md` §2.1). Multi-cluster pair/ring GB/s is the wrong unit.
+
+- [ ] **L3-1** Fit non-zero `-gpgpu_dsm_bytes_per_cycle`.  
+  Files: `configs/SM90_H200*/gpgpusim.config`, this doc §7.  
+  Exit: config comment cites the profiling metric + job id; a size-sweep shows extra cycles ≈ `ceil(bytes/BPC)-1`.
+- [ ] **L3-2** Fit non-zero `-gpgpu_tma_mcast_bytes_per_cycle` if TMA size-sweep e2e grows with payload.  
+  Exit: same as L3-1 for the TMA knob; or note “leave 0 — no size slope in job N.”
+- [ ] **L3-3** Credits / ingress queue — **only if** profiling has queue-depth or multi-issuer contention.  
+  Exit: implement + test, **or** `[x]` with “no profiling evidence; wontfix.”
+- [ ] **L3-4** Bcast fan-out tax (GB/s collapse with cluster size; not multi-hop).  
+  Exit: model + test, **or** `[x]` with “no single-cluster fan-out data; wontfix.”
+- [ ] **L3-5** After any non-zero BPC: re-run F1-3 and F1-4; record PASS here.  
+  Deps: L3-1 and/or L3-2.
 
 ### 12.5 Checklist — L4 / product
 
-- [ ] **L4-1** Suite-vs-silicon validation harness for cluster kernels (beyond unit/integration gtests)
-- [ ] **L4-2** OpenMP + NoC race audit (optional TSan)
-- [ ] **L4-3** Remaining TMA/mbarrier corner cases not claimed by F2/F6 — see `FLASH.md` limitations
+L4 is **not** “fix leftover F-items.” F2/F6/F8 stay on the F-track.
+
+- [ ] **L4-1** Suite-vs-silicon harness for **cluster** microbenches (DSM RTT, TMA mcast−unicast extra), not full apps.  
+  Files: new script under `test/` or hook to `../H200_profiling`.  
+  Exit: a table sim vs job 2046238 for hop / RTT / mcast extra, with documented slop. Deps: L2 (and L3 if BPC ≠ 0).
+- [ ] **L4-2** OpenMP + NoC race audit. Invariant: only the owning cluster thread runs `cluster_noc_t::cycle` / `deliver`.  
+  Files: `gpu-sim.cc` cycle loop, `cluster_noc.cc`. Optional TSan.  
+  Exit: written audit note here (functions + locks) **or** TSan clean on F1-3/F1-4. Within-cluster SM parallelism is still serial today.
+- [ ] **L4-3** Do **not** use this ID as a dumpster. New silicon mismatches get a new **L4-4+** or an F-id.  
+  Exit: `[x]` when L4-1 exists and leftover gaps have their own IDs.
 
 ### 12.6 Explicit non-goals for the sim NoC
 
