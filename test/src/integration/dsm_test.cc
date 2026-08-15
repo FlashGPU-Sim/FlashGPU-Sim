@@ -240,4 +240,188 @@ TEST_F(DsmTest, RemoteLoadFromPeer_TwoCtas) {
   EXPECT_EQ(h[1], 0xA0000007u) << "remote load via mapa not visible on peer";
 }
 
+// ---------------------------------------------------------------------------
+// clusterDim=4 — rank 0 stores a distinct word into each peer.
+// multi-peer fan-out is the same kernel (1 producer, 3 consumers).
+// ---------------------------------------------------------------------------
+__global__ void dsm_cluster4_fanout_kernel(uint32_t *out, volatile int *ready) {
+  __shared__ uint32_t smem[8];
+  __shared__ unsigned long long bar;
+  const int rank = blockIdx.x;
+  const int tid = threadIdx.x;
+
+  if (tid == 0)
+    smem[0] = 0;
+
+  if (rank != 0 && tid == 0) {
+    mbarrier_init_local(&bar, 1);
+    ready[rank] = 1;
+    __threadfence_system();
+    mbarrier_try_wait_local(&bar, 0);
+    out[rank] = smem[0];
+    ready[rank + 4] = 1;
+    __threadfence_system();
+  }
+
+  if (rank == 0 && tid == 0) {
+    while (ready[1] == 0 || ready[2] == 0 || ready[3] == 0) {
+    }
+    out[0] = 1;
+    __threadfence_system();
+    for (unsigned r = 1; r < 4; r++) {
+      uint32_t *remote = mapa_shared_rank(smem, r);
+      remote[0] = 0xC0FFE000u + r;
+      unsigned long long remote_bar = mapa_u64(&bar, r);
+      mbarrier_arrive_remote(remote_bar, 1);
+    }
+    out[0] = 2;
+    while (ready[5] == 0 || ready[6] == 0 || ready[7] == 0) {
+    }
+  }
+}
+
+TEST_F(DsmTest, RemoteStoreCluster4_Fanout) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(4);
+  constexpr int kRanks = 4;
+  uint32_t *d_out = nullptr;
+  int *d_ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, kRanks * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_ready, 8 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, kRanks * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_ready, 0, 8 * sizeof(int)), cudaSuccess);
+
+  dim3 grid(kRanks), block(32), cluster(kRanks, 1, 1);
+  void *args[] = {&d_out, &d_ready};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_cluster4_fanout_kernel, grid, block, cluster,
+                args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  std::vector<uint32_t> h(kRanks, 0);
+  ASSERT_EQ(cudaMemcpy(h.data(), d_out, kRanks * sizeof(uint32_t),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  cudaFree(d_ready);
+
+  EXPECT_EQ(h[0], 2u);
+  EXPECT_EQ(h[1], 0xC0FFE001u);
+  EXPECT_EQ(h[2], 0xC0FFE002u);
+  EXPECT_EQ(h[3], 0xC0FFE003u);
+}
+
+// ---------------------------------------------------------------------------
+// first cluster writes MAGIC via mapa and exits; a second launch on
+// the same ranks must not see a late NoC deliver of MAGIC after it clears
+// smem (drop_messages_to_cta + NULL smem on recycled slots).
+// ---------------------------------------------------------------------------
+__global__ void dsm_stale_writer_kernel(volatile int *ready) {
+  __shared__ uint32_t smem[4];
+  __shared__ unsigned long long bar;
+  const int rank = blockIdx.x;
+  const int tid = threadIdx.x;
+  if (tid != 0)
+    return;
+  smem[0] = 0;
+  if (rank == 1) {
+    mbarrier_init_local(&bar, 1);
+    ready[0] = 1;
+    __threadfence_system();
+    mbarrier_try_wait_local(&bar, 0);
+  } else {
+    while (ready[0] == 0) {
+    }
+    uint32_t *remote = mapa_shared_rank(smem, 1);
+    remote[0] = 0xDEADBEEFu;
+    unsigned long long remote_bar = mapa_u64(&bar, 1);
+    mbarrier_arrive_remote(remote_bar, 1);
+  }
+}
+
+__global__ void dsm_stale_occupant_kernel(uint32_t *out) {
+  __shared__ uint32_t smem[4];
+  if (threadIdx.x == 0 && blockIdx.x == 1) {
+    smem[0] = 0x11111111u;
+    out[0] = smem[0];
+  }
+}
+
+TEST_F(DsmTest, DropOnCtaExit_NoStalePayload) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  int *d_ready = nullptr;
+  uint32_t *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_ready, sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_out, sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_ready, 0, sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, sizeof(uint32_t)), cudaSuccess);
+
+  dim3 grid(2), block(32), cluster(2, 1, 1);
+  void *args1[] = {&d_ready};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_stale_writer_kernel, grid, block, cluster,
+                args1),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  void *args2[] = {&d_out};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_stale_occupant_kernel, grid, block, cluster,
+                args2),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  uint32_t h = 0;
+  ASSERT_EQ(cudaMemcpy(&h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_ready);
+  cudaFree(d_out);
+  EXPECT_EQ(h, 0x11111111u) << "recycled CTA smem was overwritten by a stale "
+                               "NoC DSM_STORE (expected drop_messages_to_cta)";
+}
+
+// ---------------------------------------------------------------------------
+// mapa.u32 cannot hold the 64-bit generic shared window
+// (SHARED_GENERIC_START is > 2^32). u64 self-mapa still works.
+// ---------------------------------------------------------------------------
+__device__ __forceinline__ unsigned mapa_u32(void *local, unsigned rank) {
+  unsigned out = 0;
+  unsigned in = static_cast<unsigned>(reinterpret_cast<unsigned long long>(local));
+  asm volatile("mapa.u32 %0, %1, %2;\n" : "=r"(out) : "r"(in), "r"(rank));
+  return out;
+}
+
+__global__ void dsm_mapa_width_kernel(unsigned long long *out) {
+  __shared__ uint32_t smem[4];
+  if (threadIdx.x == 0) {
+    smem[0] = 0xA5A5A5A5u;
+    unsigned long long u64 = mapa_u64(smem, /*rank=*/0);
+    unsigned u32 = mapa_u32(smem, /*rank=*/0);
+    out[0] = u64;
+    out[1] = static_cast<unsigned long long>(u32);
+    out[2] = *reinterpret_cast<uint32_t *>(u64);
+  }
+}
+
+TEST_F(DsmTest, MapaU64WorksU32TruncatesGenericWindow) {
+  unsigned long long *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, 3 * sizeof(unsigned long long)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, 3 * sizeof(unsigned long long)), cudaSuccess);
+  dim3 grid(1), block(32), cluster(1, 1, 1);
+  void *args[] = {&d_out};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_mapa_width_kernel, grid, block, cluster,
+                args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  unsigned long long h[3] = {};
+  ASSERT_EQ(cudaMemcpy(h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  EXPECT_EQ(h[2], 0xA5A5A5A5ull) << "mapa.u64 self-map must read local smem";
+  EXPECT_NE(h[0], h[1]) << "mapa.u32 should truncate the 64-bit generic window "
+                           "(SHARED_GENERIC_START > 2^32); do not use u32";
+  EXPECT_GT(h[0], 0xffffffffull);
+}
+
 }  // namespace

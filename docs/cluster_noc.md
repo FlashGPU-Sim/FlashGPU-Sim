@@ -270,7 +270,7 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 | **F5** | `mapa` lifetime: exited producer → local fallback | Med | **Open** | §12.2 F5 |
 | **F6** | TMA corners stubbed (swizzle, tensormap, bulk group) | Med | **Open** | §12.2 F6 |
 | **F7** | Programming-model fragility (spin / `bar.sync`+`try_wait`) | Med | **Open** | §12.2 F7 |
-| **F8** | Thin DSM / remote-mbar / compose / isolation tests | High | **Open** | §12.2 F8 |
+| **F8** | Thin DSM / remote-mbar / compose / isolation tests | High | **Done** | §12.2 F8 |
 | **F9** | Dual-path store (immediate peer write + issuer hop) | Med | **Partial** | §12.2 F9 · L2-2 |
 
 **How to read statuses**
@@ -317,7 +317,7 @@ Correct CUDA cluster code usually avoids both. The sim should **assert or docume
 
 #### F8 — Thin tests
 
-Happy-path only today: `DsmTest` (self-mapa, 2-CTA store, 2-CTA load) and `MbarrierClusterTest` (remote arrive, remote try_wait). Missing items are **F8-1…F8-11** (clusterDim=4, fan-out, drop-on-exit, mapa width, TMA order, compose, real-shaped kernel, remote expect/complete, multi-cluster isolation with NoC on, shipped unit tests, mask + NoC).
+**Done (2026-08-15):** clusterDim=4 fan-out, drop-on-exit, mapa u32 vs u64, TMA data-before-mbar assert, compose (`TMAClusterOneProducerTest`), real-shaped accumulate kernel, remote expect/complete, NoC-on `MultiCluster*` isolation, shipped `cluster_noc_helpers` unit tests, TMA mask + NoC. See §12.2 F8.
 
 #### F9 — Dual-path store
 
@@ -702,42 +702,21 @@ These are **sim hang preventers**, not HW-faithful detectors. Prefer fail-loud o
 
 Note (standing): keep §10 constraints in tests until F7-1/F7-2 exist; do not “fix” hangs by weakening kernels only.
 
-#### F8 — Test surface  *(Open)*
+#### F8 — Test surface  *(Done)*
 
-Happy path today: `DsmTest` ×3, `MbarrierClusterTest` ×2, TMA cluster suite (F1-2 NoC-off), OneProducer (F1-3/F1-4 NoC-on). Close F8 before calling the pillar “functionally complete.”
+Closed 2026-08-15. Shipped helpers live in `cluster_noc_helpers.cc` (unit-testable without linking the full sim).
 
-- [ ] **F8-1** `DsmTest` clusterDim=4 (needs m≥4).  
-  Files: `dsm_test.cc`. Config: `SM90_H200_REDUCED_CLUSTER4x4` or `SM120_*_CLUSTER4x4`.  
-  Exit: `DsmTest.*Cluster4*` (name flexible) PASS with NoC on.
-- [ ] **F8-2** Multi-peer DSM fan-out (1 producer, ≥2 consumers) + mbarrier.  
-  Files: `dsm_test.cc`. Exit: test PASS on m≥3 (4x4).
-- [ ] **F8-3** Drop-on-CTA-exit: inflight NoC msgs to a recycled hw CTA slot must not corrupt the next occupant.  
-  Files: `cluster_noc.cc` `drop_messages_to_cta`, `shader.cc` (already called), new gtest.  
-  Exit: test PASS that writes, exits producer, relaunches occupant, asserts no stale payload.
-- [ ] **F8-4** `mapa.u32` vs `mapa.u64`: u32 must not silently alias on a large generic window (document + test).  
-  Files: `dsm_test.cc`, §10 rule 4.  
-  Exit: u64 path PASS; u32 either PASS with truncated-window caveat or fails loud (match F5 policy).
-- [ ] **F8-5** TMA data-before-mbar with NoC on (`gpgpu_tma_mcast_mbar_after_data=1`): peer `try_wait` must not fire before data bytes are visible.  
-  Files: `tma.cc` `inject_tma_mcast_to_peer`, `tma_cluster_multicast_test.cc` or unit inject order.  
-  Exit: existing TMA cluster filter PASS with NoC on **and** a comment/assert that data msg `seq` < mbar msg `seq` for the same stream.
-- [ ] **F8-6** **Compose** (AND, not OR): one test kernel uses cluster launch **and** (TMA mcast **or** DSM) **and** remote/peer mbarrier.  
-  Files: new or extended integration test.  
-  Exit: that test PASS on H200 reduced (NoC on).  
-  Note: `TMAClusterOneProducer` already almost this — count it `[x]` only if the write-up here names that test as the compose proof.
-- [ ] **F8-7** One **real-shaped** path beyond micro-gtests: Triton cluster kernel **or** FA producer-consumer.  
-  Files: `test/triton_trace/…` launcher or hopper FA case.  
-  Exit: `Validation PASSED` / gtest PASS on a reduced cluster config with NoC policy documented.
-- [ ] **F8-8** Remote `expect_tx` / `complete_tx` (not only arrive / try_wait).  
-  Files: `mbarrier_cluster_test.cc`.  
-  Exit: `MbarrierClusterTest.RemoteExpectAndCompleteTx` (or equivalent) PASS NoC-on.
-- [ ] **F8-9** Multi-cluster **isolation** with NoC on: ordinary `<<<>>>` on `REDUCED_CLUSTER2x2` must not deliver TMA/DSM to the other physical cluster.  
-  Files: `cluster_multicast_multicluster_test.cc`. Config: `SM120_RTX5090_REDUCED_CLUSTER2x2` + overlay.  
-  Exit: `MultiCluster*` PASS with NoC knobs on (F1-2 skipped this on 2x1).
-- [ ] **F8-10** Unit tests call **shipped** `cluster_noc_latency_matrix` / `decode_shared_generic` (today `cluster_noc_test.cc` reimplements both).  
-  Files: `test/src/unit/cluster_noc_test.cc`, `test/make/sm120.mk` if a thin link is needed.  
-  Exit: `ClusterNoc*` still PASS and the test file `#include`s `cluster_noc.h` (no local `class LatencyMatrix`).
-- [ ] **F8-11** TMA **mask** tests with NoC on (`tma_multicast_mask_test.cc`).  
-  Exit: `*MulticastMask*` PASS under the F1-3 overlay (or H200 reduced).
+- [x] **F8-1** `DsmTest.RemoteStoreCluster4_Fanout` PASS on `SM90_H200_REDUCED_CLUSTER4x4` (NoC on).
+- [x] **F8-2** Same test: 1 producer → 3 consumers + mbarrier (m≥4).
+- [x] **F8-3** `cluster_noc_drop_queue_to_cta` unit test + `DsmTest.DropOnCtaExit_NoStalePayload` (writer kernel, then occupant; no `0xDEADBEEF` leftover).
+- [x] **F8-4** `DsmTest.MapaU64WorksU32TruncatesGenericWindow`: u64 self-mapa reads smem; u32 result ≠ u64 (generic window > 2³²).
+- [x] **F8-5** `inject_tma_mcast_to_peer` asserts `data_seq < mbar_seq`. `TMAClusterOneProducerTest` PASS NoC-on (H200 reduced).
+- [x] **F8-6** Compose proof: **`TMAClusterOneProducerTest.OneProducerPeerConsumers`** (cluster launch + TMA mcast + peer mbarrier). PASS H200 reduced NoC-on.
+- [x] **F8-7** `ClusterRealShapedTest.TmaProducerAccumulateTwoCta` (TMA cluster tile + per-rank accumulate). No cluster-enabled Triton/FA launcher in-tree; this is the stand-in. PASS H200 reduced NoC-on.
+- [x] **F8-8** `MbarrierClusterTest.RemoteExpectAndCompleteTx` PASS NoC-on. Owner arrives only after remote `expect_tx`; only remote `complete_tx` may release `try_wait` (no remote arrive).
+- [x] **F8-9** `MultiCluster*` PASS on `SM120_RTX5090_REDUCED_CLUSTER2x2` with NoC overlay (4 tests, 0 skip).
+- [x] **F8-10** `test/src/unit/cluster_noc_test.cc` `#include`s `cluster_noc.h`; links `cluster_noc_helpers.cc`; no local `LatencyMatrix`. `ClusterNoc*` 8/8 PASS.
+- [x] **F8-11** `TmaMulticastMaskTest.*` PASS on H200 reduced (NoC on, m=4).
 
 #### F9 — Dual-path store semantic  *(Partial; pairs with L2-2)*
 

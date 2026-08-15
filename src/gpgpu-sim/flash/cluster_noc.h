@@ -207,6 +207,16 @@ bool is_remote_shared_generic(unsigned local_smid, addr_t addr,
                               unsigned *out_owner_smid = nullptr,
                               addr_t *out_offset = nullptr);
 
+// CTA-exit drop predicate + queue filter (used by cluster_noc_t and unit
+// tests).
+inline bool cluster_noc_msg_targets_cta(const cluster_noc_message &msg,
+                                        unsigned cid, unsigned hw_cta) {
+  return msg.dst_cid == cid && msg.dst_hw_cta == hw_cta;
+}
+// Erase messages targeting (cid, hw_cta). Returns the number removed.
+size_t cluster_noc_drop_queue_to_cta(std::deque<cluster_noc_message> *q,
+                                     unsigned cid, unsigned hw_cta);
+
 } // namespace flash_gpgpu_sim
 
 #endif // FLASH_GPGPU_SIM_CLUSTER_NOC_H

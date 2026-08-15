@@ -19,9 +19,11 @@ GPGPUSIM_OBJ_DIR = $(OBJ_DIR)/gpgpu-sim
 # bulk_group_test and tma_helpers_test exercise these implementations directly.
 # tensormap pure methods are inline in tensormap.h (no tensormap.cc link needed).
 FLASH_SOURCES = $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc \
-                $(SRC_DIR)/gpgpu-sim/flash/tma_helpers.cc
+                $(SRC_DIR)/gpgpu-sim/flash/tma_helpers.cc \
+                $(SRC_DIR)/gpgpu-sim/flash/cluster_noc_helpers.cc
 FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o \
-                $(OBJ_DIR)/flash/tma_helpers.cu.o
+                $(OBJ_DIR)/flash/tma_helpers.cu.o \
+                $(OBJ_DIR)/flash/cluster_noc_helpers.cu.o
 LOCAL_INTERCONNECT_OBJECT = $(OBJ_DIR)/unit/local_interconnect.cc.o
 MSHR_TABLE_OBJECT = $(GPGPUSIM_OBJ_DIR)/mshr-table.cu.o
 

@@ -1,9 +1,6 @@
 #include "cluster_noc.h"
 
-#include <algorithm>
-#include <cstdio>
-#include <fstream>
-#include <sstream>
+#include <cassert>
 
 #include "../../abstract_hardware_model.h"
 #include "../../cuda-sim/ptx_sim.h"
@@ -11,100 +8,6 @@
 #include "../shader.h"
 
 namespace flash_gpgpu_sim {
-
-// ---------------------------------------------------------------------------
-// Latency matrix
-// ---------------------------------------------------------------------------
-
-void cluster_noc_latency_matrix::init(unsigned n_cores, unsigned local_lat,
-                                      unsigned remote_lat) {
-  m_n = n_cores;
-  m_lat.assign(static_cast<size_t>(n_cores) * n_cores, remote_lat);
-  for (unsigned i = 0; i < n_cores; i++) {
-    m_lat[static_cast<size_t>(i) * n_cores + i] = local_lat;
-  }
-}
-
-bool cluster_noc_latency_matrix::load_from_file(const std::string &path,
-                                                unsigned n_cores) {
-  std::ifstream in(path);
-  if (!in) {
-    printf("GPGPU-Sim WARNING: cluster NoC latency matrix file '%s' not found; "
-           "using scalar defaults\n",
-           path.c_str());
-    return false;
-  }
-  std::vector<unsigned> vals;
-  vals.reserve(static_cast<size_t>(n_cores) * n_cores);
-  std::string line;
-  while (std::getline(in, line)) {
-    if (line.empty() || line[0] == '#' || line[0] == '/')
-      continue;
-    // Allow commas or whitespace.
-    for (char &c : line) {
-      if (c == ',')
-        c = ' ';
-    }
-    std::istringstream iss(line);
-    unsigned v;
-    while (iss >> v) {
-      vals.push_back(v);
-    }
-  }
-  const size_t expect = static_cast<size_t>(n_cores) * n_cores;
-  if (vals.size() != expect) {
-    printf("GPGPU-Sim WARNING: cluster NoC matrix '%s' has %zu values, "
-           "expected %zu (n_cores=%u); using scalar defaults\n",
-           path.c_str(), vals.size(), expect, n_cores);
-    return false;
-  }
-  m_n = n_cores;
-  m_lat = std::move(vals);
-  return true;
-}
-
-unsigned cluster_noc_latency_matrix::hop(unsigned src_cid,
-                                         unsigned dst_cid) const {
-  if (m_n == 0)
-    return 0;
-  assert(src_cid < m_n && dst_cid < m_n);
-  return m_lat[static_cast<size_t>(src_cid) * m_n + dst_cid];
-}
-
-// ---------------------------------------------------------------------------
-// Address helpers
-// ---------------------------------------------------------------------------
-
-bool decode_shared_generic(addr_t addr, unsigned *out_smid,
-                           addr_t *out_offset) {
-  if (addr < SHARED_GENERIC_START)
-    return false;
-  const addr_t rel = addr - SHARED_GENERIC_START;
-  if (rel >= TOTAL_SHARED_MEM)
-    return false;
-  const unsigned smid = static_cast<unsigned>(rel / SHARED_MEM_SIZE_MAX);
-  const addr_t offset = static_cast<addr_t>(rel % SHARED_MEM_SIZE_MAX);
-  if (out_smid)
-    *out_smid = smid;
-  if (out_offset)
-    *out_offset = offset;
-  return true;
-}
-
-bool is_remote_shared_generic(unsigned local_smid, addr_t addr,
-                              unsigned *out_owner_smid, addr_t *out_offset) {
-  unsigned owner = 0;
-  addr_t off = 0;
-  if (!decode_shared_generic(addr, &owner, &off))
-    return false;
-  if (owner == local_smid)
-    return false;
-  if (out_owner_smid)
-    *out_owner_smid = owner;
-  if (out_offset)
-    *out_offset = off;
-  return true;
-}
 
 // ---------------------------------------------------------------------------
 // cluster_noc_t
@@ -248,10 +151,14 @@ bool cluster_noc_t::inject_tma_mcast_to_peer(
   } else {
     data_msg.payload->bytes.assign(size_in_bytes, 0);
   }
+  const uint64_t data_seq = m_next_seq;
   inject(std::move(data_msg));
 
   // mbar must not race ahead of data (same stream, later seq, ready >= data).
   if (m_config->gpgpu_tma_mcast_mbar_after_data) {
+    const uint64_t mbar_seq = m_next_seq;
+    assert(data_seq < mbar_seq &&
+           "TMA mcast: data message seq must precede mbar on the same stream");
     cluster_noc_message mbar_msg;
     mbar_msg.type = cluster_noc_msg_type::TMA_MCAST_MBAR;
     mbar_msg.src_cid = src_cid;
@@ -368,14 +275,10 @@ void cluster_noc_t::deliver_ready() {
 void cluster_noc_t::cycle() { deliver_ready(); }
 
 void cluster_noc_t::drop_messages_to_cta(unsigned cid, unsigned hw_cta) {
-  for (auto it = m_inflight.begin(); it != m_inflight.end();) {
-    if (it->dst_cid == cid && it->dst_hw_cta == hw_cta) {
-      m_stats.dropped_on_cta_exit++;
-      it = m_inflight.erase(it);
-    } else {
-      ++it;
-    }
-  }
+  m_stats.dropped_on_cta_exit +=
+      cluster_noc_drop_queue_to_cta(&m_inflight, cid, hw_cta);
+  m_stats.dropped_on_cta_exit +=
+      cluster_noc_drop_queue_to_cta(&m_deferred_inject, cid, hw_cta);
 }
 
 void cluster_noc_t::deliver(cluster_noc_message &msg) {
