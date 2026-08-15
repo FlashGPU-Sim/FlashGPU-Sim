@@ -184,12 +184,13 @@ When NoC is **disabled** (`-gpgpu_cluster_noc_enable 0`): legacy immediate multi
 | Item | Status |
 |------|--------|
 | `mapa` maps to peer generic shared | Yes (`mapa.u64` preferred) |
+| Missing / exited cluster rank | **Abort** (named error); does not alias issuer smem |
 | `ld`/`st` generic → remote smem | Yes (via `decode_space`) |
 | Store via NoC + functional peer write | Yes (dual-path: inject hop + immediate write) |
 | Load pre-delivers due stores | Yes (`deliver_ready` before remote load) |
 | Timing hop (shared dispatch_delay) | Yes (load RTT=2×hop, store=1×hop; no phantom L1) |
 | Flat topology (H200) | Yes (constant/near-constant hop; stride ratio~1.0) |
-| Integration tests | Yes (`dsm_test.cc`: SelfMapa, RemoteStore, RemoteLoad) |
+| Integration tests | Yes (`dsm_test.cc`: self/remote ld/st, Cluster4, drop-on-exit, u64, after-exit abort) |
 | Full scoreboard / DSM_LOAD_RSP→RF | Partial (optional; see §12) |
 
 ### 6.3 Cluster mbarrier
@@ -209,7 +210,7 @@ When NoC is **disabled** (`-gpgpu_cluster_noc_enable 0`): legacy immediate multi
 |------|----------------------|-------------|
 | **Cluster launch** | **Yes** | `cudaLaunchKernelExC` / cluster dims co-schedule CTAs of one Thread Block Cluster onto one physical `simt_core_cluster`, with ranks and `cluster_group` for peer discovery. Ordinary `<<<>>>` does not force co-residency. See `docs/cluster_cta2_realLaunch.md`. |
 | **TMA + cluster multicast** | **Yes (common paths)** | `.shared::cluster` and `.multicast::cluster` + `ctaMask` select peer destinations for data and mbarrier `complete_tx`. With NoC off, peers see data immediately (legacy). With NoC on, peers see data after hop deliver and can `try_wait` correctly. Mask edge cases, OOB, and some bulk corners remain idealized (see `FLASH.md`). |
-| **DSM (`mapa` + remote ld/st)** | **Yes (tested patterns)** | Real `mapa.u64` maps into peer generic shared windows; remote `ld`/`st` resolve via `decode_space` and (when NoC on) the store NoC path. Integration coverage: self-mapa, two-CTA remote store, two-CTA remote load. Prefer **`mapa.u64`** (u32 truncates large generic windows). |
+| **DSM (`mapa` + remote ld/st)** | **Yes (tested patterns)** | Real `mapa.u64` maps into peer generic shared windows; remote `ld`/`st` resolve via `decode_space` and (when NoC on) the store NoC path. A rank with no active CTA **aborts** (no local-window alias). Integration coverage: self-mapa, two-CTA remote store/load, clusterDim=4 fan-out, drop-on-exit, u64 vs u32, after-exit abort. Prefer **`mapa.u64`** (u32 truncates large generic windows). |
 | **mbarrier (local + remote)** | **Yes (main ops)** | Local init/arrive/try_wait/complete_tx as before. Remote (mapa’d) arrive and try_wait go through NoC when `-gpgpu_mbarrier_cluster_enable 1` and NoC is on. Timeout and some PTX variants are still unimplemented. |
 | **Correctness model for multi-CTA** | **mbarrier-ordered kernels** | Kernels that **sync with mbarrier** (or equivalent interest-list wait) match the intended model. Bare spins on peer smem without the peer having issued, or `__syncthreads` mixed with single-thread try_wait, can hang or behave poorly under functional-first PTX sim. Remote DSM **stores** are dual-path (issuer pays hop; peer smem also updated immediately for mbarrier-safe visibility). |
 
@@ -267,7 +268,7 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 | **F2** | mbarrier idealized / incomplete PTX | High | **Open** | §12.2 F2 |
 | **F3** | `barrier.cluster` / CG DSM map builtins | Med | **Non-goal** | §12.6 (reopen only if an app needs it) |
 | **F4** | DSM `atom`/`red` overclaimed / broken | Med | **Open** | §12.2 F4 |
-| **F5** | `mapa` lifetime: exited producer → local fallback | Med | **Open** | §12.2 F5 |
+| **F5** | `mapa` lifetime: exited producer → abort | Med | **Done** | §12.2 F5 |
 | **F6** | TMA corners stubbed (swizzle, tensormap, bulk group) | Med | **Open** | §12.2 F6 |
 | **F7** | Programming-model fragility (spin / `bar.sync`+`try_wait`) | Med | **Open** | §12.2 F7 |
 | **F8** | Thin DSM / remote-mbar / compose / isolation tests | High | **Done** | §12.2 F8 |
@@ -300,7 +301,7 @@ Special regs + `mapa` are the supported cluster discovery path. Full `barrier.cl
 
 #### F5 — `mapa` lifetime
 
-`mapa` looks up an **active** peer rank in the same `cluster_group`. If the producer CTA has exited, lookup falls back to **local** — silent wrong data, not a hardware behavior. Tests already keep the producer alive; the sim should fail loud (or keep the rank mapping after exit) instead of aliasing local smem.
+`mapa` looks up an **active** peer rank in the same `cluster_group`. If the producer CTA has exited or the rank was never co-resident, the simulator **aborts** with a named error (it does not alias the issuer’s local shared window). Keep the producer CTA alive until consumers finish `mapa` (§10 rule 3); the abort is the safety net.
 
 #### F6 — TMA corners
 
@@ -395,8 +396,9 @@ PTX: `mapa{.shared::cluster}.type d, a, b` with `b` = target **cluster rank**.
 Implementation:
 
 1. Parse local shared offset from `a` (shared-relative or local generic).
-2. Find peer CTA with matching rank in the same `cluster_group`.
-3. Write `d = shared_to_generic(peer_sid, offset)`.
+2. Find an **active** peer CTA with matching rank in the same `cluster_group` (then rank-only if group tagging missed a co-resident).
+3. If found: write `d = shared_to_generic(peer_sid, offset)`.
+4. If not found (CTA exited or rank never co-resident): print a named error and **abort**. Do not return a generic address in the issuer’s shared window.
 
 Generic shared windows:
 
@@ -443,7 +445,7 @@ Mask semantics (unchanged):
 | `tma_cluster_multicast_test` | Pass (legacy) | Pass (delayed visibility + try_wait) |
 | `tma_multicast_mask_test` | Pass | Pass |
 | `cluster_multicast_multicluster_test` | Pass | Pass (isolation) |
-| `dsm_test` | SelfMapa only | SelfMapa + RemoteStore + RemoteLoad |
+| `dsm_test` | SelfMapa only | SelfMapa + RemoteStore + RemoteLoad + Cluster4 + drop-on-exit + u64 + after-exit abort |
 | `mbarrier_cluster_test` | Local only | RemoteArrive + RemoteTryWait |
 
 ### Recommended run
@@ -477,7 +479,7 @@ FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4
 
 1. **Coordinate cross-rank visibility with mbarrier**, not bare smem spin-waits (functional-first sim hangs if the peer has not issued yet).
 2. **Never mix `__syncthreads` with single-thread `try_wait`** in the same CTA.
-3. **Producer CTA must stay alive** until consumers finish `mapa` (mapa looks up active cluster ranks; exited slots fall back to local).
+3. **Producer CTA must stay alive** until consumers finish `mapa` (mapa looks up active cluster ranks and **aborts** if the target CTA has exited or was never co-resident).
 4. Prefer **`mapa.u64`** over u32 (generic shared windows exceed 32-bit on large GPUs).
 5. Remote DSM stores use **dual-path**: NoC hop for issuer timing + immediate peer write so mbarrier-ordered consumers see data.
 
@@ -509,7 +511,7 @@ FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4
 **Branch/PR scope:** still the **same** unified cluster PR/branch (`docs/cluster.md`). F-items and L2–L4 are in-branch / follow-on checklist work, not separate “feature PRs.”  
 **Profiling / new microbenchmarks:** `../H200_profiling/TODO.md` (separate agent, separate tree).
 
-Suggested order (F1 is **done**): **F8 + F4 + F5 → F2 → F6/F7/F9 → L2 → L3 → L4**.
+Suggested order (F1, F5, F8 **done**): **F4 → F2 → F6/F7/F9 → L2 → L3 → L4**.
 
 ### Task contract (how to write / close an item)
 
@@ -536,7 +538,7 @@ Nothing in the cluster/NoC pillar should sit outside this table. If you find a h
 |---------|----------------|------------|--------|
 | Cluster launch + co-residency + specials | (landed; F1-2 regression) | idealized schedule (non-goal) | OK |
 | TMA `.shared::cluster` / mask / OneProducer | F6, F8-5, F8-6, F8-11 | L1 done; L3-2, L3-4 | corners open |
-| DSM `mapa` + remote ld/st | F5, F8-1…F8-4, F8-10 | L2-1, L2-3, L2-5; L3-1 | happy path only |
+| DSM `mapa` + remote ld/st | F5 (done), F8-1…F8-4, F8-10 | L2-1, L2-3, L2-5; L3-1 | happy path + inactive-rank abort |
 | DSM / shared `atom` + `red` | **F4** | after F4 implement | **broken / overclaimed** |
 | Remote mbarrier | F2, F8-8 | hop via L1; L2 not needed | main ops only |
 | Dual-path store visibility | F9 | **L2-2** (= F9-2) | default documented |
@@ -552,6 +554,7 @@ Nothing in the cluster/NoC pillar should sit outside this table. If you find a h
 - [x] Intra-cluster `cluster_noc_t` (inject / cycle / deliver; race rules)
 - [x] TMA peer data + mbar via NoC when enabled
 - [x] DSM `mapa` + remote ld/st; dual-path store; load issue delay ≈ 2×hop
+- [x] `mapa` of a missing / exited cluster rank aborts (does not alias issuer smem)
 - [x] Remote mbarrier arrive / try_wait (WAIT_REG / WAIT_DONE)
 - [x] CTA exit `drop_messages_to_cta`
 - [x] H200 knobs/matrices from **2046238** (local ~37, one-way ~78, flat; TMA mcast hop ~135)
@@ -661,16 +664,16 @@ Note: making barriers live in real smem is **out of scope** unless F2-1 shows a 
   Files: `cluster_noc.h` line-5 comment, this doc §4 / §6.2.  
   Exit: grep `atomic` in those files matches the chosen policy.
 
-#### F5 — `mapa` lifetime / exited producer  *(Open)*
+#### F5 — `mapa` lifetime / exited producer  *(Done)*
 
-- [ ] **F5-1** If target rank CTA is inactive: **fail loud** (printf + abort). Do not fall back to local smem.  
+- [x] **F5-1** If target rank CTA is inactive: **fail loud** (printf + abort). Do not fall back to local smem.  
   Files: `src/cuda-sim/instructions.cc` `mapa_impl`.  
   Exit: missing-rank path no longer writes `shared_to_generic(local_smid, …)` as success.
-- [ ] **F5-2** Integration test: consumer `mapa` after producer exit must not return a local alias.  
+- [x] **F5-2** Integration test: consumer `mapa` after producer exit must not return a local alias.  
   Files: `test/src/integration/dsm_test.cc`.  
-  Exit: `DsmTest.MapaAfterProducerExit_FailsLoud` (or equivalent) PASS (death/abort test). Deps: F5-1.
+  Exit: `DsmTest.MapaAfterProducerExit_FailsLoud` PASS (death/abort) on `SM90_H200_REDUCED_CLUSTER4x4`. Deps: F5-1.
 
-Note (standing, not a checkbox): until F5-1 ships, kernels must keep the producer CTA alive until consumers finish `mapa` (§10 rule 3).
+Note (standing, not a checkbox): kernels must still keep the producer CTA alive until consumers finish `mapa` (§10 rule 3). The abort is the safety net, not a programming model.
 
 #### F6 — TMA corners  *(Open)*
 
@@ -731,7 +734,7 @@ Closed 2026-08-15. Shipped helpers live in `cluster_noc_helpers.cc` (unit-testab
 
 ### 12.3 Checklist — L2 pipeline fidelity
 
-Assessment: **§6.5**. Do not start until F1 is Done (wrong-data bugs look like timing bugs). Prefer F4/F5/F8 green first.
+Assessment: **§6.5**. Do not start until F1 is Done (wrong-data bugs look like timing bugs). Prefer F4/F8 green first (F5 is done).
 
 - [ ] **L2-1** **DSM_LOAD_RSP → RF / scoreboard.** On remote-load issue: mark dest regs pending. On `DSM_LOAD_RSP` deliver: write RF + clear scoreboard.  
   Files: `cluster_noc.cc` `deliver` `DSM_LOAD_RSP` (today a no-op), `scoreboard.cc`, `shader.cc` `func_exec_inst`.  

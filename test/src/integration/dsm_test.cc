@@ -17,6 +17,8 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <unistd.h>
 #include <vector>
 
 #include "common/cluster_launch.h"
@@ -122,8 +124,7 @@ __global__ void dsm_peer_store_kernel(uint32_t *out, volatile int *ready) {
 // on rank 1's mbarrier. Only tid0 on each rank participates.
 //
 // Rank 0 must stay alive until rank 1 finishes the load — mapa looks up the
-// peer CTA by active cluster rank; if the producer CTA has already exited,
-// mapa falls back to local and the load is wrong.
+// peer CTA by active cluster rank and aborts if that CTA has already exited.
 // ---------------------------------------------------------------------------
 __global__ void dsm_remote_load_kernel(uint32_t *out, volatile int *ready) {
   __shared__ uint32_t smem[32];
@@ -422,6 +423,55 @@ TEST_F(DsmTest, MapaU64WorksU32TruncatesGenericWindow) {
   EXPECT_NE(h[0], h[1]) << "mapa.u32 should truncate the 64-bit generic window "
                            "(SHARED_GENERIC_START > 2^32); do not use u32";
   EXPECT_GT(h[0], 0xffffffffull);
+}
+
+// Rank 0 arrives on rank 1's mbarrier and exits. Rank 1 then maps rank 0.
+// Mapping a cluster rank whose CTA is gone must abort, not alias local smem.
+// Handshake is mbarrier (a global spin before the peer has issued hangs).
+__global__ void dsm_mapa_after_peer_exit_kernel(volatile int *ready) {
+  __shared__ uint32_t smem[4];
+  __shared__ unsigned long long bar;
+  const int rank = blockIdx.x;
+  const int tid = threadIdx.x;
+  if (tid != 0)
+    return;
+
+  if (rank == 1) {
+    mbarrier_init_local(&bar, 1);
+    ready[0] = 1;
+    __threadfence_system();
+    mbarrier_try_wait_local(&bar, 0);
+    (void)mapa_u64(smem, /*rank=*/0);
+    return;
+  }
+
+  while (ready[0] == 0) {
+  }
+  unsigned long long remote_bar = mapa_u64(&bar, /*rank=*/1);
+  mbarrier_arrive_remote(remote_bar, 1);
+}
+
+[[noreturn]] void run_mapa_after_peer_exit() {
+  int *d_ready = nullptr;
+  if (cudaMalloc(&d_ready, sizeof(int)) != cudaSuccess)
+    _exit(2);
+  if (cudaMemset(d_ready, 0, sizeof(int)) != cudaSuccess)
+    _exit(3);
+  dim3 grid(2), block(32), cluster(2, 1, 1);
+  void *args[] = {&d_ready};
+  if (flash_test::launch_kernel_with_cluster(
+          (const void *)dsm_mapa_after_peer_exit_kernel, grid, block, cluster,
+          args) != cudaSuccess)
+    _exit(4);
+  cudaDeviceSynchronize();
+  std::fprintf(stderr, "ERROR: mapa of exited rank did not abort\n");
+  _exit(0);
+}
+
+TEST_F(DsmTest, MapaAfterProducerExit_FailsLoud) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(run_mapa_after_peer_exit(), "not an active CTA");
 }
 
 }  // namespace

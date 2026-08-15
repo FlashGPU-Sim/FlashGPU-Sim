@@ -4235,6 +4235,7 @@ void mapa_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // Map shared address `a` into the CTA of cluster rank `b`.
   // Destination is a generic shared address in the target SM's window so
   // subsequent ld/st.generic can resolve remote DSM (see cluster_noc).
+  // If no active CTA has the requested rank, abort (do not alias local smem).
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();
   const operand_info &src2 = pI->src2();
@@ -4262,14 +4263,13 @@ void mapa_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
 
   auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
-  ptx_reg_t result;
-  result.u64 = shared_to_generic(local_smid, local_offset);  // default: local
+  bool found = false;
+  unsigned found_sid = local_smid;
 
   if (core && core->get_cluster()) {
     auto *cluster = core->get_cluster();
     const unsigned issuer_hw = thread->get_hw_ctaid();
     const unsigned group = core->get_cta_cluster_group(issuer_hw);
-    bool found = false;
     // Pass 1: same cluster_group + rank (TB-cluster peers).
     // Pass 2: rank only (if group tagging missed a co-resident peer).
     for (int pass = 0; pass < 2 && !found; pass++) {
@@ -4283,14 +4283,33 @@ void mapa_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
             continue;
           if (peer->get_cta_cluster_rank(slot) != target_rank)
             continue;
-          result.u64 = shared_to_generic(peer->get_sid(), local_offset);
+          found_sid = peer->get_sid();
           found = true;
           break;
         }
       }
     }
+  } else if (target_rank == 0) {
+    // No physical cluster object: only rank 0 (the issuer) exists.
+    found = true;
+    found_sid = local_smid;
   }
 
+  if (!found) {
+    // Write both streams: sim logs use stdout; death tests match stderr.
+    const char *fmt =
+        "GPGPU-Sim ERROR: mapa: cluster rank %u is not an active CTA "
+        "(issuer smid=%u hw_cta=%u). The target CTA has exited or was "
+        "never co-resident; refusing to alias the issuer's shared memory.\n";
+    printf(fmt, target_rank, local_smid, thread->get_hw_ctaid());
+    fprintf(stderr, fmt, target_rank, local_smid, thread->get_hw_ctaid());
+    fflush(stdout);
+    fflush(stderr);
+    abort();
+  }
+
+  ptx_reg_t result;
+  result.u64 = shared_to_generic(found_sid, local_offset);
   if (i_type == U32_TYPE || i_type == B32_TYPE)
     result.u32 = (unsigned)result.u64;
   thread->set_operand_value(dst, result, i_type, thread, pI);
