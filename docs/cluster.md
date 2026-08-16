@@ -18,7 +18,7 @@ This is **not** a stack of separate “launch-only” / “TMA-only” / “NoC-
 
 | Doc | Role |
 |-----|------|
-| **`docs/cluster.md` (this file)** | Branch/PR overview, feature matrix, non-goals, reading order |
+| **`docs/cluster.md` (this file)** | Branch/PR overview, feature matrix, concurrency model, non-goals |
 | **`docs/cluster_noc.md`** | NoC / DSM / remote mbar **design authority**; **§6.4–§6.6** maturity (F1–F9 + L0–L4); **§12** living checklist |
 | **`docs/cluster_cta2_realLaunch.md`** | Launch API, co-residency, configs `CLUSTERmxn`, tests |
 | **`FLASH.md`** | Product feature list + limitations (short) |
@@ -50,7 +50,65 @@ This is **not** a stack of separate “launch-only” / “TMA-only” / “NoC-
 
 ---
 
-## 3. Config quick reference
+## 3. Cluster concurrency (silicon vs this sim)
+
+On real Hopper/Blackwell, CTAs in one Thread Block Cluster are **co-resident and live at the same time**. They run on different SMs in the same GPC and can talk through DSM / mbarrier while both still exist.
+
+This sim keeps that as **simulated time**, not as host threads.
+
+### 3.1 What is modeled
+
+| Silicon | This sim |
+|---------|----------|
+| Whole TB cluster on one GPC | Whole TB cluster on one `simt_core_cluster` (`cluster_group` + ranks) |
+| Each SM has its own scheduler | Each GPU cycle, **one host thread** runs `SM.cycle()` for every core in that cluster, then `cluster_noc.cycle()` |
+| OpenMP / multi-core host | Flash OpenMP is **one thread per physical cluster**, not per SM |
+
+So rank 0 and rank 1 both **tick every GPU cycle**. They are concurrent the way a cycle-accurate CPU sim is concurrent: lockstep interleaving, not two OS threads.
+
+Event-ordered communication is correct because of **state + messages + cycle order**, not because two CTAs run simultaneously on the host:
+
+1. Both CTAs stay allocated until they retire (`mapa` of an inactive rank **aborts**).
+2. Cross-SM effects are NoC messages (or the documented dual-path store). Peer smem / remote mbarrier change on **deliver** after a hop, on the same cluster thread.
+3. `mbarrier.try_wait` **registers interest and parks the warp**. The producer can issue, the hop can complete, then the waiter is released.
+
+That is the supported model: **mbarrier-ordered** cluster / TMA / DSM (same as `cluster_noc.md` §6.4 and §10).
+
+### 3.2 Gap: busy-wait is not a wait
+
+On silicon, this is usually fine if the producer is still alive:
+
+```text
+CTA 1:  while (*peer_flag == 0) { }   // load + branch
+CTA 0:  *my_flag = 1;                 // eventually issues
+```
+
+Both SMs keep issuing. The spin is just traffic. When the store becomes visible, the loop ends. CUDA still **prefers** mbarrier / `cluster.sync()`; a bare spin on live peer smem is legal-ish, not the recommended pattern.
+
+This sim does **not** treat a load-loop as “I am waiting on a peer”:
+
+| Pattern | Real GPU | This sim |
+|---------|----------|----------|
+| TMA / DSM + **mbarrier** / `try_wait` | Works | **Supported** |
+| Peer ld/st/`atom` after that wait | Works | Works (decode + NoC / dual-path) |
+| Both CTAs live; each getting cycles | Parallel SMs | Yes in **cycle time**, one host thread per GPC |
+| Spin on peer smem or a global flag until the peer writes | Usually works | **May hang or miss the write** |
+| Two CTAs `atom` the same word in the same clock | HW arbiter | Never simultaneous (serialized on the cluster thread) |
+
+Typical hang: the consumer functionally executes `while (flag == 0)` **before** the producer has been allowed to issue, or the load does not re-observe the store. `try_wait` yields; a spin does not. Functional-only / execute-until-barrier is worse: a spin never hits `bar.sync`, so the peer CTA is never scheduled.
+
+This is **not** caused by “one OpenMP thread per GPC.” That design is fine for event-ordered comm. Spins fail because **wait ≠ load-loop** in this exec model.
+
+### 3.3 What we do about it
+
+- **Supported kernels:** coordinate with mbarrier (or a future `cluster.sync`), not “load until I see it.” Tests in `dsm_test` / TMA cluster follow that rule.
+- **Do not** treat a passing contention test as proof of hardware races — intra-cluster atoms are pipeline-serialized on one host thread.
+- **Mitigation (checklist, not a rewrite):** fail loud if a warp sits on the same PC with no mbarrier interest (`cluster_noc.md` §12.2 F7), rather than hanging until `TEST_TIMEOUT`.
+- **Only make bare spins work** if a target kernel actually needs them (re-read owner smem each iteration; never starve the peer). That is optional fidelity, not a blocker for this PR.
+
+---
+
+## 4. Config quick reference
 
 `CLUSTERmxn` → **m** = SMs per physical cluster, **n** = number of physical clusters.
 
@@ -67,7 +125,7 @@ Rule: TB-cluster size (product of launch cluster dims) **≤ m**.
 
 ---
 
-## 4. Non-goals (still out of scope for this PR)
+## 5. Non-goals (still out of scope for this PR)
 
 These remain **non-goals** even with a unified cluster PR (not “later PRs for the same pillars”):
 
@@ -84,7 +142,7 @@ Optional product polish (floorswept GPC sizes, extra launch attributes) can stil
 
 ---
 
-## 5. Suggested test filters
+## 6. Suggested test filters
 
 ```bash
 source setup.sh && source setup_environment
@@ -106,7 +164,7 @@ H200 product path: config `SM90_H200_REDUCED_CLUSTER4x4` (NoC defaults on).
 
 ---
 
-## 6. Code map (high level)
+## 7. Code map (high level)
 
 | Area | Location |
 |------|----------|

@@ -295,7 +295,7 @@ Barriers live in simulator state, not GPU shared-memory contents. `mbarrier.try_
 
 #### F3 — `barrier.cluster` / CG map (non-goal)
 
-Special regs + `mapa` are the supported cluster discovery path. Full `barrier.cluster` and Cooperative Groups DSM map builtins are out of scope (`docs/cluster.md` §4). Kernels that require them will fail.
+Special regs + `mapa` are the supported cluster discovery path. Full `barrier.cluster` and Cooperative Groups DSM map builtins are out of scope (`docs/cluster.md` §5). Kernels that require them will fail.
 
 #### F4 — DSM atomics
 
@@ -651,7 +651,7 @@ Note: making barriers live in real smem is **out of scope** unless F2-1 shows a 
 
 #### F3 — `barrier.cluster` / CG DSM map  *(Non-goal)*
 
-- [x] Explicitly out of scope (`docs/cluster.md` §4). Reopen only if a target kernel requires it — then add **F3-1** here, do not hide it under F2.
+- [x] Explicitly out of scope (`docs/cluster.md` §5). Reopen only if a target kernel requires it — then add **F3-1** here, do not hide it under F2.
 
 #### F4 — DSM atomics / reductions  *(Partial: `atom` done)*
 
@@ -799,7 +799,7 @@ Do **not** add checklist items for these unless new HW evidence appears.
 | Multi-hop / tree hop by rank distance | H200 stride ratio ≈ 1.0 (flat) |
 | Calibrate from bare `.shared::cluster` timeouts | Known timeout artifact |
 | Permanent matrix-import script in this repo | Offline gen; commit CSVs + comments only |
-| **F3** `barrier.cluster` / full CG DSM map | Beyond specials + `mapa` (`docs/cluster.md` §4) |
+| **F3** `barrier.cluster` / full CG DSM map | Beyond specials + `mapa` (`docs/cluster.md` §5) |
 | Cross-physical-cluster DSM or TMA mcast | HW TB clusters do not span arbitrary physical clusters |
 
 ---

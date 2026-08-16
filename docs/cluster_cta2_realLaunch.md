@@ -129,4 +129,4 @@ Do not treat topology skips as product failures.
 
 ## 7. Non-goals (launch surface)
 
-See [`docs/cluster.md`](cluster.md) §4. Launch-specific: preferred-substitute cluster dims, high-fidelity occupancy APIs, and unrelated CUDA launch attributes remain stubs / out of scope.
+See [`docs/cluster.md`](cluster.md) §5. Launch-specific: preferred-substitute cluster dims, high-fidelity occupancy APIs, and unrelated CUDA launch attributes remain stubs / out of scope.
