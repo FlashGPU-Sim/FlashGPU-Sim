@@ -24,14 +24,11 @@ public:
 
 private:
   /**
-   * Implement the mbarrier instruction.
-   * NOTE: So far, this is more like a idealized implementation with some
-   * limitations:
-   * 1. It does not access the shared memory,
-   * 2. only support CTA level synchronization.
-   * 3. Does not support thread-level barrier (this is a limitation from
-   * GPGPU-Sim, we can fix later). So far if one thread in a warp is blocked by
-   * a barrier, the entire warp is blocked.
+   * mbarrier objects live in simulator state (not 64-bit smem contents).
+   * Local CTA ops and remote (mapa) arrive/try_wait/expect/complete via
+   * cluster NoC are supported. A blocked thread stalls the whole warp
+   * (GPGPU-Sim SIMT). try_wait.parity optional timeout sets dest pred
+   * false on expiry, true if the waited phase completed.
    */
   struct mbarrier_t {
     mbarrier_t(int id, int hw_cta_id, int sw_cta_id, uint64_t addr,
@@ -144,6 +141,9 @@ public:
    * This prevents stale barriers when hw_cta_ids get recycled.
    */
   void cleanup_cta(unsigned hw_cta_id);
+
+  // Drop a local waiter without advancing the phase (try_wait timeout).
+  void cancel_wait(int hw_warp_id);
 
 private:
   int m_next_id;

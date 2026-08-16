@@ -39,7 +39,7 @@ This is **not** a stack of separate “launch-only” / “TMA-only” / “NoC-
 |------|------------|--------|
 | Cluster launch + co-residency | Yes | Idealized schedule (pack whole TB-cluster on one physical cluster) |
 | TMA cluster multicast (+ mask) | Yes | NoC hop when enabled; free/immediate when NoC off |
-| Local mbarrier | Yes (main ops) | Calibrated arrive/try_wait knobs |
+| Local mbarrier | Yes (used ops); `try_wait` timeout sets dest pred | Calibrated arrive/try_wait knobs |
 | Remote mbarrier (mapa) | Yes | Via NoC hop |
 | DSM mapa + remote ld/st/`atom` | Yes (tested patterns); inactive rank **aborts**; `red`/`red.async` unimplemented | Flat hop L1; load RTT≈2×hop; dual-path store |
 | Intra-cluster NoC | Yes | **L1** flat hop (H200); L2–L4 in §12 of `cluster_noc.md` |

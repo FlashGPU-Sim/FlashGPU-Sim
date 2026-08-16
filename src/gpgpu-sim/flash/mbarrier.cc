@@ -2,6 +2,7 @@
 #include "cluster_noc.h"
 
 #include "../cuda-sim/ptx_ir.h"
+#include "../cuda-sim/ptx_sim.h"
 #include "../gpu-sim.h"
 #include "../shader.h"
 #include <cstdlib>
@@ -60,6 +61,11 @@ void mbarrier_manager_t::inval(gpgpu_sim *gpu,
   } else {
     assert(false && "mbarrier to be invalidated does not exist");
   }
+}
+
+void mbarrier_manager_t::cancel_wait(int hw_warp_id) {
+  for (auto &entry : addr_to_mbarrier_map)
+    entry.second->m_waiting_warps.erase(hw_warp_id);
 }
 
 void mbarrier_manager_t::cleanup_cta(unsigned hw_cta_id) {
@@ -479,6 +485,10 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
 
     const operand_info &addr_op = pI->src1();
     const operand_info &parity_op = pI->src2();
+    const bool has_timeout = pI->get_num_operands() == 4;
+    unsigned timeout_hint = 0;
+    if (has_timeout)
+      timeout_hint = get_u32_value(pI->src3());
     // Prefer u64 so mapa.u64 generic remote addresses are preserved.
     uint64_t raw_addr =
         thread->get_operand_value(addr_op, addr_op, U64_TYPE, thread, 0).u64;
@@ -501,6 +511,12 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
         "with parity %u\n",
         ctaid, hw_tid, laneid, (unsigned long long)raw_addr, parity);
     resolve_and_fill_mbar_info(raw_addr, (unsigned)-1, parity);
+    {
+      inst_t::mbarrier_info_t info = pI->get_mbarrier_info(laneid);
+      info.has_timeout = has_timeout;
+      info.timeout_hint = timeout_hint;
+      pI->set_mbarrier_info(laneid, info);
+    }
 
     /**
      * Inline PTX commonly lowers mbarrier waits to an explicit software loop:
@@ -508,14 +524,17 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
      *   mbarrier.try_wait.parity ..., complete;
      *   @!complete bra waitLoop;
      *
-     * The timing model below already blocks and releases the warp at this
-     * instruction, so functional execution must let the loop exit. Otherwise,
-     * the warp re-enters the same try_wait forever after timing release.
+     * Without a timeout, the timing model parks until the phase completes, so
+     * functional exec writes dest pred as success and the loop exits once.
+     *
+     * With a timeout operand, PTX sets dest pred true only if the waited
+     * phase completed; false if the hint expires first. Functional exec
+     * starts pred as false; the timing path flips it to true on phase done.
      *
      * ! PTXPlus inverts the zero flag -- 0 means true, 1 means false !
      */
     ptx_reg_t pred;
-    pred.pred = 0;
+    pred.pred = has_timeout ? 1 : 0;
     thread->set_operand_value(pI->dst(), pred, PRED_TYPE, thread, pI);
 
   } else if (bar_op == COMPLETE_TX_OPTION) {
@@ -637,9 +656,63 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
   }
 }
 
+void barrier_set_t::apply_trywait_pred(unsigned warp_id, bool phase_complete) {
+  if (warp_id >= m_mbar_trywait_inst.size())
+    return;
+  const ptx_instruction *pI = m_mbar_trywait_inst[warp_id];
+  if (!pI)
+    return;
+  ptx_thread_info **threads = m_shader->get_thread_info();
+  if (!threads)
+    return;
+  // PTXPlus dest pred: 0 = true, 1 = false.
+  ptx_reg_t pred;
+  pred.pred = phase_complete ? 0 : 1;
+  const unsigned warp_size = m_warp_size;
+  const active_mask_t &mask = m_mbar_trywait_mask[warp_id];
+  for (unsigned lane = 0; lane < warp_size; lane++) {
+    if (!mask.test(lane))
+      continue;
+    ptx_thread_info *thd = threads[warp_id * warp_size + lane];
+    if (!thd)
+      continue;
+    thd->set_operand_value(pI->dst(), pred, PRED_TYPE, thd, pI);
+  }
+}
+
+void barrier_set_t::arm_trywait_timeout(unsigned warp_id, unsigned timeout_hint,
+                                        const ptx_instruction *static_inst,
+                                        const active_mask_t &active_mask) {
+  if (warp_id >= m_mbar_trywait_has_timeout.size())
+    return;
+  m_mbar_trywait_has_timeout[warp_id] = true;
+  m_mbar_trywait_inst[warp_id] = static_inst;
+  m_mbar_trywait_mask[warp_id] = active_mask;
+  const unsigned delay = timeout_hint == 0 ? 1u : timeout_hint;
+  const unsigned long long now = m_shader->get_gpu()->gpu_sim_cycle +
+                                 m_shader->get_gpu()->gpu_tot_sim_cycle;
+  m_mbar_timeout_cycle[warp_id] = now + delay;
+}
+
+void barrier_set_t::clear_trywait_timeout(unsigned warp_id) {
+  if (warp_id >= m_mbar_trywait_has_timeout.size())
+    return;
+  m_mbar_trywait_has_timeout[warp_id] = false;
+  m_mbar_timeout_cycle[warp_id] = 0;
+  m_mbar_trywait_inst[warp_id] = nullptr;
+}
+
 void barrier_set_t::release_warps(const std::set<int> &released_warps) {
   if (released_warps.empty())
     return;
+  for (auto w : released_warps) {
+    if (w >= 0 && (unsigned)w < m_mbar_trywait_has_timeout.size() &&
+        m_mbar_trywait_has_timeout[w]) {
+      // Phase completed before the timeout expired.
+      apply_trywait_pred((unsigned)w, /*phase_complete=*/true);
+      clear_trywait_timeout((unsigned)w);
+    }
+  }
   unsigned trywait_latency =
       m_shader->get_config()->gpgpu_mbarrier_trywait_latency;
   const char *trace = getenv("FLASHGPU_SIM_BARRIER_TRACE");
@@ -678,6 +751,22 @@ void barrier_set_t::release_warps(const std::set<int> &released_warps) {
 }
 
 void barrier_set_t::cycle() {
+  const unsigned long long now = m_shader->get_gpu()->gpu_sim_cycle +
+                                 m_shader->get_gpu()->gpu_tot_sim_cycle;
+  for (unsigned w = 0; w < m_max_warps_per_core; w++) {
+    if (!m_mbar_trywait_has_timeout[w])
+      continue;
+    if (!m_warp_at_barrier.test(w) ||
+        m_warp_barrier_type[w] != BARRIER_WAIT_MBARRIER)
+      continue;
+    if (now < m_mbar_timeout_cycle[w])
+      continue;
+    apply_trywait_pred(w, /*phase_complete=*/false);
+    clear_trywait_timeout(w);
+    m_mbarrier_manager.cancel_wait((int)w);
+    release_warps({static_cast<int>(w)});
+  }
+
   for (auto &entry : m_pending_warp_releases) {
     entry.remaining--;
   }
@@ -933,6 +1022,8 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     bool any_blocking = false;
     bool any_released = false;
     bool any_remote = false;
+    bool has_timeout = false;
+    unsigned timeout_hint = 0;
 
     auto *cluster = m_shader->get_cluster();
     auto *noc = cluster ? cluster->get_cluster_noc() : nullptr;
@@ -950,6 +1041,11 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       any_active = true;
       unsigned addr = mbar_info.bar_id;
       bool parity = mbar_info.bar_parity;
+      if (mbar_info.has_timeout) {
+        has_timeout = true;
+        if (mbar_info.timeout_hint > timeout_hint)
+          timeout_hint = mbar_info.timeout_hint;
+      }
 
       if (mbar_info.is_remote) {
         any_remote = true;
@@ -999,8 +1095,15 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       m_warp_at_barrier.set(warp_id);
       m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
       m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+      if (has_timeout) {
+        m_mbar_trywait_inst[warp_id] = pI;
+        m_mbar_trywait_mask[warp_id] = active_mask;
+        m_mbar_trywait_has_timeout[warp_id] = true;
+      }
       if (!any_remote && any_released && !any_blocking) {
         release_warps({static_cast<int>(warp_id)});
+      } else if (has_timeout) {
+        arm_trywait_timeout(warp_id, timeout_hint, pI, active_mask);
       }
     }
 

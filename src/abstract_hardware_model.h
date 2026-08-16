@@ -952,6 +952,11 @@ public:
     unsigned bar_id = (unsigned)-1;     // mbarrier address (smem offset on owner)
     unsigned bar_count = (unsigned)-1;  // expected count or arrival count
     bool bar_parity = false;            // parity for try_wait
+    // Optional try_wait suspend/timeout hint (4th PTX operand). When set,
+    // an unsatisfied wait expires and dest pred is false instead of parking
+    // until the phase completes.
+    bool has_timeout = false;
+    unsigned timeout_hint = 0;
     // Remote (mapa / DSM) target; when is_remote, bar_id is offset on owner CTA.
     bool is_remote = false;
     unsigned remote_cid = 0;
@@ -961,6 +966,8 @@ public:
       bar_id = (unsigned)-1;
       bar_count = (unsigned)-1;
       bar_parity = false;
+      has_timeout = false;
+      timeout_hint = 0;
       is_remote = false;
       remote_cid = 0;
       remote_hw_cta = 0;

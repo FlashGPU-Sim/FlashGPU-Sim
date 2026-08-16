@@ -301,7 +301,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 
 ### Known Limitations
 - TMA: Some corner cases not fully handled (see `FLASH.md` for details)
-- Mbarrier: Idealized implementation, CTA-level only
+- Mbarrier: Used ops implemented (incl. `try_wait` timeout dest-pred); remote via NoC; objects not smem-backed; unused variants hard-fail; `barrier.cluster` is a non-goal
 - Multi-threading: Potential race conditions in edge cases
 - Flash mode: Primarily validated on basic usage patterns
 

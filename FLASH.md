@@ -95,7 +95,7 @@ For detailed Docker usage, see [docker/README.md](docker/README.md).
 | Feature | Status | Description |
 |---------|--------|-------------|
 | Multi-threaded Simulation | ✅ **finished** | OpenMP-based SM parallelization |
-| Memory Barriers (`mbarrier`) | 🔶 **partial** | Parser support, CTA-level sync, idealized implementation |
+| Memory Barriers (`mbarrier`) | 🔶 **partial** | Used ops + remote via NoC; `try_wait` timeout dest-pred; objects not smem-backed |
 | Tensor Memory Accelerator (TMA) | 🔶 **partial** | Multi-dimensional tensor transfers, tensormap support, integration tests |
 | Warp Group Async MMA (`wgmma`) | ⭕ **init** | Specification review phase |
 | PyTorch Record/Replay | ⭕ **init** | Workload capture framework |
@@ -195,9 +195,11 @@ std::set<int> complete_tx(gpgpu_sim *gpu, const thread_index_t &thread_index,
 - Warps unblock atomically when barrier advances to next phase
 
 **Current Limitations**:
-1. **Idealized Implementation**: Barriers exist in simulator memory rather than GPU shared memory
-2. **CTA-Level Only**: No support for cluster-level synchronization
-3. **Warp Granularity**: Single blocked thread stalls entire warp (GPGPU-Sim architectural limitation)
+1. **Storage**: Barrier objects live in simulator state, not as 64-bit values in GPU shared memory. Kernels that inspect mbarrier bytes in smem will not see HW-faithful contents.
+2. **Cluster wait**: Remote (mapa) arrive / try_wait / expect_tx / complete_tx go through the intra-cluster NoC when `-gpgpu_mbarrier_cluster_enable 1` and `-gpgpu_cluster_noc_enable 1`. `barrier.cluster` / `cluster.sync()` are **not** implemented (see `docs/cluster.md` §5).
+3. **Warp granularity**: A blocked thread stalls the entire warp (GPGPU-Sim SIMT).
+4. **`try_wait` timeout**: The optional 4th operand is implemented. Dest pred is **true** if the waited phase completed, **false** if the hint expires first. Hint is modeled in sim cycles, not silicon nanoseconds.
+5. **Unused PTX**: `test_wait`, `pending_count`, and try_wait without `.parity` are unused in-tree and hard-fail / fail to parse.
 
 ### Tensor Memory Accelerator (TMA)
 
@@ -301,11 +303,11 @@ Lane 28-31: Row 7
 5. **Cluster destination**: `.shared::cluster` is functionally supported; timing is idealized (see Cluster / TMA multicast below)
 
 **Mbarrier Subsystem**:
-1. **Idealized implementation**: Barriers reside in simulator memory rather than GPU shared memory
-2. **CTA-level storage**: Barriers are per-CTA; remote (mapa) arrive/try_wait go through cluster NoC when `-gpgpu_mbarrier_cluster_enable 1`
-3. **Thread-level granularity**: Blocked threads stall entire warp (GPGPU-Sim limitation)
-4. **Timeout feature**: `mbarrier.try_wait` timeout not implemented
-5. **Incomplete operations**: Some mbarrier variants assert as unimplemented
+1. **Storage**: Barrier objects live in simulator state, not as 64-bit GPU shared-memory contents
+2. **Remote cluster ops**: mapa’d arrive / try_wait / expect_tx / complete_tx use cluster NoC when `-gpgpu_mbarrier_cluster_enable 1` and NoC is on. Not “CTA-level only.” `barrier.cluster` / `cluster.sync()` remain unimplemented
+3. **Warp granularity**: A blocked thread stalls the entire warp
+4. **`try_wait` timeout**: Optional 4th operand implemented — dest pred true if the phase completed, false if the hint expires first (hint in sim cycles)
+5. **Unused variants**: `test_wait`, `pending_count`, try_wait without `.parity` hard-fail / do not parse
 6. **Calibration knobs**: `gpgpu_mbarrier_arrive_latency` / `trywait_latency` are end-to-end TMA+mbarrier fits, not pure HW barrier cost
 
 **Cluster / TMA multicast / DSM / NoC** (unified branch — see **`docs/cluster.md`**):

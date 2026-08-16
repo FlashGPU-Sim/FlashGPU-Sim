@@ -81,7 +81,7 @@ With `cudaLaunchKernelEx(clusterDim=2)` both CTAs co-reside → peer path works.
 | `cluster_launch_api_test.cc` | Ex launch success/failure, ordinary `<<<>>>`, required attrs |
 | `TMAClusterOneProducerTest` | Ex launch + cluster TMA one-producer |
 | `MultiCluster*` | Ordinary `<<<>>>` isolation on multi-cluster configs |
-| `DsmTest` / `MbarrierClusterTest` | DSM + remote mbar (need m≥2 + NoC overlay or H200 reduced). `mapa` of an inactive rank aborts (`MapaAfterProducerExit_FailsLoud`). Remote `atomicAdd` via `mapa` is `RemoteAtomicAdd_TwoCtas`. |
+| `DsmTest` / `MbarrierClusterTest` | DSM + remote mbar (need m≥2 + NoC overlay or H200 reduced). `mapa` of an inactive rank aborts (`MapaAfterProducerExit_FailsLoud`). Remote `atomicAdd` via `mapa` is `RemoteAtomicAdd_TwoCtas`. Timed `try_wait` dest-pred: `TryWaitTimeoutExpires_PredFalse`, `TryWaitTimeoutPhaseDone_PredTrue`. |
 
 ```bash
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER4x4 run test --target sm120 --group integration \

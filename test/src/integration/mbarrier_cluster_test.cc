@@ -271,4 +271,78 @@ TEST_F(MbarrierClusterTest, RemoteExpectAndCompleteTx) {
   EXPECT_EQ(h[1], 1) << "peer remote expect_tx/complete_tx did not finish";
 }
 
+// try_wait 4th operand is the PTX timeout / suspend hint. Dest pred is true
+// only if the waited phase completed; false if the hint expires first.
+__device__ __forceinline__ unsigned
+mbarrier_try_wait_parity_timeout(uint32_t bar_ptr, unsigned parity,
+                                 unsigned timeout) {
+  unsigned done = 0;
+  asm volatile("{\n"
+               ".reg .pred P1;\n"
+               "mbarrier.try_wait.parity.shared::cta.b64 P1, [%1], %2, %3;\n"
+               "selp.u32 %0, 1, 0, P1;\n"
+               "}\n"
+               : "=r"(done)
+               : "r"(bar_ptr), "r"(parity), "r"(timeout));
+  return done;
+}
+
+__global__ void mbar_timeout_expires_kernel(unsigned *out) {
+  __shared__ unsigned long long bar;
+  if (threadIdx.x != 0)
+    return;
+  mbarrier_init_local(&bar, /*expected=*/2);
+  uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(&bar));
+  out[0] = mbarrier_try_wait_parity_timeout(p, /*parity=*/0, /*timeout=*/8);
+}
+
+__global__ void mbar_timeout_phase_done_kernel(unsigned *out) {
+  __shared__ unsigned long long bar;
+  if (threadIdx.x != 0)
+    return;
+  mbarrier_init_local(&bar, /*expected=*/1);
+  uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(&bar));
+  asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0], %1;\n" ::"r"(p),
+               "r"(1));
+  out[0] = mbarrier_try_wait_parity_timeout(p, /*parity=*/0, /*timeout=*/64);
+}
+
+TEST_F(MbarrierClusterTest, TryWaitTimeoutExpires_PredFalse) {
+  unsigned *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, sizeof(unsigned)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0xFFu, sizeof(unsigned)), cudaSuccess);
+  dim3 grid(1), block(32), cluster(1, 1, 1);
+  void *args[] = {&d_out};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)mbar_timeout_expires_kernel, grid, block, cluster,
+                args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  unsigned h = 0xFFu;
+  ASSERT_EQ(cudaMemcpy(&h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  EXPECT_EQ(h, 0u) << "timed try_wait must set dest pred false when the "
+                      "phase never completes";
+}
+
+TEST_F(MbarrierClusterTest, TryWaitTimeoutPhaseDone_PredTrue) {
+  unsigned *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, sizeof(unsigned)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, sizeof(unsigned)), cudaSuccess);
+  dim3 grid(1), block(32), cluster(1, 1, 1);
+  void *args[] = {&d_out};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)mbar_timeout_phase_done_kernel, grid, block,
+                cluster, args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  unsigned h = 0;
+  ASSERT_EQ(cudaMemcpy(&h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  EXPECT_EQ(h, 1u) << "timed try_wait must set dest pred true when the "
+                      "waited phase has already completed";
+}
+
 }  // namespace

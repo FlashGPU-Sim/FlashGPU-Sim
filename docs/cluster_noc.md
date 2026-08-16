@@ -213,7 +213,7 @@ When NoC is **disabled** (`-gpgpu_cluster_noc_enable 0`): legacy immediate multi
 | **Cluster launch** | **Yes** | `cudaLaunchKernelExC` / cluster dims co-schedule CTAs of one Thread Block Cluster onto one physical `simt_core_cluster`, with ranks and `cluster_group` for peer discovery. Ordinary `<<<>>>` does not force co-residency. See `docs/cluster_cta2_realLaunch.md`. |
 | **TMA + cluster multicast** | **Yes (common paths)** | `.shared::cluster` and `.multicast::cluster` + `ctaMask` select peer destinations for data and mbarrier `complete_tx`. With NoC off, peers see data immediately (legacy). With NoC on, peers see data after hop deliver and can `try_wait` correctly. Mask edge cases, OOB, and some bulk corners remain idealized (see `FLASH.md`). |
 | **DSM (`mapa` + remote ld/st)** | **Yes (tested patterns)** | Real `mapa.u64` maps into peer generic shared windows; remote `ld`/`st`/`atom` resolve via `decode_space` (owner smem). A rank with no active CTA **aborts** (no local-window alias). Integration coverage: self-mapa, two-CTA remote store/load/`atom.add`, clusterDim=4 fan-out, drop-on-exit, u64 vs u32, after-exit abort. Prefer **`mapa.u64`** (u32 truncates large generic windows). PTX `red`/`red.async` are unimplemented. |
-| **mbarrier (local + remote)** | **Yes (main ops)** | Local init/arrive/try_wait/complete_tx as before. Remote (mapa’d) arrive and try_wait go through NoC when `-gpgpu_mbarrier_cluster_enable 1` and NoC is on. Timeout and some PTX variants are still unimplemented. |
+| **mbarrier (local + remote)** | **Yes (used ops)** | Local init/arrive/expect_tx/complete_tx/inval/`try_wait.parity`. Timeout 4th operand: dest pred true if phase done, false on expiry. Remote arrive/try_wait/expect/complete via NoC when cluster-mbar + NoC on. Unused variants (`test_wait`, `pending_count`) hard-fail. Objects are simulator state, not smem bytes. |
 | **Correctness model for multi-CTA** | **mbarrier-ordered kernels** | Kernels that **sync with mbarrier** (or equivalent interest-list wait) match the intended model. Bare spins on peer smem without the peer having issued, or `__syncthreads` mixed with single-thread try_wait, can hang or behave poorly under functional-first PTX sim. Remote DSM **stores** are dual-path (issuer pays hop; peer smem also updated immediately for mbarrier-safe visibility). |
 
 **What “functionally usable” means here**
@@ -267,7 +267,7 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 | ID | Gap | Sev | Status | Close-out |
 |----|-----|-----|--------|-----------|
 | **F1** | Land + green-gate NoC stack | Crit | **Done** | §12.2 F1 |
-| **F2** | mbarrier idealized / incomplete PTX | High | **Open** | §12.2 F2 |
+| **F2** | mbarrier idealized / incomplete PTX | High | **Done** | §12.2 F2 |
 | **F3** | `barrier.cluster` / CG DSM map builtins | Med | **Non-goal** | §12.6 (reopen only if an app needs it) |
 | **F4** | DSM `atom`/`red` overclaimed / broken | Med | **Partial** | §12.2 F4 (`atom` done; `red`/`red.async` follow-on) |
 | **F5** | `mapa` lifetime: exited producer → abort | Med | **Done** | §12.2 F5 |
@@ -289,9 +289,9 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 
 NoC / DSM / remote mbarrier landed as `cluster_noc_t`. **Green-gate is done** (2026-08-15): unit `ClusterNoc*` plus SM120 NoC-off cluster/TMA filters, SM120 NoC overlay, and H200 reduced NoC-on DSM/mbar/OneProducer all recorded PASS in §12.2 F1-5.
 
-#### F2 — Idealized mbarrier
+#### F2 — mbarrier completeness
 
-Barriers live in simulator state, not GPU shared-memory contents. `mbarrier.try_wait` **timeout** is unimplemented. Some PTX variants still `assert`. Remote arrive / try_wait work for the tested ops only.
+Barriers live in simulator state, not GPU shared-memory contents (no in-tree kernel inspects those bytes). Used PTX ops including `try_wait.parity` **timeout** are implemented. Remote arrive / try_wait / expect / complete go through NoC. Unused variants hard-fail. `barrier.cluster` is F3 (non-goal).
 
 #### F3 — `barrier.cluster` / CG map (non-goal)
 
@@ -630,24 +630,33 @@ FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh \
 
 `FLASHGPU_ALLOW_CC_MISMATCH=1` is required for F1-4: `run_tests.sh` otherwise rejects `--target sm120` on an SM90 config. The integration binary still exercises the H200 sim model (NoC on).
 
-#### F2 — Idealized / incomplete mbarrier  *(Open)*
+#### F2 — mbarrier completeness  *(Done)*
 
-Implemented today (local + remote when NoC + cluster-mbar on): `init`, `arrive`, `expect_tx`, `arrive.expect_tx`, `complete_tx`, `try_wait.parity` (no timeout), `inval` (partial). Unknown `bar_op` → `assert`. Storage is **simulator state**, not smem contents.
+Storage remains **simulator state**, not smem contents. No inventoried kernel reads the 64-bit object.
 
-- [ ] **F2-1** Inventory mbarrier PTX actually used by cluster tests + target traces.  
-  Files: `src/gpgpu-sim/flash/mbarrier.cc`, `test/src/integration/*mbarrier*`, `test/triton_trace/**/*.ptx`.  
-  Exit: table in this subsection: opcode → used? → sim status (ok / assert / NOP / missing).
-- [ ] **F2-2** For every **used** opcode from F2-1 that is not ok: implement. Unused opcodes stay hard-fail (no silent NOP).  
-  Files: `mbarrier.cc`, matching gtest.  
-  Exit: F2-1 table has no “used + missing”; new/updated test PASS. Deps: F2-1.
-- [ ] **F2-3** `mbarrier.try_wait` **timeout** operand: implement **or** reject with a clear runtime error (today: ignored / unimplemented).  
-  Files: `mbarrier.cc`, `FLASH.md`.  
-  Exit: either a timeout test PASS, or a kernel using timeout aborts with a message naming the missing feature.
-- [ ] **F2-4** Keep `FLASH.md` honest: barriers are not GPU smem objects; cluster remote is NoC-only.  
-  Files: `FLASH.md` *Mbarrier Subsystem*.  
-  Exit: limitation bullets match F2-1 table (no stale “CTA-level only” / wrong line numbers).
+**F2-1 inventory** (integration + `test/src/trace/ptx/*.ptx`; `test/triton_trace/**` has no mbarrier PTX):
 
-Note: making barriers live in real smem is **out of scope** unless F2-1 shows a kernel that inspects barrier bytes.
+| Opcode | Used? | Sim |
+|--------|-------|-----|
+| `mbarrier.init.shared::cta.b64` | yes | ok |
+| `mbarrier.arrive` (+ optional count) | yes | ok |
+| `mbarrier.arrive.expect_tx` | yes | ok |
+| `mbarrier.expect_tx` | yes | ok |
+| `mbarrier.complete_tx` | yes | ok |
+| `mbarrier.try_wait.parity` (3-op, no timeout) | yes | ok (park until phase; dest pred success so `@!P bra` exits) |
+| `mbarrier.try_wait.parity` + timeout (4th operand) | yes (`test/src/hopper/named_barrier_test.cc`, `MbarrierClusterTest.TryWaitTimeout*`) | ok (pred true if phase done, false on expiry) |
+| `mbarrier.inval` | yes | ok (drops manager entry) |
+| `mbarrier.test_wait` | no | not parsed / unused |
+| `mbarrier.pending_count` | no | not parsed / unused |
+| `try_wait` without `.parity` | no | assert (parity required) |
+| other `bar_op` | no | `assert` + named error |
+
+- [x] **F2-1** Inventory written in the table above.
+- [x] **F2-2** Every **used** opcode is ok. Unused stay hard-fail (no silent NOP).
+- [x] **F2-3** `try_wait` timeout: dest pred **true** if the waited phase completed, **false** if the hint expires first. Tests: `MbarrierClusterTest.TryWaitTimeoutExpires_PredFalse`, `TryWaitTimeoutPhaseDone_PredTrue`. Hint is counted in sim cycles, not silicon ns.
+- [x] **F2-4** `FLASH.md` *Mbarrier Subsystem* matches: not smem-backed; remote via NoC; timeout implemented; unused variants hard-fail.
+
+Note: making barriers live in real smem is **out of scope** unless a kernel inspects barrier bytes.
 
 #### F3 — `barrier.cluster` / CG DSM map  *(Non-goal)*
 

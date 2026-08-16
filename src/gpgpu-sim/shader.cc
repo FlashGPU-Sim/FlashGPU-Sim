@@ -5574,6 +5574,10 @@ barrier_set_t::barrier_set_t(shader_core_ctx *shader,
   m_warp_at_barrier.reset();
   m_warp_barrier_type.resize(max_warps_per_core, BARRIER_WAIT_BAR_SYNC);
   m_warp_named_barrier_id.resize(max_warps_per_core, (unsigned)-1);
+  m_mbar_trywait_has_timeout.assign(max_warps_per_core, false);
+  m_mbar_timeout_cycle.assign(max_warps_per_core, 0);
+  m_mbar_trywait_inst.assign(max_warps_per_core, nullptr);
+  m_mbar_trywait_mask.assign(max_warps_per_core, active_mask_t());
   for (unsigned i = 0; i < max_barriers_per_cta; i++) {
     m_bar_id_to_warps[i].reset();
   }

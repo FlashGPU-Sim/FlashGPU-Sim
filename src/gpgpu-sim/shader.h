@@ -1265,6 +1265,18 @@ class barrier_set_t {
     barrier_wait_type_t type;
   };
   std::vector<pending_warp_release_t> m_pending_warp_releases;
+
+  // try_wait with a timeout operand: expire and set dest pred false.
+  void apply_trywait_pred(unsigned warp_id, bool phase_complete);
+  void arm_trywait_timeout(unsigned warp_id, unsigned timeout_hint,
+                           const ptx_instruction *static_inst,
+                           const active_mask_t &active_mask);
+  void clear_trywait_timeout(unsigned warp_id);
+
+  std::vector<bool> m_mbar_trywait_has_timeout;
+  std::vector<unsigned long long> m_mbar_timeout_cycle;
+  std::vector<const ptx_instruction *> m_mbar_trywait_inst;
+  std::vector<active_mask_t> m_mbar_trywait_mask;
 };
 
 struct insn_latency_info {
