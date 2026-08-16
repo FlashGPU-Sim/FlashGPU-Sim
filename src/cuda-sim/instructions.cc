@@ -174,6 +174,8 @@ int acc_float_offset(int index, int wmma_layout, int stride) {
 }
 
 void inst_not_implemented(const ptx_instruction *pI);
+void decode_space(memory_space_t &space, ptx_thread_info *thread,
+                  const operand_info &op, memory_space *&mem, addr_t &addr);
 ptx_reg_t srcOperandModifiers(ptx_reg_t opData, operand_info opInfo,
                               operand_info dstInfo, unsigned type,
                               ptx_thread_info *thread);
@@ -1278,31 +1280,17 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
     src2_data = thread->get_operand_value(src2, src1, to_type, thread, 1);  // b
   }
 
-  // Check state space
+  // Generic atom.add (CUDA atomicAdd on a mapa'd pointer) must use the
+  // same shared-window decode as remote ld/st: owner SM smem, not the
+  // issuer's local smid.
   addr_t effective_address = src1_data.u64;
   memory_space_t space = pI->get_space();
-  if (space == undefined_space) {
-    // generic space - determine space via address
-    if (whichspace(effective_address) == global_space) {
-      effective_address = generic_to_global(effective_address);
-      space = global_space;
-    } else if (whichspace(effective_address) == shared_space) {
-      unsigned smid = thread->get_hw_sid();
-      effective_address = generic_to_shared(smid, effective_address);
-      space = shared_space;
-    } else {
-      abort();
-    }
-  }
-  assert(space == global_space || space == shared_space);
-
+  if (space == undefined_space)
+    space = generic_space;
   memory_space *mem = NULL;
-  if (space == global_space)
-    mem = thread->get_global_memory();
-  else if (space == shared_space)
-    mem = thread->m_shared_mem;
-  else
-    abort();
+  decode_space(space, thread, src1, mem, effective_address);
+  assert(mem);
+  assert(space == global_space || space == shared_space);
 
   // Copy value pointed to in operand 'a' into register 'd'
   // (i.e. copy src1_data to dst)
@@ -1601,29 +1589,16 @@ void atom_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   src1_data = thread->get_operand_value(src1, src1, i_type, thread, 1);
   addr_t effective_address = src1_data.u64;
 
-  addr_t effective_address_final;
-
-  // handle generic memory space by converting it to global
-  if (space == undefined_space) {
-    if (whichspace(effective_address) == global_space) {
-      effective_address_final = generic_to_global(effective_address);
-      space = global_space;
-    } else if (whichspace(effective_address) == shared_space) {
-      unsigned smid = thread->get_hw_sid();
-      effective_address_final = generic_to_shared(smid, effective_address);
-      space = shared_space;
-    } else {
-      abort();
-    }
-  } else {
-    assert(space == global_space || space == shared_space);
-    effective_address_final = effective_address;
-  }
-
-  // Check state space
+  // Same decode as the atom callback / remote ld/st: a generic shared
+  // window may belong to a peer CTA.
+  if (space == undefined_space)
+    space = generic_space;
+  memory_space *mem = NULL;
+  decode_space(space, thread, src1, mem, effective_address);
+  (void)mem;
   assert(space == global_space || space == shared_space);
 
-  thread->m_last_effective_address = effective_address_final;
+  thread->m_last_effective_address = effective_address;
   thread->m_last_memory_space = space;
   thread->m_last_dram_callback.function = atom_callback;
   thread->m_last_dram_callback.instruction = pI;

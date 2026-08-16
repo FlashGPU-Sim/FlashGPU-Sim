@@ -2,7 +2,7 @@
 //
 // Models hop latency (and optional simple bandwidth) for:
 //   - TMA .shared::cluster multicast data + peer mbarrier complete_tx
-//   - Distributed shared memory (DSM) loads/stores/atomics
+//   - Distributed shared memory (DSM) loads/stores and atom (owner-smem RMW)
 //   - Remote mbarrier operations
 //
 // Design rules (race-freedom):

@@ -187,10 +187,12 @@ When NoC is **disabled** (`-gpgpu_cluster_noc_enable 0`): legacy immediate multi
 | Missing / exited cluster rank | **Abort** (named error); does not alias issuer smem |
 | `ld`/`st` generic → remote smem | Yes (via `decode_space`) |
 | Store via NoC + functional peer write | Yes (dual-path: inject hop + immediate write) |
+| Remote `atom` on mapa’d generic shared | Yes (owner smem RMW; CUDA `atomicAdd` path) |
+| PTX `red` / `red.async` | No (`inst_not_implemented`; follow-on) |
 | Load pre-delivers due stores | Yes (`deliver_ready` before remote load) |
 | Timing hop (shared dispatch_delay) | Yes (load RTT=2×hop, store=1×hop; no phantom L1) |
 | Flat topology (H200) | Yes (constant/near-constant hop; stride ratio~1.0) |
-| Integration tests | Yes (`dsm_test.cc`: self/remote ld/st, Cluster4, drop-on-exit, u64, after-exit abort) |
+| Integration tests | Yes (`dsm_test.cc`: self/remote ld/st, remote `atom.add`, Cluster4, drop-on-exit, u64, after-exit abort) |
 | Full scoreboard / DSM_LOAD_RSP→RF | Partial (optional; see §12) |
 
 ### 6.3 Cluster mbarrier
@@ -210,7 +212,7 @@ When NoC is **disabled** (`-gpgpu_cluster_noc_enable 0`): legacy immediate multi
 |------|----------------------|-------------|
 | **Cluster launch** | **Yes** | `cudaLaunchKernelExC` / cluster dims co-schedule CTAs of one Thread Block Cluster onto one physical `simt_core_cluster`, with ranks and `cluster_group` for peer discovery. Ordinary `<<<>>>` does not force co-residency. See `docs/cluster_cta2_realLaunch.md`. |
 | **TMA + cluster multicast** | **Yes (common paths)** | `.shared::cluster` and `.multicast::cluster` + `ctaMask` select peer destinations for data and mbarrier `complete_tx`. With NoC off, peers see data immediately (legacy). With NoC on, peers see data after hop deliver and can `try_wait` correctly. Mask edge cases, OOB, and some bulk corners remain idealized (see `FLASH.md`). |
-| **DSM (`mapa` + remote ld/st)** | **Yes (tested patterns)** | Real `mapa.u64` maps into peer generic shared windows; remote `ld`/`st` resolve via `decode_space` and (when NoC on) the store NoC path. A rank with no active CTA **aborts** (no local-window alias). Integration coverage: self-mapa, two-CTA remote store/load, clusterDim=4 fan-out, drop-on-exit, u64 vs u32, after-exit abort. Prefer **`mapa.u64`** (u32 truncates large generic windows). |
+| **DSM (`mapa` + remote ld/st)** | **Yes (tested patterns)** | Real `mapa.u64` maps into peer generic shared windows; remote `ld`/`st`/`atom` resolve via `decode_space` (owner smem). A rank with no active CTA **aborts** (no local-window alias). Integration coverage: self-mapa, two-CTA remote store/load/`atom.add`, clusterDim=4 fan-out, drop-on-exit, u64 vs u32, after-exit abort. Prefer **`mapa.u64`** (u32 truncates large generic windows). PTX `red`/`red.async` are unimplemented. |
 | **mbarrier (local + remote)** | **Yes (main ops)** | Local init/arrive/try_wait/complete_tx as before. Remote (mapa’d) arrive and try_wait go through NoC when `-gpgpu_mbarrier_cluster_enable 1` and NoC is on. Timeout and some PTX variants are still unimplemented. |
 | **Correctness model for multi-CTA** | **mbarrier-ordered kernels** | Kernels that **sync with mbarrier** (or equivalent interest-list wait) match the intended model. Bare spins on peer smem without the peer having issued, or `__syncthreads` mixed with single-thread try_wait, can hang or behave poorly under functional-first PTX sim. Remote DSM **stores** are dual-path (issuer pays hop; peer smem also updated immediately for mbarrier-safe visibility). |
 
@@ -267,7 +269,7 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 | **F1** | Land + green-gate NoC stack | Crit | **Done** | §12.2 F1 |
 | **F2** | mbarrier idealized / incomplete PTX | High | **Open** | §12.2 F2 |
 | **F3** | `barrier.cluster` / CG DSM map builtins | Med | **Non-goal** | §12.6 (reopen only if an app needs it) |
-| **F4** | DSM `atom`/`red` overclaimed / broken | Med | **Open** | §12.2 F4 |
+| **F4** | DSM `atom`/`red` overclaimed / broken | Med | **Partial** | §12.2 F4 (`atom` done; `red`/`red.async` follow-on) |
 | **F5** | `mapa` lifetime: exited producer → abort | Med | **Done** | §12.2 F5 |
 | **F6** | TMA corners stubbed (swizzle, tensormap, bulk group) | Med | **Open** | §12.2 F6 |
 | **F7** | Programming-model fragility (spin / `bar.sync`+`try_wait`) | Med | **Open** | §12.2 F7 |
@@ -297,7 +299,9 @@ Special regs + `mapa` are the supported cluster discovery path. Full `barrier.cl
 
 #### F4 — DSM atomics
 
-`cluster_noc.h` mentions atomics. `atom_impl` converts generic→shared with the **local** `smid` only, so mapa’d remote `atom` is wrong or undefined. `red_impl` is already `inst_not_implemented` (global). Either implement remote atom via the same decode/NoC path or reject loudly.
+Remote PTX `atom` (CUDA `atomicAdd` on a `mapa` / `map_shared_rank` pointer) uses the same generic-shared decode as remote ld/st and mutates the **owner** CTA’s smem. Official DSM histogram C++ compiles to generic `atom.add` after `mapa`, not to `red`.
+
+PTX `red` and `red.async` stay unimplemented (`red_impl` is `inst_not_implemented`). `red.shared::cluster` is legal PTX (ISA 8.4 example) but nvcc 12.8 does not emit it for the C++ DSM `atomicAdd` path; `red.async` is a separate Hopper opcode that completes via mbarrier on peer smem. See §12.2 F4 follow-ons.
 
 #### F5 — `mapa` lifetime
 
@@ -445,7 +449,7 @@ Mask semantics (unchanged):
 | `tma_cluster_multicast_test` | Pass (legacy) | Pass (delayed visibility + try_wait) |
 | `tma_multicast_mask_test` | Pass | Pass |
 | `cluster_multicast_multicluster_test` | Pass | Pass (isolation) |
-| `dsm_test` | SelfMapa only | SelfMapa + RemoteStore + RemoteLoad + Cluster4 + drop-on-exit + u64 + after-exit abort |
+| `dsm_test` | SelfMapa only | SelfMapa + RemoteStore + RemoteLoad + RemoteAtomicAdd + Cluster4 + drop-on-exit + u64 + after-exit abort |
 | `mbarrier_cluster_test` | Local only | RemoteArrive + RemoteTryWait |
 
 ### Recommended run
@@ -511,7 +515,7 @@ FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4
 **Branch/PR scope:** still the **same** unified cluster PR/branch (`docs/cluster.md`). F-items and L2–L4 are in-branch / follow-on checklist work, not separate “feature PRs.”  
 **Profiling / new microbenchmarks:** `../H200_profiling/TODO.md` (separate agent, separate tree).
 
-Suggested order (F1, F5, F8 **done**): **F4 → F2 → F6/F7/F9 → L2 → L3 → L4**.
+Suggested order (F1, F4-`atom`, F5, F8 **done**): **F2 → F6/F7/F9 → L2 → L3 → L4** (`red`/`red.async` are F4 follow-ons).
 
 ### Task contract (how to write / close an item)
 
@@ -539,7 +543,7 @@ Nothing in the cluster/NoC pillar should sit outside this table. If you find a h
 | Cluster launch + co-residency + specials | (landed; F1-2 regression) | idealized schedule (non-goal) | OK |
 | TMA `.shared::cluster` / mask / OneProducer | F6, F8-5, F8-6, F8-11 | L1 done; L3-2, L3-4 | corners open |
 | DSM `mapa` + remote ld/st | F5 (done), F8-1…F8-4, F8-10 | L2-1, L2-3, L2-5; L3-1 | happy path + inactive-rank abort |
-| DSM / shared `atom` + `red` | **F4** | after F4 implement | **broken / overclaimed** |
+| DSM / shared `atom` + `red` | F4 (`atom` done; `red`/`red.async` follow-on) | functional RMW; no dedicated atom hop | **`atom` OK; `red` open** |
 | Remote mbarrier | F2, F8-8 | hop via L1; L2 not needed | main ops only |
 | Dual-path store visibility | F9 | **L2-2** (= F9-2) | default documented |
 | Intra-cluster NoC fabric | F1 (done), F8-3 | L1 done; L3, L4 | L1 |
@@ -555,6 +559,7 @@ Nothing in the cluster/NoC pillar should sit outside this table. If you find a h
 - [x] TMA peer data + mbar via NoC when enabled
 - [x] DSM `mapa` + remote ld/st; dual-path store; load issue delay ≈ 2×hop
 - [x] `mapa` of a missing / exited cluster rank aborts (does not alias issuer smem)
+- [x] Remote `atom` on a mapa’d generic shared address mutates owner smem (`DsmTest.RemoteAtomicAdd_TwoCtas`)
 - [x] Remote mbarrier arrive / try_wait (WAIT_REG / WAIT_DONE)
 - [x] CTA exit `drop_messages_to_cta`
 - [x] H200 knobs/matrices from **2046238** (local ~37, one-way ~78, flat; TMA mcast hop ~135)
@@ -648,21 +653,25 @@ Note: making barriers live in real smem is **out of scope** unless F2-1 shows a 
 
 - [x] Explicitly out of scope (`docs/cluster.md` §4). Reopen only if a target kernel requires it — then add **F3-1** here, do not hide it under F2.
 
-#### F4 — DSM atomics / reductions  *(Open)*
+#### F4 — DSM atomics / reductions  *(Partial: `atom` done)*
 
-`cluster_noc.h` claims atomics. `atom_impl` (`instructions.cc`) converts generic→shared with the **local** `smid` only — mapa’d remote `atom` is wrong or undefined. `red_impl` is already `inst_not_implemented` (not a silent DSM bug).
+- [x] **F4-1** Decision: **implement** remote `atom` (CUDA `atomicAdd` + `mapa` / `map_shared_rank`). Do not implement `red` / `red.async` until a kernel dump shows them.  
+  Note: NVIDIA’s DSM histogram sample is `map_shared_rank` + `atomicAdd`. nvcc 12.8 / sm_90 emits generic `atom.add` after `mapa.u64`, not `red`.
+- [ ] **F4-2** *(not taken — F4-1 = implement)*
+- [x] **F4-3** Remote `atom` uses the same `decode_space` generic-shared path as remote ld/st; RMW mutates the **owner** CTA smem.  
+  Files: `src/cuda-sim/instructions.cc` (`atom_impl` / `atom_callback`).  
+  Exit: `DsmTest.RemoteAtomicAdd_TwoCtas` PASS on `SM90_H200_REDUCED_CLUSTER4x4` (NoC on).
+- [x] **F4-4** Header/docs match the policy: `atom` on mapa’d generic shared is supported; `red` / `red.async` are not.  
+  Files: `cluster_noc.h` line-5 comment, this doc §6.2 / §6.6 F4.
 
-- [ ] **F4-1** Decision (record the choice as a one-line note under this item): **reject** (F4-2) **or** **implement** (F4-3). Default recommendation: **reject** until a target kernel needs remote atom/red.  
-  Exit: note says “reject” or “implement”.
-- [ ] **F4-2** *(only if F4-1 = reject)* `atom_impl` aborts on remote generic shared (use `decode_shared_generic` / `is_remote_shared_generic`; stop using local `smid`).  
-  Files: `src/cuda-sim/instructions.cc`, `src/gpgpu-sim/flash/cluster_noc.h` (drop atomics claim).  
-  Exit: a 2-CTA mapa+`atom.add` test **aborts with a named error** (not wrong data). Deps: F4-1 reject.
-- [ ] **F4-3** *(only if F4-1 = implement)* Remote `atom` via same decode + NoC/owner path as ld/st (owner SM mutates smem). Leave `red` unimplemented unless a kernel needs it (then add **F4-5**).  
-  Files: `instructions.cc`, `cluster_noc.{h,cc}`, `test/src/integration/dsm_test.cc`.  
-  Exit: `DsmTest.RemoteAtomicAdd_TwoCtas` (or equivalent) PASS on NoC-on. Deps: F4-1 implement.
-- [ ] **F4-4** Header/docs do not claim DSM atomics until F4-2 or F4-3 is `[x]`.  
-  Files: `cluster_noc.h` line-5 comment, this doc §4 / §6.2.  
-  Exit: grep `atomic` in those files matches the chosen policy.
+Follow-ons (open; not required for C++ DSM `atomicAdd`):
+
+- [ ] **F4-5** PTX `red` (sync reduction, no old value). Legal on `.shared{::cta,::cluster}` (ISA 8.4 example `red.shared::cluster.max.u32`). nvcc 12.8 does **not** emit it for `atomicAdd` on a `mapa` pointer (generic `atom.add` instead). SASS `REDG` appears for unused-return **global** atomics. `red_impl` stays `inst_not_implemented` until a PTX dump contains `red`.  
+  Files: `instructions.cc` `red_impl`.  
+  Exit: either a kernel snippet that emits `red` + test PASS, or leave unimplemented.
+- [ ] **F4-6** PTX `red.async` (Hopper, `sm_90+`): async reduce to **another CTA’s** smem + `mbarrier.complete_tx`. Separate from `atomicAdd` / sync `red`. Implement only if CUTLASS / Triton / a test dump uses it.  
+  Files: `instructions.cc`, `mbarrier.cc`.  
+  Exit: a `red.async` snippet PASS, or stay hard-fail.
 
 #### F5 — `mapa` lifetime / exited producer  *(Done)*
 
@@ -734,7 +743,7 @@ Closed 2026-08-15. Shipped helpers live in `cluster_noc_helpers.cc` (unit-testab
 
 ### 12.3 Checklist — L2 pipeline fidelity
 
-Assessment: **§6.5**. Do not start until F1 is Done (wrong-data bugs look like timing bugs). Prefer F4/F8 green first (F5 is done).
+Assessment: **§6.5**. Do not start until F1 is Done (wrong-data bugs look like timing bugs). Prefer F8 green first (F4 `atom` and F5 are done).
 
 - [ ] **L2-1** **DSM_LOAD_RSP → RF / scoreboard.** On remote-load issue: mark dest regs pending. On `DSM_LOAD_RSP` deliver: write RF + clear scoreboard.  
   Files: `cluster_noc.cc` `deliver` `DSM_LOAD_RSP` (today a no-op), `scoreboard.cc`, `shader.cc` `func_exec_inst`.  

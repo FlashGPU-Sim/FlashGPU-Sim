@@ -242,6 +242,75 @@ TEST_F(DsmTest, RemoteLoadFromPeer_TwoCtas) {
 }
 
 // ---------------------------------------------------------------------------
+// Remote atom.add: rank 0 mapa's rank 1 smem and atomicAdds; rank 1 waits
+// on a local mbarrier then reads the sum. The issuer's own smem must stay
+// the local sentinel (not the peer sum).
+// ---------------------------------------------------------------------------
+__global__ void dsm_remote_atom_kernel(uint32_t *out, volatile int *ready) {
+  __shared__ uint32_t smem[32];
+  __shared__ unsigned long long bar;
+  const int rank = blockIdx.x;
+  const int tid = threadIdx.x;
+
+  if (tid == 0)
+    smem[0] = 0;
+
+  if (rank == 1 && tid == 0) {
+    mbarrier_init_local(&bar, 1);
+    ready[0] = 1;
+    __threadfence_system();
+    mbarrier_try_wait_local(&bar, 0);
+    out[1] = smem[0];
+    ready[1] = 1;
+    __threadfence_system();
+  }
+
+  if (rank == 0 && tid == 0) {
+    while (ready[0] == 0) {
+    }
+    smem[0] = 0x11111111u;
+    uint32_t *remote = mapa_shared_rank(smem, /*rank=*/1);
+    atomicAdd(remote, 5u);
+    atomicAdd(remote, 13u);
+    out[0] = smem[0];
+    unsigned long long remote_bar = mapa_u64(&bar, /*rank=*/1);
+    mbarrier_arrive_remote(remote_bar, 1);
+    while (ready[1] == 0) {
+    }
+  }
+}
+
+TEST_F(DsmTest, RemoteAtomicAdd_TwoCtas) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  constexpr int kRanks = 2;
+  uint32_t *d_out = nullptr;
+  int *d_ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, kRanks * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_ready, 4 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, kRanks * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_ready, 0, 4 * sizeof(int)), cudaSuccess);
+
+  dim3 grid(kRanks), block(32), cluster(kRanks, 1, 1);
+  void *args[] = {&d_out, &d_ready};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_remote_atom_kernel, grid, block, cluster,
+                args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  std::vector<uint32_t> h(kRanks, 0);
+  ASSERT_EQ(cudaMemcpy(h.data(), d_out, kRanks * sizeof(uint32_t),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  cudaFree(d_ready);
+
+  EXPECT_EQ(h[0], 0x11111111u)
+      << "remote atom.add mutated the issuer's local smem (local alias)";
+  EXPECT_EQ(h[1], 18u) << "peer smem did not see atomicAdd 5+13 via mapa";
+}
+
+// ---------------------------------------------------------------------------
 // clusterDim=4 — rank 0 stores a distinct word into each peer.
 // multi-peer fan-out is the same kernel (1 producer, 3 consumers).
 // ---------------------------------------------------------------------------

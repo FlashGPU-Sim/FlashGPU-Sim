@@ -315,7 +315,8 @@ Lane 28-31: Row 7
 4. **Intra-cluster NoC**: TMA peer data/mbar, DSM, remote mbarrier via `cluster_noc_t` when `-gpgpu_cluster_noc_enable 1` (`docs/cluster_noc.md`). Default on for `SM90_H200_REDUCED_CLUSTER4x4`.
 5. Prefer `SM120_*_REDUCED_CLUSTER*` for functional tests; H200 reduced for NoC-on calibration path.
 6. **`mapa` lifetime**: `mapa` maps only an **active** cluster rank. If the target CTA has exited or the rank was never co-resident, the simulator **aborts** (it does not alias the issuer’s shared memory). Keep the producer CTA alive until consumers finish `mapa`.
-7. **Maturity:** `docs/cluster_noc.md` §6.4–§6.6 (usefulness + F1–F9 functional gaps + L0–L4). **Living checklist:** §12. Short version: functionally useful for mbarrier-ordered cluster/TMA/DSM kernels; remaining functional holes F1–F9 (mapa lifetime is closed); SM↔SM timing is **L1** (flat hop, job 2046238).
+7. **DSM `atom`**: CUDA `atomicAdd` on a `mapa` / `map_shared_rank` pointer is a generic PTX `atom.add` against the **owner** CTA’s smem. PTX `red` and `red.async` are unimplemented (`inst_not_implemented`). nvcc 12.8 does not emit `red.shared::cluster` for that C++ path; `red.async` is a separate Hopper mbarrier-completion opcode.
+8. **Maturity:** `docs/cluster_noc.md` §6.4–§6.6 (usefulness + F1–F9 functional gaps + L0–L4). **Living checklist:** §12. Short version: functionally useful for mbarrier-ordered cluster/TMA/DSM kernels; remaining functional holes F1–F9 (mapa lifetime and remote `atom` are closed; `red` is a follow-on); SM↔SM timing is **L1** (flat hop, job 2046238).
 
 **General**:
 - Flash mode multi-threading may have race conditions in certain edge cases

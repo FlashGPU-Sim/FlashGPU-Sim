@@ -9,7 +9,7 @@ This is **not** a stack of separate “launch-only” / “TMA-only” / “NoC-
 | **Real cluster launch** | `cudaLaunchKernelExC`, cluster attrs, PTX required dims, co-resident issue |
 | **TMA `.shared::cluster`** | Multicast + selective `ctaMask`; peer data and mbarrier complete |
 | **Remote mbarrier** | mapa’d arrive / try_wait via cluster path |
-| **DSM** | Real `mapa.u64`, remote ld/st; inactive rank aborts |
+| **DSM** | Real `mapa.u64`, remote ld/st/`atom`; inactive rank aborts |
 | **Intra-cluster NoC** | Hop / flat matrix (H200 job 2046238), race-safe deliver |
 
 ---
@@ -41,7 +41,7 @@ This is **not** a stack of separate “launch-only” / “TMA-only” / “NoC-
 | TMA cluster multicast (+ mask) | Yes | NoC hop when enabled; free/immediate when NoC off |
 | Local mbarrier | Yes (main ops) | Calibrated arrive/try_wait knobs |
 | Remote mbarrier (mapa) | Yes | Via NoC hop |
-| DSM mapa + remote ld/st | Yes (tested patterns); inactive rank **aborts** | Flat hop L1; load RTT≈2×hop; dual-path store |
+| DSM mapa + remote ld/st/`atom` | Yes (tested patterns); inactive rank **aborts**; `red`/`red.async` unimplemented | Flat hop L1; load RTT≈2×hop; dual-path store |
 | Intra-cluster NoC | Yes | **L1** flat hop (H200); L2–L4 in §12 of `cluster_noc.md` |
 
 **Maturity (detailed tables):** `docs/cluster_noc.md` **§6.4** (functional usefulness), **§6.5** (cycle levels L0–L4), **§6.6** (functional gaps F1–F9). Living TODO: **§12**.
