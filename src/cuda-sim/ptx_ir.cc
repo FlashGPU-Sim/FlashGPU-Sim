@@ -368,6 +368,43 @@ unsigned operand_info::get_uid() {
   return result;
 }
 
+operand_info::operand_info(const std::vector<operand_info> &components,
+                           gpgpu_context *ctx) {
+  init(ctx);
+  m_uid = get_uid();
+  m_valid = true;
+  m_vector = true;
+  m_type = vector_t;
+  m_vector_nelem = components.size();
+  const size_t alloc_size = components.size() < 8 ? 8 : components.size();
+  m_value.m_vector_symbolic = new const symbol *[alloc_size];
+  bool has_literal = false;
+  for (const operand_info &component : components)
+    has_literal = has_literal || component.is_literal();
+  if (has_literal) {
+    m_vector_component_types = new enum operand_type[alloc_size];
+    m_vector_literal_values = new ptx_reg_t[alloc_size];
+  }
+  for (size_t i = 0; i < alloc_size; ++i) {
+    m_value.m_vector_symbolic[i] = NULL;
+    if (has_literal) {
+      m_vector_component_types[i] = undef_t;
+      m_vector_literal_values[i] = ptx_reg_t();
+    }
+  }
+  for (size_t i = 0; i < components.size(); ++i) {
+    const operand_info &component = components[i];
+    if (component.is_reg()) {
+      m_value.m_vector_symbolic[i] = component.get_symbol();
+    } else {
+      assert(component.is_literal());
+      assert(has_literal);
+      m_vector_component_types[i] = component.get_type();
+      m_vector_literal_values[i] = component.get_literal_value();
+    }
+  }
+}
+
 std::list<ptx_instruction *>::iterator
 function_info::find_next_real_instruction(
     std::list<ptx_instruction *>::iterator i) {

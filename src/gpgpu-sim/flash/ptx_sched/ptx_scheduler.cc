@@ -1192,7 +1192,7 @@ void add_reg(reg_set_t &regs, const symbol *sym) {
 void collect_operand_regs(const operand_info &op, reg_set_t &regs) {
   if (op.is_vector()) {
     for (unsigned i = 0; i < op.get_vect_nelem(); ++i)
-      add_reg(regs, op.vec_symbol(i));
+      add_reg(regs, op.vec_symbol_or_null(i));
     return;
   }
 

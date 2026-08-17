@@ -722,6 +722,12 @@ class operand_info {
     m_immediate_address = false;
   }
 
+  // A PTX vector operand may contain registers, literals, or a mixture of the
+  // two (for example, the source of `st.local.v2.b32 ..., {0, 0}`).  Keep the
+  // existing symbol-only representation for compatibility and attach typed
+  // component metadata only when a vector actually contains a literal.
+  operand_info(const std::vector<operand_info> &components, gpgpu_context *ctx);
+
   void init(gpgpu_context *ctx) {
     gpgpu_ctx = ctx;
     m_uid = (unsigned)-1;
@@ -747,6 +753,8 @@ class operand_info {
     }
     m_value.m_symbolic = NULL;
     m_value.m_vector_symbolic = NULL;
+    m_vector_component_types = NULL;
+    m_vector_literal_values = NULL;
     m_addr_offset = 0;
     m_neg_pred = 0;
     m_is_return_var = 0;
@@ -769,8 +777,37 @@ class operand_info {
   const symbol *vec_symbol(int idx) const {
     assert(idx >= 0 && (unsigned)idx < m_vector_nelem);
     const symbol *result = m_value.m_vector_symbolic[idx];
-    assert(result != NULL);
+    assert(result != NULL && "literal vector component has no symbol");
     return result;
+  }
+
+  const symbol *vec_symbol_or_null(int idx) const {
+    assert(idx >= 0 && (unsigned)idx < m_vector_nelem);
+    return m_value.m_vector_symbolic[idx];
+  }
+
+  bool vec_is_literal(int idx) const {
+    assert(idx >= 0 && (unsigned)idx < m_vector_nelem);
+    return m_vector_component_types != NULL &&
+           m_vector_component_types[idx] != undef_t;
+  }
+
+  enum operand_type vec_component_type(int idx) const {
+    assert(vec_is_literal(idx));
+    return m_vector_component_types[idx];
+  }
+
+  ptx_reg_t vec_literal_value(int idx) const {
+    assert(vec_is_literal(idx));
+    return m_vector_literal_values[idx];
+  }
+
+  bool vector_has_literal() const {
+    if (!is_vector() || m_vector_component_types == NULL) return false;
+    for (unsigned i = 0; i < m_vector_nelem; ++i) {
+      if (m_vector_component_types[i] != undef_t) return true;
+    }
+    return false;
   }
 
   const std::string &vec_name1() const {
@@ -817,44 +854,43 @@ class operand_info {
     return false;
   }
   int reg_num() const { return m_value.m_symbolic->reg_num(); }
-  int reg1_num() const { return m_value.m_vector_symbolic[0]->reg_num(); }
-  int reg2_num() const { return m_value.m_vector_symbolic[1]->reg_num(); }
+  int reg1_num() const {
+    const symbol *s = vec_symbol_or_null(0);
+    return s ? s->reg_num() : 0;
+  }
+  int reg2_num() const {
+    const symbol *s = vec_symbol_or_null(1);
+    return s ? s->reg_num() : 0;
+  }
   int reg3_num() const {
-    return m_value.m_vector_symbolic[2]
-               ? m_value.m_vector_symbolic[2]->reg_num()
-               : 0;
+    const symbol *s = vec_symbol_or_null(2);
+    return s ? s->reg_num() : 0;
   }
   int reg4_num() const {
-    return m_value.m_vector_symbolic[3]
-               ? m_value.m_vector_symbolic[3]->reg_num()
-               : 0;
+    const symbol *s = vec_symbol_or_null(3);
+    return s ? s->reg_num() : 0;
   }
   int reg5_num() const {
-    return m_value.m_vector_symbolic[4]
-               ? m_value.m_vector_symbolic[4]->reg_num()
-               : 0;
+    const symbol *s = vec_symbol_or_null(4);
+    return s ? s->reg_num() : 0;
   }
   int reg6_num() const {
-    return m_value.m_vector_symbolic[5]
-               ? m_value.m_vector_symbolic[5]->reg_num()
-               : 0;
+    const symbol *s = vec_symbol_or_null(5);
+    return s ? s->reg_num() : 0;
   }
   int reg7_num() const {
-    return m_value.m_vector_symbolic[6]
-               ? m_value.m_vector_symbolic[6]->reg_num()
-               : 0;
+    const symbol *s = vec_symbol_or_null(6);
+    return s ? s->reg_num() : 0;
   }
   int reg8_num() const {
-    return m_value.m_vector_symbolic[7]
-               ? m_value.m_vector_symbolic[7]->reg_num()
-               : 0;
+    const symbol *s = vec_symbol_or_null(7);
+    return s ? s->reg_num() : 0;
   }
   int arch_reg_num() const { return m_value.m_symbolic->arch_reg_num(); }
   int arch_reg_num(unsigned n) const {
     if (n >= m_vector_nelem) return -1;
-    return (m_value.m_vector_symbolic[n])
-               ? m_value.m_vector_symbolic[n]->arch_reg_num()
-               : -1;
+    const symbol *s = vec_symbol_or_null(n);
+    return s ? s->arch_reg_num() : -1;
   }
   bool is_label() const { return m_type == label_t; }
   bool is_builtin() const { return m_type == builtin_t; }
@@ -978,6 +1014,12 @@ class operand_info {
     const symbol *m_symbolic;
     const symbol **m_vector_symbolic;
   } m_value;
+
+  // NULL means the legacy all-symbol vector representation.  Otherwise each
+  // entry is undef_t for a symbol component or the scalar literal operand
+  // type for a literal component.  Literal bits live in the parallel array.
+  enum operand_type *m_vector_component_types;
+  ptx_reg_t *m_vector_literal_values;
 
   long long m_addr_offset;
 

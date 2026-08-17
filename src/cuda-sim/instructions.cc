@@ -625,8 +625,11 @@ void ptx_thread_info::get_vector_operand_values(const operand_info &op,
   assert(num_elements <= 8);
 
   for (int idx = num_elements - 1; idx >= 0; --idx) {
-    const symbol *sym = NULL;
-    sym = op.vec_symbol(idx);
+    if (op.vec_is_literal(idx)) {
+      ptx_regs[idx] = op.vec_literal_value(idx);
+      continue;
+    }
+    const symbol *sym = op.vec_symbol(idx);
     if (strcmp(sym->name().c_str(), "_") != 0) {
       ptx_regs[idx] = get_reg(sym);
     }

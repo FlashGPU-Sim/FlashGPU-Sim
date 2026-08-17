@@ -99,6 +99,7 @@ void ptx_recognizer::init_instruction_state() {
   g_mma_options.clear();
   g_wgmma_options.clear();
   g_return_var = operand_info(gpgpu_ctx);
+  g_vector_operand_start = -1;
   init_directive_state();
 }
 
@@ -813,6 +814,159 @@ void ptx_recognizer::add_vector_operand(
     symbols.push_back(s);
   }
   g_operands.push_back(operand_info(symbols, gpgpu_ctx));
+}
+
+void ptx_recognizer::begin_vector_operand() {
+  PTX_PARSE_GPPRINTF("begin_vector_operand");
+  parse_assert(g_vector_operand_start == -1,
+               "nested vector operands are not allowed.");
+  g_vector_operand_start = static_cast<int>(g_operands.size());
+}
+
+namespace {
+
+unsigned vector_width_from_options(const std::list<int> &options) {
+  unsigned width = 0;
+  for (int option : options) {
+    unsigned candidate = 0;
+    if (option == V2_TYPE) candidate = 2;
+    if (option == V3_TYPE) candidate = 3;
+    if (option == V4_TYPE) candidate = 4;
+    if (candidate != 0) {
+      assert(width == 0 || width == candidate);
+      width = candidate;
+    }
+  }
+  return width;
+}
+
+bool is_bit_scalar_type(int type) {
+  return type == B8_TYPE || type == B16_TYPE || type == B32_TYPE ||
+         type == B64_TYPE || type == BB64_TYPE || type == BB128_TYPE;
+}
+
+bool is_integer_scalar_type(int type) {
+  return type == S8_TYPE || type == S16_TYPE || type == S32_TYPE ||
+         type == S64_TYPE || type == U8_TYPE || type == U16_TYPE ||
+         type == U32_TYPE || type == U64_TYPE;
+}
+
+bool is_float_scalar_type(int type) {
+  return type == F16_TYPE || type == F32_TYPE || type == F64_TYPE ||
+         type == FF64_TYPE || type == BF16_TYPE || type == TF32_TYPE;
+}
+
+unsigned scalar_type_bits(int type) {
+  size_t bits = 0;
+  int basic_type = 0;
+  type_info_key::type_decode(type, bits, basic_type);
+  return static_cast<unsigned>(bits);
+}
+
+}  // namespace
+
+void ptx_recognizer::end_vector_operand() {
+  PTX_PARSE_GPPRINTF("end_vector_operand");
+  parse_assert(g_vector_operand_start >= 0,
+               "vector operand end without a matching start.");
+
+  std::vector<operand_info> components;
+  std::list<operand_info>::iterator first = g_operands.begin();
+  std::advance(first, g_vector_operand_start);
+  for (std::list<operand_info>::iterator it = first; it != g_operands.end();
+       ++it) {
+    parse_assert(it->is_reg() || it->is_literal(),
+                 "vector components must be registers or literals.");
+    components.push_back(*it);
+  }
+  parse_assert(!components.empty(), "empty vector operand is not allowed.");
+
+  bool has_literal = false;
+  for (const operand_info &component : components) {
+    has_literal = has_literal || component.is_literal();
+  }
+
+  if (has_literal) {
+    parse_assert(g_opcode == ST_OP && g_vector_operand_start == 1,
+                 "literal vector operands are only valid as store sources.");
+    const unsigned vector_width = vector_width_from_options(g_options);
+    parse_assert(vector_width != 0,
+                 "literal vector store requires a vector qualifier.");
+    parse_assert(components.size() == vector_width,
+                 "vector operand width does not match vector qualifier.");
+    parse_assert(g_scalar_type_spec != -1,
+                 "literal vector store requires a scalar type.");
+
+    const int instruction_type = g_scalar_type_spec;
+    const unsigned instruction_bits = scalar_type_bits(instruction_type);
+
+    // Decimal floating-point operands are lexed as doubles.  PTX applies the
+    // instruction type to them, just as it does for scalar operands, so make
+    // that contextual f64-to-f32 conversion before comparing components.
+    if (instruction_type == F32_TYPE) {
+      for (operand_info &component : components) {
+        if (component.get_type() != double_op_t) continue;
+        const ptx_reg_t value = component.get_literal_value();
+        component = operand_info(static_cast<float>(value.f64), gpgpu_ctx);
+      }
+    }
+
+    enum operand_type literal_type = undef_t;
+    for (const operand_info &component : components) {
+      if (!component.is_literal()) continue;
+      if (literal_type == undef_t) {
+        literal_type = component.get_type();
+      } else {
+        parse_assert(component.get_type() == literal_type,
+                     "vector literal components must have a uniform type.");
+      }
+    }
+
+    if (literal_type == int_t || literal_type == unsigned_t) {
+      parse_assert(is_bit_scalar_type(instruction_type) ||
+                       is_integer_scalar_type(instruction_type),
+                   "integer vector literal is incompatible with store type.");
+    } else if (literal_type == float_op_t) {
+      parse_assert(instruction_bits == 32 && (instruction_type == B32_TYPE ||
+                                              instruction_type == F32_TYPE),
+                   "f32 vector literal is incompatible with store type.");
+    } else if (literal_type == double_op_t) {
+      parse_assert(instruction_bits == 64 && (instruction_type == B64_TYPE ||
+                                              instruction_type == F64_TYPE),
+                   "f64 vector literal is incompatible with store type.");
+    } else {
+      parse_assert(false, "unsupported vector literal type in store operand.");
+    }
+
+    for (const operand_info &component : components) {
+      if (component.is_literal()) continue;
+      const symbol *symbol = component.get_symbol();
+      parse_assert(symbol != NULL && symbol->type() != NULL,
+                   "vector register component has no type.");
+      const int register_type = symbol->type()->get_key().scalar_type();
+      parse_assert(scalar_type_bits(register_type) == instruction_bits,
+                   "vector register width is incompatible with store type.");
+      if (!is_bit_scalar_type(register_type) &&
+          !is_bit_scalar_type(instruction_type)) {
+        parse_assert(register_type == instruction_type,
+                     "vector register type is incompatible with store type.");
+      }
+      if (is_bit_scalar_type(instruction_type) &&
+          !is_bit_scalar_type(register_type)) {
+        const bool register_is_integer = is_integer_scalar_type(register_type);
+        const bool register_is_float = is_float_scalar_type(register_type);
+        parse_assert(
+            (literal_type == int_t && register_is_integer) ||
+                ((literal_type == float_op_t || literal_type == double_op_t) &&
+                 register_is_float),
+            "vector register and literal component types differ.");
+      }
+    }
+  }
+
+  g_operands.erase(first, g_operands.end());
+  g_operands.push_back(operand_info(components, gpgpu_ctx));
+  g_vector_operand_start = -1;
 }
 
 void ptx_recognizer::add_builtin_operand(int builtin, int dim_modifier) {

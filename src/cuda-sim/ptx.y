@@ -319,8 +319,6 @@ class ptx_recognizer;
 %token	TCGEN05_AFTER_THREAD_SYNC_OPTION;
 %type <int_value> function_decl_header
 %type <ptr_value> function_decl
-%type <ptr_value> vector_identifier_list
-%type <ptr_value> vector_identifier_tail
 
 %{
   	#include "ptx_parser.h"
@@ -845,38 +843,20 @@ operand: IDENTIFIER  { recognizer->add_scalar_operand( $1 ); }
 	| IDENTIFIER BACKSLASH IDENTIFIER HI_OPTION { recognizer->add_2vector_operand($1,$3); recognizer->change_double_operand_type(-3); recognizer->change_operand_lohi(2);}
 	;
 
-vector_operand: LEFT_BRACE IDENTIFIER vector_identifier_tail RIGHT_BRACE {
-			std::vector<const char *> *ids = (std::vector<const char *> *)$3;
-			ids->insert(ids->begin(), $2);
-			recognizer->add_vector_operand(*ids);
-			delete ids;
-		}
-		| LEFT_BRACE IDENTIFIER COMMA INT_OPERAND RIGHT_BRACE {
-			recognizer->add_scalar_operand($2);
-			recognizer->add_literal_int($4);
+vector_operand: LEFT_BRACE { recognizer->begin_vector_operand(); }
+		vector_component vector_component_tail RIGHT_BRACE {
+			recognizer->end_vector_operand();
 		}
 	;
 
-vector_identifier_list: IDENTIFIER {
-			std::vector<const char *> *ids = new std::vector<const char *>();
-			ids->push_back($1);
-			$$ = ids;
-		}
-		| vector_identifier_list COMMA IDENTIFIER {
-			std::vector<const char *> *ids = (std::vector<const char *> *)$1;
-			ids->push_back($3);
-			$$ = ids;
-		}
+vector_component: IDENTIFIER { recognizer->add_scalar_operand($1); }
+		| INT_OPERAND { recognizer->add_literal_int($1); }
+		| FLOAT_OPERAND { recognizer->add_literal_float($1); }
+		| DOUBLE_OPERAND { recognizer->add_literal_double($1); }
 	;
 
-vector_identifier_tail: /* empty */ {
-			$$ = new std::vector<const char *>();
-		}
-		| COMMA IDENTIFIER vector_identifier_tail {
-			std::vector<const char *> *ids = (std::vector<const char *> *)$3;
-			ids->insert(ids->begin(), $2);
-			$$ = ids;
-		}
+vector_component_tail: /* empty */
+		| COMMA vector_component vector_component_tail
 	;
 
 tex_vector_operand: LEFT_BRACE IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_2vector_operand($2,$4); }

@@ -85,7 +85,7 @@ void collect_operand_liveness_regs(const operand_info &op,
                                    reg_symbol_set &regs) {
   if (op.is_vector()) {
     for (unsigned i = 0; i < op.get_vect_nelem(); ++i) {
-      add_liveness_reg(regs, op.vec_symbol(i));
+      add_liveness_reg(regs, op.vec_symbol_or_null(i));
     }
     return;
   }

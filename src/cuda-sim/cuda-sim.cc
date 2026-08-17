@@ -1926,25 +1926,15 @@ void ptx_instruction::pre_decode() {
         // now
         is_vectorout = 1;
         unsigned num_elem = o.get_vect_nelem();
-        if (num_elem >= 1 && m + 0 < MAX_INPUT_VALUES)
-          in[m + 0] = o.reg1_num();
-        if (num_elem >= 2 && m + 1 < MAX_INPUT_VALUES)
-          in[m + 1] = o.reg2_num();
-        if (num_elem >= 3 && m + 2 < MAX_INPUT_VALUES)
-          in[m + 2] = o.reg3_num();
-        if (num_elem >= 4 && m + 3 < MAX_INPUT_VALUES)
-          in[m + 3] = o.reg4_num();
-        if (num_elem >= 5 && m + 4 < MAX_INPUT_VALUES)
-          in[m + 4] = o.reg5_num();
-        if (num_elem >= 6 && m + 5 < MAX_INPUT_VALUES)
-          in[m + 5] = o.reg6_num();
-        if (num_elem >= 7 && m + 6 < MAX_INPUT_VALUES)
-          in[m + 6] = o.reg7_num();
-        if (num_elem >= 8 && m + 7 < MAX_INPUT_VALUES)
-          in[m + 7] = o.reg8_num();
-        for (int i = 0; i < num_elem && m + i < MAX_REG_OPERANDS; i++)
-          arch_reg.src[m + i] = o.arch_reg_num(i);
-        m += num_elem;
+        for (unsigned i = 0; i < num_elem; ++i) {
+          if (o.vec_is_literal(i)) continue;
+          const symbol *component = o.vec_symbol_or_null(i);
+          if (component == NULL || component->is_non_arch_reg()) continue;
+          if (m >= MAX_INPUT_VALUES || m >= MAX_REG_OPERANDS) break;
+          in[m] = component->reg_num();
+          arch_reg.src[m] = component->arch_reg_num();
+          ++m;
+        }
       }
     }
   }
