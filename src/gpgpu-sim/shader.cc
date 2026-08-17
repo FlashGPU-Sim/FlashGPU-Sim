@@ -499,6 +499,10 @@ void shader_core_ctx::create_exec_pipeline() {
       in_ports.push_back(&m_pipeline_reg[ID_OC_INT]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_INT]);
     }
+    if (m_config->gpgpu_num_tma_units > 0) {
+      in_ports.push_back(&m_pipeline_reg[ID_OC_TMA]);
+      out_ports.push_back(&m_pipeline_reg[OC_EX_TMA]);
+    }
     if (m_config->gpgpu_num_cp_async_units > 0) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_CP_ASYNC]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_CP_ASYNC]);
@@ -2480,7 +2484,9 @@ void scheduler_unit::cycle() {
               }
             } else {
               // This code need to be refactored
-              if (pI->op != TENSOR_CORE_OP && pI->op != SFU_OP &&
+              if (pI->op != TENSOR_CORE_OP &&
+                  pI->op != TENSOR_MEMORY_ACCELERATOR_OP &&
+                  pI->op != SFU_OP &&
                   pI->op != DP_OP &&
                   pI->op != ASYNC_COPY_OP &&
                   !(pI->op == TENSOR_MAP_OP &&
