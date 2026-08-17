@@ -107,7 +107,9 @@ Helpers: **`test/common/gpgpusim_config_topology.h`**.
 | `REDUCED_CLUSTER2x2` / `4x4` | Run | Run | Primary functional |
 | `CLUSTER16x11` | Run | Run | Heavy smoke |
 
-Do not treat topology skips as product failures.
+Do not treat topology skips as product failures. `SKIP_IF_N_*` prints
+`WARNING: skipped Suite.Name: …` to stdout and stderr before `GTEST_SKIP`,
+so a too-small config is visible in the log (not only a quiet `[  SKIPPED ]`).
 
 ---
 

@@ -26,6 +26,8 @@
 #include <sstream>
 #include <string>
 
+#include <gtest/gtest.h>
+
 namespace flash_test {
 
 struct GpgpuSimTopology {
@@ -71,6 +73,21 @@ inline GpgpuSimTopology read_gpgpusim_topology(
   return topo;
 }
 
+// Print to stdout and stderr so a topology skip is visible in suite logs
+// (GTEST_SKIP alone is easy to miss in a long [  SKIPPED ] list).
+inline void warn_topology_skip(const std::string &msg) {
+  const char *suite = "?";
+  const char *name = "?";
+  if (const auto *info = ::testing::UnitTest::GetInstance()->current_test_info()) {
+    suite = info->test_suite_name();
+    name = info->name();
+  }
+  std::fprintf(stderr, "WARNING: skipped %s.%s: %s\n", suite, name, msg.c_str());
+  std::fprintf(stdout, "WARNING: skipped %s.%s: %s\n", suite, name, msg.c_str());
+  std::fflush(stderr);
+  std::fflush(stdout);
+}
+
 // Skip if the active config has fewer than min_cores SMs per cluster.
 // One-producer cluster TMA and peer mbarrier complete require >= 2.
 #define SKIP_IF_N_CORES_PER_CLUSTER_LT(min_cores)                              \
@@ -78,10 +95,13 @@ inline GpgpuSimTopology read_gpgpusim_topology(
     const auto __topo = ::flash_test::read_gpgpusim_topology();                \
     if (__topo.found_config &&                                                 \
         __topo.n_cores_per_cluster < static_cast<unsigned>(min_cores)) {       \
-      GTEST_SKIP() << "Requires -gpgpu_n_cores_per_cluster >= " << (min_cores) \
-                   << " (got " << __topo.n_cores_per_cluster                    \
-                   << "). Use SM120_RTX5090_REDUCED_CLUSTER2x1 / 4x4 "         \
-                      "(or CLUSTER16x11).";                                   \
+      std::ostringstream __skip;                                               \
+      __skip << "Requires -gpgpu_n_cores_per_cluster >= " << (min_cores)       \
+             << " (got " << __topo.n_cores_per_cluster                         \
+             << "). Use SM120_RTX5090_REDUCED_CLUSTER2x1 / 4x4 "               \
+                "(or CLUSTER16x11).";                                          \
+      ::flash_test::warn_topology_skip(__skip.str());                          \
+      GTEST_SKIP() << __skip.str();                                            \
     }                                                                          \
   } while (0)
 
@@ -91,10 +111,13 @@ inline GpgpuSimTopology read_gpgpusim_topology(
     const auto __topo = ::flash_test::read_gpgpusim_topology();                \
     if (__topo.found_config &&                                                 \
         __topo.n_clusters < static_cast<unsigned>(min_clusters)) {             \
-      GTEST_SKIP() << "Requires -gpgpu_n_clusters >= " << (min_clusters)       \
-                   << " (got " << __topo.n_clusters                            \
-                   << "). Use SM120_RTX5090_REDUCED_CLUSTER2x2 / 4x4 "         \
-                      "(or similar).";                                        \
+      std::ostringstream __skip;                                               \
+      __skip << "Requires -gpgpu_n_clusters >= " << (min_clusters)             \
+             << " (got " << __topo.n_clusters                                  \
+             << "). Use SM120_RTX5090_REDUCED_CLUSTER2x2 / 4x4 "               \
+                "(or similar).";                                               \
+      ::flash_test::warn_topology_skip(__skip.str());                          \
+      GTEST_SKIP() << __skip.str();                                            \
     }                                                                          \
   } while (0)
 
