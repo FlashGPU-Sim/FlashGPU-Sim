@@ -629,3 +629,38 @@ TEST_F(TMAStoreTest, PartialLastChunk) {
 
   cudaFree(di); cudaFree(dd);
 }
+
+// wait_group must not retire before the committed bulk store is done: the
+// thread reads dst only after wait_group(0).
+__global__ void tma_wait_group_then_load_kernel(uint32_t *dst, uint32_t *out) {
+  __shared__ __align__(16) uint8_t smem[64];
+  if (threadIdx.x != 0)
+    return;
+  auto *u = reinterpret_cast<uint32_t *>(smem);
+  for (int i = 0; i < 16; i++)
+    u[i] = 0xA5A5A5A5u + static_cast<uint32_t>(i);
+  tma_store_fence_proxy_async();
+  tma_store_cp_async_bulk<64>(dst, smem);
+  tma_store_commit_group();
+  tma_store_wait_group<0>();
+  out[0] = dst[0];
+  out[1] = dst[15];
+}
+
+TEST_F(TMAStoreTest, WaitGroupSeesCommittedStore) {
+  uint32_t *d_dst = nullptr, *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_dst, 64), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_out, 2 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_dst, 0, 64), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, 2 * sizeof(uint32_t)), cudaSuccess);
+  tma_wait_group_then_load_kernel<<<1, 32>>>(d_dst, d_out);
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  uint32_t h[2] = {0, 0};
+  ASSERT_EQ(cudaMemcpy(h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_dst);
+  cudaFree(d_out);
+  EXPECT_EQ(h[0], 0xA5A5A5A5u);
+  EXPECT_EQ(h[1], 0xA5A5A5A5u + 15u);
+}

@@ -41,8 +41,8 @@ cp.async.bulk.wait_group N;
   - Parses coordinate vectors: `{c0}` (1D), `{c0, c1}` (2D), ..., `{c0, c1, c2, c3, c4}` (5D)
   - Reads tensormap descriptor from memory to obtain tile dimensions and strides
   - Calculates source address based on coordinates and descriptor parameters
-- **Commit group** (stubbed): Treated as NOP with debug logging
-- **Wait group** (stubbed): Treated as NOP with debug logging
+- **Commit group**: Marks pending TMA stores as a bulk group (`bulk_group_manager`)
+- **Wait group**: Parks the warp until at most N committed groups remain incomplete
 
 **Functional Simulation**: Performs immediate memory copy between global and shared memory spaces.
 
@@ -80,12 +80,12 @@ tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.sem.scope [dst], [
 - `thread`: Current thread context
 
 **Behavior**:
-- **tensormap.replace**: Modifies specific field in tensormap descriptor (global address, rank, dimensions, strides, etc.)
-- **tensormap.cp_fenceproxy**: Copies tensormap with fence semantics (stubbed as NOP)
+- **tensormap.replace**: Modifies a used field in the tensormap descriptor (global address, rank, dimensions, strides, elemtype, interleave, swizzle, fill)
+- **tensormap.cp_fenceproxy**: Copies the descriptor from shared to global
 
-**Functional Simulation**: Reads descriptor, modifies specified field, writes back to memory.
+**Functional Simulation**: Reads descriptor, modifies specified field, writes back to memory. `cp_fenceproxy` writes the 128-byte object to global.
 
-**Error Conditions**: Unsupported field type → prints stub message
+**Error Conditions**: Unrecognized replace field or tensormap variant → named error and `abort`
 
 ---
 
@@ -371,10 +371,10 @@ void cycle();
 
 ## Known Limitations
 
-**Documented in FLASH.md:295-299**:
+**Documented in FLASH.md TMA limitations**:
 1. **CP.ASYNC sector masking**: Corner cases with non-cacheline-aligned sizes not fully handled
-2. **Commit/wait groups**: `cp.async.bulk.commit_group` and `cp.async.bulk.wait_group` treated as NOPs (allowed during PTX inspection)
-3. **Tensormap options**: Some tensormap manipulation options not fully validated
+2. **Commit/wait groups**: implemented via `bulk_group_manager` (park until committed stores complete)
+3. **Tensormap**: used `replace.tile.*` + `cp_fenceproxy`; unknown variants abort; 96B swizzle aborts
 
 **Multi-dimensional testing**: Full test coverage for 1D and 3D-5D tensor operations documented in `docs/testing-instructions.md` TMA Testing section (all tests passing as of issue #31).
 

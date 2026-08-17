@@ -1196,6 +1196,8 @@ class barrier_set_t {
   void wait_bulk_group(unsigned cta_id, unsigned warp_id, unsigned latest_group_num);
   void commit_bulk_group(unsigned cta_id, unsigned warp_id);
   void cleanup_cta_bulk_groups(unsigned cta_id);
+  bool is_bulk_tx_committed(unsigned cta_id, unsigned warp_id,
+                            unsigned tx_uid) const;
 
   // Ordinary cp.async wait_group uses this only as a scheduler wait state.
   void wait_cp_async_group(unsigned warp_id);

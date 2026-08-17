@@ -113,6 +113,10 @@ public:
    */
   unsigned get_pending_group_count(unsigned cta_id, unsigned warp_id) const;
 
+  // True once commit_group has taken this tx out of the uncommitted set.
+  bool is_tx_committed(unsigned cta_id, unsigned warp_id,
+                       unsigned tx_uid) const;
+
 private:
   // Represents a committed bulk group containing a set of transactions
   struct bulk_group_t {
@@ -145,6 +149,21 @@ private:
   // Maps (cta_id, warp_id) -> warp bulk info
   std::map<std::pair<unsigned, unsigned>, warp_bulk_info_t> m_warp_bulk_info;
 };
+
+// Idealized TMA stores complete the cycle after commit, never on the
+// commit cycle, so wait_group can observe a still-incomplete group.
+inline unsigned long long
+idealized_bulk_write_ready_cycle(unsigned long long commit_cycle) {
+  return commit_cycle + 1;
+}
+
+inline bool idealized_bulk_write_can_finalize(bool committed,
+                                              unsigned long long now,
+                                              unsigned long long commit_cycle) {
+  if (!committed)
+    return false;
+  return now >= idealized_bulk_write_ready_cycle(commit_cycle);
+}
 
 } // namespace flash_gpgpu_sim
 

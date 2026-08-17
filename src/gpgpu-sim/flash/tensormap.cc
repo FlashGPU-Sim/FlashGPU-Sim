@@ -359,8 +359,9 @@ void handle_tensormap_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
                          tensormap_addr, value);
 
     } else {
-      GPPRINTF_INST_EXEC(
-          TMA, "[STUB] Unrecognized tensormap.replace.tile field%s\n", "");
+      printf("GPGPU-Sim ERROR: unrecognized tensormap.replace.tile field\n");
+      pI->print_insn();
+      abort();
     }
 
     // Write modified descriptor back to shared memory
@@ -383,7 +384,8 @@ void handle_tensormap_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
     global_mem->write(dst_addr, size_in_bytes, desc.raw_bytes, thread, pI);
 
   } else {
-    GPPRINTF_INST_EXEC(
-        TMA, "[STUB] Unrecognized tensormap instruction variant%s\n", "");
+    printf("GPGPU-Sim ERROR: unrecognized tensormap instruction variant\n");
+    pI->print_insn();
+    abort();
   }
 }

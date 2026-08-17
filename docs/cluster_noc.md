@@ -271,7 +271,7 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 | **F3** | `barrier.cluster` / CG DSM map builtins | Med | **Non-goal** | §12.6 (reopen only if an app needs it) |
 | **F4** | DSM `atom`/`red` overclaimed / broken | Med | **Partial** | §12.2 F4 (`atom` done; `red`/`red.async` follow-on) |
 | **F5** | `mapa` lifetime: exited producer → abort | Med | **Done** | §12.2 F5 |
-| **F6** | TMA corners stubbed (swizzle, tensormap, bulk group) | Med | **Open** | §12.2 F6 |
+| **F6** | TMA corners stubbed (swizzle, tensormap, bulk group) | Med | **Done** | §12.2 F6 |
 | **F7** | Programming-model fragility (spin / `bar.sync`+`try_wait`) | Med | **Open** | §12.2 F7 |
 | **F8** | Thin DSM / remote-mbar / compose / isolation tests | High | **Done** | §12.2 F8 |
 | **F9** | Dual-path store (immediate peer write + issuer hop) | Med | **Partial** | §12.2 F9 · L2-2 |
@@ -309,7 +309,7 @@ PTX `red` and `red.async` stay unimplemented (`red_impl` is `inst_not_implemente
 
 #### F6 — TMA corners
 
-Known stubs / idealizations that can break real PTX: 96B swizzle, some `tensormap.*` variants, weak `cp.async.bulk.commit_group` / `wait_group` on the functional path, sector / OOB edges. Implement only what target kernels use; otherwise hard-fail.
+Used cluster/TMA PTX is implemented. 96B swizzle stays a named abort (unused). Recognized `tensormap.replace.tile.*` + `cp_fenceproxy` work; unknown variants abort. `cp.async.bulk.commit_group` / `wait_group` park on the existing bulk-group path until committed stores complete. Sector / OOB edges remain as in `FLASH.md`.
 
 #### F7 — Programming-model fragility
 
@@ -693,22 +693,33 @@ Follow-ons (open; not required for C++ DSM `atomicAdd`):
 
 Note (standing, not a checkbox): kernels must still keep the producer CTA alive until consumers finish `mapa` (§10 rule 3). The abort is the safety net, not a programming model.
 
-#### F6 — TMA corners  *(Open)*
+#### F6 — TMA corners  *(Done)*
 
 Scope is **cluster/TMA PTX that real kernels execute**, not the full ISA.
 
-- [ ] **F6-1** Audit PTX from cluster tests + `test/triton_trace/**` cluster/TMA kernels.  
-  Files: those PTX dumps; write the table under this item.  
-  Exit: table opcode/option → used? → sim (ok / stub / error / missing).
-- [ ] **F6-2** 96B swizzle: implement **or** reject (today: `ERROR: TMA 96B swizzle…`).  
-  Files: `tma_helpers.cc` / `tma.cc`.  
-  Exit: F6-1 says unused → keep reject; used → functional test PASS. Deps: F6-1.
-- [ ] **F6-3** Stubbed `tensormap.*` variants (`[STUB]` in `tensormap.cc`): same implement-or-reject as F6-2.  
-  Files: `tensormap.cc`, `FLASH.md`. Deps: F6-1.
-- [ ] **F6-4** `cp.async.bulk.commit_group` / `wait_group`: if F6-1 shows use, wire real `bulk_group` wait; else keep NOP **and** list them as allowed stubs in `docs/testing-instructions.md`.  
-  Files: `tma.cc` `handle_tma_commit_group` / `wait_group`, test docs. Deps: F6-1.
+**F6-1 inventory** (integration `*tma*` / `cluster_*`, `test/src/trace/ptx/*.ptx`; `test/triton_trace/**/*.ptx` has no TMA/tensormap text):
 
-Note (standing): sector / OOB / other `FLASH.md` TMA limits — if a kernel hits one, add **F6-6+** with a failing PTX snippet; do not grow F6-5 as a grab-bag.
+| Opcode / option | Used? | Sim |
+|-----------------|-------|-----|
+| `cp.async.bulk.shared::{cta,cluster}.global.mbarrier::complete_tx` | yes | ok |
+| `cp.async.bulk.tensor.{1-5}d` load + mbarrier complete | yes | ok |
+| `cp.async.bulk.global.shared::cta.bulk_group` store | yes (`tma_store_test`, trace stores) | ok |
+| `cp.async.bulk.commit_group` | yes | ok (commits pending store txs) |
+| `cp.async.bulk.wait_group` / `.read` | yes | ok (park until ≤N committed groups remain; empty `.read` after tensormap publish is immediate) |
+| Swizzle none / 32B / 64B / 128B (`0x0`–`0x3`) | yes | ok |
+| Swizzle 96B (`TMA_SWIZZLE_96B`) | no | reject (`abort`) |
+| `tensormap.replace.tile.{global_address,rank,box_dim,global_dim,global_stride,element_stride,elemtype,interleave_layout,swizzle_mode,fill_mode}` | yes | ok |
+| `tensormap.replace.tile.swizzle_atomicity` | no (only 16B asserted) | ok if 0; abort otherwise |
+| `tensormap.cp_fenceproxy` | yes | ok |
+| Other `tensormap.*` variants / replace fields | no | reject (`abort`) |
+| Sector / OOB / 96B-adjacent edges | some | remaining `FLASH.md` limits — not silent success |
+
+- [x] **F6-1** Inventory written in the table above.
+- [x] **F6-2** 96B swizzle unused; keep named abort. Test: `TMAHelpersTest.Swizzle96B_RejectsLoud`.
+- [x] **F6-3** Used `tensormap.replace.tile.*` + `cp_fenceproxy` implemented. Unrecognized field/variant **abort** (no silent `[STUB]`).
+- [x] **F6-4** `commit_group` / `wait_group` used; wait parks on `bulk_group_manager` until committed stores complete. Test: `TMAStoreTest.WaitGroupSeesCommittedStore`. Not an allowed NOP.
+
+Note (standing): sector / OOB / other `FLASH.md` TMA limits — if a kernel hits one, add **F6-6+** with a failing PTX snippet; do not grow a grab-bag.
 
 #### F7 — Programming-model fragility  *(Open)*
 

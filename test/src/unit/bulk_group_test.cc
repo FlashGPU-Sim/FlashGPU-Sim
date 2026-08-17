@@ -44,6 +44,8 @@ TEST_F(BulkGroupTest, BasicAddAndCommit) {
   // Should have 1 pending group
   EXPECT_EQ(manager.get_pending_group_count(CTA_0, WARP_0), 1u);
   EXPECT_FALSE(manager.is_waiting(CTA_0, WARP_0));
+  EXPECT_TRUE(manager.is_tx_committed(CTA_0, WARP_0, 100));
+  EXPECT_TRUE(manager.is_tx_committed(CTA_0, WARP_0, 101));
 }
 
 // Test: Empty group commit
@@ -83,6 +85,36 @@ TEST_F(BulkGroupTest, TransactionCompletion) {
 //=============================================================================
 // Wait Mechanism Tests
 //=============================================================================
+
+TEST_F(BulkGroupTest, TxNotCommittedUntilCommitGroup) {
+  manager.add_tx(CTA_0, WARP_0, 100);
+  EXPECT_FALSE(manager.is_tx_committed(CTA_0, WARP_0, 100));
+  manager.commit_bulk_group(CTA_0, WARP_0);
+  EXPECT_TRUE(manager.is_tx_committed(CTA_0, WARP_0, 100));
+}
+
+// wait_group stays blocked until complete_tx (the TMA finalize hook).
+// The deferred-complete policy forbids finalize on the commit cycle.
+TEST_F(BulkGroupTest, WaitBlockedUntilCommittedTxFinalized) {
+  constexpr unsigned long long kCommitCycle = 40;
+  manager.add_tx(CTA_0, WARP_0, 100);
+  manager.commit_bulk_group(CTA_0, WARP_0);
+
+  EXPECT_FALSE(manager.wait_bulk_group(CTA_0, WARP_0, 0));
+  EXPECT_TRUE(manager.is_waiting(CTA_0, WARP_0));
+  EXPECT_FALSE(idealized_bulk_write_can_finalize(
+      /*committed=*/false, kCommitCycle, kCommitCycle));
+  EXPECT_FALSE(idealized_bulk_write_can_finalize(
+      /*committed=*/true, kCommitCycle, kCommitCycle));
+  EXPECT_TRUE(idealized_bulk_write_can_finalize(
+      /*committed=*/true, idealized_bulk_write_ready_cycle(kCommitCycle),
+      kCommitCycle));
+  // Eligible to finalize is not the same as wait retiring.
+  EXPECT_TRUE(manager.is_waiting(CTA_0, WARP_0));
+
+  EXPECT_TRUE(manager.complete_tx(CTA_0, WARP_0, 100));
+  EXPECT_FALSE(manager.is_waiting(CTA_0, WARP_0));
+}
 
 // Test: Wait for all groups (wait_group(0))
 TEST_F(BulkGroupTest, WaitForAllGroups) {

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <csignal>
 #include <cstring>
 #include <vector>
 
@@ -177,6 +178,16 @@ TEST(TMAHelpersTest, Swizzle128B_Pattern) {
   EXPECT_EQ(apply_tma_swizzle(0x200, 0, TMA_SWIZZLE_128B, 128), 0x240u);
   // addr=0x380: row_bits=7, 7&7=7, XOR 0x70 -> 0x3F0
   EXPECT_EQ(apply_tma_swizzle(0x380, 0, TMA_SWIZZLE_128B, 128), 0x3F0u);
+}
+
+TEST(TMAHelpersTest, Swizzle96B_RejectsLoud) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(
+      {
+        apply_tma_swizzle(0x080, 0, TMA_SWIZZLE_96B, 128);
+        ::exit(0);
+      },
+      ::testing::KilledBySignal(SIGABRT), ".*");
 }
 
 TEST(TMAHelpersTest, SwizzleRoundTrip) {

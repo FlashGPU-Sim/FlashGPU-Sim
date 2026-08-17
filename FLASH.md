@@ -226,7 +226,7 @@ class tma_unit_t {
 - 128-byte aligned structure mirroring CUDA Driver API layout
 - Describes multi-dimensional tensor shape (up to 5D: x, y, z, w, v)
 - Supports various data types: U8/U16/U32/U64, F16/F32/F64, BF16
-- Configurable swizzle modes (32B/64B/96B/128B) for memory coalescing
+- Configurable swizzle modes (none / 32B / 64B / 128B; 96B aborts)
 - Out-of-bounds fill modes (zero or NaN)
 
 **Key Operations**:
@@ -295,12 +295,12 @@ Lane 28-31: Row 7
 ### Known Limitations
 
 **TMA Subsystem**:
-1. **CP.ASYNC sector masking**: Corner cases with non-cacheline-aligned sizes not fully handled (src/gpgpu-sim/flash/tma.cc:664)
-2. **Commit/wait groups**: `cp.async.bulk.commit_group` and `cp.async.bulk.wait_group` treated as NOPs (src/gpgpu-sim/flash/tma.cc:1121-1127)
-   - **Note**: These stubbed instructions are explicitly allowed during PTX inspection for TMA tests (see docs/testing-instructions.md TMA Testing section)
-3. **Tensormap options**: Some tensormap manipulation options not validated (src/gpgpu-sim/flash/tma.cc:1273)
-4. **Multi-dimensional testing**: Full test coverage for 1D and 3D-5D tensor operations documented in docs/testing-instructions.md TMA Testing section
-5. **Cluster destination**: `.shared::cluster` is functionally supported; timing is idealized (see Cluster / TMA multicast below)
+1. **CP.ASYNC sector masking**: Corner cases with non-cacheline-aligned sizes not fully handled
+2. **Commit/wait groups**: `cp.async.bulk.commit_group` / `wait_group` are real. Stores join a bulk group; `wait_group N` parks until at most N committed groups remain incomplete. Payload bytes are still written at functional execute (same as TMA loads); the wait is the timing park. `.read` after a tensormap publish with no prior store is an empty wait.
+3. **Tensormap**: Used `replace.tile.*` fields and `cp_fenceproxy` are implemented. Unrecognized variants abort. `swizzle_atomicity` only accepts 16B (0).
+4. **96B swizzle**: Unused in-tree; named abort (32/64/128B and none work).
+5. **Multi-dimensional testing**: 1D–5D coverage is in `docs/testing-instructions.md`
+6. **Cluster destination**: `.shared::cluster` is functionally supported; hop timing via NoC when enabled (see Cluster / TMA multicast below)
 
 **Mbarrier Subsystem**:
 1. **Storage**: Barrier objects live in simulator state, not as 64-bit GPU shared-memory contents

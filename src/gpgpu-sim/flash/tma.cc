@@ -879,6 +879,16 @@ private:
   std::unordered_map<unsigned, unsigned> m_mf_to_tx;
   std::unordered_map<unsigned, uint32_t> m_mf_pending_bytes;
 
+  // Idealized TMA stores: do not complete at issue. Wait until the warp
+  // commits the tx, then finish on a later cycle so wait_group can park.
+  struct deferred_idealized_write_t {
+    unsigned tx_uid = 0;
+    unsigned cta_id = 0;
+    unsigned warp_id = 0;
+    unsigned long long commit_cycle = 0; // 0 = not committed yet
+  };
+  std::vector<deferred_idealized_write_t> m_deferred_idealized_writes;
+
   struct cp_async_transaction_t {
     mem_access_t access;
     warp_inst_t inst;
@@ -1331,7 +1341,10 @@ public:
           m_barriers->add_bulk_tx(cta_id, warp_id, tx_uid);
         }
 
-        if (idealized) {
+        if (idealized && is_write_op) {
+          m_deferred_idealized_writes.push_back(
+              {tx_uid, cta_id, warp_id, /*commit_cycle=*/0});
+        } else if (idealized) {
           finalize_transaction(tx_uid);
         } else {
           issue_queue.push_back(tx_uid);
@@ -1441,6 +1454,22 @@ public:
   }
 
   void cycle() {
+    const unsigned long long now = current_cycle();
+    for (int i = (int)m_deferred_idealized_writes.size() - 1; i >= 0; i--) {
+      auto &dw = m_deferred_idealized_writes[i];
+      const bool committed =
+          m_barriers->is_bulk_tx_committed(dw.cta_id, dw.warp_id, dw.tx_uid);
+      if (dw.commit_cycle == 0) {
+        if (committed)
+          dw.commit_cycle = now;
+      }
+      if (!idealized_bulk_write_can_finalize(committed, now, dw.commit_cycle))
+        continue;
+      finalize_transaction(dw.tx_uid);
+      m_deferred_idealized_writes.erase(m_deferred_idealized_writes.begin() +
+                                        i);
+    }
+
     const auto *config = m_shader_ctx->get_config();
     const unsigned request_bytes_per_cycle =
         config->gpgpu_tma_request_bytes_per_cycle;
@@ -1912,10 +1941,19 @@ public:
       if (entry.first.first == cta_id && entry.second.has_pending())
         return true;
     }
+    for (const auto &dw : m_deferred_idealized_writes) {
+      if (dw.cta_id == cta_id && dw.commit_cycle != 0)
+        return true;
+    }
     return false;
   }
 
   void cleanup_cta(unsigned cta_id) {
+    for (int i = (int)m_deferred_idealized_writes.size() - 1; i >= 0; i--) {
+      if (m_deferred_idealized_writes[i].cta_id == cta_id)
+        m_deferred_idealized_writes.erase(m_deferred_idealized_writes.begin() +
+                                          i);
+    }
     for (auto it = m_cp_group_info.begin(); it != m_cp_group_info.end();) {
       if (it->first.first == cta_id) {
         it = m_cp_group_info.erase(it);

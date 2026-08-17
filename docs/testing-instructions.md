@@ -153,10 +153,14 @@ TMA instructions (`cp.async.bulk.tensor`) use the Triton-based test workflow to 
 
 ### TMA Test Requirements
 
-**Stubbed Instructions**: The following instructions are parsed but implemented as NOPs and are **explicitly allowed** in PTX inspection:
-- `cp.async.bulk.commit_group` - NOP with debug logging (see FLASH.md:297)
-- `cp.async.bulk.wait_group` - NOP with debug logging (see FLASH.md:297)
-- `tensormap.cp_fence` - Parsed but not functionally simulated
+**TMA / tensormap that is implemented** (not allowed NOPs):
+- `cp.async.bulk.commit_group` / `wait_group` — real bulk-group commit and wait
+- Used `tensormap.replace.tile.*` fields and `tensormap.cp_fenceproxy`
+
+**Still rejected or limited** (see `FLASH.md` TMA limitations):
+- 96B swizzle — named abort
+- Unrecognized `tensormap.*` variants — abort
+- Sector / OOB corner cases — not fully handled
 
 **Device-Side Tensormap Creation**: All tensormap descriptors must be created on the device side using Triton's `tl.make_tensor_descriptor` within the kernel (not passed as host-side parameters).
 
