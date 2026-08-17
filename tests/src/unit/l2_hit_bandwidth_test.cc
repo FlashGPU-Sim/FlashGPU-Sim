@@ -160,6 +160,34 @@ TEST(B200L2ConfigTest, CheckedInConfigDrivesPortModelAndValidTopology) {
   }
 }
 
+TEST(B200TMAConfigTest, FullAndReducedCreditWindowsRemainIntentional) {
+  const std::filesystem::path repository_root = FindRepositoryRoot();
+  ASSERT_FALSE(repository_root.empty())
+      << "cannot locate B200 configs from "
+      << std::filesystem::current_path();
+
+  const ConfigEntries full = ReadConfig(
+      repository_root / "configs/SM100_B200/gpgpusim.config");
+  const ConfigEntries reduced = ReadConfig(
+      repository_root / "configs/SM100_B200_REDUCED/gpgpusim.config");
+  ASSERT_FALSE(full.empty());
+  ASSERT_FALSE(reduced.empty());
+
+  constexpr unsigned long long kCalibrationStages = 12;
+  const unsigned long long transaction_quota =
+      ConfigUnsigned(full, "-gpgpu_tma_tx_quota");
+  EXPECT_EQ(transaction_quota, 48u);
+  EXPECT_EQ(ConfigUnsigned(full, "-gpgpu_tma_max_inflight"),
+            kCalibrationStages * transaction_quota);
+  EXPECT_EQ(ConfigUnsigned(full, "-gpgpu_tma_request_granularity"), 32u);
+  EXPECT_EQ(ConfigUnsigned(full, "-gpgpu_tma_request_width"), 4u);
+  EXPECT_EQ(ConfigUnsigned(full, "-gpgpu_tma_response_width"), 4u);
+
+  // The one-SM reduced model is functional-only; zero deliberately exercises
+  // the parser's unlimited-credit boundary instead of importing calibration.
+  EXPECT_EQ(ConfigUnsigned(reduced, "-gpgpu_tma_max_inflight"), 0u);
+}
+
 TEST(L2PortModelSelectionTest, LegacyAndMultiIssueModesAreMutuallyExclusive) {
   EXPECT_FALSE(l2_multi_issue_port_model_enabled(0));
   EXPECT_TRUE(l2_multi_issue_port_model_enabled(1));

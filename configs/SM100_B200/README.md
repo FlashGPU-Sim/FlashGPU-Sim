@@ -46,6 +46,16 @@ can use the full shared four-sector request or response budget when it runs
 alone. Mixed responses still arbitrate within one four-sector cluster-dispatch
 budget.
 
+The full model limits each SM to 576 issued TMA child requests awaiting a
+response. This is a calibrated request-count window, not a measured B200
+physical queue depth. It corresponds to the 12 live stages of the calibration
+workload times the existing 48-request per-transaction fairness quota. For the
+clean 56 MiB, P4/C4, 12-stage, 16 KiB producer/consumer workload, B200 measured
+19.773135 TB/s. Paired 1 MiB and 4 MiB simulations at the measured clock shape
+extrapolate to 19.646398 TB/s at 576 requests, 0.641% below that measurement.
+The simulator figure is an extrapolation that removes fixed launch and tail
+costs; it is not a direct 56 MiB simulation.
+
 Detailed DRAM timing and physical address-to-bank mapping remain functional
 placeholders; those parts are not calibrated against B200 hardware counters.
 

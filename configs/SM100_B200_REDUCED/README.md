@@ -39,11 +39,14 @@ does not alter any child's ready cycle. It only controls ready 32-byte sector
 children entering the bounded L2 input FIFO, and it is a deterministic
 sensitivity assumption rather than a documented B200 physical-port count.
 
-The reduced model also matches the full model's local TMA and ordinary
-`cp.async` limits: 32-byte requests with width four on both the request and
-response sides. Each type can therefore use the complete shared four-sector
+The reduced model matches the full model's TMA and ordinary `cp.async`
+granularity and local request/response widths: 32-byte requests with width four
+on both sides. Each type can therefore use the complete shared four-sector
 budget when it runs alone, while mixed responses still share one cluster
-dispatch budget.
+dispatch budget. Its TMA max-inflight value remains `0` (unlimited), and its
+transaction quota remains at the unlimited code default: this one-SM model is
+for functional tests and does not inherit the full model's throughput
+calibration.
 
 Detailed DRAM timing and physical address-to-bank mapping are inherited from
 the reduced Blackwell configuration and remain functional placeholders; those
