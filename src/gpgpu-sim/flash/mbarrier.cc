@@ -1095,6 +1095,8 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       m_warp_at_barrier.set(warp_id);
       m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
       m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+      if (warp_id < m_mbar_partial_wait.size())
+        m_mbar_partial_wait[warp_id] = active_mask.count() < m_warp_size;
       if (has_timeout) {
         m_mbar_trywait_inst[warp_id] = pI;
         m_mbar_trywait_mask[warp_id] = active_mask;

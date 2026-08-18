@@ -49,6 +49,7 @@
 #include "gpu-misc.h"
 #include "gpu-sim.h"
 #include "flash/cluster_noc.h"
+#include "flash/cluster_hang_prevent.h"
 #include "icnt_wrapper.h"
 #include "mem_fetch.h"
 #include "mem_latency_stat.h"
@@ -1655,6 +1656,7 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
     }
     inst.set_dsm_remote(any_remote, max_hop);
     if (any_remote) {
+      note_peer_smem_access(inst.warp_id());
       // Remote DSM: functional data is applied in st_impl / ld_impl (peer
       // smem). Do NOT generate conventional L1/global mem accesses for the
       // generic peer window — those never complete and hang the warp.
@@ -5443,6 +5445,7 @@ void shader_core_ctx::cycle() {
     decode();
     fetch();
   }
+  m_barriers.poll_hang_preventers();
 }
 
 // Flushes all content of the cache to memory
@@ -5573,6 +5576,13 @@ barrier_set_t::barrier_set_t(shader_core_ctx *shader,
   m_mbar_timeout_cycle.assign(max_warps_per_core, 0);
   m_mbar_trywait_inst.assign(max_warps_per_core, nullptr);
   m_mbar_trywait_mask.assign(max_warps_per_core, active_mask_t());
+  m_mbar_partial_wait.assign(max_warps_per_core, false);
+  m_hang_saw_peer.assign(max_warps_per_core, false);
+  m_hang_quiet_cycles.assign(max_warps_per_core, 0);
+  m_hang_watch_cycles.assign(max_warps_per_core, 0);
+  m_hang_pc_n.assign(max_warps_per_core, 0);
+  m_hang_pc_hist.assign(max_warps_per_core * flash_gpgpu_sim::kHangPcHist, 0);
+  m_hang_mix_cycles.assign(max_cta_per_core, 0);
   for (unsigned i = 0; i < max_barriers_per_cta; i++) {
     m_bar_id_to_warps[i].reset();
   }
@@ -5590,6 +5600,17 @@ void barrier_set_t::allocate_barrier(unsigned cta_id, warp_set_t warps) {
 
   m_warp_active |= warps;
   m_warp_at_barrier &= ~warps;
+  if (cta_id < m_hang_mix_cycles.size())
+    m_hang_mix_cycles[cta_id] = 0;
+  for (unsigned warp_id = 0; warp_id < m_max_warps_per_core; warp_id++) {
+    if (!warps.test(warp_id))
+      continue;
+    m_hang_saw_peer[warp_id] = false;
+    m_hang_quiet_cycles[warp_id] = 0;
+    m_hang_watch_cycles[warp_id] = 0;
+    m_hang_pc_n[warp_id] = 0;
+    m_mbar_partial_wait[warp_id] = false;
+  }
   for (unsigned warp_id = 0; warp_id < m_max_warps_per_core; warp_id++) {
     if (warps.test(warp_id)) {
       m_warp_named_barrier_id[warp_id] = (unsigned)-1;
@@ -5608,6 +5629,118 @@ void barrier_set_t::allocate_barrier(unsigned cta_id, warp_set_t warps) {
 
 void barrier_set_t::reset_mbarrier() {
   m_mbarrier_manager.reset();
+}
+
+void barrier_set_t::note_peer_smem_access(unsigned warp_id) {
+  if (warp_id >= m_hang_saw_peer.size())
+    return;
+  m_hang_saw_peer[warp_id] = true;
+  m_hang_quiet_cycles[warp_id] = 0;
+}
+
+void barrier_set_t::poll_hang_preventers() {
+  using namespace flash_gpgpu_sim;
+  const unsigned thresh =
+      hang_watchdog_threshold(m_shader->get_config()->gpgpu_cluster_hang_watchdog);
+  const bool enabled = thresh > 0;
+  if (!enabled)
+    return;
+
+  for (unsigned w = 0; w < m_max_warps_per_core; w++) {
+    if (!m_warp_active.test(w))
+      continue;
+    shd_warp_t *warp = m_shader->get_shd_warp(w);
+    if (!warp || warp->hardware_done() || warp->functional_done())
+      continue;
+
+    const bool at_wait = m_warp_at_barrier.test(w);
+    const bool mbar_interest =
+        at_wait && m_warp_barrier_type[w] == BARRIER_WAIT_MBARRIER;
+    const unsigned long long pc = (unsigned long long)warp->get_pc();
+    unsigned &n = m_hang_pc_n[w];
+    if (n < kHangPcHist) {
+      m_hang_pc_hist[w * kHangPcHist + n] = pc;
+      n++;
+    } else {
+      for (unsigned i = 1; i < kHangPcHist; i++)
+        m_hang_pc_hist[w * kHangPcHist + i - 1] =
+            m_hang_pc_hist[w * kHangPcHist + i];
+      m_hang_pc_hist[w * kHangPcHist + kHangPcHist - 1] = pc;
+    }
+    const unsigned unique = unique_pc_count(&m_hang_pc_hist[w * kHangPcHist], n);
+    const auto *cfg = m_shader->get_config();
+    const unsigned quiet_limit = peer_arm_quiet_limit(
+        cfg->gpgpu_dsm_remote_latency, cfg->gpgpu_tma_mcast_hop_latency,
+        cfg->gpgpu_mbarrier_trywait_latency);
+    if (at_wait)
+      m_hang_saw_peer[w] = false;
+    else if (m_hang_saw_peer[w])
+      m_hang_quiet_cycles[w]++;
+    const bool peer_armed = peer_access_still_armed(
+        m_hang_saw_peer[w], at_wait, m_hang_quiet_cycles[w], quiet_limit);
+    if (!peer_armed)
+      m_hang_saw_peer[w] = false;
+    if (at_wait || mbar_interest || !peer_armed || unique > kHangTightLoopPcs)
+      m_hang_watch_cycles[w] = 0;
+    else
+      m_hang_watch_cycles[w]++;
+    if (spin_watchdog_should_trip(enabled, thresh, at_wait, mbar_interest,
+                                  peer_armed, unique,
+                                  m_hang_watch_cycles[w])) {
+      printf("GPGPU-Sim ERROR: warp %u sat in a tight loop for %u cycles "
+             "after a peer DSM/TMA access with no mbarrier wait registered "
+             "(docs/cluster_noc.md §10 rule 1). Coordinate with mbarrier, "
+             "not a bare spin.\n",
+             w, m_hang_watch_cycles[w]);
+      fflush(stdout);
+      fprintf(stderr,
+              "GPGPU-Sim ERROR: warp %u sat in a tight loop for %u cycles "
+              "after a peer DSM/TMA access with no mbarrier wait registered "
+              "(docs/cluster_noc.md §10 rule 1). Coordinate with mbarrier, "
+              "not a bare spin.\n",
+              w, m_hang_watch_cycles[w]);
+      fflush(stderr);
+      abort();
+    }
+  }
+
+  for (cta_to_warp_t::const_iterator it = m_cta_to_warps.begin();
+       it != m_cta_to_warps.end(); ++it) {
+    const unsigned cta = it->first;
+    if (cta >= m_hang_mix_cycles.size())
+      continue;
+    bool partial_trywait = false;
+    bool sibling_bar_sync = false;
+    for (unsigned w = 0; w < m_max_warps_per_core; w++) {
+      if (!it->second.test(w) || !m_warp_at_barrier.test(w))
+        continue;
+      if (m_warp_barrier_type[w] == BARRIER_WAIT_BAR_SYNC)
+        sibling_bar_sync = true;
+      if (m_warp_barrier_type[w] == BARRIER_WAIT_MBARRIER &&
+          m_mbar_partial_wait[w])
+        partial_trywait = true;
+    }
+    if (partial_trywait && sibling_bar_sync)
+      m_hang_mix_cycles[cta]++;
+    else
+      m_hang_mix_cycles[cta] = 0;
+    if (mixed_bar_trywait_should_trip(enabled, thresh, partial_trywait,
+                                      sibling_bar_sync,
+                                      m_hang_mix_cycles[cta])) {
+      printf("GPGPU-Sim ERROR: CTA %u mixed bar.sync / __syncthreads with a "
+             "single-thread mbarrier.try_wait for %u cycles "
+             "(docs/cluster_noc.md §10 rule 2).\n",
+             cta, m_hang_mix_cycles[cta]);
+      fflush(stdout);
+      fprintf(stderr,
+              "GPGPU-Sim ERROR: CTA %u mixed bar.sync / __syncthreads with a "
+              "single-thread mbarrier.try_wait for %u cycles "
+              "(docs/cluster_noc.md §10 rule 2).\n",
+              cta, m_hang_mix_cycles[cta]);
+      fflush(stderr);
+      abort();
+    }
+  }
 }
 
 // during cta deallocation

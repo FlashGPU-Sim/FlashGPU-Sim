@@ -1325,6 +1325,9 @@ public:
 
         bool is_write_op = (tma_static_info.dst_space ==
                             inst_t::tma_static_info_t::TMA_GLOBAL);
+        if (tma_static_info.dst_space ==
+            inst_t::tma_static_info_t::TMA_SHARED_CLUSTER)
+          m_barriers->note_peer_smem_access(warp_id);
         record_tma_tx_started(is_write_op);
         tma_trace_emit(tx.m_create_cycle, "NEW", tx_uid,
                        is_write_op ? "WRITE" : "READ", tma_static_info.tma_type,

@@ -103,7 +103,7 @@ This is **not** caused by “one OpenMP thread per GPC.” That design is fine f
 
 - **Supported kernels:** coordinate with mbarrier (or a future `cluster.sync`), not “load until I see it.” Tests in `dsm_test` / TMA cluster follow that rule.
 - **Do not** treat a passing contention test as proof of hardware races — intra-cluster atoms are pipeline-serialized on one host thread.
-- **Mitigation (checklist, not a rewrite):** fail loud if a warp sits on the same PC with no mbarrier interest (`cluster_noc.md` §12.2 F7), rather than hanging until `TEST_TIMEOUT`.
+- **Hang preventers** (sim only, not silicon): after a **recent** peer DSM/TMA access, a tight PC loop with no mbarrier interest aborts (§10 rule 1). The arm expires on a recognized wait or after a hop-scale window with no further peer touch. A partial-warp `try_wait` parked next to a `bar.sync` waiter for longer than hop-scale latencies aborts (§10 rule 2). Parked `try_wait` and hop-scale TMA mixes are exempt. Default dwell 8192 cycles (`-gpgpu_cluster_hang_watchdog`).
 - **Only make bare spins work** if a target kernel actually needs them (re-read owner smem each iteration; never starve the peer). That is optional fidelity, not a blocker for this PR.
 
 ---

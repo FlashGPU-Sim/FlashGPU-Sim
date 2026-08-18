@@ -272,7 +272,7 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 | **F4** | DSM `atom`/`red` overclaimed / broken | Med | **Partial** | §12.2 F4 (`atom` done; `red`/`red.async` follow-on) |
 | **F5** | `mapa` lifetime: exited producer → abort | Med | **Done** | §12.2 F5 |
 | **F6** | TMA corners stubbed (swizzle, tensormap, bulk group) | Med | **Done** | §12.2 F6 |
-| **F7** | Programming-model fragility (spin / `bar.sync`+`try_wait`) | Med | **Open** | §12.2 F7 |
+| **F7** | Programming-model fragility (spin / `bar.sync`+`try_wait`) | Med | **Done** | §12.2 F7 |
 | **F8** | Thin DSM / remote-mbar / compose / isolation tests | High | **Done** | §12.2 F8 |
 | **F9** | Dual-path store (immediate peer write + issuer hop) | Med | **Partial** | §12.2 F9 · L2-2 |
 
@@ -313,12 +313,12 @@ Used cluster/TMA PTX is implemented. 96B swizzle stays a named abort (unused). R
 
 #### F7 — Programming-model fragility
 
-Functional-first PTX sim hangs or deadlocks on patterns that are legal-ish but unsupported here:
+These are **sim hang preventers**, not silicon. Default dwell **8192** cycles (`-gpgpu_cluster_hang_watchdog`; `FLASHGPU_CLUSTER_HANG_WATCHDOG` overrides; **0** disables). That is well above hop 78 / RTT ~193 / TMA hop 135 / try_wait 43.
 
-1. Bare spin on peer smem before the peer has issued (no mbarrier interest list).
-2. Mixing `__syncthreads` / `bar.sync` with a **single-thread** `try_wait` in the same CTA.
+1. After a **recent** peer DSM/TMA access (re-armed only when the warp keeps touching peer smem), a warp that stays in a tight PC loop with **no** mbarrier interest / recognized wait aborts (§10 rule 1). A recognized wait, or a hop-scale quiet window with no further peer access, drops the arm so later local compute cannot trip.
+2. A **partial-warp** `try_wait` parked **at the same time** as a `bar.sync` waiter in the same CTA, for the same dwell, aborts (§10 rule 2). Instant mix (TMA tid0 `try_wait` + other warps at `__syncthreads`) is allowed for hop-scale time.
 
-Correct CUDA cluster code usually avoids both. The sim should **assert or document-and-skip**, not hang silently.
+Parked `try_wait`, bulk-group wait, and mbarrier interest do **not** increment the spin counter. Cycle-level hops of correct kernels are unchanged.
 
 #### F8 — Thin tests
 
@@ -348,6 +348,7 @@ All registered in `shader_core_config::reg_options` (`gpu-sim.cc`).
 | `-gpgpu_tma_mcast_mbar_after_data` | `1` | Data-before-mbar ordering |
 | `-gpgpu_mbarrier_remote_hop_latency` | `0` | 0 ⇒ use DSM hop |
 | `-gpgpu_mbarrier_cluster_enable` | `0` | Allow remote mbarrier addresses |
+| `-gpgpu_cluster_hang_watchdog` | `8192` | Abort after this many cycles of a bare peer spin or mixed bar.sync + single-thread try_wait (0=off) |
 
 **Latency math (important):**
 
@@ -721,18 +722,18 @@ Scope is **cluster/TMA PTX that real kernels execute**, not the full ISA.
 
 Note (standing): sector / OOB / other `FLASH.md` TMA limits — if a kernel hits one, add **F6-6+** with a failing PTX snippet; do not grow a grab-bag.
 
-#### F7 — Programming-model fragility  *(Open)*
+#### F7 — Programming-model fragility  *(Done)*
 
-These are **sim hang preventers**, not HW-faithful detectors. Prefer fail-loud over silent deadlock.
+Sim hang preventers. Default N=8192 (`-gpgpu_cluster_hang_watchdog`; env `FLASHGPU_CLUSTER_HANG_WATCHDOG`; 0=off). Not HW-faithful.
 
-- [ ] **F7-1** Watchdog (optional, best-effort): if a warp sits on the same PC for `N` cycles while the last DSM/TMA peer access has **no** mbarrier interest registered, abort with a message pointing at §10 rule 1.  
-  Files: `shader.cc` or `mbarrier.cc`.  
-  Exit: a **deliberate** bare-spin test aborts with that message (not a hang until `TEST_TIMEOUT`). If judged infeasible, mark this `[x]` with a note “wontfix — §10 only” — do not leave it Open forever.
-- [ ] **F7-2** Detect mixing `bar.sync` / `__syncthreads` with a single-thread `try_wait` in the same CTA; abort naming §10 rule 2.  
-  Files: `mbarrier.cc` / `shader.cc` barrier wait types.  
-  Exit: a small death test PASS.
+- [x] **F7-1** After a **recent** peer DSM/TMA access, a warp in a tight PC loop with no mbarrier interest / recognized wait aborts naming §10 rule 1. Arm drops on recognized wait or hop-scale quiet with no further peer touch.  
+  Files: `cluster_hang_prevent.h`, `shader.cc` `poll_hang_preventers`.  
+  Exit: `MbarrierClusterTest.BarePeerSpin_Aborts`. Robustness: `PeerThenLocalTightLoop_Ok` (peer load then >N local tight work must not abort); parked try_wait / happy-path DSM/TMA do not trip.
+- [x] **F7-2** Partial-warp try_wait **and** a sibling warp at `bar.sync` for N cycles aborts naming §10 rule 2. Instant/hop-scale mix (TMA tid0 wait + `__syncthreads`) does **not** abort.  
+  Files: same.  
+  Exit: `MbarrierClusterTest.BarSyncThenSingleThreadTryWait_Aborts`. Robustness: `FullWarpTryWaitAfterSync_Ok`.
 
-Note (standing): keep §10 constraints in tests until F7-1/F7-2 exist; do not “fix” hangs by weakening kernels only.
+Note: do not “fix” remaining hangs by weakening kernels; add a new numbered row if a new pattern appears.
 
 #### F8 — Test surface  *(Done)*
 

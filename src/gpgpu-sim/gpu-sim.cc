@@ -843,6 +843,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &gpgpu_mbarrier_remote_hop_latency,
                          "Remote mbarrier hop; 0 means use DSM matrix (default=0)",
                          "0");
+  option_parser_register(
+      opp, "-gpgpu_cluster_hang_watchdog", OPT_UINT32,
+      &gpgpu_cluster_hang_watchdog,
+      "Abort after this many cycles of a bare peer spin or mixed "
+      "bar.sync+single-thread try_wait (0=off; default 8192)",
+      "8192");
   option_parser_register(opp, "-gpgpu_mbarrier_cluster_enable", OPT_BOOL,
                          &gpgpu_mbarrier_cluster_enable,
                          "Allow mbarrier ops on remote (DSM-mapped) shared addresses (default=0)",

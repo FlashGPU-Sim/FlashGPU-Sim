@@ -1199,6 +1199,9 @@ class barrier_set_t {
   bool is_bulk_tx_committed(unsigned cta_id, unsigned warp_id,
                             unsigned tx_uid) const;
 
+  void note_peer_smem_access(unsigned warp_id);
+  void poll_hang_preventers();
+
   // Ordinary cp.async wait_group uses this only as a scheduler wait state.
   void wait_cp_async_group(unsigned warp_id);
   void release_cp_async_warp(unsigned warp_id);
@@ -1277,6 +1280,13 @@ class barrier_set_t {
 
   std::vector<bool> m_mbar_trywait_has_timeout;
   std::vector<unsigned long long> m_mbar_timeout_cycle;
+  std::vector<bool> m_mbar_partial_wait;
+  std::vector<bool> m_hang_saw_peer;
+  std::vector<unsigned> m_hang_quiet_cycles;
+  std::vector<unsigned> m_hang_watch_cycles;
+  std::vector<unsigned> m_hang_pc_n;
+  std::vector<unsigned long long> m_hang_pc_hist; // 8 slots per warp
+  std::vector<unsigned> m_hang_mix_cycles;
   std::vector<const ptx_instruction *> m_mbar_trywait_inst;
   std::vector<active_mask_t> m_mbar_trywait_mask;
 };
@@ -2020,6 +2030,8 @@ class shader_core_config : public core_config {
   bool gpgpu_tma_mcast_mbar_after_data;
   unsigned int gpgpu_mbarrier_remote_hop_latency;
   bool gpgpu_mbarrier_cluster_enable;
+  // 0 = off. Default is well above hop / try_wait latencies.
+  unsigned int gpgpu_cluster_hang_watchdog;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;
   unsigned gpgpu_wgmma_issue_chain_ss_config[5];
@@ -2481,6 +2493,10 @@ class shader_core_ctx : public core_t {
   // used by simt_core_cluster:
   // modifiers
   void cycle();
+  shd_warp_t *get_shd_warp(unsigned warp_id) { return m_warp[warp_id]; }
+  void note_peer_smem_access(unsigned warp_id) {
+    m_barriers.note_peer_smem_access(warp_id);
+  }
   void reinit(unsigned start_thread, unsigned end_thread,
               bool reset_not_completed);
   void issue_block2core(class kernel_info_t &kernel);

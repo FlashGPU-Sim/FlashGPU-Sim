@@ -13,6 +13,9 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
 #include <vector>
 
 #include "common/cluster_launch.h"
@@ -324,6 +327,183 @@ TEST_F(MbarrierClusterTest, TryWaitTimeoutExpires_PredFalse) {
   cudaFree(d_out);
   EXPECT_EQ(h, 0u) << "timed try_wait must set dest pred false when the "
                       "phase never completes";
+}
+
+// Bare peer smem spin: no mbarrier interest. Must abort, not hang.
+__global__ void bare_peer_spin_kernel(int *out) {
+  __shared__ int flag;
+  const int rank = blockIdx.x;
+  if (threadIdx.x != 0)
+    return;
+  if (rank == 0) {
+    flag = 0;
+    out[0] = 1;
+    __threadfence_system();
+    // Stay allocated (global wait, not a peer spin).
+    while (out[1] == 0) {
+    }
+    return;
+  }
+  while (out[0] == 0) {
+  }
+  volatile int *peer =
+      reinterpret_cast<volatile int *>(mapa_u64_shared(&flag, 0));
+  while (*peer == 0) {
+  }
+  out[1] = 1;
+}
+
+[[noreturn]] void run_bare_peer_spin() {
+  setenv("FLASHGPU_CLUSTER_HANG_WATCHDOG", "256", 1);
+  int *d_out = nullptr;
+  if (cudaMalloc(&d_out, 2 * sizeof(int)) != cudaSuccess)
+    _exit(2);
+  if (cudaMemset(d_out, 0, 2 * sizeof(int)) != cudaSuccess)
+    _exit(4);
+  dim3 grid(2), block(32), cluster(2, 1, 1);
+  void *args[] = {&d_out};
+  if (flash_test::launch_kernel_with_cluster(
+          (const void *)bare_peer_spin_kernel, grid, block, cluster, args) !=
+      cudaSuccess)
+    _exit(3);
+  cudaDeviceSynchronize();
+  std::fprintf(stderr, "ERROR: bare peer spin did not abort\n");
+  _exit(0);
+}
+
+TEST_F(MbarrierClusterTest, BarePeerSpin_Aborts) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(run_bare_peer_spin(), "rule 1");
+}
+
+// Other warps sit at __syncthreads while tid0 is in try_wait that never
+// completes. Abort after the watchdog dwell, not at TEST_TIMEOUT.
+__global__ void mixed_barsync_trywait_kernel() {
+  __shared__ unsigned long long bar;
+  if (threadIdx.x == 0)
+    mbarrier_init_local(&bar, /*expected=*/2);
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(&bar));
+    asm volatile("{\n"
+                 ".reg .pred P1;\n"
+                 "LAB_MIX_WAIT:\n"
+                 "mbarrier.try_wait.parity.shared::cta.b64 P1, [%0], %1;\n"
+                 "@!P1 bra.uni LAB_MIX_WAIT;\n"
+                 "}\n" ::"r"(p),
+                 "r"(0));
+  }
+  __syncthreads();
+}
+
+[[noreturn]] void run_mixed_barsync_trywait() {
+  setenv("FLASHGPU_CLUSTER_HANG_WATCHDOG", "256", 1);
+  dim3 grid(1), block(64), cluster(1, 1, 1);
+  void *args[] = {};
+  if (flash_test::launch_kernel_with_cluster(
+          (const void *)mixed_barsync_trywait_kernel, grid, block, cluster,
+          args) != cudaSuccess)
+    _exit(3);
+  cudaDeviceSynchronize();
+  std::fprintf(stderr, "ERROR: mixed bar.sync + try_wait did not abort\n");
+  _exit(0);
+}
+
+TEST_F(MbarrierClusterTest, BarSyncThenSingleThreadTryWait_Aborts) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(run_mixed_barsync_trywait(), "rule 2");
+}
+
+// Full-warp try_wait after syncthreads is not the mixed hang.
+__global__ void full_warp_trywait_after_sync_kernel(int *out) {
+  __shared__ unsigned long long bar;
+  if (threadIdx.x == 0)
+    mbarrier_init_local(&bar, 1);
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(&bar));
+    asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0], %1;\n" ::"r"(p),
+                 "r"(1));
+  }
+  __syncthreads();
+  uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(&bar));
+  asm volatile("{\n"
+               ".reg .pred P1;\n"
+               "LAB_FULL_WAIT:\n"
+               "mbarrier.try_wait.parity.shared::cta.b64 P1, [%0], %1;\n"
+               "@!P1 bra.uni LAB_FULL_WAIT;\n"
+               "}\n" ::"r"(p),
+               "r"(0));
+  out[threadIdx.x] = 1;
+}
+
+// One peer load, then a long *local* tight loop. Must not abort: the peer
+// arm expires after a hop-scale quiet window.
+__global__ void peer_then_local_tight_loop_kernel(int *out) {
+  __shared__ int flag;
+  __shared__ volatile int acc;
+  const int rank = blockIdx.x;
+  if (threadIdx.x != 0)
+    return;
+  if (rank == 0) {
+    flag = 7;
+    out[0] = 1;
+    __threadfence_system();
+    while (out[1] == 0) {
+    }
+    return;
+  }
+  while (out[0] == 0) {
+  }
+  volatile int *peer =
+      reinterpret_cast<volatile int *>(mapa_u64_shared(&flag, 0));
+  const int v = *peer;
+  acc = 0;
+  for (int i = 0; i < 768; i++)
+    acc += i;
+  out[1] = acc + v;
+}
+
+TEST_F(MbarrierClusterTest, PeerThenLocalTightLoop_Ok) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  ASSERT_EQ(setenv("FLASHGPU_CLUSTER_HANG_WATCHDOG", "512", 1), 0);
+  int *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, 2 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, 2 * sizeof(int)), cudaSuccess);
+  dim3 grid(2), block(32), cluster(2, 1, 1);
+  void *args[] = {&d_out};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)peer_then_local_tight_loop_kernel, grid, block,
+                cluster, args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  unsetenv("FLASHGPU_CLUSTER_HANG_WATCHDOG");
+  int h[2] = {0, 0};
+  ASSERT_EQ(cudaMemcpy(h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  EXPECT_EQ(h[0], 1);
+  EXPECT_EQ(h[1], 768 * 767 / 2 + 7);
+}
+
+TEST_F(MbarrierClusterTest, FullWarpTryWaitAfterSync_Ok) {
+  int *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, 32 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, 32 * sizeof(int)), cudaSuccess);
+  dim3 grid(1), block(32), cluster(1, 1, 1);
+  void *args[] = {&d_out};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)full_warp_trywait_after_sync_kernel, grid, block,
+                cluster, args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  int h[32] = {};
+  ASSERT_EQ(cudaMemcpy(h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  for (int i = 0; i < 32; i++)
+    EXPECT_EQ(h[i], 1) << "lane " << i;
 }
 
 TEST_F(MbarrierClusterTest, TryWaitTimeoutPhaseDone_PredTrue) {
