@@ -314,7 +314,12 @@ TEST(Fa4OpaqueTensorMapTest, DecodesRealCudaApiEncodedDescriptors) {
   }
 
   CudaContextGuard context;
+#if CUDA_VERSION >= 13000
+  CUctxCreateParams context_params{};
+  status = cuCtxCreate(&context.context, &context_params, 0, device);
+#else
   status = cuCtxCreate(&context.context, 0, device);
+#endif
   if (status != CUDA_SUCCESS) {
     GTEST_SKIP() << "cuCtxCreate failed: " << cuda_error_string(status);
   }

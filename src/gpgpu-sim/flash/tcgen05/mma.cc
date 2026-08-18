@@ -160,6 +160,10 @@ std::vector<uint32_t> tcgen05_mma_mxf4_compute_words(
         uint32_t scale_k = k / scale_vector_size;
         float a_value = tcgen05_e2m1_to_f32(a[row * desc.k + k]);
         float b_value = tcgen05_e2m1_to_f32(b[col * desc.k + k]);
+        if (desc.negate_a)
+          a_value = -a_value;
+        if (desc.negate_b)
+          b_value = -b_value;
         a_value *=
             tcgen05_ue8m0_to_f32(scale_a[row * scales_per_row + scale_k]);
         b_value *=

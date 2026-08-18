@@ -1283,6 +1283,8 @@ static std::list<operand_info> check_operands(
       (opcode == FMA_OP) ||
       (opcode == WGMMA_MMA_ASYNC_OP) ||
       (opcode == WGMMA_MMA_ASYNC_SP_OP) ||
+      (opcode == CLC_QUERY_CANCELED_OP) ||
+      (opcode == CLC_QUERY_FIRST_CTA_OP) ||
       (opcode == DP4A_OP) || (opcode == VMIN_OP) || (opcode == VMAX_OP)) {
     // just make sure these do not have have const operands...
     if (!g_warn_literal_operands_two_type_inst) {
@@ -1493,6 +1495,7 @@ ptx_instruction::ptx_instruction(
       case INIT_OPTION:
       case INVAL_OPTION:
       case TRY_WAIT_OPTION:
+      case TEST_WAIT_OPTION:
       case EXPECT_TX_OPTION:
       case COMPLETE_TX_OPTION:
         m_barrier_op = last_ptx_inst_option;

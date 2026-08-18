@@ -122,6 +122,24 @@ bool mbarrier_manager_t::try_wait(gpgpu_sim *gpu,
   return false;
 }
 
+bool mbarrier_manager_t::test_wait(gpgpu_sim *gpu,
+                                   const thread_index_t &thread_index,
+                                   uint64_t addr, int parity) const {
+  auto key = std::make_pair(thread_index.sw_cta_id, addr);
+  auto it = addr_to_mbarrier_map.find(key);
+  assert(it != addr_to_mbarrier_map.end() &&
+         "mbarrier to test_wait on does not exist");
+  const auto *mbarrier = it->second.get();
+  const int current_parity = mbarrier->m_phase & 1;
+
+  GPPRINTF_GPU(gpu, MBAR,
+               "CTA %d Warp %d mbarrier.test_wait id %d at 0x%x with parity %d "
+               "(current phase %d parity %d)\n",
+               thread_index.sw_cta_id, thread_index.sw_warp_id, mbarrier->m_id,
+               (uint32_t)addr, parity, mbarrier->m_phase, current_parity);
+  return parity != current_parity;
+}
+
 std::set<int> mbarrier_manager_t::try_advance(
     gpgpu_sim *gpu, const thread_index_t &thread_index, mbarrier_t *mbarrier) {
 
@@ -342,13 +360,14 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     fflush(stdout);
     // Set per-thread info
     set_thread_mbarrier_info(addr, expected_count, false);
-  } else if (bar_op == TRY_WAIT_OPTION) {
+  } else if (bar_op == TRY_WAIT_OPTION || bar_op == TEST_WAIT_OPTION) {
 
-    assert(pI->parity_op() && "Only support parity op of mbarrier.try_wait");
+    assert(pI->parity_op() &&
+           "Only support parity op of mbarrier try_wait/test_wait");
 
     assert((pI->get_num_operands() == 3 || pI->get_num_operands() == 4) &&
-           "mbarrier.try_wait expects predicate, address, parity, and optional "
-           "timeout");
+           "mbarrier try_wait/test_wait expects predicate, address, parity, "
+           "and optional timeout");
 
     const operand_info &addr_op = pI->src1();
     const operand_info &parity_op = pI->src2();
@@ -357,9 +376,11 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     auto parity = get_u32_value(parity_op) & 1;
 
     GPPRINTF_GPU(thread->get_gpu(), MBAR,
-                 "CTA %d Thread %d (lane %u) mbarrier.try_wait at address 0x%x "
+                 "CTA %d Thread %d (lane %u) mbarrier.%s at address 0x%x "
                  "with parity %u\n",
-                 ctaid, hw_tid, laneid, addr, parity);
+                 ctaid, hw_tid, laneid,
+                 bar_op == TRY_WAIT_OPTION ? "try_wait" : "test_wait", addr,
+                 parity);
     // Set per-thread info
     set_thread_mbarrier_info(addr, (unsigned)-1, parity);
 
@@ -376,7 +397,12 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
      * ! PTXPlus inverts the zero flag -- 0 means true, 1 means false !
      */
     ptx_reg_t pred;
-    pred.pred = 0;
+    const bool ready =
+        bar_op == TRY_WAIT_OPTION || thread->isInFunctionalSimulationMode()
+            ? true
+            : thread->get_core()->test_mbarrier(
+                  thread->get_hw_ctaid(), thread->get_hw_wid(), addr, parity);
+    pred.pred = ready ? 0 : 1;
     thread->set_operand_value(pI->dst(), pred, PRED_TYPE, thread, pI);
 
   } else if (bar_op == COMPLETE_TX_OPTION) {
@@ -626,10 +652,17 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     return;
   }
 
-  auto bar_op = pI->barrier_op();
+  auto bar_op = pI->get_opcode() == CLC_TRY_CANCEL_OP ? COMPLETE_TX_OPTION
+                                                      : pI->barrier_op();
 
   unsigned warp_size = m_shader->get_config()->warp_size;
   const bool trace_mbarrier = mbarrier_trace_enabled();
+
+  // mbarrier.test_wait is a non-blocking poll. Functional execution already
+  // queried the manager to produce its predicate result; it must not register
+  // this warp as a waiter here.
+  if (bar_op == TEST_WAIT_OPTION)
+    return;
 
   // mbarrier.complete_tx is modeled once per warp and therefore requires one
   // uniform set of lane parameters. Other mbarrier operations are thread-level
@@ -791,4 +824,21 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
   }
 
   assert(false && "mbarrier in barrier_set_t not implemented");
+}
+
+bool barrier_set_t::test_mbarrier(unsigned cta_id, unsigned warp_id,
+                                  uint32_t addr, bool parity) const {
+  const int logical_cta_id = m_shader->get_logical_cta_id(warp_id);
+  const int logical_warp_id = m_shader->get_cta_warp_id(warp_id);
+  flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{
+      (int)cta_id, (int)warp_id, logical_cta_id, logical_warp_id};
+  return m_mbarrier_manager.test_wait(m_shader->get_gpu(), thread_index, addr,
+                                      parity);
+}
+
+bool shader_core_ctx::test_mbarrier(unsigned hw_cta_id, unsigned hw_warp_id,
+                                    uint64_t addr, bool parity) const {
+  assert(addr <= UINT32_MAX);
+  return m_barriers.test_mbarrier(hw_cta_id, hw_warp_id, (uint32_t)addr,
+                                  parity);
 }

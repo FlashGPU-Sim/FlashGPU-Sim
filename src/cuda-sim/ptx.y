@@ -191,6 +191,7 @@ class ptx_recognizer;
 %token COMPLETE_TX_OPTION
 %token INIT_OPTION
 %token TRY_WAIT_OPTION
+%token TEST_WAIT_OPTION
 %token WAIT_OPTION
 %token PARITY_OPTION
 %token TMA_MBAR_COMPLETE_BYTES
@@ -348,13 +349,19 @@ function_defn: function_decl { recognizer->set_symtab($1); recognizer->func_head
 	| function_decl { recognizer->set_symtab($1); } block_spec_list { recognizer->func_header(".skip"); } statement_block { recognizer->end_function(); }
 	;
 
-block_spec: MAXNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND {recognizer->func_header_info_int(".maxntid", $2);
+block_spec: MAXNTID_DIRECTIVE INT_OPERAND {recognizer->func_header_info_int(".maxntid", $2);
+									recognizer->maxnt_id($2, 1, 1);}
+	| MAXNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND {recognizer->func_header_info_int(".maxntid", $2);
+									recognizer->func_header_info_int(",", $4);
+									recognizer->maxnt_id($2, $4, 1);}
+	| MAXNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND {recognizer->func_header_info_int(".maxntid", $2);
 										recognizer->func_header_info_int(",", $4);
 										recognizer->func_header_info_int(",", $6);
                                                                                 recognizer->maxnt_id($2, $4, $6);}
 	| MINNCTAPERSM_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".minnctapersm", $2); printf("GPGPU-Sim PTX: Warning: .minnctapersm ignored. \n"); }
 	| MAXNCTAPERSM_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".maxnctapersm", $2); printf("GPGPU-Sim PTX: Warning: .maxnctapersm ignored. \n"); }
 	| REQNTID_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".reqntid", $2); printf("GPGPU-Sim PTX: Warning: .reqntid ignored. \n"); }
+	| REQNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND { recognizer->func_header_info_int(".reqntid", $2); printf("GPGPU-Sim PTX: Warning: .reqntid ignored. \n"); }
 	| REQNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND { recognizer->func_header_info_int(".reqntid", $2); printf("GPGPU-Sim PTX: Warning: .reqntid ignored. \n"); }
 	;
 
@@ -633,6 +640,7 @@ option: type_spec
 	| RED_OPTION { recognizer->add_option(RED_OPTION); }
 	| INIT_OPTION { recognizer->add_option(INIT_OPTION); }
 	| TRY_WAIT_OPTION { recognizer->add_option(TRY_WAIT_OPTION); }
+	| TEST_WAIT_OPTION { recognizer->add_option(TEST_WAIT_OPTION); }
 	| WAIT_OPTION { recognizer->add_option(WAIT_OPTION); }
 	| PARITY_OPTION { recognizer->add_option(PARITY_OPTION); }
 	| TMA_MBAR_COMPLETE_BYTES { recognizer->add_option(TMA_MBAR_COMPLETE_BYTES); }

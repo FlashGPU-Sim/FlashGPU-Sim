@@ -44,18 +44,11 @@ tcgen05_warpx4_32x128b_words(const std::vector<uint32_t> &source) {
   std::vector<uint32_t> result(
       kSourceDataPaths * kBroadcastCopies * kWordsPerDataPath, 0);
   for (uint32_t source_dp = 0; source_dp < kSourceDataPaths; ++source_dp) {
-    uint32_t transposed[kWordsPerDataPath] = {};
-    for (uint32_t leading_bit = 0; leading_bit < kBitsPerDataPath;
-         ++leading_bit) {
-      // UTCCP source layout is [strided, leading] with bit strides [1, 32].
-      uint32_t source_bit = source_dp + leading_bit * kSourceDataPaths;
-      uint32_t bit = (source[source_bit / 32] >> (source_bit % 32)) & 0x1;
-      transposed[leading_bit / 32] |= bit << (leading_bit % 32);
-    }
     for (uint32_t broadcast = 0; broadcast < kBroadcastCopies; ++broadcast) {
       uint32_t destination_dp = source_dp + broadcast * kSourceDataPaths;
       for (uint32_t word = 0; word < kWordsPerDataPath; ++word) {
-        result[destination_dp * kWordsPerDataPath + word] = transposed[word];
+        result[destination_dp * kWordsPerDataPath + word] =
+            source[source_dp * kWordsPerDataPath + word];
       }
     }
   }

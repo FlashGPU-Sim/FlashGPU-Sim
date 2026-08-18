@@ -583,7 +583,8 @@ public:
       state.start_coords[d] = start_coords[d];
     }
 
-    // Calculate strides: stride[0] = elem_size, stride[i] = globalStrides[i-1]
+    // Dim0 may be a packed U4/U6 format, so its byte offset is computed via
+    // the tensor map helper below.  Higher dimensions always use byte strides.
     state.global_strides[0] = state.elem_size;
     for (uint32_t d = 1; d < state.num_dims; d++) {
       state.global_strides[d] = tm.fields.globalStrides[d - 1];
@@ -596,8 +597,13 @@ public:
 
     // Calculate initial row address using signed coordinates.  OOB requests
     // may precede the tensor base when OOB L2 traffic is enabled.
-    int64_t byte_offset = 0;
-    for (uint32_t d = 0; d < state.num_dims; d++) {
+    const int64_t dim0_coord = start_coords[0];
+    const uint64_t dim0_magnitude =
+        static_cast<uint64_t>(dim0_coord < 0 ? -dim0_coord : dim0_coord);
+    const int64_t dim0_byte_offset =
+        static_cast<int64_t>(tm.get_dim0_byte_offset(dim0_magnitude));
+    int64_t byte_offset = dim0_coord < 0 ? -dim0_byte_offset : dim0_byte_offset;
+    for (uint32_t d = 1; d < state.num_dims; d++) {
       byte_offset += static_cast<int64_t>(start_coords[d]) *
                      static_cast<int64_t>(state.global_strides[d]);
     }
@@ -609,7 +615,8 @@ public:
           tm.fields.globalAddress + static_cast<uint64_t>(byte_offset);
     }
 
-    state.row_bytes = state.box_dim[0] * state.elem_size;
+    state.row_bytes =
+        static_cast<uint32_t>(tm.get_dim0_span_bytes(state.box_dim[0]));
     state.offset_in_row = 0;
     state.done = false;
 
@@ -621,10 +628,10 @@ public:
     const int64_t valid_start = std::max<int64_t>(row_start, 0);
     const int64_t valid_end = std::min<int64_t>(row_end, state.global_dim[0]);
     if (valid_start < valid_end) {
-      state.valid_row_start_bytes =
-          static_cast<uint32_t>(valid_start - row_start) * state.elem_size;
+      state.valid_row_start_bytes = static_cast<uint32_t>(
+          tm.get_dim0_byte_offset(valid_start - row_start));
       state.valid_row_end_bytes =
-          static_cast<uint32_t>(valid_end - row_start) * state.elem_size;
+          static_cast<uint32_t>(tm.get_dim0_span_bytes(valid_end - row_start));
     } else {
       state.valid_row_start_bytes = state.row_bytes;
       state.valid_row_end_bytes = state.row_bytes;
@@ -2025,20 +2032,23 @@ struct tma_request_t {
 
 static void compute_tile_strides(const tensormap_descriptor_t &tensormap,
                                  uint64_t tile_strides[5]) {
-  uint32_t elem_size = tensormap.get_element_size();
   uint32_t num_dims = tensormap.num_dims();
 
-  tile_strides[0] = elem_size;
-  for (uint32_t d = 1; d < num_dims; d++) {
+  tile_strides[0] = 0;
+  if (num_dims > 1) {
+    tile_strides[1] = tensormap.get_dim0_span_bytes(tensormap.fields.boxDim[0]);
+  }
+  for (uint32_t d = 2; d < num_dims; d++) {
     tile_strides[d] = tile_strides[d - 1] * tensormap.fields.boxDim[d - 1];
   }
 }
 
 // Apply TMA swizzle transformation to shared memory address
 //
-// Mask-based implementation matching Hopper/Blackwell hardware behavior.
-// Assumes 128B row stride for row extraction (addr >> 7).
-// Applies XOR permutation at 16B granularity (shift = 4).
+// Mask-based implementation of the PTX tensor-map swizzle tables. Shared
+// memory is divided into 128B lines; each mode XORs a line-dependent value
+// into the chunk index. The base row accounts for a destination address that
+// is not aligned to the full repeating pattern.
 static uint64_t apply_tma_swizzle(uint64_t linear_offset,
                                   uint32_t smem_base_addr,
                                   uint32_t swizzle_mode, uint32_t row_bytes) {
@@ -2046,7 +2056,8 @@ static uint64_t apply_tma_swizzle(uint64_t linear_offset,
     return linear_offset;
 
   uint32_t mask = 0;
-  constexpr uint32_t shift = 4; // only support 16B granularity for now
+  uint32_t shift = 4;
+  bool flip_8b = false;
 
   switch (swizzle_mode) {
   case TMA_SWIZZLE_128B:
@@ -2059,19 +2070,35 @@ static uint64_t apply_tma_swizzle(uint64_t linear_offset,
     mask = 0x1;
     break; // 1 bit, cycle of 2
   case TMA_SWIZZLE_96B:
-    printf("ERROR: TMA 96B swizzle mode is not yet implemented\n");
-    abort();
+    assert(row_bytes <= 96);
+    mask = 0x1;
+    break;
+  case TMA_SWIZZLE_128B_ATOM_32B:
+    mask = 0x3;
+    shift = 5;
+    break;
+  case TMA_SWIZZLE_128B_ATOM_32B_FLIP_8B:
+    mask = 0x3;
+    shift = 5;
+    flip_8b = true;
+    break;
+  case TMA_SWIZZLE_128B_ATOM_64B:
+    mask = 0x1;
+    shift = 6;
+    break;
   default:
     printf("ERROR: Unknown TMA swizzle mode %u\n", swizzle_mode);
     abort();
   }
 
-  // Extract row information assuming 128B stride
-  // In Hopper/Blackwell hardware, row extraction is based on 128B alignment
-  uint32_t row_bits = (uint32_t)(linear_offset >> 7);
+  const uint32_t row = (uint32_t)(linear_offset >> 7);
+  const uint32_t base_row = (smem_base_addr >> 7) & mask;
+  const uint32_t swizzle_row = (row + base_row) & mask;
 
-  // Apply XOR permutation: addr XOR ((row_bits & mask) << shift)
-  return linear_offset ^ ((uint64_t)(row_bits & mask) << shift);
+  uint64_t swizzled = linear_offset ^ ((uint64_t)swizzle_row << shift);
+  if (flip_8b && (swizzle_row & 1))
+    swizzled ^= 8;
+  return swizzled;
 }
 
 // Generate 128B-aligned memory fetch requests
@@ -2119,8 +2146,6 @@ static void traverse_tensor_dim(int dim, const int32_t current_coords[5],
                                 const uint64_t tile_strides[5],
                                 uint64_t tile_offset,
                                 std::vector<tma_request_t> &requests) {
-  uint32_t elem_size = tensormap.get_element_size();
-
   if (dim == 0) {
     // Base case: innermost dimension (contiguous)
     int64_t start_x = current_coords[0];
@@ -2146,11 +2171,13 @@ static void traverse_tensor_dim(int dim, const int32_t current_coords[5],
 
     // Calculate physical start address and total bytes
     uint64_t phys_start_addr =
-        base_addr + static_cast<uint64_t>(valid_start) * elem_size;
+        base_addr +
+        tensormap.get_dim0_byte_offset(static_cast<uint64_t>(valid_start));
     uint64_t valid_tile_offset =
-        tile_offset + static_cast<uint64_t>(valid_start - start_x) * elem_size;
-    uint32_t valid_bytes =
-        static_cast<uint32_t>(valid_end - valid_start) * elem_size;
+        tile_offset + tensormap.get_dim0_byte_offset(
+                          static_cast<uint64_t>(valid_start - start_x));
+    uint32_t valid_bytes = static_cast<uint32_t>(
+        tensormap.get_dim0_span_bytes(valid_end - valid_start));
 
     // Generate aligned memory fetch requests
     gen_aligned_req(phys_start_addr, valid_tile_offset, valid_bytes, requests);
@@ -2323,10 +2350,9 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
 
   auto memory_requests = generate_tma_requests(tensormap, coords);
   uint32_t swizzle_mode = tensormap.fields.swizzle;
-  uint32_t elem_size = tensormap.get_element_size();
-  uint32_t row_bytes = tensormap.fields.boxDim[0] * elem_size;
+  uint32_t row_bytes = static_cast<uint32_t>(
+      tensormap.get_dim0_span_bytes(tensormap.fields.boxDim[0]));
 
-  constexpr uint32_t SWIZZLE_GRANULARITY = 16;
   constexpr uint32_t LOCAL_BUF_SIZE = 128;
   alignas(16) unsigned char local_data_buf[LOCAL_BUF_SIZE];
 
@@ -2334,6 +2360,8 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
     uint64_t global_req_addr = req.global_addr;
     uint32_t req_size = req.size;
     uint64_t tile_offset = req.tile_offset;
+    const uint32_t swizzle_granularity =
+        swizzle_mode == TMA_SWIZZLE_128B_ATOM_32B_FLIP_8B ? 8 : 16;
 
     unsigned char *data_buffer = (req_size <= LOCAL_BUF_SIZE)
                                      ? local_data_buf
@@ -2359,9 +2387,9 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
 
       if (swizzle_mode != TMA_SWIZZLE_NONE) {
         for (uint32_t sub_offset = 0; sub_offset < req_size;
-             sub_offset += SWIZZLE_GRANULARITY) {
+             sub_offset += swizzle_granularity) {
           uint32_t sub_size =
-              std::min(SWIZZLE_GRANULARITY, req_size - sub_offset);
+              std::min(swizzle_granularity, req_size - sub_offset);
           uint64_t logical_offset = tile_offset + sub_offset;
           uint64_t swizzled_offset = apply_tma_swizzle(
               logical_offset, smem_addr, swizzle_mode, row_bytes);
@@ -2379,9 +2407,9 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
       // Store: shared -> global (reverse swizzle)
       if (swizzle_mode != TMA_SWIZZLE_NONE) {
         for (uint32_t sub_offset = 0; sub_offset < req_size;
-             sub_offset += SWIZZLE_GRANULARITY) {
+             sub_offset += swizzle_granularity) {
           uint32_t sub_size =
-              std::min(SWIZZLE_GRANULARITY, req_size - sub_offset);
+              std::min(swizzle_granularity, req_size - sub_offset);
           uint64_t logical_offset = tile_offset + sub_offset;
           uint64_t swizzled_offset = apply_tma_swizzle(
               logical_offset, smem_addr, swizzle_mode, row_bytes);

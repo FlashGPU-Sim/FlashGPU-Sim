@@ -1319,7 +1319,12 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case WGMMA_WAIT_GROUP_OP:
   case SETMAXNREG_OP:
   case GRIDDEPCONTROL_OP:
+  case CLC_TRY_CANCEL_OP:
     return inst_class_t::control;
+
+  case CLC_QUERY_CANCELED_OP:
+  case CLC_QUERY_FIRST_CTA_OP:
+    return inst_class_t::intp;
 
   case ADDP_OP:
   case ADDC_OP:

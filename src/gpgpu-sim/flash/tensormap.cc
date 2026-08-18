@@ -57,8 +57,60 @@ uint32_t tensormap_descriptor_t::get_element_size() const {
     return 8;
   case TMA_DTYPE_BF16:
     return 2;
+  case TMA_DTYPE_16U4_ALIGN8B:
+  case TMA_DTYPE_16U4_ALIGN16B:
+  case TMA_DTYPE_16U6_ALIGN16B:
+    // Packed TMA formats are addressed in groups rather than as an integral
+    // number of bytes per logical element.  Callers that operate on dim0 use
+    // get_dim0_byte_offset()/get_dim0_span_bytes(); one byte is the smallest
+    // independently transferable storage unit.
+    return 1;
   default:
     return 4; // default to 4 bytes
+  }
+}
+
+uint32_t tensormap_descriptor_t::get_element_bits() const {
+  switch (fields.tensorDataType) {
+  case TMA_DTYPE_16U4_ALIGN8B:
+  case TMA_DTYPE_16U4_ALIGN16B:
+    return 4;
+  case TMA_DTYPE_16U6_ALIGN16B:
+    return 6;
+  default:
+    return get_element_size() * 8;
+  }
+}
+
+bool tensormap_descriptor_t::is_packed() const {
+  return fields.tensorDataType == TMA_DTYPE_16U4_ALIGN8B ||
+         fields.tensorDataType == TMA_DTYPE_16U4_ALIGN16B ||
+         fields.tensorDataType == TMA_DTYPE_16U6_ALIGN16B;
+}
+
+uint64_t
+tensormap_descriptor_t::get_dim0_byte_offset(uint64_t element_index) const {
+  switch (fields.tensorDataType) {
+  case TMA_DTYPE_16U4_ALIGN8B:
+    return element_index / 2;
+  case TMA_DTYPE_16U4_ALIGN16B:
+  case TMA_DTYPE_16U6_ALIGN16B:
+    return (element_index / 16) * 16;
+  default:
+    return element_index * get_element_size();
+  }
+}
+
+uint64_t
+tensormap_descriptor_t::get_dim0_span_bytes(uint64_t element_count) const {
+  switch (fields.tensorDataType) {
+  case TMA_DTYPE_16U4_ALIGN8B:
+    return (element_count + 1) / 2;
+  case TMA_DTYPE_16U4_ALIGN16B:
+  case TMA_DTYPE_16U6_ALIGN16B:
+    return ((element_count + 15) / 16) * 16;
+  default:
+    return element_count * get_element_size();
   }
 }
 
@@ -66,12 +118,12 @@ uint32_t tensormap_descriptor_t::get_tile_size_bytes() const {
   if (fields.tensorRank > 4)
     return 0;
 
-  uint32_t total_elements = 1;
+  uint64_t total_bytes = get_dim0_span_bytes(fields.boxDim[0]);
   uint32_t dims = num_dims();
-  for (uint32_t i = 0; i < dims; i++) {
-    total_elements *= fields.boxDim[i];
+  for (uint32_t i = 1; i < dims; i++) {
+    total_bytes *= fields.boxDim[i];
   }
-  return total_elements * get_element_size();
+  return static_cast<uint32_t>(total_bytes);
 }
 
 uint64_t
@@ -80,13 +132,17 @@ tensormap_descriptor_t::calculate_src_addr(const int32_t coords[5]) const {
   // This is used for simple address calculation (not for generating actual
   // memory requests) fields.tensorRank is 0-based.
   int64_t byte_offset = 0;
-  uint32_t elem_size = get_element_size();
   uint32_t dims = num_dims();
 
   for (uint32_t i = 0; i < dims; i++) {
     // For dimension 0, use element size; for others, use stride
     if (i == 0) {
-      byte_offset += static_cast<int64_t>(coords[i]) * elem_size;
+      const int64_t coord = coords[i];
+      const uint64_t magnitude =
+          static_cast<uint64_t>(coord < 0 ? -coord : coord);
+      const int64_t offset =
+          static_cast<int64_t>(get_dim0_byte_offset(magnitude));
+      byte_offset += coord < 0 ? -offset : offset;
     } else {
       byte_offset += static_cast<int64_t>(coords[i]) *
                      static_cast<int64_t>(fields.globalStrides[i - 1]);
@@ -187,6 +243,12 @@ void tensormap_descriptor_t::print() const {
       return "TMA_SWIZZLE_64B";
     case TMA_SWIZZLE_128B:
       return "TMA_SWIZZLE_128B";
+    case TMA_SWIZZLE_128B_ATOM_32B:
+      return "TMA_SWIZZLE_128B_ATOM_32B";
+    case TMA_SWIZZLE_128B_ATOM_32B_FLIP_8B:
+      return "TMA_SWIZZLE_128B_ATOM_32B_FLIP_8B";
+    case TMA_SWIZZLE_128B_ATOM_64B:
+      return "TMA_SWIZZLE_128B_ATOM_64B";
     case TMA_SWIZZLE_96B:
       return "TMA_SWIZZLE_96B";
     default:

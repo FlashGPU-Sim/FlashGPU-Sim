@@ -758,6 +758,7 @@ void shader_core_ctx::reinit(unsigned start_thread, unsigned end_thread,
     m_occupied_cta_to_hwtid.clear();
     m_active_warps = 0;
     m_pending_tma_cta_releases.clear();
+    m_tcgen05_timing.reset();
   }
   for (unsigned i = start_thread; i < end_thread; i++) {
     m_threadState[i].n_insn = 0;
@@ -1582,6 +1583,12 @@ static int wgmma_opcode(const warp_inst_t *inst) {
   assert(inst != NULL);
   const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
   return ptx_inst->get_opcode();
+}
+
+static bool is_tcgen05_mma(const warp_inst_t &inst) {
+  const ptx_instruction *ptx_inst =
+      static_cast<const ptx_instruction *>(&inst);
+  return ptx_inst->get_opcode() == TCGEN05_MMA_OP;
 }
 
 static bool is_wgmma_mma_async_opcode(int opcode) {
@@ -3835,6 +3842,7 @@ tensor_core::tensor_core(register_set *result_port,
 bool tensor_core::issue_queue_enabled_for(const warp_inst_t &inst) const {
   if (m_config->gpgpu_tensor_core_issue_queue_depth == 0) return false;
   if (inst.op != TENSOR_CORE_OP) return false;
+  if (is_tcgen05_mma(inst)) return false;
 
   // The queue idealizes classic warp-level MMA. WGMMA has separate warpgroup
   // ordering and completion machinery, so leave it on the existing path.
@@ -3843,6 +3851,8 @@ bool tensor_core::issue_queue_enabled_for(const warp_inst_t &inst) const {
 
 bool tensor_core::can_issue(const warp_inst_t &inst) const {
   if (inst.op != TENSOR_CORE_OP) return false;
+  if (is_tcgen05_mma(inst) && !m_core->tcgen05_backend_can_issue())
+    return false;
   if (issue_queue_enabled_for(inst)) {
     return m_issue_queue.size() <
            m_config->gpgpu_tensor_core_issue_queue_depth;
@@ -3966,7 +3976,24 @@ void tensor_core::issue(register_set &source_reg) {
     (*ready_reg)->clear();
     return;
   }
+  if (is_tcgen05_mma(**ready_reg)) {
+    unsigned compute_cycles = (*ready_reg)->tcgen05_compute_latency;
+    if (compute_cycles == 0) compute_cycles = (*ready_reg)->latency;
+    m_core->reserve_tcgen05_backend(compute_cycles);
+  }
   pipelined_simd_unit::issue(source_reg);
+}
+
+bool shader_core_ctx::tcgen05_backend_can_issue() const {
+  const unsigned long long now =
+      m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+  return m_tcgen05_timing.can_issue(now);
+}
+
+void shader_core_ctx::reserve_tcgen05_backend(unsigned compute_cycles) {
+  const unsigned long long now =
+      m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+  m_tcgen05_timing.reserve(now, compute_cycles);
 }
 
 void tma_fu::issue(register_set &source_reg) {
@@ -5480,6 +5507,7 @@ void shader_core_config::set_pipeline_latency() {
   unsigned tensor_latency_max = 1;
   unsigned wgmma_latency[4];
   unsigned wgmma_latency_max = 1;
+  unsigned tcgen05_mxf4_latency_max = 1;
   unsigned tma_latency;
   unsigned cp_async_latency;
   unsigned cp_async_commit_latency;
@@ -5530,6 +5558,11 @@ void shader_core_config::set_pipeline_latency() {
       wgmma_latency_max = std::max(wgmma_latency_max, wgmma_latency[i]);
     wgmma_latency_max = std::max(wgmma_latency_max, 4 * wgmma_latency[3]);
   }
+  const unsigned tcgen05_mxf4_throughput =
+      flash_gpgpu_sim::tcgen05_parse_mxf4_throughput(
+          gpgpu_ctx->func_sim->opcode_compute_throughput_tcgen05_mxf4);
+  tcgen05_mxf4_latency_max = flash_gpgpu_sim::tcgen05_mxf4_compute_cycles(
+      /*m=*/256, /*n=*/256, /*k=*/96, tcgen05_mxf4_throughput);
   if (gpgpu_ctx->func_sim->opcode_latency_tma)
     sscanf(gpgpu_ctx->func_sim->opcode_latency_tma, "%u", &tma_latency);
   else
@@ -5564,6 +5597,8 @@ void shader_core_config::set_pipeline_latency() {
   max_int_latency = std::max(int_latency[1], int_latency[5]);
   max_dp_latency = dp_latency[1];
   max_tensor_core_latency = std::max(tensor_latency_max, wgmma_latency_max);
+  max_tensor_core_latency =
+      std::max(max_tensor_core_latency, tcgen05_mxf4_latency_max);
   max_tma_latency = tma_latency;
   max_cp_async_latency = std::max(cp_async_latency, cp_async_commit_latency);
   max_cp_async_latency = std::max(max_cp_async_latency, cp_async_wait_latency);

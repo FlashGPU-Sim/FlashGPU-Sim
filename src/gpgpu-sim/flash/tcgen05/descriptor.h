@@ -48,6 +48,11 @@ struct tcgen05_mma_descriptor_t {
 };
 
 tcgen05_shared_descriptor_t tcgen05_decode_shared_descriptor(uint64_t desc);
+uint32_t tcgen05_shared_k_major_packed_byte_address(
+    const tcgen05_shared_descriptor_t &desc, uint32_t matrix_row,
+    uint32_t packed_k, uint32_t default_packed_k_per_row);
+bool tcgen05_mxf4_dense_shape_supported(uint32_t m, uint32_t n, uint32_t k,
+                                        unsigned cta_group);
 tcgen05_mma_descriptor_t tcgen05_decode_f16_mma_descriptor(uint32_t idesc,
                                                            unsigned cta_group);
 tcgen05_mma_descriptor_t tcgen05_decode_mxf4_mma_descriptor(uint32_t idesc,

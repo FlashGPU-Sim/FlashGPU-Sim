@@ -147,6 +147,7 @@ class cuda_sim {
   char *opcode_completion_wgmma_int_ss;
   char *opcode_completion_wgmma_int_rs;
   char *opcode_compute_throughput_wgmma;
+  char *opcode_compute_throughput_tcgen05_mxf4;
   char *opcode_latency_tma;
   char *opcode_latency_cp_async;
   char *opcode_latency_cp_async_commit;

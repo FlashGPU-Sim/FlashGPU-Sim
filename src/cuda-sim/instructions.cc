@@ -440,11 +440,16 @@ ptx_reg_t ptx_thread_info::get_operand_value(const operand_info &op,
       else if (op.get_operand_lohi() == 2)
         result.u64 = (result.u64 >> 16) & 0xFFFF;
     } else if (opType == BB128_TYPE) {
-      // b128
-      result.u128.lowest = get_reg(op.vec_symbol(0)).u32;
-      result.u128.low = get_reg(op.vec_symbol(1)).u32;
-      result.u128.high = get_reg(op.vec_symbol(2)).u32;
-      result.u128.highest = get_reg(op.vec_symbol(3)).u32;
+      // PTX permits a native .b128 register. PTXPlus also uses a legacy
+      // four-register vector representation, so retain both forms.
+      if (op.is_vector()) {
+        result.u128.lowest = get_reg(op.vec_symbol(0)).u32;
+        result.u128.low = get_reg(op.vec_symbol(1)).u32;
+        result.u128.high = get_reg(op.vec_symbol(2)).u32;
+        result.u128.highest = get_reg(op.vec_symbol(3)).u32;
+      } else {
+        result = get_reg(op.get_symbol());
+      }
     } else {
       // bb64 or ff64
       result.bits.ls = get_reg(op.vec_symbol(0)).u32;
@@ -788,28 +793,25 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
       set_reg(predName, predValue);
       set_reg(regName, setValue);
     } else if (type == BB128_TYPE) {
-      // b128 stuff here.
-      ptx_reg_t setValue2, setValue3, setValue4;
-      setValue.u64 = 0;
-      setValue2.u64 = 0;
-      setValue3.u64 = 0;
-      setValue4.u64 = 0;
-      setValue.u32 = data.u128.lowest;
-      setValue2.u32 = data.u128.low;
-      setValue3.u32 = data.u128.high;
-      setValue4.u32 = data.u128.highest;
+      if (!dst.is_vector()) {
+        set_reg(dst.get_symbol(), data);
+      } else {
+        // Legacy PTXPlus representation of b128 as four b32 registers.
+        ptx_reg_t setValue2, setValue3, setValue4;
+        setValue.u64 = 0;
+        setValue2.u64 = 0;
+        setValue3.u64 = 0;
+        setValue4.u64 = 0;
+        setValue.u32 = data.u128.lowest;
+        setValue2.u32 = data.u128.low;
+        setValue3.u32 = data.u128.high;
+        setValue4.u32 = data.u128.highest;
 
-      const symbol *name1, *name2, *name3, *name4 = NULL;
-
-      name1 = dst.vec_symbol(0);
-      name2 = dst.vec_symbol(1);
-      name3 = dst.vec_symbol(2);
-      name4 = dst.vec_symbol(3);
-
-      set_reg(name1, setValue);
-      set_reg(name2, setValue2);
-      set_reg(name3, setValue3);
-      set_reg(name4, setValue4);
+        set_reg(dst.vec_symbol(0), setValue);
+        set_reg(dst.vec_symbol(1), setValue2);
+        set_reg(dst.vec_symbol(2), setValue3);
+        set_reg(dst.vec_symbol(3), setValue4);
+      }
     } else if (type == BB64_TYPE || type == FF64_TYPE) {
       // ptxplus version of storing 64 bit values to registers stores to two
       // adjacent registers
@@ -1761,6 +1763,48 @@ void griddepcontrol_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   (void)thread;
 }
 
+void clc_try_cancel_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  assert(pI->get_num_operands() == 2);
+  const operand_info &result_op = pI->dst();
+  const operand_info &mbarrier_op = pI->src1();
+  const uint32_t result_addr =
+      thread->get_operand_value(result_op, result_op, B32_TYPE, thread, 0).u32;
+  const uint32_t mbarrier_addr = thread
+      ->get_operand_value(mbarrier_op, mbarrier_op, B32_TYPE, thread, 0)
+      .u32;
+
+  // The reduced one-CTA simulation never has a pending CTA to cancel.  The
+  // PTX ISA still requires a 128-bit result and completion of the 16-byte
+  // mbarrier transaction, so return an all-zero "not canceled" response.
+  const ptx_reg_t result = {};
+  thread->m_shared_mem->write(result_addr, sizeof(result.u128), &result.u128,
+                              thread, pI);
+  thread->m_last_effective_address = result_addr;
+  thread->m_last_memory_space = shared_space;
+
+  inst_t::mbarrier_info_t info;
+  info.bar_id = mbarrier_addr;
+  info.bar_count = sizeof(result.u128);
+  const_cast<ptx_instruction *>(pI)->set_mbarrier_info(thread->get_laneid(),
+                                                       info);
+}
+
+void clc_query_canceled_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t predicate = {};
+  predicate.pred = 1;  // PTXPlus predicate encoding: one means false.
+  thread->set_operand_value(pI->dst(), predicate, PRED_TYPE, thread, pI);
+}
+
+void clc_query_first_cta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const operand_info &dst = pI->dst();
+  assert(dst.is_vector());
+  ptx_reg_t zero = {};
+  for (unsigned i = 0; i < dst.get_vect_nelem(); ++i) {
+    const symbol *reg = dst.vec_symbol(i);
+    if (reg && reg->name() != "_") thread->set_reg(reg, zero);
+  }
+}
+
 void elect_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
   handle_elect_inst(pI, core, inst);
 }
@@ -1984,29 +2028,26 @@ static std::vector<uint16_t> tcgen05_read_shared_f16_linearized(
   return values;
 }
 
-static std::vector<uint8_t> tcgen05_read_shared_u4_linearized(
-    const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t nelem,
-    ptx_thread_info *thread) {
+static std::vector<uint8_t> tcgen05_read_shared_u4_k_major(
+    const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t rows,
+    uint32_t k, ptx_thread_info *thread) {
   assert(!desc.leading_dimension_absolute &&
          "TCGen05 MMA absolute leading-dimension mode is not implemented");
 
-  if (tcgen05_debug_enabled() && desc.swizzle_mode != 0) {
-    printf("TCGEN05_DEBUG shared_desc swizzle=%u linearized_u4 start=%u "
-           "nelem=%u\n",
-           desc.swizzle_mode, desc.start_address, nelem);
-    fflush(stdout);
-  }
-
-  // Keep the same deliberately linearized shared-memory model as the f16
-  // bring-up path, but preserve the two E2M1 values packed in each byte.
-  std::vector<uint8_t> values(nelem, 0);
-  for (uint32_t byte_index = 0; byte_index < (nelem + 1) / 2; ++byte_index) {
-    uint8_t packed = 0;
-    thread->m_shared_mem->read(desc.start_address + byte_index,
-                               sizeof(packed), &packed);
-    values[byte_index * 2] = packed & 0xf;
-    if (byte_index * 2 + 1 < nelem)
-      values[byte_index * 2 + 1] = packed >> 4;
+  assert(k % 2 == 0 && "TCGen05 MXFP4 K must contain whole packed bytes");
+  const uint32_t packed_k_per_row = k / 2;
+  std::vector<uint8_t> values(rows * k, 0);
+  for (uint32_t row = 0; row < rows; ++row) {
+    for (uint32_t packed_k = 0; packed_k < packed_k_per_row; ++packed_k) {
+      uint8_t packed = 0;
+      uint32_t address =
+          flash_gpgpu_sim::tcgen05_shared_k_major_packed_byte_address(
+              desc, row, packed_k, packed_k_per_row);
+      thread->m_shared_mem->read(address, sizeof(packed), &packed);
+      const uint32_t element = row * k + packed_k * 2;
+      values[element] = packed & 0xf;
+      values[element + 1] = packed >> 4;
+    }
   }
   return values;
 }
@@ -2124,8 +2165,8 @@ void tcgen05_relinq_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   manager.relinquish_alloc_permit(tcgen05_tmem_scope(pI, thread));
 }
 
-void tcgen05_mma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  if (!tcgen05_is_warp_leader(thread)) return;
+static void tcgen05_execute_mma_thread(const ptx_instruction *pI,
+                                       ptx_thread_info *thread) {
   tcgen05_assert_cta_group1(pI);
   assert(pI->get_num_operands() >= 5);
   bool is_f16 = tcgen05_has_option(pI, TCGEN05_KIND_F16_OPTION);
@@ -2173,16 +2214,44 @@ void tcgen05_mma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     constexpr uint32_t kScaleVectorSize = 32;
     uint32_t scales_per_row = mma_desc.k / kScaleVectorSize;
 
-    std::vector<uint8_t> a_values = tcgen05_read_shared_u4_linearized(
-        a_desc, mma_desc.m * mma_desc.k, thread);
-    std::vector<uint8_t> b_values = tcgen05_read_shared_u4_linearized(
-        b_desc, mma_desc.n * mma_desc.k, thread);
+    std::vector<uint8_t> a_values = tcgen05_read_shared_u4_k_major(
+        a_desc, mma_desc.m, mma_desc.k, thread);
+    std::vector<uint8_t> b_values = tcgen05_read_shared_u4_k_major(
+        b_desc, mma_desc.n, mma_desc.k, thread);
     std::vector<uint8_t> scale_a = manager.read_mxf4_scale_matrix(
         scope, sfa_address, mma_desc.m, scales_per_row,
         mma_desc.a_scale_factor_id);
     std::vector<uint8_t> scale_b = manager.read_mxf4_scale_matrix(
         scope, sfb_address, mma_desc.n, scales_per_row,
         mma_desc.b_scale_factor_id);
+    if (tcgen05_debug_enabled()) {
+      size_t a_nonzero = 0;
+      size_t b_nonzero = 0;
+      size_t sfa_nan = 0;
+      size_t sfb_nan = 0;
+      for (uint8_t value : a_values) a_nonzero += value != 0;
+      for (uint8_t value : b_values) b_nonzero += value != 0;
+      for (uint8_t value : scale_a) sfa_nan += value == 0xff;
+      for (uint8_t value : scale_b) sfb_nan += value == 0xff;
+      printf("TCGEN05_DEBUG mma_mxf4 line=%u tid=%u lane=%u "
+             "scope=(%u,%u,%u) idesc=0x%08x shape=%ux%ux%u "
+             "d=%u sfa=%u/%u sfb=%u/%u enable_d=%u "
+             "a_desc=0x%016llx b_desc=0x%016llx "
+             "a_nonzero=%zu/%zu b_nonzero=%zu/%zu "
+             "sfa_ff=%zu/%zu sfb_ff=%zu/%zu\n",
+             pI->source_line(), thread->get_tid().x, thread->get_laneid(),
+             scope.sm_id, scope.cta_id, scope.cta_group,
+             tcgen05_read_operand(pI, thread, 3).u32, mma_desc.m, mma_desc.n,
+             mma_desc.k, d_address, sfa_address, mma_desc.a_scale_factor_id,
+             sfb_address, mma_desc.b_scale_factor_id, enable_input_d,
+             static_cast<unsigned long long>(
+                 tcgen05_read_u64_operand(pI, thread, 1).u64),
+             static_cast<unsigned long long>(
+                 tcgen05_read_u64_operand(pI, thread, 2).u64),
+             a_nonzero, a_values.size(), b_nonzero, b_values.size(), sfa_nan,
+             scale_a.size(), sfb_nan, scale_b.size());
+      fflush(stdout);
+    }
     std::vector<uint32_t> input_d;
     if (enable_input_d) {
       input_d = manager.read_matrix_words(scope, d_address, mma_desc.m,
@@ -2192,6 +2261,16 @@ void tcgen05_mma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
         flash_gpgpu_sim::tcgen05_mma_mxf4_compute_words(
             mma_desc, a_values, b_values, scale_a, scale_b,
             kScaleVectorSize, input_d, enable_input_d);
+    if (tcgen05_debug_enabled()) {
+      size_t nan_outputs = 0;
+      for (uint32_t value : output) {
+        nan_outputs +=
+            std::isnan(flash_gpgpu_sim::tcgen05_bits_to_f32(value));
+      }
+      printf("TCGEN05_DEBUG mma_mxf4_result line=%u nan=%zu/%zu\n",
+             pI->source_line(), nan_outputs, output.size());
+      fflush(stdout);
+    }
     manager.write_matrix_words(scope, d_address, output, mma_desc.m,
                                mma_desc.n);
     return;
@@ -2266,6 +2345,37 @@ void tcgen05_mma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   std::vector<uint32_t> output = flash_gpgpu_sim::tcgen05_mma_f16_compute_words(
       mma_desc, a_values, b_values, input_d, enable_input_d);
   manager.write_matrix_words(scope, d_address, output, mma_desc.m, mma_desc.n);
+}
+
+void tcgen05_mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
+  const active_mask_t &active_mask = inst.get_active_mask();
+  if (!active_mask.any()) return;
+
+  unsigned active_lane = 0;
+  while (!active_mask.test(active_lane)) ++active_lane;
+
+  unsigned warp_id = core->get_gpu()->is_functional_sim()
+                         ? inst.warp_id_func()
+                         : inst.warp_id();
+  unsigned tid = warp_id * core->get_warp_size() + active_lane;
+  ptx_thread_info *thread = core->get_thread_info()[tid];
+  assert(thread != NULL);
+
+  if (tcgen05_has_option(pI, TCGEN05_KIND_MXF4_OPTION)) {
+    flash_gpgpu_sim::tcgen05_mma_descriptor_t desc =
+        flash_gpgpu_sim::tcgen05_decode_mxf4_mma_descriptor(
+            tcgen05_read_operand(pI, thread, 3).u32, tcgen05_cta_group(pI));
+    unsigned throughput = flash_gpgpu_sim::tcgen05_parse_mxf4_throughput(
+        thread->get_gpu()
+            ->gpgpu_ctx->func_sim->opcode_compute_throughput_tcgen05_mxf4);
+    unsigned cycles = flash_gpgpu_sim::tcgen05_mxf4_compute_cycles(
+        desc.m, desc.n, desc.k, throughput);
+    inst.tcgen05_compute_latency = cycles;
+    inst.latency = cycles;
+    inst.initiation_interval = cycles;
+  }
+
+  tcgen05_execute_mma_thread(pI, thread);
 }
 
 void tcgen05_commit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -2365,10 +2475,13 @@ void tcgen05_cp_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
   if (tcgen05_debug_enabled()) {
     printf("TCGEN05_DEBUG cp line=%u tid=%u lane=%u scope=(%u,%u,%u) "
-           "dst=%u rows=%u row_words=%u\n",
+           "dst=%u rows=%u row_words=%u src_desc=0x%016llx "
+           "start=%u leading=%u stride=%u swizzle=%u\n",
            pI->source_line(), thread->get_tid().x, thread->get_laneid(),
            scope.sm_id, scope.cta_id, scope.cta_group, dst_address, rows,
-           words_per_row);
+           words_per_row, static_cast<unsigned long long>(src_desc_value),
+           src_desc.start_address, src_desc.leading_dimension_byte_offset,
+           src_desc.stride_dimension_byte_offset, src_desc.swizzle_mode);
     fflush(stdout);
   }
   manager.write_matrix_words(scope, dst_address, values, rows, words_per_row);

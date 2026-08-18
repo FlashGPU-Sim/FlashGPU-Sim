@@ -78,6 +78,10 @@ public:
   bool try_wait(gpgpu_sim *gpu, const thread_index_t &thread_index,
                 uint64_t addr, int parity);
 
+  /** Test the barrier phase without registering the warp as a waiter. */
+  bool test_wait(gpgpu_sim *gpu, const thread_index_t &thread_index,
+                 uint64_t addr, int parity) const;
+
   /**
    * Arrive at the mbarrier at addr with arrival_count for warp warp_id.
    * @return the set of warp ids that are released due to this arrive.

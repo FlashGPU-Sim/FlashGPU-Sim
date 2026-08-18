@@ -35,12 +35,17 @@ uint32_t make_f16_idesc(uint32_t m, uint32_t n, bool transpose_b = false) {
 }
 
 uint32_t make_mxf4_idesc(uint32_t n, uint8_t a_scale_factor_id = 0,
-                         uint8_t b_scale_factor_id = 0) {
+                         uint8_t b_scale_factor_id = 0, uint32_t m = 128,
+                         uint32_t k = 64, bool negate_a = false,
+                         bool negate_b = false) {
   return (static_cast<uint32_t>(b_scale_factor_id) << 4) |
          (TCGEN05_MXF4_FORMAT_E2M1 << 7) |
-         (TCGEN05_MXF4_FORMAT_E2M1 << 10) | ((n >> 3) << 17) |
-         (TCGEN05_SCALE_FORMAT_UE8M0 << 23) | ((128u >> 4) << 24) |
-         (static_cast<uint32_t>(a_scale_factor_id) << 29);
+         (TCGEN05_MXF4_FORMAT_E2M1 << 10) |
+         (static_cast<uint32_t>(negate_a) << 13) |
+         (static_cast<uint32_t>(negate_b) << 14) | ((n >> 3) << 17) |
+         (TCGEN05_SCALE_FORMAT_UE8M0 << 23) | ((m >> 7) << 27) |
+         (static_cast<uint32_t>(a_scale_factor_id) << 29) |
+         (static_cast<uint32_t>(k == 96) << 31);
 }
 
 }  // namespace
@@ -221,18 +226,12 @@ TEST(Tcgen05TmemTest, PackedU16MatrixReadSplitsWordsByRow) {
             std::vector<uint16_t>({1, 2, 3, 4, 5, 6, 7, 8}));
 }
 
-TEST(Tcgen05TmemTest, Warpx4CopyTransposesAndBroadcasts32x128Bits) {
+TEST(Tcgen05TmemTest, Warpx4CopyBroadcasts32x128BitRows) {
   std::vector<uint32_t> source(128, 0);
-  uint32_t expected[32][4] = {};
   for (uint32_t data_path = 0; data_path < 32; ++data_path) {
     for (uint32_t word = 0; word < 4; ++word) {
-      expected[data_path][word] =
+      source[data_path * 4 + word] =
           0x01020408u * (data_path + 1) ^ (0x11111111u * word);
-      for (uint32_t bit = 0; bit < 32; ++bit) {
-        uint32_t value = (expected[data_path][word] >> bit) & 0x1;
-        uint32_t source_bit = data_path + (word * 32 + bit) * 32;
-        source[source_bit / 32] |= value << (source_bit % 32);
-      }
     }
   }
 
@@ -241,7 +240,8 @@ TEST(Tcgen05TmemTest, Warpx4CopyTransposesAndBroadcasts32x128Bits) {
   ASSERT_EQ(result.size(), 128u * 4u);
   for (uint32_t data_path = 0; data_path < 128; ++data_path) {
     for (uint32_t word = 0; word < 4; ++word) {
-      EXPECT_EQ(result[data_path * 4 + word], expected[data_path % 32][word]);
+      EXPECT_EQ(result[data_path * 4 + word],
+                source[(data_path % 32) * 4 + word]);
     }
   }
 }
@@ -386,17 +386,108 @@ TEST(Tcgen05TmemTest, DecodeInstructionDescriptorF16) {
 
 TEST(Tcgen05TmemTest, DecodeInstructionDescriptorMxf4Block32) {
   tcgen05_mma_descriptor_t desc =
-      tcgen05_decode_mxf4_mma_descriptor(make_mxf4_idesc(64, 2, 3), 1);
+      tcgen05_decode_mxf4_mma_descriptor(make_mxf4_idesc(64, 2, 2), 1);
 
   EXPECT_FALSE(desc.sparse);
   EXPECT_EQ(desc.a_type, TCGEN05_MXF4_FORMAT_E2M1);
   EXPECT_EQ(desc.b_type, TCGEN05_MXF4_FORMAT_E2M1);
   EXPECT_EQ(desc.scale_format, TCGEN05_SCALE_FORMAT_UE8M0);
   EXPECT_EQ(desc.a_scale_factor_id, 2u);
-  EXPECT_EQ(desc.b_scale_factor_id, 3u);
+  EXPECT_EQ(desc.b_scale_factor_id, 2u);
   EXPECT_EQ(desc.m, 128u);
   EXPECT_EQ(desc.n, 64u);
   EXPECT_EQ(desc.k, 64u);
+}
+
+TEST(Tcgen05TmemTest, Mxf4DenseShapesMatchPtxIsaTable) {
+  for (uint32_t n = 8; n <= 256; n += 8) {
+    EXPECT_TRUE(tcgen05_mxf4_dense_shape_supported(128, n, 64, 1));
+    tcgen05_mma_descriptor_t desc = tcgen05_decode_mxf4_mma_descriptor(
+        make_mxf4_idesc(n), /*cta_group=*/1);
+    EXPECT_EQ(desc.m, 128u);
+    EXPECT_EQ(desc.n, n);
+    EXPECT_EQ(desc.k, 64u);
+  }
+
+  for (uint32_t n = 16; n <= 256; n += 16) {
+    for (uint32_t m : {128u, 256u}) {
+      EXPECT_TRUE(tcgen05_mxf4_dense_shape_supported(m, n, 64, 2));
+      tcgen05_mma_descriptor_t desc = tcgen05_decode_mxf4_mma_descriptor(
+          make_mxf4_idesc(n, 0, 0, m, 64), /*cta_group=*/2);
+      EXPECT_EQ(desc.m, m);
+      EXPECT_EQ(desc.n, n);
+      EXPECT_EQ(desc.k, 64u);
+    }
+
+    EXPECT_TRUE(tcgen05_mxf4_dense_shape_supported(256, n, 96, 2));
+    for (uint8_t scale_factor_id = 0; scale_factor_id < 4;
+         ++scale_factor_id) {
+      tcgen05_mma_descriptor_t k96 = tcgen05_decode_mxf4_mma_descriptor(
+          make_mxf4_idesc(n, scale_factor_id, scale_factor_id, 256, 96),
+          /*cta_group=*/2);
+      EXPECT_EQ(k96.m, 256u);
+      EXPECT_EQ(k96.n, n);
+      EXPECT_EQ(k96.k, 96u);
+      EXPECT_EQ(k96.a_scale_factor_id, scale_factor_id);
+      EXPECT_EQ(k96.b_scale_factor_id, scale_factor_id);
+    }
+  }
+
+  EXPECT_FALSE(tcgen05_mxf4_dense_shape_supported(256, 8, 64, 1));
+  EXPECT_FALSE(tcgen05_mxf4_dense_shape_supported(128, 8, 64, 2));
+  EXPECT_FALSE(tcgen05_mxf4_dense_shape_supported(128, 16, 96, 2));
+}
+
+TEST(Tcgen05TmemTest, Mxf4DescriptorPreservesNegateBits) {
+  tcgen05_mma_descriptor_t desc = tcgen05_decode_mxf4_mma_descriptor(
+      make_mxf4_idesc(8, 0, 0, 128, 64, true, false), 1);
+  EXPECT_TRUE(desc.negate_a);
+  EXPECT_FALSE(desc.negate_b);
+}
+
+TEST(Tcgen05TmemTest, Mxf4KMajorPackedAddressLinearFallback) {
+  tcgen05_shared_descriptor_t desc = tcgen05_decode_shared_descriptor(
+      make_shared_desc(/*start=*/0x100, /*lbo=*/0, /*sbo=*/0));
+
+  EXPECT_EQ(tcgen05_shared_k_major_packed_byte_address(desc, 0, 0, 32),
+            0x100u);
+  EXPECT_EQ(tcgen05_shared_k_major_packed_byte_address(desc, 1, 2, 32),
+            0x122u);
+  EXPECT_EQ(tcgen05_shared_k_major_packed_byte_address(desc, 127, 31, 32),
+            0x10ffu);
+}
+
+TEST(Tcgen05TmemTest, Mxf4KMajorPackedAddressApplies128ByteSwizzle) {
+  tcgen05_shared_descriptor_t desc = tcgen05_decode_shared_descriptor(
+      make_shared_desc(/*start=*/0x400, /*lbo=*/0x10, /*sbo=*/0x400,
+                       /*swizzle=*/2));
+
+  EXPECT_EQ(tcgen05_shared_k_major_packed_byte_address(desc, 0, 0, 32),
+            0x400u);
+  EXPECT_EQ(tcgen05_shared_k_major_packed_byte_address(desc, 1, 0, 32),
+            0x490u);
+  EXPECT_EQ(tcgen05_shared_k_major_packed_byte_address(desc, 7, 0, 32),
+            0x7f0u);
+  EXPECT_EQ(tcgen05_shared_k_major_packed_byte_address(desc, 8, 0, 32),
+            0x800u);
+}
+
+TEST(Tcgen05TmemTest, Mxf4TheoreticalTimingScalesWithDescriptorWork) {
+  EXPECT_EQ(tcgen05_mxf4_dense_work(128, 8, 64), 131072u);
+  EXPECT_EQ(tcgen05_mxf4_compute_cycles(128, 8, 64, 56306), 3u);
+  EXPECT_EQ(tcgen05_mxf4_compute_cycles(128, 256, 64, 56306), 75u);
+  EXPECT_EQ(tcgen05_mxf4_compute_cycles(256, 256, 96, 56306), 224u);
+}
+
+TEST(Tcgen05TmemTest, Mxf4TimingBackendSerializesFrontendPipes) {
+  tcgen05_timing_model_t timing;
+  EXPECT_TRUE(timing.can_issue(100));
+  timing.reserve(100, 75);
+  EXPECT_FALSE(timing.can_issue(174));
+  EXPECT_TRUE(timing.can_issue(175));
+  EXPECT_EQ(timing.backend_ready_cycle(), 175u);
+  timing.reset();
+  EXPECT_TRUE(timing.can_issue(0));
 }
 
 TEST(Tcgen05TmemTest, Mxf4NumericFormats) {
@@ -475,4 +566,20 @@ TEST(Tcgen05TmemTest, MmaMxf4Block32KnownScalesAndAccum) {
   ASSERT_EQ(result.size(), desc.m * desc.n);
   EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.front()), 66.5f);
   EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.back()), 66.5f);
+}
+
+TEST(Tcgen05TmemTest, MmaMxf4AppliesDescriptorNegation) {
+  tcgen05_mma_descriptor_t desc = tcgen05_decode_mxf4_mma_descriptor(
+      make_mxf4_idesc(8, 0, 0, 128, 64, true, false), 1);
+  std::vector<uint8_t> a(desc.m * desc.k, 0x2);
+  std::vector<uint8_t> b(desc.n * desc.k, 0x2);
+  std::vector<uint8_t> scale_a(desc.m * 2, 127);
+  std::vector<uint8_t> scale_b(desc.n * 2, 127);
+
+  std::vector<uint32_t> result = tcgen05_mma_mxf4_compute_words(
+      desc, a, b, scale_a, scale_b, 32, {}, false);
+
+  ASSERT_EQ(result.size(), desc.m * desc.n);
+  EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.front()), -64.0f);
+  EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.back()), -64.0f);
 }

@@ -5316,8 +5316,10 @@ extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
   }
 
   // Null pointer checks
-  if (!tensorMap || !globalAddress || !globalDim || !globalStrides ||
-      !boxDim || !elementStrides)
+  // Pointer-array TMA kernels intentionally encode a template descriptor with
+  // a zero global base and replace that field on device before use.
+  if (!tensorMap || !globalDim || !globalStrides || !boxDim ||
+      !elementStrides)
     return CUDA_ERROR_INVALID_VALUE;
 
   // tensorRank: must be 1-5
@@ -5350,7 +5352,7 @@ extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
   }
 
   // Enum range checks
-  if (swizzle > CU_TENSOR_MAP_SWIZZLE_128B_ATOM_32B)
+  if (swizzle > CU_TENSOR_MAP_SWIZZLE_128B_ATOM_64B)
     return CUDA_ERROR_INVALID_VALUE;
   if (interleave > CU_TENSOR_MAP_INTERLEAVE_32B)
     return CUDA_ERROR_INVALID_VALUE;
@@ -5373,6 +5375,15 @@ extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
     case CU_TENSOR_MAP_DATA_TYPE_FLOAT32:  desc.fields.tensorDataType = TMA_DTYPE_F32;  break;
     case CU_TENSOR_MAP_DATA_TYPE_FLOAT64:  desc.fields.tensorDataType = TMA_DTYPE_F64;  break;
     case CU_TENSOR_MAP_DATA_TYPE_BFLOAT16: desc.fields.tensorDataType = TMA_DTYPE_BF16; break;
+    case CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN8B:
+      desc.fields.tensorDataType = TMA_DTYPE_16U4_ALIGN8B;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN16B:
+      desc.fields.tensorDataType = TMA_DTYPE_16U4_ALIGN16B;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_16U6_ALIGN16B:
+      desc.fields.tensorDataType = TMA_DTYPE_16U6_ALIGN16B;
+      break;
     default:
       printf("WARNING: cuTensorMapEncodeTiled: unsupported tensorDataType %d\n",
              (int)tensorDataType);
@@ -5381,11 +5392,11 @@ extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
 
   // When interleave is NONE, boxDim[0] * elementSize must be a multiple of 16
   if (interleave == CU_TENSOR_MAP_INTERLEAVE_NONE) {
-    uint32_t elemSize = desc.get_element_size();
-    if ((boxDim[0] * elemSize) % 16 != 0) {
-      printf("WARNING: cuTensorMapEncodeTiled: boxDim[0]=%u * elemSize=%u = %u "
+    uint64_t rowBytes = desc.get_dim0_span_bytes(boxDim[0]);
+    if (rowBytes % 16 != 0) {
+      printf("WARNING: cuTensorMapEncodeTiled: boxDim[0]=%u spans %llu bytes "
              "is not a multiple of 16\n",
-             boxDim[0], elemSize, boxDim[0] * elemSize);
+             boxDim[0], static_cast<unsigned long long>(rowBytes));
       return CUDA_ERROR_INVALID_VALUE;
     }
   }

@@ -62,6 +62,7 @@
 #include "flash/bulk_group.h"
 #include "flash/tma.h"
 #include "flash/wgmma/tensor_wgmma.h"
+#include "flash/tcgen05/timing.h"
 #include "flash/tma.h"
 
 #define NO_OP_FLAG 0xFF
@@ -1160,6 +1161,8 @@ class barrier_set_t {
                              const ptx_instruction *static_inst,
                              const warp_inst_t *dynamic_inst,
                              const active_mask_t &active_mask);
+  bool test_mbarrier(unsigned cta_id, unsigned warp_id, uint32_t addr,
+                     bool parity) const;
   // complete_tx for TMA usages
   void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
                    uint32_t completed_tx_count);
@@ -2485,6 +2488,8 @@ class shader_core_ctx : public core_t {
   PowerscalingCoefficients *scaling_coeffs;
   // accessors
   bool tma_response_buffer_full() const;
+  bool test_mbarrier(unsigned hw_cta_id, unsigned hw_warp_id, uint64_t addr,
+                     bool parity) const override;
   unsigned get_total_ctas_issued() const { return m_total_ctas_issued; }
   bool fetch_unit_response_buffer_full() const;
   bool ldst_unit_response_buffer_full() const;
@@ -2860,11 +2865,14 @@ class shader_core_ctx : public core_t {
   friend class scheduler_unit;  // this is needed to use private issue warp.
   friend class TwoLevelScheduler;
   friend class LooseRoundRobbinScheduler;
+  friend class tensor_core;
   bool can_issue_wgmma_warpgroup(const unsigned *warp_ids, unsigned count,
                                  register_set &pipe_reg_set,
                                  const warp_inst_t *inst) const;
   unsigned wgmma_cta_warpgroup_id(unsigned warp_id) const;
   bool wgmma_issued_this_cycle() const { return m_wgmma_issued_this_cycle; }
+  bool tcgen05_backend_can_issue() const;
+  void reserve_tcgen05_backend(unsigned compute_cycles);
   void mark_scheduler_issued(unsigned sch_id);
   void mark_wgmma_issued();
   unsigned long long wgmma_rf_traffic_tokens(const warp_inst_t *inst) const;
@@ -2963,6 +2971,7 @@ class shader_core_ctx : public core_t {
   std::vector<shd_warp_t *> m_warp;  // per warp information array
   barrier_set_t m_barriers;
   flash_gpgpu_sim::wgmma_unit_t m_wgmma;
+  flash_gpgpu_sim::tcgen05_timing_model_t m_tcgen05_timing;
   ifetch_buffer_t m_inst_fetch_buffer;
   std::vector<register_set> m_pipeline_reg;
   Scoreboard *m_scoreboard;

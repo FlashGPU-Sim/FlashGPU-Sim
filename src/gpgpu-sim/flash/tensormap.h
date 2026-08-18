@@ -19,6 +19,9 @@ class ptx_instruction;
 #define TMA_DTYPE_F32 7u
 #define TMA_DTYPE_F64 9u
 #define TMA_DTYPE_BF16 10u
+#define TMA_DTYPE_16U4_ALIGN8B 13u
+#define TMA_DTYPE_16U4_ALIGN16B 14u
+#define TMA_DTYPE_16U6_ALIGN16B 15u
 
 // Interleave layout modes (in bytes)
 #define TMA_INTERLEAVE_NONE 0u
@@ -30,7 +33,12 @@ class ptx_instruction;
 #define TMA_SWIZZLE_32B 1u
 #define TMA_SWIZZLE_64B 2u
 #define TMA_SWIZZLE_128B 3u
-#define TMA_SWIZZLE_96B 4u
+#define TMA_SWIZZLE_128B_ATOM_32B 4u
+#define TMA_SWIZZLE_128B_ATOM_32B_FLIP_8B 5u
+#define TMA_SWIZZLE_128B_ATOM_64B 6u
+// The tiled tensor-map CUDA API uses values 0..6 above. Keep the PTX 96B
+// layout distinct so value 4 cannot be misdecoded as 96B.
+#define TMA_SWIZZLE_96B 7u
 
 // Out-of-bound fill modes
 #define TMA_OOB_ZERO 0u
@@ -64,6 +72,10 @@ typedef union __attribute__((aligned(128))) tensormap_descriptor_t {
 
   // Helpers
   uint32_t get_element_size() const;
+  uint32_t get_element_bits() const;
+  bool is_packed() const;
+  uint64_t get_dim0_byte_offset(uint64_t element_index) const;
+  uint64_t get_dim0_span_bytes(uint64_t element_count) const;
   uint32_t get_tile_size_bytes() const;
   uint64_t calculate_src_addr(const int32_t coords[5]) const;
   uint32_t num_dims() const { return fields.tensorRank + 1u; }

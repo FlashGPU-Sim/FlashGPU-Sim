@@ -827,6 +827,7 @@ class inst_t {
     initiation_interval = 1;
     wgmma_compute_latency = 0;
     wgmma_completion_tail_latency = 0;
+    tcgen05_compute_latency = 0;
     for (unsigned i = 0; i < MAX_REG_OPERANDS; i++) {
       arch_reg.src[i] = -1;
       arch_reg.dst[i] = -1;
@@ -1003,6 +1004,7 @@ public:
   unsigned initiation_interval;
   unsigned wgmma_compute_latency;
   unsigned wgmma_completion_tail_latency;
+  unsigned tcgen05_compute_latency;
 
   unsigned data_size;  // what is the size of the word being operated on?
   memory_space_t space;
@@ -1349,6 +1351,14 @@ class core_t {
   virtual ~core_t() { free(m_thread); }
   virtual void warp_exit(unsigned warp_id) = 0;
   virtual bool warp_waiting_at_barrier(unsigned warp_id) const = 0;
+  // Functional-only execution completes asynchronous memory operations
+  // synchronously, so its default mbarrier state is always ready. Timing
+  // cores override this with a non-blocking query of the modeled barrier.
+  virtual bool test_mbarrier(unsigned /*hw_cta_id*/,
+                             unsigned /*hw_warp_id*/, uint64_t /*addr*/,
+                             bool /*parity*/) const {
+    return true;
+  }
   virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,
                                              unsigned tid) = 0;
   class gpgpu_sim *get_gpu() { return m_gpu; }

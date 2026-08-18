@@ -46,6 +46,7 @@ typedef void *yyscan_t;
 #include "../abstract_hardware_model.h"
 #include "../gpgpu-sim/gpu-sim.h"
 #include "../gpgpu-sim/flash/wgmma/tensor_wgmma.h"
+#include "../gpgpu-sim/flash/tcgen05/timing.h"
 #include "../gpgpusim_entrypoint.h"
 #include "../statwrapper.h"
 #include "../stream_manager.h"
@@ -211,6 +212,12 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
       "WGMMA non-overlappable compute throughput in work/cycle per SM "
       "<f16/bf16,tf32,fp8,int8,b1>. Default 4096,2048,8192,8192,65536",
       "4096,2048,8192,8192,65536");
+  option_parser_register(
+      opp, "-ptx_opcode_compute_throughput_tcgen05_mxf4", OPT_CSTR,
+      &opcode_compute_throughput_tcgen05_mxf4,
+      "TCGen05 dense MXFP4 throughput in FLOP/cycle per SM. "
+      "Default 56306 (9 PFLOP/s over 148 SMs at 1.08 GHz)",
+      "56306");
   option_parser_register(opp, "-ptx_opcode_latency_tma", OPT_CSTR,
                          &opcode_latency_tma,
                          "Opcode latency for TMA (cp.async.bulk) instructions"
@@ -888,7 +895,8 @@ void ptx_instruction::set_fp_or_int_archop() {
   oprnd_type = UN_OP;
   if ((m_opcode == MEMBAR_OP) || (m_opcode == SSY_OP) || (m_opcode == BRA_OP) ||
       (m_opcode == BAR_OP) || (m_opcode == RET_OP) || (m_opcode == RETP_OP) ||
-      (m_opcode == NOP_OP) || (m_opcode == EXIT_OP) || (m_opcode == CALLP_OP) ||
+      (m_opcode == NOP_OP) || (m_opcode == BRKPT_OP) ||
+      (m_opcode == EXIT_OP) || (m_opcode == CALLP_OP) ||
       (m_opcode == CALL_OP) || (m_opcode == TENSORMAP_OP) || (m_opcode == FENCE_OP) ||
       (m_opcode == GRIDDEPCONTROL_OP) || (m_opcode == ELECT_OP) ||
       (m_opcode == LDMATRIX_OP) || (m_opcode == STMATRIX_OP) ||
@@ -927,6 +935,7 @@ void ptx_instruction::set_mul_div_or_other_archop() {
   sp_op = OTHER_OP;
   if ((m_opcode != MEMBAR_OP) && (m_opcode != SSY_OP) && (m_opcode != BRA_OP) &&
       (m_opcode != BAR_OP) && (m_opcode != EXIT_OP) && (m_opcode != NOP_OP) &&
+      (m_opcode != BRKPT_OP) &&
       (m_opcode != RETP_OP) && (m_opcode != RET_OP) && (m_opcode != CALLP_OP) &&
       (m_opcode != CALL_OP) && (m_opcode != TENSORMAP_OP) && (m_opcode != FENCE_OP) &&
       (m_opcode != GRIDDEPCONTROL_OP) && (m_opcode != ELECT_OP) &&
@@ -1381,6 +1390,7 @@ void ptx_instruction::set_opcode_and_latency() {
       op = BARRIER_OP;
       break;
     case MBAR_OP:
+    case CLC_TRY_CANCEL_OP:
       op = MBARRIER_OP;
       break;
     case TMA_OP:
@@ -2514,7 +2524,8 @@ int tensorcore_op(int inst_opcode) {
       (inst_opcode == WGMMA_MMA_ASYNC_SP_OP) ||
       (inst_opcode == WGMMA_FENCE_OP) ||
       (inst_opcode == WGMMA_COMMIT_GROUP_OP) ||
-      (inst_opcode == WGMMA_WAIT_GROUP_OP) || (inst_opcode == SETMAXNREG_OP))
+      (inst_opcode == WGMMA_WAIT_GROUP_OP) ||
+      (inst_opcode == TCGEN05_MMA_OP) || (inst_opcode == SETMAXNREG_OP))
     return 1;
   else
     return 0;
