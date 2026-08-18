@@ -15,6 +15,7 @@ sources = [
 
   # SM100 simulator TMA integration tests.
   "tma/tma_linear_bulk_lifecycle_test.cu",
+  "tma/tma_subbyte_layout_test.cu",
 
   # SM100 host-side component tests.
   "unit/addrdec_l2_slice_test.cc",

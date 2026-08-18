@@ -559,6 +559,47 @@ TEST(Tcgen05TmemTest, Mxf8f6f4DenseShapesMatchPtxIsaTable) {
   EXPECT_FALSE(tcgen05_mxf8f6f4_dense_shape_supported(128, 16, 64, 2));
 }
 
+TEST(Tcgen05TmemTest, Mxf8f6f4SharedLocationsMatchPaddedTmaContainers) {
+  auto fp4_0 = tcgen05_mxf8f6f4_shared_location(
+      0, TCGEN05_MXF8F6F4_FORMAT_E2M1);
+  auto fp4_1 = tcgen05_mxf8f6f4_shared_location(
+      1, TCGEN05_MXF8F6F4_FORMAT_E2M1);
+  auto fp4_15 = tcgen05_mxf8f6f4_shared_location(
+      15, TCGEN05_MXF8F6F4_FORMAT_E2M1);
+  auto fp4_16 = tcgen05_mxf8f6f4_shared_location(
+      16, TCGEN05_MXF8F6F4_FORMAT_E2M1);
+  EXPECT_EQ(fp4_0.byte_offset, 0u);
+  EXPECT_EQ(fp4_0.bit_offset, 0u);
+  EXPECT_EQ(fp4_1.byte_offset, 0u);
+  EXPECT_EQ(fp4_1.bit_offset, 4u);
+  EXPECT_EQ(fp4_15.byte_offset, 7u);
+  EXPECT_EQ(fp4_15.bit_offset, 4u);
+  EXPECT_EQ(fp4_16.byte_offset, 16u);
+  EXPECT_EQ(fp4_16.bit_offset, 0u);
+
+  auto fp6_3 = tcgen05_mxf8f6f4_shared_location(
+      3, TCGEN05_MXF8F6F4_FORMAT_E2M3);
+  auto fp6_15 = tcgen05_mxf8f6f4_shared_location(
+      15, TCGEN05_MXF8F6F4_FORMAT_E3M2);
+  auto fp6_16 = tcgen05_mxf8f6f4_shared_location(
+      16, TCGEN05_MXF8F6F4_FORMAT_E2M3);
+  EXPECT_EQ(fp6_3.byte_offset, 2u);
+  EXPECT_EQ(fp6_3.bit_offset, 2u);
+  EXPECT_EQ(fp6_15.byte_offset, 11u);
+  EXPECT_EQ(fp6_15.bit_offset, 2u);
+  EXPECT_EQ(fp6_16.byte_offset, 16u);
+  EXPECT_EQ(fp6_16.bit_offset, 0u);
+
+  auto fp8_15 = tcgen05_mxf8f6f4_shared_location(
+      15, TCGEN05_MXF8F6F4_FORMAT_E4M3);
+  auto fp8_16 = tcgen05_mxf8f6f4_shared_location(
+      16, TCGEN05_MXF8F6F4_FORMAT_E5M2);
+  EXPECT_EQ(fp8_15.byte_offset, 15u);
+  EXPECT_EQ(fp8_15.bit_offset, 0u);
+  EXPECT_EQ(fp8_16.byte_offset, 16u);
+  EXPECT_EQ(fp8_16.bit_offset, 0u);
+}
+
 TEST(Tcgen05TmemTest, Mxf4KMajorPackedAddressLinearFallback) {
   tcgen05_shared_descriptor_t desc = tcgen05_decode_shared_descriptor(
       make_shared_desc(/*start=*/0x100, /*lbo=*/0, /*sbo=*/0));
