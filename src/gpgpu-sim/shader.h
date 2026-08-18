@@ -1540,7 +1540,7 @@ class shader_memory_interface;
 class shader_core_mem_fetch_allocator;
 class cache_t;
 
-// Ordinary LD/ST request issue and response retirement are shader-pipeline
+// LD/ST request issue and response retirement are shader-pipeline
 // concerns, even though they consume the shared memory-transport budget.
 enum ldst_request_issue_stop_reason {
   LDST_REQUEST_DRAINED,
@@ -1557,7 +1557,7 @@ struct ldst_request_issue_result {
   unsigned issued;
 };
 
-// Drain ordinary global/local coalescer children into the request injection
+// Drain global/local coalescer children into the request injection
 // path.  On sector-coalescing architectures each queue element is one internal
 // 32-byte sector child; this helper deliberately does not claim that each child
 // is a distinct physical L2 request.  The callbacks keep the helper independent

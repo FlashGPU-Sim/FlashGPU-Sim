@@ -181,7 +181,7 @@ TEST(MemoryTransportTest, EachConsumerCanOwnTheFullResponseBudget) {
   }
 }
 
-TEST(MemoryTransportTest, OrdinaryLdstRequestWidthsPushOneTwoOrFourPerTick) {
+TEST(MemoryTransportTest, LdstRequestWidthsPushOneTwoOrFourPerTick) {
   for (unsigned width : {1u, 2u, 4u}) {
     SCOPED_TRACE(width);
     std::deque<unsigned> children(6, 1);
@@ -215,7 +215,7 @@ TEST(MemoryTransportTest, OrdinaryLdstRequestWidthsPushOneTwoOrFourPerTick) {
   }
 }
 
-TEST(MemoryTransportTest, OrdinaryLdstRequestBackpressurePreservesChildren) {
+TEST(MemoryTransportTest, LdstRequestBackpressurePreservesChildren) {
   std::deque<unsigned> children(4, 1);
   memory_transport_service_budget budget;
   memory_transport_service_stats stats;
@@ -262,7 +262,7 @@ TEST(MemoryTransportTest, OrdinaryLdstRequestBackpressurePreservesChildren) {
 }
 
 TEST(MemoryTransportTest,
-     OrdinaryLdstRequestInitializesOneCompletionForAllChildren) {
+     LdstRequestInitializesOneCompletionForAllChildren) {
   struct SyntheticInstruction {
     unsigned id;
   };
@@ -311,7 +311,7 @@ TEST(MemoryTransportTest,
 }
 
 TEST(MemoryTransportTest,
-     OrdinaryLdstRequestSideEffectsRunOncePerAcceptedStoreOrAtomicChild) {
+     LdstRequestSideEffectsRunOncePerAcceptedStoreOrAtomicChild) {
   enum ChildKind { STORE_CHILD, ATOMIC_CHILD };
   struct Child {
     ChildKind kind;

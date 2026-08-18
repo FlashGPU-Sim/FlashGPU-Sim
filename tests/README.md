@@ -57,7 +57,7 @@ level; selecting one profile expands its compile-time modes.
 ```bash
 ./run_tests.py run --arch sm100 --group unit
 ./run_tests.py run --arch sm120 --group unit
-./run_tests.py run --arch sm120 --group tma CudaTMATest
+./run_tests.py run --arch sm120 --group tma TmaProducerConsumerTest
 ./run_tests.py run --arch sm90 --group fa2 --profile smoke
 ./run_tests.py run --arch sm120 --group fa2 --profile smoke
 ./run_tests.py run --arch sm90 --group fa3 \

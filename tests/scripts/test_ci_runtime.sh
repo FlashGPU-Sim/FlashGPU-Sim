@@ -53,7 +53,7 @@ TEST_SUITES=(
   "MMABF16M16N8K16Test.*"
   "MBarrierThreadLevelTest.*"
   "MBarrierSanityTest.*"
-  "CudaTMATest.*"
+  "TmaProducerConsumerTest.*"
   "VariousSizes/CudaVectorAddParameterizedTest.*"
 )
 
@@ -75,7 +75,7 @@ for test_pattern in "${TEST_SUITES[@]}"; do
     MBarrier*)
       test_group="barrier"
       ;;
-    CudaTMA*)
+    TmaProducerConsumerTest*)
       test_group="tma"
       ;;
     Cuda*|LdMatrix*|StMatrix*|VariousSizes/*)
@@ -83,13 +83,8 @@ for test_pattern in "${TEST_SUITES[@]}"; do
       ;;
   esac
 
-  # Run test in a subshell with proper environment and capture result
-  # Skip CudaTMATest.PerformanceComparison for CudaTMATest suite
-  if [[ "$test_pattern" == "CudaTMATest.*" ]]; then
-    filter="CudaTMATest.*-CudaTMATest.PerformanceComparison"
-  else
-    filter="$test_pattern"
-  fi
+  # Run test in a subshell with proper environment and capture result.
+  filter="$test_pattern"
 
   if timeout "$TIMEOUT_PER_TEST" ./tests/run_tests.py -c "$TEST_CONFIG" \
       run --arch sm120 --group "$test_group" \

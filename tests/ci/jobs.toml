@@ -11,7 +11,7 @@ tests = [
   { name = "unit", group = "unit" },
   { name = "integration", group = "integration" },
   { name = "barrier", group = "barrier", gtest_filter = "*-MBarrierSanityTest.*" },
-  { name = "tma", group = "tma", gtest_filter = "*-*CPAsyncMethod*:*PerformanceComparison*" },
+  { name = "tma", group = "tma", gtest_filter = "*-*CPAsyncMethod*" },
   { name = "mma", group = "mma" },
   { name = "trace", group = "trace", profile = "gpt2" },
 ]

@@ -552,13 +552,13 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_ldst_request_width", OPT_UINT32,
       &gpgpu_ldst_request_width,
-      "Ordinary global/local coalescer children injected per SM and core tick; "
+      "Global/local coalescer children injected per SM and core tick; "
       "on sector-coalescing architectures each child is 32 bytes (0=legacy)",
       "0");
   option_parser_register(
       opp, "-gpgpu_ldst_response_sectors_per_cycle", OPT_UINT32,
       &gpgpu_ldst_response_sectors_per_cycle,
-      "Ordinary LD/ST response sectors advanced per SM and core tick "
+      "LD/ST response sectors advanced per SM and core tick "
       "(0=legacy)",
       "0");
   option_parser_register(

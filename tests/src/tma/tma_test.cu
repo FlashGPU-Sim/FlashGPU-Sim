@@ -1,316 +1,23 @@
-#include <chrono>
-#include <cmath>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
-#include <memory>
-#include <random>
+
+#include <array>
+#include <cstdint>
+#include <cstdio>
+#include <numeric>
 #include <vector>
 
 #include "cp_kernels.cuh"
+#include "ptx/mbarrier.cuh"
 
-// Template parameters for configurable test
-template <int STAGES = 2, int NUM_PRODUCERS = 1, int NUM_CONSUMERS = 1,
-          int CHUNK_SIZE = 256>
-struct TMAConfig {
-  static constexpr int stages = STAGES;
-  static constexpr int num_producers = NUM_PRODUCERS;
-  static constexpr int num_consumers = NUM_CONSUMERS;
-  static constexpr int chunk_size = CHUNK_SIZE;
-  static constexpr int total_warps = num_producers + num_consumers;
-};
-
-// Test class for CUDA TMA functionality
-class CudaTMATest : public ::testing::Test {
-protected:
-  void SetUp() override {
-    // Test with 1MB of data
-    num_elements = 262144; // 1MB / 4 bytes per float
-    data_size_bytes = num_elements * sizeof(float);
-
-    // Allocate host memory
-    h_input.resize(num_elements);
-
-    // Initialize with random data
-    std::random_device rd;
-    std::mt19937 gen(42); // Fixed seed for reproducibility
-    std::uniform_int_distribution<int> dis(1, 10);
-
-    for (size_t i = 0; i < num_elements; ++i) {
-      h_input[i] = dis(gen);
-      //   h_input[i] = 2;
-    }
-  }
-
-  void TearDown() override {
-    // Cleanup handled by vectors and RAII
-  }
-
-  // CUDA error checking helpers
-  cudaError_t checkCudaError(cudaError_t error, const char *message) {
-    if (error != cudaSuccess) {
-      fprintf(stderr, "CUDA Error: %s - %s\n", message,
-              cudaGetErrorString(error));
-    }
-    return error;
-  }
-
-  bool cudaSafeMalloc(void **ptr, size_t size) {
-    cudaError_t error = cudaMalloc(ptr, size);
-    return checkCudaError(error, "cudaMalloc") == cudaSuccess;
-  }
-
-  bool cudaSafeMemcpy(void *dst, const void *src, size_t size,
-                      cudaMemcpyKind kind) {
-    cudaError_t error = cudaMemcpy(dst, src, size, kind);
-    return checkCudaError(error, "cudaMemcpy") == cudaSuccess;
-  }
-
-  void cudaSafeFree(void *ptr) {
-    if (ptr) {
-      cudaError_t error = cudaFree(ptr);
-      checkCudaError(error, "cudaFree");
-    }
-  }
-
-  template <typename Config, CP_METHOD Method = CP_METHOD::TMA>
-  bool runTMATest() {
-    const size_t chunk_size_bytes = Config::chunk_size * sizeof(float);
-    const size_t total_bytes = num_elements * sizeof(float);
-    const int repeat = 1; // Single pass for correctness testing
-
-    // Allocate device memory
-    uint8_t *d_input = nullptr;
-    unsigned long long *d_output = nullptr;
-
-    // Copy input data to device (cast to uint8_t)
-    EXPECT_TRUE(cudaSafeMalloc((void **)&d_input, data_size_bytes));
-    EXPECT_TRUE(cudaSafeMemcpy(d_input, h_input.data(), data_size_bytes,
-                               cudaMemcpyHostToDevice));
-
-    // Calculate shared memory size needed
-    const size_t shared_mem_size = Config::stages * chunk_size_bytes;
-
-    // Launch kernel with enough threads for all warps
-    const int threads_per_block = Config::total_warps * 32;
-    int num_sms = 0;
-    auto error =
-        cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
-    EXPECT_EQ(error, cudaSuccess)
-        << "Failed to get SM count: " << cudaGetErrorString(error);
-    printf("Detected %d SMs on GPU\n", num_sms);
-    const int blocks = num_sms;
-    // const int blocks = 1;
-    EXPECT_TRUE(cudaSafeMalloc((void **)&d_output,
-                               sizeof(unsigned long long) * blocks));
-
-    auto start_time = std::chrono::high_resolution_clock::now();
-
-    cp_bw_kernel<Config::stages, chunk_size_bytes, repeat,
-                 Config::num_producers, Config::num_consumers, Method>
-        <<<blocks, threads_per_block, shared_mem_size>>>(d_input, d_output,
-                                                         total_bytes);
-
-    cudaError_t kernel_error = cudaGetLastError();
-    EXPECT_EQ(kernel_error, cudaSuccess)
-        << "Kernel launch failed: " << cudaGetErrorString(kernel_error);
-
-    cudaError_t sync_error = cudaDeviceSynchronize();
-    EXPECT_EQ(sync_error, cudaSuccess)
-        << "Kernel execution failed: " << cudaGetErrorString(sync_error);
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-        end_time - start_time);
-
-    // Copy result back to host
-    std::vector<unsigned long long> h_output(blocks);
-    EXPECT_TRUE(cudaSafeMemcpy(h_output.data(), d_output,
-                               sizeof(unsigned long long) * blocks,
-                               cudaMemcpyDeviceToHost));
-
-    // Sum all the block results.
-    unsigned long long h_result = 0;
-    for (const auto &val : h_output) {
-      h_result += val;
-    }
-
-    // The cp_bw_kernel sums the first uint32_t of each chunk
-    // For verification, we need to compute the expected result differently
-    unsigned long long expected_result = computeExpectedSum<Config>(blocks);
-
-    // Verify exact match for unsigned long long results
-    EXPECT_EQ(h_result, expected_result)
-        << "TMA test failed. Expected: " << expected_result
-        << ", Got: " << h_result << ", Method: " << static_cast<int>(Method)
-        << ", Config: stages=" << Config::stages
-        << ", producers=" << Config::num_producers
-        << ", consumers=" << Config::num_consumers
-        << ", chunk_size=" << Config::chunk_size
-        << ", Duration: " << duration.count() << " μs";
-
-    // Cleanup
-    cudaSafeFree(d_input);
-    cudaSafeFree(d_output);
-
-    return sync_error == cudaSuccess && kernel_error == cudaSuccess;
-  }
-
-  // Compute expected result based on how cp_bw_kernel processes data.
-  // With repeat=1, each unique chunk is processed exactly once across all blocks.
-  // The kernel sums the first uint32_t of each chunk's data.
-  template <typename Config>
-  unsigned long long computeExpectedSum(int num_blocks) {
-    const size_t chunk_size_bytes = Config::chunk_size * sizeof(float);
-    const size_t total_chunks = data_size_bytes / chunk_size_bytes;
-
-    unsigned long long expected_sum = 0;
-    const uint32_t *data_as_uint32 =
-        reinterpret_cast<const uint32_t *>(h_input.data());
-
-    // Each chunk is processed exactly once. Sum the first uint32 of each chunk.
-    for (size_t chunk = 0; chunk < total_chunks; ++chunk) {
-      size_t offset_in_uint32 = (chunk * chunk_size_bytes) / sizeof(uint32_t);
-      if (offset_in_uint32 < num_elements) {
-        expected_sum += data_as_uint32[offset_in_uint32];
-      }
-    }
-
-    return expected_sum;
-  }
-
-  // Test data
-  size_t num_elements;
-  size_t data_size_bytes;
-  std::vector<int> h_input;
-
-  static constexpr float TOLERANCE = 1e-5f;
-};
-
-// Basic TMA test with minimal configuration
-// Note: TMA requires at least 2 stages due to barrier parity synchronization
-TEST_F(CudaTMATest, BasicSingleStageProducerConsumer) {
-  using Config = TMAConfig<2, 1, 1, 256>;
-  bool result = runTMATest<Config, CP_METHOD::TMA>();
-  ASSERT_TRUE(result);
-}
-
-// Multi-stage test
-TEST_F(CudaTMATest, MultiStageProducerConsumer) {
-  using Config = TMAConfig<4, 1, 1, 512>;
-  bool result = runTMATest<Config, CP_METHOD::TMA>();
-  ASSERT_TRUE(result);
-}
-
-// Multiple producers test
-TEST_F(CudaTMATest, MultipleProducers) {
-  using Config = TMAConfig<2, 2, 1, 256>;
-  bool result = runTMATest<Config, CP_METHOD::TMA>();
-  ASSERT_TRUE(result);
-}
-
-// Multiple consumers test
-TEST_F(CudaTMATest, MultipleConsumers) {
-  using Config = TMAConfig<2, 1, 2, 256>;
-  bool result = runTMATest<Config, CP_METHOD::TMA>();
-  ASSERT_TRUE(result);
-}
-
-// Complex configuration with multiple producers and consumers
-TEST_F(CudaTMATest, MultipleProducersAndConsumers) {
-  using Config =
-      TMAConfig<4, 2, 2, 512>; // 4 stages is divisible by 2 producers
-  bool result = runTMATest<Config, CP_METHOD::TMA>();
-  ASSERT_TRUE(result);
-}
-
-// Large chunk size test
-TEST_F(CudaTMATest, LargeChunkSize) {
-  using Config = TMAConfig<2, 1, 1, 1024>;
-  bool result = runTMATest<Config, CP_METHOD::TMA>();
-  ASSERT_TRUE(result);
-}
-
-// Stress test with many stages and workers
-TEST_F(CudaTMATest, StressTest) {
-  using Config =
-      TMAConfig<6, 3, 3, 256>; // 6 stages is divisible by 3 producers
-  bool result = runTMATest<Config, CP_METHOD::TMA>();
-  ASSERT_TRUE(result);
-}
-
-// Test different copy methods
-// Not supported yet in the simulator
-// TEST_F(CudaTMATest, CPAsyncMethod) {
-//   using Config = TMAConfig<2, 1, 1, 256>;
-//   bool result = runTMATest<Config, CP_METHOD::CP_ASYNC>();
-//   ASSERT_TRUE(result);
-// }
-
-TEST_F(CudaTMATest, NormalLoadMethod) {
-  using Config = TMAConfig<2, 1, 1, 256>;
-  bool result = runTMATest<Config, CP_METHOD::NORMAL_LOAD>();
-  ASSERT_TRUE(result);
-}
-
-TEST_F(CudaTMATest, NormalLoad4Producer4Consumer) {
-  using Config = TMAConfig<4, 4, 4, 256>;
-  bool result = runTMATest<Config, CP_METHOD::NORMAL_LOAD>();
-  ASSERT_TRUE(result);
-}
-
-// Performance comparison test
-TEST_F(CudaTMATest, PerformanceComparison) {
-  const int num_iterations = 5; // Reduced for faster testing
-
-  // Test different configurations and methods
-  struct TestConfig {
-    const char *name;
-    std::function<bool()> test_func;
-  };
-
-  std::vector<TestConfig> configs = {
-      {"TMA Minimal Stage",  // TMA requires at least 2 stages for correct sync
-       [this]() {
-         return runTMATest<TMAConfig<2, 1, 1, 256>, CP_METHOD::TMA>();
-       }},
-      {"TMA Multi Stage",
-       [this]() {
-         return runTMATest<TMAConfig<4, 1, 1, 256>, CP_METHOD::TMA>();
-       }},
-      {"TMA Multi Producer",
-       [this]() {
-         return runTMATest<TMAConfig<2, 2, 1, 256>, CP_METHOD::TMA>();
-       }},
-      {"TMA Multi Consumer",
-       [this]() {
-         return runTMATest<TMAConfig<2, 1, 2, 256>, CP_METHOD::TMA>();
-       }},
-      // {"CP_ASYNC Method",
-      //  [this]() {
-      //    return runTMATest<TMAConfig<2, 1, 1, 256>, CP_METHOD::CP_ASYNC>();
-      //  }},
-      {"Normal Load Method", [this]() {
-         return runTMATest<TMAConfig<2, 1, 1, 256>, CP_METHOD::NORMAL_LOAD>();
-       }}};
-
-  for (const auto &config : configs) {
-    auto start = std::chrono::high_resolution_clock::now();
-
-    bool success = true;
-    for (int i = 0; i < num_iterations; ++i) {
-      success &= config.test_func();
-    }
-
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration =
-        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-
-    EXPECT_TRUE(success) << "Performance test failed for config: "
-                         << config.name;
-
-    std::cout << config.name
-              << " average time: " << (duration.count() / num_iterations)
-              << " μs" << std::endl;
+// Commit and wait on a bulk group that contains no TMA stores. This kernel is
+// local to the bulk-group test translation unit so including cp_kernels.cuh in
+// another test binary does not define a second global entry point.
+__global__ void empty_tma_bulk_group_kernel(uint32_t *completion) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    cp_async_bulk_commit_group();
+    cp_async_bulk_wait_group<0>();
+    *completion = 1;
   }
 }
 
@@ -319,7 +26,7 @@ TEST_F(CudaTMATest, PerformanceComparison) {
 //=============================================================================
 
 // Test class for TMA Store with Bulk Group functionality
-class BulkGroupIntegrationTest : public ::testing::Test {
+class TmaBulkGroupStoreTest : public ::testing::Test {
 protected:
   void SetUp() override {
     // Use smaller data for store tests
@@ -329,21 +36,10 @@ protected:
     // Allocate and initialize host input
     h_input.resize(num_elements);
     h_output.resize(num_elements);
-    h_expected.resize(num_elements);
 
     for (size_t i = 0; i < num_elements; ++i) {
       h_input[i] = static_cast<uint32_t>(i + 1);
     }
-  }
-
-  void TearDown() override {}
-
-  cudaError_t checkCudaError(cudaError_t error, const char *message) {
-    if (error != cudaSuccess) {
-      fprintf(stderr, "CUDA Error: %s - %s\n", message,
-              cudaGetErrorString(error));
-    }
-    return error;
   }
 
   // Test data
@@ -351,13 +47,12 @@ protected:
   size_t data_size_bytes;
   std::vector<uint32_t> h_input;
   std::vector<uint32_t> h_output;
-  std::vector<uint32_t> h_expected;
 };
 
 // Test: Basic TMA Store with single bulk group
-TEST_F(BulkGroupIntegrationTest, BasicTMAStore) {
+TEST_F(TmaBulkGroupStoreTest, BasicTMAStore) {
   constexpr int CHUNK_BYTES = 256;  // 64 uint32_t elements per chunk
-  constexpr int NUM_GROUPS = 4;
+  constexpr int NUM_GROUPS = 1;
 
   uint32_t *d_input = nullptr;
   uint32_t *d_output = nullptr;
@@ -376,7 +71,7 @@ TEST_F(BulkGroupIntegrationTest, BasicTMAStore) {
 
   const size_t shared_mem_size = CHUNK_BYTES;
 
-  tma_store_kernel<NUM_GROUPS, CHUNK_BYTES, 0>
+  tma_store_kernel<NUM_GROUPS, CHUNK_BYTES>
       <<<blocks, threads_per_block, shared_mem_size>>>(d_input, d_output, num_elements);
 
   ASSERT_EQ(cudaGetLastError(), cudaSuccess) << "Kernel launch failed";
@@ -404,7 +99,7 @@ TEST_F(BulkGroupIntegrationTest, BasicTMAStore) {
 }
 
 // Test: TMA Store with multiple groups per warp
-TEST_F(BulkGroupIntegrationTest, MultiGroupTMAStore) {
+TEST_F(TmaBulkGroupStoreTest, MultiGroupTMAStore) {
   constexpr int CHUNK_BYTES = 128;  // 32 uint32_t elements per chunk
   const int num_chunks = 8;
   const int elements_per_chunk = CHUNK_BYTES / sizeof(uint32_t);
@@ -460,7 +155,7 @@ TEST_F(BulkGroupIntegrationTest, MultiGroupTMAStore) {
 }
 
 // Test: Pipelined TMA Store with wait_group(N)
-TEST_F(BulkGroupIntegrationTest, PipelinedTMAStore) {
+TEST_F(TmaBulkGroupStoreTest, PipelinedTMAStore) {
   constexpr int CHUNK_BYTES = 128;
   constexpr int MAX_IN_FLIGHT = 2;  // Allow 2 groups in flight
   const int num_chunks = 6;
@@ -514,7 +209,7 @@ TEST_F(BulkGroupIntegrationTest, PipelinedTMAStore) {
 }
 
 // Test: Large scale TMA Store with many groups
-TEST_F(BulkGroupIntegrationTest, LargeScaleTMAStore) {
+TEST_F(TmaBulkGroupStoreTest, LargeScaleTMAStore) {
   constexpr int CHUNK_BYTES = 256;
   constexpr int NUM_GROUPS = 16;
 
@@ -546,7 +241,7 @@ TEST_F(BulkGroupIntegrationTest, LargeScaleTMAStore) {
 
   const size_t shared_mem_size = warps_per_block * CHUNK_BYTES;
 
-  tma_store_kernel<NUM_GROUPS, CHUNK_BYTES, 0>
+  tma_store_kernel<NUM_GROUPS, CHUNK_BYTES>
       <<<blocks, threads_per_block, shared_mem_size>>>(d_input, d_output, large_elements);
 
   ASSERT_EQ(cudaGetLastError(), cudaSuccess) << "Kernel launch failed";
@@ -572,54 +267,127 @@ TEST_F(BulkGroupIntegrationTest, LargeScaleTMAStore) {
   cudaFree(d_output);
 }
 
-// Test: Empty bulk groups (commit without any stores)
-TEST_F(BulkGroupIntegrationTest, EmptyBulkGroups) {
-  // This test verifies that empty groups are handled correctly
-  // The kernel will commit groups even when there are no stores
+// Test: commit and wait on a bulk group with no TMA stores.
+TEST_F(TmaBulkGroupStoreTest, EmptyBulkGroupCompletes) {
+  uint32_t *device_completion = nullptr;
+  ASSERT_EQ(cudaMalloc(&device_completion, sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(device_completion, 0, sizeof(uint32_t)), cudaSuccess);
 
-  constexpr int CHUNK_BYTES = 128;
-  const int num_chunks = 4;
-  const int elements_per_chunk = CHUNK_BYTES / sizeof(uint32_t);
-  const size_t test_elements = num_chunks * elements_per_chunk;
-
-  std::vector<uint32_t> test_input(test_elements, 42);
-  std::vector<uint32_t> test_output(test_elements, 0);
-
-  uint32_t *d_input = nullptr;
-  uint32_t *d_output = nullptr;
-  size_t test_bytes = test_elements * sizeof(uint32_t);
-
-  ASSERT_EQ(cudaMalloc(&d_input, test_bytes), cudaSuccess);
-  ASSERT_EQ(cudaMalloc(&d_output, test_bytes), cudaSuccess);
-  ASSERT_EQ(cudaMemcpy(d_input, test_input.data(), test_bytes,
-                       cudaMemcpyHostToDevice), cudaSuccess);
-  ASSERT_EQ(cudaMemset(d_output, 0, test_bytes), cudaSuccess);
-
-  const size_t shared_mem_size = CHUNK_BYTES;
-
-  // Run the multi-group kernel which tests normal operation
-  tma_store_multi_group_kernel<CHUNK_BYTES>
-      <<<1, 32, shared_mem_size>>>(d_input, d_output, num_chunks);
-
+  empty_tma_bulk_group_kernel<<<1, 1>>>(device_completion);
   ASSERT_EQ(cudaGetLastError(), cudaSuccess) << "Kernel launch failed";
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess) << "Kernel execution failed";
 
-  ASSERT_EQ(cudaMemcpy(test_output.data(), d_output, test_bytes,
-                       cudaMemcpyDeviceToHost), cudaSuccess);
+  uint32_t completion = 0;
+  ASSERT_EQ(cudaMemcpy(&completion, device_completion, sizeof(completion),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(completion, 1u);
 
-  // Verify correctness
-  int errors = 0;
-  for (int chunk = 0; chunk < num_chunks; chunk++) {
-    for (int i = 0; i < elements_per_chunk; i++) {
-      size_t idx = chunk * elements_per_chunk + i;
-      uint32_t expected = 42 + (chunk + 1);
-      if (test_output[idx] != expected) {
-        errors++;
-      }
-    }
-  }
-  EXPECT_EQ(errors, 0) << "Total mismatches: " << errors;
-
-  cudaFree(d_input);
-  cudaFree(d_output);
+  EXPECT_EQ(cudaFree(device_completion), cudaSuccess);
 }
+
+namespace {
+
+using flashgpu::test::ptx::mbarrier_arrive_expect_tx;
+using flashgpu::test::ptx::mbarrier_init;
+using flashgpu::test::ptx::mbarrier_inval;
+using flashgpu::test::ptx::mbarrier_wait_parity;
+using flashgpu::test::ptx::smem_u64_addr;
+
+constexpr unsigned kChunkBytes = 4096;
+constexpr unsigned kCopiesPerPhase = 4;
+constexpr unsigned kPhaseBytes = kChunkBytes * kCopiesPerPhase;
+constexpr unsigned kPhases = 2;
+constexpr unsigned kWordsPerPhase = kPhaseBytes / sizeof(uint32_t);
+constexpr unsigned kTotalWords = kPhases * kWordsPerPhase;
+
+__device__ __forceinline__ uint64_t global_address(const void* pointer) {
+  uint64_t address = 0;
+  asm volatile("cvta.to.global.u64 %0, %1;" : "=l"(address) : "l"(pointer));
+  return address;
+}
+
+__device__ __forceinline__ void linear_bulk_g2s(void* destination,
+                                                const void* source,
+                                                uint64_t* barrier) {
+  const uint64_t destination_s = smem_u64_addr(destination);
+  const uint64_t source_g = global_address(source);
+  const uint64_t barrier_s = smem_u64_addr(barrier);
+  asm volatile(
+      "cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes "
+      "[%0], [%1], %2, [%3];\n"
+      :
+      : "l"(destination_s), "l"(source_g), "n"(kChunkBytes),
+        "l"(barrier_s)
+      : "memory");
+}
+
+__global__ void linear_bulk_two_phase_kernel(const uint32_t* input,
+                                              uint64_t* phase_sums) {
+  extern __shared__ __align__(16) uint8_t shared[];
+  if (threadIdx.x != 0) return;
+
+  auto* barrier = reinterpret_cast<uint64_t*>(shared + kPhaseBytes);
+  mbarrier_init(barrier, 1);
+  asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+
+  for (unsigned phase = 0; phase < kPhases; ++phase) {
+    mbarrier_arrive_expect_tx(barrier, kPhaseBytes);
+    for (unsigned copy = 0; copy < kCopiesPerPhase; ++copy) {
+      linear_bulk_g2s(shared + copy * kChunkBytes,
+                      input + phase * kWordsPerPhase +
+                          copy * (kChunkBytes / sizeof(uint32_t)),
+                      barrier);
+    }
+
+    mbarrier_wait_parity(barrier, phase & 1);
+    asm volatile("" ::: "memory");
+
+    const auto* words = reinterpret_cast<const uint32_t*>(shared);
+    uint64_t sum = 0;
+    for (unsigned word = 0; word < kWordsPerPhase; ++word) {
+      sum += words[word];
+    }
+    phase_sums[phase] = sum;
+  }
+
+  mbarrier_inval(barrier);
+}
+
+TEST(TmaLinearBulkMultiTxBarrierTest,
+     AggregatesFourTransactionsAndReusesBarrierAcrossPhases) {
+  std::array<uint32_t, kTotalWords> input{};
+  for (unsigned i = 0; i < input.size(); ++i) input[i] = i + 1;
+
+  std::array<uint64_t, kPhases> expected{};
+  for (unsigned phase = 0; phase < kPhases; ++phase) {
+    expected[phase] = std::accumulate(
+        input.begin() + phase * kWordsPerPhase,
+        input.begin() + (phase + 1) * kWordsPerPhase, uint64_t{0});
+  }
+
+  uint32_t* device_input = nullptr;
+  uint64_t* device_sums = nullptr;
+  ASSERT_EQ(cudaMalloc(&device_input, sizeof(input)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&device_sums, sizeof(expected)), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(device_input, input.data(), sizeof(input),
+                       cudaMemcpyHostToDevice),
+            cudaSuccess);
+
+  constexpr unsigned kSharedBytes = kPhaseBytes + sizeof(uint64_t);
+  linear_bulk_two_phase_kernel<<<1, 1, kSharedBytes>>>(device_input,
+                                                       device_sums);
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  std::array<uint64_t, kPhases> actual{};
+  ASSERT_EQ(cudaMemcpy(actual.data(), device_sums, sizeof(actual),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(actual, expected);
+
+  EXPECT_EQ(cudaFree(device_sums), cudaSuccess);
+  EXPECT_EQ(cudaFree(device_input), cudaSuccess);
+}
+
+}  // namespace

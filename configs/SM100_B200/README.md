@@ -39,7 +39,7 @@ controls ready 32-byte sector children entering the bounded L2 input FIFO.
 Three is a candidate chosen for sensitivity testing alongside lookup width
 three, not a publicly documented B200 ROP-port count.
 
-Across the wider transport path, ordinary LD/ST, TMA, and ordinary
+Across the wider transport path, LD/ST, TMA, and ordinary
 `cp.async` retain separate local producer/consumer limits. The TMA and
 `cp.async` configurations use 32-byte requests with width four, so either type
 can use the full shared four-sector request or response budget when it runs

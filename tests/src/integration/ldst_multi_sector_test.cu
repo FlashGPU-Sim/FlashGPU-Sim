@@ -23,16 +23,16 @@ __device__ __forceinline__ void store_global_cg(uint32_t *address,
                : "memory");
 }
 
-__global__ void ordinary_ldst_request_width_kernel(const uint32_t *input,
-                                                   uint32_t *output,
-                                                   uint32_t *atomic_count) {
+__global__ void ldst_multi_sector_kernel(const uint32_t *input,
+                                         uint32_t *output,
+                                         uint32_t *atomic_count) {
   const unsigned lane = threadIdx.x & 31;
   const uint32_t value = load_global_cg(input + lane) ^ 0x5a5a5a5aU;
   store_global_cg(output + lane, value);
   if (lane == 0) atomicAdd(atomic_count, 1U);
 }
 
-TEST(OrdinaryLdstRequestWidthIntegrationTest,
+TEST(LdstMultiSectorIntegrationTest,
      MultiSectorLoadStoreAndAtomicCompleteExactlyOnce) {
   constexpr unsigned kThreads = 32;
   std::vector<uint32_t> input(kThreads);
@@ -55,7 +55,7 @@ TEST(OrdinaryLdstRequestWidthIntegrationTest,
             cudaSuccess);
   ASSERT_EQ(cudaMemset(device_atomic_count, 0, sizeof(uint32_t)), cudaSuccess);
 
-  ordinary_ldst_request_width_kernel<<<1, kThreads>>>(
+  ldst_multi_sector_kernel<<<1, kThreads>>>(
       device_input, device_output, device_atomic_count);
   ASSERT_EQ(cudaGetLastError(), cudaSuccess);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
@@ -73,7 +73,7 @@ TEST(OrdinaryLdstRequestWidthIntegrationTest,
     checksum += output[lane];
   }
   EXPECT_EQ(atomic_count, 1U);
-  std::printf("ordinary_ldst_request_width_checksum = %llu\n",
+  std::printf("ldst_multi_sector_checksum = %llu\n",
               static_cast<unsigned long long>(checksum));
 
   EXPECT_EQ(cudaFree(device_atomic_count), cudaSuccess);

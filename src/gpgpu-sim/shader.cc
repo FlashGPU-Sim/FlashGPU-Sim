@@ -3682,7 +3682,7 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
       bypassL1D = true;
   }
   if (bypassL1D) {
-    // Only ordinary requests which already bypass L1D are widened here. The
+    // Only LD/ST requests which already bypass L1D are widened here. The
     // shared/constant/texture/L1D/response/writeback paths retain their legacy
     // cadence.
     const unsigned request_width = m_config->gpgpu_ldst_request_width;

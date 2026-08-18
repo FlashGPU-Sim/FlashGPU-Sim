@@ -90,7 +90,7 @@ using power_of_two_sequence =
     typename make_power_of_two_sequence<Start, End>::type;
 
 // Copy method enumeration
-enum class CP_METHOD { NORMAL_LOAD = 0, CP_ASYNC = 1, TMA = 2 };
+enum class CP_METHOD { CP_ASYNC = 1, TMA = 2 };
 
 // cp.async 16-byte copy (cache-global)
 __device__ inline void cp_async_16(void *smem_dst, const void *global_src) {
@@ -182,9 +182,8 @@ template <int N = 0> __device__ inline void cp_async_bulk_wait_group() {
  * Template parameters:
  *   NUM_GROUPS: Number of bulk groups to create per warp
  *   CHUNK_BYTES: Size of each chunk in bytes
- *   PIPELINE_DEPTH: Number of groups allowed to be in-flight (for wait_group)
  */
-template <int NUM_GROUPS, int CHUNK_BYTES, int PIPELINE_DEPTH = 0>
+template <int NUM_GROUPS, int CHUNK_BYTES>
 __global__ void tma_store_kernel(const uint32_t *__restrict__ src,
                                  uint32_t *__restrict__ dst,
                                  size_t num_elements) {
@@ -232,26 +231,22 @@ __global__ void tma_store_kernel(const uint32_t *__restrict__ src,
       // Step 5: Commit the bulk group
       cp_async_bulk_commit_group();
 
-      // Step 6: If pipeline depth is set, wait with allowance
-      if constexpr (PIPELINE_DEPTH > 0) {
-        if (group >= PIPELINE_DEPTH) {
-          cp_async_bulk_wait_group<PIPELINE_DEPTH>();
-        }
-      }
+      // This correctness kernel owns one shared-memory slot per warp. Wait
+      // before the next iteration overwrites that slot. The separate
+      // pipelined kernel below uses a slot ring to test multiple in-flight
+      // groups.
+      cp_async_bulk_wait_group<0>();
     }
-
-    // Final wait: ensure all groups are complete
-    cp_async_bulk_wait_group<0>();
   }
 
   __syncthreads();
 }
 
 /**
- * TMA Store Kernel with Multiple Groups and Out-of-Order Testing
+ * TMA Store Kernel with Sequential Shared-Slot Reuse
  *
- * This kernel creates multiple bulk groups and tests the sequential
- * completion semantics of wait_group.
+ * This kernel creates multiple bulk groups and waits before reusing its single
+ * shared-memory slot.
  *
  * NOTE: Since we reuse the same shared memory buffer for each chunk,
  * we must wait for each async store to complete before loading the
@@ -423,16 +418,8 @@ __device__ inline void cp_chunk(uint8_t *dst_slot, const uint8_t *src_chunk,
       cp_async_bulk<CHUNK_BYTES>(dst_slot, src_chunk, bar_addr);
     }
   } else {
-    // Use normal load instruction with float4 (16 bytes)
-    constexpr int load_bytes = 16;
-    static_assert(CHUNK_BYTES % load_bytes == 0,
-                  "CHUNK_BYTES must be divisible by load_bytes");
-    for (int b = lane_id * load_bytes; b < CHUNK_BYTES; b += 32 * load_bytes) {
-
-      const float4 *src_ptr = reinterpret_cast<const float4 *>(src_chunk + b);
-      float4 *dst_ptr = reinterpret_cast<float4 *>(dst_slot + b);
-      *dst_ptr = *src_ptr;
-    }
+    static_assert(METHOD == CP_METHOD::CP_ASYNC || METHOD == CP_METHOD::TMA,
+                  "Unsupported copy method");
   }
 }
 

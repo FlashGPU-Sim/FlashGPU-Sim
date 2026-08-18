@@ -218,7 +218,7 @@ topology and address mapping.
 The B200 transport model uses the following independent integer service widths.
 For the sector-service options, `0` preserves the legacy packet-per-tick path;
 a positive value is a 32-byte sector budget for the stated local tick. The
-ordinary LD/ST request option follows the same convention: `0` preserves the
+LD/ST request option follows the same convention: `0` preserves the
 legacy LD/ST-cycle path, while a positive value counts coalescer children.
 Under B200's `coalesce_arch=100`, every such child is one 32-byte sector.
 
@@ -226,20 +226,20 @@ The B200 configurations leave `-gpgpu_mem_unit_ports` at its code default of
 one. Raising that older option repeats the complete LD/ST-unit cycle, including
 request generation, shared-memory and L1 cache activity, response handling,
 and writeback. The dedicated request width below drains multiple children only
-for ordinary global/local operations which already bypass L1D (`.cg`, no L1D,
+for global/local operations which already bypass L1D (`.cg`, no L1D,
 or the existing global skip-L1 policy); it does not repeat or widen an L1D
 access. These 32-byte `m_accessq` entries are internal sector children: one
 physical L2 request may cover one to four sectors of the same 128-byte line, so
 the model does not claim that each child is a distinct physical request.
 
-The dedicated LD/ST response width applies a sector budget only to ordinary
+The dedicated LD/ST response width applies a sector budget only to
 global/local response staging and packet retirement. The final sector enqueues
 one instruction-level RF/scoreboard completion through the legacy writeback
 arbiter; shared, texture, constant, L1D, and writeback behavior keep their
 legacy cadence.
 
 TMA and ordinary `cp.async` keep their existing local producer and consumer
-limits rather than borrowing the ordinary LD/ST width. B200 makes their
+limits rather than borrowing the LD/ST width. B200 makes their
 32-byte request granularity and width of four explicit, so either type can use
 the complete four-sector shared transport budget when it runs alone. A mixed
 response stream still shares the single cluster-dispatch budget shown below.
@@ -257,8 +257,8 @@ disables the additional byte-credit limiter instead of restricting service.
 | `-icnt_reply_output_sectors_per_cycle` | `0` | `4` | `4` | Reply sectors per local-xbar output and ICNT tick |
 | `-gpgpu_cluster_response_ingress_sectors_per_cycle` | `0` | `4` | `4` | Reply sectors entering a cluster FIFO per target SM and core tick |
 | `-gpgpu_cluster_response_dispatch_sectors_per_cycle` | `0` | `4` | `4` | Shared response sectors dispatched per target SM and core tick |
-| `-gpgpu_ldst_request_width` | `0` | `4` | `4` | Internal 32-byte ordinary global/local bypass children injected per SM and core tick; `0` preserves the legacy LD/ST-cycle path |
-| `-gpgpu_ldst_response_sectors_per_cycle` | `0` | `4` | `4` | Ordinary LD/ST response sectors advanced per SM and core tick |
+| `-gpgpu_ldst_request_width` | `0` | `4` | `4` | Internal 32-byte global/local bypass children injected per SM and core tick; `0` preserves the legacy LD/ST-cycle path |
+| `-gpgpu_ldst_response_sectors_per_cycle` | `0` | `4` | `4` | LD/ST response sectors advanced per SM and core tick |
 | `-gpgpu_tma_max_inflight` | `0` | `576` | `0` | Issued TMA child requests awaiting response per SM; `0` is unlimited. The full-model value is a calibrated request-count window, while the reduced functional model remains unlimited |
 | `-gpgpu_tma_tx_quota` | `0` | `48` | default | Base fairness quota per live TMA transaction; the work-conserving scheduler may borrow beyond it when all live transactions are over quota |
 | `-gpgpu_tma_request_granularity` | `32` | `32` | `32` | Bytes represented by one TMA request |

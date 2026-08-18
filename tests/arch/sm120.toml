@@ -16,7 +16,7 @@ sources = [
   "integration/vector_add_test.cu",
   "integration/shared_memory_optin_test.cu",
   "integration/ldst_matrix_test.cu",
-  "integration/ordinary_ldst_request_width_test.cu",
+  "integration/ldst_multi_sector_test.cu",
   "integration/cp_async_src_size_test.cu",
 
   # SM120 correctness groups.
@@ -24,6 +24,7 @@ sources = [
   "barrier/mbarrier_sanity_test.cu",
   "tma/host_tensormap_test.cu",
   "tma/tma_test.cu",
+  "tma/tma_producer_consumer_test.cu",
   "tma/tma_multidim_test.cu",
   "tma/tma_edge_cases_test.cu",
   "mma/mma_f16_test.cu",
