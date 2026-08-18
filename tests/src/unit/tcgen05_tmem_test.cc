@@ -214,6 +214,47 @@ TEST(Tcgen05TmemTest, EncodedLaneBitsDoNotAffectColumnBounds) {
   EXPECT_EQ(manager.read_words(kScope0, base, 16), std::vector<uint32_t>(16, 0));
 }
 
+TEST(Tcgen05TmemTest, RegisterAddressFollowsDataMovementFragmentLayout) {
+  uint32_t base = tcgen05_encode_tmem_address(16, 7);
+
+  // 32x32b assigns one TMEM lane to each warp lane and repeats in columns.
+  tcgen05_tmem_address_t shape32 = tcgen05_decode_tmem_address(
+      tcgen05_tmem_register_address(base, 31, 32, 32, 1));
+  EXPECT_EQ(shape32.lane, 47u);
+  EXPECT_EQ(shape32.column, 8u);
+
+  // The PTX fragment layout for 16x256b.x1 maps T0:r0/r1 across the first
+  // lane and T0:r2/r3 across the lane eight rows below it. T3 finishes the
+  // eight-word row, while T31 addresses the corresponding final lane.
+  const tcgen05_tmem_address_t t0r0 = tcgen05_decode_tmem_address(
+      tcgen05_tmem_register_address(base, 0, 16, 256, 0));
+  const tcgen05_tmem_address_t t0r2 = tcgen05_decode_tmem_address(
+      tcgen05_tmem_register_address(base, 0, 16, 256, 2));
+  const tcgen05_tmem_address_t t3r1 = tcgen05_decode_tmem_address(
+      tcgen05_tmem_register_address(base, 3, 16, 256, 1));
+  const tcgen05_tmem_address_t t31r3 = tcgen05_decode_tmem_address(
+      tcgen05_tmem_register_address(base, 31, 16, 256, 3));
+  EXPECT_EQ(t0r0.lane, 16u);
+  EXPECT_EQ(t0r0.column, 7u);
+  EXPECT_EQ(t0r2.lane, 24u);
+  EXPECT_EQ(t0r2.column, 7u);
+  EXPECT_EQ(t3r1.lane, 16u);
+  EXPECT_EQ(t3r1.column, 14u);
+  EXPECT_EQ(t31r3.lane, 31u);
+  EXPECT_EQ(t31r3.column, 14u);
+
+  // Repeated 16x128b and 16x64b shapes advance in the columns indicated by
+  // their official register fragment layouts.
+  const tcgen05_tmem_address_t shape128_r2 = tcgen05_decode_tmem_address(
+      tcgen05_tmem_register_address(base, 0, 16, 128, 2));
+  const tcgen05_tmem_address_t shape64_t1_r1 = tcgen05_decode_tmem_address(
+      tcgen05_tmem_register_address(base, 1, 16, 64, 1));
+  EXPECT_EQ(shape128_r2.lane, 16u);
+  EXPECT_EQ(shape128_r2.column, 11u);
+  EXPECT_EQ(shape64_t1_r1.lane, 24u);
+  EXPECT_EQ(shape64_t1_r1.column, 9u);
+}
+
 TEST(Tcgen05TmemTest, MatrixStoreUsesRowsAsTmemLanes) {
   tcgen05_tmem_manager_t manager;
   uint32_t base = manager.alloc(kScope0, 32);

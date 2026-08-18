@@ -240,6 +240,42 @@ static inline float f32_from_f16_bits(uint16_t bits) {
   return half_float::detail::half2float<float>(bits);
 }
 
+static inline float f32_from_bf16_bits(uint16_t bits) {
+  return f32_from_bits(static_cast<uint32_t>(bits) << 16);
+}
+
+static inline uint16_t bf16_bits_from_f32(
+    float value, unsigned rounding_mode = RN_OPTION) {
+  uint32_t bits = bits_from_f32(value);
+  uint32_t discarded = bits & 0xffffu;
+  if ((bits & 0x7f800000u) == 0x7f800000u) {
+    // Preserve infinities, and make sure a NaN does not round to infinity.
+    return static_cast<uint16_t>((bits >> 16) | (discarded != 0u ? 1u : 0u));
+  }
+  switch (rounding_mode) {
+    case RZ_OPTION:
+    case RZI_OPTION:
+      return static_cast<uint16_t>(bits >> 16);
+    case RP_OPTION:
+    case RPI_OPTION:
+      return static_cast<uint16_t>(
+          (bits >> 16) +
+          (((bits & 0x80000000u) == 0u && discarded != 0u) ? 1u : 0u));
+    case RM_OPTION:
+    case RMI_OPTION:
+      return static_cast<uint16_t>(
+          (bits >> 16) +
+          (((bits & 0x80000000u) != 0u && discarded != 0u) ? 1u : 0u));
+    case RN_OPTION:
+    case RNI_OPTION:
+    default: {
+      // Round to nearest, ties to even.
+      uint32_t rounding_bias = 0x7fffu + ((bits >> 16) & 1u);
+      return static_cast<uint16_t>((bits + rounding_bias) >> 16);
+    }
+  }
+}
+
 void ptx_thread_info::set_reg(const symbol *reg, const ptx_reg_t &value) {
   assert(reg != NULL);
   if (reg->name() == "_") return;
@@ -1850,6 +1886,10 @@ static bool tcgen05_is_warp_leader(const ptx_thread_info *thread) {
   return thread->get_laneid() == 0;
 }
 
+static ptx_reg_t tcgen05_read_operand(const ptx_instruction *pI,
+                                      ptx_thread_info *thread,
+                                      unsigned operand_index);
+
 static flash_gpgpu_sim::tcgen05_tmem_scope_t tcgen05_tmem_scope(
     const ptx_instruction *pI, const ptx_thread_info *thread) {
   unsigned sm_id = thread->get_hw_sid();
@@ -1862,12 +1902,48 @@ static flash_gpgpu_sim::tcgen05_tmem_scope_t tcgen05_tmem_scope(
                                                tcgen05_cta_group(pI)};
 }
 
-static uint32_t tcgen05_apply_thread_lane(uint32_t address,
-                                          const ptx_thread_info *thread) {
-  flash_gpgpu_sim::tcgen05_tmem_address_t decoded =
-      flash_gpgpu_sim::tcgen05_decode_tmem_address(address);
-  return flash_gpgpu_sim::tcgen05_encode_tmem_address(
-      decoded.lane + thread->get_laneid(), decoded.column);
+struct tcgen05_ld_st_shape_t {
+  uint32_t lanes;
+  uint32_t bits;
+  bool half_split;
+};
+
+static tcgen05_ld_st_shape_t tcgen05_ld_st_shape(
+    const ptx_instruction *pI) {
+  if (tcgen05_has_option(pI, TCGEN05_32X32B_OPTION)) return {32, 32, false};
+  if (tcgen05_has_option(pI, TCGEN05_16X32BX2_OPTION))
+    return {16, 32, true};
+  if (tcgen05_has_option(pI, TCGEN05_16X64B_OPTION)) return {16, 64, false};
+  if (tcgen05_has_option(pI, TCGEN05_16X128B_OPTION))
+    return {16, 128, false};
+  if (tcgen05_has_option(pI, TCGEN05_16X256B_OPTION))
+    return {16, 256, false};
+  printf("GPGPU-Sim PTX: ERROR ** Unsupported tcgen05.ld/st shape: %s\n",
+         pI->to_string().c_str());
+  abort();
+}
+
+static uint32_t tcgen05_ld_st_register_address(
+    const ptx_instruction *pI, uint32_t raw_address,
+    ptx_thread_info *thread, uint32_t register_index) {
+  tcgen05_ld_st_shape_t shape = tcgen05_ld_st_shape(pI);
+  uint32_t warp_lane = thread->get_laneid();
+
+  if (shape.half_split) {
+    // The upper half-warp accesses the second 16x32b region. Its base is
+    // taddr + immHalfSplitoff rather than a later column in the first region.
+    assert(pI->get_num_operands() >= 3 &&
+           "tcgen05.ld/st.16x32bx2 requires immHalfSplitoff");
+    unsigned offset_operand =
+        pI->get_opcode() == TCGEN05_ST_OP ? 1 : 2;
+    uint32_t half_split_offset =
+        tcgen05_read_operand(pI, thread, offset_operand).u32;
+    if (warp_lane >= shape.lanes) raw_address += half_split_offset;
+    warp_lane %= shape.lanes;
+  }
+
+  return flash_gpgpu_sim::tcgen05_tmem_register_address(
+      raw_address, warp_lane, shape.lanes, shape.bits, register_index);
 }
 
 static ptx_reg_t tcgen05_read_operand(const ptx_instruction *pI,
@@ -2505,7 +2581,8 @@ void tcgen05_ld_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       thread->get_gpu()->get_tcgen05_tmem_manager();
   flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
   uint32_t raw_address = tcgen05_eval_address(addr, thread);
-  uint32_t address = tcgen05_apply_thread_lane(raw_address, thread);
+  uint32_t address =
+      tcgen05_ld_st_register_address(pI, raw_address, thread, 0);
   if (tcgen05_debug_enabled()) {
     printf("TCGEN05_DEBUG ld line=%u tid=%u lane=%u scope=(%u,%u,%u) "
            "raw=%u addr=%u n=%u\n",
@@ -2514,8 +2591,12 @@ void tcgen05_ld_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
            dst.get_vect_nelem());
     fflush(stdout);
   }
-  std::vector<uint32_t> values =
-      manager.read_words(scope, address, dst.get_vect_nelem());
+  std::vector<uint32_t> values(dst.get_vect_nelem(), 0);
+  for (uint32_t reg = 0; reg < dst.get_vect_nelem(); ++reg) {
+    uint32_t reg_address =
+        tcgen05_ld_st_register_address(pI, raw_address, thread, reg);
+    values[reg] = manager.read_words(scope, reg_address, 1)[0];
+  }
   tcgen05_write_vector_words(dst, thread, values);
 }
 
@@ -2524,14 +2605,16 @@ void tcgen05_st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   assert(pI->get_num_operands() >= 2);
 
   const operand_info &addr = pI->operand_lookup(0);
-  const operand_info &src = pI->operand_lookup(1);
+  const operand_info &src = pI->operand_lookup(
+      tcgen05_has_option(pI, TCGEN05_16X32BX2_OPTION) ? 2 : 1);
   assert(src.is_vector());
 
   flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
       thread->get_gpu()->get_tcgen05_tmem_manager();
   flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
   uint32_t raw_address = tcgen05_eval_address(addr, thread);
-  uint32_t address = tcgen05_apply_thread_lane(raw_address, thread);
+  uint32_t address =
+      tcgen05_ld_st_register_address(pI, raw_address, thread, 0);
   if (tcgen05_debug_enabled()) {
     printf("TCGEN05_DEBUG st line=%u tid=%u lane=%u scope=(%u,%u,%u) "
            "raw=%u addr=%u n=%u\n",
@@ -2540,7 +2623,12 @@ void tcgen05_st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
            src.get_vect_nelem());
     fflush(stdout);
   }
-  manager.write_words(scope, address, tcgen05_read_vector_words(src, thread));
+  std::vector<uint32_t> values = tcgen05_read_vector_words(src, thread);
+  for (uint32_t reg = 0; reg < values.size(); ++reg) {
+    uint32_t reg_address =
+        tcgen05_ld_st_register_address(pI, raw_address, thread, reg);
+    manager.write_words(scope, reg_address, {values[reg]});
+  }
 }
 
 void tcgen05_wait_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -4113,6 +4201,28 @@ void cvt_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned rounding_mode = pI->rounding_mode();
   unsigned saturation_mode = pI->saturation_mode();
 
+  // BF16 has its own format index in type_decode(), outside the legacy
+  // 11x11 conversion table below.  Handle the scalar conversions explicitly
+  // instead of indexing that table out of bounds.
+  if (to_type == BF16_TYPE && from_type == F32_TYPE) {
+    ptx_reg_t src =
+        thread->get_operand_value(src1, dst, from_type, thread, 1);
+    ptx_reg_t result;
+    result.u64 = 0;
+    result.u16 = bf16_bits_from_f32(src.f32, rounding_mode);
+    thread->set_operand_value(dst, result, to_type, thread, pI);
+    return;
+  }
+
+  if (to_type == F32_TYPE && from_type == BF16_TYPE) {
+    ptx_reg_t src =
+        thread->get_operand_value(src1, dst, from_type, thread, 1);
+    ptx_reg_t result;
+    result.u32 = static_cast<uint32_t>(src.u16) << 16;
+    thread->set_operand_value(dst, result, to_type, thread, pI);
+    return;
+  }
+
   //   if ( to_type == F16_TYPE || from_type == F16_TYPE )
   //      abort();
 
@@ -4167,6 +4277,28 @@ void cvt_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     ptx_reg_t result;
     result.u32 = (static_cast<uint32_t>(f16_high) << 16) | static_cast<uint32_t>(f16_low);
 
+    thread->set_operand_value(dst, result, to_type, thread, pI);
+    return;
+  }
+
+  // PTX packs the converted first source into the upper half and the second
+  // source into the lower half of the bf16x2 destination.
+  if (to_type == BF16X2_TYPE && from_type == F32_TYPE) {
+    assert(pI->get_num_operands() >= 3 &&
+           "cvt.rn.bf16x2.f32 requires 3 operands (dst, src1, src2).");
+    const std::vector<operand_info> &operands = pI->get_operands();
+    const operand_info &src2 = operands[2];
+    ptx_reg_t src1_data =
+        thread->get_operand_value(src1, dst, from_type, thread, 1);
+    ptx_reg_t src2_data =
+        thread->get_operand_value(src2, dst, from_type, thread, 1);
+
+    const uint16_t high =
+        bf16_bits_from_f32(src1_data.f32, rounding_mode);
+    const uint16_t low = bf16_bits_from_f32(src2_data.f32, rounding_mode);
+    ptx_reg_t result;
+    result.u32 = (static_cast<uint32_t>(high) << 16) |
+                 static_cast<uint32_t>(low);
     thread->set_operand_value(dst, result, to_type, thread, pI);
     return;
   }

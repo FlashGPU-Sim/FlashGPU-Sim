@@ -34,6 +34,10 @@ struct tcgen05_tmem_address_t {
 
 tcgen05_tmem_address_t tcgen05_decode_tmem_address(uint32_t address);
 uint32_t tcgen05_encode_tmem_address(uint32_t lane, uint32_t column);
+uint32_t tcgen05_tmem_register_address(uint32_t base_address,
+                                       uint32_t warp_lane, uint32_t shape_lanes,
+                                       uint32_t shape_bits,
+                                       uint32_t register_index);
 std::vector<uint32_t>
 tcgen05_warpx4_32x128b_words(const std::vector<uint32_t> &source);
 
