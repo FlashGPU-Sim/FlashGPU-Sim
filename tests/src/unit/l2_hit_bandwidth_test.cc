@@ -205,12 +205,21 @@ TEST(B200Mxfp4ConfigTest,
   constexpr unsigned long long kPeakClockMhz = 1965;
   constexpr unsigned long long kCalibrationClockMhz = 1080;
   constexpr unsigned long long kMxfp4FlopPerSmCycle = 30947;
+  constexpr unsigned long long kMxf8f6f4FlopPerSmCycle = 15474;
   EXPECT_EQ(ConfigValue(full, "-gpgpu_clock_domains"), "1080:1080:1155:3996");
   EXPECT_EQ(ConfigUnsigned(full, "-ptx_opcode_compute_throughput_tcgen05_mxf4"),
             kMxfp4FlopPerSmCycle);
   EXPECT_EQ(
       ConfigUnsigned(reduced, "-ptx_opcode_compute_throughput_tcgen05_mxf4"),
       kMxfp4FlopPerSmCycle);
+  EXPECT_EQ(ConfigUnsigned(
+                full,
+                "-ptx_opcode_compute_throughput_tcgen05_mxf8f6f4"),
+            kMxf8f6f4FlopPerSmCycle);
+  EXPECT_EQ(ConfigUnsigned(
+                reduced,
+                "-ptx_opcode_compute_throughput_tcgen05_mxf8f6f4"),
+            kMxf8f6f4FlopPerSmCycle);
 
   const double peak_pflops =
       static_cast<double>(kMxfp4FlopPerSmCycle * kSms * kPeakClockMhz) / 1e9;
@@ -219,6 +228,11 @@ TEST(B200Mxfp4ConfigTest,
       1e9;
   EXPECT_NEAR(peak_pflops, 9.0, 1e-4);
   EXPECT_NEAR(calibration_pflops, 4.94657, 1e-5);
+
+  const double mxf8f6f4_peak_pflops =
+      static_cast<double>(kMxf8f6f4FlopPerSmCycle * kSms * kPeakClockMhz) /
+      1e9;
+  EXPECT_NEAR(mxf8f6f4_peak_pflops, 4.5, 2e-4);
 }
 
 TEST(L2PortModelSelectionTest, LegacyAndMultiIssueModesAreMutuallyExclusive) {

@@ -1,0 +1,31 @@
+.version 9.1
+.target sm_100a
+.address_size 64
+
+.visible .entry tcgen05_mxf8f6f4_smoke()
+.reqntid 32
+{
+.reg .pred enable_input_d;
+.reg .b32 tmem_acc;
+.reg .b32 tmem_sfa;
+.reg .b32 tmem_sfb;
+.reg .b32 idesc;
+.reg .b64 sdesc_a;
+.reg .b64 sdesc_b;
+
+mov.b32 tmem_acc, 0;
+mov.b32 tmem_sfa, 256;
+mov.b32 tmem_sfb, 264;
+// M=128, N=64, K=32, A=E4M3, B=E2M1, scales=UE8M0.
+mov.b32 idesc, 0x08901400;
+mov.b64 sdesc_a, 0;
+mov.b64 sdesc_b, 0;
+setp.eq.u32 enable_input_d, tmem_acc, 0;
+
+// DeepGEMM currently emits the canonical spelling without an explicit
+// scale-vector qualifier. The latter two spellings cover PTX aliases.
+tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale [tmem_acc], sdesc_a, sdesc_b, idesc, [tmem_sfa], [tmem_sfb], enable_input_d;
+tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.block32 [tmem_acc], sdesc_a, sdesc_b, idesc, [tmem_sfa], [tmem_sfb], enable_input_d;
+tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [tmem_acc], sdesc_a, sdesc_b, idesc, [tmem_sfa], [tmem_sfb], enable_input_d;
+ret;
+}

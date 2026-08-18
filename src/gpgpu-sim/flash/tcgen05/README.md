@@ -10,6 +10,11 @@ Current scope:
 - Dense shared/shared `.kind::mxf4.block_scale.block32` MMA with E2M1
   inputs, UE8M0 scale factors, K=64, and f32 accumulator output. Both the CUDA
   12.8 `.scale_vec::2X` spelling and CUDA 12.9+ `.block32` spelling parse.
+- Dense shared/shared `.kind::mxf8f6f4.block_scale` MMA with independent E4M3,
+  E5M2, E2M3, E3M2, or E2M1 A and B types (all 25 ordered combinations),
+  one padded shared-memory byte per element, UE8M0 scale factors, K=32, and
+  f32 accumulator output. This includes DeepGEMM's E4M3 A by E2M1 B W4A8
+  path. The canonical spelling, `.block32`, and `.scale_vec::1X` parse.
 - TMEM allocation, deallocation, register load/store, and accumulator storage.
 - `tcgen05.cp.32x128b.warpx4` bit transpose and four-subpartition broadcast,
   including the compact 8-bit scale-factor layout used by CUTLASS.
@@ -22,7 +27,10 @@ Current scope:
 Not calibrated yet:
 
 - TCGen05 MMA issue throughput and completion latency.
-- Separate MXFP4 versus f16 TCGen05 throughput calibration.
+- Instruction-level issue/latency and small-shape utilization calibration for
+  strict MXFP4 and MXF8F6F4. Their checked-in roofline ratio follows the
+  documented Tensor Core throughput classes, rather than hardware timing
+  measurements.
 - TMEM load/store bandwidth, banking, and queueing.
 - `tcgen05.cp`/`shift`/`commit` timing.
 
@@ -30,7 +38,7 @@ Unsupported by design for the current FA4 forward target:
 
 - `cta_group::2`.
 - Sparse and weight-stationary MMA variants.
-- NVFP4 (`mxf4nvf4.block16`), MXF8/F6/F4, and other narrow-precision kinds
-  beyond the strict MXFP4 path above.
+- NVFP4 (`mxf4nvf4.block16`) and unscaled `f8f6f4` remain separate,
+  unsupported instruction families.
 - Exact shared-memory descriptor swizzles; operand tiles are still linearized
   in the functional bring-up model.

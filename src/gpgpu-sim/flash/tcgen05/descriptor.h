@@ -14,6 +14,18 @@ enum tcgen05_mxf4_format_t {
   TCGEN05_MXF4_FORMAT_E2M1 = 1,
 };
 
+// The three-bit atype/btype encoding used by kind::mxf8f6f4 is different
+// from the strict kind::mxf4 encoding above.  Keep the two namespaces
+// separate even for E2M1 so an instruction descriptor cannot silently be
+// decoded with the wrong MMA kind.
+enum tcgen05_mxf8f6f4_format_t {
+  TCGEN05_MXF8F6F4_FORMAT_E4M3 = 0,
+  TCGEN05_MXF8F6F4_FORMAT_E5M2 = 1,
+  TCGEN05_MXF8F6F4_FORMAT_E2M3 = 3,
+  TCGEN05_MXF8F6F4_FORMAT_E3M2 = 4,
+  TCGEN05_MXF8F6F4_FORMAT_E2M1 = 5,
+};
+
 enum tcgen05_scale_format_t {
   TCGEN05_SCALE_FORMAT_UE4M3 = 0,
   TCGEN05_SCALE_FORMAT_UE8M0 = 1,
@@ -53,10 +65,16 @@ uint32_t tcgen05_shared_k_major_packed_byte_address(
     uint32_t packed_k, uint32_t default_packed_k_per_row);
 bool tcgen05_mxf4_dense_shape_supported(uint32_t m, uint32_t n, uint32_t k,
                                         unsigned cta_group);
+bool tcgen05_mxf8f6f4_format_supported(uint8_t format);
+uint32_t tcgen05_mxf8f6f4_format_bits(uint8_t format);
+bool tcgen05_mxf8f6f4_dense_shape_supported(uint32_t m, uint32_t n, uint32_t k,
+                                            unsigned cta_group);
 tcgen05_mma_descriptor_t tcgen05_decode_f16_mma_descriptor(uint32_t idesc,
                                                            unsigned cta_group);
 tcgen05_mma_descriptor_t tcgen05_decode_mxf4_mma_descriptor(uint32_t idesc,
                                                             unsigned cta_group);
+tcgen05_mma_descriptor_t
+tcgen05_decode_mxf8f6f4_mma_descriptor(uint32_t idesc, unsigned cta_group);
 
 } // namespace flash_gpgpu_sim
 

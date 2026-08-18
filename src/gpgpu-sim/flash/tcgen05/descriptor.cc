@@ -117,6 +117,45 @@ bool tcgen05_mxf4_dense_shape_supported(uint32_t m, uint32_t n, uint32_t k,
   return m == 256 && k == 96;
 }
 
+bool tcgen05_mxf8f6f4_format_supported(uint8_t format) {
+  switch (format) {
+  case TCGEN05_MXF8F6F4_FORMAT_E4M3:
+  case TCGEN05_MXF8F6F4_FORMAT_E5M2:
+  case TCGEN05_MXF8F6F4_FORMAT_E2M3:
+  case TCGEN05_MXF8F6F4_FORMAT_E3M2:
+  case TCGEN05_MXF8F6F4_FORMAT_E2M1:
+    return true;
+  default:
+    return false;
+  }
+}
+
+uint32_t tcgen05_mxf8f6f4_format_bits(uint8_t format) {
+  switch (format) {
+  case TCGEN05_MXF8F6F4_FORMAT_E4M3:
+  case TCGEN05_MXF8F6F4_FORMAT_E5M2:
+    return 8;
+  case TCGEN05_MXF8F6F4_FORMAT_E2M3:
+  case TCGEN05_MXF8F6F4_FORMAT_E3M2:
+    return 6;
+  case TCGEN05_MXF8F6F4_FORMAT_E2M1:
+    return 4;
+  default:
+    assert(false && "Invalid TCGen05 MXF8F6F4 input format");
+    return 0;
+  }
+}
+
+bool tcgen05_mxf8f6f4_dense_shape_supported(uint32_t m, uint32_t n, uint32_t k,
+                                            unsigned cta_group) {
+  if (k != 32)
+    return false;
+  if (cta_group == 1)
+    return m == 128 && n >= 8 && n <= 256 && n % 8 == 0;
+  return cta_group == 2 && (m == 128 || m == 256) && n >= 16 && n <= 256 &&
+         n % 16 == 0;
+}
+
 tcgen05_mma_descriptor_t tcgen05_decode_f16_mma_descriptor(uint32_t idesc,
                                                            unsigned cta_group) {
   tcgen05_mma_descriptor_t decoded = {};
@@ -203,6 +242,62 @@ tcgen05_decode_mxf4_mma_descriptor(uint32_t idesc, unsigned cta_group) {
   assert(tcgen05_mxf4_dense_shape_supported(decoded.m, decoded.n, decoded.k,
                                             cta_group) &&
          "Unsupported dense TCGen05 MXFP4 shape");
+  return decoded;
+}
+
+tcgen05_mma_descriptor_t
+tcgen05_decode_mxf8f6f4_mma_descriptor(uint32_t idesc, unsigned cta_group) {
+  tcgen05_mma_descriptor_t decoded = {};
+  decoded.sparse = ((idesc >> 2) & 0x1) != 0;
+  decoded.b_scale_factor_id = static_cast<uint8_t>((idesc >> 4) & 0x3);
+  decoded.a_type = static_cast<uint8_t>((idesc >> 7) & 0x7);
+  decoded.b_type = static_cast<uint8_t>((idesc >> 10) & 0x7);
+  decoded.negate_a = ((idesc >> 13) & 0x1) != 0;
+  decoded.negate_b = ((idesc >> 14) & 0x1) != 0;
+  decoded.transpose_a = ((idesc >> 15) & 0x1) != 0;
+  decoded.transpose_b = ((idesc >> 16) & 0x1) != 0;
+  decoded.n = ((idesc >> 17) & 0x3f) << 3;
+  decoded.scale_format = static_cast<uint8_t>((idesc >> 23) & 0x1);
+  decoded.m = ((idesc >> 27) & 0x3) << 7;
+  decoded.a_scale_factor_id = static_cast<uint8_t>((idesc >> 29) & 0x3);
+  decoded.k = decoded.sparse ? 64 : 32;
+  decoded.d_type = TCGEN05_MMA_TYPE_FIELD_ONE;
+
+  assert((cta_group == 1 || cta_group == 2) &&
+         "TCGen05 MXF8F6F4 CTA group must be 1 or 2");
+  assert(!decoded.sparse && "Sparse TCGen05 MXF8F6F4 MMA is not supported");
+  assert((idesc & 0x3) == 0 &&
+         "TCGen05 MXF8F6F4 reserved bits 0-1 must be zero");
+  assert(((idesc >> 3) & 0x1) == 0 &&
+         "TCGen05 MXF8F6F4 reserved bit 3 must be zero");
+  assert(((idesc >> 6) & 0x1) == 0 &&
+         "TCGen05 MXF8F6F4 reserved bit 6 must be zero");
+  assert(((idesc >> 24) & 0x7) == 0 &&
+         "TCGen05 MXF8F6F4 reserved bits 24-26 must be zero");
+  assert(((idesc >> 31) & 0x1) == 0 &&
+         "TCGen05 MXF8F6F4 reserved bit 31 must be zero");
+  assert(tcgen05_mxf8f6f4_format_supported(decoded.a_type) &&
+         tcgen05_mxf8f6f4_format_supported(decoded.b_type) &&
+         "Unsupported TCGen05 MXF8F6F4 input format");
+  assert(decoded.scale_format == TCGEN05_SCALE_FORMAT_UE8M0 &&
+         "TCGen05 MXF8F6F4 requires UE8M0 scale factors");
+
+  // PTX only defines MN-major (transpose) narrow inputs for eight-bit element
+  // formats.  DeepGEMM uses K-major operands, but validate the descriptor here
+  // so other callers do not accidentally reinterpret padded FP4/FP6 storage.
+  assert((!decoded.transpose_a ||
+          tcgen05_mxf8f6f4_format_bits(decoded.a_type) == 8) &&
+         (!decoded.transpose_b ||
+          tcgen05_mxf8f6f4_format_bits(decoded.b_type) == 8) &&
+         "TCGen05 MXF8F6F4 transpose requires an eight-bit operand");
+  assert(tcgen05_mxf8f6f4_dense_shape_supported(decoded.m, decoded.n, decoded.k,
+                                                cta_group) &&
+         "Unsupported dense TCGen05 MXF8F6F4 shape");
+  if (decoded.transpose_b) {
+    const uint32_t n_step = cta_group == 1 ? 16 : 32;
+    assert(decoded.n % n_step == 0 &&
+           "TCGen05 MXF8F6F4 transposed eight-bit B has a wider N step");
+  }
   return decoded;
 }
 

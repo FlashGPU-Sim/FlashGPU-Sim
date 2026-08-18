@@ -48,6 +48,23 @@ uint32_t make_mxf4_idesc(uint32_t n, uint8_t a_scale_factor_id = 0,
          (static_cast<uint32_t>(k == 96) << 31);
 }
 
+uint32_t make_mxf8f6f4_idesc(uint32_t n, uint8_t a_type, uint8_t b_type,
+                             uint8_t a_scale_factor_id = 0,
+                             uint8_t b_scale_factor_id = 0, uint32_t m = 128,
+                             bool negate_a = false, bool negate_b = false,
+                             bool transpose_a = false,
+                             bool transpose_b = false) {
+  return (static_cast<uint32_t>(b_scale_factor_id) << 4) |
+         (static_cast<uint32_t>(a_type) << 7) |
+         (static_cast<uint32_t>(b_type) << 10) |
+         (static_cast<uint32_t>(negate_a) << 13) |
+         (static_cast<uint32_t>(negate_b) << 14) |
+         (static_cast<uint32_t>(transpose_a) << 15) |
+         (static_cast<uint32_t>(transpose_b) << 16) | ((n >> 3) << 17) |
+         (TCGEN05_SCALE_FORMAT_UE8M0 << 23) | ((m >> 7) << 27) |
+         (static_cast<uint32_t>(a_scale_factor_id) << 29);
+}
+
 }  // namespace
 
 TEST(Tcgen05TmemTest, AllocSingleCTA) {
@@ -445,6 +462,61 @@ TEST(Tcgen05TmemTest, Mxf4DescriptorPreservesNegateBits) {
   EXPECT_FALSE(desc.negate_b);
 }
 
+TEST(Tcgen05TmemTest, DecodeInstructionDescriptorDeepGemmW4A8) {
+  tcgen05_mma_descriptor_t desc = tcgen05_decode_mxf8f6f4_mma_descriptor(
+      make_mxf8f6f4_idesc(64, TCGEN05_MXF8F6F4_FORMAT_E4M3,
+                          TCGEN05_MXF8F6F4_FORMAT_E2M1,
+                          /*a_scale_factor_id=*/3, /*b_scale_factor_id=*/2),
+      /*cta_group=*/1);
+
+  EXPECT_EQ(desc.a_type, TCGEN05_MXF8F6F4_FORMAT_E4M3);
+  EXPECT_EQ(desc.b_type, TCGEN05_MXF8F6F4_FORMAT_E2M1);
+  EXPECT_EQ(desc.scale_format, TCGEN05_SCALE_FORMAT_UE8M0);
+  EXPECT_EQ(desc.a_scale_factor_id, 3u);
+  EXPECT_EQ(desc.b_scale_factor_id, 2u);
+  EXPECT_EQ(desc.m, 128u);
+  EXPECT_EQ(desc.n, 64u);
+  EXPECT_EQ(desc.k, 32u);
+}
+
+TEST(Tcgen05TmemTest, Mxf8f6f4SupportsAllOrderedFormatPairs) {
+  const uint8_t formats[] = {
+      TCGEN05_MXF8F6F4_FORMAT_E4M3, TCGEN05_MXF8F6F4_FORMAT_E5M2,
+      TCGEN05_MXF8F6F4_FORMAT_E2M3, TCGEN05_MXF8F6F4_FORMAT_E3M2,
+      TCGEN05_MXF8F6F4_FORMAT_E2M1};
+
+  for (uint8_t a_type : formats) {
+    for (uint8_t b_type : formats) {
+      tcgen05_mma_descriptor_t desc = tcgen05_decode_mxf8f6f4_mma_descriptor(
+          make_mxf8f6f4_idesc(8, a_type, b_type), /*cta_group=*/1);
+      EXPECT_EQ(desc.a_type, a_type);
+      EXPECT_EQ(desc.b_type, b_type);
+    }
+  }
+}
+
+TEST(Tcgen05TmemTest, Mxf8f6f4DenseShapesMatchPtxIsaTable) {
+  for (uint32_t n = 8; n <= 256; n += 8) {
+    EXPECT_TRUE(tcgen05_mxf8f6f4_dense_shape_supported(128, n, 32, 1));
+  }
+  for (uint32_t n = 16; n <= 256; n += 16) {
+    for (uint32_t m : {128u, 256u}) {
+      EXPECT_TRUE(tcgen05_mxf8f6f4_dense_shape_supported(m, n, 32, 2));
+      tcgen05_mma_descriptor_t desc = tcgen05_decode_mxf8f6f4_mma_descriptor(
+          make_mxf8f6f4_idesc(n, TCGEN05_MXF8F6F4_FORMAT_E4M3,
+                              TCGEN05_MXF8F6F4_FORMAT_E2M1, 0, 0, m),
+          /*cta_group=*/2);
+      EXPECT_EQ(desc.m, m);
+      EXPECT_EQ(desc.n, n);
+      EXPECT_EQ(desc.k, 32u);
+    }
+  }
+
+  EXPECT_FALSE(tcgen05_mxf8f6f4_dense_shape_supported(256, 8, 32, 1));
+  EXPECT_FALSE(tcgen05_mxf8f6f4_dense_shape_supported(128, 8, 32, 2));
+  EXPECT_FALSE(tcgen05_mxf8f6f4_dense_shape_supported(128, 16, 64, 2));
+}
+
 TEST(Tcgen05TmemTest, Mxf4KMajorPackedAddressLinearFallback) {
   tcgen05_shared_descriptor_t desc = tcgen05_decode_shared_descriptor(
       make_shared_desc(/*start=*/0x100, /*lbo=*/0, /*sbo=*/0));
@@ -479,6 +551,13 @@ TEST(Tcgen05TmemTest, Mxf4TheoreticalTimingScalesWithDescriptorWork) {
   EXPECT_EQ(tcgen05_mxf4_compute_cycles(256, 256, 96, 30947), 407u);
 }
 
+TEST(Tcgen05TmemTest, Mxf8f6f4TheoreticalTimingScalesWithDescriptorWork) {
+  EXPECT_EQ(tcgen05_mxf8f6f4_dense_work(128, 8, 32), 65536u);
+  EXPECT_EQ(tcgen05_mxf8f6f4_compute_cycles(128, 8, 32, 15474), 5u);
+  EXPECT_EQ(tcgen05_mxf8f6f4_compute_cycles(128, 256, 32, 15474), 136u);
+  EXPECT_EQ(tcgen05_mxf8f6f4_compute_cycles(256, 256, 32, 15474), 272u);
+}
+
 TEST(Tcgen05TmemTest, Mxf4TimingBackendSerializesFrontendPipes) {
   tcgen05_timing_model_t timing;
   EXPECT_TRUE(timing.can_issue(100));
@@ -502,6 +581,33 @@ TEST(Tcgen05TmemTest, Mxf4NumericFormats) {
   EXPECT_FLOAT_EQ(tcgen05_ue8m0_to_f32(128), 2.0f);
   EXPECT_FLOAT_EQ(tcgen05_ue8m0_to_f32(126), 0.5f);
   EXPECT_TRUE(std::isnan(tcgen05_ue8m0_to_f32(0xff)));
+}
+
+TEST(Tcgen05TmemTest, Mxf8f6f4NumericFormats) {
+  EXPECT_FLOAT_EQ(tcgen05_mxf8f6f4_to_f32(0x38, TCGEN05_MXF8F6F4_FORMAT_E4M3),
+                  1.0f);
+  EXPECT_FLOAT_EQ(tcgen05_mxf8f6f4_to_f32(0x7e, TCGEN05_MXF8F6F4_FORMAT_E4M3),
+                  448.0f);
+  EXPECT_TRUE(
+      std::isnan(tcgen05_mxf8f6f4_to_f32(0x7f, TCGEN05_MXF8F6F4_FORMAT_E4M3)));
+
+  EXPECT_FLOAT_EQ(tcgen05_mxf8f6f4_to_f32(0x3c, TCGEN05_MXF8F6F4_FORMAT_E5M2),
+                  1.0f);
+  EXPECT_TRUE(
+      std::isinf(tcgen05_mxf8f6f4_to_f32(0x7c, TCGEN05_MXF8F6F4_FORMAT_E5M2)));
+  EXPECT_TRUE(
+      std::isnan(tcgen05_mxf8f6f4_to_f32(0x7d, TCGEN05_MXF8F6F4_FORMAT_E5M2)));
+
+  EXPECT_FLOAT_EQ(tcgen05_mxf8f6f4_to_f32(0x08, TCGEN05_MXF8F6F4_FORMAT_E2M3),
+                  1.0f);
+  EXPECT_FLOAT_EQ(tcgen05_mxf8f6f4_to_f32(0x1f, TCGEN05_MXF8F6F4_FORMAT_E2M3),
+                  7.5f);
+  EXPECT_FLOAT_EQ(tcgen05_mxf8f6f4_to_f32(0x0c, TCGEN05_MXF8F6F4_FORMAT_E3M2),
+                  1.0f);
+  EXPECT_FLOAT_EQ(tcgen05_mxf8f6f4_to_f32(0x1f, TCGEN05_MXF8F6F4_FORMAT_E3M2),
+                  28.0f);
+  EXPECT_FLOAT_EQ(tcgen05_mxf8f6f4_to_f32(0x02, TCGEN05_MXF8F6F4_FORMAT_E2M1),
+                  1.0f);
 }
 
 TEST(Tcgen05TmemTest, MmaF16KnownPatternNoAccum) {
@@ -582,4 +688,49 @@ TEST(Tcgen05TmemTest, MmaMxf4AppliesDescriptorNegation) {
   ASSERT_EQ(result.size(), desc.m * desc.n);
   EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.front()), -64.0f);
   EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.back()), -64.0f);
+}
+
+TEST(Tcgen05TmemTest, MmaMxf8f6f4DeepGemmW4A8KnownScalesAndAccum) {
+  tcgen05_mma_descriptor_t desc = tcgen05_decode_mxf8f6f4_mma_descriptor(
+      make_mxf8f6f4_idesc(8, TCGEN05_MXF8F6F4_FORMAT_E4M3,
+                          TCGEN05_MXF8F6F4_FORMAT_E2M1),
+      /*cta_group=*/1);
+  std::vector<uint8_t> a(desc.m * desc.k, 0x38);  // E4M3 1.0
+  std::vector<uint8_t> b(desc.n * desc.k, 0x02);  // E2M1 1.0
+  std::vector<uint8_t> scale_a(desc.m, 128);      // 2.0
+  std::vector<uint8_t> scale_b(desc.n, 126);      // 0.5
+  std::vector<uint32_t> input_d(desc.m * desc.n, tcgen05_f32_to_bits(2.5f));
+
+  std::vector<uint32_t> result = tcgen05_mma_mxf8f6f4_compute_words(
+      desc, a, b, scale_a, scale_b, input_d, true);
+
+  ASSERT_EQ(result.size(), desc.m * desc.n);
+  EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.front()), 34.5f);
+  EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.back()), 34.5f);
+}
+
+TEST(Tcgen05TmemTest, MmaMxf8f6f4ComputesAllOrderedFormatPairs) {
+  const uint8_t formats[] = {
+      TCGEN05_MXF8F6F4_FORMAT_E4M3, TCGEN05_MXF8F6F4_FORMAT_E5M2,
+      TCGEN05_MXF8F6F4_FORMAT_E2M3, TCGEN05_MXF8F6F4_FORMAT_E3M2,
+      TCGEN05_MXF8F6F4_FORMAT_E2M1};
+  const uint8_t one[] = {0x38, 0x3c, 0x08, 0x0c, 0x02};
+
+  for (unsigned a_format = 0; a_format < 5; ++a_format) {
+    for (unsigned b_format = 0; b_format < 5; ++b_format) {
+      tcgen05_mma_descriptor_t desc = tcgen05_decode_mxf8f6f4_mma_descriptor(
+          make_mxf8f6f4_idesc(8, formats[a_format], formats[b_format]),
+          /*cta_group=*/1);
+      std::vector<uint8_t> a(desc.m * desc.k, one[a_format]);
+      std::vector<uint8_t> b(desc.n * desc.k, one[b_format]);
+      std::vector<uint8_t> scale_a(desc.m, 127);
+      std::vector<uint8_t> scale_b(desc.n, 127);
+
+      std::vector<uint32_t> result = tcgen05_mma_mxf8f6f4_compute_words(
+          desc, a, b, scale_a, scale_b, {}, false);
+      ASSERT_EQ(result.size(), desc.m * desc.n);
+      EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.front()), 32.0f);
+      EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.back()), 32.0f);
+    }
+  }
 }

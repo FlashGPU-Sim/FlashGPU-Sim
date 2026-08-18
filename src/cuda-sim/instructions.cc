@@ -2052,6 +2052,28 @@ static std::vector<uint8_t> tcgen05_read_shared_u4_k_major(
   return values;
 }
 
+static std::vector<uint8_t> tcgen05_read_shared_narrow_u8_k_major(
+    const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t rows,
+    uint32_t k, ptx_thread_info *thread) {
+  assert(!desc.leading_dimension_absolute &&
+         "TCGen05 MMA absolute leading-dimension mode is not implemented");
+
+  // mxf8f6f4 uses one padded eight-bit shared-memory container for every
+  // logical FP8, FP6, or FP4 element.  This differs from strict mxf4, which
+  // keeps two E2M1 values packed in each shared-memory byte.
+  std::vector<uint8_t> values(rows * k, 0);
+  for (uint32_t row = 0; row < rows; ++row) {
+    for (uint32_t element_k = 0; element_k < k; ++element_k) {
+      const uint32_t address =
+          flash_gpgpu_sim::tcgen05_shared_k_major_packed_byte_address(
+              desc, row, element_k, k);
+      thread->m_shared_mem->read(address, sizeof(uint8_t),
+                                 &values[row * k + element_k]);
+    }
+  }
+  return values;
+}
+
 static std::vector<uint32_t> tcgen05_read_shared_words_linearized(
     const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t rows,
     uint32_t words_per_row, ptx_thread_info *thread) {
@@ -2171,8 +2193,77 @@ static void tcgen05_execute_mma_thread(const ptx_instruction *pI,
   assert(pI->get_num_operands() >= 5);
   bool is_f16 = tcgen05_has_option(pI, TCGEN05_KIND_F16_OPTION);
   bool is_mxf4 = tcgen05_has_option(pI, TCGEN05_KIND_MXF4_OPTION);
-  assert(is_f16 != is_mxf4 &&
+  bool is_mxf8f6f4 =
+      tcgen05_has_option(pI, TCGEN05_KIND_MXF8F6F4_OPTION);
+  assert(static_cast<unsigned>(is_f16) + static_cast<unsigned>(is_mxf4) +
+                 static_cast<unsigned>(is_mxf8f6f4) ==
+             1 &&
          "TCGen05 MMA requires exactly one supported kind");
+
+  if (is_mxf8f6f4) {
+    assert(pI->get_num_operands() >= 7);
+    assert(tcgen05_has_option(pI, TCGEN05_BLOCK_SCALE_OPTION));
+    assert(!tcgen05_has_option(pI, TCGEN05_BLOCK16_OPTION) &&
+           !tcgen05_has_option(pI, TCGEN05_SCALE_VEC_2X_OPTION) &&
+           !tcgen05_has_option(pI, TCGEN05_SCALE_VEC_4X_OPTION) &&
+           "TCGen05 MXF8F6F4 requires scale_vec::1X/block32");
+
+    const operand_info &d_tmem = pI->operand_lookup(0);
+    const operand_info &a_desc_op = pI->operand_lookup(1);
+    const operand_info &b_desc_op = pI->operand_lookup(2);
+    const operand_info &sfa_tmem = pI->operand_lookup(4);
+    const operand_info &sfb_tmem = pI->operand_lookup(5);
+    const operand_info &enable_input_d_op = pI->operand_lookup(6);
+    assert(!a_desc_op.is_memory_operand() &&
+           !b_desc_op.is_memory_operand() &&
+           "Only shared/shared TCGen05 MXF8F6F4 MMA is supported");
+
+    const uint32_t d_address = tcgen05_eval_address(d_tmem, thread);
+    const uint32_t sfa_address = tcgen05_eval_address(sfa_tmem, thread);
+    const uint32_t sfb_address = tcgen05_eval_address(sfb_tmem, thread);
+    flash_gpgpu_sim::tcgen05_tmem_scope_t scope =
+        tcgen05_tmem_scope(pI, thread);
+    flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
+        thread->get_gpu()->get_tcgen05_tmem_manager();
+    flash_gpgpu_sim::tcgen05_mma_descriptor_t mma_desc =
+        flash_gpgpu_sim::tcgen05_decode_mxf8f6f4_mma_descriptor(
+            tcgen05_read_operand(pI, thread, 3).u32, tcgen05_cta_group(pI));
+    assert(!mma_desc.transpose_a && !mma_desc.transpose_b &&
+           "TCGen05 MXF8F6F4 execution currently requires K-major operands");
+    const flash_gpgpu_sim::tcgen05_shared_descriptor_t a_desc =
+        flash_gpgpu_sim::tcgen05_decode_shared_descriptor(
+            tcgen05_read_u64_operand(pI, thread, 1).u64);
+    const flash_gpgpu_sim::tcgen05_shared_descriptor_t b_desc =
+        flash_gpgpu_sim::tcgen05_decode_shared_descriptor(
+            tcgen05_read_u64_operand(pI, thread, 2).u64);
+    const bool enable_input_d =
+        tcgen05_read_enable_input_d(enable_input_d_op, thread);
+
+    std::vector<uint8_t> a_values =
+        tcgen05_read_shared_narrow_u8_k_major(a_desc, mma_desc.m, mma_desc.k,
+                                              thread);
+    std::vector<uint8_t> b_values =
+        tcgen05_read_shared_narrow_u8_k_major(b_desc, mma_desc.n, mma_desc.k,
+                                              thread);
+    std::vector<uint8_t> scale_a = manager.read_mxf4_scale_matrix(
+        scope, sfa_address, mma_desc.m, /*scales_per_row=*/1,
+        mma_desc.a_scale_factor_id);
+    std::vector<uint8_t> scale_b = manager.read_mxf4_scale_matrix(
+        scope, sfb_address, mma_desc.n, /*scales_per_row=*/1,
+        mma_desc.b_scale_factor_id);
+    std::vector<uint32_t> input_d;
+    if (enable_input_d) {
+      input_d = manager.read_matrix_words(scope, d_address, mma_desc.m,
+                                          mma_desc.n);
+    }
+    std::vector<uint32_t> output =
+        flash_gpgpu_sim::tcgen05_mma_mxf8f6f4_compute_words(
+            mma_desc, a_values, b_values, scale_a, scale_b, input_d,
+            enable_input_d);
+    manager.write_matrix_words(scope, d_address, output, mma_desc.m,
+                               mma_desc.n);
+    return;
+  }
 
   if (is_mxf4) {
     assert(pI->get_num_operands() >= 7);
@@ -2369,6 +2460,20 @@ void tcgen05_mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst
         thread->get_gpu()
             ->gpgpu_ctx->func_sim->opcode_compute_throughput_tcgen05_mxf4);
     unsigned cycles = flash_gpgpu_sim::tcgen05_mxf4_compute_cycles(
+        desc.m, desc.n, desc.k, throughput);
+    inst.tcgen05_compute_latency = cycles;
+    inst.latency = cycles;
+    inst.initiation_interval = cycles;
+  } else if (tcgen05_has_option(pI, TCGEN05_KIND_MXF8F6F4_OPTION)) {
+    flash_gpgpu_sim::tcgen05_mma_descriptor_t desc =
+        flash_gpgpu_sim::tcgen05_decode_mxf8f6f4_mma_descriptor(
+            tcgen05_read_operand(pI, thread, 3).u32, tcgen05_cta_group(pI));
+    unsigned throughput =
+        flash_gpgpu_sim::tcgen05_parse_mxf8f6f4_throughput(
+            thread->get_gpu()
+                ->gpgpu_ctx->func_sim
+                ->opcode_compute_throughput_tcgen05_mxf8f6f4);
+    unsigned cycles = flash_gpgpu_sim::tcgen05_mxf8f6f4_compute_cycles(
         desc.m, desc.n, desc.k, throughput);
     inst.tcgen05_compute_latency = cycles;
     inst.latency = cycles;

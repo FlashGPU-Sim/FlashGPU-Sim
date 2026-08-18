@@ -13,6 +13,14 @@ unsigned tcgen05_mxf4_compute_cycles(uint32_t m, uint32_t n, uint32_t k,
                                      unsigned work_per_sm_cycle);
 unsigned tcgen05_parse_mxf4_throughput(const char *value);
 
+// kind::mxf8f6f4 covers all 25 ordered FP8/FP6/FP4 input combinations.  The
+// useful-work convention is the same as strict mxf4, but hardware exposes it
+// at the FP8-class rate rather than the dedicated 2x-faster strict-FP4 rate.
+uint64_t tcgen05_mxf8f6f4_dense_work(uint32_t m, uint32_t n, uint32_t k);
+unsigned tcgen05_mxf8f6f4_compute_cycles(uint32_t m, uint32_t n, uint32_t k,
+                                         unsigned work_per_sm_cycle);
+unsigned tcgen05_parse_mxf8f6f4_throughput(const char *value);
+
 // TCGen05 is exposed through four scheduler-facing tensor pipes on Blackwell,
 // but one instruction consumes a shared per-SM Tensor Core backend.  This
 // small reservation model prevents four independently modelled frontends from

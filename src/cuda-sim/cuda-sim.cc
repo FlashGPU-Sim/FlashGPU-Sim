@@ -218,6 +218,12 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
       "TCGen05 dense MXFP4 throughput in FLOP/cycle per SM. "
       "Default 30947 (9 PFLOP/s over 148 SMs at 1.965 GHz peak)",
       "30947");
+  option_parser_register(
+      opp, "-ptx_opcode_compute_throughput_tcgen05_mxf8f6f4", OPT_CSTR,
+      &opcode_compute_throughput_tcgen05_mxf8f6f4,
+      "TCGen05 dense MXF8F6F4 throughput in FLOP/cycle per SM. "
+      "Default 15474 (4.5 PFLOP/s over 148 SMs at 1.965 GHz peak)",
+      "15474");
   option_parser_register(opp, "-ptx_opcode_latency_tma", OPT_CSTR,
                          &opcode_latency_tma,
                          "Opcode latency for TMA (cp.async.bulk) instructions"

@@ -492,6 +492,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.block_scale TC; return TCGEN05_BLOCK_SCALE_OPTION;
 \.block16 TC; return TCGEN05_BLOCK16_OPTION;
 \.block32 TC; return TCGEN05_BLOCK32_OPTION;
+\.scale_vec::1X TC; return TCGEN05_SCALE_VEC_1X_OPTION;
 \.scale_vec::2X TC; return TCGEN05_SCALE_VEC_2X_OPTION;
 \.scale_vec::4X TC; return TCGEN05_SCALE_VEC_4X_OPTION;
 \.mbarrier::arrive::one TC; return TCGEN05_MBARRIER_ARRIVE_ONE_OPTION;

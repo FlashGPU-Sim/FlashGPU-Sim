@@ -5508,6 +5508,7 @@ void shader_core_config::set_pipeline_latency() {
   unsigned wgmma_latency[4];
   unsigned wgmma_latency_max = 1;
   unsigned tcgen05_mxf4_latency_max = 1;
+  unsigned tcgen05_mxf8f6f4_latency_max = 1;
   unsigned tma_latency;
   unsigned cp_async_latency;
   unsigned cp_async_commit_latency;
@@ -5563,6 +5564,14 @@ void shader_core_config::set_pipeline_latency() {
           gpgpu_ctx->func_sim->opcode_compute_throughput_tcgen05_mxf4);
   tcgen05_mxf4_latency_max = flash_gpgpu_sim::tcgen05_mxf4_compute_cycles(
       /*m=*/256, /*n=*/256, /*k=*/96, tcgen05_mxf4_throughput);
+  const unsigned tcgen05_mxf8f6f4_throughput =
+      flash_gpgpu_sim::tcgen05_parse_mxf8f6f4_throughput(
+          gpgpu_ctx->func_sim
+              ->opcode_compute_throughput_tcgen05_mxf8f6f4);
+  tcgen05_mxf8f6f4_latency_max =
+      flash_gpgpu_sim::tcgen05_mxf8f6f4_compute_cycles(
+          /*m=*/256, /*n=*/256, /*k=*/32,
+          tcgen05_mxf8f6f4_throughput);
   if (gpgpu_ctx->func_sim->opcode_latency_tma)
     sscanf(gpgpu_ctx->func_sim->opcode_latency_tma, "%u", &tma_latency);
   else
@@ -5599,6 +5608,8 @@ void shader_core_config::set_pipeline_latency() {
   max_tensor_core_latency = std::max(tensor_latency_max, wgmma_latency_max);
   max_tensor_core_latency =
       std::max(max_tensor_core_latency, tcgen05_mxf4_latency_max);
+  max_tensor_core_latency =
+      std::max(max_tensor_core_latency, tcgen05_mxf8f6f4_latency_max);
   max_tma_latency = tma_latency;
   max_cp_async_latency = std::max(cp_async_latency, cp_async_commit_latency);
   max_cp_async_latency = std::max(max_cp_async_latency, cp_async_wait_latency);

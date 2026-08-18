@@ -1,9 +1,11 @@
-# SM100 strict-MXFP4 support
+# SM100 strict-MXFP4 and mixed MXF8/F6/F4 support
 
 This directory contains the real CUTLASS integration smoke for the simulator's
-SM100 `tcgen05.mma.kind::mxf4.block_scale.block32` path. It uses CUTLASS's
-block-scaled collective builder and testbed; it is not a hand-written traffic
-proxy.
+SM100 `tcgen05.mma.kind::mxf4.block_scale.block32` path, plus the
+`kind::mxf8f6f4.block_scale` path used by DeepGEMM W4A8. The strict-MXFP4
+CUDA smoke uses CUTLASS's block-scaled collective builder and testbed; it is
+not a hand-written traffic proxy. Host numerical and PTX parser tests cover
+the mixed path until its DeepGEMM integration smoke is added.
 
 ## Modeled semantics
 
@@ -15,6 +17,17 @@ The functional model follows the PTX ISA strict-MXFP4 contract:
 - scale-factor IDs 0 and 2 and the PTX TMEM subpartition/byte layout; and
 - `tcgen05.cp.32x128b.warpx4` row multicast into four TMEM subpartitions.
 
+The mixed MXF8/F6/F4 model follows the separate PTX contract:
+
+- A and B independently select E4M3, E5M2, E2M3, E3M2, or E2M1, for 25
+  ordered input combinations;
+- FP4 and FP6 values use the ISA's one-byte padded shared-memory containers;
+- one UE8M0 scale per row and 32 K elements, with K=32 per instruction; and
+- FP32 accumulation, optional input D, and A/B negate bits.
+
+DeepGEMM's Kimi K3 path selects E4M3 A and E2M1 B: W4A8. Strict W4A4 remains
+on `kind::mxf4`, whose packed storage and K=64 instruction shape are distinct.
+
 The descriptor and compute models cover every dense shape in the PTX table:
 
 - `cta_group::1`: M=128, K=64, N=8..256 in steps of 8;
@@ -25,6 +38,11 @@ The end-to-end CUDA execution path currently coordinates `cta_group::1`.
 Two-CTA distributed shared-memory/TMEM coordination for `cta_group::2` remains
 separate work; its legal descriptors, numerical compute model, and theoretical
 latencies are covered by host unit tests.
+
+For dense `kind::mxf8f6f4`, descriptors cover M=128, K=32, N=8..256 for
+`cta_group::1`, and M=128 or 256, K=32, N=16..256 for `cta_group::2`.
+End-to-end execution currently remains K-major shared/shared and
+`cta_group::1`.
 
 ## Timing model
 
@@ -46,6 +64,13 @@ is lower; it does not preserve peak FLOP/s by inflating per-cycle throughput.
 All scheduler-facing Tensor Core pipes reserve one shared per-SM TCGen05 backend,
 so the configured chip throughput is not multiplied by the four front-end
 pipes.
+
+The checked-in mixed MXF8/F6/F4 rate is 15,474 FLOP/cycle/SM, or about 4.5
+PFLOP/s at the same 148-SM, 1.965-GHz peak-clock point. This is half the strict
+MXFP4 rate because NVIDIA documents `mxf8f6f4` at 2x Hopper FP8 Tensor Core
+throughput and strict `mxf4` at 4x. It is a theoretical roofline anchor; exact
+instruction latency, issue interval, shape efficiency, and tails still need
+native Blackwell calibration.
 
 ## Run the CUTLASS smoke
 
