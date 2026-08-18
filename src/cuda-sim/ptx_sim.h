@@ -600,8 +600,8 @@ class ptx_thread_info {
   ptx_reg_t m_last_set_operand_value;
 
   // Intra-cluster DSM (set by decode_space for remote shared accesses).
-  // When m_dsm_remote is true, st may inject via cluster NoC instead of
-  // immediate peer write (delayed visibility).
+  // When m_dsm_remote is true and NoC is on, st injects DSM_STORE. Peer
+  // smem is also written at issue unless -gpgpu_dsm_store_immediate is 0.
   bool m_dsm_remote = false;
   unsigned m_dsm_owner_smid = 0;
   unsigned m_dsm_dst_cid = 0;

@@ -93,6 +93,7 @@ Reduced multi-cluster H200 profile for functional iteration.
 - 4 clusters × 4 SMs/cluster = 16 total SMs
 - Same H200 SM / memory / WGMMA / latency knobs as `SM90_H200` (job 2034797)
 - Local interconnect (`-network_mode 2`) and idealized TMA memory
+- `-gpgpu_dsm_store_immediate 0` (peer DSM store visible after NoC deliver)
 - Prefer over full `SM90_H200` for day-to-day functional work
 
 ### SM90_H100_1500MHZ

@@ -33,6 +33,7 @@ namespace flash_test {
 struct GpgpuSimTopology {
   unsigned n_clusters = 1;
   unsigned n_cores_per_cluster = 1;
+  bool cluster_noc_enable = false;
   bool found_config = false;
 };
 
@@ -68,6 +69,11 @@ inline GpgpuSimTopology read_gpgpusim_topology(
       if (iss >> v) {
         topo.n_cores_per_cluster = v;
       }
+    } else if (key == "-gpgpu_cluster_noc_enable") {
+      unsigned v = 0;
+      if (iss >> v) {
+        topo.cluster_noc_enable = (v != 0);
+      }
     }
   }
   return topo;
@@ -100,6 +106,19 @@ inline void warn_topology_skip(const std::string &msg) {
              << " (got " << __topo.n_cores_per_cluster                         \
              << "). Use SM120_RTX5090_REDUCED_CLUSTER2x1 / 4x4 "               \
                 "(or CLUSTER16x11).";                                          \
+      ::flash_test::warn_topology_skip(__skip.str());                          \
+      GTEST_SKIP() << __skip.str();                                            \
+    }                                                                          \
+  } while (0)
+
+// Skip if intra-cluster NoC is off (delayed DSM store visibility needs it).
+#define SKIP_IF_CLUSTER_NOC_OFF()                                              \
+  do {                                                                         \
+    const auto __topo = ::flash_test::read_gpgpusim_topology();                \
+    if (__topo.found_config && !__topo.cluster_noc_enable) {                   \
+      std::ostringstream __skip;                                               \
+      __skip << "Requires -gpgpu_cluster_noc_enable 1 (NoC off). "             \
+                "Use SM90_H200_REDUCED_CLUSTER4x4 or a NoC overlay.";          \
       ::flash_test::warn_topology_skip(__skip.str());                          \
       GTEST_SKIP() << __skip.str();                                            \
     }                                                                          \

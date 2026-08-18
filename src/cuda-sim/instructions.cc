@@ -57,6 +57,7 @@ class ptx_recognizer;
 #include "../gpgpu-sim/flash/ld_st_matrix.h"
 #include "../gpgpu-sim/flash/tma.h"
 #include "../gpgpu-sim/flash/cluster_noc.h"
+#include "../gpgpu-sim/flash/cluster_dsm_store.h"
 #include "../trace.h"
 #include "cuda-math.h"
 #include "cuda_device_printf.h"
@@ -3538,6 +3539,9 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
                   const operand_info &op, memory_space *&mem, addr_t &addr) {
   unsigned smid = thread->get_hw_sid();
   unsigned hwtid = thread->get_hw_tid();
+  // Each decode starts local; remote generic shared sets this again below.
+  thread->m_dsm_remote = false;
+  thread->m_dsm_hop = 0;
 
   if (space == param_space_unclassified) {
     // need to op to determine whether it refers to a kernel param or local
@@ -6359,33 +6363,30 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
 
   // Remote DSM store via cluster NoC when enabled.
-  // Dual-path (functional + timing):
-  //   1. Inject NoC message so hop latency is modeled for the issuer.
-  //   2. Also write peer smem immediately so subsequent remote mbarrier
-  //      arrive (same warp, after hop delay) observes the data, and so
-  //      mbarrier-coordinated peers are not racing a pure delayed deliver.
-  // Pure delayed-only visibility is still available when hop>0 if the
-  // consumer waits long enough without mbarrier; mbarrier-ordered code is
-  // the supported pattern (see docs/cluster_noc.md).
+  // Default (-gpgpu_dsm_store_immediate 1): inject a hop for the issuer and
+  // also write peer smem immediately so mbarrier-ordered consumers see data.
+  // Set the knob or FLASHGPU_DSM_STORE_IMMEDIATE to 0 to write peer smem
+  // only when DSM_STORE is delivered. NoC-off still writes immediately.
   auto try_noc_dsm_store = [&](const void *bytes, size_t nbytes) -> bool {
-    if (!thread->m_dsm_remote || nbytes == 0)
-      return false;
     auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
     if (!core || !core->get_cluster() || !core->get_cluster()->get_cluster_noc())
       return false;
     auto *noc = core->get_cluster()->get_cluster_noc();
-    if (!noc->enabled())
-      return false;
-    const unsigned src_cid = core->get_config()->sid_to_cid(core->get_sid());
-    const bool injected =
-        noc->inject_dsm_store(src_cid, thread->m_dsm_dst_cid,
-                              thread->m_dsm_dst_hw_cta, (uint32_t)addr, bytes,
-                              (uint32_t)nbytes);
-    if (injected && mem && bytes && nbytes > 0) {
-      // Immediate functional peer write (idempotent with later NoC deliver).
-      mem->write(addr, nbytes, bytes, thread, pI);
-    }
-    return injected;
+    const bool immediate = flash_gpgpu_sim::dsm_store_immediate_enabled(
+        core->get_config()->gpgpu_dsm_store_immediate);
+    return flash_gpgpu_sim::issue_remote_dsm_store(
+        thread->m_dsm_remote && nbytes > 0, noc->enabled(), immediate,
+        [&]() {
+          const unsigned src_cid =
+              core->get_config()->sid_to_cid(core->get_sid());
+          return noc->inject_dsm_store(src_cid, thread->m_dsm_dst_cid,
+                                       thread->m_dsm_dst_hw_cta, (uint32_t)addr,
+                                       bytes, (uint32_t)nbytes);
+        },
+        [&]() {
+          if (mem && bytes && nbytes > 0)
+            mem->write(addr, nbytes, bytes, thread, pI);
+        });
   };
   
   if (!vector_spec) {

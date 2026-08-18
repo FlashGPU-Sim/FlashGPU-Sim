@@ -121,7 +121,7 @@ OpenMP in Flash mode parallelizes **physical clusters**, not SMs inside a cluste
 |------|---------|-------------|-------------------|
 | `TMA_MCAST_DATA` | Byte snapshot | TMA finalize | Write peer CTA smem |
 | `TMA_MCAST_MBAR` | mbar addr + tx count | After data (same stream) | `try_complete_tx_if_pending` on peer |
-| `DSM_STORE` | Bytes | Remote `st` (NoC path) | Write peer smem (also dual-path immediate write) |
+| `DSM_STORE` | Bytes | Remote `st` (NoC path) | Write peer smem on deliver. Default also writes at issue (`-gpgpu_dsm_store_immediate 1`); `0` writes only here. |
 | `DSM_LOAD_REQ` | Addr/size | Optional timing path | Read peer; inject `DSM_LOAD_RSP` |
 | `DSM_LOAD_RSP` | Bytes | Load req deliver | **Scoreboard/RF completion still partial** (load uses issue delay today) |
 | `MBAR_REMOTE_OP` | arrive / expect / complete / wait | Remote mbarrier | Owner CTA manager + WAIT_DONE to requester |
@@ -186,7 +186,7 @@ When NoC is **disabled** (`-gpgpu_cluster_noc_enable 0`): legacy immediate multi
 | `mapa` maps to peer generic shared | Yes (`mapa.u64` preferred) |
 | Missing / exited cluster rank | **Abort** (named error); does not alias issuer smem |
 | `ld`/`st` generic → remote smem | Yes (via `decode_space`) |
-| Store via NoC + functional peer write | Yes (dual-path: inject hop + immediate write) |
+| Store via NoC + optional immediate peer write | Yes (default `-gpgpu_dsm_store_immediate 1`; `0` = write only on deliver) |
 | Remote `atom` on mapa’d generic shared | Yes (owner smem RMW; CUDA `atomicAdd` path) |
 | PTX `red` / `red.async` | No (`inst_not_implemented`; follow-on) |
 | Load pre-delivers due stores | Yes (`deliver_ready` before remote load) |
@@ -214,20 +214,20 @@ When NoC is **disabled** (`-gpgpu_cluster_noc_enable 0`): legacy immediate multi
 | **TMA + cluster multicast** | **Yes (common paths)** | `.shared::cluster` and `.multicast::cluster` + `ctaMask` select peer destinations for data and mbarrier `complete_tx`. With NoC off, peers see data immediately (legacy). With NoC on, peers see data after hop deliver and can `try_wait` correctly. Mask edge cases, OOB, and some bulk corners remain idealized (see `FLASH.md`). |
 | **DSM (`mapa` + remote ld/st)** | **Yes (tested patterns)** | Real `mapa.u64` maps into peer generic shared windows; remote `ld`/`st`/`atom` resolve via `decode_space` (owner smem). A rank with no active CTA **aborts** (no local-window alias). Integration coverage: self-mapa, two-CTA remote store/load/`atom.add`, clusterDim=4 fan-out, drop-on-exit, u64 vs u32, after-exit abort. Prefer **`mapa.u64`** (u32 truncates large generic windows). PTX `red`/`red.async` are unimplemented. |
 | **mbarrier (local + remote)** | **Yes (used ops)** | Local init/arrive/expect_tx/complete_tx/inval/`try_wait.parity`. Timeout 4th operand: dest pred true if phase done, false on expiry. Remote arrive/try_wait/expect/complete via NoC when cluster-mbar + NoC on. Unused variants (`test_wait`, `pending_count`) hard-fail. Objects are simulator state, not smem bytes. |
-| **Correctness model for multi-CTA** | **mbarrier-ordered kernels** | Kernels that **sync with mbarrier** (or equivalent interest-list wait) match the intended model. Bare spins on peer smem without the peer having issued, or `__syncthreads` mixed with single-thread try_wait, can hang or behave poorly under functional-first PTX sim. Remote DSM **stores** are dual-path (issuer pays hop; peer smem also updated immediately for mbarrier-safe visibility). |
+| **Correctness model for multi-CTA** | **mbarrier-ordered kernels** | Kernels that **sync with mbarrier** (or equivalent interest-list wait) match the intended model. Bare spins on peer smem without the peer having issued, or `__syncthreads` mixed with single-thread try_wait, can hang or behave poorly under functional-first PTX sim. Remote DSM **stores** default to dual-path (issuer pays hop; peer smem also updated immediately). `-gpgpu_dsm_store_immediate 0` writes peer smem only on NoC deliver. |
 
 **What “functionally usable” means here**
 
 - If a correct CUDA kernel uses cluster launch, TMA into peer smem, DSM via `mapa`, and mbarrier to wait for data, the simulator should **produce the right data and complete without hanging** (under supported configs / knobs).
 - It does **not** mean every latency, throughput, or microarchitectural hazard matches silicon.
 
-**Open functional holes:** **F1–F9** in **§6.6**. Track close-out in **§12.2**.
+**Open functional holes:** **F4** (`red` / `red.async` follow-on) in **§6.6**. F1–F3 and F5–F9 are closed or non-goal. Track close-out in **§12.2**.
 
 **Configs**
 
 | Config | NoC default | Use for |
 |--------|-------------|---------|
-| `SM90_H200_REDUCED_CLUSTER4x4` | **On** | Multi-SM cluster + hop-calibrated H200 path |
+| `SM90_H200_REDUCED_CLUSTER4x4` | **On** | Multi-SM cluster + hop-calibrated H200 path; `-gpgpu_dsm_store_immediate 0` |
 | `SM90_H200` (full) | Off (1 SM/cluster) | Product latency knobs; NoC idle unless multi-SM pack |
 | `SM120_RTX5090*` | Off | Functional TMA/cluster tests; enable NoC via run-dir overlay if needed |
 | `SM120_*_REDUCED_CLUSTER2x1` | Off | Fast two-CTA smoke; overlay NoC for DSM/mbar cluster tests |
@@ -240,7 +240,7 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 |------:|------|--------|----------------|
 | **L0** | Functional only | **Past** | Peer TMA/DSM effects applied immediately; no hop; free multicast. Pre-NoC default for most configs still behaves like this when NoC is off. |
 | **L1** | Tunable flat hop | **Current** | Separate `cluster_noc_t`; flat (constant/near-constant) hop from H200 job **2046238** (one-way ~78; remote load RTT ≈ local + 2×hop ≈ 193; TMA mcast−unicast e2e ~+135). Topology class matches HW stride ratio ~1.0 (not multi-hop tree). |
-| **L2** | Pipeline / scoreboard fidelity | **Partial** | Remote **load** still fills RF at functional execute and only *stalls issue* by ~2×hop. Real HW: hop → peer read → hop back → **scoreboard clear / RF write** on response (`DSM_LOAD_RSP`). Store dual-path immediacy also differs from pure delayed visibility. |
+| **L2** | Pipeline / scoreboard fidelity | **Partial** | Remote **load** still fills RF at functional execute and only *stalls issue* by ~2×hop. Real HW: hop → peer read → hop back → **scoreboard clear / RF write** on response (`DSM_LOAD_RSP`). Delayed-only store visibility is available (`-gpgpu_dsm_store_immediate 0`; L2-2 done). Remaining L2 is load scoreboard / RF and local DSM latency. |
 | **L3** | BW + contention | **Not fitted** | `-gpgpu_dsm_bytes_per_cycle` / TMA BPC exist but default **0** (unlimited). Multi-cluster pair/ring GB/s from profiling cannot be dropped in as per-link BPC without a single-cluster fit. No credits, ingress queues, or bcast fan-out tax. |
 | **L4** | HW-matched e2e cycles | **Far** | Matching wall-clock or cycle counts of real H200 for full kernels needs L2+L3, broader suite-vs-silicon validation, and the usual GPGPU-Sim limits (idealized mbarrier storage, partial TMA corners, OpenMP edge races, etc.). |
 
@@ -248,7 +248,7 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 
 - **L1 is intentional and calibrated:** hop numbers and flat topology come from `../H200_profiling/output-2046238-H200Profiling.txt`. Good for *relative* SM↔SM cost studies and for not treating cluster multicast as free when NoC is on (H200 reduced).
 - **L1 is not “cycle-perfect”:** absolute GPU cycles for a large app will still differ from silicon for many reasons outside the NoC (caches, DRAM, scheduling, idealized barriers).
-- **Moving L1 → L2:** implement items in **§12.3** (DSM_LOAD_RSP scoreboard; optional delayed-only store). Profiling inputs for validation: `../H200_profiling/TODO.md` §2.2–2.3.
+- **Moving L1 → L2:** implement remaining items in **§12.3** (DSM_LOAD_RSP scoreboard; always-REQ loads; local DSM latency). Delayed-only store is done (L2-2). Profiling inputs for validation: `../H200_profiling/TODO.md` §2.2–2.3.
 - **Moving L2 → L3:** fit non-zero BPC (**§12.4**); needs **single-cluster** BW microbench from profiling suite (`../H200_profiling/TODO.md` §2.1).
 - **L4** is a long-term product goal (**§12.5**), not a claim of the current NoC work.
 
@@ -256,7 +256,7 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 
 | Question | Answer |
 |----------|--------|
-| Functionally correct cluster / TMA / DSM for real-style kernels? | **Mostly yes**, caveats in §6.4; remaining holes **F1–F9** (§6.6) |
+| Functionally correct cluster / TMA / DSM for real-style kernels? | **Mostly yes**, caveats in §6.4; remaining hole **F4** `red`/`red.async` (§6.6) |
 | Cycle-accurate SM↔SM fabric? | **L1: directionally right, hop-tunable, flat** — not L4 |
 | Full SM pipeline cycle-accurate vs H200? | **No** — NoC is only one subsystem; rest is still GPGPU-Sim / Flash idealized in places |
 
@@ -274,7 +274,7 @@ SM↔SM / cluster timing is best thought of as a **ladder**, not a binary “acc
 | **F6** | TMA corners stubbed (swizzle, tensormap, bulk group) | Med | **Done** | §12.2 F6 |
 | **F7** | Programming-model fragility (spin / `bar.sync`+`try_wait`) | Med | **Done** | §12.2 F7 |
 | **F8** | Thin DSM / remote-mbar / compose / isolation tests | High | **Done** | §12.2 F8 |
-| **F9** | Dual-path store (immediate peer write + issuer hop) | Med | **Partial** | §12.2 F9 · L2-2 |
+| **F9** | Dual-path store (immediate peer write + issuer hop) | Med | **Done** | §12.2 F9 · L2-2 |
 
 **How to read statuses**
 
@@ -326,7 +326,9 @@ Parked `try_wait`, bulk-group wait, and mbarrier interest do **not** increment t
 
 #### F9 — Dual-path store
 
-When NoC is on, a remote `st` **injects a hop for the issuer and writes peer smem immediately**. Safe for mbarrier-ordered kernels (the supported model — **F9-1** documented). Incorrect for algorithms that rely on delayed visibility without a barrier. Timing studies need `-gpgpu_dsm_store_immediate 0` (**F9-2** / **L2-2**).
+**Done.** Default (`-gpgpu_dsm_store_immediate 1`; unset `FLASHGPU_DSM_STORE_IMMEDIATE`): when NoC is on, a remote `st` **injects a hop for the issuer and writes peer smem immediately**. Safe for mbarrier-ordered kernels (the supported model — **F9-1**).
+
+`-gpgpu_dsm_store_immediate 0` (or `FLASHGPU_DSM_STORE_IMMEDIATE=0` at store time) writes peer smem **only** on NoC `DSM_STORE` deliver. NoC-off still writes immediately (legacy). Tests: `DsmTest.RemoteStoreToPeer_TwoCtas` (default), `DsmTest.RemoteStoreDelayed_TryWaitSeesData`, `DsmTest.RemoteStoreDelayed_NoWaitDoesNotAssumeInstantVisibility`. Same close-out as **L2-2**.
 
 ---
 
@@ -341,6 +343,7 @@ All registered in `shader_core_config::reg_options` (`gpu-sim.cc`).
 | `-gpgpu_dsm_remote_latency` | `78` | **One-way** hop if matrix missing (H200~78) |
 | `-gpgpu_dsm_latency_matrix_file` | `""` | N×N **one-way hop** CSV (cluster-local core ids) |
 | `-gpgpu_dsm_bytes_per_cycle` | `0` | DSM BW: extra cycles ceil(bytes/BPC)−1; 0=unlimited |
+| `-gpgpu_dsm_store_immediate` | `1` | When NoC on: `1` = inject hop **and** write peer smem at issue; `0` = write only on `DSM_STORE` deliver. `FLASHGPU_DSM_STORE_IMMEDIATE` overrides at store time. NoC-off always writes immediately. |
 | `-gpgpu_tma_mcast_enable_timing` | `1` | When NoC on, route TMA peers through NoC |
 | `-gpgpu_tma_mcast_hop_latency` | `0` | Fixed TMA peer hop; H200 product sets **135** |
 | `-gpgpu_tma_mcast_use_dsm_matrix` | `0` | TMA hop = L[src][dst] (usually off; TMA ≠ full DSM RTT) |
@@ -355,7 +358,7 @@ All registered in `shader_core_config::reg_options` (`gpu-sim.cc`).
 - Matrix / `gpgpu_dsm_remote_latency` store **one-way fabric hop**.
 - Remote **load** issue delay ≈ **2 × hop** (request + response).
 - Target e2e remote load ≈ local_smem + 2×hop ≈ 37 + 2×78 ≈ **193** (matches H200 pointer-chase).
-- Remote **store** NoC delay ≈ **1 × hop** (plus dual-path immediate peer write for functional mbarrier safety).
+- Remote **store** NoC delay ≈ **1 × hop**. Default also writes peer smem at issue; `-gpgpu_dsm_store_immediate 0` waits for deliver.
 
 ### 7.1 Matrix file format
 
@@ -450,7 +453,7 @@ Mask semantics (unchanged):
 | `tma_cluster_multicast_test` | Pass (legacy) | Pass (delayed visibility + try_wait) |
 | `tma_multicast_mask_test` | Pass | Pass |
 | `cluster_multicast_multicluster_test` | Pass | Pass (isolation) |
-| `dsm_test` | SelfMapa only | SelfMapa + RemoteStore + RemoteLoad + RemoteAtomicAdd + Cluster4 + drop-on-exit + u64 + after-exit abort |
+| `dsm_test` | SelfMapa only | SelfMapa + RemoteStore + RemoteLoad + RemoteAtomicAdd + Cluster4 + drop-on-exit + u64 + after-exit abort + delayed-store try_wait / no-wait |
 | `mbarrier_cluster_test` | Local only | RemoteArrive + RemoteTryWait |
 
 ### Recommended run
@@ -486,7 +489,7 @@ FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4
 2. **Never mix `__syncthreads` with single-thread `try_wait`** in the same CTA.
 3. **Producer CTA must stay alive** until consumers finish `mapa` (mapa looks up active cluster ranks and **aborts** if the target CTA has exited or was never co-resident).
 4. Prefer **`mapa.u64`** over u32 (generic shared windows exceed 32-bit on large GPUs).
-5. Remote DSM stores use **dual-path**: NoC hop for issuer timing + immediate peer write so mbarrier-ordered consumers see data.
+5. Remote DSM stores default to **dual-path**: NoC hop for issuer timing + immediate peer write so mbarrier-ordered consumers see data. `-gpgpu_dsm_store_immediate 0` writes peer smem only on deliver; consumers must `try_wait` (or equivalent) before reading.
 
 ---
 
@@ -516,7 +519,7 @@ FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4
 **Branch/PR scope:** still the **same** unified cluster PR/branch (`docs/cluster.md`). F-items and L2–L4 are in-branch / follow-on checklist work, not separate “feature PRs.”  
 **Profiling / new microbenchmarks:** `../H200_profiling/TODO.md` (separate agent, separate tree).
 
-Suggested order (F1, F4-`atom`, F5, F8 **done**): **F2 → F6/F7/F9 → L2 → L3 → L4** (`red`/`red.async` are F4 follow-ons).
+Suggested order (F1–F3, F4-`atom`, F5–F9 **done**): **L2** (except L2-2, done) **→ L3 → L4** (`red`/`red.async` are F4 follow-ons).
 
 ### Task contract (how to write / close an item)
 
@@ -546,7 +549,7 @@ Nothing in the cluster/NoC pillar should sit outside this table. If you find a h
 | DSM `mapa` + remote ld/st | F5 (done), F8-1…F8-4, F8-10 | L2-1, L2-3, L2-5; L3-1 | happy path + inactive-rank abort |
 | DSM / shared `atom` + `red` | F4 (`atom` done; `red`/`red.async` follow-on) | functional RMW; no dedicated atom hop | **`atom` OK; `red` open** |
 | Remote mbarrier | F2, F8-8 | hop via L1; L2 not needed | main ops only |
-| Dual-path store visibility | F9 | **L2-2** (= F9-2) | default documented |
+| Dual-path store visibility | F9 | **L2-2** (= F9-2) | **Done** (knob + tests) |
 | Intra-cluster NoC fabric | F1 (done), F8-3 | L1 done; L3, L4 | L1 |
 | Programming-model hangs | F7 | — | docs only |
 | `barrier.cluster` / CG map | **F3** | — | non-goal |
@@ -751,16 +754,16 @@ Closed 2026-08-15. Shipped helpers live in `cluster_noc_helpers.cc` (unit-testab
 - [x] **F8-10** `test/src/unit/cluster_noc_test.cc` `#include`s `cluster_noc.h`; links `cluster_noc_helpers.cc`; no local `LatencyMatrix`. `ClusterNoc*` 8/8 PASS.
 - [x] **F8-11** `TmaMulticastMaskTest.*` PASS on H200 reduced (NoC on, m=4).
 
-#### F9 — Dual-path store semantic  *(Partial; pairs with L2-2)*
+#### F9 — Dual-path store semantic  *(Done; pairs with L2-2)*
 
 - [x] **F9-1** Document the default (immediate peer write + issuer hop) as the **supported** functional model.  
   Done in §6.6 F9, §10 rule 5, `st_impl` comment. Re-open only if the default changes.
-- [ ] **F9-2** Implement `-gpgpu_dsm_store_immediate` (default 1). `0` = write only on NoC deliver. **Same close-out as L2-2** — flip both when the knob lands.  
-  Files: `gpu-sim.cc` `reg_options`, `instructions.cc` `try_noc_dsm_store`, `shader.h`.  
-  Exit: knob parsed; immediacy=1 matches today’s tests; immediacy=0 used by F9-3.
-- [ ] **F9-3** Test: immediacy=0 + consumer `try_wait` still sees data (mbar after hop); without wait, test must **not** assume instant visibility.  
-  Files: `dsm_test.cc`. Deps: F9-2.  
-  Exit: both cases PASS on NoC-on.
+- [x] **F9-2** Implement `-gpgpu_dsm_store_immediate` (default 1). `0` = write only on NoC deliver. **Same close-out as L2-2**.  
+  Files: `gpu-sim.cc` `reg_options`, `shader.h`, `cluster_dsm_store.h`, `instructions.cc` `try_noc_dsm_store`.  
+  Exit: knob parsed (default 1); `FLASHGPU_DSM_STORE_IMMEDIATE` overrides at store time; immediacy=1 matches existing `DsmTest.RemoteStore*`; immediacy=0 used by F9-3.
+- [x] **F9-3** Test: immediacy=0 + consumer `try_wait` still sees data; without wait, test must **not** assume instant visibility.  
+  Files: `dsm_test.cc`, `cluster_dsm_store_test.cc`. Deps: F9-2.  
+  Exit: `DsmTest.RemoteStoreDelayed_TryWaitSeesData` and `DsmTest.RemoteStoreDelayed_NoWaitDoesNotAssumeInstantVisibility` PASS on NoC-on `SM90_H200_REDUCED_CLUSTER4x4`; unit `DsmStoreImmediate*` covers inject-without-write.
 
 ### 12.3 Checklist — L2 pipeline fidelity
 
@@ -769,7 +772,7 @@ Assessment: **§6.5**. Do not start until F1 is Done (wrong-data bugs look like 
 - [ ] **L2-1** **DSM_LOAD_RSP → RF / scoreboard.** On remote-load issue: mark dest regs pending. On `DSM_LOAD_RSP` deliver: write RF + clear scoreboard.  
   Files: `cluster_noc.cc` `deliver` `DSM_LOAD_RSP` (today a no-op), `scoreboard.cc`, `shader.cc` `func_exec_inst`.  
   Exit: a remote load that is scoreboard-blocked cannot be consumed by the next ALU until RSP deliver; `DsmTest.RemoteLoad*` still PASS. Deps: L2-3 (or do them together).
-- [ ] **L2-2** **`-gpgpu_dsm_store_immediate` (0/1).** Default 1. `0` = peer write only on deliver. Same item as **F9-2**.  
+- [x] **L2-2** **`-gpgpu_dsm_store_immediate` (0/1).** Default 1. `0` = peer write only on deliver. Same item as **F9-2**.  
   Exit: see F9-2 / F9-3.
 - [ ] **L2-3** When NoC is on, remote loads **always** inject `DSM_LOAD_REQ` and complete only on `DSM_LOAD_RSP` (stop filling RF in `ld_impl` at functional execute).  
   Files: `instructions.cc` ld path, `cluster_noc.cc` `inject_dsm_load_req` / `deliver_dsm_load_req`.  

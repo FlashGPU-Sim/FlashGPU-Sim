@@ -818,6 +818,13 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "DSM NoC BW: extra cycles ceil(bytes/BPC)-1 on DSM msgs "
                          "(0=unlimited; H200 pair BW is multi-cluster aggregate)",
                          "0");
+  option_parser_register(
+      opp, "-gpgpu_dsm_store_immediate", OPT_BOOL,
+      &gpgpu_dsm_store_immediate,
+      "When NoC is on, also write peer smem at remote st issue "
+      "(default=1). 0 = write only on DSM_STORE deliver. "
+      "FLASHGPU_DSM_STORE_IMMEDIATE overrides at store time.",
+      "1");
   option_parser_register(opp, "-gpgpu_tma_mcast_enable_timing", OPT_BOOL,
                          &gpgpu_tma_mcast_enable_timing,
                          "Route TMA cluster multicast data/mbar through NoC when NoC enabled (default=1)",

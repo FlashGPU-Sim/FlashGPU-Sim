@@ -135,7 +135,8 @@ public:
                                 uint32_t mbar_addr, uint32_t mbar_bytes,
                                 uint64_t stream_key);
 
-  // DSM store: delayed peer write (visibility after hop).
+  // DSM store: enqueue peer write for deliver after hop. Issuer may also
+  // write immediately when -gpgpu_dsm_store_immediate is on (default).
   bool inject_dsm_store(unsigned src_cid, unsigned dst_cid, unsigned dst_hw_cta,
                         uint32_t smem_addr, const void *data,
                         uint32_t size_in_bytes, uint64_t stream_key = 0);

@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <unistd.h>
 #include <vector>
 
@@ -86,7 +87,7 @@ __global__ void dsm_self_mapa_kernel(uint32_t *out) {
 // Order:
 //   rank1: init bar (expect 1), publish ready flag, try_wait, read smem
 //   rank0: wait ready, write out[0]=1 (progress), mapa+store, remote arrive,
-//          write out[0]=2 (done)
+//          stay alive until the consumer has read (deliver-only store)
 // ---------------------------------------------------------------------------
 __global__ void dsm_peer_store_kernel(uint32_t *out, volatile int *ready) {
   __shared__ uint32_t smem[32];
@@ -104,6 +105,8 @@ __global__ void dsm_peer_store_kernel(uint32_t *out, volatile int *ready) {
     __threadfence_system();
     mbarrier_try_wait_local(&bar, 0);
     out[1] = smem[0];
+    ready[1] = 1;
+    __threadfence_system();
   }
 
   if (rank == 0 && tid == 0) {
@@ -115,7 +118,9 @@ __global__ void dsm_peer_store_kernel(uint32_t *out, volatile int *ready) {
     remote[0] = 0xCAFEBABEu;
     unsigned long long remote_bar = mapa_u64(&bar, /*rank=*/1);
     mbarrier_arrive_remote(remote_bar, 1);
-    out[0] = 2;  // done: store + arrive issued
+    while (ready[1] == 0) {
+    }
+    out[0] = 2;  // done: store + arrive issued and consumer read
   }
 }
 
@@ -541,6 +546,132 @@ TEST_F(DsmTest, MapaAfterProducerExit_FailsLoud) {
   SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
   EXPECT_DEATH(run_mapa_after_peer_exit(), "not an active CTA");
+}
+
+// ---------------------------------------------------------------------------
+// Delayed store visibility (-gpgpu_dsm_store_immediate 0 via env).
+// Consumer parks (try_wait timeout — not a peer-smem spin), snapshots local
+// smem once, then try_waits for the real arrive. After try_wait the payload
+// must be visible. The first snapshot must not assume instant visibility.
+// ---------------------------------------------------------------------------
+struct DsmStoreImmediateEnv {
+  explicit DsmStoreImmediateEnv(const char *val) {
+    setenv("FLASHGPU_DSM_STORE_IMMEDIATE", val, 1);
+  }
+  ~DsmStoreImmediateEnv() { unsetenv("FLASHGPU_DSM_STORE_IMMEDIATE"); }
+};
+
+__device__ __forceinline__ unsigned
+mbarrier_try_wait_parity_timeout(uint32_t bar_ptr, unsigned parity,
+                                 unsigned timeout) {
+  unsigned done = 0;
+  asm volatile("{\n"
+               ".reg .pred P1;\n"
+               "mbarrier.try_wait.parity.shared::cta.b64 P1, [%1], %2, %3;\n"
+               "selp.u32 %0, 1, 0, P1;\n"
+               "}\n"
+               : "=r"(done)
+               : "r"(bar_ptr), "r"(parity), "r"(timeout));
+  return done;
+}
+
+__global__ void dsm_delayed_store_visibility_kernel(uint32_t *out,
+                                                    volatile int *hs) {
+  __shared__ uint32_t smem[32];
+  __shared__ unsigned long long bar;
+  const int rank = blockIdx.x;
+  const int tid = threadIdx.x;
+
+  if (tid == 0)
+    smem[0] = 0;
+
+  if (rank == 1 && tid == 0) {
+    mbarrier_init_local(&bar, 1);
+    hs[0] = 1;
+    __threadfence_system();
+    uint32_t p = static_cast<uint32_t>(__cvta_generic_to_shared(&bar));
+    // Short parked wait so the producer can issue the remote st. Not a hop.
+    (void)mbarrier_try_wait_parity_timeout(p, /*parity=*/0, /*timeout=*/16);
+    out[0] = smem[0];
+    mbarrier_try_wait_local(&bar, 0);
+    out[1] = smem[0];
+    hs[1] = 1;
+    __threadfence_system();
+  }
+
+  if (rank == 0 && tid == 0) {
+    while (hs[0] == 0) {
+    }
+    uint32_t *remote = mapa_shared_rank(smem, /*rank=*/1);
+    remote[0] = 0xCAFEBABEu;
+    unsigned long long remote_bar = mapa_u64(&bar, /*rank=*/1);
+    mbarrier_arrive_remote(remote_bar, 1);
+    while (hs[1] == 0) {
+    }
+  }
+}
+
+bool run_delayed_store_visibility(uint32_t *h_out) {
+  uint32_t *d_out = nullptr;
+  int *d_hs = nullptr;
+  if (cudaMalloc(&d_out, 2 * sizeof(uint32_t)) != cudaSuccess)
+    return false;
+  if (cudaMalloc(&d_hs, 4 * sizeof(int)) != cudaSuccess) {
+    cudaFree(d_out);
+    return false;
+  }
+  if (cudaMemset(d_out, 0, 2 * sizeof(uint32_t)) != cudaSuccess ||
+      cudaMemset(d_hs, 0, 4 * sizeof(int)) != cudaSuccess) {
+    cudaFree(d_out);
+    cudaFree(d_hs);
+    return false;
+  }
+
+  dim3 grid(2), block(32), cluster(2, 1, 1);
+  void *args[] = {&d_out, &d_hs};
+  if (flash_test::launch_kernel_with_cluster(
+          (const void *)dsm_delayed_store_visibility_kernel, grid, block,
+          cluster, args) != cudaSuccess) {
+    cudaFree(d_out);
+    cudaFree(d_hs);
+    return false;
+  }
+  if (cudaDeviceSynchronize() != cudaSuccess) {
+    cudaFree(d_out);
+    cudaFree(d_hs);
+    return false;
+  }
+  const bool ok = cudaMemcpy(h_out, d_out, 2 * sizeof(uint32_t),
+                             cudaMemcpyDeviceToHost) == cudaSuccess;
+  cudaFree(d_out);
+  cudaFree(d_hs);
+  return ok;
+}
+
+TEST_F(DsmTest, RemoteStoreDelayed_TryWaitSeesData) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  SKIP_IF_CLUSTER_NOC_OFF();
+  DsmStoreImmediateEnv env("0");
+  uint32_t h[2] = {};
+  ASSERT_TRUE(run_delayed_store_visibility(h));
+  EXPECT_EQ(h[1], 0xCAFEBABEu)
+      << "delayed store + try_wait must still see the payload after deliver";
+}
+
+TEST_F(DsmTest, RemoteStoreDelayed_NoWaitDoesNotAssumeInstantVisibility) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  SKIP_IF_CLUSTER_NOC_OFF();
+  DsmStoreImmediateEnv env("0");
+  uint32_t h[2] = {};
+  ASSERT_TRUE(run_delayed_store_visibility(h));
+  // First local snapshot after a short parked wait — must not require the
+  // new payload. If the issuer still wrote peer smem at issue, this would
+  // be 0xCAFEBABE.
+  EXPECT_NE(h[0], 0xCAFEBABEu)
+      << "delayed store without a wait must not make the payload instantly "
+         "visible on the peer (issue-time write is still on)";
+  EXPECT_EQ(h[1], 0xCAFEBABEu)
+      << "same kernel: try_wait after the hop must still see the payload";
 }
 
 }  // namespace

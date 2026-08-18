@@ -41,12 +41,12 @@ This is **not** a stack of separate “launch-only” / “TMA-only” / “NoC-
 | TMA cluster multicast (+ mask) | Yes | NoC hop when enabled; free/immediate when NoC off |
 | Local mbarrier | Yes (used ops); `try_wait` timeout sets dest pred | Calibrated arrive/try_wait knobs |
 | Remote mbarrier (mapa) | Yes | Via NoC hop |
-| DSM mapa + remote ld/st/`atom` | Yes (tested patterns); inactive rank **aborts**; `red`/`red.async` unimplemented | Flat hop L1; load RTT≈2×hop; dual-path store |
+| DSM mapa + remote ld/st/`atom` | Yes (tested patterns); inactive rank **aborts**; `red`/`red.async` unimplemented | Flat hop L1; load RTT≈2×hop; store default dual-path, or deliver-only via `-gpgpu_dsm_store_immediate 0` |
 | Intra-cluster NoC | Yes | **L1** flat hop (H200); L2–L4 in §12 of `cluster_noc.md` |
 
 **Maturity (detailed tables):** `docs/cluster_noc.md` **§6.4** (functional usefulness), **§6.5** (cycle levels L0–L4), **§6.6** (functional gaps F1–F9). Living TODO: **§12**.
 
-**Target for this PR:** ship **functional correctness** for mbarrier-ordered cluster/TMA/DSM kernels **and** an honest **L1 cycle-tunable** SM↔SM fabric (not “free multicast”). Remaining F-items and L2–L4 work are the **in-branch checklist** in `cluster_noc.md` §12, not separate feature PRs.
+**Target for this PR:** ship **functional correctness** for mbarrier-ordered cluster/TMA/DSM kernels **and** an honest **L1 cycle-tunable** SM↔SM fabric (not “free multicast”). Remaining work is F4 `red`/`red.async` and L2–L4 (except L2-2) in the **in-branch checklist** in `cluster_noc.md` §12, not separate feature PRs.
 
 ---
 
@@ -69,7 +69,7 @@ So rank 0 and rank 1 both **tick every GPU cycle**. They are concurrent the way 
 Event-ordered communication is correct because of **state + messages + cycle order**, not because two CTAs run simultaneously on the host:
 
 1. Both CTAs stay allocated until they retire (`mapa` of an inactive rank **aborts**).
-2. Cross-SM effects are NoC messages (or the documented dual-path store). Peer smem / remote mbarrier change on **deliver** after a hop, on the same cluster thread.
+2. Cross-SM effects are NoC messages (or the documented default dual-path store). Peer smem / remote mbarrier change on **deliver** after a hop, on the same cluster thread. Remote DSM stores also write peer smem at issue unless `-gpgpu_dsm_store_immediate 0`.
 3. `mbarrier.try_wait` **registers interest and parks the warp**. The producer can issue, the hop can complete, then the waiter is released.
 
 That is the supported model: **mbarrier-ordered** cluster / TMA / DSM (same as `cluster_noc.md` §6.4 and §10).
@@ -90,7 +90,7 @@ This sim does **not** treat a load-loop as “I am waiting on a peer”:
 | Pattern | Real GPU | This sim |
 |---------|----------|----------|
 | TMA / DSM + **mbarrier** / `try_wait` | Works | **Supported** |
-| Peer ld/st/`atom` after that wait | Works | Works (decode + NoC / dual-path) |
+| Peer ld/st/`atom` after that wait | Works | Works (decode + NoC; default immediate store, or deliver-only) |
 | Both CTAs live; each getting cycles | Parallel SMs | Yes in **cycle time**, one host thread per GPC |
 | Spin on peer smem or a global flag until the peer writes | Usually works | **May hang or miss the write** |
 | Two CTAs `atom` the same word in the same clock | HW arbiter | Never simultaneous (serialized on the cluster thread) |
@@ -118,7 +118,7 @@ This is **not** caused by “one OpenMP thread per GPC.” That design is fine f
 | `SM120_RTX5090_REDUCED_CLUSTER2x2` | m=2, n=2 | Multi-cluster isolation |
 | `SM120_RTX5090_REDUCED_CLUSTER4x4` | m=4, n=4 | Primary multi-SM functional |
 | `SM120_RTX5090_CLUSTER16x11` | m=16, n=11 | Full GPC-aligned smoke |
-| `SM90_H200_REDUCED_CLUSTER4x4` | m=4, n=4 | **NoC on** + H200 hop calibration |
+| `SM90_H200_REDUCED_CLUSTER4x4` | m=4, n=4 | **NoC on** + H200 hop calibration; DSM store deliver-only |
 | `SM90_H200` | m=1, n=132 | Product latencies; NoC idle |
 
 Rule: TB-cluster size (product of launch cluster dims) **≤ m**.
