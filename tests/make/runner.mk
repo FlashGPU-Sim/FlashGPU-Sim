@@ -1,36 +1,9 @@
 # Machine-readable build metadata used by the test runner.
 
-# FA3 uses the same mode binaries for multiple runtime case sets.
-$(foreach profile,breakdown scaling concurrency,\
-  $(foreach mode,$(FA3_MODES),\
-    $(eval $(call REGISTER_SM90_FA3_MODE,$(profile),$(mode)))))
-
-define REGISTER_FA3_ALL_MODE
-TEST_GROUP_BUILD_TARGET_sm90_fa3_$(1)_all := fa3-modes
-TEST_GROUP_BINARY_GROUP_sm90_fa3_$(1)_all := fa3-modes
-TEST_GROUP_EXECUTOR_sm90_fa3_$(1)_all := build-only
-TEST_GROUP_FILTER_sm90_fa3_$(1)_all := *
-endef
-$(foreach profile,breakdown scaling concurrency,$(eval $(call REGISTER_FA3_ALL_MODE,$(profile))))
-
-# Binary sets are an internal execution detail. They are deliberately separate
-# from the public architecture/test-group hierarchy.
-BINARY_GROUPS += \
-	none \
-	$(FA2_BINARY_GROUPS) \
-	fa3-standard fa3-packgqa fa3-modes \
-	microbench-sm120-mbarrier microbench-sm120-mma \
-	microbench-sm90-wgmma \
-	$(foreach mode,$(FA3_MODES),fa3-mode-$(mode))
-
+# Workload fragments register concrete binary sets before this file is loaded.
+# Binary sets remain separate from the public architecture/test-group hierarchy.
+BINARY_GROUPS += none
 BINARY_GROUP_BINARIES_none =
-BINARY_GROUP_BINARIES_fa3-standard = $(FA3_STANDARD_TARGET)
-BINARY_GROUP_BINARIES_fa3-packgqa = $(FA3_PACKGQA_TARGETS)
-BINARY_GROUP_BINARIES_fa3-modes = $(FA3_MODE_TARGETS)
-BINARY_GROUP_BINARIES_microbench-sm120-mbarrier = $(MICROBENCH_SM120_MBAR_TARGETS)
-BINARY_GROUP_BINARIES_microbench-sm120-mma = $(MICROBENCH_SM120_MMA_TARGETS)
-BINARY_GROUP_BINARIES_microbench-sm90-wgmma = $(MICROBENCH_SM90_WGMMA_TARGETS)
-$(foreach mode,$(FA3_MODES),$(eval BINARY_GROUP_BINARIES_fa3-mode-$(mode) = $(call FA3_MODE_TARGET,$(mode))))
 
 BINARY_GROUPS := $(sort $(BINARY_GROUPS))
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-flash_attention_dir="${FLASH_ATTENTION_DIR:-${script_dir}/flash-attention}"
+flash_attention_dir="${FLASH_ATTENTION_DIR:-${script_dir}/checkout}"
 flash_attention_repo="${FLASH_ATTENTION_REPO:-https://github.com/Dao-AILab/flash-attention.git}"
 flash_attention_base_commit="${FLASH_ATTENTION_BASE_COMMIT:-d80a77103021c4e980f8cbbf85774f6a19e6474a}"
 cutlass_commit="${FLASH_ATTENTION_CUTLASS_COMMIT:-7127592069c2fe01b041e174ba4345ef9b279671}"

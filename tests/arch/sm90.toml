@@ -36,7 +36,7 @@ sources = [
   "fa3/fa3_fwd_h1d128_profile_test.cu",
   "fa3/fa3_fwd_packgqa_test.cu",
 
-  # Existing microbenchmark layout remains unchanged.
+  # Microbenchmark workloads.
   "microbench/cp_async/cp_async_issue_scope_bench.cu",
   "microbench/cp_async/cp_async_latency_bench.cu",
   "microbench/cp_async/cp_async_ptx_bench.cu",

@@ -108,8 +108,8 @@ src/
 ├── wgmma/         WGMMA tests
 ├── fa2/           FlashAttention 2 tests and build variants
 ├── fa3/           FlashAttention 3 tests and build variants
-├── microbench/    existing microbenchmark layout
-└── trace/         existing trace-driven GPT-2 tests
+├── microbench/    architecture-specific performance microbenchmarks
+└── trace/         trace-driven GPT-2 tests
 ```
 
 Executable sources follow `tests/src/<test_group>/<test>.cu`; shared headers
@@ -127,6 +127,10 @@ Device-launch tests that need shared support, multiple sources, special flags,
 or architecture-specific handling use a feature-specific sibling group.
 Unstable bring-up programs and toolchain-specific probes live under
 `tests/dev/` and are outside the manifest-driven runner.
+
+Downloaded dependencies are isolated below `tests/third_party/`. The test
+build fetches GoogleTest into `tests/third_party/gtest/` on demand, while the
+FlashAttention checkout is managed by `tests/third_party/flash-attention/`.
 
 ## Architecture manifests
 
@@ -261,7 +265,12 @@ CI_JOB=sm90-fa3 ./tests/ci/run_ci_tests.sh
 CI_JOB=all ./tests/ci/run_ci_tests.sh
 ```
 
-Logs and GoogleTest XML results are written below `tests/logs/ci/`.
+Logs and GoogleTest XML results are written below `tests/logs/ci/`. GitHub
+Actions uploads them only when a `func-tests` job fails. Failed jobs also parse
+the available XML into a compact job summary that lists failed cases only. If
+a test process aborts before writing XML, the summary recovers the active
+GoogleTest case from its log and reports it as `Aborted`. Successful jobs
+produce neither an artifact nor a test summary.
 
 The planner can be inspected without building or running tests:
 
@@ -269,4 +278,46 @@ The planner can be inspected without building or running tests:
 ./tests/ci/planner.py list-jobs
 ./tests/ci/planner.py plan --job sm90-fa3
 CI_JOB=all CI_LIST_JOBS=1 ./tests/ci/run_ci_tests.sh
+```
+
+Cycle-validation jobs are defined separately in `ci/perf/cases.toml`. Tables
+use the path `[CONFIG.job.case-id]`; each `CONFIG.job` pair becomes one GitHub
+Actions job, and its cases run sequentially. A case provides a stable ID, a
+summary label, an NCU cycle reference, and either repository-relative scripts
+or a frozen TritonTrace launcher:
+
+```toml
+[SM120_RTX5090.tutorial.cuda-vector-add-2m]
+label = "Tutorial - CUDA Vector Add"
+scripts = ["tutorials/vectorAdd/run.sh"]
+ncu_cycles = 29642.67
+```
+
+The current SM120 plan has three jobs: `tutorial` runs the two quick examples
+whose simulator cycles are synchronized with the top-level README; `gemm`
+replays two TMA GEMM launches; and `llama3` replays prefill QKV, prefill GQA,
+and decode output-residual launches.
+
+Inspect the performance plan without building or simulating:
+
+```bash
+python3 tests/ci/perf/perf.py validate
+python3 tests/ci/perf/perf.py matrix
+```
+
+GitHub Actions builds the simulator once per configured performance job, runs
+its cases in manifest order, and reports `gpu_tot_sim_cycle` beside the stored
+NCU value. The report also checks that current simulator cycles match the
+top-level README exactly. A mismatch asks the developer to inspect the change
+and update the documentation when it is expected. The config jobs are
+informational and do not feed `verify-status`. Their small JSON results are
+combined by `cycle-validation-report`; complete logs are uploaded only for
+failed config jobs.
+
+The long-running Triton FlashAttention case is not part of PR CI. For broader
+offline validation after building FlashGPU-Sim, run:
+
+```bash
+bash tutorials/triton-flash-attention/capture.sh
+bash tutorials/triton-flash-attention/run.sh
 ```

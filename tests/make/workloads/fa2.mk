@@ -15,6 +15,8 @@ FA2_CONCURRENCY_MODES = only_cp_async only_cp_async_bhhalf qk_softmax_pv_only qk
 # A workload recipe is instantiated only for architectures whose TOML manifest
 # lists the FA2 source. The compiler target always comes from that manifest.
 FA2_ARCHITECTURES := $(foreach arch,$(ARCHITECTURES),$(if $(filter fa2,$(ARCH_TEST_GROUPS_$(arch))),$(arch)))
+$(foreach arch,$(FA2_ARCHITECTURES),\
+  $(eval WORKLOAD_MANAGED_TEST_GROUPS_$(arch) += fa2))
 FA2_NVCCFLAGS = $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_$(FA2_TARGET_ARCH))
 
 define FA2_STANDARD_OBJECTS_FOR
@@ -110,6 +112,8 @@ $(foreach arch,$(FA2_ARCHITECTURES), \
   $(eval $(call REGISTER_FA2_ALL_MODE,$(arch),scaling,SCALING)) \
   $(eval $(call REGISTER_FA2_ALL_MODE,$(arch),concurrency,CONCURRENCY)))
 
+BINARY_GROUPS += $(FA2_BINARY_GROUPS)
+
 FA2_ALL_OBJECTS := $(foreach arch,$(FA2_ARCHITECTURES),$(FA2_OBJECTS_$(arch)))
 $(foreach arch,$(FA2_ARCHITECTURES),$(eval $(FA2_OBJECTS_$(arch)): FA2_TARGET_ARCH := $(arch)))
 
@@ -120,8 +124,7 @@ FA2_COMMON_FLAGS = --ftemplate-backtrace-limit=0 -O3 \
                           -DNDEBUG \
                           -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED \
                           -I$(FA2_DIR) \
-                          -I$(FA3_DIR)/flash-attention/csrc/flash_attn/src \
-                          -I$(FA3_DIR)/flash-attention/csrc/cutlass/include
+                          $(FLASH_ATTENTION_FA2_INCLUDES)
 FA2_FLAGS = $(FA2_COMMON_FLAGS)
 
 # Each standard object instantiates one D/full-causal kernel family.
@@ -177,7 +180,8 @@ $(call FA2_CASE_OBJECTS,concurrency_qk_softmax_pv_only): TEST_GROUP_EXTRA_NVCCFL
 $(call FA2_CASE_OBJECTS,concurrency_qk_pv_only): TEST_GROUP_EXTRA_NVCCFLAGS = $(FA2_CONCURRENCY_FLAGS) -DFA2_FWD_SENS_SKIP_CP_ASYNC -DFA2_FWD_SENS_SKIP_SOFTMAX
 
 $(FA2_ALL_OBJECTS): $(FA2_TEST_SOURCE) $(TEST_HEADERS) \
-$(TOP_MAKEFILE) $(FA2_MK) $(FA3_PREPARED_STAMP) | $(OBJ_DIR)
+$(TOP_MAKEFILE) $(FA_MK) $(FA2_MK) \
+$(FLASH_ATTENTION_PREPARED_STAMP) | $(OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(FA2_NVCCFLAGS) $(TEST_GROUP_EXTRA_NVCCFLAGS) \
 		$(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@

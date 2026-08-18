@@ -9,6 +9,7 @@ sources = [
   "unit/local_interconnect_test.cc",
   "unit/memory_transport_test.cc",
   "unit/mshr_table_test.cc",
+  "unit/tma_reduction_test.cc",
 
   # Portable integration tests.
   "integration/address_operand_test.cu",
@@ -27,6 +28,7 @@ sources = [
   "tma/tma_producer_consumer_test.cu",
   "tma/tma_multidim_test.cu",
   "tma/tma_edge_cases_test.cu",
+  "tma/tma_tensor_reduce_test.cu",
   "mma/mma_f16_test.cu",
   "mma/mma_bf16_test.cu",
   "mma/mma_tf32_test.cu",
@@ -35,7 +37,7 @@ sources = [
   # FlashAttention build variants.
   "fa2/fa2_fwd_fp16_test.cu",
 
-  # Existing microbenchmark and trace layouts remain unchanged.
+  # Microbenchmark and trace workloads.
   "microbench/mbarrier/mbarrier_trywait_latency_bench.cc",
   "microbench/mma/inst_latency_bench.cc",
   "microbench/mma/mma_issue_bench.cc",

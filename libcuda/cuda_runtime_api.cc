@@ -1428,6 +1428,35 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
   }
   struct CUstream_st *stream = config.get_stream();
 
+  function_info *entry = context->get_kernel(hostFun);
+  const struct gpgpu_ptx_sim_info *kernel_info = entry->get_kernel_info();
+  unsigned static_smem = kernel_info ? kernel_info->smem : 0;
+  size_t dynamic_smem = config.shared_mem();
+  gpgpu_sim *device_gpu = context->get_device()->get_gpgpu();
+  bool opted_in =
+      device_gpu->has_kernel_max_dynamic_smem(entry->get_name());
+  unsigned dynamic_limit = 0;
+  unsigned total_limit = 0;
+  if (opted_in) {
+    dynamic_limit =
+        device_gpu->get_kernel_max_dynamic_smem(entry->get_name());
+    total_limit = device_gpu->shared_mem_per_block_optin();
+  } else {
+    total_limit = device_gpu->shared_mem_per_block();
+    dynamic_limit =
+        static_smem < total_limit ? total_limit - static_smem : 0;
+  }
+  unsigned long long total_smem =
+      static_cast<unsigned long long>(static_smem) + dynamic_smem;
+  if (dynamic_smem > dynamic_limit || total_smem > total_limit) {
+    printf("GPGPU-Sim PTX: kernel launch dynamic shared memory invalid for "
+           "'%s': static=%u, dynamic=%zu, max_dynamic=%u, max_total=%u%s\n",
+           entry->get_name().c_str(), static_smem, dynamic_smem, dynamic_limit,
+           total_limit, opted_in ? " (opt-in)" : " (default)");
+    ctx->api->g_cuda_launch_stack.pop_back();
+    return g_last_cudaError = cudaErrorInvalidConfiguration;
+  }
+
   printf("\nGPGPU-Sim PTX: cudaLaunch for 0x%p (mode=%s) on stream %u\n",
          hostFun,
          (ctx->func_sim->g_ptx_sim_mode) ? "functional simulation"
@@ -2632,8 +2661,7 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernelInternal(
     cudaSetupArgumentInternal(args[i], p.first, p.second);
   }
 
-  cudaLaunchInternal(hostFun);
-  return g_last_cudaError = cudaSuccess;
+  return cudaLaunchInternal(hostFun, ctx);
 }
 
 __host__ cudaError_t CUDARTAPI cudaStreamCreateInternal(
@@ -2825,8 +2853,8 @@ CUresult CUDAAPI cuLaunchKernelInternal(
     std::pair<size_t, unsigned> p = entry->get_param_config(i);
     cudaSetupArgumentInternal(kernelParams[i], p.first, p.second, ctx);
   }
-  cudaLaunchInternal(hostFun, ctx);
-  return CUDA_SUCCESS;
+  cudaError_t launch_result = cudaLaunchInternal(hostFun, ctx);
+  return launch_result == cudaSuccess ? CUDA_SUCCESS : CUDA_ERROR_INVALID_VALUE;
 }
 #endif /* CUDART_VERSION >= 4000 */
 
@@ -3448,7 +3476,9 @@ __host__ cudaError_t CUDARTAPI cudaGetLastError(void) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  return g_last_cudaError;
+  cudaError_t error = g_last_cudaError;
+  g_last_cudaError = cudaSuccess;
+  return error;
 }
 
 __host__ const char *cudaGetErrorName(cudaError_t error) {
@@ -5363,16 +5393,45 @@ extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
 
   // Map CUDA API data type enum to internal TMA dtype constants
   switch (tensorDataType) {
-    case CU_TENSOR_MAP_DATA_TYPE_UINT8:    desc.fields.tensorDataType = TMA_DTYPE_U8;   break;
-    case CU_TENSOR_MAP_DATA_TYPE_UINT16:   desc.fields.tensorDataType = TMA_DTYPE_U16;  break;
-    case CU_TENSOR_MAP_DATA_TYPE_UINT32:   desc.fields.tensorDataType = TMA_DTYPE_U32;  break;
-    case CU_TENSOR_MAP_DATA_TYPE_INT32:    desc.fields.tensorDataType = TMA_DTYPE_U32;  break;
-    case CU_TENSOR_MAP_DATA_TYPE_UINT64:   desc.fields.tensorDataType = TMA_DTYPE_U64;  break;
-    case CU_TENSOR_MAP_DATA_TYPE_INT64:    desc.fields.tensorDataType = TMA_DTYPE_U64;  break;
-    case CU_TENSOR_MAP_DATA_TYPE_FLOAT16:  desc.fields.tensorDataType = TMA_DTYPE_F16;  break;
-    case CU_TENSOR_MAP_DATA_TYPE_FLOAT32:  desc.fields.tensorDataType = TMA_DTYPE_F32;  break;
-    case CU_TENSOR_MAP_DATA_TYPE_FLOAT64:  desc.fields.tensorDataType = TMA_DTYPE_F64;  break;
-    case CU_TENSOR_MAP_DATA_TYPE_BFLOAT16: desc.fields.tensorDataType = TMA_DTYPE_BF16; break;
+    case CU_TENSOR_MAP_DATA_TYPE_UINT8:
+      desc.fields.tensorDataType = TMA_DTYPE_U8;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_UINT16:
+      desc.fields.tensorDataType = TMA_DTYPE_U16;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_UINT32:
+      desc.fields.tensorDataType = TMA_DTYPE_U32;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_INT32:
+      desc.fields.tensorDataType = TMA_DTYPE_S32;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_UINT64:
+      desc.fields.tensorDataType = TMA_DTYPE_U64;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_INT64:
+      desc.fields.tensorDataType = TMA_DTYPE_S64;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_FLOAT16:
+      desc.fields.tensorDataType = TMA_DTYPE_F16;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_FLOAT32:
+      desc.fields.tensorDataType = TMA_DTYPE_F32;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_FLOAT64:
+      desc.fields.tensorDataType = TMA_DTYPE_F64;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_BFLOAT16:
+      desc.fields.tensorDataType = TMA_DTYPE_BF16;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_FLOAT32_FTZ:
+      desc.fields.tensorDataType = TMA_DTYPE_F32_FTZ;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_TFLOAT32:
+      desc.fields.tensorDataType = TMA_DTYPE_TF32;
+      break;
+    case CU_TENSOR_MAP_DATA_TYPE_TFLOAT32_FTZ:
+      desc.fields.tensorDataType = TMA_DTYPE_TF32_FTZ;
+      break;
     default:
       printf("WARNING: cuTensorMapEncodeTiled: unsupported tensorDataType %d\n",
              (int)tensorDataType);

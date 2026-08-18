@@ -83,6 +83,16 @@ class Fa3PrefillFp16BackwardSmallTest : public ::testing::Test {};
 class Fa3PrefillFp16BackwardMediumTest : public ::testing::Test {};
 #endif
 
+inline void ExpectFa3TensorMatch(const char *name,
+                                 const Fa3TensorComparison &comparison) {
+  EXPECT_LE(comparison.worst_error_ratio, 1.0f)
+      << name << " mismatch at linear index " << comparison.index
+      << ": actual=" << comparison.actual
+      << ", expected=" << comparison.expected
+      << ", abs_error=" << comparison.abs_error
+      << ", allowed_error=" << comparison.allowed_error;
+}
+
 #if defined(FLASH_FWD_ENABLE_PROFILE_CLOCK) && \
     !defined(FA3_STANDARD_BACKWARD_TU)
 class Fa3SingleTileProfileTest : public ::testing::Test {};
@@ -327,12 +337,14 @@ inline void WriteSingleTileProfileCsv(
 #endif
 
 #if !defined(FA3_STANDARD_BACKWARD_TU)
-static Fa3RunResult RunFa3ForwardKernel(const Fa3PrefillCase &cfg) {
+static Fa3RunResult RunFa3ForwardKernel(
+    const Fa3PrefillCase &cfg, bool validate_reference = false) {
 #if defined(FA3_STANDARD_FORWARD_TU)
   return run_fa3_prefill_fp16_typed<FA3_STANDARD_HEAD_DIM,
-                                    FA3_STANDARD_CAUSAL != 0>(cfg);
+                                    FA3_STANDARD_CAUSAL != 0>(
+      cfg, validate_reference);
 #else
-  return run_fa3_prefill_fp16(cfg);
+  return run_fa3_prefill_fp16(cfg, validate_reference);
 #endif
 }
 
@@ -363,19 +375,24 @@ static void RunFa3PrefillSmokeCase(const Fa3PrefillCase &cfg) {
 
   ASSERT_TRUE(is_valid_fa3_prefill_smoke_case(cfg));
 
-  Fa3RunResult result = RunFa3ForwardKernel(cfg);
+  const Fa3RunResult result = RunFa3ForwardKernel(cfg, true);
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
+  ASSERT_TRUE(result.reference_checked);
+  ExpectFa3TensorMatch("O", result.output_comparison);
+  ExpectFa3TensorMatch("LSE", result.lse_comparison);
 }
 #endif
 
 #if !defined(FA3_STANDARD_FORWARD_TU)
-static Fa3RunResult RunFa3BackwardKernel(const Fa3PrefillCase &cfg) {
+static Fa3RunResult RunFa3BackwardKernel(
+    const Fa3PrefillCase &cfg, bool validate_reference = false) {
 #if defined(FA3_STANDARD_BACKWARD_TU)
   return run_fa3_prefill_fp16_bwd_typed<FA3_STANDARD_HEAD_DIM,
-                                        FA3_STANDARD_CAUSAL != 0>(cfg);
+                                        FA3_STANDARD_CAUSAL != 0>(
+      cfg, validate_reference);
 #else
-  return run_fa3_prefill_fp16_bwd(cfg);
+  return run_fa3_prefill_fp16_bwd(cfg, validate_reference);
 #endif
 }
 
@@ -406,9 +423,13 @@ static void RunFa3PrefillBackwardSmokeCase(const Fa3PrefillCase &cfg) {
 
   ASSERT_TRUE(is_valid_fa3_prefill_smoke_case(cfg));
 
-  Fa3RunResult result = RunFa3BackwardKernel(cfg);
+  const Fa3RunResult result = RunFa3BackwardKernel(cfg, true);
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
+  ASSERT_TRUE(result.reference_checked);
+  ExpectFa3TensorMatch("dQ", result.dq_comparison);
+  ExpectFa3TensorMatch("dK", result.dk_comparison);
+  ExpectFa3TensorMatch("dV", result.dv_comparison);
 }
 #endif
 
@@ -470,34 +491,6 @@ TEST_F(Fa3PrefillFp16BackwardIntegrationTest, ShapeTableHas20PrefillCases) {
   for (const Fa3PrefillCase &cfg : kFa3PrefillCases) {
     EXPECT_TRUE(is_valid_fa3_prefill_case(cfg))
         << cfg.name << " is not a valid 32Ki-token prefill backward case";
-  }
-}
-#endif
-
-#if !defined(FA3_STANDARD_BACKWARD_TU) && \
-    defined(FA3_STANDARD_SHAPE_TESTS)
-TEST_F(Fa3PrefillFp16SmokeTest, ShapeTableHas4SmokeCases) {
-  ASSERT_EQ(sizeof(kFa3PrefillSmokeCases) /
-                sizeof(kFa3PrefillSmokeCases[0]),
-            size_t{kFa3PrefillSmokeCaseCount});
-
-  for (const Fa3PrefillCase &cfg : kFa3PrefillSmokeCases) {
-    EXPECT_TRUE(is_valid_fa3_prefill_smoke_case(cfg))
-        << cfg.name << " is not a valid FA3 smoke case";
-  }
-}
-#endif
-
-#if !defined(FA3_STANDARD_FORWARD_TU) && \
-    defined(FA3_STANDARD_SHAPE_TESTS)
-TEST_F(Fa3PrefillFp16BackwardSmokeTest, ShapeTableHas4SmokeCases) {
-  ASSERT_EQ(sizeof(kFa3PrefillSmokeCases) /
-                sizeof(kFa3PrefillSmokeCases[0]),
-            size_t{kFa3PrefillSmokeCaseCount});
-
-  for (const Fa3PrefillCase &cfg : kFa3PrefillSmokeCases) {
-    EXPECT_TRUE(is_valid_fa3_prefill_smoke_case(cfg))
-        << cfg.name << " is not a valid FA3 backward smoke case";
   }
 }
 #endif

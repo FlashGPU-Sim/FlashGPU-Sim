@@ -3,10 +3,6 @@
 
 [jobs.sm120-core]
 arch = "sm120"
-pre_checks = [
-  "tests/ci/tests/test_arch_manifest.py",
-  "tests/ci/tests/test_gtest.py",
-]
 tests = [
   { name = "unit", group = "unit" },
   { name = "integration", group = "integration" },
@@ -27,7 +23,7 @@ tests = [
 [jobs.sm90-fa2]
 arch = "sm90"
 tests = [
-  { name = "smoke", group = "fa2", profile = "smoke" },
+  { name = "smoke", group = "fa2", profile = "smoke", gtest_filter = "Fa2PrefillFp16SmokeTest.*" },
 ]
 
 [jobs.sm90-fa3]

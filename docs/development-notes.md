@@ -91,9 +91,10 @@ The current gate covers:
 - architecture manifest, test-group build metadata, PTX scheduler, and gtest discovery
   regression checks;
 - SM120 unit, integration, barrier, TMA, and MMA test groups with `SM120_RTX5090`;
-- SM90 integration, barrier, WGMMA, and FA2 smoke test groups with `SM90_H100`;
-- FA3 forward smoke shapes, the fixed-forward integration case, and backward
-  smoke shapes with `SM90_H100`; and
+- SM90 integration, barrier, WGMMA, and numerically checked FA2 forward smoke
+  tests with `SM90_H100`;
+- numerically checked FA3 forward/backward smoke shapes, the fixed-forward
+  integration case, and PackGQA smoke with `SM90_H100`; and
 - SM120 GPT-2 trace smoke tests.
 
 The workflow carries architecture and test set as independent matrix fields: SM120
@@ -102,6 +103,11 @@ limit and no additional swap allowance. Simulator builds use two jobs by default
 kernel compilation is serial because a single NVCC translation unit approaches
 5 GiB of resident memory; FA3 specializations also use an object-level
 serialization chain to stay within the same budget.
+
+Separate, non-required SM120 performance jobs run the tutorial checks and
+frozen TritonTrace GEMM/Llama3 launchers. `cycle-validation-report` compares
+their simulator cycles with stored NCU references and checks the tutorial rows
+in the top-level README. These jobs do not feed `verify-status`.
 
 Build and run logs are written under `tests/logs/ci/logs/`, and gtest XML is
 written under `tests/logs/ci/xml/`. The workflow uploads the complete

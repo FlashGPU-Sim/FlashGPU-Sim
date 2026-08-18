@@ -77,8 +77,8 @@ static constexpr int kFa2PrefillCaseCount = 20;
 #define FA2_PREFILL_SMOKE_H32D64_CAUSAL_CASE_LIST(X) \
   X(H32D64CausalB2S128, 2, 128, 32, 64, true)
 
-#define FA2_PREFILL_SMOKE_H16D128_FULL_CASE_LIST(X) \
-  X(H16D128FullB2S128, 2, 128, 16, 128, false)
+#define FA2_PREFILL_SMOKE_D128_FULL_CASE_LIST(X) \
+  X(H1D128FullB1S256, 1, 256, 1, 128, false)
 
 #define FA2_PREFILL_SMOKE_H16D128_CAUSAL_CASE_LIST(X) \
   X(H16D128CausalB2S128, 2, 128, 16, 128, true)
@@ -86,7 +86,7 @@ static constexpr int kFa2PrefillCaseCount = 20;
 #define FA2_PREFILL_SMOKE_CASE_LIST(X)              \
   FA2_PREFILL_SMOKE_H32D64_FULL_CASE_LIST(X)        \
   FA2_PREFILL_SMOKE_H32D64_CAUSAL_CASE_LIST(X)      \
-  FA2_PREFILL_SMOKE_H16D128_FULL_CASE_LIST(X)       \
+  FA2_PREFILL_SMOKE_D128_FULL_CASE_LIST(X)          \
   FA2_PREFILL_SMOKE_H16D128_CAUSAL_CASE_LIST(X)
 
 static constexpr int kFa2PrefillSmokeCaseCount = 4;
@@ -235,8 +235,7 @@ inline Fa2RunResult make_fa2_invalid_result(const char *where) {
 
 inline bool is_supported_fa2_prefill_case(const Fa2PrefillCase &cfg) {
   return cfg.batch > 0 && cfg.seqlen > 0 && cfg.heads > 0 &&
-         ((cfg.heads == 32 && cfg.head_dim == 64) ||
-          (cfg.heads == 16 && cfg.head_dim == 128));
+         (cfg.head_dim == 64 || cfg.head_dim == 128);
 }
 
 inline bool is_valid_fa2_prefill_case(const Fa2PrefillCase &cfg) {
@@ -245,8 +244,11 @@ inline bool is_valid_fa2_prefill_case(const Fa2PrefillCase &cfg) {
 }
 
 inline bool is_valid_fa2_prefill_smoke_case(const Fa2PrefillCase &cfg) {
+  const bool standard_shape = cfg.batch == 2 && cfg.seqlen == 128;
+  const bool multi_tile_shape =
+      cfg.batch == 1 && cfg.seqlen == 256 && cfg.heads == 1;
   return is_supported_fa2_prefill_case(cfg) &&
-         cfg.batch == 2 && cfg.seqlen == 128;
+         (standard_shape || multi_tile_shape);
 }
 
 inline bool is_valid_fa2_prefill_tuning_case(const Fa2PrefillCase &cfg) {

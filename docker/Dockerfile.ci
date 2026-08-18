@@ -1,12 +1,27 @@
-# GPGPU-Sim CI Docker Image
-# Minimal container for automated testing in CI/CD pipelines
-# Based on NVIDIA CUDA 12.8 (aligned with docker/Dockerfile)
+# FlashGPU-Sim CI base image.
+# Branch sources are mounted at runtime and are never baked into this image.
 
-ARG CUDA_IMAGE=nvidia/cuda:12.8.0-devel-ubuntu22.04
+ARG CUDA_IMAGE=nvidia/cuda:12.8.0-base-ubuntu22.04
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.8.0
+
+FROM ${UV_IMAGE} AS uv
 FROM ${CUDA_IMAGE}
 
-LABEL maintainer="GPGPU-Sim CI"
-LABEL description="Minimal GPGPU-Sim CI environment for automated testing"
+ARG GTEST_VERSION=1.12.1
+ARG PYTHON_VERSION=3.12.3
+ARG NUMPY_VERSION=2.4.0
+ARG TORCH_VERSION=2.9.0
+ARG TRITON_VERSION=3.5.0
+ARG PYTORCH_CPU_INDEX=https://download.pytorch.org/whl/cpu
+ARG CUDA_NVCC_VERSION=12.8.61-1
+ARG CUDA_CUDART_VERSION=12.8.57-1
+ARG CUDA_CCCL_VERSION=12.8.55-1
+ARG CUDA_BINUTILS_VERSION=12.8.55-1
+
+LABEL org.opencontainers.image.title="FlashGPU-Sim CI"
+LABEL org.opencontainers.image.description="CUDA, simulator test, and Triton compiler dependencies for FlashGPU-Sim"
+LABEL org.opencontainers.image.source="https://github.com/FlashGPU-Sim/FlashGPU-Sim"
+LABEL org.opencontainers.image.version="cuda12.8-gtest${GTEST_VERSION}-triton${TRITON_VERSION}"
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -15,9 +30,20 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV CUDA_INSTALL_PATH=/usr/local/cuda
 ENV PATH="${CUDA_INSTALL_PATH}/bin:${PATH}"
 ENV LD_LIBRARY_PATH="${CUDA_INSTALL_PATH}/lib64:${LD_LIBRARY_PATH}"
+ENV LIBRARY_PATH="${CUDA_INSTALL_PATH}/lib64/stubs"
 
-# Install minimal dependencies for CI testing
+# Install simulator build and correctness-test dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Minimal CUDA compiler and binary-inspection tools
+    "cuda-nvcc-12-8=${CUDA_NVCC_VERSION}" \
+    "cuda-nvvm-12-8=${CUDA_NVCC_VERSION}" \
+    "cuda-crt-12-8=${CUDA_NVCC_VERSION}" \
+    "cuda-cudart-12-8=${CUDA_CUDART_VERSION}" \
+    "cuda-cudart-dev-12-8=${CUDA_CUDART_VERSION}" \
+    "cuda-driver-dev-12-8=${CUDA_CUDART_VERSION}" \
+    "cuda-cccl-12-8=${CUDA_CCCL_VERSION}" \
+    "cuda-cuobjdump-12-8=${CUDA_BINUTILS_VERSION}" \
+    "cuda-nvdisasm-12-8=${CUDA_BINUTILS_VERSION}" \
     # Build essentials
     build-essential \
     g++ \
@@ -36,12 +62,49 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Keep the upstream repository layout out of the public image contract. Tests
+# consume only the GoogleTest component rooted at /opt/googletest.
+RUN git clone --depth 1 --branch "release-${GTEST_VERSION}" \
+        https://github.com/google/googletest.git /tmp/googletest \
+    && mkdir -p /opt/googletest \
+    && cp -a /tmp/googletest/googletest/. /opt/googletest/ \
+    && rm -rf /tmp/googletest \
+    && test -f /opt/googletest/include/gtest/gtest.h \
+    && test -f /opt/googletest/src/gtest-all.cc
+
+# Keep the CI compiler versions aligned with the development image. Performance
+# jobs compile Triton workloads offline before simulator replay, so the
+# CPU-only PyTorch wheel avoids duplicating CUDA runtime libraries already
+# present in the base image.
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+ENV UV_LINK_MODE=copy
+ENV VIRTUAL_ENV=/opt/flashgpusim-venv
+
+RUN uv python install "${PYTHON_VERSION}" \
+    && uv venv --python "${PYTHON_VERSION}" --seed "${VIRTUAL_ENV}" \
+    && uv pip install --python "${VIRTUAL_ENV}/bin/python" \
+        "numpy==${NUMPY_VERSION}" \
+        "triton==${TRITON_VERSION}" \
+    && uv pip install --python "${VIRTUAL_ENV}/bin/python" \
+        --index-url "${PYTORCH_CPU_INDEX}" \
+        "torch==${TORCH_VERSION}" \
+    && uv cache clean
+
 # Create working directory
 WORKDIR /gpgpu-sim
 
 # Set up environment variables for GPGPU-Sim
 ENV GPGPUSIM_ROOT=/gpgpu-sim
 ENV PTXAS_CUDA_INSTALL_PATH=${CUDA_INSTALL_PATH}
+ENV GTEST_DIR=/opt/googletest
+ENV FLASHGPU_GTEST_VERSION=${GTEST_VERSION}
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+ENV PYTHONPATH=/gpgpu-sim/tools
+
+# Git commands in the simulator build inspect the bind-mounted checkout.
+RUN git config --system --add safe.directory /gpgpu-sim
 
 # Create necessary directories
 RUN mkdir -p /gpgpu-sim/lib /gpgpu-sim/build

@@ -8,7 +8,8 @@ RUN_DIR="${SCRIPT_DIR}/run"
 TRACKING_DIR="${RUN_DIR}/tracking"
 LAUNCHER_DIR="${TRACKING_DIR}/launchers"
 BUNDLED_TRACE_DIR="${SCRIPT_DIR}/trace"
-CONFIG_DIR="${REPO_ROOT}/configs/SM120_RTX5090"
+CONFIG_NAME="${PERF_SIM_CONFIG:-SM120_RTX5090}"
+CONFIG_DIR="${REPO_ROOT}/configs/${CONFIG_NAME}"
 SIMULATION_LOG="${RUN_DIR}/simulation.log"
 LAUNCHER_NAME="kernel_tma_gemm_launch1"
 LAUNCHER_MAKEFILE="${LAUNCHER_NAME}_Makefile"
@@ -35,7 +36,7 @@ fi
 
 mkdir -p "${RUN_DIR}"
 
-echo "[2/4] Configuring FlashGPU-Sim for SM120_RTX5090"
+echo "[2/4] Configuring FlashGPU-Sim for ${CONFIG_NAME}"
 cp -a "${CONFIG_DIR}/." "${LAUNCHER_DIR}/"
 
 if [[ "${GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN:-}" != "1" ]]; then

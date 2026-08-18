@@ -11,6 +11,11 @@ else
 fi
 
 ARCH="${ARCH:-sm_100a}"
+# FA2 and FA3 remain registered in the repository's sm90 manifest slot. The
+# generated-code target is overridden below so those native binaries contain
+# B200 cubins while retaining the manifest-driven output layout.
+MAKE_ARCH="sm90"
+BUILD_BIN_ROOT="build/bin/${MAKE_ARCH}"
 BUILD_FA2="${BUILD_FA2:-1}"
 BUILD_FA3="${BUILD_FA3:-1}"
 BUILD_GROUPS="${BUILD_GROUPS:-smoke small}"
@@ -29,7 +34,7 @@ Environment:
   FA4_CUDA_ROOT    CUDA root from the FA4 venv. Auto-detected if unset.
   FA4_PYTHON       Python from the FA4 venv. Auto-detected if unset.
   BUILD_FA2        Build FA2 split binaries, default 1.
-  BUILD_FA3        Build FA3 extended binary, default 1.
+  BUILD_FA3        Build the FA3 standard binary, default 1.
   BUILD_GROUPS     FA2 groups to build: smoke small medium large, default
                    "smoke small".
   MAKE_JOBS        make -j value, default 1.
@@ -99,11 +104,13 @@ detect_driver_stub_dir() {
   return 1
 }
 
-append_fa2_group_targets() {
+append_fa2_group() {
   local group="$1"
   local variant
+
+  BUILD_GOALS+=("fa2-${MAKE_ARCH}-${group}")
   for variant in h32d64_full h32d64_causal h16d128_full h16d128_causal; do
-    BUILD_TARGETS+=("build/bin/hopper/run_fa2_${group}_${variant}_tests")
+    BUILT_BINARIES+=("${BUILD_BIN_ROOT}/fa2/${group}_${variant}_tests")
   done
 }
 
@@ -130,12 +137,13 @@ mkdir -p "${PREBUILT_ROOT}/bin" "${PREBUILT_ROOT}/lib" \
   "${PREBUILT_ROOT}/scripts" "${PREBUILT_ROOT}/provenance"
 cp -f "${RUNTIME_LIB}" "${PREBUILT_ROOT}/lib/"
 
-BUILD_TARGETS=()
+BUILD_GOALS=()
+BUILT_BINARIES=()
 if [[ "${BUILD_FA2}" == "1" ]]; then
   for group in ${BUILD_GROUPS}; do
     case "${group}" in
       smoke|small|medium|large)
-        append_fa2_group_targets "${group}"
+        append_fa2_group "${group}"
         ;;
       *)
         echo "unknown FA2 group in BUILD_GROUPS: ${group}" >&2
@@ -145,10 +153,11 @@ if [[ "${BUILD_FA2}" == "1" ]]; then
   done
 fi
 if [[ "${BUILD_FA3}" == "1" ]]; then
-  BUILD_TARGETS+=("build/bin/hopper/run_fa3_extended_tests")
+  BUILD_GOALS+=("fa3-standard")
+  BUILT_BINARIES+=("${BUILD_BIN_ROOT}/fa3/standard_tests")
 fi
 
-if [[ "${#BUILD_TARGETS[@]}" -eq 0 ]]; then
+if [[ "${#BUILD_GOALS[@]}" -eq 0 ]]; then
   echo "nothing to build; set BUILD_FA2 or BUILD_FA3" >&2
   exit 2
 fi
@@ -158,6 +167,7 @@ fi
   echo "test_dir=${TEST_DIR}"
   echo "prebuilt_root=${PREBUILT_ROOT}"
   echo "arch=${ARCH}"
+  echo "make_arch=${MAKE_ARCH}"
   echo "fa4_cuda_root=${FA4_CUDA_ROOT}"
   echo "nvcc=${NVCC}"
   echo "cuobjdump=${CUOBJDUMP}"
@@ -173,7 +183,8 @@ fi
   git -C "${ROOT_DIR}" status --short 2>/dev/null | sed 's/^/git_status=/'
 } | tee "${PREBUILT_ROOT}/provenance/build_env.txt"
 "${NVCC}" --version | tee "${PREBUILT_ROOT}/provenance/nvcc_version.txt"
-printf "%s\n" "${BUILD_TARGETS[@]}" >"${PREBUILT_ROOT}/provenance/build_targets.txt"
+printf "%s\n" "${BUILD_GOALS[@]}" >"${PREBUILT_ROOT}/provenance/build_goals.txt"
+printf "%s\n" "${BUILT_BINARIES[@]}" >"${PREBUILT_ROOT}/provenance/build_targets.txt"
 
 driver_link_args=()
 if [[ -n "${DRIVER_STUB_DIR}" ]]; then
@@ -184,7 +195,7 @@ fi
 
 cuda_libs=(
   "-L${PREBUILT_ROOT}/lib"
-  "-Wl,-rpath,\$\$ORIGIN/../lib"
+  "-Wl,-rpath,'\$\$ORIGIN/../../lib'"
   "-l:libcudart.so.13"
   "${driver_link_args[@]}"
   "-static-libstdc++"
@@ -193,34 +204,46 @@ cuda_libs=(
 
 (
   cd "${TEST_DIR}"
+  # Materialize the repository-local checkout before the parallel build. The
+  # aggregate FA targets also depend on setup-gtest, so this remains aligned
+  # with the repository rule and avoids a first-build race when MAKE_JOBS > 1.
+  make setup-gtest
   make_args=()
   if [[ "${FORCE_REBUILD}" == "1" ]]; then
     make_args+=("-B")
   fi
-  make -j"${MAKE_JOBS}" "${make_args[@]}" "${BUILD_TARGETS[@]}" \
+  make -j"${MAKE_JOBS}" "${make_args[@]}" "${BUILD_GOALS[@]}" \
     CUDA_INSTALL_PATH="${FA4_CUDA_ROOT}" \
     CUDA_HOME="${FA4_CUDA_ROOT}" \
     CUDA_PATH="${FA4_CUDA_ROOT}" \
     NVCC="${NVCC}" \
-    CUDA_ARCH="${ARCH}" \
-    HOPPER_CUDA_ARCH="${ARCH}" \
+    ARCH_NVCC_TARGET_sm90="${ARCH}" \
     CUDA_LIBS="${cuda_libs[*]}"
 )
 
 manifest="${PREBUILT_ROOT}/manifest.csv"
 echo "binary,path,sha256,elf,ptx" >"${manifest}"
-for target in "${BUILD_TARGETS[@]}"; do
+BUNDLED_BINARIES=()
+for target in "${BUILT_BINARIES[@]}"; do
   src="${TEST_DIR}/${target}"
   if [[ ! -x "${src}" ]]; then
     echo "expected binary missing after build: ${src}" >&2
     exit 1
   fi
-  name="$(basename "${src}")"
-  dst="${PREBUILT_ROOT}/bin/${name}"
+  relative_path="${target#"${BUILD_BIN_ROOT}/"}"
+  if [[ "${relative_path}" == "${target}" ]]; then
+    echo "built binary is outside ${BUILD_BIN_ROOT}: ${target}" >&2
+    exit 1
+  fi
+  name="$(basename "${relative_path}")"
+  artifact_id="${relative_path//\//_}"
+  dst="${PREBUILT_ROOT}/bin/${relative_path}"
+  mkdir -p "$(dirname "${dst}")"
   cp -f "${src}" "${dst}"
   chmod +x "${dst}"
+  BUNDLED_BINARIES+=("${dst}")
   if command -v patchelf >/dev/null 2>&1; then
-    patchelf --set-rpath '$ORIGIN/../lib' "${dst}" || true
+    patchelf --set-rpath '$ORIGIN/../../lib' "${dst}" || true
   fi
   sha="$(sha256sum "${dst}" | awk '{print $1}')"
   elf="$("${CUOBJDUMP}" --list-elf "${dst}" 2>/dev/null | tr '\n' ';' | sed 's/;$//')"
@@ -230,16 +253,16 @@ for target in "${BUILD_TARGETS[@]}"; do
     echo "${elf}" >&2
     exit 1
   fi
-  printf '%s,%s,%s,"%s","%s"\n' "${name}" "${dst}" "${sha}" "${elf}" "${ptx}" >>"${manifest}"
+  printf '%s,%s,%s,"%s","%s"\n' "${relative_path}" "${dst}" "${sha}" "${elf}" "${ptx}" >>"${manifest}"
   {
     echo "== ${name} =="
     "${CUOBJDUMP}" --list-elf "${dst}" || true
     "${CUOBJDUMP}" --list-ptx "${dst}" || true
-  } >"${PREBUILT_ROOT}/provenance/${name}.cuobjdump.txt"
+  } >"${PREBUILT_ROOT}/provenance/${artifact_id}.cuobjdump.txt"
 done
 
 if command -v ldd >/dev/null 2>&1; then
-  for dst in "${PREBUILT_ROOT}"/bin/*; do
+  for dst in "${BUNDLED_BINARIES[@]}"; do
     ldd "${dst}" 2>/dev/null |
       awk '/libstdc\+\+\.so|libgcc_s\.so/ { print $3 }' |
       while IFS= read -r dep; do
@@ -265,9 +288,10 @@ cat >"${PREBUILT_ROOT}/README.md" <<EOF
 - Default NCU script: \`scripts/run_b200_fa2_fa3_ncu.sh\`
 - Results default to \`../results/B200_FA2_FA3_NCU_<timestamp>\` relative to this bundle.
 
-FA2 is compiled as split gtest binaries. FA3 is compiled as the extended
-Hopper-origin gtest binary under \`${ARCH}\`; check provenance because the
-SM100A forward kernel may be an SM90 guard/stub even when compilation succeeds.
+The bundle preserves the repository layout below \`bin/fa2/\` and \`bin/fa3/\`.
+FA2 is compiled as split gtest binaries. FA3 is compiled as the standard
+Hopper-origin gtest binary for \`${ARCH}\`; check provenance because an SM100A
+forward kernel may be an SM90 guard/stub even when compilation succeeds.
 EOF
 
 echo "${PREBUILT_ROOT}" | tee "${PREBUILT_ROOT}/prebuilt_root.txt"

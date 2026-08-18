@@ -258,6 +258,12 @@ def _print_plan(jobs: tuple[CiJob, ...]) -> None:
             )
 
 
+def _matrix_label(job: CiJob) -> str:
+    prefix = f"{job.arch}-"
+    suite = job.name[len(prefix) :] if job.name.startswith(prefix) else job.name
+    return f"{job.arch}({suite})"
+
+
 def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -282,7 +288,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             validate_selections(jobs)
             print(
                 json.dumps(
-                    {"job": [job.name for job in jobs]},
+                    {
+                        "include": [
+                            {"job": job.name, "label": _matrix_label(job)}
+                            for job in jobs
+                        ]
+                    },
                     separators=(",", ":"),
                 )
             )

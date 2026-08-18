@@ -1,32 +1,17 @@
 # Shared compile and link rules for ordinary GoogleTest test groups.
 
 BUILD_MK := $(lastword $(MAKEFILE_LIST))
-SPECIAL_TEST_GROUPS := fa2 fa3 microbench trace
 
-# Every non-special first path component in arch/*.toml is one ordinary
-# GoogleTest binary group.
+# Workload fragments claim groups that have custom build graphs. Every
+# remaining first path component in arch/*.toml is an ordinary GoogleTest
+# binary group.
 $(foreach arch,$(ARCHITECTURES),\
   $(eval STANDARD_TEST_GROUPS_$(arch) := \
-    $(filter-out $(SPECIAL_TEST_GROUPS),$(ARCH_TEST_GROUPS_$(arch)))))
+    $(filter-out $(WORKLOAD_MANAGED_TEST_GROUPS_$(arch)),\
+      $(ARCH_TEST_GROUPS_$(arch)))))
 
-# WGMMA emits forward-compatible PTX in addition to the manifest-owned target.
-TEST_GROUP_EXTRA_FLAGS_sm90_wgmma := $(WGMMA_EXTRA_NVCCFLAGS)
-
-TEST_GROUP_EXTRA_OBJECTS_sm120_unit := \
-	$(OBJ_DIR)/sm120/support/bulk_group.cu.o \
-	$(OBJ_DIR)/sm120/support/local_interconnect.cc.o \
-	$(OBJ_DIR)/sm120/support/mshr-table.cu.o
-
-TEST_GROUP_EXTRA_OBJECTS_sm100_unit := \
-	$(OBJ_DIR)/sm100/support/addrdec.cc.o \
-	$(OBJ_DIR)/sm100/support/hashing.cc.o \
-	$(OBJ_DIR)/sm100/support/local_interconnect.cc.o \
-	$(OBJ_DIR)/sm100/support/mshr-table.cc.o \
-	$(OBJ_DIR)/sm100/support/option_parser.cc.o \
-	$(OBJ_DIR)/sm100/support/tcgen05/descriptor.cu.o \
-	$(OBJ_DIR)/sm100/support/tcgen05/mma.cu.o \
-	$(OBJ_DIR)/sm100/support/tcgen05/tmem.cu.o
-
+# Workload fragments loaded before this file may add group-specific link inputs
+# and configuration prerequisites through TEST_GROUP_EXTRA_{OBJECTS,PREREQUISITES}.
 define TEST_SOURCE_OBJECTS
 $(patsubst $(TEST_SRC_DIR)/%.cu,$(OBJ_DIR)/$(1)/%.cu.o,$(filter %.cu,$(2))) \
 $(patsubst $(TEST_SRC_DIR)/%.cc,$(OBJ_DIR)/$(1)/%.cc.o,$(filter %.cc,$(2)))
@@ -47,34 +32,6 @@ endef
 
 $(foreach arch,$(ARCHITECTURES),$(eval $(call REGISTER_ARCH_COMPILE_RULES,$(arch))))
 
-# These host tests include simulator headers outside TEST_HEADERS. Keep their
-# object layouts in lockstep with the production types they exercise so an
-# incremental build cannot link stale test objects.
-$(OBJ_DIR)/sm100/unit/local_interconnect_test.cc.o \
-$(OBJ_DIR)/sm120/unit/local_interconnect_test.cc.o: \
-$(SRC_DIR)/gpgpu-sim/local_interconnect.h \
-$(SRC_DIR)/gpgpu-sim/mem_transport_budget.h
-
-$(OBJ_DIR)/sm100/unit/memory_transport_test.cc.o \
-$(OBJ_DIR)/sm120/unit/memory_transport_test.cc.o: \
-$(SRC_DIR)/gpgpu-sim/shader.h \
-$(SRC_DIR)/gpgpu-sim/mem_transport_budget.h
-
-$(OBJ_DIR)/sm100/unit/rop_delay_output_test.cc.o \
-$(OBJ_DIR)/sm120/unit/rop_delay_output_test.cc.o: \
-$(SRC_DIR)/gpgpu-sim/gpu-cache.h \
-$(SRC_DIR)/gpgpu-sim/l2cache.h \
-$(SRC_DIR)/gpgpu-sim/mem_transport_budget.h
-
-$(OBJ_DIR)/sm100/unit/l2_bandwidth_test.cc.o: \
-$(SRC_DIR)/gpgpu-sim/gpu-cache.h \
-$(SRC_DIR)/gpgpu-sim/l2cache.h
-
-$(OBJ_DIR)/sm100/unit/l2_multi_issue_ports_test.cc.o: \
-$(SRC_DIR)/gpgpu-sim/gpu-cache.h \
-$(SRC_DIR)/gpgpu-sim/l2cache.h \
-$(SRC_DIR)/gpgpu-sim/mem_fetch.h
-
 define REGISTER_STANDARD_TEST_GROUP
 TEST_GROUP_OBJECTS_$(1)_$(2) := $$(call TEST_SOURCE_OBJECTS,$(1),$$(TEST_GROUP_SOURCES_$(1)_$(2)))
 TEST_GROUP_TARGET_$(1)_$(2) := $$(BIN_DIR)/$(1)/$(2)_tests
@@ -88,6 +45,7 @@ build-$(1)-$(2): setup-gtest $$(TEST_GROUP_TARGET_$(1)_$(2))
 
 $$(TEST_GROUP_TARGET_$(1)_$(2)): $$(TEST_GROUP_OBJECTS_$(1)_$(2)) \
 $$(TEST_GROUP_EXTRA_OBJECTS_$(1)_$(2)) $$(OBJ_DIR)/gtest_main.a \
+$$(TEST_GROUP_EXTRA_PREREQUISITES_$(1)_$(2)) \
 $$(TOP_MAKEFILE) $$(BUILD_MK) arch/$(1).toml $$(ARCH_MANIFEST_SCRIPT)
 	@mkdir -p $$(dir $$@)
 	$$(CXX) $$(CXXFLAGS) $$(TEST_GROUP_OBJECTS_$(1)_$(2)) \
@@ -105,62 +63,3 @@ endef
 $(foreach arch,$(ARCHITECTURES),\
   $(foreach test_group,$(STANDARD_TEST_GROUPS_$(arch)),\
     $(eval $(call REGISTER_STANDARD_TEST_GROUP,$(arch),$(test_group)))))
-
-# Host-side TCGen05 model objects required by the SM100 unit test group.
-$(OBJ_DIR)/sm100/support/tcgen05/%.cu.o: \
-$(SRC_DIR)/gpgpu-sim/flash/tcgen05/%.cc \
-$(wildcard $(SRC_DIR)/gpgpu-sim/flash/tcgen05/*.h) \
-$(TOP_MAKEFILE) $(BUILD_MK)
-	@mkdir -p $(dir $@)
-	$(NVCC) $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_sm100) $(INCLUDES) \
-		$(GPGPUSIM_FLAGS) -c $< -o $@
-
-$(OBJ_DIR)/sm100/support/addrdec.cc.o: $(SRC_DIR)/gpgpu-sim/addrdec.cc \
-$(SRC_DIR)/gpgpu-sim/addrdec.h $(SRC_DIR)/gpgpu-sim/hashing.h \
-$(SRC_DIR)/option_parser.h $(TOP_MAKEFILE) $(BUILD_MK)
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
-
-$(OBJ_DIR)/sm100/support/hashing.cc.o: $(SRC_DIR)/gpgpu-sim/hashing.cc \
-$(SRC_DIR)/gpgpu-sim/hashing.h $(SRC_DIR)/gpgpu-sim/gpu-cache.h \
-$(TOP_MAKEFILE) $(BUILD_MK)
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
-
-$(OBJ_DIR)/sm100/support/mshr-table.cc.o: \
-$(SRC_DIR)/gpgpu-sim/mshr-table.cc $(SRC_DIR)/gpgpu-sim/gpu-cache.h \
-$(TOP_MAKEFILE) $(BUILD_MK)
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
-
-$(OBJ_DIR)/sm100/support/option_parser.cc.o: $(SRC_DIR)/option_parser.cc \
-$(SRC_DIR)/option_parser.h $(TOP_MAKEFILE) $(BUILD_MK)
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
-
-# Host-side simulator objects required by architecture unit test groups.
-$(OBJ_DIR)/sm120/support/bulk_group.cu.o: $(SRC_DIR)/gpgpu-sim/flash/bulk_group.cc \
-$(SRC_DIR)/gpgpu-sim/flash/bulk_group.h $(TOP_MAKEFILE) $(BUILD_MK)
-	@mkdir -p $(dir $@)
-	$(NVCC) $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_sm120) $(INCLUDES) \
-		$(GPGPUSIM_FLAGS) -c $< -o $@
-
-$(OBJ_DIR)/sm120/support/local_interconnect.cc.o: \
-$(SRC_DIR)/gpgpu-sim/local_interconnect.cc \
-$(SRC_DIR)/gpgpu-sim/local_interconnect.h \
-$(SRC_DIR)/gpgpu-sim/mem_transport_budget.h $(TOP_MAKEFILE) $(BUILD_MK)
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
-
-$(OBJ_DIR)/sm100/support/local_interconnect.cc.o: \
-$(SRC_DIR)/gpgpu-sim/local_interconnect.cc \
-$(SRC_DIR)/gpgpu-sim/local_interconnect.h \
-$(SRC_DIR)/gpgpu-sim/mem_transport_budget.h $(TOP_MAKEFILE) $(BUILD_MK)
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
-
-$(OBJ_DIR)/sm120/support/mshr-table.cu.o: $(SRC_DIR)/gpgpu-sim/mshr-table.cc \
-$(SRC_DIR)/gpgpu-sim/gpu-cache.h $(TOP_MAKEFILE) $(BUILD_MK)
-	@mkdir -p $(dir $@)
-	$(NVCC) $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_sm120) $(INCLUDES) \
-		$(GPGPUSIM_FLAGS) -c $< -o $@

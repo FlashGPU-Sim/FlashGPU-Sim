@@ -158,19 +158,6 @@ TEST_F(Fa2PrefillFp16IntegrationTest, ShapeTableHas20PrefillCases) {
 }
 #endif
 
-#if defined(FA2_PREFILL_GROUP_SMOKE)
-TEST_F(Fa2PrefillFp16SmokeTest, ShapeTableHas4SmokeCases) {
-  ASSERT_EQ(sizeof(kFa2PrefillSmokeCases) /
-                sizeof(kFa2PrefillSmokeCases[0]),
-            size_t{kFa2PrefillSmokeCaseCount});
-
-  for (const Fa2PrefillCase &cfg : kFa2PrefillSmokeCases) {
-    EXPECT_TRUE(is_valid_fa2_prefill_smoke_case(cfg))
-        << cfg.name << " is not a valid FA2 smoke case";
-  }
-}
-#endif
-
 #if defined(FA2_PREFILL_GROUP_SMALL)
 TEST_F(Fa2PrefillFp16SmallTest, ShapeTableHas4SmallCases) {
   ASSERT_EQ(sizeof(kFa2PrefillSmallCases) / sizeof(kFa2PrefillSmallCases[0]),
@@ -273,7 +260,7 @@ FA2_PREFILL_SMOKE_H32D64_FULL_CASE_LIST(FA2_PREFILL_SMOKE_TEST)
 FA2_PREFILL_SMOKE_H32D64_CAUSAL_CASE_LIST(FA2_PREFILL_SMOKE_TEST)
 #endif
 #if defined(FA2_PREFILL_ENABLE_H16D128_FULL)
-FA2_PREFILL_SMOKE_H16D128_FULL_CASE_LIST(FA2_PREFILL_SMOKE_TEST)
+FA2_PREFILL_SMOKE_D128_FULL_CASE_LIST(FA2_PREFILL_SMOKE_TEST)
 #endif
 #if defined(FA2_PREFILL_ENABLE_H16D128_CAUSAL)
 FA2_PREFILL_SMOKE_H16D128_CAUSAL_CASE_LIST(FA2_PREFILL_SMOKE_TEST)

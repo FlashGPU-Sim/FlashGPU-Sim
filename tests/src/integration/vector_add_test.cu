@@ -3,8 +3,6 @@
 #include <vector>
 #include <random>
 #include <chrono>
-#include <cstring>
-#include <memory>
 
 // CUDA kernel for vector addition
 __global__ void vectorAddKernel(const float* a, const float* b, float* c, int n) {
@@ -199,74 +197,3 @@ TEST_F(CudaVectorAddTest, SpecialValueTesting) {
     cudaSafeFree(d_b);
     cudaSafeFree(d_c);
 }
-
-// Parameterized test for different data sizes
-class CudaVectorAddParameterizedTest : public ::testing::TestWithParam<int> {
-protected:
-    void SetUp() override {
-        num_elements = GetParam();
-        data_size_bytes = num_elements * sizeof(float);
-        
-        h_a.resize(num_elements);
-        h_b.resize(num_elements);
-        h_c.resize(num_elements);
-        h_c_ref.resize(num_elements);
-        
-        // Initialize with simple pattern for parameterized tests
-        for (int i = 0; i < num_elements; ++i) {
-            h_a[i] = static_cast<float>(i % 100);
-            h_b[i] = static_cast<float>((i + 1) % 100);
-            h_c_ref[i] = h_a[i] + h_b[i];
-        }
-    }
-    
-    int num_elements;
-    size_t data_size_bytes;
-    std::vector<float> h_a, h_b, h_c, h_c_ref;
-    static constexpr float TOLERANCE = 1e-6f;
-};
-
-TEST_P(CudaVectorAddParameterizedTest, DifferentSizes) {
-    // Test with different data sizes
-    
-    float* d_a = (float*)malloc(data_size_bytes);
-    float* d_b = (float*)malloc(data_size_bytes);
-    float* d_c = (float*)malloc(data_size_bytes);
-    
-    ASSERT_NE(d_a, nullptr);
-    ASSERT_NE(d_b, nullptr);
-    ASSERT_NE(d_c, nullptr);
-    
-    std::memcpy(d_a, h_a.data(), data_size_bytes);
-    std::memcpy(d_b, h_b.data(), data_size_bytes);
-    
-    // Simulate kernel execution
-    for (int i = 0; i < num_elements; ++i) {
-        ((float*)d_c)[i] = ((float*)d_a)[i] + ((float*)d_b)[i];
-    }
-    
-    std::memcpy(h_c.data(), d_c, data_size_bytes);
-    
-    // Verify results
-    for (int i = 0; i < num_elements; ++i) {
-        EXPECT_NEAR(h_c[i], h_c_ref[i], TOLERANCE);
-    }
-    
-    free(d_a);
-    free(d_b);
-    free(d_c);
-}
-
-// Test different data sizes: 1KB, 4KB, 16KB, 64KB, 256KB, 1MB
-INSTANTIATE_TEST_SUITE_P(
-    VariousSizes,
-    CudaVectorAddParameterizedTest,
-    ::testing::Values(
-        256,      // 1KB
-        1024,     // 4KB
-        4096,     // 16KB
-        16384,    // 64KB
-        65536,    // 256KB
-        262144    // 1MB
-    )
-);

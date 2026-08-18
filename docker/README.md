@@ -86,6 +86,35 @@ container.
 
 ## CI Image
 
-[`Dockerfile.ci`](Dockerfile.ci) is a separate minimal image used by the
-GitHub Actions workflow. The development image and helper do not replace or
-modify the CI environment.
+[`Dockerfile.ci`](Dockerfile.ci) is the reusable image used by GitHub Actions.
+It starts from NVIDIA's CUDA 12.8 `base` image and installs pinned leaf
+packages rather than the full CUDA development metapackage: `cuda-nvcc`,
+`cuda-nvvm`, `cuda-crt`, and `cuda-cccl` provide compilation support;
+`cuda-cudart`, `cuda-cudart-dev`, and `cuda-driver-dev` provide the runtime,
+headers, and driver stub; and `cuda-cuobjdump` plus `cuda-nvdisasm` provide the
+binary-inspection tools. CUDA math-library development packages and Nsight
+Compute are not installed.
+The image also contains the simulator build dependencies, GoogleTest 1.12.1
+under `/opt/googletest`, and the same Python 3.12.3, PyTorch 2.9.0, Triton 3.5.0,
+and NumPy 2.4.0 versions as the development image. CI uses PyTorch's CPU-only
+wheel because Triton capture is offline. Repository source and test binaries
+are not included; CI mounts and builds the selected commit at runtime. The
+in-tree `TritonTrace` package is exposed from the mounted checkout through
+`PYTHONPATH=/gpgpu-sim/tools`.
+
+The [PR workflow](../.github/workflows/pr-tests.yml) pins the prebuilt image by
+immutable digest. The workflow is the source of truth for the image selected
+by CI.
+
+Build and smoke-test the equivalent environment locally:
+
+```bash
+docker build -f docker/Dockerfile.ci \
+  -t flashgpu-sim-ci:local .
+docker run --rm \
+  -v "$PWD:/gpgpu-sim:ro" \
+  flashgpu-sim-ci:local \
+  bash -c 'python3 -c "import torch, triton, TritonTrace" && nvcc --version'
+```
+
+The development image and helper do not replace or modify the CI environment.

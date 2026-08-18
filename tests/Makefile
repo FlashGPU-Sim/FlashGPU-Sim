@@ -9,10 +9,6 @@ NVCC = nvcc
 CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -g -O2
 BASE_NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu
 SM90_NVCCFLAGS = $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_sm90)
-WGMMA_PTX_NVCCFLAGS = \
-    -gencode arch=$(ARCH_COMPUTE_TARGET_sm90),code=$(ARCH_COMPUTE_TARGET_sm90)
-WGMMA_EXTRA_NVCCFLAGS = \
-    -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED $(WGMMA_PTX_NVCCFLAGS)
 TEST_GROUP_EXTRA_NVCCFLAGS =
 
 CUDA_ENV_PATH := $(if $(CUDA_HOME),$(CUDA_HOME),$(CUDA_PATH))
@@ -27,8 +23,9 @@ ifneq ($(origin CUDA_INSTALL_PATH),command line)
 endif
 CUDA_LIBS = -L$(CUDA_INSTALL_PATH)/lib64 -lcudart -lcuda
 
-GTEST_CLONE_DIR = gtest
-GTEST_DIR = gtest/googletest
+LOCAL_GTEST_CLONE_DIR := third_party/gtest
+LOCAL_GTEST_DIR := $(LOCAL_GTEST_CLONE_DIR)/googletest
+GTEST_DIR ?= $(LOCAL_GTEST_DIR)
 SRC_DIR = ../src
 BUILD_DIR = build
 TEST_SRC_DIR = src
@@ -62,7 +59,7 @@ GPGPUSIM_FLAGS = -DDEBUG=0
 TOP_MAKEFILE := $(firstword $(MAKEFILE_LIST))
 .DEFAULT_GOAL := help
 
-ARCH_MANIFEST_SCRIPT := scripts/arch_manifest.py
+ARCH_MANIFEST_SCRIPT := scripts/arch_manifests_to_make.py
 ARCH_MANIFESTS := $(wildcard arch/*.toml)
 ARCH_MANIFEST_MK := $(BUILD_DIR)/generated/arch.mk
 
@@ -75,12 +72,16 @@ include $(ARCH_MANIFEST_MK)
 $(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(SM90_OBJ_DIR):
 	mkdir -p $@
 
+# Workload fragments declare custom groups and runner metadata before the
+# generic GoogleTest build graph is registered.
 include make/gtest.mk
-include make/build.mk
-include make/workloads/fa3.mk
+include make/workloads/fa.mk
 include make/workloads/fa2.mk
+include make/workloads/fa3.mk
 include make/workloads/microbench.mk
 include make/workloads/trace.mk
+include make/workloads/unit.mk
+include make/build.mk
 include make/runner.mk
 
 .PHONY: clean clean-all debug
@@ -90,8 +91,8 @@ clean:
 	@echo "Cleaned build directory"
 
 clean-all: clean
-	rm -rf $(GTEST_DIR)
-	@echo "Cleaned everything including Google Test"
+	rm -rf $(LOCAL_GTEST_CLONE_DIR)
+	@echo "Cleaned build directory and repository-local Google Test"
 
 debug:
 	@echo "ARCHITECTURES: $(ARCHITECTURES)"

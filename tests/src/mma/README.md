@@ -1,185 +1,43 @@
 # MMA Integration Tests
 
-End-to-end integration tests for PTX MMA (Matrix Multiply-Accumulate) tensor core instructions.
+These CUDA/GoogleTest workloads execute inline PTX `mma.sync` instructions
+through FlashGPU-Sim and compare the results with CPU reference calculations.
+The SM120 architecture manifest selects this test group.
 
-## Purpose
+## Coverage
 
-This directory contains comprehensive integration tests that validate MMA instruction implementations by:
-- Executing real CUDA kernels with inline PTX assembly through GPGPU-Sim
-- Comparing GPU results against CPU reference implementations
-- Testing complete instruction paths from PTX parsing to functional execution
+| Source | Input type | Instruction shapes |
+| --- | --- | --- |
+| `mma_f16_test.cu` | F16 | `m16n8k8`, `m8n8k4`, `m16n8k16` |
+| `mma_bf16_test.cu` | BF16 | `m16n8k8`, `m16n8k16` |
+| `mma_tf32_test.cu` | TF32 | `m16n8k4`, `m16n8k8` |
+| `mma_s8_test.cu` | S8 | `m16n8k16`, `m16n8k32`, `m8n8k16` |
 
-## Test Files
+The floating-point tests round inputs to the instruction format before
+computing their references and compare with a format-appropriate tolerance.
+The integer tests use exact S32 accumulation checks.
 
-### F16 Tests - `mma_f16_test.cu`
+## Run
 
-Tests F16 (IEEE 754 half-precision float) MMA operations with M16N8K8 shape.
-
-**Test cases**:
-- `AllOnesTest` - Uniform inputs (all 1.0)
-- `ZeroMatrixTest` - Zero matrices
-- `IdentityMatrixTest` - Identity matrix multiplication
-- `RandomValuesTest` - Random values stress test
-- `MixedSignTest` - Positive/negative value handling
-
-**Fragment distribution**: Each thread holds 4 F16 values for A, 2 for B, 4 F32 for C/D
-
-### BF16 Tests - `mma_bf16_test.cu`
-
-Tests BF16 (bfloat16) MMA operations with M16N8K8 shape.
-
-**Key characteristics**:
-- BF16 format: 1 sign bit, 8 exponent bits, 7 mantissa bits
-- Wider dynamic range than F16, preferred for ML training
-- Same test cases as F16 with adjusted tolerance (1e-2f due to 7-bit mantissa)
-
-**Fragment distribution**: Same as F16 (4 BF16 for A, 2 for B, 4 F32 for C/D)
-
-### TF32 Tests - `mma_tf32_test.cu`
-
-Tests TF32 (TensorFloat-32) MMA operations with M16N8K4 shape.
-
-**Key characteristics**:
-- TF32 format: 1 sign bit, 8 exponent bits, 10 mantissa bits
-- Uses `b32` registers for A/B fragments (not `f32`)
-- M16N8K4 required for sm_90 (Hopper), M16N8K8 only for sm_80-89 (Ampere)
-
-**Fragment distribution**: Each thread holds 2 TF32 for A, 1 for B, 4 F32 for C/D
-
-### S8 Tests - `mma_s8_test.cu`
-
-Tests S8 (signed 8-bit integer) MMA operations with M16N8K16 and M16N8K32 shapes.
-
-**Key characteristics**:
-- Integer accumulation in S32 format
-- Includes saturation tests (clamp to [-128, 127])
-- Tests both signed (S8) and unsigned (U8) variants
-
-**Fragment distribution**: Each thread holds 4 S8 for A, 2 for B, 4 S32 for C/D
-
-## Running Tests
-
-Use the full SM120 configuration:
+From the repository root:
 
 ```bash
-# Run all MMA tests
-./tests/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --group mma "*MMA*"
-
-# Run specific data type tests
-./tests/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --group mma "MMAF16*"
-./tests/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --group mma "MMABF16*"
-./tests/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --group mma "MMATF32*"
-./tests/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --group mma "MMAS8*"
-
-# Run specific test case
-./tests/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --group mma \
-  "MMAF16M16N8K8IntegrationTest.AllOnesTest"
+./tests/run_tests.py list-cases --arch sm120 --group mma
+./tests/run_tests.py run --arch sm120 --group mma
+./tests/run_tests.py run --arch sm120 --group mma \
+  --gtest-filter 'MMAF16M16N8K8IntegrationTest.AllOnesTest'
 ```
 
-**Configuration**: `SM120_RTX5090` (default)
-- 170 SMs
-- 16 memory controllers
-- Complete hardware simulation
+The `sm120` manifest supplies the NVCC target and simulator configuration; no
+per-test configuration is required.
 
-## Test Structure
+## Adding coverage
 
-Each MMA integration test follows this pattern:
+Add the CUDA source below this directory, register it in
+[`tests/arch/sm120.toml`](../../arch/sm120.toml), and implement a CPU reference
+that applies the input format's rounding and accumulation rules. Keep the
+fragment-to-lane mapping consistent with the PTX ISA definition.
 
-```cpp
-class MMATestFixture : public ::testing::Test {
-protected:
-    // Test parameters (M, N, K dimensions)
-    // Host and device memory pointers
-
-    void SetUp() override { /* Allocate memory */ }
-    void TearDown() override { /* Free memory */ }
-    void compute_reference() { /* CPU reference implementation */ }
-    void run_mma_kernel() { /* Execute through GPGPU-Sim */ }
-};
-
-TEST_F(MMATestFixture, TestCase) {
-    // 1. Initialize inputs
-    // 2. Compute CPU reference
-    // 3. Run GPU kernel through simulator
-    // 4. Validate results with EXPECT_NEAR
-}
-```
-
-## Validation Strategy
-
-### Tolerance Values
-
-Different data types require different tolerances due to precision limitations:
-
-- **F16**: `1e-3f` - 10-bit mantissa precision
-- **BF16**: `1e-2f` - 7-bit mantissa precision (less precise than F16)
-- **TF32**: `1e-3f` to `1e-2f` - 10-bit mantissa + accumulation errors
-- **S8**: `0` - Exact integer arithmetic (no tolerance)
-
-### CPU Reference Implementation
-
-Each test computes expected results on CPU:
-1. Apply data type rounding (F16, BF16, TF32) to simulate precision
-2. Perform matrix multiplication: D = A × B + C
-3. Apply saturation if needed (integer types)
-4. Compare GPU result against CPU reference with appropriate tolerance
-
-## Expected Results
-
-All 30 MMA tests should pass:
-- **F16 tests**: 16 test cases
-- **BF16 tests**: 5 test cases
-- **TF32 tests**: 5 test cases
-- **S8 tests**: 4 test cases
-
-**Status**: ✅ All tests passing (verified as of commit 1d88e1c7)
-
-## Adding New MMA Tests
-
-When adding support for new MMA shapes or data types:
-
-1. **Create test file**: `mma_<type>_test.cu` in this directory
-2. **Define test fixture**: Inherit from `::testing::Test`
-3. **Implement CPU reference**: With proper type rounding for the data type
-4. **Write test cases**: At least 5 tests (all-ones, zeros, identity, random, edge cases)
-5. **Update this README**: Document new test file and expected results
-
-## Troubleshooting
-
-### Test Compilation Errors
-
-```bash
-# Verify environment setup
-export CUDA_INSTALL_PATH=/path/to/cuda
-source setup_environment
-
-# Rebuild tests
-./tests/run_tests.py build --arch sm120 --group mma
-```
-
-### Test Execution Failures
-
-If tests compile but fail:
-- Check tolerance values match data type precision
-- Verify fragment distribution matches PTX ISA specification
-- Review CPU reference implementation for correct type rounding
-- Compare against hardware results if available
-
-### All Results Zero
-
-If test results are all zeros:
-- Verify MMA shape is handled in dispatcher (src/gpgpu-sim/flash/mma/tensor_mma.cc)
-- Check shape enum mapping from parser to implementation
-- Ensure fragment distribution uses correct thread-to-element formulas
-
-## References
-
-- Test framework documentation: `../README.md`
-- MMA implementation: `src/gpgpu-sim/flash/mma/`
-- PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)
+See the [test framework documentation](../../README.md), the
+[MMA implementation](../../../src/gpgpu-sim/flash/mma/), and NVIDIA's
+[PTX MMA instruction reference](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma).

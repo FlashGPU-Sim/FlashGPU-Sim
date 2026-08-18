@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
-CONFIG_NAME="SM120_RTX5090"
+CONFIG_NAME="${PERF_SIM_CONFIG:-SM120_RTX5090}"
 CONFIG_DIR="${REPO_ROOT}/configs/${CONFIG_NAME}"
 RUN_DIR="${SCRIPT_DIR}/run"
 APP="${RUN_DIR}/vectorAdd"
