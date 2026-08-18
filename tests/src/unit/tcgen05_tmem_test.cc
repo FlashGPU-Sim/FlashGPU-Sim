@@ -474,9 +474,9 @@ TEST(Tcgen05TmemTest, Mxf4KMajorPackedAddressApplies128ByteSwizzle) {
 
 TEST(Tcgen05TmemTest, Mxf4TheoreticalTimingScalesWithDescriptorWork) {
   EXPECT_EQ(tcgen05_mxf4_dense_work(128, 8, 64), 131072u);
-  EXPECT_EQ(tcgen05_mxf4_compute_cycles(128, 8, 64, 56306), 3u);
-  EXPECT_EQ(tcgen05_mxf4_compute_cycles(128, 256, 64, 56306), 75u);
-  EXPECT_EQ(tcgen05_mxf4_compute_cycles(256, 256, 96, 56306), 224u);
+  EXPECT_EQ(tcgen05_mxf4_compute_cycles(128, 8, 64, 30947), 5u);
+  EXPECT_EQ(tcgen05_mxf4_compute_cycles(128, 256, 64, 30947), 136u);
+  EXPECT_EQ(tcgen05_mxf4_compute_cycles(256, 256, 96, 30947), 407u);
 }
 
 TEST(Tcgen05TmemTest, Mxf4TimingBackendSerializesFrontendPipes) {

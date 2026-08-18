@@ -30,17 +30,22 @@ latencies are covered by host unit tests.
 
 Dense MXFP4 work is counted as `2*M*N*K` FLOPs and instruction latency is
 `ceil(2*M*N*K / throughput_per_sm_cycle)`. The checked-in B200 configurations
-use 56,306 FLOP/cycle/SM:
+use 30,947 FLOP/cycle/SM, derived at the device-reported 1.965 GHz maximum SM
+clock:
 
 ```
-56,306 * 148 SM * 1.08 GHz = 8.99995 PFLOP/s
+30,947 * 148 SM * 1.965 GHz = 9.00001 PFLOP/s
+30,947 * 148 SM * 1.08 GHz  = 4.94657 PFLOP/s
 ```
 
 This is a theoretical dense-throughput anchor derived from the published B200
-9 PFLOP/s per-GPU FP4 rate, not a measured instruction-latency calibration.
-All scheduler-facing Tensor Core pipes reserve one shared per-SM TCGen05
-backend, so the configured chip throughput is not multiplied by the four
-front-end pipes.
+9 PFLOP/s per-GPU FP4 rate at the peak-clock operating point, not a measured
+instruction-latency calibration. The simulator keeps the per-cycle hardware
+throughput fixed when the configured 1.08 GHz B200 workload-calibration clock
+is lower; it does not preserve peak FLOP/s by inflating per-cycle throughput.
+All scheduler-facing Tensor Core pipes reserve one shared per-SM TCGen05 backend,
+so the configured chip throughput is not multiplied by the four front-end
+pipes.
 
 ## Run the CUTLASS smoke
 
@@ -67,3 +72,4 @@ default 600-second timeout.
 - [NVIDIA PTX ISA: `tcgen05` matrix multiply-accumulate instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/#tcgen05-matrix-multiply-accumulate-instructions)
 - [NVIDIA CUTLASS: Blackwell SM100 GEMMs and scale-factor layouts](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/blackwell_functionality.html)
 - [NVIDIA DGX B200 specifications](https://www.nvidia.com/en-us/data-center/dgx-b200/)
+- [B200 device-reported 1.965 GHz maximum SM clock](https://github.com/ProjectPhysX/OpenCL-Benchmark#example-results)

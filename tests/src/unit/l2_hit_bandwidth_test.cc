@@ -188,6 +188,39 @@ TEST(B200TMAConfigTest, FullAndReducedCreditWindowsRemainIntentional) {
   EXPECT_EQ(ConfigUnsigned(reduced, "-gpgpu_tma_max_inflight"), 0u);
 }
 
+TEST(B200Mxfp4ConfigTest,
+     PeakDerivedHardwareThroughputRemainsFixedAtCalibrationClock) {
+  const std::filesystem::path repository_root = FindRepositoryRoot();
+  ASSERT_FALSE(repository_root.empty())
+      << "cannot locate B200 configs from " << std::filesystem::current_path();
+
+  const ConfigEntries full =
+      ReadConfig(repository_root / "configs/SM100_B200/gpgpusim.config");
+  const ConfigEntries reduced = ReadConfig(
+      repository_root / "configs/SM100_B200_REDUCED/gpgpusim.config");
+  ASSERT_FALSE(full.empty());
+  ASSERT_FALSE(reduced.empty());
+
+  constexpr unsigned long long kSms = 148;
+  constexpr unsigned long long kPeakClockMhz = 1965;
+  constexpr unsigned long long kCalibrationClockMhz = 1080;
+  constexpr unsigned long long kMxfp4FlopPerSmCycle = 30947;
+  EXPECT_EQ(ConfigValue(full, "-gpgpu_clock_domains"), "1080:1080:1155:3996");
+  EXPECT_EQ(ConfigUnsigned(full, "-ptx_opcode_compute_throughput_tcgen05_mxf4"),
+            kMxfp4FlopPerSmCycle);
+  EXPECT_EQ(
+      ConfigUnsigned(reduced, "-ptx_opcode_compute_throughput_tcgen05_mxf4"),
+      kMxfp4FlopPerSmCycle);
+
+  const double peak_pflops =
+      static_cast<double>(kMxfp4FlopPerSmCycle * kSms * kPeakClockMhz) / 1e9;
+  const double calibration_pflops =
+      static_cast<double>(kMxfp4FlopPerSmCycle * kSms * kCalibrationClockMhz) /
+      1e9;
+  EXPECT_NEAR(peak_pflops, 9.0, 1e-4);
+  EXPECT_NEAR(calibration_pflops, 4.94657, 1e-5);
+}
+
 TEST(L2PortModelSelectionTest, LegacyAndMultiIssueModesAreMutuallyExclusive) {
   EXPECT_FALSE(l2_multi_issue_port_model_enabled(0));
   EXPECT_TRUE(l2_multi_issue_port_model_enabled(1));
