@@ -282,9 +282,10 @@ TEST(Tcgen05TmemTest, Mxf4ScaleReadSelectsSubpartitionAndByteId) {
 
   std::vector<uint8_t> low = manager.read_mxf4_scale_matrix(
       kScope0, scale_base, 128, 2, /*scale_factor_id=*/0);
+  // The instruction descriptor, not the TMEM address, selects the byte ID.
+  // DeepGEMM therefore reuses the same address for consecutive K slices.
   std::vector<uint8_t> high = manager.read_mxf4_scale_matrix(
-      kScope0, scale_base | 0x80000000u, 128, 2,
-      /*scale_factor_id=*/2);
+      kScope0, scale_base, 128, 2, /*scale_factor_id=*/2);
 
   EXPECT_EQ(low[0], 1u);
   EXPECT_EQ(low[1], 40u);

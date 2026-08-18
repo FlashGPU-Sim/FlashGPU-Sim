@@ -273,8 +273,12 @@ std::vector<uint8_t> tcgen05_tmem_manager_t::read_mxf4_scale_matrix(
   constexpr uint32_t kScaleBytesPerWord = 4;
   assert(logical_rows > 0 && scales_per_row > 0 &&
          "TCGen05 MXFP4 scale matrix read must be non-empty");
-  assert((address >> 30) == scale_factor_id &&
-         "TCGen05 MXFP4 scale-factor ID disagrees with TMEM address");
+  // SFA_ID/SFB_ID are instruction-descriptor fields that select a byte
+  // sub-column within each TMEM word.  The PTX scale-address operand names
+  // the containing TMEM matrix; it does not have to repeat the selected ID
+  // in its two most-significant bits.  CUTLASS can derive the descriptor ID
+  // from those bits as a convenience, while DeepGEMM deliberately keeps the
+  // address fixed and changes the descriptor ID for consecutive K slices.
   assert(scale_factor_id + scales_per_row <= kScaleBytesPerWord &&
          "TCGen05 MXFP4 scale factors cross a TMEM word");
 
