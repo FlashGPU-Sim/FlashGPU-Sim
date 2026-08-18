@@ -43,7 +43,7 @@
 #include "addrdec.h"
 #include "flash/tcgen05.h"
 #include "gpu-cache.h"
-#include "memory_transport.h"
+#include "mem_transport_budget.h"
 #include "shader.h"
 
 // constants for statistics printouts

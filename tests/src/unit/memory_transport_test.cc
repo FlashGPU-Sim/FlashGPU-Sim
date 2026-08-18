@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "../../../src/gpgpu-sim/memory_transport.h"
+#include "../../../src/gpgpu-sim/shader.h"
 
 namespace {
 

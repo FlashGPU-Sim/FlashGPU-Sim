@@ -34,7 +34,7 @@
 #include <map>
 #include <vector>
 
-#include "memory_transport.h"
+#include "mem_transport_budget.h"
 using namespace std;
 
 enum Interconnect_type { REQ_NET = 0, REPLY_NET = 1 };

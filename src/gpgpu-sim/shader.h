@@ -53,7 +53,7 @@
 #include "dram.h"
 #include "gpu-cache.h"
 #include "mem_fetch.h"
-#include "memory_transport.h"
+#include "mem_transport_budget.h"
 #include "scoreboard.h"
 #include "stack.h"
 #include "stats.h"
@@ -1539,6 +1539,133 @@ class simt_core_cluster;
 class shader_memory_interface;
 class shader_core_mem_fetch_allocator;
 class cache_t;
+
+// Ordinary LD/ST request issue and response retirement are shader-pipeline
+// concerns, even though they consume the shared memory-transport budget.
+enum ldst_request_issue_stop_reason {
+  LDST_REQUEST_DRAINED,
+  LDST_REQUEST_WIDTH_LIMITED,
+  LDST_REQUEST_DOWNSTREAM_FULL
+};
+
+struct ldst_request_issue_result {
+  ldst_request_issue_result(ldst_request_issue_stop_reason stop_reason,
+                            unsigned issued_children)
+      : reason(stop_reason), issued(issued_children) {}
+
+  ldst_request_issue_stop_reason reason;
+  unsigned issued;
+};
+
+// Drain ordinary global/local coalescer children into the request injection
+// path.  On sector-coalescing architectures each queue element is one internal
+// 32-byte sector child; this helper deliberately does not claim that each child
+// is a distinct physical L2 request.  The callbacks keep the helper independent
+// of warp, ICNT, and cache implementation details while the before/after count
+// assertion guarantees exactly one queue element is consumed per successful
+// injection.
+template <typename PendingCount, typename DownstreamFull, typename IssueOne>
+ldst_request_issue_result memory_transport_issue_ldst_sector_children(
+    memory_transport_service_budget *budget,
+    memory_transport_service_stats *stats, PendingCount pending_count,
+    DownstreamFull downstream_full, IssueOne issue_one) {
+  assert(budget);
+  assert(stats);
+  assert(budget->active());
+
+  unsigned issued = 0;
+  while (pending_count() != 0) {
+    if (!budget->can_accept(/*data_sectors=*/1)) {
+      budget->note_width_limited(/*data_sectors=*/1);
+      return ldst_request_issue_result(LDST_REQUEST_WIDTH_LIMITED, issued);
+    }
+    if (downstream_full()) {
+      budget->note_downstream_full();
+      return ldst_request_issue_result(LDST_REQUEST_DOWNSTREAM_FULL, issued);
+    }
+
+    const unsigned before = pending_count();
+    const unsigned data_sectors = issue_one();
+    assert(pending_count() + 1 == before);
+    budget->consume(/*data_sectors=*/1);
+    stats->record_accept(data_sectors);
+    ++issued;
+  }
+
+  return ldst_request_issue_result(LDST_REQUEST_DRAINED, issued);
+}
+
+// Track the response packets belonging to each dynamic instruction separately
+// from instruction/RF writeback.  Every response can retire at the configured
+// transport width; only the final response produces one instruction-level
+// completion for the ordinary writeback arbiter.
+template <typename Key, typename T>
+class memory_transport_response_retirement_queue {
+ public:
+  memory_transport_response_retirement_queue() : m_retired_responses(0) {}
+
+  void expect_responses(const Key &key, unsigned count, const T &completion) {
+    assert(count != 0);
+    assert(m_pending.find(key) == m_pending.end());
+    m_pending.insert(
+        std::make_pair(key, pending_instruction(count, completion)));
+  }
+
+  bool has_pending_responses(const Key &key) const {
+    return m_pending.find(key) != m_pending.end();
+  }
+
+  unsigned pending_responses(const Key &key) const {
+    typename std::map<Key, pending_instruction>::const_iterator found =
+        m_pending.find(key);
+    assert(found != m_pending.end());
+    return found->second.remaining;
+  }
+
+  bool retire_response(const Key &key) {
+    typename std::map<Key, pending_instruction>::iterator found =
+        m_pending.find(key);
+    assert(found != m_pending.end());
+    assert(found->second.remaining != 0);
+    --found->second.remaining;
+    ++m_retired_responses;
+    if (found->second.remaining != 0) return false;
+
+    m_completions.push_back(found->second.completion);
+    m_pending.erase(found);
+    return true;
+  }
+
+  bool completion_ready() const { return !m_completions.empty(); }
+  size_t completion_count() const { return m_completions.size(); }
+  size_t pending_instruction_count() const { return m_pending.size(); }
+  unsigned long long retired_response_count() const {
+    return m_retired_responses;
+  }
+
+  const T &next_completion() const {
+    assert(completion_ready());
+    return m_completions.front();
+  }
+
+  void pop_completion() {
+    assert(completion_ready());
+    m_completions.pop_front();
+  }
+
+ private:
+  struct pending_instruction {
+    pending_instruction(unsigned response_count, const T &value)
+        : remaining(response_count), completion(value) {}
+
+    unsigned remaining;
+    T completion;
+  };
+
+  std::map<Key, pending_instruction> m_pending;
+  std::deque<T> m_completions;
+  unsigned long long m_retired_responses;
+};
 
 class ldst_unit : public pipelined_simd_unit {
  public:

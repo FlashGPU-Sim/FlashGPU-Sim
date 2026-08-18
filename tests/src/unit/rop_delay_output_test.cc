@@ -1,7 +1,8 @@
 // Copyright (c) 2026
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include "gpgpu-sim/memory_transport.h"
+#include "gpgpu-sim/gpu-cache.h"
+#include "gpgpu-sim/l2cache.h"
 
 #include <gtest/gtest.h>
 
