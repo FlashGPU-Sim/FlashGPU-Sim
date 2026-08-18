@@ -369,6 +369,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.u64  TC;  return U64_TYPE;
 \.f16  TC;  return F16_TYPE;
 \.f16x2  TC;  return F16X2_TYPE;
+\.bf16x2  TC;  return BF16X2_TYPE;
 \.bf16  TC;  return BF16_TYPE;
 \.tf32  TC;  return TF32_TYPE;
 \.e4m3  TC;  return E4M3_TYPE;

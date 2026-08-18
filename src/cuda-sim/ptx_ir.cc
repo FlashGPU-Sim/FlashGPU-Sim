@@ -1119,6 +1119,10 @@ unsigned type_info_key::type_decode(int type, size_t &size, int &basic_type) {
       size = 16;
       basic_type = -1;
       return 20;
+    case BF16X2_TYPE:
+      size = 32;  // Two bfloat16 values packed in a 32-bit register.
+      basic_type = -1;
+      return 24;
     case F16X2_TYPE:
       size = 32;  // Two f16 values packed in 32 bits
       basic_type = -1;

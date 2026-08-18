@@ -620,6 +620,7 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
     case U32_TYPE:
     case F32_TYPE:
     case TF32_TYPE:
+    case BF16X2_TYPE:
       g_size = 4;
       break;
     case F32X2_TYPE:
@@ -855,7 +856,8 @@ bool is_integer_scalar_type(int type) {
 
 bool is_float_scalar_type(int type) {
   return type == F16_TYPE || type == F32_TYPE || type == F64_TYPE ||
-         type == FF64_TYPE || type == BF16_TYPE || type == TF32_TYPE;
+         type == FF64_TYPE || type == BF16_TYPE || type == BF16X2_TYPE ||
+         type == TF32_TYPE;
 }
 
 unsigned scalar_type_bits(int type) {
