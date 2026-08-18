@@ -12,8 +12,10 @@ Current scope:
   12.8 `.scale_vec::2X` spelling and CUDA 12.9+ `.block32` spelling parse.
 - Dense shared/shared `.kind::mxf8f6f4.block_scale` MMA with independent E4M3,
   E5M2, E2M3, E3M2, or E2M1 A and B types (all 25 ordered combinations),
-  one padded shared-memory byte per element, UE8M0 scale factors, K=32, and
-  f32 accumulator output. This includes DeepGEMM's E4M3 A by E2M1 B W4A8
+  UE8M0 scale factors, K=32, and f32 accumulator output. Every 16 logical
+  values occupy a 16-byte TMA shared-memory container: FP8 uses all 16 payload
+  bytes, FP6 uses 12 payload bytes plus 4 padding bytes, and FP4 uses 8 payload
+  bytes plus 8 padding bytes. This includes DeepGEMM's E4M3 A by E2M1 B W4A8
   path. The canonical spelling, `.block32`, and `.scale_vec::1X` parse.
 - TMEM allocation, deallocation, register load/store, and accumulator storage.
 - `tcgen05.cp.32x128b.warpx4` bit transpose and four-subpartition broadcast,
@@ -40,5 +42,4 @@ Unsupported by design for the current FA4 forward target:
 - Sparse and weight-stationary MMA variants.
 - NVFP4 (`mxf4nvf4.block16`) and unscaled `f8f6f4` remain separate,
   unsupported instruction families.
-- Exact shared-memory descriptor swizzles; operand tiles are still linearized
-  in the functional bring-up model.
+- Absolute-leading-dimension and transposed shared operands.

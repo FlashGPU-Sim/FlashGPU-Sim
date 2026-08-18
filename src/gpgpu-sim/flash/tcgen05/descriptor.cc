@@ -146,6 +146,15 @@ uint32_t tcgen05_mxf8f6f4_format_bits(uint8_t format) {
   }
 }
 
+tcgen05_mxf8f6f4_shared_location_t
+tcgen05_mxf8f6f4_shared_location(uint32_t logical_k, uint8_t format) {
+  const uint32_t element_bits = tcgen05_mxf8f6f4_format_bits(format);
+  const uint32_t element_in_group = logical_k % 16;
+  const uint32_t bit_offset = element_in_group * element_bits;
+  return {/*byte_offset=*/(logical_k / 16) * 16 + bit_offset / 8,
+          /*bit_offset=*/static_cast<uint8_t>(bit_offset % 8)};
+}
+
 bool tcgen05_mxf8f6f4_dense_shape_supported(uint32_t m, uint32_t n, uint32_t k,
                                             unsigned cta_group) {
   if (k != 32)

@@ -2145,27 +2145,25 @@ static std::vector<uint8_t> tcgen05_read_shared_narrow_k_major(
   std::vector<uint8_t> values(rows * k, 0);
   for (uint32_t row = 0; row < rows; ++row) {
     for (uint32_t element_k = 0; element_k < k; ++element_k) {
-      const uint32_t group = element_k / 16;
-      const uint32_t element_in_group = element_k % 16;
-      const uint32_t bit_offset = element_in_group * element_bits;
-      const uint32_t storage_byte = group * 16 + bit_offset / 8;
-      const uint32_t bit_in_byte = bit_offset % 8;
+      const auto location =
+          flash_gpgpu_sim::tcgen05_mxf8f6f4_shared_location(element_k,
+                                                             format);
       const uint32_t address =
           flash_gpgpu_sim::tcgen05_shared_k_major_packed_byte_address(
-              desc, row, storage_byte, k);
+              desc, row, location.byte_offset, k);
       uint8_t low = 0;
       thread->m_shared_mem->read(address, sizeof(low), &low);
       uint16_t packed = low;
-      if (bit_in_byte + element_bits > 8) {
+      if (location.bit_offset + element_bits > 8) {
         uint8_t high = 0;
         const uint32_t high_address =
             flash_gpgpu_sim::tcgen05_shared_k_major_packed_byte_address(
-                desc, row, storage_byte + 1, k);
+                desc, row, location.byte_offset + 1, k);
         thread->m_shared_mem->read(high_address, sizeof(high), &high);
         packed |= static_cast<uint16_t>(high) << 8;
       }
       values[row * k + element_k] = static_cast<uint8_t>(
-          (packed >> bit_in_byte) & ((1u << element_bits) - 1));
+          (packed >> location.bit_offset) & ((1u << element_bits) - 1));
     }
   }
   return values;

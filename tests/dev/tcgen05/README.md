@@ -5,7 +5,9 @@ SM100 `tcgen05.mma.kind::mxf4.block_scale.block32` path, plus the
 `kind::mxf8f6f4.block_scale` path used by DeepGEMM W4A8. The strict-MXFP4
 CUDA smoke uses CUTLASS's block-scaled collective builder and testbed; it is
 not a hand-written traffic proxy. Host numerical and PTX parser tests cover
-the mixed path until its DeepGEMM integration smoke is added.
+the mixed path, while the SM100 TMA integration tests exercise its real
+sub-byte global-to-shared layout. The downstream Kimi-K3 workload provides the
+full DeepGEMM W4A8 integration smoke.
 
 ## Modeled semantics
 
@@ -21,7 +23,9 @@ The mixed MXF8/F6/F4 model follows the separate PTX contract:
 
 - A and B independently select E4M3, E5M2, E2M3, E3M2, or E2M1, for 25
   ordered input combinations;
-- FP4 and FP6 values use the ISA's one-byte padded shared-memory containers;
+- every 16 logical values use one 16-byte shared-memory container: FP8 is
+  16-byte payload, FP6 is 12-byte payload plus 4-byte padding, and FP4 is
+  8-byte payload plus 8-byte padding;
 - one UE8M0 scale per row and 32 K elements, with K=32 per instruction; and
 - FP32 accumulation, optional input D, and A/B negate bits.
 
