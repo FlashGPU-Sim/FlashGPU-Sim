@@ -1163,6 +1163,14 @@ unsigned type_info_key::type_decode(int type, size_t &size, int &basic_type) {
       size = 8;
       basic_type = -1;
       return 23;
+    case E4M3X2_TYPE:
+      size = 16;
+      basic_type = -1;
+      return 25;
+    case E5M2X2_TYPE:
+      size = 16;
+      basic_type = -1;
+      return 26;
     case B16_TYPE:
       size = 16;
       basic_type = 0;

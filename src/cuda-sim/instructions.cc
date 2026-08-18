@@ -4218,6 +4218,79 @@ void cvt_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned rounding_mode = pI->rounding_mode();
   unsigned saturation_mode = pI->saturation_mode();
 
+  // PTX packs the converted first f32 source into the high byte and the
+  // second source into the low byte.  FP8 x2 conversions are instruction
+  // types, not register declaration types; the destination is normally .b16.
+  if ((to_type == E4M3X2_TYPE || to_type == E5M2X2_TYPE) &&
+      from_type == F32_TYPE) {
+    assert(pI->get_num_operands() >= 3 &&
+           "cvt.{e4m3x2,e5m2x2}.f32 requires dst, src1, src2");
+    const std::vector<operand_info> &operands = pI->get_operands();
+    const operand_info &src2 = operands[2];
+    const ptx_reg_t src1_data =
+        thread->get_operand_value(src1, dst, from_type, thread, 1);
+    const ptx_reg_t src2_data =
+        thread->get_operand_value(src2, dst, from_type, thread, 1);
+
+    auto round_to_even = [](float value) -> int {
+      const float base_f = std::floor(value);
+      const int base = static_cast<int>(base_f);
+      const float fraction = value - base_f;
+      if (fraction > 0.5f) return base + 1;
+      if (fraction < 0.5f) return base;
+      return (base & 1) ? base + 1 : base;
+    };
+    auto encode_fp8 = [&](float value, bool e4m3) -> uint8_t {
+      if (std::isnan(value)) return 0x7fu;
+      const uint8_t sign = std::signbit(value) ? 0x80u : 0u;
+      float magnitude = std::fabs(value);
+      const float max_norm = e4m3 ? 448.0f : 57344.0f;
+      if (magnitude > max_norm || std::isinf(magnitude)) magnitude = max_norm;
+      if (magnitude == 0.0f) return sign;
+
+      const int mantissa_bits = e4m3 ? 3 : 2;
+      const int bias = e4m3 ? 7 : 15;
+      const int max_exp = e4m3 ? 15 : 30;
+      const float min_normal = std::ldexp(1.0f, 1 - bias);
+      if (magnitude < min_normal) {
+        const float subnormal_step =
+            std::ldexp(1.0f, 1 - bias - mantissa_bits);
+        int mantissa = round_to_even(magnitude / subnormal_step);
+        if (mantissa == 0) return sign;
+        const int mantissa_limit = 1 << mantissa_bits;
+        if (mantissa >= mantissa_limit) {
+          return sign | static_cast<uint8_t>(1 << mantissa_bits);
+        }
+        return sign | static_cast<uint8_t>(mantissa);
+      }
+
+      int exponent = 0;
+      const float fraction = std::frexp(magnitude, &exponent) * 2.0f;
+      int encoded_exp = exponent - 1 + bias;
+      int mantissa = round_to_even(
+          (fraction - 1.0f) * static_cast<float>(1 << mantissa_bits));
+      if (mantissa == (1 << mantissa_bits)) {
+        mantissa = 0;
+        ++encoded_exp;
+      }
+      if (encoded_exp > max_exp ||
+          (e4m3 && encoded_exp == 15 && mantissa > 6)) {
+        return sign | static_cast<uint8_t>(e4m3 ? 0x7e : 0x7b);
+      }
+      return sign | static_cast<uint8_t>((encoded_exp << mantissa_bits) |
+                                         mantissa);
+    };
+
+    const bool e4m3 = to_type == E4M3X2_TYPE;
+    const uint8_t high = encode_fp8(src1_data.f32, e4m3);
+    const uint8_t low = encode_fp8(src2_data.f32, e4m3);
+    ptx_reg_t result;
+    result.u64 = 0;
+    result.u16 = (static_cast<uint16_t>(high) << 8) | low;
+    thread->set_operand_value(dst, result, to_type, thread, pI);
+    return;
+  }
+
   // BF16 has its own format index in type_decode(), outside the legacy
   // 11x11 conversion table below.  Handle the scalar conversions explicitly
   // instead of indexing that table out of bounds.

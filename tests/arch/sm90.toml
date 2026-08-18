@@ -12,6 +12,7 @@ sources = [
   "integration/ldst_matrix_test.cu",
   "integration/ordinary_ldst_request_width_test.cu",
   "integration/cp_async_src_size_test.cu",
+  "integration/cvt_fp8x2_test.cu",
 
   # SM90 correctness groups.
   "barrier/named_barrier_test.cu",
