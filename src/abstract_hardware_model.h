@@ -1198,6 +1198,7 @@ class warp_inst_t : public inst_t {
   {
     return m_warp_id;
   }
+  void set_warp_id_func(unsigned warp_id) { m_warp_id = warp_id; }
   unsigned dynamic_warp_id() const {
     assert(!m_empty);
     return m_dynamic_warp_id;
