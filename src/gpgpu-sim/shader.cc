@@ -7324,6 +7324,11 @@ void simt_core_cluster::get_L1T_sub_stats(struct cache_sub_stats &css) const {
 void exec_shader_core_ctx::checkExecutionStatusAndUpdate(warp_inst_t &inst,
                                                          unsigned t,
                                                          unsigned tid) {
+  // Functional execution clears a lane from the dynamic active mask when a
+  // predicated instruction is skipped.  Do not create timing-side state for
+  // that lane: in particular, an atomic response can only retire callbacks
+  // for lanes that actually executed the atomic.
+  if (!inst.active(t)) return;
   if (inst.isatomic()) m_warp[inst.warp_id()]->inc_n_atomic();
   if (inst.space.is_local() && (inst.is_load() || inst.is_store())) {
     new_addr_type localaddrs[MAX_ACCESSES_PER_INSN_PER_THREAD];

@@ -22,6 +22,8 @@ Current sources:
 - `shared_memory_optin_test.cu`: opt-in dynamic shared-memory behavior;
 - `ldst_matrix_test.cu`: `ldmatrix` and `stmatrix` variants;
 - `cp_async_src_size_test.cu`: `cp.async` source-size forms.
+- `cvt_fp8x2_test.cu`: packed E4M3x2/E5M2x2 conversion semantics.
+- `predicated_atomic_test.cu`: predicated-off atomic lane bookkeeping.
 
 Run the test group with:
 
