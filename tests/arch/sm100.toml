@@ -19,7 +19,8 @@ sources = [
   # SM100 host-side component tests.
   "unit/addrdec_l2_slice_test.cc",
   "unit/fa4_opaque_tensormap_test.cc",
-  "unit/l2_hit_bandwidth_test.cc",
+  "unit/l2_bandwidth_test.cc",
+  "unit/l2_multi_issue_ports_test.cc",
   "unit/local_interconnect_test.cc",
   "unit/memory_transport_test.cc",
   "unit/rop_delay_output_test.cc",
