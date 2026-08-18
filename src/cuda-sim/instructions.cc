@@ -2128,23 +2128,44 @@ static std::vector<uint8_t> tcgen05_read_shared_u4_k_major(
   return values;
 }
 
-static std::vector<uint8_t> tcgen05_read_shared_narrow_u8_k_major(
+static std::vector<uint8_t> tcgen05_read_shared_narrow_k_major(
     const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t rows,
-    uint32_t k, ptx_thread_info *thread) {
+    uint32_t k, uint8_t format, ptx_thread_info *thread) {
   assert(!desc.leading_dimension_absolute &&
          "TCGen05 MMA absolute leading-dimension mode is not implemented");
 
-  // mxf8f6f4 uses one padded eight-bit shared-memory container for every
-  // logical FP8, FP6, or FP4 element.  This differs from strict mxf4, which
-  // keeps two E2M1 values packed in each shared-memory byte.
+  const uint32_t element_bits =
+      flash_gpgpu_sim::tcgen05_mxf8f6f4_format_bits(format);
+  assert(k % 16 == 0 &&
+         "TCGen05 MXF8F6F4 K must contain whole 16-element containers");
+
+  // Every 16 logical elements occupy one 16-byte shared-memory container.
+  // FP8 consumes all 16 bytes, FP6 uses 12 bytes plus 4 bytes padding, and
+  // FP4 uses 8 bytes plus 8 bytes padding (.b4x16_p64).
   std::vector<uint8_t> values(rows * k, 0);
   for (uint32_t row = 0; row < rows; ++row) {
     for (uint32_t element_k = 0; element_k < k; ++element_k) {
+      const uint32_t group = element_k / 16;
+      const uint32_t element_in_group = element_k % 16;
+      const uint32_t bit_offset = element_in_group * element_bits;
+      const uint32_t storage_byte = group * 16 + bit_offset / 8;
+      const uint32_t bit_in_byte = bit_offset % 8;
       const uint32_t address =
           flash_gpgpu_sim::tcgen05_shared_k_major_packed_byte_address(
-              desc, row, element_k, k);
-      thread->m_shared_mem->read(address, sizeof(uint8_t),
-                                 &values[row * k + element_k]);
+              desc, row, storage_byte, k);
+      uint8_t low = 0;
+      thread->m_shared_mem->read(address, sizeof(low), &low);
+      uint16_t packed = low;
+      if (bit_in_byte + element_bits > 8) {
+        uint8_t high = 0;
+        const uint32_t high_address =
+            flash_gpgpu_sim::tcgen05_shared_k_major_packed_byte_address(
+                desc, row, storage_byte + 1, k);
+        thread->m_shared_mem->read(high_address, sizeof(high), &high);
+        packed |= static_cast<uint16_t>(high) << 8;
+      }
+      values[row * k + element_k] = static_cast<uint8_t>(
+          (packed >> bit_in_byte) & ((1u << element_bits) - 1));
     }
   }
   return values;
@@ -2315,12 +2336,10 @@ static void tcgen05_execute_mma_thread(const ptx_instruction *pI,
     const bool enable_input_d =
         tcgen05_read_enable_input_d(enable_input_d_op, thread);
 
-    std::vector<uint8_t> a_values =
-        tcgen05_read_shared_narrow_u8_k_major(a_desc, mma_desc.m, mma_desc.k,
-                                              thread);
-    std::vector<uint8_t> b_values =
-        tcgen05_read_shared_narrow_u8_k_major(b_desc, mma_desc.n, mma_desc.k,
-                                              thread);
+    std::vector<uint8_t> a_values = tcgen05_read_shared_narrow_k_major(
+        a_desc, mma_desc.m, mma_desc.k, mma_desc.a_type, thread);
+    std::vector<uint8_t> b_values = tcgen05_read_shared_narrow_k_major(
+        b_desc, mma_desc.n, mma_desc.k, mma_desc.b_type, thread);
     std::vector<uint8_t> scale_a = manager.read_mxf4_scale_matrix(
         scope, sfa_address, mma_desc.m, /*scales_per_row=*/1,
         mma_desc.a_scale_factor_id);

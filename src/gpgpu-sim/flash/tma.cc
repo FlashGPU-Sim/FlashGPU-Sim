@@ -601,7 +601,7 @@ public:
     const uint64_t dim0_magnitude =
         static_cast<uint64_t>(dim0_coord < 0 ? -dim0_coord : dim0_coord);
     const int64_t dim0_byte_offset =
-        static_cast<int64_t>(tm.get_dim0_byte_offset(dim0_magnitude));
+        static_cast<int64_t>(tm.get_dim0_gmem_byte_offset(dim0_magnitude));
     int64_t byte_offset = dim0_coord < 0 ? -dim0_byte_offset : dim0_byte_offset;
     for (uint32_t d = 1; d < state.num_dims; d++) {
       byte_offset += static_cast<int64_t>(start_coords[d]) *
@@ -616,7 +616,7 @@ public:
     }
 
     state.row_bytes =
-        static_cast<uint32_t>(tm.get_dim0_span_bytes(state.box_dim[0]));
+        static_cast<uint32_t>(tm.get_dim0_gmem_span_bytes(state.box_dim[0]));
     state.offset_in_row = 0;
     state.done = false;
 
@@ -629,9 +629,9 @@ public:
     const int64_t valid_end = std::min<int64_t>(row_end, state.global_dim[0]);
     if (valid_start < valid_end) {
       state.valid_row_start_bytes = static_cast<uint32_t>(
-          tm.get_dim0_byte_offset(valid_start - row_start));
-      state.valid_row_end_bytes =
-          static_cast<uint32_t>(tm.get_dim0_span_bytes(valid_end - row_start));
+          tm.get_dim0_gmem_byte_offset(valid_start - row_start));
+      state.valid_row_end_bytes = static_cast<uint32_t>(
+          tm.get_dim0_gmem_span_bytes(valid_end - row_start));
     } else {
       state.valid_row_start_bytes = state.row_bytes;
       state.valid_row_end_bytes = state.row_bytes;
@@ -2027,7 +2027,8 @@ bool tma_unit_t::has_pending_for_cta(unsigned cta_id) const {
 struct tma_request_t {
   uint64_t global_addr;
   uint64_t tile_offset;
-  uint32_t size;
+  uint32_t global_size;
+  uint32_t smem_size;
 };
 
 static void compute_tile_strides(const tensormap_descriptor_t &tensormap,
@@ -2036,7 +2037,8 @@ static void compute_tile_strides(const tensormap_descriptor_t &tensormap,
 
   tile_strides[0] = 0;
   if (num_dims > 1) {
-    tile_strides[1] = tensormap.get_dim0_span_bytes(tensormap.fields.boxDim[0]);
+    tile_strides[1] =
+        tensormap.get_dim0_smem_span_bytes(tensormap.fields.boxDim[0]);
   }
   for (uint32_t d = 2; d < num_dims; d++) {
     tile_strides[d] = tile_strides[d - 1] * tensormap.fields.boxDim[d - 1];
@@ -2126,11 +2128,32 @@ static void gen_aligned_req(uint64_t start_addr, uint64_t start_tile_offset,
     uint32_t request_size =
         std::min({remaining_bytes, bytes_to_boundary, CACHE_LINE_SIZE});
 
-    requests.push_back({current_addr, current_tile_offset, request_size});
+    requests.push_back(
+        {current_addr, current_tile_offset, request_size, request_size});
 
     current_addr += request_size;
     current_tile_offset += request_size;
     remaining_bytes -= request_size;
+  }
+}
+
+// ALIGN16B sub-byte formats are dense in global memory. Each group is copied
+// into a 16-byte shared-memory container with trailing padding. Tensor-map
+// dimensions and coordinates are constrained to groups of 16 elements.
+static void gen_align16_padded_req(uint64_t start_addr,
+                                   uint64_t start_tile_offset,
+                                   uint32_t logical_elements,
+                                   uint32_t tensor_data_type,
+                                   std::vector<tma_request_t> &requests) {
+  assert(logical_elements % 16 == 0 &&
+         "ALIGN16B TMA spans must contain complete 16-element groups");
+  const uint32_t packed_group_bytes =
+      tensor_data_type == TMA_DTYPE_16U4_ALIGN16B ? 8 : 12;
+  const uint32_t num_groups = logical_elements / 16;
+  for (uint32_t group = 0; group < num_groups; ++group) {
+    requests.push_back({start_addr + group * packed_group_bytes,
+                        start_tile_offset + group * 16, packed_group_bytes,
+                        16});
   }
 }
 
@@ -2172,15 +2195,26 @@ static void traverse_tensor_dim(int dim, const int32_t current_coords[5],
     // Calculate physical start address and total bytes
     uint64_t phys_start_addr =
         base_addr +
-        tensormap.get_dim0_byte_offset(static_cast<uint64_t>(valid_start));
+        tensormap.get_dim0_gmem_byte_offset(static_cast<uint64_t>(valid_start));
     uint64_t valid_tile_offset =
-        tile_offset + tensormap.get_dim0_byte_offset(
+        tile_offset + tensormap.get_dim0_smem_byte_offset(
                           static_cast<uint64_t>(valid_start - start_x));
+    const uint32_t valid_elements =
+        static_cast<uint32_t>(valid_end - valid_start);
     uint32_t valid_bytes = static_cast<uint32_t>(
-        tensormap.get_dim0_span_bytes(valid_end - valid_start));
+        tensormap.get_dim0_gmem_span_bytes(valid_elements));
 
     // Generate aligned memory fetch requests
-    gen_aligned_req(phys_start_addr, valid_tile_offset, valid_bytes, requests);
+    if (tensormap.fields.tensorDataType == TMA_DTYPE_16U4_ALIGN16B ||
+        tensormap.fields.tensorDataType == TMA_DTYPE_16U6_ALIGN16B) {
+      assert(valid_start % 16 == 0 &&
+             "ALIGN16B TMA coordinates must be 16-element aligned");
+      gen_align16_padded_req(phys_start_addr, valid_tile_offset, valid_elements,
+                             tensormap.fields.tensorDataType, requests);
+    } else {
+      gen_aligned_req(phys_start_addr, valid_tile_offset, valid_bytes,
+                      requests);
+    }
 
   } else {
     // Recursive case: traverse higher dimensions
@@ -2324,6 +2358,43 @@ static tma_oob_fill_table_t g_oob_fill_table;
 // Functional Simulation: TMA Data Transfer
 //=============================================================================
 
+static void expand_align16_subbytes(uint32_t tensor_data_type,
+                                    const unsigned char *packed,
+                                    uint32_t packed_size, unsigned char *padded,
+                                    uint32_t padded_size) {
+  assert(padded_size == 16);
+  const uint32_t expected_packed_size =
+      tensor_data_type == TMA_DTYPE_16U4_ALIGN16B ? 8 : 12;
+  assert((tensor_data_type == TMA_DTYPE_16U4_ALIGN16B ||
+          tensor_data_type == TMA_DTYPE_16U6_ALIGN16B) &&
+         packed_size == expected_packed_size);
+  memcpy(padded, packed, packed_size);
+  // PTX leaves this padding uninitialized. Zeroing it gives functional
+  // simulation deterministic bytes without changing any logical value.
+  memset(padded + packed_size, 0, padded_size - packed_size);
+}
+
+static void pack_align16_subbytes(uint32_t tensor_data_type,
+                                  const unsigned char *unpacked,
+                                  uint32_t unpacked_size, unsigned char *packed,
+                                  uint32_t packed_size) {
+  assert(unpacked_size == 16);
+  memset(packed, 0, packed_size);
+  // Encoding 14 (.b4x16_p64) is load-only. Encoding 15 denotes .b6x16_p32
+  // on load and .b6p2x16 on store; the latter discards each byte's top bits.
+  assert(tensor_data_type == TMA_DTYPE_16U6_ALIGN16B && packed_size == 12);
+  for (uint32_t i = 0; i < unpacked_size; ++i) {
+    const uint32_t bit_offset = i * 6;
+    const uint32_t byte_offset = bit_offset / 8;
+    const uint32_t bit_in_byte = bit_offset % 8;
+    const uint32_t value = unpacked[i] & 0x3f;
+    packed[byte_offset] |= static_cast<unsigned char>(value << bit_in_byte);
+    if (bit_in_byte > 2)
+      packed[byte_offset + 1] |=
+          static_cast<unsigned char>(value >> (8 - bit_in_byte));
+  }
+}
+
 // Execute TMA data transfer (load or store)
 // is_load=true: global -> shared, is_load=false: shared -> global
 static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
@@ -2334,7 +2405,7 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
   // For load operations, pre-fill the entire tile in shared memory with OOB
   // fill value
   if (is_load) {
-    uint32_t tile_size_bytes = tensormap.get_tile_size_bytes();
+    uint32_t tile_size_bytes = tensormap.get_tile_smem_size_bytes();
     const unsigned char *fill_pattern = g_oob_fill_table.get_pattern(
         tensormap.fields.oobFill, tensormap.fields.tensorDataType);
 
@@ -2351,82 +2422,99 @@ static void do_tma_transfer(const tensormap_descriptor_t &tensormap,
   auto memory_requests = generate_tma_requests(tensormap, coords);
   uint32_t swizzle_mode = tensormap.fields.swizzle;
   uint32_t row_bytes = static_cast<uint32_t>(
-      tensormap.get_dim0_span_bytes(tensormap.fields.boxDim[0]));
-
-  constexpr uint32_t LOCAL_BUF_SIZE = 128;
-  alignas(16) unsigned char local_data_buf[LOCAL_BUF_SIZE];
+      tensormap.get_dim0_smem_span_bytes(tensormap.fields.boxDim[0]));
 
   for (const auto &req : memory_requests) {
     uint64_t global_req_addr = req.global_addr;
-    uint32_t req_size = req.size;
+    uint32_t global_req_size = req.global_size;
+    uint32_t smem_req_size = req.smem_size;
     uint64_t tile_offset = req.tile_offset;
     const uint32_t swizzle_granularity =
         swizzle_mode == TMA_SWIZZLE_128B_ATOM_32B_FLIP_8B ? 8 : 16;
-
-    unsigned char *data_buffer = (req_size <= LOCAL_BUF_SIZE)
-                                     ? local_data_buf
-                                     : new unsigned char[req_size];
+    std::vector<unsigned char> global_data(global_req_size);
+    std::vector<unsigned char> smem_data(smem_req_size);
 
     if (is_load) {
       // Load: global -> shared
-      global_mem->read(global_req_addr, req_size, data_buffer);
+      global_mem->read(global_req_addr, global_req_size, global_data.data());
+      if (global_req_size == smem_req_size) {
+        memcpy(smem_data.data(), global_data.data(), global_req_size);
+      } else {
+        expand_align16_subbytes(tensormap.fields.tensorDataType,
+                                global_data.data(), global_req_size,
+                                smem_data.data(), smem_req_size);
+      }
 
-      GPPRINTF_INST_EXEC(
-          TMA,
-          "coord[%d,%d,%d,%d,%d] "
-          "swizzle_mode %u "
-          "gmem=0x%llx -> "
-          "smem=0x%x, space=%p, size=%u, tile_offset=0x%llx, "
-          "data[0..3]=0x%02x%02x%02x%02x fp32 %.3f\n",
-          coords[0], coords[1], coords[2], coords[3], coords[4], swizzle_mode,
-          (unsigned long long)global_req_addr, (unsigned)smem_addr, shared_mem,
-          req_size, (unsigned long long)tile_offset,
-          req_size > 0 ? data_buffer[0] : 0, req_size > 1 ? data_buffer[1] : 0,
-          req_size > 2 ? data_buffer[2] : 0, req_size > 3 ? data_buffer[3] : 0,
-          *reinterpret_cast<float *>(data_buffer));
+      float debug_fp32 = 0.0f;
+      if (global_req_size >= sizeof(debug_fp32))
+        memcpy(&debug_fp32, global_data.data(), sizeof(debug_fp32));
+
+      GPPRINTF_INST_EXEC(TMA,
+                         "coord[%d,%d,%d,%d,%d] "
+                         "swizzle_mode %u "
+                         "gmem=0x%llx -> "
+                         "smem=0x%x, space=%p, size=%u, tile_offset=0x%llx, "
+                         "data[0..3]=0x%02x%02x%02x%02x fp32 %.3f\n",
+                         coords[0], coords[1], coords[2], coords[3], coords[4],
+                         swizzle_mode, (unsigned long long)global_req_addr,
+                         (unsigned)smem_addr, shared_mem, global_req_size,
+                         (unsigned long long)tile_offset,
+                         global_req_size > 0 ? global_data[0] : 0,
+                         global_req_size > 1 ? global_data[1] : 0,
+                         global_req_size > 2 ? global_data[2] : 0,
+                         global_req_size > 3 ? global_data[3] : 0, debug_fp32);
 
       if (swizzle_mode != TMA_SWIZZLE_NONE) {
-        for (uint32_t sub_offset = 0; sub_offset < req_size;
+        for (uint32_t sub_offset = 0; sub_offset < smem_req_size;
              sub_offset += swizzle_granularity) {
           uint32_t sub_size =
-              std::min(swizzle_granularity, req_size - sub_offset);
+              std::min(swizzle_granularity, smem_req_size - sub_offset);
           uint64_t logical_offset = tile_offset + sub_offset;
           uint64_t swizzled_offset = apply_tma_swizzle(
               logical_offset, smem_addr, swizzle_mode, row_bytes);
 
           shared_mem->write(smem_addr + swizzled_offset, sub_size,
-                            data_buffer + sub_offset, thread, pI);
+                            smem_data.data() + sub_offset, thread, pI);
         }
       } else {
         // No swizzle - write contiguously
-        shared_mem->write(smem_addr + tile_offset, req_size, data_buffer,
-                          thread, pI);
+        shared_mem->write(smem_addr + tile_offset, smem_req_size,
+                          smem_data.data(), thread, pI);
       }
 
     } else {
       // Store: shared -> global (reverse swizzle)
       if (swizzle_mode != TMA_SWIZZLE_NONE) {
-        for (uint32_t sub_offset = 0; sub_offset < req_size;
+        for (uint32_t sub_offset = 0; sub_offset < smem_req_size;
              sub_offset += swizzle_granularity) {
           uint32_t sub_size =
-              std::min(swizzle_granularity, req_size - sub_offset);
+              std::min(swizzle_granularity, smem_req_size - sub_offset);
           uint64_t logical_offset = tile_offset + sub_offset;
           uint64_t swizzled_offset = apply_tma_swizzle(
               logical_offset, smem_addr, swizzle_mode, row_bytes);
 
           shared_mem->read(smem_addr + swizzled_offset, sub_size,
-                           data_buffer + sub_offset);
+                           smem_data.data() + sub_offset);
         }
       } else {
         // No swizzle - read contiguously
-        shared_mem->read(smem_addr + tile_offset, req_size, data_buffer);
+        shared_mem->read(smem_addr + tile_offset, smem_req_size,
+                         smem_data.data());
       }
 
-      global_mem->write(global_req_addr, req_size, data_buffer, thread, pI);
-    }
+      if (global_req_size == smem_req_size) {
+        memcpy(global_data.data(), smem_data.data(), global_req_size);
+      } else {
+        assert(tensormap.fields.tensorDataType == TMA_DTYPE_16U6_ALIGN16B &&
+               "TMA .b4x16_p64 does not support shared-to-global copies");
+        pack_align16_subbytes(tensormap.fields.tensorDataType, smem_data.data(),
+                              smem_req_size, global_data.data(),
+                              global_req_size);
+      }
 
-    if (req_size > LOCAL_BUF_SIZE)
-      delete[] data_buffer;
+      global_mem->write(global_req_addr, global_req_size, global_data.data(),
+                        thread, pI);
+    }
   }
 }
 

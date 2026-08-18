@@ -5390,13 +5390,42 @@ extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
       return CUDA_ERROR_INVALID_VALUE;
   }
 
-  // When interleave is NONE, boxDim[0] * elementSize must be a multiple of 16
+  const bool align16Subbyte =
+      tensorDataType == CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN16B ||
+      tensorDataType == CU_TENSOR_MAP_DATA_TYPE_16U6_ALIGN16B;
+  if (align16Subbyte) {
+    // PTX .b4x16_p64/.b6x16_p32 operate on 128 logical elements at a time.
+    // Their global base and all outer strides have a stricter 32-byte
+    // alignment than ordinary tiled tensor maps.
+    if (reinterpret_cast<uint64_t>(globalAddress) % 32 != 0 ||
+        globalDim[0] % 128 != 0 || boxDim[0] != 128)
+      return CUDA_ERROR_INVALID_VALUE;
+    for (cuuint32_t i = 0; i < tensorRank - 1; ++i) {
+      if (globalStrides[i] % 32 != 0) return CUDA_ERROR_INVALID_VALUE;
+    }
+    if (swizzle != CU_TENSOR_MAP_SWIZZLE_NONE &&
+        swizzle != CU_TENSOR_MAP_SWIZZLE_128B &&
+        swizzle != CU_TENSOR_MAP_SWIZZLE_128B_ATOM_32B &&
+        !(tensorDataType == CU_TENSOR_MAP_DATA_TYPE_16U6_ALIGN16B &&
+          swizzle == CU_TENSOR_MAP_SWIZZLE_128B_ATOM_64B))
+      return CUDA_ERROR_INVALID_VALUE;
+  } else if (tensorDataType == CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN8B &&
+             globalDim[0] % 2 != 0) {
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  if (desc.is_packed() && oobFill != CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE)
+    return CUDA_ERROR_INVALID_VALUE;
+
+  // With no interleave, the dimension-0 shared-memory span must be a multiple
+  // of 16 bytes (including sub-byte padding expansion).
   if (interleave == CU_TENSOR_MAP_INTERLEAVE_NONE) {
-    uint64_t rowBytes = desc.get_dim0_span_bytes(boxDim[0]);
+    uint64_t rowBytes = desc.get_dim0_smem_span_bytes(boxDim[0]);
     if (rowBytes % 16 != 0) {
-      printf("WARNING: cuTensorMapEncodeTiled: boxDim[0]=%u spans %llu bytes "
-             "is not a multiple of 16\n",
-             boxDim[0], static_cast<unsigned long long>(rowBytes));
+      printf(
+          "WARNING: cuTensorMapEncodeTiled: boxDim[0]=%u spans %llu bytes "
+          "is not a multiple of 16\n",
+          boxDim[0], static_cast<unsigned long long>(rowBytes));
       return CUDA_ERROR_INVALID_VALUE;
     }
   }

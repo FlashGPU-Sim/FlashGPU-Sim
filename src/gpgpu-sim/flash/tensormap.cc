@@ -61,8 +61,7 @@ uint32_t tensormap_descriptor_t::get_element_size() const {
   case TMA_DTYPE_16U4_ALIGN16B:
   case TMA_DTYPE_16U6_ALIGN16B:
     // Packed TMA formats are addressed in groups rather than as an integral
-    // number of bytes per logical element.  Callers that operate on dim0 use
-    // get_dim0_byte_offset()/get_dim0_span_bytes(); one byte is the smallest
+    // number of bytes per logical element. One byte is the smallest
     // independently transferable storage unit.
     return 1;
   default:
@@ -88,27 +87,55 @@ bool tensormap_descriptor_t::is_packed() const {
          fields.tensorDataType == TMA_DTYPE_16U6_ALIGN16B;
 }
 
-uint64_t
-tensormap_descriptor_t::get_dim0_byte_offset(uint64_t element_index) const {
+uint64_t tensormap_descriptor_t::get_dim0_gmem_byte_offset(
+    uint64_t element_index) const {
   switch (fields.tensorDataType) {
   case TMA_DTYPE_16U4_ALIGN8B:
-    return element_index / 2;
   case TMA_DTYPE_16U4_ALIGN16B:
+    return element_index / 2;
   case TMA_DTYPE_16U6_ALIGN16B:
-    return (element_index / 16) * 16;
+    return (element_index * 6) / 8;
   default:
     return element_index * get_element_size();
   }
 }
 
 uint64_t
-tensormap_descriptor_t::get_dim0_span_bytes(uint64_t element_count) const {
+tensormap_descriptor_t::get_dim0_gmem_span_bytes(uint64_t element_count) const {
+  switch (fields.tensorDataType) {
+  case TMA_DTYPE_16U4_ALIGN8B:
+  case TMA_DTYPE_16U4_ALIGN16B:
+    return (element_count + 1) / 2;
+  case TMA_DTYPE_16U6_ALIGN16B:
+    return (element_count * 6 + 7) / 8;
+  default:
+    return element_count * get_element_size();
+  }
+}
+
+uint64_t tensormap_descriptor_t::get_dim0_smem_byte_offset(
+    uint64_t element_index) const {
+  switch (fields.tensorDataType) {
+  case TMA_DTYPE_16U4_ALIGN8B:
+    return element_index / 2;
+  case TMA_DTYPE_16U4_ALIGN16B:
+  case TMA_DTYPE_16U6_ALIGN16B:
+    // ALIGN16B formats expand each group into a 16-byte shared-memory
+    // container: packed payload first, followed by padding.
+    return element_index;
+  default:
+    return element_index * get_element_size();
+  }
+}
+
+uint64_t
+tensormap_descriptor_t::get_dim0_smem_span_bytes(uint64_t element_count) const {
   switch (fields.tensorDataType) {
   case TMA_DTYPE_16U4_ALIGN8B:
     return (element_count + 1) / 2;
   case TMA_DTYPE_16U4_ALIGN16B:
   case TMA_DTYPE_16U6_ALIGN16B:
-    return ((element_count + 15) / 16) * 16;
+    return element_count;
   default:
     return element_count * get_element_size();
   }
@@ -118,12 +145,35 @@ uint32_t tensormap_descriptor_t::get_tile_size_bytes() const {
   if (fields.tensorRank > 4)
     return 0;
 
-  uint64_t total_bytes = get_dim0_span_bytes(fields.boxDim[0]);
+  uint64_t total_bytes = get_dim0_gmem_span_bytes(fields.boxDim[0]);
   uint32_t dims = num_dims();
   for (uint32_t i = 1; i < dims; i++) {
     total_bytes *= fields.boxDim[i];
   }
   return static_cast<uint32_t>(total_bytes);
+}
+
+uint32_t tensormap_descriptor_t::get_tile_smem_size_bytes() const {
+  if (fields.tensorRank > 4)
+    return 0;
+
+  uint64_t total_bytes = get_dim0_smem_span_bytes(fields.boxDim[0]);
+  uint32_t dims = num_dims();
+  for (uint32_t i = 1; i < dims; i++)
+    total_bytes *= fields.boxDim[i];
+  return static_cast<uint32_t>(total_bytes);
+}
+
+uint32_t tensormap_descriptor_t::get_smem_bytes_for_gmem_bytes(
+    uint32_t gmem_bytes) const {
+  switch (fields.tensorDataType) {
+  case TMA_DTYPE_16U4_ALIGN16B:
+    return gmem_bytes * 2;
+  case TMA_DTYPE_16U6_ALIGN16B:
+    return (gmem_bytes * 4 + 2) / 3;
+  default:
+    return gmem_bytes;
+  }
 }
 
 uint64_t
@@ -141,7 +191,7 @@ tensormap_descriptor_t::calculate_src_addr(const int32_t coords[5]) const {
       const uint64_t magnitude =
           static_cast<uint64_t>(coord < 0 ? -coord : coord);
       const int64_t offset =
-          static_cast<int64_t>(get_dim0_byte_offset(magnitude));
+          static_cast<int64_t>(get_dim0_gmem_byte_offset(magnitude));
       byte_offset += coord < 0 ? -offset : offset;
     } else {
       byte_offset += static_cast<int64_t>(coords[i]) *

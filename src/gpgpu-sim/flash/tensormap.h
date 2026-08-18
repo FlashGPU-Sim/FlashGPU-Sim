@@ -74,9 +74,13 @@ typedef union __attribute__((aligned(128))) tensormap_descriptor_t {
   uint32_t get_element_size() const;
   uint32_t get_element_bits() const;
   bool is_packed() const;
-  uint64_t get_dim0_byte_offset(uint64_t element_index) const;
-  uint64_t get_dim0_span_bytes(uint64_t element_count) const;
+  uint64_t get_dim0_gmem_byte_offset(uint64_t element_index) const;
+  uint64_t get_dim0_gmem_span_bytes(uint64_t element_count) const;
+  uint64_t get_dim0_smem_byte_offset(uint64_t element_index) const;
+  uint64_t get_dim0_smem_span_bytes(uint64_t element_count) const;
   uint32_t get_tile_size_bytes() const;
+  uint32_t get_tile_smem_size_bytes() const;
+  uint32_t get_smem_bytes_for_gmem_bytes(uint32_t gmem_bytes) const;
   uint64_t calculate_src_addr(const int32_t coords[5]) const;
   uint32_t num_dims() const { return fields.tensorRank + 1u; }
   bool is_valid() const {
