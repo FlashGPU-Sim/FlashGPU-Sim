@@ -32,6 +32,36 @@ uint32_t tcgen05_encode_tmem_address(uint32_t lane, uint32_t column) {
   return (lane << kTcgen05TmemLaneShift) | column;
 }
 
+std::vector<uint32_t>
+tcgen05_warpx4_32x128b_words(const std::vector<uint32_t> &source) {
+  constexpr uint32_t kSourceDataPaths = 32;
+  constexpr uint32_t kBitsPerDataPath = 128;
+  constexpr uint32_t kBroadcastCopies = 4;
+  constexpr uint32_t kWordsPerDataPath = kBitsPerDataPath / 32;
+  assert(source.size() == kSourceDataPaths * kWordsPerDataPath &&
+         "TCGen05 32x128b.warpx4 source must contain 4096 bits");
+
+  std::vector<uint32_t> result(
+      kSourceDataPaths * kBroadcastCopies * kWordsPerDataPath, 0);
+  for (uint32_t source_dp = 0; source_dp < kSourceDataPaths; ++source_dp) {
+    uint32_t transposed[kWordsPerDataPath] = {};
+    for (uint32_t leading_bit = 0; leading_bit < kBitsPerDataPath;
+         ++leading_bit) {
+      // UTCCP source layout is [strided, leading] with bit strides [1, 32].
+      uint32_t source_bit = source_dp + leading_bit * kSourceDataPaths;
+      uint32_t bit = (source[source_bit / 32] >> (source_bit % 32)) & 0x1;
+      transposed[leading_bit / 32] |= bit << (leading_bit % 32);
+    }
+    for (uint32_t broadcast = 0; broadcast < kBroadcastCopies; ++broadcast) {
+      uint32_t destination_dp = source_dp + broadcast * kSourceDataPaths;
+      for (uint32_t word = 0; word < kWordsPerDataPath; ++word) {
+        result[destination_dp * kWordsPerDataPath + word] = transposed[word];
+      }
+    }
+  }
+  return result;
+}
+
 uint32_t tcgen05_tmem_manager_t::alloc(const tcgen05_tmem_scope_t &scope,
                                        uint32_t ncols) {
   std::lock_guard<tcgen05_tmem_spinlock_t> lock(m_mutex);
@@ -237,6 +267,53 @@ std::vector<uint16_t> tcgen05_tmem_manager_t::read_matrix_packed_u16(
       uint32_t word = words[row * word_columns + column / 2];
       result[row * columns + column] = static_cast<uint16_t>(
           (column & 0x1) ? (word >> 16) : (word & 0xffff));
+    }
+  }
+  return result;
+}
+
+std::vector<uint8_t> tcgen05_tmem_manager_t::read_mxf4_scale_matrix(
+    const tcgen05_tmem_scope_t &scope, uint32_t address, uint32_t logical_rows,
+    uint32_t scales_per_row, uint8_t scale_factor_id) const {
+  constexpr uint32_t kTmemDataPaths = 128;
+  constexpr uint32_t kDataPathsPerSubpartition = 32;
+  constexpr uint32_t kScaleBytesPerWord = 4;
+  assert(logical_rows > 0 && scales_per_row > 0 &&
+         "TCGen05 MXFP4 scale matrix read must be non-empty");
+  assert((address >> 30) == scale_factor_id &&
+         "TCGen05 MXFP4 scale-factor ID disagrees with TMEM address");
+  assert(scale_factor_id + scales_per_row <= kScaleBytesPerWord &&
+         "TCGen05 MXFP4 scale factors cross a TMEM word");
+
+  std::lock_guard<tcgen05_tmem_spinlock_t> lock(m_mutex);
+  const scope_state_t *state = find_scope(scope);
+  assert(state && "TCGen05 MXFP4 scale read from unknown scope");
+  tcgen05_tmem_address_t base =
+      tcgen05_decode_tmem_address(address & 0x00ffffff);
+  uint32_t word_columns = (logical_rows + kDataPathsPerSubpartition - 1) /
+                          kDataPathsPerSubpartition;
+  assert(find_accessible_allocation_containing(
+             *state, tcgen05_encode_tmem_address(base.lane, base.column),
+             word_columns) != nullptr &&
+         "TCGen05 MXFP4 scale read outside allocation");
+
+  std::vector<uint8_t> result(logical_rows * scales_per_row, 0);
+  for (uint32_t row = 0; row < logical_rows; ++row) {
+    // Compact scale-factor rows use 32 data paths per subpartition. Rows
+    // beyond the first 32 advance the column; warpx4 leaves equivalent
+    // replicas in the other three subpartitions.
+    uint32_t data_path = base.lane + row % kDataPathsPerSubpartition;
+    assert(data_path < kTmemDataPaths &&
+           "TCGen05 MXFP4 scale TMEM data path is out of range");
+    uint32_t column = base.column + row / kDataPathsPerSubpartition;
+    uint32_t word = 0;
+    auto it = state->words.find(tcgen05_encode_tmem_address(data_path, column));
+    if (it != state->words.end())
+      word = it->second;
+    for (uint32_t scale = 0; scale < scales_per_row; ++scale) {
+      uint32_t byte = scale_factor_id + scale;
+      result[row * scales_per_row + scale] =
+          static_cast<uint8_t>((word >> (byte * 8)) & 0xff);
     }
   }
   return result;

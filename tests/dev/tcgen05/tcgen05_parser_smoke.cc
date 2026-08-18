@@ -238,6 +238,29 @@ void assert_tcgen05_surface_decode(gpgpu_context *ctx,
   if (!saw_unpack) fail("tcgen05.st surface did not preserve .unpack::16b");
 }
 
+void assert_tcgen05_mxf4_decode(gpgpu_context *ctx,
+                                const std::string &ptx_path) {
+  std::map<int, std::vector<const ptx_instruction *>> by_opcode =
+      collect_tcgen05_by_opcode(ctx, ptx_path);
+  expect_opcode_count(by_opcode, TCGEN05_MMA_OP, 2);
+
+  const std::vector<const ptx_instruction *> &mmas =
+      by_opcode.at(TCGEN05_MMA_OP);
+  for (const ptx_instruction *mma : mmas) {
+    expect_operand_count(mma, 7);
+    expect_options(mma, {TCGEN05_CTA_GROUP_1_OPTION,
+                         TCGEN05_KIND_MXF4_OPTION,
+                         TCGEN05_BLOCK_SCALE_OPTION});
+    if (!mma->operand_lookup(0).is_memory_operand() ||
+        !mma->operand_lookup(4).is_memory_operand() ||
+        !mma->operand_lookup(5).is_memory_operand()) {
+      fail("tcgen05.mma MXFP4 did not preserve D/SFA/SFB TMEM operands");
+    }
+  }
+  expect_options(mmas.at(0), {TCGEN05_BLOCK32_OPTION});
+  expect_options(mmas.at(1), {TCGEN05_SCALE_VEC_2X_OPTION});
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -256,6 +279,8 @@ int main(int argc, char **argv) {
   const std::string ptx_path = argv[1];
   if (ptx_path.find("tcgen05_phase1_smoke") != std::string::npos) {
     assert_tcgen05_phase1_decode(ctx, ptx_path);
+  } else if (ptx_path.find("tcgen05_mxf4_smoke") != std::string::npos) {
+    assert_tcgen05_mxf4_decode(ctx, ptx_path);
   } else if (ptx_path.find("tcgen05_instruction_surface_smoke") !=
                  std::string::npos ||
              ptx_path.find("tcgen05_instruction_surface_inline") !=

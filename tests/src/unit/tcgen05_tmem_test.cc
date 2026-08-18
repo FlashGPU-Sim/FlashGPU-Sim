@@ -2,6 +2,7 @@
 
 #include "gpgpu-sim/flash/tcgen05.h"
 
+#include <cmath>
 #include <cstring>
 
 using namespace flash_gpgpu_sim;
@@ -31,6 +32,15 @@ uint64_t make_shared_desc(uint32_t start, uint32_t lbo, uint32_t sbo,
 uint32_t make_f16_idesc(uint32_t m, uint32_t n, bool transpose_b = false) {
   return (TCGEN05_MMA_TYPE_FIELD_ONE << 4) | ((n >> 3) << 17) |
          (static_cast<uint32_t>(transpose_b) << 16) | ((m >> 4) << 24);
+}
+
+uint32_t make_mxf4_idesc(uint32_t n, uint8_t a_scale_factor_id = 0,
+                         uint8_t b_scale_factor_id = 0) {
+  return (static_cast<uint32_t>(b_scale_factor_id) << 4) |
+         (TCGEN05_MXF4_FORMAT_E2M1 << 7) |
+         (TCGEN05_MXF4_FORMAT_E2M1 << 10) | ((n >> 3) << 17) |
+         (TCGEN05_SCALE_FORMAT_UE8M0 << 23) | ((128u >> 4) << 24) |
+         (static_cast<uint32_t>(a_scale_factor_id) << 29);
 }
 
 }  // namespace
@@ -211,6 +221,68 @@ TEST(Tcgen05TmemTest, PackedU16MatrixReadSplitsWordsByRow) {
             std::vector<uint16_t>({1, 2, 3, 4, 5, 6, 7, 8}));
 }
 
+TEST(Tcgen05TmemTest, Warpx4CopyTransposesAndBroadcasts32x128Bits) {
+  std::vector<uint32_t> source(128, 0);
+  uint32_t expected[32][4] = {};
+  for (uint32_t data_path = 0; data_path < 32; ++data_path) {
+    for (uint32_t word = 0; word < 4; ++word) {
+      expected[data_path][word] =
+          0x01020408u * (data_path + 1) ^ (0x11111111u * word);
+      for (uint32_t bit = 0; bit < 32; ++bit) {
+        uint32_t value = (expected[data_path][word] >> bit) & 0x1;
+        uint32_t source_bit = data_path + (word * 32 + bit) * 32;
+        source[source_bit / 32] |= value << (source_bit % 32);
+      }
+    }
+  }
+
+  std::vector<uint32_t> result = tcgen05_warpx4_32x128b_words(source);
+
+  ASSERT_EQ(result.size(), 128u * 4u);
+  for (uint32_t data_path = 0; data_path < 128; ++data_path) {
+    for (uint32_t word = 0; word < 4; ++word) {
+      EXPECT_EQ(result[data_path * 4 + word], expected[data_path % 32][word]);
+    }
+  }
+}
+
+TEST(Tcgen05TmemTest, Mxf4ScaleReadSelectsSubpartitionAndByteId) {
+  tcgen05_tmem_manager_t manager;
+  uint32_t allocation = manager.alloc(kScope0, 512);
+  uint32_t scale_base = allocation + 64;
+  std::vector<uint32_t> words(128 * 4, 0);
+  for (uint32_t data_path = 0; data_path < 128; ++data_path) {
+    for (uint32_t column = 0; column < 4; ++column) {
+      uint32_t byte0 = 1 + data_path % 32;
+      uint32_t byte1 = 40 + column;
+      uint32_t byte2 = 80 + data_path % 32;
+      uint32_t byte3 = 120 + column;
+      words[data_path * 4 + column] =
+          byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24);
+    }
+  }
+  manager.write_matrix_words(kScope0, scale_base, words, 128, 4);
+
+  std::vector<uint8_t> low = manager.read_mxf4_scale_matrix(
+      kScope0, scale_base, 128, 2, /*scale_factor_id=*/0);
+  std::vector<uint8_t> high = manager.read_mxf4_scale_matrix(
+      kScope0, scale_base | 0x80000000u, 128, 2,
+      /*scale_factor_id=*/2);
+
+  EXPECT_EQ(low[0], 1u);
+  EXPECT_EQ(low[1], 40u);
+  EXPECT_EQ(low[32 * 2], 1u);
+  EXPECT_EQ(low[32 * 2 + 1], 41u);
+  EXPECT_EQ(low[127 * 2], 32u);
+  EXPECT_EQ(low[127 * 2 + 1], 43u);
+  EXPECT_EQ(high[0], 80u);
+  EXPECT_EQ(high[1], 120u);
+  EXPECT_EQ(high[32 * 2], 80u);
+  EXPECT_EQ(high[32 * 2 + 1], 121u);
+  EXPECT_EQ(high[127 * 2], 111u);
+  EXPECT_EQ(high[127 * 2 + 1], 123u);
+}
+
 TEST(Tcgen05TmemTest, StoreLoadRoundTripX16) {
   tcgen05_tmem_manager_t manager;
   uint32_t base = manager.alloc(kScope0, 32);
@@ -312,6 +384,35 @@ TEST(Tcgen05TmemTest, DecodeInstructionDescriptorF16) {
   EXPECT_EQ(desc.k, 16u);
 }
 
+TEST(Tcgen05TmemTest, DecodeInstructionDescriptorMxf4Block32) {
+  tcgen05_mma_descriptor_t desc =
+      tcgen05_decode_mxf4_mma_descriptor(make_mxf4_idesc(64, 2, 3), 1);
+
+  EXPECT_FALSE(desc.sparse);
+  EXPECT_EQ(desc.a_type, TCGEN05_MXF4_FORMAT_E2M1);
+  EXPECT_EQ(desc.b_type, TCGEN05_MXF4_FORMAT_E2M1);
+  EXPECT_EQ(desc.scale_format, TCGEN05_SCALE_FORMAT_UE8M0);
+  EXPECT_EQ(desc.a_scale_factor_id, 2u);
+  EXPECT_EQ(desc.b_scale_factor_id, 3u);
+  EXPECT_EQ(desc.m, 128u);
+  EXPECT_EQ(desc.n, 64u);
+  EXPECT_EQ(desc.k, 64u);
+}
+
+TEST(Tcgen05TmemTest, Mxf4NumericFormats) {
+  const float expected_e2m1[8] = {0.0f, 0.5f, 1.0f, 1.5f,
+                                   2.0f, 3.0f, 4.0f, 6.0f};
+  for (uint8_t value = 0; value < 8; ++value) {
+    EXPECT_FLOAT_EQ(tcgen05_e2m1_to_f32(value), expected_e2m1[value]);
+    EXPECT_FLOAT_EQ(tcgen05_e2m1_to_f32(value | 0x8),
+                    -expected_e2m1[value]);
+  }
+  EXPECT_FLOAT_EQ(tcgen05_ue8m0_to_f32(127), 1.0f);
+  EXPECT_FLOAT_EQ(tcgen05_ue8m0_to_f32(128), 2.0f);
+  EXPECT_FLOAT_EQ(tcgen05_ue8m0_to_f32(126), 0.5f);
+  EXPECT_TRUE(std::isnan(tcgen05_ue8m0_to_f32(0xff)));
+}
+
 TEST(Tcgen05TmemTest, MmaF16KnownPatternNoAccum) {
   tcgen05_mma_descriptor_t desc =
       tcgen05_decode_f16_mma_descriptor(make_f16_idesc(64, 8), 1);
@@ -347,4 +448,31 @@ TEST(Tcgen05TmemTest, MmaF16KnownPatternWithAccum) {
   ASSERT_EQ(result.size(), desc.m * desc.n);
   EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result[0]), 18.5f);
   EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.back()), 18.5f);
+}
+
+TEST(Tcgen05TmemTest, MmaMxf4Block32KnownScalesAndAccum) {
+  tcgen05_mma_descriptor_t desc =
+      tcgen05_decode_mxf4_mma_descriptor(make_mxf4_idesc(8), 1);
+  std::vector<uint8_t> a(desc.m * desc.k, 0x2);  // E2M1 1.0
+  // B is K-major for each output column.
+  std::vector<uint8_t> b(desc.n * desc.k, 0x2);
+  std::vector<uint8_t> scale_a(desc.m * 2);
+  std::vector<uint8_t> scale_b(desc.n * 2);
+  for (uint32_t row = 0; row < desc.m; ++row) {
+    scale_a[row * 2] = 127;      // 1.0 for k=[0,32)
+    scale_a[row * 2 + 1] = 128;  // 2.0 for k=[32,64)
+  }
+  for (uint32_t col = 0; col < desc.n; ++col) {
+    scale_b[col * 2] = 127;      // 1.0 for k=[0,32)
+    scale_b[col * 2 + 1] = 126;  // 0.5 for k=[32,64)
+  }
+  std::vector<uint32_t> input_d(desc.m * desc.n,
+                                tcgen05_f32_to_bits(2.5f));
+
+  std::vector<uint32_t> result = tcgen05_mma_mxf4_compute_words(
+      desc, a, b, scale_a, scale_b, 32, input_d, true);
+
+  ASSERT_EQ(result.size(), desc.m * desc.n);
+  EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.front()), 66.5f);
+  EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.back()), 66.5f);
 }

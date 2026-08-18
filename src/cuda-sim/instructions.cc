@@ -1984,6 +1984,33 @@ static std::vector<uint16_t> tcgen05_read_shared_f16_linearized(
   return values;
 }
 
+static std::vector<uint8_t> tcgen05_read_shared_u4_linearized(
+    const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t nelem,
+    ptx_thread_info *thread) {
+  assert(!desc.leading_dimension_absolute &&
+         "TCGen05 MMA absolute leading-dimension mode is not implemented");
+
+  if (tcgen05_debug_enabled() && desc.swizzle_mode != 0) {
+    printf("TCGEN05_DEBUG shared_desc swizzle=%u linearized_u4 start=%u "
+           "nelem=%u\n",
+           desc.swizzle_mode, desc.start_address, nelem);
+    fflush(stdout);
+  }
+
+  // Keep the same deliberately linearized shared-memory model as the f16
+  // bring-up path, but preserve the two E2M1 values packed in each byte.
+  std::vector<uint8_t> values(nelem, 0);
+  for (uint32_t byte_index = 0; byte_index < (nelem + 1) / 2; ++byte_index) {
+    uint8_t packed = 0;
+    thread->m_shared_mem->read(desc.start_address + byte_index,
+                               sizeof(packed), &packed);
+    values[byte_index * 2] = packed & 0xf;
+    if (byte_index * 2 + 1 < nelem)
+      values[byte_index * 2 + 1] = packed >> 4;
+  }
+  return values;
+}
+
 static std::vector<uint32_t> tcgen05_read_shared_words_linearized(
     const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t rows,
     uint32_t words_per_row, ptx_thread_info *thread) {
@@ -2101,7 +2128,74 @@ void tcgen05_mma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (!tcgen05_is_warp_leader(thread)) return;
   tcgen05_assert_cta_group1(pI);
   assert(pI->get_num_operands() >= 5);
-  assert(tcgen05_has_option(pI, TCGEN05_KIND_F16_OPTION));
+  bool is_f16 = tcgen05_has_option(pI, TCGEN05_KIND_F16_OPTION);
+  bool is_mxf4 = tcgen05_has_option(pI, TCGEN05_KIND_MXF4_OPTION);
+  assert(is_f16 != is_mxf4 &&
+         "TCGen05 MMA requires exactly one supported kind");
+
+  if (is_mxf4) {
+    assert(pI->get_num_operands() >= 7);
+    assert(tcgen05_has_option(pI, TCGEN05_BLOCK_SCALE_OPTION));
+    assert(tcgen05_has_option(pI, TCGEN05_BLOCK32_OPTION) ||
+           tcgen05_has_option(pI, TCGEN05_SCALE_VEC_2X_OPTION));
+    assert(!tcgen05_has_option(pI, TCGEN05_BLOCK16_OPTION) &&
+           !tcgen05_has_option(pI, TCGEN05_SCALE_VEC_4X_OPTION) &&
+           "NVFP4 block16 is not part of MXFP4 support");
+
+    const operand_info &d_tmem = pI->operand_lookup(0);
+    const operand_info &a_desc_op = pI->operand_lookup(1);
+    const operand_info &b_desc_op = pI->operand_lookup(2);
+    const operand_info &sfa_tmem = pI->operand_lookup(4);
+    const operand_info &sfb_tmem = pI->operand_lookup(5);
+    const operand_info &enable_input_d_op = pI->operand_lookup(6);
+    assert(!a_desc_op.is_memory_operand() &&
+           !b_desc_op.is_memory_operand() &&
+           "Only shared/shared TCGen05 MXFP4 MMA is supported");
+
+    uint32_t d_address = tcgen05_eval_address(d_tmem, thread);
+    uint32_t sfa_address = tcgen05_eval_address(sfa_tmem, thread);
+    uint32_t sfb_address = tcgen05_eval_address(sfb_tmem, thread);
+    flash_gpgpu_sim::tcgen05_tmem_scope_t scope =
+        tcgen05_tmem_scope(pI, thread);
+    flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
+        thread->get_gpu()->get_tcgen05_tmem_manager();
+    flash_gpgpu_sim::tcgen05_mma_descriptor_t mma_desc =
+        flash_gpgpu_sim::tcgen05_decode_mxf4_mma_descriptor(
+            tcgen05_read_operand(pI, thread, 3).u32, tcgen05_cta_group(pI));
+    flash_gpgpu_sim::tcgen05_shared_descriptor_t a_desc =
+        flash_gpgpu_sim::tcgen05_decode_shared_descriptor(
+            tcgen05_read_u64_operand(pI, thread, 1).u64);
+    flash_gpgpu_sim::tcgen05_shared_descriptor_t b_desc =
+        flash_gpgpu_sim::tcgen05_decode_shared_descriptor(
+            tcgen05_read_u64_operand(pI, thread, 2).u64);
+    bool enable_input_d =
+        tcgen05_read_enable_input_d(enable_input_d_op, thread);
+    constexpr uint32_t kScaleVectorSize = 32;
+    uint32_t scales_per_row = mma_desc.k / kScaleVectorSize;
+
+    std::vector<uint8_t> a_values = tcgen05_read_shared_u4_linearized(
+        a_desc, mma_desc.m * mma_desc.k, thread);
+    std::vector<uint8_t> b_values = tcgen05_read_shared_u4_linearized(
+        b_desc, mma_desc.n * mma_desc.k, thread);
+    std::vector<uint8_t> scale_a = manager.read_mxf4_scale_matrix(
+        scope, sfa_address, mma_desc.m, scales_per_row,
+        mma_desc.a_scale_factor_id);
+    std::vector<uint8_t> scale_b = manager.read_mxf4_scale_matrix(
+        scope, sfb_address, mma_desc.n, scales_per_row,
+        mma_desc.b_scale_factor_id);
+    std::vector<uint32_t> input_d;
+    if (enable_input_d) {
+      input_d = manager.read_matrix_words(scope, d_address, mma_desc.m,
+                                          mma_desc.n);
+    }
+    std::vector<uint32_t> output =
+        flash_gpgpu_sim::tcgen05_mma_mxf4_compute_words(
+            mma_desc, a_values, b_values, scale_a, scale_b,
+            kScaleVectorSize, input_d, enable_input_d);
+    manager.write_matrix_words(scope, d_address, output, mma_desc.m,
+                               mma_desc.n);
+    return;
+  }
 
   const operand_info &d_tmem = pI->operand_lookup(0);
   const operand_info &a_desc_op = pI->operand_lookup(1);
@@ -2259,6 +2353,12 @@ void tcgen05_cp_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   std::vector<uint32_t> values =
       tcgen05_read_shared_words_linearized(src_desc, rows, words_per_row,
                                            thread);
+  if (tcgen05_has_option(pI, TCGEN05_WARPX4_OPTION)) {
+    assert(rows == 32 && words_per_row == 4 &&
+           "TCGen05 warpx4 requires the 32x128b copy shape");
+    values = flash_gpgpu_sim::tcgen05_warpx4_32x128b_words(values);
+    rows = 128;
+  }
 
   flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
       thread->get_gpu()->get_tcgen05_tmem_manager();

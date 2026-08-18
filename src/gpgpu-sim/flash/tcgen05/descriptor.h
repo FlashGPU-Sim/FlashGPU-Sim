@@ -10,6 +10,15 @@ enum tcgen05_mma_type_field_t {
   TCGEN05_MMA_TYPE_FIELD_ONE = 1,
 };
 
+enum tcgen05_mxf4_format_t {
+  TCGEN05_MXF4_FORMAT_E2M1 = 1,
+};
+
+enum tcgen05_scale_format_t {
+  TCGEN05_SCALE_FORMAT_UE4M3 = 0,
+  TCGEN05_SCALE_FORMAT_UE8M0 = 1,
+};
+
 struct tcgen05_shared_descriptor_t {
   uint32_t start_address;
   uint32_t leading_dimension_byte_offset;
@@ -30,6 +39,9 @@ struct tcgen05_mma_descriptor_t {
   bool negate_b;
   bool transpose_a;
   bool transpose_b;
+  uint8_t a_scale_factor_id;
+  uint8_t b_scale_factor_id;
+  uint8_t scale_format;
   uint32_t m;
   uint32_t n;
   uint32_t k;
@@ -38,6 +50,8 @@ struct tcgen05_mma_descriptor_t {
 tcgen05_shared_descriptor_t tcgen05_decode_shared_descriptor(uint64_t desc);
 tcgen05_mma_descriptor_t tcgen05_decode_f16_mma_descriptor(uint32_t idesc,
                                                            unsigned cta_group);
+tcgen05_mma_descriptor_t tcgen05_decode_mxf4_mma_descriptor(uint32_t idesc,
+                                                            unsigned cta_group);
 
 } // namespace flash_gpgpu_sim
 

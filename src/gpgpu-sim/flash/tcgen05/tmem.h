@@ -34,6 +34,8 @@ struct tcgen05_tmem_address_t {
 
 tcgen05_tmem_address_t tcgen05_decode_tmem_address(uint32_t address);
 uint32_t tcgen05_encode_tmem_address(uint32_t lane, uint32_t column);
+std::vector<uint32_t>
+tcgen05_warpx4_32x128b_words(const std::vector<uint32_t> &source);
 
 struct tcgen05_tmem_scope_t {
   unsigned sm_id;
@@ -80,6 +82,11 @@ public:
   std::vector<uint16_t>
   read_matrix_packed_u16(const tcgen05_tmem_scope_t &scope, uint32_t address,
                          uint32_t rows, uint32_t columns) const;
+  std::vector<uint8_t> read_mxf4_scale_matrix(const tcgen05_tmem_scope_t &scope,
+                                              uint32_t address,
+                                              uint32_t logical_rows,
+                                              uint32_t scales_per_row,
+                                              uint8_t scale_factor_id) const;
 
   void clear_cta(unsigned sm_id, unsigned cta_id);
   void reset();

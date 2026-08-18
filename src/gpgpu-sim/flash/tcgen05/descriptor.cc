@@ -37,7 +37,7 @@ tcgen05_shared_descriptor_t tcgen05_decode_shared_descriptor(uint64_t desc) {
 
 tcgen05_mma_descriptor_t tcgen05_decode_f16_mma_descriptor(uint32_t idesc,
                                                            unsigned cta_group) {
-  tcgen05_mma_descriptor_t decoded;
+  tcgen05_mma_descriptor_t decoded = {};
   decoded.sparsity_selector = idesc & 0x3;
   decoded.sparse = ((idesc >> 2) & 0x1) != 0;
   decoded.d_type = static_cast<uint8_t>((idesc >> 4) & 0x3);
@@ -73,6 +73,47 @@ tcgen05_mma_descriptor_t tcgen05_decode_f16_mma_descriptor(uint32_t idesc,
          "TCGen05 f16 dense cta_group::1 supports M=64 or M=128");
   assert(decoded.n >= 8 && decoded.n <= 256 && decoded.n % 8 == 0 &&
          "TCGen05 f16 dense cta_group::1 supports N in steps of 8");
+  return decoded;
+}
+
+tcgen05_mma_descriptor_t
+tcgen05_decode_mxf4_mma_descriptor(uint32_t idesc, unsigned cta_group) {
+  tcgen05_mma_descriptor_t decoded = {};
+  decoded.sparsity_selector = idesc & 0x3;
+  decoded.sparse = ((idesc >> 2) & 0x1) != 0;
+  decoded.b_scale_factor_id = static_cast<uint8_t>((idesc >> 4) & 0x3);
+  decoded.a_type = static_cast<uint8_t>((idesc >> 7) & 0x7);
+  decoded.b_type = static_cast<uint8_t>((idesc >> 10) & 0x7);
+  decoded.negate_a = ((idesc >> 13) & 0x1) != 0;
+  decoded.negate_b = ((idesc >> 14) & 0x1) != 0;
+  decoded.transpose_a = ((idesc >> 15) & 0x1) != 0;
+  decoded.transpose_b = ((idesc >> 16) & 0x1) != 0;
+  decoded.n = ((idesc >> 17) & 0x3f) << 3;
+  decoded.scale_format = static_cast<uint8_t>((idesc >> 23) & 0x1);
+  decoded.m = ((idesc >> 24) & 0x1f) << 4;
+  decoded.a_scale_factor_id = static_cast<uint8_t>((idesc >> 29) & 0x3);
+  decoded.k = ((idesc >> 31) & 0x1) ? 96 : 64;
+  decoded.d_type = TCGEN05_MMA_TYPE_FIELD_ONE;
+
+  assert(cta_group == 1 && "Only TCGen05 cta_group::1 is supported");
+  assert(!decoded.sparse && "Sparse TCGen05 MXFP4 MMA is not supported");
+  assert(((idesc >> 3) & 0x1) == 0 &&
+         "TCGen05 MXFP4 reserved bit 3 must be zero");
+  assert(((idesc >> 6) & 0x1) == 0 &&
+         "TCGen05 MXFP4 reserved bit 6 must be zero");
+  assert(decoded.a_type == TCGEN05_MXF4_FORMAT_E2M1 &&
+         decoded.b_type == TCGEN05_MXF4_FORMAT_E2M1 &&
+         "Only E2M1 TCGen05 MXFP4 inputs are supported");
+  assert(!decoded.negate_a && !decoded.negate_b &&
+         "TCGen05 MXFP4 input negation is not supported");
+  assert(!decoded.transpose_a && !decoded.transpose_b &&
+         "TCGen05 MXFP4 E2M1 inputs must be K-major");
+  assert(decoded.scale_format == TCGEN05_SCALE_FORMAT_UE8M0 &&
+         "Only UE8M0 TCGen05 MXFP4 scale factors are supported");
+  assert(decoded.m == 128 && "TCGen05 MXFP4 dense cta_group::1 supports M=128");
+  assert(decoded.n >= 8 && decoded.n <= 256 && decoded.n % 8 == 0 &&
+         "TCGen05 MXFP4 dense cta_group::1 supports N in steps of 8");
+  assert(decoded.k == 64 && "Only TCGen05 MXFP4 dense K=64 MMA is supported");
   return decoded;
 }
 
