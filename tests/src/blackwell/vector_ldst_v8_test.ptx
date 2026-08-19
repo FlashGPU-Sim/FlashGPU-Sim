@@ -1,0 +1,36 @@
+.version 8.8
+.target sm_120a
+.address_size 64
+
+.visible .entry vector_ldst_v8_kernel(
+    .param .u64 .ptr .align 1 vector_ldst_v8_kernel_param_0,
+    .param .u64 .ptr .align 1 vector_ldst_v8_kernel_param_1
+)
+{
+    .reg .b32 %r<19>;
+    .reg .b64 %rd<7>;
+
+    ld.param.b64 %rd3, [vector_ldst_v8_kernel_param_0];
+    ld.param.b64 %rd4, [vector_ldst_v8_kernel_param_1];
+    mov.u32 %r17, %tid.x;
+    mul.wide.u32 %rd5, %r17, 4;
+    add.s64 %rd1, %rd3, %rd5;
+
+    ld.global.v8.b32 {%r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8}, [%rd1];
+
+    xor.b32 %r9, %r1, -1515913216;
+    xor.b32 %r10, %r2, -1515913199;
+    xor.b32 %r11, %r3, -1515913182;
+    xor.b32 %r12, %r4, -1515913165;
+    xor.b32 %r13, %r5, -1515913148;
+    xor.b32 %r14, %r6, -1515913131;
+    xor.b32 %r15, %r7, -1515913114;
+    xor.b32 %r16, %r8, -1515913097;
+    shl.b32 %r18, %r17, 3;
+    mul.wide.u32 %rd6, %r18, 4;
+    add.s64 %rd2, %rd4, %rd6;
+
+    st.global.v8.b32 [%rd2], {%r9, %r10, %r11, %r12, %r13, %r14, %r15, %r16};
+
+    ret;
+}

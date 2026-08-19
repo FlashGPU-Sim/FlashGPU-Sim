@@ -75,6 +75,7 @@ $(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(SM90_OBJ_DIR):
 # Workload fragments declare custom groups and runner metadata before the
 # generic GoogleTest build graph is registered.
 include make/gtest.mk
+include make/workloads/blackwell.mk
 include make/workloads/fa.mk
 include make/workloads/fa2.mk
 include make/workloads/fa3.mk

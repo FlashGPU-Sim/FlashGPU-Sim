@@ -4,41 +4,17 @@
 #include <cstdint>
 #include <vector>
 
-namespace {
-
-struct Words8 {
-  uint32_t value[8];
-};
-
-__device__ __forceinline__ Words8 load_global_v8(const uint32_t *address) {
-  Words8 words;
-  asm volatile("ld.global.v8.b32 {%0, %1, %2, %3, %4, %5, %6, %7}, [%8];"
-               : "=r"(words.value[0]), "=r"(words.value[1]),
-                 "=r"(words.value[2]), "=r"(words.value[3]),
-                 "=r"(words.value[4]), "=r"(words.value[5]),
-                 "=r"(words.value[6]), "=r"(words.value[7])
-               : "l"(reinterpret_cast<uint64_t>(address)));
-  return words;
-}
-
-__device__ __forceinline__ void store_global_v8(uint32_t *address,
-                                                const Words8 &words) {
-  asm volatile("st.global.v8.b32 [%0], {%1, %2, %3, %4, %5, %6, %7, %8};"
-               :
-               : "l"(reinterpret_cast<uint64_t>(address)), "r"(words.value[0]),
-                 "r"(words.value[1]), "r"(words.value[2]), "r"(words.value[3]),
-                 "r"(words.value[4]), "r"(words.value[5]), "r"(words.value[6]),
-                 "r"(words.value[7])
-               : "memory");
-}
-
-__global__ void vector_ldst_v8_kernel(const uint32_t *input, uint32_t *output) {
+// CUDA 12.8 only supports PTX ISA 8.7, while .v8.b32 memory operands were
+// added in PTX ISA 8.8. The test launcher replaces this placeholder with the
+// adjacent handwritten PTX fixture so CI can exercise the simulator without
+// requiring a newer ptxas. Keep the signature synchronized with that fixture.
+extern "C" __global__ void vector_ldst_v8_kernel(const uint32_t *input,
+                                                  uint32_t *output) {
   const unsigned lane = threadIdx.x;
-  Words8 words = load_global_v8(input + lane);
-#pragma unroll
-  for (unsigned i = 0; i < 8; ++i) words.value[i] ^= 0xa5a50000U + 17U * i;
-  store_global_v8(output + 8 * lane, words);
+  output[lane] = input[lane];
 }
+
+namespace {
 
 TEST(BlackwellVectorLdstIntegrationTest,
      GlobalV8B32MovesAllEightWordsPerThread) {
