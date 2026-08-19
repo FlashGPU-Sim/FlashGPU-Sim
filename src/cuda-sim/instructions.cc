@@ -1294,6 +1294,9 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
     }
   }
   assert(space == global_space || space == shared_space);
+  if (space == shared_space) {
+    effective_address &= 0x00000000FFFFFFFFULL;
+  }
 
   memory_space *mem = NULL;
   if (space == global_space)
@@ -1617,6 +1620,9 @@ void atom_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   } else {
     assert(space == global_space || space == shared_space);
     effective_address_final = effective_address;
+    if (space == shared_space) {
+      effective_address_final &= 0x00000000FFFFFFFFULL;
+    }
   }
 
   // Check state space
@@ -3638,6 +3644,10 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
       break;
     case shared_space:
       mem = thread->m_shared_mem;
+      // Explicit shared-memory addresses are 32-bit offsets. PTX arithmetic
+      // that produces such an address can leave carry bits above bit 31 in
+      // the simulator's wider register representation.
+      addr &= 0x00000000FFFFFFFFULL;
       break;
     case sstarr_space:
       mem = thread->m_sstarr_mem;
