@@ -1,5 +1,7 @@
 BW_SRC := global_load_bw_bench.cu
 BW_TARGET_NAME ?= global_load_bw_bench_cuda129
+HBM_BW_SRC := hbm_bw_bench.cu
+HBM_BW_TARGET_NAME ?= hbm_bw_bench_cuda128_$(ARCH)
 LAT_SRC := l2_latency_bench.cu
 LAT_TARGET_NAME ?= l2_latency_bench_cuda128_$(ARCH)
 INTERLEAVE_SRC := l2_hbm_interleave_bench.cu
@@ -13,6 +15,7 @@ include ../common.mk
 CUDA_DRIVER_LIBS ?= -lcuda
 BIN_DIR ?= $(STANDALONE_BIN_ROOT)/memory
 BW_TARGET ?= $(BIN_DIR)/$(BW_TARGET_NAME)
+HBM_BW_TARGET ?= $(BIN_DIR)/$(HBM_BW_TARGET_NAME)
 LAT_TARGET ?= $(BIN_DIR)/$(LAT_TARGET_NAME)
 INTERLEAVE_TARGET ?= $(BIN_DIR)/$(INTERLEAVE_TARGET_NAME)
 L2PART_TARGET ?= $(BIN_DIR)/$(L2PART_TARGET_NAME)
@@ -22,14 +25,20 @@ TARGET_EXE := $(notdir $(BW_TARGET))
 CONFIG_DIR ?= ../../../../configs/SM120_RTX5090
 RUN_DIR ?= $(STANDALONE_RUN_ROOT)/memory/gem5_global_load_bw_smoke_cuda129
 
-.PHONY: all clean check-ptx gem5-dir gem5-smoke run-hw interleave l2part run-interleave-quick run-l2part-quick
-TARGETS := $(BW_TARGET) $(LAT_TARGET) $(INTERLEAVE_TARGET) $(L2PART_TARGET)
+.PHONY: all clean check-ptx gem5-dir gem5-smoke run-hw hbm-bw run-hbm-bw interleave l2part run-interleave-quick run-l2part-quick
+TARGETS := $(BW_TARGET) $(HBM_BW_TARGET) $(LAT_TARGET) $(INTERLEAVE_TARGET) $(L2PART_TARGET)
 
 all: $(TARGETS)
 
 $(BW_TARGET): $(BW_SRC)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(NVCC_FLAGS) -o $@ $<
+
+$(HBM_BW_TARGET): $(HBM_BW_SRC)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(NVCC_FLAGS) -o $@ $<
+
+hbm-bw: $(HBM_BW_TARGET)
 
 $(LAT_TARGET): $(LAT_SRC)
 	@mkdir -p $(dir $@)
@@ -49,6 +58,7 @@ l2part: $(L2PART_TARGET)
 
 check-ptx: $(TARGETS)
 	$(CUOBJDUMP) -lptx $(BW_TARGET)
+	$(CUOBJDUMP) -lptx $(HBM_BW_TARGET)
 	$(CUOBJDUMP) -lptx $(LAT_TARGET)
 	$(CUOBJDUMP) -lptx $(INTERLEAVE_TARGET)
 	$(CUOBJDUMP) -lptx $(L2PART_TARGET)
@@ -65,6 +75,9 @@ gem5-smoke: gem5-dir
 
 run-hw: $(BW_TARGET)
 	$(BW_TARGET) --blocks=528 --threads=256 --iters=4096 --warmup=256 --tiles=528 --repeat=1 --block-hot
+
+run-hbm-bw: $(HBM_BW_TARGET)
+	$(HBM_BW_TARGET) --mib 256 --blocks-per-sm 4 --threads 256 --chains 8 --passes 1 --warmup 0 --iterations 1
 
 run-l2-latency: $(LAT_TARGET)
 	$(LAT_TARGET) --case=l2-hit --bytes=65536 --steps=4096 --samples=2048 --warmup-steps=65536 --cache-op=cg
