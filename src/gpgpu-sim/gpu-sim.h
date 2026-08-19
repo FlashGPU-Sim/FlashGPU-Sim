@@ -552,6 +552,10 @@ class gpgpu_sim_config : public power_config,
   int gpgpu_frfcfs_dram_sched_queue_size;
   int gpgpu_cflog_interval;
   char *gpgpu_clock_domains;
+  // Validation metadata consumed by config-driven tests. The simulator timing
+  // model does not use these values.
+  double l2_expected_bandwidth_tbps;
+  double dram_expected_bandwidth_tbps;
   unsigned max_concurrent_kernel;
 
   // visualizer

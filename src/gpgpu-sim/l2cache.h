@@ -497,6 +497,61 @@ class partition_mf_allocator : public mem_fetch_allocator {
   const memory_config *m_memory_config;
 };
 
+// Fractional per-tick service budget used by the fixed-latency simple DRAM
+// model. Credit is stored in numerator units so rates such as 15/4 atoms per
+// DRAM tick are exact. The cap permits one maximum-sized request to make
+// forward progress while preventing idle ticks from creating an unbounded
+// future burst.
+class simple_dram_service_budget {
+ public:
+  simple_dram_service_budget(unsigned numerator, unsigned denominator,
+                             unsigned long long max_request_atoms)
+      : m_numerator(numerator), m_denominator(denominator), m_credit(0) {
+    assert(m_numerator > 0);
+    assert(m_denominator > 0);
+    assert(max_request_atoms > 0);
+    const unsigned long long max_service_atoms =
+        (static_cast<unsigned long long>(m_numerator) + m_denominator - 1) /
+        m_denominator;
+    const unsigned long long max_credit_atoms =
+        std::max(max_service_atoms, max_request_atoms);
+    m_whole_credit_cap = max_credit_atoms * m_denominator;
+    m_credit_cap = m_whole_credit_cap + m_denominator - 1;
+  }
+
+  void begin_tick() {
+    m_credit += m_numerator;
+    if (m_credit > m_credit_cap) {
+      m_credit = m_whole_credit_cap + m_credit % m_denominator;
+    }
+  }
+
+  bool can_service(unsigned long long atoms) const {
+    assert(atoms > 0);
+    return m_credit >= atoms * m_denominator;
+  }
+
+  void consume(unsigned long long atoms) {
+    assert(can_service(atoms));
+    m_credit -= atoms * m_denominator;
+  }
+
+  // The production issue path calls this when no request is available. The
+  // return path calls it when no fixed-latency completion is ready.
+  void discard_idle_credit() { m_credit %= m_denominator; }
+
+  unsigned numerator() const { return m_numerator; }
+  unsigned denominator() const { return m_denominator; }
+  unsigned long long credit() const { return m_credit; }
+
+ private:
+  unsigned m_numerator;
+  unsigned m_denominator;
+  unsigned long long m_credit;
+  unsigned long long m_whole_credit_cap;
+  unsigned long long m_credit_cap;
+};
+
 // Memory partition unit contains all the units assolcated with a single DRAM
 // channel.
 // - It arbitrates the DRAM channel among multiple sub partitions.
@@ -584,10 +639,10 @@ class memory_partition_unit {
   };
   std::list<dram_delay_t> m_dram_latency_queue;
 
-  // Fixed-latency aggregate-service state. Credits are represented in units
-  // of the configured service-rate denominator to avoid floating-point drift.
-  unsigned long long m_simple_dram_issue_credit;
-  unsigned long long m_simple_dram_return_credit;
+  // Issue and return are independently rate-limited by the same configured
+  // aggregate service rate.
+  simple_dram_service_budget m_simple_dram_issue_budget;
+  simple_dram_service_budget m_simple_dram_return_budget;
   unsigned long long m_simple_dram_cycles;
   unsigned long long m_simple_dram_issue_requests;
   unsigned long long m_simple_dram_issue_atoms;

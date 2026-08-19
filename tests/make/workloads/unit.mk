@@ -45,6 +45,10 @@ $(OBJ_DIR)/sm100/unit/l2_bandwidth_test.cc.o: \
 $(SRC_DIR)/gpgpu-sim/gpu-cache.h \
 $(SRC_DIR)/gpgpu-sim/l2cache.h
 
+$(OBJ_DIR)/sm100/unit/dram_bandwidth_test.cc.o: \
+$(SRC_DIR)/gpgpu-sim/gpu-cache.h \
+$(SRC_DIR)/gpgpu-sim/l2cache.h
+
 $(OBJ_DIR)/sm100/unit/l2_multi_issue_ports_test.cc.o: \
 $(SRC_DIR)/gpgpu-sim/gpu-cache.h \
 $(SRC_DIR)/gpgpu-sim/l2cache.h \

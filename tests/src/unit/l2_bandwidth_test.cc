@@ -99,11 +99,8 @@ TEST(B200L2BandwidthTest, CheckedInConfigSustainsPeakWithAbove99PercentHits) {
   const ConfigEntries config =
       ReadConfig(repository_root / "configs/SM100_B200/gpgpusim.config");
   ASSERT_FALSE(config.empty());
-  const ConfigEntries expectations = ReadConfig(
-      repository_root / "tests/configs/SM100_B200/l2_bandwidth.config");
-  ASSERT_FALSE(expectations.empty());
   const double expected_tb_per_second =
-      ConfigDouble(expectations, "-gpgpu_l2_expected_bandwidth_TBp");
+      ConfigDouble(config, "-gpgpu_l2_expected_bandwidth_TBp");
   ASSERT_GT(expected_tb_per_second, 0.0);
 
   const unsigned long long memory_channels =

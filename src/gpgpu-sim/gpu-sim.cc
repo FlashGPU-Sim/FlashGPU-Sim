@@ -1015,6 +1015,18 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
                          "Clock>:<L2 Clock>:<DRAM Clock>}",
                          "500.0:2000.0:2000.0:2000.0");
   option_parser_register(
+      opp, "-gpgpu_l2_expected_bandwidth_TBp", OPT_DOUBLE,
+      &l2_expected_bandwidth_tbps,
+      "Nominal L2 bandwidth validation target in TB/s; parsed as config "
+      "metadata and unused by the simulator timing model",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_dram_expected_bandwidth_TBp", OPT_DOUBLE,
+      &dram_expected_bandwidth_tbps,
+      "Nominal DRAM bandwidth validation target in TB/s; parsed as config "
+      "metadata and unused by the simulator timing model",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_max_concurrent_kernel", OPT_INT32, &max_concurrent_kernel,
       "maximum kernels that can run concurrently on GPU, set this value "
       "according to max resident grids for your compute capability",

@@ -233,8 +233,16 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
       m_config(config),
       m_mem_stats(stats),
       m_arbitration_metadata(config),
-      m_simple_dram_issue_credit(0),
-      m_simple_dram_return_credit(0),
+      m_simple_dram_issue_budget(
+          config->simple_dram_service_rate_num,
+          config->simple_dram_service_rate_den,
+          (MAX_MEMORY_ACCESS_SIZE + config->dram_atom_size - 1) /
+              config->dram_atom_size),
+      m_simple_dram_return_budget(
+          config->simple_dram_service_rate_num,
+          config->simple_dram_service_rate_den,
+          (MAX_MEMORY_ACCESS_SIZE + config->dram_atom_size - 1) /
+              config->dram_atom_size),
       m_simple_dram_cycles(0),
       m_simple_dram_issue_requests(0),
       m_simple_dram_issue_atoms(0),
@@ -407,29 +415,10 @@ int memory_partition_unit::global_sub_partition_id_to_local_id(
 void memory_partition_unit::simple_dram_model_cycle() {
   const unsigned long long now =
       m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
-  const unsigned long long numerator = m_config->simple_dram_service_rate_num;
-  const unsigned long long denominator = m_config->simple_dram_service_rate_den;
-  const unsigned long long max_request_atoms =
-      (MAX_MEMORY_ACCESS_SIZE + m_config->dram_atom_size - 1) /
-      m_config->dram_atom_size;
-  const unsigned long long max_service_atoms =
-      (numerator + denominator - 1) / denominator;
-  const unsigned long long max_credit_atoms =
-      std::max(max_service_atoms, max_request_atoms);
-  const unsigned long long whole_credit_cap = max_credit_atoms * denominator;
-  const unsigned long long credit_cap = whole_credit_cap + denominator - 1;
 
   m_simple_dram_cycles++;
-  m_simple_dram_issue_credit += numerator;
-  m_simple_dram_return_credit += numerator;
-  if (m_simple_dram_issue_credit > credit_cap) {
-    m_simple_dram_issue_credit =
-        whole_credit_cap + m_simple_dram_issue_credit % denominator;
-  }
-  if (m_simple_dram_return_credit > credit_cap) {
-    m_simple_dram_return_credit =
-        whole_credit_cap + m_simple_dram_return_credit % denominator;
-  }
+  m_simple_dram_issue_budget.begin_tick();
+  m_simple_dram_return_budget.begin_tick();
 
   // Complete as many fixed-latency requests as the return service permits.
   bool saw_ready_return = false;
@@ -441,9 +430,8 @@ void memory_partition_unit::simple_dram_model_cycle() {
         1ull, (static_cast<unsigned long long>(mf_return->get_data_size()) +
                m_config->dram_atom_size - 1) /
                   m_config->dram_atom_size);
-    const unsigned long long cost = atoms * denominator;
     saw_ready_return = true;
-    if (m_simple_dram_return_credit < cost) break;
+    if (!m_simple_dram_return_budget.can_service(atoms)) break;
 
     const bool is_writeback = mf_return->get_access_type() == L1_WRBK_ACC ||
                               mf_return->get_access_type() == L2_WRBK_ACC;
@@ -470,7 +458,7 @@ void memory_partition_unit::simple_dram_model_cycle() {
     }
 
     m_dram_latency_queue.pop_front();
-    m_simple_dram_return_credit -= cost;
+    m_simple_dram_return_budget.consume(atoms);
     m_simple_dram_return_requests++;
     m_simple_dram_return_atoms += atoms;
   }
@@ -480,7 +468,7 @@ void memory_partition_unit::simple_dram_model_cycle() {
     m_simple_dram_return_not_ready_cycles++;
     // Do not accumulate an unbounded burst while the fixed-latency pipeline is
     // empty. Preserve only the fractional phase of the configured rate.
-    m_simple_dram_return_credit %= denominator;
+    m_simple_dram_return_budget.discard_idle_credit();
   }
 
   // Admit requests from L2 in round-robin order until the aggregate service
@@ -506,11 +494,10 @@ void memory_partition_unit::simple_dram_model_cycle() {
           std::max(1ull, (static_cast<unsigned long long>(mf->get_data_size()) +
                           m_config->dram_atom_size - 1) /
                              m_config->dram_atom_size);
-      const unsigned long long cost = atoms * denominator;
       // Preserve round-robin fairness across mixed request sizes. Skipping a
       // large request here would let a continuous stream of one-atom requests
       // consume every new credit and starve it indefinitely.
-      if (m_simple_dram_issue_credit < cost) break;
+      if (!m_simple_dram_issue_budget.can_service(atoms)) break;
 
       m_sub_partition[spid]->L2_dram_queue_pop();
       MEMPART_GPPRINTF(
@@ -523,7 +510,7 @@ void memory_partition_unit::simple_dram_model_cycle() {
       mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE, now);
       m_arbitration_metadata.borrow_credit(spid);
       m_mem_stats->get_stats()->memlatstat_dram_access(mf);
-      m_simple_dram_issue_credit -= cost;
+      m_simple_dram_issue_budget.consume(atoms);
       m_simple_dram_issue_requests++;
       m_simple_dram_issue_atoms += atoms;
       issued = true;
@@ -533,7 +520,7 @@ void memory_partition_unit::simple_dram_model_cycle() {
   }
   if (!saw_issue_request) {
     m_simple_dram_issue_no_request_cycles++;
-    m_simple_dram_issue_credit %= denominator;
+    m_simple_dram_issue_budget.discard_idle_credit();
   } else if (issue_backpressured) {
     m_simple_dram_issue_backpressure_cycles++;
   }
