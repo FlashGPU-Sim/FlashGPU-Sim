@@ -98,6 +98,7 @@ src/
 ├── include/       shared test-only headers (not a test group)
 ├── unit/          host-side simulator component tests
 ├── integration/   cross-architecture standalone CUDA tests
+├── blackwell/     SM100+ instruction integration tests
 ├── barrier/       named barrier and mbarrier tests
 ├── tma/           TMA and tensor-map tests
 ├── mma/           mma.sync tests

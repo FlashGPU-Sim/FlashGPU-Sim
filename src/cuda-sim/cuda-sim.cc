@@ -2759,6 +2759,16 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
         if (pI->m_is_ldgsts) {
           inst.set_per_thread_memory_access_size(
               lane_id, last_memory_access_size());
+        } else if (pI->get_vector() != 0 &&
+                   (pI->has_memory_read() || pI->has_memory_write())) {
+          unsigned vector_width = 0;
+          if (pI->get_vector() == V2_TYPE) vector_width = 2;
+          if (pI->get_vector() == V3_TYPE) vector_width = 3;
+          if (pI->get_vector() == V4_TYPE) vector_width = 4;
+          if (pI->get_vector() == V8_TYPE) vector_width = 8;
+          assert(vector_width != 0);
+          inst.set_per_thread_memory_access_size(lane_id,
+                                                 insn_data_size * vector_width);
         }
         inst.data_size = insn_data_size;  // simpleAtomicIntrinsics
         assert(inst.memory_op == insn_memory_op);
