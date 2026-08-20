@@ -67,6 +67,8 @@ int main(int argc, char **argv) {
     fail("parser returned a null symbol table");
   symtab->lookup_function("vector_literal_valid")->do_pdom();
 
+  const ptx_instruction *mov_pack = nullptr;
+
   std::ifstream input(argv[1]);
   if (!input) fail("could not reopen PTX fixture");
   std::vector<const ptx_instruction *> stores;
@@ -74,6 +76,11 @@ int main(int argc, char **argv) {
   unsigned line_number = 0;
   while (std::getline(input, line)) {
     ++line_number;
+    if (line.find("mov.b64 %rd1, {%r1, 0x40004040}") !=
+        std::string::npos) {
+      mov_pack =
+          ctx->ptx_parser->ptx_instruction_lookup(argv[1], line_number);
+    }
     if (line.find("st.local.v") == std::string::npos) continue;
     const ptx_instruction *inst =
         ctx->ptx_parser->ptx_instruction_lookup(argv[1], line_number);
@@ -82,6 +89,12 @@ int main(int argc, char **argv) {
     stores.push_back(inst);
   }
   if (stores.size() != 7) fail("expected seven vector stores");
+  if (mov_pack == nullptr || !mov_pack->src1().is_vector() ||
+      mov_pack->src1().get_vect_nelem() != 2 ||
+      mov_pack->src1().vec_is_literal(0) ||
+      !mov_pack->src1().vec_is_literal(1) ||
+      mov_pack->src1().vec_literal_value(1).u64 != 0x40004040ULL)
+    fail("mov.b64 mixed register/literal pack metadata is incorrect");
 
   for (const ptx_instruction *inst : stores) {
     const operand_info &source = inst->src1();

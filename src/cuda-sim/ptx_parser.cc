@@ -887,79 +887,111 @@ void ptx_recognizer::end_vector_operand() {
   }
 
   if (has_literal) {
-    parse_assert(g_opcode == ST_OP && g_vector_operand_start == 1,
-                 "literal vector operands are only valid as store sources.");
-    const unsigned vector_width = vector_width_from_options(g_options);
-    parse_assert(vector_width != 0,
-                 "literal vector store requires a vector qualifier.");
-    parse_assert(components.size() == vector_width,
-                 "vector operand width does not match vector qualifier.");
-    parse_assert(g_scalar_type_spec != -1,
-                 "literal vector store requires a scalar type.");
+    const bool is_store_source =
+        g_opcode == ST_OP && g_vector_operand_start == 1;
+    const bool is_mov_pack = g_opcode == MOV_OP && g_vector_operand_start == 1 &&
+                             g_scalar_type_spec == B64_TYPE;
+    parse_assert(is_store_source || is_mov_pack,
+                 "literal vector operands are only valid as store sources "
+                 "or mov.b64 pack sources.");
 
-    const int instruction_type = g_scalar_type_spec;
-    const unsigned instruction_bits = scalar_type_bits(instruction_type);
+    if (is_mov_pack) {
+      parse_assert(components.size() == 2,
+                   "mov.b64 pack source requires two 32-bit components.");
+      for (const operand_info &component : components) {
+        if (component.is_literal()) {
+          const enum operand_type type = component.get_type();
+          parse_assert(type == int_t || type == unsigned_t,
+                       "mov.b64 pack literals must be integers.");
+          continue;
+        }
+        const symbol *symbol = component.get_symbol();
+        parse_assert(symbol != NULL && symbol->type() != NULL,
+                     "mov.b64 pack register component has no type.");
+        const int register_type = symbol->type()->get_key().scalar_type();
+        parse_assert(scalar_type_bits(register_type) == 32,
+                     "mov.b64 pack register components must be 32 bits.");
+      }
+    } else {
+      const unsigned vector_width = vector_width_from_options(g_options);
+      parse_assert(vector_width != 0,
+                   "literal vector store requires a vector qualifier.");
+      parse_assert(components.size() == vector_width,
+                   "vector operand width does not match vector qualifier.");
+      parse_assert(g_scalar_type_spec != -1,
+                   "literal vector store requires a scalar type.");
+
+      const int instruction_type = g_scalar_type_spec;
+      const unsigned instruction_bits = scalar_type_bits(instruction_type);
 
     // Decimal floating-point operands are lexed as doubles.  PTX applies the
     // instruction type to them, just as it does for scalar operands, so make
     // that contextual f64-to-f32 conversion before comparing components.
-    if (instruction_type == F32_TYPE) {
-      for (operand_info &component : components) {
-        if (component.get_type() != double_op_t) continue;
-        const ptx_reg_t value = component.get_literal_value();
-        component = operand_info(static_cast<float>(value.f64), gpgpu_ctx);
+      if (instruction_type == F32_TYPE) {
+        for (operand_info &component : components) {
+          if (component.get_type() != double_op_t) continue;
+          const ptx_reg_t value = component.get_literal_value();
+          component = operand_info(static_cast<float>(value.f64), gpgpu_ctx);
+        }
       }
-    }
 
-    enum operand_type literal_type = undef_t;
-    for (const operand_info &component : components) {
-      if (!component.is_literal()) continue;
-      if (literal_type == undef_t) {
-        literal_type = component.get_type();
-      } else {
-        parse_assert(component.get_type() == literal_type,
-                     "vector literal components must have a uniform type.");
+      enum operand_type literal_type = undef_t;
+      for (const operand_info &component : components) {
+        if (!component.is_literal()) continue;
+        if (literal_type == undef_t) {
+          literal_type = component.get_type();
+        } else {
+          parse_assert(component.get_type() == literal_type,
+                       "vector literal components must have a uniform type.");
+        }
       }
-    }
 
-    if (literal_type == int_t || literal_type == unsigned_t) {
-      parse_assert(is_bit_scalar_type(instruction_type) ||
-                       is_integer_scalar_type(instruction_type),
-                   "integer vector literal is incompatible with store type.");
-    } else if (literal_type == float_op_t) {
-      parse_assert(instruction_bits == 32 && (instruction_type == B32_TYPE ||
-                                              instruction_type == F32_TYPE),
-                   "f32 vector literal is incompatible with store type.");
-    } else if (literal_type == double_op_t) {
-      parse_assert(instruction_bits == 64 && (instruction_type == B64_TYPE ||
-                                              instruction_type == F64_TYPE),
-                   "f64 vector literal is incompatible with store type.");
-    } else {
-      parse_assert(false, "unsupported vector literal type in store operand.");
-    }
-
-    for (const operand_info &component : components) {
-      if (component.is_literal()) continue;
-      const symbol *symbol = component.get_symbol();
-      parse_assert(symbol != NULL && symbol->type() != NULL,
-                   "vector register component has no type.");
-      const int register_type = symbol->type()->get_key().scalar_type();
-      parse_assert(scalar_type_bits(register_type) == instruction_bits,
-                   "vector register width is incompatible with store type.");
-      if (!is_bit_scalar_type(register_type) &&
-          !is_bit_scalar_type(instruction_type)) {
-        parse_assert(register_type == instruction_type,
-                     "vector register type is incompatible with store type.");
-      }
-      if (is_bit_scalar_type(instruction_type) &&
-          !is_bit_scalar_type(register_type)) {
-        const bool register_is_integer = is_integer_scalar_type(register_type);
-        const bool register_is_float = is_float_scalar_type(register_type);
+      if (literal_type == int_t || literal_type == unsigned_t) {
         parse_assert(
-            (literal_type == int_t && register_is_integer) ||
-                ((literal_type == float_op_t || literal_type == double_op_t) &&
-                 register_is_float),
-            "vector register and literal component types differ.");
+            is_bit_scalar_type(instruction_type) ||
+                is_integer_scalar_type(instruction_type),
+            "integer vector literal is incompatible with store type.");
+      } else if (literal_type == float_op_t) {
+        parse_assert(instruction_bits == 32 &&
+                         (instruction_type == B32_TYPE ||
+                          instruction_type == F32_TYPE),
+                     "f32 vector literal is incompatible with store type.");
+      } else if (literal_type == double_op_t) {
+        parse_assert(instruction_bits == 64 &&
+                         (instruction_type == B64_TYPE ||
+                          instruction_type == F64_TYPE),
+                     "f64 vector literal is incompatible with store type.");
+      } else {
+        parse_assert(false,
+                     "unsupported vector literal type in store operand.");
+      }
+
+      for (const operand_info &component : components) {
+        if (component.is_literal()) continue;
+        const symbol *symbol = component.get_symbol();
+        parse_assert(symbol != NULL && symbol->type() != NULL,
+                     "vector register component has no type.");
+        const int register_type = symbol->type()->get_key().scalar_type();
+        parse_assert(scalar_type_bits(register_type) == instruction_bits,
+                     "vector register width is incompatible with store type.");
+        if (!is_bit_scalar_type(register_type) &&
+            !is_bit_scalar_type(instruction_type)) {
+          parse_assert(
+              register_type == instruction_type,
+              "vector register type is incompatible with store type.");
+        }
+        if (is_bit_scalar_type(instruction_type) &&
+            !is_bit_scalar_type(register_type)) {
+          const bool register_is_integer =
+              is_integer_scalar_type(register_type);
+          const bool register_is_float = is_float_scalar_type(register_type);
+          parse_assert(
+              (literal_type == int_t && register_is_integer) ||
+                  ((literal_type == float_op_t ||
+                    literal_type == double_op_t) &&
+                   register_is_float),
+              "vector register and literal component types differ.");
+        }
       }
     }
   }
