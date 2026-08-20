@@ -821,10 +821,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_dsm_store_immediate", OPT_BOOL,
       &gpgpu_dsm_store_immediate,
-      "When NoC is on, also write peer smem at remote st issue "
-      "(default=1). 0 = write only on DSM_STORE deliver. "
-      "FLASHGPU_DSM_STORE_IMMEDIATE overrides at store time.",
-      "1");
+      "When NoC is on, write peer smem at remote st issue "
+      "(default=0 = only on DSM_STORE deliver, closer to silicon). "
+      "1 = also write at issue. FLASHGPU_DSM_STORE_IMMEDIATE overrides "
+      "at store time. NoC-off always writes immediately.",
+      "0");
   option_parser_register(opp, "-gpgpu_tma_mcast_enable_timing", OPT_BOOL,
                          &gpgpu_tma_mcast_enable_timing,
                          "Route TMA cluster multicast data/mbar through NoC when NoC enabled (default=1)",

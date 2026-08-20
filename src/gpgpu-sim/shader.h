@@ -2023,8 +2023,8 @@ class shader_core_config : public core_config {
   char *gpgpu_dsm_latency_matrix_file;
   // Simple DSM BW: extra NoC cycles ceil(bytes/BPC)-1 (0=unlimited).
   unsigned int gpgpu_dsm_bytes_per_cycle;
-  // When NoC is on: 1 = inject hop + write peer smem at issue (default);
-  // 0 = write peer smem only on DSM_STORE deliver. NoC-off always writes now.
+  // When NoC is on: 0 (default) = write peer smem only on DSM_STORE deliver;
+  // 1 = also write at issue. NoC-off always writes now.
   bool gpgpu_dsm_store_immediate;
   bool gpgpu_tma_mcast_enable_timing;
   unsigned int gpgpu_tma_mcast_hop_latency;

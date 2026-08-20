@@ -549,7 +549,7 @@ TEST_F(DsmTest, MapaAfterProducerExit_FailsLoud) {
 }
 
 // ---------------------------------------------------------------------------
-// Delayed store visibility (-gpgpu_dsm_store_immediate 0 via env).
+// Delayed store visibility (code default is 0; env pins it for this process).
 // Consumer parks (try_wait timeout — not a peer-smem spin), snapshots local
 // smem once, then try_waits for the real arrive. After try_wait the payload
 // must be visible. The first snapshot must not assume instant visibility.

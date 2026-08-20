@@ -29,7 +29,7 @@ L2 model, 80 HBM channels). Clocks and latency knobs match `SM90_H200`
 
 - `-network_mode 2` (local interconnect; BookSim icnt unused / not sized for 16 SMs)
 - `-gpgpu_tma_idealized_memory 1` (functional TMA path)
-- `-gpgpu_dsm_store_immediate 0` (peer DSM `st` visible only after NoC deliver)
+- `-gpgpu_dsm_store_immediate 0` (peer DSM `st` visible only after NoC deliver; matches the code default)
 
 ## Usage
 

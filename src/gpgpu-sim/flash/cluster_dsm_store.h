@@ -2,8 +2,8 @@
 #define FLASH_GPGPU_SIM_CLUSTER_DSM_STORE_H
 
 // Issuer-side policy for remote DSM stores (see docs/cluster_noc.md).
-// Default: inject a NoC hop and also write peer smem immediately.
-// `-gpgpu_dsm_store_immediate 0` writes peer smem only on DSM_STORE deliver.
+// Default (0): inject a NoC hop; write peer smem only on DSM_STORE deliver
+// (closer to silicon). 1 = also write at issue (opt-in).
 // FLASHGPU_DSM_STORE_IMMEDIATE overrides the parsed knob at store time so
 // tests can switch without a second config file.
 

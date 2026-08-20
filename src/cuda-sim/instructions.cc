@@ -6363,10 +6363,11 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
 
   // Remote DSM store via cluster NoC when enabled.
-  // Default (-gpgpu_dsm_store_immediate 1): inject a hop for the issuer and
-  // also write peer smem immediately so mbarrier-ordered consumers see data.
-  // Set the knob or FLASHGPU_DSM_STORE_IMMEDIATE to 0 to write peer smem
-  // only when DSM_STORE is delivered. NoC-off still writes immediately.
+  // Default (-gpgpu_dsm_store_immediate 0): inject a hop; write peer smem
+  // only when DSM_STORE is delivered (closer to silicon). Set the knob or
+  // FLASHGPU_DSM_STORE_IMMEDIATE to 1 to also write at issue. NoC-off still
+  // writes immediately. Mbarrier-ordered consumers are safe either way:
+  // try_wait completes after arrive, which is injected after the store.
   auto try_noc_dsm_store = [&](const void *bytes, size_t nbytes) -> bool {
     auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
     if (!core || !core->get_cluster() || !core->get_cluster()->get_cluster_noc())

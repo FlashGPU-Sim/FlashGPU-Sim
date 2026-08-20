@@ -138,18 +138,19 @@ TEST(DsmStoreImmediate, StImplUsesShippedIssuePath) {
   EXPECT_NE(src.find("gpgpu_dsm_store_immediate"), std::string::npos);
 }
 
-TEST(DsmStoreImmediate, KnobRegisteredWithDefaultOn) {
+TEST(DsmStoreImmediate, KnobRegisteredWithDefaultOff) {
   const std::string path = find_repo_file("src/gpgpu-sim/gpu-sim.cc");
   ASSERT_FALSE(path.empty()) << "cannot find src/gpgpu-sim/gpu-sim.cc";
   std::ifstream in(path);
   ASSERT_TRUE(in);
   std::string src((std::istreambuf_iterator<char>(in)),
                   std::istreambuf_iterator<char>());
-  EXPECT_NE(src.find("\"-gpgpu_dsm_store_immediate\""), std::string::npos);
-  // option_parser default string is the last argument; must be "1".
   const auto pos = src.find("\"-gpgpu_dsm_store_immediate\"");
   ASSERT_NE(pos, std::string::npos);
-  const auto tail = src.substr(pos, 600);
-  EXPECT_NE(tail.find("\"1\""), std::string::npos)
-      << "parsed default for -gpgpu_dsm_store_immediate must stay 1";
+  const auto next = src.find("option_parser_register", pos + 8);
+  const auto block = src.substr(pos, next == std::string::npos ? 800 : next - pos);
+  EXPECT_NE(block.find("default=0"), std::string::npos)
+      << "help text must state default=0 (deliver-only, closer to silicon)";
+  EXPECT_NE(block.find("\"0\""), std::string::npos)
+      << "parsed default for -gpgpu_dsm_store_immediate must be 0";
 }

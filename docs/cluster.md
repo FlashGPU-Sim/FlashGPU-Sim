@@ -19,6 +19,7 @@ This is **not** a stack of separate “launch-only” / “TMA-only” / “NoC-
 | Doc | Role |
 |-----|------|
 | **`docs/cluster.md` (this file)** | Branch/PR overview, feature matrix, concurrency model, non-goals |
+| **`docs/cluster_cta2_midterm.md`** | Midterm snapshot: features, APIs/PTX, knobs, silicon gaps, **DSM model + timing figure**, why DSM is not the memory xbar |
 | **`docs/cluster_noc.md`** | NoC / DSM / remote mbar **design authority**; **§6.4–§6.6** maturity (F1–F9 + L0–L4); **§12** living checklist |
 | **`docs/cluster_cta2_realLaunch.md`** | Launch API, co-residency, configs `CLUSTERmxn`, tests |
 | **`FLASH.md`** | Product feature list + limitations (short) |
@@ -41,7 +42,7 @@ This is **not** a stack of separate “launch-only” / “TMA-only” / “NoC-
 | TMA cluster multicast (+ mask) | Yes | NoC hop when enabled; free/immediate when NoC off |
 | Local mbarrier | Yes (used ops); `try_wait` timeout sets dest pred | Calibrated arrive/try_wait knobs |
 | Remote mbarrier (mapa) | Yes | Via NoC hop |
-| DSM mapa + remote ld/st/`atom` | Yes (tested patterns); inactive rank **aborts**; `red`/`red.async` unimplemented | Flat hop L1; load RTT≈2×hop; store default dual-path, or deliver-only via `-gpgpu_dsm_store_immediate 0` |
+| DSM mapa + remote ld/st/`atom` | Yes (tested patterns); inactive rank **aborts**; `red`/`red.async` unimplemented | Flat hop L1; load RTT≈2×hop; store default deliver-only (`-gpgpu_dsm_store_immediate 0`); `1` also writes at issue |
 | Intra-cluster NoC | Yes | **L1** flat hop (H200); L2–L4 in §12 of `cluster_noc.md` |
 
 **Maturity (detailed tables):** `docs/cluster_noc.md` **§6.4** (functional usefulness), **§6.5** (cycle levels L0–L4), **§6.6** (functional gaps F1–F9). Living TODO: **§12**.
@@ -69,7 +70,7 @@ So rank 0 and rank 1 both **tick every GPU cycle**. They are concurrent the way 
 Event-ordered communication is correct because of **state + messages + cycle order**, not because two CTAs run simultaneously on the host:
 
 1. Both CTAs stay allocated until they retire (`mapa` of an inactive rank **aborts**).
-2. Cross-SM effects are NoC messages (or the documented default dual-path store). Peer smem / remote mbarrier change on **deliver** after a hop, on the same cluster thread. Remote DSM stores also write peer smem at issue unless `-gpgpu_dsm_store_immediate 0`.
+2. Cross-SM effects are NoC messages. Peer smem / remote mbarrier change on **deliver** after a hop, on the same cluster thread. Remote DSM stores write peer smem on deliver by default (`-gpgpu_dsm_store_immediate 0`); `1` also writes at issue.
 3. `mbarrier.try_wait` **registers interest and parks the warp**. The producer can issue, the hop can complete, then the waiter is released.
 
 That is the supported model: **mbarrier-ordered** cluster / TMA / DSM (same as `cluster_noc.md` §6.4 and §10).
@@ -90,7 +91,7 @@ This sim does **not** treat a load-loop as “I am waiting on a peer”:
 | Pattern | Real GPU | This sim |
 |---------|----------|----------|
 | TMA / DSM + **mbarrier** / `try_wait` | Works | **Supported** |
-| Peer ld/st/`atom` after that wait | Works | Works (decode + NoC; default immediate store, or deliver-only) |
+| Peer ld/st/`atom` after that wait | Works | Works (decode + NoC; default deliver-only store, or immediate if knob 1) |
 | Both CTAs live; each getting cycles | Parallel SMs | Yes in **cycle time**, one host thread per GPC |
 | Spin on peer smem or a global flag until the peer writes | Usually works | **May hang or miss the write** |
 | Two CTAs `atom` the same word in the same clock | HW arbiter | Never simultaneous (serialized on the cluster thread) |
