@@ -240,6 +240,9 @@ def render_make(manifests: tuple[ArchitectureManifest, ...]) -> str:
                 f"ARCH_DEFAULT_CONFIG_{prefix} := {manifest.config}",
                 f"ARCH_NVCC_TARGET_{prefix} := {manifest.nvcc_target}",
                 f"ARCH_COMPUTE_TARGET_{prefix} := {manifest.compute_target}",
+                f"ARCH_NVCC_CODEGEN_{prefix} := --generate-code="
+                f"arch={manifest.compute_target},"
+                f"code=[{manifest.compute_target},{manifest.nvcc_target}]",
             ]
         )
         lines.extend(_make_list(f"ARCH_TEST_GROUPS_{prefix}", list(manifest.test_groups)))

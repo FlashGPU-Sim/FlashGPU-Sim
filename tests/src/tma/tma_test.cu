@@ -300,6 +300,11 @@ constexpr unsigned kPhaseBytes = kChunkBytes * kCopiesPerPhase;
 constexpr unsigned kPhases = 2;
 constexpr unsigned kWordsPerPhase = kPhaseBytes / sizeof(uint32_t);
 constexpr unsigned kTotalWords = kPhases * kWordsPerPhase;
+constexpr unsigned kSlotPressureTransactions = 17;
+constexpr unsigned kSlotPressureChunkBytes = 2816;
+constexpr unsigned kSlotPressureBytes =
+    kSlotPressureTransactions * kSlotPressureChunkBytes;
+constexpr unsigned kSlotPressureWords = kSlotPressureBytes / sizeof(uint32_t);
 
 __device__ __forceinline__ uint64_t global_address(const void* pointer) {
   uint64_t address = 0;
@@ -320,6 +325,56 @@ __device__ __forceinline__ void linear_bulk_g2s(void* destination,
       : "l"(destination_s), "l"(source_g), "n"(kChunkBytes),
         "l"(barrier_s)
       : "memory");
+}
+
+__device__ __forceinline__ void slot_pressure_bulk_g2s(void* destination,
+                                                       const void* source,
+                                                       uint64_t* barrier) {
+  const uint64_t destination_s = smem_u64_addr(destination);
+  const uint64_t source_g = global_address(source);
+  const uint64_t barrier_s = smem_u64_addr(barrier);
+  asm volatile(
+      "cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes "
+      "[%0], [%1], %2, [%3];\n"
+      :
+      : "l"(destination_s), "l"(source_g), "n"(kSlotPressureChunkBytes),
+        "l"(barrier_s)
+      : "memory");
+}
+
+__global__ void tma_transaction_slot_pressure_kernel(const uint32_t* input,
+                                                     uint64_t* output_sum) {
+  extern __shared__ __align__(16) uint8_t shared[];
+  auto* barrier = reinterpret_cast<uint64_t*>(shared + kSlotPressureBytes);
+
+  if (threadIdx.x == 0) {
+    mbarrier_init(barrier, 1);
+    asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+    mbarrier_arrive_expect_tx(barrier, kSlotPressureBytes);
+  }
+  __syncthreads();
+
+  const unsigned warp = threadIdx.x / warpSize;
+  const unsigned lane = threadIdx.x % warpSize;
+  if (lane == 0 && warp < kSlotPressureTransactions) {
+    const unsigned byte_offset = warp * kSlotPressureChunkBytes;
+    slot_pressure_bulk_g2s(shared + byte_offset,
+                           input + byte_offset / sizeof(uint32_t), barrier);
+  }
+  __syncthreads();
+
+  if (threadIdx.x == 0) mbarrier_wait_parity(barrier, 0);
+  __syncthreads();
+
+  if (threadIdx.x == 0) {
+    const auto* words = reinterpret_cast<const uint32_t*>(shared);
+    uint64_t sum = 0;
+    for (unsigned word = 0; word < kSlotPressureWords; ++word) {
+      sum += words[word];
+    }
+    *output_sum = sum;
+    mbarrier_inval(barrier);
+  }
 }
 
 __global__ void linear_bulk_two_phase_kernel(const uint32_t* input,
@@ -387,6 +442,37 @@ TEST(TmaLinearBulkMultiTxBarrierTest,
   EXPECT_EQ(actual, expected);
 
   EXPECT_EQ(cudaFree(device_sums), cudaSuccess);
+  EXPECT_EQ(cudaFree(device_input), cudaSuccess);
+}
+
+TEST(TmaTransactionSlotTest, SeventeenthTransactionMakesForwardProgress) {
+  std::array<uint32_t, kSlotPressureWords> input{};
+  for (unsigned i = 0; i < input.size(); ++i) input[i] = i + 1;
+  const uint64_t expected =
+      std::accumulate(input.begin(), input.end(), uint64_t{0});
+
+  uint32_t* device_input = nullptr;
+  uint64_t* device_sum = nullptr;
+  ASSERT_EQ(cudaMalloc(&device_input, sizeof(input)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&device_sum, sizeof(uint64_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(device_input, input.data(), sizeof(input),
+                       cudaMemcpyHostToDevice),
+            cudaSuccess);
+
+  constexpr unsigned kThreads = kSlotPressureTransactions * 32;
+  constexpr unsigned kSharedBytes = kSlotPressureBytes + sizeof(uint64_t);
+  tma_transaction_slot_pressure_kernel<<<1, kThreads, kSharedBytes>>>(
+      device_input, device_sum);
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  uint64_t actual = 0;
+  ASSERT_EQ(cudaMemcpy(&actual, device_sum, sizeof(actual),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(actual, expected);
+
+  EXPECT_EQ(cudaFree(device_sum), cudaSuccess);
   EXPECT_EQ(cudaFree(device_input), cudaSuccess);
 }
 

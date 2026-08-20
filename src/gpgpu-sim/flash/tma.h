@@ -36,6 +36,7 @@ struct tma_progress_counters_t {
   unsigned long long write_mf_responses = 0;
   unsigned long long bytes_issued = 0;
   unsigned long long bytes_completed = 0;
+  unsigned long long max_active_transactions = 0;
 };
 
 tma_progress_counters_t get_global_tma_progress_counters();
@@ -89,6 +90,7 @@ public:
   void cycle();
 
   void fill(mem_fetch *mf);
+  bool can_accept_transaction() const;
   bool response_buffer_full() const;
   bool has_pending_for_cta(unsigned cta_id) const;
 

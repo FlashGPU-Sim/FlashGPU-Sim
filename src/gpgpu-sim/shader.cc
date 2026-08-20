@@ -1948,6 +1948,21 @@ void shader_core_ctx::issue_wgmma_warpgroup_control(
   // wgmma.commit_group/wait_group have no architectural register output.
 }
 
+bool shader_core_ctx::tma_frontend_available(
+    const warp_inst_t *inst, const active_mask_t &active_mask) const {
+  assert(inst != nullptr);
+  if (!active_mask.any()) return true;
+
+  const auto tma_type = inst->get_tma_static_info().tma_type;
+  if (tma_type == inst_t::tma_static_info_t::TMA_BULK_COMMIT ||
+      tma_type == inst_t::tma_static_info_t::TMA_BULK_WAIT) {
+    return true;
+  }
+
+  assert(m_tma != nullptr);
+  return m_tma->can_accept_transaction();
+}
+
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                  const warp_inst_t *next_inst,
                                  const active_mask_t &active_mask,
@@ -2645,7 +2660,8 @@ void scheduler_unit::cycle() {
                 bool tma_pipe_avail =
                     (m_shader->m_config->gpgpu_num_tma_units > 0) &&
                     m_tma_out->has_free(m_shader->m_config->sub_core_model,
-                                        m_id);
+                                        m_id) &&
+                    m_shader->tma_frontend_available(pI, active_mask);
 
                 if (tma_pipe_avail) {
                   m_shader->issue_warp(*m_tma_out, pI, active_mask, warp_id,
@@ -2867,9 +2883,13 @@ void scheduler_unit::cycle() {
             (op == TENSOR_MAP_OP &&
              m_shader->m_config->gpgpu_num_tensormap_units > 0)) {
           is_mio = true;
-          if (op == TENSOR_MEMORY_ACCELERATOR_OP)
+          if (op == TENSOR_MEMORY_ACCELERATOR_OP) {
+            const active_mask_t &tma_active_mask =
+                m_shader->get_active_mask(wid, pI);
             fu_full = !m_tma_out->has_free(m_shader->m_config->sub_core_model, m_id);
-          else if (op == ASYNC_COPY_OP)
+            fu_full = fu_full ||
+                      !m_shader->tma_frontend_available(pI, tma_active_mask);
+          } else if (op == ASYNC_COPY_OP)
             fu_full = m_shader->m_config->gpgpu_num_cp_async_units == 0 ||
                       !m_cp_async_out->has_free(
                 m_shader->m_config->sub_core_model, m_id);

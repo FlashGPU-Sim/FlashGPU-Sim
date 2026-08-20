@@ -797,6 +797,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &gpgpu_num_tensormap_units,
                          "Number of tensor-map descriptor units (default=0)",
                          "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_transaction_slots", OPT_UINT32,
+      &gpgpu_tma_transaction_slots,
+      "Max active TMA transactions accepted from warps per SM "
+      "(default=0, 0=unlimited)",
+      "0");
   option_parser_register(opp, "-gpgpu_tma_max_inflight", OPT_UINT32,
                          &gpgpu_tma_max_inflight,
                          "Max in-flight TMA mem_fetch requests per SM (default=0, 0=unlimited)", "0");
@@ -2097,6 +2103,9 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
                            "gpgpu_ldst_ordinary_request_transport");
   ldst_response_total.print(statfout,
                             "gpgpu_ldst_ordinary_response_transport");
+  auto tma_progress = flash_gpgpu_sim::get_global_tma_progress_counters();
+  printf("tma_max_active_transactions = %llu\n",
+         tma_progress.max_active_transactions);
   auto cp_async_debug = flash_gpgpu_sim::get_global_cp_async_debug_counters();
   printf("cp_async_debug_tx_started = %llu\n", cp_async_debug.tx_started);
   printf("cp_async_debug_tx_completed = %llu\n", cp_async_debug.tx_completed);

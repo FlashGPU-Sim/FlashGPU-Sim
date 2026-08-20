@@ -101,7 +101,7 @@ $(OBJ_DIR)/sm120/support/bulk_group.cu.o: $(SRC_DIR)/gpgpu-sim/flash/bulk_group.
 $(SRC_DIR)/gpgpu-sim/flash/bulk_group.h $(TOP_MAKEFILE) $(UNIT_MK) \
 arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
 	@mkdir -p $(dir $@)
-	$(NVCC) $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_sm120) $(INCLUDES) \
+	$(NVCC) $(SM120_NVCCFLAGS) $(INCLUDES) \
 		$(GPGPUSIM_FLAGS) -c $< -o $@
 
 $(OBJ_DIR)/sm120/support/tma_reduction.cu.o: \
@@ -111,7 +111,7 @@ $(SRC_DIR)/gpgpu-sim/flash/tensormap.h \
 $(SRC_DIR)/cuda-sim/half.h $(SRC_DIR)/cuda-sim/half.hpp \
 $(TOP_MAKEFILE) $(UNIT_MK) arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
 	@mkdir -p $(dir $@)
-	$(NVCC) $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_sm120) $(INCLUDES) \
+	$(NVCC) $(SM120_NVCCFLAGS) $(INCLUDES) \
 		$(GPGPUSIM_FLAGS) -c $< -o $@
 
 $(OBJ_DIR)/sm120/support/local_interconnect.cc.o: \
@@ -126,5 +126,5 @@ $(OBJ_DIR)/sm120/support/mshr-table.cu.o: $(SRC_DIR)/gpgpu-sim/mshr-table.cc \
 $(SRC_DIR)/gpgpu-sim/gpu-cache.h $(TOP_MAKEFILE) $(UNIT_MK) \
 arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
 	@mkdir -p $(dir $@)
-	$(NVCC) $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_sm120) $(INCLUDES) \
+	$(NVCC) $(SM120_NVCCFLAGS) $(INCLUDES) \
 		$(GPGPUSIM_FLAGS) -c $< -o $@

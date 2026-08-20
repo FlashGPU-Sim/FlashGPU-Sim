@@ -120,6 +120,7 @@ inherit another limit.
 | Option | Code default | SM90_H100 | SM120_RTX5090 | Meaning |
 | --- | ---: | ---: | ---: | --- |
 | `-gpgpu_num_tma_units` | `0` | `1` | `1` | TMA execution units per SM; `0` disables the TMA pipeline |
+| `-gpgpu_tma_transaction_slots` | `0` | default | `16` | Active TMA transactions accepted from warps per SM; a full table backpressures new TMA copies, and `0` is unlimited |
 | `-gpgpu_tma_max_inflight` | `0` | `384` | `384` | Maximum in-flight TMA memory requests per SM; `0` is unlimited |
 | `-gpgpu_tma_tx_quota` | `0` | `48` | `48` | Base in-flight request quota per TMA transaction; `0` is unlimited |
 | `-gpgpu_tma_quota_segment_bytes` | `0` | default | `8192` | Scale the transaction quota by `ceil(transaction_bytes / segment_bytes)`; `0` disables scaling |

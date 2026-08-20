@@ -2100,6 +2100,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_num_tma_units;
   unsigned int gpgpu_num_cp_async_units;
   unsigned int gpgpu_num_tensormap_units;
+  unsigned int gpgpu_tma_transaction_slots;
   unsigned int gpgpu_tma_max_inflight;
   unsigned int gpgpu_tma_tx_quota;
   unsigned int gpgpu_tma_quota_segment_bytes;
@@ -2990,6 +2991,8 @@ class shader_core_ctx : public core_t {
   bool can_issue_wgmma_warpgroup(const unsigned *warp_ids, unsigned count,
                                  register_set &pipe_reg_set,
                                  const warp_inst_t *inst) const;
+  bool tma_frontend_available(const warp_inst_t *inst,
+                              const active_mask_t &active_mask) const;
   unsigned wgmma_cta_warpgroup_id(unsigned warp_id) const;
   bool wgmma_issued_this_cycle() const { return m_wgmma_issued_this_cycle; }
   void mark_scheduler_issued(unsigned sch_id);

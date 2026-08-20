@@ -45,6 +45,7 @@ static std::atomic<unsigned long long> g_tma_read_mf_responses{0};
 static std::atomic<unsigned long long> g_tma_write_mf_responses{0};
 static std::atomic<unsigned long long> g_tma_bytes_issued{0};
 static std::atomic<unsigned long long> g_tma_bytes_completed{0};
+static std::atomic<unsigned long long> g_tma_max_active_transactions{0};
 
 static std::atomic<unsigned long long> g_cp_async_tx_started{0};
 static std::atomic<unsigned long long> g_cp_async_tx_completed{0};
@@ -105,6 +106,8 @@ tma_progress_counters_t get_global_tma_progress_counters() {
   counters.bytes_issued = g_tma_bytes_issued.load(std::memory_order_relaxed);
   counters.bytes_completed =
       g_tma_bytes_completed.load(std::memory_order_relaxed);
+  counters.max_active_transactions =
+      g_tma_max_active_transactions.load(std::memory_order_relaxed);
   return counters;
 }
 
@@ -1203,7 +1206,15 @@ private:
   }
 
 public:
+  bool can_accept_transaction() const {
+    const unsigned slots =
+        m_shader_ctx->get_config()->gpgpu_tma_transaction_slots;
+    return slots == 0 || m_transactions.size() < slots;
+  }
+
   void warp_reaches_tma(unsigned cta_id, unsigned warp_id, warp_inst_t *inst) {
+    assert(can_accept_transaction() &&
+           "TMA transaction reached a full front-end slot table");
     ptx_instruction *pI = dynamic_cast<ptx_instruction *>(inst);
     if (pI == nullptr) {
       printf("Error: TMA inst is not a ptx_inst\n");
@@ -1328,6 +1339,7 @@ public:
         unsigned tx_uid =
             tma_next_tx_uid.fetch_add(1, std::memory_order_relaxed);
         m_transactions.emplace(tx_uid, tx);
+        atomic_update_max(g_tma_max_active_transactions, m_transactions.size());
 
         bool is_write_op = (tma_static_info.dst_space ==
                             inst_t::tma_static_info_t::TMA_GLOBAL);
@@ -1974,6 +1986,10 @@ tma_unit_t::~tma_unit_t() = default;
 void tma_unit_t::warp_reaches_tma(unsigned cta_id, unsigned warp_id,
                                   warp_inst_t *inst) {
   m_impl->warp_reaches_tma(cta_id, warp_id, inst);
+}
+
+bool tma_unit_t::can_accept_transaction() const {
+  return m_impl->can_accept_transaction();
 }
 
 void tma_unit_t::warp_reaches_cp_async(unsigned cta_id, unsigned warp_id,
