@@ -26,4 +26,5 @@ sources = [
   "unit/memory_transport_test.cc",
   "unit/rop_delay_output_test.cc",
   "unit/tcgen05_tmem_test.cc",
+  "unit/tcgen05_timing_test.cc",
 ]

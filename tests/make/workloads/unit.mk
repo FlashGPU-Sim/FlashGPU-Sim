@@ -10,6 +10,7 @@ TEST_GROUP_EXTRA_OBJECTS_sm100_unit := \
 	$(OBJ_DIR)/sm100/support/option_parser.cc.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/descriptor.cu.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/mma.cu.o \
+	$(OBJ_DIR)/sm100/support/tcgen05/timing.cu.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/tmem.cu.o
 
 TEST_GROUP_EXTRA_OBJECTS_sm120_unit := \
