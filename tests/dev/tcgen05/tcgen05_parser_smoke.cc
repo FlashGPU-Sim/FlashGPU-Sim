@@ -165,7 +165,8 @@ void assert_tcgen05_phase1_decode(gpgpu_context *ctx,
 
   const ptx_instruction *wait = first(by_opcode, TCGEN05_WAIT_OP);
   expect_operand_count(wait, 0);
-  expect_options(wait, {SYNC_OPTION, ALIGNED_OPTION});
+  expect_options(wait,
+                 {TCGEN05_WAIT_ST_OPTION, SYNC_OPTION, ALIGNED_OPTION});
 
   expect_operand_count(first(by_opcode, TCGEN05_DEALLOC_OP), 2);
   expect_operand_count(first(by_opcode, TCGEN05_RELINQUISH_ALLOC_PERMIT_OP),
@@ -236,6 +237,13 @@ void assert_tcgen05_surface_decode(gpgpu_context *ctx,
     expect_vector_width(inst, 1, 1);
   }
   if (!saw_unpack) fail("tcgen05.st surface did not preserve .unpack::16b");
+
+  const std::vector<const ptx_instruction *> &waits =
+      by_opcode.at(TCGEN05_WAIT_OP);
+  expect_options(waits.at(0),
+                 {TCGEN05_WAIT_LD_OPTION, SYNC_OPTION, ALIGNED_OPTION});
+  expect_options(waits.at(1),
+                 {TCGEN05_WAIT_ST_OPTION, SYNC_OPTION, ALIGNED_OPTION});
 }
 
 }  // namespace
