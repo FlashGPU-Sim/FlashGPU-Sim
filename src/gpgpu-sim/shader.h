@@ -60,6 +60,7 @@
 #include "traffic_breakdown.h"
 #include "flash/mbarrier.h"
 #include "flash/bulk_group.h"
+#include "flash/tcgen05/timing.h"
 #include "flash/tma.h"
 #include "flash/wgmma/tensor_wgmma.h"
 #include "flash/tma.h"
@@ -1110,6 +1111,7 @@ enum barrier_wait_type_t {
   BARRIER_WAIT_BULK_GROUP,   // cp.async.bulk.wait_group (TMA)
   BARRIER_WAIT_CP_ASYNC_GROUP,  // cp.async.wait_group
   BARRIER_WAIT_WGMMA_GROUP,  // wgmma.wait_group
+  BARRIER_WAIT_TCGEN05,       // tcgen05.wait::ld/st
 };
 
 static inline const char *barrier_wait_type_name(barrier_wait_type_t type) {
@@ -1124,6 +1126,8 @@ static inline const char *barrier_wait_type_name(barrier_wait_type_t type) {
     return "cp_async_group";
   case BARRIER_WAIT_WGMMA_GROUP:
     return "wgmma_group";
+  case BARRIER_WAIT_TCGEN05:
+    return "tcgen05";
   }
   return "unknown";
 }
@@ -1187,6 +1191,9 @@ class barrier_set_t {
   // WGMMA wait_group uses the barrier bitset only as a scheduler wait state.
   void set_wgmma_waiting_warps(const unsigned *warp_ids, unsigned count);
   void release_wgmma_warps(const std::vector<unsigned> &released_warps);
+
+  void wait_tcgen05_warp(unsigned warp_id);
+  void release_tcgen05_warp(unsigned warp_id);
 
   // warp reaches exit
   void warp_exit(unsigned warp_id);
@@ -1932,6 +1939,64 @@ class shader_core_config : public core_config {
              "<depth,startup_gap,fast_gap,slow_gap,reset_gap>\n");
       abort();
     }
+    int tcgen05_cp_latency_ntok = sscanf(
+        ptx_opcode_tcgen05_cp_completion_latency, "%u,%u,%u,%u,%u",
+        &tcgen05_cp_completion_latency[0], &tcgen05_cp_completion_latency[1],
+        &tcgen05_cp_completion_latency[2], &tcgen05_cp_completion_latency[3],
+        &tcgen05_cp_completion_latency[4]);
+    int tcgen05_cp_ii_ntok = sscanf(
+        ptx_opcode_tcgen05_cp_initiation_interval, "%u,%u,%u,%u,%u",
+        &tcgen05_cp_initiation_interval[0], &tcgen05_cp_initiation_interval[1],
+        &tcgen05_cp_initiation_interval[2], &tcgen05_cp_initiation_interval[3],
+        &tcgen05_cp_initiation_interval[4]);
+    int tcgen05_ld_latency_ntok = sscanf(
+        ptx_opcode_tcgen05_ld_completion_latency, "%u,%u,%u,%u,%u,%u,%u,%u",
+        &tcgen05_ld_completion_latency[0], &tcgen05_ld_completion_latency[1],
+        &tcgen05_ld_completion_latency[2], &tcgen05_ld_completion_latency[3],
+        &tcgen05_ld_completion_latency[4], &tcgen05_ld_completion_latency[5],
+        &tcgen05_ld_completion_latency[6], &tcgen05_ld_completion_latency[7]);
+    int tcgen05_ld_ii_ntok = sscanf(
+        ptx_opcode_tcgen05_ld_initiation_interval, "%u,%u,%u,%u,%u,%u,%u,%u",
+        &tcgen05_ld_initiation_interval[0], &tcgen05_ld_initiation_interval[1],
+        &tcgen05_ld_initiation_interval[2], &tcgen05_ld_initiation_interval[3],
+        &tcgen05_ld_initiation_interval[4], &tcgen05_ld_initiation_interval[5],
+        &tcgen05_ld_initiation_interval[6], &tcgen05_ld_initiation_interval[7]);
+    int tcgen05_st_latency_ntok = sscanf(
+        ptx_opcode_tcgen05_st_completion_latency, "%u,%u,%u,%u,%u,%u,%u,%u",
+        &tcgen05_st_completion_latency[0], &tcgen05_st_completion_latency[1],
+        &tcgen05_st_completion_latency[2], &tcgen05_st_completion_latency[3],
+        &tcgen05_st_completion_latency[4], &tcgen05_st_completion_latency[5],
+        &tcgen05_st_completion_latency[6], &tcgen05_st_completion_latency[7]);
+    int tcgen05_st_ii_ntok = sscanf(
+        ptx_opcode_tcgen05_st_initiation_interval, "%u,%u,%u,%u,%u,%u,%u,%u",
+        &tcgen05_st_initiation_interval[0], &tcgen05_st_initiation_interval[1],
+        &tcgen05_st_initiation_interval[2], &tcgen05_st_initiation_interval[3],
+        &tcgen05_st_initiation_interval[4], &tcgen05_st_initiation_interval[5],
+        &tcgen05_st_initiation_interval[6], &tcgen05_st_initiation_interval[7]);
+    if (tcgen05_cp_latency_ntok != 5 || tcgen05_cp_ii_ntok != 5 ||
+        tcgen05_ld_latency_ntok != 8 || tcgen05_ld_ii_ntok != 8 ||
+        tcgen05_st_latency_ntok != 8 || tcgen05_st_ii_ntok != 8 ||
+        ptx_opcode_tcgen05_mma_issue_interval == 0 ||
+        ptx_opcode_tcgen05_mma_f16_flops_per_cycle == 0 ||
+        ptx_opcode_tcgen05_shift_latency == 0) {
+      printf("GPGPU-Sim uArch: invalid TCGen05 timing configuration; "
+             "CP tables require 5 positive entries, LD/ST tables require 8 "
+             "positive entries, and MMA II/FLOP rate and shift latency must "
+             "be nonzero\n");
+      abort();
+    }
+    for (unsigned i = 0; i < 5; ++i) {
+      if (tcgen05_cp_completion_latency[i] == 0 ||
+          tcgen05_cp_initiation_interval[i] == 0)
+        abort();
+    }
+    for (unsigned i = 0; i < 8; ++i) {
+      if (tcgen05_ld_completion_latency[i] == 0 ||
+          tcgen05_ld_initiation_interval[i] == 0 ||
+          tcgen05_st_completion_latency[i] == 0 ||
+          tcgen05_st_initiation_interval[i] == 0)
+        abort();
+    }
 
     // CRITICAL: Validate number of SMs against MAX_STREAMING_MULTIPROCESSORS
     // This check prevents address space overflow in generic addressing mode.
@@ -2128,6 +2193,23 @@ class shader_core_config : public core_config {
   bool gpgpu_wgmma_rf_traffic_share_read_budget;
   bool gpgpu_wgmma_rf_traffic_assume_accumulate;
   bool gpgpu_wgmma_rf_traffic_include_rs_a;
+  unsigned int ptx_opcode_tcgen05_mma_issue_interval;
+  unsigned int ptx_opcode_tcgen05_mma_completion_base;
+  unsigned int ptx_opcode_tcgen05_mma_f16_flops_per_cycle;
+  unsigned int gpgpu_tcgen05_async_queue_depth;
+  char *ptx_opcode_tcgen05_cp_completion_latency;
+  char *ptx_opcode_tcgen05_cp_initiation_interval;
+  unsigned int tcgen05_cp_completion_latency[5];
+  unsigned int tcgen05_cp_initiation_interval[5];
+  char *ptx_opcode_tcgen05_ld_completion_latency;
+  char *ptx_opcode_tcgen05_ld_initiation_interval;
+  unsigned int tcgen05_ld_completion_latency[8];
+  unsigned int tcgen05_ld_initiation_interval[8];
+  char *ptx_opcode_tcgen05_st_completion_latency;
+  char *ptx_opcode_tcgen05_st_initiation_interval;
+  unsigned int tcgen05_st_completion_latency[8];
+  unsigned int tcgen05_st_initiation_interval[8];
+  unsigned int ptx_opcode_tcgen05_shift_latency;
 
   // Shader core resources
   unsigned gpgpu_shader_registers;
@@ -2184,6 +2266,7 @@ enum warp_stall_reason_t {
   STALL_MEMBAR,                 // at memory barrier
   STALL_WAIT_TMA,               // waiting for LDGSTS / TMA bulk wait
   STALL_WAIT_WGMMA,             // waiting for WGMMA async group
+  STALL_WAIT_TCGEN05,           // waiting for TCGen05 LD/ST completion
   STALL_ATOMIC,                 // waiting for atomic completion
   STALL_SCOREBOARD_MEM_GLOBAL,  // RAW hazard on global/local mem load
   STALL_SCOREBOARD_MEM_SHARED,  // RAW hazard on shared mem op
@@ -2311,6 +2394,16 @@ struct shader_core_stats_pod {
   unsigned long long wgmma_collector_tokens_drained;
   unsigned long long wgmma_collector_active_cycles;
   unsigned long long wgmma_collector_max_backlog;
+
+  unsigned long long tcgen05_issued[flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT];
+  unsigned long long tcgen05_completed[flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT];
+  unsigned long long tcgen05_backend_busy_cycles;
+  unsigned long long tcgen05_queue_full_stall_cycles;
+  unsigned long long tcgen05_issue_interval_stall_cycles;
+  unsigned long long tcgen05_commit_wait_cycles;
+  unsigned long long tcgen05_ld_wait_cycles;
+  unsigned long long tcgen05_st_wait_cycles;
+  unsigned long long tcgen05_max_queue_occupancy;
 };
 
 class shader_core_stats : public shader_core_stats_pod {
@@ -2993,6 +3086,9 @@ class shader_core_ctx : public core_t {
                                  const warp_inst_t *inst) const;
   bool tma_frontend_available(const warp_inst_t *inst,
                               const active_mask_t &active_mask) const;
+  bool tcgen05_frontend_available(const warp_inst_t *inst,
+                                  const active_mask_t &active_mask,
+                                  uint64_t cycle);
   unsigned wgmma_cta_warpgroup_id(unsigned warp_id) const;
   bool wgmma_issued_this_cycle() const { return m_wgmma_issued_this_cycle; }
   void mark_scheduler_issued(unsigned sch_id);
@@ -3093,6 +3189,8 @@ class shader_core_ctx : public core_t {
   std::vector<shd_warp_t *> m_warp;  // per warp information array
   barrier_set_t m_barriers;
   flash_gpgpu_sim::wgmma_unit_t m_wgmma;
+  flash_gpgpu_sim::tcgen05_unit_t m_tcgen05;
+  flash_gpgpu_sim::tcgen05_timing_stats_t m_tcgen05_last_stats;
   ifetch_buffer_t m_inst_fetch_buffer;
   std::vector<register_set> m_pipeline_reg;
   Scoreboard *m_scoreboard;

@@ -926,6 +926,58 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "WGMMA (default=0)",
       "0");
   option_parser_register(
+      opp, "-ptx_opcode_tcgen05_mma_issue_interval", OPT_UINT32,
+      &ptx_opcode_tcgen05_mma_issue_interval,
+      "Minimum cycles between accepted TCGen05 FP16 MMA operations", "1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_mma_completion_base", OPT_UINT32,
+      &ptx_opcode_tcgen05_mma_completion_base,
+      "Fixed TCGen05 MMA completion tail in cycles", "0");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_mma_f16_flops_per_cycle", OPT_UINT32,
+      &ptx_opcode_tcgen05_mma_f16_flops_per_cycle,
+      "Per-SM dense FP16 TCGen05 backend throughput in FLOP/cycle", "1");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_async_queue_depth", OPT_UINT32,
+      &gpgpu_tcgen05_async_queue_depth,
+      "Maximum per-SM outstanding TCGen05 operations (0=unlimited)", "0");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_cp_completion_latency", OPT_CSTR,
+      &ptx_opcode_tcgen05_cp_completion_latency,
+      "TCGen05 CP completion cycles for "
+      "<128x256b,128x128b,64x128b,32x128b,4x256b>",
+      "1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_cp_initiation_interval", OPT_CSTR,
+      &ptx_opcode_tcgen05_cp_initiation_interval,
+      "TCGen05 CP initiation intervals for "
+      "<128x256b,128x128b,64x128b,32x128b,4x256b>",
+      "1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_ld_completion_latency", OPT_CSTR,
+      &ptx_opcode_tcgen05_ld_completion_latency,
+      "TCGen05 LD completion cycles for <x1,x2,x4,x8,x16,x32,x64,x128>",
+      "1,1,1,1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_ld_initiation_interval", OPT_CSTR,
+      &ptx_opcode_tcgen05_ld_initiation_interval,
+      "TCGen05 LD initiation intervals for <x1,x2,x4,x8,x16,x32,x64,x128>",
+      "1,1,1,1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_st_completion_latency", OPT_CSTR,
+      &ptx_opcode_tcgen05_st_completion_latency,
+      "TCGen05 ST completion cycles for <x1,x2,x4,x8,x16,x32,x64,x128>",
+      "1,1,1,1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_st_initiation_interval", OPT_CSTR,
+      &ptx_opcode_tcgen05_st_initiation_interval,
+      "TCGen05 ST initiation intervals for <x1,x2,x4,x8,x16,x32,x64,x128>",
+      "1,1,1,1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_shift_latency", OPT_UINT32,
+      &ptx_opcode_tcgen05_shift_latency,
+      "TCGen05 shift completion latency in cycles", "1");
+  option_parser_register(
       opp, "-gpgpu_num_mem_units", OPT_UINT32, &gpgpu_num_mem_units,
       "Number if ldst units (default=1) WARNING: not hooked up to anything",
       "1");

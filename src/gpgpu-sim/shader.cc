@@ -107,6 +107,17 @@ issue_trace_state &get_issue_trace_state() {
   return state;
 }
 
+flash_gpgpu_sim::tcgen05_timing_config_t tcgen05_timing_config(
+    const shader_core_config *config) {
+  flash_gpgpu_sim::tcgen05_timing_config_t result;
+  result.mma_issue_interval = config->ptx_opcode_tcgen05_mma_issue_interval;
+  result.mma_completion_base = config->ptx_opcode_tcgen05_mma_completion_base;
+  result.mma_f16_flops_per_cycle =
+      config->ptx_opcode_tcgen05_mma_f16_flops_per_cycle;
+  result.async_queue_depth = config->gpgpu_tcgen05_async_queue_depth;
+  return result;
+}
+
 const char *issue_trace_op_name(unsigned op) {
   switch (op) {
     case SP_OP:
@@ -713,6 +724,7 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
       m_barriers(this, config->max_warps_per_shader, config->max_cta_per_core,
                  config->max_barriers_per_cta, config->warp_size),
       m_wgmma(&m_barriers, config),
+      m_tcgen05(tcgen05_timing_config(config)),
       m_active_warps(0),
       m_subpartition_issue_mask(0),
       m_wgmma_issued_this_cycle(false),
@@ -1017,6 +1029,19 @@ void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, in
   wgmma_collector_max_backlog =
       std::max(wgmma_collector_max_backlog,
                other.wgmma_collector_max_backlog);
+  for (unsigned i = 0; i < flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT; ++i) {
+    tcgen05_issued[i] += other.tcgen05_issued[i];
+    tcgen05_completed[i] += other.tcgen05_completed[i];
+  }
+  accumulate(tcgen05_backend_busy_cycles);
+  accumulate(tcgen05_queue_full_stall_cycles);
+  accumulate(tcgen05_issue_interval_stall_cycles);
+  accumulate(tcgen05_commit_wait_cycles);
+  accumulate(tcgen05_ld_wait_cycles);
+  accumulate(tcgen05_st_wait_cycles);
+  tcgen05_max_queue_occupancy =
+      std::max(tcgen05_max_queue_occupancy,
+               other.tcgen05_max_queue_occupancy);
 
   merge(gpgpu_n_shmem_bank_access);
   merge(n_simt_to_mem);
@@ -1094,6 +1119,17 @@ void shader_core_stats::clear_accumulator() {
   accumulate(wgmma_collector_tokens_drained);
   accumulate(wgmma_collector_active_cycles);
   accumulate(wgmma_collector_max_backlog);
+  for (unsigned i = 0; i < flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT; ++i) {
+    tcgen05_issued[i] = 0;
+    tcgen05_completed[i] = 0;
+  }
+  accumulate(tcgen05_backend_busy_cycles);
+  accumulate(tcgen05_queue_full_stall_cycles);
+  accumulate(tcgen05_issue_interval_stall_cycles);
+  accumulate(tcgen05_commit_wait_cycles);
+  accumulate(tcgen05_ld_wait_cycles);
+  accumulate(tcgen05_st_wait_cycles);
+  accumulate(tcgen05_max_queue_occupancy);
 
   m_outgoing_traffic_stats->clear();
   m_incoming_traffic_stats->clear();
@@ -1252,12 +1288,31 @@ void shader_core_stats::print(FILE *fout) const {
   fprintf(fout, "  active_cycles = %llu\n",
           wgmma_collector_active_cycles);
 
+  static const char *tcgen05_op_labels[] = {"mma", "cp", "shift", "ld", "st"};
+  fprintf(fout, "TCGen05 Timing:\n");
+  for (unsigned i = 0; i < flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT; ++i) {
+    fprintf(fout, "  %s_issued = %llu\n", tcgen05_op_labels[i],
+            tcgen05_issued[i]);
+    fprintf(fout, "  %s_completed = %llu\n", tcgen05_op_labels[i],
+            tcgen05_completed[i]);
+  }
+  fprintf(fout, "  backend_busy_cycles = %llu\n", tcgen05_backend_busy_cycles);
+  fprintf(fout, "  queue_full_stall_cycles = %llu\n",
+          tcgen05_queue_full_stall_cycles);
+  fprintf(fout, "  issue_interval_stall_cycles = %llu\n",
+          tcgen05_issue_interval_stall_cycles);
+  fprintf(fout, "  commit_wait_cycles = %llu\n", tcgen05_commit_wait_cycles);
+  fprintf(fout, "  ld_wait_cycles = %llu\n", tcgen05_ld_wait_cycles);
+  fprintf(fout, "  st_wait_cycles = %llu\n", tcgen05_st_wait_cycles);
+  fprintf(fout, "  max_queue_occupancy = %llu\n", tcgen05_max_queue_occupancy);
+
   // NCU-style warp stall breakdown
   {
     static const char *stall_labels[NUM_STALL_REASONS] = {
         "Selected",        "NoInstruction",    "Barrier",
         "Membar",          "WaitTMA",          "WaitWGMMA",
-        "Atomic",          "SB_MemGlobal",     "SB_MemShared",
+        "WaitTCGen05",     "Atomic",           "SB_MemGlobal",
+        "SB_MemShared",
         "SB_TensorCore",   "SB_SpInt",         "SB_Sfu",
         "SB_Tma",          "SB_Other",         "MathPipeThrottle",
         "MioThrottle",     "PipeStallOther",   "NotSelected",
@@ -1693,6 +1748,110 @@ static unsigned wgmma_wait_group_num_from_inst(const warp_inst_t *inst) {
   return static_cast<unsigned>(op.get_literal_value().u64);
 }
 
+static int tcgen05_opcode(const warp_inst_t *inst) {
+  const ptx_instruction *ptx_inst = dynamic_cast<const ptx_instruction *>(inst);
+  return ptx_inst == NULL ? -1 : ptx_inst->get_opcode();
+}
+
+static bool tcgen05_has_option(const ptx_instruction *inst, int option) {
+  const std::list<int> options = inst->get_options();
+  return std::find(options.begin(), options.end(), option) != options.end();
+}
+
+static flash_gpgpu_sim::tcgen05_op_kind_t tcgen05_timing_kind(int opcode) {
+  switch (opcode) {
+    case TCGEN05_MMA_OP:
+      return flash_gpgpu_sim::TCGEN05_TIMING_MMA;
+    case TCGEN05_CP_OP:
+      return flash_gpgpu_sim::TCGEN05_TIMING_CP;
+    case TCGEN05_SHIFT_OP:
+      return flash_gpgpu_sim::TCGEN05_TIMING_SHIFT;
+    case TCGEN05_LD_OP:
+      return flash_gpgpu_sim::TCGEN05_TIMING_LD;
+    case TCGEN05_ST_OP:
+      return flash_gpgpu_sim::TCGEN05_TIMING_ST;
+    default:
+      abort();
+  }
+}
+
+static bool is_tcgen05_timing_data_op(int opcode) {
+  return opcode == TCGEN05_MMA_OP || opcode == TCGEN05_CP_OP ||
+         opcode == TCGEN05_SHIFT_OP || opcode == TCGEN05_LD_OP ||
+         opcode == TCGEN05_ST_OP;
+}
+
+static unsigned tcgen05_cp_shape_index(const ptx_instruction *inst) {
+  if (tcgen05_has_option(inst, TCGEN05_128X256B_OPTION)) return 0;
+  if (tcgen05_has_option(inst, TCGEN05_128X128B_OPTION)) return 1;
+  if (tcgen05_has_option(inst, TCGEN05_64X128B_OPTION)) return 2;
+  if (tcgen05_has_option(inst, TCGEN05_32X128B_OPTION)) return 3;
+  if (tcgen05_has_option(inst, TCGEN05_4X256B_OPTION)) return 4;
+  fprintf(stderr, "GPGPU-Sim: unsupported TCGen05 CP timing shape: %s\n",
+          inst->to_string().c_str());
+  abort();
+}
+
+static unsigned tcgen05_vector_width_index(unsigned width) {
+  unsigned index = 0;
+  unsigned value = 1;
+  while (value < width && index < 7) {
+    value <<= 1;
+    ++index;
+  }
+  if (value != width) {
+    fprintf(stderr, "GPGPU-Sim: unsupported TCGen05 vector width x%u\n", width);
+    abort();
+  }
+  return index;
+}
+
+static flash_gpgpu_sim::tcgen05_op_t tcgen05_timing_op(
+    const ptx_instruction *inst, const ptx_instruction *dynamic_inst,
+    const shader_core_config *config) {
+  flash_gpgpu_sim::tcgen05_op_t op;
+  const int opcode = inst->get_opcode();
+  op.kind = tcgen05_timing_kind(opcode);
+  if (opcode == TCGEN05_MMA_OP) {
+    assert(dynamic_inst != NULL);
+    op.work = dynamic_inst->get_tcgen05_dyn_info(0).mma_work;
+    assert(op.work != 0);
+  } else if (opcode == TCGEN05_CP_OP) {
+    const unsigned index = tcgen05_cp_shape_index(inst);
+    op.completion_latency = config->tcgen05_cp_completion_latency[index];
+    op.initiation_interval = config->tcgen05_cp_initiation_interval[index];
+  } else if (opcode == TCGEN05_LD_OP || opcode == TCGEN05_ST_OP) {
+    const unsigned operand_index = opcode == TCGEN05_LD_OP ? 0 : 1;
+    const operand_info &vector_operand = inst->operand_lookup(operand_index);
+    assert(vector_operand.is_vector());
+    const unsigned index =
+        tcgen05_vector_width_index(vector_operand.get_vect_nelem());
+    if (opcode == TCGEN05_LD_OP) {
+      op.completion_latency = config->tcgen05_ld_completion_latency[index];
+      op.initiation_interval = config->tcgen05_ld_initiation_interval[index];
+    } else {
+      op.completion_latency = config->tcgen05_st_completion_latency[index];
+      op.initiation_interval = config->tcgen05_st_initiation_interval[index];
+    }
+  } else {
+    assert(opcode == TCGEN05_SHIFT_OP);
+    op.completion_latency = config->ptx_opcode_tcgen05_shift_latency;
+    op.initiation_interval = config->ptx_opcode_tcgen05_mma_issue_interval;
+  }
+  return op;
+}
+
+bool shader_core_ctx::tcgen05_frontend_available(
+    const warp_inst_t *inst, const active_mask_t &active_mask, uint64_t cycle) {
+  const int opcode = tcgen05_opcode(inst);
+  if (!is_tcgen05_timing_data_op(opcode)) return true;
+  if (!active_mask.any()) return true;
+  if (opcode != TCGEN05_LD_OP && opcode != TCGEN05_ST_OP &&
+      !active_mask.test(0))
+    return true;
+  return m_tcgen05.can_enqueue(tcgen05_timing_kind(opcode), cycle);
+}
+
 bool shader_core_ctx::can_issue_wgmma_warpgroup(
     const unsigned *warp_ids, unsigned count, register_set &pipe_reg_set,
     const warp_inst_t *inst) const {
@@ -1986,16 +2145,25 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   // a copy made before execution.
   ptx_instruction *dyn_inst = nullptr;
   ptx_instruction *mbarrier_dyn_inst = nullptr;
+  ptx_instruction *tcgen05_dyn_inst = nullptr;
   const ptx_instruction *next_ptx_inst =
       dynamic_cast<const ptx_instruction *>(next_inst);
   const bool is_tcgen05_commit =
       next_ptx_inst && next_ptx_inst->get_opcode() == TCGEN05_COMMIT_OP;
+  const bool is_tcgen05_mma =
+      next_ptx_inst && next_ptx_inst->get_opcode() == TCGEN05_MMA_OP;
   if (next_inst->op == MBARRIER_OP || is_tcgen05_commit ||
       next_inst->m_is_cp_async_mbarrier_arrive) {
     mbarrier_dyn_inst = const_cast<ptx_instruction *>(
         flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(
             next_inst->pc, static_cast<const ptx_instruction *>(next_inst)));
     mbarrier_dyn_inst->reset_mbarrier_info();
+  }
+  if (is_tcgen05_mma) {
+    tcgen05_dyn_inst = const_cast<ptx_instruction *>(
+        flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(
+            next_inst->pc, static_cast<const ptx_instruction *>(next_inst)));
+    tcgen05_dyn_inst->reset_tcgen05_dyn_info();
   }
   if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
     dyn_inst = const_cast<ptx_instruction *>(
@@ -2006,6 +2174,30 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   
   m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
   func_exec_inst(**pipe_reg);
+
+  if (next_ptx_inst && is_tcgen05_timing_data_op(next_ptx_inst->get_opcode()) &&
+      (*pipe_reg)->get_active_mask().any()) {
+    const int opcode = next_ptx_inst->get_opcode();
+    const uint64_t now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+    const flash_gpgpu_sim::tcgen05_op_t op =
+        tcgen05_timing_op(next_ptx_inst, tcgen05_dyn_inst, m_config);
+    const unsigned cta_id = m_warp[warp_id]->get_cta_id();
+    if (opcode == TCGEN05_LD_OP || opcode == TCGEN05_ST_OP) {
+      assert((*pipe_reg)->get_active_mask().count() == m_config->warp_size &&
+             "TCGen05 LD/ST must be warp collective");
+      flash_gpgpu_sim::tcgen05_warp_stream_key_t stream;
+      stream.hw_cta_id = cta_id;
+      stream.warp_id = warp_id;
+      m_tcgen05.enqueue_warp_mem_op(stream, op, now);
+    } else if ((*pipe_reg)->get_active_mask().test(0)) {
+      flash_gpgpu_sim::tcgen05_thread_stream_key_t stream;
+      stream.hw_cta_id = cta_id;
+      stream.warp_id = warp_id;
+      stream.lane_id = 0;
+      stream.cta_group = 1;
+      m_tcgen05.enqueue_thread_op(stream, op, now);
+    }
+  }
 
   // Add LDGSTS instructions into a buffer
   unsigned int ldgdepbar_id = m_warp[warp_id]->m_ldgdepbar_id;
@@ -2026,7 +2218,36 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
     m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
                                     const_cast<warp_inst_t *>(next_inst));
-  } else if (next_inst->op == MBARRIER_OP || is_tcgen05_commit) {
+  } else if (is_tcgen05_commit) {
+    if ((*pipe_reg)->get_active_mask().test(0)) {
+      assert(mbarrier_dyn_inst != NULL);
+      const inst_t::mbarrier_info_t &info =
+          mbarrier_dyn_inst->get_mbarrier_info(0);
+      assert(info.bar_id != (unsigned)-1);
+      flash_gpgpu_sim::tcgen05_thread_stream_key_t stream;
+      stream.hw_cta_id = m_warp[warp_id]->get_cta_id();
+      stream.warp_id = warp_id;
+      stream.lane_id = 0;
+      stream.cta_group = 1;
+      m_tcgen05.commit(stream, info.bar_id);
+    }
+  } else if (next_ptx_inst && next_ptx_inst->get_opcode() == TCGEN05_WAIT_OP) {
+    if ((*pipe_reg)->get_active_mask().any()) {
+      assert((*pipe_reg)->get_active_mask().count() == m_config->warp_size &&
+             "TCGen05 wait must be warp collective");
+      flash_gpgpu_sim::tcgen05_warp_stream_key_t stream;
+      stream.hw_cta_id = m_warp[warp_id]->get_cta_id();
+      stream.warp_id = warp_id;
+      bool satisfied = false;
+      if (tcgen05_has_option(next_ptx_inst, TCGEN05_WAIT_LD_OPTION)) {
+        satisfied = m_tcgen05.wait_ld(stream);
+      } else {
+        assert(tcgen05_has_option(next_ptx_inst, TCGEN05_WAIT_ST_OPTION));
+        satisfied = m_tcgen05.wait_st(stream);
+      }
+      if (!satisfied) m_barriers.wait_tcgen05_warp(warp_id);
+    }
+  } else if (next_inst->op == MBARRIER_OP) {
     // Skip mbarrier processing if no threads are active (e.g., all predicated out)
     if ((*pipe_reg)->get_active_mask().any()) {
       auto pI = mbarrier_dyn_inst;
@@ -2619,6 +2840,13 @@ void scheduler_unit::cycle() {
                     (m_shader->m_config->gpgpu_num_tensor_core_units > 0) &&
                     m_tensor_core_out->has_free(
                         m_shader->m_config->sub_core_model, m_id);
+                const unsigned long long tcgen05_now =
+                    m_shader->m_gpu->gpu_tot_sim_cycle +
+                    m_shader->m_gpu->gpu_sim_cycle;
+                tensor_core_pipe_avail =
+                    tensor_core_pipe_avail &&
+                    m_shader->tcgen05_frontend_available(
+                        pI, active_mask, tcgen05_now);
                 if (tensor_core_pipe_avail) {
                   if (is_wgmma_mma_async(pI)) {
                     unsigned wgmma_warp_ids[WGMMA_WARPGROUP_SIZE] = {
@@ -2829,6 +3057,8 @@ void scheduler_unit::cycle() {
           reason = STALL_WAIT_TMA;
         else if (btype == BARRIER_WAIT_WGMMA_GROUP)
           reason = STALL_WAIT_WGMMA;
+        else if (btype == BARRIER_WAIT_TCGEN05)
+          reason = STALL_WAIT_TCGEN05;
         else
           reason = STALL_BARRIER;
       } else if (m_shader->warp_waiting_at_mem_barrier(wid))
@@ -3217,6 +3447,41 @@ void shader_core_ctx::execute() {
     }
   }
   m_wgmma.cycle();
+  const uint64_t tcgen05_now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+  m_tcgen05.cycle(tcgen05_now);
+  const flash_gpgpu_sim::tcgen05_timing_stats_t &tcgen05_stats =
+      m_tcgen05.stats();
+  for (unsigned i = 0; i < flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT; ++i) {
+    m_stats->tcgen05_issued[i] +=
+        tcgen05_stats.issued[i] - m_tcgen05_last_stats.issued[i];
+    m_stats->tcgen05_completed[i] +=
+        tcgen05_stats.completed[i] - m_tcgen05_last_stats.completed[i];
+  }
+#define ACCUMULATE_TCGEN05_STAT(name) \
+  m_stats->tcgen05_##name += tcgen05_stats.name - m_tcgen05_last_stats.name
+  ACCUMULATE_TCGEN05_STAT(backend_busy_cycles);
+  ACCUMULATE_TCGEN05_STAT(queue_full_stall_cycles);
+  ACCUMULATE_TCGEN05_STAT(issue_interval_stall_cycles);
+  ACCUMULATE_TCGEN05_STAT(commit_wait_cycles);
+  ACCUMULATE_TCGEN05_STAT(ld_wait_cycles);
+  ACCUMULATE_TCGEN05_STAT(st_wait_cycles);
+#undef ACCUMULATE_TCGEN05_STAT
+  m_stats->tcgen05_max_queue_occupancy = std::max<unsigned long long>(
+      m_stats->tcgen05_max_queue_occupancy, tcgen05_stats.max_queue_occupancy);
+  m_tcgen05_last_stats = tcgen05_stats;
+  const std::vector<flash_gpgpu_sim::tcgen05_completion_event_t> events =
+      m_tcgen05.take_completion_events();
+  for (std::vector<flash_gpgpu_sim::tcgen05_completion_event_t>::const_iterator
+           it = events.begin();
+       it != events.end(); ++it) {
+    if (it->kind ==
+        flash_gpgpu_sim::tcgen05_completion_event_t::MBARRIER_ARRIVAL) {
+      m_barriers.arrive_mbarrier_async(it->hw_cta_id, it->warp_id,
+                                       it->mbarrier_addr);
+    } else {
+      m_barriers.release_tcgen05_warp(it->warp_id);
+    }
+  }
   m_tma->cycle();
   release_pending_tma_ctas();
   m_barriers.cycle();
@@ -4805,6 +5070,7 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
   m_barriers.cleanup_cta_bulk_groups(cta_num);
   if (m_tma != nullptr) m_tma->cleanup_cta(cta_num);
   m_wgmma.cleanup_cta(cta_num);
+  m_tcgen05.cleanup_cta(cta_num);
   m_gpu->get_tcgen05_tmem_manager().clear_cta(m_sid, cta_num);
   shader_CTA_count_unlog(m_sid, 1);
 
@@ -5987,6 +6253,17 @@ void barrier_set_t::wait_cp_async_group(unsigned warp_id) {
   m_warp_at_barrier.set(warp_id);
   m_warp_barrier_type[warp_id] = BARRIER_WAIT_CP_ASYNC_GROUP;
   m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+}
+
+void barrier_set_t::wait_tcgen05_warp(unsigned warp_id) {
+  assert(!m_warp_at_barrier.test(warp_id));
+  m_warp_at_barrier.set(warp_id);
+  m_warp_barrier_type[warp_id] = BARRIER_WAIT_TCGEN05;
+  m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+}
+
+void barrier_set_t::release_tcgen05_warp(unsigned warp_id) {
+  clear_warp_waiting(warp_id, BARRIER_WAIT_TCGEN05, "TCGen05 wait release");
 }
 
 void barrier_set_t::release_cp_async_warp(unsigned warp_id) {

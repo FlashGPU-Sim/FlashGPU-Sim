@@ -969,6 +969,24 @@ private:
   mbarrier_info_t mbarrier_info[MAX_WARP_SIZE];
 
 public:
+  struct tcgen05_dyn_info_t {
+    uint64_t mma_work = 0;
+  };
+  void set_tcgen05_dyn_info(int laneid, const tcgen05_dyn_info_t &info) {
+    tcgen05_dyn_info[laneid] = info;
+  }
+  const tcgen05_dyn_info_t &get_tcgen05_dyn_info(int laneid) const {
+    return tcgen05_dyn_info[laneid];
+  }
+  void reset_tcgen05_dyn_info() {
+    for (unsigned i = 0; i < MAX_WARP_SIZE; ++i)
+      tcgen05_dyn_info[i] = tcgen05_dyn_info_t();
+  }
+
+private:
+  tcgen05_dyn_info_t tcgen05_dyn_info[MAX_WARP_SIZE];
+
+public:
   types_of_operands oprnd_type;  // code (uarch visible) identify if the
                                  // operation is an interger or a floating point
   special_ops

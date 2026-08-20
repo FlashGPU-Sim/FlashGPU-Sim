@@ -2133,6 +2133,10 @@ void tcgen05_mma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   flash_gpgpu_sim::tcgen05_mma_descriptor_t mma_desc =
       flash_gpgpu_sim::tcgen05_decode_f16_mma_descriptor(
           tcgen05_read_operand(pI, thread, 3).u32, tcgen05_cta_group(pI));
+  inst_t::tcgen05_dyn_info_t perf_info;
+  perf_info.mma_work = 2ULL * mma_desc.m * mma_desc.n * mma_desc.k;
+  const_cast<ptx_instruction *>(pI)->set_tcgen05_dyn_info(
+      thread->get_laneid(), perf_info);
   uint64_t a_desc_value = 0;
   if (!a_desc_op.is_memory_operand()) {
     a_desc_value = tcgen05_read_u64_operand(pI, thread, 1).u64;
