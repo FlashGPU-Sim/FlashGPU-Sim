@@ -7431,12 +7431,16 @@ void vsub_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void vote_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  static bool first_in_warp = true;
-  static bool and_all;
-  static bool or_all;
-  static unsigned int ballot_result;
-  static std::list<ptx_thread_info *> threads_in_warp;
-  static unsigned last_tid;
+  // Shader clusters execute concurrently when FLASH_GPGPU_SIM_OMP is
+  // enabled.  Each host thread visits a warp's lanes serially, but function
+  // statics were shared by all host threads and corrupted the cross-lane
+  // accumulator (including the std::list) when two clusters voted at once.
+  static thread_local bool first_in_warp = true;
+  static thread_local bool and_all;
+  static thread_local bool or_all;
+  static thread_local unsigned int ballot_result;
+  static thread_local std::list<ptx_thread_info *> threads_in_warp;
+  static thread_local unsigned last_tid;
 
   if (first_in_warp) {
     first_in_warp = false;
