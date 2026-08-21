@@ -1319,6 +1319,17 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case WGMMA_WAIT_GROUP_OP:
   case SETMAXNREG_OP:
   case GRIDDEPCONTROL_OP:
+  case TCGEN05_ALLOC_OP:
+  case TCGEN05_DEALLOC_OP:
+  case TCGEN05_RELINQUISH_ALLOC_PERMIT_OP:
+  case TCGEN05_MMA_OP:
+  case TCGEN05_COMMIT_OP:
+  case TCGEN05_LD_OP:
+  case TCGEN05_ST_OP:
+  case TCGEN05_WAIT_OP:
+  case TCGEN05_CP_OP:
+  case TCGEN05_SHIFT_OP:
+  case TCGEN05_FENCE_OP:
     return inst_class_t::control;
 
   case ADDP_OP:
