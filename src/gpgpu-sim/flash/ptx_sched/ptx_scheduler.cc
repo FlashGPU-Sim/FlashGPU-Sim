@@ -1201,7 +1201,8 @@ void collect_operand_regs(const operand_info &op, reg_set_t &regs) {
     return;
   }
 
-  if (op.is_reg() || op.get_type() == address_t)
+  if (op.get_type() == reg_t || op.get_type() == symbolic_t ||
+      op.get_type() == address_t)
     add_reg(regs, op.get_symbol());
 }
 
@@ -1281,17 +1282,29 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case SHFL_OP:
     return inst_class_t::shfl;
 
+  case NOP_OP:
+    return inst_class_t::boundary;
+
   case LD_OP:
   case LDU_OP:
   case ST_OP:
   case ATOM_OP:
   case RED_OP:
+  case MMA_LD_OP:
+  case MMA_ST_OP:
+  case TENSOR_MMA_LD_OP:
+  case TENSOR_MMA_ST_OP:
   case PREFETCH_OP:
   case PREFETCHU_OP:
   case CP_ASYNC_OP:
   case TMA_OP:
   case TMA_PREFETCH_OP:
   case TENSORMAP_OP:
+  case SULD_OP:
+  case SURED_OP:
+  case SUST_OP:
+  case SUQ_OP:
+  case TEX_OP:
     return inst_class_t::mem;
 
   case BRA_OP:
@@ -1305,6 +1318,9 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case RETP_OP:
   case EXIT_OP:
   case TRAP_OP:
+  case SSY_OP:
+  case SST_OP:
+  case PMEVENT_OP:
   case BAR_OP:
   case MBAR_OP:
   case MEMBAR_OP:
@@ -1343,10 +1359,14 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case CLZ_OP:
   case CNOT_OP:
   case CVTA_OP:
+  case DP4A_OP:
   case ISSPACEP_OP:
   case MAPA_OP:
   case MOV_OP:
   case MUL24_OP:
+  case MAD24_OP:
+  case MADC_OP:
+  case MADP_OP:
   case NANDN_OP:
   case NORN_OP:
   case NOT_OP:
@@ -1363,6 +1383,7 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case SHL_OP:
   case SHR_OP:
   case SLCT_OP:
+  case SUBC_OP:
   case VOTE_OP:
   case ACTIVEMASK_OP:
   case XOR_OP:
@@ -1370,7 +1391,9 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
     return inst_class_t::intp;
 
   default:
-    return inst_class_t::other;
+    // Newly added or legacy opcodes must opt in to reordering after their
+    // operand semantics are represented above.
+    return inst_class_t::boundary;
   }
 }
 
@@ -1392,6 +1415,7 @@ bool is_segment_boundary(const ptx_instruction *inst,
                          bool allow_ldmatrix_memory_operand = false) {
   inst_class_t cls = classify_inst(inst);
   return cls == inst_class_t::boundary || cls == inst_class_t::control ||
+         cls == inst_class_t::mem ||
          has_unsupported_operand_form(inst, allow_ldmatrix_memory_operand);
 }
 
@@ -2698,10 +2722,10 @@ void run_ptx_reorder(function_info *func) {
                 &sass_guide_cursor, sass_ptxline_guide);
 
   if (reordered.size() != func->m_instructions.size()) {
-    printf("GPGPU-Sim PTX: reorder switch skipped function '%s' due to size "
-           "mismatch (%zu vs %zu)\n",
-           func->m_name.c_str(), reordered.size(), func->m_instructions.size());
-    return;
+    ptx_reorder_fatal(
+        "internal instruction permutation size mismatch for function '%s' "
+        "(%zu vs %zu)",
+        func->m_name.c_str(), reordered.size(), func->m_instructions.size());
   }
 
   func->m_instructions.swap(reordered);
