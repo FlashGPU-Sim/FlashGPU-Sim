@@ -3,6 +3,7 @@
 #include "../../../../libcuda/gpgpu_context.h"
 #include "../../../cuda-sim/opcodes.h"
 #include "../../../cuda-sim/ptx_ir.h"
+#include "ptx.tab.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1245,6 +1246,32 @@ void collect_inst_regs(const ptx_instruction *inst, reg_set_t &uses,
   }
 }
 
+bool has_floating_scalar_type(const ptx_instruction *inst) {
+  if (inst == NULL)
+    return false;
+
+  const std::list<int> types = inst->get_scalar_type();
+  for (std::list<int>::const_iterator type = types.begin(); type != types.end();
+       ++type) {
+    switch (*type) {
+    case F16_TYPE:
+    case F16X2_TYPE:
+    case BF16_TYPE:
+    case TF32_TYPE:
+    case E4M3_TYPE:
+    case E5M2_TYPE:
+    case F32_TYPE:
+    case F32X2_TYPE:
+    case F64_TYPE:
+    case FF64_TYPE:
+      return true;
+    default:
+      break;
+    }
+  }
+  return false;
+}
+
 inst_class_t classify_inst(const ptx_instruction *inst) {
   if (inst == NULL || inst->is_label())
     return inst_class_t::boundary;
@@ -1266,10 +1293,15 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case SIN_OP:
   case COS_OP:
   case TANH_OP:
-  case DIV_OP:
     return inst_class_t::sfu;
 
+  case DIV_OP:
+    return has_floating_scalar_type(inst) ? inst_class_t::sfu
+                                          : inst_class_t::intp;
+
   case FMA_OP:
+    return inst_class_t::fp32;
+
   case MAD_OP:
   case MUL_OP:
   case ADD_OP:
@@ -1277,7 +1309,13 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case MAX_OP:
   case MIN_OP:
   case CVT_OP:
-    return inst_class_t::fp32;
+  case ABS_OP:
+  case NEG_OP:
+  case SETP_OP:
+  case SET_OP:
+  case SLCT_OP:
+    return has_floating_scalar_type(inst) ? inst_class_t::fp32
+                                          : inst_class_t::intp;
 
   case SHFL_OP:
     return inst_class_t::shfl;
@@ -1377,12 +1415,9 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case REM_OP:
   case SAD_OP:
   case SELP_OP:
-  case SETP_OP:
-  case SET_OP:
   case SHF_OP:
   case SHL_OP:
   case SHR_OP:
-  case SLCT_OP:
   case SUBC_OP:
   case VOTE_OP:
   case ACTIVEMASK_OP:
