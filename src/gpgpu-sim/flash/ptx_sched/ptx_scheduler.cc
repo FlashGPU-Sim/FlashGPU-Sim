@@ -117,12 +117,18 @@ struct guide_item_t {
 };
 
 struct reorder_stats_t {
+  unsigned regions;
   unsigned segments;
   unsigned skipped_segments;
   unsigned total_insts;
   unsigned moved_slots;
+  unsigned moved_distance;
+  unsigned max_moved_distance;
   unsigned max_segment;
   unsigned edges;
+  unsigned compiler_view_insts;
+  unsigned compiler_view_roundtrips;
+  std::map<unsigned, unsigned> segment_length_histogram;
   unsigned sass_guided_segments;
   unsigned sass_guided_fallback_segments;
   unsigned sass_guide_cursor;
@@ -130,8 +136,10 @@ struct reorder_stats_t {
   std::string sass_guide_head;
 
   reorder_stats_t()
-      : segments(0), skipped_segments(0), total_insts(0), moved_slots(0),
-        max_segment(0), edges(0), sass_guided_segments(0),
+      : regions(0), segments(0), skipped_segments(0), total_insts(0),
+        moved_slots(0), moved_distance(0), max_moved_distance(0),
+        max_segment(0), edges(0), compiler_view_insts(0),
+        compiler_view_roundtrips(0), sass_guided_segments(0),
         sass_guided_fallback_segments(0), sass_guide_cursor(0) {}
 };
 
@@ -1139,13 +1147,23 @@ void dump_ptx_reorder_result(
   fprintf(fp, "# ptx_sched dump\n");
   fprintf(fp, "# function: %s\n", function_name.c_str());
   fprintf(fp,
-          "# stats: segments=%u skipped=%u insts=%u moved_slots=%u "
-          "max_segment=%u edges=%u slack=%d sass_guided=%u "
+          "# stats: regions=%u segments=%u skipped=%u insts=%u "
+          "moved_slots=%u moved_distance=%u max_moved_distance=%u "
+          "max_segment=%u edges=%u compiler_view_insts=%u "
+          "compiler_view_roundtrips=%u slack=%d sass_guided=%u "
           "sass_guided_fallback=%u sass_cursor=%u\n",
-          stats.segments, stats.skipped_segments, stats.total_insts,
-          stats.moved_slots, stats.max_segment, stats.edges, ready_slack,
-          stats.sass_guided_segments, stats.sass_guided_fallback_segments,
-          stats.sass_guide_cursor);
+          stats.regions, stats.segments, stats.skipped_segments,
+          stats.total_insts, stats.moved_slots, stats.moved_distance,
+          stats.max_moved_distance, stats.max_segment, stats.edges,
+          stats.compiler_view_insts, stats.compiler_view_roundtrips,
+          ready_slack, stats.sass_guided_segments,
+          stats.sass_guided_fallback_segments, stats.sass_guide_cursor);
+  fprintf(fp, "# segment_length_histogram:");
+  for (std::map<unsigned, unsigned>::const_iterator it =
+           stats.segment_length_histogram.begin();
+       it != stats.segment_length_histogram.end(); ++it)
+    fprintf(fp, " %u:%u", it->first, it->second);
+  fprintf(fp, "\n");
   if (!stats.sass_guide_source.empty() || !stats.sass_guide_head.empty()) {
     fprintf(fp, "# sass_guide: source=%s head=%s\n",
             stats.sass_guide_source.empty() ? "<none>"
@@ -1464,6 +1482,233 @@ bool is_segment_boundary(const ptx_instruction *inst,
   return cls == inst_class_t::boundary || cls == inst_class_t::control ||
          cls == inst_class_t::mem ||
          has_unsupported_operand_form(inst, allow_ldmatrix_memory_operand);
+}
+
+struct compiler_view_inst_info_t {
+  ptx_instruction *inst;
+  unsigned index;
+  unsigned region;
+  bool boundary;
+  reg_set_t uses;
+  reg_set_t defs;
+};
+
+struct compiler_view_candidate_t {
+  ptx_instruction *unpack;
+  ptx_instruction *pack;
+  const symbol *dest[2];
+  const symbol *source[2];
+  bool roundtrip;
+
+  compiler_view_candidate_t() : unpack(NULL), pack(NULL), roundtrip(false) {
+    dest[0] = dest[1] = source[0] = source[1] = NULL;
+  }
+};
+
+bool decode_brace_unpack(const ptx_instruction *inst, const symbol **scalar,
+                         const symbol **low, const symbol **high) {
+  if (inst == NULL || inst->get_opcode() != MOV_OP || inst->has_pred() ||
+      inst->get_type() != B64_TYPE || inst->get_num_operands() != 2)
+    return false;
+
+  const operand_info &dst = inst->dst();
+  const operand_info &src = inst->src1();
+  if (!dst.is_vector() || dst.get_vect_nelem() != 2 ||
+      dst.vector_has_literal() || src.is_vector() || !src.is_reg() ||
+      src.is_non_arch_reg())
+    return false;
+
+  const symbol *decoded_scalar = src.get_symbol();
+  const symbol *decoded_low = dst.vec_symbol_or_null(0);
+  const symbol *decoded_high = dst.vec_symbol_or_null(1);
+  if (decoded_scalar == NULL || decoded_low == NULL || decoded_high == NULL ||
+      decoded_low == decoded_high || decoded_scalar->get_size_in_bytes() != 8 ||
+      decoded_low->get_size_in_bytes() != 4 ||
+      decoded_high->get_size_in_bytes() != 4 || !decoded_scalar->is_reg() ||
+      !decoded_low->is_reg() || !decoded_high->is_reg() ||
+      decoded_scalar->is_non_arch_reg() || decoded_low->is_non_arch_reg() ||
+      decoded_high->is_non_arch_reg())
+    return false;
+
+  *scalar = decoded_scalar;
+  *low = decoded_low;
+  *high = decoded_high;
+  return true;
+}
+
+bool decode_brace_pack(const ptx_instruction *inst, const symbol **scalar,
+                       const symbol **low, const symbol **high) {
+  if (inst == NULL || inst->get_opcode() != MOV_OP || inst->has_pred() ||
+      inst->get_type() != B64_TYPE || inst->get_num_operands() != 2)
+    return false;
+
+  const operand_info &dst = inst->dst();
+  const operand_info &src = inst->src1();
+  if (dst.is_vector() || !dst.is_reg() || dst.is_non_arch_reg() ||
+      !src.is_vector() || src.get_vect_nelem() != 2 || src.vector_has_literal())
+    return false;
+
+  const symbol *decoded_scalar = dst.get_symbol();
+  const symbol *decoded_low = src.vec_symbol_or_null(0);
+  const symbol *decoded_high = src.vec_symbol_or_null(1);
+  if (decoded_scalar == NULL || decoded_low == NULL || decoded_high == NULL ||
+      decoded_low == decoded_high || decoded_scalar->get_size_in_bytes() != 8 ||
+      decoded_low->get_size_in_bytes() != 4 ||
+      decoded_high->get_size_in_bytes() != 4 || !decoded_scalar->is_reg() ||
+      !decoded_low->is_reg() || !decoded_high->is_reg() ||
+      decoded_scalar->is_non_arch_reg() || decoded_low->is_non_arch_reg() ||
+      decoded_high->is_non_arch_reg())
+    return false;
+
+  *scalar = decoded_scalar;
+  *low = decoded_low;
+  *high = decoded_high;
+  return true;
+}
+
+bool is_supported_compiler_view_consumer(
+    const compiler_view_inst_info_t &info) {
+  if (info.inst == NULL || info.boundary)
+    return false;
+  switch (classify_inst(info.inst)) {
+  case inst_class_t::intp:
+  case inst_class_t::fp32:
+  case inst_class_t::sfu:
+  case inst_class_t::shfl:
+  case inst_class_t::other:
+    return !has_unsupported_operand_form(info.inst, false);
+  default:
+    return false;
+  }
+}
+
+bool compiler_view_source_is_local_or_boundary(
+    const symbol *source, unsigned consumer_index, unsigned consumer_region,
+    const std::map<const symbol *, unsigned> &def_count,
+    const std::map<const symbol *, const compiler_view_inst_info_t *>
+        &def_inst) {
+  std::map<const symbol *, unsigned>::const_iterator count =
+      def_count.find(source);
+  if (count == def_count.end() || count->second != 1)
+    return false;
+  std::map<const symbol *, const compiler_view_inst_info_t *>::const_iterator
+      producer = def_inst.find(source);
+  if (producer == def_inst.end() || producer->second == NULL ||
+      producer->second->index >= consumer_index)
+    return false;
+  return producer->second->boundary ||
+         producer->second->region == consumer_region;
+}
+
+std::vector<compiler_view_candidate_t> analyze_compiler_register_views(
+    const std::list<ptx_instruction *> &instructions) {
+  std::vector<compiler_view_inst_info_t> infos;
+  infos.reserve(instructions.size());
+  unsigned index = 0;
+  unsigned region = 0;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it, ++index) {
+    compiler_view_inst_info_t info;
+    info.inst = *it;
+    info.index = index;
+    info.region = region;
+    info.boundary = is_segment_boundary(info.inst);
+    collect_inst_regs(info.inst, info.uses, info.defs);
+    infos.push_back(info);
+    if (info.boundary)
+      ++region;
+  }
+
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, const compiler_view_inst_info_t *> def_inst;
+  for (unsigned i = 0; i < infos.size(); ++i) {
+    for (reg_set_t::const_iterator def = infos[i].defs.begin();
+         def != infos[i].defs.end(); ++def) {
+      ++def_count[*def];
+      def_inst[*def] = &infos[i];
+    }
+  }
+
+  std::vector<compiler_view_candidate_t> candidates;
+  std::set<const ptx_instruction *> claimed;
+  for (unsigned i = 0; i < infos.size(); ++i) {
+    const symbol *scalar = NULL;
+    const symbol *low = NULL;
+    const symbol *high = NULL;
+    if (!decode_brace_unpack(infos[i].inst, &scalar, &low, &high) ||
+        def_count[scalar] != 1 || def_count[low] != 1 || def_count[high] != 1 ||
+        !compiler_view_source_is_local_or_boundary(
+            scalar, infos[i].index, infos[i].region, def_count, def_inst))
+      continue;
+
+    bool consumers_valid = true;
+    bool have_consumer = false;
+    unsigned scalar_consumer_count = 0;
+    for (unsigned j = 0; j < infos.size(); ++j) {
+      if (infos[j].uses.find(scalar) != infos[j].uses.end())
+        ++scalar_consumer_count;
+      const bool uses_view = infos[j].uses.find(low) != infos[j].uses.end() ||
+                             infos[j].uses.find(high) != infos[j].uses.end();
+      if (!uses_view)
+        continue;
+      have_consumer = true;
+      if (infos[j].index <= infos[i].index ||
+          infos[j].region != infos[i].region ||
+          !is_supported_compiler_view_consumer(infos[j])) {
+        consumers_valid = false;
+        break;
+      }
+    }
+    if (!consumers_valid || !have_consumer)
+      continue;
+
+    compiler_view_candidate_t candidate;
+    candidate.unpack = infos[i].inst;
+    candidate.dest[0] = low;
+    candidate.dest[1] = high;
+    candidate.source[0] = scalar;
+    candidate.source[1] = scalar;
+
+    const compiler_view_inst_info_t *producer = def_inst[scalar];
+    const symbol *pack_scalar = NULL;
+    const symbol *pack_low = NULL;
+    const symbol *pack_high = NULL;
+    if (scalar_consumer_count == 1 && producer != NULL &&
+        producer->region == infos[i].region &&
+        decode_brace_pack(producer->inst, &pack_scalar, &pack_low,
+                          &pack_high) &&
+        pack_scalar == scalar && def_count[pack_low] == 1 &&
+        def_count[pack_high] == 1 &&
+        compiler_view_source_is_local_or_boundary(
+            pack_low, producer->index, producer->region, def_count, def_inst) &&
+        compiler_view_source_is_local_or_boundary(pack_high, producer->index,
+                                                  producer->region, def_count,
+                                                  def_inst) &&
+        claimed.find(producer->inst) == claimed.end()) {
+      candidate.pack = producer->inst;
+      candidate.source[0] = pack_low;
+      candidate.source[1] = pack_high;
+      candidate.roundtrip = true;
+    }
+
+    if (claimed.find(candidate.unpack) != claimed.end())
+      continue;
+    claimed.insert(candidate.unpack);
+    if (candidate.pack != NULL)
+      claimed.insert(candidate.pack);
+    candidates.push_back(candidate);
+  }
+  return candidates;
+}
+
+void canonicalize_compiler_view_regs(const function_info *func,
+                                     reg_set_t &regs) {
+  reg_set_t canonical;
+  for (reg_set_t::const_iterator reg = regs.begin(); reg != regs.end(); ++reg) {
+    canonical.insert(
+        func == NULL ? *reg : func->canonicalize_compiler_register_view(*reg));
+  }
+  regs.swap(canonical);
 }
 
 bool is_memory_like(inst_class_t cls) {
@@ -2555,6 +2800,8 @@ void flush_segment(std::vector<sched_inst_t> &segment,
   if (segment.empty())
     return;
 
+  ++stats.regions;
+  ++stats.segment_length_histogram[segment.size()];
   stats.total_insts += segment.size();
   stats.max_segment =
       std::max(stats.max_segment, static_cast<unsigned>(segment.size()));
@@ -2629,8 +2876,16 @@ void flush_segment(std::vector<sched_inst_t> &segment,
   }
 
   for (unsigned i = 0; i < scheduled.size(); ++i) {
-    if (scheduled[i].inst != segment[i].inst)
+    const unsigned scheduled_original = scheduled[i].original_index;
+    const unsigned slot_original = segment[i].original_index;
+    const unsigned distance = scheduled_original > slot_original
+                                  ? scheduled_original - slot_original
+                                  : slot_original - scheduled_original;
+    if (distance != 0) {
       ++stats.moved_slots;
+      stats.moved_distance += distance;
+      stats.max_moved_distance = std::max(stats.max_moved_distance, distance);
+    }
     out.push_back(scheduled[i].inst);
   }
   segment.clear();
@@ -2643,6 +2898,8 @@ namespace flash_gpgpu_sim {
 void run_ptx_reorder(function_info *func) {
   if (func == NULL || func->gpgpu_ctx == NULL ||
       !func->gpgpu_ctx->ptx_reorder_enabled)
+    return;
+  if (func->m_ptx_reorder_completed)
     return;
 
   std::list<ptx_instruction *> reordered;
@@ -2657,6 +2914,53 @@ void run_ptx_reorder(function_info *func) {
   unsigned sass_guide_cursor = 0;
   const int ready_slack = 0;
   const bool sass_ptxline_guided = func->gpgpu_ctx->ptx_reorder_sass_guided;
+
+  func->m_compiler_register_views.clear();
+  if (!sass_ptxline_guided) {
+    const std::vector<compiler_view_candidate_t> compiler_views =
+        analyze_compiler_register_views(func->m_instructions);
+    std::set<ptx_instruction *> removed;
+    for (unsigned i = 0; i < compiler_views.size(); ++i) {
+      const compiler_view_candidate_t &view = compiler_views[i];
+      bool installed = true;
+      for (unsigned lane = 0; lane < 2; ++lane) {
+        if (view.dest[lane] == NULL || view.source[lane] == NULL ||
+            view.dest[lane] == view.source[lane] ||
+            func->m_compiler_register_views.find(view.dest[lane]) !=
+                func->m_compiler_register_views.end()) {
+          installed = false;
+          break;
+        }
+      }
+      if (!installed)
+        continue;
+
+      for (unsigned lane = 0; lane < 2; ++lane) {
+        func->m_compiler_register_views[view.dest[lane]] =
+            std::make_pair(view.source[lane], view.roundtrip ? 0u : lane);
+        symbol *destination = const_cast<symbol *>(view.dest[lane]);
+        const unsigned view_arch_reg = destination->arch_reg_num();
+        destination->set_regno(
+            view.source[lane]->reg_num(),
+            view.roundtrip ? view.source[lane]->arch_reg_num() : view_arch_reg);
+      }
+      removed.insert(view.unpack);
+      if (view.pack != NULL)
+        removed.insert(view.pack);
+      if (view.roundtrip)
+        ++stats.compiler_view_roundtrips;
+    }
+
+    for (std::list<ptx_instruction *>::iterator it =
+             func->m_instructions.begin();
+         it != func->m_instructions.end();) {
+      if (removed.find(*it) != removed.end())
+        it = func->m_instructions.erase(it);
+      else
+        ++it;
+    }
+    stats.compiler_view_insts = removed.size();
+  }
 
   if (sass_ptxline_guided) {
     if (func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.empty()) {
@@ -2722,6 +3026,8 @@ void run_ptx_reorder(function_info *func) {
     sched_inst.original_index = original_index;
     sched_inst.cls = classify_inst(inst);
     collect_inst_regs(inst, sched_inst.uses, sched_inst.defs);
+    canonicalize_compiler_view_regs(func, sched_inst.uses);
+    canonicalize_compiler_view_regs(func, sched_inst.defs);
     segment.push_back(sched_inst);
   }
   flush_segment(segment, reordered, ready_slack, stats, timing_state, false,
@@ -2735,20 +3041,25 @@ void run_ptx_reorder(function_info *func) {
   }
 
   func->m_instructions.swap(reordered);
+  func->m_ptx_reorder_completed = true;
 
   dump_ptx_reorder_result(func->m_name, func->m_instructions, original_indices,
                           stats, ready_slack, k_ptx_reorder_dump_dir);
 
   const std::size_t guide_total =
       sass_ptxline_guide != NULL ? sass_ptxline_guide->items.size() : 0;
-  printf("GPGPU-Sim PTX: reorder function '%s': mode=%s segments=%u "
-         "skipped=%u insts=%u moved_slots=%u max_segment=%u edges=%u "
-         "slack=%d sass_guided=%u sass_guided_fallback=%u "
+  printf("GPGPU-Sim PTX: reorder function '%s': mode=%s regions=%u "
+         "segments=%u skipped=%u insts=%u moved_slots=%u "
+         "moved_distance=%u max_moved_distance=%u max_segment=%u edges=%u "
+         "compiler_view_insts=%u compiler_view_roundtrips=%u slack=%d "
+         "sass_guided=%u sass_guided_fallback=%u "
          "sass_cursor=%u/%zu\n",
          func->m_name.c_str(),
-         sass_ptxline_guide != NULL ? "sass_ptxline" : "plain", stats.segments,
-         stats.skipped_segments, stats.total_insts, stats.moved_slots,
-         stats.max_segment, stats.edges, ready_slack,
+         sass_ptxline_guide != NULL ? "sass_ptxline" : "plain", stats.regions,
+         stats.segments, stats.skipped_segments, stats.total_insts,
+         stats.moved_slots, stats.moved_distance, stats.max_moved_distance,
+         stats.max_segment, stats.edges, stats.compiler_view_insts,
+         stats.compiler_view_roundtrips, ready_slack,
          stats.sass_guided_segments, stats.sass_guided_fallback_segments,
          stats.sass_guide_cursor, guide_total);
 }

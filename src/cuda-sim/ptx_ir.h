@@ -1594,6 +1594,33 @@ class function_info {
     return it == m_reg_alloc_aliases.end() ? reg : it->second;
   }
   bool has_register_aliases() const { return !m_reg_alloc_aliases.empty(); }
+  bool get_compiler_register_view(const symbol *reg,
+                                  const symbol **source,
+                                  unsigned *lane) const {
+    std::unordered_map<const symbol *,
+                       std::pair<const symbol *, unsigned>>::const_iterator it =
+        m_compiler_register_views.find(reg);
+    if (it == m_compiler_register_views.end()) return false;
+    if (source != NULL) *source = it->second.first;
+    if (lane != NULL) *lane = it->second.second;
+    return true;
+  }
+  const symbol *canonicalize_compiler_register_view(const symbol *reg) const {
+    const symbol *current = reg;
+    for (std::size_t depth = 0; depth <= m_compiler_register_views.size();
+         ++depth) {
+      std::unordered_map<
+          const symbol *,
+          std::pair<const symbol *, unsigned>>::const_iterator it =
+          m_compiler_register_views.find(current);
+      if (it == m_compiler_register_views.end()) return current;
+      current = it->second.first;
+    }
+    // The analysis only creates views from later definitions to earlier
+    // definitions, so a cycle is invalid.  Preserve the logical register if
+    // corrupted metadata ever reaches this defensive path.
+    return reg;
+  }
 
   friend void flash_gpgpu_sim::run_ptx_register_allocation(function_info *func);
   friend void flash_gpgpu_sim::run_ptx_reorder(function_info *func);
@@ -1613,6 +1640,7 @@ class function_info {
   bool m_entry_point;
   bool m_extern;
   bool m_assembled;
+  bool m_ptx_reorder_completed;
   bool pdom_done;  // flag to check whether pdom is completed or not
   std::string m_name;
   ptx_instruction **m_instr_mem;
@@ -1627,6 +1655,12 @@ class function_info {
   std::vector<basic_block_t *> m_basic_blocks;
   std::list<std::pair<unsigned, unsigned> > m_back_edges;
   std::unordered_map<const symbol *, const symbol *> m_reg_alloc_aliases;
+  // Strict compiler-removed register views.  The key is a 32-bit logical
+  // register and the value is {source register, 32-bit lane}.  PTX reorder
+  // only installs entries after proving a single-definition, same-region
+  // brace-pair move can be removed from the hardware timing stream.
+  std::unordered_map<const symbol *, std::pair<const symbol *, unsigned>>
+      m_compiler_register_views;
 
   /**
    * WZR: To support scoped label, we need to remember the scope of each label,

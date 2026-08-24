@@ -129,6 +129,17 @@ void collect_inst_liveness_regs(const ptx_instruction *inst,
   }
 }
 
+void canonicalize_compiler_view_regs(const function_info *func,
+                                     reg_symbol_set &regs) {
+  if (func == NULL || regs.empty())
+    return;
+  reg_symbol_set canonical;
+  for (reg_symbol_set::const_iterator reg = regs.begin(); reg != regs.end();
+       ++reg)
+    canonical.insert(func->canonicalize_compiler_register_view(*reg));
+  regs.swap(canonical);
+}
+
 int reg_alloc_group(const symbol *sym) {
   if (sym == NULL || sym->type() == NULL)
     return -1;
@@ -290,6 +301,8 @@ void run_ptx_register_allocation(function_info *func) {
       reg_symbol_set uses;
       reg_symbol_set defs;
       collect_inst_liveness_regs(inst, uses, defs);
+      canonicalize_compiler_view_regs(func, uses);
+      canonicalize_compiler_view_regs(func, defs);
       if (!inst->is_label())
         ++real_inst_count;
 
@@ -385,6 +398,8 @@ void run_ptx_register_allocation(function_info *func) {
       reg_symbol_set uses;
       reg_symbol_set defs;
       collect_inst_liveness_regs(inst, uses, defs);
+      canonicalize_compiler_view_regs(func, uses);
+      canonicalize_compiler_view_regs(func, defs);
       for (reg_symbol_set::const_iterator d = defs.begin(); d != defs.end();
            ++d) {
         live.erase(*d);

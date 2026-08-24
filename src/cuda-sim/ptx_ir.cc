@@ -1860,6 +1860,7 @@ function_info::function_info(int entry_point, gpgpu_context *ctx) {
   num_reconvergence_pairs = 0;
   m_symtab = NULL;
   m_assembled = false;
+  m_ptx_reorder_completed = false;
   m_return_var_sym = NULL;
   m_kernel_info.cmem = 0;
   m_kernel_info.lmem = 0;

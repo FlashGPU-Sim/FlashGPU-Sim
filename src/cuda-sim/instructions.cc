@@ -244,6 +244,27 @@ void ptx_thread_info::set_reg(const symbol *reg, const ptx_reg_t &value) {
   assert(reg != NULL);
   if (reg->name() == "_") return;
   assert(!m_regs.empty());
+
+  const symbol *view_source = NULL;
+  unsigned view_lane = 0;
+  if (m_func_info != NULL &&
+      m_func_info->get_compiler_register_view(reg, &view_source, &view_lane)) {
+    assert(view_source != NULL && view_source != reg && view_lane < 2);
+    if (view_source->get_size_in_bytes() <= 4) {
+      set_reg(view_source, value);
+    } else {
+      ptx_reg_t combined = get_reg(view_source);
+      const unsigned long long mask = 0xffffffffull << (32 * view_lane);
+      combined.u64 = (combined.u64 & ~mask) |
+                     ((static_cast<unsigned long long>(value.u32) <<
+                       (32 * view_lane)) &
+                      mask);
+      set_reg(view_source, combined);
+    }
+    m_last_set_operand_value = value;
+    return;
+  }
+
   const symbol *mapped_reg = canonicalize_reg(reg);
   assert(mapped_reg->uid() > 0);
   m_regs.back()[mapped_reg] = value;
@@ -299,6 +320,24 @@ ptx_reg_t ptx_thread_info::get_reg(const symbol *reg) {
   static bool unfound_register_warned = false;
   assert(reg != NULL);
   assert(!m_regs.empty());
+
+  const symbol *view_source = NULL;
+  unsigned view_lane = 0;
+  if (m_func_info != NULL &&
+      m_func_info->get_compiler_register_view(reg, &view_source, &view_lane)) {
+    assert(view_source != NULL && view_source != reg && view_lane < 2);
+    const ptx_reg_t source_value = get_reg(view_source);
+    ptx_reg_t view_value;
+    view_value.u64 = 0;
+    view_value.u32 = view_source->get_size_in_bytes() <= 4
+                         ? source_value.u32
+                         : static_cast<unsigned>(source_value.u64 >>
+                                                 (32 * view_lane));
+    if (m_enable_debug_trace)
+      m_debug_trace_regs_read.back()[reg] = view_value;
+    return view_value;
+  }
+
   const symbol *logical_reg = reg;
   const symbol *mapped_reg = canonicalize_reg(reg);
   reg_map_t::iterator regs_iter = m_regs.back().find(mapped_reg);
