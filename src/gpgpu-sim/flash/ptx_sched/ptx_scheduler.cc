@@ -79,6 +79,18 @@ struct dep_graph_t {
   std::vector<dep_edge_t> edges;
 };
 
+struct scheduling_state_t {
+  unsigned next_issue;
+  std::map<const symbol *, unsigned> register_ready;
+
+  scheduling_state_t() : next_issue(0) {}
+
+  void reset_control_scope() {
+    next_issue = 0;
+    register_ready.clear();
+  }
+};
+
 struct role_signature_t {
   char token;
   unsigned rank;
@@ -1526,8 +1538,19 @@ unsigned inst_latency(const sched_inst_t &inst) {
   case inst_class_t::sfu:
     return 28;
   case inst_class_t::ldmatrix:
-  case inst_class_t::mem:
     return 8;
+  case inst_class_t::mem: {
+    const enum _memory_space_t space = inst.inst->get_space().get_type();
+    // The sm_100 ptxas fill probes keep up to 64 dependent integer PTX
+    // operations between an LDG and its consumer.  With the four-cycle
+    // integer dependency used by this compiler model, 256 issue-time units
+    // reproduce that architecture-level scheduling horizon.  Memory remains
+    // a fixed ordering boundary; this value only controls destination ready
+    // time in the following safe region.
+    if (space == global_space || space == local_space)
+      return 256;
+    return 8;
+  }
   case inst_class_t::fp32:
   case inst_class_t::shfl:
   case inst_class_t::intp:
@@ -1548,130 +1571,6 @@ unsigned inst_initiation(const sched_inst_t &inst) {
   default:
     return 1;
   }
-}
-
-double switch_bonus(char last, char next) {
-  switch (last) {
-  case 'T':
-    switch (next) {
-    case 'L':
-      return 16.0;
-    case 'F':
-      return 12.0;
-    case 'I':
-      return 7.0;
-    case 'S':
-      return 5.0;
-    case 'T':
-      return 3.0;
-    }
-    break;
-  case 'L':
-    switch (next) {
-    case 'T':
-      return 18.0;
-    case 'F':
-      return 6.0;
-    case 'I':
-      return 5.0;
-    case 'S':
-      return 4.0;
-    case 'L':
-      return 2.0;
-    }
-    break;
-  case 'F':
-    switch (next) {
-    case 'T':
-      return 10.0;
-    case 'I':
-      return 10.0;
-    case 'S':
-      return 8.0;
-    case 'M':
-      return 4.0;
-    case 'L':
-      return 2.0;
-    case 'F':
-      return 2.0;
-    }
-    break;
-  case 'S':
-    switch (next) {
-    case 'F':
-      return 18.0;
-    case 'I':
-      return 8.0;
-    case 'T':
-      return 7.0;
-    case 'L':
-      return 2.0;
-    }
-    break;
-  case 'M':
-    switch (next) {
-    case 'I':
-      return 16.0;
-    case 'F':
-      return 8.0;
-    case '.':
-      return 4.0;
-    case 'M':
-      return 2.0;
-    }
-    break;
-  case 'I':
-    switch (next) {
-    case 'M':
-      return 12.0;
-    case 'F':
-      return 10.0;
-    case 'T':
-      return 6.0;
-    case '.':
-      return 5.0;
-    case 'S':
-      return 4.0;
-    case 'L':
-      return 2.0;
-    case 'I':
-      return 1.0;
-    }
-    break;
-  case '.':
-    switch (next) {
-    case 'I':
-      return 12.0;
-    case 'F':
-      return 7.0;
-    case 'M':
-      return 4.0;
-    case 'T':
-      return 2.0;
-    }
-    break;
-  case 'C':
-    switch (next) {
-    case 'I':
-      return 8.0;
-    case '.':
-      return 4.0;
-    case 'T':
-      return 2.0;
-    }
-    break;
-  case 'H':
-    switch (next) {
-    case 'F':
-      return 10.0;
-    case 'I':
-      return 2.0;
-    case 'H':
-      return 1.0;
-    }
-    break;
-  }
-  return 0.0;
 }
 
 void add_edge(dep_graph_t &graph,
@@ -1984,8 +1883,10 @@ double role_signature_similarity(const role_signature_t &candidate,
 }
 
 std::vector<sched_inst_t>
-schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
-                unsigned *edge_count, bool *valid) {
+schedule_switch(const std::vector<sched_inst_t> &chunk,
+                const scheduling_state_t &entry_state,
+                scheduling_state_t *exit_state, unsigned *edge_count,
+                bool *valid) {
   *valid = true;
   dep_graph_t graph = build_dependency_graph(chunk, false, false);
   *edge_count = graph.edges.size();
@@ -2009,16 +1910,28 @@ schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
       ready.insert(i);
   }
 
-  std::vector<unsigned> dep_ready(chunk.size(), 0);
-  std::vector<unsigned> pipe_ready(static_cast<unsigned>(pipe_t::count), 0);
-  unsigned warp_issue_ready = 0;
+  std::vector<unsigned> dep_ready(chunk.size(), entry_state.next_issue);
+  reg_set_t local_defs;
+  for (unsigned i = 0; i < chunk.size(); ++i) {
+    for (reg_set_t::const_iterator use = chunk[i].uses.begin();
+         use != chunk[i].uses.end(); ++use) {
+      if (local_defs.find(*use) != local_defs.end())
+        continue;
+      std::map<const symbol *, unsigned>::const_iterator ready_time =
+          entry_state.register_ready.find(*use);
+      if (ready_time != entry_state.register_ready.end())
+        dep_ready[i] = std::max(dep_ready[i], ready_time->second);
+    }
+    local_defs.insert(chunk[i].defs.begin(), chunk[i].defs.end());
+  }
+  std::vector<unsigned> pipe_ready(static_cast<unsigned>(pipe_t::count),
+                                   entry_state.next_issue);
+  unsigned warp_issue_ready = entry_state.next_issue;
   std::vector<unsigned> emitted;
-  std::deque<char> recent;
-  char last_token = 0;
+  std::vector<unsigned> emitted_issue;
 
   while (!ready.empty()) {
     std::map<unsigned, unsigned> issues;
-    unsigned min_issue = std::numeric_limits<unsigned>::max();
     for (std::set<unsigned>::const_iterator it = ready.begin();
          it != ready.end(); ++it) {
       const sched_inst_t &inst = chunk[*it];
@@ -2026,61 +1939,35 @@ schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
       unsigned issue = std::max(dep_ready[*it], pipe_ready[pipe_index]);
       issue = std::max(issue, warp_issue_ready);
       issues[*it] = issue;
-      min_issue = std::min(min_issue, issue);
     }
 
     bool have_pick = false;
     unsigned pick = 0;
-    double best_score = -std::numeric_limits<double>::infinity();
-    int best_neg_issue = std::numeric_limits<int>::min();
     unsigned best_height = 0;
-    int best_neg_index = std::numeric_limits<int>::min();
-    const unsigned slack =
-        ready_slack < 0 ? 0 : static_cast<unsigned>(ready_slack);
+    unsigned best_issue = std::numeric_limits<unsigned>::max();
+    unsigned best_index = std::numeric_limits<unsigned>::max();
 
+    // Bottom-level (remaining critical-path latency) is the primary list
+    // scheduling priority. Estimated issue time resolves equal criticality,
+    // then source order makes equivalent choices deterministic. This keeps
+    // pipeline availability and producer ready time in the model without an
+    // opcode-pair preference table.
     for (std::set<unsigned>::const_iterator it = ready.begin();
          it != ready.end(); ++it) {
       const unsigned idx = *it;
       const unsigned issue = issues[idx];
-      if (issue > min_issue + slack)
-        continue;
-
-      const sched_inst_t &inst = chunk[idx];
-      const char token = class_token(inst.cls);
-      unsigned same_recent = 0;
-      for (std::deque<char>::const_iterator r = recent.begin();
-           r != recent.end(); ++r) {
-        if (*r == token)
-          ++same_recent;
-      }
-
-      double score = -0.02 * static_cast<double>(issue) +
-                     0.001 * static_cast<double>(height[idx]) -
-                     0.0001 * static_cast<double>(inst.original_index);
-      if (last_token != 0) {
-        score += 0.6 * switch_bonus(last_token, token);
-        if ((last_token == 'T' && token == 'L') ||
-            (last_token == 'L' && token == 'T'))
-          score += 4.0;
-        score -= 2.0 * static_cast<double>(same_recent);
-      }
-
-      const int neg_issue = -static_cast<int>(issue);
-      const int neg_index = -static_cast<int>(inst.original_index);
+      const unsigned original_index = chunk[idx].original_index;
       const bool better =
-          !have_pick || score > best_score + 1e-12 ||
-          (std::fabs(score - best_score) <= 1e-12 &&
-           (neg_issue > best_neg_issue ||
-            (neg_issue == best_neg_issue &&
-             (height[idx] > best_height ||
-              (height[idx] == best_height && neg_index > best_neg_index)))));
+          !have_pick || height[idx] > best_height ||
+          (height[idx] == best_height &&
+           (issue < best_issue ||
+            (issue == best_issue && original_index < best_index)));
       if (better) {
         have_pick = true;
         pick = idx;
-        best_score = score;
-        best_neg_issue = neg_issue;
         best_height = height[idx];
-        best_neg_index = neg_index;
+        best_issue = issue;
+        best_index = original_index;
       }
     }
 
@@ -2091,17 +1978,13 @@ schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
 
     ready.erase(pick);
     emitted.push_back(pick);
+    emitted_issue.push_back(issues[pick]);
 
     const sched_inst_t &inst = chunk[pick];
     const unsigned issue = issues[pick];
     const unsigned pipe_index = static_cast<unsigned>(inst_pipe(inst.cls));
     pipe_ready[pipe_index] = issue + inst_initiation(inst);
     warp_issue_ready = issue + 1;
-
-    last_token = class_token(inst.cls);
-    recent.push_back(last_token);
-    if (recent.size() > 12)
-      recent.pop_front();
 
     for (std::vector<dep_edge_t>::const_iterator edge =
              edge_by_src[pick].begin();
@@ -2127,6 +2010,18 @@ schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
   scheduled.reserve(chunk.size());
   for (unsigned i = 0; i < emitted.size(); ++i)
     scheduled.push_back(chunk[emitted[i]]);
+
+  if (exit_state != NULL) {
+    *exit_state = entry_state;
+    exit_state->next_issue = warp_issue_ready;
+    for (unsigned i = 0; i < emitted.size(); ++i) {
+      const sched_inst_t &inst = chunk[emitted[i]];
+      for (reg_set_t::const_iterator def = inst.defs.begin();
+           def != inst.defs.end(); ++def)
+        exit_state->register_ready[*def] =
+            emitted_issue[i] + inst_latency(inst);
+    }
+  }
   return scheduled;
 }
 
@@ -2144,6 +2039,70 @@ bool contains_barrier_inst(const std::vector<sched_inst_t> &chunk) {
       return true;
   }
   return false;
+}
+
+void advance_timing_in_order(const std::vector<sched_inst_t> &instructions,
+                             scheduling_state_t &state) {
+  for (unsigned i = 0; i < instructions.size(); ++i) {
+    const sched_inst_t &inst = instructions[i];
+    unsigned issue = state.next_issue;
+    for (reg_set_t::const_iterator use = inst.uses.begin();
+         use != inst.uses.end(); ++use) {
+      std::map<const symbol *, unsigned>::const_iterator ready_time =
+          state.register_ready.find(*use);
+      if (ready_time != state.register_ready.end())
+        issue = std::max(issue, ready_time->second);
+    }
+    state.next_issue = issue + 1;
+    for (reg_set_t::const_iterator def = inst.defs.begin();
+         def != inst.defs.end(); ++def)
+      state.register_ready[*def] = issue + inst_latency(inst);
+  }
+}
+
+void advance_boundary_timing(ptx_instruction *inst, scheduling_state_t &state) {
+  sched_inst_t boundary;
+  boundary.inst = inst;
+  boundary.original_index = 0;
+  boundary.cls = classify_inst(inst);
+
+  if (!is_memory_like(boundary.cls)) {
+    // Branch label operands are symbolic but are not register operands.  Do
+    // not send them through register collection; a control boundary starts a
+    // new timing scope in all cases.
+    state.reset_control_scope();
+    return;
+  }
+
+  collect_inst_regs(inst, boundary.uses, boundary.defs);
+
+  unsigned issue = state.next_issue;
+  for (reg_set_t::const_iterator use = boundary.uses.begin();
+       use != boundary.uses.end(); ++use) {
+    std::map<const symbol *, unsigned>::const_iterator ready_time =
+        state.register_ready.find(*use);
+    if (ready_time != state.register_ready.end())
+      issue = std::max(issue, ready_time->second);
+  }
+  state.next_issue = issue + 1;
+
+  const int opcode = inst == NULL ? -1 : inst->get_opcode();
+  const bool supported_load = (opcode == LD_OP || opcode == LDU_OP) &&
+                              !inst->has_pred() && !boundary.defs.empty();
+  if (!supported_load) {
+    if (opcode == ST_OP && boundary.defs.empty())
+      return;
+
+    // Only ordinary, unconditional LD/LDU producers have a reviewed compiler
+    // latency policy.  Atomics, texture/surface operations, async copies,
+    // tensor-memory operations, and predicated loads stop carry propagation
+    // until their destination and completion semantics are modelled.
+    state.register_ready.clear();
+    return;
+  }
+  for (reg_set_t::const_iterator def = boundary.defs.begin();
+       def != boundary.defs.end(); ++def)
+    state.register_ready[*def] = issue + inst_latency(boundary);
 }
 
 double sass_guide_target_score(const std::string &guide, unsigned cursor,
@@ -2589,8 +2548,8 @@ std::vector<sched_inst_t> schedule_sass_ptxline_guided(
 
 void flush_segment(std::vector<sched_inst_t> &segment,
                    std::list<ptx_instruction *> &out, int ready_slack,
-                   reorder_stats_t &stats, bool sass_guided,
-                   const sass_function_guide_t *sass_guide,
+                   reorder_stats_t &stats, scheduling_state_t &timing_state,
+                   bool sass_guided, const sass_function_guide_t *sass_guide,
                    unsigned guide_lookahead, unsigned *sass_guide_cursor,
                    const ptxline_guide_t *sass_ptxline_guide) {
   if (segment.empty())
@@ -2601,6 +2560,7 @@ void flush_segment(std::vector<sched_inst_t> &segment,
       std::max(stats.max_segment, static_cast<unsigned>(segment.size()));
 
   if (segment.size() == 1) {
+    advance_timing_in_order(segment, timing_state);
     out.push_back(segment[0].inst);
     segment.clear();
     return;
@@ -2608,6 +2568,8 @@ void flush_segment(std::vector<sched_inst_t> &segment,
 
   unsigned edge_count = 0;
   bool valid = true;
+  bool timing_from_plain_schedule = false;
+  scheduling_state_t candidate_timing = timing_state;
   std::vector<sched_inst_t> scheduled;
   std::vector<ptxline_guide_item_t> segment_ptxline_guide;
   if (sass_ptxline_guide != NULL)
@@ -2647,9 +2609,10 @@ void flush_segment(std::vector<sched_inst_t> &segment,
     edge_count = 0;
   } else if (!use_sass_ptxline_guide && (!use_sass_guide || !valid)) {
     bool switch_valid = true;
-    scheduled =
-        schedule_switch(segment, ready_slack, &edge_count, &switch_valid);
+    scheduled = schedule_switch(segment, timing_state, &candidate_timing,
+                                &edge_count, &switch_valid);
     valid = switch_valid;
+    timing_from_plain_schedule = valid;
   }
   stats.edges += edge_count;
   ++stats.segments;
@@ -2657,6 +2620,12 @@ void flush_segment(std::vector<sched_inst_t> &segment,
   if (!valid) {
     ++stats.skipped_segments;
     scheduled = segment;
+  }
+
+  if (timing_from_plain_schedule) {
+    timing_state = candidate_timing;
+  } else {
+    advance_timing_in_order(scheduled, timing_state);
   }
 
   for (unsigned i = 0; i < scheduled.size(); ++i) {
@@ -2680,6 +2649,7 @@ void run_ptx_reorder(function_info *func) {
   std::vector<sched_inst_t> segment;
   std::map<const ptx_instruction *, unsigned> original_indices;
   reorder_stats_t stats;
+  scheduling_state_t timing_state;
   unsigned original_index = 0;
   const sass_function_guide_t *sass_guide = NULL;
   ptxline_guide_t sass_ptxline_guide_storage;
@@ -2740,9 +2710,10 @@ void run_ptx_reorder(function_info *func) {
                                         inst != NULL &&
                                         inst->get_opcode() == LDMATRIX_OP;
     if (is_segment_boundary(inst, guide_relaxed_ldmatrix)) {
-      flush_segment(segment, reordered, ready_slack, stats, false, sass_guide,
-                    1, &sass_guide_cursor, sass_ptxline_guide);
+      flush_segment(segment, reordered, ready_slack, stats, timing_state, false,
+                    sass_guide, 1, &sass_guide_cursor, sass_ptxline_guide);
       reordered.push_back(inst);
+      advance_boundary_timing(inst, timing_state);
       continue;
     }
 
@@ -2753,8 +2724,8 @@ void run_ptx_reorder(function_info *func) {
     collect_inst_regs(inst, sched_inst.uses, sched_inst.defs);
     segment.push_back(sched_inst);
   }
-  flush_segment(segment, reordered, ready_slack, stats, false, sass_guide, 1,
-                &sass_guide_cursor, sass_ptxline_guide);
+  flush_segment(segment, reordered, ready_slack, stats, timing_state, false,
+                sass_guide, 1, &sass_guide_cursor, sass_ptxline_guide);
 
   if (reordered.size() != func->m_instructions.size()) {
     ptx_reorder_fatal(
