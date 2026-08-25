@@ -11,7 +11,7 @@
 3. Implement **only** that ID. Do not mix rename + fabric + calibration in one patch.
 4. Run the **Verify** commands.
 5. Flip `[ ]` → `[x]`, add date + one-line evidence (test names, config).
-6. Stop. Leave follow-ons to their own IDs.
+6. Stop. Leave follow-ons to their own IDs. Do **not** `git commit`. Reply with the list of modified files and a draft commit message. The human reviews and commits.
 
 ### ID rules
 
@@ -19,6 +19,7 @@
 - Do not re-open **A-*** items marked done unless you have new failing evidence.
 - New work gets `B-*` or `A-F4-*`, not a revived `L2-1`.
 - English only in checkboxes and close-out notes.
+- Checklist IDs (`B1`, `Track B`, `A-F1`, …) live **only** in this file. Do not put them in source comments, config comments, or commit messages. Name the change in product terms (GPC rename, per-SM global NoC, delay-line hop, …).
 
 ### Suggested order
 
