@@ -63,7 +63,7 @@ Shipped on `cluster_cta2_support`. Do not re-implement. Tests: [`tests.md`](test
 
 ## B0 — Baseline and evidence labels
 
-- [ ] **B0** Freeze what “no change” means before refactors.
+- [x] **B0** Freeze what “no change” means before refactors. Closed 2026-08-25. No C++ / knob change.
 
 **Read first:** [`evidence.md`](evidence.md), [`tests.md`](tests.md).
 
@@ -83,6 +83,50 @@ Shipped on `cluster_cta2_support`. Do not re-implement. Tests: [`tests.md`](test
 **Exit:** A short note under this item with node counts + test commands + date.
 
 **Prereqs:** C1. **Next:** B1.
+
+**Close-out (2026-08-25):** Observed-in-tree topology (config knobs + existing `icnt_create(m_shader_config->n_simt_clusters, …)` in `src/gpgpu-sim/gpu-sim.cc`; shader nodes = `-gpgpu_n_clusters` / `n_simt_clusters`, **not** total SMs). Not H200 hardware fact. No `measured` / `patent` / `inferred` / `unresolved` numbers copied from [`evidence.md`](evidence.md).
+
+| Config | n_clusters | n_cores_per_cluster | total SMs | icnt shader nodes |
+|--------|-----------:|--------------------:|----------:|------------------:|
+| `SM90_H200_REDUCED_CLUSTER4x4` | 4 | 4 | 16 | 4 |
+| `SM120_RTX5090_REDUCED_CLUSTER2x1` | 1 | 2 | 2 | 1 |
+| `SM120_RTX5090_REDUCED_CLUSTER4x4` | 4 | 4 | 16 | 4 |
+
+total SMs = `n_clusters * n_cores_per_cluster`. `g_icnt_n_shader` is set from that first `icnt_create` argument.
+
+Pinned `dsm_bw` hash already recorded in [`evidence.md`](evidence.md): `4e8c4f91dd7b00584efcb3ac4b602b33ce2631cd` (`Add standalone H200 DSM bandwidth benchmark`).
+
+[`tests.md`](tests.md) §1 commands (plus a second `ClusterNoc*` unit run):
+
+```bash
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "ClusterNoc*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 build test --target sm120 --group integration
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER4x4 run test --target sm120 --group integration \
+  "*ClusterLaunch*:*TMACluster*:*MultiCluster*"
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4 \
+  run test --target sm120 --group integration \
+  "DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*"
+```
+
+PASS evidence (0 failures; skip allowed):
+
+```text
+# unit ClusterNoc* (run 1 and rerun, SM120_RTX5090_REDUCED_CLUSTER2x1)
+[  PASSED  ] 8 tests.
+✓ test/sm120/unit passed!
+
+# SM120 integration (SM120_RTX5090_REDUCED_CLUSTER4x4)
+[  PASSED  ] 31 tests.
+[  SKIPPED ] 1 test, listed below:
+[  SKIPPED ] ClusterLaunchApiTest.ExLaunch_ClusterLargerThanPhysical_Fails
+✓ Tests passed!
+
+# H200 DSM / remote mbar / OneProducer (SM90_H200_REDUCED_CLUSTER4x4)
+[  PASSED  ] 20 tests.
+✓ Tests passed!
+```
+
+The SM120 skip is `GTEST_SKIP` because that case needs `n_cores_per_cluster == 1`; 4x4 has m=4. Not a product failure.
 
 ---
 
