@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="820" viewBox="0 0 980 820">
+  <style>
+    .title { font: 700 16px "IBM Plex Sans", "DejaVu Sans", sans-serif; fill: #111; }
+    .h { font: 700 13px "IBM Plex Sans", "DejaVu Sans", sans-serif; fill: #111; }
+    .t { font: 12px "IBM Plex Sans", "DejaVu Sans", sans-serif; fill: #222; }
+    .s { font: 11px "IBM Plex Sans", "DejaVu Sans", sans-serif; fill: #444; }
+    .mono { font: 11px "IBM Plex Mono", "DejaVu Sans Mono", monospace; fill: #222; }
+    .axis { stroke: #333; stroke-width: 1.2; }
+    .grid { stroke: #ddd; stroke-width: 1; }
+    .box { stroke-width: 1.4; }
+  </style>
+  <rect width="980" height="820" fill="#fafafa"/>
+
+  <!-- ===== Panel A: address + hop ===== -->
+  <text x="24" y="28" class="title">A. DSM address and hop (one physical cluster)</text>
+
+  <rect x="24" y="44" width="200" height="118" rx="6" fill="#e8f4fc" stroke="#2a6f97" class="box"/>
+  <text x="36" y="66" class="h">SM 0 / rank 0</text>
+  <text x="36" y="86" class="s">issuer CTA smem[]</text>
+  <text x="36" y="108" class="mono">mapa.u64(local, 1)</text>
+  <text x="36" y="126" class="s">→ generic window of</text>
+  <text x="36" y="142" class="s">owner SM 1, same offset</text>
+
+  <polygon points="228,103 268,103 268,96 292,110 268,124 268,117 228,117" fill="#2a6f97"/>
+  <text x="232" y="90" class="s">generic ld/st/atom</text>
+
+  <rect x="300" y="44" width="240" height="118" rx="6" fill="#eef6ee" stroke="#2f6f3e" class="box"/>
+  <text x="312" y="66" class="h">cluster_noc_t</text>
+  <text x="312" y="86" class="s">one fabric per physical cluster</text>
+  <text x="312" y="108" class="mono">inject DSM_STORE</text>
+  <text x="312" y="126" class="mono">ready = now + hop(~78)</text>
+  <text x="312" y="144" class="s">deliver writes owner smem</text>
+
+  <polygon points="544,103 584,103 584,96 608,110 584,124 584,117 544,117" fill="#2f6f3e"/>
+  <text x="548" y="90" class="s">deliver after hop</text>
+
+  <rect x="616" y="44" width="200" height="118" rx="6" fill="#fff4e5" stroke="#a15c12" class="box"/>
+  <text x="628" y="66" class="h">SM 1 / rank 1</text>
+  <text x="628" y="86" class="s">owner CTA smem[]</text>
+  <text x="628" y="108" class="s">Bytes land here, not in</text>
+  <text x="628" y="126" class="s">L2 / DRAM / icnt.</text>
+  <text x="628" y="144" class="mono">get_cta_smem(slot)</text>
+
+  <rect x="828" y="44" width="128" height="118" rx="6" fill="#f0f0f0" stroke="#888" stroke-dasharray="4 3" class="box"/>
+  <text x="840" y="70" class="h">Not this path</text>
+  <text x="840" y="92" class="s">memory xbar</text>
+  <text x="840" y="110" class="s">cluster → L2</text>
+  <text x="840" y="128" class="s">one port / cluster</text>
+  <text x="840" y="146" class="s">no SM→SM port</text>
+
+  <text x="24" y="186" class="s">mapa does not copy bytes. It only writes a generic pointer. The later ld/st/atom uses that pointer; decode_space finds the owner CTA’s smem. If NoC is on, the store is a DSM_STORE message, not a mem_fetch on the L2 interconnect.</text>
+
+  <!-- ===== Panel B: timing ===== -->
+  <text x="24" y="228" class="title">B. Timing vs H200 job 2046238 (cycles; hop = 78)</text>
+
+  <!-- axis -->
+  <line x1="220" y1="250" x2="220" y2="560" class="axis"/>
+  <line x1="220" y1="560" x2="940" y2="560" class="axis"/>
+  <!-- ticks 0, 37, 78, 156, 193 -->
+  <!-- scale: 720 px for 220 cycles → 3.2727 px/cycle, origin x=220 -->
+  <!-- 0 → 220, 37 → 341, 78 → 475, 156 → 730, 193 → 851, 220 → 940 -->
+
+  <line x1="220" y1="560" x2="220" y2="568" class="axis"/>
+  <text x="214" y="584" class="s">0</text>
+  <line x1="341" y1="250" x2="341" y2="560" class="grid"/>
+  <line x1="341" y1="560" x2="341" y2="568" class="axis"/>
+  <text x="328" y="584" class="s">37</text>
+  <text x="318" y="598" class="s">local</text>
+  <line x1="475" y1="250" x2="475" y2="560" class="grid"/>
+  <line x1="475" y1="560" x2="475" y2="568" class="axis"/>
+  <text x="462" y="584" class="s">78</text>
+  <text x="450" y="598" class="s">1×hop</text>
+  <line x1="730" y1="250" x2="730" y2="560" class="grid"/>
+  <line x1="730" y1="560" x2="730" y2="568" class="axis"/>
+  <text x="710" y="584" class="s">156</text>
+  <text x="698" y="598" class="s">2×hop</text>
+  <line x1="851" y1="250" x2="851" y2="560" class="grid"/>
+  <line x1="851" y1="560" x2="851" y2="568" class="axis"/>
+  <text x="832" y="584" class="s">193</text>
+  <text x="808" y="598" class="s">H200 e2e</text>
+  <text x="900" y="584" class="s">cycle</text>
+
+  <!-- Row 1: silicon load -->
+  <text x="24" y="278" class="t">H200 remote load</text>
+  <text x="24" y="294" class="s">measured e2e ~193</text>
+  <rect x="220" y="262" width="631" height="28" rx="3" fill="#c8e6c9" stroke="#2e7d32"/>
+  <text x="430" y="281" class="s">local smem + request hop + response hop</text>
+
+  <!-- Row 2: sim load -->
+  <text x="24" y="338" class="t">Sim remote load</text>
+  <text x="24" y="354" class="s">RF fill at issue; stall 2×hop</text>
+  <rect x="220" y="322" width="510" height="28" rx="3" fill="#ffe0b2" stroke="#ef6c00"/>
+  <text x="360" y="341" class="s">issue stall ≈ 156 (L2-1 RF-on-RSP still open)</text>
+  <circle cx="220" cy="336" r="5" fill="#ef6c00"/>
+  <text x="228" y="318" class="s">functional read now</text>
+
+  <!-- Row 3: store delayed -->
+  <text x="24" y="398" class="t">Sim remote store</text>
+  <text x="24" y="414" class="s">immediate=0 (default)</text>
+  <rect x="220" y="382" width="255" height="28" rx="3" fill="#bbdefb" stroke="#1565c0"/>
+  <text x="268" y="401" class="s">issuer hop; peer visible at 78</text>
+  <circle cx="475" cy="396" r="6" fill="#1565c0"/>
+  <text x="484" y="380" class="s">deliver writes owner smem</text>
+
+  <!-- Row 4: store immediate -->
+  <text x="24" y="458" class="t">Sim remote store</text>
+  <text x="24" y="474" class="s">immediate=1 (opt-in)</text>
+  <rect x="220" y="442" width="255" height="28" rx="3" fill="#e3f2fd" stroke="#1565c0" stroke-dasharray="4 3"/>
+  <circle cx="220" cy="456" r="6" fill="#1565c0"/>
+  <text x="232" y="461" class="s">peer write at issue; issuer still pays hop 78</text>
+
+  <!-- Row 5: memory xbar contrast -->
+  <text x="24" y="518" class="t">If DSM used icnt</text>
+  <text x="24" y="534" class="s">cluster↔L2 crossbar</text>
+  <rect x="220" y="502" width="700" height="28" rx="3" fill="#eeeeee" stroke="#757575" stroke-dasharray="5 3"/>
+  <text x="300" y="521" class="s">wrong ports (no SM→SM), wrong clock domain, mixes DRAM contention — not modeled</text>
+
+  <text x="24" y="628" class="s">Default and H200 reduced use -gpgpu_dsm_store_immediate 0. A consumer that only try_waits still sees the store (mbar hop ≈ DSM hop, store injected first). A consumer that reads peer smem with no wait must not assume the new word is already there. Set 1 to also write at issue.</text>
+
+  <!-- ===== Panel C: load vs store messages ===== -->
+  <text x="24" y="668" class="title">C. What happens on the fabric (NoC on)</text>
+
+  <rect x="24" y="684" width="458" height="118" rx="6" fill="#fff" stroke="#1565c0" class="box"/>
+  <text x="36" y="706" class="h">Remote st  (today)</text>
+  <text x="36" y="728" class="mono">st_impl → issue_remote_dsm_store</text>
+  <text x="36" y="746" class="s">1. inject DSM_STORE (payload bytes)</text>
+  <text x="36" y="764" class="s">2. optional immediate write if knob=1</text>
+  <text x="36" y="782" class="s">3. issuer dispatch_delay = 1×hop</text>
+  <text x="36" y="798" class="s">4. deliver_dsm_store writes owner smem</text>
+
+  <rect x="498" y="684" width="458" height="118" rx="6" fill="#fff" stroke="#ef6c00" class="box"/>
+  <text x="510" y="706" class="h">Remote ld  (today — L2 still open)</text>
+  <text x="510" y="728" class="mono">decode_space → deliver_ready → read</text>
+  <text x="510" y="746" class="s">1. drain due stores, then functional read</text>
+  <text x="510" y="764" class="s">2. RF is filled at execute, not on RSP</text>
+  <text x="510" y="782" class="s">3. issuer dispatch_delay = 2×hop</text>
+  <text x="510" y="798" class="s">4. DSM_LOAD_RSP deliver is a no-op</text>
+</svg>

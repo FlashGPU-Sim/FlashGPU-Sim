@@ -14,7 +14,7 @@
 // longer form issue-order peer groups (each CTA is its own group) so
 // independent multi-issuer kernels are not falsely coupled on m>1 packs.
 // OneProducer also uses Ex launch. Cluster TMA timing is idealized; see
-// docs/cluster_cta2_explain.md.
+// docs/cluster_noc/programming_model.md
 
 // Inline mbarrier helpers matching cp_kernels.cuh patterns.
 __device__ inline void mbarrier_init_impl(unsigned long long *bar_addr,

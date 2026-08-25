@@ -302,6 +302,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 ### Known Limitations
 - TMA: Some corner cases not fully handled (see `FLASH.md` for details)
 - Mbarrier: Used ops implemented (incl. `try_wait` timeout dest-pred); remote via NoC; objects not smem-backed; unused variants hard-fail; `barrier.cluster` is a non-goal
+- Cluster / DSM: Functional `mapa` + delay-line NoC; target GPC flit fabric is `docs/cluster_noc/todos.md` (not implemented)
 - Multi-threading: Potential race conditions in edge cases
 - Flash mode: Primarily validated on basic usage patterns
 
@@ -311,6 +312,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 - **Testing instructions**: `docs/testing-instructions.md`
 - **MMA design**: `docs/mma_instructions.md`
 - **Flash features**: `FLASH.md`
+- **Cluster / DSM / GPC fabric**: `docs/cluster_noc/README.md` (checklist: `docs/cluster_noc/todos.md`)
 - **MMA API**: `src/gpgpu-sim/flash/tensor_mma.md`
 - **Flash module overview**: `src/gpgpu-sim/flash/README.md`
 - **Original GPGPU-Sim**: `README.md`

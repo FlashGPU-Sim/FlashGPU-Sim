@@ -68,7 +68,7 @@ Source: `H200_profiling/output-2046238-H200Profiling.txt` (suite includes `dsm` 
 | TMA mcast−unicast e2e | ~**135** cyc | `gpgpu_tma_mcast_hop_latency=135` |
 | Matrix file | 16×16 one-way | `dsm_latency_matrix_16.csv` |
 
-See `docs/cluster_noc.md` and `H200_profiling/TODO.md` for remaining BW/scoreboard knobs.
+See `docs/cluster_noc/knobs.md`, `docs/cluster_noc/todos.md`, and `H200_profiling/TODO.md` for remaining BW/scoreboard knobs.
 
 ### Still open
 

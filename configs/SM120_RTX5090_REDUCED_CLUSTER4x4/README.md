@@ -1,5 +1,7 @@
 # SM120_RTX5090_REDUCED_CLUSTER4x4
 
+Cluster / DSM design: `docs/cluster_noc/README.md`. Checklist: `docs/cluster_noc/todos.md`.
+
 Reduced multi-cluster config with **m>2** physical packing for development
 and functional validation of Thread Block Clusters larger than 2.
 

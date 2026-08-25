@@ -795,7 +795,7 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &gpgpu_mbarrier_trywait_latency,
                          "Latency (cycles) for mbarrier.try_wait polling before warp release (default=0)", "0");
 
-  // Intra-cluster NoC / DSM / TMA multicast (docs/cluster_noc.md)
+  // Intra-cluster NoC / DSM / TMA multicast (docs/cluster_noc/knobs.md)
   option_parser_register(opp, "-gpgpu_cluster_noc_enable", OPT_BOOL,
                          &gpgpu_cluster_noc_enable,
                          "Enable intra-cluster SM↔SM NoC for TMA mcast/DSM/remote mbarrier (default=0)",

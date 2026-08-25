@@ -196,7 +196,7 @@ std::set<int> complete_tx(gpgpu_sim *gpu, const thread_index_t &thread_index,
 
 **Current Limitations**:
 1. **Storage**: Barrier objects live in simulator state, not as 64-bit values in GPU shared memory. Kernels that inspect mbarrier bytes in smem will not see HW-faithful contents.
-2. **Cluster wait**: Remote (mapa) arrive / try_wait / expect_tx / complete_tx go through the intra-cluster NoC when `-gpgpu_mbarrier_cluster_enable 1` and `-gpgpu_cluster_noc_enable 1`. `barrier.cluster` / `cluster.sync()` are **not** implemented (see `docs/cluster.md` §5).
+2. **Cluster wait**: Remote (mapa) arrive / try_wait / expect_tx / complete_tx go through the intra-cluster NoC when `-gpgpu_mbarrier_cluster_enable 1` and `-gpgpu_cluster_noc_enable 1`. `barrier.cluster` / `cluster.sync()` are **not** implemented (see `docs/cluster_noc/programming_model.md`).
 3. **Warp granularity**: A blocked thread stalls the entire warp (GPGPU-Sim SIMT).
 4. **`try_wait` timeout**: The optional 4th operand is implemented. Dest pred is **true** if the waited phase completed, **false** if the hint expires first. Hint is modeled in sim cycles, not silicon nanoseconds.
 5. **Unused PTX**: `test_wait`, `pending_count`, and try_wait without `.parity` are unused in-tree and hard-fail / fail to parse.
@@ -310,16 +310,16 @@ Lane 28-31: Row 7
 5. **Unused variants**: `test_wait`, `pending_count`, try_wait without `.parity` hard-fail / do not parse
 6. **Calibration knobs**: `gpgpu_mbarrier_arrive_latency` / `trywait_latency` are end-to-end TMA+mbarrier fits, not pure HW barrier cost
 
-**Cluster / TMA multicast / DSM / NoC** (unified branch — see **`docs/cluster.md`**):
-1. **TB cluster launch**: `cudaLaunchKernelExC` / `__cluster_dims__` co-schedule CTAs onto one physical `simt_core_cluster`. Details: `docs/cluster_cta2_realLaunch.md`.
-2. **Peer model**: `.shared::cluster` peers share `cluster_group` / ranks on the same physical cluster.
+**Cluster / TMA multicast / DSM / NoC** (see **`docs/cluster_noc/README.md`**):
+1. **TB cluster launch**: `cudaLaunchKernelExC` / `__cluster_dims__` co-schedule CTAs onto one physical `simt_core_cluster` (target name: `gpc_t`). Details: `docs/cluster_noc/programming_model.md`.
+2. **Peer model**: `.shared::cluster` peers share `cluster_group` / ranks on the same physical cluster / GPC.
 3. **Selective multicast**: `.multicast::cluster` + `ctaMask` for data and mbarrier `complete_tx`.
-4. **Intra-cluster NoC**: TMA peer data/mbar, DSM, remote mbarrier via `cluster_noc_t` when `-gpgpu_cluster_noc_enable 1` (`docs/cluster_noc.md`). Default on for `SM90_H200_REDUCED_CLUSTER4x4`.
+4. **Intra-cluster NoC (today)**: TMA peer data/mbar, DSM, remote mbarrier via delay-line `cluster_noc_t` when `-gpgpu_cluster_noc_enable 1`. Default on for `SM90_H200_REDUCED_CLUSTER4x4`. **Target:** per-GPC flit fabric (`dsm_fabric_t`) in `docs/cluster_noc/dsm_fabric.md`.
 5. Prefer `SM120_*_REDUCED_CLUSTER*` for functional tests; H200 reduced for NoC-on calibration path.
 6. **`mapa` lifetime**: `mapa` maps only an **active** cluster rank. If the target CTA has exited or the rank was never co-resident, the simulator **aborts** (it does not alias the issuer’s shared memory). Keep the producer CTA alive until consumers finish `mapa`.
 7. **DSM `atom`**: CUDA `atomicAdd` on a `mapa` / `map_shared_rank` pointer is a generic PTX `atom.add` against the **owner** CTA’s smem. PTX `red` and `red.async` are unimplemented (`inst_not_implemented`). nvcc 12.8 does not emit `red.shared::cluster` for that C++ path; `red.async` is a separate Hopper mbarrier-completion opcode.
-8. **Hang preventers**: a bare peer-smem spin (no mbarrier interest) and a prolonged mix of `bar.sync` + single-thread `try_wait` abort instead of hanging until the test timeout. Not hardware detectors. The peer-spin arm is recent (expires on a recognized wait or a hop-scale quiet window). Parked `try_wait` and hop-scale waits of correct kernels are exempt (`docs/cluster_noc.md` §10).
-9. **Maturity:** `docs/cluster_noc.md` §6.4–§6.6 (usefulness + F1–F9 functional gaps + L0–L4). **Living checklist:** §12. Short version: functionally useful for mbarrier-ordered cluster/TMA/DSM kernels; F1–F3 and F5–F9 are closed or non-goal (mapa lifetime, remote `atom`, TMA corners, hang preventers, and dual-path store); remaining hole is F4 `red`/`red.async`. Remote DSM stores default to write-on-deliver (`-gpgpu_dsm_store_immediate 0`, closer to silicon); `1` also writes peer smem at issue. NoC-off still writes immediately. SM↔SM timing is **L1** (flat hop, job 2046238).
+8. **Hang preventers**: a bare peer-smem spin (no mbarrier interest) and a prolonged mix of `bar.sync` + single-thread `try_wait` abort instead of hanging until the test timeout. Not hardware detectors. Parked `try_wait` is exempt (`docs/cluster_noc/programming_model.md`).
+9. **Maturity:** Functional track closed except `red`/`red.async`. SM↔SM timing is still a **delay line** (flat hop, job 2046238). Target fabric + scoreboard-complete remote loads: living checklist **`docs/cluster_noc/todos.md`**. Remote DSM stores default to write-on-deliver (`-gpgpu_dsm_store_immediate 0`); NoC-off still writes immediately.
 
 **General**:
 - Flash mode multi-threading may have race conditions in certain edge cases

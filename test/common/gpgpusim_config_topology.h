@@ -6,8 +6,8 @@
 // isolation and would hang or give false failures on the wrong config.
 //
 // Documented skip matrix (which tests skip on REDUCED / CLUSTER2x1 / 2x2 / 4x4):
-//   docs/cluster_cta2_explain.md §19.1
-//   docs/cluster_cta2_realLaunch.md §5 (Tests / topology skips)
+//   docs/cluster_noc/tests.md
+//   docs/cluster_noc/programming_model.md
 //
 // Naming: physical packing is CLUSTERmxn (m = n_cores_per_cluster,
 // n = n_clusters). TB cluster size is a launch attribute, not the config name.

@@ -2015,7 +2015,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_mbarrier_arrive_latency;
   unsigned int gpgpu_mbarrier_trywait_latency;
 
-  // Intra-cluster NoC / DSM / TMA multicast hop (see docs/cluster_noc.md).
+  // Intra-cluster NoC / DSM / TMA multicast hop (docs/cluster_noc/knobs.md).
   bool gpgpu_cluster_noc_enable;
   unsigned int gpgpu_dsm_local_latency;
   // One-way remote hop default when matrix missing (H200~78). Load RTT ≈ 2×hop.

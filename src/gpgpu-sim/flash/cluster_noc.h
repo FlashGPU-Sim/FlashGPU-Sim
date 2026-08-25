@@ -12,7 +12,8 @@
 //      SM pipeline stage.
 //   3. Per (src_cid, dst_cid) FIFO for messages with the same stream key.
 //
-// See docs/cluster_noc.md for the full model.
+// Delay-line intra-cluster NoC. Target fabric: docs/cluster_noc/dsm_fabric.md
+// Living checklist: docs/cluster_noc/todos.md
 
 #ifndef FLASH_GPGPU_SIM_CLUSTER_NOC_H
 #define FLASH_GPGPU_SIM_CLUSTER_NOC_H

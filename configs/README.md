@@ -33,6 +33,8 @@ Full RTX 5090 configuration with 170 streaming multiprocessors (flat packing).
 
 ### SM120 cluster packing configs (Thread Block Cluster / TMA)
 
+Design: `docs/cluster_noc/README.md`. TODOs: `docs/cluster_noc/todos.md`.
+
 Naming: `CLUSTERmxn` means **m** = `-gpgpu_n_cores_per_cluster`,
 **n** = `-gpgpu_n_clusters`. TB cluster size is a **launch** attribute
 (`product(clusterDim) ≤ m`), not part of the config name.
