@@ -2158,6 +2158,9 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   auto tma_progress = flash_gpgpu_sim::get_global_tma_progress_counters();
   printf("tma_max_active_transactions = %llu\n",
          tma_progress.max_active_transactions);
+  printf("tma_max_mf_inflight = %llu\n", tma_progress.max_mf_inflight);
+  printf("tma_issue_blocked_inflight_cycles = %llu\n",
+         tma_progress.issue_blocked_inflight_cycles);
   auto cp_async_debug = flash_gpgpu_sim::get_global_cp_async_debug_counters();
   printf("cp_async_debug_tx_started = %llu\n", cp_async_debug.tx_started);
   printf("cp_async_debug_tx_completed = %llu\n", cp_async_debug.tx_completed);

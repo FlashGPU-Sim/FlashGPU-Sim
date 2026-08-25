@@ -260,7 +260,7 @@ disables the additional byte-credit limiter instead of restricting service.
 | `-gpgpu_cluster_response_dispatch_sectors_per_cycle` | `0` | `4` | `4` | Shared response sectors dispatched per target SM and core tick |
 | `-gpgpu_ldst_request_width` | `0` | `4` | `4` | Internal 32-byte global/local bypass children injected per SM and core tick; `0` preserves the legacy LD/ST-cycle path |
 | `-gpgpu_ldst_response_sectors_per_cycle` | `0` | `4` | `4` | LD/ST response sectors advanced per SM and core tick |
-| `-gpgpu_tma_max_inflight` | `0` | `576` | `0` | Issued TMA child requests awaiting response per SM; `0` is unlimited. The full-model value is a calibrated request-count window, while the reduced functional model remains unlimited |
+| `-gpgpu_tma_max_inflight` | `0` | `2648` | `0` | Issued TMA child requests awaiting response per SM; `0` is unlimited. The full-model value covers the measured DRAM bandwidth-delay product while response service width independently limits steady-state bandwidth; the reduced functional model remains unlimited |
 | `-gpgpu_tma_tx_quota` | `0` | `48` | default | Base fairness quota per live TMA transaction; the work-conserving scheduler may borrow beyond it when all live transactions are over quota |
 | `-gpgpu_tma_request_granularity` | `32` | `32` | `32` | Bytes represented by one TMA request |
 | `-gpgpu_tma_request_width` | `1` | `4` | `4` | TMA requests issued per TMA unit and core tick |

@@ -46,6 +46,8 @@ static std::atomic<unsigned long long> g_tma_write_mf_responses{0};
 static std::atomic<unsigned long long> g_tma_bytes_issued{0};
 static std::atomic<unsigned long long> g_tma_bytes_completed{0};
 static std::atomic<unsigned long long> g_tma_max_active_transactions{0};
+static std::atomic<unsigned long long> g_tma_max_mf_inflight{0};
+static std::atomic<unsigned long long> g_tma_issue_blocked_inflight_cycles{0};
 
 static std::atomic<unsigned long long> g_cp_async_tx_started{0};
 static std::atomic<unsigned long long> g_cp_async_tx_completed{0};
@@ -108,6 +110,10 @@ tma_progress_counters_t get_global_tma_progress_counters() {
       g_tma_bytes_completed.load(std::memory_order_relaxed);
   counters.max_active_transactions =
       g_tma_max_active_transactions.load(std::memory_order_relaxed);
+  counters.max_mf_inflight =
+      g_tma_max_mf_inflight.load(std::memory_order_relaxed);
+  counters.issue_blocked_inflight_cycles =
+      g_tma_issue_blocked_inflight_cycles.load(std::memory_order_relaxed);
   return counters;
 }
 
@@ -1708,8 +1714,11 @@ public:
       // entries are only bulk-erased on finalize, so it over-counts.
       unsigned max_inflight =
           m_shader_ctx->get_config()->gpgpu_tma_max_inflight;
-      if (max_inflight > 0 && m_mf_inflight >= max_inflight)
+      if (max_inflight > 0 && m_mf_inflight >= max_inflight) {
+        g_tma_issue_blocked_inflight_cycles.fetch_add(
+            1, std::memory_order_relaxed);
         return;
+      }
 
       const unsigned tx_quota = m_shader_ctx->get_config()->gpgpu_tma_tx_quota;
       const unsigned quota_segment_bytes =
@@ -1779,8 +1788,12 @@ public:
         // Loop: batch-consume consecutive skip-OOB requests in one cycle,
         // then issue up to request_width mem_fetches to L2 before breaking.
         while (issued_requests < request_width && !transaction_finalized) {
-          if (max_inflight > 0 && m_mf_inflight >= max_inflight)
+          if (max_inflight > 0 && m_mf_inflight >= max_inflight &&
+              !tx.agu_state.done) {
+            g_tma_issue_blocked_inflight_cycles.fetch_add(
+                1, std::memory_order_relaxed);
             break;
+          }
           if (!borrowing_quota && tx_quota > 0 &&
               tx.m_mf_tx_inflight >= effective_tx_quota(tx))
             break;
@@ -1891,6 +1904,7 @@ public:
             m_icnt->push(mf);
             m_mf_inflight++;
             tx.m_mf_tx_inflight++;
+            atomic_update_max(g_tma_max_mf_inflight, m_mf_inflight);
             record_tma_mf_issued(is_write, size);
             if (request_bytes_per_cycle > 0)
               m_request_byte_credit -=

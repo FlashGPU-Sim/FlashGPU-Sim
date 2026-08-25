@@ -37,6 +37,10 @@ struct tma_progress_counters_t {
   unsigned long long bytes_issued = 0;
   unsigned long long bytes_completed = 0;
   unsigned long long max_active_transactions = 0;
+  // Maximum child requests awaiting responses on any one SM.
+  unsigned long long max_mf_inflight = 0;
+  // Sum of SM-cycles in which the cap prevented full TMA issue progress.
+  unsigned long long issue_blocked_inflight_cycles = 0;
 };
 
 tma_progress_counters_t get_global_tma_progress_counters();

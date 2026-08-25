@@ -46,15 +46,13 @@ can use the full shared four-sector request or response budget when it runs
 alone. Mixed responses still arbitrate within one four-sector cluster-dispatch
 budget.
 
-The full model limits each SM to 576 issued TMA child requests awaiting a
-response. This is a calibrated request-count window, not a measured B200
-physical queue depth. It corresponds to the 12 live stages of the calibration
-workload times the existing 48-request per-transaction fairness quota. For the
-clean 56 MiB, P4/C4, 12-stage, 16 KiB producer/consumer workload, B200 measured
-19.773135 TB/s. Paired 1 MiB and 4 MiB simulations at the measured clock shape
-extrapolate to 19.646398 TB/s at 576 requests, 0.641% below that measurement.
-The simulator figure is an extrapolation that removes fixed launch and tail
-costs; it is not a direct 56 MiB simulation.
+The full model limits each SM to 2648 issued TMA child requests awaiting a
+response. This finite capacity covers the measured DRAM bandwidth-delay
+product: four 32-byte child responses per core cycle times the 661.39-cycle
+measured latency upper bound gives 2645.56 requests, rounded up to a complete
+four-request service group. The value is not a measurement of the physical
+B200 queue depth. The independent four-request response service continues to
+limit steady-state TMA bandwidth to 128 B/core-cycle.
 
 Detailed DRAM timing and physical address-to-bank mapping remain functional
 placeholders; those parts are not calibrated against B200 hardware counters.
@@ -68,7 +66,25 @@ placeholders; those parts are not calibrated against B200 hardware counters.
 ./tests/dev/fa4/run_fa4_b200_cases.sh --config SM100_B200 --suite smoke --artifact-head-dim 128
 ./tests/dev/fa4/run_fa4_b200_suite_matrix.sh --config SM100_B200 --suite smoke
 ./tests/dev/fa4/run_fa4_b200_suite_matrix.sh --config SM100_B200 --suite medium
+make -C tests/src/microbench/tma ARCH=sm_100a PTX_PROFILE=compute_100a \
+  throughput-sim
 ```
+
+The `throughput-sim` target runs one cold-L2/DRAM CTA with 512 unique 8 KiB
+TMA loads (4 MiB total), 28 stages, and four issuer warps.  Its private run
+copy overrides the clock domains to `1965:1965:1155:3996`; it does not change
+this configuration's normal FA4 clocks.  Set `THROUGHPUT_TMA_MAX_INFLIGHT` on
+the make command line to compare another finite value or `0` (unlimited).
+
+The benchmark's elapsed-cycle result includes cold-pipeline startup and drain.
+For the steady-state service check, divide
+`gpgpu_cluster_response_dispatch_transport_accepted_data_sectors` by
+`gpgpu_cluster_response_dispatch_transport_service_ticks` and multiply by 32.
+The result must be at least 122.14 B/core-cycle and no more than the
+four-sector service limit of 128 B/core-cycle.  `tma_max_mf_inflight` and
+`tma_issue_blocked_inflight_cycles` distinguish tracking-cap stalls from that
+service limit.  The former is the maximum observed on any one SM; the latter
+is the sum of blocked SM-cycles across the GPU.
 
 `tests/dev/fa4/fa4_b200_cases.csv` follows the FA2/FA3 prefill workload groups:
 `smoke`, `small`, `medium`, and `large`.  Each generated FA4 artifact is still

@@ -16,6 +16,9 @@ sources = [
   # SM100 simulator TMA integration tests.
   "tma/tma_test.cu",
 
+  # SM100 standalone calibration microbenchmarks.
+  "microbench/tma/tma_throughput_bench.cu",
+
   # SM100 host-side component tests.
   "unit/addrdec_l2_slice_test.cc",
   "unit/dram_bandwidth_test.cc",

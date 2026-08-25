@@ -63,6 +63,7 @@ level; selecting one profile expands its compile-time modes.
 ./run_tests.py run --arch sm90 --group fa3 \
   --profile breakdown --mode baseline
 ./run_tests.py build --arch sm90 --group microbench --profile tma
+./run_tests.py build --arch sm100 --group microbench --profile tma
 ./run_tests.py run --arch sm120 --group trace \
   --profile gpt2 flash_attn
 ```
