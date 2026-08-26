@@ -133,7 +133,7 @@ The SM120 skip is `GTEST_SKIP` because that case needs `n_cores_per_cluster == 1
 
 ## B1 — Naming and `gpu_topology_t`
 
-- [ ] **B1** Zero-behavior rename: physical cluster → GPC; introduce topology table with PG'd slots.
+- [x] **B1** Zero-behavior rename: physical cluster → GPC; introduce topology table with PG'd slots. Closed 2026-08-25.
 
 **Read first:** [`architecture.md`](architecture.md) §§2–5.
 
@@ -174,6 +174,42 @@ Plus new topology unit tests: round trip; PG'd slot has no `shader_core_ctx`; `s
 **Exit:** Baseline tests bit-identical in **functional** results; no interconnect node count change. Close-out lists the alias knobs.
 
 **Prereqs:** B0. **Next:** B2.
+
+**Close-out (2026-08-25):** Physical cluster is `gpc_t` (`typedef simt_core_cluster gpc_t`). SM↔GPC↔CPC-slot maps go through `gpu_topology_t` (CPC = 6 slots; `-gpgpu_dsm_cpcs_per_gpc` default 3; extra slots PG'd). `create_shader_core_ctx` still allocates only enabled local SMs. `icnt_create` first argument remains GPC count (`n_simt_clusters`). DSM delay-line hops unchanged. No TPCARB.
+
+Alias knobs (conflict at start-up aborts):
+
+| Old (kept) | New |
+|------------|-----|
+| `-gpgpu_n_clusters` | `-gpgpu_num_gpcs` |
+| `-gpgpu_n_cores_per_cluster` | `-gpgpu_num_sms_per_gpc` |
+
+`mem_fetch` requester is `m_requester_sm_id` (`get_sid()` / `get_tpc()` deprecated). TB-cluster storage touched here: `m_cta_tb_cluster_group`, `m_cta_tb_cluster_rank`, `m_next_tb_cluster_group_id`.
+
+Verify:
+
+```bash
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "ClusterNoc*:GpuTopology*"
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4 \
+  run test --target sm120 --group integration \
+  "DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*"
+```
+
+PASS evidence (0 failures):
+
+```text
+# unit ClusterNoc* + GpuTopology* (SM120_RTX5090_REDUCED_CLUSTER2x1)
+[  PASSED  ] 17 tests.
+✓ test/sm120/unit passed!
+
+# GpuTopology* rerun after exclusive-end SM range
+[  PASSED  ] 9 tests.
+✓ test/sm120/unit passed!
+
+# H200 DSM / remote mbar / OneProducer (SM90_H200_REDUCED_CLUSTER4x4)
+[  PASSED  ] 20 tests.
+✓ Tests passed!
+```
 
 ---
 

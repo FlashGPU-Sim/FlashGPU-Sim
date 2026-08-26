@@ -364,6 +364,11 @@ void memory_config::reg_options(class OptionParser *opp) {
   m_address_mapping.addrdec_setoption(opp);
 }
 
+void shader_core_config::apply_gpc_knob_aliases() {
+  gpc_apply_topology_aliases(m_opp, &n_simt_clusters, &n_simt_cores_per_cluster,
+                             &num_gpcs_alias, &num_sms_per_gpc_alias);
+}
+
 void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_simd_model", OPT_INT32, &model,
                          "1 = post-dominator", "1");
@@ -465,11 +470,27 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_num_cta_barriers", OPT_UINT32, &max_barriers_per_cta,
       "Maximum number of named barriers per CTA (default 16)", "16");
+  m_opp = opp;
   option_parser_register(opp, "-gpgpu_n_clusters", OPT_UINT32, &n_simt_clusters,
-                         "number of processing clusters", "10");
+                         "number of processing clusters (GPC count; alias of "
+                         "-gpgpu_num_gpcs)",
+                         "10");
+  option_parser_register(opp, "-gpgpu_num_gpcs", OPT_UINT32, &num_gpcs_alias,
+                         "number of GPCs (alias of -gpgpu_n_clusters)", "0");
   option_parser_register(opp, "-gpgpu_n_cores_per_cluster", OPT_UINT32,
                          &n_simt_cores_per_cluster,
-                         "number of simd cores per cluster", "3");
+                         "enabled SMs per GPC (alias of -gpgpu_num_sms_per_gpc)",
+                         "3");
+  option_parser_register(opp, "-gpgpu_num_sms_per_gpc", OPT_UINT32,
+                         &num_sms_per_gpc_alias,
+                         "enabled SMs per GPC (alias of "
+                         "-gpgpu_n_cores_per_cluster)",
+                         "0");
+  option_parser_register(opp, "-gpgpu_dsm_cpcs_per_gpc", OPT_UINT32,
+                         &dsm_cpcs_per_gpc,
+                         "CPCs per GPC (each CPC has 6 SM slots; extra slots "
+                         "are PG'd)",
+                         "3");
   option_parser_register(opp, "-gpgpu_n_cluster_ejection_buffer_size",
                          OPT_UINT32, &n_simt_ejection_buffer_size,
                          "number of packets in ejection buffer", "8");

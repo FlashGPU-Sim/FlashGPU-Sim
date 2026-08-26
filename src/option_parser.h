@@ -68,3 +68,6 @@ void option_parser_delimited_string(option_parser_t opp,
                                     const char *delimiters);
 // print options
 void option_parser_print(option_parser_t opp, FILE *fout);
+
+// 1 if the option was set from command line or config (not just the default)
+int option_parser_was_set(option_parser_t opp, const char *name);

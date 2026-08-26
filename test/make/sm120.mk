@@ -26,6 +26,8 @@ FLASH_OBJECTS = $(OBJ_DIR)/flash/bulk_group.cu.o \
                 $(OBJ_DIR)/flash/cluster_noc_helpers.cu.o
 LOCAL_INTERCONNECT_OBJECT = $(OBJ_DIR)/unit/local_interconnect.cc.o
 MSHR_TABLE_OBJECT = $(GPGPUSIM_OBJ_DIR)/mshr-table.cu.o
+GPU_TOPOLOGY_OBJECT = $(GPGPUSIM_OBJ_DIR)/gpu_topology.cu.o
+OPTION_PARSER_OBJECT = $(GPGPUSIM_OBJ_DIR)/option_parser.cc.o
 
 .PHONY: test-sm120-unit test-sm120-integration
 
@@ -46,12 +48,21 @@ $(TOP_MAKEFILE) $(SM120_MK) | $(UNIT_OBJ_DIR)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
 $(LOCAL_INTERCONNECT_OBJECT): $(SRC_DIR)/gpgpu-sim/local_interconnect.cc \
-$(SRC_DIR)/gpgpu-sim/local_interconnect.h $(TOP_MAKEFILE) $(SM120_MK) | $(UNIT_OBJ_DIR)
+$(SRC_DIR)/gpgpu-sim/local_interconnect.h $(SRC_DIR)/gpgpu-sim/mem_fetch.h \
+$(SRC_DIR)/gpgpu-sim/gpu_topology.h $(TOP_MAKEFILE) $(SM120_MK) | $(UNIT_OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
 $(MSHR_TABLE_OBJECT): $(SRC_DIR)/gpgpu-sim/mshr-table.cc \
 $(SRC_DIR)/gpgpu-sim/gpu-cache.h $(TOP_MAKEFILE) $(SM120_MK) | $(GPGPUSIM_OBJ_DIR)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
+$(GPU_TOPOLOGY_OBJECT): $(SRC_DIR)/gpgpu-sim/gpu_topology.cc \
+$(SRC_DIR)/gpgpu-sim/gpu_topology.h $(TOP_MAKEFILE) $(SM120_MK) | $(GPGPUSIM_OBJ_DIR)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
+$(OPTION_PARSER_OBJECT): $(SRC_DIR)/option_parser.cc \
+$(SRC_DIR)/option_parser.h $(TOP_MAKEFILE) $(SM120_MK) | $(GPGPUSIM_OBJ_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
 $(OBJ_DIR)/integration/%.cu.o: $(TEST_SRC_DIR)/integration/%.cc \
 $(CUH_HEADERS) $(TOP_MAKEFILE) $(SM120_MK)
@@ -60,6 +71,7 @@ $(CUH_HEADERS) $(TOP_MAKEFILE) $(SM120_MK)
 
 $(SM120_UNIT_TARGET): $(UNIT_TEST_OBJECTS) $(FLASH_OBJECTS) \
 $(LOCAL_INTERCONNECT_OBJECT) $(MSHR_TABLE_OBJECT) \
+$(GPU_TOPOLOGY_OBJECT) $(OPTION_PARSER_OBJECT) \
 $(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(SM120_MK) | $(BIN_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out $(TOP_MAKEFILE) $(SM120_MK),$^) \

@@ -33,6 +33,7 @@
 #include <bitset>
 #include "../abstract_hardware_model.h"
 #include "addrdec.h"
+#include "gpu_topology.h"
 
 enum mf_type {
   READ_REQUEST = 0,
@@ -94,8 +95,14 @@ class mem_fetch {
   unsigned get_sub_partition_id() const { return m_raw_addr.sub_partition; }
   bool get_is_write() const { return m_access.is_write(); }
   unsigned get_request_uid() const { return m_request_uid; }
-  unsigned get_sid() const { return m_sid; }
-  unsigned get_tpc() const { return m_tpc; }
+  unsigned get_requester_sm_id() const { return m_requester_sm_id; }
+  // Deprecated: requester SM. Use get_requester_sm_id().
+  unsigned get_sid() const { return m_requester_sm_id; }
+  // Deprecated: GPC id of the requester (current shader icnt node).
+  unsigned get_tpc() const {
+    if (m_requester_sm_id == (unsigned)-1) return (unsigned)-1;
+    return gpu_topology_live().gpc_id_of_sm(m_requester_sm_id);
+  }
   unsigned get_wid() const { return m_wid; }
   bool istexture() const;
   bool isconst() const;
@@ -135,8 +142,7 @@ class mem_fetch {
  private:
   // request source information
   unsigned m_request_uid;
-  unsigned m_sid;
-  unsigned m_tpc;
+  unsigned m_requester_sm_id;
   unsigned m_wid;
 
   // where is this request now?

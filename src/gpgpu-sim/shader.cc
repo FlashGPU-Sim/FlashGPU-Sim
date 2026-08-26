@@ -344,8 +344,8 @@ void shader_core_ctx::create_front_pipeline() {
   for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_status[i] = 0;
   for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_smem[i] = NULL;
   for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++)
-    m_cta_cluster_group[i] = (unsigned)-1;
-  for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_cluster_rank[i] = 0;
+    m_cta_tb_cluster_group[i] = (unsigned)-1;
+  for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_tb_cluster_rank[i] = 0;
   for (unsigned i = 0; i < m_config->n_thread_per_shader; i++) {
     m_thread[i] = NULL;
     m_threadState[i].m_cta_id = -1;
@@ -880,7 +880,7 @@ memory_space *shader_core_ctx::get_cta_smem(unsigned hw_cta_id) const {
 
 unsigned shader_core_ctx::get_cta_cluster_group(unsigned hw_cta_id) const {
   assert(hw_cta_id < MAX_CTA_PER_SHADER);
-  return m_cta_cluster_group[hw_cta_id];
+  return m_cta_tb_cluster_group[hw_cta_id];
 }
 
 bool shader_core_ctx::is_cta_slot_active(unsigned hw_cta_id) const {
@@ -890,17 +890,17 @@ bool shader_core_ctx::is_cta_slot_active(unsigned hw_cta_id) const {
 
 void shader_core_ctx::set_cta_cluster_group(unsigned hw_cta_id, unsigned group) {
   assert(hw_cta_id < MAX_CTA_PER_SHADER);
-  m_cta_cluster_group[hw_cta_id] = group;
+  m_cta_tb_cluster_group[hw_cta_id] = group;
 }
 
 unsigned shader_core_ctx::get_cta_cluster_rank(unsigned hw_cta_id) const {
   assert(hw_cta_id < MAX_CTA_PER_SHADER);
-  return m_cta_cluster_rank[hw_cta_id];
+  return m_cta_tb_cluster_rank[hw_cta_id];
 }
 
 void shader_core_ctx::set_cta_cluster_rank(unsigned hw_cta_id, unsigned rank) {
   assert(hw_cta_id < MAX_CTA_PER_SHADER);
-  m_cta_cluster_rank[hw_cta_id] = rank;
+  m_cta_tb_cluster_rank[hw_cta_id] = rank;
 }
 
 void shader_core_ctx::try_complete_cluster_peer_mbarrier(
@@ -4653,8 +4653,8 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
     m_cluster->get_cluster_noc()->drop_messages_to_cta(cid, cta_num);
   }
   m_cta_smem[cta_num] = NULL;  // Clear shared memory pointer for TMA multicast
-  m_cta_cluster_group[cta_num] = (unsigned)-1;
-  m_cta_cluster_rank[cta_num] = 0;
+  m_cta_tb_cluster_group[cta_num] = (unsigned)-1;
+  m_cta_tb_cluster_rank[cta_num] = 0;
   shader_CTA_count_unlog(m_sid, 1);
 
   SHADER_GPPRINTF(
@@ -6599,6 +6599,7 @@ void opndcoll_rfu_t::collector_unit_t::dispatch() {
 }
 
 void exec_simt_core_cluster::create_shader_core_ctx() {
+  // Only enabled local SMs get a shader_core_ctx. PG'd CPC slots do not.
   m_core = new shader_core_ctx *[m_config->n_simt_cores_per_cluster];
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
     unsigned sid = m_config->cid_to_sid(i, m_cluster_id);
@@ -6616,7 +6617,7 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
   m_config = config;
   m_cta_issue_next_core = m_config->n_simt_cores_per_cluster -
                           1;  // this causes first launch to use hw cta 0
-  m_cluster_cta_seq = 0;
+  m_next_tb_cluster_group_id = 0;
   m_pending_issue_cluster_group = (unsigned)-1;
   m_pending_issue_group_size = 0;
   m_cluster_id = cluster_id;
@@ -6713,8 +6714,8 @@ unsigned simt_core_cluster::allocate_cta_cluster_group(unsigned group_size,
   // group_size > 0: reserve a unique group id for an entire TB cluster
   // (one id per TB cluster, independent of per-CTA issue count).
   if (group_size > 0) {
-    unsigned group = m_cluster_cta_seq;
-    m_cluster_cta_seq++;
+    unsigned group = m_next_tb_cluster_group_id;
+    m_next_tb_cluster_group_id++;
     return group;
   }
   // Ordinary (non-cluster) launches: each CTA gets its own group so
@@ -6725,8 +6726,8 @@ unsigned simt_core_cluster::allocate_cta_cluster_group(unsigned group_size,
   // Previously grouped consecutive CTAs by n_cores_per_cluster, which
   // caused false peers on m>1 configs (mbarrier complete after inval,
   // tile clobber for distinct per-block loads).
-  unsigned group = m_cluster_cta_seq;
-  m_cluster_cta_seq++;
+  unsigned group = m_next_tb_cluster_group_id;
+  m_next_tb_cluster_group_id++;
   return group;
 }
 

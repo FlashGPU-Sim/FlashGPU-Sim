@@ -49,6 +49,7 @@
 
 // Complete type required for std::unique_ptr destructor of cluster_noc_t.
 #include "flash/cluster_noc.h"
+#include "gpu_topology.h"
 
 // #include "../cuda-sim/ptx.tab.h"
 
@@ -1762,9 +1763,16 @@ class shader_core_config : public core_config {
   shader_core_config(gpgpu_context *ctx) : core_config(ctx) {
     pipeline_widths_string = NULL;
     gpgpu_ctx = ctx;
+    m_opp = NULL;
+    num_gpcs_alias = 0;
+    num_sms_per_gpc_alias = 0;
+    dsm_cpcs_per_gpc = 3;
   }
 
+  void apply_gpc_knob_aliases();
+
   void init() {
+    apply_gpc_knob_aliases();
     int ntok = sscanf(gpgpu_shader_core_pipeline_opt, "%d:%d",
                       &n_thread_per_shader, &warp_size);
     if (ntok != 2) {
@@ -1871,6 +1879,9 @@ class shader_core_config : public core_config {
       abort();
     }
 
+    m_topology.build(n_simt_clusters, n_simt_cores_per_cluster, dsm_cpcs_per_gpc);
+    m_topology.set_live();
+
     m_L1I_config.init(m_L1I_config.m_config_string, FuncCachePreferNone);
     m_L1T_config.init(m_L1T_config.m_config_string, FuncCachePreferNone);
     m_L1C_config.init(m_L1C_config.m_config_string, FuncCachePreferNone);
@@ -1913,14 +1924,18 @@ class shader_core_config : public core_config {
   unsigned num_shader() const {
     return n_simt_clusters * n_simt_cores_per_cluster;
   }
+  const gpu_topology_t &topology() const { return m_topology; }
+  // Deprecated: GPC of SM. Use topology().gpc_id_of_sm().
   unsigned sid_to_cluster(unsigned sid) const {
-    return sid / n_simt_cores_per_cluster;
+    return m_topology.gpc_id_of_sm(sid);
   }
+  // Deprecated: enabled local SM in the GPC. Use topology().local_sm_of_sm().
   unsigned sid_to_cid(unsigned sid) const {
-    return sid % n_simt_cores_per_cluster;
+    return m_topology.local_sm_of_sm(sid);
   }
+  // Deprecated: SM id from GPC + local SM. Use topology().sm_id_at().
   unsigned cid_to_sid(unsigned cid, unsigned cluster_id) const {
-    return cluster_id * n_simt_cores_per_cluster + cid;
+    return m_topology.sm_id_at(cluster_id, cid);
   }
   void set_pipeline_latency();
 
@@ -2064,8 +2079,13 @@ class shader_core_config : public core_config {
   unsigned max_cp_async_latency;
   unsigned max_tensormap_latency;
 
-  unsigned n_simt_cores_per_cluster;
-  unsigned n_simt_clusters;
+  unsigned n_simt_cores_per_cluster;  // enabled SMs per GPC
+  unsigned n_simt_clusters;           // GPC count
+  unsigned num_gpcs_alias;            // -gpgpu_num_gpcs
+  unsigned num_sms_per_gpc_alias;     // -gpgpu_num_sms_per_gpc
+  unsigned dsm_cpcs_per_gpc;          // default 3; each CPC is 6 slots
+  gpu_topology_t m_topology;
+  class OptionParser *m_opp;
   unsigned n_simt_ejection_buffer_size;
   unsigned ldst_unit_response_queue_size;
 
@@ -3092,11 +3112,11 @@ class shader_core_ctx : public core_t {
   // Used by TMA cluster multicast to write data to other SMs' CTAs.
   class memory_space *m_cta_smem[MAX_CTA_PER_SHADER];
 
-  // Per-CTA cluster group id assigned at issue time for multicast peer match.
+  // Per-CTA TB-cluster group id assigned at issue time for multicast peer match.
   // UINT_MAX means the slot is empty / unassigned.
-  unsigned m_cta_cluster_group[MAX_CTA_PER_SHADER];
+  unsigned m_cta_tb_cluster_group[MAX_CTA_PER_SHADER];
   // Per-CTA TB-cluster relative rank (for .multicast::cluster ctaMask bits).
-  unsigned m_cta_cluster_rank[MAX_CTA_PER_SHADER];
+  unsigned m_cta_tb_cluster_rank[MAX_CTA_PER_SHADER];
 };
 
 class exec_shader_core_ctx : public shader_core_ctx {
@@ -3191,6 +3211,7 @@ class simt_core_cluster {
   void aggregate_stats();
 
   // Cluster accessors for TMA multicast and distributed shared memory.
+  // cid is the enabled local SM in this GPC (PG'd CPC slots have no core).
   shader_core_ctx *get_core(unsigned cid) const {
     assert(cid < m_config->n_simt_cores_per_cluster);
     return m_core[cid];
@@ -3226,8 +3247,8 @@ class simt_core_cluster {
   const memory_config *m_mem_config;
 
   unsigned m_cta_issue_next_core;
-  // Monotonic CTA issue counter for cluster-group assignment.
-  unsigned m_cluster_cta_seq;
+  // Monotonic CTA issue counter for TB-cluster group assignment.
+  unsigned m_next_tb_cluster_group_id;
   // Transient state while issuing a CTA: force group id / group size for
   // allocate_cta_cluster_group (consumed by shader_core_ctx::issue_block2core).
   unsigned m_pending_issue_cluster_group;
@@ -3244,6 +3265,8 @@ class simt_core_cluster {
     return m_pending_issue_group_size;
   }
 };
+
+typedef simt_core_cluster gpc_t;
 
 class exec_simt_core_cluster : public simt_core_cluster {
  public:
