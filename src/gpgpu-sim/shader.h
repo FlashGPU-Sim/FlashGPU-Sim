@@ -2093,7 +2093,7 @@ class shader_core_config : public core_config {
 
   unsigned smem_latency;
 
-  unsigned mem2device(unsigned memid) const { return memid + n_simt_clusters; }
+  unsigned mem2device(unsigned memid) const { return memid + num_shader(); }
 
   // Jin: concurrent kernel on sm
   bool gpgpu_concurrent_kernel_sm;
@@ -3167,7 +3167,7 @@ class simt_core_cluster {
   unsigned issue_block2core();
   void cache_flush();
   void cache_invalidate();
-  bool icnt_injection_buffer_full(unsigned size, bool write);
+  bool icnt_injection_buffer_full(unsigned sm_id, unsigned size, bool write);
   void icnt_inject_request_packet(class mem_fetch *mf);
   void update_icnt_stats(class mem_fetch *mf);
 
@@ -3176,12 +3176,12 @@ class simt_core_cluster {
     return m_cluster_noc.get();
   }
 
-  // for perfect memory interface
-  bool response_queue_full() {
-    return (m_response_fifo.size() >= m_config->n_simt_ejection_buffer_size);
+  // for perfect memory interface (per-SM ejection buffer)
+  bool response_queue_full(unsigned sid) const {
+    return m_response_fifo.full(m_config->sid_to_cid(sid));
   }
   void push_response_fifo(class mem_fetch *mf) {
-    m_response_fifo.push_back(mf);
+    m_response_fifo.push(m_config->sid_to_cid(mf->get_sid()), mf);
   }
 
   void get_pdom_stack_top_info(unsigned sid, unsigned tid, unsigned *pc,
@@ -3254,7 +3254,7 @@ class simt_core_cluster {
   unsigned m_pending_issue_cluster_group;
   unsigned m_pending_issue_group_size;
   std::list<unsigned> m_core_sim_order;
-  std::list<mem_fetch *> m_response_fifo;
+  gpc_sm_response_fifos_t m_response_fifo;
   std::unique_ptr<flash_gpgpu_sim::cluster_noc_t> m_cluster_noc;
 
  public:
@@ -3308,7 +3308,7 @@ class sst_simt_core_cluster : public exec_simt_core_cluster {
    * @return true
    * @return false
    */
-  bool SST_injection_buffer_full(unsigned size, bool write,
+  bool SST_injection_buffer_full(unsigned sid, unsigned size, bool write,
                                  mem_access_type type);
 
   /**
@@ -3333,7 +3333,8 @@ class shader_memory_interface : public mem_fetch_interface {
     m_cluster = cluster;
   }
   virtual bool full(unsigned size, bool write) const {
-    return m_cluster->icnt_injection_buffer_full(size, write);
+    return m_cluster->icnt_injection_buffer_full(m_core->get_sid(), size,
+                                                 write);
   }
   virtual void push(mem_fetch *mf) {
     m_core->inc_simt_to_mem(mf->get_num_flits(true));
@@ -3352,7 +3353,7 @@ class perfect_memory_interface : public mem_fetch_interface {
     m_cluster = cluster;
   }
   virtual bool full(unsigned size, bool write) const {
-    return m_cluster->response_queue_full();
+    return m_cluster->response_queue_full(m_core->get_sid());
   }
   virtual void push(mem_fetch *mf) {
     if (mf && mf->isatomic())
@@ -3402,7 +3403,8 @@ class sst_memory_interface : public mem_fetch_interface {
    * @return false
    */
   bool full(unsigned size, bool write, mem_access_type type) const {
-    return m_cluster->SST_injection_buffer_full(size, write, type);
+    return m_cluster->SST_injection_buffer_full(m_core->get_sid(), size, write,
+                                                type);
   }
 
   /**

@@ -1302,6 +1302,8 @@ void sst_gpgpu_sim::createSIMTCluster() {
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
     m_cluster[i] = new sst_simt_core_cluster(
         this, i, m_shader_config, m_memory_config, m_shader_stats, m_mem_stats);
+  // SST still indexes one shader port per GPC. Unsupported until a per-SM
+  // adapter exists.
   SST_gpgpu_reply_buffer.resize(m_shader_config->n_simt_clusters);
 }
 
@@ -1371,7 +1373,7 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
     }
 
     icnt_wrapper_init();
-    icnt_create(m_shader_config->n_simt_clusters,
+    icnt_create(m_shader_config->num_shader(),
                 m_memory_config->m_n_mem_sub_partition);
   }
 
@@ -2693,8 +2695,10 @@ void gpgpu_sim::cycle() {
           // if (!mf->get_is_write())
           mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
           mf->set_status(IN_ICNT_TO_SHADER, gpu_sim_cycle + gpu_tot_sim_cycle);
-          ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
-                      response_size);
+          ::icnt_push(m_shader_config->mem2device(i),
+                      m_shader_config->topology().global_sm_node_id(
+                          mf->get_requester_sm_id()),
+                      mf, response_size);
           m_memory_sub_partition[i]->pop();
           partiton_replys_in_parallel_per_cycle++;
         } else {
@@ -3096,6 +3100,8 @@ const memory_config *gpgpu_sim::getMemoryConfig() { return m_memory_config; }
 simt_core_cluster *gpgpu_sim::getSIMTCluster() { return *m_cluster; }
 
 void sst_gpgpu_sim::SST_gpgpusim_numcores_equal_check(unsigned sst_numcores) {
+  // SST still treats one shader port per GPC. Unsupported until a per-SM
+  // adapter exists.
   if (m_shader_config->n_simt_clusters != sst_numcores) {
     assert(
         "\nSST core is not equal the GPGPU-sim cores. Open gpgpu-sim.config "

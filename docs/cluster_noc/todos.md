@@ -215,7 +215,7 @@ PASS evidence (0 failures):
 
 ## B2 — Global NoC endpoint per SM
 
-- [ ] **B2** One shader icnt node per **enabled SM**, not per GPC.
+- [x] **B2** One shader icnt node per **enabled SM**, not per GPC. Closed 2026-08-26.
 
 **Read first:** [`architecture.md`](architecture.md) §4.
 
@@ -239,6 +239,47 @@ PASS evidence (0 failures):
 **Exit:** Written table: config A/B, `num_sms`, `icnt` shader nodes, note on L2 roofline.
 
 **Prereqs:** B1. **Next:** B3a.
+
+**Close-out (2026-08-26):** `icnt_create` is sized from enabled SMs (`num_shader()`). `global_sm_node_id(sm)` is the SM; `global_l2_node_id` starts at `num_sms`. Each GPC ejects per member SM into a per-SM response FIFO. Ordinary CTA issue may place one CTA on each member SM per cycle. Incoming interconnect stats are counted per SM and summed per GPC. SST and gem5 still index one shader port per GPC and are unsupported until a per-SM adapter exists. DSM stays off this interconnect.
+
+| Config / map | n_gpcs | sms/gpc | num_sms | icnt shader nodes |
+|--------------|-------:|--------:|--------:|------------------:|
+| `SM90_H200_REDUCED_CLUSTER4x4` | 4 | 4 | 16 | 16 |
+| `gpu_topology_t::build(16, 1, 3)` | 16 | 1 | 16 | 16 |
+| `SM120_RTX5090_REDUCED_CLUSTER2x1` | 1 | 2 | 2 | 2 |
+
+L2 roofline: no dual-config kernel run. Independent SM ports (`GpuTopology.ShaderIcntNodeCountIndependentOfGpcGrouping`, `LocalInterconnectTest.PerSmShaderPortsDoNotShareBuffer`) mean packing SMs into fewer GPCs cannot cut L2 ports by `m`.
+
+Verify:
+
+```bash
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "GpuTopology*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "LocalInterconnect*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "ClusterNoc*:GpuTopology*"
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4 \
+  run test --target sm120 --group integration \
+  "DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*"
+```
+
+PASS evidence (0 failures):
+
+```text
+# unit GpuTopology* (run 1 and rerun, SM120_RTX5090_REDUCED_CLUSTER2x1)
+[  PASSED  ] 12 tests.
+✓ test/sm120/unit passed!
+
+# unit LocalInterconnect* (SM120_RTX5090_REDUCED_CLUSTER2x1)
+[  PASSED  ] 5 tests.
+✓ test/sm120/unit passed!
+
+# unit ClusterNoc* + GpuTopology* (SM120_RTX5090_REDUCED_CLUSTER2x1)
+[  PASSED  ] 20 tests.
+✓ test/sm120/unit passed!
+
+# H200 DSM / remote mbar / OneProducer (SM90_H200_REDUCED_CLUSTER4x4)
+[  PASSED  ] 20 tests.
+✓ Tests passed!
+```
 
 ---
 

@@ -6630,6 +6630,8 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
 #endif
   m_mem_stats = mstats;
   m_mem_config = mem_config;
+  m_response_fifo.init(m_config->n_simt_cores_per_cluster,
+                       m_config->n_simt_ejection_buffer_size);
   m_cluster_noc = std::make_unique<flash_gpgpu_sim::cluster_noc_t>(this, config);
 }
 
@@ -6744,9 +6746,10 @@ unsigned simt_core_cluster::issue_block2core_for_kernel(
   if (!kernel || !m_gpu->kernel_more_cta_left(kernel)) return 0;
 
   unsigned num_blocks_issued = 0;
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
-    unsigned core =
-        (i + m_cta_issue_next_core + 1) % m_config->n_simt_cores_per_cluster;
+  const unsigned n = m_config->n_simt_cores_per_cluster;
+  const unsigned rr_start = m_cta_issue_next_core;
+  for (unsigned i = 0; i < n; i++) {
+    unsigned core = gpc_cta_issue_visit(i, rr_start, n);
 
     // Bind kernel to the core if needed (non-concurrent path).
     if (!m_config->gpgpu_concurrent_kernel_sm) {
@@ -6790,9 +6793,10 @@ unsigned simt_core_cluster::issue_block2core_for_kernel(
 
 unsigned simt_core_cluster::issue_block2core() {
   unsigned num_blocks_issued = 0;
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
-    unsigned core =
-        (i + m_cta_issue_next_core + 1) % m_config->n_simt_cores_per_cluster;
+  const unsigned n = m_config->n_simt_cores_per_cluster;
+  const unsigned rr_start = m_cta_issue_next_core;
+  for (unsigned i = 0; i < n; i++) {
+    unsigned core = gpc_cta_issue_visit(i, rr_start, n);
 
     kernel_info_t *kernel;
     // Jin: fetch kernel according to concurrent kernel setting
@@ -6835,7 +6839,6 @@ unsigned simt_core_cluster::issue_block2core() {
       m_core[core]->issue_block2core(*kernel);
       num_blocks_issued++;
       m_cta_issue_next_core = core;
-      break;
     }
   }
   return num_blocks_issued;
@@ -6851,21 +6854,26 @@ void simt_core_cluster::cache_invalidate() {
     m_core[i]->cache_invalidate();
 }
 
-bool simt_core_cluster::icnt_injection_buffer_full(unsigned size, bool write) {
+bool simt_core_cluster::icnt_injection_buffer_full(unsigned sm_id, unsigned size,
+                                                   bool write) {
   unsigned request_size = size;
   if (!write) request_size = READ_PACKET_SIZE;
-  return !::icnt_has_buffer(m_cluster_id, request_size);
+  return !::icnt_has_buffer(m_config->topology().global_sm_node_id(sm_id),
+                            request_size);
 }
 
-bool sst_simt_core_cluster::SST_injection_buffer_full(unsigned size, bool write,
+bool sst_simt_core_cluster::SST_injection_buffer_full(unsigned sid, unsigned size,
+                                                      bool write,
                                                       mem_access_type type) {
   switch (type) {
     case CONST_ACC_R:
     case INST_ACC_R: {
-      return response_queue_full();
+      return response_queue_full(sid);
       break;
     }
     default: {
+      // SST still indexes one shader port per GPC. Unsupported until a
+      // per-SM adapter exists.
       return ::is_SST_buffer_full(m_cluster_id);
       break;
     }
@@ -6886,14 +6894,14 @@ void simt_core_cluster::icnt_inject_request_packet(class mem_fetch *mf) {
   }
   m_stats->m_outgoing_traffic_stats->record_traffic(mf, packet_size);
   unsigned destination = mf->get_sub_partition_id();
+  unsigned src = m_config->topology().global_sm_node_id(mf->get_requester_sm_id());
   mf->set_status(IN_ICNT_TO_MEM,
                  m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
   if (!mf->get_is_write() && !mf->isatomic())
-    ::icnt_push(m_cluster_id, m_config->mem2device(destination), (void *)mf,
+    ::icnt_push(src, m_config->mem2device(destination), (void *)mf,
                 mf->get_ctrl_size());
   else
-    ::icnt_push(m_cluster_id, m_config->mem2device(destination), (void *)mf,
-                mf->size());
+    ::icnt_push(src, m_config->mem2device(destination), (void *)mf, mf->size());
 }
 
 void simt_core_cluster::update_icnt_stats(class mem_fetch *mf) {
@@ -6973,6 +6981,8 @@ void sst_simt_core_cluster::icnt_inject_request_packet_to_SST(
       break;
     }
     default: {
+      // SST still indexes one shader port per GPC. Unsupported until a
+      // per-SM adapter exists.
       if (!mf->get_is_write() && !mf->isatomic())
         ::send_read_request_SST(m_cluster_id, mf->get_addr(),
                                 mf->get_data_size(), (void *)mf);
@@ -6992,115 +7002,116 @@ void simt_core_cluster::icnt_cycle() {
       m_config->gpgpu_cp_async_response_width
           ? m_config->gpgpu_cp_async_response_width
           : 1;
-  unsigned tma_responses_accepted = 0;
-  unsigned cp_async_responses_accepted = 0;
+  const unsigned n = m_config->n_simt_cores_per_cluster;
 
-  while (!m_response_fifo.empty()) {
-    mem_fetch *mf = m_response_fifo.front();
-    unsigned cid = m_config->sid_to_cid(mf->get_sid());
-    if (mf->get_access_type() == TMA_ACC_R ||
-        mf->get_access_type() == TMA_ACC_W ||
-        mf->get_access_type() == CP_ASYNC_ACC_R) {
-      bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
-      unsigned &accepted =
-          is_cp_async ? cp_async_responses_accepted : tma_responses_accepted;
-      unsigned width = is_cp_async ? cp_async_response_width : tma_response_width;
-      if (accepted < width &&
-          !m_core[cid]->tma_response_buffer_full()) {
-        m_response_fifo.pop_front();
-        m_core[cid]->accept_tma_response(mf);
-        accepted++;
-        continue;
+  for (unsigned cid = 0; cid < n; cid++) {
+    unsigned tma_responses_accepted = 0;
+    unsigned cp_async_responses_accepted = 0;
+    while (!m_response_fifo.empty(cid)) {
+      mem_fetch *mf = m_response_fifo.front(cid);
+      if (mf->get_access_type() == TMA_ACC_R ||
+          mf->get_access_type() == TMA_ACC_W ||
+          mf->get_access_type() == CP_ASYNC_ACC_R) {
+        bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
+        unsigned &accepted =
+            is_cp_async ? cp_async_responses_accepted : tma_responses_accepted;
+        unsigned width =
+            is_cp_async ? cp_async_response_width : tma_response_width;
+        if (accepted < width && !m_core[cid]->tma_response_buffer_full()) {
+          m_response_fifo.pop(cid);
+          m_core[cid]->accept_tma_response(mf);
+          accepted++;
+          continue;
+        }
+        break;
+      } else if (mf->get_access_type() == INST_ACC_R) {
+        if (!m_core[cid]->fetch_unit_response_buffer_full()) {
+          m_response_fifo.pop(cid);
+          m_core[cid]->accept_fetch_response(mf);
+        }
+      } else {
+        if (!m_core[cid]->ldst_unit_response_buffer_full()) {
+          m_response_fifo.pop(cid);
+          m_mem_stats->get_stats()->memlatstat_read_done(mf);
+          m_core[cid]->accept_ldst_unit_response(mf);
+        }
       }
       break;
-    } else if (mf->get_access_type() == INST_ACC_R) {
-      // instruction fetch response
-      if (!m_core[cid]->fetch_unit_response_buffer_full()) {
-        m_response_fifo.pop_front();
-        m_core[cid]->accept_fetch_response(mf);
-      }
-    } else {
-      // data response
-      if (!m_core[cid]->ldst_unit_response_buffer_full()) {
-        m_response_fifo.pop_front();
-        m_mem_stats->get_stats()->memlatstat_read_done(mf);
-        m_core[cid]->accept_ldst_unit_response(mf);
-      }
     }
-    break;
   }
 
-  unsigned tma_responses_popped = 0;
-  unsigned cp_async_responses_popped = 0;
-  while (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
-    mem_fetch *mf = (mem_fetch *)::icnt_pop(m_cluster_id);
-    if (!mf) break;
-    assert(mf->get_tpc() == m_cluster_id);
-    assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
+  for (unsigned cid = 0; cid < n; cid++) {
+    unsigned sm_id = m_config->cid_to_sid(cid, m_cluster_id);
+    unsigned node = m_config->topology().global_sm_node_id(sm_id);
+    unsigned tma_responses_popped = 0;
+    unsigned cp_async_responses_popped = 0;
+    while (!m_response_fifo.full(cid)) {
+      mem_fetch *mf = (mem_fetch *)::icnt_pop(node);
+      if (!mf) break;
+      assert(m_config->sid_to_cluster(mf->get_sid()) == m_cluster_id);
+      assert(m_config->sid_to_cid(mf->get_sid()) == cid);
+      assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
 
-    // The packet size varies depending on the type of request:
-    // - For read request and atomic request, the packet contains the data
-    // - For write-ack, the packet only has control metadata
-    unsigned int packet_size =
-        (mf->get_is_write()) ? mf->get_ctrl_size() : mf->size();
-    m_stats->m_incoming_traffic_stats->record_traffic(mf, packet_size);
-    mf->set_status(IN_CLUSTER_TO_SHADER_QUEUE,
-                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-    m_response_fifo.push_back(mf);
-    m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+      unsigned int packet_size =
+          (mf->get_is_write()) ? mf->get_ctrl_size() : mf->size();
+      m_stats->m_incoming_traffic_stats->record_traffic(mf, packet_size);
+      mf->set_status(IN_CLUSTER_TO_SHADER_QUEUE,
+                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+      m_response_fifo.push(cid, mf);
+      m_stats->n_mem_to_simt[sm_id] += mf->get_num_flits(false);
 
-    if (mf->get_access_type() == TMA_ACC_R ||
-        mf->get_access_type() == TMA_ACC_W ||
-        mf->get_access_type() == CP_ASYNC_ACC_R) {
-      bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
-      unsigned &popped =
-          is_cp_async ? cp_async_responses_popped : tma_responses_popped;
-      unsigned width = is_cp_async ? cp_async_response_width : tma_response_width;
-      popped++;
-      if (popped < width)
-        continue;
+      if (mf->get_access_type() == TMA_ACC_R ||
+          mf->get_access_type() == TMA_ACC_W ||
+          mf->get_access_type() == CP_ASYNC_ACC_R) {
+        bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
+        unsigned &popped =
+            is_cp_async ? cp_async_responses_popped : tma_responses_popped;
+        unsigned width =
+            is_cp_async ? cp_async_response_width : tma_response_width;
+        popped++;
+        if (popped < width) continue;
+      }
+      break;
     }
-    break;
   }
 }
 
 void sst_simt_core_cluster::icnt_cycle_SST() {
-  if (!m_response_fifo.empty()) {
-    mem_fetch *mf = m_response_fifo.front();
-    unsigned cid = m_config->sid_to_cid(mf->get_sid());
+  // SST still indexes one shader port per GPC. Unsupported until a per-SM
+  // adapter exists. Dispatch uses the packet's local SM FIFO.
+  const unsigned n = m_config->n_simt_cores_per_cluster;
+  for (unsigned cid = 0; cid < n; cid++) {
+    if (m_response_fifo.empty(cid)) continue;
+    mem_fetch *mf = m_response_fifo.front(cid);
     if (mf->get_access_type() == TMA_ACC_R ||
         mf->get_access_type() == TMA_ACC_W ||
         mf->get_access_type() == CP_ASYNC_ACC_R) {
       if (!m_core[cid]->tma_response_buffer_full()) {
-        m_response_fifo.pop_front();
+        m_response_fifo.pop(cid);
         m_core[cid]->accept_tma_response(mf);
       }
     } else if (mf->get_access_type() == INST_ACC_R) {
-      // instruction fetch response
       if (!m_core[cid]->fetch_unit_response_buffer_full()) {
-        m_response_fifo.pop_front();
+        m_response_fifo.pop(cid);
         m_core[cid]->accept_fetch_response(mf);
       }
     } else {
-      // data response
       if (!m_core[cid]->ldst_unit_response_buffer_full()) {
-        m_response_fifo.pop_front();
+        m_response_fifo.pop(cid);
         m_mem_stats->get_stats()->memlatstat_read_done(mf);
         m_core[cid]->accept_ldst_unit_response(mf);
       }
     }
   }
 
-  // pop from SST buffers
-  if (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
+  // pop from SST buffers (GPC-indexed port; unsupported per-SM adapter)
+  if (!m_response_fifo.full(0)) {
     mem_fetch *mf = (mem_fetch *)(static_cast<sst_gpgpu_sim *>(get_gpu())
                                       ->SST_pop_mem_reply(m_cluster_id));
     if (!mf) return;
-    assert(mf->get_tpc() == m_cluster_id);
+    unsigned cid = m_config->sid_to_cid(mf->get_sid());
+    assert(m_config->sid_to_cluster(mf->get_sid()) == m_cluster_id);
 
-    // do atomic here
-    // For now, we execute atomic when the mem reply comes back
-    // This needs to be validated
     if (mf && mf->isatomic()) mf->do_atomic();
 
     unsigned int packet_size =
@@ -7108,8 +7119,8 @@ void sst_simt_core_cluster::icnt_cycle_SST() {
     m_stats->m_incoming_traffic_stats->record_traffic(mf, packet_size);
     mf->set_status(IN_CLUSTER_TO_SHADER_QUEUE,
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-    m_response_fifo.push_back(mf);
-    m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+    m_response_fifo.push(cid, mf);
+    m_stats->n_mem_to_simt[mf->get_sid()] += mf->get_num_flits(false);
   }
 }
 
@@ -7126,11 +7137,14 @@ void simt_core_cluster::display_pipeline(unsigned sid, FILE *fout,
 
   fprintf(fout, "\n");
   fprintf(fout, "Cluster %u pipeline state\n", m_cluster_id);
-  fprintf(fout, "Response FIFO (occupancy = %zu):\n", m_response_fifo.size());
-  for (std::list<mem_fetch *>::const_iterator i = m_response_fifo.begin();
-       i != m_response_fifo.end(); i++) {
-    const mem_fetch *mf = *i;
-    mf->print(fout);
+  for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; cid++) {
+    fprintf(fout, "SM %u response FIFO (occupancy = %zu):\n",
+            m_config->cid_to_sid(cid, m_cluster_id), m_response_fifo.size(cid));
+    for (std::list<mem_fetch *>::const_iterator i =
+             m_response_fifo.at(cid).begin();
+         i != m_response_fifo.at(cid).end(); i++) {
+      (*i)->print(fout);
+    }
   }
 }
 

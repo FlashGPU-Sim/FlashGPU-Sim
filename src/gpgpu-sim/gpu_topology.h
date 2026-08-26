@@ -1,15 +1,18 @@
 #ifndef GPU_TOPOLOGY_H
 #define GPU_TOPOLOGY_H
 
+#include <list>
 #include <vector>
 
 #include "../option_parser.h"
 
+class mem_fetch;
+
 // SM / GPC / CPC-slot map. All SM↔GPC↔slot conversion goes through this
 // object. A CPC is six SM slots; leftover slots are PG'd (no shader core).
 //
-// Shader icnt nodes remain one per GPC (global_sm_node_id returns that
-// GPC's node). Per-SM endpoints are a later change.
+// Each enabled SM is a global interconnect node. L2 subpartitions start at
+// num_sms. A GPC id is never a node.
 
 typedef unsigned sm_id_t;
 typedef unsigned gpc_id_t;
@@ -49,8 +52,9 @@ class gpu_topology_t {
   gpc_id_t gpc_id_of_sm(sm_id_t sm_id) const;
   local_sm_id_t local_sm_of_sm(sm_id_t sm_id) const;
 
-  // Today's shader icnt node is the GPC, not the SM.
+  // Shader icnt node of an enabled SM; equal to sm_id (dense enabled set).
   global_icnt_node_id_t global_sm_node_id(sm_id_t sm_id) const;
+  // L2 subpartition node; does not overlap any SM node.
   global_icnt_node_id_t global_l2_node_id(unsigned subpartition_id) const;
 
   void set_live() const;
@@ -66,6 +70,40 @@ class gpu_topology_t {
 };
 
 const gpu_topology_t &gpu_topology_live();
+
+// Local SM visited at step i of a GPC CTA-issue pass. rr_start is the
+// previous-cycle cursor; snapshot it before the loop so issuing on one SM
+// does not skip a sibling.
+inline unsigned gpc_cta_issue_visit(unsigned i, unsigned rr_start,
+                                    unsigned n_local_sms) {
+  return (i + rr_start + 1) % n_local_sms;
+}
+
+// Per-enabled-SM icnt ejection buffers on one GPC. One SM at capacity does
+// not head-of-line block a sibling SM in the same GPC.
+struct gpc_sm_response_fifos_t {
+  void init(unsigned n_local_sms, unsigned ejection_limit) {
+    m_limit = ejection_limit;
+    m_q.assign(n_local_sms, std::list<mem_fetch *>());
+  }
+  unsigned ejection_limit() const { return m_limit; }
+  unsigned n_local_sms() const { return (unsigned)m_q.size(); }
+  bool full(unsigned local_sm) const {
+    return m_q[local_sm].size() >= m_limit;
+  }
+  bool empty(unsigned local_sm) const { return m_q[local_sm].empty(); }
+  std::size_t size(unsigned local_sm) const { return m_q[local_sm].size(); }
+  void push(unsigned local_sm, mem_fetch *mf) { m_q[local_sm].push_back(mf); }
+  mem_fetch *front(unsigned local_sm) const { return m_q[local_sm].front(); }
+  void pop(unsigned local_sm) { m_q[local_sm].pop_front(); }
+  const std::list<mem_fetch *> &at(unsigned local_sm) const {
+    return m_q[local_sm];
+  }
+
+ private:
+  unsigned m_limit = 0;
+  std::vector<std::list<mem_fetch *>> m_q;
+};
 
 // Canonicalize old/new topology knobs. Returns false on disagreement.
 bool gpc_resolve_topology_aliases(bool old_gpcs_set, unsigned n_clusters,

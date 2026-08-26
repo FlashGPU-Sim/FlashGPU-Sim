@@ -98,7 +98,7 @@ class mem_fetch {
   unsigned get_requester_sm_id() const { return m_requester_sm_id; }
   // Deprecated: requester SM. Use get_requester_sm_id().
   unsigned get_sid() const { return m_requester_sm_id; }
-  // Deprecated: GPC id of the requester (current shader icnt node).
+  // Deprecated: GPC id of the requester. Not a global interconnect node.
   unsigned get_tpc() const {
     if (m_requester_sm_id == (unsigned)-1) return (unsigned)-1;
     return gpu_topology_live().gpc_id_of_sm(m_requester_sm_id);

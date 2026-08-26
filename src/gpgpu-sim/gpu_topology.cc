@@ -83,12 +83,13 @@ local_sm_id_t gpu_topology_t::local_sm_of_sm(sm_id_t sm_id) const {
 }
 
 global_icnt_node_id_t gpu_topology_t::global_sm_node_id(sm_id_t sm_id) const {
-  return gpc_id_of_sm(sm_id);
+  assert(sm_id < m_num_sms);
+  return sm_id;
 }
 
 global_icnt_node_id_t gpu_topology_t::global_l2_node_id(
     unsigned subpartition_id) const {
-  return m_num_gpcs + subpartition_id;
+  return m_num_sms + subpartition_id;
 }
 
 void gpu_topology_t::set_live() const { g_live_topology = this; }

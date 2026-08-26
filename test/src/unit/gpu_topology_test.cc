@@ -3,7 +3,11 @@
 
 #include <gtest/gtest.h>
 
+#include <fstream>
+#include <iterator>
+#include <set>
 #include <string>
+#include <unistd.h>
 
 #include "../../../src/gpgpu-sim/gpu_topology.h"
 #include "../../../src/option_parser.h"
@@ -56,14 +60,107 @@ TEST(GpuTopology, DefaultThreeCpcsLeavesExtraSlotsPgd) {
   EXPECT_EQ(topo.locate_sm(7).local_sm_id, 3u);
 }
 
-TEST(GpuTopology, ShaderIcntNodeIsGpcNotSm) {
+TEST(GpuTopology, ShaderIcntNodeIsEnabledSm) {
   gpu_topology_t topo;
   topo.build(4, 4, 3);
-  EXPECT_EQ(topo.global_sm_node_id(0), 0u);
-  EXPECT_EQ(topo.global_sm_node_id(3), 0u);
-  EXPECT_EQ(topo.global_sm_node_id(4), 1u);
-  EXPECT_EQ(topo.global_sm_node_id(15), 3u);
-  EXPECT_EQ(topo.global_l2_node_id(0), 4u);
+  EXPECT_EQ(topo.num_sms(), 16u);
+  std::set<unsigned> sm_nodes;
+  for (unsigned sm = 0; sm < 16; sm++) {
+    EXPECT_EQ(topo.global_sm_node_id(sm), sm);
+    sm_nodes.insert(topo.global_sm_node_id(sm));
+    EXPECT_NE(topo.global_l2_node_id(0), topo.global_sm_node_id(sm));
+  }
+  EXPECT_EQ(sm_nodes.size(), 16u);
+  EXPECT_EQ(topo.global_l2_node_id(0), topo.num_sms());
+  EXPECT_EQ(topo.gpc_id_of_sm(3), 0u);
+  EXPECT_NE(topo.global_sm_node_id(3), topo.gpc_id_of_sm(3));
+}
+
+TEST(GpuTopology, ShaderIcntNodeCountIndependentOfGpcGrouping) {
+  gpu_topology_t packed;
+  gpu_topology_t sliced;
+  packed.build(4, 4, 3);
+  sliced.build(16, 1, 3);
+  EXPECT_EQ(packed.num_sms(), 16u);
+  EXPECT_EQ(sliced.num_sms(), 16u);
+  EXPECT_EQ(packed.num_gpcs(), 4u);
+  EXPECT_EQ(sliced.num_gpcs(), 16u);
+  std::set<unsigned> packed_nodes;
+  std::set<unsigned> sliced_nodes;
+  for (unsigned sm = 0; sm < 16; sm++) {
+    packed_nodes.insert(packed.global_sm_node_id(sm));
+    sliced_nodes.insert(sliced.global_sm_node_id(sm));
+    EXPECT_NE(packed.global_l2_node_id(0), packed.global_sm_node_id(sm));
+    EXPECT_NE(sliced.global_l2_node_id(0), sliced.global_sm_node_id(sm));
+  }
+  EXPECT_EQ(packed_nodes.size(), sliced_nodes.size());
+  EXPECT_EQ(packed_nodes.size(), 16u);
+  EXPECT_EQ(packed.global_l2_node_id(0), packed.num_sms());
+  EXPECT_EQ(sliced.global_l2_node_id(0), sliced.num_sms());
+}
+
+TEST(GpuTopology, GpcSmResponseFifoNoCrossSmHol) {
+  gpc_sm_response_fifos_t fifos;
+  fifos.init(/*n_local_sms=*/2, /*ejection_limit=*/2);
+  mem_fetch *a = reinterpret_cast<mem_fetch *>(0x10);
+  mem_fetch *b = reinterpret_cast<mem_fetch *>(0x20);
+  mem_fetch *c = reinterpret_cast<mem_fetch *>(0x30);
+  fifos.push(0, a);
+  fifos.push(0, b);
+  EXPECT_TRUE(fifos.full(0));
+  EXPECT_FALSE(fifos.full(1));
+  fifos.push(1, c);
+  EXPECT_EQ(fifos.size(1), 1u);
+  EXPECT_EQ(fifos.front(1), c);
+  fifos.pop(1);
+  EXPECT_TRUE(fifos.empty(1));
+  EXPECT_EQ(fifos.front(0), a);
+  EXPECT_TRUE(fifos.full(0));
+}
+
+static std::string read_file_if_exists(const std::string &path) {
+  std::ifstream in(path.c_str());
+  if (!in) return std::string();
+  return std::string((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+}
+
+TEST(GpuTopology, OrdinaryCtaIssueVisitsEachMemberSmOnce) {
+  for (unsigned n = 2; n <= 4; n++) {
+    for (unsigned start = 0; start < n; start++) {
+      unsigned seen[4] = {};
+      for (unsigned i = 0; i < n; i++) {
+        unsigned core = gpc_cta_issue_visit(i, start, n);
+        ASSERT_LT(core, n);
+        seen[core]++;
+      }
+      for (unsigned sm = 0; sm < n; sm++) {
+        EXPECT_EQ(seen[sm], 1u) << "n=" << n << " start=" << start
+                                << " sm=" << sm;
+      }
+    }
+  }
+
+  std::string src;
+  char cwd[4096];
+  if (getcwd(cwd, sizeof(cwd))) {
+    std::string dir(cwd);
+    for (int i = 0; i < 8 && src.empty() && !dir.empty(); i++) {
+      src = read_file_if_exists(dir + "/src/gpgpu-sim/shader.cc");
+      auto slash = dir.find_last_of('/');
+      if (slash == std::string::npos || slash == 0) break;
+      dir.resize(slash);
+    }
+  }
+  ASSERT_FALSE(src.empty());
+  auto ord = src.find("unsigned simt_core_cluster::issue_block2core()");
+  auto nextfn = src.find("\nvoid simt_core_cluster::cache_flush", ord);
+  ASSERT_NE(ord, std::string::npos);
+  ASSERT_NE(nextfn, std::string::npos);
+  const std::string body = src.substr(ord, nextfn - ord);
+  EXPECT_NE(body.find("gpc_cta_issue_visit(i, rr_start, n)"), std::string::npos);
+  EXPECT_NE(body.find("const unsigned rr_start = m_cta_issue_next_core"),
+            std::string::npos);
 }
 
 TEST(GpuTopology, ResolveAliasesAgree) {
