@@ -118,7 +118,7 @@ inline void warn_topology_skip(const std::string &msg) {
     if (__topo.found_config && !__topo.cluster_noc_enable) {                   \
       std::ostringstream __skip;                                               \
       __skip << "Requires -gpgpu_cluster_noc_enable 1 (NoC off). "             \
-                "Use SM90_H200_REDUCED_CLUSTER4x4 or a NoC overlay.";          \
+                "Use SM90_H200_REDUCED_CLUSTER16x2 or a NoC overlay.";          \
       ::flash_test::warn_topology_skip(__skip.str());                          \
       GTEST_SKIP() << __skip.str();                                            \
     }                                                                          \

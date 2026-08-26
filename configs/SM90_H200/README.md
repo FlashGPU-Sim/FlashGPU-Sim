@@ -20,7 +20,7 @@ Full **NVIDIA H200 SXM / NVL** configuration (Hopper GH100 compute + HBM3e memor
 |--------|------|
 | `SM90_H100` | Same compute silicon; older HBM3 / clock defaults |
 | **`SM90_H200`** | Full 132-SM H200 latency profile |
-| `SM90_H200_REDUCED_CLUSTER4x4` | 4×4 = 16 SMs for fast functional cluster/TMA work |
+| `SM90_H200_REDUCED_CLUSTER16x2` | 16×2 = 32 SMs (two GPCs × 16 enabled) for cluster/TMA/DSM |
 | `SM120_RTX5090` | Blackwell consumer reference (different arch) |
 
 Flat packing: `-gpgpu_n_clusters 132` / `-gpgpu_n_cores_per_cluster 1`.
@@ -85,4 +85,4 @@ See `docs/cluster_noc/knobs.md`, `docs/cluster_noc/todos.md`, and `H200_profilin
 ./test/run_tests.sh -c SM90_H200 test "*TMA*"
 ```
 
-Prefer `SM90_H200_REDUCED_CLUSTER4x4` for day-to-day multi-cluster functional tests.
+Prefer `SM90_H200_REDUCED_CLUSTER16x2` for day-to-day multi-GPC functional tests.

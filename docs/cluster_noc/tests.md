@@ -25,7 +25,7 @@ Use `./test/run_tests.sh`. Do not invoke test binaries by hand.
   "*ClusterLaunch*:*TMACluster*:*MultiCluster*"
 
 # DSM / remote mbar / OneProducer on H200 reduced (NoC on)
-FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4 \
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
   run test --target sm120 --group integration \
   "DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*"
 ```

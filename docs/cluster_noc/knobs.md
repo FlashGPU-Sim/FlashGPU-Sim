@@ -32,7 +32,7 @@ Target extras:
 
 ## 2. Delay-line knobs (legacy — B-DEPR)
 
-Master switch today: `-gpgpu_cluster_noc_enable` (default 0; **1** on `SM90_H200_REDUCED_CLUSTER4x4`).
+Master switch today: `-gpgpu_cluster_noc_enable` (default 0; **1** on `SM90_H200_REDUCED_CLUSTER16x2`).
 
 | Knob | Default | Meaning |
 |------|---------|---------|
@@ -66,11 +66,8 @@ stride ratio             ≈ 1.0         // flat, not a tree
 Dense N×N integers, N = cores per cluster. Whitespace or comma; `#` comments. Index = **cluster-local** core id, not global `%smid`. Values are **one-way** hops. Diagonal 0.
 
 ```text
-# configs/SM90_H200_REDUCED_CLUSTER4x4/dsm_latency_matrix_4.csv
-0,78,78,78
-78,0,78,78
-78,78,0,78
-78,78,78,0
+# configs/SM90_H200_REDUCED_CLUSTER16x2/dsm_latency_matrix_16.csv
+# (same 16×16 one-way file as configs/SM90_H200/; diagonal 0, off-diag ~71–86)
 ```
 
 ---

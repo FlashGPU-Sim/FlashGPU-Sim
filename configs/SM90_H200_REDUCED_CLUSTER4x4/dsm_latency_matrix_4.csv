@@ -1,6 +1,0 @@
-# H200 reduced 4-SM flat one-way hop (constant 78 from 2046238 mean)
-# one_way≈(193.41-37.05)/2≈78. Units: cycles.
-0,78,78,78
-78,0,78,78
-78,78,0,78
-78,78,78,0

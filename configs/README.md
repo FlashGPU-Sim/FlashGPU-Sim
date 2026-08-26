@@ -84,16 +84,18 @@ Full Hopper H200 SXM/NVL configuration (same GH100 compute as H100, HBM3e memory
 - Latency knobs calibrated from `H200_profiling` job **2034797** (see config README)
 - Includes `sass_primary_hints.rules` (H200 label, same sm_90a rules as H100)
 
-### SM90_H200_REDUCED_CLUSTER4x4
-Reduced multi-cluster H200 profile for functional iteration.
+### SM90_H200_REDUCED_CLUSTER16x2
+Reduced two-GPC H200 profile for functional iteration and intra-GPC NoC.
 
 **Use for:**
-- Fast Hopper multi-cluster / TB-cluster (m>2) functional tests
-- TMA + mbarrier development without full 132-SM cost
+- Hopper TB-cluster / TMA / mbarrier / DSM with NoC on
+- CPC-shaped GPC (16 enabled SMs on 18 slots) plus a second GPC for isolation
+- Development without full 132-SM cost
 
 **Characteristics:**
-- 4 clusters × 4 SMs/cluster = 16 total SMs
+- 2 GPCs × 16 SMs/GPC = 32 total SMs (`-gpgpu_dsm_cpcs_per_gpc 3`)
 - Same H200 SM / memory / WGMMA / latency knobs as `SM90_H200` (job 2034797)
+- 16×16 one-way hop matrix (job 2046238)
 - Local interconnect (`-network_mode 2`) and idealized TMA memory
 - `-gpgpu_dsm_store_immediate 0` (peer DSM store visible after NoC deliver; same as the code default)
 - Prefer over full `SM90_H200` for day-to-day functional work

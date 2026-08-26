@@ -7,7 +7,7 @@
 //
 // Run with NoC on (H200 reduced, or SM120 reduced + overlay):
 //   FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh \
-//     -c SM90_H200_REDUCED_CLUSTER4x4 run test --target sm120 \
+//     -c SM90_H200_REDUCED_CLUSTER16x2 run test --target sm120 \
 //     --group integration "ClusterRealShaped*"
 
 #include <cuda_runtime.h>

@@ -4,7 +4,7 @@
 // mapa.u64 and performs arrive / try_wait remotely.
 //
 // Requires: multi-SM cluster + NoC + mbarrier cluster enable
-//   SM90_H200_REDUCED_CLUSTER4x4 (defaults)
+//   SM90_H200_REDUCED_CLUSTER16x2 (defaults)
 //   or SM120 reduced with run-dir NoC overlay:
 //     -gpgpu_cluster_noc_enable 1
 //     -gpgpu_mbarrier_cluster_enable 1

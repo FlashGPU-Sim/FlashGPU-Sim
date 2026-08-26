@@ -1,10 +1,10 @@
 // Distributed shared memory (DSM) functional tests for intra-cluster NoC.
 //
 // Prefer multi-SM cluster configs:
-//   SM90_H200_REDUCED_CLUSTER4x4  (NoC on by default)
+//   SM90_H200_REDUCED_CLUSTER16x2  (NoC on by default)
 //   SM120_RTX5090_REDUCED_CLUSTER2x1 / 4x4 (enable NoC in run config)
 //
-//   ./run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4 test "*Dsm*"
+//   ./run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 test "*Dsm*"
 //
 // Cross-rank coordination uses mbarrier (not bare smem spin-waits). Under
 // PTX functional-first simulation, spinning on peer smem before the peer has

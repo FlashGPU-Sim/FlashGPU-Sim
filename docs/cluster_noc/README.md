@@ -91,7 +91,7 @@ TB-cluster **size** is a launch attribute. Rule: `product(clusterDim) ≤` enabl
 | `SM120_RTX5090_REDUCED_CLUSTER2x2` | m=2, n=2 | Multi-cluster isolation |
 | `SM120_RTX5090_REDUCED_CLUSTER4x4` | m=4, n=4 | Primary multi-SM functional |
 | `SM120_RTX5090_CLUSTER16x11` | m=16, n=11 | GPC-sized smoke |
-| `SM90_H200_REDUCED_CLUSTER4x4` | m=4, n=4 | Delay-line NoC **on** + H200 hop knobs |
+| `SM90_H200_REDUCED_CLUSTER16x2` | m=16, n=2 | Delay-line NoC **on** + H200 hop knobs; GPC-shaped |
 | `SM90_H200` | m=1, n=132 | Product latencies; NoC idle |
 
 ---

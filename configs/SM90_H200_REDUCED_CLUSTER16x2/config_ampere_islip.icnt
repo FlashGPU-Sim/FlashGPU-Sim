@@ -1,5 +1,5 @@
-// SM90_H200_REDUCED_CLUSTER4x4 interconnect (BookSim fly template).
-// GPU topology: 4 clusters x 4 SMs = 16 SMs (plus memory controllers).
+// SM90_H200_REDUCED_CLUSTER16x2 interconnect (BookSim fly template).
+// GPU topology: 2 GPCs x 16 SMs = 32 SMs (plus memory controllers).
 //
 // NOTE: gpgpusim.config uses -network_mode 2 (local interconnect/xbar).
 // This BookSim file is unused unless network_mode is changed to BookSim.

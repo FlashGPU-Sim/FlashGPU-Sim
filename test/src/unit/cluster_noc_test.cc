@@ -61,26 +61,27 @@ TEST(ClusterNocMatrix, LoadWrongSizeFails) {
 TEST(ClusterNocMatrix, H200ReducedMatrixFile) {
   cluster_noc_latency_matrix m;
   const char *candidates[] = {
-      "configs/SM90_H200_REDUCED_CLUSTER4x4/dsm_latency_matrix_4.csv",
-      "../configs/SM90_H200_REDUCED_CLUSTER4x4/dsm_latency_matrix_4.csv",
-      "../../configs/SM90_H200_REDUCED_CLUSTER4x4/dsm_latency_matrix_4.csv",
-      "dsm_latency_matrix_4.csv",
+      "configs/SM90_H200_REDUCED_CLUSTER16x2/dsm_latency_matrix_16.csv",
+      "../configs/SM90_H200_REDUCED_CLUSTER16x2/dsm_latency_matrix_16.csv",
+      "../../configs/SM90_H200_REDUCED_CLUSTER16x2/dsm_latency_matrix_16.csv",
+      "../../../configs/SM90_H200_REDUCED_CLUSTER16x2/dsm_latency_matrix_16.csv",
+      "dsm_latency_matrix_16.csv",
   };
   bool loaded = false;
   for (const char *p : candidates) {
-    if (m.load_from_file(p, 4)) {
+    if (m.load_from_file(p, 16)) {
       loaded = true;
       break;
     }
   }
   if (!loaded) {
-    m.init(4, /*local=*/0, /*remote=*/78);
+    m.init(16, /*local=*/0, /*remote=*/78);
   }
   EXPECT_EQ(m.hop(0, 0), 0u);
   EXPECT_GE(m.hop(0, 1), 70u);
   EXPECT_LE(m.hop(0, 1), 90u);
-  EXPECT_GE(m.hop(3, 2), 70u);
-  EXPECT_LE(m.hop(3, 2), 90u);
+  EXPECT_GE(m.hop(15, 14), 70u);
+  EXPECT_LE(m.hop(15, 14), 90u);
 }
 
 TEST(ClusterNocMatrix, H200RemoteLoadRttFormula) {
