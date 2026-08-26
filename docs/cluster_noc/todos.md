@@ -72,7 +72,7 @@ Shipped on `cluster_cta2_support`. Do not re-implement. Tests: [`tests.md`](test
 
 **Work:**
 
-1. Record current `icnt` shader node count vs `n_clusters` vs total SMs for `SM90_H200_REDUCED_CLUSTER4x4` and one SM120 reduced cluster config.
+1. Record current `icnt` shader node count vs `n_clusters` vs total SMs for `SM90_H200_REDUCED_CLUSTER4x4` (later replaced by `CLUSTER16x2`) and one SM120 reduced cluster config.
 2. Run the functional filters in [`tests.md`](tests.md) §1; paste PASS lines in the close-out.
 3. Pin the `dsm_bw` commit hash from [`evidence.md`](evidence.md) in the close-out (already in that file).
 4. In any new comment/preset, tag numbers `measured` / `patent` / `inferred` / `unresolved`.
@@ -89,7 +89,7 @@ Shipped on `cluster_cta2_support`. Do not re-implement. Tests: [`tests.md`](test
 
 | Config | n_clusters | n_cores_per_cluster | total SMs | icnt shader nodes |
 |--------|-----------:|--------------------:|----------:|------------------:|
-| `SM90_H200_REDUCED_CLUSTER4x4` | 4 | 4 | 16 | 4 |
+| `SM90_H200_REDUCED_CLUSTER4x4` (superseded by `CLUSTER16x2`) | 4 | 4 | 16 | 4 |
 | `SM120_RTX5090_REDUCED_CLUSTER2x1` | 1 | 2 | 2 | 1 |
 | `SM120_RTX5090_REDUCED_CLUSTER4x4` | 4 | 4 | 16 | 4 |
 
@@ -104,7 +104,7 @@ Pinned `dsm_bw` hash already recorded in [`evidence.md`](evidence.md): `4e8c4f91
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 build test --target sm120 --group integration
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER4x4 run test --target sm120 --group integration \
   "*ClusterLaunch*:*TMACluster*:*MultiCluster*"
-FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4 \
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
   run test --target sm120 --group integration \
   "DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*"
 ```
@@ -122,7 +122,7 @@ PASS evidence (0 failures; skip allowed):
 [  SKIPPED ] ClusterLaunchApiTest.ExLaunch_ClusterLargerThanPhysical_Fails
 ✓ Tests passed!
 
-# H200 DSM / remote mbar / OneProducer (SM90_H200_REDUCED_CLUSTER4x4)
+# H200 DSM / remote mbar / OneProducer (SM90_H200_REDUCED_CLUSTER16x2)
 [  PASSED  ] 20 tests.
 ✓ Tests passed!
 ```
@@ -164,7 +164,7 @@ The SM120 skip is `GTEST_SKIP` because that case needs `n_cores_per_cluster == 1
 
 ```bash
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "ClusterNoc*"
-FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4 \
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
   run test --target sm120 --group integration \
   "DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*"
 ```
@@ -190,7 +190,7 @@ Verify:
 
 ```bash
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "ClusterNoc*:GpuTopology*"
-FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4 \
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
   run test --target sm120 --group integration \
   "DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*"
 ```
@@ -206,7 +206,7 @@ PASS evidence (0 failures):
 [  PASSED  ] 9 tests.
 ✓ test/sm120/unit passed!
 
-# H200 DSM / remote mbar / OneProducer (SM90_H200_REDUCED_CLUSTER4x4)
+# H200 DSM / remote mbar / OneProducer (SM90_H200_REDUCED_CLUSTER16x2)
 [  PASSED  ] 20 tests.
 ✓ Tests passed!
 ```
@@ -244,7 +244,7 @@ PASS evidence (0 failures):
 
 | Config / map | n_gpcs | sms/gpc | num_sms | icnt shader nodes |
 |--------------|-------:|--------:|--------:|------------------:|
-| `SM90_H200_REDUCED_CLUSTER4x4` | 4 | 4 | 16 | 16 |
+| `SM90_H200_REDUCED_CLUSTER16x2` | 2 | 16 | 32 | 32 |
 | `gpu_topology_t::build(16, 1, 3)` | 16 | 1 | 16 | 16 |
 | `SM120_RTX5090_REDUCED_CLUSTER2x1` | 1 | 2 | 2 | 2 |
 
@@ -256,7 +256,7 @@ Verify:
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "GpuTopology*"
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "LocalInterconnect*"
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "ClusterNoc*:GpuTopology*"
-FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER4x4 \
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
   run test --target sm120 --group integration \
   "DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*"
 ```
@@ -276,7 +276,7 @@ PASS evidence (0 failures):
 [  PASSED  ] 20 tests.
 ✓ test/sm120/unit passed!
 
-# H200 DSM / remote mbar / OneProducer (SM90_H200_REDUCED_CLUSTER4x4)
+# H200 DSM / remote mbar / OneProducer (SM90_H200_REDUCED_CLUSTER16x2)
 [  PASSED  ] 20 tests.
 ✓ Tests passed!
 ```
@@ -285,7 +285,7 @@ PASS evidence (0 failures):
 
 ## B3a — Shared transport primitives
 
-- [ ] **B3a** Bounded VOQ, RR arbiter, flit-credit counters, stats — **no** DSM policy.
+- [x] **B3a** Bounded VOQ, RR arbiter, flit-credit counters, stats — **no** DSM policy. Closed 2026-08-27.
 
 **Read first:** [`dsm_fabric.md`](dsm_fabric.md) §§6 and 9.
 
@@ -304,6 +304,29 @@ PASS evidence (0 failures):
 **Exit:** Primitives have **no** `REQ_NET`/`REPLY_NET` in their API.
 
 **Prereqs:** B1 (B2 preferred). **Next:** B3b.
+
+**Close-out (2026-08-27):** Header-only primitives in `src/gpgpu-sim/transport.h`: `transport_packet_metadata_t`, `bounded_voq_t`, `flit_credit_counters_t`, `round_robin_arbiter_t`, `interconnect_sink_t`, `interconnect_stats_t`. Occupancy unit = **payload flits**. API has no `REQ_NET`/`REPLY_NET` and no shader/memory endpoint roles. `LocalInterconnect` was not wrapped.
+
+Unit tests (`Transport*`): `OccupancyCountsPayloadFlits`, `FullDestDoesNotHolSibling`, `CreditTakeDoesNotCrossQueue`, `RoundRobinRotates`, `SinkOccupancyIsPayloadFlits`.
+
+Verify:
+
+```bash
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "Transport*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "LocalInterconnect*"
+```
+
+PASS evidence (0 failures):
+
+```text
+# unit Transport* (run 1 and rerun, SM120_RTX5090_REDUCED_CLUSTER2x1)
+[  PASSED  ] 5 tests.
+✓ test/sm120/unit passed!
+
+# unit LocalInterconnect* (SM120_RTX5090_REDUCED_CLUSTER2x1)
+[  PASSED  ] 5 tests.
+✓ test/sm120/unit passed!
+```
 
 ---
 
@@ -493,16 +516,20 @@ PASS evidence (0 failures):
 
 **Work:**
 
-1. Delete or `#error` unused: `cluster_noc_t` inject/deliver delay-line, `-gpgpu_dsm_bytes_per_cycle`, `-gpgpu_dsm_latency_matrix_file`, `-gpgpu_dsm_remote_latency` as **bandwidth/hop model**, `-gpgpu_tma_mcast_hop_latency` if B6 replaced it, `-gpgpu_dsm_store_immediate` if fabric stores are deliver-only only.
-2. Keep: hang watchdog, mbarrier cluster enable, TMA data-before-mbar, topology knobs, fabric knobs, possibly `-gpgpu_dsm_local_latency` / `base_latency` if still used as SMEM/floor.
-3. Grep configs: `configs/SM90_H200*`, `configs/SM120_*CLUSTER*`, test overlays, `FLASH.md`, comments in `gpu-sim.cc` / `shader.h` / `cluster_noc.*`.
-4. Update every `gpgpusim.config` that set the deleted knobs.
-5. Remove or rewrite unit tests that only parsed the hop CSV **or** keep CSV as unused file with a README note — prefer delete to avoid false calibration.
-6. Stub `cluster_noc_t` gone: either remove sources or make them thin wrappers around `dsm_fabric_t` with a deprecation comment, then delete in the same ID if compile-clean.
+1. **Must delete** once the fabric is the only SM↔SM path (do not leave unused files or knobs):
+   - all `dsm_latency_matrix_*.csv`
+   - `-gpgpu_dsm_latency_matrix_file`
+   - `-gpgpu_dsm_remote_latency` as a hop / bandwidth knob
+2. Also delete or `#error` unused: `cluster_noc_t` inject/deliver delay-line, `-gpgpu_dsm_bytes_per_cycle`, `-gpgpu_tma_mcast_hop_latency` if B6 replaced it, `-gpgpu_dsm_store_immediate` if fabric stores are deliver-only only.
+3. Keep: hang watchdog, mbarrier cluster enable, TMA data-before-mbar, topology knobs, fabric knobs, possibly `-gpgpu_dsm_local_latency` / `base_latency` if still used as SMEM/floor. Do **not** keep a pairwise hop table or a scalar remote hop as the DSM timing model.
+4. Grep configs: `configs/SM90_H200*`, `configs/SM120_*CLUSTER*`, test overlays, `FLASH.md`, comments in `gpu-sim.cc` / `shader.h` / `cluster_noc.*`.
+5. Update every `gpgpusim.config` that set the deleted knobs.
+6. Rewrite or drop unit tests that only parsed the hop CSV (`ClusterNocMatrix.H200ReducedMatrixFile` and similar). Do not keep the CSV as an unused file.
+7. Stub `cluster_noc_t` gone: either remove sources or make them thin wrappers around `dsm_fabric_t` with a deprecation comment, then delete in the same ID if compile-clean.
 
 **Do not:** Leave “0 = unlimited BPC” in any shipped config. Do not keep a second inject path that writes smem immediately when `can_inject` is false.
 
-**Verify:** Full cluster integration filters; grep for `dsm_bytes_per_cycle`, `dsm_latency_matrix`, `cluster_noc_enable` has a defined migration (renamed to `dsm_enable` or documented alias).
+**Verify:** Full cluster integration filters. Grep is empty for `dsm_latency_matrix`, `dsm_latency_matrix_file`, `gpgpu_dsm_remote_latency`, and `dsm_bytes_per_cycle`. `cluster_noc_enable` has a defined migration (renamed to `dsm_enable` or documented alias).
 
 **Exit:** Grep output empty (or aliases listed). Config list in the close-out.
 
