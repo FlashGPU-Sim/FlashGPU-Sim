@@ -937,6 +937,20 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &gpgpu_dsm_route_seed, "GPCMMU hash seed (default=0)",
                          "0");
   option_parser_register(
+      opp, "-gpgpu_dsm_max_outstanding_per_sm", OPT_UINT32,
+      &gpgpu_dsm_max_outstanding_per_sm,
+      "Endpoint outstanding transaction window per SM (default=16; not a "
+      "VC/link credit)",
+      "16");
+  option_parser_register(
+      opp, "-gpgpu_dsm_ack_coalesce_threshold", OPT_UINT32,
+      &gpgpu_dsm_ack_coalesce_threshold,
+      "Store/TMA completions per coalesced write_ack (default=4)", "4");
+  option_parser_register(
+      opp, "-gpgpu_dsm_ack_timeout_cycles", OPT_UINT32,
+      &gpgpu_dsm_ack_timeout_cycles,
+      "Flush remaining ACK debt after this many cycles (default=64)", "64");
+  option_parser_register(
       opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
       &gpgpu_wgmma_issue_chain_ss,
       "Per-SM WGMMA SS issue chain throttle "

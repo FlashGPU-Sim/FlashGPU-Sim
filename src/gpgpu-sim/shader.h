@@ -1782,6 +1782,9 @@ class shader_core_config : public core_config {
     gpgpu_dsm_vc_arbiter = NULL;
     gpgpu_dsm_route_policy = NULL;
     gpgpu_dsm_route_seed = 0;
+    gpgpu_dsm_max_outstanding_per_sm = 16;
+    gpgpu_dsm_ack_coalesce_threshold = 4;
+    gpgpu_dsm_ack_timeout_cycles = 64;
   }
 
   void apply_gpc_knob_aliases();
@@ -2080,6 +2083,9 @@ class shader_core_config : public core_config {
   char *gpgpu_dsm_vc_arbiter;
   char *gpgpu_dsm_route_policy;
   unsigned int gpgpu_dsm_route_seed;
+  unsigned int gpgpu_dsm_max_outstanding_per_sm;
+  unsigned int gpgpu_dsm_ack_coalesce_threshold;
+  unsigned int gpgpu_dsm_ack_timeout_cycles;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;
   unsigned gpgpu_wgmma_issue_chain_ss_config[5];

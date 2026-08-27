@@ -46,6 +46,7 @@ struct dsm_packet_t {
   unsigned long long created_cycle = 0;
   unsigned long long injected_cycle = 0;
   unsigned long long tail_arrival_cycle = 0;
+  unsigned completion_count = 1;  // coalesced write_ack completions
 };
 
 struct dsm_route_t {

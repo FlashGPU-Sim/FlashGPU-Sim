@@ -28,6 +28,7 @@ LOCAL_INTERCONNECT_OBJECT = $(OBJ_DIR)/unit/local_interconnect.cc.o
 MSHR_TABLE_OBJECT = $(GPGPUSIM_OBJ_DIR)/mshr-table.cu.o
 GPU_TOPOLOGY_OBJECT = $(GPGPUSIM_OBJ_DIR)/gpu_topology.cu.o
 DSM_FABRIC_OBJECT = $(GPGPUSIM_OBJ_DIR)/dsm_fabric.cu.o
+DSM_ENDPOINT_OBJECT = $(GPGPUSIM_OBJ_DIR)/dsm_endpoint.cu.o
 OPTION_PARSER_OBJECT = $(GPGPUSIM_OBJ_DIR)/option_parser.cc.o
 
 .PHONY: test-sm120-unit test-sm120-integration
@@ -66,6 +67,12 @@ $(SRC_DIR)/gpgpu-sim/dsm_fabric.h $(SRC_DIR)/gpgpu-sim/transport.h \
 $(SRC_DIR)/gpgpu-sim/gpu_topology.h $(TOP_MAKEFILE) $(SM120_MK) | $(GPGPUSIM_OBJ_DIR)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
+$(DSM_ENDPOINT_OBJECT): $(SRC_DIR)/gpgpu-sim/dsm_endpoint.cc \
+$(SRC_DIR)/gpgpu-sim/dsm_endpoint.h $(SRC_DIR)/gpgpu-sim/dsm_fabric.h \
+$(SRC_DIR)/gpgpu-sim/transport.h $(SRC_DIR)/gpgpu-sim/gpu_topology.h \
+$(TOP_MAKEFILE) $(SM120_MK) | $(GPGPUSIM_OBJ_DIR)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
 $(OPTION_PARSER_OBJECT): $(SRC_DIR)/option_parser.cc \
 $(SRC_DIR)/option_parser.h $(TOP_MAKEFILE) $(SM120_MK) | $(GPGPUSIM_OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
@@ -77,7 +84,8 @@ $(CUH_HEADERS) $(TOP_MAKEFILE) $(SM120_MK)
 
 $(SM120_UNIT_TARGET): $(UNIT_TEST_OBJECTS) $(FLASH_OBJECTS) \
 $(LOCAL_INTERCONNECT_OBJECT) $(MSHR_TABLE_OBJECT) \
-$(GPU_TOPOLOGY_OBJECT) $(DSM_FABRIC_OBJECT) $(OPTION_PARSER_OBJECT) \
+$(GPU_TOPOLOGY_OBJECT) $(DSM_FABRIC_OBJECT) $(DSM_ENDPOINT_OBJECT) \
+$(OPTION_PARSER_OBJECT) \
 $(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(SM120_MK) | $(BIN_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out $(TOP_MAKEFILE) $(SM120_MK),$^) \

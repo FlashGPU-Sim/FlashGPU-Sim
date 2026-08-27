@@ -411,7 +411,7 @@ eligibility used=32 wasted=160 slots=192
 
 ## B3c — Endpoint protocol
 
-- [ ] **B3c** Outstanding transactions + coalesced **write_ack** + read_command/data correlation.
+- [x] **B3c** Outstanding transactions + coalesced **write_ack** + read_command/data correlation.
 
 **Read first:** [`dsm_fabric.md`](dsm_fabric.md) §§3 and 7.
 
@@ -431,6 +431,29 @@ eligibility used=32 wasted=160 slots=192
 **Exit:** Tests named in close-out. **Next:** B4.
 
 **Prereqs:** B3b.
+
+**Close-out (2026-08-27):** `dsm_endpoint_protocol_t` in `src/gpgpu-sim/dsm_endpoint.{h,cc}`. Per-SM outstanding window (`-gpgpu_dsm_max_outstanding_per_sm`, default 16) is not a VC credit. ACK debt is per original requester; one-flit `write_ack` on the response VC flushes on threshold (default 4), timeout (default 64 cycles), or idle response path. Remote load always emits `read_command` + `read_data` (no data coalescing). SRAM service is a stub. Delay-line remains the functional SM↔SM path.
+
+Unit tests (`DsmEndpoint*`, topology 2 GPCs × 16 SMs): `ReducedCluster16x2Packing`, `HeavyStoresDrainNoDeadlock`, `AckPacketsFewerThanStores`, `SymmetricStoresReverseFlitsFarFewer`, `RemoteLoadPairsCommandAndData`, `OutstandingFullDoesNotTouchVcCredits`, `AckFromOneTargetDoesNotRetireSiblingStore`, `ThresholdFlushProducesWriteAck`, `TimeoutFlushProducesWriteAck`, `IdleResponseFlushProducesWriteAck`, `DumpShowsOutstandingDebtRatioTimeout`.
+
+Verify:
+
+```bash
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 run test --target sm120 --group unit "DsmEndpoint*"
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 run test --target sm120 --group unit "DsmFabric*"
+```
+
+PASS evidence (0 failures):
+
+```text
+# unit DsmEndpoint* (run 1 and rerun, SM90_H200_REDUCED_CLUSTER16x2)
+[  PASSED  ] 11 tests.
+✓ test/sm120/unit passed!
+
+# unit DsmFabric* regress (SM90_H200_REDUCED_CLUSTER16x2)
+[  PASSED  ] 15 tests.
+✓ test/sm120/unit passed!
+```
 
 ---
 

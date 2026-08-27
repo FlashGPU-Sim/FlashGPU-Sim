@@ -94,9 +94,9 @@ GX port formula: `routes = gx_planes * lanes_per_cpc`. GPCARB still grants at mo
 | `-gpgpu_dsm_route_policy` | `deterministic_hash` | GPCMMU hash |
 | `-gpgpu_dsm_route_seed` | 0 | Hash seed |
 | `-gpgpu_dsm_base_latency_cycles` | TBD | Pipeline / serializer floor in addition to flit grants |
-| `-gpgpu_dsm_max_outstanding_per_sm` | TBD | Endpoint tx window |
-| `-gpgpu_dsm_ack_coalesce_threshold` | TBD | Completions per `write_ack` |
-| `-gpgpu_dsm_ack_timeout_cycles` | TBD | Flush ACK debt |
+| `-gpgpu_dsm_max_outstanding_per_sm` | **16** | Endpoint tx window (not a VC/link credit) |
+| `-gpgpu_dsm_ack_coalesce_threshold` | **4** | Completions per `write_ack` |
+| `-gpgpu_dsm_ack_timeout_cycles` | **64** | Flush remaining ACK debt |
 | `-gpgpu_dsm_tma_mcast_expand` | `source_unicast` | v1 source expansion; later `fabric_replicate` |
 
 H200 **preset** may set shaper period 3, 6/4 CPC, 2 GX, 32 B payload. Generic / Blackwell presets must **not** inherit those values silently.
