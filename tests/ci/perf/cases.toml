@@ -26,6 +26,20 @@ label = "TritonTrace - GEMM m512_n6000_k1536"
 launcher = "tests/ci/perf/traces/SM120_RTX5090/gemm-m512-n6000-k1536/kernel_tma_gemm_launch1"
 ncu_cycles = 169861
 
+# Reuse the same frozen workloads so this job isolates the instruction-cache
+# configuration and bounded prefetcher.
+[SM120_RTX5090_ICACHE.gemm.tma-gemm-m4096-n128-k4096]
+label = "TritonTrace - GEMM m4096_n128_k4096 + I-cache prefetch"
+launcher = "tests/ci/perf/traces/SM120_RTX5090/gemm-m4096-n128-k4096/kernel_tma_gemm_launch1"
+trace_config = "SM120_RTX5090"
+ncu_cycles = 119636
+
+[SM120_RTX5090_ICACHE.gemm.tma-gemm-m512-n6000-k1536]
+label = "TritonTrace - GEMM m512_n6000_k1536 + I-cache prefetch"
+launcher = "tests/ci/perf/traces/SM120_RTX5090/gemm-m512-n6000-k1536/kernel_tma_gemm_launch1"
+trace_config = "SM120_RTX5090"
+ncu_cycles = 169861
+
 [SM120_RTX5090.llama3.llama3-prefill-qkv]
 label = "TritonTrace - Llama3 Prefill QKV"
 launcher = "tests/ci/perf/traces/SM120_RTX5090/llama3-prefill-b2-s128/_llama3_layer_matmul_tile_launch2"

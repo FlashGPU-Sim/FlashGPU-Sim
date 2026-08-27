@@ -59,6 +59,7 @@
 #include "traffic_breakdown.h"
 #include "flash/mbarrier.h"
 #include "flash/bulk_group.h"
+#include "flash/instruction_cache/prefetcher.h"
 #include "flash/tma.h"
 #include "flash/wgmma/tensor_wgmma.h"
 #include "flash/tma.h"
@@ -2016,7 +2017,17 @@ class shader_core_config : public core_config {
   bool gpgpu_concurrent_kernel_sm;
 
   bool perfect_inst_const_cache;
+  int perfect_inst_cache_override;
+  bool perfect_instruction_cache() const {
+    return perfect_inst_cache_override < 0
+               ? perfect_inst_const_cache
+               : perfect_inst_cache_override != 0;
+  }
   unsigned inst_fetch_throughput;
+  bool icache_prefetch_enable;
+  unsigned icache_prefetch_streams;
+  unsigned icache_prefetch_depth;
+  unsigned icache_prefetch_issue_width;
   unsigned reg_file_port_throughput;
 
   // specialized unit config strings
@@ -2515,6 +2526,8 @@ class shader_core_ctx : public core_t {
 
   void get_cache_stats(cache_stats &cs);
   void get_L1I_sub_stats(struct cache_sub_stats &css) const;
+  void get_instruction_prefetch_stats(
+      flash_gpgpu_sim::instruction_stream_buffer_stats &stats) const;
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
@@ -2931,6 +2944,7 @@ class shader_core_ctx : public core_t {
 
   // fetch
   read_only_cache *m_L1I;  // instruction cache
+  flash_gpgpu_sim::instruction_prefetcher *m_instruction_prefetcher;
   int m_last_warp_fetched;
 
   // decode/dispatch
@@ -3064,6 +3078,8 @@ class simt_core_cluster {
 
   void get_cache_stats(cache_stats &cs) const;
   void get_L1I_sub_stats(struct cache_sub_stats &css) const;
+  void get_instruction_prefetch_stats(
+      flash_gpgpu_sim::instruction_stream_buffer_stats &stats) const;
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;

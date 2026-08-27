@@ -23,7 +23,11 @@ TEST_GROUP_BINARY_GROUP_sm90_microbench_wgmma := microbench-sm90-wgmma
 TEST_GROUP_EXECUTOR_sm90_microbench_wgmma := gtest-multi
 TEST_GROUP_FILTER_sm90_microbench_wgmma := *
 
-TEST_GROUP_PROFILES_sm120_microbench := mbarrier mma memory
+TEST_GROUP_PROFILES_sm120_microbench := instruction-cache mbarrier mma memory
+TEST_GROUP_BUILD_TARGET_sm120_microbench_instruction-cache := microbench-sm120-instruction-cache
+TEST_GROUP_BINARY_GROUP_sm120_microbench_instruction-cache := none
+TEST_GROUP_EXECUTOR_sm120_microbench_instruction-cache := build-only
+TEST_GROUP_FILTER_sm120_microbench_instruction-cache := *
 TEST_GROUP_BUILD_TARGET_sm120_microbench_mbarrier := microbench-sm120-mbarrier
 TEST_GROUP_BINARY_GROUP_sm120_microbench_mbarrier := microbench-sm120-mbarrier
 TEST_GROUP_EXECUTOR_sm120_microbench_mbarrier := gtest-multi
@@ -60,9 +64,13 @@ BINARY_GROUP_BINARIES_microbench-sm90-wgmma = $(MICROBENCH_SM90_WGMMA_TARGETS)
 
 .SECONDARY: $(MICROBENCH_SM120_GTEST_OBJECTS) $(MICROBENCH_SM90_GTEST_OBJECTS)
 
-.PHONY: microbench-sm120-mbarrier microbench-sm120-mma \
+.PHONY: microbench-sm120-instruction-cache microbench-sm120-mbarrier microbench-sm120-mma \
 microbench-sm120-memory microbench-sm90-cp-async microbench-sm90-mma \
 microbench-sm90-tma microbench-sm90-wgmma
+
+microbench-sm120-instruction-cache:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/instruction_cache \
+		ARCH=$(ARCH_NVCC_TARGET_sm120) PTX_PROFILE=$(ARCH_COMPUTE_TARGET_sm120) all
 
 microbench-sm120-mbarrier: setup-gtest $(MICROBENCH_SM120_MBAR_TARGETS)
 

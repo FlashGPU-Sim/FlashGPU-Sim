@@ -366,6 +366,13 @@ void shader_core_ctx::create_front_pipeline() {
   m_L1I = new read_only_cache(name, m_config->m_L1I_config, m_sid,
                               get_shader_instruction_cache_id(), m_icnt,
                               IN_L1I_MISS_QUEUE, OTHER_GPU_CACHE, m_gpu);
+  m_instruction_prefetcher = new flash_gpgpu_sim::instruction_prefetcher(
+      m_config->icache_prefetch_enable &&
+          !m_config->perfect_instruction_cache(),
+      m_config->icache_prefetch_streams, m_config->icache_prefetch_depth,
+      m_config->icache_prefetch_issue_width,
+      m_config->m_L1I_config.get_line_sz(), m_sid, m_tpc, m_memory_config,
+      m_gpu, m_L1I);
 }
 
 void shader_core_ctx::create_schedulers() {
@@ -1453,9 +1460,16 @@ void shader_core_ctx::decode() {
 }
 
 void shader_core_ctx::fetch() {
+  bool demand_reservation_failed = false;
   if (!m_inst_fetch_buffer.m_valid) {
-    if (m_L1I->access_ready()) {
+    bool delivered_demand_response = false;
+    while (m_L1I->access_ready() && !delivered_demand_response) {
       mem_fetch *mf = m_L1I->next_access();
+      if (mf->is_instruction_prefetch()) {
+        m_instruction_prefetcher->fill(mf);
+        delete mf;
+        continue;
+      }
       m_warp[mf->get_wid()]->clear_imiss_pending();
       m_inst_fetch_buffer =
           ifetch_buffer_t(m_warp[mf->get_wid()]->get_pc(),
@@ -1467,7 +1481,9 @@ void shader_core_ctx::fetch() {
       m_inst_fetch_buffer.m_valid = true;
       m_warp[mf->get_wid()]->set_last_fetch(m_gpu->gpu_sim_cycle);
       delete mf;
-    } else {
+      delivered_demand_response = true;
+    }
+    if (!delivered_demand_response) {
       // find an active warp with space in instruction buffer that is not
       // already waiting on a cache miss and get next 1-2 instructions from
       // i-cache...
@@ -1525,13 +1541,22 @@ void shader_core_ctx::fetch() {
               m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
           std::list<cache_event> events;
           enum cache_request_status status;
-          if (m_config->perfect_inst_const_cache) {
+          if (m_config->perfect_instruction_cache()) {
             status = HIT;
             shader_cache_access_log(m_sid, INSTRUCTION, 0);
-          } else
+          } else {
             status = m_L1I->access(
                 (new_addr_type)ppc, mf,
                 m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events);
+          }
+
+          if (m_instruction_prefetcher->enabled() &&
+              status != RESERVATION_FAIL) {
+            kernel_info_t *kernel = m_warp[warp_id]->get_kernel_info();
+            m_instruction_prefetcher->observe_demand(
+                kernel->get_uid(), kernel->get_streamID(), ppc,
+                status == MISS);
+          }
 
           if (status == MISS) {
             m_last_warp_fetched = warp_id;
@@ -1545,6 +1570,7 @@ void shader_core_ctx::fetch() {
           } else {
             m_last_warp_fetched = warp_id;
             assert(status == RESERVATION_FAIL);
+            demand_reservation_failed = true;
             delete mf;
           }
           break;
@@ -1554,6 +1580,7 @@ void shader_core_ctx::fetch() {
   }
 
   m_L1I->cycle();
+  m_instruction_prefetcher->cycle(demand_reservation_failed);
 }
 
 void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
@@ -4707,6 +4734,28 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
             total_css.pending_hits);
     fprintf(fout, "\tL1I_total_cache_reservation_fails = %llu\n",
             total_css.res_fails);
+    flash_gpgpu_sim::instruction_stream_buffer_stats prefetch_stats;
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i) {
+      m_cluster[i]->get_instruction_prefetch_stats(prefetch_stats);
+    }
+    fprintf(fout, "\tL1I_prefetch_streams_started = %llu\n",
+            static_cast<unsigned long long>(prefetch_stats.streams_started));
+    fprintf(fout, "\tL1I_prefetch_streams_replaced = %llu\n",
+            static_cast<unsigned long long>(prefetch_stats.streams_replaced));
+    fprintf(fout, "\tL1I_prefetch_requests_issued = %llu\n",
+            static_cast<unsigned long long>(prefetch_stats.requests_issued));
+    fprintf(fout, "\tL1I_prefetch_useful = %llu\n",
+            static_cast<unsigned long long>(prefetch_stats.useful));
+    fprintf(fout, "\tL1I_prefetch_late = %llu\n",
+            static_cast<unsigned long long>(prefetch_stats.late));
+    fprintf(fout, "\tL1I_prefetch_resident = %llu\n",
+            static_cast<unsigned long long>(prefetch_stats.resident));
+    fprintf(fout, "\tL1I_prefetch_retries = %llu\n",
+            static_cast<unsigned long long>(prefetch_stats.retries));
+    fprintf(fout, "\tL1I_prefetch_stale_fills = %llu\n",
+            static_cast<unsigned long long>(prefetch_stats.stale_fills));
+    fprintf(fout, "\tL1I_prefetch_canceled_entries = %llu\n",
+            static_cast<unsigned long long>(prefetch_stats.canceled_entries));
   }
 
   // L1D
@@ -5346,7 +5395,10 @@ void shader_core_ctx::cycle() {
 
 void shader_core_ctx::cache_flush() { m_ldst_unit->flush(); }
 
-void shader_core_ctx::cache_invalidate() { m_ldst_unit->invalidate(); }
+void shader_core_ctx::cache_invalidate() {
+  m_ldst_unit->invalidate();
+  if (m_instruction_prefetcher) m_instruction_prefetcher->reset();
+}
 
 // modifiers
 std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads(
@@ -5889,6 +5941,13 @@ void shader_core_ctx::accept_fetch_response(mem_fetch *mf) {
   mf->set_status(IN_SHADER_FETCHED,
                  m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
   m_L1I->fill(mf, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+  if (mf->is_instruction_prefetch() && get_not_completed() == 0 &&
+      m_L1I->access_ready()) {
+    mem_fetch *ready = m_L1I->next_access();
+    assert(ready->is_instruction_prefetch());
+    m_instruction_prefetcher->fill(ready);
+    delete ready;
+  }
 }
 
 bool shader_core_ctx::ldst_unit_response_buffer_full() const {
@@ -5920,6 +5979,10 @@ void shader_core_ctx::get_cache_stats(cache_stats &cs) {
 
 void shader_core_ctx::get_L1I_sub_stats(struct cache_sub_stats &css) const {
   if (m_L1I) m_L1I->get_sub_stats(css);
+}
+void shader_core_ctx::get_instruction_prefetch_stats(
+    flash_gpgpu_sim::instruction_stream_buffer_stats &stats) const {
+  if (m_instruction_prefetcher) stats += m_instruction_prefetcher->stats();
 }
 void shader_core_ctx::get_L1D_sub_stats(struct cache_sub_stats &css) const {
   m_ldst_unit->get_L1D_sub_stats(css);
@@ -6830,6 +6893,12 @@ void simt_core_cluster::get_L1I_sub_stats(struct cache_sub_stats &css) const {
     total_css += temp_css;
   }
   css = total_css;
+}
+void simt_core_cluster::get_instruction_prefetch_stats(
+    flash_gpgpu_sim::instruction_stream_buffer_stats &stats) const {
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+    m_core[i]->get_instruction_prefetch_stats(stats);
+  }
 }
 void simt_core_cluster::get_L1D_sub_stats(struct cache_sub_stats &css) const {
   struct cache_sub_stats temp_css;

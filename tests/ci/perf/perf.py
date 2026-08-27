@@ -226,7 +226,14 @@ def load_manifest(
                     raise PerfError(f"{path}: {case_path} must be a table")
                 _exact_keys(
                     raw_case,
-                    {"label", "scripts", "launcher", "ncu_cycles", "readme"},
+                    {
+                        "label",
+                        "scripts",
+                        "launcher",
+                        "trace_config",
+                        "ncu_cycles",
+                        "readme",
+                    },
                     {"label", "ncu_cycles"},
                     case_path,
                     path,
@@ -269,12 +276,29 @@ def load_manifest(
                             f"{path}: {case_path}.scripts contains duplicates"
                         )
                 else:
+                    trace_config = config
+                    if "trace_config" in raw_case:
+                        trace_config = _nonempty_string(
+                            raw_case["trace_config"],
+                            f"{case_path}.trace_config",
+                            path,
+                        )
+                        if not CONFIG_RE.fullmatch(trace_config):
+                            raise PerfError(
+                                f"{path}: {case_path}.trace_config must use "
+                                "uppercase letters, digits, and underscores"
+                            )
                     launcher = _launcher_path(
                         raw_case["launcher"],
                         f"{case_path}.launcher",
                         path,
                         repo_root,
-                        config,
+                        trace_config,
+                    )
+
+                if "trace_config" in raw_case and launcher is None:
+                    raise PerfError(
+                        f"{path}: {case_path}.trace_config requires launcher"
                     )
 
                 raw_cycles = raw_case["ncu_cycles"]
