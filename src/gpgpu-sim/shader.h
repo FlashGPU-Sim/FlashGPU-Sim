@@ -59,6 +59,7 @@
 #include "traffic_breakdown.h"
 #include "flash/mbarrier.h"
 #include "flash/bulk_group.h"
+#include "flash/icache_prefetcher.h"
 #include "flash/tma.h"
 #include "flash/wgmma/tensor_wgmma.h"
 #include "flash/tma.h"
@@ -2017,6 +2018,9 @@ class shader_core_config : public core_config {
 
   bool perfect_inst_const_cache;
   unsigned inst_fetch_throughput;
+  bool icache_prefetch_enable;
+  unsigned icache_prefetch_num_streams;
+  unsigned icache_prefetch_depth;
   unsigned reg_file_port_throughput;
 
   // specialized unit config strings
@@ -2441,6 +2445,8 @@ class shader_core_ctx : public core_t {
 
   void cache_flush();
   void cache_invalidate();
+  void drain_l1i();
+  bool l1i_has_pending() const;
   void accept_tma_response(mem_fetch *mf);
   void accept_fetch_response(mem_fetch *mf);
   void accept_ldst_unit_response(class mem_fetch *mf);
@@ -2518,6 +2524,8 @@ class shader_core_ctx : public core_t {
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
+  void get_icache_prefetch_stats(
+      flash_gpgpu_sim::icache_prefetch_stats_t &stats) const;
 
   void get_icnt_power_stats(long &n_simt_to_mem, long &n_mem_to_simt) const;
 
@@ -2931,6 +2939,7 @@ class shader_core_ctx : public core_t {
 
   // fetch
   read_only_cache *m_L1I;  // instruction cache
+  flash_gpgpu_sim::icache_prefetcher_t *m_icache_prefetcher;
   int m_last_warp_fetched;
 
   // decode/dispatch
@@ -3037,6 +3046,8 @@ class simt_core_cluster {
   unsigned issue_block2core();
   void cache_flush();
   void cache_invalidate();
+  void drain_l1i();
+  bool l1i_has_pending() const;
   bool icnt_injection_buffer_full(unsigned size, bool write);
   void icnt_inject_request_packet(class mem_fetch *mf);
   void update_icnt_stats(class mem_fetch *mf);
@@ -3067,6 +3078,8 @@ class simt_core_cluster {
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
+  void get_icache_prefetch_stats(
+      flash_gpgpu_sim::icache_prefetch_stats_t &stats) const;
 
   void get_icnt_stats(long &n_simt_to_mem, long &n_mem_to_simt) const;
   float get_current_occupancy(unsigned long long &active,

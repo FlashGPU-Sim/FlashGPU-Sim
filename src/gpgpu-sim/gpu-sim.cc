@@ -861,6 +861,18 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_inst_fetch_throughput", OPT_INT32, &inst_fetch_throughput,
       "the number of fetched intruction per warp each cycle", "1");
+  option_parser_register(opp, "-gpgpu_icache_prefetch_enable", OPT_BOOL,
+                         &icache_prefetch_enable,
+                         "Enable I-cache next-line prefetcher (default=0)",
+                         "0");
+  option_parser_register(opp, "-gpgpu_icache_prefetch_num_streams", OPT_UINT32,
+                         &icache_prefetch_num_streams,
+                         "Number of I-cache prefetch stream buffers per SM",
+                         "4");
+  option_parser_register(opp, "-gpgpu_icache_prefetch_depth", OPT_UINT32,
+                         &icache_prefetch_depth,
+                         "Max outstanding I-cache prefetches per stream",
+                         "2");
   option_parser_register(opp, "-gpgpu_reg_file_port_throughput", OPT_INT32,
                          &reg_file_port_throughput,
                          "the number ports of the register file", "1");
@@ -1464,6 +1476,9 @@ bool gpgpu_sim::active() {
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
     if (m_cluster[i]->get_not_completed() > 0) return true;
   ;
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
+    if (m_cluster[i]->l1i_has_pending()) return true;
+  ;
   for (unsigned i = 0; i < m_memory_config->m_n_mem; i++)
     if (m_memory_partition_unit[i]->busy() > 0) return true;
   ;
@@ -1488,6 +1503,8 @@ bool sst_gpgpu_sim::active() {
   if (m_config.gpu_deadlock_detect && gpu_deadlock) return false;
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
     if (m_cluster[i]->get_not_completed() > 0) return true;
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
+    if (m_cluster[i]->l1i_has_pending()) return true;
   if (get_more_cta_left()) return true;
   return false;
 }
@@ -2631,6 +2648,8 @@ void gpgpu_sim::cycle() {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
         active_sms_local += m_cluster[i]->get_n_active_sms();
+      } else {
+        m_cluster[i]->drain_l1i();
       }
     }
     *active_sms += active_sms_local;
@@ -2652,6 +2671,8 @@ void gpgpu_sim::cycle() {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
         *active_sms += m_cluster[i]->get_n_active_sms();
+      } else {
+        m_cluster[i]->drain_l1i();
       }
       // Update core icnt/cache stats for AccelWattch
       if (m_config.g_power_simulation_enabled) {
@@ -2947,6 +2968,8 @@ void sst_gpgpu_sim::SST_cycle() {
     if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
       m_cluster[i]->core_cycle();
       *active_sms += m_cluster[i]->get_n_active_sms();
+    } else {
+      m_cluster[i]->drain_l1i();
     }
     // Update core icnt/cache stats for GPUWattch
     m_cluster[i]->get_icnt_stats(

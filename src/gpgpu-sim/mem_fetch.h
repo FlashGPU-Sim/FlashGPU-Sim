@@ -108,6 +108,8 @@ class mem_fetch {
   unsigned get_return_timestamp() const { return m_timestamp2; }
   unsigned get_icnt_receive_time() const { return m_icnt_receive_time; }
   unsigned long long get_streamID() const { return m_streamID; }
+  bool get_is_prefetch() const { return m_is_prefetch; }
+  void set_is_prefetch(bool value) { m_is_prefetch = value; }
 
   enum mem_access_type get_access_type() const { return m_access.get_type(); }
   unsigned long long get_status_change() const { return m_status_change; }
@@ -168,6 +170,7 @@ class mem_fetch {
   warp_inst_t m_inst;
 
   unsigned long long m_streamID;
+  bool m_is_prefetch = false;
 
   static std::atomic<unsigned int> sm_next_mf_request_uid;
 

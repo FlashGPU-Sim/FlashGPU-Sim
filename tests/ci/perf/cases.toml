@@ -26,6 +26,18 @@ label = "TritonTrace - GEMM m512_n6000_k1536"
 launcher = "tests/ci/perf/traces/SM120_RTX5090/gemm-m512-n6000-k1536/kernel_tma_gemm_launch1"
 ncu_cycles = 169861
 
+[SM120_RTX5090_ICACHE.gemm.tma-gemm-m4096-n128-k4096]
+label = "TritonTrace - GEMM m4096_n128_k4096 + I-cache prefetch"
+launcher = "tests/ci/perf/traces/SM120_RTX5090_ICACHE/gemm-m4096-n128-k4096/kernel_tma_gemm_launch1"
+ncu_cycles = 119636
+
+[SM120_RTX5090_ICACHE.gemm.triton-gemm-m2560-n64-k2560]
+label = "Tutorial - Triton GEMM + I-cache prefetch"
+scripts = [
+  "tutorials/triton-gemm/run.sh",
+]
+ncu_cycles = 77190.74
+
 [SM120_RTX5090.llama3.llama3-prefill-qkv]
 label = "TritonTrace - Llama3 Prefill QKV"
 launcher = "tests/ci/perf/traces/SM120_RTX5090/llama3-prefill-b2-s128/_llama3_layer_matmul_tile_launch2"

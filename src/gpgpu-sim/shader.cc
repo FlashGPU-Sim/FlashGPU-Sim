@@ -366,6 +366,8 @@ void shader_core_ctx::create_front_pipeline() {
   m_L1I = new read_only_cache(name, m_config->m_L1I_config, m_sid,
                               get_shader_instruction_cache_id(), m_icnt,
                               IN_L1I_MISS_QUEUE, OTHER_GPU_CACHE, m_gpu);
+  m_icache_prefetcher = new flash_gpgpu_sim::icache_prefetcher_t(
+      m_L1I, m_sid, m_tpc, m_memory_config, m_config, m_gpu);
 }
 
 void shader_core_ctx::create_schedulers() {
@@ -1456,16 +1458,20 @@ void shader_core_ctx::fetch() {
   if (!m_inst_fetch_buffer.m_valid) {
     if (m_L1I->access_ready()) {
       mem_fetch *mf = m_L1I->next_access();
-      m_warp[mf->get_wid()]->clear_imiss_pending();
-      m_inst_fetch_buffer =
-          ifetch_buffer_t(m_warp[mf->get_wid()]->get_pc(),
-                          mf->get_access_size(), mf->get_wid());
-      assert(m_warp[mf->get_wid()]->get_pc() ==
-             (mf->get_addr() -
-              PROGRAM_MEM_START));  // Verify that we got the instruction we
-                                    // were expecting.
-      m_inst_fetch_buffer.m_valid = true;
-      m_warp[mf->get_wid()]->set_last_fetch(m_gpu->gpu_sim_cycle);
+      if (mf->get_is_prefetch()) {
+        m_icache_prefetcher->on_fill(mf->get_addr());
+      } else {
+        m_warp[mf->get_wid()]->clear_imiss_pending();
+        m_inst_fetch_buffer =
+            ifetch_buffer_t(m_warp[mf->get_wid()]->get_pc(),
+                            mf->get_access_size(), mf->get_wid());
+        assert(m_warp[mf->get_wid()]->get_pc() ==
+               (mf->get_addr() -
+                PROGRAM_MEM_START));  // Verify that we got the instruction we
+                                      // were expecting.
+        m_inst_fetch_buffer.m_valid = true;
+        m_warp[mf->get_wid()]->set_last_fetch(m_gpu->gpu_sim_cycle);
+      }
       delete mf;
     } else {
       // find an active warp with space in instruction buffer that is not
@@ -1537,10 +1543,17 @@ void shader_core_ctx::fetch() {
             m_last_warp_fetched = warp_id;
             m_warp[warp_id]->set_imiss_pending();
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
+            new_addr_type block_addr =
+                m_config->m_L1I_config.block_addr((new_addr_type)ppc);
+            m_icache_prefetcher->on_demand_miss(
+                block_addr, m_warp[warp_id]->get_kernel_info()->get_streamID());
           } else if (status == HIT) {
             m_last_warp_fetched = warp_id;
             m_inst_fetch_buffer = ifetch_buffer_t(pc, nbytes, warp_id);
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
+            new_addr_type block_addr =
+                m_config->m_L1I_config.block_addr((new_addr_type)ppc);
+            m_icache_prefetcher->check_useful(block_addr);
             delete mf;
           } else {
             m_last_warp_fetched = warp_id;
@@ -1554,6 +1567,7 @@ void shader_core_ctx::fetch() {
   }
 
   m_L1I->cycle();
+  m_icache_prefetcher->cycle();
 }
 
 void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
@@ -4707,6 +4721,20 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
             total_css.pending_hits);
     fprintf(fout, "\tL1I_total_cache_reservation_fails = %llu\n",
             total_css.res_fails);
+    flash_gpgpu_sim::icache_prefetch_stats_t prefetch_stats;
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i) {
+      m_cluster[i]->get_icache_prefetch_stats(prefetch_stats);
+    }
+    fprintf(fout, "\tL1I_prefetch_issued = %llu\n", prefetch_stats.issued);
+    fprintf(fout, "\tL1I_prefetch_hit_in_cache = %llu\n",
+            prefetch_stats.hit_in_cache);
+    fprintf(fout, "\tL1I_prefetch_hit_in_mshr = %llu\n",
+            prefetch_stats.hit_in_mshr);
+    fprintf(fout, "\tL1I_prefetch_useful = %llu\n", prefetch_stats.useful);
+    fprintf(fout, "\tL1I_prefetch_streams_started = %llu\n",
+            prefetch_stats.streams_started);
+    fprintf(fout, "\tL1I_prefetch_drain_cycles = %llu\n",
+            prefetch_stats.drain_cycles);
   }
 
   // L1D
@@ -5346,7 +5374,32 @@ void shader_core_ctx::cycle() {
 
 void shader_core_ctx::cache_flush() { m_ldst_unit->flush(); }
 
-void shader_core_ctx::cache_invalidate() { m_ldst_unit->invalidate(); }
+void shader_core_ctx::cache_invalidate() {
+  m_ldst_unit->invalidate();
+  if (m_icache_prefetcher) m_icache_prefetcher->invalidate();
+}
+
+void shader_core_ctx::drain_l1i() {
+  bool had_work = false;
+  while (m_L1I->access_ready()) {
+    mem_fetch *mf = m_L1I->next_access();
+    if (mf->get_is_prefetch()) {
+      m_icache_prefetcher->on_fill(mf->get_addr());
+    }
+    delete mf;
+    had_work = true;
+  }
+  m_L1I->cycle();
+  if (had_work || l1i_has_pending()) {
+    m_icache_prefetcher->inc_drain_cycles();
+  }
+}
+
+bool shader_core_ctx::l1i_has_pending() const {
+  return m_L1I && (m_L1I->access_ready() || !m_L1I->miss_queue_empty() ||
+                  m_L1I->get_mshr().has_pending() ||
+                  (m_icache_prefetcher && m_icache_prefetcher->has_pending()));
+}
 
 // modifiers
 std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads(
@@ -5920,6 +5973,10 @@ void shader_core_ctx::get_cache_stats(cache_stats &cs) {
 
 void shader_core_ctx::get_L1I_sub_stats(struct cache_sub_stats &css) const {
   if (m_L1I) m_L1I->get_sub_stats(css);
+}
+void shader_core_ctx::get_icache_prefetch_stats(
+    flash_gpgpu_sim::icache_prefetch_stats_t &stats) const {
+  if (m_icache_prefetcher) stats += m_icache_prefetcher->stats();
 }
 void shader_core_ctx::get_L1D_sub_stats(struct cache_sub_stats &css) const {
   m_ldst_unit->get_L1D_sub_stats(css);
@@ -6513,6 +6570,18 @@ void simt_core_cluster::cache_invalidate() {
     m_core[i]->cache_invalidate();
 }
 
+void simt_core_cluster::drain_l1i() {
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+    m_core[i]->drain_l1i();
+}
+
+bool simt_core_cluster::l1i_has_pending() const {
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
+    if (m_core[i]->l1i_has_pending()) return true;
+  }
+  return false;
+}
+
 bool simt_core_cluster::icnt_injection_buffer_full(unsigned size, bool write) {
   unsigned request_size = size;
   if (!write) request_size = READ_PACKET_SIZE;
@@ -6830,6 +6899,12 @@ void simt_core_cluster::get_L1I_sub_stats(struct cache_sub_stats &css) const {
     total_css += temp_css;
   }
   css = total_css;
+}
+void simt_core_cluster::get_icache_prefetch_stats(
+    flash_gpgpu_sim::icache_prefetch_stats_t &stats) const {
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+    m_core[i]->get_icache_prefetch_stats(stats);
+  }
 }
 void simt_core_cluster::get_L1D_sub_stats(struct cache_sub_stats &css) const {
   struct cache_sub_stats temp_css;

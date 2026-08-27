@@ -5501,7 +5501,7 @@ CUresult CUDAAPI cuCtxSynchronize(void) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  printf("WARNING: this function has not been implemented yet %s\n", __my_func__);
+  GPGPU_Context()->synchronize();
   return CUDA_SUCCESS;
 }
 

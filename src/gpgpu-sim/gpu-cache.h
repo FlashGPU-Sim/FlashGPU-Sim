@@ -1056,6 +1056,9 @@ class mshr_table {
   void display(FILE *fp) const;
   // Returns true if there is a pending read after write
   bool is_read_after_write_pending(new_addr_type block_addr);
+  bool has_pending() const {
+    return !m_data.empty() || !m_current_response.empty();
+  }
 
   void check_mshr_parameters(unsigned num_entries, unsigned max_merged) {
     assert(m_num_entries == num_entries &&
@@ -1343,6 +1346,10 @@ class baseline_cache : public cache_t {
   void invalidate() { m_tag_array->invalidate(); }
   void print(FILE *fp, unsigned &accesses, unsigned &misses) const;
   void display_state(FILE *fp) const;
+  tag_array *get_tag_array() const { return m_tag_array; }
+  const mshr_table &get_mshr() const { return m_mshrs; }
+  const cache_config &get_config() const { return m_config; }
+  bool miss_queue_empty() const { return m_miss_queue.empty(); }
 
   // Stat collection
   const cache_stats &get_stats() const { return m_stats; }
