@@ -152,4 +152,4 @@ Exact hash and per-hop credit depth are **not** v1 accept criteria.
 
 ## 4. After B-DEPR
 
-Configs that still set `-gpgpu_dsm_bytes_per_cycle`, hop matrix, or `gpgpu_dsm_remote_latency` as the **bandwidth** model are bugs. Timing residual may remain as `-gpgpu_dsm_base_latency_cycles` if B6 refits it. Update `configs/SM90_H200*` and any overlay comments in this directory.
+After **B-DEPR**, delete all `dsm_latency_matrix_*.csv`, `-gpgpu_dsm_latency_matrix_file`, and `-gpgpu_dsm_remote_latency` as a hop/bandwidth knob. Configs that still set those, or `-gpgpu_dsm_bytes_per_cycle`, as the **bandwidth** model are bugs. Timing residual may remain as `-gpgpu_dsm_base_latency_cycles` if B6 refits it. Update `configs/SM90_H200*` and any overlay comments in this directory.

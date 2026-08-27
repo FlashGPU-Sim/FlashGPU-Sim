@@ -280,7 +280,7 @@ BookSim has real flits/VCs but global maps, subnet-by-category, and OpenMP-hosti
 | BW | Default unlimited | 32 B payload × shaped slots |
 | Topology | Flat hop matrix | GPCMMU hash + GX + GPCARB |
 
-When the fabric is the only path, **B-DEPR** removes delay-line knobs and updates configs ([`todos.md`](todos.md)).
+When the fabric is the only path, **B-DEPR** deletes all `dsm_latency_matrix_*.csv`, `-gpgpu_dsm_latency_matrix_file`, and `-gpgpu_dsm_remote_latency` as a hop/bandwidth knob, plus the rest of the delay-line knobs, and updates configs ([`todos.md`](todos.md)).
 
 ---
 

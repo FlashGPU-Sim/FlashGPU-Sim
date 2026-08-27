@@ -883,6 +883,60 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "Allow mbarrier ops on remote (DSM-mapped) shared addresses (default=0)",
                          "0");
   option_parser_register(
+      opp, "-gpgpu_dsm_enable", OPT_BOOL, &gpgpu_dsm_enable,
+      "Enable intra-GPC DSM fabric object (default=0; delay-line remains the "
+      "functional SM↔SM path until cut-over)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_dsm_flit_payload_bytes", OPT_UINT32,
+      &gpgpu_dsm_flit_payload_bytes,
+      "DSM fabric payload bytes per grant (default=32; header unmodeled)",
+      "32");
+  option_parser_register(
+      opp, "-gpgpu_dsm_flit_bytes", OPT_UINT32, &gpgpu_dsm_flit_payload_bytes,
+      "Alias of -gpgpu_dsm_flit_payload_bytes", "32");
+  option_parser_register(opp, "-gpgpu_dsm_lanes_per_cpc", OPT_UINT32,
+                         &gpgpu_dsm_lanes_per_cpc,
+                         "GPCARB outputs per CPC (default=4)", "4");
+  option_parser_register(
+      opp, "-gpgpu_dsm_gx_planes", OPT_UINT32, &gpgpu_dsm_gx_planes,
+      "Parallel GX switch planes (default=2; not request/response VCs). "
+      "Routes = gx_planes * lanes_per_cpc; GPCARB still grants at most "
+      "lanes_per_cpc per CPC per cycle",
+      "2");
+  option_parser_register(
+      opp, "-gpgpu_dsm_shaper", OPT_CSTR, &gpgpu_dsm_shaper,
+      "SM send shaper: skip_mod | fixed_tdm | hard_rate_cap (default skip_mod)",
+      "skip_mod");
+  option_parser_register(opp, "-gpgpu_dsm_shaper_period", OPT_UINT32,
+                         &gpgpu_dsm_shaper_period,
+                         "Shaper period for skip_mod (default=3)", "3");
+  option_parser_register(
+      opp, "-gpgpu_dsm_shaper_index", OPT_CSTR, &gpgpu_dsm_shaper_index,
+      "skip_mod index: sm_id or cpc_slot (default sm_id)", "sm_id");
+  option_parser_register(
+      opp, "-gpgpu_dsm_request_vc_flits", OPT_UINT32,
+      &gpgpu_dsm_request_vc_flits,
+      "Request VC ingress depth in payload flits (default=64)", "64");
+  option_parser_register(
+      opp, "-gpgpu_dsm_response_vc_flits", OPT_UINT32,
+      &gpgpu_dsm_response_vc_flits,
+      "Response VC ingress depth in payload flits (default=64)", "64");
+  option_parser_register(
+      opp, "-gpgpu_dsm_ejection_vc_flits", OPT_UINT32,
+      &gpgpu_dsm_ejection_vc_flits,
+      "Per-dest ejection depth in payload flits (default=64)", "64");
+  option_parser_register(
+      opp, "-gpgpu_dsm_vc_arbiter", OPT_CSTR, &gpgpu_dsm_vc_arbiter,
+      "VC select: bounded_response_priority (default)",
+      "bounded_response_priority");
+  option_parser_register(
+      opp, "-gpgpu_dsm_route_policy", OPT_CSTR, &gpgpu_dsm_route_policy,
+      "GPCMMU hash: deterministic_hash (default)", "deterministic_hash");
+  option_parser_register(opp, "-gpgpu_dsm_route_seed", OPT_UINT32,
+                         &gpgpu_dsm_route_seed, "GPCMMU hash seed (default=0)",
+                         "0");
+  option_parser_register(
       opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
       &gpgpu_wgmma_issue_chain_ss,
       "Per-SM WGMMA SS issue chain throttle "

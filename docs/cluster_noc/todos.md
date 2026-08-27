@@ -332,7 +332,7 @@ PASS evidence (0 failures):
 
 ## B3b — `dsm_fabric_t`
 
-- [ ] **B3b** Network-only DSM transport: VCs, 32 B **payload** flits, shaper, GPCMMU hash, GX count, CPC 6→4, PG slots.
+- [x] **B3b** Network-only DSM transport: VCs, 32 B **payload** flits, shaper, GPCMMU hash, GX count, CPC 6→4, PG slots.
 
 **Read first:** [`dsm_fabric.md`](dsm_fabric.md) **all**, [`knobs.md`](knobs.md) §3, [`evidence.md`](evidence.md).
 
@@ -379,6 +379,33 @@ PASS evidence (0 failures):
 **Exit:** Those tests PASS. Stats print eligibility used vs wasted.
 
 **Prereqs:** B3a, B1. **Next:** B3c.
+
+**Close-out (2026-08-27):** `dsm_fabric_t` in `src/gpgpu-sim/dsm_fabric.{h,cc}`. Payload grant 32 B (`-gpgpu_dsm_flit_payload_bytes`, alias `-gpgpu_dsm_flit_bytes`). Request/response VCs have independent VOQs and credits and share one physical-lane scheduler. Destination VOQ, GPCMMU hash `(addr,src,dst,uid)→(gx_plane,lane)`, GX default 2, CPC 6→4, PG slots never eligible. Shapers `skip_mod` / `fixed_tdm` / `hard_rate_cap`. Per-GPC instance on `simt_core_cluster` (delay-line remains the functional SM↔SM path). `can_inject` false refuses inject.
+
+Unit tests (`DsmFabric*`): `OneSmIdleNeighborsCap`, `IdleNeighborDoesNotRaiseRate`, `SameDirRequestResponseShareCap`, `OppositeDirsExceedOneDirCap`, `ReadCommandIsOneReverseFlit`, `RequestFullDoesNotConsumeResponseCredits`, `DestVoqBlockedDoesNotHolSibling`, `Data128BNeedsFourGrants`, `CanInjectFalseRefusesInject`, `GxPlanesOneReducesRoutesVsTwo`, `PgdSlotNeverSends`, `SkipModAndFixedTdmCoEligibleDiffer`, `HardRateCapAveragesTwoThirds`, `TwoFabricsIsolated`, `DisplayStateShowsUsedAndWasted`.
+
+Verify:
+
+```bash
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "DsmFabric*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "Transport*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit "LocalInterconnect*"
+```
+
+PASS evidence (0 failures):
+
+```text
+# unit DsmFabric* (run 1 and rerun, SM120_RTX5090_REDUCED_CLUSTER2x1)
+[  PASSED  ] 15 tests.
+✓ test/sm120/unit passed!
+
+# unit Transport* + LocalInterconnect* (SM120_RTX5090_REDUCED_CLUSTER2x1)
+[  PASSED  ] 10 tests.
+✓ test/sm120/unit passed!
+
+# display_state (DsmFabric.DisplayStateShowsUsedAndWasted)
+eligibility used=32 wasted=160 slots=192
+```
 
 ---
 
@@ -510,16 +537,21 @@ PASS evidence (0 failures):
 
 - [ ] **B-DEPR** Once `dsm_fabric_t` is the only SM↔SM path, **deprecate and delete delay-line knobs** and update **all** config files.
 
+**After B-DEPR, delete these (do not leave unused files or knobs in tree):**
+
+- all `dsm_latency_matrix_*.csv`
+- `-gpgpu_dsm_latency_matrix_file`
+- `-gpgpu_dsm_remote_latency` as a hop / bandwidth knob
+
+The hop-matrix CSV and the two knobs above are delay-line-only. They are **not** the fabric timing model. After this ID, grep for them must be empty.
+
 **Read first:** [`knobs.md`](knobs.md) §§2–3.
 
 **Why:** Two timing models in tree will drift. Agents must not keep `ready_cycle = hop + BPC`.
 
 **Work:**
 
-1. **Must delete** once the fabric is the only SM↔SM path (do not leave unused files or knobs):
-   - all `dsm_latency_matrix_*.csv`
-   - `-gpgpu_dsm_latency_matrix_file`
-   - `-gpgpu_dsm_remote_latency` as a hop / bandwidth knob
+1. Delete the three items in the After-B-DEPR list above. No leftover CSV, no unused knob registration, no config that still points at a matrix file.
 2. Also delete or `#error` unused: `cluster_noc_t` inject/deliver delay-line, `-gpgpu_dsm_bytes_per_cycle`, `-gpgpu_tma_mcast_hop_latency` if B6 replaced it, `-gpgpu_dsm_store_immediate` if fabric stores are deliver-only only.
 3. Keep: hang watchdog, mbarrier cluster enable, TMA data-before-mbar, topology knobs, fabric knobs, possibly `-gpgpu_dsm_local_latency` / `base_latency` if still used as SMEM/floor. Do **not** keep a pairwise hop table or a scalar remote hop as the DSM timing model.
 4. Grep configs: `configs/SM90_H200*`, `configs/SM120_*CLUSTER*`, test overlays, `FLASH.md`, comments in `gpu-sim.cc` / `shader.h` / `cluster_noc.*`.

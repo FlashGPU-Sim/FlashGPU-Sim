@@ -6633,6 +6633,21 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
   m_response_fifo.init(m_config->n_simt_cores_per_cluster,
                        m_config->n_simt_ejection_buffer_size);
   m_cluster_noc = std::make_unique<flash_gpgpu_sim::cluster_noc_t>(this, config);
+  dsm_fabric_config_t fcfg;
+  fcfg.cpcs = config->dsm_cpcs_per_gpc;
+  fcfg.lanes_per_cpc = config->gpgpu_dsm_lanes_per_cpc;
+  fcfg.gx_planes = config->gpgpu_dsm_gx_planes;
+  fcfg.flit_payload_bytes = config->gpgpu_dsm_flit_payload_bytes;
+  fcfg.shaper_period = config->gpgpu_dsm_shaper_period;
+  fcfg.request_vc_flits = config->gpgpu_dsm_request_vc_flits;
+  fcfg.response_vc_flits = config->gpgpu_dsm_response_vc_flits;
+  fcfg.ejection_vc_flits = config->gpgpu_dsm_ejection_vc_flits;
+  fcfg.route_seed = config->gpgpu_dsm_route_seed;
+  fcfg.shaper = config->gpgpu_dsm_shaper;
+  fcfg.shaper_index = config->gpgpu_dsm_shaper_index;
+  fcfg.vc_arbiter = config->gpgpu_dsm_vc_arbiter;
+  m_dsm_fabric = std::make_unique<dsm_fabric_t>(config->m_topology, cluster_id,
+                                                fcfg);
 }
 
 void simt_core_cluster::aggregate_stats() {
@@ -6659,6 +6674,8 @@ void simt_core_cluster::core_cycle() {
 void simt_core_cluster::cluster_noc_cycle() {
   if (m_cluster_noc)
     m_cluster_noc->cycle();
+  if (m_dsm_fabric)
+    m_dsm_fabric->cycle(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 }
 
 void simt_core_cluster::reinit() {

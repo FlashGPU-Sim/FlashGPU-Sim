@@ -5,7 +5,7 @@ Registered in `shader_core_config::reg_options` (`src/gpgpu-sim/gpu-sim.cc`) unl
 Two generations:
 
 1. **Delay-line (in tree now).** Keep working until `dsm_fabric_t` is the only path.
-2. **Target fabric.** Add in **B3**. After cut-over, **B-DEPR** removes delay-line knobs and updates every config file that sets them.
+2. **Target fabric.** Add in **B3**. After cut-over, **B-DEPR** deletes all `dsm_latency_matrix_*.csv`, `-gpgpu_dsm_latency_matrix_file`, and `-gpgpu_dsm_remote_latency` as a hop/bandwidth knob, plus the rest of the delay-line knobs, and updates every config file that set them.
 
 If old and new topology knobs are both set and disagree: **abort at start-up**.
 
@@ -31,6 +31,8 @@ Target extras:
 ---
 
 ## 2. Delay-line knobs (legacy — B-DEPR)
+
+After **B-DEPR**, these hop/bandwidth artifacts are gone: every `dsm_latency_matrix_*.csv`, `-gpgpu_dsm_latency_matrix_file`, and `-gpgpu_dsm_remote_latency` used as a hop or bandwidth knob. Do not keep a pairwise hop table or a scalar remote hop as the DSM timing model.
 
 Master switch today: `-gpgpu_cluster_noc_enable` (default 0; **1** on `SM90_H200_REDUCED_CLUSTER16x2`).
 
@@ -72,7 +74,9 @@ Dense N×N integers, N = cores per cluster. Whitespace or comma; `#` comments. I
 
 ---
 
-## 3. Target fabric knobs (add in B3; not in gpu-sim.cc yet)
+## 3. Target fabric knobs
+
+GX port formula: `routes = gx_planes * lanes_per_cpc`. GPCARB still grants at most `lanes_per_cpc` per CPC per cycle. Do not hard-code plane count `2` in C++.
 
 | Knob | Default | Meaning |
 |------|---------|---------|
@@ -83,9 +87,9 @@ Dense N×N integers, N = cores per cluster. Whitespace or comma; `#` comments. I
 | `-gpgpu_dsm_shaper` | `skip_mod` | Required: `skip_mod` \| `fixed_tdm` \| `hard_rate_cap`. Not a silicon dump; B6 may switch H200 preset |
 | `-gpgpu_dsm_shaper_period` | 3 | For `skip_mod` / TDM |
 | `-gpgpu_dsm_shaper_index` | `sm_id` | `sm_id` or `cpc_slot`. Skip/TDM phase uses this index |
-| `-gpgpu_dsm_request_vc_flits` | TBD (fit B3) | Request VC buffer depth (flits) |
-| `-gpgpu_dsm_response_vc_flits` | TBD | Response VC buffer depth |
-| `-gpgpu_dsm_ejection_vc_flits` | TBD | Per-dest ejection depth |
+| `-gpgpu_dsm_request_vc_flits` | **64** | Request VC buffer depth (flits) |
+| `-gpgpu_dsm_response_vc_flits` | **64** | Response VC buffer depth |
+| `-gpgpu_dsm_ejection_vc_flits` | **64** | Per-dest ejection depth |
 | `-gpgpu_dsm_vc_arbiter` | `bounded_response_priority` | VC select |
 | `-gpgpu_dsm_route_policy` | `deterministic_hash` | GPCMMU hash |
 | `-gpgpu_dsm_route_seed` | 0 | Hash seed |

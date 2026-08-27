@@ -34,6 +34,8 @@ struct interconnect_stats_t {
 };
 
 // One bounded queue per destination. Occupancy is remaining payload flits.
+// Packet type must provide remaining_flits and created_cycle.
+template <typename Pkt = transport_packet_metadata_t>
 struct bounded_voq_t {
   void init(unsigned n_dst, unsigned flit_limit_per_dst) {
     m_limit = flit_limit_per_dst;
@@ -52,7 +54,7 @@ struct bounded_voq_t {
   bool can_push(unsigned dst, unsigned flits) const {
     return m_occ[dst] + flits <= m_limit;
   }
-  bool push(unsigned dst, transport_packet_metadata_t pkt) {
+  bool push(unsigned dst, Pkt pkt) {
     assert(dst < m_q.size());
     const unsigned flits = pkt.remaining_flits;
     if (!can_push(dst, flits)) {
@@ -65,17 +67,16 @@ struct bounded_voq_t {
     m_stats.note_occupancy(occupancy_flits());
     return true;
   }
-  const transport_packet_metadata_t *front(unsigned dst) const {
+  const Pkt *front(unsigned dst) const {
     if (m_q[dst].empty()) return nullptr;
     return &m_q[dst].front();
   }
   // Consume one payload flit from dest's head. Returns true if that packet ends.
-  bool grant_flit(unsigned dst, unsigned long long now,
-                  transport_packet_metadata_t *completed) {
+  bool grant_flit(unsigned dst, unsigned long long now, Pkt *completed) {
     assert(dst < m_q.size());
     assert(!m_q[dst].empty());
     assert(m_occ[dst] > 0);
-    transport_packet_metadata_t &p = m_q[dst].front();
+    Pkt &p = m_q[dst].front();
     assert(p.remaining_flits > 0);
     p.remaining_flits--;
     m_occ[dst]--;
@@ -92,7 +93,7 @@ struct bounded_voq_t {
 
  private:
   unsigned m_limit = 0;
-  std::vector<std::deque<transport_packet_metadata_t>> m_q;
+  std::vector<std::deque<Pkt>> m_q;
   std::vector<unsigned> m_occ;
   interconnect_stats_t m_stats;
 };

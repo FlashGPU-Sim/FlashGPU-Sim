@@ -47,7 +47,9 @@
 #include <utility>
 #include <vector>
 
-// Complete type required for std::unique_ptr destructor of cluster_noc_t.
+// Complete type required for std::unique_ptr destructor of cluster_noc_t /
+// dsm_fabric_t.
+#include "dsm_fabric.h"
 #include "flash/cluster_noc.h"
 #include "gpu_topology.h"
 
@@ -1767,6 +1769,19 @@ class shader_core_config : public core_config {
     num_gpcs_alias = 0;
     num_sms_per_gpc_alias = 0;
     dsm_cpcs_per_gpc = 3;
+    gpgpu_dsm_enable = false;
+    gpgpu_dsm_flit_payload_bytes = 32;
+    gpgpu_dsm_lanes_per_cpc = 4;
+    gpgpu_dsm_gx_planes = 2;
+    gpgpu_dsm_shaper = NULL;
+    gpgpu_dsm_shaper_period = 3;
+    gpgpu_dsm_shaper_index = NULL;
+    gpgpu_dsm_request_vc_flits = 64;
+    gpgpu_dsm_response_vc_flits = 64;
+    gpgpu_dsm_ejection_vc_flits = 64;
+    gpgpu_dsm_vc_arbiter = NULL;
+    gpgpu_dsm_route_policy = NULL;
+    gpgpu_dsm_route_seed = 0;
   }
 
   void apply_gpc_knob_aliases();
@@ -2050,6 +2065,21 @@ class shader_core_config : public core_config {
   bool gpgpu_mbarrier_cluster_enable;
   // 0 = off. Default is well above hop / try_wait latencies.
   unsigned int gpgpu_cluster_hang_watchdog;
+  // Intra-GPC DSM fabric (docs/cluster_noc/knobs.md §3). Network-only until
+  // ordinary cluster ld/st are switched off the delay line.
+  bool gpgpu_dsm_enable;
+  unsigned int gpgpu_dsm_flit_payload_bytes;
+  unsigned int gpgpu_dsm_lanes_per_cpc;
+  unsigned int gpgpu_dsm_gx_planes;
+  char *gpgpu_dsm_shaper;
+  unsigned int gpgpu_dsm_shaper_period;
+  char *gpgpu_dsm_shaper_index;
+  unsigned int gpgpu_dsm_request_vc_flits;
+  unsigned int gpgpu_dsm_response_vc_flits;
+  unsigned int gpgpu_dsm_ejection_vc_flits;
+  char *gpgpu_dsm_vc_arbiter;
+  char *gpgpu_dsm_route_policy;
+  unsigned int gpgpu_dsm_route_seed;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;
   unsigned gpgpu_wgmma_issue_chain_ss_config[5];
@@ -3175,6 +3205,7 @@ class simt_core_cluster {
   class flash_gpgpu_sim::cluster_noc_t *get_cluster_noc() const {
     return m_cluster_noc.get();
   }
+  class dsm_fabric_t *get_dsm_fabric() const { return m_dsm_fabric.get(); }
 
   // for perfect memory interface (per-SM ejection buffer)
   bool response_queue_full(unsigned sid) const {
@@ -3256,6 +3287,7 @@ class simt_core_cluster {
   std::list<unsigned> m_core_sim_order;
   gpc_sm_response_fifos_t m_response_fifo;
   std::unique_ptr<flash_gpgpu_sim::cluster_noc_t> m_cluster_noc;
+  std::unique_ptr<dsm_fabric_t> m_dsm_fabric;
 
  public:
   unsigned pending_issue_cluster_group() const {
