@@ -54,6 +54,15 @@ four-request service group. The value is not a measurement of the physical
 B200 queue depth. The independent four-request response service continues to
 limit steady-state TMA bandwidth to 128 B/core-cycle.
 
+After a physical CTA has drained outstanding TMA work and released its
+architectural resources, the same SM slot spends 1200 core cycles in a CTA
+context transition before another CTA can be admitted. A never-used slot's
+first admission is not delayed, and transitions on different SMs overlap. This
+models repeated CTA replacement directly instead of folding it into the
+whole-grid kernel or thread-block launch latency. The current value is
+constrained by the approximately linear extra-wave timing of the B200 FA4
+causal workloads; it is not a published hardware queue or pipeline latency.
+
 Detailed DRAM timing and physical address-to-bank mapping remain functional
 placeholders; those parts are not calibrated against B200 hardware counters.
 

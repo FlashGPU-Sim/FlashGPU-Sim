@@ -158,6 +158,7 @@ inherit another limit.
 | `-ptx_opcode_latency_tensor` | `64` | `22,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA result latency by shape and type |
 | `-ptx_opcode_initiation_tensor` | `64` | `6,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA issue interval by shape and type |
 | `-gpgpu_cta_load_balance` | `0` | `1` | `1` | Cap CTAs per SM for uniform kernels using `ceil(total_ctas / total_sms)` |
+| `-gpgpu_cta_replacement_latency` | `0` | default | default | Per-SM hardware CTA slot transition after resource release; a never-used slot is immediately available and slots on different SMs transition in parallel |
 
 The public SM90 configuration also models asynchronous WGMMA execution. SS
 uses shared-memory operands for A and B; RS uses registers for A and shared
@@ -260,6 +261,7 @@ disables the additional byte-credit limiter instead of restricting service.
 | `-gpgpu_cluster_response_dispatch_sectors_per_cycle` | `0` | `4` | `4` | Shared response sectors dispatched per target SM and core tick |
 | `-gpgpu_ldst_request_width` | `0` | `4` | `4` | Internal 32-byte global/local bypass children injected per SM and core tick; `0` preserves the legacy LD/ST-cycle path |
 | `-gpgpu_ldst_response_sectors_per_cycle` | `0` | `4` | `4` | LD/ST response sectors advanced per SM and core tick |
+| `-gpgpu_cta_replacement_latency` | `0` | `1200` | `0` | Per-SM hardware CTA slot transition after resource release; a never-used slot is immediately available and different SMs transition in parallel |
 | `-gpgpu_tma_max_inflight` | `0` | `2648` | `0` | Issued TMA child requests awaiting response per SM; `0` is unlimited. The full-model value covers the measured DRAM bandwidth-delay product while response service width independently limits steady-state bandwidth; the reduced functional model remains unlimited |
 | `-gpgpu_tma_tx_quota` | `0` | `48` | default | Base fairness quota per live TMA transaction; the work-conserving scheduler may borrow beyond it when all live transactions are over quota |
 | `-gpgpu_tma_request_granularity` | `32` | `32` | `32` | Bytes represented by one TMA request |

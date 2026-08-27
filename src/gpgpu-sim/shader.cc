@@ -5060,6 +5060,31 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
   assert(m_cta_status[cta_num] == 0);
   assert(m_pending_tma_cta_releases.find(cta_num) ==
          m_pending_tma_cta_releases.end());
+  cta_lifecycle_state_t &lifecycle = m_cta_lifecycle[cta_num];
+  assert(lifecycle.active);
+  assert(lifecycle.kernel_uid == kernel->get_uid());
+  const unsigned long long release_cycle =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  const unsigned long long replacement_ready_cycle =
+      release_cycle + m_config->gpgpu_cta_replacement_latency;
+  assert(release_cycle >= lifecycle.admit_cycle);
+  assert(lifecycle.threads_exited);
+  assert(release_cycle >= lifecycle.threads_exit_cycle);
+  SHADER_GPPRINTF(LIVENESS,
+                  "CTA_LIFECYCLE event=release kernel_uid=%u sid=%u hw_cta=%u "
+                  "logical_cta=%u generation=%u cycle=%llu active_cycles=%llu "
+                  "threads_exit=%llu exit_to_release=%llu pending_tma=%u "
+                  "replacement_ready=%llu replacement_latency=%u\n",
+                  lifecycle.kernel_uid, m_sid, cta_num,
+                  lifecycle.logical_cta_id, lifecycle.generation, release_cycle,
+                  release_cycle - lifecycle.admit_cycle,
+                  lifecycle.threads_exit_cycle,
+                  release_cycle - lifecycle.threads_exit_cycle,
+                  lifecycle.pending_tma ? 1 : 0, replacement_ready_cycle,
+                  m_config->gpgpu_cta_replacement_latency);
+  lifecycle.active = false;
+  lifecycle.last_release_cycle = release_cycle;
+  lifecycle.replacement_ready_cycle = replacement_ready_cycle;
 
   // Increment the completed CTAs
   m_stats->ctas_completed++;
@@ -5132,7 +5157,22 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
   assert(m_cta_status[cta_num] > 0);
   m_cta_status[cta_num]--;
   if (!m_cta_status[cta_num]) {
-    if (m_tma != nullptr && m_tma->has_pending_for_cta(cta_num)) {
+    cta_lifecycle_state_t &lifecycle = m_cta_lifecycle[cta_num];
+    assert(lifecycle.active);
+    assert(lifecycle.kernel_uid == kernel->get_uid());
+    lifecycle.threads_exited = true;
+    lifecycle.threads_exit_cycle =
+        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+    lifecycle.pending_tma =
+        m_tma != nullptr && m_tma->has_pending_for_cta(cta_num);
+    SHADER_GPPRINTF(
+        LIVENESS,
+        "CTA_LIFECYCLE event=threads_exit kernel_uid=%u sid=%u hw_cta=%u "
+        "logical_cta=%u generation=%u cycle=%llu pending_tma=%u\n",
+        lifecycle.kernel_uid, m_sid, cta_num, lifecycle.logical_cta_id,
+        lifecycle.generation, lifecycle.threads_exit_cycle,
+        lifecycle.pending_tma ? 1 : 0);
+    if (lifecycle.pending_tma) {
       bool inserted = m_pending_tma_cta_releases.emplace(cta_num, kernel).second;
       assert(inserted && "CTA already pending TMA release");
       SHADER_GPPRINTF(

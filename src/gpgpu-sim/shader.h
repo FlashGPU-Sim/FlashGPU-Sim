@@ -2180,6 +2180,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_cp_async_idealized_memory;
   unsigned int gpgpu_cp_async_wait_release_latency;
   bool gpgpu_cta_load_balance;
+  unsigned int gpgpu_cta_replacement_latency;
   unsigned int gpgpu_tma_idealized_memory;
   bool gpgpu_tma_oob_l2_traffic;
   unsigned int gpgpu_mbarrier_arrive_latency;
@@ -3166,9 +3167,24 @@ class shader_core_ctx : public core_t {
   shader_core_stats *m_stats;
 
   // CTA scheduling / hardware thread allocation
+  struct cta_lifecycle_state_t {
+    bool active = false;
+    bool ever_used = false;
+    bool threads_exited = false;
+    bool pending_tma = false;
+    unsigned kernel_uid = 0;
+    unsigned logical_cta_id = 0;
+    unsigned generation = 0;
+    unsigned long long admit_cycle = 0;
+    unsigned long long threads_exit_cycle = 0;
+    unsigned long long last_release_cycle = 0;
+    unsigned long long replacement_ready_cycle = 0;
+  };
+
   unsigned m_n_active_cta;  // number of Cooperative Thread Arrays (blocks)
                             // currently running on this shader.
   unsigned m_cta_status[MAX_CTA_PER_SHADER];  // CTAs status
+  cta_lifecycle_state_t m_cta_lifecycle[MAX_CTA_PER_SHADER];
   std::map<unsigned, kernel_info_t *> m_pending_tma_cta_releases;
   unsigned m_not_completed;  // number of threads to be completed (==0 when all
                              // thread on this core completed)
@@ -3237,6 +3253,7 @@ class shader_core_ctx : public core_t {
   int find_available_hwtid(unsigned int cta_size, bool occupy);
 
  private:
+  bool cta_context_ready(unsigned hw_cta_id) const;
   unsigned int m_occupied_n_threads;
   unsigned int m_occupied_shmem;
   unsigned int m_occupied_regs;

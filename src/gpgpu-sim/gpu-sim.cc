@@ -872,6 +872,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cta_load_balance", OPT_BOOL,
                          &gpgpu_cta_load_balance,
                          "Cap CTAs per core to ceil(total_ctas/n_cores) for load balancing (default=0)", "0");
+  option_parser_register(
+      opp, "-gpgpu_cta_replacement_latency", OPT_UINT32,
+      &gpgpu_cta_replacement_latency,
+      "Per-SM hardware CTA slot transition latency after resource release; "
+      "a never-used slot is immediately available (default=0)",
+      "0");
   option_parser_register(opp, "-gpgpu_tma_idealized_memory", OPT_UINT32,
                          &gpgpu_tma_idealized_memory,
                          "Idealized TMA memory: all requests complete instantly (default=0)", "0");
@@ -2411,7 +2417,36 @@ void shader_core_ctx::mem_instruction_stats(const warp_inst_t &inst) {
       abort();
   }
 }
+
+bool shader_core_ctx::cta_context_ready(unsigned hw_cta_id) const {
+  if (m_cta_status[hw_cta_id] != 0 ||
+      m_pending_tma_cta_releases.find(hw_cta_id) !=
+          m_pending_tma_cta_releases.end()) {
+    return false;
+  }
+
+  const cta_lifecycle_state_t &lifecycle = m_cta_lifecycle[hw_cta_id];
+  if (!lifecycle.ever_used) return true;
+
+  const unsigned long long now =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  return now >= lifecycle.replacement_ready_cycle;
+}
+
 bool shader_core_ctx::can_issue_1block(kernel_info_t &kernel) {
+  const unsigned max_cta_per_core = m_config->gpgpu_concurrent_kernel_sm
+                                        ? m_config->max_cta_per_core
+                                        : m_config->max_cta(kernel);
+  assert(max_cta_per_core <= MAX_CTA_PER_SHADER);
+  bool has_ready_cta_context = false;
+  for (unsigned i = 0; i < max_cta_per_core; ++i) {
+    if (cta_context_ready(i)) {
+      has_ready_cta_context = true;
+      break;
+    }
+  }
+  if (!has_ready_cta_context) return false;
+
   // Jin: concurrent kernels on one SM
   if (m_config->gpgpu_concurrent_kernel_sm) {
     if (m_config->max_cta(kernel) < 1) return false;
@@ -2553,10 +2588,9 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
     max_cta_per_core = kernel_max_cta_per_shader;
   else
     max_cta_per_core = m_config->max_cta_per_core;
+  assert(max_cta_per_core <= MAX_CTA_PER_SHADER);
   for (unsigned i = 0; i < max_cta_per_core; i++) {
-    if (m_cta_status[i] == 0 &&
-        m_pending_tma_cta_releases.find(i) ==
-            m_pending_tma_cta_releases.end()) {
+    if (cta_context_ready(i)) {
       free_cta_hw_id = i;
       break;
     }
@@ -2600,6 +2634,30 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   function_info *kernel_func_info = kernel.entry();
   symbol_table *symtab = kernel_func_info->get_symtab();
   unsigned ctaid = kernel.get_next_cta_id_single();
+  const unsigned long long admit_cycle =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  cta_lifecycle_state_t &lifecycle = m_cta_lifecycle[free_cta_hw_id];
+  assert(!lifecycle.active);
+  const bool slot_reuse = lifecycle.ever_used;
+  const unsigned long long release_to_admit =
+      slot_reuse ? admit_cycle - lifecycle.last_release_cycle : 0;
+  lifecycle.active = true;
+  lifecycle.ever_used = true;
+  lifecycle.threads_exited = false;
+  lifecycle.pending_tma = false;
+  lifecycle.kernel_uid = kernel.get_uid();
+  lifecycle.logical_cta_id = ctaid;
+  lifecycle.generation++;
+  lifecycle.admit_cycle = admit_cycle;
+  lifecycle.threads_exit_cycle = 0;
+  SHADER_GPPRINTF(LIVENESS,
+                  "CTA_LIFECYCLE event=admit kernel_uid=%u sid=%u hw_cta=%u "
+                  "logical_cta=%u generation=%u cycle=%llu slot_reuse=%u "
+                  "previous_release=%llu release_to_admit=%llu\n",
+                  lifecycle.kernel_uid, m_sid, free_cta_hw_id,
+                  lifecycle.logical_cta_id, lifecycle.generation, admit_cycle,
+                  slot_reuse ? 1 : 0, lifecycle.last_release_cycle,
+                  release_to_admit);
   checkpoint *g_checkpoint = new checkpoint();
   for (unsigned i = start_thread; i < end_thread; i++) {
     m_threadState[i].m_cta_id = free_cta_hw_id;
