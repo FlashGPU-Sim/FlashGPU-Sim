@@ -890,4 +890,90 @@ TEST_F(DsmTest, CrossGpcReject) {
   EXPECT_DEATH(run_cross_gpc_reject(), "not an active CTA");
 }
 
+// Remote ld then add on that dest: add must see the loaded word (scoreboard
+// holds dest until shared writeback, same as local ld.shared).
+__global__ void dsm_remote_ld_then_add_kernel(uint32_t *out,
+                                              volatile int *ready) {
+  __shared__ uint32_t smem[32];
+  __shared__ unsigned long long bar;
+  const int rank = blockIdx.x;
+  const int tid = threadIdx.x;
+
+  if (tid == 0)
+    smem[0] = 0;
+
+  if (rank == 1 && tid == 0) {
+    mbarrier_init_local(&bar, 1);
+    ready[0] = 1;
+    __threadfence_system();
+    mbarrier_try_wait_local(&bar, 0);
+    uint32_t *remote = mapa_shared_rank(smem, /*rank=*/0);
+    uint32_t v = remote[0];
+    out[1] = v + 1u;
+    ready[1] = 1;
+    __threadfence_system();
+  }
+
+  if (rank == 0 && tid == 0) {
+    while (ready[0] == 0) {
+    }
+    smem[0] = 0xA0000007u;
+    unsigned long long remote_bar = mapa_u64(&bar, /*rank=*/1);
+    mbarrier_arrive_remote(remote_bar, 1);
+    while (ready[1] == 0) {
+    }
+  }
+}
+
+TEST_F(DsmTest, RemoteLoadThenAdd) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  uint32_t *d_out = nullptr;
+  int *d_ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, 2 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_ready, 4 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, 2 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_ready, 0, 4 * sizeof(int)), cudaSuccess);
+
+  dim3 grid(2), block(32), cluster(2, 1, 1);
+  void *args[] = {&d_out, &d_ready};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_remote_ld_then_add_kernel, grid, block,
+                cluster, args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  uint32_t h[2] = {};
+  ASSERT_EQ(cudaMemcpy(h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  cudaFree(d_ready);
+  EXPECT_EQ(h[1], 0xA0000008u);
+}
+
+__global__ void dsm_local_ld_then_add_kernel(uint32_t *out) {
+  __shared__ uint32_t smem[8];
+  if (threadIdx.x == 0) {
+    smem[0] = 0xA0000007u;
+    uint32_t v = smem[0];
+    out[0] = v + 1u;
+  }
+}
+
+TEST_F(DsmTest, LocalSharedLoadThenAdd) {
+  uint32_t *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, sizeof(uint32_t)), cudaSuccess);
+  dim3 grid(1), block(32), cluster(1, 1, 1);
+  void *args[] = {&d_out};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_local_ld_then_add_kernel, grid, block,
+                cluster, args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  uint32_t h = 0;
+  ASSERT_EQ(cudaMemcpy(&h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  EXPECT_EQ(h, 0xA0000008u);
+}
+
 }  // namespace

@@ -542,6 +542,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Number of banks in the shared memory in each shader core (default 16)",
       "16");
   option_parser_register(
+      opp, "-gpgpu_shmem_bytes_per_cycle", OPT_UINT32,
+      &gpgpu_shmem_bytes_per_cycle,
+      "Per-SM shared-memory service byte budget (0=unlimited; local LSU, "
+      "TMA landing, and DSM ingress share it)",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_shmem_limited_broadcast", OPT_BOOL, &shmem_limited_broadcast,
       "Limit shared memory to do one broadcast per cycle (default on)", "1");
   option_parser_register(opp, "-gpgpu_shmem_warp_parts", OPT_INT32,

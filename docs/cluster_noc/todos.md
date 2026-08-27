@@ -508,7 +508,7 @@ PASS evidence:
 
 ## B5 — Remote load = local SMEM load + SRAM service
 
-- [ ] **B5** Scoreboard and LDST writeback for remote DSM **match local `ld.shared`**. Target SRAM is a real service.
+- [x] **B5** Scoreboard and LDST writeback for remote DSM **match local `ld.shared`**. Target SRAM is a real service. Closed 2026-08-27.
 
 **Read first:** [`pipeline.md`](pipeline.md) **all**.
 
@@ -537,6 +537,31 @@ PASS evidence:
 **Exit:** Written note: file:line for reserve, RF write, release. **Next:** B6 (calibration) and B8 (TMA/mbar packets).
 
 **Prereqs:** B4.
+
+**Close-out (2026-08-27):** Remote cluster loads reserve dest as shared (`Scoreboard::reserveRegisters` + `reclassifyShared` → `PROD_MEM_SHARED`), stay in the LD/ST shared pipe until `read_data` + SRAM grant, then RF write + `releaseRegister` on `ldst_unit::writeback` (same path as local `ld.shared`). Fabric-path `ld_impl` does not fill dest RF. `dispatch_delay = 2×hop` is delay-line only. Per-SM `shared_memory_service_t` (`-gpgpu_shmem_bytes_per_cycle`, 0=unlimited) two-phase grant shared by local LSU, TMA landing, and DSM ingress; arrival / grant / inject each ≥1 cycle. Stores write owner smem only on grant. CTA exit waits for outstanding DSM.
+
+Verify (run twice, 0 failures, `SM90_H200_REDUCED_CLUSTER16x2`):
+
+```bash
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
+  run test --target sm120 --group integration "DsmTest.*"
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
+  run test --target sm120 --group unit "SmemService*:DsmEndpoint*"
+```
+
+PASS evidence:
+
+```text
+# integration DsmTest.* (run 1 and 2)
+[  PASSED  ] 16 tests.
+# includes RemoteLoadFromPeer_TwoCtas, RemoteLoadThenAdd, LocalSharedLoadThenAdd
+
+# unit SmemService*:DsmEndpoint* (run 1 and 2)
+[  PASSED  ] 20 tests.
+✓ test/sm120/unit passed!
+```
+
+Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`; release `shader.cc:4388`.
 
 ---
 

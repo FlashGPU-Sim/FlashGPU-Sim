@@ -56,6 +56,7 @@
 #include "flash/cluster_noc.h"
 #include "flash/tb_cluster.h"
 #include "gpu_topology.h"
+#include "smem_service.h"
 
 // #include "../cuda-sim/ptx.tab.h"
 
@@ -1789,6 +1790,7 @@ class shader_core_config : public core_config {
     gpgpu_dsm_max_outstanding_per_sm = 16;
     gpgpu_dsm_ack_coalesce_threshold = 4;
     gpgpu_dsm_ack_timeout_cycles = 64;
+    gpgpu_shmem_bytes_per_cycle = 0;
   }
 
   void apply_gpc_knob_aliases();
@@ -2090,6 +2092,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_dsm_max_outstanding_per_sm;
   unsigned int gpgpu_dsm_ack_coalesce_threshold;
   unsigned int gpgpu_dsm_ack_timeout_cycles;
+  unsigned int gpgpu_shmem_bytes_per_cycle;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;
   unsigned gpgpu_wgmma_issue_chain_ss_config[5];
@@ -2654,6 +2657,8 @@ class shader_core_ctx : public core_t {
 
   void dsm_note_lane_op(flash_gpgpu_sim::dsm_lane_op_t op);
   void dsm_issue_lane_ops(warp_inst_t &inst);
+  shared_memory_service_t &smem_service() { return m_smem; }
+  void smem_cycle() { m_smem.cycle(); }
 
   // Complete pending mbarrier tx on this SM's CTA if armed (cluster peer path).
   void try_complete_cluster_peer_mbarrier(unsigned hw_cta_id,
@@ -3126,6 +3131,7 @@ class shader_core_ctx : public core_t {
 
   // TMA support.
   flash_gpgpu_sim::tma_unit_t *m_tma = nullptr;
+  shared_memory_service_t m_smem;
 
   // used for local address mapping with single kernel launch
   unsigned kernel_max_cta_per_shader;
@@ -3230,13 +3236,18 @@ class simt_core_cluster {
   void dsm_register_load(unsigned txid, unsigned sid, unsigned warp,
                          ptx_thread_info *thread, const ptx_instruction *pI);
   bool dsm_try_issue(unsigned src, const flash_gpgpu_sim::dsm_lane_op_t &op,
-                     unsigned sid, unsigned warp);
+                     unsigned sid, unsigned warp, unsigned cta);
   void dsm_queue_retry(unsigned src, flash_gpgpu_sim::dsm_lane_op_t op,
-                       unsigned sid, unsigned warp);
+                       unsigned sid, unsigned warp, unsigned cta);
   void dsm_retry_issues();
   unsigned dsm_cta_gen(unsigned local_sm, unsigned cta) const;
   void dsm_on_tx_done(unsigned txid);
   void dsm_on_load_data(unsigned txid, const uint8_t *p, unsigned n);
+  void dsm_commit_loads(unsigned sid, unsigned warp,
+                        const warp_inst_t *inst = nullptr);
+  bool dsm_cta_busy(unsigned sid, unsigned cta) const;
+  void dsm_note_cta_issue(unsigned sid, unsigned cta, unsigned n);
+  void dsm_note_cta_complete(unsigned sid, unsigned cta);
 
   // for perfect memory interface (per-SM ejection buffer)
   bool response_queue_full(unsigned sid) const {
@@ -3325,17 +3336,26 @@ class simt_core_cluster {
     unsigned src = 0;
     unsigned sid = 0;
     unsigned warp = 0;
+    unsigned cta = 0;
   };
   struct dsm_load_wait_t {
     unsigned sid = 0;
     unsigned warp = 0;
     ptx_thread_info *thread = nullptr;
     const ptx_instruction *pI = nullptr;
+    std::vector<uint8_t> data;
+    bool ready = false;
+  };
+  struct dsm_tx_src_t {
+    unsigned sid = 0;
+    unsigned warp = 0;
+    unsigned cta = 0;
   };
   std::deque<dsm_retry_t> m_dsm_retry;
   std::unordered_map<unsigned, unsigned> m_dsm_warp_pending;
-  std::unordered_map<unsigned, std::pair<unsigned, unsigned>> m_dsm_tx_warp;
+  std::unordered_map<unsigned, dsm_tx_src_t> m_dsm_tx_warp;
   std::unordered_map<unsigned, dsm_load_wait_t> m_dsm_loads;
+  std::unordered_map<unsigned, unsigned> m_dsm_cta_pending;
 
  public:
   unsigned pending_issue_cluster_group() const {

@@ -257,85 +257,125 @@ bool dsm_endpoint_protocol_t::inject_response(const pending_t &p) {
   return true;
 }
 
+bool dsm_endpoint_protocol_t::apply_sram(pending_t &p) {
+  const bool gen_ok =
+      p.cta_slot < 32 && p.cta_gen == m_cta_gen[p.src][p.cta_slot];
+  if (p.cls == dsm_packet_class_t::write_data) {
+    sram_store(p.src, p.bytes);
+    auto dit = m_data.find(p.txid);
+    if (gen_ok && m_sram_write && dit != m_data.end() && !dit->second.empty())
+      m_sram_write(m_sram_ctx, p.src, p.cta_slot, p.addr, dit->second.data(),
+                   (unsigned)dit->second.size());
+    accrue_ack(p.src, p.dst);
+    if (p.dst < m_n) {
+      auto it = m_tx[p.dst].find(p.txid);
+      if (it != m_tx[p.dst].end()) it->second.applied = true;
+    }
+    return true;
+  }
+  if (p.cls == dsm_packet_class_t::read_command) {
+    p.payload.assign(p.bytes, 0);
+    if (gen_ok && m_sram_read && p.bytes)
+      m_sram_read(m_sram_ctx, p.src, p.cta_slot, p.addr, p.payload.data(),
+                  p.bytes);
+    sram_load(p.src, p.bytes);
+    p.cls = dsm_packet_class_t::read_data;
+    return true;
+  }
+  if (p.cls == dsm_packet_class_t::atomic_request) {
+    p.payload.assign(p.bytes, 0);
+    auto tit = m_data.find(p.txid);
+    const std::vector<uint8_t> *addend =
+        (tit != m_data.end()) ? &tit->second : nullptr;
+    if (gen_ok && m_sram_read && p.bytes) {
+      m_sram_read(m_sram_ctx, p.src, p.cta_slot, p.addr, p.payload.data(),
+                  p.bytes);
+      if (addend && p.bytes == 4 && addend->size() >= 4) {
+        uint32_t old = 0, add = 0, neu = 0;
+        memcpy(&old, p.payload.data(), 4);
+        memcpy(&add, addend->data(), 4);
+        neu = old + add;
+        if (m_sram_write)
+          m_sram_write(m_sram_ctx, p.src, p.cta_slot, p.addr,
+                       reinterpret_cast<uint8_t *>(&neu), 4);
+        memcpy(p.payload.data(), &old, 4);
+      } else if (addend && p.bytes == 8 && addend->size() >= 8) {
+        uint64_t old = 0, add = 0, neu = 0;
+        memcpy(&old, p.payload.data(), 8);
+        memcpy(&add, addend->data(), 8);
+        neu = old + add;
+        if (m_sram_write)
+          m_sram_write(m_sram_ctx, p.src, p.cta_slot, p.addr,
+                       reinterpret_cast<uint8_t *>(&neu), 8);
+        memcpy(p.payload.data(), &old, 8);
+      }
+    }
+    sram_store(p.src, p.bytes);
+    sram_load(p.src, p.bytes);
+    p.cls = dsm_packet_class_t::atomic_response;
+    return true;
+  }
+  return true;
+}
+
+void dsm_endpoint_protocol_t::process_ingress() {
+  std::deque<pending_t> keep;
+  while (!m_ingress.empty()) {
+    pending_t p = std::move(m_ingress.front());
+    m_ingress.pop_front();
+    if (p.arrive_cycle >= m_now) {
+      keep.push_back(std::move(p));
+      continue;
+    }
+    if (!p.sram_done) {
+      unsigned need = p.bytes ? p.bytes - p.sram_got : 0;
+      unsigned got = 0;
+      if (need && m_sram_take)
+        got = m_sram_take(m_flow_ctx, p.src, need);
+      else
+        got = need;
+      p.sram_got += got;
+      if (p.bytes && p.sram_got < p.bytes) {
+        if (m_sram_expose)
+          m_sram_expose(m_flow_ctx, p.src, p.bytes - p.sram_got);
+        keep.push_back(std::move(p));
+        continue;
+      }
+      apply_sram(p);
+      p.sram_done = true;
+      p.inject_after = m_now;
+      if (p.cls == dsm_packet_class_t::write_data) {
+        continue;
+      }
+    }
+    if (p.inject_after >= m_now) {
+      keep.push_back(std::move(p));
+      continue;
+    }
+    m_pending.push_back(std::move(p));
+  }
+  m_ingress.swap(keep);
+}
+
 void dsm_endpoint_protocol_t::harvest() {
   for (unsigned sm = 0; sm < m_n; sm++) {
     while (m_fab->top(sm, dsm_vc_t::request)) {
       auto p = m_fab->pop(sm, dsm_vc_t::request);
       if (!p) break;
-      const unsigned req = p->transaction_requester_sm_id;
-      const bool gen_ok =
-          p->cta_slot < 32 && p->cta_gen == m_cta_gen[sm][p->cta_slot];
-      if (p->packet_class == dsm_packet_class_t::write_data) {
-        sram_store(sm, p->payload_bytes);
-        accrue_ack(sm, req);
-        if (req < m_n) {
-          auto it = m_tx[req].find(p->transaction_id);
-          if (it != m_tx[req].end()) it->second.applied = true;
-        }
-        auto dit = m_data.find(p->transaction_id);
-        if (gen_ok && m_sram_write && dit != m_data.end() &&
-            !dit->second.empty())
-          m_sram_write(m_sram_ctx, sm, p->cta_slot, p->payload_address,
-                       dit->second.data(), (unsigned)dit->second.size());
-      } else if (p->packet_class == dsm_packet_class_t::read_command) {
-        pending_t rd;
-        rd.cls = dsm_packet_class_t::read_data;
-        rd.src = sm;
-        rd.dst = p->transaction_requester_sm_id;
-        rd.txid = p->transaction_id;
-        rd.bytes = p->payload_bytes;
-        rd.count = 1;
-        rd.addr = p->payload_address;
-        rd.cta_slot = p->cta_slot;
-        rd.cta_gen = p->cta_gen;
-        rd.payload.assign(p->payload_bytes, 0);
-        if (gen_ok && m_sram_read && p->payload_bytes)
-          m_sram_read(m_sram_ctx, sm, p->cta_slot, p->payload_address,
-                      rd.payload.data(), p->payload_bytes);
-        sram_load(sm, p->payload_bytes);
-        m_pending.push_back(std::move(rd));
-      } else if (p->packet_class == dsm_packet_class_t::atomic_request) {
-        pending_t rsp;
-        rsp.cls = dsm_packet_class_t::atomic_response;
-        rsp.src = sm;
-        rsp.dst = p->transaction_requester_sm_id;
-        rsp.txid = p->transaction_id;
-        rsp.bytes = p->payload_bytes;
-        rsp.count = 1;
-        rsp.addr = p->payload_address;
-        rsp.cta_slot = p->cta_slot;
-        rsp.cta_gen = p->cta_gen;
-        rsp.payload.assign(p->payload_bytes, 0);
-        auto tit = m_data.find(p->transaction_id);
-        const std::vector<uint8_t> *addend =
-            (tit != m_data.end()) ? &tit->second : nullptr;
-        if (gen_ok && m_sram_read && p->payload_bytes) {
-          m_sram_read(m_sram_ctx, sm, p->cta_slot, p->payload_address,
-                      rsp.payload.data(), p->payload_bytes);
-          if (addend && p->payload_bytes == 4 && addend->size() >= 4) {
-            uint32_t old = 0, add = 0, neu = 0;
-            memcpy(&old, rsp.payload.data(), 4);
-            memcpy(&add, addend->data(), 4);
-            neu = old + add;
-            if (m_sram_write)
-              m_sram_write(m_sram_ctx, sm, p->cta_slot, p->payload_address,
-                           reinterpret_cast<uint8_t *>(&neu), 4);
-            memcpy(rsp.payload.data(), &old, 4);
-          } else if (addend && p->payload_bytes == 8 && addend->size() >= 8) {
-            uint64_t old = 0, add = 0, neu = 0;
-            memcpy(&old, rsp.payload.data(), 8);
-            memcpy(&add, addend->data(), 8);
-            neu = old + add;
-            if (m_sram_write)
-              m_sram_write(m_sram_ctx, sm, p->cta_slot, p->payload_address,
-                           reinterpret_cast<uint8_t *>(&neu), 8);
-            memcpy(rsp.payload.data(), &old, 8);
-          }
-        }
-        sram_store(sm, p->payload_bytes);
-        sram_load(sm, p->payload_bytes);
-        m_pending.push_back(std::move(rsp));
-      }
+      pending_t in;
+      in.cls = p->packet_class;
+      in.src = sm;
+      in.dst = p->transaction_requester_sm_id;
+      in.txid = p->transaction_id;
+      in.bytes = p->payload_bytes;
+      in.count = 1;
+      in.addr = p->payload_address;
+      in.cta_slot = p->cta_slot;
+      in.cta_gen = p->cta_gen;
+      in.arrive_cycle = m_now;
+      if (m_sram_expose && in.bytes)
+        m_sram_expose(m_flow_ctx, sm, in.bytes);
+      m_ingress.push_back(std::move(in));
     }
     while (m_fab->top(sm, dsm_vc_t::response)) {
       auto p = m_fab->pop(sm, dsm_vc_t::response);
@@ -380,8 +420,13 @@ void dsm_endpoint_protocol_t::try_flush_acks() {
       const bool thresh = debt >= m_cfg.ack_coalesce_threshold;
       const bool timed =
           (m_now - m_oldest_ack[sm][req]) >= m_cfg.ack_timeout_cycles;
+      bool ingress_store = false;
+      for (const auto &in : m_ingress)
+        if (in.src == sm && in.dst == req &&
+            in.cls == dsm_packet_class_t::write_data)
+          ingress_store = true;
       const bool idle = in_flight_writes(req, sm) == 0 &&
-                        response_occ(sm) == 0 &&
+                        response_occ(sm) == 0 && !ingress_store &&
                         (m_now - m_last_write[sm][req]) >= 3;
       if (!thresh && !timed && !idle) continue;
       pending_t p;
@@ -413,13 +458,14 @@ void dsm_endpoint_protocol_t::cycle(unsigned long long now) {
   m_now = now;
   m_fab->cycle(now);
   harvest();
+  process_ingress();
   try_send_pending();
   try_flush_acks();
 }
 
 bool dsm_endpoint_protocol_t::busy() const {
   if (m_fab->busy()) return true;
-  if (!m_pending.empty()) return true;
+  if (!m_pending.empty() || !m_ingress.empty()) return true;
   for (unsigned sm = 0; sm < m_n; sm++) {
     if (!m_tx[sm].empty()) return true;
     if (ack_debt(sm)) return true;

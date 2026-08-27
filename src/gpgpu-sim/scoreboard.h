@@ -58,6 +58,7 @@ class Scoreboard {
   void reserveRegistersForWarp(const warp_inst_t *inst, unsigned warp_id);
   void releaseRegistersForWarp(const warp_inst_t *inst, unsigned warp_id);
   void releaseRegister(unsigned wid, unsigned regnum);
+  void reclassifyShared(const warp_inst_t *inst);
 
   bool checkCollision(unsigned wid, const inst_t *inst) const;
   reg_producer_t getCollisionType(unsigned wid, const inst_t *inst) const;

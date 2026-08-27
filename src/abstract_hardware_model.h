@@ -1059,6 +1059,8 @@ class warp_inst_t : public inst_t {
     m_depbar_group_no = 0;
     m_dsm_remote = false;
     m_dsm_hop = 0;
+    m_smem_exposed = false;
+    m_smem_got = 0;
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
@@ -1087,6 +1089,8 @@ class warp_inst_t : public inst_t {
     m_depbar_group_no = 0;
     m_dsm_remote = false;
     m_dsm_hop = 0;
+    m_smem_exposed = false;
+    m_smem_got = 0;
   }
   virtual ~warp_inst_t() {}
 
@@ -1311,6 +1315,8 @@ class warp_inst_t : public inst_t {
   // Intra-cluster DSM: hop latency for remote shared accesses (cycles).
   bool m_dsm_remote;
   unsigned m_dsm_hop;
+  bool m_smem_exposed;
+  unsigned m_smem_got;
   bool is_dsm_remote() const { return m_dsm_remote; }
   unsigned dsm_hop() const { return m_dsm_hop; }
   void set_dsm_remote(bool remote, unsigned hop) {

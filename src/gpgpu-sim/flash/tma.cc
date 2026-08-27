@@ -986,6 +986,8 @@ private:
     bool has_cta_mask;    // PTX .multicast::cluster selective destinations
     uint16_t cta_mask;
     uint32_t smem_dst_addr; // for NoC peer data payload after tx erase
+    bool sram_armed = false;
+    unsigned sram_got = 0;
   };
   std::vector<pending_arrive_t> m_pending_arrives;
 
@@ -1492,11 +1494,25 @@ public:
     // Process delayed arrive_tx notifications
     if (!m_pending_arrives.empty()) {
       for (auto &entry : m_pending_arrives) {
-        entry.remaining--;
+        if (entry.remaining > 0)
+          entry.remaining--;
       }
       for (int i = m_pending_arrives.size() - 1; i >= 0; i--) {
         if (m_pending_arrives[i].remaining == 0) {
           auto &entry = m_pending_arrives[i];
+          unsigned bytes = entry.size_in_bytes ? entry.size_in_bytes : 4;
+          auto &svc = m_shader_ctx->smem_service();
+          if (!entry.sram_armed) {
+            svc.expose(shared_memory_service_t::TMA, bytes);
+            entry.sram_armed = true;
+            continue;
+          }
+          unsigned need = bytes - entry.sram_got;
+          entry.sram_got += svc.take(shared_memory_service_t::TMA, need);
+          if (entry.sram_got < bytes) {
+            svc.expose(shared_memory_service_t::TMA, bytes - entry.sram_got);
+            continue;
+          }
           tma_trace_emit(current_cycle(), "ARRIVE", entry.tx_uid,
                          entry.is_write ? "WRITE" : "READ", 0, 0, entry.cta_id,
                          entry.warp_id, 0, 0, 0, 0, entry.size_in_bytes,

@@ -302,3 +302,52 @@ TEST(DsmEndpoint, LoadInjectsReadCommandNotPeerWrite) {
   EXPECT_EQ(spy.writes, 0u);
   EXPECT_EQ(got, 0xA0000007u);
 }
+
+TEST(DsmEndpoint, SramNotSameCycleAsArrival) {
+  dsm_endpoint_config_t ecfg;
+  EpEnv e(dsm_fabric_config_t{}, ecfg);
+  SramSpy spy;
+  e.ep.set_sram(&spy, SramSpy::wr, SramSpy::rd);
+  uint32_t word = 0x11111111u;
+  ASSERT_TRUE(e.ep.issue_store(0, 1, 4, 16, 0, 0, &word));
+  bool split = false;
+  unsigned guard = 0;
+  while (e.ep.busy() && guard++ < 100000) {
+    unsigned ejected = e.fab.stats().packets_ejected;
+    unsigned w = spy.writes;
+    e.ep.cycle(e.now++);
+    if (e.fab.stats().packets_ejected > ejected && spy.writes == w)
+      split = true;
+    if (e.fab.stats().packets_ejected > ejected && spy.writes > w)
+      FAIL() << "SRAM write same cycle as request eject";
+  }
+  EXPECT_TRUE(split);
+  EXPECT_EQ(spy.writes, 1u);
+}
+
+TEST(DsmEndpoint, LoadInjectAfterSram) {
+  dsm_endpoint_config_t ecfg;
+  EpEnv e(dsm_fabric_config_t{}, ecfg);
+  SramSpy spy;
+  uint32_t seed = 0xA0000007u;
+  memcpy(spy.mem + 8, &seed, 4);
+  e.ep.set_sram(&spy, SramSpy::wr, SramSpy::rd);
+  uint32_t got = 0;
+  e.ep.set_on_load_data(&got, [](void *ctx, unsigned, const uint8_t *p,
+                                 unsigned n) {
+    if (n >= 4 && p) memcpy(ctx, p, 4);
+  });
+  ASSERT_TRUE(e.ep.issue_load(0, 1, 4, 8, 0, 0));
+  unsigned guard = 0;
+  while (e.ep.busy() && guard++ < 100000) {
+    unsigned reads = spy.reads;
+    unsigned pkts = e.ep.stats().load_data_packets;
+    e.ep.cycle(e.now++);
+    if (spy.reads > reads) {
+      EXPECT_EQ(e.ep.stats().load_data_packets, pkts)
+          << "read_data injected same cycle as SRAM grant";
+    }
+  }
+  EXPECT_EQ(got, 0xA0000007u);
+  EXPECT_GE(spy.reads, 1u);
+}

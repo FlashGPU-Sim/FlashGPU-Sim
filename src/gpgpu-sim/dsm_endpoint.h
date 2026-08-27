@@ -54,6 +54,9 @@ class dsm_endpoint_protocol_t {
  public:
   using sram_fn = void (*)(void *ctx, unsigned local_sm, unsigned cta,
                            uint64_t addr, uint8_t *bytes, unsigned n);
+  using sram_expose_fn = void (*)(void *ctx, unsigned local_sm, unsigned bytes);
+  using sram_take_fn = unsigned (*)(void *ctx, unsigned local_sm,
+                                    unsigned bytes);
   using tx_done_fn = void (*)(void *ctx, unsigned txid);
 
   dsm_endpoint_protocol_t(dsm_fabric_t *fabric,
@@ -63,6 +66,11 @@ class dsm_endpoint_protocol_t {
     m_sram_ctx = ctx;
     m_sram_write = write;
     m_sram_read = read;
+  }
+  void set_sram_flow(void *ctx, sram_expose_fn expose, sram_take_fn take) {
+    m_flow_ctx = ctx;
+    m_sram_expose = expose;
+    m_sram_take = take;
   }
   void set_on_tx_done(void *ctx, tx_done_fn fn) {
     m_done_ctx = ctx;
@@ -109,6 +117,10 @@ class dsm_endpoint_protocol_t {
     unsigned src, dst, txid, bytes, count;
     uint64_t addr;
     unsigned cta_slot, cta_gen;
+    unsigned long long arrive_cycle = 0;
+    unsigned long long inject_after = 0;
+    unsigned sram_got = 0;
+    bool sram_done = false;
     std::vector<uint8_t> payload;
   };
 
@@ -121,6 +133,8 @@ class dsm_endpoint_protocol_t {
   void complete_stores(unsigned requester, unsigned target, unsigned count);
   void complete_load(unsigned requester, unsigned txid);
   void harvest();
+  void process_ingress();
+  bool apply_sram(pending_t &p);
   void try_send_pending();
   void try_flush_acks();
   bool inject_response(const pending_t &p);
@@ -142,12 +156,16 @@ class dsm_endpoint_protocol_t {
   std::vector<std::vector<unsigned long long>> m_oldest_ack;
   std::vector<std::vector<unsigned long long>> m_last_write;
   std::vector<std::vector<unsigned>> m_cta_gen;
+  std::deque<pending_t> m_ingress;
   std::deque<pending_t> m_pending;
   std::unordered_map<unsigned, std::vector<uint8_t>> m_data;
   dsm_endpoint_stats_t m_stats;
   void *m_sram_ctx = nullptr;
   sram_fn m_sram_write = nullptr;
   sram_fn m_sram_read = nullptr;
+  void *m_flow_ctx = nullptr;
+  sram_expose_fn m_sram_expose = nullptr;
+  sram_take_fn m_sram_take = nullptr;
   void *m_done_ctx = nullptr;
   tx_done_fn m_on_tx_done = nullptr;
   void *m_load_ctx = nullptr;
