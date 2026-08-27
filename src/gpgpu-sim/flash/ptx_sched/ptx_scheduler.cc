@@ -1484,6 +1484,11 @@ bool is_segment_boundary(const ptx_instruction *inst,
          has_unsupported_operand_form(inst, allow_ldmatrix_memory_operand);
 }
 
+bool is_tma_pipeline_boundary(const ptx_instruction *inst) {
+  return inst != NULL &&
+         (inst->get_opcode() == MBAR_OP || inst->get_opcode() == TMA_OP);
+}
+
 struct compiler_view_inst_info_t {
   ptx_instruction *inst;
   unsigned index;
@@ -2794,7 +2799,9 @@ std::vector<sched_inst_t> schedule_sass_ptxline_guided(
 void flush_segment(std::vector<sched_inst_t> &segment,
                    std::list<ptx_instruction *> &out, int ready_slack,
                    reorder_stats_t &stats, scheduling_state_t &timing_state,
-                   bool sass_guided, const sass_function_guide_t *sass_guide,
+                   const ptx_instruction *previous_boundary,
+                   const ptx_instruction *next_boundary, bool sass_guided,
+                   const sass_function_guide_t *sass_guide,
                    unsigned guide_lookahead, unsigned *sass_guide_cursor,
                    const ptxline_guide_t *sass_ptxline_guide) {
   if (segment.empty())
@@ -2816,13 +2823,17 @@ void flush_segment(std::vector<sched_inst_t> &segment,
   unsigned edge_count = 0;
   bool valid = true;
   bool timing_from_plain_schedule = false;
+  const bool is_tma_pipeline_segment =
+      is_tma_pipeline_boundary(previous_boundary) ||
+      is_tma_pipeline_boundary(next_boundary);
   scheduling_state_t candidate_timing = timing_state;
   std::vector<sched_inst_t> scheduled;
   std::vector<ptxline_guide_item_t> segment_ptxline_guide;
   if (sass_ptxline_guide != NULL)
     segment_ptxline_guide =
         filter_ptxline_guide_for_segment(segment, *sass_ptxline_guide);
-  const bool use_sass_ptxline_guide = !segment_ptxline_guide.empty();
+  const bool use_sass_ptxline_guide =
+      !is_tma_pipeline_segment && !segment_ptxline_guide.empty();
   const bool use_sass_guide =
       sass_guided && sass_guide != NULL && !sass_guide->lt_stream.empty() &&
       !sass_guide->guide_items.empty() && sass_guide_cursor != NULL &&
@@ -2849,8 +2860,13 @@ void flush_segment(std::vector<sched_inst_t> &segment,
     else
       ++stats.sass_guided_fallback_segments;
   }
-  if ((!use_sass_ptxline_guide && (!use_sass_guide || !valid)) &&
-      has_relaxed_barrier) {
+  if (!use_sass_ptxline_guide && (!use_sass_guide || !valid) &&
+      is_tma_pipeline_segment) {
+    scheduled = segment;
+    valid = true;
+    edge_count = 0;
+  } else if ((!use_sass_ptxline_guide && (!use_sass_guide || !valid)) &&
+             has_relaxed_barrier) {
     scheduled = segment;
     valid = false;
     edge_count = 0;
@@ -3006,6 +3022,7 @@ void run_ptx_reorder(function_info *func) {
            sass_ptxline_guide->source.c_str());
   }
 
+  const ptx_instruction *previous_boundary = NULL;
   for (std::list<ptx_instruction *>::iterator it = func->m_instructions.begin();
        it != func->m_instructions.end(); ++it, ++original_index) {
     ptx_instruction *inst = *it;
@@ -3014,10 +3031,21 @@ void run_ptx_reorder(function_info *func) {
                                         inst != NULL &&
                                         inst->get_opcode() == LDMATRIX_OP;
     if (is_segment_boundary(inst, guide_relaxed_ldmatrix)) {
-      flush_segment(segment, reordered, ready_slack, stats, timing_state, false,
-                    sass_guide, 1, &sass_guide_cursor, sass_ptxline_guide);
+      const ptx_instruction *next_boundary = inst;
+      if (inst != NULL && inst->is_label()) {
+        std::list<ptx_instruction *>::iterator next = it;
+        while (++next != func->m_instructions.end() && (*next)->is_label()) {
+        }
+        if (next != func->m_instructions.end())
+          next_boundary = *next;
+      }
+      flush_segment(segment, reordered, ready_slack, stats, timing_state,
+                    previous_boundary, next_boundary, false, sass_guide, 1,
+                    &sass_guide_cursor, sass_ptxline_guide);
       reordered.push_back(inst);
       advance_boundary_timing(inst, timing_state);
+      if (inst != NULL && !inst->is_label())
+        previous_boundary = inst;
       continue;
     }
 
@@ -3030,8 +3058,9 @@ void run_ptx_reorder(function_info *func) {
     canonicalize_compiler_view_regs(func, sched_inst.defs);
     segment.push_back(sched_inst);
   }
-  flush_segment(segment, reordered, ready_slack, stats, timing_state, false,
-                sass_guide, 1, &sass_guide_cursor, sass_ptxline_guide);
+  flush_segment(segment, reordered, ready_slack, stats, timing_state,
+                previous_boundary, NULL, false, sass_guide, 1,
+                &sass_guide_cursor, sass_ptxline_guide);
 
   if (reordered.size() != func->m_instructions.size()) {
     ptx_reorder_fatal(
