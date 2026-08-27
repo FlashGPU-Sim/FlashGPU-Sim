@@ -859,8 +859,29 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "const hits in the cache(default = disabled)",
                          "0");
   option_parser_register(
+      opp, "-gpgpu_perfect_inst_cache", OPT_INT32,
+      &perfect_inst_cache_override,
+      "Override perfect instruction cache mode only (-1 inherits "
+      "gpgpu_perfect_inst_const_cache)",
+      "-1");
+  option_parser_register(
       opp, "-gpgpu_inst_fetch_throughput", OPT_INT32, &inst_fetch_throughput,
       "the number of fetched intruction per warp each cycle", "1");
+  option_parser_register(
+      opp, "-gpgpu_icache_prefetch_enable", OPT_BOOL,
+      &icache_prefetch_enable,
+      "Enable bounded instruction stream-buffer prefetching", "0");
+  option_parser_register(
+      opp, "-gpgpu_icache_prefetch_streams", OPT_UINT32,
+      &icache_prefetch_streams, "Instruction prefetch streams per SM", "1");
+  option_parser_register(
+      opp, "-gpgpu_icache_prefetch_depth", OPT_UINT32,
+      &icache_prefetch_depth,
+      "Instruction cache lines kept ahead of each demand stream", "8");
+  option_parser_register(
+      opp, "-gpgpu_icache_prefetch_issue_width", OPT_UINT32,
+      &icache_prefetch_issue_width,
+      "Maximum instruction prefetch requests issued per SM cycle", "1");
   option_parser_register(opp, "-gpgpu_reg_file_port_throughput", OPT_INT32,
                          &reg_file_port_throughput,
                          "the number ports of the register file", "1");

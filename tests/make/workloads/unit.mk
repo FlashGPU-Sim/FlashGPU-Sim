@@ -4,6 +4,7 @@ UNIT_MK := $(lastword $(MAKEFILE_LIST))
 
 TEST_GROUP_EXTRA_OBJECTS_sm120_unit := \
 	$(OBJ_DIR)/sm120/support/bulk_group.cu.o \
+	$(OBJ_DIR)/sm120/support/instruction-stream-buffer.cc.o \
 	$(OBJ_DIR)/sm120/support/tma_reduction.cu.o \
 	$(OBJ_DIR)/sm120/support/local_interconnect.cc.o \
 	$(OBJ_DIR)/sm120/support/mshr-table.cu.o
@@ -17,6 +18,13 @@ arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_sm120) $(INCLUDES) \
 		$(GPGPUSIM_FLAGS) -c $< -o $@
+
+$(OBJ_DIR)/sm120/support/instruction-stream-buffer.cc.o: \
+$(SRC_DIR)/gpgpu-sim/flash/instruction_cache/stream_buffer.cc \
+$(SRC_DIR)/gpgpu-sim/flash/instruction_cache/stream_buffer.h \
+$(TOP_MAKEFILE) $(UNIT_MK) arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
 $(OBJ_DIR)/sm120/support/tma_reduction.cu.o: \
 $(SRC_DIR)/gpgpu-sim/flash/tma_reduction.cc \

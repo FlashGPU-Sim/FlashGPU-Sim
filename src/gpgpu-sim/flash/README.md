@@ -6,10 +6,26 @@ This folder contains extended functionality for GPGPU-Sim, including tensor core
 
 The `flash/` namespace provides:
 - **Tensor Core Support**: PTX MMA (Matrix Multiply-Accumulate) instruction implementations
+- **Instruction Fetch Extensions**: Bounded, cancelable instruction stream-buffer prefetching
 - **Advanced GPU Features**: Implementations for modern GPU architectures (SM75+)
 - **Isolated Extensions**: Clear separation from core GPGPU-Sim to avoid breaking existing functionality
 
 ## Key Files
+
+### Instruction Cache
+
+Located in `flash/instruction_cache/`:
+
+- **instruction_cache/stream_buffer.h/.cc**: Simulator-independent bounded
+  stream state, generation-based cancellation, and prefetch-depth accounting
+- **instruction_cache/prefetcher.h/.cc**: Adapter from the stream buffer to the
+  existing per-SM read-only instruction cache and `mem_fetch` path
+
+The stream buffer never owns simulator liveness. Replacing or canceling a
+stream invalidates its generation, so a late speculative fill can populate the
+cache but cannot revive old stream state. See the
+[RTX 5090 calibration notes](../../../docs/rtx5090-instruction-cache.md) for
+the hardware evidence and current model limits.
 
 ### Tensor Core MMA Implementation
 
