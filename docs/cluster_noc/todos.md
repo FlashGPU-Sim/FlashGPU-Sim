@@ -459,7 +459,7 @@ PASS evidence (0 failures):
 
 ## B4 — Functional DSM on the fabric
 
-- [ ] **B4** Ordinary `.shared::cluster` ld/st/atom use resolver + fabric packets. Existing DsmTest* PASS.
+- [x] **B4** Ordinary `.shared::cluster` ld/st/atom use resolver + fabric packets. Existing DsmTest* PASS. Closed 2026-08-27.
 
 **Read first:** [`programming_model.md`](programming_model.md) §2, [`architecture.md`](architecture.md) §7.
 
@@ -479,6 +479,30 @@ PASS evidence (0 failures):
 **Exit:** Fabric path is default on H200 reduced **or** documented dual-path with fabric-on tests green.
 
 **Prereqs:** B3c. **Next:** B5.
+
+**Close-out (2026-08-27):** One TB-cluster resolver (`resolve_tb_cluster_rank` / `resolve_tb_cluster_owner_sm` in `src/gpgpu-sim/flash/tb_cluster.{h,cc}`) used by DSM, TMA (`for_each_tb_cluster_peer`), and remote mbarrier. Logical generic address kept; owner bits stripped for the target smem offset. Fabric-on remote st injects `write_data`, remote ld injects `read_command`, remote `atom.add` RMW on owner smem. Mixed-target warps group by `(target_sm, cta_slot)` and join. Fabric-path `ld_impl` does not fill dest RF. Cross-GPC / dead rank abort. Fabric default on `SM90_H200_REDUCED_CLUSTER16x2` via `-gpgpu_dsm_enable 1`; delay-line DSM via `0`. TMA multicast and remote mbarrier still use the delay-line.
+
+Verify (run twice, 0 failures):
+
+```bash
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
+  run test --target sm120 --group integration "DsmTest.*:MbarrierClusterTest.*"
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
+  run test --target sm120 --group unit "DsmEndpoint*:DsmFabric*"
+```
+
+PASS evidence:
+
+```text
+# integration DsmTest.*:MbarrierClusterTest.* (run 1 and 2, SM90_H200_REDUCED_CLUSTER16x2)
+[  PASSED  ] 23 tests.
+# includes DsmTest.MixedLaneTargetJoin, TwoTbClusterGroupsIsolated,
+# VectorRemoteLdSt, CrossGpcReject; 9 MbarrierClusterTest.*
+
+# unit DsmEndpoint*:DsmFabric* (run 1 and 2, SM90_H200_REDUCED_CLUSTER16x2)
+[  PASSED  ] 28 tests.
+✓ test/sm120/unit passed!
+```
 
 ---
 

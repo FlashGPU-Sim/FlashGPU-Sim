@@ -674,4 +674,220 @@ TEST_F(DsmTest, RemoteStoreDelayed_NoWaitDoesNotAssumeInstantVisibility) {
       << "same kernel: try_wait after the hop must still see the payload";
 }
 
+// Mixed-target warp: rank 0 lanes 0 and 1 mapa different ranks and store.
+// Both consumers must see their payload after the warp joins.
+__global__ void dsm_mixed_lane_kernel(uint32_t *out, volatile int *ready) {
+  __shared__ uint32_t smem[8];
+  __shared__ unsigned long long bar;
+  const int rank = blockIdx.x;
+  const int tid = threadIdx.x;
+
+  if (tid == 0)
+    smem[0] = 0;
+
+  if (rank != 0 && tid == 0) {
+    mbarrier_init_local(&bar, 1);
+    ready[rank] = 1;
+    __threadfence_system();
+    mbarrier_try_wait_local(&bar, 0);
+    out[rank] = smem[0];
+    ready[rank + 4] = 1;
+    __threadfence_system();
+  }
+
+  if (rank == 0 && tid < 2) {
+    while (ready[1] == 0 || ready[2] == 0) {
+    }
+    uint32_t *remote = mapa_shared_rank(smem, (unsigned)(tid + 1));
+    remote[0] = 0xBEEF0000u + (unsigned)tid;
+    unsigned long long remote_bar = mapa_u64(&bar, (unsigned)(tid + 1));
+    mbarrier_arrive_remote(remote_bar, 1);
+    while (ready[5] == 0 || ready[6] == 0) {
+    }
+    if (tid == 0)
+      out[0] = 2;
+  }
+}
+
+TEST_F(DsmTest, MixedLaneTargetJoin) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(3);
+  constexpr int kRanks = 3;
+  uint32_t *d_out = nullptr;
+  int *d_ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, kRanks * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_ready, 8 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, kRanks * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_ready, 0, 8 * sizeof(int)), cudaSuccess);
+
+  dim3 grid(kRanks), block(32), cluster(kRanks, 1, 1);
+  void *args[] = {&d_out, &d_ready};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_mixed_lane_kernel, grid, block, cluster,
+                args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  std::vector<uint32_t> h(kRanks, 0);
+  ASSERT_EQ(cudaMemcpy(h.data(), d_out, kRanks * sizeof(uint32_t),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  cudaFree(d_ready);
+  EXPECT_EQ(h[0], 2u);
+  EXPECT_EQ(h[1], 0xBEEF0000u) << "rank 1 did not see lane 0 payload";
+  EXPECT_EQ(h[2], 0xBEEF0001u) << "rank 2 did not see lane 1 payload";
+}
+
+// Two TB-cluster groups on one GPC: each group's rank 1 must see only its
+// own producer's word.
+__global__ void dsm_two_groups_kernel(uint32_t *out, volatile int *ready) {
+  __shared__ uint32_t smem[8];
+  __shared__ unsigned long long bar;
+  const int rank = blockIdx.x % 2;
+  const int grp = blockIdx.x / 2;
+  const int tid = threadIdx.x;
+  const int ready_base = grp * 4;
+
+  if (tid == 0)
+    smem[0] = 0;
+
+  if (rank == 1 && tid == 0) {
+    mbarrier_init_local(&bar, 1);
+    ready[ready_base] = 1;
+    __threadfence_system();
+    mbarrier_try_wait_local(&bar, 0);
+    out[grp] = smem[0];
+    ready[ready_base + 1] = 1;
+    __threadfence_system();
+  }
+
+  if (rank == 0 && tid == 0) {
+    while (ready[ready_base] == 0) {
+    }
+    uint32_t *remote = mapa_shared_rank(smem, 1);
+    remote[0] = grp ? 0xBBBBBBBBu : 0xAAAAAAAAu;
+    unsigned long long remote_bar = mapa_u64(&bar, 1);
+    mbarrier_arrive_remote(remote_bar, 1);
+    while (ready[ready_base + 1] == 0) {
+    }
+  }
+}
+
+TEST_F(DsmTest, TwoTbClusterGroupsIsolated) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(4);
+  uint32_t *d_out = nullptr;
+  int *d_ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, 2 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_ready, 8 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, 2 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_ready, 0, 8 * sizeof(int)), cudaSuccess);
+
+  dim3 grid(4), block(32), cluster(2, 1, 1);
+  void *args[] = {&d_out, &d_ready};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_two_groups_kernel, grid, block, cluster,
+                args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  uint32_t h[2] = {};
+  ASSERT_EQ(cudaMemcpy(h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  cudaFree(d_ready);
+  EXPECT_EQ(h[0], 0xAAAAAAAAu) << "group 0 saw the other group's payload";
+  EXPECT_EQ(h[1], 0xBBBBBBBBu) << "group 1 saw the other group's payload";
+}
+
+__global__ void dsm_cross_gpc_kernel(unsigned n_sms_per_gpc) {
+  __shared__ uint32_t smem[4];
+  if (threadIdx.x != 0)
+    return;
+  unsigned long long self = mapa_u64(smem, 0);
+  unsigned long long other =
+      self + (unsigned long long)n_sms_per_gpc * (1024ull * 1024ull);
+  volatile uint32_t *p = reinterpret_cast<volatile uint32_t *>(other);
+  (void)*p;
+}
+
+[[noreturn]] void run_cross_gpc_reject() {
+  auto topo = flash_test::read_gpgpusim_topology();
+  unsigned n = topo.n_cores_per_cluster ? topo.n_cores_per_cluster : 16;
+  dim3 grid(1), block(32), cluster(1, 1, 1);
+  void *args[] = {&n};
+  if (flash_test::launch_kernel_with_cluster(
+          (const void *)dsm_cross_gpc_kernel, grid, block, cluster, args) !=
+      cudaSuccess)
+    _exit(4);
+  cudaDeviceSynchronize();
+  std::fprintf(stderr, "ERROR: cross-GPC shared access did not abort\n");
+  _exit(0);
+}
+
+// Vector remote store/load: rank 0 writes a v2 word into rank 1; rank 1
+// reads it back with a v2 load after try_wait.
+__global__ void dsm_vector_kernel(uint32_t *out, volatile int *ready) {
+  __shared__ uint32_t smem[8];
+  __shared__ unsigned long long bar;
+  const int rank = blockIdx.x;
+  const int tid = threadIdx.x;
+
+  if (tid == 0)
+    smem[0] = smem[1] = 0;
+
+  if (rank == 1 && tid == 0) {
+    mbarrier_init_local(&bar, 1);
+    ready[0] = 1;
+    __threadfence_system();
+    mbarrier_try_wait_local(&bar, 0);
+    uint2 got = *reinterpret_cast<uint2 *>(smem);
+    out[0] = got.x;
+    out[1] = got.y;
+    ready[1] = 1;
+    __threadfence_system();
+  }
+
+  if (rank == 0 && tid == 0) {
+    while (ready[0] == 0) {
+    }
+    uint32_t *remote = mapa_shared_rank(smem, 1);
+    *reinterpret_cast<uint2 *>(remote) = make_uint2(0x11111111u, 0x22222222u);
+    unsigned long long remote_bar = mapa_u64(&bar, 1);
+    mbarrier_arrive_remote(remote_bar, 1);
+    while (ready[1] == 0) {
+    }
+  }
+}
+
+TEST_F(DsmTest, VectorRemoteLdSt) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  uint32_t *d_out = nullptr;
+  int *d_ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, 2 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_ready, 4 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, 2 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_ready, 0, 4 * sizeof(int)), cudaSuccess);
+
+  dim3 grid(2), block(32), cluster(2, 1, 1);
+  void *args[] = {&d_out, &d_ready};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_vector_kernel, grid, block, cluster, args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  uint32_t h[2] = {};
+  ASSERT_EQ(cudaMemcpy(h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  cudaFree(d_ready);
+  EXPECT_EQ(h[0], 0x11111111u);
+  EXPECT_EQ(h[1], 0x22222222u);
+}
+
+TEST_F(DsmTest, CrossGpcReject) {
+  SKIP_IF_N_CLUSTERS_LT(2);
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(run_cross_gpc_reject(), "not an active CTA");
+}
+
 }  // namespace

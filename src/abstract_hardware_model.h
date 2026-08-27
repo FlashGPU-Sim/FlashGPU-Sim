@@ -1094,6 +1094,7 @@ class warp_inst_t : public inst_t {
   void broadcast_barrier_reduction(const active_mask_t &access_mask);
   void do_atomic(bool forceDo = false);
   void do_atomic(const active_mask_t &access_mask, bool forceDo = false);
+  void skip_atomic_callback() { should_do_atomic = false; }
   void clear() { m_empty = true; }
 
   void issue(const active_mask_t &mask, unsigned warp_id,

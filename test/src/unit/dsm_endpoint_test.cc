@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "../../../src/gpgpu-sim/dsm_endpoint.h"
@@ -238,4 +239,66 @@ TEST(DsmEndpoint, DumpShowsOutstandingDebtRatioTimeout) {
   EXPECT_NE(s.find("coalescing_ratio="), std::string::npos);
   EXPECT_NE(s.find("timeout_flushes="), std::string::npos);
   printf("%s", s.c_str());
+}
+
+namespace {
+
+struct SramSpy {
+  unsigned writes = 0;
+  unsigned reads = 0;
+  uint32_t last = 0;
+  uint8_t mem[256]{};
+  static void wr(void *ctx, unsigned, unsigned, uint64_t addr, uint8_t *p,
+                 unsigned n) {
+    auto *s = static_cast<SramSpy *>(ctx);
+    s->writes++;
+    if (addr + n <= sizeof(s->mem) && p) memcpy(s->mem + addr, p, n);
+    if (n >= 4 && p) memcpy(&s->last, p, 4);
+  }
+  static void rd(void *ctx, unsigned, unsigned, uint64_t addr, uint8_t *p,
+                 unsigned n) {
+    auto *s = static_cast<SramSpy *>(ctx);
+    s->reads++;
+    if (addr + n <= sizeof(s->mem) && p) memcpy(p, s->mem + addr, n);
+  }
+};
+
+}  // namespace
+
+TEST(DsmEndpoint, StoreDoesNotWriteSramAtIssue) {
+  dsm_endpoint_config_t ecfg;
+  EpEnv e(dsm_fabric_config_t{}, ecfg);
+  SramSpy spy;
+  e.ep.set_sram(&spy, SramSpy::wr, SramSpy::rd);
+  uint32_t word = 0xCAFEBABEu;
+  ASSERT_TRUE(e.ep.issue_store(0, 1, 4, 16, /*cta=*/0, /*gen=*/0, &word));
+  EXPECT_EQ(spy.writes, 0u);
+  EXPECT_EQ(e.ep.stats().store_packets, 1u);
+  EXPECT_EQ(e.fab.stats().packets_injected, 1u);
+  ASSERT_TRUE(e.step_until_idle());
+  EXPECT_EQ(spy.writes, 1u);
+  EXPECT_EQ(spy.last, 0xCAFEBABEu);
+  EXPECT_EQ(e.ep.stats().sram_store_bytes, 4u);
+}
+
+TEST(DsmEndpoint, LoadInjectsReadCommandNotPeerWrite) {
+  dsm_endpoint_config_t ecfg;
+  EpEnv e(dsm_fabric_config_t{}, ecfg);
+  SramSpy spy;
+  uint32_t seed = 0xA0000007u;
+  memcpy(spy.mem + 8, &seed, 4);
+  e.ep.set_sram(&spy, SramSpy::wr, SramSpy::rd);
+  uint32_t got = 0;
+  e.ep.set_on_load_data(&got, [](void *ctx, unsigned, const uint8_t *p,
+                                 unsigned n) {
+    if (n >= 4 && p) memcpy(ctx, p, 4);
+  });
+  ASSERT_TRUE(e.ep.issue_load(0, 1, 4, 8, 0, 0));
+  EXPECT_EQ(e.ep.stats().load_commands, 1u);
+  EXPECT_EQ(spy.writes, 0u);
+  ASSERT_TRUE(e.step_until_idle());
+  EXPECT_EQ(e.ep.stats().load_data_packets, 1u);
+  EXPECT_EQ(spy.reads, 1u);
+  EXPECT_EQ(spy.writes, 0u);
+  EXPECT_EQ(got, 0xA0000007u);
 }

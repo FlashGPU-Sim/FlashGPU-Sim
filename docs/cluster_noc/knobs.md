@@ -80,7 +80,7 @@ GX port formula: `routes = gx_planes * lanes_per_cpc`. GPCARB still grants at mo
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `-gpgpu_dsm_enable` | (replaces cluster_noc_enable) | Fabric on |
+| `-gpgpu_dsm_enable` | 0 (1 on `SM90_H200_REDUCED_CLUSTER16x2`) | Ordinary cluster ld/st/atom use the intra-GPC fabric. Delay-line stays for TMA multicast and remote mbarrier. 0 = delay-line DSM. |
 | `-gpgpu_dsm_flit_payload_bytes` | **32** | Payload bytes per grant. Alias **`-gpgpu_dsm_flit_bytes`** (plan-v2 name). Header unmodeled |
 | `-gpgpu_dsm_lanes_per_cpc` | 4 | GPCARB outputs |
 | `-gpgpu_dsm_gx_planes` | **2** | Parallel GX planes, not VCs |

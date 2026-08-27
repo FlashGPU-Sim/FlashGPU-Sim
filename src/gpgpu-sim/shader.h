@@ -35,6 +35,7 @@
 
 #include <assert.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <algorithm>
@@ -44,13 +45,16 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 // Complete type required for std::unique_ptr destructor of cluster_noc_t /
-// dsm_fabric_t.
+// dsm_fabric_t / dsm_endpoint_protocol_t.
+#include "dsm_endpoint.h"
 #include "dsm_fabric.h"
 #include "flash/cluster_noc.h"
+#include "flash/tb_cluster.h"
 #include "gpu_topology.h"
 
 // #include "../cuda-sim/ptx.tab.h"
@@ -2068,8 +2072,8 @@ class shader_core_config : public core_config {
   bool gpgpu_mbarrier_cluster_enable;
   // 0 = off. Default is well above hop / try_wait latencies.
   unsigned int gpgpu_cluster_hang_watchdog;
-  // Intra-GPC DSM fabric (docs/cluster_noc/knobs.md §3). Network-only until
-  // ordinary cluster ld/st are switched off the delay line.
+  // Intra-GPC DSM fabric (docs/cluster_noc/knobs.md §3). When set, ordinary
+  // cluster ld/st/atom use fabric packets; delay-line stays for TMA/mbar.
   bool gpgpu_dsm_enable;
   unsigned int gpgpu_dsm_flit_payload_bytes;
   unsigned int gpgpu_dsm_lanes_per_cpc;
@@ -2648,6 +2652,9 @@ class shader_core_ctx : public core_t {
   unsigned get_cta_cluster_rank(unsigned hw_cta_id) const;
   void set_cta_cluster_rank(unsigned hw_cta_id, unsigned rank);
 
+  void dsm_note_lane_op(flash_gpgpu_sim::dsm_lane_op_t op);
+  void dsm_issue_lane_ops(warp_inst_t &inst);
+
   // Complete pending mbarrier tx on this SM's CTA if armed (cluster peer path).
   void try_complete_cluster_peer_mbarrier(unsigned hw_cta_id,
                                           uint32_t mbarrier_addr,
@@ -3153,6 +3160,8 @@ class shader_core_ctx : public core_t {
   unsigned m_cta_tb_cluster_group[MAX_CTA_PER_SHADER];
   // Per-CTA TB-cluster relative rank (for .multicast::cluster ctaMask bits).
   unsigned m_cta_tb_cluster_rank[MAX_CTA_PER_SHADER];
+
+  std::vector<flash_gpgpu_sim::dsm_lane_op_t> m_dsm_lane_ops;
 };
 
 class exec_shader_core_ctx : public shader_core_ctx {
@@ -3212,6 +3221,22 @@ class simt_core_cluster {
     return m_cluster_noc.get();
   }
   class dsm_fabric_t *get_dsm_fabric() const { return m_dsm_fabric.get(); }
+  class dsm_endpoint_protocol_t *get_dsm_endpoint() const {
+    return m_dsm_endpoint.get();
+  }
+  void dsm_note_warp_issue(unsigned sid, unsigned warp, unsigned n);
+  void dsm_note_warp_complete(unsigned sid, unsigned warp);
+  bool dsm_warp_busy(unsigned sid, unsigned warp) const;
+  void dsm_register_load(unsigned txid, unsigned sid, unsigned warp,
+                         ptx_thread_info *thread, const ptx_instruction *pI);
+  bool dsm_try_issue(unsigned src, const flash_gpgpu_sim::dsm_lane_op_t &op,
+                     unsigned sid, unsigned warp);
+  void dsm_queue_retry(unsigned src, flash_gpgpu_sim::dsm_lane_op_t op,
+                       unsigned sid, unsigned warp);
+  void dsm_retry_issues();
+  unsigned dsm_cta_gen(unsigned local_sm, unsigned cta) const;
+  void dsm_on_tx_done(unsigned txid);
+  void dsm_on_load_data(unsigned txid, const uint8_t *p, unsigned n);
 
   // for perfect memory interface (per-SM ejection buffer)
   bool response_queue_full(unsigned sid) const {
@@ -3294,6 +3319,23 @@ class simt_core_cluster {
   gpc_sm_response_fifos_t m_response_fifo;
   std::unique_ptr<flash_gpgpu_sim::cluster_noc_t> m_cluster_noc;
   std::unique_ptr<dsm_fabric_t> m_dsm_fabric;
+  std::unique_ptr<dsm_endpoint_protocol_t> m_dsm_endpoint;
+  struct dsm_retry_t {
+    flash_gpgpu_sim::dsm_lane_op_t op;
+    unsigned src = 0;
+    unsigned sid = 0;
+    unsigned warp = 0;
+  };
+  struct dsm_load_wait_t {
+    unsigned sid = 0;
+    unsigned warp = 0;
+    ptx_thread_info *thread = nullptr;
+    const ptx_instruction *pI = nullptr;
+  };
+  std::deque<dsm_retry_t> m_dsm_retry;
+  std::unordered_map<unsigned, unsigned> m_dsm_warp_pending;
+  std::unordered_map<unsigned, std::pair<unsigned, unsigned>> m_dsm_tx_warp;
+  std::unordered_map<unsigned, dsm_load_wait_t> m_dsm_loads;
 
  public:
   unsigned pending_issue_cluster_group() const {

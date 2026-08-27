@@ -1,5 +1,6 @@
 #include "mbarrier.h"
 #include "cluster_noc.h"
+#include "tb_cluster.h"
 
 #include "../cuda-sim/ptx_ir.h"
 #include "../cuda-sim/ptx_sim.h"
@@ -423,25 +424,13 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
       if (flash_gpgpu_sim::decode_shared_generic(raw_addr, &owner_smid,
                                                  &offset) &&
           owner_smid != thread->get_hw_sid()) {
-        auto *cluster = core->get_cluster();
-        for (unsigned cid = 0; cid < cluster->num_cores(); cid++) {
-          auto *peer = cluster->get_core(cid);
-          if (peer->get_sid() != owner_smid)
-            continue;
-          unsigned group = core->get_cta_cluster_group(thread->get_hw_ctaid());
-          for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
-            if (!peer->is_cta_slot_active(slot))
-              continue;
-            if (group != (unsigned)-1 &&
-                peer->get_cta_cluster_group(slot) != group)
-              continue;
-            info.is_remote = true;
-            info.remote_cid = cid;
-            info.remote_hw_cta = slot;
-            info.bar_id = static_cast<unsigned>(offset);
-            break;
-          }
-          break;
+        flash_gpgpu_sim::tb_cluster_target_t tgt;
+        if (flash_gpgpu_sim::resolve_tb_cluster_owner_sm(
+                core, thread->get_hw_ctaid(), owner_smid, &tgt)) {
+          info.is_remote = true;
+          info.remote_cid = tgt.local_sm;
+          info.remote_hw_cta = tgt.cta_slot;
+          info.bar_id = static_cast<unsigned>(offset);
         }
       }
     }

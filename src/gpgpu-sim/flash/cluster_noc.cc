@@ -254,8 +254,14 @@ void cluster_noc_t::deliver_ready() {
   }
 
   m_in_deliver_sweep = true;
+  auto *ep = m_cluster ? m_cluster->get_dsm_endpoint() : nullptr;
   for (auto it = m_inflight.begin(); it != m_inflight.end();) {
     if (it->ready_cycle <= t) {
+      if (it->type == cluster_noc_msg_type::MBAR_REMOTE_OP && ep &&
+          ep->write_unapplied(it->src_cid, it->dst_cid)) {
+        ++it;
+        continue;
+      }
       deliver(*it);
       m_stats.delivered++;
       m_stats.bytes_delivered += it->size_in_bytes;

@@ -1,5 +1,6 @@
 #include "tma.h"
 #include "cluster_noc.h"
+#include "tb_cluster.h"
 #include "tensormap.h"
 #include <algorithm>
 #include <atomic>
@@ -2445,36 +2446,9 @@ static void
 for_each_cluster_peer_cta(shader_core_ctx *core, unsigned issuer_hw_cta,
                           Fn &&fn, bool include_issuer = false,
                           bool use_mask = false, uint16_t cta_mask = 0xFFFF) {
-  if (!core)
-    return;
-  auto *cluster = core->get_cluster();
-  if (!cluster)
-    return;
-  // Peers require multi-SM packing; mask-selected issuer still works with 1 SM.
-  if (cluster->num_cores() <= 1 && !include_issuer)
-    return;
-
-  unsigned group = core->get_cta_cluster_group(issuer_hw_cta);
-  if (group == (unsigned)-1)
-    return;
-
-  for (unsigned cid = 0; cid < cluster->num_cores(); cid++) {
-    auto *peer_core = cluster->get_core(cid);
-    for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
-      if (!include_issuer && peer_core == core && slot == issuer_hw_cta)
-        continue;
-      if (!peer_core->is_cta_slot_active(slot))
-        continue;
-      if (peer_core->get_cta_cluster_group(slot) != group)
-        continue;
-      if (use_mask) {
-        unsigned rank = peer_core->get_cta_cluster_rank(slot);
-        if (rank >= 16 || ((cta_mask >> rank) & 1u) == 0)
-          continue;
-      }
-      fn(peer_core, slot);
-    }
-  }
+  flash_gpgpu_sim::for_each_tb_cluster_peer(core, issuer_hw_cta,
+                                            std::forward<Fn>(fn),
+                                            include_issuer, use_mask, cta_mask);
 }
 
 // True when cluster NoC should delay peer TMA data/mbar visibility.

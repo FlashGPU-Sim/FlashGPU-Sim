@@ -884,8 +884,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "0");
   option_parser_register(
       opp, "-gpgpu_dsm_enable", OPT_BOOL, &gpgpu_dsm_enable,
-      "Enable intra-GPC DSM fabric object (default=0; delay-line remains the "
-      "functional SM↔SM path until cut-over)",
+      "Use intra-GPC fabric for ordinary cluster ld/st/atom (default=0; "
+      "delay-line remains for TMA multicast and remote mbarrier)",
       "0");
   option_parser_register(
       opp, "-gpgpu_dsm_flit_payload_bytes", OPT_UINT32,

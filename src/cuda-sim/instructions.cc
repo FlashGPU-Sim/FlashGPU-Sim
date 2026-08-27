@@ -42,6 +42,7 @@ class ptx_recognizer;
 #include <assert.h>
 #include <fenv.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +59,7 @@ class ptx_recognizer;
 #include "../gpgpu-sim/flash/tma.h"
 #include "../gpgpu-sim/flash/cluster_noc.h"
 #include "../gpgpu-sim/flash/cluster_dsm_store.h"
+#include "../gpgpu-sim/flash/tb_cluster.h"
 #include "../trace.h"
 #include "cuda-math.h"
 #include "cuda_device_printf.h"
@@ -71,6 +73,28 @@ class ptx_recognizer;
 #include "../../libcuda/gpgpu_context.h"
 
 using half_float::half;
+
+static bool dsm_note_fabric(ptx_thread_info *thread, const ptx_instruction *pI,
+                            flash_gpgpu_sim::dsm_op_kind kind, const void *bytes,
+                            size_t nbytes) {
+  auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+  if (!thread->m_dsm_remote || !flash_gpgpu_sim::dsm_fabric_enabled(core))
+    return false;
+  flash_gpgpu_sim::dsm_lane_op_t op;
+  op.kind = kind;
+  op.dst_local = thread->m_dsm_dst_cid;
+  op.cta_slot = thread->m_dsm_dst_hw_cta;
+  op.cta_gen = core->get_cluster()->dsm_cta_gen(op.dst_local, op.cta_slot);
+  op.offset = thread->m_dsm_offset;
+  op.bytes = (unsigned)nbytes;
+  if (bytes && nbytes)
+    op.data.assign((const uint8_t *)bytes, (const uint8_t *)bytes + nbytes);
+  op.thread = thread;
+  op.pI = pI;
+  op.type = pI->get_type();
+  core->dsm_note_lane_op(std::move(op));
+  return true;
+}
 
 const char *g_opcode_string[NUM_OPCODES] = {
 #define OP_DEF(OP, FUNC, STR, DST, CLASSIFICATION) STR,
@@ -1598,6 +1622,20 @@ void atom_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   decode_space(space, thread, src1, mem, effective_address);
   (void)mem;
   assert(space == global_space || space == shared_space);
+
+  if (thread->m_dsm_remote) thread->m_dsm_offset = effective_address;
+  auto *atom_core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+  if (thread->m_dsm_remote &&
+      flash_gpgpu_sim::dsm_fabric_enabled(atom_core)) {
+    size_t at_size;
+    int at_t;
+    type_info_key::type_decode(i_type, at_size, at_t);
+    const operand_info &src2 = pI->src2();
+    ptx_reg_t addend =
+        thread->get_operand_value(src2, src2, i_type, thread, 1);
+    dsm_note_fabric(thread, pI, flash_gpgpu_sim::dsm_op_kind::atom_add,
+                    &addend.s64, at_size / 8);
+  }
 
   thread->m_last_effective_address = effective_address;
   thread->m_last_memory_space = space;
@@ -3626,67 +3664,31 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
                 mem = thread->m_shared_mem;
                 addr = offset;
               } else {
-                // Remote DSM: resolve peer CTA smem on owner SM.
                 mem = nullptr;
                 auto *core =
                     dynamic_cast<shader_core_ctx *>(thread->get_core());
-                if (core && core->get_cluster()) {
-                  auto *cluster = core->get_cluster();
-                  for (unsigned cid = 0; cid < cluster->num_cores(); cid++) {
-                    auto *peer = cluster->get_core(cid);
-                    if (peer->get_sid() != owner_smid)
-                      continue;
-                    unsigned group =
-                        core->get_cta_cluster_group(thread->get_hw_ctaid());
-                    unsigned found_slot = (unsigned)-1;
-                    for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
-                      if (!peer->is_cta_slot_active(slot))
-                        continue;
-                      if (group != (unsigned)-1 &&
-                          peer->get_cta_cluster_group(slot) != group)
-                        continue;
-                      mem = peer->get_cta_smem(slot);
-                      if (mem) {
-                        found_slot = slot;
-                        break;
-                      }
-                    }
-                    if (!mem) {
-                      for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER;
-                           slot++) {
-                        if (peer->is_cta_slot_active(slot)) {
-                          mem = peer->get_cta_smem(slot);
-                          if (mem) {
-                            found_slot = slot;
-                            break;
-                          }
-                        }
-                      }
-                    }
-                    if (mem) {
-                      thread->m_dsm_remote = true;
-                      thread->m_dsm_owner_smid = owner_smid;
-                      thread->m_dsm_dst_cid = cid;
-                      thread->m_dsm_dst_hw_cta = found_slot;
-                      thread->m_dsm_offset = offset;
-                      auto *noc = cluster->get_cluster_noc();
-                      if (noc && noc->enabled()) {
-                        const unsigned src_cid =
-                            core->get_config()->sid_to_cid(core->get_sid());
-                        thread->m_dsm_hop =
-                            noc->hop_latency(src_cid, cid);
-                        // Apply any due stores before a remote load reads.
-                        noc->deliver_ready();
-                      }
-                    }
-                    break;
-                  }
+                flash_gpgpu_sim::tb_cluster_target_t tgt;
+                if (!core ||
+                    !flash_gpgpu_sim::resolve_tb_cluster_owner_sm(
+                        core, thread->get_hw_ctaid(), owner_smid, &tgt)) {
+                  flash_gpgpu_sim::abort_tb_cluster_dead_owner(
+                      owner_smid, thread->get_hw_sid(), thread->get_hw_ctaid(),
+                      addr);
                 }
-                if (!mem) {
-                  printf("GPGPU-Sim ERROR: DSM remote shared access to smid=%u "
-                         "failed (addr=0x%llx)\n",
-                         owner_smid, (unsigned long long)addr);
-                  abort();
+                mem = tgt.smem;
+                thread->m_dsm_remote = true;
+                thread->m_dsm_owner_smid = owner_smid;
+                thread->m_dsm_dst_cid = tgt.local_sm;
+                thread->m_dsm_dst_hw_cta = tgt.cta_slot;
+                thread->m_dsm_offset = offset;
+                if (!flash_gpgpu_sim::dsm_fabric_enabled(core)) {
+                  auto *noc = core->get_cluster()->get_cluster_noc();
+                  if (noc && noc->enabled()) {
+                    const unsigned src_cid =
+                        core->get_config()->sid_to_cid(core->get_sid());
+                    thread->m_dsm_hop = noc->hop_latency(src_cid, tgt.local_sm);
+                    noc->deliver_ready();
+                  }
                 }
                 addr = offset;
               }
@@ -3734,6 +3736,16 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   int t;
   data.u64 = 0;
   type_info_key::type_decode(type, size, t);
+  unsigned nbytes = (unsigned)(size / 8);
+  if (vector_spec == V2_TYPE) nbytes *= 2;
+  else if (vector_spec == V3_TYPE) nbytes *= 3;
+  else if (vector_spec == V4_TYPE) nbytes *= 4;
+  if (dsm_note_fabric(thread, pI, flash_gpgpu_sim::dsm_op_kind::load, nullptr,
+                      nbytes)) {
+    thread->m_last_effective_address = addr;
+    thread->m_last_memory_space = space;
+    return;
+  }
   if (!vector_spec) {
     mem->read(addr, size / 8, &data.s64);
     if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
@@ -4242,50 +4254,14 @@ void mapa_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
 
   auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
-  bool found = false;
+  flash_gpgpu_sim::tb_cluster_target_t tgt;
   unsigned found_sid = local_smid;
-
-  if (core && core->get_cluster()) {
-    auto *cluster = core->get_cluster();
-    const unsigned issuer_hw = thread->get_hw_ctaid();
-    const unsigned group = core->get_cta_cluster_group(issuer_hw);
-    // Pass 1: same cluster_group + rank (TB-cluster peers).
-    // Pass 2: rank only (if group tagging missed a co-resident peer).
-    for (int pass = 0; pass < 2 && !found; pass++) {
-      for (unsigned cid = 0; cid < cluster->num_cores() && !found; cid++) {
-        auto *peer = cluster->get_core(cid);
-        for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
-          if (!peer->is_cta_slot_active(slot))
-            continue;
-          if (pass == 0 && group != (unsigned)-1 &&
-              peer->get_cta_cluster_group(slot) != group)
-            continue;
-          if (peer->get_cta_cluster_rank(slot) != target_rank)
-            continue;
-          found_sid = peer->get_sid();
-          found = true;
-          break;
-        }
-      }
-    }
-  } else if (target_rank == 0) {
-    // No physical cluster object: only rank 0 (the issuer) exists.
-    found = true;
-    found_sid = local_smid;
+  if (!flash_gpgpu_sim::resolve_tb_cluster_rank(
+          core, thread->get_hw_ctaid(), target_rank, &tgt)) {
+    flash_gpgpu_sim::abort_tb_cluster_dead_rank(target_rank, local_smid,
+                                               thread->get_hw_ctaid());
   }
-
-  if (!found) {
-    // Write both streams: sim logs use stdout; death tests match stderr.
-    const char *fmt =
-        "GPGPU-Sim ERROR: mapa: cluster rank %u is not an active CTA "
-        "(issuer smid=%u hw_cta=%u). The target CTA has exited or was "
-        "never co-resident; refusing to alias the issuer's shared memory.\n";
-    printf(fmt, target_rank, local_smid, thread->get_hw_ctaid());
-    fprintf(stderr, fmt, target_rank, local_smid, thread->get_hw_ctaid());
-    fflush(stdout);
-    fflush(stderr);
-    abort();
-  }
+  found_sid = tgt.sm_id;
 
   ptx_reg_t result;
   result.u64 = shared_to_generic(found_sid, local_offset);
@@ -6361,14 +6337,15 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (space == shared_space) {
     addr &= 0x00000000FFFFFFFF;
   }
+  if (thread->m_dsm_remote) thread->m_dsm_offset = addr;
 
-  // Remote DSM store via cluster NoC when enabled.
-  // Default (-gpgpu_dsm_store_immediate 0): inject a hop; write peer smem
-  // only when DSM_STORE is delivered (closer to silicon). Set the knob or
-  // FLASHGPU_DSM_STORE_IMMEDIATE to 1 to also write at issue. NoC-off still
-  // writes immediately. Mbarrier-ordered consumers are safe either way:
-  // try_wait completes after arrive, which is injected after the store.
+  // Remote DSM store: fabric packets when that path is on; otherwise the
+  // delay-line hop. Default (-gpgpu_dsm_store_immediate 0): write peer smem
+  // only on deliver. NoC-off still writes immediately.
   auto try_noc_dsm_store = [&](const void *bytes, size_t nbytes) -> bool {
+    if (dsm_note_fabric(thread, pI, flash_gpgpu_sim::dsm_op_kind::store, bytes,
+                        nbytes))
+      return true;
     auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
     if (!core || !core->get_cluster() || !core->get_cluster()->get_cluster_noc())
       return false;

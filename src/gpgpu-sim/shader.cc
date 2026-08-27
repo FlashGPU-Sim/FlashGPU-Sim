@@ -36,9 +36,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <tuple>
 #include "../../libcuda/gpgpu_context.h"
 #include "../cuda-sim/cuda-sim.h"
 #include "../cuda-sim/ptx-stats.h"
+#include "../cuda-sim/ptx_ir.h"
 #include "../cuda-sim/ptx_sim.h"
 #include "ptx.tab.h"
 #include "../cuda-sim/dyn_ptx_inst.h"
@@ -1639,41 +1641,33 @@ void shader_core_ctx::fetch() {
 
 void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
   execute_warp_inst_t(inst);
-  // Propagate remote DSM hop from active threads (set in decode_space / st/ld).
-  if (inst.is_load() || inst.is_store()) {
-    unsigned max_hop = 0;
-    bool any_remote = false;
+  dsm_issue_lane_ops(inst);
+  unsigned max_hop = 0;
+  bool any_remote = false;
+  if (inst.is_load() || inst.is_store() || inst.isatomic()) {
     for (unsigned t = 0; t < m_config->warp_size; t++) {
-      if (!inst.active(t))
-        continue;
+      if (!inst.active(t)) continue;
       unsigned tid = m_config->warp_size * inst.warp_id() + t;
       ptx_thread_info *thd = m_thread[tid];
       if (thd && thd->m_dsm_remote) {
         any_remote = true;
-        if (thd->m_dsm_hop > max_hop)
-          max_hop = thd->m_dsm_hop;
+        if (thd->m_dsm_hop > max_hop) max_hop = thd->m_dsm_hop;
       }
     }
-    inst.set_dsm_remote(any_remote, max_hop);
-    if (any_remote) {
-      note_peer_smem_access(inst.warp_id());
-      // Remote DSM: functional data is applied in st_impl / ld_impl (peer
-      // smem). Do NOT generate conventional L1/global mem accesses for the
-      // generic peer window — those never complete and hang the warp.
-      //
-      // Model hop as shared-unit dispatch_delay; keep op as load/store so the
-      // instruction still routes through the LD/ST unit, but mark space as
-      // shared with an empty access queue so shared_cycle just burns the hop
-      // and then completes (accessq_empty).
+  }
+  if (any_remote) {
+    inst.set_dsm_remote(true, max_hop);
+    note_peer_smem_access(inst.warp_id());
+    const bool fabric = flash_gpgpu_sim::dsm_fabric_enabled(this);
+    if (fabric && inst.isatomic()) inst.skip_atomic_callback();
+    if (!fabric) {
       unsigned delay = inst.is_load() ? (2 * max_hop) : max_hop;
-      if (delay == 0)
-        delay = 1;
+      if (delay == 0) delay = 1;
       inst.set_issue_cycle_delay(delay);
-      inst.space = memory_space_t(shared_space);
-      // Leave accessq empty: shared_cycle stalls on dispatch_delay only.
-    } else {
-      inst.generate_mem_accesses();
     }
+    inst.space = memory_space_t(shared_space);
+  } else if (inst.is_load() || inst.is_store()) {
+    inst.generate_mem_accesses();
   }
 }
 
@@ -3447,6 +3441,10 @@ bool ldst_unit::shared_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
   }
 
   bool stall = inst.dispatch_delay();
+  if (!stall && !inst.empty() && inst.is_dsm_remote() &&
+      m_core->get_config()->gpgpu_dsm_enable && m_core->get_cluster() &&
+      m_core->get_cluster()->dsm_warp_busy(m_core->get_sid(), inst.warp_id()))
+    stall = true;
   if (stall) {
     fail_type = S_MEM;
     rc_fail = BK_CONF;
@@ -4648,9 +4646,12 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
   m_wgmma.cleanup_cta(cta_num);
   // Drop in-flight intra-cluster NoC messages targeting this CTA (race-safe
   // lifecycle: no late deliver into freed smem / recycled slots).
-  if (m_cluster && m_cluster->get_cluster_noc()) {
+  if (m_cluster) {
     const unsigned cid = m_config->sid_to_cid(m_sid);
-    m_cluster->get_cluster_noc()->drop_messages_to_cta(cid, cta_num);
+    if (m_cluster->get_cluster_noc())
+      m_cluster->get_cluster_noc()->drop_messages_to_cta(cid, cta_num);
+    if (m_cluster->get_dsm_endpoint())
+      m_cluster->get_dsm_endpoint()->bump_cta_gen(cid, cta_num);
   }
   m_cta_smem[cta_num] = NULL;  // Clear shared memory pointer for TMA multicast
   m_cta_tb_cluster_group[cta_num] = (unsigned)-1;
@@ -6648,6 +6649,39 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
   fcfg.vc_arbiter = config->gpgpu_dsm_vc_arbiter;
   m_dsm_fabric = std::make_unique<dsm_fabric_t>(config->m_topology, cluster_id,
                                                 fcfg);
+  dsm_endpoint_config_t ecfg;
+  ecfg.max_outstanding_per_sm = config->gpgpu_dsm_max_outstanding_per_sm;
+  ecfg.ack_coalesce_threshold = config->gpgpu_dsm_ack_coalesce_threshold;
+  ecfg.ack_timeout_cycles = config->gpgpu_dsm_ack_timeout_cycles;
+  m_dsm_endpoint = std::make_unique<dsm_endpoint_protocol_t>(m_dsm_fabric.get(),
+                                                             ecfg);
+  m_dsm_endpoint->set_sram(
+      this,
+      [](void *ctx, unsigned local_sm, unsigned cta, uint64_t addr,
+         uint8_t *bytes, unsigned n) {
+        auto *cl = static_cast<simt_core_cluster *>(ctx);
+        if (local_sm >= cl->num_cores() || !bytes || !n) return;
+        auto *core = cl->get_core(local_sm);
+        if (!core || !core->is_cta_slot_active(cta)) return;
+        memory_space *smem = core->get_cta_smem(cta);
+        if (smem) smem->write((mem_addr_t)addr, n, bytes, nullptr, nullptr);
+      },
+      [](void *ctx, unsigned local_sm, unsigned cta, uint64_t addr,
+         uint8_t *bytes, unsigned n) {
+        auto *cl = static_cast<simt_core_cluster *>(ctx);
+        if (local_sm >= cl->num_cores() || !bytes || !n) return;
+        auto *core = cl->get_core(local_sm);
+        if (!core || !core->is_cta_slot_active(cta)) return;
+        memory_space *smem = core->get_cta_smem(cta);
+        if (smem) smem->read((mem_addr_t)addr, n, bytes);
+      });
+  m_dsm_endpoint->set_on_tx_done(this, [](void *ctx, unsigned txid) {
+    static_cast<simt_core_cluster *>(ctx)->dsm_on_tx_done(txid);
+  });
+  m_dsm_endpoint->set_on_load_data(
+      this, [](void *ctx, unsigned txid, const uint8_t *p, unsigned n) {
+        static_cast<simt_core_cluster *>(ctx)->dsm_on_load_data(txid, p, n);
+      });
 }
 
 void simt_core_cluster::aggregate_stats() {
@@ -6672,10 +6706,200 @@ void simt_core_cluster::core_cycle() {
 }
 
 void simt_core_cluster::cluster_noc_cycle() {
-  if (m_cluster_noc)
-    m_cluster_noc->cycle();
-  if (m_dsm_fabric)
-    m_dsm_fabric->cycle(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+  const unsigned long long now =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  if (m_dsm_endpoint) {
+    m_dsm_endpoint->cycle(now);
+    dsm_retry_issues();
+  } else if (m_dsm_fabric) {
+    m_dsm_fabric->cycle(now);
+  }
+  if (m_cluster_noc) m_cluster_noc->cycle();
+}
+
+static unsigned dsm_warp_key(unsigned sid, unsigned warp) {
+  return (sid << 16) | (warp & 0xffff);
+}
+
+void simt_core_cluster::dsm_note_warp_issue(unsigned sid, unsigned warp,
+                                            unsigned n) {
+  if (!n) return;
+  m_dsm_warp_pending[dsm_warp_key(sid, warp)] += n;
+}
+
+void simt_core_cluster::dsm_note_warp_complete(unsigned sid, unsigned warp) {
+  auto it = m_dsm_warp_pending.find(dsm_warp_key(sid, warp));
+  if (it == m_dsm_warp_pending.end()) return;
+  if (it->second > 0) it->second--;
+  if (!it->second) m_dsm_warp_pending.erase(it);
+}
+
+bool simt_core_cluster::dsm_warp_busy(unsigned sid, unsigned warp) const {
+  auto it = m_dsm_warp_pending.find(dsm_warp_key(sid, warp));
+  return it != m_dsm_warp_pending.end() && it->second > 0;
+}
+
+void simt_core_cluster::dsm_register_load(unsigned txid, unsigned sid,
+                                          unsigned warp,
+                                          ptx_thread_info *thread,
+                                          const ptx_instruction *pI) {
+  dsm_load_wait_t w;
+  w.sid = sid;
+  w.warp = warp;
+  w.thread = thread;
+  w.pI = pI;
+  m_dsm_loads[txid] = w;
+}
+
+unsigned simt_core_cluster::dsm_cta_gen(unsigned local_sm, unsigned cta) const {
+  return m_dsm_endpoint ? m_dsm_endpoint->cta_gen(local_sm, cta) : 0;
+}
+
+void simt_core_cluster::dsm_on_tx_done(unsigned txid) {
+  auto it = m_dsm_tx_warp.find(txid);
+  if (it != m_dsm_tx_warp.end()) {
+    dsm_note_warp_complete(it->second.first, it->second.second);
+    m_dsm_tx_warp.erase(it);
+  }
+  m_dsm_loads.erase(txid);
+}
+
+void simt_core_cluster::dsm_on_load_data(unsigned txid, const uint8_t *p,
+                                         unsigned n) {
+  auto it = m_dsm_loads.find(txid);
+  if (it == m_dsm_loads.end() || !it->second.thread || !it->second.pI || !p)
+    return;
+  const ptx_instruction *pI = it->second.pI;
+  ptx_thread_info *thread = it->second.thread;
+  size_t size = 0;
+  int t = 0;
+  type_info_key::type_decode(pI->get_type(), size, t);
+  const unsigned elem = (unsigned)(size / 8);
+  const unsigned vec = pI->get_vector();
+  auto take = [&](unsigned i) {
+    ptx_reg_t r;
+    r.u64 = 0;
+    const unsigned off = i * elem;
+    if (elem && off < n)
+      memcpy(&r.s64, p + off, elem < (n - off) ? elem : (n - off));
+    return r;
+  };
+  if (!vec) {
+    ptx_reg_t data = take(0);
+    thread->set_operand_value(pI->dst(), data, pI->get_type(), thread, pI);
+    return;
+  }
+  ptx_reg_t d1 = take(0), d2 = take(1), d3 = take(2), d4 = take(3);
+  thread->set_vector_operand_values(pI->dst(), d1, d2, d3, d4);
+}
+
+bool simt_core_cluster::dsm_try_issue(unsigned src,
+                                      const flash_gpgpu_sim::dsm_lane_op_t &op,
+                                      unsigned sid, unsigned warp) {
+  if (!m_dsm_endpoint) return false;
+  if (src == op.dst_local) {
+    shader_core_ctx *core = (src < num_cores()) ? get_core(src) : nullptr;
+    memory_space *smem =
+        (core && core->is_cta_slot_active(op.cta_slot))
+            ? core->get_cta_smem(op.cta_slot)
+            : nullptr;
+    if (op.kind == flash_gpgpu_sim::dsm_op_kind::store) {
+      if (smem && !op.data.empty())
+        smem->write((mem_addr_t)op.offset, op.bytes, op.data.data(), nullptr,
+                    nullptr);
+    } else if (smem && op.bytes) {
+      std::vector<uint8_t> buf(op.bytes);
+      smem->read((mem_addr_t)op.offset, op.bytes, buf.data());
+      if (op.kind == flash_gpgpu_sim::dsm_op_kind::atom_add &&
+          !op.data.empty()) {
+        if (op.bytes == 4) {
+          uint32_t old = 0, add = 0;
+          memcpy(&old, buf.data(), 4);
+          memcpy(&add, op.data.data(), 4);
+          uint32_t neu = old + add;
+          smem->write((mem_addr_t)op.offset, 4, &neu, nullptr, nullptr);
+          memcpy(buf.data(), &old, 4);
+        } else if (op.bytes == 8) {
+          uint64_t old = 0, add = 0;
+          memcpy(&old, buf.data(), 8);
+          memcpy(&add, op.data.data(), 8);
+          uint64_t neu = old + add;
+          smem->write((mem_addr_t)op.offset, 8, &neu, nullptr, nullptr);
+          memcpy(buf.data(), &old, 8);
+        }
+      }
+      if (op.thread && op.pI) {
+        static unsigned local_txid = 0x80000000u;
+        unsigned txid = ++local_txid;
+        dsm_register_load(txid, sid, warp, op.thread, op.pI);
+        dsm_on_load_data(txid, buf.data(), (unsigned)buf.size());
+        m_dsm_loads.erase(txid);
+      }
+    }
+    dsm_note_warp_complete(sid, warp);
+    return true;
+  }
+  bool ok = false;
+  if (op.kind == flash_gpgpu_sim::dsm_op_kind::store)
+    ok = m_dsm_endpoint->issue_store(src, op.dst_local, op.bytes, op.offset,
+                                     op.cta_slot, op.cta_gen,
+                                     op.data.empty() ? nullptr : op.data.data());
+  else if (op.kind == flash_gpgpu_sim::dsm_op_kind::load)
+    ok = m_dsm_endpoint->issue_load(src, op.dst_local, op.bytes, op.offset,
+                                    op.cta_slot, op.cta_gen);
+  else
+    ok = m_dsm_endpoint->issue_atom(src, op.dst_local, op.bytes, op.offset,
+                                    op.cta_slot, op.cta_gen,
+                                    op.data.empty() ? nullptr : op.data.data());
+  if (!ok) return false;
+  const unsigned txid = m_dsm_endpoint->last_txid();
+  m_dsm_tx_warp[txid] = {sid, warp};
+  if (op.kind != flash_gpgpu_sim::dsm_op_kind::store)
+    dsm_register_load(txid, sid, warp, op.thread, op.pI);
+  return true;
+}
+
+void simt_core_cluster::dsm_retry_issues() {
+  std::deque<dsm_retry_t> keep;
+  while (!m_dsm_retry.empty()) {
+    dsm_retry_t r = std::move(m_dsm_retry.front());
+    m_dsm_retry.pop_front();
+    if (!dsm_try_issue(r.src, r.op, r.sid, r.warp)) keep.push_back(std::move(r));
+  }
+  m_dsm_retry.swap(keep);
+}
+
+void shader_core_ctx::dsm_note_lane_op(flash_gpgpu_sim::dsm_lane_op_t op) {
+  m_dsm_lane_ops.push_back(std::move(op));
+}
+
+void shader_core_ctx::dsm_issue_lane_ops(warp_inst_t &inst) {
+  if (m_dsm_lane_ops.empty() || !m_cluster || inst.empty()) return;
+  std::stable_sort(m_dsm_lane_ops.begin(), m_dsm_lane_ops.end(),
+                   [](const flash_gpgpu_sim::dsm_lane_op_t &a,
+                      const flash_gpgpu_sim::dsm_lane_op_t &b) {
+                     return std::tie(a.dst_local, a.cta_slot) <
+                            std::tie(b.dst_local, b.cta_slot);
+                   });
+  const unsigned src = m_config->sid_to_cid(m_sid);
+  const unsigned n = (unsigned)m_dsm_lane_ops.size();
+  m_cluster->dsm_note_warp_issue(m_sid, inst.warp_id(), n);
+  for (auto &op : m_dsm_lane_ops) {
+    if (!m_cluster->dsm_try_issue(src, op, m_sid, inst.warp_id()))
+      m_cluster->dsm_queue_retry(src, std::move(op), m_sid, inst.warp_id());
+  }
+  m_dsm_lane_ops.clear();
+}
+
+void simt_core_cluster::dsm_queue_retry(unsigned src,
+                                        flash_gpgpu_sim::dsm_lane_op_t op,
+                                        unsigned sid, unsigned warp) {
+  dsm_retry_t r;
+  r.op = std::move(op);
+  r.src = src;
+  r.sid = sid;
+  r.warp = warp;
+  m_dsm_retry.push_back(std::move(r));
 }
 
 void simt_core_cluster::reinit() {

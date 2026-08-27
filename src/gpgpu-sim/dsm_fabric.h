@@ -47,6 +47,8 @@ struct dsm_packet_t {
   unsigned long long injected_cycle = 0;
   unsigned long long tail_arrival_cycle = 0;
   unsigned completion_count = 1;  // coalesced write_ack completions
+  unsigned cta_slot = 0;
+  unsigned cta_gen = 0;
 };
 
 struct dsm_route_t {
@@ -119,14 +121,12 @@ class dsm_fabric_t {
   dsm_fabric_t(const gpu_topology_t &topo, unsigned gpc,
                const dsm_fabric_config_t &cfg);
 
-  bool can_inject(unsigned physical_source, dsm_vc_t vc,
-                  unsigned flits) const;
+  bool can_inject(unsigned physical_source, dsm_vc_t vc, unsigned flits) const;
   bool can_inject(unsigned physical_source, dsm_vc_t vc, unsigned dest,
                   unsigned flits) const;
   void inject(std::unique_ptr<dsm_packet_t> packet);
   const dsm_packet_t *top(unsigned physical_destination, dsm_vc_t vc) const;
-  std::unique_ptr<dsm_packet_t> pop(unsigned physical_destination,
-                                    dsm_vc_t vc);
+  std::unique_ptr<dsm_packet_t> pop(unsigned physical_destination, dsm_vc_t vc);
   void cycle(unsigned long long cycle);
   bool busy() const;
   void display_state(FILE *fp) const;
@@ -136,9 +136,7 @@ class dsm_fabric_t {
   unsigned flit_payload_bytes() const { return m_cfg.flit_payload_bytes; }
   unsigned gx_planes() const { return m_cfg.gx_planes; }
   unsigned lanes_per_cpc() const { return m_cfg.lanes_per_cpc; }
-  unsigned num_routes() const {
-    return m_cfg.gx_planes * m_cfg.lanes_per_cpc;
-  }
+  unsigned num_routes() const { return m_cfg.gx_planes * m_cfg.lanes_per_cpc; }
   bool sm_eligible(unsigned local_sm, unsigned long long cycle) const;
   dsm_route_t hash_route(uint64_t addr, unsigned src, unsigned dst,
                          unsigned uid) const;

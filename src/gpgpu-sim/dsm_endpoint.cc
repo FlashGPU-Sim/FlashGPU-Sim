@@ -1,6 +1,7 @@
 #include "dsm_endpoint.h"
 
 #include <assert.h>
+#include <string.h>
 #include <memory>
 
 dsm_endpoint_protocol_t::dsm_endpoint_protocol_t(
@@ -16,6 +17,7 @@ dsm_endpoint_protocol_t::dsm_endpoint_protocol_t(
   m_acks_owed.assign(m_n, std::vector<unsigned>(m_n, 0));
   m_oldest_ack.assign(m_n, std::vector<unsigned long long>(m_n, 0));
   m_last_write.assign(m_n, std::vector<unsigned long long>(m_n, 0));
+  m_cta_gen.assign(m_n, std::vector<unsigned>(32, 0));
 }
 
 bool dsm_endpoint_protocol_t::window_open(unsigned sm) const {
@@ -50,6 +52,29 @@ double dsm_endpoint_protocol_t::coalescing_ratio() const {
   return (double)m_stats.ack_completions / (double)m_stats.ack_packets;
 }
 
+void dsm_endpoint_protocol_t::bump_cta_gen(unsigned local_sm, unsigned cta) {
+  if (local_sm >= m_n || cta >= 32) return;
+  m_cta_gen[local_sm][cta]++;
+}
+
+unsigned dsm_endpoint_protocol_t::cta_gen(unsigned local_sm,
+                                          unsigned cta) const {
+  if (local_sm >= m_n || cta >= 32) return 0;
+  return m_cta_gen[local_sm][cta];
+}
+
+bool dsm_endpoint_protocol_t::write_unapplied(unsigned src,
+                                              unsigned dst) const {
+  if (src >= m_n || dst >= m_n) return false;
+  for (const auto &kv : m_tx[src]) {
+    const dsm_tx_t &t = kv.second;
+    if (t.target == dst && t.cls == dsm_packet_class_t::write_data &&
+        !t.applied)
+      return true;
+  }
+  return in_flight_writes(src, dst) > 0;
+}
+
 bool dsm_endpoint_protocol_t::can_store(unsigned src, unsigned dst,
                                         unsigned bytes) const {
   if (!window_open(src) || src == dst) return false;
@@ -64,70 +89,104 @@ bool dsm_endpoint_protocol_t::can_load(unsigned src, unsigned dst,
                            flits_of(dsm_packet_class_t::read_command, bytes));
 }
 
+bool dsm_endpoint_protocol_t::can_atom(unsigned src, unsigned dst,
+                                       unsigned bytes) const {
+  if (!window_open(src) || src == dst) return false;
+  return m_fab->can_inject(src, dsm_vc_t::request, dst,
+                           flits_of(dsm_packet_class_t::atomic_request, bytes));
+}
+
 void dsm_endpoint_protocol_t::note_outstanding(unsigned sm) {
   const unsigned o = outstanding(sm);
   if (o > m_stats.outstanding_high_water) m_stats.outstanding_high_water = o;
 }
 
-bool dsm_endpoint_protocol_t::issue_store(unsigned src, unsigned dst,
-                                          unsigned bytes, uint64_t addr) {
-  if (!can_store(src, dst, bytes)) return false;
+bool dsm_endpoint_protocol_t::issue_req(unsigned src, unsigned dst,
+                                        unsigned bytes, uint64_t addr,
+                                        unsigned cta_slot, unsigned cta_gen,
+                                        dsm_packet_class_t cls,
+                                        const void *data) {
+  const bool is_store = cls == dsm_packet_class_t::write_data;
+  const bool is_load = cls == dsm_packet_class_t::read_command;
+  const bool is_atom = cls == dsm_packet_class_t::atomic_request;
+  if (is_store && !can_store(src, dst, bytes)) return false;
+  if (is_load && !can_load(src, dst, bytes)) return false;
+  if (is_atom && !can_atom(src, dst, bytes)) return false;
   dsm_tx_t tx;
   tx.id = ++m_next_tx;
   tx.requester = src;
   tx.target = dst;
-  tx.cls = dsm_packet_class_t::write_data;
+  tx.cls = cls;
   tx.remaining_responses = 1;
   tx.payload_bytes = bytes;
   tx.addr = addr;
   tx.created_cycle = m_now;
+  tx.cta_slot = cta_slot;
+  tx.cta_gen = cta_gen;
   auto p = std::make_unique<dsm_packet_t>();
   p->transaction_id = tx.id;
   p->network_src_sm_id = src;
   p->network_dst_sm_id = dst;
   p->transaction_requester_sm_id = src;
   p->transaction_target_sm_id = dst;
-  p->packet_class = dsm_packet_class_t::write_data;
-  p->vc = dsm_vc_t::request;
+  p->packet_class = cls;
+  p->vc = dsm_vc_of(cls);
   p->payload_bytes = bytes;
   p->payload_address = addr;
   p->created_cycle = m_now;
+  p->cta_slot = cta_slot;
+  p->cta_gen = cta_gen;
+  if (data && bytes) {
+    m_data[tx.id].assign((const uint8_t *)data, (const uint8_t *)data + bytes);
+  }
   m_fab->inject(std::move(p));
   m_tx[src][tx.id] = tx;
-  m_store_q[src][dst].push_back(tx.id);
-  m_stats.store_packets++;
+  m_last_txid = tx.id;
+  if (is_store) {
+    m_store_q[src][dst].push_back(tx.id);
+    m_stats.store_packets++;
+  } else if (is_load) {
+    m_stats.load_commands++;
+  } else {
+    m_stats.atom_requests++;
+  }
   note_outstanding(src);
   return true;
 }
 
+bool dsm_endpoint_protocol_t::issue_store(unsigned src, unsigned dst,
+                                          unsigned bytes, uint64_t addr) {
+  return issue_req(src, dst, bytes, addr, 0, 0, dsm_packet_class_t::write_data,
+                   nullptr);
+}
+
 bool dsm_endpoint_protocol_t::issue_load(unsigned src, unsigned dst,
                                          unsigned bytes, uint64_t addr) {
-  if (!can_load(src, dst, bytes)) return false;
-  dsm_tx_t tx;
-  tx.id = ++m_next_tx;
-  tx.requester = src;
-  tx.target = dst;
-  tx.cls = dsm_packet_class_t::read_command;
-  tx.remaining_responses = 1;
-  tx.payload_bytes = bytes;
-  tx.addr = addr;
-  tx.created_cycle = m_now;
-  auto p = std::make_unique<dsm_packet_t>();
-  p->transaction_id = tx.id;
-  p->network_src_sm_id = src;
-  p->network_dst_sm_id = dst;
-  p->transaction_requester_sm_id = src;
-  p->transaction_target_sm_id = dst;
-  p->packet_class = dsm_packet_class_t::read_command;
-  p->vc = dsm_vc_t::request;
-  p->payload_bytes = bytes;
-  p->payload_address = addr;
-  p->created_cycle = m_now;
-  m_fab->inject(std::move(p));
-  m_tx[src][tx.id] = tx;
-  m_stats.load_commands++;
-  note_outstanding(src);
-  return true;
+  return issue_req(src, dst, bytes, addr, 0, 0,
+                   dsm_packet_class_t::read_command, nullptr);
+}
+
+bool dsm_endpoint_protocol_t::issue_store(unsigned src, unsigned dst,
+                                          unsigned bytes, uint64_t addr,
+                                          unsigned cta_slot, unsigned cta_gen,
+                                          const void *data) {
+  return issue_req(src, dst, bytes, addr, cta_slot, cta_gen,
+                   dsm_packet_class_t::write_data, data);
+}
+
+bool dsm_endpoint_protocol_t::issue_load(unsigned src, unsigned dst,
+                                         unsigned bytes, uint64_t addr,
+                                         unsigned cta_slot, unsigned cta_gen) {
+  return issue_req(src, dst, bytes, addr, cta_slot, cta_gen,
+                   dsm_packet_class_t::read_command, nullptr);
+}
+
+bool dsm_endpoint_protocol_t::issue_atom(unsigned src, unsigned dst,
+                                         unsigned bytes, uint64_t addr,
+                                         unsigned cta_slot, unsigned cta_gen,
+                                         const void *addend) {
+  return issue_req(src, dst, bytes, addr, cta_slot, cta_gen,
+                   dsm_packet_class_t::atomic_request, addend);
 }
 
 void dsm_endpoint_protocol_t::sram_store(unsigned sm, unsigned bytes) {
@@ -141,25 +200,27 @@ void dsm_endpoint_protocol_t::sram_load(unsigned sm, unsigned bytes) {
 }
 
 void dsm_endpoint_protocol_t::accrue_ack(unsigned target, unsigned requester) {
+  if (target >= m_n || requester >= m_n) return;
   if (!m_acks_owed[target][requester]) m_oldest_ack[target][requester] = m_now;
   m_acks_owed[target][requester]++;
   m_last_write[target][requester] = m_now;
 }
 
 void dsm_endpoint_protocol_t::complete_stores(unsigned requester,
-                                              unsigned target,
-                                              unsigned count) {
+                                              unsigned target, unsigned count) {
   if (requester >= m_n || target >= m_n) return;
   for (unsigned i = 0; i < count; i++) {
     if (m_store_q[requester][target].empty()) break;
     const unsigned id = m_store_q[requester][target].front();
     m_store_q[requester][target].pop_front();
     m_tx[requester].erase(id);
+    if (m_on_tx_done) m_on_tx_done(m_done_ctx, id);
   }
 }
 
 void dsm_endpoint_protocol_t::complete_load(unsigned requester, unsigned txid) {
   m_tx[requester].erase(txid);
+  if (m_on_tx_done) m_on_tx_done(m_done_ctx, txid);
 }
 
 unsigned dsm_endpoint_protocol_t::response_occ(unsigned sm) const {
@@ -189,6 +250,9 @@ bool dsm_endpoint_protocol_t::inject_response(const pending_t &p) {
   pkt->payload_address = p.addr;
   pkt->completion_count = p.count ? p.count : 1;
   pkt->created_cycle = m_now;
+  pkt->cta_slot = p.cta_slot;
+  pkt->cta_gen = p.cta_gen;
+  if (!p.payload.empty()) m_data[p.txid] = p.payload;
   m_fab->inject(std::move(pkt));
   return true;
 }
@@ -198,11 +262,22 @@ void dsm_endpoint_protocol_t::harvest() {
     while (m_fab->top(sm, dsm_vc_t::request)) {
       auto p = m_fab->pop(sm, dsm_vc_t::request);
       if (!p) break;
+      const unsigned req = p->transaction_requester_sm_id;
+      const bool gen_ok =
+          p->cta_slot < 32 && p->cta_gen == m_cta_gen[sm][p->cta_slot];
       if (p->packet_class == dsm_packet_class_t::write_data) {
         sram_store(sm, p->payload_bytes);
-        accrue_ack(sm, p->transaction_requester_sm_id);
+        accrue_ack(sm, req);
+        if (req < m_n) {
+          auto it = m_tx[req].find(p->transaction_id);
+          if (it != m_tx[req].end()) it->second.applied = true;
+        }
+        auto dit = m_data.find(p->transaction_id);
+        if (gen_ok && m_sram_write && dit != m_data.end() &&
+            !dit->second.empty())
+          m_sram_write(m_sram_ctx, sm, p->cta_slot, p->payload_address,
+                       dit->second.data(), (unsigned)dit->second.size());
       } else if (p->packet_class == dsm_packet_class_t::read_command) {
-        sram_load(sm, p->payload_bytes);
         pending_t rd;
         rd.cls = dsm_packet_class_t::read_data;
         rd.src = sm;
@@ -211,7 +286,55 @@ void dsm_endpoint_protocol_t::harvest() {
         rd.bytes = p->payload_bytes;
         rd.count = 1;
         rd.addr = p->payload_address;
-        m_pending.push_back(rd);
+        rd.cta_slot = p->cta_slot;
+        rd.cta_gen = p->cta_gen;
+        rd.payload.assign(p->payload_bytes, 0);
+        if (gen_ok && m_sram_read && p->payload_bytes)
+          m_sram_read(m_sram_ctx, sm, p->cta_slot, p->payload_address,
+                      rd.payload.data(), p->payload_bytes);
+        sram_load(sm, p->payload_bytes);
+        m_pending.push_back(std::move(rd));
+      } else if (p->packet_class == dsm_packet_class_t::atomic_request) {
+        pending_t rsp;
+        rsp.cls = dsm_packet_class_t::atomic_response;
+        rsp.src = sm;
+        rsp.dst = p->transaction_requester_sm_id;
+        rsp.txid = p->transaction_id;
+        rsp.bytes = p->payload_bytes;
+        rsp.count = 1;
+        rsp.addr = p->payload_address;
+        rsp.cta_slot = p->cta_slot;
+        rsp.cta_gen = p->cta_gen;
+        rsp.payload.assign(p->payload_bytes, 0);
+        auto tit = m_data.find(p->transaction_id);
+        const std::vector<uint8_t> *addend =
+            (tit != m_data.end()) ? &tit->second : nullptr;
+        if (gen_ok && m_sram_read && p->payload_bytes) {
+          m_sram_read(m_sram_ctx, sm, p->cta_slot, p->payload_address,
+                      rsp.payload.data(), p->payload_bytes);
+          if (addend && p->payload_bytes == 4 && addend->size() >= 4) {
+            uint32_t old = 0, add = 0, neu = 0;
+            memcpy(&old, rsp.payload.data(), 4);
+            memcpy(&add, addend->data(), 4);
+            neu = old + add;
+            if (m_sram_write)
+              m_sram_write(m_sram_ctx, sm, p->cta_slot, p->payload_address,
+                           reinterpret_cast<uint8_t *>(&neu), 4);
+            memcpy(rsp.payload.data(), &old, 4);
+          } else if (addend && p->payload_bytes == 8 && addend->size() >= 8) {
+            uint64_t old = 0, add = 0, neu = 0;
+            memcpy(&old, rsp.payload.data(), 8);
+            memcpy(&add, addend->data(), 8);
+            neu = old + add;
+            if (m_sram_write)
+              m_sram_write(m_sram_ctx, sm, p->cta_slot, p->payload_address,
+                           reinterpret_cast<uint8_t *>(&neu), 8);
+            memcpy(rsp.payload.data(), &old, 8);
+          }
+        }
+        sram_store(sm, p->payload_bytes);
+        sram_load(sm, p->payload_bytes);
+        m_pending.push_back(std::move(rsp));
       }
     }
     while (m_fab->top(sm, dsm_vc_t::response)) {
@@ -220,8 +343,17 @@ void dsm_endpoint_protocol_t::harvest() {
       if (p->packet_class == dsm_packet_class_t::write_ack)
         complete_stores(sm, p->transaction_target_sm_id,
                         p->completion_count ? p->completion_count : 1);
-      else if (p->packet_class == dsm_packet_class_t::read_data)
+      else if (p->packet_class == dsm_packet_class_t::read_data ||
+               p->packet_class == dsm_packet_class_t::atomic_response) {
+        auto dit = m_data.find(p->transaction_id);
+        if (m_on_load_data && dit != m_data.end() && !dit->second.empty())
+          m_on_load_data(m_load_ctx, p->transaction_id, dit->second.data(),
+                         (unsigned)dit->second.size());
+        if (dit != m_data.end()) m_data.erase(dit);
+        if (p->packet_class == dsm_packet_class_t::atomic_response)
+          m_stats.atom_responses++;
         complete_load(sm, p->transaction_id);
+      }
     }
   }
 }
@@ -234,7 +366,7 @@ void dsm_endpoint_protocol_t::try_send_pending() {
     if (inject_response(p)) {
       if (p.cls == dsm_packet_class_t::read_data) m_stats.load_data_packets++;
     } else {
-      keep.push_back(p);
+      keep.push_back(std::move(p));
     }
   }
   m_pending.swap(keep);
@@ -260,6 +392,8 @@ void dsm_endpoint_protocol_t::try_flush_acks() {
       p.bytes = 0;
       p.count = debt;
       p.addr = 0;
+      p.cta_slot = 0;
+      p.cta_gen = 0;
       if (!inject_response(p)) continue;
       m_acks_owed[sm][req] = 0;
       m_oldest_ack[sm][req] = 0;
@@ -307,10 +441,11 @@ void dsm_endpoint_protocol_t::display_state(FILE *fp) const {
           m_stats.threshold_flushes, m_stats.idle_flushes);
   fprintf(fp,
           "  stores=%llu acks=%llu ack_completions=%llu loads=%llu "
-          "read_data=%llu sram_store=%llu sram_load=%llu\n",
+          "read_data=%llu atoms=%llu sram_store=%llu sram_load=%llu\n",
           m_stats.store_packets, m_stats.ack_packets, m_stats.ack_completions,
           m_stats.load_commands, m_stats.load_data_packets,
-          m_stats.sram_store_bytes, m_stats.sram_load_bytes);
+          m_stats.atom_requests, m_stats.sram_store_bytes,
+          m_stats.sram_load_bytes);
   for (unsigned sm = 0; sm < m_n; sm++) {
     for (const auto &kv : m_tx[sm]) {
       const dsm_tx_t &t = kv.second;
