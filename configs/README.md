@@ -186,8 +186,9 @@ the normal operand-collector read budget:
 | --- | ---: | ---: | ---: | --- |
 | `-gpgpu_ptx_register_allocator` | `0` | `1` | `1` | Enable conservative PTX virtual-register aliasing |
 | `-gpgpu_ptx_register_allocator_stats` | `0` | `0` | `0` | Print register-allocation statistics |
-| `-gpgpu_ptx_reorder` | `0` | `1` | `0` | Enable conservative PTX instruction reordering |
+| `-gpgpu_ptx_reorder` | `0` | `1` | `1` | Enable conservative PTX instruction reordering |
 | `-gpgpu_ptx_reorder_sass_guided` | `0` | `0` | `0` | Guide PTX reordering with auto-extracted SASS/PTX-line anchors |
+| `-gpgpu_alu_result_forwarding` | `0` | `0` | `1` | Make ALU dependencies ready after the configured operation latency instead of ALU writeback |
 
 When SASS-guided reordering is enabled, FlashGPU-Sim loads the single
 `*.rules` file in the run directory. The supplied configurations include

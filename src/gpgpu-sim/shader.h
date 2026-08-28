@@ -1997,6 +1997,7 @@ class shader_core_config : public core_config {
   int gpgpu_warp_issue_shader;
   unsigned gpgpu_num_reg_banks;
   bool gpgpu_reg_bank_use_warp_id;
+  bool gpgpu_alu_result_forwarding;
   bool gpgpu_local_mem_map;
   bool gpgpu_ignore_resources_limitation;
   bool sub_core_model;

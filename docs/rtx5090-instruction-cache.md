@@ -100,12 +100,12 @@ cubin/PTX artifacts. Full counters and cubin hashes are in
 
 | Workload | RTX 5090 cycles | Simulator cycles | Error | L1I reservation failures |
 |---|---:|---:|---:|---:|
-| GEMM M512 N16 K512 | 24,600.54 | 24,908 | +1.25% | 0 |
-| GPT-2 FA H12 S128 D64 | 25,243.15 | 28,888 | +14.44% | 0 |
+| GEMM M512 N16 K512 | 24,600.54 | 24,385 | -0.88% | 0 |
+| GPT-2 FA H12 S128 D64 | 25,243.15 | 27,644 | +9.51% | 0 |
 
 These results bound the current short-kernel cycle error but do not validate a
 physical ICC/GCC implementation. In particular, the FA run still generates
-45,756 simulator L1I misses, while hardware reports 3,889 ICC lookup misses;
+47,857 simulator L1I misses, while hardware reports 3,889 ICC lookup misses;
 the event definitions and hierarchy are not one-to-one.
 
 ### Microbenchmark correlation gap
@@ -117,17 +117,34 @@ is not yet solved even before adding a GCC:
 
 | Steps | RTX 5090 cycles | Perfect-I sim | Experimental-I sim |
 |---:|---:|---:|---:|
-| 64 | 3,977.42 | 6,400 | 7,730 |
-| 1,024 | 7,911.99 | 14,095 | 21,841 |
-| 4,096 | 20,425.12 | 38,716 | 67,126 |
-| 5,120 | 30,176.85 | 46,923 | 82,200 |
+| 64 | 3,977.42 | 6,103 | 7,683 |
+| 1,024 | 7,911.99 | 9,951 | 21,125 |
+| 4,096 | 20,425.12 | 22,248 | 64,261 |
+| 5,120 | 30,176.85 | 26,347 | 78,607 |
 
-The perfect-I result isolates a base integer dependency/scoreboard mismatch.
+All simulator rows above enable conservative PTX reordering. SASS-guided
+reordering remains opt-in because a pure integer kernel currently has no
+primary guide anchors. ALU result forwarding makes the dependent IMAD body
+track its configured four-cycle latency: the 4,096-step body falls from 32,843
+to 16,409 cycles, versus 16,688 cycles measured with `clock64` on hardware.
+The remaining perfect-I total-cycle error is dominated by the fixed launch and
+front-end overhead for the smaller probes.
+
 The additional experimental-I error comes from fetching each PTX line through
 the normal lower-memory path. On hardware, the 66,176-byte probe has 528 ICC
 requests but only 10 ICC lookup misses and 16 GCC misses; the simulator has
-1,029 L1I misses for the corresponding timing probe. Prefetch depth must not be
-tuned to compensate for either mismatch.
+1,024 L1I misses for the corresponding timing probe. A sensitivity run with
+depth 32 and 64 MSHRs removes all late prefetches and lowers the 4,096-step run
+to 22,989 cycles, but it also underestimates the short GEMM and FA kernels by
+12.14% and 19.13%. Therefore the supported experimental configuration keeps
+depth four rather than tuning a rolling stream buffer to hide the missing GCC.
+
+The hardware counters also expose a capacity boundary that a rolling stream
+cannot represent: GCC lookup hits reach 509 at 4,096 steps and remain 509 at
+5,120 steps, while misses rise from 16 to 144. This is consistent with an
+approximately 512-line (64 KiB for 128-byte lines) preload or resident window.
+A shared GCC/preload model is required before changing the supported prefetch
+depth.
 
 For the final four-line, scale-two configuration, both short kernels complete
 without L1I reservation failure. This addresses the observed liveness failure

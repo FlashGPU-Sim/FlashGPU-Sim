@@ -27,18 +27,24 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include "scoreboard.h"
+
+#include <algorithm>
+
 #include "../cuda-sim/ptx_sim.h"
 #include "shader.h"
 #include "shader_trace.h"
 
 // Constructor
-Scoreboard::Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t* gpu)
-    : longopregs() {
+Scoreboard::Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t* gpu,
+                       bool alu_result_forwarding)
+    : longopregs(), m_alu_result_forwarding(alu_result_forwarding) {
   m_sid = sid;
   // Initialize size of table
   reg_table.resize(n_warps);
   longopregs.resize(n_warps);
   reg_producer.resize(n_warps);
+  reg_owner.resize(n_warps);
+  reg_forward_ready.resize(n_warps);
 
   m_gpu = gpu;
 }
@@ -56,8 +62,32 @@ void Scoreboard::printContents() const {
   }
 }
 
-void Scoreboard::reserveRegister(unsigned wid, unsigned regnum) {
+unsigned long long Scoreboard::currentCycle() const {
+  return m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+}
+
+bool Scoreboard::registerCollision(unsigned wid, unsigned regnum) const {
+  if (reg_table[wid].find(regnum) == reg_table[wid].end()) return false;
+  if (!m_alu_result_forwarding) return true;
+
+  std::map<unsigned, unsigned long long>::const_iterator ready =
+      reg_forward_ready[wid].find(regnum);
+  return ready == reg_forward_ready[wid].end() ||
+         currentCycle() < ready->second;
+}
+
+void Scoreboard::reserveRegister(unsigned wid, unsigned regnum,
+                                 unsigned owner_uid, bool forwardable,
+                                 unsigned long long forward_ready_cycle) {
   if (!(reg_table[wid].find(regnum) == reg_table[wid].end())) {
+    if (m_alu_result_forwarding && !registerCollision(wid, regnum)) {
+      reg_owner[wid][regnum] = owner_uid;
+      if (forwardable)
+        reg_forward_ready[wid][regnum] = forward_ready_cycle;
+      else
+        reg_forward_ready[wid].erase(regnum);
+      return;
+    }
     printf(
         "Error: trying to reserve an already reserved register (sid=%d, "
         "wid=%d, regnum=%d).",
@@ -67,14 +97,31 @@ void Scoreboard::reserveRegister(unsigned wid, unsigned regnum) {
   SHADER_GPPRINTF(SCOREBOARD, "Reserved Register - warp:%d, reg: %d\n", wid,
                  regnum);
   reg_table[wid].insert(regnum);
+  reg_owner[wid][regnum] = owner_uid;
+  if (forwardable)
+    reg_forward_ready[wid][regnum] = forward_ready_cycle;
+  else
+    reg_forward_ready[wid].erase(regnum);
 }
 
 // Unmark register as write-pending
-void Scoreboard::releaseRegister(unsigned wid, unsigned regnum) {
+void Scoreboard::clearRegister(unsigned wid, unsigned regnum) {
   if (!(reg_table[wid].find(regnum) != reg_table[wid].end())) return;
   SHADER_GPPRINTF(SCOREBOARD, "Release register - warp:%d, reg: %d\n", wid,
                  regnum);
   reg_table[wid].erase(regnum);
+  longopregs[wid].erase(regnum);
+  reg_producer[wid].erase(regnum);
+  reg_owner[wid].erase(regnum);
+  reg_forward_ready[wid].erase(regnum);
+}
+
+void Scoreboard::releaseRegister(unsigned wid, unsigned regnum,
+                                 unsigned owner_uid) {
+  std::map<unsigned, unsigned>::const_iterator owner =
+      reg_owner[wid].find(regnum);
+  if (owner == reg_owner[wid].end() || owner->second != owner_uid) return;
+  clearRegister(wid, regnum);
 }
 
 const bool Scoreboard::islongop(unsigned warp_id, unsigned regnum) {
@@ -110,9 +157,14 @@ void Scoreboard::reserveRegistersForWarp(const class warp_inst_t* inst,
     prod = PROD_SP_INT;
   }
 
+  const bool forwardable = m_alu_result_forwarding && prod == PROD_SP_INT;
+  const unsigned long long forward_ready_cycle =
+      currentCycle() + std::max(1u, inst->latency);
+
   for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
     if (inst->out[r] > 0) {
-      reserveRegister(warp_id, inst->out[r]);
+      reserveRegister(warp_id, inst->out[r], inst->get_uid(), forwardable,
+                      forward_ready_cycle);
       reg_producer[warp_id][inst->out[r]] = prod;
       SHADER_GPPRINTF(SCOREBOARD, "Reserved register - warp:%d, reg: %d\n",
                      warp_id, inst->out[r]);
@@ -147,9 +199,7 @@ void Scoreboard::releaseRegistersForWarp(const class warp_inst_t* inst,
     if (inst->out[r] > 0) {
       SHADER_GPPRINTF(SCOREBOARD, "Register Released - warp:%d, reg: %d\n",
                      warp_id, inst->out[r]);
-      releaseRegister(warp_id, inst->out[r]);
-      longopregs[warp_id].erase(inst->out[r]);
-      reg_producer[warp_id].erase(inst->out[r]);
+      releaseRegister(warp_id, inst->out[r], inst->get_uid());
     }
   }
 }
@@ -179,7 +229,7 @@ reg_producer_t Scoreboard::getCollisionType(unsigned wid,
 
   reg_producer_t worst = PROD_OTHER;
   for (auto it = inst_regs.begin(); it != inst_regs.end(); ++it) {
-    if (reg_table[wid].find(*it) != reg_table[wid].end()) {
+    if (registerCollision(wid, *it)) {
       auto prod_it = reg_producer[wid].find(*it);
       reg_producer_t p = (prod_it != reg_producer[wid].end())
                              ? prod_it->second
@@ -215,7 +265,7 @@ bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
   // instruction registers
   std::set<int>::const_iterator it2;
   for (it2 = inst_regs.begin(); it2 != inst_regs.end(); it2++)
-    if (reg_table[wid].find(*it2) != reg_table[wid].end()) {
+    if (registerCollision(wid, *it2)) {
       return true;
     }
   return false;

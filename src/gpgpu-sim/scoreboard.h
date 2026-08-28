@@ -51,13 +51,14 @@ enum reg_producer_t {
 
 class Scoreboard {
  public:
-  Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t *gpu);
+  Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t *gpu,
+             bool alu_result_forwarding = false);
 
   void reserveRegisters(const warp_inst_t *inst);
   void releaseRegisters(const warp_inst_t *inst);
   void reserveRegistersForWarp(const warp_inst_t *inst, unsigned warp_id);
   void releaseRegistersForWarp(const warp_inst_t *inst, unsigned warp_id);
-  void releaseRegister(unsigned wid, unsigned regnum);
+  void releaseRegister(unsigned wid, unsigned regnum, unsigned owner_uid);
 
   bool checkCollision(unsigned wid, const inst_t *inst) const;
   reg_producer_t getCollisionType(unsigned wid, const inst_t *inst) const;
@@ -66,7 +67,12 @@ class Scoreboard {
   const bool islongop(unsigned warp_id, unsigned regnum);
 
  private:
-  void reserveRegister(unsigned wid, unsigned regnum);
+  void reserveRegister(unsigned wid, unsigned regnum, unsigned owner_uid,
+                       bool forwardable,
+                       unsigned long long forward_ready_cycle);
+  void clearRegister(unsigned wid, unsigned regnum);
+  bool registerCollision(unsigned wid, unsigned regnum) const;
+  unsigned long long currentCycle() const;
   int get_sid() const { return m_sid; }
 
   unsigned m_sid;
@@ -78,8 +84,13 @@ class Scoreboard {
   std::vector<std::set<unsigned> > longopregs;
   // Producer type for each pending register (NCU-style stall classification)
   std::vector<std::map<unsigned, reg_producer_t> > reg_producer;
+  // Dynamic producer ownership prevents a late writeback from clearing a
+  // younger producer that reused a forwarded destination register.
+  std::vector<std::map<unsigned, unsigned> > reg_owner;
+  std::vector<std::map<unsigned, unsigned long long> > reg_forward_ready;
 
   class gpgpu_t *m_gpu;
+  bool m_alu_result_forwarding;
 };
 
 #endif /* SCOREBOARD_H_ */

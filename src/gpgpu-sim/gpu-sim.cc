@@ -555,6 +555,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_reg_bank_use_warp_id", OPT_BOOL, &gpgpu_reg_bank_use_warp_id,
       "Use warp ID in mapping registers to banks (default = off)", "0");
+  option_parser_register(
+      opp, "-gpgpu_alu_result_forwarding", OPT_BOOL,
+      &gpgpu_alu_result_forwarding,
+      "Allow dependent ALU instructions to consume results after the "
+      "configured operation latency instead of waiting for writeback",
+      "0");
   option_parser_register(opp, "-gpgpu_sub_core_model", OPT_BOOL,
                          &sub_core_model,
                          "Sub Core Volta/Pascal model (default = off)", "0");

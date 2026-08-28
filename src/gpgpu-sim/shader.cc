@@ -377,7 +377,8 @@ void shader_core_ctx::create_front_pipeline() {
 }
 
 void shader_core_ctx::create_schedulers() {
-  m_scoreboard = new Scoreboard(m_sid, m_config->max_warps_per_shader, m_gpu);
+  m_scoreboard = new Scoreboard(m_sid, m_config->max_warps_per_shader, m_gpu,
+                                m_config->gpgpu_alu_result_forwarding);
 
   // scedulers
   // must currently occur after all inputs have been initialized.
@@ -3576,7 +3577,8 @@ void ldst_unit::L1_latency_queue_cycle() {
                 m_pending_writes[mf_next->get_inst().warp_id()].erase(
                     mf_next->get_inst().out[r]);
                 m_scoreboard->releaseRegister(mf_next->get_inst().warp_id(),
-                                              mf_next->get_inst().out[r]);
+                                              mf_next->get_inst().out[r],
+                                              mf_next->get_inst().get_uid());
                 m_core->warp_inst_complete(mf_next->get_inst());
               }
             }
@@ -4293,13 +4295,13 @@ void ldst_unit::writeback() {
                 --m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]];
             if (!still_pending) {
               m_pending_writes[m_next_wb.warp_id()].erase(m_next_wb.out[r]);
-              m_scoreboard->releaseRegister(m_next_wb.warp_id(),
-                                            m_next_wb.out[r]);
+              m_scoreboard->releaseRegister(
+                  m_next_wb.warp_id(), m_next_wb.out[r], m_next_wb.get_uid());
               insn_completed = true;
             }
           } else {  // shared
-            m_scoreboard->releaseRegister(m_next_wb.warp_id(),
-                                          m_next_wb.out[r]);
+            m_scoreboard->releaseRegister(m_next_wb.warp_id(), m_next_wb.out[r],
+                                          m_next_wb.get_uid());
             insn_completed = true;
           }
         } else if (m_next_wb.m_is_ldgsts) {  // for LDGSTS instructions where no
