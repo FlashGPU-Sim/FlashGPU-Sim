@@ -10,10 +10,17 @@ of SASS NOPs on SM120. Always inspect the generated cubin after changing CUDA
 toolkit versions. The collector records the ELF text size reported by
 `cuobjdump`; `FOOTPRINT_STEPS` is not treated as a byte count.
 
+The default footprint variant is a hierarchy probe, not a cycle-correlation
+probe: FlashGPU-Sim executes the PTX warp barrier while hardware executes the
+lowered SASS NOP. The `timing` variant instead emits a dependent LCG chain. Each
+step remains one PTX `mad.lo.u32` and one SM120 SASS `IMAD`, so it exposes base
+integer dependency latency separately from instruction-cache behavior.
+
 ## Build and smoke test
 
 ```bash
 make all test check
+make timing check-timing
 ```
 
 `make sweep` builds the full set of footprints around the currently observed
@@ -27,6 +34,7 @@ make collect-cold
 make collect-warm
 make collect-skip
 make collect-parallel
+make collect-timing-cold
 ```
 
 - `cold` uses kernel replay and flushes caches between replay passes.
@@ -38,6 +46,9 @@ make collect-parallel
 - `parallel` runs 1--32 warps at distinct device-function PCs on one SM. The
   first nonzero `sm__icc_requests_lookup_miss_tag_unavailable` point bounds ICC
   miss/fill resources independently of sequential capacity.
+- `timing-cold` runs one dependent `IMAD` chain through each quick footprint.
+  Compare it with a perfect-I-cache simulation first. A mismatch there is a
+  core pipeline issue and must not be hidden by tuning prefetch depth.
 
 Reports and raw NCU logs are written below
 `tests/run/microbench/instruction_cache/`. They are intentionally ignored by
@@ -52,6 +63,8 @@ needed.
   associativity.
 - A plateau in the skipped-body experiment proves read-ahead/preload traffic,
   but does not by itself identify a prefetch distance.
+- Aggregate ICC and GCC lookup counters are pipeline events; they must not be
+  equated directly with simulator cache-line hits and misses.
 - Current RTX 5090 NCU releases expose ICC/GCC as aggregate replay metrics, not
   as PM Sampling metrics. This tool therefore cannot produce a GPUVision time
   series for these units.

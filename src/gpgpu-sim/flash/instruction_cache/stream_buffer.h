@@ -27,7 +27,7 @@ struct instruction_prefetch_request {
 struct instruction_stream_buffer_config {
   uint64_t line_size = 128;
   unsigned streams = 1;
-  unsigned depth = 8;
+  unsigned depth = 4;
   unsigned issue_width = 1;
 };
 

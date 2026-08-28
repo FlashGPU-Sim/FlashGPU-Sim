@@ -26,19 +26,19 @@ label = "TritonTrace - GEMM m512_n6000_k1536"
 launcher = "tests/ci/perf/traces/SM120_RTX5090/gemm-m512-n6000-k1536/kernel_tma_gemm_launch1"
 ncu_cycles = 169861
 
-# Reuse the same frozen workloads so this job isolates the instruction-cache
-# configuration and bounded prefetcher.
-[SM120_RTX5090_ICACHE.gemm.tma-gemm-m4096-n128-k4096]
-label = "TritonTrace - GEMM m4096_n128_k4096 + I-cache prefetch"
-launcher = "tests/ci/perf/traces/SM120_RTX5090/gemm-m4096-n128-k4096/kernel_tma_gemm_launch1"
+# These approximately 10 us kernels make instruction-startup behavior visible
+# without turning the experimental I-cache job into a long simulation soak.
+[SM120_RTX5090_ICACHE.short-kernels.tma-gemm-m512-n16-k512]
+label = "TritonTrace - GEMM m512_n16_k512 + I-cache prefetch"
+launcher = "tests/ci/perf/traces/SM120_RTX5090/gemm-m512-n16-k512/kernel_tma_gemm_launch1"
 trace_config = "SM120_RTX5090"
-ncu_cycles = 119636
+ncu_cycles = 24600.54
 
-[SM120_RTX5090_ICACHE.gemm.tma-gemm-m512-n6000-k1536]
-label = "TritonTrace - GEMM m512_n6000_k1536 + I-cache prefetch"
-launcher = "tests/ci/perf/traces/SM120_RTX5090/gemm-m512-n6000-k1536/kernel_tma_gemm_launch1"
+[SM120_RTX5090_ICACHE.short-kernels.gpt2-fa-h12-s128-d64]
+label = "TritonTrace - GPT-2 FA h12_s128_d64 + I-cache prefetch"
+launcher = "tests/ci/perf/traces/SM120_RTX5090/fa-gpt2-h12-s128-d64/flash_attn_kernel_launch5"
 trace_config = "SM120_RTX5090"
-ncu_cycles = 169861
+ncu_cycles = 25243.15
 
 [SM120_RTX5090.llama3.llama3-prefill-qkv]
 label = "TritonTrace - Llama3 Prefill QKV"

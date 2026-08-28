@@ -1831,6 +1831,14 @@ class shader_core_config : public core_config {
     }
 
     m_L1I_config.init(m_L1I_config.m_config_string, FuncCachePreferNone);
+    if (icache_address_scale == 0 ||
+        m_L1I_config.get_line_sz() % icache_address_scale != 0) {
+      fprintf(stderr,
+              "GPGPU-Sim Config ERROR: instruction-cache address scale %u "
+              "must be a nonzero divisor of line size %u\n",
+              icache_address_scale, m_L1I_config.get_line_sz());
+      abort();
+    }
     m_L1T_config.init(m_L1T_config.m_config_string, FuncCachePreferNone);
     m_L1C_config.init(m_L1C_config.m_config_string, FuncCachePreferNone);
     m_L1D_config.init(m_L1D_config.m_config_string, FuncCachePreferNone);
@@ -2024,6 +2032,7 @@ class shader_core_config : public core_config {
                : perfect_inst_cache_override != 0;
   }
   unsigned inst_fetch_throughput;
+  unsigned icache_address_scale;
   bool icache_prefetch_enable;
   unsigned icache_prefetch_streams;
   unsigned icache_prefetch_depth;

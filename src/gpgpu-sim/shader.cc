@@ -45,6 +45,7 @@
 #include "../statwrapper.h"
 #include "addrdec.h"
 #include "dram.h"
+#include "flash/instruction_cache/address_mapping.h"
 #include "gpu-misc.h"
 #include "gpu-sim.h"
 #include "icnt_wrapper.h"
@@ -1471,13 +1472,15 @@ void shader_core_ctx::fetch() {
         continue;
       }
       m_warp[mf->get_wid()]->clear_imiss_pending();
+      const flash_gpgpu_sim::instruction_address_mapper mapper(
+          m_config->icache_address_scale,
+          m_config->m_L1I_config.get_line_sz());
       m_inst_fetch_buffer =
           ifetch_buffer_t(m_warp[mf->get_wid()]->get_pc(),
-                          mf->get_access_size(), mf->get_wid());
+                          mapper.functional_bytes(mf->get_access_size()),
+                          mf->get_wid());
       assert(m_warp[mf->get_wid()]->get_pc() ==
-             (mf->get_addr() -
-              PROGRAM_MEM_START));  // Verify that we got the instruction we
-                                    // were expecting.
+             mapper.functional_pc(mf->get_addr(), PROGRAM_MEM_START));
       m_inst_fetch_buffer.m_valid = true;
       m_warp[mf->get_wid()]->set_last_fetch(m_gpu->gpu_sim_cycle);
       delete mf;
@@ -1525,16 +1528,16 @@ void shader_core_ctx::fetch() {
             m_warp[warp_id]->ibuffer_empty()) {
           address_type pc;
           pc = m_warp[warp_id]->get_pc();
-          address_type ppc = pc + PROGRAM_MEM_START;
-          unsigned nbytes = 16;
-          unsigned offset_in_block =
-              pc & (m_config->m_L1I_config.get_line_sz() - 1);
-          if ((offset_in_block + nbytes) > m_config->m_L1I_config.get_line_sz())
-            nbytes = (m_config->m_L1I_config.get_line_sz() - offset_in_block);
+          const flash_gpgpu_sim::instruction_address_mapper mapper(
+              m_config->icache_address_scale,
+              m_config->m_L1I_config.get_line_sz());
+          const flash_gpgpu_sim::instruction_fetch_mapping fetch =
+              mapper.map_fetch(pc, 16, PROGRAM_MEM_START);
 
           // TODO: replace with use of allocator
           // mem_fetch *mf = m_mem_fetch_allocator->alloc()
-          mem_access_t acc(INST_ACC_R, ppc, nbytes, false, m_gpu->gpgpu_ctx);
+          mem_access_t acc(INST_ACC_R, fetch.cache_address, fetch.cache_bytes,
+                           false, m_gpu->gpgpu_ctx);
           mem_fetch *mf = new mem_fetch(
               acc, NULL, m_warp[warp_id]->get_kernel_info()->get_streamID(),
               READ_PACKET_SIZE, warp_id, m_sid, m_tpc, m_memory_config,
@@ -1546,7 +1549,7 @@ void shader_core_ctx::fetch() {
             shader_cache_access_log(m_sid, INSTRUCTION, 0);
           } else {
             status = m_L1I->access(
-                (new_addr_type)ppc, mf,
+                (new_addr_type)fetch.cache_address, mf,
                 m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events);
           }
 
@@ -1554,8 +1557,8 @@ void shader_core_ctx::fetch() {
               status != RESERVATION_FAIL) {
             kernel_info_t *kernel = m_warp[warp_id]->get_kernel_info();
             m_instruction_prefetcher->observe_demand(
-                kernel->get_uid(), kernel->get_streamID(), ppc,
-                status == MISS);
+                kernel->get_uid(), kernel->get_streamID(),
+                fetch.cache_address, status == MISS);
           }
 
           if (status == MISS) {
@@ -1564,7 +1567,8 @@ void shader_core_ctx::fetch() {
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
           } else if (status == HIT) {
             m_last_warp_fetched = warp_id;
-            m_inst_fetch_buffer = ifetch_buffer_t(pc, nbytes, warp_id);
+            m_inst_fetch_buffer =
+                ifetch_buffer_t(pc, fetch.functional_bytes, warp_id);
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
             delete mf;
           } else {

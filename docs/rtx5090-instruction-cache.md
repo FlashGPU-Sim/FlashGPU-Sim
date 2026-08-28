@@ -32,7 +32,7 @@ series therefore cannot currently replace controlled cold/warm experiments.
 
 ## Current observations
 
-These values were collected from real `sm_120a` cubins on August 27, 2026.
+These values were collected from real `sm_120a` cubins on August 27-28, 2026.
 They are effective transitions for the generated sequential layout, not claims
 about undocumented physical organization.
 
@@ -73,7 +73,9 @@ default perfect instruction cache to:
 
 - a 64 KiB per-SM read-only instruction cache with 128-byte simulator lines;
 - 12 MSHR entries, based on the independent-PC pressure bound;
-- one bounded stream with an eight-line lookahead window and one issue attempt
+- a cache-address scale of two, mapping eight-byte PTX PC slots onto Blackwell's
+  sixteen-byte SASS address spacing without changing functional PCs;
+- one bounded stream with a four-line lookahead window and one issue attempt
   per SM cycle.
 
 The stream-buffer depth is a real finite ahead window. Demand progress slides
@@ -81,11 +83,56 @@ the window, replacement changes a generation token, and late fills from old or
 canceled generations cannot mutate current stream state. Demand reservation
 failure also suppresses speculative issue for that cycle.
 
-The eight-line depth and 128-byte line are model parameters, not reverse-
-engineered RTX 5090 values. The current implementation also does **not** add a
-shared GCC between ICC and L2. Modeling ICC misses as direct lower-memory
-requests is incomplete, so this configuration must not replace
-`SM120_RTX5090` for cycle validation yet.
+The four-line depth, address scale, and 128-byte line are model parameters, not
+reverse-engineered RTX 5090 values. Address scale two corrects the obvious
+eight-byte PTX versus sixteen-byte SASS slot mismatch, but variable PTX-to-SASS
+expansion still requires a real address map. The current implementation also
+does **not** add a shared GCC or hardware-like code preload between ICC and L2.
+Modeling ICC misses as direct lower-memory requests is incomplete, so this
+configuration must not replace `SM120_RTX5090` for general cycle validation.
+
+### Short-kernel correlation
+
+Two frozen cubins keep the validation target in the approximately 10 us range.
+They were measured cold with NCU base clock control and replayed from the same
+cubin/PTX artifacts. Full counters and cubin hashes are in
+`tests/ci/perf/instruction_cache_reference.csv`.
+
+| Workload | RTX 5090 cycles | Simulator cycles | Error | L1I reservation failures |
+|---|---:|---:|---:|---:|
+| GEMM M512 N16 K512 | 24,600.54 | 24,908 | +1.25% | 0 |
+| GPT-2 FA H12 S128 D64 | 25,243.15 | 28,888 | +14.44% | 0 |
+
+These results bound the current short-kernel cycle error but do not validate a
+physical ICC/GCC implementation. In particular, the FA run still generates
+45,756 simulator L1I misses, while hardware reports 3,889 ICC lookup misses;
+the event definitions and hierarchy are not one-to-one.
+
+### Microbenchmark correlation gap
+
+The original footprint probe lowers PTX `bar.warp.sync` to SASS NOP, so its
+cycle count is intentionally not compared. A second variant preserves a
+one-to-one dependent `mad.lo.u32`/`IMAD` chain. It shows that cycle correlation
+is not yet solved even before adding a GCC:
+
+| Steps | RTX 5090 cycles | Perfect-I sim | Experimental-I sim |
+|---:|---:|---:|---:|
+| 64 | 3,977.42 | 6,400 | 7,730 |
+| 1,024 | 7,911.99 | 14,095 | 21,841 |
+| 4,096 | 20,425.12 | 38,716 | 67,126 |
+| 5,120 | 30,176.85 | 46,923 | 82,200 |
+
+The perfect-I result isolates a base integer dependency/scoreboard mismatch.
+The additional experimental-I error comes from fetching each PTX line through
+the normal lower-memory path. On hardware, the 66,176-byte probe has 528 ICC
+requests but only 10 ICC lookup misses and 16 GCC misses; the simulator has
+1,029 L1I misses for the corresponding timing probe. Prefetch depth must not be
+tuned to compensate for either mismatch.
+
+For the final four-line, scale-two configuration, both short kernels complete
+without L1I reservation failure. This addresses the observed liveness failure
+from the older depth-eight configuration, but it is only a bounded regression,
+not proof of the hardware prefetch distance.
 
 ## Remaining probes
 
@@ -102,8 +149,16 @@ The next hierarchy change should wait for three targeted measurements:
    warm ICC miss/GCC hit, and cold GCC miss cases; subtract a same-layout
    control traversal.
 
-Only after those probes identify sharing, capacity/associativity, and latency
-should the simulator add a GPC-scoped GCC and route ICC misses through it.
+4. **PTX-to-SASS addresses:** extract per-instruction SASS PCs and correlate
+   them with PTX source anchors. Replace the global scale with a kernel-local
+   monotonic address map when mappings are complete enough.
+5. **Preload timing and extent:** launch skipped-body kernels with controlled
+   entry-to-body distance and measure ICC/GCC traffic and launch duration. This
+   separates launch-time preload from demand stream lookahead.
+
+Only after those probes identify sharing, capacity/associativity, latency, and
+preload semantics should the simulator add a GPC-scoped GCC and route ICC
+misses through it.
 
 ## Commands
 

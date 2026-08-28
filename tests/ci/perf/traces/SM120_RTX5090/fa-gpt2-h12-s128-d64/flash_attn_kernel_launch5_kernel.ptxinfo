@@ -1,0 +1,5 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function 'flash_attn_kernel' for 'sm_120a'
+ptxas info    : Function properties for flash_attn_kernel
+    8 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 124 registers, 1024 bytes smem, 968 bytes cmem[0], 0 bytes lmem
