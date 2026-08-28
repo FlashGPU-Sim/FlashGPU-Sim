@@ -2472,11 +2472,13 @@ static bool tma_mcast_via_noc(shader_core_ctx *core) {
   if (!core || !core->get_config())
     return false;
   const auto *cfg = core->get_config();
-  if (!cfg->gpgpu_cluster_noc_enable || !cfg->gpgpu_tma_mcast_enable_timing)
+  if (!cfg->gpgpu_tma_mcast_enable_timing)
     return false;
+  if (flash_gpgpu_sim::dsm_fabric_enabled(core))
+    return true;
   auto *cluster = core->get_cluster();
-  return cluster && cluster->get_cluster_noc() &&
-         cluster->get_cluster_noc()->enabled();
+  return cfg->gpgpu_cluster_noc_enable && cluster &&
+         cluster->get_cluster_noc() && cluster->get_cluster_noc()->enabled();
 }
 
 // Multicast: copy data from the issuing CTA's shared memory to peer CTAs.
@@ -2534,7 +2536,8 @@ static void schedule_cluster_tma_mcast_noc(
   if (!core || !tma_mcast_via_noc(core))
     return;
   auto *cluster = core->get_cluster();
-  auto *noc = cluster->get_cluster_noc();
+  if (!cluster)
+    return;
   memory_space *src_smem = core->get_cta_smem(issuer_hw_cta);
   if (!src_smem)
     return;
@@ -2546,18 +2549,39 @@ static void schedule_cluster_tma_mcast_noc(
 
   const uint64_t stream_key = (static_cast<uint64_t>(issuer_hw_cta) << 32) |
                               static_cast<uint64_t>(mbar_addr);
+  const unsigned mbar_bytes =
+      core->get_config()->gpgpu_tma_mcast_mbar_after_data ? size_in_bytes : 0;
+  const unsigned mbar_for_peer =
+      core->get_config()->gpgpu_tma_mcast_mbar_after_data ? mbar_addr : 0;
 
-  // Data + mbar to peers only (issuer already has local smem if destination).
-  for_each_cluster_peer_cta(
-      core, issuer_hw_cta,
-      [&](shader_core_ctx *peer_core, unsigned peer_slot) {
-        const unsigned dst_cid =
-            peer_core->get_config()->sid_to_cid(peer_core->get_sid());
-        noc->inject_tma_mcast_to_peer(src_cid, dst_cid, peer_slot, smem_addr,
-                                      buf.data(), size_in_bytes, mbar_addr,
-                                      size_in_bytes, stream_key);
-      },
-      /*include_issuer=*/false, use_mask, cta_mask);
+  if (flash_gpgpu_sim::dsm_fabric_enabled(core)) {
+    for_each_cluster_peer_cta(
+        core, issuer_hw_cta,
+        [&](shader_core_ctx *peer_core, unsigned peer_slot) {
+          const unsigned dst_cid =
+              peer_core->get_config()->sid_to_cid(peer_core->get_sid());
+          const unsigned gen = cluster->dsm_cta_gen(dst_cid, peer_slot);
+          if (!cluster->dsm_issue_tma(src_cid, dst_cid, size_in_bytes,
+                                      smem_addr, peer_slot, gen, buf.data(),
+                                      mbar_for_peer, mbar_bytes))
+            cluster->dsm_queue_tma_retry(
+                src_cid, dst_cid, size_in_bytes, smem_addr, peer_slot, gen,
+                buf.data(), size_in_bytes, mbar_for_peer, mbar_bytes);
+        },
+        /*include_issuer=*/false, use_mask, cta_mask);
+  } else if (cluster->get_cluster_noc()) {
+    auto *noc = cluster->get_cluster_noc();
+    for_each_cluster_peer_cta(
+        core, issuer_hw_cta,
+        [&](shader_core_ctx *peer_core, unsigned peer_slot) {
+          const unsigned dst_cid =
+              peer_core->get_config()->sid_to_cid(peer_core->get_sid());
+          noc->inject_tma_mcast_to_peer(src_cid, dst_cid, peer_slot, smem_addr,
+                                        buf.data(), size_in_bytes, mbar_addr,
+                                        size_in_bytes, stream_key);
+        },
+        /*include_issuer=*/false, use_mask, cta_mask);
+  }
 
   // Masked complete_tx also completes the issuer locally when its bit is set.
   if (include_issuer_for_mbar && use_mask) {

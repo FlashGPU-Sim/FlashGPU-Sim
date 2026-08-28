@@ -5696,15 +5696,28 @@ void barrier_set_t::poll_hang_preventers() {
     }
     const unsigned unique = unique_pc_count(&m_hang_pc_hist[w * kHangPcHist], n);
     const auto *cfg = m_shader->get_config();
+    unsigned fabric_rtt = 0;
+    bool fabric_out = false;
+    if (m_shader->get_cluster()) {
+      fabric_out = m_shader->get_cluster()->dsm_endpoint_busy();
+      fabric_rtt = m_shader->get_cluster()->dsm_max_tx_age(
+          m_shader->get_gpu()->gpu_sim_cycle +
+          m_shader->get_gpu()->gpu_tot_sim_cycle);
+    }
     const unsigned quiet_limit = peer_arm_quiet_limit(
         cfg->gpgpu_dsm_remote_latency, cfg->gpgpu_tma_mcast_hop_latency,
-        cfg->gpgpu_mbarrier_trywait_latency);
+        cfg->gpgpu_mbarrier_trywait_latency, fabric_rtt);
     if (at_wait)
       m_hang_saw_peer[w] = false;
-    else if (m_hang_saw_peer[w])
-      m_hang_quiet_cycles[w]++;
+    else if (m_hang_saw_peer[w]) {
+      if (fabric_out)
+        m_hang_quiet_cycles[w] = 0;
+      else
+        m_hang_quiet_cycles[w]++;
+    }
     const bool peer_armed = peer_access_still_armed(
-        m_hang_saw_peer[w], at_wait, m_hang_quiet_cycles[w], quiet_limit);
+        m_hang_saw_peer[w], at_wait, m_hang_quiet_cycles[w], quiet_limit,
+        fabric_out);
     if (!peer_armed)
       m_hang_saw_peer[w] = false;
     if (at_wait || mbar_interest || !peer_armed || unique > kHangTightLoopPcs)
@@ -6724,6 +6737,25 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
       this, [](void *ctx, unsigned txid, const uint8_t *p, unsigned n) {
         static_cast<simt_core_cluster *>(ctx)->dsm_on_load_data(txid, p, n);
       });
+  m_dsm_endpoint->set_on_tma_mbar(
+      this, [](void *ctx, unsigned local_sm, unsigned cta, unsigned mbar_addr,
+               unsigned mbar_bytes) {
+        static_cast<simt_core_cluster *>(ctx)->dsm_on_tma_mbar(
+            local_sm, cta, mbar_addr, mbar_bytes);
+      });
+  m_dsm_endpoint->set_on_mbar(
+      this,
+      [](void *ctx, unsigned local_sm, unsigned cta, unsigned src,
+         unsigned mbar_addr, unsigned op, unsigned count, unsigned req_cta,
+         unsigned req_warp, int parity) {
+        return static_cast<simt_core_cluster *>(ctx)->dsm_on_mbar_req(
+            local_sm, cta, src, mbar_addr, op, count, req_cta, req_warp,
+            parity);
+      },
+      [](void *ctx, unsigned local_sm, unsigned req_warp) {
+        static_cast<simt_core_cluster *>(ctx)->dsm_on_mbar_done(local_sm,
+                                                               req_warp);
+      });
 }
 
 void simt_core_cluster::aggregate_stats() {
@@ -6757,6 +6789,7 @@ void simt_core_cluster::cluster_noc_cycle() {
   if (m_dsm_endpoint) {
     m_dsm_endpoint->cycle(now);
     dsm_retry_issues();
+    dsm_retry_tma_mbar();
   } else if (m_dsm_fabric) {
     m_dsm_fabric->cycle(now);
   }
@@ -6990,6 +7023,141 @@ void shader_core_ctx::dsm_issue_lane_ops(warp_inst_t &inst) {
                                  cta);
   }
   m_dsm_lane_ops.clear();
+}
+
+bool simt_core_cluster::dsm_endpoint_busy() const {
+  if (m_dsm_endpoint && m_dsm_endpoint->busy()) return true;
+  return !m_tma_retry.empty() || !m_mbar_retry.empty();
+}
+
+unsigned simt_core_cluster::dsm_max_tx_age(unsigned long long now) const {
+  return m_dsm_endpoint ? m_dsm_endpoint->max_tx_age(now) : 0;
+}
+
+bool simt_core_cluster::dsm_issue_tma(unsigned src, unsigned dst,
+                                      unsigned bytes, uint64_t addr,
+                                      unsigned cta_slot, unsigned cta_gen,
+                                      const void *data, unsigned mbar_addr,
+                                      unsigned mbar_bytes) {
+  if (!m_dsm_endpoint) return false;
+  return m_dsm_endpoint->issue_tma(src, dst, bytes, addr, cta_slot, cta_gen,
+                                   data, mbar_addr, mbar_bytes);
+}
+
+bool simt_core_cluster::dsm_issue_mbar(unsigned src, unsigned dst,
+                                       unsigned cta_slot, unsigned cta_gen,
+                                       unsigned mbar_addr, unsigned op,
+                                       unsigned count, unsigned req_cta,
+                                       unsigned req_warp, int parity) {
+  if (!m_dsm_endpoint) return false;
+  return m_dsm_endpoint->issue_mbar(src, dst, cta_slot, cta_gen, mbar_addr, op,
+                                    count, req_cta, req_warp, parity);
+}
+
+void simt_core_cluster::dsm_queue_tma_retry(
+    unsigned src, unsigned dst, unsigned bytes, uint64_t addr,
+    unsigned cta_slot, unsigned cta_gen, const void *data, unsigned n,
+    unsigned mbar_addr, unsigned mbar_bytes) {
+  dsm_tma_retry_t r;
+  r.src = src;
+  r.dst = dst;
+  r.bytes = bytes;
+  r.addr = addr;
+  r.cta_slot = cta_slot;
+  r.cta_gen = cta_gen;
+  r.mbar_addr = mbar_addr;
+  r.mbar_bytes = mbar_bytes;
+  if (data && n)
+    r.data.assign((const uint8_t *)data, (const uint8_t *)data + n);
+  m_tma_retry.push_back(std::move(r));
+}
+
+void simt_core_cluster::dsm_queue_mbar_retry(
+    unsigned src, unsigned dst, unsigned cta_slot, unsigned cta_gen,
+    unsigned mbar_addr, unsigned op, unsigned count, unsigned req_cta,
+    unsigned req_warp, int parity) {
+  dsm_mbar_retry_t r;
+  r.src = src;
+  r.dst = dst;
+  r.cta_slot = cta_slot;
+  r.cta_gen = cta_gen;
+  r.mbar_addr = mbar_addr;
+  r.op = op;
+  r.count = count;
+  r.req_cta = req_cta;
+  r.req_warp = req_warp;
+  r.parity = parity;
+  m_mbar_retry.push_back(r);
+}
+
+void simt_core_cluster::dsm_retry_tma_mbar() {
+  std::deque<dsm_tma_retry_t> tkeep;
+  while (!m_tma_retry.empty()) {
+    dsm_tma_retry_t r = std::move(m_tma_retry.front());
+    m_tma_retry.pop_front();
+    if (!dsm_issue_tma(r.src, r.dst, r.bytes, r.addr, r.cta_slot, r.cta_gen,
+                       r.data.empty() ? nullptr : r.data.data(), r.mbar_addr,
+                       r.mbar_bytes))
+      tkeep.push_back(std::move(r));
+  }
+  m_tma_retry.swap(tkeep);
+  std::deque<dsm_mbar_retry_t> mkeep;
+  while (!m_mbar_retry.empty()) {
+    dsm_mbar_retry_t r = m_mbar_retry.front();
+    m_mbar_retry.pop_front();
+    if (!dsm_issue_mbar(r.src, r.dst, r.cta_slot, r.cta_gen, r.mbar_addr, r.op,
+                        r.count, r.req_cta, r.req_warp, r.parity))
+      mkeep.push_back(r);
+  }
+  m_mbar_retry.swap(mkeep);
+}
+
+void simt_core_cluster::dsm_on_tma_mbar(unsigned local_sm, unsigned cta,
+                                        unsigned mbar_addr,
+                                        unsigned mbar_bytes) {
+  if (local_sm >= num_cores()) return;
+  shader_core_ctx *core = get_core(local_sm);
+  if (core)
+    core->try_complete_cluster_peer_mbarrier(cta, mbar_addr, mbar_bytes);
+}
+
+bool simt_core_cluster::dsm_on_mbar_req(unsigned local_sm, unsigned cta,
+                                        unsigned src, unsigned mbar_addr,
+                                        unsigned op, unsigned count,
+                                        unsigned req_cta, unsigned req_warp,
+                                        int parity) {
+  if (local_sm >= num_cores()) return false;
+  shader_core_ctx *core = get_core(local_sm);
+  if (!core) return false;
+  using flash_gpgpu_sim::cluster_mbar_op;
+  switch (static_cast<cluster_mbar_op>(op)) {
+    case cluster_mbar_op::TRY_COMPLETE_TX:
+    case cluster_mbar_op::COMPLETE_TX:
+      core->try_complete_cluster_peer_mbarrier(cta, mbar_addr, count);
+      core->notify_remote_mbarrier_waiters(cta, mbar_addr);
+      return false;
+    case cluster_mbar_op::ARRIVE:
+      core->remote_mbarrier_arrive(cta, mbar_addr, count);
+      core->notify_remote_mbarrier_waiters(cta, mbar_addr);
+      return false;
+    case cluster_mbar_op::EXPECT_TX:
+      core->remote_mbarrier_expect_tx(cta, mbar_addr, count);
+      return false;
+    case cluster_mbar_op::WAIT_REG:
+      return core->register_remote_mbarrier_wait(cta, mbar_addr, parity, src,
+                                                 req_cta, req_warp);
+    case cluster_mbar_op::WAIT_DONE:
+      return false;
+    default:
+      return false;
+  }
+}
+
+void simt_core_cluster::dsm_on_mbar_done(unsigned local_sm,
+                                         unsigned req_warp) {
+  if (local_sm >= num_cores()) return;
+  shader_core_ctx *core = get_core(local_sm);
+  if (core) core->release_remote_mbarrier_waiter(req_warp);
 }
 
 void simt_core_cluster::dsm_queue_retry(unsigned src,

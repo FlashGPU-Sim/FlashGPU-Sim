@@ -24,22 +24,29 @@ inline unsigned hang_watchdog_threshold(unsigned configured) {
 // Hop-scale so a remote load's scoreboard stall stays armed, but a later
 // local tight loop does not.
 inline unsigned peer_arm_quiet_limit(unsigned hop, unsigned tma_hop,
-                                     unsigned trywait) {
+                                     unsigned trywait,
+                                     unsigned fabric_rtt = 0) {
   unsigned n = hop * 2 + 64;
   if (tma_hop + 64 > n)
     n = tma_hop + 64;
   if (trywait + 64 > n)
     n = trywait + 64;
+  if (fabric_rtt + 64 > n)
+    n = fabric_rtt + 64;
   return n;
 }
 
 // Armed only while the last peer access is recent. Recognized waits
-// (try_wait park, bar.sync, …) drop the arm immediately.
+// (try_wait park, bar.sync, …) drop the arm immediately. Fabric
+// outstanding / live RTT keeps the arm until the path is idle.
 inline bool peer_access_still_armed(bool saw_peer, bool at_recognized_wait,
                                     unsigned quiet_since_peer,
-                                    unsigned quiet_limit) {
+                                    unsigned quiet_limit,
+                                    bool fabric_outstanding = false) {
   if (!saw_peer || at_recognized_wait)
     return false;
+  if (fabric_outstanding)
+    return true;
   return quiet_since_peer < quiet_limit;
 }
 

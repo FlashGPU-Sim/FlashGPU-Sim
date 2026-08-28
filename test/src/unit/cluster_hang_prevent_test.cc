@@ -49,6 +49,15 @@ TEST(ClusterHangPrevent, PeerArmExpiresAfterQuietAndOnWait) {
   EXPECT_FALSE(peer_access_still_armed(true, false, 220, 220));
 }
 
+TEST(ClusterHangPrevent, PeerArmStaysWhileFabricOutstanding) {
+  EXPECT_TRUE(peer_access_still_armed(true, false, 1000, 220,
+                                      /*fabric_outstanding=*/true));
+  EXPECT_FALSE(peer_access_still_armed(true, /*at_wait=*/true, 0, 220, true));
+  EXPECT_FALSE(peer_access_still_armed(true, false, 220, 220, false));
+  EXPECT_EQ(peer_arm_quiet_limit(78, 0, 0, /*fabric_rtt=*/500), 500u + 64u);
+  EXPECT_EQ(peer_arm_quiet_limit(78, 0, 0, /*fabric_rtt=*/10), 78u * 2 + 64u);
+}
+
 TEST(ClusterHangPrevent, EnvOverrideThreshold) {
   ASSERT_EQ(setenv("FLASHGPU_CLUSTER_HANG_WATCHDOG", "32", 1), 0);
   EXPECT_EQ(hang_watchdog_threshold(8192), 32u);

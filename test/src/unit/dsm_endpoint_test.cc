@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "../../../src/gpgpu-sim/dsm_endpoint.h"
 #include "../../../src/gpgpu-sim/dsm_fabric.h"
@@ -350,4 +351,96 @@ TEST(DsmEndpoint, LoadInjectAfterSram) {
   }
   EXPECT_EQ(got, 0xA0000007u);
   EXPECT_GE(spy.reads, 1u);
+}
+
+TEST(DsmEndpoint, TmaPutSourceUnicastNPeers) {
+  dsm_endpoint_config_t ecfg;
+  EpEnv e(dsm_fabric_config_t{}, ecfg);
+  std::vector<uint8_t> tile(128, 0xAB);
+  const unsigned npeer = 3;
+  for (unsigned d = 1; d <= npeer; d++)
+    ASSERT_TRUE(e.ep.issue_tma(0, d, 128, 0, 0, 0, tile.data(), 0x40, 128));
+  EXPECT_EQ(e.ep.stats().tma_packets, npeer);
+  EXPECT_EQ(e.fab.stats().packets_injected, npeer);
+  EXPECT_EQ(dsm_vc_of(dsm_packet_class_t::tma_data), dsm_vc_t::request);
+  EXPECT_FALSE(dsm_packet_is_control(dsm_packet_class_t::tma_data));
+  EXPECT_EQ(dsm_payload_flits(dsm_packet_class_t::tma_data, 128, 32), 4u);
+  EXPECT_EQ(e.fab.occupancy_flits(0, dsm_vc_t::request, 1), 4u);
+  EXPECT_EQ(e.fab.occupancy_flits(0, dsm_vc_t::request, 2), 4u);
+  EXPECT_EQ(e.fab.occupancy_flits(0, dsm_vc_t::request, 3), 4u);
+  ASSERT_TRUE(e.step_until_idle());
+  EXPECT_EQ(e.ep.stats().sram_store_bytes, npeer * 128u);
+}
+
+TEST(DsmEndpoint, TmaCompleteTxAfterSramApply) {
+  dsm_endpoint_config_t ecfg;
+  EpEnv e(dsm_fabric_config_t{}, ecfg);
+  SramSpy spy;
+  e.ep.set_sram(&spy, SramSpy::wr, SramSpy::rd);
+  struct TmaSpy {
+    SramSpy *sram;
+    unsigned mbar = 0;
+    unsigned writes_at_mbar = 0;
+    static void on_mbar(void *ctx, unsigned, unsigned, unsigned, unsigned) {
+      auto *t = static_cast<TmaSpy *>(ctx);
+      t->mbar++;
+      t->writes_at_mbar = t->sram->writes;
+    }
+  } tma;
+  tma.sram = &spy;
+  e.ep.set_on_tma_mbar(&tma, TmaSpy::on_mbar);
+  std::vector<uint8_t> tile(128, 0x5A);
+  ASSERT_TRUE(e.ep.issue_tma(0, 1, 128, 0, 0, 0, tile.data(), 0x40, 128));
+  unsigned guard = 0;
+  while (e.ep.busy() && guard++ < 100000) {
+    unsigned w = spy.writes;
+    unsigned m = tma.mbar;
+    e.ep.cycle(e.now++);
+    if (tma.mbar > m)
+      EXPECT_GE(spy.writes, 1u) << "complete_tx before dest SRAM apply";
+    if (spy.writes > w && tma.mbar == m) {
+      // SRAM can land the same cycle as the callback; never after.
+    }
+  }
+  EXPECT_EQ(tma.mbar, 1u);
+  EXPECT_GE(tma.writes_at_mbar, 1u);
+  EXPECT_GE(spy.writes, 1u);
+}
+
+TEST(DsmEndpoint, MbarRequestAndCompletionVcs) {
+  dsm_endpoint_config_t ecfg;
+  EpEnv e(dsm_fabric_config_t{}, ecfg);
+  EXPECT_EQ(dsm_vc_of(dsm_packet_class_t::mbarrier_request), dsm_vc_t::request);
+  EXPECT_EQ(dsm_vc_of(dsm_packet_class_t::mbarrier_completion),
+            dsm_vc_t::response);
+  EXPECT_TRUE(dsm_packet_is_control(dsm_packet_class_t::mbarrier_request));
+  EXPECT_TRUE(dsm_packet_is_control(dsm_packet_class_t::mbarrier_completion));
+  EXPECT_EQ(dsm_payload_flits(dsm_packet_class_t::mbarrier_request, 99, 32),
+            1u);
+  EXPECT_EQ(dsm_payload_flits(dsm_packet_class_t::mbarrier_completion, 99, 32),
+            1u);
+  ASSERT_TRUE(e.ep.issue_mbar(0, 1, 0, 0, 0x100, /*ARRIVE=*/0, 1, 0, 0, 0));
+  EXPECT_EQ(e.ep.stats().mbar_requests, 1u);
+  EXPECT_EQ(e.fab.occupancy_flits(0, dsm_vc_t::request, 1), 1u);
+  EXPECT_EQ(e.fab.occupancy_flits(0, dsm_vc_t::response, 1), 0u);
+  bool saw_rsp = false;
+  unsigned guard = 0;
+  while (e.ep.busy() && guard++ < 100000) {
+    if (e.fab.occupancy_flits(1, dsm_vc_t::response, 0) > 0) saw_rsp = true;
+    e.ep.cycle(e.now++);
+  }
+  EXPECT_TRUE(saw_rsp);
+  EXPECT_EQ(e.ep.stats().mbar_completions, 1u);
+  EXPECT_EQ(e.ep.outstanding(0), 0u);
+}
+
+TEST(DsmEndpoint, QuietWindowUsesOutstandingRtt) {
+  dsm_endpoint_config_t ecfg;
+  EpEnv e(dsm_fabric_config_t{}, ecfg);
+  ASSERT_TRUE(e.ep.issue_tma(0, 1, 128, 0, 0, 0, nullptr, 0, 0));
+  EXPECT_TRUE(e.ep.busy());
+  EXPECT_GE(e.ep.max_tx_age(e.now + 10), 10u);
+  ASSERT_TRUE(e.step_until_idle());
+  EXPECT_FALSE(e.ep.busy());
+  EXPECT_EQ(e.ep.max_tx_age(e.now), 0u);
 }

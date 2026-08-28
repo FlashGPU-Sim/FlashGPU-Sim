@@ -341,6 +341,42 @@ parse_mbarrier_arrive_expect_tx_options(const ptx_instruction *pI) {
   assert(is_arrive || is_expect_tx);
   return {is_arrive, is_expect_tx};
 }
+
+bool mbar_has_remote_path(shader_core_ctx *core) {
+  if (!core || !core->get_config())
+    return false;
+  if (flash_gpgpu_sim::dsm_fabric_enabled(core))
+    return true;
+  auto *cluster = core->get_cluster();
+  auto *noc = cluster ? cluster->get_cluster_noc() : nullptr;
+  return noc && noc->enabled();
+}
+
+void inject_remote_mbar(shader_core_ctx *shader, unsigned src_cid,
+                        unsigned dst_cid, unsigned dst_hw_cta,
+                        uint32_t mbar_addr, flash_gpgpu_sim::cluster_mbar_op op,
+                        uint32_t count, unsigned req_hw_cta = 0,
+                        unsigned req_warp_id = 0, int parity = 0) {
+  if (!shader)
+    return;
+  auto *cluster = shader->get_cluster();
+  if (!cluster)
+    return;
+  if (flash_gpgpu_sim::dsm_fabric_enabled(shader)) {
+    const unsigned gen = cluster->dsm_cta_gen(dst_cid, dst_hw_cta);
+    if (!cluster->dsm_issue_mbar(src_cid, dst_cid, dst_hw_cta, gen, mbar_addr,
+                                 (unsigned)op, count, req_hw_cta, req_warp_id,
+                                 parity))
+      cluster->dsm_queue_mbar_retry(src_cid, dst_cid, dst_hw_cta, gen,
+                                    mbar_addr, (unsigned)op, count, req_hw_cta,
+                                    req_warp_id, parity);
+    return;
+  }
+  auto *noc = cluster->get_cluster_noc();
+  if (noc && noc->enabled())
+    noc->inject_mbar_remote(src_cid, dst_cid, dst_hw_cta, mbar_addr, op, count,
+                            req_hw_cta, req_warp_id, parity);
+}
 } // namespace
 
 void handle_mbarrier_inst(const ptx_instruction *pIin,
@@ -388,11 +424,12 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
                       ->get_config()
                 : nullptr;
         if (!(remote && cfg && cfg->gpgpu_mbarrier_cluster_enable &&
-              cfg->gpgpu_cluster_noc_enable)) {
+              (cfg->gpgpu_cluster_noc_enable || cfg->gpgpu_dsm_enable))) {
           printf("GPGPU-Sim ERROR: mbarrier address 0x%x (absolute 0x%llx) is "
                  "not in SM %u's shared memory.\n"
-                 "Enable -gpgpu_cluster_noc_enable and "
-                 "-gpgpu_mbarrier_cluster_enable for remote mbarrier.\n",
+                 "Enable -gpgpu_mbarrier_cluster_enable with "
+                 "-gpgpu_dsm_enable or -gpgpu_cluster_noc_enable for remote "
+                 "mbarrier.\n",
                  *addr, (unsigned long long)absolute_addr,
                  thread->get_hw_sid());
           fflush(stdout);
@@ -416,8 +453,10 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
 
     auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
     const auto *cfg = core ? core->get_config() : nullptr;
-    if (core && cfg && cfg->gpgpu_cluster_noc_enable &&
-        cfg->gpgpu_mbarrier_cluster_enable && core->get_cluster()) {
+    if (core && cfg && cfg->gpgpu_mbarrier_cluster_enable &&
+        (cfg->gpgpu_cluster_noc_enable ||
+         flash_gpgpu_sim::dsm_fabric_enabled(core)) &&
+        core->get_cluster()) {
       unsigned owner_smid = 0;
       addr_t offset = 0;
       // Prefer full generic (mapa.u64 result). Fallback: local-relative only.
@@ -904,15 +943,15 @@ void barrier_set_t::notify_remote_waiters(unsigned cta_id,
   if (waiters.empty())
     return;
   auto *cluster = m_shader->get_cluster();
-  auto *noc = cluster ? cluster->get_cluster_noc() : nullptr;
-  if (!noc || !noc->enabled())
+  if (!cluster || !mbar_has_remote_path(m_shader))
     return;
   const unsigned owner_cid =
       m_shader->get_config()->sid_to_cid(m_shader->get_sid());
   for (const auto &w : waiters) {
-    noc->inject_mbar_remote(owner_cid, w.src_cid, w.src_hw_cta, mbarrier_addr,
-                            flash_gpgpu_sim::cluster_mbar_op::WAIT_DONE, 1,
-                            w.src_hw_cta, w.src_warp_id, /*parity=*/1);
+    inject_remote_mbar(m_shader, owner_cid, w.src_cid, w.src_hw_cta,
+                       mbarrier_addr,
+                       flash_gpgpu_sim::cluster_mbar_op::WAIT_DONE, 1,
+                       w.src_hw_cta, w.src_warp_id, /*parity=*/1);
   }
 }
 
@@ -1014,8 +1053,6 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     bool has_timeout = false;
     unsigned timeout_hint = 0;
 
-    auto *cluster = m_shader->get_cluster();
-    auto *noc = cluster ? cluster->get_cluster_noc() : nullptr;
     const unsigned src_cid =
         m_shader->get_config()->sid_to_cid(m_shader->get_sid());
 
@@ -1038,12 +1075,12 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
 
       if (mbar_info.is_remote) {
         any_remote = true;
-        any_blocking = true; // always wait for NoC DONE (or hop if immediate)
-        if (noc && noc->enabled()) {
-          noc->inject_mbar_remote(src_cid, mbar_info.remote_cid,
-                                  mbar_info.remote_hw_cta, addr,
-                                  flash_gpgpu_sim::cluster_mbar_op::WAIT_REG,
-                                  /*count=*/0, cta_id, warp_id, parity ? 1 : 0);
+        any_blocking = true; // always wait for DONE (or hop if immediate)
+        if (mbar_has_remote_path(m_shader)) {
+          inject_remote_mbar(m_shader, src_cid, mbar_info.remote_cid,
+                             mbar_info.remote_hw_cta, addr,
+                             flash_gpgpu_sim::cluster_mbar_op::WAIT_REG,
+                             /*count=*/0, cta_id, warp_id, parity ? 1 : 0);
         } else {
           // NoC off: fall back to local try_wait (will assert if bar missing).
           bool released = m_mbarrier_manager.try_wait(
@@ -1110,14 +1147,13 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     auto completed_tx_count = mbar_info.bar_count;
 
     if (mbar_info.is_remote) {
-      auto *cluster = m_shader->get_cluster();
-      auto *noc = cluster ? cluster->get_cluster_noc() : nullptr;
-      if (noc && noc->enabled()) {
+      if (mbar_has_remote_path(m_shader)) {
         const unsigned src_cid =
             m_shader->get_config()->sid_to_cid(m_shader->get_sid());
-        noc->inject_mbar_remote(
-            src_cid, mbar_info.remote_cid, mbar_info.remote_hw_cta, addr,
-            flash_gpgpu_sim::cluster_mbar_op::COMPLETE_TX, completed_tx_count);
+        inject_remote_mbar(m_shader, src_cid, mbar_info.remote_cid,
+                           mbar_info.remote_hw_cta, addr,
+                           flash_gpgpu_sim::cluster_mbar_op::COMPLETE_TX,
+                           completed_tx_count);
       }
       return;
     }
@@ -1133,8 +1169,6 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     auto [is_arrive, is_expect_tx] =
         parse_mbarrier_arrive_expect_tx_options(pI);
 
-    auto *cluster = m_shader->get_cluster();
-    auto *noc = cluster ? cluster->get_cluster_noc() : nullptr;
     const unsigned src_cid =
         m_shader->get_config()->sid_to_cid(m_shader->get_sid());
 
@@ -1150,22 +1184,24 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       auto count = mbar_info.bar_count;
 
       if (mbar_info.is_remote) {
-        if (noc && noc->enabled()) {
+        if (mbar_has_remote_path(m_shader)) {
           if (is_expect_tx && is_arrive) {
-            noc->inject_mbar_remote(
-                src_cid, mbar_info.remote_cid, mbar_info.remote_hw_cta, addr,
-                flash_gpgpu_sim::cluster_mbar_op::EXPECT_TX, count);
-            noc->inject_mbar_remote(
-                src_cid, mbar_info.remote_cid, mbar_info.remote_hw_cta, addr,
-                flash_gpgpu_sim::cluster_mbar_op::ARRIVE, 1);
+            inject_remote_mbar(m_shader, src_cid, mbar_info.remote_cid,
+                               mbar_info.remote_hw_cta, addr,
+                               flash_gpgpu_sim::cluster_mbar_op::EXPECT_TX,
+                               count);
+            inject_remote_mbar(m_shader, src_cid, mbar_info.remote_cid,
+                               mbar_info.remote_hw_cta, addr,
+                               flash_gpgpu_sim::cluster_mbar_op::ARRIVE, 1);
           } else if (is_arrive) {
-            noc->inject_mbar_remote(
-                src_cid, mbar_info.remote_cid, mbar_info.remote_hw_cta, addr,
-                flash_gpgpu_sim::cluster_mbar_op::ARRIVE, count);
+            inject_remote_mbar(m_shader, src_cid, mbar_info.remote_cid,
+                               mbar_info.remote_hw_cta, addr,
+                               flash_gpgpu_sim::cluster_mbar_op::ARRIVE, count);
           } else if (is_expect_tx) {
-            noc->inject_mbar_remote(
-                src_cid, mbar_info.remote_cid, mbar_info.remote_hw_cta, addr,
-                flash_gpgpu_sim::cluster_mbar_op::EXPECT_TX, count);
+            inject_remote_mbar(m_shader, src_cid, mbar_info.remote_cid,
+                               mbar_info.remote_hw_cta, addr,
+                               flash_gpgpu_sim::cluster_mbar_op::EXPECT_TX,
+                               count);
           }
         }
         continue;

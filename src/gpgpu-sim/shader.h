@@ -2074,8 +2074,8 @@ class shader_core_config : public core_config {
   bool gpgpu_mbarrier_cluster_enable;
   // 0 = off. Default is well above hop / try_wait latencies.
   unsigned int gpgpu_cluster_hang_watchdog;
-  // Intra-GPC DSM fabric (docs/cluster_noc/knobs.md §3). When set, ordinary
-  // cluster ld/st/atom use fabric packets; delay-line stays for TMA/mbar.
+  // Intra-GPC DSM fabric (docs/cluster_noc/knobs.md §3). When set, cluster
+  // ld/st/atom, TMA multicast, and remote mbarrier use fabric packets.
   bool gpgpu_dsm_enable;
   unsigned int gpgpu_dsm_flit_payload_bytes;
   unsigned int gpgpu_dsm_lanes_per_cpc;
@@ -3248,6 +3248,30 @@ class simt_core_cluster {
   bool dsm_cta_busy(unsigned sid, unsigned cta) const;
   void dsm_note_cta_issue(unsigned sid, unsigned cta, unsigned n);
   void dsm_note_cta_complete(unsigned sid, unsigned cta);
+  bool dsm_endpoint_busy() const;
+  unsigned dsm_max_tx_age(unsigned long long now) const;
+  bool dsm_issue_tma(unsigned src, unsigned dst, unsigned bytes, uint64_t addr,
+                     unsigned cta_slot, unsigned cta_gen, const void *data,
+                     unsigned mbar_addr, unsigned mbar_bytes);
+  bool dsm_issue_mbar(unsigned src, unsigned dst, unsigned cta_slot,
+                      unsigned cta_gen, unsigned mbar_addr, unsigned op,
+                      unsigned count, unsigned req_cta, unsigned req_warp,
+                      int parity);
+  void dsm_queue_tma_retry(unsigned src, unsigned dst, unsigned bytes,
+                           uint64_t addr, unsigned cta_slot, unsigned cta_gen,
+                           const void *data, unsigned n, unsigned mbar_addr,
+                           unsigned mbar_bytes);
+  void dsm_queue_mbar_retry(unsigned src, unsigned dst, unsigned cta_slot,
+                            unsigned cta_gen, unsigned mbar_addr, unsigned op,
+                            unsigned count, unsigned req_cta, unsigned req_warp,
+                            int parity);
+  void dsm_retry_tma_mbar();
+  void dsm_on_tma_mbar(unsigned local_sm, unsigned cta, unsigned mbar_addr,
+                       unsigned mbar_bytes);
+  bool dsm_on_mbar_req(unsigned local_sm, unsigned cta, unsigned src,
+                       unsigned mbar_addr, unsigned op, unsigned count,
+                       unsigned req_cta, unsigned req_warp, int parity);
+  void dsm_on_mbar_done(unsigned local_sm, unsigned req_warp);
 
   // for perfect memory interface (per-SM ejection buffer)
   bool response_queue_full(unsigned sid) const {
@@ -3352,6 +3376,19 @@ class simt_core_cluster {
     unsigned cta = 0;
   };
   std::deque<dsm_retry_t> m_dsm_retry;
+  struct dsm_tma_retry_t {
+    unsigned src = 0, dst = 0, bytes = 0, cta_slot = 0, cta_gen = 0;
+    uint64_t addr = 0;
+    unsigned mbar_addr = 0, mbar_bytes = 0;
+    std::vector<uint8_t> data;
+  };
+  struct dsm_mbar_retry_t {
+    unsigned src = 0, dst = 0, cta_slot = 0, cta_gen = 0;
+    unsigned mbar_addr = 0, op = 0, count = 0, req_cta = 0, req_warp = 0;
+    int parity = 0;
+  };
+  std::deque<dsm_tma_retry_t> m_tma_retry;
+  std::deque<dsm_mbar_retry_t> m_mbar_retry;
   std::unordered_map<unsigned, unsigned> m_dsm_warp_pending;
   std::unordered_map<unsigned, dsm_tx_src_t> m_dsm_tx_warp;
   std::unordered_map<unsigned, dsm_load_wait_t> m_dsm_loads;

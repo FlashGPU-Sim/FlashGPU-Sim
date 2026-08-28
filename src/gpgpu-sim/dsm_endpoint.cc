@@ -68,7 +68,9 @@ bool dsm_endpoint_protocol_t::write_unapplied(unsigned src,
   if (src >= m_n || dst >= m_n) return false;
   for (const auto &kv : m_tx[src]) {
     const dsm_tx_t &t = kv.second;
-    if (t.target == dst && t.cls == dsm_packet_class_t::write_data &&
+    if (t.target == dst &&
+        (t.cls == dsm_packet_class_t::write_data ||
+         t.cls == dsm_packet_class_t::tma_data) &&
         !t.applied)
       return true;
   }
@@ -96,6 +98,32 @@ bool dsm_endpoint_protocol_t::can_atom(unsigned src, unsigned dst,
                            flits_of(dsm_packet_class_t::atomic_request, bytes));
 }
 
+bool dsm_endpoint_protocol_t::can_tma(unsigned src, unsigned dst,
+                                      unsigned bytes) const {
+  if (!window_open(src) || src == dst) return false;
+  return m_fab->can_inject(src, dsm_vc_t::request, dst,
+                           flits_of(dsm_packet_class_t::tma_data, bytes));
+}
+
+bool dsm_endpoint_protocol_t::can_mbar(unsigned src, unsigned dst) const {
+  if (!window_open(src) || src == dst) return false;
+  return m_fab->can_inject(src, dsm_vc_t::request, dst,
+                           flits_of(dsm_packet_class_t::mbarrier_request, 0));
+}
+
+unsigned dsm_endpoint_protocol_t::max_tx_age(unsigned long long now) const {
+  unsigned age = 0;
+  for (unsigned sm = 0; sm < m_n; sm++) {
+    for (const auto &kv : m_tx[sm]) {
+      if (now > kv.second.created_cycle) {
+        unsigned a = (unsigned)(now - kv.second.created_cycle);
+        if (a > age) age = a;
+      }
+    }
+  }
+  return age;
+}
+
 void dsm_endpoint_protocol_t::note_outstanding(unsigned sm) {
   const unsigned o = outstanding(sm);
   if (o > m_stats.outstanding_high_water) m_stats.outstanding_high_water = o;
@@ -109,9 +137,13 @@ bool dsm_endpoint_protocol_t::issue_req(unsigned src, unsigned dst,
   const bool is_store = cls == dsm_packet_class_t::write_data;
   const bool is_load = cls == dsm_packet_class_t::read_command;
   const bool is_atom = cls == dsm_packet_class_t::atomic_request;
+  const bool is_tma = cls == dsm_packet_class_t::tma_data;
+  const bool is_mbar = cls == dsm_packet_class_t::mbarrier_request;
   if (is_store && !can_store(src, dst, bytes)) return false;
   if (is_load && !can_load(src, dst, bytes)) return false;
   if (is_atom && !can_atom(src, dst, bytes)) return false;
+  if (is_tma && !can_tma(src, dst, bytes)) return false;
+  if (is_mbar && !can_mbar(src, dst)) return false;
   dsm_tx_t tx;
   tx.id = ++m_next_tx;
   tx.requester = src;
@@ -142,11 +174,16 @@ bool dsm_endpoint_protocol_t::issue_req(unsigned src, unsigned dst,
   m_fab->inject(std::move(p));
   m_tx[src][tx.id] = tx;
   m_last_txid = tx.id;
-  if (is_store) {
+  if (is_store || is_tma) {
     m_store_q[src][dst].push_back(tx.id);
-    m_stats.store_packets++;
+    if (is_tma)
+      m_stats.tma_packets++;
+    else
+      m_stats.store_packets++;
   } else if (is_load) {
     m_stats.load_commands++;
+  } else if (is_mbar) {
+    m_stats.mbar_requests++;
   } else {
     m_stats.atom_requests++;
   }
@@ -189,6 +226,63 @@ bool dsm_endpoint_protocol_t::issue_atom(unsigned src, unsigned dst,
                    dsm_packet_class_t::atomic_request, addend);
 }
 
+bool dsm_endpoint_protocol_t::issue_tma(unsigned src, unsigned dst,
+                                        unsigned bytes, uint64_t addr,
+                                        unsigned cta_slot, unsigned cta_gen,
+                                        const void *data, unsigned mbar_addr,
+                                        unsigned mbar_bytes) {
+  if (!issue_req(src, dst, bytes, addr, cta_slot, cta_gen,
+                 dsm_packet_class_t::tma_data, data))
+    return false;
+  extra_t e;
+  e.mbar_addr = mbar_addr;
+  e.mbar_bytes = mbar_bytes;
+  m_extra[m_last_txid] = e;
+  return true;
+}
+
+bool dsm_endpoint_protocol_t::issue_mbar(unsigned src, unsigned dst,
+                                         unsigned cta_slot, unsigned cta_gen,
+                                         unsigned mbar_addr, unsigned op,
+                                         unsigned count, unsigned req_cta,
+                                         unsigned req_warp, int parity) {
+  const unsigned kWaitDone = 5;
+  extra_t e;
+  e.mbar_addr = mbar_addr;
+  e.mbar_bytes = count;
+  e.mbar_op = op;
+  e.req_cta = req_cta;
+  e.req_warp = req_warp;
+  e.parity = parity;
+  if (op == kWaitDone) {
+    const unsigned id = ++m_next_tx;
+    m_extra[id] = e;
+    pending_t p;
+    p.cls = dsm_packet_class_t::mbarrier_completion;
+    p.src = src;
+    p.dst = dst;
+    p.txid = id;
+    p.bytes = 0;
+    p.count = 1;
+    p.cta_slot = cta_slot;
+    p.cta_gen = cta_gen;
+    p.mbar_addr = mbar_addr;
+    p.mbar_bytes = count;
+    p.mbar_op = op;
+    p.req_cta = req_cta;
+    p.req_warp = req_warp;
+    p.parity = parity;
+    if (!inject_response(p)) m_pending.push_back(std::move(p));
+    else m_stats.mbar_completions++;
+    return true;
+  }
+  if (!issue_req(src, dst, 0, mbar_addr, cta_slot, cta_gen,
+                 dsm_packet_class_t::mbarrier_request, nullptr))
+    return false;
+  m_extra[m_last_txid] = e;
+  return true;
+}
+
 void dsm_endpoint_protocol_t::sram_store(unsigned sm, unsigned bytes) {
   (void)sm;
   m_stats.sram_store_bytes += bytes;
@@ -214,12 +308,14 @@ void dsm_endpoint_protocol_t::complete_stores(unsigned requester,
     const unsigned id = m_store_q[requester][target].front();
     m_store_q[requester][target].pop_front();
     m_tx[requester].erase(id);
+    m_extra.erase(id);
     if (m_on_tx_done) m_on_tx_done(m_done_ctx, id);
   }
 }
 
 void dsm_endpoint_protocol_t::complete_load(unsigned requester, unsigned txid) {
-  m_tx[requester].erase(txid);
+  if (requester < m_n) m_tx[requester].erase(txid);
+  m_extra.erase(txid);
   if (m_on_tx_done) m_on_tx_done(m_done_ctx, txid);
 }
 
@@ -260,7 +356,8 @@ bool dsm_endpoint_protocol_t::inject_response(const pending_t &p) {
 bool dsm_endpoint_protocol_t::apply_sram(pending_t &p) {
   const bool gen_ok =
       p.cta_slot < 32 && p.cta_gen == m_cta_gen[p.src][p.cta_slot];
-  if (p.cls == dsm_packet_class_t::write_data) {
+  if (p.cls == dsm_packet_class_t::write_data ||
+      p.cls == dsm_packet_class_t::tma_data) {
     sram_store(p.src, p.bytes);
     auto dit = m_data.find(p.txid);
     if (gen_ok && m_sram_write && dit != m_data.end() && !dit->second.empty())
@@ -342,10 +439,34 @@ void dsm_endpoint_protocol_t::process_ingress() {
         continue;
       }
       apply_sram(p);
+      if (p.cls == dsm_packet_class_t::tma_data && m_on_tma_mbar &&
+          (p.mbar_addr || p.mbar_bytes) && p.cta_slot < 32 &&
+          p.cta_gen == m_cta_gen[p.src][p.cta_slot])
+        m_on_tma_mbar(m_tma_ctx, p.src, p.cta_slot, p.mbar_addr, p.mbar_bytes);
       p.sram_done = true;
       p.inject_after = m_now;
-      if (p.cls == dsm_packet_class_t::write_data) {
+      if (p.cls == dsm_packet_class_t::write_data ||
+          p.cls == dsm_packet_class_t::tma_data) {
         continue;
+      }
+      if (p.cls == dsm_packet_class_t::mbarrier_request) {
+        const unsigned kWaitReg = 4;
+        const unsigned kWaitDone = 5;
+        bool sat = false;
+        if (m_on_mbar_req)
+          sat = m_on_mbar_req(m_mbar_ctx, p.src, p.cta_slot, p.dst, p.mbar_addr,
+                              p.mbar_op, p.mbar_bytes, p.req_cta, p.req_warp,
+                              p.parity);
+        if (p.mbar_op == kWaitReg && !sat) {
+          complete_load(p.dst, p.txid);
+          continue;
+        }
+        if (p.mbar_op == kWaitReg) {
+          p.mbar_op = kWaitDone;
+          auto eit = m_extra.find(p.txid);
+          if (eit != m_extra.end()) eit->second.mbar_op = kWaitDone;
+        }
+        p.cls = dsm_packet_class_t::mbarrier_completion;
       }
     }
     if (p.inject_after >= m_now) {
@@ -373,6 +494,15 @@ void dsm_endpoint_protocol_t::harvest() {
       in.cta_slot = p->cta_slot;
       in.cta_gen = p->cta_gen;
       in.arrive_cycle = m_now;
+      auto eit = m_extra.find(in.txid);
+      if (eit != m_extra.end()) {
+        in.mbar_addr = eit->second.mbar_addr;
+        in.mbar_bytes = eit->second.mbar_bytes;
+        in.mbar_op = eit->second.mbar_op;
+        in.req_cta = eit->second.req_cta;
+        in.req_warp = eit->second.req_warp;
+        in.parity = eit->second.parity;
+      }
       if (m_sram_expose && in.bytes)
         m_sram_expose(m_flow_ctx, sm, in.bytes);
       m_ingress.push_back(std::move(in));
@@ -393,6 +523,17 @@ void dsm_endpoint_protocol_t::harvest() {
         if (p->packet_class == dsm_packet_class_t::atomic_response)
           m_stats.atom_responses++;
         complete_load(sm, p->transaction_id);
+      } else if (p->packet_class ==
+                 dsm_packet_class_t::mbarrier_completion) {
+        extra_t ex;
+        auto eit = m_extra.find(p->transaction_id);
+        if (eit != m_extra.end()) ex = eit->second;
+        const bool in_tx = sm < m_n && m_tx[sm].count(p->transaction_id);
+        if (in_tx) complete_load(sm, p->transaction_id);
+        else m_extra.erase(p->transaction_id);
+        const unsigned kWaitDone = 5;
+        if (ex.mbar_op == kWaitDone && m_on_mbar_done)
+          m_on_mbar_done(m_mbar_ctx, sm, ex.req_warp);
       }
     }
   }
@@ -405,6 +546,8 @@ void dsm_endpoint_protocol_t::try_send_pending() {
     m_pending.pop_front();
     if (inject_response(p)) {
       if (p.cls == dsm_packet_class_t::read_data) m_stats.load_data_packets++;
+      if (p.cls == dsm_packet_class_t::mbarrier_completion)
+        m_stats.mbar_completions++;
     } else {
       keep.push_back(std::move(p));
     }
@@ -423,7 +566,8 @@ void dsm_endpoint_protocol_t::try_flush_acks() {
       bool ingress_store = false;
       for (const auto &in : m_ingress)
         if (in.src == sm && in.dst == req &&
-            in.cls == dsm_packet_class_t::write_data)
+            (in.cls == dsm_packet_class_t::write_data ||
+             in.cls == dsm_packet_class_t::tma_data))
           ingress_store = true;
       const bool idle = in_flight_writes(req, sm) == 0 &&
                         response_occ(sm) == 0 && !ingress_store &&
@@ -487,10 +631,12 @@ void dsm_endpoint_protocol_t::display_state(FILE *fp) const {
           m_stats.threshold_flushes, m_stats.idle_flushes);
   fprintf(fp,
           "  stores=%llu acks=%llu ack_completions=%llu loads=%llu "
-          "read_data=%llu atoms=%llu sram_store=%llu sram_load=%llu\n",
+          "read_data=%llu atoms=%llu tma=%llu mbar_req=%llu mbar_done=%llu "
+          "sram_store=%llu sram_load=%llu\n",
           m_stats.store_packets, m_stats.ack_packets, m_stats.ack_completions,
           m_stats.load_commands, m_stats.load_data_packets,
-          m_stats.atom_requests, m_stats.sram_store_bytes,
+          m_stats.atom_requests, m_stats.tma_packets, m_stats.mbar_requests,
+          m_stats.mbar_completions, m_stats.sram_store_bytes,
           m_stats.sram_load_bytes);
   for (unsigned sm = 0; sm < m_n; sm++) {
     for (const auto &kv : m_tx[sm]) {

@@ -80,7 +80,7 @@ GX port formula: `routes = gx_planes * lanes_per_cpc`. GPCARB still grants at mo
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `-gpgpu_dsm_enable` | 0 (1 on `SM90_H200_REDUCED_CLUSTER16x2`) | Ordinary cluster ld/st/atom use the intra-GPC fabric. Delay-line stays for TMA multicast and remote mbarrier. 0 = delay-line DSM. |
+| `-gpgpu_dsm_enable` | 0 (1 on `SM90_H200_REDUCED_CLUSTER16x2`) | Cluster ld/st/atom, TMA multicast, and remote mbarrier use the intra-GPC fabric. 0 = delay-line for those paths. |
 | `-gpgpu_shmem_bytes_per_cycle` | 0 (unlimited) | Per-SM SRAM service byte budget. Local LSU, TMA landing, and DSM ingress share it (two-phase grant). |
 | `-gpgpu_dsm_flit_payload_bytes` | **32** | Payload bytes per grant. Alias **`-gpgpu_dsm_flit_bytes`** (plan-v2 name). Header unmodeled |
 | `-gpgpu_dsm_lanes_per_cpc` | 4 | GPCARB outputs |
@@ -126,7 +126,9 @@ Policy: only `configs/SM90_H200*` carry calibrated DSM timing today.
 
 ---
 
-## 5. TMA multicast behavior (delay line)
+## 5. TMA multicast behavior
+
+Delay-line (`-gpgpu_dsm_enable 0`):
 
 | NoC enable | `tma_mcast_enable_timing` | Peers |
 |------------|---------------------------|-------|
@@ -134,4 +136,4 @@ Policy: only `configs/SM90_H200*` carry calibrated DSM timing today.
 | 1 | 0 | Immediate |
 | 1 | 1 | Data + mbar after hop |
 
-Fabric path (B8) must keep **data before mbar**.
+Fabric (`-gpgpu_dsm_enable 1` and `tma_mcast_enable_timing`): source-expanded unicast `tma_data` on the request VC (one packet per selected peer). Peer smem write and `complete_tx` wait for that packet’s tail **and** that SM’s SRAM grant. `-gpgpu_tma_mcast_mbar_after_data` stays the ordering policy. In-fabric replication is not required.

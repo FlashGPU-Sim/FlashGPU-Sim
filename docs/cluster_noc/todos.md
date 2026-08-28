@@ -593,7 +593,7 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 ## B8 — TMA multicast and remote mbarrier on the fabric
 
-- [ ] **B8** Same VC contract. Data before mbar. Source-expanded unicast v1.
+- [x] **B8** Same VC contract. Data before mbar. Source-expanded unicast v1. Closed 2026-08-27.
 
 **Read first:** [`dsm_fabric.md`](dsm_fabric.md) §8, [`programming_model.md`](programming_model.md) §§3–4.
 
@@ -602,6 +602,39 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 **Verify:** `TMAClusterOneProducer*`, `TmaMulticastMaskTest.*`, `MbarrierClusterTest.*`.
 
 **Prereqs:** B5.
+
+**Close-out (2026-08-27):** With `-gpgpu_dsm_enable 1`, TMA `.shared::cluster` multicast expands at the source into unicast `tma_data` on the request VC (one packet per selected peer; 128 B = four 32 B grants). Peer smem write and `complete_tx` wait for that packet’s tail and that SM’s SRAM grant (`-gpgpu_tma_mcast_mbar_after_data`). Remote mbarrier `arrive` / `expect_tx` / `complete_tx` / `try_wait` use `mbarrier_request` (request VC, one control flit) and `mbarrier_completion` (response VC, one control flit). Fabric-on does not also inject delay-line `TMA_MCAST_*` / `MBAR_REMOTE_OP`. Hang-preventer quiet window stays armed while endpoint outstanding / observed RTT is live; recognized waits still drop the arm. Delay-line TMA/mbar remains when fabric is off. v1 expand mode is source unicast (in-fabric replication not implemented).
+
+Verify (run twice, 0 failures):
+
+```bash
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
+  run test --target sm120 --group unit "DsmEndpoint*:ClusterHangPrevent*"
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
+  run test --target sm120 --group integration \
+  "TMAClusterOneProducer*:MbarrierClusterTest.*:DsmTest.*"
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER4x4 \
+  run test --target sm120 --group integration "TmaMulticastMaskTest.*"
+```
+
+PASS evidence:
+
+```text
+# unit DsmEndpoint*:ClusterHangPrevent* on SM90_H200_REDUCED_CLUSTER16x2 (run 1 and 2)
+[  PASSED  ] 26 tests.
+# includes TmaPutSourceUnicastNPeers, TmaCompleteTxAfterSramApply,
+# MbarRequestAndCompletionVcs, QuietWindowUsesOutstandingRtt,
+# PeerArmStaysWhileFabricOutstanding
+
+# integration TMAClusterOneProducer*:MbarrierClusterTest.*:DsmTest.*
+# on SM90_H200_REDUCED_CLUSTER16x2 (run 1 and 2)
+[  PASSED  ] 26 tests.
+# 1 TMAClusterOneProducer + 9 MbarrierClusterTest + 16 DsmTest
+
+# integration TmaMulticastMaskTest.* on SM120_RTX5090_REDUCED_CLUSTER4x4
+# (run 1 and 2; fabric-off functional regression)
+[  PASSED  ] 4 tests.
+```
 
 ---
 
