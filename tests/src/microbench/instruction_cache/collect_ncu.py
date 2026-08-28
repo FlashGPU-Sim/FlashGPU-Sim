@@ -50,6 +50,7 @@ DEFAULT_STEPS = (
 
 METRICS = (
     "gpu__time_duration.sum",
+    "sm__cycles_elapsed.avg",
     "smsp__inst_executed.sum",
     "smsp__warps_issue_stalled_no_instruction.sum",
     "sm__icc_requests.sum",
@@ -261,7 +262,7 @@ def collect(args: argparse.Namespace) -> list[dict[str, str]]:
 
     rows: list[dict[str, str]] = []
     for steps in args.steps:
-        binary = args.bin_dir / f"icc_gcc_footprint_{steps}"
+        binary = args.bin_dir / f"{args.binary_prefix}{steps}"
         if not binary.is_file():
             raise FileNotFoundError(f"missing benchmark binary: {binary}")
         repetitions = (
@@ -315,6 +316,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--blocks", type=int, default=1)
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--bin-dir", type=Path, default=default_bin_dir)
+    parser.add_argument("--binary-prefix", default="icc_gcc_footprint_")
     parser.add_argument("--output", type=Path, default=default_output)
     parser.add_argument("--ncu", default="ncu")
     parser.add_argument("--cuobjdump", default="cuobjdump")

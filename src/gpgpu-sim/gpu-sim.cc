@@ -868,6 +868,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_inst_fetch_throughput", OPT_INT32, &inst_fetch_throughput,
       "the number of fetched intruction per warp each cycle", "1");
   option_parser_register(
+      opp, "-gpgpu_icache_address_scale", OPT_UINT32, &icache_address_scale,
+      "Scale PTX byte PCs when addressing the instruction cache", "1");
+  option_parser_register(
       opp, "-gpgpu_icache_prefetch_enable", OPT_BOOL,
       &icache_prefetch_enable,
       "Enable bounded instruction stream-buffer prefetching", "0");
@@ -877,7 +880,7 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_icache_prefetch_depth", OPT_UINT32,
       &icache_prefetch_depth,
-      "Instruction cache lines kept ahead of each demand stream", "8");
+      "Instruction cache lines kept ahead of each demand stream", "4");
   option_parser_register(
       opp, "-gpgpu_icache_prefetch_issue_width", OPT_UINT32,
       &icache_prefetch_issue_width,

@@ -16,7 +16,14 @@ namespace {
     }                                                                    \
   } while (0)
 
+#ifdef ICACHE_TIMING
+#define ICACHE_STEP() \
+  asm volatile("mad.lo.u32 %0, %0, 1664525, 1013904223;" : "+r"(value));
+#define BENCHMARK_MODE "timing"
+#else
 #define ICACHE_STEP() asm volatile("bar.warp.sync 0xffffffff;" ::: "memory");
+#define BENCHMARK_MODE "footprint"
+#endif
 #define REP_1() ICACHE_STEP()
 #define REP_2() REP_1() REP_1()
 #define REP_4() REP_2() REP_2()
@@ -203,19 +210,26 @@ int main(int argc, char** argv) {
 
   unsigned int* output = nullptr;
   unsigned long long* cycles = nullptr;
-  CUDA_CHECK(cudaMallocManaged(&output, options.blocks * sizeof(*output)));
-  CUDA_CHECK(cudaMallocManaged(&cycles, options.blocks * sizeof(*cycles)));
+  CUDA_CHECK(cudaMalloc(&output, options.blocks * sizeof(*output)));
+  CUDA_CHECK(cudaMalloc(&cycles, options.blocks * sizeof(*cycles)));
 
   for (int i = 0; i < options.warmup_launches; ++i) {
     launch(options, output, cycles);
   }
   launch(options, output, cycles);
 
+  unsigned int host_output = 0;
+  unsigned long long host_cycles = 0;
+  CUDA_CHECK(cudaMemcpy(&host_output, output, sizeof(host_output),
+                        cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(&host_cycles, cycles, sizeof(host_cycles),
+                        cudaMemcpyDeviceToHost));
+
   std::printf(
-      "footprint_steps=%d blocks=%d repetitions=%d warmup_launches=%d "
+      "mode=%s footprint_steps=%d blocks=%d repetitions=%d warmup_launches=%d "
       "cycles=%llu sink=%u\n",
-      FOOTPRINT_STEPS, options.blocks, options.repetitions,
-      options.warmup_launches, cycles[0], output[0]);
+      BENCHMARK_MODE, FOOTPRINT_STEPS, options.blocks, options.repetitions,
+      options.warmup_launches, host_cycles, host_output);
 
   CUDA_CHECK(cudaFree(output));
   CUDA_CHECK(cudaFree(cycles));
