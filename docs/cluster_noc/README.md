@@ -28,6 +28,7 @@ The English files in this directory are the working spec. Supervisor plan v2 is 
 | 7 | [`knobs.md`](knobs.md) | Current delay-line knobs and **target** fabric knobs |
 | 8 | [`tests.md`](tests.md) | What to run after a change |
 | 9 | [`evidence.md`](evidence.md) | H200 measurements vs patent vs inference |
+| 10 | [`calibration.md`](calibration.md) | B6: H200 vs sim cycle tables (mbarrier, TMA, DSM, GEMM) |
 
 Physical path (patent US12248788B2 Figs. 21A–21D). **TPC / TPCARB are not modeled.** PG'd SM slots **are** modeled. ASCII path: [`architecture.md`](architecture.md), [`dsm_fabric.md`](dsm_fabric.md).
 
@@ -91,8 +92,9 @@ TB-cluster **size** is a launch attribute. Rule: `product(clusterDim) ≤` enabl
 | `SM120_RTX5090_REDUCED_CLUSTER2x2` | m=2, n=2 | Multi-cluster isolation |
 | `SM120_RTX5090_REDUCED_CLUSTER4x4` | m=4, n=4 | Primary multi-SM functional |
 | `SM120_RTX5090_CLUSTER16x11` | m=16, n=11 | GPC-sized smoke |
-| `SM90_H200_REDUCED_CLUSTER16x2` | m=16, n=2 | Delay-line NoC **on** + H200 hop knobs; GPC-shaped |
-| `SM90_H200` | m=1, n=132 | Product latencies; NoC idle |
+| `SM90_H200_REDUCED_CLUSTER16x2` | m=16, n=2 | Functional cluster / TMA / DSM; **not** published calibration |
+| `SM90_H200` | m=1, n=132 | Product latencies; NoC idle; **cannot** exercise DSM fabric |
+| `SM90_H200_CLUSTER16x8` | m=16, n=8 (128 SMs) | B6 full-chip GPC packing; fabric on. **Add in B6a** ([`calibration.md`](calibration.md)) |
 
 ---
 

@@ -93,6 +93,10 @@ package.json
 package-lock.json
 calibration_results/
 
+# Local H200/sim calibration kernels and run artifacts (not part of the product tree).
+# Inventory and expected results live in docs/cluster_noc/calibration.md.
+calibration/
+
 # Test logs produced by inst_latency_bench
 test/logs/
 test/*.log

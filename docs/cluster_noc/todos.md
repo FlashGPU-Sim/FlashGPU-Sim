@@ -33,8 +33,12 @@ C1 (docs — this rewrite)
   → B3c endpoint protocol
   → B4 functional DSM on fabric
   → B5 scoreboard + SRAM service   // remote load = local SMEM load
-  → B6 H200 slope calibration
-  → B8 TMA mcast / remote mbar on fabric
+  → B6 H200 cycle-accurate calibration (mbarrier / TMA / DSM / GEMM)
+       B6a full-chip GPC config + sim harness
+       B6b latency
+       B6c dsm_bw slopes
+       B6d Triton multicast GEMM
+       B6e freeze knobs + fill calibration.md
   → B-DEPR deprecate delay-line knobs
   → B7 per-bank SRAM (optional)
   → B9 research extras (not first delivery)
@@ -565,21 +569,114 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 ---
 
-## B6 — H200 bandwidth calibration
+## B6 — H200 cycle-accurate calibration (mbarrier, TMA, DSM, GEMM)
 
-- [ ] **B6** Fit knobs to `dsm_bw` **slopes**, not a single GB/s point.
+- [ ] **B6** Close when **B6a–B6e** are all `[x]`. Not a single GB/s point.
 
-**Read first:** [`evidence.md`](evidence.md), [`tests.md`](tests.md) §3 H200.
+**Read first:** [`calibration.md`](calibration.md) (supervisor report; kernels, expected H200 numbers, empty sim columns), [`evidence.md`](evidence.md), [`tests.md`](tests.md) §3.
 
-**Work:** Size sweep 16–96 KiB unique addresses, one TB-cluster, checksum after the timer. Record one-way load/store/TMA, duplex, same vs opposite mix, 2/4/8/16 TMA, idle-neighbor. Tune shaper period, VC depths, ACK threshold/timeout, optional `base_latency`. **Do not** overfit GPCMMU hash to one camping trace.
+**Why:** First delivery needs cluster features **functionally correct and cycle-accurate**. Supervisor gate: for each calibration kernel,
 
-**Do not:** Reintroduce `-gpgpu_dsm_bytes_per_cycle` as the model.
+```text
+|T_sim − T_H200| / T_H200  <  10%
+```
 
-**Verify:** Core slopes within a slop you document (suggest ±10% on 21.3 B/cycle; duplex loss sign and magnitude: load ≫ store).
+`T` is the timed `%clock64` region (sim `clock64` is `gpu_sim_cycle`). Bandwidth knobs are still fitted from **size slopes**; the 10% gate is on cycle counts.
 
-**Exit:** Table in this item + H200 preset comments labeled `measured`/`inferred`.
+**Hard rules (every B6\* run):**
 
-**Prereqs:** B5.
+1. Config: **`SM90_H200_CLUSTER16x8`** (8 GPCs × 16 SMs = 128 SMs, fabric on, clocks/L2/HBM copied from `SM90_H200`). This is the full-chip GPC-packed H200. **Not** `SM90_H200_REDUCED_CLUSTER16x2`. **Not** shipped `SM90_H200` (132 × 1 SM/GPC — DSM fabric is intra-GPC and that packing cannot exercise it).
+2. `export OMP_NUM_THREADS=4`.
+3. Cycle-gate kernels: inner loop count so the timed region is **~1e5 cycles** (8e4–1.2e5). Grow **repeats**, not unique smem.
+4. Slope kernels (`dsm_bw` 16–96 KiB) stay unique-address; they may be shorter than 1e5 cycles.
+5. Kernel sources live in git-ignored `calibration/kernels/` (refresh: `bash scripts/sync_calibration_kernels.sh`). Do not `git add` that tree.
+6. Fill Sim / Error columns in [`calibration.md`](calibration.md) as you go. Record config, commit, `OMP_NUM_THREADS`, iteration count.
+
+**Do not (applies to all B6\*):** Reintroduce `-gpgpu_dsm_bytes_per_cycle` as the model. Overfit GPCMMU hash to one camping trace. Publish numbers from the reduced 32-SM config. Stamp H200 numbers as Blackwell fact. Mix a large knob retune with an unrelated rename.
+
+**Prereqs:** B5 and B8 (fabric carries DSM, TMA mcast, remote mbar). **Next:** B-DEPR after B6e.
+
+**Hardware still needed** (see [`calibration.md`](calibration.md) §8): H1 `dsm_bw` on this H200 NVL; H2 remote mbarrier RTT probe; H3 finish Triton mcast GEMM (current autotuned winner deadlocks); H4 cycle-gate twins at ~1e5 cycles. Launch those jobs; do not skip a kernel because the log is missing.
+
+---
+
+### B6a — Full-chip config and sim harness
+
+- [ ] **B6a** `SM90_H200_CLUSTER16x8` + build/run path for the git-ignored kernels.
+
+**Work:**
+
+1. New config dir `configs/SM90_H200_CLUSTER16x8/`: copy SM/memory/clock/latency knobs from `SM90_H200`; packing `-gpgpu_num_gpcs 8` / `-gpgpu_num_sms_per_gpc 16` (aliases `-gpgpu_n_clusters` / `-gpgpu_n_cores_per_cluster`); `-gpgpu_dsm_enable 1`; `-gpgpu_mbarrier_cluster_enable 1`; fabric knobs from [`knobs.md`](knobs.md) §3; no delay-line BPC. README states: full-chip calibration only; reduced 16x2 remains the functional filter.
+2. Register the config so `./test/run_tests.sh list-configs` lists it.
+3. Sim-side Makefile/wrapper under `calibration/` (git-ignored is fine) that (a) sources `setup_environment`, (b) links sim `libcudart`, (c) copies this config into the run cwd, (d) forces `OMP_NUM_THREADS=4`, (e) accepts a loop-count override.
+4. Confirm `calibration/kernels/{dsm_bw,tma_bw,h200_probes,hopper_paper}` exist; if not, run `bash scripts/sync_calibration_kernels.sh`. `dsm_bw` and `tma_bw` are verbatim copies of [seanzw/random](https://github.com/seanzw/random); do not rewrite the kernels.
+
+**Verify:** Config starts; a hello kernel on this config prints `gpu_sim_cycle` and uses 4 OpenMP threads. `DsmTest.RemoteLoadFromPeer_TwoCtas` still PASS on **reduced** 16x2 (do not replace functional CI with 128 SMs).
+
+**Exit:** Config path named in [`calibration.md`](calibration.md) §2. **Next:** B6b.
+
+**Prereqs:** B5, B8.
+
+---
+
+### B6b — Latency (mbarrier, DSM RTT, TMA e2e)
+
+- [ ] **B6b** Cycle gate on [`calibration.md`](calibration.md) §4.1 L1–L11. L12 after hardware job H2.
+
+**Work:** For each L* kernel, set loop count ≈ 1e5 cycles, run on H200 (or use the cited job if the kernel is already that shape) and on sim. Compare `%clock64`. Tune only the knobs in [`calibration.md`](calibration.md) §6 that those kernels constrain (mbarrier arrive/trywait, TMA issue 44 not 68, `base_latency` residual). Remote store visibility (L7) is globaltimer; convert with measured SM MHz.
+
+**Verify:** L1–L11 error < 10%. Stride ratio stays ~1 (do not invent a tree). TMA mcast − unicast is explained by fabric + SRAM, not by keeping `-gpgpu_tma_mcast_hop_latency` as a second delay line.
+
+**Exit:** Table §5.1 Sim/Error filled. **Next:** B6c.
+
+**Prereqs:** B6a.
+
+---
+
+### B6c — DSM / TMA bandwidth slopes
+
+- [ ] **B6c** Fit knobs to `dsm_bw` **slopes**. Prefer hardware job H1 on this H200 NVL; until it lands, use the blog table in [`calibration.md`](calibration.md) §5.2.
+
+**Work:** **Copy-paste** `calibration/kernels/dsm_bw/` from seanzw/random (`kernels.cuh`: `load_kernel`, `store_kernel`, `tma_kernel`, `mixed_kernel`). Do **not** rewrite them from `H200_profiling`. Size sweep 16–96 KiB unique addresses, one TB-cluster, checksum after the timer. Record BW1–BW11 (one-way load/store/TMA, duplex, same vs opposite mix, 2/4/8/16 TMA, idle neighbor). Then a **cycle-gate** repeat of one saturated one-way TMA put and one symmetric load at ~1e5 cycles (iteration override only). Tune shaper period, VC depths, ACK threshold/timeout, optional `base_latency`. Idle neighbor must not raise the active SM’s rate. `tma_bw/` from the same repo is GMEM TMA vs L2/HBM (not DSM); run the simple TMA test as a TMA-to-memory check, do not treat it as a DSM slope.
+
+**Verify:** \(1/\beta\) within 10% of 19.87 / 18.87 / 21.25 (or H1 replacements). Duplex: load loses ~23%/dir, store/TMA ~4–6%. Same-dir mix ≈ one-way ceiling; opposite-dir higher. TMA 2→16 SM per-SM rate stays ~21 B/cycle.
+
+**Exit:** Table §5.2 Sim columns filled. **Next:** B6d (GEMM may start in parallel with B6c once B6a is up; do not freeze knobs until B6e).
+
+**Prereqs:** B6a. B6b preferred so latency residuals are not eaten by the shaper.
+
+---
+
+### B6d — Triton autotuned GEMM (unicast vs multicast B)
+
+- [ ] **B6d** Real kernel: TMA + WGMMA, cluster of 2, same autotune winner for uni and mcast.
+
+**Work:**
+
+1. Hardware job **H3**: fix the 30 s warmup deadlock on winner `bm256 bn128 bk64 w4 s2` (job 2060111). Need at least one memory-bound shape where multicast speedup is clearly > 1, plus C-match.
+2. Until H3: still run **G1/G2** on the small 2059248 shapes (already ~7e4–1.8e5 cycles) for functional + cycle check. Multicast will **not** win there; that is expected (AI too high).
+3. Sim: same cubin/PTX as hardware (embedded artifacts under `calibration/kernels/h200_probes/artifacts/`). Loop/K so timed region ~1e5 cycles. Config `SM90_H200_CLUSTER16x8`, 4 threads.
+4. Compare in-kernel cycles if the harness has `%clock64`; otherwise `gpu_sim_cycle` vs H200 `cycles_est` (wall_ms × SM MHz) and say so in the table.
+
+**Verify:** Functional C-match on sim. Cycle error < 10% on G1. After H3, G2 not slower than G1 on the memory-bound shape, and that pair also < 10%.
+
+**Exit:** Table §5.3 plus a short note if H3 is still open (then B6d cannot fully close). **Next:** B6e.
+
+**Prereqs:** B6a. B6b/B6c preferred.
+
+---
+
+### B6e — Freeze preset and close the report
+
+- [ ] **B6e** Write fitted knobs into `SM90_H200*` comments (`measured` / `inferred`). No pending rows on the accepted set in [`calibration.md`](calibration.md).
+
+**Work:** One pass over §6 knobs. Sync comments in `SM90_H200` (flat, NoC off) vs `SM90_H200_CLUSTER16x8` (fabric on) vs reduced 16x2 (functional). Do not leave `-gpgpu_dsm_bytes_per_cycle` as a non-zero bandwidth model. TMA issue knob is the **pure** 44 unless a new exclusive job contradicts it.
+
+**Verify:** Re-run the accepted L/BW/G set once on the frozen preset; errors still < 10%. Reduced functional filters still PASS.
+
+**Exit:** Close-out under **B6** with date, config, commit, and a pointer to the filled [`calibration.md`](calibration.md). Then B-DEPR.
+
+**Prereqs:** B6b, B6c; B6d as far as H3 allows.
 
 ---
 
@@ -743,7 +840,7 @@ Declare first delivery when **all** are true:
 10. DSM vs local LSU/TMA compete in `shared_memory_service_t`.
 11. Finite buffers + ACK coalesce: no constructed deadlock; pending DSM blocks warp/CTA/sim end.
 12. OMP on/off functionally equal; fixed config completion cycles repeat.
-13. H200 preset explains `dsm_bw` slope, direction sharing, scaling (B6).
+13. H200 preset explains mbarrier / TMA / DSM latency and `dsm_bw` slopes; sim cycle counts on the calibration suite (including Triton multicast GEMM) are within 10% of H200 ([`calibration.md`](calibration.md), B6).
 14. TMA multicast can use the same resolver/fabric/SRAM without changing the VC contract (B8).
 15. Delay-line knobs gone or hard-deprecated (**B-DEPR**).
 

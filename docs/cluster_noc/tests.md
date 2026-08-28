@@ -138,7 +138,13 @@ Existing `DsmTest.*` / `MbarrierClusterTest.*` must still PASS.
 
 ### H200 calibration (B6)
 
-Size-**slope** (16–96 KiB), not a single 64 KiB point:
+Full write-up, kernel IDs, expected H200 numbers, and empty sim columns: [`calibration.md`](calibration.md).
+
+**Config:** `SM90_H200_CLUSTER16x8` (full-chip GPC packing, 8×16, fabric on). **Not** the reduced 32-SM cluster. **Not** shipped `SM90_H200` (132×1).  
+**Threads:** `OMP_NUM_THREADS=4`.  
+**Cycle gate:** inner loop ≈ 1e5 `%clock64` cycles; \(|T_{\mathrm{sim}}-T_{\mathrm{H200}}|/T_{\mathrm{H200}} < 10\%\).
+
+Size-**slope** (16–96 KiB), not a single 64 KiB point, still required for DSM BW:
 
 - One-way load/store/TMA ≈ 20–21 B/cycle per SM
 - Symmetric load loss ~22–23%/dir; store/TMA ~4–6%
@@ -146,10 +152,12 @@ Size-**slope** (16–96 KiB), not a single 64 KiB point:
 - TMA 2/4/8/16 SM aggregate ≈ linear
 - Idle neighbor does not raise the active SM’s rate
 
+Also required: local mbarrier arrive / try_wait, DSM local/remote RTT, TMA issue (pure 44, not bundle 68), TMA mcast − unicast e2e, and the Triton unicast/multicast GEMM (GEMM multicast on H200 is not finished; still in the suite).
+
 Exact hash and per-hop credit depth are **not** v1 accept criteria.
 
 ---
 
 ## 4. After B-DEPR
 
-After **B-DEPR**, delete all `dsm_latency_matrix_*.csv`, `-gpgpu_dsm_latency_matrix_file`, and `-gpgpu_dsm_remote_latency` as a hop/bandwidth knob. Configs that still set those, or `-gpgpu_dsm_bytes_per_cycle`, as the **bandwidth** model are bugs. Timing residual may remain as `-gpgpu_dsm_base_latency_cycles` if B6 refits it. Update `configs/SM90_H200*` and any overlay comments in this directory.
+After **B-DEPR**, delete all `dsm_latency_matrix_*.csv`, `-gpgpu_dsm_latency_matrix_file`, and `-gpgpu_dsm_remote_latency` as a hop/bandwidth knob. Configs that still set those, or `-gpgpu_dsm_bytes_per_cycle`, as the **bandwidth** model are bugs. Timing residual may remain as `-gpgpu_dsm_base_latency_cycles` if B6e refits it. Update `configs/SM90_H200*`, `configs/SM90_H200_CLUSTER16x8`, and any overlay comments in this directory.

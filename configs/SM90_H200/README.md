@@ -68,14 +68,14 @@ Source: `H200_profiling/output-2046238-H200Profiling.txt` (suite includes `dsm` 
 | TMA mcast−unicast e2e | ~**135** cyc | `gpgpu_tma_mcast_hop_latency=135` |
 | Matrix file | 16×16 one-way | `dsm_latency_matrix_16.csv` |
 
-See `docs/cluster_noc/knobs.md`, `docs/cluster_noc/todos.md`, and `H200_profiling/TODO.md` for remaining BW/scoreboard knobs.
+See `docs/cluster_noc/knobs.md`, `docs/cluster_noc/todos.md`, and `docs/cluster_noc/calibration.md` for remaining BW/latency/GEMM calibration (B6). This flat 132×1 packing **cannot** exercise the DSM fabric; cycle-accurate cluster numbers use `SM90_H200_CLUSTER16x8` (added in B6a).
 
 ### Still open
 
 - HBM **bank** timings (CCD/RRD/…) — not invertible from BW alone  
 - Cold DRAM RTT under exclusive GPU (this job had co-resident python)  
 - int-WGMMA completion; RF-pressure byte/cycle budgets  
-- DSM BW fit (`gpgpu_dsm_bytes_per_cycle`); optional DSM_LOAD_RSP scoreboard
+- Cluster mbarrier / TMA / DSM / GEMM cycle calibration (`docs/cluster_noc/calibration.md`). Do **not** fit `-gpgpu_dsm_bytes_per_cycle` as the fabric model.
 
 ## Usage
 

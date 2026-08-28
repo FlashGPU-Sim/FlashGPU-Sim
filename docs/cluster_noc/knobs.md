@@ -110,6 +110,8 @@ Hang watchdog **stays** after B-DEPR (not a delay-line hop knob). `tma_mcast_mba
 
 ## 4. H200 mapping (job 2046238)
 
+Cycle-accurate calibration (latency + slopes + GEMM), full-chip GPC packing, and sim tables: [`calibration.md`](calibration.md).
+
 Source: `../H200_profiling/output-2046238-H200Profiling.txt`. Blog / `dsm_bw` pin: [`evidence.md`](evidence.md).
 
 | Profile metric | Delay-line knob | Fabric intent |

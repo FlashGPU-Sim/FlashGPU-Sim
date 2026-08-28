@@ -11,6 +11,8 @@ Pinned reverse-engineering tree:
 
 In-tree latency job: `../H200_profiling/output-2046238-H200Profiling.txt` (hop / RTT / TMA extra).
 
+Calibration report (kernel inventory, expected H200 numbers, sim columns): [`calibration.md`](calibration.md).
+
 Patent: US12248788B2, figures 21A–21D. TPCARB in those figures is **not** modeled; PG'd SM slots **are**.
 
 ---
