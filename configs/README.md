@@ -103,7 +103,7 @@ Reduced two-GPC H200 profile for functional iteration and intra-GPC NoC.
 
 ### SM90_H200_CLUSTER16x8
 
-Full-chip GPC-packed H200 for cycle-accurate cluster calibration (B6). Added in B6a; see `docs/cluster_noc/calibration.md`.
+Full-chip GPC-packed H200 for cycle-accurate cluster calibration (B6). See `docs/cluster_noc/calibration.md`.
 
 **Use for:**
 - Published mbarrier / TMA / DSM / GEMM cycle comparisons vs H200

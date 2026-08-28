@@ -602,7 +602,7 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 ### B6a — Full-chip config and sim harness
 
-- [ ] **B6a** `SM90_H200_CLUSTER16x8` + build/run path for the git-ignored kernels.
+- [x] **B6a** `SM90_H200_CLUSTER16x8` + build/run path for the git-ignored kernels. Closed 2026-08-28. **No H200 job.**
 
 **Work:**
 
@@ -616,6 +616,8 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 **Exit:** Config path named in [`calibration.md`](calibration.md) §2. **Next:** B6b.
 
 **Prereqs:** B5, B8.
+
+**Close-out (2026-08-28):** Setup only. No new H200 job (H1–H4 belong to B6b–B6d). `configs/SM90_H200_CLUSTER16x8/`: 8 GPCs × 16 SMs = 128, `-gpgpu_dsm_enable 1`, `-gpgpu_mbarrier_cluster_enable 1`, fabric knobs at documented defaults, `-gpgpu_dsm_bytes_per_cycle 0`. `./test/run_tests.sh list-configs` lists `SM90_H200_CLUSTER16x8`. Harness: `scripts/run_calibration_sim.sh` (`OMP_NUM_THREADS=4`, `--loops` → `CALIB_LOOPS`, copies this config into `calibration/runs/`). Kernels present under git-ignored `calibration/kernels/{dsm_bw,tma_bw,h200_probes,hopper_paper}`. No C++ change; reduced 16x2 functional filters not re-run (last PASS B8 2026-08-27). First `gpu_sim_cycle` print is B6b.
 
 ---
 
