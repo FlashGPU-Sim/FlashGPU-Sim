@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <vector>
 
 namespace flash_gpgpu_sim {
@@ -29,6 +30,7 @@ struct instruction_stream_buffer_config {
   unsigned streams = 1;
   unsigned depth = 4;
   unsigned issue_width = 1;
+  unsigned gcc_preload_lines = 0;
 };
 
 struct instruction_stream_buffer_stats {
@@ -41,6 +43,8 @@ struct instruction_stream_buffer_stats {
   uint64_t retries = 0;
   uint64_t stale_fills = 0;
   uint64_t canceled_entries = 0;
+  uint64_t gcc_preload_hits = 0;
+  uint64_t gcc_preload_misses = 0;
 
   instruction_stream_buffer_stats &
   operator+=(const instruction_stream_buffer_stats &other) {
@@ -53,6 +57,8 @@ struct instruction_stream_buffer_stats {
     retries += other.retries;
     stale_fills += other.stale_fills;
     canceled_entries += other.canceled_entries;
+    gcc_preload_hits += other.gcc_preload_hits;
+    gcc_preload_misses += other.gcc_preload_misses;
     return *this;
   }
 };
@@ -72,6 +78,9 @@ public:
   void reset();
 
   bool current(const instruction_prefetch_request &request) const;
+  bool gcc_preload_contains(const instruction_prefetch_request &request) const;
+  void record_gcc_preload_hit() { ++m_stats.gcc_preload_hits; }
+  void record_gcc_preload_miss() { ++m_stats.gcc_preload_misses; }
   size_t pending_entries() const;
   size_t pending_entries(unsigned stream) const;
   const instruction_stream_buffer_stats &stats() const { return m_stats; }
@@ -105,6 +114,7 @@ private:
   std::vector<stream_state> m_streams;
   unsigned m_issue_cursor = 0;
   uint64_t m_clock = 0;
+  std::map<uint64_t, uint64_t> m_preload_base_lines;
   instruction_stream_buffer_stats m_stats;
 };
 

@@ -4,10 +4,10 @@
 #include <list>
 
 #include "../../../abstract_hardware_model.h"
-#include "../../gpu-cache.h"
 #include "../../gpu-sim.h"
 #include "../../mem_fetch.h"
 #include "../../shader.h"
+#include "instruction_cache.h"
 
 namespace flash_gpgpu_sim {
 
@@ -15,12 +15,14 @@ namespace {
 
 instruction_stream_buffer_config make_config(unsigned streams, unsigned depth,
                                              unsigned issue_width,
+                                             unsigned gcc_preload_lines,
                                              unsigned line_size) {
   instruction_stream_buffer_config config;
   config.line_size = line_size;
   config.streams = streams;
   config.depth = depth;
   config.issue_width = issue_width;
+  config.gcc_preload_lines = gcc_preload_lines;
   return config;
 }
 
@@ -28,13 +30,17 @@ instruction_stream_buffer_config make_config(unsigned streams, unsigned depth,
 
 instruction_prefetcher::instruction_prefetcher(
     bool enabled, unsigned streams, unsigned depth, unsigned issue_width,
-    unsigned line_size, unsigned sid, unsigned tpc,
-    const memory_config *memory_config, gpgpu_sim *gpu, read_only_cache *cache)
+    unsigned gcc_preload_lines, unsigned gcc_hit_latency, unsigned line_size,
+    unsigned sid, unsigned tpc,
+    const memory_config *memory_config, gpgpu_sim *gpu,
+    instruction_cache *cache)
     : m_enabled(enabled && streams != 0 && depth != 0 && issue_width != 0),
-      m_line_size(line_size), m_sid(sid), m_tpc(tpc),
+      m_line_size(line_size), m_gcc_preload_lines(gcc_preload_lines),
+      m_gcc_hit_latency(gcc_hit_latency), m_sid(sid), m_tpc(tpc),
       m_memory_config(memory_config), m_gpu(gpu), m_cache(cache),
       m_stream_buffer(make_config(streams ? streams : 1, depth ? depth : 1,
-                                  issue_width ? issue_width : 1, line_size)),
+                                  issue_width ? issue_width : 1,
+                                  gcc_preload_lines, line_size)),
       m_active_context(std::numeric_limits<uint64_t>::max()) {}
 
 void instruction_prefetcher::activate_context(uint64_t context,
@@ -80,8 +86,15 @@ void instruction_prefetcher::cycle(bool demand_reservation_failed) {
     std::list<cache_event> events;
     const cache_request_status status =
         m_cache->access(request.address, mf, now, events);
-    if (status == MISS)
+    if (status == MISS) {
+      if (m_stream_buffer.gcc_preload_contains(request) &&
+          m_cache->schedule_preload_fill(mf, now + m_gcc_hit_latency)) {
+        m_stream_buffer.record_gcc_preload_hit();
+      } else if (m_gcc_preload_lines != 0) {
+        m_stream_buffer.record_gcc_preload_miss();
+      }
       continue;
+    }
     if (status == HIT) {
       m_stream_buffer.mark_resident(request);
     } else {

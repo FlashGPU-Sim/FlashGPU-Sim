@@ -17,16 +17,28 @@ namespace {
   } while (0)
 
 #ifdef ICACHE_TIMING
-#define ICACHE_STEP() \
-  asm volatile("mad.lo.u32 %0, %0, 1664525, 1013904223;" : "+r"(value));
-#define BENCHMARK_MODE "timing"
+#define ICACHE_STEP_0()                                                   \
+  asm volatile("mad.lo.u32 %0, %0, 1664525, 1013904223;" : "+r"(value0));
+#define ICACHE_STEP_1()                                                   \
+  asm volatile("mad.lo.u32 %0, %0, 1664525, 1013904223;" : "+r"(value1));
+#define ICACHE_STEP_2()                                                   \
+  asm volatile("mad.lo.u32 %0, %0, 1664525, 1013904223;" : "+r"(value2));
+#define ICACHE_STEP_3()                                                   \
+  asm volatile("mad.lo.u32 %0, %0, 1664525, 1013904223;" : "+r"(value3));
+#define BENCHMARK_MODE "timing-4-chain"
+#define BENCHMARK_CHAINS 4
 #else
-#define ICACHE_STEP() asm volatile("bar.warp.sync 0xffffffff;" ::: "memory");
+#define ICACHE_STEP_0() \
+  asm volatile("bar.warp.sync 0xffffffff;" ::: "memory");
+#define ICACHE_STEP_1() ICACHE_STEP_0()
+#define ICACHE_STEP_2() ICACHE_STEP_0()
+#define ICACHE_STEP_3() ICACHE_STEP_0()
 #define BENCHMARK_MODE "footprint"
+#define BENCHMARK_CHAINS 0
 #endif
-#define REP_1() ICACHE_STEP()
-#define REP_2() REP_1() REP_1()
-#define REP_4() REP_2() REP_2()
+#define REP_1() ICACHE_STEP_0()
+#define REP_2() ICACHE_STEP_0() ICACHE_STEP_1()
+#define REP_4() REP_2() ICACHE_STEP_2() ICACHE_STEP_3()
 #define REP_8() REP_4() REP_4()
 #define REP_16() REP_8() REP_8()
 #define REP_32() REP_16() REP_16()
@@ -182,15 +194,28 @@ Options parse_options(int argc, char** argv) {
 
 __global__ __launch_bounds__(32, 1) void footprint_kernel(
     unsigned int* output, unsigned long long* cycles, int repetitions) {
-  unsigned int value = threadIdx.x + blockIdx.x + 1;
+  const unsigned int seed = threadIdx.x + blockIdx.x + 1;
+#ifdef ICACHE_TIMING
+  unsigned int value0 = seed;
+  unsigned int value1 = seed + 0x9e3779b9u;
+  unsigned int value2 = seed + 2u * 0x9e3779b9u;
+  unsigned int value3 = seed + 3u * 0x9e3779b9u;
+#else
+  unsigned int value0 = seed;
+#endif
   const unsigned long long begin = clock64();
 #pragma unroll 1
   for (int iteration = 0; iteration < repetitions; ++iteration) {
     FOOTPRINT_BODY()
   }
   const unsigned long long end = clock64();
+#ifdef ICACHE_TIMING
+  const unsigned int sink = value0 ^ value1 ^ value2 ^ value3;
+#else
+  const unsigned int sink = value0;
+#endif
   if (threadIdx.x == 0) {
-    output[blockIdx.x] = value;
+    output[blockIdx.x] = sink;
     cycles[blockIdx.x] = end - begin;
   }
 }
@@ -226,10 +251,10 @@ int main(int argc, char** argv) {
                         cudaMemcpyDeviceToHost));
 
   std::printf(
-      "mode=%s footprint_steps=%d blocks=%d repetitions=%d warmup_launches=%d "
-      "cycles=%llu sink=%u\n",
-      BENCHMARK_MODE, FOOTPRINT_STEPS, options.blocks, options.repetitions,
-      options.warmup_launches, host_cycles, host_output);
+      "mode=%s footprint_steps=%d dependency_chains=%d blocks=%d "
+      "repetitions=%d warmup_launches=%d cycles=%llu sink=%u\n",
+      BENCHMARK_MODE, FOOTPRINT_STEPS, BENCHMARK_CHAINS, options.blocks,
+      options.repetitions, options.warmup_launches, host_cycles, host_output);
 
   CUDA_CHECK(cudaFree(output));
   CUDA_CHECK(cudaFree(cycles));

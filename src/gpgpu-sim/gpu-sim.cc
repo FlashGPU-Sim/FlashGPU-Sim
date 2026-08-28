@@ -885,6 +885,14 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_icache_prefetch_issue_width", OPT_UINT32,
       &icache_prefetch_issue_width,
       "Maximum instruction prefetch requests issued per SM cycle", "1");
+  option_parser_register(
+      opp, "-gpgpu_icache_gcc_preload_lines", OPT_UINT32,
+      &icache_gcc_preload_lines,
+      "Instruction lines in the launch-time GCC preload window", "0");
+  option_parser_register(
+      opp, "-gpgpu_icache_gcc_hit_latency", OPT_UINT32,
+      &icache_gcc_hit_latency,
+      "Cycles from a GCC preload hit to ICC fill", "16");
   option_parser_register(opp, "-gpgpu_reg_file_port_throughput", OPT_INT32,
                          &reg_file_port_throughput,
                          "the number ports of the register file", "1");

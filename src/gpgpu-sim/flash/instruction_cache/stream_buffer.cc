@@ -106,6 +106,7 @@ instruction_demand_state
 instruction_stream_buffer::observe_demand(uint64_t context, uint64_t address,
                                           bool demand_miss) {
   const uint64_t line = line_address(address);
+  m_preload_base_lines.emplace(context, line);
   for (stream_state &stream : m_streams) {
     if (!stream.valid || stream.context != context)
       continue;
@@ -202,6 +203,16 @@ bool instruction_stream_buffer::current(
   return stream && find_entry(*stream, request.address);
 }
 
+bool instruction_stream_buffer::gcc_preload_contains(
+    const instruction_prefetch_request &request) const {
+  if (m_config.gcc_preload_lines == 0) return false;
+  const auto base = m_preload_base_lines.find(request.context);
+  if (base == m_preload_base_lines.end() || request.address < base->second)
+    return false;
+  const uint64_t distance = request.address - base->second;
+  return distance / m_config.line_size < m_config.gcc_preload_lines;
+}
+
 void instruction_stream_buffer::retry(
     const instruction_prefetch_request &request) {
   stream_state *stream = request_stream(request);
@@ -243,12 +254,14 @@ void instruction_stream_buffer::cancel_context(uint64_t context) {
     if (stream.valid && stream.context == context)
       invalidate(stream);
   }
+  m_preload_base_lines.erase(context);
 }
 
 void instruction_stream_buffer::reset() {
   for (stream_state &stream : m_streams)
     invalidate(stream);
   m_issue_cursor = 0;
+  m_preload_base_lines.clear();
 }
 
 size_t instruction_stream_buffer::pending_entries() const {

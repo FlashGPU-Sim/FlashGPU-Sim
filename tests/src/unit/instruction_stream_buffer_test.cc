@@ -103,4 +103,26 @@ TEST(InstructionStreamBufferTest, IssueWidthIsGlobalAcrossStreams) {
   EXPECT_EQ(buffer.stats().requests_issued, 2u);
 }
 
+TEST(InstructionStreamBufferTest, GccPreloadWindowStaysLaunchRelative) {
+  instruction_stream_buffer_config config;
+  config.line_size = 128;
+  config.streams = 1;
+  config.depth = 4;
+  config.issue_width = 4;
+  config.gcc_preload_lines = 4;
+  instruction_stream_buffer buffer(config);
+
+  buffer.observe_demand(7, 0x1000, true);
+  const auto initial = buffer.issue();
+  ASSERT_EQ(initial.size(), 4u);
+  EXPECT_TRUE(buffer.gcc_preload_contains(initial[0]));
+  EXPECT_TRUE(buffer.gcc_preload_contains(initial[2]));
+  EXPECT_FALSE(buffer.gcc_preload_contains(initial[3]));
+
+  buffer.observe_demand(7, 0x8000, true);
+  const auto replacement = buffer.issue();
+  ASSERT_GE(replacement.size(), 1u);
+  EXPECT_FALSE(buffer.gcc_preload_contains(replacement.front()));
+}
+
 }  // namespace

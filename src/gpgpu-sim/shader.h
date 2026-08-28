@@ -60,6 +60,7 @@
 #include "flash/mbarrier.h"
 #include "flash/bulk_group.h"
 #include "flash/instruction_cache/prefetcher.h"
+#include "flash/instruction_cache/instruction_cache.h"
 #include "flash/tma.h"
 #include "flash/wgmma/tensor_wgmma.h"
 #include "flash/tma.h"
@@ -2037,6 +2038,8 @@ class shader_core_config : public core_config {
   unsigned icache_prefetch_streams;
   unsigned icache_prefetch_depth;
   unsigned icache_prefetch_issue_width;
+  unsigned icache_gcc_preload_lines;
+  unsigned icache_gcc_hit_latency;
   unsigned reg_file_port_throughput;
 
   // specialized unit config strings
@@ -2952,7 +2955,7 @@ class shader_core_ctx : public core_t {
   shader_core_mem_fetch_allocator *m_mem_fetch_allocator;
 
   // fetch
-  read_only_cache *m_L1I;  // instruction cache
+  flash_gpgpu_sim::instruction_cache *m_L1I;
   flash_gpgpu_sim::instruction_prefetcher *m_instruction_prefetcher;
   int m_last_warp_fetched;
 

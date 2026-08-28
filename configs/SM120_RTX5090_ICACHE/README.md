@@ -4,14 +4,19 @@ This configuration enables the bounded instruction stream buffer and replaces
 the perfect instruction cache with an experimental 64 KiB per-SM cache while
 leaving the default perfect constant-cache behavior unchanged. It is used by
 the approximately 10 us instruction-prefetch GEMM and FlashAttention
-regression cases in
-`tests/ci/perf/cases.toml`.
+regression cases in `tests/ci/perf/cases.toml`.
 
 This is not a complete RTX 5090 instruction hierarchy. In particular, ICC
-misses currently go through the simulator's normal lower-memory path; there is
-no GPC-scoped GCC or hardware-like code preload between ICC and L2. The
-128-byte simulator line and four-line prefetch depth are tunable model
-parameters, not measured hardware values.
+prefetch misses in the first 512 launch-relative lines use a 16-cycle local GCC
+return path. The path preserves the ordinary ICC tag, MSHR, sector-fill, and
+fill-port behavior. Requests outside that fixed 64 KiB window still use the
+normal lower-memory hierarchy.
+
+This local path approximates the measured launch-time code preload; it is not a
+GPC-scoped shared GCC. GCC sharing, lookup-miss/tag-hit latency, capacity, and
+replacement are still unmodeled. The 128-byte simulator line and four-line
+prefetch depth also remain tunable model parameters rather than measured
+physical values.
 
 `-gpgpu_icache_address_scale 2` maps each eight-byte PTX PC slot onto the
 sixteen-byte address spacing used by Blackwell SASS before looking up the

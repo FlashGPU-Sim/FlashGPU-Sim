@@ -186,7 +186,7 @@ the normal operand-collector read budget:
 | --- | ---: | ---: | ---: | --- |
 | `-gpgpu_ptx_register_allocator` | `0` | `1` | `1` | Enable conservative PTX virtual-register aliasing |
 | `-gpgpu_ptx_register_allocator_stats` | `0` | `0` | `0` | Print register-allocation statistics |
-| `-gpgpu_ptx_reorder` | `0` | `1` | `0` | Enable conservative PTX instruction reordering |
+| `-gpgpu_ptx_reorder` | `0` | `1` | `1` | Enable conservative PTX instruction reordering |
 | `-gpgpu_ptx_reorder_sass_guided` | `0` | `0` | `0` | Guide PTX reordering with auto-extracted SASS/PTX-line anchors |
 
 When SASS-guided reordering is enabled, FlashGPU-Sim loads the single

@@ -364,14 +364,16 @@ void shader_core_ctx::create_front_pipeline() {
 #define STRSIZE 1024
   char name[STRSIZE];
   snprintf(name, STRSIZE, "L1I_%03d", m_sid);
-  m_L1I = new read_only_cache(name, m_config->m_L1I_config, m_sid,
-                              get_shader_instruction_cache_id(), m_icnt,
-                              IN_L1I_MISS_QUEUE, OTHER_GPU_CACHE, m_gpu);
+  m_L1I = new flash_gpgpu_sim::instruction_cache(
+      name, m_config->m_L1I_config, m_sid,
+      get_shader_instruction_cache_id(), m_icnt, IN_L1I_MISS_QUEUE,
+      OTHER_GPU_CACHE, m_gpu);
   m_instruction_prefetcher = new flash_gpgpu_sim::instruction_prefetcher(
       m_config->icache_prefetch_enable &&
           !m_config->perfect_instruction_cache(),
       m_config->icache_prefetch_streams, m_config->icache_prefetch_depth,
       m_config->icache_prefetch_issue_width,
+      m_config->icache_gcc_preload_lines, m_config->icache_gcc_hit_latency,
       m_config->m_L1I_config.get_line_sz(), m_sid, m_tpc, m_memory_config,
       m_gpu, m_L1I);
 }
@@ -4760,6 +4762,10 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
             static_cast<unsigned long long>(prefetch_stats.stale_fills));
     fprintf(fout, "\tL1I_prefetch_canceled_entries = %llu\n",
             static_cast<unsigned long long>(prefetch_stats.canceled_entries));
+    fprintf(fout, "\tL1I_gcc_preload_hits = %llu\n",
+            static_cast<unsigned long long>(prefetch_stats.gcc_preload_hits));
+    fprintf(fout, "\tL1I_gcc_preload_misses = %llu\n",
+            static_cast<unsigned long long>(prefetch_stats.gcc_preload_misses));
   }
 
   // L1D
