@@ -22,6 +22,8 @@ Current sources:
 - `shared_memory_optin_test.cu`: opt-in dynamic shared-memory behavior;
 - `ldst_matrix_test.cu`: `ldmatrix` and `stmatrix` variants;
 - `cp_async_src_size_test.cu`: `cp.async` source-size forms.
+- `shared_atomic_address_test.cu`: canonical explicit shared-memory addresses
+  across atomic and ordinary accesses.
 
 Run the test group with:
 
