@@ -27,6 +27,7 @@ sources = [
   "unit/l2_multi_issue_ports_test.cc",
   "unit/local_interconnect_test.cc",
   "unit/memory_transport_test.cc",
+  "unit/ptx_scheduler_test.cc",
   "unit/rop_delay_output_test.cc",
   "unit/tcgen05_tmem_test.cc",
   "unit/tcgen05_timing_test.cc",

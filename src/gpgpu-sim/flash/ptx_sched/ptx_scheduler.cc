@@ -128,6 +128,7 @@ struct reorder_stats_t {
   unsigned edges;
   unsigned compiler_view_insts;
   unsigned compiler_view_roundtrips;
+  unsigned compiler_pack_fusions;
   std::map<unsigned, unsigned> segment_length_histogram;
   unsigned sass_guided_segments;
   unsigned sass_guided_fallback_segments;
@@ -139,8 +140,9 @@ struct reorder_stats_t {
       : regions(0), segments(0), skipped_segments(0), total_insts(0),
         moved_slots(0), moved_distance(0), max_moved_distance(0),
         max_segment(0), edges(0), compiler_view_insts(0),
-        compiler_view_roundtrips(0), sass_guided_segments(0),
-        sass_guided_fallback_segments(0), sass_guide_cursor(0) {}
+        compiler_view_roundtrips(0), compiler_pack_fusions(0),
+        sass_guided_segments(0), sass_guided_fallback_segments(0),
+        sass_guide_cursor(0) {}
 };
 
 struct sass_function_guide_t {
@@ -1150,13 +1152,14 @@ void dump_ptx_reorder_result(
           "# stats: regions=%u segments=%u skipped=%u insts=%u "
           "moved_slots=%u moved_distance=%u max_moved_distance=%u "
           "max_segment=%u edges=%u compiler_view_insts=%u "
-          "compiler_view_roundtrips=%u slack=%d sass_guided=%u "
+          "compiler_view_roundtrips=%u compiler_pack_fusions=%u "
+          "plain_priority=ready_first slack=%d sass_guided=%u "
           "sass_guided_fallback=%u sass_cursor=%u\n",
           stats.regions, stats.segments, stats.skipped_segments,
           stats.total_insts, stats.moved_slots, stats.moved_distance,
           stats.max_moved_distance, stats.max_segment, stats.edges,
           stats.compiler_view_insts, stats.compiler_view_roundtrips,
-          ready_slack, stats.sass_guided_segments,
+          stats.compiler_pack_fusions, ready_slack, stats.sass_guided_segments,
           stats.sass_guided_fallback_segments, stats.sass_guide_cursor);
   fprintf(fp, "# segment_length_histogram:");
   for (std::map<unsigned, unsigned>::const_iterator it =
@@ -1510,6 +1513,15 @@ struct compiler_view_candidate_t {
   }
 };
 
+struct compiler_pack_candidate_t {
+  ptx_instruction *pack;
+  const symbol *dest;
+  const symbol *low;
+  const symbol *high;
+
+  compiler_pack_candidate_t() : pack(NULL), dest(NULL), low(NULL), high(NULL) {}
+};
+
 bool decode_brace_unpack(const ptx_instruction *inst, const symbol **scalar,
                          const symbol **low, const symbol **high) {
   if (inst == NULL || inst->get_opcode() != MOV_OP || inst->has_pred() ||
@@ -1603,6 +1615,29 @@ bool compiler_view_source_is_local_or_boundary(
     return false;
   return producer->second->boundary ||
          producer->second->region == consumer_region;
+}
+
+bool is_compiler_pack_control_flow_boundary(const ptx_instruction *inst) {
+  if (inst == NULL || inst->is_label())
+    return true;
+  switch (inst->get_opcode()) {
+  case BRA_OP:
+  case BRX_OP:
+  case BRKPT_OP:
+  case BREAK_OP:
+  case BREAKADDR_OP:
+  case CALL_OP:
+  case CALLP_OP:
+  case RET_OP:
+  case RETP_OP:
+  case EXIT_OP:
+  case TRAP_OP:
+  case SSY_OP:
+  case SST_OP:
+    return true;
+  default:
+    return false;
+  }
 }
 
 std::vector<compiler_view_candidate_t> analyze_compiler_register_views(
@@ -1706,12 +1741,103 @@ std::vector<compiler_view_candidate_t> analyze_compiler_register_views(
   return candidates;
 }
 
+std::vector<compiler_pack_candidate_t> analyze_compiler_register_packs(
+    const std::list<ptx_instruction *> &instructions,
+    const std::set<ptx_instruction *> &claimed) {
+  std::vector<compiler_view_inst_info_t> infos;
+  infos.reserve(instructions.size());
+  unsigned index = 0;
+  unsigned region = 0;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it, ++index) {
+    compiler_view_inst_info_t info;
+    info.inst = *it;
+    info.index = index;
+    info.region = region;
+    info.boundary = is_segment_boundary(info.inst);
+    collect_inst_regs(info.inst, info.uses, info.defs);
+    infos.push_back(info);
+    if (info.boundary)
+      ++region;
+  }
+
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, const compiler_view_inst_info_t *> def_inst;
+  for (unsigned i = 0; i < infos.size(); ++i) {
+    for (reg_set_t::const_iterator def = infos[i].defs.begin();
+         def != infos[i].defs.end(); ++def) {
+      ++def_count[*def];
+      def_inst[*def] = &infos[i];
+    }
+  }
+
+  std::vector<compiler_pack_candidate_t> candidates;
+  for (unsigned i = 0; i < infos.size(); ++i) {
+    const symbol *scalar = NULL;
+    const symbol *low = NULL;
+    const symbol *high = NULL;
+    if (claimed.find(infos[i].inst) != claimed.end() ||
+        !decode_brace_pack(infos[i].inst, &scalar, &low, &high) ||
+        scalar->name().compare(0, 3, "%rd") != 0 || def_count[scalar] != 1 ||
+        def_count[low] != 1 || def_count[high] != 1 ||
+        !compiler_view_source_is_local_or_boundary(
+            low, infos[i].index, infos[i].region, def_count, def_inst) ||
+        !compiler_view_source_is_local_or_boundary(
+            high, infos[i].index, infos[i].region, def_count, def_inst))
+      continue;
+
+    bool have_consumer = false;
+    bool consumers_valid = true;
+    for (unsigned j = 0; j < infos.size(); ++j) {
+      if (infos[j].uses.find(scalar) == infos[j].uses.end())
+        continue;
+      have_consumer = true;
+      bool crosses_unsafe_boundary = false;
+      if (infos[j].index > infos[i].index) {
+        for (unsigned k = i + 1; k < j; ++k) {
+          if (is_compiler_pack_control_flow_boundary(infos[k].inst)) {
+            crosses_unsafe_boundary = true;
+            break;
+          }
+        }
+      }
+      // Timing boundaries such as TCGen05 loads and barriers preserve the
+      // register-pair value. Control-flow boundaries remain hard stops because
+      // lexical order alone cannot establish dominance across them.
+      if (infos[j].index <= infos[i].index || crosses_unsafe_boundary ||
+          !is_supported_compiler_view_consumer(infos[j])) {
+        consumers_valid = false;
+        break;
+      }
+    }
+    if (!have_consumer || !consumers_valid)
+      continue;
+
+    compiler_pack_candidate_t candidate;
+    candidate.pack = infos[i].inst;
+    candidate.dest = scalar;
+    candidate.low = low;
+    candidate.high = high;
+    candidates.push_back(candidate);
+  }
+  return candidates;
+}
+
 void canonicalize_compiler_view_regs(const function_info *func,
                                      reg_set_t &regs) {
   reg_set_t canonical;
   for (reg_set_t::const_iterator reg = regs.begin(); reg != regs.end(); ++reg) {
-    canonical.insert(
-        func == NULL ? *reg : func->canonicalize_compiler_register_view(*reg));
+    const symbol *low = NULL;
+    const symbol *high = NULL;
+    if (func != NULL &&
+        func->expand_compiler_register_pack(*reg, &low, &high)) {
+      canonical.insert(func->canonicalize_compiler_register_view(low));
+      canonical.insert(func->canonicalize_compiler_register_view(high));
+    } else {
+      canonical.insert(func == NULL
+                           ? *reg
+                           : func->canonicalize_compiler_register_view(*reg));
+    }
   }
   regs.swap(canonical);
 }
@@ -2197,21 +2323,22 @@ schedule_switch(const std::vector<sched_inst_t> &chunk,
     unsigned best_issue = std::numeric_limits<unsigned>::max();
     unsigned best_index = std::numeric_limits<unsigned>::max();
 
-    // Bottom-level (remaining critical-path latency) is the primary list
-    // scheduling priority. Estimated issue time resolves equal criticality,
-    // then source order makes equivalent choices deterministic. This keeps
-    // pipeline availability and producer ready time in the model without an
-    // opcode-pair preference table.
+    // Selecting the earliest estimated issue time prevents a dependency-ready
+    // node with a future operand or pipeline-ready time from blocking work that
+    // can issue now. Remaining critical-path latency then favors useful work
+    // among equally ready nodes, and source order keeps ties deterministic.
     for (std::set<unsigned>::const_iterator it = ready.begin();
          it != ready.end(); ++it) {
       const unsigned idx = *it;
       const unsigned issue = issues[idx];
       const unsigned original_index = chunk[idx].original_index;
+      const flash_gpgpu_sim::detail::ptx_schedule_priority_t candidate = {
+          issue, height[idx], original_index};
+      const flash_gpgpu_sim::detail::ptx_schedule_priority_t incumbent = {
+          best_issue, best_height, best_index};
       const bool better =
-          !have_pick || height[idx] > best_height ||
-          (height[idx] == best_height &&
-           (issue < best_issue ||
-            (issue == best_issue && original_index < best_index)));
+          !have_pick || flash_gpgpu_sim::detail::ptx_schedule_priority_precedes(
+                            candidate, incumbent);
       if (better) {
         have_pick = true;
         pick = idx;
@@ -2932,6 +3059,7 @@ void run_ptx_reorder(function_info *func) {
   const bool sass_ptxline_guided = func->gpgpu_ctx->ptx_reorder_sass_guided;
 
   func->m_compiler_register_views.clear();
+  func->m_compiler_register_packs.clear();
   if (!sass_ptxline_guided) {
     const std::vector<compiler_view_candidate_t> compiler_views =
         analyze_compiler_register_views(func->m_instructions);
@@ -2967,6 +3095,22 @@ void run_ptx_reorder(function_info *func) {
         ++stats.compiler_view_roundtrips;
     }
 
+    stats.compiler_view_insts = removed.size();
+    const std::vector<compiler_pack_candidate_t> compiler_packs =
+        analyze_compiler_register_packs(func->m_instructions, removed);
+    for (unsigned i = 0; i < compiler_packs.size(); ++i) {
+      const compiler_pack_candidate_t &pack = compiler_packs[i];
+      if (pack.dest == NULL || pack.low == NULL || pack.high == NULL ||
+          pack.dest == pack.low || pack.dest == pack.high ||
+          func->m_compiler_register_packs.find(pack.dest) !=
+              func->m_compiler_register_packs.end())
+        continue;
+      func->m_compiler_register_packs[pack.dest] =
+          std::make_pair(pack.low, pack.high);
+      removed.insert(pack.pack);
+      ++stats.compiler_pack_fusions;
+    }
+
     for (std::list<ptx_instruction *>::iterator it =
              func->m_instructions.begin();
          it != func->m_instructions.end();) {
@@ -2975,7 +3119,6 @@ void run_ptx_reorder(function_info *func) {
       else
         ++it;
     }
-    stats.compiler_view_insts = removed.size();
   }
 
   if (sass_ptxline_guided) {
@@ -3080,7 +3223,8 @@ void run_ptx_reorder(function_info *func) {
   printf("GPGPU-Sim PTX: reorder function '%s': mode=%s regions=%u "
          "segments=%u skipped=%u insts=%u moved_slots=%u "
          "moved_distance=%u max_moved_distance=%u max_segment=%u edges=%u "
-         "compiler_view_insts=%u compiler_view_roundtrips=%u slack=%d "
+         "compiler_view_insts=%u compiler_view_roundtrips=%u "
+         "compiler_pack_fusions=%u plain_priority=ready_first slack=%d "
          "sass_guided=%u sass_guided_fallback=%u "
          "sass_cursor=%u/%zu\n",
          func->m_name.c_str(),
@@ -3088,9 +3232,10 @@ void run_ptx_reorder(function_info *func) {
          stats.segments, stats.skipped_segments, stats.total_insts,
          stats.moved_slots, stats.moved_distance, stats.max_moved_distance,
          stats.max_segment, stats.edges, stats.compiler_view_insts,
-         stats.compiler_view_roundtrips, ready_slack,
-         stats.sass_guided_segments, stats.sass_guided_fallback_segments,
-         stats.sass_guide_cursor, guide_total);
+         stats.compiler_view_roundtrips, stats.compiler_pack_fusions,
+         ready_slack, stats.sass_guided_segments,
+         stats.sass_guided_fallback_segments, stats.sass_guide_cursor,
+         guide_total);
 }
 
 } // namespace flash_gpgpu_sim

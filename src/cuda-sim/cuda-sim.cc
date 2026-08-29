@@ -1905,6 +1905,24 @@ void ptx_instruction::pre_decode() {
       }
     } else {
       if (o.is_reg() && !o.is_non_arch_reg()) {
+        const symbol *pack_low = NULL;
+        const symbol *pack_high = NULL;
+        const symbol *logical_reg = o.get_symbol();
+        function_info *owner =
+            logical_reg == NULL ? NULL : logical_reg->get_pc();
+        if (owner != NULL && owner->expand_compiler_register_pack(
+                                 logical_reg, &pack_low, &pack_high)) {
+          const symbol *pack_sources[2] = {pack_low, pack_high};
+          for (unsigned lane = 0; lane < 2; ++lane) {
+            const symbol *source = pack_sources[lane];
+            assert(source != NULL && !source->is_non_arch_reg());
+            assert(m < MAX_INPUT_VALUES && m < MAX_REG_OPERANDS);
+            in[m] = source->reg_num();
+            arch_reg.src[m] = source->arch_reg_num();
+            ++m;
+          }
+          continue;
+        }
         int reg_num = o.reg_num();
         arch_reg.src[m] = o.arch_reg_num();
         switch (m) {

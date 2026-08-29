@@ -135,8 +135,16 @@ void canonicalize_compiler_view_regs(const function_info *func,
     return;
   reg_symbol_set canonical;
   for (reg_symbol_set::const_iterator reg = regs.begin(); reg != regs.end();
-       ++reg)
-    canonical.insert(func->canonicalize_compiler_register_view(*reg));
+       ++reg) {
+    const symbol *low = NULL;
+    const symbol *high = NULL;
+    if (func->expand_compiler_register_pack(*reg, &low, &high)) {
+      canonical.insert(func->canonicalize_compiler_register_view(low));
+      canonical.insert(func->canonicalize_compiler_register_view(high));
+    } else {
+      canonical.insert(func->canonicalize_compiler_register_view(*reg));
+    }
+  }
   regs.swap(canonical);
 }
 

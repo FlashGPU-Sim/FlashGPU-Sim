@@ -16,6 +16,28 @@ __global__ void unpack_with_discarded_components(uint16_t *output,
   output[1] = word2;
 }
 
+__global__ void consume_compiler_pack_alias_chain(uint64_t *output,
+                                                  uint32_t low,
+                                                  uint32_t high) {
+  uint64_t packed = 0;
+  uint32_t unpacked_low = 0;
+  uint32_t unpacked_high = 0;
+  uint64_t incremented = 0;
+  uint64_t repacked = 0;
+  asm volatile("mov.b64 %0, {%1, %2};"
+               : "=l"(packed)
+               : "r"(low), "r"(high));
+  asm volatile("mov.b64 {%0, %1}, %2;"
+               : "=r"(unpacked_low), "=r"(unpacked_high)
+               : "l"(packed));
+  asm volatile("add.u64 %0, %1, 1;" : "=l"(incremented) : "l"(packed));
+  asm volatile("mov.b64 %0, {%1, %2};"
+               : "=l"(repacked)
+               : "r"(unpacked_low), "r"(unpacked_high));
+  output[0] = repacked;
+  output[1] = incremented;
+}
+
 __global__ void bit_type_predicate_width(uint32_t *output) {
   uint32_t branch_iterations = 0;
   const uint32_t minus_four = 0xfffffffcu;
@@ -69,6 +91,29 @@ TEST(VectorOperandIntegrationTest, DiscardsPlaceholderComponents) {
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
 
   uint16_t actual[2] = {};
+  ASSERT_EQ(cudaMemcpy(actual, output, sizeof(actual), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(actual[0], kExpected[0]);
+  EXPECT_EQ(actual[1], kExpected[1]);
+
+  EXPECT_EQ(cudaFree(output), cudaSuccess);
+}
+
+TEST(PtxReorderPackIntegrationTest, PreservesNestedCompilerAliases) {
+  constexpr uint32_t kLow = 0xffffffffu;
+  constexpr uint32_t kHigh = 0x89abcdefu;
+  constexpr uint64_t kPacked =
+      (static_cast<uint64_t>(kHigh) << 32) | kLow;
+  constexpr uint64_t kExpected[] = {kPacked, kPacked + 1};
+
+  uint64_t *output = nullptr;
+  ASSERT_EQ(cudaMalloc(&output, sizeof(kExpected)), cudaSuccess);
+
+  consume_compiler_pack_alias_chain<<<1, 1>>>(output, kLow, kHigh);
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  uint64_t actual[2] = {};
   ASSERT_EQ(cudaMemcpy(actual, output, sizeof(actual), cudaMemcpyDeviceToHost),
             cudaSuccess);
   EXPECT_EQ(actual[0], kExpected[0]);

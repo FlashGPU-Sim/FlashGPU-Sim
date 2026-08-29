@@ -245,6 +245,24 @@ void ptx_thread_info::set_reg(const symbol *reg, const ptx_reg_t &value) {
   if (reg->name() == "_") return;
   assert(!m_regs.empty());
 
+  const symbol *pack_low = NULL;
+  const symbol *pack_high = NULL;
+  if (m_func_info != NULL &&
+      m_func_info->get_compiler_register_pack(reg, &pack_low, &pack_high)) {
+    assert(pack_low != NULL && pack_high != NULL && pack_low != reg &&
+           pack_high != reg);
+    ptx_reg_t low_value;
+    low_value.u64 = 0;
+    low_value.u32 = static_cast<unsigned>(value.u64);
+    ptx_reg_t high_value;
+    high_value.u64 = 0;
+    high_value.u32 = static_cast<unsigned>(value.u64 >> 32);
+    set_reg(pack_low, low_value);
+    set_reg(pack_high, high_value);
+    m_last_set_operand_value = value;
+    return;
+  }
+
   const symbol *view_source = NULL;
   unsigned view_lane = 0;
   if (m_func_info != NULL &&
@@ -320,6 +338,22 @@ ptx_reg_t ptx_thread_info::get_reg(const symbol *reg) {
   static bool unfound_register_warned = false;
   assert(reg != NULL);
   assert(!m_regs.empty());
+
+  const symbol *pack_low = NULL;
+  const symbol *pack_high = NULL;
+  if (m_func_info != NULL &&
+      m_func_info->get_compiler_register_pack(reg, &pack_low, &pack_high)) {
+    assert(pack_low != NULL && pack_high != NULL && pack_low != reg &&
+           pack_high != reg);
+    const ptx_reg_t low_value = get_reg(pack_low);
+    const ptx_reg_t high_value = get_reg(pack_high);
+    ptx_reg_t packed_value;
+    packed_value.u64 = static_cast<unsigned long long>(low_value.u32) |
+                       (static_cast<unsigned long long>(high_value.u32) << 32);
+    if (m_enable_debug_trace)
+      m_debug_trace_regs_read.back()[reg] = packed_value;
+    return packed_value;
+  }
 
   const symbol *view_source = NULL;
   unsigned view_lane = 0;

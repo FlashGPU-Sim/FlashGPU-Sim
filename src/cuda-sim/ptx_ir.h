@@ -1605,6 +1605,31 @@ class function_info {
     if (lane != NULL) *lane = it->second.second;
     return true;
   }
+  // Functional access resolves only direct packs so an enclosing register
+  // view can still select its low or high lane.
+  bool get_compiler_register_pack(const symbol *reg, const symbol **low,
+                                  const symbol **high) const {
+    std::unordered_map<
+        const symbol *, std::pair<const symbol *, const symbol *>>::const_iterator
+        it = m_compiler_register_packs.find(reg);
+    if (it == m_compiler_register_packs.end()) return false;
+    if (low != NULL) *low = it->second.first;
+    if (high != NULL) *high = it->second.second;
+    return true;
+  }
+  // Timing and allocation consumers need the underlying pair even when the
+  // operand first passes through a compiler-register view.
+  bool expand_compiler_register_pack(const symbol *reg, const symbol **low,
+                                     const symbol **high) const {
+    const symbol *logical = canonicalize_compiler_register_view(reg);
+    const symbol *pack_low = NULL;
+    const symbol *pack_high = NULL;
+    if (!get_compiler_register_pack(logical, &pack_low, &pack_high))
+      return false;
+    if (low != NULL) *low = canonicalize_compiler_register_view(pack_low);
+    if (high != NULL) *high = canonicalize_compiler_register_view(pack_high);
+    return true;
+  }
   const symbol *canonicalize_compiler_register_view(const symbol *reg) const {
     const symbol *current = reg;
     for (std::size_t depth = 0; depth <= m_compiler_register_views.size();
@@ -1661,6 +1686,11 @@ class function_info {
   // brace-pair move can be removed from the hardware timing stream.
   std::unordered_map<const symbol *, std::pair<const symbol *, unsigned>>
       m_compiler_register_views;
+  // A 64-bit logical register that only packages two single-definition 32-bit
+  // registers. Functional reads reconstruct the value, while dependency and
+  // register-allocation analysis expand the input back to both source lanes.
+  std::unordered_map<const symbol *, std::pair<const symbol *, const symbol *>>
+      m_compiler_register_packs;
 
   /**
    * WZR: To support scoped label, we need to remember the scope of each label,
