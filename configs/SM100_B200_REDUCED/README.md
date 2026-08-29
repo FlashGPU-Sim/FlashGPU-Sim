@@ -48,9 +48,12 @@ transaction quota remains at the unlimited code default: this one-SM model is
 for functional tests and does not inherit the full model's throughput
 calibration.
 
-Detailed DRAM timing and physical address-to-bank mapping are inherited from
-the reduced Blackwell configuration and remain functional placeholders; those
-parts are not performance-calibrated for B200.
+The reduced model matches the full profile's active
+`1080:1080:1155:3996` base-clock tuple and keeps the same commented
+`1930:1930:1964:3996` high-clock alternative. It also matches the full model's
+fixed L1/L2 latency candidates and unvalidated uniform 800-cycle DRAM
+candidate. Detailed DRAM timing and physical address-to-bank mapping remain
+functional placeholders; those parts are not performance-calibrated for B200.
 
 ## Usage
 

@@ -12,7 +12,7 @@ constexpr int kIssuerWarps = 4;
 constexpr int kThreads = kIssuerWarps * 32;
 constexpr uint64_t kTransfers = 512;
 constexpr uint64_t kMeasuredBytes = kTransfers * kTmaBytes;
-constexpr double kCoreClockGhz = 1.965;
+constexpr double kCoreClockGhz = 1.930;
 
 struct TmaThroughputResult {
   uint64_t cycles;

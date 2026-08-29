@@ -46,13 +46,17 @@ can use the full shared four-sector request or response budget when it runs
 alone. Mixed responses still arbitrate within one four-sector cluster-dispatch
 budget.
 
-The full model limits each SM to 2648 issued TMA child requests awaiting a
-response. This finite capacity covers the measured DRAM bandwidth-delay
-product: four 32-byte child responses per core cycle times the 661.39-cycle
-measured latency upper bound gives 2645.56 requests, rounded up to a complete
-four-request service group. The value is not a measurement of the physical
-B200 queue depth. The independent four-request response service continues to
-limit steady-state TMA bandwidth to 128 B/core-cycle.
+The full model limits each SM to 3200 issued TMA child requests awaiting a
+response. This finite capacity covers the current uniform DRAM approximation's
+bandwidth-delay product: four 32-byte child responses per core cycle times the
+800-cycle endpoint target gives 3200 requests. The value is not a measurement
+of the physical B200 queue depth. The independent four-request response service
+continues to limit steady-state TMA bandwidth to 128 B/core-cycle.
+
+The per-transaction fairness quota is disabled with
+`-gpgpu_tma_tx_quota 0`, so quota-driven transaction rotation does not throttle
+the single-SM TMA service target. The SM-wide 3200-request tracking cap and the
+four-request issue/response widths remain active.
 
 After a physical CTA has drained outstanding TMA work and released its
 architectural resources, the same SM slot spends 1200 core cycles in a CTA
@@ -79,17 +83,23 @@ make -C tests/src/microbench/tma ARCH=sm_100a PTX_PROFILE=compute_100a \
   throughput-sim
 ```
 
+The active configuration uses the base-clock tuple
+`1080:1080:1155:3996`, matching the controlled FA4 calibration profile. A
+commented `1930:1930:1964:3996` tuple is kept next to it for coherent manual
+high-clock comparisons without maintaining a second configuration.
+
 The `throughput-sim` target runs one cold-L2/DRAM CTA with 512 unique 8 KiB
-TMA loads (4 MiB total), 28 stages, and four issuer warps.  Its private run
-copy overrides the clock domains to `1965:1965:1155:3996`; it does not change
-this configuration's normal FA4 clocks.  Set `THROUGHPUT_TMA_MAX_INFLIGHT` on
-the make command line to compare another finite value or `0` (unlimited).
+TMA loads (4 MiB total), 28 stages, and four issuer warps. Its private run copy
+uses the coherent high-clock tuple `1930:1930:1964:3996`. Set
+`THROUGHPUT_TMA_MAX_INFLIGHT` on the make command line to compare another finite
+value or `0` (unlimited).
 
 The benchmark's elapsed-cycle result includes cold-pipeline startup and drain.
 For the steady-state service check, divide
 `gpgpu_cluster_response_dispatch_transport_accepted_data_sectors` by
 `gpgpu_cluster_response_dispatch_transport_service_ticks` and multiply by 32.
-The result must be at least 122.14 B/core-cycle and no more than the
+At the private 1930 MHz throughput point, the result must be at least
+124.35 B/core-cycle (240 GB/s) and no more than the
 four-sector service limit of 128 B/core-cycle.  `tma_max_mf_inflight` and
 `tma_issue_blocked_inflight_cycles` distinguish tracking-cap stalls from that
 service limit.  The former is the maximum observed on any one SM; the latter
