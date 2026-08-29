@@ -378,6 +378,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.v2	TC; return V2_TYPE;
 \.v3	TC; return V3_TYPE;
 \.v4	TC; return V4_TYPE;
+\.v8	TC; return V8_TYPE;
 
 \.half  TC; return HALF_OPTION; /* ptxplus */
 \.cc	TC; return EXTP_OPTION; /* extended precision option */

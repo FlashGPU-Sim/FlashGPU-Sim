@@ -125,6 +125,7 @@ class ptx_recognizer;
 %token  V2_TYPE
 %token  V3_TYPE
 %token  V4_TYPE
+%token  V8_TYPE
 %token  COMMA
 %token  PRED
 %token  HALF_OPTION
@@ -481,6 +482,7 @@ type_spec: scalar_type
 vector_spec:  V2_TYPE {  recognizer->add_option(V2_TYPE); recognizer->func_header_info(".v2");}
 	| V3_TYPE     {  recognizer->add_option(V3_TYPE); recognizer->func_header_info(".v3");}
 	| V4_TYPE     {  recognizer->add_option(V4_TYPE); recognizer->func_header_info(".v4");}
+	| V8_TYPE     {  recognizer->add_option(V8_TYPE); recognizer->func_header_info(".v8");}
 	;
 
 scalar_type: S8_TYPE { recognizer->add_scalar_type_spec( S8_TYPE ); }

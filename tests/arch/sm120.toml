@@ -19,6 +19,9 @@ sources = [
   "integration/cp_async_src_size_test.cu",
   "integration/shared_atomic_address_test.cu",
 
+  # Blackwell vector-memory forms emitted by native kernels.
+  "blackwell/vector_ldst_v8_test.cu",
+
   # SM120 correctness groups.
   "barrier/mbarrier_test.cu",
   "barrier/mbarrier_sanity_test.cu",

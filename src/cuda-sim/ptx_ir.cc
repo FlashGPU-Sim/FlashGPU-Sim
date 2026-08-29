@@ -1552,6 +1552,7 @@ ptx_instruction::ptx_instruction(
       case V2_TYPE:
       case V3_TYPE:
       case V4_TYPE:
+      case V8_TYPE:
         m_vector_spec = last_ptx_inst_option;
         break;
       case ATOMIC_AND:

@@ -853,44 +853,33 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
 }
 
 void ptx_thread_info::set_vector_operand_values(const operand_info &dst,
+                                                const ptx_reg_t *values,
+                                                unsigned num_elements) {
+  assert(dst.is_vector());
+  assert(num_elements == dst.get_vect_nelem());
+  assert(num_elements > 0 && num_elements <= 8);
+  for (unsigned i = 0; i < num_elements; ++i) {
+    set_reg(dst.vec_symbol(i), values[i]);
+  }
+  m_last_set_operand_value = values[0];
+}
+
+void ptx_thread_info::set_vector_operand_values(const operand_info &dst,
                                                 const ptx_reg_t &data1,
                                                 const ptx_reg_t &data2,
                                                 const ptx_reg_t &data3,
                                                 const ptx_reg_t &data4) {
-  unsigned num_elements = dst.get_vect_nelem();
-  if (num_elements > 0) {
-    set_reg(dst.vec_symbol(0), data1);
-    if (num_elements > 1) {
-      set_reg(dst.vec_symbol(1), data2);
-      if (num_elements > 2) {
-        set_reg(dst.vec_symbol(2), data3);
-        if (num_elements > 3) {
-          set_reg(dst.vec_symbol(3), data4);
-        }
-      }
-    }
-  }
-
-  m_last_set_operand_value = data1;
+  assert(dst.get_vect_nelem() <= 4);
+  const ptx_reg_t values[] = {data1, data2, data3, data4};
+  set_vector_operand_values(dst, values, dst.get_vect_nelem());
 }
 void ptx_thread_info::set_wmma_vector_operand_values(
     const operand_info &dst, const ptx_reg_t &data1, const ptx_reg_t &data2,
     const ptx_reg_t &data3, const ptx_reg_t &data4, const ptx_reg_t &data5,
     const ptx_reg_t &data6, const ptx_reg_t &data7, const ptx_reg_t &data8) {
-  unsigned num_elements = dst.get_vect_nelem();
-  if (num_elements == 8) {
-    set_reg(dst.vec_symbol(0), data1);
-    set_reg(dst.vec_symbol(1), data2);
-    set_reg(dst.vec_symbol(2), data3);
-    set_reg(dst.vec_symbol(3), data4);
-    set_reg(dst.vec_symbol(4), data5);
-    set_reg(dst.vec_symbol(5), data6);
-    set_reg(dst.vec_symbol(6), data7);
-    set_reg(dst.vec_symbol(7), data8);
-  } else {
-    printf("error:set_wmma_vector_operands");
-  }
-
+  const ptx_reg_t values[] = {data1, data2, data3, data4,
+                              data5, data6, data7, data8};
+  set_vector_operand_values(dst, values, 8);
   m_last_set_operand_value = data8;
 }
 
@@ -3726,18 +3715,19 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
     }
 
   } else {
-    ptx_reg_t data1, data2, data3, data4;
-    mem->read(addr, size / 8, &data1.s64);
-    mem->read(addr + size / 8, size / 8, &data2.s64);
-    if (vector_spec != V2_TYPE) {  // either V3 or V4
-      mem->read(addr + 2 * size / 8, size / 8, &data3.s64);
-      if (vector_spec != V3_TYPE) {  // v4
-        mem->read(addr + 3 * size / 8, size / 8, &data4.s64);
-        thread->set_vector_operand_values(dst, data1, data2, data3, data4);
-      } else  // v3
-        thread->set_vector_operand_values(dst, data1, data2, data3, data3);
-    } else  // v2
-      thread->set_vector_operand_values(dst, data1, data2, data2, data2);
+    unsigned vector_width = 0;
+    if (vector_spec == V2_TYPE) vector_width = 2;
+    if (vector_spec == V3_TYPE) vector_width = 3;
+    if (vector_spec == V4_TYPE) vector_width = 4;
+    if (vector_spec == V8_TYPE) vector_width = 8;
+    assert(vector_width == dst.get_vect_nelem());
+
+    ptx_reg_t values[8] = {};
+    const size_t element_bytes = size / 8;
+    for (unsigned i = 0; i < vector_width; ++i) {
+      mem->read(addr + i * element_bytes, element_bytes, &values[i].s64);
+    }
+    thread->set_vector_operand_values(dst, values, vector_width);
   }
   thread->m_last_effective_address = addr;
   thread->m_last_memory_space = space;
@@ -6280,37 +6270,19 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     }
 
   } else {
-    if (vector_spec == V2_TYPE) {
-      ptx_reg_t *ptx_regs = new ptx_reg_t[2];
-      thread->get_vector_operand_values(src1, ptx_regs, 2);
-      mem->write(addr, size / 8, &ptx_regs[0].s64, thread, pI);
-      mem->write(addr + size / 8, size / 8, &ptx_regs[1].s64, thread, pI);
-      delete[] ptx_regs;
-    }
-    if (vector_spec == V3_TYPE) {
-      ptx_reg_t *ptx_regs = new ptx_reg_t[3];
-      thread->get_vector_operand_values(src1, ptx_regs, 3);
-      mem->write(addr, size / 8, &ptx_regs[0].s64, thread, pI);
-      mem->write(addr + size / 8, size / 8, &ptx_regs[1].s64, thread, pI);
-      mem->write(addr + 2 * size / 8, size / 8, &ptx_regs[2].s64, thread, pI);
-      delete[] ptx_regs;
-    }
-    if (vector_spec == V4_TYPE) {
-      ptx_reg_t *ptx_regs = new ptx_reg_t[4];
-      thread->get_vector_operand_values(src1, ptx_regs, 4);
-      mem->write(addr, size / 8, &ptx_regs[0].s64, thread, pI);
-      mem->write(addr + size / 8, size / 8, &ptx_regs[1].s64, thread, pI);
-      mem->write(addr + 2 * size / 8, size / 8, &ptx_regs[2].s64, thread, pI);
-      mem->write(addr + 3 * size / 8, size / 8, &ptx_regs[3].s64, thread, pI);
+    unsigned vector_width = 0;
+    if (vector_spec == V2_TYPE) vector_width = 2;
+    if (vector_spec == V3_TYPE) vector_width = 3;
+    if (vector_spec == V4_TYPE) vector_width = 4;
+    if (vector_spec == V8_TYPE) vector_width = 8;
+    assert(vector_width == src1.get_vect_nelem());
 
-      GPPRINTF_INST_EXEC(PTX_INST_EXEC,
-                        "st.v4: space %p type %s addr %llx data %llu %llu %llu "
-                        "%llu inst %s\n",
-                        mem, decode_token(type), addr, ptx_regs[0].u64,
-                        ptx_regs[1].u64, ptx_regs[2].u64, ptx_regs[3].u64,
-                        pI->to_string().c_str());
-
-      delete[] ptx_regs;
+    ptx_reg_t values[8] = {};
+    thread->get_vector_operand_values(src1, values, vector_width);
+    const size_t element_bytes = size / 8;
+    for (unsigned i = 0; i < vector_width; ++i) {
+      mem->write(addr + i * element_bytes, element_bytes, &values[i].s64,
+                 thread, pI);
     }
   }
   thread->m_last_effective_address = addr;

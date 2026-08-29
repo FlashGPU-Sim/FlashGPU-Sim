@@ -6,6 +6,7 @@ arch = "sm120"
 tests = [
   { name = "unit", group = "unit" },
   { name = "integration", group = "integration" },
+  { name = "blackwell", group = "blackwell", gtest_filter = "BlackwellVectorLdstIntegrationTest.*", post_check = "tests/scripts/check_vector_v8_transactions.py" },
   { name = "barrier", group = "barrier", gtest_filter = "*-MBarrierSanityTest.*" },
   { name = "tma", group = "tma", gtest_filter = "*-*CPAsyncMethod*:*PerformanceComparison*" },
   { name = "mma", group = "mma" },
