@@ -216,6 +216,18 @@ TEST(DsmFabric, Data128BNeedsFourGrants) {
   EXPECT_EQ(p->payload_bytes, 128u);
 }
 
+TEST(DsmFabric, TmaPayloadUsesThreeGrantStripe) {
+  dsm_fabric_t f = make_fabric(4, 1);
+  f.inject(mk_pkt(0, 1, dsm_packet_class_t::tma_data, 128, 0));
+  f.cycle(0);
+  EXPECT_EQ(f.stats().flits_granted, 3u);
+  EXPECT_EQ(f.occupancy_flits(0, dsm_vc_t::request, 1), 1u);
+  EXPECT_EQ(f.top(1, dsm_vc_t::request), nullptr);
+  f.cycle(1);
+  ASSERT_NE(f.top(1, dsm_vc_t::request), nullptr);
+  EXPECT_EQ(f.stats().flits_granted, 4u);
+}
+
 TEST(DsmFabric, PayloadLargerThanVcDepthCompletes) {
   dsm_fabric_config_t cfg;
   cfg.request_vc_flits = 4;
@@ -473,4 +485,25 @@ TEST(DsmFabric, ResidualIsFloorNotAddedToBulk) {
   ASSERT_NE(f1.top(1, dsm_vc_t::request), nullptr);
   EXPECT_EQ(f1.stats().flits_granted, f0.stats().flits_granted);
   EXPECT_LE(t1, t0 + 1);
+}
+
+
+TEST(DsmFabric, PacketClassFloorsOverrideGenericFloor) {
+  dsm_fabric_config_t cfg;
+  cfg.base_latency_cycles = 2;
+  cfg.store_visibility_latency_cycles = 20;
+  cfg.tma_latency_cycles = 30;
+  dsm_fabric_t f = make_fabric(4, 1, cfg);
+  f.inject(mk_pkt(0, 1, dsm_packet_class_t::write_data, 32, 0));
+  f.inject(mk_pkt(0, 2, dsm_packet_class_t::tma_data, 32, 1));
+  for (unsigned long long now = 0; now < 20; now++) {
+    f.cycle(now);
+    EXPECT_EQ(f.top(1, dsm_vc_t::request), nullptr);
+    EXPECT_EQ(f.top(2, dsm_vc_t::request), nullptr);
+  }
+  f.cycle(20);
+  ASSERT_NE(f.top(1, dsm_vc_t::request), nullptr);
+  EXPECT_EQ(f.top(2, dsm_vc_t::request), nullptr);
+  f.cycle(30);
+  ASSERT_NE(f.top(2, dsm_vc_t::request), nullptr);
 }

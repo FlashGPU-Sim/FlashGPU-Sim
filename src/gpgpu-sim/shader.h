@@ -1800,6 +1800,11 @@ class shader_core_config : public core_config {
     gpgpu_dsm_ack_coalesce_threshold = 4;
     gpgpu_dsm_ack_timeout_cycles = 64;
     gpgpu_dsm_base_latency_cycles = 0;
+    gpgpu_dsm_store_visibility_latency_cycles = 0;
+    gpgpu_tma_mcast_fabric_latency_cycles = 0;
+    gpgpu_tma_mcast_completion_extra_cycles = 0;
+    gpgpu_tma_load_completion_base_cycles = 0;
+    gpgpu_tma_load_completion_cycles_per_kib = 0;
     gpgpu_shmem_bytes_per_cycle = 0;
   }
 
@@ -2103,6 +2108,11 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_dsm_ack_coalesce_threshold;
   unsigned int gpgpu_dsm_ack_timeout_cycles;
   unsigned int gpgpu_dsm_base_latency_cycles;
+  unsigned int gpgpu_dsm_store_visibility_latency_cycles;
+  unsigned int gpgpu_tma_mcast_fabric_latency_cycles;
+  unsigned int gpgpu_tma_mcast_completion_extra_cycles;
+  unsigned int gpgpu_tma_load_completion_base_cycles;
+  unsigned int gpgpu_tma_load_completion_cycles_per_kib;
   unsigned int gpgpu_shmem_bytes_per_cycle;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;

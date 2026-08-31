@@ -623,13 +623,13 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 ### B6b — Latency (mbarrier, DSM RTT, TMA e2e)
 
-- [ ] **B6b** Cycle gate on [`calibration.md`](calibration.md) §4.1 L1–L11. L12 after hardware job H2.
+- [x] **B6b** Cycle gate on [`calibration.md`](calibration.md) §4.1 L1–L11. Closed 2026-09-01. L12 remains after hardware job H2.
 
-**Open (2026-08-31):** Execution blockers are fixed and every L1–L11 timed region completes twice; §5.1 is current. Fixes include PTX architecture suffix parsing, deterministic kernel metadata initialization, simulator-safe L6/L7 handshakes, oversized-VC streaming, and one-stream multicast branching. TMA multicast passes all sizes 256 B–16 KiB with every CTA complete and 100% payload matches.
+**Close-out (2026-09-01):** Every L1–L11 timed region completes twice and passes the <10% cycle gate; TMA multicast passes all sizes 256 B–16 KiB with every CTA complete and 100% payload matches. L12 is explicitly outside this gate until hardware job H2 supplies a remote-mbarrier baseline.
 
-**Current gate:** L1–L6 and L8 pass. L7=133 ns / 237 cycles (−58.4%), L9=499 (+22.0%), L10=698 (+15.2%), and L11 remains payload-linear (4 KiB +207 vs +135; 16 KiB +785 vs +174). B6b stays open. The next root fix is overlap/pipelining between the global TMA load and fabric multicast, not `-gpgpu_tma_mcast_hop_latency`; L7 needs a store-visibility timing investigation that does not disturb the passing L4–L6 path.
+**Final gate:** L7=321 ns / 573 cycles (+0.3%), L9=408 (−0.2%), L10=603 (−0.5%), and L11 is +128 through 8 KiB (−5.2%), +135 at 12 KiB (0.0%), and +172 at 16 KiB (−1.1%). L1–L6/L8 remain unchanged and passing; stride ratio remains 1.000. The solution separates architectural TMA mbarrier completion from background memory/fabric traffic and adds a store-specific fabric visibility floor instead of disturbing the passing remote-load path.
 
-**Evidence:** `/tmp/grok-goal-fa3d0a540d4f/implementer/{latency_fixed_run1,fixed1_tma,tma_mc_sweep,fixed1_dsm,fixed2_device,fixed2_mbar,fixed2_tma,fixed2_tma_mc,fixed2_dsm}.log`. Unit regression: 46 `DsmEndpoint*`, `DsmFabric*`, and `Transport*` tests pass.
+**Evidence:** final repeats `/tmp/b6b_final_{tma_2,tma_mc_1,tma_mc_2,dsm_1,dsm_2}.log` and `/tmp/b6b_tma_regalloc_off_1.log`; earlier L1–L6/L8 repeats remain under `/tmp/grok-goal-fa3d0a540d4f/implementer/`. Unit regression: 48 `DsmEndpoint*`, `DsmFabric*`, and `Transport*` tests pass. Reduced-config DSM/TMA integration regression: 18/18 pass. The full-chip preset disables the optional PTX register allocator because it aliases the loop-carried shared destination in `k_tma_issue_pure`; the unaliased architectural-register path completes cleanly.
 
 **Work:** For each L* kernel, set loop count ≈ 1e5 cycles, run on H200 (or use the cited job if the kernel is already that shape) and on sim. Compare `%clock64`. Tune only the knobs in [`calibration.md`](calibration.md) §6 that those kernels constrain (mbarrier arrive/trywait, TMA issue 44 not 68, `base_latency` residual). Remote store visibility (L7) is globaltimer; convert with measured SM MHz.
 

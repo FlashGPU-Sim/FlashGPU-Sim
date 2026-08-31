@@ -6717,6 +6717,9 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
   fcfg.shaper_index = config->gpgpu_dsm_shaper_index;
   fcfg.vc_arbiter = config->gpgpu_dsm_vc_arbiter;
   fcfg.base_latency_cycles = config->gpgpu_dsm_base_latency_cycles;
+  fcfg.store_visibility_latency_cycles =
+      config->gpgpu_dsm_store_visibility_latency_cycles;
+  fcfg.tma_latency_cycles = config->gpgpu_tma_mcast_fabric_latency_cycles;
   m_dsm_fabric = std::make_unique<dsm_fabric_t>(config->m_topology, cluster_id,
                                                 fcfg);
   dsm_endpoint_config_t ecfg;

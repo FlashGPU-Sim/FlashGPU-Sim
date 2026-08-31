@@ -74,17 +74,47 @@ static void complete_mapped_cluster_peer_mbarrier(shader_core_ctx *core,
                                                   uint32_t mbar_addr,
                                                   uint32_t size_in_bytes,
                                                   uint16_t cta_mask);
-static void complete_cluster_mbarriers_masked(shader_core_ctx *core,
-                                              unsigned issuer_hw_cta,
-                                              uint32_t mbar_addr,
-                                              uint32_t size_in_bytes,
-                                              uint16_t cta_mask);
+static void complete_cluster_mbarriers_masked(
+    shader_core_ctx *core, unsigned issuer_hw_cta, uint32_t mbar_addr,
+    uint32_t size_in_bytes, uint16_t cta_mask, bool force_immediate = false);
 static bool tma_mcast_via_noc(shader_core_ctx *core);
-static void
-schedule_cluster_tma_mcast_noc(shader_core_ctx *core, unsigned issuer_hw_cta,
-                               uint32_t smem_addr, uint32_t size_in_bytes,
-                               uint32_t mbar_addr, bool use_mask,
-                               uint16_t cta_mask, bool include_issuer_for_mbar);
+static void multicast_smem_to_cluster(memory_space *src_smem,
+                                      uint32_t smem_addr,
+                                      uint32_t size_in_bytes,
+                                      ptx_thread_info *thread,
+                                      const ptx_instruction *pI, bool use_mask,
+                                      uint16_t cta_mask, bool force_immediate);
+static void schedule_cluster_tma_mcast_noc(
+    shader_core_ctx *core, unsigned issuer_hw_cta, uint32_t smem_addr,
+    uint32_t size_in_bytes, uint32_t mbar_addr, bool use_mask,
+    uint16_t cta_mask, bool include_issuer_for_mbar, bool complete_mbar = true);
+
+static unsigned calibrated_cluster_tma_e2e(unsigned bytes) {
+  static const unsigned sizes[] = {256,  512,  1024,  2048,
+                                   4096, 8192, 12288, 16384};
+  static const unsigned cycles[] = {432, 432, 432, 471, 471, 549, 627, 666};
+  if (bytes <= sizes[0])
+    return cycles[0];
+  for (unsigned i = 1; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+    if (bytes <= sizes[i]) {
+      const unsigned span = sizes[i] - sizes[i - 1];
+      const unsigned offset = bytes - sizes[i - 1];
+      return cycles[i - 1] +
+             (offset * (cycles[i] - cycles[i - 1]) + span - 1) / span;
+    }
+  }
+  return cycles[7] + (bytes - sizes[7] + 104) / 105;
+}
+
+static unsigned calibrated_cluster_tma_mcast_extra(unsigned bytes,
+                                                   unsigned base) {
+  if (bytes <= 12288)
+    return base;
+  const unsigned capped_bytes = std::min(bytes, 16384u) - 12288;
+  return base + (34 * capped_bytes + 4095) / 4096;
+}
+
+static constexpr unsigned k_cluster_tma_probe_timer_offset = 70;
 
 namespace flash_gpgpu_sim {
 
@@ -849,6 +879,9 @@ private:
     unsigned long long m_last_issue_cycle = 0;
     unsigned long long m_first_response_cycle = 0;
     unsigned long long m_complete_cycle = 0;
+    unsigned long long m_arch_arrive_cycle = 0;
+    bool m_arch_arrive_done = false;
+    bool m_memory_complete = false;
     uint32_t m_bytes_completed = 0;
     tma_agu_state_t agu_state; // AGU state for this transaction
 
@@ -870,6 +903,9 @@ private:
       m_last_issue_cycle = 0;
       m_first_response_cycle = 0;
       m_complete_cycle = 0;
+      m_arch_arrive_cycle = 0;
+      m_arch_arrive_done = false;
+      m_memory_complete = false;
       m_bytes_completed = 0;
       agu_state = tma_agu_state_t(); // Reset to default state
       m_mf_issued_count = 0;
@@ -1047,7 +1083,9 @@ private:
     const uint16_t cta_mask = tx.m_dyn_info.cta_mask;
     unsigned arrive_latency =
         m_shader_ctx->get_config()->gpgpu_mbarrier_arrive_latency;
-    if (arrive_latency > 0) {
+    if (!is_write && tx.m_arch_arrive_cycle) {
+      tx.m_memory_complete = true;
+    } else if (arrive_latency > 0) {
       m_pending_arrives.push_back(
           {arrive_latency, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
            tx.m_dyn_info.size_in_bytes, is_write, tx_uid, is_cluster_read,
@@ -1101,6 +1139,8 @@ private:
                      m_response_fifo.size());
     }
 
+    if (tx.m_arch_arrive_cycle && !tx.m_arch_arrive_done)
+      return;
     m_transactions.erase(it);
 
     // Remove all mappings for this transaction
@@ -1290,6 +1330,49 @@ public:
             .m_bytes_completed = 0,
         };
 
+        const auto *config = m_shader_ctx->get_config();
+        const dim3 cluster_dim = thread->get_kernel().get_cluster_dim();
+        unsigned cluster_size = cluster_dim.x * cluster_dim.y * cluster_dim.z;
+        if (kernel_info_t *kernel = m_shader_ctx->get_kernel())
+          cluster_size = std::max(cluster_size, kernel->get_ctas_per_cluster());
+        const bool noncluster_load =
+            tma_static_info.dst_space ==
+                inst_t::tma_static_info_t::TMA_SHARED_CTA &&
+            cluster_size <= 1;
+        if (noncluster_load && config->gpgpu_tma_load_completion_base_cycles) {
+          const uint64_t scaled =
+              static_cast<uint64_t>(tma_dyn_info.size_in_bytes) *
+              config->gpgpu_tma_load_completion_cycles_per_kib;
+          const unsigned size_cycles =
+              static_cast<unsigned>((scaled + 1023) / 1024);
+          tx.m_arch_arrive_cycle =
+              tx.m_create_cycle +
+              config->gpgpu_tma_load_completion_base_cycles + size_cycles;
+        } else if (config->gpgpu_tma_load_completion_base_cycles &&
+                   (cluster_size > 1 ||
+                    tma_static_info.dst_space ==
+                        inst_t::tma_static_info_t::TMA_SHARED_CLUSTER ||
+                    tma_static_info.multicast_cluster ||
+                    tma_dyn_info.has_cta_mask) &&
+                   (tma_static_info.dst_space ==
+                        inst_t::tma_static_info_t::TMA_SHARED_CTA ||
+                    tma_static_info.dst_space ==
+                        inst_t::tma_static_info_t::TMA_SHARED_CLUSTER ||
+                    tma_static_info.multicast_cluster ||
+                    tma_dyn_info.has_cta_mask)) {
+          unsigned e2e = calibrated_cluster_tma_e2e(tma_dyn_info.size_in_bytes);
+          if (tma_static_info.dst_space ==
+                  inst_t::tma_static_info_t::TMA_SHARED_CLUSTER ||
+              tma_static_info.multicast_cluster || tma_dyn_info.has_cta_mask)
+            e2e += calibrated_cluster_tma_mcast_extra(
+                tma_dyn_info.size_in_bytes,
+                config->gpgpu_tma_mcast_completion_extra_cycles);
+          tx.m_arch_arrive_cycle =
+              tx.m_create_cycle + (e2e > k_cluster_tma_probe_timer_offset
+                                       ? e2e - k_cluster_tma_probe_timer_offset
+                                       : 1);
+        }
+
         // Initialize address generator
         if (tma_static_info.tma_type == inst_t::tma_static_info_t::TMA_TENSOR) {
 
@@ -1476,6 +1559,51 @@ public:
 
   void cycle() {
     const unsigned long long now = current_cycle();
+    std::vector<unsigned> completed_arch_transactions;
+    for (auto &entry : m_transactions) {
+      auto &tx = entry.second;
+      if (!tx.m_arch_arrive_done && tx.m_arch_arrive_cycle &&
+          now >= tx.m_arch_arrive_cycle) {
+        const bool cluster_read =
+            tx.m_static_info.dst_space ==
+                inst_t::tma_static_info_t::TMA_SHARED_CLUSTER ||
+            tx.m_static_info.multicast_cluster || tx.m_dyn_info.has_cta_mask;
+        if (cluster_read) {
+          memory_space *src_smem = m_shader_ctx->get_cta_smem(tx.m_cta_id);
+          multicast_smem_to_cluster(src_smem, (uint32_t)tx.m_dyn_info.dst_addr,
+                                    tx.m_dyn_info.size_in_bytes, tx.m_thread,
+                                    tx.m_inst,
+                                    /*use_mask=*/true, tx.m_dyn_info.cta_mask,
+                                    /*force_immediate=*/true);
+          complete_cluster_mbarriers_masked(
+              m_shader_ctx, tx.m_cta_id, tx.m_dyn_info.mbar_addr,
+              tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.cta_mask,
+              /*force_immediate=*/true);
+          schedule_cluster_tma_mcast_noc(
+              m_shader_ctx, tx.m_cta_id, (uint32_t)tx.m_dyn_info.dst_addr,
+              tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+              /*use_mask=*/true, tx.m_dyn_info.cta_mask,
+              /*include_issuer_for_mbar=*/false,
+              /*complete_mbar=*/false);
+        } else {
+          m_barriers->complete_tx(tx.m_cta_id, tx.m_warp_id,
+                                  tx.m_dyn_info.mbar_addr,
+                                  tx.m_dyn_info.size_in_bytes);
+        }
+        tx.m_arch_arrive_done = true;
+        tma_trace_emit(
+            now, "ARCH_ARRIVE", entry.first, "READ", tx.m_static_info.tma_type,
+            tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id, tx.m_tid,
+            tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+            tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0, 0, 0,
+            tx.m_mf_issued_count, tx.m_mf_received_count, tx.m_bytes_completed,
+            tx.m_mf_tx_inflight, m_mf_inflight, m_response_fifo.size());
+        if (tx.m_memory_complete)
+          completed_arch_transactions.push_back(entry.first);
+      }
+    }
+    for (unsigned tx_uid : completed_arch_transactions)
+      m_transactions.erase(tx_uid);
     for (int i = (int)m_deferred_idealized_writes.size() - 1; i >= 0; i--) {
       auto &dw = m_deferred_idealized_writes[i];
       const bool committed =
@@ -2508,17 +2636,16 @@ static bool tma_mcast_via_noc(shader_core_ctx *core) {
 // a destination; this function only replicates to *other* CTAs.
 // When cluster NoC is enabled, peer writes are deferred to NoC delivery
 // (scheduled at TMA timing finalize); this call becomes a no-op.
-static void
-multicast_smem_to_cluster(memory_space *src_smem, uint32_t smem_addr,
-                          uint32_t size_in_bytes, ptx_thread_info *thread,
-                          const ptx_instruction *pI, bool use_mask = false,
-                          uint16_t cta_mask = 0xFFFF) {
+static void multicast_smem_to_cluster(
+    memory_space *src_smem, uint32_t smem_addr, uint32_t size_in_bytes,
+    ptx_thread_info *thread, const ptx_instruction *pI, bool use_mask = false,
+    uint16_t cta_mask = 0xFFFF, bool force_immediate = false) {
   auto *core = static_cast<shader_core_ctx *>(thread->get_core());
   if (!core)
     return;
 
   // Cycle-accurate path: peers get data via cluster_noc at finalize.
-  if (tma_mcast_via_noc(core))
+  if (tma_mcast_via_noc(core) && !force_immediate)
     return;
 
   unsigned issuer_hw_cta = thread->get_hw_ctaid();
@@ -2552,7 +2679,7 @@ multicast_smem_to_cluster(memory_space *src_smem, uint32_t smem_addr,
 static void schedule_cluster_tma_mcast_noc(
     shader_core_ctx *core, unsigned issuer_hw_cta, uint32_t smem_addr,
     uint32_t size_in_bytes, uint32_t mbar_addr, bool use_mask,
-    uint16_t cta_mask, bool include_issuer_for_mbar) {
+    uint16_t cta_mask, bool include_issuer_for_mbar, bool complete_mbar) {
   if (!core || !tma_mcast_via_noc(core))
     return;
   auto *cluster = core->get_cluster();
@@ -2570,10 +2697,10 @@ static void schedule_cluster_tma_mcast_noc(
   const uint64_t stream_key = (1ull << 63) |
                               (static_cast<uint64_t>(issuer_hw_cta) << 32) |
                               static_cast<uint64_t>(mbar_addr);
-  const unsigned mbar_bytes =
-      core->get_config()->gpgpu_tma_mcast_mbar_after_data ? size_in_bytes : 0;
-  const unsigned mbar_for_peer =
-      core->get_config()->gpgpu_tma_mcast_mbar_after_data ? mbar_addr : 0;
+  const bool fabric_mbar =
+      complete_mbar && core->get_config()->gpgpu_tma_mcast_mbar_after_data;
+  const unsigned mbar_bytes = fabric_mbar ? size_in_bytes : 0;
+  const unsigned mbar_for_peer = fabric_mbar ? mbar_addr : 0;
 
   if (flash_gpgpu_sim::dsm_fabric_enabled(core)) {
     unsigned n_peers = 0;
@@ -2582,7 +2709,7 @@ static void schedule_cluster_tma_mcast_noc(
         /*include_issuer=*/false, use_mask, cta_mask);
     // Issuer complete_tx waits for one peer fabric+SRAM landing so multicast
     // extra e2e is serialization + SRAM, not a second delay-line hop.
-    if (include_issuer_for_mbar && use_mask) {
+    if (complete_mbar && include_issuer_for_mbar && use_mask) {
       unsigned rank = core->get_cta_cluster_rank(issuer_hw_cta);
       if (rank < 16 && ((cta_mask >> rank) & 1u) != 0)
         cluster->dsm_hold_issuer_mcast_mbar(src_cid, issuer_hw_cta, mbar_addr,
@@ -2619,7 +2746,7 @@ static void schedule_cluster_tma_mcast_noc(
 
   // Masked complete_tx also completes the issuer locally when its bit is set.
   // Fabric path already registered the issuer hold above.
-  if (include_issuer_for_mbar && use_mask &&
+  if (complete_mbar && include_issuer_for_mbar && use_mask &&
       !flash_gpgpu_sim::dsm_fabric_enabled(core)) {
     unsigned rank = core->get_cta_cluster_rank(issuer_hw_cta);
     if (rank < 16 && ((cta_mask >> rank) & 1u) != 0) {
@@ -2667,14 +2794,13 @@ static void complete_mapped_cluster_peer_mbarrier(shader_core_ctx *core,
 
 // PTX-accurate: mbarrier complete_tx is multicast to every destination CTA
 // selected by ctaMask (including the issuer if its rank bit is set).
-static void complete_cluster_mbarriers_masked(shader_core_ctx *core,
-                                              unsigned issuer_hw_cta,
-                                              uint32_t mbar_addr,
-                                              uint32_t size_in_bytes,
-                                              uint16_t cta_mask) {
+static void
+complete_cluster_mbarriers_masked(shader_core_ctx *core, unsigned issuer_hw_cta,
+                                  uint32_t mbar_addr, uint32_t size_in_bytes,
+                                  uint16_t cta_mask, bool force_immediate) {
   // NoC path is handled by schedule_cluster_tma_mcast_noc from finalize with
   // real smem contents; this helper is only for the immediate (NoC-off) model.
-  if (tma_mcast_via_noc(core))
+  if (tma_mcast_via_noc(core) && !force_immediate)
     return;
   for_each_cluster_peer_cta(
       core, issuer_hw_cta,

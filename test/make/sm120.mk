@@ -46,6 +46,7 @@ $(TOP_MAKEFILE) $(SM120_MK) | $(FLASH_OBJ_DIR)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
 $(OBJ_DIR)/unit/%.cu.o: $(TEST_SRC_DIR)/unit/%.cc $(CUH_HEADERS) \
+$(SRC_DIR)/gpgpu-sim/dsm_fabric.h \
 $(TOP_MAKEFILE) $(SM120_MK) | $(UNIT_OBJ_DIR)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 

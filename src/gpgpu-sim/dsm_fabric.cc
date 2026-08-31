@@ -109,9 +109,16 @@ void dsm_fabric_t::inject(std::unique_ptr<dsm_packet_t> packet) {
 
 bool dsm_fabric_t::ejection_visible(const dsm_packet_t &p) const {
   unsigned long long vis = p.tail_arrival_cycle;
-  if (m_cfg.base_latency_cycles) {
+  unsigned floor = m_cfg.base_latency_cycles;
+  if (p.packet_class == dsm_packet_class_t::write_data &&
+      m_cfg.store_visibility_latency_cycles)
+    floor = m_cfg.store_visibility_latency_cycles;
+  if (p.packet_class == dsm_packet_class_t::tma_data &&
+      m_cfg.tma_latency_cycles)
+    floor = m_cfg.tma_latency_cycles;
+  if (floor) {
     const unsigned long long floor_at =
-        p.injected_cycle + m_cfg.base_latency_cycles;
+        p.injected_cycle + floor;
     if (floor_at > vis) vis = floor_at;
   }
   return vis <= m_now;
@@ -232,6 +239,18 @@ bool dsm_fabric_t::pick_head(unsigned sm, unsigned *vc, unsigned *dst) const {
   return true;
 }
 
+bool dsm_fabric_t::has_tma_head(unsigned sm) const {
+  if (sm >= m_n) return false;
+  for (unsigned vc = 0; vc < 2; vc++) {
+    for (unsigned dst = 0; dst < m_n; dst++) {
+      const dsm_packet_t *packet = m_in[vc][sm].front(dst);
+      if (packet && packet->packet_class == dsm_packet_class_t::tma_data)
+        return true;
+    }
+  }
+  return false;
+}
+
 void dsm_fabric_t::note_hw(unsigned vc) {
   unsigned occ = 0;
   for (unsigned s = 0; s < m_n; s++) occ += m_in[vc][s].occupancy_flits();
@@ -255,6 +274,7 @@ void dsm_fabric_t::cycle(unsigned long long cycle) {
     } else {
       allow = shaper_allows(sm, cycle);
     }
+    allow = allow || has_tma_head(sm);
     eligible[sm] = allow ? 1 : 0;
     m_last_eligible[sm] = eligible[sm];
     if (allow) m_stats.eligibility_slots++;
@@ -310,6 +330,7 @@ void dsm_fabric_t::cycle(unsigned long long cycle) {
     unsigned taken = 0;
     const unsigned cap = m_cfg.lanes_per_cpc;
     for (unsigned g = 0; g < cap; g++) {
+      if (taken >= cap) break;
       const unsigned route = m_cpc_rr[cpc].grant(ready, n_routes);
       if (route == ~0u) break;
       ready[route] = false;
@@ -354,27 +375,39 @@ void dsm_fabric_t::cycle(unsigned long long cycle) {
         }
       }
       const bool control = dsm_packet_is_control(selected->packet_class);
-      for (unsigned dst : multicast_dsts) {
-        dsm_packet_t done{};
-        const bool tail = m_in[r.vc][r.sm].grant_flit(dst, cycle, &done);
-        if (tail) {
-          done.tail_arrival_cycle = cycle;
-          m_ej[r.vc][dst].push_back(done);
+      const bool striped_tma =
+          selected->packet_class == dsm_packet_class_t::tma_data;
+      const unsigned grant_cap = striped_tma ? 3 : 1;
+      unsigned grants = 0;
+      while (grants < grant_cap && taken + grants < cap) {
+        bool any_tail = false;
+        for (unsigned dst : multicast_dsts) {
+          if (m_in[r.vc][r.sm].empty(dst)) continue;
+          dsm_packet_t done{};
+          const bool tail = m_in[r.vc][r.sm].grant_flit(dst, cycle, &done);
+          if (tail) {
+            done.tail_arrival_cycle = cycle;
+            m_ej[r.vc][dst].push_back(done);
+            any_tail = true;
+          }
         }
+        m_stats.flits_granted++;
+        if (r.vc)
+          m_stats.flits_response++;
+        else
+          m_stats.flits_request++;
+        if (!control)
+          m_stats.payload_bytes_granted += m_cfg.flit_payload_bytes;
+        grants++;
+        if (any_tail) break;
       }
       m_dst_next[r.vc][r.sm] = (r.dst + 1) % m_n;
       if (r.vc)
         m_consec_rsp[r.sm]++;
       else
         m_consec_rsp[r.sm] = 0;
-      m_stats.flits_granted++;
-      if (r.vc)
-        m_stats.flits_response++;
-      else
-        m_stats.flits_request++;
-      if (!control) m_stats.payload_bytes_granted += m_cfg.flit_payload_bytes;
       granted[r.sm] = 1;
-      taken++;
+      taken += grants;
     }
     if (n_winners > taken) m_stats.stall_lane += n_winners - taken;
   }

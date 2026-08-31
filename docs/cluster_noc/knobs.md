@@ -95,6 +95,12 @@ GX port formula: `routes = gx_planes * lanes_per_cpc`. GPCARB still grants at mo
 | `-gpgpu_dsm_route_policy` | `deterministic_hash` | GPCMMU hash |
 | `-gpgpu_dsm_route_seed` | 0 | Hash seed |
 | `-gpgpu_dsm_base_latency_cycles` | **0** (H200 full-chip preset **78**, inferred) | Pipeline / serializer floor in addition to flit grants. Visible at dest at `max(tail_arrival, injected+floor)`. Does not add flit occupancy. |
+| `-gpgpu_dsm_store_visibility_latency_cycles` | **0** (H200 full-chip **245**, inferred) | Store-only visibility floor; 0 inherits the generic fabric floor. |
+| `-gpgpu_tma_mcast_fabric_latency_cycles` | **0** (H200 full-chip **143**, inferred) | Background TMA multicast packet visibility floor; 0 inherits the generic fabric floor. |
+| `-gpgpu_tma_mcast_completion_extra_cycles` | **0** (H200 full-chip **128**, inferred) | Architectural multicast completion premium; the H200 model includes the measured 16 KiB step. |
+| `-gpgpu_tma_load_completion_base_cycles` | **0** (H200 full-chip **240**, inferred) | Architectural TMA load completion base; 0 disables the calibrated completion curve. |
+| `-gpgpu_tma_load_completion_cycles_per_kib` | **0** (H200 full-chip **25**, inferred) | Size term added to the architectural TMA load completion base. |
+| `-gpgpu_ptx_register_allocator` | Generic default **1**; H200 calibration preset **0** | Optional virtual-register aliasing. Disabled for calibration because the looped TMA issue probe keeps its shared destination live across iterations. |
 | `-gpgpu_dsm_max_outstanding_per_sm` | **16** | Endpoint tx window (not a VC/link credit) |
 | `-gpgpu_dsm_ack_coalesce_threshold` | **4** | Completions per `write_ack` |
 | `-gpgpu_dsm_ack_timeout_cycles` | **64** | Flush remaining ACK debt |
@@ -120,7 +126,7 @@ Source: `../H200_profiling/output-2046238-H200Profiling.txt`. Blog / `dsm_bw` pi
 | Remote e2e ~193.41 | local + 2×hop | Fabric RTT + SRAM, **not** a baked issue stall |
 | One-way ~78 | matrix / remote_latency=78 | `base_latency` + serialization; do not keep a magic 78 after B-DEPR unless re-fit as base |
 | Stride ~1.001 | flat matrix | Hash should not invent multi-hop by rank |
-| TMA mcast−unicast ~135 | `tma_mcast_hop_latency=135` | Re-fit as fabric + SRAM, not a second delay line |
+| TMA mcast−unicast +135, +174 at 16 KiB | `tma_mcast_hop_latency=135` | Architectural completion premium plus background fabric traffic, not a second delay line |
 | ~21 B/cycle / SM | BPC unused (0) | Shaper 2/3 × 32 B payload |
 | SM120 product | NoC **off** | Keep functional-immediate until a SM120 fabric preset exists |
 
@@ -139,3 +145,5 @@ Delay-line (`-gpgpu_dsm_enable 0`):
 | 1 | 1 | Data + mbar after hop |
 
 Fabric (`-gpgpu_dsm_enable 1` and `tma_mcast_enable_timing`): software creates one `tma_data` descriptor per selected peer, tagged with one multicast group. The fabric grants the group as one physical flit stream and branches it to the destination ejection queues. Peer smem write and `complete_tx` wait for that packet’s tail **and** that SM’s SRAM grant. `-gpgpu_tma_mcast_mbar_after_data` stays the ordering policy.
+
+The calibrated H200 full-chip preset releases the architectural mbarrier on its measured completion curve while the global-memory request and multicast packets continue in the background. This does not skip payload validation or remove fabric accounting. TMA packets use a three-grant stripe and bypass the ordinary DSM shaper; ordinary DSM traffic retains the 2/3-rate shaper used for bandwidth calibration.

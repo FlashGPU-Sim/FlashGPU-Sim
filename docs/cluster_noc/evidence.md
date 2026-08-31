@@ -77,6 +77,8 @@ plan-v2 §3.3 and the blog use the same arithmetic. **Do not** promote an implem
 | Two GX planes | Patent + figure; firmware may drop one | `-gpgpu_dsm_gx_planes=2` |
 | Write ACKs coalesce | Patent + 4–6% store duplex loss | Endpoint coalescer, not the arbiter |
 | Request VC blocking, response VC non-blocking | Patent packet table | Independent queues/credits; shared lanes |
+| Architectural TMA completion overlaps payload traffic | L9–L11 endpoint curves cannot be matched by serial global load then multicast delivery | H200-only completion curve releases mbarrier while memory/fabric traffic remains modeled |
+| Store visibility has a distinct floor | L7 is ~573 cycles while L4–L6 already match with the generic 78-cycle floor | Store-class visibility floor; load path unchanged |
 
 Shaper **implementations** (all required, none is “the Hopper schedule”):
 

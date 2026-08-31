@@ -964,6 +964,35 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Does not add flit occupancy.",
       "0");
   option_parser_register(
+      opp, "-gpgpu_dsm_store_visibility_latency_cycles", OPT_UINT32,
+      &gpgpu_dsm_store_visibility_latency_cycles,
+      "Remote DSM store visibility floor from injection (default=0 means "
+      "use the generic fabric floor).",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_mcast_fabric_latency_cycles", OPT_UINT32,
+      &gpgpu_tma_mcast_fabric_latency_cycles,
+      "TMA multicast fabric visibility floor from injection (default=0 "
+      "means use the generic fabric floor).",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_mcast_completion_extra_cycles", OPT_UINT32,
+      &gpgpu_tma_mcast_completion_extra_cycles,
+      "Architectural multicast completion premium over the clustered TMA "
+      "unicast curve; payload traffic still uses the fabric (default=0).",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_load_completion_base_cycles", OPT_UINT32,
+      &gpgpu_tma_load_completion_base_cycles,
+      "Architectural non-cluster TMA load completion cycles from transaction "
+      "creation, before the size term (default=0 disables).",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_load_completion_cycles_per_kib", OPT_UINT32,
+      &gpgpu_tma_load_completion_cycles_per_kib,
+      "Architectural non-cluster TMA load completion size term (default=0).",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
       &gpgpu_wgmma_issue_chain_ss,
       "Per-SM WGMMA SS issue chain throttle "

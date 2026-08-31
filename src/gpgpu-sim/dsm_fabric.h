@@ -73,6 +73,8 @@ struct dsm_fabric_config_t {
   // visible at dest when max(tail_arrival, injected + this) is reached.
   // 0 = tail grant only. Does not add flit occupancy.
   unsigned base_latency_cycles = 0;
+  unsigned store_visibility_latency_cycles = 0;
+  unsigned tma_latency_cycles = 0;
   const char *shaper = "skip_mod";
   const char *shaper_index = "sm_id";
   const char *vc_arbiter = "bounded_response_priority";
@@ -156,6 +158,7 @@ class dsm_fabric_t {
 
   unsigned vci(dsm_vc_t v) const { return static_cast<unsigned>(v); }
   bool shaper_allows(unsigned sm, unsigned long long cycle) const;
+  bool has_tma_head(unsigned sm) const;
   unsigned peek_dst(unsigned sm, unsigned vc) const;
   bool pick_head(unsigned sm, unsigned *vc, unsigned *dst) const;
   void note_hw(unsigned vc);
