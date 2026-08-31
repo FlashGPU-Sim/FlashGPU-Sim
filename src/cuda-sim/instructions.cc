@@ -1310,6 +1310,11 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
   // issuer's local smid.
   addr_t effective_address = src1_data.u64;
   memory_space_t space = pI->get_space();
+  const auto &options = pI->get_options();
+  if (space == generic_space &&
+      std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
+          options.end())
+    space = shared_space;
   if (space == undefined_space)
     space = generic_space;
   memory_space *mem = NULL;
@@ -1604,6 +1609,11 @@ void atom_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   // obtain memory space of the operation
   memory_space_t space = pI->get_space();
+  const auto &options = pI->get_options();
+  if (space == generic_space &&
+      std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
+          options.end())
+    space = shared_space;
 
   // get the memory address
   const operand_info &src1 = pI->src1();
@@ -1645,6 +1655,13 @@ void atom_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
 void bar_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
   ptx_instruction *pI = const_cast<ptx_instruction *>(pIin);
+  const auto &options = pI->get_options();
+  if (std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
+      options.end()) {
+    thread->m_last_dram_callback.function = bar_callback;
+    thread->m_last_dram_callback.instruction = pIin;
+    return;
+  }
   unsigned bar_op = pI->barrier_op();
   unsigned red_op = pI->get_atomic();
   unsigned ctaid = thread->get_cta_uid();
@@ -3391,9 +3408,22 @@ void cvta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   if (to_non_generic) {
     switch (space.get_type()) {
-      case shared_space:
-        to_addr_hw = generic_to_shared(smid, from_addr_hw);
+      case shared_space: {
+        unsigned owner_smid = 0;
+        addr_t offset = 0;
+        if (flash_gpgpu_sim::decode_shared_generic(from_addr_hw, &owner_smid,
+                                                   &offset)) {
+          // PTX shared addresses are opaque values.  Keep the owner SM in the
+          // high part of that value so a mapa-produced peer address survives
+          // cvta.to.shared and can be decoded by ld/st.shared::cluster.
+          to_addr_hw = owner_smid == smid
+                           ? offset
+                           : (owner_smid + 1) * SHARED_MEM_SIZE_MAX + offset;
+        } else {
+          to_addr_hw = generic_to_shared(smid, from_addr_hw);
+        }
         break;
+      }
       case local_space:
         to_addr_hw = generic_to_local(smid, hwtid, from_addr_hw);
         break;
@@ -3619,9 +3649,33 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
     case param_space_kernel:
       mem = thread->get_param_memory();
       break;
-    case shared_space:
-      mem = thread->m_shared_mem;
+    case shared_space: {
+      const bool mapped_cluster_address = addr >= SHARED_MEM_SIZE_MAX;
+      const unsigned owner_smid = mapped_cluster_address
+                                      ? addr / SHARED_MEM_SIZE_MAX - 1
+                                      : smid;
+      const addr_t offset = addr % SHARED_MEM_SIZE_MAX;
+      if (owner_smid == smid) {
+        mem = thread->m_shared_mem;
+        addr = offset;
+        break;
+      }
+      auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+      flash_gpgpu_sim::tb_cluster_target_t tgt;
+      if (!core || !flash_gpgpu_sim::resolve_tb_cluster_owner_sm(
+                       core, thread->get_hw_ctaid(), owner_smid, &tgt)) {
+        flash_gpgpu_sim::abort_tb_cluster_dead_owner(
+            owner_smid, thread->get_hw_sid(), thread->get_hw_ctaid(), addr);
+      }
+      mem = tgt.smem;
+      addr = offset;
+      thread->m_dsm_remote = true;
+      thread->m_dsm_owner_smid = owner_smid;
+      thread->m_dsm_dst_cid = tgt.local_sm;
+      thread->m_dsm_dst_hw_cta = tgt.cta_slot;
+      thread->m_dsm_offset = offset;
       break;
+    }
     case sstarr_space:
       mem = thread->m_sstarr_mem;
       break;
@@ -3721,6 +3775,11 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t src1_data = thread->get_operand_value(src1, dst, type, thread, 1);
   ptx_reg_t data;
   memory_space_t space = pI->get_space();
+  const auto &options = pI->get_options();
+  if (space == generic_space &&
+      std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
+          options.end())
+    space = shared_space;
   unsigned vector_spec = pI->get_vector();
 
   memory_space *mem = NULL;
@@ -6318,6 +6377,11 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t addr_reg = thread->get_operand_value(dst, dst, type, thread, 1);
   ptx_reg_t data;
   memory_space_t space = pI->get_space();
+  const auto &options = pI->get_options();
+  if (space == generic_space &&
+      std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
+          options.end())
+    space = shared_space;
   unsigned vector_spec = pI->get_vector();
 
   memory_space *mem = NULL;

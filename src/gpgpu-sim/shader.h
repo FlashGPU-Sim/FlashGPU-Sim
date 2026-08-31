@@ -1122,6 +1122,7 @@ enum barrier_wait_type_t {
   BARRIER_WAIT_BULK_GROUP,   // cp.async.bulk.wait_group (TMA)
   BARRIER_WAIT_CP_ASYNC_GROUP,  // cp.async.wait_group
   BARRIER_WAIT_WGMMA_GROUP,  // wgmma.wait_group
+  BARRIER_WAIT_CLUSTER,       // barrier.cluster.wait
 };
 
 static inline const char *barrier_wait_type_name(barrier_wait_type_t type) {
@@ -1136,6 +1137,8 @@ static inline const char *barrier_wait_type_name(barrier_wait_type_t type) {
     return "cp_async_group";
   case BARRIER_WAIT_WGMMA_GROUP:
     return "wgmma_group";
+  case BARRIER_WAIT_CLUSTER:
+    return "cluster";
   }
   return "unknown";
 }
@@ -1220,6 +1223,9 @@ class barrier_set_t {
   // WGMMA wait_group uses the barrier bitset only as a scheduler wait state.
   void set_wgmma_waiting_warps(const unsigned *warp_ids, unsigned count);
   void release_wgmma_warps(const std::vector<unsigned> &released_warps);
+  void wait_cluster_barrier(unsigned warp_id);
+  void release_cluster_barrier(unsigned warp_id);
+  unsigned active_warps_in_cta(unsigned cta_id) const;
 
   // warp reaches exit
   void warp_exit(unsigned warp_id);
@@ -2659,6 +2665,15 @@ class shader_core_ctx : public core_t {
   // TB-cluster relative rank (%cluster_ctarank); used by ctaMask filtering.
   unsigned get_cta_cluster_rank(unsigned hw_cta_id) const;
   void set_cta_cluster_rank(unsigned hw_cta_id, unsigned rank);
+  void wait_at_cluster_barrier(unsigned warp_id) {
+    m_barriers.wait_cluster_barrier(warp_id);
+  }
+  void release_from_cluster_barrier(unsigned warp_id) {
+    m_barriers.release_cluster_barrier(warp_id);
+  }
+  unsigned active_warps_in_cta(unsigned hw_cta_id) const {
+    return m_barriers.active_warps_in_cta(hw_cta_id);
+  }
 
   void dsm_note_lane_op(flash_gpgpu_sim::dsm_lane_op_t op);
   void dsm_issue_lane_ops(warp_inst_t &inst);
@@ -3283,6 +3298,7 @@ class simt_core_cluster {
                        unsigned mbar_addr, unsigned op, unsigned count,
                        unsigned req_cta, unsigned req_warp, int parity);
   void dsm_on_mbar_done(unsigned local_sm, unsigned req_warp);
+  void cluster_barrier_wait(unsigned local_sm, unsigned cta, unsigned warp);
 
   // for perfect memory interface (per-SM ejection buffer)
   bool response_queue_full(unsigned sid) const {
@@ -3409,6 +3425,14 @@ class simt_core_cluster {
     unsigned remaining = 0;
   };
   std::deque<dsm_mcast_issuer_hold_t> m_mcast_issuer_holds;
+  struct cluster_barrier_waiter_t {
+    unsigned local_sm = 0;
+    unsigned cta = 0;
+    unsigned warp = 0;
+  };
+  std::unordered_map<unsigned, std::vector<cluster_barrier_waiter_t>>
+      m_cluster_barrier_waiters;
+  std::unordered_map<unsigned, unsigned> m_tb_cluster_group_sizes;
   std::unordered_map<unsigned, unsigned> m_dsm_warp_pending;
   std::unordered_map<unsigned, dsm_tx_src_t> m_dsm_tx_warp;
   std::unordered_map<unsigned, dsm_load_wait_t> m_dsm_loads;

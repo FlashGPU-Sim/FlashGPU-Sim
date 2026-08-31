@@ -1460,6 +1460,9 @@ ptx_instruction::ptx_instruction(
       case COMPLETE_TX_OPTION:
         m_barrier_op = last_ptx_inst_option;
         break;
+      case WAIT_OPTION:
+        if (opcode == BAR_OP) m_barrier_op = WAIT_OPTION;
+        break;
       case PARITY_OPTION:
         m_parity_op = true;
         break;
@@ -1467,7 +1470,7 @@ ptx_instruction::ptx_instruction(
       case COMMIT_GROUP_OPTION:
       case WAIT_GROUP_OPTION:
       case LAUNCH_DEPENDENTS_OPTION:
-      case WAIT_OPTION: {
+      {
         // Do nothing for now... need to be implemented later.
         break;
       }

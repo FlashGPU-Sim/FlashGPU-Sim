@@ -118,7 +118,7 @@ The English spec follows plan-v2 §§1–17, 19–20. Chapter 18 is ignored. The
 | GX count | Two planes in the patent | Knob, default 2 | Agreed |
 | PG'd SM slots | Topology table; extra detail in Phase 9 | **B1** (pulled forward) | Need it for `num_sms_per_gpc` ≠ 6×CPCs |
 | Remote load completion | Data response + pending join (Phase 5) | Same **SMEM** scoreboard / LDST writeback | Agreed: remote load ≈ local `ld.shared` |
-| `tb_cluster_barriers` object | In the ownership tree | mbarrier path only; `barrier.cluster` still non-goal | Same non-goal as v2 §F3 equivalent |
+| `tb_cluster_barriers` object | In the ownership tree | Timing state is held by the physical cluster and keyed by TB-cluster group | Required by upstream `cluster.sync()` bandwidth kernels; no longer a non-goal |
 
 Do **not** add further deltas without updating this table.
 

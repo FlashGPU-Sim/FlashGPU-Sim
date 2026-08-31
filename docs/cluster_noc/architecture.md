@@ -170,7 +170,7 @@ Target core-clock order inside one `gpc_t`:
 5. Cycle SM pipelines; expose new DSM transactions
 6. Inject ready request/response packets (subject to shaper + credits)
 7. Advance dsm_fabric_t exactly once
-8. TB-cluster barrier / CTA release (pending DSM blocks exit)
+8. Release completed `barrier.cluster` groups / CTA release (pending DSM blocks exit)
 ```
 
 Rules:
@@ -179,6 +179,7 @@ Rules:
 - SM walk order must not change packet arrival cycle.
 - Fabric advances **once** per GPC per core tick.
 - Request arrival, SRAM service, and response inject must not complete in **zero** cycles.
+- `barrier.cluster.wait` releases only after all active warps in all CTAs of the reserved TB-cluster group have arrived; a partially issued cluster cannot release early.
 - No nested OpenMP inside a GPC.
 
 `gpgpu_sim::active()`, deadlock detect, and state dump must cover fabric queues, partial packets, target service, outstanding transactions, ACK debt, pending batches, and CTA async work.

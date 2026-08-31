@@ -69,6 +69,11 @@ static void maybe_warn_multicast_cluster_on_sm120(ptx_thread_info *thread) {
 static void complete_cluster_peer_mbarriers(
     shader_core_ctx *core, unsigned issuer_hw_cta, uint32_t mbar_addr,
     uint32_t size_in_bytes, bool use_mask = false, uint16_t cta_mask = 0xFFFF);
+static void complete_mapped_cluster_peer_mbarrier(shader_core_ctx *core,
+                                                  unsigned issuer_hw_cta,
+                                                  uint32_t mbar_addr,
+                                                  uint32_t size_in_bytes,
+                                                  uint16_t cta_mask);
 static void complete_cluster_mbarriers_masked(shader_core_ctx *core,
                                               unsigned issuer_hw_cta,
                                               uint32_t mbar_addr,
@@ -985,6 +990,7 @@ private:
     bool is_cluster_read; // also complete peer mbarriers for .shared::cluster
     bool has_cta_mask;    // PTX .multicast::cluster selective destinations
     uint16_t cta_mask;
+    bool mapped_cluster_copy;
     uint32_t smem_dst_addr; // for NoC peer data payload after tx erase
     bool sram_armed = false;
     unsigned sram_got = 0;
@@ -1045,10 +1051,15 @@ private:
       m_pending_arrives.push_back(
           {arrive_latency, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
            tx.m_dyn_info.size_in_bytes, is_write, tx_uid, is_cluster_read,
-           has_cta_mask, cta_mask, (uint32_t)tx.m_dyn_info.dst_addr});
+           has_cta_mask, cta_mask, tx.m_dyn_info.mapped_cluster_copy,
+           (uint32_t)tx.m_dyn_info.dst_addr});
     } else {
       if (!is_write) {
-        if (tma_mcast_via_noc(m_shader_ctx) && is_cluster_read) {
+        if (tx.m_dyn_info.mapped_cluster_copy) {
+          complete_mapped_cluster_peer_mbarrier(
+              m_shader_ctx, cta_id, tx.m_dyn_info.mbar_addr,
+              tx.m_dyn_info.size_in_bytes, cta_mask);
+        } else if (tma_mcast_via_noc(m_shader_ctx) && is_cluster_read) {
           // Peer data + mbar via NoC; issuer complete when in mask or legacy.
           if (has_cta_mask) {
             schedule_cluster_tma_mcast_noc(
@@ -1523,7 +1534,12 @@ public:
                          entry.mbar_addr, 0, 0, 0, 0, 0, entry.size_in_bytes, 0,
                          m_mf_inflight, m_response_fifo.size());
           if (!entry.is_write) {
-            if (tma_mcast_via_noc(m_shader_ctx) && entry.is_cluster_read) {
+            if (entry.mapped_cluster_copy) {
+              complete_mapped_cluster_peer_mbarrier(
+                  m_shader_ctx, entry.cta_id, entry.mbar_addr,
+                  entry.size_in_bytes, entry.cta_mask);
+            } else if (tma_mcast_via_noc(m_shader_ctx) &&
+                       entry.is_cluster_read) {
               if (entry.has_cta_mask) {
                 schedule_cluster_tma_mcast_noc(
                     m_shader_ctx, entry.cta_id, entry.smem_dst_addr,
@@ -2635,6 +2651,20 @@ static void complete_cluster_peer_mbarriers(shader_core_ctx *core,
       /*include_issuer=*/false, use_mask, cta_mask);
 }
 
+static void complete_mapped_cluster_peer_mbarrier(shader_core_ctx *core,
+                                                  unsigned issuer_hw_cta,
+                                                  uint32_t mbar_addr,
+                                                  uint32_t size_in_bytes,
+                                                  uint16_t cta_mask) {
+  for_each_cluster_peer_cta(
+      core, issuer_hw_cta,
+      [&](shader_core_ctx *peer_core, unsigned peer_slot) {
+        peer_core->try_complete_cluster_peer_mbarrier(peer_slot, mbar_addr,
+                                                      size_in_bytes);
+      },
+      /*include_issuer=*/false, /*use_mask=*/true, cta_mask);
+}
+
 // PTX-accurate: mbarrier complete_tx is multicast to every destination CTA
 // selected by ctaMask (including the issuer if its rank bit is set).
 static void complete_cluster_mbarriers_masked(shader_core_ctx *core,
@@ -2854,6 +2884,48 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
         size_in_bytes, mbar_addr, (int)multicast_cluster, (unsigned)cta_mask,
         (int)write_issuer);
 
+  } else if (dst_option == CLUSTER_OPTION && src_option == CTA_OPTION &&
+             completion_option == TMA_MBAR_COMPLETE_BYTES) {
+    auto mapped_dst = get_operand_u32(thread, pI->dst());
+    auto src_addr = get_operand_u32(thread, pI->src1());
+    auto size_in_bytes = get_operand_u32(thread, pI->src2());
+    auto mapped_mbar = get_operand_u32(thread, pI->src3());
+    if (mapped_dst < SHARED_MEM_SIZE_MAX || mapped_mbar < SHARED_MEM_SIZE_MAX) {
+      printf("TMA ERROR: shared::cluster destination is not mapa-derived\n");
+      pI->print_insn();
+      abort();
+    }
+    const unsigned owner_smid = mapped_dst / SHARED_MEM_SIZE_MAX - 1;
+    const uint32_t dst_addr = mapped_dst % SHARED_MEM_SIZE_MAX;
+    const uint32_t mbar_addr = mapped_mbar % SHARED_MEM_SIZE_MAX;
+    auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+    tb_cluster_target_t target;
+    if (!core || !resolve_tb_cluster_owner_sm(core, thread->get_hw_ctaid(),
+                                              owner_smid, &target)) {
+      abort_tb_cluster_dead_owner(owner_smid, thread->get_hw_sid(),
+                                  thread->get_hw_ctaid(), mapped_dst);
+    }
+    check_tma_alignment(dst_addr, src_addr, size_in_bytes);
+    copy_mem(shared_mem, src_addr, target.smem, dst_addr, size_in_bytes, thread,
+             pI);
+
+    inst_t::tma_static_info_t tma_static_info{
+        .tma_type = inst_t::tma_static_info_t::TMA_NORMAL,
+        .dst_space = inst_t::tma_static_info_t::TMA_SHARED_CLUSTER,
+        .src_space = inst_t::tma_static_info_t::TMA_SHARED_CTA,
+    };
+    pI->set_tma_static_info(tma_static_info);
+    inst_t::tma_dyn_info_t tma_dyn_info{
+        .dst_addr = dst_addr,
+        .src_addr = src_addr,
+        .size_in_bytes = size_in_bytes,
+        .mbar_addr = mbar_addr,
+        .cta_mask = static_cast<uint16_t>(
+            1u << target.core->get_cta_cluster_rank(target.cta_slot)),
+        .has_cta_mask = true,
+        .mapped_cluster_copy = true,
+    };
+    pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
   } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION &&
              completion_option == BULK_GROUP_OPTION) {
     // global <- shared::cta with bulk group completion

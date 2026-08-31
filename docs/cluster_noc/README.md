@@ -103,7 +103,6 @@ TB-cluster **size** is a launch attribute. Rule: `product(clusterDim) ≤` enabl
 | Non-goal | Reason |
 |----------|--------|
 | TPC / TPCARB as a unit | Supervisor + this rewrite: SMs attach to GPCMMU / GPCARB |
-| `barrier.cluster` / CG DSM map builtins | Specials + `mapa` only |
 | Preferred-substitute cluster dims / full occupancy APIs | Stubs only |
 | Cross-GPC DSM or TMA multicast | Hardware TB-clusters stay in one GPC |
 | Multi-hop / tree hop by rank | H200 stride ratio ≈ 1.0 |
@@ -111,6 +110,8 @@ TB-cluster **size** is a launch attribute. Rule: `product(clusterDim) ≤` enabl
 | BookSim as the first DSM fabric | Global state, extra uncalibrated hops |
 | Stamping H200 numbers as Blackwell hardware fact | Separate preset later |
 | Making bare peer-smem spins work | Use mbarrier |
+
+`barrier.cluster.arrive` / `barrier.cluster.wait` and the CG DSM map path are supported requirements, not non-goals. The simulator releases a cluster barrier only after all active warps in every CTA of the TB-cluster group arrive.
 
 ---
 

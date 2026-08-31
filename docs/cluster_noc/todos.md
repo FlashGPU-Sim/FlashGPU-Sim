@@ -54,7 +54,7 @@ Shipped on `cluster_cta2_support`. Do not re-implement. Tests: [`tests.md`](test
 
 - [x] **A-F1** Land delay-line NoC + cluster launch + TMA cluster + DSM + remote mbar. Evidence: ClusterNoc*, DsmTest*, MbarrierClusterTest*, TMAClusterOneProducer* on SM120 reduced and SM90 H200 reduced.
 - [x] **A-F2** Used mbarrier ops + `try_wait` timeout dest-pred.
-- [x] **A-F3** `barrier.cluster` / CG map **non-goal**.
+- [x] **A-F3** `mapa` / CG DSM map and `barrier.cluster.arrive` + `barrier.cluster.wait` are supported. Cluster barriers wait for every active warp in every CTA of the launched TB cluster; this was promoted from the former non-goal because the upstream bandwidth kernels use `cluster.sync()`.
 - [ ] **A-F4** PTX `red` / `red.async`. Still `inst_not_implemented`. nvcc 12.8 `atomicAdd`+`mapa` emits generic `atom.add` (already works). Implement only if a real dump emits `red`.
 - [x] **A-F5** `mapa` of inactive rank **aborts**.
 - [x] **A-F6** TMA corners: used paths work; 96B swizzle / unused tensormap abort.

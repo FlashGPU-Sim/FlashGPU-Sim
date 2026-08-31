@@ -119,7 +119,7 @@ Target fabric: same programming model; packets become `tma_data` + `mbarrier_com
 | `try_wait.parity` + timeout | Yes — pred true if phase done, false if hint expires (**sim cycles**) |
 | `mbarrier.inval` | Yes |
 | `test_wait` / `pending_count` / try_wait without `.parity` | Not parsed / hard-fail |
-| `barrier.cluster` / `cluster.sync()` | **Non-goal** |
+| `barrier.cluster.arrive` / `barrier.cluster.wait` (`cluster.sync()`) | Yes; all active warps in every CTA of the launched TB cluster participate |
 
 Objects live in **simulator tables**, not as 64-bit smem contents. Kernels that read barrier **bytes** will not match hardware.
 
@@ -129,7 +129,7 @@ Remote: `remote_mbarrier_*` in `mbarrier.cc`. Delay line: `inject_mbar_remote`. 
 
 ## 5. Hang preventers (sim only)
 
-Not hardware detectors. Default 8192 cycles (`-gpgpu_cluster_hang_watchdog`; env `FLASHGPU_CLUSTER_HANG_WATCHDOG`). `0` = off.
+Not hardware detectors. Default 8192 cycles (`-gpgpu_cluster_hang_watchdog`; env `FLASHGPU_CLUSTER_HANG_WATCHDOG`). `0` = off. Warps stalled on an outstanding DSM scoreboard dependency or a cluster barrier are recognized waits and do not trip the watchdog.
 
 **Rule 1 — bare peer spin.** After a **recent** peer DSM/TMA access, a tight PC loop with no mbarrier interest aborts. The arm expires on a recognized wait (`try_wait` park, `bar.sync`, …) or a hop-scale quiet window with no further peer touch. Parked `try_wait` is exempt.
 

@@ -810,6 +810,7 @@ class inst_t {
     bar_id = (unsigned)-1;
     bar_count = (unsigned)-1;
     bar_parity = false;
+    cluster_barrier = false;
     oprnd_type = UN_OP;
     sp_op = OTHER_OP;
     op_pipe = UNKOWN_OP;
@@ -880,6 +881,7 @@ class inst_t {
   unsigned bar_id;
   unsigned bar_count;
   bool bar_parity = false;
+  bool cluster_barrier = false;
 
 public:
   struct tma_static_info_t {
@@ -918,6 +920,7 @@ public:
     // When has_cta_mask is false, legacy shared::cluster peers use full group.
     uint16_t cta_mask = 0xFFFF;
     bool has_cta_mask = false;
+    bool mapped_cluster_copy = false;
     bool is_valid() const {
       return mbar_addr != (uint32_t)-1 || size_in_bytes > 0;
     }

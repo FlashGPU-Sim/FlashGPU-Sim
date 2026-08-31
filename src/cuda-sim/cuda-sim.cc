@@ -1050,12 +1050,19 @@ void ptx_instruction::set_mul_div_or_other_archop() {
 
 void ptx_instruction::set_bar_type() {
   if (m_opcode == BAR_OP) {
+    const auto &options = get_options();
+    cluster_barrier =
+        std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
+        options.end();
     switch (m_barrier_op) {
       case SYNC_OPTION:
         bar_type = SYNC;
         break;
       case ARRIVE_OPTION:
         bar_type = ARRIVE;
+        break;
+      case WAIT_OPTION:
+        bar_type = SYNC;
         break;
       case RED_OPTION:
         bar_type = RED;

@@ -2109,8 +2109,15 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 
   if (next_inst->op == BARRIER_OP) {
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
-    m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
-                                    const_cast<warp_inst_t *>(next_inst));
+    if (next_inst->cluster_barrier) {
+      if (next_inst->bar_type == SYNC)
+        m_cluster->cluster_barrier_wait(
+            m_config->sid_to_cid(m_sid), m_warp[warp_id]->get_cta_id(),
+            warp_id);
+    } else {
+      m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
+                                      const_cast<warp_inst_t *>(next_inst));
+    }
   } else if (next_inst->op == MBARRIER_OP) {
     // Skip mbarrier processing if no threads are active (e.g., all predicated out)
     if ((*pipe_reg)->get_active_mask().any()) {
@@ -5681,6 +5688,10 @@ void barrier_set_t::poll_hang_preventers() {
       continue;
 
     const bool at_wait = m_warp_at_barrier.test(w);
+    const bool at_dsm_scoreboard_wait =
+        m_shader->get_cluster() &&
+        m_shader->get_cluster()->dsm_warp_busy(m_shader->get_sid(), w);
+    const bool at_recognized_wait = at_wait || at_dsm_scoreboard_wait;
     const bool mbar_interest =
         at_wait && m_warp_barrier_type[w] == BARRIER_WAIT_MBARRIER;
     const unsigned long long pc = (unsigned long long)warp->get_pc();
@@ -5707,7 +5718,7 @@ void barrier_set_t::poll_hang_preventers() {
     const unsigned quiet_limit = peer_arm_quiet_limit(
         cfg->gpgpu_dsm_remote_latency, cfg->gpgpu_tma_mcast_hop_latency,
         cfg->gpgpu_mbarrier_trywait_latency, fabric_rtt);
-    if (at_wait)
+    if (at_recognized_wait)
       m_hang_saw_peer[w] = false;
     else if (m_hang_saw_peer[w]) {
       if (fabric_out)
@@ -5716,16 +5727,17 @@ void barrier_set_t::poll_hang_preventers() {
         m_hang_quiet_cycles[w]++;
     }
     const bool peer_armed = peer_access_still_armed(
-        m_hang_saw_peer[w], at_wait, m_hang_quiet_cycles[w], quiet_limit,
-        fabric_out);
+        m_hang_saw_peer[w], at_recognized_wait, m_hang_quiet_cycles[w],
+        quiet_limit, fabric_out);
     if (!peer_armed)
       m_hang_saw_peer[w] = false;
-    if (at_wait || mbar_interest || !peer_armed || unique > kHangTightLoopPcs)
+    if (at_recognized_wait || mbar_interest || !peer_armed ||
+        unique > kHangTightLoopPcs)
       m_hang_watch_cycles[w] = 0;
     else
       m_hang_watch_cycles[w]++;
-    if (spin_watchdog_should_trip(enabled, thresh, at_wait, mbar_interest,
-                                  peer_armed, unique,
+    if (spin_watchdog_should_trip(enabled, thresh, at_recognized_wait,
+                                  mbar_interest, peer_armed, unique,
                                   m_hang_watch_cycles[w])) {
       printf("GPGPU-Sim ERROR: warp %u sat in a tight loop for %u cycles "
              "after a peer DSM/TMA access with no mbarrier wait registered "
@@ -6018,6 +6030,24 @@ void barrier_set_t::release_cp_async_warp(unsigned warp_id) {
   }
   clear_warp_waiting(warp_id, BARRIER_WAIT_CP_ASYNC_GROUP,
                      "cp.async wait_group release");
+}
+
+void barrier_set_t::wait_cluster_barrier(unsigned warp_id) {
+  assert(!m_warp_at_barrier.test(warp_id));
+  m_warp_at_barrier.set(warp_id);
+  m_warp_barrier_type[warp_id] = BARRIER_WAIT_CLUSTER;
+  m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+}
+
+void barrier_set_t::release_cluster_barrier(unsigned warp_id) {
+  clear_warp_waiting(warp_id, BARRIER_WAIT_CLUSTER,
+                     "cluster barrier release");
+}
+
+unsigned barrier_set_t::active_warps_in_cta(unsigned cta_id) const {
+  auto it = m_cta_to_warps.find(cta_id);
+  if (it == m_cta_to_warps.end()) return 0;
+  return (it->second & m_warp_active).count();
 }
 
 void barrier_set_t::dump() const {
@@ -7161,6 +7191,43 @@ void simt_core_cluster::dsm_on_tma_mbar(unsigned local_sm, unsigned cta,
   }
 }
 
+void simt_core_cluster::cluster_barrier_wait(unsigned local_sm, unsigned cta,
+                                             unsigned warp) {
+  assert(local_sm < num_cores());
+  shader_core_ctx *source = get_core(local_sm);
+  assert(source && source->is_cta_slot_active(cta));
+  const unsigned group = source->get_cta_cluster_group(cta);
+  auto &waiters = m_cluster_barrier_waiters[group];
+  for (const auto &waiter : waiters) {
+    if (waiter.local_sm == local_sm && waiter.warp == warp) return;
+  }
+  source->wait_at_cluster_barrier(warp);
+  waiters.push_back({local_sm, cta, warp});
+
+  unsigned expected = 0;
+  for (unsigned sm = 0; sm < num_cores(); sm++) {
+    shader_core_ctx *core = get_core(sm);
+    if (!core) continue;
+    for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
+      if (!core->is_cta_slot_active(slot)) continue;
+      if (core->get_cta_cluster_group(slot) != group) continue;
+      expected += core->active_warps_in_cta(slot);
+    }
+  }
+  auto group_size = m_tb_cluster_group_sizes.find(group);
+  if (group_size != m_tb_cluster_group_sizes.end()) {
+    const unsigned source_warps = source->active_warps_in_cta(cta);
+    expected = group_size->second * source_warps;
+  }
+  if (!expected || waiters.size() < expected) return;
+
+  for (const auto &waiter : waiters) {
+    shader_core_ctx *core = get_core(waiter.local_sm);
+    if (core) core->release_from_cluster_barrier(waiter.warp);
+  }
+  m_cluster_barrier_waiters.erase(group);
+}
+
 bool simt_core_cluster::dsm_on_mbar_req(unsigned local_sm, unsigned cta,
                                         unsigned src, unsigned mbar_addr,
                                         unsigned op, unsigned count,
@@ -7270,6 +7337,7 @@ unsigned simt_core_cluster::allocate_cta_cluster_group(unsigned group_size,
   if (group_size > 0) {
     unsigned group = m_next_tb_cluster_group_id;
     m_next_tb_cluster_group_id++;
+    m_tb_cluster_group_sizes[group] = group_size;
     return group;
   }
   // Ordinary (non-cluster) launches: each CTA gets its own group so
