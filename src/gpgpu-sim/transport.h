@@ -3,6 +3,7 @@
 
 #include <assert.h>
 
+#include <algorithm>
 #include <deque>
 #include <vector>
 
@@ -52,6 +53,7 @@ struct bounded_voq_t {
   }
   bool empty(unsigned dst) const { return m_q[dst].empty(); }
   bool can_push(unsigned dst, unsigned flits) const {
+    if (flits > m_limit) return m_q[dst].empty() && m_occ[dst] == 0;
     return m_occ[dst] + flits <= m_limit;
   }
   bool push(unsigned dst, Pkt pkt) {
@@ -62,12 +64,16 @@ struct bounded_voq_t {
       return false;
     }
     m_q[dst].push_back(pkt);
-    m_occ[dst] += flits;
+    m_occ[dst] += std::min(flits, m_limit);
     m_stats.packets_in++;
     m_stats.note_occupancy(occupancy_flits());
     return true;
   }
   const Pkt *front(unsigned dst) const {
+    if (m_q[dst].empty()) return nullptr;
+    return &m_q[dst].front();
+  }
+  Pkt *front_mutable(unsigned dst) {
     if (m_q[dst].empty()) return nullptr;
     return &m_q[dst].front();
   }
@@ -78,8 +84,9 @@ struct bounded_voq_t {
     assert(m_occ[dst] > 0);
     Pkt &p = m_q[dst].front();
     assert(p.remaining_flits > 0);
+    const unsigned before = p.remaining_flits;
     p.remaining_flits--;
-    m_occ[dst]--;
+    if (before <= m_limit) m_occ[dst]--;
     m_stats.flits_moved++;
     if (p.remaining_flits > 0) return false;
     if (completed) *completed = p;
@@ -105,6 +112,7 @@ struct flit_credit_counters_t {
     m_free.assign(n_queues, depth);
   }
   unsigned remaining(unsigned q) const { return m_free[q]; }
+  unsigned depth() const { return m_depth; }
   bool has(unsigned q, unsigned flits) const { return m_free[q] >= flits; }
   bool take(unsigned q, unsigned flits) {
     if (m_free[q] < flits) return false;

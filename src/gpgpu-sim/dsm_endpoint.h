@@ -118,6 +118,10 @@ class dsm_endpoint_protocol_t {
   bool issue_tma(unsigned src, unsigned dst, unsigned bytes, uint64_t addr,
                  unsigned cta_slot, unsigned cta_gen, const void *data,
                  unsigned mbar_addr, unsigned mbar_bytes);
+  bool issue_tma(unsigned src, unsigned dst, unsigned bytes, uint64_t addr,
+                 unsigned cta_slot, unsigned cta_gen, const void *data,
+                 unsigned mbar_addr, unsigned mbar_bytes,
+                 uint64_t multicast_group);
   bool issue_mbar(unsigned src, unsigned dst, unsigned cta_slot,
                   unsigned cta_gen, unsigned mbar_addr, unsigned op,
                   unsigned count, unsigned req_cta, unsigned req_warp,
@@ -180,7 +184,7 @@ class dsm_endpoint_protocol_t {
   unsigned in_flight_writes(unsigned src, unsigned dst) const;
   bool issue_req(unsigned src, unsigned dst, unsigned bytes, uint64_t addr,
                  unsigned cta_slot, unsigned cta_gen, dsm_packet_class_t cls,
-                 const void *data);
+                 const void *data, uint64_t multicast_group = 0);
 
   dsm_fabric_t *m_fab;
   dsm_endpoint_config_t m_cfg;

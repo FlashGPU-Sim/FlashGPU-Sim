@@ -1,7 +1,7 @@
 # SM90_H200_CLUSTER16x8
 
-Full-chip GPC-packed **H200** config for cycle-accurate cluster calibration
-(**B6**). Design: `docs/cluster_noc/README.md`. Report:
+Full-chip GPC-packed **H200** config for cycle-accurate cluster calibration.
+Design: `docs/cluster_noc/README.md`. Report:
 `docs/cluster_noc/calibration.md`.
 
 ## Naming: `CLUSTERmxn`
@@ -32,11 +32,10 @@ TB-cluster size is a launch attribute: `product(clusterDim) ≤ 16`.
 |--------|---------|------|
 | `SM90_H200` | 132 × 1 | Product clocks / L2 / HBM; NoC idle |
 | `SM90_H200_REDUCED_CLUSTER16x2` | 16 × 2 = 32 | Functional cluster tests |
-| **`SM90_H200_CLUSTER16x8`** | 16 × 8 = 128 | B6 calibration |
+| **`SM90_H200_CLUSTER16x8`** | 16 × 8 = 128 | Cycle calibration |
 
 Clocks, caches, HBM, and SM pipeline knobs are copied from `SM90_H200`
-(job 2034797). Fabric knobs start at the documented defaults
-(`docs/cluster_noc/knobs.md` §3); B6e may refit them.
+(job 2034797). Fabric knobs: `docs/cluster_noc/knobs.md` §3.
 
 ## Usage
 

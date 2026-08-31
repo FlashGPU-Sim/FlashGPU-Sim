@@ -3242,6 +3242,32 @@ cudaError_t CUDARTAPI cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(
 
 #endif
 
+#if CUDART_VERSION >= 11040
+__host__ cudaError_t CUDARTAPI cudaOccupancyMaxActiveClusters(
+    int *numClusters, const void *func, const cudaLaunchConfig_t *config) {
+  (void)func;
+  (void)config;
+  if (!numClusters) return g_last_cudaError = cudaErrorInvalidValue;
+  *numClusters = 1;
+  return g_last_cudaError = cudaSuccess;
+}
+
+__host__ cudaError_t CUDARTAPI cudaOccupancyMaxPotentialClusterSize(
+    int *clusterSize, const void *func, const cudaLaunchConfig_t *config) {
+  (void)func;
+  (void)config;
+  if (!clusterSize) return g_last_cudaError = cudaErrorInvalidValue;
+  gpgpu_context *ctx = GPGPU_Context();
+  _cuda_device_id *dev = ctx->GPGPUSim_Init();
+  unsigned sms_per_gpc = 16;
+  if (dev->get_gpgpu() && dev->get_gpgpu()->getShaderCoreConfig())
+    sms_per_gpc =
+        dev->get_gpgpu()->getShaderCoreConfig()->n_simt_cores_per_cluster;
+  *clusterSize = (int)sms_per_gpc;
+  return g_last_cudaError = cudaSuccess;
+}
+#endif
+
 /*******************************************************************************
  *                                                                              *
  *                                                                              *
@@ -4393,6 +4419,41 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
     }
   }
 
+  // cuobjdump writes one PTX per .cu; the version set can miss a module.
+  // Only pick up the same sm_* suffix already selected (do not also load
+  // sm_90 when sm_90a is the chosen image).
+  {
+    std::string want_arch;
+    if (!selected_files.empty()) {
+      const std::string &s0 = selected_files.front();
+      const size_t sm = s0.rfind("sm_");
+      if (sm != std::string::npos)
+        want_arch = s0.substr(sm);
+    }
+    DIR *dir = opendir(".");
+    if (dir) {
+      std::set<std::string> have(selected_files.begin(), selected_files.end());
+      struct dirent *ent;
+      while ((ent = readdir(dir)) != NULL) {
+        const std::string n = ent->d_name;
+        if (n.size() < 8 || n.compare(n.size() - 4, 4, ".ptx") != 0)
+          continue;
+        if (n.find("sm_") == std::string::npos)
+          continue;
+        if (!want_arch.empty() &&
+            (n.size() < want_arch.size() ||
+             n.compare(n.size() - want_arch.size(), want_arch.size(),
+                       want_arch) != 0))
+          continue;
+        if (have.insert(n).second) {
+          printf("GPGPU-Sim PTX: adding extracted module %s\n", n.c_str());
+          selected_files.push_back(n);
+        }
+      }
+      closedir(dir);
+    }
+  }
+
   if (ptx_reorder_sass_guided && !ptx_reorder_enabled) {
     fprintf(stderr,
             "GPGPU-Sim PTX: -gpgpu_ptx_reorder_sass_guided requires "
@@ -4459,7 +4520,7 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
   for (auto &ptx_filename : selected_files) {
     // Extract full architecture string (e.g., "sm_120a" from "kernel.2.sm_120a.ptx")
     std::string arch_str = "";
-    size_t sm_pos = ptx_filename.find("sm_");
+    size_t sm_pos = ptx_filename.rfind("sm_");
     if (sm_pos != std::string::npos) {
       size_t dot_pos = ptx_filename.find('.', sm_pos);
       arch_str = ptx_filename.substr(sm_pos, dot_pos - sm_pos);
@@ -8696,6 +8757,47 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernelExC(
 
   return cudaLaunchInternal((const char *)func, ctx);
 }
+
+#if CUDART_VERSION >= 11080
+// Vendored cuda_api.h has no CUlaunchConfig; match CUDA 12 driver layout.
+struct cu_launch_config_compat {
+  unsigned int gridDimX, gridDimY, gridDimZ;
+  unsigned int blockDimX, blockDimY, blockDimZ;
+  unsigned int sharedMemBytes;
+  CUstream hStream;
+  cudaLaunchAttribute *attrs;
+  unsigned int numAttrs;
+};
+
+CUresult CUDAAPI cuLaunchKernelEx(const cu_launch_config_compat *config,
+                                  CUfunction f, void **kernelParams,
+                                  void **extra) {
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+  if (extra != NULL) {
+    printf("GPGPU-Sim CUDA DRIVER API: ERROR: cuLaunchKernelEx extra not "
+           "supported.\n");
+    abort();
+  }
+  if (!config || !f) return CUDA_ERROR_INVALID_VALUE;
+  cudaLaunchConfig_t rt{};
+  rt.gridDim = dim3(config->gridDimX, config->gridDimY, config->gridDimZ);
+  rt.blockDim = dim3(config->blockDimX, config->blockDimY, config->blockDimZ);
+  rt.dynamicSmemBytes = config->sharedMemBytes;
+  rt.stream = (cudaStream_t)config->hStream;
+  rt.numAttrs = config->numAttrs;
+  rt.attrs = config->attrs;
+  cudaError_t e = cudaLaunchKernelExC(&rt, (const void *)f, kernelParams);
+  return (e == cudaSuccess) ? CUDA_SUCCESS : CUDA_ERROR_LAUNCH_FAILED;
+}
+
+CUresult CUDAAPI cuLaunchKernelEx_ptsz(const cu_launch_config_compat *config,
+                                       CUfunction f, void **kernelParams,
+                                       void **extra) {
+  return cuLaunchKernelEx(config, f, kernelParams, extra);
+}
+#endif
 
 __host__ cudaError_t CUDARTAPI cudaLaunchHostFunc(cudaStream_t stream, cudaHostFn_t fn, void *userData) {
   cuda_error_not_impl;

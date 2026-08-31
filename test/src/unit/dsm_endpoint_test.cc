@@ -444,3 +444,46 @@ TEST(DsmEndpoint, QuietWindowUsesOutstandingRtt) {
   EXPECT_FALSE(e.ep.busy());
   EXPECT_EQ(e.ep.max_tx_age(e.now), 0u);
 }
+
+TEST(DsmEndpoint, LoadRttGrowsWithResidualFloor) {
+  auto rtt = [](unsigned floor) {
+    dsm_fabric_config_t fcfg;
+    fcfg.base_latency_cycles = floor;
+    EpEnv e(fcfg, dsm_endpoint_config_t{});
+    unsigned done = 0;
+    e.ep.set_on_tx_done(&done, [](void *ctx, unsigned) {
+      *static_cast<unsigned *>(ctx) += 1;
+    });
+    EXPECT_TRUE(e.ep.issue_load(0, 1, 4, 8, 0, 0));
+    unsigned n = 0;
+    while (e.ep.busy() && n++ < 100000) e.ep.cycle(e.now++);
+    return n;
+  };
+  const unsigned z = rtt(0);
+  const unsigned n = rtt(20);
+  EXPECT_GT(z, 0u);
+  EXPECT_GE(n, z + 20u);
+}
+
+TEST(DsmEndpoint, TmaDeliveryScalesWithFlitsNotHop) {
+  auto time_tma = [](unsigned bytes) {
+    EpEnv e(dsm_fabric_config_t{}, dsm_endpoint_config_t{});
+    std::vector<uint8_t> payload(bytes, 1);
+    unsigned mbar = 0;
+    e.ep.set_on_tma_mbar(&mbar, [](void *ctx, unsigned, unsigned, unsigned,
+                                   unsigned) {
+      *static_cast<unsigned *>(ctx) = 1;
+    });
+    EXPECT_TRUE(e.ep.issue_tma(0, 1, bytes, 0, 0, 0, payload.data(), 1, bytes));
+    unsigned n = 0;
+    while (e.ep.busy() && mbar == 0 && n++ < 100000) e.ep.cycle(e.now++);
+    EXPECT_EQ(mbar, 1u);
+    return n;
+  };
+  const unsigned t32 = time_tma(32);
+  const unsigned t128 = time_tma(128);
+  EXPECT_GT(t128, t32);
+  EXPECT_GE(t128 - t32, 2u);
+  // Extra delay is flit grants, not a 135-cycle multicast hop.
+  EXPECT_LT(t128 - t32, 80u);
+}

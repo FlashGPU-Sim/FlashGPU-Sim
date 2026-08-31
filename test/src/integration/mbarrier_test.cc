@@ -512,9 +512,59 @@ protected:
   }
 };
 
+// Re-init + arrive.expect_tx(0) + try_wait spin, N times, tid0 only.
+// A no-op init left a completed phase with pending_arrival restored, so the
+// second try_wait.parity 0 parked forever.
+__global__ void test_reinit_arrive_trywait_loop(uint32_t *output) {
+  __shared__ unsigned long long bar;
+  if (threadIdx.x != 0)
+    return;
+  for (int i = 0; i < 8; ++i) {
+    mbarrier_init(&bar, 1);
+    mbarrier_arrive_expect_tx(&bar, 0);
+    mbarrier_wait(&bar, 0);
+  }
+  output[0] = 0xCAFEu;
+}
+
 // ============================================================================
 // Test Cases
 // ============================================================================
+
+TEST_F(MBarrierThreadLevelTest, ReinitArriveTryWaitLoop) {
+  test_reinit_arrive_trywait_loop<<<1, 32>>>(d_output);
+
+  cudaError_t err = cudaDeviceSynchronize();
+  ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
+
+  auto output = getOutput();
+  EXPECT_EQ(output[0], 0xCAFEu) << "re-init + try_wait loop must complete";
+}
+
+// Incomplete try_wait (count=2, one arrive) must not park the warp. Hardware
+// try_wait is a query; software re-issues. Parking here hung calibration
+// kernels that spin on a not-yet-complete barrier.
+__global__ void test_incomplete_trywait_does_not_hang(uint32_t *output) {
+  __shared__ unsigned long long bar;
+  if (threadIdx.x != 0)
+    return;
+  mbarrier_init(&bar, 2);
+  mbarrier_arrive(&bar);
+  const bool done = mbarrier_try_wait_parity(&bar, 0);
+  output[0] = done ? 1u : 0u;
+  output[1] = 0xCAFEu;
+}
+
+TEST_F(MBarrierThreadLevelTest, IncompleteTryWaitDoesNotHang) {
+  test_incomplete_trywait_does_not_hang<<<1, 32>>>(d_output);
+
+  cudaError_t err = cudaDeviceSynchronize();
+  ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
+
+  auto output = getOutput();
+  EXPECT_EQ(output[0], 0u) << "try_wait on an incomplete barrier is false";
+  EXPECT_EQ(output[1], 0xCAFEu) << "warp must write back after a failed try_wait";
+}
 
 TEST_F(MBarrierThreadLevelTest, DifferentThreadsInitDifferentAddresses) {
   test_different_threads_init_different_addresses<<<1, 32>>>(d_output);

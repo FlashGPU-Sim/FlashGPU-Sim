@@ -427,9 +427,10 @@ void gpgpu_context::gpgpu_ptx_info_load_from_filename(const char *filename,
   int result = system(buff);
   if (result != 0) {
     if (!copy_ptxinfo_sidecar(filename, ptxas_filename)) {
-      printf("GPGPU-Sim PTX: ERROR ** while loading PTX (b) %d\n", result);
-      printf("               Ensure ptxas is in your path.\n");
-      exit(1);
+      printf("GPGPU-Sim PTX: WARNING ** ptxas ptxinfo failed for %s (status %d); "
+             "skipping register-usage info for this module\n",
+             filename, result);
+      return;
     }
   }
 

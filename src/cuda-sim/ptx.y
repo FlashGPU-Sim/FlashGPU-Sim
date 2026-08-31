@@ -222,6 +222,7 @@ class ptx_recognizer;
 %token  GLOBAL_OPTION
 %token  CTA_OPTION
 %token  SYS_OPTION
+%token  SC_OPTION
 %token  EXIT_OPTION
 %token  ABS_OPTION
 %token  TO_OPTION
@@ -620,6 +621,7 @@ option: type_spec
 	| GLOBAL_OPTION { recognizer->add_option(GLOBAL_OPTION); }
 	| CTA_OPTION { recognizer->add_option(CTA_OPTION); }
 	| SYS_OPTION { recognizer->add_option(SYS_OPTION); }
+	| SC_OPTION { recognizer->add_option(SC_OPTION); }
 	| GEOM_MODIFIER_1D { recognizer->add_option(GEOM_MODIFIER_1D); }
 	| GEOM_MODIFIER_2D { recognizer->add_option(GEOM_MODIFIER_2D); }
 	| GEOM_MODIFIER_3D { recognizer->add_option(GEOM_MODIFIER_3D); }

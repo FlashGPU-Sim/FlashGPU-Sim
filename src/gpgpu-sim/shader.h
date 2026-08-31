@@ -1198,6 +1198,9 @@ class barrier_set_t {
   // Process delayed mbarrier warp releases each cycle
   void cycle();
 
+  // Park warp for `latency` cycles (mbarrier.arrive issue, TMA bulk issue).
+  void hold_warp(unsigned warp_id, unsigned latency, barrier_wait_type_t type);
+
   // Bulk group methods for TMA write operations
   void add_bulk_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
   void complete_bulk_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
@@ -1790,6 +1793,7 @@ class shader_core_config : public core_config {
     gpgpu_dsm_max_outstanding_per_sm = 16;
     gpgpu_dsm_ack_coalesce_threshold = 4;
     gpgpu_dsm_ack_timeout_cycles = 64;
+    gpgpu_dsm_base_latency_cycles = 0;
     gpgpu_shmem_bytes_per_cycle = 0;
   }
 
@@ -2092,6 +2096,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_dsm_max_outstanding_per_sm;
   unsigned int gpgpu_dsm_ack_coalesce_threshold;
   unsigned int gpgpu_dsm_ack_timeout_cycles;
+  unsigned int gpgpu_dsm_base_latency_cycles;
   unsigned int gpgpu_shmem_bytes_per_cycle;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;
@@ -3252,7 +3257,8 @@ class simt_core_cluster {
   unsigned dsm_max_tx_age(unsigned long long now) const;
   bool dsm_issue_tma(unsigned src, unsigned dst, unsigned bytes, uint64_t addr,
                      unsigned cta_slot, unsigned cta_gen, const void *data,
-                     unsigned mbar_addr, unsigned mbar_bytes);
+                     unsigned mbar_addr, unsigned mbar_bytes,
+                     uint64_t multicast_group = 0);
   bool dsm_issue_mbar(unsigned src, unsigned dst, unsigned cta_slot,
                       unsigned cta_gen, unsigned mbar_addr, unsigned op,
                       unsigned count, unsigned req_cta, unsigned req_warp,
@@ -3260,7 +3266,7 @@ class simt_core_cluster {
   void dsm_queue_tma_retry(unsigned src, unsigned dst, unsigned bytes,
                            uint64_t addr, unsigned cta_slot, unsigned cta_gen,
                            const void *data, unsigned n, unsigned mbar_addr,
-                           unsigned mbar_bytes);
+                           unsigned mbar_bytes, uint64_t multicast_group = 0);
   void dsm_queue_mbar_retry(unsigned src, unsigned dst, unsigned cta_slot,
                             unsigned cta_gen, unsigned mbar_addr, unsigned op,
                             unsigned count, unsigned req_cta, unsigned req_warp,
@@ -3268,6 +3274,11 @@ class simt_core_cluster {
   void dsm_retry_tma_mbar();
   void dsm_on_tma_mbar(unsigned local_sm, unsigned cta, unsigned mbar_addr,
                        unsigned mbar_bytes);
+  // Delay issuer complete_tx until fabric+SRAM has landed one peer copy
+  // (source-expanded multicast). wait_peers==0 completes immediately.
+  void dsm_hold_issuer_mcast_mbar(unsigned issuer_cid, unsigned issuer_cta,
+                                  unsigned mbar_addr, unsigned mbar_bytes,
+                                  unsigned wait_peers);
   bool dsm_on_mbar_req(unsigned local_sm, unsigned cta, unsigned src,
                        unsigned mbar_addr, unsigned op, unsigned count,
                        unsigned req_cta, unsigned req_warp, int parity);
@@ -3380,6 +3391,7 @@ class simt_core_cluster {
     unsigned src = 0, dst = 0, bytes = 0, cta_slot = 0, cta_gen = 0;
     uint64_t addr = 0;
     unsigned mbar_addr = 0, mbar_bytes = 0;
+    uint64_t multicast_group = 0;
     std::vector<uint8_t> data;
   };
   struct dsm_mbar_retry_t {
@@ -3389,6 +3401,14 @@ class simt_core_cluster {
   };
   std::deque<dsm_tma_retry_t> m_tma_retry;
   std::deque<dsm_mbar_retry_t> m_mbar_retry;
+  struct dsm_mcast_issuer_hold_t {
+    unsigned issuer_cid = 0;
+    unsigned issuer_cta = 0;
+    unsigned mbar_addr = 0;
+    unsigned mbar_bytes = 0;
+    unsigned remaining = 0;
+  };
+  std::deque<dsm_mcast_issuer_hold_t> m_mcast_issuer_holds;
   std::unordered_map<unsigned, unsigned> m_dsm_warp_pending;
   std::unordered_map<unsigned, dsm_tx_src_t> m_dsm_tx_warp;
   std::unordered_map<unsigned, dsm_load_wait_t> m_dsm_loads;

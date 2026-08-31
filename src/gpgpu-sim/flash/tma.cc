@@ -1376,6 +1376,10 @@ public:
             tma_static_info.tma_type);
       }
     }
+    // Warp cannot issue the next instruction until TMA issue occupancy elapses
+    // (H200 pure cp.async.bulk is 44 cycles). Data movement is already queued.
+    if (active_lane_count > 0 && inst->latency > 1)
+      m_barriers->hold_warp(warp_id, inst->latency, BARRIER_WAIT_BULK_GROUP);
   }
 
   void warp_reaches_cp_async(unsigned cta_id, unsigned warp_id,
@@ -2547,7 +2551,8 @@ static void schedule_cluster_tma_mcast_noc(
   if (size_in_bytes > 0)
     src_smem->read(smem_addr, size_in_bytes, buf.data());
 
-  const uint64_t stream_key = (static_cast<uint64_t>(issuer_hw_cta) << 32) |
+  const uint64_t stream_key = (1ull << 63) |
+                              (static_cast<uint64_t>(issuer_hw_cta) << 32) |
                               static_cast<uint64_t>(mbar_addr);
   const unsigned mbar_bytes =
       core->get_config()->gpgpu_tma_mcast_mbar_after_data ? size_in_bytes : 0;
@@ -2555,6 +2560,18 @@ static void schedule_cluster_tma_mcast_noc(
       core->get_config()->gpgpu_tma_mcast_mbar_after_data ? mbar_addr : 0;
 
   if (flash_gpgpu_sim::dsm_fabric_enabled(core)) {
+    unsigned n_peers = 0;
+    for_each_cluster_peer_cta(
+        core, issuer_hw_cta, [&](shader_core_ctx *, unsigned) { n_peers++; },
+        /*include_issuer=*/false, use_mask, cta_mask);
+    // Issuer complete_tx waits for one peer fabric+SRAM landing so multicast
+    // extra e2e is serialization + SRAM, not a second delay-line hop.
+    if (include_issuer_for_mbar && use_mask) {
+      unsigned rank = core->get_cta_cluster_rank(issuer_hw_cta);
+      if (rank < 16 && ((cta_mask >> rank) & 1u) != 0)
+        cluster->dsm_hold_issuer_mcast_mbar(src_cid, issuer_hw_cta, mbar_addr,
+                                            size_in_bytes, n_peers ? 1u : 0u);
+    }
     for_each_cluster_peer_cta(
         core, issuer_hw_cta,
         [&](shader_core_ctx *peer_core, unsigned peer_slot) {
@@ -2563,10 +2580,11 @@ static void schedule_cluster_tma_mcast_noc(
           const unsigned gen = cluster->dsm_cta_gen(dst_cid, peer_slot);
           if (!cluster->dsm_issue_tma(src_cid, dst_cid, size_in_bytes,
                                       smem_addr, peer_slot, gen, buf.data(),
-                                      mbar_for_peer, mbar_bytes))
-            cluster->dsm_queue_tma_retry(
-                src_cid, dst_cid, size_in_bytes, smem_addr, peer_slot, gen,
-                buf.data(), size_in_bytes, mbar_for_peer, mbar_bytes);
+                                      mbar_for_peer, mbar_bytes, stream_key))
+            cluster->dsm_queue_tma_retry(src_cid, dst_cid, size_in_bytes,
+                                         smem_addr, peer_slot, gen, buf.data(),
+                                         size_in_bytes, mbar_for_peer,
+                                         mbar_bytes, stream_key);
         },
         /*include_issuer=*/false, use_mask, cta_mask);
   } else if (cluster->get_cluster_noc()) {
@@ -2584,7 +2602,9 @@ static void schedule_cluster_tma_mcast_noc(
   }
 
   // Masked complete_tx also completes the issuer locally when its bit is set.
-  if (include_issuer_for_mbar && use_mask) {
+  // Fabric path already registered the issuer hold above.
+  if (include_issuer_for_mbar && use_mask &&
+      !flash_gpgpu_sim::dsm_fabric_enabled(core)) {
     unsigned rank = core->get_cta_cluster_rank(issuer_hw_cta);
     if (rank < 16 && ((cta_mask >> rank) & 1u) != 0) {
       core->try_complete_cluster_peer_mbarrier(issuer_hw_cta, mbar_addr,

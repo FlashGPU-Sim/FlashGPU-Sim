@@ -454,6 +454,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.gl    TC; return GLOBAL_OPTION;
 \.cta   TC; return CTA_OPTION;
 \.sys   TC; return SYS_OPTION;
+\.sc    TC; return SC_OPTION;
 
 \.exit   TC; return EXIT_OPTION;
 

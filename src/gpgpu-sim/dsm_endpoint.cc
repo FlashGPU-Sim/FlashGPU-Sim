@@ -133,7 +133,8 @@ bool dsm_endpoint_protocol_t::issue_req(unsigned src, unsigned dst,
                                         unsigned bytes, uint64_t addr,
                                         unsigned cta_slot, unsigned cta_gen,
                                         dsm_packet_class_t cls,
-                                        const void *data) {
+                                        const void *data,
+                                        uint64_t multicast_group) {
   const bool is_store = cls == dsm_packet_class_t::write_data;
   const bool is_load = cls == dsm_packet_class_t::read_command;
   const bool is_atom = cls == dsm_packet_class_t::atomic_request;
@@ -168,6 +169,7 @@ bool dsm_endpoint_protocol_t::issue_req(unsigned src, unsigned dst,
   p->created_cycle = m_now;
   p->cta_slot = cta_slot;
   p->cta_gen = cta_gen;
+  p->multicast_group = multicast_group;
   if (data && bytes) {
     m_data[tx.id].assign((const uint8_t *)data, (const uint8_t *)data + bytes);
   }
@@ -231,8 +233,18 @@ bool dsm_endpoint_protocol_t::issue_tma(unsigned src, unsigned dst,
                                         unsigned cta_slot, unsigned cta_gen,
                                         const void *data, unsigned mbar_addr,
                                         unsigned mbar_bytes) {
+  return issue_tma(src, dst, bytes, addr, cta_slot, cta_gen, data, mbar_addr,
+                   mbar_bytes, 0);
+}
+
+bool dsm_endpoint_protocol_t::issue_tma(unsigned src, unsigned dst,
+                                        unsigned bytes, uint64_t addr,
+                                        unsigned cta_slot, unsigned cta_gen,
+                                        const void *data, unsigned mbar_addr,
+                                        unsigned mbar_bytes,
+                                        uint64_t multicast_group) {
   if (!issue_req(src, dst, bytes, addr, cta_slot, cta_gen,
-                 dsm_packet_class_t::tma_data, data))
+                 dsm_packet_class_t::tma_data, data, multicast_group))
     return false;
   extra_t e;
   e.mbar_addr = mbar_addr;

@@ -21,21 +21,22 @@ void mbarrier_manager_t::init(gpgpu_sim *gpu,
   auto key = std::make_pair(thread_index.sw_cta_id, addr);
   auto existing = addr_to_mbarrier_map.find(key);
   if (existing != addr_to_mbarrier_map.end()) {
+    // PTX mbarrier.init reinitializes the object. A no-op left a completed
+    // phase with pending_arrival reset to expected, so a later try_wait
+    // on parity 0 parked forever (init/arrive/try_wait loops).
     auto *mbarrier = existing->second.get();
-    if (mbarrier->m_expected_count == expected_count) {
-      return;
-    }
-
-    printf("MBARRIER INIT COLLISION: CTA %u (hw_cta=%u) Warp %u trying to init "
-           "mbarrier at addr 0x%lx, but it already exists!\n",
-           thread_index.sw_cta_id, thread_index.hw_cta_id,
-           thread_index.sw_warp_id, (unsigned long)addr);
-    printf("  Existing mbarrier: id=%d, addr=0x%lx, expected_count=%d\n",
-           mbarrier->m_id, (unsigned long)mbarrier->m_addr,
-           mbarrier->m_expected_count);
-    printf("  New mbarrier: expected_count=%d\n", expected_count);
-    fflush(stdout);
-    assert(false && "mbarrier at the same address already exists");
+    mbarrier->m_expected_count = expected_count;
+    mbarrier->m_pending_arrival_count = expected_count;
+    mbarrier->m_tx_count = 0;
+    mbarrier->m_phase = 0;
+    mbarrier->m_waiting_warps.clear();
+    mbarrier->m_remote_waiters.clear();
+    GPPRINTF_GPU(gpu, MBAR,
+                 "CTA %u Warp %u re-init mbarrier at address 0x%llx "
+                 "expected count %u\n",
+                 thread_index.sw_cta_id, thread_index.sw_warp_id,
+                 (unsigned long long)addr, expected_count);
+    return;
   }
 
   auto id = m_next_id++;
@@ -102,7 +103,8 @@ void mbarrier_manager_t::dump() const {
 
 bool mbarrier_manager_t::try_wait(gpgpu_sim *gpu,
                                   const thread_index_t &thread_index,
-                                  uint64_t addr, int parity) {
+                                  uint64_t addr, int parity,
+                                  std::set<int> *released_on_advance) {
   auto key = std::make_pair(thread_index.sw_cta_id, addr);
   auto it = addr_to_mbarrier_map.find(key);
   if (it == addr_to_mbarrier_map.end()) {
@@ -125,9 +127,27 @@ bool mbarrier_manager_t::try_wait(gpgpu_sim *gpu,
     return true;
   }
 
-  // Add the warp_id to the waiting set.
-  mbarrier->m_waiting_warps.insert(thread_index.hw_warp_id);
+  // Phase already satisfied (all arrivals + tx) but not yet flipped —
+  // complete now so a subsequent try_wait does not sleep forever.
+  if (mbarrier->m_pending_arrival_count == 0 && mbarrier->m_tx_count == 0) {
+    std::set<int> released = try_advance(gpu, thread_index, mbarrier);
+    if (released_on_advance)
+      released_on_advance->insert(released.begin(), released.end());
+    return true;
+  }
+
+  // Incomplete: do not enqueue. Hardware try_wait is a query; the caller
+  // parks (timeout / remote) and then enqueue_wait if it needs a wake-up.
   return false;
+}
+
+void mbarrier_manager_t::enqueue_wait(const thread_index_t &thread_index,
+                                      uint64_t addr) {
+  auto key = std::make_pair(thread_index.sw_cta_id, addr);
+  auto it = addr_to_mbarrier_map.find(key);
+  if (it == addr_to_mbarrier_map.end())
+    return;
+  it->second->m_waiting_warps.insert(thread_index.hw_warp_id);
 }
 
 std::set<int> mbarrier_manager_t::try_advance(
@@ -547,22 +567,14 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     }
 
     /**
-     * Inline PTX commonly lowers mbarrier waits to an explicit software loop:
-     *
-     *   mbarrier.try_wait.parity ..., complete;
-     *   @!complete bra waitLoop;
-     *
-     * Without a timeout, the timing model parks until the phase completes, so
-     * functional exec writes dest pred as success and the loop exits once.
-     *
-     * With a timeout operand, PTX sets dest pred true only if the waited
-     * phase completed; false if the hint expires first. Functional exec
-     * starts pred as false; the timing path flips it to true on phase done.
+     * Hardware try_wait is non-blocking: dest pred is true iff the waited
+     * phase has already completed. Software spin loops re-issue. Timing
+     * overwrites this pred in warp_reaches_mbarrier.
      *
      * ! PTXPlus inverts the zero flag -- 0 means true, 1 means false !
      */
     ptx_reg_t pred;
-    pred.pred = has_timeout ? 1 : 0;
+    pred.pred = 1;
     thread->set_operand_value(pI->dst(), pred, PRED_TYPE, thread, pI);
 
   } else if (bar_op == COMPLETE_TX_OPTION) {
@@ -601,9 +613,7 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
     auto expected_tx_count = 0;
     if (is_arrive && is_expect_tx) {
       assert(pI->get_num_operands() == 3);
-      const operand_info &phase_op = pI->dst();
-      assert(phase_op.name() == "_" &&
-             "Only support sink reg for mbarrier.arrive");
+      // Dest is the phase token; `_` or a discarded register are both fine.
 
       raw_addr =
           thread->get_operand_value(pI->src1(), pI->src1(), U64_TYPE, thread, 0)
@@ -620,9 +630,6 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
 
     } else if (is_arrive) {
       assert(pI->get_num_operands() == 3 || pI->get_num_operands() == 2);
-      const operand_info &phase_op = pI->dst();
-      assert(phase_op.name() == "_" &&
-             "Only support sink reg for mbarrier.arrive");
 
       raw_addr =
           thread->get_operand_value(pI->src1(), pI->src1(), U64_TYPE, thread, 0)
@@ -747,6 +754,12 @@ void barrier_set_t::release_warps(const std::set<int> &released_warps) {
   bool trace_barrier = trace != nullptr && trace[0] != '\0' && trace[0] != '0';
   if (trywait_latency > 0) {
     for (auto w : released_warps) {
+      // Incomplete try_wait is non-blocking and is not parked. A later
+      // arrive must not treat that warp as a barrier waiter.
+      if (w < 0 || (unsigned)w >= m_warp_barrier_type.size() ||
+          !m_warp_at_barrier.test(w) ||
+          m_warp_barrier_type[w] != BARRIER_WAIT_MBARRIER)
+        continue;
       assert_warp_waiting(w, BARRIER_WAIT_MBARRIER, "mbarrier release");
       if (trace_barrier) {
         printf("GPGPU-Sim Cycle %llu: MBAR_RELEASE - schedule warp=%d "
@@ -763,19 +776,33 @@ void barrier_set_t::release_warps(const std::set<int> &released_warps) {
     }
   } else {
     for (auto w : released_warps) {
+      if (w < 0 || (unsigned)w >= m_warp_barrier_type.size() ||
+          !m_warp_at_barrier.test(w) ||
+          m_warp_barrier_type[w] != BARRIER_WAIT_MBARRIER)
+        continue;
       if (trace_barrier) {
         printf("GPGPU-Sim Cycle %llu: MBAR_RELEASE - reset warp=%d "
                "warp_at_barrier_before=%s type=%d\n",
                m_shader->get_gpu()->gpu_sim_cycle +
                    m_shader->get_gpu()->gpu_tot_sim_cycle,
                w, m_warp_at_barrier.to_string().c_str(),
-               (w >= 0 && (unsigned)w < m_warp_barrier_type.size())
-                   ? (int)m_warp_barrier_type[w]
-                   : -1);
+               (int)m_warp_barrier_type[w]);
       }
       clear_warp_waiting(w, BARRIER_WAIT_MBARRIER, "mbarrier release");
     }
   }
+}
+
+void barrier_set_t::hold_warp(unsigned warp_id, unsigned latency,
+                              barrier_wait_type_t type) {
+  if (latency == 0)
+    return;
+  m_warp_at_barrier.set(warp_id);
+  if (warp_id < m_warp_barrier_type.size())
+    m_warp_barrier_type[warp_id] = type;
+  if (warp_id < m_warp_named_barrier_id.size())
+    m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+  m_pending_warp_releases.push_back({latency, static_cast<int>(warp_id), type});
 }
 
 void barrier_set_t::cycle() {
@@ -1052,6 +1079,7 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     bool any_remote = false;
     bool has_timeout = false;
     unsigned timeout_hint = 0;
+    std::set<int> advanced_waiters;
 
     const unsigned src_cid =
         m_shader->get_config()->sid_to_cid(m_shader->get_sid());
@@ -1083,8 +1111,9 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
                              /*count=*/0, cta_id, warp_id, parity ? 1 : 0);
         } else {
           // NoC off: fall back to local try_wait (will assert if bar missing).
-          bool released = m_mbarrier_manager.try_wait(
-              m_shader->get_gpu(), thread_index, addr, parity);
+          bool released =
+              m_mbarrier_manager.try_wait(m_shader->get_gpu(), thread_index,
+                                          addr, parity, &advanced_waiters);
           if (released)
             any_released = true;
           else
@@ -1093,8 +1122,8 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
         continue;
       }
 
-      bool released = m_mbarrier_manager.try_wait(m_shader->get_gpu(),
-                                                  thread_index, addr, parity);
+      bool released = m_mbarrier_manager.try_wait(
+          m_shader->get_gpu(), thread_index, addr, parity, &advanced_waiters);
       if (trace_mbarrier) {
         printf("GPGPU-Sim Cycle %llu: MBAR_TRY_WAIT - CTA %u Warp %u lane=%u "
                "addr=0x%x parity=%u released=%s active=%s\n",
@@ -1111,27 +1140,43 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     }
 
     if (any_active) {
-      // Always mark the warp as waiting at the barrier first.
-      // - Incomplete: stays blocked until complete_tx/arrive releases it.
-      // - Already complete (immediate success): still pay
-      //   gpgpu_mbarrier_trywait_latency via release_warps(). Without this,
-      //   clock64 microbenches measure only opcode overhead (~15 cycles) vs
-      //   ~130 cycles on real Hopper/Blackwell hardware.
-      // - Remote: released when WAIT_DONE arrives (release_remote_waiter).
-      m_warp_at_barrier.set(warp_id);
-      m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
-      m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+      m_mbar_trywait_inst[warp_id] = pI;
+      m_mbar_trywait_mask[warp_id] = active_mask;
       if (warp_id < m_mbar_partial_wait.size())
         m_mbar_partial_wait[warp_id] = active_mask.count() < m_warp_size;
-      if (has_timeout) {
-        m_mbar_trywait_inst[warp_id] = pI;
-        m_mbar_trywait_mask[warp_id] = active_mask;
-        m_mbar_trywait_has_timeout[warp_id] = true;
-      }
-      if (!any_remote && any_released && !any_blocking) {
-        release_warps({static_cast<int>(warp_id)});
-      } else if (has_timeout) {
-        arm_trywait_timeout(warp_id, timeout_hint, pI, active_mask);
+      const bool success = !any_remote && any_released && !any_blocking;
+      if (success) {
+        // Pay trywait_latency on the success path; dest pred true.
+        apply_trywait_pred(warp_id, /*phase_complete=*/true);
+        m_warp_at_barrier.set(warp_id);
+        m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
+        m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+        advanced_waiters.insert(static_cast<int>(warp_id));
+        release_warps(advanced_waiters);
+      } else if (any_remote || has_timeout) {
+        // Remote WAIT_DONE or timed wait: park. Dest pred starts false.
+        apply_trywait_pred(warp_id, /*phase_complete=*/false);
+        m_warp_at_barrier.set(warp_id);
+        m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
+        m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+        if (has_timeout) {
+          arm_trywait_timeout(warp_id, timeout_hint, pI, active_mask);
+          for (unsigned lane = 0; lane < warp_size; lane++) {
+            if (!active_mask.test(lane))
+              continue;
+            const auto &info = dynamic_inst->get_mbarrier_info(lane);
+            if (!is_valid_mbarrier_info(info) || info.is_remote)
+              continue;
+            m_mbarrier_manager.enqueue_wait(thread_index, info.bar_id);
+          }
+        }
+        if (!advanced_waiters.empty())
+          release_warps(advanced_waiters);
+      } else {
+        // Local miss, no timeout: non-blocking, pred false. Software may spin.
+        apply_trywait_pred(warp_id, /*phase_complete=*/false);
+        if (!advanced_waiters.empty())
+          release_warps(advanced_waiters);
       }
     }
 
@@ -1171,6 +1216,7 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
 
     const unsigned src_cid =
         m_shader->get_config()->sid_to_cid(m_shader->get_sid());
+    bool expect_tx_zero = false;
 
     for (unsigned lane = 0; lane < warp_size; lane++) {
       if (!active_mask.test(lane))
@@ -1182,6 +1228,8 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
 
       auto addr = mbar_info.bar_id;
       auto count = mbar_info.bar_count;
+      if (is_expect_tx && count == 0)
+        expect_tx_zero = true;
 
       if (mbar_info.is_remote) {
         if (mbar_has_remote_path(m_shader)) {
@@ -1230,6 +1278,14 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       }
     }
 
+    const unsigned arrive_lat =
+        m_shader->get_config()->gpgpu_mbarrier_arrive_latency;
+    // Isolated arrive is 6; H200 arrive.expect_tx(0)+wait is 71 vs 6+43.
+    unsigned hold = arrive_lat;
+    if (is_arrive && is_expect_tx && expect_tx_zero)
+      hold += 20;
+    if (is_arrive && hold > 0)
+      hold_warp(warp_id, hold, BARRIER_WAIT_MBARRIER);
     return;
   } else if (bar_op == INVAL_OPTION) {
 

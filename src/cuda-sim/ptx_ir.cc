@@ -1588,6 +1588,9 @@ ptx_instruction::ptx_instruction(
       case SYS_OPTION:
         m_membar_level = SYS_OPTION;
         break;
+      case SC_OPTION:
+        // fence.sc.* : sequential-consistency order; scope is a later option.
+        break;
       case FTZ_OPTION:
         break;
       case EXIT_OPTION:
@@ -1778,6 +1781,11 @@ function_info::function_info(int entry_point, gpgpu_context *ctx) {
   m_kernel_info.lmem = 0;
   m_kernel_info.regs = 0;
   m_kernel_info.smem = 0;
+  m_kernel_info.gmem = 0;
+  m_kernel_info.ptx_version = 0;
+  m_kernel_info.sm_target = 0;
+  m_kernel_info.maxthreads = 0;
+  m_kernel_info.barriers = 0;
   m_local_mem_framesize = 0;
   m_args_aligned_size = -1;
   pdom_done = false;  // initialize it to false

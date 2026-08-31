@@ -60,6 +60,25 @@ TEST(Transport, FullDestDoesNotHolSibling) {
   EXPECT_FALSE(voq.empty(0));
 }
 
+TEST(Transport, OversizedPacketStreamsThroughBoundedVoq) {
+  bounded_voq_t voq;
+  voq.init(/*n_dst=*/1, /*flit_limit_per_dst=*/4);
+  transport_packet_metadata_t pkt{};
+  pkt.remaining_flits = 9;
+  ASSERT_TRUE(voq.push(0, pkt));
+  EXPECT_EQ(voq.occupancy_flits(0), 4u);
+  EXPECT_FALSE(voq.can_push(0, 1));
+
+  transport_packet_metadata_t done{};
+  for (unsigned i = 0; i < 8; ++i) {
+    EXPECT_FALSE(voq.grant_flit(0, i, &done));
+    EXPECT_LE(voq.occupancy_flits(0), 4u);
+  }
+  EXPECT_TRUE(voq.grant_flit(0, 8, &done));
+  EXPECT_EQ(done.remaining_flits, 0u);
+  EXPECT_EQ(voq.occupancy_flits(0), 0u);
+}
+
 TEST(Transport, CreditTakeDoesNotCrossQueue) {
   flit_credit_counters_t credits;
   credits.init(/*n_queues=*/2, /*depth=*/4);

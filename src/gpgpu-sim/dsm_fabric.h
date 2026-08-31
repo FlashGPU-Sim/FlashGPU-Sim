@@ -46,6 +46,8 @@ struct dsm_packet_t {
   unsigned long long created_cycle = 0;
   unsigned long long injected_cycle = 0;
   unsigned long long tail_arrival_cycle = 0;
+  unsigned ejection_reserved_flits = 0;
+  uint64_t multicast_group = 0;
   unsigned completion_count = 1;  // coalesced write_ack completions
   unsigned cta_slot = 0;
   unsigned cta_gen = 0;
@@ -67,6 +69,10 @@ struct dsm_fabric_config_t {
   unsigned ejection_vc_flits = 64;
   unsigned route_seed = 0;
   unsigned response_priority_bound = 4;
+  // Pipeline floor after inject, in addition to flit grants. Packet is
+  // visible at dest when max(tail_arrival, injected + this) is reached.
+  // 0 = tail grant only. Does not add flit occupancy.
+  unsigned base_latency_cycles = 0;
   const char *shaper = "skip_mod";
   const char *shaper_index = "sm_id";
   const char *vc_arbiter = "bounded_response_priority";
@@ -142,6 +148,7 @@ class dsm_fabric_t {
                          unsigned uid) const;
   unsigned occupancy_flits(unsigned src, dsm_vc_t vc, unsigned dst) const;
   unsigned credit_remaining(unsigned dst, dsm_vc_t vc) const;
+  unsigned base_latency_cycles() const { return m_cfg.base_latency_cycles; }
   const dsm_fabric_stats_t &stats() const { return m_stats; }
 
  private:
@@ -152,6 +159,7 @@ class dsm_fabric_t {
   unsigned peek_dst(unsigned sm, unsigned vc) const;
   bool pick_head(unsigned sm, unsigned *vc, unsigned *dst) const;
   void note_hw(unsigned vc);
+  bool ejection_visible(const dsm_packet_t &p) const;
 
   dsm_fabric_config_t m_cfg;
   unsigned m_gpc = 0;

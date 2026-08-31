@@ -625,6 +625,12 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 - [ ] **B6b** Cycle gate on [`calibration.md`](calibration.md) §4.1 L1–L11. L12 after hardware job H2.
 
+**Open (2026-08-31):** Execution blockers are fixed and every L1–L11 timed region completes twice; §5.1 is current. Fixes include PTX architecture suffix parsing, deterministic kernel metadata initialization, simulator-safe L6/L7 handshakes, oversized-VC streaming, and one-stream multicast branching. TMA multicast passes all sizes 256 B–16 KiB with every CTA complete and 100% payload matches.
+
+**Current gate:** L1–L6 and L8 pass. L7=133 ns / 237 cycles (−58.4%), L9=499 (+22.0%), L10=698 (+15.2%), and L11 remains payload-linear (4 KiB +207 vs +135; 16 KiB +785 vs +174). B6b stays open. The next root fix is overlap/pipelining between the global TMA load and fabric multicast, not `-gpgpu_tma_mcast_hop_latency`; L7 needs a store-visibility timing investigation that does not disturb the passing L4–L6 path.
+
+**Evidence:** `/tmp/grok-goal-fa3d0a540d4f/implementer/{latency_fixed_run1,fixed1_tma,tma_mc_sweep,fixed1_dsm,fixed2_device,fixed2_mbar,fixed2_tma,fixed2_tma_mc,fixed2_dsm}.log`. Unit regression: 46 `DsmEndpoint*`, `DsmFabric*`, and `Transport*` tests pass.
+
 **Work:** For each L* kernel, set loop count ≈ 1e5 cycles, run on H200 (or use the cited job if the kernel is already that shape) and on sim. Compare `%clock64`. Tune only the knobs in [`calibration.md`](calibration.md) §6 that those kernels constrain (mbarrier arrive/trywait, TMA issue 44 not 68, `base_latency` residual). Remote store visibility (L7) is globaltimer; convert with measured SM MHz.
 
 **Verify:** L1–L11 error < 10%. Stride ratio stays ~1 (do not invent a tree). TMA mcast − unicast is explained by fabric + SRAM, not by keeping `-gpgpu_tma_mcast_hop_latency` as a second delay line.

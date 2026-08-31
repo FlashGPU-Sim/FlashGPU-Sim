@@ -216,6 +216,55 @@ TEST(DsmFabric, Data128BNeedsFourGrants) {
   EXPECT_EQ(p->payload_bytes, 128u);
 }
 
+TEST(DsmFabric, PayloadLargerThanVcDepthCompletes) {
+  dsm_fabric_config_t cfg;
+  cfg.request_vc_flits = 4;
+  cfg.ejection_vc_flits = 4;
+  dsm_fabric_t f = make_fabric(4, 1, cfg);
+  const unsigned flits =
+      dsm_payload_flits(dsm_packet_class_t::tma_data, 288,
+                        f.flit_payload_bytes());
+  ASSERT_EQ(flits, 9u);
+  ASSERT_TRUE(f.can_inject(0, dsm_vc_t::request, 1, flits));
+  f.inject(mk_pkt(0, 1, dsm_packet_class_t::tma_data, 288, 0));
+  EXPECT_EQ(f.occupancy_flits(0, dsm_vc_t::request, 1), 4u);
+
+  unsigned long long now = 0;
+  while (!f.top(1, dsm_vc_t::request) && now < 64) f.cycle(now++);
+  ASSERT_NE(f.top(1, dsm_vc_t::request), nullptr);
+  auto pkt = f.pop(1, dsm_vc_t::request);
+  EXPECT_EQ(pkt->total_flits, 9u);
+  EXPECT_EQ(f.credit_remaining(1, dsm_vc_t::request), 4u);
+}
+
+TEST(DsmFabric, MulticastGroupBranchesOnePhysicalStream) {
+  dsm_fabric_t f = make_fabric(4, 1);
+  for (unsigned dst = 1; dst < 4; dst++) {
+    auto packet = mk_pkt(0, dst, dsm_packet_class_t::tma_data, 128, 0);
+    packet->multicast_group = 7;
+    f.inject(std::move(packet));
+  }
+
+  unsigned long long now = 0;
+  while ((!f.top(1, dsm_vc_t::request) ||
+          !f.top(2, dsm_vc_t::request) ||
+          !f.top(3, dsm_vc_t::request)) &&
+         now < 64)
+    f.cycle(now++);
+
+  ASSERT_NE(f.top(1, dsm_vc_t::request), nullptr);
+  ASSERT_NE(f.top(2, dsm_vc_t::request), nullptr);
+  ASSERT_NE(f.top(3, dsm_vc_t::request), nullptr);
+  EXPECT_EQ(f.stats().flits_granted, 4u);
+  const unsigned long long tail_cycle =
+      f.top(1, dsm_vc_t::request)->tail_arrival_cycle;
+  for (unsigned dst = 1; dst < 4; dst++) {
+    auto packet = f.pop(dst, dsm_vc_t::request);
+    EXPECT_EQ(packet->tail_arrival_cycle, tail_cycle);
+    EXPECT_EQ(f.credit_remaining(dst, dsm_vc_t::request), 64u);
+  }
+}
+
 TEST(DsmFabric, CanInjectFalseRefusesInject) {
   dsm_fabric_config_t cfg;
   cfg.request_vc_flits = 4;
@@ -372,4 +421,56 @@ TEST(DsmFabric, DisplayStateShowsUsedAndWasted) {
   EXPECT_GT(f.stats().eligibility_used, 0u);
   EXPECT_GT(f.stats().eligibility_wasted, 0u);
   printf("%s", s.c_str());
+}
+
+unsigned long long inject_until_visible(dsm_fabric_t &f, unsigned bytes) {
+  f.inject(mk_pkt(0, 1, dsm_packet_class_t::write_data, bytes, 0));
+  unsigned long long now = 0;
+  while (!f.top(1, dsm_vc_t::request) && now < 256) f.cycle(now++);
+  return now;
+}
+
+TEST(DsmFabric, ResidualFloorDelaysTailNotOccupancy) {
+  dsm_fabric_config_t z;
+  z.base_latency_cycles = 0;
+  dsm_fabric_t f0 = make_fabric(4, 1, z);
+  f0.inject(mk_pkt(0, 1, dsm_packet_class_t::write_data, 32, 0));
+  EXPECT_EQ(f0.occupancy_flits(0, dsm_vc_t::request, 1), 1u);
+  unsigned long long now = 0;
+  while (!f0.top(1, dsm_vc_t::request) && now < 64) f0.cycle(now++);
+  ASSERT_NE(f0.top(1, dsm_vc_t::request), nullptr);
+  const unsigned long long t0 = now;
+  EXPECT_EQ(f0.stats().flits_granted, 1u);
+
+  dsm_fabric_config_t ncfg;
+  ncfg.base_latency_cycles = 20;
+  dsm_fabric_t f1 = make_fabric(4, 1, ncfg);
+  f1.inject(mk_pkt(0, 1, dsm_packet_class_t::write_data, 32, 1));
+  EXPECT_EQ(f1.occupancy_flits(0, dsm_vc_t::request, 1), 1u);
+  now = 0;
+  while (!f1.top(1, dsm_vc_t::request) && now < 128) f1.cycle(now++);
+  ASSERT_NE(f1.top(1, dsm_vc_t::request), nullptr);
+  // Floor is max(tail, injected+20). Inject is cycle 0, so visible at 20
+  // (loop leaves now one past the granting cycle). Grants still match.
+  EXPECT_GT(now, t0);
+  EXPECT_GE(now, 20u);
+  EXPECT_EQ(f1.stats().flits_granted, f0.stats().flits_granted);
+  EXPECT_EQ(f1.occupancy_flits(0, dsm_vc_t::request, 1), 0u);
+}
+
+TEST(DsmFabric, ResidualIsFloorNotAddedToBulk) {
+  dsm_fabric_config_t z;
+  z.base_latency_cycles = 0;
+  dsm_fabric_t f0 = make_fabric(4, 1, z);
+  const unsigned long long t0 = inject_until_visible(f0, 128);
+  ASSERT_NE(f0.top(1, dsm_vc_t::request), nullptr);
+  EXPECT_GE(f0.stats().flits_granted, 4u);
+
+  dsm_fabric_config_t ncfg;
+  ncfg.base_latency_cycles = 2;
+  dsm_fabric_t f1 = make_fabric(4, 1, ncfg);
+  const unsigned long long t1 = inject_until_visible(f1, 128);
+  ASSERT_NE(f1.top(1, dsm_vc_t::request), nullptr);
+  EXPECT_EQ(f1.stats().flits_granted, f0.stats().flits_granted);
+  EXPECT_LE(t1, t0 + 1);
 }

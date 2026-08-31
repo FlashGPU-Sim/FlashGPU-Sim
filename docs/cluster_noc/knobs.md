@@ -94,7 +94,7 @@ GX port formula: `routes = gx_planes * lanes_per_cpc`. GPCARB still grants at mo
 | `-gpgpu_dsm_vc_arbiter` | `bounded_response_priority` | VC select |
 | `-gpgpu_dsm_route_policy` | `deterministic_hash` | GPCMMU hash |
 | `-gpgpu_dsm_route_seed` | 0 | Hash seed |
-| `-gpgpu_dsm_base_latency_cycles` | TBD | Pipeline / serializer floor in addition to flit grants |
+| `-gpgpu_dsm_base_latency_cycles` | **0** (H200 full-chip preset **78**, inferred) | Pipeline / serializer floor in addition to flit grants. Visible at dest at `max(tail_arrival, injected+floor)`. Does not add flit occupancy. |
 | `-gpgpu_dsm_max_outstanding_per_sm` | **16** | Endpoint tx window (not a VC/link credit) |
 | `-gpgpu_dsm_ack_coalesce_threshold` | **4** | Completions per `write_ack` |
 | `-gpgpu_dsm_ack_timeout_cycles` | **64** | Flush remaining ACK debt |
@@ -138,4 +138,4 @@ Delay-line (`-gpgpu_dsm_enable 0`):
 | 1 | 0 | Immediate |
 | 1 | 1 | Data + mbar after hop |
 
-Fabric (`-gpgpu_dsm_enable 1` and `tma_mcast_enable_timing`): source-expanded unicast `tma_data` on the request VC (one packet per selected peer). Peer smem write and `complete_tx` wait for that packet’s tail **and** that SM’s SRAM grant. `-gpgpu_tma_mcast_mbar_after_data` stays the ordering policy. In-fabric replication is not required.
+Fabric (`-gpgpu_dsm_enable 1` and `tma_mcast_enable_timing`): software creates one `tma_data` descriptor per selected peer, tagged with one multicast group. The fabric grants the group as one physical flit stream and branches it to the destination ejection queues. Peer smem write and `complete_tx` wait for that packet’s tail **and** that SM’s SRAM grant. `-gpgpu_tma_mcast_mbar_after_data` stays the ordering policy.

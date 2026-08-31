@@ -957,6 +957,13 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       &gpgpu_dsm_ack_timeout_cycles,
       "Flush remaining ACK debt after this many cycles (default=64)", "64");
   option_parser_register(
+      opp, "-gpgpu_dsm_base_latency_cycles", OPT_UINT32,
+      &gpgpu_dsm_base_latency_cycles,
+      "DSM fabric pipeline floor in addition to flit grants (default=0). "
+      "A packet is visible at dest at max(tail_arrival, injected+floor). "
+      "Does not add flit occupancy.",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
       &gpgpu_wgmma_issue_chain_ss,
       "Per-SM WGMMA SS issue chain throttle "

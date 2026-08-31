@@ -6686,6 +6686,7 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
   fcfg.shaper = config->gpgpu_dsm_shaper;
   fcfg.shaper_index = config->gpgpu_dsm_shaper_index;
   fcfg.vc_arbiter = config->gpgpu_dsm_vc_arbiter;
+  fcfg.base_latency_cycles = config->gpgpu_dsm_base_latency_cycles;
   m_dsm_fabric = std::make_unique<dsm_fabric_t>(config->m_topology, cluster_id,
                                                 fcfg);
   dsm_endpoint_config_t ecfg;
@@ -7038,10 +7039,12 @@ bool simt_core_cluster::dsm_issue_tma(unsigned src, unsigned dst,
                                       unsigned bytes, uint64_t addr,
                                       unsigned cta_slot, unsigned cta_gen,
                                       const void *data, unsigned mbar_addr,
-                                      unsigned mbar_bytes) {
+                                      unsigned mbar_bytes,
+                                      uint64_t multicast_group) {
   if (!m_dsm_endpoint) return false;
   return m_dsm_endpoint->issue_tma(src, dst, bytes, addr, cta_slot, cta_gen,
-                                   data, mbar_addr, mbar_bytes);
+                                   data, mbar_addr, mbar_bytes,
+                                   multicast_group);
 }
 
 bool simt_core_cluster::dsm_issue_mbar(unsigned src, unsigned dst,
@@ -7057,7 +7060,7 @@ bool simt_core_cluster::dsm_issue_mbar(unsigned src, unsigned dst,
 void simt_core_cluster::dsm_queue_tma_retry(
     unsigned src, unsigned dst, unsigned bytes, uint64_t addr,
     unsigned cta_slot, unsigned cta_gen, const void *data, unsigned n,
-    unsigned mbar_addr, unsigned mbar_bytes) {
+    unsigned mbar_addr, unsigned mbar_bytes, uint64_t multicast_group) {
   dsm_tma_retry_t r;
   r.src = src;
   r.dst = dst;
@@ -7067,6 +7070,7 @@ void simt_core_cluster::dsm_queue_tma_retry(
   r.cta_gen = cta_gen;
   r.mbar_addr = mbar_addr;
   r.mbar_bytes = mbar_bytes;
+  r.multicast_group = multicast_group;
   if (data && n)
     r.data.assign((const uint8_t *)data, (const uint8_t *)data + n);
   m_tma_retry.push_back(std::move(r));
@@ -7097,7 +7101,7 @@ void simt_core_cluster::dsm_retry_tma_mbar() {
     m_tma_retry.pop_front();
     if (!dsm_issue_tma(r.src, r.dst, r.bytes, r.addr, r.cta_slot, r.cta_gen,
                        r.data.empty() ? nullptr : r.data.data(), r.mbar_addr,
-                       r.mbar_bytes))
+                       r.mbar_bytes, r.multicast_group))
       tkeep.push_back(std::move(r));
   }
   m_tma_retry.swap(tkeep);
@@ -7112,6 +7116,29 @@ void simt_core_cluster::dsm_retry_tma_mbar() {
   m_mbar_retry.swap(mkeep);
 }
 
+void simt_core_cluster::dsm_hold_issuer_mcast_mbar(unsigned issuer_cid,
+                                                   unsigned issuer_cta,
+                                                   unsigned mbar_addr,
+                                                   unsigned mbar_bytes,
+                                                   unsigned wait_peers) {
+  if (!wait_peers) {
+    if (issuer_cid < num_cores()) {
+      shader_core_ctx *core = get_core(issuer_cid);
+      if (core)
+        core->try_complete_cluster_peer_mbarrier(issuer_cta, mbar_addr,
+                                                 mbar_bytes);
+    }
+    return;
+  }
+  dsm_mcast_issuer_hold_t h;
+  h.issuer_cid = issuer_cid;
+  h.issuer_cta = issuer_cta;
+  h.mbar_addr = mbar_addr;
+  h.mbar_bytes = mbar_bytes;
+  h.remaining = wait_peers;
+  m_mcast_issuer_holds.push_back(h);
+}
+
 void simt_core_cluster::dsm_on_tma_mbar(unsigned local_sm, unsigned cta,
                                         unsigned mbar_addr,
                                         unsigned mbar_bytes) {
@@ -7119,6 +7146,19 @@ void simt_core_cluster::dsm_on_tma_mbar(unsigned local_sm, unsigned cta,
   shader_core_ctx *core = get_core(local_sm);
   if (core)
     core->try_complete_cluster_peer_mbarrier(cta, mbar_addr, mbar_bytes);
+  if (!m_mcast_issuer_holds.empty()) {
+    dsm_mcast_issuer_hold_t &h = m_mcast_issuer_holds.front();
+    if (h.remaining) h.remaining--;
+    if (!h.remaining) {
+      if (h.issuer_cid < num_cores()) {
+        shader_core_ctx *iss = get_core(h.issuer_cid);
+        if (iss)
+          iss->try_complete_cluster_peer_mbarrier(h.issuer_cta, h.mbar_addr,
+                                                  h.mbar_bytes);
+      }
+      m_mcast_issuer_holds.pop_front();
+    }
+  }
 }
 
 bool simt_core_cluster::dsm_on_mbar_req(unsigned local_sm, unsigned cta,

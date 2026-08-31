@@ -110,6 +110,15 @@ struct CUctx_st {
                          const char *deviceFun) {
     if (m_code.find(fat_cubin_handle) != m_code.end()) {
       symbol *s = m_code[fat_cubin_handle]->lookup(deviceFun);
+      if (s == NULL) {
+        // One fatbin handle per .cu; cuobjdump dumps one PTX per module.
+        // Search every loaded table so a later module still resolves.
+        for (auto &kv : m_code) {
+          s = kv.second->lookup(deviceFun);
+          if (s != NULL)
+            break;
+        }
+      }
       if (s != NULL) {
         function_info *f = s->get_pc();
         assert(f != NULL);

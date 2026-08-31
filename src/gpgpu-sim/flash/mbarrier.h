@@ -41,7 +41,7 @@ private:
     const int m_hw_cta_id;
     const int m_sw_cta_id;
     const uint64_t m_addr;
-    const int m_expected_count;
+    int m_expected_count;
     int m_pending_arrival_count;
     // This is for TMA interaction. It may change every phase.
     int m_tx_count;
@@ -81,11 +81,18 @@ public:
   void inval(gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr);
 
   /**
-   * Try to wait on the mbarrier at addr with parity for warp warp_id.
+   * Query whether the waited parity has completed. Does not park the warp.
+   * Hardware try_wait is non-blocking; software spin loops re-issue.
+   * If the current phase is already satisfied, try_advance runs and any
+   * previously parked waiters are returned in released_on_advance.
    * @return true if the wait is satisfied.
    */
   bool try_wait(gpgpu_sim *gpu, const thread_index_t &thread_index,
-                uint64_t addr, int parity);
+                uint64_t addr, int parity,
+                std::set<int> *released_on_advance = nullptr);
+
+  // Record a parked waiter so a later arrive/complete_tx can release it.
+  void enqueue_wait(const thread_index_t &thread_index, uint64_t addr);
 
   /**
    * Arrive at the mbarrier at addr with arrival_count for warp warp_id.

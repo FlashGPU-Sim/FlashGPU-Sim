@@ -107,11 +107,23 @@ void dsm_fabric_t::inject(std::unique_ptr<dsm_packet_t> packet) {
   note_hw(v);
 }
 
+bool dsm_fabric_t::ejection_visible(const dsm_packet_t &p) const {
+  unsigned long long vis = p.tail_arrival_cycle;
+  if (m_cfg.base_latency_cycles) {
+    const unsigned long long floor_at =
+        p.injected_cycle + m_cfg.base_latency_cycles;
+    if (floor_at > vis) vis = floor_at;
+  }
+  return vis <= m_now;
+}
+
 const dsm_packet_t *dsm_fabric_t::top(unsigned dst, dsm_vc_t vc) const {
   if (dst >= m_n) return nullptr;
   const unsigned v = vci(vc);
   if (m_ej[v][dst].empty()) return nullptr;
-  return &m_ej[v][dst].front();
+  const dsm_packet_t &p = m_ej[v][dst].front();
+  if (!ejection_visible(p)) return nullptr;
+  return &p;
 }
 
 std::unique_ptr<dsm_packet_t> dsm_fabric_t::pop(unsigned dst, dsm_vc_t vc) {
@@ -119,7 +131,7 @@ std::unique_ptr<dsm_packet_t> dsm_fabric_t::pop(unsigned dst, dsm_vc_t vc) {
   const unsigned v = vci(vc);
   dsm_packet_t pkt = m_ej[v][dst].front();
   m_ej[v][dst].pop_front();
-  m_credit[v].give(dst, pkt.total_flits);
+  m_credit[v].give(dst, pkt.ejection_reserved_flits);
   m_stats.packets_ejected++;
   return std::make_unique<dsm_packet_t>(pkt);
 }
@@ -304,15 +316,52 @@ void dsm_fabric_t::cycle(unsigned long long cycle) {
       const int sm = route_winner[route];
       if (sm < 0) continue;
       const req_t &r = reqs[sm_req[sm]];
-      if (!m_credit[r.vc].has(r.dst, 1)) {
+      const dsm_packet_t *selected = m_in[r.vc][r.sm].front(r.dst);
+      std::vector<unsigned> multicast_dsts;
+      multicast_dsts.push_back(r.dst);
+      if (selected->multicast_group) {
+        for (unsigned dst = 0; dst < m_n; dst++) {
+          if (dst == r.dst) continue;
+          const dsm_packet_t *candidate = m_in[r.vc][r.sm].front(dst);
+          if (candidate &&
+              candidate->multicast_group == selected->multicast_group)
+            multicast_dsts.push_back(dst);
+        }
+      }
+      bool has_ejection_space = true;
+      for (unsigned dst : multicast_dsts) {
+        const dsm_packet_t *head = m_in[r.vc][r.sm].front(dst);
+        if (head->ejection_reserved_flits) continue;
+        const unsigned reserve =
+            std::min(head->total_flits, m_credit[r.vc].depth());
+        if (!m_credit[r.vc].has(dst, reserve)) {
+          has_ejection_space = false;
+          break;
+        }
+      }
+      if (!has_ejection_space) {
         m_stats.stall_ejection++;
         continue;
       }
-      const dsm_packet_t *head = m_in[r.vc][r.sm].front(r.dst);
-      const bool control = dsm_packet_is_control(head->packet_class);
-      m_credit[r.vc].take(r.dst, 1);
-      dsm_packet_t done{};
-      const bool tail = m_in[r.vc][r.sm].grant_flit(r.dst, cycle, &done);
+      for (unsigned dst : multicast_dsts) {
+        dsm_packet_t *head = m_in[r.vc][r.sm].front_mutable(dst);
+        if (!head->ejection_reserved_flits) {
+          const unsigned reserve =
+              std::min(head->total_flits, m_credit[r.vc].depth());
+          const bool reserved = m_credit[r.vc].take(dst, reserve);
+          assert(reserved);
+          head->ejection_reserved_flits = reserve;
+        }
+      }
+      const bool control = dsm_packet_is_control(selected->packet_class);
+      for (unsigned dst : multicast_dsts) {
+        dsm_packet_t done{};
+        const bool tail = m_in[r.vc][r.sm].grant_flit(dst, cycle, &done);
+        if (tail) {
+          done.tail_arrival_cycle = cycle;
+          m_ej[r.vc][dst].push_back(done);
+        }
+      }
       m_dst_next[r.vc][r.sm] = (r.dst + 1) % m_n;
       if (r.vc)
         m_consec_rsp[r.sm]++;
@@ -324,10 +373,6 @@ void dsm_fabric_t::cycle(unsigned long long cycle) {
       else
         m_stats.flits_request++;
       if (!control) m_stats.payload_bytes_granted += m_cfg.flit_payload_bytes;
-      if (tail) {
-        done.tail_arrival_cycle = cycle;
-        m_ej[r.vc][r.dst].push_back(done);
-      }
       granted[r.sm] = 1;
       taken++;
     }
