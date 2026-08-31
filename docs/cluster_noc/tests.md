@@ -54,6 +54,9 @@ SM120 reduced needs a run-dir **overlay** for NoC-on DSM:
 | `cluster_real_shaped_test` | TMA accumulate | Same with hop |
 | unit `cluster_noc_test` | Matrix / decode | Same |
 | unit `cluster_dsm_store_test` | Immediacy | Immediacy |
+| `dsm_bw` upstream smoke | `cluster.sync()` + DSM/TMA checksums | 8/8 on `SM90_H200_CLUSTER16x8` |
+
+`barrier.cluster.arrive` / `barrier.cluster.wait` are timing-model operations, not functional no-ops in performance simulation. A cluster barrier must not release before every active warp in every CTA of the reserved TB-cluster group reaches the same phase.
 
 ### Topology skips
 
@@ -155,6 +158,8 @@ Size-**slope** (16–96 KiB), not a single 64 KiB point, still required for DSM 
 Also required: local mbarrier arrive / try_wait, DSM local/remote RTT, TMA issue (pure 44, not bundle 68), TMA mcast − unicast e2e, and the Triton unicast/multicast GEMM (GEMM multicast on H200 is not finished; still in the suite).
 
 Exact hash and per-hop credit depth are **not** v1 accept criteria.
+
+Pre-calibration functional audit (2026-08-31): upstream smoke 8/8; fresh-process BW1–BW12 representatives 17/17; reduced-workload upstream GMEM normal / `cp.async` / TMA 3/3; reduced-config `DsmTest.*` + one-producer/CTA-scope TMA integration filter 18/18. See [`calibration.md`](calibration.md) §5.2.1. These passes do not replace the size-slope or full-workload performance gates.
 
 ---
 

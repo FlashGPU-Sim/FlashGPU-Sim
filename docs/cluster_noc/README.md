@@ -11,6 +11,8 @@ Two layers exist at once:
 
 Do not treat the delay line as the end-state performance model. Do not start a second design doc outside this directory.
 
+Pre-calibration functional status (2026-08-31): upstream DSM smoke passes 8/8, fresh-process BW1–BW12 representatives pass 17/17, reduced-workload upstream GMEM normal / `cp.async` / TMA gates pass 3/3, and the reduced-config DSM/TMA integration filter passes 18/18. These are correctness gates only; B6c slope calibration remains open. See [`calibration.md`](calibration.md) §5.2.1.
+
 The English files in this directory are the working spec. Supervisor plan v2 is a local reference only (not in this tree). Chapter 18 of that plan (student split) is ignored; every phase is in-tree work.
 
 ---

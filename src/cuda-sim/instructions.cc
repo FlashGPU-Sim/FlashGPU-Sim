@@ -74,6 +74,16 @@ class ptx_recognizer;
 
 using half_float::half;
 
+static void normalize_scoped_shared_space(memory_space_t &space,
+                                          const ptx_instruction *pI) {
+  if (space != generic_space) return;
+  const auto &options = pI->get_options();
+  if (std::find(options.begin(), options.end(), CTA_OPTION) != options.end() ||
+      std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
+          options.end())
+    space = shared_space;
+}
+
 static bool dsm_note_fabric(ptx_thread_info *thread, const ptx_instruction *pI,
                             flash_gpgpu_sim::dsm_op_kind kind, const void *bytes,
                             size_t nbytes) {
@@ -1310,11 +1320,7 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
   // issuer's local smid.
   addr_t effective_address = src1_data.u64;
   memory_space_t space = pI->get_space();
-  const auto &options = pI->get_options();
-  if (space == generic_space &&
-      std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
-          options.end())
-    space = shared_space;
+  normalize_scoped_shared_space(space, pI);
   if (space == undefined_space)
     space = generic_space;
   memory_space *mem = NULL;
@@ -1609,11 +1615,7 @@ void atom_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   // obtain memory space of the operation
   memory_space_t space = pI->get_space();
-  const auto &options = pI->get_options();
-  if (space == generic_space &&
-      std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
-          options.end())
-    space = shared_space;
+  normalize_scoped_shared_space(space, pI);
 
   // get the memory address
   const operand_info &src1 = pI->src1();
@@ -3775,11 +3777,7 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t src1_data = thread->get_operand_value(src1, dst, type, thread, 1);
   ptx_reg_t data;
   memory_space_t space = pI->get_space();
-  const auto &options = pI->get_options();
-  if (space == generic_space &&
-      std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
-          options.end())
-    space = shared_space;
+  normalize_scoped_shared_space(space, pI);
   unsigned vector_spec = pI->get_vector();
 
   memory_space *mem = NULL;
@@ -6377,11 +6375,7 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t addr_reg = thread->get_operand_value(dst, dst, type, thread, 1);
   ptx_reg_t data;
   memory_space_t space = pI->get_space();
-  const auto &options = pI->get_options();
-  if (space == generic_space &&
-      std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
-          options.end())
-    space = shared_space;
+  normalize_scoped_shared_space(space, pI);
   unsigned vector_spec = pI->get_vector();
 
   memory_space *mem = NULL;

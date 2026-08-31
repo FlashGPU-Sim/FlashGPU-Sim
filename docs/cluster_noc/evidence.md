@@ -122,6 +122,8 @@ The English spec follows plan-v2 §§1–17, 19–20. Chapter 18 is ignored. The
 
 Do **not** add further deltas without updating this table.
 
+Implementation evidence from the 2026-08-31 bandwidth audit: PTX scope suffixes on ordinary memory instructions require explicit normalization of both `.shared::cta` and `.shared::cluster`; otherwise the parser's generic-space representation can incorrectly route a valid shared address to global memory. The upstream mixed load+TMA checksum exposed this distinction.
+
 ---
 
 ## 6. Hypotheses that failed (do not revive)

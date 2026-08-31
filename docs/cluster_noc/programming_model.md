@@ -49,6 +49,7 @@ Code: `ptx_thread_info` in `src/cuda-sim/ptx_sim.cc`.
 | `mapa.u64` / `mapa.shared::cluster` | **Yes.** Preferred |
 | `mapa.u32` | Parses; **truncates** large windows. Do not use |
 | `ld` / `st` of a `mapa` generic pointer | Yes (`decode_space`) |
+| Explicit `ld/st/atom.shared::{cta,cluster}` scope | Yes; both scope suffixes normalize to shared space before local/peer decode |
 | `atom.add` (CUDA `atomicAdd` on a `mapa` pointer) | Yes — RMW on owner smem |
 | `red` / `red.async` / `red.shared::cluster` | **No** (`inst_not_implemented`) |
 
@@ -60,6 +61,8 @@ Code: `ptx_thread_info` in `src/cuda-sim/ptx_sim.cc`.
 4. If no such CTA: named error and **abort**. Do not alias the issuer’s window.
 
 Keep the producer CTA allocated until every consumer that will `mapa` that rank has done so.
+
+The `.shared::cta` and `.shared::cluster` scope suffixes are not interchangeable with global generic addressing. The simulator explicitly normalizes both before address decode; this is required by the upstream mixed DSM/TMA checksum path.
 
 Generic window:
 
