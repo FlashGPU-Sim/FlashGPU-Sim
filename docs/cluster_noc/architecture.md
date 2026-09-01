@@ -186,6 +186,8 @@ Rules:
 
 `gpgpu_sim::active()`, deadlock detect, and state dump must cover fabric queues, partial packets, target service, outstanding transactions, ACK debt, pending batches, and CTA async work.
 
+`cluster.sync()` is also a DSM publication fence in this model: once every warp in the TB-cluster group has arrived, release is deferred until every participating CTA has drained its outstanding DSM transactions. This prevents a peer from observing the barrier before an ordinary remote store lands.
+
 ---
 
 ## 7. TB-cluster resolver

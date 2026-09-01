@@ -545,7 +545,6 @@ void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
            m_local_dyn_shared_mem_symbol->name().c_str(), addr + addr_pad,
            addr + addr_pad + shared_mem_size, shared_mem_size);
     m_local_dyn_shared_mem_symbol->set_address(addr + addr_pad);
-    symtab->alloc_shared(shared_mem_size + addr_pad);
     // Print the dynamic allocation and the resulting total shared mem for this
     // kernel. `m_kernel_info.smem` is the declared (static) smem size parsed
     // at assembly time; `shared_mem_size` is the per-launch dynamic size.

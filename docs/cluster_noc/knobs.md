@@ -88,9 +88,9 @@ GX port formula: `routes = gx_planes * lanes_per_cpc`. GPCARB still grants at mo
 | `-gpgpu_dsm_shaper` | `skip_mod` | Required: `skip_mod` \| `fixed_tdm` \| `hard_rate_cap`. Not a silicon dump; B6 may switch H200 preset |
 | `-gpgpu_dsm_shaper_period` | 3 | For `skip_mod` / TDM |
 | `-gpgpu_dsm_shaper_index` | `sm_id` | `sm_id` or `cpc_slot`. Skip/TDM phase uses this index |
-| `-gpgpu_dsm_request_vc_flits` | **64** | Request VC buffer depth (flits) |
-| `-gpgpu_dsm_response_vc_flits` | **64** | Response VC buffer depth |
-| `-gpgpu_dsm_ejection_vc_flits` | **64** | Per-dest ejection depth |
+| `-gpgpu_dsm_request_vc_flits` | **64** (H200 full-chip **512**) | Request VC buffer depth (flits) |
+| `-gpgpu_dsm_response_vc_flits` | **64** (H200 full-chip **512**) | Response VC buffer depth |
+| `-gpgpu_dsm_ejection_vc_flits` | **64** (H200 full-chip **512**) | Per-dest ejection depth |
 | `-gpgpu_dsm_vc_arbiter` | `bounded_response_priority` | VC select |
 | `-gpgpu_dsm_route_policy` | `deterministic_hash` | GPCMMU hash |
 | `-gpgpu_dsm_route_seed` | 0 | Hash seed |
@@ -101,8 +101,8 @@ GX port formula: `routes = gx_planes * lanes_per_cpc`. GPCARB still grants at mo
 | `-gpgpu_tma_load_completion_base_cycles` | **0** (H200 full-chip **240**, inferred) | Architectural TMA load completion base; 0 disables the calibrated completion curve. |
 | `-gpgpu_tma_load_completion_cycles_per_kib` | **0** (H200 full-chip **25**, inferred) | Size term added to the architectural TMA load completion base. |
 | `-gpgpu_ptx_register_allocator` | Generic default **1**; H200 calibration preset **0** | Optional virtual-register aliasing. Disabled for calibration because the looped TMA issue probe keeps its shared destination live across iterations. |
-| `-gpgpu_dsm_max_outstanding_per_sm` | **16** | Endpoint tx window (not a VC/link credit) |
-| `-gpgpu_dsm_ack_coalesce_threshold` | **4** | Completions per `write_ack` |
+| `-gpgpu_dsm_max_outstanding_per_sm` | **16** (H200 full-chip **1024**) | Endpoint tx window (not a VC/link credit) |
+| `-gpgpu_dsm_ack_coalesce_threshold` | **4** (H200 full-chip **64**) | Completions per `write_ack` |
 | `-gpgpu_dsm_ack_timeout_cycles` | **64** | Flush remaining ACK debt |
 | `-gpgpu_dsm_tma_mcast_expand` | `source_unicast` | v1 source expansion; later `fabric_replicate` |
 
@@ -146,4 +146,4 @@ Delay-line (`-gpgpu_dsm_enable 0`):
 
 Fabric (`-gpgpu_dsm_enable 1` and `tma_mcast_enable_timing`): software creates one `tma_data` descriptor per selected peer, tagged with one multicast group. The fabric grants the group as one physical flit stream and branches it to the destination ejection queues. Peer smem write and `complete_tx` wait for that packet’s tail **and** that SM’s SRAM grant. `-gpgpu_tma_mcast_mbar_after_data` stays the ordering policy.
 
-The calibrated H200 full-chip preset releases the architectural mbarrier on its measured completion curve while the global-memory request and multicast packets continue in the background. This does not skip payload validation or remove fabric accounting. TMA packets use a three-grant stripe and bypass the ordinary DSM shaper; ordinary DSM traffic retains the 2/3-rate shaper used for bandwidth calibration.
+The calibrated H200 full-chip preset releases the architectural mbarrier on its measured completion curve while the global-memory request and multicast packets continue in the background. This does not skip payload validation or remove fabric accounting. TMA and ordinary DSM payloads use the same shaped 32-byte cache-line grants.

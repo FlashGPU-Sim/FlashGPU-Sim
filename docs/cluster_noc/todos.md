@@ -573,7 +573,7 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 - [ ] **B6** Close when **B6a–B6e** are all `[x]`. Not a single GB/s point.
 
-**Read first:** [`calibration.md`](calibration.md) (supervisor report; kernels, expected H200 numbers, empty sim columns), [`evidence.md`](evidence.md), [`tests.md`](tests.md) §3.
+**Read first:** [`calibration.md`](calibration.md) (kernels, H200 baselines, simulator results), [`evidence.md`](evidence.md), [`tests.md`](tests.md) §3.
 
 **Why:** First delivery needs cluster features **functionally correct and cycle-accurate**. Supervisor gate: for each calibration kernel,
 
@@ -643,9 +643,13 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 ### B6c — DSM / TMA bandwidth slopes
 
-- [ ] **B6c** Fit knobs to `dsm_bw` **slopes**. Prefer hardware job H1 on this H200 NVL; until it lands, use the blog table in [`calibration.md`](calibration.md) §5.2.
+- [x] **B6c** Fit knobs to `dsm_bw` **slopes**. Closed 2026-09-01 against the existing blog table; a future H1 result may replace the baseline.
 
-**Functional close-out (2026-08-31):** the unmodified smoke suite passes 8/8 on `SM90_H200_CLUSTER16x8`. Fresh-process representative runs for every BW1–BW12 behavior pass 17/17 checksum gates, reduced-workload copies of the upstream GMEM normal-load, `cp.async`, and TMA kernels pass 3/3, and the reduced-config DSM/TMA integration filter passes 18/18. This closes the execution/correctness prerequisite only; B6c remains open for the complete 16–96 KiB slopes and tuning. Evidence and starting rates are in [`calibration.md`](calibration.md) §5.2.1.
+**Functional close-out (2026-08-31):** the unmodified smoke suite passes 8/8 on `SM90_H200_CLUSTER16x8`. Fresh-process representative runs for every BW1–BW12 behavior pass 17/17 checksum gates, reduced-workload copies of the upstream GMEM normal-load, `cp.async`, and TMA kernels pass 3/3, and the reduced-config DSM/TMA integration filter passes 18/18. This established the execution/correctness prerequisite before the slope close-out below. Evidence and starting rates are in [`calibration.md`](calibration.md) §5.2.1.
+
+**Close-out (2026-09-01):** 16–96 KiB fits pass the 10% gates for one-/two-way load, store, and TMA and for 2/4/8/16-SM TMA scaling. Load+TMA is 21.27 B/cycle same-direction and 29.00 opposite-direction; idle pressure does not change the active reader. Twenty 96-KiB repeats are checksum-clean and total more than 1e5 timed cycles for both one-way TMA and symmetric load. The model now uses shaped 32-B cache-line grants, 128-B read-command packing, read-command head priority over payload VOQs, 512-flit VCs, a 1024-entry endpoint window, and ACK threshold 64. Cluster barriers retain arrived warps until their TB-cluster group has no outstanding DSM writes.
+
+**Known limitation:** ordinary load+store opposite-direction remains 18.11 B/cycle versus the blog's 29.70 because the simulator serializes those two warp-loop issue streams before they reach the fabric. The equivalent load+TMA direction gate passes; do not hide the store issue artifact by widening the fabric. Evidence and the complete table are in [`calibration.md`](calibration.md) §5.2.
 
 **Work:** **Copy-paste** `calibration/kernels/dsm_bw/` from seanzw/random (`kernels.cuh`: `load_kernel`, `store_kernel`, `tma_kernel`, `mixed_kernel`). Do **not** rewrite them from `H200_profiling`. Size sweep 16–96 KiB unique addresses, one TB-cluster, checksum after the timer. Record BW1–BW11 (one-way load/store/TMA, duplex, same vs opposite mix, 2/4/8/16 TMA, idle neighbor). Then a **cycle-gate** repeat of one saturated one-way TMA put and one symmetric load at ~1e5 cycles (iteration override only). Tune shaper period, VC depths, ACK threshold/timeout, optional `base_latency`. Idle neighbor must not raise the active SM’s rate. `tma_bw/` from the same repo is GMEM TMA vs L2/HBM (not DSM); run the simple TMA test as a TMA-to-memory check, do not treat it as a DSM slope.
 

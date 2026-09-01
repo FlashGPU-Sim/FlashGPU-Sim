@@ -87,7 +87,8 @@ static void multicast_smem_to_cluster(memory_space *src_smem,
 static void schedule_cluster_tma_mcast_noc(
     shader_core_ctx *core, unsigned issuer_hw_cta, uint32_t smem_addr,
     uint32_t size_in_bytes, uint32_t mbar_addr, bool use_mask,
-    uint16_t cta_mask, bool include_issuer_for_mbar, bool complete_mbar = true);
+    uint16_t cta_mask, bool include_issuer_for_mbar, bool complete_mbar = true,
+    uint32_t src_smem_addr = UINT32_MAX);
 
 static unsigned calibrated_cluster_tma_e2e(unsigned bytes) {
   static const unsigned sizes[] = {256,  512,  1024,  2048,
@@ -1570,21 +1571,30 @@ public:
             tx.m_static_info.multicast_cluster || tx.m_dyn_info.has_cta_mask;
         if (cluster_read) {
           memory_space *src_smem = m_shader_ctx->get_cta_smem(tx.m_cta_id);
-          multicast_smem_to_cluster(src_smem, (uint32_t)tx.m_dyn_info.dst_addr,
-                                    tx.m_dyn_info.size_in_bytes, tx.m_thread,
-                                    tx.m_inst,
-                                    /*use_mask=*/true, tx.m_dyn_info.cta_mask,
-                                    /*force_immediate=*/true);
-          complete_cluster_mbarriers_masked(
-              m_shader_ctx, tx.m_cta_id, tx.m_dyn_info.mbar_addr,
-              tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.cta_mask,
-              /*force_immediate=*/true);
-          schedule_cluster_tma_mcast_noc(
-              m_shader_ctx, tx.m_cta_id, (uint32_t)tx.m_dyn_info.dst_addr,
-              tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
-              /*use_mask=*/true, tx.m_dyn_info.cta_mask,
-              /*include_issuer_for_mbar=*/false,
-              /*complete_mbar=*/false);
+          if (tx.m_dyn_info.mapped_cluster_copy) {
+            schedule_cluster_tma_mcast_noc(
+                m_shader_ctx, tx.m_cta_id, (uint32_t)tx.m_dyn_info.dst_addr,
+                tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+                /*use_mask=*/true, tx.m_dyn_info.cta_mask,
+                /*include_issuer_for_mbar=*/false,
+                /*complete_mbar=*/true, (uint32_t)tx.m_dyn_info.src_addr);
+          } else {
+            multicast_smem_to_cluster(
+                src_smem, (uint32_t)tx.m_dyn_info.dst_addr,
+                tx.m_dyn_info.size_in_bytes, tx.m_thread, tx.m_inst,
+                /*use_mask=*/true, tx.m_dyn_info.cta_mask,
+                /*force_immediate=*/true);
+            complete_cluster_mbarriers_masked(
+                m_shader_ctx, tx.m_cta_id, tx.m_dyn_info.mbar_addr,
+                tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.cta_mask,
+                /*force_immediate=*/true);
+            schedule_cluster_tma_mcast_noc(
+                m_shader_ctx, tx.m_cta_id, (uint32_t)tx.m_dyn_info.dst_addr,
+                tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+                /*use_mask=*/true, tx.m_dyn_info.cta_mask,
+                /*include_issuer_for_mbar=*/false,
+                /*complete_mbar=*/false);
+          }
         } else {
           m_barriers->complete_tx(tx.m_cta_id, tx.m_warp_id,
                                   tx.m_dyn_info.mbar_addr,
@@ -2676,10 +2686,12 @@ static void multicast_smem_to_cluster(
 
 // Schedule NoC messages: peer data (from issuer smem) + ordered mbar complete.
 // Called from TMA timing finalize when cluster NoC is enabled.
-static void schedule_cluster_tma_mcast_noc(
-    shader_core_ctx *core, unsigned issuer_hw_cta, uint32_t smem_addr,
-    uint32_t size_in_bytes, uint32_t mbar_addr, bool use_mask,
-    uint16_t cta_mask, bool include_issuer_for_mbar, bool complete_mbar) {
+static void
+schedule_cluster_tma_mcast_noc(shader_core_ctx *core, unsigned issuer_hw_cta,
+                               uint32_t smem_addr, uint32_t size_in_bytes,
+                               uint32_t mbar_addr, bool use_mask,
+                               uint16_t cta_mask, bool include_issuer_for_mbar,
+                               bool complete_mbar, uint32_t src_smem_addr) {
   if (!core || !tma_mcast_via_noc(core))
     return;
   auto *cluster = core->get_cluster();
@@ -2692,7 +2704,8 @@ static void schedule_cluster_tma_mcast_noc(
   const unsigned src_cid = core->get_config()->sid_to_cid(core->get_sid());
   std::vector<uint8_t> buf(size_in_bytes);
   if (size_in_bytes > 0)
-    src_smem->read(smem_addr, size_in_bytes, buf.data());
+    src_smem->read(src_smem_addr == UINT32_MAX ? smem_addr : src_smem_addr,
+                   size_in_bytes, buf.data());
 
   const uint64_t stream_key = (1ull << 63) |
                               (static_cast<uint64_t>(issuer_hw_cta) << 32) |

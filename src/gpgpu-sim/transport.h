@@ -52,6 +52,11 @@ struct bounded_voq_t {
     return sum;
   }
   bool empty(unsigned dst) const { return m_q[dst].empty(); }
+  template <typename Predicate>
+  bool contains(unsigned dst, Predicate predicate) const {
+    return std::find_if(m_q[dst].begin(), m_q[dst].end(), predicate) !=
+           m_q[dst].end();
+  }
   bool can_push(unsigned dst, unsigned flits) const {
     if (flits > m_limit) return m_q[dst].empty() && m_occ[dst] == 0;
     return m_occ[dst] + flits <= m_limit;
@@ -68,6 +73,24 @@ struct bounded_voq_t {
     m_stats.packets_in++;
     m_stats.note_occupancy(occupancy_flits());
     return true;
+  }
+  template <typename Predicate>
+  bool push_before(unsigned dst, Pkt pkt, Predicate before) {
+    assert(dst < m_q.size());
+    const unsigned flits = pkt.remaining_flits;
+    if (!can_push(dst, flits)) {
+      m_stats.stall_events++;
+      return false;
+    }
+    auto pos = std::find_if(m_q[dst].begin(), m_q[dst].end(), before);
+    m_q[dst].insert(pos, pkt);
+    m_occ[dst] += std::min(flits, m_limit);
+    m_stats.packets_in++;
+    m_stats.note_occupancy(occupancy_flits());
+    return true;
+  }
+  bool push_front(unsigned dst, Pkt pkt) {
+    return push_before(dst, pkt, [](const Pkt &) { return true; });
   }
   const Pkt *front(unsigned dst) const {
     if (m_q[dst].empty()) return nullptr;

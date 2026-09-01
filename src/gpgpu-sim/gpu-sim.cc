@@ -2718,12 +2718,17 @@ void gpgpu_sim::issue_block2core() {
       unsigned phys = ckernel->open_tb_phys_cluster();
       unsigned group = ckernel->open_tb_cluster_group();
       if (phys < m_shader_config->n_simt_clusters) {
-        unsigned num =
-            m_cluster[phys]->issue_block2core_for_kernel(ckernel, group);
-        if (num) {
+        unsigned issued = 0;
+        while (ckernel->has_open_tb_cluster()) {
+          unsigned num =
+              m_cluster[phys]->issue_block2core_for_kernel(ckernel, group);
+          if (!num) break;
+          issued += num;
           ckernel->consume_open_tb_cta();
+        }
+        if (issued) {
           m_last_cluster_issue = phys;
-          m_total_cta_launched += num;
+          m_total_cta_launched += issued;
         }
       }
     } else {
@@ -2738,12 +2743,17 @@ void gpgpu_sim::issue_block2core() {
         // Reserve one unique group id for the whole TB cluster.
         unsigned group =
             m_cluster[idx]->allocate_cta_cluster_group(ctas_per, (unsigned)-1);
-        unsigned num =
-            m_cluster[idx]->issue_block2core_for_kernel(ckernel, group);
-        if (num) {
-          ckernel->open_tb_cluster(idx, group, ctas_per - num);
+        unsigned issued = 0;
+        while (issued < ctas_per) {
+          unsigned num =
+              m_cluster[idx]->issue_block2core_for_kernel(ckernel, group);
+          if (!num) break;
+          issued += num;
+        }
+        if (issued) {
+          ckernel->open_tb_cluster(idx, group, ctas_per - issued);
           m_last_cluster_issue = idx;
-          m_total_cta_launched += num;
+          m_total_cta_launched += issued;
         }
         break;
       }

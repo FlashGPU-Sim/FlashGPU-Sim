@@ -2671,6 +2671,7 @@ class shader_core_ctx : public core_t {
   // within this simt_core_cluster; size = n_cores_per_cluster CTAs per group).
   unsigned get_cta_cluster_group(unsigned hw_cta_id) const;
   bool is_cta_slot_active(unsigned hw_cta_id) const;
+  bool cta_slot_has_threads(unsigned hw_cta_id) const;
   void set_cta_cluster_group(unsigned hw_cta_id, unsigned group);
   // TB-cluster relative rank (%cluster_ctarank); used by ctaMask filtering.
   unsigned get_cta_cluster_rank(unsigned hw_cta_id) const;
@@ -3297,6 +3298,7 @@ class simt_core_cluster {
                             unsigned count, unsigned req_cta, unsigned req_warp,
                             int parity);
   void dsm_retry_tma_mbar();
+  void release_ready_cluster_barriers();
   void dsm_on_tma_mbar(unsigned local_sm, unsigned cta, unsigned mbar_addr,
                        unsigned mbar_bytes);
   // Delay issuer complete_tx until fabric+SRAM has landed one peer copy
@@ -3455,6 +3457,8 @@ class simt_core_cluster {
   unsigned pending_issue_group_size() const {
     return m_pending_issue_group_size;
   }
+  bool tb_cluster_group_has_live_threads(unsigned local_sm,
+                                         unsigned cta_slot) const;
 };
 
 typedef simt_core_cluster gpc_t;

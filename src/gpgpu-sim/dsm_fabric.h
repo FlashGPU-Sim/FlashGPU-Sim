@@ -11,7 +11,7 @@
 #include "transport.h"
 
 // Intra-GPC DSM fabric: 32 B payload grants, request/response VCs sharing
-// one physical-lane scheduler, per-SM shaper, GPCMMU hash, GX planes,
+// one physical-lane scheduler, per-SM shaper, cache-line GPCMMU hash, GX planes,
 // CPC 6 slots → 4 lanes. PG'd slots never inject and never take eligibility.
 
 enum class dsm_vc_t { request = 0, response = 1 };
@@ -158,7 +158,6 @@ class dsm_fabric_t {
 
   unsigned vci(dsm_vc_t v) const { return static_cast<unsigned>(v); }
   bool shaper_allows(unsigned sm, unsigned long long cycle) const;
-  bool has_tma_head(unsigned sm) const;
   unsigned peek_dst(unsigned sm, unsigned vc) const;
   bool pick_head(unsigned sm, unsigned *vc, unsigned *dst) const;
   void note_hw(unsigned vc);

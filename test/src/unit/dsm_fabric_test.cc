@@ -216,16 +216,54 @@ TEST(DsmFabric, Data128BNeedsFourGrants) {
   EXPECT_EQ(p->payload_bytes, 128u);
 }
 
-TEST(DsmFabric, TmaPayloadUsesThreeGrantStripe) {
+TEST(DsmFabric, TmaPayloadUsesShapedLane) {
   dsm_fabric_t f = make_fabric(4, 1);
   f.inject(mk_pkt(0, 1, dsm_packet_class_t::tma_data, 128, 0));
   f.cycle(0);
-  EXPECT_EQ(f.stats().flits_granted, 3u);
-  EXPECT_EQ(f.occupancy_flits(0, dsm_vc_t::request, 1), 1u);
+  EXPECT_EQ(f.stats().flits_granted, 0u);
+  EXPECT_EQ(f.occupancy_flits(0, dsm_vc_t::request, 1), 4u);
   EXPECT_EQ(f.top(1, dsm_vc_t::request), nullptr);
   f.cycle(1);
+  EXPECT_EQ(f.stats().flits_granted, 1u);
+  EXPECT_EQ(f.occupancy_flits(0, dsm_vc_t::request, 1), 3u);
+  f.cycle(2);
+  f.cycle(3);
+  f.cycle(4);
+  f.cycle(5);
   ASSERT_NE(f.top(1, dsm_vc_t::request), nullptr);
   EXPECT_EQ(f.stats().flits_granted, 4u);
+}
+
+TEST(DsmFabric, TmaRingScalesAcrossSixteenSms) {
+  dsm_fabric_config_t cfg;
+  cfg.request_vc_flits = 512;
+  cfg.ejection_vc_flits = 512;
+  dsm_fabric_t f = make_fabric(16, 3, cfg);
+  const unsigned bytes = 16 * 1024;
+  for (unsigned src = 0; src < 16; src++)
+    f.inject(mk_pkt(src, (src + 1) % 16, dsm_packet_class_t::tma_data,
+                    bytes, 0));
+
+  const unsigned warmup = 300;
+  const unsigned window = 900;
+  unsigned long long now = 0;
+  auto step = [&]() {
+    f.cycle(now++);
+    for (unsigned dst = 0; dst < 16; dst++) {
+      if (!f.top(dst, dsm_vc_t::request)) continue;
+      auto packet = f.pop(dst, dsm_vc_t::request);
+      f.inject(mk_pkt(packet->network_src_sm_id, dst,
+                      dsm_packet_class_t::tma_data, bytes, 0));
+    }
+  };
+  for (unsigned i = 0; i < warmup; i++) step();
+  const auto before = f.stats();
+  for (unsigned i = 0; i < window; i++) step();
+  const auto after = f.stats();
+  const double rate =
+      (double)(after.payload_bytes_granted - before.payload_bytes_granted) /
+      window;
+  EXPECT_NEAR(rate, 16.0 * (2.0 / 3.0) * f.flit_payload_bytes(), 0.1);
 }
 
 TEST(DsmFabric, PayloadLargerThanVcDepthCompletes) {
@@ -302,23 +340,23 @@ TEST(DsmFabric, GxPlanesOneReducesRoutesVsTwo) {
   EXPECT_EQ(f2.num_routes(), 2u * f2.lanes_per_cpc());
   EXPECT_LT(f1.num_routes(), f2.num_routes());
 
-  // Same address, SM0 and SM4, dest 1: hash (addr/32+src+dst*3) collides
-  // on 4 routes (both → 3) and splits on 8 routes (3 vs 7).
+  // Same address, SM0 and SM2, dest 1: hash (addr/32+2*src+3*dst)
+  // collides on 4 routes and splits on 8 routes.
   const dsm_route_t r0 = f1.hash_route(0, 0, 1, 1);
-  const dsm_route_t r4 = f1.hash_route(0, 4, 1, 1);
+  const dsm_route_t r4 = f1.hash_route(0, 2, 1, 1);
   EXPECT_EQ(r0.gx_plane * f1.lanes_per_cpc() + r0.lane,
             r4.gx_plane * f1.lanes_per_cpc() + r4.lane);
   const dsm_route_t s0 = f2.hash_route(0, 0, 1, 1);
-  const dsm_route_t s4 = f2.hash_route(0, 4, 1, 1);
+  const dsm_route_t s4 = f2.hash_route(0, 2, 1, 1);
   EXPECT_NE(s0.gx_plane * f2.lanes_per_cpc() + s0.lane,
             s4.gx_plane * f2.lanes_per_cpc() + s4.lane);
 
   auto fill_camp = [](dsm_fabric_t &f, unsigned src) {
     const unsigned flits =
-        dsm_payload_flits(dsm_packet_class_t::write_data, 128,
+        dsm_payload_flits(dsm_packet_class_t::write_data, 32,
                           f.flit_payload_bytes());
     while (f.can_inject(src, dsm_vc_t::request, 1, flits)) {
-      auto p = mk_pkt(src, 1, dsm_packet_class_t::write_data, 128, 0);
+      auto p = mk_pkt(src, 1, dsm_packet_class_t::write_data, 32, 0);
       p->packet_id = 1;
       f.inject(std::move(p));
     }
@@ -328,7 +366,7 @@ TEST(DsmFabric, GxPlanesOneReducesRoutesVsTwo) {
     const unsigned warmup = 30, window = 300;
     auto step = [&]() {
       fill_camp(f, 0);
-      fill_camp(f, 4);
+      fill_camp(f, 2);
       f.cycle(now++);
       drain(f);
     };

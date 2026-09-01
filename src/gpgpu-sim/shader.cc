@@ -891,6 +891,11 @@ bool shader_core_ctx::is_cta_slot_active(unsigned hw_cta_id) const {
   return m_cta_status[hw_cta_id] > 0 && m_cta_smem[hw_cta_id] != NULL;
 }
 
+bool shader_core_ctx::cta_slot_has_threads(unsigned hw_cta_id) const {
+  assert(hw_cta_id < MAX_CTA_PER_SHADER);
+  return m_cta_status[hw_cta_id] > 0;
+}
+
 void shader_core_ctx::set_cta_cluster_group(unsigned hw_cta_id, unsigned group) {
   assert(hw_cta_id < MAX_CTA_PER_SHADER);
   m_cta_tb_cluster_group[hw_cta_id] = group;
@@ -4734,7 +4739,10 @@ void shader_core_ctx::release_pending_tma_ctas() {
         m_tma != nullptr && m_tma->has_pending_for_cta(entry.first);
     const bool dsm_busy =
         m_cluster && m_cluster->dsm_cta_busy(m_sid, entry.first);
-    if (!tma_busy && !dsm_busy) ready.push_back(entry);
+    const bool cluster_peer_busy =
+        m_cluster && m_cluster->tb_cluster_group_has_live_threads(
+                         m_config->sid_to_cid(m_sid), entry.first);
+    if (!tma_busy && !dsm_busy && !cluster_peer_busy) ready.push_back(entry);
   }
 
   for (const auto &entry : ready) {
@@ -4749,7 +4757,9 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
   m_cta_status[cta_num]--;
   if (!m_cta_status[cta_num]) {
     if ((m_tma != nullptr && m_tma->has_pending_for_cta(cta_num)) ||
-        (m_cluster && m_cluster->dsm_cta_busy(m_sid, cta_num))) {
+        (m_cluster && m_cluster->dsm_cta_busy(m_sid, cta_num)) ||
+        (m_cluster && m_cluster->tb_cluster_group_has_live_threads(
+                          m_config->sid_to_cid(m_sid), cta_num))) {
       bool inserted = m_pending_tma_cta_releases.emplace(cta_num, kernel).second;
       assert(inserted && "CTA already pending TMA/DSM release");
       SHADER_GPPRINTF(
@@ -6896,6 +6906,7 @@ void simt_core_cluster::dsm_on_tx_done(unsigned txid) {
     dsm_note_warp_complete(it->second.sid, it->second.warp);
     dsm_note_cta_complete(it->second.sid, it->second.cta);
     m_dsm_tx_warp.erase(it);
+    release_ready_cluster_barriers();
   }
 }
 
@@ -7207,28 +7218,53 @@ void simt_core_cluster::cluster_barrier_wait(unsigned local_sm, unsigned cta,
   source->wait_at_cluster_barrier(warp);
   waiters.push_back({local_sm, cta, warp});
 
-  unsigned expected = 0;
-  for (unsigned sm = 0; sm < num_cores(); sm++) {
-    shader_core_ctx *core = get_core(sm);
-    if (!core) continue;
-    for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
-      if (!core->is_cta_slot_active(slot)) continue;
-      if (core->get_cta_cluster_group(slot) != group) continue;
-      expected += core->active_warps_in_cta(slot);
-    }
-  }
-  auto group_size = m_tb_cluster_group_sizes.find(group);
-  if (group_size != m_tb_cluster_group_sizes.end()) {
-    const unsigned source_warps = source->active_warps_in_cta(cta);
-    expected = group_size->second * source_warps;
-  }
-  if (!expected || waiters.size() < expected) return;
+  release_ready_cluster_barriers();
+}
 
-  for (const auto &waiter : waiters) {
-    shader_core_ctx *core = get_core(waiter.local_sm);
-    if (core) core->release_from_cluster_barrier(waiter.warp);
+void simt_core_cluster::release_ready_cluster_barriers() {
+  for (auto it = m_cluster_barrier_waiters.begin();
+       it != m_cluster_barrier_waiters.end();) {
+    const unsigned group = it->first;
+    const auto &waiters = it->second;
+    unsigned expected = 0;
+    for (unsigned sm = 0; sm < num_cores(); sm++) {
+      shader_core_ctx *core = get_core(sm);
+      if (!core) continue;
+      for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
+        if (!core->is_cta_slot_active(slot)) continue;
+        if (core->get_cta_cluster_group(slot) != group) continue;
+        expected += core->active_warps_in_cta(slot);
+      }
+    }
+    auto group_size = m_tb_cluster_group_sizes.find(group);
+    if (group_size != m_tb_cluster_group_sizes.end() && !waiters.empty()) {
+      shader_core_ctx *source = get_core(waiters.front().local_sm);
+      if (source) {
+        const unsigned source_warps =
+            source->active_warps_in_cta(waiters.front().cta);
+        expected = group_size->second * source_warps;
+      }
+    }
+    bool dsm_busy = false;
+    if (expected && waiters.size() >= expected) {
+      for (const auto &waiter : waiters) {
+        shader_core_ctx *core = get_core(waiter.local_sm);
+        if (core && dsm_cta_busy(core->get_sid(), waiter.cta)) {
+          dsm_busy = true;
+          break;
+        }
+      }
+    }
+    if (!expected || waiters.size() < expected || dsm_busy) {
+      ++it;
+      continue;
+    }
+    for (const auto &waiter : waiters) {
+      shader_core_ctx *core = get_core(waiter.local_sm);
+      if (core) core->release_from_cluster_barrier(waiter.warp);
+    }
+    it = m_cluster_barrier_waiters.erase(it);
   }
-  m_cluster_barrier_waiters.erase(group);
 }
 
 bool simt_core_cluster::dsm_on_mbar_req(unsigned local_sm, unsigned cta,
@@ -7328,6 +7364,26 @@ unsigned simt_core_cluster::get_n_active_sms() const {
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
     n += m_core[i]->isactive();
   return n;
+}
+
+bool simt_core_cluster::tb_cluster_group_has_live_threads(
+    unsigned local_sm, unsigned cta_slot) const {
+  if (local_sm >= num_cores() || cta_slot >= MAX_CTA_PER_SHADER) return false;
+  shader_core_ctx *requester = get_core(local_sm);
+  if (!requester) return false;
+  const unsigned group = requester->get_cta_cluster_group(cta_slot);
+  if (m_tb_cluster_group_sizes.find(group) == m_tb_cluster_group_sizes.end())
+    return false;
+  for (unsigned sm = 0; sm < num_cores(); sm++) {
+    shader_core_ctx *core = get_core(sm);
+    if (!core) continue;
+    for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
+      if (sm == local_sm && slot == cta_slot) continue;
+      if (core->get_cta_cluster_group(slot) != group) continue;
+      if (core->cta_slot_has_threads(slot)) return true;
+    }
+  }
+  return false;
 }
 
 unsigned simt_core_cluster::allocate_cta_cluster_group(unsigned group_size,

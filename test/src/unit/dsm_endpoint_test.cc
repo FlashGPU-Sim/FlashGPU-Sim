@@ -483,7 +483,7 @@ TEST(DsmEndpoint, TmaDeliveryScalesWithFlitsNotHop) {
   const unsigned t32 = time_tma(32);
   const unsigned t128 = time_tma(128);
   EXPECT_GT(t128, t32);
-  EXPECT_EQ(t128 - t32, 1u);
+  EXPECT_EQ(t128 - t32, 4u);
   // Extra delay is flit grants, not a 135-cycle multicast hop.
   EXPECT_LT(t128 - t32, 80u);
 }

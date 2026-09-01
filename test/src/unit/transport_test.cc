@@ -79,6 +79,33 @@ TEST(Transport, OversizedPacketStreamsThroughBoundedVoq) {
   EXPECT_EQ(voq.occupancy_flits(0), 0u);
 }
 
+TEST(Transport, PriorityInsertPreservesMatchingPacketOrder) {
+  bounded_voq_t voq;
+  voq.init(/*n_dst=*/1, /*flit_limit_per_dst=*/8);
+  transport_packet_metadata_t data{};
+  data.packet_id = 1;
+  data.remaining_flits = 2;
+  transport_packet_metadata_t command_a{};
+  command_a.packet_id = 2;
+  command_a.remaining_flits = 1;
+  transport_packet_metadata_t command_b = command_a;
+  command_b.packet_id = 3;
+  ASSERT_TRUE(voq.push(0, data));
+  ASSERT_TRUE(voq.push_before(0, command_a, [](const auto &packet) {
+    return packet.remaining_flits > 1;
+  }));
+  ASSERT_TRUE(voq.push_before(0, command_b, [](const auto &packet) {
+    return packet.remaining_flits > 1;
+  }));
+
+  transport_packet_metadata_t done{};
+  ASSERT_TRUE(voq.grant_flit(0, 1, &done));
+  EXPECT_EQ(done.packet_id, 2u);
+  ASSERT_TRUE(voq.grant_flit(0, 2, &done));
+  EXPECT_EQ(done.packet_id, 3u);
+  EXPECT_EQ(voq.front(0)->packet_id, 1u);
+}
+
 TEST(Transport, CreditTakeDoesNotCrossQueue) {
   flit_credit_counters_t credits;
   credits.init(/*n_queues=*/2, /*depth=*/4);

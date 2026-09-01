@@ -141,7 +141,7 @@ Existing `DsmTest.*` / `MbarrierClusterTest.*` must still PASS.
 
 ### H200 calibration (B6)
 
-Full write-up, kernel IDs, expected H200 numbers, and empty sim columns: [`calibration.md`](calibration.md).
+Full write-up, kernel IDs, H200 numbers, and simulator results: [`calibration.md`](calibration.md).
 
 **Config:** `SM90_H200_CLUSTER16x8` (full-chip GPC packing, 8×16, fabric on). **Not** the reduced 32-SM cluster. **Not** shipped `SM90_H200` (132×1).  
 **Threads:** `OMP_NUM_THREADS=4`.  
@@ -161,9 +161,11 @@ Exact hash and per-hop credit depth are **not** v1 accept criteria.
 
 Pre-calibration functional audit (2026-08-31): upstream smoke 8/8; fresh-process BW1–BW12 representatives 17/17; reduced-workload upstream GMEM normal / `cp.async` / TMA 3/3; reduced-config `DsmTest.*` + one-producer/CTA-scope TMA integration filter 18/18. See [`calibration.md`](calibration.md) §5.2.1. These passes do not replace the size-slope or full-workload performance gates.
 
-Latency close-out (2026-09-01): L1–L11 each complete twice on the full-chip preset with <10% error and valid payloads. Fabric unit coverage includes the TMA three-grant stripe and store/TMA packet-class visibility floors. L12 still requires the H2 hardware result.
+Latency close-out (2026-09-01): L1–L11 each complete twice on the full-chip preset with <10% error and valid payloads. Fabric unit coverage includes shaped TMA payloads and store/TMA packet-class visibility floors. L12 still requires the H2 hardware result.
 
-Final regressions: 48/48 `DsmEndpoint*`, `DsmFabric*`, and `Transport*` unit tests; 18/18 reduced-config `DsmTest.*`, one-producer TMA, and CTA-scope TMA integration tests.
+Bandwidth close-out (2026-09-01): primary load/store/TMA slopes and 2/4/8/16-SM TMA scaling pass the 10% blog gates. Load+TMA direction sharing passes; ordinary load+store opposite direction retains the documented pre-fabric issue-order limitation. Twenty-repeat cycle gates exceed 1e5 aggregate timed cycles with valid checksums.
+
+Final regressions: 50/50 `DsmEndpoint*`, `DsmFabric*`, and `Transport*` unit tests; 18/18 reduced-config `DsmTest.*` and `TMAClusterMulticastTest.*` integration tests.
 
 The full-chip calibration preset sets `-gpgpu_ptx_register_allocator 0`. With aliasing enabled, `k_tma_issue_pure` can reuse its loop-carried shared destination register and abort on a bogus unaligned address; calibration must use the architectural-register path.
 

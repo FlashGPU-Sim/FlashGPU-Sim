@@ -126,6 +126,8 @@ Do **not** add further deltas without updating this table.
 
 Implementation evidence from the 2026-08-31 bandwidth audit: PTX scope suffixes on ordinary memory instructions require explicit normalization of both `.shared::cta` and `.shared::cluster`; otherwise the parser's generic-space representation can incorrectly route a valid shared address to global memory. The upstream mixed load+TMA checksum exposed this distinction.
 
+Implementation evidence from the 2026-09-01 slope audit: multi-flit payloads must hash each 32-B cache-line grant rather than pin a whole TMA command to one route; otherwise per-SM TMA rate falls from about 21 B/cycle at two SMs to about 15 B/cycle at sixteen. Reverse read commands need head priority over queued request data, while request/response VCs still share the shaped physical sender. Cluster-barrier release must also wait for outstanding DSM transactions in every CTA in the TB-cluster group.
+
 ---
 
 ## 6. Hypotheses that failed (do not revive)

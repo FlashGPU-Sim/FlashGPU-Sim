@@ -123,7 +123,7 @@ Requirements:
 - A knob can force **stride camping** for tests
 - **Do not** claim it is NVIDIA’s hash
 
-Default: cache-line / 32 B payload-address interleave across `num_gx * lanes_per_cpc` routes.
+Default: every 32 B payload grant rehashes its current cache-line address across `num_gx * lanes_per_cpc` routes. A multi-flit TMA command is therefore interleaved rather than pinned to one lane.
 
 ### GPCARB
 
@@ -168,6 +168,8 @@ credit[dst][vc]                 // free ejection / downstream flit slots
 ```
 
 A full request VOQ must **not** steal response-VC occupancy (and the reverse).
+
+Pure read-command streams remain FIFO. When payload data is queued in the same request VOQ, a new read command receives head priority so a 16-KiB TMA packet cannot block all reverse commands. Ejection credit is reserved per granted flit; an unfinished large packet does not reserve an entire destination buffer before its first grant.
 
 Each core cycle, per eligible source SM:
 

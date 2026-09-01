@@ -102,7 +102,15 @@ void dsm_fabric_t::inject(std::unique_ptr<dsm_packet_t> packet) {
   pkt.gx_plane = rt.gx_plane;
   pkt.route_lane = rt.lane;
   const unsigned v = vci(pkt.vc);
-  assert(m_in[v][src].push(dst, pkt));
+  const bool data_queued = m_in[v][src].contains(
+      dst, [](const dsm_packet_t &queued) {
+        return queued.packet_class != dsm_packet_class_t::read_command;
+      });
+  const bool pushed =
+      pkt.packet_class == dsm_packet_class_t::read_command && data_queued
+          ? m_in[v][src].push_front(dst, pkt)
+          : m_in[v][src].push(dst, pkt);
+  assert(pushed);
   m_stats.packets_injected++;
   note_hw(v);
 }
@@ -180,7 +188,7 @@ dsm_route_t dsm_fabric_t::hash_route(uint64_t addr, unsigned src, unsigned dst,
   // with src/dst. uid is coarse so a stream of packets with the same
   // address stays on one route (stride camping).
   uint64_t idx = addr / m_cfg.flit_payload_bytes;
-  idx += src;
+  idx += (uint64_t)src * 2;
   idx += (uint64_t)dst * 3;
   idx += uid / 16;
   idx += m_cfg.route_seed;
@@ -239,18 +247,6 @@ bool dsm_fabric_t::pick_head(unsigned sm, unsigned *vc, unsigned *dst) const {
   return true;
 }
 
-bool dsm_fabric_t::has_tma_head(unsigned sm) const {
-  if (sm >= m_n) return false;
-  for (unsigned vc = 0; vc < 2; vc++) {
-    for (unsigned dst = 0; dst < m_n; dst++) {
-      const dsm_packet_t *packet = m_in[vc][sm].front(dst);
-      if (packet && packet->packet_class == dsm_packet_class_t::tma_data)
-        return true;
-    }
-  }
-  return false;
-}
-
 void dsm_fabric_t::note_hw(unsigned vc) {
   unsigned occ = 0;
   for (unsigned s = 0; s < m_n; s++) occ += m_in[vc][s].occupancy_flits();
@@ -274,7 +270,6 @@ void dsm_fabric_t::cycle(unsigned long long cycle) {
     } else {
       allow = shaper_allows(sm, cycle);
     }
-    allow = allow || has_tma_head(sm);
     eligible[sm] = allow ? 1 : 0;
     m_last_eligible[sm] = eligible[sm];
     if (allow) m_stats.eligibility_slots++;
@@ -295,7 +290,13 @@ void dsm_fabric_t::cycle(unsigned long long cycle) {
     r.vc = vc;
     r.dst = dst;
     r.cpc = m_cpc[sm];
-    r.route = p->gx_plane * m_cfg.lanes_per_cpc + p->route_lane;
+    const unsigned granted_flits = p->total_flits - p->remaining_flits;
+    const uint64_t flit_addr =
+        p->payload_address +
+        (uint64_t)granted_flits * m_cfg.flit_payload_bytes;
+    const dsm_route_t route =
+        hash_route(flit_addr, sm, dst, p->packet_id);
+    r.route = route.gx_plane * m_cfg.lanes_per_cpc + route.lane;
     sm_req[sm] = (int)reqs.size();
     reqs.push_back(r);
   }
@@ -352,10 +353,10 @@ void dsm_fabric_t::cycle(unsigned long long cycle) {
       bool has_ejection_space = true;
       for (unsigned dst : multicast_dsts) {
         const dsm_packet_t *head = m_in[r.vc][r.sm].front(dst);
-        if (head->ejection_reserved_flits) continue;
-        const unsigned reserve =
+        const unsigned reserve_limit =
             std::min(head->total_flits, m_credit[r.vc].depth());
-        if (!m_credit[r.vc].has(dst, reserve)) {
+        if (head->ejection_reserved_flits < reserve_limit &&
+            !m_credit[r.vc].has(dst, 1)) {
           has_ejection_space = false;
           break;
         }
@@ -366,20 +367,27 @@ void dsm_fabric_t::cycle(unsigned long long cycle) {
       }
       for (unsigned dst : multicast_dsts) {
         dsm_packet_t *head = m_in[r.vc][r.sm].front_mutable(dst);
-        if (!head->ejection_reserved_flits) {
-          const unsigned reserve =
-              std::min(head->total_flits, m_credit[r.vc].depth());
-          const bool reserved = m_credit[r.vc].take(dst, reserve);
+        const unsigned reserve_limit =
+            std::min(head->total_flits, m_credit[r.vc].depth());
+        if (head->ejection_reserved_flits < reserve_limit) {
+          const bool reserved = m_credit[r.vc].take(dst, 1);
           assert(reserved);
-          head->ejection_reserved_flits = reserve;
+          head->ejection_reserved_flits++;
         }
       }
       const bool control = dsm_packet_is_control(selected->packet_class);
-      const bool striped_tma =
-          selected->packet_class == dsm_packet_class_t::tma_data;
-      const unsigned grant_cap = striped_tma ? 3 : 1;
-      unsigned grants = 0;
-      while (grants < grant_cap && taken + grants < cap) {
+      const dsm_packet_class_t selected_class = selected->packet_class;
+      const unsigned selected_payload = selected->payload_bytes;
+      unsigned packet_cap = 1;
+      if (multicast_dsts.size() == 1 && selected->total_flits == 1 &&
+          selected_payload > 0) {
+        if (selected_class == dsm_packet_class_t::read_command)
+          packet_cap = std::max(1u, 128u / selected_payload);
+        else if (!control && selected_payload < m_cfg.flit_payload_bytes)
+          packet_cap = m_cfg.flit_payload_bytes / selected_payload;
+      }
+      unsigned packets = 0;
+      while (packets < packet_cap) {
         bool any_tail = false;
         for (unsigned dst : multicast_dsts) {
           if (m_in[r.vc][r.sm].empty(dst)) continue;
@@ -391,23 +399,35 @@ void dsm_fabric_t::cycle(unsigned long long cycle) {
             any_tail = true;
           }
         }
-        m_stats.flits_granted++;
-        if (r.vc)
-          m_stats.flits_response++;
-        else
-          m_stats.flits_request++;
-        if (!control)
-          m_stats.payload_bytes_granted += m_cfg.flit_payload_bytes;
-        grants++;
-        if (any_tail) break;
+        packets++;
+        if (!any_tail || packets >= packet_cap) break;
+        dsm_packet_t *next = m_in[r.vc][r.sm].front_mutable(r.dst);
+        if (!next || next->packet_class != selected_class ||
+            next->payload_bytes != selected_payload || next->total_flits != 1)
+          break;
+        const unsigned reserve_limit =
+            std::min(next->total_flits, m_credit[r.vc].depth());
+        if (next->ejection_reserved_flits < reserve_limit) {
+          if (!m_credit[r.vc].has(r.dst, 1)) break;
+          const bool reserved = m_credit[r.vc].take(r.dst, 1);
+          assert(reserved);
+          next->ejection_reserved_flits++;
+        }
       }
+      m_stats.flits_granted++;
+      if (r.vc)
+        m_stats.flits_response++;
+      else
+        m_stats.flits_request++;
+      if (!control)
+        m_stats.payload_bytes_granted += m_cfg.flit_payload_bytes;
       m_dst_next[r.vc][r.sm] = (r.dst + 1) % m_n;
       if (r.vc)
         m_consec_rsp[r.sm]++;
       else
         m_consec_rsp[r.sm] = 0;
       granted[r.sm] = 1;
-      taken += grants;
+      taken++;
     }
     if (n_winners > taken) m_stats.stall_lane += n_winners - taken;
   }
