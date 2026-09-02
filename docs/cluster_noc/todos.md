@@ -596,7 +596,7 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 **Prereqs:** B5 and B8 (fabric carries DSM, TMA mcast, remote mbar). **Next:** B-DEPR after B6e.
 
-**Hardware still needed** (see [`calibration.md`](calibration.md) §8): H1 `dsm_bw` on this H200 NVL; H2 remote mbarrier RTT probe; H3 finish Triton mcast GEMM (current autotuned winner deadlocks); H4 cycle-gate twins at ~1e5 cycles. Launch those jobs; do not skip a kernel because the log is missing.
+**Hardware still needed** (see [`calibration.md`](calibration.md) §8): H2 remote mbarrier RTT probe; H3 finish the M=4096 Triton timed launch; H4 cycle-gate twins at ~1e5 cycles. H1 and the M=256–2048 GEMM pairs are complete in job 2111262.
 
 ---
 
@@ -643,17 +643,17 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 ### B6c — DSM / TMA bandwidth slopes
 
-- [x] **B6c** Fit knobs to `dsm_bw` **slopes**. Closed 2026-09-01 against the existing blog table; a future H1 result may replace the baseline.
+- [x] **B6c** Fit knobs to `dsm_bw` **slopes**. Closed 2026-09-01; job 2111262 subsequently replaced the blog baseline without changing the fitted knobs.
 
 **Functional close-out (2026-08-31):** the unmodified smoke suite passes 8/8 on `SM90_H200_CLUSTER16x8`. Fresh-process representative runs for every BW1–BW12 behavior pass 17/17 checksum gates, reduced-workload copies of the upstream GMEM normal-load, `cp.async`, and TMA kernels pass 3/3, and the reduced-config DSM/TMA integration filter passes 18/18. This established the execution/correctness prerequisite before the slope close-out below. Evidence and starting rates are in [`calibration.md`](calibration.md) §5.2.1.
 
 **Close-out (2026-09-01):** 16–96 KiB fits pass the 10% gates for one-/two-way load, store, and TMA and for 2/4/8/16-SM TMA scaling. Load+TMA is 21.27 B/cycle same-direction and 29.00 opposite-direction; idle pressure does not change the active reader. Twenty 96-KiB repeats are checksum-clean and total more than 1e5 timed cycles for both one-way TMA and symmetric load. The model now uses shaped 32-B cache-line grants, 128-B read-command packing, read-command head priority over payload VOQs, 512-flit VCs, a 1024-entry endpoint window, and ACK threshold 64. Cluster barriers retain arrived warps until their TB-cluster group has no outstanding DSM writes.
 
-**Known limitation:** ordinary load+store opposite-direction remains 18.11 B/cycle versus the blog's 29.70 because the simulator serializes those two warp-loop issue streams before they reach the fabric. The equivalent load+TMA direction gate passes; do not hide the store issue artifact by widening the fabric. Evidence and the complete table are in [`calibration.md`](calibration.md) §5.2.
+**2111262 recheck:** all accepted slope gates remain within 10% against the same-machine H200 data. Ordinary load+store opposite-direction remains the sole exception at 18.11 versus 29.5289 B/cycle (−38.7%) because the simulator serializes those two warp-loop issue streams before they reach the fabric. The equivalent load+TMA direction gate passes; do not hide the store issue artifact by widening the fabric.
 
 **Work:** **Copy-paste** `calibration/kernels/dsm_bw/` from seanzw/random (`kernels.cuh`: `load_kernel`, `store_kernel`, `tma_kernel`, `mixed_kernel`). Do **not** rewrite them from `H200_profiling`. Size sweep 16–96 KiB unique addresses, one TB-cluster, checksum after the timer. Record BW1–BW11 (one-way load/store/TMA, duplex, same vs opposite mix, 2/4/8/16 TMA, idle neighbor). Then a **cycle-gate** repeat of one saturated one-way TMA put and one symmetric load at ~1e5 cycles (iteration override only). Tune shaper period, VC depths, ACK threshold/timeout, optional `base_latency`. Idle neighbor must not raise the active SM’s rate. `tma_bw/` from the same repo is GMEM TMA vs L2/HBM (not DSM); run the simple TMA test as a TMA-to-memory check, do not treat it as a DSM slope.
 
-**Verify:** \(1/\beta\) within 10% of 19.87 / 18.87 / 21.25 (or H1 replacements). Duplex: load loses ~23%/dir, store/TMA ~4–6%. Same-dir mix ≈ one-way ceiling; opposite-dir higher. TMA 2→16 SM per-SM rate stays ~21 B/cycle.
+**Verify:** \(1/\beta\) within 10% of job 2111262's 19.8157 / 19.0504 / 21.2664. Duplex: load loses substantially more than store/TMA. Same-dir mix ≈ one-way ceiling; opposite-dir higher. TMA 2→16 SM per-SM rate stays ~20–21 B/cycle.
 
 **Exit:** Table §5.2 Sim columns filled. **Next:** B6d (GEMM may start in parallel with B6c once B6a is up; do not freeze knobs until B6e).
 
@@ -667,14 +667,16 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 **Work:**
 
-1. Hardware job **H3**: fix the 30 s warmup deadlock on winner `bm256 bn128 bk64 w4 s2` (job 2060111). Need at least one memory-bound shape where multicast speedup is clearly > 1, plus C-match.
-2. Until H3: still run **G1/G2** on the small 2059248 shapes (already ~7e4–1.8e5 cycles) for functional + cycle check. Multicast will **not** win there; that is expected (AI too high).
+1. Job 2111262 supplies correctness-clean G1/G2 pairs at M=256, 512, 1024, and 2048 with winner `bm256 bn128 bk64 w4 s2`. Use M=256 and M=512 for the first simulator gates; do not assume multicast should win (H200 speedup is 0.956–0.993×).
+2. Hardware job **H3** now means only the unresolved M=4096 timed launch. Its smoke launch passes, but the timed launch times out; do not use it as a calibration point.
 3. Sim: same cubin/PTX as hardware (embedded artifacts under `calibration/kernels/h200_probes/artifacts/`). Loop/K so timed region ~1e5 cycles. Config `SM90_H200_CLUSTER16x8`, 4 threads.
 4. Compare in-kernel cycles if the harness has `%clock64`; otherwise `gpu_sim_cycle` vs H200 `cycles_est` (wall_ms × SM MHz) and say so in the table.
 
 **Verify:** Functional C-match on sim. Cycle error < 10% on G1. After H3, G2 not slower than G1 on the memory-bound shape, and that pair also < 10%.
 
 **Exit:** Table §5.3 plus a short note if H3 is still open (then B6d cannot fully close). **Next:** B6e.
+
+**2111262 provisional result (2026-09-01):** M=256 is functionally clean on the simulator with the H200 winner configuration. `gpu_sim_cycle` is 242,750 unicast (+35.5%) and 208,687 multicast (+11.3%), so the simulator predicts 1.163× speedup while H200 measures 0.956×. M=512 unicast completes in 400,765 cycles (+16.4%), but multicast stalls permanently at 460/512 CTAs after all TMA traffic completes. Do not retune the frozen fabric: M=256 points to missing TMA/WGMMA pipeline overlap, while M=512 is a cluster/TMA synchronization or scheduling bug. The regenerated simulator artifact also reports 65,544 B shared versus 65,552 B in the submitted-job metadata. B6d remains open. Evidence is in [`calibration.md`](calibration.md) §5.3.
 
 **Prereqs:** B6a. B6b/B6c preferred.
 

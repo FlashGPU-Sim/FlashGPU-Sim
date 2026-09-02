@@ -147,6 +147,8 @@ Full write-up, kernel IDs, H200 numbers, and simulator results: [`calibration.md
 **Threads:** `OMP_NUM_THREADS=4`.  
 **Cycle gate:** inner loop ≈ 1e5 `%clock64` cycles; \(|T_{\mathrm{sim}}-T_{\mathrm{H200}}|/T_{\mathrm{H200}} < 10\%\).
 
+Supervisor-facing full run and H200 comparison: `python3 scripts/run_cluster_noc_demo.py`. See [`calibration.md`](calibration.md) §7 for result files and shorter rehearsal commands.
+
 Size-**slope** (16–96 KiB), not a single 64 KiB point, still required for DSM BW:
 
 - One-way load/store/TMA ≈ 20–21 B/cycle per SM
@@ -155,7 +157,7 @@ Size-**slope** (16–96 KiB), not a single 64 KiB point, still required for DSM 
 - TMA 2/4/8/16 SM aggregate ≈ linear
 - Idle neighbor does not raise the active SM’s rate
 
-Also required: local mbarrier arrive / try_wait, DSM local/remote RTT, TMA issue (pure 44, not bundle 68), TMA mcast − unicast e2e, and the Triton unicast/multicast GEMM (GEMM multicast on H200 is not finished; still in the suite).
+Also required: local mbarrier arrive / try_wait, DSM local/remote RTT, TMA issue (pure 44, not bundle 68), TMA mcast − unicast e2e, and the Triton unicast/multicast GEMM. Job 2111262 supplies correctness-clean GEMM pairs through M=2048; M=4096 still times out and remains in the suite.
 
 Exact hash and per-hop credit depth are **not** v1 accept criteria.
 

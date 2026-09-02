@@ -511,7 +511,8 @@ static int get_app_cuda_version_internal(std::string app_binary) {
       "strings " +
       app_binary +
       " | grep libcudart_vanadis.a | sed  "
-      "'s/.*libcudart_vanadis.a.\\(.*\\)/\\1/'; } | head -1 > " +
+      "'s/.*libcudart_vanadis.a.\\(.*\\)/\\1/'; } | grep -E '^[0-9]+' | "
+      "head -1 > " +
       fname;
   int res = system(app_cuda_version_command.c_str());
   if (res == -1) {
@@ -5878,13 +5879,12 @@ CUresult CUDAAPI cuModuleGetFunction(CUfunction *hfunc, CUmodule hmod,
     return CUDA_ERROR_INVALID_HANDLE;
   }
 
-  // ! Use the deviceFunc as the hostFunc for now.
-  const char *hostFunc = reinterpret_cast<const char *>(deviceFunc);
+  // Driver modules may contain identically named kernels. Use a distinct
+  // opaque handle for every lookup instead of using function_info as the key;
+  // the latter aliases when the PTX parser reuses a named function object.
+  const char *hostFunc = new char[1];
+  context->register_hostFun_function(hostFunc, deviceFunc);
 
-  context->register_function(module_handle, hostFunc, name);
-
-  // Return the function as a CUfunction (we use the function_info pointer as
-  // the handle)
   *hfunc = (CUfunction)hostFunc;
 
   printf("cuModuleGetFunction: Found kernel '%s' at %p\n", name, hostFunc);
@@ -6878,11 +6878,11 @@ CUresult CUDAAPI cuFuncSetAttribute(CUfunction hfunc,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  function_info *entry = reinterpret_cast<function_info *>(hfunc);
-  if (entry == NULL) return CUDA_ERROR_INVALID_HANDLE;
-
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
+  function_info *entry =
+      context->get_kernel(reinterpret_cast<const char *>(hfunc));
+  if (entry == NULL) return CUDA_ERROR_INVALID_HANDLE;
 
   if (attrib == CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES) {
     if (value < 0) return CUDA_ERROR_INVALID_VALUE;
