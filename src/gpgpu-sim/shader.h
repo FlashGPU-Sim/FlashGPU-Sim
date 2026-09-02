@@ -38,6 +38,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <vector>
 #include <algorithm>
 #include <bitset>
 #include <deque>
@@ -1882,6 +1883,38 @@ class shader_core_config : public core_config {
     // will cause SHARED_GENERIC_START calculation to overflow and corrupt memory.
     // See docs/addressing_mode.md for details.
     unsigned total_num_sms = n_simt_clusters * n_simt_cores_per_cluster;
+    if (gpgpu_gpc_sms && gpgpu_gpc_sms[0]) {
+      std::vector<unsigned> counts;
+      char perr[256];
+      perr[0] = 0;
+      if (!gpu_topology_t::parse_gpc_sms(gpgpu_gpc_sms, n_simt_clusters,
+                                         &counts, perr, sizeof(perr))) {
+        fprintf(stderr, "%s", perr);
+        abort();
+      }
+      unsigned mx = 0, sum = 0;
+      for (unsigned c : counts) {
+        sum += c;
+        if (c > mx) mx = c;
+      }
+      total_num_sms = sum;
+      if (option_parser_was_set(m_opp, "-gpgpu_num_sms_per_gpc") ||
+          option_parser_was_set(m_opp, "-gpgpu_n_cores_per_cluster")) {
+        if (n_simt_cores_per_cluster != mx) {
+          fprintf(stderr,
+                  "GPGPU-Sim ** ERROR: -gpgpu_gpc_sms max=%u but "
+                  "num_sms_per_gpc/n_cores_per_cluster=%u (set the scalar to "
+                  "the max or omit it).\n",
+                  mx, n_simt_cores_per_cluster);
+          abort();
+        }
+      }
+      n_simt_cores_per_cluster = mx;
+      m_topology.build(n_simt_clusters, counts, dsm_cpcs_per_gpc);
+    } else {
+      m_topology.build(n_simt_clusters, n_simt_cores_per_cluster,
+                       dsm_cpcs_per_gpc);
+    }
     if (total_num_sms > MAX_STREAMING_MULTIPROCESSORS) {
       fprintf(stderr, "\n");
       fprintf(stderr, "================================================================================\n");
@@ -1918,7 +1951,6 @@ class shader_core_config : public core_config {
       abort();
     }
 
-    m_topology.build(n_simt_clusters, n_simt_cores_per_cluster, dsm_cpcs_per_gpc);
     m_topology.set_live();
 
     m_L1I_config.init(m_L1I_config.m_config_string, FuncCachePreferNone);
@@ -1961,6 +1993,7 @@ class shader_core_config : public core_config {
   void reg_options(class OptionParser *opp);
   unsigned max_cta(const kernel_info_t &k) const;
   unsigned num_shader() const {
+    if (m_topology.num_sms() > 0) return m_topology.num_sms();
     return n_simt_clusters * n_simt_cores_per_cluster;
   }
   const gpu_topology_t &topology() const { return m_topology; }
@@ -2143,10 +2176,11 @@ class shader_core_config : public core_config {
   unsigned max_cp_async_latency;
   unsigned max_tensormap_latency;
 
-  unsigned n_simt_cores_per_cluster;  // enabled SMs per GPC
+  unsigned n_simt_cores_per_cluster;  // enabled SMs per GPC (max if hetero)
   unsigned n_simt_clusters;           // GPC count
   unsigned num_gpcs_alias;            // -gpgpu_num_gpcs
   unsigned num_sms_per_gpc_alias;     // -gpgpu_num_sms_per_gpc
+  char *gpgpu_gpc_sms = nullptr;      // per-GPC counts, e.g. 17,17,17,17,16,16,16,16
   unsigned dsm_cpcs_per_gpc;          // default 3; each CPC is 6 slots
   gpu_topology_t m_topology;
   class OptionParser *m_opp;
@@ -3349,10 +3383,12 @@ class simt_core_cluster {
   // Cluster accessors for TMA multicast and distributed shared memory.
   // cid is the enabled local SM in this GPC (PG'd CPC slots have no core).
   shader_core_ctx *get_core(unsigned cid) const {
-    assert(cid < m_config->n_simt_cores_per_cluster);
+    assert(cid < num_cores());
     return m_core[cid];
   }
-  unsigned num_cores() const { return m_config->n_simt_cores_per_cluster; }
+  unsigned num_cores() const {
+    return m_config->topology().num_sms_in_gpc(m_cluster_id);
+  }
 
   // Assign the next issue-order cluster group for a newly launched CTA on
   // this physical cluster. Groups have size num_cores() by default (legacy

@@ -22,7 +22,8 @@ cluster_noc_t::cluster_noc_t(simt_core_cluster *cluster,
 void cluster_noc_t::reconfigure() {
   if (!m_config)
     return;
-  const unsigned n = m_config->n_simt_cores_per_cluster;
+  const unsigned n =
+      m_cluster ? m_cluster->num_cores() : m_config->n_simt_cores_per_cluster;
   const unsigned local_lat = m_config->gpgpu_dsm_local_latency;
   const unsigned remote_lat = m_config->gpgpu_dsm_remote_latency;
   m_matrix.init(n, local_lat, remote_lat);

@@ -486,6 +486,13 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "enabled SMs per GPC (alias of "
                          "-gpgpu_n_cores_per_cluster)",
                          "0");
+  option_parser_register(
+      opp, "-gpgpu_gpc_sms", OPT_CSTR, &gpgpu_gpc_sms,
+      "per-GPC enabled SM counts, comma-separated (e.g. "
+      "17,17,17,17,16,16,16,16). Empty = uniform num_sms_per_gpc. inferred "
+      "H200 packing: 4x17+4x16=132. Omit scalar sms-per-gpc or set it to the "
+      "max.",
+      "");
   option_parser_register(opp, "-gpgpu_dsm_cpcs_per_gpc", OPT_UINT32,
                          &dsm_cpcs_per_gpc,
                          "CPCs per GPC (each CPC has 6 SM slots; extra slots "
@@ -1811,7 +1818,7 @@ void gpgpu_sim::deadlock_check() {
         } else if (num_cores >= 8) {
           printf(" + others ... ");
         }
-        num_cores += m_shader_config->n_simt_cores_per_cluster;
+        num_cores += m_cluster[i]->num_cores();
       }
     }
     printf("\n");

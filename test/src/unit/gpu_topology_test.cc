@@ -226,3 +226,34 @@ static void apply_conflicting_gpc_counts() {
 TEST(GpuTopology, OptionParserConflictAborts) {
   ASSERT_DEATH(apply_conflicting_gpc_counts(), "disagree");
 }
+
+TEST(GpuTopology, HeteroH200FourBy17FourBy16) {
+  gpu_topology_t topo;
+  const std::vector<unsigned> counts = {17, 17, 17, 17, 16, 16, 16, 16};
+  topo.build(8, counts, 3);
+  EXPECT_EQ(topo.num_gpcs(), 8u);
+  EXPECT_EQ(topo.num_sms(), 132u);
+  EXPECT_EQ(topo.num_sms_in_gpc(0), 17u);
+  EXPECT_EQ(topo.num_sms_in_gpc(7), 16u);
+  EXPECT_TRUE(topo.slot_is_enabled(0, 2, 4));   // local 16 → cpc 2 slot 4
+  EXPECT_FALSE(topo.slot_is_enabled(0, 2, 5));  // 17th slot PG'd
+  EXPECT_FALSE(topo.slot_is_enabled(7, 2, 4));  // 16-SM GPC: local 16 PG'd
+  EXPECT_EQ(topo.sm_id_at(0, 0), 0u);
+  EXPECT_EQ(topo.sm_id_at(0, 17), 17u);
+  EXPECT_EQ(topo.locate_sm(16).gpc_id, 0u);
+  EXPECT_EQ(topo.locate_sm(16).local_sm_id, 16u);
+  EXPECT_EQ(topo.locate_sm(17).gpc_id, 1u);
+  EXPECT_EQ(topo.gpc_id_of_sm(131), 7u);
+  EXPECT_EQ(topo.local_sm_of_sm(131), 15u);
+}
+
+TEST(GpuTopology, ParseGpcSms) {
+  std::vector<unsigned> c;
+  char err[128];
+  ASSERT_TRUE(gpu_topology_t::parse_gpc_sms("17,17,17,17,16,16,16,16", 8, &c,
+                                            err, sizeof(err)));
+  ASSERT_EQ(c.size(), 8u);
+  EXPECT_EQ(c[0], 17u);
+  EXPECT_EQ(c[7], 16u);
+  EXPECT_FALSE(gpu_topology_t::parse_gpc_sms("16,16", 8, &c, err, sizeof(err)));
+}

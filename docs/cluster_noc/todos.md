@@ -33,12 +33,13 @@ C1 (docs — this rewrite)
   → B3c endpoint protocol
   → B4 functional DSM on fabric
   → B5 scoreboard + SRAM service   // remote load = local SMEM load
-  → B6 H200 cycle-accurate calibration (mbarrier / TMA / DSM / GEMM)
-       B6a full-chip GPC config + sim harness
-       B6b latency
-       B6c dsm_bw slopes
-       B6d Triton multicast GEMM
-       B6e freeze knobs + fill calibration.md
+  → B6 full-scale H200 preset (not fabric-only)
+       B6a–c  (done) fabric latency/slopes
+       B6f    mixed 132-SM GPC map + occupancy 2048/32 + CLUSTER132
+       B6g    one exclusive H200 job = standalone dump of every kernel
+       B6d    TMA GEMM sim gate (config CLUSTER132)
+       B6h    fit non-fabric knobs from B6g CSV
+       B6e    freeze comments on SM90_H200, CLUSTER132, reduced 16×2
   → B-DEPR deprecate delay-line knobs
   → B7 per-bank SRAM (optional)
   → B9 research extras (not first delivery)
@@ -569,9 +570,11 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 ---
 
-## B6 — H200 cycle-accurate calibration (mbarrier, TMA, DSM, GEMM)
+## B6 — Full-scale H200 config (SM/memory/ALU + cluster fabric + GEMM)
 
-- [ ] **B6** Close when **B6a–B6e** are all `[x]`. Not a single GB/s point.
+- [ ] **B6** Close when **B6a–B6h** that apply are `[x]`. Not a single GB/s point. Not fabric-only.
+
+Published cycle numbers use **`SM90_H200_CLUSTER132`** (inferred 4×17+4×16 = 132 SMs). Functional filters stay on `SM90_H200_REDUCED_CLUSTER16x2`.
 
 **Read first:** [`calibration.md`](calibration.md) (kernels, H200 baselines, simulator results), [`evidence.md`](evidence.md), [`tests.md`](tests.md) §3.
 
@@ -585,7 +588,7 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 **Hard rules (every B6\* run):**
 
-1. Config: **`SM90_H200_CLUSTER16x8`** (8 GPCs × 16 SMs = 128 SMs, fabric on, clocks/L2/HBM copied from `SM90_H200`). This is the full-chip GPC-packed H200. **Not** `SM90_H200_REDUCED_CLUSTER16x2`. **Not** shipped `SM90_H200` (132 × 1 SM/GPC — DSM fabric is intra-GPC and that packing cannot exercise it).
+1. Config: **`SM90_H200_CLUSTER132`** (inferred 4 GPCs × 17 SMs + 4 GPCs × 16 SMs = 132, fabric on). **Not** `SM90_H200_REDUCED_CLUSTER16x2` (functional only). **Not** shipped `SM90_H200` (132 × 1).
 2. `export OMP_NUM_THREADS=4`.
 3. Cycle-gate kernels: inner loop count so the timed region is **~1e5 cycles** (8e4–1.2e5). Grow **repeats**, not unique smem.
 4. Slope kernels (`dsm_bw` 16–96 KiB) stay unique-address; they may be shorter than 1e5 cycles.
@@ -602,22 +605,22 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 ### B6a — Full-chip config and sim harness
 
-- [x] **B6a** `SM90_H200_CLUSTER16x8` + build/run path for the git-ignored kernels. Closed 2026-08-28. **No H200 job.**
+- [x] **B6a** Full-chip packed config + build/run path for the git-ignored kernels. Closed 2026-08-28. **No H200 job.** Later B6 work uses `SM90_H200_CLUSTER132`.
 
 **Work:**
 
-1. New config dir `configs/SM90_H200_CLUSTER16x8/`: copy SM/memory/clock/latency knobs from `SM90_H200`; packing `-gpgpu_num_gpcs 8` / `-gpgpu_num_sms_per_gpc 16` (aliases `-gpgpu_n_clusters` / `-gpgpu_n_cores_per_cluster`); `-gpgpu_dsm_enable 1`; `-gpgpu_mbarrier_cluster_enable 1`; fabric knobs from [`knobs.md`](knobs.md) §3; no delay-line BPC. README states: full-chip calibration only; reduced 16x2 remains the functional filter.
+1. New full-chip packed config dir: copy SM/memory/clock/latency knobs from `SM90_H200`; fabric on (`-gpgpu_dsm_enable 1`, `-gpgpu_mbarrier_cluster_enable 1`); fabric knobs from [`knobs.md`](knobs.md) §3; no delay-line BPC. README states: full-chip calibration only; reduced 16x2 remains the functional filter. (This ID first landed a uniform 128-SM packing; published default is now `SM90_H200_CLUSTER132`.)
 2. Register the config so `./test/run_tests.sh list-configs` lists it.
 3. Sim-side Makefile/wrapper under `calibration/` (git-ignored is fine) that (a) sources `setup_environment`, (b) links sim `libcudart`, (c) copies this config into the run cwd, (d) forces `OMP_NUM_THREADS=4`, (e) accepts a loop-count override.
 4. Confirm `calibration/kernels/{dsm_bw,tma_bw,h200_probes,hopper_paper}` exist; if not, run `bash scripts/sync_calibration_kernels.sh`. `dsm_bw` and `tma_bw` are verbatim copies of [seanzw/random](https://github.com/seanzw/random); do not rewrite the kernels.
 
-**Verify:** Config starts; a hello kernel on this config prints `gpu_sim_cycle` and uses 4 OpenMP threads. `DsmTest.RemoteLoadFromPeer_TwoCtas` still PASS on **reduced** 16x2 (do not replace functional CI with 128 SMs).
+**Verify:** Config starts; a hello kernel on this config prints `gpu_sim_cycle` and uses 4 OpenMP threads. `DsmTest.RemoteLoadFromPeer_TwoCtas` still PASS on **reduced** 16x2 (do not replace functional CI with full-chip packing).
 
 **Exit:** Config path named in [`calibration.md`](calibration.md) §2. **Next:** B6b.
 
 **Prereqs:** B5, B8.
 
-**Close-out (2026-08-28):** Setup only. No new H200 job (H1–H4 belong to B6b–B6d). `configs/SM90_H200_CLUSTER16x8/`: 8 GPCs × 16 SMs = 128, `-gpgpu_dsm_enable 1`, `-gpgpu_mbarrier_cluster_enable 1`, fabric knobs at documented defaults, `-gpgpu_dsm_bytes_per_cycle 0`. `./test/run_tests.sh list-configs` lists `SM90_H200_CLUSTER16x8`. Harness: `scripts/run_calibration_sim.sh` (`OMP_NUM_THREADS=4`, `--loops` → `CALIB_LOOPS`, copies this config into `calibration/runs/`). Kernels present under git-ignored `calibration/kernels/{dsm_bw,tma_bw,h200_probes,hopper_paper}`. No C++ change; reduced 16x2 functional filters not re-run (last PASS B8 2026-08-27). First `gpu_sim_cycle` print is B6b.
+**Close-out (2026-08-28):** Setup only. No new H200 job (H1–H4 belong to B6b–B6d). Landed a full-chip packed fabric-on config, harness `scripts/run_calibration_sim.sh` (`OMP_NUM_THREADS=4`, `--loops` → `CALIB_LOOPS`). Kernels present under git-ignored `calibration/kernels/{dsm_bw,tma_bw,h200_probes,hopper_paper}`. No C++ change; reduced 16x2 functional filters not re-run (last PASS B8 2026-08-27). First `gpu_sim_cycle` print is B6b. **Published default since B6f is `SM90_H200_CLUSTER132`.**
 
 ---
 
@@ -645,7 +648,7 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 - [x] **B6c** Fit knobs to `dsm_bw` **slopes**. Closed 2026-09-01; job 2111262 subsequently replaced the blog baseline without changing the fitted knobs.
 
-**Functional close-out (2026-08-31):** the unmodified smoke suite passes 8/8 on `SM90_H200_CLUSTER16x8`. Fresh-process representative runs for every BW1–BW12 behavior pass 17/17 checksum gates, reduced-workload copies of the upstream GMEM normal-load, `cp.async`, and TMA kernels pass 3/3, and the reduced-config DSM/TMA integration filter passes 18/18. This established the execution/correctness prerequisite before the slope close-out below. Evidence and starting rates are in [`calibration.md`](calibration.md) §5.2.1.
+**Functional close-out (2026-08-31):** the unmodified smoke suite passes 8/8 on the then full-chip packing. Fresh-process representative runs for every BW1–BW12 behavior pass 17/17 checksum gates, reduced-workload copies of the upstream GMEM normal-load, `cp.async`, and TMA kernels pass 3/3, and the reduced-config DSM/TMA integration filter passes 18/18. This established the execution/correctness prerequisite before the slope close-out below. Evidence and starting rates are in [`calibration.md`](calibration.md) §5.2.1.
 
 **Close-out (2026-09-01):** 16–96 KiB fits pass the 10% gates for one-/two-way load, store, and TMA and for 2/4/8/16-SM TMA scaling. Load+TMA is 21.27 B/cycle same-direction and 29.00 opposite-direction; idle pressure does not change the active reader. Twenty 96-KiB repeats are checksum-clean and total more than 1e5 timed cycles for both one-way TMA and symmetric load. The model now uses shaped 32-B cache-line grants, 128-B read-command packing, read-command head priority over payload VOQs, 512-flit VCs, a 1024-entry endpoint window, and ACK threshold 64. Cluster barriers retain arrived warps until their TB-cluster group has no outstanding DSM writes.
 
@@ -669,7 +672,7 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 1. Job 2111262 supplies correctness-clean G1/G2 pairs at M=256, 512, 1024, and 2048 with winner `bm256 bn128 bk64 w4 s2`. Use M=256 and M=512 for the first simulator gates; do not assume multicast should win (H200 speedup is 0.956–0.993×).
 2. Hardware job **H3** now means only the unresolved M=4096 timed launch. Its smoke launch passes, but the timed launch times out; do not use it as a calibration point.
-3. Sim: same cubin/PTX as hardware (embedded artifacts under `calibration/kernels/h200_probes/artifacts/`). Loop/K so timed region ~1e5 cycles. Config `SM90_H200_CLUSTER16x8`, 4 threads.
+3. Sim: same cubin/PTX as hardware (embedded artifacts under `calibration/kernels/h200_probes/artifacts/`). Loop/K so timed region ~1e5 cycles. Config `SM90_H200_CLUSTER132`, 4 threads.
 4. Compare in-kernel cycles if the harness has `%clock64`; otherwise `gpu_sim_cycle` vs H200 `cycles_est` (wall_ms × SM MHz) and say so in the table.
 
 **Verify:** Functional C-match on sim. Cycle error < 10% on G1. After H3, G2 not slower than G1 on the memory-bound shape, and that pair also < 10%.
@@ -686,13 +689,39 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 - [ ] **B6e** Write fitted knobs into `SM90_H200*` comments (`measured` / `inferred`). No pending rows on the accepted set in [`calibration.md`](calibration.md).
 
-**Work:** One pass over §6 knobs. Sync comments in `SM90_H200` (flat, NoC off) vs `SM90_H200_CLUSTER16x8` (fabric on) vs reduced 16x2 (functional). Do not leave `-gpgpu_dsm_bytes_per_cycle` as a non-zero bandwidth model. TMA issue knob is the **pure** 44 unless a new exclusive job contradicts it.
+**Work:** One pass over §6 knobs. Sync comments in `SM90_H200` (flat, NoC off) vs `SM90_H200_CLUSTER132` (fabric on, published) vs reduced 16x2 (functional). Do not leave `-gpgpu_dsm_bytes_per_cycle` as a non-zero bandwidth model. TMA issue knob is the **pure** 44 unless a new exclusive job contradicts it.
 
 **Verify:** Re-run the accepted L/BW/G set once on the frozen preset; errors still < 10%. Reduced functional filters still PASS.
 
 **Exit:** Close-out under **B6** with date, config, commit, and a pointer to the filled [`calibration.md`](calibration.md). Then B-DEPR.
 
-**Prereqs:** B6b, B6c; B6d as far as H3 allows.
+**Prereqs:** B6b, B6c; B6d as far as H3 allows; B6f/B6g/B6h for the product packing.
+
+---
+
+### B6f — Mixed 132-SM GPC map
+
+- [ ] **B6f** `-gpgpu_gpc_sms 17,17,17,17,16,16,16,16` + `SM90_H200_CLUSTER132` + occupancy `2048:32` / `cta 32`. Label packing `inferred`.
+
+**Verify:** unit `GpuTopology.HeteroH200FourBy17FourBy16`; reduced 16×2 DSM/TMA still PASS. Do not replace CI with 132 SMs.
+
+**Prereqs:** B1. **Next:** B6g.
+
+---
+
+### B6g — Standalone exclusive H200 job
+
+- [ ] **B6g** One sbatch dumps every kernel (old GPC/TMA/DSM/GEMM + ALU/L1/L2/HBM/cp.async + G3 notma). CSV files `h200_<suite>_<jobid>.csv`. Cycles on every kernel. Frequency at log start. One suite failure continues. ALU/MMA/WGMMA come from FlashGPU-Sim `test/src/microbench` (vendored). G3 is the Triton `USE_TMA=0` twin of G1/G2 (same autotune space and winner tile), not a separate FMA kernel.
+
+**Prereqs:** B6f preferred for sim; hardware job does not need sim topology.
+
+---
+
+### B6h — Fit non-fabric knobs from B6g
+
+- [ ] **B6h** ALU, L1, L2, DRAM, STREAM, occupancy comments `measured`/`inferred`. Do not retune fabric from STREAM or G3.
+
+**Prereqs:** B6g CSV.
 
 ---
 

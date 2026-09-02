@@ -96,7 +96,7 @@ TB-cluster **size** is a launch attribute. Rule: `product(clusterDim) ≤` enabl
 | `SM120_RTX5090_CLUSTER16x11` | m=16, n=11 | GPC-sized smoke |
 | `SM90_H200_REDUCED_CLUSTER16x2` | m=16, n=2 | Functional cluster / TMA / DSM; **not** published calibration |
 | `SM90_H200` | m=1, n=132 | Product latencies; NoC idle; **cannot** exercise DSM fabric |
-| `SM90_H200_CLUSTER16x8` | m=16, n=8 (128 SMs) | B6 full-chip GPC packing; fabric on ([`calibration.md`](calibration.md)) |
+| `SM90_H200_CLUSTER132` | 4×17 + 4×16 = 132 | **Default** full-chip packing; fabric on ([`calibration.md`](calibration.md)) |
 
 ---
 

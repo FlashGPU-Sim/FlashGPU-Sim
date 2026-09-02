@@ -54,7 +54,7 @@ SM120 reduced needs a run-dir **overlay** for NoC-on DSM:
 | `cluster_real_shaped_test` | TMA accumulate | Same with hop |
 | unit `cluster_noc_test` | Matrix / decode | Same |
 | unit `cluster_dsm_store_test` | Immediacy | Immediacy |
-| `dsm_bw` upstream smoke | `cluster.sync()` + DSM/TMA checksums | 8/8 on `SM90_H200_CLUSTER16x8` |
+| `dsm_bw` upstream smoke | `cluster.sync()` + DSM/TMA checksums | full-chip packing (`SM90_H200_CLUSTER132`) |
 
 `barrier.cluster.arrive` / `barrier.cluster.wait` are timing-model operations, not functional no-ops in performance simulation. A cluster barrier must not release before every active warp in every CTA of the reserved TB-cluster group reaches the same phase.
 
@@ -143,7 +143,7 @@ Existing `DsmTest.*` / `MbarrierClusterTest.*` must still PASS.
 
 Full write-up, kernel IDs, H200 numbers, and simulator results: [`calibration.md`](calibration.md).
 
-**Config:** `SM90_H200_CLUSTER16x8` (full-chip GPC packing, 8×16, fabric on). **Not** the reduced 32-SM cluster. **Not** shipped `SM90_H200` (132×1).  
+**Config:** `SM90_H200_CLUSTER132` (inferred 4×17 + 4×16 = 132 SMs, fabric on). **Not** the reduced 32-SM cluster. **Not** shipped `SM90_H200` (132×1).  
 **Threads:** `OMP_NUM_THREADS=4`.  
 **Cycle gate:** inner loop ≈ 1e5 `%clock64` cycles; \(|T_{\mathrm{sim}}-T_{\mathrm{H200}}|/T_{\mathrm{H200}} < 10\%\).
 
@@ -175,4 +175,4 @@ The full-chip calibration preset sets `-gpgpu_ptx_register_allocator 0`. With al
 
 ## 4. After B-DEPR
 
-After **B-DEPR**, delete all `dsm_latency_matrix_*.csv`, `-gpgpu_dsm_latency_matrix_file`, and `-gpgpu_dsm_remote_latency` as a hop/bandwidth knob. Configs that still set those, or `-gpgpu_dsm_bytes_per_cycle`, as the **bandwidth** model are bugs. Timing residual may remain as `-gpgpu_dsm_base_latency_cycles` if B6e refits it. Update `configs/SM90_H200*`, `configs/SM90_H200_CLUSTER16x8`, and any overlay comments in this directory.
+After **B-DEPR**, delete all `dsm_latency_matrix_*.csv`, `-gpgpu_dsm_latency_matrix_file`, and `-gpgpu_dsm_remote_latency` as a hop/bandwidth knob. Configs that still set those, or `-gpgpu_dsm_bytes_per_cycle`, as the **bandwidth** model are bugs. Timing residual may remain as `-gpgpu_dsm_base_latency_cycles` if B6e refits it. Update `configs/SM90_H200*`, `configs/SM90_H200_CLUSTER132`, and any overlay comments in this directory.

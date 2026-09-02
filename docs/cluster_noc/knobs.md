@@ -24,9 +24,10 @@ Target extras:
 |------|---------|---------|
 | `-gpgpu_dsm_cpcs_per_gpc` | 3 | CPCs in one GPC. Each CPC is 6 slots + GPCMMU + GPCARB |
 | `-gpgpu_dsm_clients_per_cpc` | 6 | SM slots per CPC (do not use 2 for “TPC”) |
-| `-gpgpu_gpc_slot_map` | empty = first N slots enabled | Which of the `6 * cpcs` slots are live; rest **PG'd** |
+| `-gpgpu_gpc_slot_map` | empty = first N slots enabled | Documented alias; **implemented as** `-gpgpu_gpc_sms` |
+| `-gpgpu_gpc_sms` | empty = uniform | Per-GPC enabled SM counts, comma-separated. H200 product packing **inferred**: `17,17,17,17,16,16,16,16` (132 SMs). If set, scalar `num_sms_per_gpc` must be omitted or equal to the max. |
 
-`product(clusterDim) ≤ num_sms_per_gpc` (enabled), not ≤ 18 slots.
+`product(clusterDim) ≤ min(enabled SMs in any GPC)`, not ≤ 18 slots.
 
 ---
 

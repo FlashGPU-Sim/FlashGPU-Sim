@@ -9,27 +9,48 @@ static const gpu_topology_t *g_live_topology = nullptr;
 
 void gpu_topology_t::build(unsigned num_gpcs, unsigned num_sms_per_gpc,
                            unsigned cpcs_per_gpc) {
+  std::vector<unsigned> counts(num_gpcs, num_sms_per_gpc);
+  build(num_gpcs, counts, cpcs_per_gpc);
+}
+
+void gpu_topology_t::build(unsigned num_gpcs,
+                           const std::vector<unsigned> &sms_per_gpc,
+                           unsigned cpcs_per_gpc) {
   assert(num_gpcs > 0);
-  assert(num_sms_per_gpc > 0);
   assert(cpcs_per_gpc > 0);
-  m_slots_per_gpc = k_sm_slots_per_cpc * cpcs_per_gpc;
-  if (num_sms_per_gpc > m_slots_per_gpc) {
+  if (sms_per_gpc.size() != num_gpcs) {
     fprintf(stderr,
-            "GPGPU-Sim ** ERROR: enabled SMs per GPC (%u) exceed CPC slots "
-            "(%u = %u CPCs * %d slots). Increase -gpgpu_dsm_cpcs_per_gpc.\n",
-            num_sms_per_gpc, m_slots_per_gpc, cpcs_per_gpc, k_sm_slots_per_cpc);
+            "GPGPU-Sim ** ERROR: -gpgpu_gpc_sms has %zu entries, need %u "
+            "(one per GPC).\n",
+            sms_per_gpc.size(), num_gpcs);
     abort();
   }
+  m_slots_per_gpc = k_sm_slots_per_cpc * cpcs_per_gpc;
   m_num_gpcs = num_gpcs;
-  m_sms_per_gpc = num_sms_per_gpc;
   m_cpcs_per_gpc = cpcs_per_gpc;
-  m_num_sms = num_gpcs * num_sms_per_gpc;
+  m_sms_in_gpc = sms_per_gpc;
+  m_gpc_sm_base.assign(num_gpcs, 0);
+  m_sms_per_gpc = 0;
+  m_num_sms = 0;
+  for (unsigned g = 0; g < num_gpcs; g++) {
+    const unsigned n = sms_per_gpc[g];
+    if (n == 0 || n > m_slots_per_gpc) {
+      fprintf(stderr,
+              "GPGPU-Sim ** ERROR: GPC %u enabled SMs (%u) must be in 1..%u "
+              "(%u CPCs * %d slots). Increase -gpgpu_dsm_cpcs_per_gpc.\n",
+              g, n, m_slots_per_gpc, cpcs_per_gpc, k_sm_slots_per_cpc);
+      abort();
+    }
+    m_gpc_sm_base[g] = m_num_sms;
+    m_num_sms += n;
+    if (n > m_sms_per_gpc) m_sms_per_gpc = n;
+  }
   m_sm.resize(m_num_sms);
   m_slot_sm.assign((size_t)num_gpcs * m_slots_per_gpc, ~0u);
 
   for (unsigned g = 0; g < num_gpcs; g++) {
-    for (unsigned local = 0; local < num_sms_per_gpc; local++) {
-      const sm_id_t sm = g * num_sms_per_gpc + local;
+    for (unsigned local = 0; local < sms_per_gpc[g]; local++) {
+      const sm_id_t sm = m_gpc_sm_base[g] + local;
       sm_location_t loc;
       loc.sm_id = sm;
       loc.gpc_id = g;
@@ -42,9 +63,42 @@ void gpu_topology_t::build(unsigned num_gpcs, unsigned num_sms_per_gpc,
   }
 }
 
+bool gpu_topology_t::parse_gpc_sms(const char *s, unsigned num_gpcs,
+                                   std::vector<unsigned> *out, char *err,
+                                   unsigned err_len) {
+  if (!s || !out) return false;
+  out->clear();
+  const char *p = s;
+  while (*p) {
+    while (*p == ' ' || *p == '\t') p++;
+    if (!*p) break;
+    char *end = nullptr;
+    const unsigned long v = strtoul(p, &end, 10);
+    if (end == p) {
+      if (err && err_len)
+        snprintf(err, err_len,
+                 "GPGPU-Sim ** ERROR: -gpgpu_gpc_sms parse failed at '%s'\n",
+                 p);
+      return false;
+    }
+    out->push_back((unsigned)v);
+    p = end;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == ',') p++;
+  }
+  if (out->size() != num_gpcs) {
+    if (err && err_len)
+      snprintf(err, err_len,
+               "GPGPU-Sim ** ERROR: -gpgpu_gpc_sms has %zu entries, need %u\n",
+               out->size(), num_gpcs);
+    return false;
+  }
+  return true;
+}
+
 unsigned gpu_topology_t::num_sms_in_gpc(gpc_id_t gpc) const {
   assert(gpc < m_num_gpcs);
-  return m_sms_per_gpc;
+  return m_sms_in_gpc[gpc];
 }
 
 unsigned gpu_topology_t::num_cpc_slots_in_gpc(gpc_id_t gpc) const {
@@ -70,8 +124,8 @@ sm_id_t gpu_topology_t::sm_id_at(gpc_id_t gpc, local_sm_id_t local_sm) const {
   assert(gpc < m_num_gpcs);
   // local_sm == num_sms_in_gpc is the exclusive end of the GPC's SM range
   // (legacy cid_to_sid(n_cores, gpc) used by stats aggregation).
-  assert(local_sm <= m_sms_per_gpc);
-  return gpc * m_sms_per_gpc + local_sm;
+  assert(local_sm <= m_sms_in_gpc[gpc]);
+  return m_gpc_sm_base[gpc] + local_sm;
 }
 
 gpc_id_t gpu_topology_t::gpc_id_of_sm(sm_id_t sm_id) const {

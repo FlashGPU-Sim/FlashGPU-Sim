@@ -6680,8 +6680,9 @@ void opndcoll_rfu_t::collector_unit_t::dispatch() {
 
 void exec_simt_core_cluster::create_shader_core_ctx() {
   // Only enabled local SMs get a shader_core_ctx. PG'd CPC slots do not.
-  m_core = new shader_core_ctx *[m_config->n_simt_cores_per_cluster];
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
+  const unsigned n = num_cores();
+  m_core = new shader_core_ctx *[n];
+  for (unsigned i = 0; i < n; i++) {
     unsigned sid = m_config->cid_to_sid(i, m_cluster_id);
     m_core[i] = new exec_shader_core_ctx(m_gpu, this, sid, m_cluster_id,
                                          m_config, m_mem_config, m_stats);
@@ -6695,12 +6696,11 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
                                      shader_core_stats *stats,
                                      class memory_stats_manager_t *mstats) {
   m_config = config;
-  m_cta_issue_next_core = m_config->n_simt_cores_per_cluster -
-                          1;  // this causes first launch to use hw cta 0
+  m_cluster_id = cluster_id;
+  m_cta_issue_next_core = num_cores() - 1;  // first launch uses hw cta 0
   m_next_tb_cluster_group_id = 0;
   m_pending_issue_cluster_group = (unsigned)-1;
   m_pending_issue_group_size = 0;
-  m_cluster_id = cluster_id;
   m_gpu = gpu;
 #ifdef FLASH_GPGPU_SIM_OMP
   m_stats = new shader_core_stats(config);
@@ -6710,8 +6710,7 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
 #endif
   m_mem_stats = mstats;
   m_mem_config = mem_config;
-  m_response_fifo.init(m_config->n_simt_cores_per_cluster,
-                       m_config->n_simt_ejection_buffer_size);
+  m_response_fifo.init(num_cores(), m_config->n_simt_ejection_buffer_size);
   m_cluster_noc = std::make_unique<flash_gpgpu_sim::cluster_noc_t>(this, config);
   dsm_fabric_config_t fcfg;
   fcfg.cpcs = config->dsm_cpcs_per_gpc;
@@ -6805,7 +6804,7 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
 void simt_core_cluster::aggregate_stats() {
 #ifdef FLASH_GPGPU_SIM_OMP
   auto sm_lhs = m_config->cid_to_sid(0, m_cluster_id);
-  auto sm_rhs = m_config->cid_to_sid(m_config->n_simt_cores_per_cluster,
+  auto sm_rhs = m_config->cid_to_sid(num_cores(),
                                       m_cluster_id);
   m_aggregate_stats->aggregate(*m_stats, sm_lhs, sm_rhs);
 #endif
@@ -7320,23 +7319,23 @@ void simt_core_cluster::dsm_queue_retry(unsigned src,
 }
 
 void simt_core_cluster::reinit() {
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+  for (unsigned i = 0; i < num_cores(); i++)
     m_core[i]->reinit(0, m_config->n_thread_per_shader, true);
 }
 
 unsigned simt_core_cluster::max_cta(const kernel_info_t &kernel) {
-  return m_config->n_simt_cores_per_cluster * m_config->max_cta(kernel);
+  return num_cores() * m_config->max_cta(kernel);
 }
 
 unsigned simt_core_cluster::get_not_completed() const {
   unsigned not_completed = 0;
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+  for (unsigned i = 0; i < num_cores(); i++)
     not_completed += m_core[i]->get_not_completed();
   return not_completed;
 }
 
 void simt_core_cluster::print_not_completed(FILE *fp) const {
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
+  for (unsigned i = 0; i < num_cores(); i++) {
     unsigned not_completed = m_core[i]->get_not_completed();
     unsigned sid = m_config->cid_to_sid(i, m_cluster_id);
     fprintf(fp, "%u(%u) ", sid, not_completed);
@@ -7346,22 +7345,22 @@ void simt_core_cluster::print_not_completed(FILE *fp) const {
 float simt_core_cluster::get_current_occupancy(
     unsigned long long &active, unsigned long long &total) const {
   float aggregate = 0.f;
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
+  for (unsigned i = 0; i < num_cores(); i++) {
     aggregate += m_core[i]->get_current_occupancy(active, total);
   }
-  return aggregate / m_config->n_simt_cores_per_cluster;
+  return aggregate / num_cores();
 }
 
 unsigned simt_core_cluster::get_n_active_cta() const {
   unsigned n = 0;
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+  for (unsigned i = 0; i < num_cores(); i++)
     n += m_core[i]->get_n_active_cta();
   return n;
 }
 
 unsigned simt_core_cluster::get_n_active_sms() const {
   unsigned n = 0;
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+  for (unsigned i = 0; i < num_cores(); i++)
     n += m_core[i]->isactive();
   return n;
 }
@@ -7414,7 +7413,7 @@ unsigned simt_core_cluster::allocate_cta_cluster_group(unsigned group_size,
 
 unsigned simt_core_cluster::count_free_cta_slots(kernel_info_t &kernel) const {
   unsigned free_slots = 0;
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
+  for (unsigned i = 0; i < num_cores(); i++) {
     if (m_core[i]->can_issue_1block(kernel)) free_slots++;
   }
   return free_slots;
@@ -7425,7 +7424,7 @@ unsigned simt_core_cluster::issue_block2core_for_kernel(
   if (!kernel || !m_gpu->kernel_more_cta_left(kernel)) return 0;
 
   unsigned num_blocks_issued = 0;
-  const unsigned n = m_config->n_simt_cores_per_cluster;
+  const unsigned n = num_cores();
   const unsigned rr_start = m_cta_issue_next_core;
   for (unsigned i = 0; i < n; i++) {
     unsigned core = gpc_cta_issue_visit(i, rr_start, n);
@@ -7446,8 +7445,7 @@ unsigned simt_core_cluster::issue_block2core_for_kernel(
 
     if (m_core[core]->can_issue_1block(*kernel)) {
       if (m_config->gpgpu_cta_load_balance && !kernel->is_cluster_launch()) {
-        unsigned n_cores =
-            m_config->n_simt_clusters * m_config->n_simt_cores_per_cluster;
+        unsigned n_cores = m_config->num_shader();
         unsigned total_ctas = kernel->num_blocks();
         unsigned max_ctas_per_core = (total_ctas + n_cores - 1) / n_cores;
         if (m_core[core]->get_total_ctas_issued() >= max_ctas_per_core) {
@@ -7472,7 +7470,7 @@ unsigned simt_core_cluster::issue_block2core_for_kernel(
 
 unsigned simt_core_cluster::issue_block2core() {
   unsigned num_blocks_issued = 0;
-  const unsigned n = m_config->n_simt_cores_per_cluster;
+  const unsigned n = num_cores();
   const unsigned rr_start = m_cta_issue_next_core;
   for (unsigned i = 0; i < n; i++) {
     unsigned core = gpc_cta_issue_visit(i, rr_start, n);
@@ -7506,7 +7504,7 @@ unsigned simt_core_cluster::issue_block2core() {
     if (m_gpu->kernel_more_cta_left(kernel) &&
         m_core[core]->can_issue_1block(*kernel)) {
       if (m_config->gpgpu_cta_load_balance) {
-        unsigned n_cores = m_config->n_simt_clusters * m_config->n_simt_cores_per_cluster;
+        unsigned n_cores = m_config->num_shader();
         unsigned total_ctas = kernel->num_blocks();
         unsigned max_ctas_per_core = (total_ctas + n_cores - 1) / n_cores;
         if (m_core[core]->get_total_ctas_issued() >= max_ctas_per_core) {
@@ -7524,12 +7522,12 @@ unsigned simt_core_cluster::issue_block2core() {
 }
 
 void simt_core_cluster::cache_flush() {
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+  for (unsigned i = 0; i < num_cores(); i++)
     m_core[i]->cache_flush();
 }
 
 void simt_core_cluster::cache_invalidate() {
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+  for (unsigned i = 0; i < num_cores(); i++)
     m_core[i]->cache_invalidate();
 }
 
@@ -7681,7 +7679,7 @@ void simt_core_cluster::icnt_cycle() {
       m_config->gpgpu_cp_async_response_width
           ? m_config->gpgpu_cp_async_response_width
           : 1;
-  const unsigned n = m_config->n_simt_cores_per_cluster;
+  const unsigned n = num_cores();
 
   for (unsigned cid = 0; cid < n; cid++) {
     unsigned tma_responses_accepted = 0;
@@ -7758,7 +7756,7 @@ void simt_core_cluster::icnt_cycle() {
 void sst_simt_core_cluster::icnt_cycle_SST() {
   // SST still indexes one shader port per GPC. Unsupported until a per-SM
   // adapter exists. Dispatch uses the packet's local SM FIFO.
-  const unsigned n = m_config->n_simt_cores_per_cluster;
+  const unsigned n = num_cores();
   for (unsigned cid = 0; cid < n; cid++) {
     if (m_response_fifo.empty(cid)) continue;
     mem_fetch *mf = m_response_fifo.front(cid);
@@ -7816,7 +7814,7 @@ void simt_core_cluster::display_pipeline(unsigned sid, FILE *fout,
 
   fprintf(fout, "\n");
   fprintf(fout, "Cluster %u pipeline state\n", m_cluster_id);
-  for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; cid++) {
+  for (unsigned cid = 0; cid < num_cores(); cid++) {
     fprintf(fout, "SM %u response FIFO (occupancy = %zu):\n",
             m_config->cid_to_sid(cid, m_cluster_id), m_response_fifo.size(cid));
     for (std::list<mem_fetch *>::const_iterator i =
@@ -7829,7 +7827,7 @@ void simt_core_cluster::display_pipeline(unsigned sid, FILE *fout,
 
 void simt_core_cluster::print_cache_stats(FILE *fp, unsigned &dl1_accesses,
                                           unsigned &dl1_misses) const {
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+  for (unsigned i = 0; i < num_cores(); ++i) {
     m_core[i]->print_cache_stats(fp, dl1_accesses, dl1_misses);
   }
 }
@@ -7838,7 +7836,7 @@ void simt_core_cluster::get_icnt_stats(long &n_simt_to_mem,
                                        long &n_mem_to_simt) const {
   long simt_to_mem = 0;
   long mem_to_simt = 0;
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+  for (unsigned i = 0; i < num_cores(); ++i) {
     m_core[i]->get_icnt_power_stats(simt_to_mem, mem_to_simt);
   }
   n_simt_to_mem = simt_to_mem;
@@ -7846,7 +7844,7 @@ void simt_core_cluster::get_icnt_stats(long &n_simt_to_mem,
 }
 
 void simt_core_cluster::get_cache_stats(cache_stats &cs) const {
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+  for (unsigned i = 0; i < num_cores(); ++i) {
     m_core[i]->get_cache_stats(cs);
   }
 }
@@ -7856,7 +7854,7 @@ void simt_core_cluster::get_L1I_sub_stats(struct cache_sub_stats &css) const {
   struct cache_sub_stats total_css;
   temp_css.clear();
   total_css.clear();
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+  for (unsigned i = 0; i < num_cores(); ++i) {
     m_core[i]->get_L1I_sub_stats(temp_css);
     total_css += temp_css;
   }
@@ -7867,7 +7865,7 @@ void simt_core_cluster::get_L1D_sub_stats(struct cache_sub_stats &css) const {
   struct cache_sub_stats total_css;
   temp_css.clear();
   total_css.clear();
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+  for (unsigned i = 0; i < num_cores(); ++i) {
     m_core[i]->get_L1D_sub_stats(temp_css);
     total_css += temp_css;
   }
@@ -7878,7 +7876,7 @@ void simt_core_cluster::get_L1C_sub_stats(struct cache_sub_stats &css) const {
   struct cache_sub_stats total_css;
   temp_css.clear();
   total_css.clear();
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+  for (unsigned i = 0; i < num_cores(); ++i) {
     m_core[i]->get_L1C_sub_stats(temp_css);
     total_css += temp_css;
   }
@@ -7889,7 +7887,7 @@ void simt_core_cluster::get_L1T_sub_stats(struct cache_sub_stats &css) const {
   struct cache_sub_stats total_css;
   temp_css.clear();
   total_css.clear();
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+  for (unsigned i = 0; i < num_cores(); ++i) {
     m_core[i]->get_L1T_sub_stats(temp_css);
     total_css += temp_css;
   }
@@ -7905,7 +7903,7 @@ void exec_shader_core_ctx::checkExecutionStatusAndUpdate(warp_inst_t &inst,
     unsigned num_addrs;
     num_addrs = translate_local_memaddr(
         inst.get_addr(t), tid,
-        m_config->n_simt_clusters * m_config->n_simt_cores_per_cluster,
+        m_config->num_shader(),
         inst.data_size, (new_addr_type *)localaddrs);
     inst.set_addr(t, (new_addr_type *)localaddrs, num_addrs);
   }

@@ -38,6 +38,15 @@ class gpu_topology_t {
   void build(unsigned num_gpcs, unsigned num_sms_per_gpc,
              unsigned cpcs_per_gpc);
 
+  // Per-GPC enabled SM counts (e.g. H200 4×17 + 4×16). Length == num_gpcs.
+  void build(unsigned num_gpcs, const std::vector<unsigned> &sms_per_gpc,
+             unsigned cpcs_per_gpc);
+
+  // Parse "-gpgpu_gpc_sms 17,17,17,17,16,16,16,16". Returns false on error.
+  static bool parse_gpc_sms(const char *s, unsigned num_gpcs,
+                            std::vector<unsigned> *out, char *err,
+                            unsigned err_len);
+
   unsigned num_gpcs() const { return m_num_gpcs; }
   unsigned num_sms() const { return m_num_sms; }
   unsigned num_sms_in_gpc(gpc_id_t gpc) const;
@@ -61,10 +70,12 @@ class gpu_topology_t {
 
  private:
   unsigned m_num_gpcs = 0;
-  unsigned m_sms_per_gpc = 0;
+  unsigned m_sms_per_gpc = 0;  // uniform count, or max if hetero
   unsigned m_cpcs_per_gpc = 0;
   unsigned m_num_sms = 0;
   unsigned m_slots_per_gpc = 0;
+  std::vector<unsigned> m_sms_in_gpc;
+  std::vector<unsigned> m_gpc_sm_base;      // prefix: first sm_id of GPC
   std::vector<sm_location_t> m_sm;          // enabled SMs, index = sm_id
   std::vector<unsigned> m_slot_sm;          // gpc*slots + linear slot → sm or ~0u
 };

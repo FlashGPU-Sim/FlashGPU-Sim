@@ -101,16 +101,17 @@ Reduced two-GPC H200 profile for functional iteration and intra-GPC NoC.
 - Prefer over full `SM90_H200` for day-to-day functional work
 - **Not** the published cycle-calibration config
 
-### SM90_H200_CLUSTER16x8
+### SM90_H200_CLUSTER132
 
-Full-chip GPC-packed H200 for cycle-accurate cluster calibration (B6). See `docs/cluster_noc/calibration.md`.
+Default full-chip GPC packing for published H200 calibration. See `docs/cluster_noc/calibration.md`.
 
 **Use for:**
 - Published mbarrier / TMA / DSM / GEMM cycle comparisons vs H200
 - Fabric-on runs that need a product-scale L2/HBM system
 
 **Characteristics:**
-- 8 GPCs × 16 SMs/GPC = 128 SMs (uniform 16-SM GPC; product H200 is 132)
+- **inferred** 4 GPCs × 17 SMs + 4 GPCs × 16 SMs = **132 SMs** (`-gpgpu_gpc_sms 17,17,17,17,16,16,16,16`)
+- CUDA CC 9.0 occupancy: 2048 threads / 32 blocks per SM
 - Same clocks / caches / HBM knobs as `SM90_H200`
 - `-gpgpu_dsm_enable 1` (intra-GPC fabric)
 - Do **not** use the reduced 32-SM cluster for numbers that go in `calibration.md`
