@@ -33,14 +33,12 @@ FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x
 FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER_HETERO3_2 \
   run test --target sm120 --group integration "*ClusterLaunch*"
 
-# Same-SM TMA multicast applies locally (fabric rejects src==dst)
+# TMA multicast is functional and has no DSM-fabric callsite
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit \
-  "GpuTopology.DsmTma*"
+  "GpuTopology.TmaMulticastDoesNotUseDsmFabric"
 
-# Multicast peer mbar rides the fabric with the TMA data (mbar-after-data).
-# Without it the demo GEMM mcast kernel stalls at 248/256 on the leftover
-# 17th SM. Known tradeoff: L10/L11 TMA-mcast latency probes shift because the
-# issuer now waits for one peer fabric+SRAM landing.
+# Multicast peer data and mbar completion remain functionally ordered; no
+# network or SRAM-contention overlay is needed for TMA multicast.
 ```
 
 SM120 reduced needs a run-dir **overlay** for NoC-on DSM:
@@ -157,7 +155,7 @@ Existing `DsmTest.*` / `MbarrierClusterTest.*` must still PASS.
 
 Full write-up, kernel IDs, H200 numbers, and simulator results: [`calibration.md`](calibration.md).
 
-**Config:** `SM90_H200_CLUSTER132` (inferred 4×17 + 4×16 = 132 SMs, fabric on). **Not** the reduced 32-SM cluster. **Not** shipped `SM90_H200` (132×1).  
+**Config:** `SM90_H200_CLUSTER132` (inferred 6×16 + 2×18 = 132 SMs, fabric on). **Not** the reduced 32-SM cluster. **Not** shipped `SM90_H200` (132×1).
 **Threads:** `OMP_NUM_THREADS=4`.  
 **Cycle gate:** inner loop ≈ 1e5 `%clock64` cycles; \(|T_{\mathrm{sim}}-T_{\mathrm{H200}}|/T_{\mathrm{H200}} < 10\%\).
 
@@ -177,7 +175,7 @@ Exact hash and per-hop credit depth are **not** v1 accept criteria.
 
 Pre-calibration functional audit (2026-08-31): upstream smoke 8/8; fresh-process BW1–BW12 representatives 17/17; reduced-workload upstream GMEM normal / `cp.async` / TMA 3/3; reduced-config `DsmTest.*` + one-producer/CTA-scope TMA integration filter 18/18. See [`calibration.md`](calibration.md) §5.2.1. These passes do not replace the size-slope or full-workload performance gates.
 
-Latency close-out (2026-09-01): L1–L11 each complete twice on the full-chip preset with <10% error and valid payloads. Fabric unit coverage includes shaped TMA payloads and store/TMA packet-class visibility floors. L12 still requires the H2 hardware result.
+Latency close-out (2026-09-01): L1–L11 each complete twice on the full-chip preset with <10% error and valid payloads. Those historical TMA fabric results are no longer acceptance criteria: multicast now has functional fan-out plus a fixed latency knob only. L12 still requires the H2 hardware result.
 
 Bandwidth close-out (2026-09-01): primary load/store/TMA slopes and 2/4/8/16-SM TMA scaling pass the 10% blog gates. Load+TMA direction sharing passes; ordinary load+store opposite direction retains the documented pre-fabric issue-order limitation. Twenty-repeat cycle gates exceed 1e5 aggregate timed cycles with valid checksums.
 

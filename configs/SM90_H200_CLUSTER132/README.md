@@ -8,10 +8,10 @@ Product-scale **H200 NVL** packing for published cycle calibration.
 
 | GPC | Enabled SMs | PG'd CPC slots (of 18) |
 |-----|------------:|-----------------------:|
-| 0–3 | 17 | 1 |
-| 4–7 | 16 | 2 |
+| 0–5 | 16 | 2 |
+| 6–7 | 18 | 0 |
 
-Total SMs = **132**. Knob: `-gpgpu_gpc_sms 17,17,17,17,16,16,16,16`.
+Total SMs = **132**. Knob: `-gpgpu_gpc_sms 16,16,16,16,16,16,18,18`.
 
 TB-cluster `product(clusterDim) ≤ 16` (min enabled SMs in a GPC).
 
@@ -25,7 +25,7 @@ CUDA CC 9.0: 2048 threads / 64 warps / 32 blocks per SM (`-gpgpu_shader_core_pip
 |--------|---------|------|
 | `SM90_H200` | 132 × 1 | Product clocks; **cannot** exercise DSM fabric |
 | `SM90_H200_REDUCED_CLUSTER16x2` | 16 × 2 = 32 | Functional CI |
-| **`SM90_H200_CLUSTER132`** | 4×17 + 4×16 | **Default published H200 calibration** |
+| **`SM90_H200_CLUSTER132`** | 6×16 + 2×18 | **Default published H200 calibration** |
 
 ## Usage
 

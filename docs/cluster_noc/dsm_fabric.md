@@ -247,11 +247,12 @@ Each transaction dump: ids, requester/target sm/gpc/cta/warp/rank, network src/d
 
 ---
 
-## 8. TMA multicast on this fabric
+## 8. TMA multicast
 
-v1: expand multicast at the **source** into unicast `tma_data` packets (source bandwidth scales with peer count). Keep a route descriptor that can later be `unicast | multicast_mask` so fabric replication is possible without changing the VC contract.
-
-Do not claim a hardware replication point. Peer mbarrier complete stays **after** data (same as today).
+TMA multicast is not carried by this fabric. It is a functional fan-out with a
+single fixed completion-latency knob, default 0. No route, flits, credits,
+bandwidth, SRAM arbitration, or DSM contention are modeled without evidence
+that TMA shares this network.
 
 ---
 

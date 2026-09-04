@@ -1802,8 +1802,7 @@ class shader_core_config : public core_config {
     gpgpu_dsm_ack_timeout_cycles = 64;
     gpgpu_dsm_base_latency_cycles = 0;
     gpgpu_dsm_store_visibility_latency_cycles = 0;
-    gpgpu_tma_mcast_fabric_latency_cycles = 0;
-    gpgpu_tma_mcast_completion_extra_cycles = 0;
+    gpgpu_tma_multicast_latency = 0;
     gpgpu_tma_load_completion_base_cycles = 0;
     gpgpu_tma_load_completion_cycles_per_kib = 0;
     gpgpu_shmem_bytes_per_cycle = 0;
@@ -2102,7 +2101,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_mbarrier_arrive_latency;
   unsigned int gpgpu_mbarrier_trywait_latency;
 
-  // Intra-cluster NoC / DSM / TMA multicast hop (docs/cluster_noc/knobs.md).
+  // Intra-cluster NoC / DSM (docs/cluster_noc/knobs.md).
   bool gpgpu_cluster_noc_enable;
   unsigned int gpgpu_dsm_local_latency;
   // One-way remote hop default when matrix missing (H200~78). Load RTT ≈ 2×hop.
@@ -2113,17 +2112,14 @@ class shader_core_config : public core_config {
   // When NoC is on: 0 (default) = write peer smem only on DSM_STORE deliver;
   // 1 = also write at issue. NoC-off always writes now.
   bool gpgpu_dsm_store_immediate;
-  bool gpgpu_tma_mcast_enable_timing;
-  unsigned int gpgpu_tma_mcast_hop_latency;
-  bool gpgpu_tma_mcast_use_dsm_matrix;
-  unsigned int gpgpu_tma_mcast_bytes_per_cycle;
-  bool gpgpu_tma_mcast_mbar_after_data;
+  // Fixed completion delay only; multicast does not use an on-chip network.
+  unsigned int gpgpu_tma_multicast_latency;
   unsigned int gpgpu_mbarrier_remote_hop_latency;
   bool gpgpu_mbarrier_cluster_enable;
   // 0 = off. Default is well above hop / try_wait latencies.
   unsigned int gpgpu_cluster_hang_watchdog;
   // Intra-GPC DSM fabric (docs/cluster_noc/knobs.md §3). When set, cluster
-  // ld/st/atom, TMA multicast, and remote mbarrier use fabric packets.
+  // ld/st/atom and remote mbarrier use fabric packets.
   bool gpgpu_dsm_enable;
   unsigned int gpgpu_dsm_flit_payload_bytes;
   unsigned int gpgpu_dsm_lanes_per_cpc;
@@ -2142,8 +2138,6 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_dsm_ack_timeout_cycles;
   unsigned int gpgpu_dsm_base_latency_cycles;
   unsigned int gpgpu_dsm_store_visibility_latency_cycles;
-  unsigned int gpgpu_tma_mcast_fabric_latency_cycles;
-  unsigned int gpgpu_tma_mcast_completion_extra_cycles;
   unsigned int gpgpu_tma_load_completion_base_cycles;
   unsigned int gpgpu_tma_load_completion_cycles_per_kib;
   unsigned int gpgpu_shmem_bytes_per_cycle;
@@ -2180,7 +2174,7 @@ class shader_core_config : public core_config {
   unsigned n_simt_clusters;           // GPC count
   unsigned num_gpcs_alias;            // -gpgpu_num_gpcs
   unsigned num_sms_per_gpc_alias;     // -gpgpu_num_sms_per_gpc
-  char *gpgpu_gpc_sms = nullptr;      // per-GPC counts, e.g. 17,17,17,17,16,16,16,16
+  char *gpgpu_gpc_sms = nullptr;      // per-GPC counts, e.g. 16,16,16,16,16,16,18,18
   unsigned dsm_cpcs_per_gpc;          // default 3; each CPC is 6 slots
   gpu_topology_t m_topology;
   class OptionParser *m_opp;

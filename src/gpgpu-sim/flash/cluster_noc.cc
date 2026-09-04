@@ -1,7 +1,5 @@
 #include "cluster_noc.h"
 
-#include <cassert>
-
 #include "../../abstract_hardware_model.h"
 #include "../../cuda-sim/ptx_sim.h"
 #include "../gpu-sim.h"
@@ -52,22 +50,11 @@ unsigned cluster_noc_t::hop_latency(unsigned src_cid, unsigned dst_cid) const {
   return m_config ? m_config->gpgpu_dsm_remote_latency : 0;
 }
 
-unsigned cluster_noc_t::tma_mcast_hop(unsigned src_cid,
-                                      unsigned dst_cid) const {
-  return resolve_hop(src_cid, dst_cid, /*tma_path=*/true);
-}
-
-unsigned cluster_noc_t::resolve_hop(unsigned src_cid, unsigned dst_cid,
-                                    bool tma_path) const {
+unsigned cluster_noc_t::resolve_hop(unsigned src_cid, unsigned dst_cid) const {
   if (!m_config)
     return 0;
   if (src_cid == dst_cid)
     return 0;
-  if (tma_path) {
-    if (m_config->gpgpu_tma_mcast_use_dsm_matrix)
-      return hop_latency(src_cid, dst_cid);
-    return m_config->gpgpu_tma_mcast_hop_latency;
-  }
   if (m_config->gpgpu_mbarrier_remote_hop_latency != 0)
     return m_config->gpgpu_mbarrier_remote_hop_latency;
   return hop_latency(src_cid, dst_cid);
@@ -79,10 +66,6 @@ unsigned cluster_noc_t::bw_extra_cycles(cluster_noc_msg_type type,
     return 0;
   unsigned bpc = 0;
   switch (type) {
-  case cluster_noc_msg_type::TMA_MCAST_DATA:
-  case cluster_noc_msg_type::TMA_MCAST_MBAR:
-    bpc = m_config->gpgpu_tma_mcast_bytes_per_cycle;
-    break;
   case cluster_noc_msg_type::DSM_STORE:
   case cluster_noc_msg_type::DSM_LOAD_REQ:
   case cluster_noc_msg_type::DSM_LOAD_RSP:
@@ -105,9 +88,7 @@ bool cluster_noc_t::inject(cluster_noc_message msg) {
   msg.inject_cycle = t;
   if (msg.ready_cycle < t) {
     // Caller did not pre-set ready; compute hop.
-    const bool tma = (msg.type == cluster_noc_msg_type::TMA_MCAST_DATA ||
-                      msg.type == cluster_noc_msg_type::TMA_MCAST_MBAR);
-    unsigned hop = resolve_hop(msg.src_cid, msg.dst_cid, tma);
+    unsigned hop = resolve_hop(msg.src_cid, msg.dst_cid);
     hop += bw_extra_cycles(msg.type, msg.size_in_bytes);
     msg.ready_cycle = t + hop;
   }
@@ -121,58 +102,6 @@ bool cluster_noc_t::inject(cluster_noc_message msg) {
   const size_t inflight_now = m_inflight.size() + m_deferred_inject.size();
   if (inflight_now > m_stats.max_inflight)
     m_stats.max_inflight = inflight_now;
-  return true;
-}
-
-bool cluster_noc_t::inject_tma_mcast_to_peer(
-    unsigned src_cid, unsigned dst_cid, unsigned dst_hw_cta, uint32_t smem_addr,
-    const uint8_t *data, uint32_t size_in_bytes, uint32_t mbar_addr,
-    uint32_t mbar_bytes, uint64_t stream_key) {
-  if (!enabled())
-    return false;
-
-  const unsigned long long t = now();
-  unsigned hop = resolve_hop(src_cid, dst_cid, /*tma_path=*/true);
-  hop += bw_extra_cycles(cluster_noc_msg_type::TMA_MCAST_DATA, size_in_bytes);
-  const unsigned long long data_ready = t + hop;
-
-  cluster_noc_message data_msg;
-  data_msg.type = cluster_noc_msg_type::TMA_MCAST_DATA;
-  data_msg.src_cid = src_cid;
-  data_msg.dst_cid = dst_cid;
-  data_msg.dst_hw_cta = dst_hw_cta;
-  data_msg.smem_addr = smem_addr;
-  data_msg.size_in_bytes = size_in_bytes;
-  data_msg.inject_cycle = t;
-  data_msg.ready_cycle = data_ready;
-  data_msg.stream_key = stream_key;
-  data_msg.payload = std::make_shared<cluster_noc_payload>();
-  if (data && size_in_bytes > 0) {
-    data_msg.payload->bytes.assign(data, data + size_in_bytes);
-  } else {
-    data_msg.payload->bytes.assign(size_in_bytes, 0);
-  }
-  const uint64_t data_seq = m_next_seq;
-  inject(std::move(data_msg));
-
-  // mbar must not race ahead of data (same stream, later seq, ready >= data).
-  if (m_config->gpgpu_tma_mcast_mbar_after_data) {
-    const uint64_t mbar_seq = m_next_seq;
-    assert(data_seq < mbar_seq &&
-           "TMA mcast: data message seq must precede mbar on the same stream");
-    cluster_noc_message mbar_msg;
-    mbar_msg.type = cluster_noc_msg_type::TMA_MCAST_MBAR;
-    mbar_msg.src_cid = src_cid;
-    mbar_msg.dst_cid = dst_cid;
-    mbar_msg.dst_hw_cta = dst_hw_cta;
-    mbar_msg.mbar_addr = mbar_addr;
-    mbar_msg.mbar_count = mbar_bytes;
-    mbar_msg.mbar_op = cluster_mbar_op::TRY_COMPLETE_TX;
-    mbar_msg.inject_cycle = t;
-    mbar_msg.ready_cycle = data_ready; // same cycle as data is fine (FIFO)
-    mbar_msg.stream_key = stream_key;
-    inject(std::move(mbar_msg));
-  }
   return true;
 }
 
@@ -290,12 +219,6 @@ void cluster_noc_t::drop_messages_to_cta(unsigned cid, unsigned hw_cta) {
 
 void cluster_noc_t::deliver(cluster_noc_message &msg) {
   switch (msg.type) {
-  case cluster_noc_msg_type::TMA_MCAST_DATA:
-    deliver_tma_mcast_data(msg);
-    break;
-  case cluster_noc_msg_type::TMA_MCAST_MBAR:
-    deliver_tma_mcast_mbar(msg);
-    break;
   case cluster_noc_msg_type::DSM_STORE:
     deliver_dsm_store(msg);
     break;
@@ -310,40 +233,6 @@ void cluster_noc_t::deliver(cluster_noc_message &msg) {
     deliver_mbar_remote(msg);
     break;
   }
-}
-
-void cluster_noc_t::deliver_tma_mcast_data(cluster_noc_message &msg) {
-  if (!m_cluster)
-    return;
-  shader_core_ctx *peer = m_cluster->get_core(msg.dst_cid);
-  if (!peer)
-    return;
-  if (!peer->is_cta_slot_active(msg.dst_hw_cta)) {
-    m_stats.dropped_on_cta_exit++;
-    return;
-  }
-  memory_space *peer_smem = peer->get_cta_smem(msg.dst_hw_cta);
-  if (!peer_smem || !msg.payload)
-    return;
-  const auto &bytes = msg.payload->bytes;
-  if (bytes.empty())
-    return;
-  // Null thread/pI: pure functional peer write (no watchpoint callback).
-  peer_smem->write(msg.smem_addr, bytes.size(), bytes.data(), nullptr, nullptr);
-}
-
-void cluster_noc_t::deliver_tma_mcast_mbar(cluster_noc_message &msg) {
-  if (!m_cluster)
-    return;
-  shader_core_ctx *peer = m_cluster->get_core(msg.dst_cid);
-  if (!peer)
-    return;
-  if (!peer->is_cta_slot_active(msg.dst_hw_cta)) {
-    m_stats.dropped_on_cta_exit++;
-    return;
-  }
-  peer->try_complete_cluster_peer_mbarrier(msg.dst_hw_cta, msg.mbar_addr,
-                                           msg.mbar_count);
 }
 
 void cluster_noc_t::deliver_dsm_store(cluster_noc_message &msg) {

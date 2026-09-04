@@ -101,11 +101,13 @@ Keep `-gpgpu_n_clusters` / `-gpgpu_n_cores_per_cluster` as **deprecated aliases*
 | Network | Connects | Carries | Clock |
 |---------|----------|---------|--------|
 | Existing icnt (`local_interconnect` / BookSim) | **SM ↔ L2/DRAM** | Cache-line `mem_fetch` | ICNT domain |
-| New `dsm_fabric_t` | **SM ↔ SM inside one GPC** | DSM / TMA-peer / remote mbarrier **packets and 32 B payload flits** | CORE domain |
+| New `dsm_fabric_t` | **SM ↔ SM inside one GPC** | DSM / remote mbarrier **packets and 32 B payload flits** | CORE domain |
 
 DSM bytes never become a `mem_fetch`, never allocate L1/L2, never use an icnt port.
 
-For the H200 calibration preset, architectural TMA completion and physical traffic completion are distinct events. Global-memory requests and multicast `tma_data` packets still execute and update shared memory, but the transaction's mbarrier is released on the measured completion curve. This models H200 overlap without serializing global-memory completion and peer delivery; it is disabled when the completion knobs are zero.
+TMA multicast is outside both on-chip networks: it functionally fans out to the
+selected CTAs and optionally delays `complete_tx` by
+`-gpgpu_tma_multicast_latency` cycles (default 0).
 
 ### Global NoC stays per SM (B2)
 

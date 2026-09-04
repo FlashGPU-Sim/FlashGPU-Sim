@@ -29,7 +29,7 @@ L2 model, 80 HBM channels). Clocks and latency knobs match `SM90_H200`
 - Intra-GPC NoC (CPC / GPCMMU / two-GPC isolation)
 - Co-residency of TB-cluster launches with clusterDim up to 16
 - Primary **functional** H200 regression (prefer over full 132 SM)
-- Hopper TMA / mbarrier / DSM with NoC on
+- Hopper TMA / mbarrier / DSM; the NoC models DSM only
 
 - `-network_mode 2` (local interconnect; BookSim icnt unused / not sized for 32 SMs)
 - `-gpgpu_tma_idealized_memory 1` (functional TMA path)

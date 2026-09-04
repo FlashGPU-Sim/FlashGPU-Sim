@@ -526,22 +526,16 @@ TEST(DsmFabric, ResidualIsFloorNotAddedToBulk) {
 }
 
 
-TEST(DsmFabric, PacketClassFloorsOverrideGenericFloor) {
+TEST(DsmFabric, StoreFloorOverridesGenericFloor) {
   dsm_fabric_config_t cfg;
   cfg.base_latency_cycles = 2;
   cfg.store_visibility_latency_cycles = 20;
-  cfg.tma_latency_cycles = 30;
   dsm_fabric_t f = make_fabric(4, 1, cfg);
   f.inject(mk_pkt(0, 1, dsm_packet_class_t::write_data, 32, 0));
-  f.inject(mk_pkt(0, 2, dsm_packet_class_t::tma_data, 32, 1));
   for (unsigned long long now = 0; now < 20; now++) {
     f.cycle(now);
     EXPECT_EQ(f.top(1, dsm_vc_t::request), nullptr);
-    EXPECT_EQ(f.top(2, dsm_vc_t::request), nullptr);
   }
   f.cycle(20);
   ASSERT_NE(f.top(1, dsm_vc_t::request), nullptr);
-  EXPECT_EQ(f.top(2, dsm_vc_t::request), nullptr);
-  f.cycle(30);
-  ASSERT_NE(f.top(2, dsm_vc_t::request), nullptr);
 }

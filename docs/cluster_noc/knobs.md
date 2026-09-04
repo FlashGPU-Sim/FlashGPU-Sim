@@ -25,7 +25,7 @@ Target extras:
 | `-gpgpu_dsm_cpcs_per_gpc` | 3 | CPCs in one GPC. Each CPC is 6 slots + GPCMMU + GPCARB |
 | `-gpgpu_dsm_clients_per_cpc` | 6 | SM slots per CPC (do not use 2 for “TPC”) |
 | `-gpgpu_gpc_slot_map` | empty = first N slots enabled | Documented alias; **implemented as** `-gpgpu_gpc_sms` |
-| `-gpgpu_gpc_sms` | empty = uniform | Per-GPC enabled SM counts, comma-separated. H200 product packing **inferred**: `17,17,17,17,16,16,16,16` (132 SMs). If set, scalar `num_sms_per_gpc` must be omitted or equal to the max. |
+| `-gpgpu_gpc_sms` | empty = uniform | Per-GPC enabled SM counts, comma-separated. H200 product packing **inferred**: `16,16,16,16,16,16,18,18` (132 SMs). If set, scalar `num_sms_per_gpc` must be omitted or equal to the max. |
 
 `product(clusterDim) ≤ min(enabled SMs in any GPC)`, not ≤ 18 slots.
 
@@ -44,11 +44,6 @@ Master switch today: `-gpgpu_cluster_noc_enable` (default 0; **1** on `SM90_H200
 | `-gpgpu_dsm_latency_matrix_file` | `""` | N×N one-way hop CSV, cluster-local core ids |
 | `-gpgpu_dsm_bytes_per_cycle` | 0 | Extra cycles `ceil(bytes/BPC)-1`; **0 = unlimited** |
 | `-gpgpu_dsm_store_immediate` | 0 | `0` write peer smem on deliver; `1` also at issue. Env `FLASHGPU_DSM_STORE_IMMEDIATE` |
-| `-gpgpu_tma_mcast_enable_timing` | 1 | When NoC on, TMA peers go through NoC |
-| `-gpgpu_tma_mcast_hop_latency` | 0 | H200 product **135** |
-| `-gpgpu_tma_mcast_use_dsm_matrix` | 0 | Usually off; TMA ≠ full DSM RTT |
-| `-gpgpu_tma_mcast_bytes_per_cycle` | 0 | Unlimited |
-| `-gpgpu_tma_mcast_mbar_after_data` | 1 | Data before peer `complete_tx` |
 | `-gpgpu_mbarrier_remote_hop_latency` | 0 | 0 ⇒ DSM hop |
 | `-gpgpu_mbarrier_cluster_enable` | 0 | Remote mbarrier addresses. **1** on H200 reduced |
 | `-gpgpu_cluster_hang_watchdog` | 8192 | Abort bare spin / mixed bar+try_wait. `0` = off. Env `FLASHGPU_CLUSTER_HANG_WATCHDOG` |
@@ -81,8 +76,9 @@ GX port formula: `routes = gx_planes * lanes_per_cpc`. GPCARB still grants at mo
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `-gpgpu_dsm_enable` | 0 (1 on `SM90_H200_REDUCED_CLUSTER16x2`) | Cluster ld/st/atom, TMA multicast, and remote mbarrier use the intra-GPC fabric. 0 = delay-line for those paths. |
-| `-gpgpu_shmem_bytes_per_cycle` | 0 (unlimited) | Per-SM SRAM service byte budget. Local LSU, TMA landing, and DSM ingress share it (two-phase grant). |
+| `-gpgpu_dsm_enable` | 0 (1 on `SM90_H200_REDUCED_CLUSTER16x2`) | Cluster ld/st/atom and remote mbarrier use the intra-GPC fabric. 0 = delay-line for those paths. |
+| `-gpgpu_shmem_bytes_per_cycle` | 0 (unlimited) | Per-SM SRAM service byte budget for local LSU and DSM ingress (two-phase grant). |
+| `-gpgpu_tma_multicast_latency` | **0** | Fixed cycles added before multicast `complete_tx`; functional fan-out only, with no NoC/fabric traffic or contention. |
 | `-gpgpu_dsm_flit_payload_bytes` | **32** | Payload bytes per grant. Alias **`-gpgpu_dsm_flit_bytes`** (plan-v2 name). Header unmodeled |
 | `-gpgpu_dsm_lanes_per_cpc` | 4 | GPCARB outputs |
 | `-gpgpu_dsm_gx_planes` | **2** | Parallel GX planes, not VCs |
@@ -97,21 +93,18 @@ GX port formula: `routes = gx_planes * lanes_per_cpc`. GPCARB still grants at mo
 | `-gpgpu_dsm_route_seed` | 0 | Hash seed |
 | `-gpgpu_dsm_base_latency_cycles` | **0** (H200 full-chip preset **78**, inferred) | Pipeline / serializer floor in addition to flit grants. Visible at dest at `max(tail_arrival, injected+floor)`. Does not add flit occupancy. |
 | `-gpgpu_dsm_store_visibility_latency_cycles` | **0** (H200 full-chip **245**, inferred) | Store-only visibility floor; 0 inherits the generic fabric floor. |
-| `-gpgpu_tma_mcast_fabric_latency_cycles` | **0** (H200 full-chip **143**, inferred) | Background TMA multicast packet visibility floor; 0 inherits the generic fabric floor. |
-| `-gpgpu_tma_mcast_completion_extra_cycles` | **0** (H200 full-chip **128**, inferred) | Architectural multicast completion premium; the H200 model includes the measured 16 KiB step. |
 | `-gpgpu_tma_load_completion_base_cycles` | **0** (H200 full-chip **240**, inferred) | Architectural TMA load completion base; 0 disables the calibrated completion curve. |
 | `-gpgpu_tma_load_completion_cycles_per_kib` | **0** (H200 full-chip **25**, inferred) | Size term added to the architectural TMA load completion base. |
 | `-gpgpu_ptx_register_allocator` | Generic default **1**; H200 calibration preset **0** | Optional virtual-register aliasing. Disabled for calibration because the looped TMA issue probe keeps its shared destination live across iterations. |
 | `-gpgpu_dsm_max_outstanding_per_sm` | **16** (H200 full-chip **1024**) | Endpoint tx window (not a VC/link credit) |
 | `-gpgpu_dsm_ack_coalesce_threshold` | **4** (H200 full-chip **64**) | Completions per `write_ack` |
 | `-gpgpu_dsm_ack_timeout_cycles` | **64** | Flush remaining ACK debt |
-| `-gpgpu_dsm_tma_mcast_expand` | `source_unicast` | v1 source expansion; later `fabric_replicate` |
 
 H200 **preset** may set shaper period 3, 6/4 CPC, 2 GX, 32 B payload. Generic / Blackwell presets must **not** inherit those values silently.
 
 Shared-memory aggregate bandwidth stays on the **SRAM service** (`gpgpu_shmem_bytes_per_cycle` or successor), not a DSM network knob.
 
-Hang watchdog **stays** after B-DEPR (not a delay-line hop knob). `tma_mcast_mbar_after_data` stays as an ordering policy.
+Hang watchdog **stays** after B-DEPR (not a delay-line hop knob).
 
 ---
 
@@ -127,7 +120,7 @@ Source: `../H200_profiling/output-2046238-H200Profiling.txt`. Blog / `dsm_bw` pi
 | Remote e2e ~193.41 | local + 2×hop | Fabric RTT + SRAM, **not** a baked issue stall |
 | One-way ~78 | matrix / remote_latency=78 | `base_latency` + serialization; do not keep a magic 78 after B-DEPR unless re-fit as base |
 | Stride ~1.001 | flat matrix | Hash should not invent multi-hop by rank |
-| TMA mcast−unicast +135, +174 at 16 KiB | `tma_mcast_hop_latency=135` | Architectural completion premium plus background fabric traffic, not a second delay line |
+| TMA mcast−unicast +135, +174 at 16 KiB | not modeled by default | Set only `tma_multicast_latency` when a fixed-delay experiment needs it |
 | ~21 B/cycle / SM | BPC unused (0) | Shaper 2/3 × 32 B payload |
 | SM120 product | NoC **off** | Keep functional-immediate until a SM120 fabric preset exists |
 
@@ -137,14 +130,8 @@ Policy: only `configs/SM90_H200*` carry calibrated DSM timing today.
 
 ## 5. TMA multicast behavior
 
-Delay-line (`-gpgpu_dsm_enable 0`):
-
-| NoC enable | `tma_mcast_enable_timing` | Peers |
-|------------|---------------------------|-------|
-| 0 | * | Immediate copy + try_complete |
-| 1 | 0 | Immediate |
-| 1 | 1 | Data + mbar after hop |
-
-Fabric (`-gpgpu_dsm_enable 1` and `tma_mcast_enable_timing`): software creates one `tma_data` descriptor per selected peer, tagged with one multicast group. The fabric grants the group as one physical flit stream and branches it to the destination ejection queues. Peer smem write and `complete_tx` wait for that packet’s tail **and** that SM’s SRAM grant. `-gpgpu_tma_mcast_mbar_after_data` stays the ordering policy.
-
-The calibrated H200 full-chip preset releases the architectural mbarrier on its measured completion curve while the global-memory request and multicast packets continue in the background. This does not skip payload validation or remove fabric accounting. TMA and ordinary DSM payloads use the same shaped 32-byte cache-line grants.
+TMA multicast is functionally copied to every selected peer without entering
+`cluster_noc_t` or `dsm_fabric_t`. Peer and selected-issuer `complete_tx` occurs
+after the TMA transaction plus `-gpgpu_tma_multicast_latency`; the default zero
+adds no multicast delay. No topology, bandwidth, routing, queue, SRAM-service,
+or contention model is attached to multicast.

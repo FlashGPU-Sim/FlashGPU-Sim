@@ -1,7 +1,6 @@
 // Intra-cluster SM↔SM Network-on-Chip for FlashGPU-Sim.
 //
 // Models hop latency (and optional simple bandwidth) for:
-//   - TMA .shared::cluster multicast data + peer mbarrier complete_tx
 //   - Distributed shared memory (DSM) loads/stores and atom (owner-smem RMW)
 //   - Remote mbarrier operations
 //
@@ -35,12 +34,10 @@ class gpgpu_sim;
 namespace flash_gpgpu_sim {
 
 enum class cluster_noc_msg_type : uint8_t {
-  TMA_MCAST_DATA = 0, // payload → peer CTA smem
-  TMA_MCAST_MBAR,     // try_complete_tx_if_pending on peer
-  DSM_STORE,          // write peer smem
-  DSM_LOAD_REQ,       // read peer smem, enqueue DSM_LOAD_RSP
-  DSM_LOAD_RSP,       // complete remote load (functional data path)
-  MBAR_REMOTE_OP,     // remote arrive / expect_tx / complete_tx
+  DSM_STORE = 0,  // write peer smem
+  DSM_LOAD_REQ,   // read peer smem, enqueue DSM_LOAD_RSP
+  DSM_LOAD_RSP,   // complete remote load (functional data path)
+  MBAR_REMOTE_OP, // remote arrive / expect_tx / complete_tx
 };
 
 enum class cluster_mbar_op : uint8_t {
@@ -53,14 +50,13 @@ enum class cluster_mbar_op : uint8_t {
   WAIT_DONE,
 };
 
-// Payload for in-flight messages. Large TMA tiles store bytes here so the
-// issuer may overwrite local smem after inject without corrupting peers.
+// Payload for in-flight DSM messages.
 struct cluster_noc_payload {
   std::vector<uint8_t> bytes;
 };
 
 struct cluster_noc_message {
-  cluster_noc_msg_type type = cluster_noc_msg_type::TMA_MCAST_DATA;
+  cluster_noc_msg_type type = cluster_noc_msg_type::DSM_STORE;
   unsigned src_cid = 0; // core id within physical cluster
   unsigned dst_cid = 0;
   unsigned src_sid = 0; // global SM id (debug / matrix remap)
@@ -121,20 +117,9 @@ public:
   // Hop latency between two cores in this physical cluster.
   unsigned hop_latency(unsigned src_cid, unsigned dst_cid) const;
 
-  // TMA multicast hop (may use dedicated knob or DSM matrix).
-  unsigned tma_mcast_hop(unsigned src_cid, unsigned dst_cid) const;
-
   // Inject a message. ready_cycle = now + hop(+optional BW term).
   // Returns false if NoC disabled (caller should apply effect immediately).
   bool inject(cluster_noc_message msg);
-
-  // Convenience: inject TMA data + ordered mbar for one peer.
-  // Data message is injected first; mbar ready_cycle >= data ready_cycle.
-  bool inject_tma_mcast_to_peer(unsigned src_cid, unsigned dst_cid,
-                                unsigned dst_hw_cta, uint32_t smem_addr,
-                                const uint8_t *data, uint32_t size_in_bytes,
-                                uint32_t mbar_addr, uint32_t mbar_bytes,
-                                uint64_t stream_key);
 
   // DSM store: enqueue peer write for deliver after hop. Issuer also writes
   // at issue only when -gpgpu_dsm_store_immediate is 1 (default is 0).
@@ -176,16 +161,13 @@ public:
 
 private:
   void deliver(cluster_noc_message &msg);
-  void deliver_tma_mcast_data(cluster_noc_message &msg);
-  void deliver_tma_mcast_mbar(cluster_noc_message &msg);
   void deliver_dsm_store(cluster_noc_message &msg);
   void deliver_dsm_load_req(cluster_noc_message &msg);
   void deliver_mbar_remote(cluster_noc_message &msg);
 
-  unsigned resolve_hop(unsigned src_cid, unsigned dst_cid, bool tma_path) const;
-  // BW term: TMA uses tma_mcast_bytes_per_cycle; DSM store/load uses
-  // dsm_bytes_per_cycle. Mbar/remote control msgs get 0 (size_in_bytes may
-  // hold parity/flags, not payload length).
+  unsigned resolve_hop(unsigned src_cid, unsigned dst_cid) const;
+  // DSM store/load use dsm_bytes_per_cycle. Mbar/remote control messages get
+  // 0 because size_in_bytes may hold parity/flags, not payload length.
   unsigned bw_extra_cycles(cluster_noc_msg_type type,
                            uint32_t size_in_bytes) const;
 

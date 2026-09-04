@@ -121,9 +121,6 @@ bool dsm_fabric_t::ejection_visible(const dsm_packet_t &p) const {
   if (p.packet_class == dsm_packet_class_t::write_data &&
       m_cfg.store_visibility_latency_cycles)
     floor = m_cfg.store_visibility_latency_cycles;
-  if (p.packet_class == dsm_packet_class_t::tma_data &&
-      m_cfg.tma_latency_cycles)
-    floor = m_cfg.tma_latency_cycles;
   if (floor) {
     const unsigned long long floor_at =
         p.injected_cycle + floor;

@@ -489,8 +489,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_gpc_sms", OPT_CSTR, &gpgpu_gpc_sms,
       "per-GPC enabled SM counts, comma-separated (e.g. "
-      "17,17,17,17,16,16,16,16). Empty = uniform num_sms_per_gpc. inferred "
-      "H200 packing: 4x17+4x16=132. Omit scalar sms-per-gpc or set it to the "
+      "16,16,16,16,16,16,18,18). Empty = uniform num_sms_per_gpc. inferred "
+      "H200 packing: 6x16+2x18=132. Omit scalar sms-per-gpc or set it to the "
       "max.",
       "");
   option_parser_register(opp, "-gpgpu_dsm_cpcs_per_gpc", OPT_UINT32,
@@ -829,10 +829,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &gpgpu_mbarrier_trywait_latency,
                          "Latency (cycles) for mbarrier.try_wait polling before warp release (default=0)", "0");
 
-  // Intra-cluster NoC / DSM / TMA multicast (docs/cluster_noc/knobs.md)
+  // Intra-cluster NoC / DSM (docs/cluster_noc/knobs.md)
   option_parser_register(opp, "-gpgpu_cluster_noc_enable", OPT_BOOL,
                          &gpgpu_cluster_noc_enable,
-                         "Enable intra-cluster SM↔SM NoC for TMA mcast/DSM/remote mbarrier (default=0)",
+                         "Enable intra-cluster SM↔SM NoC for DSM/remote mbarrier (default=0)",
                          "0");
   option_parser_register(opp, "-gpgpu_dsm_local_latency", OPT_UINT32,
                          &gpgpu_dsm_local_latency,
@@ -860,27 +860,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "1 = also write at issue. FLASHGPU_DSM_STORE_IMMEDIATE overrides "
       "at store time. NoC-off always writes immediately.",
       "0");
-  option_parser_register(opp, "-gpgpu_tma_mcast_enable_timing", OPT_BOOL,
-                         &gpgpu_tma_mcast_enable_timing,
-                         "Route TMA cluster multicast data/mbar through NoC when NoC enabled (default=1)",
-                         "1");
-  option_parser_register(opp, "-gpgpu_tma_mcast_hop_latency", OPT_UINT32,
-                         &gpgpu_tma_mcast_hop_latency,
-                         "Fixed TMA multicast peer hop when not using DSM matrix "
-                         "(default=0; H200 mcast−unicast e2e ~135)",
-                         "0");
-  option_parser_register(opp, "-gpgpu_tma_mcast_use_dsm_matrix", OPT_BOOL,
-                         &gpgpu_tma_mcast_use_dsm_matrix,
-                         "Use DSM SM×SM matrix for TMA mcast hop (default=0; TMA often cheaper)",
-                         "0");
-  option_parser_register(opp, "-gpgpu_tma_mcast_bytes_per_cycle", OPT_UINT32,
-                         &gpgpu_tma_mcast_bytes_per_cycle,
-                         "Simple TMA mcast BW model: extra cycles ceil(bytes/BPC)-1 (0=unlimited)",
-                         "0");
-  option_parser_register(opp, "-gpgpu_tma_mcast_mbar_after_data", OPT_BOOL,
-                         &gpgpu_tma_mcast_mbar_after_data,
-                         "Deliver peer mbarrier complete only after peer data (default=1)",
-                         "1");
+  option_parser_register(
+      opp, "-gpgpu_tma_multicast_latency", OPT_UINT32,
+      &gpgpu_tma_multicast_latency,
+      "Fixed TMA multicast completion latency; no network or contention "
+      "is modeled (default=0)",
+      "0");
   option_parser_register(opp, "-gpgpu_mbarrier_remote_hop_latency", OPT_UINT32,
                          &gpgpu_mbarrier_remote_hop_latency,
                          "Remote mbarrier hop; 0 means use DSM matrix (default=0)",
@@ -897,7 +882,7 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "0");
   option_parser_register(
       opp, "-gpgpu_dsm_enable", OPT_BOOL, &gpgpu_dsm_enable,
-      "Use intra-GPC fabric for cluster ld/st/atom, TMA multicast, and remote "
+      "Use intra-GPC fabric for cluster ld/st/atom and remote "
       "mbarrier (default=0; delay-line when 0)",
       "0");
   option_parser_register(
@@ -975,18 +960,6 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       &gpgpu_dsm_store_visibility_latency_cycles,
       "Remote DSM store visibility floor from injection (default=0 means "
       "use the generic fabric floor).",
-      "0");
-  option_parser_register(
-      opp, "-gpgpu_tma_mcast_fabric_latency_cycles", OPT_UINT32,
-      &gpgpu_tma_mcast_fabric_latency_cycles,
-      "TMA multicast fabric visibility floor from injection (default=0 "
-      "means use the generic fabric floor).",
-      "0");
-  option_parser_register(
-      opp, "-gpgpu_tma_mcast_completion_extra_cycles", OPT_UINT32,
-      &gpgpu_tma_mcast_completion_extra_cycles,
-      "Architectural multicast completion premium over the clustered TMA "
-      "unicast curve; payload traffic still uses the fabric (default=0).",
       "0");
   option_parser_register(
       opp, "-gpgpu_tma_load_completion_base_cycles", OPT_UINT32,

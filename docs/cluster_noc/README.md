@@ -6,7 +6,7 @@ Two layers exist at once:
 
 | Layer | What it is | Status |
 |-------|------------|--------|
-| **In-tree code** | Functional cluster launch + TMA multicast + DSM `mapa` + remote mbarrier + a **typed delay-line** (`cluster_noc_t`) | Shipped. Functional track **A** closed except `red` / `red.async`. |
+| **In-tree code** | Functional cluster launch + fixed-latency TMA multicast + DSM `mapa` + remote mbarrier + a **typed delay-line** (`cluster_noc_t`) for non-TMA legacy traffic | Shipped. Functional track **A** closed except `red` / `red.async`. |
 | **Target architecture** | Per-GPC flit fabric (`dsm_fabric_t`): two VCs, 32 B **payload** per flit, GPCMMU hash, GPCARB 6→4, configurable GX planes, per-SM traffic control, coalesced write ACK, remote load through the **same scoreboard / LDST path as local SMEM** | Implemented; H200 latency and bandwidth gates B6b/B6c are closed. Checklist: [`todos.md`](todos.md). |
 
 Do not treat the delay line as the end-state performance model. Do not start a second design doc outside this directory.
@@ -50,7 +50,7 @@ Hopper/Blackwell let several CTAs form a **Thread Block Cluster**, sit on neighb
 | Area | Functional (today) | Timing (today) |
 |------|--------------------|----------------|
 | Cluster launch + co-residency | Yes | Idealized: whole TB-cluster on one physical cluster |
-| TMA cluster multicast (+ mask) | Yes | Delay-line hop when NoC on; immediate when off |
+| TMA cluster multicast (+ mask) | Yes | Fixed completion latency, default 0; no NoC/fabric traffic or contention |
 | Local mbarrier | Yes (used ops) | Calibrated arrive / try_wait knobs |
 | Remote mbarrier (`mapa`) | Yes | Delay-line hop |
 | DSM `mapa` + remote ld/st/`atom` | Yes; inactive rank **aborts**; `red`/`red.async` unimplemented | Flat hop ~78 one-way; load RF filled at execute + stall `2×hop` |
@@ -96,7 +96,7 @@ TB-cluster **size** is a launch attribute. Rule: `product(clusterDim) ≤` enabl
 | `SM120_RTX5090_CLUSTER16x11` | m=16, n=11 | GPC-sized smoke |
 | `SM90_H200_REDUCED_CLUSTER16x2` | m=16, n=2 | Functional cluster / TMA / DSM; **not** published calibration |
 | `SM90_H200` | m=1, n=132 | Product latencies; NoC idle; **cannot** exercise DSM fabric |
-| `SM90_H200_CLUSTER132` | 4×17 + 4×16 = 132 | **Default** full-chip packing; fabric on ([`calibration.md`](calibration.md)) |
+| `SM90_H200_CLUSTER132` | 6×16 + 2×18 = 132 | **Default** full-chip packing; fabric on ([`calibration.md`](calibration.md)) |
 
 ---
 

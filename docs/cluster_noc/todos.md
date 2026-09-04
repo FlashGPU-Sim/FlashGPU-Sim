@@ -574,7 +574,7 @@ Path note: reserve `shader.cc:2191` / `1670`; RF write `shader.cc:4371` + `6876`
 
 - [ ] **B6** Close when **B6a–B6h** that apply are `[x]`. Not a single GB/s point. Not fabric-only.
 
-Published cycle numbers use **`SM90_H200_CLUSTER132`** (inferred 4×17+4×16 = 132 SMs). Functional filters stay on `SM90_H200_REDUCED_CLUSTER16x2`.
+Published cycle numbers use **`SM90_H200_CLUSTER132`** (inferred 6×16+2×18 = 132 SMs). Functional filters stay on `SM90_H200_REDUCED_CLUSTER16x2`.
 
 **Read first:** [`calibration.md`](calibration.md) (kernels, H200 baselines, simulator results), [`evidence.md`](evidence.md), [`tests.md`](tests.md) §3.
 
@@ -588,7 +588,7 @@ Published cycle numbers use **`SM90_H200_CLUSTER132`** (inferred 4×17+4×16 = 1
 
 **Hard rules (every B6\* run):**
 
-1. Config: **`SM90_H200_CLUSTER132`** (inferred 4 GPCs × 17 SMs + 4 GPCs × 16 SMs = 132, fabric on). **Not** `SM90_H200_REDUCED_CLUSTER16x2` (functional only). **Not** shipped `SM90_H200` (132 × 1).
+1. Config: **`SM90_H200_CLUSTER132`** (inferred 6 GPCs × 16 SMs + 2 GPCs × 18 SMs = 132, fabric on). **Not** `SM90_H200_REDUCED_CLUSTER16x2` (functional only). **Not** shipped `SM90_H200` (132 × 1).
 2. `export OMP_NUM_THREADS=4`.
 3. Cycle-gate kernels: inner loop count so the timed region is **~1e5 cycles** (8e4–1.2e5). Grow **repeats**, not unique smem.
 4. Slope kernels (`dsm_bw` 16–96 KiB) stay unique-address; they may be shorter than 1e5 cycles.
@@ -597,7 +597,7 @@ Published cycle numbers use **`SM90_H200_CLUSTER132`** (inferred 4×17+4×16 = 1
 
 **Do not (applies to all B6\*):** Reintroduce `-gpgpu_dsm_bytes_per_cycle` as the model. Overfit GPCMMU hash to one camping trace. Publish numbers from the reduced 32-SM config. Stamp H200 numbers as Blackwell fact. Mix a large knob retune with an unrelated rename.
 
-**Prereqs:** B5 and B8 (fabric carries DSM, TMA mcast, remote mbar). **Next:** B-DEPR after B6e.
+**Prereqs:** B5 and remote-mbarrier fabric support. TMA multicast is intentionally outside the fabric. **Next:** B-DEPR after B6e.
 
 **Hardware still needed** (see [`calibration.md`](calibration.md) §8): H2 remote mbarrier RTT probe; H3 finish the M=4096 Triton timed launch; H4 cycle-gate twins at ~1e5 cycles. H1 and the M=256–2048 GEMM pairs are complete in job 2111262.
 
@@ -636,7 +636,7 @@ Published cycle numbers use **`SM90_H200_CLUSTER132`** (inferred 4×17+4×16 = 1
 
 **Work:** For each L* kernel, set loop count ≈ 1e5 cycles, run on H200 (or use the cited job if the kernel is already that shape) and on sim. Compare `%clock64`. Tune only the knobs in [`calibration.md`](calibration.md) §6 that those kernels constrain (mbarrier arrive/trywait, TMA issue 44 not 68, `base_latency` residual). Remote store visibility (L7) is globaltimer; convert with measured SM MHz.
 
-**Verify:** L1–L11 error < 10%. Stride ratio stays ~1 (do not invent a tree). TMA mcast − unicast is explained by fabric + SRAM, not by keeping `-gpgpu_tma_mcast_hop_latency` as a second delay line.
+**Verify:** L1–L11 error < 10%. Stride ratio stays ~1 (do not invent a tree). TMA multicast is functional-only with `-gpgpu_tma_multicast_latency`; do not infer fabric or SRAM contention from the measured delta.
 
 **Exit:** Table §5.1 Sim/Error filled. **Next:** B6c.
 
@@ -701,9 +701,14 @@ Published cycle numbers use **`SM90_H200_CLUSTER132`** (inferred 4×17+4×16 = 1
 
 ### B6f — Mixed 132-SM GPC map
 
-- [ ] **B6f** `-gpgpu_gpc_sms 17,17,17,17,16,16,16,16` + `SM90_H200_CLUSTER132` + occupancy `2048:32` / `cta 32`. Label packing `inferred`.
+- [x] **B6f** `-gpgpu_gpc_sms 16,16,16,16,16,16,18,18` + `SM90_H200_CLUSTER132` + occupancy `2048:32` / `cta 32`. Label packing `inferred`. Closed 2026-09-04.
 
-**Verify:** unit `GpuTopology.HeteroH200FourBy17FourBy16`; reduced 16×2 DSM/TMA still PASS. Do not replace CI with 132 SMs.
+**Close-out (2026-09-04):** Updated the 132-SM preset and related topology
+examples/docs from 4×17+4×16 to the inferred 6×16+2×18 packing. The topology
+unit test validates all eight GPC counts and powered-gated slots; the reduced
+16×2 DSM/TMA integration regression remains passing.
+
+**Verify:** unit `GpuTopology.HeteroH200SixBy16TwoBy18`; reduced 16×2 DSM/TMA still PASS. Do not replace CI with 132 SMs.
 
 **Prereqs:** B1. **Next:** B6g.
 
@@ -733,49 +738,45 @@ Published cycle numbers use **`SM90_H200_CLUSTER132`** (inferred 4×17+4×16 = 1
 
 ---
 
-## B8 — TMA multicast and remote mbarrier on the fabric
+## B8 — Remote mbarrier on the fabric; TMA multicast decoupled
 
-- [x] **B8** Same VC contract. Data before mbar. Source-expanded unicast v1. Closed 2026-08-27.
+- [x] **B8** Remote mbarrier uses the DSM fabric; TMA multicast is functional
+  fan-out with an optional fixed completion latency and no network model.
+  Revised and closed 2026-09-04.
 
 **Read first:** [`dsm_fabric.md`](dsm_fabric.md) §8, [`programming_model.md`](programming_model.md) §§3–4.
 
-**Work:** Replace `cluster_noc_t` TMA_MCAST_* / MBAR_REMOTE_OP with `tma_data` / `mbarrier_*` packets. Configurable `source_unicast` vs later `fabric_replicate`. Hang-preventer quiet window uses real outstanding/RTT, not `2×hop` only.
+**Original work plan (superseded):** Route TMA multicast and remote mbarrier
+through fabric packets, with configurable source or fabric replication. The
+multicast portion was rejected because there is no evidence that TMA shares
+the DSM fabric; only remote mbarrier uses the fabric now.
 
-**Verify:** `TMAClusterOneProducer*`, `TmaMulticastMaskTest.*`, `MbarrierClusterTest.*`.
+**Verify:** topology/fabric-isolation unit tests plus
+`TMAClusterMulticastTest.*`, `TmaMulticastMaskTest.*`, and a combined reduced
+H200 DSM/TMA regression.
 
 **Prereqs:** B5.
 
-**Close-out (2026-08-27):** With `-gpgpu_dsm_enable 1`, TMA `.shared::cluster` multicast expands at the source into unicast `tma_data` on the request VC (one packet per selected peer; 128 B = four 32 B grants). Peer smem write and `complete_tx` wait for that packet’s tail and that SM’s SRAM grant (`-gpgpu_tma_mcast_mbar_after_data`). Remote mbarrier `arrive` / `expect_tx` / `complete_tx` / `try_wait` use `mbarrier_request` (request VC, one control flit) and `mbarrier_completion` (response VC, one control flit). Fabric-on does not also inject delay-line `TMA_MCAST_*` / `MBAR_REMOTE_OP`. Hang-preventer quiet window stays armed while endpoint outstanding / observed RTT is live; recognized waits still drop the arm. Delay-line TMA/mbar remains when fabric is off. v1 expand mode is source unicast (in-fabric replication not implemented).
+**Revised (2026-09-04):** TMA `.shared::cluster` multicast no longer injects `tma_data` into either `cluster_noc_t` or `dsm_fabric_t`; there is no multicast bandwidth, route, queue, SRAM-service, or contention model. Functional fan-out remains, and `-gpgpu_tma_multicast_latency` adds a fixed delay before `complete_tx` (default 0). Remote mbarrier `arrive` / `expect_tx` / `complete_tx` / `try_wait` still use `mbarrier_request` / `mbarrier_completion` on the DSM fabric.
 
-Verify (run twice, 0 failures):
+Verification (2026-09-04, 0 failures):
 
 ```bash
-FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
-  run test --target sm120 --group unit "DsmEndpoint*:ClusterHangPrevent*"
-FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
-  run test --target sm120 --group integration \
-  "TMAClusterOneProducer*:MbarrierClusterTest.*:DsmTest.*"
 ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER4x4 \
-  run test --target sm120 --group integration "TmaMulticastMaskTest.*"
+  run test --target sm120 --group integration \
+  "TMAClusterMulticastTest.*:TmaMulticastMaskTest.*"
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh \
+  -c SM90_H200_REDUCED_CLUSTER16x2 run test --target sm120 \
+  --group integration \
+  "DsmTest.RemoteLoadFromPeer_TwoCtas:TMAClusterOneProducerTest.OneProducerPeerConsumers"
 ```
 
 PASS evidence:
 
 ```text
-# unit DsmEndpoint*:ClusterHangPrevent* on SM90_H200_REDUCED_CLUSTER16x2 (run 1 and 2)
-[  PASSED  ] 26 tests.
-# includes TmaPutSourceUnicastNPeers, TmaCompleteTxAfterSramApply,
-# MbarRequestAndCompletionVcs, QuietWindowUsesOutstandingRtt,
-# PeerArmStaysWhileFabricOutstanding
-
-# integration TMAClusterOneProducer*:MbarrierClusterTest.*:DsmTest.*
-# on SM90_H200_REDUCED_CLUSTER16x2 (run 1 and 2)
-[  PASSED  ] 26 tests.
-# 1 TMAClusterOneProducer + 9 MbarrierClusterTest + 16 DsmTest
-
-# integration TmaMulticastMaskTest.* on SM120_RTX5090_REDUCED_CLUSTER4x4
-# (run 1 and 2; fabric-off functional regression)
-[  PASSED  ] 4 tests.
+[  PASSED  ] 4 focused topology/fabric unit tests.
+[  PASSED  ] 6 TMA multicast/mask integration tests.
+[  PASSED  ] 2 reduced-H200 DSM/TMA integration tests.
 ```
 
 ---
@@ -783,6 +784,13 @@ PASS evidence:
 ## B-DEPR — Remove the delay line
 
 - [ ] **B-DEPR** Once `dsm_fabric_t` is the only SM↔SM path, **deprecate and delete delay-line knobs** and update **all** config files.
+
+**Current state (2026-09-04):** TMA multicast message types, injection, and
+delivery have been deleted from `cluster_noc_t`; multicast now has no NoC
+callsite. The module itself remains because fabric-disabled remote mbarrier is
+still routed through `inject_mbar_remote`. DSM store/load delay-line entry
+points are otherwise uncalled. B-DEPR remains open until that fallback and the
+module, helpers, knobs, matrices, build entries, and tests are removed together.
 
 **After B-DEPR, delete these (do not leave unused files or knobs in tree):**
 
@@ -799,12 +807,14 @@ The hop-matrix CSV and the two knobs above are delay-line-only. They are **not**
 **Work:**
 
 1. Delete the three items in the After-B-DEPR list above. No leftover CSV, no unused knob registration, no config that still points at a matrix file.
-2. Also delete or `#error` unused: `cluster_noc_t` inject/deliver delay-line, `-gpgpu_dsm_bytes_per_cycle`, `-gpgpu_tma_mcast_hop_latency` if B6 replaced it, `-gpgpu_dsm_store_immediate` if fabric stores are deliver-only only.
+2. Delete the remaining `cluster_noc_t` remote-mbarrier fallback, then remove the module and its helper/test build entries. Also delete unused `-gpgpu_dsm_bytes_per_cycle` and `-gpgpu_dsm_store_immediate` if fabric stores are deliver-only. The old TMA multicast message types and network knobs are already gone; keep only the fixed `-gpgpu_tma_multicast_latency` knob.
 3. Keep: hang watchdog, mbarrier cluster enable, TMA data-before-mbar, topology knobs, fabric knobs, possibly `-gpgpu_dsm_local_latency` / `base_latency` if still used as SMEM/floor. Do **not** keep a pairwise hop table or a scalar remote hop as the DSM timing model.
 4. Grep configs: `configs/SM90_H200*`, `configs/SM120_*CLUSTER*`, test overlays, `FLASH.md`, comments in `gpu-sim.cc` / `shader.h` / `cluster_noc.*`.
 5. Update every `gpgpusim.config` that set the deleted knobs.
 6. Rewrite or drop unit tests that only parsed the hop CSV (`ClusterNocMatrix.H200ReducedMatrixFile` and similar). Do not keep the CSV as an unused file.
-7. Stub `cluster_noc_t` gone: either remove sources or make them thin wrappers around `dsm_fabric_t` with a deprecation comment, then delete in the same ID if compile-clean.
+7. Delete `cluster_noc.{h,cc}`, `cluster_noc_helpers.cc`, their build entries,
+   and delay-line-only tests after the remote-mbarrier fallback is gone. Do not
+   replace them with wrappers around `dsm_fabric_t`.
 
 **Do not:** Leave “0 = unlimited BPC” in any shipped config. Do not keep a second inject path that writes smem immediately when `can_inject` is false.
 
@@ -886,7 +896,7 @@ Declare first delivery when **all** are true:
 11. Finite buffers + ACK coalesce: no constructed deadlock; pending DSM blocks warp/CTA/sim end.
 12. OMP on/off functionally equal; fixed config completion cycles repeat.
 13. H200 preset explains mbarrier / TMA / DSM latency and `dsm_bw` slopes; sim cycle counts on the calibration suite (including Triton multicast GEMM) are within 10% of H200 ([`calibration.md`](calibration.md), B6).
-14. TMA multicast can use the same resolver/fabric/SRAM without changing the VC contract (B8).
+14. TMA multicast uses the common TB-cluster resolver but deliberately does not use the DSM fabric/SRAM contention model (B8 revision).
 15. Delay-line knobs gone or hard-deprecated (**B-DEPR**).
 
 Then, and only then, B7/B9.

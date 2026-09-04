@@ -2,7 +2,9 @@
 
 Remote DSM **loads must behave like local shared-memory loads** on the SM: same LD/ST unit, same scoreboard reservation, same writeback/RF release. The fabric only changes **where the bytes come from** and **how long until they arrive**.
 
-Stores and TMA puts are not dest-reg producers; they use the fabric + ACK / mbarrier. They still must not retire the CTA while outstanding.
+DSM stores are not dest-reg producers; they use the fabric + ACK. TMA multicast
+uses functional fan-out plus its fixed completion latency and does not enter the
+fabric. Neither operation may let its CTA retire while outstanding.
 
 ---
 

@@ -91,8 +91,8 @@ Typical one-producer (`TMAClusterOneProducerTest`):
 
 1. Each rank inits a **local** mbarrier (`expect_tx` = bytes it will receive).
 2. Producer issues `cp.async.bulk` / tensor copy with `.shared::cluster` and optional `ctaMask`.
-3. **NoC off:** peers filled immediately; `complete_tx` immediate.
-4. **NoC on (delay line):** issuer smem is the staging buffer; after TMA arrive, snapshot + per-peer data then mbar. Consumers `try_wait` on **local** bars, then read **local** smem.
+3. Peers are filled functionally without NoC/fabric traffic.
+4. `complete_tx` follows the TMA transaction plus the fixed multicast latency knob (default 0). Consumers `try_wait` on **local** bars, then read **local** smem.
 
 Mask bit *i* is TB-cluster **rank** *i*. Issuer gets a local copy only if its own bit is set.
 
@@ -107,7 +107,7 @@ Mask bit *i* is TB-cluster **rank** *i*. Issuer gets a local copy only if its ow
 | Swizzle none / 32B / 64B / 128B | Yes |
 | Swizzle 96B | Named abort |
 
-Target fabric: same programming model; packets become `tma_data` + `mbarrier_completion` on `dsm_fabric_t` (**B8**).
+TMA multicast does not become `dsm_fabric_t` traffic.
 
 ---
 

@@ -74,7 +74,6 @@ struct dsm_fabric_config_t {
   // 0 = tail grant only. Does not add flit occupancy.
   unsigned base_latency_cycles = 0;
   unsigned store_visibility_latency_cycles = 0;
-  unsigned tma_latency_cycles = 0;
   const char *shaper = "skip_mod";
   const char *shaper_index = "sm_id";
   const char *vc_arbiter = "bounded_response_priority";

@@ -227,34 +227,33 @@ TEST(GpuTopology, OptionParserConflictAborts) {
   ASSERT_DEATH(apply_conflicting_gpc_counts(), "disagree");
 }
 
-TEST(GpuTopology, HeteroH200FourBy17FourBy16) {
+TEST(GpuTopology, HeteroH200SixBy16TwoBy18) {
   gpu_topology_t topo;
-  const std::vector<unsigned> counts = {17, 17, 17, 17, 16, 16, 16, 16};
+  const std::vector<unsigned> counts = {16, 16, 16, 16, 16, 16, 18, 18};
   topo.build(8, counts, 3);
   EXPECT_EQ(topo.num_gpcs(), 8u);
   EXPECT_EQ(topo.num_sms(), 132u);
-  EXPECT_EQ(topo.num_sms_in_gpc(0), 17u);
-  EXPECT_EQ(topo.num_sms_in_gpc(7), 16u);
-  EXPECT_TRUE(topo.slot_is_enabled(0, 2, 4));   // local 16 → cpc 2 slot 4
-  EXPECT_FALSE(topo.slot_is_enabled(0, 2, 5));  // 17th slot PG'd
-  EXPECT_FALSE(topo.slot_is_enabled(7, 2, 4));  // 16-SM GPC: local 16 PG'd
+  EXPECT_EQ(topo.num_sms_in_gpc(0), 16u);
+  EXPECT_EQ(topo.num_sms_in_gpc(7), 18u);
+  EXPECT_FALSE(topo.slot_is_enabled(0, 2, 4));  // 16-SM GPC: local 16 PG'd
+  EXPECT_TRUE(topo.slot_is_enabled(7, 2, 5));   // 18-SM GPC: all slots enabled
   EXPECT_EQ(topo.sm_id_at(0, 0), 0u);
-  EXPECT_EQ(topo.sm_id_at(0, 17), 17u);
-  EXPECT_EQ(topo.locate_sm(16).gpc_id, 0u);
-  EXPECT_EQ(topo.locate_sm(16).local_sm_id, 16u);
-  EXPECT_EQ(topo.locate_sm(17).gpc_id, 1u);
+  EXPECT_EQ(topo.sm_id_at(1, 0), 16u);
+  EXPECT_EQ(topo.locate_sm(15).gpc_id, 0u);
+  EXPECT_EQ(topo.locate_sm(15).local_sm_id, 15u);
+  EXPECT_EQ(topo.locate_sm(16).gpc_id, 1u);
   EXPECT_EQ(topo.gpc_id_of_sm(131), 7u);
-  EXPECT_EQ(topo.local_sm_of_sm(131), 15u);
+  EXPECT_EQ(topo.local_sm_of_sm(131), 17u);
 }
 
 TEST(GpuTopology, ParseGpcSms) {
   std::vector<unsigned> c;
   char err[128];
-  ASSERT_TRUE(gpu_topology_t::parse_gpc_sms("17,17,17,17,16,16,16,16", 8, &c,
+  ASSERT_TRUE(gpu_topology_t::parse_gpc_sms("16,16,16,16,16,16,18,18", 8, &c,
                                             err, sizeof(err)));
   ASSERT_EQ(c.size(), 8u);
-  EXPECT_EQ(c[0], 17u);
-  EXPECT_EQ(c[7], 16u);
+  EXPECT_EQ(c[0], 16u);
+  EXPECT_EQ(c[7], 18u);
   EXPECT_FALSE(gpu_topology_t::parse_gpc_sms("16,16", 8, &c, err, sizeof(err)));
 }
 
@@ -295,26 +294,22 @@ TEST(GpuTopology, ClusterIssueDoesNotBreakOnZeroIssue) {
   EXPECT_NE(body.find("if (issued < ctas_per)"), std::string::npos);
 }
 
-TEST(GpuTopology, DsmTmaAppliesLocallyWhenSrcEqualsDst) {
+TEST(GpuTopology, TmaMulticastDoesNotUseDsmFabric) {
   std::string src;
   char cwd[4096];
   if (getcwd(cwd, sizeof(cwd))) {
     std::string dir(cwd);
     for (int i = 0; i < 8 && src.empty() && !dir.empty(); i++) {
-      src = read_file_if_exists(dir + "/src/gpgpu-sim/shader.cc");
+      src = read_file_if_exists(dir + "/src/gpgpu-sim/flash/tma.cc");
       auto slash = dir.find_last_of('/');
       if (slash == std::string::npos || slash == 0) break;
       dir.resize(slash);
     }
   }
   ASSERT_FALSE(src.empty());
-  auto ord = src.find("bool simt_core_cluster::dsm_issue_tma");
-  auto nextfn = src.find("\nbool simt_core_cluster::dsm_issue_mbar", ord);
-  ASSERT_NE(ord, std::string::npos);
-  ASSERT_NE(nextfn, std::string::npos);
-  const std::string body = src.substr(ord, nextfn - ord);
-  EXPECT_NE(body.find("src == dst"), std::string::npos);
-  EXPECT_NE(body.find("dsm_on_tma_mbar"), std::string::npos);
+  EXPECT_EQ(src.find("dsm_issue_tma"), std::string::npos);
+  EXPECT_EQ(src.find("inject_tma_mcast_to_peer"), std::string::npos);
+  EXPECT_NE(src.find("gpgpu_tma_multicast_latency"), std::string::npos);
 }
 
 TEST(GpuTopology, CountFreeCtaSlotsIsContextsNotSms) {

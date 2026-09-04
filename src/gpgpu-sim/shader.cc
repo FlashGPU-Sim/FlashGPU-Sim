@@ -5726,7 +5726,7 @@ void barrier_set_t::poll_hang_preventers() {
           m_shader->get_gpu()->gpu_tot_sim_cycle);
     }
     const unsigned quiet_limit = peer_arm_quiet_limit(
-        cfg->gpgpu_dsm_remote_latency, cfg->gpgpu_tma_mcast_hop_latency,
+        cfg->gpgpu_dsm_remote_latency, cfg->gpgpu_tma_multicast_latency,
         cfg->gpgpu_mbarrier_trywait_latency, fabric_rtt);
     if (at_recognized_wait)
       m_hang_saw_peer[w] = false;
@@ -6728,7 +6728,6 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
   fcfg.base_latency_cycles = config->gpgpu_dsm_base_latency_cycles;
   fcfg.store_visibility_latency_cycles =
       config->gpgpu_dsm_store_visibility_latency_cycles;
-  fcfg.tma_latency_cycles = config->gpgpu_tma_mcast_fabric_latency_cycles;
   m_dsm_fabric = std::make_unique<dsm_fabric_t>(config->m_topology, cluster_id,
                                                 fcfg);
   dsm_endpoint_config_t ecfg;

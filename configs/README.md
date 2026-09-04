@@ -88,7 +88,7 @@ Full Hopper H200 SXM/NVL configuration (same GH100 compute as H100, HBM3e memory
 Reduced two-GPC H200 profile for functional iteration and intra-GPC NoC.
 
 **Use for:**
-- Hopper TB-cluster / TMA / mbarrier / DSM with NoC on
+- Hopper TB-cluster / TMA / mbarrier / DSM; the NoC models DSM only
 - CPC-shaped GPC (16 enabled SMs on 18 slots) plus a second GPC for isolation
 - Development without full 132-SM cost
 
@@ -110,7 +110,7 @@ Default full-chip GPC packing for published H200 calibration. See `docs/cluster_
 - Fabric-on runs that need a product-scale L2/HBM system
 
 **Characteristics:**
-- **inferred** 4 GPCs × 17 SMs + 4 GPCs × 16 SMs = **132 SMs** (`-gpgpu_gpc_sms 17,17,17,17,16,16,16,16`)
+- **inferred** 6 GPCs × 16 SMs + 2 GPCs × 18 SMs = **132 SMs** (`-gpgpu_gpc_sms 16,16,16,16,16,16,18,18`)
 - CUDA CC 9.0 occupancy: 2048 threads / 32 blocks per SM
 - Same clocks / caches / HBM knobs as `SM90_H200`
 - `-gpgpu_dsm_enable 1` (intra-GPC fabric)

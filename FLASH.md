@@ -314,7 +314,7 @@ Lane 28-31: Row 7
 1. **TB cluster launch**: `cudaLaunchKernelExC` / `__cluster_dims__` co-schedule CTAs onto one physical `simt_core_cluster` (target name: `gpc_t`). Details: `docs/cluster_noc/programming_model.md`.
 2. **Peer model**: `.shared::cluster` peers share `cluster_group` / ranks on the same physical cluster / GPC.
 3. **Selective multicast**: `.multicast::cluster` + `ctaMask` for data and mbarrier `complete_tx`.
-4. **Intra-cluster NoC (today)**: TMA peer data/mbar, DSM, remote mbarrier via delay-line `cluster_noc_t` when `-gpgpu_cluster_noc_enable 1`. Default on for `SM90_H200_REDUCED_CLUSTER16x2`. **Target:** per-GPC flit fabric (`dsm_fabric_t`) in `docs/cluster_noc/dsm_fabric.md`.
+4. **Intra-cluster NoC (today)**: DSM and remote mbarrier use `cluster_noc_t` / `dsm_fabric_t` when enabled. TMA multicast is functional fan-out with `-gpgpu_tma_multicast_latency` (default 0) and never enters either network.
 5. Prefer `SM120_*_REDUCED_CLUSTER*` for functional tests; H200 reduced (`SM90_H200_REDUCED_CLUSTER16x2`) for functional NoC-on. Published cycle calibration uses `SM90_H200_CLUSTER132` (`docs/cluster_noc/calibration.md`).
 6. **`mapa` lifetime**: `mapa` maps only an **active** cluster rank. If the target CTA has exited or the rank was never co-resident, the simulator **aborts** (it does not alias the issuer’s shared memory). Keep the producer CTA alive until consumers finish `mapa`.
 7. **DSM `atom`**: CUDA `atomicAdd` on a `mapa` / `map_shared_rank` pointer is a generic PTX `atom.add` against the **owner** CTA’s smem. PTX `red` and `red.async` are unimplemented (`inst_not_implemented`). nvcc 12.8 does not emit `red.shared::cluster` for that C++ path; `red.async` is a separate Hopper mbarrier-completion opcode.

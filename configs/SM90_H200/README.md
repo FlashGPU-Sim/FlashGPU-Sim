@@ -65,7 +65,7 @@ Source: `H200_profiling/output-2046238-H200Profiling.txt` (suite includes `dsm` 
 | DSM remote e2e mean | ~193.41 cyc | load ≈ local + 2×hop |
 | One-way hop | ~78 cyc | matrix / `gpgpu_dsm_remote_latency=78` |
 | Stride ratio | **1.001** | **flat** all-to-all (not multi-hop tree) |
-| TMA mcast−unicast e2e | ~**135** cyc | `gpgpu_tma_mcast_hop_latency=135` |
+| TMA mcast−unicast e2e | ~**135** cyc | Measured only; multicast latency defaults to 0 |
 | Matrix file | 16×16 one-way | `dsm_latency_matrix_16.csv` |
 
 See `docs/cluster_noc/knobs.md`, `docs/cluster_noc/todos.md`, and `docs/cluster_noc/calibration.md` for remaining BW/latency/GEMM calibration. This flat 132×1 packing **cannot** exercise the DSM fabric; cycle-accurate cluster numbers use `SM90_H200_CLUSTER132`.

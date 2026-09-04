@@ -38,11 +38,11 @@ class gpu_topology_t {
   void build(unsigned num_gpcs, unsigned num_sms_per_gpc,
              unsigned cpcs_per_gpc);
 
-  // Per-GPC enabled SM counts (e.g. H200 4×17 + 4×16). Length == num_gpcs.
+  // Per-GPC enabled SM counts (e.g. H200 6×16 + 2×18). Length == num_gpcs.
   void build(unsigned num_gpcs, const std::vector<unsigned> &sms_per_gpc,
              unsigned cpcs_per_gpc);
 
-  // Parse "-gpgpu_gpc_sms 17,17,17,17,16,16,16,16". Returns false on error.
+  // Parse "-gpgpu_gpc_sms 16,16,16,16,16,16,18,18". Returns false on error.
   static bool parse_gpc_sms(const char *s, unsigned num_gpcs,
                             std::vector<unsigned> *out, char *err,
                             unsigned err_len);
