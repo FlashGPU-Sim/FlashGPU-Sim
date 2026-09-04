@@ -7,11 +7,14 @@ Two layers exist at once:
 | Layer | What it is | Status |
 |-------|------------|--------|
 | **In-tree code** | Functional cluster launch + fixed-latency TMA multicast + DSM `mapa` + remote mbarrier + a **typed delay-line** (`cluster_noc_t`) for non-TMA legacy traffic | Shipped. Functional track **A** closed except `red` / `red.async`. |
-| **Target architecture** | Per-GPC flit fabric (`dsm_fabric_t`): two VCs, 32 B **payload** per flit, GPCMMU hash, GPCARB 6→4, configurable GX planes, per-SM traffic control, coalesced write ACK, remote load through the **same scoreboard / LDST path as local SMEM** | Implemented; H200 latency and bandwidth gates B6b/B6c are closed. Checklist: [`todos.md`](todos.md). |
+| **Target architecture** | Per-GPC flit fabric (`dsm_fabric_t`): two VCs, 32 B **payload** per flit, GPCMMU hash, GPCARB 6→4, configurable GX planes, per-SM traffic control, coalesced write ACK, remote load through the **same scoreboard / LDST path as local SMEM** | Implemented; calibration is waiting for the new exclusive H200 result. Checklist: [`todos.md`](todos.md). |
 
 Do not treat the delay line as the end-state performance model. Do not start a second design doc outside this directory.
 
-Calibration status (2026-09-01): B6b latency and B6c bandwidth are closed against the existing H200/blog results. Primary load/store/TMA slopes and TMA scaling pass; the ordinary load+store opposite-direction issue-order limitation remains documented. See [`calibration.md`](calibration.md) §5.2.
+Calibration status (2026-09-04): the vendor-first one-shot suite has been
+uploaded and the project is **waiting for the new exclusive H200 result**.
+Previous Slurm measurements are superseded and are not current calibration
+evidence. See [`calibration.md`](calibration.md).
 
 The English files in this directory are the working spec. Supervisor plan v2 is a local reference only (not in this tree). Chapter 18 of that plan (student split) is ignored; every phase is in-tree work.
 

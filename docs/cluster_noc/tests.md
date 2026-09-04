@@ -153,31 +153,29 @@ Existing `DsmTest.*` / `MbarrierClusterTest.*` must still PASS.
 
 ### H200 calibration (B6)
 
-Full write-up, kernel IDs, H200 numbers, and simulator results: [`calibration.md`](calibration.md).
+Full write-up and pending result contract: [`calibration.md`](calibration.md).
 
 **Config:** `SM90_H200_CLUSTER132` (inferred 6×16 + 2×18 = 132 SMs, fabric on). **Not** the reduced 32-SM cluster. **Not** shipped `SM90_H200` (132×1).
 **Threads:** `OMP_NUM_THREADS=4`.  
 **Cycle gate:** inner loop ≈ 1e5 `%clock64` cycles; \(|T_{\mathrm{sim}}-T_{\mathrm{H200}}|/T_{\mathrm{H200}} < 10\%\).
 
-Supervisor-facing full run and H200 comparison: `python3 scripts/run_cluster_noc_demo.py`. See [`calibration.md`](calibration.md) §7 for result files and shorter rehearsal commands.
+The hardware job is `../H200_profiling/run_h200.sbatch`. The comparison tool
+must not be used until its embedded targets are replaced with validation-clean
+values from that job.
 
-Size-**slope** (16–96 KiB), not a single 64 KiB point, still required for DSM BW:
+Size-slope fitting, rather than a single throughput point, is required for DSM
+and TMA bandwidth. Check directionality, scaling, and idle-neighbor behavior
+without assuming values from a previous run.
 
-- One-way load/store/TMA ≈ 20–21 B/cycle per SM
-- Symmetric load loss ~22–23%/dir; store/TMA ~4–6%
-- Same-dir mix ≈ one-way ceiling; opposite-dir higher
-- TMA 2/4/8/16 SM aggregate ≈ linear
-- Idle neighbor does not raise the active SM’s rate
-
-Also required: local mbarrier arrive / try_wait, DSM local/remote RTT, TMA issue (pure 44, not bundle 68), TMA mcast − unicast e2e, and the Triton unicast/multicast GEMM. Job 2111262 supplies correctness-clean GEMM pairs through M=2048; M=4096 still times out and remains in the suite.
+Also required: local and remote mbarrier timing, DSM local/remote RTT, isolated
+TMA issue, TMA multicast versus unicast, and the Triton G1/G2/G3 GEMM
+comparison. Hardware targets are pending from the new exclusive H200 job; do
+not use superseded Slurm results as acceptance values.
 
 Exact hash and per-hop credit depth are **not** v1 accept criteria.
 
-Pre-calibration functional audit (2026-08-31): upstream smoke 8/8; fresh-process BW1–BW12 representatives 17/17; reduced-workload upstream GMEM normal / `cp.async` / TMA 3/3; reduced-config `DsmTest.*` + one-producer/CTA-scope TMA integration filter 18/18. See [`calibration.md`](calibration.md) §5.2.1. These passes do not replace the size-slope or full-workload performance gates.
-
-Latency close-out (2026-09-01): L1–L11 each complete twice on the full-chip preset with <10% error and valid payloads. Those historical TMA fabric results are no longer acceptance criteria: multicast now has functional fan-out plus a fixed latency knob only. L12 still requires the H2 hardware result.
-
-Bandwidth close-out (2026-09-01): primary load/store/TMA slopes and 2/4/8/16-SM TMA scaling pass the 10% blog gates. Load+TMA direction sharing passes; ordinary load+store opposite direction retains the documented pre-fabric issue-order limitation. Twenty-repeat cycle gates exceed 1e5 aggregate timed cycles with valid checksums.
+Previous H200 latency, bandwidth, and GEMM close-outs are superseded. Repeat
+their acceptance checks after the pending result arrives.
 
 Final regressions: 50/50 `DsmEndpoint*`, `DsmFabric*`, and `Transport*` unit tests; 18/18 reduced-config `DsmTest.*` and `TMAClusterMulticastTest.*` integration tests.
 
