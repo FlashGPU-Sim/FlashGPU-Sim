@@ -1578,6 +1578,16 @@ public:
                 /*use_mask=*/true, tx.m_dyn_info.cta_mask,
                 /*include_issuer_for_mbar=*/false,
                 /*complete_mbar=*/true, (uint32_t)tx.m_dyn_info.src_addr);
+          } else if (tma_mcast_via_noc(m_shader_ctx)) {
+            // Peer data + mbar must ride the fabric together (mbar after
+            // data), otherwise a peer that arms expect_tx after the arch
+            // arrive never observes complete_tx and spins forever.
+            schedule_cluster_tma_mcast_noc(
+                m_shader_ctx, tx.m_cta_id, (uint32_t)tx.m_dyn_info.dst_addr,
+                tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+                /*use_mask=*/true, tx.m_dyn_info.cta_mask,
+                /*include_issuer_for_mbar=*/true,
+                /*complete_mbar=*/true);
           } else {
             multicast_smem_to_cluster(
                 src_smem, (uint32_t)tx.m_dyn_info.dst_addr,
@@ -1588,12 +1598,6 @@ public:
                 m_shader_ctx, tx.m_cta_id, tx.m_dyn_info.mbar_addr,
                 tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.cta_mask,
                 /*force_immediate=*/true);
-            schedule_cluster_tma_mcast_noc(
-                m_shader_ctx, tx.m_cta_id, (uint32_t)tx.m_dyn_info.dst_addr,
-                tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
-                /*use_mask=*/true, tx.m_dyn_info.cta_mask,
-                /*include_issuer_for_mbar=*/false,
-                /*complete_mbar=*/false);
           }
         } else {
           m_barriers->complete_tx(tx.m_cta_id, tx.m_warp_id,
@@ -2707,9 +2711,13 @@ schedule_cluster_tma_mcast_noc(shader_core_ctx *core, unsigned issuer_hw_cta,
     src_smem->read(src_smem_addr == UINT32_MAX ? smem_addr : src_smem_addr,
                    size_in_bytes, buf.data());
 
-  const uint64_t stream_key = (1ull << 63) |
-                              (static_cast<uint64_t>(issuer_hw_cta) << 32) |
-                              static_cast<uint64_t>(mbar_addr);
+  // Unique per TMA transaction: the same issuer CTA may issue several
+  // multicasts to the same mbarrier (e.g. one per K-chunk). A shared key
+  // would make the fabric treat them as one source-expanded multicast and
+  // drop the second peer mbar.
+  const uint64_t stream_key =
+      (1ull << 63) | (static_cast<uint64_t>(issuer_hw_cta) << 32) |
+      (static_cast<uint64_t>(smem_addr) ^ static_cast<uint64_t>(mbar_addr));
   const bool fabric_mbar =
       complete_mbar && core->get_config()->gpgpu_tma_mcast_mbar_after_data;
   const unsigned mbar_bytes = fabric_mbar ? size_in_bytes : 0;

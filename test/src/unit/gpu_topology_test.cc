@@ -257,3 +257,108 @@ TEST(GpuTopology, ParseGpcSms) {
   EXPECT_EQ(c[7], 16u);
   EXPECT_FALSE(gpu_topology_t::parse_gpc_sms("16,16", 8, &c, err, sizeof(err)));
 }
+
+TEST(GpuTopology, ParseGpcSmsCheapHetero3And2) {
+  std::vector<unsigned> c;
+  char err[128];
+  ASSERT_TRUE(gpu_topology_t::parse_gpc_sms("3,2", 2, &c, err, sizeof(err)));
+  ASSERT_EQ(c.size(), 2u);
+  EXPECT_EQ(c[0], 3u);
+  EXPECT_EQ(c[1], 2u);
+  gpu_topology_t topo;
+  topo.build(2, c, 3);
+  EXPECT_EQ(topo.num_sms(), 5u);
+  EXPECT_EQ(topo.num_sms_in_gpc(0), 3u);
+  EXPECT_EQ(topo.num_sms_in_gpc(1), 2u);
+}
+
+TEST(GpuTopology, ClusterIssueDoesNotBreakOnZeroIssue) {
+  std::string src;
+  char cwd[4096];
+  if (getcwd(cwd, sizeof(cwd))) {
+    std::string dir(cwd);
+    for (int i = 0; i < 8 && src.empty() && !dir.empty(); i++) {
+      src = read_file_if_exists(dir + "/src/gpgpu-sim/gpu-sim.cc");
+      auto slash = dir.find_last_of('/');
+      if (slash == std::string::npos || slash == 0) break;
+      dir.resize(slash);
+    }
+  }
+  ASSERT_FALSE(src.empty());
+  auto ord = src.find("void gpgpu_sim::issue_block2core()");
+  auto nextfn = src.find("\nvoid gpgpu_sim::maybe_dump_stuck_cluster_ctas", ord);
+  ASSERT_NE(ord, std::string::npos);
+  ASSERT_NE(nextfn, std::string::npos);
+  const std::string body = src.substr(ord, nextfn - ord);
+  EXPECT_NE(body.find("if (!issued)"), std::string::npos);
+  EXPECT_NE(body.find("continue"), std::string::npos);
+  EXPECT_NE(body.find("if (issued < ctas_per)"), std::string::npos);
+}
+
+TEST(GpuTopology, DsmTmaAppliesLocallyWhenSrcEqualsDst) {
+  std::string src;
+  char cwd[4096];
+  if (getcwd(cwd, sizeof(cwd))) {
+    std::string dir(cwd);
+    for (int i = 0; i < 8 && src.empty() && !dir.empty(); i++) {
+      src = read_file_if_exists(dir + "/src/gpgpu-sim/shader.cc");
+      auto slash = dir.find_last_of('/');
+      if (slash == std::string::npos || slash == 0) break;
+      dir.resize(slash);
+    }
+  }
+  ASSERT_FALSE(src.empty());
+  auto ord = src.find("bool simt_core_cluster::dsm_issue_tma");
+  auto nextfn = src.find("\nbool simt_core_cluster::dsm_issue_mbar", ord);
+  ASSERT_NE(ord, std::string::npos);
+  ASSERT_NE(nextfn, std::string::npos);
+  const std::string body = src.substr(ord, nextfn - ord);
+  EXPECT_NE(body.find("src == dst"), std::string::npos);
+  EXPECT_NE(body.find("dsm_on_tma_mbar"), std::string::npos);
+}
+
+TEST(GpuTopology, CountFreeCtaSlotsIsContextsNotSms) {
+  std::string src;
+  char cwd[4096];
+  if (getcwd(cwd, sizeof(cwd))) {
+    std::string dir(cwd);
+    for (int i = 0; i < 8 && src.empty() && !dir.empty(); i++) {
+      src = read_file_if_exists(dir + "/src/gpgpu-sim/shader.cc");
+      auto slash = dir.find_last_of('/');
+      if (slash == std::string::npos || slash == 0) break;
+      dir.resize(slash);
+    }
+  }
+  ASSERT_FALSE(src.empty());
+  auto ord = src.find("unsigned shader_core_ctx::count_free_cta_slots");
+  auto nextfn = src.find("\nvoid shader_core_ctx::dump_live_cta_waits", ord);
+  ASSERT_NE(ord, std::string::npos);
+  ASSERT_NE(nextfn, std::string::npos);
+  const std::string body = src.substr(ord, nextfn - ord);
+  EXPECT_NE(body.find("get_n_active_cta()"), std::string::npos);
+  EXPECT_NE(body.find("max_cta"), std::string::npos);
+}
+
+TEST(GpuTopology, ClusterBarrierExpectedUsesLiveCtas) {
+  std::string src;
+  char cwd[4096];
+  if (getcwd(cwd, sizeof(cwd))) {
+    std::string dir(cwd);
+    for (int i = 0; i < 8 && src.empty() && !dir.empty(); i++) {
+      src = read_file_if_exists(dir + "/src/gpgpu-sim/shader.cc");
+      auto slash = dir.find_last_of('/');
+      if (slash == std::string::npos || slash == 0) break;
+      dir.resize(slash);
+    }
+  }
+  ASSERT_FALSE(src.empty());
+  auto ord = src.find("void simt_core_cluster::release_ready_cluster_barriers()");
+  auto nextfn = src.find("\nbool simt_core_cluster::dsm_on_mbar_req", ord);
+  ASSERT_NE(ord, std::string::npos);
+  ASSERT_NE(nextfn, std::string::npos);
+  const std::string body = src.substr(ord, nextfn - ord);
+  EXPECT_NE(body.find("live_warps"), std::string::npos);
+  EXPECT_NE(body.find("m_tb_cluster_group_issued"), std::string::npos);
+  EXPECT_EQ(body.find("expected = group_size->second * source_warps"),
+            std::string::npos);
+}

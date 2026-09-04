@@ -7085,6 +7085,26 @@ bool simt_core_cluster::dsm_issue_tma(unsigned src, unsigned dst,
                                       unsigned mbar_bytes,
                                       uint64_t multicast_group) {
   if (!m_dsm_endpoint) return false;
+  // Fabric endpoints refuse src==dst. Two CTAs of one TB cluster can share an
+  // SM (leftover 17th SM, or cluster size > SM count); apply locally.
+  if (src == dst) {
+    (void)multicast_group;
+    if (src >= num_cores()) return false;
+    if (cta_slot < 32 && cta_gen != dsm_cta_gen(src, cta_slot))
+      return true;
+    shader_core_ctx *core = get_core(src);
+    if (!core) return false;
+    if (data && bytes) {
+      memory_space *smem =
+          core->is_cta_slot_active(cta_slot) ? core->get_cta_smem(cta_slot)
+                                             : nullptr;
+      if (smem)
+        smem->write((mem_addr_t)addr, bytes, data, nullptr, nullptr);
+    }
+    if (mbar_addr || mbar_bytes)
+      dsm_on_tma_mbar(src, cta_slot, mbar_addr, mbar_bytes);
+    return true;
+  }
   return m_dsm_endpoint->issue_tma(src, dst, bytes, addr, cta_slot, cta_gen,
                                    data, mbar_addr, mbar_bytes,
                                    multicast_group);
@@ -7225,23 +7245,32 @@ void simt_core_cluster::release_ready_cluster_barriers() {
        it != m_cluster_barrier_waiters.end();) {
     const unsigned group = it->first;
     const auto &waiters = it->second;
-    unsigned expected = 0;
+    unsigned live_warps = 0;
+    unsigned live_ctas = 0;
     for (unsigned sm = 0; sm < num_cores(); sm++) {
       shader_core_ctx *core = get_core(sm);
       if (!core) continue;
       for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
         if (!core->is_cta_slot_active(slot)) continue;
         if (core->get_cta_cluster_group(slot) != group) continue;
-        expected += core->active_warps_in_cta(slot);
+        live_ctas++;
+        live_warps += core->active_warps_in_cta(slot);
       }
     }
+    unsigned expected = live_warps;
     auto group_size = m_tb_cluster_group_sizes.find(group);
+    auto issued_it = m_tb_cluster_group_issued.find(group);
     if (group_size != m_tb_cluster_group_sizes.end() && !waiters.empty()) {
-      shader_core_ctx *source = get_core(waiters.front().local_sm);
-      if (source) {
+      const unsigned issued =
+          issued_it != m_tb_cluster_group_issued.end() ? issued_it->second
+                                                       : live_ctas;
+      // Not-yet-issued partners must still arrive. Partners that already
+      // exited are not in live_warps and must not inflate expected.
+      if (issued < group_size->second) {
+        shader_core_ctx *source = get_core(waiters.front().local_sm);
         const unsigned source_warps =
-            source->active_warps_in_cta(waiters.front().cta);
-        expected = group_size->second * source_warps;
+            source ? source->active_warps_in_cta(waiters.front().cta) : 0;
+        expected = live_warps + (group_size->second - issued) * source_warps;
       }
     }
     bool dsm_busy = false;
@@ -7388,6 +7417,7 @@ bool simt_core_cluster::tb_cluster_group_has_live_threads(
 unsigned simt_core_cluster::allocate_cta_cluster_group(unsigned group_size,
                                                        unsigned force_group) {
   if (force_group != (unsigned)-1) {
+    m_tb_cluster_group_issued[force_group]++;
     return force_group;
   }
   // group_size > 0: reserve a unique group id for an entire TB cluster
@@ -7396,6 +7426,7 @@ unsigned simt_core_cluster::allocate_cta_cluster_group(unsigned group_size,
     unsigned group = m_next_tb_cluster_group_id;
     m_next_tb_cluster_group_id++;
     m_tb_cluster_group_sizes[group] = group_size;
+    m_tb_cluster_group_issued[group] = 0;
     return group;
   }
   // Ordinary (non-cluster) launches: each CTA gets its own group so
@@ -7411,12 +7442,63 @@ unsigned simt_core_cluster::allocate_cta_cluster_group(unsigned group_size,
   return group;
 }
 
+unsigned shader_core_ctx::count_free_cta_slots(kernel_info_t &kernel) const {
+  if (m_config->gpgpu_concurrent_kernel_sm) {
+    if (m_config->max_cta(kernel) < 1) return 0;
+    return 1;
+  }
+  unsigned max_cta = m_config->max_cta(kernel);
+  unsigned used = get_n_active_cta();
+  return used < max_cta ? max_cta - used : 0;
+}
+
+void shader_core_ctx::dump_live_cta_waits(FILE *fp) {
+  const unsigned gpc = m_config->sid_to_cluster(m_sid);
+  const unsigned local = m_config->sid_to_cid(m_sid);
+  for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
+    if (m_cta_status[slot] == 0) continue;
+    fprintf(fp,
+            "  stuck-cta sid=%u gpc=%u local_sm=%u slot=%u group=%u rank=%u "
+            "threads=%u\n",
+            m_sid, gpc, local, slot, get_cta_cluster_group(slot),
+            get_cta_cluster_rank(slot), m_cta_status[slot]);
+    for (unsigned w = 0; w < m_config->max_warps_per_shader; w++) {
+      shd_warp_t *warp = m_warp[w];
+      if (!warp || warp->get_cta_id() != slot) continue;
+      if (warp->functional_done() && warp->hardware_done()) continue;
+      const char *kind = "running";
+      if (warp_waiting_at_barrier(w))
+        kind = barrier_wait_type_name(get_warp_barrier_type(w));
+      else if (m_cluster && m_cluster->dsm_warp_busy(m_sid, w))
+        kind = "dsm_scoreboard";
+      else if (warp->get_membar())
+        kind = "membar";
+      fprintf(fp, "    warp %u wait=%s pc=%llu\n", w, kind,
+              (unsigned long long)warp->get_pc());
+    }
+  }
+}
+
 unsigned simt_core_cluster::count_free_cta_slots(kernel_info_t &kernel) const {
   unsigned free_slots = 0;
-  for (unsigned i = 0; i < num_cores(); i++) {
-    if (m_core[i]->can_issue_1block(kernel)) free_slots++;
-  }
+  for (unsigned i = 0; i < num_cores(); i++)
+    free_slots += m_core[i]->count_free_cta_slots(kernel);
   return free_slots;
+}
+
+void simt_core_cluster::dump_live_cta_waits(FILE *fp) {
+  for (unsigned i = 0; i < num_cores(); i++)
+    m_core[i]->dump_live_cta_waits(fp);
+  for (const auto &entry : m_cluster_barrier_waiters) {
+    fprintf(fp, "  cluster-barrier group=%u waiters=%zu group_size=%u issued=%u\n",
+            entry.first, entry.second.size(),
+            m_tb_cluster_group_sizes.count(entry.first)
+                ? m_tb_cluster_group_sizes.at(entry.first)
+                : 0u,
+            m_tb_cluster_group_issued.count(entry.first)
+                ? m_tb_cluster_group_issued.at(entry.first)
+                : 0u);
+  }
 }
 
 unsigned simt_core_cluster::issue_block2core_for_kernel(

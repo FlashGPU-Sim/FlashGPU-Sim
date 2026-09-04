@@ -1454,6 +1454,8 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   gpu_tot_issued_cta = 0;
   gpu_completed_cta = 0;
   m_total_cta_launched = 0;
+  m_stuck_cta_dump_done = false;
+  m_stuck_cta_dump_last_completed = ~(0ull);
   gpu_deadlock = false;
 
   gpu_stall_dramfull = 0;
@@ -1706,6 +1708,8 @@ void gpgpu_sim::init() {
   last_gpu_sim_insn = 0;
   m_total_cta_launched = 0;
   gpu_completed_cta = 0;
+  m_stuck_cta_dump_done = false;
+  m_stuck_cta_dump_last_completed = ~(0ull);
   partiton_reqs_in_parallel = 0;
   partiton_replys_in_parallel = 0;
   partiton_reqs_in_parallel_util = 0;
@@ -1765,6 +1769,8 @@ void gpgpu_sim::update_stats() {
   gpu_sim_insn = 0;
   m_total_cta_launched = 0;
   gpu_completed_cta = 0;
+  m_stuck_cta_dump_done = false;
+  m_stuck_cta_dump_last_completed = ~(0ull);
   gpu_occupancy = occupancy_stats();
 }
 
@@ -2757,11 +2763,16 @@ void gpgpu_sim::issue_block2core() {
           if (!num) break;
           issued += num;
         }
-        if (issued) {
-          ckernel->open_tb_cluster(idx, group, ctas_per - issued);
-          m_last_cluster_issue = idx;
-          m_total_cta_launched += issued;
+        if (!issued) {
+          // Slot count can disagree with can_issue (pending TMA, kernel bind).
+          // Do not stick on this GPC; try the next one that has room.
+          continue;
         }
+        if (issued < ctas_per) {
+          ckernel->open_tb_cluster(idx, group, ctas_per - issued);
+        }
+        m_last_cluster_issue = idx;
+        m_total_cta_launched += issued;
         break;
       }
     }
@@ -2777,6 +2788,43 @@ void gpgpu_sim::issue_block2core() {
       m_total_cta_launched += num;
     }
   }
+}
+
+void gpgpu_sim::maybe_dump_stuck_cluster_ctas(
+    unsigned long long cta_launched, unsigned long long cta_completed,
+    unsigned long long tma_tx_started, unsigned long long tma_tx_completed,
+    unsigned long long tma_bytes_issued, unsigned long long tma_bytes_completed) {
+  if (m_stuck_cta_dump_done) return;
+  const bool tma_idle = (tma_tx_started == tma_tx_completed) &&
+                        (tma_bytes_issued == tma_bytes_completed);
+  const bool no_cta_retire =
+      cta_launched > cta_completed &&
+      m_stuck_cta_dump_last_completed == cta_completed;
+  m_stuck_cta_dump_last_completed = cta_completed;
+  if (!tma_idle || !no_cta_retire) return;
+
+  unsigned live = 0;
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
+    live += m_cluster[i]->get_not_completed();
+  if (!live) return;
+
+  m_stuck_cta_dump_done = true;
+  printf("GPGPU-Sim uArch: STUCK-CTA dump: TMA idle, no CTA retire, "
+         "launched=%llu completed=%llu live_threads=%u cycle=%llu\n",
+         cta_launched, cta_completed, live,
+         (unsigned long long)(gpu_sim_cycle + gpu_tot_sim_cycle));
+  for (kernel_info_t *kernel : m_running_kernels) {
+    if (!kernel) continue;
+    printf("  kernel uid=%u open_tb_remaining=%u phys=%u group=%u\n",
+           kernel->get_uid(), kernel->open_tb_remaining(),
+           kernel->has_open_tb_cluster() ? kernel->open_tb_phys_cluster()
+                                         : (unsigned)-1,
+           kernel->has_open_tb_cluster() ? kernel->open_tb_cluster_group()
+                                         : (unsigned)-1);
+  }
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
+    m_cluster[i]->dump_live_cta_waits(stdout);
+  fflush(stdout);
 }
 
 unsigned long long g_single_step =
@@ -3134,6 +3182,10 @@ void gpgpu_sim::cycle() {
       progress.tma_write_mf_responses = tma_progress.write_mf_responses;
       progress.tma_bytes_issued = tma_progress.bytes_issued;
       progress.tma_bytes_completed = tma_progress.bytes_completed;
+      maybe_dump_stuck_cluster_ctas(
+          progress.cta_launched, progress.cta_completed,
+          progress.tma_tx_started, progress.tma_tx_completed,
+          progress.tma_bytes_issued, progress.tma_bytes_completed);
       profiler.increment_and_check(&progress);
     } else {
       profiler.increment_and_check();

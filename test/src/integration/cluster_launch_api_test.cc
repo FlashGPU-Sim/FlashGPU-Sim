@@ -285,6 +285,81 @@ TEST_F(ClusterLaunchApiTest, ExLaunch_ClusterDim4_AllCtasMarkReady) {
   cudaFree(d_ready);
 }
 
+__device__ __forceinline__ void cluster_sync_ptx() {
+  asm volatile("barrier.cluster.arrive;\n");
+  asm volatile("barrier.cluster.wait;\n");
+}
+
+// Every thread in every CTA of the TB cluster participates, then CTA 0
+// of each cluster records that the barrier released.
+__global__ void cluster_launch_cluster_sync_mark(int *ready, int n) {
+  cluster_sync_ptx();
+  if (threadIdx.x == 0 && blockIdx.x < n) {
+    atomicAdd(ready, 1);
+  }
+}
+
+TEST_F(ClusterLaunchApiTest, ExLaunch_ClusterDim2_ClusterSync_TwoWaves) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+
+  const auto topo = flash_test::read_gpgpusim_topology();
+  unsigned n_sms = topo.total_sms ? topo.total_sms
+                                  : topo.n_clusters * topo.n_cores_per_cluster;
+  if (n_sms < 2 || n_sms > 256)
+    n_sms = 8;
+  // Even CTA count, more CTAs than SMs, but cheap enough for CI.
+  int n = static_cast<int>((n_sms + 2) & ~1u);
+  if (n < 8) n = 8;
+  if (n > 32) n = 32;
+
+  int *d_ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_ready, sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_ready, 0, sizeof(int)), cudaSuccess);
+
+  void *args[] = {&d_ready, &n};
+  cudaError_t err = flash_test::launch_kernel_with_cluster(
+      (const void *)cluster_launch_cluster_sync_mark, dim3(n), dim3(32),
+      dim3(2, 1, 1), args);
+  ASSERT_EQ(err, cudaSuccess) << cudaGetErrorString(err);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  int h = 0;
+  ASSERT_EQ(cudaMemcpy(&h, d_ready, sizeof(int), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(h, n);
+  cudaFree(d_ready);
+}
+
+TEST_F(ClusterLaunchApiTest, ExLaunch_HeteroGpc_ClusterDim2_ManyClustersSync) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  SKIP_IF_NOT_HETERO_GPC();
+
+  const auto topo = flash_test::read_gpgpusim_topology();
+  unsigned n_sms = topo.total_sms ? topo.total_sms : 5;
+  if (n_sms < 2 || n_sms > 256)
+    n_sms = 5;
+  int n = static_cast<int>((n_sms * 2) & ~1u);
+  if (n < 8) n = 8;
+  if (n > 32) n = 32;
+
+  int *d_ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_ready, sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_ready, 0, sizeof(int)), cudaSuccess);
+
+  void *args[] = {&d_ready, &n};
+  cudaError_t err = flash_test::launch_kernel_with_cluster(
+      (const void *)cluster_launch_cluster_sync_mark, dim3(n), dim3(32),
+      dim3(2, 1, 1), args);
+  ASSERT_EQ(err, cudaSuccess) << cudaGetErrorString(err);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  int h = 0;
+  ASSERT_EQ(cudaMemcpy(&h, d_ready, sizeof(int), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(h, n);
+  cudaFree(d_ready);
+}
+
 TEST_F(ClusterLaunchApiTest, ExLaunch_ClusterLargerThanPhysical_m_Fails) {
   // On any topology, product(clusterDim) > m must be rejected.
   const auto topo = flash_test::read_gpgpusim_topology();

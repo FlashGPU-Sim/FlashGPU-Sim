@@ -28,6 +28,19 @@ Use `./test/run_tests.sh`. Do not invoke test binaries by hand.
 FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER16x2 \
   run test --target sm120 --group integration \
   "DsmTest.*:MbarrierClusterTest.*:TMAClusterOneProducer*"
+
+# Hetero GPC cluster-of-2 (odd leftover SM)
+FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh -c SM90_H200_REDUCED_CLUSTER_HETERO3_2 \
+  run test --target sm120 --group integration "*ClusterLaunch*"
+
+# Same-SM TMA multicast applies locally (fabric rejects src==dst)
+./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit \
+  "GpuTopology.DsmTma*"
+
+# Multicast peer mbar rides the fabric with the TMA data (mbar-after-data).
+# Without it the demo GEMM mcast kernel stalls at 248/256 on the leftover
+# 17th SM. Known tradeoff: L10/L11 TMA-mcast latency probes shift because the
+# issuer now waits for one peer fabric+SRAM landing.
 ```
 
 SM120 reduced needs a run-dir **overlay** for NoC-on DSM:
@@ -45,7 +58,7 @@ SM120 reduced needs a run-dir **overlay** for NoC-on DSM:
 
 | Suite | NoC off | NoC on |
 |-------|---------|--------|
-| `cluster_launch_api_test` | Ex launch / attrs | Same |
+| `cluster_launch_api_test` | Ex launch / attrs, cluster.sync two-wave | Same; hetero GPC (`HETERO3_2` / CLUSTER132) |
 | `tma_cluster_multicast_test` | Immediate peers | Delayed + try_wait |
 | `tma_multicast_mask_test` | Pass | Pass |
 | `cluster_multicast_multicluster_test` | Isolation | Isolation |
@@ -66,6 +79,7 @@ Helpers: `test/common/gpgpusim_config_topology.h`.
 |-------|-----------|
 | `SKIP_IF_N_CORES_PER_CLUSTER_LT(2)` | m < 2 |
 | `SKIP_IF_N_CLUSTERS_LT(2)` | n < 2 |
+| `SKIP_IF_NOT_HETERO_GPC()` | uniform `-gpgpu_gpc_sms` / none |
 
 Skips print `WARNING: skipped Suite.Name` before `GTEST_SKIP`. They are not product failures.
 

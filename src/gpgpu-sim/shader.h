@@ -2710,6 +2710,8 @@ class shader_core_ctx : public core_t {
   // TB-cluster relative rank (%cluster_ctarank); used by ctaMask filtering.
   unsigned get_cta_cluster_rank(unsigned hw_cta_id) const;
   void set_cta_cluster_rank(unsigned hw_cta_id, unsigned rank);
+  unsigned count_free_cta_slots(kernel_info_t &kernel) const;
+  void dump_live_cta_waits(FILE *fp);
   void wait_at_cluster_barrier(unsigned warp_id) {
     m_barriers.wait_cluster_barrier(warp_id);
   }
@@ -3394,13 +3396,17 @@ class simt_core_cluster {
   // this physical cluster. Groups have size num_cores() by default (legacy
   // proxy for non-cluster launches). When group_size > 0, use that size
   // (explicit TB cluster). When force_group != (unsigned)-1, return that
-  // group id without advancing (remaining CTAs of an open TB cluster).
+  // group id and count the CTA as issued (remaining CTAs of an open TB
+  // cluster).
   unsigned allocate_cta_cluster_group(unsigned group_size = 0,
                                       unsigned force_group = (unsigned)-1);
 
-  // Count free CTA slots across all SMs in this physical cluster that can
+  // Count free CTA contexts across all SMs in this physical cluster that can
   // accept a block of the given kernel (for TB-cluster co-residency checks).
+  // This is the number of additional CTAs that fit, not the number of SMs
+  // that can take at least one CTA.
   unsigned count_free_cta_slots(kernel_info_t &kernel) const;
+  void dump_live_cta_waits(FILE *fp);
 
   // Issue up to one CTA of kernel onto this physical cluster. When
   // force_group is set, assign that cluster_group to the issued CTA.
@@ -3481,6 +3487,7 @@ class simt_core_cluster {
   std::unordered_map<unsigned, std::vector<cluster_barrier_waiter_t>>
       m_cluster_barrier_waiters;
   std::unordered_map<unsigned, unsigned> m_tb_cluster_group_sizes;
+  std::unordered_map<unsigned, unsigned> m_tb_cluster_group_issued;
   std::unordered_map<unsigned, unsigned> m_dsm_warp_pending;
   std::unordered_map<unsigned, dsm_tx_src_t> m_dsm_tx_warp;
   std::unordered_map<unsigned, dsm_load_wait_t> m_dsm_loads;

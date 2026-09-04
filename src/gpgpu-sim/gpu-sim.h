@@ -692,6 +692,12 @@ class gpgpu_sim : public gpgpu_t {
   void reinit_clock_domains(void);
   int next_clock_domain(void);
   void issue_block2core();
+  void maybe_dump_stuck_cluster_ctas(unsigned long long cta_launched,
+                                     unsigned long long cta_completed,
+                                     unsigned long long tma_tx_started,
+                                     unsigned long long tma_tx_completed,
+                                     unsigned long long tma_bytes_issued,
+                                     unsigned long long tma_bytes_completed);
   void print_dram_stats(FILE *fout) const;
   void shader_print_runtime_stat(FILE *fout);
   void shader_print_l1_miss_stat(FILE *fout) const;
@@ -717,6 +723,8 @@ class gpgpu_sim : public gpgpu_t {
   unsigned long long m_total_cta_launched;
   unsigned long long gpu_tot_issued_cta;
   unsigned gpu_completed_cta;
+  bool m_stuck_cta_dump_done;
+  unsigned long long m_stuck_cta_dump_last_completed;
 
   unsigned m_last_cluster_issue;
   float *average_pipeline_duty_cycle;

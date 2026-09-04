@@ -33,7 +33,9 @@ namespace flash_test {
 struct GpgpuSimTopology {
   unsigned n_clusters = 1;
   unsigned n_cores_per_cluster = 1;
+  unsigned total_sms = 0;
   bool cluster_noc_enable = false;
+  bool hetero_gpc = false;
   bool found_config = false;
 };
 
@@ -74,7 +76,31 @@ inline GpgpuSimTopology read_gpgpusim_topology(
       if (iss >> v) {
         topo.cluster_noc_enable = (v != 0);
       }
+    } else if (key == "-gpgpu_gpc_sms") {
+      unsigned v = 0;
+      unsigned min_v = 0, max_v = 0, n = 0, sum = 0;
+      char sep = 0;
+      if (iss >> v) {
+        min_v = max_v = v;
+        sum = v;
+        n = 1;
+        while (iss >> sep >> v) {
+          if (sep != ',') break;
+          if (v < min_v) min_v = v;
+          if (v > max_v) max_v = v;
+          sum += v;
+          n++;
+        }
+      }
+      if (n) {
+        topo.total_sms = sum;
+        topo.hetero_gpc = (min_v != max_v);
+        if (max_v) topo.n_cores_per_cluster = max_v;
+      }
     }
+  }
+  if (!topo.total_sms) {
+    topo.total_sms = topo.n_clusters * topo.n_cores_per_cluster;
   }
   return topo;
 }
@@ -125,6 +151,25 @@ inline void warn_topology_skip(const std::string &msg) {
   } while (0)
 
 // Skip if fewer than min_clusters physical clusters (multi-cluster isolation).
+#define SKIP_IF_NOT_HETERO_GPC()                                               \
+  do {                                                                         \
+    const auto __topo = ::flash_test::read_gpgpusim_topology();                \
+    const bool __cheap_hetero = __topo.n_clusters == 2 &&                      \
+                                __topo.n_cores_per_cluster == 3;               \
+    if (!__topo.hetero_gpc && !__cheap_hetero) {                               \
+      std::ostringstream __skip;                                               \
+      __skip << "Requires mixed -gpgpu_gpc_sms (e.g. 3,2 or 17,16). "          \
+                "Use SM90_H200_REDUCED_CLUSTER_HETERO3_2 or CLUSTER132 "       \
+                "(found="                                                      \
+             << __topo.found_config << " hetero=" << __topo.hetero_gpc         \
+             << " sms=" << __topo.total_sms                                    \
+             << " m=" << __topo.n_cores_per_cluster                            \
+             << " n=" << __topo.n_clusters << ").";                            \
+      ::flash_test::warn_topology_skip(__skip.str());                          \
+      GTEST_SKIP() << __skip.str();                                            \
+    }                                                                          \
+  } while (0)
+
 #define SKIP_IF_N_CLUSTERS_LT(min_clusters)                                    \
   do {                                                                         \
     const auto __topo = ::flash_test::read_gpgpusim_topology();                \
