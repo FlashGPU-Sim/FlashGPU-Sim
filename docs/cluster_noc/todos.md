@@ -744,6 +744,19 @@ unit test validates all eight GPC counts and powered-gated slots; the reduced
   isolated failures, and rejects the overall job if any required suite fails,
   times out, or reports invalid data.
 
+Before-result preparation is complete: the reusable simulator harness records
+run fingerprints, resumes only exact matches, rejects skip/timeout markers,
+and emits strict canonical CSV. The hardware/simulator comparator and explicit
+case mapping are documented in [`calibration.md`](calibration.md); H200 and
+vendor kernel source revisions are pinned. A fresh 132-SM representative run
+is the only local result retained.
+
+`SM90_H200_CLUSTER132` is the sole H200 configuration intended to survive the
+development phase. `SM90_H200`, `SM90_H200_CLUSTER16x8`, and both reduced H200
+presets are development-only and will be removed. Their 94-controller / 188-L2
+slice geometry is kept consistent only to avoid misleading interim behavior;
+do not spend calibration effort on them.
+
 **Prereqs:** B6f preferred for sim; hardware job does not need sim topology.
 
 ---

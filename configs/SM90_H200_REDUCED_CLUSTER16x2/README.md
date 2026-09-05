@@ -1,5 +1,7 @@
 # SM90_H200_REDUCED_CLUSTER16x2
 
+**Development-only functional preset; it will be removed after development.**
+
 Cluster / DSM design: `docs/cluster_noc/README.md`. Checklist: `docs/cluster_noc/todos.md`.
 
 Reduced two-GPC **H200 (Hopper + HBM3e)** config. Each GPC has **16 enabled
@@ -19,10 +21,9 @@ launch API. Capacity rule: `product(clusterDim) ≤ m` (TB cluster size ≤ 16).
 
 ## Hardware baseline
 
-Same GH100 compute as full `SM90_H200` (cc 9.0, Hopper SM, TMA, WGMMA, 50 MiB
-L2 model, 80 HBM channels). Clocks and latency knobs match `SM90_H200`
-(H200 NVL job **2034797**). Hop matrix is the 16×16 H200 one-way file (job
-**2046238**). Only SM packing is reduced.
+Same GH100 compute as the retained full-chip preset. Its hard memory geometry
+uses 94 controllers and 188 L2 slices; timing values remain provisional until
+the pending exclusive H200 run. Only SM packing is reduced.
 
 ## Intended use
 
@@ -46,8 +47,8 @@ FLASHGPU_ALLOW_CC_MISMATCH=1 ./test/run_tests.sh \
 
 ## Latency
 
-Synced with `SM90_H200` / jobs 2034797 and 2046238. Absolute performance still
-differs from full 132-SM packing; use full `SM90_H200` for scale studies.
+Timing defaults are provisional. Absolute performance differs from full
+132-SM packing; use `SM90_H200_CLUSTER132` for scale studies.
 
 ## Limitations
 

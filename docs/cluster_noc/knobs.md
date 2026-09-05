@@ -48,7 +48,8 @@ Master switch today: `-gpgpu_cluster_noc_enable` (default 0; **1** on `SM90_H200
 | `-gpgpu_mbarrier_cluster_enable` | 0 | Remote mbarrier addresses. **1** on H200 reduced |
 | `-gpgpu_cluster_hang_watchdog` | 8192 | Abort bare spin / mixed bar+try_wait. `0` = off. Env `FLASHGPU_CLUSTER_HANG_WATCHDOG` |
 
-Hop math (job **2046238**):
+The following delay-line values are provisional compatibility defaults. Their
+former Slurm evidence is superseded; refit all of them from the pending run:
 
 ```text
 one-way hop              ≈ 78
@@ -108,13 +109,15 @@ Hang watchdog **stays** after B-DEPR (not a delay-line hop knob).
 
 ---
 
-## 4. H200 mapping (job 2046238)
+## 4. Provisional H200 mapping
 
 Cycle-accurate calibration (latency + slopes + GEMM), full-chip GPC packing, and sim tables: [`calibration.md`](calibration.md).
 
-Source: `../H200_profiling/output-2046238-H200Profiling.txt`. Blog / `dsm_bw` pin: [`evidence.md`](evidence.md).
+The old H200 Slurm source is intentionally not retained as evidence. The
+vendor `dsm_bw` pin remains documented in [`evidence.md`](evidence.md); use
+[`calibration.md`](calibration.md) for the pending replacement workflow.
 
-| Profile metric | Delay-line knob | Fabric intent |
+| Provisional target | Delay-line knob | Fabric intent |
 |----------------|-----------------|---------------|
 | DSM local ~37.05 | `gpgpu_dsm_local_latency=37` | Local SMEM / self-mapa latency |
 | Remote e2e ~193.41 | local + 2×hop | Fabric RTT + SRAM, **not** a baked issue stall |

@@ -1,5 +1,7 @@
 # SM90_H200_REDUCED_CLUSTER_HETERO3_2
 
+**Development-only functional preset; it will be removed after development.**
+
 Cheap mixed-GPC packing for Thread Block Cluster issue/barrier tests:
 `-gpgpu_gpc_sms 3,2` (max m=3, n=2, total 5 SMs).
 

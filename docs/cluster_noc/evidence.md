@@ -9,7 +9,8 @@ Pinned reverse-engineering tree:
 - [benchmark](https://github.com/seanzw/random/tree/4e8c4f91dd7b00584efcb3ac4b602b33ce2631cd/dsm_bw)
 - Blog: https://seanzw.github.io/posts/gpu_dsm_bw/
 
-In-tree latency job: `../H200_profiling/output-2046238-H200Profiling.txt` (hop / RTT / TMA extra).
+The previous in-tree H200 Slurm measurements are superseded. Replacement
+latency, bandwidth, and TMA evidence is pending from the exclusive run.
 
 Calibration report (kernel inventory, expected H200 numbers, sim columns): [`calibration.md`](calibration.md).
 
@@ -33,16 +34,6 @@ Mixed traffic (read response + write/TMA payload):
 - Opposite directions: ~29.3–29.7 B/cycle
 
 TMA ring put, per-SM rate stays ~21 B/cycle from 2 to 16 SMs. Idle neighbors do **not** donate bandwidth.
-
-Job 2046238 (pointer-chase / latency, not slope BW):
-
-| Metric | Value |
-|--------|------:|
-| DSM local | ~37 cycles |
-| DSM remote e2e | ~193 cycles |
-| Implied one-way | ~78 cycles |
-| Stride ratio | ~1.001 (flat) |
-| TMA mcast − unicast e2e | ~135 cycles |
 
 ---
 
