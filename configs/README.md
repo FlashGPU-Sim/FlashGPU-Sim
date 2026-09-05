@@ -79,9 +79,10 @@ Full Hopper H200 SXM/NVL configuration (same GH100 compute as H100, HBM3e memory
 
 **Characteristics:**
 - Same 132 SMs / 8 GPCs / 66 TPCs topology as H100 SXM5 product
-- Same 50 MiB L2 model and 80 HBM channels → 160 L2/HBM subpartitions
+- Legacy H100-width 50 MiB L2 / 80-channel memory geometry; use
+  `SM90_H200_CLUSTER132` for the H200 NVL datasheet-derived full-chip model
 - Clocks from H200 NVL: core **1785 MHz**, DRAM **3201 MHz**
-- Latency knobs calibrated from `H200_profiling` job **2034797** (see config README)
+- Latency knobs are provisional compatibility defaults pending the new exclusive H200 result
 - Includes `sass_primary_hints.rules` (H200 label, same sm_90a rules as H100)
 
 ### SM90_H200_REDUCED_CLUSTER16x2
@@ -94,8 +95,8 @@ Reduced two-GPC H200 profile for functional iteration and intra-GPC NoC.
 
 **Characteristics:**
 - 2 GPCs × 16 SMs/GPC = 32 total SMs (`-gpgpu_dsm_cpcs_per_gpc 3`)
-- Same H200 SM / memory / WGMMA / latency knobs as `SM90_H200` (job 2034797)
-- 16×16 one-way hop matrix (job 2046238)
+- Same provisional H200 SM / memory / WGMMA / latency defaults as `SM90_H200`
+- Legacy 16×16 one-way hop matrix for reduced functional tests only
 - Local interconnect (`-network_mode 2`) and idealized TMA memory
 - `-gpgpu_dsm_store_immediate 0` (peer DSM store visible after NoC deliver; same as the code default)
 - Prefer over full `SM90_H200` for day-to-day functional work
@@ -112,7 +113,9 @@ Default full-chip GPC packing for published H200 calibration. See `docs/cluster_
 **Characteristics:**
 - **inferred** 6 GPCs × 16 SMs + 2 GPCs × 18 SMs = **132 SMs** (`-gpgpu_gpc_sms 16,16,16,16,16,16,18,18`)
 - CUDA CC 9.0 occupancy: 2048 threads / 32 blocks per SM
-- Same clocks / caches / HBM knobs as `SM90_H200`
+- H200 NVL datasheet-derived 6016-bit HBM geometry: 94 simulated channels at 3201 MHz (4.814 TB/s modeled peak)
+- 188 L2 slices at 320 KiB each: 58.75 MiB modeled L2
+- Calibration-derived latency/throughput knobs are provisional pending the new exclusive H200 result
 - `-gpgpu_dsm_enable 1` (intra-GPC fabric)
 - Do **not** use the reduced 32-SM cluster for numbers that go in `calibration.md`
 

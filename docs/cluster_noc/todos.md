@@ -752,6 +752,32 @@ unit test validates all eight GPC counts and powered-gated slots; the reduced
 
 - [ ] **B6h** ALU, L1, L2, DRAM, STREAM, occupancy comments `measured`/`inferred`. Do not retune fabric from STREAM or G3.
 
+The H200 NVL hard-spec baseline now uses `-gpgpu_n_mem 94`, derived from the
+[NVIDIA product brief](https://dam-cdn.nvd.orangelogic.com/AssetLink/7n7vya4684sdccfyy6kv37ek5lw702h7.pdf)'s
+6016-bit bus (`94 × 64 bits`) and 3201 MHz clock. With
+`-dram_data_command_freq_ratio 2`, this models 4.814 TB/s versus the published
+4.813 TB/s. Its 188 L2 subpartitions retain the existing per-slice geometry and
+therefore model 58.75 MiB. Review the following provisional knobs when B6g
+arrives; none may be accepted from the superseded Slurm jobs:
+
+| Area to review | Knobs / current assumption | Required check |
+|---|---|---|
+| Memory geometry and L2 capacity | `-gpgpu_n_mem 94`, 188 L2 slices / 58.75 MiB | Confirm device bus width, reported L2, address distribution, and HBM STREAM peak. |
+| Shared-memory latency | `-gpgpu_smem_latency 30` | Direct SMEM dependency test; do not subtract DSM pointer-chase overhead. |
+| Clock domains | `-gpgpu_clock_domains 1785:1785:1785:3201` | Core/memory are datasheet values; measure ICNT/L2 instead of assuming core frequency. |
+| Kernel launch | `-gpgpu_kernel_launch_latency 8270` | Refit from isolated launch measurements. |
+| DRAM latency/timing | `-dram_latency 360`, copied H100 `-gpgpu_dram_timing_opt` | Isolate cold HBM latency and validate both latency and STREAM slopes. |
+| L2 latency/locality | `-gpgpu_l2_rop_latency 286`, `-gpgpu_l2_partition_extra_latency 23` | Refit base and far-L2 penalties independently. |
+| Local mbarrier | `-gpgpu_mbarrier_arrive_latency 6`, `-gpgpu_mbarrier_trywait_latency 43` | Use separate arrive and successful try-wait probes. |
+| `cp.async` | latency/initiation `112/39`, commit `2`, wait/release `15` | Verify exact timed instruction boundaries and saturated versus dependent issue. |
+| DP arithmetic | latency `8,8,8,8,110`, initiation `1,1,1,1,8` | Explain the large H100/H200 delta with matched dependent and ILP probes. |
+| Integer division | INT DIV latency/initiation `64/4` | Re-run the same operand and renormalization path as H100. |
+| WGMMA | SS issue/completion `11/51`; RS `19/41` | Re-run matched shapes and distinguish issue, wait, and completion. |
+| Remaining instruction fits | FP DIV, SFU, MMA, TMA and integer WGMMA tuples | Revalidate with all 26 exact mirrored microbenchmarks; do not extrapolate one shape/opcode across tuples. |
+| DSM/TMA fabric | DSM latency/floor/visibility, shaper, VC/ACK and TMA completion curve | Refit latency and size slopes from vendor-first measurements. |
+| Unlimited shared service | `-gpgpu_shmem_bytes_per_cycle 0` | Keep as compatibility default only until a kernel constrains aggregate SMEM service bandwidth. |
+| Non-hardware simulator choices | inferred `6×16+2×18` GPC map; PTX allocator disabled | Confirm topology if exposed; retain allocator workaround only while its calibration probe requires it. |
+
 **Prereqs:** B6g CSV.
 
 ---

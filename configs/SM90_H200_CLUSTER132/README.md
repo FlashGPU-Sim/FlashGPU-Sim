@@ -19,6 +19,19 @@ TB-cluster `product(clusterDim) ≤ 16` (min enabled SMs in a GPC).
 
 CUDA CC 9.0: 2048 threads / 64 warps / 32 blocks per SM (`-gpgpu_shader_core_pipeline 2048:32`, `-gpgpu_shader_cta 32`).
 
+## HBM and L2 geometry
+
+`-gpgpu_n_mem 94` is derived from the
+[NVIDIA H200 NVL product brief](https://dam-cdn.nvd.orangelogic.com/AssetLink/7n7vya4684sdccfyy6kv37ek5lw702h7.pdf)'s
+6016-bit bus: 94 simulated channels × 64 bits. At the specified 3201 MHz
+memory clock and data-command ratio 2, the modeled peak is 4.814 TB/s versus
+the brief's 4.813 TB/s. Two subpartitions per channel produce 188 L2 slices;
+the existing 320 KiB slice geometry therefore models 58.75 MiB total L2.
+
+Latency and throughput knobs remain provisional compatibility defaults until
+the pending exclusive H200 result is accepted; see `docs/cluster_noc/todos.md`
+under B6h for the mandatory review list.
+
 ## Relationship
 
 | Config | Packing | Role |
