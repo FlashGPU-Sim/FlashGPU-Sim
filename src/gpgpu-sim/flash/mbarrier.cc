@@ -574,7 +574,9 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
      * ! PTXPlus inverts the zero flag -- 0 means true, 1 means false !
      */
     ptx_reg_t pred;
-    pred.pred = 1;
+    // Functional TMA copies complete synchronously and do not use the timing
+    // model's barrier manager, so their wait is immediately satisfied.
+    pred.pred = thread->get_gpu()->is_functional_sim() ? 0 : 1;
     thread->set_operand_value(pI->dst(), pred, PRED_TYPE, thread, pI);
 
   } else if (bar_op == COMPLETE_TX_OPTION) {
@@ -985,6 +987,7 @@ void barrier_set_t::notify_remote_waiters(unsigned cta_id,
 void barrier_set_t::release_remote_waiter(unsigned warp_id) {
   if (warp_id >= m_max_warps_per_core)
     return;
+  apply_trywait_pred(warp_id, /*phase_complete=*/true);
   // Pay trywait observation latency like a local successful try_wait.
   release_warps({static_cast<int>(warp_id)});
 }

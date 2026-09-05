@@ -5728,7 +5728,7 @@ void barrier_set_t::poll_hang_preventers() {
     const unsigned quiet_limit = peer_arm_quiet_limit(
         cfg->gpgpu_dsm_remote_latency, cfg->gpgpu_tma_multicast_latency,
         cfg->gpgpu_mbarrier_trywait_latency, fabric_rtt);
-    if (at_recognized_wait)
+    if (at_wait)
       m_hang_saw_peer[w] = false;
     else if (m_hang_saw_peer[w]) {
       if (fabric_out)
@@ -5737,13 +5737,15 @@ void barrier_set_t::poll_hang_preventers() {
         m_hang_quiet_cycles[w]++;
     }
     const bool peer_armed = peer_access_still_armed(
-        m_hang_saw_peer[w], at_recognized_wait, m_hang_quiet_cycles[w],
+        m_hang_saw_peer[w], at_wait, m_hang_quiet_cycles[w],
         quiet_limit, fabric_out);
-    if (!peer_armed)
+    if (!at_dsm_scoreboard_wait && !peer_armed)
       m_hang_saw_peer[w] = false;
-    if (at_recognized_wait || mbar_interest || !peer_armed ||
+    if (at_wait || mbar_interest || !peer_armed ||
         unique > kHangTightLoopPcs)
       m_hang_watch_cycles[w] = 0;
+    else if (at_dsm_scoreboard_wait)
+      continue;
     else
       m_hang_watch_cycles[w]++;
     if (spin_watchdog_should_trip(enabled, thresh, at_recognized_wait,
@@ -5774,13 +5776,14 @@ void barrier_set_t::poll_hang_preventers() {
     bool partial_trywait = false;
     bool sibling_bar_sync = false;
     for (unsigned w = 0; w < m_max_warps_per_core; w++) {
-      if (!it->second.test(w) || !m_warp_at_barrier.test(w))
+      if (!it->second.test(w))
+        continue;
+      if (m_mbar_partial_wait[w])
+        partial_trywait = true;
+      if (!m_warp_at_barrier.test(w))
         continue;
       if (m_warp_barrier_type[w] == BARRIER_WAIT_BAR_SYNC)
         sibling_bar_sync = true;
-      if (m_warp_barrier_type[w] == BARRIER_WAIT_MBARRIER &&
-          m_mbar_partial_wait[w])
-        partial_trywait = true;
     }
     if (partial_trywait && sibling_bar_sync)
       m_hang_mix_cycles[cta]++;

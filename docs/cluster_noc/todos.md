@@ -606,6 +606,17 @@ been uploaded and the project is **waiting for the new exclusive H200 result**.
 Previous Slurm measurements are superseded. Do not close or retune a B6 item
 from them.
 
+**Simulator status (2026-09-05):** the reusable 132-SM suite is
+`scripts/run_cluster_noc_demo.py`. It mirrors all pending kernel families,
+caps each case at one million cycles, and produces both supervisor-facing and
+machine-readable results. The completed representative run reports 33 PASS,
+four explicit SKIP, and no FAIL/TIMEOUT/LIMIT results. The full MMA instruction
+sweep, DSM calibration sweep, fixed-loop cycle gate, and GEMM are skipped by
+default to avoid redundant or unbounded simulator work. Post-fix regressions
+pass 27/27 cluster/topology and 7/7 hang-preventer unit tests, 31/31 SM120
+cluster integration tests (three expected skips), and 26/26 reduced-H200
+DSM/remote-mbarrier/TMA tests.
+
 ---
 
 ### B6a — Full-chip config and sim harness
@@ -687,6 +698,11 @@ accepted simulator timing errors are <10%. Do not assume multicast must win.
 new job and matched simulator runs. **Next:** B6e.
 
 **Prereqs:** B6a. B6b/B6c preferred.
+
+**Progress (2026-09-05):** The 256x256x64 G1 unicast-TMA and G3 no-TMA
+functional smoke passes on `SM90_H200_CLUSTER132` and their outputs match.
+G2 and all timing acceptance remain open pending timing-mode simulation and
+the new H200 job; do not close B6d from functional evidence alone.
 
 ---
 

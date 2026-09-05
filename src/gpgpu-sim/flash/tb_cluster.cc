@@ -76,7 +76,13 @@ bool resolve_tb_cluster_owner_sm(shader_core_ctx *requester,
     if (peer->get_sid() != owner_sm_id)
       continue;
     for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; slot++) {
-      if (!match_group(requester, requester_cta_slot, peer, slot))
+      // An address produced while the owner was live remains valid while its
+      // cluster resources are retained for a peer, even after its threads exit.
+      if (!peer->get_cta_smem(slot))
+        continue;
+      const unsigned group =
+          requester->get_cta_cluster_group(requester_cta_slot);
+      if (group != (unsigned)-1 && peer->get_cta_cluster_group(slot) != group)
         continue;
       return fill_target(peer, slot, out);
     }

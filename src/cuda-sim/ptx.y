@@ -325,6 +325,10 @@ block_spec: MAXNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND {r
 	| MAXNCTAPERSM_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".maxnctapersm", $2); printf("GPGPU-Sim PTX: Warning: .maxnctapersm ignored. \n"); }
 	| REQNTID_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".reqntid", $2); printf("GPGPU-Sim PTX: Warning: .reqntid ignored. \n"); }
 	| EXPLICITCLUSTER_DIRECTIVE { recognizer->func_header_info(".explicitcluster"); recognizer->set_explicit_cluster(); }
+	| REQNCTAPERCLUSTER_DIRECTIVE INT_OPERAND {
+	    recognizer->func_header_info_int(".reqnctapercluster", $2);
+	    recognizer->set_req_cluster_dim($2, 1, 1);
+	  }
 	| REQNCTAPERCLUSTER_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND {
 	    recognizer->func_header_info_int(".reqnctapercluster", $2);
 	    recognizer->func_header_info_int(",", $4);

@@ -1064,6 +1064,7 @@ class warp_inst_t : public inst_t {
     m_dsm_hop = 0;
     m_smem_exposed = false;
     m_smem_got = 0;
+    m_current_lane = 0;
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
@@ -1094,6 +1095,7 @@ class warp_inst_t : public inst_t {
     m_dsm_hop = 0;
     m_smem_exposed = false;
     m_smem_got = 0;
+    m_current_lane = 0;
   }
   virtual ~warp_inst_t() {}
 
@@ -1220,6 +1222,7 @@ class warp_inst_t : public inst_t {
   {
     return m_warp_id;
   }
+  void set_warp_id_func(unsigned warp_id) { m_warp_id = warp_id; }
   unsigned dynamic_warp_id() const {
     assert(!m_empty);
     return m_dynamic_warp_id;
@@ -1260,6 +1263,8 @@ class warp_inst_t : public inst_t {
   unsigned long long get_streamID() const { return m_streamID; }
   unsigned get_schd_id() const { return m_scheduler_id; }
   active_mask_t get_warp_active_mask() const { return m_warp_active_mask; }
+  void set_current_lane(unsigned lane) { m_current_lane = lane; }
+  unsigned current_lane() const { return m_current_lane; }
 
  protected:
   unsigned m_uid;
@@ -1273,6 +1278,7 @@ class warp_inst_t : public inst_t {
   bool m_is_printf;
   unsigned m_warp_id;
   unsigned m_dynamic_warp_id;
+  unsigned m_current_lane;
   const core_config *m_config;
   active_mask_t m_warp_active_mask;  // dynamic active mask for timing model
                                      // (after predication)

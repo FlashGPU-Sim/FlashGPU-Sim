@@ -2581,7 +2581,7 @@ multicast_smem_to_cluster(memory_space *src_smem, uint32_t smem_addr,
                           uint32_t size_in_bytes, ptx_thread_info *thread,
                           const ptx_instruction *pI, bool use_mask = false,
                           uint16_t cta_mask = 0xFFFF) {
-  auto *core = static_cast<shader_core_ctx *>(thread->get_core());
+  auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
   if (!core)
     return;
 
@@ -2805,7 +2805,7 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
     };
     pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
 
-    auto *core = static_cast<shader_core_ctx *>(thread->get_core());
+    auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
     unsigned issuer_rank =
         core ? core->get_cta_cluster_rank(thread->get_hw_ctaid()) : 0;
     // PTX: data lands only in destinations selected by ctaMask.
@@ -2825,7 +2825,7 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
       // directly per selected peer.
       multicast_smem_to_cluster(shared_mem, dst_addr, size_in_bytes, thread, pI,
                                 has_cta_mask, cta_mask);
-    } else if (is_cluster && has_cta_mask && !write_issuer) {
+    } else if (is_cluster && has_cta_mask && !write_issuer && core) {
       // Issuer is not a destination; copy global data directly to mask peers.
       for_each_cluster_peer_cta(
           core, thread->get_hw_ctaid(),
@@ -3085,7 +3085,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     cache_tensormap_descriptor(tma_dyn_info, tensormap);
     pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
 
-    auto *core = static_cast<shader_core_ctx *>(thread->get_core());
+    auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
     unsigned issuer_rank =
         core ? core->get_cta_cluster_rank(thread->get_hw_ctaid()) : 0;
     const bool write_issuer =
@@ -3096,10 +3096,10 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
                       thread, pI, true);
     }
 
-    if (is_cluster && write_issuer) {
+    if (is_cluster && write_issuer && core) {
       multicast_smem_to_cluster(shared_mem, dst_addr, size_in_bytes, thread, pI,
                                 has_cta_mask, cta_mask);
-    } else if (is_cluster && has_cta_mask && !write_issuer) {
+    } else if (is_cluster && has_cta_mask && !write_issuer && core) {
       for_each_cluster_peer_cta(
           core, thread->get_hw_ctaid(),
           [&](shader_core_ctx *peer_core, unsigned peer_slot) {

@@ -5919,10 +5919,8 @@ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
   else
     tid = inst.warp_id() * core->get_warp_size();
 
-  ptx_thread_info *thread = core->get_thread_info()[tid];
-  ptx_warp_info *warp_info = thread->m_warp_info;
-  int lane = warp_info->get_done_threads();
-  thread = core->get_thread_info()[tid + lane];
+  int lane = inst.current_lane();
+  ptx_thread_info *thread = core->get_thread_info()[tid + lane];
 
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();
@@ -5993,11 +5991,6 @@ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
   if (dest predicate selected) data.pred = p;
   */
 
-  // keep track of the number of threads that have executed in the warp
-  warp_info->inc_done_threads();
-  if (warp_info->get_done_threads() == inst.active_count()) {
-    warp_info->reset_done_threads();
-  }
 }
 
 void shf_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

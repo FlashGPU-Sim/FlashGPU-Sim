@@ -884,6 +884,7 @@ void append_math_only(cudaDeviceProp prop, int blocks, int rounds,
                       const std::vector<std::string> &modes,
                       const std::string &filter,
                       std::vector<TimingResult> *results) {
+#ifndef FLASHGPU_SIM_REPRESENTATIVE
   if (!list_contains(modes, "math_only")) return;
   for (MathKind math_kind : math_kinds) {
     for (int math_ops : math_ops_values) {
@@ -898,6 +899,7 @@ void append_math_only(cudaDeviceProp prop, int blocks, int rounds,
       results->push_back(std::move(result));
     }
   }
+#endif
 }
 
 void write_csv(const std::string &path, const std::vector<TimingResult> &results) {
@@ -1007,6 +1009,12 @@ TEST(WgmmaRfBandwidth, Sweep) {
                                     "0,1,2,4,8,16,24,32,64"));
 
   std::vector<TimingResult> results;
+#ifdef FLASHGPU_SIM_REPRESENTATIVE
+  results.push_back(run_case<MixMode::WgmmaOnly, WgmmaF16Ss, 256,
+                             AccMode::Accumulate>(
+      prop, blocks, rounds, warmup_rounds, wgmma_ops, MathKind::FmaIndep8, 0,
+      "ss", "accumulate"));
+#else
   append_math_only(prop, blocks, rounds, warmup_rounds, math_kinds,
                    math_ops_values, modes, filter, &results);
   if (list_contains(operands, "ss")) {
@@ -1019,6 +1027,7 @@ TEST(WgmmaRfBandwidth, Sweep) {
                                math_kinds, math_ops_values, modes, acc_modes,
                                shapes, "rs", filter, &results);
   }
+#endif
 
   ASSERT_FALSE(results.empty()) << "WGMMA_RF_BW_FILTER matched no cases";
   print_results(results);

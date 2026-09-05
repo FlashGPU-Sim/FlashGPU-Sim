@@ -105,6 +105,7 @@
 #include <assert.h>
 #include <cctype>
 #include <dirent.h>
+#include <elf.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3582,7 +3583,13 @@ __host__ cudaError_t CUDARTAPI cudaStreamQuery(cudaStream_t stream) {
     announce_call(__my_func__);
   }
 #if (CUDART_VERSION >= 3000)
-  if (stream == NULL) return g_last_cudaError = cudaErrorInvalidResourceHandle;
+  if (stream == NULL) {
+    gpgpu_context *ctx = GPGPU_Context();
+    return g_last_cudaError =
+               ctx->the_gpgpusim->g_stream_manager->empty_protected()
+                   ? cudaSuccess
+                   : cudaErrorNotReady;
+  }
   return g_last_cudaError = stream->empty() ? cudaSuccess : cudaErrorNotReady;
 #else
   printf(
@@ -5808,7 +5815,79 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  printf("WARNING: this function has not been implemented yet %s\n", __my_func__);
+
+  if (!module || !image) return CUDA_ERROR_INVALID_VALUE;
+
+  const unsigned char *bytes = static_cast<const unsigned char *>(image);
+  if (memcmp(bytes, ELFMAG, SELFMAG) != 0 ||
+      bytes[EI_CLASS] != ELFCLASS64 || bytes[EI_DATA] != ELFDATA2LSB) {
+    printf("GPGPU-Sim CUDA DRIVER API: cuModuleLoadData currently requires "
+           "an ELF64 little-endian cubin with embedded debug PTX.\n");
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  const Elf64_Ehdr *eh = reinterpret_cast<const Elf64_Ehdr *>(bytes);
+  if (eh->e_shentsize != sizeof(Elf64_Shdr) || eh->e_shnum == 0 ||
+      eh->e_shnum > 4096 || eh->e_shstrndx >= eh->e_shnum) {
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+  const Elf64_Shdr *sections =
+      reinterpret_cast<const Elf64_Shdr *>(bytes + eh->e_shoff);
+  const Elf64_Shdr &names_section = sections[eh->e_shstrndx];
+  const char *names = reinterpret_cast<const char *>(bytes + names_section.sh_offset);
+  const Elf64_Shdr *ptx_section = nullptr;
+  for (unsigned i = 0; i < eh->e_shnum; ++i) {
+    if (sections[i].sh_name >= names_section.sh_size) continue;
+    const char *name = names + sections[i].sh_name;
+    size_t remaining = names_section.sh_size - sections[i].sh_name;
+    if (!memchr(name, '\0', remaining)) continue;
+    if (strcmp(name, ".nv_debug_ptx_txt") == 0) {
+      ptx_section = &sections[i];
+      break;
+    }
+  }
+  if (!ptx_section || ptx_section->sh_size == 0 ||
+      ptx_section->sh_size > 512ULL * 1024 * 1024) {
+    printf("GPGPU-Sim CUDA DRIVER API: cubin has no embedded debug PTX.\n");
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  std::string ptx(reinterpret_cast<const char *>(bytes + ptx_section->sh_offset),
+                  ptx_section->sh_size);
+  std::replace(ptx.begin(), ptx.end(), '\0', '\n');
+
+  gpgpu_context *ctx = GPGPU_Context();
+  if (!ctx) return CUDA_ERROR_INVALID_HANDLE;
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  unsigned handle = get_next_fat_bin_handle();
+  char ptx_path[] = "_module_ptx_XXXXXX";
+  int fd = mkstemp(ptx_path);
+  if (fd < 0) return CUDA_ERROR_INVALID_VALUE;
+  FILE *ptx_file = fdopen(fd, "w");
+  if (!ptx_file || fwrite(ptx.data(), 1, ptx.size(), ptx_file) != ptx.size()) {
+    if (ptx_file)
+      fclose(ptx_file);
+    else
+      close(fd);
+    unlink(ptx_path);
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+  fclose(ptx_file);
+
+  symbol_table *symtab =
+      ctx->gpgpu_ptx_sim_load_ptx_from_filename_isolated(ptx_path);
+  context->add_binary(symtab, handle);
+  std::string arch = ptx_target_from_file(ptx_path);
+  ctx->gpgpu_ptx_info_load_from_filename(ptx_path, arch.c_str());
+  unlink(ptx_path);
+  ctx->api->load_static_globals(symtab, STATIC_ALLOC_LIMIT,
+                                context->get_device()->get_gpgpu());
+  ctx->api->load_constants(symtab, STATIC_ALLOC_LIMIT,
+                           context->get_device()->get_gpgpu());
+  *module = reinterpret_cast<CUmodule>(static_cast<uintptr_t>(handle));
+  printf("GPGPU-Sim CUDA DRIVER API: cuModuleLoadData loaded embedded PTX "
+         "as module %u.\n",
+         handle);
   return CUDA_SUCCESS;
 }
 

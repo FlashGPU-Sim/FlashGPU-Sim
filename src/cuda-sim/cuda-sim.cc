@@ -554,10 +554,12 @@ void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
       "GPGPU-Sim PTX: Kernel '%s' : smem(static)=%u, smem(dynamic)=%d, total_smem=%u\n",
       m_name.c_str(), declared_smem, shared_mem_size, total_smem);
   } else {
-    symtab->dump_until_top();
-    printf("GPGPU-Sim PTX: Error -- dynamic shared memory size specified "
-           "but no local dynamic shared memory symbol found in kernel\n");
-    abort();
+    // CUDA permits a launch to reserve dynamic shared memory even when the
+    // selected kernel specialization does not reference its extern symbol.
+    // The grid still records the reservation for resource accounting.
+    printf("GPGPU-Sim PTX: No referenced dynamic shared memory symbol; "
+           "reserving %d bytes for the launch only\n",
+           shared_mem_size);
   }
 }
 

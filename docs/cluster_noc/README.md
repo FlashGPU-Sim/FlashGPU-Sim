@@ -11,10 +11,13 @@ Two layers exist at once:
 
 Do not treat the delay line as the end-state performance model. Do not start a second design doc outside this directory.
 
-Calibration status (2026-09-04): the vendor-first one-shot suite has been
+Calibration status (2026-09-05): the vendor-first one-shot suite has been
 uploaded and the project is **waiting for the new exclusive H200 result**.
 Previous Slurm measurements are superseded and are not current calibration
 evidence. See [`calibration.md`](calibration.md).
+The matching reusable 132-SM simulator suite is
+`python3 scripts/run_cluster_noc_demo.py`; it produces a human report plus
+CSV/JSON and does not embed superseded H200 targets.
 
 The English files in this directory are the working spec. Supervisor plan v2 is a local reference only (not in this tree). Chapter 18 of that plan (student split) is ignored; every phase is in-tree work.
 

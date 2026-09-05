@@ -277,6 +277,17 @@ symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_filename(
   return symtab;
 }
 
+symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_filename_isolated(
+    const char *filename) {
+  if (g_global_allfiles_symbol_table == NULL) {
+    g_global_allfiles_symbol_table =
+        new symbol_table("global_allfiles", 0, NULL, this);
+  }
+  ptx_parser->g_global_symbol_table = ptx_parser->g_current_symbol_table =
+      new symbol_table(filename, 0, g_global_allfiles_symbol_table, this);
+  return gpgpu_ptx_sim_load_ptx_from_filename(filename);
+}
+
 void fix_duplicate_errors(char fname2[1024]) {
   char tempfile[1024] = "_temp_ptx";
   char commandline[1024];

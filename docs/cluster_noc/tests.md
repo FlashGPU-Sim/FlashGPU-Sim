@@ -159,9 +159,14 @@ Full write-up and pending result contract: [`calibration.md`](calibration.md).
 **Threads:** `OMP_NUM_THREADS=4`.  
 **Cycle gate:** inner loop ≈ 1e5 `%clock64` cycles; \(|T_{\mathrm{sim}}-T_{\mathrm{H200}}|/T_{\mathrm{H200}} < 10\%\).
 
-The hardware job is `../H200_profiling/run_h200.sbatch`. The comparison tool
-must not be used until its embedded targets are replaced with validation-clean
-values from that job.
+The hardware job is `../H200_profiling/run_h200.sbatch`. Its simulator-side
+companion is `python3 scripts/run_cluster_noc_demo.py`; it contains no embedded
+hardware targets and emits `report.md`, `suite.log`, CSV, and JSON. Use
+`--resume` after a fix. The completed representative pass has 33 PASS, four
+explicit SKIP, and no FAIL/TIMEOUT/LIMIT results. The skipped cases are the
+full MMA instruction sweep, DSM calibration sweep, cycle gate, and GEMM; run
+them separately only when that focused calibration is needed.
+Use `--profile exhaustive --exclude none` to run all 37 cases.
 
 Size-slope fitting, rather than a single throughput point, is required for DSM
 and TMA bandwidth. Check directionality, scaling, and idle-neighbor behavior
@@ -177,9 +182,20 @@ Exact hash and per-hop credit depth are **not** v1 accept criteria.
 Previous H200 latency, bandwidth, and GEMM close-outs are superseded. Repeat
 their acceptance checks after the pending result arrives.
 
-Final regressions: 50/50 `DsmEndpoint*`, `DsmFabric*`, and `Transport*` unit tests; 18/18 reduced-config `DsmTest.*` and `TMAClusterMulticastTest.*` integration tests.
+Latest local regression (2026-09-05): 27/27 `ClusterNoc*`/`GpuTopology*` and
+7/7 `ClusterHangPrevent*` unit tests; 31/31 SM120 cluster integration tests
+with three expected topology skips; and 26/26 reduced-H200 `DsmTest.*`,
+`MbarrierClusterTest.*`, and `TMAClusterOneProducer*` tests. The latter includes
+the two expected watchdog death tests. The 132-SM calibration resume remains
+33 PASS and four intentional SKIP results.
 
 The full-chip calibration preset sets `-gpgpu_ptx_register_allocator 0`. With aliasing enabled, `k_tma_issue_pure` can reuse its loop-carried shared destination register and abort on a bogus unaligned address; calibration must use the architectural-register path.
+
+For a bounded Triton correctness check, run `gemm_compare --gemm-smoke` via
+`scripts/run_calibration_sim.sh`. Under functional simulation it checks the
+one-tile G1 unicast-TMA and G3 no-TMA outputs plus CPU reference samples; G2
+multicast is reserved for timing mode because functional CTAs have no live
+peer shared memory.
 
 ---
 
