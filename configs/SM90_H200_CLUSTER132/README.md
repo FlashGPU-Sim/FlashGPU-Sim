@@ -28,9 +28,10 @@ memory clock and data-command ratio 2, the modeled peak is 4.814 TB/s versus
 the brief's 4.813 TB/s. Two subpartitions per channel produce 188 L2 slices;
 the existing 320 KiB slice geometry therefore models 58.75 MiB total L2.
 
-Latency and throughput knobs remain provisional compatibility defaults until
-the pending exclusive H200 result is accepted; see `docs/cluster_noc/todos.md`
-under B6h for the mandatory review list.
+Selected latency and throughput knobs use validation-clean rows from H200 job
+2119329. The job is only partially accepted because its 4096^3 GEMM case
+failed. Suspicious fields not measured by that job use explicitly documented
+H100 same-Hopper baselines; see `docs/cluster_noc/todos.md` under B6h.
 
 ## Relationship
 

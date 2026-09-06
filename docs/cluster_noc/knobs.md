@@ -49,7 +49,8 @@ Master switch today: `-gpgpu_cluster_noc_enable` (default 0; **1** on `SM90_H200
 | `-gpgpu_cluster_hang_watchdog` | 8192 | Abort bare spin / mixed bar+try_wait. `0` = off. Env `FLASHGPU_CLUSTER_HANG_WATCHDOG` |
 
 The following delay-line values are provisional compatibility defaults. Their
-former Slurm evidence is superseded; refit all of them from the pending run:
+former Slurm evidence is superseded; fit them against accepted job-2119329
+rows before publishing simulator comparisons:
 
 ```text
 one-way hop              ≈ 78
@@ -113,9 +114,11 @@ Hang watchdog **stays** after B-DEPR (not a delay-line hop knob).
 
 Cycle-accurate calibration (latency + slopes + GEMM), full-chip GPC packing, and sim tables: [`calibration.md`](calibration.md).
 
-The old H200 Slurm source is intentionally not retained as evidence. The
-vendor `dsm_bw` pin remains documented in [`evidence.md`](evidence.md); use
-[`calibration.md`](calibration.md) for the pending replacement workflow.
+The old H200 Slurm source is intentionally not retained as evidence. Job
+2119329 is the current, partially accepted source; its failed 4096^3 GEMM row
+is excluded. The vendor `dsm_bw` pin remains documented in
+[`evidence.md`](evidence.md); use [`calibration.md`](calibration.md) for the
+acceptance details.
 
 | Provisional target | Delay-line knob | Fabric intent |
 |----------------|-----------------|---------------|
@@ -123,7 +126,7 @@ vendor `dsm_bw` pin remains documented in [`evidence.md`](evidence.md); use
 | Remote e2e ~193.41 | local + 2×hop | Fabric RTT + SRAM, **not** a baked issue stall |
 | One-way ~78 | matrix / remote_latency=78 | `base_latency` + serialization; do not keep a magic 78 after B-DEPR unless re-fit as base |
 | Stride ~1.001 | flat matrix | Hash should not invent multi-hop by rank |
-| TMA mcast−unicast +135, +174 at 16 KiB | not modeled by default | Set only `tma_multicast_latency` when a fixed-delay experiment needs it |
+| TMA mcast−unicast robust median ~99 cycles | `gpgpu_tma_multicast_latency=100` | Fixed completion approximation; job 2119329 observed roughly 100–140 cycles normally |
 | ~21 B/cycle / SM | BPC unused (0) | Shaper 2/3 × 32 B payload |
 | SM120 product | NoC **off** | Keep functional-immediate until a SM120 fabric preset exists |
 
@@ -135,6 +138,7 @@ Policy: only `configs/SM90_H200*` carry calibrated DSM timing today.
 
 TMA multicast is functionally copied to every selected peer without entering
 `cluster_noc_t` or `dsm_fabric_t`. Peer and selected-issuer `complete_tx` occurs
-after the TMA transaction plus `-gpgpu_tma_multicast_latency`; the default zero
-adds no multicast delay. No topology, bandwidth, routing, queue, SRAM-service,
-or contention model is attached to multicast.
+after the TMA transaction plus `-gpgpu_tma_multicast_latency`; the H200
+full-chip preset uses 100 cycles from job 2119329. Zero adds no multicast
+delay. No topology, bandwidth, routing, queue, SRAM-service, or contention
+model is attached to multicast.

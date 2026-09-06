@@ -601,13 +601,14 @@ Future published cycle numbers use **`SM90_H200_CLUSTER132`** (inferred
 
 **Prereqs:** B5 and remote-mbarrier fabric support. TMA multicast is intentionally outside the fabric. **Next:** B-DEPR after B6e.
 
-**Hardware status (2026-09-04):** the updated vendor-first one-shot suite has
-been uploaded and the project is **waiting for the new exclusive H200 result**.
-Previous Slurm measurements are superseded. Do not close or retune a B6 item
+**Hardware status (2026-09-07):** job 2119329 is partially accepted. Its
+low-level measurements are usable, but the 4096^3 GEMM timed launch deadlocked;
+a corrective rerun is required before the preset is frozen. Previous Slurm
+measurements remain superseded. Do not close a B6 item
 from them.
 
 **Simulator status (2026-09-05):** the reusable 132-SM suite is
-`scripts/run_cluster_noc_demo.py`. It mirrors all pending kernel families,
+`scripts/run_cluster_noc_demo.py`. It mirrors all hardware kernel families,
 caps each case at one million cycles, and produces both supervisor-facing and
 machine-readable results. The completed representative run reports 33 PASS,
 four explicit SKIP, and no FAIL/TIMEOUT/LIMIT results. The full MMA instruction
@@ -645,8 +646,8 @@ full-chip packing is now `SM90_H200_CLUSTER132`.
 
 ### B6b — Latency (mbarrier, DSM RTT, TMA e2e)
 
-- [ ] **B6b** Revalidate latency against the pending H200 job. Earlier
-  simulator work is provisional until the new hardware rows pass the gate.
+- [ ] **B6b** Revalidate simulator latency against accepted job-2119329 rows.
+  Earlier simulator work remains provisional until matched rows pass the gate.
 
 **Work:** For each accepted latency kernel, compare equivalent hardware and
 simulator timing. Tune only the knobs constrained by that kernel. Convert
@@ -663,8 +664,8 @@ topology or multicast-fabric model before the new measurements exist.
 
 ### B6c — DSM / TMA bandwidth slopes
 
-- [ ] **B6c** Refit and revalidate against the pending vendor DSM/TMA results.
-  Existing simulator knobs remain provisional compatibility defaults.
+- [ ] **B6c** Refit and revalidate against accepted job-2119329 vendor DSM/TMA
+  results. Existing simulator knobs remain provisional compatibility defaults.
 
 **Work:** **Copy-paste** `calibration/kernels/dsm_bw/` from seanzw/random (`kernels.cuh`: `load_kernel`, `store_kernel`, `tma_kernel`, `mixed_kernel`). Do **not** rewrite them from `H200_profiling`. Size sweep 16–96 KiB unique addresses, one TB-cluster, checksum after the timer. Record BW1–BW11 (one-way load/store/TMA, duplex, same vs opposite mix, 2/4/8/16 TMA, idle neighbor). Then a **cycle-gate** repeat of one saturated one-way TMA put and one symmetric load at ~1e5 cycles (iteration override only). Tune shaper period, VC depths, ACK threshold/timeout, optional `base_latency`. Idle neighbor must not raise the active SM’s rate. `tma_bw/` from the same repo is GMEM TMA vs L2/HBM (not DSM); run the simple TMA test as a TMA-to-memory check, do not treat it as a DSM slope.
 
@@ -685,7 +686,8 @@ in parallel; do not freeze knobs until B6e).
 
 **Work:**
 
-1. Wait for validation-clean G1/G2/G3 rows from the pending H200 job.
+1. Use the 19 validation-clean job-2119329 shapes; exclude the failed 4096^3
+   row until its corrective hardware rerun succeeds.
 2. Use the same autotuned tile for unicast, multicast, and no-TMA variants.
 3. Simulate the exact accepted cubin/PTX under
    `calibration/kernels/h200_probes/artifacts/` on `SM90_H200_CLUSTER132`.
@@ -701,8 +703,8 @@ new job and matched simulator runs. **Next:** B6e.
 
 **Progress (2026-09-05):** The 256x256x64 G1 unicast-TMA and G3 no-TMA
 functional smoke passes on `SM90_H200_CLUSTER132` and their outputs match.
-G2 and all timing acceptance remain open pending timing-mode simulation and
-the new H200 job; do not close B6d from functional evidence alone.
+G2 and all timing acceptance remain open pending timing-mode simulation; do
+not close B6d from functional evidence alone or from the failed 4096^3 row.
 
 ---
 
@@ -739,10 +741,10 @@ unit test validates all eight GPC counts and powered-gated slots; the reduced
 
 ### B6g — Standalone exclusive H200 job
 
-- [ ] **B6g — WAITING FOR RESULT.** The updated vendor-first sbatch has been
-  uploaded to the H200 server. It records job-scoped outputs, continues after
-  isolated failures, and rejects the overall job if any required suite fails,
-  times out, or reports invalid data.
+- [ ] **B6g — JOB 2119329 PARTIALLY ACCEPTED.** The vendor-first result is
+  available under `/home/jcliu/H200_results/job_2119329`. Low-level rows pass,
+  but the 4096^3 GEMM timed launch deadlocked and the unicast winner label was
+  wrong. Exclude that row and rerun it before closing B6g.
 
 Before-result preparation is complete: the reusable simulator harness records
 run fingerprints, resumes only exact matches, rejects skip/timeout markers,
@@ -771,21 +773,21 @@ The H200 NVL hard-spec baseline now uses `-gpgpu_n_mem 94`, derived from the
 `-dram_data_command_freq_ratio 2`, this models 4.814 TB/s versus the published
 4.813 TB/s. Its 188 L2 subpartitions retain the existing per-slice geometry and
 therefore model 58.75 MiB. Review the following provisional knobs when B6g
-arrives; none may be accepted from the superseded Slurm jobs:
+is reviewed; none may be accepted from the superseded Slurm jobs:
 
 | Area to review | Knobs / current assumption | Required check |
 |---|---|---|
 | Memory geometry and L2 capacity | `-gpgpu_n_mem 94`, 188 L2 slices / 58.75 MiB | Confirm device bus width, reported L2, address distribution, and HBM STREAM peak. |
 | Shared-memory latency | `-gpgpu_smem_latency 30` | Direct SMEM dependency test; do not subtract DSM pointer-chase overhead. |
-| Clock domains | `-gpgpu_clock_domains 1785:1785:1785:3201` | Core/memory are datasheet values; measure ICNT/L2 instead of assuming core frequency. |
-| Kernel launch | `-gpgpu_kernel_launch_latency 8270` | Refit from isolated launch measurements. |
-| DRAM latency/timing | `-dram_latency 360`, copied H100 `-gpgpu_dram_timing_opt` | Isolate cold HBM latency and validate both latency and STREAM slopes. |
-| L2 latency/locality | `-gpgpu_l2_rop_latency 286`, `-gpgpu_l2_partition_extra_latency 23` | Refit base and far-L2 penalties independently. |
-| Local mbarrier | `-gpgpu_mbarrier_arrive_latency 6`, `-gpgpu_mbarrier_trywait_latency 43` | Use separate arrive and successful try-wait probes. |
-| `cp.async` | latency/initiation `112/39`, commit `2`, wait/release `15` | Verify exact timed instruction boundaries and saturated versus dependent issue. |
-| DP arithmetic | latency `8,8,8,8,110`, initiation `1,1,1,1,8` | Explain the large H100/H200 delta with matched dependent and ILP probes. |
-| Integer division | INT DIV latency/initiation `64/4` | Re-run the same operand and renormalization path as H100. |
-| WGMMA | SS issue/completion `11/51`; RS `19/41` | Re-run matched shapes and distinguish issue, wait, and completion. |
+| Clock domains | `-gpgpu_clock_domains 1785:1700:1700:3201` | Core/DRAM are H200 hard specs; ICNT/L2 are H100 fallbacks because job 2119329 did not measure them. |
+| Kernel launch | `-gpgpu_kernel_launch_latency 8700` | Job 2119329 median converts to 8698.67 cycles. |
+| DRAM latency/timing | `-dram_latency 254`, copied H100 `-gpgpu_dram_timing_opt` | H100 fallback: job 2119329 did not isolate a cold dependent HBM miss. |
+| L2 latency/locality | `-gpgpu_l2_rop_latency 286`, `-gpgpu_l2_partition_extra_latency 150` | Base remains provisional; Far-L2 is the H100 fallback because per-offset distributions were not exported. |
+| Local mbarrier | arrive `6`, successful try-wait `43` | Accepted job 2119329 medians; false-path 7755 is not the release knob. |
+| `cp.async` | issue `4/4`; commit `7/7`; wait `5/5`; release `5` | Issue is job-derived; remaining fields are H100 fallbacks because they were not isolated. |
+| DP arithmetic | latency `64,64,64,64,330`, initiation `64,64,64,64,130` | H100 same-GH100 fallback; job 2119329 executed no DP probe. |
+| Integer division | INT DIV latency/initiation `21/2` | H100 fallback; the job's scalar suite did not execute integer division. |
+| WGMMA | SS issue `4,4,4,4`, completion `47,51,59,75`; RS issue `9,9,9,10`, completion `37,41,49,65` | Accepted job 2119329 shape/group sweeps. |
 | Remaining instruction fits | FP DIV, SFU, MMA, TMA and integer WGMMA tuples | Revalidate with all 26 exact mirrored microbenchmarks; do not extrapolate one shape/opcode across tuples. |
 | DSM/TMA fabric | DSM latency/floor/visibility, shaper, VC/ACK and TMA completion curve | Refit latency and size slopes from vendor-first measurements. |
 | Unlimited shared service | `-gpgpu_shmem_bytes_per_cycle 0` | Keep as compatibility default only until a kernel constrains aggregate SMEM service bandwidth. |
