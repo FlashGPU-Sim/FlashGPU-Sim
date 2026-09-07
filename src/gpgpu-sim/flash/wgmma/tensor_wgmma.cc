@@ -4,8 +4,10 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <list>
 #include <map>
+#include <mutex>
 #include <set>
 #include <utility>
 #include <vector>
@@ -21,6 +23,41 @@ typedef void *yyscan_t;
 #include "ptx.tab.h"
 
 namespace flash_gpgpu_sim {
+
+void trace_wgmma_lifecycle(const char *event, unsigned uid, unsigned sid,
+                           unsigned long long cycle, unsigned compute,
+                           unsigned tail) {
+  static const bool enabled =
+      getenv("GPGPU_SIM_WGMMA_COLLECTOR_DEBUG") != nullptr;
+  if (!enabled)
+    return;
+  static const unsigned selected_sm = [] {
+    const char *value = getenv("GPGPU_SIM_WGMMA_LIFECYCLE_SM");
+    return value ? static_cast<unsigned>(strtoul(value, nullptr, 10)) : 0u;
+  }();
+  static const unsigned long long min_cycle = [] {
+    const char *value = getenv("GPGPU_SIM_WGMMA_LIFECYCLE_MIN_CYCLE");
+    return value ? strtoull(value, nullptr, 10) : 0ull;
+  }();
+  if (sid != selected_sm)
+    return;
+  // ponytail: one lock for at most 16 selected instruction lifecycles;
+  // use per-SM sinks only if this opt-in diagnostic grows beyond one SM.
+  static std::mutex mutex;
+  static std::set<unsigned> selected;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (strcmp(event, "REGISTER") == 0 && cycle >= min_cycle &&
+      selected.size() < 16)
+    selected.insert(uid);
+  if (!selected.count(uid))
+    return;
+  // Keep selections through completion: the old 128-line RF debug budget
+  // must not truncate a selected lifecycle (including an early completion).
+  fprintf(stdout,
+          "WGMMA_LIFECYCLE event=%s uid=%u sm=%u cycle=%llu "
+          "compute=%u tail=%u\n",
+          event, uid, sid, cycle, compute, tail);
+}
 
 namespace {
 
@@ -534,7 +571,7 @@ public:
   void wait_group(unsigned cta_id, unsigned warpgroup_id,
                   unsigned max_pending_groups, const unsigned *warp_ids,
                   unsigned count);
-  void cycle();
+  void cycle(unsigned sid, unsigned long long cycle);
   void cleanup_cta(unsigned cta_id);
 
 private:
@@ -679,7 +716,7 @@ void wgmma_unit_t::impl_t::wait_group(unsigned cta_id, unsigned warpgroup_id,
     m_barriers->set_wgmma_waiting_warps(warp_ids, count);
 }
 
-void wgmma_unit_t::impl_t::cycle() {
+void wgmma_unit_t::impl_t::cycle(unsigned sid, unsigned long long cycle) {
   wgmma_group_manager_t::wait_result_t result;
   for (std::vector<pending_completion_t>::iterator it =
            m_pending_completions.begin();
@@ -695,6 +732,8 @@ void wgmma_unit_t::impl_t::cycle() {
     if (m_pending_completions[i].remaining != 0 ||
         m_pending_completions[i].rf_traffic_remaining != 0)
       continue;
+    trace_wgmma_lifecycle("ASYNC_COMPLETE", m_pending_completions[i].op_uid,
+                          sid, cycle);
     wgmma_group_manager_t::wait_result_t completed =
         m_group_manager.complete_op(m_pending_completions[i].key.first,
                                     m_pending_completions[i].key.second,
@@ -764,7 +803,9 @@ void wgmma_unit_t::wait_group(unsigned cta_id, unsigned warpgroup_id,
   m_impl->wait_group(cta_id, warpgroup_id, max_pending_groups, warp_ids, count);
 }
 
-void wgmma_unit_t::cycle() { m_impl->cycle(); }
+void wgmma_unit_t::cycle(unsigned sid, unsigned long long cycle) {
+  m_impl->cycle(sid, cycle);
+}
 
 void wgmma_unit_t::cleanup_cta(unsigned cta_id) { m_impl->cleanup_cta(cta_id); }
 

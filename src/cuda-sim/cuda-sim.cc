@@ -1408,6 +1408,8 @@ void ptx_instruction::set_opcode_and_latency() {
         op = TENSOR_MAP_OP;
         latency = tensormap_latency[2];
         initiation_interval = tensormap_init[2];
+      } else if (std::find(opts.begin(), opts.end(), SC_OPTION) != opts.end()) {
+        op = MEMORY_BARRIER_OP;
       }
       break;
     }
@@ -1619,7 +1621,9 @@ void ptx_instruction::set_opcode_and_latency() {
           wgmma_compute_cycles(shape_n, shape_k, input_type,
                                wgmma_compute_throughput);
       wgmma_completion_tail_latency =
-          wgmma_latency_for_shape(shape_n, wgmma_completion);
+          // Compute already scales with N. Do not multiply the final
+          // scoreboard/writeback tail again for wider instructions.
+          wgmma_latency_for_shape(std::min(shape_n, 64), wgmma_completion);
       if (initiation_interval > latency) {
         printf("GPGPU-Sim PTX: ERROR WGMMA initiation interval (%u) exceeds "
                "pipe latency (%u) for m64n%dk%d\n",

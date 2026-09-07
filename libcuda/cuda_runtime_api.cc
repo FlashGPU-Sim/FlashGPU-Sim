@@ -2626,6 +2626,12 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernelInternal(
   function_info *entry = context->get_kernel(hostFun);
 #if CUDART_VERSION < 10000
   cudaConfigureCallInternal(gridDim, blockDim, sharedMem, stream, ctx);
+#else
+  // Compiler-generated launches pre-push a configuration; direct calls to
+  // cudaLaunchKernel do not. Both paths must have a frame before arguments
+  // are packed, and cudaLaunchInternal consumes that frame exactly once.
+  if (ctx->api->g_cuda_launch_stack.empty())
+    cudaConfigureCallInternal(gridDim, blockDim, sharedMem, stream, ctx);
 #endif
   for (unsigned i = 0; i < entry->num_args(); i++) {
     std::pair<size_t, unsigned> p = entry->get_param_config(i);
@@ -3678,12 +3684,17 @@ __host__ cudaError_t CUDARTAPI cudaEventElapsedTime(float *ms,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  time_t elapsed_time;
+  if (ms == nullptr || start == nullptr || end == nullptr)
+    return g_last_cudaError = cudaErrorInvalidValue;
   CUevent_st *s = get_event(start);
   CUevent_st *e = get_event(end);
   if (s == NULL || e == NULL) return g_last_cudaError = cudaErrorUnknown;
-  elapsed_time = e->clock() - s->clock();
-  *ms = 1000 * elapsed_time;
+  if (!s->done() || !e->done())
+    return g_last_cudaError = cudaErrorNotReady;
+  // CUDA event time follows the device timeline, not simulator host runtime.
+  // shader_clock() is kHz, so cycles / kHz yields milliseconds.
+  *ms = (e->sim_cycle() - s->sim_cycle()) /
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->shader_clock();
   return g_last_cudaError = cudaSuccess;
 }
 

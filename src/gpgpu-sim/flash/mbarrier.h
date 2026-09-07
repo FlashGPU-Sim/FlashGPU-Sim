@@ -110,10 +110,9 @@ public:
                             uint64_t addr, int completed_tx_count);
 
   /**
-   * Like complete_tx, but no-ops (returns empty set) when the mbarrier is
-   * missing or has no outstanding expected_tx. Used for cluster-TMA peer
-   * completion so multi-issuer programs do not double-count, and so peers
-   * that have not yet armed expect_tx are left alone.
+   * Like complete_tx, but no-ops when the mbarrier is missing. Despite the
+   * historical name, initialized peers retain early completions as negative
+   * tx-count; the caller must deliver each transaction exactly once.
    */
   std::set<int> try_complete_tx_if_pending(gpgpu_sim *gpu,
                                            const thread_index_t &thread_index,

@@ -6,6 +6,272 @@
 
 ## How to take a task
 
+GEMM status propagation is repaired in the probe, suite harness and comparator:
+explicit numerical failures must not become timing/functional PASS. Both
+Python self-tests pass normally and under `-O`, including failed reference,
+multicast and no-TMA checks with equal timings. Use these updated scripts for
+final reporting; running processes retain their old loaded code. The probe
+adds an explicit failure line and `notma_ok` timing note; no timing knobs change.
+
+Final GEMM acceptance must use the repaired finite-value validators in
+`src/probe_gemm_triton.cu`: old NaN differences could silently pass.
+Separate `/tmp/h200-gemm-validation-fix.mZiTX8/nvprof-after` passes 19 direct
+controls and existing harness policies; original validators fail ten controls.
+The live candidate batch retains the old executable, so its correctness flags
+are provisional (no NaN output has been demonstrated). Do not replace that
+binary mid-run. Rebuild/use the repaired probe for final acceptance; the
+G3-only timing entrypoint has no numerical check and is not a substitute.
+
+Priority correctness finding: the production non-power-of-two IPOLY mapping
+aliases distinct addresses to identical full DRAM coordinates. Reproducer:
+`/tmp/h200-hash-local.XaPdoS/check` (`0x000` and `0x200` both decode to all-zero
+coordinates); 1MiB/32B sweep gives 26288 collisions versus zero for consecutive
+indexing. Legacy balanced=0/1 also alias. The shared decoder source now uses
+a bijective IPOLY-derived rotation for all three legacy non-power2 modes;
+power2 and channel-stable paths remain unchanged. Permanent standalone
+regression `test/check_address_mapping.cc` passes all 12 H200/H100-sized
+geometry/mode/control combinations; main verification log is
+`/tmp/h200-map-regression.L4snoW/result.log`. A separate candidate library is
+now built at `/tmp/h200-memory-fixes-build.CtH6nJ/lib/libcudart.so` (SHA 708c448e...).
+The regular baseline library is unchanged. The H200 config's obsolete hash
+comment is corrected; numeric settings are unchanged and the active baseline
+already uses a copied config with captured start-time provenance.
+Read the decoder audit in `calibration.md`. Repair and regress this before
+final timing acceptance; existing passes are historical, not validation of
+the flawed mapping. Keep the active trace libraries unchanged until terminal.
+Separate deferred geometry review: the inherited 13-row-bit mask has only
+23.5GiB H200 DRAM-coordinate capacity, and CUDA memory-size reports are
+inconsistent placeholders. This is not functional address wrap; the hash
+repair does not extend capacity. Document and review before any full-141GB
+claim. The current calibration buffers do not validate that capacity.
+The mapping regression now also sweeps the actual 48GiB heap base, with
+65536 unique tuples/pairs across two 1MiB regions; all 12 cases pass in
+`/tmp/h200-map-regression.L4snoW/high-address.log`. A separate caller defect
+has a source fix: `perf_memcpy_to_gpu` now keeps its loop offset and preload
+address as size_t, instead of truncating the 64-bit heap address to unsigned.
+Run `test/check_memcpy_preload.py` on the documented short 132SM copy-engine
+trace after rebuilding; synthetic checker cases pass under Python `-O`.
+H2D/D2H functional storage was not truncated. The short test does not cover
+a >4GiB copy length.
+Failing-before runtime control is now terminal, exit 0:
+`/tmp/h200-preload-before.bl6073/run.log`. The old library emits low preload
+addresses `0, 0x20, ...`; the checker correctly exits 1. Reuse the same
+short benchmark/trace settings for the completed passing-after proof at
+`/tmp/h200-preload-after.dpY0wu/run.log`: all 128 high-address sectors match.
+
+Candidate runtime checks now pass: 216/216 unit tests in
+`/tmp/h200-unit-memory-fixed.UvrStH/run.log`; five global multicast tests
+with zero DSM payload in `/tmp/h200-global-route-fixed.T8GekU/run.log`;
+8/8 checksum-validated vendor smoke controls with mapped TMA payload in
+`/tmp/h200-mapped-route-fixed.tbjYQs/run.log`.
+All nine matched GEMMs are now running sequentially in
+`/tmp/h200-gemm-memory-fixed.wPiMCL/results` with candidate 708c448e..., OMP4,
+warmup=1/sample=1 and DSM counters enabled. Config 6caac58f... differs from the
+baseline only in comments. Check correctness, all nine event errors, and
+global-zero DSM counters before acceptance. The harness now fingerprints
+external libraries and loader search order; self-tests pass. See the current
+candidate section at the top of `calibration.md` for full hashes and limits.
+Candidate small GEMM (M256 N8192 K2048) is complete: all outputs/reference
+checks pass, and all 21 complete DSM dumps have zero payload, including
+explicit tensor multicast. All three event timings fail: unicast
+0.0427978ms (24.821% fast), multicast 0.0443042ms (20.293% fast), no-TMA
+0.125347ms (20.319% fast). K2K completed: unicast0.151900ms (36.444% slow),
+multicast0.141589ms (27.365% slow), no-TMA0.457300ms (8.028% fast, timing
+PASS). All21 K2K DSM dumps have zero payload. Square is now running;
+comparison has1PASS/5FAIL/3MISSING. Numerical flags remain provisional under
+the old validator; final acceptance requires the repaired finite checks.
+The batch's `comparison/` preserves all nine targets, six still missing.
+Do not restore the erroneous memory mapping/preload to regain old passes.
+Follow-up if candidate GEMM gaps persist: trace WGMMA scheduler issue,
+collector dispatch, tensor admission and async completion by instruction
+UID. Async counting currently begins at scheduler issue and has no explicit
+tensor-admission dependency. Measure any overlap with queueing before
+changing that abstraction; no new timing fix is established by source
+inspection alone.
+Initial bounded matched-GEMM lifecycle evidence is now available at
+`/tmp/h200-wgmma-lifecycle-matched.YLgqev/run.log`: 16 complete SM0 UIDs,
+2–3 cycles scheduler-to-admission (mean 2.125), zero completion-before-
+admission. This early sample does not explain the 20–25% small-GEMM gap;
+do not change WGMMA timing on this evidence. Diagnostic library4335a49f...
+passes216/216 unit tests and is separate from the candidate708 runs.
+Short non-GEMM revalidation completed with 6/6 functional PASS in
+`/tmp/h200-short-probes-memory-fixed.xF79r9/results`: vendor TMA latency
+256B/1KiB/4KiB/16KiB, representative TMA multicast, and mbarrier. Same
+candidate library/config and OMP4; preserve these matched measurements for
+the combined comparison. The old K2K trace is now terminal (exit 0), and
+the three-path 1GiB HBM remeasurement has completed sequentially at
+`/tmp/h200-hbm-memory-fixed.y7xnzH/results` on the same frozen candidate.
+Normal-load HBM now passes payload checks and bandwidth: 476985 cycles,
+4.01822 TB/s versus hardware 480368 cycles, 3.98992 TB/s (0.709% rate gap).
+cp.async has completed with payload PASS but bandwidth FAIL: 418070 cycles,
+4.58447 TB/s versus hardware 4.09131 TB/s (12.054% high). TMA completed with
+payload PASS but bandwidth FAIL: 414464 cycles, 4.62436 TB/s versus hardware
+467059 cycles, 4.10361 TB/s (12.690% high). All three are functionally complete;
+only one bandwidth target passes. See the run's `comparison/`. Do not globally
+throttle the passing normal-load path to hide the cp.async/TMA gaps.
+Candidate DSM bandwidth completed at `/tmp/h200-dsm-memory-fixed.eFHCBY/results`
+(exit 0, 157 samples, 1188.581 host seconds): 10/12 non-exempt slopes pass.
+One-way load/store fail by 10.814%/11.935%; BW7 passes (4.704%), exempt BW8
+fails (40.129%). See `comparison/` for all 14 rows; old 12/12 is not current.
+The 16-CTA latency case was skipped by the default exclusion list, not run.
+It is now explicitly enabled with `--exclude none --only dsm_calibration`
+at `/tmp/h200-dsm-latency-memory-fixed.lxtwwT/results`, same frozen library,
+config and OMP4. That latency run is now complete (exit 0,1624.636s): remote
+mean/RTT/store visibility pass; local latency and remote minimum fail by
+37.453%/13.584%. The full table's13passes include derived/metadata rows,
+not13independent timing tests. Matched L2 normal-load completed with exit0 at
+`/tmp/h200-l2-memory-fixed.MIxzLp/run.log` with candidate708 and one warmup,
+one timed launch: payload PASS, 370715 timed cycles, 6462.61 GB/s versus
+hardware 358536 cycles, 6682.13 GB/s (3.285% bandwidth error, PASS).
+Warmup370382 cycles is not the measured result. Matched vendor TMA L2 also
+completed at `/tmp/h200-l2-tma-memory-fixed.d5MXY0/run.log`: vendor checksum
+PASS, 352027 timed cycles and 6805.69 GB/s versus hardware325910 cycles and
+7351.08 GB/s (7.419% rate error, PASS). Warmup350319 cycles is excluded.
+Timed L2 misses and DRAM accesses are zero. Both L2 rates are slightly below
+hardware; do not globally slow L2 to fit small GEMM. Provenance and hardware
+references are in `calibration.md`; no new knob fit has been applied.
+The short-probe run's four vendor TMA latency cases pass correctness, zero-DSM routing,
+and strict <10% timing: 1396/1424/1538/1994 cycles versus hardware
+1351/1346/1649/1887 (maximum gap 6.731%). Comparison artifacts are in
+`tma_latency_comparison/` under that run. All 16 representative multicast
+and unicast E2E points pass (maximum 7.192%), but issue, skew and several
+derived metrics still fail; five fanout metrics are missing. Keep those
+visible in `tma_multicast_comparison/`. This probe gathers results using
+explicit post-timing DSM loads, so it is not an isolated zero-payload test.
+Mbarrier has four local timing passes, remote owner/E2E failures of
+37.264%/45.391%, and an invalid zero hardware remote-arrive reference;
+see `mbarrier_comparison/`. Resolve remote timing before acceptance.
+Remote mbarrier audit: the CSV-advertised remote-hop knob is bypassed by
+the enabled DSM path; do not tune it. Owner wait and E2E have different
+measurement envelopes (E2E includes the owner's global result store), and
+an ARRIVE return packet already exists. Separate these phases before adding
+any transport penalty; see `calibration.md` for source-level conclusions.
+The completed `/tmp/h200-remote-mbar-trace.iX3yP7` diagnostic (exit 0)
+reproduces the short-batch values. Arrival issue→owner release scheduling
+is 78 cycles, release delay 43, return/control→owner clock 12; owner
+clock→final globaltimer is 20, including a store issued two cycles before
+the timer. No second wait or long store stall appears. Hardware's missing
+cost is still unexplained; see the exact timeline in `calibration.md`.
+
+Current experiment: fixed-output-priority VOQ arbitration can starve a higher
+output under sustained low-output traffic. A failing-before/passing-after
+regression covers both network directions; the router now rotates its output
+scan without increasing bandwidth. Small warmup=1 GEMM completed in
+`/tmp/h200-gemm-router-rotation`: unicast -0.354% PASS, multicast -9.827%
+PASS, no-TMA -17.285% FAIL, all correctness checks pass. Multicast has very
+little timing margin. The larger M512 N16384 K2048 warmup=1 run completed
+in `/tmp/h200-gemm-router-k2k`: unicast +51.086% FAIL, multicast +40.283%
+FAIL, no-TMA -8.344% PASS, with correctness passing. The square warmup=1
+run completed in `/tmp/h200-gemm-router-square` on the same build:
+unicast +54.222% FAIL, multicast +39.731% FAIL, no-TMA -9.638% PASS;
+all correctness checks pass. All three runs are terminal. Four of nine
+GEMM event timings pass; five fail. Diagnose larger-shape TMA service and
+small-shape no-TMA timing before further acceptance runs.
+Full simulator-backed unit regression passed 216/216 in
+`/tmp/h200-router-unit-sim-rooted.log`. All-nine acceptance remains open.
+See `calibration.md` for library/config hashes and exact results.
+The three same-config/same-library baseline CSVs are now combined in
+`/tmp/h200-router-all-nine-comparison/{comparison.csv,comparison.md}`:
+all nine rows present, four PASS/five FAIL. The comparator now accepts
+multiple `--sim` paths with source preservation and duplicate rejection;
+its CLI regression passes. This remains a baseline, not final acceptance.
+
+Completed diagnostic: `/tmp/h200-reply-multigrant.vtkbrQ/results` ran K2K
+with only `icnt_multi_grant_reply=1` added to a temporary 132SM config.
+It tests reply-input arbitration sensitivity, not an accepted hardware
+bandwidth change. Compare against `/tmp/h200-gemm-router-k2k`; both use
+warmup=1, samples=1, OMP=4 and the same router-fixed library. Production
+config remains unchanged. Exit 0, all correctness checks pass, 6255.781 host
+seconds. Event errors are +50.958% unicast, +48.033% multicast, -8.228%
+no-TMA. Unicast barely changes and multicast worsens versus baseline;
+reject this setting as a remedy. Do not restart this terminal run. Continue
+investigating larger TMA service and small no-TMA timing; see calibration.md.
+
+Completed evidence run: `/tmp/h200-k2k-tx-trace.BL9ylc/results` repeated the
+production-config K2K case with existing transaction tracing enabled at
+`/tmp/h200-k2k-tx-trace.BL9ylc/transactions.csv` (per-memory-fetch tracing
+disabled). No build or knob change. Separate NEW/FIRST_MF_ISSUE,
+ISSUE_DONE and completion events before choosing another service change.
+Keep warmup=1, samples=1, OMP=4; this is a diagnostic, not final acceptance.
+Exit 0 in 6837.341 host seconds, all correctness checks pass, and all three
+event times exactly match the old baseline; do not restart it.
+Timed unicast has completed in 300239 cycles, exactly matching baseline.
+Its 8192/16384-byte reads average 2518/3334 cycles from last issue to memory
+completion, versus only 1.00/1.10 cycles from completion to barrier arrival.
+Investigate memory/reply service before changing the completion floor; these
+transaction intervals are not exclusive kernel stalls. Full table and cycle
+window are in `calibration.md`. Timed multicast now matches baseline at
+278371 cycles; 8K/16K post-last-issue means are 2299/2664 cycles, followed
+by 100/23.78 mean cycles to barrier arrival (the explicit multicast path
+retains its configured 100-cycle delay). No-TMA and final correctness remain
+pending. The opt-in DSM counter hook/checker now rejects disabled DSM and
+retains checks under Python optimization; normal and `-O` self-tests pass.
+The candidate build passes isolated global-zero and mapped-positive runtime
+controls; explicit tensor-multicast GEMM routing remains under test.
+No-TMA timed scheduler deltas are documented in `calibration.md`: small
+SB_SpInt share is 67.08%, versus 41.36%/42.75% for larger shapes. Reuse a
+single-SM/single-warp issue trace next to identify dependency-stalled PCs;
+do not add instrumentation or treat sample shares as elapsed-cycle shares.
+This existing-hook diagnostic is now terminal in
+`/tmp/h200-small-issue-trace.9OsQho/results`, with its issue trace at
+`/tmp/h200-small-issue-trace.9OsQho/issue.log`. It uses the production 132SM
+config, pinned router-fixed library, OMP4, matched small case, warmup=1 and
+samples=1; SM=0/warp=0 and unlimited trace rows. No rebuild or knob change.
+Exit 0 in 1918.225 host seconds; all correctness checks pass and all three
+event times exactly reproduce baseline. Timed no-TMA interval 1179514–1411779
+has 148158 traced SP_INT stalls; top PCs are half-loads following queued
+zero-MOVs, not proof of long MOV execution. Full extraction is documented in
+`calibration.md`. Do not restart this terminal run; the K2K transaction trace
+has also completed on the old library. The separate candidate build does not replace
+that library and is already under validation; do not repeat its build/tests.
+
+GEMM measurement update: `/tmp/h200-gemm-bounded-wait` is terminal (square
+host timeout); the square-only retry `/tmp/h200-gemm-square-extended` is
+now terminal, functional PASS in 9913.894 host seconds. Square-shape event
+errors are +69.821% unicast, +37.638% multicast, -9.452% no-TMA. It used
+warmup=0 and remains diagnostic; the first two fail the timing gate.
+The completed `/tmp/h200-gemm-small-warm1` run matches the profiling source's
+one immediate warmup and reports small-shape time errors +18.557% unicast,
++17.078% multicast, -17.315% no-TMA: all fail despite correctness passing.
+The former zero-warmup multicast pass is not robust. Future harness GEMMs
+retain `--warmup 1`; do not mix warmup procedures into final acceptance.
+Read `calibration.md` for full results/provenance and the L2 service audit.
+
+Calibration follow-up (2026-09-07): audit bounded `mbarrier.try_wait`
+suspension before further remote-wait tuning. Job 2119329 vendor WaitFalse
+has a repeatable 7755 cycles/op slope. Explicit ns-to-cycle conversion is
+now fixed with a failing-before/passing-after expiry regression. The 4320 ns
+default-timeout candidate passes bounded expiry, early wakeup, and 16 local
+regressions; matched false-chain gap is 0.090%. Remote owner/E2E gaps remain
+37.264%/45.391%, so do not declare remote calibration complete. All nine
+GEMMs are being checked in `/tmp/h200-gemm-bounded-wait`: the 256x8192x2048
+shape is functionally complete, with CUDA-event errors +15.998% unicast
+(FAIL), +8.085% multicast (PASS), -16.615% no-TMA (FAIL). The two larger
+shapes have since finished (see the update above and `calibration.md`);
+no all-nine timing acceptance yet. No-hint
+nonuniform local waits retain immediate polling. The standalone postdominator assertion
+was traced to compiler-hoisted non-volatile test handshake loads; corrected
+polling now passes four focused remote/timeout tests. Still validate the
+remote timing independently. `RemoteExpectAndCompleteTx` now passes with a
+bounded observation window and a deliberate missing-expect negative control
+(`/tmp/h200-mbar-observation-negative.log`); this resolves its former timeout.
+See the scope clarification in
+[`calibration.md`](calibration.md). Keep successful-wait latency separate;
+require finite-expiry, early-wakeup and all nine GEMM timing comparisons
+after any fix. This is unfinished calibration work, not an accepted fit.
+
+The historical pre-memory-fix 1-GiB HBM batch finished with payload checks passing on all
+three paths: normal load -5.991%, cp.async +9.433%, TMA +8.752% bandwidth
+error against job 2119329. Evidence is in
+`/tmp/h200-calibration-hbm-matched/comparison/comparison.csv`. The batch spans
+library revisions: repeat on one frozen build before final acceptance, and
+do not interpret streaming bandwidth as validation of inherited bank timings
+or the DRAM residual. No HBM knob change was needed for these three results.
+The separate matched L2 normal-load diagnostic completed with correct
+payload but fails timing: 405292 vs 358536 cycles (+13.041%), or -11.536%
+bandwidth. See `/tmp/h200-l2-normal-comparison/comparison.csv`; the 414050
+warmup cycles must not be used as its measured result. L2 remains open.
+
 1. Pick the **lowest undone ID** whose **Prereqs** are all `[x]`.
 2. Read the **Read first** links. Do not skim unrelated chapters.
 3. Implement **only** that ID. Do not mix rename + fabric + calibration in one patch.
@@ -586,7 +852,10 @@ Future published cycle numbers use **`SM90_H200_CLUSTER132`** (inferred
 |T_sim − T_H200| / T_H200  <  10%
 ```
 
-`T` is the timed `%clock64` region (sim `clock64` is `gpu_sim_cycle`). Bandwidth knobs are still fitted from **size slopes**; the 10% gate is on cycle counts.
+`T` uses each matched measurement's envelope and unit: CUDA-event ms for
+GEMM, clock-counter cycles for instruction probes, globaltimer ns (or
+explicitly converted cycles) for remote E2E, and size slopes or bytes/s for
+bandwidth. Reciprocal time/bandwidth metrics are not independent tests.
 
 **Hard rules (every B6\* run):**
 
@@ -607,7 +876,73 @@ a corrective rerun is required before the preset is frozen. Previous Slurm
 measurements remain superseded. Do not close a B6 item
 from them.
 
-**Simulator status (2026-09-05):** the reusable 132-SM suite is
+**Simulator status (2026-09-07):** calibration is still in progress. The suite
+now includes all nine requested GEMM comparisons and the vendor DSM size
+sweep. Do not use the earlier functional pass count as calibrated evidence.
+TMA's size table has been replaced by a linear completion floor; full multicast
+payload checks pass, with end-to-end errors below 6.26%. GEMM outputs pass
+for 256/8192/2048, but its first diagnostic timing is invalid because CUDA
+events used host time. Device-cycle event timing now passes its regression
+on SM120 and the 132-SM H200 config; the launcher uses the configured clock
+for unit conversion. Resume fingerprints include simulator libraries, and
+the multi-launch cases have explicit cumulative cycle ceilings. DSM/HBM
+validation remains open. Shared-to-shared TMA previously bypassed DSM
+contention; mapped copies now use the existing DSM transport and pass all
+eight vendor smoke cases. Both false-positive watchdog patterns (finite
+address streams and active producers alongside bar.sync) have 132-SM
+regressions, while genuine polling/mixed-wait death tests remain passing.
+The full DSM sweep now passes 12/12 non-exempt slopes (<7.95% error); BW7
+is -9.49% and exempt BW8 is -42.35%. HBM cp.async/TMA diagnostics are
+-1.49%/+0.20%, while normal loads remain -13.32% (all use 256 MiB versus
+hardware's 1 GiB). Do not retune the roofline to fix only normal loads.
+New regression work found a retired-kernel binding lifetime bug: sparse
+cluster launches can leave idle SMs pointing at deleted kernels and bypass
+the next launch's delay. The 8700-cycle regression fails at 509 cycles before
+the cleanup fix; both post-fix event tests pass on build 13.0. The broad TMA regression
+also aborted in Pipelined2InFlight with an invalid shared address. The trace
+identified a 32-bit arithmetic carry leaking into a 64-bit address read;
+register-width truncation fixes the isolated test on build 14.0. Complete
+the remaining address/pipelined-store checks and broader regressions before
+declaring regression safety. Build-12.0 GEMM also stalls at 124/128 multicast
+CTAs despite completed TMA memory traffic. Signed transaction accounting
+now retains completion credits before expect_tx, as PTX requires; the
+reproducer plus 24 related regressions pass. The new GEMM run has progressed
+past both TMA smoke launches; final timing remains open.
+Direct cudaLaunchKernel now creates its missing launch frame (reproduced
+cycle-gate host abort; regression passes). Register-width enforcement also
+exposed mapa.u32's reliance on out-of-width generic-pointer bits. Compact
+owner/offset encoding and mbarrier decoding now pass both 32-/64-bit remote
+arrival tests. Full remote probes now complete functionally, but owner wait
+and E2E timing are still 28.77% and 39.11% too short. Repeated-init and
+remote-barrier cycle gates also remain outside tolerance. Pure local
+arrive/try-wait/composite measurements pass; preserve their isolated fits.
+Broader checks pass 215/215 unit tests and 23/23 selected arithmetic/matrix
+integration tests; see calibration.md for exact logs and scope.
+Historical pre-memory-fix checkpoint, not candidate acceptance: the harness
+was updated to hardware's 1 GiB HBM stream and 16-CTA DSM matrix.
+Earlier 256 MiB/18-CTA numbers remain diagnostics.
+The matched 1-GiB normal-load HBM case now passes payload checks and is
+5.991% below hardware bandwidth without further HBM tuning. The matched
+16-CTA DSM matrix also completes: remote mean is within 4.711%, but local
+latency and store visibility remain outside tolerance. A new fenced-store
+regression exposed fence.sc being treated as an ordinary instruction;
+classification and outstanding-store/DSM draining now fix that reproducer.
+Full vendor store-row and broader DSM validation are running; see
+calibration.md for exact artifacts and the two-CTA diagnostic's limits.
+These validations now pass: 13/13 selected DSM tests; producer fenced-store
+span 665/660 simulator/hardware cycles, peer visibility 375/352 ns. No
+latency knob was changed. Preserve the store-only comparison and do not
+count visibility ns/cycles as independent measurements. Local SMEM and
+remote-mbarrier timing still need work.
+Global TMA architectural arrival now requires actual memory completion;
+the fresh linear-model trace passes all 32 transfer-order checks. Independent
+GEMM validation remains open: corrected-clock small-shape baseline errors are
+-9.07% (unicast), -11.09% (multicast), and -15.44% (no-TMA), before the new
+completion model. All three shapes are being rerun on build 12.0. Fitted
+probe agreement alone does not establish predictive accuracy. See
+[`calibration.md`](calibration.md) for diagnostic paths and limitations.
+
+**Historical functional rehearsal (2026-09-05):** the reusable 132-SM suite is
 `scripts/run_cluster_noc_demo.py`. It mirrors all hardware kernel families,
 caps each case at one million cycles, and produces both supervisor-facing and
 machine-readable results. The completed representative run reports 33 PASS,
@@ -710,10 +1045,11 @@ not close B6d from functional evidence alone or from the failed 4096^3 row.
 
 ### B6e — Freeze preset and close the report
 
-- [ ] **B6e** Write fitted knobs into `SM90_H200*` comments (`measured` / `inferred`). No pending rows on the accepted set in [`calibration.md`](calibration.md).
+- [ ] **B6e** Write fitted knobs into `SM90_H200_CLUSTER132` comments (`measured` / `inferred`). No pending rows on the accepted set in [`calibration.md`](calibration.md).
 
-**Work:** One pass over the fitted knobs. Sync comments in `SM90_H200` (flat,
-NoC off), `SM90_H200_CLUSTER132` (fabric on), and reduced 16x2 (functional).
+**Work:** Fit and accept only `SM90_H200_CLUSTER132` (fabric on). Other H200
+presets are development-only and slated for removal; maintain compatibility
+and geometry comments as needed, not separate calibration fits.
 Do not leave `-gpgpu_dsm_bytes_per_cycle` as a non-zero bandwidth model.
 
 **Verify:** Re-run the accepted L/BW/G set once on the frozen preset; errors still < 10%. Reduced functional filters still PASS.
@@ -782,15 +1118,32 @@ is reviewed; none may be accepted from the superseded Slurm jobs:
 | Clock domains | `-gpgpu_clock_domains 1785:1700:1700:3201` | Core/DRAM are H200 hard specs; ICNT/L2 are H100 fallbacks because job 2119329 did not measure them. |
 | Kernel launch | `-gpgpu_kernel_launch_latency 8700` | Job 2119329 median converts to 8698.67 cycles. |
 | DRAM latency/timing | `-dram_latency 254`, copied H100 `-gpgpu_dram_timing_opt` | H100 fallback: job 2119329 did not isolate a cold dependent HBM miss. |
+| HBM bank/controller assumptions | H100 bank/group counts, timing tuple, burst length, FR-FCFS and queues retained | Unchanged DRAM-cycle timings at 3201 vs 2617 MHz imply approximately 18% shorter nanoseconds; validate rather than infer latency from bandwidth. The 254-cycle residual uses the core-cycle counter, not DRAM cycles. |
+| L2 capacity discrepancy | Model 58.75 MiB; job's vendor driver reports 60.00 MiB | Separate effective bus-width decomposition from physical L2 geometry; do not claim 188 slices or 94 controllers are measured physical counts. |
 | L2 latency/locality | `-gpgpu_l2_rop_latency 286`, `-gpgpu_l2_partition_extra_latency 150` | Base remains provisional; Far-L2 is the H100 fallback because per-offset distributions were not exported. |
 | Local mbarrier | arrive `6`, successful try-wait `43` | Accepted job 2119329 medians; false-path 7755 is not the release knob. |
 | `cp.async` | issue `4/4`; commit `7/7`; wait `5/5`; release `5` | Issue is job-derived; remaining fields are H100 fallbacks because they were not isolated. |
 | DP arithmetic | latency `64,64,64,64,330`, initiation `64,64,64,64,130` | H100 same-GH100 fallback; job 2119329 executed no DP probe. |
 | Integer division | INT DIV latency/initiation `21/2` | H100 fallback; the job's scalar suite did not execute integer division. |
-| WGMMA | SS issue `4,4,4,4`, completion `47,51,59,75`; RS issue `9,9,9,10`, completion `37,41,49,65` | Accepted job 2119329 shape/group sweeps. |
+| WGMMA | SS issue `4,4,4,4`, candidate completion tail `46,46,46,46`; RS issue `9,9,9,10`, completion `37,41,49,65` | SS matched width diagnostic found compute double-counting; validate corrected tail and all GEMMs. RS still needs compute-subtracted tail validation. |
 | Remaining instruction fits | FP DIV, SFU, MMA, TMA and integer WGMMA tuples | Revalidate with all 26 exact mirrored microbenchmarks; do not extrapolate one shape/opcode across tuples. |
 | DSM/TMA fabric | DSM latency/floor/visibility, shaper, VC/ACK and TMA completion curve | Refit latency and size slopes from vendor-first measurements. |
 | Unlimited shared service | `-gpgpu_shmem_bytes_per_cycle 0` | Keep as compatibility default only until a kernel constrains aggregate SMEM service bandwidth. |
+
+- [ ] Validate WGMMA width extrapolation before final GEMM acceptance.
+  `cuda-sim.cc::wgmma_latency_for_shape` multiplies the N=64 entry by
+  ceil(N/64) for issue, initiation and completion tail alike. The loaded
+  no-TMA winning GEMM uses `m64n128k16` SS instructions. Job 2119329's
+  `WgmmaAsyncLatencyBench.F16SsShapeSweep.csv` reports issue 4.29688/4.27344
+  and wait 75/107 cycles at N=64/128. Those measurements do not support
+  blindly doubling every timing component. First reproduce the matched
+  issue/wait sweep and distinguish measured wait from modeled compute plus
+  tail; do not substitute measured wait directly for an internal tail.
+  The matched one-SM diagnostic now confirms the error and its correction:
+  waits change from 104/211 to 75/107 cycles, matching hardware N=64/128.
+  `test/check_wgmma_width.py` fails before and passes after. Total spans are
+  within 2.3%, but issue spans remain too high. Wider RS/integer regression
+  and all-shape GEMM acceptance remain required before closing this item.
 | Non-hardware simulator choices | inferred `6×16+2×18` GPC map; PTX allocator disabled | Confirm topology if exposed; retain allocator workaround only while its calibration probe requires it. |
 
 **Prereqs:** B6g CSV.

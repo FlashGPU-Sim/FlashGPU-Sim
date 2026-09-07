@@ -14,6 +14,7 @@
 // same CTA — other threads waiting at bar.sync deadlock with tid0 in try_wait.
 
 #include <cuda_runtime.h>
+#include <cooperative_groups.h>
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -974,6 +975,50 @@ TEST_F(DsmTest, LocalSharedLoadThenAdd) {
             cudaSuccess);
   cudaFree(d_out);
   EXPECT_EQ(h, 0xA0000008u);
+}
+
+__global__ void dsm_sc_fence_timing_kernel(unsigned long long *out) {
+  __shared__ unsigned value;
+  auto cluster = cooperative_groups::this_cluster();
+  if (threadIdx.x == 0) value = 0;
+  cluster.sync();
+  if (cluster.block_rank() == 0 && threadIdx.x == 0) {
+    volatile unsigned *peer = cluster.map_shared_rank(&value, 1);
+    const auto start = clock64();
+    *peer = 42;
+    asm volatile("fence.sc.cluster;" ::: "memory");
+    out[0] = clock64() - start;
+  }
+  cluster.sync();
+  if (cluster.block_rank() == 1 && threadIdx.x == 0) out[1] = value;
+}
+
+TEST_F(DsmTest, ScFenceWaitsForRemoteStore) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  // Check the configured delivery floor, not a hard-coded silicon latency.
+  unsigned floor = 0;
+  std::ifstream config("gpgpusim.config");
+  std::string line;
+  while (std::getline(config, line)) {
+    std::istringstream fields(line);
+    std::string key;
+    if (fields >> key && key == "-gpgpu_dsm_store_visibility_latency_cycles")
+      fields >> floor;
+  }
+  if (!floor) GTEST_SKIP() << "requires a nonzero DSM store visibility floor";
+  unsigned long long *device = nullptr;
+  ASSERT_EQ(cudaMalloc(&device, 2 * sizeof(*device)), cudaSuccess);
+  void *args[] = {&device};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_sc_fence_timing_kernel, dim3(2), dim3(32),
+                dim3(2, 1, 1), args), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  unsigned long long result[2] = {};
+  ASSERT_EQ(cudaMemcpy(result, device, sizeof(result), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  ASSERT_EQ(cudaFree(device), cudaSuccess);
+  EXPECT_EQ(result[1], 42u);
+  EXPECT_GE(result[0], floor) << "fence retired before remote store delivery";
 }
 
 }  // namespace

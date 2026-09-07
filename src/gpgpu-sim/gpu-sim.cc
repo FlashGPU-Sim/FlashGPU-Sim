@@ -40,6 +40,7 @@
 #include "zlib.h"
 
 #include "dram.h"
+#include "dsm_endpoint.h"
 #include "mem_fetch.h"
 #include "shader.h"
 #include "shader_trace.h"
@@ -828,6 +829,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_mbarrier_trywait_latency", OPT_UINT32,
                          &gpgpu_mbarrier_trywait_latency,
                          "Latency (cycles) for mbarrier.try_wait polling before warp release (default=0)", "0");
+  option_parser_register(opp, "-gpgpu_mbarrier_trywait_default_timeout_ns", OPT_UINT32,
+                         &gpgpu_mbarrier_trywait_default_timeout_ns,
+                         "Default suspension limit (ns) for uniform local try_wait without a hint; 0 preserves immediate polling", "0");
 
   // Intra-cluster NoC / DSM (docs/cluster_noc/knobs.md)
   option_parser_register(opp, "-gpgpu_cluster_noc_enable", OPT_BOOL,
@@ -972,6 +976,15 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       &gpgpu_tma_load_completion_cycles_per_kib,
       "Architectural non-cluster TMA load completion size term (default=0).",
       "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_cluster_load_completion_base_cycles", OPT_UINT32,
+      &gpgpu_tma_cluster_load_completion_base_cycles,
+      "Cluster global-to-shared TMA completion floor from creation; actual "
+      "memory completion is also required (default=0 disables).", "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_cluster_load_completion_cycles_per_kib", OPT_UINT32,
+      &gpgpu_tma_cluster_load_completion_cycles_per_kib,
+      "Cluster global-to-shared TMA completion floor size term (default=0).", "0");
   option_parser_register(
       opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
       &gpgpu_wgmma_issue_chain_ss,
@@ -1351,6 +1364,13 @@ unsigned gpgpu_sim::finished_kernel() {
 }
 
 void gpgpu_sim::set_kernel_done(kernel_info_t *kernel) {
+  // Idle SMs can be pre-bound without ever receiving a CTA (notably during
+  // cluster dispatch). They never execute the last-CTA release path. Clear
+  // these bindings before stream retirement deletes the kernel; allocator
+  // reuse otherwise lets a later launch bypass select_kernel's latency gate.
+  for (unsigned gpc = 0; gpc < m_shader_config->n_simt_clusters; ++gpc)
+    for (unsigned core = 0; core < m_cluster[gpc]->num_cores(); ++core)
+      m_cluster[gpc]->get_core(core)->clear_kernel_binding(kernel);
   unsigned uid = kernel->get_uid();
   last_uid = uid;
   unsigned long long streamID = kernel->get_streamID();
@@ -1754,6 +1774,18 @@ PowerscalingCoefficients *gpgpu_sim::get_scaling_coeffs() {
 void gpgpu_sim::print_stats(unsigned long long streamID) {
   gpgpu_ctx->stats->ptx_file_line_stats_write_file();
   gpu_print_stat(streamID);
+
+  const char *dsm_stats = getenv("FLASHGPU_DSM_STATS");
+  if (dsm_stats && dsm_stats[0] && dsm_stats[0] != '0') {
+    printf("DSM_ROUTE_STATS_BEGIN clusters=%u enabled=%u\n", m_config.num_cluster(),
+           m_shader_config->gpgpu_dsm_enable ? 1u : 0u);
+    for (unsigned i = 0; i < m_config.num_cluster(); ++i) {
+      printf("DSM_ROUTE_STATS_CLUSTER id=%u\n", i);
+      if (auto *endpoint = m_cluster[i]->get_dsm_endpoint())
+        endpoint->display_state(stdout);
+    }
+    printf("DSM_ROUTE_STATS_END\n");
+  }
 
   if (g_network_mode) {
     printf(
@@ -3185,8 +3217,9 @@ void gpgpu_sim::perf_memcpy_to_gpu(size_t dst_start_addr, size_t count) {
     // 32
     //== 0);
 
-    for (unsigned counter = 0; counter < count; counter += 32) {
-      const unsigned wr_addr = dst_start_addr + counter;
+    // CUDA allocations start above 4 GiB; preserve the caller's address width.
+    for (size_t counter = 0; counter < count; counter += 32) {
+      const size_t wr_addr = dst_start_addr + counter;
       addrdec_t raw_addr;
       mem_access_sector_mask_t mask;
       mask.set(wr_addr % 128 / 32);

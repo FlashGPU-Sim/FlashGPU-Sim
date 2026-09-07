@@ -307,7 +307,19 @@ TEST(GpuTopology, TmaMulticastDoesNotUseDsmFabric) {
     }
   }
   ASSERT_FALSE(src.empty());
+  // Only mapped shared-to-shared copies may use DSM. Global TMA multicast
+  // must continue through its independent completion path.
+  const auto begin = src.rfind("static void issue_mapped_shared_copy(");
+  const auto end = src.find("static void complete_mapped_cluster_peer_mbarrier(", begin);
+  ASSERT_NE(begin, std::string::npos);
+  ASSERT_NE(end, std::string::npos);
+  const std::string helper = src.substr(begin, end - begin);
+  EXPECT_NE(helper.find("assert(info.mapped_cluster_copy)"), std::string::npos);
+  EXPECT_NE(helper.find("dsm_issue_tma"), std::string::npos);
+  src.erase(begin, end - begin);
   EXPECT_EQ(src.find("dsm_issue_tma"), std::string::npos);
+  EXPECT_NE(src.find("if (tma_dyn_info.mapped_cluster_copy &&"), std::string::npos);
+  EXPECT_NE(src.find("assert(!tma_static_info.multicast_cluster)"), std::string::npos);
   EXPECT_EQ(src.find("inject_tma_mcast_to_peer"), std::string::npos);
   EXPECT_NE(src.find("gpgpu_tma_multicast_latency"), std::string::npos);
 }

@@ -68,6 +68,37 @@ TEST(LocalInterconnectTest, VoqAllowsConfiguredRequestMultiGrant) {
   EXPECT_EQ(router.input_grants[0], 2u);
 }
 
+TEST(LocalInterconnectTest, VoqDoesNotStarveHigherOutput) {
+  for (auto type : {REQ_NET, REPLY_NET}) {
+    inct_config config{};
+    config.in_buffer_limit = 16;
+    config.out_buffer_limit = 8;
+    config.subnets = 2;
+    config.arbiter_algo = iSLIP;
+    config.grant_cycles = 1;
+    config.use_voq = 1;
+    const unsigned input = type == REQ_NET ? 0 : 2;
+    const unsigned low = type == REQ_NET ? 1 : 0;
+    xbar_router router(0, type, type == REQ_NET ? 1 : 2,
+                       type == REQ_NET ? 2 : 1, config);
+    int low_packet = 0, high_packet = 1;
+    router.Push(input, low + 1, &high_packet, 1);
+    bool delivered = false;
+    for (unsigned cycle = 0; cycle < 8; ++cycle) {
+      router.Push(input, low, &low_packet, 1);
+      const auto before = router.input_grants[input];
+      router.Advance();
+      EXPECT_LE(router.input_grants[input] - before, 1u);
+      router.Pop(low);
+      if (void *packet = router.Pop(low + 1)) {
+        EXPECT_EQ(packet, &high_packet);
+        delivered = true;
+      }
+    }
+    EXPECT_TRUE(delivered) << "network type " << type;
+  }
+}
+
 TEST(LocalInterconnectTest, VoqAllowsConfiguredReplyMultiGrant) {
   inct_config config{};
   config.in_buffer_limit = 8;

@@ -2,6 +2,35 @@
 
 Registered in `shader_core_config::reg_options` (`src/gpgpu-sim/gpu-sim.cc`) unless noted.
 
+## Non-power-of-two memory partition indexing
+
+Registered in `src/gpgpu-sim/addrdec.cc`. For IPOLY indexing with a
+non-power-of-two channel count, `-gpgpu_ipoly_non_power2_balanced` values
+**0/1/2 are now compatibility aliases** for a bijective IPOLY-derived cyclic
+rotation of decoded channel/slice seeds. Earlier modulo/range reductions
+aliased distinct addresses to identical DRAM coordinates; do not use their
+old descriptions to interpret new runs. `-gpgpu_ipoly_channel_stable_l2slice=1`
+retains its existing channel-stable path and takes precedence. Power-of-two
+mapping is unchanged. No setting here establishes NVIDIA's physical hash.
+
+Run the standalone regression documented in `test/check_address_mapping.cc`.
+See `calibration.md` for failing-before evidence, build status, and the separate
+inherited row-capacity limitation. Recalibrate after rebuilding the decoder;
+old timing results are not acceptance evidence for the repaired mapping.
+
+## Bounded local mbarrier wait
+
+`-gpgpu_mbarrier_trywait_default_timeout_ns` defaults to **0** (legacy
+immediate polling, including unchanged H100). The H200 132SM candidate is
+**4320 ns**, inferred from job 2119329's vendor WaitFalse slope of 7755
+cycles/op after accounting for modeled release overhead. This is a bounded
+suspension limit, not successful-wait latency. Completion wakes the warp
+early; explicit PTX hints override the default and are also in ns. The default
+applies only to uniform local barrier/parity waits; nonuniform no-hint waits
+remain immediate queries because the current wakeup manager is warp-based.
+Mapped remote waits retain their existing protocol. See `calibration.md` for
+the expiry/early-wakeup regression and outstanding matched-probe/GEMM gates.
+
 Two generations:
 
 1. **Delay-line (in tree now).** Keep working until `dsm_fabric_t` is the only path.
@@ -44,7 +73,7 @@ Master switch today: `-gpgpu_cluster_noc_enable` (default 0; **1** on `SM90_H200
 | `-gpgpu_dsm_latency_matrix_file` | `""` | N×N one-way hop CSV, cluster-local core ids |
 | `-gpgpu_dsm_bytes_per_cycle` | 0 | Extra cycles `ceil(bytes/BPC)-1`; **0 = unlimited** |
 | `-gpgpu_dsm_store_immediate` | 0 | `0` write peer smem on deliver; `1` also at issue. Env `FLASHGPU_DSM_STORE_IMMEDIATE` |
-| `-gpgpu_mbarrier_remote_hop_latency` | 0 | 0 ⇒ DSM hop |
+| `-gpgpu_mbarrier_remote_hop_latency` | 0 | Legacy delay-line only: 0 ⇒ DSM hop. Bypassed when DSM fabric is enabled; not an active 132SM remote-mbarrier tuning knob. |
 | `-gpgpu_mbarrier_cluster_enable` | 0 | Remote mbarrier addresses. **1** on H200 reduced |
 | `-gpgpu_cluster_hang_watchdog` | 8192 | Abort bare spin / mixed bar+try_wait. `0` = off. Env `FLASHGPU_CLUSTER_HANG_WATCHDOG` |
 
@@ -95,8 +124,10 @@ GX port formula: `routes = gx_planes * lanes_per_cpc`. GPCARB still grants at mo
 | `-gpgpu_dsm_route_seed` | 0 | Hash seed |
 | `-gpgpu_dsm_base_latency_cycles` | **0** (H200 full-chip preset **78**, inferred) | Pipeline / serializer floor in addition to flit grants. Visible at dest at `max(tail_arrival, injected+floor)`. Does not add flit occupancy. |
 | `-gpgpu_dsm_store_visibility_latency_cycles` | **0** (H200 full-chip **245**, inferred) | Store-only visibility floor; 0 inherits the generic fabric floor. |
-| `-gpgpu_tma_load_completion_base_cycles` | **0** (H200 full-chip **240**, inferred) | Architectural TMA load completion base; 0 disables the calibrated completion curve. |
-| `-gpgpu_tma_load_completion_cycles_per_kib` | **0** (H200 full-chip **25**, inferred) | Size term added to the architectural TMA load completion base. |
+| `-gpgpu_tma_load_completion_base_cycles` | **0** (H200 full-chip **1314**, fitted) | Non-cluster global-to-shared TMA completion floor from transaction creation; actual memory completion is also required. Zero disables the floor. |
+| `-gpgpu_tma_load_completion_cycles_per_kib` | **0** (H200 full-chip **38**, fitted) | Non-cluster floor size term, cycles/KiB; rounded up to a whole cycle. |
+| `-gpgpu_tma_cluster_load_completion_base_cycles` | **0** (H200 full-chip **860**, provisional fit) | Cluster global-to-shared TMA floor from transaction creation; also waits for memory completion. Excludes mapped shared-to-shared DSM copies. |
+| `-gpgpu_tma_cluster_load_completion_cycles_per_kib` | **0** (H200 full-chip **12**, provisional fit) | Cluster floor size term, cycles/KiB. Together with the base replaces the probe-specific size table. Multicast adds its separate fixed latency; no DSM traffic. |
 | `-gpgpu_ptx_register_allocator` | Generic default **1**; H200 calibration preset **0** | Optional virtual-register aliasing. Disabled for calibration because the looped TMA issue probe keeps its shared destination live across iterations. |
 | `-gpgpu_dsm_max_outstanding_per_sm` | **16** (H200 full-chip **1024**) | Endpoint tx window (not a VC/link credit) |
 | `-gpgpu_dsm_ack_coalesce_threshold` | **4** (H200 full-chip **64**) | Completions per `write_ack` |
@@ -136,9 +167,10 @@ Policy: only `configs/SM90_H200*` carry calibrated DSM timing today.
 
 ## 5. TMA multicast behavior
 
-TMA multicast is functionally copied to every selected peer without entering
+Global-memory TMA multicast is functionally copied to every selected peer without entering
 `cluster_noc_t` or `dsm_fabric_t`. Peer and selected-issuer `complete_tx` occurs
 after the TMA transaction plus `-gpgpu_tma_multicast_latency`; the H200
 full-chip preset uses 100 cycles from job 2119329. Zero adds no multicast
 delay. No topology, bandwidth, routing, queue, SRAM-service, or contention
-model is attached to multicast.
+model is attached to global-memory multicast. Mapped shared-to-shared TMA
+is different: it uses DSM transport and is the positive routing control.

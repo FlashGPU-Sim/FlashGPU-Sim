@@ -78,9 +78,9 @@ void linear_to_raw_address_translation::addrdec_setoption(option_parser_t opp) {
   option_parser_register(
       opp, "-gpgpu_ipoly_non_power2_balanced", OPT_UINT32,
       &ipoly_non_power2_balanced,
-      "For non-power-of-two memory partitions: 0 = legacy modulo, 1 = map "
-      "IPOLY buckets to channels before subpartitions, 2 = hash into a larger "
-      "virtual partition space then range-reduce to the final partition count.",
+      "Compatibility option: legacy values 0/1/2 all use a bijective "
+      "IPOLY-derived rotation for non-power-of-two memory partitions. "
+      "Channel-stable mode takes precedence; power-of-two mapping is unchanged.",
       "0");
   option_parser_register(
       opp, "-gpgpu_ipoly_channel_stable_l2slice", OPT_UINT32,
@@ -188,33 +188,18 @@ void linear_to_raw_address_translation::addrdec_tlx(new_addr_type addr,
             slice_hash % m_n_sub_partition_in_channel;
         sub_partition = decoded_channel * m_n_sub_partition_in_channel +
                         sub_partition_in_channel;
+      } else if (gap) {
+        // Hash the rotation, not the decoded seed: many-to-one reduction of
+        // a hashed seed aliases DRAM addresses because row/column coordinates
+        // have already discarded the original channel. A cyclic permutation
+        // preserves every channel/slice identity for each address quotient.
+        const unsigned total = m_n_channel * m_n_sub_partition_in_channel;
+        const unsigned offset = ipoly_hash_function(ipoly_high_bits, 0, 1024);
+        sub_partition = (sub_partition + offset) % total;
       } else {
-        const unsigned total_sub_partitions =
-            m_n_channel * m_n_sub_partition_in_channel;
-        const unsigned virtual_sub_partitions =
-            (gap && ipoly_non_power2_balanced == 2)
-                ? 1024
-                : nextPowerOf2_m_n_channel * m_n_sub_partition_in_channel;
         sub_partition = ipoly_hash_function(
-            ipoly_high_bits, sub_partition, virtual_sub_partitions);
-
-        if (gap) {  // if it is not 2^n partitions, then take modular
-          if (ipoly_non_power2_balanced == 1) {
-            const unsigned channel = sub_partition % m_n_channel;
-            const unsigned sub_partition_in_channel =
-                (sub_partition / m_n_channel) % m_n_sub_partition_in_channel;
-            sub_partition = channel * m_n_sub_partition_in_channel +
-                            sub_partition_in_channel;
-          } else if (ipoly_non_power2_balanced == 2) {
-            sub_partition =
-                (static_cast<unsigned long long>(sub_partition) *
-                 total_sub_partitions) /
-                virtual_sub_partitions;
-          } else {
-            sub_partition =
-                sub_partition % (m_n_channel * m_n_sub_partition_in_channel);
-          }
-        }
+            ipoly_high_bits, sub_partition,
+            nextPowerOf2_m_n_channel * m_n_sub_partition_in_channel);
       }
 
       tlx->chip = sub_partition / m_n_sub_partition_in_channel;

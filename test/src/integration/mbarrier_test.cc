@@ -20,6 +20,34 @@
 // Test Kernels
 // ============================================================================
 
+__global__ void complete_before_expect_kernel(uint32_t *output) {
+  __shared__ __align__(8) unsigned long long barrier;
+  const unsigned addr = static_cast<unsigned>(__cvta_generic_to_shared(&barrier));
+  unsigned ready;
+  asm volatile(
+      "{ .reg .pred p;\n"
+      "mbarrier.init.shared.b64 [%1], 1;\n"
+      "mbarrier.complete_tx.relaxed.cta.shared::cta.b64 [%1], 128;\n"
+      "mbarrier.arrive.expect_tx.shared.b64 _, [%1], 128;\n"
+      "mbarrier.try_wait.parity.shared.b64 p, [%1], 0;\n"
+      "selp.u32 %0, 1, 0, p; }"
+      : "=r"(ready) : "r"(addr) : "memory");
+  *output = ready;
+}
+
+TEST(MbarrierTransactionOrder, CompleteBeforeExpectIsRetained) {
+  uint32_t *output = nullptr;
+  ASSERT_EQ(cudaMalloc(&output, sizeof(*output)), cudaSuccess);
+  complete_before_expect_kernel<<<1, 1>>>(output);
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  uint32_t ready = 0;
+  ASSERT_EQ(cudaMemcpy(&ready, output, sizeof(ready), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(ready, 1u);
+  EXPECT_EQ(cudaFree(output), cudaSuccess);
+}
+
 /**
  * Test 1: Different threads in a warp init different barrier addresses
  *
@@ -541,9 +569,10 @@ TEST_F(MBarrierThreadLevelTest, ReinitArriveTryWaitLoop) {
   EXPECT_EQ(output[0], 0xCAFEu) << "re-init + try_wait loop must complete";
 }
 
-// Incomplete try_wait (count=2, one arrive) must not park the warp. Hardware
-// try_wait is a query; software re-issues. Parking here hung calibration
-// kernels that spin on a not-yet-complete barrier.
+// Incomplete try_wait (count=2, one arrive) must eventually return false.
+// PTX permits bounded suspension, including a system-dependent timeout when
+// no hint is supplied. This regression rejects an infinite park, not a finite
+// hardware-style wait; test_wait, unlike try_wait, is non-blocking.
 __global__ void test_incomplete_trywait_does_not_hang(uint32_t *output) {
   __shared__ unsigned long long bar;
   if (threadIdx.x != 0)

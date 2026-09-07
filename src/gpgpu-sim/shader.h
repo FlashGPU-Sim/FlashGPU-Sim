@@ -1180,8 +1180,8 @@ class barrier_set_t {
   void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
                    uint32_t completed_tx_count);
 
-  // Peer-side complete for TMA .shared::cluster: no-op if the CTA has no
-  // mbarrier at addr or no outstanding expected_tx.
+  // Peer-side complete for TMA .shared::cluster: no-op only if the CTA has
+  // no mbarrier at addr; retain completions that precede expect_tx.
   void try_complete_tx_if_pending(unsigned cta_id, uint32_t mbarrier_addr,
                                   uint32_t completed_tx_count);
 
@@ -1214,7 +1214,7 @@ class barrier_set_t {
   bool is_bulk_tx_committed(unsigned cta_id, unsigned warp_id,
                             unsigned tx_uid) const;
 
-  void note_peer_smem_access(unsigned warp_id);
+  void note_peer_smem_access(unsigned warp_id, unsigned long long address);
   void poll_hang_preventers();
 
   // Ordinary cp.async wait_group uses this only as a scheduler wait state.
@@ -1273,6 +1273,8 @@ class barrier_set_t {
     assert_warp_waiting(warp_id, expected_type, reason);
     m_warp_at_barrier.reset(warp_id);
     m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+    if (expected_type == BARRIER_WAIT_MBARRIER)
+      m_mbar_partial_wait[warp_id] = false;
   }
   // Release warps with optional try_wait latency delay
   void release_warps(const std::set<int> &released_warps);
@@ -1300,6 +1302,7 @@ class barrier_set_t {
   std::vector<unsigned long long> m_mbar_timeout_cycle;
   std::vector<bool> m_mbar_partial_wait;
   std::vector<bool> m_hang_saw_peer;
+  std::vector<unsigned long long> m_hang_peer_address;
   std::vector<unsigned> m_hang_quiet_cycles;
   std::vector<unsigned> m_hang_watch_cycles;
   std::vector<unsigned> m_hang_pc_n;
@@ -1805,6 +1808,8 @@ class shader_core_config : public core_config {
     gpgpu_tma_multicast_latency = 0;
     gpgpu_tma_load_completion_base_cycles = 0;
     gpgpu_tma_load_completion_cycles_per_kib = 0;
+    gpgpu_tma_cluster_load_completion_base_cycles = 0;
+    gpgpu_tma_cluster_load_completion_cycles_per_kib = 0;
     gpgpu_shmem_bytes_per_cycle = 0;
   }
 
@@ -2100,6 +2105,7 @@ class shader_core_config : public core_config {
   bool gpgpu_tma_oob_l2_traffic;
   unsigned int gpgpu_mbarrier_arrive_latency;
   unsigned int gpgpu_mbarrier_trywait_latency;
+  unsigned int gpgpu_mbarrier_trywait_default_timeout_ns;
 
   // Intra-cluster NoC / DSM (docs/cluster_noc/knobs.md).
   bool gpgpu_cluster_noc_enable;
@@ -2140,6 +2146,8 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_dsm_store_visibility_latency_cycles;
   unsigned int gpgpu_tma_load_completion_base_cycles;
   unsigned int gpgpu_tma_load_completion_cycles_per_kib;
+  unsigned int gpgpu_tma_cluster_load_completion_base_cycles;
+  unsigned int gpgpu_tma_cluster_load_completion_cycles_per_kib;
   unsigned int gpgpu_shmem_bytes_per_cycle;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;
@@ -2609,8 +2617,8 @@ class shader_core_ctx : public core_t {
   // modifiers
   void cycle();
   shd_warp_t *get_shd_warp(unsigned warp_id) { return m_warp[warp_id]; }
-  void note_peer_smem_access(unsigned warp_id) {
-    m_barriers.note_peer_smem_access(warp_id);
+  void note_peer_smem_access(unsigned warp_id, unsigned long long address) {
+    m_barriers.note_peer_smem_access(warp_id, address);
   }
   void reinit(unsigned start_thread, unsigned end_thread,
               bool reset_not_completed);
@@ -2652,6 +2660,9 @@ class shader_core_ctx : public core_t {
       return 0;
   }
  kernel_info_t *get_kernel() { return m_kernel; }
+  void clear_kernel_binding(const kernel_info_t *kernel) {
+    if (m_kernel == kernel) m_kernel = nullptr;
+  }
  unsigned get_sid() const { return m_sid; }
   class simt_core_cluster *get_cluster() const { return m_cluster; }
 

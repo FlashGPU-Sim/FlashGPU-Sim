@@ -66,6 +66,8 @@ static void maybe_warn_multicast_cluster_on_sm120(ptx_thread_info *thread) {
 
 // Forward decls for cluster peer helpers (defined with functional TMA
 // handlers).
+static void issue_mapped_shared_copy(shader_core_ctx *core, unsigned cta,
+                                     const inst_t::tma_dyn_info_t &info);
 static void complete_cluster_peer_mbarriers(
     shader_core_ctx *core, unsigned issuer_hw_cta, uint32_t mbar_addr,
     uint32_t size_in_bytes, bool use_mask = false, uint16_t cta_mask = 0xFFFF);
@@ -85,25 +87,6 @@ static void multicast_smem_to_cluster(memory_space *src_smem,
                                       ptx_thread_info *thread,
                                       const ptx_instruction *pI, bool use_mask,
                                       uint16_t cta_mask);
-
-static unsigned calibrated_cluster_tma_e2e(unsigned bytes) {
-  static const unsigned sizes[] = {256,  512,  1024,  2048,
-                                   4096, 8192, 12288, 16384};
-  static const unsigned cycles[] = {432, 432, 432, 471, 471, 549, 627, 666};
-  if (bytes <= sizes[0])
-    return cycles[0];
-  for (unsigned i = 1; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
-    if (bytes <= sizes[i]) {
-      const unsigned span = sizes[i] - sizes[i - 1];
-      const unsigned offset = bytes - sizes[i - 1];
-      return cycles[i - 1] +
-             (offset * (cycles[i] - cycles[i - 1]) + span - 1) / span;
-    }
-  }
-  return cycles[7] + (bytes - sizes[7] + 104) / 105;
-}
-
-static constexpr unsigned k_cluster_tma_probe_timer_offset = 70;
 
 namespace flash_gpgpu_sim {
 
@@ -1078,6 +1061,13 @@ private:
       arrive_latency += m_shader_ctx->get_config()->gpgpu_tma_multicast_latency;
     if (!is_write && tx.m_arch_arrive_cycle) {
       tx.m_memory_complete = true;
+      // Preserve the multicast penalty even when memory service exceeds
+      // the configured floor; the payload still never uses DSM transport.
+      if (is_cluster_read)
+        tx.m_arch_arrive_cycle = std::max(
+            tx.m_arch_arrive_cycle,
+            tx.m_complete_cycle +
+                m_shader_ctx->get_config()->gpgpu_tma_multicast_latency);
     } else if (arrive_latency > 0) {
       m_pending_arrives.push_back(
           {arrive_latency, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
@@ -1293,6 +1283,17 @@ public:
         unsigned tid = warp_size * warp_id + laneid;
         auto thread = m_shader_ctx->get_thread_info()[tid];
 
+        // shared::cluster <- shared::cta is a DSM transfer, not a global
+        // TMA multicast. Its payload and completion share DSM contention.
+        if (tma_dyn_info.mapped_cluster_copy &&
+            flash_gpgpu_sim::dsm_fabric_enabled(m_shader_ctx)) {
+          assert(tma_static_info.src_space ==
+                 inst_t::tma_static_info_t::TMA_SHARED_CTA);
+          assert(!tma_static_info.multicast_cluster);
+          issue_mapped_shared_copy(m_shader_ctx, cta_id, tma_dyn_info);
+          continue;
+        }
+
         // Create a TMA transaction for this thread.
         tma_transaction_t tx{
             .m_thread = thread,
@@ -1313,40 +1314,27 @@ public:
         unsigned cluster_size = cluster_dim.x * cluster_dim.y * cluster_dim.z;
         if (kernel_info_t *kernel = m_shader_ctx->get_kernel())
           cluster_size = std::max(cluster_size, kernel->get_ctas_per_cluster());
-        const bool noncluster_load =
+        const bool multicast =
+            tma_static_info.multicast_cluster || tma_dyn_info.has_cta_mask ||
             tma_static_info.dst_space ==
-                inst_t::tma_static_info_t::TMA_SHARED_CTA &&
-            cluster_size <= 1;
-        if (noncluster_load && config->gpgpu_tma_load_completion_base_cycles) {
+                inst_t::tma_static_info_t::TMA_SHARED_CLUSTER;
+        const bool cluster_load = cluster_size > 1 || multicast;
+        const unsigned base =
+            cluster_load ? config->gpgpu_tma_cluster_load_completion_base_cycles
+                         : config->gpgpu_tma_load_completion_base_cycles;
+        const unsigned slope =
+            cluster_load
+                ? config->gpgpu_tma_cluster_load_completion_cycles_per_kib
+                : config->gpgpu_tma_load_completion_cycles_per_kib;
+        if (base && tma_static_info.src_space ==
+                        inst_t::tma_static_info_t::TMA_GLOBAL) {
           const uint64_t scaled =
-              static_cast<uint64_t>(tma_dyn_info.size_in_bytes) *
-              config->gpgpu_tma_load_completion_cycles_per_kib;
+              static_cast<uint64_t>(tma_dyn_info.size_in_bytes) * slope;
           const unsigned size_cycles =
               static_cast<unsigned>((scaled + 1023) / 1024);
           tx.m_arch_arrive_cycle =
-              tx.m_create_cycle +
-              config->gpgpu_tma_load_completion_base_cycles + size_cycles;
-        } else if (config->gpgpu_tma_load_completion_base_cycles &&
-                   (cluster_size > 1 ||
-                    tma_static_info.dst_space ==
-                        inst_t::tma_static_info_t::TMA_SHARED_CLUSTER ||
-                    tma_static_info.multicast_cluster ||
-                    tma_dyn_info.has_cta_mask) &&
-                   (tma_static_info.dst_space ==
-                        inst_t::tma_static_info_t::TMA_SHARED_CTA ||
-                    tma_static_info.dst_space ==
-                        inst_t::tma_static_info_t::TMA_SHARED_CLUSTER ||
-                    tma_static_info.multicast_cluster ||
-                    tma_dyn_info.has_cta_mask)) {
-          unsigned e2e = calibrated_cluster_tma_e2e(tma_dyn_info.size_in_bytes);
-          if (tma_static_info.dst_space ==
-                  inst_t::tma_static_info_t::TMA_SHARED_CLUSTER ||
-              tma_static_info.multicast_cluster || tma_dyn_info.has_cta_mask)
-            e2e += config->gpgpu_tma_multicast_latency;
-          tx.m_arch_arrive_cycle =
-              tx.m_create_cycle + (e2e > k_cluster_tma_probe_timer_offset
-                                       ? e2e - k_cluster_tma_probe_timer_offset
-                                       : 1);
+              tx.m_create_cycle + base + size_cycles +
+              (multicast ? config->gpgpu_tma_multicast_latency : 0);
         }
 
         // Initialize address generator
@@ -1400,7 +1388,7 @@ public:
                             inst_t::tma_static_info_t::TMA_GLOBAL);
         if (tma_static_info.dst_space ==
             inst_t::tma_static_info_t::TMA_SHARED_CLUSTER)
-          m_barriers->note_peer_smem_access(warp_id);
+          m_barriers->note_peer_smem_access(warp_id, tma_dyn_info.dst_addr);
         record_tma_tx_started(is_write_op);
         tma_trace_emit(tx.m_create_cycle, "NEW", tx_uid,
                        is_write_op ? "WRITE" : "READ", tma_static_info.tma_type,
@@ -1538,8 +1526,10 @@ public:
     std::vector<unsigned> completed_arch_transactions;
     for (auto &entry : m_transactions) {
       auto &tx = entry.second;
-      if (!tx.m_arch_arrive_done && tx.m_arch_arrive_cycle &&
-          now >= tx.m_arch_arrive_cycle) {
+      // The configured latency is a floor, never permission to release a
+      // consumer before the actual L2/HBM responses have completed.
+      if (tx.m_memory_complete && !tx.m_arch_arrive_done &&
+          tx.m_arch_arrive_cycle && now >= tx.m_arch_arrive_cycle) {
         const bool cluster_read =
             tx.m_static_info.dst_space ==
                 inst_t::tma_static_info_t::TMA_SHARED_CLUSTER ||
@@ -2611,9 +2601,8 @@ multicast_smem_to_cluster(memory_space *src_smem, uint32_t smem_addr,
   }
 }
 
-// Notify peer CTAs' mbarriers that a cluster TMA load completed. Uses
-// try_complete so multi-issuer kernels that already completed locally do not
-// double-count, and unarmed peers are left alone.
+// Notify peer CTAs' initialized mbarriers exactly once per cluster TMA load.
+// Early completions are retained until the peer executes expect_tx.
 // With use_mask=true, only mask-selected destinations get complete_tx (PTX).
 static void complete_cluster_peer_mbarriers(shader_core_ctx *core,
                                             unsigned issuer_hw_cta,
@@ -2627,6 +2616,29 @@ static void complete_cluster_peer_mbarriers(shader_core_ctx *core,
                                                       size_in_bytes);
       },
       /*include_issuer=*/false, use_mask, cta_mask);
+}
+
+static void issue_mapped_shared_copy(shader_core_ctx *core, unsigned cta,
+                                     const inst_t::tma_dyn_info_t &info) {
+  assert(info.mapped_cluster_copy);
+  auto *cluster = core->get_cluster();
+  const unsigned src = core->get_config()->sid_to_cid(core->get_sid());
+  std::vector<uint8_t> data(info.size_in_bytes);
+  core->get_cta_smem(cta)->read(info.src_addr, data.size(), data.data());
+  for_each_cluster_peer_cta(
+      core, cta,
+      [&](shader_core_ctx *peer, unsigned slot) {
+        assert(peer->get_cluster() == cluster);
+        const unsigned dst = peer->get_config()->sid_to_cid(peer->get_sid());
+        const unsigned gen = cluster->dsm_cta_gen(dst, slot);
+        if (!cluster->dsm_issue_tma(src, dst, data.size(), info.dst_addr, slot,
+                                    gen, data.data(), info.mbar_addr,
+                                    info.size_in_bytes))
+          cluster->dsm_queue_tma_retry(src, dst, data.size(), info.dst_addr,
+                                       slot, gen, data.data(), data.size(),
+                                       info.mbar_addr, info.size_in_bytes);
+      },
+      /*include_issuer=*/true, /*use_mask=*/true, info.cta_mask);
 }
 
 static void complete_mapped_cluster_peer_mbarrier(shader_core_ctx *core,

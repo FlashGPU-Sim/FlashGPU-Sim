@@ -260,10 +260,16 @@ void ptx_thread_info::set_reg(const symbol *reg, const ptx_reg_t &value) {
   assert(!m_regs.empty());
   const symbol *mapped_reg = canonicalize_reg(reg);
   assert(mapped_reg->uid() > 0);
-  m_regs.back()[mapped_reg] = value;
+  // Arithmetic may compute an extra carry bit in the backing union. It is
+  // not part of a narrow PTX register and must not leak into address reads.
+  ptx_reg_t stored = value;
+  const unsigned bytes = reg->get_size_in_bytes();
+  if (bytes > 0 && bytes < 8)
+    stored.u64 &= (1ULL << (8 * bytes)) - 1;
+  m_regs.back()[mapped_reg] = stored;
   if (m_enable_debug_trace)
-    m_debug_trace_regs_modified.back()[mapped_reg] = value;
-  m_last_set_operand_value = value;
+    m_debug_trace_regs_modified.back()[mapped_reg] = stored;
+  m_last_set_operand_value = stored;
 }
 
 void ptx_thread_info::print_reg_thread(char *fname) {
@@ -1776,9 +1782,8 @@ void tensormap_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  // fence instruction - memory barrier
-  // Currently treated as NOP since memory ordering is not simulated
-  GPPRINTF_INST_EXEC(WIP, "[STUB] fence instruction not implemented%s\n", "");
+  // fence.sc.* ordering is enforced by the timing memory-barrier path.
+  // Proxy/tensormap fences retain their separate timing classification.
 }
 
 void griddepcontrol_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -4321,9 +4326,15 @@ void mapa_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   found_sid = tgt.sm_id;
 
   ptx_reg_t result;
-  result.u64 = shared_to_generic(found_sid, local_offset);
-  if (i_type == U32_TYPE || i_type == B32_TYPE)
-    result.u32 = (unsigned)result.u64;
+  if (i_type == U32_TYPE || i_type == B32_TYPE) {
+    // Use the same compact owner/offset encoding as cvta.to.shared, not a
+    // truncated generic pointer whose owner bits live above bit 31.
+    result.u64 = (static_cast<uint64_t>(found_sid) + 1) *
+                     SHARED_MEM_SIZE_MAX + local_offset;
+    assert(result.u64 <= UINT32_MAX);
+  } else {
+    result.u64 = shared_to_generic(found_sid, local_offset);
+  }
   thread->set_operand_value(dst, result, i_type, thread, pI);
 }
 

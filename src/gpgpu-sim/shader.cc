@@ -37,6 +37,7 @@
 #include <string.h>
 #include <errno.h>
 #include <tuple>
+#include <atomic>
 #include "../../libcuda/gpgpu_context.h"
 #include "../cuda-sim/cuda-sim.h"
 #include "../cuda-sim/ptx-stats.h"
@@ -1650,12 +1651,14 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
   dsm_issue_lane_ops(inst);
   unsigned max_hop = 0;
   bool any_remote = false;
+  unsigned long long peer_address = 0;
   if (inst.is_load() || inst.is_store() || inst.isatomic()) {
     for (unsigned t = 0; t < m_config->warp_size; t++) {
       if (!inst.active(t)) continue;
       unsigned tid = m_config->warp_size * inst.warp_id() + t;
       ptx_thread_info *thd = m_thread[tid];
       if (thd && thd->m_dsm_remote) {
+        if (!any_remote) peer_address = inst.get_addr(t);
         any_remote = true;
         if (thd->m_dsm_hop > max_hop) max_hop = thd->m_dsm_hop;
       }
@@ -1663,7 +1666,7 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
   }
   if (any_remote) {
     inst.set_dsm_remote(true, max_hop);
-    note_peer_smem_access(inst.warp_id());
+    note_peer_smem_access(inst.warp_id(), peer_address);
     const bool fabric = flash_gpgpu_sim::dsm_fabric_enabled(this);
     if (fabric && inst.isatomic()) inst.skip_atomic_callback();
     if (!fabric) {
@@ -1708,20 +1711,15 @@ static bool is_wgmma_warpgroup_opcode(int opcode) {
 }
 
 static bool wgmma_collector_debug_enabled() {
-  static int enabled = -1;
-  if (enabled < 0)
-    enabled = getenv("GPGPU_SIM_WGMMA_COLLECTOR_DEBUG") ? 1 : 0;
-  return enabled != 0;
+  static const bool enabled = getenv("GPGPU_SIM_WGMMA_COLLECTOR_DEBUG") != nullptr;
+  return enabled;
 }
 
 static bool wgmma_collector_debug_take_slot() {
-  static unsigned long long prints = 0;
+  static std::atomic<unsigned long long> prints{0};
   if (!wgmma_collector_debug_enabled())
     return false;
-  if (prints >= 128)
-    return false;
-  prints++;
-  return true;
+  return prints.fetch_add(1, std::memory_order_relaxed) < 128;
 }
 
 static int wgmma_scalar_type_at(const ptx_instruction *ptx_inst,
@@ -1934,6 +1932,9 @@ void shader_core_ctx::issue_wgmma_warpgroup(register_set &pipe_reg_set,
   (*pipe_reg)->set_wgmma_warpgroup_info(warp_ids, count);
   unsigned compute_latency = (*pipe_reg)->wgmma_compute_latency;
   if (compute_latency == 0) compute_latency = (*pipe_reg)->latency;
+  flash_gpgpu_sim::trace_wgmma_lifecycle(
+      "REGISTER", (*pipe_reg)->get_uid(), m_sid, now, std::max(1u, compute_latency),
+      (*pipe_reg)->wgmma_completion_tail_latency);
   m_wgmma.add_op(m_warp[representative_warp_id]->get_cta_id(),
                  wgmma_cta_warpgroup_id(representative_warp_id),
                  (*pipe_reg)->get_uid(), compute_latency,
@@ -3288,7 +3289,7 @@ void shader_core_ctx::execute() {
       }
     }
   }
-  m_wgmma.cycle();
+  m_wgmma.cycle(m_sid, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
   m_tma->cycle();
   release_pending_tma_ctas();
   m_barriers.cycle();
@@ -3899,7 +3900,7 @@ bool tensor_core::issue_queue_enabled_for(const warp_inst_t &inst) const {
 
   // The queue idealizes classic warp-level MMA. WGMMA has separate warpgroup
   // ordering and completion machinery, so leave it on the existing path.
-  return !is_wgmma_warpgroup_opcode(wgmma_opcode(&inst));
+  return !inst.is_wgmma_warpgroup();
 }
 
 bool tensor_core::can_issue(const warp_inst_t &inst) const {
@@ -4026,6 +4027,14 @@ void tensor_core::issue(register_set &source_reg) {
     m_issue_queue.push_back(**ready_reg);
     (*ready_reg)->clear();
     return;
+  }
+  // WGMMA bypasses the classic-MMA issue queue above. This is actual FU
+  // admission to the dispatch register, not the later pipeline start stage.
+  if ((*ready_reg)->is_wgmma_warpgroup() &&
+      (*ready_reg)->op == TENSOR_CORE_OP) {
+    flash_gpgpu_sim::trace_wgmma_lifecycle(
+        "FU_ADMIT", (*ready_reg)->get_uid(), m_core->get_sid(),
+        m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle);
   }
   pipelined_simd_unit::issue(source_reg);
 }
@@ -5622,6 +5631,7 @@ barrier_set_t::barrier_set_t(shader_core_ctx *shader,
   m_mbar_trywait_mask.assign(max_warps_per_core, active_mask_t());
   m_mbar_partial_wait.assign(max_warps_per_core, false);
   m_hang_saw_peer.assign(max_warps_per_core, false);
+  m_hang_peer_address.assign(max_warps_per_core, 0);
   m_hang_quiet_cycles.assign(max_warps_per_core, 0);
   m_hang_watch_cycles.assign(max_warps_per_core, 0);
   m_hang_pc_n.assign(max_warps_per_core, 0);
@@ -5675,9 +5685,15 @@ void barrier_set_t::reset_mbarrier() {
   m_mbarrier_manager.reset();
 }
 
-void barrier_set_t::note_peer_smem_access(unsigned warp_id) {
+void barrier_set_t::note_peer_smem_access(unsigned warp_id,
+                                       unsigned long long address) {
   if (warp_id >= m_hang_saw_peer.size())
     return;
+  // A finite stream can revisit the same few PCs for many cycles. Advancing
+  // addresses is progress; polling the same location must still time out.
+  if (!m_hang_saw_peer[warp_id] || m_hang_peer_address[warp_id] != address)
+    m_hang_watch_cycles[warp_id] = 0;
+  m_hang_peer_address[warp_id] = address;
   m_hang_saw_peer[warp_id] = true;
   m_hang_quiet_cycles[warp_id] = 0;
 }
@@ -5775,17 +5791,25 @@ void barrier_set_t::poll_hang_preventers() {
       continue;
     bool partial_trywait = false;
     bool sibling_bar_sync = false;
+    bool running_sibling = false;
     for (unsigned w = 0; w < m_max_warps_per_core; w++) {
       if (!it->second.test(w))
         continue;
       if (m_mbar_partial_wait[w])
         partial_trywait = true;
-      if (!m_warp_at_barrier.test(w))
+      if (!m_warp_at_barrier.test(w)) {
+        const auto *warp = m_shader->get_shd_warp(w);
+        if (!m_mbar_partial_wait[w] && warp &&
+            !warp->hardware_done() && !warp->functional_done())
+          running_sibling = true;
         continue;
+      }
       if (m_warp_barrier_type[w] == BARRIER_WAIT_BAR_SYNC)
         sibling_bar_sync = true;
     }
-    if (partial_trywait && sibling_bar_sync)
+    // A producer can still be doing useful work while early-finished warps
+    // wait at the final bar.sync and consumers wait on their mbarriers.
+    if (partial_trywait && sibling_bar_sync && !running_sibling)
       m_hang_mix_cycles[cta]++;
     else
       m_hang_mix_cycles[cta] = 0;
@@ -5914,6 +5938,7 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
     m_bar_id_to_count[count_key] += m_warp_size;
   }
   if (bar_type == SYNC || bar_type == RED) {
+    m_mbar_partial_wait[warp_id] = false;
     m_warp_at_barrier.set(warp_id);
     m_warp_barrier_type[warp_id] = BARRIER_WAIT_BAR_SYNC;
     m_warp_named_barrier_id[warp_id] = bar_id;
@@ -6154,7 +6179,9 @@ barrier_wait_type_t shader_core_ctx::get_warp_barrier_type(
 
 bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {
   if (!m_warp[warp_id]->get_membar()) return false;
-  if (!m_scoreboard->pendingWrites(warp_id)) {
+  if (!m_scoreboard->pendingWrites(warp_id) &&
+      m_warp[warp_id]->stores_done() &&
+      (!m_cluster || !m_cluster->dsm_warp_busy(m_sid, warp_id))) {
     m_warp[warp_id]->clear_membar();
     if (m_gpu->get_config().flush_l1()) {
       // Mahmoud fixed this on Nov 2019
@@ -6675,6 +6702,12 @@ bool opndcoll_rfu_t::collector_unit_t::allocate(register_set *pipeline_reg_set,
 
 void opndcoll_rfu_t::collector_unit_t::dispatch() {
   assert(m_not_ready.none());
+  if (m_warp->is_wgmma_warpgroup() && m_warp->op == TENSOR_CORE_OP) {
+    auto *shader = m_rfu->shader_core();
+    flash_gpgpu_sim::trace_wgmma_lifecycle(
+        "OC_DISPATCH", m_warp->get_uid(), shader->get_sid(),
+        shader->get_gpu()->gpu_sim_cycle + shader->get_gpu()->gpu_tot_sim_cycle);
+  }
   m_output_register->move_in(m_sub_core_model, m_reg_id, m_warp);
   m_free = true;
   m_output_register = NULL;

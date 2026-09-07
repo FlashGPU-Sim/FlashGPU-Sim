@@ -420,9 +420,13 @@ void xbar_router::iSLIP_Advance() {
     conflicts_util += conflict_sub;
     cycles_util++;
   }
-  // do iSLIP
-  for (unsigned i = active_out_buffer_base;
-       i < active_out_buffer_base + active_out_buffers; ++i) {
+  // Rotate output priority when VOQs compete for a single input grant.
+  // Fixed ascending priority can starve a higher output indefinitely.
+  // This remains a greedy matching, with unchanged input/output bandwidth.
+  for (unsigned offset = 0; offset < active_out_buffers; ++offset) {
+    const unsigned i = active_out_buffer_base +
+        ((offset + (use_voq && !allow_multi_grant ? cycles : 0)) %
+         active_out_buffers);
     if (Has_Buffer_Out(i, 1)) {
 
       // Only check the input buffers.
