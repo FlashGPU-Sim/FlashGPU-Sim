@@ -147,6 +147,11 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
       "Opcode latencies for integers <ADD,MAX,MUL,MAD,DIV,SHFL>"
       "Default 1,1,19,25,145,32",
       "1,1,19,25,145,32");
+  option_parser_register(
+      opp, "-ptx_int64_add_lowering_factor", OPT_UINT32,
+      &int64_add_lowering_factor,
+      "Scale integer ADD/SUB latency and initiation for 64-bit PTX lowering",
+      "1");
   option_parser_register(opp, "-ptx_opcode_latency_fp", OPT_CSTR,
                          &opcode_latency_fp,
                          "Opcode latencies for single precision floating "
@@ -1464,6 +1469,20 @@ void ptx_instruction::set_opcode_and_latency() {
           initiation_interval = dp_init[0];
           op = DP_OP;
           break;
+        case B64_TYPE:
+        case U64_TYPE:
+        case S64_TYPE: {
+          // A 64-bit integer address add lowers to low/high integer
+          // instructions on Hopper. Keep the factor opt-in so existing
+          // architecture presets retain their established behavior.
+          const unsigned lowering_factor =
+              std::max(1u, gpgpu_ctx->func_sim->int64_add_lowering_factor);
+          latency = int_latency[0] * lowering_factor;
+          initiation_interval =
+              int_init[0] * lowering_factor;
+          op = INTP_OP;
+          break;
+        }
         case B32_TYPE:
         case U32_TYPE:
         case S32_TYPE:

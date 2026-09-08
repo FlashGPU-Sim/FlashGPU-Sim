@@ -1,0 +1,519 @@
+--- a/Makefile
++++ b/Makefile
+@@ -3,7 +3,7 @@
+ CXXSTD    := -std=c++17
+ OPT       := -O3 -lineinfo
+ INCLUDES  := -Iinclude
+-NVCCFLAGS := $(CXXSTD) $(OPT) $(INCLUDES) -arch=$(CUDA_ARCH)
++NVCCFLAGS := $(CXXSTD) $(OPT) $(INCLUDES) -arch=$(CUDA_ARCH) --cudart shared
+ PYTHON    ?= python/.venv/bin/python
+ 
+ SRCS := \
+--- a/src/probe_device.cu
++++ b/src/probe_device.cu
+@@ -70,7 +70,8 @@
+ 
+   // ---- observed SM clock MHz (before launch conversion) ----
+   {
+-    const int iters = 50'000'000;
++    const char *iters_env = std::getenv("FLASHGPU_DEVICE_ITERS");
++    const int iters = iters_env ? std::max(10, std::atoi(iters_env)) : 50'000'000;
+     uint64_t *d_cycles = nullptr;
+     uint32_t *d_sink = nullptr;
+     CUDA_CHECK(cudaMalloc(&d_cycles, sizeof(uint64_t)));
+@@ -99,6 +100,13 @@
+     const double sec = ms * 1e-3;
+     const double mhz = (sec > 0) ? (static_cast<double>(cycles) / sec) / 1e6 : 0;
+     opt.sm_clock_mhz = mhz;
++    // The simulator clock is fixed by its config. The shortened busy probe
++    // includes launch/drain overhead and must not redefine that clock.
++    if (std::getenv("FLASHGPU_SIM_CLOCK_FROM_PROP")) {
++      opt.sm_clock_mhz = prop0.clockRate / 1000.0;
++      std::printf("  timing_conversion_sm_clock_mhz: %.3f (simulator config)\n",
++                  opt.sm_clock_mhz);
++    }
+     std::printf("  %-40s %10.2f MHz  (clock64 span / wall)\n",
+                 "observed_sm_clock_mhz", mhz);
+     sink.add("device", "observed_sm_clock_mhz", "gpgpu_clock_domains[core]",
+--- a/src/probe_dsm.cu
++++ b/src/probe_dsm.cu
+@@ -322,7 +322,7 @@
+                               int samples, int warmup) {
+   for (int try_n = n_want; try_n >= 2; --try_n) {
+     bool ok = true;
+-    for (int w = 0; w < std::max(1, warmup); ++w) {
++    for (int w = 0; w < warmup; ++w) {
+       cudaError_t cerr =
+           launch_dsm_matrix(d_lat, d_smids, try_n, /*n_samples=*/1, 2);
+       if (cerr != cudaSuccess) {
+@@ -341,7 +341,8 @@
+       continue;
+     }
+     // Full measurement
+-    cudaError_t cerr = launch_dsm_matrix(d_lat, d_smids, try_n, samples, 8);
++    cudaError_t cerr = launch_dsm_matrix(d_lat, d_smids, try_n, samples,
++                                       warmup > 0 ? 8 : 0);
+     if (cerr != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+       (void)cudaGetLastError();
+       continue;
+--- a/src/probe_gemm_triton.cu
++++ b/src/probe_gemm_triton.cu
+@@ -19,6 +19,7 @@
+ #include <chrono>
+ #include <cmath>
+ #include <cstdio>
++#include <limits>
+ #include <string>
+ #include <thread>
+ #include <vector>
+@@ -272,8 +273,11 @@
+ 
+ bool check_close(const std::vector<float> &ref, const std::vector<float> &got,
+                  double *max_abs, double atol) {
++  *max_abs = std::numeric_limits<double>::infinity();
++  if (ref.size() != got.size()) return false;
+   double m = 0;
+   for (size_t i = 0; i < ref.size(); ++i) {
++    if (!std::isfinite(ref[i]) || !std::isfinite(got[i])) return false;
+     m = std::max(m, static_cast<double>(std::fabs(ref[i] - got[i])));
+   }
+   *max_abs = m;
+@@ -297,6 +301,10 @@
+     const float expected = __half2float(__float2half(sum));
+     const double err = std::fabs(static_cast<double>(c[static_cast<size_t>(row) * N + col]) -
+                                  expected);
++    if (!std::isfinite(expected) || !std::isfinite(err)) {
++      *max_abs = std::numeric_limits<double>::infinity();
++      return false;
++    }
+     const double tol = 0.25 + 0.005 * std::fabs(expected);
+     worst = std::max(worst, err);
+     if (err > tol) ok = false;
+@@ -361,10 +369,16 @@
+       {2048, 16384, 4096, "occ_m2048"},
+       {512, 16384, 512, "k512"},
+       {512, 16384, 8192, "k8k"},
++      {256, 8192, 2048, "cyc_1e5"},
++      {512, 16384, 2048, "k2k"},
++      {512, 4096, 4096, "n4k"},
++      {512, 8192, 4096, "n8k"},
+       {4096, 4096, 4096, "sq_4k"},
+   };
+-  const Case *cases = (representative_sweep && !opt.gemm_smoke) ? sweep : smoke;
+-  const int ncases = (representative_sweep && !opt.gemm_smoke)
++  const char *sim_case = std::getenv("FLASHGPU_GEMM_CASE");
++  const bool use_sweep = sim_case || (representative_sweep && !opt.gemm_smoke);
++  const Case *cases = use_sweep ? sweep : smoke;
++  const int ncases = use_sweep
+                          ? static_cast<int>(sizeof(sweep) / sizeof(sweep[0]))
+                          : 1;
+   constexpr float kTimeoutS = 30.f;
+@@ -372,6 +386,7 @@
+ 
+   for (int ci = 0; ci < ncases; ++ci) {
+     const Case &cs = cases[ci];
++    if (sim_case && std::strcmp(cs.tag, sim_case) != 0) continue;
+     const int M = cs.M, N = cs.N, K = cs.K;
+     if (M % kernel.meta->block_m || N % kernel.meta->block_n ||
+         K % kernel.meta->block_k) {
+@@ -420,7 +435,7 @@
+       if (scratch) CUDA_CHECK(cudaMemsetAsync(scratch, 0, scratch_bytes, stream));
+       GemmTiming t{};
+       if (!run_once(kernel, dA, dB, dC, M, N, K, scratch, stream,
+-                    /*warmup=*/1, kTimeoutS, &t)) {
++                    opt.warmup, kTimeoutS, &t)) {
+         ok = false;
+         break;
+       }
+@@ -431,6 +446,20 @@
+       std::printf("  TIMEOUT %s: G3 timed launch; leaving poisoned context\n", cs.tag);
+       return;
+     }
++    std::vector<__half> result(elems_c);
++    CUDA_CHECK(cudaMemcpy(result.data(), dC, elems_c * sizeof(__half),
++                          cudaMemcpyDeviceToHost));
++    std::vector<float> output(elems_c);
++    for (size_t i = 0; i < elems_c; ++i) output[i] = __half2float(result[i]);
++    double finite_error = 0, reference_error = 0;
++    const bool finite = check_close(output, output, &finite_error, 1.0);
++    const bool reference =
++        check_reference_samples(hA, hB, output, M, N, K, &reference_error);
++    std::printf("%s G3 validation %s finite_ok=%d ref_ok=%d ref_abs=%.9g\n",
++                finite && reference ? "OK:" : "FAIL:", cs.tag,
++                finite, reference, reference_error);
++    if (!(finite && reference)) std::exit(EXIT_FAILURE);
++
+     const CycleStats sm = summarize_f64(ms);
+     const CycleStats sns = summarize_f64(ns);
+     const double mhz = (opt.sm_clock_mhz > 0) ? opt.sm_clock_mhz
+@@ -439,8 +468,10 @@
+     const double cycles = sns.median * mhz * 1e-3;
+     char metric[96], notes[192];
+     std::snprintf(notes, sizeof(notes),
+-                  "M=%d N=%d K=%d clusters=%d fixed=%s; G3 only, no TMA/mcast",
+-                  M, N, K, nclusters, kernel.meta->tag);
++                  "M=%d N=%d K=%d clusters=%d fixed=%s; G3 only, no TMA/mcast; "
++                  "finite_ok=%d ref_ok=%d ref_abs=%.3g",
++                  M, N, K, nclusters, kernel.meta->tag,
++                  finite, reference, reference_error);
+     std::printf("  %-35s median=%8.3f ms  -> %8.2f TFLOPS\n", cs.tag,
+                 sm.median, tf);
+     std::snprintf(metric, sizeof(metric), "gemm_notma_%s_ms", cs.tag);
+@@ -479,8 +510,14 @@
+              "cc < 9.0");
+     return;
+   }
+-  const bool do_mcast = prop.major == 9;
+-  if (!do_mcast)
++  const bool functional_sim = std::getenv("PTX_SIM_MODE_FUNC") != nullptr;
++  const bool do_mcast = prop.major == 9 && !functional_sim;
++  const char *sim_case = std::getenv("FLASHGPU_GEMM_CASE");
++  if (functional_sim)
++    std::printf(
++        "  SKIP G2 multicast in functional simulation; cluster peer shared "
++        "memory requires the timing model\n");
++  else if (!do_mcast)
+     std::printf("  SKIP G2 multicast on sm_%d%d; testing G1 unicast and G3 no-TMA\n",
+                 prop.major, prop.minor);
+ 
+@@ -542,10 +579,12 @@
+   // Default stream: NonBlocking + cluster TMA hung on the 2060111 warmup.
+   cudaStream_t stream = 0;
+ 
++  int best_idx = gemm_wanted_winner_index(uni_cfgs, ncfg);
+   std::vector<LoadedGemm> uni_loaded(ncfg), mc_loaded(ncfg), nm_loaded(ncfg);
+   char load_err[256];
+   auto load_all = [&]() -> bool {
+     for (int i = 0; i < ncfg; ++i) {
++      if (opt.gemm_smoke && i != best_idx) continue;
+       uni_loaded[i] = {};
+       mc_loaded[i] = {};
+       nm_loaded[i] = {};
+@@ -572,7 +611,6 @@
+     return false;
+   };
+ 
+-  int best_idx = gemm_wanted_winner_index(uni_cfgs, ncfg);
+   int best_m128_idx = -1;
+   double best_ms = 0.0;
+   double best_m128_ms = 1e300;
+@@ -585,8 +623,9 @@
+       return;
+     }
+     std::printf(
+-        "  --gemm-smoke: skip autotune sweep; force winner %s for G1/G2/G3\n",
+-        uni_cfgs[best_idx].tag);
++        "  --gemm-smoke: skip autotune sweep; force winner %s for G1/G2/G3; "
++        "case=%s\n",
++        uni_cfgs[best_idx].tag, sim_case ? sim_case : "smoke_tile");
+     std::fflush(stdout);
+   } else {
+   // Autotune on a large B-dominated problem that fills the GPU. Time the
+@@ -801,7 +840,9 @@
+ 
+   for (const auto &cs : cases) {
+     const int M = cs.M, N = cs.N, K = cs.K;
+-    if (opt.gemm_smoke && std::strcmp(cs.tag, "smoke_tile") != 0) continue;
++    if (opt.gemm_smoke &&
++        std::strcmp(cs.tag, sim_case ? sim_case : "smoke_tile") != 0)
++      continue;
+     int case_idx = best_idx;
+     if ((M % uni_cfgs[case_idx].block_m || N % uni_cfgs[case_idx].block_n ||
+          K % uni_cfgs[case_idx].block_k) &&
+@@ -892,13 +933,16 @@
+       continue;
+     }
+ 
+-    // Cluster kernels cannot be overlapped. One warmup is enough (smoke
+-    // already proved the launch path); never queue several on the stream.
+-    const int warm = 1;
++    // The smoke launch already exercises each path; honor --warmup so the
++    // simulator harness can avoid a redundant full GEMM.
++    const int warm = opt.warmup;
+     std::vector<double> uni_ms_v, mc_ms_v, nm_ms_v, uni_ns_v, mc_ns_v, nm_ns_v;
+     uni_ms_v.reserve(opt.samples);
+     mc_ms_v.reserve(opt.samples);
+     nm_ms_v.reserve(opt.samples);
++    std::printf(
++        "GEMM_SAMPLE_HEADER,shape,variant,sample,event_ms,globaltimer_ns\n");
++    std::fflush(stdout);
+ 
+     bool timed_ok = true;
+     for (int s = 0; s < opt.samples && timed_ok; ++s) {
+@@ -911,6 +955,9 @@
+       if (timed_ok) {
+         uni_ms_v.push_back(t.ms);
+         uni_ns_v.push_back(t.cycles);
++        std::printf("GEMM_SAMPLE,%s,unicast,%d,%.9g,%.9g\n", cs.tag, s + 1,
++                    t.ms, t.cycles);
++        std::fflush(stdout);
+       }
+     }
+     if (timed_ok) {
+@@ -933,6 +980,9 @@
+       if (timed_ok) {
+         mc_ms_v.push_back(t.ms);
+         mc_ns_v.push_back(t.cycles);
++        std::printf("GEMM_SAMPLE,%s,multicast,%d,%.9g,%.9g\n", cs.tag, s + 1,
++                    t.ms, t.cycles);
++        std::fflush(stdout);
+       }
+     }
+     if (do_mcast && timed_ok) {
+@@ -955,6 +1005,9 @@
+       if (timed_ok) {
+         nm_ms_v.push_back(t.ms);
+         nm_ns_v.push_back(t.cycles);
++        std::printf("GEMM_SAMPLE,%s,notma,%d,%.9g,%.9g\n", cs.tag, s + 1,
++                    t.ms, t.cycles);
++        std::fflush(stdout);
+       }
+     }
+     if (!timed_ok) {
+@@ -1004,14 +1057,17 @@
+     double max_abs = 0, max_abs_nm = 0;
+     const bool ok = !do_mcast || check_close(hC_uni, hC_mc, &max_abs, atol);
+     const bool ok_nm = check_close(hC_uni, hC_nm, &max_abs_nm, atol);
++    if (!(ok && ok_nm && ok_ref))
++      std::printf("FAIL: GEMM validation %s (mcast_ok=%d notma_ok=%d ref_ok=%d)\n",
++                  cs.tag, ok ? 1 : 0, ok_nm ? 1 : 0, ok_ref ? 1 : 0);
+ 
+     char name[96], notes[256];
+     std::snprintf(notes, sizeof(notes),
+                   "M=%d N=%d K=%d cluster=%d n_clusters=%d AI=%.1f "
+-                  "traf=%.3f ok=%d ref_ok=%d max_abs=%.3g ref_abs=%.3g "
++                  "traf=%.3f ok=%d notma_ok=%d ref_ok=%d max_abs=%.3g ref_abs=%.3g "
+                   "atol=%.3g fp16 tile=%s",
+                   M, N, K, case_mc_meta.num_ctas, n_clusters, ai, traf,
+-                  ok ? 1 : 0, ok_ref ? 1 : 0, max_abs, max_abs_ref, atol,
++                  ok ? 1 : 0, ok_nm ? 1 : 0, ok_ref ? 1 : 0, max_abs, max_abs_ref, atol,
+                   case_uni_meta.tag);
+ 
+     std::printf(
+@@ -1156,6 +1212,43 @@
+ int run_gemm_harness_selfcheck() {
+   std::printf("=== gemm harness self-check ===\n");
+   int rc = 0;
++  const float nan = std::numeric_limits<float>::quiet_NaN();
++  const float inf = std::numeric_limits<float>::infinity();
++  double max_abs = 0;
++  auto require = [&](bool passed, const char *name) {
++    std::printf("%s validation %s\n", passed ? "OK " : "FAIL:", name);
++    if (!passed) rc = 1;
++  };
++  require(check_close({1.f}, {1.f}, &max_abs, 0.1) && max_abs == 0,
++          "finite equal");
++  require(!check_close({1.f}, {2.f}, &max_abs, 0.1), "finite mismatch");
++  require(!check_close({nan}, {1.f}, &max_abs, 0.1), "NaN reference");
++  require(!check_close({1.f}, {nan}, &max_abs, 0.1), "NaN output");
++  require(!check_close({nan}, {nan}, &max_abs, 0.1), "both NaN");
++  require(!check_close({inf}, {inf}, &max_abs, 0.1), "equal infinities");
++  require(!check_close({-inf}, {-inf}, &max_abs, 0.1), "equal negative infinities");
++  require(!check_close({inf}, {-inf}, &max_abs, 0.1), "opposite infinities");
++  require(!check_close({1.f}, {inf}, &max_abs, 0.1), "infinite output");
++  require(!check_close({inf}, {1.f}, &max_abs, 0.1), "infinite reference");
++  require(!check_close({}, {1.f}, &max_abs, 0.1), "long output");
++  require(!check_close({1.f}, {}, &max_abs, 0.1), "short output");
++  const std::vector<__half> one{__float2half(1.f)};
++  const std::vector<__half> half_nan{__float2half(nan)};
++  const std::vector<__half> half_inf{__float2half(inf)};
++  require(check_reference_samples(one, one, {1.f}, 1, 1, 1, &max_abs),
++          "sampled finite equal");
++  require(!check_reference_samples(one, one, {2.f}, 1, 1, 1, &max_abs),
++          "sampled finite mismatch");
++  require(!check_reference_samples(one, one, {nan}, 1, 1, 1, &max_abs),
++          "sampled NaN output");
++  require(!check_reference_samples(half_nan, one, {1.f}, 1, 1, 1, &max_abs),
++          "sampled NaN reference");
++  require(!check_reference_samples(half_inf, one, {inf}, 1, 1, 1, &max_abs),
++          "sampled infinite reference and output");
++  require(!check_reference_samples(half_inf, one, {1.f}, 1, 1, 1, &max_abs),
++          "sampled infinite reference");
++  require(!check_reference_samples(one, one, {inf}, 1, 1, 1, &max_abs),
++          "sampled infinite output");
+   const TritonGemmKernel *uni = triton_gemm_uni_sm90;
+   const TritonGemmKernel *mc = triton_gemm_mcast_sm90;
+   const int n = triton_gemm_n_sm90;
+--- a/src/probe_tma_multicast.cu
++++ b/src/probe_tma_multicast.cu
+@@ -547,6 +547,7 @@
+ }  // namespace
+ 
+ void run_tma_multicast_probes(const SuiteOptions &opt, MetricSink &sink) {
++  const bool representative = std::getenv("FLASHGPU_TMA_MC_REPRESENTATIVE");
+   std::printf("\n--- tma_multicast (simultaneity + size sweep) ---\n");
+   print_kernel_source("src/probe_tma_multicast.cu",
+                       "H200_profiling (our own)",
+@@ -745,7 +746,7 @@
+   // Fanout sweep at 4 KB
+   std::printf("  --- fanout sweep (4KB mask mcast) ---\n");
+   const void *fn4k = kernel_for_bytes(4096);
+-  for (int fan = 2; fan <= cn; fan *= 2) {
++  for (int fan = 2; !representative && fan <= cn; fan *= 2) {
+     char tag[64];
+     std::snprintf(tag, sizeof(tag), "mcast_4k_fan%d", fan);
+     std::vector<McTimed> h;
+--- a/src/old/probe_l2_dram_OLD.cu
++++ b/src/old/probe_l2_dram_OLD.cu
+@@ -224,7 +224,10 @@
+   // Prefer a quiet exclusive GPU job; multi-job contention collapses BW.
+   {
+     std::printf("  --- hbm bandwidth (use exclusive GPU for peak) ---\n");
+-    const size_t n = 256ull * 1024 * 1024;  // 1 GiB floats
++    // Keep the H200 default; the simulator suite can reduce only the workload.
++    const char *kib_env = std::getenv("FLASHGPU_HBM_KIB");
++    const size_t kib = kib_env ? std::max(1, std::atoi(kib_env)) : 1024 * 1024;
++    const size_t n = kib * 1024ull / sizeof(float);
+     float *d_src = nullptr, *d_dst = nullptr, *d_sink = nullptr;
+     CUDA_CHECK(cudaMalloc(&d_src, n * sizeof(float)));
+     CUDA_CHECK(cudaMalloc(&d_dst, n * sizeof(float)));
+@@ -233,7 +236,9 @@
+     CUDA_CHECK(cudaGetDeviceProperties(&prop, opt.device));
+     const int threads = 256;
+     // Scale grid with SM count for saturation
+-    const int blocks = std::max(prop.multiProcessorCount * 8, 1024);
++    const char *blocks_env = std::getenv("FLASHGPU_HBM_BLOCKS");
++    const int blocks = blocks_env ? std::max(1, std::atoi(blocks_env))
++                                  : std::max(prop.multiProcessorCount * 8, 1024);
+     CUDA_CHECK(cudaMalloc(&d_sink, sizeof(float) * blocks * threads));
+     k_stream_write<<<blocks, threads>>>(d_src, n, 1.0f);
+     CUDA_CHECK(cudaDeviceSynchronize());
+@@ -271,7 +276,8 @@
+       return (bytes_per_rep * reps / 1e9) / (ms * 1e-3);
+     };
+ 
+-    constexpr int reps = 10;
++    const char *reps_env = std::getenv("FLASHGPU_HBM_REPS");
++    const int reps = reps_env ? std::max(1, std::atoi(reps_env)) : 10;
+     double cy_copy = 0, cy_read = 0, cy_write = 0;
+     double gbs_copy = timed_gbs(
+         [&] { k_stream_copy<<<blocks, threads>>>(d_src, d_dst, n); },
+--- a/vendor/tma_bw/simple_normal_load_test.cu
++++ b/vendor/tma_bw/simple_normal_load_test.cu
+@@ -5,11 +5,11 @@
+ #include "kernel_wrappers.cuh"
+ 
+ int main() {
+-  const size_t total_bytes = size_t(64) * 1024 * 1024; // 64 MiB
++  const size_t total_bytes = size_t(1024) * 1024 * 1024; // Match job 2119329 HBM stream
+ 
+   // Simple configuration
+-  constexpr int stages = 4;
+-  constexpr int chunk_bytes = 1024;
++  constexpr int stages = 16;
++  constexpr int chunk_bytes = 8192;
+   constexpr int repeat = 1;
+   constexpr int warmup_iters = 0;
+   constexpr int num_iters = 1;
+@@ -17,14 +17,14 @@
+   TestData test_data(total_bytes);
+   const dim3 grid(test_data.get_num_sms());
+ //   const dim3 grid(1);
+-  const dim3 block(64); // 1 producer + 1 consumer warp
++  const dim3 block(1024); // 16 producer + 16 consumer warps
+ 
+   printf("=== Simple Normal Load Test ===\n");
+   printf(
+       "Configuration: Stages=%d, Chunk=%d B, Repeat=%d, Warmup=%d, Iters=%d\n",
+       stages, chunk_bytes, repeat, warmup_iters, num_iters);
+ 
+-  NormalLoadKernelWrapper<1, 1> normal_load_wrapper;
++  NormalLoadKernelWrapper<16, 16> normal_load_wrapper;
+   BandwidthBenchmark normal_load_bench(
+       test_data, grid, block, normal_load_wrapper, "Normal Load Simple Test");
+ 
+@@ -33,4 +33,4 @@
+       warmup_iters, num_iters);
+ 
+   return 0;
+-}
+\ No newline at end of file
++}
+--- a/vendor/tma_bw/simple_cp_async_test.cu
++++ b/vendor/tma_bw/simple_cp_async_test.cu
+@@ -5,24 +5,26 @@
+ #include "kernel_wrappers.cuh"
+ 
+ int main() {
+-  const size_t total_bytes = size_t(64) * 1024 * 1024; // 64 MiB
++  const size_t total_bytes = size_t(1024) * 1024 * 1024; // Match job 2119329 HBM stream
+   
+   // Simple configuration
+-  constexpr int stages = 4;
+-  constexpr int chunk_bytes = 1024;
+-  constexpr int repeat = 8;
+-  constexpr int warmup_iters = 3;
+-  constexpr int num_iters = 5;
++  constexpr int stages = 16;
++  constexpr int chunk_bytes = 8192;
++#ifdef FLASHGPU_SIM_REPRESENTATIVE
++  constexpr int repeat = 1, warmup_iters = 0, num_iters = 1;
++#else
++  constexpr int repeat = 8, warmup_iters = 3, num_iters = 5;
++#endif
+ 
+   TestData test_data(total_bytes);
+   const dim3 grid(test_data.get_num_sms());
+-  const dim3 block(64); // 1 producer + 1 consumer warp
++  const dim3 block(1024); // 16 producer + 16 consumer warps
+ 
+   printf("=== Simple cp.async Test ===\n");
+   printf("Configuration: Stages=%d, Chunk=%d B, Repeat=%d, Warmup=%d, Iters=%d\n",
+          stages, chunk_bytes, repeat, warmup_iters, num_iters);
+ 
+-  CPAsyncKernelWrapper<1, 1> cp_async_wrapper;
++  CPAsyncKernelWrapper<16, 16> cp_async_wrapper;
+   BandwidthBenchmark cp_async_bench(test_data, grid, block, cp_async_wrapper,
+                                    "cp.async Simple Test");
+ 
+@@ -30,4 +32,4 @@
+   cp_async_bench.template run_single_config<stages, chunk_bytes, repeat>(warmup_iters, num_iters);
+ 
+   return 0;
+-}
+\ No newline at end of file
++}
+--- a/vendor/tma_bw/simple_tma_test.cu
++++ b/vendor/tma_bw/simple_tma_test.cu
+@@ -5,24 +5,26 @@
+ #include "kernel_wrappers.cuh"
+ 
+ int main() {
+-  const size_t total_bytes = size_t(64) * 1024 * 1024; // 64 MiB
++  const size_t total_bytes = size_t(1024) * 1024 * 1024; // Match job 2119329 HBM stream
+   
+   // Simple configuration
+-  constexpr int stages = 4;
+-  constexpr int chunk_bytes = 1024;
+-  constexpr int repeat = 8;
+-  constexpr int warmup_iters = 3;
+-  constexpr int num_iters = 5;
++  constexpr int stages = 16;
++  constexpr int chunk_bytes = 8192;
++#ifdef FLASHGPU_SIM_REPRESENTATIVE
++  constexpr int repeat = 1, warmup_iters = 0, num_iters = 1;
++#else
++  constexpr int repeat = 8, warmup_iters = 3, num_iters = 5;
++#endif
+ 
+   TestData test_data(total_bytes);
+   const dim3 grid(test_data.get_num_sms());
+-  const dim3 block(64); // 1 producer + 1 consumer warp
++  const dim3 block(1024); // 16 producer + 16 consumer warps
+ 
+   printf("=== Simple TMA Test ===\n");
+   printf("Configuration: Stages=%d, Chunk=%d B, Repeat=%d, Warmup=%d, Iters=%d\n",
+          stages, chunk_bytes, repeat, warmup_iters, num_iters);
+ 
+-  TMAKernelWrapper<1, 1> tma_wrapper;
++  TMAKernelWrapper<16, 16> tma_wrapper;
+   BandwidthBenchmark tma_bench(test_data, grid, block, tma_wrapper,
+                               "TMA Simple Test");
+ 
+@@ -30,4 +32,4 @@
+   tma_bench.template run_single_config<stages, chunk_bytes, repeat>(warmup_iters, num_iters);
+ 
+   return 0;
+-}
+\ No newline at end of file
++}

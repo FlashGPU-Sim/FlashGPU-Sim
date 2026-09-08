@@ -509,6 +509,10 @@ void shader_core_ctx::create_exec_pipeline() {
       in_ports.push_back(&m_pipeline_reg[ID_OC_INT]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_INT]);
     }
+    if (m_config->gpgpu_num_tma_units > 0) {
+      in_ports.push_back(&m_pipeline_reg[ID_OC_TMA]);
+      out_ports.push_back(&m_pipeline_reg[OC_EX_TMA]);
+    }
     if (m_config->gpgpu_num_cp_async_units > 0) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_CP_ASYNC]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_CP_ASYNC]);
@@ -2581,6 +2585,7 @@ void scheduler_unit::cycle() {
               // This code need to be refactored
               if (pI->op != TENSOR_CORE_OP && pI->op != SFU_OP &&
                   pI->op != DP_OP &&
+                  pI->op != TENSOR_MEMORY_ACCELERATOR_OP &&
                   pI->op != ASYNC_COPY_OP &&
                   !(pI->op == TENSOR_MAP_OP &&
                     m_shader->m_config->gpgpu_num_tensormap_units > 0) &&
@@ -5477,6 +5482,11 @@ void shader_core_config::set_pipeline_latency() {
   // assume that the max operation has the max latency
   max_sp_latency = fp_latency[1];
   max_int_latency = std::max(int_latency[1], int_latency[5]);
+  // Include the same lowered ADD/SUB latency used by PTX predecode.
+  max_int_latency = std::max(
+      max_int_latency,
+      int_latency[0] *
+          std::max(1u, gpgpu_ctx->func_sim->int64_add_lowering_factor));
   max_dp_latency = dp_latency[1];
   max_tensor_core_latency = std::max(tensor_latency_max, wgmma_latency_max);
   max_tma_latency = tma_latency;
