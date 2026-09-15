@@ -8,7 +8,15 @@ WORKLOAD_MANAGED_TEST_GROUPS_sm90 += fa3
 # Runner profiles are properties of the FA3 build recipe. Architecture
 # membership and the source inventory remain in arch/sm90.toml.
 TEST_GROUP_PROFILES_sm90_fa3 := \
-	smoke packgqa small medium large breakdown scaling concurrency
+	smoke packgqa small medium medium-forward large large-forward breakdown scaling concurrency
+TEST_GROUP_BUILD_TARGET_sm90_fa3_medium-forward := fa3-forward
+TEST_GROUP_BINARY_GROUP_sm90_fa3_medium-forward := fa3-forward
+TEST_GROUP_EXECUTOR_sm90_fa3_medium-forward := gtest-single
+TEST_GROUP_FILTER_sm90_fa3_medium-forward := Fa3PrefillFp16MediumTest.H*
+TEST_GROUP_BUILD_TARGET_sm90_fa3_large-forward := fa3-forward
+TEST_GROUP_BINARY_GROUP_sm90_fa3_large-forward := fa3-forward
+TEST_GROUP_EXECUTOR_sm90_fa3_large-forward := gtest-single
+TEST_GROUP_FILTER_sm90_fa3_large-forward := Fa3PrefillFp16IntegrationTest.H*
 TEST_GROUP_BUILD_TARGET_sm90_fa3_smoke := fa3-standard
 TEST_GROUP_BINARY_GROUP_sm90_fa3_smoke := fa3-standard
 TEST_GROUP_EXECUTOR_sm90_fa3_smoke := gtest-single
@@ -252,6 +260,19 @@ $(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(FA3_MK) | $(BIN_DIR)
 
 $(BIN_DIR)/sm90/fa3/%_tests: \
 $(OBJ_DIR)/sm90/fa3/modes/%/fa3_fwd_h1d128_profile_test.cu.o \
+$(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(FA3_MK) | $(BIN_DIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(filter-out $(TOP_MAKEFILE) $(FA3_MK),$^) \
+		-o $@ -lpthread $(CUDA_LIBS)
+
+FA3_FORWARD_OBJECTS = $(filter %/fa3_fwd_d64_noncausal_test.cu.o %/fa3_fwd_d64_causal_test.cu.o %/fa3_fwd_d128_noncausal_test.cu.o %/fa3_fwd_d128_causal_test.cu.o,$(FA3_STANDARD_OBJECTS))
+FA3_FORWARD_TARGET = $(BIN_DIR)/sm90/fa3/forward_tests
+BINARY_GROUPS += fa3-forward
+BINARY_GROUP_BINARIES_fa3-forward = $(FA3_FORWARD_TARGET)
+.PHONY: fa3-forward
+fa3-forward: setup-gtest $(FA3_FORWARD_TARGET)
+
+$(FA3_FORWARD_TARGET): $(FA3_FORWARD_OBJECTS) \
 $(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(FA3_MK) | $(BIN_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out $(TOP_MAKEFILE) $(FA3_MK),$^) \

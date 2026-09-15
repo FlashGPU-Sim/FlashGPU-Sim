@@ -8,7 +8,13 @@ CXX = g++
 NVCC = nvcc
 CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -g -O2
 BASE_NVCCFLAGS = -std=c++17 -g -O2 --compiler-options "-pthread" -x cu
-SM90_NVCCFLAGS = $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_sm90)
+# Keep architecture-specific virtual targets (for example compute_120a) intact.
+# nvcc's -arch=sm_*a shorthand may select the non-specific compute_* target,
+# which makes feature-specific inline PTX fail during assembly.
+ARCH_NVCCFLAGS = \
+	-gencode arch=$(ARCH_COMPUTE_TARGET_$(1)),code=$(ARCH_NVCC_TARGET_$(1)) \
+	-gencode arch=$(ARCH_COMPUTE_TARGET_$(1)),code=$(ARCH_COMPUTE_TARGET_$(1))
+SM90_NVCCFLAGS = $(BASE_NVCCFLAGS) $(call ARCH_NVCCFLAGS,sm90)
 TEST_GROUP_EXTRA_NVCCFLAGS =
 
 CUDA_ENV_PATH := $(if $(CUDA_HOME),$(CUDA_HOME),$(CUDA_PATH))

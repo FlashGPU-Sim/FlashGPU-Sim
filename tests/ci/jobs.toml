@@ -1,6 +1,44 @@
 # PR CI jobs. Architecture manifests own source membership; this file owns
 # which manifest selections CI builds and runs.
 
+# Separate processes keep each medium kernel's cache/launch state cold.
+# Both numerical correctness and frozen simulator cycles are blocking gates.
+[jobs.sm90-sass-medium-d64f]
+arch = "sm90"
+config = "SM90_H100_SASS_FRONTEND"
+frontend = "sass-timing"
+cuda = "13.3"
+tests = [
+  { name = "forward", group = "fa3", profile = "medium-forward", gtest_filter = "Fa3PrefillFp16MediumTest.H32D64FullB16S512", post_check = "tests/ci/check_sass_medium.py" },
+]
+
+[jobs.sm90-sass-medium-d64c]
+arch = "sm90"
+config = "SM90_H100_SASS_FRONTEND"
+frontend = "sass-timing"
+cuda = "13.3"
+tests = [
+  { name = "forward", group = "fa3", profile = "medium-forward", gtest_filter = "Fa3PrefillFp16MediumTest.H32D64CausalB16S512", post_check = "tests/ci/check_sass_medium.py" },
+]
+
+[jobs.sm90-sass-medium-d128f]
+arch = "sm90"
+config = "SM90_H100_SASS_FRONTEND"
+frontend = "sass-timing"
+cuda = "13.3"
+tests = [
+  { name = "forward", group = "fa3", profile = "medium-forward", gtest_filter = "Fa3PrefillFp16MediumTest.H16D128FullB16S512", post_check = "tests/ci/check_sass_medium.py" },
+]
+
+[jobs.sm90-sass-medium-d128c]
+arch = "sm90"
+config = "SM90_H100_SASS_FRONTEND"
+frontend = "sass-timing"
+cuda = "13.3"
+tests = [
+  { name = "forward", group = "fa3", profile = "medium-forward", gtest_filter = "Fa3PrefillFp16MediumTest.H16D128CausalB16S512", post_check = "tests/ci/check_sass_medium.py" },
+]
+
 [jobs.sm120-core]
 arch = "sm120"
 tests = [

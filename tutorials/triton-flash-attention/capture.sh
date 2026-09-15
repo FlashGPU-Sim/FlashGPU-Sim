@@ -5,16 +5,25 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
 RUN_DIR="${SCRIPT_DIR}/run"
-TRACKING_DIR="${RUN_DIR}/tracking"
+CAPTURE_NAME="${FLASH_ATTN_CAPTURE_NAME:-tracking}"
+TRACKING_DIR="${RUN_DIR}/${CAPTURE_NAME}"
 LAUNCHER_DIR="${TRACKING_DIR}/launchers"
-CAPTURE_LOG="${RUN_DIR}/capture.log"
+CAPTURE_LOG="${RUN_DIR}/${CAPTURE_NAME}.capture.log"
 
 BATCH="${FLASH_ATTN_BATCH:-32}"
 HEADS="${FLASH_ATTN_HEADS:-32}"
 SEQ_LEN="${FLASH_ATTN_SEQ_LEN:-512}"
 HEAD_DIM="${FLASH_ATTN_HEAD_DIM:-64}"
 CAUSAL="${FLASH_ATTN_CAUSAL:-1}"
+USE_TMA="${FLASH_ATTN_TMA:-1}"
+MODE="${FLASH_ATTN_MODE:-full}"
+PROFILE_PHASES="${FLASH_ATTN_PROFILE_PHASES:-0}"
 TRITON_TARGET="${TRITON_TARGET:-sm120}"
+
+if [[ ! "${CAPTURE_NAME}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+  echo "Error: FLASH_ATTN_CAPTURE_NAME contains unsupported characters." >&2
+  exit 1
+fi
 
 if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
   PYTHON="${VIRTUAL_ENV}/bin/python"
@@ -62,6 +71,32 @@ case "${CAUSAL}" in
     ;;
 esac
 
+case "${USE_TMA}" in
+  0)
+    TMA_ARGS=(--no-tma)
+    ;;
+  1)
+    TMA_ARGS=(--tma)
+    ;;
+  *)
+    echo "Error: FLASH_ATTN_TMA must be 0 or 1." >&2
+    exit 1
+    ;;
+esac
+
+case "${PROFILE_PHASES}" in
+  0)
+    PROFILE_ARGS=()
+    ;;
+  1)
+    PROFILE_ARGS=(--profile-phases)
+    ;;
+  *)
+    echo "Error: FLASH_ATTN_PROFILE_PHASES must be 0 or 1." >&2
+    exit 1
+    ;;
+esac
+
 export PATH="${CUDA_INSTALL_PATH}/bin:${PATH}"
 mkdir -p "${RUN_DIR}"
 
@@ -71,8 +106,12 @@ echo "[2/3] Compiling Triton FlashAttention for ${TRITON_TARGET}"
   --heads "${HEADS}" \
   --seq-len "${SEQ_LEN}" \
   --head-dim "${HEAD_DIM}" \
+  --mode "${MODE}" \
   --target "${TRITON_TARGET}" \
+  --output-dir "${TRACKING_DIR}" \
   "${CAUSAL_ARGS[@]}" \
+  "${TMA_ARGS[@]}" \
+  "${PROFILE_ARGS[@]}" \
   2>&1 | tee "${CAPTURE_LOG}"
 
 shopt -s nullglob

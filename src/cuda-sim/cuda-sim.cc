@@ -41,9 +41,11 @@ typedef void *yyscan_t;
 #include <map>
 #include <set>
 #include <sstream>
+#include "../gpgpu-sim/flash/panic.h"
 #include <cassert>
 #include "../../libcuda/gpgpu_context.h"
 #include "../abstract_hardware_model.h"
+#include "../gpgpu-sim/flash/sass/runtime/runtime_adapter.h"
 #include "../gpgpu-sim/gpu-sim.h"
 #include "../gpgpu-sim/flash/wgmma/tensor_wgmma.h"
 #include "../gpgpusim_entrypoint.h"
@@ -141,210 +143,7 @@ static unsigned wgmma_compute_cycles(int shape_n, int shape_k, int input_type,
   return std::max(1u, cycles);
 }
 
-void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
-  option_parser_register(
-      opp, "-ptx_opcode_latency_int", OPT_CSTR, &opcode_latency_int,
-      "Opcode latencies for integers <ADD,MAX,MUL,MAD,DIV,SHFL>"
-      "Default 1,1,19,25,145,32",
-      "1,1,19,25,145,32");
-  option_parser_register(
-      opp, "-ptx_int64_add_lowering_factor", OPT_UINT32,
-      &int64_add_lowering_factor,
-      "Scale integer ADD/SUB latency and initiation for 64-bit PTX lowering",
-      "1");
-  option_parser_register(opp, "-ptx_opcode_latency_fp", OPT_CSTR,
-                         &opcode_latency_fp,
-                         "Opcode latencies for single precision floating "
-                         "points <ADD,MAX,MUL,MAD,DIV>"
-                         "Default 1,1,1,1,30",
-                         "1,1,1,1,30");
-  option_parser_register(opp, "-ptx_opcode_latency_dp", OPT_CSTR,
-                         &opcode_latency_dp,
-                         "Opcode latencies for double precision floating "
-                         "points <ADD,MAX,MUL,MAD,DIV>"
-                         "Default 8,8,8,8,335",
-                         "8,8,8,8,335");
-  option_parser_register(opp, "-ptx_opcode_latency_sfu", OPT_CSTR,
-                         &opcode_latency_sfu,
-                         "Opcode latencies for SFU instructions"
-                         "Default 8",
-                         "8");
-  option_parser_register(opp, "-ptx_opcode_latency_ex2", OPT_UINT32,
-                         &opcode_latency_ex2,
-                         "EX2 latency; 0 inherits SFU latency", "0");
-  option_parser_register(opp, "-ptx_opcode_latency_predicate", OPT_UINT32,
-                         &opcode_latency_predicate,
-                         "SETP/SELP latency; 0 preserves legacy one-cycle ALU", "0");
-  option_parser_register(opp, "-ptx_opcode_latency_int_logic", OPT_UINT32,
-                         &opcode_latency_int_logic,
-                         "32-bit AND/OR/XOR/NOT/SHL/SHR result latency", "1");
-  option_parser_register(opp, "-ptx_opcode_initiation_int_logic", OPT_UINT32,
-                         &opcode_initiation_int_logic,
-                         "32-bit AND/OR/XOR/NOT/SHL/SHR initiation interval", "1");
-  option_parser_register(opp, "-ptx_opcode_f32_minmax_use_int", OPT_BOOL,
-                         &opcode_f32_minmax_use_int,
-                         "Route scalar FP32 MIN/MAX through the integer ALU; "
-                         "retain FP MIN/MAX latency and initiation settings", "0");
-  option_parser_register(opp, "-ptx_opcode_latency_f32x2", OPT_UINT32,
-                         &opcode_latency_f32x2,
-                         "Packed f32x2 arithmetic latency; 0 inherits scalar FP",
-                         "0");
-  option_parser_register(opp, "-ptx_opcode_initiation_f32x2", OPT_UINT32,
-                         &opcode_initiation_f32x2,
-                         "Packed f32x2 arithmetic initiation; 0 inherits scalar FP",
-                         "0");
-  option_parser_register(opp, "-ptx_opcode_latency_cvt_f16x2_f32", OPT_UINT32,
-                         &opcode_latency_cvt_f16x2_f32,
-                         "Packed f32 to f16x2 conversion latency", "1");
-  option_parser_register(opp, "-ptx_opcode_initiation_cvt_f16x2_f32", OPT_UINT32,
-                         &opcode_initiation_cvt_f16x2_f32,
-                         "Packed f32 to f16x2 conversion initiation", "1");
-  option_parser_register(opp, "-ptx_opcode_latency_tensor", OPT_CSTR,
-                         &opcode_latency_tensor,
-                         "Opcode latencies for Tensor instructions"
-                         "Default 64",
-                         "64");
-  option_parser_register(
-      opp, "-ptx_opcode_latency_wgmma_ss", OPT_CSTR,
-      &opcode_latency_wgmma_ss,
-      "WGMMA tensor pipe latencies for SS operands "
-      "<m64n8,m64n16,m64n32,m64n64>. Default 4,4,4,4",
-      "4,4,4,4");
-  option_parser_register(
-      opp, "-ptx_opcode_latency_wgmma_rs", OPT_CSTR,
-      &opcode_latency_wgmma_rs,
-      "WGMMA tensor pipe latencies for RS operands "
-      "<m64n8,m64n16,m64n32,m64n64>. Default 12,12,12,12",
-      "12,12,12,12");
-  option_parser_register(
-      opp, "-ptx_opcode_completion_wgmma_ss", OPT_CSTR,
-      &opcode_completion_wgmma_ss,
-      "WGMMA overlappable completion tail latencies for SS operands "
-      "<m64n8,m64n16,m64n32,m64n64>. Default 66,66,66,66",
-      "66,66,66,66");
-  option_parser_register(
-      opp, "-ptx_opcode_completion_wgmma_rs", OPT_CSTR,
-      &opcode_completion_wgmma_rs,
-      "WGMMA overlappable completion tail latencies for RS operands "
-      "<m64n8,m64n16,m64n32,m64n64>. Default 64,65,64,64",
-      "64,65,64,64");
-  option_parser_register(
-      opp, "-ptx_opcode_completion_wgmma_int_ss", OPT_CSTR,
-      &opcode_completion_wgmma_int_ss,
-      "WGMMA overlappable completion tail latencies for int/b1 SS operands "
-      "<m64n8,m64n16,m64n32,m64n64>. Default 64,64,64,64",
-      "64,64,64,64");
-  option_parser_register(
-      opp, "-ptx_opcode_completion_wgmma_int_rs", OPT_CSTR,
-      &opcode_completion_wgmma_int_rs,
-      "WGMMA overlappable completion tail latencies for int/b1 RS operands "
-      "<m64n8,m64n16,m64n32,m64n64>. Default 62,62,62,61",
-      "62,62,62,61");
-  option_parser_register(
-      opp, "-ptx_opcode_compute_throughput_wgmma", OPT_CSTR,
-      &opcode_compute_throughput_wgmma,
-      "WGMMA non-overlappable compute throughput in work/cycle per SM "
-      "<f16/bf16,tf32,fp8,int8,b1>. Default 4096,2048,8192,8192,65536",
-      "4096,2048,8192,8192,65536");
-  option_parser_register(opp, "-ptx_opcode_latency_tma", OPT_CSTR,
-                         &opcode_latency_tma,
-                         "Opcode latency for TMA (cp.async.bulk) instructions"
-                         "Default 33",
-                         "33");
-  option_parser_register(
-      opp, "-ptx_opcode_latency_cp_async", OPT_CSTR, &opcode_latency_cp_async,
-      "Opcode latency for ordinary cp.async instructions. Default 7", "7");
-  option_parser_register(
-      opp, "-ptx_opcode_latency_cp_async_commit", OPT_CSTR,
-      &opcode_latency_cp_async_commit,
-      "Opcode latency for ordinary cp.async.commit_group instructions. Default 7",
-      "7");
-  option_parser_register(
-      opp, "-ptx_opcode_latency_cp_async_wait", OPT_CSTR,
-      &opcode_latency_cp_async_wait,
-      "Opcode latency for ordinary cp.async.wait_group/wait_all instructions. "
-      "Default 5",
-      "5");
-  option_parser_register(
-      opp, "-ptx_opcode_latency_tensormap", OPT_CSTR,
-      &opcode_latency_tensormap,
-      "Opcode latencies for tensormap descriptor instructions "
-      "<replace,cp_fenceproxy,fence_proxy_tensormap>Default 1,1,1",
-      "1,1,1");
-  option_parser_register(
-      opp, "-ptx_opcode_initiation_int", OPT_CSTR, &opcode_initiation_int,
-      "Opcode initiation intervals for integers <ADD,MAX,MUL,MAD,DIV,SHFL>"
-      "Default 1,1,4,4,32,4",
-      "1,1,4,4,32,4");
-  option_parser_register(opp, "-ptx_opcode_initiation_fp", OPT_CSTR,
-                         &opcode_initiation_fp,
-                         "Opcode initiation intervals for single precision "
-                         "floating points <ADD,MAX,MUL,MAD,DIV>"
-                         "Default 1,1,1,1,5",
-                         "1,1,1,1,5");
-  option_parser_register(opp, "-ptx_opcode_initiation_dp", OPT_CSTR,
-                         &opcode_initiation_dp,
-                         "Opcode initiation intervals for double precision "
-                         "floating points <ADD,MAX,MUL,MAD,DIV>"
-                         "Default 8,8,8,8,130",
-                         "8,8,8,8,130");
-  option_parser_register(opp, "-ptx_opcode_initiation_sfu", OPT_CSTR,
-                         &opcode_initiation_sfu,
-                         "Opcode initiation intervals for sfu instructions"
-                         "Default 8",
-                         "8");
-  option_parser_register(opp, "-ptx_opcode_initiation_tensor", OPT_CSTR,
-                         &opcode_initiation_tensor,
-                         "Opcode initiation intervals for tensor instructions"
-                         "Default 64",
-                         "64");
-  option_parser_register(
-      opp, "-ptx_opcode_initiation_wgmma_ss", OPT_CSTR,
-      &opcode_initiation_wgmma_ss,
-      "WGMMA initiation intervals for SS operands "
-      "<m64n8,m64n16,m64n32,m64n64>. Default 4,4,4,4",
-      "4,4,4,4");
-  option_parser_register(
-      opp, "-ptx_opcode_initiation_wgmma_rs", OPT_CSTR,
-      &opcode_initiation_wgmma_rs,
-      "WGMMA initiation intervals for RS operands "
-      "<m64n8,m64n16,m64n32,m64n64>. Default 12,12,12,12",
-      "12,12,12,12");
-  option_parser_register(opp, "-ptx_opcode_initiation_tma", OPT_CSTR,
-                         &opcode_initiation_tma,
-                         "Opcode initiation interval for TMA (cp.async.bulk) instructions"
-                         "Default 33",
-                         "33");
-  option_parser_register(
-      opp, "-ptx_opcode_initiation_cp_async", OPT_CSTR,
-      &opcode_initiation_cp_async,
-      "Opcode initiation interval for ordinary cp.async instructions. Default 7",
-      "7");
-  option_parser_register(
-      opp, "-ptx_opcode_initiation_cp_async_commit", OPT_CSTR,
-      &opcode_initiation_cp_async_commit,
-      "Opcode initiation interval for ordinary cp.async.commit_group "
-      "instructions. Default 7",
-      "7");
-  option_parser_register(
-      opp, "-ptx_opcode_initiation_cp_async_wait", OPT_CSTR,
-      &opcode_initiation_cp_async_wait,
-      "Opcode initiation interval for ordinary cp.async.wait_group/wait_all "
-      "instructions. Default 5",
-      "5");
-  option_parser_register(
-      opp, "-ptx_opcode_initiation_tensormap", OPT_CSTR,
-      &opcode_initiation_tensormap,
-      "Opcode initiation intervals for tensormap descriptor instructions "
-      "<replace,cp_fenceproxy,fence_proxy_tensormap>Default 1,1,1",
-      "1,1,1");
-  option_parser_register(opp, "-cdp_latency", OPT_CSTR, &cdp_latency_str,
-                         "CDP API latency <cudaStreamCreateWithFlags, \
-cudaGetParameterBufferV2_init_perWarp, cudaGetParameterBufferV2_perKernel, \
-cudaLaunchDeviceV2_init_perWarp, cudaLaunchDevicV2_perKernel>"
-                         "Default 7200,8000,100,12000,1600",
-                         "7200,8000,100,12000,1600");
-}
+
 
 void gpgpu_t::gpgpu_ptx_sim_bindNameToTexture(
     const char *name, const struct textureReference *texref, int dim,
@@ -1211,7 +1010,7 @@ void ptx_instruction::set_opcode_and_latency() {
    * [5] SHFL
    */
   int nret;
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_int, "%u,%u,%u,%u,%u,%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_latency_int, "%u,%u,%u,%u,%u,%u",
                 &int_latency[0], &int_latency[1], &int_latency[2], &int_latency[3],
                 &int_latency[4], &int_latency[5]);
   if (nret != 6) {
@@ -1219,7 +1018,7 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_fp, "%u,%u,%u,%u,%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_latency_fp, "%u,%u,%u,%u,%u",
                 &fp_latency[0], &fp_latency[1], &fp_latency[2], &fp_latency[3],
                 &fp_latency[4]);
   if (nret != 5) {
@@ -1227,7 +1026,7 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_dp, "%u,%u,%u,%u,%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_latency_dp, "%u,%u,%u,%u,%u",
                 &dp_latency[0], &dp_latency[1], &dp_latency[2], &dp_latency[3],
                 &dp_latency[4]);
   if (nret != 5) {
@@ -1235,13 +1034,13 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_sfu, "%u", &sfu_latency);
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_latency_sfu, "%u", &sfu_latency);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_sfu (expected 1 value, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_tensor, "%u,%u,%u,%u,%u,%u,%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_latency_tensor, "%u,%u,%u,%u,%u,%u,%u",
                 &tensor_latency[0], &tensor_latency[1], &tensor_latency[2], &tensor_latency[3], &tensor_latency[4],
                 &tensor_latency[5], &tensor_latency[6]);
   if (nret != 7) {
@@ -1249,26 +1048,26 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
-  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_latency_wgmma_ss,
+  parse_wgmma_latency_table(gpgpu_ctx->instruction_timing.opcode_latency_wgmma_ss,
                             "opcode_latency_wgmma_ss", wgmma_ss_latency);
-  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_latency_wgmma_rs,
+  parse_wgmma_latency_table(gpgpu_ctx->instruction_timing.opcode_latency_wgmma_rs,
                             "opcode_latency_wgmma_rs", wgmma_rs_latency);
-  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_completion_wgmma_ss,
+  parse_wgmma_latency_table(gpgpu_ctx->instruction_timing.opcode_completion_wgmma_ss,
                             "opcode_completion_wgmma_ss",
                             wgmma_ss_completion);
-  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_completion_wgmma_rs,
+  parse_wgmma_latency_table(gpgpu_ctx->instruction_timing.opcode_completion_wgmma_rs,
                             "opcode_completion_wgmma_rs",
                             wgmma_rs_completion);
-  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_completion_wgmma_int_ss,
+  parse_wgmma_latency_table(gpgpu_ctx->instruction_timing.opcode_completion_wgmma_int_ss,
                             "opcode_completion_wgmma_int_ss",
                             wgmma_int_ss_completion);
-  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_completion_wgmma_int_rs,
+  parse_wgmma_latency_table(gpgpu_ctx->instruction_timing.opcode_completion_wgmma_int_rs,
                             "opcode_completion_wgmma_int_rs",
                             wgmma_int_rs_completion);
   parse_wgmma_compute_throughput(
-      gpgpu_ctx->func_sim->opcode_compute_throughput_wgmma,
+      gpgpu_ctx->instruction_timing.opcode_compute_throughput_wgmma,
       wgmma_compute_throughput);
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_int, "%u,%u,%u,%u,%u,%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_initiation_int, "%u,%u,%u,%u,%u,%u",
                 &int_init[0], &int_init[1], &int_init[2], &int_init[3], &int_init[4],
                 &int_init[5]);
   if (nret != 6) {
@@ -1276,27 +1075,27 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_fp, "%u,%u,%u,%u,%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_initiation_fp, "%u,%u,%u,%u,%u",
                 &fp_init[0], &fp_init[1], &fp_init[2], &fp_init[3], &fp_init[4]);
   if (nret != 5) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_fp (expected 5 values, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_dp, "%u,%u,%u,%u,%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_initiation_dp, "%u,%u,%u,%u,%u",
                 &dp_init[0], &dp_init[1], &dp_init[2], &dp_init[3], &dp_init[4]);
   if (nret != 5) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_dp (expected 5 values, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_sfu, "%u", &sfu_init);
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_initiation_sfu, "%u", &sfu_init);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_sfu (expected 1 value, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_tensor, "%u,%u,%u,%u,%u,%u,%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_initiation_tensor, "%u,%u,%u,%u,%u,%u,%u",
                 &tensor_init[0], &tensor_init[1], &tensor_init[2], &tensor_init[3], &tensor_init[4],
                 &tensor_init[5], &tensor_init[6]);
   if (nret != 7) {
@@ -1304,38 +1103,38 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
-  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_initiation_wgmma_ss,
+  parse_wgmma_latency_table(gpgpu_ctx->instruction_timing.opcode_initiation_wgmma_ss,
                             "opcode_initiation_wgmma_ss", wgmma_ss_init);
-  parse_wgmma_latency_table(gpgpu_ctx->func_sim->opcode_initiation_wgmma_rs,
+  parse_wgmma_latency_table(gpgpu_ctx->instruction_timing.opcode_initiation_wgmma_rs,
                             "opcode_initiation_wgmma_rs", wgmma_rs_init);
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_tma, "%u", &tma_latency_val);
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_latency_tma, "%u", &tma_latency_val);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_tma (expected 1 value, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_cp_async, "%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_latency_cp_async, "%u",
                 &cp_async_latency_val);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_cp_async (expected 1 value, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_cp_async_commit, "%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_latency_cp_async_commit, "%u",
                 &cp_async_commit_latency_val);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_cp_async_commit (expected 1 value, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_cp_async_wait, "%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_latency_cp_async_wait, "%u",
                 &cp_async_wait_latency_val);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_latency_cp_async_wait (expected 1 value, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_latency_tensormap, "%u,%u,%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_latency_tensormap, "%u,%u,%u",
                 &tensormap_latency[0], &tensormap_latency[1],
                 &tensormap_latency[2]);
   if (nret != 3) {
@@ -1343,34 +1142,34 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_tma, "%u", &tma_init_val);
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_initiation_tma, "%u", &tma_init_val);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_tma (expected 1 value, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_cp_async, "%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_initiation_cp_async, "%u",
                 &cp_async_init_val);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_cp_async (expected 1 value, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_cp_async_commit, "%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_initiation_cp_async_commit, "%u",
                 &cp_async_commit_init_val);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_cp_async_commit (expected 1 value, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_cp_async_wait, "%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_initiation_cp_async_wait, "%u",
                 &cp_async_wait_init_val);
   if (nret != 1) {
     printf("GPGPU-Sim PTX: ERROR parsing opcode_initiation_cp_async_wait (expected 1 value, got %d)\n", nret);
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->opcode_initiation_tensormap, "%u,%u,%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.opcode_initiation_tensormap, "%u,%u,%u",
                 &tensormap_init[0], &tensormap_init[1],
                 &tensormap_init[2]);
   if (nret != 3) {
@@ -1378,7 +1177,7 @@ void ptx_instruction::set_opcode_and_latency() {
     fflush(stdout);
     exit(1);
   }
-  nret = sscanf(gpgpu_ctx->func_sim->cdp_latency_str, "%u,%u,%u,%u,%u",
+  nret = sscanf(gpgpu_ctx->instruction_timing.cdp_latency_str, "%u,%u,%u,%u,%u",
                 &gpgpu_ctx->func_sim->cdp_latency[0],
                 &gpgpu_ctx->func_sim->cdp_latency[1],
                 &gpgpu_ctx->func_sim->cdp_latency[2],
@@ -1413,17 +1212,17 @@ void ptx_instruction::set_opcode_and_latency() {
     case SHR_OP:
       if (get_type() == B32_TYPE || get_type() == U32_TYPE ||
           get_type() == S32_TYPE) {
-        latency = gpgpu_ctx->func_sim->opcode_latency_int_logic;
+        latency = gpgpu_ctx->instruction_timing.opcode_latency_int_logic;
         initiation_interval =
-            gpgpu_ctx->func_sim->opcode_initiation_int_logic;
+            gpgpu_ctx->instruction_timing.opcode_initiation_int_logic;
         if (latency != 1 || initiation_interval != 1) op = INTP_OP;
         int_logic_timing = true;
       }
       break;
     case SETP_OP:
     case SELP_OP:
-      if (gpgpu_ctx->func_sim->opcode_latency_predicate) {
-        latency = gpgpu_ctx->func_sim->opcode_latency_predicate;
+      if (gpgpu_ctx->instruction_timing.opcode_latency_predicate) {
+        latency = gpgpu_ctx->instruction_timing.opcode_latency_predicate;
         initiation_interval = 1;
         op = INTP_OP;
       }
@@ -1431,9 +1230,9 @@ void ptx_instruction::set_opcode_and_latency() {
     case CVT_OP:
       if (m_scalar_type.size() == 2 && get_type() == F16X2_TYPE &&
           get_type2() == F32_TYPE) {
-        latency = gpgpu_ctx->func_sim->opcode_latency_cvt_f16x2_f32;
+        latency = gpgpu_ctx->instruction_timing.opcode_latency_cvt_f16x2_f32;
         initiation_interval =
-            gpgpu_ctx->func_sim->opcode_initiation_cvt_f16x2_f32;
+            gpgpu_ctx->instruction_timing.opcode_initiation_cvt_f16x2_f32;
         packed_timing = true;
       }
       break;
@@ -1638,7 +1437,7 @@ void ptx_instruction::set_opcode_and_latency() {
           // instructions on Hopper. Keep the factor opt-in so existing
           // architecture presets retain their established behavior.
           const unsigned lowering_factor =
-              std::max(1u, gpgpu_ctx->func_sim->int64_add_lowering_factor);
+              std::max(1u, gpgpu_ctx->instruction_timing.int64_add_lowering_factor);
           latency = int_latency[0] * lowering_factor;
           initiation_interval =
               int_init[0] * lowering_factor;
@@ -1662,7 +1461,7 @@ void ptx_instruction::set_opcode_and_latency() {
         case F32_TYPE:
           latency = fp_latency[1];
           initiation_interval = fp_init[1];
-          op = gpgpu_ctx->func_sim->opcode_f32_minmax_use_int ? INTP_OP : SP_OP;
+          op = gpgpu_ctx->instruction_timing.opcode_f32_minmax_use_int ? INTP_OP : SP_OP;
           break;
         case F32X2_TYPE:
           latency = fp_latency[1];
@@ -1782,8 +1581,8 @@ void ptx_instruction::set_opcode_and_latency() {
     case RSQRT_OP:
     case RCP_OP:
       latency = sfu_latency;
-      if (m_opcode == EX2_OP && gpgpu_ctx->func_sim->opcode_latency_ex2)
-        latency = gpgpu_ctx->func_sim->opcode_latency_ex2;
+      if (m_opcode == EX2_OP && gpgpu_ctx->instruction_timing.opcode_latency_ex2)
+        latency = gpgpu_ctx->instruction_timing.opcode_latency_ex2;
       initiation_interval = sfu_init;
       op = SFU_OP;
       break;
@@ -1883,10 +1682,10 @@ void ptx_instruction::set_opcode_and_latency() {
       case MUL_OP:
       case MAD_OP:
       case FMA_OP:
-        if (gpgpu_ctx->func_sim->opcode_latency_f32x2)
-          latency = gpgpu_ctx->func_sim->opcode_latency_f32x2;
-        if (gpgpu_ctx->func_sim->opcode_initiation_f32x2)
-          initiation_interval = gpgpu_ctx->func_sim->opcode_initiation_f32x2;
+        if (gpgpu_ctx->instruction_timing.opcode_latency_f32x2)
+          latency = gpgpu_ctx->instruction_timing.opcode_latency_f32x2;
+        if (gpgpu_ctx->instruction_timing.opcode_initiation_f32x2)
+          initiation_interval = gpgpu_ctx->instruction_timing.opcode_initiation_f32x2;
         packed_timing = true;
         break;
       default:
@@ -2001,6 +1800,9 @@ void ptx_instruction::pre_decode() {
   space = m_space_spec;
   memory_op = no_memory_op;
   data_size = 0;
+  set_wgmma_static_info(inst_t::wgmma_static_info_t());
+  set_mbarrier_static_info(inst_t::mbarrier_static_info_t());
+  set_async_copy_static_info(inst_t::async_copy_static_info_t());
   if (m_opcode == CP_ASYNC_OP || m_opcode == CP_ASYNC_COMMIT_OP ||
       m_opcode == CP_ASYNC_WAIT_OP ||
       m_opcode == CP_ASYNC_MBARRIER_ARRIVE_OP) {
@@ -2236,6 +2038,109 @@ void ptx_instruction::pre_decode() {
 
   // get reconvergence pc
   reconvergence_pc = gpgpu_ctx->func_sim->get_converge_point(pc);
+
+  // Translate PTX syntax into the ISA-neutral contract consumed by the timing
+  // backend.  Other execution-driven frontends populate the same metadata
+  // directly from their native instruction encoding.
+  inst_t::wgmma_static_info_t wgmma_info;
+  switch (m_opcode) {
+    case WGMMA_MMA_ASYNC_OP:
+      wgmma_info.operation =
+          inst_t::wgmma_static_info_t::WGMMA_MMA_ASYNC;
+      break;
+    case WGMMA_MMA_ASYNC_SP_OP:
+      wgmma_info.operation =
+          inst_t::wgmma_static_info_t::WGMMA_MMA_ASYNC_SPARSE;
+      break;
+    case WGMMA_COMMIT_GROUP_OP:
+      wgmma_info.operation =
+          inst_t::wgmma_static_info_t::WGMMA_COMMIT_GROUP;
+      break;
+    case WGMMA_WAIT_GROUP_OP:
+      wgmma_info.operation =
+          inst_t::wgmma_static_info_t::WGMMA_WAIT_GROUP;
+      break;
+    default:
+      break;
+  }
+  if (wgmma_info.is_mma_async()) {
+    unsigned accumulator_registers = 0;
+    if (get_num_operands() > 0 && operand_lookup(0).is_vector())
+      accumulator_registers = operand_lookup(0).get_vect_nelem();
+    if (accumulator_registers == 0 && m_wgmma_shape_n > 0)
+      accumulator_registers = static_cast<unsigned>(m_wgmma_shape_n / 2);
+
+    unsigned accumulator_type = F32_TYPE;
+    if (!m_scalar_type.empty())
+      accumulator_type = static_cast<unsigned>(m_scalar_type.front());
+    wgmma_info.accumulator_bytes_per_thread =
+        accumulator_registers * datatype2size(accumulator_type);
+
+    if (get_num_operands() > 1 && operand_lookup(1).is_vector()) {
+      wgmma_info.register_a_registers_per_thread =
+          operand_lookup(1).get_vect_nelem();
+    }
+  } else if (wgmma_info.operation ==
+             inst_t::wgmma_static_info_t::WGMMA_WAIT_GROUP) {
+    if (get_num_operands() > 0 && operand_lookup(0).is_literal()) {
+      wgmma_info.wait_group_num = static_cast<unsigned>(
+          operand_lookup(0).get_literal_value().u64);
+    }
+  }
+  set_wgmma_static_info(wgmma_info);
+
+  inst_t::mbarrier_static_info_t mbarrier_static_info;
+  bool mbarrier_arrive = false;
+  bool mbarrier_expect_tx = false;
+  for (int option : m_options) {
+    mbarrier_arrive |= option == ARRIVE_OPTION;
+    mbarrier_expect_tx |= option == EXPECT_TX_OPTION;
+  }
+  if (mbarrier_arrive || mbarrier_expect_tx) {
+    mbarrier_static_info.operation =
+        inst_t::mbarrier_static_info_t::MBARRIER_ARRIVE_EXPECT_TX;
+    mbarrier_static_info.arrive = mbarrier_arrive;
+    mbarrier_static_info.expect_tx = mbarrier_expect_tx;
+  } else {
+    switch (m_barrier_op) {
+      case INIT_OPTION:
+        mbarrier_static_info.operation =
+            inst_t::mbarrier_static_info_t::MBARRIER_INIT;
+        break;
+      case TRY_WAIT_OPTION:
+        mbarrier_static_info.operation =
+            inst_t::mbarrier_static_info_t::MBARRIER_TRY_WAIT;
+        break;
+      case COMPLETE_TX_OPTION:
+        mbarrier_static_info.operation =
+            inst_t::mbarrier_static_info_t::MBARRIER_COMPLETE_TX;
+        break;
+      case INVAL_OPTION:
+        mbarrier_static_info.operation =
+            inst_t::mbarrier_static_info_t::MBARRIER_INVAL;
+        break;
+      default:
+        break;
+    }
+  }
+  set_mbarrier_static_info(mbarrier_static_info);
+
+  inst_t::async_copy_static_info_t async_copy_info;
+  if (m_opcode == CP_ASYNC_OP && m_is_ldgsts) {
+    const operand_info *source_size = cp_async_source_control_operand();
+    if (source_size != nullptr && source_size->is_literal()) {
+      async_copy_info.has_source_size = true;
+      async_copy_info.source_size =
+          static_cast<unsigned>(source_size->get_literal_value().u64);
+    }
+  }
+  if (m_opcode == CP_ASYNC_MBARRIER_ARRIVE_OP) {
+    for (int option : m_options) {
+      if (option == NOINC_OPTION)
+        async_copy_info.mbarrier_increment_pending = false;
+    }
+  }
+  set_async_copy_static_info(async_copy_info);
 
   m_decoded = true;
 }
@@ -3488,6 +3393,34 @@ parameter which holds the data for the CUDA kernel to be executed
 !*/
 void cuda_sim::gpgpu_cuda_ptx_sim_main_func(kernel_info_t &kernel,
                                             bool openCL) {
+  if (flash_gpgpu_sim::sass::runtime_timing_requested())
+    flash_gpgpu_sim::panic(
+        "SASS timing kernel was incorrectly routed to functional launch");
+  if (flash_gpgpu_sim::sass::runtime_functional_requested()) {
+    if (openCL)
+      flash_gpgpu_sim::panic(
+          "execution-driven SASS functional mode does not support OpenCL");
+    const std::string kernel_name = kernel.name();
+    printf(
+        "FlashGPU-Sim SASS: Performing strict functional execution of %s "
+        "(no PTX fallback)...\n",
+        kernel_name.c_str());
+    const flash_gpgpu_sim::sass::functional_grid_summary summary =
+        flash_gpgpu_sim::sass::execute_runtime_functional_grid(
+            kernel, gpgpu_ctx->the_gpgpusim->g_the_gpu->get_global_memory(),
+            flash_gpgpu_sim::sass::runtime_sassir_path(
+                kernel_name, kernel.get_sass_fatbin_handle()));
+    printf(
+        "FlashGPU-Sim SASS: Done %s: %llu CTAs, %llu warps, %llu "
+        "dynamic instructions.\n",
+        kernel_name.c_str(),
+        static_cast<unsigned long long>(summary.ctas_executed),
+        static_cast<unsigned long long>(summary.warps_executed),
+        static_cast<unsigned long long>(summary.instructions_executed));
+    gpgpu_ctx->the_gpgpusim->g_stream_manager->register_finished_kernel(
+        kernel.get_uid());
+    return;
+  }
   printf(
       "GPGPU-Sim: Performing Functional Simulation, executing kernel %s...\n",
       kernel.name().c_str());

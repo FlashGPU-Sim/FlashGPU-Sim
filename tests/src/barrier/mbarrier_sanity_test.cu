@@ -493,8 +493,8 @@ TEST_F(MBarrierSanityTest, Arrive) {
 }
 
 TEST_F(MBarrierSanityTest, HintAndActiveMask) {
-  cudaDeviceProp props{};
-  ASSERT_EQ(cudaGetDeviceProperties(&props, 0), cudaSuccess);
+  int clock_rate_khz = 0;
+  ASSERT_EQ(cudaDeviceGetAttribute(&clock_rate_khz, cudaDevAttrClockRate, 0), cudaSuccess);
   for (uint32_t hint_ns : {0u, 1000u}) {
     SCOPED_TRACE(hint_ns);
     ResetOutput();
@@ -520,7 +520,7 @@ TEST_F(MBarrierSanityTest, HintAndActiveMask) {
     } else {
       ASSERT_EQ(sleeping.size(), 1u);
       const uint64_t expected_cycles =
-          (uint64_t(hint_ns) * props.clockRate + 999999) / 1000000;
+          (uint64_t(hint_ns) * clock_rate_khz + 999999) / 1000000;
       EXPECT_EQ(TraceNumber(completed[0], "deadline") -
                     TraceNumber(sleeping[0], "cycle"), expected_cycles);
       EXPECT_EQ(TraceNumber(completed[0], "cycle"),
@@ -593,6 +593,11 @@ TEST_F(MBarrierSanityTest, CompletionDuringSuspension) {
 }
 
 TEST_F(MBarrierSanityTest, TMA) {
+  if (!flashgpu::test::running_on_native_gpu() &&
+      !flashgpu::test::running_with_sass_frontend()) {
+    GTEST_SKIP() << "TMA mbarrier sanity requires native GPU or strict SASS "
+                    "functional mode.";
+  }
   ResetOutput();
 
   const size_t shared_memory_bytes =

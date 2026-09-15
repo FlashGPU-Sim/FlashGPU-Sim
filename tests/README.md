@@ -34,6 +34,27 @@ Toolkit or GPU feature and report a GoogleTest skip when unavailable.
 
 A positional filter provides a substring search. `list` shows supported
 selections; choosing a profile expands its available modes.
+```text
+architecture manifest
+└── selected test sources
+    └── test group / binary
+        └── GoogleTest suite
+            └── GoogleTest case
+```
+
+The public selectors are:
+
+- `--arch`: an architecture manifest, currently `sm90` or `sm120`;
+- `--group`: the first directory component below `tests/src/`;
+- `--profile`: an optional build/run profile for a complex test group;
+- `--mode`: an optional compile-time variant inside a profile;
+- `--binary`: an exact executable basename inside a multi-binary profile; and
+- `--gtest-filter`: an exact GoogleTest filter expression.
+
+A positional filter remains available as a convenient substring search.
+
+`list` uses progressive discovery: without `--profile` it stops at the profile
+level; selecting one profile expands its compile-time modes.
 
 ```bash
 ./tests/run_tests.py list --arch sm90 --group fa3 --profile breakdown
@@ -55,6 +76,29 @@ GoogleTest case list.
 ./tests/run_tests.py run --arch sm120 --group integration \
   --gtest-filter 'CudaVectorAddTest.BasicVectorAddition'
 ```
+
+For the execution-driven SASS frontend, ask the runner to decode the exact
+selected executable:
+
+```bash
+./tests/run_tests.py run \
+  --arch sm120 \
+  --group integration \
+  --gtest-filter 'CudaVectorAddTest.*' \
+  --sass
+```
+
+`--sass` is a strict functional mode, not a trace replay or a request to
+reorder PTX. The exact registered cubin is decoded into a per-run `.sassir` dump;
+the test process skips PTX registration and PDOM analysis. A missing kernel or
+unsupported SASS instruction fails the launch without PTX fallback. The
+low-level `--sassir` override remains available for decoder debugging,
+but declarative suites never store generated manifest paths.
+For a profile whose binaries register the same GTest name, use `--binary` to
+select one exact executable. Declarative strict-SASS suites support the same
+selector through a per-case `"binary"` field.
+
+## CI
 
 ## Build-Only Selections
 

@@ -1,0 +1,25 @@
+{
+  "architecture": "sm90",
+  "config": "SM90_H100_SASS_FRONTEND",
+  "group": "fa3",
+  "profile": "small",
+  "expected_tests": 4,
+  "cases": [
+    {
+      "gtest_filter": "Fa3PrefillFp16SmallTest.H32D64FullB32S256",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "Fa3PrefillFp16SmallTest.H32D64CausalB32S256",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "Fa3PrefillFp16SmallTest.H16D128FullB32S256",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "Fa3PrefillFp16SmallTest.H16D128CausalB32S256",
+      "expected_tests": 1
+    }
+  ]
+}
