@@ -10,14 +10,21 @@ __global__ void wrapped_shared_atomic_address_kernel(uint32_t *output) {
   value = 0;
 
   uint32_t old = 0;
+  // CUDA's shared allocation need not start at offset zero (sm_120a may
+  // reserve a prefix). Force a 32-bit carry around this variable's actual
+  // offset, so PTX and the assembled SASS access the same shared object.
+  const uint32_t shared_address =
+      static_cast<uint32_t>(
+          __cvta_generic_to_shared(const_cast<uint32_t *>(&value)));
   asm volatile(
       "{\n\t"
       ".reg .u32 wrapped_address;\n\t"
-      "add.u32 wrapped_address, 0xffffffff, 1;\n\t"
+      "add.u32 wrapped_address, %1, 0xffffffff;\n\t"
+      "add.u32 wrapped_address, wrapped_address, 1;\n\t"
       "atom.shared.add.u32 %0, [wrapped_address], 7;\n\t"
       "}"
       : "=r"(old)
-      :
+      : "r"(shared_address)
       : "memory");
   output[0] = value;
   output[1] = old;

@@ -326,6 +326,8 @@ def check_offline_compilation(tracking_dir, cache_dir):
         assert "validate_tensor_output" not in harness
         assert "Validating outputs" not in harness
         assert "math.h" not in harness
+        assert "maybe_dump_u64_arg(d_arg0, arg0_size, 0);" in harness
+        assert "TRITON_TRACE_DUMP_U64_ARG" in harness
         assert (launcher_dir / "kernel_tma_gemm_launch1_Makefile").is_file()
         assert (launcher_dir / "kernel_tma_gemm_launch1_kernel.ptx").is_file()
         assert (launcher_dir / "kernel_tma_gemm_launch1_kernel.cubin").is_file()

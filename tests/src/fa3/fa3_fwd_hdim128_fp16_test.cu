@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -434,7 +435,8 @@ static void RunFa3PrefillBackwardSmokeCase(const Fa3PrefillCase &cfg) {
 #endif
 
 #if !defined(FA3_STANDARD_BACKWARD_TU)
-static void RunFa3PrefillTuningCase(const Fa3PrefillCase &cfg) {
+static void RunFa3PrefillTuningCase(const Fa3PrefillCase &cfg,
+                                  bool validate_reference = false) {
   SCOPED_TRACE(::testing::Message()
                << "case=" << cfg.name
                << " batch=" << cfg.batch
@@ -445,9 +447,16 @@ static void RunFa3PrefillTuningCase(const Fa3PrefillCase &cfg) {
 
   ASSERT_TRUE(is_valid_fa3_prefill_tuning_case(cfg));
 
-  Fa3RunResult result = RunFa3ForwardKernel(cfg);
+  Fa3RunResult result = RunFa3ForwardKernel(cfg, validate_reference);
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
+  if (validate_reference) {
+    ASSERT_TRUE(result.reference_checked);
+    ExpectFa3TensorMatch("O", result.output_comparison);
+    ExpectFa3TensorMatch("LSE", result.lse_comparison);
+    if (!::testing::Test::HasFailure())
+      std::printf("FA3 reference PASS: %s O and LSE\n", cfg.name);
+  }
 }
 #endif
 
@@ -626,7 +635,7 @@ FA3_STANDARD_SMALL_CASE_LIST(FA3_PREFILL_BWD_SMALL_TEST)
 #define FA3_PREFILL_MEDIUM_TEST(name, batch, seqlen, heads, head_dim, causal) \
   TEST_F(Fa3PrefillFp16MediumTest, name) {                                    \
     RunFa3PrefillTuningCase(                                                  \
-        Fa3PrefillCase{#name, batch, seqlen, heads, head_dim, causal});        \
+        Fa3PrefillCase{#name, batch, seqlen, heads, head_dim, causal}, true);  \
   }
 
 FA3_STANDARD_MEDIUM_CASE_LIST(FA3_PREFILL_MEDIUM_TEST)

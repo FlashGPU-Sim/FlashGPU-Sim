@@ -115,6 +115,7 @@ struct inct_config {
   unsigned request_output_sectors_per_cycle;
   unsigned reply_input_sectors_per_cycle;
   unsigned reply_output_sectors_per_cycle;
+  unsigned reply_output_grants_per_cycle = 1;
   unsigned tma_request_multicast;
   unsigned tma_response_multicast;
 };
@@ -233,6 +234,7 @@ class xbar_router {
   bool allow_multi_grant;
   unsigned input_sector_width;
   unsigned output_sector_width;
+  unsigned output_grants_per_cycle;
   bool tma_request_multicast;
   bool tma_response_multicast;
   mutable std::mutex tma_multicast_mutex;

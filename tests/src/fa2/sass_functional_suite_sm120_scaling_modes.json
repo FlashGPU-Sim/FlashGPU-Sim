@@ -1,0 +1,33 @@
+{
+  "architecture": "sm120",
+  "group": "fa2",
+  "profile": "scaling",
+  "expected_tests": 50,
+  "cases": [
+    {
+      "mode": "nothing",
+      "gtest_filter": "Fa2PrefillFp16ScalingTest.H1D128*B1S*",
+      "expected_tests": 10
+    },
+    {
+      "mode": "only_cp_async",
+      "gtest_filter": "Fa2PrefillFp16ScalingTest.H1D128*B1S*",
+      "expected_tests": 10
+    },
+    {
+      "mode": "only_softmax",
+      "gtest_filter": "Fa2PrefillFp16ScalingTest.H1D128*B1S*",
+      "expected_tests": 10
+    },
+    {
+      "mode": "only_mma",
+      "gtest_filter": "Fa2PrefillFp16ScalingTest.H1D128*B1S*",
+      "expected_tests": 10
+    },
+    {
+      "mode": "softmax_mma",
+      "gtest_filter": "Fa2PrefillFp16ScalingTest.H1D128*B1S*",
+      "expected_tests": 10
+    }
+  ]
+}

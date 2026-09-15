@@ -2,10 +2,10 @@
 
 #include "tensormap.h"
 
+#include "panic.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <stdexcept>
 #include <type_traits>
 
 #include "../../cuda-sim/half.h"
@@ -92,7 +92,7 @@ void reduce_integer(tma_reduction_op_t op, void *dst, const void *src,
                               static_cast<unsigned_t>(src_value));
       break;
     default:
-      throw std::invalid_argument("invalid integer TMA reduction operation");
+      flash_gpgpu_sim::panic("invalid integer TMA reduction operation");
     }
     store_element(dst, i, result);
   }
@@ -136,7 +136,7 @@ void reduce_f16_like(tma_reduction_op_t op, bool bf16, void *dst,
       result = std::fmax(dst_value, src_value);
       break;
     default:
-      throw std::invalid_argument("invalid 16-bit TMA reduction operation");
+      flash_gpgpu_sim::panic("invalid 16-bit TMA reduction operation");
     }
     const uint16_t result_bits =
         bf16 ? f32_to_bf16(result) : f32_to_f16(result);
@@ -207,7 +207,7 @@ void apply_tma_tensor_reduction(tma_reduction_op_t op,
                                 uint32_t tensor_data_type, void *dst,
                                 const void *src, size_t size_in_bytes) {
   if (!tma_tensor_reduction_supported(op, tensor_data_type))
-    throw std::invalid_argument("unsupported TMA tensor reduction type");
+    flash_gpgpu_sim::panic("unsupported TMA tensor reduction type");
 
   const size_t element_size =
       tensor_data_type == TMA_DTYPE_F16 || tensor_data_type == TMA_DTYPE_BF16
@@ -217,7 +217,7 @@ void apply_tma_tensor_reduction(tma_reduction_op_t op,
                  ? sizeof(uint64_t)
                  : sizeof(uint32_t));
   if (size_in_bytes % element_size != 0)
-    throw std::invalid_argument("partial element in TMA tensor reduction");
+    flash_gpgpu_sim::panic("partial element in TMA tensor reduction");
 
   switch (tensor_data_type) {
   case TMA_DTYPE_U32:
@@ -244,6 +244,6 @@ void apply_tma_tensor_reduction(tma_reduction_op_t op,
                    size_in_bytes / sizeof(float));
     return;
   default:
-    throw std::invalid_argument("unsupported TMA tensor reduction type");
+    flash_gpgpu_sim::panic("unsupported TMA tensor reduction type");
   }
 }

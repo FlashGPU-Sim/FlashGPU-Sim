@@ -24,8 +24,8 @@ TEST(CudaEventTiming, RepeatedSmallLaunchRetainsConfiguredDelay) {
     SKIP_WITH_REASON("Set the simulator launch-delay expectation");
   const unsigned latency = std::strtoul(expected, nullptr, 10);
   ASSERT_GT(latency, 0u);
-  cudaDeviceProp prop{};
-  ASSERT_EQ(cudaGetDeviceProperties(&prop, 0), cudaSuccess);
+  int clock_rate_khz = 0;
+  ASSERT_EQ(cudaDeviceGetAttribute(&clock_rate_khz, cudaDevAttrClockRate, 0), cudaSuccess);
   unsigned long long *span = nullptr;
   ASSERT_EQ(cudaMalloc(&span, 4 * sizeof(*span)), cudaSuccess);
   cudaEvent_t begin, end;
@@ -45,7 +45,7 @@ TEST(CudaEventTiming, RepeatedSmallLaunchRetainsConfiguredDelay) {
     ASSERT_EQ(cudaEventSynchronize(end), cudaSuccess);
     float ms = 0;
     ASSERT_EQ(cudaEventElapsedTime(&ms, begin, end), cudaSuccess);
-    EXPECT_GE(ms * prop.clockRate, latency) << "launch " << repeat;
+    EXPECT_GE(ms * clock_rate_khz, latency) << "launch " << repeat;
   }
   EXPECT_EQ(cudaEventDestroy(begin), cudaSuccess);
   EXPECT_EQ(cudaEventDestroy(end), cudaSuccess);
@@ -53,9 +53,9 @@ TEST(CudaEventTiming, RepeatedSmallLaunchRetainsConfiguredDelay) {
 }
 
 TEST(CudaEventTiming, DeviceCyclesAndRerecord) {
-  cudaDeviceProp prop{};
-  ASSERT_EQ(cudaGetDeviceProperties(&prop, 0), cudaSuccess);
-  ASSERT_GT(prop.clockRate, 0);
+  int clock_rate_khz = 0;
+  ASSERT_EQ(cudaDeviceGetAttribute(&clock_rate_khz, cudaDevAttrClockRate, 0), cudaSuccess);
+  ASSERT_GT(clock_rate_khz, 0);
   unsigned long long *device_span = nullptr;
   ASSERT_EQ(cudaMalloc(&device_span, sizeof(*device_span)), cudaSuccess);
   cudaEvent_t begin, end;
@@ -71,7 +71,7 @@ TEST(CudaEventTiming, DeviceCyclesAndRerecord) {
     unsigned long long span = 0;
     ASSERT_EQ(cudaMemcpy(&span, device_span, sizeof(span),
                          cudaMemcpyDeviceToHost), cudaSuccess);
-    const double event_cycles = ms * prop.clockRate;
+    const double event_cycles = ms * clock_rate_khz;
     // Events include kernel setup/drain; host simulation time must not enter.
     EXPECT_GE(event_cycles, static_cast<double>(span));
     EXPECT_LT(event_cycles, static_cast<double>(span) + 10000);

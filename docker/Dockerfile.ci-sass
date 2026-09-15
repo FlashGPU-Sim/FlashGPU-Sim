@@ -1,0 +1,21 @@
+# Reuse the pinned CI userspace; add the compiler used by the SASS baseline.
+ARG CI_IMAGE
+FROM ${CI_IMAGE}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cuda-nvcc-13-3=13.3.73-1 \
+    cuda-crt-13-3=13.3.73-1 \
+    libnvvm-13-3=13.3.73-1 \
+    libnvptxcompiler-13-3=13.3.73-1 \
+    cuda-cudart-13-3=13.3.29-1 \
+    cuda-cudart-dev-13-3=13.3.29-1 \
+    cuda-driver-dev-13-3=13.3.29-1 \
+    cuda-cuobjdump-13-3=13.3.73-1 \
+    cuda-nvdisasm-13-3=13.3.73-1 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CUDA_INSTALL_PATH=/usr/local/cuda-13.3
+ENV PTXAS_CUDA_INSTALL_PATH=${CUDA_INSTALL_PATH}
+ENV PATH="${CUDA_INSTALL_PATH}/bin:${PATH}"
+ENV LD_LIBRARY_PATH="${CUDA_INSTALL_PATH}/lib64:${LD_LIBRARY_PATH}"
+ENV LIBRARY_PATH="${CUDA_INSTALL_PATH}/lib64/stubs"

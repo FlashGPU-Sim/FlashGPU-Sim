@@ -5,6 +5,7 @@
 #include <list>
 #include <map>
 #include <string>
+#include "gpgpu-sim/flash/frontend/launch_types.h"
 
 #ifdef FLASH_GPGPU_SIM_OMP
 #include <mutex>
@@ -115,12 +116,16 @@ inline void step_next_cta(dim3 &cta, const dim3 &grid, const dim3 &cluster,
  * ! shader_core_ctx::register_cta_thread_exit() ->
  * ! kernel->dec_running()
  *
- * ! Our solution so far is to use a mutex in dec_running()...
+ * ! dec_running() returns the zero transition while holding the mutex so only
+ * ! one simulator thread can publish kernel completion.
  */
 class kernel_info_t {
 public:
   kernel_info_t(dim3 gridDim, dim3 blockDim, class function_info *entry,
                 unsigned long long streamID);
+  kernel_info_t(dim3 gridDim, dim3 blockDim, std::string kernel_name,
+                class gpgpu_context *context, unsigned long long streamID,
+                unsigned sass_fatbin_handle);
   kernel_info_t(
       dim3 gridDim, dim3 blockDim, class function_info *entry,
       std::map<std::string, const struct cudaArray *> nameToCudaArray,
@@ -128,14 +133,20 @@ public:
   ~kernel_info_t();
 
   void inc_running() { m_num_cores_running++; }
-  void dec_running() {
+  bool dec_running() {
 #ifdef FLASH_GPGPU_SIM_OMP
     std::unique_lock<std::shared_mutex> lock(m_mutex);
 #endif
     assert(m_num_cores_running > 0);
     m_num_cores_running--;
+    return m_num_cores_running == 0;
   }
-  bool running() const { return m_num_cores_running > 0; }
+  bool running() const {
+#ifdef FLASH_GPGPU_SIM_OMP
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+#endif
+    return m_num_cores_running > 0;
+  }
   bool done() const { return no_more_ctas_to_run() && !running(); }
   class function_info *entry() { return m_kernel_entry; }
   const class function_info *entry() const { return m_kernel_entry; }
@@ -183,6 +194,17 @@ public:
   unsigned long long get_streamID() const { return m_streamID; }
   std::string get_name() const { return name(); }
   std::string name() const;
+  unsigned get_sass_fatbin_handle() const { return m_sass_fatbin_handle; }
+  flash_gpgpu_sim::frontend_kind frontend() const { return m_frontend; }
+  bool uses_sass_frontend() const {
+    return frontend() == flash_gpgpu_sim::frontend_kind::sass;
+  }
+  void set_resource_usage(flash_gpgpu_sim::kernel_resource_usage resources);
+  flash_gpgpu_sim::kernel_resource_usage resource_usage() const;
+  unsigned registers_per_thread() const;
+  unsigned static_shared_memory() const;
+  unsigned local_memory_per_thread() const;
+  unsigned stack_size_per_thread() const;
 
   std::list<class ptx_thread_info *> &active_threads() {
     return m_active_threads;
@@ -211,6 +233,11 @@ private:
   void operator=(const kernel_info_t &); // disable copy operator
 
   class function_info *m_kernel_entry;
+  std::string m_kernel_name;
+  unsigned m_sass_fatbin_handle = 0;
+  flash_gpgpu_sim::frontend_kind m_frontend = flash_gpgpu_sim::frontend_kind::ptx;
+  bool m_has_resources = false;
+  flash_gpgpu_sim::kernel_resource_usage m_resources;
 
   unsigned m_uid; // Kernel ID
   unsigned long long m_streamID;
@@ -313,12 +340,12 @@ public:
   }
 
 private:
-  bool m_is_cluster_launch;
-  dim3 m_cluster_dim;
-  unsigned m_ctas_per_cluster;
-  unsigned m_open_tb_phys_cluster;
-  unsigned m_open_tb_cluster_group;
-  unsigned m_open_tb_remaining;
+  bool m_is_cluster_launch = false;
+  dim3 m_cluster_dim = dim3(0, 0, 0);
+  unsigned m_ctas_per_cluster = 1;
+  unsigned m_open_tb_phys_cluster = (unsigned)-1;
+  unsigned m_open_tb_cluster_group = (unsigned)-1;
+  unsigned m_open_tb_remaining = 0;
 };
 
 #endif // #ifndef KERNEL_INFO_INCLUDED

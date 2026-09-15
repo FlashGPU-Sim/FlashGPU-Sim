@@ -45,7 +45,11 @@ static int init_cuda(CUcontext* ctx) {
     if (cuInit(0) != CUDA_SUCCESS) return 1;
     CUdevice dev;
     if (cuDeviceGet(&dev, 0) != CUDA_SUCCESS) return 1;
+#if CUDA_VERSION >= 13000
+    return cuCtxCreate(ctx, nullptr, 0, dev) == CUDA_SUCCESS ? 0 : 1;
+#else
     return cuCtxCreate(ctx, 0, dev) == CUDA_SUCCESS ? 0 : 1;
+#endif
 }
 
 // Get directory of the executable

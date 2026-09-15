@@ -1,0 +1,31 @@
+{
+  "architecture": "sm120",
+  "group": "integration",
+  "expected_tests": 23,
+  "cases": [
+    {
+      "gtest_filter": "AddressOperandIntegrationTest.*",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "CpAsyncSrcSizeTest.*",
+      "expected_tests": 8
+    },
+    {
+      "gtest_filter": "LdMatrixX1Test.*:LdMatrixX2Test.*:LdMatrixX4Test.*:StMatrixX1Test.*:StMatrixX2Test.*:StMatrixX4Test.*:LdMatrixM8N8TransTest.*:StMatrixM8N8TransTest.*",
+      "expected_tests": 8
+    },
+    {
+      "gtest_filter": "SharedMemoryOptinTest.*",
+      "expected_tests": 3
+    },
+    {
+      "gtest_filter": "CudaVectorAddTest.*",
+      "expected_tests": 2
+    },
+    {
+      "gtest_filter": "VectorOperandIntegrationTest.*",
+      "expected_tests": 1
+    }
+  ]
+}

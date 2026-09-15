@@ -1,0 +1,67 @@
+{
+  "architecture": "sm90",
+  "group": "wgmma",
+  "expected_tests": 25,
+  "cases": [
+    {
+      "gtest_filter": "WgmmaF16M64N8K16IntegrationTest.*-WgmmaF16M64N8K16IntegrationTest.ThreeWarpgroupsLaunch12WarpsTest",
+      "expected_tests": 8
+    },
+    {
+      "gtest_filter": "WgmmaF16M64N8K16IntegrationTest.ThreeWarpgroupsLaunch12WarpsTest",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "WgmmaF16M64N64K16SsFa3IntegrationTest.KMajorOperandsMatchReference",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "WgmmaF16M64N64K16SsFa3IntegrationTest.MnMajorBOperandMatchesReference",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "WgmmaBf16M64N8K16IntegrationTest.*",
+      "expected_tests": 2
+    },
+    {
+      "gtest_filter": "WgmmaTf32M64N8K8IntegrationTest.*",
+      "expected_tests": 2
+    },
+    {
+      "gtest_filter": "WgmmaFp8M64N8K32IntegrationTest.E4M3E4M3RandomValuesTest",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "WgmmaFp8M64N8K32IntegrationTest.E5M2E5M2RandomValuesTest",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "WgmmaFp8M64N8K32IntegrationTest.E4M3E5M2RandomValuesTest",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "WgmmaFp8M64N8K32IntegrationTest.E5M2E4M3RandomValuesScaleDZeroTest",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "WgmmaInt8M64N8K32IntegrationTest.S8S8RandomValuesTest",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "WgmmaInt8M64N8K32IntegrationTest.U8U8RandomValuesScaleDZeroTest",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "WgmmaInt8M64N8K32IntegrationTest.S8U8RandomValuesTest",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "WgmmaInt8M64N8K32IntegrationTest.U8S8RandomValuesTest",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "WgmmaB1M64N8K256IntegrationTest.*",
+      "expected_tests": 2
+    }
+  ]
+}
