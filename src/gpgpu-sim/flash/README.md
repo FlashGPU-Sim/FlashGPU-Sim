@@ -8,6 +8,7 @@ The `flash/` namespace provides:
 - **Tensor Core Support**: PTX MMA (Matrix Multiply-Accumulate) instruction implementations
 - **Advanced GPU Features**: Implementations for modern GPU architectures (SM75+)
 - **Isolated Extensions**: Clear separation from core GPGPU-Sim to avoid breaking existing functionality
+- **Experimental SASS Frontend**: Static SM120 SASS decoding and an execution-driven frontend boundary in [`sass/`](sass/README.md)
 
 ## Key Files
 

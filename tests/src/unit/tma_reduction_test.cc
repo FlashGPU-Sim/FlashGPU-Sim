@@ -3,7 +3,6 @@
 #include <array>
 #include <cstdint>
 #include <limits>
-#include <stdexcept>
 
 #include "gpgpu-sim/flash/tensormap.h"
 #include "gpgpu-sim/flash/tma_reduction.h"
@@ -118,10 +117,10 @@ TEST(TmaTensorReductionTest, AppliesF16AndBf16Operations) {
 TEST(TmaTensorReductionTest, RejectsUnsupportedCombination) {
   float dst = 1.0f;
   const float src = 2.0f;
-  EXPECT_THROW(
+  EXPECT_DEATH(
       apply_tma_tensor_reduction(tma_reduction_op_t::MIN, TMA_DTYPE_F32, &dst,
                                  &src, sizeof(dst)),
-      std::invalid_argument);
+      "unsupported TMA tensor reduction type");
 }
 
 }  // namespace

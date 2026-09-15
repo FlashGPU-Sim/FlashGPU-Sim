@@ -42,6 +42,7 @@
 #include <deque>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <utility>
 #include <vector>
@@ -59,6 +60,12 @@
 #include "traffic_breakdown.h"
 #include "flash/mbarrier.h"
 #include "flash/bulk_group.h"
+#include "flash/cta_barrier_timing.h"
+#include "flash/instruction_dependency_tracker.h"
+#include "flash/mio_ldsm_timing.h"
+#include "flash/native_register_file_timing.h"
+#include "flash/shared_proxy_timing.h"
+#include "flash/tensor_core_admission_timing.h"
 #include "flash/tma.h"
 #include "flash/wgmma/tensor_wgmma.h"
 #include "flash/tma.h"
@@ -80,6 +87,13 @@
 
 class gpgpu_context;
 class memory_stats_manager_t;
+namespace flash_gpgpu_sim {
+class execution_frontend;
+class ptx_shader_frontend;
+namespace sass {
+class shader_frontend;
+}
+} // namespace flash_gpgpu_sim
 
 enum exec_unit_type_t {
   NONE = 0,
@@ -128,6 +142,7 @@ class shd_warp_t {
     m_membar = false;
     m_done_exit = true;
     m_last_fetch = 0;
+    m_instruction_fetch_ready_cycle = 0;
     m_next = 0;
     m_streamID = (unsigned long long)-1;
 
@@ -143,6 +158,8 @@ class shd_warp_t {
 
     // Ni: Set waiting to false
     m_waiting_ldgsts = false;
+    m_instruction_dependencies.reset();
+    m_instruction_fetch_ready_cycle = 0;
 
     // Ni: Clear m_ldgdepbar_buf
     for (unsigned i = 0; i < m_ldgdepbar_buf.size(); i++) {
@@ -176,6 +193,7 @@ class shd_warp_t {
 
     // Ni: Set waiting to false
     m_waiting_ldgsts = false;
+    m_instruction_dependencies.reset();
 
     // Ni: Clear m_ldgdepbar_buf
     for (unsigned i = 0; i < m_ldgdepbar_buf.size(); i++) {
@@ -203,6 +221,13 @@ class shd_warp_t {
 
   void set_last_fetch(unsigned long long sim_cycle) {
     m_last_fetch = sim_cycle;
+  }
+  bool instruction_fetch_ready(uint64_t cycle) const {
+    return cycle >= m_instruction_fetch_ready_cycle;
+  }
+  void delay_instruction_fetch(uint64_t cycle, unsigned delay) {
+    m_instruction_fetch_ready_cycle =
+        std::max(m_instruction_fetch_ready_cycle, cycle + delay);
   }
 
   unsigned get_n_atomic() const { return m_n_atomic; }
@@ -285,6 +310,51 @@ class shd_warp_t {
   unsigned get_dynamic_warp_id() const { return m_dynamic_warp_id; }
   unsigned get_warp_id() const { return m_warp_id; }
 
+  bool instruction_dependency_ready(const inst_t &inst,
+                                    uint64_t cycle) {
+    return m_instruction_dependencies.ready(inst.get_dependency_control(),
+                                            cycle, inst.op);
+  }
+  bool instruction_control_delay_ready(uint64_t cycle) const {
+    return m_instruction_dependencies.control_delay_ready(cycle);
+  }
+  uint8_t instruction_pending_wait_mask(const inst_t &inst,
+                                        uint64_t cycle) {
+    return m_instruction_dependencies.pending_wait_mask(
+        inst.get_dependency_control(), cycle, inst.op);
+  }
+  void instruction_dependency_issue(const warp_inst_t &inst,
+                                    uint64_t cycle) {
+    m_instruction_dependencies.issue(inst.get_dependency_control(),
+                                     inst.get_uid(),
+                                     inst.get_active_mask().any(), cycle);
+  }
+  void instruction_dependency_hold_write_barrier_until(
+      const warp_inst_t &inst, uint64_t visible_cycle) {
+    m_instruction_dependencies.hold_write_barrier_until(
+        inst.get_dependency_control(), inst.get_uid(), visible_cycle);
+  }
+  void instruction_dependency_begin_service(
+      const warp_inst_t &inst, uint64_t cycle,
+      unsigned sfu_to_sp_forwarding_latency,
+      unsigned variable_read_barrier_latency) {
+    m_instruction_dependencies.begin_service(
+        inst.get_dependency_control(), inst.get_uid(), inst.op, cycle,
+        sfu_to_sp_forwarding_latency, variable_read_barrier_latency);
+  }
+  void instruction_dependency_operands_read(const warp_inst_t &inst,
+                                            uint64_t cycle,
+                                            bool defer_read_barrier) {
+    m_instruction_dependencies.operands_read(inst.get_dependency_control(),
+                                             inst.get_uid(), cycle,
+                                             defer_read_barrier);
+  }
+  void instruction_dependency_complete(const warp_inst_t &inst,
+                                       uint64_t cycle) {
+    m_instruction_dependencies.complete(inst.get_dependency_control(),
+                                        inst.get_uid(), cycle);
+  }
+
   class shader_core_ctx *get_shader() { return m_shader; }
 
  private:
@@ -322,10 +392,12 @@ class shd_warp_t {
                      // this warp
 
   unsigned long long m_last_fetch;
+  uint64_t m_instruction_fetch_ready_cycle;
 
   unsigned m_stores_outstanding;  // number of store requests sent but not yet
                                   // acknowledged
   unsigned m_inst_in_pipeline;
+  flash_gpgpu_sim::instruction_dependency_tracker m_instruction_dependencies;
 
   // Jin: cdp support
  public:
@@ -479,7 +551,8 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   bool get_wgmma_warpgroup(unsigned warp_id, const warp_inst_t *inst,
                            unsigned *warp_ids, unsigned *count);
   bool wgmma_warpgroup_ready(const unsigned *warp_ids, unsigned count,
-                             const warp_inst_t *inst);
+                              const warp_inst_t *inst,
+                              const char **reason = NULL);
   unsigned get_wgmma_wait_group_num(const warp_inst_t *inst) const;
   inline int get_sid() const;
 
@@ -998,6 +1071,8 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     const active_mask_t &get_active_mask() const {
       return m_warp->get_active_mask();
     }
+    const warp_inst_t &get_warp_inst() const { return *m_warp; }
+    bool operands_ready() const { return m_not_ready.none(); }
     unsigned get_sp_op() const { return m_warp->sp_op; }
     unsigned get_id() const { return m_cuid; }  // returns CU hw id
     unsigned get_reg_id() const { return m_reg_id; }
@@ -1109,6 +1184,7 @@ enum barrier_wait_type_t {
   BARRIER_WAIT_BULK_GROUP,   // cp.async.bulk.wait_group (TMA)
   BARRIER_WAIT_CP_ASYNC_GROUP,  // cp.async.wait_group
   BARRIER_WAIT_WGMMA_GROUP,  // wgmma.wait_group
+  BARRIER_WAIT_WGMMA_ARRIVAL,  // warp arrived before its WGMMA peers
 };
 
 static inline const char *barrier_wait_type_name(barrier_wait_type_t type) {
@@ -1123,6 +1199,8 @@ static inline const char *barrier_wait_type_name(barrier_wait_type_t type) {
     return "cp_async_group";
   case BARRIER_WAIT_WGMMA_GROUP:
     return "wgmma_group";
+  case BARRIER_WAIT_WGMMA_ARRIVAL:
+    return "wgmma_arrival";
   }
   return "unknown";
 }
@@ -1156,8 +1234,7 @@ class barrier_set_t {
 
   // individual warp hits mbarrier
   void warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
-                             const ptx_instruction *static_inst,
-                             const warp_inst_t *dynamic_inst,
+                             const warp_inst_t &inst,
                              const active_mask_t &active_mask);
   // complete_tx for TMA usages
   void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
@@ -1177,6 +1254,7 @@ class barrier_set_t {
   void complete_bulk_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
   void wait_bulk_group(unsigned cta_id, unsigned warp_id, unsigned latest_group_num);
   void commit_bulk_group(unsigned cta_id, unsigned warp_id);
+  bool has_pending_bulk_group(unsigned cta_id, unsigned warp_id) const;
   void cleanup_cta_bulk_groups(unsigned cta_id);
 
   // Ordinary cp.async wait_group uses this only as a scheduler wait state.
@@ -1186,6 +1264,12 @@ class barrier_set_t {
   // WGMMA wait_group uses the barrier bitset only as a scheduler wait state.
   void set_wgmma_waiting_warps(const unsigned *warp_ids, unsigned count);
   void release_wgmma_warps(const std::vector<unsigned> &released_warps);
+
+  // HGMMA is a warpgroup rendezvous, but the four constituent warps arrive
+  // through their own schedulers. Keep early arrivals dormant without
+  // advancing their architectural PC until the fourth warp arrives.
+  void wait_wgmma_arrival(unsigned warp_id);
+  void release_wgmma_arrival(unsigned warp_id);
 
   // warp reaches exit
   void warp_exit(unsigned warp_id);
@@ -1211,7 +1295,7 @@ class barrier_set_t {
   std::vector<unsigned> m_warp_named_barrier_id;
   warp_set_t named_barrier_waiters(unsigned bar_id,
                                    const warp_set_t &participants) const;
-  void clear_named_barrier_waiters(const warp_set_t &waiters);
+  void release_named_barrier_waiters(const warp_set_t &waiters);
   void assert_warp_waiting(unsigned warp_id, barrier_wait_type_t expected_type,
                            const char *reason) const {
     bool valid = warp_id < m_warp_barrier_type.size();
@@ -1240,7 +1324,7 @@ class barrier_set_t {
   flash_gpgpu_sim::mbarrier_manager_t m_mbarrier_manager;
   flash_gpgpu_sim::bulk_group_manager_t m_bulk_group_manager;
 
-  // Delayed warp release queue for mbarrier try_wait latency
+  // Delayed warp release queue for CTA barriers and asynchronous wait groups.
   struct pending_warp_release_t {
     unsigned remaining;
     int warp_id;
@@ -1571,23 +1655,7 @@ class ldst_unit : public pipelined_simd_unit {
   // accessors
   virtual unsigned clock_multiplier() const;
 
-  virtual bool can_issue(const warp_inst_t &inst) const {
-    switch (inst.op) {
-      case LOAD_OP:
-        break;
-      case TENSOR_CORE_LOAD_OP:
-        break;
-      case STORE_OP:
-        break;
-      case TENSOR_CORE_STORE_OP:
-        break;
-      case MEMORY_BARRIER_OP:
-        break;
-      default:
-        return false;
-    }
-    return m_dispatch_reg->empty();
-  }
+  virtual bool can_issue(const warp_inst_t &inst) const;
 
   virtual void active_lanes_in_pipeline();
   virtual bool stallable() const { return true; }
@@ -1619,6 +1687,8 @@ class ldst_unit : public pipelined_simd_unit {
             unsigned sid, unsigned tpc);
 
  protected:
+  bool ldsm_queue_enabled_for(const warp_inst_t &inst) const;
+
   bool shared_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
                     mem_stage_access_type &fail_type);
   bool constant_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
@@ -1665,6 +1735,7 @@ class ldst_unit : public pipelined_simd_unit {
   enum mem_stage_stall_type m_mem_rc;
 
   shader_core_stats *m_stats;
+  std::deque<warp_inst_t> m_ldsm_issue_queue;
 
   // for debugging
   unsigned long long m_last_inst_gpu_sim_cycle;
@@ -1707,6 +1778,7 @@ const char *const pipeline_stage_name_decode[] = {
 
 struct specialized_unit_params {
   unsigned latency;
+  unsigned initiation;
   unsigned num_units;
   unsigned id_oc_spec_reg_width;
   unsigned oc_ex_spec_reg_width;
@@ -1842,9 +1914,26 @@ class shader_core_config : public core_config {
     for (unsigned i = 0; i < SPECIALIZED_UNIT_NUM; ++i) {
       unsigned enabled;
       specialized_unit_params sparam;
-      sscanf(specialized_unit_string[i], "%u,%u,%u,%u,%u,%s", &enabled,
-             &sparam.num_units, &sparam.latency, &sparam.id_oc_spec_reg_width,
-             &sparam.oc_ex_spec_reg_width, sparam.name);
+      int parsed = sscanf(specialized_unit_string[i],
+                          "%u,%u,%u,%u,%u,%u,%19s", &enabled,
+                          &sparam.num_units, &sparam.latency,
+                          &sparam.initiation, &sparam.id_oc_spec_reg_width,
+                          &sparam.oc_ex_spec_reg_width, sparam.name);
+      if (parsed != 7) {
+        // Legacy records did not expose an initiation interval.
+        sparam.initiation = 1;
+        parsed = sscanf(specialized_unit_string[i], "%u,%u,%u,%u,%u,%19s",
+                        &enabled, &sparam.num_units, &sparam.latency,
+                        &sparam.id_oc_spec_reg_width,
+                        &sparam.oc_ex_spec_reg_width, sparam.name);
+      }
+      if (parsed != 6 && parsed != 7) {
+        fprintf(stderr,
+                "GPGPU-Sim uArch: invalid specialized-unit configuration: "
+                "%s\n",
+                specialized_unit_string[i]);
+        abort();
+      }
 
       if (enabled) {
         m_specialized_unit.push_back(sparam);
@@ -1890,6 +1979,14 @@ class shader_core_config : public core_config {
   bool gpgpu_clock_gated_reg_file;
   bool gpgpu_clock_gated_lanes;
   unsigned gpgpu_reg_file_read_bytes_per_cycle;
+  bool gpgpu_native_fixed_latency_rf;
+  bool gpgpu_native_rf_reuse_cache;
+  unsigned gpgpu_native_rf_banks_per_subcore;
+  unsigned gpgpu_native_rf_read_ports_per_bank;
+  unsigned gpgpu_native_rf_write_ports_per_bank;
+  unsigned gpgpu_native_rf_read_window;
+  unsigned gpgpu_native_rf_result_queue_depth;
+  unsigned gpgpu_native_rf_result_queue_max_pops;
   enum divergence_support_t model;
   unsigned n_thread_per_shader;
   unsigned n_regfile_gating_group;
@@ -1945,6 +2042,27 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_tensor_core_avail;
   unsigned int gpgpu_tensor_core_units_per_sub_partition;
   unsigned int gpgpu_tensor_core_issue_queue_depth;
+  bool gpgpu_tensor_core_scheduler_backpressure;
+  unsigned int gpgpu_mio_queue_depth;
+  unsigned int gpgpu_mio_ldsm_queue_depth;
+  unsigned int gpgpu_mio_ldsm_issue_interval;
+  unsigned int gpgpu_mio_read_barrier_latency;
+  unsigned int gpgpu_tma_read_barrier_latency;
+  unsigned int gpgpu_cta_barrier_issue_interval;
+  unsigned int gpgpu_cta_barrier_release_latency;
+  unsigned int gpgpu_mbarrier_issue_interval;
+  unsigned int gpgpu_async_proxy_fence_extra_stall;
+  unsigned int gpgpu_async_proxy_fence_dirty_extra_stall;
+  unsigned int gpgpu_async_proxy_fence_initiation_stall;
+  unsigned int gpgpu_async_proxy_fence_dirty_initiation_stall;
+  unsigned int gpgpu_async_proxy_shared_store_visibility_latency;
+  unsigned int gpgpu_async_proxy_shared_store_initiation_interval;
+  unsigned int gpgpu_sfu_to_sp_forwarding_latency;
+  unsigned int gpgpu_instruction_backedge_redirect_latency;
+  unsigned int gpgpu_instruction_loop_buffer_bytes;
+  unsigned int gpgpu_instruction_loop_refill_granularity;
+  unsigned int gpgpu_instruction_loop_refill_latency;
+  unsigned int gpgpu_instruction_loop_refill_max_latency;
   bool gpgpu_tensor_core_skip_writeback;
   unsigned int gpgpu_num_dp_units;
   unsigned int gpgpu_num_sfu_units;
@@ -1955,12 +2073,16 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_num_cp_async_units;
   unsigned int gpgpu_num_tensormap_units;
   unsigned int gpgpu_tma_max_inflight;
+  unsigned int gpgpu_tma_max_inflight_bytes;
   unsigned int gpgpu_tma_tx_quota;
+  unsigned int gpgpu_tma_tx_quota_bytes;
   unsigned int gpgpu_tma_quota_segment_bytes;
   unsigned int gpgpu_tma_response_width;
   unsigned int gpgpu_tma_request_granularity;
   unsigned int gpgpu_tma_request_width;
   unsigned int gpgpu_tma_request_bytes_per_cycle;
+  unsigned int gpgpu_tma_store_source_bytes_per_cycle;
+  unsigned int gpgpu_tma_store_source_fixed_latency;
   unsigned int gpgpu_cp_async_max_inflight;
   unsigned int gpgpu_cp_async_request_width;
   unsigned int gpgpu_cp_async_response_width;
@@ -1972,10 +2094,18 @@ class shader_core_config : public core_config {
   bool gpgpu_tma_oob_l2_traffic;
   unsigned int gpgpu_mbarrier_arrive_latency;
   unsigned int gpgpu_mbarrier_trywait_latency;
+  unsigned int gpgpu_mbarrier_trywait_predicate_latency;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;
   unsigned gpgpu_wgmma_issue_chain_ss_config[5];
   unsigned gpgpu_wgmma_issue_chain_rs_config[5];
+  unsigned int gpgpu_wgmma_admission_queue_depth_ss;
+  unsigned int gpgpu_wgmma_admission_queue_depth_rs;
+  unsigned int gpgpu_wgmma_accumulator_queue_depth;
+  bool gpgpu_wgmma_warp_arrival_model;
+  unsigned int gpgpu_wgmma_dispatch_pressure_period;
+  unsigned int gpgpu_wgmma_dispatch_pressure_tail_multiplier;
+  unsigned int gpgpu_wgmma_sfu_dispatch_pressure_percent;
   bool gpgpu_wgmma_rf_traffic_enable;
   unsigned int gpgpu_wgmma_rf_traffic_bytes_per_cycle;
   bool gpgpu_wgmma_rf_traffic_share_read_budget;
@@ -2160,6 +2290,19 @@ struct shader_core_stats_pod {
   unsigned long long wgmma_collector_tokens_drained;
   unsigned long long wgmma_collector_active_cycles;
   unsigned long long wgmma_collector_max_backlog;
+
+  // Native fixed-latency register-file Allocate-stage counters.  Reads are
+  // warp-wide physical register reads, not scalar lane accesses.
+  unsigned long long native_rf_allocate_evaluations;
+  unsigned long long native_rf_allocate_conflicts;
+  unsigned long long native_rf_instructions;
+  unsigned long long native_rf_physical_reads;
+  unsigned long long native_rf_reuse_hits;
+  unsigned long long native_rf_result_queue_stalls;
+  unsigned long long native_rf_results_enqueued;
+  unsigned long long native_rf_result_writeback_stall_cycles;
+  unsigned long long native_rf_writeback_bank_stall_cycles;
+  unsigned long long native_rf_physical_writes;
 };
 
 class shader_core_stats : public shader_core_stats_pod {
@@ -2466,6 +2609,18 @@ class shader_core_ctx : public core_t {
     return m_not_completed + (m_pending_tma_cta_releases.empty() ? 0 : 1);
   }
   unsigned get_n_active_cta() const { return m_n_active_cta; }
+  void record_matrix_store_proxy_visibility(unsigned warp_id,
+                                            unsigned scheduler_id,
+                                            unsigned long long cycle) {
+    m_shared_proxy_timing.record_matrix_store(warp_id, scheduler_id, cycle);
+  }
+  bool async_proxy_fence_ready(unsigned warp_id,
+                               unsigned long long cycle) const {
+    return m_shared_proxy_timing.fence_ready(warp_id, cycle);
+  }
+  void reset_shared_proxy_warp(unsigned warp_id) {
+    m_shared_proxy_timing.reset_warp(warp_id);
+  }
   unsigned isactive() const {
     if (m_n_active_cta > 0)
       return 1;
@@ -2476,8 +2631,14 @@ class shader_core_ctx : public core_t {
   unsigned get_sid() const { return m_sid; }
 
   // Get logical CTA ID and logical Warp ID from hardware warp ID
-  int get_logical_cta_id(unsigned warp_id) const;
-  int get_cta_warp_id(unsigned warp_id) const;
+  virtual int get_logical_cta_id(unsigned warp_id) const;
+  virtual int get_cta_warp_id(unsigned warp_id) const;
+  // Native SASS try-wait completes its destination predicate when an observed
+  // mbarrier phase releases the pending instruction. PTX execution owns its
+  // predicate state separately and therefore uses this default no-op.
+  virtual void complete_mbarrier_try_wait(unsigned warp_id) {
+    (void)warp_id;
+  }
 
   // used by functional simulation:
   // modifiers
@@ -2505,7 +2666,28 @@ class shader_core_ctx : public core_t {
   bool warp_waiting_at_mem_barrier(unsigned warp_id);
   void set_max_cta(const kernel_info_t &kernel);
   void warp_inst_complete(const warp_inst_t &inst);
+  void warp_inst_operands_read(const warp_inst_t &inst);
   void complete_inst_without_writeback(warp_inst_t *inst);
+  bool mio_queue_can_issue(const warp_inst_t &inst, unsigned scheduler_id,
+                           unsigned long long cycle);
+  void mio_queue_reserve(const warp_inst_t &inst, unsigned scheduler_id,
+                         unsigned long long cycle);
+  void mio_queue_begin_service(const warp_inst_t &inst,
+                               unsigned long long cycle);
+  void tma_begin_service(const warp_inst_t &inst, unsigned long long cycle);
+  bool cta_barrier_can_issue(const warp_inst_t &inst,
+                             unsigned long long cycle) const;
+  void cta_barrier_reserve(const warp_inst_t &inst,
+                           unsigned long long cycle);
+  bool tensor_core_scheduler_can_issue(const warp_inst_t &inst,
+                                       unsigned scheduler_id,
+                                       unsigned long long cycle) const;
+  void tensor_core_scheduler_reserve(const warp_inst_t &inst,
+                                     unsigned scheduler_id,
+                                     unsigned long long cycle);
+  bool native_register_file_can_issue(const warp_inst_t &inst,
+                                      unsigned dynamic_warp_id,
+                                      unsigned scheduler_id) const;
 
   // accessors
   std::list<unsigned> get_regs_written(const inst_t &fvt) const;
@@ -2836,10 +3018,28 @@ class shader_core_ctx : public core_t {
   friend class LooseRoundRobbinScheduler;
   bool can_issue_wgmma_warpgroup(const unsigned *warp_ids, unsigned count,
                                  register_set &pipe_reg_set,
-                                 const warp_inst_t *inst) const;
+                                 const warp_inst_t *inst,
+                                 const char **reason = NULL) const;
+  enum wgmma_arrival_status_t {
+    WGMMA_ARRIVAL_STALL,
+    WGMMA_ARRIVAL_LATCHED,
+    WGMMA_ARRIVAL_COMPLETE,
+  };
+  wgmma_arrival_status_t register_wgmma_warp_arrival(
+      unsigned warp_id, const unsigned *warp_ids, unsigned count,
+      register_set &pipe_reg_set, const warp_inst_t *inst, unsigned sch_id,
+      const char **reason = NULL);
+  void release_wgmma_warp_arrivals(unsigned cta_id, unsigned warpgroup_id);
+  void cleanup_wgmma_warp_arrivals(unsigned cta_id);
+  bool wgmma_result_dispatch_can_issue(const warp_inst_t *inst,
+                                       unsigned long long cycle,
+                                       unsigned scheduler_id);
   unsigned wgmma_cta_warpgroup_id(unsigned warp_id) const;
   bool wgmma_issued_this_cycle() const { return m_wgmma_issued_this_cycle; }
   void mark_scheduler_issued(unsigned sch_id);
+  void native_register_file_allocate(warp_inst_t &inst);
+  void native_register_file_retire(const warp_inst_t &inst);
+  void native_register_file_cycle();
   void mark_wgmma_issued();
   unsigned long long wgmma_rf_traffic_tokens(const warp_inst_t *inst) const;
   void drain_wgmma_rf_traffic();
@@ -2863,16 +3063,21 @@ class shader_core_ctx : public core_t {
   virtual void init_warps(unsigned cta_id, unsigned start_thread,
                           unsigned end_thread, unsigned ctaid, int cta_size,
                           kernel_info_t &kernel);
+  virtual void release_frontend_cta(unsigned cta_id) {}
+  virtual void reset_frontend() {}
   virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,
                                              unsigned tid) = 0;
   virtual void func_exec_inst(warp_inst_t &inst) = 0;
+  // Apply an already-issued collective to a non-representative participant.
+  // This updates architectural state but must not issue another timing op.
+  // PTX has already evaluated the group and only advances participant PCs;
+  // native frontends may still need to evaluate each participant's semantics.
+  virtual void execute_collective_participant(warp_inst_t &inst) = 0;
 
-  virtual unsigned sim_init_thread(kernel_info_t &kernel,
-                                   ptx_thread_info **thread_info, int sid,
-                                   unsigned tid, unsigned threads_left,
-                                   unsigned num_threads, core_t *core,
-                                   unsigned hw_cta_id, unsigned hw_warp_id,
-                                   gpgpu_t *gpu) = 0;
+  virtual unsigned initialize_frontend_thread(kernel_info_t &kernel,
+                                               unsigned tid,
+                                               unsigned threads_left,
+                                               unsigned hardware_cta) = 0;
 
   virtual void create_shd_warp() = 0;
 
@@ -2882,6 +3087,9 @@ class shader_core_ctx : public core_t {
                                        unsigned *pc, unsigned *rpc) = 0;
   virtual const active_mask_t &get_active_mask(unsigned warp_id,
                                                const warp_inst_t *pI) = 0;
+  virtual bool frontend_instruction_can_issue(unsigned warp_id) {
+    return true;
+  }
 
   // Returns numbers of addresses in translated_addrs
   unsigned translate_local_memaddr(address_type localaddr, unsigned tid,
@@ -2941,6 +3149,8 @@ class shader_core_ctx : public core_t {
   std::vector<register_set> m_pipeline_reg;
   Scoreboard *m_scoreboard;
   opndcoll_rfu_t m_operand_collector;
+  std::vector<flash_gpgpu_sim::native_register_file_timing>
+      m_native_register_files;
   int m_active_warps;
   std::vector<register_set *> m_specilized_dispatch_reg;
 
@@ -2951,6 +3161,24 @@ class shader_core_ctx : public core_t {
   unsigned int Issue_Prio;
   unsigned long long m_subpartition_issue_mask;
   bool m_wgmma_issued_this_cycle;
+  struct wgmma_arrival_state_t {
+    address_type pc = 0;
+    unsigned warp_ids[WGMMA_WARPGROUP_SIZE] = {
+        (unsigned)-1, (unsigned)-1, (unsigned)-1, (unsigned)-1};
+    unsigned arrived_mask = 0;
+    unsigned waiting_mask = 0;
+  };
+  typedef std::pair<unsigned, unsigned> wgmma_arrival_key_t;
+  std::map<wgmma_arrival_key_t, wgmma_arrival_state_t>
+      m_wgmma_warp_arrivals;
+  std::vector<unsigned> m_mio_queue_occupancy;
+  std::vector<std::deque<unsigned long long>> m_mio_queue_release_cycles;
+  flash_gpgpu_sim::mio_ldsm_timing m_mio_ldsm_timing;
+  flash_gpgpu_sim::cta_barrier_timing m_cta_barrier_timing;
+  flash_gpgpu_sim::cta_barrier_timing m_mbarrier_timing;
+  flash_gpgpu_sim::shared_proxy_timing m_shared_proxy_timing;
+  flash_gpgpu_sim::tensor_core_admission_timing
+      m_tensor_core_admission_timing;
 
   // execute
   unsigned m_num_function_units;
@@ -2997,30 +3225,41 @@ class exec_shader_core_ctx : public shader_core_ctx {
                        unsigned shader_id, unsigned tpc_id,
                        const shader_core_config *config,
                        const memory_config *mem_config,
-                       shader_core_stats *stats)
-      : shader_core_ctx(gpu, cluster, shader_id, tpc_id, config, mem_config,
-                        stats) {
-    create_front_pipeline();
-    create_shd_warp();
-    create_schedulers();
-    create_exec_pipeline();
-  }
+                       shader_core_stats *stats);
+  ~exec_shader_core_ctx() override;
 
   virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,
                                              unsigned tid);
   virtual void func_exec_inst(warp_inst_t &inst);
-  virtual unsigned sim_init_thread(kernel_info_t &kernel,
-                                   ptx_thread_info **thread_info, int sid,
-                                   unsigned tid, unsigned threads_left,
-                                   unsigned num_threads, core_t *core,
-                                   unsigned hw_cta_id, unsigned hw_warp_id,
-                                   gpgpu_t *gpu);
+  virtual void execute_collective_participant(warp_inst_t &inst);
+  unsigned initialize_frontend_thread(kernel_info_t &kernel, unsigned tid,
+                                      unsigned threads_left,
+                                      unsigned hardware_cta) override;
   virtual void create_shd_warp();
+  virtual void init_warps(unsigned cta_id, unsigned start_thread,
+                          unsigned end_thread, unsigned ctaid, int cta_size,
+                          kernel_info_t &kernel);
+  virtual void release_frontend_cta(unsigned cta_id);
+  virtual void reset_frontend();
+  virtual void updateSIMTStack(unsigned warp_id, warp_inst_t *inst);
   virtual const warp_inst_t *get_next_inst(unsigned warp_id, address_type pc);
   virtual void get_pdom_stack_top_info(unsigned warp_id, const warp_inst_t *pI,
                                        unsigned *pc, unsigned *rpc);
   virtual const active_mask_t &get_active_mask(unsigned warp_id,
                                                const warp_inst_t *pI);
+  bool frontend_instruction_can_issue(unsigned warp_id) override;
+  bool get_frontend_instruction_text(unsigned warp_id, address_type pc,
+                                 std::string &text) const;
+  int get_logical_cta_id(unsigned warp_id) const override;
+  int get_cta_warp_id(unsigned warp_id) const override;
+  void complete_mbarrier_try_wait(unsigned warp_id) override;
+
+ private:
+  // The adapters alone bridge legacy architectural state to this SIMT core.
+  friend class flash_gpgpu_sim::ptx_shader_frontend;
+  friend class flash_gpgpu_sim::sass::shader_frontend;
+  void select_frontend(const kernel_info_t &kernel);
+  std::unique_ptr<flash_gpgpu_sim::execution_frontend> m_frontend;
 };
 
 class simt_core_cluster {

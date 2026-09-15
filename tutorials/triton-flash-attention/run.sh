@@ -5,11 +5,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
 RUN_DIR="${SCRIPT_DIR}/run"
-TRACKING_DIR="${RUN_DIR}/tracking"
+CAPTURE_NAME="${FLASH_ATTN_CAPTURE_NAME:-tracking}"
+TRACKING_DIR="${RUN_DIR}/${CAPTURE_NAME}"
 LAUNCHER_DIR="${TRACKING_DIR}/launchers"
 CONFIG_NAME="${PERF_SIM_CONFIG:-SM120_RTX5090}"
 CONFIG_DIR="${REPO_ROOT}/configs/${CONFIG_NAME}"
-SIMULATION_LOG="${RUN_DIR}/simulation.log"
+SIMULATION_LOG="${RUN_DIR}/${CAPTURE_NAME}.simulation.log"
+
+if [[ ! "${CAPTURE_NAME}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+  echo "Error: FLASH_ATTN_CAPTURE_NAME contains unsupported characters." >&2
+  exit 1
+fi
 
 if [[ ! -d "${CONFIG_DIR}" ]]; then
   echo "Error: GPU configuration not found: ${CONFIG_DIR}" >&2

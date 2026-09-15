@@ -115,6 +115,7 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -157,6 +158,7 @@ typedef enum CUoutput_mode_enum {
 #include "../src/cuda-sim/ptx_ir.h"
 #include "../src/cuda-sim/ptx_loader.h"
 #include "../src/cuda-sim/ptx_parser.h"
+#include "../src/gpgpu-sim/flash/sass/runtime/runtime_adapter.h"
 #include "../src/gpgpu-sim/gpu-sim.h"
 #include "../src/gpgpusim_entrypoint.h"
 #include "../src/stream_manager.h"
@@ -1047,8 +1049,15 @@ void **cudaRegisterFatBiaryInternal_impl(
      * then for next calls, only returns the appropriate number
      */
     assert(fat_cubin_handle >= 1);
-    if (fat_cubin_handle == 1) ctx_cuobjdumpInit_func(ctx);
+    const bool sass_functional =
+        flash_gpgpu_sim::sass::runtime_functional_requested();
+    if (fat_cubin_handle == 1 && !sass_functional) ctx_cuobjdumpInit_func(ctx);
     ctx->api->cuobjdumpRegisterFatBinary(fat_cubin_handle, filename, context);
+    if (sass_functional)
+      printf(
+          "FlashGPU-Sim SASS: deferred fatbin %llu to the configured "
+          "static manifest; PTX was not parsed.\n",
+          fat_cubin_handle);
 
     return (void **)fat_cubin_handle;
   }
@@ -1181,6 +1190,10 @@ void cudaRegisterFunctionInternal(void **fatCubinHandle, const char *hostFun,
       "GPGPU-Sim PTX: __cudaRegisterFunction %s : hostFun 0x%p, "
       "fat_cubin_handle = %u\n",
       deviceFun, hostFun, fat_cubin_handle);
+  if (flash_gpgpu_sim::sass::runtime_functional_requested()) {
+    context->register_sass_function(fat_cubin_handle, hostFun, deviceFun);
+    return;
+  }
   if (context->get_device()->get_gpgpu()->get_config().use_cuobjdump())
     ctx->cuobjdumpParseBinary(fat_cubin_handle);
   context->register_function(fat_cubin_handle, hostFun, deviceFun);
@@ -1210,6 +1223,13 @@ void cudaRegisterVarInternal(
   //     "GPGPU-Sim PTX: __cudaRegisterVar: Registering const memory space of %d "
   //     "bytes\n",
   //     size);
+  if (flash_gpgpu_sim::sass::runtime_functional_requested()) {
+    printf(
+        "FlashGPU-Sim SASS: deferred device variable '%s' (%d bytes); "
+        "PTX symbols were not parsed.\n",
+        deviceName != NULL ? deviceName : "<unnamed>", size);
+    return;
+  }
   if (GPGPUSim_Context(ctx)
           ->get_device()
           ->get_gpgpu()
@@ -1341,6 +1361,12 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
   CUctx_st *context = GPGPUSim_Context(ctx);
   char *mode = getenv("PTX_SIM_MODE_FUNC");
   if (mode) sscanf(mode, "%u", &(ctx->func_sim->g_ptx_sim_mode));
+  const bool sass_functional =
+      flash_gpgpu_sim::sass::runtime_functional_requested();
+  const bool sass_timing =
+      flash_gpgpu_sim::sass::runtime_timing_requested();
+  if (sass_functional)
+    ctx->func_sim->g_ptx_sim_mode = sass_timing ? 0 : 1;
   gpgpusim_ptx_assert(!ctx->api->g_cuda_launch_stack.empty(),
                       "empty launch stack");
   kernel_config config = ctx->api->g_cuda_launch_stack.back();
@@ -1357,19 +1383,35 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
   }
   struct CUstream_st *stream = config.get_stream();
 
-  function_info *entry = context->get_kernel(hostFun);
-  const struct gpgpu_ptx_sim_info *kernel_info = entry->get_kernel_info();
+  function_info *entry = sass_functional ? NULL : context->get_kernel(hostFun);
+  const std::string launch_kernel_name =
+      sass_functional ? context->get_sass_kernel_name(hostFun)
+                      : entry->get_name();
+  const unsigned launch_fatbin_handle =
+      sass_functional ? context->get_sass_fatbin_handle(hostFun) : 0;
+  const struct gpgpu_ptx_sim_info *kernel_info =
+      entry != NULL ? entry->get_kernel_info() : NULL;
   unsigned static_smem = kernel_info ? kernel_info->smem : 0;
+  flash_gpgpu_sim::sass::runtime_kernel_resources sass_resources;
+  if (sass_functional) {
+    sass_resources = flash_gpgpu_sim::sass::load_runtime_kernel_resources(
+        flash_gpgpu_sim::sass::runtime_sassir_path(
+            launch_kernel_name, launch_fatbin_handle),
+        launch_kernel_name);
+    static_smem = sass_resources.static_shared;
+  }
   size_t dynamic_smem = config.shared_mem();
   gpgpu_sim *device_gpu = context->get_device()->get_gpgpu();
-  bool opted_in =
-      device_gpu->has_kernel_max_dynamic_smem(entry->get_name());
+  bool opted_in = device_gpu->has_kernel_max_dynamic_smem(launch_kernel_name);
   unsigned dynamic_limit = 0;
   unsigned total_limit = 0;
   if (opted_in) {
-    dynamic_limit =
-        device_gpu->get_kernel_max_dynamic_smem(entry->get_name());
-    total_limit = device_gpu->shared_mem_per_block_optin();
+    dynamic_limit = device_gpu->get_kernel_max_dynamic_smem(launch_kernel_name);
+    const unsigned optin_limit = device_gpu->shared_mem_per_block_optin();
+    total_limit =
+        static_smem <= std::numeric_limits<unsigned>::max() - optin_limit
+            ? optin_limit + static_smem
+            : std::numeric_limits<unsigned>::max();
   } else {
     total_limit = device_gpu->shared_mem_per_block();
     dynamic_limit =
@@ -1380,7 +1422,7 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
   if (dynamic_smem > dynamic_limit || total_smem > total_limit) {
     printf("GPGPU-Sim PTX: kernel launch dynamic shared memory invalid for "
            "'%s': static=%u, dynamic=%zu, max_dynamic=%u, max_total=%u%s\n",
-           entry->get_name().c_str(), static_smem, dynamic_smem, dynamic_limit,
+           launch_kernel_name.c_str(), static_smem, dynamic_smem, dynamic_limit,
            total_limit, opted_in ? " (opt-in)" : " (default)");
     ctx->api->g_cuda_launch_stack.pop_back();
     return g_last_cudaError = cudaErrorInvalidConfiguration;
@@ -1388,33 +1430,52 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
 
   printf("\nGPGPU-Sim PTX: cudaLaunch for 0x%p (mode=%s) on stream %u\n",
          hostFun,
-         (ctx->func_sim->g_ptx_sim_mode) ? "functional simulation"
+         sass_timing ? "execution-driven SASS timing simulation"
+         : sass_functional                 ? "strict SASS functional simulation"
+         : (ctx->func_sim->g_ptx_sim_mode) ? "functional simulation"
                                          : "performance simulation",
          stream ? stream->get_uid() : 0);
-  kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
-      hostFun, config.get_args(), config.grid_dim(), config.block_dim(),
-      context);
+  kernel_info_t *grid = NULL;
+  if (sass_functional) {
+    grid = new kernel_info_t(config.grid_dim(), config.block_dim(),
+                             launch_kernel_name, ctx,
+                             stream ? stream->get_uid() : 0,
+                             launch_fatbin_handle);
+    grid->set_resource_usage({
+        sass_resources.registers, sass_resources.static_shared,
+        sass_resources.local_memory, sass_resources.stack_size});
+    const gpgpu_ptx_sim_arg_list_t arguments = config.get_args();
+    for (const gpgpu_ptx_sim_arg &argument : arguments)
+      grid->get_param_memory()->write(argument.m_offset, argument.m_nbytes,
+                                      argument.m_start, NULL, NULL);
+  } else {
+    grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
+        hostFun, config.get_args(), config.grid_dim(), config.block_dim(),
+        context);
+  }
 
   // Handle dynamic shared memory for extern shared symbols and record the
   // per-launch dynamic shared memory size on the kernel grid object
   size_t shared_mem_size = config.shared_mem();
   grid->set_dynamic_smem((unsigned)shared_mem_size);
-  if (shared_mem_size > 0) {
+  if (shared_mem_size > 0 && !sass_functional) {
     function_info *func_info = grid->entry();
     func_info->alloc_dyn_shared_mem(shared_mem_size);
   }
 
   // do dynamic PDOM analysis for performance simulation scenario
   std::string kname = grid->name();
-  function_info *kernel_func_info = grid->entry();
-  if (kernel_func_info->is_pdom_set()) {
+  if (sass_functional) {
+    printf("FlashGPU-Sim SASS: skipping PTX PDOM analysis for '%s'.\n",
+           kname.c_str());
+  } else if (grid->entry()->is_pdom_set()) {
     printf("GPGPU-Sim PTX: PDOM analysis already done for %s \n",
            kname.c_str());
   } else {
     printf("GPGPU-Sim PTX: finding reconvergence points for \'%s\'...\n",
            kname.c_str());
-    kernel_func_info->do_pdom();
-    kernel_func_info->set_pdom();
+    grid->entry()->do_pdom();
+    grid->entry()->set_pdom();
   }
   dim3 gridDim = config.grid_dim();
   dim3 blockDim = config.block_dim();
@@ -2119,6 +2180,34 @@ cudaError_t CUDARTAPI cudaFuncGetAttributesInternal(
     announce_call(__my_func__);
   }
   CUctx_st *context = GPGPUSim_Context(ctx);
+  if (flash_gpgpu_sim::sass::runtime_functional_requested() &&
+      context->has_sass_function(hostFun)) {
+    const std::string kernel_name = context->get_sass_kernel_name(hostFun);
+    const unsigned fatbin_handle =
+        context->get_sass_fatbin_handle(hostFun);
+    const flash_gpgpu_sim::sass::runtime_kernel_resources resources =
+        flash_gpgpu_sim::sass::load_runtime_kernel_resources(
+            flash_gpgpu_sim::sass::runtime_sassir_path(kernel_name,
+                                                         fatbin_handle),
+            kernel_name);
+
+    // In strict SASS mode PTX is intentionally not parsed, so there is no
+    // function_info to query.  The official decoder cache carries the
+    // corresponding ELF resource metadata needed by runtime launch helpers.
+    struct cudaFuncAttributes sass_attr = {};
+    sass_attr.sharedSizeBytes = resources.static_shared;
+    sass_attr.localSizeBytes = resources.local_memory;
+    sass_attr.numRegs = resources.registers;
+    *attr = sass_attr;
+    attr->maxThreadsPerBlock = getMaxThreadsPerBlock(attr, ctx);
+#if CUDART_VERSION >= 3000
+    const struct cudaDeviceProp *prop = ctx->GPGPUSim_Init()->get_prop();
+    attr->binaryVersion = prop->major * 10 + prop->minor;
+    // This execution path consumes native code rather than a PTX target.
+    attr->ptxVersion = 0;
+#endif
+    return g_last_cudaError = cudaSuccess;
+  }
   function_info *entry = context->get_kernel(hostFun);
   if (entry) {
     const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
@@ -2581,13 +2670,28 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernelInternal(
     }
   }
   CUctx_st *context = GPGPUSim_Context(ctx);
-  function_info *entry = context->get_kernel(hostFun);
 #if CUDART_VERSION < 10000
   cudaConfigureCallInternal(gridDim, blockDim, sharedMem, stream, ctx);
 #endif
-  for (unsigned i = 0; i < entry->num_args(); i++) {
-    std::pair<size_t, unsigned> p = entry->get_param_config(i);
-    cudaSetupArgumentInternal(args[i], p.first, p.second);
+  if (flash_gpgpu_sim::sass::runtime_functional_requested()) {
+    const std::string kernel_name = context->get_sass_kernel_name(hostFun);
+    const unsigned fatbin_handle =
+        context->get_sass_fatbin_handle(hostFun);
+    const flash_gpgpu_sim::sass::runtime_kernel_abi abi =
+        flash_gpgpu_sim::sass::load_runtime_kernel_abi(
+            flash_gpgpu_sim::sass::runtime_sassir_path(kernel_name,
+                                                         fatbin_handle),
+            kernel_name);
+    for (const flash_gpgpu_sim::sass::runtime_kernel_parameter &parameter :
+         abi.parameters)
+      cudaSetupArgumentInternal(args[parameter.ordinal], parameter.size,
+                                parameter.offset, ctx);
+  } else {
+    function_info *entry = context->get_kernel(hostFun);
+    for (unsigned i = 0; i < entry->num_args(); i++) {
+      std::pair<size_t, unsigned> p = entry->get_param_config(i);
+      cudaSetupArgumentInternal(args[i], p.first, p.second);
+    }
   }
 
   return cudaLaunchInternal(hostFun, ctx);
@@ -2774,13 +2878,28 @@ CUresult CUDAAPI cuLaunchKernelInternal(
   }
   const char *hostFun = (const char *)f;
   CUctx_st *context = GPGPUSim_Context(ctx);
-  function_info *entry = context->get_kernel(hostFun);
   cudaConfigureCallInternal(dim3(gridDimX, gridDimY, gridDimZ),
                             dim3(blockDimX, blockDimY, blockDimZ),
                             sharedMemBytes, (cudaStream_t)hStream, ctx);
-  for (unsigned i = 0; i < entry->num_args(); i++) {
-    std::pair<size_t, unsigned> p = entry->get_param_config(i);
-    cudaSetupArgumentInternal(kernelParams[i], p.first, p.second, ctx);
+  if (flash_gpgpu_sim::sass::runtime_functional_requested()) {
+    const std::string kernel_name = context->get_sass_kernel_name(hostFun);
+    const unsigned fatbin_handle =
+        context->get_sass_fatbin_handle(hostFun);
+    const flash_gpgpu_sim::sass::runtime_kernel_abi abi =
+        flash_gpgpu_sim::sass::load_runtime_kernel_abi(
+            flash_gpgpu_sim::sass::runtime_sassir_path(kernel_name,
+                                                         fatbin_handle),
+            kernel_name);
+    for (const flash_gpgpu_sim::sass::runtime_kernel_parameter &parameter :
+         abi.parameters)
+      cudaSetupArgumentInternal(kernelParams[parameter.ordinal],
+                                parameter.size, parameter.offset, ctx);
+  } else {
+    function_info *entry = context->get_kernel(hostFun);
+    for (unsigned i = 0; i < entry->num_args(); i++) {
+      std::pair<size_t, unsigned> p = entry->get_param_config(i);
+      cudaSetupArgumentInternal(kernelParams[i], p.first, p.second, ctx);
+    }
   }
   cudaError_t launch_result = cudaLaunchInternal(hostFun, ctx);
   return launch_result == cudaSuccess ? CUDA_SUCCESS : CUDA_ERROR_INVALID_VALUE;
@@ -4814,14 +4933,12 @@ __host__ cudaError_t CUDARTAPI cudaDeviceSetLimit(enum cudaLimit limit,
 #endif
 
 static bool max_dynamic_shared_memory_fits(
-    CUctx_st *context, function_info *entry, unsigned requested_dynamic,
-    unsigned *static_smem, unsigned *max_per_block_optin) {
-  const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
-  *static_smem = kinfo ? kinfo->smem : 0;
+    CUctx_st *context, unsigned static_smem, unsigned requested_dynamic,
+    unsigned *static_smem_out, unsigned *max_per_block_optin) {
+  *static_smem_out = static_smem;
   *max_per_block_optin =
       context->get_device()->get_gpgpu()->shared_mem_per_block_optin();
-  return static_cast<unsigned long long>(*static_smem) + requested_dynamic <=
-         *max_per_block_optin;
+  return requested_dynamic <= *max_per_block_optin;
 }
 
 #if CUDART_VERSION >= 9000
@@ -4872,27 +4989,47 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
 
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
-  function_info *entry = context->get_kernel((const char *)func);
+  const bool sass_functional =
+      flash_gpgpu_sim::sass::runtime_functional_requested();
+  function_info *entry =
+      sass_functional ? NULL : context->get_kernel((const char *)func);
+  std::string kernel_name;
+  unsigned kernel_static_smem = 0;
+  if (sass_functional) {
+    kernel_name = context->get_sass_kernel_name((const char *)func);
+    const unsigned fatbin_handle =
+        context->get_sass_fatbin_handle((const char *)func);
+    kernel_static_smem =
+        flash_gpgpu_sim::sass::load_runtime_kernel_resources(
+            flash_gpgpu_sim::sass::runtime_sassir_path(kernel_name,
+                                                         fatbin_handle),
+            kernel_name)
+            .static_shared;
+  } else {
+    kernel_name = entry->get_name();
+    const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
+    kernel_static_smem = kinfo ? kinfo->smem : 0;
+  }
 
   if (attr == cudaFuncAttributeMaxDynamicSharedMemorySize) {
     if (value < 0) return g_last_cudaError = cudaErrorInvalidValue;
     unsigned static_smem;
     unsigned max_per_block_optin;
     if (!max_dynamic_shared_memory_fits(
-            context, entry, (unsigned)value, &static_smem,
+            context, kernel_static_smem, (unsigned)value, &static_smem,
             &max_per_block_optin)) {
       printf("GPGPU-Sim PTX: cudaFuncSetAttribute "
              "MaxDynamicSharedMemorySize invalid for '%s': static=%u, "
              "dynamic=%u, max_per_block_optin=%u\n",
-             entry->get_name().c_str(), static_smem, (unsigned)value,
+             kernel_name.c_str(), static_smem, (unsigned)value,
              max_per_block_optin);
       return g_last_cudaError = cudaErrorInvalidValue;
     }
     context->get_device()->get_gpgpu()->set_kernel_max_dynamic_smem(
-        entry->get_name(), (unsigned)value, static_smem);
+        kernel_name, (unsigned)value, static_smem);
     printf("GPGPU-Sim PTX: cudaFuncSetAttribute "
            "MaxDynamicSharedMemorySize for '%s' = %u bytes\n",
-           entry->get_name().c_str(), (unsigned)value);
+           kernel_name.c_str(), (unsigned)value);
     return g_last_cudaError = cudaSuccess;
   }
 
@@ -4902,10 +5039,10 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
       return g_last_cudaError = cudaErrorInvalidValue;
     }
     context->get_device()->get_gpgpu()->set_kernel_preferred_shared_carveout(
-        entry->get_name(), value);
+        kernel_name, value);
     printf("GPGPU-Sim PTX: cudaFuncSetAttribute "
            "PreferredSharedMemoryCarveout for '%s' = %d\n",
-           entry->get_name().c_str(), value);
+           kernel_name.c_str(), value);
     return g_last_cudaError = cudaSuccess;
   }
 
@@ -5501,7 +5638,11 @@ CUresult CUDAAPI cuCtxSynchronize(void) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  printf("WARNING: this function has not been implemented yet %s\n", __my_func__);
+  // The driver API has the same device-wide synchronization semantics as the
+  // runtime API here.  Generated Triton launchers use cuLaunchKernel followed
+  // by cuCtxSynchronize, so returning immediately can let the host tear down
+  // a still-running timing simulation.
+  GPGPU_Context()->synchronize();
   return CUDA_SUCCESS;
 }
 
@@ -5607,6 +5748,16 @@ CUresult CUDAAPI cuModuleLoad(CUmodule *module, const char *fname) {
   // cudaRegisterFatBinary
   unsigned module_handle = get_next_fat_bin_handle();
   printf("cuModuleLoad: Allocated module handle %u\n", module_handle);
+
+  if (flash_gpgpu_sim::sass::runtime_functional_requested()) {
+    flash_gpgpu_sim::sass::register_runtime_binary(module_handle, fname);
+    context->register_sass_module(module_handle, fname);
+    *module = (CUmodule)(unsigned long long)module_handle;
+    printf("FlashGPU-Sim SASS: registered Driver API module %u from %s "
+           "without parsing PTX.\n",
+           module_handle, fname);
+    return CUDA_SUCCESS;
+  }
 
   std::string sidecar_ptx = sidecar_ptx_for_module(fname);
   if (!sidecar_ptx.empty()) {
@@ -5717,6 +5868,19 @@ CUresult CUDAAPI cuModuleGetFunction(CUfunction *hfunc, CUmodule hmod,
 
   // Convert module handle to unsigned
   unsigned module_handle = (unsigned)(unsigned long long)hmod;
+
+  if (flash_gpgpu_sim::sass::runtime_functional_requested()) {
+    const char *hostFunc =
+        context->register_sass_driver_function(module_handle, name);
+    if (hostFunc == NULL) {
+      printf("ERROR: SASS module handle %u not found\n", module_handle);
+      return CUDA_ERROR_INVALID_HANDLE;
+    }
+    *hfunc = (CUfunction)hostFunc;
+    printf("FlashGPU-Sim SASS: registered Driver API kernel '%s' at %p\n",
+           name, hostFunc);
+    return CUDA_SUCCESS;
+  }
 
   // Look up the symbol table for this module using the public accessor
   symbol_table *symtab = context->get_symbol_table(module_handle);
@@ -6739,18 +6903,62 @@ CUresult CUDAAPI cuFuncSetAttribute(CUfunction hfunc,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  function_info *entry = reinterpret_cast<function_info *>(hfunc);
-  if (entry == NULL) return CUDA_ERROR_INVALID_HANDLE;
-
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
+  const char *hostFun = reinterpret_cast<const char *>(hfunc);
+  if (flash_gpgpu_sim::sass::runtime_functional_requested() &&
+      context->has_sass_function(hostFun)) {
+    const std::string kernel_name = context->get_sass_kernel_name(hostFun);
+    if (attrib == CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES) {
+      if (value < 0) return CUDA_ERROR_INVALID_VALUE;
+      const unsigned fatbin_handle =
+          context->get_sass_fatbin_handle(hostFun);
+      const unsigned kernel_static_smem =
+          flash_gpgpu_sim::sass::load_runtime_kernel_resources(
+              flash_gpgpu_sim::sass::runtime_sassir_path(
+                  kernel_name, fatbin_handle),
+              kernel_name)
+              .static_shared;
+      unsigned static_smem;
+      unsigned max_per_block_optin;
+      if (!max_dynamic_shared_memory_fits(
+              context, kernel_static_smem, (unsigned)value, &static_smem,
+              &max_per_block_optin)) {
+        printf("FlashGPU-Sim SASS: cuFuncSetAttribute "
+               "MAX_DYNAMIC_SHARED_SIZE_BYTES invalid for '%s': "
+               "static=%u, dynamic=%u, max_per_block_optin=%u\n",
+               kernel_name.c_str(), static_smem, (unsigned)value,
+               max_per_block_optin);
+        return CUDA_ERROR_INVALID_VALUE;
+      }
+      context->get_device()->get_gpgpu()->set_kernel_max_dynamic_smem(
+          kernel_name, (unsigned)value, static_smem);
+      return CUDA_SUCCESS;
+    }
+
+    if (attrib == CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT) {
+      if (value != CU_SHAREDMEM_CARVEOUT_DEFAULT &&
+          (value < 0 || value > 100))
+        return CUDA_ERROR_INVALID_VALUE;
+      context->get_device()->get_gpgpu()->set_kernel_preferred_shared_carveout(
+          kernel_name, value);
+      return CUDA_SUCCESS;
+    }
+
+    return CUDA_SUCCESS;
+  }
+
+  function_info *entry = reinterpret_cast<function_info *>(hfunc);
+  if (entry == NULL) return CUDA_ERROR_INVALID_HANDLE;
 
   if (attrib == CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES) {
     if (value < 0) return CUDA_ERROR_INVALID_VALUE;
     unsigned static_smem;
     unsigned max_per_block_optin;
+    const struct gpgpu_ptx_sim_info *kinfo = entry->get_kernel_info();
+    const unsigned kernel_static_smem = kinfo ? kinfo->smem : 0;
     if (!max_dynamic_shared_memory_fits(
-            context, entry, (unsigned)value, &static_smem,
+            context, kernel_static_smem, (unsigned)value, &static_smem,
             &max_per_block_optin)) {
       printf("GPGPU-Sim PTX: cuFuncSetAttribute "
              "MAX_DYNAMIC_SHARED_SIZE_BYTES invalid for '%s': static=%u, "

@@ -28,6 +28,11 @@
 # Define EXTRA_FLAGS for propagating extra macros/flags to sub-makefiles
 EXTRA_FLAGS ?=
 
+include src/gpgpu-sim/flash/sass/sources.mk
+SASS_OBJECTS = $(patsubst src/%.cc,$(SIM_OBJ_FILES_DIR)/%.o,$(SASS_SRCS))
+include src/gpgpu-sim/flash/frontend/sources.mk
+FRONTEND_OBJECTS = $(patsubst src/%.cc,$(SIM_OBJ_FILES_DIR)/%.o,$(FRONTEND_SRCS))
+
 # Flash mode is enabled by default 
 FLASH ?= 1
 
@@ -194,6 +199,8 @@ $(SIM_LIB_DIR)/libcudart.so: makedirs $(LIBS) cudalib
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/mma/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/wgmma/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/ptx_sched/*.o \
+			$(SASS_OBJECTS) \
+			$(FRONTEND_OBJECTS) \
 		$(GEM5_OBJ_FILES) \
 		$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
 		$(SIM_OBJ_FILES_DIR)/*.o -lm -lz $(OPENGL_LIB) -pthread -fopenmp \
@@ -230,6 +237,8 @@ $(SIM_LIB_DIR)/libcudart.dylib: makedirs $(LIBS) cudalib
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/mma/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/wgmma/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/ptx_sched/*.o \
+			$(SASS_OBJECTS) \
+			$(FRONTEND_OBJECTS) \
 			$(GEM5_OBJ_FILES) \
 			$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o  \
 			$(SIM_OBJ_FILES_DIR)/*.o -lm -lz -pthread \
@@ -246,6 +255,8 @@ $(SIM_LIB_DIR)/libOpenCL.so: makedirs $(LIBS) opencllib
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/mma/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/wgmma/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/flash/ptx_sched/*.o \
+			$(SASS_OBJECTS) \
+			$(FRONTEND_OBJECTS) \
 		$(GEM5_OBJ_FILES) \
 		$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
 		$(SIM_OBJ_FILES_DIR)/*.o -lm -lz $(OPENGL_LIB) -pthread \

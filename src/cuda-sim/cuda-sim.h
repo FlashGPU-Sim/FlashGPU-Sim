@@ -135,40 +135,12 @@ class cuda_sim {
     gpgpu_ctx = ctx;
   }
   // global variables
-  char *opcode_latency_int;
-  char *opcode_latency_fp;
-  char *opcode_latency_dp;
-  char *opcode_latency_sfu;
-  char *opcode_latency_tensor;
-  char *opcode_latency_wgmma_ss;
-  char *opcode_latency_wgmma_rs;
-  char *opcode_completion_wgmma_ss;
-  char *opcode_completion_wgmma_rs;
-  char *opcode_completion_wgmma_int_ss;
-  char *opcode_completion_wgmma_int_rs;
-  char *opcode_compute_throughput_wgmma;
-  char *opcode_latency_tma;
-  char *opcode_latency_cp_async;
-  char *opcode_latency_cp_async_commit;
-  char *opcode_latency_cp_async_wait;
-  char *opcode_latency_tensormap;
-  char *opcode_initiation_int;
-  char *opcode_initiation_fp;
-  char *opcode_initiation_dp;
-  char *opcode_initiation_sfu;
-  char *opcode_initiation_tensor;
-  char *opcode_initiation_wgmma_ss;
-  char *opcode_initiation_wgmma_rs;
-  char *opcode_initiation_tma;
-  char *opcode_initiation_cp_async;
-  char *opcode_initiation_cp_async_commit;
-  char *opcode_initiation_cp_async_wait;
-  char *opcode_initiation_tensormap;
+
   int cp_count;
   int cp_cta_resume;
   int g_ptxinfo_error_detected;
   unsigned g_ptx_sim_num_insn;
-  char *cdp_latency_str;
+
   int g_ptx_kernel_count;  // used for classification stat collection purposes
   std::map<const void *, std::string>
       g_global_name_lookup;  // indexed by hostVar
@@ -197,7 +169,7 @@ class cuda_sim {
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
   // global functions
-  void ptx_opcocde_latency_options(option_parser_t opp);
+
   void gpgpu_cuda_ptx_sim_main_func(kernel_info_t &kernel, bool openCL = false);
   int gpgpu_opencl_ptx_sim_main_func(kernel_info_t *grid);
   void init_inst_classification_stat();

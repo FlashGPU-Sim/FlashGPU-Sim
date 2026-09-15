@@ -71,7 +71,10 @@ OEXT = o
 
 OUTPUT_DIR=$(SIM_OBJ_FILES_DIR)/gpgpu-sim
 
-SRCS = $(shell ls *.cc) $(shell ls flash/*.cc) $(shell ls flash/mma/*.cc) $(shell ls flash/wgmma/*.cc) $(shell ls flash/ptx_sched/*.cc)
+include flash/sass/sources.mk
+include flash/frontend/sources.mk
+SRCS = $(shell ls *.cc) $(shell ls flash/*.cc) $(shell ls flash/mma/*.cc) $(shell ls flash/wgmma/*.cc) $(shell ls flash/ptx_sched/*.cc) $(SASS_SRCS)
+SRCS += $(FRONTEND_SRCS)
 
 ifeq ($(FLASH_GEM_FORGE),1)
 SRCS += $(shell ls flash/gem5/*.cc)
@@ -88,6 +91,7 @@ CSRCS = $(filter-out $(EXCLUDES), $(SRCS))
 OBJS = $(CSRCS:%.cc=$(OUTPUT_DIR)/%.$(OEXT))
  
 libgpu_uarch_sim.a:$(OBJS)
+	$(RM) $(OUTPUT_DIR)/libgpu_uarch_sim.a
 	ar rcs  $(OUTPUT_DIR)/libgpu_uarch_sim.a $(OBJS)
 
 # Create flash directory if it doesn't exist
@@ -102,6 +106,9 @@ $(OUTPUT_DIR)/flash/wgmma:
 
 $(OUTPUT_DIR)/flash/ptx_sched:
 	mkdir -p $(OUTPUT_DIR)/flash/ptx_sched
+
+$(OUTPUT_DIR)/flash/sass:
+	mkdir -p $(OUTPUT_DIR)/flash/sass
 
 $(OUTPUT_DIR)/flash/gem5:
 	mkdir -p $(OUTPUT_DIR)/flash/gem5
@@ -130,6 +137,15 @@ $(OUTPUT_DIR)/flash/wgmma/%.$(OEXT): flash/wgmma/%.cc | $(OUTPUT_DIR)/flash/wgmm
 
 # Specific rule for flash/ptx_sched subdirectory
 $(OUTPUT_DIR)/flash/ptx_sched/%.$(OEXT): flash/ptx_sched/%.cc | $(OUTPUT_DIR)/flash/ptx_sched
+	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
+
+# Execution adapters and native frontend source trees
+$(OUTPUT_DIR)/flash/frontend/%.$(OEXT): flash/frontend/%.cc
+	@mkdir -p $(dir $@)
+	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
+
+$(OUTPUT_DIR)/flash/sass/%.$(OEXT): flash/sass/%.cc | $(OUTPUT_DIR)/flash/sass
+	@mkdir -p $(dir $@)
 	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
 
 # Specific rule for flash/gem5 subdirectory

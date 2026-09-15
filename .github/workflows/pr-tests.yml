@@ -66,7 +66,16 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull CI Docker image
+        if: matrix.cuda != '13.3'
         run: docker pull "$CI_IMAGE"
+
+      - name: Prepare SASS baseline toolchain
+        if: matrix.cuda == '13.3'
+        run: |
+          docker build -f docker/Dockerfile.ci -t flashgpu-ci-base .
+          docker build -f docker/Dockerfile.ci-sass \
+            --build-arg CI_IMAGE=flashgpu-ci-base -t flashgpu-ci-sass .
+          echo "CI_IMAGE=flashgpu-ci-sass" >> "$GITHUB_ENV"
 
       - name: Run simulation tests in container
         id: tests
@@ -79,6 +88,7 @@ jobs:
             -e GITHUB_ACTIONS=true \
             -e CI_JOB=${{ matrix.job }} \
             -e CI_BUILD_JOBS=2 \
+            -e OMP_NUM_THREADS=4 \
             -v ${{ github.workspace }}:/gpgpu-sim \
             -w /gpgpu-sim \
             "$CI_IMAGE" \

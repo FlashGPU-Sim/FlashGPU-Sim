@@ -56,17 +56,58 @@ class GTest:
 
         environment = os.environ.copy()
         environment.pop("GTEST_OUTPUT", None)
+        environment.pop("LD_PRELOAD", None)
+        # Listing tests must not initialize the simulator. CUDA test binaries
+        # register their fatbins before main(), which can make
+        # --gtest_list_tests enter PTX extraction when setup_environment has
+        # put the simulator's libcudart first. Use the toolkit runtime for this
+        # metadata-only subprocess; actual test execution retains the caller's
+        # simulator environment.
+        simulator_root = environment.get("GPGPUSIM_ROOT")
+        library_paths = [
+            entry
+            for entry in environment.get("LD_LIBRARY_PATH", "").split(":")
+            if entry
+        ]
+        if simulator_root:
+            simulator_lib = Path(simulator_root) / "lib"
+            library_paths = [
+                entry
+                for entry in library_paths
+                if not Path(entry).is_relative_to(simulator_lib)
+            ]
+        cuda_root = environment.get("CUDA_INSTALL_PATH")
+        if cuda_root:
+            cuda_lib = str(Path(cuda_root) / "lib64")
+            library_paths = [
+                entry for entry in library_paths if entry != cuda_lib
+            ]
+            library_paths.insert(0, cuda_lib)
+            # Some tests link the driver API directly. GPU-less CI has the
+            # toolkit stub but no libcuda.so.1 loader entry. Preloading the
+            # stub satisfies its SONAME for discovery only; never export this
+            # environment to actual test execution.
+            driver_stub = Path(cuda_lib) / "stubs/libcuda.so"
+            if driver_stub.is_file():
+                environment["LD_PRELOAD"] = str(driver_stub)
+        if library_paths:
+            environment["LD_LIBRARY_PATH"] = ":".join(library_paths)
+        else:
+            environment.pop("LD_LIBRARY_PATH", None)
         completed = subprocess.run(
             [str(binary), "--gtest_color=no", "--gtest_list_tests"],
             cwd=config_dir,
             env=environment,
             text=True,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             check=False,
         )
         if completed.returncode != 0:
-            raise DiscoveryError(f"Failed to list tests in: {binary}")
+            raise DiscoveryError(
+                f"Failed to list tests in: {binary} (exit {completed.returncode})\n"
+                f"{completed.stderr.strip()}"
+            )
         return parse_gtest_list(completed.stdout)
 
     def matches(self, binary: Path, config_dir: Path, gtest_filter: str) -> bool:

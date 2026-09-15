@@ -1,6 +1,7 @@
 #ifndef __gpgpu_context_h__
 #define __gpgpu_context_h__
 #include <atomic>
+#include "../src/gpgpu-sim/flash/instruction_timing_config.h"
 #include <string>
 #include "../src/cuda-sim/cuda-sim.h"
 #include "../src/cuda-sim/cuda_device_runtime.h"
@@ -37,6 +38,8 @@ class gpgpu_context {
     device_runtime = new cuda_device_runtime(this);
     stats = new ptx_stats(this);
   }
+  flash_gpgpu_sim::instruction_timing_config instruction_timing;
+
   // global list
   symbol_table *g_global_allfiles_symbol_table;
   const char *g_filename;

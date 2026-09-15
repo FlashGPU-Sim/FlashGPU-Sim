@@ -1,0 +1,17 @@
+{
+  "architecture": "sm120",
+  "group": "fa2",
+  "profile": "scaling",
+  "mode": "baseline",
+  "expected_tests": 10,
+  "cases": [
+    {
+      "gtest_filter": "Fa2PrefillFp16ScalingTest.H1D128FullB1S*",
+      "expected_tests": 5
+    },
+    {
+      "gtest_filter": "Fa2PrefillFp16ScalingTest.H1D128CausalB1S*",
+      "expected_tests": 5
+    }
+  ]
+}

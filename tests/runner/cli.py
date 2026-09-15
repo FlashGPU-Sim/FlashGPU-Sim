@@ -35,7 +35,11 @@ class Arguments:
     test_group: str = ""
     profile: str = ""
     mode: str = ""
+    binary: str = ""
     gtest_filter: str = ""
+    sass: bool = False
+    sass_timing: bool = False
+    sassir: str = ""
 
 
 def usage(program: str, stream: object = sys.stdout) -> None:
@@ -71,7 +75,13 @@ Options:
   --group NAME       Select one source/binary group; build also accepts all
   --profile NAME     Select a profile within a complex test group
   --mode NAME        Select a compile-time analysis mode
+  --binary NAME      Select one executable from a multi-binary test group
   --gtest-filter EXPR Filter GoogleTest cases for run or list-cases
+  --sass             Decode the exact executable with NVIDIA's disassembler
+                     and run through strict functional SASS
+  --sass-timing      Decode the exact executable and run execution-driven
+                     SASS through both functional and detailed timing paths
+  --sassir PATH Use an explicit SASSIR file for low-level debugging
   -h, --help         Show this help
   Options may appear before or after the command.
 
@@ -80,6 +90,9 @@ Examples:
   {program} list-cases --arch sm120 --group integration
   {program} list-cases --arch sm120 --group integration --gtest-filter '*VectorAdd*'
   {program} run --arch sm120 --group integration CudaVectorAdd
+  {program} run --arch sm120 --group integration \\
+    --gtest-filter 'CudaVectorAddTest.BasicVectorAddition' \\
+    --sass
   {program} run --arch sm90 --group wgmma --gtest-filter 'WgmmaF16*'
   {program} run --arch sm90 --group fa2 --profile smoke
   {program} run --arch sm90 --group fa2 --profile breakdown --mode only_mma
@@ -174,6 +187,15 @@ def parse_arguments(argv: Sequence[str]) -> Arguments:
             )
             index += 2
             continue
+        if not positional_only and token == "--binary":
+            _set_once(
+                arguments,
+                "binary",
+                _require_value(argv, index, "--binary"),
+                "--binary",
+            )
+            index += 2
+            continue
         if not positional_only and token == "--gtest-filter":
             _set_once(
                 arguments,
@@ -182,6 +204,27 @@ def parse_arguments(argv: Sequence[str]) -> Arguments:
                 "--gtest-filter",
             )
             index += 2
+            continue
+        if not positional_only and token == "--sassir":
+            _set_once(
+                arguments,
+                "sassir",
+                _require_value(argv, index, "--sassir"),
+                "--sassir",
+            )
+            index += 2
+            continue
+        if not positional_only and token == "--sass":
+            if arguments.sass:
+                raise RunnerError("--sass may only be specified once")
+            arguments.sass = True
+            index += 1
+            continue
+        if not positional_only and token == "--sass-timing":
+            if arguments.sass_timing:
+                raise RunnerError("--sass-timing may only be specified once")
+            arguments.sass_timing = True
+            index += 1
             continue
         if not positional_only and token.startswith("-"):
             raise RunnerError(f"Unknown option: {token}")
@@ -246,6 +289,20 @@ def validate_arguments(arguments: Arguments) -> None:
         raise RunnerError(
             "--gtest-filter cannot be combined with a positional filter"
         )
+    if arguments.sassir and action != "run":
+        raise RunnerError("--sassir is only valid with run")
+    if arguments.sass and action != "run":
+        raise RunnerError("--sass is only valid with run")
+    if arguments.sass_timing and action != "run":
+        raise RunnerError("--sass-timing is only valid with run")
+    if arguments.sass and arguments.sassir:
+        raise RunnerError("--sass cannot be combined with --sassir")
+    if arguments.sass_timing and (arguments.sass or arguments.sassir):
+        raise RunnerError(
+            "--sass-timing cannot be combined with --sass or --sassir"
+        )
+    if arguments.binary and action not in {"run", "list-cases"}:
+        raise RunnerError("--binary is only valid with run or list-cases")
     if arguments.test_group and not arguments.architecture:
         raise RunnerError("--group requires --arch")
     if arguments.profile and not arguments.test_group:
@@ -314,6 +371,14 @@ def load_settings(arguments: Arguments) -> Settings:
     if arguments.config:
         settings.gpu_config = arguments.config
         settings.gpu_config_explicit = True
+    if arguments.sassir:
+        sassir = Path(arguments.sassir).expanduser().resolve()
+        if not sassir.is_file():
+            raise RunnerError(f"SASSIR not found: {sassir}")
+        settings.sassir = str(sassir)
+    settings.sass_auto = arguments.sass or arguments.sass_timing
+    settings.sass_timing = arguments.sass_timing
+    settings.binary = arguments.binary
     return settings
 
 
@@ -414,6 +479,13 @@ def execute(arguments: Arguments, program: str) -> int:
         profile=arguments.profile,
         mode=arguments.mode,
     )
+    if (settings.sass_auto or settings.sassir) and architecture.name not in {
+        "sm90",
+        "sm120",
+    }:
+        raise RunnerError(
+            "strict SASS supports only the SM90 and SM120 frontends"
+        )
     builder.configure_architecture(architecture)
 
     if arguments.action == "build":

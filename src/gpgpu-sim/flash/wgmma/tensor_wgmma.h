@@ -70,10 +70,18 @@ public:
 
   bool issue_chain_ready(const warp_inst_t *inst,
                          unsigned long long cycle) const;
+  bool admission_queue_ready(unsigned cta_id, unsigned warpgroup_id,
+                             const warp_inst_t *inst) const;
+  bool accumulator_queue_ready(unsigned cta_id, unsigned warpgroup_id,
+                               const warp_inst_t *inst) const;
   void record_issue_chain(const warp_inst_t *inst, unsigned long long cycle);
   void add_op(unsigned cta_id, unsigned warpgroup_id, unsigned op_uid,
               unsigned compute_latency, unsigned completion_tail_latency,
-              unsigned long long rf_traffic_tokens);
+              unsigned long long rf_traffic_tokens,
+              int accumulator_base_register,
+              unsigned accumulator_bytes_per_thread);
+  bool stalls_result_dispatch(unsigned long long cycle, unsigned scheduler_id,
+                              unsigned pressure_percent = 100);
   unsigned long long drain_rf_traffic(unsigned long long bytes);
   unsigned long long rf_traffic_backlog() const;
   void commit_group(unsigned cta_id, unsigned warpgroup_id);

@@ -223,6 +223,9 @@ class core_config {
     m_valid = false;
     num_shmem_bank = 16;
     shmem_limited_broadcast = false;
+    shmem_data_wavefronts_per_cycle = 1;
+    shmem_matrix_store_data_wavefronts_per_cycle = 0;
+    shmem_mio_load_initiation_interval = 1;
     gpgpu_shmem_sizeDefault = (unsigned)-1;
     gpgpu_shmem_sizePrefL1 = (unsigned)-1;
     gpgpu_shmem_sizePrefShared = (unsigned)-1;
@@ -242,6 +245,9 @@ class core_config {
   bool shmem_limited_broadcast;
   static const address_type WORD_SIZE = 4;
   unsigned num_shmem_bank;
+  unsigned shmem_data_wavefronts_per_cycle;
+  unsigned shmem_matrix_store_data_wavefronts_per_cycle;
+  unsigned shmem_mio_load_initiation_interval;
   unsigned shmem_bank_func(address_type addr) const {
     return ((addr / WORD_SIZE) % num_shmem_bank);
   }
@@ -817,8 +823,8 @@ class inst_t {
     const_cache_operand = 0;
     num_operands = 0;
     num_regs = 0;
-    memset(out, 0, sizeof(unsigned));
-    memset(in, 0, sizeof(unsigned));
+    memset(out, 0, sizeof(out));
+    memset(in, 0, sizeof(in));
     is_vectorin = 0;
     is_vectorout = 0;
     space = memory_space_t();
@@ -882,6 +888,81 @@ class inst_t {
   bool bar_parity = false;
 
 public:
+  // ISA-neutral metadata consumed by the timing model.  Frontends translate
+  // their instruction encoding into these hardware-facing descriptions during
+  // decode; timing units must not inspect frontend-specific instruction types.
+  struct wgmma_static_info_t {
+    enum operation_t {
+      WGMMA_INVALID = 0,
+      WGMMA_MMA_ASYNC,
+      WGMMA_MMA_ASYNC_SPARSE,
+      WGMMA_COMMIT_GROUP,
+      WGMMA_WAIT_GROUP,
+    };
+
+    operation_t operation = WGMMA_INVALID;
+    unsigned accumulator_bytes_per_thread = 0;
+    unsigned register_a_registers_per_thread = 0;
+    unsigned wait_group_num = 0;
+    // Native GMMA marks the last MMA in a group with a scoreboard operand,
+    // whereas PTX represents the same boundary with a separate commit_group.
+    bool commit_group_after_issue = false;
+
+    bool is_mma_async() const {
+      return operation == WGMMA_MMA_ASYNC ||
+             operation == WGMMA_MMA_ASYNC_SPARSE;
+    }
+    bool is_group_control() const {
+      return operation == WGMMA_COMMIT_GROUP ||
+             operation == WGMMA_WAIT_GROUP;
+    }
+    bool is_warpgroup_instruction() const {
+      return is_mma_async() || is_group_control();
+    }
+    bool uses_register_a() const {
+      return register_a_registers_per_thread != 0;
+    }
+  };
+  void set_wgmma_static_info(const wgmma_static_info_t &info) {
+    wgmma_static_info = info;
+  }
+  const wgmma_static_info_t &get_wgmma_static_info() const {
+    return wgmma_static_info;
+  }
+
+  struct mbarrier_static_info_t {
+    enum operation_t {
+      MBARRIER_INVALID = 0,
+      MBARRIER_INIT,
+      MBARRIER_TRY_WAIT,
+      MBARRIER_COMPLETE_TX,
+      MBARRIER_ARRIVE_EXPECT_TX,
+      MBARRIER_INVAL,
+    };
+
+    operation_t operation = MBARRIER_INVALID;
+    bool arrive = false;
+    bool expect_tx = false;
+  };
+  void set_mbarrier_static_info(const mbarrier_static_info_t &info) {
+    mbarrier_static_info = info;
+  }
+  const mbarrier_static_info_t &get_mbarrier_static_info() const {
+    return mbarrier_static_info;
+  }
+
+  struct async_copy_static_info_t {
+    bool has_source_size = false;
+    unsigned source_size = 0;
+    bool mbarrier_increment_pending = true;
+  };
+  void set_async_copy_static_info(const async_copy_static_info_t &info) {
+    async_copy_static_info = info;
+  }
+  const async_copy_static_info_t &get_async_copy_static_info() const {
+    return async_copy_static_info;
+  }
+
   struct tma_static_info_t {
     enum type_t {
       TMA_TYPE_INVALID = 0,
@@ -922,6 +1003,83 @@ public:
   const tma_static_info_t &get_tma_static_info() const {
     return tma_static_info;
   }
+
+  // Frontend-neutral dependency control carried by native machine
+  // instructions. PTX leaves this structure at its defaults; a SASS frontend
+  // fills it from the instruction control word before issue. The timing
+  // scheduler consumes these fields without inspecting a frontend-specific
+  // instruction object.
+  struct dependency_control_t {
+    static constexpr uint8_t NO_BARRIER = 7;
+
+    uint8_t stall_cycles = 0;
+    bool yield = false;
+    uint8_t write_barrier = NO_BARRIER;
+    uint8_t read_barrier = NO_BARRIER;
+    uint8_t wait_mask = 0;
+    uint8_t reuse_mask = 0;
+
+    bool waits_on(unsigned barrier) const {
+      return barrier < 6 && (wait_mask & (1u << barrier)) != 0;
+    }
+    bool has_write_barrier() const { return write_barrier < 6; }
+    bool has_read_barrier() const { return read_barrier < 6; }
+  };
+  void set_dependency_control(const dependency_control_t &control) {
+    dependency_control = control;
+    explicit_dependency_control = true;
+  }
+  const dependency_control_t &get_dependency_control() const {
+    return dependency_control;
+  }
+  bool has_explicit_dependency_control() const {
+    return explicit_dependency_control;
+  }
+
+  // Frontend-neutral description of physical regular-register reads.  Native
+  // frontends retain the logical source position because modern register-file
+  // reuse caches distinguish the same register used in different positions.
+  // PTX leaves this list empty and continues through the legacy operand path.
+  struct register_file_source_t {
+    unsigned reg = 0;
+    uint8_t slot = 0;
+    bool retain = false;
+  };
+
+  struct register_file_destination_t {
+    unsigned reg = 0;
+  };
+  void add_register_file_source(unsigned reg, unsigned slot, bool retain) {
+    assert(register_file_source_count < MAX_REG_OPERANDS);
+    register_file_sources[register_file_source_count++] =
+        register_file_source_t{reg, static_cast<uint8_t>(slot), retain};
+  }
+  unsigned get_register_file_source_count() const {
+    return register_file_source_count;
+  }
+  const register_file_source_t &get_register_file_source(unsigned index) const {
+    assert(index < register_file_source_count);
+    return register_file_sources[index];
+  }
+  void add_register_file_destination(unsigned reg) {
+    assert(register_file_destination_count < MAX_REG_OPERANDS);
+    register_file_destinations[register_file_destination_count++] =
+        register_file_destination_t{reg};
+  }
+  unsigned get_register_file_destination_count() const {
+    return register_file_destination_count;
+  }
+  const register_file_destination_t &
+  get_register_file_destination(unsigned index) const {
+    assert(index < register_file_destination_count);
+    return register_file_destinations[index];
+  }
+  void set_mio_client(bool value = true) { mio_client = value; }
+  bool is_mio_client() const { return mio_client; }
+  void set_async_proxy_fence(bool value = true) {
+    async_proxy_fence = value;
+  }
+  bool is_async_proxy_fence() const { return async_proxy_fence; }
   void set_tma_dyn_info(int laneid, const tma_dyn_info_t &info) {
     tma_dyn_info[laneid] = info;
   }
@@ -935,7 +1093,23 @@ public:
   }
 
 private:
+  wgmma_static_info_t wgmma_static_info;
+  mbarrier_static_info_t mbarrier_static_info;
+  async_copy_static_info_t async_copy_static_info;
   tma_static_info_t tma_static_info;
+  dependency_control_t dependency_control;
+  bool explicit_dependency_control = false;
+  register_file_source_t register_file_sources[MAX_REG_OPERANDS];
+  unsigned register_file_source_count = 0;
+  register_file_destination_t register_file_destinations[MAX_REG_OPERANDS];
+  unsigned register_file_destination_count = 0;
+  // Frontend-neutral marker for instructions admitted through the SM's
+  // memory-input/output queue. Frontends classify ISA opcodes; the timing
+  // backend models only the shared hardware resource.
+  bool mio_client = false;
+  // Frontend-neutral marker for a fence that orders shared-memory writes with
+  // the asynchronous proxy. Other memory barriers do not consume this path.
+  bool async_proxy_fence = false;
   tma_dyn_info_t tma_dyn_info[MAX_WARP_SIZE];
 
 public:
@@ -1028,6 +1202,7 @@ class warp_inst_t : public inst_t {
     m_wgmma_warpgroup = false;
     m_wgmma_warpgroup_size = 0;
     m_wgmma_warpgroup_base_warp_id = (unsigned)-1;
+    m_shared_dispatch_bank_conflict = false;
     for (unsigned i = 0; i < 4; ++i)
       m_wgmma_warpgroup_warp_id[i] = (unsigned)-1;
 
@@ -1055,6 +1230,7 @@ class warp_inst_t : public inst_t {
     m_wgmma_warpgroup = false;
     m_wgmma_warpgroup_size = 0;
     m_wgmma_warpgroup_base_warp_id = (unsigned)-1;
+    m_shared_dispatch_bank_conflict = false;
     for (unsigned i = 0; i < 4; ++i)
       m_wgmma_warpgroup_warp_id[i] = (unsigned)-1;
 
@@ -1072,6 +1248,18 @@ class warp_inst_t : public inst_t {
   void broadcast_barrier_reduction(const active_mask_t &access_mask);
   void do_atomic(bool forceDo = false);
   void do_atomic(const active_mask_t &access_mask, bool forceDo = false);
+  // Mark a timing instruction as an atomic memory transaction. Native
+  // frontends may already have applied the architectural RMW while issuing
+  // the instruction, in which case the memory-system callback must remain
+  // disabled even though coalescing, cache handling, and response timing are
+  // still atomic.
+  void set_atomic(bool execute_callback = true) {
+    m_isatomic = true;
+    should_do_atomic = execute_callback;
+  }
+  bool executes_atomic_callback() const {
+    return m_isatomic && should_do_atomic;
+  }
   void clear() { m_empty = true; }
 
   void issue(const active_mask_t &mask, unsigned warp_id,
@@ -1105,6 +1293,7 @@ class warp_inst_t : public inst_t {
       m_per_scalar_thread_valid = true;
     }
     m_per_scalar_thread[n].memreqaddr[0] = addr;
+    m_per_scalar_thread[n].memreqaddr_count = 1;
   }
   void set_addr(unsigned n, new_addr_type *addr, unsigned num_addrs) {
     if (!m_per_scalar_thread_valid) {
@@ -1114,6 +1303,7 @@ class warp_inst_t : public inst_t {
     assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
     for (unsigned i = 0; i < num_addrs; i++)
       m_per_scalar_thread[n].memreqaddr[i] = addr[i];
+    m_per_scalar_thread[n].memreqaddr_count = num_addrs;
   }
   void set_per_thread_memory_access_size(unsigned n, unsigned size) {
     if (!m_per_scalar_thread_valid) {
@@ -1211,6 +1401,10 @@ class warp_inst_t : public inst_t {
     assert(m_per_scalar_thread_valid);
     return m_per_scalar_thread[n].memreqaddr[0];
   }
+  unsigned get_addr_count(unsigned n) const {
+    assert(m_per_scalar_thread_valid);
+    return m_per_scalar_thread[n].memreqaddr_count;
+  }
 
   bool isatomic() const { return m_isatomic; }
 
@@ -1227,6 +1421,9 @@ class warp_inst_t : public inst_t {
   }
 
   bool has_dispatch_delay() { return cycles > 0; }
+  bool shared_dispatch_delay_is_bank_conflict() const {
+    return m_shared_dispatch_bank_conflict;
+  }
 
   void print(FILE *fout) const;
   unsigned get_uid() const { return m_uid; }
@@ -1241,6 +1438,7 @@ class warp_inst_t : public inst_t {
   bool m_cache_hit;
   unsigned long long issue_cycle;
   unsigned cycles;  // used for implementing initiation interval delay
+  bool m_shared_dispatch_bank_conflict;
   bool m_isatomic;
   bool should_do_atomic;
   bool m_is_printf;
@@ -1257,12 +1455,14 @@ class warp_inst_t : public inst_t {
     per_thread_info() {
       for (unsigned i = 0; i < MAX_ACCESSES_PER_INSN_PER_THREAD; i++)
         memreqaddr[i] = 0;
+      memreqaddr_count = 0;
       memory_access_size = 0;
       memory_access_size_valid = false;
     }
     dram_callback_t callback;
     unsigned memory_access_size;
     bool memory_access_size_valid;
+    unsigned memreqaddr_count;
     new_addr_type
         memreqaddr[MAX_ACCESSES_PER_INSN_PER_THREAD];  // effective address,
                                                        // upto 8 different
@@ -1486,6 +1686,20 @@ class register_set {
     ready = NULL;
     for (unsigned i = 0; i < regs.size(); i++) {
       if (not regs[i]->empty()) {
+        if (ready and (*ready)->get_uid() < regs[i]->get_uid()) {
+          // ready is oldest
+        } else {
+          ready = &regs[i];
+        }
+      }
+    }
+    return ready;
+  }
+  template <typename Predicate>
+  warp_inst_t **get_ready_if(Predicate predicate) {
+    warp_inst_t **ready = NULL;
+    for (unsigned i = 0; i < regs.size(); i++) {
+      if (not regs[i]->empty() && predicate(*regs[i])) {
         if (ready and (*ready)->get_uid() < regs[i]->get_uid()) {
           // ready is oldest
         } else {
