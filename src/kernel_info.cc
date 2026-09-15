@@ -2,6 +2,8 @@
 #include "kernel_info.h"
 #include <algorithm>
 #include <cstdio>
+#include "gpgpu-sim/flash/panic.h"
+#include <utility>
 #include "../libcuda/gpgpu_context.h"
 #include "cuda-sim/memory.h"
 #include "cuda-sim/ptx_ir.h"
@@ -24,6 +26,7 @@ kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
                              class function_info *entry,
                              unsigned long long streamID) {
   m_kernel_entry = entry;
+  m_kernel_name = entry->get_name();
   m_grid_dim = gridDim;
   m_block_dim = blockDim;
   m_next_cta.x = 0;
@@ -49,6 +52,33 @@ kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
   m_dynamic_smem = 0;
 }
 
+kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
+                             std::string kernel_name, gpgpu_context *context,
+                             unsigned long long streamID,
+                             unsigned sass_fatbin_handle) {
+  if (context == nullptr)
+    flash_gpgpu_sim::panic("SASS kernel launch requires a context");
+  m_kernel_entry = nullptr;
+  m_frontend = flash_gpgpu_sim::frontend_kind::sass;
+  m_kernel_name = std::move(kernel_name);
+  m_sass_fatbin_handle = sass_fatbin_handle;
+  m_grid_dim = gridDim;
+  m_block_dim = blockDim;
+  m_next_cta = dim3(0, 0, 0);
+  m_next_tid = m_next_cta;
+  m_num_cores_running = 0;
+  m_uid = (context->kernel_info_m_next_uid)++;
+  m_streamID = streamID;
+  m_param_mem = new memory_space_impl<8192>("param", 64 * 1024);
+  m_parent_kernel = nullptr;
+  m_launch_latency = context->device_runtime->g_kernel_launch_latency;
+  m_kernel_TB_latency =
+      context->device_runtime->g_kernel_launch_latency +
+      num_blocks() * context->device_runtime->g_TB_launch_latency;
+  cache_config_set = false;
+  m_dynamic_smem = 0;
+}
+
 /*A snapshot of the texture mappings needs to be stored in the kernel's info as
 kernels should use the texture bindings seen at the time of launch and textures
  can be bound/unbound asynchronously with respect to streams. */
@@ -57,6 +87,7 @@ kernel_info_t::kernel_info_t(
     std::map<std::string, const struct cudaArray *> nameToCudaArray,
     std::map<std::string, const struct textureInfo *> nameToTextureInfo) {
   m_kernel_entry = entry;
+  m_kernel_name = entry->get_name();
   m_grid_dim = gridDim;
   m_block_dim = blockDim;
   m_next_cta.x = 0;
@@ -89,7 +120,44 @@ kernel_info_t::~kernel_info_t() {
   delete m_param_mem;
 }
 
-std::string kernel_info_t::name() const { return m_kernel_entry->get_name(); }
+std::string kernel_info_t::name() const {
+  return m_kernel_entry == nullptr ? m_kernel_name : m_kernel_entry->get_name();
+}
+
+void kernel_info_t::set_resource_usage(
+    flash_gpgpu_sim::kernel_resource_usage resources) {
+  m_resources = resources;
+  m_has_resources = true;
+}
+
+flash_gpgpu_sim::kernel_resource_usage kernel_info_t::resource_usage() const {
+  if (m_has_resources)
+    return m_resources;
+  // Preserve lazy PTX metadata lookup: register allocation may finalize it
+  // after kernel_info_t is constructed. Native loaders supply a snapshot.
+  if (frontend() != flash_gpgpu_sim::frontend_kind::ptx || !m_kernel_entry)
+    flash_gpgpu_sim::panic("kernel resource metadata is unavailable");
+  const gpgpu_ptx_sim_info *info = m_kernel_entry->get_kernel_info();
+  if (!info)
+    return {};
+  return {info->regs, info->smem, info->lmem, 0};
+}
+
+unsigned kernel_info_t::registers_per_thread() const {
+  return resource_usage().registers;
+}
+
+unsigned kernel_info_t::static_shared_memory() const {
+  return resource_usage().static_shared;
+}
+
+unsigned kernel_info_t::local_memory_per_thread() const {
+  return resource_usage().local_memory;
+}
+
+unsigned kernel_info_t::stack_size_per_thread() const {
+  return resource_usage().stack_size;
+}
 
 // Jin: parent and child kernel management for CDP
 void kernel_info_t::set_parent(kernel_info_t *parent, dim3 parent_ctaid,

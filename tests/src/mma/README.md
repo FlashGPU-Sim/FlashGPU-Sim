@@ -31,6 +31,22 @@ From the repository root:
 The `sm120` manifest supplies the NVCC target and simulator configuration; no
 per-test configuration is required.
 
+## Strict SASS gate
+
+All 29 SM120 MMA integration cases run through their original numerical
+GoogleTests in strict execution-driven SASS:
+
+```bash
+./tests/run_sass_suite.py tests/src/mma/sass_functional_suite.json
+```
+
+The runner selects `mma_tests`, pairs every registered kernel with its exact
+fatbin handle, and generates SASSIR under the ignored content-addressed cache.
+The four case families cover F16 (`HMMA.1688`/`HMMA.16816` plus the compiler
+helper for legacy `m8n8k4`), BF16, TF32, and signed INT8. All original CPU
+references remain unchanged, and unsupported official SASS forms fail closed.
+No manifest, cubin selector, or kernel name is stored in the suite JSON.
+
 ## Adding coverage
 
 Add the CUDA source below this directory, register it in

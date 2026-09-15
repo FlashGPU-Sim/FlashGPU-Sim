@@ -61,6 +61,7 @@ void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
   m_dynamic_warp_id = dynamic_warp_id;
   issue_cycle = cycle;
   cycles = initiation_interval;
+  m_shared_dispatch_bank_conflict = false;
   m_cache_hit = false;
   m_empty = false;
   m_scheduler_id = sch_id;
@@ -247,7 +248,7 @@ void warp_inst_t::set_not_active(unsigned lane_id) {
 
 void warp_inst_t::set_active(const active_mask_t &active) {
   m_warp_active_mask = active;
-  if (m_isatomic) {
+  if (m_isatomic && m_per_scalar_thread_valid) {
     for (unsigned i = 0; i < m_config->warp_size; i++) {
       if (!m_warp_active_mask.test(i)) {
         m_per_scalar_thread[i].callback.function = NULL;
@@ -334,90 +335,143 @@ void warp_inst_t::generate_mem_accesses() {
     case sstarr_space: {
       unsigned subwarp_size = m_config->warp_size / m_config->mem_warp_parts;
       unsigned total_accesses = 0;
-      for (unsigned subwarp = 0; subwarp < m_config->mem_warp_parts;
-           subwarp++) {
-        // data structures used per part warp
-        std::map<unsigned, std::map<new_addr_type, unsigned> >
-            bank_accs;  // bank -> word address -> access count
+      unsigned longest_transaction_cycles = 0;
+      unsigned access_phases = 0;
+      for (unsigned thread = 0; thread < m_config->warp_size; ++thread)
+        if (active(thread))
+          access_phases = std::max(
+              access_phases,
+              m_per_scalar_thread[thread].memreqaddr_count);
 
-        // step 1: compute accesses to words in banks
-        for (unsigned thread = subwarp * subwarp_size;
-             thread < (subwarp + 1) * subwarp_size; thread++) {
-          if (!active(thread)) continue;
-          new_addr_type addr = m_per_scalar_thread[thread].memreqaddr[0];
-          // FIXME: deferred allocation of shared memory should not accumulate
-          // across kernel launches assert( addr < m_config->gpgpu_shmem_size );
-          unsigned bank = m_config->shmem_bank_func(addr);
-          new_addr_type word =
-              line_size_based_tag_func(addr, m_config->WORD_SIZE);
-          bank_accs[bank][word]++;
-        }
-
-        if (m_config->shmem_limited_broadcast) {
-          // step 2: look for and select a broadcast bank/word if one occurs
-          bool broadcast_detected = false;
-          new_addr_type broadcast_word = (new_addr_type)-1;
-          unsigned broadcast_bank = (unsigned)-1;
-          std::map<unsigned, std::map<new_addr_type, unsigned> >::iterator b;
-          for (b = bank_accs.begin(); b != bank_accs.end(); b++) {
-            unsigned bank = b->first;
-            std::map<new_addr_type, unsigned> &access_set = b->second;
-            std::map<new_addr_type, unsigned>::iterator w;
-            for (w = access_set.begin(); w != access_set.end(); ++w) {
-              if (w->second > 1) {
-                // found a broadcast
-                broadcast_detected = true;
-                broadcast_bank = bank;
-                broadcast_word = w->first;
-                break;
-              }
-            }
-            if (broadcast_detected) break;
-          }
-
-          // step 3: figure out max bank accesses performed, taking account of
-          // broadcast case
+      using bank_access_map =
+          std::map<unsigned, std::map<new_addr_type, unsigned> >;
+      const auto bank_conflict_cycles = [this](bank_access_map &bank_accs) {
+        if (!m_config->shmem_limited_broadcast) {
           unsigned max_bank_accesses = 0;
-          for (b = bank_accs.begin(); b != bank_accs.end(); b++) {
-            unsigned bank_accesses = 0;
-            std::map<new_addr_type, unsigned> &access_set = b->second;
-            std::map<new_addr_type, unsigned>::iterator w;
-            for (w = access_set.begin(); w != access_set.end(); ++w)
-              bank_accesses += w->second;
-            if (broadcast_detected && broadcast_bank == b->first) {
-              for (w = access_set.begin(); w != access_set.end(); ++w) {
-                if (w->first == broadcast_word) {
-                  unsigned n = w->second;
-                  assert(n > 1);  // or this wasn't a broadcast
-                  assert(bank_accesses >= (n - 1));
-                  bank_accesses -= (n - 1);
-                  break;
-                }
-              }
-            }
-            if (bank_accesses > max_bank_accesses)
-              max_bank_accesses = bank_accesses;
-          }
-
-          // step 4: accumulate
-          total_accesses += max_bank_accesses;
-        } else {
-          // step 2: look for the bank with the maximum number of access to
-          // different words
-          unsigned max_bank_accesses = 0;
-          std::map<unsigned, std::map<new_addr_type, unsigned> >::iterator b;
-          for (b = bank_accs.begin(); b != bank_accs.end(); b++) {
+          for (const auto &bank : bank_accs)
             max_bank_accesses =
-                std::max(max_bank_accesses, (unsigned)b->second.size());
-          }
-
-          // step 3: accumulate
-          total_accesses += max_bank_accesses;
+                std::max(max_bank_accesses, (unsigned)bank.second.size());
+          return max_bank_accesses;
         }
+
+        bool broadcast_detected = false;
+        new_addr_type broadcast_word = (new_addr_type)-1;
+        unsigned broadcast_bank = (unsigned)-1;
+        for (const auto &bank : bank_accs) {
+          for (const auto &word : bank.second) {
+            if (word.second > 1) {
+              broadcast_detected = true;
+              broadcast_bank = bank.first;
+              broadcast_word = word.first;
+              break;
+            }
+          }
+          if (broadcast_detected) break;
+        }
+
+        unsigned max_bank_accesses = 0;
+        for (const auto &bank : bank_accs) {
+          unsigned bank_accesses = 0;
+          for (const auto &word : bank.second) bank_accesses += word.second;
+          if (broadcast_detected && broadcast_bank == bank.first) {
+            const unsigned copies = bank.second.at(broadcast_word);
+            assert(copies > 1 && bank_accesses >= copies - 1);
+            bank_accesses -= copies - 1;
+          }
+          max_bank_accesses = std::max(max_bank_accesses, bank_accesses);
+        }
+        return max_bank_accesses;
+      };
+
+      for (unsigned access = 0; access < access_phases; ++access) {
+        unsigned phase_accesses = 0;
+        unsigned phase_access_bytes = 0;
+        for (unsigned thread = 0; thread < m_config->warp_size; ++thread) {
+          if (!active(thread) ||
+              access >= m_per_scalar_thread[thread].memreqaddr_count)
+            continue;
+          const unsigned thread_access_bytes =
+              m_per_scalar_thread[thread].memory_access_size_valid
+                  ? m_per_scalar_thread[thread].memory_access_size
+                  : data_size;
+          if (phase_access_bytes == 0)
+            phase_access_bytes = thread_access_bytes;
+          else
+            assert(thread_access_bytes == phase_access_bytes);
+        }
+        assert(phase_access_bytes > 0);
+        const unsigned bank_word_bytes =
+            static_cast<unsigned>(m_config->WORD_SIZE);
+        const unsigned words_per_thread =
+            std::max(1u, (phase_access_bytes + bank_word_bytes - 1) /
+                             bank_word_bytes);
+        const unsigned lanes_per_transaction =
+            std::max(1u, m_config->num_shmem_bank / words_per_thread);
+
+        for (unsigned subwarp = 0; subwarp < m_config->mem_warp_parts;
+             subwarp++) {
+          const unsigned subwarp_begin = subwarp * subwarp_size;
+          const unsigned subwarp_end = (subwarp + 1) * subwarp_size;
+          // A wide per-lane access is split into bank-width transactions. For
+          // example, LDS.128 uses four 8-lane transactions; grouping all lane
+          // word zeroes together would manufacture false 4-way conflicts.
+          for (unsigned group_begin = subwarp_begin;
+               group_begin < subwarp_end;
+               group_begin += lanes_per_transaction) {
+            const unsigned group_end =
+                std::min(subwarp_end, group_begin + lanes_per_transaction);
+            bank_access_map bank_accs;
+            for (unsigned thread = group_begin; thread < group_end; ++thread) {
+              if (!active(thread) ||
+                  access >= m_per_scalar_thread[thread].memreqaddr_count)
+                continue;
+              const new_addr_type base_addr =
+                  m_per_scalar_thread[thread].memreqaddr[access];
+              for (unsigned word_index = 0; word_index < words_per_thread;
+                   ++word_index) {
+                const new_addr_type addr =
+                    base_addr + word_index * m_config->WORD_SIZE;
+                const unsigned bank = m_config->shmem_bank_func(addr);
+                const new_addr_type word =
+                    line_size_based_tag_func(addr, m_config->WORD_SIZE);
+                bank_accs[bank][word]++;
+              }
+            }
+            const unsigned transaction_cycles =
+                bank_conflict_cycles(bank_accs);
+            phase_accesses += transaction_cycles;
+            longest_transaction_cycles =
+                std::max(longest_transaction_cycles, transaction_cycles);
+          }
+        }
+        total_accesses += phase_accesses;
       }
-      assert(total_accesses > 0 && total_accesses <= m_config->warp_size);
-      cycles = total_accesses;  // shared memory conflicts modeled as larger
-                                // initiation interval
+      assert(total_accesses > 0);
+      assert(m_config->shmem_data_wavefronts_per_cycle > 0);
+      unsigned data_wavefronts_per_cycle =
+          m_config->shmem_data_wavefronts_per_cycle;
+      if (op == TENSOR_CORE_STORE_OP &&
+          m_config->shmem_matrix_store_data_wavefronts_per_cycle > 0) {
+        data_wavefronts_per_cycle =
+            m_config->shmem_matrix_store_data_wavefronts_per_cycle;
+      }
+      const unsigned bandwidth_cycles =
+          (total_accesses + data_wavefronts_per_cycle - 1) /
+          data_wavefronts_per_cycle;
+      // Independent matrix/vector transactions can occupy distinct
+      // shared-data paths. Accesses caused by a bank conflict within one
+      // transaction cannot, so preserve that conflict as a lower bound.
+      cycles = std::max(longest_transaction_cycles, bandwidth_cycles);
+      // Shared loads use the SM-wide MIO admission/return path in addition to
+      // the banked data path.  A narrow request may therefore occupy the load
+      // service port longer than its single data wavefront, while wide LDS or
+      // LDSM requests remain limited by their transaction wavefront count.
+      if (space.get_type() == shared_space && is_load())
+        cycles = std::max(cycles,
+                          m_config->shmem_mio_load_initiation_interval);
+      m_shared_dispatch_bank_conflict =
+          longest_transaction_cycles > 1 &&
+          longest_transaction_cycles >= bandwidth_cycles;
       m_config->gpgpu_ctx->stats->ptx_file_line_stats_add_smem_bank_conflict(
           pc, total_accesses);
       break;

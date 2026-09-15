@@ -93,4 +93,62 @@ TEST(LocalInterconnectTest, VoqAllowsConfiguredReplyMultiGrant) {
   EXPECT_EQ(router.input_grants[2], 2u);
 }
 
+TEST(LocalInterconnectTest, ReplyOutputCanAcceptTwoDifferentInputsPerCycle) {
+  inct_config config{};
+  config.in_buffer_limit = 8;
+  config.out_buffer_limit = 8;
+  config.subnets = 2;
+  config.arbiter_algo = iSLIP;
+  config.grant_cycles = 1;
+  config.use_voq = 1;
+  config.reply_output_grants_per_cycle = 2;
+
+  xbar_router router(/*router_id=*/1, REPLY_NET, /*n_shader=*/1, /*n_mem=*/2,
+                     config);
+  int packet_from_input_1 = 1;
+  int packet_from_input_2 = 2;
+  router.Push(/*input_deviceID=*/1, /*output_deviceID=*/0,
+              &packet_from_input_1, /*size=*/1);
+  router.Push(/*input_deviceID=*/2, /*output_deviceID=*/0,
+              &packet_from_input_2, /*size=*/1);
+
+  router.Advance();
+
+  EXPECT_EQ(router.Pop(0), &packet_from_input_1);
+  EXPECT_EQ(router.Pop(0), &packet_from_input_2);
+  EXPECT_EQ(router.input_grants[1], 1u);
+  EXPECT_EQ(router.input_grants[2], 1u);
+  EXPECT_EQ(router.output_grants[0], 2u);
+}
+
+TEST(LocalInterconnectTest, ReplyOutputWidthDoesNotWidenOneInput) {
+  inct_config config{};
+  config.in_buffer_limit = 8;
+  config.out_buffer_limit = 8;
+  config.subnets = 2;
+  config.arbiter_algo = iSLIP;
+  config.grant_cycles = 1;
+  config.use_voq = 1;
+  config.reply_output_grants_per_cycle = 2;
+
+  xbar_router router(/*router_id=*/1, REPLY_NET, /*n_shader=*/1, /*n_mem=*/1,
+                     config);
+  int first_packet = 1;
+  int second_packet = 2;
+  router.Push(/*input_deviceID=*/1, /*output_deviceID=*/0, &first_packet,
+              /*size=*/1);
+  router.Push(/*input_deviceID=*/1, /*output_deviceID=*/0, &second_packet,
+              /*size=*/1);
+
+  router.Advance();
+
+  EXPECT_EQ(router.Pop(0), &first_packet);
+  EXPECT_EQ(router.Pop(0), nullptr);
+  EXPECT_EQ(router.input_grants[1], 1u);
+  EXPECT_EQ(router.output_grants[0], 1u);
+
+  router.Advance();
+  EXPECT_EQ(router.Pop(0), &second_packet);
+}
+
 }  // namespace

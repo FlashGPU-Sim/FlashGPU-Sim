@@ -128,9 +128,15 @@ class BuildManager:
         needs_rebuild = library is None or library.stat().st_size == 0
         if not needs_rebuild and library is not None:
             library_mtime = library.stat().st_mtime
+            simulator_sources = (
+                source
+                for root in (self.repo_root / "src", self.repo_root / "libcuda")
+                for source in root.rglob("*")
+                if source.suffix in {".cc", ".h"}
+            )
             needs_rebuild = any(
                 source.stat().st_mtime > library_mtime
-                for source in (self.repo_root / "src").rglob("*.cc")
+                for source in simulator_sources
             )
 
         if needs_rebuild:

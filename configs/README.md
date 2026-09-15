@@ -18,6 +18,17 @@ starting points for simulation and architecture studies.
 - **Clock domains (MHz):** `1500:1700:1700:2617`
   (core:interconnect:L2:DRAM)
 
+### SM90_H100_SASS_FRONTEND
+
+[`SM90_H100_SASS_FRONTEND`](SM90_H100_SASS_FRONTEND/gpgpusim.config) is the
+frozen H100 baseline for FA-3 SASS-frontend validation. It uses the current
+SM90 core timing model but retains the historical memory/SoC behavior from
+before the experimental partition-mapping changes. It is intended for SASS
+functionality and accuracy regressions, not general H100 architecture studies.
+
+The exact frozen differences and maintenance rules are documented in its
+[`README`](SM90_H100_SASS_FRONTEND/README.md).
+
 ### SM120_RTX5090
 
 [`SM120_RTX5090`](SM120_RTX5090/gpgpusim.config) models an RTX 5090 GPU with:
@@ -32,6 +43,11 @@ starting points for simulation and architecture studies.
 
 Both configuration directories include `sass_primary_hints.rules` for
 experiments that explicitly enable SASS-guided PTX reordering.
+
+The separate [SM120_RTX5090_SASS_FRONTEND](SM120_RTX5090_SASS_FRONTEND/README.md)
+selects SASS timing with the local 1800 MHz SM120 calibration. Use it explicitly
+with `--config SM120_RTX5090_SASS_FRONTEND --sass-timing`; the original
+SM120 configuration remains the PTX baseline.
 
 ### Legacy Configurations
 
@@ -115,12 +131,14 @@ inherit another limit.
 | --- | ---: | ---: | ---: | --- |
 | `-gpgpu_num_tma_units` | `0` | `1` | `1` | TMA execution units per SM; `0` disables the TMA pipeline |
 | `-gpgpu_tma_max_inflight` | `0` | `384` | `384` | Maximum in-flight TMA memory requests per SM; `0` is unlimited |
+| `-gpgpu_tma_max_inflight_bytes` | `0` | default | `12288` | Maximum in-flight TMA payload bytes per SM; `0` is unlimited |
 | `-gpgpu_tma_tx_quota` | `0` | `48` | `48` | Base in-flight request quota per TMA transaction; `0` is unlimited |
+| `-gpgpu_tma_tx_quota_bytes` | `0` | default | `3072` | Base in-flight byte quota per TMA transaction; when nonzero, overrides the request-count quota |
 | `-gpgpu_tma_quota_segment_bytes` | `0` | default | `8192` | Scale the transaction quota by `ceil(transaction_bytes / segment_bytes)`; `0` disables scaling |
 | `-gpgpu_tma_request_granularity` | `32` | `128` | `32` | Bytes represented by one TMA memory request |
 | `-gpgpu_tma_request_width` | `1` | default | default | TMA memory requests issued per TMA unit per cycle |
 | `-gpgpu_tma_response_width` | `1` | default | default | TMA response tokens accepted per SM per cycle |
-| `-gpgpu_tma_oob_l2_traffic` | `1` | `1` | `1` | Route out-of-bounds TMA fill traffic through L2 |
+| `-gpgpu_tma_oob_l2_traffic` | `0` | `0` | `1` | Route out-of-bounds TMA fill traffic through L2; H100 measurements show zero-filled elements do not become DRAM reads |
 | `-ptx_opcode_latency_tma` | `33` | `32` | `32` | TMA instruction latency in SM cycles |
 | `-ptx_opcode_initiation_tma` | `33` | `32` | `32` | Minimum TMA issue interval in SM cycles |
 | `-gpgpu_num_cp_async_units` | `0` | `1` | `1` | Ordinary `cp.async` execution units per SM; `0` disables this pipeline |
@@ -150,6 +168,7 @@ inherit another limit.
 | --- | ---: | ---: | ---: | --- |
 | `-ptx_opcode_latency_tensor` | `64` | `22,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA result latency by shape and type |
 | `-ptx_opcode_initiation_tensor` | `64` | `6,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA issue interval by shape and type |
+| `-gpgpu_tensor_core_scheduler_backpressure` | `0` | default | `1` | Apply the configured MMA initiation interval at each scheduler's classic tensor-admission lane |
 | `-gpgpu_cta_load_balance` | `0` | `1` | `1` | Cap CTAs per SM for uniform kernels using `ceil(total_ctas / total_sms)` |
 
 The public SM90 configuration also models asynchronous WGMMA execution. SS
@@ -158,8 +177,8 @@ memory for B. SM120 does not set the WGMMA-specific options.
 
 | Option | Code default | SM90_H100 | Meaning |
 | --- | ---: | ---: | --- |
-| `-ptx_opcode_latency_wgmma_ss`, `-ptx_opcode_initiation_wgmma_ss` | `4,4,4,4` | `4,4,4,4` | Non-overlappable SS tensor-pipe latency and issue interval for N = 8, 16, 32, and 64 |
-| `-ptx_opcode_latency_wgmma_rs`, `-ptx_opcode_initiation_wgmma_rs` | `12,12,12,12` | `3,3,3,3` | Non-overlappable RS tensor-pipe latency and issue interval |
+| `-ptx_opcode_latency_wgmma_ss`, `-ptx_opcode_initiation_wgmma_ss` | `4,4,4,4` | `17,17,17,17` | Non-overlappable SS tensor-pipe latency and issue interval for N = 8, 16, 32, and 64 |
+| `-ptx_opcode_latency_wgmma_rs`, `-ptx_opcode_initiation_wgmma_rs` | `12,12,12,12` | `17,17,17,17` | Non-overlappable RS tensor-pipe latency and issue interval |
 | `-ptx_opcode_completion_wgmma_ss` | `66,66,66,66` | `66,66,66,66` | Overlappable SS completion tail |
 | `-ptx_opcode_completion_wgmma_rs` | `64,65,64,64` | `64,65,64,64` | Overlappable RS completion tail |
 | `-ptx_opcode_completion_wgmma_int_ss` | `64,64,64,64` | `64,64,64,64` | Overlappable INT/B1 SS completion tail |
@@ -167,6 +186,8 @@ memory for B. SM120 does not set the WGMMA-specific options.
 | `-ptx_opcode_compute_throughput_wgmma` | `4096,2048,8192,8192,65536` | `4096,2048,8192,8192,65536` | Per-SM work/cycle for FP16/BF16, TF32, FP8, INT8, and B1 |
 | `-gpgpu_wgmma_issue_chain_ss` | `0,0,0,0,64` | `7,0,4,20,64` | SS issue-chain throttle encoded as `depth,startup_gap,fast_gap,slow_gap,reset_gap`; depth `0` disables it |
 | `-gpgpu_wgmma_issue_chain_rs` | `0,0,0,0,64` | `7,0,3,13,64` | RS issue-chain throttle using the same encoding |
+| `-gpgpu_wgmma_admission_queue_depth_ss` | `0` | `6` | Per-SM SS operations admitted but not yet consumed by the tensor backend; `0` disables it |
+| `-gpgpu_wgmma_admission_queue_depth_rs` | `0` | `5` | Per-SM RS operations admitted but not yet consumed by the tensor backend; `0` disables it |
 
 WGMMA register-file pressure is represented by pending traffic tokens sharing
 the normal operand-collector read budget:
@@ -201,11 +222,13 @@ topology and address mapping.
 
 | Option | Code default | SM90_H100 | SM120_RTX5090 | Meaning |
 | --- | ---: | ---: | ---: | --- |
-| `-gpgpu_ipoly_non_power2_balanced` | `0` | `2` | default | Balance IPOLY mapping for non-power-of-two memory-channel counts |
+| `-gpgpu_ipoly_non_power2_balanced` | `0` | `2` | default | Non-power-of-two IPOLY policy; mode `3` independently hashes channel/slice; mode `4` rotates each decoded stripe; mode `5` keeps one channel rotation for an entire decoded DRAM bank-row; mode `6` keeps mode `5`'s channel mapping and independently hashes only the local L2 slice |
 | `-gpgpu_ipoly_channel_stable_l2slice` | `0` | `0` | default | Keep the decoded DRAM channel stable while hashing the L2 slice |
+| L2 data-port width | cache-line width | `32 B/cycle` | `32 B/cycle` | Per-subpartition bandwidth; H100 has 160 subpartitions, giving 7.68 TB/s at 1.5 GHz |
 | `-gpgpu_l2_partition_count` | `1` | `2` | default | Coarse L2/locality partitions; `1` disables remote-partition detection |
 | `-gpgpu_l2_partition_extra_latency` | `0` | `150` | default | Extra cycles for an access to a remote coarse L2 partition |
 | `-icnt_use_voq` | `0` | `1` | default | Use virtual output queues in the local crossbar |
+| `-icnt_reply_output_grants_per_cycle` | `1` | `2` (SASS frontend) | default | Maximum reply packets delivered to one local-crossbar destination per ICNT tick; inputs retain their independent one-grant limit |
 | `-icnt_multi_grant_request` | `0` | default | `1` | Permit one request-network input to grant multiple outputs per cycle |
 | `-icnt_multi_grant_reply` | `0` | default | `1` | Permit one reply-network input to grant multiple outputs per cycle |
 
@@ -220,6 +243,7 @@ represent the calibrated default models.
 | `-gpgpu_tma_idealized_memory` | `0` | Complete TMA memory requests immediately |
 | `-gpgpu_cp_async_idealized_memory` | `0` | Complete ordinary `cp.async` requests immediately |
 | `-gpgpu_tensor_core_issue_queue_depth` | `0` | Add an ideal pre-functional-unit tensor-core queue; `0` disables it |
+| `-gpgpu_mio_queue_depth` | `0` | Per-scheduler admission depth for instructions explicitly marked as MIO clients; `0` disables it |
 | `-gpgpu_tensor_core_skip_writeback` | `0` | Complete tensor-core instructions without the register-file writeback path |
 | `-gpgpu_tensor_core_units_per_sub_partition` | `1` | Tensor issue units sharing each ideal queue subpartition |
 | `-gpgpu_tma_request_bytes_per_cycle` | `0` | Apply a TMA request-side byte budget; `0` disables the budget |

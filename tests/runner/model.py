@@ -44,3 +44,7 @@ class Settings:
     simulator_build_jobs: int = 4
     gpu_config: str = "SM120_RTX5090"
     gpu_config_explicit: bool = False
+    sass_auto: bool = False
+    sass_timing: bool = False
+    sassir: str = ""
+    binary: str = ""

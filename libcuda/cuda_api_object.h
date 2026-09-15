@@ -132,6 +132,57 @@ struct CUctx_st {
     m_kernel_lookup[hostFun] = f;
   }
 
+  void register_sass_function(unsigned fat_cubin_handle, const char *hostFun,
+                              const char *deviceFun) {
+    if (hostFun == NULL || deviceFun == NULL || deviceFun[0] == '\0') {
+      fprintf(stderr, "FlashGPU-Sim SASS: invalid kernel registration\n");
+      abort();
+    }
+    m_sass_kernel_lookup[hostFun] = {deviceFun, fat_cubin_handle};
+  }
+
+  void register_sass_module(unsigned fat_cubin_handle,
+                            const std::string &binary_path) {
+    m_sass_module_lookup[fat_cubin_handle] = binary_path;
+  }
+
+  const char *register_sass_driver_function(unsigned fat_cubin_handle,
+                                            const char *deviceFun) {
+    if (m_sass_module_lookup.find(fat_cubin_handle) ==
+        m_sass_module_lookup.end())
+      return NULL;
+    m_sass_driver_function_tokens.emplace_back(0);
+    const char *hostFun = &m_sass_driver_function_tokens.back();
+    register_sass_function(fat_cubin_handle, hostFun, deviceFun);
+    return hostFun;
+  }
+
+  bool has_sass_function(const char *hostFun) const {
+    return m_sass_kernel_lookup.find(hostFun) != m_sass_kernel_lookup.end();
+  }
+
+  std::string get_sass_kernel_name(const char *hostFun) const {
+    auto found = m_sass_kernel_lookup.find(hostFun);
+    if (found == m_sass_kernel_lookup.end()) {
+      fprintf(stderr,
+              "FlashGPU-Sim SASS: no registered kernel for host function %p\n",
+              hostFun);
+      abort();
+    }
+    return found->second.name;
+  }
+
+  unsigned get_sass_fatbin_handle(const char *hostFun) const {
+    auto found = m_sass_kernel_lookup.find(hostFun);
+    if (found == m_sass_kernel_lookup.end()) {
+      fprintf(stderr,
+              "FlashGPU-Sim SASS: no registered fatbin for host function %p\n",
+              hostFun);
+      abort();
+    }
+    return found->second.fatbin_handle;
+  }
+
   function_info *get_kernel(const char *hostFun) {
     auto i = m_kernel_lookup.find(hostFun);
     if (i == m_kernel_lookup.end()) {
@@ -159,6 +210,13 @@ struct CUctx_st {
   std::map<const void *, function_info *>
       m_kernel_lookup;  // unique id (CUDA app function address) => kernel entry
                         // point
+  struct sass_kernel_registration {
+    std::string name;
+    unsigned fatbin_handle = 0;
+  };
+  std::map<const void *, sass_kernel_registration> m_sass_kernel_lookup;
+  std::map<unsigned, std::string> m_sass_module_lookup;
+  std::list<char> m_sass_driver_function_tokens;
   struct gpgpu_ptx_sim_info m_binary_info;
 };
 

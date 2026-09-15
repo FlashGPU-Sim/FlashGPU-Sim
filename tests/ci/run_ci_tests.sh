@@ -201,12 +201,26 @@ run_ci_test() {
   local mode="$6"
   local gtest_filter="$7"
   local post_check="$8"
+  local job_config="$9"
+  local frontend="${10}"
+  local cuda_version="${11}"
   local config=""
   local label="$job_name-$test_name"
   local post_name=""
   local -a selectors=(--arch "$arch" --group "$test_group")
 
-  config="$(architecture_config "$arch")"
+  config="${job_config:-$(architecture_config "$arch")}"
+  if [ -n "$cuda_version" ] &&
+      ! "$CUDA_INSTALL_PATH/bin/nvcc" --version | grep -Fq "release $cuda_version,"; then
+    echo "ERROR: $job_name requires CUDA $cuda_version"
+    return 2
+  fi
+  case "$frontend" in
+    sass-functional) selectors+=(--sass) ;;
+    sass-timing) selectors+=(--sass-timing) ;;
+    ptx) ;;
+    *) echo "ERROR: unsupported CI frontend $frontend"; return 2 ;;
+  esac
   if [ -n "$profile" ]; then
     selectors+=(--profile "$profile")
   fi
@@ -231,9 +245,9 @@ run_ci_test() {
 }
 
 while IFS='|' read -r job_name arch test_name test_group profile mode \
-  gtest_filter post_check; do
+  gtest_filter post_check job_config frontend cuda_version; do
   run_ci_test "$job_name" "$arch" "$test_name" "$test_group" "$profile" \
-    "$mode" "$gtest_filter" "$post_check"
+    "$mode" "$gtest_filter" "$post_check" "$job_config" "$frontend" "$cuda_version"
 done <<< "$PLANNED_TESTS"
 
 echo "CI tests completed successfully!"

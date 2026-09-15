@@ -17,6 +17,7 @@
   - [Update Configuration](#update-configuration)
   - [Set CPU Threads](#set-cpu-threads)
   - [Inspect Statistics](#inspect-statistics)
+- [Experimental SASS Frontend](#experimental-sass-frontend)
 - [Citation](#citation)
 - [License and Acknowledgements](#license-and-acknowledgements)
 
@@ -109,7 +110,7 @@ is calculated as `(Sim - NCU) / NCU`.
 | Config | Workload | Shape | NCU cycles | Sim cycles | Difference |
 | --- | --- | --- | ---: | ---: | ---: |
 | SM120_RTX5090 | Tutorial - CUDA Vector Add | 2,000,000 elements | 29,642.67 | 30,133 | +1.65% |
-| SM120_RTX5090 | Tutorial - Triton GEMM | `M=2560, N=64, K=2560` | 77,190.74 | 78,989 | +2.33% |
+| SM120_RTX5090 | Tutorial - Triton GEMM | `M=2560, N=64, K=2560` | 77,190.74 | 78,423 | +1.60% |
 
 > [!TIP]
 > We provide RTX 5090 Nsight Compute reports and CSVs for
@@ -333,6 +334,17 @@ python3 tests/scripts/extract_sim_stats.py tutorials/vectorAdd/run/simulation.lo
 The summary includes `simulated cycles`, `instructions`, `IPC`, `occupancy`,
 `cache statistics`, and `DRAM command counts`. Pass `--all` to inspect every
 statistics report or `--csv output.csv` to export the results.
+
+## Experimental SASS Frontend
+
+The **experimental** execution-driven SASS frontend executes native cubin
+instructions to capture the effects of `ptxas` optimization and scheduling,
+which are difficult to reproduce sustainably with PTX reordering and peephole
+optimizations. Validation has primarily focused on FlashAttention-3 on H100
+(SM90), with selected RTX 5090 (SM120) workloads also supported; PTX remains
+the default path, and SASS uses separate configs.
+See the [SASS frontend guide](docs/sass-frontend.md) for activation, implementation,
+coverage, limitations, and H100 FlashAttention-3 validation results.
 
 ## Citation
 

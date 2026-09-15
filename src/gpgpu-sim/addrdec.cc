@@ -80,7 +80,11 @@ void linear_to_raw_address_translation::addrdec_setoption(option_parser_t opp) {
       &ipoly_non_power2_balanced,
       "For non-power-of-two memory partitions: 0 = legacy modulo, 1 = map "
       "IPOLY buckets to channels before subpartitions, 2 = hash into a larger "
-      "virtual partition space then range-reduce to the final partition count.",
+      "virtual partition space then range-reduce to the final partition count, "
+      "3 = independently hash the memory channel and the L2 slice, 4 = rotate "
+      "channels between decoded address stripes while preserving DRAM row "
+      "order, 5 = rotate channels only at decoded DRAM bank-row boundaries, "
+      "6 = mode 5 channel mapping with an independently hashed local L2 slice.",
       "0");
   option_parser_register(
       opp, "-gpgpu_ipoly_channel_stable_l2slice", OPT_UINT32,
@@ -179,7 +183,96 @@ void linear_to_raw_address_translation::addrdec_tlx(new_addr_type addr,
       unsigned long long int ipoly_high_bits =
           gap ? rest_of_addr_high_bits : (addr >> ipoly_shift);
 
-      if (gap && ipoly_channel_stable_l2slice) {
+      if (gap && ipoly_non_power2_balanced == 6) {
+        // Preserve mode 5's decoded bank/row and row-stable channel rotation,
+        // but do not let one decoded bank bit be the sole selector between the
+        // local L2 slices.  Power-of-two tensor strides (notably 4 KiB) can
+        // keep that bit constant across every SM and create a synchronized
+        // even/odd-slice wave despite balanced channel traffic.
+        //
+        // The local-slice hash is address-only, so one physical line always
+        // maps to one slice.  It does not change the already decoded DRAM
+        // bank, row, or channel.
+        const unsigned long long bank_row = rest_of_addr_high_bits >> 4;
+        const unsigned rotation =
+            static_cast<unsigned>(bank_row % m_n_channel);
+        const unsigned channel =
+            (decoded_channel + rotation) % m_n_channel;
+        const new_addr_type parent_256b = addr >> ipoly_shift;
+        const unsigned slice_hash_seed =
+            ((channel & 0xf) ^ decoded_sub_partition_in_channel);
+        const unsigned slice_hash =
+            ipoly_hash_function(parent_256b, slice_hash_seed, 16);
+        const unsigned sub_partition_in_channel =
+            slice_hash % m_n_sub_partition_in_channel;
+        sub_partition = channel * m_n_sub_partition_in_channel +
+                        sub_partition_in_channel;
+      } else if (gap && ipoly_non_power2_balanced == 5) {
+        // Keep the channel permutation constant for every request belonging
+        // to one decoded DRAM (bank,row).  With the H100 address map, the low
+        // four bits of rest_of_addr_high_bits select columns within a bank;
+        // the next three bits select the bank and the remaining bits select
+        // the row.  Rotating by the packed bank-row identity therefore
+        // preserves row-buffer grouping exactly, while changing the rotation
+        // across bank-rows eventually breaks power-of-two stride aliasing.
+        const unsigned long long bank_row = rest_of_addr_high_bits >> 4;
+        const unsigned rotation =
+            static_cast<unsigned>(bank_row % m_n_channel);
+        const unsigned channel =
+            (decoded_channel + rotation) % m_n_channel;
+        sub_partition = channel * m_n_sub_partition_in_channel +
+                        decoded_sub_partition_in_channel;
+      } else if (gap && ipoly_non_power2_balanced == 4) {
+        // A non-power-of-two channel count makes a power-of-two stride visit
+        // only a subset of the decoded channels.  Repair that aliasing without
+        // independently re-hashing every cache line: within each original
+        // m_n_channel-wide address stripe, apply the same channel rotation.
+        //
+        // The mapping is a permutation inside every stripe, so it cannot
+        // create a channel hot spot for a contiguous stripe.  Advancing the
+        // rotation by an odd value coprime with H100's 80 channels makes a
+        // 4096B stride (16 256B parents) eventually visit all channels.  More
+        // importantly, the DRAM bank/row fields are decoded from this same
+        // stripe address, so keeping the transformation stripe-stable retains
+        // their natural ordering instead of trading load balance for ACT/PRE
+        // traffic as the fine-grained mode 3 mapping can.
+        const unsigned long long stripe = rest_of_addr_high_bits;
+        const unsigned rotation =
+            static_cast<unsigned>((3ULL * (stripe % m_n_channel)) %
+                                  m_n_channel);
+        const unsigned channel =
+            (decoded_channel + rotation) % m_n_channel;
+        sub_partition = channel * m_n_sub_partition_in_channel +
+                        decoded_sub_partition_in_channel;
+      } else if (gap && ipoly_non_power2_balanced == 3) {
+        // H100 has a non-power-of-two number of memory channels and two L2
+        // slices per channel.  Hashing the combined 160-way destination and
+        // then range-reducing it can collapse the two 128B children of one
+        // 256B parent onto the same slice.  Conversely, the channel-stable
+        // policy below cannot repair a badly imbalanced decoded channel.
+        //
+        // Select the channel and its local slice independently.  The channel
+        // hash deliberately uses the 256B parent address, so both 128B
+        // children retain channel/row locality.  The decoded slice bit is
+        // mixed only into the local-slice hash, which makes those children
+        // choose opposite slices when there are two slices per channel.
+        const unsigned virtual_channels = 1024;
+        const new_addr_type parent_256b = addr >> ipoly_shift;
+        const unsigned virtual_channel = ipoly_hash_function(
+            parent_256b, decoded_channel, virtual_channels);
+        const unsigned channel =
+            (static_cast<unsigned long long>(virtual_channel) * m_n_channel) /
+            virtual_channels;
+
+        const unsigned slice_hash_seed =
+            ((channel & 0xf) ^ decoded_sub_partition_in_channel);
+        const unsigned slice_hash =
+            ipoly_hash_function(parent_256b, slice_hash_seed, 16);
+        const unsigned sub_partition_in_channel =
+            slice_hash % m_n_sub_partition_in_channel;
+        sub_partition = channel * m_n_sub_partition_in_channel +
+                        sub_partition_in_channel;
+      } else if (gap && ipoly_channel_stable_l2slice) {
         const unsigned slice_hash_seed =
             ((decoded_channel & 0xf) ^ decoded_sub_partition_in_channel);
         const unsigned slice_hash =

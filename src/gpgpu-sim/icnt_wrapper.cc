@@ -178,6 +178,12 @@ void icnt_reg_options(class OptionParser* opp) {
       &g_inct_config.multi_grant_reply,
       "Allow one reply-network input to grant multiple outputs per cycle",
       "0");
+  option_parser_register(
+      opp, "-icnt_reply_output_grants_per_cycle", OPT_UINT32,
+      &g_inct_config.reply_output_grants_per_cycle,
+      "Maximum reply packets granted to one output per local-interconnect "
+      "cycle",
+      "1");
 }
 
 void icnt_wrapper_init() {

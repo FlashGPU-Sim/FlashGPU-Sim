@@ -45,3 +45,30 @@ From `tests/`:
 ./run_tests.py build --arch sm90 --group fa2 --profile scaling --mode all
 ./run_tests.py run --arch sm120 --group fa2 --profile smoke
 ```
+
+## Strict SASS gate
+
+All fixed-length FP16 suites decode their exact SM90 or SM120 executable at
+runtime with the official CUDA tools. Run every original GoogleTest through
+the execution-driven frontend with exact per-specialization count checks:
+
+```bash
+./tests/run_sass_suite.py tests/src/fa2/sass_functional_suite_sm90_smoke.json
+./tests/run_sass_suite.py tests/src/fa2/sass_functional_suite_sm90_small.json
+./tests/run_sass_suite.py tests/src/fa2/sass_functional_suite_sm90_medium.json
+./tests/run_sass_suite.py tests/src/fa2/sass_functional_suite_sm90_breakdown.json
+./tests/run_sass_suite.py \
+  tests/src/fa2/sass_functional_suite_sm90_scaling_baseline.json
+./tests/run_sass_suite.py \
+  tests/src/fa2/sass_functional_suite_sm90_scaling_modes.json
+FA2_RUN_32KI=1 ./tests/run_sass_suite.py \
+  tests/src/fa2/sass_functional_suite_sm90_concurrency.json
+./tests/run_sass_suite.py tests/src/fa2/sass_functional_suite_sm120_smoke.json
+```
+
+These paths do not parse PTX. The D64 full case covers both its 64-CTA smoke
+launch and the original two-CTA fixed smoke case. Every case retains its
+complete output and LSE comparison with the CPU attention reference. On SM120,
+the four prefill launches cover 162 CTAs, 648 physical warps, and 1,513,216
+dynamic SASS instructions. The decoded SASSIR and its provenance are
+content-addressed generated cache data, not committed test inputs.

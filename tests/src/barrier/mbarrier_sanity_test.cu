@@ -344,8 +344,10 @@ TEST_F(MBarrierSanityTest, Arrive) {
 }
 
 TEST_F(MBarrierSanityTest, TMA) {
-  if (!flashgpu::test::running_on_native_gpu()) {
-    GTEST_SKIP() << "TMA mbarrier sanity requires native GPU mode.";
+  if (!flashgpu::test::running_on_native_gpu() &&
+      !flashgpu::test::running_with_sass_frontend()) {
+    GTEST_SKIP() << "TMA mbarrier sanity requires native GPU or strict SASS "
+                    "functional mode.";
   }
 
   ResetOutput();

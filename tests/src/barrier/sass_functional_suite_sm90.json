@@ -1,0 +1,11 @@
+{
+  "architecture": "sm90",
+  "group": "barrier",
+  "expected_tests": 2,
+  "cases": [
+    {
+      "gtest_filter": "NamedBarrierIntegrationTest.*:MixedBarrierIntegrationTest.*",
+      "expected_tests": 2
+    }
+  ]
+}

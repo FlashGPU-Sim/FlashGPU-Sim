@@ -1,0 +1,28 @@
+{
+  "architecture": "sm90",
+  "group": "fa2",
+  "profile": "concurrency",
+  "expected_tests": 4,
+  "cases": [
+    {
+      "mode": "only_cp_async",
+      "gtest_filter": "Fa2PrefillFp16ConcurrencyTest.H16D128FullB64S512",
+      "expected_tests": 1
+    },
+    {
+      "mode": "only_cp_async_bhhalf",
+      "gtest_filter": "Fa2PrefillFp16ConcurrencyTest.H8D128FullB32S512",
+      "expected_tests": 1
+    },
+    {
+      "mode": "qk_softmax_pv_only",
+      "gtest_filter": "Fa2PrefillFp16ConcurrencyTest.H16D128FullB64S512",
+      "expected_tests": 1
+    },
+    {
+      "mode": "qk_pv_only",
+      "gtest_filter": "Fa2PrefillFp16ConcurrencyTest.H16D128FullB64S512",
+      "expected_tests": 1
+    }
+  ]
+}

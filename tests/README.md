@@ -44,7 +44,8 @@ The public selectors are:
 - `--arch`: an architecture manifest, currently `sm90` or `sm120`;
 - `--group`: the first directory component below `tests/src/`;
 - `--profile`: an optional build/run profile for a complex test group;
-- `--mode`: an optional compile-time variant inside a profile; and
+- `--mode`: an optional compile-time variant inside a profile;
+- `--binary`: an exact executable basename inside a multi-binary profile; and
 - `--gtest-filter`: an exact GoogleTest filter expression.
 
 A positional filter remains available as a convenient substring search.
@@ -219,6 +220,27 @@ Use one of those names as an exact runtime selection:
   --group integration \
   --gtest-filter 'CudaVectorAddTest.BasicVectorAddition'
 ```
+
+For the execution-driven SASS frontend, ask the runner to decode the exact
+selected executable:
+
+```bash
+./tests/run_tests.py run \
+  --arch sm120 \
+  --group integration \
+  --gtest-filter 'CudaVectorAddTest.*' \
+  --sass
+```
+
+`--sass` is a strict functional mode, not a trace replay or a request to
+reorder PTX. The exact registered cubin is decoded into a per-run `.sassir` dump;
+the test process skips PTX registration and PDOM analysis. A missing kernel or
+unsupported SASS instruction fails the launch without PTX fallback. The
+low-level `--sassir` override remains available for decoder debugging,
+but declarative suites never store generated manifest paths.
+For a profile whose binaries register the same GTest name, use `--binary` to
+select one exact executable. Declarative strict-SASS suites support the same
+selector through a per-case `"binary"` field.
 
 ## CI
 

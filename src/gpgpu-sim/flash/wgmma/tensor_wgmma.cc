@@ -24,6 +24,19 @@ namespace flash_gpgpu_sim {
 
 namespace {
 
+bool wgmma_dispatch_debug_enabled() {
+  static const bool enabled = getenv("GPGPU_SIM_WGMMA_DISPATCH_DEBUG") != NULL;
+  return enabled;
+}
+
+bool wgmma_dispatch_debug_take_slot() {
+  static unsigned prints = 0;
+  if (!wgmma_dispatch_debug_enabled() || prints >= 128)
+    return false;
+  ++prints;
+  return true;
+}
+
 [[noreturn]] void fail_unsupported_sparse_wgmma() {
   fprintf(stderr,
           "GPGPU-Sim ERROR: sparse WGMMA is not functionally supported\n");
@@ -49,22 +62,9 @@ int wgmma_scalar_type_at(const ptx_instruction *pI, unsigned index,
   return *it;
 }
 
-int wgmma_opcode(const warp_inst_t *inst) {
-  assert(inst != NULL);
-  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
-  return ptx_inst->get_opcode();
-}
-
-bool is_wgmma_mma_async_opcode(int opcode) {
-  return opcode == WGMMA_MMA_ASYNC_OP || opcode == WGMMA_MMA_ASYNC_SP_OP;
-}
-
 bool wgmma_uses_register_a_operand(const warp_inst_t *inst) {
   assert(inst != NULL);
-  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
-  if (ptx_inst->get_num_operands() < 2)
-    return false;
-  return ptx_inst->operand_lookup(1).is_vector();
+  return inst->get_wgmma_static_info().uses_register_a();
 }
 
 class wgmma_group_manager_t {
@@ -517,17 +517,28 @@ void setmaxnreg_impl(const ptx_instruction *pI, core_t *core,
 class wgmma_unit_t::impl_t {
 public:
   impl_t(barrier_set_t *barriers, const shader_core_config *config)
-      : m_barriers(barriers), m_config(config) {
+      : m_barriers(barriers), m_config(config),
+        m_dispatch_query_cycle(config->gpgpu_num_sched_per_core, ~0ull),
+        m_dispatch_credit(config->gpgpu_num_sched_per_core, 0),
+        m_dispatch_stall_cycle(config->gpgpu_num_sched_per_core, false) {
     assert(m_barriers != NULL);
     assert(m_config != NULL);
   }
 
   bool issue_chain_ready(const warp_inst_t *inst,
                          unsigned long long cycle) const;
+  bool admission_queue_ready(unsigned cta_id, unsigned warpgroup_id,
+                             const warp_inst_t *inst) const;
+  bool accumulator_queue_ready(unsigned cta_id, unsigned warpgroup_id,
+                               const warp_inst_t *inst) const;
   void record_issue_chain(const warp_inst_t *inst, unsigned long long cycle);
   void add_op(unsigned cta_id, unsigned warpgroup_id, unsigned op_uid,
               unsigned compute_latency, unsigned completion_tail_latency,
-              unsigned long long rf_traffic_tokens);
+              unsigned long long rf_traffic_tokens,
+              int accumulator_base_register,
+              unsigned accumulator_bytes_per_thread);
+  bool stalls_result_dispatch(unsigned long long cycle, unsigned scheduler_id,
+                              unsigned pressure_percent);
   unsigned long long drain_rf_traffic(unsigned long long bytes);
   unsigned long long rf_traffic_backlog() const;
   void commit_group(unsigned cta_id, unsigned warpgroup_id);
@@ -546,12 +557,24 @@ private:
     unsigned compute_remaining = 0;
     unsigned remaining = 0;
     unsigned long long rf_traffic_remaining = 0;
+    int accumulator_base_register = -1;
+  };
+
+  struct dispatch_pressure_t {
+    key_t key;
+    unsigned compute_remaining = 0;
+    unsigned remaining = 0;
+    unsigned reserved_cycles_per_period = 0;
   };
 
   barrier_set_t *m_barriers;
   const shader_core_config *m_config;
   wgmma_group_manager_t m_group_manager;
   std::vector<pending_completion_t> m_pending_completions;
+  std::vector<dispatch_pressure_t> m_dispatch_pressure;
+  std::vector<unsigned long long> m_dispatch_query_cycle;
+  std::vector<unsigned> m_dispatch_credit;
+  std::vector<bool> m_dispatch_stall_cycle;
   unsigned long long m_issue_chain_next_cycle = 0;
   unsigned long long m_issue_chain_last_cycle = 0;
   unsigned m_issue_chain_depth = 0;
@@ -559,7 +582,7 @@ private:
 
 bool wgmma_unit_t::impl_t::issue_chain_ready(const warp_inst_t *inst,
                                              unsigned long long cycle) const {
-  if (!is_wgmma_mma_async_opcode(wgmma_opcode(inst)))
+  if (!inst->get_wgmma_static_info().is_mma_async())
     return true;
 
   const unsigned *chain_config =
@@ -572,9 +595,64 @@ bool wgmma_unit_t::impl_t::issue_chain_ready(const warp_inst_t *inst,
   return cycle >= m_issue_chain_next_cycle;
 }
 
+bool wgmma_unit_t::impl_t::admission_queue_ready(
+    unsigned cta_id, unsigned warpgroup_id, const warp_inst_t *inst) const {
+  if (!inst->get_wgmma_static_info().is_mma_async())
+    return true;
+
+  const unsigned depth = wgmma_uses_register_a_operand(inst)
+                             ? m_config->gpgpu_wgmma_admission_queue_depth_rs
+                             : m_config->gpgpu_wgmma_admission_queue_depth_ss;
+  if (depth == 0)
+    return true;
+
+  // Completion tails and register-file traffic are independently modeled and
+  // may overlap later WGMMA issue.  The admission credit returns when the
+  // tensor backend consumes an operation, not when its accumulator writeback
+  // finally completes.
+  const key_t incoming = std::make_pair(cta_id, warpgroup_id);
+  unsigned admitted = 0;
+  bool competing_warpgroup = false;
+  for (std::vector<pending_completion_t>::const_iterator it =
+           m_pending_completions.begin();
+       it != m_pending_completions.end(); ++it) {
+    if (it->compute_remaining == 0)
+      continue;
+    ++admitted;
+    competing_warpgroup |= it->key != incoming;
+  }
+  // One warpgroup has a separate eight-entry accumulator dependency window,
+  // calibrated by the same-accumulator sweep below.  This shared admission
+  // limit is the additional contention exposed only when another warpgroup
+  // has live tensor work on the SM.
+  return !competing_warpgroup || admitted < depth;
+}
+
+bool wgmma_unit_t::impl_t::accumulator_queue_ready(
+    unsigned cta_id, unsigned warpgroup_id, const warp_inst_t *inst) const {
+  if (!inst->get_wgmma_static_info().is_mma_async())
+    return true;
+
+  const unsigned depth = m_config->gpgpu_wgmma_accumulator_queue_depth;
+  if (depth == 0)
+    return true;
+
+  const key_t key = std::make_pair(cta_id, warpgroup_id);
+  const int accumulator_base_register = inst->arch_reg.dst[0];
+  unsigned pending = 0;
+  for (std::vector<pending_completion_t>::const_iterator it =
+           m_pending_completions.begin();
+       it != m_pending_completions.end(); ++it) {
+    if (it->key == key &&
+        it->accumulator_base_register == accumulator_base_register)
+      ++pending;
+  }
+  return pending < depth;
+}
+
 void wgmma_unit_t::impl_t::record_issue_chain(const warp_inst_t *inst,
                                               unsigned long long cycle) {
-  if (!is_wgmma_mma_async_opcode(wgmma_opcode(inst)))
+  if (!inst->get_wgmma_static_info().is_mma_async())
     return;
 
   const unsigned *chain_config =
@@ -611,7 +689,9 @@ void wgmma_unit_t::impl_t::record_issue_chain(const warp_inst_t *inst,
 void wgmma_unit_t::impl_t::add_op(unsigned cta_id, unsigned warpgroup_id,
                                   unsigned op_uid, unsigned compute_latency,
                                   unsigned completion_tail_latency,
-                                  unsigned long long rf_traffic_tokens) {
+                                  unsigned long long rf_traffic_tokens,
+                                  int accumulator_base_register,
+                                  unsigned accumulator_bytes_per_thread) {
   m_group_manager.add_op(cta_id, warpgroup_id, op_uid);
 
   compute_latency = std::max(1u, compute_latency);
@@ -635,7 +715,83 @@ void wgmma_unit_t::impl_t::add_op(unsigned cta_id, unsigned warpgroup_id,
   pending.compute_remaining = compute_done_remaining;
   pending.remaining = compute_done_remaining + completion_tail_latency;
   pending.rf_traffic_remaining = rf_traffic_tokens;
+  pending.accumulator_base_register = accumulator_base_register;
   m_pending_completions.push_back(pending);
+
+  const unsigned pressure_period =
+      m_config->gpgpu_wgmma_dispatch_pressure_period;
+  const unsigned tail_multiplier =
+      m_config->gpgpu_wgmma_dispatch_pressure_tail_multiplier;
+  if (pressure_period != 0 && tail_multiplier != 0 &&
+      accumulator_bytes_per_thread != 0) {
+    unsigned pressure_compute_tail = 0;
+    for (std::vector<dispatch_pressure_t>::const_iterator it =
+             m_dispatch_pressure.begin();
+         it != m_dispatch_pressure.end(); ++it) {
+      pressure_compute_tail =
+          std::max(pressure_compute_tail, it->compute_remaining);
+    }
+    dispatch_pressure_t pressure;
+    pressure.key = pending.key;
+    pressure.compute_remaining = pressure_compute_tail + compute_latency;
+    pressure.remaining =
+        pressure.compute_remaining + tail_multiplier * completion_tail_latency;
+    // accumulator_bytes_per_thread is 2*N for f32 accumulators. Wider
+    // fragments occupy both more result lanes and those lanes for longer. The
+    // triangular slice count represents the simultaneously live result-lane
+    // groups without charging the full fragment byte count as a serialized
+    // register-file transfer.
+    const unsigned slices = (accumulator_bytes_per_thread + 127) / 128;
+    pressure.reserved_cycles_per_period =
+        slices > 1 ? std::min((slices * (slices + 1)) / 2, pressure_period) : 0;
+    m_dispatch_pressure.push_back(pressure);
+    if (wgmma_dispatch_debug_take_slot())
+      printf("WGMMA_DISPATCH_PRESSURE add cta=%u wg=%u compute=%u "
+             "remaining=%u reserve=%u/%u\n",
+             cta_id, warpgroup_id, pressure.compute_remaining,
+             pressure.remaining, pressure.reserved_cycles_per_period,
+             pressure_period);
+  }
+}
+
+bool wgmma_unit_t::impl_t::stalls_result_dispatch(unsigned long long cycle,
+                                                  unsigned scheduler_id,
+                                                  unsigned pressure_percent) {
+  const unsigned period = m_config->gpgpu_wgmma_dispatch_pressure_period;
+  if (period == 0)
+    return false;
+  assert(scheduler_id < m_dispatch_query_cycle.size());
+  unsigned reservations = 0;
+  for (std::vector<dispatch_pressure_t>::const_iterator it =
+           m_dispatch_pressure.begin();
+       it != m_dispatch_pressure.end(); ++it) {
+    if (it->remaining != 0)
+      reservations = std::max(reservations, it->reserved_cycles_per_period);
+  }
+  if (reservations == 0) {
+    m_dispatch_credit[scheduler_id] = 0;
+    m_dispatch_stall_cycle[scheduler_id] = false;
+    m_dispatch_query_cycle[scheduler_id] = cycle;
+    return false;
+  }
+
+  if (m_dispatch_query_cycle[scheduler_id] != cycle) {
+    m_dispatch_query_cycle[scheduler_id] = cycle;
+    m_dispatch_stall_cycle[scheduler_id] = false;
+    const unsigned scaled_reservations =
+        (reservations * pressure_percent + 99) / 100;
+    m_dispatch_credit[scheduler_id] += std::min(period, scaled_reservations);
+    if (m_dispatch_credit[scheduler_id] >= period) {
+      m_dispatch_credit[scheduler_id] -= period;
+      m_dispatch_stall_cycle[scheduler_id] = true;
+    }
+  }
+  const bool stalls = m_dispatch_stall_cycle[scheduler_id];
+  if (stalls && wgmma_dispatch_debug_take_slot())
+    printf("WGMMA_DISPATCH_PRESSURE stall cycle=%llu sched=%u "
+           "reserve=%u/%u\n",
+           cycle, scheduler_id, reservations, period);
+  return stalls;
 }
 
 unsigned long long
@@ -681,6 +837,21 @@ void wgmma_unit_t::impl_t::wait_group(unsigned cta_id, unsigned warpgroup_id,
 
 void wgmma_unit_t::impl_t::cycle() {
   wgmma_group_manager_t::wait_result_t result;
+  for (std::vector<dispatch_pressure_t>::iterator it =
+           m_dispatch_pressure.begin();
+       it != m_dispatch_pressure.end(); ++it) {
+    if (it->compute_remaining > 0)
+      it->compute_remaining--;
+    if (it->remaining > 0)
+      it->remaining--;
+  }
+  m_dispatch_pressure.erase(
+      std::remove_if(m_dispatch_pressure.begin(), m_dispatch_pressure.end(),
+                     [](const dispatch_pressure_t &pressure) {
+                       return pressure.remaining == 0;
+                     }),
+      m_dispatch_pressure.end());
+
   for (std::vector<pending_completion_t>::iterator it =
            m_pending_completions.begin();
        it != m_pending_completions.end(); ++it) {
@@ -719,6 +890,13 @@ void wgmma_unit_t::impl_t::cleanup_cta(unsigned cta_id) {
     }
   }
 
+  m_dispatch_pressure.erase(
+      std::remove_if(m_dispatch_pressure.begin(), m_dispatch_pressure.end(),
+                     [cta_id](const dispatch_pressure_t &pressure) {
+                       return pressure.key.first == cta_id;
+                     }),
+      m_dispatch_pressure.end());
+
   m_group_manager.cleanup_cta(cta_id);
 }
 
@@ -733,6 +911,17 @@ bool wgmma_unit_t::issue_chain_ready(const warp_inst_t *inst,
   return m_impl->issue_chain_ready(inst, cycle);
 }
 
+bool wgmma_unit_t::admission_queue_ready(unsigned cta_id, unsigned warpgroup_id,
+                                         const warp_inst_t *inst) const {
+  return m_impl->admission_queue_ready(cta_id, warpgroup_id, inst);
+}
+
+bool wgmma_unit_t::accumulator_queue_ready(unsigned cta_id,
+                                           unsigned warpgroup_id,
+                                           const warp_inst_t *inst) const {
+  return m_impl->accumulator_queue_ready(cta_id, warpgroup_id, inst);
+}
+
 void wgmma_unit_t::record_issue_chain(const warp_inst_t *inst,
                                       unsigned long long cycle) {
   m_impl->record_issue_chain(inst, cycle);
@@ -741,9 +930,18 @@ void wgmma_unit_t::record_issue_chain(const warp_inst_t *inst,
 void wgmma_unit_t::add_op(unsigned cta_id, unsigned warpgroup_id,
                           unsigned op_uid, unsigned compute_latency,
                           unsigned completion_tail_latency,
-                          unsigned long long rf_traffic_tokens) {
+                          unsigned long long rf_traffic_tokens,
+                          int accumulator_base_register,
+                          unsigned accumulator_bytes_per_thread) {
   m_impl->add_op(cta_id, warpgroup_id, op_uid, compute_latency,
-                 completion_tail_latency, rf_traffic_tokens);
+                 completion_tail_latency, rf_traffic_tokens,
+                 accumulator_base_register, accumulator_bytes_per_thread);
+}
+
+bool wgmma_unit_t::stalls_result_dispatch(unsigned long long cycle,
+                                          unsigned scheduler_id,
+                                          unsigned pressure_percent) {
+  return m_impl->stalls_result_dispatch(cycle, scheduler_id, pressure_percent);
 }
 
 unsigned long long wgmma_unit_t::drain_rf_traffic(unsigned long long bytes) {

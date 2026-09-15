@@ -56,6 +56,7 @@ debug_tools/WatchYourStep/data/*
 debug_tools/WatchYourStep/ptxjitplus/bin/*
 *log
 *.o
+*.sassir
 debug_tools/WatchYourStep/ptxjitplus/config*
 debug_tools/WatchYourStep/ptxjitplus/*.xml
 debug_tools/WatchYourStep/ptxjitplus/*.icnt

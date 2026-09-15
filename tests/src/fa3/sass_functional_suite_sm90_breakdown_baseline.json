@@ -1,0 +1,19 @@
+{
+  "architecture": "sm90",
+  "config": "SM90_H100_SASS_FRONTEND",
+  "group": "fa3",
+  "profile": "breakdown",
+  "mode": "baseline",
+  "expected_tests": 2,
+  "cases": [
+    {
+      "gtest_filter": "Fa3H1D128ProfileTest.SelectedD128FullCases",
+      "expected_tests": 1
+    },
+    {
+      "mode": "baseline_noprofile",
+      "gtest_filter": "Fa3H1D128ProfileTest.SelectedD128FullCases",
+      "expected_tests": 1
+    }
+  ]
+}

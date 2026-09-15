@@ -245,6 +245,11 @@ xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
   allow_multi_grant =
       m_type == REQ_NET ? m_localinct_config.multi_grant_request != 0
                         : m_localinct_config.multi_grant_reply != 0;
+  output_grants_per_cycle =
+      m_type == REPLY_NET &&
+              m_localinct_config.reply_output_grants_per_cycle != 0
+          ? m_localinct_config.reply_output_grants_per_cycle
+          : 1;
   in_buffers.resize(total_nodes);
   const unsigned queues_per_input = use_voq ? total_nodes : 1;
   for (unsigned i = 0; i < total_nodes; ++i) {
@@ -355,7 +360,7 @@ void xbar_router::Advance() {
 
 void xbar_router::RR_Advance() {
   bool active = false;
-  vector<bool> issued(total_nodes, false);
+  vector<unsigned> issued(total_nodes, 0);
   unsigned conflict_sub = 0;
   unsigned reqs = 0;
   CollectRequestStats(&active, &conflict_sub);
@@ -369,9 +374,9 @@ void xbar_router::RR_Advance() {
       const unsigned output = FirstReadyOutput(node_id);
       assert(output < total_nodes);
       if (Has_Buffer_Out(output, 1)) {
-        if (!issued[output]) {
+        if (issued[output] < output_grants_per_cycle) {
           TransferPacket(node_id, output);
-          issued[output] = true;
+          issued[output]++;
           reqs++;
         }
       } else {
@@ -423,8 +428,15 @@ void xbar_router::iSLIP_Advance() {
   // do iSLIP
   for (unsigned i = active_out_buffer_base;
        i < active_out_buffer_base + active_out_buffers; ++i) {
-    if (Has_Buffer_Out(i, 1)) {
-
+    if (!Has_Buffer_Out(i, 1)) {
+      out_buffer_full++;
+      output_full_events[i]++;
+      continue;
+    }
+    unsigned output_grants = 0;
+    while (output_grants < output_grants_per_cycle &&
+           Has_Buffer_Out(i, 1)) {
+      bool granted = false;
       // Only check the input buffers.
       for (unsigned j = 0; j < active_in_buffers; ++j) {
         unsigned node_id =
@@ -458,12 +470,12 @@ void xbar_router::iSLIP_Advance() {
           }
 
           reqs++;
+          output_grants++;
+          granted = true;
           break;
         }
       }
-    } else {
-      out_buffer_full++;
-      output_full_events[i]++;
+      if (!granted) break;
     }
   }
 

@@ -65,6 +65,59 @@ The standard wrappers compile serially and link into
 gives every fatbin a unique source-derived PTX name, which GPGPU-Sim requires
 when loading multiple embedded PTX images.
 
+## Strict SASS gates
+
+The five standard forward tests, four backward tests, two PackGQA smoke tests,
+and both breakdown baselines run their unchanged assertions through
+execution-driven SASS with no PTX fallback. The runner decodes the exact cubin
+registered by each executable into per-run `.sassir` files; suite
+JSON contains no generated SASSIR path or kernel selector. Run them using:
+
+```bash
+export CUDA_INSTALL_PATH=/usr/local/cuda-13.3
+source ./setup_environment
+./tests/run_sass_suite.py \
+  tests/src/fa3/sass_functional_suite_sm90_forward_smoke.json
+./tests/run_sass_suite.py \
+  tests/src/fa3/sass_functional_suite_sm90_backward_smoke.json
+./tests/run_sass_suite.py \
+  tests/src/fa3/sass_functional_suite_sm90_packgqa.json
+./tests/run_sass_suite.py \
+  tests/src/fa3/sass_functional_suite_sm90_forward_small.json
+./tests/run_sass_suite.py \
+  tests/src/fa3/sass_functional_suite_sm90_backward_small.json
+FA3_H1D128_PROFILE_OUT=/tmp/fa3_h1d128_profile.csv \
+  ./tests/run_sass_suite.py \
+  tests/src/fa3/sass_functional_suite_sm90_breakdown_baseline.json
+```
+
+For reproducible medium/large forward timing, see the
+[regression workflow](../../scripts/README.md). SASS suites select the separate
+`SM90_H100_SASS_FRONTEND` config.
+
+Each declarative suite binds every specialization to one exact GTest filter.
+The forward suite requires 5/5 tests: four check output and LSE against the CPU
+reference, while the rectangular fixed case (`Sq=64`, `Sk=128`, `B=9`,
+`H=6`, `D=128`) checks successful execution. The backward suite requires 4/4
+tests and checks dQ, dK, and dV across its preprocess, mainloop, and
+postprocess launches. PackGQA requires 2/2 tests.
+The PackGQA suite uses an exact binary selector because its default and
+`.noinc` executables intentionally register the same GTest name.
+
+The same eight standard specializations also gate all four forward and four
+backward `small` runtime cases at `B=32, S=256`. These unchanged tuning tests check
+successful execution rather than a CPU reference; the adjacent smoke suites
+remain the numerical output/LSE and dQ/dK/dV gates.
+
+The separately compiled breakdown gate runs both `baseline` and
+`baseline_noprofile` on their default `B=1, H=1, S=4096, D=128`,
+full-attention case. Both check successful execution rather than attention
+output against a CPU reference; the profiled build additionally requires
+nonzero clock deltas. In functional SASS mode the global timer is a monotonic
+logical value, so the emitted CSV is not a cycle-accurate timing result. The
+unprofiled target kernel is byte-identical to the standard D128-full image and
+therefore produces the same kernel-level SASSIR content from its own binary.
+
 Smoke, packgqa, size, and sensitivity profiles are all exposed through the
 `sm90/fa3` test group. A filter can select an individual GoogleTest case
 without escaping the selected profile.

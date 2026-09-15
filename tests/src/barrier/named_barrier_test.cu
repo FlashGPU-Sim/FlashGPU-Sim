@@ -114,7 +114,9 @@ __global__ void named_barrier_does_not_release_mbarrier_kernel(
       released = 1;
     }
     __syncwarp();
-    mbarrier_arrive(&barrier);
+    if (lane_id == 0) {
+      mbarrier_arrive(&barrier);
+    }
   }
 }
 
@@ -167,7 +169,9 @@ __global__ void bulk_completion_does_not_release_mbarrier_kernel(
       release_allowed = 1;
     }
     __syncwarp();
-    mbarrier_arrive(&barrier);
+    if (lane_id == 0) {
+      mbarrier_arrive(&barrier);
+    }
   }
 }
 

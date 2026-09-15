@@ -1,0 +1,25 @@
+{
+  "architecture": "sm90",
+  "config": "SM90_H100_SASS_FRONTEND",
+  "group": "fa3",
+  "profile": "smoke",
+  "expected_tests": 4,
+  "cases": [
+    {
+      "gtest_filter": "Fa3PrefillFp16BackwardSmokeTest.H2D64FullB2S128",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "Fa3PrefillFp16BackwardSmokeTest.H1D64CausalB1S256",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "Fa3PrefillFp16BackwardSmokeTest.H1D128FullB1S256",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "Fa3PrefillFp16BackwardSmokeTest.H1D128CausalB1S256",
+      "expected_tests": 1
+    }
+  ]
+}
