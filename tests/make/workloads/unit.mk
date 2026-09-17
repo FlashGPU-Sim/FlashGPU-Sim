@@ -129,3 +129,22 @@ arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(SM120_NVCCFLAGS) $(INCLUDES) \
 		$(GPGPUSIM_FLAGS) -c $< -o $@
+
+# Register-view reload regression calls the production PTX loader.
+UNIT_SIM_LIB_DIR := $(abspath ../lib/$(GPGPUSIM_CONFIG))
+UNIT_SIM_BUILD_DIR := $(abspath ../build/$(GPGPUSIM_CONFIG))
+$(BIN_DIR)/sm90/unit_tests $(BIN_DIR)/sm100/unit_tests $(BIN_DIR)/sm120/unit_tests: \
+  CUDA_LIBS = -L$(CUDA_INSTALL_PATH)/lib64 -lcudart -lcuda \
+    $(UNIT_SIM_LIB_DIR)/libcudart.so -Wl,-rpath,$(UNIT_SIM_LIB_DIR)
+$(BIN_DIR)/sm90/unit_tests $(BIN_DIR)/sm100/unit_tests $(BIN_DIR)/sm120/unit_tests: \
+  $(UNIT_SIM_LIB_DIR)/libcudart.so $(UNIT_MK)
+$(OBJ_DIR)/sm90/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm100/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o: \
+  INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
+$(OBJ_DIR)/sm90/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm100/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o: \
+  $(UNIT_MK) $(wildcard ../libcuda/*.h) $(wildcard ../src/cuda-sim/*.h) \
+  $(wildcard ../src/gpgpu-sim/*.h) ../src/abstract_hardware_model.h \
+  $(UNIT_SIM_BUILD_DIR)/cuda-sim/ptx.tab.h

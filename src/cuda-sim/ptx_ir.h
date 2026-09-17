@@ -1463,9 +1463,7 @@ class function_info {
   std::string get_name() const { return m_name; }
   unsigned print_insn(unsigned pc, FILE *fp) const;
   std::string get_insn_str(unsigned pc) const;
-  void add_inst(const std::list<ptx_instruction *> &instructions) {
-    m_instructions = instructions;
-  }
+  void add_inst(const std::list<ptx_instruction *> &instructions);
   std::list<ptx_instruction *>::iterator find_next_real_instruction(
       std::list<ptx_instruction *>::iterator i);
   void create_basic_blocks();
@@ -1666,6 +1664,9 @@ class function_info {
   bool m_extern;
   bool m_assembled;
   bool m_ptx_reorder_completed;
+  // Register-view lowering mutates shared symbols. Restore their parser IDs
+  // before installing another definition of this function.
+  std::map<symbol *, std::pair<unsigned, unsigned>> m_pre_view_register_ids;
   bool pdom_done;  // flag to check whether pdom is completed or not
   std::string m_name;
   ptx_instruction **m_instr_mem;

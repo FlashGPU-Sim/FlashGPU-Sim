@@ -4,6 +4,9 @@ config = "SM90_H100"
 
 [workloads]
 sources = [
+  # Host-side simulator regression.
+  "unit/register_view_reload_test.cc",
+
   # Portable integration tests.
   "integration/address_operand_test.cu",
   "integration/vector_operand_test.cu",

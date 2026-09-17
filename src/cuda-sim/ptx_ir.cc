@@ -684,6 +684,22 @@ bool function_info::connect_break_targets()  // connecting break instructions
 
   return modified;
 }
+void function_info::add_inst(
+    const std::list<ptx_instruction *> &instructions) {
+  for (const auto &entry : m_pre_view_register_ids)
+    entry.first->set_regno(entry.second.first, entry.second.second);
+  m_pre_view_register_ids.clear();
+  m_compiler_register_views.clear();
+  m_compiler_register_packs.clear();
+  m_reg_alloc_aliases.clear();
+  m_ptx_reorder_completed = false;
+  m_assembled = false;
+  pdom_done = false;
+  m_basic_blocks.clear();
+  num_reconvergence_pairs = 0;
+  m_instructions = instructions;
+}
+
 void function_info::do_pdom() {
   create_basic_blocks();
   connect_basic_blocks();

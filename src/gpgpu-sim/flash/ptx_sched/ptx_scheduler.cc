@@ -3084,6 +3084,8 @@ void run_ptx_reorder(function_info *func) {
             std::make_pair(view.source[lane], view.roundtrip ? 0u : lane);
         symbol *destination = const_cast<symbol *>(view.dest[lane]);
         const unsigned view_arch_reg = destination->arch_reg_num();
+        func->m_pre_view_register_ids.emplace(
+            destination, std::make_pair(destination->reg_num(), view_arch_reg));
         destination->set_regno(
             view.source[lane]->reg_num(),
             view.roundtrip ? view.source[lane]->arch_reg_num() : view_arch_reg);

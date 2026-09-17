@@ -15,6 +15,7 @@ tests = [
 [jobs.sm90-core]
 arch = "sm90"
 tests = [
+  { name = "unit", group = "unit" },
   { name = "integration", group = "integration", post_check = "tests/scripts/check_cp_async_size.py" },
   { name = "barrier", group = "barrier" },
   { name = "wgmma", group = "wgmma" },
