@@ -148,3 +148,8 @@ $(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o: \
   $(UNIT_MK) $(wildcard ../libcuda/*.h) $(wildcard ../src/cuda-sim/*.h) \
   $(wildcard ../src/gpgpu-sim/*.h) ../src/abstract_hardware_model.h \
   $(UNIT_SIM_BUILD_DIR)/cuda-sim/ptx.tab.h
+
+$(OBJ_DIR)/sm90/unit/mbarrier_retry_timing_test.cc.o \
+$(OBJ_DIR)/sm100/unit/mbarrier_retry_timing_test.cc.o \
+$(OBJ_DIR)/sm120/unit/mbarrier_retry_timing_test.cc.o: \
+  $(SRC_DIR)/gpgpu-sim/flash/mbarrier.h

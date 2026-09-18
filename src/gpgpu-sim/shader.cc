@@ -1042,6 +1042,13 @@ void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, in
   tcgen05_max_queue_occupancy =
       std::max(tcgen05_max_queue_occupancy,
                other.tcgen05_max_queue_occupancy);
+  accumulate(mbarrier_logical_trywait);
+  accumulate(mbarrier_immediate_true);
+  accumulate(mbarrier_suspended_waits);
+  accumulate(mbarrier_rechecks);
+  accumulate(mbarrier_true_after_suspend);
+  accumulate(mbarrier_timeout_false);
+  accumulate(mbarrier_sleep_cycles);
 
   merge(gpgpu_n_shmem_bank_access);
   merge(n_simt_to_mem);
@@ -1130,6 +1137,13 @@ void shader_core_stats::clear_accumulator() {
   accumulate(tcgen05_ld_wait_cycles);
   accumulate(tcgen05_st_wait_cycles);
   accumulate(tcgen05_max_queue_occupancy);
+  accumulate(mbarrier_logical_trywait);
+  accumulate(mbarrier_immediate_true);
+  accumulate(mbarrier_suspended_waits);
+  accumulate(mbarrier_rechecks);
+  accumulate(mbarrier_true_after_suspend);
+  accumulate(mbarrier_timeout_false);
+  accumulate(mbarrier_sleep_cycles);
 
   m_outgoing_traffic_stats->clear();
   m_incoming_traffic_stats->clear();
@@ -1305,6 +1319,15 @@ void shader_core_stats::print(FILE *fout) const {
   fprintf(fout, "  ld_wait_cycles = %llu\n", tcgen05_ld_wait_cycles);
   fprintf(fout, "  st_wait_cycles = %llu\n", tcgen05_st_wait_cycles);
   fprintf(fout, "  max_queue_occupancy = %llu\n", tcgen05_max_queue_occupancy);
+
+  fprintf(fout, "MBarrier Try-Wait Timing:\n");
+  fprintf(fout, "  logical_trywait = %llu\n", mbarrier_logical_trywait);
+  fprintf(fout, "  immediate_true = %llu\n", mbarrier_immediate_true);
+  fprintf(fout, "  suspended_waits = %llu\n", mbarrier_suspended_waits);
+  fprintf(fout, "  rechecks = %llu\n", mbarrier_rechecks);
+  fprintf(fout, "  true_after_suspend = %llu\n", mbarrier_true_after_suspend);
+  fprintf(fout, "  timeout_false = %llu\n", mbarrier_timeout_false);
+  fprintf(fout, "  sleep_cycles = %llu\n", mbarrier_sleep_cycles);
 
   // NCU-style warp stall breakdown
   {
@@ -2253,9 +2276,10 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       auto pI = mbarrier_dyn_inst;
       assert(pI && "mbarrier instruction is not ptx_instruction");
       m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
-      m_barriers.warp_reaches_mbarrier(m_warp[warp_id]->get_cta_id(), warp_id,
-                                       pI, pI,
-                                       (*pipe_reg)->get_active_mask());
+      m_barriers.warp_reaches_mbarrier(
+          m_warp[warp_id]->get_cta_id(), warp_id, next_ptx_inst, pI,
+          (*pipe_reg)->get_active_mask(),
+          m_warp[warp_id]->get_dynamic_warp_id());
     }
   } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP &&
              (*pipe_reg)->get_active_mask().any()) {
@@ -6070,6 +6094,13 @@ void barrier_set_t::allocate_barrier(unsigned cta_id, warp_set_t warps) {
 }
 
 void barrier_set_t::reset_mbarrier() {
+  std::vector<unsigned> warp_ids;
+  for (const auto &entry : m_pending_mbarrier_waits) {
+    warp_ids.push_back(entry.first);
+  }
+  for (unsigned warp_id : warp_ids) {
+    cancel_mbarrier_wait(warp_id, "mbarrier reset", true);
+  }
   m_mbarrier_manager.reset();
 }
 
@@ -6077,6 +6108,7 @@ void barrier_set_t::reset_mbarrier() {
 void barrier_set_t::deallocate_barrier(unsigned cta_id) {
   cta_to_warp_t::iterator w = m_cta_to_warps.find(cta_id);
   if (w == m_cta_to_warps.end()) return;
+  cleanup_cta_pending_mbarrier_waits(cta_id);
   warp_set_t warps = w->second;
   warp_set_t at_barrier = warps & m_warp_at_barrier;
   assert(at_barrier.any() == false);  // no warps stuck at barrier
@@ -6105,6 +6137,7 @@ void barrier_set_t::deallocate_barrier(unsigned cta_id) {
 void barrier_set_t::cleanup_cta_mbarriers(unsigned cta_id) {
   // Clean up all mbarriers for this CTA to prevent collisions when
   // the hw_cta_id gets recycled for a new CTA
+  cleanup_cta_pending_mbarrier_waits(cta_id);
   m_mbarrier_manager.cleanup_cta(cta_id);
 }
 
@@ -6249,6 +6282,7 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
 void barrier_set_t::warp_exit(unsigned warp_id) {
   // caller needs to verify all threads in warp are done, e.g., by checking PDOM
   // stack to see it has only one entry during exit_impl()
+  cancel_mbarrier_wait(warp_id, "mbarrier warp exit", true);
   m_warp_active.reset(warp_id);
   m_warp_named_barrier_id[warp_id] = (unsigned)-1;
 
@@ -6348,9 +6382,26 @@ void barrier_set_t::dump() const {
     }
   }
   printf("\n");
-  printf("  pending_mbarrier_releases: %zu", m_pending_warp_releases.size());
+  printf("  pending_delayed_releases: %zu", m_pending_warp_releases.size());
   for (const auto &entry : m_pending_warp_releases) {
     printf(" {warp=%d, remaining=%u}", entry.warp_id, entry.remaining);
+  }
+  printf("\n");
+  printf("  pending_mbarrier_waits: %zu", m_pending_mbarrier_waits.size());
+  for (const auto &entry : m_pending_mbarrier_waits) {
+    printf(" {warp=%u,dynamic=%u,next=%llu,lanes=[", entry.first,
+           entry.second.dynamic_warp_id,
+           (unsigned long long)entry.second.next_recheck_cycle);
+    for (unsigned lane = 0; lane < m_warp_size; ++lane) {
+      const auto &lane_wait = entry.second.lanes[lane];
+      if (!lane_wait.active) continue;
+      printf("%u:0x%llx/%u/%s@%llu,", lane,
+             (unsigned long long)lane_wait.addr, (unsigned)lane_wait.parity,
+             lane_wait.resolved ? (lane_wait.result ? "true" : "false")
+                                : "pending",
+             (unsigned long long)lane_wait.deadline_cycle);
+    }
+    printf("]}");
   }
   printf("\n");
   m_mbarrier_manager.dump();

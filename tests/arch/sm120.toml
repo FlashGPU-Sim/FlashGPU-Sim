@@ -10,6 +10,7 @@ sources = [
   "unit/memory_transport_test.cc",
   "unit/mshr_table_test.cc",
   "unit/register_view_reload_test.cc",
+  "unit/mbarrier_retry_timing_test.cc",
   "unit/tma_reduction_test.cc",
 
   # Portable integration tests.

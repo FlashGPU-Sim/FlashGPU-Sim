@@ -1,6 +1,9 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 #include <cstdint>
+#include <cstdlib>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include "execution_mode.h"
@@ -24,6 +27,66 @@ constexpr int kTmaTensorMapBytes = 128;
 constexpr int kTmaTileElements = 16;
 constexpr int kTmaTileBytes = kTmaTileElements * static_cast<int>(sizeof(float));
 constexpr int kTmaScratchBytes = 256;
+constexpr uint32_t kCompletionWakeHintNs = 100000;
+constexpr uint32_t kCompletionWakeCycleLimit = 100000;
+
+// Capture existing simulator events without exposing simulator internals to
+// CUDA tests. Always restore stdout and the caller's tracing environment.
+class ScopedMBarrierTrace {
+ public:
+  ScopedMBarrierTrace() : enabled_(!flashgpu::test::running_on_native_gpu()) {
+    if (!enabled_) return;
+    const char* previous = std::getenv("FLASHGPU_SIM_MBARRIER_TRACE");
+    had_previous_ = previous != nullptr;
+    if (previous) previous_ = previous;
+    setenv("FLASHGPU_SIM_MBARRIER_TRACE", "1", 1);
+    ::testing::internal::CaptureStdout();
+  }
+  ~ScopedMBarrierTrace() {
+    if (!finished_) Finish();
+  }
+  std::string Finish() {
+    finished_ = true;
+    if (!enabled_) return {};
+    const std::string output = ::testing::internal::GetCapturedStdout();
+    if (had_previous_)
+      setenv("FLASHGPU_SIM_MBARRIER_TRACE", previous_.c_str(), 1);
+    else
+      unsetenv("FLASHGPU_SIM_MBARRIER_TRACE");
+    std::istringstream input(output);
+    std::string line, events;
+    while (std::getline(input, line)) {
+      if (line.rfind("MBAR_WAIT ", 0) == 0) events += line + "\n";
+    }
+    return events;
+  }
+ private:
+  bool enabled_, finished_ = false, had_previous_ = false;
+  std::string previous_;
+};
+
+std::vector<std::string> TraceEvents(const std::string& trace,
+                                    const std::string& match) {
+  std::vector<std::string> events;
+  std::istringstream input(trace);
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.find(match) != std::string::npos) events.push_back(line);
+  }
+  return events;
+}
+
+uint64_t TraceNumber(const std::string& event, const std::string& key) {
+  std::istringstream input(event);
+  std::string token;
+  const std::string prefix = key + "=";
+  while (input >> token) {
+    if (token.rfind(prefix, 0) == 0)
+      return std::stoull(token.substr(prefix.size()), nullptr, 0);
+  }
+  ADD_FAILURE() << "Missing " << key << " in " << event;
+  return 0;
+}
 
 __device__ inline void initialize_tensormap_shared(void* tmap_smem, int tid) {
   uint32_t* words = reinterpret_cast<uint32_t*>(tmap_smem);
@@ -110,6 +173,73 @@ __global__ void mbarrier_arrive_visibility_kernel(uint32_t* output) {
     output[0] = observed ? 1u : 0u;
     output[1] = static_cast<uint32_t>(poll_count);
     output[2] = observed && mbarrier_try_wait_parity(&barrier, 0) ? 1u : 0u;
+  }
+}
+
+__global__ void mbarrier_hint_and_active_mask_kernel(uint32_t* output, uint32_t hint_ns) {
+  __shared__ uint64_t barrier;
+
+  if (threadIdx.x == 0) {
+    mbarrier_init(&barrier, 1);
+  }
+  __syncthreads();
+
+  if (threadIdx.x < 2) {
+    bool value = threadIdx.x == 1;
+    if (threadIdx.x == 0) {
+      const unsigned long long start = clock64();
+      value = mbarrier_try_wait_parity(&barrier, 0, hint_ns);
+      output[2] = static_cast<uint32_t>(clock64() - start);
+    }
+    output[threadIdx.x] = value ? 1u : 0u;
+  }
+}
+
+__global__ void mbarrier_divergent_lane_results_kernel(uint32_t* output) {
+  __shared__ uint64_t barriers[2];
+
+  if (threadIdx.x == 0) {
+    mbarrier_init(&barriers[0], 1);
+    mbarrier_init(&barriers[1], 1);
+    mbarrier_arrive_expect_tx(&barriers[0], 0);
+  }
+  __syncthreads();
+
+  if (threadIdx.x < 2) {
+    const bool result = mbarrier_try_wait_parity(&barriers[threadIdx.x], 0, 1);
+    output[threadIdx.x] = result ? 1u : 0u;
+  }
+}
+
+__global__ void mbarrier_completion_during_suspension_kernel(uint32_t* output) {
+  __shared__ uint64_t barrier;
+  __shared__ volatile uint32_t consumer_started;
+
+  if (threadIdx.x == 0) {
+    mbarrier_init(&barrier, 1);
+    consumer_started = 0;
+  }
+  __syncthreads();
+
+  if (threadIdx.x == 0) {
+    consumer_started = 1;
+    // The explicit bound is deliberately much longer than the producer's
+    // delay. The producer's phase completion must wake the consumer early.
+    const unsigned long long start = clock64();
+    output[0] =
+        mbarrier_try_wait_parity(&barrier, 0, kCompletionWakeHintNs) ? 1u : 0u;
+    output[2] = static_cast<uint32_t>(clock64() - start);
+  } else if (threadIdx.x == 32) {
+    while (consumer_started == 0) {
+    }
+    uint32_t dependency = 1;
+#pragma unroll 1
+    for (int i = 0; i < 32; ++i) {
+      dependency = dependency * 1664525u + 1013904223u;
+      asm volatile("" : "+r"(dependency));
+    }
+    output[1] = dependency != 0 ? 1u : 0u;
+    mbarrier_arrive_expect_tx(&barrier, 0);
   }
 }
 
@@ -341,6 +471,93 @@ TEST_F(MBarrierSanityTest, Arrive) {
       << "Visibility poll should converge before the safety bound";
   EXPECT_EQ(output[2], 1u)
       << "Once visible, try_wait on the old parity should stay true";
+}
+
+TEST_F(MBarrierSanityTest, HintAndActiveMask) {
+  cudaDeviceProp props{};
+  ASSERT_EQ(cudaGetDeviceProperties(&props, 0), cudaSuccess);
+  for (uint32_t hint_ns : {0u, 1000u}) {
+    SCOPED_TRACE(hint_ns);
+    ResetOutput();
+    ScopedMBarrierTrace capture;
+    mbarrier_hint_and_active_mask_kernel<<<1, 32>>>(d_output_, hint_ns);
+    SynchronizeAndAssert();
+    const std::string trace = capture.Finish();
+    SCOPED_TRACE(trace);
+    const auto output = CopyOutput(3);
+    EXPECT_EQ(output[0], 0u);
+    EXPECT_EQ(output[1], 1u) << "Inactive lane must retain its value";
+    if (flashgpu::test::running_on_native_gpu()) continue;
+
+    const auto completed = TraceEvents(trace, "state=lane_complete");
+    ASSERT_EQ(completed.size(), 1u);
+    EXPECT_EQ(TraceNumber(completed[0], "lane"), 0u);
+    EXPECT_NE(completed[0].find("result=false"), std::string::npos);
+    const auto sleeping = TraceEvents(trace, "state=sleeping next_recheck=");
+    if (hint_ns == 0) {
+      EXPECT_TRUE(sleeping.empty()) << "Zero hint must not suspend";
+      EXPECT_EQ(TraceNumber(completed[0], "cycle"),
+                TraceNumber(completed[0], "deadline"));
+    } else {
+      ASSERT_EQ(sleeping.size(), 1u);
+      const uint64_t expected_cycles =
+          (uint64_t(hint_ns) * props.clockRate + 999999) / 1000000;
+      EXPECT_EQ(TraceNumber(completed[0], "deadline") -
+                    TraceNumber(sleeping[0], "cycle"), expected_cycles);
+      EXPECT_EQ(TraceNumber(completed[0], "cycle"),
+                TraceNumber(completed[0], "deadline"));
+    }
+  }
+}
+
+TEST_F(MBarrierSanityTest, DivergentLaneResults) {
+  mbarrier_divergent_lane_results_kernel<<<1, 32>>>(d_output_);
+  SynchronizeAndAssert();
+
+  const auto output = CopyOutput(2);
+  EXPECT_EQ(output[0], 1u)
+      << "A lane targeting a completed barrier should return true";
+  EXPECT_EQ(output[1], 0u)
+      << "A lane targeting an incomplete barrier should return false";
+}
+
+TEST_F(MBarrierSanityTest, CompletionDuringSuspension) {
+  ScopedMBarrierTrace capture;
+  mbarrier_completion_during_suspension_kernel<<<1, 64>>>(d_output_);
+  SynchronizeAndAssert();
+  const std::string trace = capture.Finish();
+
+  const auto output = CopyOutput(3);
+  EXPECT_EQ(output[0], 1u)
+      << "Completion during suspension should return true at a recheck";
+  EXPECT_EQ(output[1], 1u)
+      << "A producer warp must progress while the consumer warp sleeps";
+  if (!flashgpu::test::running_on_native_gpu()) {
+    SCOPED_TRACE(trace);
+    const auto sleeping = TraceEvents(trace, "state=sleeping next_recheck=");
+    const auto notified = TraceEvents(trace, "event=phase_notification");
+    const auto rechecks = TraceEvents(trace, "state=recheck");
+    const auto completed = TraceEvents(trace, "state=lane_complete");
+    ASSERT_EQ(sleeping.size(), 1u) << "Consumer must actually suspend";
+    ASSERT_EQ(notified.size(), 1u);
+    ASSERT_EQ(rechecks.size(), 1u);
+    ASSERT_EQ(completed.size(), 1u);
+    EXPECT_LT(trace.find(sleeping[0]), trace.find(notified[0]));
+    EXPECT_LT(trace.find(notified[0]), trace.find(rechecks[0]));
+    EXPECT_NE(rechecks[0].find("complete=1 notified=1"), std::string::npos);
+    EXPECT_NE(completed[0].find("result=true"), std::string::npos);
+    for (const auto& event : {notified[0], rechecks[0], completed[0]}) {
+      EXPECT_EQ(TraceNumber(event, "warp"), TraceNumber(sleeping[0], "warp"));
+      EXPECT_EQ(TraceNumber(event, "pc"), TraceNumber(sleeping[0], "pc"));
+    }
+    EXPECT_LT(TraceNumber(completed[0], "cycle"),
+              TraceNumber(completed[0], "deadline"));
+    EXPECT_LE(TraceNumber(completed[0], "cycle"),
+              TraceNumber(notified[0], "cycle") + 1);
+    EXPECT_LT(output[2], kCompletionWakeCycleLimit)
+        << "The phase notification should wake the simulator well before the "
+           "explicit maximum wait";
+  }
 }
 
 TEST_F(MBarrierSanityTest, TMA) {

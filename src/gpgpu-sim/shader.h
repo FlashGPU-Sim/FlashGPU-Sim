@@ -1163,7 +1163,8 @@ class barrier_set_t {
   void warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
                              const ptx_instruction *static_inst,
                              const warp_inst_t *dynamic_inst,
-                             const active_mask_t &active_mask);
+                             const active_mask_t &active_mask,
+                             unsigned dynamic_warp_id);
   // complete_tx for TMA usages
   void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
                    uint32_t completed_tx_count);
@@ -1174,7 +1175,7 @@ class barrier_set_t {
   void arrive_mbarrier_async(unsigned cta_id, unsigned warp_id,
                              uint32_t mbarrier_addr);
 
-  // Process delayed mbarrier warp releases each cycle
+  // Process pending behavioral waits and delayed non-mbarrier releases.
   void cycle();
 
   // Bulk group methods for TMA write operations
@@ -1241,14 +1242,47 @@ class barrier_set_t {
     m_warp_at_barrier.reset(warp_id);
     m_warp_named_barrier_id[warp_id] = (unsigned)-1;
   }
-  // Release warps with optional try_wait latency delay
-  void release_warps(const std::set<int> &released_warps);
+  // A phase update makes the pending wait eligible for an authoritative
+  // recheck. The recheck, rather than the notification, owns predicate commit.
+  void notify_mbarrier_phase_change(const std::set<int> &notified_warps);
+  void finish_mbarrier_wait(unsigned warp_id, const char *reason);
+  void cancel_mbarrier_wait(unsigned warp_id, const char *reason,
+                            bool clear_wait_bit);
+  void cleanup_cta_pending_mbarrier_waits(unsigned hw_cta_id);
 
   shader_core_ctx *m_shader;
   flash_gpgpu_sim::mbarrier_manager_t m_mbarrier_manager;
   flash_gpgpu_sim::bulk_group_manager_t m_bulk_group_manager;
 
-  // Delayed warp release queue for mbarrier try_wait latency
+  struct pending_mbarrier_wait_t {
+    struct lane_wait_t {
+      bool active = false;
+      bool resolved = false;
+      bool result = false;
+      uint64_t addr = 0;
+      bool parity = false;
+      bool has_time_hint = false;
+      uint32_t time_hint_ns = 0;
+      uint64_t deadline_cycle = 0;
+    };
+
+    unsigned hw_cta_id = 0;
+    int sw_cta_id = 0;
+    unsigned hw_warp_id = 0;
+    int sw_warp_id = 0;
+    unsigned dynamic_warp_id = 0;
+    address_type pc = 0;
+    active_mask_t active_mask;
+    uint64_t issue_cycle = 0;
+    uint64_t next_recheck_cycle = 0;
+    bool phase_notification_pending = false;
+    bool suspended = false;
+    const ptx_instruction *static_inst = nullptr;
+    lane_wait_t lanes[MAX_WARP_SIZE];
+  };
+  std::map<unsigned, pending_mbarrier_wait_t> m_pending_mbarrier_waits;
+
+  // Delayed warp release queue used only by ordinary cp.async wait_group.
   struct pending_warp_release_t {
     unsigned remaining;
     int warp_id;
@@ -2184,6 +2218,8 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_tma_idealized_memory;
   bool gpgpu_tma_oob_l2_traffic;
   unsigned int gpgpu_mbarrier_arrive_latency;
+  // Maximum modeled suspension for a no-hint mbarrier.try_wait. The optional
+  // PTX suspendTimeHint overrides this bound after ns-to-core-cycle conversion.
   unsigned int gpgpu_mbarrier_trywait_latency;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;
@@ -2405,6 +2441,15 @@ struct shader_core_stats_pod {
   unsigned long long tcgen05_ld_wait_cycles;
   unsigned long long tcgen05_st_wait_cycles;
   unsigned long long tcgen05_max_queue_occupancy;
+
+  // Warp-instruction-level behavioral mbarrier.try_wait counters.
+  unsigned long long mbarrier_logical_trywait;
+  unsigned long long mbarrier_immediate_true;
+  unsigned long long mbarrier_suspended_waits;
+  unsigned long long mbarrier_rechecks;
+  unsigned long long mbarrier_true_after_suspend;
+  unsigned long long mbarrier_timeout_false;
+  unsigned long long mbarrier_sleep_cycles;
 };
 
 class shader_core_stats : public shader_core_stats_pod {
@@ -3080,6 +3125,7 @@ class shader_core_ctx : public core_t {
 
   void issue();
   friend class scheduler_unit;  // this is needed to use private issue warp.
+  friend class barrier_set_t;
   friend class TwoLevelScheduler;
   friend class LooseRoundRobbinScheduler;
   bool can_issue_wgmma_warpgroup(const unsigned *warp_ids, unsigned count,

@@ -889,7 +889,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "Latency (cycles) for arrive_tx shared memory write before mbarrier update (default=0)", "0");
   option_parser_register(opp, "-gpgpu_mbarrier_trywait_latency", OPT_UINT32,
                          &gpgpu_mbarrier_trywait_latency,
-                         "Latency (cycles) for mbarrier.try_wait polling before warp release (default=0)", "0");
+                         "Maximum modeled suspension (core cycles) for a "
+                         "no-hint mbarrier.try_wait; 0 returns false "
+                         "immediately when incomplete (default=32)",
+                         "32");
   option_parser_register(
       opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
       &gpgpu_wgmma_issue_chain_ss,

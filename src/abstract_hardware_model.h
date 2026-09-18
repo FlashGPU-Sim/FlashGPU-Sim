@@ -946,11 +946,15 @@ public:
     unsigned bar_id = (unsigned)-1;     // mbarrier address in shared memory
     unsigned bar_count = (unsigned)-1;  // expected count or arrival count
     bool bar_parity = false;            // parity for try_wait
-    
+    bool bar_has_time_hint = false;     // optional try_wait suspendTimeHint
+    uint32_t bar_time_hint_ns = 0;      // hint value in nanoseconds
+
     void reset() {
       bar_id = (unsigned)-1;
       bar_count = (unsigned)-1;
       bar_parity = false;
+      bar_has_time_hint = false;
+      bar_time_hint_ns = 0;
     }
   };
   void set_mbarrier_info(int laneid, const mbarrier_info_t &info) {

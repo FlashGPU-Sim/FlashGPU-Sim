@@ -6,6 +6,7 @@ config = "SM90_H100"
 sources = [
   # Host-side simulator regression.
   "unit/register_view_reload_test.cc",
+  "unit/mbarrier_retry_timing_test.cc",
 
   # Portable integration tests.
   "integration/address_operand_test.cu",
