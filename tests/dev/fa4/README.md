@@ -146,3 +146,26 @@ run_fa4_b200_cases.sh
 
 `fa4_b200_cases.csv` is the workload table used by both the single-case driver
 and the suite matrix.
+
+## Real CUDA TensorMap compatibility probe
+
+`fa4_cuda_tensormap_probe.cc` checks the simulator decoder against descriptors
+produced by the installed NVIDIA driver. It requires a CUDA-capable GPU and
+runs separately from the simulator regression suite. Fixed descriptor samples
+remain in `tests/src/unit/fa4_opaque_tensormap_test.cc`.
+
+From the repository root, in a shell without `setup_environment` sourced:
+
+```bash
+cuda_root=${CUDA_INSTALL_PATH:-/usr/local/cuda-12.8}
+gtest_root=tests/third_party/gtest/googletest
+c++ -std=c++17 -pthread -Isrc -I"$cuda_root/include" \
+  -I"$gtest_root/include" -I"$gtest_root" \
+  tests/dev/fa4/fa4_cuda_tensormap_probe.cc \
+  "$gtest_root/src/gtest-all.cc" "$gtest_root/src/gtest_main.cc" \
+  -l:libcuda.so.1 -o /tmp/fa4_cuda_tensormap_probe
+/tmp/fa4_cuda_tensormap_probe
+```
+
+Use the system NVIDIA driver library, without simulator library paths in
+`LD_LIBRARY_PATH`. Missing driver/device support is reported as a skipped test.

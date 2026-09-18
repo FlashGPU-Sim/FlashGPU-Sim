@@ -30,11 +30,7 @@ TEST_GROUP_BINARY_GROUP_sm100_microbench_tma := none
 TEST_GROUP_EXECUTOR_sm100_microbench_tma := build-only
 TEST_GROUP_FILTER_sm100_microbench_tma := *
 
-TEST_GROUP_PROFILES_sm120_microbench := mbarrier mma memory
-TEST_GROUP_BUILD_TARGET_sm120_microbench_mbarrier := microbench-sm120-mbarrier
-TEST_GROUP_BINARY_GROUP_sm120_microbench_mbarrier := microbench-sm120-mbarrier
-TEST_GROUP_EXECUTOR_sm120_microbench_mbarrier := gtest-multi
-TEST_GROUP_FILTER_sm120_microbench_mbarrier := *
+TEST_GROUP_PROFILES_sm120_microbench := mma memory
 TEST_GROUP_BUILD_TARGET_sm120_microbench_mma := microbench-sm120-mma
 TEST_GROUP_BINARY_GROUP_sm120_microbench_mma := microbench-sm120-mma
 TEST_GROUP_EXECUTOR_sm120_microbench_mma := gtest-multi
@@ -46,11 +42,9 @@ TEST_GROUP_FILTER_sm120_microbench_memory := *
 
 MICROBENCH_SM120_GTEST_SOURCES = $(filter %_bench.cc,$(TEST_GROUP_SOURCES_sm120_microbench))
 MICROBENCH_SM90_GTEST_SOURCES = $(filter %_bench.cc,$(TEST_GROUP_SOURCES_sm90_microbench))
-MICROBENCH_SM120_MBAR_SOURCE = $(filter $(TEST_SRC_DIR)/microbench/mbarrier/%,$(MICROBENCH_SM120_GTEST_SOURCES))
 MICROBENCH_SM120_MMA_SOURCES = $(filter $(TEST_SRC_DIR)/microbench/mma/%,$(MICROBENCH_SM120_GTEST_SOURCES))
 MICROBENCH_SM90_WGMMA_SOURCES = $(filter $(TEST_SRC_DIR)/microbench/wgmma/%,$(MICROBENCH_SM90_GTEST_SOURCES))
 
-MICROBENCH_SM120_MBAR_TARGETS = $(MICROBENCH_SM120_MBAR_SOURCE:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/sm120/microbench/%_bench)
 MICROBENCH_SM120_MMA_TARGETS = $(MICROBENCH_SM120_MMA_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/sm120/microbench/%_bench)
 MICROBENCH_SM90_WGMMA_TARGETS = $(MICROBENCH_SM90_WGMMA_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/sm90/microbench/%_bench)
 MICROBENCH_SM120_GTEST_OBJECTS = $(MICROBENCH_SM120_GTEST_SOURCES:$(TEST_SRC_DIR)/microbench/%.cc=$(OBJ_DIR)/sm120/microbench/%.cu.o)
@@ -59,19 +53,16 @@ MICROBENCH_SM120_ARCH_TAG = $(subst _,,$(ARCH_NVCC_TARGET_sm120))
 MICROBENCH_SM90_ARCH_TAG = $(subst _,,$(ARCH_NVCC_TARGET_sm90))
 
 BINARY_GROUPS += \
-	microbench-sm120-mbarrier microbench-sm120-mma \
+	microbench-sm120-mma \
 	microbench-sm90-wgmma
-BINARY_GROUP_BINARIES_microbench-sm120-mbarrier = $(MICROBENCH_SM120_MBAR_TARGETS)
 BINARY_GROUP_BINARIES_microbench-sm120-mma = $(MICROBENCH_SM120_MMA_TARGETS)
 BINARY_GROUP_BINARIES_microbench-sm90-wgmma = $(MICROBENCH_SM90_WGMMA_TARGETS)
 
 .SECONDARY: $(MICROBENCH_SM120_GTEST_OBJECTS) $(MICROBENCH_SM90_GTEST_OBJECTS)
 
-.PHONY: microbench-sm120-mbarrier microbench-sm120-mma \
+.PHONY: microbench-sm120-mma \
 microbench-sm120-memory microbench-sm90-cp-async microbench-sm90-mma \
 microbench-sm90-tma microbench-sm90-wgmma microbench-sm100-tma
-
-microbench-sm120-mbarrier: setup-gtest $(MICROBENCH_SM120_MBAR_TARGETS)
 
 # The MMA group contains gtest timing probes plus standalone calibration binaries.
 microbench-sm120-mma: setup-gtest $(MICROBENCH_SM120_MMA_TARGETS)

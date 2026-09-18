@@ -561,10 +561,6 @@ TEST_F(MBarrierSanityTest, CompletionDuringSuspension) {
 }
 
 TEST_F(MBarrierSanityTest, TMA) {
-  if (!flashgpu::test::running_on_native_gpu()) {
-    GTEST_SKIP() << "TMA mbarrier sanity requires native GPU mode.";
-  }
-
   ResetOutput();
 
   const size_t shared_memory_bytes =
