@@ -336,21 +336,16 @@ statistics report or `--csv output.csv` to export the results.
 
 ## Citation
 
-We hope FlashGPU-Sim benefits your research! If you use it in your work, please cite our paper:
-
-```text
-Siying Yu, Yixun Hong, Guozhi Qiu, Feng Gu, Chenbo Geng, Zhengrong Wang, Chen Zhang, Bei Yu,
-FlashGPU-sim: Enabling GPU Modeling for Modern Architectures and AI Workloads,
-in 2026 IEEE/ACM 59th International Symposium on Microarchitecture (MICRO)
-```
+We hope FlashGPU-Sim benefits your research! If you use it in your work, please cite our paper:  
+[FlashGPU-sim: Enabling GPU Modeling for Modern Architectures and AI Workloads](https://arxiv.org/abs/2609.15311v1)
 
 BibTeX:
 ```bibtex
 @inproceedings{flashgpusim,
-  author    = {Yu, Siying and Hong, Yixun and Qiu, Guozhi and Gu, Feng
+  author    = {Yu, Siying and Hong, Yixun and Qiu, Guozhi and Liu, Jingci and Gu, Feng
                and Geng, Chenbo and Wang, Zhengrong and Zhang, Chen and Yu, Bei},
   title     = {{FlashGPU-sim}: Enabling GPU Modeling for Modern Architectures and AI Workloads},
-  booktitle = {IEEE/ACM 59th International Symposium on Microarchitecture (MICRO)},
+  booktitle = {59th IEEE/ACM International Symposium on Microarchitecture (MICRO)},
   year      = {2026}
 }
 ```
