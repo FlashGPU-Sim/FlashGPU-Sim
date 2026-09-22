@@ -877,6 +877,18 @@ sass_ptxline_file_t parse_sass_ptxline_file(const char *path) {
     if (!have_function)
       continue;
 
+    // nvdisasm may place compiler-generated trap/helper functions inside the
+    // kernel's text section.  They do not get a new //## source marker, so
+    // without this boundary they inherit the kernel's final PTX line and look
+    // like normal inline lowering.  Keep their instructions out of the kernel
+    // guide; real CALL paths remain represented by their call sites.
+    if (line.find(".type") != std::string::npos &&
+        line.find("@function") != std::string::npos &&
+        line.find(current.name) == std::string::npos) {
+      current_ptx_line = 0;
+      continue;
+    }
+
     unsigned marked_line = 0;
     if (parse_sass_ptxline_marker(line, &marked_line)) {
       current_ptx_line = marked_line;
@@ -1309,6 +1321,19 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   if (inst == NULL || inst->is_label())
     return inst_class_t::boundary;
 
+  // Timing special registers are observable side effects. In particular,
+  // moving register-only work across a clock read invalidates dependency
+  // microbenchmarks even when all ordinary register edges remain satisfied.
+  const std::vector<operand_info> &operands = inst->get_operands();
+  for (unsigned i = 0; i < operands.size(); ++i) {
+    if (!operands[i].is_builtin())
+      continue;
+    const int builtin = operands[i].get_int() & 0xFFFF;
+    if (builtin == CLOCK_REG || builtin == CLOCK64_REG ||
+        builtin == GLOBALTIMER_REG)
+      return inst_class_t::boundary;
+  }
+
   switch (inst->get_opcode()) {
   case MMA_OP:
   case TENSOR_MMA_OP:
@@ -1485,6 +1510,42 @@ bool is_segment_boundary(const ptx_instruction *inst,
   return cls == inst_class_t::boundary || cls == inst_class_t::control ||
          cls == inst_class_t::mem ||
          has_unsupported_operand_form(inst, allow_ldmatrix_memory_operand);
+}
+
+bool has_option(const ptx_instruction *inst, int option) {
+  if (inst == NULL)
+    return false;
+  const std::list<int> options = inst->get_options();
+  return std::find(options.begin(), options.end(), option) != options.end();
+}
+
+// These operations are ordered side-effect anchors, but they do not stop the
+// surrounding scalar register pipelines on Blackwell. Keeping them inside a
+// dependency-checked scheduling region lets independent register work that
+// originally precedes an anchor move after it. Explicit graph edges preserve
+// observable TCGen05/mbarrier order and prevent code originally after an
+// anchor from moving back across it.
+//
+// mbarrier.arrive.expect_tx is intentionally excluded: unlike a plain arrive,
+// it also changes the barrier's outstanding transaction count and is commonly
+// coupled to a TMA pipeline boundary.
+bool is_ordered_register_transparent_anchor(const ptx_instruction *inst) {
+  if (inst == NULL || inst->is_label())
+    return false;
+
+  if (inst->get_opcode() == TCGEN05_ST_OP)
+    return true;
+  if (inst->get_opcode() == TCGEN05_WAIT_OP)
+    return has_option(inst, TCGEN05_WAIT_ST_OPTION);
+  if (inst->get_opcode() != MBAR_OP)
+    return false;
+
+  return has_option(inst, ARRIVE_OPTION) && !has_option(inst, EXPECT_TX_OPTION);
+}
+
+bool is_pure_register_class(inst_class_t cls) {
+  return cls == inst_class_t::sfu || cls == inst_class_t::fp32 ||
+         cls == inst_class_t::shfl || cls == inst_class_t::intp;
 }
 
 bool is_tma_pipeline_boundary(const ptx_instruction *inst) {
@@ -1991,9 +2052,21 @@ dep_graph_t build_dependency_graph(const std::vector<sched_inst_t> &chunk,
   bool have_last_barrier = false;
   unsigned last_barrier = 0;
   std::vector<unsigned> barrier_sensitive_since_last;
+  bool have_last_ordered_anchor = false;
+  unsigned last_ordered_anchor = 0;
 
   for (unsigned i = 0; i < chunk.size(); ++i) {
     const sched_inst_t &inst = chunk[i];
+    const bool ordered_anchor =
+        is_ordered_register_transparent_anchor(inst.inst);
+    if (ordered_anchor) {
+      if (have_last_ordered_anchor)
+        add_edge(graph, edge_index, last_ordered_anchor, i, 0);
+      have_last_ordered_anchor = true;
+      last_ordered_anchor = i;
+    } else if (have_last_ordered_anchor) {
+      add_edge(graph, edge_index, last_ordered_anchor, i, 0);
+    }
     if (relax_barrier_reg && is_barrier_inst(inst)) {
       for (std::vector<unsigned>::const_iterator prior =
                barrier_sensitive_since_last.begin();
@@ -2743,6 +2816,47 @@ filter_ptxline_guide_for_segment(const std::vector<sched_inst_t> &chunk,
   return out;
 }
 
+void constrain_anchor_crossings_to_guide(
+    const std::vector<sched_inst_t> &chunk,
+    const std::vector<ptxline_guide_item_t> &segment_guide,
+    dep_graph_t &graph) {
+  std::map<unsigned, unsigned> sass_offset_by_original;
+  for (std::vector<ptxline_guide_item_t>::const_iterator item =
+           segment_guide.begin();
+       item != segment_guide.end(); ++item) {
+    sass_offset_by_original[item->original_index] = item->sass_offset;
+  }
+
+  std::map<std::pair<unsigned, unsigned>, unsigned> edge_index;
+  for (unsigned i = 0; i < graph.edges.size(); ++i) {
+    edge_index[std::make_pair(graph.edges[i].src, graph.edges[i].dst)] = i;
+  }
+
+  for (unsigned anchor = 0; anchor < chunk.size(); ++anchor) {
+    if (!is_ordered_register_transparent_anchor(chunk[anchor].inst))
+      continue;
+
+    const std::map<unsigned, unsigned>::const_iterator anchor_guide =
+        sass_offset_by_original.find(chunk[anchor].original_index);
+    if (anchor_guide == sass_offset_by_original.end()) {
+      ptx_reorder_fatal(
+          "ordered anchor '%s' at original index %u has no primary SASS "
+          "guide item",
+          chunk[anchor].inst->get_opcode_cstr(), chunk[anchor].original_index);
+    }
+
+    for (unsigned prior = 0; prior < anchor; ++prior) {
+      const std::map<unsigned, unsigned>::const_iterator prior_guide =
+          sass_offset_by_original.find(chunk[prior].original_index);
+      const bool compiler_places_after =
+          prior_guide != sass_offset_by_original.end() &&
+          prior_guide->second > anchor_guide->second;
+      if (!compiler_places_after)
+        add_edge(graph, edge_index, prior, anchor, 0);
+    }
+  }
+}
+
 std::vector<sched_inst_t> schedule_sass_ptxline_guided(
     const std::vector<sched_inst_t> &chunk,
     const std::vector<ptxline_guide_item_t> &segment_guide,
@@ -2754,6 +2868,7 @@ std::vector<sched_inst_t> schedule_sass_ptxline_guided(
   }
 
   dep_graph_t graph = build_dependency_graph(chunk, true, false);
+  constrain_anchor_crossings_to_guide(chunk, segment_guide, graph);
   *edge_count = graph.edges.size();
 
   std::vector<std::vector<dep_edge_t>> edge_by_src(chunk.size());
@@ -2940,6 +3055,22 @@ void flush_segment(std::vector<sched_inst_t> &segment,
   stats.max_segment =
       std::max(stats.max_segment, static_cast<unsigned>(segment.size()));
 
+  unsigned ordered_anchor_count = 0;
+  for (unsigned i = 0; i < segment.size(); ++i) {
+    if (is_ordered_register_transparent_anchor(segment[i].inst))
+      ++ordered_anchor_count;
+  }
+  if (ordered_anchor_count != 0) {
+    for (unsigned i = 0; i < segment.size(); ++i) {
+      if (!is_ordered_register_transparent_anchor(segment[i].inst) &&
+          !is_pure_register_class(segment[i].cls)) {
+        ptx_reorder_fatal(
+            "ordered-anchor segment contains non-register instruction %s",
+            segment[i].inst->get_opcode_cstr());
+      }
+    }
+  }
+
   if (segment.size() == 1) {
     advance_timing_in_order(segment, timing_state);
     out.push_back(segment[0].inst);
@@ -3056,7 +3187,9 @@ void run_ptx_reorder(function_info *func) {
   const ptxline_guide_t *sass_ptxline_guide = NULL;
   unsigned sass_guide_cursor = 0;
   const int ready_slack = 0;
-  const bool sass_ptxline_guided = func->gpgpu_ctx->ptx_reorder_sass_guided;
+  const bool sass_ptxline_guided =
+      func->gpgpu_ctx->ptx_reorder_sass_guided ||
+      !func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.empty();
 
   func->m_compiler_register_views.clear();
   func->m_compiler_register_packs.clear();
@@ -3124,11 +3257,8 @@ void run_ptx_reorder(function_info *func) {
   }
 
   if (sass_ptxline_guided) {
-    if (func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.empty()) {
-      ptx_reorder_fatal(
-          "SASS-guided reorder is enabled but no auto full SASS guide path "
-          "was recorded before PTX assembly");
-    }
+    if (func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.empty())
+      ptx_reorder_fatal("PTX loader did not prepare a SASS PTX-line guide");
     const std::string primary_rules_file =
         find_unique_sass_primary_rules_file();
     const sass_primary_rules_t &rules =
@@ -3168,6 +3298,8 @@ void run_ptx_reorder(function_info *func) {
   }
 
   const ptx_instruction *previous_boundary = NULL;
+  bool segment_has_ordered_anchor = false;
+  bool segment_has_non_register_inst = false;
   for (std::list<ptx_instruction *>::iterator it = func->m_instructions.begin();
        it != func->m_instructions.end(); ++it, ++original_index) {
     ptx_instruction *inst = *it;
@@ -3175,7 +3307,34 @@ void run_ptx_reorder(function_info *func) {
     const bool guide_relaxed_ldmatrix = sass_ptxline_guide != NULL &&
                                         inst != NULL &&
                                         inst->get_opcode() == LDMATRIX_OP;
-    if (is_segment_boundary(inst, guide_relaxed_ldmatrix)) {
+    // Crossing a side-effect anchor is enabled only when a compiler-order
+    // guide covers this function. Plain reorder retains the conservative hard
+    // boundaries used by workloads without architecture/toolchain evidence.
+    const bool ordered_anchor = sass_ptxline_guide != NULL &&
+                                is_ordered_register_transparent_anchor(inst);
+    const inst_class_t cls = classify_inst(inst);
+    const bool pure_register_inst = is_pure_register_class(cls);
+
+    // An anchor may join only scalar-register work. This keeps tensor,
+    // ldmatrix, memory, and unreviewed side effects under the original hard
+    // boundary policy while allowing reviewed anchors and scalar work on both
+    // sides to share one dependency graph.
+    if (ordered_anchor && segment_has_non_register_inst) {
+      flush_segment(segment, reordered, ready_slack, stats, timing_state,
+                    previous_boundary, NULL, false, sass_guide, 1,
+                    &sass_guide_cursor, sass_ptxline_guide);
+      segment_has_ordered_anchor = false;
+      segment_has_non_register_inst = false;
+    } else if (!ordered_anchor && !pure_register_inst &&
+               segment_has_ordered_anchor) {
+      flush_segment(segment, reordered, ready_slack, stats, timing_state,
+                    previous_boundary, NULL, false, sass_guide, 1,
+                    &sass_guide_cursor, sass_ptxline_guide);
+      segment_has_ordered_anchor = false;
+      segment_has_non_register_inst = false;
+    }
+
+    if (is_segment_boundary(inst, guide_relaxed_ldmatrix) && !ordered_anchor) {
       const ptx_instruction *next_boundary = inst;
       if (inst != NULL && inst->is_label()) {
         std::list<ptx_instruction *>::iterator next = it;
@@ -3191,17 +3350,22 @@ void run_ptx_reorder(function_info *func) {
       advance_boundary_timing(inst, timing_state);
       if (inst != NULL && !inst->is_label())
         previous_boundary = inst;
+      segment_has_ordered_anchor = false;
+      segment_has_non_register_inst = false;
       continue;
     }
 
     sched_inst_t sched_inst;
     sched_inst.inst = inst;
     sched_inst.original_index = original_index;
-    sched_inst.cls = classify_inst(inst);
+    sched_inst.cls = cls;
     collect_inst_regs(inst, sched_inst.uses, sched_inst.defs);
     canonicalize_compiler_view_regs(func, sched_inst.uses);
     canonicalize_compiler_view_regs(func, sched_inst.defs);
     segment.push_back(sched_inst);
+    segment_has_ordered_anchor = segment_has_ordered_anchor || ordered_anchor;
+    segment_has_non_register_inst = segment_has_non_register_inst ||
+                                    (!ordered_anchor && !pure_register_inst);
   }
   flush_segment(segment, reordered, ready_slack, stats, timing_state,
                 previous_boundary, NULL, false, sass_guide, 1,
