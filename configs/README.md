@@ -248,29 +248,29 @@ response stream still shares the single cluster-dispatch budget shown below.
 `-gpgpu_tma_request_bytes_per_cycle` remains at its code default of `0`, which
 disables the additional byte-credit limiter instead of restricting service.
 
-| Option | Code default | SM100_B200 | SM100_B200_REDUCED | Meaning |
-| --- | ---: | ---: | ---: | --- |
-| `-icnt_request_input_sectors_per_cycle` | `0` | `4` | `4` | Request sectors per local-xbar input and ICNT tick |
-| `-icnt_request_output_sectors_per_cycle` | `0` | `4` | `4` | Request sectors per local-xbar output and ICNT tick |
-| `-gpgpu_l2_request_ingress_sectors_per_cycle` | `0` | `4` | `4` | Request sectors entering each memory subpartition and L2 tick |
-| `-gpgpu_l2_rop_delay_output_sectors_per_cycle` | `1` | `3` | `3` | Ready 32-byte sector children leaving each ROP-delay queue per L2 instance and L2 tick |
-| `-gpgpu_l2_response_egress_sectors_per_cycle` | `0` | `4` | `4` | Response sectors leaving each memory subpartition and ICNT tick |
-| `-icnt_reply_input_sectors_per_cycle` | `0` | `4` | `4` | Reply sectors per local-xbar input and ICNT tick |
-| `-icnt_reply_output_sectors_per_cycle` | `0` | `4` | `4` | Reply sectors per local-xbar output and ICNT tick |
-| `-gpgpu_cluster_response_ingress_sectors_per_cycle` | `0` | `4` | `4` | Reply sectors entering a cluster FIFO per target SM and core tick |
-| `-gpgpu_cluster_response_dispatch_sectors_per_cycle` | `0` | `4` | `4` | Shared response sectors dispatched per target SM and core tick |
-| `-gpgpu_ldst_request_width` | `0` | `4` | `4` | Internal 32-byte global/local bypass children injected per SM and core tick; `0` preserves the legacy LD/ST-cycle path |
-| `-gpgpu_ldst_response_sectors_per_cycle` | `0` | `4` | `4` | LD/ST response sectors advanced per SM and core tick |
-| `-gpgpu_cta_replacement_latency` | `0` | `1200` | `0` | Per-SM hardware CTA slot transition after resource release; a never-used slot is immediately available and different SMs transition in parallel |
-| `-gpgpu_tma_max_inflight` | `0` | `3200` | `0` | Issued TMA child requests awaiting response per SM; `0` is unlimited. The full-model value covers the uniform 800-cycle DRAM approximation's bandwidth-delay product while response service width independently limits steady-state bandwidth; the reduced functional model remains unlimited |
-| `-gpgpu_tma_tx_quota` | `0` | `0` | default | Per-live-transaction fairness quota; B200 disables it so the SM-wide tracking cap and request/response widths determine aggregate concurrency |
-| `-gpgpu_tma_request_granularity` | `32` | `32` | `32` | Bytes represented by one TMA request |
-| `-gpgpu_tma_request_width` | `1` | `4` | `4` | TMA requests issued per TMA unit and core tick |
-| `-gpgpu_tma_response_width` | `1` | `4` | `4` | TMA response tokens consumed per SM and core tick |
-| `-gpgpu_cp_async_request_granularity` | `32` | `32` | `32` | Bytes represented by one ordinary `cp.async` request |
-| `-gpgpu_cp_async_request_width` | `1` | `4` | `4` | Ordinary `cp.async` requests issued per SM and core tick |
-| `-gpgpu_cp_async_response_width` | `1` | `4` | `4` | Ordinary `cp.async` response tokens consumed per SM and core tick |
-| `-gpgpu_mbarrier_trywait_latency` | `32` | `32` | `32` | Provisional no-hint maximum suspension; an explicit PTX hint selects the deterministic hinted-wait policy |
+| Option | Code default | SM100_B200 | Meaning |
+| --- | ---: | ---: | --- |
+| `-icnt_request_input_sectors_per_cycle` | `0` | `4` | Request sectors per local-xbar input and ICNT tick |
+| `-icnt_request_output_sectors_per_cycle` | `0` | `4` | Request sectors per local-xbar output and ICNT tick |
+| `-gpgpu_l2_request_ingress_sectors_per_cycle` | `0` | `4` | Request sectors entering each memory subpartition and L2 tick |
+| `-gpgpu_l2_rop_delay_output_sectors_per_cycle` | `1` | `3` | Ready 32-byte sector children leaving each ROP-delay queue per L2 instance and L2 tick |
+| `-gpgpu_l2_response_egress_sectors_per_cycle` | `0` | `4` | Response sectors leaving each memory subpartition and ICNT tick |
+| `-icnt_reply_input_sectors_per_cycle` | `0` | `4` | Reply sectors per local-xbar input and ICNT tick |
+| `-icnt_reply_output_sectors_per_cycle` | `0` | `4` | Reply sectors per local-xbar output and ICNT tick |
+| `-gpgpu_cluster_response_ingress_sectors_per_cycle` | `0` | `4` | Reply sectors entering a cluster FIFO per target SM and core tick |
+| `-gpgpu_cluster_response_dispatch_sectors_per_cycle` | `0` | `4` | Shared response sectors dispatched per target SM and core tick |
+| `-gpgpu_ldst_request_width` | `0` | `4` | Internal 32-byte global/local bypass children injected per SM and core tick; `0` preserves the legacy LD/ST-cycle path |
+| `-gpgpu_ldst_response_sectors_per_cycle` | `0` | `4` | LD/ST response sectors advanced per SM and core tick |
+| `-gpgpu_cta_replacement_latency` | `0` | `1200` | Per-SM hardware CTA slot transition after resource release; a never-used slot is immediately available and different SMs transition in parallel |
+| `-gpgpu_tma_max_inflight` | `0` | `3200` | Issued TMA child requests awaiting response per SM; `0` is unlimited. The full-model value covers the uniform 800-cycle DRAM approximation's bandwidth-delay product while response service width independently limits steady-state bandwidth |
+| `-gpgpu_tma_tx_quota` | `0` | `0` | Per-live-transaction fairness quota; B200 disables it so the SM-wide tracking cap and request/response widths determine aggregate concurrency |
+| `-gpgpu_tma_request_granularity` | `32` | `32` | Bytes represented by one TMA request |
+| `-gpgpu_tma_request_width` | `1` | `4` | TMA requests issued per TMA unit and core tick |
+| `-gpgpu_tma_response_width` | `1` | `4` | TMA response tokens consumed per SM and core tick |
+| `-gpgpu_cp_async_request_granularity` | `32` | `32` | Bytes represented by one ordinary `cp.async` request |
+| `-gpgpu_cp_async_request_width` | `1` | `4` | Ordinary `cp.async` requests issued per SM and core tick |
+| `-gpgpu_cp_async_response_width` | `1` | `4` | Ordinary `cp.async` response tokens consumed per SM and core tick |
+| `-gpgpu_mbarrier_trywait_latency` | `32` | `32` | Provisional no-hint maximum suspension; an explicit PTX hint selects the deterministic hinted-wait policy |
 
 ### Experimental Controls
 

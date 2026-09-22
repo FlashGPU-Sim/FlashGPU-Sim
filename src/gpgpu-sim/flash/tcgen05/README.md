@@ -13,8 +13,8 @@ Current scope:
 - A per-SM asynchronous timing unit with thread-stream MMA/CP/shift ordering,
   warp-stream LD/ST waits, commit-to-mbarrier completion, issue intervals,
   queue backpressure, and timing statistics.
-- Dense FP16 MMA service time derived from decoded `2*M*N*K` work. The full and
-  reduced B200 configs use an initial 13,764 FLOP/SM-cycle reference estimate
+- Dense FP16 MMA service time derived from decoded `2*M*N*K` work. The B200
+  config uses an initial 13,764 FLOP/SM-cycle reference estimate
   derived from the published 2.2 PFLOP/s device throughput at the configured
   1.08 GHz; it is not an instruction-level calibration result.
 - Optional inline-PTX surface validation through

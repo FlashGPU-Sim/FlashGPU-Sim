@@ -13,7 +13,7 @@ Run one case through export, runner build, simulation, and result checking:
 
 ```bash
 tests/dev/fa4/run_fa4_b200_cases.sh run \
-  --config SM100_B200_REDUCED \
+  --config SM100_B200 \
   --case H32D64CausalB2S128
 ```
 
@@ -21,7 +21,7 @@ Reuse its exported artifacts and run the simulation again:
 
 ```bash
 tests/dev/fa4/run_fa4_b200_cases.sh sim \
-  --config SM100_B200_REDUCED \
+  --config SM100_B200 \
   --case H32D64CausalB2S128
 ```
 
@@ -29,7 +29,7 @@ Export artifacts without running the simulator:
 
 ```bash
 tests/dev/fa4/run_fa4_b200_cases.sh export \
-  --config SM100_B200_REDUCED \
+  --config SM100_B200 \
   --case H32D64CausalB2S128
 ```
 
@@ -37,7 +37,7 @@ Run every specialization in the smoke suite:
 
 ```bash
 tests/dev/fa4/run_fa4_b200_suite_matrix.sh \
-  --config SM100_B200_REDUCED \
+  --config SM100_B200 \
   --suite smoke
 ```
 
@@ -59,7 +59,7 @@ Run the complete small suite. Simulations have no timeout by default:
 
 ```bash
 tests/dev/fa4/run_fa4_b200_suite_matrix.sh \
-  --config SM100_B200_REDUCED \
+  --config SM100_B200 \
   --suite small
 ```
 
