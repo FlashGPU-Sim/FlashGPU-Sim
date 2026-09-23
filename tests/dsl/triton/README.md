@@ -16,7 +16,7 @@ limitations.
 Create a local Python environment and install TritonTrace:
 
 ```bash
-cd tests/frontend/triton
+cd tests/dsl/triton
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -U pip uv
 .venv/bin/uv pip install --python .venv/bin/python torch triton numpy

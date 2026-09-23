@@ -2,7 +2,7 @@
 
 The same tools distribution also provides [CutedslTrace](CutedslTrace/README.md)
 for offline CuTe DSL capture and replay. Its examples are in
-[tests/frontend/cutedsl](../tests/frontend/cutedsl/README.md).
+[tests/dsl/cutedsl](../tests/dsl/cutedsl/README.md).
 
 TritonTrace records Triton CUDA kernel compilation and launch state and generates standalone CUDA C++ harnesses. The generated harnesses can replay a captured launch on a compatible physical GPU or with FlashGPU-Sim. The public API is [`TritonTrace.Tracker`](TritonTrace/tracker.py).
 

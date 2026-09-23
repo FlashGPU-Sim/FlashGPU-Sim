@@ -27,7 +27,7 @@ architectures and AI workloads, built upon GPGPU-Sim.
 | --- | --- |
 | Architectures | Hopper/SM90 ([`SM90_H100`](configs/SM90_H100/gpgpusim.config)) and Blackwell/SM120 ([`SM120_RTX5090`](configs/SM120_RTX5090/gpgpusim.config)) configurations |
 | GPU features | TMA, `mbarrier`, `mma`, `wgmma`, `ldmatrix`/`stmatrix`, etc. |
-| Workload tooling | [TritonTrace](tools/README.md) kernel capture and standalone replay ([examples and validation](tests/frontend/triton/README.md)) |
+| Workload tooling | [TritonTrace](tools/README.md) kernel capture and standalone replay ([examples and validation](tests/dsl/triton/README.md)) |
 | Simulation | Execution-driven functional simulation and cycle-level timing simulation |
 | Parallelism | OpenMP-based multi-threaded SM simulation |
 

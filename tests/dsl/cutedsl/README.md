@@ -1,6 +1,6 @@
 # CutedslTrace examples and validation
 
-This directory parallels `tests/frontend/triton/`. The generic exporter lives in
+This directory parallels `tests/dsl/triton/`. The generic exporter lives in
 [`tools/CutedslTrace`](../../../tools/CutedslTrace/README.md); workloads and their
 configuration live here. These standalone tests are not registered in `run_tests.py`.
 
@@ -69,3 +69,48 @@ The exporter does not create simulator configs or automatically run simulations.
 
 If `ptxas` rejects the exported PTX version, set `PTXAS_CUDA_INSTALL_PATH`
 to a Toolkit that supports that version before running the replay.
+
+## FA4 stage controller
+
+From this directory, use the current Python environment:
+
+```bash
+python validation/run_fa4.py track --suite smoke
+python validation/run_fa4.py compile --suite smoke
+python validation/run_fa4.py replay --case H16D128CausalB2S128
+python validation/run_fa4.py all --shape 2,16,128,128,true
+python validation/run_fa4.py compile --suite all --list
+```
+
+Stages are explicit: `compile` requires an existing export; `replay` requires a
+compiled executable. `all` performs all three stages. Selection defaults to all
+32 presets. Repeat `--suite`, `--case`, or `--shape B,H,S,D,true|false` to select
+multiple cases. A shape matching a preset reuses its existing directory; other
+shapes use `custom/<case-name>`.
+
+Exports remain in `exports/fa4/<suite>/<case>/`. Each controller invocation creates
+`runs/fa4/<timestamp>/<suite>/<case>/` for stage logs, replay configuration and
+output data, plus a run-level `summary.json`. Replay copies the executable and
+links input artifacts, leaving generated result files inside the run directory.
+`--export-root` and `--run-root` override these roots.
+
+Replay defaults to simulation: it copies files from `configs/SM100_B200` (override
+with `--config-dir`) and sources this repository's simulator environment in a
+child shell. Set `CUDA_INSTALL_PATH` and, if required, `PTXAS_CUDA_INSTALL_PATH`
+in the caller's environment. Simulations use up to four workers (`--jobs N`), limited by the available
+physical cores. Whole-machine memory is checked every second: new replays wait
+at the configured limit (default 50 GiB; override with `--memory-limit-gib N`), and above that limit the newest active replay is stopped. A stage
+failure stops the run and its remaining child processes.
+For hardware replay, use `--native` from a shell without the simulator environment
+on a matching B200 GPU. The controller stops on the first failed stage and records
+the failure in `summary.json`.
+
+Simulated replay uses `tests/scripts/cpu_affinity.py` to assign each worker four physical
+cores based on topology and current load. Worker CPU sets do not overlap. `taskset` applies the
+CPU set and `OMP_NUM_THREADS` matches its size. Override with `--cpus-per-job N`
+or an explicit `--cpus 0,2,4-5` within the caller's allowed CPUs (an explicit CPU set selects one worker). Selected CPUs
+are recorded in `summary.json`. Track, compile and native replay retain the
+caller's affinity.
+
+Track and compile remain sequential; `all` finishes these stages before parallel
+simulation. Native replay is sequential to avoid GPU contention.

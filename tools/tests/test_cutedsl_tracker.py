@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import torch
 import cutlass.cute as cute
 from CutedslTrace import Tracker
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/frontend/cutedsl/examples"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/dsl/cutedsl/examples"))
 from example_vector_add import add
 
 
