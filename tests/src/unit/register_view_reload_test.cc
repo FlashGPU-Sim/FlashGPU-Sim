@@ -89,3 +89,33 @@ TEST(RegisterViewReloadTest, RebuildsStateForRepeatedDefinitions) {
         << "replacement retained an eliminated unpack or skipped assembly";
   }
 }
+TEST(RegisterViewReloadTest, RestoresScalarCopyRegisterIds) {
+  gpgpu_context *ctx = GPGPU_Context();
+  GPGPUSim_Context(ctx);
+  ctx->ptx_reorder_sass_guided = false;
+  function_info *first = nullptr;
+  for (bool optimized : {true, false, true}) {
+    ctx->ptx_reorder_enabled = optimized;
+    const char *path = "scalar_copy_reload.ptx";
+    {
+      std::ofstream fixture(path);
+      fixture << ".version 8.0\n.target sm_80\n.address_size 64\n"
+                 ".visible .entry reload_scalar_copy() {\n"
+                 ".reg .b32 %source, %copy, %result;\n"
+                 "mov.b32 %source, 7;\nmov.b32 %copy, %source;\n"
+                 "add.u32 %result, %copy, 1;\nret;\n}\n";
+      ASSERT_TRUE(fixture.good());
+    }
+    auto *symbols = ctx->gpgpu_ptx_sim_load_ptx_from_filename(path);
+    std::remove(path);
+    ASSERT_NE(symbols, nullptr);
+    auto *func = symbols->lookup_function("reload_scalar_copy");
+    ASSERT_NE(func, nullptr);
+    if (!first) first = func;
+    ASSERT_EQ(func, first);
+    const auto *source = func->get_symtab()->lookup("%source");
+    const auto *copy = func->get_symtab()->lookup("%copy");
+    EXPECT_EQ(source->reg_num() == copy->reg_num(), optimized);
+    EXPECT_EQ(func->get_compiler_register_view(copy, nullptr, nullptr), optimized);
+  }
+}

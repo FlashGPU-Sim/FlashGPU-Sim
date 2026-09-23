@@ -5389,6 +5389,9 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       }
 
       d.f32 = a.f32 * b.f32;
+      // Preserve the original rounded product and +0 subtraction, including
+      // signed zero. Negating an input would change these semantics.
+      if (pI->is_compiler_negated_mul()) d.f32 = 0.0f - d.f32;
 
       if (pI->saturation_mode()) {
         if (d.f32 < 0)
@@ -6291,6 +6294,27 @@ void setp_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();
   const operand_info &src2 = pI->src2();
+
+  if (pI->is_compiler_predicate_byte_extract()) {
+    assert(dst.is_vector() && dst.get_vect_nelem() == 7);
+    assert(src1.is_reg() && src2.is_vector() &&
+           src2.get_vect_nelem() == dst.get_vect_nelem());
+    const ptx_reg_t source = thread->get_reg(src1.get_symbol());
+    for (unsigned i = 0; i < dst.get_vect_nelem(); ++i) {
+      assert(src2.vec_is_literal(i));
+      const unsigned long long encoded = src2.vec_literal_value(i).u64;
+      const unsigned mask = static_cast<unsigned>(encoded);
+      const bool compare_equal_to_zero = (encoded & (1ULL << 32)) != 0;
+      const bool bit_is_set = (source.u32 & mask) != 0;
+      const bool predicate_true =
+          compare_equal_to_zero ? !bit_is_set : bit_is_set;
+      ptx_reg_t data;
+      data.u64 = 0;
+      data.pred = predicate_true ? 0 : 1;
+      thread->set_reg(dst.vec_symbol(i), data);
+    }
+    return;
+  }
 
   assert(pI->get_num_operands() <
          4);  // or need to deal with "c" operand / boolOp

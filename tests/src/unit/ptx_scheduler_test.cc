@@ -119,12 +119,69 @@ class PtxSchedulerGuidedTest : public ::testing::Test {
     }
     return lines;
   }
+  std::vector<const ptx_instruction *> fusion(const std::string &name,
+                                              const std::string &body) {
+    ctx->ptx_reorder_sass_guided = false;
+    unsetenv("GPGPUSIM_SASS_PTXLINE_GUIDE");
+    std::ofstream("fusion.ptx") <<
+        ".version 8.0\n.target sm_90\n.address_size 64\n.visible .entry " <<
+        name << "() {\n.reg .f32 a,b,product,zero,result;\n"
+        ".reg .pred source,inverted;\n.reg .b32 value;\n" <<
+        body << "ret;\n}\n";
+    auto *symbols = ctx->gpgpu_ptx_sim_load_ptx_from_filename("fusion.ptx");
+    if (!symbols) { ADD_FAILURE(); return {}; }
+    auto *func = symbols->lookup_function(name.c_str());
+    if (!func) { ADD_FAILURE(); return {}; }
+    func->do_pdom();
+    std::vector<const ptx_instruction *> result;
+    for (unsigned pc = func->get_start_PC(); result.size() < 32;) {
+      const auto *inst = func->get_dyn_inst(pc);
+      if (!inst || inst->get_opcode() == RET_OP) break;
+      result.push_back(inst);
+      pc += inst->inst_size();
+    }
+    return result;
+  }
   gpgpu_context *ctx = nullptr;
   bool enabled = false, guided = false;
   std::string guide_path, previous_override, rules_path;
   bool had_override = false;
   std::filesystem::path cwd, work;
 };
+
+TEST_F(PtxSchedulerGuidedTest, NegatedMultiplyOnlyFusesPlainRoundNearest) {
+  unsigned index = 0;
+  for (const auto &options : std::vector<std::pair<std::string, std::string>>{
+           {"", ""}, {".rn", ".rn"}, {".sat", ""}, {"", ".sat"},
+           {".rz", ""}, {"", ".rm"}, {".ftz", ""}, {"", ".ftz"}}) {
+    const auto insts = fusion("negated_mul_" + std::to_string(index),
+        "mul" + options.first + ".f32 product,a,b;\n"
+        "mov.b32 zero,0f00000000;\nsub" + options.second +
+        ".f32 result,zero,product;\n");
+    ASSERT_FALSE(insts.empty());
+    unsigned fused = 0, subtracts = 0;
+    for (const auto *inst : insts) {
+      fused += inst->is_compiler_negated_mul();
+      subtracts += inst->get_opcode() == SUB_OP;
+    }
+    EXPECT_EQ(fused, index < 2 ? 1u : 0u);
+    EXPECT_EQ(subtracts, index < 2 ? 0u : 1u);
+    ++index;
+  }
+}
+
+TEST_F(PtxSchedulerGuidedTest, PredicateGuardFusionPreservesDataOperandUses) {
+  for (bool data_use : {false, true}) {
+    const auto insts = fusion(data_use ? "guard_data_use" : "guard_only",
+        std::string("setp.eq.u32 source,0,1;\nnot.pred inverted,source;\n") +
+        (data_use ? "@inverted selp.u32 value,7,9,inverted;\n"
+                  : "@inverted mov.u32 value,7;\n"));
+    ASSERT_FALSE(insts.empty());
+    unsigned inversions = 0;
+    for (const auto *inst : insts) inversions += inst->get_opcode() == NOT_OP;
+    EXPECT_EQ(inversions, data_use ? 1u : 0u);
+  }
+}
 
 TEST_F(PtxSchedulerGuidedTest, MovesIndependentWorkOnlyForwardAcrossAnchor) {
   EXPECT_EQ(schedule("guided_forward",

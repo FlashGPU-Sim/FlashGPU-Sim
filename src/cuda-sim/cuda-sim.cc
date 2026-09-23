@@ -909,6 +909,7 @@ void ptx_instruction::set_fp_or_int_archop() {
   } else if ((m_opcode == CVT_OP || m_opcode == SET_OP ||
               m_opcode == SLCT_OP)) {
     if (get_type2() == F16_TYPE || get_type2() == F32_TYPE ||
+        get_type2() == F32X2_TYPE ||
         get_type2() == F64_TYPE || get_type2() == FF64_TYPE) {
       oprnd_type = FP_OP;
     } else
@@ -916,6 +917,7 @@ void ptx_instruction::set_fp_or_int_archop() {
 
   } else {
     if (get_type() == F16_TYPE || get_type() == F32_TYPE ||
+        get_type() == F32X2_TYPE ||
         get_type() == F64_TYPE || get_type() == FF64_TYPE) {
       oprnd_type = FP_OP;
     } else
@@ -986,7 +988,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           if ((op == DP_OP) || (op == ALU_OP)) sp_op = DP___OP;
           break;
       }
-    } else if (get_type() == F16_TYPE || get_type() == F32_TYPE) {
+    } else if (get_type() == F16_TYPE || get_type() == F32_TYPE ||
+               get_type() == F32X2_TYPE) {
       switch (get_opcode()) {
         case MUL_OP:
         case MAD_OP:
@@ -1485,6 +1488,7 @@ void ptx_instruction::set_opcode_and_latency() {
       // ADD,SUB latency
       switch (get_type()) {
         case F32_TYPE:
+        case F32X2_TYPE:
           latency = fp_latency[0];
           initiation_interval = fp_init[0];
           op = SP_OP;
@@ -1510,6 +1514,7 @@ void ptx_instruction::set_opcode_and_latency() {
       // MAX,MIN latency
       switch (get_type()) {
         case F32_TYPE:
+        case F32X2_TYPE:
           latency = fp_latency[1];
           initiation_interval = fp_init[1];
           op = SP_OP;
@@ -1534,6 +1539,7 @@ void ptx_instruction::set_opcode_and_latency() {
       // MUL latency
       switch (get_type()) {
         case F32_TYPE:
+        case F32X2_TYPE:
           latency = fp_latency[2];
           initiation_interval = fp_init[2];
           op = SP_OP;
@@ -1561,6 +1567,7 @@ void ptx_instruction::set_opcode_and_latency() {
       // MAD latency
       switch (get_type()) {
         case F32_TYPE:
+        case F32X2_TYPE:
           latency = fp_latency[3];
           initiation_interval = fp_init[3];
           op = SP_OP;
@@ -1916,6 +1923,10 @@ void ptx_instruction::pre_decode() {
           for (unsigned lane = 0; lane < 2; ++lane) {
             const symbol *source = pack_sources[lane];
             assert(source != NULL && !source->is_non_arch_reg());
+            // A brace pack may broadcast one 32-bit register into both lanes.
+            // The compiled packed operation reads that scalar once and applies
+            // it to both lanes, so do not create a duplicate collector input.
+            if (lane != 0 && source == pack_sources[0]) continue;
             assert(m < MAX_INPUT_VALUES && m < MAX_REG_OPERANDS);
             in[m] = source->reg_num();
             arch_reg.src[m] = source->arch_reg_num();

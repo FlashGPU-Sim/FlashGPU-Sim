@@ -28,6 +28,7 @@ add.rn.f32x2 = FADD2
 sub.rn.f32x2 = FADD2
 fma.rn.f32x2 = FFMA2
 max.f32 = FMNMX3, FMNMX
+compiler.mad.lo.s32 = IMAD
 mul.rn.f32x2 = FMUL2
 cvt.rn.f16x2.f32 = F2FP.F16.F32.PACK_AB
 shfl.sync.bfly.b32 = SHFL.BFLY

@@ -453,6 +453,8 @@ bool opcode_set_contains(const std::set<std::string> &values,
 std::string ptx_mnemonic_from_source(const ptx_instruction *inst) {
   if (inst == NULL)
     return std::string();
+  if (inst->is_compiler_shift_add_mad())
+    return "compiler.mad.lo.s32";
 
   std::string source = trim_copy(inst->get_source());
   std::size_t pos = 0;
@@ -1614,6 +1616,552 @@ bool decode_brace_unpack(const ptx_instruction *inst, const symbol **scalar,
   return true;
 }
 
+struct compiler_scalar_copy_candidate_t {
+  ptx_instruction *move;
+  const symbol *destination;
+  const symbol *source;
+
+  compiler_scalar_copy_candidate_t()
+      : move(NULL), destination(NULL), source(NULL) {}
+};
+
+bool decode_scalar_reg_move(const ptx_instruction *inst, const symbol **dst,
+                            const operand_info **src) {
+  if (inst == NULL || inst->get_opcode() != MOV_OP || inst->has_pred() ||
+      inst->get_type() != B32_TYPE || inst->get_num_operands() != 2 ||
+      !inst->get_options().empty() || !inst->dst().is_reg() ||
+      !inst->src1().is_reg())
+    return false;
+  *dst = inst->dst().get_symbol();
+  *src = &inst->src1();
+  return *dst != NULL && (*src)->get_symbol() != NULL;
+}
+
+bool decode_word_shift(const operand_info &operand, unsigned *value) {
+  if (!operand.is_literal() || operand.get_literal_value().u64 >= 32)
+    return false;
+  *value = static_cast<unsigned>(operand.get_literal_value().u64);
+  return true;
+}
+
+bool decode_packed_f32x2_literal_move(const ptx_instruction *inst,
+                                      const symbol **dst,
+                                      const operand_info **literal) {
+  if (inst == NULL || inst->get_opcode() != MOV_OP || inst->has_pred() ||
+      inst->get_type() != B64_TYPE || inst->get_num_operands() != 2 ||
+      !inst->get_options().empty() || !inst->dst().is_reg() ||
+      !inst->src1().is_literal())
+    return false;
+  *dst = inst->dst().get_symbol();
+  *literal = &inst->src1();
+  return *dst != NULL;
+}
+
+bool packed_f32x2_consumer_uses_direct_source(const ptx_instruction *inst,
+                                              const symbol *source) {
+  if (inst == NULL || inst->has_pred() ||
+      (inst->get_opcode() != ADD_OP && inst->get_opcode() != SUB_OP &&
+       inst->get_opcode() != FMA_OP) ||
+      inst->get_type() != F32X2_TYPE)
+    return false;
+
+  bool found = false;
+  const std::vector<operand_info> &operands = inst->get_operands();
+  for (unsigned i = 1; i < operands.size(); ++i) {
+    reg_set_t operand_regs;
+    collect_operand_regs(operands[i], operand_regs);
+    if (operand_regs.find(source) == operand_regs.end())
+      continue;
+    if (!operands[i].is_reg() || operands[i].get_symbol() != source)
+      return false;
+    found = true;
+  }
+  return found;
+}
+
+// ptxas can encode a packed-f32 constant directly in FADD2/FFMA2, while PTX
+// materializes it in a b64 register.  Propagate the literal only when the move
+// is the register's unique definition, every static use is a supported direct
+// source operand, and all uses remain in the same straight-line scheduling
+// region.  These conditions make removing the materialization independent of
+// register names and prevent the value from crossing control, memory, or
+// synchronization boundaries.
+void fuse_compiler_packed_f32x2_literals(
+    std::list<ptx_instruction *> &instructions) {
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, unsigned> use_count;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it) {
+    reg_set_t uses;
+    reg_set_t defs;
+    collect_inst_regs(*it, uses, defs);
+    for (reg_set_t::const_iterator reg = uses.begin(); reg != uses.end(); ++reg)
+      ++use_count[*reg];
+    for (reg_set_t::const_iterator reg = defs.begin(); reg != defs.end(); ++reg)
+      ++def_count[*reg];
+  }
+
+  std::list<ptx_instruction *>::iterator candidate = instructions.begin();
+  while (candidate != instructions.end()) {
+    const symbol *destination = NULL;
+    const operand_info *literal = NULL;
+    if (!decode_packed_f32x2_literal_move(*candidate, &destination, &literal) ||
+        def_count[destination] != 1 || use_count[destination] == 0) {
+      ++candidate;
+      continue;
+    }
+
+    std::vector<std::list<ptx_instruction *>::iterator> consumers;
+    unsigned matched_uses = 0;
+    bool valid = true;
+    std::list<ptx_instruction *>::iterator scan = candidate;
+    while (++scan != instructions.end() &&
+           matched_uses < use_count[destination]) {
+      if (is_segment_boundary(*scan)) {
+        valid = false;
+        break;
+      }
+
+      reg_set_t uses;
+      reg_set_t defs;
+      collect_inst_regs(*scan, uses, defs);
+      if (defs.find(destination) != defs.end()) {
+        valid = false;
+        break;
+      }
+      if (uses.find(destination) == uses.end())
+        continue;
+      if (!packed_f32x2_consumer_uses_direct_source(*scan, destination)) {
+        valid = false;
+        break;
+      }
+      consumers.push_back(scan);
+      ++matched_uses;
+    }
+
+    if (!valid || matched_uses != use_count[destination]) {
+      ++candidate;
+      continue;
+    }
+
+    for (unsigned i = 0; i < consumers.size(); ++i) {
+      *consumers[i] =
+          (*consumers[i])
+              ->make_with_packed_f32x2_literal(destination, *literal);
+    }
+    candidate = instructions.erase(candidate);
+  }
+}
+
+bool decode_zero_b32_move(const ptx_instruction *inst,
+                          const symbol **destination) {
+  if (inst == NULL || inst->get_opcode() != MOV_OP || inst->has_pred() ||
+      inst->get_type() != B32_TYPE || inst->get_num_operands() != 2 ||
+      !inst->get_options().empty() || !inst->dst().is_reg() ||
+      !inst->src1().is_literal() || inst->src1().get_literal_value().u64 != 0)
+    return false;
+  *destination = inst->dst().get_symbol();
+  return *destination != NULL;
+}
+
+// Other rounding modes, saturation and FTZ require separate lowering rules.
+bool is_plain_rn_f32(const ptx_instruction *inst) {
+  for (int option : inst->get_options())
+    if (option != RN_OPTION)
+      return false;
+  return inst->rounding_mode() == RN_OPTION;
+}
+
+// ptxas lowers this NVVM idiom to one FFMA with a negate source modifier:
+//
+//   mul.f32 product, a, b;
+//   mov.b32 zero, 0f00000000;
+//   sub.f32 dst, zero, product;
+//
+// Keep the original rounded multiply and zero subtraction in functional
+// execution; model the chain as one instruction for timing. Restrict to a
+// contiguous, unpredicated chain whose two temporaries each have one static
+// definition and one static use, so removing either producer cannot discard a
+// visible value or cross a scheduling boundary.
+void fuse_compiler_negated_multiply(
+    std::list<ptx_instruction *> &instructions) {
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, unsigned> use_count;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it) {
+    reg_set_t uses;
+    reg_set_t defs;
+    collect_inst_regs(*it, uses, defs);
+    for (reg_set_t::const_iterator reg = uses.begin(); reg != uses.end(); ++reg)
+      ++use_count[*reg];
+    for (reg_set_t::const_iterator reg = defs.begin(); reg != defs.end(); ++reg)
+      ++def_count[*reg];
+  }
+
+  std::list<ptx_instruction *>::iterator mul_it = instructions.begin();
+  while (mul_it != instructions.end()) {
+    std::list<ptx_instruction *>::iterator zero_it = mul_it;
+    if (++zero_it == instructions.end())
+      break;
+    std::list<ptx_instruction *>::iterator sub_it = zero_it;
+    if (++sub_it == instructions.end())
+      break;
+
+    ptx_instruction *mul = *mul_it;
+    ptx_instruction *sub = *sub_it;
+    const symbol *zero = NULL;
+    if (mul == NULL || mul->get_opcode() != MUL_OP || mul->has_pred() ||
+        mul->get_type() != F32_TYPE || mul->get_num_operands() != 3 ||
+        !mul->dst().is_reg() || !mul->src1().is_reg() ||
+        !mul->src2().is_reg() || !decode_zero_b32_move(*zero_it, &zero) ||
+        sub == NULL || sub->get_opcode() != SUB_OP || sub->has_pred() ||
+        sub->get_type() != F32_TYPE || sub->get_num_operands() != 3 ||
+        !sub->dst().is_reg() || !sub->src1().is_reg() ||
+        !sub->src2().is_reg() || !is_plain_rn_f32(mul) ||
+        !is_plain_rn_f32(sub)) {
+      ++mul_it;
+      continue;
+    }
+
+    const symbol *product = mul->dst().get_symbol();
+    if (product == NULL || zero == NULL || product == zero ||
+        sub->src1().get_symbol() != zero ||
+        sub->src2().get_symbol() != product || def_count[product] != 1 ||
+        use_count[product] != 1 || def_count[zero] != 1 ||
+        use_count[zero] != 1) {
+      ++mul_it;
+      continue;
+    }
+
+    *sub_it = mul->make_negated_mul_f32(sub->dst(), *sub);
+    instructions.erase(mul_it);
+    instructions.erase(zero_it);
+    mul_it = sub_it;
+    ++mul_it;
+  }
+}
+
+// Fold the compiler idiom
+//
+//   mov.b32 t0, x; mov.b32 t1, y; shl.b32 t2, t0, shift;
+//   add.s32 t3, t2, t1; mov.b32 dst, t3;
+//
+// into mad.lo.s32 dst, x, 1<<shift, y for a literal word-sized shift.  Low
+// signed multiply-add and the
+// shift/add chain are identical modulo 2^32.  Requiring a contiguous,
+// unpredicated chain and single-definition/single-use intermediates makes the
+// transform independent of source names and prevents hidden side effects or
+// control-flow uses from being discarded.
+void fuse_compiler_shift_add_mad(std::list<ptx_instruction *> &instructions) {
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, unsigned> use_count;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it) {
+    reg_set_t uses;
+    reg_set_t defs;
+    collect_inst_regs(*it, uses, defs);
+    for (reg_set_t::const_iterator reg = uses.begin(); reg != uses.end(); ++reg)
+      ++use_count[*reg];
+    for (reg_set_t::const_iterator reg = defs.begin(); reg != defs.end(); ++reg)
+      ++def_count[*reg];
+  }
+
+  std::list<ptx_instruction *>::iterator first = instructions.begin();
+  while (first != instructions.end()) {
+    std::list<ptx_instruction *>::iterator second = first;
+    if (++second == instructions.end())
+      break;
+    std::list<ptx_instruction *>::iterator third = second;
+    if (++third == instructions.end())
+      break;
+    std::list<ptx_instruction *>::iterator fourth = third;
+    if (++fourth == instructions.end())
+      break;
+    std::list<ptx_instruction *>::iterator fifth = fourth;
+    if (++fifth == instructions.end())
+      break;
+
+    const symbol *copy_x = NULL;
+    const symbol *copy_y = NULL;
+    const symbol *copy_out = NULL;
+    const operand_info *x = NULL;
+    const operand_info *y = NULL;
+    const operand_info *out_source = NULL;
+    ptx_instruction *shift = *third;
+    ptx_instruction *add = *fourth;
+    unsigned shift_amount = 0;
+    const bool moves_match =
+        decode_scalar_reg_move(*first, &copy_x, &x) &&
+        decode_scalar_reg_move(*second, &copy_y, &y) &&
+        decode_scalar_reg_move(*fifth, &copy_out, &out_source);
+    const bool arithmetic_matches =
+        shift != NULL && shift->get_opcode() == SHL_OP && !shift->has_pred() &&
+        shift->get_type() == B32_TYPE && shift->get_num_operands() == 3 &&
+        shift->get_options().empty() && shift->dst().is_reg() &&
+        shift->src1().is_reg() &&
+        decode_word_shift(shift->src2(), &shift_amount) && add != NULL &&
+        add->get_opcode() == ADD_OP && !add->has_pred() &&
+        add->get_type() == S32_TYPE && add->get_num_operands() == 3 &&
+        add->get_options().empty() && add->dst().is_reg() &&
+        add->src1().is_reg() && add->src2().is_reg();
+
+    if (!moves_match || !arithmetic_matches) {
+      ++first;
+      continue;
+    }
+
+    const symbol *shift_out = shift->dst().get_symbol();
+    const symbol *add_out = add->dst().get_symbol();
+    const symbol *final_out = (*fifth)->dst().get_symbol();
+    if (copy_x == NULL || copy_y == NULL || copy_out == NULL ||
+        shift_out == NULL || add_out == NULL || final_out == NULL ||
+        copy_x == copy_y || copy_x == shift_out || copy_x == add_out ||
+        copy_y == shift_out || copy_y == add_out || shift_out == add_out ||
+        shift->src1().get_symbol() != copy_x ||
+        add->src1().get_symbol() != shift_out ||
+        add->src2().get_symbol() != copy_y ||
+        out_source->get_symbol() != add_out || def_count[copy_x] != 1 ||
+        use_count[copy_x] != 1 || def_count[copy_y] != 1 ||
+        use_count[copy_y] != 1 || def_count[shift_out] != 1 ||
+        use_count[shift_out] != 1 || def_count[add_out] != 1 ||
+        use_count[add_out] != 1) {
+      ++first;
+      continue;
+    }
+
+    // The native IMAD is attributed to the add, not either compiler-emitted
+    // copy.  Preserve that primary source location so a SASS PTX-line guide
+    // can place the fused instruction on the compiler's actual schedule.
+    ptx_instruction *replacement =
+        add->make_mad_lo_s32((*fifth)->dst(), *x, 1u << shift_amount, *y);
+    *first = replacement;
+    instructions.erase(second, ++fifth);
+    ++first;
+  }
+}
+
+// PTX materializes predicate inversion as an instruction, while SASS can
+// encode the inversion directly on a guarded instruction.  Fold only the
+// adjacent, single-definition/single-use form so replacing the guard cannot
+// observe a redefinition of the source predicate or cross control flow:
+//
+//   not.pred inverted, source;
+//   @inverted instruction;
+//
+// becomes an instruction guarded by @!source (and vice versa for an already
+// negated consumer guard).
+void fuse_compiler_predicate_not_guards(
+    std::list<ptx_instruction *> &instructions) {
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, unsigned> use_count;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it) {
+    reg_set_t uses;
+    reg_set_t defs;
+    collect_inst_regs(*it, uses, defs);
+    for (reg_set_t::const_iterator reg = uses.begin(); reg != uses.end(); ++reg)
+      ++use_count[*reg];
+    for (reg_set_t::const_iterator reg = defs.begin(); reg != defs.end(); ++reg)
+      ++def_count[*reg];
+  }
+
+  std::list<ptx_instruction *>::iterator it = instructions.begin();
+  while (it != instructions.end()) {
+    std::list<ptx_instruction *>::iterator consumer = it;
+    ++consumer;
+    ptx_instruction *invert = *it;
+    if (consumer == instructions.end() || invert == NULL ||
+        invert->get_opcode() != NOT_OP || invert->has_pred() ||
+        invert->get_type() != PRED_TYPE || invert->get_num_operands() != 2 ||
+        !invert->get_options().empty() || !invert->dst().is_reg() ||
+        !invert->src1().is_reg() || *consumer == NULL ||
+        !(*consumer)->has_pred()) {
+      ++it;
+      continue;
+    }
+
+    const symbol *dest = invert->dst().get_symbol();
+    const symbol *source = invert->src1().get_symbol();
+    const symbol *guard = (*consumer)->get_pred().get_symbol();
+    if (dest == NULL || source == NULL || dest == source || guard != dest ||
+        def_count[dest] != 1 || use_count[dest] != 1) {
+      ++it;
+      continue;
+    }
+
+    // use_count counts instructions, not operand occurrences. The consumer
+    // must use the removed predicate only as its guard.
+    reg_set_t operand_regs;
+    for (const operand_info &operand : (*consumer)->get_operands())
+      collect_operand_regs(operand, operand_regs);
+    if (operand_regs.count(dest)) {
+      ++it;
+      continue;
+    }
+
+    (*consumer)->rewrite_predicate(source, !(*consumer)->get_pred_neg());
+    it = instructions.erase(it);
+  }
+}
+
+// Blackwell R2P extracts the low seven bits of any register byte into the
+// seven predicate registers of a predicate bank.  NVCC lowers the same source
+// operation to seven adjacent AND/SETP/SELP triples in PTX.  Replace exactly
+// that byte-aligned form with one internal multi-destination SETP operation;
+// the SELP instructions remain in place.  Equality-to-zero comparisons are
+// recorded per destination because SASS can consume either predicate sense.
+//
+// Requiring a complete group of seven, byte alignment, contiguous triples,
+// one-definition/one-use temporaries and predicates, and an unchanged source
+// across every SELP prevents this target-specific lowering from accepting
+// general collections of bit tests.
+void fuse_compiler_predicate_byte_extracts(
+    std::list<ptx_instruction *> &instructions) {
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, unsigned> use_count;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it) {
+    reg_set_t uses;
+    reg_set_t defs;
+    collect_inst_regs(*it, uses, defs);
+    for (reg_set_t::const_iterator reg = uses.begin(); reg != uses.end(); ++reg)
+      ++use_count[*reg];
+    for (reg_set_t::const_iterator reg = defs.begin(); reg != defs.end(); ++reg)
+      ++def_count[*reg];
+  }
+
+  typedef std::list<ptx_instruction *>::iterator inst_iterator;
+  inst_iterator first = instructions.begin();
+  while (first != instructions.end()) {
+    std::vector<inst_iterator> and_iters;
+    std::vector<inst_iterator> setp_iters;
+    std::vector<const symbol *> predicate_destinations;
+    std::vector<unsigned long long> encoded_masks;
+    const symbol *common_source = NULL;
+    unsigned byte_base = 0;
+    bool matches = true;
+    inst_iterator cursor = first;
+
+    for (unsigned bit = 0; bit < 7 && matches; ++bit) {
+      if (cursor == instructions.end()) {
+        matches = false;
+        break;
+      }
+      inst_iterator and_it = cursor;
+      inst_iterator setp_it = and_it;
+      if (++setp_it == instructions.end()) {
+        matches = false;
+        break;
+      }
+      inst_iterator selp_it = setp_it;
+      if (++selp_it == instructions.end()) {
+        matches = false;
+        break;
+      }
+      cursor = selp_it;
+      ++cursor;
+
+      ptx_instruction *bit_and = *and_it;
+      ptx_instruction *compare = *setp_it;
+      ptx_instruction *select = *selp_it;
+      if (bit_and == NULL || bit_and->get_opcode() != AND_OP ||
+          bit_and->has_pred() || bit_and->get_type() != B32_TYPE ||
+          bit_and->get_num_operands() != 3 || !bit_and->get_options().empty() ||
+          !bit_and->dst().is_reg() || !bit_and->src1().is_reg() ||
+          bit_and->src1().is_non_arch_reg() || !bit_and->src2().is_literal() ||
+          compare == NULL || compare->get_opcode() != SETP_OP ||
+          compare->has_pred() ||
+          (compare->get_type() != B32_TYPE &&
+           compare->get_type() != S32_TYPE) ||
+          compare->get_num_operands() != 3 || !compare->dst().is_reg() ||
+          !compare->src1().is_reg() || !compare->src2().is_literal() ||
+          compare->src2().get_literal_value().u64 != 0 || select == NULL ||
+          select->get_opcode() != SELP_OP || select->has_pred() ||
+          select->get_num_operands() != 4 || !select->get_options().empty() ||
+          !select->src3().is_reg() || select->src3().is_neg_pred()) {
+        matches = false;
+        break;
+      }
+
+      const unsigned cmp = compare->get_cmpop();
+      const std::list<int> compare_options = compare->get_options();
+      if ((cmp != EQ_OPTION && cmp != NE_OPTION) ||
+          compare_options.size() != 1 || compare_options.front() != int(cmp)) {
+        matches = false;
+        break;
+      }
+
+      const unsigned long long mask64 = bit_and->src2().get_literal_value().u64;
+      if (mask64 == 0 || mask64 > 0x7fffffffULL) {
+        matches = false;
+        break;
+      }
+      const unsigned mask = static_cast<unsigned>(mask64);
+      if (bit == 0) {
+        if (mask == 1u)
+          byte_base = 0;
+        else if (mask == (1u << 8))
+          byte_base = 8;
+        else if (mask == (1u << 16))
+          byte_base = 16;
+        else if (mask == (1u << 24))
+          byte_base = 24;
+        else
+          matches = false;
+      }
+      if (!matches || mask != (1u << (byte_base + bit))) {
+        matches = false;
+        break;
+      }
+
+      const symbol *temporary = bit_and->dst().get_symbol();
+      const symbol *source = bit_and->src1().get_symbol();
+      const symbol *predicate = compare->dst().get_symbol();
+      if (bit == 0)
+        common_source = source;
+      reg_set_t select_uses;
+      reg_set_t select_defs;
+      collect_inst_regs(select, select_uses, select_defs);
+      if (temporary == NULL || source == NULL || predicate == NULL ||
+          source != common_source || source == temporary ||
+          source == predicate || compare->src1().get_symbol() != temporary ||
+          select->src3().get_symbol() != predicate ||
+          def_count[temporary] != 1 || use_count[temporary] != 1 ||
+          def_count[predicate] != 1 || use_count[predicate] != 1 ||
+          select_defs.find(source) != select_defs.end()) {
+        matches = false;
+        break;
+      }
+
+      and_iters.push_back(and_it);
+      setp_iters.push_back(setp_it);
+      predicate_destinations.push_back(predicate);
+      encoded_masks.push_back(static_cast<unsigned long long>(mask) |
+                              (cmp == EQ_OPTION ? (1ULL << 32) : 0));
+    }
+
+    if (!matches || common_source == NULL ||
+        common_source->get_size_in_bytes() != 4 ||
+        predicate_destinations.size() != 7) {
+      ++first;
+      continue;
+    }
+
+    ptx_instruction *replacement =
+        (*and_iters[0])
+            ->make_predicate_byte_extract(
+                predicate_destinations, (*and_iters[0])->src1(), encoded_masks);
+    *and_iters[0] = replacement;
+    const inst_iterator next = cursor;
+    for (unsigned bit = 0; bit < 7; ++bit) {
+      instructions.erase(setp_iters[bit]);
+      if (bit != 0)
+        instructions.erase(and_iters[bit]);
+    }
+    first = next;
+  }
+}
+
 bool decode_brace_pack(const ptx_instruction *inst, const symbol **scalar,
                        const symbol **low, const symbol **high) {
   if (inst == NULL || inst->get_opcode() != MOV_OP || inst->has_pred() ||
@@ -1802,6 +2350,80 @@ std::vector<compiler_view_candidate_t> analyze_compiler_register_views(
   return candidates;
 }
 
+std::vector<compiler_scalar_copy_candidate_t> analyze_compiler_scalar_copies(
+    const std::list<ptx_instruction *> &instructions) {
+  std::vector<compiler_view_inst_info_t> infos;
+  infos.reserve(instructions.size());
+  unsigned index = 0;
+  unsigned region = 0;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it, ++index) {
+    compiler_view_inst_info_t info;
+    info.inst = *it;
+    info.index = index;
+    info.region = region;
+    info.boundary = is_segment_boundary(info.inst);
+    collect_inst_regs(info.inst, info.uses, info.defs);
+    infos.push_back(info);
+    if (is_compiler_pack_control_flow_boundary(info.inst))
+      ++region;
+  }
+
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, unsigned> use_count;
+  std::map<const symbol *, const compiler_view_inst_info_t *> def_inst;
+  for (unsigned i = 0; i < infos.size(); ++i) {
+    for (reg_set_t::const_iterator use = infos[i].uses.begin();
+         use != infos[i].uses.end(); ++use)
+      ++use_count[*use];
+    for (reg_set_t::const_iterator def = infos[i].defs.begin();
+         def != infos[i].defs.end(); ++def) {
+      ++def_count[*def];
+      def_inst[*def] = &infos[i];
+    }
+  }
+
+  std::vector<compiler_scalar_copy_candidate_t> candidates;
+  for (unsigned i = 0; i < infos.size(); ++i) {
+    const symbol *destination = NULL;
+    const operand_info *source_operand = NULL;
+    if (!decode_scalar_reg_move(infos[i].inst, &destination, &source_operand) ||
+        source_operand == NULL)
+      continue;
+    const symbol *source = source_operand->get_symbol();
+    if (source == NULL || source == destination || source->is_non_arch_reg() ||
+        destination->is_non_arch_reg() || source->get_size_in_bytes() != 4 ||
+        destination->get_size_in_bytes() != 4 || def_count[destination] != 1 ||
+        use_count[destination] == 0 || def_count[source] != 1 ||
+        def_inst.find(source) == def_inst.end() || def_inst[source] == NULL ||
+        def_inst[source]->index >= infos[i].index ||
+        def_inst[source]->region != infos[i].region)
+      continue;
+
+    bool valid = true;
+    unsigned matched_uses = 0;
+    for (unsigned j = 0; j < infos.size(); ++j) {
+      if (infos[j].uses.find(destination) == infos[j].uses.end())
+        continue;
+      ++matched_uses;
+      if (infos[j].index <= infos[i].index ||
+          infos[j].region != infos[i].region) {
+        valid = false;
+        break;
+      }
+    }
+    if (!valid || matched_uses != use_count[destination])
+      continue;
+
+    compiler_scalar_copy_candidate_t candidate;
+    candidate.move = infos[i].inst;
+    candidate.destination = destination;
+    candidate.source = source;
+    candidates.push_back(candidate);
+  }
+  return candidates;
+}
+
 std::vector<compiler_pack_candidate_t> analyze_compiler_register_packs(
     const std::list<ptx_instruction *> &instructions,
     const std::set<ptx_instruction *> &claimed) {
@@ -1841,10 +2463,14 @@ std::vector<compiler_pack_candidate_t> analyze_compiler_register_packs(
         !decode_brace_pack(infos[i].inst, &scalar, &low, &high) ||
         scalar->name().compare(0, 3, "%rd") != 0 || def_count[scalar] != 1 ||
         def_count[low] != 1 || def_count[high] != 1 ||
-        !compiler_view_source_is_local_or_boundary(
-            low, infos[i].index, infos[i].region, def_count, def_inst) ||
-        !compiler_view_source_is_local_or_boundary(
-            high, infos[i].index, infos[i].region, def_count, def_inst))
+        def_inst.find(low) == def_inst.end() ||
+        def_inst.find(high) == def_inst.end() || def_inst.at(low) == NULL ||
+        def_inst.at(high) == NULL || def_inst.at(low)->inst == NULL ||
+        def_inst.at(high)->inst == NULL ||
+        def_inst.at(low)->index >= infos[i].index ||
+        def_inst.at(high)->index >= infos[i].index ||
+        def_inst.at(low)->inst->has_pred() ||
+        def_inst.at(high)->inst->has_pred())
       continue;
 
     bool have_consumer = false;
@@ -1862,9 +2488,11 @@ std::vector<compiler_pack_candidate_t> analyze_compiler_register_packs(
           }
         }
       }
-      // Timing boundaries such as TCGen05 loads and barriers preserve the
-      // register-pair value. Control-flow boundaries remain hard stops because
-      // lexical order alone cannot establish dominance across them.
+      // The pack snapshots two uniquely-defined 32-bit sources. Their
+      // definitions may precede timing or control-flow boundaries because no
+      // instruction can redefine them before the pack. After removing the
+      // pack, however, every use reads those sources directly, so retain a
+      // straight-line requirement from the pack to each consumer.
       if (infos[j].index <= infos[i].index || crosses_unsafe_boundary ||
           !is_supported_compiler_view_consumer(infos[j])) {
         consumers_valid = false;
@@ -3193,67 +3821,96 @@ void run_ptx_reorder(function_info *func) {
 
   func->m_compiler_register_views.clear();
   func->m_compiler_register_packs.clear();
-  if (!sass_ptxline_guided) {
-    const std::vector<compiler_view_candidate_t> compiler_views =
-        analyze_compiler_register_views(func->m_instructions);
-    std::set<ptx_instruction *> removed;
-    for (unsigned i = 0; i < compiler_views.size(); ++i) {
-      const compiler_view_candidate_t &view = compiler_views[i];
-      bool installed = true;
-      for (unsigned lane = 0; lane < 2; ++lane) {
-        if (view.dest[lane] == NULL || view.source[lane] == NULL ||
-            view.dest[lane] == view.source[lane] ||
-            func->m_compiler_register_views.find(view.dest[lane]) !=
-                func->m_compiler_register_views.end()) {
-          installed = false;
-          break;
-        }
+  fuse_compiler_predicate_not_guards(func->m_instructions);
+  fuse_compiler_predicate_byte_extracts(func->m_instructions);
+  fuse_compiler_packed_f32x2_literals(func->m_instructions);
+  fuse_compiler_negated_multiply(func->m_instructions);
+  fuse_compiler_shift_add_mad(func->m_instructions);
+  const std::vector<compiler_view_candidate_t> compiler_views =
+      analyze_compiler_register_views(func->m_instructions);
+  std::set<ptx_instruction *> removed;
+  for (unsigned i = 0; i < compiler_views.size(); ++i) {
+    const compiler_view_candidate_t &view = compiler_views[i];
+    bool installed = true;
+    for (unsigned lane = 0; lane < 2; ++lane) {
+      if (view.dest[lane] == NULL || view.source[lane] == NULL ||
+          view.dest[lane] == view.source[lane] ||
+          func->m_compiler_register_views.find(view.dest[lane]) !=
+              func->m_compiler_register_views.end()) {
+        installed = false;
+        break;
       }
-      if (!installed)
-        continue;
-
-      for (unsigned lane = 0; lane < 2; ++lane) {
-        func->m_compiler_register_views[view.dest[lane]] =
-            std::make_pair(view.source[lane], view.roundtrip ? 0u : lane);
-        symbol *destination = const_cast<symbol *>(view.dest[lane]);
-        const unsigned view_arch_reg = destination->arch_reg_num();
-        func->m_pre_view_register_ids.emplace(
-            destination, std::make_pair(destination->reg_num(), view_arch_reg));
-        destination->set_regno(
-            view.source[lane]->reg_num(),
-            view.roundtrip ? view.source[lane]->arch_reg_num() : view_arch_reg);
-      }
-      removed.insert(view.unpack);
-      if (view.pack != NULL)
-        removed.insert(view.pack);
-      if (view.roundtrip)
-        ++stats.compiler_view_roundtrips;
     }
+    if (!installed)
+      continue;
 
-    stats.compiler_view_insts = removed.size();
-    const std::vector<compiler_pack_candidate_t> compiler_packs =
-        analyze_compiler_register_packs(func->m_instructions, removed);
-    for (unsigned i = 0; i < compiler_packs.size(); ++i) {
-      const compiler_pack_candidate_t &pack = compiler_packs[i];
-      if (pack.dest == NULL || pack.low == NULL || pack.high == NULL ||
-          pack.dest == pack.low || pack.dest == pack.high ||
-          func->m_compiler_register_packs.find(pack.dest) !=
-              func->m_compiler_register_packs.end())
-        continue;
-      func->m_compiler_register_packs[pack.dest] =
-          std::make_pair(pack.low, pack.high);
-      removed.insert(pack.pack);
-      ++stats.compiler_pack_fusions;
+    for (unsigned lane = 0; lane < 2; ++lane) {
+      func->m_compiler_register_views[view.dest[lane]] =
+          std::make_pair(view.source[lane], view.roundtrip ? 0u : lane);
+      symbol *destination = const_cast<symbol *>(view.dest[lane]);
+      const unsigned view_arch_reg = destination->arch_reg_num();
+      func->m_pre_view_register_ids.emplace(
+          destination, std::make_pair(destination->reg_num(), view_arch_reg));
+      destination->set_regno(view.source[lane]->reg_num(),
+                             view.roundtrip ? view.source[lane]->arch_reg_num()
+                                            : view_arch_reg);
     }
+    removed.insert(view.unpack);
+    if (view.pack != NULL)
+      removed.insert(view.pack);
+    if (view.roundtrip)
+      ++stats.compiler_view_roundtrips;
+  }
 
-    for (std::list<ptx_instruction *>::iterator it =
-             func->m_instructions.begin();
-         it != func->m_instructions.end();) {
-      if (removed.find(*it) != removed.end())
-        it = func->m_instructions.erase(it);
-      else
-        ++it;
-    }
+  stats.compiler_view_insts = removed.size();
+  const std::vector<compiler_pack_candidate_t> compiler_packs =
+      analyze_compiler_register_packs(func->m_instructions, removed);
+  for (unsigned i = 0; i < compiler_packs.size(); ++i) {
+    const compiler_pack_candidate_t &pack = compiler_packs[i];
+    if (pack.dest == NULL || pack.low == NULL || pack.high == NULL ||
+        pack.dest == pack.low || pack.dest == pack.high ||
+        func->m_compiler_register_packs.find(pack.dest) !=
+            func->m_compiler_register_packs.end())
+      continue;
+    func->m_compiler_register_packs[pack.dest] =
+        std::make_pair(pack.low, pack.high);
+    removed.insert(pack.pack);
+    ++stats.compiler_pack_fusions;
+  }
+
+  for (std::list<ptx_instruction *>::iterator it = func->m_instructions.begin();
+       it != func->m_instructions.end();) {
+    if (removed.find(*it) != removed.end())
+      it = func->m_instructions.erase(it);
+    else
+      ++it;
+  }
+
+  const std::vector<compiler_scalar_copy_candidate_t> scalar_copies =
+      analyze_compiler_scalar_copies(func->m_instructions);
+  std::set<ptx_instruction *> removed_scalar_copies;
+  for (unsigned i = 0; i < scalar_copies.size(); ++i) {
+    const compiler_scalar_copy_candidate_t &copy = scalar_copies[i];
+    if (copy.move == NULL || copy.destination == NULL || copy.source == NULL ||
+        copy.destination == copy.source ||
+        func->m_compiler_register_views.find(copy.destination) !=
+            func->m_compiler_register_views.end())
+      continue;
+    func->m_compiler_register_views[copy.destination] =
+        std::make_pair(copy.source, 0u);
+    symbol *destination = const_cast<symbol *>(copy.destination);
+    func->m_pre_view_register_ids.emplace(
+        destination,
+        std::make_pair(destination->reg_num(), destination->arch_reg_num()));
+    destination->set_regno(copy.source->reg_num(), copy.source->arch_reg_num());
+    removed_scalar_copies.insert(copy.move);
+  }
+  for (std::list<ptx_instruction *>::iterator it = func->m_instructions.begin();
+       it != func->m_instructions.end();) {
+    if (removed_scalar_copies.find(*it) != removed_scalar_copies.end())
+      it = func->m_instructions.erase(it);
+    else
+      ++it;
   }
 
   if (sass_ptxline_guided) {

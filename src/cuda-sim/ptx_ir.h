@@ -1096,6 +1096,38 @@ class ptx_instruction : public warp_inst_t {
   unsigned inst_size() const { return m_inst_size; }
   unsigned uid() const { return m_uid; }
   int get_opcode() const { return m_opcode; }
+  // Build the canonical integer operation used by compiler-pattern
+  // lowering.  The returned instruction inherits this instruction's source
+  // location, symbol table, simulator context, and core configuration.
+  ptx_instruction *make_mad_lo_s32(const operand_info &dst,
+                                   const operand_info &multiplicand,
+                                   unsigned multiplier,
+                                   const operand_info &addend) const;
+  // Build an equivalent packed-f32 instruction with every direct use of one
+  // source register replaced by a b64 literal.  Compiler-pattern lowering
+  // calls this only after proving the materialized register has no other
+  // consumers.
+  ptx_instruction *make_with_packed_f32x2_literal(
+      const symbol *source, const operand_info &literal) const;
+  // Build one internal multiply representing mul followed by zero-minus-product.
+  // Functional execution preserves both original operations. The replacement
+  // keeps the SUB source location because that is where the hardware
+  // instruction is attributed.
+  ptx_instruction *make_negated_mul_f32(
+      const operand_info &dst,
+      const ptx_instruction &replacement_site) const;
+  // Build the internal SETP-form operation used to model one Blackwell R2P
+  // byte extraction.  Each encoded mask contains a 32-bit one-hot mask and
+  // bit 32 records whether the original comparison was equality-to-zero.
+  ptx_instruction *make_predicate_byte_extract(
+      const std::vector<const symbol *> &destinations,
+      const operand_info &source,
+      const std::vector<unsigned long long> &encoded_masks) const;
+  bool is_compiler_negated_mul() const { return m_compiler_negated_mul; }
+  bool is_compiler_shift_add_mad() const { return m_compiler_shift_add_mad; }
+  bool is_compiler_predicate_byte_extract() const {
+    return m_compiler_predicate_byte_extract;
+  }
   const char *get_opcode_cstr() const {
     if (m_opcode != -1) {
       return g_opcode_string[m_opcode];
@@ -1110,6 +1142,10 @@ class ptx_instruction : public warp_inst_t {
   operand_info get_pred() const;
   bool get_pred_neg() const { return m_neg_pred; }
   int get_pred_mod() const { return m_pred_mod; }
+  void rewrite_predicate(const symbol *pred, bool neg_pred) {
+    m_pred = pred;
+    m_neg_pred = neg_pred;
+  }
   const char *get_source() const { return m_source.c_str(); }
 
   const std::list<int> get_scalar_type() const { return m_scalar_type; }
@@ -1357,6 +1393,9 @@ class ptx_instruction : public warp_inst_t {
   bool m_is_wgmma_instruction;
   bool m_wgmma_sparse;
   bool m_wgmma_saturate;
+  bool m_compiler_predicate_byte_extract;
+  bool m_compiler_shift_add_mad;
+  bool m_compiler_negated_mul;
   int m_wgmma_shape_n;
   int m_wgmma_shape_k;
   unsigned m_rounding_mode;
