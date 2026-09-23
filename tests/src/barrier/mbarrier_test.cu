@@ -24,6 +24,7 @@ using flashgpu::test::ptx::mbarrier_init;
 using flashgpu::test::ptx::mbarrier_inval;
 using flashgpu::test::ptx::mbarrier_try_wait_parity;
 using flashgpu::test::ptx::mbarrier_wait_parity;
+using flashgpu::test::ptx::mbarrier_try_wait_parity;
 
 // ============================================================================
 // Test Kernels
@@ -570,7 +571,7 @@ __global__ void test_reinit_arrive_trywait_loop(uint32_t *output) {
   for (int i = 0; i < 8; ++i) {
     mbarrier_init(&bar, 1);
     mbarrier_arrive_expect_tx(&bar, 0);
-    mbarrier_wait(&bar, 0);
+    mbarrier_wait_parity(&bar, 0);
   }
   output[0] = 0xCAFEu;
 }
