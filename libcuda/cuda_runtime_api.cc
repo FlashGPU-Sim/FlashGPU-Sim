@@ -8369,6 +8369,17 @@ __host__ cudaError_t CUDARTAPI cudaGetDriverEntryPoint(
     return cudaErrorInvalidValue;
   }
 
+  if (strcmp(symbol, "cuDeviceGet") == 0 ||
+      strcmp(symbol, "cuKernelGetAttribute") == 0) {
+    *funcPtr = strcmp(symbol, "cuDeviceGet") == 0
+                   ? reinterpret_cast<void *>(&cuDeviceGet)
+                   : reinterpret_cast<void *>(&cuKernelGetAttribute);
+    if (driverStatus) {
+      *driverStatus = cudaDriverEntryPointSuccess;
+    }
+    return cudaSuccess;
+  }
+
   if (strcmp(symbol, "cuTensorMapEncodeTiled") == 0) {
     *funcPtr = reinterpret_cast<void *>(&cuTensorMapEncodeTiled);
     if (driverStatus) {
