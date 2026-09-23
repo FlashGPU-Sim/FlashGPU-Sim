@@ -68,7 +68,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRITON_TRACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$TRITON_TRACE_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$TRITON_TRACE_DIR/../../.." && pwd)"
 TOP_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 VENV_ACTIVATE="$TRITON_TRACE_DIR/.venv/bin/activate"
 GPU_CONFIG_DIR="$REPO_ROOT/configs/SM120_RTX5090"

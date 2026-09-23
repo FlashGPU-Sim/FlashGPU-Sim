@@ -21,7 +21,7 @@ TRACKING_DIR = os.path.join(TRITON_TRACE_DIR, "triton_kernel_tracking")
 
 
 def resolve_input_path(path):
-    """Resolve input files relative to validation/ first, then triton_trace/."""
+    """Resolve input files relative to validation/ first, then the frontend root."""
     if os.path.isabs(path):
         return path
     candidate = os.path.join(SCRIPT_DIR, path)

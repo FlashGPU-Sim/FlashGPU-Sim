@@ -193,7 +193,7 @@ def resolve_results_dir(user_arg):
 
     Tries in order:
       1. user_arg as-is (explicit path)
-      2. triton_kernel_tracking/<user_arg>/results  (relative to triton_trace dir)
+      2. triton_kernel_tracking/<user_arg>/results  (relative to the frontend root)
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     triton_trace_dir = os.path.dirname(script_dir)

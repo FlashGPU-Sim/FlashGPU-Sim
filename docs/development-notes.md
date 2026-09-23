@@ -129,7 +129,7 @@ authoritative sources for the current matrix layout and test scope.
   and the public test runner.
 - `tools/`: Triton kernel capture and standalone harness-generation tool and
   documentation.
-- `tests/triton_trace/`: Triton examples and offline validation workloads.
+- `tests/frontend/triton/`: Triton examples and offline validation workloads.
 - `docs/`: build, testing, development, and instruction documentation.
 
 ### Core Types
@@ -357,4 +357,4 @@ Keep changes focused and avoid unrelated formatting or generated-file churn.
 - Triton capture and replay:
   [TritonTrace](../tools/README.md)
 - Triton examples and validation:
-  [TritonTrace Examples and Validation](../tests/triton_trace/README.md)
+  [TritonTrace Examples and Validation](../tests/frontend/triton/README.md)

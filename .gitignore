@@ -5,7 +5,6 @@
 _cuobjdump_*
 _app_cuda_version_*
 
-tests/triton_trace/triton_kernel_tracking/*
 __pycache__
 *.egg-info/
 

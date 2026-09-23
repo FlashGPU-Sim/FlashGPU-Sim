@@ -39,6 +39,10 @@ Thumbs.db
 test_output.txt
 
 # triton trace
-triton_trace/triton_kernel_tracking/
-triton_trace/.venv
-triton_trace/temp
+frontend/triton/triton_kernel_tracking/
+frontend/triton/.venv
+frontend/triton/temp
+
+# CuTe DSL export artifacts and local environment
+frontend/cutedsl/exports/
+frontend/cutedsl/.venv/

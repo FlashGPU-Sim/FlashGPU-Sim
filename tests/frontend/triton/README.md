@@ -1,7 +1,7 @@
 # TritonTrace Examples and Validation
 
 This directory contains examples and validation workloads for
-[TritonTrace](../../tools/README.md). See the tool documentation for
+[TritonTrace](../../../tools/README.md). See the tool documentation for
 installation, capture internals, generated artifacts, standalone replay, and
 limitations.
 
@@ -16,11 +16,11 @@ limitations.
 Create a local Python environment and install TritonTrace:
 
 ```bash
-cd tests/triton_trace
+cd tests/frontend/triton
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -U pip uv
 .venv/bin/uv pip install --python .venv/bin/python torch triton numpy
-.venv/bin/python -m pip install -e ../../tools
+.venv/bin/python -m pip install -e ../../../tools
 source .venv/bin/activate
 ```
 

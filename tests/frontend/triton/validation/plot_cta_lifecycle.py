@@ -33,7 +33,7 @@ TRITON_TRACE_DIR = SCRIPT_DIR.parent
 
 
 def resolve_input_path(path):
-    """Resolve input files relative to validation/ first, then triton_trace/."""
+    """Resolve input files relative to validation/ first, then the frontend root."""
     p = Path(path)
     if p.is_absolute():
         return p

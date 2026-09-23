@@ -11,7 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRITON_TRACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$TRITON_TRACE_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$TRITON_TRACE_DIR/../../.." && pwd)"
 TRACKING_DIR="$TRITON_TRACE_DIR/triton_kernel_tracking"
 GPU_CONFIG_DIR="$REPO_ROOT/configs/SM120_RTX5090"
 
