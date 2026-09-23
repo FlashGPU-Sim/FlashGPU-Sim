@@ -18,6 +18,16 @@ sources = [
   "integration/ldst_matrix_test.cu",
   "integration/cp_async_src_size_test.cu",
   "integration/shared_atomic_address_test.cu",
+  "integration/cluster_basic_test.cu",
+  "integration/cluster_launch_api_test.cu",
+  "integration/cluster_multicast_multicluster_test.cu",
+  "integration/cluster_real_shaped_test.cu",
+  "integration/cuda_event_timing_test.cu",
+  "integration/dsm_test.cu",
+  "integration/mbarrier_cluster_test.cu",
+  "integration/tma_cluster_multicast_test.cu",
+  "integration/tma_multicast_mask_test.cu",
+  "integration/tma_store_test.cu",
 
   # SM120 correctness groups.
   "barrier/mbarrier_test.cu",
