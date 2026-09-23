@@ -40,6 +40,7 @@
 #include "zlib.h"
 
 #include "dram.h"
+#include "dsm_endpoint.h"
 #include "mem_fetch.h"
 #include "shader.h"
 #include "shader_trace.h"
@@ -364,6 +365,11 @@ void memory_config::reg_options(class OptionParser *opp) {
   m_address_mapping.addrdec_setoption(opp);
 }
 
+void shader_core_config::apply_gpc_knob_aliases() {
+  gpc_apply_topology_aliases(m_opp, &n_simt_clusters, &n_simt_cores_per_cluster,
+                             &num_gpcs_alias, &num_sms_per_gpc_alias);
+}
+
 void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_simd_model", OPT_INT32, &model,
                          "1 = post-dominator", "1");
@@ -465,11 +471,34 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_num_cta_barriers", OPT_UINT32, &max_barriers_per_cta,
       "Maximum number of named barriers per CTA (default 16)", "16");
+  m_opp = opp;
   option_parser_register(opp, "-gpgpu_n_clusters", OPT_UINT32, &n_simt_clusters,
-                         "number of processing clusters", "10");
+                         "number of processing clusters (GPC count; alias of "
+                         "-gpgpu_num_gpcs)",
+                         "10");
+  option_parser_register(opp, "-gpgpu_num_gpcs", OPT_UINT32, &num_gpcs_alias,
+                         "number of GPCs (alias of -gpgpu_n_clusters)", "0");
   option_parser_register(opp, "-gpgpu_n_cores_per_cluster", OPT_UINT32,
                          &n_simt_cores_per_cluster,
-                         "number of simd cores per cluster", "3");
+                         "enabled SMs per GPC (alias of -gpgpu_num_sms_per_gpc)",
+                         "3");
+  option_parser_register(opp, "-gpgpu_num_sms_per_gpc", OPT_UINT32,
+                         &num_sms_per_gpc_alias,
+                         "enabled SMs per GPC (alias of "
+                         "-gpgpu_n_cores_per_cluster)",
+                         "0");
+  option_parser_register(
+      opp, "-gpgpu_gpc_sms", OPT_CSTR, &gpgpu_gpc_sms,
+      "per-GPC enabled SM counts, comma-separated (e.g. "
+      "16,16,16,16,16,16,18,18). Empty = uniform num_sms_per_gpc. inferred "
+      "H200 packing: 6x16+2x18=132. Omit scalar sms-per-gpc or set it to the "
+      "max.",
+      "");
+  option_parser_register(opp, "-gpgpu_dsm_cpcs_per_gpc", OPT_UINT32,
+                         &dsm_cpcs_per_gpc,
+                         "CPCs per GPC (each CPC has 6 SM slots; extra slots "
+                         "are PG'd)",
+                         "3");
   option_parser_register(opp, "-gpgpu_n_cluster_ejection_buffer_size",
                          OPT_UINT32, &n_simt_ejection_buffer_size,
                          "number of packets in ejection buffer", "8");
@@ -520,6 +549,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_shmem_num_banks", OPT_UINT32, &num_shmem_bank,
       "Number of banks in the shared memory in each shader core (default 16)",
       "16");
+  option_parser_register(
+      opp, "-gpgpu_shmem_bytes_per_cycle", OPT_UINT32,
+      &gpgpu_shmem_bytes_per_cycle,
+      "Per-SM shared-memory service byte budget (0=unlimited; local LSU, "
+      "TMA landing, and DSM ingress share it)",
+      "0");
   option_parser_register(
       opp, "-gpgpu_shmem_limited_broadcast", OPT_BOOL, &shmem_limited_broadcast,
       "Limit shared memory to do one broadcast per cycle (default on)", "1");
@@ -794,6 +829,129 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_mbarrier_trywait_latency", OPT_UINT32,
                          &gpgpu_mbarrier_trywait_latency,
                          "Latency (cycles) for mbarrier.try_wait polling before warp release (default=0)", "0");
+  option_parser_register(opp, "-gpgpu_mbarrier_trywait_default_timeout_ns", OPT_UINT32,
+                         &gpgpu_mbarrier_trywait_default_timeout_ns,
+                         "Default suspension limit (ns) for uniform local try_wait without a hint; 0 preserves immediate polling", "0");
+
+  option_parser_register(
+      opp, "-gpgpu_tma_multicast_latency", OPT_UINT32,
+      &gpgpu_tma_multicast_latency,
+      "Fixed TMA multicast completion latency; no network or contention "
+      "is modeled (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_cluster_hang_watchdog", OPT_UINT32,
+      &gpgpu_cluster_hang_watchdog,
+      "Abort after this many cycles of a bare peer spin or mixed "
+      "bar.sync+single-thread try_wait (0=off; default 8192). Ignored "
+      "unless -gpgpu_dsm_enable or -gpgpu_mbarrier_cluster_enable, or "
+      "FLASHGPU_CLUSTER_HANG_WATCHDOG is set",
+      "8192");
+  option_parser_register(opp, "-gpgpu_mbarrier_cluster_enable", OPT_BOOL,
+                         &gpgpu_mbarrier_cluster_enable,
+                         "Allow mbarrier ops on remote (DSM-mapped) shared addresses (default=0)",
+                         "0");
+  option_parser_register(
+      opp, "-gpgpu_dsm_enable", OPT_BOOL, &gpgpu_dsm_enable,
+      "Use intra-GPC fabric for cluster ld/st/atom and remote "
+      "mbarrier (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_dsm_flit_payload_bytes", OPT_UINT32,
+      &gpgpu_dsm_flit_payload_bytes,
+      "DSM fabric payload bytes per grant (default=32; header unmodeled)",
+      "32");
+  option_parser_register(
+      opp, "-gpgpu_dsm_flit_bytes", OPT_UINT32, &gpgpu_dsm_flit_payload_bytes,
+      "Alias of -gpgpu_dsm_flit_payload_bytes", "32");
+  option_parser_register(opp, "-gpgpu_dsm_lanes_per_cpc", OPT_UINT32,
+                         &gpgpu_dsm_lanes_per_cpc,
+                         "GPCARB outputs per CPC (default=4)", "4");
+  option_parser_register(
+      opp, "-gpgpu_dsm_gx_planes", OPT_UINT32, &gpgpu_dsm_gx_planes,
+      "Parallel GX switch planes (default=2; not request/response VCs). "
+      "Routes = gx_planes * lanes_per_cpc; GPCARB still grants at most "
+      "lanes_per_cpc per CPC per cycle",
+      "2");
+  option_parser_register(
+      opp, "-gpgpu_dsm_shaper", OPT_CSTR, &gpgpu_dsm_shaper,
+      "SM send shaper: skip_mod | fixed_tdm | hard_rate_cap (default skip_mod)",
+      "skip_mod");
+  option_parser_register(opp, "-gpgpu_dsm_shaper_period", OPT_UINT32,
+                         &gpgpu_dsm_shaper_period,
+                         "Shaper period for skip_mod (default=3)", "3");
+  option_parser_register(
+      opp, "-gpgpu_dsm_shaper_index", OPT_CSTR, &gpgpu_dsm_shaper_index,
+      "skip_mod index: sm_id or cpc_slot (default sm_id)", "sm_id");
+  option_parser_register(
+      opp, "-gpgpu_dsm_request_vc_flits", OPT_UINT32,
+      &gpgpu_dsm_request_vc_flits,
+      "Request VC ingress depth in payload flits (default=64)", "64");
+  option_parser_register(
+      opp, "-gpgpu_dsm_response_vc_flits", OPT_UINT32,
+      &gpgpu_dsm_response_vc_flits,
+      "Response VC ingress depth in payload flits (default=64)", "64");
+  option_parser_register(
+      opp, "-gpgpu_dsm_ejection_vc_flits", OPT_UINT32,
+      &gpgpu_dsm_ejection_vc_flits,
+      "Per-dest ejection depth in payload flits (default=64)", "64");
+  option_parser_register(
+      opp, "-gpgpu_dsm_vc_arbiter", OPT_CSTR, &gpgpu_dsm_vc_arbiter,
+      "VC select: bounded_response_priority (default)",
+      "bounded_response_priority");
+  option_parser_register(
+      opp, "-gpgpu_dsm_route_policy", OPT_CSTR, &gpgpu_dsm_route_policy,
+      "GPCMMU hash: deterministic_hash (default)", "deterministic_hash");
+  option_parser_register(opp, "-gpgpu_dsm_route_seed", OPT_UINT32,
+                         &gpgpu_dsm_route_seed, "GPCMMU hash seed (default=0)",
+                         "0");
+  option_parser_register(
+      opp, "-gpgpu_dsm_max_outstanding_per_sm", OPT_UINT32,
+      &gpgpu_dsm_max_outstanding_per_sm,
+      "Endpoint outstanding transaction window per SM (default=16; not a "
+      "VC/link credit)",
+      "16");
+  option_parser_register(
+      opp, "-gpgpu_dsm_ack_coalesce_threshold", OPT_UINT32,
+      &gpgpu_dsm_ack_coalesce_threshold,
+      "Store/TMA completions per coalesced write_ack (default=4)", "4");
+  option_parser_register(
+      opp, "-gpgpu_dsm_ack_timeout_cycles", OPT_UINT32,
+      &gpgpu_dsm_ack_timeout_cycles,
+      "Flush remaining ACK debt after this many cycles (default=64)", "64");
+  option_parser_register(
+      opp, "-gpgpu_dsm_base_latency_cycles", OPT_UINT32,
+      &gpgpu_dsm_base_latency_cycles,
+      "DSM fabric pipeline floor in addition to flit grants (default=0). "
+      "A packet is visible at dest at max(tail_arrival, injected+floor). "
+      "Does not add flit occupancy.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_dsm_store_visibility_latency_cycles", OPT_UINT32,
+      &gpgpu_dsm_store_visibility_latency_cycles,
+      "Remote DSM store visibility floor from injection (default=0 means "
+      "use the generic fabric floor).",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_load_completion_base_cycles", OPT_UINT32,
+      &gpgpu_tma_load_completion_base_cycles,
+      "Architectural non-cluster TMA load completion cycles from transaction "
+      "creation, before the size term (default=0 disables).",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_load_completion_cycles_per_kib", OPT_UINT32,
+      &gpgpu_tma_load_completion_cycles_per_kib,
+      "Architectural non-cluster TMA load completion size term (default=0).",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_cluster_load_completion_base_cycles", OPT_UINT32,
+      &gpgpu_tma_cluster_load_completion_base_cycles,
+      "Cluster global-to-shared TMA completion floor from creation; actual "
+      "memory completion is also required (default=0 disables).", "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_cluster_load_completion_cycles_per_kib", OPT_UINT32,
+      &gpgpu_tma_cluster_load_completion_cycles_per_kib,
+      "Cluster global-to-shared TMA completion floor size term (default=0).", "0");
   option_parser_register(
       opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
       &gpgpu_wgmma_issue_chain_ss,
@@ -1173,6 +1331,13 @@ unsigned gpgpu_sim::finished_kernel() {
 }
 
 void gpgpu_sim::set_kernel_done(kernel_info_t *kernel) {
+  // Idle SMs can be pre-bound without ever receiving a CTA (notably during
+  // cluster dispatch). They never execute the last-CTA release path. Clear
+  // these bindings before stream retirement deletes the kernel; allocator
+  // reuse otherwise lets a later launch bypass select_kernel's latency gate.
+  for (unsigned gpc = 0; gpc < m_shader_config->n_simt_clusters; ++gpc)
+    for (unsigned core = 0; core < m_cluster[gpc]->num_cores(); ++core)
+      m_cluster[gpc]->get_core(core)->clear_kernel_binding(kernel);
   unsigned uid = kernel->get_uid();
   last_uid = uid;
   unsigned long long streamID = kernel->get_streamID();
@@ -1214,6 +1379,8 @@ void sst_gpgpu_sim::createSIMTCluster() {
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
     m_cluster[i] = new sst_simt_core_cluster(
         this, i, m_shader_config, m_memory_config, m_shader_stats, m_mem_stats);
+  // SST still indexes one shader port per GPC. Unsupported until a per-SM
+  // adapter exists.
   SST_gpgpu_reply_buffer.resize(m_shader_config->n_simt_clusters);
 }
 
@@ -1247,6 +1414,8 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   gpu_tot_issued_cta = 0;
   gpu_completed_cta = 0;
   m_total_cta_launched = 0;
+  m_stuck_cta_dump_done = false;
+  m_stuck_cta_dump_last_completed = ~(0ull);
   gpu_deadlock = false;
 
   gpu_stall_dramfull = 0;
@@ -1283,7 +1452,7 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
     }
 
     icnt_wrapper_init();
-    icnt_create(m_shader_config->n_simt_clusters,
+    icnt_create(m_shader_config->num_shader(),
                 m_memory_config->m_n_mem_sub_partition);
   }
 
@@ -1499,6 +1668,8 @@ void gpgpu_sim::init() {
   last_gpu_sim_insn = 0;
   m_total_cta_launched = 0;
   gpu_completed_cta = 0;
+  m_stuck_cta_dump_done = false;
+  m_stuck_cta_dump_last_completed = ~(0ull);
   partiton_reqs_in_parallel = 0;
   partiton_replys_in_parallel = 0;
   partiton_reqs_in_parallel_util = 0;
@@ -1558,6 +1729,8 @@ void gpgpu_sim::update_stats() {
   gpu_sim_insn = 0;
   m_total_cta_launched = 0;
   gpu_completed_cta = 0;
+  m_stuck_cta_dump_done = false;
+  m_stuck_cta_dump_last_completed = ~(0ull);
   gpu_occupancy = occupancy_stats();
 }
 
@@ -1568,6 +1741,18 @@ PowerscalingCoefficients *gpgpu_sim::get_scaling_coeffs() {
 void gpgpu_sim::print_stats(unsigned long long streamID) {
   gpgpu_ctx->stats->ptx_file_line_stats_write_file();
   gpu_print_stat(streamID);
+
+  const char *dsm_stats = getenv("FLASHGPU_DSM_STATS");
+  if (dsm_stats && dsm_stats[0] && dsm_stats[0] != '0') {
+    printf("DSM_ROUTE_STATS_BEGIN clusters=%u enabled=%u\n", m_config.num_cluster(),
+           m_shader_config->gpgpu_dsm_enable ? 1u : 0u);
+    for (unsigned i = 0; i < m_config.num_cluster(); ++i) {
+      printf("DSM_ROUTE_STATS_CLUSTER id=%u\n", i);
+      if (auto *endpoint = m_cluster[i]->get_dsm_endpoint())
+        endpoint->display_state(stdout);
+    }
+    printf("DSM_ROUTE_STATS_END\n");
+  }
 
   if (g_network_mode) {
     printf(
@@ -1611,7 +1796,7 @@ void gpgpu_sim::deadlock_check() {
         } else if (num_cores >= 8) {
           printf(" + others ... ");
         }
-        num_cores += m_shader_config->n_simt_cores_per_cluster;
+        num_cores += m_cluster[i]->num_cores();
       }
     }
     printf("\n");
@@ -2408,6 +2593,40 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
                                               // less than max
   m_cta_status[free_cta_hw_id] = nthreads_in_block;
 
+  // Cache the CTA's shared memory pointer for TMA cluster multicast.
+  m_cta_smem[free_cta_hw_id] = m_thread[start_thread]->m_shared_mem;
+  // Cluster group for peer matching: explicit TB-cluster group when set by
+  // co-resident issuer, else per-CTA groups for ordinary launches.
+  {
+    unsigned force_group = m_cluster->pending_issue_cluster_group();
+    unsigned group_size = m_cluster->pending_issue_group_size();
+    set_cta_cluster_group(
+        free_cta_hw_id,
+        m_cluster->allocate_cta_cluster_group(group_size, force_group));
+    // TB-cluster relative rank for .multicast::cluster ctaMask (bit = rank).
+    // Matches %cluster_ctarank: rank within product(clusterDim).
+    // `ctaid` was captured before sim_init_thread advanced the next-CTA cursor.
+    unsigned rank = 0;
+    if (kernel.is_cluster_launch()) {
+      dim3 cdim = kernel.get_cluster_dim();
+      if (cdim.x == 0) cdim.x = 1;
+      if (cdim.y == 0) cdim.y = 1;
+      if (cdim.z == 0) cdim.z = 1;
+      unsigned gx = kernel.get_grid_dim().x;
+      unsigned gy = kernel.get_grid_dim().y;
+      if (gx == 0) gx = 1;
+      if (gy == 0) gy = 1;
+      unsigned cx = ctaid % gx;
+      unsigned cy = (ctaid / gx) % gy;
+      unsigned cz = ctaid / (gx * gy);
+      unsigned rel_x = cx % cdim.x;
+      unsigned rel_y = cy % cdim.y;
+      unsigned rel_z = cz % cdim.z;
+      rank = rel_x + cdim.x * (rel_y + cdim.y * rel_z);
+    }
+    set_cta_cluster_rank(free_cta_hw_id, rank);
+  }
+
   if (m_gpu->resume_option == 1 && kernel.get_uid() == m_gpu->resume_kernel &&
       ctaid >= m_gpu->resume_CTA && ctaid < m_gpu->checkpoint_CTA_t) {
     char f1name[2048];
@@ -2470,6 +2689,68 @@ int gpgpu_sim::next_clock_domain(void) {
 }
 
 void gpgpu_sim::issue_block2core() {
+  // 1) Co-resident issue for Thread Block Cluster launches.
+  // Prefer completing an open TB cluster, else start a new one on a physical
+  // cluster that can fit the whole TB cluster (never split across physical
+  // clusters).
+  kernel_info_t *ckernel = select_kernel();
+  if (ckernel && ckernel->is_cluster_launch() &&
+      kernel_more_cta_left(ckernel)) {
+    unsigned ctas_per = ckernel->get_ctas_per_cluster();
+    if (ctas_per == 0) ctas_per = 1;
+
+    if (ckernel->has_open_tb_cluster()) {
+      unsigned phys = ckernel->open_tb_phys_cluster();
+      unsigned group = ckernel->open_tb_cluster_group();
+      if (phys < m_shader_config->n_simt_clusters) {
+        unsigned issued = 0;
+        while (ckernel->has_open_tb_cluster()) {
+          unsigned num =
+              m_cluster[phys]->issue_block2core_for_kernel(ckernel, group);
+          if (!num) break;
+          issued += num;
+          ckernel->consume_open_tb_cta();
+        }
+        if (issued) {
+          m_last_cluster_issue = phys;
+          m_total_cta_launched += issued;
+        }
+      }
+    } else {
+      // Start a new TB cluster: find a physical cluster with enough free slots.
+      unsigned last_issued = m_last_cluster_issue;
+      for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+        unsigned idx =
+            (i + last_issued + 1) % m_shader_config->n_simt_clusters;
+        if (m_cluster[idx]->count_free_cta_slots(*ckernel) < ctas_per) {
+          continue;
+        }
+        // Reserve one unique group id for the whole TB cluster.
+        unsigned group =
+            m_cluster[idx]->allocate_cta_cluster_group(ctas_per, (unsigned)-1);
+        unsigned issued = 0;
+        while (issued < ctas_per) {
+          unsigned num =
+              m_cluster[idx]->issue_block2core_for_kernel(ckernel, group);
+          if (!num) break;
+          issued += num;
+        }
+        if (!issued) {
+          // Slot count can disagree with can_issue (pending TMA, kernel bind).
+          // Do not stick on this GPC; try the next one that has room.
+          continue;
+        }
+        if (issued < ctas_per) {
+          ckernel->open_tb_cluster(idx, group, ctas_per - issued);
+        }
+        m_last_cluster_issue = idx;
+        m_total_cta_launched += issued;
+        break;
+      }
+    }
+  }
+
+  // 2) Ordinary (non-cluster) launch path: RR across physical clusters.
   unsigned last_issued = m_last_cluster_issue;
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
     unsigned idx = (i + last_issued + 1) % m_shader_config->n_simt_clusters;
@@ -2479,6 +2760,43 @@ void gpgpu_sim::issue_block2core() {
       m_total_cta_launched += num;
     }
   }
+}
+
+void gpgpu_sim::maybe_dump_stuck_cluster_ctas(
+    unsigned long long cta_launched, unsigned long long cta_completed,
+    unsigned long long tma_tx_started, unsigned long long tma_tx_completed,
+    unsigned long long tma_bytes_issued, unsigned long long tma_bytes_completed) {
+  if (m_stuck_cta_dump_done) return;
+  const bool tma_idle = (tma_tx_started == tma_tx_completed) &&
+                        (tma_bytes_issued == tma_bytes_completed);
+  const bool no_cta_retire =
+      cta_launched > cta_completed &&
+      m_stuck_cta_dump_last_completed == cta_completed;
+  m_stuck_cta_dump_last_completed = cta_completed;
+  if (!tma_idle || !no_cta_retire) return;
+
+  unsigned live = 0;
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
+    live += m_cluster[i]->get_not_completed();
+  if (!live) return;
+
+  m_stuck_cta_dump_done = true;
+  printf("GPGPU-Sim uArch: STUCK-CTA dump: TMA idle, no CTA retire, "
+         "launched=%llu completed=%llu live_threads=%u cycle=%llu\n",
+         cta_launched, cta_completed, live,
+         (unsigned long long)(gpu_sim_cycle + gpu_tot_sim_cycle));
+  for (kernel_info_t *kernel : m_running_kernels) {
+    if (!kernel) continue;
+    printf("  kernel uid=%u open_tb_remaining=%u phys=%u group=%u\n",
+           kernel->get_uid(), kernel->open_tb_remaining(),
+           kernel->has_open_tb_cluster() ? kernel->open_tb_phys_cluster()
+                                         : (unsigned)-1,
+           kernel->has_open_tb_cluster() ? kernel->open_tb_cluster_group()
+                                         : (unsigned)-1);
+  }
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
+    m_cluster[i]->dump_live_cta_waits(stdout);
+  fflush(stdout);
 }
 
 unsigned long long g_single_step =
@@ -2524,8 +2842,10 @@ void gpgpu_sim::cycle() {
           // if (!mf->get_is_write())
           mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
           mf->set_status(IN_ICNT_TO_SHADER, gpu_sim_cycle + gpu_tot_sim_cycle);
-          ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
-                      response_size);
+          ::icnt_push(m_shader_config->mem2device(i),
+                      m_shader_config->topology().global_sm_node_id(
+                          mf->get_requester_sm_id()),
+                      mf, response_size);
           m_memory_sub_partition[i]->pop();
           partiton_replys_in_parallel_per_cycle++;
         } else {
@@ -2630,6 +2950,7 @@ void gpgpu_sim::cycle() {
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
+        m_cluster[i]->dsm_cycle();
         active_sms_local += m_cluster[i]->get_n_active_sms();
       }
     }
@@ -2651,6 +2972,7 @@ void gpgpu_sim::cycle() {
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
+        m_cluster[i]->dsm_cycle();
         *active_sms += m_cluster[i]->get_n_active_sms();
       }
       // Update core icnt/cache stats for AccelWattch
@@ -2832,6 +3154,10 @@ void gpgpu_sim::cycle() {
       progress.tma_write_mf_responses = tma_progress.write_mf_responses;
       progress.tma_bytes_issued = tma_progress.bytes_issued;
       progress.tma_bytes_completed = tma_progress.bytes_completed;
+      maybe_dump_stuck_cluster_ctas(
+          progress.cta_launched, progress.cta_completed,
+          progress.tma_tx_started, progress.tma_tx_completed,
+          progress.tma_bytes_issued, progress.tma_bytes_completed);
       profiler.increment_and_check(&progress);
     } else {
       profiler.increment_and_check();
@@ -2858,7 +3184,8 @@ void gpgpu_sim::perf_memcpy_to_gpu(size_t dst_start_addr, size_t count) {
     // 32
     //== 0);
 
-    for (unsigned counter = 0; counter < count; counter += 32) {
+    // CUDA allocations start above 4 GiB; preserve the caller's address width.
+    for (size_t counter = 0; counter < count; counter += 32) {
       const size_t wr_addr = dst_start_addr + counter;
       addrdec_t raw_addr;
       mem_access_sector_mask_t mask;
@@ -2925,6 +3252,8 @@ const memory_config *gpgpu_sim::getMemoryConfig() { return m_memory_config; }
 simt_core_cluster *gpgpu_sim::getSIMTCluster() { return *m_cluster; }
 
 void sst_gpgpu_sim::SST_gpgpusim_numcores_equal_check(unsigned sst_numcores) {
+  // SST still treats one shader port per GPC. Unsupported until a per-SM
+  // adapter exists.
   if (m_shader_config->n_simt_clusters != sst_numcores) {
     assert(
         "\nSST core is not equal the GPGPU-sim cores. Open gpgpu-sim.config "

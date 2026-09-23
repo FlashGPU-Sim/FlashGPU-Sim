@@ -6,21 +6,38 @@
 #include <memory>
 #include <set>
 #include <unordered_map>
+#include <vector>
 
 class gpgpu_sim;
 namespace flash_gpgpu_sim {
 
+enum class cluster_mbar_op : uint8_t {
+  ARRIVE = 0,
+  EXPECT_TX,
+  COMPLETE_TX,
+  TRY_COMPLETE_TX,
+  WAIT_REG,
+  WAIT_DONE,
+};
+
 class mbarrier_manager_t {
 
+public:
+  // Remote try_wait interest (other SM waiting on this barrier).
+  struct remote_waiter_t {
+    unsigned src_cid;
+    unsigned src_hw_cta;
+    unsigned src_warp_id;
+    int parity;
+  };
+
+private:
   /**
-   * Implement the mbarrier instruction.
-   * NOTE: So far, this is more like a idealized implementation with some
-   * limitations:
-   * 1. It does not access the shared memory,
-   * 2. only support CTA level synchronization.
-   * 3. Does not support thread-level barrier (this is a limitation from
-   * GPGPU-Sim, we can fix later). So far if one thread in a warp is blocked by
-   * a barrier, the entire warp is blocked.
+   * mbarrier objects live in simulator state (not 64-bit smem contents).
+   * Local CTA ops and remote (mapa) arrive/try_wait/expect/complete via
+   * the intra-GPC fabric are supported. A blocked thread stalls the whole warp
+   * (GPGPU-Sim SIMT). try_wait.parity optional timeout sets dest pred
+   * false on expiry, true if the waited phase completed.
    */
   struct mbarrier_t {
     mbarrier_t(int id, int hw_cta_id, int sw_cta_id, uint64_t addr,
@@ -33,12 +50,13 @@ class mbarrier_manager_t {
     const int m_hw_cta_id;
     const int m_sw_cta_id;
     const uint64_t m_addr;
-    const int m_expected_count;
+    int m_expected_count;
     int m_pending_arrival_count;
     // This is for TMA interaction. It may change every phase.
     int m_tx_count;
     int m_phase;
     std::set<int> m_waiting_warps;
+    std::vector<remote_waiter_t> m_remote_waiters;
   };
 
 public:
@@ -72,11 +90,18 @@ public:
   void inval(gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr);
 
   /**
-   * Try to wait on the mbarrier at addr with parity for warp warp_id.
+   * Query whether the waited parity has completed. Does not park the warp.
+   * Hardware try_wait is non-blocking; software spin loops re-issue.
+   * If the current phase is already satisfied, try_advance runs and any
+   * previously parked waiters are returned in released_on_advance.
    * @return true if the wait is satisfied.
    */
   bool try_wait(gpgpu_sim *gpu, const thread_index_t &thread_index,
-                uint64_t addr, int parity);
+                uint64_t addr, int parity,
+                std::set<int> *released_on_advance = nullptr);
+
+  // Record a parked waiter so a later arrive/complete_tx can release it.
+  void enqueue_wait(const thread_index_t &thread_index, uint64_t addr);
 
   /**
    * Arrive at the mbarrier at addr with arrival_count for warp warp_id.
@@ -98,6 +123,16 @@ public:
                             uint64_t addr, int completed_tx_count);
 
   /**
+   * Like complete_tx, but no-ops when the mbarrier is missing. Despite the
+   * historical name, initialized peers retain early completions as negative
+   * tx-count; the caller must deliver each transaction exactly once.
+   */
+  std::set<int> try_complete_tx_if_pending(gpgpu_sim *gpu,
+                                           const thread_index_t &thread_index,
+                                           uint64_t addr,
+                                           int completed_tx_count);
+
+  /**
    * Increase the expected tx count for the mbarrier at addr.
    * @return void
    */
@@ -105,10 +140,29 @@ public:
                  uint64_t addr, int expected_tx_count);
 
   /**
+   * Register a remote try_wait interest on the barrier at addr.
+   * @return true if the wait is already satisfied (parity advanced).
+   * If false, waiter is stored and will be notified on phase advance.
+   */
+  bool register_remote_wait(gpgpu_sim *gpu, const thread_index_t &thread_index,
+                            uint64_t addr, int parity, unsigned src_cid,
+                            unsigned src_hw_cta, unsigned src_warp_id);
+
+  /**
+   * After a phase advance, return and clear remote waiters whose parity is
+   * now satisfied (waiting for previous phase).
+   */
+  std::vector<remote_waiter_t> take_satisfied_remote_waiters(int sw_cta_id,
+                                                             uint64_t addr);
+
+  /**
    * Clean up all mbarriers for a given hw_cta_id when the CTA completes.
    * This prevents stale barriers when hw_cta_ids get recycled.
    */
   void cleanup_cta(unsigned hw_cta_id);
+
+  // Drop a local waiter without advancing the phase (try_wait timeout).
+  void cancel_wait(int hw_warp_id);
 
 private:
   int m_next_id;

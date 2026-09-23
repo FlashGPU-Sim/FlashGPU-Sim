@@ -43,8 +43,8 @@ cp.async.bulk.wait_group N;
   - Parses coordinate vectors: `{c0}` (1D), `{c0, c1}` (2D), ..., `{c0, c1, c2, c3, c4}` (5D)
   - Reads tensormap descriptor from memory to obtain tile dimensions and strides
   - Calculates source address based on coordinates and descriptor parameters
-- **Commit group** (stubbed): Treated as NOP with debug logging
-- **Wait group** (stubbed): Treated as NOP with debug logging
+- **Commit group**: Marks pending TMA stores as a bulk group (`bulk_group_manager`)
+- **Wait group**: Parks the warp until at most N committed groups remain incomplete
 
 **Functional Simulation**: Performs immediate memory copy between global and shared memory spaces.
 
@@ -82,12 +82,12 @@ tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.sem.scope [dst], [
 - `thread`: Current thread context
 
 **Behavior**:
-- **tensormap.replace**: Modifies specific field in tensormap descriptor (global address, rank, dimensions, strides, etc.)
-- **tensormap.cp_fenceproxy**: Copies tensormap with fence semantics (stubbed as NOP)
+- **tensormap.replace**: Modifies a used field in the tensormap descriptor (global address, rank, dimensions, strides, elemtype, interleave, swizzle, fill)
+- **tensormap.cp_fenceproxy**: Copies the descriptor from shared to global
 
-**Functional Simulation**: Reads descriptor, modifies specified field, writes back to memory.
+**Functional Simulation**: Reads descriptor, modifies specified field, writes back to memory. `cp_fenceproxy` writes the 128-byte object to global.
 
-**Error Conditions**: Unsupported field type → prints stub message
+**Error Conditions**: Unrecognized replace field or tensormap variant → named error and `abort`
 
 ---
 
@@ -404,6 +404,8 @@ uncalibrated until a hardware microbenchmark supplies those parameters.
 2. **Tensormap options**: Some tensormap manipulation options not fully validated
 3. **Tensor reduction timing**: Functional semantics are implemented, but the
    `UTMAREDG` atomic timing path is not calibrated
+4. **Cluster multicast**: functional fan-out plus a fixed latency knob, not a
+   bandwidth or contention model (`docs/cluster_noc/README.md`)
 
 **Multi-dimensional testing**: Full test coverage for 1D and 3D-5D tensor
 operations is implemented in

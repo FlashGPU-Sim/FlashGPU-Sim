@@ -33,6 +33,23 @@ starting points for simulation and architecture studies.
 Both configuration directories include `sass_primary_hints.rules` for
 experiments that explicitly enable SASS-guided PTX reordering.
 
+### Cluster and DSM presets
+
+Design: `docs/cluster_noc/README.md`. These are extra configs; `SM120_RTX5090`
+and `SM90_H100` stay the flash defaults.
+
+`CLUSTERmxn` means **m** = `-gpgpu_n_cores_per_cluster` and **n** =
+`-gpgpu_n_clusters`. The reduced SM120 presets set
+`-gpgpu_dsm_enable 1` and `-gpgpu_mbarrier_cluster_enable 1`.
+
+| Config | Role |
+| --- | --- |
+| `SM120_RTX5090_REDUCED_CLUSTER2x1` | Fast single-cluster peer path |
+| `SM120_RTX5090_REDUCED_CLUSTER2x2` | Two-cluster isolation |
+| `SM120_RTX5090_REDUCED_CLUSTER4x4` | Primary multi-SM functional config |
+| `SM90_H200_CLUSTER132` | H200 packing for calibration, not the default test config |
+
+
 ### Legacy Configurations
 
 `tested-cfgs/` contains configurations validated by earlier GPGPU-Sim
@@ -267,3 +284,5 @@ When troubleshooting a custom configuration:
 - **Unexpected performance:** Compare the complete run directory with its base
   configuration and confirm that an automation script has not recopied the
   bundled default configuration over local edits.
+
+

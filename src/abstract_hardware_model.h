@@ -810,6 +810,7 @@ class inst_t {
     bar_id = (unsigned)-1;
     bar_count = (unsigned)-1;
     bar_parity = false;
+    cluster_barrier = false;
     oprnd_type = UN_OP;
     sp_op = OTHER_OP;
     op_pipe = UNKOWN_OP;
@@ -880,6 +881,7 @@ class inst_t {
   unsigned bar_id;
   unsigned bar_count;
   bool bar_parity = false;
+  bool cluster_barrier = false;
 
 public:
   struct tma_static_info_t {
@@ -902,6 +904,8 @@ public:
     unsigned tensor_dim = 0;
     unsigned bulk_wait_num = 0;  // For TMA_BULK_WAIT: number of recent groups to wait for
     bool bulk_wait_read_only = false;
+    // PTX .multicast::cluster (cluster-level selective destination only).
+    bool multicast_cluster = false;
   };
   struct tma_dyn_info_t {
     static constexpr unsigned TMA_DESCRIPTOR_BYTES = 128;
@@ -912,6 +916,11 @@ public:
     int32_t coords[5] = {0, 0, 0, 0, 0};
     uint8_t tensormap_descriptor[TMA_DESCRIPTOR_BYTES] = {};
     bool has_tensormap_descriptor = false;
+    // 16-bit CTA rank mask for .multicast::cluster (bit i = cluster rank i).
+    // When has_cta_mask is false, legacy shared::cluster peers use full group.
+    uint16_t cta_mask = 0xFFFF;
+    bool has_cta_mask = false;
+    bool mapped_cluster_copy = false;
     bool is_valid() const {
       return mbar_addr != (uint32_t)-1 || size_in_bytes > 0;
     }
@@ -943,14 +952,28 @@ public:
   // Note: Whether a thread participates is determined by inst->active(lane)
   // at warp_reaches_mbarrier time, not stored in this struct.
   struct mbarrier_info_t {
-    unsigned bar_id = (unsigned)-1;     // mbarrier address in shared memory
+    unsigned bar_id = (unsigned)-1;     // mbarrier address (smem offset on owner)
     unsigned bar_count = (unsigned)-1;  // expected count or arrival count
     bool bar_parity = false;            // parity for try_wait
-    
+    // Optional try_wait suspend/timeout hint (4th PTX operand). When set,
+    // an unsatisfied wait expires and dest pred is false instead of parking
+    // until the phase completes.
+    bool has_timeout = false;
+    unsigned timeout_hint = 0;
+    // Remote (mapa / DSM) target; when is_remote, bar_id is offset on owner CTA.
+    bool is_remote = false;
+    unsigned remote_cid = 0;
+    unsigned remote_hw_cta = 0;
+
     void reset() {
       bar_id = (unsigned)-1;
       bar_count = (unsigned)-1;
       bar_parity = false;
+      has_timeout = false;
+      timeout_hint = 0;
+      is_remote = false;
+      remote_cid = 0;
+      remote_hw_cta = 0;
     }
   };
   void set_mbarrier_info(int laneid, const mbarrier_info_t &info) {
@@ -1038,6 +1061,11 @@ class warp_inst_t : public inst_t {
     m_is_cp_async_mbarrier_arrive = false;
 
     m_depbar_group_no = 0;
+    m_dsm_remote = false;
+    m_dsm_hop = 0;
+    m_smem_exposed = false;
+    m_smem_got = 0;
+    m_current_lane = 0;
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
@@ -1065,6 +1093,11 @@ class warp_inst_t : public inst_t {
     m_is_cp_async_mbarrier_arrive = false;
 
     m_depbar_group_no = 0;
+    m_dsm_remote = false;
+    m_dsm_hop = 0;
+    m_smem_exposed = false;
+    m_smem_got = 0;
+    m_current_lane = 0;
   }
   virtual ~warp_inst_t() {}
 
@@ -1072,6 +1105,7 @@ class warp_inst_t : public inst_t {
   void broadcast_barrier_reduction(const active_mask_t &access_mask);
   void do_atomic(bool forceDo = false);
   void do_atomic(const active_mask_t &access_mask, bool forceDo = false);
+  void skip_atomic_callback() { should_do_atomic = false; }
   void clear() { m_empty = true; }
 
   void issue(const active_mask_t &mask, unsigned warp_id,
@@ -1228,11 +1262,19 @@ class warp_inst_t : public inst_t {
 
   bool has_dispatch_delay() { return cycles > 0; }
 
+  // Arm shared-unit dispatch delay (e.g. DSM hop). Max with existing cycles.
+  void set_issue_cycle_delay(unsigned n) {
+    if (n > cycles)
+      cycles = n;
+  }
+
   void print(FILE *fout) const;
   unsigned get_uid() const { return m_uid; }
   unsigned long long get_streamID() const { return m_streamID; }
   unsigned get_schd_id() const { return m_scheduler_id; }
   active_mask_t get_warp_active_mask() const { return m_warp_active_mask; }
+  void set_current_lane(unsigned lane) { m_current_lane = lane; }
+  unsigned current_lane() const { return m_current_lane; }
 
  protected:
   unsigned m_uid;
@@ -1246,6 +1288,7 @@ class warp_inst_t : public inst_t {
   bool m_is_printf;
   unsigned m_warp_id;
   unsigned m_dynamic_warp_id;
+  unsigned m_current_lane;
   const core_config *m_config;
   active_mask_t m_warp_active_mask;  // dynamic active mask for timing model
                                      // (after predication)
@@ -1292,6 +1335,18 @@ class warp_inst_t : public inst_t {
   bool m_is_cp_async_mbarrier_arrive;
 
   unsigned int m_depbar_group_no;
+
+  // Intra-cluster DSM: hop latency for remote shared accesses (cycles).
+  bool m_dsm_remote;
+  unsigned m_dsm_hop;
+  bool m_smem_exposed;
+  unsigned m_smem_got;
+  bool is_dsm_remote() const { return m_dsm_remote; }
+  unsigned dsm_hop() const { return m_dsm_hop; }
+  void set_dsm_remote(bool remote, unsigned hop) {
+    m_dsm_remote = remote;
+    m_dsm_hop = hop;
+  }
 };
 
 #ifdef FLASH_GPGPU_SIM

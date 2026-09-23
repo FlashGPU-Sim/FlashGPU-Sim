@@ -1056,6 +1056,14 @@ void ptx_recognizer::maxnt_id(int x, int y, int z) {
   g_func_info->set_maxnt_id(x * y * z);
 }
 
+void ptx_recognizer::set_explicit_cluster() {
+  if (g_func_info) g_func_info->set_explicit_cluster(true);
+}
+
+void ptx_recognizer::set_req_cluster_dim(int x, int y, int z) {
+  if (g_func_info) g_func_info->set_req_cluster_dim(x, y, z);
+}
+
 void ptx_recognizer::func_header(const char *a) {}  // intentional dummy
                                                     // function
 void ptx_recognizer::func_header_info(const char *a) {

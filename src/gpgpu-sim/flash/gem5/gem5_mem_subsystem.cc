@@ -123,6 +123,9 @@ void Gem5MemSubsystem::pushMemFetch(GPGPUSimPortId input_port_id,
   /**
    * So far with gem5 integration, we expect only SM requests here.
    * If this is from memory, we panic.
+   *
+   * gem5 requestors are still sized as one shader port per GPC. Per-SM
+   * global interconnect nodes are unsupported here until an adapter exists.
    */
   if (input_port_id >= g_icnt_n_shader) {
     panic("Received request from port %u which is not a shader core "

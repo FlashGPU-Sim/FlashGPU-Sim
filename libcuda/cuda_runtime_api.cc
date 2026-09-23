@@ -105,6 +105,7 @@
 #include <assert.h>
 #include <cctype>
 #include <dirent.h>
+#include <elf.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -512,7 +513,8 @@ static int get_app_cuda_version_internal(std::string app_binary) {
       "strings " +
       app_binary +
       " | grep libcudart_vanadis.a | sed  "
-      "'s/.*libcudart_vanadis.a.\\(.*\\)/\\1/'; } | head -1 > " +
+      "'s/.*libcudart_vanadis.a.\\(.*\\)/\\1/'; } | grep -E '^[0-9]+' | "
+      "head -1 > " +
       fname;
   int res = system(app_cuda_version_command.c_str());
   if (res == -1) {
@@ -1391,9 +1393,79 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
          (ctx->func_sim->g_ptx_sim_mode) ? "functional simulation"
                                          : "performance simulation",
          stream ? stream->get_uid() : 0);
+
+  // Resolve Thread Block Cluster dimensions:
+  // 1) Explicit launch attribute (cudaLaunchKernelEx) on kernel_config
+  // 2) Else required dims from function_info (PTX .reqnctapercluster /
+  //    cudaFuncSetAttribute RequiredCluster*)
+  function_info *entry_for_cluster = context->get_kernel(hostFun);
+  bool cluster_launch = config.is_cluster_launch();
+  dim3 cluster_dim = config.cluster_dim();
+  if (!cluster_launch && entry_for_cluster &&
+      entry_for_cluster->has_explicit_cluster()) {
+    cluster_launch = true;
+    cluster_dim = entry_for_cluster->get_req_cluster_dim();
+  }
+  if (entry_for_cluster && entry_for_cluster->cluster_dim_must_be_set() &&
+      !cluster_launch) {
+    printf(
+        "GPGPU-Sim PTX: ERROR ** cluster dimension must be set for kernel "
+        "0x%p (cudaFuncAttributeClusterDimMustBeSet)\n",
+        hostFun);
+    ctx->api->g_cuda_launch_stack.pop_back();
+    return g_last_cudaError = cudaErrorInvalidClusterSize;
+  }
+  if (cluster_launch) {
+    if (cluster_dim.x == 0 || cluster_dim.y == 0 || cluster_dim.z == 0) {
+      printf(
+          "GPGPU-Sim PTX: ERROR ** invalid clusterDim=(%u,%u,%u) for 0x%p\n",
+          cluster_dim.x, cluster_dim.y, cluster_dim.z, hostFun);
+      ctx->api->g_cuda_launch_stack.pop_back();
+      return g_last_cudaError = cudaErrorInvalidClusterSize;
+    }
+    dim3 gd = config.grid_dim();
+    if ((gd.x % cluster_dim.x) != 0 || (gd.y % cluster_dim.y) != 0 ||
+        (gd.z % cluster_dim.z) != 0) {
+      printf(
+          "GPGPU-Sim PTX: ERROR ** gridDim=(%u,%u,%u) not a multiple of "
+          "clusterDim=(%u,%u,%u)\n",
+          gd.x, gd.y, gd.z, cluster_dim.x, cluster_dim.y, cluster_dim.z);
+      ctx->api->g_cuda_launch_stack.pop_back();
+      return g_last_cudaError = cudaErrorInvalidClusterSize;
+    }
+    // Capacity: TB cluster size must fit physical cluster packing
+    // (n_cores_per_cluster).
+    gpgpu_sim *gpu_for_check =
+        context->get_device()->get_gpgpu();
+    unsigned n_cores = 1;
+    if (gpu_for_check) {
+      n_cores = gpu_for_check->getShaderCoreConfig()
+                    ->n_simt_cores_per_cluster;
+      if (n_cores == 0) n_cores = 1;
+    }
+    unsigned ctas = cluster_dim.x * cluster_dim.y * cluster_dim.z;
+    if (ctas > n_cores) {
+      printf(
+          "GPGPU-Sim PTX: ERROR ** cluster size %u exceeds "
+          "n_cores_per_cluster %u (config capacity)\n",
+          ctas, n_cores);
+      ctx->api->g_cuda_launch_stack.pop_back();
+      return g_last_cudaError = cudaErrorInvalidClusterSize;
+    }
+  }
+
   kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
       hostFun, config.get_args(), config.grid_dim(), config.block_dim(),
       context);
+
+  if (cluster_launch) {
+    grid->set_cluster_launch(cluster_dim);
+    printf(
+        "GPGPU-Sim PTX: Thread Block Cluster launch clusterDim=(%u,%u,%u) "
+        "ctas_per_cluster=%u\n",
+        cluster_dim.x, cluster_dim.y, cluster_dim.z,
+        grid->get_ctas_per_cluster());
+  }
 
   // Handle dynamic shared memory for extern shared symbols and record the
   // per-launch dynamic shared memory size on the kernel grid object
@@ -2584,6 +2656,12 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernelInternal(
   function_info *entry = context->get_kernel(hostFun);
 #if CUDART_VERSION < 10000
   cudaConfigureCallInternal(gridDim, blockDim, sharedMem, stream, ctx);
+#else
+  // Compiler-generated launches pre-push a configuration; direct calls to
+  // cudaLaunchKernel do not. Both paths must have a frame before arguments
+  // are packed, and cudaLaunchInternal consumes that frame exactly once.
+  if (ctx->api->g_cuda_launch_stack.empty())
+    cudaConfigureCallInternal(gridDim, blockDim, sharedMem, stream, ctx);
 #endif
   for (unsigned i = 0; i < entry->num_args(); i++) {
     std::pair<size_t, unsigned> p = entry->get_param_config(i);
@@ -3201,6 +3279,32 @@ cudaError_t CUDARTAPI cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(
 
 #endif
 
+#if CUDART_VERSION >= 11040
+__host__ cudaError_t CUDARTAPI cudaOccupancyMaxActiveClusters(
+    int *numClusters, const void *func, const cudaLaunchConfig_t *config) {
+  (void)func;
+  (void)config;
+  if (!numClusters) return g_last_cudaError = cudaErrorInvalidValue;
+  *numClusters = 1;
+  return g_last_cudaError = cudaSuccess;
+}
+
+__host__ cudaError_t CUDARTAPI cudaOccupancyMaxPotentialClusterSize(
+    int *clusterSize, const void *func, const cudaLaunchConfig_t *config) {
+  (void)func;
+  (void)config;
+  if (!clusterSize) return g_last_cudaError = cudaErrorInvalidValue;
+  gpgpu_context *ctx = GPGPU_Context();
+  _cuda_device_id *dev = ctx->GPGPUSim_Init();
+  unsigned sms_per_gpc = 16;
+  if (dev->get_gpgpu() && dev->get_gpgpu()->getShaderCoreConfig())
+    sms_per_gpc =
+        dev->get_gpgpu()->getShaderCoreConfig()->n_simt_cores_per_cluster;
+  *clusterSize = (int)sms_per_gpc;
+  return g_last_cudaError = cudaSuccess;
+}
+#endif
+
 /*******************************************************************************
  *                                                                              *
  *                                                                              *
@@ -3516,7 +3620,13 @@ __host__ cudaError_t CUDARTAPI cudaStreamQuery(cudaStream_t stream) {
     announce_call(__my_func__);
   }
 #if (CUDART_VERSION >= 3000)
-  if (stream == NULL) return g_last_cudaError = cudaErrorInvalidResourceHandle;
+  if (stream == NULL) {
+    gpgpu_context *ctx = GPGPU_Context();
+    return g_last_cudaError =
+               ctx->the_gpgpusim->g_stream_manager->empty_protected()
+                   ? cudaSuccess
+                   : cudaErrorNotReady;
+  }
   return g_last_cudaError = stream->empty() ? cudaSuccess : cudaErrorNotReady;
 #else
   printf(
@@ -3605,12 +3715,17 @@ __host__ cudaError_t CUDARTAPI cudaEventElapsedTime(float *ms,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  time_t elapsed_time;
+  if (ms == nullptr || start == nullptr || end == nullptr)
+    return g_last_cudaError = cudaErrorInvalidValue;
   CUevent_st *s = get_event(start);
   CUevent_st *e = get_event(end);
   if (s == NULL || e == NULL) return g_last_cudaError = cudaErrorUnknown;
-  elapsed_time = e->clock() - s->clock();
-  *ms = 1000 * elapsed_time;
+  if (!s->done() || !e->done())
+    return g_last_cudaError = cudaErrorNotReady;
+  // CUDA event time follows the device timeline, not simulator host runtime.
+  // shader_clock() is kHz, so cycles / kHz yields milliseconds.
+  *ms = (e->sim_cycle() - s->sim_cycle()) /
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->shader_clock();
   return g_last_cudaError = cudaSuccess;
 }
 
@@ -4292,47 +4407,100 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
       selected_version = api->version_filename.rbegin()->first;
     }
 
-    // Determine if there are suffix variants for this selected_version
-    bool has_suffix = false;
+    // Determine which kernel names have suffix variants available.
+    // Naming convention: <kernel_name>.<file_index>.sm_<arch>[suffix].ptx
+    // Match on kernel_name so that files with different indices but the
+    // same kernel name are recognized as variants of each other.
+    auto extract_kernel_name = [](const std::string &filename) -> std::string {
+      // Find "sm_" to locate the arch portion
+      size_t sm_pos = filename.rfind("sm_");
+      if (sm_pos == std::string::npos) return "";
+      // Strip back past ".<N>.sm_": the kernel name is everything before
+      // the file-index dot.
+      size_t prefix_end = sm_pos - 1;  // position of '.' before sm_
+      if (prefix_end >= filename.size() || filename[prefix_end] != '.') return "";
+      size_t dot2 = filename.rfind('.', prefix_end - 1);
+      if (dot2 == std::string::npos) return "";
+      return filename.substr(0, dot2);
+    };
+
+    auto is_suffix_arch = [](const std::string &arch_part) -> bool {
+      for (size_t j = 0; j < arch_part.length(); j++) {
+        if (!isdigit(arch_part[j])) return true;
+      }
+      return false;
+    };
+
+    std::set<std::string> kernels_with_suffix;
     for (auto &check_name : api->version_filename[selected_version]) {
-      size_t sm_pos = check_name.find("sm_");
+      size_t sm_pos = check_name.rfind("sm_");
       if (sm_pos != std::string::npos) {
         size_t dot_pos = check_name.find('.', sm_pos);
-        std::string arch_part =
-            check_name.substr(sm_pos + 3, dot_pos - sm_pos - 3);
-        for (size_t j = 0; j < arch_part.length(); j++) {
-          if (!std::isdigit(static_cast<unsigned char>(arch_part[j]))) {
-            has_suffix = true;
-            break;
+        if (dot_pos != std::string::npos) {
+          std::string arch_part =
+              check_name.substr(sm_pos + 3, dot_pos - sm_pos - 3);
+          if (is_suffix_arch(arch_part)) {
+            std::string kn = extract_kernel_name(check_name);
+            if (!kn.empty()) kernels_with_suffix.insert(kn);
           }
         }
-        if (has_suffix) break;
       }
     }
 
     for (auto &ptx_filename : api->version_filename[selected_version]) {
-      // Skip base version if suffix version exists
-      if (has_suffix) {
-        size_t sm_pos = ptx_filename.find("sm_");
+      // Skip base version if a suffix version exists for the same kernel
+      std::string kernel_name = extract_kernel_name(ptx_filename);
+      if (!kernel_name.empty() && kernels_with_suffix.count(kernel_name) > 0) {
+        size_t sm_pos = ptx_filename.rfind("sm_");
         if (sm_pos != std::string::npos) {
           size_t dot_pos = ptx_filename.find('.', sm_pos);
-          std::string arch_part =
-              ptx_filename.substr(sm_pos + 3, dot_pos - sm_pos - 3);
-          bool is_base = true;
-          for (size_t j = 0; j < arch_part.length(); j++) {
-            if (!std::isdigit(static_cast<unsigned char>(arch_part[j]))) {
-              is_base = false;
-              break;
+          if (dot_pos != std::string::npos) {
+            std::string arch_part =
+                ptx_filename.substr(sm_pos + 3, dot_pos - sm_pos - 3);
+            if (!is_suffix_arch(arch_part)) {
+              printf("GPGPU-Sim PTX: Skipping %s (suffix version available)\n",
+                     ptx_filename.c_str());
+              continue;
             }
-          }
-          if (is_base) {
-            printf("GPGPU-Sim PTX: Skipping %s (suffix version available)\n",
-                   ptx_filename.c_str());
-            continue;
           }
         }
       }
       selected_files.push_back(ptx_filename);
+    }
+  }
+
+  // cuobjdump writes one PTX per .cu; the version set can miss a module.
+  // Only pick up the same sm_* suffix already selected (do not also load
+  // sm_90 when sm_90a is the chosen image).
+  {
+    std::string want_arch;
+    if (!selected_files.empty()) {
+      const std::string &s0 = selected_files.front();
+      const size_t sm = s0.rfind("sm_");
+      if (sm != std::string::npos)
+        want_arch = s0.substr(sm);
+    }
+    DIR *dir = opendir(".");
+    if (dir) {
+      std::set<std::string> have(selected_files.begin(), selected_files.end());
+      struct dirent *ent;
+      while ((ent = readdir(dir)) != NULL) {
+        const std::string n = ent->d_name;
+        if (n.size() < 8 || n.compare(n.size() - 4, 4, ".ptx") != 0)
+          continue;
+        if (n.find("sm_") == std::string::npos)
+          continue;
+        if (!want_arch.empty() &&
+            (n.size() < want_arch.size() ||
+             n.compare(n.size() - want_arch.size(), want_arch.size(),
+                       want_arch) != 0))
+          continue;
+        if (have.insert(n).second) {
+          printf("GPGPU-Sim PTX: adding extracted module %s\n", n.c_str());
+          selected_files.push_back(n);
+        }
+      }
+      closedir(dir);
     }
   }
 
@@ -4402,7 +4570,7 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
   for (auto &ptx_filename : selected_files) {
     // Extract full architecture string (e.g., "sm_120a" from "kernel.2.sm_120a.ptx")
     std::string arch_str = "";
-    size_t sm_pos = ptx_filename.find("sm_");
+    size_t sm_pos = ptx_filename.rfind("sm_");
     if (sm_pos != std::string::npos) {
       size_t dot_pos = ptx_filename.find('.', sm_pos);
       arch_str = ptx_filename.substr(sm_pos, dot_pos - sm_pos);
@@ -4875,6 +5043,7 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
   function_info *entry = context->get_kernel((const char *)func);
 
   if (attr == cudaFuncAttributeMaxDynamicSharedMemorySize) {
+    if (!entry) return g_last_cudaError = cudaErrorInvalidDeviceFunction;
     if (value < 0) return g_last_cudaError = cudaErrorInvalidValue;
     unsigned static_smem;
     unsigned max_per_block_optin;
@@ -4897,6 +5066,7 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
   }
 
   if (attr == cudaFuncAttributePreferredSharedMemoryCarveout) {
+    if (!entry) return g_last_cudaError = cudaErrorInvalidDeviceFunction;
     if (value != cudaSharedmemCarveoutDefault &&
         (value < 0 || value > 100)) {
       return g_last_cudaError = cudaErrorInvalidValue;
@@ -4909,9 +5079,57 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
     return g_last_cudaError = cudaSuccess;
   }
 
-  printf("GPGPU-Sim PTX: Execution warning: ignoring call to \"%s "
-         "( func=%p, attr=%d, value=%d )\"\n",
-         __my_func__, func, attr, value);
+  if (!entry) {
+    printf(
+        "GPGPU-Sim PTX: cudaFuncSetAttribute: no kernel for %p (attr=%d "
+        "value=%d); ignoring\n",
+        func, (int)attr, value);
+    return g_last_cudaError = cudaSuccess;
+  }
+
+  switch (attr) {
+#if CUDART_VERSION >= 11040
+    case cudaFuncAttributeRequiredClusterWidth: {
+      dim3 d = entry->get_req_cluster_dim();
+      d.x = (unsigned)value;
+      if (d.y == 0) d.y = 1;
+      if (d.z == 0) d.z = 1;
+      entry->set_req_cluster_dim(d.x, d.y, d.z);
+      break;
+    }
+    case cudaFuncAttributeRequiredClusterHeight: {
+      dim3 d = entry->get_req_cluster_dim();
+      if (d.x == 0) d.x = 1;
+      d.y = (unsigned)value;
+      if (d.z == 0) d.z = 1;
+      entry->set_req_cluster_dim(d.x, d.y, d.z);
+      break;
+    }
+    case cudaFuncAttributeRequiredClusterDepth: {
+      dim3 d = entry->get_req_cluster_dim();
+      if (d.x == 0) d.x = 1;
+      if (d.y == 0) d.y = 1;
+      d.z = (unsigned)value;
+      entry->set_req_cluster_dim(d.x, d.y, d.z);
+      break;
+    }
+    case cudaFuncAttributeClusterDimMustBeSet:
+      entry->set_cluster_dim_must_be_set(value != 0);
+      break;
+    case cudaFuncAttributeNonPortableClusterSizeAllowed:
+      entry->set_nonportable_cluster_size_allowed(value != 0);
+      break;
+    case cudaFuncAttributeClusterSchedulingPolicyPreference:
+      entry->set_cluster_sched_policy(value);
+      break;
+#endif
+    default:
+      printf(
+          "GPGPU-Sim PTX: Execution warning: ignoring call to \"%s ( "
+          "func=%p, attr=%d, value=%d )\"\n",
+          __my_func__, func, attr, value);
+      break;
+  }
   return g_last_cudaError = cudaSuccess;
 }
 #endif
@@ -5668,7 +5886,79 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  printf("WARNING: this function has not been implemented yet %s\n", __my_func__);
+
+  if (!module || !image) return CUDA_ERROR_INVALID_VALUE;
+
+  const unsigned char *bytes = static_cast<const unsigned char *>(image);
+  if (memcmp(bytes, ELFMAG, SELFMAG) != 0 ||
+      bytes[EI_CLASS] != ELFCLASS64 || bytes[EI_DATA] != ELFDATA2LSB) {
+    printf("GPGPU-Sim CUDA DRIVER API: cuModuleLoadData currently requires "
+           "an ELF64 little-endian cubin with embedded debug PTX.\n");
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  const Elf64_Ehdr *eh = reinterpret_cast<const Elf64_Ehdr *>(bytes);
+  if (eh->e_shentsize != sizeof(Elf64_Shdr) || eh->e_shnum == 0 ||
+      eh->e_shnum > 4096 || eh->e_shstrndx >= eh->e_shnum) {
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+  const Elf64_Shdr *sections =
+      reinterpret_cast<const Elf64_Shdr *>(bytes + eh->e_shoff);
+  const Elf64_Shdr &names_section = sections[eh->e_shstrndx];
+  const char *names = reinterpret_cast<const char *>(bytes + names_section.sh_offset);
+  const Elf64_Shdr *ptx_section = nullptr;
+  for (unsigned i = 0; i < eh->e_shnum; ++i) {
+    if (sections[i].sh_name >= names_section.sh_size) continue;
+    const char *name = names + sections[i].sh_name;
+    size_t remaining = names_section.sh_size - sections[i].sh_name;
+    if (!memchr(name, '\0', remaining)) continue;
+    if (strcmp(name, ".nv_debug_ptx_txt") == 0) {
+      ptx_section = &sections[i];
+      break;
+    }
+  }
+  if (!ptx_section || ptx_section->sh_size == 0 ||
+      ptx_section->sh_size > 512ULL * 1024 * 1024) {
+    printf("GPGPU-Sim CUDA DRIVER API: cubin has no embedded debug PTX.\n");
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  std::string ptx(reinterpret_cast<const char *>(bytes + ptx_section->sh_offset),
+                  ptx_section->sh_size);
+  std::replace(ptx.begin(), ptx.end(), '\0', '\n');
+
+  gpgpu_context *ctx = GPGPU_Context();
+  if (!ctx) return CUDA_ERROR_INVALID_HANDLE;
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  unsigned handle = get_next_fat_bin_handle();
+  char ptx_path[] = "_module_ptx_XXXXXX";
+  int fd = mkstemp(ptx_path);
+  if (fd < 0) return CUDA_ERROR_INVALID_VALUE;
+  FILE *ptx_file = fdopen(fd, "w");
+  if (!ptx_file || fwrite(ptx.data(), 1, ptx.size(), ptx_file) != ptx.size()) {
+    if (ptx_file)
+      fclose(ptx_file);
+    else
+      close(fd);
+    unlink(ptx_path);
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+  fclose(ptx_file);
+
+  symbol_table *symtab =
+      ctx->gpgpu_ptx_sim_load_ptx_from_filename_isolated(ptx_path);
+  context->add_binary(symtab, handle);
+  std::string arch = ptx_target_from_file(ptx_path);
+  ctx->gpgpu_ptx_info_load_from_filename(ptx_path, arch.c_str());
+  unlink(ptx_path);
+  ctx->api->load_static_globals(symtab, STATIC_ALLOC_LIMIT,
+                                context->get_device()->get_gpgpu());
+  ctx->api->load_constants(symtab, STATIC_ALLOC_LIMIT,
+                           context->get_device()->get_gpgpu());
+  *module = reinterpret_cast<CUmodule>(static_cast<uintptr_t>(handle));
+  printf("GPGPU-Sim CUDA DRIVER API: cuModuleLoadData loaded embedded PTX "
+         "as module %u.\n",
+         handle);
   return CUDA_SUCCESS;
 }
 
@@ -5739,13 +6029,12 @@ CUresult CUDAAPI cuModuleGetFunction(CUfunction *hfunc, CUmodule hmod,
     return CUDA_ERROR_INVALID_HANDLE;
   }
 
-  // ! Use the deviceFunc as the hostFunc for now.
-  const char *hostFunc = reinterpret_cast<const char *>(deviceFunc);
+  // Driver modules may contain identically named kernels. Use a distinct
+  // opaque handle for every lookup instead of using function_info as the key;
+  // the latter aliases when the PTX parser reuses a named function object.
+  const char *hostFunc = new char[1];
+  context->register_hostFun_function(hostFunc, deviceFunc);
 
-  context->register_function(module_handle, hostFunc, name);
-
-  // Return the function as a CUfunction (we use the function_info pointer as
-  // the handle)
   *hfunc = (CUfunction)hostFunc;
 
   printf("cuModuleGetFunction: Found kernel '%s' at %p\n", name, hostFunc);
@@ -6739,11 +7028,11 @@ CUresult CUDAAPI cuFuncSetAttribute(CUfunction hfunc,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  function_info *entry = reinterpret_cast<function_info *>(hfunc);
-  if (entry == NULL) return CUDA_ERROR_INVALID_HANDLE;
-
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
+  function_info *entry =
+      context->get_kernel(reinterpret_cast<const char *>(hfunc));
+  if (entry == NULL) return CUDA_ERROR_INVALID_HANDLE;
 
   if (attrib == CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES) {
     if (value < 0) return CUDA_ERROR_INVALID_VALUE;
@@ -8538,9 +8827,127 @@ __host__ cudaError_t CUDARTAPI cudaHostUnregister(void *ptr) {
   cuda_error_not_impl;
 }
 
-__host__ cudaError_t CUDARTAPI cudaLaunchKernelExC(const cudaLaunchConfig_t *config, const void *func, void **args) {
-  cuda_error_not_impl;
+__host__ cudaError_t CUDARTAPI cudaLaunchKernelExC(
+    const cudaLaunchConfig_t *config, const void *func, void **args) {
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+  if (!config || !func) {
+    return g_last_cudaError = cudaErrorInvalidValue;
+  }
+
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  function_info *entry = context->get_kernel((const char *)func);
+  if (!entry) {
+    printf(
+        "GPGPU-Sim PTX: ERROR cudaLaunchKernelExC -- no PTX implementation "
+        "found for %p\n",
+        func);
+    return g_last_cudaError = cudaErrorInvalidDeviceFunction;
+  }
+
+  dim3 gridDim = config->gridDim;
+  dim3 blockDim = config->blockDim;
+  size_t sharedMem = config->dynamicSmemBytes;
+  cudaStream_t stream = config->stream;
+
+  // Parse launch attributes for cluster dimension (and ignore others with log).
+  bool have_cluster_attr = false;
+  dim3 cluster_dim(0, 0, 0);
+  for (unsigned i = 0; i < config->numAttrs; i++) {
+    const cudaLaunchAttribute &attr = config->attrs[i];
+    switch (attr.id) {
+#if CUDART_VERSION >= 11040
+      case cudaLaunchAttributeClusterDimension:
+        have_cluster_attr = true;
+        cluster_dim.x = attr.val.clusterDim.x;
+        cluster_dim.y = attr.val.clusterDim.y;
+        cluster_dim.z = attr.val.clusterDim.z;
+        break;
+      case cudaLaunchAttributeClusterSchedulingPolicyPreference:
+        // Stored on function for issuer; no full spread model yet.
+        entry->set_cluster_sched_policy(
+            (int)attr.val.clusterSchedulingPolicyPreference);
+        break;
+      case cudaLaunchAttributePreferredClusterDimension:
+        printf(
+            "GPGPU-Sim PTX: WARNING cudaLaunchKernelExC: "
+            "PreferredClusterDimension not fully modeled; ignoring\n");
+        break;
+#endif
+      case cudaLaunchAttributeIgnore:
+        break;
+      default:
+        // Accept other attrs without error (cooperative, priority, ...).
+        break;
+    }
+  }
+
+  // Fall back to required cluster dims on the function if no launch attr.
+  if (!have_cluster_attr && entry->has_explicit_cluster()) {
+    have_cluster_attr = true;
+    cluster_dim = entry->get_req_cluster_dim();
+  }
+
+  // Push config (with optional cluster metadata) then set up args + launch.
+  struct CUstream_st *s = (struct CUstream_st *)stream;
+  kernel_config kcfg(gridDim, blockDim, sharedMem, s);
+  if (have_cluster_attr) {
+    kcfg.set_cluster_dim(cluster_dim);
+  }
+  ctx->api->g_cuda_launch_stack.push_back(kcfg);
+
+  for (unsigned i = 0; i < entry->num_args(); i++) {
+    std::pair<size_t, unsigned> p = entry->get_param_config(i);
+    if (args && args[i]) {
+      cudaSetupArgumentInternal(args[i], p.first, p.second, ctx);
+    }
+  }
+
+  return cudaLaunchInternal((const char *)func, ctx);
 }
+
+#if CUDART_VERSION >= 11080
+// Vendored cuda_api.h has no CUlaunchConfig; match CUDA 12 driver layout.
+struct cu_launch_config_compat {
+  unsigned int gridDimX, gridDimY, gridDimZ;
+  unsigned int blockDimX, blockDimY, blockDimZ;
+  unsigned int sharedMemBytes;
+  CUstream hStream;
+  cudaLaunchAttribute *attrs;
+  unsigned int numAttrs;
+};
+
+CUresult CUDAAPI cuLaunchKernelEx(const cu_launch_config_compat *config,
+                                  CUfunction f, void **kernelParams,
+                                  void **extra) {
+  if (g_debug_execution >= 3) {
+    announce_call(__my_func__);
+  }
+  if (extra != NULL) {
+    printf("GPGPU-Sim CUDA DRIVER API: ERROR: cuLaunchKernelEx extra not "
+           "supported.\n");
+    abort();
+  }
+  if (!config || !f) return CUDA_ERROR_INVALID_VALUE;
+  cudaLaunchConfig_t rt{};
+  rt.gridDim = dim3(config->gridDimX, config->gridDimY, config->gridDimZ);
+  rt.blockDim = dim3(config->blockDimX, config->blockDimY, config->blockDimZ);
+  rt.dynamicSmemBytes = config->sharedMemBytes;
+  rt.stream = (cudaStream_t)config->hStream;
+  rt.numAttrs = config->numAttrs;
+  rt.attrs = config->attrs;
+  cudaError_t e = cudaLaunchKernelExC(&rt, (const void *)f, kernelParams);
+  return (e == cudaSuccess) ? CUDA_SUCCESS : CUDA_ERROR_LAUNCH_FAILED;
+}
+
+CUresult CUDAAPI cuLaunchKernelEx_ptsz(const cu_launch_config_compat *config,
+                                       CUfunction f, void **kernelParams,
+                                       void **extra) {
+  return cuLaunchKernelEx(config, f, kernelParams, extra);
+}
+#endif
 
 __host__ cudaError_t CUDARTAPI cudaLaunchHostFunc(cudaStream_t stream, cudaHostFn_t fn, void *userData) {
   cuda_error_not_impl;

@@ -60,9 +60,16 @@ enum special_regs {
   SMID_REG,
   TID_REG,
   WARPID_REG,
+  WARPSZ_REG,
+  // SM90+ Thread Block Cluster specials (PTX ISA 7.8+)
+  // CLUSTER_CTA_RANK_REG is the flash name for %cluster_ctarank.
   CLUSTER_CTAID_REG,
+  CLUSTER_NCTAID_REG,
   CLUSTER_CTA_RANK_REG,
-  WARPSZ_REG
+  CLUSTER_NCTARANK_REG,
+  CLUSTERID_REG,
+  NCLUSTERID_REG,
+  IS_EXPLICIT_CLUSTER_REG
 };
 enum wmma_type {
   LOAD_A,

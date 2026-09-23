@@ -35,16 +35,28 @@
 
 #include <assert.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <vector>
 #include <algorithm>
 #include <bitset>
 #include <deque>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
+
+// Complete type required for std::unique_ptr destructor of dsm_fabric_t /
+// dsm_endpoint_protocol_t.
+#include "dsm_endpoint.h"
+#include "dsm_fabric.h"
+#include "flash/tb_cluster.h"
+#include "gpu_topology.h"
+#include "smem_service.h"
 
 // #include "../cuda-sim/ptx.tab.h"
 
@@ -80,6 +92,7 @@
 
 class gpgpu_context;
 class memory_stats_manager_t;
+class memory_space;
 
 enum exec_unit_type_t {
   NONE = 0,
@@ -1109,6 +1122,7 @@ enum barrier_wait_type_t {
   BARRIER_WAIT_BULK_GROUP,   // cp.async.bulk.wait_group (TMA)
   BARRIER_WAIT_CP_ASYNC_GROUP,  // cp.async.wait_group
   BARRIER_WAIT_WGMMA_GROUP,  // wgmma.wait_group
+  BARRIER_WAIT_CLUSTER,       // barrier.cluster.wait
 };
 
 static inline const char *barrier_wait_type_name(barrier_wait_type_t type) {
@@ -1123,6 +1137,8 @@ static inline const char *barrier_wait_type_name(barrier_wait_type_t type) {
     return "cp_async_group";
   case BARRIER_WAIT_WGMMA_GROUP:
     return "wgmma_group";
+  case BARRIER_WAIT_CLUSTER:
+    return "cluster";
   }
   return "unknown";
 }
@@ -1169,8 +1185,30 @@ class barrier_set_t {
   void arrive_mbarrier_async(unsigned cta_id, unsigned warp_id,
                              uint32_t mbarrier_addr);
 
+  // Peer-side complete for TMA .shared::cluster: no-op only if the CTA has
+  // no mbarrier at addr; retain completions that precede expect_tx.
+  void try_complete_tx_if_pending(unsigned cta_id, uint32_t mbarrier_addr,
+                                  uint32_t completed_tx_count);
+
+  // Remote arrive / expect_tx applied on the owner CTA (DSM fabric path).
+  void remote_arrive(unsigned cta_id, uint32_t mbarrier_addr,
+                     uint32_t arrival_count);
+  void remote_expect_tx(unsigned cta_id, uint32_t mbarrier_addr,
+                        uint32_t expected_tx_count);
+  // Remote try_wait interest list; returns true if already satisfied.
+  bool register_remote_wait(unsigned cta_id, uint32_t mbarrier_addr, int parity,
+                            unsigned src_cid, unsigned src_hw_cta,
+                            unsigned src_warp_id);
+  // After phase advance: inject WAIT_DONE to satisfied remote waiters.
+  void notify_remote_waiters(unsigned cta_id, uint32_t mbarrier_addr);
+  // Release a local warp that was blocked on remote try_wait.
+  void release_remote_waiter(unsigned warp_id);
+
   // Process delayed mbarrier warp releases each cycle
   void cycle();
+
+  // Park warp for `latency` cycles (mbarrier.arrive issue, TMA bulk issue).
+  void hold_warp(unsigned warp_id, unsigned latency, barrier_wait_type_t type);
 
   // Bulk group methods for TMA write operations
   void add_bulk_tx(unsigned cta_id, unsigned warp_id, unsigned tx_uid);
@@ -1178,6 +1216,11 @@ class barrier_set_t {
   void wait_bulk_group(unsigned cta_id, unsigned warp_id, unsigned latest_group_num);
   void commit_bulk_group(unsigned cta_id, unsigned warp_id);
   void cleanup_cta_bulk_groups(unsigned cta_id);
+  bool is_bulk_tx_committed(unsigned cta_id, unsigned warp_id,
+                            unsigned tx_uid) const;
+
+  void note_peer_smem_access(unsigned warp_id, unsigned long long address);
+  void poll_hang_preventers();
 
   // Ordinary cp.async wait_group uses this only as a scheduler wait state.
   void wait_cp_async_group(unsigned warp_id);
@@ -1186,6 +1229,9 @@ class barrier_set_t {
   // WGMMA wait_group uses the barrier bitset only as a scheduler wait state.
   void set_wgmma_waiting_warps(const unsigned *warp_ids, unsigned count);
   void release_wgmma_warps(const std::vector<unsigned> &released_warps);
+  void wait_cluster_barrier(unsigned warp_id);
+  void release_cluster_barrier(unsigned warp_id);
+  unsigned active_warps_in_cta(unsigned cta_id) const;
 
   // warp reaches exit
   void warp_exit(unsigned warp_id);
@@ -1232,6 +1278,8 @@ class barrier_set_t {
     assert_warp_waiting(warp_id, expected_type, reason);
     m_warp_at_barrier.reset(warp_id);
     m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+    if (expected_type == BARRIER_WAIT_MBARRIER)
+      m_mbar_partial_wait[warp_id] = false;
   }
   // Release warps with optional try_wait latency delay
   void release_warps(const std::set<int> &released_warps);
@@ -1247,6 +1295,26 @@ class barrier_set_t {
     barrier_wait_type_t type;
   };
   std::vector<pending_warp_release_t> m_pending_warp_releases;
+
+  // try_wait with a timeout operand: expire and set dest pred false.
+  void apply_trywait_pred(unsigned warp_id, bool phase_complete);
+  void arm_trywait_timeout(unsigned warp_id, unsigned timeout_hint,
+                           const ptx_instruction *static_inst,
+                           const active_mask_t &active_mask);
+  void clear_trywait_timeout(unsigned warp_id);
+
+  std::vector<bool> m_mbar_trywait_has_timeout;
+  std::vector<unsigned long long> m_mbar_timeout_cycle;
+  std::vector<bool> m_mbar_partial_wait;
+  std::vector<bool> m_hang_saw_peer;
+  std::vector<unsigned long long> m_hang_peer_address;
+  std::vector<unsigned> m_hang_quiet_cycles;
+  std::vector<unsigned> m_hang_watch_cycles;
+  std::vector<unsigned> m_hang_pc_n;
+  std::vector<unsigned long long> m_hang_pc_hist; // 8 slots per warp
+  std::vector<unsigned> m_hang_mix_cycles;
+  std::vector<const ptx_instruction *> m_mbar_trywait_inst;
+  std::vector<active_mask_t> m_mbar_trywait_mask;
 };
 
 struct insn_latency_info {
@@ -1720,9 +1788,40 @@ class shader_core_config : public core_config {
   shader_core_config(gpgpu_context *ctx) : core_config(ctx) {
     pipeline_widths_string = NULL;
     gpgpu_ctx = ctx;
+    m_opp = NULL;
+    num_gpcs_alias = 0;
+    num_sms_per_gpc_alias = 0;
+    dsm_cpcs_per_gpc = 3;
+    gpgpu_dsm_enable = false;
+    gpgpu_dsm_flit_payload_bytes = 32;
+    gpgpu_dsm_lanes_per_cpc = 4;
+    gpgpu_dsm_gx_planes = 2;
+    gpgpu_dsm_shaper = NULL;
+    gpgpu_dsm_shaper_period = 3;
+    gpgpu_dsm_shaper_index = NULL;
+    gpgpu_dsm_request_vc_flits = 64;
+    gpgpu_dsm_response_vc_flits = 64;
+    gpgpu_dsm_ejection_vc_flits = 64;
+    gpgpu_dsm_vc_arbiter = NULL;
+    gpgpu_dsm_route_policy = NULL;
+    gpgpu_dsm_route_seed = 0;
+    gpgpu_dsm_max_outstanding_per_sm = 16;
+    gpgpu_dsm_ack_coalesce_threshold = 4;
+    gpgpu_dsm_ack_timeout_cycles = 64;
+    gpgpu_dsm_base_latency_cycles = 0;
+    gpgpu_dsm_store_visibility_latency_cycles = 0;
+    gpgpu_tma_multicast_latency = 0;
+    gpgpu_tma_load_completion_base_cycles = 0;
+    gpgpu_tma_load_completion_cycles_per_kib = 0;
+    gpgpu_tma_cluster_load_completion_base_cycles = 0;
+    gpgpu_tma_cluster_load_completion_cycles_per_kib = 0;
+    gpgpu_shmem_bytes_per_cycle = 0;
   }
 
+  void apply_gpc_knob_aliases();
+
   void init() {
+    apply_gpc_knob_aliases();
     int ntok = sscanf(gpgpu_shader_core_pipeline_opt, "%d:%d",
                       &n_thread_per_shader, &warp_size);
     if (ntok != 2) {
@@ -1793,6 +1892,38 @@ class shader_core_config : public core_config {
     // will cause SHARED_GENERIC_START calculation to overflow and corrupt memory.
     // See docs/addressing_mode.md for details.
     unsigned total_num_sms = n_simt_clusters * n_simt_cores_per_cluster;
+    if (gpgpu_gpc_sms && gpgpu_gpc_sms[0]) {
+      std::vector<unsigned> counts;
+      char perr[256];
+      perr[0] = 0;
+      if (!gpu_topology_t::parse_gpc_sms(gpgpu_gpc_sms, n_simt_clusters,
+                                         &counts, perr, sizeof(perr))) {
+        fprintf(stderr, "%s", perr);
+        abort();
+      }
+      unsigned mx = 0, sum = 0;
+      for (unsigned c : counts) {
+        sum += c;
+        if (c > mx) mx = c;
+      }
+      total_num_sms = sum;
+      if (option_parser_was_set(m_opp, "-gpgpu_num_sms_per_gpc") ||
+          option_parser_was_set(m_opp, "-gpgpu_n_cores_per_cluster")) {
+        if (n_simt_cores_per_cluster != mx) {
+          fprintf(stderr,
+                  "GPGPU-Sim ** ERROR: -gpgpu_gpc_sms max=%u but "
+                  "num_sms_per_gpc/n_cores_per_cluster=%u (set the scalar to "
+                  "the max or omit it).\n",
+                  mx, n_simt_cores_per_cluster);
+          abort();
+        }
+      }
+      n_simt_cores_per_cluster = mx;
+      m_topology.build(n_simt_clusters, counts, dsm_cpcs_per_gpc);
+    } else {
+      m_topology.build(n_simt_clusters, n_simt_cores_per_cluster,
+                       dsm_cpcs_per_gpc);
+    }
     if (total_num_sms > MAX_STREAMING_MULTIPROCESSORS) {
       fprintf(stderr, "\n");
       fprintf(stderr, "================================================================================\n");
@@ -1828,6 +1959,8 @@ class shader_core_config : public core_config {
       fflush(stderr);
       abort();
     }
+
+    m_topology.set_live();
 
     m_L1I_config.init(m_L1I_config.m_config_string, FuncCachePreferNone);
     m_L1T_config.init(m_L1T_config.m_config_string, FuncCachePreferNone);
@@ -1869,16 +2002,21 @@ class shader_core_config : public core_config {
   void reg_options(class OptionParser *opp);
   unsigned max_cta(const kernel_info_t &k) const;
   unsigned num_shader() const {
+    if (m_topology.num_sms() > 0) return m_topology.num_sms();
     return n_simt_clusters * n_simt_cores_per_cluster;
   }
+  const gpu_topology_t &topology() const { return m_topology; }
+  // Deprecated: GPC of SM. Use topology().gpc_id_of_sm().
   unsigned sid_to_cluster(unsigned sid) const {
-    return sid / n_simt_cores_per_cluster;
+    return m_topology.gpc_id_of_sm(sid);
   }
+  // Deprecated: enabled local SM in the GPC. Use topology().local_sm_of_sm().
   unsigned sid_to_cid(unsigned sid) const {
-    return sid % n_simt_cores_per_cluster;
+    return m_topology.local_sm_of_sm(sid);
   }
+  // Deprecated: SM id from GPC + local SM. Use topology().sm_id_at().
   unsigned cid_to_sid(unsigned cid, unsigned cluster_id) const {
-    return cluster_id * n_simt_cores_per_cluster + cid;
+    return m_topology.sm_id_at(cluster_id, cid);
   }
   void set_pipeline_latency();
 
@@ -1972,6 +2110,38 @@ class shader_core_config : public core_config {
   bool gpgpu_tma_oob_l2_traffic;
   unsigned int gpgpu_mbarrier_arrive_latency;
   unsigned int gpgpu_mbarrier_trywait_latency;
+  unsigned int gpgpu_mbarrier_trywait_default_timeout_ns;
+
+  // Fixed completion delay only; multicast does not use an on-chip network.
+  unsigned int gpgpu_tma_multicast_latency;
+  bool gpgpu_mbarrier_cluster_enable;
+  // 0 = off. Default is well above hop / try_wait latencies.
+  unsigned int gpgpu_cluster_hang_watchdog;
+  // Intra-GPC DSM fabric (docs/cluster_noc/knobs.md §3). When set, cluster
+  // ld/st/atom and remote mbarrier use fabric packets.
+  bool gpgpu_dsm_enable;
+  unsigned int gpgpu_dsm_flit_payload_bytes;
+  unsigned int gpgpu_dsm_lanes_per_cpc;
+  unsigned int gpgpu_dsm_gx_planes;
+  char *gpgpu_dsm_shaper;
+  unsigned int gpgpu_dsm_shaper_period;
+  char *gpgpu_dsm_shaper_index;
+  unsigned int gpgpu_dsm_request_vc_flits;
+  unsigned int gpgpu_dsm_response_vc_flits;
+  unsigned int gpgpu_dsm_ejection_vc_flits;
+  char *gpgpu_dsm_vc_arbiter;
+  char *gpgpu_dsm_route_policy;
+  unsigned int gpgpu_dsm_route_seed;
+  unsigned int gpgpu_dsm_max_outstanding_per_sm;
+  unsigned int gpgpu_dsm_ack_coalesce_threshold;
+  unsigned int gpgpu_dsm_ack_timeout_cycles;
+  unsigned int gpgpu_dsm_base_latency_cycles;
+  unsigned int gpgpu_dsm_store_visibility_latency_cycles;
+  unsigned int gpgpu_tma_load_completion_base_cycles;
+  unsigned int gpgpu_tma_load_completion_cycles_per_kib;
+  unsigned int gpgpu_tma_cluster_load_completion_base_cycles;
+  unsigned int gpgpu_tma_cluster_load_completion_cycles_per_kib;
+  unsigned int gpgpu_shmem_bytes_per_cycle;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;
   unsigned gpgpu_wgmma_issue_chain_ss_config[5];
@@ -2001,8 +2171,14 @@ class shader_core_config : public core_config {
   unsigned max_cp_async_latency;
   unsigned max_tensormap_latency;
 
-  unsigned n_simt_cores_per_cluster;
-  unsigned n_simt_clusters;
+  unsigned n_simt_cores_per_cluster;  // enabled SMs per GPC (max if hetero)
+  unsigned n_simt_clusters;           // GPC count
+  unsigned num_gpcs_alias;            // -gpgpu_num_gpcs
+  unsigned num_sms_per_gpc_alias;     // -gpgpu_num_sms_per_gpc
+  char *gpgpu_gpc_sms = nullptr;      // per-GPC counts, e.g. 16,16,16,16,16,16,18,18
+  unsigned dsm_cpcs_per_gpc;          // default 3; each CPC is 6 slots
+  gpu_topology_t m_topology;
+  class OptionParser *m_opp;
   unsigned n_simt_ejection_buffer_size;
   unsigned ldst_unit_response_queue_size;
 
@@ -2010,7 +2186,7 @@ class shader_core_config : public core_config {
 
   unsigned smem_latency;
 
-  unsigned mem2device(unsigned memid) const { return memid + n_simt_clusters; }
+  unsigned mem2device(unsigned memid) const { return memid + num_shader(); }
 
   // Jin: concurrent kernel on sm
   bool gpgpu_concurrent_kernel_sm;
@@ -2433,6 +2609,10 @@ class shader_core_ctx : public core_t {
   // used by simt_core_cluster:
   // modifiers
   void cycle();
+  shd_warp_t *get_shd_warp(unsigned warp_id) { return m_warp[warp_id]; }
+  void note_peer_smem_access(unsigned warp_id, unsigned long long address) {
+    m_barriers.note_peer_smem_access(warp_id, address);
+  }
   void reinit(unsigned start_thread, unsigned end_thread,
               bool reset_not_completed);
   void issue_block2core(class kernel_info_t &kernel);
@@ -2472,11 +2652,15 @@ class shader_core_ctx : public core_t {
     else
       return 0;
   }
-  kernel_info_t *get_kernel() { return m_kernel; }
-  unsigned get_sid() const { return m_sid; }
+ kernel_info_t *get_kernel() { return m_kernel; }
+  void clear_kernel_binding(const kernel_info_t *kernel) {
+    if (m_kernel == kernel) m_kernel = nullptr;
+  }
+ unsigned get_sid() const { return m_sid; }
+  class simt_core_cluster *get_cluster() const { return m_cluster; }
 
-  // Get logical CTA ID and logical Warp ID from hardware warp ID
-  int get_logical_cta_id(unsigned warp_id) const;
+ // Get logical CTA ID and logical Warp ID from hardware warp ID
+ int get_logical_cta_id(unsigned warp_id) const;
   int get_cta_warp_id(unsigned warp_id) const;
 
   // used by functional simulation:
@@ -2507,11 +2691,58 @@ class shader_core_ctx : public core_t {
   void warp_inst_complete(const warp_inst_t &inst);
   void complete_inst_without_writeback(warp_inst_t *inst);
 
-  // accessors
-  std::list<unsigned> get_regs_written(const inst_t &fvt) const;
-  const shader_core_config *get_config() const { return m_config; }
-  void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
-                         unsigned &dl1_misses);
+ // accessors
+ std::list<unsigned> get_regs_written(const inst_t &fvt) const;
+ const shader_core_config *get_config() const { return m_config; }
+
+  // Cluster TMA multicast: return shared memory of a CTA running on this SM.
+  // Returns nullptr if the CTA slot is not currently occupied.
+  class memory_space *get_cta_smem(unsigned hw_cta_id) const;
+
+  // Cluster membership for TMA multicast peer matching (issue-order group
+  // within this simt_core_cluster; size = n_cores_per_cluster CTAs per group).
+  unsigned get_cta_cluster_group(unsigned hw_cta_id) const;
+  bool is_cta_slot_active(unsigned hw_cta_id) const;
+  bool cta_slot_has_threads(unsigned hw_cta_id) const;
+  void set_cta_cluster_group(unsigned hw_cta_id, unsigned group);
+  // TB-cluster relative rank (%cluster_ctarank); used by ctaMask filtering.
+  unsigned get_cta_cluster_rank(unsigned hw_cta_id) const;
+  void set_cta_cluster_rank(unsigned hw_cta_id, unsigned rank);
+  unsigned count_free_cta_slots(kernel_info_t &kernel) const;
+  void dump_live_cta_waits(FILE *fp);
+  void wait_at_cluster_barrier(unsigned warp_id) {
+    m_barriers.wait_cluster_barrier(warp_id);
+  }
+  void release_from_cluster_barrier(unsigned warp_id) {
+    m_barriers.release_cluster_barrier(warp_id);
+  }
+  unsigned active_warps_in_cta(unsigned hw_cta_id) const {
+    return m_barriers.active_warps_in_cta(hw_cta_id);
+  }
+
+  void dsm_note_lane_op(flash_gpgpu_sim::dsm_lane_op_t op);
+  void dsm_issue_lane_ops(warp_inst_t &inst);
+  shared_memory_service_t &smem_service() { return m_smem; }
+  void smem_cycle() { m_smem.cycle(); }
+
+  // Complete pending mbarrier tx on this SM's CTA if armed (cluster peer path).
+  void try_complete_cluster_peer_mbarrier(unsigned hw_cta_id,
+                                          uint32_t mbarrier_addr,
+                                          uint32_t completed_tx_count);
+  // Remote mbarrier ops delivered via the DSM fabric (owner CTA is local).
+  void remote_mbarrier_arrive(unsigned hw_cta_id, uint32_t mbarrier_addr,
+                              uint32_t arrival_count);
+  void remote_mbarrier_expect_tx(unsigned hw_cta_id, uint32_t mbarrier_addr,
+                                 uint32_t expected_tx_count);
+  bool register_remote_mbarrier_wait(unsigned hw_cta_id, uint32_t mbarrier_addr,
+                                     int parity, unsigned src_cid,
+                                     unsigned src_hw_cta, unsigned src_warp_id);
+  void notify_remote_mbarrier_waiters(unsigned hw_cta_id,
+                                      uint32_t mbarrier_addr);
+  void release_remote_mbarrier_waiter(unsigned warp_id);
+
+ void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
+                        unsigned &dl1_misses);
 
   void get_cache_stats(cache_stats &cs);
   void get_L1I_sub_stats(struct cache_sub_stats &css) const;
@@ -2965,6 +3196,7 @@ class shader_core_ctx : public core_t {
 
   // TMA support.
   flash_gpgpu_sim::tma_unit_t *m_tma = nullptr;
+  shared_memory_service_t m_smem;
 
   // used for local address mapping with single kernel launch
   unsigned kernel_max_cta_per_shader;
@@ -2983,12 +3215,24 @@ class shader_core_ctx : public core_t {
   int find_available_hwtid(unsigned int cta_size, bool occupy);
 
  private:
-  unsigned int m_occupied_n_threads;
-  unsigned int m_occupied_shmem;
-  unsigned int m_occupied_regs;
-  unsigned int m_occupied_ctas;
-  std::bitset<MAX_THREAD_PER_SM> m_occupied_hwtid;
-  std::map<unsigned int, unsigned int> m_occupied_cta_to_hwtid;
+ unsigned int m_occupied_n_threads;
+ unsigned int m_occupied_shmem;
+ unsigned int m_occupied_regs;
+ unsigned int m_occupied_ctas;
+ std::bitset<MAX_THREAD_PER_SM> m_occupied_hwtid;
+ std::map<unsigned int, unsigned int> m_occupied_cta_to_hwtid;
+
+  // Per-CTA shared memory pointer, indexed by hardware CTA slot.
+  // Used by TMA cluster multicast to write data to other SMs' CTAs.
+  class memory_space *m_cta_smem[MAX_CTA_PER_SHADER];
+
+  // Per-CTA TB-cluster group id assigned at issue time for multicast peer match.
+  // UINT_MAX means the slot is empty / unassigned.
+  unsigned m_cta_tb_cluster_group[MAX_CTA_PER_SHADER];
+  // Per-CTA TB-cluster relative rank (for .multicast::cluster ctaMask bits).
+  unsigned m_cta_tb_cluster_rank[MAX_CTA_PER_SHADER];
+
+  std::vector<flash_gpgpu_sim::dsm_lane_op_t> m_dsm_lane_ops;
 };
 
 class exec_shader_core_ctx : public shader_core_ctx {
@@ -3032,21 +3276,78 @@ class simt_core_cluster {
 
   void core_cycle();
   void icnt_cycle();
+  // Advance intra-GPC DSM fabric. Call after core_cycle.
+  void dsm_cycle();
 
   void reinit();
   unsigned issue_block2core();
   void cache_flush();
   void cache_invalidate();
-  bool icnt_injection_buffer_full(unsigned size, bool write);
+  bool icnt_injection_buffer_full(unsigned sm_id, unsigned size, bool write);
   void icnt_inject_request_packet(class mem_fetch *mf);
   void update_icnt_stats(class mem_fetch *mf);
 
-  // for perfect memory interface
-  bool response_queue_full() {
-    return (m_response_fifo.size() >= m_config->n_simt_ejection_buffer_size);
+  class dsm_fabric_t *get_dsm_fabric() const { return m_dsm_fabric.get(); }
+  class dsm_endpoint_protocol_t *get_dsm_endpoint() const {
+    return m_dsm_endpoint.get();
+  }
+  void dsm_note_warp_issue(unsigned sid, unsigned warp, unsigned n);
+  void dsm_note_warp_complete(unsigned sid, unsigned warp);
+  bool dsm_warp_busy(unsigned sid, unsigned warp) const;
+  void dsm_register_load(unsigned txid, unsigned sid, unsigned warp,
+                         ptx_thread_info *thread, const ptx_instruction *pI);
+  bool dsm_try_issue(unsigned src, const flash_gpgpu_sim::dsm_lane_op_t &op,
+                     unsigned sid, unsigned warp, unsigned cta);
+  void dsm_queue_retry(unsigned src, flash_gpgpu_sim::dsm_lane_op_t op,
+                       unsigned sid, unsigned warp, unsigned cta);
+  void dsm_retry_issues();
+  unsigned dsm_cta_gen(unsigned local_sm, unsigned cta) const;
+  void dsm_on_tx_done(unsigned txid);
+  void dsm_on_load_data(unsigned txid, const uint8_t *p, unsigned n);
+  void dsm_commit_loads(unsigned sid, unsigned warp,
+                        const warp_inst_t *inst = nullptr);
+  bool dsm_cta_busy(unsigned sid, unsigned cta) const;
+  void dsm_note_cta_issue(unsigned sid, unsigned cta, unsigned n);
+  void dsm_note_cta_complete(unsigned sid, unsigned cta);
+  bool dsm_endpoint_busy() const;
+  unsigned dsm_max_tx_age(unsigned long long now) const;
+  bool dsm_issue_tma(unsigned src, unsigned dst, unsigned bytes, uint64_t addr,
+                     unsigned cta_slot, unsigned cta_gen, const void *data,
+                     unsigned mbar_addr, unsigned mbar_bytes,
+                     uint64_t multicast_group = 0);
+  bool dsm_issue_mbar(unsigned src, unsigned dst, unsigned cta_slot,
+                      unsigned cta_gen, unsigned mbar_addr, unsigned op,
+                      unsigned count, unsigned req_cta, unsigned req_warp,
+                      int parity);
+  void dsm_queue_tma_retry(unsigned src, unsigned dst, unsigned bytes,
+                           uint64_t addr, unsigned cta_slot, unsigned cta_gen,
+                           const void *data, unsigned n, unsigned mbar_addr,
+                           unsigned mbar_bytes, uint64_t multicast_group = 0);
+  void dsm_queue_mbar_retry(unsigned src, unsigned dst, unsigned cta_slot,
+                            unsigned cta_gen, unsigned mbar_addr, unsigned op,
+                            unsigned count, unsigned req_cta, unsigned req_warp,
+                            int parity);
+  void dsm_retry_tma_mbar();
+  void release_ready_cluster_barriers();
+  void dsm_on_tma_mbar(unsigned local_sm, unsigned cta, unsigned mbar_addr,
+                       unsigned mbar_bytes);
+  // Delay issuer complete_tx until fabric+SRAM has landed one peer copy
+  // (source-expanded multicast). wait_peers==0 completes immediately.
+  void dsm_hold_issuer_mcast_mbar(unsigned issuer_cid, unsigned issuer_cta,
+                                  unsigned mbar_addr, unsigned mbar_bytes,
+                                  unsigned wait_peers);
+  bool dsm_on_mbar_req(unsigned local_sm, unsigned cta, unsigned src,
+                       unsigned mbar_addr, unsigned op, unsigned count,
+                       unsigned req_cta, unsigned req_warp, int parity);
+  void dsm_on_mbar_done(unsigned local_sm, unsigned req_warp);
+  void cluster_barrier_wait(unsigned local_sm, unsigned cta, unsigned warp);
+
+  // for perfect memory interface (per-SM ejection buffer)
+  bool response_queue_full(unsigned sid) const {
+    return m_response_fifo.full(m_config->sid_to_cid(sid));
   }
   void push_response_fifo(class mem_fetch *mf) {
-    m_response_fifo.push_back(mf);
+    m_response_fifo.push(m_config->sid_to_cid(mf->get_sid()), mf);
   }
 
   void get_pdom_stack_top_info(unsigned sid, unsigned tid, unsigned *pc,
@@ -3075,6 +3376,42 @@ class simt_core_cluster {
 
   void aggregate_stats();
 
+  // Cluster accessors for TMA multicast and distributed shared memory.
+  // cid is the enabled local SM in this GPC (PG'd CPC slots have no core).
+  shader_core_ctx *get_core(unsigned cid) const {
+    assert(cid < num_cores());
+    return m_core[cid];
+  }
+  unsigned num_cores() const {
+    return m_config->topology().num_sms_in_gpc(m_cluster_id);
+  }
+
+  // Assign the next issue-order cluster group for a newly launched CTA on
+  // this physical cluster. Groups have size num_cores() by default (legacy
+  // proxy for non-cluster launches). When group_size > 0, use that size
+  // (explicit TB cluster). When force_group != (unsigned)-1, return that
+  // group id and count the CTA as issued (remaining CTAs of an open TB
+  // cluster).
+  unsigned allocate_cta_cluster_group(unsigned group_size = 0,
+                                      unsigned force_group = (unsigned)-1);
+  unsigned tb_cluster_group_size(unsigned group) const {
+    auto it = m_tb_cluster_group_sizes.find(group);
+    return it == m_tb_cluster_group_sizes.end() ? 1u : it->second;
+  }
+
+  // Count free CTA contexts across all SMs in this physical cluster that can
+  // accept a block of the given kernel (for TB-cluster co-residency checks).
+  // This is the number of additional CTAs that fit, not the number of SMs
+  // that can take at least one CTA.
+  unsigned count_free_cta_slots(kernel_info_t &kernel) const;
+  void dump_live_cta_waits(FILE *fp);
+
+  // Issue up to one CTA of kernel onto this physical cluster. When
+  // force_group is set, assign that cluster_group to the issued CTA.
+  // Returns number of CTAs issued (0 or 1).
+  unsigned issue_block2core_for_kernel(kernel_info_t *kernel,
+                                       unsigned force_group = (unsigned)-1);
+
  protected:
   unsigned m_cluster_id;
   gpgpu_sim *m_gpu;
@@ -3086,9 +3423,85 @@ class simt_core_cluster {
   const memory_config *m_mem_config;
 
   unsigned m_cta_issue_next_core;
+  // Monotonic CTA issue counter for TB-cluster group assignment.
+  unsigned m_next_tb_cluster_group_id;
+  // Transient state while issuing a CTA: force group id / group size for
+  // allocate_cta_cluster_group (consumed by shader_core_ctx::issue_block2core).
+  unsigned m_pending_issue_cluster_group;
+  unsigned m_pending_issue_group_size;
   std::list<unsigned> m_core_sim_order;
-  std::list<mem_fetch *> m_response_fifo;
+  gpc_sm_response_fifos_t m_response_fifo;
+  std::unique_ptr<dsm_fabric_t> m_dsm_fabric;
+  std::unique_ptr<dsm_endpoint_protocol_t> m_dsm_endpoint;
+  struct dsm_retry_t {
+    flash_gpgpu_sim::dsm_lane_op_t op;
+    unsigned src = 0;
+    unsigned sid = 0;
+    unsigned warp = 0;
+    unsigned cta = 0;
+  };
+  struct dsm_load_wait_t {
+    unsigned sid = 0;
+    unsigned warp = 0;
+    ptx_thread_info *thread = nullptr;
+    const ptx_instruction *pI = nullptr;
+    std::vector<uint8_t> data;
+    bool ready = false;
+  };
+  struct dsm_tx_src_t {
+    unsigned sid = 0;
+    unsigned warp = 0;
+    unsigned cta = 0;
+  };
+  std::deque<dsm_retry_t> m_dsm_retry;
+  struct dsm_tma_retry_t {
+    unsigned src = 0, dst = 0, bytes = 0, cta_slot = 0, cta_gen = 0;
+    uint64_t addr = 0;
+    unsigned mbar_addr = 0, mbar_bytes = 0;
+    uint64_t multicast_group = 0;
+    std::vector<uint8_t> data;
+  };
+  struct dsm_mbar_retry_t {
+    unsigned src = 0, dst = 0, cta_slot = 0, cta_gen = 0;
+    unsigned mbar_addr = 0, op = 0, count = 0, req_cta = 0, req_warp = 0;
+    int parity = 0;
+  };
+  std::deque<dsm_tma_retry_t> m_tma_retry;
+  std::deque<dsm_mbar_retry_t> m_mbar_retry;
+  struct dsm_mcast_issuer_hold_t {
+    unsigned issuer_cid = 0;
+    unsigned issuer_cta = 0;
+    unsigned mbar_addr = 0;
+    unsigned mbar_bytes = 0;
+    unsigned remaining = 0;
+  };
+  std::deque<dsm_mcast_issuer_hold_t> m_mcast_issuer_holds;
+  struct cluster_barrier_waiter_t {
+    unsigned local_sm = 0;
+    unsigned cta = 0;
+    unsigned warp = 0;
+  };
+  std::unordered_map<unsigned, std::vector<cluster_barrier_waiter_t>>
+      m_cluster_barrier_waiters;
+  std::unordered_map<unsigned, unsigned> m_tb_cluster_group_sizes;
+  std::unordered_map<unsigned, unsigned> m_tb_cluster_group_issued;
+  std::unordered_map<unsigned, unsigned> m_dsm_warp_pending;
+  std::unordered_map<unsigned, dsm_tx_src_t> m_dsm_tx_warp;
+  std::unordered_map<unsigned, dsm_load_wait_t> m_dsm_loads;
+  std::unordered_map<unsigned, unsigned> m_dsm_cta_pending;
+
+ public:
+  unsigned pending_issue_cluster_group() const {
+    return m_pending_issue_cluster_group;
+  }
+  unsigned pending_issue_group_size() const {
+    return m_pending_issue_group_size;
+  }
+  bool tb_cluster_group_has_live_threads(unsigned local_sm,
+                                         unsigned cta_slot) const;
 };
+
+typedef simt_core_cluster gpc_t;
 
 class exec_simt_core_cluster : public simt_core_cluster {
  public:
@@ -3130,7 +3543,7 @@ class sst_simt_core_cluster : public exec_simt_core_cluster {
    * @return true
    * @return false
    */
-  bool SST_injection_buffer_full(unsigned size, bool write,
+  bool SST_injection_buffer_full(unsigned sid, unsigned size, bool write,
                                  mem_access_type type);
 
   /**
@@ -3155,7 +3568,8 @@ class shader_memory_interface : public mem_fetch_interface {
     m_cluster = cluster;
   }
   virtual bool full(unsigned size, bool write) const {
-    return m_cluster->icnt_injection_buffer_full(size, write);
+    return m_cluster->icnt_injection_buffer_full(m_core->get_sid(), size,
+                                                 write);
   }
   virtual void push(mem_fetch *mf) {
     m_core->inc_simt_to_mem(mf->get_num_flits(true));
@@ -3174,7 +3588,7 @@ class perfect_memory_interface : public mem_fetch_interface {
     m_cluster = cluster;
   }
   virtual bool full(unsigned size, bool write) const {
-    return m_cluster->response_queue_full();
+    return m_cluster->response_queue_full(m_core->get_sid());
   }
   virtual void push(mem_fetch *mf) {
     if (mf && mf->isatomic())
@@ -3224,7 +3638,8 @@ class sst_memory_interface : public mem_fetch_interface {
    * @return false
    */
   bool full(unsigned size, bool write, mem_access_type type) const {
-    return m_cluster->SST_injection_buffer_full(size, write, type);
+    return m_cluster->SST_injection_buffer_full(m_core->get_sid(), size, write,
+                                                type);
   }
 
   /**

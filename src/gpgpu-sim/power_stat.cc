@@ -129,11 +129,12 @@ void power_mem_stat_t::init() {
     n_wr_WB[i] = (unsigned *)calloc(m_config->m_n_mem, sizeof(unsigned));
     n_req[i] = (unsigned *)calloc(m_config->m_n_mem, sizeof(unsigned));
 
-    // Interconnect stats
+    // Interconnect stats: per-SM traffic is counted in shader_core_stats and
+    // summed per GPC by gpc_t::get_icnt_stats.
     n_mem_to_simt[i] = (long *)calloc(m_core_config->n_simt_clusters,
-                                      sizeof(long));  // Counted at SM
+                                      sizeof(long));
     n_simt_to_mem[i] = (long *)calloc(m_core_config->n_simt_clusters,
-                                      sizeof(long));  // Counted at SM
+                                      sizeof(long));
   }
 }
 

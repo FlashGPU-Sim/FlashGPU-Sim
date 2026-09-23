@@ -147,6 +147,11 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
       "Opcode latencies for integers <ADD,MAX,MUL,MAD,DIV,SHFL>"
       "Default 1,1,19,25,145,32",
       "1,1,19,25,145,32");
+  option_parser_register(
+      opp, "-ptx_int64_add_lowering_factor", OPT_UINT32,
+      &int64_add_lowering_factor,
+      "Scale integer ADD/SUB latency and initiation for 64-bit PTX lowering",
+      "1");
   option_parser_register(opp, "-ptx_opcode_latency_fp", OPT_CSTR,
                          &opcode_latency_fp,
                          "Opcode latencies for single precision floating "
@@ -482,6 +487,12 @@ unsigned function_info::find_label(symbol_table *symtab, const std::string &name
   abort();
 }
 
+ptx_instruction *function_info::instr_mem_at(unsigned index) const {
+  if (!m_instr_mem) return NULL;
+  while (index < m_n && m_instr_mem[index] == NULL) ++index;
+  return (index < m_n) ? m_instr_mem[index] : NULL;
+}
+
 void function_info::recognize_dynamic_shared_mem() {
 
   /**
@@ -545,7 +556,6 @@ void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
            m_local_dyn_shared_mem_symbol->name().c_str(), addr + addr_pad,
            addr + addr_pad + shared_mem_size, shared_mem_size);
     m_local_dyn_shared_mem_symbol->set_address(addr + addr_pad);
-    symtab->alloc_shared(shared_mem_size + addr_pad);
     // Print the dynamic allocation and the resulting total shared mem for this
     // kernel. `m_kernel_info.smem` is the declared (static) smem size parsed
     // at assembly time; `shared_mem_size` is the per-launch dynamic size.
@@ -555,10 +565,12 @@ void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
       "GPGPU-Sim PTX: Kernel '%s' : smem(static)=%u, smem(dynamic)=%d, total_smem=%u\n",
       m_name.c_str(), declared_smem, shared_mem_size, total_smem);
   } else {
-    symtab->dump_until_top();
-    printf("GPGPU-Sim PTX: Error -- dynamic shared memory size specified "
-           "but no local dynamic shared memory symbol found in kernel\n");
-    abort();
+    // CUDA permits a launch to reserve dynamic shared memory even when the
+    // selected kernel specialization does not reference its extern symbol.
+    // The grid still records the reservation for resource accounting.
+    printf("GPGPU-Sim PTX: No referenced dynamic shared memory symbol; "
+           "reserving %d bytes for the launch only\n",
+           shared_mem_size);
   }
 }
 
@@ -570,7 +582,7 @@ void function_info::ptx_assemble() {
   // get the instructions into instruction memory...
   unsigned num_inst = m_instructions.size();
   m_instr_mem_size = MAX_INST_SIZE * (num_inst + 1);
-  m_instr_mem = new ptx_instruction *[m_instr_mem_size];
+  m_instr_mem = new ptx_instruction *[m_instr_mem_size]();
 
   printf("GPGPU-Sim PTX: instruction assembly for function \'%s\'... ",
          m_name.c_str());
@@ -623,9 +635,17 @@ void function_info::ptx_assemble() {
     }
   }
   gpgpu_ctx->func_sim->g_assemble_code_next_pc = PC;
-  for (unsigned ii = 0; ii < n;
-       ii += m_instr_mem[ii]->inst_size()) {  // handle branch instructions
+  m_n = n;
+  // Multi-byte instructions leave NULL padding in m_instr_mem. Skip those
+  // slots. Trailing labels (index == n) keep PC just past the last
+  // instruction so PDOM can edge to the exit block instead of NULL-deref.
+  for (unsigned ii = 0; ii < n; ) {
     ptx_instruction *pI = m_instr_mem[ii];
+    if (!pI) {
+      ii++;
+      continue;
+    }
+    const unsigned inst_bytes = pI->inst_size() ? pI->inst_size() : 1;
     if (pI->get_opcode() == BRA_OP || pI->get_opcode() == BREAKADDR_OP ||
         pI->get_opcode() == CALLP_OP) {
       operand_info &target = pI->dst();  // get operand, e.g. target name
@@ -639,11 +659,13 @@ void function_info::ptx_assemble() {
       // }
       // unsigned index = labels[target.name()];  // determine address from name
       unsigned index = find_label(pI->get_symbol_table(), target.name());
-      unsigned PC = m_instr_mem[index]->get_PC();
+      ptx_instruction *tgt = instr_mem_at(index);
+      const unsigned target_pc = tgt ? tgt->get_PC() : (m_start_PC + n);
       GPPRINTF_NoGPU(PTX_IR,
-              "  handling branch inst %s resolving label %s to inst %s PC 0x%x\n",
+              "  handling branch inst %s resolving label %s to %s PC 0x%x\n",
               pI->to_string().c_str(), target.name().c_str(),
-              m_instr_mem[index]->to_string().c_str(), PC);
+              tgt ? tgt->to_string().c_str() : "<end of function>",
+              target_pc);
       /**
        * WZR: Not sure why we need to set this target address here.
        * If this is for lookup later, the current symbol_table::lookup()
@@ -655,11 +677,12 @@ void function_info::ptx_assemble() {
        * scope if needed.
        */
       // m_symtab->set_label_address(target.get_symbol(), PC);
-      pI->get_symbol_table()->set_label_address(target.get_symbol(), PC);
+      pI->get_symbol_table()->set_label_address(target.get_symbol(),
+                                                target_pc);
       target.set_type(label_t);
     }
+    ii += inst_bytes;
   }
-  m_n = n;
   printf("  done.\n");
   fflush(stdout);
 
@@ -731,8 +754,16 @@ memory_space_t whichspace(addr_t addr) {
 }
 
 addr_t generic_to_shared(unsigned smid, addr_t addr) {
-  assert(isspace_shared(smid, addr));
-  return addr - (SHARED_GENERIC_START + smid * SHARED_MEM_SIZE_MAX);
+  if (isspace_shared(smid, addr))
+    return addr - (SHARED_GENERIC_START + smid * SHARED_MEM_SIZE_MAX);
+  if ((addr >> 32) != 0)
+    addr = static_cast<uint32_t>(addr);
+  if (addr < SHARED_MEM_SIZE_MAX)
+    return addr;
+  const unsigned owner = static_cast<unsigned>(addr / SHARED_MEM_SIZE_MAX);
+  if (owner >= 1 && owner - 1 == smid)
+    return addr % SHARED_MEM_SIZE_MAX;
+  return static_cast<uint32_t>(addr) % SHARED_MEM_SIZE_MAX;
 }
 
 addr_t local_to_generic(unsigned smid, unsigned hwtid, addr_t addr) {
@@ -1054,12 +1085,19 @@ void ptx_instruction::set_mul_div_or_other_archop() {
 
 void ptx_instruction::set_bar_type() {
   if (m_opcode == BAR_OP) {
+    const auto &options = get_options();
+    cluster_barrier =
+        std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
+        options.end();
     switch (m_barrier_op) {
       case SYNC_OPTION:
         bar_type = SYNC;
         break;
       case ARRIVE_OPTION:
         bar_type = ARRIVE;
+        break;
+      case WAIT_OPTION:
+        bar_type = SYNC;
         break;
       case RED_OPTION:
         bar_type = RED;
@@ -1405,6 +1443,8 @@ void ptx_instruction::set_opcode_and_latency() {
         op = TENSOR_MAP_OP;
         latency = tensormap_latency[2];
         initiation_interval = tensormap_init[2];
+      } else if (std::find(opts.begin(), opts.end(), SC_OPTION) != opts.end()) {
+        op = MEMORY_BARRIER_OP;
       }
       break;
     }
@@ -1459,6 +1499,20 @@ void ptx_instruction::set_opcode_and_latency() {
           initiation_interval = dp_init[0];
           op = DP_OP;
           break;
+        case B64_TYPE:
+        case U64_TYPE:
+        case S64_TYPE: {
+          // A 64-bit integer address add lowers to low/high integer
+          // instructions on Hopper. Keep the factor opt-in so existing
+          // architecture presets retain their established behavior.
+          const unsigned lowering_factor =
+              std::max(1u, gpgpu_ctx->func_sim->int64_add_lowering_factor);
+          latency = int_latency[0] * lowering_factor;
+          initiation_interval =
+              int_init[0] * lowering_factor;
+          op = INTP_OP;
+          break;
+        }
         case B32_TYPE:
         case U32_TYPE:
         case S32_TYPE:
@@ -1616,7 +1670,9 @@ void ptx_instruction::set_opcode_and_latency() {
           wgmma_compute_cycles(shape_n, shape_k, input_type,
                                wgmma_compute_throughput);
       wgmma_completion_tail_latency =
-          wgmma_latency_for_shape(shape_n, wgmma_completion);
+          // Compute already scales with N. Do not multiply the final
+          // scoreboard/writeback tail again for wider instructions.
+          wgmma_latency_for_shape(std::min(shape_n, 64), wgmma_completion);
       if (initiation_interval > latency) {
         printf("GPGPU-Sim PTX: ERROR WGMMA initiation interval (%u) exceeds "
                "pipe latency (%u) for m64n%dk%d\n",
@@ -2596,6 +2652,10 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
             fflush(stdout);
             exit(1);
         }
+      }
+      if (inst_opcode == BAR_OP && inst.bar_id == (unsigned)-1) {
+        inst.set_bar_id(pI->bar_id);
+        inst.set_bar_count(pI->bar_count);
       }
       delete pJ;
       pI = pI_saved;

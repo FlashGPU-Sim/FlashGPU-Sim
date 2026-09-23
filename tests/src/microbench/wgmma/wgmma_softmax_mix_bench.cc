@@ -603,6 +603,9 @@ __device__ __forceinline__ uint64_t run_lop3_indep8_math(
 
 __device__ __forceinline__ uint64_t run_math_block(
     float (&x)[kSoftmaxRegs], int math_kind, int math_iters) {
+#ifdef FLASHGPU_SIM_REPRESENTATIVE
+  return run_softmax_math(x, math_iters);
+#else
   switch (static_cast<MathKind>(math_kind)) {
     case MathKind::Softmax32:
       return run_softmax_math(x, math_iters);
@@ -632,6 +635,7 @@ __device__ __forceinline__ uint64_t run_math_block(
       return run_mix4_math(x, math_iters);
   }
   return run_softmax_math(x, math_iters);
+#endif
 }
 
 template <MixMode Mode>
@@ -1666,6 +1670,7 @@ void append_fine_dense_kind(cudaDeviceProp prop, int blocks, int rounds,
 
 #undef RUN_STATIC_FINE_OPS
 
+#ifndef FLASHGPU_SIM_REPRESENTATIVE
 FineMixResult run_fine_qk_only(cudaDeviceProp prop, int blocks, int rounds,
                                int warmup_rounds, int qk_ops) {
   FineMixResult result = run_static_fine_case<MixMode::QkOnly,
@@ -1676,6 +1681,7 @@ FineMixResult run_fine_qk_only(cudaDeviceProp prop, int blocks, int rounds,
   result.math_inst_per_thread = 0;
   return result;
 }
+#endif
 
 void print_fine_results(const std::vector<FineMixResult> &results) {
   printf("mode,math_kind,math_ops,math_inst_per_thread,blocks,rounds,qk_ops,"
@@ -1722,6 +1728,15 @@ void append_selected(const std::string &selected, cudaDeviceProp prop,
                      int blocks, int rounds, int warmup_rounds, int qk_ops,
                      int pv_ops, int math_iters,
                      int math_kind, std::vector<MixResult> *results) {
+#ifdef FLASHGPU_SIM_REPRESENTATIVE
+  if (selected != "qk_wait_math_pv") {
+    throw std::runtime_error(
+        "simulator representative supports qk_wait_math_pv only");
+  }
+  results->push_back(run_case<MixMode::QkWaitMathPv>(
+      prop, blocks, rounds, warmup_rounds, qk_ops, pv_ops, math_iters,
+      math_kind));
+#else
   if (selected == "qk_only") {
     results->push_back(run_case<MixMode::QkOnly>(
         prop, blocks, rounds, warmup_rounds, qk_ops, pv_ops, math_iters,
@@ -1761,6 +1776,7 @@ void append_selected(const std::string &selected, cudaDeviceProp prop,
         "qk_wait_math, qk_math_wait, qk_wait_math_pv, or "
         "qk_math_wait_pv)");
   }
+#endif
 }
 
 void require_hopper_or_newer() {
@@ -1805,6 +1821,7 @@ TEST(WgmmaSoftmaxMixBench, Selected) {
   write_csv(prefix + ".csv", results);
 }
 
+#ifndef FLASHGPU_SIM_REPRESENTATIVE
 TEST(WgmmaSoftmaxMixBench, Sweep) {
   require_hopper_or_newer();
 
@@ -2061,3 +2078,4 @@ TEST(WgmmaSoftmaxMixBench, LocalOverlapSweep) {
   print_results(results);
   write_csv(prefix + ".csv", results);
 }
+#endif

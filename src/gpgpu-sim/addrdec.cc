@@ -80,7 +80,9 @@ void linear_to_raw_address_translation::addrdec_setoption(option_parser_t opp) {
       &ipoly_non_power2_balanced,
       "For non-power-of-two memory partitions: 0 = legacy modulo, 1 = map "
       "IPOLY buckets to channels before subpartitions, 2 = hash into a larger "
-      "virtual partition space then range-reduce to the final partition count.",
+      "virtual partition space then range-reduce to the final partition count, "
+      "3 = bijective IPOLY-derived cyclic rotation (H200 94-channel). "
+      "Channel-stable mode takes precedence; power-of-two mapping is unchanged.",
       "0");
   option_parser_register(
       opp, "-gpgpu_ipoly_channel_stable_l2slice", OPT_UINT32,
@@ -188,6 +190,14 @@ void linear_to_raw_address_translation::addrdec_tlx(new_addr_type addr,
             slice_hash % m_n_sub_partition_in_channel;
         sub_partition = decoded_channel * m_n_sub_partition_in_channel +
                         sub_partition_in_channel;
+      } else if (gap && ipoly_non_power2_balanced == 3) {
+        // Hash the rotation, not the decoded seed: many-to-one reduction of
+        // a hashed seed aliases DRAM addresses because row/column coordinates
+        // have already discarded the original channel. A cyclic permutation
+        // preserves every channel/slice identity for each address quotient.
+        const unsigned total = m_n_channel * m_n_sub_partition_in_channel;
+        const unsigned offset = ipoly_hash_function(ipoly_high_bits, 0, 1024);
+        sub_partition = (sub_partition + offset) % total;
       } else {
         const unsigned total_sub_partitions =
             m_n_channel * m_n_sub_partition_in_channel;

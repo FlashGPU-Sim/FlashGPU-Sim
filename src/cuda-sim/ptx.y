@@ -75,6 +75,8 @@ class ptx_recognizer;
 %token  PRAGMA_DIRECTIVE
 %token  REG_DIRECTIVE
 %token  REQNTID_DIRECTIVE
+%token  EXPLICITCLUSTER_DIRECTIVE
+%token  REQNCTAPERCLUSTER_DIRECTIVE
 %token  SECTION_DIRECTIVE
 %token  DEBUG_DIRECTIVE
 %token  SHARED_DIRECTIVE
@@ -221,6 +223,7 @@ class ptx_recognizer;
 %token  GLOBAL_OPTION
 %token  CTA_OPTION
 %token  SYS_OPTION
+%token  SC_OPTION
 %token  EXIT_OPTION
 %token  ABS_OPTION
 %token  TO_OPTION
@@ -280,6 +283,7 @@ class ptx_recognizer;
 %token	READ_OPTION;
 %token	BULK_GROUP_OPTION;
 %token	CLUSTER_OPTION;
+%token	MULTICAST_CLUSTER_OPTION;
 %token	INVAL_OPTION;
 %token	MBARRIER_INIT_OPTION;
 %token	M8N8_OPTION;
@@ -321,6 +325,17 @@ block_spec: MAXNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND {r
 	| MINNCTAPERSM_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".minnctapersm", $2); printf("GPGPU-Sim PTX: Warning: .minnctapersm ignored. \n"); }
 	| MAXNCTAPERSM_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".maxnctapersm", $2); printf("GPGPU-Sim PTX: Warning: .maxnctapersm ignored. \n"); }
 	| REQNTID_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".reqntid", $2); printf("GPGPU-Sim PTX: Warning: .reqntid ignored. \n"); }
+	| EXPLICITCLUSTER_DIRECTIVE { recognizer->func_header_info(".explicitcluster"); recognizer->set_explicit_cluster(); }
+	| REQNCTAPERCLUSTER_DIRECTIVE INT_OPERAND {
+	    recognizer->func_header_info_int(".reqnctapercluster", $2);
+	    recognizer->set_req_cluster_dim($2, 1, 1);
+	  }
+	| REQNCTAPERCLUSTER_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND {
+	    recognizer->func_header_info_int(".reqnctapercluster", $2);
+	    recognizer->func_header_info_int(",", $4);
+	    recognizer->func_header_info_int(",", $6);
+	    recognizer->set_req_cluster_dim($2, $4, $6);
+	  }
 	;
 
 block_spec_list: block_spec
@@ -612,6 +627,7 @@ option: type_spec
 	| GLOBAL_OPTION { recognizer->add_option(GLOBAL_OPTION); }
 	| CTA_OPTION { recognizer->add_option(CTA_OPTION); }
 	| SYS_OPTION { recognizer->add_option(SYS_OPTION); }
+	| SC_OPTION { recognizer->add_option(SC_OPTION); }
 	| GEOM_MODIFIER_1D { recognizer->add_option(GEOM_MODIFIER_1D); }
 	| GEOM_MODIFIER_2D { recognizer->add_option(GEOM_MODIFIER_2D); }
 	| GEOM_MODIFIER_3D { recognizer->add_option(GEOM_MODIFIER_3D); }
@@ -679,6 +695,7 @@ option: type_spec
 	| READ_OPTION { recognizer->add_option(READ_OPTION); }
 	| BULK_GROUP_OPTION { recognizer->add_option(BULK_GROUP_OPTION); }
 	| CLUSTER_OPTION { recognizer->add_option(CLUSTER_OPTION); }
+	| MULTICAST_CLUSTER_OPTION { recognizer->add_option(MULTICAST_CLUSTER_OPTION); }
 	| INVAL_OPTION { recognizer->add_option(INVAL_OPTION); }
 	| MBARRIER_INIT_OPTION { recognizer->add_option(MBARRIER_INIT_OPTION); }
 	| M8N8_OPTION { recognizer->add_option(M8N8_OPTION); }
