@@ -136,6 +136,7 @@ class cuda_sim {
   }
   // global variables
   char *opcode_latency_int;
+  unsigned int64_add_lowering_factor;
   char *opcode_latency_fp;
   char *opcode_latency_dp;
   char *opcode_latency_sfu;

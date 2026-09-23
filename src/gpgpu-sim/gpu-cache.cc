@@ -433,6 +433,8 @@ void tag_array::fill(new_addr_type addr, unsigned time,
   m_lines[idx]->fill(time, mask, byte_mask);
   if (m_lines[idx]->is_modified_line() && !before) {
     m_dirty++;
+  } else if (before && !m_lines[idx]->is_modified_line()) {
+    m_dirty--;
   }
 }
 
@@ -443,6 +445,8 @@ void tag_array::fill(unsigned index, unsigned time, mem_fetch *mf) {
                        mf->get_access_byte_mask());
   if (m_lines[index]->is_modified_line() && !before) {
     m_dirty++;
+  } else if (before && !m_lines[index]->is_modified_line()) {
+    m_dirty--;
   }
 }
 

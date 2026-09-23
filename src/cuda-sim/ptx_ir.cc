@@ -604,8 +604,9 @@ void function_info::connect_basic_blocks()  // iterate across m_basic_blocks of
         printf("GPGPU-Sim PTX: Warning detected predicated return/exit.\n");
         // if predicated, add link to next block
         unsigned next_addr = pI->get_m_instr_mem_index() + pI->inst_size();
-        if (next_addr < m_instr_mem_size && m_instr_mem[next_addr]) {
-          basic_block_t *next_bb = m_instr_mem[next_addr]->get_bb();
+        ptx_instruction *next_pI = instr_mem_at(next_addr);
+        if (next_pI && next_pI->get_bb()) {
+          basic_block_t *next_bb = next_pI->get_bb();
           (*bb_itr)->successor_ids.insert(next_bb->bb_id);
           next_bb->predecessor_ids.insert((*bb_itr)->bb_id);
         }
@@ -615,8 +616,9 @@ void function_info::connect_basic_blocks()  // iterate across m_basic_blocks of
       // find successor and link that basic_block to this one
       operand_info &target = pI->dst();  // get operand, e.g. target name
       unsigned addr = find_label(pI->get_symbol_table(), target.name());
-      ptx_instruction *target_pI = m_instr_mem[addr];
-      basic_block_t *target_bb = target_pI->get_bb();
+      ptx_instruction *target_pI = instr_mem_at(addr);
+      basic_block_t *target_bb =
+          target_pI && target_pI->get_bb() ? target_pI->get_bb() : exit_bb;
       (*bb_itr)->successor_ids.insert(target_bb->bb_id);
       target_bb->predecessor_ids.insert((*bb_itr)->bb_id);
     }
@@ -626,7 +628,9 @@ void function_info::connect_basic_blocks()  // iterate across m_basic_blocks of
       // then next basic block is also successor
       // (this is better than testing for .uni)
       unsigned next_addr = pI->get_m_instr_mem_index() + pI->inst_size();
-      basic_block_t *next_bb = m_instr_mem[next_addr]->get_bb();
+      ptx_instruction *next_pI = instr_mem_at(next_addr);
+      basic_block_t *next_bb =
+          next_pI && next_pI->get_bb() ? next_pI->get_bb() : exit_bb;
       (*bb_itr)->successor_ids.insert(next_bb->bb_id);
       next_bb->predecessor_ids.insert((*bb_itr)->bb_id);
     } else
@@ -665,15 +669,19 @@ bool function_info::connect_break_targets()  // connecting break instructions
       operand_info *target = find_break_target(pI);
       // unsigned addr = labels[target->name()];
       unsigned addr = find_label(pI->get_symbol_table(), target->name());
-      ptx_instruction *target_pI = m_instr_mem[addr];
-      basic_block_t *target_bb = target_pI->get_bb();
+      ptx_instruction *target_pI = instr_mem_at(addr);
+      basic_block_t *exit_bb = m_basic_blocks.back();
+      basic_block_t *target_bb =
+          target_pI && target_pI->get_bb() ? target_pI->get_bb() : exit_bb;
       p_bb->successor_ids.insert(target_bb->bb_id);
       target_bb->predecessor_ids.insert(p_bb->bb_id);
 
       if (pI->has_pred()) {
         // predicated break - add link to next basic block
         unsigned next_addr = pI->get_m_instr_mem_index() + pI->inst_size();
-        basic_block_t *next_bb = m_instr_mem[next_addr]->get_bb();
+        ptx_instruction *next_pI = instr_mem_at(next_addr);
+        basic_block_t *next_bb =
+            next_pI && next_pI->get_bb() ? next_pI->get_bb() : exit_bb;
         p_bb->successor_ids.insert(next_bb->bb_id);
         next_bb->predecessor_ids.insert(p_bb->bb_id);
       }
@@ -726,11 +734,15 @@ void function_info::do_pdom() {
   }
   printf("GPGPU-Sim PTX: pre-decoding instructions for \'%s\'...\n",
          m_name.c_str());
-  for (unsigned ii = 0; ii < m_n;
-       ii += m_instr_mem[ii]->inst_size()) {  // handle branch instructions
+  for (unsigned ii = 0; ii < m_n; ) {
     ptx_instruction *pI = m_instr_mem[ii];
+    if (!pI) {
+      ii++;
+      continue;
+    }
     pI->pre_decode();
     update_dyn_inst(pI);
+    ii += pI->inst_size() ? pI->inst_size() : 1;
   }
   flash_gpgpu_sim::run_ptx_register_allocation(this);
   printf("GPGPU-Sim PTX: ... done pre-decoding instructions for \'%s\'.\n",
@@ -1516,6 +1528,9 @@ ptx_instruction::ptx_instruction(
       case COMPLETE_TX_OPTION:
         m_barrier_op = last_ptx_inst_option;
         break;
+      case WAIT_OPTION:
+        if (opcode == BAR_OP) m_barrier_op = WAIT_OPTION;
+        break;
       case PARITY_OPTION:
         m_parity_op = true;
         break;
@@ -1524,7 +1539,7 @@ ptx_instruction::ptx_instruction(
       case COMMIT_GROUP_OPTION:
       case WAIT_GROUP_OPTION:
       case LAUNCH_DEPENDENTS_OPTION:
-      case WAIT_OPTION: {
+      {
         // Do nothing for now... need to be implemented later.
         break;
       }
@@ -1645,6 +1660,9 @@ ptx_instruction::ptx_instruction(
       case SYS_OPTION:
         m_membar_level = SYS_OPTION;
         break;
+      case SC_OPTION:
+        // fence.sc.* : sequential-consistency order; scope is a later option.
+        break;
       case FTZ_OPTION:
         break;
       case EXIT_OPTION:
@@ -1724,6 +1742,7 @@ ptx_instruction::ptx_instruction(
       case READ_OPTION:
       case BULK_GROUP_OPTION:
       case CLUSTER_OPTION:
+      case MULTICAST_CLUSTER_OPTION:
       case M8N8_OPTION:
       case MBARRIER_INIT_OPTION:
       case TRANS_OPTION:
@@ -2013,14 +2032,28 @@ function_info::function_info(int entry_point, gpgpu_context *ctx) {
   m_symtab = NULL;
   m_assembled = false;
   m_ptx_reorder_completed = false;
+  m_instr_mem = NULL;
+  m_instr_mem_size = 0;
+  m_n = 0;
+  m_start_PC = 0;
   m_return_var_sym = NULL;
   m_kernel_info.cmem = 0;
   m_kernel_info.lmem = 0;
   m_kernel_info.regs = 0;
   m_kernel_info.smem = 0;
+  m_kernel_info.gmem = 0;
+  m_kernel_info.ptx_version = 0;
+  m_kernel_info.sm_target = 0;
+  m_kernel_info.maxthreads = 0;
+  m_kernel_info.barriers = 0;
   m_local_mem_framesize = 0;
   m_args_aligned_size = -1;
   pdom_done = false;  // initialize it to false
+  m_explicit_cluster = false;
+  m_req_cluster_dim = dim3(0, 0, 0);
+  m_cluster_dim_must_be_set = false;
+  m_nonportable_cluster_size_allowed = false;
+  m_cluster_sched_policy = 0;
 }
 
 unsigned function_info::print_insn(unsigned pc, FILE *fp) const {

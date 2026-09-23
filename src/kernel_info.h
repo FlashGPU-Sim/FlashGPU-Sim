@@ -209,6 +209,52 @@ public:
   // Dynamic shared memory per CTA (specified at launch)
   void set_dynamic_smem(unsigned bytes) { m_dynamic_smem = bytes; }
   unsigned get_dynamic_smem() const { return m_dynamic_smem; }
+
+  // Thread Block Cluster launch metadata (Hopper/Blackwell cooperative clusters).
+  // Non-cluster launches leave m_is_cluster_launch=false and m_ctas_per_cluster=1.
+  void set_cluster_launch(dim3 cluster_dim) {
+    m_is_cluster_launch = true;
+    m_cluster_dim = cluster_dim;
+    unsigned prod = cluster_dim.x * cluster_dim.y * cluster_dim.z;
+    m_ctas_per_cluster = prod > 0 ? prod : 1;
+  }
+  void clear_cluster_launch() {
+    m_is_cluster_launch = false;
+    m_cluster_dim = dim3(0, 0, 0);
+    m_ctas_per_cluster = 1;
+  }
+  bool is_cluster_launch() const { return m_is_cluster_launch; }
+  dim3 get_cluster_dim() const { return m_cluster_dim; }
+  unsigned get_ctas_per_cluster() const { return m_ctas_per_cluster; }
+
+  // Pending TB-cluster co-residency while issuing CTAs of one cluster.
+  // When open, subsequent CTAs of this TB cluster must go to m_open_tb_phys_cluster.
+  bool has_open_tb_cluster() const { return m_open_tb_remaining > 0; }
+  unsigned open_tb_phys_cluster() const { return m_open_tb_phys_cluster; }
+  unsigned open_tb_cluster_group() const { return m_open_tb_cluster_group; }
+  unsigned open_tb_remaining() const { return m_open_tb_remaining; }
+  void open_tb_cluster(unsigned phys_cluster, unsigned group,
+                       unsigned remaining) {
+    m_open_tb_phys_cluster = phys_cluster;
+    m_open_tb_cluster_group = group;
+    m_open_tb_remaining = remaining;
+  }
+  void consume_open_tb_cta() {
+    if (m_open_tb_remaining > 0) m_open_tb_remaining--;
+  }
+  void clear_open_tb_cluster() {
+    m_open_tb_remaining = 0;
+    m_open_tb_phys_cluster = (unsigned)-1;
+    m_open_tb_cluster_group = (unsigned)-1;
+  }
+
+private:
+  bool m_is_cluster_launch;
+  dim3 m_cluster_dim;
+  unsigned m_ctas_per_cluster;
+  unsigned m_open_tb_phys_cluster;
+  unsigned m_open_tb_cluster_group;
+  unsigned m_open_tb_remaining;
 };
 
 #endif // #ifndef KERNEL_INFO_INCLUDED

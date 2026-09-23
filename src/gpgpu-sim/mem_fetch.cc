@@ -56,8 +56,8 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   m_instruction_prefetch_context = 0;
   m_data_size = access.get_size();
   m_ctrl_size = ctrl_size;
-  m_sid = sid;
-  m_tpc = tpc;
+  m_requester_sm_id = sid;
+  (void)tpc;  // GPC / icnt node is derived from requester SM
   m_wid = wid;
 
   if (!config->is_SST_mode()) {
@@ -100,8 +100,8 @@ void mem_fetch::print(FILE *fp, bool print_inst) const {
   //   fprintf(fp, " <NULL mem_fetch pointer>\n");
   //   return;
   // }
-  fprintf(fp, "  mf: uid=%6u, sid%02u:w%02u, part=%u, ", m_request_uid, m_sid,
-          m_wid, m_raw_addr.chip);
+  fprintf(fp, "  mf: uid=%6u, sid%02u:w%02u, part=%u, ", m_request_uid,
+          m_requester_sm_id, m_wid, m_raw_addr.chip);
   m_access.print(fp);
   if ((unsigned)m_status < NUM_MEM_REQ_STAT)
     fprintf(fp, " status = %s (%llu), ", Status_str[m_status], m_status_change);

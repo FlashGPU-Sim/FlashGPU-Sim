@@ -73,3 +73,7 @@ See [`tma_test.cu`](../../../tests/src/tma/tma_test.cu) and
 [`tma_multidim_test.cu`](../../../tests/src/tma/tma_multidim_test.cu) for the
 selected functional and synchronization checks, and the
 [mbarrier model](mbarrier.md) for phase-completion semantics.
+
+Cluster multicast is a functional fan-out plus a fixed latency knob, not a
+bandwidth or contention model. See `docs/cluster_noc/README.md`.
+

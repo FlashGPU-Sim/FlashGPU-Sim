@@ -66,6 +66,7 @@ struct CUevent_st {
   unsigned num_updates() const { return m_updates; }
   bool done() const { return m_updates == m_issued; }
   time_t clock() const { return m_wallclock; }
+  double sim_cycle() const { return m_gpu_tot_sim_cycle; }
   void issue() { m_issued++; }
   unsigned int num_issued() const { return m_issued; }
 

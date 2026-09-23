@@ -46,13 +46,15 @@ using namespace std;
 class OptionRegistryInterface {
  public:
   OptionRegistryInterface(const string optionName, const string optionDesc)
-      : m_optionName(optionName), m_optionDesc(optionDesc), m_isParsed(false) {}
+      : m_optionName(optionName), m_optionDesc(optionDesc), m_isParsed(false),
+        m_explicit(false) {}
 
   virtual ~OptionRegistryInterface() {}
 
   const string &GetName() { return m_optionName; }
   const string &GetDesc() { return m_optionDesc; }
   const bool isParsed() { return m_isParsed; }
+  bool isExplicit() const { return m_explicit; }
   virtual string toString() = 0;
   virtual bool fromString(const string str) = 0;
   virtual bool isFlag() = 0;
@@ -63,6 +65,7 @@ class OptionRegistryInterface {
   string m_optionDesc;
   bool m_isParsed;  // true if the target variable has been updated by
                     // fromString()
+  bool m_explicit;  // true if set from cmdline/config, not assignDefault
 };
 
 // Template for option registry - class T = specify data type of the option
@@ -99,11 +102,16 @@ class OptionRegistry : public OptionRegistryInterface {
       return false;
     }
     m_isParsed = true;
+    m_explicit = true;
     return true;
   }
 
   virtual bool isFlag() { return false; }
-  virtual bool assignDefault(const char *str) { return fromString(str); }
+  virtual bool assignDefault(const char *str) {
+    bool ok = fromString(str);
+    m_explicit = false;
+    return ok;
+  }
 
   operator T() { return m_variable; }
 
@@ -116,6 +124,7 @@ template <>
 bool OptionRegistry<string>::fromString(const string str) {
   m_variable = str;
   m_isParsed = true;
+  m_explicit = true;
   return true;
 }
 
@@ -125,6 +134,7 @@ bool OptionRegistry<char *>::fromString(const string str) {
   m_variable = new char[str.size() + 1];
   strcpy(m_variable, str.c_str());
   m_isParsed = true;
+  m_explicit = true;
   return true;
 }
 
@@ -134,6 +144,7 @@ bool OptionRegistry<char *>::assignDefault(const char *str) {
   m_variable = const_cast<char *>(
       str);  // c-string options are not meant to be edited anyway
   m_isParsed = true;
+  m_explicit = false;
   return true;
 }
 
@@ -166,6 +177,7 @@ bool OptionRegistry<bool>::fromString(const string str) {
              1);  // sanity check for boolean options (it can only be 1 or 0)
   m_variable = (value != 0);
   m_isParsed = true;
+  m_explicit = true;
   return parsed;
 }
 
@@ -339,6 +351,12 @@ class OptionParser {
     }
   }
 
+  bool WasSet(const string &name) const {
+    OptionMap::const_iterator i_option = m_optionMap.find(name);
+    if (i_option == m_optionMap.end()) return false;
+    return i_option->second->isExplicit();
+  }
+
  private:
   typedef list<OptionRegistryInterface *> OptionCollection;
   OptionCollection m_optionReg;
@@ -422,6 +440,11 @@ void option_parser_delimited_string(option_parser_t opp,
 void option_parser_print(option_parser_t opp, FILE *fout) {
   OptionParser *p_opr = reinterpret_cast<OptionParser *>(opp);
   p_opr->Print(fout);
+}
+
+int option_parser_was_set(option_parser_t opp, const char *name) {
+  OptionParser *p_opr = reinterpret_cast<OptionParser *>(opp);
+  return p_opr->WasSet(name) ? 1 : 0;
 }
 
 // #define UNIT_TEST
