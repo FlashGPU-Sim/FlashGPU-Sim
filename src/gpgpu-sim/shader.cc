@@ -5911,9 +5911,18 @@ void shader_core_config::set_pipeline_latency() {
   // all div operation are executed on sfu
   // assume that the max latency are dp div or normal sfu_latency
   max_sfu_latency = std::max(dp_latency[4], sfu_latency);
-  // assume that the max operation has the max latency
+  // Packed arithmetic can inherit any of the first four scalar FP latencies.
   max_sp_latency = fp_latency[1];
+  for (unsigned i = 0; i < 4; ++i)
+    max_sp_latency = std::max(max_sp_latency, fp_latency[i]);
   max_int_latency = std::max(int_latency[1], int_latency[5]);
+  max_sp_latency = std::max(max_sp_latency,
+                           gpgpu_ctx->func_sim->opcode_latency_f32x2);
+  // Packed CVT keeps the ALU route: INT when available, SP otherwise.
+  max_sp_latency = std::max(max_sp_latency,
+                           gpgpu_ctx->func_sim->opcode_latency_cvt_f16x2_f32);
+  max_int_latency = std::max(max_int_latency,
+                            gpgpu_ctx->func_sim->opcode_latency_cvt_f16x2_f32);
   max_dp_latency = dp_latency[1];
   max_tensor_core_latency = std::max(tensor_latency_max, wgmma_latency_max);
   max_tma_latency = tma_latency;

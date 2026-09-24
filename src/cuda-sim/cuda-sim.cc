@@ -164,6 +164,20 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
                          "Opcode latencies for SFU instructions"
                          "Default 8",
                          "8");
+  option_parser_register(opp, "-ptx_opcode_latency_f32x2", OPT_UINT32,
+                         &opcode_latency_f32x2,
+                         "Packed f32x2 arithmetic latency; 0 inherits scalar FP",
+                         "0");
+  option_parser_register(opp, "-ptx_opcode_initiation_f32x2", OPT_UINT32,
+                         &opcode_initiation_f32x2,
+                         "Packed f32x2 arithmetic initiation; 0 inherits scalar FP",
+                         "0");
+  option_parser_register(opp, "-ptx_opcode_latency_cvt_f16x2_f32", OPT_UINT32,
+                         &opcode_latency_cvt_f16x2_f32,
+                         "Packed f32 to f16x2 conversion latency", "1");
+  option_parser_register(opp, "-ptx_opcode_initiation_cvt_f16x2_f32", OPT_UINT32,
+                         &opcode_initiation_cvt_f16x2_f32,
+                         "Packed f32 to f16x2 conversion initiation", "1");
   option_parser_register(opp, "-ptx_opcode_latency_tensor", OPT_CSTR,
                          &opcode_latency_tensor,
                          "Opcode latencies for Tensor instructions"
@@ -1328,7 +1342,17 @@ void ptx_instruction::set_opcode_and_latency() {
   op = ALU_OP;
   mem_op = NOT_TEX;
   initiation_interval = latency = 1;
+  bool packed_timing = false;
   switch (m_opcode) {
+    case CVT_OP:
+      if (m_scalar_type.size() == 2 && get_type() == F16X2_TYPE &&
+          get_type2() == F32_TYPE) {
+        latency = gpgpu_ctx->func_sim->opcode_latency_cvt_f16x2_f32;
+        initiation_interval =
+            gpgpu_ctx->func_sim->opcode_initiation_cvt_f16x2_f32;
+        packed_timing = true;
+      }
+      break;
     case MOV_OP:
       assert(!(has_memory_read() && has_memory_write()));
       if (has_memory_read()) op = LOAD_OP;
@@ -1721,6 +1745,35 @@ void ptx_instruction::set_opcode_and_latency() {
       break;
     default:
       break;
+  }
+  if (!m_scalar_type.empty() && get_type() == F32X2_TYPE) {
+    switch (m_opcode) {
+      case ADD_OP:
+      case SUB_OP:
+      case MAX_OP:
+      case MIN_OP:
+      case MUL_OP:
+      case MAD_OP:
+      case FMA_OP:
+        if (gpgpu_ctx->func_sim->opcode_latency_f32x2)
+          latency = gpgpu_ctx->func_sim->opcode_latency_f32x2;
+        if (gpgpu_ctx->func_sim->opcode_initiation_f32x2)
+          initiation_interval = gpgpu_ctx->func_sim->opcode_initiation_f32x2;
+        packed_timing = true;
+        break;
+      default:
+        break;
+    }
+  }
+  // The pipeline indexes latency - initiation_interval and reserves a result
+  // bus slot at latency. Reject invalid overrides before either operation.
+  if (packed_timing &&
+      (initiation_interval == 0 || latency < initiation_interval ||
+       latency >= simd_function_unit::MAX_ALU_LATENCY)) {
+    fprintf(stderr,
+            "GPGPU-Sim PTX: invalid packed timing: latency=%u initiation=%u\n",
+            latency, initiation_interval);
+    abort();
   }
   set_fp_or_int_archop();
   set_mul_div_or_other_archop();
