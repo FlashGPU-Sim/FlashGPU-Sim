@@ -175,7 +175,56 @@ __global__ void bulk_completion_does_not_release_mbarrier_kernel(
   }
 }
 
+template <bool ExitAfterArrive>
+__global__ void named_barrier_publish_kernel(int *errors) {
+  __shared__ volatile unsigned values[32];
+  const unsigned lane = threadIdx.x % 32;
+  const unsigned warp = threadIdx.x / 32;
+  const unsigned address = smem_addr(const_cast<unsigned *>(values) + lane);
+  // A predicated-off shared store must not leave an outstanding fence.
+  asm volatile("{ .reg .pred p; setp.eq.u32 p, 0, 1; "
+               "@p st.shared.u32 [%0], 0; }" :: "r"(address) : "memory");
+  __syncthreads();
+  for (unsigned round = 1; round <= (ExitAfterArrive ? 1u : 8u); ++round) {
+    if (warp == 0) {
+      values[lane] = blockIdx.x * 256 + round * 32 + lane;
+      named_barrier_arrive(1, 64);
+      if (ExitAfterArrive) return;
+      named_barrier_sync(2, 64);
+    } else {
+      named_barrier_sync(1, 64);
+      if (values[lane] != blockIdx.x * 256 + round * 32 + lane)
+        atomicAdd(errors, 1);
+      if (!ExitAfterArrive) named_barrier_arrive(2, 64);
+    }
+  }
+}
+
+template <bool ExitAfterArrive>
+void check_named_barrier_publish() {
+  int *errors = nullptr;
+  ASSERT_EQ(cudaSuccess, cudaMalloc(&errors, sizeof(int)));
+  ASSERT_EQ(cudaSuccess, cudaMemset(errors, 0, sizeof(int)));
+  // Repeated launches also exercise reuse of warp and CTA state.
+  for (unsigned launch = 0; launch < 2; ++launch) {
+    named_barrier_publish_kernel<ExitAfterArrive><<<64, 64>>>(errors);
+    ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
+  }
+  int result = -1;
+  ASSERT_EQ(cudaSuccess, cudaMemcpy(&result, errors, sizeof(int), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(result, 0);
+  ASSERT_EQ(cudaSuccess, cudaFree(errors));
+}
+
 }  // namespace
+
+TEST(NamedBarrierIntegrationTest, ArrivalSurvivesProducerExit) {
+  check_named_barrier_publish<true>();
+}
+
+TEST(NamedBarrierIntegrationTest, PublishesSharedStoresAcrossRepeatedGenerations) {
+  check_named_barrier_publish<false>();
+}
 
 TEST(NamedBarrierIntegrationTest, ArriveDoesNotReleaseMbarrierWaiter) {
   int *d_early_release = nullptr;

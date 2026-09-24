@@ -53,6 +53,18 @@ measured variants, and FP min/max timing has limited independent validation.
 
 ## Memory and synchronization model
 
+Shared loads use a 19-cycle shared-memory pipeline. A named barrier waits for
+earlier shared stores from its warp to leave LD/ST dispatch plus four core
+cycles. This is a timing fence; functional shared-memory updates occur at
+instruction execution.
+
+A nonblocking named-barrier arrive has two overlapping delays measured from
+issue: the warp can resume ordinary instructions after 18 core cycles, and
+the arrival is visible to waiters after 24 core cycles. These delays are not
+added together. Later named-barrier operations remain ordered behind pending
+arrivals, and warp retirement waits for delivery. These values are effective
+timing approximations. They do not change the separate mbarrier/try-wait model.
+
 - L2 lookup, data and fill service each have a budget of three 32-byte sectors
   per slice per L2 cycle. ROP-delay output has a separate budget of two sectors
   per L2 cycle.

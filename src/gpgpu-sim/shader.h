@@ -2280,6 +2280,9 @@ class shader_core_config : public core_config {
   int simt_core_sim_order;
 
   unsigned smem_latency;
+  unsigned gpgpu_smem_store_visibility_latency;
+  unsigned gpgpu_named_barrier_arrive_latency;
+  unsigned gpgpu_named_barrier_arrive_visibility_latency;
 
   unsigned mem2device(unsigned memid) const { return memid + n_simt_clusters; }
 
@@ -2801,6 +2804,9 @@ class shader_core_ctx : public core_t {
   void warp_inst_complete(const warp_inst_t &inst);
   void complete_inst_without_writeback(warp_inst_t *inst);
   void begin_alu_scoreboard_forwarding(const warp_inst_t &inst);
+  void complete_shared_store(unsigned warp_id);
+  bool named_barrier_issue_ready(unsigned warp_id) const;
+  bool named_arrive_warp_ready(unsigned warp_id) const;
 
   // accessors
   std::list<unsigned> get_regs_written(const inst_t &fvt) const;
@@ -3274,6 +3280,20 @@ class shader_core_ctx : public core_t {
   };
   std::multimap<unsigned long long, alu_forward_event_t> m_alu_forward_events;
   void process_alu_scoreboard_forwarding(unsigned long long cycle);
+  struct shared_barrier_state {
+    unsigned pending_stores = 0;
+    unsigned pending_arrivals = 0;
+    unsigned long long stores_visible = 0;
+    unsigned long long arrive_ready = 0;
+  };
+  std::vector<shared_barrier_state> m_shared_barrier_state;
+  struct named_arrival_event {
+    unsigned cta_id, warp_id, dynamic_warp_id, bar_id, bar_count;
+    address_type pc;
+  };
+  std::multimap<unsigned long long, named_arrival_event> m_named_arrivals;
+  void issue_named_arrival(unsigned warp_id, const warp_inst_t &inst);
+  void process_named_arrivals(unsigned long long cycle);
   unsigned long long m_subpartition_issue_mask;
   bool m_wgmma_issued_this_cycle;
 

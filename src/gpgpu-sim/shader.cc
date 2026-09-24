@@ -734,6 +734,7 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
   m_config = config;
   m_memory_config = mem_config;
   m_stats = stats;
+  m_shared_barrier_state.resize(config->max_warps_per_shader);
   // unsigned warp_size = config->warp_size;
   Issue_Prio = 0;
 
@@ -778,6 +779,8 @@ void shader_core_ctx::reinit(unsigned start_thread, unsigned end_thread,
   }
   for (unsigned i = start_thread / m_config->warp_size;
        i < end_thread / m_config->warp_size; ++i) {
+    assert(m_shared_barrier_state[i].pending_arrivals == 0);
+    m_shared_barrier_state[i] = shared_barrier_state{};
     m_warp[i]->reset();
     m_simt_stack[i]->reset();
   }
@@ -824,6 +827,9 @@ void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
         start_pc = pc;
       }
 
+      assert(m_shared_barrier_state[i].pending_arrivals == 0);
+      assert(m_shared_barrier_state[i].pending_stores == 0);
+      m_shared_barrier_state[i] = shared_barrier_state{};
       m_warp[i]->init(start_pc, cta_id, i, active_threads, m_dynamic_warp_id,
                       kernel.get_streamID());
       ++m_dynamic_warp_id;
@@ -2238,10 +2244,22 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     }
   }
 
+  // Use the post-execution mask/space: predication and generic-address
+  // resolution can change which shared stores actually entered the pipeline.
+  if ((*pipe_reg)->is_store() &&
+      (*pipe_reg)->space.get_type() == shared_space &&
+      (*pipe_reg)->get_active_mask().any())
+    ++m_shared_barrier_state[warp_id].pending_stores;
+
   if (next_inst->op == BARRIER_OP) {
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
-    m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
-                                    const_cast<warp_inst_t *>(next_inst));
+    if ((*pipe_reg)->get_active_mask().any()) {
+      if (next_inst->bar_type == ARRIVE)
+        issue_named_arrival(warp_id, *next_inst);
+      else
+        m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
+                                        const_cast<warp_inst_t *>(next_inst));
+    }
   } else if (is_tcgen05_commit) {
     if ((*pipe_reg)->get_active_mask().test(0)) {
       assert(mbarrier_dyn_inst != NULL);
@@ -2696,7 +2714,9 @@ void scheduler_unit::cycle() {
             fflush(stderr);
             abort();
           }
-          if (!m_scoreboard->checkCollision(warp_id, pI)) {
+          if (!m_scoreboard->checkCollision(warp_id, pI) &&
+              (pI->op != BARRIER_OP ||
+               m_shader->named_barrier_issue_ready(warp_id))) {
             SCHED_GPPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
                 (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
@@ -3021,7 +3041,9 @@ void scheduler_unit::cycle() {
         else
           do_on_warp_issued(warp_id, issued, iter);
         if (warpgroup_inst_issued) break;
-      } else if (current_inst && !m_scoreboard->checkCollision(warp_id, pI)) {
+      } else if (current_inst && !m_scoreboard->checkCollision(warp_id, pI) &&
+                 (pI->op != BARRIER_OP ||
+                  m_shader->named_barrier_issue_ready(warp_id))) {
         issue_trace_log(m_shader, m_id, warp_id, (*iter)->get_dynamic_warp_id(),
                         pI, "STALL_READY_NO_ISSUE", "-");
       }
@@ -3074,7 +3096,9 @@ void scheduler_unit::cycle() {
     if (issued_inst && wid == issued_warp_id) {
       reason = STALL_SELECTED;
     } else if (warp(wid).waiting()) {
-      if (m_shader->warp_waiting_at_barrier(wid)) {
+      if (!m_shader->named_arrive_warp_ready(wid)) {
+        reason = STALL_BARRIER;
+      } else if (m_shader->warp_waiting_at_barrier(wid)) {
         auto btype = m_shader->get_warp_barrier_type(wid);
         if (btype == BARRIER_WAIT_MBARRIER ||
             btype == BARRIER_WAIT_BULK_GROUP ||
@@ -3112,6 +3136,9 @@ void scheduler_unit::cycle() {
       // from this statistics-only pass.
       if (!current_inst) {
         reason = STALL_NO_INSTRUCTION;
+      } else if (pI->op == BARRIER_OP &&
+                 !m_shader->named_barrier_issue_ready(wid)) {
+        reason = STALL_BARRIER;
       } else if (m_scoreboard->checkCollision(wid, pI)) {
         // Scoreboard stall — classify by producer type
         reg_producer_t prod = m_scoreboard->getCollisionType(wid, pI);
@@ -5048,6 +5075,9 @@ void ldst_unit::cycle() {
       }
     } else {
       // stores exit pipeline here
+      if (pipe_reg.is_store() && pipe_reg.space.get_type() == shared_space &&
+          pipe_reg.get_active_mask().any())
+        m_core->complete_shared_store(warp_id);
       m_core->dec_inst_in_pipeline(warp_id);
       m_core->warp_inst_complete(*m_dispatch_reg);
       m_dispatch_reg->clear();
@@ -5947,6 +5977,7 @@ void shader_core_ctx::cycle() {
   execute();
   process_alu_scoreboard_forwarding(m_gpu->gpu_tot_sim_cycle +
                                    m_gpu->gpu_sim_cycle);
+  process_named_arrivals(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
   m_ldst_unit->end_memory_transport_cycle();
   read_operands();
   issue();
@@ -6472,6 +6503,74 @@ void barrier_set_t::dump() const {
   fflush(stdout);
 }
 
+void shader_core_ctx::complete_shared_store(unsigned warp_id) {
+  auto &state = m_shared_barrier_state[warp_id];
+  assert(state.pending_stores > 0);
+  --state.pending_stores;
+  state.stores_visible = std::max(
+      state.stores_visible, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle +
+                                m_config->gpgpu_smem_store_visibility_latency);
+}
+
+bool shader_core_ctx::named_barrier_issue_ready(unsigned warp_id) const {
+  const auto &state = m_shared_barrier_state[warp_id];
+  // Preserve barrier order while ordinary instructions may resume before
+  // a previous nonblocking arrive becomes visible.
+  return state.pending_stores == 0 && state.pending_arrivals == 0 &&
+         state.stores_visible <=
+             m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+}
+
+bool shader_core_ctx::named_arrive_warp_ready(unsigned warp_id) const {
+  return m_shared_barrier_state[warp_id].arrive_ready <=
+         m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+}
+
+void shader_core_ctx::issue_named_arrival(unsigned warp_id,
+                                          const warp_inst_t &inst) {
+  const auto now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+  auto &state = m_shared_barrier_state[warp_id];
+  state.arrive_ready = now + m_config->gpgpu_named_barrier_arrive_latency;
+  const unsigned cta_id = m_warp[warp_id]->get_cta_id();
+  const unsigned delay =
+      m_config->gpgpu_named_barrier_arrive_visibility_latency;
+  if (delay == 0) {
+    m_barriers.warp_reaches_barrier(cta_id, warp_id,
+                                    const_cast<warp_inst_t *>(&inst));
+    return;
+  }
+  m_named_arrivals.emplace(
+      now + delay, named_arrival_event{cta_id, warp_id,
+                                       m_warp[warp_id]->get_dynamic_warp_id(),
+                                       inst.bar_id, inst.bar_count, inst.pc});
+  ++state.pending_arrivals;
+  // Retain resource lifetime until delivery without holding instruction issue.
+  m_warp[warp_id]->inc_inst_in_pipeline();
+}
+
+void shader_core_ctx::process_named_arrivals(unsigned long long cycle) {
+  while (!m_named_arrivals.empty() &&
+         m_named_arrivals.begin()->first <= cycle) {
+    const auto event = m_named_arrivals.begin()->second;
+    m_named_arrivals.erase(m_named_arrivals.begin());
+    auto &state = m_shared_barrier_state[event.warp_id];
+    assert(state.pending_arrivals > 0);
+    assert(m_warp[event.warp_id]->get_dynamic_warp_id() ==
+           event.dynamic_warp_id);
+    assert(m_warp[event.warp_id]->get_cta_id() == event.cta_id);
+    warp_inst_t arrival;
+    arrival.bar_type = ARRIVE;
+    arrival.bar_id = event.bar_id;
+    arrival.bar_count = event.bar_count;
+    arrival.pc = event.pc;
+    m_barriers.warp_reaches_barrier(event.cta_id, event.warp_id, &arrival);
+    --state.pending_arrivals;
+    m_warp[event.warp_id]->dec_inst_in_pipeline();
+    if (state.pending_arrivals == 0 && m_warp[event.warp_id]->functional_done())
+      warp_exit(event.warp_id);
+  }
+}
+
 void shader_core_ctx::warp_exit(unsigned warp_id) {
   bool done = true;
   for (unsigned i = warp_id * get_config()->warp_size;
@@ -6485,7 +6584,10 @@ void shader_core_ctx::warp_exit(unsigned warp_id) {
   }
   // if (m_warp[warp_id].get_n_completed() == get_config()->warp_size)
   // if (this->m_simt_stack[warp_id]->get_num_entries() == 0)
-  if (done) m_barriers.warp_exit(warp_id);
+  // An issued arrive must reach the barrier before the warp is removed from
+  // its participants. Pending events also retain the warp's pipeline lifetime.
+  if (done && m_shared_barrier_state[warp_id].pending_arrivals == 0)
+    m_barriers.warp_exit(warp_id);
 }
 
 bool shader_core_ctx::check_if_non_released_reduction_barrier(
@@ -6640,6 +6742,8 @@ bool shd_warp_t::hardware_done() const {
 bool shd_warp_t::waiting() {
   if (functional_done()) {
     // waiting to be initialized with a kernel
+    return true;
+  } else if (!m_shader->named_arrive_warp_ready(m_warp_id)) {
     return true;
   } else if (m_shader->warp_waiting_at_barrier(m_warp_id)) {
     // waiting for other warps in CTA to reach barrier

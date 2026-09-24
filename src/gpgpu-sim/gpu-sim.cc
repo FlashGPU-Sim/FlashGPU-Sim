@@ -477,6 +477,18 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &m_L1D_config.l1_latency, "L1 Hit Latency", "1");
   option_parser_register(opp, "-gpgpu_smem_latency", OPT_UINT32, &smem_latency,
                          "smem Latency", "3");
+  option_parser_register(opp, "-gpgpu_smem_store_visibility_latency",
+                         OPT_UINT32, &gpgpu_smem_store_visibility_latency,
+                         "Shared-store dispatch completion to named-barrier "
+                         "issue delay",
+                         "0");
+  option_parser_register(opp, "-gpgpu_named_barrier_arrive_latency", OPT_UINT32,
+                         &gpgpu_named_barrier_arrive_latency,
+                         "Named arrive issue to issuing-warp readiness", "0");
+  option_parser_register(opp, "-gpgpu_named_barrier_arrive_visibility_latency",
+                         OPT_UINT32,
+                         &gpgpu_named_barrier_arrive_visibility_latency,
+                         "Named arrive issue to waiter-visible arrival", "0");
   option_parser_register(opp, "-gpgpu_cache:dl1PrefL1", OPT_CSTR,
                          &m_L1D_config.m_config_stringPrefL1,
                          "per-shader L1 data cache config "

@@ -9,6 +9,7 @@ sources = [
   "integration/vector_operand_test.cu",
   "integration/vector_add_test.cu",
   "integration/shared_memory_optin_test.cu",
+  "barrier/named_barrier_test.cu",
   "integration/ldst_matrix_test.cu",
   "integration/ldst_multi_sector_test.cu",
   "integration/cp_async_src_size_test.cu",
