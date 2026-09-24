@@ -788,6 +788,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Ideal tensor-core pre-FU issue queue depth. 0 disables the queue.",
       "0");
   option_parser_register(
+      opp, "-gpgpu_alu_scoreboard_forwarding", OPT_BOOL,
+      &gpgpu_alu_scoreboard_forwarding,
+      "Expose ALU results before physical writeback using opcode latency as "
+      "issue-to-dependent-ready with execution queue delays preserved",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_tensor_core_skip_writeback", OPT_BOOL,
       &gpgpu_tensor_core_skip_writeback,
       "Complete tensor-core instructions without using the register-file "

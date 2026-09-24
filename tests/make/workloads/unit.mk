@@ -2,6 +2,9 @@
 
 UNIT_MK := $(lastword $(MAKEFILE_LIST))
 
+$(OBJ_DIR)/sm100/unit/scoreboard_forwarding_test.cc.o: \
+  $(SRC_DIR)/gpgpu-sim/scoreboard.h $(SRC_DIR)/abstract_hardware_model.h
+
 TEST_GROUP_EXTRA_OBJECTS_sm100_unit := \
 	$(OBJ_DIR)/sm100/support/addrdec.cc.o \
 	$(OBJ_DIR)/sm100/support/hashing.cc.o \

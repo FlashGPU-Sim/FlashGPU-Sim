@@ -30,6 +30,7 @@ sources = [
   "unit/memory_transport_test.cc",
   "unit/ptx_scheduler_test.cc",
   "unit/register_view_reload_test.cc",
+  "unit/scoreboard_forwarding_test.cc",
   "unit/mbarrier_retry_timing_test.cc",
   "unit/rop_delay_output_test.cc",
   "unit/tcgen05_tmem_test.cc",

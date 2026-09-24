@@ -284,11 +284,24 @@ represent the calibrated default models.
 | `-gpgpu_cp_async_idealized_memory` | `0` | Complete ordinary `cp.async` requests immediately |
 | `-gpgpu_tensor_core_issue_queue_depth` | `0` | Add an ideal pre-functional-unit tensor-core queue; `0` disables it |
 | `-gpgpu_tensor_core_skip_writeback` | `0` | Complete tensor-core instructions without the register-file writeback path |
+| `-gpgpu_alu_scoreboard_forwarding` | `0` | Interpret ordinary ALU opcode latency as issue-to-dependent-ready; preserve extra execution queue delay and physical writeback occupancy |
 | `-gpgpu_tensor_core_units_per_sub_partition` | `1` | Tensor issue units sharing each ideal queue subpartition |
 | `-gpgpu_tma_request_bytes_per_cycle` | `0` | Apply a TMA request-side byte budget; `0` disables the budget |
 | `-gpgpu_dram_frfcfs_rowhit_first` | `0` | Prefer row-hit banks during FR-FCFS bank assignment |
 
 ## Custom Configurations
+
+ALU scoreboard forwarding applies to the PTX register dependency model. With
+forwarding enabled, a producer admitted to its execution unit at cycle `E`,
+issued at cycle `I`, and configured with latency `L` becomes dependency-ready
+at `max(I + L, E + max(L - 2, 0))`. The two-cycle term represents nominal
+issue/operand-collector transit. Additional collector or execution queue
+delays remain visible. The physical pipeline and writeback still run to
+completion; producer identities protect younger writes from older completion
+events. Memory, tensor-core, and asynchronous barrier results are excluded.
+Enabling this option changes the meaning of existing ALU latency settings;
+calibrate those settings with dependent chains before enabling it in a GPU
+configuration. The supported configurations currently keep it disabled.
 
 Create a custom configuration by copying the closest supported model as a
 complete directory:

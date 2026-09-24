@@ -2191,6 +2191,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_tensor_core_units_per_sub_partition;
   unsigned int gpgpu_tensor_core_issue_queue_depth;
   bool gpgpu_tensor_core_skip_writeback;
+  bool gpgpu_alu_scoreboard_forwarding;
   unsigned int gpgpu_num_dp_units;
   unsigned int gpgpu_num_sfu_units;
   unsigned int gpgpu_num_tensor_core_units;
@@ -2799,6 +2800,7 @@ class shader_core_ctx : public core_t {
   void set_max_cta(const kernel_info_t &kernel);
   void warp_inst_complete(const warp_inst_t &inst);
   void complete_inst_without_writeback(warp_inst_t *inst);
+  void begin_alu_scoreboard_forwarding(const warp_inst_t &inst);
 
   // accessors
   std::list<unsigned> get_regs_written(const inst_t &fvt) const;
@@ -3265,6 +3267,13 @@ class shader_core_ctx : public core_t {
 
   // issue
   unsigned int Issue_Prio;
+  struct alu_forward_event_t {
+    unsigned warp_id;
+    unsigned inst_uid;
+    unsigned outputs[MAX_OUTPUT_VALUES];
+  };
+  std::multimap<unsigned long long, alu_forward_event_t> m_alu_forward_events;
+  void process_alu_scoreboard_forwarding(unsigned long long cycle);
   unsigned long long m_subpartition_issue_mask;
   bool m_wgmma_issued_this_cycle;
 

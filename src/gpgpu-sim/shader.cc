@@ -4504,6 +4504,7 @@ void pipelined_simd_unit::issue(register_set &source_reg) {
   unsigned issue_reg_id = this->get_issue_reg_id();
   warp_inst_t **ready_reg =
       source_reg.get_ready(partition_issue, issue_reg_id);
+  m_core->begin_alu_scoreboard_forwarding(**ready_reg);
   m_core->incexecstat((*ready_reg));
   // source_reg.move_out_to(m_dispatch_reg);
   simd_function_unit::issue(source_reg);
@@ -5928,6 +5929,8 @@ void shader_core_ctx::cycle() {
   m_stats->shader_cycles[m_sid]++;
   writeback();
   execute();
+  process_alu_scoreboard_forwarding(m_gpu->gpu_tot_sim_cycle +
+                                   m_gpu->gpu_sim_cycle);
   m_ldst_unit->end_memory_transport_cycle();
   read_operands();
   issue();
@@ -5937,8 +5940,38 @@ void shader_core_ctx::cycle() {
   }
 }
 
-// Flushes all content of the cache to memory
+void shader_core_ctx::begin_alu_scoreboard_forwarding(const warp_inst_t &inst) {
+  if (!m_config->gpgpu_alu_scoreboard_forwarding) return;
+  if (inst.op != SP_OP && inst.op != INTP_OP && inst.op != ALU_OP &&
+      inst.op != SFU_OP && inst.op != ALU_SFU_OP && inst.op != DP_OP)
+    return;
+  bool has_output = false;
+  alu_forward_event_t event;
+  event.warp_id = inst.warp_id();
+  event.inst_uid = inst.get_uid();
+  for (unsigned r = 0; r < MAX_OUTPUT_VALUES; ++r) {
+    event.outputs[r] = inst.out[r];
+    has_output |= inst.out[r] != 0;
+  }
+  if (!has_output) return;
+  const auto cycle = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+  m_alu_forward_events.emplace(
+      scoreboard_forward_ready_cycle(inst.get_issue_cycle(), cycle, inst.latency),
+      event);
+}
 
+void shader_core_ctx::process_alu_scoreboard_forwarding(
+    unsigned long long cycle) {
+  while (!m_alu_forward_events.empty() &&
+         m_alu_forward_events.begin()->first <= cycle) {
+    const auto &event = m_alu_forward_events.begin()->second;
+    m_scoreboard->markRegistersReadyForWarp(event.warp_id, event.inst_uid,
+                                          event.outputs);
+    m_alu_forward_events.erase(m_alu_forward_events.begin());
+  }
+}
+
+// Flushes all content of the cache to memory
 void shader_core_ctx::cache_flush() { m_ldst_unit->flush(); }
 
 void shader_core_ctx::cache_invalidate() { m_ldst_unit->invalidate(); }
