@@ -9,7 +9,7 @@ namespace {
 tcgen05_timing_config_t config(unsigned depth = 0) {
   tcgen05_timing_config_t result;
   result.mma_issue_interval = 2;
-  result.mma_completion_base = 3;
+  result.mma_completion_tail_latency = 3;
   result.mma_f16_flops_per_cycle = 16;
   result.async_queue_depth = depth;
   return result;

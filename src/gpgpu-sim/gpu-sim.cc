@@ -939,8 +939,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       &ptx_opcode_tcgen05_mma_issue_interval,
       "Minimum cycles between accepted TCGen05 FP16 MMA operations", "1");
   option_parser_register(
-      opp, "-ptx_opcode_tcgen05_mma_completion_base", OPT_UINT32,
-      &ptx_opcode_tcgen05_mma_completion_base,
+      opp, "-ptx_opcode_tcgen05_mma_completion_tail_latency", OPT_UINT32,
+      &ptx_opcode_tcgen05_mma_completion_tail_latency,
       "Fixed TCGen05 MMA completion tail in cycles", "0");
   option_parser_register(
       opp, "-ptx_opcode_tcgen05_mma_f16_flops_per_cycle", OPT_UINT32,

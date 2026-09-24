@@ -111,7 +111,8 @@ flash_gpgpu_sim::tcgen05_timing_config_t tcgen05_timing_config(
     const shader_core_config *config) {
   flash_gpgpu_sim::tcgen05_timing_config_t result;
   result.mma_issue_interval = config->ptx_opcode_tcgen05_mma_issue_interval;
-  result.mma_completion_base = config->ptx_opcode_tcgen05_mma_completion_base;
+  result.mma_completion_tail_latency =
+      config->ptx_opcode_tcgen05_mma_completion_tail_latency;
   result.mma_f16_flops_per_cycle =
       config->ptx_opcode_tcgen05_mma_f16_flops_per_cycle;
   result.async_queue_depth = config->gpgpu_tcgen05_async_queue_depth;

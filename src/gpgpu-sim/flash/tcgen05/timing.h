@@ -35,7 +35,7 @@ struct tcgen05_warp_stream_key_t {
 
 struct tcgen05_timing_config_t {
   unsigned mma_issue_interval = 1;
-  unsigned mma_completion_base = 0;
+  unsigned mma_completion_tail_latency = 0;
   unsigned mma_f16_flops_per_cycle = 1;
   unsigned async_queue_depth = 0;
 };

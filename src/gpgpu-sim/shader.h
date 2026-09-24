@@ -2231,7 +2231,7 @@ class shader_core_config : public core_config {
   bool gpgpu_wgmma_rf_traffic_assume_accumulate;
   bool gpgpu_wgmma_rf_traffic_include_rs_a;
   unsigned int ptx_opcode_tcgen05_mma_issue_interval;
-  unsigned int ptx_opcode_tcgen05_mma_completion_base;
+  unsigned int ptx_opcode_tcgen05_mma_completion_tail_latency;
   unsigned int ptx_opcode_tcgen05_mma_f16_flops_per_cycle;
   unsigned int gpgpu_tcgen05_async_queue_depth;
   char *ptx_opcode_tcgen05_cp_completion_latency;

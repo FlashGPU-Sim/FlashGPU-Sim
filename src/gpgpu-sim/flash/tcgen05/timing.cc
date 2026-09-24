@@ -73,7 +73,7 @@ tcgen05_unit_t::enqueue_thread_op(const tcgen05_thread_stream_key_t &stream,
                m_config.mma_f16_flops_per_cycle);
     pending.backend_done_cycle = m_mma_busy_period_start_cycle + compute_cycles;
     pending.completion_cycle =
-        pending.backend_done_cycle + m_config.mma_completion_base;
+        pending.backend_done_cycle + m_config.mma_completion_tail_latency;
     m_mma_backend_available_cycle = pending.backend_done_cycle;
     m_next_issue_cycle[op.kind] = cycle + m_config.mma_issue_interval;
   } else {
