@@ -164,6 +164,12 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
                          "Opcode latencies for SFU instructions"
                          "Default 8",
                          "8");
+  option_parser_register(opp, "-ptx_opcode_latency_ex2", OPT_UINT32,
+                         &opcode_latency_ex2,
+                         "EX2 latency; 0 inherits SFU latency", "0");
+  option_parser_register(opp, "-ptx_opcode_latency_predicate", OPT_UINT32,
+                         &opcode_latency_predicate,
+                         "SETP/SELP latency; 0 preserves legacy one-cycle ALU", "0");
   option_parser_register(opp, "-ptx_opcode_latency_f32x2", OPT_UINT32,
                          &opcode_latency_f32x2,
                          "Packed f32x2 arithmetic latency; 0 inherits scalar FP",
@@ -1344,6 +1350,14 @@ void ptx_instruction::set_opcode_and_latency() {
   initiation_interval = latency = 1;
   bool packed_timing = false;
   switch (m_opcode) {
+    case SETP_OP:
+    case SELP_OP:
+      if (gpgpu_ctx->func_sim->opcode_latency_predicate) {
+        latency = gpgpu_ctx->func_sim->opcode_latency_predicate;
+        initiation_interval = 1;
+        op = INTP_OP;
+      }
+      break;
     case CVT_OP:
       if (m_scalar_type.size() == 2 && get_type() == F16X2_TYPE &&
           get_type2() == F32_TYPE) {
@@ -1656,6 +1670,8 @@ void ptx_instruction::set_opcode_and_latency() {
     case RSQRT_OP:
     case RCP_OP:
       latency = sfu_latency;
+      if (m_opcode == EX2_OP && gpgpu_ctx->func_sim->opcode_latency_ex2)
+        latency = gpgpu_ctx->func_sim->opcode_latency_ex2;
       initiation_interval = sfu_init;
       op = SFU_OP;
       break;
@@ -1773,6 +1789,12 @@ void ptx_instruction::set_opcode_and_latency() {
     fprintf(stderr,
             "GPGPU-Sim PTX: invalid packed timing: latency=%u initiation=%u\n",
             latency, initiation_interval);
+    abort();
+  }
+  if ((m_opcode == EX2_OP || m_opcode == SETP_OP || m_opcode == SELP_OP) &&
+      (initiation_interval == 0 || latency < initiation_interval ||
+       latency >= simd_function_unit::MAX_ALU_LATENCY)) {
+    fprintf(stderr, "GPGPU-Sim PTX: invalid EX2/predicate timing\n");
     abort();
   }
   set_fp_or_int_archop();

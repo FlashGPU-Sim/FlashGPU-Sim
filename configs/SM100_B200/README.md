@@ -1,121 +1,110 @@
 # SM100_B200 Configuration
 
-Full-scale functional B200/SM100 simulator configuration for FA4 launch and
-TCGen05 coverage.
+PTX execution-driven configuration for datacenter Blackwell
+(`sm_100` / `sm_100a`), including TCGen05 and TMA modeling.
+The configuration combines architectural limits with effective timing and
+bandwidth models; it is not a complete reconstruction of the B200
+microarchitecture.
 
-## Purpose
+## Modeled device
 
-This configuration targets datacenter Blackwell PTX (`sm_100` / `sm_100a`) and
-keeps the B200 shared-memory limits visible to the simulator:
+| Property | Configuration |
+| --- | --- |
+| Compute capability | 10.0 |
+| SMs | 148 |
+| Resident threads / warps per SM | 2048 / 64 |
+| Shared memory per SM | 228 KiB |
+| Default / opt-in shared memory per block | 48 / 227 KiB |
+| Unified L1/shared capacity per SM | 256 KiB |
+| L2 topology | 16 channels, 12 slices per channel |
+| Modeled L2 capacity | 126 MiB |
+| Core / interconnect / L2 / DRAM clocks | 1080 / 1080 / 1155 / 3996 MHz |
 
-- Compute capability: 10.0 / `sm_100`
-- PTX force-max capability: 100
-- SM count: 148
-- Shared memory per SM: 228 KB
-- Default shared memory per block: 48 KB
-- Maximum opt-in shared memory per block: 227 KB
-- Unified L1/shared capacity: 256 KB
-- L2 topology: 16 memory channels x 12 slices = 192 instances
-- Modeled L2 capacity: 126 MiB (approximately 128 MiB)
+See [gpgpusim.config](gpgpusim.config) for the complete parameter set.
 
-The 12 slices in each channel use consecutive channel indexing plus the
-explicit stable-rotation policy (`-gpgpu_non_power2_l2_slice_mapping 1`). This
-mapping is independent of the detailed DRAM-bank count and is not an IPOLY
-mode. In the absence of public hardware evidence for the B200 L2-slice hash,
-the stable rotation is a deterministic modeling assumption.
+## Compute timing
 
-The L2 uses the optional multi-issue sector-port model with independent
-lookup, hit/dirty-eviction data, and fill widths of three 32-byte sector work
-packages per L2 instance and L2 tick. These widths are current deterministic
-model values, not publicly documented B200 physical-port counts. Legacy
-cache-port utilization statistics apply only when the legacy port model is
-selected; the multi-issue model reports accepted sector work and width stalls
-separately for lookup, data, and fill.
+ALU scoreboard forwarding is enabled. Dependent instructions may consume a
+ready result before physical writeback; execution queue delays and execution
+and writeback resource occupancy remain modeled.
 
-Ready requests leave the fixed-latency ROP-delay queues through a separate
-three-sector-per-L2-tick service model. The latency and output width remain
-independent: each child keeps its assigned ready cycle, while the width only
-controls ready 32-byte sector children entering the bounded L2 input FIFO.
-Three is a candidate chosen for sensitivity testing alongside lookup width
-three, not a publicly documented B200 ROP-port count.
+The following values are in core cycles. Latency specifies the modeled result
+timing, while initiation interval controls execution-unit issue spacing.
 
-Across the wider transport path, LD/ST, TMA, and ordinary
-`cp.async` retain separate local producer/consumer limits. The TMA and
-`cp.async` configurations use 32-byte requests with width four, so either type
-can use the full shared four-sector request or response budget when it runs
-alone. Mixed responses still arbitrate within one four-sector cluster-dispatch
-budget.
+| Instruction class | Latency | Initiation interval |
+| --- | --- | --- |
+| Scalar FP32 ADD / MUL / MAD | 4 | 1 |
+| FP32 MIN / MAX | 5 | 1 |
+| Packed `f32x2` arithmetic | Corresponding scalar FP latency | 2 |
+| Packed `cvt.f16x2.f32` | 4 | 2 |
+| EX2 | 18 | 8 |
+| Other instructions using generic SFU timing | 28 | 8 |
+| SETP / SELP | 5 | 1 |
 
-The full model limits each SM to 3200 issued TMA child requests awaiting a
-response. This finite capacity covers the current uniform DRAM approximation's
-bandwidth-delay product: four 32-byte child responses per core cycle times the
-800-cycle endpoint target gives 3200 requests. The value is not a measurement
-of the physical B200 queue depth. The independent four-request response service
-continues to limit steady-state TMA bandwidth to 128 B/core-cycle.
+Packed conversion and predicate instructions use the INT execution path in
+this configuration. Packed arithmetic uses SP; EX2 uses SFU. No separate
+packed-conversion subpipeline is modeled.
 
-The per-transaction fairness quota is disabled with
-`-gpgpu_tma_tx_quota 0`, so quota-driven transaction rotation does not throttle
-the single-SM TMA service target. The SM-wide 3200-request tracking cap and the
-four-request issue/response widths remain active.
+These values include Blackwell-family approximations informed by SM120
+measurements and SM100 compiler scheduling. They are not all direct B200
+measurements; compiler scheduling alone does not establish hardware latency.
+The common packed-arithmetic and conversion rules extend beyond individually
+measured variants, and FP min/max timing has limited independent validation.
 
-After a physical CTA has drained outstanding TMA work and released its
-architectural resources, the same SM slot spends 1200 core cycles in a CTA
-context transition before another CTA can be admitted. A never-used slot's
-first admission is not delayed, and transitions on different SMs overlap. This
-models repeated CTA replacement directly instead of folding it into the
-whole-grid kernel or thread-block launch latency. The current value is
-constrained by the approximately linear extra-wave timing of the B200 FA4
-causal workloads; it is not a published hardware queue or pipeline latency.
+## Memory and synchronization model
 
-Detailed DRAM timing and physical address-to-bank mapping remain functional
-placeholders; those parts are not calibrated against B200 hardware counters.
+- L2 lookup, data and fill service each have a budget of three 32-byte sectors
+  per slice per L2 cycle. ROP-delay output has a separate budget of two sectors
+  per L2 cycle.
+- Memory-channel selection uses the configured IPOLY mapping. The 12 L2 slices
+  per channel use a separate stable-rotation policy. These mappings and service
+  widths are modeling assumptions, not measured physical hashes or port counts.
+- TMA and ordinary `cp.async` use 32-byte requests with issue and response
+  widths of four. Mixed traffic shares the cluster's transport budget.
+- TMA permits up to 3200 outstanding child requests per SM. This is a
+  bandwidth-delay-product bound for four responses per core cycle and an
+  approximately 800-cycle memory endpoint, not a measured hardware queue depth.
+  Per-transaction quota throttling is disabled.
+- The simple DRAM model is enabled. Its delay and service parameters model
+  aggregate latency and bandwidth; detailed DRAM timing and physical bank
+  mapping are not independently calibrated.
+- CTA slot reuse has a 1200-core-cycle transition after outstanding work and
+  resources drain. First use of a slot is not delayed. TCGen05 MMA has a
+  160-cycle completion tail. Both are effective timing approximations rather
+  than intrinsic hardware instruction latencies.
+
+Application timing can be affected by interactions among these models.
+Functional correctness and agreement on individual workloads do not establish
+cycle accuracy for other workloads.
 
 ## Usage
 
+Build the simulator and source `setup_environment` as described in the
+repository setup instructions. Run tests from the repository root:
+
 ```bash
 ./tests/run_tests.py -c SM100_B200 run --arch sm100 --group unit
-./tests/dev/fa4/run_fa4_b200_cases.sh --config SM100_B200 --suite smoke
-./tests/dev/fa4/run_fa4_b200_cases.sh --config SM100_B200 --suite smoke --non-causal
-./tests/dev/fa4/run_fa4_b200_cases.sh --config SM100_B200 --suite smoke --artifact-head-dim 128
-./tests/dev/fa4/run_fa4_b200_suite_matrix.sh --config SM100_B200 --suite smoke
-./tests/dev/fa4/run_fa4_b200_suite_matrix.sh --config SM100_B200 --suite medium
+./tests/run_tests.py -c SM100_B200 run --arch sm100 --group integration
+```
+
+For PTX versions requiring a newer assembler, set `PTXAS_CUDA_INSTALL_PATH`
+to a compatible CUDA toolkit while keeping `CUDA_INSTALL_PATH` on the toolkit
+used to build the simulator.
+
+The standalone TMA throughput benchmark can be run with:
+
+```bash
 make -C tests/src/microbench/tma ARCH=sm_100a PTX_PROFILE=compute_100a \
   throughput-sim
 ```
 
-The active configuration uses the base-clock tuple
-`1080:1080:1155:3996`, matching the controlled FA4 calibration profile. A
-commented `1930:1930:1964:3996` tuple is kept next to it for coherent manual
-high-clock comparisons without maintaining a second configuration.
-
-The `throughput-sim` target runs one cold-L2/DRAM CTA with 512 unique 8 KiB
-TMA loads (4 MiB total), 28 stages, and four issuer warps. Its private run copy
-uses the coherent high-clock tuple `1930:1930:1964:3996`. Set
-`THROUGHPUT_TMA_MAX_INFLIGHT` on the make command line to compare another finite
-value or `0` (unlimited).
-
-The benchmark's elapsed-cycle result includes cold-pipeline startup and drain.
-For the steady-state service check, divide
+This target creates its own run configuration with clock domains
+`1930:1930:1964:3996`; it does not use the base-clock tuple unchanged.
+`THROUGHPUT_TMA_MAX_INFLIGHT` overrides its outstanding-request limit
+(`0` means unlimited). Elapsed kernel time includes startup and drain.
+For steady-state response bandwidth in bytes per core cycle, divide
 `gpgpu_cluster_response_dispatch_transport_accepted_data_sectors` by
 `gpgpu_cluster_response_dispatch_transport_service_ticks` and multiply by 32.
-At the private 1930 MHz throughput point, the result must be at least
-124.35 B/core-cycle (240 GB/s) and no more than the
-four-sector service limit of 128 B/core-cycle.  `tma_max_mf_inflight` and
-`tma_issue_blocked_inflight_cycles` distinguish tracking-cap stalls from that
-service limit.  The former is the maximum observed on any one SM; the latter
-is the sum of blocked SM-cycles across the GPU.
 
-`tests/dev/fa4/fa4_b200_cases.csv` follows the FA2/FA3 prefill workload groups:
-`smoke`, `small`, `medium`, and `large`.  Each generated FA4 artifact is still
-specialized by head dimension, dtype, and causal mode, so mismatched rows are
-reported as `SKIP`; use `tests/dev/fa4/run_fa4_b200_suite_matrix.sh` to run every
-artifact variant in a suite automatically.  The matrix runner also supports
-`--direction bwd`; backward defaults to export-only coverage to keep routine
-runs short, and `--run-bwd` enables the launch smoke.  Forward keeps the simple
-Q=K=0, V=1 numeric output check.  Backward currently checks that the generated
-kernel launches, synchronizes, and preserves input buffers; it does not yet
-validate gradients against a CPU reference.
-
-For FA4 artifacts that emit PTX 9.1 / `sm_100a`, point
-`PTXAS_CUDA_INSTALL_PATH` at a CUDA 13 Blackwell-capable ptxas while keeping
-`CUDA_INSTALL_PATH` on a toolkit usable by this GPGPU-Sim build.
+See the [CuTe DSL examples and validation guide](../../tests/dsl/cutedsl/README.md)
+for frontend capture and replay workflows.

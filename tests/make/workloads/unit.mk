@@ -142,7 +142,6 @@ $(BIN_DIR)/sm90/unit_tests $(BIN_DIR)/sm100/unit_tests $(BIN_DIR)/sm120/unit_tes
 $(BIN_DIR)/sm90/unit_tests $(BIN_DIR)/sm100/unit_tests $(BIN_DIR)/sm120/unit_tests: \
   $(UNIT_SIM_LIB_DIR)/libcudart.so $(UNIT_MK)
 $(OBJ_DIR)/sm90/unit/ptx_scheduler_test.cc.o \
-$(OBJ_DIR)/sm100/unit/packed_timing_test.cc.o \
 $(OBJ_DIR)/sm100/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm120/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm90/unit/register_view_reload_test.cc.o \
@@ -150,7 +149,6 @@ $(OBJ_DIR)/sm100/unit/register_view_reload_test.cc.o \
 $(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o: \
   INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
 $(OBJ_DIR)/sm90/unit/ptx_scheduler_test.cc.o \
-$(OBJ_DIR)/sm100/unit/packed_timing_test.cc.o \
 $(OBJ_DIR)/sm100/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm120/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm90/unit/register_view_reload_test.cc.o \

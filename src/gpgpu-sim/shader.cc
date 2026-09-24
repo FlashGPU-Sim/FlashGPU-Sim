@@ -5911,11 +5911,18 @@ void shader_core_config::set_pipeline_latency() {
   // all div operation are executed on sfu
   // assume that the max latency are dp div or normal sfu_latency
   max_sfu_latency = std::max(dp_latency[4], sfu_latency);
+  max_sfu_latency = std::max(max_sfu_latency,
+                            gpgpu_ctx->func_sim->opcode_latency_ex2);
   // Packed arithmetic can inherit any of the first four scalar FP latencies.
   max_sp_latency = fp_latency[1];
   for (unsigned i = 0; i < 4; ++i)
     max_sp_latency = std::max(max_sp_latency, fp_latency[i]);
   max_int_latency = std::max(int_latency[1], int_latency[5]);
+  max_int_latency = std::max(max_int_latency,
+                            gpgpu_ctx->func_sim->opcode_latency_predicate);
+  // Predicate ALU instructions fall back to SP when there is no INT unit.
+  max_sp_latency = std::max(max_sp_latency,
+                           gpgpu_ctx->func_sim->opcode_latency_predicate);
   max_sp_latency = std::max(max_sp_latency,
                            gpgpu_ctx->func_sim->opcode_latency_f32x2);
   // Packed CVT keeps the ALU route: INT when available, SP otherwise.
