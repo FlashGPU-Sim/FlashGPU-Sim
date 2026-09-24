@@ -9,6 +9,16 @@ sources = [
   "unit/local_interconnect_test.cc",
   "unit/mshr_table_test.cc",
   "unit/tma_reduction_test.cc",
+  "unit/cluster_dsm_store_test.cc",
+  "unit/cluster_hang_prevent_test.cc",
+  "unit/dsm_endpoint_test.cc",
+  "unit/dsm_fabric_test.cc",
+  "unit/gpu_topology_test.cc",
+  "unit/smem_service_test.cc",
+  "unit/tb_cluster_test.cc",
+  "unit/tensormap_test.cc",
+  "unit/tma_helpers_test.cc",
+  "unit/transport_test.cc",
 
   # Portable integration tests.
   "integration/address_operand_test.cu",

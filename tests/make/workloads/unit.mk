@@ -8,7 +8,10 @@ TEST_GROUP_EXTRA_OBJECTS_sm120_unit := \
 	$(OBJ_DIR)/sm120/support/local_interconnect.cc.o \
 	$(OBJ_DIR)/sm120/support/mshr-table.cu.o \
 	$(OBJ_DIR)/sm120/support/gpu_topology.cu.o \
-	$(OBJ_DIR)/sm120/support/option_parser.cc.o
+	$(OBJ_DIR)/sm120/support/option_parser.cc.o \
+	$(OBJ_DIR)/sm120/support/dsm_fabric.cc.o \
+	$(OBJ_DIR)/sm120/support/dsm_endpoint.cc.o \
+	$(OBJ_DIR)/sm120/support/tma_helpers.cc.o
 
 # Relink the unit binary when its support-object configuration changes.
 TEST_GROUP_EXTRA_PREREQUISITES_sm120_unit := $(UNIT_MK)
@@ -53,6 +56,25 @@ arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
 
 $(OBJ_DIR)/sm120/support/option_parser.cc.o: $(SRC_DIR)/option_parser.cc \
 $(SRC_DIR)/option_parser.h $(TOP_MAKEFILE) $(UNIT_MK) \
+arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
+$(OBJ_DIR)/sm120/support/dsm_fabric.cc.o: $(SRC_DIR)/gpgpu-sim/dsm_fabric.cc \
+$(SRC_DIR)/gpgpu-sim/dsm_fabric.h $(SRC_DIR)/gpgpu-sim/transport.h \
+$(SRC_DIR)/gpgpu-sim/gpu_topology.h $(TOP_MAKEFILE) $(UNIT_MK) \
+arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
+$(OBJ_DIR)/sm120/support/dsm_endpoint.cc.o: $(SRC_DIR)/gpgpu-sim/dsm_endpoint.cc \
+$(SRC_DIR)/gpgpu-sim/dsm_endpoint.h $(SRC_DIR)/gpgpu-sim/dsm_fabric.h \
+$(TOP_MAKEFILE) $(UNIT_MK) arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
+$(OBJ_DIR)/sm120/support/tma_helpers.cc.o: $(SRC_DIR)/gpgpu-sim/flash/tma_helpers.cc \
+$(SRC_DIR)/gpgpu-sim/flash/tma_helpers.h $(TOP_MAKEFILE) $(UNIT_MK) \
 arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
