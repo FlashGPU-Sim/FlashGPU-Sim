@@ -18,6 +18,17 @@ sources = [
   "unit/tma_issue_timing_test.cc",
   "unit/tma_reduction_test.cc",
   "unit/trace_validation_test.cc",
+  "unit/cluster_dsm_store_test.cc",
+  "unit/cluster_hang_prevent_test.cc",
+  "unit/dsm_endpoint_test.cc",
+  "unit/dsm_fabric_test.cc",
+  "unit/gpu_topology_test.cc",
+  "unit/smem_service_test.cc",
+  "unit/tb_cluster_test.cc",
+  "unit/tensormap_test.cc",
+  "unit/tma_helpers_test.cc",
+  "unit/transport_test.cc",
+>>>>>>> 09e9fb79 ([test]: Register DSM/cluster unit tests in the manifest runner)
 
   # Portable integration tests.
   "integration/address_operand_test.cu",
