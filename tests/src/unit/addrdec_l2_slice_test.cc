@@ -33,7 +33,8 @@ class ConfiguredAddressMapping {
       unsigned channels = kChannels,
       unsigned slices_per_channel = kSlicesPerChannel,
       unsigned ipoly_non_power2_balanced = 0,
-      unsigned ipoly_channel_stable_l2slice = 0) {
+      unsigned ipoly_channel_stable_l2slice = 0,
+      unsigned non_power2_l2_channel_indexing = 0) {
     parser_ = option_parser_create();
     mapping_.addrdec_setoption(parser_);
     const std::string indexing_arg = std::to_string(indexing);
@@ -43,6 +44,8 @@ class ConfiguredAddressMapping {
         std::to_string(ipoly_non_power2_balanced);
     const std::string ipoly_stable_arg =
         std::to_string(ipoly_channel_stable_l2slice);
+    const std::string channel_indexing_arg =
+        std::to_string(non_power2_l2_channel_indexing);
     const char *args[] = {
         "addrdec_l2_slice_test",
         "-gpgpu_mem_address_mask",
@@ -57,6 +60,8 @@ class ConfiguredAddressMapping {
         ipoly_balanced_arg.c_str(),
         "-gpgpu_ipoly_channel_stable_l2slice",
         ipoly_stable_arg.c_str(),
+        "-gpgpu_non_power2_l2_channel_indexing",
+        channel_indexing_arg.c_str(),
     };
     option_parser_cmdline(parser_, sizeof(args) / sizeof(args[0]), args);
     mapping_.init(channels, slices_per_channel);
@@ -109,6 +114,87 @@ TEST(AddrdecL2SliceTest, EveryTwelveLineWindowIsABalancedPermutation) {
     }
     EXPECT_TRUE(std::all_of(seen.begin(), seen.end(),
                             [](bool reached) { return reached; }));
+  }
+}
+
+TEST(AddrdecL2SliceTest, IPolyChannelHashSpreadsTmaRowStrideWithoutAliasing) {
+  ConfiguredAddressMapping decoded(
+      /*CONSECUTIVE=*/0, NON_POWER2_L2_SLICE_STABLE_ROTATION);
+  ConfiguredAddressMapping hashed(
+      /*CONSECUTIVE=*/0, NON_POWER2_L2_SLICE_STABLE_ROTATION, kChannels,
+      kSlicesPerChannel, /*ipoly_non_power2_balanced=*/0,
+      /*ipoly_channel_stable_l2slice=*/0,
+      /*non_power2_l2_channel_indexing=*/2);
+  std::array<unsigned long long, kChannels> decoded_channels{};
+  std::array<unsigned long long, kChannels> hashed_channels{};
+  std::unordered_set<unsigned long long> destinations;
+
+  constexpr new_addr_type kRowStride = 32768;
+  constexpr unsigned kRows = 8192;
+  for (unsigned row = 0; row < kRows; ++row) {
+    for (new_addr_type column = 0; column < 256; column += 128) {
+      const new_addr_type addr = row * kRowStride + column;
+      addrdec_t before{};
+      addrdec_t after{};
+      decoded->addrdec_tlx(addr, &before);
+      hashed->addrdec_tlx(addr, &after);
+      ++decoded_channels[before.chip];
+      ++hashed_channels[after.chip];
+
+      EXPECT_EQ(after.bk, before.bk);
+      EXPECT_EQ(after.row, before.row);
+      EXPECT_EQ(after.col, before.col);
+      EXPECT_EQ(after.burst, before.burst);
+      EXPECT_EQ(hashed->partition_address(addr),
+                decoded->partition_address(addr));
+      const unsigned long long destination =
+          (hashed->partition_address(addr) << 8) | after.sub_partition;
+      EXPECT_TRUE(destinations.insert(destination).second);
+    }
+  }
+
+  const auto decoded_nonzero =
+      std::count_if(decoded_channels.begin(), decoded_channels.end(),
+                    [](unsigned long long count) { return count != 0; });
+  const auto hashed_nonzero =
+      std::count_if(hashed_channels.begin(), hashed_channels.end(),
+                    [](unsigned long long count) { return count != 0; });
+  EXPECT_LT(decoded_nonzero, hashed_nonzero);
+  EXPECT_EQ(hashed_nonzero, kChannels);
+  const auto limits =
+      std::minmax_element(hashed_channels.begin(), hashed_channels.end());
+  EXPECT_LE(*limits.second - *limits.first, kRows / 50);
+
+  // The stride check above intentionally keeps the decoded channel fixed so
+  // it can expose the imbalance.  Separately cover every decoded-channel seed
+  // at the same channel-local addresses: the channel hash must be a
+  // permutation for each local address, otherwise two distinct raw addresses
+  // would alias to the same L2 destination.
+  std::unordered_set<unsigned long long> all_channel_destinations;
+  constexpr unsigned kAliasRows = 2048;
+  for (unsigned row = 0; row < kAliasRows; ++row) {
+    for (unsigned channel = 0; channel < kChannels; ++channel) {
+      for (new_addr_type column = 0; column < 256; column += 128) {
+        const new_addr_type addr = row * kRowStride +
+                                   channel * 256 + column;
+        addrdec_t before{};
+        addrdec_t after{};
+        decoded->addrdec_tlx(addr, &before);
+        hashed->addrdec_tlx(addr, &after);
+
+        ASSERT_EQ(before.chip, channel);
+        EXPECT_EQ(after.bk, before.bk);
+        EXPECT_EQ(after.row, before.row);
+        EXPECT_EQ(after.col, before.col);
+        EXPECT_EQ(after.burst, before.burst);
+        EXPECT_EQ(hashed->partition_address(addr),
+                  decoded->partition_address(addr));
+        const unsigned long long destination =
+            (hashed->partition_address(addr) << 8) | after.sub_partition;
+        EXPECT_TRUE(all_channel_destinations.insert(destination).second)
+            << "alias at raw address 0x" << std::hex << addr;
+      }
+    }
   }
 }
 

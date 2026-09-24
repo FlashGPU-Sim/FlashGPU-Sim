@@ -29,6 +29,104 @@ unsigned PopCount(xbar_router *router, unsigned output) {
   return count;
 }
 
+TEST(RequestMulticastGroupTrackerTest,
+     ActiveMasterCollectsOrderedWaitersAndClosesAtPop) {
+  request_multicast_group_tracker<int *, unsigned long long> tracker;
+  int master = 0;
+  int first_waiter = 1;
+  int second_waiter = 2;
+  unsigned long long waiter_count = 99;
+
+  EXPECT_TRUE(tracker.admit(0x100, &master, waiter_count));
+  EXPECT_EQ(waiter_count, 0u);
+  EXPECT_FALSE(tracker.admit(0x100, &first_waiter, waiter_count));
+  EXPECT_EQ(waiter_count, 1u);
+  EXPECT_FALSE(tracker.admit(0x100, &second_waiter, waiter_count));
+  EXPECT_EQ(waiter_count, 2u);
+
+  std::deque<int *> waiters;
+  ASSERT_TRUE(tracker.close_master(&master, waiters));
+  ASSERT_EQ(waiters.size(), 2u);
+  EXPECT_EQ(waiters[0], &first_waiter);
+  EXPECT_EQ(waiters[1], &second_waiter);
+
+  EXPECT_TRUE(tracker.admit(0x100, &first_waiter, waiter_count));
+  EXPECT_EQ(waiter_count, 0u);
+}
+
+TEST(RequestMulticastGroupTrackerTest,
+     InterveningAccessClosesOnlyTheActiveAddressGeneration) {
+  request_multicast_group_tracker<int *, unsigned long long> tracker;
+  int old_master = 0;
+  int old_waiter = 1;
+  int new_master = 2;
+  unsigned long long waiter_count = 0;
+
+  EXPECT_TRUE(tracker.admit(0x200, &old_master, waiter_count));
+  EXPECT_FALSE(tracker.admit(0x200, &old_waiter, waiter_count));
+  tracker.close_address(0x200);
+  EXPECT_TRUE(tracker.admit(0x200, &new_master, waiter_count));
+
+  std::deque<int *> old_waiters;
+  ASSERT_TRUE(tracker.close_master(&old_master, old_waiters));
+  ASSERT_EQ(old_waiters.size(), 1u);
+  EXPECT_EQ(old_waiters.front(), &old_waiter);
+  std::deque<int *> new_waiters;
+  EXPECT_TRUE(tracker.close_master(&new_master, new_waiters));
+  EXPECT_TRUE(new_waiters.empty());
+}
+
+TEST(LocalInterconnectTest,
+     ResponseMulticastUsesOnePhysicalReplyAndFansOutByDestination) {
+  inct_config config = NumericConfig(iSLIP, 1, 1);
+  config.tma_response_multicast = 1;
+  xbar_router router(/*router_id=*/1, REPLY_NET, /*n_shader=*/3, /*n_mem=*/1,
+                     config);
+  int master = 0;
+  int waiter_1 = 1;
+  int waiter_2 = 2;
+  std::vector<std::pair<unsigned, void *> > destinations;
+  destinations.push_back(std::make_pair(1u, (void *)&waiter_1));
+  destinations.push_back(std::make_pair(2u, (void *)&waiter_2));
+
+  router.PushMulticast(/*input_deviceID=*/3, /*output_deviceID=*/0, &master,
+                       /*size=*/32, /*data_sectors=*/1, destinations);
+  router.Advance();
+
+  // Once the physical reply reaches the xbar output side, independently
+  // buffered target clusters need not wait for the master's cluster to pop.
+  EXPECT_EQ(router.Pop(1), &waiter_1);
+  EXPECT_EQ(router.Pop(2), &waiter_2);
+  EXPECT_EQ(router.Pop(0), &master);
+  EXPECT_EQ(router.input_pushes[3], 1u);
+  EXPECT_EQ(router.output_pushes[0], 1u);
+  EXPECT_EQ(router.output_pushes[1], 0u);
+  EXPECT_EQ(router.output_pushes[2], 0u);
+}
+
+TEST(LocalInterconnectTest, ResponseMulticastPreservesWaiterOrderPerOutput) {
+  inct_config config = NumericConfig(iSLIP, 1, 1);
+  config.tma_response_multicast = 1;
+  xbar_router router(/*router_id=*/1, REPLY_NET, /*n_shader=*/2, /*n_mem=*/1,
+                     config);
+  int master = 0;
+  int first = 1;
+  int second = 2;
+  std::vector<std::pair<unsigned, void *> > destinations;
+  destinations.push_back(std::make_pair(0u, (void *)&first));
+  destinations.push_back(std::make_pair(0u, (void *)&second));
+
+  router.PushMulticast(/*input_deviceID=*/2, /*output_deviceID=*/0, &master,
+                       /*size=*/32, /*data_sectors=*/1, destinations);
+  router.Advance();
+
+  EXPECT_EQ(router.Pop(0), &master);
+  EXPECT_EQ(router.Top(0), &first);
+  EXPECT_EQ(router.Pop(0), &first);
+  EXPECT_EQ(router.Pop(0), &second);
+  EXPECT_EQ(router.Pop(0), nullptr);
+}
+
 TEST(LocalInterconnectTest, VoqGrantsEachInputAtMostOncePerCycle) {
   inct_config config{};
   config.in_buffer_limit = 8;

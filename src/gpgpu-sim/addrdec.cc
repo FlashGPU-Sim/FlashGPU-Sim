@@ -93,6 +93,7 @@ linear_to_raw_address_translation::linear_to_raw_address_translation() {
   addrdec_mask[4] = 0x000000000000000F;
   ipoly_non_power2_balanced = 0;
   ipoly_channel_stable_l2slice = 0;
+  non_power2_l2_channel_indexing = 0;
   non_power2_l2_slice_mapping = NON_POWER2_L2_SLICE_PLAIN;
 }
 
@@ -128,6 +129,13 @@ void linear_to_raw_address_translation::addrdec_setoption(option_parser_t opp) {
       "For non-power-of-two channel counts, keep the decoded DRAM channel "
       "stable and use IPOLY only to choose the L2 subpartition inside that "
       "channel. This preserves channel/row locality while balancing L2 slices.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_non_power2_l2_channel_indexing", OPT_UINT32,
+      &non_power2_l2_channel_indexing,
+      "Channel indexing used with a non-power-of-two per-channel L2-slice "
+      "count: 0 = decoded channel, 2 = 16-way IPOLY channel hash. The local-slice policy "
+      "remains independently selected.",
       "0");
   option_parser_register(
       opp, "-gpgpu_non_power2_l2_slice_mapping", OPT_UINT32,
@@ -220,10 +228,15 @@ void linear_to_raw_address_translation::addrdec_tlx(new_addr_type addr,
            "Non-power-of-two per-channel L2-slice counts require "
            "-gpgpu_memory_partition_indexing 0; select their mapping with "
            "-gpgpu_non_power2_l2_slice_mapping");
-    const bool balanced =
-        non_power2_l2_slice_mapping == NON_POWER2_L2_SLICE_STABLE_ROTATION;
+    const new_addr_type local_address = channel_address(addr);
+    if (non_power2_l2_channel_indexing == 2) {
+      tlx->chip = ipoly_hash_function(local_address >> ADDR_CHIP_S, tlx->chip,
+                                      m_n_channel);
+    }
+    assert(tlx->chip < m_n_channel);
     const unsigned sub_partition_in_channel = l2_slice_mapping::slice_index(
-        channel_address(addr), m_n_sub_partition_in_channel, balanced);
+        local_address, m_n_sub_partition_in_channel,
+        non_power2_l2_slice_mapping == NON_POWER2_L2_SLICE_STABLE_ROTATION);
     tlx->sub_partition =
         tlx->chip * m_n_sub_partition_in_channel + sub_partition_in_channel;
     assert(tlx->sub_partition < m_n_channel * m_n_sub_partition_in_channel);
@@ -432,6 +445,14 @@ void linear_to_raw_address_translation::init(
   assert(n_sub_partition_in_channel > 0);
   assert(non_power2_l2_slice_mapping >= NON_POWER2_L2_SLICE_PLAIN &&
          non_power2_l2_slice_mapping <= NON_POWER2_L2_SLICE_STABLE_ROTATION);
+  assert(non_power2_l2_channel_indexing == 0 ||
+         non_power2_l2_channel_indexing == 2);
+  assert((non_power2_l2_channel_indexing == 0 ||
+          l2_slice_mapping::is_power_of_two(n_channel)) &&
+         "Hashed L2 channel indexing requires a power-of-two channel count");
+  assert((non_power2_l2_channel_indexing != 2 ||
+          (n_channel >= 16 && n_channel <= 1024)) &&
+         "IPOLY L2 channel indexing supports 16 through 1024 channels");
   assert((l2_slice_mapping::is_power_of_two(n_sub_partition_in_channel) ||
           memory_partition_indexing == CONSECUTIVE) &&
          "Non-power-of-two per-channel L2-slice counts require "

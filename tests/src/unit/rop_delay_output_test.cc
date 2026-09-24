@@ -26,6 +26,7 @@ rop_delay_output_service_result service(
     std::vector<unsigned> &accepted, unsigned downstream_capacity = 1000) {
   return queue.service(
       cycle, width, [](const test_item *item) { return item->sectors; },
+      [](const test_item *) { return false; },
       [&accepted, downstream_capacity]() {
         return accepted.size() >= downstream_capacity;
       },
@@ -169,6 +170,37 @@ TEST(RopDelayOutputTest, DownstreamBackpressureRetainsOrderWithoutCredit) {
   EXPECT_TRUE(std::equal(first.begin(), first.end(), expected));
 }
 
+TEST(RopDelayOutputTest, BypassedItemsDoNotConsumeSourceWidth) {
+  test_queue queue;
+  std::vector<test_item> items = make_items(4, 40);
+  std::vector<unsigned> accepted;
+  std::vector<unsigned> bypassed;
+  for (unsigned i = 0; i < items.size(); ++i)
+    queue.push(&items[i], 0, false);
+
+  const rop_delay_output_service_result result = queue.service(
+      0, 2, [](const test_item *item) { return item->sectors; },
+      [&bypassed](const test_item *item) {
+        if ((item->id & 1) == 0) return false;
+        bypassed.push_back(item->id);
+        return true;
+      },
+      []() { return false; },
+      [&accepted](const test_item *item) { accepted.push_back(item->id); });
+
+  EXPECT_EQ(ROP_DELAY_OUTPUT_NO_READY_WORK, result.reason);
+  EXPECT_EQ(2u, result.accepted_items);
+  EXPECT_EQ(2u, result.accepted_sectors);
+  EXPECT_EQ(2u, result.bypassed_items);
+  const unsigned expected_accepted[] = {40, 42};
+  const unsigned expected_bypassed[] = {41, 43};
+  EXPECT_TRUE(std::equal(accepted.begin(), accepted.end(),
+                         expected_accepted));
+  EXPECT_TRUE(std::equal(bypassed.begin(), bypassed.end(),
+                         expected_bypassed));
+  EXPECT_TRUE(queue.empty());
+}
+
 TEST(RopDelayOutputTest, StatsSeparateWidthAndDownstreamStops) {
   rop_delay_output_service_stats stats;
   rop_delay_output_service_result width;
@@ -185,6 +217,7 @@ TEST(RopDelayOutputTest, StatsSeparateWidthAndDownstreamStops) {
 
   EXPECT_EQ(4u, stats.accepted_items);
   EXPECT_EQ(4u, stats.accepted_sectors);
+  EXPECT_EQ(0u, stats.bypassed_items);
   EXPECT_EQ(2u, stats.service_ticks);
   EXPECT_EQ(3u, stats.max_sectors_per_tick);
   EXPECT_EQ(1u, stats.width_limited_ticks);

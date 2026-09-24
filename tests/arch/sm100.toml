@@ -25,6 +25,7 @@ sources = [
   "unit/fa4_opaque_tensormap_test.cc",
   "unit/l2_bandwidth_test.cc",
   "unit/l2_multi_issue_ports_test.cc",
+  "unit/l2_tma_coalescing_test.cc",
   "unit/local_interconnect_test.cc",
   "unit/memory_transport_test.cc",
   "unit/ptx_scheduler_test.cc",

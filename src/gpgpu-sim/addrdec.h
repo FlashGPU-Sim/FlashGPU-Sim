@@ -109,6 +109,7 @@ class linear_to_raw_address_translation {
   unsigned nextPowerOf2_m_n_channel;
   unsigned ipoly_non_power2_balanced;
   unsigned ipoly_channel_stable_l2slice;
+  unsigned non_power2_l2_channel_indexing;
   non_power2_l2_slice_mapping_policy non_power2_l2_slice_mapping;
 };
 

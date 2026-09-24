@@ -39,8 +39,11 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
+#include <deque>
 #include <list>
 #include <queue>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 // ROP-delay arbitration and accounting belong to the L2 sub-partition.
@@ -54,17 +57,20 @@ struct rop_delay_output_service_result {
   rop_delay_output_service_result()
       : reason(ROP_DELAY_OUTPUT_NO_READY_WORK),
         accepted_items(0),
-        accepted_sectors(0) {}
+        accepted_sectors(0),
+        bypassed_items(0) {}
 
   rop_delay_output_stop_reason reason;
   unsigned accepted_items;
   unsigned accepted_sectors;
+  unsigned bypassed_items;
 };
 
 struct rop_delay_output_service_stats {
   rop_delay_output_service_stats()
       : accepted_items(0),
         accepted_sectors(0),
+        bypassed_items(0),
         service_ticks(0),
         max_sectors_per_tick(0),
         width_limited_ticks(0),
@@ -74,6 +80,7 @@ struct rop_delay_output_service_stats {
   void record(const rop_delay_output_service_result &result) {
     accepted_items += result.accepted_items;
     accepted_sectors += result.accepted_sectors;
+    bypassed_items += result.bypassed_items;
     if (result.accepted_items != 0) ++service_ticks;
     max_sectors_per_tick =
         std::max<unsigned long long>(max_sectors_per_tick,
@@ -93,6 +100,7 @@ struct rop_delay_output_service_stats {
       const rop_delay_output_service_stats &rhs) {
     accepted_items += rhs.accepted_items;
     accepted_sectors += rhs.accepted_sectors;
+    bypassed_items += rhs.bypassed_items;
     service_ticks += rhs.service_ticks;
     max_sectors_per_tick =
         std::max(max_sectors_per_tick, rhs.max_sectors_per_tick);
@@ -105,6 +113,7 @@ struct rop_delay_output_service_stats {
   void print(FILE *fout, const char *name) const {
     fprintf(fout, "%s_accepted_items = %llu\n", name, accepted_items);
     fprintf(fout, "%s_accepted_sectors = %llu\n", name, accepted_sectors);
+    fprintf(fout, "%s_bypassed_items = %llu\n", name, bypassed_items);
     fprintf(fout, "%s_service_ticks = %llu\n", name, service_ticks);
     fprintf(fout, "%s_max_sectors_per_tick = %llu\n", name,
             max_sectors_per_tick);
@@ -117,6 +126,7 @@ struct rop_delay_output_service_stats {
 
   unsigned long long accepted_items;
   unsigned long long accepted_sectors;
+  unsigned long long bypassed_items;
   unsigned long long service_ticks;
   unsigned long long max_sectors_per_tick;
   unsigned long long width_limited_ticks;
@@ -149,12 +159,16 @@ class rop_delay_output_queue {
 
   // Width one is deliberately the legacy compatibility mode: it accepts one
   // ready queue item per tick even if a non-sector cache represented that item
-  // with more than one 32-byte sector. Widths above one require every item to
-  // be exactly one sector, making the configured unit unambiguous.
-  template <typename SectorCount, typename DownstreamFull, typename Accept>
+  // with more than one 32-byte sector. Widths above one require every accepted
+  // item to be exactly one sector. The bypass callback models work resolved at
+  // the source arbiter (such as a waiter joining an outstanding sector master):
+  // it removes that item without consuming downstream source width.
+  template <typename SectorCount, typename Bypass, typename DownstreamFull,
+            typename Accept>
   rop_delay_output_service_result service(unsigned long long cycle,
                                            unsigned width,
                                            SectorCount sector_count,
+                                           Bypass bypass,
                                            DownstreamFull downstream_full,
                                            Accept accept) {
     assert(width > 0);
@@ -167,7 +181,14 @@ class rop_delay_output_queue {
         return result;
       }
 
-      const unsigned sectors = sector_count(queue->top().item);
+      const T candidate = queue->top().item;
+      if (bypass(candidate)) {
+        queue->pop();
+        ++result.bypassed_items;
+        continue;
+      }
+
+      const unsigned sectors = sector_count(candidate);
       assert(sectors > 0);
       if (width == 1) {
         if (result.accepted_items == 1) {
@@ -188,9 +209,8 @@ class rop_delay_output_queue {
         return result;
       }
 
-      const T item = queue->top().item;
       queue->pop();
-      accept(item);
+      accept(candidate);
       ++result.accepted_items;
       result.accepted_sectors += sectors;
     }
@@ -315,6 +335,85 @@ struct l2_multi_issue_port_stats {
     fill_port_width_stall_cycles += rhs.fill_port_width_stall_cycles;
     return *this;
   }
+};
+
+struct l2_tma_request_coalescing_stats {
+  l2_tma_request_coalescing_stats()
+      : master_sectors(0), merged_sectors(0), max_waiters(0) {}
+
+  l2_tma_request_coalescing_stats &operator+=(
+      const l2_tma_request_coalescing_stats &rhs) {
+    master_sectors += rhs.master_sectors;
+    merged_sectors += rhs.merged_sectors;
+    max_waiters = std::max(max_waiters, rhs.max_waiters);
+    return *this;
+  }
+
+  unsigned long long master_sectors;
+  unsigned long long merged_sectors;
+  unsigned long long max_waiters;
+};
+
+// Tracks one active read-service generation per sector address.  Closing an
+// address prevents later reads from joining an older generation (for example
+// after an intervening write), while the older master's existing waiters stay
+// available for response fan-out.
+template <typename T, typename Address>
+class outstanding_sector_coalescer {
+ public:
+  bool admit_waiter(Address address, T item,
+                    unsigned long long &waiter_count) {
+    typename std::unordered_map<Address, T>::iterator active =
+        m_active_master.find(address);
+    if (active == m_active_master.end()) return false;
+
+    typename std::unordered_map<T, group>::iterator existing =
+        m_groups.find(active->second);
+    assert(existing != m_groups.end());
+    existing->second.waiters.push_back(item);
+    waiter_count = existing->second.waiters.size();
+    return true;
+  }
+
+  bool admit(Address address, T item, unsigned long long &waiter_count) {
+    if (admit_waiter(address, item, waiter_count)) return false;
+
+    const std::pair<typename std::unordered_map<T, group>::iterator, bool>
+        inserted_group = m_groups.insert(std::make_pair(item, group(address)));
+    assert(inserted_group.second);
+    const std::pair<typename std::unordered_map<Address, T>::iterator, bool>
+        inserted_active =
+            m_active_master.insert(std::make_pair(address, item));
+    assert(inserted_active.second);
+    waiter_count = 0;
+    return true;
+  }
+
+  void close_address(Address address) { m_active_master.erase(address); }
+
+  bool close_master(T master, std::deque<T> &waiters) {
+    typename std::unordered_map<T, group>::iterator existing =
+        m_groups.find(master);
+    if (existing == m_groups.end()) return false;
+
+    typename std::unordered_map<Address, T>::iterator active =
+        m_active_master.find(existing->second.address);
+    if (active != m_active_master.end() && active->second == master)
+      m_active_master.erase(active);
+    waiters.swap(existing->second.waiters);
+    m_groups.erase(existing);
+    return true;
+  }
+
+ private:
+  struct group {
+    explicit group(Address address_) : address(address_) {}
+    Address address;
+    std::deque<T> waiters;
+  };
+
+  std::unordered_map<Address, T> m_active_master;
+  std::unordered_map<T, group> m_groups;
 };
 
 // Per-L2-instance sector service for the optional multi-issue port model.
@@ -676,12 +775,15 @@ class memory_sub_partition {
   void accumulate_full_state_stats(unsigned long long *stats) const;
   void accumulate_l2_multi_issue_port_stats(
       l2_multi_issue_port_stats &stats) const;
+  void accumulate_l2_tma_request_coalescing_stats(
+      l2_tma_request_coalescing_stats &stats) const;
   void accumulate_rop_delay_output_stats(
       rop_delay_output_service_stats &stats) const;
   void accumulate_l2_partition_stats(unsigned long long &remote_accesses,
                                      unsigned long long &extra_latency) const;
   void push(class mem_fetch *mf, unsigned long long clock_cycle);
-  class mem_fetch *pop();
+  class mem_fetch *pop(
+      std::deque<mem_fetch *> *multicast_waiters = NULL);
   class mem_fetch *top();
   void set_done(mem_fetch *mf);
 
@@ -739,6 +841,14 @@ class memory_sub_partition {
 
   unsigned long long m_full_state_stats[NUM_MEM_SUB_PARTITION_FULL_STATS];
   l2_multi_issue_ports m_l2_multi_issue_ports;
+  outstanding_sector_coalescer<mem_fetch *, new_addr_type>
+      m_l2_tma_coalescer;
+  // A merge generation closes once its master finishes L2 service. Saved
+  // requesters either drain serially (legacy behavior) or fan out when response
+  // multicast is enabled.
+  std::unordered_map<mem_fetch *, std::deque<mem_fetch *> >
+      m_l2_tma_coalesced_response_waiters;
+  l2_tma_request_coalescing_stats m_l2_tma_request_coalescing_stats;
   mem_fetch *m_pending_l2_writeback;
   l2_multi_issue_pending_operation m_pending_l2_writeback_work;
   mem_fetch *m_pending_l2_fill;
@@ -768,6 +878,14 @@ class memory_sub_partition {
   void service_dram_to_l2_multi_issue();
   void service_l2_requests_legacy();
   void service_l2_requests_multi_issue();
+  bool coalesce_l2_tma_request(mem_fetch *mf, unsigned long long cycle);
+  void register_l2_tma_request(mem_fetch *mf);
+  void enqueue_l2_request(mem_fetch *mf);
+  void finalize_l2_tma_coalesced_response(mem_fetch *mf);
+  void enqueue_l2_response(mem_fetch *mf);
+  void release_next_l2_tma_coalesced_response(mem_fetch *mf);
+  void extract_l2_tma_coalesced_responses(
+      mem_fetch *mf, std::deque<mem_fetch *> *waiters);
   void enqueue_ready_rop(unsigned cycle);
   bool l2_data_port_busy() const;
   bool l2_fill_port_busy() const;

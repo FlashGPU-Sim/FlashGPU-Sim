@@ -381,6 +381,12 @@ void memory_config::reg_options(class OptionParser *opp) {
       "Multi-issue L2 fill-port width per memory subpartition and L2 cycle, "
       "in 32-byte sector work packages (used only when port model = 1)",
       "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_tma_request_coalescing", OPT_BOOL,
+      &l2_tma_request_coalescing,
+      "Coalesce identical outstanding TMA read sectors at each L2 "
+      "subpartition while retaining one response per requester (default=0)",
+      "0");
   option_parser_register(opp, "-dram_latency", OPT_UINT32, &dram_latency,
                          "DRAM latency (default 30)", "30");
   option_parser_register(opp, "-dram_dual_bus_interface", OPT_UINT32,
@@ -2232,6 +2238,16 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   // printf("partiton_replys_in_parallel = %lld\n",
   // partiton_replys_in_parallel); printf("partiton_replys_in_parallel_total =
   // %lld\n", partiton_replys_in_parallel_total );
+  l2_tma_request_coalescing_stats tma_coalescing;
+  for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; ++i)
+    m_memory_sub_partition[i]->accumulate_l2_tma_request_coalescing_stats(
+        tma_coalescing);
+  printf("L2_tma_coalescing_master_sectors = %llu\n",
+         tma_coalescing.master_sectors);
+  printf("L2_tma_coalescing_merged_sectors = %llu\n",
+         tma_coalescing.merged_sectors);
+  printf("L2_tma_coalescing_max_waiters = %llu\n",
+         tma_coalescing.max_waiters);
   printf("L2_BW  = %12.4f GB/Sec\n",
          ((float)(partiton_replys_in_parallel * SECTOR_SIZE) /
           (gpu_sim_cycle * m_config.core_period)) /
@@ -2797,6 +2813,8 @@ void gpgpu_sim::cycle() {
 
   if (clock_mask & ICNT && !gem5_integrated) {
     profiler.start_step();
+    const bool tma_response_multicast =
+        icnt_tma_response_multicast_enabled();
     // pop from memory controller to interconnect
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
       const unsigned width =
@@ -2808,13 +2826,35 @@ void gpgpu_sim::cycle() {
               mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
           if (::icnt_has_buffer(m_shader_config->mem2device(i),
                                 response_size)) {
-            // if (!mf->get_is_write())
+            std::deque<mem_fetch *> multicast_waiters;
+            if (tma_response_multicast) {
+              mem_fetch *popped =
+                  m_memory_sub_partition[i]->pop(&multicast_waiters);
+              assert(popped == mf);
+            }
             mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
             mf->set_status(IN_ICNT_TO_SHADER,
                            gpu_sim_cycle + gpu_tot_sim_cycle);
-            ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
-                        response_size);
-            m_memory_sub_partition[i]->pop();
+            std::vector<std::pair<unsigned, void *> > destinations;
+            for (std::deque<mem_fetch *>::iterator it =
+                     multicast_waiters.begin();
+                 it != multicast_waiters.end(); ++it) {
+              mem_fetch *waiter = *it;
+              waiter->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
+              waiter->set_status(IN_ICNT_TO_SHADER,
+                                 gpu_sim_cycle + gpu_tot_sim_cycle);
+              destinations.push_back(
+                  std::make_pair(waiter->get_tpc(), (void *)waiter));
+            }
+            if (!destinations.empty())
+              ::icnt_push_multicast(m_shader_config->mem2device(i),
+                                    mf->get_tpc(), mf, response_size,
+                                    destinations);
+            else
+              ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
+                          response_size);
+            if (!tma_response_multicast)
+              m_memory_sub_partition[i]->pop();
             const unsigned sectors = memory_transport_data_sectors(mf);
             m_l2_response_egress_stats[i].record_accept(sectors);
             m_l2_response_egress_stats[i].record_tick_service(
@@ -2853,10 +2893,30 @@ void gpgpu_sim::cycle() {
 
           mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
           mf->set_status(IN_ICNT_TO_SHADER, gpu_sim_cycle + gpu_tot_sim_cycle);
-          ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
-                      response_size);
-          mem_fetch *popped = m_memory_sub_partition[i]->pop();
+          std::deque<mem_fetch *> multicast_waiters;
+          mem_fetch *popped = tma_response_multicast
+                                  ? m_memory_sub_partition[i]->pop(
+                                        &multicast_waiters)
+                                  : m_memory_sub_partition[i]->pop();
           assert(popped == mf);
+          std::vector<std::pair<unsigned, void *> > destinations;
+          for (std::deque<mem_fetch *>::iterator it =
+                   multicast_waiters.begin();
+               it != multicast_waiters.end(); ++it) {
+            mem_fetch *waiter = *it;
+            waiter->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
+            waiter->set_status(IN_ICNT_TO_SHADER,
+                               gpu_sim_cycle + gpu_tot_sim_cycle);
+            destinations.push_back(
+                std::make_pair(waiter->get_tpc(), (void *)waiter));
+          }
+          if (!destinations.empty())
+            ::icnt_push_multicast(m_shader_config->mem2device(i),
+                                  mf->get_tpc(), mf, response_size,
+                                  destinations);
+          else
+            ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
+                        response_size);
           budget.consume(sectors);
           stats.record_accept(sectors);
           partiton_replys_in_parallel_per_cycle += sectors;

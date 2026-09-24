@@ -770,7 +770,7 @@ void memory_sub_partition::process_l2_access_result(
         mf->set_reply();
         mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-        m_L2_icnt_queue->push(mf);
+        enqueue_l2_response(mf);
       }
       m_icnt_L2_queue->pop();
     } else {
@@ -789,7 +789,7 @@ void memory_sub_partition::process_l2_access_result(
         mf->set_reply();
         mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-        m_L2_icnt_queue->push(mf);
+        enqueue_l2_response(mf);
       }
     }
     m_icnt_L2_queue->pop();
@@ -811,7 +811,7 @@ void memory_sub_partition::service_ready_l2_response() {
     mf->set_reply();
     mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-    m_L2_icnt_queue->push(mf);
+    enqueue_l2_response(mf);
     return;
   }
 
@@ -821,7 +821,7 @@ void memory_sub_partition::service_ready_l2_response() {
     original_wr_mf->set_reply();
     original_wr_mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                                m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-    m_L2_icnt_queue->push(original_wr_mf);
+    enqueue_l2_response(original_wr_mf);
   }
   m_request_tracker.erase(mf);
   delete mf;
@@ -843,7 +843,7 @@ void memory_sub_partition::service_dram_to_l2_legacy() {
     if (mf->is_write() && mf->get_type() == WRITE_ACK)
       mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-    m_L2_icnt_queue->push(mf);
+    enqueue_l2_response(mf);
     m_dram_L2_queue->pop();
   }
 }
@@ -879,7 +879,7 @@ void memory_sub_partition::service_dram_to_l2_multi_issue() {
       if (mf->is_write() && mf->get_type() == WRITE_ACK)
         mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-      m_L2_icnt_queue->push(mf);
+      enqueue_l2_response(mf);
       m_dram_L2_queue->pop();
       // The bypass path is not an L2 fill-port operation. Preserve its
       // legacy single-response-per-tick behavior.
@@ -1048,13 +1048,11 @@ void memory_sub_partition::enqueue_ready_rop(unsigned cycle) {
             assert(bytes > 0);
             return (bytes + SECTOR_SIZE - 1) / SECTOR_SIZE;
           },
+          [this, cycle](mem_fetch *mf) {
+            return coalesce_l2_tma_request(mf, cycle);
+          },
           [this]() { return m_icnt_L2_queue->full(); },
-          [this](mem_fetch *mf) {
-            m_icnt_L2_queue->push(mf);
-            mf->set_status(
-                IN_PARTITION_ICNT_TO_L2_QUEUE,
-                m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-          });
+          [this](mem_fetch *mf) { enqueue_l2_request(mf); });
   m_rop_delay_output_stats.record(rop_output);
 }
 
@@ -1138,6 +1136,11 @@ void memory_sub_partition::accumulate_full_state_stats(
 void memory_sub_partition::accumulate_l2_multi_issue_port_stats(
     l2_multi_issue_port_stats &stats) const {
   stats += m_l2_multi_issue_ports.stats();
+}
+
+void memory_sub_partition::accumulate_l2_tma_request_coalescing_stats(
+    l2_tma_request_coalescing_stats &stats) const {
+  stats += m_l2_tma_request_coalescing_stats;
 }
 
 void memory_sub_partition::accumulate_rop_delay_output_stats(
@@ -1292,6 +1295,122 @@ void memory_sub_partition::push_rop_delay(mem_fetch *mf,
   m_rop_delay_output.push(mf, ready_cycle, remote);
 }
 
+void memory_sub_partition::enqueue_l2_request(mem_fetch *mf) {
+  const unsigned long long cycle =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  register_l2_tma_request(mf);
+  m_icnt_L2_queue->push(mf);
+  mf->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE, cycle);
+}
+
+bool memory_sub_partition::coalesce_l2_tma_request(
+    mem_fetch *mf, unsigned long long cycle) {
+  if (!m_config->l2_tma_request_coalescing) return false;
+
+  if (mf->get_is_write() || mf->isatomic()) return false;
+  if (mf->get_access_type() != TMA_ACC_R ||
+      mf->get_data_size() != SECTOR_SIZE)
+    return false;
+
+  const new_addr_type sector_addr =
+      mf->get_addr() - (mf->get_addr() % SECTOR_SIZE);
+  unsigned long long waiter_count = 0;
+  if (!m_l2_tma_coalescer.admit_waiter(sector_addr, mf, waiter_count))
+    return false;
+
+  ++m_l2_tma_request_coalescing_stats.merged_sectors;
+  m_l2_tma_request_coalescing_stats.max_waiters =
+      std::max<unsigned long long>(
+          m_l2_tma_request_coalescing_stats.max_waiters,
+          waiter_count);
+  mf->set_status(IN_PARTITION_ROP_DELAY, cycle);
+  return true;
+}
+
+void memory_sub_partition::register_l2_tma_request(mem_fetch *mf) {
+  if (!m_config->l2_tma_request_coalescing) return;
+
+  const new_addr_type sector_addr =
+      mf->get_addr() - (mf->get_addr() % SECTOR_SIZE);
+  if (mf->get_is_write() || mf->isatomic()) {
+    m_l2_tma_coalescer.close_address(sector_addr);
+    return;
+  }
+  if (mf->get_access_type() != TMA_ACC_R ||
+      mf->get_data_size() != SECTOR_SIZE)
+    return;
+
+  unsigned long long waiter_count = 0;
+  const bool opened =
+      m_l2_tma_coalescer.admit(sector_addr, mf, waiter_count);
+  assert(opened && waiter_count == 0);
+  ++m_l2_tma_request_coalescing_stats.master_sectors;
+}
+
+void memory_sub_partition::finalize_l2_tma_coalesced_response(mem_fetch *mf) {
+  if (!m_config->l2_tma_request_coalescing || mf == NULL ||
+      mf->get_access_type() != TMA_ACC_R)
+    return;
+
+  std::deque<mem_fetch *> waiters;
+  if (m_l2_tma_coalescer.close_master(mf, waiters)) {
+    assert(m_l2_tma_coalesced_response_waiters.find(mf) ==
+           m_l2_tma_coalesced_response_waiters.end());
+    if (!waiters.empty())
+      m_l2_tma_coalesced_response_waiters[mf].swap(waiters);
+  }
+}
+
+void memory_sub_partition::enqueue_l2_response(mem_fetch *mf) {
+  finalize_l2_tma_coalesced_response(mf);
+  m_L2_icnt_queue->push(mf);
+}
+
+void memory_sub_partition::release_next_l2_tma_coalesced_response(
+    mem_fetch *mf) {
+  if (!m_config->l2_tma_request_coalescing || mf == NULL ||
+      mf->get_access_type() != TMA_ACC_R)
+    return;
+
+  std::unordered_map<mem_fetch *, std::deque<mem_fetch *> >::iterator group =
+      m_l2_tma_coalesced_response_waiters.find(mf);
+  if (group == m_l2_tma_coalesced_response_waiters.end()) return;
+  assert(!group->second.empty());
+  mem_fetch *next = group->second.front();
+  group->second.pop_front();
+  std::deque<mem_fetch *> remaining;
+  remaining.swap(group->second);
+  m_l2_tma_coalesced_response_waiters.erase(group);
+  if (!remaining.empty())
+    m_l2_tma_coalesced_response_waiters[next].swap(remaining);
+  next->set_reply();
+  const unsigned long long cycle =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  next->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE, cycle);
+  assert(!m_L2_icnt_queue->full());
+  enqueue_l2_response(next);
+}
+
+void memory_sub_partition::extract_l2_tma_coalesced_responses(
+    mem_fetch *mf, std::deque<mem_fetch *> *waiters) {
+  assert(waiters != NULL);
+  waiters->clear();
+  if (!m_config->l2_tma_request_coalescing || mf == NULL ||
+      mf->get_access_type() != TMA_ACC_R)
+    return;
+  std::unordered_map<mem_fetch *, std::deque<mem_fetch *> >::iterator group =
+      m_l2_tma_coalesced_response_waiters.find(mf);
+  if (group == m_l2_tma_coalesced_response_waiters.end()) return;
+  waiters->swap(group->second);
+  m_l2_tma_coalesced_response_waiters.erase(group);
+  for (std::deque<mem_fetch *>::iterator it = waiters->begin();
+       it != waiters->end(); ++it) {
+    mem_fetch *waiter = *it;
+    m_request_tracker.erase(waiter);
+    waiter->set_reply();
+  }
+}
+
 std::vector<mem_fetch *>
 memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
   std::vector<mem_fetch *> result;
@@ -1357,9 +1476,8 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
         m_l2_partition_extra_latency_cycles += extra_latency;
       }
       if (req->istexture() && extra_latency == 0) {
-        m_icnt_L2_queue->push(req);
-        req->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
-                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+        if (coalesce_l2_tma_request(req, cycle)) continue;
+        enqueue_l2_request(req);
       } else {
         unsigned long long ready_cycle = cycle + extra_latency;
         if (!req->istexture()) ready_cycle += m_config->rop_latency;
@@ -1371,9 +1489,14 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
   }
 }
 
-mem_fetch *memory_sub_partition::pop() {
+mem_fetch *memory_sub_partition::pop(
+    std::deque<mem_fetch *> *multicast_waiters) {
   mem_fetch *mf = m_L2_icnt_queue->pop();
   m_request_tracker.erase(mf);
+  if (multicast_waiters != NULL)
+    extract_l2_tma_coalesced_responses(mf, multicast_waiters);
+  else
+    release_next_l2_tma_coalesced_response(mf);
   if (mf && mf->isatomic()) mf->do_atomic();
   if (mf && (mf->get_access_type() == L2_WRBK_ACC ||
              mf->get_access_type() == L1_WRBK_ACC)) {

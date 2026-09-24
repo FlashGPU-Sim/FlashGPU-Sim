@@ -382,6 +382,7 @@ class memory_config {
   unsigned l2_lookup_sectors_per_cycle;
   unsigned l2_data_port_sectors_per_cycle;
   unsigned l2_fill_port_sectors_per_cycle;
+  bool l2_tma_request_coalescing;
   unsigned dram_latency;
 
   // DRAM parameters

@@ -36,6 +36,7 @@ icnt_create_p icnt_create;
 icnt_init_p icnt_init;
 icnt_has_buffer_p icnt_has_buffer;
 icnt_push_p icnt_push = nullptr;
+icnt_push_multicast_p icnt_push_multicast = nullptr;
 icnt_pop_p icnt_pop;
 icnt_top_p icnt_top;
 icnt_transfer_p icnt_transfer;
@@ -75,6 +76,14 @@ static bool intersim2_has_buffer(unsigned input, unsigned int size) {
 static void intersim2_push(unsigned input, unsigned output, void* data,
                            unsigned int size) {
   g_icnt_interface->Push(input, output, data, size);
+}
+
+static void intersim2_push_multicast(
+    unsigned input, unsigned output, void* data, unsigned int size,
+    const std::vector<std::pair<unsigned, void*> >& destinations) {
+  assert(destinations.empty() &&
+         "TMA response multicast requires the local xbar");
+  intersim2_push(input, output, data, size);
 }
 
 static void* intersim2_pop(unsigned output) {
@@ -121,6 +130,13 @@ static bool LocalInterconnect_has_buffer(unsigned input, unsigned int size) {
 static void LocalInterconnect_push(unsigned input, unsigned output, void* data,
                                    unsigned int size) {
   g_localicnt_interface->Push(input, output, data, size);
+}
+
+static void LocalInterconnect_push_multicast(
+    unsigned input, unsigned output, void* data, unsigned int size,
+    const std::vector<std::pair<unsigned, void*> >& destinations) {
+  g_localicnt_interface->PushMulticast(input, output, data, size,
+                                       destinations);
 }
 
 static void* LocalInterconnect_pop(unsigned output) {
@@ -203,6 +219,25 @@ void icnt_reg_options(class OptionParser* opp) {
       opp, "-icnt_reply_output_sectors_per_cycle", OPT_UINT32,
       &g_inct_config.reply_output_sectors_per_cycle,
       "Reply-network sector slots per output and ICNT tick (0=legacy)", "0");
+  option_parser_register(
+      opp, "-icnt_tma_request_multicast", OPT_UINT32,
+      &g_inct_config.tma_request_multicast,
+      "Merge identical TMA read sectors while their master is physically "
+      "in the local request network; each waiter keeps an independent "
+      "response (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-icnt_tma_response_multicast", OPT_UINT32,
+      &g_inct_config.tma_response_multicast,
+      "Carry one physical local-xbar reply for an L2-coalesced TMA read and "
+      "fan out independent responses at their target cluster outputs "
+      "(default=0, local xbar only)",
+      "0");
+}
+
+bool icnt_tma_response_multicast_enabled() {
+  return g_network_mode == LOCAL_XBAR &&
+         g_inct_config.tma_response_multicast != 0;
 }
 
 void icnt_wrapper_init() {
@@ -214,6 +249,7 @@ void icnt_wrapper_init() {
       icnt_init = intersim2_init;
       icnt_has_buffer = intersim2_has_buffer;
       icnt_push = intersim2_push;
+      icnt_push_multicast = intersim2_push_multicast;
       icnt_pop = intersim2_pop;
       icnt_top = intersim2_top;
       icnt_transfer = intersim2_transfer;
@@ -229,6 +265,7 @@ void icnt_wrapper_init() {
       icnt_init = LocalInterconnect_init;
       icnt_has_buffer = LocalInterconnect_has_buffer;
       icnt_push = LocalInterconnect_push;
+      icnt_push_multicast = LocalInterconnect_push_multicast;
       icnt_pop = LocalInterconnect_pop;
       icnt_top = LocalInterconnect_top;
       icnt_transfer = LocalInterconnect_transfer;

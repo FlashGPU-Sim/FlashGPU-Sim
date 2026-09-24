@@ -251,12 +251,23 @@ xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
   output_sector_width =
       m_type == REQ_NET ? m_localinct_config.request_output_sectors_per_cycle
                         : m_localinct_config.reply_output_sectors_per_cycle;
+  tma_request_multicast =
+      m_type == REQ_NET && m_localinct_config.tma_request_multicast != 0;
+  tma_response_multicast =
+      m_type == REPLY_NET && m_localinct_config.tma_response_multicast != 0;
+  tma_multicast_master_sectors = 0;
+  tma_multicast_merged_sectors = 0;
+  tma_multicast_max_waiters = 0;
+  tma_response_multicast_masters = 0;
+  tma_response_multicast_waiters = 0;
+  tma_response_multicast_max_waiters = 0;
   in_buffers.resize(total_nodes);
   const unsigned queues_per_input = use_voq ? total_nodes : 1;
   for (unsigned i = 0; i < total_nodes; ++i) {
     in_buffers[i].resize(queues_per_input);
   }
   out_buffers.resize(total_nodes);
+  multicast_delivery_buffers.resize(total_nodes);
   in_buffer_occupancy.assign(total_nodes, 0);
   next_node.resize(total_nodes, 0);
   next_output.resize(total_nodes, 0);
@@ -309,6 +320,30 @@ void xbar_router::Push(unsigned input_deviceID, unsigned output_deviceID,
                        void *data, unsigned int size, unsigned data_sectors) {
   assert(input_deviceID < total_nodes);
   assert(output_deviceID < total_nodes);
+  mem_fetch *mf = static_cast<mem_fetch *>(data);
+  if (tma_request_multicast) {
+    // Shader clusters inject concurrently under FLASH_GPGPU_SIM_OMP. The
+    // ordinary input queues are cluster-private, but multicast generations
+    // are shared across all request-network inputs.
+    std::lock_guard<std::mutex> lock(tma_multicast_mutex);
+    const unsigned long long sector_addr =
+        mf->get_addr() - (mf->get_addr() % SECTOR_SIZE);
+    if (!mf->get_is_write() && mf->get_access_type() == TMA_ACC_R &&
+        mf->get_data_size() == SECTOR_SIZE) {
+      unsigned long long waiter_count = 0;
+      if (!tma_multicast_groups.admit(sector_addr, data, waiter_count)) {
+        ++tma_multicast_merged_sectors;
+        tma_multicast_max_waiters =
+            std::max(tma_multicast_max_waiters, waiter_count);
+        return;
+      }
+      ++tma_multicast_master_sectors;
+    } else {
+      // A non-eligible access establishes an ordering boundary for this
+      // address. This includes writes, atomics, and non-sector TMA requests.
+      tma_multicast_groups.close_address(sector_addr);
+    }
+  }
   in_buffers[input_deviceID][InputQueueIndex(output_deviceID)].push_back(
       Packet(data, output_deviceID, size, data_sectors));
   in_buffer_occupancy[input_deviceID]++;
@@ -327,21 +362,94 @@ void xbar_router::Push(unsigned input_deviceID, unsigned output_deviceID,
   }
 }
 
+void xbar_router::PushMulticast(
+    unsigned input_deviceID, unsigned output_deviceID, void *data,
+    unsigned int size, unsigned data_sectors,
+    const std::vector<std::pair<unsigned, void *> > &destinations) {
+  assert(tma_response_multicast);
+  assert(router_type == REPLY_NET);
+  assert(data != NULL);
+  {
+    std::lock_guard<std::mutex> lock(tma_multicast_mutex);
+    assert(tma_response_multicast_deliveries.find(data) ==
+           tma_response_multicast_deliveries.end());
+    std::deque<Packet> &deliveries = tma_response_multicast_deliveries[data];
+    for (std::vector<std::pair<unsigned, void *> >::const_iterator it =
+             destinations.begin();
+         it != destinations.end(); ++it) {
+      assert(it->first < total_nodes);
+      assert(it->second != NULL);
+      deliveries.push_back(Packet(it->second, it->first, size, data_sectors));
+    }
+    ++tma_response_multicast_masters;
+    tma_response_multicast_waiters += destinations.size();
+    tma_response_multicast_max_waiters =
+        std::max<unsigned long long>(tma_response_multicast_max_waiters,
+                                     destinations.size());
+  }
+  // Only the master occupies reply-network input and output bandwidth. The
+  // associated requester responses are materialized at their target xbar
+  // outputs when the master arrives there.
+  Push(input_deviceID, output_deviceID, data, size, data_sectors);
+}
+
 void *xbar_router::Pop(unsigned ouput_deviceID) {
   assert(ouput_deviceID < total_nodes);
-  void *data = NULL;
+  if (tma_request_multicast || tma_response_multicast) {
+    std::lock_guard<std::mutex> lock(tma_multicast_mutex);
+    if (!multicast_delivery_buffers[ouput_deviceID].empty()) {
+      const Packet packet = multicast_delivery_buffers[ouput_deviceID].front();
+      multicast_delivery_buffers[ouput_deviceID].pop_front();
+      return packet.data;
+    }
 
-  if (!out_buffers[ouput_deviceID].empty()) {
-    const Packet packet = out_buffers[ouput_deviceID].front();
-    data = packet.data;
-    out_buffers[ouput_deviceID].pop_front();
+    if (!out_buffers[ouput_deviceID].empty()) {
+      const Packet packet = out_buffers[ouput_deviceID].front();
+      out_buffers[ouput_deviceID].pop_front();
+      if (tma_request_multicast) {
+        std::deque<void *> waiters;
+        if (tma_multicast_groups.close_master(packet.data, waiters)) {
+          while (!waiters.empty()) {
+            multicast_delivery_buffers[ouput_deviceID].push_back(
+                Packet(waiters.front(), packet.output_deviceID, packet.size,
+                       packet.data_sectors));
+            waiters.pop_front();
+          }
+        }
+      }
+      if (tma_response_multicast) {
+        std::unordered_map<void *, std::deque<Packet> >::iterator deliveries =
+            tma_response_multicast_deliveries.find(packet.data);
+        if (deliveries != tma_response_multicast_deliveries.end()) {
+          while (!deliveries->second.empty()) {
+            const Packet waiter = deliveries->second.front();
+            deliveries->second.pop_front();
+            multicast_delivery_buffers[waiter.output_deviceID].push_back(
+                waiter);
+          }
+          tma_response_multicast_deliveries.erase(deliveries);
+        }
+      }
+      return packet.data;
+    }
+    return NULL;
   }
 
+  void *data = NULL;
+  if (!out_buffers[ouput_deviceID].empty()) {
+    data = out_buffers[ouput_deviceID].front().data;
+    out_buffers[ouput_deviceID].pop_front();
+  }
   return data;
 }
 
 void *xbar_router::Top(unsigned output_deviceID) const {
   assert(output_deviceID < total_nodes);
+  if (tma_request_multicast || tma_response_multicast) {
+    std::lock_guard<std::mutex> lock(tma_multicast_mutex);
+    if (!multicast_delivery_buffers[output_deviceID].empty())
+      return multicast_delivery_buffers[output_deviceID].front().data;
+  }
   if (out_buffers[output_deviceID].empty()) return NULL;
   return out_buffers[output_deviceID].front().data;
 }
@@ -900,6 +1008,28 @@ void xbar_router::TransferPacket(unsigned input_deviceID,
         static_cast<mem_fetch *>(packet.data), packet.size, "TO_L2_OUTPUT");
   }
   out_buffers[output_deviceID].push_back(packet);
+  if (tma_response_multicast) {
+    std::lock_guard<std::mutex> lock(tma_multicast_mutex);
+    std::unordered_map<void *, std::deque<Packet> >::iterator deliveries =
+        tma_response_multicast_deliveries.find(packet.data);
+    if (deliveries != tma_response_multicast_deliveries.end()) {
+      std::deque<Packet> same_output;
+      while (!deliveries->second.empty()) {
+        const Packet waiter = deliveries->second.front();
+        deliveries->second.pop_front();
+        if (waiter.output_deviceID == output_deviceID)
+          same_output.push_back(waiter);
+        else
+          multicast_delivery_buffers[waiter.output_deviceID].push_back(
+              waiter);
+      }
+      if (same_output.empty()) {
+        tma_response_multicast_deliveries.erase(deliveries);
+      } else {
+        deliveries->second.swap(same_output);
+      }
+    }
+  }
   max_output_occupancy[output_deviceID] =
       std::max<unsigned>(max_output_occupancy[output_deviceID],
                          out_buffers[output_deviceID].size());
@@ -1073,6 +1203,18 @@ void xbar_router::DisplayStats(const char *name) const {
          (float)(out_buffer_full) / (cycles));
   printf("%s_Network_out_buffer_avg_util = %12.4f\n", name,
          ((float)(out_buffer_util) / (cycles) / active_out_buffers));
+  printf("%s_Network_tma_multicast_master_sectors = %llu\n", name,
+         tma_multicast_master_sectors);
+  printf("%s_Network_tma_multicast_merged_sectors = %llu\n", name,
+         tma_multicast_merged_sectors);
+  printf("%s_Network_tma_multicast_max_waiters = %llu\n", name,
+         tma_multicast_max_waiters);
+  printf("%s_Network_tma_response_multicast_masters = %llu\n", name,
+         tma_response_multicast_masters);
+  printf("%s_Network_tma_response_multicast_waiters = %llu\n", name,
+         tma_response_multicast_waiters);
+  printf("%s_Network_tma_response_multicast_max_waiters = %llu\n", name,
+         tma_response_multicast_max_waiters);
 
   auto print_top = [&](const char *label,
                        const std::vector<unsigned long long> &values,
@@ -1154,6 +1296,9 @@ bool xbar_router::Busy() const {
 
     if (!out_buffers[i].empty())
       return true;
+
+    if (!multicast_delivery_buffers[i].empty())
+      return true;
   }
   return false;
 }
@@ -1224,6 +1369,21 @@ void LocalInterconnect::Push(unsigned input_deviceID, unsigned output_deviceID,
   const mem_fetch *mf = static_cast<const mem_fetch *>(data);
   net[subnet]->Push(input_deviceID, output_deviceID, data, size,
                     memory_transport_data_sectors(mf));
+}
+
+void LocalInterconnect::PushMulticast(
+    unsigned input_deviceID, unsigned output_deviceID, void *data,
+    unsigned int size,
+    const std::vector<std::pair<unsigned, void *> > &destinations) {
+  assert(n_subnets > REPLY_NET);
+  assert(input_deviceID >= n_shader);
+  assert(output_deviceID < n_shader);
+  assert(net[REPLY_NET]->Has_Buffer_In(input_deviceID, 1));
+  assert(data != NULL);
+  const mem_fetch *mf = static_cast<const mem_fetch *>(data);
+  net[REPLY_NET]->PushMulticast(input_deviceID, output_deviceID, data, size,
+                                memory_transport_data_sectors(mf),
+                                destinations);
 }
 
 void *LocalInterconnect::Pop(unsigned ouput_deviceID) {
