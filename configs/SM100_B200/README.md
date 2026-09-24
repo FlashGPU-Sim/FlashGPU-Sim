@@ -65,9 +65,12 @@ added together. Later named-barrier operations remain ordered behind pending
 arrivals, and warp retirement waits for delivery. These values are effective
 timing approximations. They do not change the separate mbarrier/try-wait model.
 
-- L2 lookup, data and fill service each have a budget of three 32-byte sectors
-  per slice per L2 cycle. ROP-delay output has a separate budget of two sectors
-  per L2 cycle.
+- L2 lookup and fill service each allow three 32-byte sectors per slice per
+  L2 cycle. Data service allows five sectors per three L2 cycles, modeling
+  shared bandwidth of 20.111 TB/s at 1964 MHz L2 and 11.827 TB/s at the default
+  1155 MHz. ROP-delay output has a separate budget of two sectors per L2 cycle.
+  Delayed ingress uses a bounded pipeline budget derived from its configured
+  bandwidth and latency, plus the existing output FIFO capacity.
 - Memory-channel selection uses the configured IPOLY mapping. The 12 L2 slices
   per channel use a separate stable-rotation policy. These mappings and service
   widths are modeling assumptions, not measured physical hashes or port counts.
@@ -76,10 +79,13 @@ timing approximations. They do not change the separate mbarrier/try-wait model.
 - TMA permits up to 3200 outstanding child requests per SM. This is a
   bandwidth-delay-product bound for four responses per core cycle and an
   approximately 800-cycle memory endpoint, not a measured hardware queue depth.
-  Per-transaction quota throttling is disabled.
 - The simple DRAM model is enabled. Its delay and service parameters model
   aggregate latency and bandwidth; detailed DRAM timing and physical bank
   mapping are not independently calibrated.
+- Each L2 instance tracks up to 768 outstanding 32-byte sector misses. The
+  12 instances per memory channel provide 9216 entries to cover the configured
+  7220 DRAM in-flight requests and buffering. This is an effective capacity
+  approximation, not a measurement of the physical MSHR organization.
 - CTA slot reuse has a 1200-core-cycle transition after outstanding work and
   resources drain. First use of a slot is not delayed. TCGen05 MMA has a
   160-cycle completion tail. Both are effective timing approximations rather

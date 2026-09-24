@@ -107,6 +107,42 @@ TEST_P(RopDelayOutputWidthTest, AcceptsExactlyConfiguredReadySectorWidth) {
 INSTANTIATE_TEST_SUITE_P(WidthsTwoThreeFour, RopDelayOutputWidthTest,
                          ::testing::Values(2u, 3u, 4u));
 
+TEST(RopDelayOutputTest, PipelineAdmissionSustainsSlowerDownstream) {
+  // Regression: gating ingress on the far-end FIFO makes width 3 slower than
+  // width 2 after that FIFO fills, despite both feeding the same 2-sector port.
+  for (unsigned width : {2u, 3u}) {
+    test_queue queue;
+    test_item item(0);
+    unsigned fifo = 0;
+    unsigned accepted = 0;
+    unsigned completed = 0;
+    for (unsigned cycle = 0; cycle < 5000; ++cycle) {
+      for (unsigned lane = 0; lane < 4; ++lane) {
+        if (queue.full(1, fifo, 64, 4 * 260)) break;
+        queue.push(&item, cycle + 260, false);
+        ++accepted;
+      }
+      // Include a long downstream stall: admission must stay bounded and
+      // normal throughput must resume after the consumer restarts.
+      const bool blocked = cycle >= 1500 && cycle < 2100;
+      const unsigned consumed = blocked ? 0 : std::min(fifo, 2u);
+      fifo -= consumed;
+      completed += consumed;
+      if ((cycle >= 1000 && cycle < 1500) || cycle >= 2500) {
+        EXPECT_EQ(2u, consumed) << "width=" << width << " cycle=" << cycle;
+      }
+      queue.service(
+          cycle, width, [](const test_item *) { return 1u; },
+          [](const test_item *) { return false; },
+          [&fifo]() { return fifo == 64; },
+          [&fifo](const test_item *) { ++fifo; });
+      ASSERT_LE(fifo, 64u);
+      ASSERT_LE(queue.size() + fifo, 4u * 260 + 64);
+      ASSERT_EQ(accepted, completed + fifo + queue.size());
+    }
+  }
+}
+
 TEST(RopDelayOutputTest, SameReadyCyclePreservesLegacyLocalPriority) {
   test_queue queue;
   std::vector<test_item> items = make_items(4, 10);

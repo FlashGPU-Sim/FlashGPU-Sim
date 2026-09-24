@@ -372,8 +372,14 @@ void memory_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_l2_data_port_sectors_per_cycle", OPT_UINT32,
       &l2_data_port_sectors_per_cycle,
-      "Multi-issue L2 data-port width per memory subpartition and L2 cycle, "
+      "Multi-issue L2 data-port service numerator per memory subpartition, "
       "in 32-byte sector work packages (used only when port model = 1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_data_port_cycle_period", OPT_UINT32,
+      &l2_data_port_cycle_period,
+      "L2 ticks per data-port service numerator (default 1 preserves integer "
+      "widths; unused whole-sector slots do not accumulate)",
       "1");
   option_parser_register(
       opp, "-gpgpu_l2_fill_port_sectors_per_cycle", OPT_UINT32,
@@ -830,16 +836,6 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_tma_max_inflight", OPT_UINT32,
                          &gpgpu_tma_max_inflight,
                          "Max in-flight TMA mem_fetch requests per SM (default=0, 0=unlimited)", "0");
-  option_parser_register(opp, "-gpgpu_tma_tx_quota", OPT_UINT32,
-                         &gpgpu_tma_tx_quota,
-                         "Max in-flight mem_fetch per TMA transaction (default=0, 0=unlimited)", "0");
-  option_parser_register(
-      opp, "-gpgpu_tma_quota_segment_bytes", OPT_UINT32,
-      &gpgpu_tma_quota_segment_bytes,
-      "Scale the base per-transaction quota by ceil(transaction bytes / "
-      "segment bytes), modeling independently credited internal transfer "
-      "segments (default=0, 0=disabled)",
-      "0");
   option_parser_register(opp, "-gpgpu_tma_response_width", OPT_UINT32,
                          &gpgpu_tma_response_width,
                          "TMA response tokens accepted per SM per cycle (default=1)", "1");
@@ -2982,10 +2978,12 @@ void gpgpu_sim::cycle() {
       const unsigned width =
           m_memory_config->gpgpu_l2_request_ingress_sectors_per_cycle;
       if (width == 0) {
-        if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
+        const mem_fetch *request =
+            (mem_fetch *)icnt_top(m_shader_config->mem2device(i));
+        if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE, request)) {
           gpu_stall_dramfull++;
           ++m_l2_request_ingress_stats[i].downstream_full_ticks;
-          m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE);
+          m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE, request);
         } else {
           mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
           m_memory_sub_partition[i]->push(mf,
@@ -3011,10 +3009,10 @@ void gpgpu_sim::cycle() {
             budget.note_width_limited(sectors);
             break;
           }
-          if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
+          if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE, mf)) {
             ++gpu_stall_dramfull;
             budget.note_downstream_full();
-            m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE);
+            m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE, mf);
             break;
           }
           mem_fetch *popped =

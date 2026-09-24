@@ -2202,8 +2202,6 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_num_tensormap_units;
   unsigned int gpgpu_tma_transaction_slots;
   unsigned int gpgpu_tma_max_inflight;
-  unsigned int gpgpu_tma_tx_quota;
-  unsigned int gpgpu_tma_quota_segment_bytes;
   unsigned int gpgpu_tma_response_width;
   unsigned int gpgpu_tma_request_granularity;
   unsigned int gpgpu_tma_request_width;

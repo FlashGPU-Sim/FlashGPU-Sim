@@ -138,6 +138,11 @@ TEST(B200L2BandwidthTest, CheckedInConfigSustainsPeakWithAbove99PercentHits) {
       ConfigUnsigned(config, "-gpgpu_l2_lookup_sectors_per_cycle");
   const unsigned long long data_width_config =
       ConfigUnsigned(config, "-gpgpu_l2_data_port_sectors_per_cycle");
+  const unsigned long long data_period_config =
+      ConfigUnsigned(config, "-gpgpu_l2_data_port_cycle_period");
+  ASSERT_GT(data_period_config, 0u);
+  ASSERT_LE(data_period_config, std::numeric_limits<unsigned>::max() / 1024);
+  const unsigned data_period = static_cast<unsigned>(data_period_config);
   const unsigned long long fill_width_config =
       ConfigUnsigned(config, "-gpgpu_l2_fill_port_sectors_per_cycle");
   ASSERT_GT(lookup_width_config, 0u);
@@ -150,7 +155,9 @@ TEST(B200L2BandwidthTest, CheckedInConfigSustainsPeakWithAbove99PercentHits) {
   const unsigned lookup_width = static_cast<unsigned>(lookup_width_config);
   const unsigned data_width = static_cast<unsigned>(data_width_config);
   const unsigned fill_width = static_cast<unsigned>(fill_width_config);
-  const unsigned peak_hit_width = std::min(lookup_width, data_width);
+  const double peak_hit_rate =
+      std::min(static_cast<double>(lookup_width),
+               static_cast<double>(data_width) / data_period);
   const double l2_clock_mhz = ConfigL2ClockMHz(config);
   ASSERT_GT(l2_clock_mhz, 0.0);
 
@@ -159,12 +166,12 @@ TEST(B200L2BandwidthTest, CheckedInConfigSustainsPeakWithAbove99PercentHits) {
   // are supplied directly so the test excludes SM/ICNT queues and DRAM by
   // construction. A sparse miss stream keeps the measured hit rate above 99%
   // without requiring a physically impossible all-hit workload.
-  constexpr unsigned kMeasurementCycles = 1024;
+  const unsigned kMeasurementCycles = 1024 * data_period;
   constexpr unsigned kMissPeriodSectors = 128;
   std::vector<l2_multi_issue_ports> ports(
       static_cast<std::size_t>(l2_instances));
   for (l2_multi_issue_ports &instance : ports)
-    instance.configure(lookup_width, data_width, fill_width);
+    instance.configure(lookup_width, data_width, fill_width, data_period);
 
   unsigned long long offered_sectors = 0;
   unsigned long long hit_sectors = 0;
@@ -172,7 +179,9 @@ TEST(B200L2BandwidthTest, CheckedInConfigSustainsPeakWithAbove99PercentHits) {
   for (unsigned cycle = 0; cycle < kMeasurementCycles; ++cycle) {
     for (l2_multi_issue_ports &instance : ports) {
       instance.begin_cycle();
-      for (unsigned sector = 0; sector < peak_hit_width; ++sector) {
+      const unsigned offered_width =
+          std::min(lookup_width, instance.data_remaining());
+      for (unsigned sector = 0; sector < offered_width; ++sector) {
         ASSERT_TRUE(instance.can_accept_lookup(1));
         instance.accept_lookup(1);
         ++offered_sectors;
@@ -195,7 +204,9 @@ TEST(B200L2BandwidthTest, CheckedInConfigSustainsPeakWithAbove99PercentHits) {
     aggregate += instance.stats();
 
   const unsigned long long theoretical_peak_sectors =
-      l2_instances * kMeasurementCycles * peak_hit_width;
+      l2_instances * 1024 *
+      std::min(static_cast<unsigned long long>(lookup_width) * data_period,
+               static_cast<unsigned long long>(data_width));
   ASSERT_EQ(offered_sectors, theoretical_peak_sectors);
   ASSERT_GT(miss_sectors, 0u);
   ASSERT_EQ(hit_sectors + miss_sectors, offered_sectors);
@@ -212,7 +223,7 @@ TEST(B200L2BandwidthTest, CheckedInConfigSustainsPeakWithAbove99PercentHits) {
   EXPECT_GT(hit_rate, 0.99);
 
   const double theoretical_tb_per_second = static_cast<double>(l2_instances) *
-                                           peak_hit_width * SECTOR_SIZE *
+                                           peak_hit_rate * SECTOR_SIZE *
                                            l2_clock_mhz * 1.0e6 / 1.0e12;
   const double measured_tb_per_second =
       (static_cast<double>(hit_sectors) / kMeasurementCycles) * SECTOR_SIZE *
@@ -222,11 +233,11 @@ TEST(B200L2BandwidthTest, CheckedInConfigSustainsPeakWithAbove99PercentHits) {
   EXPECT_LE(measured_tb_per_second, theoretical_tb_per_second);
 
   std::printf(
-      "L2 config-driven peak: instances=%llu lookup=%u data=%u fill=%u "
+      "L2 config-driven peak: instances=%llu lookup=%u data=%u/%u fill=%u "
       "clock=%.3f MHz hit_rate=%.5f expected=%.6f TB/s "
       "theoretical=%.6f TB/s "
       "measured=%.6f TB/s\n",
-      l2_instances, lookup_width, data_width, fill_width, l2_clock_mhz,
+      l2_instances, lookup_width, data_width, data_period, fill_width, l2_clock_mhz,
       hit_rate, expected_tb_per_second, theoretical_tb_per_second,
       measured_tb_per_second);
 }

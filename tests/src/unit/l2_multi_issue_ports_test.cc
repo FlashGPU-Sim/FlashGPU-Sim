@@ -47,6 +47,34 @@ TEST(L2MultiIssuePortsTest, DataWidthsOneTwoAndThreeAcceptThatManySectors) {
   }
 }
 
+TEST(L2MultiIssuePortsTest, FractionalDataServicePreservesIndependentPorts) {
+  l2_multi_issue_ports ports;
+  ports.configure(3, 5, 3, 3);
+  for (unsigned tick = 0; tick < 300; ++tick) {
+    if (tick) ports.begin_cycle();
+    EXPECT_LE(ports.data_remaining(), 2u);
+    ports.accept_data(4, L2_MULTI_ISSUE_HIT_DATA);
+    ports.accept_lookup(3);
+    EXPECT_EQ(ports.accept_fill(3), 3u);
+  }
+  EXPECT_EQ(ports.stats().data_port_hit_sectors, 500u);
+  EXPECT_EQ(ports.stats().lookup_accepted_sectors, 900u);
+  EXPECT_EQ(ports.stats().fill_port_accepted_sectors, 900u);
+}
+
+TEST(L2MultiIssuePortsTest, FractionalDataServiceDoesNotBankIdleWholeSectors) {
+  l2_multi_issue_ports ports;
+  ports.configure(3, 1, 3, 3);
+  for (unsigned tick = 0; tick < 1000; ++tick) ports.begin_cycle();
+  unsigned accepted = 0;
+  for (unsigned tick = 0; tick < 3; ++tick) {
+    accepted += ports.accept_data(4, L2_MULTI_ISSUE_DIRTY_EVICTION);
+    ports.begin_cycle();
+  }
+  EXPECT_EQ(accepted, 1u);
+  EXPECT_EQ(ports.stats().data_port_dirty_eviction_sectors, 1u);
+}
+
 TEST(L2MultiIssuePortsTest, ThreeIndependentSectorHitsIssueInOneTick) {
   l2_multi_issue_ports ports;
   ports.configure(/*lookup_width=*/3, /*data_width=*/3, /*fill_width=*/1);

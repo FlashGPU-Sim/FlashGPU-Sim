@@ -236,6 +236,7 @@ class memory_config {
     if (l2_multi_issue_port_model == 1) {
       assert(l2_lookup_sectors_per_cycle > 0);
       assert(l2_data_port_sectors_per_cycle > 0);
+      assert(l2_data_port_cycle_period > 0);
       assert(l2_fill_port_sectors_per_cycle > 0);
     }
     if (strchr(gpgpu_dram_timing_opt, '=') == NULL) {
@@ -381,6 +382,7 @@ class memory_config {
   unsigned l2_multi_issue_port_model;
   unsigned l2_lookup_sectors_per_cycle;
   unsigned l2_data_port_sectors_per_cycle;
+  unsigned l2_data_port_cycle_period;
   unsigned l2_fill_port_sectors_per_cycle;
   bool l2_tma_request_coalescing;
   unsigned dram_latency;
@@ -500,6 +502,7 @@ class gpgpu_sim_config : public power_config,
     m_valid = true;
   }
   unsigned get_core_freq() const { return core_freq; }
+  double get_l2_freq() const { return l2_freq; }
   unsigned num_shader() const { return m_shader_config.num_shader(); }
   unsigned num_cluster() const { return m_shader_config.n_simt_clusters; }
   unsigned get_max_concurrent_kernel() const { return max_concurrent_kernel; }

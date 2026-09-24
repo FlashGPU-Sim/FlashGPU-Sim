@@ -211,8 +211,8 @@ static void tma_trace_emit(unsigned long long cycle, const char *event,
                            unsigned size, unsigned mbar, unsigned mf_uid,
                            unsigned long long mf_addr, unsigned mf_size,
                            unsigned issued_mf, unsigned received_mf,
-                           unsigned bytes_completed, unsigned tx_inflight,
-                           unsigned global_inflight, unsigned response_fifo) {
+                           unsigned bytes_completed, unsigned global_inflight,
+                           unsigned response_fifo) {
   const char *path = std::getenv("FLASHGPU_TMA_TRACE_CSV");
   if (path == nullptr || path[0] == '\0')
     return;
@@ -238,18 +238,18 @@ static void tma_trace_emit(unsigned long long cycle, const char *event,
     std::fprintf(trace_file,
                  "cycle,event,tx_uid,kind,tma_type,pc,cta,warp,lane,tid,"
                  "src,dst,size,mbar,mf_uid,mf_addr,mf_size,issued_mf,"
-                 "received_mf,bytes_completed,tx_inflight,global_inflight,"
+                 "received_mf,bytes_completed,global_inflight,"
                  "response_fifo\n");
     header_written = true;
   }
 
   std::fprintf(trace_file,
                "%llu,%s,%u,%s,%u,0x%llx,%u,%u,%u,%u,0x%llx,0x%llx,%u,"
-               "0x%x,%u,0x%llx,%u,%u,%u,%u,%u,%u,%u\n",
+               "0x%x,%u,0x%llx,%u,%u,%u,%u,%u,%u\n",
                cycle, event, tx_uid, kind, tma_type, pc, cta_id, warp_id,
                lane_id, tid, src, dst, size, mbar, mf_uid, mf_addr, mf_size,
-               issued_mf, received_mf, bytes_completed, tx_inflight,
-               global_inflight, response_fifo);
+               issued_mf, received_mf, bytes_completed, global_inflight,
+               response_fifo);
   std::fflush(trace_file);
 }
 
@@ -827,7 +827,6 @@ private:
     // Debug counters
     uint32_t m_mf_issued_count = 0;   // Number of mem_fetch requests issued
     uint32_t m_mf_received_count = 0; // Number of mem_fetch responses received
-    uint32_t m_mf_tx_inflight = 0; // Currently in-flight for this transaction
 
     void reset() {
       m_thread = nullptr;
@@ -846,7 +845,6 @@ private:
       agu_state = tma_agu_state_t(); // Reset to default state
       m_mf_issued_count = 0;
       m_mf_received_count = 0;
-      m_mf_tx_inflight = 0;
     }
 
     bool is_valid() const { return m_thread != nullptr; }
@@ -1000,13 +998,13 @@ private:
 
     bool is_write = is_write_transaction(tx);
     tx.m_complete_cycle = current_cycle();
-    tma_trace_emit(
-        tx.m_complete_cycle, "COMPLETE", tx_uid, is_write ? "WRITE" : "READ",
-        tx.m_static_info.tma_type, tx.m_pc, tx.m_cta_id, tx.m_warp_id,
-        tx.m_lane_id, tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
-        tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0, 0, 0,
-        tx.m_mf_issued_count, tx.m_mf_received_count, tx.m_bytes_completed,
-        tx.m_mf_tx_inflight, m_mf_inflight, m_response_fifo.size());
+    tma_trace_emit(tx.m_complete_cycle, "COMPLETE", tx_uid,
+                   is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                   tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id, tx.m_tid,
+                   tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                   tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0, 0,
+                   0, tx.m_mf_issued_count, tx.m_mf_received_count,
+                   tx.m_bytes_completed, m_mf_inflight, m_response_fifo.size());
     m_shader_ctx->inc_tma_tx_completed(is_write);
     record_tma_tx_completed(is_write);
     GPPRINTF_TMA(
@@ -1046,7 +1044,7 @@ private:
                      tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
                      tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0, 0,
                      0, tx.m_mf_issued_count, tx.m_mf_received_count,
-                     tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                     tx.m_bytes_completed, m_mf_inflight,
                      m_response_fifo.size());
     }
 
@@ -1355,7 +1353,7 @@ public:
                        tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
                        tx.m_tid, tma_dyn_info.src_addr, tma_dyn_info.dst_addr,
                        tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr, 0, 0,
-                       0, 0, 0, 0, 0, m_mf_inflight, m_response_fifo.size());
+                       0, 0, 0, 0, m_mf_inflight, m_response_fifo.size());
 
         bool idealized =
             m_shader_ctx->get_config()->gpgpu_tma_idealized_memory != 0;
@@ -1552,7 +1550,7 @@ public:
           tma_trace_emit(current_cycle(), "ARRIVE", entry.tx_uid,
                          entry.is_write ? "WRITE" : "READ", 0, 0, entry.cta_id,
                          entry.warp_id, 0, 0, 0, 0, entry.size_in_bytes,
-                         entry.mbar_addr, 0, 0, 0, 0, 0, entry.size_in_bytes, 0,
+                         entry.mbar_addr, 0, 0, 0, 0, 0, entry.size_in_bytes,
                          m_mf_inflight, m_response_fifo.size());
           if (!entry.is_write) {
             m_barriers->complete_tx(entry.cta_id, entry.warp_id,
@@ -1628,15 +1626,14 @@ public:
       bool is_write = is_write_transaction(tx);
       unsigned long long response_cycle = current_cycle();
       if (tma_trace_mf_enabled(response_cycle)) {
-        tma_trace_emit(response_cycle, "MF_RESPONSE", tx_uid,
-                       is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
-                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
-                       tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
-                       tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
-                       parent_uid, parent_mf->get_addr(), mf->get_data_size(),
-                       tx.m_mf_issued_count, tx.m_mf_received_count,
-                       tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
-                       m_response_fifo.size());
+        tma_trace_emit(
+            response_cycle, "MF_RESPONSE", tx_uid, is_write ? "WRITE" : "READ",
+            tx.m_static_info.tma_type, tx.m_pc, tx.m_cta_id, tx.m_warp_id,
+            tx.m_lane_id, tx.m_tid, tx.m_dyn_info.src_addr,
+            tx.m_dyn_info.dst_addr, tx.m_dyn_info.size_in_bytes,
+            tx.m_dyn_info.mbar_addr, parent_uid, parent_mf->get_addr(),
+            mf->get_data_size(), tx.m_mf_issued_count, tx.m_mf_received_count,
+            tx.m_bytes_completed, m_mf_inflight, m_response_fifo.size());
       }
       if (tx.m_first_response_cycle == 0) {
         tx.m_first_response_cycle = response_cycle;
@@ -1647,7 +1644,7 @@ public:
                        tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
                        parent_uid, parent_mf->get_addr(), mf->get_data_size(),
                        tx.m_mf_issued_count, tx.m_mf_received_count,
-                       tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                       tx.m_bytes_completed, m_mf_inflight,
                        m_response_fifo.size());
       }
 
@@ -1685,8 +1682,6 @@ public:
       if (bytes_to_add >= pending_it->second) {
         assert(m_mf_inflight > 0);
         m_mf_inflight--;
-        assert(tx.m_mf_tx_inflight > 0);
-        tx.m_mf_tx_inflight--;
         m_mf_pending_bytes.erase(pending_it);
         m_mf_to_tx.erase(parent_uid);
         parent_complete = true;
@@ -1720,59 +1715,14 @@ public:
         return;
       }
 
-      const unsigned tx_quota = m_shader_ctx->get_config()->gpgpu_tma_tx_quota;
-      const unsigned quota_segment_bytes =
-          m_shader_ctx->get_config()->gpgpu_tma_quota_segment_bytes;
-      const auto effective_tx_quota = [tx_quota, quota_segment_bytes](
-                                          const tma_transaction_t &candidate) {
-        if (tx_quota == 0 || quota_segment_bytes == 0)
-          return tx_quota;
-        const unsigned segments = std::max(
-            1u, (candidate.m_dyn_info.size_in_bytes + quota_segment_bytes - 1) /
-                    quota_segment_bytes);
-        return tx_quota * segments;
-      };
-      bool borrowing_quota = false;
-      unsigned tx_uid = 0;
-      tma_transaction_t *selected_tx = nullptr;
-      const unsigned num_candidates = issue_queue.size();
-
-      for (unsigned attempt = 0; attempt < num_candidates; ++attempt) {
-        tx_uid = issue_queue.front();
-        auto it = m_transactions.find(tx_uid);
-        assert(it != m_transactions.end());
-        auto &candidate = it->second;
-
-        const bool over_quota =
-            tx_quota > 0 &&
-            candidate.m_mf_tx_inflight >= effective_tx_quota(candidate);
-        if (over_quota) {
-          issue_queue.pop_front();
-          issue_queue.push_back(tx_uid);
-          continue;
-        }
-        selected_tx = &candidate;
-        break;
-      }
-
-      if (selected_tx == nullptr) {
-        // Legacy unsegmented quotas are soft fairness targets: once every
-        // transaction reaches its quota, keep the TMA unit busy under the
-        // SM-wide limit. Segmented quotas model hard transaction credits.
-        if (quota_segment_bytes > 0)
-          return;
-        borrowing_quota = true;
-        tx_uid = issue_queue.front();
-        auto it = m_transactions.find(tx_uid);
-        assert(it != m_transactions.end());
-        selected_tx = &it->second;
-      }
-      auto &tx = *selected_tx;
+      const unsigned tx_uid = issue_queue.front();
+      auto it = m_transactions.find(tx_uid);
+      assert(it != m_transactions.end());
+      auto &tx = it->second;
 
       bool is_write =
           (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
       unsigned packet_size = is_write ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
-      bool made_progress = false;
       bool transaction_finalized = false;
 
       if (!m_icnt->full(packet_size, is_write)) {
@@ -1794,9 +1744,6 @@ public:
                 1, std::memory_order_relaxed);
             break;
           }
-          if (!borrowing_quota && tx_quota > 0 &&
-              tx.m_mf_tx_inflight >= effective_tx_quota(tx))
-            break;
           if (m_icnt->full(packet_size, is_write))
             break;
           if (request_bytes_per_cycle > 0 &&
@@ -1806,8 +1753,6 @@ public:
           bool issued_this_iteration = false;
           while (m_agu.gen_next_req(tx.agu_state, addr, size,
                                     request_granularity)) {
-            made_progress = true;
-
             bool first_request = tx.m_mf_issued_count == 0;
             if (first_request) {
               GPPRINTF_TMA(TMA,
@@ -1884,8 +1829,7 @@ public:
                   tx.m_dyn_info.dst_addr, tx.m_dyn_info.size_in_bytes,
                   tx.m_dyn_info.mbar_addr, mf->get_request_uid(), addr, size,
                   tx.m_mf_issued_count, tx.m_mf_received_count,
-                  tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
-                  m_response_fifo.size());
+                  tx.m_bytes_completed, m_mf_inflight, m_response_fifo.size());
             }
             if (first_request) {
               tx.m_first_issue_cycle = issue_cycle;
@@ -1896,14 +1840,13 @@ public:
                   tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
                   tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
                   mf->get_request_uid(), addr, size, tx.m_mf_issued_count,
-                  tx.m_mf_received_count, tx.m_bytes_completed,
-                  tx.m_mf_tx_inflight, m_mf_inflight, m_response_fifo.size());
+                  tx.m_mf_received_count, tx.m_bytes_completed, m_mf_inflight,
+                  m_response_fifo.size());
             }
             tx.m_last_issue_cycle = issue_cycle;
 
             m_icnt->push(mf);
             m_mf_inflight++;
-            tx.m_mf_tx_inflight++;
             atomic_update_max(g_tma_max_mf_inflight, m_mf_inflight);
             record_tma_mf_issued(is_write, size);
             if (request_bytes_per_cycle > 0)
@@ -1929,7 +1872,7 @@ public:
                        tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
                        tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0,
                        0, 0, tx.m_mf_issued_count, tx.m_mf_received_count,
-                       tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                       tx.m_bytes_completed, m_mf_inflight,
                        m_response_fifo.size());
         GPPRINTF_TMA(TMA,
                      "[TMA AGU DONE] tx_uid=%u issued %u %s mem_fetch requests "
@@ -1938,9 +1881,6 @@ public:
                      tx.m_dyn_info.size_in_bytes);
         fflush(stdout);
         issue_queue.pop_front();
-      } else if (borrowing_quota && made_progress) {
-        issue_queue.pop_front();
-        issue_queue.push_back(tx_uid);
       }
     }
   }

@@ -80,7 +80,8 @@ option in each `gpgpusim.config`.
 | `-gpgpu_cache:dl2` | L2 cache geometry and policy per subpartition |
 | `-gpgpu_l2_multi_issue_port_model` | Select `0` for the legacy single-request data/fill busy-delay model or `1` for independent multi-issue lookup, data, and fill sector ports |
 | `-gpgpu_l2_lookup_sectors_per_cycle` | Lookup width in 32-byte sector work packages when the multi-issue port model is enabled |
-| `-gpgpu_l2_data_port_sectors_per_cycle` | Data-port width for hits and dirty-eviction reads in 32-byte sector work packages when the multi-issue model is enabled |
+| `-gpgpu_l2_data_port_sectors_per_cycle` | Data-port service numerator for hits and dirty-eviction reads, in 32-byte sector work packages |
+| `-gpgpu_l2_data_port_cycle_period` | L2 ticks per data-service numerator; default `1` preserves integer widths. Unused whole-sector service does not accumulate |
 | `-gpgpu_l2_fill_port_sectors_per_cycle` | Independent fill-port width in 32-byte sector work packages when the multi-issue model is enabled |
 | `-gpgpu_l2_rop_delay_output_sectors_per_cycle` | Ready ROP-delay output service width per L2 instance and L2 tick; `1` preserves the legacy one-item cadence |
 | `-gpgpu_shmem_size` | Shared-memory capacity in bytes per SM |
@@ -122,8 +123,6 @@ inherit another limit.
 | `-gpgpu_num_tma_units` | `0` | `1` | `1` | TMA execution units per SM; `0` disables the TMA pipeline |
 | `-gpgpu_tma_transaction_slots` | `0` | default | `16` | Active TMA transactions accepted from warps per SM; a full table backpressures new TMA copies, and `0` is unlimited |
 | `-gpgpu_tma_max_inflight` | `0` | `384` | `384` | Maximum in-flight TMA memory requests per SM; `0` is unlimited |
-| `-gpgpu_tma_tx_quota` | `0` | `48` | `48` | Base in-flight request quota per TMA transaction; `0` is unlimited |
-| `-gpgpu_tma_quota_segment_bytes` | `0` | default | `8192` | Scale the transaction quota by `ceil(transaction_bytes / segment_bytes)`; `0` disables scaling |
 | `-gpgpu_tma_request_granularity` | `32` | `128` | `32` | Bytes represented by one TMA memory request |
 | `-gpgpu_tma_request_width` | `1` | default | default | TMA memory requests issued per TMA unit per cycle |
 | `-gpgpu_tma_response_width` | `1` | default | default | TMA response tokens accepted per SM per cycle |
@@ -263,7 +262,6 @@ disables the additional byte-credit limiter instead of restricting service.
 | `-gpgpu_ldst_response_sectors_per_cycle` | `0` | `4` | LD/ST response sectors advanced per SM and core tick |
 | `-gpgpu_cta_replacement_latency` | `0` | `1200` | Per-SM hardware CTA slot transition after resource release; a never-used slot is immediately available and different SMs transition in parallel |
 | `-gpgpu_tma_max_inflight` | `0` | `3200` | Issued TMA child requests awaiting response per SM; `0` is unlimited. The full-model value covers the uniform 800-cycle DRAM approximation's bandwidth-delay product while response service width independently limits steady-state bandwidth |
-| `-gpgpu_tma_tx_quota` | `0` | `0` | Per-live-transaction fairness quota; B200 disables it so the SM-wide tracking cap and request/response widths determine aggregate concurrency |
 | `-gpgpu_tma_request_granularity` | `32` | `32` | Bytes represented by one TMA request |
 | `-gpgpu_tma_request_width` | `1` | `4` | TMA requests issued per TMA unit and core tick |
 | `-gpgpu_tma_response_width` | `1` | `4` | TMA response tokens consumed per SM and core tick |

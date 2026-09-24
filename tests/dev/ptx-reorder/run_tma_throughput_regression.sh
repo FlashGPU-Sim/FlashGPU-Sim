@@ -23,7 +23,6 @@ run_case() {
     -e 's/^-gpgpu_tma_request_width[[:space:]]+.*/-gpgpu_tma_request_width 4/' \
     -e 's/^-gpgpu_tma_response_width[[:space:]]+.*/-gpgpu_tma_response_width 4/' \
     -e 's/^-gpgpu_tma_max_inflight[[:space:]]+.*/-gpgpu_tma_max_inflight 3200/' \
-    -e 's/^-gpgpu_tma_tx_quota[[:space:]]+.*/-gpgpu_tma_tx_quota 48/' \
     -e 's/^-dram_latency[[:space:]]+.*/-dram_latency 393/' \
     -e 's/^-gpgpu_simple_dram_model[[:space:]]+.*/-gpgpu_simple_dram_model 1/' \
     "$run_dir/gpgpusim.config"

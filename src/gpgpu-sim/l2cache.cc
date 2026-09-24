@@ -35,6 +35,7 @@
 #include <limits.h>
 
 #include <algorithm>
+#include <cmath>
 #include <list>
 #include <set>
 
@@ -60,6 +61,8 @@ const char *mem_sub_partition_full_stat_str(
       return "ICNT_TO_L2_QUEUE_FULL";
     case MSP_FULL_ICNT_TO_L2_QUEUE_NEAR_FULL:
       return "ICNT_TO_L2_QUEUE_NEAR_FULL";
+    case MSP_FULL_ROP_PIPELINE_FULL:
+      return "ROP_PIPELINE_FULL";
     case MSP_FULL_L2_DRAM_QUEUE_FULL:
       return "L2_DRAM_QUEUE_FULL";
     case MSP_FULL_DRAM_L2_QUEUE_FULL:
@@ -698,17 +701,32 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
   m_mem_stats = stats;
   m_gpu = gpu;
   m_memcpy_cycle_offset = 0;
+  m_rop_pipeline_capacity = 0;
+
   memset(m_full_state_stats, 0, sizeof(m_full_state_stats));
   m_l2_partition_remote_accesses = 0;
   m_l2_partition_extra_latency_cycles = 0;
   m_pending_l2_writeback = NULL;
   m_pending_l2_fill = NULL;
   if (m_l2_port_model == l2_port_model_kind::multi_issue) {
+    // Storage for the configured fixed-latency ingress pipeline, in sectors.
+    // This is a bandwidth-delay-product budget, not a physical queue-depth claim.
+    const double delay_ticks = std::ceil(
+        (static_cast<double>(config->rop_latency) +
+         config->l2_partition_extra_latency) *
+        gpu->get_config().get_l2_freq() / gpu->get_config().get_core_freq());
+    const unsigned ingress_width =
+        config->gpgpu_l2_request_ingress_sectors_per_cycle
+            ? config->gpgpu_l2_request_ingress_sectors_per_cycle
+            : SECTOR_CHUNCK_SIZE;
+    m_rop_pipeline_capacity =
+        static_cast<std::size_t>(delay_ticks) * ingress_width;
     assert(!m_config->m_L2_config.disabled());
     assert(m_config->m_L2_config.m_cache_type == SECTOR);
     m_l2_multi_issue_ports.configure(m_config->l2_lookup_sectors_per_cycle,
                                      m_config->l2_data_port_sectors_per_cycle,
-                                     m_config->l2_fill_port_sectors_per_cycle);
+                                     m_config->l2_fill_port_sectors_per_cycle,
+                                     m_config->l2_data_port_cycle_period);
   }
 
   assert(m_id < m_config->m_n_mem_sub_partition);
@@ -1077,6 +1095,19 @@ bool memory_sub_partition::full(unsigned size) const {
   return m_icnt_L2_queue->is_avilable_size(size);
 }
 
+bool memory_sub_partition::full(unsigned size, const mem_fetch *request) const {
+  if (request == NULL) return false;
+  // Texture requests without a remote delay enter the FIFO directly. Preserve
+  // the legacy port model's admission behavior as well.
+  if (m_l2_port_model != l2_port_model_kind::multi_issue) return full(size);
+  if (request->istexture() && l2_partition_extra_latency(request) == 0 &&
+      full(size))
+    return true;
+  return m_rop_delay_output.full(size, m_icnt_L2_queue->get_length(),
+                                 m_icnt_L2_queue->get_max_len(),
+                                 m_rop_pipeline_capacity);
+}
+
 bool memory_sub_partition::l2_data_port_busy() const {
   assert(!m_config->m_L2_config.disabled());
   switch (m_l2_port_model) {
@@ -1101,7 +1132,14 @@ bool memory_sub_partition::l2_fill_port_busy() const {
   abort();
 }
 
-void memory_sub_partition::record_full_state(unsigned size) {
+void memory_sub_partition::record_full_state(unsigned size,
+                                             const mem_fetch *request) {
+  if (request != NULL && m_l2_port_model == l2_port_model_kind::multi_issue &&
+      (!request->istexture() || l2_partition_extra_latency(request) != 0 ||
+       !full(size))) {
+    if (full(size, request)) m_full_state_stats[MSP_FULL_ROP_PIPELINE_FULL]++;
+    return;
+  }
   if (!full(size)) return;
 
   m_full_state_stats[MSP_FULL_ICNT_TO_L2_NOT_ENOUGH_SECTOR_SLOTS]++;

@@ -153,6 +153,15 @@ class rop_delay_output_queue {
   bool empty() const { return m_local.empty() && m_remote.empty(); }
   std::size_t size() const { return m_local.size() + m_remote.size(); }
 
+  // The delay stage and its output FIFO share an admission budget. Looking
+  // only at the far-end FIFO can drain the latency pipeline on every stall.
+  bool full(unsigned incoming, std::size_t downstream_size,
+            std::size_t downstream_capacity,
+            std::size_t pipeline_capacity) const {
+    return size() + downstream_size + incoming >
+           pipeline_capacity + downstream_capacity;
+  }
+
   bool has_ready(unsigned long long cycle) const {
     return next_ready_queue(cycle) != NULL;
   }
@@ -425,6 +434,8 @@ class l2_multi_issue_ports {
   l2_multi_issue_ports()
       : m_lookup_width(1),
         m_data_width(1),
+        m_data_cycle_period(1),
+        m_data_fraction(0),
         m_fill_width(1),
         m_lookup_remaining(1),
         m_data_remaining(1),
@@ -434,19 +445,26 @@ class l2_multi_issue_ports {
         m_fill_stall_recorded(false) {}
 
   void configure(unsigned lookup_width, unsigned data_width,
-                 unsigned fill_width) {
+                 unsigned fill_width, unsigned data_cycle_period = 1) {
     assert(lookup_width > 0);
     assert(data_width > 0);
     assert(fill_width > 0);
+    assert(data_cycle_period > 0);
     m_lookup_width = lookup_width;
     m_data_width = data_width;
+    m_data_cycle_period = data_cycle_period;
+    m_data_fraction = 0;
     m_fill_width = fill_width;
     begin_cycle();
   }
 
   void begin_cycle() {
     m_lookup_remaining = m_lookup_width;
-    m_data_remaining = m_data_width;
+    // Retain only the fractional service phase. Unused whole-sector slots
+    // expire each tick, so idle time cannot create a later bandwidth burst.
+    m_data_fraction += m_data_width;
+    m_data_remaining = m_data_fraction / m_data_cycle_period;
+    m_data_fraction %= m_data_cycle_period;
     m_fill_remaining = m_fill_width;
     m_lookup_stall_recorded = false;
     m_data_stall_recorded = false;
@@ -511,6 +529,8 @@ class l2_multi_issue_ports {
 
   unsigned m_lookup_width;
   unsigned m_data_width;
+  unsigned m_data_cycle_period;
+  unsigned long long m_data_fraction;
   unsigned m_fill_width;
   unsigned m_lookup_remaining;
   unsigned m_data_remaining;
@@ -557,6 +577,7 @@ enum mem_sub_partition_full_stat {
   MSP_FULL_ICNT_TO_L2_NOT_ENOUGH_SECTOR_SLOTS = 0,
   MSP_FULL_ICNT_TO_L2_QUEUE_FULL,
   MSP_FULL_ICNT_TO_L2_QUEUE_NEAR_FULL,
+  MSP_FULL_ROP_PIPELINE_FULL,
   MSP_FULL_L2_DRAM_QUEUE_FULL,
   MSP_FULL_DRAM_L2_QUEUE_FULL,
   MSP_FULL_L2_ICNT_QUEUE_FULL,
@@ -771,7 +792,8 @@ class memory_sub_partition {
 
   bool full() const;
   bool full(unsigned size) const;
-  void record_full_state(unsigned size);
+  bool full(unsigned size, const mem_fetch *request) const;
+  void record_full_state(unsigned size, const mem_fetch *request = NULL);
   void accumulate_full_state_stats(unsigned long long *stats) const;
   void accumulate_l2_multi_issue_port_stats(
       l2_multi_issue_port_stats &stats) const;
@@ -832,6 +854,7 @@ class memory_sub_partition {
   // arbitration.
   rop_delay_output_queue<class mem_fetch *> m_rop_delay_output;
   rop_delay_output_service_stats m_rop_delay_output_stats;
+  std::size_t m_rop_pipeline_capacity;
 
   // these are various FIFOs between units within a memory partition
   fifo_pipeline<mem_fetch> *m_icnt_L2_queue;
