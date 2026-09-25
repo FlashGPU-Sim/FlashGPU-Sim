@@ -5950,6 +5950,10 @@ void shader_core_config::set_pipeline_latency() {
   max_int_latency = std::max(int_latency[1], int_latency[5]);
   max_int_latency = std::max(max_int_latency,
                             gpgpu_ctx->func_sim->opcode_latency_predicate);
+  max_int_latency = std::max(max_int_latency,
+                            gpgpu_ctx->func_sim->opcode_latency_int_logic);
+  if (gpgpu_ctx->func_sim->opcode_f32_minmax_use_int)
+    max_int_latency = std::max(max_int_latency, fp_latency[1]);
   // Predicate ALU instructions fall back to SP when there is no INT unit.
   max_sp_latency = std::max(max_sp_latency,
                            gpgpu_ctx->func_sim->opcode_latency_predicate);
@@ -5960,6 +5964,10 @@ void shader_core_config::set_pipeline_latency() {
                            gpgpu_ctx->func_sim->opcode_latency_cvt_f16x2_f32);
   max_int_latency = std::max(max_int_latency,
                             gpgpu_ctx->func_sim->opcode_latency_cvt_f16x2_f32);
+  // Without a dedicated INT pipeline, integer and shuffle instructions use
+  // SP as well. Size that pipeline for their latency before dispatching them.
+  if (gpgpu_num_int_units == 0)
+    max_sp_latency = std::max(max_sp_latency, max_int_latency);
   max_dp_latency = dp_latency[1];
   max_tensor_core_latency = std::max(tensor_latency_max, wgmma_latency_max);
   max_tma_latency = tma_latency;

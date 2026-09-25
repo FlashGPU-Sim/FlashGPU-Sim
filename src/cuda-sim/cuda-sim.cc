@@ -170,6 +170,16 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
   option_parser_register(opp, "-ptx_opcode_latency_predicate", OPT_UINT32,
                          &opcode_latency_predicate,
                          "SETP/SELP latency; 0 preserves legacy one-cycle ALU", "0");
+  option_parser_register(opp, "-ptx_opcode_latency_int_logic", OPT_UINT32,
+                         &opcode_latency_int_logic,
+                         "32-bit AND/OR/XOR/NOT/SHL/SHR result latency", "1");
+  option_parser_register(opp, "-ptx_opcode_initiation_int_logic", OPT_UINT32,
+                         &opcode_initiation_int_logic,
+                         "32-bit AND/OR/XOR/NOT/SHL/SHR initiation interval", "1");
+  option_parser_register(opp, "-ptx_opcode_f32_minmax_use_int", OPT_BOOL,
+                         &opcode_f32_minmax_use_int,
+                         "Route scalar FP32 MIN/MAX through the integer ALU; "
+                         "retain FP MIN/MAX latency and initiation settings", "0");
   option_parser_register(opp, "-ptx_opcode_latency_f32x2", OPT_UINT32,
                          &opcode_latency_f32x2,
                          "Packed f32x2 arithmetic latency; 0 inherits scalar FP",
@@ -1349,7 +1359,23 @@ void ptx_instruction::set_opcode_and_latency() {
   mem_op = NOT_TEX;
   initiation_interval = latency = 1;
   bool packed_timing = false;
+  bool int_logic_timing = false;
   switch (m_opcode) {
+    case AND_OP:
+    case OR_OP:
+    case XOR_OP:
+    case NOT_OP:
+    case SHL_OP:
+    case SHR_OP:
+      if (get_type() == B32_TYPE || get_type() == U32_TYPE ||
+          get_type() == S32_TYPE) {
+        latency = gpgpu_ctx->func_sim->opcode_latency_int_logic;
+        initiation_interval =
+            gpgpu_ctx->func_sim->opcode_initiation_int_logic;
+        if (latency != 1 || initiation_interval != 1) op = INTP_OP;
+        int_logic_timing = true;
+      }
+      break;
     case SETP_OP:
     case SELP_OP:
       if (gpgpu_ctx->func_sim->opcode_latency_predicate) {
@@ -1552,6 +1578,10 @@ void ptx_instruction::set_opcode_and_latency() {
       // MAX,MIN latency
       switch (get_type()) {
         case F32_TYPE:
+          latency = fp_latency[1];
+          initiation_interval = fp_init[1];
+          op = gpgpu_ctx->func_sim->opcode_f32_minmax_use_int ? INTP_OP : SP_OP;
+          break;
         case F32X2_TYPE:
           latency = fp_latency[1];
           initiation_interval = fp_init[1];
@@ -1783,6 +1813,12 @@ void ptx_instruction::set_opcode_and_latency() {
   }
   // The pipeline indexes latency - initiation_interval and reserves a result
   // bus slot at latency. Reject invalid overrides before either operation.
+  if (int_logic_timing &&
+      (initiation_interval == 0 || latency < initiation_interval ||
+       latency >= simd_function_unit::MAX_ALU_LATENCY)) {
+    fprintf(stderr, "GPGPU-Sim PTX: invalid integer logic timing\n");
+    abort();
+  }
   if (packed_timing &&
       (initiation_interval == 0 || latency < initiation_interval ||
        latency >= simd_function_unit::MAX_ALU_LATENCY)) {
