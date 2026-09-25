@@ -11,6 +11,7 @@
 
 
 #include "gpgpu-sim/flash/ptx_sched/ptx_scheduler.h"
+#include "gpgpu-sim/scoreboard.h"
 
 namespace {
 
@@ -148,6 +149,53 @@ class PtxSchedulerGuidedTest : public ::testing::Test {
   bool had_override = false;
   std::filesystem::path cwd, work;
 };
+
+TEST_F(PtxSchedulerGuidedTest, WideTmemOperandsKeepTailDependencies) {
+  ctx->ptx_reorder_enabled = false;
+  for (unsigned width : {16u, 32u}) {
+    std::string operands;
+    for (unsigned i = 0; i < width; ++i) {
+      if (i) operands += ",";
+      operands += "%v" + std::to_string(i);
+    }
+    const std::string tail = "%v" + std::to_string(width - 1);
+    auto insts = fusion(
+        "wide_tmem_dependencies_" + std::to_string(width),
+        ".reg .b32 %v<32>, %addr, %sink;\n"
+        "tcgen05.ld.sync.aligned.32x32b.x" + std::to_string(width) +
+        ".b32 {" + operands + "}, [%addr];\n"
+        "add.u32 %sink, " + tail + ", 1;\n"
+        "tcgen05.st.sync.aligned.32x32b.x" + std::to_string(width) +
+        ".b32 [%addr], {" + operands + "};\n");
+    ASSERT_EQ(insts.size(), 3u);
+    warp_inst_t load;
+    static_cast<inst_t &>(load) = *insts[0];
+    Scoreboard scoreboard(0, 1, nullptr);
+    scoreboard.reserveRegistersForWarp(&load, 0);
+    EXPECT_TRUE(scoreboard.checkCollision(0, insts[1]));
+    EXPECT_EQ(scoreboard.getCollisionType(0, insts[1]), PROD_TENSOR_CORE);
+
+    // A write to the last vector component must also wait for the load.
+    warp_inst_t writer;
+    for (auto &reg : writer.out) reg = 0;
+    for (auto &reg : writer.in) reg = 0;
+    writer.out[0] = insts[1]->in[0];
+    writer.outcount = 1;
+    writer.incount = 0;
+    writer.pred = writer.ar1 = writer.ar2 = 0;
+    writer.op = SP_OP;
+    EXPECT_TRUE(scoreboard.checkCollision(0, &writer));
+    scoreboard.releaseRegistersForWarp(&load, 0);
+    EXPECT_FALSE(scoreboard.pendingWrites(0));
+    EXPECT_FALSE(scoreboard.checkCollision(0, insts[1]));
+
+    scoreboard.reserveRegistersForWarp(&writer, 0);
+    EXPECT_TRUE(scoreboard.checkCollision(0, insts[2]));
+    EXPECT_EQ(scoreboard.getCollisionType(0, insts[2]), PROD_SP_INT);
+    scoreboard.releaseRegistersForWarp(&writer, 0);
+    EXPECT_FALSE(scoreboard.checkCollision(0, insts[2]));
+  }
+}
 
 TEST_F(PtxSchedulerGuidedTest, NegatedMultiplyOnlyFusesPlainRoundNearest) {
   unsigned index = 0;

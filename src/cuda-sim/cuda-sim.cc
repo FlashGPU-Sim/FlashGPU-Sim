@@ -1857,6 +1857,8 @@ void ptx_instruction::pre_decode() {
   }
   incount = 0;
   outcount = 0;
+  extra_in.clear();
+  extra_out.clear();
   is_vectorin = 0;
   is_vectorout = 0;
   std::fill_n(arch_reg.src, MAX_REG_OPERANDS, -1);
@@ -1963,6 +1965,14 @@ void ptx_instruction::pre_decode() {
   set_bar_type();
   // Get register operands
   int n = 0, m = 0;
+  auto add_input = [&](unsigned reg, int arch) {
+    if (m < MAX_INPUT_VALUES)
+      in[m] = reg;
+    else
+      extra_in.push_back(reg);
+    if (m < MAX_REG_OPERANDS) arch_reg.src[m] = arch;
+    ++m;
+  };
   ptx_instruction::const_iterator opr = op_iter_begin();
   for (; opr != op_iter_end(); opr++, n++) {  // process operands
     const operand_info &o = *opr;
@@ -1974,14 +1984,14 @@ void ptx_instruction::pre_decode() {
       } else if (o.is_vector()) {
         is_vectorin = 1;
         unsigned num_elem = o.get_vect_nelem();
-        if (num_elem >= 1) out[0] = o.reg1_num();
-        if (num_elem >= 2) out[1] = o.reg2_num();
-        if (num_elem >= 3) out[2] = o.reg3_num();
-        if (num_elem >= 4) out[3] = o.reg4_num();
-        if (num_elem >= 5) out[4] = o.reg5_num();
-        if (num_elem >= 6) out[5] = o.reg6_num();
-        if (num_elem >= 7) out[6] = o.reg7_num();
-        if (num_elem >= 8) out[7] = o.reg8_num();
+        for (unsigned i = 0; i < num_elem; ++i) {
+          const symbol *component = o.vec_symbol_or_null(i);
+          if (component == NULL || component->is_non_arch_reg()) continue;
+          if (i < MAX_OUTPUT_VALUES)
+            out[i] = component->reg_num();
+          else
+            extra_out.push_back(component->reg_num());
+        }
         for (unsigned i = 0; i < num_elem && i < MAX_REG_OPERANDS; i++)
           arch_reg.dst[i] = o.arch_reg_num(i);
       }
@@ -2002,29 +2012,11 @@ void ptx_instruction::pre_decode() {
             // The compiled packed operation reads that scalar once and applies
             // it to both lanes, so do not create a duplicate collector input.
             if (lane != 0 && source == pack_sources[0]) continue;
-            assert(m < MAX_INPUT_VALUES && m < MAX_REG_OPERANDS);
-            in[m] = source->reg_num();
-            arch_reg.src[m] = source->arch_reg_num();
-            ++m;
+            add_input(source->reg_num(), source->arch_reg_num());
           }
           continue;
         }
-        int reg_num = o.reg_num();
-        arch_reg.src[m] = o.arch_reg_num();
-        switch (m) {
-          case 0:
-            in[0] = reg_num;
-            break;
-          case 1:
-            in[1] = reg_num;
-            break;
-          case 2:
-            in[2] = reg_num;
-            break;
-          default:
-            break;
-        }
-        m++;
+        add_input(o.reg_num(), o.arch_reg_num());
       } else if (o.is_vector()) {
         // assert(m == 0); //only support 1 vector operand (for textures) right
         // now
@@ -2034,10 +2026,7 @@ void ptx_instruction::pre_decode() {
           if (o.vec_is_literal(i)) continue;
           const symbol *component = o.vec_symbol_or_null(i);
           if (component == NULL || component->is_non_arch_reg()) continue;
-          if (m >= MAX_INPUT_VALUES || m >= MAX_REG_OPERANDS) break;
-          in[m] = component->reg_num();
-          arch_reg.src[m] = component->arch_reg_num();
-          ++m;
+          add_input(component->reg_num(), component->arch_reg_num());
         }
       }
     }

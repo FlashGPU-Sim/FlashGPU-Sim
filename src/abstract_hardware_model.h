@@ -1010,6 +1010,10 @@ public:
   unsigned outcount;
   unsigned in[24];
   unsigned incount;
+  // Logical dependencies beyond the fixed operand-collector arrays. Wide
+  // register vectors must not lose RAW/WAW hazards at those array limits.
+  std::vector<unsigned> extra_out;
+  std::vector<unsigned> extra_in;
   unsigned char is_vectorin;
   unsigned char is_vectorout;
   int pred;  // predicate register number

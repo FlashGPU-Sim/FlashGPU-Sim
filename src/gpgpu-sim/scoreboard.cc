@@ -158,6 +158,13 @@ void Scoreboard::reserveRegistersForWarp(const class warp_inst_t* inst,
     }
   }
 
+  for (unsigned reg : inst->extra_out) {
+    if (reg > 0 && reserved_outputs.insert(reg).second) {
+      reserveRegister(warp_id, reg, inst->get_uid());
+      reg_producer[warp_id][reg] = prod;
+    }
+  }
+
   // Keep track of long operations
   if (inst->is_load() && (inst->space.get_type() == global_space ||
                           inst->space.get_type() == local_space ||
@@ -172,6 +179,8 @@ void Scoreboard::reserveRegistersForWarp(const class warp_inst_t* inst,
         longopregs[warp_id].insert(inst->out[r]);
       }
     }
+    for (unsigned reg : inst->extra_out)
+      if (reg > 0) longopregs[warp_id].insert(reg);
   }
 }
 
@@ -189,6 +198,8 @@ void Scoreboard::releaseRegistersForWarp(const class warp_inst_t* inst,
       releaseRegisterIfOwner(warp_id, inst->out[r], inst->get_uid());
     }
   }
+  for (unsigned reg : inst->extra_out)
+    if (reg > 0) releaseRegisterIfOwner(warp_id, reg, inst->get_uid());
 }
 
 void Scoreboard::markRegistersReadyForWarp(unsigned warp_id,
@@ -223,6 +234,8 @@ reg_producer_t Scoreboard::getCollisionType(unsigned wid,
   std::set<int> inst_regs;
   for (unsigned i = 0; i < inst->outcount; i++) inst_regs.insert(inst->out[i]);
   for (unsigned i = 0; i < inst->incount; i++) inst_regs.insert(inst->in[i]);
+  inst_regs.insert(inst->extra_out.begin(), inst->extra_out.end());
+  inst_regs.insert(inst->extra_in.begin(), inst->extra_in.end());
   if (inst->pred > 0) inst_regs.insert(inst->pred);
   if (inst->ar1 > 0) inst_regs.insert(inst->ar1);
   if (inst->ar2 > 0) inst_regs.insert(inst->ar2);
@@ -257,6 +270,8 @@ bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
 
   for (unsigned jjj = 0; jjj < inst->incount; jjj++)
     inst_regs.insert(inst->in[jjj]);
+  inst_regs.insert(inst->extra_out.begin(), inst->extra_out.end());
+  inst_regs.insert(inst->extra_in.begin(), inst->extra_in.end());
 
   if (inst->pred > 0) inst_regs.insert(inst->pred);
   if (inst->ar1 > 0) inst_regs.insert(inst->ar1);
