@@ -16,6 +16,8 @@ sources = [
   # Portable integration tests.
   "integration/address_operand_test.cu",
   "integration/vector_operand_test.cu",
+  "integration/integer_multiply_test.cu",
+  "integration/float_minmax_three_input_test.cu",
   "integration/vector_add_test.cu",
   "integration/shared_memory_optin_test.cu",
   "integration/ldst_matrix_test.cu",

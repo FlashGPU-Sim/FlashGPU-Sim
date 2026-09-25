@@ -5018,6 +5018,17 @@ bool isNaN(float x) { return std::isnan(x); }
 
 bool isNaN(double x) { return std::isnan(x); }
 
+static ptx_reg_t minmax_f32_pair(ptx_reg_t a, ptx_reg_t b, bool maximum) {
+  // PTX orders +0 above -0, independently of operand order.
+  if (a.f32 == 0.0f && b.f32 == 0.0f) {
+    a.u32 = maximum ? (a.u32 & b.u32) : (a.u32 | b.u32);
+  } else {
+    a.f32 = maximum ? (MY_MAX_F(a.f32, b.f32))
+                    : (MY_MIN_F(a.f32, b.f32));
+  }
+  return a;
+}
+
 void max_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t a, b, d;
   const operand_info &dst = pI->dst();
@@ -5049,6 +5060,11 @@ void max_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       break;
     case F32_TYPE:
       d.f32 = MY_MAX_F(a.f32, b.f32);
+      if (pI->get_num_operands() == 4) {
+        const ptx_reg_t c =
+            thread->get_operand_value(pI->src3(), dst, i_type, thread, 1);
+        d = minmax_f32_pair(minmax_f32_pair(a, b, true), c, true);
+      }
       break;
     case F64_TYPE:
     case FF64_TYPE:
@@ -5098,6 +5114,11 @@ void min_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       break;
     case F32_TYPE:
       d.f32 = MY_MIN_F(a.f32, b.f32);
+      if (pI->get_num_operands() == 4) {
+        const ptx_reg_t c =
+            thread->get_operand_value(pI->src3(), dst, i_type, thread, 1);
+        d = minmax_f32_pair(minmax_f32_pair(a, b, false), c, false);
+      }
       break;
     case F64_TYPE:
     case FF64_TYPE:
@@ -5323,10 +5344,17 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
         assert(0);
       break;
     case S64_TYPE:
-      t.s64 = a.s64 * b.s64;
       assert(!pI->is_wide());
-      // assert(!pI->is_hi());
-      d.s64 = t.s64;
+      if (pI->is_hi()) {
+        const __int128 product = static_cast<__int128>(a.s64) * b.s64;
+        d.u64 = static_cast<unsigned __int128>(product) >> 64;
+      } else if (pI->is_lo()) {
+        // Low bits are identical for signed and unsigned multiplication;
+        // unsigned arithmetic also avoids host signed-overflow UB.
+        d.u64 = a.u64 * b.u64;
+      } else {
+        assert(0);
+      }
       break;
     case U16_TYPE:
       t.u32 = ((unsigned)a.u16) * ((unsigned)b.u16);
@@ -5351,11 +5379,11 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
         assert(0);
       break;
     case U64_TYPE:
-      t.u64 = a.u64 * b.u64;
       assert(!pI->is_wide());
-      assert(!pI->is_hi());
-      if (pI->is_lo())
-        d.u64 = t.u64;
+      if (pI->is_hi())
+        d.u64 = (static_cast<unsigned __int128>(a.u64) * b.u64) >> 64;
+      else if (pI->is_lo())
+        d.u64 = a.u64 * b.u64;
       else
         assert(0);
       break;
