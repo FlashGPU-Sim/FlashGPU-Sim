@@ -287,9 +287,40 @@ class ptx_recognizer;
 %token	X1_OPTION;
 %token	X2_OPTION;
 %token	X4_OPTION;
+%token	X16_OPTION;
+%token	X32_OPTION;
+%token	TCGEN05_CTA_GROUP_1_OPTION;
+%token	TCGEN05_CTA_GROUP_2_OPTION;
+%token	TCGEN05_KIND_F16_OPTION;
+%token	TCGEN05_KIND_TF32_OPTION;
+%token	TCGEN05_KIND_I8_OPTION;
+%token	TCGEN05_KIND_F8F6F4_OPTION;
+%token	TCGEN05_KIND_MXF8F6F4_OPTION;
+%token	TCGEN05_KIND_MXF4_OPTION;
+%token	TCGEN05_KIND_MXF4NVF4_OPTION;
+%token	TCGEN05_MBARRIER_ARRIVE_ONE_OPTION;
+%token	TCGEN05_32X32B_OPTION;
+%token	TCGEN05_128X256B_OPTION;
+%token	TCGEN05_128X128B_OPTION;
+%token	TCGEN05_64X128B_OPTION;
+%token	TCGEN05_32X128B_OPTION;
+%token	TCGEN05_16X256B_OPTION;
+%token	TCGEN05_16X128B_OPTION;
+%token	TCGEN05_16X64B_OPTION;
+%token	TCGEN05_16X32BX2_OPTION;
+%token	TCGEN05_4X256B_OPTION;
+%token	TCGEN05_WARPX4_OPTION;
+%token	TCGEN05_WARPX2_02_13_OPTION;
+%token	TCGEN05_WARPX2_01_23_OPTION;
+%token	TCGEN05_MULTICAST_CLUSTER_OPTION;
+%token	TCGEN05_PACK_16B_OPTION;
+%token	TCGEN05_UNPACK_16B_OPTION;
+%token	TCGEN05_BEFORE_THREAD_SYNC_OPTION;
+%token	TCGEN05_AFTER_THREAD_SYNC_OPTION;
+%token	TCGEN05_WAIT_LD_OPTION;
+%token	TCGEN05_WAIT_ST_OPTION;
 %type <int_value> function_decl_header
 %type <ptr_value> function_decl
-%type <ptr_value> vector_identifier_list
 
 %{
   	#include "ptx_parser.h"
@@ -321,6 +352,7 @@ block_spec: MAXNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND {r
 	| MINNCTAPERSM_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".minnctapersm", $2); printf("GPGPU-Sim PTX: Warning: .minnctapersm ignored. \n"); }
 	| MAXNCTAPERSM_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".maxnctapersm", $2); printf("GPGPU-Sim PTX: Warning: .maxnctapersm ignored. \n"); }
 	| REQNTID_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".reqntid", $2); printf("GPGPU-Sim PTX: Warning: .reqntid ignored. \n"); }
+	| REQNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND { recognizer->func_header_info_int(".reqntid", $2); printf("GPGPU-Sim PTX: Warning: .reqntid ignored. \n"); }
 	;
 
 block_spec_list: block_spec
@@ -686,6 +718,36 @@ option: type_spec
 	| X1_OPTION { recognizer->add_option(X1_OPTION); }
 	| X2_OPTION { recognizer->add_option(X2_OPTION); }
 	| X4_OPTION { recognizer->add_option(X4_OPTION); }
+	| X16_OPTION { recognizer->add_option(X16_OPTION); }
+	| X32_OPTION { recognizer->add_option(X32_OPTION); }
+	| TCGEN05_CTA_GROUP_1_OPTION { recognizer->add_option(TCGEN05_CTA_GROUP_1_OPTION); }
+	| TCGEN05_CTA_GROUP_2_OPTION { recognizer->add_option(TCGEN05_CTA_GROUP_2_OPTION); }
+	| TCGEN05_KIND_F16_OPTION { recognizer->add_option(TCGEN05_KIND_F16_OPTION); }
+	| TCGEN05_KIND_TF32_OPTION { recognizer->add_option(TCGEN05_KIND_TF32_OPTION); }
+	| TCGEN05_KIND_I8_OPTION { recognizer->add_option(TCGEN05_KIND_I8_OPTION); }
+	| TCGEN05_KIND_F8F6F4_OPTION { recognizer->add_option(TCGEN05_KIND_F8F6F4_OPTION); }
+	| TCGEN05_KIND_MXF8F6F4_OPTION { recognizer->add_option(TCGEN05_KIND_MXF8F6F4_OPTION); }
+	| TCGEN05_KIND_MXF4_OPTION { recognizer->add_option(TCGEN05_KIND_MXF4_OPTION); }
+	| TCGEN05_KIND_MXF4NVF4_OPTION { recognizer->add_option(TCGEN05_KIND_MXF4NVF4_OPTION); }
+	| TCGEN05_MBARRIER_ARRIVE_ONE_OPTION { recognizer->add_option(TCGEN05_MBARRIER_ARRIVE_ONE_OPTION); }
+	| TCGEN05_32X32B_OPTION { recognizer->add_option(TCGEN05_32X32B_OPTION); }
+	| TCGEN05_128X256B_OPTION { recognizer->add_option(TCGEN05_128X256B_OPTION); }
+	| TCGEN05_128X128B_OPTION { recognizer->add_option(TCGEN05_128X128B_OPTION); }
+	| TCGEN05_64X128B_OPTION { recognizer->add_option(TCGEN05_64X128B_OPTION); }
+	| TCGEN05_32X128B_OPTION { recognizer->add_option(TCGEN05_32X128B_OPTION); }
+	| TCGEN05_16X256B_OPTION { recognizer->add_option(TCGEN05_16X256B_OPTION); }
+	| TCGEN05_16X128B_OPTION { recognizer->add_option(TCGEN05_16X128B_OPTION); }
+	| TCGEN05_16X64B_OPTION { recognizer->add_option(TCGEN05_16X64B_OPTION); }
+	| TCGEN05_16X32BX2_OPTION { recognizer->add_option(TCGEN05_16X32BX2_OPTION); }
+	| TCGEN05_4X256B_OPTION { recognizer->add_option(TCGEN05_4X256B_OPTION); }
+	| TCGEN05_WARPX4_OPTION { recognizer->add_option(TCGEN05_WARPX4_OPTION); }
+	| TCGEN05_WARPX2_02_13_OPTION { recognizer->add_option(TCGEN05_WARPX2_02_13_OPTION); }
+	| TCGEN05_WARPX2_01_23_OPTION { recognizer->add_option(TCGEN05_WARPX2_01_23_OPTION); }
+	| TCGEN05_MULTICAST_CLUSTER_OPTION { recognizer->add_option(TCGEN05_MULTICAST_CLUSTER_OPTION); }
+	| TCGEN05_PACK_16B_OPTION { recognizer->add_option(TCGEN05_PACK_16B_OPTION); }
+	| TCGEN05_UNPACK_16B_OPTION { recognizer->add_option(TCGEN05_UNPACK_16B_OPTION); }
+	| TCGEN05_BEFORE_THREAD_SYNC_OPTION { recognizer->add_option(TCGEN05_BEFORE_THREAD_SYNC_OPTION); }
+	| TCGEN05_AFTER_THREAD_SYNC_OPTION { recognizer->add_option(TCGEN05_AFTER_THREAD_SYNC_OPTION); }
 	;
 
 atomic_operation_spec: ATOMIC_AND { recognizer->add_option(ATOMIC_AND); }
@@ -783,23 +845,20 @@ operand: IDENTIFIER  { recognizer->add_scalar_operand( $1 ); }
 	| IDENTIFIER BACKSLASH IDENTIFIER HI_OPTION { recognizer->add_2vector_operand($1,$3); recognizer->change_double_operand_type(-3); recognizer->change_operand_lohi(2);}
 	;
 
-vector_operand: LEFT_BRACE vector_identifier_list RIGHT_BRACE {
-			std::vector<const char *> *ids = (std::vector<const char *> *)$2;
-			recognizer->add_vector_operand(*ids);
-			delete ids;
+vector_operand: LEFT_BRACE { recognizer->begin_vector_operand(); }
+		vector_component vector_component_tail RIGHT_BRACE {
+			recognizer->end_vector_operand();
 		}
 	;
 
-vector_identifier_list: IDENTIFIER {
-			std::vector<const char *> *ids = new std::vector<const char *>();
-			ids->push_back($1);
-			$$ = ids;
-		}
-		| vector_identifier_list COMMA IDENTIFIER {
-			std::vector<const char *> *ids = (std::vector<const char *> *)$1;
-			ids->push_back($3);
-			$$ = ids;
-		}
+vector_component: IDENTIFIER { recognizer->add_scalar_operand($1); }
+		| INT_OPERAND { recognizer->add_literal_int($1); }
+		| FLOAT_OPERAND { recognizer->add_literal_float($1); }
+		| DOUBLE_OPERAND { recognizer->add_literal_double($1); }
+	;
+
+vector_component_tail: /* empty */
+		| COMMA vector_component vector_component_tail
 	;
 
 tex_vector_operand: LEFT_BRACE IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_2vector_operand($2,$4); }

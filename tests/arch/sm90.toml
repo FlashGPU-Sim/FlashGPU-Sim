@@ -4,12 +4,19 @@ config = "SM90_H100"
 
 [workloads]
 sources = [
+  # Host-side simulator regression.
+  "unit/register_view_reload_test.cc",
+  "unit/mbarrier_retry_timing_test.cc",
+
   # Portable integration tests.
   "integration/address_operand_test.cu",
   "integration/vector_operand_test.cu",
+  "integration/integer_multiply_test.cu",
+  "integration/float_minmax_three_input_test.cu",
   "integration/vector_add_test.cu",
   "integration/shared_memory_optin_test.cu",
   "integration/ldst_matrix_test.cu",
+  "integration/ldst_multi_sector_test.cu",
   "integration/cp_async_src_size_test.cu",
   "integration/shared_atomic_address_test.cu",
 

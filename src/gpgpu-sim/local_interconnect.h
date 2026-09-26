@@ -29,15 +29,76 @@
 #ifndef _LOCAL_INTERCONNECT_HPP_
 #define _LOCAL_INTERCONNECT_HPP_
 
+#include <cassert>
 #include <deque>
 #include <iostream>
 #include <map>
+#include <mutex>
+#include <unordered_map>
 #include <vector>
+
+#include "mem_transport_budget.h"
 using namespace std;
 
 enum Interconnect_type { REQ_NET = 0, REPLY_NET = 1 };
 
 enum Arbiteration_type { NAIVE_RR = 0, iSLIP = 1 };
+
+// Tracks one request-network multicast generation per address. A generation
+// is active only while its master is physically in the request network;
+// waiters retain their own request objects for independent response delivery.
+template <typename Item, typename Address>
+class request_multicast_group_tracker {
+ public:
+  bool admit(Address address, Item item, unsigned long long &waiter_count) {
+    typename std::unordered_map<Address, Item>::iterator active =
+        m_active_master.find(address);
+    if (active != m_active_master.end()) {
+      typename std::unordered_map<Item, group>::iterator existing =
+          m_groups.find(active->second);
+      assert(existing != m_groups.end());
+      existing->second.waiters.push_back(item);
+      waiter_count = existing->second.waiters.size();
+      return false;
+    }
+
+    const std::pair<typename std::unordered_map<Item, group>::iterator, bool>
+        inserted_group = m_groups.insert(std::make_pair(item, group(address)));
+    assert(inserted_group.second);
+    const std::pair<typename std::unordered_map<Address, Item>::iterator, bool>
+        inserted_active =
+            m_active_master.insert(std::make_pair(address, item));
+    assert(inserted_active.second);
+    waiter_count = 0;
+    return true;
+  }
+
+  void close_address(Address address) { m_active_master.erase(address); }
+
+  bool close_master(Item master, std::deque<Item> &waiters) {
+    typename std::unordered_map<Item, group>::iterator existing =
+        m_groups.find(master);
+    if (existing == m_groups.end()) return false;
+
+    typename std::unordered_map<Address, Item>::iterator active =
+        m_active_master.find(existing->second.address);
+    if (active != m_active_master.end() && active->second == master)
+      m_active_master.erase(active);
+    waiters.swap(existing->second.waiters);
+    m_groups.erase(existing);
+    return true;
+  }
+
+ private:
+  struct group {
+    explicit group(Address address_) : address(address_) {}
+    Address address;
+    std::deque<Item> waiters;
+  };
+
+  std::unordered_map<Address, Item> m_active_master;
+  std::unordered_map<Item, group> m_groups;
+};
 
 struct inct_config {
   // config for local interconnect
@@ -50,6 +111,12 @@ struct inct_config {
   unsigned use_voq;
   unsigned multi_grant_request;
   unsigned multi_grant_reply;
+  unsigned request_input_sectors_per_cycle;
+  unsigned request_output_sectors_per_cycle;
+  unsigned reply_input_sectors_per_cycle;
+  unsigned reply_output_sectors_per_cycle;
+  unsigned tma_request_multicast;
+  unsigned tma_response_multicast;
 };
 
 class xbar_router {
@@ -61,8 +128,13 @@ class xbar_router {
               const struct inct_config& m_localinct_config);
   ~xbar_router();
   void Push(unsigned input_deviceID, unsigned output_deviceID, void* data,
-            unsigned int size);
+            unsigned int size, unsigned data_sectors = 1);
+  void PushMulticast(
+      unsigned input_deviceID, unsigned output_deviceID, void* data,
+      unsigned int size, unsigned data_sectors,
+      const std::vector<std::pair<unsigned, void*> >& destinations);
   void* Pop(unsigned ouput_deviceID);
+  void* Top(unsigned output_deviceID) const;
   void Advance();
 
   bool Busy() const;
@@ -90,35 +162,53 @@ class xbar_router {
   std::vector<unsigned long long> output_full_events;
   std::vector<unsigned> max_input_occupancy;
   std::vector<unsigned> max_output_occupancy;
+  std::vector<memory_transport_service_stats> input_service_stats;
+  std::vector<memory_transport_service_stats> output_service_stats;
 
  private:
   void iSLIP_Advance();
   void RR_Advance();
+  void NumericAdvance(bool is_islip);
+  void FinalizeLegacyServiceStats();
   void CollectRequestStats(bool* active, unsigned* conflicts) const;
   bool InputHasPackets(unsigned input_deviceID) const;
   bool InputHasPacketForOutput(unsigned input_deviceID,
                                unsigned output_deviceID) const;
   unsigned FirstReadyOutput(unsigned input_deviceID) const;
   unsigned InputQueueIndex(unsigned output_deviceID) const;
+  const Packet* InputPacketForOutput(unsigned input_deviceID,
+                                     unsigned output_deviceID) const;
+  bool InputCanGrant(unsigned input_deviceID, unsigned output_deviceID,
+                     const Packet& packet,
+                     const std::vector<unsigned>& legacy_input_grants,
+                     const std::vector<std::vector<bool> >& legacy_pairs) const;
+  bool OutputCanGrant(unsigned output_deviceID, const Packet& packet,
+                      const std::vector<unsigned>& legacy_output_grants) const;
   void TransferPacket(unsigned input_deviceID, unsigned output_deviceID);
 
   struct Packet {
-    Packet(void* m_data, unsigned m_output_deviceID, unsigned m_size) {
+    Packet(void* m_data, unsigned m_output_deviceID, unsigned m_size,
+           unsigned m_data_sectors) {
       data = m_data;
       output_deviceID = m_output_deviceID;
       size = m_size;
+      data_sectors = m_data_sectors;
     }
     void* data;
     unsigned output_deviceID;
     unsigned size;
+    unsigned data_sectors;
   };
   vector<vector<deque<Packet> > > in_buffers;
   vector<deque<Packet> > out_buffers;
+  vector<deque<Packet> > multicast_delivery_buffers;
   vector<unsigned> in_buffer_occupancy;
   unsigned _n_shader, _n_mem, total_nodes;
   unsigned in_buffer_limit, out_buffer_limit;
   vector<unsigned> next_node;  // used for iSLIP arbit
+  vector<unsigned> next_output;  // used for numeric RR output fairness
   unsigned next_node_id;       // used for RR arbit
+  unsigned next_output_id;     // rotates numeric iSLIP output priority
   unsigned m_id;
   enum Interconnect_type router_type;
   unsigned active_in_buffers, active_out_buffers;
@@ -141,6 +231,25 @@ class xbar_router {
   unsigned grant_cycles_count;
   bool use_voq;
   bool allow_multi_grant;
+  unsigned input_sector_width;
+  unsigned output_sector_width;
+  bool tma_request_multicast;
+  bool tma_response_multicast;
+  mutable std::mutex tma_multicast_mutex;
+  request_multicast_group_tracker<void *, unsigned long long>
+      tma_multicast_groups;
+  unsigned long long tma_multicast_master_sectors;
+  unsigned long long tma_multicast_merged_sectors;
+  unsigned long long tma_multicast_max_waiters;
+  std::unordered_map<void*, std::deque<Packet> >
+      tma_response_multicast_deliveries;
+  unsigned long long tma_response_multicast_masters;
+  unsigned long long tma_response_multicast_waiters;
+  unsigned long long tma_response_multicast_max_waiters;
+  vector<memory_transport_service_budget> input_budgets;
+  vector<memory_transport_service_budget> output_budgets;
+  vector<unsigned> input_tick_service_slots;
+  vector<unsigned> output_tick_service_slots;
 
   friend class LocalInterconnect;
 };
@@ -156,7 +265,12 @@ class LocalInterconnect {
   void Init();
   void Push(unsigned input_deviceID, unsigned output_deviceID, void* data,
             unsigned int size);
+  void PushMulticast(
+      unsigned input_deviceID, unsigned output_deviceID, void* data,
+      unsigned int size,
+      const std::vector<std::pair<unsigned, void*> >& destinations);
   void* Pop(unsigned ouput_deviceID);
+  void* Top(unsigned output_deviceID) const;
   void Advance();
   bool Busy() const;
   bool HasBuffer(unsigned deviceID, unsigned int size) const;

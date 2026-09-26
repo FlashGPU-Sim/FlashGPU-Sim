@@ -1,0 +1,39 @@
+# Primary SASS hints for SASS-PTX-line guided reorder.
+# Scope: B200 / sm_100a, CUDA 13.2.
+
+[primary_opcode]
+# Ordered, register-transparent producer-release anchors. Including the
+# anchors themselves lets the guide reproduce compiler scheduling across the
+# release without weakening PTX data dependencies.
+tcgen05.st.sync.aligned.32x32b.x16.b32 = STTM.X16
+tcgen05.wait::st.sync.aligned = FENCE.VIEW.ASYNC.T
+mbarrier.arrive.release.cta.shared::cta.b64 = SYNCS.ARRIVE.TRANS64.A1T0
+
+ldmatrix.sync.aligned.x4.m8n8.shared.b16 = LDSM.16.M88.4
+ldmatrix.sync.aligned.x4.trans.m8n8.shared.b16 = LDSM.16.MT88.4
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 = HMMA.16816.F32
+
+# Softmax and normalization instructions with an observed one-PTX-to-one-SASS
+# primary mapping under the recorded toolchain.
+max.ftz.f32 = FMNMX.FTZ
+ex2.approx.ftz.f32 = MUFU.EX2
+rcp.approx.ftz.f32 = MUFU.RCP
+lg2.approx.ftz.f32 = MUFU.LG2
+add.ftz.f32 = FADD.FTZ, FFMA.FTZ
+mul.ftz.f32 = FMUL.FTZ, FFMA.FTZ
+sub.ftz.f32 = FADD.FTZ, FFMA.FTZ
+fma.rn.ftz.f32 = FFMA.FTZ
+add.rm.f32x2 = FADD2.RM
+add.rn.f32x2 = FADD2
+sub.rn.f32x2 = FADD2
+fma.rn.f32x2 = FFMA2
+max.f32 = FMNMX3, FMNMX
+compiler.mad.lo.s32 = IMAD
+mul.rn.f32x2 = FMUL2
+cvt.rn.f16x2.f32 = F2FP.F16.F32.PACK_AB
+shfl.sync.bfly.b32 = SHFL.BFLY
+setp.eq.ftz.f32 = FSETP.NEU.FTZ.AND, FSETP.NE.FTZ.AND
+setp.equ.ftz.f32 = FSETP.NEU.FTZ.AND, FSETP.NE.FTZ.AND
+
+[policy]
+fallback = disabled

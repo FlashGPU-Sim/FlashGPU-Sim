@@ -3,6 +3,7 @@
 #include "../../../../libcuda/gpgpu_context.h"
 #include "../../../cuda-sim/opcodes.h"
 #include "../../../cuda-sim/ptx_ir.h"
+#include "ptx.tab.h"
 
 #include <algorithm>
 #include <cctype>
@@ -55,7 +56,6 @@ enum class pipe_t {
 };
 
 typedef std::set<const symbol *> reg_set_t;
-typedef std::set<std::string> string_reg_set_t;
 
 struct sched_inst_t {
   ptx_instruction *inst;
@@ -76,6 +76,18 @@ struct dep_graph_t {
   std::vector<std::set<unsigned>> succ;
   std::vector<unsigned> indeg;
   std::vector<dep_edge_t> edges;
+};
+
+struct scheduling_state_t {
+  unsigned next_issue;
+  std::map<const symbol *, unsigned> register_ready;
+
+  scheduling_state_t() : next_issue(0) {}
+
+  void reset_control_scope() {
+    next_issue = 0;
+    register_ready.clear();
+  }
 };
 
 struct role_signature_t {
@@ -104,12 +116,19 @@ struct guide_item_t {
 };
 
 struct reorder_stats_t {
+  unsigned regions;
   unsigned segments;
   unsigned skipped_segments;
   unsigned total_insts;
   unsigned moved_slots;
+  unsigned moved_distance;
+  unsigned max_moved_distance;
   unsigned max_segment;
   unsigned edges;
+  unsigned compiler_view_insts;
+  unsigned compiler_view_roundtrips;
+  unsigned compiler_pack_fusions;
+  std::map<unsigned, unsigned> segment_length_histogram;
   unsigned sass_guided_segments;
   unsigned sass_guided_fallback_segments;
   unsigned sass_guide_cursor;
@@ -117,9 +136,12 @@ struct reorder_stats_t {
   std::string sass_guide_head;
 
   reorder_stats_t()
-      : segments(0), skipped_segments(0), total_insts(0), moved_slots(0),
-        max_segment(0), edges(0), sass_guided_segments(0),
-        sass_guided_fallback_segments(0), sass_guide_cursor(0) {}
+      : regions(0), segments(0), skipped_segments(0), total_insts(0),
+        moved_slots(0), moved_distance(0), max_moved_distance(0),
+        max_segment(0), edges(0), compiler_view_insts(0),
+        compiler_view_roundtrips(0), compiler_pack_fusions(0),
+        sass_guided_segments(0), sass_guided_fallback_segments(0),
+        sass_guide_cursor(0) {}
 };
 
 struct sass_function_guide_t {
@@ -430,6 +452,8 @@ bool opcode_set_contains(const std::set<std::string> &values,
 std::string ptx_mnemonic_from_source(const ptx_instruction *inst) {
   if (inst == NULL)
     return std::string();
+  if (inst->is_compiler_shift_add_mad())
+    return "compiler.mad.lo.s32";
 
   std::string source = trim_copy(inst->get_source());
   std::size_t pos = 0;
@@ -459,17 +483,6 @@ std::string ptx_mnemonic_from_source(const ptx_instruction *inst) {
   if (pos == begin)
     return normalize_ptx_opcode_key(inst->get_opcode_cstr());
   return normalize_ptx_opcode_key(source.substr(begin, pos - begin));
-}
-
-char sass_opcode_token(const std::string &opcode) {
-  const std::string op = uppercase_copy(opcode);
-  if (starts_with(op, "LDSM"))
-    return 'L';
-  if (starts_with(op, "HMMA") || starts_with(op, "IMMA") ||
-      starts_with(op, "DMMA") || starts_with(op, "WGMMA") ||
-      starts_with(op, "MMA"))
-    return 'T';
-  return 0;
 }
 
 inst_class_t classify_sass_opcode(const std::string &opcode) {
@@ -511,111 +524,6 @@ inst_class_t classify_sass_opcode(const std::string &opcode) {
       starts_with(op, "VOTE"))
     return inst_class_t::intp;
   return inst_class_t::other;
-}
-
-std::vector<std::string> split_top_operands(const std::string &operands) {
-  std::vector<std::string> out;
-  std::size_t begin = 0;
-  int depth = 0;
-  for (std::size_t i = 0; i < operands.size(); ++i) {
-    const char c = operands[i];
-    if (c == '{' || c == '[' || c == '(') {
-      ++depth;
-    } else if ((c == '}' || c == ']' || c == ')') && depth > 0) {
-      --depth;
-    } else if (c == ',' && depth == 0) {
-      out.push_back(trim_copy(operands.substr(begin, i - begin)));
-      begin = i + 1;
-    }
-  }
-  const std::string tail = trim_copy(operands.substr(begin));
-  if (!tail.empty())
-    out.push_back(tail);
-  return out;
-}
-
-void add_sass_reg(string_reg_set_t &regs, const std::string &reg,
-                  unsigned width) {
-  const std::string upper = uppercase_copy(reg);
-  if (upper == "RZ")
-    return;
-  if (upper.size() < 2 || upper[0] != 'R')
-    return;
-  char *end = NULL;
-  const unsigned long base = strtoul(upper.c_str() + 1, &end, 10);
-  if (end == NULL || *end != '\0') {
-    regs.insert(upper);
-    return;
-  }
-  const unsigned n = std::max(1u, width);
-  for (unsigned i = 0; i < n; ++i) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "R%lu", base + i);
-    regs.insert(buf);
-  }
-}
-
-string_reg_set_t sass_regs_in(const std::string &text) {
-  string_reg_set_t regs;
-  for (std::size_t i = 0; i < text.size(); ++i) {
-    if (std::toupper(static_cast<unsigned char>(text[i])) != 'R')
-      continue;
-    const bool left_ok =
-        i == 0 || !std::isalnum(static_cast<unsigned char>(text[i - 1]));
-    if (!left_ok)
-      continue;
-    std::size_t j = i + 1;
-    if (j < text.size() &&
-        std::toupper(static_cast<unsigned char>(text[j])) == 'Z') {
-      ++j;
-      const bool right_ok = j == text.size() ||
-                            !std::isalnum(static_cast<unsigned char>(text[j]));
-      if (right_ok)
-        continue;
-    }
-    if (j >= text.size() || !std::isdigit(static_cast<unsigned char>(text[j])))
-      continue;
-    while (j < text.size() && std::isdigit(static_cast<unsigned char>(text[j])))
-      ++j;
-    const bool right_ok =
-        j == text.size() || !std::isalnum(static_cast<unsigned char>(text[j]));
-    if (!right_ok)
-      continue;
-    regs.insert(uppercase_copy(text.substr(i, j - i)));
-    i = j;
-  }
-  return regs;
-}
-
-unsigned sass_ldmatrix_width(const std::string &opcode) {
-  std::string op = uppercase_copy(opcode);
-  std::size_t end = op.size();
-  while (end > 0) {
-    std::size_t begin = op.rfind('.', end - 1);
-    begin = begin == std::string::npos ? 0 : begin + 1;
-    const std::string piece = op.substr(begin, end - begin);
-    bool all_digits = !piece.empty();
-    for (std::size_t i = 0; i < piece.size(); ++i) {
-      if (!std::isdigit(static_cast<unsigned char>(piece[i]))) {
-        all_digits = false;
-        break;
-      }
-    }
-    if (all_digits)
-      return static_cast<unsigned>(strtoul(piece.c_str(), NULL, 10));
-    if (begin == 0)
-      break;
-    end = begin - 1;
-  }
-  return 1;
-}
-
-unsigned sass_tensor_dest_width(const std::string &opcode) {
-  const std::string op = uppercase_copy(opcode);
-  if (starts_with(op, "HMMA") || starts_with(op, "IMMA") ||
-      starts_with(op, "DMMA") || starts_with(op, "MMA"))
-    return 4;
-  return 1;
 }
 
 bool parse_sass_instruction_line(const std::string &line, std::string *opcode,
@@ -853,6 +761,18 @@ sass_ptxline_file_t parse_sass_ptxline_file(const char *path) {
 
     if (!have_function)
       continue;
+
+    // nvdisasm may place compiler-generated trap/helper functions inside the
+    // kernel's text section.  They do not get a new //## source marker, so
+    // without this boundary they inherit the kernel's final PTX line and look
+    // like normal inline lowering.  Keep their instructions out of the kernel
+    // guide; real CALL paths remain represented by their call sites.
+    if (line.find(".type") != std::string::npos &&
+        line.find("@function") != std::string::npos &&
+        line.find(current.name) == std::string::npos) {
+      current_ptx_line = 0;
+      continue;
+    }
 
     unsigned marked_line = 0;
     if (parse_sass_ptxline_marker(line, &marked_line)) {
@@ -1126,13 +1046,24 @@ void dump_ptx_reorder_result(
   fprintf(fp, "# ptx_sched dump\n");
   fprintf(fp, "# function: %s\n", function_name.c_str());
   fprintf(fp,
-          "# stats: segments=%u skipped=%u insts=%u moved_slots=%u "
-          "max_segment=%u edges=%u slack=%d sass_guided=%u "
+          "# stats: regions=%u segments=%u skipped=%u insts=%u "
+          "moved_slots=%u moved_distance=%u max_moved_distance=%u "
+          "max_segment=%u edges=%u compiler_view_insts=%u "
+          "compiler_view_roundtrips=%u compiler_pack_fusions=%u "
+          "plain_priority=ready_first slack=%d sass_guided=%u "
           "sass_guided_fallback=%u sass_cursor=%u\n",
-          stats.segments, stats.skipped_segments, stats.total_insts,
-          stats.moved_slots, stats.max_segment, stats.edges, ready_slack,
-          stats.sass_guided_segments, stats.sass_guided_fallback_segments,
-          stats.sass_guide_cursor);
+          stats.regions, stats.segments, stats.skipped_segments,
+          stats.total_insts, stats.moved_slots, stats.moved_distance,
+          stats.max_moved_distance, stats.max_segment, stats.edges,
+          stats.compiler_view_insts, stats.compiler_view_roundtrips,
+          stats.compiler_pack_fusions, ready_slack, stats.sass_guided_segments,
+          stats.sass_guided_fallback_segments, stats.sass_guide_cursor);
+  fprintf(fp, "# segment_length_histogram:");
+  for (std::map<unsigned, unsigned>::const_iterator it =
+           stats.segment_length_histogram.begin();
+       it != stats.segment_length_histogram.end(); ++it)
+    fprintf(fp, " %u:%u", it->first, it->second);
+  fprintf(fp, "\n");
   if (!stats.sass_guide_source.empty() || !stats.sass_guide_head.empty()) {
     fprintf(fp, "# sass_guide: source=%s head=%s\n",
             stats.sass_guide_source.empty() ? "<none>"
@@ -1192,7 +1123,7 @@ void add_reg(reg_set_t &regs, const symbol *sym) {
 void collect_operand_regs(const operand_info &op, reg_set_t &regs) {
   if (op.is_vector()) {
     for (unsigned i = 0; i < op.get_vect_nelem(); ++i)
-      add_reg(regs, op.vec_symbol(i));
+      add_reg(regs, op.vec_symbol_or_null(i));
     return;
   }
 
@@ -1201,7 +1132,8 @@ void collect_operand_regs(const operand_info &op, reg_set_t &regs) {
     return;
   }
 
-  if (op.is_reg() || op.get_type() == address_t)
+  if (op.get_type() == reg_t || op.get_type() == symbolic_t ||
+      op.get_type() == address_t)
     add_reg(regs, op.get_symbol());
 }
 
@@ -1244,9 +1176,48 @@ void collect_inst_regs(const ptx_instruction *inst, reg_set_t &uses,
   }
 }
 
+bool has_floating_scalar_type(const ptx_instruction *inst) {
+  if (inst == NULL)
+    return false;
+
+  const std::list<int> types = inst->get_scalar_type();
+  for (std::list<int>::const_iterator type = types.begin(); type != types.end();
+       ++type) {
+    switch (*type) {
+    case F16_TYPE:
+    case F16X2_TYPE:
+    case BF16_TYPE:
+    case TF32_TYPE:
+    case E4M3_TYPE:
+    case E5M2_TYPE:
+    case F32_TYPE:
+    case F32X2_TYPE:
+    case F64_TYPE:
+    case FF64_TYPE:
+      return true;
+    default:
+      break;
+    }
+  }
+  return false;
+}
+
 inst_class_t classify_inst(const ptx_instruction *inst) {
   if (inst == NULL || inst->is_label())
     return inst_class_t::boundary;
+
+  // Timing special registers are observable side effects. In particular,
+  // moving register-only work across a clock read invalidates dependency
+  // microbenchmarks even when all ordinary register edges remain satisfied.
+  const std::vector<operand_info> &operands = inst->get_operands();
+  for (unsigned i = 0; i < operands.size(); ++i) {
+    if (!operands[i].is_builtin())
+      continue;
+    const int builtin = operands[i].get_int() & 0xFFFF;
+    if (builtin == CLOCK_REG || builtin == CLOCK64_REG ||
+        builtin == GLOBALTIMER_REG)
+      return inst_class_t::boundary;
+  }
 
   switch (inst->get_opcode()) {
   case MMA_OP:
@@ -1265,10 +1236,15 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case SIN_OP:
   case COS_OP:
   case TANH_OP:
-  case DIV_OP:
     return inst_class_t::sfu;
 
+  case DIV_OP:
+    return has_floating_scalar_type(inst) ? inst_class_t::sfu
+                                          : inst_class_t::intp;
+
   case FMA_OP:
+    return inst_class_t::fp32;
+
   case MAD_OP:
   case MUL_OP:
   case ADD_OP:
@@ -1276,22 +1252,40 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case MAX_OP:
   case MIN_OP:
   case CVT_OP:
-    return inst_class_t::fp32;
+  case ABS_OP:
+  case NEG_OP:
+  case SETP_OP:
+  case SET_OP:
+  case SLCT_OP:
+    return has_floating_scalar_type(inst) ? inst_class_t::fp32
+                                          : inst_class_t::intp;
 
   case SHFL_OP:
     return inst_class_t::shfl;
+
+  case NOP_OP:
+    return inst_class_t::boundary;
 
   case LD_OP:
   case LDU_OP:
   case ST_OP:
   case ATOM_OP:
   case RED_OP:
+  case MMA_LD_OP:
+  case MMA_ST_OP:
+  case TENSOR_MMA_LD_OP:
+  case TENSOR_MMA_ST_OP:
   case PREFETCH_OP:
   case PREFETCHU_OP:
   case CP_ASYNC_OP:
   case TMA_OP:
   case TMA_PREFETCH_OP:
   case TENSORMAP_OP:
+  case SULD_OP:
+  case SURED_OP:
+  case SUST_OP:
+  case SUQ_OP:
+  case TEX_OP:
     return inst_class_t::mem;
 
   case BRA_OP:
@@ -1305,6 +1299,9 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case RETP_OP:
   case EXIT_OP:
   case TRAP_OP:
+  case SSY_OP:
+  case SST_OP:
+  case PMEVENT_OP:
   case BAR_OP:
   case MBAR_OP:
   case MEMBAR_OP:
@@ -1319,6 +1316,17 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case WGMMA_WAIT_GROUP_OP:
   case SETMAXNREG_OP:
   case GRIDDEPCONTROL_OP:
+  case TCGEN05_ALLOC_OP:
+  case TCGEN05_DEALLOC_OP:
+  case TCGEN05_RELINQUISH_ALLOC_PERMIT_OP:
+  case TCGEN05_MMA_OP:
+  case TCGEN05_COMMIT_OP:
+  case TCGEN05_LD_OP:
+  case TCGEN05_ST_OP:
+  case TCGEN05_WAIT_OP:
+  case TCGEN05_CP_OP:
+  case TCGEN05_SHIFT_OP:
+  case TCGEN05_FENCE_OP:
     return inst_class_t::control;
 
   case ADDP_OP:
@@ -1332,10 +1340,14 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case CLZ_OP:
   case CNOT_OP:
   case CVTA_OP:
+  case DP4A_OP:
   case ISSPACEP_OP:
   case MAPA_OP:
   case MOV_OP:
   case MUL24_OP:
+  case MAD24_OP:
+  case MADC_OP:
+  case MADP_OP:
   case NANDN_OP:
   case NORN_OP:
   case NOT_OP:
@@ -1346,12 +1358,10 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
   case REM_OP:
   case SAD_OP:
   case SELP_OP:
-  case SETP_OP:
-  case SET_OP:
   case SHF_OP:
   case SHL_OP:
   case SHR_OP:
-  case SLCT_OP:
+  case SUBC_OP:
   case VOTE_OP:
   case ACTIVEMASK_OP:
   case XOR_OP:
@@ -1359,7 +1369,9 @@ inst_class_t classify_inst(const ptx_instruction *inst) {
     return inst_class_t::intp;
 
   default:
-    return inst_class_t::other;
+    // Newly added or legacy opcodes must opt in to reordering after their
+    // operand semantics are represented above.
+    return inst_class_t::boundary;
   }
 }
 
@@ -1381,7 +1393,1025 @@ bool is_segment_boundary(const ptx_instruction *inst,
                          bool allow_ldmatrix_memory_operand = false) {
   inst_class_t cls = classify_inst(inst);
   return cls == inst_class_t::boundary || cls == inst_class_t::control ||
+         cls == inst_class_t::mem ||
          has_unsupported_operand_form(inst, allow_ldmatrix_memory_operand);
+}
+
+bool has_option(const ptx_instruction *inst, int option) {
+  if (inst == NULL)
+    return false;
+  const std::list<int> options = inst->get_options();
+  return std::find(options.begin(), options.end(), option) != options.end();
+}
+
+// These operations are ordered side-effect anchors, but they do not stop the
+// surrounding scalar register pipelines on Blackwell. Keeping them inside a
+// dependency-checked scheduling region lets independent register work that
+// originally precedes an anchor move after it. Explicit graph edges preserve
+// observable TCGen05/mbarrier order and prevent code originally after an
+// anchor from moving back across it.
+//
+// mbarrier.arrive.expect_tx is intentionally excluded: unlike a plain arrive,
+// it also changes the barrier's outstanding transaction count and is commonly
+// coupled to a TMA pipeline boundary.
+bool is_ordered_register_transparent_anchor(const ptx_instruction *inst) {
+  if (inst == NULL || inst->is_label())
+    return false;
+
+  if (inst->get_opcode() == TCGEN05_ST_OP)
+    return true;
+  if (inst->get_opcode() == TCGEN05_WAIT_OP)
+    return has_option(inst, TCGEN05_WAIT_ST_OPTION);
+  if (inst->get_opcode() != MBAR_OP)
+    return false;
+
+  return has_option(inst, ARRIVE_OPTION) && !has_option(inst, EXPECT_TX_OPTION);
+}
+
+bool is_pure_register_class(inst_class_t cls) {
+  return cls == inst_class_t::sfu || cls == inst_class_t::fp32 ||
+         cls == inst_class_t::shfl || cls == inst_class_t::intp;
+}
+
+bool is_tma_pipeline_boundary(const ptx_instruction *inst) {
+  return inst != NULL &&
+         (inst->get_opcode() == MBAR_OP || inst->get_opcode() == TMA_OP);
+}
+
+struct compiler_view_inst_info_t {
+  ptx_instruction *inst;
+  unsigned index;
+  unsigned region;
+  bool boundary;
+  reg_set_t uses;
+  reg_set_t defs;
+};
+
+struct compiler_view_candidate_t {
+  ptx_instruction *unpack;
+  ptx_instruction *pack;
+  const symbol *dest[2];
+  const symbol *source[2];
+  bool roundtrip;
+
+  compiler_view_candidate_t() : unpack(NULL), pack(NULL), roundtrip(false) {
+    dest[0] = dest[1] = source[0] = source[1] = NULL;
+  }
+};
+
+struct compiler_pack_candidate_t {
+  ptx_instruction *pack;
+  const symbol *dest;
+  const symbol *low;
+  const symbol *high;
+
+  compiler_pack_candidate_t() : pack(NULL), dest(NULL), low(NULL), high(NULL) {}
+};
+
+bool decode_brace_unpack(const ptx_instruction *inst, const symbol **scalar,
+                         const symbol **low, const symbol **high) {
+  if (inst == NULL || inst->get_opcode() != MOV_OP || inst->has_pred() ||
+      inst->get_type() != B64_TYPE || inst->get_num_operands() != 2)
+    return false;
+
+  const operand_info &dst = inst->dst();
+  const operand_info &src = inst->src1();
+  if (!dst.is_vector() || dst.get_vect_nelem() != 2 ||
+      dst.vector_has_literal() || src.is_vector() || !src.is_reg() ||
+      src.is_non_arch_reg())
+    return false;
+
+  const symbol *decoded_scalar = src.get_symbol();
+  const symbol *decoded_low = dst.vec_symbol_or_null(0);
+  const symbol *decoded_high = dst.vec_symbol_or_null(1);
+  if (decoded_scalar == NULL || decoded_low == NULL || decoded_high == NULL ||
+      decoded_low == decoded_high || decoded_scalar->get_size_in_bytes() != 8 ||
+      decoded_low->get_size_in_bytes() != 4 ||
+      decoded_high->get_size_in_bytes() != 4 || !decoded_scalar->is_reg() ||
+      !decoded_low->is_reg() || !decoded_high->is_reg() ||
+      decoded_scalar->is_non_arch_reg() || decoded_low->is_non_arch_reg() ||
+      decoded_high->is_non_arch_reg())
+    return false;
+
+  *scalar = decoded_scalar;
+  *low = decoded_low;
+  *high = decoded_high;
+  return true;
+}
+
+struct compiler_scalar_copy_candidate_t {
+  ptx_instruction *move;
+  const symbol *destination;
+  const symbol *source;
+
+  compiler_scalar_copy_candidate_t()
+      : move(NULL), destination(NULL), source(NULL) {}
+};
+
+bool decode_scalar_reg_move(const ptx_instruction *inst, const symbol **dst,
+                            const operand_info **src) {
+  if (inst == NULL || inst->get_opcode() != MOV_OP || inst->has_pred() ||
+      inst->get_type() != B32_TYPE || inst->get_num_operands() != 2 ||
+      !inst->get_options().empty() || !inst->dst().is_reg() ||
+      !inst->src1().is_reg())
+    return false;
+  *dst = inst->dst().get_symbol();
+  *src = &inst->src1();
+  return *dst != NULL && (*src)->get_symbol() != NULL;
+}
+
+bool decode_word_shift(const operand_info &operand, unsigned *value) {
+  if (!operand.is_literal() || operand.get_literal_value().u64 >= 32)
+    return false;
+  *value = static_cast<unsigned>(operand.get_literal_value().u64);
+  return true;
+}
+
+bool decode_packed_f32x2_literal_move(const ptx_instruction *inst,
+                                      const symbol **dst,
+                                      const operand_info **literal) {
+  if (inst == NULL || inst->get_opcode() != MOV_OP || inst->has_pred() ||
+      inst->get_type() != B64_TYPE || inst->get_num_operands() != 2 ||
+      !inst->get_options().empty() || !inst->dst().is_reg() ||
+      !inst->src1().is_literal())
+    return false;
+  *dst = inst->dst().get_symbol();
+  *literal = &inst->src1();
+  return *dst != NULL;
+}
+
+bool packed_f32x2_consumer_uses_direct_source(const ptx_instruction *inst,
+                                              const symbol *source) {
+  if (inst == NULL || inst->has_pred() ||
+      (inst->get_opcode() != ADD_OP && inst->get_opcode() != SUB_OP &&
+       inst->get_opcode() != FMA_OP) ||
+      inst->get_type() != F32X2_TYPE)
+    return false;
+
+  bool found = false;
+  const std::vector<operand_info> &operands = inst->get_operands();
+  for (unsigned i = 1; i < operands.size(); ++i) {
+    reg_set_t operand_regs;
+    collect_operand_regs(operands[i], operand_regs);
+    if (operand_regs.find(source) == operand_regs.end())
+      continue;
+    if (!operands[i].is_reg() || operands[i].get_symbol() != source)
+      return false;
+    found = true;
+  }
+  return found;
+}
+
+// ptxas can encode a packed-f32 constant directly in FADD2/FFMA2, while PTX
+// materializes it in a b64 register.  Propagate the literal only when the move
+// is the register's unique definition, every static use is a supported direct
+// source operand, and all uses remain in the same straight-line scheduling
+// region.  These conditions make removing the materialization independent of
+// register names and prevent the value from crossing control, memory, or
+// synchronization boundaries.
+void fuse_compiler_packed_f32x2_literals(
+    std::list<ptx_instruction *> &instructions) {
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, unsigned> use_count;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it) {
+    reg_set_t uses;
+    reg_set_t defs;
+    collect_inst_regs(*it, uses, defs);
+    for (reg_set_t::const_iterator reg = uses.begin(); reg != uses.end(); ++reg)
+      ++use_count[*reg];
+    for (reg_set_t::const_iterator reg = defs.begin(); reg != defs.end(); ++reg)
+      ++def_count[*reg];
+  }
+
+  std::list<ptx_instruction *>::iterator candidate = instructions.begin();
+  while (candidate != instructions.end()) {
+    const symbol *destination = NULL;
+    const operand_info *literal = NULL;
+    if (!decode_packed_f32x2_literal_move(*candidate, &destination, &literal) ||
+        def_count[destination] != 1 || use_count[destination] == 0) {
+      ++candidate;
+      continue;
+    }
+
+    std::vector<std::list<ptx_instruction *>::iterator> consumers;
+    unsigned matched_uses = 0;
+    bool valid = true;
+    std::list<ptx_instruction *>::iterator scan = candidate;
+    while (++scan != instructions.end() &&
+           matched_uses < use_count[destination]) {
+      if (is_segment_boundary(*scan)) {
+        valid = false;
+        break;
+      }
+
+      reg_set_t uses;
+      reg_set_t defs;
+      collect_inst_regs(*scan, uses, defs);
+      if (defs.find(destination) != defs.end()) {
+        valid = false;
+        break;
+      }
+      if (uses.find(destination) == uses.end())
+        continue;
+      if (!packed_f32x2_consumer_uses_direct_source(*scan, destination)) {
+        valid = false;
+        break;
+      }
+      consumers.push_back(scan);
+      ++matched_uses;
+    }
+
+    if (!valid || matched_uses != use_count[destination]) {
+      ++candidate;
+      continue;
+    }
+
+    for (unsigned i = 0; i < consumers.size(); ++i) {
+      *consumers[i] =
+          (*consumers[i])
+              ->make_with_packed_f32x2_literal(destination, *literal);
+    }
+    candidate = instructions.erase(candidate);
+  }
+}
+
+bool decode_zero_b32_move(const ptx_instruction *inst,
+                          const symbol **destination) {
+  if (inst == NULL || inst->get_opcode() != MOV_OP || inst->has_pred() ||
+      inst->get_type() != B32_TYPE || inst->get_num_operands() != 2 ||
+      !inst->get_options().empty() || !inst->dst().is_reg() ||
+      !inst->src1().is_literal() || inst->src1().get_literal_value().u64 != 0)
+    return false;
+  *destination = inst->dst().get_symbol();
+  return *destination != NULL;
+}
+
+// Other rounding modes, saturation and FTZ require separate lowering rules.
+bool is_plain_rn_f32(const ptx_instruction *inst) {
+  for (int option : inst->get_options())
+    if (option != RN_OPTION)
+      return false;
+  return inst->rounding_mode() == RN_OPTION;
+}
+
+// ptxas lowers this NVVM idiom to one FFMA with a negate source modifier:
+//
+//   mul.f32 product, a, b;
+//   mov.b32 zero, 0f00000000;
+//   sub.f32 dst, zero, product;
+//
+// Keep the original rounded multiply and zero subtraction in functional
+// execution; model the chain as one instruction for timing. Restrict to a
+// contiguous, unpredicated chain whose two temporaries each have one static
+// definition and one static use, so removing either producer cannot discard a
+// visible value or cross a scheduling boundary.
+void fuse_compiler_negated_multiply(
+    std::list<ptx_instruction *> &instructions) {
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, unsigned> use_count;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it) {
+    reg_set_t uses;
+    reg_set_t defs;
+    collect_inst_regs(*it, uses, defs);
+    for (reg_set_t::const_iterator reg = uses.begin(); reg != uses.end(); ++reg)
+      ++use_count[*reg];
+    for (reg_set_t::const_iterator reg = defs.begin(); reg != defs.end(); ++reg)
+      ++def_count[*reg];
+  }
+
+  std::list<ptx_instruction *>::iterator mul_it = instructions.begin();
+  while (mul_it != instructions.end()) {
+    std::list<ptx_instruction *>::iterator zero_it = mul_it;
+    if (++zero_it == instructions.end())
+      break;
+    std::list<ptx_instruction *>::iterator sub_it = zero_it;
+    if (++sub_it == instructions.end())
+      break;
+
+    ptx_instruction *mul = *mul_it;
+    ptx_instruction *sub = *sub_it;
+    const symbol *zero = NULL;
+    if (mul == NULL || mul->get_opcode() != MUL_OP || mul->has_pred() ||
+        mul->get_type() != F32_TYPE || mul->get_num_operands() != 3 ||
+        !mul->dst().is_reg() || !mul->src1().is_reg() ||
+        !mul->src2().is_reg() || !decode_zero_b32_move(*zero_it, &zero) ||
+        sub == NULL || sub->get_opcode() != SUB_OP || sub->has_pred() ||
+        sub->get_type() != F32_TYPE || sub->get_num_operands() != 3 ||
+        !sub->dst().is_reg() || !sub->src1().is_reg() ||
+        !sub->src2().is_reg() || !is_plain_rn_f32(mul) ||
+        !is_plain_rn_f32(sub)) {
+      ++mul_it;
+      continue;
+    }
+
+    const symbol *product = mul->dst().get_symbol();
+    if (product == NULL || zero == NULL || product == zero ||
+        sub->src1().get_symbol() != zero ||
+        sub->src2().get_symbol() != product || def_count[product] != 1 ||
+        use_count[product] != 1 || def_count[zero] != 1 ||
+        use_count[zero] != 1) {
+      ++mul_it;
+      continue;
+    }
+
+    *sub_it = mul->make_negated_mul_f32(sub->dst(), *sub);
+    instructions.erase(mul_it);
+    instructions.erase(zero_it);
+    mul_it = sub_it;
+    ++mul_it;
+  }
+}
+
+// Fold the compiler idiom
+//
+//   mov.b32 t0, x; mov.b32 t1, y; shl.b32 t2, t0, shift;
+//   add.s32 t3, t2, t1; mov.b32 dst, t3;
+//
+// into mad.lo.s32 dst, x, 1<<shift, y for a literal word-sized shift.  Low
+// signed multiply-add and the
+// shift/add chain are identical modulo 2^32.  Requiring a contiguous,
+// unpredicated chain and single-definition/single-use intermediates makes the
+// transform independent of source names and prevents hidden side effects or
+// control-flow uses from being discarded.
+void fuse_compiler_shift_add_mad(std::list<ptx_instruction *> &instructions) {
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, unsigned> use_count;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it) {
+    reg_set_t uses;
+    reg_set_t defs;
+    collect_inst_regs(*it, uses, defs);
+    for (reg_set_t::const_iterator reg = uses.begin(); reg != uses.end(); ++reg)
+      ++use_count[*reg];
+    for (reg_set_t::const_iterator reg = defs.begin(); reg != defs.end(); ++reg)
+      ++def_count[*reg];
+  }
+
+  std::list<ptx_instruction *>::iterator first = instructions.begin();
+  while (first != instructions.end()) {
+    std::list<ptx_instruction *>::iterator second = first;
+    if (++second == instructions.end())
+      break;
+    std::list<ptx_instruction *>::iterator third = second;
+    if (++third == instructions.end())
+      break;
+    std::list<ptx_instruction *>::iterator fourth = third;
+    if (++fourth == instructions.end())
+      break;
+    std::list<ptx_instruction *>::iterator fifth = fourth;
+    if (++fifth == instructions.end())
+      break;
+
+    const symbol *copy_x = NULL;
+    const symbol *copy_y = NULL;
+    const symbol *copy_out = NULL;
+    const operand_info *x = NULL;
+    const operand_info *y = NULL;
+    const operand_info *out_source = NULL;
+    ptx_instruction *shift = *third;
+    ptx_instruction *add = *fourth;
+    unsigned shift_amount = 0;
+    const bool moves_match =
+        decode_scalar_reg_move(*first, &copy_x, &x) &&
+        decode_scalar_reg_move(*second, &copy_y, &y) &&
+        decode_scalar_reg_move(*fifth, &copy_out, &out_source);
+    const bool arithmetic_matches =
+        shift != NULL && shift->get_opcode() == SHL_OP && !shift->has_pred() &&
+        shift->get_type() == B32_TYPE && shift->get_num_operands() == 3 &&
+        shift->get_options().empty() && shift->dst().is_reg() &&
+        shift->src1().is_reg() &&
+        decode_word_shift(shift->src2(), &shift_amount) && add != NULL &&
+        add->get_opcode() == ADD_OP && !add->has_pred() &&
+        add->get_type() == S32_TYPE && add->get_num_operands() == 3 &&
+        add->get_options().empty() && add->dst().is_reg() &&
+        add->src1().is_reg() && add->src2().is_reg();
+
+    if (!moves_match || !arithmetic_matches) {
+      ++first;
+      continue;
+    }
+
+    const symbol *shift_out = shift->dst().get_symbol();
+    const symbol *add_out = add->dst().get_symbol();
+    const symbol *final_out = (*fifth)->dst().get_symbol();
+    if (copy_x == NULL || copy_y == NULL || copy_out == NULL ||
+        shift_out == NULL || add_out == NULL || final_out == NULL ||
+        copy_x == copy_y || copy_x == shift_out || copy_x == add_out ||
+        copy_y == shift_out || copy_y == add_out || shift_out == add_out ||
+        shift->src1().get_symbol() != copy_x ||
+        add->src1().get_symbol() != shift_out ||
+        add->src2().get_symbol() != copy_y ||
+        out_source->get_symbol() != add_out || def_count[copy_x] != 1 ||
+        use_count[copy_x] != 1 || def_count[copy_y] != 1 ||
+        use_count[copy_y] != 1 || def_count[shift_out] != 1 ||
+        use_count[shift_out] != 1 || def_count[add_out] != 1 ||
+        use_count[add_out] != 1) {
+      ++first;
+      continue;
+    }
+
+    // The native IMAD is attributed to the add, not either compiler-emitted
+    // copy.  Preserve that primary source location so a SASS PTX-line guide
+    // can place the fused instruction on the compiler's actual schedule.
+    ptx_instruction *replacement =
+        add->make_mad_lo_s32((*fifth)->dst(), *x, 1u << shift_amount, *y);
+    *first = replacement;
+    instructions.erase(second, ++fifth);
+    ++first;
+  }
+}
+
+// PTX materializes predicate inversion as an instruction, while SASS can
+// encode the inversion directly on a guarded instruction.  Fold only the
+// adjacent, single-definition/single-use form so replacing the guard cannot
+// observe a redefinition of the source predicate or cross control flow:
+//
+//   not.pred inverted, source;
+//   @inverted instruction;
+//
+// becomes an instruction guarded by @!source (and vice versa for an already
+// negated consumer guard).
+void fuse_compiler_predicate_not_guards(
+    std::list<ptx_instruction *> &instructions) {
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, unsigned> use_count;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it) {
+    reg_set_t uses;
+    reg_set_t defs;
+    collect_inst_regs(*it, uses, defs);
+    for (reg_set_t::const_iterator reg = uses.begin(); reg != uses.end(); ++reg)
+      ++use_count[*reg];
+    for (reg_set_t::const_iterator reg = defs.begin(); reg != defs.end(); ++reg)
+      ++def_count[*reg];
+  }
+
+  std::list<ptx_instruction *>::iterator it = instructions.begin();
+  while (it != instructions.end()) {
+    std::list<ptx_instruction *>::iterator consumer = it;
+    ++consumer;
+    ptx_instruction *invert = *it;
+    if (consumer == instructions.end() || invert == NULL ||
+        invert->get_opcode() != NOT_OP || invert->has_pred() ||
+        invert->get_type() != PRED_TYPE || invert->get_num_operands() != 2 ||
+        !invert->get_options().empty() || !invert->dst().is_reg() ||
+        !invert->src1().is_reg() || *consumer == NULL ||
+        !(*consumer)->has_pred()) {
+      ++it;
+      continue;
+    }
+
+    const symbol *dest = invert->dst().get_symbol();
+    const symbol *source = invert->src1().get_symbol();
+    const symbol *guard = (*consumer)->get_pred().get_symbol();
+    if (dest == NULL || source == NULL || dest == source || guard != dest ||
+        def_count[dest] != 1 || use_count[dest] != 1) {
+      ++it;
+      continue;
+    }
+
+    // use_count counts instructions, not operand occurrences. The consumer
+    // must use the removed predicate only as its guard.
+    reg_set_t operand_regs;
+    for (const operand_info &operand : (*consumer)->get_operands())
+      collect_operand_regs(operand, operand_regs);
+    if (operand_regs.count(dest)) {
+      ++it;
+      continue;
+    }
+
+    (*consumer)->rewrite_predicate(source, !(*consumer)->get_pred_neg());
+    it = instructions.erase(it);
+  }
+}
+
+// Blackwell R2P extracts the low seven bits of any register byte into the
+// seven predicate registers of a predicate bank.  NVCC lowers the same source
+// operation to seven adjacent AND/SETP/SELP triples in PTX.  Replace exactly
+// that byte-aligned form with one internal multi-destination SETP operation;
+// the SELP instructions remain in place.  Equality-to-zero comparisons are
+// recorded per destination because SASS can consume either predicate sense.
+//
+// Requiring a complete group of seven, byte alignment, contiguous triples,
+// one-definition/one-use temporaries and predicates, and an unchanged source
+// across every SELP prevents this target-specific lowering from accepting
+// general collections of bit tests.
+void fuse_compiler_predicate_byte_extracts(
+    std::list<ptx_instruction *> &instructions) {
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, unsigned> use_count;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it) {
+    reg_set_t uses;
+    reg_set_t defs;
+    collect_inst_regs(*it, uses, defs);
+    for (reg_set_t::const_iterator reg = uses.begin(); reg != uses.end(); ++reg)
+      ++use_count[*reg];
+    for (reg_set_t::const_iterator reg = defs.begin(); reg != defs.end(); ++reg)
+      ++def_count[*reg];
+  }
+
+  typedef std::list<ptx_instruction *>::iterator inst_iterator;
+  inst_iterator first = instructions.begin();
+  while (first != instructions.end()) {
+    std::vector<inst_iterator> and_iters;
+    std::vector<inst_iterator> setp_iters;
+    std::vector<const symbol *> predicate_destinations;
+    std::vector<unsigned long long> encoded_masks;
+    const symbol *common_source = NULL;
+    unsigned byte_base = 0;
+    bool matches = true;
+    inst_iterator cursor = first;
+
+    for (unsigned bit = 0; bit < 7 && matches; ++bit) {
+      if (cursor == instructions.end()) {
+        matches = false;
+        break;
+      }
+      inst_iterator and_it = cursor;
+      inst_iterator setp_it = and_it;
+      if (++setp_it == instructions.end()) {
+        matches = false;
+        break;
+      }
+      inst_iterator selp_it = setp_it;
+      if (++selp_it == instructions.end()) {
+        matches = false;
+        break;
+      }
+      cursor = selp_it;
+      ++cursor;
+
+      ptx_instruction *bit_and = *and_it;
+      ptx_instruction *compare = *setp_it;
+      ptx_instruction *select = *selp_it;
+      if (bit_and == NULL || bit_and->get_opcode() != AND_OP ||
+          bit_and->has_pred() || bit_and->get_type() != B32_TYPE ||
+          bit_and->get_num_operands() != 3 || !bit_and->get_options().empty() ||
+          !bit_and->dst().is_reg() || !bit_and->src1().is_reg() ||
+          bit_and->src1().is_non_arch_reg() || !bit_and->src2().is_literal() ||
+          compare == NULL || compare->get_opcode() != SETP_OP ||
+          compare->has_pred() ||
+          (compare->get_type() != B32_TYPE &&
+           compare->get_type() != S32_TYPE) ||
+          compare->get_num_operands() != 3 || !compare->dst().is_reg() ||
+          !compare->src1().is_reg() || !compare->src2().is_literal() ||
+          compare->src2().get_literal_value().u64 != 0 || select == NULL ||
+          select->get_opcode() != SELP_OP || select->has_pred() ||
+          select->get_num_operands() != 4 || !select->get_options().empty() ||
+          !select->src3().is_reg() || select->src3().is_neg_pred()) {
+        matches = false;
+        break;
+      }
+
+      const unsigned cmp = compare->get_cmpop();
+      const std::list<int> compare_options = compare->get_options();
+      if ((cmp != EQ_OPTION && cmp != NE_OPTION) ||
+          compare_options.size() != 1 || compare_options.front() != int(cmp)) {
+        matches = false;
+        break;
+      }
+
+      const unsigned long long mask64 = bit_and->src2().get_literal_value().u64;
+      if (mask64 == 0 || mask64 > 0x7fffffffULL) {
+        matches = false;
+        break;
+      }
+      const unsigned mask = static_cast<unsigned>(mask64);
+      if (bit == 0) {
+        if (mask == 1u)
+          byte_base = 0;
+        else if (mask == (1u << 8))
+          byte_base = 8;
+        else if (mask == (1u << 16))
+          byte_base = 16;
+        else if (mask == (1u << 24))
+          byte_base = 24;
+        else
+          matches = false;
+      }
+      if (!matches || mask != (1u << (byte_base + bit))) {
+        matches = false;
+        break;
+      }
+
+      const symbol *temporary = bit_and->dst().get_symbol();
+      const symbol *source = bit_and->src1().get_symbol();
+      const symbol *predicate = compare->dst().get_symbol();
+      if (bit == 0)
+        common_source = source;
+      reg_set_t select_uses;
+      reg_set_t select_defs;
+      collect_inst_regs(select, select_uses, select_defs);
+      if (temporary == NULL || source == NULL || predicate == NULL ||
+          source != common_source || source == temporary ||
+          source == predicate || compare->src1().get_symbol() != temporary ||
+          select->src3().get_symbol() != predicate ||
+          def_count[temporary] != 1 || use_count[temporary] != 1 ||
+          def_count[predicate] != 1 || use_count[predicate] != 1 ||
+          select_defs.find(source) != select_defs.end()) {
+        matches = false;
+        break;
+      }
+
+      and_iters.push_back(and_it);
+      setp_iters.push_back(setp_it);
+      predicate_destinations.push_back(predicate);
+      encoded_masks.push_back(static_cast<unsigned long long>(mask) |
+                              (cmp == EQ_OPTION ? (1ULL << 32) : 0));
+    }
+
+    if (!matches || common_source == NULL ||
+        common_source->get_size_in_bytes() != 4 ||
+        predicate_destinations.size() != 7) {
+      ++first;
+      continue;
+    }
+
+    ptx_instruction *replacement =
+        (*and_iters[0])
+            ->make_predicate_byte_extract(
+                predicate_destinations, (*and_iters[0])->src1(), encoded_masks);
+    *and_iters[0] = replacement;
+    const inst_iterator next = cursor;
+    for (unsigned bit = 0; bit < 7; ++bit) {
+      instructions.erase(setp_iters[bit]);
+      if (bit != 0)
+        instructions.erase(and_iters[bit]);
+    }
+    first = next;
+  }
+}
+
+bool decode_brace_pack(const ptx_instruction *inst, const symbol **scalar,
+                       const symbol **low, const symbol **high) {
+  if (inst == NULL || inst->get_opcode() != MOV_OP || inst->has_pred() ||
+      inst->get_type() != B64_TYPE || inst->get_num_operands() != 2)
+    return false;
+
+  const operand_info &dst = inst->dst();
+  const operand_info &src = inst->src1();
+  if (dst.is_vector() || !dst.is_reg() || dst.is_non_arch_reg() ||
+      !src.is_vector() || src.get_vect_nelem() != 2 || src.vector_has_literal())
+    return false;
+
+  const symbol *decoded_scalar = dst.get_symbol();
+  const symbol *decoded_low = src.vec_symbol_or_null(0);
+  const symbol *decoded_high = src.vec_symbol_or_null(1);
+  if (decoded_scalar == NULL || decoded_low == NULL || decoded_high == NULL ||
+      decoded_low == decoded_high || decoded_scalar->get_size_in_bytes() != 8 ||
+      decoded_low->get_size_in_bytes() != 4 ||
+      decoded_high->get_size_in_bytes() != 4 || !decoded_scalar->is_reg() ||
+      !decoded_low->is_reg() || !decoded_high->is_reg() ||
+      decoded_scalar->is_non_arch_reg() || decoded_low->is_non_arch_reg() ||
+      decoded_high->is_non_arch_reg())
+    return false;
+
+  *scalar = decoded_scalar;
+  *low = decoded_low;
+  *high = decoded_high;
+  return true;
+}
+
+bool is_supported_compiler_view_consumer(
+    const compiler_view_inst_info_t &info) {
+  if (info.inst == NULL || info.boundary)
+    return false;
+  switch (classify_inst(info.inst)) {
+  case inst_class_t::intp:
+  case inst_class_t::fp32:
+  case inst_class_t::sfu:
+  case inst_class_t::shfl:
+  case inst_class_t::other:
+    return !has_unsupported_operand_form(info.inst, false);
+  default:
+    return false;
+  }
+}
+
+bool compiler_view_source_is_local_or_boundary(
+    const symbol *source, unsigned consumer_index, unsigned consumer_region,
+    const std::map<const symbol *, unsigned> &def_count,
+    const std::map<const symbol *, const compiler_view_inst_info_t *>
+        &def_inst) {
+  std::map<const symbol *, unsigned>::const_iterator count =
+      def_count.find(source);
+  if (count == def_count.end() || count->second != 1)
+    return false;
+  std::map<const symbol *, const compiler_view_inst_info_t *>::const_iterator
+      producer = def_inst.find(source);
+  if (producer == def_inst.end() || producer->second == NULL ||
+      producer->second->index >= consumer_index)
+    return false;
+  return producer->second->boundary ||
+         producer->second->region == consumer_region;
+}
+
+bool is_compiler_pack_control_flow_boundary(const ptx_instruction *inst) {
+  if (inst == NULL || inst->is_label())
+    return true;
+  switch (inst->get_opcode()) {
+  case BRA_OP:
+  case BRX_OP:
+  case BRKPT_OP:
+  case BREAK_OP:
+  case BREAKADDR_OP:
+  case CALL_OP:
+  case CALLP_OP:
+  case RET_OP:
+  case RETP_OP:
+  case EXIT_OP:
+  case TRAP_OP:
+  case SSY_OP:
+  case SST_OP:
+    return true;
+  default:
+    return false;
+  }
+}
+
+std::vector<compiler_view_candidate_t> analyze_compiler_register_views(
+    const std::list<ptx_instruction *> &instructions) {
+  std::vector<compiler_view_inst_info_t> infos;
+  infos.reserve(instructions.size());
+  unsigned index = 0;
+  unsigned region = 0;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it, ++index) {
+    compiler_view_inst_info_t info;
+    info.inst = *it;
+    info.index = index;
+    info.region = region;
+    info.boundary = is_segment_boundary(info.inst);
+    collect_inst_regs(info.inst, info.uses, info.defs);
+    infos.push_back(info);
+    if (info.boundary)
+      ++region;
+  }
+
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, const compiler_view_inst_info_t *> def_inst;
+  for (unsigned i = 0; i < infos.size(); ++i) {
+    for (reg_set_t::const_iterator def = infos[i].defs.begin();
+         def != infos[i].defs.end(); ++def) {
+      ++def_count[*def];
+      def_inst[*def] = &infos[i];
+    }
+  }
+
+  std::vector<compiler_view_candidate_t> candidates;
+  std::set<const ptx_instruction *> claimed;
+  for (unsigned i = 0; i < infos.size(); ++i) {
+    const symbol *scalar = NULL;
+    const symbol *low = NULL;
+    const symbol *high = NULL;
+    if (!decode_brace_unpack(infos[i].inst, &scalar, &low, &high) ||
+        def_count[scalar] != 1 || def_count[low] != 1 || def_count[high] != 1 ||
+        !compiler_view_source_is_local_or_boundary(
+            scalar, infos[i].index, infos[i].region, def_count, def_inst))
+      continue;
+
+    bool consumers_valid = true;
+    bool have_consumer = false;
+    unsigned scalar_consumer_count = 0;
+    for (unsigned j = 0; j < infos.size(); ++j) {
+      if (infos[j].uses.find(scalar) != infos[j].uses.end())
+        ++scalar_consumer_count;
+      const bool uses_view = infos[j].uses.find(low) != infos[j].uses.end() ||
+                             infos[j].uses.find(high) != infos[j].uses.end();
+      if (!uses_view)
+        continue;
+      have_consumer = true;
+      if (infos[j].index <= infos[i].index ||
+          infos[j].region != infos[i].region ||
+          !is_supported_compiler_view_consumer(infos[j])) {
+        consumers_valid = false;
+        break;
+      }
+    }
+    if (!consumers_valid || !have_consumer)
+      continue;
+
+    compiler_view_candidate_t candidate;
+    candidate.unpack = infos[i].inst;
+    candidate.dest[0] = low;
+    candidate.dest[1] = high;
+    candidate.source[0] = scalar;
+    candidate.source[1] = scalar;
+
+    const compiler_view_inst_info_t *producer = def_inst[scalar];
+    const symbol *pack_scalar = NULL;
+    const symbol *pack_low = NULL;
+    const symbol *pack_high = NULL;
+    if (scalar_consumer_count == 1 && producer != NULL &&
+        producer->region == infos[i].region &&
+        decode_brace_pack(producer->inst, &pack_scalar, &pack_low,
+                          &pack_high) &&
+        pack_scalar == scalar && def_count[pack_low] == 1 &&
+        def_count[pack_high] == 1 &&
+        compiler_view_source_is_local_or_boundary(
+            pack_low, producer->index, producer->region, def_count, def_inst) &&
+        compiler_view_source_is_local_or_boundary(pack_high, producer->index,
+                                                  producer->region, def_count,
+                                                  def_inst) &&
+        claimed.find(producer->inst) == claimed.end()) {
+      candidate.pack = producer->inst;
+      candidate.source[0] = pack_low;
+      candidate.source[1] = pack_high;
+      candidate.roundtrip = true;
+    }
+
+    if (claimed.find(candidate.unpack) != claimed.end())
+      continue;
+    claimed.insert(candidate.unpack);
+    if (candidate.pack != NULL)
+      claimed.insert(candidate.pack);
+    candidates.push_back(candidate);
+  }
+  return candidates;
+}
+
+std::vector<compiler_scalar_copy_candidate_t> analyze_compiler_scalar_copies(
+    const std::list<ptx_instruction *> &instructions) {
+  std::vector<compiler_view_inst_info_t> infos;
+  infos.reserve(instructions.size());
+  unsigned index = 0;
+  unsigned region = 0;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it, ++index) {
+    compiler_view_inst_info_t info;
+    info.inst = *it;
+    info.index = index;
+    info.region = region;
+    info.boundary = is_segment_boundary(info.inst);
+    collect_inst_regs(info.inst, info.uses, info.defs);
+    infos.push_back(info);
+    if (is_compiler_pack_control_flow_boundary(info.inst))
+      ++region;
+  }
+
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, unsigned> use_count;
+  std::map<const symbol *, const compiler_view_inst_info_t *> def_inst;
+  for (unsigned i = 0; i < infos.size(); ++i) {
+    for (reg_set_t::const_iterator use = infos[i].uses.begin();
+         use != infos[i].uses.end(); ++use)
+      ++use_count[*use];
+    for (reg_set_t::const_iterator def = infos[i].defs.begin();
+         def != infos[i].defs.end(); ++def) {
+      ++def_count[*def];
+      def_inst[*def] = &infos[i];
+    }
+  }
+
+  std::vector<compiler_scalar_copy_candidate_t> candidates;
+  for (unsigned i = 0; i < infos.size(); ++i) {
+    const symbol *destination = NULL;
+    const operand_info *source_operand = NULL;
+    if (!decode_scalar_reg_move(infos[i].inst, &destination, &source_operand) ||
+        source_operand == NULL)
+      continue;
+    const symbol *source = source_operand->get_symbol();
+    if (source == NULL || source == destination || source->is_non_arch_reg() ||
+        destination->is_non_arch_reg() || source->get_size_in_bytes() != 4 ||
+        destination->get_size_in_bytes() != 4 || def_count[destination] != 1 ||
+        use_count[destination] == 0 || def_count[source] != 1 ||
+        def_inst.find(source) == def_inst.end() || def_inst[source] == NULL ||
+        def_inst[source]->index >= infos[i].index ||
+        def_inst[source]->region != infos[i].region)
+      continue;
+
+    bool valid = true;
+    unsigned matched_uses = 0;
+    for (unsigned j = 0; j < infos.size(); ++j) {
+      if (infos[j].uses.find(destination) == infos[j].uses.end())
+        continue;
+      ++matched_uses;
+      if (infos[j].index <= infos[i].index ||
+          infos[j].region != infos[i].region) {
+        valid = false;
+        break;
+      }
+    }
+    if (!valid || matched_uses != use_count[destination])
+      continue;
+
+    compiler_scalar_copy_candidate_t candidate;
+    candidate.move = infos[i].inst;
+    candidate.destination = destination;
+    candidate.source = source;
+    candidates.push_back(candidate);
+  }
+  return candidates;
+}
+
+std::vector<compiler_pack_candidate_t> analyze_compiler_register_packs(
+    const std::list<ptx_instruction *> &instructions,
+    const std::set<ptx_instruction *> &claimed) {
+  std::vector<compiler_view_inst_info_t> infos;
+  infos.reserve(instructions.size());
+  unsigned index = 0;
+  unsigned region = 0;
+  for (std::list<ptx_instruction *>::const_iterator it = instructions.begin();
+       it != instructions.end(); ++it, ++index) {
+    compiler_view_inst_info_t info;
+    info.inst = *it;
+    info.index = index;
+    info.region = region;
+    info.boundary = is_segment_boundary(info.inst);
+    collect_inst_regs(info.inst, info.uses, info.defs);
+    infos.push_back(info);
+    if (info.boundary)
+      ++region;
+  }
+
+  std::map<const symbol *, unsigned> def_count;
+  std::map<const symbol *, const compiler_view_inst_info_t *> def_inst;
+  for (unsigned i = 0; i < infos.size(); ++i) {
+    for (reg_set_t::const_iterator def = infos[i].defs.begin();
+         def != infos[i].defs.end(); ++def) {
+      ++def_count[*def];
+      def_inst[*def] = &infos[i];
+    }
+  }
+
+  std::vector<compiler_pack_candidate_t> candidates;
+  for (unsigned i = 0; i < infos.size(); ++i) {
+    const symbol *scalar = NULL;
+    const symbol *low = NULL;
+    const symbol *high = NULL;
+    if (claimed.find(infos[i].inst) != claimed.end() ||
+        !decode_brace_pack(infos[i].inst, &scalar, &low, &high) ||
+        scalar->name().compare(0, 3, "%rd") != 0 || def_count[scalar] != 1 ||
+        def_count[low] != 1 || def_count[high] != 1 ||
+        def_inst.find(low) == def_inst.end() ||
+        def_inst.find(high) == def_inst.end() || def_inst.at(low) == NULL ||
+        def_inst.at(high) == NULL || def_inst.at(low)->inst == NULL ||
+        def_inst.at(high)->inst == NULL ||
+        def_inst.at(low)->index >= infos[i].index ||
+        def_inst.at(high)->index >= infos[i].index ||
+        def_inst.at(low)->inst->has_pred() ||
+        def_inst.at(high)->inst->has_pred())
+      continue;
+
+    bool have_consumer = false;
+    bool consumers_valid = true;
+    for (unsigned j = 0; j < infos.size(); ++j) {
+      if (infos[j].uses.find(scalar) == infos[j].uses.end())
+        continue;
+      have_consumer = true;
+      bool crosses_unsafe_boundary = false;
+      if (infos[j].index > infos[i].index) {
+        for (unsigned k = i + 1; k < j; ++k) {
+          if (is_compiler_pack_control_flow_boundary(infos[k].inst)) {
+            crosses_unsafe_boundary = true;
+            break;
+          }
+        }
+      }
+      // The pack snapshots two uniquely-defined 32-bit sources. Their
+      // definitions may precede timing or control-flow boundaries because no
+      // instruction can redefine them before the pack. After removing the
+      // pack, however, every use reads those sources directly, so retain a
+      // straight-line requirement from the pack to each consumer.
+      if (infos[j].index <= infos[i].index || crosses_unsafe_boundary ||
+          !is_supported_compiler_view_consumer(infos[j])) {
+        consumers_valid = false;
+        break;
+      }
+    }
+    if (!have_consumer || !consumers_valid)
+      continue;
+
+    compiler_pack_candidate_t candidate;
+    candidate.pack = infos[i].inst;
+    candidate.dest = scalar;
+    candidate.low = low;
+    candidate.high = high;
+    candidates.push_back(candidate);
+  }
+  return candidates;
+}
+
+void canonicalize_compiler_view_regs(const function_info *func,
+                                     reg_set_t &regs) {
+  reg_set_t canonical;
+  for (reg_set_t::const_iterator reg = regs.begin(); reg != regs.end(); ++reg) {
+    const symbol *low = NULL;
+    const symbol *high = NULL;
+    if (func != NULL &&
+        func->expand_compiler_register_pack(*reg, &low, &high)) {
+      canonical.insert(func->canonicalize_compiler_register_view(low));
+      canonical.insert(func->canonicalize_compiler_register_view(high));
+    } else {
+      canonical.insert(func == NULL
+                           ? *reg
+                           : func->canonicalize_compiler_register_view(*reg));
+    }
+  }
+  regs.swap(canonical);
 }
 
 bool is_memory_like(inst_class_t cls) {
@@ -1456,8 +2486,19 @@ unsigned inst_latency(const sched_inst_t &inst) {
   case inst_class_t::sfu:
     return 28;
   case inst_class_t::ldmatrix:
-  case inst_class_t::mem:
     return 8;
+  case inst_class_t::mem: {
+    const enum _memory_space_t space = inst.inst->get_space().get_type();
+    // The sm_100 ptxas fill probes keep up to 64 dependent integer PTX
+    // operations between an LDG and its consumer.  With the four-cycle
+    // integer dependency used by this compiler model, 256 issue-time units
+    // reproduce that architecture-level scheduling horizon.  Memory remains
+    // a fixed ordering boundary; this value only controls destination ready
+    // time in the following safe region.
+    if (space == global_space || space == local_space)
+      return 256;
+    return 8;
+  }
   case inst_class_t::fp32:
   case inst_class_t::shfl:
   case inst_class_t::intp:
@@ -1478,130 +2519,6 @@ unsigned inst_initiation(const sched_inst_t &inst) {
   default:
     return 1;
   }
-}
-
-double switch_bonus(char last, char next) {
-  switch (last) {
-  case 'T':
-    switch (next) {
-    case 'L':
-      return 16.0;
-    case 'F':
-      return 12.0;
-    case 'I':
-      return 7.0;
-    case 'S':
-      return 5.0;
-    case 'T':
-      return 3.0;
-    }
-    break;
-  case 'L':
-    switch (next) {
-    case 'T':
-      return 18.0;
-    case 'F':
-      return 6.0;
-    case 'I':
-      return 5.0;
-    case 'S':
-      return 4.0;
-    case 'L':
-      return 2.0;
-    }
-    break;
-  case 'F':
-    switch (next) {
-    case 'T':
-      return 10.0;
-    case 'I':
-      return 10.0;
-    case 'S':
-      return 8.0;
-    case 'M':
-      return 4.0;
-    case 'L':
-      return 2.0;
-    case 'F':
-      return 2.0;
-    }
-    break;
-  case 'S':
-    switch (next) {
-    case 'F':
-      return 18.0;
-    case 'I':
-      return 8.0;
-    case 'T':
-      return 7.0;
-    case 'L':
-      return 2.0;
-    }
-    break;
-  case 'M':
-    switch (next) {
-    case 'I':
-      return 16.0;
-    case 'F':
-      return 8.0;
-    case '.':
-      return 4.0;
-    case 'M':
-      return 2.0;
-    }
-    break;
-  case 'I':
-    switch (next) {
-    case 'M':
-      return 12.0;
-    case 'F':
-      return 10.0;
-    case 'T':
-      return 6.0;
-    case '.':
-      return 5.0;
-    case 'S':
-      return 4.0;
-    case 'L':
-      return 2.0;
-    case 'I':
-      return 1.0;
-    }
-    break;
-  case '.':
-    switch (next) {
-    case 'I':
-      return 12.0;
-    case 'F':
-      return 7.0;
-    case 'M':
-      return 4.0;
-    case 'T':
-      return 2.0;
-    }
-    break;
-  case 'C':
-    switch (next) {
-    case 'I':
-      return 8.0;
-    case '.':
-      return 4.0;
-    case 'T':
-      return 2.0;
-    }
-    break;
-  case 'H':
-    switch (next) {
-    case 'F':
-      return 10.0;
-    case 'I':
-      return 2.0;
-    case 'H':
-      return 1.0;
-    }
-    break;
-  }
-  return 0.0;
 }
 
 void add_edge(dep_graph_t &graph,
@@ -1646,9 +2563,21 @@ dep_graph_t build_dependency_graph(const std::vector<sched_inst_t> &chunk,
   bool have_last_barrier = false;
   unsigned last_barrier = 0;
   std::vector<unsigned> barrier_sensitive_since_last;
+  bool have_last_ordered_anchor = false;
+  unsigned last_ordered_anchor = 0;
 
   for (unsigned i = 0; i < chunk.size(); ++i) {
     const sched_inst_t &inst = chunk[i];
+    const bool ordered_anchor =
+        is_ordered_register_transparent_anchor(inst.inst);
+    if (ordered_anchor) {
+      if (have_last_ordered_anchor)
+        add_edge(graph, edge_index, last_ordered_anchor, i, 0);
+      have_last_ordered_anchor = true;
+      last_ordered_anchor = i;
+    } else if (have_last_ordered_anchor) {
+      add_edge(graph, edge_index, last_ordered_anchor, i, 0);
+    }
     if (relax_barrier_reg && is_barrier_inst(inst)) {
       for (std::vector<unsigned>::const_iterator prior =
                barrier_sensitive_since_last.begin();
@@ -1914,8 +2843,10 @@ double role_signature_similarity(const role_signature_t &candidate,
 }
 
 std::vector<sched_inst_t>
-schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
-                unsigned *edge_count, bool *valid) {
+schedule_switch(const std::vector<sched_inst_t> &chunk,
+                const scheduling_state_t &entry_state,
+                scheduling_state_t *exit_state, unsigned *edge_count,
+                bool *valid) {
   *valid = true;
   dep_graph_t graph = build_dependency_graph(chunk, false, false);
   *edge_count = graph.edges.size();
@@ -1939,16 +2870,28 @@ schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
       ready.insert(i);
   }
 
-  std::vector<unsigned> dep_ready(chunk.size(), 0);
-  std::vector<unsigned> pipe_ready(static_cast<unsigned>(pipe_t::count), 0);
-  unsigned warp_issue_ready = 0;
+  std::vector<unsigned> dep_ready(chunk.size(), entry_state.next_issue);
+  reg_set_t local_defs;
+  for (unsigned i = 0; i < chunk.size(); ++i) {
+    for (reg_set_t::const_iterator use = chunk[i].uses.begin();
+         use != chunk[i].uses.end(); ++use) {
+      if (local_defs.find(*use) != local_defs.end())
+        continue;
+      std::map<const symbol *, unsigned>::const_iterator ready_time =
+          entry_state.register_ready.find(*use);
+      if (ready_time != entry_state.register_ready.end())
+        dep_ready[i] = std::max(dep_ready[i], ready_time->second);
+    }
+    local_defs.insert(chunk[i].defs.begin(), chunk[i].defs.end());
+  }
+  std::vector<unsigned> pipe_ready(static_cast<unsigned>(pipe_t::count),
+                                   entry_state.next_issue);
+  unsigned warp_issue_ready = entry_state.next_issue;
   std::vector<unsigned> emitted;
-  std::deque<char> recent;
-  char last_token = 0;
+  std::vector<unsigned> emitted_issue;
 
   while (!ready.empty()) {
     std::map<unsigned, unsigned> issues;
-    unsigned min_issue = std::numeric_limits<unsigned>::max();
     for (std::set<unsigned>::const_iterator it = ready.begin();
          it != ready.end(); ++it) {
       const sched_inst_t &inst = chunk[*it];
@@ -1956,61 +2899,36 @@ schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
       unsigned issue = std::max(dep_ready[*it], pipe_ready[pipe_index]);
       issue = std::max(issue, warp_issue_ready);
       issues[*it] = issue;
-      min_issue = std::min(min_issue, issue);
     }
 
     bool have_pick = false;
     unsigned pick = 0;
-    double best_score = -std::numeric_limits<double>::infinity();
-    int best_neg_issue = std::numeric_limits<int>::min();
     unsigned best_height = 0;
-    int best_neg_index = std::numeric_limits<int>::min();
-    const unsigned slack =
-        ready_slack < 0 ? 0 : static_cast<unsigned>(ready_slack);
+    unsigned best_issue = std::numeric_limits<unsigned>::max();
+    unsigned best_index = std::numeric_limits<unsigned>::max();
 
+    // Selecting the earliest estimated issue time prevents a dependency-ready
+    // node with a future operand or pipeline-ready time from blocking work that
+    // can issue now. Remaining critical-path latency then favors useful work
+    // among equally ready nodes, and source order keeps ties deterministic.
     for (std::set<unsigned>::const_iterator it = ready.begin();
          it != ready.end(); ++it) {
       const unsigned idx = *it;
       const unsigned issue = issues[idx];
-      if (issue > min_issue + slack)
-        continue;
-
-      const sched_inst_t &inst = chunk[idx];
-      const char token = class_token(inst.cls);
-      unsigned same_recent = 0;
-      for (std::deque<char>::const_iterator r = recent.begin();
-           r != recent.end(); ++r) {
-        if (*r == token)
-          ++same_recent;
-      }
-
-      double score = -0.02 * static_cast<double>(issue) +
-                     0.001 * static_cast<double>(height[idx]) -
-                     0.0001 * static_cast<double>(inst.original_index);
-      if (last_token != 0) {
-        score += 0.6 * switch_bonus(last_token, token);
-        if ((last_token == 'T' && token == 'L') ||
-            (last_token == 'L' && token == 'T'))
-          score += 4.0;
-        score -= 2.0 * static_cast<double>(same_recent);
-      }
-
-      const int neg_issue = -static_cast<int>(issue);
-      const int neg_index = -static_cast<int>(inst.original_index);
+      const unsigned original_index = chunk[idx].original_index;
+      const flash_gpgpu_sim::detail::ptx_schedule_priority_t candidate = {
+          issue, height[idx], original_index};
+      const flash_gpgpu_sim::detail::ptx_schedule_priority_t incumbent = {
+          best_issue, best_height, best_index};
       const bool better =
-          !have_pick || score > best_score + 1e-12 ||
-          (std::fabs(score - best_score) <= 1e-12 &&
-           (neg_issue > best_neg_issue ||
-            (neg_issue == best_neg_issue &&
-             (height[idx] > best_height ||
-              (height[idx] == best_height && neg_index > best_neg_index)))));
+          !have_pick || flash_gpgpu_sim::detail::ptx_schedule_priority_precedes(
+                            candidate, incumbent);
       if (better) {
         have_pick = true;
         pick = idx;
-        best_score = score;
-        best_neg_issue = neg_issue;
         best_height = height[idx];
-        best_neg_index = neg_index;
+        best_issue = issue;
+        best_index = original_index;
       }
     }
 
@@ -2021,17 +2939,13 @@ schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
 
     ready.erase(pick);
     emitted.push_back(pick);
+    emitted_issue.push_back(issues[pick]);
 
     const sched_inst_t &inst = chunk[pick];
     const unsigned issue = issues[pick];
     const unsigned pipe_index = static_cast<unsigned>(inst_pipe(inst.cls));
     pipe_ready[pipe_index] = issue + inst_initiation(inst);
     warp_issue_ready = issue + 1;
-
-    last_token = class_token(inst.cls);
-    recent.push_back(last_token);
-    if (recent.size() > 12)
-      recent.pop_front();
 
     for (std::vector<dep_edge_t>::const_iterator edge =
              edge_by_src[pick].begin();
@@ -2057,6 +2971,18 @@ schedule_switch(const std::vector<sched_inst_t> &chunk, int ready_slack,
   scheduled.reserve(chunk.size());
   for (unsigned i = 0; i < emitted.size(); ++i)
     scheduled.push_back(chunk[emitted[i]]);
+
+  if (exit_state != NULL) {
+    *exit_state = entry_state;
+    exit_state->next_issue = warp_issue_ready;
+    for (unsigned i = 0; i < emitted.size(); ++i) {
+      const sched_inst_t &inst = chunk[emitted[i]];
+      for (reg_set_t::const_iterator def = inst.defs.begin();
+           def != inst.defs.end(); ++def)
+        exit_state->register_ready[*def] =
+            emitted_issue[i] + inst_latency(inst);
+    }
+  }
   return scheduled;
 }
 
@@ -2074,6 +3000,70 @@ bool contains_barrier_inst(const std::vector<sched_inst_t> &chunk) {
       return true;
   }
   return false;
+}
+
+void advance_timing_in_order(const std::vector<sched_inst_t> &instructions,
+                             scheduling_state_t &state) {
+  for (unsigned i = 0; i < instructions.size(); ++i) {
+    const sched_inst_t &inst = instructions[i];
+    unsigned issue = state.next_issue;
+    for (reg_set_t::const_iterator use = inst.uses.begin();
+         use != inst.uses.end(); ++use) {
+      std::map<const symbol *, unsigned>::const_iterator ready_time =
+          state.register_ready.find(*use);
+      if (ready_time != state.register_ready.end())
+        issue = std::max(issue, ready_time->second);
+    }
+    state.next_issue = issue + 1;
+    for (reg_set_t::const_iterator def = inst.defs.begin();
+         def != inst.defs.end(); ++def)
+      state.register_ready[*def] = issue + inst_latency(inst);
+  }
+}
+
+void advance_boundary_timing(ptx_instruction *inst, scheduling_state_t &state) {
+  sched_inst_t boundary;
+  boundary.inst = inst;
+  boundary.original_index = 0;
+  boundary.cls = classify_inst(inst);
+
+  if (!is_memory_like(boundary.cls)) {
+    // Branch label operands are symbolic but are not register operands.  Do
+    // not send them through register collection; a control boundary starts a
+    // new timing scope in all cases.
+    state.reset_control_scope();
+    return;
+  }
+
+  collect_inst_regs(inst, boundary.uses, boundary.defs);
+
+  unsigned issue = state.next_issue;
+  for (reg_set_t::const_iterator use = boundary.uses.begin();
+       use != boundary.uses.end(); ++use) {
+    std::map<const symbol *, unsigned>::const_iterator ready_time =
+        state.register_ready.find(*use);
+    if (ready_time != state.register_ready.end())
+      issue = std::max(issue, ready_time->second);
+  }
+  state.next_issue = issue + 1;
+
+  const int opcode = inst == NULL ? -1 : inst->get_opcode();
+  const bool supported_load = (opcode == LD_OP || opcode == LDU_OP) &&
+                              !inst->has_pred() && !boundary.defs.empty();
+  if (!supported_load) {
+    if (opcode == ST_OP && boundary.defs.empty())
+      return;
+
+    // Only ordinary, unconditional LD/LDU producers have a reviewed compiler
+    // latency policy.  Atomics, texture/surface operations, async copies,
+    // tensor-memory operations, and predicated loads stop carry propagation
+    // until their destination and completion semantics are modelled.
+    state.register_ready.clear();
+    return;
+  }
+  for (reg_set_t::const_iterator def = boundary.defs.begin();
+       def != boundary.defs.end(); ++def)
+    state.register_ready[*def] = issue + inst_latency(boundary);
 }
 
 double sass_guide_target_score(const std::string &guide, unsigned cursor,
@@ -2337,6 +3327,47 @@ filter_ptxline_guide_for_segment(const std::vector<sched_inst_t> &chunk,
   return out;
 }
 
+void constrain_anchor_crossings_to_guide(
+    const std::vector<sched_inst_t> &chunk,
+    const std::vector<ptxline_guide_item_t> &segment_guide,
+    dep_graph_t &graph) {
+  std::map<unsigned, unsigned> sass_offset_by_original;
+  for (std::vector<ptxline_guide_item_t>::const_iterator item =
+           segment_guide.begin();
+       item != segment_guide.end(); ++item) {
+    sass_offset_by_original[item->original_index] = item->sass_offset;
+  }
+
+  std::map<std::pair<unsigned, unsigned>, unsigned> edge_index;
+  for (unsigned i = 0; i < graph.edges.size(); ++i) {
+    edge_index[std::make_pair(graph.edges[i].src, graph.edges[i].dst)] = i;
+  }
+
+  for (unsigned anchor = 0; anchor < chunk.size(); ++anchor) {
+    if (!is_ordered_register_transparent_anchor(chunk[anchor].inst))
+      continue;
+
+    const std::map<unsigned, unsigned>::const_iterator anchor_guide =
+        sass_offset_by_original.find(chunk[anchor].original_index);
+    if (anchor_guide == sass_offset_by_original.end()) {
+      ptx_reorder_fatal(
+          "ordered anchor '%s' at original index %u has no primary SASS "
+          "guide item",
+          chunk[anchor].inst->get_opcode_cstr(), chunk[anchor].original_index);
+    }
+
+    for (unsigned prior = 0; prior < anchor; ++prior) {
+      const std::map<unsigned, unsigned>::const_iterator prior_guide =
+          sass_offset_by_original.find(chunk[prior].original_index);
+      const bool compiler_places_after =
+          prior_guide != sass_offset_by_original.end() &&
+          prior_guide->second > anchor_guide->second;
+      if (!compiler_places_after)
+        add_edge(graph, edge_index, prior, anchor, 0);
+    }
+  }
+}
+
 std::vector<sched_inst_t> schedule_sass_ptxline_guided(
     const std::vector<sched_inst_t> &chunk,
     const std::vector<ptxline_guide_item_t> &segment_guide,
@@ -2348,6 +3379,7 @@ std::vector<sched_inst_t> schedule_sass_ptxline_guided(
   }
 
   dep_graph_t graph = build_dependency_graph(chunk, true, false);
+  constrain_anchor_crossings_to_guide(chunk, segment_guide, graph);
   *edge_count = graph.edges.size();
 
   std::vector<std::vector<dep_edge_t>> edge_by_src(chunk.size());
@@ -2519,18 +3551,39 @@ std::vector<sched_inst_t> schedule_sass_ptxline_guided(
 
 void flush_segment(std::vector<sched_inst_t> &segment,
                    std::list<ptx_instruction *> &out, int ready_slack,
-                   reorder_stats_t &stats, bool sass_guided,
+                   reorder_stats_t &stats, scheduling_state_t &timing_state,
+                   const ptx_instruction *previous_boundary,
+                   const ptx_instruction *next_boundary, bool sass_guided,
                    const sass_function_guide_t *sass_guide,
                    unsigned guide_lookahead, unsigned *sass_guide_cursor,
                    const ptxline_guide_t *sass_ptxline_guide) {
   if (segment.empty())
     return;
 
+  ++stats.regions;
+  ++stats.segment_length_histogram[segment.size()];
   stats.total_insts += segment.size();
   stats.max_segment =
       std::max(stats.max_segment, static_cast<unsigned>(segment.size()));
 
+  unsigned ordered_anchor_count = 0;
+  for (unsigned i = 0; i < segment.size(); ++i) {
+    if (is_ordered_register_transparent_anchor(segment[i].inst))
+      ++ordered_anchor_count;
+  }
+  if (ordered_anchor_count != 0) {
+    for (unsigned i = 0; i < segment.size(); ++i) {
+      if (!is_ordered_register_transparent_anchor(segment[i].inst) &&
+          !is_pure_register_class(segment[i].cls)) {
+        ptx_reorder_fatal(
+            "ordered-anchor segment contains non-register instruction %s",
+            segment[i].inst->get_opcode_cstr());
+      }
+    }
+  }
+
   if (segment.size() == 1) {
+    advance_timing_in_order(segment, timing_state);
     out.push_back(segment[0].inst);
     segment.clear();
     return;
@@ -2538,12 +3591,18 @@ void flush_segment(std::vector<sched_inst_t> &segment,
 
   unsigned edge_count = 0;
   bool valid = true;
+  bool timing_from_plain_schedule = false;
+  const bool is_tma_pipeline_segment =
+      is_tma_pipeline_boundary(previous_boundary) ||
+      is_tma_pipeline_boundary(next_boundary);
+  scheduling_state_t candidate_timing = timing_state;
   std::vector<sched_inst_t> scheduled;
   std::vector<ptxline_guide_item_t> segment_ptxline_guide;
   if (sass_ptxline_guide != NULL)
     segment_ptxline_guide =
         filter_ptxline_guide_for_segment(segment, *sass_ptxline_guide);
-  const bool use_sass_ptxline_guide = !segment_ptxline_guide.empty();
+  const bool use_sass_ptxline_guide =
+      !is_tma_pipeline_segment && !segment_ptxline_guide.empty();
   const bool use_sass_guide =
       sass_guided && sass_guide != NULL && !sass_guide->lt_stream.empty() &&
       !sass_guide->guide_items.empty() && sass_guide_cursor != NULL &&
@@ -2570,16 +3629,22 @@ void flush_segment(std::vector<sched_inst_t> &segment,
     else
       ++stats.sass_guided_fallback_segments;
   }
-  if ((!use_sass_ptxline_guide && (!use_sass_guide || !valid)) &&
-      has_relaxed_barrier) {
+  if (!use_sass_ptxline_guide && (!use_sass_guide || !valid) &&
+      is_tma_pipeline_segment) {
+    scheduled = segment;
+    valid = true;
+    edge_count = 0;
+  } else if ((!use_sass_ptxline_guide && (!use_sass_guide || !valid)) &&
+             has_relaxed_barrier) {
     scheduled = segment;
     valid = false;
     edge_count = 0;
   } else if (!use_sass_ptxline_guide && (!use_sass_guide || !valid)) {
     bool switch_valid = true;
-    scheduled =
-        schedule_switch(segment, ready_slack, &edge_count, &switch_valid);
+    scheduled = schedule_switch(segment, timing_state, &candidate_timing,
+                                &edge_count, &switch_valid);
     valid = switch_valid;
+    timing_from_plain_schedule = valid;
   }
   stats.edges += edge_count;
   ++stats.segments;
@@ -2589,9 +3654,23 @@ void flush_segment(std::vector<sched_inst_t> &segment,
     scheduled = segment;
   }
 
+  if (timing_from_plain_schedule) {
+    timing_state = candidate_timing;
+  } else {
+    advance_timing_in_order(scheduled, timing_state);
+  }
+
   for (unsigned i = 0; i < scheduled.size(); ++i) {
-    if (scheduled[i].inst != segment[i].inst)
+    const unsigned scheduled_original = scheduled[i].original_index;
+    const unsigned slot_original = segment[i].original_index;
+    const unsigned distance = scheduled_original > slot_original
+                                  ? scheduled_original - slot_original
+                                  : slot_original - scheduled_original;
+    if (distance != 0) {
       ++stats.moved_slots;
+      stats.moved_distance += distance;
+      stats.max_moved_distance = std::max(stats.max_moved_distance, distance);
+    }
     out.push_back(scheduled[i].inst);
   }
   segment.clear();
@@ -2605,25 +3684,121 @@ void run_ptx_reorder(function_info *func) {
   if (func == NULL || func->gpgpu_ctx == NULL ||
       !func->gpgpu_ctx->ptx_reorder_enabled)
     return;
+  if (func->m_ptx_reorder_completed)
+    return;
 
   std::list<ptx_instruction *> reordered;
   std::vector<sched_inst_t> segment;
   std::map<const ptx_instruction *, unsigned> original_indices;
   reorder_stats_t stats;
+  scheduling_state_t timing_state;
   unsigned original_index = 0;
   const sass_function_guide_t *sass_guide = NULL;
   ptxline_guide_t sass_ptxline_guide_storage;
   const ptxline_guide_t *sass_ptxline_guide = NULL;
   unsigned sass_guide_cursor = 0;
   const int ready_slack = 0;
-  const bool sass_ptxline_guided = func->gpgpu_ctx->ptx_reorder_sass_guided;
+  const bool sass_ptxline_guided =
+      func->gpgpu_ctx->ptx_reorder_sass_guided ||
+      !func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.empty();
+
+  func->m_compiler_register_views.clear();
+  func->m_compiler_register_packs.clear();
+  fuse_compiler_predicate_not_guards(func->m_instructions);
+  fuse_compiler_predicate_byte_extracts(func->m_instructions);
+  fuse_compiler_packed_f32x2_literals(func->m_instructions);
+  fuse_compiler_negated_multiply(func->m_instructions);
+  fuse_compiler_shift_add_mad(func->m_instructions);
+  const std::vector<compiler_view_candidate_t> compiler_views =
+      analyze_compiler_register_views(func->m_instructions);
+  std::set<ptx_instruction *> removed;
+  for (unsigned i = 0; i < compiler_views.size(); ++i) {
+    const compiler_view_candidate_t &view = compiler_views[i];
+    bool installed = true;
+    for (unsigned lane = 0; lane < 2; ++lane) {
+      if (view.dest[lane] == NULL || view.source[lane] == NULL ||
+          view.dest[lane] == view.source[lane] ||
+          func->m_compiler_register_views.find(view.dest[lane]) !=
+              func->m_compiler_register_views.end()) {
+        installed = false;
+        break;
+      }
+    }
+    if (!installed)
+      continue;
+
+    for (unsigned lane = 0; lane < 2; ++lane) {
+      func->m_compiler_register_views[view.dest[lane]] =
+          std::make_pair(view.source[lane], view.roundtrip ? 0u : lane);
+      symbol *destination = const_cast<symbol *>(view.dest[lane]);
+      const unsigned view_arch_reg = destination->arch_reg_num();
+      func->m_pre_view_register_ids.emplace(
+          destination, std::make_pair(destination->reg_num(), view_arch_reg));
+      destination->set_regno(view.source[lane]->reg_num(),
+                             view.roundtrip ? view.source[lane]->arch_reg_num()
+                                            : view_arch_reg);
+    }
+    removed.insert(view.unpack);
+    if (view.pack != NULL)
+      removed.insert(view.pack);
+    if (view.roundtrip)
+      ++stats.compiler_view_roundtrips;
+  }
+
+  stats.compiler_view_insts = removed.size();
+  const std::vector<compiler_pack_candidate_t> compiler_packs =
+      analyze_compiler_register_packs(func->m_instructions, removed);
+  for (unsigned i = 0; i < compiler_packs.size(); ++i) {
+    const compiler_pack_candidate_t &pack = compiler_packs[i];
+    if (pack.dest == NULL || pack.low == NULL || pack.high == NULL ||
+        pack.dest == pack.low || pack.dest == pack.high ||
+        func->m_compiler_register_packs.find(pack.dest) !=
+            func->m_compiler_register_packs.end())
+      continue;
+    func->m_compiler_register_packs[pack.dest] =
+        std::make_pair(pack.low, pack.high);
+    removed.insert(pack.pack);
+    ++stats.compiler_pack_fusions;
+  }
+
+  for (std::list<ptx_instruction *>::iterator it = func->m_instructions.begin();
+       it != func->m_instructions.end();) {
+    if (removed.find(*it) != removed.end())
+      it = func->m_instructions.erase(it);
+    else
+      ++it;
+  }
+
+  const std::vector<compiler_scalar_copy_candidate_t> scalar_copies =
+      analyze_compiler_scalar_copies(func->m_instructions);
+  std::set<ptx_instruction *> removed_scalar_copies;
+  for (unsigned i = 0; i < scalar_copies.size(); ++i) {
+    const compiler_scalar_copy_candidate_t &copy = scalar_copies[i];
+    if (copy.move == NULL || copy.destination == NULL || copy.source == NULL ||
+        copy.destination == copy.source ||
+        func->m_compiler_register_views.find(copy.destination) !=
+            func->m_compiler_register_views.end())
+      continue;
+    func->m_compiler_register_views[copy.destination] =
+        std::make_pair(copy.source, 0u);
+    symbol *destination = const_cast<symbol *>(copy.destination);
+    func->m_pre_view_register_ids.emplace(
+        destination,
+        std::make_pair(destination->reg_num(), destination->arch_reg_num()));
+    destination->set_regno(copy.source->reg_num(), copy.source->arch_reg_num());
+    removed_scalar_copies.insert(copy.move);
+  }
+  for (std::list<ptx_instruction *>::iterator it = func->m_instructions.begin();
+       it != func->m_instructions.end();) {
+    if (removed_scalar_copies.find(*it) != removed_scalar_copies.end())
+      it = func->m_instructions.erase(it);
+    else
+      ++it;
+  }
 
   if (sass_ptxline_guided) {
-    if (func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.empty()) {
-      ptx_reorder_fatal(
-          "SASS-guided reorder is enabled but no auto full SASS guide path "
-          "was recorded before PTX assembly");
-    }
+    if (func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.empty())
+      ptx_reorder_fatal("PTX loader did not prepare a SASS PTX-line guide");
     const std::string primary_rules_file =
         find_unique_sass_primary_rules_file();
     const sass_primary_rules_t &rules =
@@ -2662,6 +3837,9 @@ void run_ptx_reorder(function_info *func) {
            sass_ptxline_guide->source.c_str());
   }
 
+  const ptx_instruction *previous_boundary = NULL;
+  bool segment_has_ordered_anchor = false;
+  bool segment_has_non_register_inst = false;
   for (std::list<ptx_instruction *>::iterator it = func->m_instructions.begin();
        it != func->m_instructions.end(); ++it, ++original_index) {
     ptx_instruction *inst = *it;
@@ -2669,47 +3847,101 @@ void run_ptx_reorder(function_info *func) {
     const bool guide_relaxed_ldmatrix = sass_ptxline_guide != NULL &&
                                         inst != NULL &&
                                         inst->get_opcode() == LDMATRIX_OP;
-    if (is_segment_boundary(inst, guide_relaxed_ldmatrix)) {
-      flush_segment(segment, reordered, ready_slack, stats, false, sass_guide,
-                    1, &sass_guide_cursor, sass_ptxline_guide);
+    // Crossing a side-effect anchor is enabled only when a compiler-order
+    // guide covers this function. Plain reorder retains the conservative hard
+    // boundaries used by workloads without architecture/toolchain evidence.
+    const bool ordered_anchor = sass_ptxline_guide != NULL &&
+                                is_ordered_register_transparent_anchor(inst);
+    const inst_class_t cls = classify_inst(inst);
+    const bool pure_register_inst = is_pure_register_class(cls);
+
+    // An anchor may join only scalar-register work. This keeps tensor,
+    // ldmatrix, memory, and unreviewed side effects under the original hard
+    // boundary policy while allowing reviewed anchors and scalar work on both
+    // sides to share one dependency graph.
+    if (ordered_anchor && segment_has_non_register_inst) {
+      flush_segment(segment, reordered, ready_slack, stats, timing_state,
+                    previous_boundary, NULL, false, sass_guide, 1,
+                    &sass_guide_cursor, sass_ptxline_guide);
+      segment_has_ordered_anchor = false;
+      segment_has_non_register_inst = false;
+    } else if (!ordered_anchor && !pure_register_inst &&
+               segment_has_ordered_anchor) {
+      flush_segment(segment, reordered, ready_slack, stats, timing_state,
+                    previous_boundary, NULL, false, sass_guide, 1,
+                    &sass_guide_cursor, sass_ptxline_guide);
+      segment_has_ordered_anchor = false;
+      segment_has_non_register_inst = false;
+    }
+
+    if (is_segment_boundary(inst, guide_relaxed_ldmatrix) && !ordered_anchor) {
+      const ptx_instruction *next_boundary = inst;
+      if (inst != NULL && inst->is_label()) {
+        std::list<ptx_instruction *>::iterator next = it;
+        while (++next != func->m_instructions.end() && (*next)->is_label()) {
+        }
+        if (next != func->m_instructions.end())
+          next_boundary = *next;
+      }
+      flush_segment(segment, reordered, ready_slack, stats, timing_state,
+                    previous_boundary, next_boundary, false, sass_guide, 1,
+                    &sass_guide_cursor, sass_ptxline_guide);
       reordered.push_back(inst);
+      advance_boundary_timing(inst, timing_state);
+      if (inst != NULL && !inst->is_label())
+        previous_boundary = inst;
+      segment_has_ordered_anchor = false;
+      segment_has_non_register_inst = false;
       continue;
     }
 
     sched_inst_t sched_inst;
     sched_inst.inst = inst;
     sched_inst.original_index = original_index;
-    sched_inst.cls = classify_inst(inst);
+    sched_inst.cls = cls;
     collect_inst_regs(inst, sched_inst.uses, sched_inst.defs);
+    canonicalize_compiler_view_regs(func, sched_inst.uses);
+    canonicalize_compiler_view_regs(func, sched_inst.defs);
     segment.push_back(sched_inst);
+    segment_has_ordered_anchor = segment_has_ordered_anchor || ordered_anchor;
+    segment_has_non_register_inst = segment_has_non_register_inst ||
+                                    (!ordered_anchor && !pure_register_inst);
   }
-  flush_segment(segment, reordered, ready_slack, stats, false, sass_guide, 1,
+  flush_segment(segment, reordered, ready_slack, stats, timing_state,
+                previous_boundary, NULL, false, sass_guide, 1,
                 &sass_guide_cursor, sass_ptxline_guide);
 
   if (reordered.size() != func->m_instructions.size()) {
-    printf("GPGPU-Sim PTX: reorder switch skipped function '%s' due to size "
-           "mismatch (%zu vs %zu)\n",
-           func->m_name.c_str(), reordered.size(), func->m_instructions.size());
-    return;
+    ptx_reorder_fatal(
+        "internal instruction permutation size mismatch for function '%s' "
+        "(%zu vs %zu)",
+        func->m_name.c_str(), reordered.size(), func->m_instructions.size());
   }
 
   func->m_instructions.swap(reordered);
+  func->m_ptx_reorder_completed = true;
 
   dump_ptx_reorder_result(func->m_name, func->m_instructions, original_indices,
                           stats, ready_slack, k_ptx_reorder_dump_dir);
 
   const std::size_t guide_total =
       sass_ptxline_guide != NULL ? sass_ptxline_guide->items.size() : 0;
-  printf("GPGPU-Sim PTX: reorder function '%s': mode=%s segments=%u "
-         "skipped=%u insts=%u moved_slots=%u max_segment=%u edges=%u "
-         "slack=%d sass_guided=%u sass_guided_fallback=%u "
+  printf("GPGPU-Sim PTX: reorder function '%s': mode=%s regions=%u "
+         "segments=%u skipped=%u insts=%u moved_slots=%u "
+         "moved_distance=%u max_moved_distance=%u max_segment=%u edges=%u "
+         "compiler_view_insts=%u compiler_view_roundtrips=%u "
+         "compiler_pack_fusions=%u plain_priority=ready_first slack=%d "
+         "sass_guided=%u sass_guided_fallback=%u "
          "sass_cursor=%u/%zu\n",
          func->m_name.c_str(),
-         sass_ptxline_guide != NULL ? "sass_ptxline" : "plain", stats.segments,
-         stats.skipped_segments, stats.total_insts, stats.moved_slots,
-         stats.max_segment, stats.edges, ready_slack,
-         stats.sass_guided_segments, stats.sass_guided_fallback_segments,
-         stats.sass_guide_cursor, guide_total);
+         sass_ptxline_guide != NULL ? "sass_ptxline" : "plain", stats.regions,
+         stats.segments, stats.skipped_segments, stats.total_insts,
+         stats.moved_slots, stats.moved_distance, stats.max_moved_distance,
+         stats.max_segment, stats.edges, stats.compiler_view_insts,
+         stats.compiler_view_roundtrips, stats.compiler_pack_fusions,
+         ready_slack, stats.sass_guided_segments,
+         stats.sass_guided_fallback_segments, stats.sass_guide_cursor,
+         guide_total);
 }
 
 } // namespace flash_gpgpu_sim

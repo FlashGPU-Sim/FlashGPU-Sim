@@ -164,6 +164,36 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
                          "Opcode latencies for SFU instructions"
                          "Default 8",
                          "8");
+  option_parser_register(opp, "-ptx_opcode_latency_ex2", OPT_UINT32,
+                         &opcode_latency_ex2,
+                         "EX2 latency; 0 inherits SFU latency", "0");
+  option_parser_register(opp, "-ptx_opcode_latency_predicate", OPT_UINT32,
+                         &opcode_latency_predicate,
+                         "SETP/SELP latency; 0 preserves legacy one-cycle ALU", "0");
+  option_parser_register(opp, "-ptx_opcode_latency_int_logic", OPT_UINT32,
+                         &opcode_latency_int_logic,
+                         "32-bit AND/OR/XOR/NOT/SHL/SHR result latency", "1");
+  option_parser_register(opp, "-ptx_opcode_initiation_int_logic", OPT_UINT32,
+                         &opcode_initiation_int_logic,
+                         "32-bit AND/OR/XOR/NOT/SHL/SHR initiation interval", "1");
+  option_parser_register(opp, "-ptx_opcode_f32_minmax_use_int", OPT_BOOL,
+                         &opcode_f32_minmax_use_int,
+                         "Route scalar FP32 MIN/MAX through the integer ALU; "
+                         "retain FP MIN/MAX latency and initiation settings", "0");
+  option_parser_register(opp, "-ptx_opcode_latency_f32x2", OPT_UINT32,
+                         &opcode_latency_f32x2,
+                         "Packed f32x2 arithmetic latency; 0 inherits scalar FP",
+                         "0");
+  option_parser_register(opp, "-ptx_opcode_initiation_f32x2", OPT_UINT32,
+                         &opcode_initiation_f32x2,
+                         "Packed f32x2 arithmetic initiation; 0 inherits scalar FP",
+                         "0");
+  option_parser_register(opp, "-ptx_opcode_latency_cvt_f16x2_f32", OPT_UINT32,
+                         &opcode_latency_cvt_f16x2_f32,
+                         "Packed f32 to f16x2 conversion latency", "1");
+  option_parser_register(opp, "-ptx_opcode_initiation_cvt_f16x2_f32", OPT_UINT32,
+                         &opcode_initiation_cvt_f16x2_f32,
+                         "Packed f32 to f16x2 conversion initiation", "1");
   option_parser_register(opp, "-ptx_opcode_latency_tensor", OPT_CSTR,
                          &opcode_latency_tensor,
                          "Opcode latencies for Tensor instructions"
@@ -898,11 +928,18 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == WGMMA_FENCE_OP) ||
       (m_opcode == WGMMA_COMMIT_GROUP_OP) || (m_opcode == WGMMA_WAIT_GROUP_OP) ||
       (m_opcode == SETMAXNREG_OP) || (m_opcode == PREFETCH_OP) ||
-      (m_opcode == PREFETCHU_OP)) {
+      (m_opcode == PREFETCHU_OP) ||
+      (m_opcode == TCGEN05_ALLOC_OP) || (m_opcode == TCGEN05_DEALLOC_OP) ||
+      (m_opcode == TCGEN05_RELINQUISH_ALLOC_PERMIT_OP) ||
+      (m_opcode == TCGEN05_MMA_OP) || (m_opcode == TCGEN05_COMMIT_OP) ||
+      (m_opcode == TCGEN05_LD_OP) || (m_opcode == TCGEN05_ST_OP) ||
+      (m_opcode == TCGEN05_WAIT_OP) || (m_opcode == TCGEN05_CP_OP) ||
+      (m_opcode == TCGEN05_SHIFT_OP) || (m_opcode == TCGEN05_FENCE_OP)) {
     // do nothing
   } else if ((m_opcode == CVT_OP || m_opcode == SET_OP ||
               m_opcode == SLCT_OP)) {
     if (get_type2() == F16_TYPE || get_type2() == F32_TYPE ||
+        get_type2() == F32X2_TYPE ||
         get_type2() == F64_TYPE || get_type2() == FF64_TYPE) {
       oprnd_type = FP_OP;
     } else
@@ -910,6 +947,7 @@ void ptx_instruction::set_fp_or_int_archop() {
 
   } else {
     if (get_type() == F16_TYPE || get_type() == F32_TYPE ||
+        get_type() == F32X2_TYPE ||
         get_type() == F64_TYPE || get_type() == FF64_TYPE) {
       oprnd_type = FP_OP;
     } else
@@ -931,7 +969,13 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != WGMMA_FENCE_OP) &&
       (m_opcode != WGMMA_COMMIT_GROUP_OP) && (m_opcode != WGMMA_WAIT_GROUP_OP) &&
       (m_opcode != SETMAXNREG_OP) && (m_opcode != PREFETCH_OP) &&
-      (m_opcode != PREFETCHU_OP)) {
+      (m_opcode != PREFETCHU_OP) &&
+      (m_opcode != TCGEN05_ALLOC_OP) && (m_opcode != TCGEN05_DEALLOC_OP) &&
+      (m_opcode != TCGEN05_RELINQUISH_ALLOC_PERMIT_OP) &&
+      (m_opcode != TCGEN05_MMA_OP) && (m_opcode != TCGEN05_COMMIT_OP) &&
+      (m_opcode != TCGEN05_LD_OP) && (m_opcode != TCGEN05_ST_OP) &&
+      (m_opcode != TCGEN05_WAIT_OP) && (m_opcode != TCGEN05_CP_OP) &&
+      (m_opcode != TCGEN05_SHIFT_OP) && (m_opcode != TCGEN05_FENCE_OP)) {
     if (get_type() == F64_TYPE || get_type() == FF64_TYPE) {
       switch (get_opcode()) {
         case MUL_OP:
@@ -974,7 +1018,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           if ((op == DP_OP) || (op == ALU_OP)) sp_op = DP___OP;
           break;
       }
-    } else if (get_type() == F16_TYPE || get_type() == F32_TYPE) {
+    } else if (get_type() == F16_TYPE || get_type() == F32_TYPE ||
+               get_type() == F32X2_TYPE) {
       switch (get_opcode()) {
         case MUL_OP:
         case MAD_OP:
@@ -1313,7 +1358,41 @@ void ptx_instruction::set_opcode_and_latency() {
   op = ALU_OP;
   mem_op = NOT_TEX;
   initiation_interval = latency = 1;
+  bool packed_timing = false;
+  bool int_logic_timing = false;
   switch (m_opcode) {
+    case AND_OP:
+    case OR_OP:
+    case XOR_OP:
+    case NOT_OP:
+    case SHL_OP:
+    case SHR_OP:
+      if (get_type() == B32_TYPE || get_type() == U32_TYPE ||
+          get_type() == S32_TYPE) {
+        latency = gpgpu_ctx->func_sim->opcode_latency_int_logic;
+        initiation_interval =
+            gpgpu_ctx->func_sim->opcode_initiation_int_logic;
+        if (latency != 1 || initiation_interval != 1) op = INTP_OP;
+        int_logic_timing = true;
+      }
+      break;
+    case SETP_OP:
+    case SELP_OP:
+      if (gpgpu_ctx->func_sim->opcode_latency_predicate) {
+        latency = gpgpu_ctx->func_sim->opcode_latency_predicate;
+        initiation_interval = 1;
+        op = INTP_OP;
+      }
+      break;
+    case CVT_OP:
+      if (m_scalar_type.size() == 2 && get_type() == F16X2_TYPE &&
+          get_type2() == F32_TYPE) {
+        latency = gpgpu_ctx->func_sim->opcode_latency_cvt_f16x2_f32;
+        initiation_interval =
+            gpgpu_ctx->func_sim->opcode_initiation_cvt_f16x2_f32;
+        packed_timing = true;
+      }
+      break;
     case MOV_OP:
       assert(!(has_memory_read() && has_memory_write()));
       if (has_memory_read()) op = LOAD_OP;
@@ -1386,6 +1465,30 @@ void ptx_instruction::set_opcode_and_latency() {
       // but use default latency (lightweight control instructions)
       break;
     }
+    case TCGEN05_MMA_OP:
+      op = TENSOR_CORE_OP;
+      sp_op = TENSOR__OP;
+      break;
+    case TCGEN05_LD_OP:
+      op = TENSOR_CORE_OP;
+      sp_op = TENSOR__OP;
+      break;
+    case TCGEN05_ST_OP:
+      op = TENSOR_CORE_OP;
+      sp_op = TENSOR__OP;
+      break;
+    case TCGEN05_CP_OP:
+    case TCGEN05_SHIFT_OP:
+      op = TENSOR_CORE_OP;
+      sp_op = TENSOR__OP;
+      break;
+    case TCGEN05_ALLOC_OP:
+    case TCGEN05_DEALLOC_OP:
+    case TCGEN05_RELINQUISH_ALLOC_PERMIT_OP:
+    case TCGEN05_COMMIT_OP:
+    case TCGEN05_WAIT_OP:
+    case TCGEN05_FENCE_OP:
+      break;
     case TENSORMAP_OP: {
       op = TENSOR_MAP_OP;
       const auto &opts = get_options();
@@ -1449,6 +1552,7 @@ void ptx_instruction::set_opcode_and_latency() {
       // ADD,SUB latency
       switch (get_type()) {
         case F32_TYPE:
+        case F32X2_TYPE:
           latency = fp_latency[0];
           initiation_interval = fp_init[0];
           op = SP_OP;
@@ -1476,6 +1580,11 @@ void ptx_instruction::set_opcode_and_latency() {
         case F32_TYPE:
           latency = fp_latency[1];
           initiation_interval = fp_init[1];
+          op = gpgpu_ctx->func_sim->opcode_f32_minmax_use_int ? INTP_OP : SP_OP;
+          break;
+        case F32X2_TYPE:
+          latency = fp_latency[1];
+          initiation_interval = fp_init[1];
           op = SP_OP;
           break;
         case F64_TYPE:
@@ -1498,6 +1607,7 @@ void ptx_instruction::set_opcode_and_latency() {
       // MUL latency
       switch (get_type()) {
         case F32_TYPE:
+        case F32X2_TYPE:
           latency = fp_latency[2];
           initiation_interval = fp_init[2];
           op = SP_OP;
@@ -1525,6 +1635,7 @@ void ptx_instruction::set_opcode_and_latency() {
       // MAD latency
       switch (get_type()) {
         case F32_TYPE:
+        case F32X2_TYPE:
           latency = fp_latency[3];
           initiation_interval = fp_init[3];
           op = SP_OP;
@@ -1589,6 +1700,8 @@ void ptx_instruction::set_opcode_and_latency() {
     case RSQRT_OP:
     case RCP_OP:
       latency = sfu_latency;
+      if (m_opcode == EX2_OP && gpgpu_ctx->func_sim->opcode_latency_ex2)
+        latency = gpgpu_ctx->func_sim->opcode_latency_ex2;
       initiation_interval = sfu_init;
       op = SFU_OP;
       break;
@@ -1679,6 +1792,47 @@ void ptx_instruction::set_opcode_and_latency() {
     default:
       break;
   }
+  if (!m_scalar_type.empty() && get_type() == F32X2_TYPE) {
+    switch (m_opcode) {
+      case ADD_OP:
+      case SUB_OP:
+      case MAX_OP:
+      case MIN_OP:
+      case MUL_OP:
+      case MAD_OP:
+      case FMA_OP:
+        if (gpgpu_ctx->func_sim->opcode_latency_f32x2)
+          latency = gpgpu_ctx->func_sim->opcode_latency_f32x2;
+        if (gpgpu_ctx->func_sim->opcode_initiation_f32x2)
+          initiation_interval = gpgpu_ctx->func_sim->opcode_initiation_f32x2;
+        packed_timing = true;
+        break;
+      default:
+        break;
+    }
+  }
+  // The pipeline indexes latency - initiation_interval and reserves a result
+  // bus slot at latency. Reject invalid overrides before either operation.
+  if (int_logic_timing &&
+      (initiation_interval == 0 || latency < initiation_interval ||
+       latency >= simd_function_unit::MAX_ALU_LATENCY)) {
+    fprintf(stderr, "GPGPU-Sim PTX: invalid integer logic timing\n");
+    abort();
+  }
+  if (packed_timing &&
+      (initiation_interval == 0 || latency < initiation_interval ||
+       latency >= simd_function_unit::MAX_ALU_LATENCY)) {
+    fprintf(stderr,
+            "GPGPU-Sim PTX: invalid packed timing: latency=%u initiation=%u\n",
+            latency, initiation_interval);
+    abort();
+  }
+  if ((m_opcode == EX2_OP || m_opcode == SETP_OP || m_opcode == SELP_OP) &&
+      (initiation_interval == 0 || latency < initiation_interval ||
+       latency >= simd_function_unit::MAX_ALU_LATENCY)) {
+    fprintf(stderr, "GPGPU-Sim PTX: invalid EX2/predicate timing\n");
+    abort();
+  }
   set_fp_or_int_archop();
   set_mul_div_or_other_archop();
 }
@@ -1739,6 +1893,8 @@ void ptx_instruction::pre_decode() {
   }
   incount = 0;
   outcount = 0;
+  extra_in.clear();
+  extra_out.clear();
   is_vectorin = 0;
   is_vectorout = 0;
   std::fill_n(arch_reg.src, MAX_REG_OPERANDS, -1);
@@ -1845,6 +2001,14 @@ void ptx_instruction::pre_decode() {
   set_bar_type();
   // Get register operands
   int n = 0, m = 0;
+  auto add_input = [&](unsigned reg, int arch) {
+    if (m < MAX_INPUT_VALUES)
+      in[m] = reg;
+    else
+      extra_in.push_back(reg);
+    if (m < MAX_REG_OPERANDS) arch_reg.src[m] = arch;
+    ++m;
+  };
   ptx_instruction::const_iterator opr = op_iter_begin();
   for (; opr != op_iter_end(); opr++, n++) {  // process operands
     const operand_info &o = *opr;
@@ -1856,59 +2020,50 @@ void ptx_instruction::pre_decode() {
       } else if (o.is_vector()) {
         is_vectorin = 1;
         unsigned num_elem = o.get_vect_nelem();
-        if (num_elem >= 1) out[0] = o.reg1_num();
-        if (num_elem >= 2) out[1] = o.reg2_num();
-        if (num_elem >= 3) out[2] = o.reg3_num();
-        if (num_elem >= 4) out[3] = o.reg4_num();
-        if (num_elem >= 5) out[4] = o.reg5_num();
-        if (num_elem >= 6) out[5] = o.reg6_num();
-        if (num_elem >= 7) out[6] = o.reg7_num();
-        if (num_elem >= 8) out[7] = o.reg8_num();
+        for (unsigned i = 0; i < num_elem; ++i) {
+          const symbol *component = o.vec_symbol_or_null(i);
+          if (component == NULL || component->is_non_arch_reg()) continue;
+          if (i < MAX_OUTPUT_VALUES)
+            out[i] = component->reg_num();
+          else
+            extra_out.push_back(component->reg_num());
+        }
         for (unsigned i = 0; i < num_elem && i < MAX_REG_OPERANDS; i++)
           arch_reg.dst[i] = o.arch_reg_num(i);
       }
     } else {
       if (o.is_reg() && !o.is_non_arch_reg()) {
-        int reg_num = o.reg_num();
-        arch_reg.src[m] = o.arch_reg_num();
-        switch (m) {
-          case 0:
-            in[0] = reg_num;
-            break;
-          case 1:
-            in[1] = reg_num;
-            break;
-          case 2:
-            in[2] = reg_num;
-            break;
-          default:
-            break;
+        const symbol *pack_low = NULL;
+        const symbol *pack_high = NULL;
+        const symbol *logical_reg = o.get_symbol();
+        function_info *owner =
+            logical_reg == NULL ? NULL : logical_reg->get_pc();
+        if (owner != NULL && owner->expand_compiler_register_pack(
+                                 logical_reg, &pack_low, &pack_high)) {
+          const symbol *pack_sources[2] = {pack_low, pack_high};
+          for (unsigned lane = 0; lane < 2; ++lane) {
+            const symbol *source = pack_sources[lane];
+            assert(source != NULL && !source->is_non_arch_reg());
+            // A brace pack may broadcast one 32-bit register into both lanes.
+            // The compiled packed operation reads that scalar once and applies
+            // it to both lanes, so do not create a duplicate collector input.
+            if (lane != 0 && source == pack_sources[0]) continue;
+            add_input(source->reg_num(), source->arch_reg_num());
+          }
+          continue;
         }
-        m++;
+        add_input(o.reg_num(), o.arch_reg_num());
       } else if (o.is_vector()) {
         // assert(m == 0); //only support 1 vector operand (for textures) right
         // now
         is_vectorout = 1;
         unsigned num_elem = o.get_vect_nelem();
-        if (num_elem >= 1 && m + 0 < MAX_INPUT_VALUES)
-          in[m + 0] = o.reg1_num();
-        if (num_elem >= 2 && m + 1 < MAX_INPUT_VALUES)
-          in[m + 1] = o.reg2_num();
-        if (num_elem >= 3 && m + 2 < MAX_INPUT_VALUES)
-          in[m + 2] = o.reg3_num();
-        if (num_elem >= 4 && m + 3 < MAX_INPUT_VALUES)
-          in[m + 3] = o.reg4_num();
-        if (num_elem >= 5 && m + 4 < MAX_INPUT_VALUES)
-          in[m + 4] = o.reg5_num();
-        if (num_elem >= 6 && m + 5 < MAX_INPUT_VALUES)
-          in[m + 5] = o.reg6_num();
-        if (num_elem >= 7 && m + 6 < MAX_INPUT_VALUES)
-          in[m + 6] = o.reg7_num();
-        if (num_elem >= 8 && m + 7 < MAX_INPUT_VALUES)
-          in[m + 7] = o.reg8_num();
-        for (int i = 0; i < num_elem && m + i < MAX_REG_OPERANDS; i++)
-          arch_reg.src[m + i] = o.arch_reg_num(i);
-        m += num_elem;
+        for (unsigned i = 0; i < num_elem; ++i) {
+          if (o.vec_is_literal(i)) continue;
+          const symbol *component = o.vec_symbol_or_null(i);
+          if (component == NULL || component->is_non_arch_reg()) continue;
+          add_input(component->reg_num(), component->arch_reg_num());
+        }
       }
     }
   }

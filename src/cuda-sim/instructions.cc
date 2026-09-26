@@ -55,6 +55,7 @@ class ptx_recognizer;
 #include "../gpgpu-sim/flash/elect.h"
 #include "../gpgpu-sim/flash/mbarrier.h"
 #include "../gpgpu-sim/flash/ld_st_matrix.h"
+#include "../gpgpu-sim/flash/tcgen05.h"
 #include "../gpgpu-sim/flash/tma.h"
 #include "../trace.h"
 #include "cuda-math.h"
@@ -212,6 +213,29 @@ static inline uint16_t f16_bits_from_f32(float value, unsigned rounding_mode) {
   }
 }
 
+static inline void set_fenv_rounding_mode(unsigned rounding_mode) {
+  switch (rounding_mode) {
+    case RN_OPTION:
+    case RNI_OPTION:
+      break;
+    case RZ_OPTION:
+    case RZI_OPTION:
+      fesetround(FE_TOWARDZERO);
+      break;
+    case RM_OPTION:
+    case RMI_OPTION:
+      fesetround(FE_DOWNWARD);
+      break;
+    case RP_OPTION:
+    case RPI_OPTION:
+      fesetround(FE_UPWARD);
+      break;
+    default:
+      assert(0);
+      break;
+  }
+}
+
 static inline float f32_from_f16_bits(uint16_t bits) {
   return half_float::detail::half2float<float>(bits);
 }
@@ -220,6 +244,45 @@ void ptx_thread_info::set_reg(const symbol *reg, const ptx_reg_t &value) {
   assert(reg != NULL);
   if (reg->name() == "_") return;
   assert(!m_regs.empty());
+
+  const symbol *pack_low = NULL;
+  const symbol *pack_high = NULL;
+  if (m_func_info != NULL &&
+      m_func_info->get_compiler_register_pack(reg, &pack_low, &pack_high)) {
+    assert(pack_low != NULL && pack_high != NULL && pack_low != reg &&
+           pack_high != reg);
+    ptx_reg_t low_value;
+    low_value.u64 = 0;
+    low_value.u32 = static_cast<unsigned>(value.u64);
+    ptx_reg_t high_value;
+    high_value.u64 = 0;
+    high_value.u32 = static_cast<unsigned>(value.u64 >> 32);
+    set_reg(pack_low, low_value);
+    set_reg(pack_high, high_value);
+    m_last_set_operand_value = value;
+    return;
+  }
+
+  const symbol *view_source = NULL;
+  unsigned view_lane = 0;
+  if (m_func_info != NULL &&
+      m_func_info->get_compiler_register_view(reg, &view_source, &view_lane)) {
+    assert(view_source != NULL && view_source != reg && view_lane < 2);
+    if (view_source->get_size_in_bytes() <= 4) {
+      set_reg(view_source, value);
+    } else {
+      ptx_reg_t combined = get_reg(view_source);
+      const unsigned long long mask = 0xffffffffull << (32 * view_lane);
+      combined.u64 = (combined.u64 & ~mask) |
+                     ((static_cast<unsigned long long>(value.u32) <<
+                       (32 * view_lane)) &
+                      mask);
+      set_reg(view_source, combined);
+    }
+    m_last_set_operand_value = value;
+    return;
+  }
+
   const symbol *mapped_reg = canonicalize_reg(reg);
   assert(mapped_reg->uid() > 0);
   m_regs.back()[mapped_reg] = value;
@@ -275,6 +338,40 @@ ptx_reg_t ptx_thread_info::get_reg(const symbol *reg) {
   static bool unfound_register_warned = false;
   assert(reg != NULL);
   assert(!m_regs.empty());
+
+  const symbol *pack_low = NULL;
+  const symbol *pack_high = NULL;
+  if (m_func_info != NULL &&
+      m_func_info->get_compiler_register_pack(reg, &pack_low, &pack_high)) {
+    assert(pack_low != NULL && pack_high != NULL && pack_low != reg &&
+           pack_high != reg);
+    const ptx_reg_t low_value = get_reg(pack_low);
+    const ptx_reg_t high_value = get_reg(pack_high);
+    ptx_reg_t packed_value;
+    packed_value.u64 = static_cast<unsigned long long>(low_value.u32) |
+                       (static_cast<unsigned long long>(high_value.u32) << 32);
+    if (m_enable_debug_trace)
+      m_debug_trace_regs_read.back()[reg] = packed_value;
+    return packed_value;
+  }
+
+  const symbol *view_source = NULL;
+  unsigned view_lane = 0;
+  if (m_func_info != NULL &&
+      m_func_info->get_compiler_register_view(reg, &view_source, &view_lane)) {
+    assert(view_source != NULL && view_source != reg && view_lane < 2);
+    const ptx_reg_t source_value = get_reg(view_source);
+    ptx_reg_t view_value;
+    view_value.u64 = 0;
+    view_value.u32 = view_source->get_size_in_bytes() <= 4
+                         ? source_value.u32
+                         : static_cast<unsigned>(source_value.u64 >>
+                                                 (32 * view_lane));
+    if (m_enable_debug_trace)
+      m_debug_trace_regs_read.back()[reg] = view_value;
+    return view_value;
+  }
+
   const symbol *logical_reg = reg;
   const symbol *mapped_reg = canonicalize_reg(reg);
   reg_map_t::iterator regs_iter = m_regs.back().find(mapped_reg);
@@ -601,8 +698,11 @@ void ptx_thread_info::get_vector_operand_values(const operand_info &op,
   assert(num_elements <= 8);
 
   for (int idx = num_elements - 1; idx >= 0; --idx) {
-    const symbol *sym = NULL;
-    sym = op.vec_symbol(idx);
+    if (op.vec_is_literal(idx)) {
+      ptx_regs[idx] = op.vec_literal_value(idx);
+      continue;
+    }
+    const symbol *sym = op.vec_symbol(idx);
     if (strcmp(sym->name().c_str(), "_") != 0) {
       ptx_regs[idx] = get_reg(sym);
     }
@@ -972,16 +1072,7 @@ void addp_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   unsigned rounding_mode = pI->rounding_mode();
   int orig_rm = fegetround();
-  switch (rounding_mode) {
-    case RN_OPTION:
-      break;
-    case RZ_OPTION:
-      fesetround(FE_TOWARDZERO);
-      break;
-    default:
-      assert(0);
-      break;
-  }
+  set_fenv_rounding_mode(rounding_mode);
 
   // performs addition. Sets carry and overflow if needed.
   // src3_data.pred&0x4 is the carry flag
@@ -1070,16 +1161,7 @@ void add_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   unsigned rounding_mode = pI->rounding_mode();
   int orig_rm = fegetround();
-  switch (rounding_mode) {
-    case RN_OPTION:
-      break;
-    case RZ_OPTION:
-      fesetround(FE_TOWARDZERO);
-      break;
-    default:
-      assert(0);
-      break;
-  }
+  set_fenv_rounding_mode(rounding_mode);
 
   // performs addition. Sets carry and overflow if needed.
   switch (i_type) {
@@ -1768,6 +1850,523 @@ void ldmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
 
 void stmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
   handle_stmatrix_inst(pI, core, inst);
+}
+
+static unsigned tcgen05_cta_group(const ptx_instruction *pI) {
+  std::list<int> options = pI->get_options();
+  for (std::list<int>::const_iterator i = options.begin(); i != options.end();
+       ++i) {
+    if (*i == TCGEN05_CTA_GROUP_1_OPTION) return 1;
+    if (*i == TCGEN05_CTA_GROUP_2_OPTION) return 2;
+  }
+  return 1;
+}
+
+static void tcgen05_assert_cta_group1(const ptx_instruction *pI) {
+  assert(tcgen05_cta_group(pI) == 1 &&
+         "TCGen05 cta_group::2 is parsed but not implemented");
+}
+
+static bool tcgen05_has_option(const ptx_instruction *pI, int option) {
+  std::list<int> options = pI->get_options();
+  for (std::list<int>::const_iterator i = options.begin(); i != options.end();
+       ++i) {
+    if (*i == option) return true;
+  }
+  return false;
+}
+
+static bool tcgen05_debug_enabled() {
+  const char *debug = getenv("TCGEN05_DEBUG");
+  return debug && strcmp(debug, "0") != 0;
+}
+
+static bool tcgen05_is_warp_leader(const ptx_thread_info *thread) {
+  return thread->get_laneid() == 0;
+}
+
+static flash_gpgpu_sim::tcgen05_tmem_scope_t tcgen05_tmem_scope(
+    const ptx_instruction *pI, const ptx_thread_info *thread) {
+  unsigned sm_id = thread->get_hw_sid();
+  if (sm_id == (unsigned)-1) sm_id = 0;
+
+  unsigned cta_id = thread->get_hw_ctaid();
+  if (cta_id == (unsigned)-1) cta_id = thread->get_flat_ctaid();
+
+  return flash_gpgpu_sim::tcgen05_tmem_scope_t{sm_id, cta_id,
+                                               tcgen05_cta_group(pI)};
+}
+
+static uint32_t tcgen05_apply_thread_lane(uint32_t address,
+                                          const ptx_thread_info *thread) {
+  flash_gpgpu_sim::tcgen05_tmem_address_t decoded =
+      flash_gpgpu_sim::tcgen05_decode_tmem_address(address);
+  return flash_gpgpu_sim::tcgen05_encode_tmem_address(
+      decoded.lane + thread->get_laneid(), decoded.column);
+}
+
+static ptx_reg_t tcgen05_read_operand(const ptx_instruction *pI,
+                                      ptx_thread_info *thread,
+                                      unsigned operand_index) {
+  assert(operand_index < pI->get_num_operands());
+  const operand_info &op = pI->operand_lookup(operand_index);
+  return thread->get_operand_value(op, op, B32_TYPE, thread, 1);
+}
+
+static ptx_reg_t tcgen05_read_u64_operand(const ptx_instruction *pI,
+                                          ptx_thread_info *thread,
+                                          unsigned operand_index) {
+  assert(operand_index < pI->get_num_operands());
+  const operand_info &op = pI->operand_lookup(operand_index);
+  return thread->get_operand_value(op, op, B64_TYPE, thread, 1);
+}
+
+static mem_addr_t tcgen05_eval_address(const operand_info &op,
+                                       ptx_thread_info *thread) {
+  ptx_reg_t addr = thread->get_operand_value(op, op, B32_TYPE, thread, 0);
+  return addr.u32;
+}
+
+static enum _memory_space_t tcgen05_effective_space(const operand_info &op) {
+  if (op.get_addr_space() != undefined_space) return op.get_addr_space();
+  if (op.is_shared()) return shared_space;
+  if (op.is_memory_operand() || op.get_type() == address_t ||
+      op.get_type() == symbolic_t) {
+    const symbol *sym = op.get_symbol();
+    if (sym->is_global()) return global_space;
+    if (sym->is_local()) return local_space;
+  }
+  return undefined_space;
+}
+
+static void tcgen05_write_u32_destination(const ptx_instruction *pI,
+                                          ptx_thread_info *thread,
+                                          const operand_info &dst,
+                                          uint32_t value,
+                                          enum _memory_space_t default_space =
+                                              undefined_space) {
+  ptx_reg_t data;
+  data.u32 = value;
+
+  if (dst.is_reg()) {
+    thread->set_operand_value(dst, data, B32_TYPE, thread, pI);
+    return;
+  }
+
+  enum _memory_space_t space = tcgen05_effective_space(dst);
+  if (space == undefined_space && default_space != undefined_space) {
+    space = default_space;
+  }
+  mem_addr_t addr = tcgen05_eval_address(dst, thread);
+  switch (space) {
+    case shared_space:
+      thread->m_shared_mem->write(addr, sizeof(uint32_t), &data.u128, thread,
+                                  pI);
+      thread->m_last_effective_address = addr;
+      thread->m_last_memory_space = shared_space;
+      return;
+    case global_space:
+      thread->get_global_memory()->write(addr, sizeof(uint32_t), &data.u128,
+                                         thread, pI);
+      thread->m_last_effective_address = addr;
+      thread->m_last_memory_space = global_space;
+      return;
+    case local_space:
+      thread->m_local_mem->write(addr, sizeof(uint32_t), &data.u128, thread,
+                                 pI);
+      thread->m_last_effective_address = addr;
+      thread->m_last_memory_space = local_space;
+      return;
+    default:
+      printf("GPGPU-Sim PTX: ERROR ** tcgen05.alloc destination is not a "
+             "supported b32 register or memory operand: %s\n",
+             dst.name().c_str());
+      abort();
+  }
+}
+
+static std::vector<uint32_t> tcgen05_read_vector_words(
+    const operand_info &src, ptx_thread_info *thread) {
+  assert(src.is_vector());
+  unsigned nelem = src.get_vect_nelem();
+  std::vector<uint32_t> values(nelem, 0);
+  for (unsigned i = 0; i < nelem; ++i) {
+    const symbol *sym = src.vec_symbol(i);
+    if (sym && strcmp(sym->name().c_str(), "_") != 0) {
+      values[i] = thread->get_reg(sym).u32;
+    }
+  }
+  return values;
+}
+
+static void tcgen05_write_vector_words(const operand_info &dst,
+                                       ptx_thread_info *thread,
+                                       const std::vector<uint32_t> &values) {
+  assert(dst.is_vector());
+  assert(dst.get_vect_nelem() == values.size());
+  for (unsigned i = 0; i < values.size(); ++i) {
+    const symbol *sym = dst.vec_symbol(i);
+    if (sym && strcmp(sym->name().c_str(), "_") != 0) {
+      ptx_reg_t value;
+      value.u32 = values[i];
+      thread->set_reg(sym, value);
+      if (i == 0) thread->m_last_set_operand_value = value;
+    }
+  }
+}
+
+static void tcgen05_set_commit_mbarrier_info(const ptx_instruction *pI,
+                                             ptx_thread_info *thread,
+                                             uint32_t addr) {
+  inst_t::mbarrier_info_t info;
+  if (tcgen05_is_warp_leader(thread)) {
+    info.bar_id = addr;
+    info.bar_count = 1;
+  }
+  const_cast<ptx_instruction *>(pI)->set_mbarrier_info(thread->get_laneid(),
+                                                       info);
+}
+
+static bool tcgen05_read_enable_input_d(const operand_info &op,
+                                        ptx_thread_info *thread) {
+  if (op.is_reg() && op.get_symbol() &&
+      op.get_symbol()->type()->get_key().scalar_type() == PRED_TYPE) {
+    ptx_reg_t predicate =
+        thread->get_operand_value(op, op, PRED_TYPE, thread, 1);
+    return (predicate.pred & 0x1) == 0;
+  }
+
+  ptx_reg_t value = thread->get_operand_value(op, op, B32_TYPE, thread, 1);
+  return value.u32 != 0;
+}
+
+static std::vector<uint16_t> tcgen05_read_shared_f16_linearized(
+    const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t nelem,
+    ptx_thread_info *thread) {
+  assert(!desc.leading_dimension_absolute &&
+         "TCGen05 MMA absolute leading-dimension mode is not implemented");
+
+  if (tcgen05_debug_enabled() && desc.swizzle_mode != 0) {
+    printf("TCGEN05_DEBUG shared_desc swizzle=%u linearized start=%u "
+           "nelem=%u\n",
+           desc.swizzle_mode, desc.start_address, nelem);
+    fflush(stdout);
+  }
+
+  // Minimal functional path for CuTeDSL-generated FA4 smoke. The detailed
+  // Blackwell shared-memory swizzle is not modeled yet.
+  std::vector<uint16_t> values(nelem, 0);
+  for (uint32_t i = 0; i < nelem; ++i) {
+    thread->m_shared_mem->read(desc.start_address + i * sizeof(uint16_t),
+                               sizeof(uint16_t), &values[i]);
+  }
+  return values;
+}
+
+static std::vector<uint32_t> tcgen05_read_shared_words_linearized(
+    const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t rows,
+    uint32_t words_per_row, ptx_thread_info *thread) {
+  assert(!desc.leading_dimension_absolute &&
+         "TCGen05 CP absolute leading-dimension mode is not implemented");
+
+  if (tcgen05_debug_enabled() && desc.swizzle_mode != 0) {
+    printf("TCGEN05_DEBUG cp shared_desc swizzle=%u linearized start=%u "
+           "rows=%u row_words=%u\n",
+           desc.swizzle_mode, desc.start_address, rows, words_per_row);
+    fflush(stdout);
+  }
+
+  std::vector<uint32_t> values(rows * words_per_row, 0);
+  for (uint32_t i = 0; i < values.size(); ++i) {
+    thread->m_shared_mem->read(desc.start_address + i * sizeof(uint32_t),
+                               sizeof(uint32_t), &values[i]);
+  }
+  return values;
+}
+
+static bool tcgen05_cp_shape_words(const ptx_instruction *pI, uint32_t *rows,
+                                   uint32_t *words_per_row) {
+  if (tcgen05_has_option(pI, TCGEN05_128X256B_OPTION)) {
+    *rows = 128;
+    *words_per_row = 8;
+    return true;
+  }
+  if (tcgen05_has_option(pI, TCGEN05_128X128B_OPTION)) {
+    *rows = 128;
+    *words_per_row = 4;
+    return true;
+  }
+  if (tcgen05_has_option(pI, TCGEN05_64X128B_OPTION)) {
+    *rows = 64;
+    *words_per_row = 4;
+    return true;
+  }
+  if (tcgen05_has_option(pI, TCGEN05_32X128B_OPTION)) {
+    *rows = 32;
+    *words_per_row = 4;
+    return true;
+  }
+  if (tcgen05_has_option(pI, TCGEN05_4X256B_OPTION)) {
+    *rows = 4;
+    *words_per_row = 8;
+    return true;
+  }
+  return false;
+}
+
+static void tcgen05_check_disable_output_lane_zero(const operand_info &op,
+                                                   ptx_thread_info *thread) {
+  assert(op.is_vector());
+  assert(op.get_vect_nelem() == 4 &&
+         "Only TCGen05 cta_group::1 disable-output-lane vectors are supported");
+
+  std::vector<uint32_t> lanes = tcgen05_read_vector_words(op, thread);
+  for (unsigned i = 0; i < lanes.size(); ++i) {
+    assert(lanes[i] == 0 &&
+           "TCGen05 MMA disable-output-lane masks are not implemented");
+  }
+}
+
+void tcgen05_alloc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (!tcgen05_is_warp_leader(thread)) return;
+  tcgen05_assert_cta_group1(pI);
+  assert(pI->get_num_operands() >= 2);
+
+  const operand_info &dst = pI->operand_lookup(0);
+  uint32_t ncols = tcgen05_read_operand(pI, thread, 1).u32;
+  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
+      thread->get_gpu()->get_tcgen05_tmem_manager();
+  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
+  uint32_t base = manager.alloc(scope, ncols);
+  if (tcgen05_debug_enabled()) {
+    printf("TCGEN05_DEBUG alloc line=%u tid=%u lane=%u scope=(%u,%u,%u) "
+           "base=%u ncols=%u\n",
+           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
+           scope.sm_id, scope.cta_id, scope.cta_group, base, ncols);
+    fflush(stdout);
+  }
+  tcgen05_write_u32_destination(pI, thread, dst, base, shared_space);
+}
+
+void tcgen05_dealloc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (!tcgen05_is_warp_leader(thread)) return;
+  tcgen05_assert_cta_group1(pI);
+  assert(pI->get_num_operands() >= 2);
+
+  uint32_t base = tcgen05_read_operand(pI, thread, 0).u32;
+  uint32_t ncols = tcgen05_read_operand(pI, thread, 1).u32;
+  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
+      thread->get_gpu()->get_tcgen05_tmem_manager();
+  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
+  if (tcgen05_debug_enabled()) {
+    printf("TCGEN05_DEBUG dealloc line=%u tid=%u lane=%u scope=(%u,%u,%u) "
+           "base=%u ncols=%u\n",
+           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
+           scope.sm_id, scope.cta_id, scope.cta_group, base, ncols);
+    fflush(stdout);
+  }
+  manager.dealloc(scope, base, ncols);
+}
+
+void tcgen05_relinq_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (!tcgen05_is_warp_leader(thread)) return;
+  tcgen05_assert_cta_group1(pI);
+  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
+      thread->get_gpu()->get_tcgen05_tmem_manager();
+  manager.relinquish_alloc_permit(tcgen05_tmem_scope(pI, thread));
+}
+
+void tcgen05_mma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (!tcgen05_is_warp_leader(thread)) return;
+  tcgen05_assert_cta_group1(pI);
+  assert(pI->get_num_operands() >= 5);
+  assert(tcgen05_has_option(pI, TCGEN05_KIND_F16_OPTION));
+
+  const operand_info &d_tmem = pI->operand_lookup(0);
+  const operand_info &a_desc_op = pI->operand_lookup(1);
+  unsigned enable_input_d_operand = 4;
+  if (pI->operand_lookup(4).is_vector()) {
+    assert(pI->get_num_operands() >= 6);
+    tcgen05_check_disable_output_lane_zero(pI->operand_lookup(4), thread);
+    enable_input_d_operand = 5;
+  }
+  const operand_info &enable_input_d_op =
+      pI->operand_lookup(enable_input_d_operand);
+
+  uint32_t d_address = tcgen05_eval_address(d_tmem, thread);
+  uint32_t a_tmem_address =
+      a_desc_op.is_memory_operand()
+          ? static_cast<uint32_t>(tcgen05_eval_address(a_desc_op, thread))
+          : 0;
+  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
+  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
+      thread->get_gpu()->get_tcgen05_tmem_manager();
+  if (tcgen05_debug_enabled()) {
+    printf("TCGEN05_DEBUG mma line=%u tid=%u lane=%u scope=(%u,%u,%u) "
+           "d=%u a_mem=%u\n",
+           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
+           scope.sm_id, scope.cta_id, scope.cta_group, d_address,
+           a_desc_op.is_memory_operand() ? 1 : 0);
+    fflush(stdout);
+  }
+  flash_gpgpu_sim::tcgen05_mma_descriptor_t mma_desc =
+      flash_gpgpu_sim::tcgen05_decode_f16_mma_descriptor(
+          tcgen05_read_operand(pI, thread, 3).u32, tcgen05_cta_group(pI));
+  inst_t::tcgen05_dyn_info_t perf_info;
+  perf_info.mma_work = 2ULL * mma_desc.m * mma_desc.n * mma_desc.k;
+  const_cast<ptx_instruction *>(pI)->set_tcgen05_dyn_info(
+      thread->get_laneid(), perf_info);
+  uint64_t a_desc_value = 0;
+  if (!a_desc_op.is_memory_operand()) {
+    a_desc_value = tcgen05_read_u64_operand(pI, thread, 1).u64;
+  }
+  uint64_t b_desc_value = tcgen05_read_u64_operand(pI, thread, 2).u64;
+  if (tcgen05_debug_enabled()) {
+    printf("TCGEN05_DEBUG mma_desc line=%u a=0x%016llx a_tmem=%u "
+           "b=0x%016llx idesc=0x%08x\n",
+           pI->source_line(), static_cast<unsigned long long>(a_desc_value),
+           a_tmem_address, static_cast<unsigned long long>(b_desc_value),
+           tcgen05_read_operand(pI, thread, 3).u32);
+    fflush(stdout);
+  }
+  flash_gpgpu_sim::tcgen05_shared_descriptor_t b_desc =
+      flash_gpgpu_sim::tcgen05_decode_shared_descriptor(b_desc_value);
+  bool enable_input_d = tcgen05_read_enable_input_d(enable_input_d_op, thread);
+
+  std::vector<uint16_t> a_values;
+  if (a_desc_op.is_memory_operand()) {
+    a_values = manager.read_matrix_packed_u16(scope, a_tmem_address, mma_desc.m,
+                                              mma_desc.k);
+  } else {
+    flash_gpgpu_sim::tcgen05_shared_descriptor_t a_desc =
+        flash_gpgpu_sim::tcgen05_decode_shared_descriptor(a_desc_value);
+    a_values = tcgen05_read_shared_f16_linearized(
+        a_desc, mma_desc.m * mma_desc.k, thread);
+  }
+  std::vector<uint16_t> b_values = tcgen05_read_shared_f16_linearized(
+      b_desc, mma_desc.k * mma_desc.n, thread);
+
+  std::vector<uint32_t> input_d;
+  if (enable_input_d) {
+    input_d = manager.read_matrix_words(scope, d_address, mma_desc.m,
+                                        mma_desc.n);
+  }
+
+  std::vector<uint32_t> output = flash_gpgpu_sim::tcgen05_mma_f16_compute_words(
+      mma_desc, a_values, b_values, input_d, enable_input_d);
+  manager.write_matrix_words(scope, d_address, output, mma_desc.m, mma_desc.n);
+}
+
+void tcgen05_commit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  tcgen05_assert_cta_group1(pI);
+  assert(pI->get_num_operands() >= 1);
+  assert(tcgen05_has_option(pI, TCGEN05_MBARRIER_ARRIVE_ONE_OPTION));
+
+  const operand_info &bar = pI->operand_lookup(0);
+  tcgen05_set_commit_mbarrier_info(pI, thread,
+                                   tcgen05_eval_address(bar, thread));
+}
+
+void tcgen05_ld_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  tcgen05_assert_cta_group1(pI);
+  assert(pI->get_num_operands() >= 2);
+
+  const operand_info &dst = pI->operand_lookup(0);
+  const operand_info &addr = pI->operand_lookup(1);
+  assert(dst.is_vector());
+
+  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
+      thread->get_gpu()->get_tcgen05_tmem_manager();
+  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
+  uint32_t raw_address = tcgen05_eval_address(addr, thread);
+  uint32_t address = tcgen05_apply_thread_lane(raw_address, thread);
+  if (tcgen05_debug_enabled()) {
+    printf("TCGEN05_DEBUG ld line=%u tid=%u lane=%u scope=(%u,%u,%u) "
+           "raw=%u addr=%u n=%u\n",
+           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
+           scope.sm_id, scope.cta_id, scope.cta_group, raw_address, address,
+           dst.get_vect_nelem());
+    fflush(stdout);
+  }
+  std::vector<uint32_t> values =
+      manager.read_words(scope, address, dst.get_vect_nelem());
+  tcgen05_write_vector_words(dst, thread, values);
+}
+
+void tcgen05_st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  tcgen05_assert_cta_group1(pI);
+  assert(pI->get_num_operands() >= 2);
+
+  const operand_info &addr = pI->operand_lookup(0);
+  const operand_info &src = pI->operand_lookup(1);
+  assert(src.is_vector());
+
+  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
+      thread->get_gpu()->get_tcgen05_tmem_manager();
+  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
+  uint32_t raw_address = tcgen05_eval_address(addr, thread);
+  uint32_t address = tcgen05_apply_thread_lane(raw_address, thread);
+  if (tcgen05_debug_enabled()) {
+    printf("TCGEN05_DEBUG st line=%u tid=%u lane=%u scope=(%u,%u,%u) "
+           "raw=%u addr=%u n=%u\n",
+           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
+           scope.sm_id, scope.cta_id, scope.cta_group, raw_address, address,
+           src.get_vect_nelem());
+    fflush(stdout);
+  }
+  manager.write_words(scope, address, tcgen05_read_vector_words(src, thread));
+}
+
+void tcgen05_wait_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  tcgen05_assert_cta_group1(pI);
+  (void)pI;
+  (void)thread;
+}
+
+void tcgen05_cp_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (!tcgen05_is_warp_leader(thread)) return;
+  tcgen05_assert_cta_group1(pI);
+  assert(pI->get_num_operands() >= 2);
+
+  uint32_t rows = 0;
+  uint32_t words_per_row = 0;
+  assert(tcgen05_cp_shape_words(pI, &rows, &words_per_row) &&
+         "Unsupported TCGen05 CP tile shape");
+
+  const operand_info &dst_tmem = pI->operand_lookup(0);
+  uint32_t dst_address = static_cast<uint32_t>(tcgen05_eval_address(dst_tmem,
+                                                                    thread));
+  uint64_t src_desc_value = tcgen05_read_u64_operand(pI, thread, 1).u64;
+  flash_gpgpu_sim::tcgen05_shared_descriptor_t src_desc =
+      flash_gpgpu_sim::tcgen05_decode_shared_descriptor(src_desc_value);
+  std::vector<uint32_t> values =
+      tcgen05_read_shared_words_linearized(src_desc, rows, words_per_row,
+                                           thread);
+
+  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
+      thread->get_gpu()->get_tcgen05_tmem_manager();
+  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
+  if (tcgen05_debug_enabled()) {
+    printf("TCGEN05_DEBUG cp line=%u tid=%u lane=%u scope=(%u,%u,%u) "
+           "dst=%u rows=%u row_words=%u\n",
+           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
+           scope.sm_id, scope.cta_id, scope.cta_group, dst_address, rows,
+           words_per_row);
+    fflush(stdout);
+  }
+  manager.write_matrix_words(scope, dst_address, values, rows, words_per_row);
+}
+
+void tcgen05_shift_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (!tcgen05_is_warp_leader(thread)) return;
+  tcgen05_assert_cta_group1(pI);
+  assert(pI->get_num_operands() >= 1);
+  (void)thread;
+}
+
+void tcgen05_fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  (void)pI;
+  (void)thread;
 }
 
 void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -4419,6 +5018,17 @@ bool isNaN(float x) { return std::isnan(x); }
 
 bool isNaN(double x) { return std::isnan(x); }
 
+static ptx_reg_t minmax_f32_pair(ptx_reg_t a, ptx_reg_t b, bool maximum) {
+  // PTX orders +0 above -0, independently of operand order.
+  if (a.f32 == 0.0f && b.f32 == 0.0f) {
+    a.u32 = maximum ? (a.u32 & b.u32) : (a.u32 | b.u32);
+  } else {
+    a.f32 = maximum ? (MY_MAX_F(a.f32, b.f32))
+                    : (MY_MIN_F(a.f32, b.f32));
+  }
+  return a;
+}
+
 void max_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t a, b, d;
   const operand_info &dst = pI->dst();
@@ -4450,6 +5060,11 @@ void max_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       break;
     case F32_TYPE:
       d.f32 = MY_MAX_F(a.f32, b.f32);
+      if (pI->get_num_operands() == 4) {
+        const ptx_reg_t c =
+            thread->get_operand_value(pI->src3(), dst, i_type, thread, 1);
+        d = minmax_f32_pair(minmax_f32_pair(a, b, true), c, true);
+      }
       break;
     case F64_TYPE:
     case FF64_TYPE:
@@ -4499,6 +5114,11 @@ void min_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       break;
     case F32_TYPE:
       d.f32 = MY_MIN_F(a.f32, b.f32);
+      if (pI->get_num_operands() == 4) {
+        const ptx_reg_t c =
+            thread->get_operand_value(pI->src3(), dst, i_type, thread, 1);
+        d = minmax_f32_pair(minmax_f32_pair(a, b, false), c, false);
+      }
       break;
     case F64_TYPE:
     case FF64_TYPE:
@@ -4520,6 +5140,15 @@ void mov_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const operand_info &src1 = pI->src1();
   unsigned i_type = pI->get_type();
   assert(src1.is_param_local() == 0);
+
+  if (i_type == B64_TYPE && pI->get_num_operands() == 3 &&
+      !src1.is_vector() && pI->src2().is_literal()) {
+    ptx_reg_t lo = thread->get_operand_value(src1, dst, B32_TYPE, thread, 1);
+    ptx_reg_t hi = pI->src2().get_literal_value();
+    data.u64 = (lo.u32 & 0xffffffffull) | ((hi.u64 & 0xffffffffull) << 32);
+    thread->set_operand_value(dst, data, i_type, thread, pI);
+    return;
+  }
 
   if ((src1.is_vector() || dst.is_vector()) && (i_type != BB64_TYPE) &&
       (i_type != BB128_TYPE) && (i_type != FF64_TYPE)) {
@@ -4715,10 +5344,17 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
         assert(0);
       break;
     case S64_TYPE:
-      t.s64 = a.s64 * b.s64;
       assert(!pI->is_wide());
-      // assert(!pI->is_hi());
-      d.s64 = t.s64;
+      if (pI->is_hi()) {
+        const __int128 product = static_cast<__int128>(a.s64) * b.s64;
+        d.u64 = static_cast<unsigned __int128>(product) >> 64;
+      } else if (pI->is_lo()) {
+        // Low bits are identical for signed and unsigned multiplication;
+        // unsigned arithmetic also avoids host signed-overflow UB.
+        d.u64 = a.u64 * b.u64;
+      } else {
+        assert(0);
+      }
       break;
     case U16_TYPE:
       t.u32 = ((unsigned)a.u16) * ((unsigned)b.u16);
@@ -4743,11 +5379,11 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
         assert(0);
       break;
     case U64_TYPE:
-      t.u64 = a.u64 * b.u64;
       assert(!pI->is_wide());
-      assert(!pI->is_hi());
-      if (pI->is_lo())
-        d.u64 = t.u64;
+      if (pI->is_hi())
+        d.u64 = (static_cast<unsigned __int128>(a.u64) * b.u64) >> 64;
+      else if (pI->is_lo())
+        d.u64 = a.u64 * b.u64;
       else
         assert(0);
       break;
@@ -4791,6 +5427,9 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       }
 
       d.f32 = a.f32 * b.f32;
+      // Preserve the original rounded product and +0 subtraction, including
+      // signed zero. Negating an input would change these semantics.
+      if (pI->is_compiler_negated_mul()) d.f32 = 0.0f - d.f32;
 
       if (pI->saturation_mode()) {
         if (d.f32 < 0)
@@ -5370,6 +6009,7 @@ bool CmpOp(int type, ptx_reg_t a, ptx_reg_t b, unsigned cmpop) {
         default:
           assert(0);
       }
+      break;
 
     case B32_TYPE:
       switch (cmpop) {
@@ -5382,6 +6022,7 @@ bool CmpOp(int type, ptx_reg_t a, ptx_reg_t b, unsigned cmpop) {
         default:
           assert(0);
       }
+      break;
     case B64_TYPE:
       switch (cmpop) {
         case EQ_OPTION:
@@ -5691,6 +6332,27 @@ void setp_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();
   const operand_info &src2 = pI->src2();
+
+  if (pI->is_compiler_predicate_byte_extract()) {
+    assert(dst.is_vector() && dst.get_vect_nelem() == 7);
+    assert(src1.is_reg() && src2.is_vector() &&
+           src2.get_vect_nelem() == dst.get_vect_nelem());
+    const ptx_reg_t source = thread->get_reg(src1.get_symbol());
+    for (unsigned i = 0; i < dst.get_vect_nelem(); ++i) {
+      assert(src2.vec_is_literal(i));
+      const unsigned long long encoded = src2.vec_literal_value(i).u64;
+      const unsigned mask = static_cast<unsigned>(encoded);
+      const bool compare_equal_to_zero = (encoded & (1ULL << 32)) != 0;
+      const bool bit_is_set = (source.u32 & mask) != 0;
+      const bool predicate_true =
+          compare_equal_to_zero ? !bit_is_set : bit_is_set;
+      ptx_reg_t data;
+      data.u64 = 0;
+      data.pred = predicate_true ? 0 : 1;
+      thread->set_reg(dst.vec_symbol(i), data);
+    }
+    return;
+  }
 
   assert(pI->get_num_operands() <
          4);  // or need to deal with "c" operand / boolOp
@@ -6385,6 +7047,16 @@ void sub_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     case F16_TYPE:
       data.f16 = src1_data.f16 - src2_data.f16;
       break;  // assert(0); break;
+    case F32X2_TYPE: {
+      uint32_t s1lo = static_cast<uint32_t>(src1_data.u64 & 0xFFFFFFFFu);
+      uint32_t s1hi = static_cast<uint32_t>(src1_data.u64 >> 32);
+      uint32_t s2lo = static_cast<uint32_t>(src2_data.u64 & 0xFFFFFFFFu);
+      uint32_t s2hi = static_cast<uint32_t>(src2_data.u64 >> 32);
+      uint32_t rlo_b = bits_from_f32(f32_from_bits(s1lo) - f32_from_bits(s2lo));
+      uint32_t rhi_b = bits_from_f32(f32_from_bits(s1hi) - f32_from_bits(s2hi));
+      data.u64 = (static_cast<uint64_t>(rhi_b) << 32) | static_cast<uint64_t>(rlo_b);
+      break;
+    }
     case F32_TYPE:
       data.f32 = src1_data.f32 - src2_data.f32;
       break;
@@ -6894,12 +7566,16 @@ void vsub_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void vote_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  static bool first_in_warp = true;
-  static bool and_all;
-  static bool or_all;
-  static unsigned int ballot_result;
-  static std::list<ptx_thread_info *> threads_in_warp;
-  static unsigned last_tid;
+  // Shader clusters execute concurrently when FLASH_GPGPU_SIM_OMP is
+  // enabled.  Each host thread visits a warp's lanes serially, but function
+  // statics were shared by all host threads and corrupted the cross-lane
+  // accumulator (including the std::list) when two clusters voted at once.
+  static thread_local bool first_in_warp = true;
+  static thread_local bool and_all;
+  static thread_local bool or_all;
+  static thread_local unsigned int ballot_result;
+  static thread_local std::list<ptx_thread_info *> threads_in_warp;
+  static thread_local unsigned last_tid;
 
   if (first_in_warp) {
     first_in_warp = false;

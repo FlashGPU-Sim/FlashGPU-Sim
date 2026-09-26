@@ -777,6 +777,10 @@ class cache_config {
     assert(m_valid);
     return m_atom_sz;
   }
+  enum cache_type get_cache_type() const {
+    assert(m_valid);
+    return m_cache_type;
+  }
   unsigned get_num_lines() const {
     assert(m_valid);
     return m_nset * m_assoc;
@@ -1402,6 +1406,12 @@ class baseline_cache : public cache_t {
     init(name, config, memport, status);
   }
 
+  // Functional cache operations shared by the legacy bandwidth model and L2's
+  // externally accounted multi-issue model. These helpers never update the
+  // legacy data/fill busy-delay state.
+  void advance_miss_queue();
+  mem_fetch *fill_cache_state(mem_fetch *mf, unsigned time);
+
  protected:
   std::string m_name;
   cache_config &m_config;
@@ -1459,6 +1469,15 @@ class baseline_cache : public cache_t {
                          bool &do_miss, bool &wb, evicted_block_info &evicted,
                          std::list<cache_event> &events, bool read_only,
                          bool wa);
+
+  // Single side-effect-free ready-MSHR forwarding rule shared by the actual
+  // send_read_request branch and L2 multi-issue admission.
+  static bool ready_forward_eligible(const mshr_table &mshrs,
+                                     new_addr_type mshr_addr,
+                                     bool write_allocate, bool atomic) {
+    return mshrs.ready_for_forward(mshr_addr) && !write_allocate && !atomic;
+  }
+  bool ready_forward_eligible(const mem_fetch *mf, bool wa) const;
 
   /// Sub-class containing all metadata for port bandwidth management
   class bandwidth_management {
@@ -1623,6 +1642,17 @@ class data_cache : public baseline_cache {
                                               mem_fetch *mf, unsigned time,
                                               std::list<cache_event> &events);
 
+  // Perform a cache state transition without charging the legacy data port.
+  // Callers separately record the resulting statistics and either charge the
+  // legacy port or let memory_sub_partition account for multi-issue sector
+  // work.
+  enum cache_request_status access_cache_state(
+      new_addr_type addr, mem_fetch *mf, unsigned time,
+      std::list<cache_event> &events, enum cache_request_status &probe_status);
+  void record_access_stats(mem_fetch *mf,
+                           enum cache_request_status probe_status,
+                           enum cache_request_status access_status);
+
  protected:
   mem_fetch_allocator *m_memfetch_creator;
 
@@ -1753,6 +1783,31 @@ class l2_cache : public data_cache {
   virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events);
+
+  enum cache_request_status probe(new_addr_type addr, mem_fetch *mf,
+                                  unsigned &dirty_eviction_sectors) const;
+
+  // Ordinary L2 reads dispatch to rd_miss_base with wa=false. Use the same
+  // MSHR predicate as that path before tag-based port admission.
+  static bool ready_read_forward_eligible(
+      const mshr_table &mshrs, new_addr_type mshr_addr, bool is_write,
+      bool is_atomic, cache_request_status tag_probe_status) {
+    if (is_write || tag_probe_status == HIT ||
+        tag_probe_status == RESERVATION_FAIL)
+      return false;
+    return ready_forward_eligible(mshrs, mshr_addr, /*write_allocate=*/false,
+                                  is_atomic);
+  }
+  bool ready_read_forward_eligible(const mem_fetch *mf,
+                                   cache_request_status tag_probe_status) const;
+
+  enum cache_request_status access_multi_issue(
+      new_addr_type addr, mem_fetch *mf, unsigned time,
+      std::list<cache_event> &events, mem_fetch *&deferred_writeback,
+      unsigned &deferred_writeback_sectors);
+  void release_deferred_writeback(mem_fetch *writeback);
+  void cycle_multi_issue_port_model();
+  void fill_multi_issue_port_model(mem_fetch *mf, unsigned time);
 };
 
 /*****************************************************************************/

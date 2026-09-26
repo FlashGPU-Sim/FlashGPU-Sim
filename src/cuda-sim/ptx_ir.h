@@ -722,6 +722,12 @@ class operand_info {
     m_immediate_address = false;
   }
 
+  // A PTX vector operand may contain registers, literals, or a mixture of the
+  // two (for example, the source of `st.local.v2.b32 ..., {0, 0}`).  Keep the
+  // existing symbol-only representation for compatibility and attach typed
+  // component metadata only when a vector actually contains a literal.
+  operand_info(const std::vector<operand_info> &components, gpgpu_context *ctx);
+
   void init(gpgpu_context *ctx) {
     gpgpu_ctx = ctx;
     m_uid = (unsigned)-1;
@@ -747,6 +753,8 @@ class operand_info {
     }
     m_value.m_symbolic = NULL;
     m_value.m_vector_symbolic = NULL;
+    m_vector_component_types = NULL;
+    m_vector_literal_values = NULL;
     m_addr_offset = 0;
     m_neg_pred = 0;
     m_is_return_var = 0;
@@ -769,8 +777,37 @@ class operand_info {
   const symbol *vec_symbol(int idx) const {
     assert(idx >= 0 && (unsigned)idx < m_vector_nelem);
     const symbol *result = m_value.m_vector_symbolic[idx];
-    assert(result != NULL);
+    assert(result != NULL && "literal vector component has no symbol");
     return result;
+  }
+
+  const symbol *vec_symbol_or_null(int idx) const {
+    assert(idx >= 0 && (unsigned)idx < m_vector_nelem);
+    return m_value.m_vector_symbolic[idx];
+  }
+
+  bool vec_is_literal(int idx) const {
+    assert(idx >= 0 && (unsigned)idx < m_vector_nelem);
+    return m_vector_component_types != NULL &&
+           m_vector_component_types[idx] != undef_t;
+  }
+
+  enum operand_type vec_component_type(int idx) const {
+    assert(vec_is_literal(idx));
+    return m_vector_component_types[idx];
+  }
+
+  ptx_reg_t vec_literal_value(int idx) const {
+    assert(vec_is_literal(idx));
+    return m_vector_literal_values[idx];
+  }
+
+  bool vector_has_literal() const {
+    if (!is_vector() || m_vector_component_types == NULL) return false;
+    for (unsigned i = 0; i < m_vector_nelem; ++i) {
+      if (m_vector_component_types[i] != undef_t) return true;
+    }
+    return false;
   }
 
   const std::string &vec_name1() const {
@@ -817,44 +854,43 @@ class operand_info {
     return false;
   }
   int reg_num() const { return m_value.m_symbolic->reg_num(); }
-  int reg1_num() const { return m_value.m_vector_symbolic[0]->reg_num(); }
-  int reg2_num() const { return m_value.m_vector_symbolic[1]->reg_num(); }
+  int reg1_num() const {
+    const symbol *s = vec_symbol_or_null(0);
+    return s ? s->reg_num() : 0;
+  }
+  int reg2_num() const {
+    const symbol *s = vec_symbol_or_null(1);
+    return s ? s->reg_num() : 0;
+  }
   int reg3_num() const {
-    return m_value.m_vector_symbolic[2]
-               ? m_value.m_vector_symbolic[2]->reg_num()
-               : 0;
+    const symbol *s = vec_symbol_or_null(2);
+    return s ? s->reg_num() : 0;
   }
   int reg4_num() const {
-    return m_value.m_vector_symbolic[3]
-               ? m_value.m_vector_symbolic[3]->reg_num()
-               : 0;
+    const symbol *s = vec_symbol_or_null(3);
+    return s ? s->reg_num() : 0;
   }
   int reg5_num() const {
-    return m_value.m_vector_symbolic[4]
-               ? m_value.m_vector_symbolic[4]->reg_num()
-               : 0;
+    const symbol *s = vec_symbol_or_null(4);
+    return s ? s->reg_num() : 0;
   }
   int reg6_num() const {
-    return m_value.m_vector_symbolic[5]
-               ? m_value.m_vector_symbolic[5]->reg_num()
-               : 0;
+    const symbol *s = vec_symbol_or_null(5);
+    return s ? s->reg_num() : 0;
   }
   int reg7_num() const {
-    return m_value.m_vector_symbolic[6]
-               ? m_value.m_vector_symbolic[6]->reg_num()
-               : 0;
+    const symbol *s = vec_symbol_or_null(6);
+    return s ? s->reg_num() : 0;
   }
   int reg8_num() const {
-    return m_value.m_vector_symbolic[7]
-               ? m_value.m_vector_symbolic[7]->reg_num()
-               : 0;
+    const symbol *s = vec_symbol_or_null(7);
+    return s ? s->reg_num() : 0;
   }
   int arch_reg_num() const { return m_value.m_symbolic->arch_reg_num(); }
   int arch_reg_num(unsigned n) const {
     if (n >= m_vector_nelem) return -1;
-    return (m_value.m_vector_symbolic[n])
-               ? m_value.m_vector_symbolic[n]->arch_reg_num()
-               : -1;
+    const symbol *s = vec_symbol_or_null(n);
+    return s ? s->arch_reg_num() : -1;
   }
   bool is_label() const { return m_type == label_t; }
   bool is_builtin() const { return m_type == builtin_t; }
@@ -979,6 +1015,12 @@ class operand_info {
     const symbol **m_vector_symbolic;
   } m_value;
 
+  // NULL means the legacy all-symbol vector representation.  Otherwise each
+  // entry is undef_t for a symbol component or the scalar literal operand
+  // type for a literal component.  Literal bits live in the parallel array.
+  enum operand_type *m_vector_component_types;
+  ptx_reg_t *m_vector_literal_values;
+
   long long m_addr_offset;
 
   bool m_neg_pred;
@@ -1054,6 +1096,38 @@ class ptx_instruction : public warp_inst_t {
   unsigned inst_size() const { return m_inst_size; }
   unsigned uid() const { return m_uid; }
   int get_opcode() const { return m_opcode; }
+  // Build the canonical integer operation used by compiler-pattern
+  // lowering.  The returned instruction inherits this instruction's source
+  // location, symbol table, simulator context, and core configuration.
+  ptx_instruction *make_mad_lo_s32(const operand_info &dst,
+                                   const operand_info &multiplicand,
+                                   unsigned multiplier,
+                                   const operand_info &addend) const;
+  // Build an equivalent packed-f32 instruction with every direct use of one
+  // source register replaced by a b64 literal.  Compiler-pattern lowering
+  // calls this only after proving the materialized register has no other
+  // consumers.
+  ptx_instruction *make_with_packed_f32x2_literal(
+      const symbol *source, const operand_info &literal) const;
+  // Build one internal multiply representing mul followed by zero-minus-product.
+  // Functional execution preserves both original operations. The replacement
+  // keeps the SUB source location because that is where the hardware
+  // instruction is attributed.
+  ptx_instruction *make_negated_mul_f32(
+      const operand_info &dst,
+      const ptx_instruction &replacement_site) const;
+  // Build the internal SETP-form operation used to model one Blackwell R2P
+  // byte extraction.  Each encoded mask contains a 32-bit one-hot mask and
+  // bit 32 records whether the original comparison was equality-to-zero.
+  ptx_instruction *make_predicate_byte_extract(
+      const std::vector<const symbol *> &destinations,
+      const operand_info &source,
+      const std::vector<unsigned long long> &encoded_masks) const;
+  bool is_compiler_negated_mul() const { return m_compiler_negated_mul; }
+  bool is_compiler_shift_add_mad() const { return m_compiler_shift_add_mad; }
+  bool is_compiler_predicate_byte_extract() const {
+    return m_compiler_predicate_byte_extract;
+  }
   const char *get_opcode_cstr() const {
     if (m_opcode != -1) {
       return g_opcode_string[m_opcode];
@@ -1068,6 +1142,10 @@ class ptx_instruction : public warp_inst_t {
   operand_info get_pred() const;
   bool get_pred_neg() const { return m_neg_pred; }
   int get_pred_mod() const { return m_pred_mod; }
+  void rewrite_predicate(const symbol *pred, bool neg_pred) {
+    m_pred = pred;
+    m_neg_pred = neg_pred;
+  }
   const char *get_source() const { return m_source.c_str(); }
 
   const std::list<int> get_scalar_type() const { return m_scalar_type; }
@@ -1315,6 +1393,9 @@ class ptx_instruction : public warp_inst_t {
   bool m_is_wgmma_instruction;
   bool m_wgmma_sparse;
   bool m_wgmma_saturate;
+  bool m_compiler_predicate_byte_extract;
+  bool m_compiler_shift_add_mad;
+  bool m_compiler_negated_mul;
   int m_wgmma_shape_n;
   int m_wgmma_shape_k;
   unsigned m_rounding_mode;
@@ -1421,9 +1502,7 @@ class function_info {
   std::string get_name() const { return m_name; }
   unsigned print_insn(unsigned pc, FILE *fp) const;
   std::string get_insn_str(unsigned pc) const;
-  void add_inst(const std::list<ptx_instruction *> &instructions) {
-    m_instructions = instructions;
-  }
+  void add_inst(const std::list<ptx_instruction *> &instructions);
   std::list<ptx_instruction *>::iterator find_next_real_instruction(
       std::list<ptx_instruction *>::iterator i);
   void create_basic_blocks();
@@ -1552,6 +1631,58 @@ class function_info {
     return it == m_reg_alloc_aliases.end() ? reg : it->second;
   }
   bool has_register_aliases() const { return !m_reg_alloc_aliases.empty(); }
+  bool get_compiler_register_view(const symbol *reg,
+                                  const symbol **source,
+                                  unsigned *lane) const {
+    std::unordered_map<const symbol *,
+                       std::pair<const symbol *, unsigned>>::const_iterator it =
+        m_compiler_register_views.find(reg);
+    if (it == m_compiler_register_views.end()) return false;
+    if (source != NULL) *source = it->second.first;
+    if (lane != NULL) *lane = it->second.second;
+    return true;
+  }
+  // Functional access resolves only direct packs so an enclosing register
+  // view can still select its low or high lane.
+  bool get_compiler_register_pack(const symbol *reg, const symbol **low,
+                                  const symbol **high) const {
+    std::unordered_map<
+        const symbol *, std::pair<const symbol *, const symbol *>>::const_iterator
+        it = m_compiler_register_packs.find(reg);
+    if (it == m_compiler_register_packs.end()) return false;
+    if (low != NULL) *low = it->second.first;
+    if (high != NULL) *high = it->second.second;
+    return true;
+  }
+  // Timing and allocation consumers need the underlying pair even when the
+  // operand first passes through a compiler-register view.
+  bool expand_compiler_register_pack(const symbol *reg, const symbol **low,
+                                     const symbol **high) const {
+    const symbol *logical = canonicalize_compiler_register_view(reg);
+    const symbol *pack_low = NULL;
+    const symbol *pack_high = NULL;
+    if (!get_compiler_register_pack(logical, &pack_low, &pack_high))
+      return false;
+    if (low != NULL) *low = canonicalize_compiler_register_view(pack_low);
+    if (high != NULL) *high = canonicalize_compiler_register_view(pack_high);
+    return true;
+  }
+  const symbol *canonicalize_compiler_register_view(const symbol *reg) const {
+    const symbol *current = reg;
+    for (std::size_t depth = 0; depth <= m_compiler_register_views.size();
+         ++depth) {
+      std::unordered_map<
+          const symbol *,
+          std::pair<const symbol *, unsigned>>::const_iterator it =
+          m_compiler_register_views.find(current);
+      if (it == m_compiler_register_views.end()) return current;
+      current = it->second.first;
+    }
+    // The analysis only creates views from later definitions to earlier
+    // definitions, so a cycle is invalid.  Preserve the logical register if
+    // corrupted metadata ever reaches this defensive path.
+    return reg;
+  }
 
   friend void flash_gpgpu_sim::run_ptx_register_allocation(function_info *func);
   friend void flash_gpgpu_sim::run_ptx_reorder(function_info *func);
@@ -1571,6 +1702,10 @@ class function_info {
   bool m_entry_point;
   bool m_extern;
   bool m_assembled;
+  bool m_ptx_reorder_completed;
+  // Register-view lowering mutates shared symbols. Restore their parser IDs
+  // before installing another definition of this function.
+  std::map<symbol *, std::pair<unsigned, unsigned>> m_pre_view_register_ids;
   bool pdom_done;  // flag to check whether pdom is completed or not
   std::string m_name;
   ptx_instruction **m_instr_mem;
@@ -1585,6 +1720,17 @@ class function_info {
   std::vector<basic_block_t *> m_basic_blocks;
   std::list<std::pair<unsigned, unsigned> > m_back_edges;
   std::unordered_map<const symbol *, const symbol *> m_reg_alloc_aliases;
+  // Strict compiler-removed register views.  The key is a 32-bit logical
+  // register and the value is {source register, 32-bit lane}.  PTX reorder
+  // only installs entries after proving a single-definition, same-region
+  // brace-pair move can be removed from the hardware timing stream.
+  std::unordered_map<const symbol *, std::pair<const symbol *, unsigned>>
+      m_compiler_register_views;
+  // A 64-bit logical register that only packages two single-definition 32-bit
+  // registers. Functional reads reconstruct the value, while dependency and
+  // register-allocation analysis expand the input back to both source lanes.
+  std::unordered_map<const symbol *, std::pair<const symbol *, const symbol *>>
+      m_compiler_register_packs;
 
   /**
    * WZR: To support scoped label, we need to remember the scope of each label,

@@ -368,6 +368,43 @@ unsigned operand_info::get_uid() {
   return result;
 }
 
+operand_info::operand_info(const std::vector<operand_info> &components,
+                           gpgpu_context *ctx) {
+  init(ctx);
+  m_uid = get_uid();
+  m_valid = true;
+  m_vector = true;
+  m_type = vector_t;
+  m_vector_nelem = components.size();
+  const size_t alloc_size = components.size() < 8 ? 8 : components.size();
+  m_value.m_vector_symbolic = new const symbol *[alloc_size];
+  bool has_literal = false;
+  for (const operand_info &component : components)
+    has_literal = has_literal || component.is_literal();
+  if (has_literal) {
+    m_vector_component_types = new enum operand_type[alloc_size];
+    m_vector_literal_values = new ptx_reg_t[alloc_size];
+  }
+  for (size_t i = 0; i < alloc_size; ++i) {
+    m_value.m_vector_symbolic[i] = NULL;
+    if (has_literal) {
+      m_vector_component_types[i] = undef_t;
+      m_vector_literal_values[i] = ptx_reg_t();
+    }
+  }
+  for (size_t i = 0; i < components.size(); ++i) {
+    const operand_info &component = components[i];
+    if (component.is_reg()) {
+      m_value.m_vector_symbolic[i] = component.get_symbol();
+    } else {
+      assert(component.is_literal());
+      assert(has_literal);
+      m_vector_component_types[i] = component.get_type();
+      m_vector_literal_values[i] = component.get_literal_value();
+    }
+  }
+}
+
 std::list<ptx_instruction *>::iterator
 function_info::find_next_real_instruction(
     std::list<ptx_instruction *>::iterator i) {
@@ -647,6 +684,22 @@ bool function_info::connect_break_targets()  // connecting break instructions
 
   return modified;
 }
+void function_info::add_inst(
+    const std::list<ptx_instruction *> &instructions) {
+  for (const auto &entry : m_pre_view_register_ids)
+    entry.first->set_regno(entry.second.first, entry.second.second);
+  m_pre_view_register_ids.clear();
+  m_compiler_register_views.clear();
+  m_compiler_register_packs.clear();
+  m_reg_alloc_aliases.clear();
+  m_ptx_reorder_completed = false;
+  m_assembled = false;
+  pdom_done = false;
+  m_basic_blocks.clear();
+  num_reconvergence_pairs = 0;
+  m_instructions = instructions;
+}
+
 void function_info::do_pdom() {
   create_basic_blocks();
   connect_basic_blocks();
@@ -1431,6 +1484,9 @@ ptx_instruction::ptx_instruction(
       opcode == WGMMA_MMA_ASYNC_OP || opcode == WGMMA_MMA_ASYNC_SP_OP ||
       opcode == WGMMA_FENCE_OP || opcode == WGMMA_COMMIT_GROUP_OP ||
       opcode == WGMMA_WAIT_GROUP_OP;
+  m_compiler_predicate_byte_extract = false;
+  m_compiler_shift_add_mad = false;
+  m_compiler_negated_mul = false;
   m_wgmma_sparse = opcode == WGMMA_MMA_ASYNC_SP_OP;
   m_wgmma_saturate = false;
   m_wgmma_shape_n = 0;
@@ -1674,6 +1730,38 @@ ptx_instruction::ptx_instruction(
       case X1_OPTION:
       case X2_OPTION:
       case X4_OPTION:
+      case X16_OPTION:
+      case X32_OPTION:
+      case TCGEN05_CTA_GROUP_1_OPTION:
+      case TCGEN05_CTA_GROUP_2_OPTION:
+      case TCGEN05_KIND_F16_OPTION:
+      case TCGEN05_KIND_TF32_OPTION:
+      case TCGEN05_KIND_I8_OPTION:
+      case TCGEN05_KIND_F8F6F4_OPTION:
+      case TCGEN05_KIND_MXF8F6F4_OPTION:
+      case TCGEN05_KIND_MXF4_OPTION:
+      case TCGEN05_KIND_MXF4NVF4_OPTION:
+      case TCGEN05_MBARRIER_ARRIVE_ONE_OPTION:
+      case TCGEN05_32X32B_OPTION:
+      case TCGEN05_128X256B_OPTION:
+      case TCGEN05_128X128B_OPTION:
+      case TCGEN05_64X128B_OPTION:
+      case TCGEN05_32X128B_OPTION:
+      case TCGEN05_16X256B_OPTION:
+      case TCGEN05_16X128B_OPTION:
+      case TCGEN05_16X64B_OPTION:
+      case TCGEN05_16X32BX2_OPTION:
+      case TCGEN05_4X256B_OPTION:
+      case TCGEN05_WARPX4_OPTION:
+      case TCGEN05_WARPX2_02_13_OPTION:
+      case TCGEN05_WARPX2_01_23_OPTION:
+      case TCGEN05_MULTICAST_CLUSTER_OPTION:
+      case TCGEN05_PACK_16B_OPTION:
+      case TCGEN05_UNPACK_16B_OPTION:
+      case TCGEN05_BEFORE_THREAD_SYNC_OPTION:
+      case TCGEN05_AFTER_THREAD_SYNC_OPTION:
+      case TCGEN05_WAIT_LD_OPTION:
+      case TCGEN05_WAIT_ST_OPTION:
         break;
       default:
         printf("Error: Unsupported PTX instruction option (0x%x) for opcode %s\n",
@@ -1737,6 +1825,139 @@ ptx_instruction::ptx_instruction(
   }
 }
 
+ptx_instruction *ptx_instruction::make_mad_lo_s32(
+    const operand_info &dst, const operand_info &multiplicand,
+    unsigned multiplier, const operand_info &addend) const {
+  std::list<operand_info> operands;
+  operands.push_back(dst);
+  operands.push_back(multiplicand);
+  operands.push_back(
+      operand_info(static_cast<unsigned long long>(multiplier), gpgpu_ctx));
+  operands.push_back(addend);
+
+  std::list<int> options;
+  options.push_back(LO_OPTION);
+  std::list<int> scalar_type;
+  scalar_type.push_back(S32_TYPE);
+  const std::list<int> empty_options;
+  char fused_source[256];
+  snprintf(fused_source, sizeof(fused_source),
+           "mad.lo.s32 %s, %s, %u, %s; // compiler-pattern fusion",
+           dst.name().c_str(), multiplicand.name().c_str(), multiplier,
+           addend.name().c_str());
+
+  ptx_instruction *result = new ptx_instruction(
+      MAD_OP, NULL, 0, -1, NULL, m_symbol_table, operands,
+      operand_info(gpgpu_ctx), options, empty_options, empty_options,
+      empty_options, scalar_type, memory_space_t(undefined_space),
+      memory_space_t(undefined_space), m_source_file.c_str(), m_source_line,
+      fused_source, m_config, gpgpu_ctx);
+  result->m_compiler_shift_add_mad = true;
+  return result;
+}
+
+ptx_instruction *ptx_instruction::make_with_packed_f32x2_literal(
+    const symbol *source, const operand_info &literal) const {
+  assert(source != NULL);
+  assert(literal.is_literal());
+  assert((m_opcode == ADD_OP || m_opcode == SUB_OP || m_opcode == FMA_OP) &&
+         get_type() == F32X2_TYPE);
+  assert(!m_is_mma_instruction && m_wmma_options.empty() &&
+         m_wgmma_options.empty());
+
+  std::list<operand_info> operands;
+  bool replaced = false;
+  for (unsigned i = 0; i < m_operands.size(); ++i) {
+    const operand_info &operand = m_operands[i];
+    if (i != 0 && operand.is_reg() && operand.get_symbol() == source) {
+      operands.push_back(literal);
+      replaced = true;
+    } else {
+      operands.push_back(operand);
+    }
+  }
+  assert(replaced);
+
+  const std::list<int> empty_options;
+  const std::string lowered_source =
+      m_source + " // compiler packed-f32 literal propagation";
+  return new ptx_instruction(
+      m_opcode, m_pred, m_neg_pred, m_pred_mod,
+      const_cast<symbol *>(m_label), m_symbol_table, operands, m_return_var,
+      m_options, m_wmma_options, empty_options, m_wgmma_options,
+      m_scalar_type, m_space_spec, m_space_spec2, m_source_file.c_str(),
+      m_source_line, lowered_source.c_str(), m_config, gpgpu_ctx);
+}
+
+ptx_instruction *ptx_instruction::make_negated_mul_f32(
+    const operand_info &dst,
+    const ptx_instruction &replacement_site) const {
+  assert(m_opcode == MUL_OP && get_type() == F32_TYPE && !has_pred());
+  assert(m_operands.size() == 3 && dst.is_reg());
+  assert(m_symbol_table == replacement_site.m_symbol_table &&
+         gpgpu_ctx == replacement_site.gpgpu_ctx);
+  assert(!m_is_mma_instruction && m_wmma_options.empty() &&
+         m_wgmma_options.empty());
+
+  std::list<operand_info> operands;
+  operands.push_back(dst);
+  operands.push_back(src1());
+  operands.push_back(src2());
+
+  const std::list<int> empty_options;
+  const std::string lowered_source =
+      "mul.f32 " + dst.name() + ", -" + src1().name() + ", " +
+      src2().name() + "; // compiler negated-multiply fusion";
+  ptx_instruction *result = new ptx_instruction(
+      MUL_OP, NULL, 0, -1, NULL, m_symbol_table, operands,
+      operand_info(gpgpu_ctx), m_options, empty_options, empty_options,
+      empty_options, m_scalar_type, memory_space_t(undefined_space),
+      memory_space_t(undefined_space), replacement_site.m_source_file.c_str(),
+      replacement_site.m_source_line, lowered_source.c_str(), m_config,
+      gpgpu_ctx);
+  result->m_compiler_negated_mul = true;
+  return result;
+}
+
+ptx_instruction *ptx_instruction::make_predicate_byte_extract(
+    const std::vector<const symbol *> &destinations,
+    const operand_info &source,
+    const std::vector<unsigned long long> &encoded_masks) const {
+  assert(destinations.size() == 7);
+  assert(encoded_masks.size() == destinations.size());
+
+  std::vector<operand_info> mask_components;
+  for (std::vector<unsigned long long>::const_iterator it =
+           encoded_masks.begin();
+       it != encoded_masks.end(); ++it)
+    mask_components.push_back(operand_info(*it, gpgpu_ctx));
+
+  std::list<operand_info> operands;
+  operands.push_back(operand_info(destinations, gpgpu_ctx));
+  operands.push_back(source);
+  operands.push_back(operand_info(mask_components, gpgpu_ctx));
+
+  std::list<int> options;
+  options.push_back(NE_OPTION);
+  std::list<int> scalar_type;
+  scalar_type.push_back(B32_TYPE);
+  const std::list<int> empty_options;
+  char fused_source[256];
+  snprintf(fused_source, sizeof(fused_source),
+           "setp.ne.b32 {<7 predicates>}, %s, {<7 masks>}; // compiler R2P "
+           "byte extraction",
+           source.name().c_str());
+
+  ptx_instruction *result = new ptx_instruction(
+      SETP_OP, NULL, 0, -1, NULL, m_symbol_table, operands,
+      operand_info(gpgpu_ctx), options, empty_options, empty_options,
+      empty_options, scalar_type, memory_space_t(undefined_space),
+      memory_space_t(undefined_space), m_source_file.c_str(), m_source_line,
+      fused_source, m_config, gpgpu_ctx);
+  result->m_compiler_predicate_byte_extract = true;
+  return result;
+}
+
 const operand_info *ptx_instruction::cp_async_source_control_operand() const {
   assert(m_opcode == CP_ASYNC_OP);
 
@@ -1791,6 +2012,7 @@ function_info::function_info(int entry_point, gpgpu_context *ctx) {
   num_reconvergence_pairs = 0;
   m_symtab = NULL;
   m_assembled = false;
+  m_ptx_reorder_completed = false;
   m_return_var_sym = NULL;
   m_kernel_info.cmem = 0;
   m_kernel_info.lmem = 0;

@@ -53,12 +53,14 @@
 #include "dram.h"
 #include "gpu-cache.h"
 #include "mem_fetch.h"
+#include "mem_transport_budget.h"
 #include "scoreboard.h"
 #include "stack.h"
 #include "stats.h"
 #include "traffic_breakdown.h"
 #include "flash/mbarrier.h"
 #include "flash/bulk_group.h"
+#include "flash/tcgen05/timing.h"
 #include "flash/tma.h"
 #include "flash/wgmma/tensor_wgmma.h"
 #include "flash/tma.h"
@@ -1109,6 +1111,7 @@ enum barrier_wait_type_t {
   BARRIER_WAIT_BULK_GROUP,   // cp.async.bulk.wait_group (TMA)
   BARRIER_WAIT_CP_ASYNC_GROUP,  // cp.async.wait_group
   BARRIER_WAIT_WGMMA_GROUP,  // wgmma.wait_group
+  BARRIER_WAIT_TCGEN05,       // tcgen05.wait::ld/st
 };
 
 static inline const char *barrier_wait_type_name(barrier_wait_type_t type) {
@@ -1123,6 +1126,8 @@ static inline const char *barrier_wait_type_name(barrier_wait_type_t type) {
     return "cp_async_group";
   case BARRIER_WAIT_WGMMA_GROUP:
     return "wgmma_group";
+  case BARRIER_WAIT_TCGEN05:
+    return "tcgen05";
   }
   return "unknown";
 }
@@ -1158,7 +1163,8 @@ class barrier_set_t {
   void warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
                              const ptx_instruction *static_inst,
                              const warp_inst_t *dynamic_inst,
-                             const active_mask_t &active_mask);
+                             const active_mask_t &active_mask,
+                             unsigned dynamic_warp_id);
   // complete_tx for TMA usages
   void complete_tx(unsigned cta_id, unsigned warp_id, uint32_t mbarrier_addr,
                    uint32_t completed_tx_count);
@@ -1169,7 +1175,7 @@ class barrier_set_t {
   void arrive_mbarrier_async(unsigned cta_id, unsigned warp_id,
                              uint32_t mbarrier_addr);
 
-  // Process delayed mbarrier warp releases each cycle
+  // Process pending behavioral waits and delayed non-mbarrier releases.
   void cycle();
 
   // Bulk group methods for TMA write operations
@@ -1186,6 +1192,9 @@ class barrier_set_t {
   // WGMMA wait_group uses the barrier bitset only as a scheduler wait state.
   void set_wgmma_waiting_warps(const unsigned *warp_ids, unsigned count);
   void release_wgmma_warps(const std::vector<unsigned> &released_warps);
+
+  void wait_tcgen05_warp(unsigned warp_id);
+  void release_tcgen05_warp(unsigned warp_id);
 
   // warp reaches exit
   void warp_exit(unsigned warp_id);
@@ -1233,14 +1242,48 @@ class barrier_set_t {
     m_warp_at_barrier.reset(warp_id);
     m_warp_named_barrier_id[warp_id] = (unsigned)-1;
   }
-  // Release warps with optional try_wait latency delay
-  void release_warps(const std::set<int> &released_warps);
+  // A phase update makes the pending wait eligible for an authoritative
+  // recheck. The recheck, rather than the notification, owns predicate commit.
+  void notify_mbarrier_phase_change(const std::set<int> &notified_warps);
+  void finish_mbarrier_wait(unsigned warp_id, const char *reason);
+  void cancel_mbarrier_wait(unsigned warp_id, const char *reason,
+                            bool clear_wait_bit);
+  void cleanup_cta_pending_mbarrier_waits(unsigned hw_cta_id);
 
   shader_core_ctx *m_shader;
   flash_gpgpu_sim::mbarrier_manager_t m_mbarrier_manager;
   flash_gpgpu_sim::bulk_group_manager_t m_bulk_group_manager;
 
-  // Delayed warp release queue for mbarrier try_wait latency
+  struct pending_mbarrier_wait_t {
+    struct lane_wait_t {
+      bool active = false;
+      bool resolved = false;
+      bool result = false;
+      uint64_t addr = 0;
+      bool parity = false;
+      bool has_time_hint = false;
+      uint32_t time_hint_ns = 0;
+      uint64_t deadline_cycle = 0;
+    };
+
+    unsigned hw_cta_id = 0;
+    int sw_cta_id = 0;
+    unsigned hw_warp_id = 0;
+    int sw_warp_id = 0;
+    unsigned dynamic_warp_id = 0;
+    address_type pc = 0;
+    active_mask_t active_mask;
+    uint64_t issue_cycle = 0;
+    uint64_t next_recheck_cycle = 0;
+    bool phase_notification_pending = false;
+    bool phase_wakeup_delay_pending = false;
+    bool suspended = false;
+    const ptx_instruction *static_inst = nullptr;
+    lane_wait_t lanes[MAX_WARP_SIZE];
+  };
+  std::map<unsigned, pending_mbarrier_wait_t> m_pending_mbarrier_waits;
+
+  // Delayed warp release queue used only by ordinary cp.async wait_group.
   struct pending_warp_release_t {
     unsigned remaining;
     int warp_id;
@@ -1274,6 +1317,7 @@ class shader_core_config;
 
 class simd_function_unit {
  public:
+  static const unsigned MAX_ALU_LATENCY = 512;
   simd_function_unit(const shader_core_config *config);
   ~simd_function_unit() { delete m_dispatch_reg; }
 
@@ -1300,7 +1344,6 @@ class simd_function_unit {
   std::string m_name;
   const shader_core_config *m_config;
   warp_inst_t *m_dispatch_reg;
-  static const unsigned MAX_ALU_LATENCY = 512;
   std::bitset<MAX_ALU_LATENCY> occupied;
 };
 
@@ -1539,6 +1582,133 @@ class shader_memory_interface;
 class shader_core_mem_fetch_allocator;
 class cache_t;
 
+// LD/ST request issue and response retirement are shader-pipeline
+// concerns, even though they consume the shared memory-transport budget.
+enum ldst_request_issue_stop_reason {
+  LDST_REQUEST_DRAINED,
+  LDST_REQUEST_WIDTH_LIMITED,
+  LDST_REQUEST_DOWNSTREAM_FULL
+};
+
+struct ldst_request_issue_result {
+  ldst_request_issue_result(ldst_request_issue_stop_reason stop_reason,
+                            unsigned issued_children)
+      : reason(stop_reason), issued(issued_children) {}
+
+  ldst_request_issue_stop_reason reason;
+  unsigned issued;
+};
+
+// Drain global/local coalescer children into the request injection
+// path.  On sector-coalescing architectures each queue element is one internal
+// 32-byte sector child; this helper deliberately does not claim that each child
+// is a distinct physical L2 request.  The callbacks keep the helper independent
+// of warp, ICNT, and cache implementation details while the before/after count
+// assertion guarantees exactly one queue element is consumed per successful
+// injection.
+template <typename PendingCount, typename DownstreamFull, typename IssueOne>
+ldst_request_issue_result memory_transport_issue_ldst_sector_children(
+    memory_transport_service_budget *budget,
+    memory_transport_service_stats *stats, PendingCount pending_count,
+    DownstreamFull downstream_full, IssueOne issue_one) {
+  assert(budget);
+  assert(stats);
+  assert(budget->active());
+
+  unsigned issued = 0;
+  while (pending_count() != 0) {
+    if (!budget->can_accept(/*data_sectors=*/1)) {
+      budget->note_width_limited(/*data_sectors=*/1);
+      return ldst_request_issue_result(LDST_REQUEST_WIDTH_LIMITED, issued);
+    }
+    if (downstream_full()) {
+      budget->note_downstream_full();
+      return ldst_request_issue_result(LDST_REQUEST_DOWNSTREAM_FULL, issued);
+    }
+
+    const unsigned before = pending_count();
+    const unsigned data_sectors = issue_one();
+    assert(pending_count() + 1 == before);
+    budget->consume(/*data_sectors=*/1);
+    stats->record_accept(data_sectors);
+    ++issued;
+  }
+
+  return ldst_request_issue_result(LDST_REQUEST_DRAINED, issued);
+}
+
+// Track the response packets belonging to each dynamic instruction separately
+// from instruction/RF writeback.  Every response can retire at the configured
+// transport width; only the final response produces one instruction-level
+// completion for the ordinary writeback arbiter.
+template <typename Key, typename T>
+class memory_transport_response_retirement_queue {
+ public:
+  memory_transport_response_retirement_queue() : m_retired_responses(0) {}
+
+  void expect_responses(const Key &key, unsigned count, const T &completion) {
+    assert(count != 0);
+    assert(m_pending.find(key) == m_pending.end());
+    m_pending.insert(
+        std::make_pair(key, pending_instruction(count, completion)));
+  }
+
+  bool has_pending_responses(const Key &key) const {
+    return m_pending.find(key) != m_pending.end();
+  }
+
+  unsigned pending_responses(const Key &key) const {
+    typename std::map<Key, pending_instruction>::const_iterator found =
+        m_pending.find(key);
+    assert(found != m_pending.end());
+    return found->second.remaining;
+  }
+
+  bool retire_response(const Key &key) {
+    typename std::map<Key, pending_instruction>::iterator found =
+        m_pending.find(key);
+    assert(found != m_pending.end());
+    assert(found->second.remaining != 0);
+    --found->second.remaining;
+    ++m_retired_responses;
+    if (found->second.remaining != 0) return false;
+
+    m_completions.push_back(found->second.completion);
+    m_pending.erase(found);
+    return true;
+  }
+
+  bool completion_ready() const { return !m_completions.empty(); }
+  size_t completion_count() const { return m_completions.size(); }
+  size_t pending_instruction_count() const { return m_pending.size(); }
+  unsigned long long retired_response_count() const {
+    return m_retired_responses;
+  }
+
+  const T &next_completion() const {
+    assert(completion_ready());
+    return m_completions.front();
+  }
+
+  void pop_completion() {
+    assert(completion_ready());
+    m_completions.pop_front();
+  }
+
+ private:
+  struct pending_instruction {
+    pending_instruction(unsigned response_count, const T &value)
+        : remaining(response_count), completion(value) {}
+
+    unsigned remaining;
+    T completion;
+  };
+
+  std::map<Key, pending_instruction> m_pending;
+  std::deque<T> m_completions;
+  unsigned long long m_retired_responses;
+};
+
 class ldst_unit : public pipelined_simd_unit {
  public:
   ldst_unit(mem_fetch_interface *icnt,
@@ -1562,6 +1732,7 @@ class ldst_unit : public pipelined_simd_unit {
   virtual void issue(register_set &inst);
   bool is_issue_partitioned() { return false; }
   virtual void cycle();
+  void end_memory_transport_cycle();
 
   void fill(mem_fetch *mf);
   void flush();
@@ -1593,6 +1764,9 @@ class ldst_unit : public pipelined_simd_unit {
   virtual bool stallable() const { return true; }
   bool response_buffer_full() const;
   void print(FILE *fout) const;
+  void accumulate_memory_transport_stats(
+      memory_transport_service_stats &request_stats,
+      memory_transport_service_stats &response_stats) const;
   void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
                          unsigned &dl1_misses);
   void get_cache_stats(unsigned &read_accesses, unsigned &write_accesses,
@@ -1634,6 +1808,7 @@ class ldst_unit : public pipelined_simd_unit {
       enum cache_request_status status);
   unsigned dec_pending_ldgsts(const warp_inst_t &inst);
   unsigned pending_ldgsts_count(const warp_inst_t &inst) const;
+  void retire_bypass_response(mem_fetch *mf);
   mem_stage_stall_type process_memory_access_queue(cache_t *cache,
                                                    warp_inst_t &inst);
   mem_stage_stall_type process_memory_access_queue_l1cache(l1_cache *cache,
@@ -1656,7 +1831,20 @@ class ldst_unit : public pipelined_simd_unit {
   Scoreboard *m_scoreboard;
 
   mem_fetch *m_next_global;
+  memory_transport_response_retirement_queue<unsigned, warp_inst_t>
+      m_global_response_retirement;
   warp_inst_t m_next_wb;
+  bool m_next_wb_is_retired_global_response;
+  memory_transport_service_budget m_ldst_request_budget;
+  memory_transport_service_stats m_ldst_request_stats;
+  bool m_ldst_request_budget_active;
+  unsigned m_ldst_legacy_request_service_slots;
+  bool m_ldst_legacy_request_downstream_full;
+  memory_transport_service_budget m_ldst_response_budget;
+  memory_transport_service_stats m_ldst_response_stats;
+  bool m_ldst_response_budget_active;
+  unsigned m_ldst_legacy_response_service_slots;
+  bool m_ldst_legacy_response_downstream_full;
   gpgpu_sim *m_gpu;
   unsigned m_writeback_arb;  // round-robin arbiter for writeback contention
                              // between L1T, L1C, shared
@@ -1785,6 +1973,64 @@ class shader_core_config : public core_config {
              "configuration, expected "
              "<depth,startup_gap,fast_gap,slow_gap,reset_gap>\n");
       abort();
+    }
+    int tcgen05_cp_latency_ntok = sscanf(
+        ptx_opcode_tcgen05_cp_completion_latency, "%u,%u,%u,%u,%u",
+        &tcgen05_cp_completion_latency[0], &tcgen05_cp_completion_latency[1],
+        &tcgen05_cp_completion_latency[2], &tcgen05_cp_completion_latency[3],
+        &tcgen05_cp_completion_latency[4]);
+    int tcgen05_cp_ii_ntok = sscanf(
+        ptx_opcode_tcgen05_cp_initiation_interval, "%u,%u,%u,%u,%u",
+        &tcgen05_cp_initiation_interval[0], &tcgen05_cp_initiation_interval[1],
+        &tcgen05_cp_initiation_interval[2], &tcgen05_cp_initiation_interval[3],
+        &tcgen05_cp_initiation_interval[4]);
+    int tcgen05_ld_latency_ntok = sscanf(
+        ptx_opcode_tcgen05_ld_completion_latency, "%u,%u,%u,%u,%u,%u,%u,%u",
+        &tcgen05_ld_completion_latency[0], &tcgen05_ld_completion_latency[1],
+        &tcgen05_ld_completion_latency[2], &tcgen05_ld_completion_latency[3],
+        &tcgen05_ld_completion_latency[4], &tcgen05_ld_completion_latency[5],
+        &tcgen05_ld_completion_latency[6], &tcgen05_ld_completion_latency[7]);
+    int tcgen05_ld_ii_ntok = sscanf(
+        ptx_opcode_tcgen05_ld_initiation_interval, "%u,%u,%u,%u,%u,%u,%u,%u",
+        &tcgen05_ld_initiation_interval[0], &tcgen05_ld_initiation_interval[1],
+        &tcgen05_ld_initiation_interval[2], &tcgen05_ld_initiation_interval[3],
+        &tcgen05_ld_initiation_interval[4], &tcgen05_ld_initiation_interval[5],
+        &tcgen05_ld_initiation_interval[6], &tcgen05_ld_initiation_interval[7]);
+    int tcgen05_st_latency_ntok = sscanf(
+        ptx_opcode_tcgen05_st_completion_latency, "%u,%u,%u,%u,%u,%u,%u,%u",
+        &tcgen05_st_completion_latency[0], &tcgen05_st_completion_latency[1],
+        &tcgen05_st_completion_latency[2], &tcgen05_st_completion_latency[3],
+        &tcgen05_st_completion_latency[4], &tcgen05_st_completion_latency[5],
+        &tcgen05_st_completion_latency[6], &tcgen05_st_completion_latency[7]);
+    int tcgen05_st_ii_ntok = sscanf(
+        ptx_opcode_tcgen05_st_initiation_interval, "%u,%u,%u,%u,%u,%u,%u,%u",
+        &tcgen05_st_initiation_interval[0], &tcgen05_st_initiation_interval[1],
+        &tcgen05_st_initiation_interval[2], &tcgen05_st_initiation_interval[3],
+        &tcgen05_st_initiation_interval[4], &tcgen05_st_initiation_interval[5],
+        &tcgen05_st_initiation_interval[6], &tcgen05_st_initiation_interval[7]);
+    if (tcgen05_cp_latency_ntok != 5 || tcgen05_cp_ii_ntok != 5 ||
+        tcgen05_ld_latency_ntok != 8 || tcgen05_ld_ii_ntok != 8 ||
+        tcgen05_st_latency_ntok != 8 || tcgen05_st_ii_ntok != 8 ||
+        ptx_opcode_tcgen05_mma_issue_interval == 0 ||
+        ptx_opcode_tcgen05_mma_f16_flops_per_cycle == 0 ||
+        ptx_opcode_tcgen05_shift_latency == 0) {
+      printf("GPGPU-Sim uArch: invalid TCGen05 timing configuration; "
+             "CP tables require 5 positive entries, LD/ST tables require 8 "
+             "positive entries, and MMA II/FLOP rate and shift latency must "
+             "be nonzero\n");
+      abort();
+    }
+    for (unsigned i = 0; i < 5; ++i) {
+      if (tcgen05_cp_completion_latency[i] == 0 ||
+          tcgen05_cp_initiation_interval[i] == 0)
+        abort();
+    }
+    for (unsigned i = 0; i < 8; ++i) {
+      if (tcgen05_ld_completion_latency[i] == 0 ||
+          tcgen05_ld_initiation_interval[i] == 0 ||
+          tcgen05_st_completion_latency[i] == 0 ||
+          tcgen05_st_initiation_interval[i] == 0)
+        abort();
     }
 
     // CRITICAL: Validate number of SMs against MAX_STREAMING_MULTIPROCESSORS
@@ -1946,6 +2192,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_tensor_core_units_per_sub_partition;
   unsigned int gpgpu_tensor_core_issue_queue_depth;
   bool gpgpu_tensor_core_skip_writeback;
+  bool gpgpu_alu_scoreboard_forwarding;
   unsigned int gpgpu_num_dp_units;
   unsigned int gpgpu_num_sfu_units;
   unsigned int gpgpu_num_tensor_core_units;
@@ -1954,9 +2201,8 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_num_tma_units;
   unsigned int gpgpu_num_cp_async_units;
   unsigned int gpgpu_num_tensormap_units;
+  unsigned int gpgpu_tma_transaction_slots;
   unsigned int gpgpu_tma_max_inflight;
-  unsigned int gpgpu_tma_tx_quota;
-  unsigned int gpgpu_tma_quota_segment_bytes;
   unsigned int gpgpu_tma_response_width;
   unsigned int gpgpu_tma_request_granularity;
   unsigned int gpgpu_tma_request_width;
@@ -1968,10 +2214,16 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_cp_async_idealized_memory;
   unsigned int gpgpu_cp_async_wait_release_latency;
   bool gpgpu_cta_load_balance;
+  unsigned int gpgpu_cta_replacement_latency;
   unsigned int gpgpu_tma_idealized_memory;
   bool gpgpu_tma_oob_l2_traffic;
   unsigned int gpgpu_mbarrier_arrive_latency;
+  // Maximum modeled suspension for a no-hint mbarrier.try_wait. The optional
+  // PTX suspendTimeHint overrides this bound after ns-to-core-cycle conversion.
   unsigned int gpgpu_mbarrier_trywait_latency;
+  // Additional delay after a phase-triggered recheck resolves every active
+  // lane of a suspended mbarrier.try_wait true.
+  unsigned int gpgpu_mbarrier_phase_wakeup_latency;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;
   unsigned gpgpu_wgmma_issue_chain_ss_config[5];
@@ -1981,6 +2233,23 @@ class shader_core_config : public core_config {
   bool gpgpu_wgmma_rf_traffic_share_read_budget;
   bool gpgpu_wgmma_rf_traffic_assume_accumulate;
   bool gpgpu_wgmma_rf_traffic_include_rs_a;
+  unsigned int ptx_opcode_tcgen05_mma_issue_interval;
+  unsigned int ptx_opcode_tcgen05_mma_completion_tail_latency;
+  unsigned int ptx_opcode_tcgen05_mma_f16_flops_per_cycle;
+  unsigned int gpgpu_tcgen05_async_queue_depth;
+  char *ptx_opcode_tcgen05_cp_completion_latency;
+  char *ptx_opcode_tcgen05_cp_initiation_interval;
+  unsigned int tcgen05_cp_completion_latency[5];
+  unsigned int tcgen05_cp_initiation_interval[5];
+  char *ptx_opcode_tcgen05_ld_completion_latency;
+  char *ptx_opcode_tcgen05_ld_initiation_interval;
+  unsigned int tcgen05_ld_completion_latency[8];
+  unsigned int tcgen05_ld_initiation_interval[8];
+  char *ptx_opcode_tcgen05_st_completion_latency;
+  char *ptx_opcode_tcgen05_st_initiation_interval;
+  unsigned int tcgen05_st_completion_latency[8];
+  unsigned int tcgen05_st_initiation_interval[8];
+  unsigned int ptx_opcode_tcgen05_shift_latency;
 
   // Shader core resources
   unsigned gpgpu_shader_registers;
@@ -2005,10 +2274,17 @@ class shader_core_config : public core_config {
   unsigned n_simt_clusters;
   unsigned n_simt_ejection_buffer_size;
   unsigned ldst_unit_response_queue_size;
+  unsigned gpgpu_cluster_response_ingress_sectors_per_cycle;
+  unsigned gpgpu_cluster_response_dispatch_sectors_per_cycle;
+  unsigned gpgpu_ldst_request_width;
+  unsigned gpgpu_ldst_response_sectors_per_cycle;
 
   int simt_core_sim_order;
 
   unsigned smem_latency;
+  unsigned gpgpu_smem_store_visibility_latency;
+  unsigned gpgpu_named_barrier_arrive_latency;
+  unsigned gpgpu_named_barrier_arrive_visibility_latency;
 
   unsigned mem2device(unsigned memid) const { return memid + n_simt_clusters; }
 
@@ -2033,6 +2309,7 @@ enum warp_stall_reason_t {
   STALL_MEMBAR,                 // at memory barrier
   STALL_WAIT_TMA,               // waiting for LDGSTS / TMA bulk wait
   STALL_WAIT_WGMMA,             // waiting for WGMMA async group
+  STALL_WAIT_TCGEN05,           // waiting for TCGen05 LD/ST completion
   STALL_ATOMIC,                 // waiting for atomic completion
   STALL_SCOREBOARD_MEM_GLOBAL,  // RAW hazard on global/local mem load
   STALL_SCOREBOARD_MEM_SHARED,  // RAW hazard on shared mem op
@@ -2160,6 +2437,27 @@ struct shader_core_stats_pod {
   unsigned long long wgmma_collector_tokens_drained;
   unsigned long long wgmma_collector_active_cycles;
   unsigned long long wgmma_collector_max_backlog;
+
+  unsigned long long tcgen05_issued[flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT];
+  unsigned long long tcgen05_completed[flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT];
+  unsigned long long tcgen05_backend_busy_cycles;
+  unsigned long long tcgen05_queue_full_stall_cycles;
+  unsigned long long tcgen05_issue_interval_stall_cycles;
+  unsigned long long tcgen05_commit_wait_cycles;
+  unsigned long long tcgen05_ld_wait_cycles;
+  unsigned long long tcgen05_st_wait_cycles;
+  unsigned long long tcgen05_max_queue_occupancy;
+
+  // Warp-instruction-level behavioral mbarrier.try_wait counters.
+  unsigned long long mbarrier_logical_trywait;
+  unsigned long long mbarrier_immediate_true;
+  unsigned long long mbarrier_suspended_waits;
+  unsigned long long mbarrier_rechecks;
+  unsigned long long mbarrier_true_after_suspend;
+  unsigned long long mbarrier_timeout_false;
+  unsigned long long mbarrier_phase_wakeups;
+  unsigned long long mbarrier_phase_wakeup_cycles;
+  unsigned long long mbarrier_sleep_cycles;
 };
 
 class shader_core_stats : public shader_core_stats_pod {
@@ -2444,6 +2742,9 @@ class shader_core_ctx : public core_t {
   void accept_tma_response(mem_fetch *mf);
   void accept_fetch_response(mem_fetch *mf);
   void accept_ldst_unit_response(class mem_fetch *mf);
+  void accumulate_ldst_transport_stats(
+      memory_transport_service_stats &ldst_request,
+      memory_transport_service_stats &ldst_response) const;
   void broadcast_barrier_reduction(unsigned cta_id, unsigned bar_id,
                                    warp_set_t warps);
   void set_kernel(kernel_info_t *k) {
@@ -2506,6 +2807,10 @@ class shader_core_ctx : public core_t {
   void set_max_cta(const kernel_info_t &kernel);
   void warp_inst_complete(const warp_inst_t &inst);
   void complete_inst_without_writeback(warp_inst_t *inst);
+  void begin_alu_scoreboard_forwarding(const warp_inst_t &inst);
+  void complete_shared_store(unsigned warp_id);
+  bool named_barrier_issue_ready(unsigned warp_id) const;
+  bool named_arrive_warp_ready(unsigned warp_id) const;
 
   // accessors
   std::list<unsigned> get_regs_written(const inst_t &fvt) const;
@@ -2832,11 +3137,17 @@ class shader_core_ctx : public core_t {
 
   void issue();
   friend class scheduler_unit;  // this is needed to use private issue warp.
+  friend class barrier_set_t;
   friend class TwoLevelScheduler;
   friend class LooseRoundRobbinScheduler;
   bool can_issue_wgmma_warpgroup(const unsigned *warp_ids, unsigned count,
                                  register_set &pipe_reg_set,
                                  const warp_inst_t *inst) const;
+  bool tma_frontend_available(const warp_inst_t *inst,
+                              const active_mask_t &active_mask) const;
+  bool tcgen05_frontend_available(const warp_inst_t *inst,
+                                  const active_mask_t &active_mask,
+                                  uint64_t cycle);
   unsigned wgmma_cta_warpgroup_id(unsigned warp_id) const;
   bool wgmma_issued_this_cycle() const { return m_wgmma_issued_this_cycle; }
   void mark_scheduler_issued(unsigned sch_id);
@@ -2914,9 +3225,24 @@ class shader_core_ctx : public core_t {
   shader_core_stats *m_stats;
 
   // CTA scheduling / hardware thread allocation
+  struct cta_lifecycle_state_t {
+    bool active = false;
+    bool ever_used = false;
+    bool threads_exited = false;
+    bool pending_tma = false;
+    unsigned kernel_uid = 0;
+    unsigned logical_cta_id = 0;
+    unsigned generation = 0;
+    unsigned long long admit_cycle = 0;
+    unsigned long long threads_exit_cycle = 0;
+    unsigned long long last_release_cycle = 0;
+    unsigned long long replacement_ready_cycle = 0;
+  };
+
   unsigned m_n_active_cta;  // number of Cooperative Thread Arrays (blocks)
                             // currently running on this shader.
   unsigned m_cta_status[MAX_CTA_PER_SHADER];  // CTAs status
+  cta_lifecycle_state_t m_cta_lifecycle[MAX_CTA_PER_SHADER];
   std::map<unsigned, kernel_info_t *> m_pending_tma_cta_releases;
   unsigned m_not_completed;  // number of threads to be completed (==0 when all
                              // thread on this core completed)
@@ -2937,6 +3263,8 @@ class shader_core_ctx : public core_t {
   std::vector<shd_warp_t *> m_warp;  // per warp information array
   barrier_set_t m_barriers;
   flash_gpgpu_sim::wgmma_unit_t m_wgmma;
+  flash_gpgpu_sim::tcgen05_unit_t m_tcgen05;
+  flash_gpgpu_sim::tcgen05_timing_stats_t m_tcgen05_last_stats;
   ifetch_buffer_t m_inst_fetch_buffer;
   std::vector<register_set> m_pipeline_reg;
   Scoreboard *m_scoreboard;
@@ -2949,6 +3277,27 @@ class shader_core_ctx : public core_t {
 
   // issue
   unsigned int Issue_Prio;
+  struct alu_forward_event_t {
+    unsigned warp_id;
+    unsigned inst_uid;
+    unsigned outputs[MAX_OUTPUT_VALUES];
+  };
+  std::multimap<unsigned long long, alu_forward_event_t> m_alu_forward_events;
+  void process_alu_scoreboard_forwarding(unsigned long long cycle);
+  struct shared_barrier_state {
+    unsigned pending_stores = 0;
+    unsigned pending_arrivals = 0;
+    unsigned long long stores_visible = 0;
+    unsigned long long arrive_ready = 0;
+  };
+  std::vector<shared_barrier_state> m_shared_barrier_state;
+  struct named_arrival_event {
+    unsigned cta_id, warp_id, dynamic_warp_id, bar_id, bar_count;
+    address_type pc;
+  };
+  std::multimap<unsigned long long, named_arrival_event> m_named_arrivals;
+  void issue_named_arrival(unsigned warp_id, const warp_inst_t &inst);
+  void process_named_arrivals(unsigned long long cycle);
   unsigned long long m_subpartition_issue_mask;
   bool m_wgmma_issued_this_cycle;
 
@@ -2983,6 +3332,7 @@ class shader_core_ctx : public core_t {
   int find_available_hwtid(unsigned int cta_size, bool occupy);
 
  private:
+  bool cta_context_ready(unsigned hw_cta_id) const;
   unsigned int m_occupied_n_threads;
   unsigned int m_occupied_shmem;
   unsigned int m_occupied_regs;
@@ -3074,8 +3424,32 @@ class simt_core_cluster {
   virtual void create_shader_core_ctx() = 0;
 
   void aggregate_stats();
+  void accumulate_response_transport_stats(
+      memory_transport_service_stats &response_ingress,
+      memory_transport_service_stats &response_dispatch) const;
+  void accumulate_ldst_transport_stats(
+      memory_transport_service_stats &ldst_request,
+      memory_transport_service_stats &ldst_response) const;
 
  protected:
+  struct response_transport_tick_state {
+    response_transport_tick_state() { reset(); }
+
+    void reset() {
+      tma_dispatches = 0;
+      cp_async_dispatches = 0;
+      instruction_dispatches = 0;
+      dispatch_service_slots = 0;
+      ingress_service_slots = 0;
+    }
+
+    unsigned tma_dispatches;
+    unsigned cp_async_dispatches;
+    unsigned instruction_dispatches;
+    unsigned dispatch_service_slots;
+    unsigned ingress_service_slots;
+  };
+
   unsigned m_cluster_id;
   gpgpu_sim *m_gpu;
   const shader_core_config *m_config;
@@ -3088,6 +3462,11 @@ class simt_core_cluster {
   unsigned m_cta_issue_next_core;
   std::list<unsigned> m_core_sim_order;
   std::list<mem_fetch *> m_response_fifo;
+  std::vector<memory_transport_service_budget> m_response_ingress_budgets;
+  std::vector<memory_transport_service_budget> m_response_dispatch_budgets;
+  std::vector<memory_transport_service_stats> m_response_ingress_stats;
+  std::vector<memory_transport_service_stats> m_response_dispatch_stats;
+  std::vector<response_transport_tick_state> m_response_tick_state;
 };
 
 class exec_simt_core_cluster : public simt_core_cluster {

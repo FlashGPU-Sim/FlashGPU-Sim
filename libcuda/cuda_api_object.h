@@ -239,9 +239,6 @@ class cuda_runtime_api {
       std::function<void(CUctx_st *)> ctx_extract_ptx_func);
   void extract_ptx_files_using_cuobjdump_internal(CUctx_st *context,
                                                   std::string &app_binary);
-  void ensure_sass_ptxline_guide(
-      CUctx_st *context, const std::string &app_binary,
-      const std::vector<std::string> &selected_files);
 
   std::list<cuobjdumpSection *> pruneSectionList(CUctx_st *context);
   std::list<cuobjdumpSection *> mergeMatchingSections(std::string identifier);

@@ -41,7 +41,9 @@
 #include "../option_parser.h"
 #include "../trace.h"
 #include "addrdec.h"
+#include "flash/tcgen05.h"
 #include "gpu-cache.h"
+#include "mem_transport_budget.h"
 #include "shader.h"
 
 // constants for statistics printouts
@@ -229,6 +231,14 @@ class memory_config {
   }
   void init() {
     assert(gpgpu_dram_timing_opt);
+    assert(l2_multi_issue_port_model <= 1);
+    assert(l2_rop_delay_output_sectors_per_cycle > 0);
+    if (l2_multi_issue_port_model == 1) {
+      assert(l2_lookup_sectors_per_cycle > 0);
+      assert(l2_data_port_sectors_per_cycle > 0);
+      assert(l2_data_port_cycle_period > 0);
+      assert(l2_fill_port_sectors_per_cycle > 0);
+    }
     if (strchr(gpgpu_dram_timing_opt, '=') == NULL) {
       // dram timing option in ordered variables (legacy)
       // Disabling bank groups if their values are not specified
@@ -305,16 +315,32 @@ class memory_config {
         BL * busW * gpu_n_mem_per_ctrlr;  // burst length x bus width x # chips
                                           // per partition
 
+    assert(simple_dram_service_rate_num > 0);
+    assert(simple_dram_service_rate_den > 0);
+    assert(simple_dram_max_inflight == 0 ||
+           simple_dram_max_inflight > m_n_sub_partition_per_memory_channel);
+
     assert(m_n_sub_partition_per_memory_channel > 0);
-    assert((nbk % m_n_sub_partition_per_memory_channel == 0) &&
-           "Number of DRAM banks must be a perfect multiple of memory sub "
-           "partition");
+    // The legacy power-of-two mapping selects the L2 subpartition from DRAM
+    // bank bits, so retain its reachability/balance constraint. The explicit
+    // non-power-of-two mapping selects the L2 slice independently of DRAM
+    // banks and therefore does not require this divisibility.
+    if ((m_n_sub_partition_per_memory_channel &
+         (m_n_sub_partition_per_memory_channel - 1)) == 0) {
+      assert((nbk % m_n_sub_partition_per_memory_channel == 0) &&
+             "Number of DRAM banks must be a perfect multiple of memory sub "
+             "partition for the legacy power-of-two slice mapping");
+    }
     m_n_mem_sub_partition = m_n_mem * m_n_sub_partition_per_memory_channel;
     fprintf(stdout, "Total number of memory sub partition = %u\n",
             m_n_mem_sub_partition);
 
     m_address_mapping.init(m_n_mem, m_n_sub_partition_per_memory_channel);
     m_L2_config.init(&m_address_mapping);
+    if (l2_rop_delay_output_sectors_per_cycle > 1)
+      assert(!m_L2_config.disabled() &&
+             m_L2_config.get_cache_type() == SECTOR &&
+             "multi-issue ROP output requires a sector cache");
 
     m_valid = true;
 
@@ -350,8 +376,15 @@ class memory_config {
   unsigned gpu_n_mem_per_ctrlr;
 
   unsigned rop_latency;
+  unsigned l2_rop_delay_output_sectors_per_cycle;
   unsigned l2_partition_count;
   unsigned l2_partition_extra_latency;
+  unsigned l2_multi_issue_port_model;
+  unsigned l2_lookup_sectors_per_cycle;
+  unsigned l2_data_port_sectors_per_cycle;
+  unsigned l2_data_port_cycle_period;
+  unsigned l2_fill_port_sectors_per_cycle;
+  bool l2_tma_request_coalescing;
   unsigned dram_latency;
 
   // DRAM parameters
@@ -400,6 +433,8 @@ class memory_config {
   linear_to_raw_address_translation m_address_mapping;
 
   unsigned icnt_flit_size;
+  unsigned gpgpu_l2_request_ingress_sectors_per_cycle;
+  unsigned gpgpu_l2_response_egress_sectors_per_cycle;
 
   unsigned dram_bnk_indexing_policy;
   unsigned dram_bnkgrp_indexing_policy;
@@ -412,6 +447,13 @@ class memory_config {
   unsigned write_low_watermark;
   bool m_perf_sim_memcpy;
   bool simple_dram_model;
+  // Aggregate DRAM service capacity in dram_atom_size units per memory
+  // partition per DRAM clock tick. This only affects simple_dram_model.
+  unsigned simple_dram_service_rate_num;
+  unsigned simple_dram_service_rate_den;
+  // Optional total in-flight request cap per memory partition. Zero preserves
+  // the legacy queue-derived arbitration limit.
+  unsigned simple_dram_max_inflight;
   bool SST_mode;
   gpgpu_context *gpgpu_ctx;
 };
@@ -460,6 +502,7 @@ class gpgpu_sim_config : public power_config,
     m_valid = true;
   }
   unsigned get_core_freq() const { return core_freq; }
+  double get_l2_freq() const { return l2_freq; }
   unsigned num_shader() const { return m_shader_config.num_shader(); }
   unsigned num_cluster() const { return m_shader_config.n_simt_clusters; }
   unsigned get_max_concurrent_kernel() const { return max_concurrent_kernel; }
@@ -513,6 +556,10 @@ class gpgpu_sim_config : public power_config,
   int gpgpu_frfcfs_dram_sched_queue_size;
   int gpgpu_cflog_interval;
   char *gpgpu_clock_domains;
+  // Validation metadata consumed by config-driven tests. The simulator timing
+  // model does not use these values.
+  double l2_expected_bandwidth_tbps;
+  double dram_expected_bandwidth_tbps;
   unsigned max_concurrent_kernel;
 
   // visualizer
@@ -684,6 +731,15 @@ class gpgpu_sim : public gpgpu_t {
    */
   bool is_SST_mode() { return m_config.is_SST_mode(); }
 
+  flash_gpgpu_sim::tcgen05_tmem_manager_t &get_tcgen05_tmem_manager() {
+    return m_tcgen05_tmem_manager;
+  }
+
+  const flash_gpgpu_sim::tcgen05_tmem_manager_t &
+  get_tcgen05_tmem_manager() const {
+    return m_tcgen05_tmem_manager;
+  }
+
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
 
@@ -746,6 +802,10 @@ class gpgpu_sim : public gpgpu_t {
   memory_stats_manager_t *m_mem_stats;
   // class memory_stats_t *m_memory_stats;
   class power_stat_t *m_power_stats;
+  std::vector<memory_transport_service_budget> m_l2_request_ingress_budgets;
+  std::vector<memory_transport_service_budget> m_l2_response_egress_budgets;
+  std::vector<memory_transport_service_stats> m_l2_request_ingress_stats;
+  std::vector<memory_transport_service_stats> m_l2_response_egress_stats;
   class gpgpu_sim_wrapper *m_gpgpusim_wrapper;
   unsigned long long last_gpu_sim_insn;
 
@@ -761,6 +821,7 @@ class gpgpu_sim : public gpgpu_t {
   std::vector<unsigned>
       m_executed_kernel_uids;  //< uids of kernel launches for stat printout
   std::map<unsigned, watchpoint_event> g_watchpoint_hits;
+  flash_gpgpu_sim::tcgen05_tmem_manager_t m_tcgen05_tmem_manager;
 
   std::string executed_kernel_info_string();  //< format the kernel information
                                               // into a string for stat printout

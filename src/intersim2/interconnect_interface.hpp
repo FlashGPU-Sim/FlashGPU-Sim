@@ -55,6 +55,7 @@ public:
   virtual void Init();
   virtual void Push(unsigned input_deviceID, unsigned output_deviceID, void* data, unsigned int size);
   virtual void* Pop(unsigned ouput_deviceID);
+  virtual void* Top(unsigned output_deviceID) const;
   virtual void Advance();
   virtual bool Busy() const;
   virtual bool HasBuffer(unsigned deviceID, unsigned int size) const;
@@ -128,5 +129,4 @@ protected:
 };
 
 #endif
-
 

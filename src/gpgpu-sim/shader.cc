@@ -107,6 +107,18 @@ issue_trace_state &get_issue_trace_state() {
   return state;
 }
 
+flash_gpgpu_sim::tcgen05_timing_config_t tcgen05_timing_config(
+    const shader_core_config *config) {
+  flash_gpgpu_sim::tcgen05_timing_config_t result;
+  result.mma_issue_interval = config->ptx_opcode_tcgen05_mma_issue_interval;
+  result.mma_completion_tail_latency =
+      config->ptx_opcode_tcgen05_mma_completion_tail_latency;
+  result.mma_f16_flops_per_cycle =
+      config->ptx_opcode_tcgen05_mma_f16_flops_per_cycle;
+  result.async_queue_depth = config->gpgpu_tcgen05_async_queue_depth;
+  return result;
+}
+
 const char *issue_trace_op_name(unsigned op) {
   switch (op) {
     case SP_OP:
@@ -499,6 +511,10 @@ void shader_core_ctx::create_exec_pipeline() {
       in_ports.push_back(&m_pipeline_reg[ID_OC_INT]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_INT]);
     }
+    if (m_config->gpgpu_num_tma_units > 0) {
+      in_ports.push_back(&m_pipeline_reg[ID_OC_TMA]);
+      out_ports.push_back(&m_pipeline_reg[OC_EX_TMA]);
+    }
     if (m_config->gpgpu_num_cp_async_units > 0) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_CP_ASYNC]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_CP_ASYNC]);
@@ -709,6 +725,7 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
       m_barriers(this, config->max_warps_per_shader, config->max_cta_per_core,
                  config->max_barriers_per_cta, config->warp_size),
       m_wgmma(&m_barriers, config),
+      m_tcgen05(tcgen05_timing_config(config)),
       m_active_warps(0),
       m_subpartition_issue_mask(0),
       m_wgmma_issued_this_cycle(false),
@@ -717,6 +734,7 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
   m_config = config;
   m_memory_config = mem_config;
   m_stats = stats;
+  m_shared_barrier_state.resize(config->max_warps_per_shader);
   // unsigned warp_size = config->warp_size;
   Issue_Prio = 0;
 
@@ -761,6 +779,8 @@ void shader_core_ctx::reinit(unsigned start_thread, unsigned end_thread,
   }
   for (unsigned i = start_thread / m_config->warp_size;
        i < end_thread / m_config->warp_size; ++i) {
+    assert(m_shared_barrier_state[i].pending_arrivals == 0);
+    m_shared_barrier_state[i] = shared_barrier_state{};
     m_warp[i]->reset();
     m_simt_stack[i]->reset();
   }
@@ -807,6 +827,9 @@ void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
         start_pc = pc;
       }
 
+      assert(m_shared_barrier_state[i].pending_arrivals == 0);
+      assert(m_shared_barrier_state[i].pending_stores == 0);
+      m_shared_barrier_state[i] = shared_barrier_state{};
       m_warp[i]->init(start_pc, cta_id, i, active_threads, m_dynamic_warp_id,
                       kernel.get_streamID());
       ++m_dynamic_warp_id;
@@ -1013,6 +1036,28 @@ void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, in
   wgmma_collector_max_backlog =
       std::max(wgmma_collector_max_backlog,
                other.wgmma_collector_max_backlog);
+  for (unsigned i = 0; i < flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT; ++i) {
+    tcgen05_issued[i] += other.tcgen05_issued[i];
+    tcgen05_completed[i] += other.tcgen05_completed[i];
+  }
+  accumulate(tcgen05_backend_busy_cycles);
+  accumulate(tcgen05_queue_full_stall_cycles);
+  accumulate(tcgen05_issue_interval_stall_cycles);
+  accumulate(tcgen05_commit_wait_cycles);
+  accumulate(tcgen05_ld_wait_cycles);
+  accumulate(tcgen05_st_wait_cycles);
+  tcgen05_max_queue_occupancy =
+      std::max(tcgen05_max_queue_occupancy,
+               other.tcgen05_max_queue_occupancy);
+  accumulate(mbarrier_logical_trywait);
+  accumulate(mbarrier_immediate_true);
+  accumulate(mbarrier_suspended_waits);
+  accumulate(mbarrier_rechecks);
+  accumulate(mbarrier_true_after_suspend);
+  accumulate(mbarrier_timeout_false);
+  accumulate(mbarrier_phase_wakeups);
+  accumulate(mbarrier_phase_wakeup_cycles);
+  accumulate(mbarrier_sleep_cycles);
 
   merge(gpgpu_n_shmem_bank_access);
   merge(n_simt_to_mem);
@@ -1090,6 +1135,26 @@ void shader_core_stats::clear_accumulator() {
   accumulate(wgmma_collector_tokens_drained);
   accumulate(wgmma_collector_active_cycles);
   accumulate(wgmma_collector_max_backlog);
+  for (unsigned i = 0; i < flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT; ++i) {
+    tcgen05_issued[i] = 0;
+    tcgen05_completed[i] = 0;
+  }
+  accumulate(tcgen05_backend_busy_cycles);
+  accumulate(tcgen05_queue_full_stall_cycles);
+  accumulate(tcgen05_issue_interval_stall_cycles);
+  accumulate(tcgen05_commit_wait_cycles);
+  accumulate(tcgen05_ld_wait_cycles);
+  accumulate(tcgen05_st_wait_cycles);
+  accumulate(tcgen05_max_queue_occupancy);
+  accumulate(mbarrier_logical_trywait);
+  accumulate(mbarrier_immediate_true);
+  accumulate(mbarrier_suspended_waits);
+  accumulate(mbarrier_rechecks);
+  accumulate(mbarrier_true_after_suspend);
+  accumulate(mbarrier_timeout_false);
+  accumulate(mbarrier_phase_wakeups);
+  accumulate(mbarrier_phase_wakeup_cycles);
+  accumulate(mbarrier_sleep_cycles);
 
   m_outgoing_traffic_stats->clear();
   m_incoming_traffic_stats->clear();
@@ -1248,12 +1313,43 @@ void shader_core_stats::print(FILE *fout) const {
   fprintf(fout, "  active_cycles = %llu\n",
           wgmma_collector_active_cycles);
 
+  static const char *tcgen05_op_labels[] = {"mma", "cp", "shift", "ld", "st"};
+  fprintf(fout, "TCGen05 Timing:\n");
+  for (unsigned i = 0; i < flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT; ++i) {
+    fprintf(fout, "  %s_issued = %llu\n", tcgen05_op_labels[i],
+            tcgen05_issued[i]);
+    fprintf(fout, "  %s_completed = %llu\n", tcgen05_op_labels[i],
+            tcgen05_completed[i]);
+  }
+  fprintf(fout, "  backend_busy_cycles = %llu\n", tcgen05_backend_busy_cycles);
+  fprintf(fout, "  queue_full_stall_cycles = %llu\n",
+          tcgen05_queue_full_stall_cycles);
+  fprintf(fout, "  issue_interval_stall_cycles = %llu\n",
+          tcgen05_issue_interval_stall_cycles);
+  fprintf(fout, "  commit_wait_cycles = %llu\n", tcgen05_commit_wait_cycles);
+  fprintf(fout, "  ld_wait_cycles = %llu\n", tcgen05_ld_wait_cycles);
+  fprintf(fout, "  st_wait_cycles = %llu\n", tcgen05_st_wait_cycles);
+  fprintf(fout, "  max_queue_occupancy = %llu\n", tcgen05_max_queue_occupancy);
+
+  fprintf(fout, "MBarrier Try-Wait Timing:\n");
+  fprintf(fout, "  logical_trywait = %llu\n", mbarrier_logical_trywait);
+  fprintf(fout, "  immediate_true = %llu\n", mbarrier_immediate_true);
+  fprintf(fout, "  suspended_waits = %llu\n", mbarrier_suspended_waits);
+  fprintf(fout, "  rechecks = %llu\n", mbarrier_rechecks);
+  fprintf(fout, "  true_after_suspend = %llu\n", mbarrier_true_after_suspend);
+  fprintf(fout, "  timeout_false = %llu\n", mbarrier_timeout_false);
+  fprintf(fout, "  phase_wakeups = %llu\n", mbarrier_phase_wakeups);
+  fprintf(fout, "  phase_wakeup_cycles = %llu\n",
+          mbarrier_phase_wakeup_cycles);
+  fprintf(fout, "  sleep_cycles = %llu\n", mbarrier_sleep_cycles);
+
   // NCU-style warp stall breakdown
   {
     static const char *stall_labels[NUM_STALL_REASONS] = {
         "Selected",        "NoInstruction",    "Barrier",
         "Membar",          "WaitTMA",          "WaitWGMMA",
-        "Atomic",          "SB_MemGlobal",     "SB_MemShared",
+        "WaitTCGen05",     "Atomic",           "SB_MemGlobal",
+        "SB_MemShared",
         "SB_TensorCore",   "SB_SpInt",         "SB_Sfu",
         "SB_Tma",          "SB_Other",         "MathPipeThrottle",
         "MioThrottle",     "PipeStallOther",   "NotSelected",
@@ -1689,6 +1785,110 @@ static unsigned wgmma_wait_group_num_from_inst(const warp_inst_t *inst) {
   return static_cast<unsigned>(op.get_literal_value().u64);
 }
 
+static int tcgen05_opcode(const warp_inst_t *inst) {
+  const ptx_instruction *ptx_inst = dynamic_cast<const ptx_instruction *>(inst);
+  return ptx_inst == NULL ? -1 : ptx_inst->get_opcode();
+}
+
+static bool tcgen05_has_option(const ptx_instruction *inst, int option) {
+  const std::list<int> options = inst->get_options();
+  return std::find(options.begin(), options.end(), option) != options.end();
+}
+
+static flash_gpgpu_sim::tcgen05_op_kind_t tcgen05_timing_kind(int opcode) {
+  switch (opcode) {
+    case TCGEN05_MMA_OP:
+      return flash_gpgpu_sim::TCGEN05_TIMING_MMA;
+    case TCGEN05_CP_OP:
+      return flash_gpgpu_sim::TCGEN05_TIMING_CP;
+    case TCGEN05_SHIFT_OP:
+      return flash_gpgpu_sim::TCGEN05_TIMING_SHIFT;
+    case TCGEN05_LD_OP:
+      return flash_gpgpu_sim::TCGEN05_TIMING_LD;
+    case TCGEN05_ST_OP:
+      return flash_gpgpu_sim::TCGEN05_TIMING_ST;
+    default:
+      abort();
+  }
+}
+
+static bool is_tcgen05_timing_data_op(int opcode) {
+  return opcode == TCGEN05_MMA_OP || opcode == TCGEN05_CP_OP ||
+         opcode == TCGEN05_SHIFT_OP || opcode == TCGEN05_LD_OP ||
+         opcode == TCGEN05_ST_OP;
+}
+
+static unsigned tcgen05_cp_shape_index(const ptx_instruction *inst) {
+  if (tcgen05_has_option(inst, TCGEN05_128X256B_OPTION)) return 0;
+  if (tcgen05_has_option(inst, TCGEN05_128X128B_OPTION)) return 1;
+  if (tcgen05_has_option(inst, TCGEN05_64X128B_OPTION)) return 2;
+  if (tcgen05_has_option(inst, TCGEN05_32X128B_OPTION)) return 3;
+  if (tcgen05_has_option(inst, TCGEN05_4X256B_OPTION)) return 4;
+  fprintf(stderr, "GPGPU-Sim: unsupported TCGen05 CP timing shape: %s\n",
+          inst->to_string().c_str());
+  abort();
+}
+
+static unsigned tcgen05_vector_width_index(unsigned width) {
+  unsigned index = 0;
+  unsigned value = 1;
+  while (value < width && index < 7) {
+    value <<= 1;
+    ++index;
+  }
+  if (value != width) {
+    fprintf(stderr, "GPGPU-Sim: unsupported TCGen05 vector width x%u\n", width);
+    abort();
+  }
+  return index;
+}
+
+static flash_gpgpu_sim::tcgen05_op_t tcgen05_timing_op(
+    const ptx_instruction *inst, const ptx_instruction *dynamic_inst,
+    const shader_core_config *config) {
+  flash_gpgpu_sim::tcgen05_op_t op;
+  const int opcode = inst->get_opcode();
+  op.kind = tcgen05_timing_kind(opcode);
+  if (opcode == TCGEN05_MMA_OP) {
+    assert(dynamic_inst != NULL);
+    op.work = dynamic_inst->get_tcgen05_dyn_info(0).mma_work;
+    assert(op.work != 0);
+  } else if (opcode == TCGEN05_CP_OP) {
+    const unsigned index = tcgen05_cp_shape_index(inst);
+    op.completion_latency = config->tcgen05_cp_completion_latency[index];
+    op.initiation_interval = config->tcgen05_cp_initiation_interval[index];
+  } else if (opcode == TCGEN05_LD_OP || opcode == TCGEN05_ST_OP) {
+    const unsigned operand_index = opcode == TCGEN05_LD_OP ? 0 : 1;
+    const operand_info &vector_operand = inst->operand_lookup(operand_index);
+    assert(vector_operand.is_vector());
+    const unsigned index =
+        tcgen05_vector_width_index(vector_operand.get_vect_nelem());
+    if (opcode == TCGEN05_LD_OP) {
+      op.completion_latency = config->tcgen05_ld_completion_latency[index];
+      op.initiation_interval = config->tcgen05_ld_initiation_interval[index];
+    } else {
+      op.completion_latency = config->tcgen05_st_completion_latency[index];
+      op.initiation_interval = config->tcgen05_st_initiation_interval[index];
+    }
+  } else {
+    assert(opcode == TCGEN05_SHIFT_OP);
+    op.completion_latency = config->ptx_opcode_tcgen05_shift_latency;
+    op.initiation_interval = config->ptx_opcode_tcgen05_mma_issue_interval;
+  }
+  return op;
+}
+
+bool shader_core_ctx::tcgen05_frontend_available(
+    const warp_inst_t *inst, const active_mask_t &active_mask, uint64_t cycle) {
+  const int opcode = tcgen05_opcode(inst);
+  if (!is_tcgen05_timing_data_op(opcode)) return true;
+  if (!active_mask.any()) return true;
+  if (opcode != TCGEN05_LD_OP && opcode != TCGEN05_ST_OP &&
+      !active_mask.test(0))
+    return true;
+  return m_tcgen05.can_enqueue(tcgen05_timing_kind(opcode), cycle);
+}
+
 bool shader_core_ctx::can_issue_wgmma_warpgroup(
     const unsigned *warp_ids, unsigned count, register_set &pipe_reg_set,
     const warp_inst_t *inst) const {
@@ -1944,6 +2144,21 @@ void shader_core_ctx::issue_wgmma_warpgroup_control(
   // wgmma.commit_group/wait_group have no architectural register output.
 }
 
+bool shader_core_ctx::tma_frontend_available(
+    const warp_inst_t *inst, const active_mask_t &active_mask) const {
+  assert(inst != nullptr);
+  if (!active_mask.any()) return true;
+
+  const auto tma_type = inst->get_tma_static_info().tma_type;
+  if (tma_type == inst_t::tma_static_info_t::TMA_BULK_COMMIT ||
+      tma_type == inst_t::tma_static_info_t::TMA_BULK_WAIT) {
+    return true;
+  }
+
+  assert(m_tma != nullptr);
+  return m_tma->can_accept_transaction();
+}
+
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                  const warp_inst_t *next_inst,
                                  const active_mask_t &active_mask,
@@ -1967,12 +2182,25 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   // a copy made before execution.
   ptx_instruction *dyn_inst = nullptr;
   ptx_instruction *mbarrier_dyn_inst = nullptr;
-  if (next_inst->op == MBARRIER_OP ||
+  ptx_instruction *tcgen05_dyn_inst = nullptr;
+  const ptx_instruction *next_ptx_inst =
+      dynamic_cast<const ptx_instruction *>(next_inst);
+  const bool is_tcgen05_commit =
+      next_ptx_inst && next_ptx_inst->get_opcode() == TCGEN05_COMMIT_OP;
+  const bool is_tcgen05_mma =
+      next_ptx_inst && next_ptx_inst->get_opcode() == TCGEN05_MMA_OP;
+  if (next_inst->op == MBARRIER_OP || is_tcgen05_commit ||
       next_inst->m_is_cp_async_mbarrier_arrive) {
     mbarrier_dyn_inst = const_cast<ptx_instruction *>(
         flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(
             next_inst->pc, static_cast<const ptx_instruction *>(next_inst)));
     mbarrier_dyn_inst->reset_mbarrier_info();
+  }
+  if (is_tcgen05_mma) {
+    tcgen05_dyn_inst = const_cast<ptx_instruction *>(
+        flash_gpgpu_sim::dyn_ptx_inst_manager::get_or_allocate(
+            next_inst->pc, static_cast<const ptx_instruction *>(next_inst)));
+    tcgen05_dyn_inst->reset_tcgen05_dyn_info();
   }
   if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP) {
     dyn_inst = const_cast<ptx_instruction *>(
@@ -1983,6 +2211,30 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   
   m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
   func_exec_inst(**pipe_reg);
+
+  if (next_ptx_inst && is_tcgen05_timing_data_op(next_ptx_inst->get_opcode()) &&
+      (*pipe_reg)->get_active_mask().any()) {
+    const int opcode = next_ptx_inst->get_opcode();
+    const uint64_t now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+    const flash_gpgpu_sim::tcgen05_op_t op =
+        tcgen05_timing_op(next_ptx_inst, tcgen05_dyn_inst, m_config);
+    const unsigned cta_id = m_warp[warp_id]->get_cta_id();
+    if (opcode == TCGEN05_LD_OP || opcode == TCGEN05_ST_OP) {
+      assert((*pipe_reg)->get_active_mask().count() == m_config->warp_size &&
+             "TCGen05 LD/ST must be warp collective");
+      flash_gpgpu_sim::tcgen05_warp_stream_key_t stream;
+      stream.hw_cta_id = cta_id;
+      stream.warp_id = warp_id;
+      m_tcgen05.enqueue_warp_mem_op(stream, op, now);
+    } else if ((*pipe_reg)->get_active_mask().test(0)) {
+      flash_gpgpu_sim::tcgen05_thread_stream_key_t stream;
+      stream.hw_cta_id = cta_id;
+      stream.warp_id = warp_id;
+      stream.lane_id = 0;
+      stream.cta_group = 1;
+      m_tcgen05.enqueue_thread_op(stream, op, now);
+    }
+  }
 
   // Add LDGSTS instructions into a buffer
   unsigned int ldgdepbar_id = m_warp[warp_id]->m_ldgdepbar_id;
@@ -1999,24 +2251,69 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     }
   }
 
+  // Use the post-execution mask/space: predication and generic-address
+  // resolution can change which shared stores actually entered the pipeline.
+  if ((*pipe_reg)->is_store() &&
+      (*pipe_reg)->space.get_type() == shared_space &&
+      (*pipe_reg)->get_active_mask().any())
+    ++m_shared_barrier_state[warp_id].pending_stores;
+
   if (next_inst->op == BARRIER_OP) {
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
-    m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
-                                    const_cast<warp_inst_t *>(next_inst));
+    if ((*pipe_reg)->get_active_mask().any()) {
+      if (next_inst->bar_type == ARRIVE)
+        issue_named_arrival(warp_id, *next_inst);
+      else
+        m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
+                                        const_cast<warp_inst_t *>(next_inst));
+    }
+  } else if (is_tcgen05_commit) {
+    if ((*pipe_reg)->get_active_mask().test(0)) {
+      assert(mbarrier_dyn_inst != NULL);
+      const inst_t::mbarrier_info_t &info =
+          mbarrier_dyn_inst->get_mbarrier_info(0);
+      assert(info.bar_id != (unsigned)-1);
+      flash_gpgpu_sim::tcgen05_thread_stream_key_t stream;
+      stream.hw_cta_id = m_warp[warp_id]->get_cta_id();
+      stream.warp_id = warp_id;
+      stream.lane_id = 0;
+      stream.cta_group = 1;
+      m_tcgen05.commit(stream, info.bar_id);
+    }
+  } else if (next_ptx_inst && next_ptx_inst->get_opcode() == TCGEN05_WAIT_OP) {
+    if ((*pipe_reg)->get_active_mask().any()) {
+      assert((*pipe_reg)->get_active_mask().count() == m_config->warp_size &&
+             "TCGen05 wait must be warp collective");
+      flash_gpgpu_sim::tcgen05_warp_stream_key_t stream;
+      stream.hw_cta_id = m_warp[warp_id]->get_cta_id();
+      stream.warp_id = warp_id;
+      bool satisfied = false;
+      if (tcgen05_has_option(next_ptx_inst, TCGEN05_WAIT_LD_OPTION)) {
+        satisfied = m_tcgen05.wait_ld(stream);
+      } else {
+        assert(tcgen05_has_option(next_ptx_inst, TCGEN05_WAIT_ST_OPTION));
+        satisfied = m_tcgen05.wait_st(stream);
+      }
+      if (!satisfied) m_barriers.wait_tcgen05_warp(warp_id);
+    }
   } else if (next_inst->op == MBARRIER_OP) {
     // Skip mbarrier processing if no threads are active (e.g., all predicated out)
     if ((*pipe_reg)->get_active_mask().any()) {
       auto pI = mbarrier_dyn_inst;
       assert(pI && "mbarrier instruction is not ptx_instruction");
       m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
-      m_barriers.warp_reaches_mbarrier(m_warp[warp_id]->get_cta_id(), warp_id,
-                                       pI, pI,
-                                       (*pipe_reg)->get_active_mask());
+      m_barriers.warp_reaches_mbarrier(
+          m_warp[warp_id]->get_cta_id(), warp_id, next_ptx_inst, pI,
+          (*pipe_reg)->get_active_mask(),
+          m_warp[warp_id]->get_dynamic_warp_id());
     }
   } else if (next_inst->op == TENSOR_MEMORY_ACCELERATOR_OP &&
              (*pipe_reg)->get_active_mask().any()) {
-    // Check if this is a bulk group operation
-    const auto &tma_info = next_inst->get_tma_static_info();
+    // Functional execution populates TMA metadata in the per-PC dynamic PTX
+    // instruction. The pipeline register was copied before that execution.
+    assert(dyn_inst != nullptr);
+    // Check if this is a bulk group operation.
+    const auto &tma_info = dyn_inst->get_tma_static_info();
     if (tma_info.tma_type == inst_t::tma_static_info_t::TMA_BULK_COMMIT) {
       // cp.async.bulk.commit_group
       m_barriers.commit_bulk_group(m_warp[warp_id]->get_cta_id(), warp_id);
@@ -2034,11 +2331,9 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                    group_num);
       }
     } else {
-      // Regular TMA operation (load/store)
-      // dyn_inst was already obtained and reset before func_exec_inst
-      // Now it has the correct tma_dyn_info set only for active lanes
-      assert(dyn_inst != nullptr);
-      m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id, dyn_inst);
+      // Regular TMA operation (load/store).
+      m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id,
+                              dyn_inst);
     }
   } else if (next_inst->op == ASYNC_COPY_OP) {
     const ptx_instruction *static_inst =
@@ -2426,7 +2721,9 @@ void scheduler_unit::cycle() {
             fflush(stderr);
             abort();
           }
-          if (!m_scoreboard->checkCollision(warp_id, pI)) {
+          if (!m_scoreboard->checkCollision(warp_id, pI) &&
+              (pI->op != BARRIER_OP ||
+               m_shader->named_barrier_issue_ready(warp_id))) {
             SCHED_GPPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
                 (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
@@ -2475,7 +2772,9 @@ void scheduler_unit::cycle() {
               }
             } else {
               // This code need to be refactored
-              if (pI->op != TENSOR_CORE_OP && pI->op != SFU_OP &&
+              if (pI->op != TENSOR_CORE_OP &&
+                  pI->op != TENSOR_MEMORY_ACCELERATOR_OP &&
+                  pI->op != SFU_OP &&
                   pI->op != DP_OP &&
                   pI->op != ASYNC_COPY_OP &&
                   !(pI->op == TENSOR_MAP_OP &&
@@ -2593,6 +2892,13 @@ void scheduler_unit::cycle() {
                     (m_shader->m_config->gpgpu_num_tensor_core_units > 0) &&
                     m_tensor_core_out->has_free(
                         m_shader->m_config->sub_core_model, m_id);
+                const unsigned long long tcgen05_now =
+                    m_shader->m_gpu->gpu_tot_sim_cycle +
+                    m_shader->m_gpu->gpu_sim_cycle;
+                tensor_core_pipe_avail =
+                    tensor_core_pipe_avail &&
+                    m_shader->tcgen05_frontend_available(
+                        pI, active_mask, tcgen05_now);
                 if (tensor_core_pipe_avail) {
                   if (is_wgmma_mma_async(pI)) {
                     unsigned wgmma_warp_ids[WGMMA_WARPGROUP_SIZE] = {
@@ -2634,7 +2940,8 @@ void scheduler_unit::cycle() {
                 bool tma_pipe_avail =
                     (m_shader->m_config->gpgpu_num_tma_units > 0) &&
                     m_tma_out->has_free(m_shader->m_config->sub_core_model,
-                                        m_id);
+                                        m_id) &&
+                    m_shader->tma_frontend_available(pI, active_mask);
 
                 if (tma_pipe_avail) {
                   m_shader->issue_warp(*m_tma_out, pI, active_mask, warp_id,
@@ -2741,7 +3048,9 @@ void scheduler_unit::cycle() {
         else
           do_on_warp_issued(warp_id, issued, iter);
         if (warpgroup_inst_issued) break;
-      } else if (current_inst && !m_scoreboard->checkCollision(warp_id, pI)) {
+      } else if (current_inst && !m_scoreboard->checkCollision(warp_id, pI) &&
+                 (pI->op != BARRIER_OP ||
+                  m_shader->named_barrier_issue_ready(warp_id))) {
         issue_trace_log(m_shader, m_id, warp_id, (*iter)->get_dynamic_warp_id(),
                         pI, "STALL_READY_NO_ISSUE", "-");
       }
@@ -2794,7 +3103,9 @@ void scheduler_unit::cycle() {
     if (issued_inst && wid == issued_warp_id) {
       reason = STALL_SELECTED;
     } else if (warp(wid).waiting()) {
-      if (m_shader->warp_waiting_at_barrier(wid)) {
+      if (!m_shader->named_arrive_warp_ready(wid)) {
+        reason = STALL_BARRIER;
+      } else if (m_shader->warp_waiting_at_barrier(wid)) {
         auto btype = m_shader->get_warp_barrier_type(wid);
         if (btype == BARRIER_WAIT_MBARRIER ||
             btype == BARRIER_WAIT_BULK_GROUP ||
@@ -2802,6 +3113,8 @@ void scheduler_unit::cycle() {
           reason = STALL_WAIT_TMA;
         else if (btype == BARRIER_WAIT_WGMMA_GROUP)
           reason = STALL_WAIT_WGMMA;
+        else if (btype == BARRIER_WAIT_TCGEN05)
+          reason = STALL_WAIT_TCGEN05;
         else
           reason = STALL_BARRIER;
       } else if (m_shader->warp_waiting_at_mem_barrier(wid))
@@ -2830,6 +3143,9 @@ void scheduler_unit::cycle() {
       // from this statistics-only pass.
       if (!current_inst) {
         reason = STALL_NO_INSTRUCTION;
+      } else if (pI->op == BARRIER_OP &&
+                 !m_shader->named_barrier_issue_ready(wid)) {
+        reason = STALL_BARRIER;
       } else if (m_scoreboard->checkCollision(wid, pI)) {
         // Scoreboard stall — classify by producer type
         reg_producer_t prod = m_scoreboard->getCollisionType(wid, pI);
@@ -2846,7 +3162,6 @@ void scheduler_unit::cycle() {
         // No scoreboard collision — check if FU is available
         unsigned op = pI->op;
         bool fu_full = false;
-        bool is_math = false;
         bool is_mio = false;
 
         if (op == LOAD_OP || op == STORE_OP ||
@@ -2856,9 +3171,13 @@ void scheduler_unit::cycle() {
             (op == TENSOR_MAP_OP &&
              m_shader->m_config->gpgpu_num_tensormap_units > 0)) {
           is_mio = true;
-          if (op == TENSOR_MEMORY_ACCELERATOR_OP)
+          if (op == TENSOR_MEMORY_ACCELERATOR_OP) {
+            const active_mask_t &tma_active_mask =
+                m_shader->get_active_mask(wid, pI);
             fu_full = !m_tma_out->has_free(m_shader->m_config->sub_core_model, m_id);
-          else if (op == ASYNC_COPY_OP)
+            fu_full = fu_full ||
+                      !m_shader->tma_frontend_available(pI, tma_active_mask);
+          } else if (op == ASYNC_COPY_OP)
             fu_full = m_shader->m_config->gpgpu_num_cp_async_units == 0 ||
                       !m_cp_async_out->has_free(
                 m_shader->m_config->sub_core_model, m_id);
@@ -2868,17 +3187,13 @@ void scheduler_unit::cycle() {
           else
             fu_full = !m_mem_out->has_free(m_shader->m_config->sub_core_model, m_id);
         } else if (op == TENSOR_CORE_OP) {
-          is_math = true;
           fu_full = !m_tensor_core_out->has_free(m_shader->m_config->sub_core_model, m_id);
         } else if (op == SFU_OP || op == ALU_SFU_OP ||
                    (op == DP_OP && m_shader->m_config->gpgpu_num_dp_units == 0)) {
-          is_math = true;
           fu_full = !m_sfu_out->has_free(m_shader->m_config->sub_core_model, m_id);
         } else if (op == DP_OP) {
-          is_math = true;
           fu_full = !m_dp_out->has_free(m_shader->m_config->sub_core_model, m_id);
         } else if (op == SP_OP || op == INTP_OP || op == ALU_OP) {
-          is_math = true;
           if (m_shader->m_config->gpgpu_num_int_units > 0 && op != SP_OP)
             fu_full = !m_int_out->has_free(m_shader->m_config->sub_core_model, m_id);
           else
@@ -3186,6 +3501,41 @@ void shader_core_ctx::execute() {
     }
   }
   m_wgmma.cycle();
+  const uint64_t tcgen05_now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+  m_tcgen05.cycle(tcgen05_now);
+  const flash_gpgpu_sim::tcgen05_timing_stats_t &tcgen05_stats =
+      m_tcgen05.stats();
+  for (unsigned i = 0; i < flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT; ++i) {
+    m_stats->tcgen05_issued[i] +=
+        tcgen05_stats.issued[i] - m_tcgen05_last_stats.issued[i];
+    m_stats->tcgen05_completed[i] +=
+        tcgen05_stats.completed[i] - m_tcgen05_last_stats.completed[i];
+  }
+#define ACCUMULATE_TCGEN05_STAT(name) \
+  m_stats->tcgen05_##name += tcgen05_stats.name - m_tcgen05_last_stats.name
+  ACCUMULATE_TCGEN05_STAT(backend_busy_cycles);
+  ACCUMULATE_TCGEN05_STAT(queue_full_stall_cycles);
+  ACCUMULATE_TCGEN05_STAT(issue_interval_stall_cycles);
+  ACCUMULATE_TCGEN05_STAT(commit_wait_cycles);
+  ACCUMULATE_TCGEN05_STAT(ld_wait_cycles);
+  ACCUMULATE_TCGEN05_STAT(st_wait_cycles);
+#undef ACCUMULATE_TCGEN05_STAT
+  m_stats->tcgen05_max_queue_occupancy = std::max<unsigned long long>(
+      m_stats->tcgen05_max_queue_occupancy, tcgen05_stats.max_queue_occupancy);
+  m_tcgen05_last_stats = tcgen05_stats;
+  const std::vector<flash_gpgpu_sim::tcgen05_completion_event_t> events =
+      m_tcgen05.take_completion_events();
+  for (std::vector<flash_gpgpu_sim::tcgen05_completion_event_t>::const_iterator
+           it = events.begin();
+       it != events.end(); ++it) {
+    if (it->kind ==
+        flash_gpgpu_sim::tcgen05_completion_event_t::MBARRIER_ARRIVAL) {
+      m_barriers.arrive_mbarrier_async(it->hw_cta_id, it->warp_id,
+                                       it->mbarrier_addr);
+    } else {
+      m_barriers.release_tcgen05_warp(it->warp_id);
+    }
+  }
   m_tma->cycle();
   release_pending_tma_ctas();
   m_barriers.cycle();
@@ -3661,7 +4011,6 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
   if (inst.accessq_empty()) return true;
 
   mem_stage_stall_type stall_cond = NO_RC_FAIL;
-  const mem_access_t &access = inst.accessq_back();
 
   bool bypassL1D = false;
   if (CACHE_GLOBAL == inst.cache_op || (m_L1D == NULL)) {
@@ -3672,22 +4021,44 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
       bypassL1D = true;
   }
   if (bypassL1D) {
-    // bypass L1 cache
-    unsigned control_size =
-        inst.is_store() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
-    unsigned size = access.get_size() + control_size;
-    // printf("Interconnect:Addr: %x, size=%d\n",access.get_addr(),size);
-    if (m_memory_config->SST_mode &&
-        (static_cast<sst_memory_interface *>(m_icnt)->full(
-            size, inst.is_store() || inst.isatomic(), access.get_type()))) {
-      // SST need mf type here
-      // Cast it to sst_memory_interface pointer first as this full() method
-      // is not a virtual method in parent class
-      stall_cond = ICNT_RC_FAIL;
-    } else if (!m_memory_config->SST_mode &&
-               (m_icnt->full(size, inst.is_store() || inst.isatomic()))) {
-      stall_cond = ICNT_RC_FAIL;
-    } else {
+    // Only LD/ST requests which already bypass L1D are widened here. The
+    // shared/constant/texture/L1D/response/writeback paths retain their legacy
+    // cadence.
+    const unsigned request_width = m_config->gpgpu_ldst_request_width;
+
+    auto downstream_full = [&]() {
+      const mem_access_t &access = inst.accessq_back();
+      if (request_width > 1) {
+        // SM100's coalesce_arch=100 creates one 32-byte sector child per
+        // accessq entry. Refuse ambiguous widening if another architecture
+        // produces a larger coalesced entry.
+        assert(access.get_size() == SECTOR_SIZE);
+      }
+      const unsigned control_size =
+          inst.is_store() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
+      const unsigned size = access.get_size() + control_size;
+      if (m_memory_config->SST_mode) {
+        return static_cast<sst_memory_interface *>(m_icnt)->full(
+            size, inst.is_store() || inst.isatomic(), access.get_type());
+      }
+      return m_icnt->full(size, inst.is_store() || inst.isatomic());
+    };
+
+    auto inject_one = [&]() -> unsigned {
+      const mem_access_t &access = inst.accessq_back();
+      const unsigned data_sectors =
+          memory_transport_data_sectors(READ_REQUEST, access.get_size());
+      if (m_config->gpgpu_ldst_response_sectors_per_cycle != 0 &&
+          inst.is_load() &&
+          !m_global_response_retirement.has_pending_responses(
+              inst.get_uid())) {
+        // This is the first successfully injected request for an uncached
+        // dynamic load.  All remaining accesses bypass L1D and therefore
+        // return through the explicit-width ordinary-response retirement
+        // path.
+        m_global_response_retirement.expect_responses(
+            inst.get_uid(), inst.accessq_count(), inst);
+      }
       mem_fetch *mf =
           m_mf_allocator->alloc(inst, access,
                                 m_core->get_gpu()->gpu_sim_cycle +
@@ -3701,6 +4072,38 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
             assert(m_pending_writes[inst.warp_id()][inst.out[r]] > 0);
       } else if (inst.is_store())
         m_core->inc_store_req(inst.warp_id());
+
+      return data_sectors;
+    };
+
+    if (request_width == 0) {
+      // Preserve the original one-head action per ldst_unit::cycle() call.
+      // If an existing configuration repeats the complete LD/ST cycle through
+      // mem_unit_ports, every repeated call retains that same legacy action.
+      if (downstream_full()) {
+        stall_cond = ICNT_RC_FAIL;
+        m_ldst_legacy_request_downstream_full = true;
+      } else {
+        const unsigned sectors = inject_one();
+        m_ldst_request_stats.record_accept(sectors);
+        m_ldst_legacy_request_service_slots +=
+            memory_transport_service_slots(sectors);
+      }
+    } else {
+      if (!m_ldst_request_budget_active) {
+        m_ldst_request_budget.begin_tick(request_width);
+        m_ldst_request_budget_active = true;
+      }
+      const ldst_request_issue_result issue_result =
+          memory_transport_issue_ldst_sector_children(
+              &m_ldst_request_budget, &m_ldst_request_stats,
+              [&]() { return inst.accessq_count(); }, downstream_full,
+              inject_one);
+      if (issue_result.reason == LDST_REQUEST_DOWNSTREAM_FULL) {
+        stall_cond = ICNT_RC_FAIL;
+      } else if (issue_result.reason == LDST_REQUEST_WIDTH_LIMITED) {
+        stall_cond = COAL_STALL;
+      }
     }
   } else {
     assert(CACHE_UNDEFINED != inst.cache_op);
@@ -4130,6 +4533,7 @@ void pipelined_simd_unit::issue(register_set &source_reg) {
   unsigned issue_reg_id = this->get_issue_reg_id();
   warp_inst_t **ready_reg =
       source_reg.get_ready(partition_issue, issue_reg_id);
+  m_core->begin_alu_scoreboard_forwarding(**ready_reg);
   m_core->incexecstat((*ready_reg));
   // source_reg.move_out_to(m_dispatch_reg);
   simd_function_unit::issue(source_reg);
@@ -4176,6 +4580,13 @@ void ldst_unit::init(mem_fetch_interface *icnt,
       5;  // = shared memory, global/local (uncached), L1D, L1T, L1C
   m_writeback_arb = 0;
   m_next_global = NULL;
+  m_next_wb_is_retired_global_response = false;
+  m_ldst_request_budget_active = false;
+  m_ldst_legacy_request_service_slots = 0;
+  m_ldst_legacy_request_downstream_full = false;
+  m_ldst_response_budget_active = false;
+  m_ldst_legacy_response_service_slots = 0;
+  m_ldst_legacy_response_downstream_full = false;
   m_last_inst_gpu_sim_cycle = 0;
   m_last_inst_gpu_tot_sim_cycle = 0;
 }
@@ -4249,38 +4660,98 @@ void ldst_unit::issue(register_set &reg_set) {
   pipelined_simd_unit::issue(reg_set);
 }
 
+void ldst_unit::retire_bypass_response(mem_fetch *mf) {
+  const warp_inst_t &inst = mf->get_inst();
+  const unsigned warp_id = inst.warp_id();
+  bool has_output = false;
+  bool all_outputs_ready = true;
+
+  for (unsigned r = 0; r < MAX_OUTPUT_VALUES; ++r) {
+    const unsigned reg_id = inst.out[r];
+    if (reg_id == 0) continue;
+    has_output = true;
+    std::map<unsigned, std::map<unsigned, unsigned>>::iterator warp_pending =
+        m_pending_writes.find(warp_id);
+    assert(warp_pending != m_pending_writes.end());
+    std::map<unsigned, unsigned>::iterator reg_pending =
+        warp_pending->second.find(reg_id);
+    assert(reg_pending != warp_pending->second.end());
+    assert(reg_pending->second != 0);
+    if (--reg_pending->second == 0) {
+      warp_pending->second.erase(reg_pending);
+    } else {
+      all_outputs_ready = false;
+    }
+  }
+
+  bool ldgsts_ready = false;
+  if (inst.m_is_ldgsts) {
+    if (inst.active_count() == 0) {
+      ldgsts_ready = true;
+    } else {
+      ldgsts_ready = dec_pending_ldgsts(inst) == 0;
+    }
+  }
+
+  const bool instruction_ready =
+      m_global_response_retirement.retire_response(inst.get_uid());
+  if (has_output) assert(all_outputs_ready == instruction_ready);
+  if (inst.m_is_ldgsts) assert(ldgsts_ready == instruction_ready);
+
+  if (mf->isatomic()) {
+    m_core->decrement_atomic_count(mf->get_wid(),
+                                   mf->get_access_warp_mask().count());
+  }
+  delete mf;
+}
+
 void ldst_unit::writeback() {
   // process next instruction that is going to writeback
   if (!m_next_wb.empty()) {
     if (m_operand_collector->writeback(m_next_wb)) {
       bool insn_completed = false;
-      for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
-        if (m_next_wb.out[r] > 0) {
-          if (m_next_wb.space.get_type() != shared_space) {
-            assert(m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]] > 0);
-            unsigned still_pending =
-                --m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]];
-            if (!still_pending) {
-              m_pending_writes[m_next_wb.warp_id()].erase(m_next_wb.out[r]);
+      if (m_next_wb_is_retired_global_response) {
+        // The response packets and their per-access pending counts were
+        // retired at transport width.  The final response generated this one
+        // instruction-level RF/scoreboard completion.
+        for (unsigned r = 0; r < MAX_OUTPUT_VALUES; ++r) {
+          if (m_next_wb.out[r] > 0) {
+            m_scoreboard->releaseRegister(m_next_wb.warp_id(),
+                                          m_next_wb.out[r]);
+          }
+        }
+        insn_completed = true;
+      } else {
+        for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+          if (m_next_wb.out[r] > 0) {
+            if (m_next_wb.space.get_type() != shared_space) {
+              assert(m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]] >
+                     0);
+              unsigned still_pending =
+                  --m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]];
+              if (!still_pending) {
+                m_pending_writes[m_next_wb.warp_id()].erase(m_next_wb.out[r]);
+                m_scoreboard->releaseRegister(m_next_wb.warp_id(),
+                                              m_next_wb.out[r]);
+                insn_completed = true;
+              }
+            } else {  // shared
               m_scoreboard->releaseRegister(m_next_wb.warp_id(),
                                             m_next_wb.out[r]);
               insn_completed = true;
             }
-          } else {  // shared
-            m_scoreboard->releaseRegister(m_next_wb.warp_id(),
-                                          m_next_wb.out[r]);
-            insn_completed = true;
-          }
-        } else if (m_next_wb.m_is_ldgsts) {  // for LDGSTS instructions where no
-                                             // output register is used
-          if (m_next_wb.active_count() == 0) {
-            insn_completed = true;
-          } else {
-            if (dec_pending_ldgsts(m_next_wb) == 0) {
+          } else if (m_next_wb.m_is_ldgsts) {
+            // LDGSTS has no output register.  The explicit-width global path
+            // already retired this count; legacy/cache clients retire it here.
+            if (m_next_wb.active_count() == 0) {
               insn_completed = true;
+            } else {
+              if (dec_pending_ldgsts(m_next_wb) == 0) {
+                insn_completed = true;
+              }
             }
+            break;
           }
-          break;
         }
       }
       if (insn_completed) {
@@ -4291,6 +4762,7 @@ void ldst_unit::writeback() {
       }
 
       m_next_wb.clear();
+      m_next_wb_is_retired_global_response = false;
       m_last_inst_gpu_sim_cycle = m_core->get_gpu()->gpu_sim_cycle;
       m_last_inst_gpu_tot_sim_cycle = m_core->get_gpu()->gpu_tot_sim_cycle;
     }
@@ -4304,6 +4776,7 @@ void ldst_unit::writeback() {
       case 0:  // shared memory
         if (!m_pipeline_reg[0]->empty()) {
           m_next_wb = *m_pipeline_reg[0];
+          m_next_wb_is_retired_global_response = false;
           if (m_next_wb.isatomic()) {
             m_next_wb.do_atomic();
             m_core->decrement_atomic_count(m_next_wb.warp_id(),
@@ -4318,6 +4791,7 @@ void ldst_unit::writeback() {
         if (m_L1T->access_ready()) {
           mem_fetch *mf = m_L1T->next_access();
           m_next_wb = mf->get_inst();
+          m_next_wb_is_retired_global_response = false;
           delete mf;
           serviced_client = next_client;
         }
@@ -4326,13 +4800,20 @@ void ldst_unit::writeback() {
         if (m_L1C->access_ready()) {
           mem_fetch *mf = m_L1C->next_access();
           m_next_wb = mf->get_inst();
+          m_next_wb_is_retired_global_response = false;
           delete mf;
           serviced_client = next_client;
         }
         break;
       case 3:  // global/local
-        if (m_next_global) {
+        if (m_global_response_retirement.completion_ready()) {
+          m_next_wb = m_global_response_retirement.next_completion();
+          m_global_response_retirement.pop_completion();
+          m_next_wb_is_retired_global_response = true;
+          serviced_client = next_client;
+        } else if (m_next_global) {
           m_next_wb = m_next_global->get_inst();
+          m_next_wb_is_retired_global_response = false;
           if (m_next_global->isatomic()) {
             m_core->decrement_atomic_count(
                 m_next_global->get_wid(),
@@ -4347,6 +4828,7 @@ void ldst_unit::writeback() {
         if (m_L1D && m_L1D->access_ready()) {
           mem_fetch *mf = m_L1D->next_access();
           m_next_wb = mf->get_inst();
+          m_next_wb_is_retired_global_response = false;
           delete mf;
           serviced_client = next_client;
         }
@@ -4399,60 +4881,127 @@ void ldst_unit::cycle() {
     if (m_pipeline_reg[stage]->empty() && !m_pipeline_reg[stage + 1]->empty())
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
 
-  if (!m_response_fifo.empty()) {
+  const unsigned response_width =
+      m_config->gpgpu_ldst_response_sectors_per_cycle;
+
+  auto response_bypasses_l1d = [&](mem_fetch *mf) {
+    if (CACHE_GLOBAL == mf->get_inst().cache_op || m_L1D == NULL) return true;
+    return (mf->get_access_type() == GLOBAL_ACC_R ||
+            mf->get_access_type() == GLOBAL_ACC_W) &&
+           m_core->get_config()->gmem_skip_L1D;
+  };
+
+  auto response_uses_explicit_width = [&](mem_fetch *mf) {
+    if (mf->get_access_type() == TEXTURE_ACC_R ||
+        mf->get_access_type() == CONST_ACC_R)
+      return false;
+    if (mf->get_type() == WRITE_ACK ||
+        ((m_config->gpgpu_perfect_mem || m_memory_config->SST_mode) &&
+         mf->get_is_write()))
+      return true;
+    return response_bypasses_l1d(mf);
+  };
+
+  auto response_head_ready = [&]() {
+    if (m_response_fifo.empty()) return false;
+    mem_fetch *mf = m_response_fifo.front();
+    if (mf->get_access_type() == TEXTURE_ACC_R) return m_L1T->fill_port_free();
+    if (mf->get_access_type() == CONST_ACC_R) return m_L1C->fill_port_free();
+    if (mf->get_type() == WRITE_ACK ||
+        ((m_config->gpgpu_perfect_mem || m_memory_config->SST_mode) &&
+         mf->get_is_write()))
+      return true;
+
+    assert(!mf->get_is_write());  // L1 cache only allocates on load misses.
+    if (!response_bypasses_l1d(mf)) return m_L1D->fill_port_free();
+    return response_width != 0 || m_next_global == NULL;
+  };
+
+  auto advance_response_head = [&]() {
+    assert(!m_response_fifo.empty());
     mem_fetch *mf = m_response_fifo.front();
     if (mf->get_access_type() == TEXTURE_ACC_R) {
-      if (m_L1T->fill_port_free()) {
-        m_L1T->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
-                            m_core->get_gpu()->gpu_tot_sim_cycle);
-        m_response_fifo.pop_front();
-      }
+      m_L1T->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
+                          m_core->get_gpu()->gpu_tot_sim_cycle);
+      m_response_fifo.pop_front();
     } else if (mf->get_access_type() == CONST_ACC_R) {
-      if (m_L1C->fill_port_free()) {
-        mf->set_status(IN_SHADER_FETCHED,
-                       m_core->get_gpu()->gpu_sim_cycle +
-                           m_core->get_gpu()->gpu_tot_sim_cycle);
-        m_L1C->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
-                            m_core->get_gpu()->gpu_tot_sim_cycle);
-        m_response_fifo.pop_front();
+      mf->set_status(IN_SHADER_FETCHED,
+                     m_core->get_gpu()->gpu_sim_cycle +
+                         m_core->get_gpu()->gpu_tot_sim_cycle);
+      m_L1C->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
+                          m_core->get_gpu()->gpu_tot_sim_cycle);
+      m_response_fifo.pop_front();
+    } else if (mf->get_type() == WRITE_ACK ||
+               ((m_config->gpgpu_perfect_mem || m_memory_config->SST_mode) &&
+                mf->get_is_write())) {
+      // SST memory is handled by SST mem hierarchy; perfect-memory writes use
+      // the same acknowledgement path.
+      m_core->store_ack(mf);
+      m_response_fifo.pop_front();
+      delete mf;
+    } else if (response_bypasses_l1d(mf)) {
+      mf->set_status(IN_SHADER_FETCHED,
+                     m_core->get_gpu()->gpu_sim_cycle +
+                         m_core->get_gpu()->gpu_tot_sim_cycle);
+      m_response_fifo.pop_front();
+      if (response_width == 0) {
+        assert(m_next_global == NULL);
+        m_next_global = mf;
+      } else {
+        retire_bypass_response(mf);
       }
     } else {
-      if (mf->get_type() == WRITE_ACK ||
-          ((m_config->gpgpu_perfect_mem || m_memory_config->SST_mode) &&
-           mf->get_is_write())) {
-        // SST memory is handled by SST mem hierarchy
-        // Perfect mem
-        m_core->store_ack(mf);
-        m_response_fifo.pop_front();
-        delete mf;
-      } else {
-        assert(!mf->get_is_write());  // L1 cache is write evict, allocate line
-                                      // on load miss only
+      m_L1D->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
+                          m_core->get_gpu()->gpu_tot_sim_cycle);
+      m_response_fifo.pop_front();
+    }
+  };
 
-        bool bypassL1D = false;
-        if (CACHE_GLOBAL == mf->get_inst().cache_op || (m_L1D == NULL)) {
-          bypassL1D = true;
-        } else if (mf->get_access_type() == GLOBAL_ACC_R ||
-                   mf->get_access_type() ==
-                       GLOBAL_ACC_W) {  // global memory access
-          if (m_core->get_config()->gmem_skip_L1D) bypassL1D = true;
+  if (response_width == 0) {
+    if (!m_response_fifo.empty()) {
+      mem_fetch *mf = m_response_fifo.front();
+      const bool ordinary_response = response_uses_explicit_width(mf);
+      const unsigned sectors = memory_transport_data_sectors(mf);
+      if (response_head_ready()) {
+        advance_response_head();
+        if (ordinary_response) {
+          m_ldst_response_stats.record_accept(sectors);
+          m_ldst_legacy_response_service_slots +=
+              memory_transport_service_slots(sectors);
         }
-        if (bypassL1D) {
-          if (m_next_global == NULL) {
-            mf->set_status(IN_SHADER_FETCHED,
-                           m_core->get_gpu()->gpu_sim_cycle +
-                               m_core->get_gpu()->gpu_tot_sim_cycle);
-            m_response_fifo.pop_front();
-            m_next_global = mf;
-          }
-        } else {
-          if (m_L1D->fill_port_free()) {
-            m_L1D->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
-                                m_core->get_gpu()->gpu_tot_sim_cycle);
-            m_response_fifo.pop_front();
-          }
-        }
+      } else if (ordinary_response) {
+        m_ldst_legacy_response_downstream_full = true;
       }
+    }
+  } else if (!m_response_fifo.empty() &&
+             !response_uses_explicit_width(m_response_fifo.front())) {
+    // This option widens only ordinary bypass replies and acknowledgements.
+    // Cached L1D, texture, and constant fills keep the pre-existing one-head
+    // service path; in particular, a sector-cache fill which does not occupy
+    // the fill port must not make the loop consume another cached response.
+    if (response_head_ready()) {
+      advance_response_head();
+    }
+  } else if (!m_response_fifo.empty()) {
+    if (!m_ldst_response_budget_active) {
+      m_ldst_response_budget.begin_tick(response_width);
+      m_ldst_response_budget_active = true;
+    }
+    while (!m_response_fifo.empty() &&
+           response_uses_explicit_width(m_response_fifo.front())) {
+      const unsigned sectors =
+          memory_transport_data_sectors(m_response_fifo.front());
+      if (!response_head_ready()) {
+        m_ldst_response_budget.note_downstream_full();
+        break;
+      }
+      if (!m_ldst_response_budget.can_accept(sectors)) {
+        m_ldst_response_budget.note_width_limited(sectors);
+        break;
+      }
+      advance_response_head();
+      m_ldst_response_budget.consume(sectors);
+      m_ldst_response_stats.record_accept(sectors);
     }
   }
 
@@ -4528,10 +5077,39 @@ void ldst_unit::cycle() {
       }
     } else {
       // stores exit pipeline here
+      if (pipe_reg.is_store() && pipe_reg.space.get_type() == shared_space &&
+          pipe_reg.get_active_mask().any())
+        m_core->complete_shared_store(warp_id);
       m_core->dec_inst_in_pipeline(warp_id);
       m_core->warp_inst_complete(*m_dispatch_reg);
       m_dispatch_reg->clear();
     }
+  }
+}
+
+void ldst_unit::end_memory_transport_cycle() {
+  if (m_config->gpgpu_ldst_request_width == 0) {
+    if (m_ldst_legacy_request_downstream_full)
+      ++m_ldst_request_stats.downstream_full_ticks;
+    m_ldst_request_stats.record_tick_service(
+        m_ldst_legacy_request_service_slots);
+    m_ldst_legacy_request_service_slots = 0;
+    m_ldst_legacy_request_downstream_full = false;
+  } else if (m_ldst_request_budget_active) {
+    m_ldst_request_budget.end_tick(&m_ldst_request_stats);
+    m_ldst_request_budget_active = false;
+  }
+
+  if (m_config->gpgpu_ldst_response_sectors_per_cycle == 0) {
+    if (m_ldst_legacy_response_downstream_full)
+      ++m_ldst_response_stats.downstream_full_ticks;
+    m_ldst_response_stats.record_tick_service(
+        m_ldst_legacy_response_service_slots);
+    m_ldst_legacy_response_service_slots = 0;
+    m_ldst_legacy_response_downstream_full = false;
+  } else if (m_ldst_response_budget_active) {
+    m_ldst_response_budget.end_tick(&m_ldst_response_stats);
+    m_ldst_response_budget_active = false;
   }
 }
 
@@ -4540,6 +5118,31 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
   assert(m_cta_status[cta_num] == 0);
   assert(m_pending_tma_cta_releases.find(cta_num) ==
          m_pending_tma_cta_releases.end());
+  cta_lifecycle_state_t &lifecycle = m_cta_lifecycle[cta_num];
+  assert(lifecycle.active);
+  assert(lifecycle.kernel_uid == kernel->get_uid());
+  const unsigned long long release_cycle =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  const unsigned long long replacement_ready_cycle =
+      release_cycle + m_config->gpgpu_cta_replacement_latency;
+  assert(release_cycle >= lifecycle.admit_cycle);
+  assert(lifecycle.threads_exited);
+  assert(release_cycle >= lifecycle.threads_exit_cycle);
+  SHADER_GPPRINTF(LIVENESS,
+                  "CTA_LIFECYCLE event=release kernel_uid=%u sid=%u hw_cta=%u "
+                  "logical_cta=%u generation=%u cycle=%llu active_cycles=%llu "
+                  "threads_exit=%llu exit_to_release=%llu pending_tma=%u "
+                  "replacement_ready=%llu replacement_latency=%u\n",
+                  lifecycle.kernel_uid, m_sid, cta_num,
+                  lifecycle.logical_cta_id, lifecycle.generation, release_cycle,
+                  release_cycle - lifecycle.admit_cycle,
+                  lifecycle.threads_exit_cycle,
+                  release_cycle - lifecycle.threads_exit_cycle,
+                  lifecycle.pending_tma ? 1 : 0, replacement_ready_cycle,
+                  m_config->gpgpu_cta_replacement_latency);
+  lifecycle.active = false;
+  lifecycle.last_release_cycle = release_cycle;
+  lifecycle.replacement_ready_cycle = replacement_ready_cycle;
 
   // Increment the completed CTAs
   m_stats->ctas_completed++;
@@ -4550,6 +5153,8 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
   m_barriers.cleanup_cta_bulk_groups(cta_num);
   if (m_tma != nullptr) m_tma->cleanup_cta(cta_num);
   m_wgmma.cleanup_cta(cta_num);
+  m_tcgen05.cleanup_cta(cta_num);
+  m_gpu->get_tcgen05_tmem_manager().clear_cta(m_sid, cta_num);
   shader_CTA_count_unlog(m_sid, 1);
 
   SHADER_GPPRINTF(
@@ -4610,7 +5215,22 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
   assert(m_cta_status[cta_num] > 0);
   m_cta_status[cta_num]--;
   if (!m_cta_status[cta_num]) {
-    if (m_tma != nullptr && m_tma->has_pending_for_cta(cta_num)) {
+    cta_lifecycle_state_t &lifecycle = m_cta_lifecycle[cta_num];
+    assert(lifecycle.active);
+    assert(lifecycle.kernel_uid == kernel->get_uid());
+    lifecycle.threads_exited = true;
+    lifecycle.threads_exit_cycle =
+        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+    lifecycle.pending_tma =
+        m_tma != nullptr && m_tma->has_pending_for_cta(cta_num);
+    SHADER_GPPRINTF(
+        LIVENESS,
+        "CTA_LIFECYCLE event=threads_exit kernel_uid=%u sid=%u hw_cta=%u "
+        "logical_cta=%u generation=%u cycle=%llu pending_tma=%u\n",
+        lifecycle.kernel_uid, m_sid, cta_num, lifecycle.logical_cta_id,
+        lifecycle.generation, lifecycle.threads_exit_cycle,
+        lifecycle.pending_tma ? 1 : 0);
+    if (lifecycle.pending_tma) {
       bool inserted = m_pending_tma_cta_releases.emplace(cta_num, kernel).second;
       assert(inserted && "CTA already pending TMA release");
       SHADER_GPPRINTF(
@@ -5021,6 +5641,13 @@ void ldst_unit::print(FILE *fout) const {
   }
 }
 
+void ldst_unit::accumulate_memory_transport_stats(
+    memory_transport_service_stats &request_stats,
+    memory_transport_service_stats &response_stats) const {
+  request_stats.add(m_ldst_request_stats);
+  response_stats.add(m_ldst_response_stats);
+}
+
 void shader_core_ctx::display_pipeline(FILE *fout, int print_mem,
                                        int mask) const {
   fprintf(fout, "=================================================\n");
@@ -5316,9 +5943,33 @@ void shader_core_config::set_pipeline_latency() {
   // all div operation are executed on sfu
   // assume that the max latency are dp div or normal sfu_latency
   max_sfu_latency = std::max(dp_latency[4], sfu_latency);
-  // assume that the max operation has the max latency
+  max_sfu_latency = std::max(max_sfu_latency,
+                            gpgpu_ctx->func_sim->opcode_latency_ex2);
+  // Packed arithmetic can inherit any of the first four scalar FP latencies.
   max_sp_latency = fp_latency[1];
+  for (unsigned i = 0; i < 4; ++i)
+    max_sp_latency = std::max(max_sp_latency, fp_latency[i]);
   max_int_latency = std::max(int_latency[1], int_latency[5]);
+  max_int_latency = std::max(max_int_latency,
+                            gpgpu_ctx->func_sim->opcode_latency_predicate);
+  max_int_latency = std::max(max_int_latency,
+                            gpgpu_ctx->func_sim->opcode_latency_int_logic);
+  if (gpgpu_ctx->func_sim->opcode_f32_minmax_use_int)
+    max_int_latency = std::max(max_int_latency, fp_latency[1]);
+  // Predicate ALU instructions fall back to SP when there is no INT unit.
+  max_sp_latency = std::max(max_sp_latency,
+                           gpgpu_ctx->func_sim->opcode_latency_predicate);
+  max_sp_latency = std::max(max_sp_latency,
+                           gpgpu_ctx->func_sim->opcode_latency_f32x2);
+  // Packed CVT keeps the ALU route: INT when available, SP otherwise.
+  max_sp_latency = std::max(max_sp_latency,
+                           gpgpu_ctx->func_sim->opcode_latency_cvt_f16x2_f32);
+  max_int_latency = std::max(max_int_latency,
+                            gpgpu_ctx->func_sim->opcode_latency_cvt_f16x2_f32);
+  // Without a dedicated INT pipeline, integer and shuffle instructions use
+  // SP as well. Size that pipeline for their latency before dispatching them.
+  if (gpgpu_num_int_units == 0)
+    max_sp_latency = std::max(max_sp_latency, max_int_latency);
   max_dp_latency = dp_latency[1];
   max_tensor_core_latency = std::max(tensor_latency_max, wgmma_latency_max);
   max_tma_latency = tma_latency;
@@ -5334,6 +5985,10 @@ void shader_core_ctx::cycle() {
   m_stats->shader_cycles[m_sid]++;
   writeback();
   execute();
+  process_alu_scoreboard_forwarding(m_gpu->gpu_tot_sim_cycle +
+                                   m_gpu->gpu_sim_cycle);
+  process_named_arrivals(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+  m_ldst_unit->end_memory_transport_cycle();
   read_operands();
   issue();
   for (unsigned int i = 0; i < m_config->inst_fetch_throughput; ++i) {
@@ -5342,8 +5997,38 @@ void shader_core_ctx::cycle() {
   }
 }
 
-// Flushes all content of the cache to memory
+void shader_core_ctx::begin_alu_scoreboard_forwarding(const warp_inst_t &inst) {
+  if (!m_config->gpgpu_alu_scoreboard_forwarding) return;
+  if (inst.op != SP_OP && inst.op != INTP_OP && inst.op != ALU_OP &&
+      inst.op != SFU_OP && inst.op != ALU_SFU_OP && inst.op != DP_OP)
+    return;
+  bool has_output = false;
+  alu_forward_event_t event;
+  event.warp_id = inst.warp_id();
+  event.inst_uid = inst.get_uid();
+  for (unsigned r = 0; r < MAX_OUTPUT_VALUES; ++r) {
+    event.outputs[r] = inst.out[r];
+    has_output |= inst.out[r] != 0;
+  }
+  if (!has_output) return;
+  const auto cycle = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+  m_alu_forward_events.emplace(
+      scoreboard_forward_ready_cycle(inst.get_issue_cycle(), cycle, inst.latency),
+      event);
+}
 
+void shader_core_ctx::process_alu_scoreboard_forwarding(
+    unsigned long long cycle) {
+  while (!m_alu_forward_events.empty() &&
+         m_alu_forward_events.begin()->first <= cycle) {
+    const auto &event = m_alu_forward_events.begin()->second;
+    m_scoreboard->markRegistersReadyForWarp(event.warp_id, event.inst_uid,
+                                          event.outputs);
+    m_alu_forward_events.erase(m_alu_forward_events.begin());
+  }
+}
+
+// Flushes all content of the cache to memory
 void shader_core_ctx::cache_flush() { m_ldst_unit->flush(); }
 
 void shader_core_ctx::cache_invalidate() { m_ldst_unit->invalidate(); }
@@ -5500,6 +6185,13 @@ void barrier_set_t::allocate_barrier(unsigned cta_id, warp_set_t warps) {
 }
 
 void barrier_set_t::reset_mbarrier() {
+  std::vector<unsigned> warp_ids;
+  for (const auto &entry : m_pending_mbarrier_waits) {
+    warp_ids.push_back(entry.first);
+  }
+  for (unsigned warp_id : warp_ids) {
+    cancel_mbarrier_wait(warp_id, "mbarrier reset", true);
+  }
   m_mbarrier_manager.reset();
 }
 
@@ -5507,6 +6199,7 @@ void barrier_set_t::reset_mbarrier() {
 void barrier_set_t::deallocate_barrier(unsigned cta_id) {
   cta_to_warp_t::iterator w = m_cta_to_warps.find(cta_id);
   if (w == m_cta_to_warps.end()) return;
+  cleanup_cta_pending_mbarrier_waits(cta_id);
   warp_set_t warps = w->second;
   warp_set_t at_barrier = warps & m_warp_at_barrier;
   assert(at_barrier.any() == false);  // no warps stuck at barrier
@@ -5535,6 +6228,7 @@ void barrier_set_t::deallocate_barrier(unsigned cta_id) {
 void barrier_set_t::cleanup_cta_mbarriers(unsigned cta_id) {
   // Clean up all mbarriers for this CTA to prevent collisions when
   // the hw_cta_id gets recycled for a new CTA
+  cleanup_cta_pending_mbarrier_waits(cta_id);
   m_mbarrier_manager.cleanup_cta(cta_id);
 }
 
@@ -5679,6 +6373,7 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
 void barrier_set_t::warp_exit(unsigned warp_id) {
   // caller needs to verify all threads in warp are done, e.g., by checking PDOM
   // stack to see it has only one entry during exit_impl()
+  cancel_mbarrier_wait(warp_id, "mbarrier warp exit", true);
   m_warp_active.reset(warp_id);
   m_warp_named_barrier_id[warp_id] = (unsigned)-1;
 
@@ -5725,6 +6420,17 @@ void barrier_set_t::wait_cp_async_group(unsigned warp_id) {
   m_warp_named_barrier_id[warp_id] = (unsigned)-1;
 }
 
+void barrier_set_t::wait_tcgen05_warp(unsigned warp_id) {
+  assert(!m_warp_at_barrier.test(warp_id));
+  m_warp_at_barrier.set(warp_id);
+  m_warp_barrier_type[warp_id] = BARRIER_WAIT_TCGEN05;
+  m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+}
+
+void barrier_set_t::release_tcgen05_warp(unsigned warp_id) {
+  clear_warp_waiting(warp_id, BARRIER_WAIT_TCGEN05, "TCGen05 wait release");
+}
+
 void barrier_set_t::release_cp_async_warp(unsigned warp_id) {
   unsigned release_latency =
       m_shader->get_config()->gpgpu_cp_async_wait_release_latency;
@@ -5767,9 +6473,26 @@ void barrier_set_t::dump() const {
     }
   }
   printf("\n");
-  printf("  pending_mbarrier_releases: %zu", m_pending_warp_releases.size());
+  printf("  pending_delayed_releases: %zu", m_pending_warp_releases.size());
   for (const auto &entry : m_pending_warp_releases) {
     printf(" {warp=%d, remaining=%u}", entry.warp_id, entry.remaining);
+  }
+  printf("\n");
+  printf("  pending_mbarrier_waits: %zu", m_pending_mbarrier_waits.size());
+  for (const auto &entry : m_pending_mbarrier_waits) {
+    printf(" {warp=%u,dynamic=%u,next=%llu,lanes=[", entry.first,
+           entry.second.dynamic_warp_id,
+           (unsigned long long)entry.second.next_recheck_cycle);
+    for (unsigned lane = 0; lane < m_warp_size; ++lane) {
+      const auto &lane_wait = entry.second.lanes[lane];
+      if (!lane_wait.active) continue;
+      printf("%u:0x%llx/%u/%s@%llu,", lane,
+             (unsigned long long)lane_wait.addr, (unsigned)lane_wait.parity,
+             lane_wait.resolved ? (lane_wait.result ? "true" : "false")
+                                : "pending",
+             (unsigned long long)lane_wait.deadline_cycle);
+    }
+    printf("]}");
   }
   printf("\n");
   m_mbarrier_manager.dump();
@@ -5790,6 +6513,74 @@ void barrier_set_t::dump() const {
   fflush(stdout);
 }
 
+void shader_core_ctx::complete_shared_store(unsigned warp_id) {
+  auto &state = m_shared_barrier_state[warp_id];
+  assert(state.pending_stores > 0);
+  --state.pending_stores;
+  state.stores_visible = std::max(
+      state.stores_visible, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle +
+                                m_config->gpgpu_smem_store_visibility_latency);
+}
+
+bool shader_core_ctx::named_barrier_issue_ready(unsigned warp_id) const {
+  const auto &state = m_shared_barrier_state[warp_id];
+  // Preserve barrier order while ordinary instructions may resume before
+  // a previous nonblocking arrive becomes visible.
+  return state.pending_stores == 0 && state.pending_arrivals == 0 &&
+         state.stores_visible <=
+             m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+}
+
+bool shader_core_ctx::named_arrive_warp_ready(unsigned warp_id) const {
+  return m_shared_barrier_state[warp_id].arrive_ready <=
+         m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+}
+
+void shader_core_ctx::issue_named_arrival(unsigned warp_id,
+                                          const warp_inst_t &inst) {
+  const auto now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+  auto &state = m_shared_barrier_state[warp_id];
+  state.arrive_ready = now + m_config->gpgpu_named_barrier_arrive_latency;
+  const unsigned cta_id = m_warp[warp_id]->get_cta_id();
+  const unsigned delay =
+      m_config->gpgpu_named_barrier_arrive_visibility_latency;
+  if (delay == 0) {
+    m_barriers.warp_reaches_barrier(cta_id, warp_id,
+                                    const_cast<warp_inst_t *>(&inst));
+    return;
+  }
+  m_named_arrivals.emplace(
+      now + delay, named_arrival_event{cta_id, warp_id,
+                                       m_warp[warp_id]->get_dynamic_warp_id(),
+                                       inst.bar_id, inst.bar_count, inst.pc});
+  ++state.pending_arrivals;
+  // Retain resource lifetime until delivery without holding instruction issue.
+  m_warp[warp_id]->inc_inst_in_pipeline();
+}
+
+void shader_core_ctx::process_named_arrivals(unsigned long long cycle) {
+  while (!m_named_arrivals.empty() &&
+         m_named_arrivals.begin()->first <= cycle) {
+    const auto event = m_named_arrivals.begin()->second;
+    m_named_arrivals.erase(m_named_arrivals.begin());
+    auto &state = m_shared_barrier_state[event.warp_id];
+    assert(state.pending_arrivals > 0);
+    assert(m_warp[event.warp_id]->get_dynamic_warp_id() ==
+           event.dynamic_warp_id);
+    assert(m_warp[event.warp_id]->get_cta_id() == event.cta_id);
+    warp_inst_t arrival;
+    arrival.bar_type = ARRIVE;
+    arrival.bar_id = event.bar_id;
+    arrival.bar_count = event.bar_count;
+    arrival.pc = event.pc;
+    m_barriers.warp_reaches_barrier(event.cta_id, event.warp_id, &arrival);
+    --state.pending_arrivals;
+    m_warp[event.warp_id]->dec_inst_in_pipeline();
+    if (state.pending_arrivals == 0 && m_warp[event.warp_id]->functional_done())
+      warp_exit(event.warp_id);
+  }
+}
+
 void shader_core_ctx::warp_exit(unsigned warp_id) {
   bool done = true;
   for (unsigned i = warp_id * get_config()->warp_size;
@@ -5803,7 +6594,10 @@ void shader_core_ctx::warp_exit(unsigned warp_id) {
   }
   // if (m_warp[warp_id].get_n_completed() == get_config()->warp_size)
   // if (this->m_simt_stack[warp_id]->get_num_entries() == 0)
-  if (done) m_barriers.warp_exit(warp_id);
+  // An issued arrive must reach the barrier before the warp is removed from
+  // its participants. Pending events also retain the warp's pipeline lifetime.
+  if (done && m_shared_barrier_state[warp_id].pending_arrivals == 0)
+    m_barriers.warp_exit(warp_id);
 }
 
 bool shader_core_ctx::check_if_non_released_reduction_barrier(
@@ -5899,6 +6693,12 @@ void shader_core_ctx::accept_ldst_unit_response(mem_fetch *mf) {
   m_ldst_unit->fill(mf);
 }
 
+void shader_core_ctx::accumulate_ldst_transport_stats(
+    memory_transport_service_stats &ldst_request,
+    memory_transport_service_stats &ldst_response) const {
+  m_ldst_unit->accumulate_memory_transport_stats(ldst_request, ldst_response);
+}
+
 void shader_core_ctx::store_ack(class mem_fetch *mf) {
   assert(mf->get_type() == WRITE_ACK ||
          ((m_config->gpgpu_perfect_mem || m_memory_config->SST_mode) &&
@@ -5952,6 +6752,8 @@ bool shd_warp_t::hardware_done() const {
 bool shd_warp_t::waiting() {
   if (functional_done()) {
     // waiting to be initialized with a kernel
+    return true;
+  } else if (!m_shader->named_arrive_warp_ready(m_warp_id)) {
     return true;
   } else if (m_shader->warp_waiting_at_barrier(m_warp_id)) {
     // waiting for other warps in CTA to reach barrier
@@ -6386,6 +7188,11 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
 #endif
   m_mem_stats = mstats;
   m_mem_config = mem_config;
+  m_response_ingress_budgets.resize(m_config->n_simt_cores_per_cluster);
+  m_response_dispatch_budgets.resize(m_config->n_simt_cores_per_cluster);
+  m_response_ingress_stats.resize(m_config->n_simt_cores_per_cluster);
+  m_response_dispatch_stats.resize(m_config->n_simt_cores_per_cluster);
+  m_response_tick_state.resize(m_config->n_simt_cores_per_cluster);
 }
 
 void simt_core_cluster::aggregate_stats() {
@@ -6648,81 +7455,219 @@ void sst_simt_core_cluster::icnt_inject_request_packet_to_SST(
 }
 
 void simt_core_cluster::icnt_cycle() {
+  for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+    m_response_tick_state[cid].reset();
+
   unsigned tma_response_width =
       m_config->gpgpu_tma_response_width ? m_config->gpgpu_tma_response_width : 1;
   unsigned cp_async_response_width =
       m_config->gpgpu_cp_async_response_width
           ? m_config->gpgpu_cp_async_response_width
           : 1;
-  unsigned tma_responses_accepted = 0;
-  unsigned cp_async_responses_accepted = 0;
+  const unsigned dispatch_width =
+      m_config->gpgpu_cluster_response_dispatch_sectors_per_cycle;
+  if (dispatch_width == 0) {
+    unsigned tma_responses_accepted = 0;
+    unsigned cp_async_responses_accepted = 0;
+    while (!m_response_fifo.empty()) {
+      mem_fetch *mf = m_response_fifo.front();
+      unsigned cid = m_config->sid_to_cid(mf->get_sid());
+      const unsigned sectors = memory_transport_data_sectors(mf);
+      const bool is_movement_response =
+          mf->get_access_type() == TMA_ACC_R ||
+          mf->get_access_type() == TMA_ACC_W ||
+          mf->get_access_type() == CP_ASYNC_ACC_R;
+      bool accepted_response = false;
+      if (is_movement_response) {
+        bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
+        unsigned &accepted =
+            is_cp_async ? cp_async_responses_accepted : tma_responses_accepted;
+        unsigned width =
+            is_cp_async ? cp_async_response_width : tma_response_width;
+        if (accepted < width && !m_core[cid]->tma_response_buffer_full()) {
+          m_response_fifo.pop_front();
+          m_core[cid]->accept_tma_response(mf);
+          accepted++;
+          accepted_response = true;
+        } else {
+          ++m_response_dispatch_stats[cid].downstream_full_ticks;
+          break;
+        }
+      } else if (mf->get_access_type() == INST_ACC_R) {
+        if (!m_core[cid]->fetch_unit_response_buffer_full()) {
+          m_response_fifo.pop_front();
+          m_core[cid]->accept_fetch_response(mf);
+          accepted_response = true;
+        } else {
+          ++m_response_dispatch_stats[cid].downstream_full_ticks;
+        }
+      } else {
+        if (!m_core[cid]->ldst_unit_response_buffer_full()) {
+          m_response_fifo.pop_front();
+          m_mem_stats->get_stats()->memlatstat_read_done(mf);
+          m_core[cid]->accept_ldst_unit_response(mf);
+          accepted_response = true;
+        } else {
+          ++m_response_dispatch_stats[cid].downstream_full_ticks;
+        }
+      }
+      if (accepted_response) {
+        m_response_dispatch_stats[cid].record_accept(sectors);
+        m_response_tick_state[cid].dispatch_service_slots +=
+            memory_transport_service_slots(sectors);
+      }
+      // accept_*() transfers ownership of mf to the target consumer.  Decide
+      // whether the legacy loop may continue from the classification cached
+      // before that hand-off, rather than reading mf afterwards.
+      if (!(accepted_response && is_movement_response))
+        break;
+    }
+    for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+      m_response_dispatch_stats[cid].record_tick_service(
+          m_response_tick_state[cid].dispatch_service_slots);
+  } else {
+    for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+      m_response_dispatch_budgets[cid].begin_tick(dispatch_width);
 
-  while (!m_response_fifo.empty()) {
-    mem_fetch *mf = m_response_fifo.front();
-    unsigned cid = m_config->sid_to_cid(mf->get_sid());
-    if (mf->get_access_type() == TMA_ACC_R ||
-        mf->get_access_type() == TMA_ACC_W ||
-        mf->get_access_type() == CP_ASYNC_ACC_R) {
-      bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
-      unsigned &accepted =
-          is_cp_async ? cp_async_responses_accepted : tma_responses_accepted;
-      unsigned width = is_cp_async ? cp_async_response_width : tma_response_width;
-      if (accepted < width &&
-          !m_core[cid]->tma_response_buffer_full()) {
-        m_response_fifo.pop_front();
+    while (!m_response_fifo.empty()) {
+      mem_fetch *mf = m_response_fifo.front();
+      unsigned cid = m_config->sid_to_cid(mf->get_sid());
+      const unsigned sectors = memory_transport_data_sectors(mf);
+      memory_transport_service_budget &budget =
+          m_response_dispatch_budgets[cid];
+      const bool is_tma_response = mf->get_access_type() == TMA_ACC_R ||
+                                   mf->get_access_type() == TMA_ACC_W ||
+                                   mf->get_access_type() == CP_ASYNC_ACC_R;
+      const bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
+
+      bool consumer_ready = false;
+      if (is_tma_response) {
+        response_transport_tick_state &state = m_response_tick_state[cid];
+        unsigned &accepted = is_cp_async ? state.cp_async_dispatches
+                                         : state.tma_dispatches;
+        const unsigned local_width =
+            is_cp_async ? cp_async_response_width : tma_response_width;
+        consumer_ready =
+            accepted < local_width && !m_core[cid]->tma_response_buffer_full();
+      } else if (mf->get_access_type() == INST_ACC_R) {
+        // The explicit transport budget widens ordinary data, TMA, and
+        // cp.async responses only.  L1I retains its legacy one-response per
+        // target core per tick cadence.
+        consumer_ready =
+            m_response_tick_state[cid].instruction_dispatches == 0 &&
+            !m_core[cid]->fetch_unit_response_buffer_full();
+      } else {
+        consumer_ready = !m_core[cid]->ldst_unit_response_buffer_full();
+      }
+      if (!consumer_ready) {
+        budget.note_downstream_full();
+        break;
+      }
+      if (!budget.can_accept(sectors)) {
+        budget.note_width_limited(sectors);
+        break;
+      }
+
+      m_response_fifo.pop_front();
+      if (is_tma_response) {
+        response_transport_tick_state &state = m_response_tick_state[cid];
+        unsigned &accepted = is_cp_async ? state.cp_async_dispatches
+                                         : state.tma_dispatches;
         m_core[cid]->accept_tma_response(mf);
-        accepted++;
-        continue;
-      }
-      break;
-    } else if (mf->get_access_type() == INST_ACC_R) {
-      // instruction fetch response
-      if (!m_core[cid]->fetch_unit_response_buffer_full()) {
-        m_response_fifo.pop_front();
+        ++accepted;
+      } else if (mf->get_access_type() == INST_ACC_R) {
         m_core[cid]->accept_fetch_response(mf);
-      }
-    } else {
-      // data response
-      if (!m_core[cid]->ldst_unit_response_buffer_full()) {
-        m_response_fifo.pop_front();
+        ++m_response_tick_state[cid].instruction_dispatches;
+      } else {
         m_mem_stats->get_stats()->memlatstat_read_done(mf);
         m_core[cid]->accept_ldst_unit_response(mf);
       }
+      budget.consume(sectors);
+      m_response_dispatch_stats[cid].record_accept(sectors);
     }
-    break;
+    for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+      m_response_dispatch_budgets[cid].end_tick(
+          &m_response_dispatch_stats[cid]);
   }
 
-  unsigned tma_responses_popped = 0;
-  unsigned cp_async_responses_popped = 0;
-  while (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
-    mem_fetch *mf = (mem_fetch *)::icnt_pop(m_cluster_id);
-    if (!mf) break;
-    assert(mf->get_tpc() == m_cluster_id);
-    assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
+  const unsigned ingress_width =
+      m_config->gpgpu_cluster_response_ingress_sectors_per_cycle;
+  if (ingress_width == 0) {
+    unsigned tma_responses_popped = 0;
+    unsigned cp_async_responses_popped = 0;
+    while (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
+      mem_fetch *mf = (mem_fetch *)::icnt_pop(m_cluster_id);
+      if (!mf) break;
+      assert(mf->get_tpc() == m_cluster_id);
+      assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
+      unsigned cid = m_config->sid_to_cid(mf->get_sid());
 
-    // The packet size varies depending on the type of request:
-    // - For read request and atomic request, the packet contains the data
-    // - For write-ack, the packet only has control metadata
-    unsigned int packet_size =
-        (mf->get_is_write()) ? mf->get_ctrl_size() : mf->size();
-    m_stats->m_incoming_traffic_stats->record_traffic(mf, packet_size);
-    mf->set_status(IN_CLUSTER_TO_SHADER_QUEUE,
-                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-    m_response_fifo.push_back(mf);
-    m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+      unsigned int packet_size =
+          (mf->get_is_write()) ? mf->get_ctrl_size() : mf->size();
+      m_stats->m_incoming_traffic_stats->record_traffic(mf, packet_size);
+      mf->set_status(IN_CLUSTER_TO_SHADER_QUEUE,
+                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+      m_response_fifo.push_back(mf);
+      m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+      const unsigned sectors = memory_transport_data_sectors(mf);
+      m_response_ingress_stats[cid].record_accept(sectors);
+      m_response_tick_state[cid].ingress_service_slots +=
+          memory_transport_service_slots(sectors);
 
-    if (mf->get_access_type() == TMA_ACC_R ||
-        mf->get_access_type() == TMA_ACC_W ||
-        mf->get_access_type() == CP_ASYNC_ACC_R) {
-      bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
-      unsigned &popped =
-          is_cp_async ? cp_async_responses_popped : tma_responses_popped;
-      unsigned width = is_cp_async ? cp_async_response_width : tma_response_width;
-      popped++;
-      if (popped < width)
-        continue;
+      if (mf->get_access_type() == TMA_ACC_R ||
+          mf->get_access_type() == TMA_ACC_W ||
+          mf->get_access_type() == CP_ASYNC_ACC_R) {
+        bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
+        unsigned &popped =
+            is_cp_async ? cp_async_responses_popped : tma_responses_popped;
+        unsigned width =
+            is_cp_async ? cp_async_response_width : tma_response_width;
+        popped++;
+        if (popped < width) continue;
+      }
+      break;
     }
-    break;
+    for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+      m_response_ingress_stats[cid].record_tick_service(
+          m_response_tick_state[cid].ingress_service_slots);
+  } else {
+    for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+      m_response_ingress_budgets[cid].begin_tick(ingress_width);
+
+    while (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
+      mem_fetch *mf = (mem_fetch *)::icnt_top(m_cluster_id);
+      if (!mf) break;
+      assert(mf->get_tpc() == m_cluster_id);
+      assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
+      unsigned cid = m_config->sid_to_cid(mf->get_sid());
+      const unsigned sectors = memory_transport_data_sectors(mf);
+      memory_transport_service_budget &budget = m_response_ingress_budgets[cid];
+      if (!budget.can_accept(sectors)) {
+        budget.note_width_limited(sectors);
+        break;
+      }
+
+      mem_fetch *popped = (mem_fetch *)::icnt_pop(m_cluster_id);
+      assert(popped == mf);
+      unsigned int packet_size =
+          (mf->get_is_write()) ? mf->get_ctrl_size() : mf->size();
+      m_stats->m_incoming_traffic_stats->record_traffic(mf, packet_size);
+      mf->set_status(IN_CLUSTER_TO_SHADER_QUEUE,
+                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+      m_response_fifo.push_back(mf);
+      m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+      budget.consume(sectors);
+      m_response_ingress_stats[cid].record_accept(sectors);
+    }
+    if (m_response_fifo.size() >= m_config->n_simt_ejection_buffer_size) {
+      mem_fetch *mf = (mem_fetch *)::icnt_top(m_cluster_id);
+      if (mf) {
+        unsigned cid = m_config->sid_to_cid(mf->get_sid());
+        m_response_ingress_budgets[cid].note_downstream_full();
+      }
+    }
+    for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid)
+      m_response_ingress_budgets[cid].end_tick(&m_response_ingress_stats[cid]);
   }
 }
 
@@ -6812,6 +7757,23 @@ void simt_core_cluster::get_icnt_stats(long &n_simt_to_mem,
   }
   n_simt_to_mem = simt_to_mem;
   n_mem_to_simt = mem_to_simt;
+}
+
+void simt_core_cluster::accumulate_response_transport_stats(
+    memory_transport_service_stats &response_ingress,
+    memory_transport_service_stats &response_dispatch) const {
+  for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid) {
+    response_ingress.add(m_response_ingress_stats[cid]);
+    response_dispatch.add(m_response_dispatch_stats[cid]);
+  }
+}
+
+void simt_core_cluster::accumulate_ldst_transport_stats(
+    memory_transport_service_stats &ldst_request,
+    memory_transport_service_stats &ldst_response) const {
+  for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid) {
+    m_core[cid]->accumulate_ldst_transport_stats(ldst_request, ldst_response);
+  }
 }
 
 void simt_core_cluster::get_cache_stats(cache_stats &cs) const {

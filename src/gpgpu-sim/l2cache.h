@@ -34,10 +34,542 @@
 
 #include "../abstract_hardware_model.h"
 #include "dram.h"
+#include "mem_transport_budget.h"
 
+#include <algorithm>
+#include <cassert>
+#include <cstdlib>
+#include <deque>
 #include <list>
 #include <queue>
+#include <unordered_map>
+#include <utility>
 #include <vector>
+
+// ROP-delay arbitration and accounting belong to the L2 sub-partition.
+enum rop_delay_output_stop_reason {
+  ROP_DELAY_OUTPUT_NO_READY_WORK,
+  ROP_DELAY_OUTPUT_WIDTH_LIMITED,
+  ROP_DELAY_OUTPUT_DOWNSTREAM_FULL,
+};
+
+struct rop_delay_output_service_result {
+  rop_delay_output_service_result()
+      : reason(ROP_DELAY_OUTPUT_NO_READY_WORK),
+        accepted_items(0),
+        accepted_sectors(0),
+        bypassed_items(0) {}
+
+  rop_delay_output_stop_reason reason;
+  unsigned accepted_items;
+  unsigned accepted_sectors;
+  unsigned bypassed_items;
+};
+
+struct rop_delay_output_service_stats {
+  rop_delay_output_service_stats()
+      : accepted_items(0),
+        accepted_sectors(0),
+        bypassed_items(0),
+        service_ticks(0),
+        max_sectors_per_tick(0),
+        width_limited_ticks(0),
+        downstream_full_ticks(0),
+        queue_full_ticks(0) {}
+
+  void record(const rop_delay_output_service_result &result) {
+    accepted_items += result.accepted_items;
+    accepted_sectors += result.accepted_sectors;
+    bypassed_items += result.bypassed_items;
+    if (result.accepted_items != 0) ++service_ticks;
+    max_sectors_per_tick =
+        std::max<unsigned long long>(max_sectors_per_tick,
+                                     result.accepted_sectors);
+    if (result.reason == ROP_DELAY_OUTPUT_WIDTH_LIMITED)
+      ++width_limited_ticks;
+    if (result.reason == ROP_DELAY_OUTPUT_DOWNSTREAM_FULL) {
+      ++downstream_full_ticks;
+      // The production ROP-delay consumer has exactly one downstream: the
+      // bounded icnt-to-L2 FIFO. Keep the exact queue-full count separate so a
+      // future downstream can be distinguished without changing this ABI.
+      ++queue_full_ticks;
+    }
+  }
+
+  rop_delay_output_service_stats &operator+=(
+      const rop_delay_output_service_stats &rhs) {
+    accepted_items += rhs.accepted_items;
+    accepted_sectors += rhs.accepted_sectors;
+    bypassed_items += rhs.bypassed_items;
+    service_ticks += rhs.service_ticks;
+    max_sectors_per_tick =
+        std::max(max_sectors_per_tick, rhs.max_sectors_per_tick);
+    width_limited_ticks += rhs.width_limited_ticks;
+    downstream_full_ticks += rhs.downstream_full_ticks;
+    queue_full_ticks += rhs.queue_full_ticks;
+    return *this;
+  }
+
+  void print(FILE *fout, const char *name) const {
+    fprintf(fout, "%s_accepted_items = %llu\n", name, accepted_items);
+    fprintf(fout, "%s_accepted_sectors = %llu\n", name, accepted_sectors);
+    fprintf(fout, "%s_bypassed_items = %llu\n", name, bypassed_items);
+    fprintf(fout, "%s_service_ticks = %llu\n", name, service_ticks);
+    fprintf(fout, "%s_max_sectors_per_tick = %llu\n", name,
+            max_sectors_per_tick);
+    fprintf(fout, "%s_width_limited_ticks = %llu\n", name,
+            width_limited_ticks);
+    fprintf(fout, "%s_downstream_full_ticks = %llu\n", name,
+            downstream_full_ticks);
+    fprintf(fout, "%s_queue_full_ticks = %llu\n", name, queue_full_ticks);
+  }
+
+  unsigned long long accepted_items;
+  unsigned long long accepted_sectors;
+  unsigned long long bypassed_items;
+  unsigned long long service_ticks;
+  unsigned long long max_sectors_per_tick;
+  unsigned long long width_limited_ticks;
+  unsigned long long downstream_full_ticks;
+  unsigned long long queue_full_ticks;
+};
+
+// The local and remote priority queues retain the legacy arbitration rule:
+// the earlier ready cycle wins across queues, and a tie selects local. Within
+// each queue, insertion order is deterministic FIFO for equal ready cycles.
+template <typename T>
+class rop_delay_output_queue {
+ public:
+  rop_delay_output_queue() : m_next_sequence(0) {}
+
+  void push(T item, unsigned long long ready_cycle, bool remote) {
+    entry value = {ready_cycle, m_next_sequence++, item};
+    if (remote)
+      m_remote.push(value);
+    else
+      m_local.push(value);
+  }
+
+  bool empty() const { return m_local.empty() && m_remote.empty(); }
+  std::size_t size() const { return m_local.size() + m_remote.size(); }
+
+  // The delay stage and its output FIFO share an admission budget. Looking
+  // only at the far-end FIFO can drain the latency pipeline on every stall.
+  bool full(unsigned incoming, std::size_t downstream_size,
+            std::size_t downstream_capacity,
+            std::size_t pipeline_capacity) const {
+    return size() + downstream_size + incoming >
+           pipeline_capacity + downstream_capacity;
+  }
+
+  bool has_ready(unsigned long long cycle) const {
+    return next_ready_queue(cycle) != NULL;
+  }
+
+  // Width one is deliberately the legacy compatibility mode: it accepts one
+  // ready queue item per tick even if a non-sector cache represented that item
+  // with more than one 32-byte sector. Widths above one require every accepted
+  // item to be exactly one sector. The bypass callback models work resolved at
+  // the source arbiter (such as a waiter joining an outstanding sector master):
+  // it removes that item without consuming downstream source width.
+  template <typename SectorCount, typename Bypass, typename DownstreamFull,
+            typename Accept>
+  rop_delay_output_service_result service(unsigned long long cycle,
+                                           unsigned width,
+                                           SectorCount sector_count,
+                                           Bypass bypass,
+                                           DownstreamFull downstream_full,
+                                           Accept accept) {
+    assert(width > 0);
+    rop_delay_output_service_result result;
+
+    while (true) {
+      queue_type *queue = next_ready_queue(cycle);
+      if (queue == NULL) {
+        result.reason = ROP_DELAY_OUTPUT_NO_READY_WORK;
+        return result;
+      }
+
+      const T candidate = queue->top().item;
+      if (bypass(candidate)) {
+        queue->pop();
+        ++result.bypassed_items;
+        continue;
+      }
+
+      const unsigned sectors = sector_count(candidate);
+      assert(sectors > 0);
+      if (width == 1) {
+        if (result.accepted_items == 1) {
+          result.reason = ROP_DELAY_OUTPUT_WIDTH_LIMITED;
+          return result;
+        }
+      } else {
+        assert(sectors == 1 &&
+               "multi-issue ROP output requires 32-byte sector children");
+        if (result.accepted_sectors + sectors > width) {
+          result.reason = ROP_DELAY_OUTPUT_WIDTH_LIMITED;
+          return result;
+        }
+      }
+
+      if (downstream_full()) {
+        result.reason = ROP_DELAY_OUTPUT_DOWNSTREAM_FULL;
+        return result;
+      }
+
+      queue->pop();
+      accept(candidate);
+      ++result.accepted_items;
+      result.accepted_sectors += sectors;
+    }
+  }
+
+ private:
+  struct entry {
+    unsigned long long ready_cycle;
+    unsigned long long sequence;
+    T item;
+  };
+
+  static bool earlier(const entry &lhs, const entry &rhs) {
+    if (lhs.ready_cycle != rhs.ready_cycle)
+      return lhs.ready_cycle < rhs.ready_cycle;
+    return lhs.sequence < rhs.sequence;
+  }
+
+  struct later_first {
+    bool operator()(const entry &lhs, const entry &rhs) const {
+      return earlier(rhs, lhs);
+    }
+  };
+
+  typedef std::priority_queue<entry, std::vector<entry>, later_first>
+      queue_type;
+
+  static bool ready(const queue_type &queue, unsigned long long cycle) {
+    return !queue.empty() && cycle >= queue.top().ready_cycle;
+  }
+
+  queue_type *next_ready_queue(unsigned long long cycle) {
+    const bool local_ready = ready(m_local, cycle);
+    const bool remote_ready = ready(m_remote, cycle);
+    if (!local_ready && !remote_ready) return NULL;
+    if (local_ready && remote_ready)
+      return m_local.top().ready_cycle <= m_remote.top().ready_cycle
+                 ? &m_local
+                 : &m_remote;
+    return local_ready ? &m_local : &m_remote;
+  }
+
+  const queue_type *next_ready_queue(unsigned long long cycle) const {
+    const bool local_ready = ready(m_local, cycle);
+    const bool remote_ready = ready(m_remote, cycle);
+    if (!local_ready && !remote_ready) return NULL;
+    if (local_ready && remote_ready)
+      return m_local.top().ready_cycle <= m_remote.top().ready_cycle
+                 ? &m_local
+                 : &m_remote;
+    return local_ready ? &m_local : &m_remote;
+  }
+
+  queue_type m_local;
+  queue_type m_remote;
+  unsigned long long m_next_sequence;
+};
+
+enum l2_multi_issue_data_work {
+  L2_MULTI_ISSUE_HIT_DATA = 0,
+  L2_MULTI_ISSUE_DIRTY_EVICTION,
+};
+
+enum class l2_port_model_kind {
+  legacy = 0,
+  multi_issue,
+};
+
+inline l2_port_model_kind l2_port_model_from_config(unsigned mode) {
+  switch (mode) {
+    case 0:
+      return l2_port_model_kind::legacy;
+    case 1:
+      return l2_port_model_kind::multi_issue;
+    default:
+      assert(mode <= 1);
+      std::abort();
+  }
+}
+
+inline bool l2_multi_issue_port_model_enabled(unsigned mode) {
+  return l2_port_model_from_config(mode) == l2_port_model_kind::multi_issue;
+}
+
+inline bool l2_multi_issue_needs_data_port(
+    cache_request_status tag_probe_status,
+    unsigned prospective_dirty_eviction_sectors, bool ready_read_forward) {
+  assert(!ready_read_forward ||
+         (tag_probe_status != HIT && tag_probe_status != RESERVATION_FAIL));
+  return !ready_read_forward &&
+         (tag_probe_status == HIT || prospective_dirty_eviction_sectors > 0);
+}
+
+struct l2_multi_issue_port_stats {
+  unsigned long long lookup_accepted_sectors;
+  unsigned long long data_port_accepted_sectors;
+  unsigned long long data_port_hit_sectors;
+  unsigned long long data_port_dirty_eviction_sectors;
+  unsigned long long fill_port_accepted_sectors;
+  unsigned long long lookup_width_stall_cycles;
+  unsigned long long data_port_width_stall_cycles;
+  unsigned long long fill_port_width_stall_cycles;
+
+  l2_multi_issue_port_stats()
+      : lookup_accepted_sectors(0),
+        data_port_accepted_sectors(0),
+        data_port_hit_sectors(0),
+        data_port_dirty_eviction_sectors(0),
+        fill_port_accepted_sectors(0),
+        lookup_width_stall_cycles(0),
+        data_port_width_stall_cycles(0),
+        fill_port_width_stall_cycles(0) {}
+
+  l2_multi_issue_port_stats &operator+=(const l2_multi_issue_port_stats &rhs) {
+    lookup_accepted_sectors += rhs.lookup_accepted_sectors;
+    data_port_accepted_sectors += rhs.data_port_accepted_sectors;
+    data_port_hit_sectors += rhs.data_port_hit_sectors;
+    data_port_dirty_eviction_sectors += rhs.data_port_dirty_eviction_sectors;
+    fill_port_accepted_sectors += rhs.fill_port_accepted_sectors;
+    lookup_width_stall_cycles += rhs.lookup_width_stall_cycles;
+    data_port_width_stall_cycles += rhs.data_port_width_stall_cycles;
+    fill_port_width_stall_cycles += rhs.fill_port_width_stall_cycles;
+    return *this;
+  }
+};
+
+struct l2_tma_request_coalescing_stats {
+  l2_tma_request_coalescing_stats()
+      : master_sectors(0), merged_sectors(0), max_waiters(0) {}
+
+  l2_tma_request_coalescing_stats &operator+=(
+      const l2_tma_request_coalescing_stats &rhs) {
+    master_sectors += rhs.master_sectors;
+    merged_sectors += rhs.merged_sectors;
+    max_waiters = std::max(max_waiters, rhs.max_waiters);
+    return *this;
+  }
+
+  unsigned long long master_sectors;
+  unsigned long long merged_sectors;
+  unsigned long long max_waiters;
+};
+
+// Tracks one active read-service generation per sector address.  Closing an
+// address prevents later reads from joining an older generation (for example
+// after an intervening write), while the older master's existing waiters stay
+// available for response fan-out.
+template <typename T, typename Address>
+class outstanding_sector_coalescer {
+ public:
+  bool admit_waiter(Address address, T item,
+                    unsigned long long &waiter_count) {
+    typename std::unordered_map<Address, T>::iterator active =
+        m_active_master.find(address);
+    if (active == m_active_master.end()) return false;
+
+    typename std::unordered_map<T, group>::iterator existing =
+        m_groups.find(active->second);
+    assert(existing != m_groups.end());
+    existing->second.waiters.push_back(item);
+    waiter_count = existing->second.waiters.size();
+    return true;
+  }
+
+  bool admit(Address address, T item, unsigned long long &waiter_count) {
+    if (admit_waiter(address, item, waiter_count)) return false;
+
+    const std::pair<typename std::unordered_map<T, group>::iterator, bool>
+        inserted_group = m_groups.insert(std::make_pair(item, group(address)));
+    assert(inserted_group.second);
+    const std::pair<typename std::unordered_map<Address, T>::iterator, bool>
+        inserted_active =
+            m_active_master.insert(std::make_pair(address, item));
+    assert(inserted_active.second);
+    waiter_count = 0;
+    return true;
+  }
+
+  void close_address(Address address) { m_active_master.erase(address); }
+
+  bool close_master(T master, std::deque<T> &waiters) {
+    typename std::unordered_map<T, group>::iterator existing =
+        m_groups.find(master);
+    if (existing == m_groups.end()) return false;
+
+    typename std::unordered_map<Address, T>::iterator active =
+        m_active_master.find(existing->second.address);
+    if (active != m_active_master.end() && active->second == master)
+      m_active_master.erase(active);
+    waiters.swap(existing->second.waiters);
+    m_groups.erase(existing);
+    return true;
+  }
+
+ private:
+  struct group {
+    explicit group(Address address_) : address(address_) {}
+    Address address;
+    std::deque<T> waiters;
+  };
+
+  std::unordered_map<Address, T> m_active_master;
+  std::unordered_map<T, group> m_groups;
+};
+
+// Per-L2-instance sector service for the optional multi-issue port model.
+// A sector is a 32-byte L2 work package. These counters describe internal
+// sector service, not physical or logical request counts; callers retain all
+// mem_fetch ownership and completion semantics.
+class l2_multi_issue_ports {
+ public:
+  l2_multi_issue_ports()
+      : m_lookup_width(1),
+        m_data_width(1),
+        m_data_cycle_period(1),
+        m_data_fraction(0),
+        m_fill_width(1),
+        m_lookup_remaining(1),
+        m_data_remaining(1),
+        m_fill_remaining(1),
+        m_lookup_stall_recorded(false),
+        m_data_stall_recorded(false),
+        m_fill_stall_recorded(false) {}
+
+  void configure(unsigned lookup_width, unsigned data_width,
+                 unsigned fill_width, unsigned data_cycle_period = 1) {
+    assert(lookup_width > 0);
+    assert(data_width > 0);
+    assert(fill_width > 0);
+    assert(data_cycle_period > 0);
+    m_lookup_width = lookup_width;
+    m_data_width = data_width;
+    m_data_cycle_period = data_cycle_period;
+    m_data_fraction = 0;
+    m_fill_width = fill_width;
+    begin_cycle();
+  }
+
+  void begin_cycle() {
+    m_lookup_remaining = m_lookup_width;
+    // Retain only the fractional service phase. Unused whole-sector slots
+    // expire each tick, so idle time cannot create a later bandwidth burst.
+    m_data_fraction += m_data_width;
+    m_data_remaining = m_data_fraction / m_data_cycle_period;
+    m_data_fraction %= m_data_cycle_period;
+    m_fill_remaining = m_fill_width;
+    m_lookup_stall_recorded = false;
+    m_data_stall_recorded = false;
+    m_fill_stall_recorded = false;
+  }
+
+  bool can_accept_lookup(unsigned sectors) {
+    assert(sectors > 0);
+    if (sectors <= m_lookup_remaining) return true;
+    record_once(m_stats.lookup_width_stall_cycles, m_lookup_stall_recorded);
+    return false;
+  }
+
+  void accept_lookup(unsigned sectors) {
+    assert(sectors > 0 && sectors <= m_lookup_remaining);
+    m_lookup_remaining -= sectors;
+    m_stats.lookup_accepted_sectors += sectors;
+  }
+
+  bool data_port_has_capacity() {
+    if (m_data_remaining > 0) return true;
+    record_once(m_stats.data_port_width_stall_cycles, m_data_stall_recorded);
+    return false;
+  }
+
+  unsigned accept_data(unsigned pending_sectors,
+                       l2_multi_issue_data_work work) {
+    assert(pending_sectors > 0);
+    const unsigned accepted = std::min(pending_sectors, m_data_remaining);
+    m_data_remaining -= accepted;
+    m_stats.data_port_accepted_sectors += accepted;
+    if (work == L2_MULTI_ISSUE_HIT_DATA)
+      m_stats.data_port_hit_sectors += accepted;
+    else
+      m_stats.data_port_dirty_eviction_sectors += accepted;
+    if (accepted < pending_sectors)
+      record_once(m_stats.data_port_width_stall_cycles, m_data_stall_recorded);
+    return accepted;
+  }
+
+  unsigned accept_fill(unsigned pending_sectors) {
+    assert(pending_sectors > 0);
+    const unsigned accepted = std::min(pending_sectors, m_fill_remaining);
+    m_fill_remaining -= accepted;
+    m_stats.fill_port_accepted_sectors += accepted;
+    if (accepted < pending_sectors)
+      record_once(m_stats.fill_port_width_stall_cycles, m_fill_stall_recorded);
+    return accepted;
+  }
+
+  unsigned lookup_remaining() const { return m_lookup_remaining; }
+  unsigned data_remaining() const { return m_data_remaining; }
+  unsigned fill_remaining() const { return m_fill_remaining; }
+  const l2_multi_issue_port_stats &stats() const { return m_stats; }
+
+ private:
+  static void record_once(unsigned long long &counter, bool &recorded) {
+    if (recorded) return;
+    ++counter;
+    recorded = true;
+  }
+
+  unsigned m_lookup_width;
+  unsigned m_data_width;
+  unsigned m_data_cycle_period;
+  unsigned long long m_data_fraction;
+  unsigned m_fill_width;
+  unsigned m_lookup_remaining;
+  unsigned m_data_remaining;
+  unsigned m_fill_remaining;
+  bool m_lookup_stall_recorded;
+  bool m_data_stall_recorded;
+  bool m_fill_stall_recorded;
+  l2_multi_issue_port_stats m_stats;
+};
+
+class l2_multi_issue_pending_operation {
+ public:
+  l2_multi_issue_pending_operation() : m_remaining_sectors(0) {}
+
+  void start(unsigned sectors) {
+    assert(!active());
+    assert(sectors > 0);
+    m_remaining_sectors = sectors;
+  }
+
+  bool service_data(l2_multi_issue_ports &ports,
+                    l2_multi_issue_data_work work) {
+    assert(active());
+    m_remaining_sectors -= ports.accept_data(m_remaining_sectors, work);
+    return !active();
+  }
+
+  bool service_fill(l2_multi_issue_ports &ports) {
+    assert(active());
+    m_remaining_sectors -= ports.accept_fill(m_remaining_sectors);
+    return !active();
+  }
+
+  bool active() const { return m_remaining_sectors != 0; }
+  unsigned remaining_sectors() const { return m_remaining_sectors; }
+
+ private:
+  unsigned m_remaining_sectors;
+};
 
 class mem_fetch;
 
@@ -45,6 +577,7 @@ enum mem_sub_partition_full_stat {
   MSP_FULL_ICNT_TO_L2_NOT_ENOUGH_SECTOR_SLOTS = 0,
   MSP_FULL_ICNT_TO_L2_QUEUE_FULL,
   MSP_FULL_ICNT_TO_L2_QUEUE_NEAR_FULL,
+  MSP_FULL_ROP_PIPELINE_FULL,
   MSP_FULL_L2_DRAM_QUEUE_FULL,
   MSP_FULL_DRAM_L2_QUEUE_FULL,
   MSP_FULL_L2_ICNT_QUEUE_FULL,
@@ -84,6 +617,61 @@ class partition_mf_allocator : public mem_fetch_allocator {
   const memory_config *m_memory_config;
 };
 
+// Fractional per-tick service budget used by the fixed-latency simple DRAM
+// model. Credit is stored in numerator units so rates such as 15/4 atoms per
+// DRAM tick are exact. The cap permits one maximum-sized request to make
+// forward progress while preventing idle ticks from creating an unbounded
+// future burst.
+class simple_dram_service_budget {
+ public:
+  simple_dram_service_budget(unsigned numerator, unsigned denominator,
+                             unsigned long long max_request_atoms)
+      : m_numerator(numerator), m_denominator(denominator), m_credit(0) {
+    assert(m_numerator > 0);
+    assert(m_denominator > 0);
+    assert(max_request_atoms > 0);
+    const unsigned long long max_service_atoms =
+        (static_cast<unsigned long long>(m_numerator) + m_denominator - 1) /
+        m_denominator;
+    const unsigned long long max_credit_atoms =
+        std::max(max_service_atoms, max_request_atoms);
+    m_whole_credit_cap = max_credit_atoms * m_denominator;
+    m_credit_cap = m_whole_credit_cap + m_denominator - 1;
+  }
+
+  void begin_tick() {
+    m_credit += m_numerator;
+    if (m_credit > m_credit_cap) {
+      m_credit = m_whole_credit_cap + m_credit % m_denominator;
+    }
+  }
+
+  bool can_service(unsigned long long atoms) const {
+    assert(atoms > 0);
+    return m_credit >= atoms * m_denominator;
+  }
+
+  void consume(unsigned long long atoms) {
+    assert(can_service(atoms));
+    m_credit -= atoms * m_denominator;
+  }
+
+  // The production issue path calls this when no request is available. The
+  // return path calls it when no fixed-latency completion is ready.
+  void discard_idle_credit() { m_credit %= m_denominator; }
+
+  unsigned numerator() const { return m_numerator; }
+  unsigned denominator() const { return m_denominator; }
+  unsigned long long credit() const { return m_credit; }
+
+ private:
+  unsigned m_numerator;
+  unsigned m_denominator;
+  unsigned long long m_credit;
+  unsigned long long m_whole_credit_cap;
+  unsigned long long m_credit_cap;
+};
+
 // Memory partition unit contains all the units assolcated with a single DRAM
 // channel.
 // - It arbitrates the DRAM channel among multiple sub partitions.
@@ -103,7 +691,7 @@ class memory_partition_unit {
   void set_done(mem_fetch *mf);
 
   void visualizer_print(gzFile visualizer_file) const;
-  void print_stat(FILE *fp) { m_dram->print_stat(fp); }
+  void print_stat(FILE *fp) const;
   void visualize() const { m_dram->visualize(); }
   void print(FILE *fp) const;
   void handle_memcpy_to_gpu(size_t dst_start_addr, unsigned subpart_id,
@@ -171,6 +759,22 @@ class memory_partition_unit {
   };
   std::list<dram_delay_t> m_dram_latency_queue;
 
+  // Issue and return are independently rate-limited by the same configured
+  // aggregate service rate.
+  simple_dram_service_budget m_simple_dram_issue_budget;
+  simple_dram_service_budget m_simple_dram_return_budget;
+  unsigned long long m_simple_dram_cycles;
+  unsigned long long m_simple_dram_issue_requests;
+  unsigned long long m_simple_dram_issue_atoms;
+  unsigned long long m_simple_dram_return_requests;
+  unsigned long long m_simple_dram_return_atoms;
+  unsigned long long m_simple_dram_issue_no_request_cycles;
+  unsigned long long m_simple_dram_issue_backpressure_cycles;
+  unsigned long long m_simple_dram_return_not_ready_cycles;
+  unsigned long long m_simple_dram_return_backpressure_cycles;
+  unsigned long long m_simple_dram_queue_length_sum;
+  unsigned long long m_simple_dram_queue_length_max;
+
   class gpgpu_sim *m_gpu;
 };
 
@@ -188,12 +792,20 @@ class memory_sub_partition {
 
   bool full() const;
   bool full(unsigned size) const;
-  void record_full_state(unsigned size);
+  bool full(unsigned size, const mem_fetch *request) const;
+  void record_full_state(unsigned size, const mem_fetch *request = NULL);
   void accumulate_full_state_stats(unsigned long long *stats) const;
+  void accumulate_l2_multi_issue_port_stats(
+      l2_multi_issue_port_stats &stats) const;
+  void accumulate_l2_tma_request_coalescing_stats(
+      l2_tma_request_coalescing_stats &stats) const;
+  void accumulate_rop_delay_output_stats(
+      rop_delay_output_service_stats &stats) const;
   void accumulate_l2_partition_stats(unsigned long long &remote_accesses,
                                      unsigned long long &extra_latency) const;
   void push(class mem_fetch *mf, unsigned long long clock_cycle);
-  class mem_fetch *pop();
+  class mem_fetch *pop(
+      std::deque<mem_fetch *> *multicast_waiters = NULL);
   class mem_fetch *top();
   void set_done(mem_fetch *mf);
 
@@ -230,30 +842,19 @@ class memory_sub_partition {
   // data
   unsigned m_id;  //< the global sub partition ID
   const memory_config *m_config;
+  const l2_port_model_kind m_l2_port_model;
   class l2_cache *m_L2cache;
   class L2interface *m_L2interface;
   class gpgpu_sim *m_gpu;
   partition_mf_allocator *m_mf_allocator;
 
-  // model delay of ROP units with a fixed latency
-  struct rop_delay_t {
-    unsigned long long ready_cycle;
-    unsigned long long sequence;
-    class mem_fetch *req;
-  };
-  struct rop_delay_compare {
-    bool operator()(const rop_delay_t &lhs, const rop_delay_t &rhs) const {
-      if (lhs.ready_cycle != rhs.ready_cycle)
-        return lhs.ready_cycle > rhs.ready_cycle;
-      return lhs.sequence > rhs.sequence;
-    }
-  };
-  typedef std::priority_queue<rop_delay_t, std::vector<rop_delay_t>,
-                              rop_delay_compare>
-      rop_delay_queue_t;
-  rop_delay_queue_t m_rop_local;
-  rop_delay_queue_t m_rop_remote;
-  unsigned long long m_next_rop_sequence;
+  // Fixed-ready-cycle ROP delay and its independently configured output
+  // service. Local/remote entries retain separate FIFO queues; the earlier
+  // ready cycle wins across queues and equal cycles retain legacy local-first
+  // arbitration.
+  rop_delay_output_queue<class mem_fetch *> m_rop_delay_output;
+  rop_delay_output_service_stats m_rop_delay_output_stats;
+  std::size_t m_rop_pipeline_capacity;
 
   // these are various FIFOs between units within a memory partition
   fifo_pipeline<mem_fetch> *m_icnt_L2_queue;
@@ -261,8 +862,20 @@ class memory_sub_partition {
   fifo_pipeline<mem_fetch> *m_dram_L2_queue;
   fifo_pipeline<mem_fetch> *m_L2_icnt_queue;  // L2 cache hit response queue
 
-  unsigned long long
-      m_full_state_stats[NUM_MEM_SUB_PARTITION_FULL_STATS];
+  unsigned long long m_full_state_stats[NUM_MEM_SUB_PARTITION_FULL_STATS];
+  l2_multi_issue_ports m_l2_multi_issue_ports;
+  outstanding_sector_coalescer<mem_fetch *, new_addr_type>
+      m_l2_tma_coalescer;
+  // A merge generation closes once its master finishes L2 service. Saved
+  // requesters either drain serially (legacy behavior) or fan out when response
+  // multicast is enabled.
+  std::unordered_map<mem_fetch *, std::deque<mem_fetch *> >
+      m_l2_tma_coalesced_response_waiters;
+  l2_tma_request_coalescing_stats m_l2_tma_request_coalescing_stats;
+  mem_fetch *m_pending_l2_writeback;
+  l2_multi_issue_pending_operation m_pending_l2_writeback_work;
+  mem_fetch *m_pending_l2_fill;
+  l2_multi_issue_pending_operation m_pending_l2_fill_work;
   unsigned long long m_l2_partition_remote_accesses;
   unsigned long long m_l2_partition_extra_latency_cycles;
 
@@ -279,7 +892,26 @@ class memory_sub_partition {
   std::vector<mem_fetch *> breakdown_request_to_sector_requests(mem_fetch *mf);
   void push_rop_delay(mem_fetch *mf, unsigned long long ready_cycle,
                       bool remote);
-  bool pop_ready_rop(unsigned long long cycle, mem_fetch *&mf);
+  void process_l2_access_result(mem_fetch *mf, cache_request_status status,
+                                const std::list<cache_event> &events);
+  void service_ready_l2_response();
+  void cycle_legacy_l2_port_model();
+  void cycle_multi_issue_l2_port_model();
+  void service_dram_to_l2_legacy();
+  void service_dram_to_l2_multi_issue();
+  void service_l2_requests_legacy();
+  void service_l2_requests_multi_issue();
+  bool coalesce_l2_tma_request(mem_fetch *mf, unsigned long long cycle);
+  void register_l2_tma_request(mem_fetch *mf);
+  void enqueue_l2_request(mem_fetch *mf);
+  void finalize_l2_tma_coalesced_response(mem_fetch *mf);
+  void enqueue_l2_response(mem_fetch *mf);
+  void release_next_l2_tma_coalesced_response(mem_fetch *mf);
+  void extract_l2_tma_coalesced_responses(
+      mem_fetch *mf, std::deque<mem_fetch *> *waiters);
+  void enqueue_ready_rop(unsigned cycle);
+  bool l2_data_port_busy() const;
+  bool l2_fill_port_busy() const;
 
   // This is a cycle offset that has to be applied to the l2 accesses to account
   // for the cudamemcpy read/writes. We want GPGPU-Sim to only count cycles for

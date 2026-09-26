@@ -261,6 +261,24 @@ void memory_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_simple_dram_model", OPT_BOOL,
                          &simple_dram_model,
                          "simple_dram_model with fixed latency and BW", "0");
+  option_parser_register(
+      opp, "-gpgpu_simple_dram_service_rate_num", OPT_UINT32,
+      &simple_dram_service_rate_num,
+      "simple DRAM service-rate numerator in DRAM atoms per partition per "
+      "DRAM tick",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_simple_dram_service_rate_den", OPT_UINT32,
+      &simple_dram_service_rate_den,
+      "simple DRAM service-rate denominator in DRAM atoms per partition per "
+      "DRAM tick",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_simple_dram_max_inflight", OPT_UINT32,
+      &simple_dram_max_inflight,
+      "maximum in-flight requests per memory partition in the simple DRAM "
+      "model (0 derives the limit from detailed DRAM queue sizes)",
+      "0");
   option_parser_register(opp, "-gpgpu_dram_scheduler", OPT_INT32,
                          &scheduler_type, "0 = fifo, 1 = FR-FCFS (defaul)",
                          "1");
@@ -323,6 +341,12 @@ void memory_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_l2_rop_latency", OPT_UINT32, &rop_latency,
                          "ROP queue latency (default 85)", "85");
   option_parser_register(
+      opp, "-gpgpu_l2_rop_delay_output_sectors_per_cycle", OPT_UINT32,
+      &l2_rop_delay_output_sectors_per_cycle,
+      "Ready ROP-delay output service per memory subpartition and L2 tick, "
+      "in 32-byte sector work packages (default 1 preserves legacy)",
+      "1");
+  option_parser_register(
       opp, "-gpgpu_l2_partition_count", OPT_UINT32, &l2_partition_count,
       "Number of coarse L2/NOC locality partitions used for remote L2 latency "
       "modeling. 1 disables remote partition detection.",
@@ -332,6 +356,42 @@ void memory_config::reg_options(class OptionParser *opp) {
       &l2_partition_extra_latency,
       "Extra cycles charged when an SM accesses a remote coarse L2 partition "
       "(default 0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_l2_multi_issue_port_model", OPT_UINT32,
+      &l2_multi_issue_port_model,
+      "L2 internal port model: 0 = legacy single-request busy-delay data/fill "
+      "ports, 1 = independent multi-issue lookup/data/fill sector ports",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_l2_lookup_sectors_per_cycle", OPT_UINT32,
+      &l2_lookup_sectors_per_cycle,
+      "Multi-issue L2 tag lookup width per memory subpartition and L2 cycle, "
+      "in 32-byte sector work packages (used only when port model = 1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_data_port_sectors_per_cycle", OPT_UINT32,
+      &l2_data_port_sectors_per_cycle,
+      "Multi-issue L2 data-port service numerator per memory subpartition, "
+      "in 32-byte sector work packages (used only when port model = 1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_data_port_cycle_period", OPT_UINT32,
+      &l2_data_port_cycle_period,
+      "L2 ticks per data-port service numerator (default 1 preserves integer "
+      "widths; unused whole-sector slots do not accumulate)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_fill_port_sectors_per_cycle", OPT_UINT32,
+      &l2_fill_port_sectors_per_cycle,
+      "Multi-issue L2 fill-port width per memory subpartition and L2 cycle, "
+      "in 32-byte sector work packages (used only when port model = 1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_tma_request_coalescing", OPT_BOOL,
+      &l2_tma_request_coalescing,
+      "Coalesce identical outstanding TMA read sectors at each L2 "
+      "subpartition while retaining one response per requester (default=0)",
       "0");
   option_parser_register(opp, "-dram_latency", OPT_UINT32, &dram_latency,
                          "DRAM latency (default 30)", "30");
@@ -358,6 +418,18 @@ void memory_config::reg_options(class OptionParser *opp) {
       "elimnate_rw_turnaround i.e set tWTR and tRTW = 0", "0");
   option_parser_register(opp, "-icnt_flit_size", OPT_UINT32, &icnt_flit_size,
                          "icnt_flit_size", "32");
+  option_parser_register(
+      opp, "-gpgpu_l2_request_ingress_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_l2_request_ingress_sectors_per_cycle,
+      "Request sector slots entering each L2 subpartition per L2 tick "
+      "(0=legacy)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_l2_response_egress_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_l2_response_egress_sectors_per_cycle,
+      "Response sector slots leaving each L2 subpartition per ICNT tick "
+      "(0=legacy)",
+      "0");
   // SST mode activate
   option_parser_register(opp, "-SST_mode", OPT_BOOL, &SST_mode, "SST mode",
                          "0");
@@ -411,6 +483,18 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &m_L1D_config.l1_latency, "L1 Hit Latency", "1");
   option_parser_register(opp, "-gpgpu_smem_latency", OPT_UINT32, &smem_latency,
                          "smem Latency", "3");
+  option_parser_register(opp, "-gpgpu_smem_store_visibility_latency",
+                         OPT_UINT32, &gpgpu_smem_store_visibility_latency,
+                         "Shared-store dispatch completion to named-barrier "
+                         "issue delay",
+                         "0");
+  option_parser_register(opp, "-gpgpu_named_barrier_arrive_latency", OPT_UINT32,
+                         &gpgpu_named_barrier_arrive_latency,
+                         "Named arrive issue to issuing-warp readiness", "0");
+  option_parser_register(opp, "-gpgpu_named_barrier_arrive_visibility_latency",
+                         OPT_UINT32,
+                         &gpgpu_named_barrier_arrive_visibility_latency,
+                         "Named arrive issue to waiter-visible arrival", "0");
   option_parser_register(opp, "-gpgpu_cache:dl1PrefL1", OPT_CSTR,
                          &m_L1D_config.m_config_stringPrefL1,
                          "per-shader L1 data cache config "
@@ -477,6 +561,30 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_n_ldst_response_buffer_size", OPT_UINT32,
       &ldst_unit_response_queue_size,
       "number of response packets in ld/st unit ejection buffer", "2");
+  option_parser_register(
+      opp, "-gpgpu_cluster_response_ingress_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_cluster_response_ingress_sectors_per_cycle,
+      "Reply sectors ejected into the cluster per target SM and core tick "
+      "(0=legacy)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_cluster_response_dispatch_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_cluster_response_dispatch_sectors_per_cycle,
+      "Shared response sectors dispatched per target SM and core tick "
+      "(0=legacy)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_ldst_request_width", OPT_UINT32,
+      &gpgpu_ldst_request_width,
+      "Global/local coalescer children injected per SM and core tick; "
+      "on sector-coalescing architectures each child is 32 bytes (0=legacy)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_ldst_response_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_ldst_response_sectors_per_cycle,
+      "LD/ST response sectors advanced per SM and core tick "
+      "(0=legacy)",
+      "0");
   option_parser_register(
       opp, "-gpgpu_shmem_per_block", OPT_UINT32, &gpgpu_shmem_per_block,
       "Size of shared memory per thread block or CTA (default 48kB)", "49152");
@@ -698,6 +806,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Ideal tensor-core pre-FU issue queue depth. 0 disables the queue.",
       "0");
   option_parser_register(
+      opp, "-gpgpu_alu_scoreboard_forwarding", OPT_BOOL,
+      &gpgpu_alu_scoreboard_forwarding,
+      "Expose ALU results before physical writeback using opcode latency as "
+      "issue-to-dependent-ready with execution queue delays preserved",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_tensor_core_skip_writeback", OPT_BOOL,
       &gpgpu_tensor_core_skip_writeback,
       "Complete tensor-core instructions without using the register-file "
@@ -713,19 +827,15 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &gpgpu_num_tensormap_units,
                          "Number of tensor-map descriptor units (default=0)",
                          "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_transaction_slots", OPT_UINT32,
+      &gpgpu_tma_transaction_slots,
+      "Max active TMA transactions accepted from warps per SM "
+      "(default=0, 0=unlimited)",
+      "0");
   option_parser_register(opp, "-gpgpu_tma_max_inflight", OPT_UINT32,
                          &gpgpu_tma_max_inflight,
                          "Max in-flight TMA mem_fetch requests per SM (default=0, 0=unlimited)", "0");
-  option_parser_register(opp, "-gpgpu_tma_tx_quota", OPT_UINT32,
-                         &gpgpu_tma_tx_quota,
-                         "Max in-flight mem_fetch per TMA transaction (default=0, 0=unlimited)", "0");
-  option_parser_register(
-      opp, "-gpgpu_tma_quota_segment_bytes", OPT_UINT32,
-      &gpgpu_tma_quota_segment_bytes,
-      "Scale the base per-transaction quota by ceil(transaction bytes / "
-      "segment bytes), modeling independently credited internal transfer "
-      "segments (default=0, 0=disabled)",
-      "0");
   option_parser_register(opp, "-gpgpu_tma_response_width", OPT_UINT32,
                          &gpgpu_tma_response_width,
                          "TMA response tokens accepted per SM per cycle (default=1)", "1");
@@ -782,6 +892,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cta_load_balance", OPT_BOOL,
                          &gpgpu_cta_load_balance,
                          "Cap CTAs per core to ceil(total_ctas/n_cores) for load balancing (default=0)", "0");
+  option_parser_register(
+      opp, "-gpgpu_cta_replacement_latency", OPT_UINT32,
+      &gpgpu_cta_replacement_latency,
+      "Per-SM hardware CTA slot transition latency after resource release; "
+      "a never-used slot is immediately available (default=0)",
+      "0");
   option_parser_register(opp, "-gpgpu_tma_idealized_memory", OPT_UINT32,
                          &gpgpu_tma_idealized_memory,
                          "Idealized TMA memory: all requests complete instantly (default=0)", "0");
@@ -793,7 +909,16 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "Latency (cycles) for arrive_tx shared memory write before mbarrier update (default=0)", "0");
   option_parser_register(opp, "-gpgpu_mbarrier_trywait_latency", OPT_UINT32,
                          &gpgpu_mbarrier_trywait_latency,
-                         "Latency (cycles) for mbarrier.try_wait polling before warp release (default=0)", "0");
+                         "Maximum modeled suspension (core cycles) for a "
+                         "no-hint mbarrier.try_wait; 0 returns false "
+                         "immediately when incomplete (default=32)",
+                         "32");
+  option_parser_register(
+      opp, "-gpgpu_mbarrier_phase_wakeup_latency", OPT_UINT32,
+      &gpgpu_mbarrier_phase_wakeup_latency,
+      "Additional delay (core cycles) after a phase notification makes a "
+      "suspended mbarrier.try_wait succeed (default=0)",
+      "0");
   option_parser_register(
       opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
       &gpgpu_wgmma_issue_chain_ss,
@@ -835,6 +960,58 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Include register-A operand reads in WGMMA RF traffic tokens for RS "
       "WGMMA (default=0)",
       "0");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_mma_issue_interval", OPT_UINT32,
+      &ptx_opcode_tcgen05_mma_issue_interval,
+      "Minimum cycles between accepted TCGen05 FP16 MMA operations", "1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_mma_completion_tail_latency", OPT_UINT32,
+      &ptx_opcode_tcgen05_mma_completion_tail_latency,
+      "Fixed TCGen05 MMA completion tail in cycles", "0");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_mma_f16_flops_per_cycle", OPT_UINT32,
+      &ptx_opcode_tcgen05_mma_f16_flops_per_cycle,
+      "Per-SM dense FP16 TCGen05 backend throughput in FLOP/cycle", "1");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_async_queue_depth", OPT_UINT32,
+      &gpgpu_tcgen05_async_queue_depth,
+      "Maximum per-SM outstanding TCGen05 operations (0=unlimited)", "0");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_cp_completion_latency", OPT_CSTR,
+      &ptx_opcode_tcgen05_cp_completion_latency,
+      "TCGen05 CP completion cycles for "
+      "<128x256b,128x128b,64x128b,32x128b,4x256b>",
+      "1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_cp_initiation_interval", OPT_CSTR,
+      &ptx_opcode_tcgen05_cp_initiation_interval,
+      "TCGen05 CP initiation intervals for "
+      "<128x256b,128x128b,64x128b,32x128b,4x256b>",
+      "1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_ld_completion_latency", OPT_CSTR,
+      &ptx_opcode_tcgen05_ld_completion_latency,
+      "TCGen05 LD completion cycles for <x1,x2,x4,x8,x16,x32,x64,x128>",
+      "1,1,1,1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_ld_initiation_interval", OPT_CSTR,
+      &ptx_opcode_tcgen05_ld_initiation_interval,
+      "TCGen05 LD initiation intervals for <x1,x2,x4,x8,x16,x32,x64,x128>",
+      "1,1,1,1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_st_completion_latency", OPT_CSTR,
+      &ptx_opcode_tcgen05_st_completion_latency,
+      "TCGen05 ST completion cycles for <x1,x2,x4,x8,x16,x32,x64,x128>",
+      "1,1,1,1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_st_initiation_interval", OPT_CSTR,
+      &ptx_opcode_tcgen05_st_initiation_interval,
+      "TCGen05 ST initiation intervals for <x1,x2,x4,x8,x16,x32,x64,x128>",
+      "1,1,1,1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_shift_latency", OPT_UINT32,
+      &ptx_opcode_tcgen05_shift_latency,
+      "TCGen05 shift completion latency in cycles", "1");
   option_parser_register(
       opp, "-gpgpu_num_mem_units", OPT_UINT32, &gpgpu_num_mem_units,
       "Number if ldst units (default=1) WARNING: not hooked up to anything",
@@ -930,6 +1107,18 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
                          "Clock Domain Frequencies in MhZ {<Core Clock>:<ICNT "
                          "Clock>:<L2 Clock>:<DRAM Clock>}",
                          "500.0:2000.0:2000.0:2000.0");
+  option_parser_register(
+      opp, "-gpgpu_l2_expected_bandwidth_TBp", OPT_DOUBLE,
+      &l2_expected_bandwidth_tbps,
+      "Nominal L2 bandwidth validation target in TB/s; parsed as config "
+      "metadata and unused by the simulator timing model",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_dram_expected_bandwidth_TBp", OPT_DOUBLE,
+      &dram_expected_bandwidth_tbps,
+      "Nominal DRAM bandwidth validation target in TB/s; parsed as config "
+      "metadata and unused by the simulator timing model",
+      "0");
   option_parser_register(
       opp, "-gpgpu_max_concurrent_kernel", OPT_INT32, &max_concurrent_kernel,
       "maximum kernels that can run concurrently on GPU, set this value "
@@ -1259,6 +1448,10 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   gpu_tot_sim_cycle_parition_util = 0;
   partiton_replys_in_parallel = 0;
   partiton_replys_in_parallel_total = 0;
+  m_l2_request_ingress_budgets.resize(m_memory_config->m_n_mem_sub_partition);
+  m_l2_response_egress_budgets.resize(m_memory_config->m_n_mem_sub_partition);
+  m_l2_request_ingress_stats.resize(m_memory_config->m_n_mem_sub_partition);
+  m_l2_response_egress_stats.resize(m_memory_config->m_n_mem_sub_partition);
   last_streamID = -1;
 
   gpu_kernel_time.clear();
@@ -1931,16 +2124,78 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
                static_cast<mem_sub_partition_full_stat>(i)),
            mem_sub_part_full_stats[i]);
   }
+  if (l2_multi_issue_port_model_enabled(
+          m_memory_config->l2_multi_issue_port_model)) {
+    l2_multi_issue_port_stats l2_port_stats;
+    for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
+      m_memory_sub_partition[i]->accumulate_l2_multi_issue_port_stats(
+          l2_port_stats);
+    }
+    printf("L2_multi_issue_lookup_accepted_sectors = %llu\n",
+           l2_port_stats.lookup_accepted_sectors);
+    printf("L2_multi_issue_data_port_accepted_sectors = %llu\n",
+           l2_port_stats.data_port_accepted_sectors);
+    printf("L2_multi_issue_data_port_hit_sectors = %llu\n",
+           l2_port_stats.data_port_hit_sectors);
+    printf("L2_multi_issue_data_port_dirty_eviction_sectors = %llu\n",
+           l2_port_stats.data_port_dirty_eviction_sectors);
+    printf("L2_multi_issue_fill_port_accepted_sectors = %llu\n",
+           l2_port_stats.fill_port_accepted_sectors);
+    printf("L2_multi_issue_lookup_width_stall_cycles = %llu\n",
+           l2_port_stats.lookup_width_stall_cycles);
+    printf("L2_multi_issue_data_port_width_stall_cycles = %llu\n",
+           l2_port_stats.data_port_width_stall_cycles);
+    printf("L2_multi_issue_fill_port_width_stall_cycles = %llu\n",
+           l2_port_stats.fill_port_width_stall_cycles);
+  }
   unsigned long long l2_partition_remote_accesses = 0;
   unsigned long long l2_partition_extra_latency_cycles = 0;
+  rop_delay_output_service_stats rop_delay_output_total;
   for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
     m_memory_sub_partition[i]->accumulate_l2_partition_stats(
         l2_partition_remote_accesses, l2_partition_extra_latency_cycles);
+    m_memory_sub_partition[i]->accumulate_rop_delay_output_stats(
+        rop_delay_output_total);
   }
   printf("l2_partition_remote_accesses = %llu\n",
          l2_partition_remote_accesses);
   printf("l2_partition_extra_latency_cycles = %llu\n",
          l2_partition_extra_latency_cycles);
+  rop_delay_output_total.print(statfout, "gpgpu_l2_rop_delay_output");
+  memory_transport_service_stats l2_request_ingress_total;
+  memory_transport_service_stats l2_response_egress_total;
+  memory_transport_service_stats cluster_response_ingress_total;
+  memory_transport_service_stats cluster_response_dispatch_total;
+  memory_transport_service_stats ldst_request_total;
+  memory_transport_service_stats ldst_response_total;
+  for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; ++i) {
+    l2_request_ingress_total.add(m_l2_request_ingress_stats[i]);
+    l2_response_egress_total.add(m_l2_response_egress_stats[i]);
+  }
+  l2_request_ingress_total.print(statfout,
+                                 "gpgpu_l2_request_ingress_transport");
+  l2_response_egress_total.print(statfout,
+                                 "gpgpu_l2_response_egress_transport");
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i) {
+    m_cluster[i]->accumulate_response_transport_stats(
+        cluster_response_ingress_total, cluster_response_dispatch_total);
+    m_cluster[i]->accumulate_ldst_transport_stats(ldst_request_total,
+                                                  ldst_response_total);
+  }
+  cluster_response_ingress_total.print(
+      statfout, "gpgpu_cluster_response_ingress_transport");
+  cluster_response_dispatch_total.print(
+      statfout, "gpgpu_cluster_response_dispatch_transport");
+  ldst_request_total.print(statfout,
+                           "gpgpu_ldst_ordinary_request_transport");
+  ldst_response_total.print(statfout,
+                            "gpgpu_ldst_ordinary_response_transport");
+  auto tma_progress = flash_gpgpu_sim::get_global_tma_progress_counters();
+  printf("tma_max_active_transactions = %llu\n",
+         tma_progress.max_active_transactions);
+  printf("tma_max_mf_inflight = %llu\n", tma_progress.max_mf_inflight);
+  printf("tma_issue_blocked_inflight_cycles = %llu\n",
+         tma_progress.issue_blocked_inflight_cycles);
   auto cp_async_debug = flash_gpgpu_sim::get_global_cp_async_debug_counters();
   printf("cp_async_debug_tx_started = %llu\n", cp_async_debug.tx_started);
   printf("cp_async_debug_tx_completed = %llu\n", cp_async_debug.tx_completed);
@@ -2003,14 +2258,24 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   // printf("partiton_replys_in_parallel = %lld\n",
   // partiton_replys_in_parallel); printf("partiton_replys_in_parallel_total =
   // %lld\n", partiton_replys_in_parallel_total );
+  l2_tma_request_coalescing_stats tma_coalescing;
+  for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; ++i)
+    m_memory_sub_partition[i]->accumulate_l2_tma_request_coalescing_stats(
+        tma_coalescing);
+  printf("L2_tma_coalescing_master_sectors = %llu\n",
+         tma_coalescing.master_sectors);
+  printf("L2_tma_coalescing_merged_sectors = %llu\n",
+         tma_coalescing.merged_sectors);
+  printf("L2_tma_coalescing_max_waiters = %llu\n",
+         tma_coalescing.max_waiters);
   printf("L2_BW  = %12.4f GB/Sec\n",
-         ((float)(partiton_replys_in_parallel * 32) /
+         ((float)(partiton_replys_in_parallel * SECTOR_SIZE) /
           (gpu_sim_cycle * m_config.core_period)) /
              1000000000);
   printf("L2_BW_total  = %12.4f GB/Sec\n",
          ((float)((partiton_replys_in_parallel +
                    partiton_replys_in_parallel_total) *
-                  32) /
+                  SECTOR_SIZE) /
           ((gpu_tot_sim_cycle + gpu_sim_cycle) * m_config.core_period)) /
              1000000000);
 
@@ -2108,7 +2373,9 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
       printf("L2_total_cache_reservation_fail_breakdown:\n");
       l2_stats.print_aggregate_fail_stats(stdout,
                                           "L2_cache_stats_fail_breakdown");
-      total_l2_css.print_port_stats(stdout, "L2_cache");
+      if (!l2_multi_issue_port_model_enabled(
+              m_memory_config->l2_multi_issue_port_model))
+        total_l2_css.print_port_stats(stdout, "L2_cache");
     }
   }
 
@@ -2189,7 +2456,36 @@ void shader_core_ctx::mem_instruction_stats(const warp_inst_t &inst) {
       abort();
   }
 }
+
+bool shader_core_ctx::cta_context_ready(unsigned hw_cta_id) const {
+  if (m_cta_status[hw_cta_id] != 0 ||
+      m_pending_tma_cta_releases.find(hw_cta_id) !=
+          m_pending_tma_cta_releases.end()) {
+    return false;
+  }
+
+  const cta_lifecycle_state_t &lifecycle = m_cta_lifecycle[hw_cta_id];
+  if (!lifecycle.ever_used) return true;
+
+  const unsigned long long now =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  return now >= lifecycle.replacement_ready_cycle;
+}
+
 bool shader_core_ctx::can_issue_1block(kernel_info_t &kernel) {
+  const unsigned max_cta_per_core = m_config->gpgpu_concurrent_kernel_sm
+                                        ? m_config->max_cta_per_core
+                                        : m_config->max_cta(kernel);
+  assert(max_cta_per_core <= MAX_CTA_PER_SHADER);
+  bool has_ready_cta_context = false;
+  for (unsigned i = 0; i < max_cta_per_core; ++i) {
+    if (cta_context_ready(i)) {
+      has_ready_cta_context = true;
+      break;
+    }
+  }
+  if (!has_ready_cta_context) return false;
+
   // Jin: concurrent kernels on one SM
   if (m_config->gpgpu_concurrent_kernel_sm) {
     if (m_config->max_cta(kernel) < 1) return false;
@@ -2331,10 +2627,9 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
     max_cta_per_core = kernel_max_cta_per_shader;
   else
     max_cta_per_core = m_config->max_cta_per_core;
+  assert(max_cta_per_core <= MAX_CTA_PER_SHADER);
   for (unsigned i = 0; i < max_cta_per_core; i++) {
-    if (m_cta_status[i] == 0 &&
-        m_pending_tma_cta_releases.find(i) ==
-            m_pending_tma_cta_releases.end()) {
+    if (cta_context_ready(i)) {
       free_cta_hw_id = i;
       break;
     }
@@ -2378,6 +2673,30 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   function_info *kernel_func_info = kernel.entry();
   symbol_table *symtab = kernel_func_info->get_symtab();
   unsigned ctaid = kernel.get_next_cta_id_single();
+  const unsigned long long admit_cycle =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  cta_lifecycle_state_t &lifecycle = m_cta_lifecycle[free_cta_hw_id];
+  assert(!lifecycle.active);
+  const bool slot_reuse = lifecycle.ever_used;
+  const unsigned long long release_to_admit =
+      slot_reuse ? admit_cycle - lifecycle.last_release_cycle : 0;
+  lifecycle.active = true;
+  lifecycle.ever_used = true;
+  lifecycle.threads_exited = false;
+  lifecycle.pending_tma = false;
+  lifecycle.kernel_uid = kernel.get_uid();
+  lifecycle.logical_cta_id = ctaid;
+  lifecycle.generation++;
+  lifecycle.admit_cycle = admit_cycle;
+  lifecycle.threads_exit_cycle = 0;
+  SHADER_GPPRINTF(LIVENESS,
+                  "CTA_LIFECYCLE event=admit kernel_uid=%u sid=%u hw_cta=%u "
+                  "logical_cta=%u generation=%u cycle=%llu slot_reuse=%u "
+                  "previous_release=%llu release_to_admit=%llu\n",
+                  lifecycle.kernel_uid, m_sid, free_cta_hw_id,
+                  lifecycle.logical_cta_id, lifecycle.generation, admit_cycle,
+                  slot_reuse ? 1 : 0, lifecycle.last_release_cycle,
+                  release_to_admit);
   checkpoint *g_checkpoint = new checkpoint();
   for (unsigned i = start_thread; i < end_thread; i++) {
     m_threadState[i].m_cta_id = free_cta_hw_id;
@@ -2514,25 +2833,115 @@ void gpgpu_sim::cycle() {
 
   if (clock_mask & ICNT && !gem5_integrated) {
     profiler.start_step();
+    const bool tma_response_multicast =
+        icnt_tma_response_multicast_enabled();
     // pop from memory controller to interconnect
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
-      mem_fetch *mf = m_memory_sub_partition[i]->top();
-      if (mf) {
-        unsigned response_size =
-            mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
-        if (::icnt_has_buffer(m_shader_config->mem2device(i), response_size)) {
-          // if (!mf->get_is_write())
-          mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
-          mf->set_status(IN_ICNT_TO_SHADER, gpu_sim_cycle + gpu_tot_sim_cycle);
-          ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
-                      response_size);
-          m_memory_sub_partition[i]->pop();
-          partiton_replys_in_parallel_per_cycle++;
+      const unsigned width =
+          m_memory_config->gpgpu_l2_response_egress_sectors_per_cycle;
+      if (width == 0) {
+        mem_fetch *mf = m_memory_sub_partition[i]->top();
+        if (mf) {
+          unsigned response_size =
+              mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
+          if (::icnt_has_buffer(m_shader_config->mem2device(i),
+                                response_size)) {
+            std::deque<mem_fetch *> multicast_waiters;
+            if (tma_response_multicast) {
+              mem_fetch *popped =
+                  m_memory_sub_partition[i]->pop(&multicast_waiters);
+              assert(popped == mf);
+            }
+            mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
+            mf->set_status(IN_ICNT_TO_SHADER,
+                           gpu_sim_cycle + gpu_tot_sim_cycle);
+            std::vector<std::pair<unsigned, void *> > destinations;
+            for (std::deque<mem_fetch *>::iterator it =
+                     multicast_waiters.begin();
+                 it != multicast_waiters.end(); ++it) {
+              mem_fetch *waiter = *it;
+              waiter->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
+              waiter->set_status(IN_ICNT_TO_SHADER,
+                                 gpu_sim_cycle + gpu_tot_sim_cycle);
+              destinations.push_back(
+                  std::make_pair(waiter->get_tpc(), (void *)waiter));
+            }
+            if (!destinations.empty())
+              ::icnt_push_multicast(m_shader_config->mem2device(i),
+                                    mf->get_tpc(), mf, response_size,
+                                    destinations);
+            else
+              ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
+                          response_size);
+            if (!tma_response_multicast)
+              m_memory_sub_partition[i]->pop();
+            const unsigned sectors = memory_transport_data_sectors(mf);
+            m_l2_response_egress_stats[i].record_accept(sectors);
+            m_l2_response_egress_stats[i].record_tick_service(
+                memory_transport_service_slots(sectors));
+            partiton_replys_in_parallel_per_cycle += sectors;
+          } else {
+            gpu_stall_icnt2sh++;
+            ++m_l2_response_egress_stats[i].downstream_full_ticks;
+          }
         } else {
-          gpu_stall_icnt2sh++;
+          m_memory_sub_partition[i]->pop();
         }
       } else {
-        m_memory_sub_partition[i]->pop();
+        memory_transport_service_budget &budget =
+            m_l2_response_egress_budgets[i];
+        memory_transport_service_stats &stats = m_l2_response_egress_stats[i];
+        budget.begin_tick(width);
+        while (true) {
+          mem_fetch *mf = m_memory_sub_partition[i]->top();
+          // top() already consumes internal writeback entries.  Unlike the
+          // legacy path, do not pop a second entry after that null return.
+          if (!mf) break;
+          const unsigned sectors = memory_transport_data_sectors(mf);
+          if (!budget.can_accept(sectors)) {
+            budget.note_width_limited(sectors);
+            break;
+          }
+          const unsigned response_size =
+              mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
+          if (!::icnt_has_buffer(m_shader_config->mem2device(i),
+                                 response_size)) {
+            budget.note_downstream_full();
+            ++gpu_stall_icnt2sh;
+            break;
+          }
+
+          mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
+          mf->set_status(IN_ICNT_TO_SHADER, gpu_sim_cycle + gpu_tot_sim_cycle);
+          std::deque<mem_fetch *> multicast_waiters;
+          mem_fetch *popped = tma_response_multicast
+                                  ? m_memory_sub_partition[i]->pop(
+                                        &multicast_waiters)
+                                  : m_memory_sub_partition[i]->pop();
+          assert(popped == mf);
+          std::vector<std::pair<unsigned, void *> > destinations;
+          for (std::deque<mem_fetch *>::iterator it =
+                   multicast_waiters.begin();
+               it != multicast_waiters.end(); ++it) {
+            mem_fetch *waiter = *it;
+            waiter->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
+            waiter->set_status(IN_ICNT_TO_SHADER,
+                               gpu_sim_cycle + gpu_tot_sim_cycle);
+            destinations.push_back(
+                std::make_pair(waiter->get_tpc(), (void *)waiter));
+          }
+          if (!destinations.empty())
+            ::icnt_push_multicast(m_shader_config->mem2device(i),
+                                  mf->get_tpc(), mf, response_size,
+                                  destinations);
+          else
+            ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
+                        response_size);
+          budget.consume(sectors);
+          stats.record_accept(sectors);
+          partiton_replys_in_parallel_per_cycle += sectors;
+        }
+        budget.end_tick(&stats);
       }
     }
     profiler.end_step(profiler.total_mem_to_icnt_time);
@@ -2572,13 +2981,56 @@ void gpgpu_sim::cycle() {
       // backed up) Note:This needs to be called in DRAM clock domain if there
       // is no L2 cache in the system In the worst case, we may need to push
       // SECTOR_CHUNCK_SIZE requests, so ensure you have enough buffer for them
-      if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
-        gpu_stall_dramfull++;
-        m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE);
+      const unsigned width =
+          m_memory_config->gpgpu_l2_request_ingress_sectors_per_cycle;
+      if (width == 0) {
+        const mem_fetch *request =
+            (mem_fetch *)icnt_top(m_shader_config->mem2device(i));
+        if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE, request)) {
+          gpu_stall_dramfull++;
+          ++m_l2_request_ingress_stats[i].downstream_full_ticks;
+          m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE, request);
+        } else {
+          mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
+          m_memory_sub_partition[i]->push(mf,
+                                          gpu_sim_cycle + gpu_tot_sim_cycle);
+          if (mf) {
+            const unsigned sectors = memory_transport_data_sectors(mf);
+            m_l2_request_ingress_stats[i].record_accept(sectors);
+            m_l2_request_ingress_stats[i].record_tick_service(
+                memory_transport_service_slots(sectors));
+            partiton_reqs_in_parallel_per_cycle++;
+          }
+        }
       } else {
-        mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
-        m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
-        if (mf) partiton_reqs_in_parallel_per_cycle++;
+        memory_transport_service_budget &budget =
+            m_l2_request_ingress_budgets[i];
+        memory_transport_service_stats &stats = m_l2_request_ingress_stats[i];
+        budget.begin_tick(width);
+        while (true) {
+          mem_fetch *mf = (mem_fetch *)icnt_top(m_shader_config->mem2device(i));
+          if (!mf) break;
+          const unsigned sectors = memory_transport_data_sectors(mf);
+          if (!budget.can_accept(sectors)) {
+            budget.note_width_limited(sectors);
+            break;
+          }
+          if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE, mf)) {
+            ++gpu_stall_dramfull;
+            budget.note_downstream_full();
+            m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE, mf);
+            break;
+          }
+          mem_fetch *popped =
+              (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
+          assert(popped == mf);
+          m_memory_sub_partition[i]->push(mf,
+                                          gpu_sim_cycle + gpu_tot_sim_cycle);
+          budget.consume(sectors);
+          stats.record_accept(sectors);
+          ++partiton_reqs_in_parallel_per_cycle;
+        }
+        budget.end_tick(&stats);
       }
       m_memory_sub_partition[i]->cache_cycle(gpu_sim_cycle + gpu_tot_sim_cycle);
       if (m_config.g_power_simulation_enabled) {

@@ -392,30 +392,37 @@ protected:
     static constexpr int BOX = 128;
     void Run(int N, int seed = 42) {
         std::vector<float> h_in(N), h_out(N);
-        float *d_in, *d_out;
-        uint8_t *d_scratch;
+        float *d_in = nullptr, *d_out = nullptr;
+        uint8_t *d_scratch = nullptr;
         
-        cudaMalloc(&d_in, N * sizeof(float));
-        cudaMalloc(&d_out, N * sizeof(float));
+        ASSERT_EQ(cudaMalloc(&d_in, N * sizeof(float)), cudaSuccess);
+        ASSERT_EQ(cudaMalloc(&d_out, N * sizeof(float)), cudaSuccess);
         
         int grid = (N + BOX - 1) / BOX;
-        cudaMalloc(&d_scratch, grid * 256);  // 256 bytes per block for tensormap
+        ASSERT_EQ(cudaMalloc(&d_scratch, grid * 256), cudaSuccess);
         
         std::mt19937 gen(seed);
         std::uniform_real_distribution<float> dist(-10, 10);
         for (int i = 0; i < N; i++) h_in[i] = dist(gen);
-        cudaMemcpy(d_in, h_in.data(), N * sizeof(float), cudaMemcpyHostToDevice);
+        ASSERT_EQ(cudaMemcpy(d_in, h_in.data(), N * sizeof(float),
+                             cudaMemcpyHostToDevice),
+                  cudaSuccess);
+        ASSERT_EQ(cudaMemset(d_out, 0, N * sizeof(float)), cudaSuccess);
         
         size_t smem = TENSORMAP_SIZE + BOX * sizeof(float) + 16 + 128; // +128 for alignment padding
         tma_tensor_1d_kernel<BOX><<<grid, BOX, smem>>>(d_in, d_out, N, d_scratch);
         ASSERT_EQ(cudaGetLastError(), cudaSuccess);
         ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
         
-        cudaMemcpy(h_out.data(), d_out, N * sizeof(float), cudaMemcpyDeviceToHost);
+        ASSERT_EQ(cudaMemcpy(h_out.data(), d_out, N * sizeof(float),
+                             cudaMemcpyDeviceToHost),
+                  cudaSuccess);
         for (int i = 0; i < N; i++)
             EXPECT_NEAR(h_out[i], h_in[i] + 1.0f, 1e-4f) << "at " << i;
         
-        cudaFree(d_in); cudaFree(d_out); cudaFree(d_scratch);
+        EXPECT_EQ(cudaFree(d_in), cudaSuccess);
+        EXPECT_EQ(cudaFree(d_out), cudaSuccess);
+        EXPECT_EQ(cudaFree(d_scratch), cudaSuccess);
     }
 };
 
@@ -429,22 +436,25 @@ protected:
     void Run(int D0, int D1, int seed = 42) {
         size_t tot = (size_t)D0 * D1;
         std::vector<float> h_in(tot), h_out(tot);
-        float *d_in, *d_out;
-        uint8_t *d_scratch;
+        float *d_in = nullptr, *d_out = nullptr;
+        uint8_t *d_scratch = nullptr;
         
-        cudaMalloc(&d_in, tot * sizeof(float));
-        cudaMalloc(&d_out, tot * sizeof(float));
+        ASSERT_EQ(cudaMalloc(&d_in, tot * sizeof(float)), cudaSuccess);
+        ASSERT_EQ(cudaMalloc(&d_out, tot * sizeof(float)), cudaSuccess);
         
         dim3 grid((D0 + BOX0 - 1) / BOX0, (D1 + BOX1 - 1) / BOX1);
-        cudaMalloc(&d_scratch, grid.x * grid.y * 256);
+        ASSERT_EQ(cudaMalloc(&d_scratch, grid.x * grid.y * 256), cudaSuccess);
         
-        std::mt19937 gen(seed);
-        std::uniform_real_distribution<float> dist(-10, 10);
-        for (auto &v : h_in) {
-            // v = dist(gen);
-            v = 2;
+        for (int y = 0; y < D1; ++y) {
+            for (int x = 0; x < D0; ++x) {
+                h_in[y * D0 + x] =
+                    static_cast<float>(seed + y * 4096 + x);
+            }
         }
-        cudaMemcpy(d_in, h_in.data(), tot * sizeof(float), cudaMemcpyHostToDevice);
+        ASSERT_EQ(cudaMemcpy(d_in, h_in.data(), tot * sizeof(float),
+                             cudaMemcpyHostToDevice),
+                  cudaSuccess);
+        ASSERT_EQ(cudaMemset(d_out, 0, tot * sizeof(float)), cudaSuccess);
         
         dim3 block(BOX0, BOX1);
         size_t smem = TENSORMAP_SIZE + BOX0 * BOX1 * sizeof(float) + 16 + 128; // +128 for alignment padding
@@ -452,12 +462,16 @@ protected:
         ASSERT_EQ(cudaGetLastError(), cudaSuccess);
         ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
         
-        cudaMemcpy(h_out.data(), d_out, tot * sizeof(float), cudaMemcpyDeviceToHost);
+        ASSERT_EQ(cudaMemcpy(h_out.data(), d_out, tot * sizeof(float),
+                             cudaMemcpyDeviceToHost),
+                  cudaSuccess);
         for (size_t i = 0; i < tot; i++)
             EXPECT_NEAR(h_out[i], h_in[i] + 1.0f, 1e-4f)
-                << " Mismatch at index [" << i /D1 << ", " << i % D1 << "]";
+                << " Mismatch at index [" << i / D0 << ", " << i % D0 << "]";
         
-        cudaFree(d_in); cudaFree(d_out); cudaFree(d_scratch);
+        EXPECT_EQ(cudaFree(d_in), cudaSuccess);
+        EXPECT_EQ(cudaFree(d_out), cudaSuccess);
+        EXPECT_EQ(cudaFree(d_scratch), cudaSuccess);
     }
 };
 
@@ -471,30 +485,38 @@ protected:
     void Run(int D0, int D1, int D2, int seed = 42) {
         size_t tot = (size_t)D0 * D1 * D2;
         std::vector<float> h_in(tot), h_out(tot);
-        float *d_in, *d_out;
-        uint8_t *d_scratch;
+        float *d_in = nullptr, *d_out = nullptr;
+        uint8_t *d_scratch = nullptr;
         
-        cudaMalloc(&d_in, tot * sizeof(float));
-        cudaMalloc(&d_out, tot * sizeof(float));
+        ASSERT_EQ(cudaMalloc(&d_in, tot * sizeof(float)), cudaSuccess);
+        ASSERT_EQ(cudaMalloc(&d_out, tot * sizeof(float)), cudaSuccess);
         
         dim3 grid((D0 + BOX0 - 1) / BOX0, (D1 + BOX1 - 1) / BOX1, (D2 + BOX2 - 1) / BOX2);
-        cudaMalloc(&d_scratch, grid.x * grid.y * grid.z * 256);
+        ASSERT_EQ(cudaMalloc(&d_scratch, grid.x * grid.y * grid.z * 256),
+                  cudaSuccess);
         
         std::mt19937 gen(seed);
         std::uniform_real_distribution<float> dist(-10, 10);
         for (auto &v : h_in) v = dist(gen);
-        cudaMemcpy(d_in, h_in.data(), tot * sizeof(float), cudaMemcpyHostToDevice);
+        ASSERT_EQ(cudaMemcpy(d_in, h_in.data(), tot * sizeof(float),
+                             cudaMemcpyHostToDevice),
+                  cudaSuccess);
+        ASSERT_EQ(cudaMemset(d_out, 0, tot * sizeof(float)), cudaSuccess);
         
         size_t smem = TENSORMAP_SIZE + BOX0 * BOX1 * BOX2 * sizeof(float) + 16 + 128; // +128 for alignment padding
         tma_tensor_3d_kernel<BOX0, BOX1, BOX2><<<grid, 128, smem>>>(d_in, d_out, D0, D1, D2, d_scratch);
         ASSERT_EQ(cudaGetLastError(), cudaSuccess);
         ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
         
-        cudaMemcpy(h_out.data(), d_out, tot * sizeof(float), cudaMemcpyDeviceToHost);
+        ASSERT_EQ(cudaMemcpy(h_out.data(), d_out, tot * sizeof(float),
+                             cudaMemcpyDeviceToHost),
+                  cudaSuccess);
         for (size_t i = 0; i < tot; i++)
             EXPECT_NEAR(h_out[i], h_in[i] + 1.0f, 1e-4f);
         
-        cudaFree(d_in); cudaFree(d_out); cudaFree(d_scratch);
+        EXPECT_EQ(cudaFree(d_in), cudaSuccess);
+        EXPECT_EQ(cudaFree(d_out), cudaSuccess);
+        EXPECT_EQ(cudaFree(d_scratch), cudaSuccess);
     }
 };
 
@@ -530,11 +552,13 @@ __global__ void tma_tensor_4d_kernel(const float *in, float *out,
     // Linearized block index
     int linear_bid = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.x * gridDim.y;
     
-    // For simplicity, we use 3D grid and only process coord3=0 slice
+    const int tiles2 = (D2 + BOX2 - 1) / BOX2;
+    const int tile2 = blockIdx.z % tiles2;
+    const int tile3 = blockIdx.z / tiles2;
     int coord0 = blockIdx.x * BOX0;
     int coord1 = blockIdx.y * BOX1;
-    int coord2 = blockIdx.z * BOX2;
-    int coord3 = 0;  // Single slice for simplicity
+    int coord2 = tile2 * BOX2;
+    int coord3 = tile3 * BOX3;
     
     uint8_t* global_tmap = global_scratch + linear_bid * 256;
     
@@ -637,19 +661,26 @@ protected:
     void Run(int D0, int D1, int D2, int D3, int seed = 42) {
         size_t tot = (size_t)D0 * D1 * D2 * D3;
         std::vector<float> h_in(tot), h_out(tot);
-        float *d_in, *d_out;
-        uint8_t *d_scratch;
+        float *d_in = nullptr, *d_out = nullptr;
+        uint8_t *d_scratch = nullptr;
         
-        cudaMalloc(&d_in, tot * sizeof(float));
-        cudaMalloc(&d_out, tot * sizeof(float));
+        ASSERT_EQ(cudaMalloc(&d_in, tot * sizeof(float)), cudaSuccess);
+        ASSERT_EQ(cudaMalloc(&d_out, tot * sizeof(float)), cudaSuccess);
         
-        dim3 grid((D0 + BOX0 - 1) / BOX0, (D1 + BOX1 - 1) / BOX1, (D2 + BOX2 - 1) / BOX2);
-        cudaMalloc(&d_scratch, grid.x * grid.y * grid.z * 256);
+        const int tiles2 = (D2 + BOX2 - 1) / BOX2;
+        const int tiles3 = (D3 + BOX3 - 1) / BOX3;
+        dim3 grid((D0 + BOX0 - 1) / BOX0,
+                  (D1 + BOX1 - 1) / BOX1, tiles2 * tiles3);
+        ASSERT_EQ(cudaMalloc(&d_scratch, grid.x * grid.y * grid.z * 256),
+                  cudaSuccess);
         
         std::mt19937 gen(seed);
         std::uniform_real_distribution<float> dist(-10, 10);
         for (auto &v : h_in) v = dist(gen);
-        cudaMemcpy(d_in, h_in.data(), tot * sizeof(float), cudaMemcpyHostToDevice);
+        ASSERT_EQ(cudaMemcpy(d_in, h_in.data(), tot * sizeof(float),
+                             cudaMemcpyHostToDevice),
+                  cudaSuccess);
+        ASSERT_EQ(cudaMemset(d_out, 0, tot * sizeof(float)), cudaSuccess);
         
         constexpr int TILE_ELEMS = BOX0 * BOX1 * BOX2 * BOX3;
         size_t smem = TENSORMAP_SIZE + TILE_ELEMS * sizeof(float) + 16 + 128; // +128 for alignment padding
@@ -657,17 +688,22 @@ protected:
         ASSERT_EQ(cudaGetLastError(), cudaSuccess);
         ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
         
-        cudaMemcpy(h_out.data(), d_out, tot * sizeof(float), cudaMemcpyDeviceToHost);
+        ASSERT_EQ(cudaMemcpy(h_out.data(), d_out, tot * sizeof(float),
+                             cudaMemcpyDeviceToHost),
+                  cudaSuccess);
         for (size_t i = 0; i < tot; i++)
             EXPECT_NEAR(h_out[i], h_in[i] + 1.0f, 1e-4f);
         
-        cudaFree(d_in); cudaFree(d_out); cudaFree(d_scratch);
+        EXPECT_EQ(cudaFree(d_in), cudaSuccess);
+        EXPECT_EQ(cudaFree(d_out), cudaSuccess);
+        EXPECT_EQ(cudaFree(d_scratch), cudaSuccess);
     }
 };
 
 TEST_F(TMA4DTest, Small_8x8x8x8) { Run(8, 8, 8, 8); }
 TEST_F(TMA4DTest, Mixed_16x8x8x4) { Run(16, 8, 8, 4, 123); }
 TEST_F(TMA4DTest, Large_16x16x8x8) { Run(16, 16, 8, 8, 456); }
+TEST_F(TMA4DTest, CrossDim3Tiles_8x8x8x16) { Run(8, 8, 8, 16, 789); }
 
 // ============================================================================  
 // 5D TMA Kernel using cp.async.bulk.tensor.5d
@@ -693,11 +729,19 @@ __global__ void tma_tensor_5d_kernel(const float *in, float *out,
 
     int linear_bid = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.x * gridDim.y;
     
+    const int tiles2 = (D2 + BOX2 - 1) / BOX2;
+    const int tiles3 = (D3 + BOX3 - 1) / BOX3;
+    int high_tile = blockIdx.z;
+    const int tile2 = high_tile % tiles2;
+    high_tile /= tiles2;
+    const int tile3 = high_tile % tiles3;
+    const int tile4 = high_tile / tiles3;
+
     int coord0 = blockIdx.x * BOX0;
     int coord1 = blockIdx.y * BOX1;
-    int coord2 = blockIdx.z * BOX2;
-    int coord3 = 0;
-    int coord4 = 0;
+    int coord2 = tile2 * BOX2;
+    int coord3 = tile3 * BOX3;
+    int coord4 = tile4 * BOX4;
     
     uint8_t* global_tmap = global_scratch + linear_bid * 256;
     
@@ -805,19 +849,28 @@ protected:
     void Run(int D0, int D1, int D2, int D3, int D4, int seed = 42) {
         size_t tot = (size_t)D0 * D1 * D2 * D3 * D4;
         std::vector<float> h_in(tot), h_out(tot);
-        float *d_in, *d_out;
-        uint8_t *d_scratch;
+        float *d_in = nullptr, *d_out = nullptr;
+        uint8_t *d_scratch = nullptr;
         
-        cudaMalloc(&d_in, tot * sizeof(float));
-        cudaMalloc(&d_out, tot * sizeof(float));
+        ASSERT_EQ(cudaMalloc(&d_in, tot * sizeof(float)), cudaSuccess);
+        ASSERT_EQ(cudaMalloc(&d_out, tot * sizeof(float)), cudaSuccess);
         
-        dim3 grid((D0 + BOX0 - 1) / BOX0, (D1 + BOX1 - 1) / BOX1, (D2 + BOX2 - 1) / BOX2);
-        cudaMalloc(&d_scratch, grid.x * grid.y * grid.z * 256);
+        const int tiles2 = (D2 + BOX2 - 1) / BOX2;
+        const int tiles3 = (D3 + BOX3 - 1) / BOX3;
+        const int tiles4 = (D4 + BOX4 - 1) / BOX4;
+        dim3 grid((D0 + BOX0 - 1) / BOX0,
+                  (D1 + BOX1 - 1) / BOX1,
+                  tiles2 * tiles3 * tiles4);
+        ASSERT_EQ(cudaMalloc(&d_scratch, grid.x * grid.y * grid.z * 256),
+                  cudaSuccess);
         
         std::mt19937 gen(seed);
         std::uniform_real_distribution<float> dist(-10, 10);
         for (auto &v : h_in) v = dist(gen);
-        cudaMemcpy(d_in, h_in.data(), tot * sizeof(float), cudaMemcpyHostToDevice);
+        ASSERT_EQ(cudaMemcpy(d_in, h_in.data(), tot * sizeof(float),
+                             cudaMemcpyHostToDevice),
+                  cudaSuccess);
+        ASSERT_EQ(cudaMemset(d_out, 0, tot * sizeof(float)), cudaSuccess);
         
         constexpr int TILE_ELEMS = BOX0 * BOX1 * BOX2 * BOX3 * BOX4;
         size_t smem = TENSORMAP_SIZE + TILE_ELEMS * sizeof(float) + 16 + 128; // +128 for alignment padding
@@ -825,15 +878,21 @@ protected:
         ASSERT_EQ(cudaGetLastError(), cudaSuccess);
         ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
         
-        cudaMemcpy(h_out.data(), d_out, tot * sizeof(float), cudaMemcpyDeviceToHost);
+        ASSERT_EQ(cudaMemcpy(h_out.data(), d_out, tot * sizeof(float),
+                             cudaMemcpyDeviceToHost),
+                  cudaSuccess);
         for (size_t i = 0; i < tot; i++)
             EXPECT_NEAR(h_out[i], h_in[i] + 1.0f, 1e-4f);
         
-        cudaFree(d_in); cudaFree(d_out); cudaFree(d_scratch);
+        EXPECT_EQ(cudaFree(d_in), cudaSuccess);
+        EXPECT_EQ(cudaFree(d_out), cudaSuccess);
+        EXPECT_EQ(cudaFree(d_scratch), cudaSuccess);
     }
 };
 
 TEST_F(TMA5DTest, Small_4x4x4x4x4) { Run(4, 4, 4, 4, 4); }
 TEST_F(TMA5DTest, Mixed_8x4x4x4x2) { Run(8, 4, 4, 4, 2, 123); }
 TEST_F(TMA5DTest, Large_8x8x4x4x4) { Run(8, 8, 4, 4, 4, 456); }
-
+TEST_F(TMA5DTest, CrossDim3AndDim4Tiles_4x4x4x8x8) {
+    Run(4, 4, 4, 8, 8, 789);
+}

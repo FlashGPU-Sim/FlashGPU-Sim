@@ -946,11 +946,15 @@ public:
     unsigned bar_id = (unsigned)-1;     // mbarrier address in shared memory
     unsigned bar_count = (unsigned)-1;  // expected count or arrival count
     bool bar_parity = false;            // parity for try_wait
-    
+    bool bar_has_time_hint = false;     // optional try_wait suspendTimeHint
+    uint32_t bar_time_hint_ns = 0;      // hint value in nanoseconds
+
     void reset() {
       bar_id = (unsigned)-1;
       bar_count = (unsigned)-1;
       bar_parity = false;
+      bar_has_time_hint = false;
+      bar_time_hint_ns = 0;
     }
   };
   void set_mbarrier_info(int laneid, const mbarrier_info_t &info) {
@@ -967,6 +971,24 @@ public:
 
 private:
   mbarrier_info_t mbarrier_info[MAX_WARP_SIZE];
+
+public:
+  struct tcgen05_dyn_info_t {
+    uint64_t mma_work = 0;
+  };
+  void set_tcgen05_dyn_info(int laneid, const tcgen05_dyn_info_t &info) {
+    tcgen05_dyn_info[laneid] = info;
+  }
+  const tcgen05_dyn_info_t &get_tcgen05_dyn_info(int laneid) const {
+    return tcgen05_dyn_info[laneid];
+  }
+  void reset_tcgen05_dyn_info() {
+    for (unsigned i = 0; i < MAX_WARP_SIZE; ++i)
+      tcgen05_dyn_info[i] = tcgen05_dyn_info_t();
+  }
+
+private:
+  tcgen05_dyn_info_t tcgen05_dyn_info[MAX_WARP_SIZE];
 
 public:
   types_of_operands oprnd_type;  // code (uarch visible) identify if the
@@ -988,6 +1010,10 @@ public:
   unsigned outcount;
   unsigned in[24];
   unsigned incount;
+  // Logical dependencies beyond the fixed operand-collector arrays. Wide
+  // register vectors must not lose RAW/WAW hazards at those array limits.
+  std::vector<unsigned> extra_out;
+  std::vector<unsigned> extra_in;
   unsigned char is_vectorin;
   unsigned char is_vectorout;
   int pred;  // predicate register number
@@ -1230,6 +1256,7 @@ class warp_inst_t : public inst_t {
 
   void print(FILE *fout) const;
   unsigned get_uid() const { return m_uid; }
+  unsigned long long get_issue_cycle() const { return issue_cycle; }
   unsigned long long get_streamID() const { return m_streamID; }
   unsigned get_schd_id() const { return m_scheduler_id; }
   active_mask_t get_warp_active_mask() const { return m_warp_active_mask; }

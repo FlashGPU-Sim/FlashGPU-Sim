@@ -7,15 +7,21 @@ sources = [
   # Host-side simulator component tests.
   "unit/bulk_group_test.cc",
   "unit/local_interconnect_test.cc",
+  "unit/memory_transport_test.cc",
   "unit/mshr_table_test.cc",
+  "unit/register_view_reload_test.cc",
+  "unit/mbarrier_retry_timing_test.cc",
   "unit/tma_reduction_test.cc",
 
   # Portable integration tests.
   "integration/address_operand_test.cu",
   "integration/vector_operand_test.cu",
+  "integration/integer_multiply_test.cu",
+  "integration/float_minmax_three_input_test.cu",
   "integration/vector_add_test.cu",
   "integration/shared_memory_optin_test.cu",
   "integration/ldst_matrix_test.cu",
+  "integration/ldst_multi_sector_test.cu",
   "integration/cp_async_src_size_test.cu",
   "integration/shared_atomic_address_test.cu",
 
@@ -24,6 +30,7 @@ sources = [
   "barrier/mbarrier_sanity_test.cu",
   "tma/host_tensormap_test.cu",
   "tma/tma_test.cu",
+  "tma/tma_producer_consumer_test.cu",
   "tma/tma_multidim_test.cu",
   "tma/tma_edge_cases_test.cu",
   "tma/tma_tensor_reduce_test.cu",
@@ -36,7 +43,6 @@ sources = [
   "fa2/fa2_fwd_fp16_test.cu",
 
   # Microbenchmark and trace workloads.
-  "microbench/mbarrier/mbarrier_trywait_latency_bench.cc",
   "microbench/mma/inst_latency_bench.cc",
   "microbench/mma/mma_issue_bench.cc",
   "microbench/mma/mma_accept_queue_bench.cu",

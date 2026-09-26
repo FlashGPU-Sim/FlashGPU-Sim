@@ -69,6 +69,10 @@ $(ARCH_MANIFEST_MK): $(ARCH_MANIFESTS) $(ARCH_MANIFEST_SCRIPT)
 
 include $(ARCH_MANIFEST_MK)
 
+# Keep architecture-specific PTX in the binary without asking newer nvcc
+# versions to also compile an incompatible generic SM120 device pass.
+SM120_NVCCFLAGS = $(BASE_NVCCFLAGS) $(ARCH_NVCC_CODEGEN_sm120)
+
 $(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(SM90_OBJ_DIR):
 	mkdir -p $@
 

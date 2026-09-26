@@ -10,6 +10,23 @@
 class gpgpu_sim;
 namespace flash_gpgpu_sim {
 
+enum class mbarrier_recheck_action_t {
+  KEEP_SLEEPING,
+  RETURN_TRUE,
+  RETURN_FALSE,
+};
+
+uint64_t mbarrier_saturating_add(uint64_t cycle, uint64_t delta);
+uint64_t mbarrier_hint_ns_to_cycles(uint32_t hint_ns, unsigned core_freq_hz);
+mbarrier_recheck_action_t mbarrier_classify_recheck(bool phase_complete,
+                                                    uint64_t cycle,
+                                                    uint64_t deadline_cycle);
+uint64_t mbarrier_wake_on_phase_notification(uint64_t scheduled_wake_cycle,
+                                             uint64_t notification_cycle);
+bool mbarrier_should_delay_phase_wakeup(bool suspended,
+                                        bool phase_notification_pending,
+                                        bool all_true, unsigned latency);
+
 class mbarrier_manager_t {
 
   /**
@@ -71,12 +88,15 @@ public:
             int expected_count);
   void inval(gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr);
 
-  /**
-   * Try to wait on the mbarrier at addr with parity for warp warp_id.
-   * @return true if the wait is satisfied.
-   */
-  bool try_wait(gpgpu_sim *gpu, const thread_index_t &thread_index,
-                uint64_t addr, int parity);
+  /** Query the current phase without registering or changing barrier state. */
+  bool test_wait(gpgpu_sim *gpu, const thread_index_t &thread_index,
+                 uint64_t addr, int parity) const;
+
+  /** Register one warp for a phase-change notification. */
+  void register_wait(const thread_index_t &thread_index, uint64_t addr);
+
+  /** Remove a waiter after timeout or lifecycle cleanup. */
+  void cancel_wait(int sw_cta_id, uint64_t addr, int hw_warp_id);
 
   /**
    * Arrive at the mbarrier at addr with arrival_count for warp warp_id.

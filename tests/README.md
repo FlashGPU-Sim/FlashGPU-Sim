@@ -12,10 +12,12 @@ source setup_environment
 
 ./tests/run_tests.py list
 ./tests/run_tests.py list --arch sm90 --group fa3 --profile breakdown
+./tests/run_tests.py list-cases --arch sm100 --group unit
 ./tests/run_tests.py list-cases --arch sm120 --group integration
 ./tests/run_tests.py list-cases --arch sm120 --group integration \
   --gtest-filter '*VectorAdd*'
 ./tests/run_tests.py build --arch sm120 --group integration
+./tests/run_tests.py run --arch sm100 --group unit
 ./tests/run_tests.py run --arch sm120 --group integration
 ./tests/run_tests.py run --arch sm90 --group wgmma \
   --gtest-filter 'WgmmaF16*'
@@ -41,7 +43,7 @@ architecture manifest
 
 The public selectors are:
 
-- `--arch`: an architecture manifest, currently `sm90` or `sm120`;
+- `--arch`: an architecture manifest, currently `sm90`, `sm100`, or `sm120`;
 - `--group`: the first directory component below `tests/src/`;
 - `--profile`: an optional build/run profile for a complex test group;
 - `--mode`: an optional compile-time variant inside a profile; and
@@ -53,13 +55,15 @@ A positional filter remains available as a convenient substring search.
 level; selecting one profile expands its compile-time modes.
 
 ```bash
+./run_tests.py run --arch sm100 --group unit
 ./run_tests.py run --arch sm120 --group unit
-./run_tests.py run --arch sm120 --group tma CudaTMATest
+./run_tests.py run --arch sm120 --group tma TmaProducerConsumerTest
 ./run_tests.py run --arch sm90 --group fa2 --profile smoke
 ./run_tests.py run --arch sm120 --group fa2 --profile smoke
 ./run_tests.py run --arch sm90 --group fa3 \
   --profile breakdown --mode baseline
 ./run_tests.py build --arch sm90 --group microbench --profile tma
+./run_tests.py build --arch sm100 --group microbench --profile tma
 ./run_tests.py run --arch sm120 --group trace \
   --profile gpt2 flash_attn
 ```
@@ -69,8 +73,9 @@ Mode `all` and standalone calibration microbenchmarks are build-only.
 Build every selection supported by one architecture:
 
 ```bash
-./tests/run_tests.py build --arch sm120 --group all
 ./tests/run_tests.py build --arch sm90 --group all
+./tests/run_tests.py build --arch sm100 --group all
+./tests/run_tests.py build --arch sm120 --group all
 ```
 
 `all` is a runner-level aggregate, not a test group stored in the TOML
@@ -96,7 +101,7 @@ GoogleTest cases.
 ```text
 src/
 ├── include/       shared test-only headers (not a test group)
-├── unit/          host-side simulator component tests
+├── unit/          host-side tests that directly exercise simulator components
 ├── integration/   cross-architecture standalone CUDA tests
 ├── barrier/       named barrier and mbarrier tests
 ├── tma/           TMA and tensor-map tests
@@ -112,8 +117,17 @@ Executable sources follow `tests/src/<test_group>/<test>.cu`; shared headers
 under `tests/src/include/` are included by those sources but are not workloads,
 test groups, or architecture-manifest entries.
 
+`unit/` contains tests that call simulator component APIs directly without
+loading or launching device code through the simulator. Architecture-specific
+component tests still belong here; architecture manifests select the relevant
+sources and support objects.
+
 `integration/` admits only standalone sources that compile for every supported
 architecture without test-specific compiler flags or link dependencies.
+Device-launch tests that need shared support, multiple sources, special flags,
+or architecture-specific handling use a feature-specific sibling group.
+Unstable bring-up programs and toolchain-specific probes live under
+`tests/dev/` and are outside the manifest-driven runner.
 
 Downloaded dependencies are isolated below `tests/third_party/`. The test
 build fetches GoogleTest into `tests/third_party/gtest/` on demand, while the
@@ -126,6 +140,7 @@ Architecture support is declared in readable TOML files:
 ```text
 arch/
 ├── sm90.toml
+├── sm100.toml
 └── sm120.toml
 ```
 
@@ -245,6 +260,7 @@ Run one CI job locally, or run the complete manifest:
 
 ```bash
 CI_JOB=sm120-core ./tests/ci/run_ci_tests.sh
+CI_JOB=sm100-core ./tests/ci/run_ci_tests.sh
 CI_JOB=sm90-core ./tests/ci/run_ci_tests.sh
 CI_JOB=sm90-fa2 ./tests/ci/run_ci_tests.sh
 CI_JOB=sm90-fa3 ./tests/ci/run_ci_tests.sh

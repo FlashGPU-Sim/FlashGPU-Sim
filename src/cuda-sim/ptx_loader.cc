@@ -28,6 +28,8 @@
 
 #include "ptx_loader.h"
 #include <dirent.h>
+#include <cerrno>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <fstream>
 #include <sstream>
@@ -144,7 +146,8 @@ void gpgpu_context::ptx_reg_options(option_parser_t opp) {
                          "0");
   option_parser_register(opp, "-gpgpu_ptx_reorder_sass_guided", OPT_BOOL,
                          &ptx_reorder_sass_guided,
-                         "Use auto-extracted SASS PTX-line anchors to guide "
+                         "Generate SASS PTX-line anchors from each loaded PTX "
+                         "to guide "
                          "PTX instruction reordering.",
                          "0");
 }
@@ -234,8 +237,83 @@ char *ptxinfo_data::gpgpu_ptx_sim_convert_ptx_and_sass_to_ptxplus(
   return ptxplus_str;
 }
 
+namespace {
+std::string quote_guide_argument(const std::string &text) {
+  std::string out = "'";
+  for (char c : text) out += c == '\'' ? "'\\''" : std::string(1, c);
+  return out + "'";
+}
+
+// Both file-backed modules (including fatbins) and in-memory PTX come here
+// before parsing can assemble/reorder any function. Never reuse another
+// module's guide: line numbers alone do not identify a PTX module.
+std::string prepare_sass_ptxline_guide(gpgpu_context *ctx, const char *source,
+                               const char *filename) {
+  ctx->ptx_reorder_sass_ptxline_file.clear();
+  if (!ctx->ptx_reorder_enabled) {
+    if (ctx->ptx_reorder_sass_guided) {
+      fprintf(stderr, "GPGPU-Sim PTX: -gpgpu_ptx_reorder_sass_guided "
+                      "requires -gpgpu_ptx_reorder\n");
+      abort();
+    }
+    return "";
+  }
+  const char *override_path = getenv("GPGPUSIM_SASS_PTXLINE_GUIDE");
+  if (override_path && override_path[0]) {
+    ctx->ptx_reorder_sass_ptxline_file = override_path;
+    return "";
+  }
+  if (!ctx->ptx_reorder_sass_guided) return "";
+
+  const char *root = getenv("GPGPUSIM_ROOT");
+  const char *cuda = getenv("PTXAS_CUDA_INSTALL_PATH");
+  if (!cuda || !cuda[0]) cuda = getenv("CUDA_INSTALL_PATH");
+  if (!root || !root[0] || !cuda || !cuda[0]) {
+    fprintf(stderr, "GPGPU-Sim PTX: guide generation requires GPGPUSIM_ROOT "
+                    "and PTXAS_CUDA_INSTALL_PATH or CUDA_INSTALL_PATH\n");
+    abort();
+  }
+  if (mkdir("sass_ptxline", 0775) != 0 && errno != EEXIST) {
+    perror("GPGPU-Sim PTX: cannot create sass_ptxline");
+    abort();
+  }
+  char directory[] = "sass_ptxline/module-XXXXXX";
+  if (!mkdtemp(directory)) {
+    perror("GPGPU-Sim PTX: cannot create guide directory");
+    abort();
+  }
+  const std::string prefix = std::string(directory) + "/guide";
+  std::string input = filename ? filename : "";
+  if (source) {
+    input = std::string(directory) + "/input.ptx";
+    std::ofstream out(input);
+    out << source;
+    out.close();
+    if (!out) {
+      fprintf(stderr, "GPGPU-Sim PTX: cannot write guide input %s\n", input.c_str());
+      abort();
+    }
+  }
+  const std::string command = std::string(ptxas_clean_env_prefix()) +
+      "python3 " + quote_guide_argument(std::string(root) +
+          "/scripts/generate_sass_ptxline_guide.py") + " " +
+      quote_guide_argument(input) + " " + quote_guide_argument(prefix) +
+      " --ptxas " + quote_guide_argument(std::string(cuda) + "/bin/ptxas") +
+      " --nvdisasm " + quote_guide_argument(std::string(cuda) + "/bin/nvdisasm");
+  if (system(command.c_str()) != 0) {
+    fprintf(stderr, "GPGPU-Sim PTX: SASS guide generation failed for %s\n",
+            input.c_str());
+    abort();
+  }
+  ctx->ptx_reorder_sass_ptxline_file = prefix + ".sass";
+  return prefix + ".input.ptx";
+}
+}  // namespace
+
 symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_string(
     const char *p, unsigned source_num) {
+  const std::string normalized = prepare_sass_ptxline_guide(this, p, nullptr);
+  if (!normalized.empty()) return init_parser(normalized.c_str());
   char buf[1024];
   snprintf(buf, 1024, "_%u.ptx", source_num);
   if (g_save_embedded_ptx) {
@@ -272,7 +350,10 @@ symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_string(
 
 symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_filename(
     const char *filename) {
-  symbol_table *symtab = init_parser(filename);
+  const std::string normalized =
+      prepare_sass_ptxline_guide(this, nullptr, filename);
+  symbol_table *symtab =
+      init_parser(normalized.empty() ? filename : normalized.c_str());
   printf("GPGPU-Sim PTX: finished parsing EMBEDDED .ptx file %s\n", filename);
   return symtab;
 }

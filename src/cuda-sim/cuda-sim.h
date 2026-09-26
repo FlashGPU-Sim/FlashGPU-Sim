@@ -139,6 +139,15 @@ class cuda_sim {
   char *opcode_latency_fp;
   char *opcode_latency_dp;
   char *opcode_latency_sfu;
+  unsigned opcode_latency_ex2;
+  unsigned opcode_latency_predicate;
+  unsigned opcode_latency_int_logic;
+  unsigned opcode_initiation_int_logic;
+  bool opcode_f32_minmax_use_int;
+  unsigned opcode_latency_f32x2;
+  unsigned opcode_initiation_f32x2;
+  unsigned opcode_latency_cvt_f16x2_f32;
+  unsigned opcode_initiation_cvt_f16x2_f32;
   char *opcode_latency_tensor;
   char *opcode_latency_wgmma_ss;
   char *opcode_latency_wgmma_rs;

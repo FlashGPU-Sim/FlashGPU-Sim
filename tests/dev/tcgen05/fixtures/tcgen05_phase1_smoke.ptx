@@ -1,0 +1,48 @@
+.version 9.1
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 1024 .b8 __dynamic_shmem__0[];
+
+.visible .entry tcgen05_phase1_smoke()
+.reqntid 32
+{
+.reg .pred leader_thread;
+.reg .pred disable_input_d;
+.reg .pred enable_input_d;
+.reg .b32 %r<80>;
+.reg .b32 tmem_acc;
+.reg .b32 tmem_a;
+.reg .b32 smem_desc_b;
+.reg .b32 idesc;
+
+mov.u32 %r1, %tid.x;
+setp.eq.u32 leader_thread, %r1, 0;
+mov.b32 %r2, 512;
+
+tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [__dynamic_shmem__0+0], %r2;
+
+mov.b32 tmem_acc, 0;
+mov.b32 tmem_a, 0;
+mov.b32 smem_desc_b, 0;
+mov.b32 idesc, 0x8200010;
+mov.b32 %r60, 0;
+mov.b32 %r61, 0;
+mov.b32 %r62, 0;
+mov.b32 %r63, 0;
+setp.ne.u32 disable_input_d, %r60, 0;
+setp.eq.u32 enable_input_d, %r60, 0;
+
+@leader_thread tcgen05.mma.cta_group::1.kind::f16 [tmem_acc], [tmem_a], smem_desc_b, idesc, {%r60, %r61, %r62, %r63}, disable_input_d;
+@leader_thread tcgen05.mma.cta_group::1.kind::f16 [tmem_acc], [tmem_a + 0x8], smem_desc_b, idesc, {%r60, %r61, %r62, %r63}, enable_input_d;
+
+tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [__dynamic_shmem__0+16];
+
+tcgen05.ld.sync.aligned.32x32b.x32.b32 {%r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10, %r11, %r12, %r13, %r14, %r15, %r16, %r17, %r18, %r19, %r20, %r21, %r22, %r23, %r24, %r25, %r26, %r27, %r28, %r29, %r30, %r31, %r32, %r33, %r34}, [tmem_acc];
+tcgen05.st.sync.aligned.32x32b.x16.b32 [tmem_acc], {%r35, %r36, %r37, %r38, %r39, %r40, %r41, %r42, %r43, %r44, %r45, %r46, %r47, %r48, %r49, %r50};
+tcgen05.wait::st.sync.aligned;
+
+tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r3, %r2;
+tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+ret;
+}
