@@ -142,6 +142,7 @@ inherit another limit.
 | `-ptx_opcode_latency_tensormap`, `-ptx_opcode_initiation_tensormap` | `1,1,1` | default | `1,1,1` | Latency and issue interval for replace, `cp_fenceproxy`, and TensorMap fence operations |
 | `-gpgpu_mbarrier_arrive_latency` | `0` | `29` | `29` | Delay before an arrive operation updates the barrier |
 | `-gpgpu_mbarrier_trywait_latency` | `32` | `32` | `32` | Provisional deterministic no-hint maximum suspension for `mbarrier.try_wait`; phase completion may wake the wait earlier, and an explicit PTX hint overrides the bound |
+| `-gpgpu_mbarrier_phase_wakeup_latency` | `0` | default | default | Delay from a notified phase transition to a suspended successful `mbarrier.try_wait` resuming |
 | `-gpgpu_shmem_per_block_optin` | `0` | default | `101376` | Opt-in shared-memory limit per CTA; `0` inherits `-gpgpu_shmem_per_block` |
 | `-gpgpu_max_dynamic_smem_prefer_occupancy_carveout` | `0` | `1` | default | Model the driver selecting an occupancy-oriented shared-memory/L1 carveout when no explicit preference is supplied |
 
@@ -269,6 +270,7 @@ disables the additional byte-credit limiter instead of restricting service.
 | `-gpgpu_cp_async_request_width` | `1` | `4` | Ordinary `cp.async` requests issued per SM and core tick |
 | `-gpgpu_cp_async_response_width` | `1` | `4` | Ordinary `cp.async` response tokens consumed per SM and core tick |
 | `-gpgpu_mbarrier_trywait_latency` | `32` | `32` | Provisional no-hint maximum suspension; an explicit PTX hint selects the deterministic hinted-wait policy |
+| `-gpgpu_mbarrier_phase_wakeup_latency` | `0` | `110` | Additional aggregate wakeup delay after a phase notification makes a suspended successful `mbarrier.try_wait` ready |
 
 ### Experimental Controls
 

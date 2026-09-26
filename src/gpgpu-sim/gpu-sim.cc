@@ -914,6 +914,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "immediately when incomplete (default=32)",
                          "32");
   option_parser_register(
+      opp, "-gpgpu_mbarrier_phase_wakeup_latency", OPT_UINT32,
+      &gpgpu_mbarrier_phase_wakeup_latency,
+      "Additional delay (core cycles) after a phase notification makes a "
+      "suspended mbarrier.try_wait succeed (default=0)",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
       &gpgpu_wgmma_issue_chain_ss,
       "Per-SM WGMMA SS issue chain throttle "

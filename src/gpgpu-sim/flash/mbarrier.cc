@@ -42,6 +42,12 @@ uint64_t mbarrier_wake_on_phase_notification(uint64_t scheduled_wake_cycle,
                                                    : notification_cycle;
 }
 
+bool mbarrier_should_delay_phase_wakeup(bool suspended,
+                                        bool phase_notification_pending,
+                                        bool all_true, unsigned latency) {
+  return suspended && phase_notification_pending && all_true && latency > 0;
+}
+
 void mbarrier_manager_t::init(gpgpu_sim *gpu,
                               const thread_index_t &thread_index, uint64_t addr,
                               int expected_count) {
@@ -708,6 +714,11 @@ void barrier_set_t::cycle() {
       continue;
     }
 
+    if (wait.phase_wakeup_delay_pending) {
+      finish_mbarrier_wait(warp_id, "mbarrier phase wakeup visible");
+      continue;
+    }
+
     flash_gpgpu_sim::mbarrier_manager_t::thread_index_t thread_index{
         (int)wait.hw_cta_id, (int)wait.hw_warp_id, wait.sw_cta_id,
         wait.sw_warp_id};
@@ -757,7 +768,32 @@ void barrier_set_t::cycle() {
     }
 
     if (all_resolved) {
-      finish_mbarrier_wait(warp_id, "mbarrier lanes resolved");
+      bool all_true = true;
+      for (unsigned lane = 0; lane < m_warp_size; ++lane) {
+        if (wait.lanes[lane].active)
+          all_true = all_true && wait.lanes[lane].result;
+      }
+      const unsigned phase_wakeup_latency =
+          m_shader->get_config()->gpgpu_mbarrier_phase_wakeup_latency;
+      if (flash_gpgpu_sim::mbarrier_should_delay_phase_wakeup(
+              wait.suspended, wait.phase_notification_pending, all_true,
+              phase_wakeup_latency)) {
+        wait.phase_notification_pending = false;
+        wait.phase_wakeup_delay_pending = true;
+        wait.next_recheck_cycle =
+            flash_gpgpu_sim::mbarrier_saturating_add(now, phase_wakeup_latency);
+        m_shader->m_stats->mbarrier_phase_wakeups++;
+        m_shader->m_stats->mbarrier_phase_wakeup_cycles += phase_wakeup_latency;
+        if (mbarrier_trace_enabled()) {
+          printf("MBAR_WAIT cycle=%llu sm=%u hw_cta=%u sw_cta=%d warp=%u "
+                 "pc=0x%llx state=phase_wakeup_delay release_cycle=%llu\n",
+                 (unsigned long long)now, m_shader->get_sid(), wait.hw_cta_id,
+                 wait.sw_cta_id, warp_id, (unsigned long long)wait.pc,
+                 (unsigned long long)wait.next_recheck_cycle);
+        }
+      } else {
+        finish_mbarrier_wait(warp_id, "mbarrier lanes resolved");
+      }
     } else {
       wait.phase_notification_pending = false;
       wait.next_recheck_cycle = next_recheck;

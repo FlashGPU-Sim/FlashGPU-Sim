@@ -136,6 +136,10 @@ The timing model exposes:
 - `-gpgpu_mbarrier_arrive_latency`
 - `-gpgpu_mbarrier_trywait_latency`: no-hint maximum suspension in core cycles;
   zero commits false immediately after a failed initial query.
+- `-gpgpu_mbarrier_phase_wakeup_latency`: additional delay in core cycles after
+  a phase notification triggers an authoritative recheck that resolves every
+  active lane true. It applies only to a suspended `try_wait`; an initially
+  ready query and a timeout-false result are unchanged.
 
 An explicit `suspendTimeHint` replaces the no-hint bound after nanosecond to
 core-cycle conversion. The pending wait performs no periodic polling. It is
@@ -160,7 +164,9 @@ activity, so the converted deadline remains a reproducible simulator policy.
 The aggregate, warp-instruction-level counters printed under
 `MBarrier Try-Wait Timing` are `logical_trywait`, `immediate_true`,
 `suspended_waits`, `rechecks`, `true_after_suspend`, `timeout_false`, and
-`sleep_cycles`. `immediate_true` and `true_after_suspend` require every active
+`sleep_cycles`. `phase_wakeups` and `phase_wakeup_cycles` report the number and
+configured aggregate cost of notification-delayed successful wakeups.
+`immediate_true` and `true_after_suspend` require every active
 lane to return true; a logical wait with any timeout-false lane is classified
 under `timeout_false`. `rechecks` counts event/deadline-driven warp-level
 recheck stages (a stage may query multiple active lanes), and sleep cycles are

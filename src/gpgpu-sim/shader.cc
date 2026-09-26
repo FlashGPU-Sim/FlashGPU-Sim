@@ -1055,6 +1055,8 @@ void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, in
   accumulate(mbarrier_rechecks);
   accumulate(mbarrier_true_after_suspend);
   accumulate(mbarrier_timeout_false);
+  accumulate(mbarrier_phase_wakeups);
+  accumulate(mbarrier_phase_wakeup_cycles);
   accumulate(mbarrier_sleep_cycles);
 
   merge(gpgpu_n_shmem_bank_access);
@@ -1150,6 +1152,8 @@ void shader_core_stats::clear_accumulator() {
   accumulate(mbarrier_rechecks);
   accumulate(mbarrier_true_after_suspend);
   accumulate(mbarrier_timeout_false);
+  accumulate(mbarrier_phase_wakeups);
+  accumulate(mbarrier_phase_wakeup_cycles);
   accumulate(mbarrier_sleep_cycles);
 
   m_outgoing_traffic_stats->clear();
@@ -1334,6 +1338,9 @@ void shader_core_stats::print(FILE *fout) const {
   fprintf(fout, "  rechecks = %llu\n", mbarrier_rechecks);
   fprintf(fout, "  true_after_suspend = %llu\n", mbarrier_true_after_suspend);
   fprintf(fout, "  timeout_false = %llu\n", mbarrier_timeout_false);
+  fprintf(fout, "  phase_wakeups = %llu\n", mbarrier_phase_wakeups);
+  fprintf(fout, "  phase_wakeup_cycles = %llu\n",
+          mbarrier_phase_wakeup_cycles);
   fprintf(fout, "  sleep_cycles = %llu\n", mbarrier_sleep_cycles);
 
   // NCU-style warp stall breakdown

@@ -23,6 +23,9 @@ mbarrier_recheck_action_t mbarrier_classify_recheck(bool phase_complete,
                                                     uint64_t deadline_cycle);
 uint64_t mbarrier_wake_on_phase_notification(uint64_t scheduled_wake_cycle,
                                              uint64_t notification_cycle);
+bool mbarrier_should_delay_phase_wakeup(bool suspended,
+                                        bool phase_notification_pending,
+                                        bool all_true, unsigned latency);
 
 class mbarrier_manager_t {
 

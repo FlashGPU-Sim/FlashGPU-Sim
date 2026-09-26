@@ -1276,6 +1276,7 @@ class barrier_set_t {
     uint64_t issue_cycle = 0;
     uint64_t next_recheck_cycle = 0;
     bool phase_notification_pending = false;
+    bool phase_wakeup_delay_pending = false;
     bool suspended = false;
     const ptx_instruction *static_inst = nullptr;
     lane_wait_t lanes[MAX_WARP_SIZE];
@@ -2220,6 +2221,9 @@ class shader_core_config : public core_config {
   // Maximum modeled suspension for a no-hint mbarrier.try_wait. The optional
   // PTX suspendTimeHint overrides this bound after ns-to-core-cycle conversion.
   unsigned int gpgpu_mbarrier_trywait_latency;
+  // Additional delay after a phase-triggered recheck resolves every active
+  // lane of a suspended mbarrier.try_wait true.
+  unsigned int gpgpu_mbarrier_phase_wakeup_latency;
   char *gpgpu_wgmma_issue_chain_ss;
   char *gpgpu_wgmma_issue_chain_rs;
   unsigned gpgpu_wgmma_issue_chain_ss_config[5];
@@ -2451,6 +2455,8 @@ struct shader_core_stats_pod {
   unsigned long long mbarrier_rechecks;
   unsigned long long mbarrier_true_after_suspend;
   unsigned long long mbarrier_timeout_false;
+  unsigned long long mbarrier_phase_wakeups;
+  unsigned long long mbarrier_phase_wakeup_cycles;
   unsigned long long mbarrier_sleep_cycles;
 };
 

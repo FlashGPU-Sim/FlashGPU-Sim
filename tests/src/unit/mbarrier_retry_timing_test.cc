@@ -20,4 +20,17 @@ TEST(MBarrierRetryTimingTest, IncompletePhaseTimesOutAtInclusiveDeadline) {
             mbarrier_recheck_action_t::RETURN_FALSE);
 }
 
+TEST(MBarrierRetryTimingTest, DelaysOnlyNotifiedSuccessfulSuspendedWakeups) {
+  EXPECT_TRUE(flash_gpgpu_sim::mbarrier_should_delay_phase_wakeup(true, true,
+                                                                  true, 110));
+  EXPECT_FALSE(flash_gpgpu_sim::mbarrier_should_delay_phase_wakeup(false, true,
+                                                                   true, 110));
+  EXPECT_FALSE(flash_gpgpu_sim::mbarrier_should_delay_phase_wakeup(true, false,
+                                                                   true, 110));
+  EXPECT_FALSE(flash_gpgpu_sim::mbarrier_should_delay_phase_wakeup(true, true,
+                                                                   false, 110));
+  EXPECT_FALSE(
+      flash_gpgpu_sim::mbarrier_should_delay_phase_wakeup(true, true, true, 0));
+}
+
 }  // namespace
