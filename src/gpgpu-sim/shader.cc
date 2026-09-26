@@ -3162,7 +3162,6 @@ void scheduler_unit::cycle() {
         // No scoreboard collision — check if FU is available
         unsigned op = pI->op;
         bool fu_full = false;
-        bool is_math = false;
         bool is_mio = false;
 
         if (op == LOAD_OP || op == STORE_OP ||
@@ -3188,17 +3187,13 @@ void scheduler_unit::cycle() {
           else
             fu_full = !m_mem_out->has_free(m_shader->m_config->sub_core_model, m_id);
         } else if (op == TENSOR_CORE_OP) {
-          is_math = true;
           fu_full = !m_tensor_core_out->has_free(m_shader->m_config->sub_core_model, m_id);
         } else if (op == SFU_OP || op == ALU_SFU_OP ||
                    (op == DP_OP && m_shader->m_config->gpgpu_num_dp_units == 0)) {
-          is_math = true;
           fu_full = !m_sfu_out->has_free(m_shader->m_config->sub_core_model, m_id);
         } else if (op == DP_OP) {
-          is_math = true;
           fu_full = !m_dp_out->has_free(m_shader->m_config->sub_core_model, m_id);
         } else if (op == SP_OP || op == INTP_OP || op == ALU_OP) {
-          is_math = true;
           if (m_shader->m_config->gpgpu_num_int_units > 0 && op != SP_OP)
             fu_full = !m_int_out->has_free(m_shader->m_config->sub_core_model, m_id);
           else

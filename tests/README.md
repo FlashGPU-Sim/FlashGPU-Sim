@@ -260,6 +260,7 @@ Run one CI job locally, or run the complete manifest:
 
 ```bash
 CI_JOB=sm120-core ./tests/ci/run_ci_tests.sh
+CI_JOB=sm100-core ./tests/ci/run_ci_tests.sh
 CI_JOB=sm90-core ./tests/ci/run_ci_tests.sh
 CI_JOB=sm90-fa2 ./tests/ci/run_ci_tests.sh
 CI_JOB=sm90-fa3 ./tests/ci/run_ci_tests.sh

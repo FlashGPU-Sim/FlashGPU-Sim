@@ -12,6 +12,15 @@ tests = [
   { name = "trace", group = "trace", profile = "gpt2" },
 ]
 
+[jobs.sm100-core]
+arch = "sm100"
+tests = [
+  { name = "unit", group = "unit" },
+  { name = "integration", group = "integration" },
+  { name = "barrier", group = "barrier" },
+  { name = "tma", group = "tma" },
+]
+
 [jobs.sm90-core]
 arch = "sm90"
 tests = [

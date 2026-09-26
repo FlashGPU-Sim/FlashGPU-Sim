@@ -181,6 +181,3 @@ Integration coverage is located in:
 - `tests/src/unit/mbarrier_retry_timing_test.cc`
 - `tests/src/tma/tma_test.cu`
 - `tests/src/tma/tma_multidim_test.cu`
-
-Latency-focused tests and usage notes are under
-`tests/src/microbench/mbarrier/`.

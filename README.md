@@ -336,7 +336,7 @@ statistics report or `--csv output.csv` to export the results.
 
 ## Citation
 
-We hope FlashGPU-Sim benefits your research! If you use it in your work, please cite our paper:  
+We hope FlashGPU-Sim benefits your research! If you use it in your work, please cite our paper:
 [FlashGPU-sim: Enabling GPU Modeling for Modern Architectures and AI Workloads](https://arxiv.org/abs/2609.15311v1)
 
 BibTeX:

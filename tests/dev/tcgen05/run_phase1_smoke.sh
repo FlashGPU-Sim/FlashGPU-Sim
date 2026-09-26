@@ -66,7 +66,7 @@ SIM_LIB_DIR="${SIM_LIB_DIR:-${ROOT_DIR}/lib/${GPGPUSIM_CONFIG}}"
 SIM_BUILD_DIR="${SIM_BUILD_DIR:-${ROOT_DIR}/build/${GPGPUSIM_CONFIG}}"
 GPU_CONFIG="${GPU_CONFIG:-SM100_B200}"
 GPU_CONFIG_DIR="${ROOT_DIR}/configs/${GPU_CONFIG}"
-CUDA_HOME="${CUDA_INSTALL_PATH:-/home/wzr/cuda}"
+CUDA_HOME="${CUDA_INSTALL_PATH:-/usr/local/cuda}"
 CXX="${CXX:-g++}"
 
 detect_fa4_python() {

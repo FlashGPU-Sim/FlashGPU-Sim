@@ -56,7 +56,6 @@ enum class pipe_t {
 };
 
 typedef std::set<const symbol *> reg_set_t;
-typedef std::set<std::string> string_reg_set_t;
 
 struct sched_inst_t {
   ptx_instruction *inst;
@@ -486,17 +485,6 @@ std::string ptx_mnemonic_from_source(const ptx_instruction *inst) {
   return normalize_ptx_opcode_key(source.substr(begin, pos - begin));
 }
 
-char sass_opcode_token(const std::string &opcode) {
-  const std::string op = uppercase_copy(opcode);
-  if (starts_with(op, "LDSM"))
-    return 'L';
-  if (starts_with(op, "HMMA") || starts_with(op, "IMMA") ||
-      starts_with(op, "DMMA") || starts_with(op, "WGMMA") ||
-      starts_with(op, "MMA"))
-    return 'T';
-  return 0;
-}
-
 inst_class_t classify_sass_opcode(const std::string &opcode) {
   const std::string op = uppercase_copy(opcode);
   if (starts_with(op, "LDSM"))
@@ -536,111 +524,6 @@ inst_class_t classify_sass_opcode(const std::string &opcode) {
       starts_with(op, "VOTE"))
     return inst_class_t::intp;
   return inst_class_t::other;
-}
-
-std::vector<std::string> split_top_operands(const std::string &operands) {
-  std::vector<std::string> out;
-  std::size_t begin = 0;
-  int depth = 0;
-  for (std::size_t i = 0; i < operands.size(); ++i) {
-    const char c = operands[i];
-    if (c == '{' || c == '[' || c == '(') {
-      ++depth;
-    } else if ((c == '}' || c == ']' || c == ')') && depth > 0) {
-      --depth;
-    } else if (c == ',' && depth == 0) {
-      out.push_back(trim_copy(operands.substr(begin, i - begin)));
-      begin = i + 1;
-    }
-  }
-  const std::string tail = trim_copy(operands.substr(begin));
-  if (!tail.empty())
-    out.push_back(tail);
-  return out;
-}
-
-void add_sass_reg(string_reg_set_t &regs, const std::string &reg,
-                  unsigned width) {
-  const std::string upper = uppercase_copy(reg);
-  if (upper == "RZ")
-    return;
-  if (upper.size() < 2 || upper[0] != 'R')
-    return;
-  char *end = NULL;
-  const unsigned long base = strtoul(upper.c_str() + 1, &end, 10);
-  if (end == NULL || *end != '\0') {
-    regs.insert(upper);
-    return;
-  }
-  const unsigned n = std::max(1u, width);
-  for (unsigned i = 0; i < n; ++i) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "R%lu", base + i);
-    regs.insert(buf);
-  }
-}
-
-string_reg_set_t sass_regs_in(const std::string &text) {
-  string_reg_set_t regs;
-  for (std::size_t i = 0; i < text.size(); ++i) {
-    if (std::toupper(static_cast<unsigned char>(text[i])) != 'R')
-      continue;
-    const bool left_ok =
-        i == 0 || !std::isalnum(static_cast<unsigned char>(text[i - 1]));
-    if (!left_ok)
-      continue;
-    std::size_t j = i + 1;
-    if (j < text.size() &&
-        std::toupper(static_cast<unsigned char>(text[j])) == 'Z') {
-      ++j;
-      const bool right_ok = j == text.size() ||
-                            !std::isalnum(static_cast<unsigned char>(text[j]));
-      if (right_ok)
-        continue;
-    }
-    if (j >= text.size() || !std::isdigit(static_cast<unsigned char>(text[j])))
-      continue;
-    while (j < text.size() && std::isdigit(static_cast<unsigned char>(text[j])))
-      ++j;
-    const bool right_ok =
-        j == text.size() || !std::isalnum(static_cast<unsigned char>(text[j]));
-    if (!right_ok)
-      continue;
-    regs.insert(uppercase_copy(text.substr(i, j - i)));
-    i = j;
-  }
-  return regs;
-}
-
-unsigned sass_ldmatrix_width(const std::string &opcode) {
-  std::string op = uppercase_copy(opcode);
-  std::size_t end = op.size();
-  while (end > 0) {
-    std::size_t begin = op.rfind('.', end - 1);
-    begin = begin == std::string::npos ? 0 : begin + 1;
-    const std::string piece = op.substr(begin, end - begin);
-    bool all_digits = !piece.empty();
-    for (std::size_t i = 0; i < piece.size(); ++i) {
-      if (!std::isdigit(static_cast<unsigned char>(piece[i]))) {
-        all_digits = false;
-        break;
-      }
-    }
-    if (all_digits)
-      return static_cast<unsigned>(strtoul(piece.c_str(), NULL, 10));
-    if (begin == 0)
-      break;
-    end = begin - 1;
-  }
-  return 1;
-}
-
-unsigned sass_tensor_dest_width(const std::string &opcode) {
-  const std::string op = uppercase_copy(opcode);
-  if (starts_with(op, "HMMA") || starts_with(op, "IMMA") ||
-      starts_with(op, "DMMA") || starts_with(op, "MMA"))
-    return 4;
-  return 1;
 }
 
 bool parse_sass_instruction_line(const std::string &line, std::string *opcode,
