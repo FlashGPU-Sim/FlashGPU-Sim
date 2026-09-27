@@ -580,6 +580,12 @@ void function_info::ptx_assemble() {
   }
 
   // get the instructions into instruction memory...
+  // The same function can be assembled again when both the embedded sm_90
+  // image and the sm_90a image are loaded. Label indices are offsets into
+  // this array, so a stale map sends branches at the previous image's slots.
+  labels.clear();
+  delete[] m_instr_mem;
+  m_instr_mem = NULL;
   unsigned num_inst = m_instructions.size();
   m_instr_mem_size = MAX_INST_SIZE * (num_inst + 1);
   m_instr_mem = new ptx_instruction *[m_instr_mem_size]();
@@ -2653,7 +2659,10 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
             exit(1);
         }
       }
-      if (inst_opcode == BAR_OP && inst.bar_id == (unsigned)-1) {
+      // bar_impl writes the id onto the shared per-PC dyn instruction.
+      // The pipe copy may already hold the previous warp's id, so always
+      // refresh it from this warp's functional result.
+      if (inst_opcode == BAR_OP) {
         inst.set_bar_id(pI->bar_id);
         inst.set_bar_count(pI->bar_count);
       }
