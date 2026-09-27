@@ -3,6 +3,9 @@
 Shipped design for Hopper Thread Block Clusters in FlashGPU-Sim. English only.
 Do not start a second design doc outside this directory.
 
+What this branch adds, what was measured, and what stays open:
+[`REPORT.md`](REPORT.md).
+
 | Feature | Functional | Timing |
 |---------|------------|--------|
 | Cluster launch (`cudaLaunchKernelExC` / required cluster dims) | Yes | Whole TB-cluster co-resident on one GPC |
@@ -34,6 +37,7 @@ functional fan-out (known timing gap vs silicon).
 | File | Contents |
 |------|----------|
 | **This file** | Status, configs, code map |
+| [`REPORT.md`](REPORT.md) | Feature summary, measurements, open limits |
 | [`architecture.md`](architecture.md) | GPC vs TB-cluster, two networks, cycle order |
 | [`dsm_fabric.md`](dsm_fabric.md) | Flits, VCs, GPCMMU, GX, shaper, ACK |
 | [`pipeline.md`](pipeline.md) | Remote load = local SMEM + fabric |
@@ -97,4 +101,4 @@ in that GPC.
 | DSM fabric | `src/gpgpu-sim/dsm_fabric.{h,cc}`, `dsm_endpoint.{h,cc}` |
 | Hang preventers | `src/gpgpu-sim/flash/cluster_hang_prevent.h` |
 | Memory icnt (not DSM) | `local_interconnect` / `intersim2` |
-| Tests | `test/src/integration/cluster_*`, `dsm_test.cc`, `mbarrier_cluster_test.cc`, `tma_cluster_*`; unit `tb_cluster_test.cc` |
+| Tests | `tests/src/integration/cluster_*.cu`, `dsm_test.cu`, `mbarrier_cluster_test.cu`, `tma_*.cu`; unit `tb_cluster_test.cc`, `dsm_fabric_test.cc`, `dsm_endpoint_test.cc` |

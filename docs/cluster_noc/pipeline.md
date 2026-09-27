@@ -84,7 +84,7 @@ Do not write peer smem at issuer execute on the fabric path.
 
 `atom.add` on a `mapa` pointer: `atomic_request` → owner SRAM **RMW at grant time** (serialized by the target service, not by “whoever’s `ld_impl` ran first”) → `atomic_response` → requester scoreboard/RF like a load if the atom has a dest, otherwise completion-only.
 
-PTX `red` / `red.async` stay unimplemented until **A-F4**.
+PTX `red` / `red.async` are unimplemented.
 
 ---
 

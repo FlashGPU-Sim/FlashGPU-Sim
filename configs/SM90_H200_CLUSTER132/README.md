@@ -37,6 +37,9 @@ failed). Unmeasured fields use H100 same-Hopper baselines.
 This is the **only** shipped H200 product config. Functional cluster / DSM /
 TMA tests use `SM120_RTX5090_REDUCED_CLUSTER2x1` / `2x2` / `4x4`.
 
+Feature summary and known limits: `docs/cluster_noc/REPORT.md`. Calibration
+status: `docs/cluster_noc/calibration.md`.
+
 ## Usage
 
 ```bash
