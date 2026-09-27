@@ -14,7 +14,7 @@ Reproduce (slow, not default CI). Kernel snapshots live in git-ignored
 sibling `H200_profiling` / `NVIDIA-Hopper-Benchmark` trees are optional):
 
 ```bash
-source setup.sh && source setup_environment
+source ./setup_environment
 export OMP_NUM_THREADS=4
 python3 scripts/run_cluster_noc_demo.py
 # optional comparator: python3 scripts/compare_h200_calibration.py

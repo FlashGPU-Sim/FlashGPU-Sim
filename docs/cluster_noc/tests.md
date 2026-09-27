@@ -3,30 +3,32 @@
 Always:
 
 ```bash
-source setup.sh && source setup_environment
+source ./setup_environment
 make FLASH=1 -j$(nproc)
 ```
 
-Use `./test/run_tests.sh`. Do not invoke test binaries by hand.
-Default config remains `SM120_RTX5090`.
+Use `./tests/run_tests.py`. Do not invoke test binaries by hand.
+Default config remains `SM120_RTX5090`. `CUDA_INSTALL_PATH` must already
+point at the CUDA toolkit (`/usr/local/cuda` on the usual machine).
 
 ---
 
 ## Functional cluster / DSM / TMA (SM120 reduced, fabric on)
 
 ```bash
-./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 run test --target sm120 --group unit \
-  "GpuTopology*:DsmFabric*:DsmEndpoint*:Transport*:SmemService*:ClusterHang*:TbClusterAddr*"
+./tests/run_tests.py -c SM120_RTX5090_REDUCED_CLUSTER2x1 run --arch sm120 --group unit \
+  --gtest-filter 'GpuTopology*:DsmFabric*:DsmEndpoint*:Transport*:SmemService*:ClusterHang*:TbClusterAddr*'
 
-./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER4x4 run test --target sm120 --group integration \
-  "*ClusterLaunch*:*TMACluster*:*TmaMulticast*:*DsmTest*:*MbarrierCluster*"
+./tests/run_tests.py -c SM120_RTX5090_REDUCED_CLUSTER4x4 run --arch sm120 --group integration \
+  --gtest-filter '*ClusterLaunch*:*ClusterBasic*:*ClusterReal*:*TMACluster*:*TmaMulticast*:*DsmTest*:*MbarrierCluster*'
 
-./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x2 run test --target sm120 --group integration \
-  "*MultiCluster*"
+./tests/run_tests.py -c SM120_RTX5090_REDUCED_CLUSTER2x2 run --arch sm120 --group integration \
+  --gtest-filter '*MultiCluster*'
 ```
 
 Existing-feature regression (WGMMA / FA / MMA) is the `flash` PR CI gate, not
-this list. See `test/ci/run_ci_tests.sh`.
+this list. See `tests/ci/run_ci_tests.sh` (`sm120-core`, `sm90-core`,
+`sm90-fa2`, `sm90-fa3`).
 
 H200 `SM90_H200_CLUSTER132` is optional and slow. Do not put it in default CI.
 Hetero leftover-SM packing is CLUSTER132-only.
@@ -35,7 +37,7 @@ Hetero leftover-SM packing is CLUSTER132-only.
 
 ## Topology skips
 
-Helpers: `test/common/gpgpusim_config_topology.h`.
+Helpers: `tests/common/gpgpusim_config_topology.h`.
 
 | Macro | Skip when |
 |-------|-----------|
