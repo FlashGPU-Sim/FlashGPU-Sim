@@ -287,6 +287,58 @@ TEST_F(PtxSchedulerGuidedTest, DifferentPrimaryCandidatesRemainFatal) {
       "multiple primary SASS candidates: 0x0:IADD3,0x10:LEA");
 }
 
+TEST_F(PtxSchedulerGuidedTest,
+       CompilerLocalDeviceFunctionMatchesByUniqueSuffix) {
+  std::ofstream("input.ptx") <<
+      ".version 8.0\n.target sm_90\n.address_size 64\n"
+      ".func helper() {\n.reg .b32 %a, %b;\n"
+      "add.u32 %a, %b, 1;\nret;\n}\n"
+      ".visible .entry parent() {\n.reg .b32 %a, %b;\n"
+      "add.u32 %a, %b, 1;\nret;\n}\n";
+  std::ofstream("guide.sass") <<
+      ".section .text.parent,\"ax\",@progbits\n"
+      ".type parent,@function\n"
+      "//## File \"input.ptx\", line 11\n/*0*/ IADD3 R0, R1, 1;\n"
+      ".type $parent$helper,@function\n"
+      "//## File \"input.ptx\", line 6\n/*10*/ IADD3 R0, R1, 1;\n";
+
+  auto *symbols = ctx->gpgpu_ptx_sim_load_ptx_from_filename("input.ptx");
+  ASSERT_NE(symbols, nullptr);
+  auto *helper = symbols->lookup_function("helper");
+  ASSERT_NE(helper, nullptr);
+  EXPECT_FALSE(helper->is_entry_point());
+  helper->do_pdom();
+  const auto *first = helper->get_dyn_inst(helper->get_start_PC());
+  ASSERT_NE(first, nullptr);
+  EXPECT_EQ(first->source_line(), 6u);
+}
+
+TEST_F(PtxSchedulerGuidedTest, AmbiguousCompilerLocalFunctionsRemainFatal) {
+  std::ofstream("input.ptx") <<
+      ".version 8.0\n.target sm_90\n.address_size 64\n"
+      ".func helper() {\n.reg .b32 %a, %b;\n"
+      "add.u32 %a, %b, 1;\nret;\n}\n";
+  std::ofstream("guide.sass") <<
+      ".section .text.first,\"ax\",@progbits\n"
+      ".type $first$helper,@function\n"
+      "//## File \"input.ptx\", line 6\n/*0*/ IADD3 R0, R1, 1;\n"
+      ".section .text.second,\"ax\",@progbits\n"
+      ".type $second$helper,@function\n"
+      "//## File \"input.ptx\", line 6\n/*10*/ IADD3 R0, R1, 1;\n";
+
+  EXPECT_DEATH(
+      {
+        auto *symbols =
+            ctx->gpgpu_ptx_sim_load_ptx_from_filename("input.ptx");
+        if (symbols != nullptr) {
+          auto *helper = symbols->lookup_function("helper");
+          if (helper != nullptr)
+            helper->do_pdom();
+        }
+      },
+      "multiple local SASS functions");
+}
+
 TEST_F(PtxSchedulerGuidedTest, PlainFallbackWhenFunctionHasNoCoveredAnchor) {
   std::ofstream(rules_path) <<
       "[primary_opcode]\nex2.approx.ftz.f32 = MUFU.EX2\n"

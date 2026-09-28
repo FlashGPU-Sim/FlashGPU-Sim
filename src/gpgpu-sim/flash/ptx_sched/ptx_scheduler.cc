@@ -620,6 +620,29 @@ bool parse_sass_function_name(const std::string &line, std::string *name) {
   return true;
 }
 
+bool parse_sass_typed_function_name(const std::string &line,
+                                    std::string *name) {
+  const std::size_t type = line.find(".type");
+  if (type == std::string::npos)
+    return false;
+  const std::size_t function = line.find("@function", type + 5);
+  if (function == std::string::npos)
+    return false;
+  const std::size_t comma = line.rfind(',', function);
+  if (comma == std::string::npos)
+    return false;
+  std::size_t begin = type + 5;
+  while (begin < comma && std::isspace(static_cast<unsigned char>(line[begin])))
+    ++begin;
+  std::size_t end = comma;
+  while (end > begin && std::isspace(static_cast<unsigned char>(line[end - 1])))
+    --end;
+  if (end == begin)
+    return false;
+  *name = line.substr(begin, end - begin);
+  return true;
+}
+
 sass_primary_rules_t parse_sass_primary_rules_from_file(const char *path) {
   sass_primary_rules_t rules;
   rules.parsed = true;
@@ -778,14 +801,17 @@ sass_ptxline_file_t parse_sass_ptxline_file(const char *path) {
     if (!have_function)
       continue;
 
-    // nvdisasm may place compiler-generated trap/helper functions inside the
-    // kernel's text section.  They do not get a new //## source marker, so
-    // without this boundary they inherit the kernel's final PTX line and look
-    // like normal inline lowering.  Keep their instructions out of the kernel
-    // guide; real CALL paths remain represented by their call sites.
-    if (line.find(".type") != std::string::npos &&
-        line.find("@function") != std::string::npos &&
-        line.find(current.name) == std::string::npos) {
+    // ptxas can place a callable device function in its caller's .text section
+    // under a local $caller$callee symbol. Keep it as a separate guide record;
+    // helpers without line markers remain empty and are discarded below.
+    std::string typed_function_name;
+    if (parse_sass_typed_function_name(line, &typed_function_name) &&
+        typed_function_name != current.name) {
+      if (!current.insts.empty())
+        result.functions.push_back(current);
+      current = sass_ptxline_function_t();
+      current.name = typed_function_name;
+      have_function = true;
       current_ptx_line = 0;
       continue;
     }
@@ -847,7 +873,10 @@ void sort_int_vector(std::vector<int> &values) {
 
 const sass_ptxline_function_t *
 select_sass_ptxline_function(const sass_ptxline_file_t &guides,
-                             const std::string &function_name) {
+                             const std::string &function_name,
+                             bool *ambiguous_local) {
+  if (ambiguous_local != NULL)
+    *ambiguous_local = false;
   if (!guides.ok)
     return NULL;
 
@@ -858,12 +887,27 @@ select_sass_ptxline_function(const sass_ptxline_file_t &guides,
       return &(*it);
   }
 
+  const std::string local_suffix = "$" + function_name;
+  const sass_ptxline_function_t *local = NULL;
   for (std::vector<sass_ptxline_function_t>::const_iterator it =
            guides.functions.begin();
        it != guides.functions.end(); ++it) {
-    if (it->insts.empty())
+    if (it->insts.empty() || !string_ends_with(it->name, local_suffix))
       continue;
-    if (guides.functions.size() == 1 &&
+    if (local != NULL) {
+      if (ambiguous_local != NULL)
+        *ambiguous_local = true;
+      return NULL;
+    }
+    local = &(*it);
+  }
+  if (local != NULL)
+    return local;
+
+  for (std::vector<sass_ptxline_function_t>::const_iterator it =
+           guides.functions.begin();
+       it != guides.functions.end(); ++it) {
+    if (!it->insts.empty() && guides.functions.size() == 1 &&
         (it->name.find(function_name) != std::string::npos ||
          function_name.find(it->name) != std::string::npos))
       return &(*it);
@@ -3872,9 +3916,17 @@ void run_ptx_reorder(function_info *func) {
                         func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.c_str(),
                         guides.error.c_str());
     }
+    bool ambiguous_local = false;
     const sass_ptxline_function_t *sass_func =
-        select_sass_ptxline_function(guides, func->m_name);
+        select_sass_ptxline_function(guides, func->m_name, &ambiguous_local);
     if (sass_func == NULL) {
+      if (ambiguous_local) {
+        ptx_reorder_fatal(
+            "auto full SASS guide '%s' has multiple local SASS functions "
+            "matching PTX function '%s'",
+            func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.c_str(),
+            func->m_name.c_str());
+      }
       ptx_reorder_fatal(
           "auto full SASS guide '%s' has no .text section for function '%s'",
           func->gpgpu_ctx->ptx_reorder_sass_ptxline_file.c_str(),
