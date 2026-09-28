@@ -1841,9 +1841,10 @@ void fuse_compiler_shift_add_mad(std::list<ptx_instruction *> &instructions) {
       continue;
     }
 
-    // The native IMAD is attributed to the add, not either compiler-emitted
-    // copy.  Preserve that primary source location so a SASS PTX-line guide
-    // can place the fused instruction on the compiler's actual schedule.
+    // The native scaled integer operation (IMAD or LEA) is attributed to the
+    // add, not either compiler-emitted copy. Preserve that primary source
+    // location so a SASS PTX-line guide can place the fused instruction on the
+    // compiler's actual schedule.
     ptx_instruction *replacement =
         add->make_mad_lo_s32((*fifth)->dst(), *x, 1u << shift_amount, *y);
     *first = replacement;
