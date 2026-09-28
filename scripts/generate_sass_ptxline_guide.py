@@ -93,15 +93,32 @@ def _instruction_spans(source: str) -> list[tuple[int, int]]:
 def normalize_ptx(source: str) -> str:
     """Put each complete instruction on its own line for parser/guide agreement."""
     source = without_comments(source)
-    # Walk backwards so replacements do not invalidate the remaining spans.
-    for start, end in reversed(_instruction_spans(source)):
+    parts: list[str] = []
+    cursor = 0
+    for start, end in _instruction_spans(source):
+        parts.append(source[cursor:start])
         statement = source[start:end]
         # Preserve string literals; only whitespace outside strings is folded.
         statement = re.sub(_PTX_STRING + r"|\s+",
                            lambda m: m.group(0) if m.group(0).startswith('"') else " ",
                            statement)
-        source = source[:start] + "\n" + statement + "\n" + source[end:]
-    return source
+        parts.extend(("\n", statement, "\n"))
+        cursor = end
+    parts.append(source[cursor:])
+    return "".join(parts)
+
+
+def _apply_insertions(source: str,
+                      insertions: list[tuple[int, str]]) -> str:
+    """Apply source-relative insertions without repeatedly copying source."""
+    parts: list[str] = []
+    cursor = 0
+    for position, text in sorted(insertions):
+        parts.append(source[cursor:position])
+        parts.append(text)
+        cursor = position
+    parts.append(source[cursor:])
+    return "".join(parts)
 
 
 def add_line_markers(source: str, source_name: str) -> tuple[str, int]:
@@ -118,16 +135,32 @@ def add_line_markers(source: str, source_name: str) -> tuple[str, int]:
         raise NoFunctionBodyInstructions(
             "PTX has no marked function-body instructions"
         )
+
+    newline_positions = iter(match.start() for match in re.finditer("\n", source))
+    next_newline = next(newline_positions, None)
+    line_number = 1
+    line_start = 0
     for start, end in spans:
-        line_number = source.count("\n", 0, end - 1) + 1
-        line_start = source.rfind("\n", 0, start) + 1
-        if not source[line_start:start].strip():
-            start = line_start
-        prefix = "" if start == 0 or source[start - 1] == "\n" else "\n"
-        insertions.append((start, f"{prefix}.loc {file_index} {line_number} 0\n"))
-    for position, text in sorted(insertions, reverse=True):
-        source = source[:position] + text + source[position:]
-    return source, len(spans)
+        while next_newline is not None and next_newline < start:
+            line_number += 1
+            line_start = next_newline + 1
+            next_newline = next(newline_positions, None)
+        instruction_line_start = line_start
+        while next_newline is not None and next_newline < end - 1:
+            line_number += 1
+            line_start = next_newline + 1
+            next_newline = next(newline_positions, None)
+
+        marker_position = start
+        if not source[instruction_line_start:start].strip():
+            marker_position = instruction_line_start
+        prefix = ("" if marker_position == 0 or
+                  source[marker_position - 1] == "\n" else "\n")
+        insertions.append(
+            (marker_position,
+             f"{prefix}.loc {file_index} {line_number} 0\n")
+        )
+    return _apply_insertions(source, insertions), len(spans)
 
 
 _SASS_INSTRUCTION = re.compile(r"^\s*/\*[0-9a-fA-F]+\*/\s+.*?;", re.MULTILINE)

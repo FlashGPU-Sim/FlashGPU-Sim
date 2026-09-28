@@ -240,8 +240,9 @@ configurations include `sass_primary_hints.rules` and enable the feature.
 Functions without a rule-covered PTX opcode use conservative plain reordering.
 A function that contains covered PTX but has no mapped SASS anchor fails
 explicitly. When at least one anchor maps, covered PTX without guide evidence
-keeps its conservative crossing constraints; a mapped line with a missing or
-ambiguous primary SASS instruction remains fatal.
+keeps its conservative crossing constraints. Repeated copies of the same
+primary SASS opcode stay unanchored because they do not identify a unique
+position; missing candidates or different primary opcodes remain fatal.
 
 ### Memory-System Controls
 

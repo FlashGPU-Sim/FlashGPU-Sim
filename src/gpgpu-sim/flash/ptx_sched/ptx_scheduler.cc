@@ -715,6 +715,15 @@ sass_primary_rules_t parse_sass_primary_rules_from_file(const char *path) {
     rules.error = "policy zero_primary_candidate must be 'fatal' or 'plain'";
     return rules;
   }
+  std::map<std::string, std::string>::const_iterator duplicate_primary =
+      rules.policy.find("duplicate_identical_primary_candidates");
+  if (duplicate_primary != rules.policy.end() &&
+      duplicate_primary->second != "fatal" &&
+      duplicate_primary->second != "plain") {
+    rules.error = "policy duplicate_identical_primary_candidates must be "
+                  "'fatal' or 'plain'";
+    return rules;
+  }
 
   rules.ok = true;
   return rules;
@@ -902,6 +911,17 @@ std::string format_sass_offsets(const std::vector<sass_ptxline_inst_t> &insts) {
   return out.str();
 }
 
+bool have_identical_sass_opcodes(
+    const std::vector<sass_ptxline_inst_t> &insts) {
+  if (insts.empty())
+    return false;
+  for (unsigned i = 1; i < insts.size(); ++i) {
+    if (insts[i].opcode != insts[0].opcode)
+      return false;
+  }
+  return true;
+}
+
 ptxline_guide_t
 build_sass_ptxline_guide(const std::string &function_name,
                          const std::list<ptx_instruction *> &instructions,
@@ -993,6 +1013,14 @@ build_sass_ptxline_guide(const std::string &function_name,
           sass_func.name.c_str());
     }
     if (entry.primary_candidates.size() != 1) {
+      const std::map<std::string, std::string>::const_iterator policy =
+          rules.policy.find("duplicate_identical_primary_candidates");
+      if (have_identical_sass_opcodes(entry.primary_candidates) &&
+          policy != rules.policy.end() && policy->second == "plain") {
+        // Multiple copies do not identify which SASS position represents the
+        // PTX instruction. Leave it unanchored instead of choosing a copy.
+        continue;
+      }
       ptx_reorder_fatal(
           "function '%s' PTX line %u opcode '%s' has multiple primary "
           "SASS candidates: %s",

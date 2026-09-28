@@ -20,6 +20,32 @@ from generate_sass_ptxline_guide import (
 
 
 class AddLineMarkersTest(unittest.TestCase):
+    def test_linear_rewrite_preserves_exact_marker_layout(self) -> None:
+        source = (
+            ".address_size 64\n"
+            '.file 3 "upstream.cu"\n'
+            ".entry kernel() { add.u32\n"
+            " %a, %b, 1; mul.lo.u32 %c, %a, %b; }\n"
+        )
+
+        normalized = normalize_ptx(source)
+        self.assertEqual(
+            normalized,
+            '.address_size 64\n.file 3 "upstream.cu"\n'
+            ".entry kernel() { \nadd.u32 %a, %b, 1;\n \n"
+            "mul.lo.u32 %c, %a, %b;\n }\n",
+        )
+        self.assertEqual(
+            add_line_markers(normalized, "input.ptx"),
+            (
+                '.address_size 64\n.file 4 "input.ptx"\n\n'
+                '.file 3 "upstream.cu"\n.entry kernel() { \n'
+                ".loc 4 4 0\nadd.u32 %a, %b, 1;\n \n"
+                ".loc 4 6 0\nmul.lo.u32 %c, %a, %b;\n }\n",
+                2,
+            ),
+        )
+
     def test_marks_only_instructions_and_preserves_original_line_numbers(self) -> None:
         source = (
             ".version 9.1\n"

@@ -74,7 +74,8 @@ class PtxSchedulerGuidedTest : public ::testing::Test {
     std::ofstream(rules_path) <<
         "[primary_opcode]\nadd.u32 = IADD3\n"
         "mbarrier.arrive.release.cta.shared::cta.b64 = SYNCS.ARRIVE\n"
-        "[policy]\nfallback = disabled\n";
+        "[policy]\nduplicate_identical_primary_candidates = plain\n"
+        "fallback = disabled\n";
   }
   void TearDown() override {
     if (had_override)
@@ -89,7 +90,14 @@ class PtxSchedulerGuidedTest : public ::testing::Test {
   }
   std::vector<unsigned> schedule(const std::string &name,
                                  const std::string &body,
-                                 const std::vector<unsigned> &guide_order) {
+                                 const std::vector<unsigned> &guide_order,
+                                 const std::vector<std::string> &guide_opcodes =
+                                     std::vector<std::string>()) {
+    if (!guide_opcodes.empty() &&
+        guide_opcodes.size() != guide_order.size()) {
+      ADD_FAILURE() << "guide opcode count must match guide line count";
+      return {};
+    }
     // Body starts at physical PTX line 8.
     std::ofstream("input.ptx") <<
         ".version 8.0\n.target sm_90\n.address_size 64\n.visible .entry " << name <<
@@ -99,10 +107,15 @@ class PtxSchedulerGuidedTest : public ::testing::Test {
       std::ofstream guide("guide.sass");
       guide << ".section .text." << name << ",\"ax\",@progbits\n";
       unsigned offset = 0;
-      for (unsigned line : guide_order) {
+      for (unsigned i = 0; i < guide_order.size(); ++i) {
+        const unsigned line = guide_order[i];
         guide << "//## File \"input.ptx\", line " << line << "\n/*"
-              << std::hex << offset << std::dec << "*/ "
-              << (line == 9 ? "SYNCS.ARRIVE;" : "IADD3 R0, R1, R2;") << "\n";
+              << std::hex << offset << std::dec << "*/ ";
+        if (!guide_opcodes.empty())
+          guide << guide_opcodes[i] << ";\n";
+        else
+          guide << (line == 9 ? "SYNCS.ARRIVE;" : "IADD3 R0, R1, R2;")
+                << "\n";
         offset += 16;
       }
     }
@@ -251,6 +264,27 @@ TEST_F(PtxSchedulerGuidedTest, WorkWithoutGuideEvidenceStaysBeforeAnchor) {
       "add.u32 %a, %b, 1;\n"
       "mbarrier.arrive.release.cta.shared::cta.b64 %state, [mb];\n", {9}),
       (std::vector<unsigned>{8, 9}));
+}
+
+TEST_F(PtxSchedulerGuidedTest,
+       DuplicateIdenticalPrimaryCandidatesStayUnanchored) {
+  EXPECT_EQ(schedule("guided_duplicate_primary",
+      "add.u32 %a, %b, 1;\n"
+      "mbarrier.arrive.release.cta.shared::cta.b64 %state, [mb];\n",
+      {8, 8, 9}),
+      (std::vector<unsigned>{8, 9}));
+}
+
+TEST_F(PtxSchedulerGuidedTest, DifferentPrimaryCandidatesRemainFatal) {
+  std::ofstream(rules_path) <<
+      "[primary_opcode]\nadd.u32 = IADD3, LEA\n"
+      "[policy]\nduplicate_identical_primary_candidates = plain\n"
+      "fallback = disabled\n";
+  EXPECT_DEATH(
+      (void)schedule("guided_distinct_primary",
+                     "add.u32 %a, %b, 1;\n", {8, 8},
+                     {"IADD3 R0, R1, R2", "LEA R0, R1, R2"}),
+      "multiple primary SASS candidates: 0x0:IADD3,0x10:LEA");
 }
 
 TEST_F(PtxSchedulerGuidedTest, PlainFallbackWhenFunctionHasNoCoveredAnchor) {
