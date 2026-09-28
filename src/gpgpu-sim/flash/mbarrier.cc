@@ -3,6 +3,7 @@
 #include "../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
 #include "../shader.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
@@ -46,6 +47,20 @@ bool mbarrier_should_delay_phase_wakeup(bool suspended,
                                         bool phase_notification_pending,
                                         bool all_true, unsigned latency) {
   return suspended && phase_notification_pending && all_true && latency > 0;
+}
+
+bool mbarrier_latches_initial_predicate(bool has_time_hint,
+                                        unsigned predicate_latency) {
+  return !has_time_hint && predicate_latency > 0;
+}
+
+uint64_t mbarrier_result_release_cycle(uint64_t issue_cycle,
+                                       uint64_t resolution_cycle,
+                                       unsigned predicate_latency,
+                                       unsigned phase_wakeup_latency) {
+  return std::max(
+      mbarrier_saturating_add(issue_cycle, predicate_latency),
+      mbarrier_saturating_add(resolution_cycle, phase_wakeup_latency));
 }
 
 void mbarrier_manager_t::init(gpgpu_sim *gpu,
@@ -542,6 +557,8 @@ void barrier_set_t::notify_mbarrier_phase_change(
     auto it = m_pending_mbarrier_waits.find(warp_id);
     if (it == m_pending_mbarrier_waits.end())
       continue;
+    if (it->second.result_ready_delay_pending)
+      continue;
     it->second.phase_notification_pending = true;
     it->second.next_recheck_cycle =
         flash_gpgpu_sim::mbarrier_wake_on_phase_notification(
@@ -682,8 +699,11 @@ void barrier_set_t::cycle() {
                    : -1);
       }
       barrier_wait_type_t type = m_pending_warp_releases[i].type;
-      const char *reason = "delayed cp.async wait_group release";
-      assert(type == BARRIER_WAIT_CP_ASYNC_GROUP);
+      const char *reason = type == BARRIER_WAIT_BAR_SYNC
+                               ? "delayed CTA barrier release"
+                               : "delayed cp.async wait_group release";
+      assert(type == BARRIER_WAIT_BAR_SYNC ||
+             type == BARRIER_WAIT_CP_ASYNC_GROUP);
       clear_warp_waiting(warp_id, type, reason);
       m_pending_warp_releases.erase(m_pending_warp_releases.begin() + i);
     }
@@ -714,8 +734,8 @@ void barrier_set_t::cycle() {
       continue;
     }
 
-    if (wait.phase_wakeup_delay_pending) {
-      finish_mbarrier_wait(warp_id, "mbarrier phase wakeup visible");
+    if (wait.result_ready_delay_pending) {
+      finish_mbarrier_wait(warp_id, "mbarrier predicate result visible");
       continue;
     }
 
@@ -773,20 +793,33 @@ void barrier_set_t::cycle() {
         if (wait.lanes[lane].active)
           all_true = all_true && wait.lanes[lane].result;
       }
-      const unsigned phase_wakeup_latency =
-          m_shader->get_config()->gpgpu_mbarrier_phase_wakeup_latency;
-      if (flash_gpgpu_sim::mbarrier_should_delay_phase_wakeup(
+      const bool delay_phase_wakeup =
+          flash_gpgpu_sim::mbarrier_should_delay_phase_wakeup(
               wait.suspended, wait.phase_notification_pending, all_true,
-              phase_wakeup_latency)) {
+              m_shader->get_config()->gpgpu_mbarrier_phase_wakeup_latency);
+      const unsigned phase_wakeup_latency =
+          delay_phase_wakeup
+              ? m_shader->get_config()->gpgpu_mbarrier_phase_wakeup_latency
+              : 0;
+      const uint64_t release_cycle =
+          flash_gpgpu_sim::mbarrier_result_release_cycle(
+              wait.issue_cycle, now,
+              wait.has_no_hint
+                  ? m_shader->get_config()->gpgpu_mbarrier_predicate_latency
+                  : 0,
+              phase_wakeup_latency);
+      if (release_cycle > now) {
         wait.phase_notification_pending = false;
-        wait.phase_wakeup_delay_pending = true;
-        wait.next_recheck_cycle =
-            flash_gpgpu_sim::mbarrier_saturating_add(now, phase_wakeup_latency);
-        m_shader->m_stats->mbarrier_phase_wakeups++;
-        m_shader->m_stats->mbarrier_phase_wakeup_cycles += phase_wakeup_latency;
+        wait.result_ready_delay_pending = true;
+        wait.next_recheck_cycle = release_cycle;
+        if (delay_phase_wakeup) {
+          m_shader->m_stats->mbarrier_phase_wakeups++;
+          m_shader->m_stats->mbarrier_phase_wakeup_cycles +=
+              phase_wakeup_latency;
+        }
         if (mbarrier_trace_enabled()) {
           printf("MBAR_WAIT cycle=%llu sm=%u hw_cta=%u sw_cta=%d warp=%u "
-                 "pc=0x%llx state=phase_wakeup_delay release_cycle=%llu\n",
+                 "pc=0x%llx state=result_ready_delay release_cycle=%llu\n",
                  (unsigned long long)now, m_shader->get_sid(), wait.hw_cta_id,
                  wait.sw_cta_id, warp_id, (unsigned long long)wait.pc,
                  (unsigned long long)wait.next_recheck_cycle);
@@ -954,6 +987,7 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
 
     bool found_lane = false;
     bool has_unresolved_lane = false;
+    bool has_latched_false_lane = false;
     wait.next_recheck_cycle = std::numeric_limits<uint64_t>::max();
     for (unsigned lane = 0; lane < warp_size; ++lane) {
       if (!active_mask.test(lane))
@@ -969,12 +1003,19 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       lane_wait.parity = mbar_info.bar_parity;
       lane_wait.has_time_hint = mbar_info.bar_has_time_hint;
       lane_wait.time_hint_ns = mbar_info.bar_time_hint_ns;
+      wait.has_no_hint = wait.has_no_hint || !lane_wait.has_time_hint;
 
-      if (m_mbarrier_manager.test_wait(m_shader->get_gpu(), thread_index,
-                                       lane_wait.addr, lane_wait.parity)) {
+      const bool complete = m_mbarrier_manager.test_wait(
+          m_shader->get_gpu(), thread_index, lane_wait.addr, lane_wait.parity);
+      const bool latch_initial_predicate =
+          flash_gpgpu_sim::mbarrier_latches_initial_predicate(
+              lane_wait.has_time_hint,
+              m_shader->get_config()->gpgpu_mbarrier_predicate_latency);
+      if (complete || latch_initial_predicate) {
         lane_wait.resolved = true;
-        lane_wait.result = true;
+        lane_wait.result = complete;
         lane_wait.deadline_cycle = now;
+        has_latched_false_lane = has_latched_false_lane || !complete;
         continue;
       }
 
@@ -999,20 +1040,37 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
           std::min(wait.next_recheck_cycle, lane_wait.deadline_cycle);
     }
     assert(found_lane);
-    wait.suspended = has_unresolved_lane;
+    wait.suspended = has_unresolved_lane || has_latched_false_lane;
     m_pending_mbarrier_waits.emplace(warp_id, wait);
     m_shader->m_stats->mbarrier_logical_trywait++;
+    if (wait.suspended)
+      m_shader->m_stats->mbarrier_suspended_waits++;
 
     if (!has_unresolved_lane) {
-      finish_mbarrier_wait(warp_id, "mbarrier initial lanes resolved");
+      const uint64_t release_cycle =
+          flash_gpgpu_sim::mbarrier_result_release_cycle(
+              wait.issue_cycle, now,
+              wait.has_no_hint
+                  ? m_shader->get_config()->gpgpu_mbarrier_predicate_latency
+                  : 0,
+              0);
+      if (release_cycle == now) {
+        finish_mbarrier_wait(warp_id, "mbarrier initial lanes resolved");
+        return;
+      }
+      pending_mbarrier_wait_t &pending =
+          m_pending_mbarrier_waits.find(warp_id)->second;
+      pending.result_ready_delay_pending = true;
+      pending.next_recheck_cycle = release_cycle;
+      m_warp_at_barrier.set(warp_id);
+      m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
+      m_warp_named_barrier_id[warp_id] = (unsigned)-1;
       return;
     }
 
     m_warp_at_barrier.set(warp_id);
     m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
     m_warp_named_barrier_id[warp_id] = (unsigned)-1;
-    m_shader->m_stats->mbarrier_suspended_waits++;
-
     if (trace_mbarrier) {
       printf("MBAR_WAIT cycle=%llu sm=%u hw_cta=%u sw_cta=%d warp=%u "
              "dynamic_warp=%u pc=0x%llx active=%s state=sleeping "

@@ -76,12 +76,15 @@ only when both counts reach zero. At that point the manager:
 2. Increments the phase.
 3. Notifies all registered pending waits that the phase may have changed.
 
-`try_wait.parity` succeeds immediately when the requested parity differs from
-the current phase parity. Otherwise, the timing model records the warp as
-sleeping until either the requested phase completes or its deterministic
-deadline is reached. A phase notification advances the pending wait's wake
-cycle so the cycle hook performs an authoritative recheck; the notification
-does not write the predicate directly.
+`try_wait.parity` logically succeeds when the requested parity differs from
+the current phase parity. A configurable predicate-ready latency can latch the
+initial no-hint query result and keep the warp parked until that result becomes
+visible. A phase completion during this delay does not change the latched
+predicate. When this latency is zero, or for a hinted call, the timing model
+records an incomplete query as sleeping until either the requested phase
+completes or its deterministic deadline is reached. A phase notification
+advances that pending wait's recheck cycle so the cycle hook performs an
+authoritative recheck; the notification does not write the predicate directly.
 
 At a scheduled recheck cycle, the state machine uses this fixed order:
 
@@ -136,6 +139,11 @@ The timing model exposes:
 - `-gpgpu_mbarrier_arrive_latency`
 - `-gpgpu_mbarrier_trywait_latency`: no-hint maximum suspension in core cycles;
   zero commits false immediately after a failed initial query.
+- `-gpgpu_mbarrier_predicate_latency`: minimum issue-to-predicate-ready latency
+  in core cycles for a no-hint `try_wait`; zero preserves the legacy immediate
+  query behavior. A nonzero value latches the result of the initial query and
+  delays its visibility; phase resolution during that delay affects only a
+  subsequent `try_wait`.
 - `-gpgpu_mbarrier_phase_wakeup_latency`: additional delay in core cycles after
   a phase notification triggers an authoritative recheck that resolves every
   active lane true. It applies only to a suspended `try_wait`; an initially
@@ -147,10 +155,14 @@ rechecked only after a relevant phase notification or when its deadline is
 due; these behavioral rechecks consume no scheduler issue slot and represent
 no synthetic instruction.
 
-The SM90, SM100, and SM120 architecture configs currently use a provisional
-32-cycle no-hint bound. This keeps the three-operand operation on the bounded
-suspension and final-query path while architecture-specific calibration is
-refined.
+The SM90 and SM100 architecture configs use a provisional 32-cycle no-hint
+bound. SM120 uses a 34-cycle no-hint bound and a 34-cycle minimum
+predicate-ready latency, matching the observed RTX 5090 complete and
+incomplete no-hint paths. Controlled overlap probes also show that a phase
+completion 2--18 cycles after issue leaves that call false, while an already
+completed phase returns true. The SM90 and SM100 predicate-ready latency
+remains at its zero default, so this SM120 evidence does not change their
+timing.
 
 The B200 single-call matrix measured the complete and incomplete three-operand
 paths at the same 26 net cycles, and all 612 delayed-producer samples returned

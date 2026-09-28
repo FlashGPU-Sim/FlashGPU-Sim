@@ -223,6 +223,8 @@ class core_config {
     m_valid = false;
     num_shmem_bank = 16;
     shmem_limited_broadcast = false;
+    shmem_load_min_dispatch_cycles = 1;
+    ldmatrix_min_dispatch_cycles = 1;
     gpgpu_shmem_sizeDefault = (unsigned)-1;
     gpgpu_shmem_sizePrefL1 = (unsigned)-1;
     gpgpu_shmem_sizePrefShared = (unsigned)-1;
@@ -246,6 +248,8 @@ class core_config {
     return ((addr / WORD_SIZE) % num_shmem_bank);
   }
   unsigned mem_warp_parts;
+  unsigned shmem_load_min_dispatch_cycles;
+  unsigned ldmatrix_min_dispatch_cycles;
   mutable unsigned gpgpu_shmem_size;
   char *gpgpu_shmem_option;
   std::vector<unsigned> shmem_opt_list;
@@ -827,6 +831,8 @@ class inst_t {
     initiation_interval = 1;
     wgmma_compute_latency = 0;
     wgmma_completion_tail_latency = 0;
+    shared_mem_dispatch_cycles = 0;
+    vector_elements = 1;
     for (unsigned i = 0; i < MAX_REG_OPERANDS; i++) {
       arch_reg.src[i] = -1;
       arch_reg.dst[i] = -1;
@@ -1029,8 +1035,16 @@ public:
   unsigned initiation_interval;
   unsigned wgmma_compute_latency;
   unsigned wgmma_completion_tail_latency;
+  // Nonzero for collective shared-memory instructions whose aligned hardware
+  // operation has a fixed dispatch service time. Ordinary loads/stores
+  // continue to derive this value from their lane addresses.
+  unsigned shared_mem_dispatch_cycles;
 
   unsigned data_size;  // what is the size of the word being operated on?
+  // Number of scalar words encoded by a generic PTX vector load/store.  This
+  // is separate from collective matrix width, which uses the fixed dispatch
+  // field above.
+  unsigned vector_elements;
   memory_space_t space;
   cache_operator_type cache_op;
 

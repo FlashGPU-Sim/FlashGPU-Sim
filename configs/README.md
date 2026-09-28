@@ -133,10 +133,11 @@ inherit another limit.
 | --- | ---: | ---: | ---: | --- |
 | `-gpgpu_num_tma_units` | `0` | `1` | `1` | TMA execution units per SM; `0` disables the TMA pipeline |
 | `-gpgpu_tma_transaction_slots` | `0` | default | `16` | Active TMA transactions accepted from warps per SM; a full table backpressures new TMA copies, and `0` is unlimited |
-| `-gpgpu_tma_max_inflight` | `0` | `384` | `384` | Maximum in-flight TMA memory requests per SM; `0` is unlimited |
+| `-gpgpu_tma_max_inflight` | `0` | `384` | `1024` | Aggregate in-flight TMA request capacity per SM, shared by all TMA sources; `0` is unlimited |
 | `-gpgpu_tma_request_granularity` | `32` | `128` | `32` | Bytes represented by one TMA memory request |
 | `-gpgpu_tma_request_width` | `1` | default | default | TMA memory requests issued per TMA unit per cycle |
 | `-gpgpu_tma_response_width` | `1` | default | default | TMA response tokens accepted per SM per cycle |
+| `-gpgpu_tma_issue_to_next_instruction_latency` | `0` | default | `168` | Issue-side warp occupancy after an active regular TMA copy; independent of asynchronous data completion |
 | `-gpgpu_tma_oob_l2_traffic` | `1` | `1` | `1` | Route out-of-bounds TMA fill traffic through L2 |
 | `-ptx_opcode_latency_tma` | `33` | `32` | `32` | TMA instruction latency in SM cycles |
 | `-ptx_opcode_initiation_tma` | `33` | `32` | `32` | Minimum TMA issue interval in SM cycles |
@@ -150,12 +151,30 @@ inherit another limit.
 | `-ptx_opcode_latency_cp_async_commit`, `-ptx_opcode_initiation_cp_async_commit` | `7` | `7` | `7` | `cp.async.commit_group` latency and issue interval |
 | `-ptx_opcode_latency_cp_async_wait`, `-ptx_opcode_initiation_cp_async_wait` | `5` | `5` | `5` | `cp.async.wait_group` and `wait_all` latency and issue interval |
 | `-gpgpu_num_tensormap_units` | `0` | default | `1` | TensorMap descriptor execution units per SM |
-| `-ptx_opcode_latency_tensormap`, `-ptx_opcode_initiation_tensormap` | `1,1,1` | default | `1,1,1` | Latency and issue interval for replace, `cp_fenceproxy`, and TensorMap fence operations |
+| `-ptx_opcode_latency_tensormap`, `-ptx_opcode_initiation_tensormap` | `1,1,1` | default | `11,448,79` / `1,1,1` | Latency and issue interval for replace, `cp_fenceproxy`, and TensorMap fence operations; RTX 5090 timing is charged only to the active leader fragment |
 | `-gpgpu_mbarrier_arrive_latency` | `0` | `29` | `29` | Delay before an arrive operation updates the barrier |
-| `-gpgpu_mbarrier_trywait_latency` | `32` | `32` | `32` | Provisional deterministic no-hint maximum suspension for `mbarrier.try_wait`; phase completion may wake the wait earlier, and an explicit PTX hint overrides the bound |
+| `-gpgpu_mbarrier_trywait_latency` | `32` | `32` | `34` | Deterministic no-hint maximum suspension for `mbarrier.try_wait`; an explicit PTX hint overrides the bound |
+| `-gpgpu_mbarrier_predicate_latency` | `0` | default | `34` | Minimum issue-to-predicate-ready latency for no-hint `mbarrier.try_wait` |
 | `-gpgpu_mbarrier_phase_wakeup_latency` | `0` | default | default | Delay from a notified phase transition to a suspended successful `mbarrier.try_wait` resuming |
+| `-gpgpu_barrier_release_latency` | `0` | default | `20` | Delay from CTA `bar.sync` satisfaction to warp release |
+| `-gpgpu_shmem_load_min_dispatch_cycles` | `1` | default | `2` | Minimum ordinary shared-load dispatch service time per warp instruction; vector accesses still count every scalar element |
 | `-gpgpu_shmem_per_block_optin` | `0` | default | `101376` | Opt-in shared-memory limit per CTA; `0` inherits `-gpgpu_shmem_per_block` |
 | `-gpgpu_max_dynamic_smem_prefer_occupancy_carveout` | `0` | `1` | default | Model the driver selecting an occupancy-oriented shared-memory/L1 carveout when no explicit preference is supplied |
+
+### Scalar Predicate Execution
+
+| Option | Code default | SM90_H100 | SM100_B200 | SM120_RTX5090 | Meaning |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `-ptx_opcode_latency_predicate` | `0` | default | `5` | `5` | Result latency for SETP and SELP; `0` preserves the legacy one-cycle ALU dependency behavior |
+| `-gpgpu_alu_scoreboard_forwarding` | `0` | default | `1` | `1` | Make ordinary ALU dependency readiness follow configured opcode latency while preserving physical pipeline and writeback timing |
+
+With ALU scoreboard forwarding enabled, a producer admitted to its execution
+unit at cycle `E`, issued at cycle `I`, and configured with latency `L` becomes
+dependency-ready at `max(I + L, E + max(L - 2, 0))`. Additional collector or
+execution-queue delays remain visible. The physical pipeline and writeback run
+to completion, and producer identities protect younger writes from older
+completion events. Memory, tensor-core, and asynchronous barrier results are
+excluded.
 
 ### Matrix Execution
 
@@ -164,12 +183,19 @@ inherit another limit.
 > order: `m16n8k16.f16`, `m16n8k8.tf32`, `m16n8k32.int8`, `m16n8k8.f16`,
 > `m16n8k8.bf16`, `m16n8k4.tf32`, and `m16n8k16.int8`.
 
-| Option | Code default | SM90_H100 | SM120_RTX5090 | Meaning |
-| --- | ---: | ---: | ---: | --- |
-| `-ptx_opcode_latency_tensor` | `64` | `22,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA result latency by shape and type |
-| `-ptx_opcode_initiation_tensor` | `64` | `6,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA issue interval by shape and type |
-| `-gpgpu_cta_load_balance` | `0` | `1` | `1` | Cap CTAs per SM for uniform kernels using `ceil(total_ctas / total_sms)` |
-| `-gpgpu_cta_replacement_latency` | `0` | default | default | Per-SM hardware CTA slot transition after resource release; a never-used slot is immediately available and slots on different SMs transition in parallel |
+| Option | Code default | SM90_H100 | SM100_B200 | SM120_RTX5090 | Meaning |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `-ptx_opcode_latency_tensor` | `64` | `22,32,19,32,32,32,19` | `34,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA result latency by shape and type |
+| `-ptx_opcode_initiation_tensor` | `64` | `6,32,19,32,32,32,19` | `34,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA issue interval by shape and type |
+| `-gpgpu_cta_load_balance` | `0` | `1` | `1` | `1` | Cap CTAs per SM for uniform kernels using `ceil(total_ctas / total_sms)` |
+| `-gpgpu_cta_replacement_latency` | `0` | default | `1200` | default | Per-SM hardware CTA slot transition after resource release; a never-used slot is immediately available and slots on different SMs transition in parallel |
+| `-gpgpu_ldmatrix_min_dispatch_cycles` | `1` | `4` | `4` | `4` | Minimum LDMATRIX dispatch service time per warp instruction; the decoded x1/x2/x4 collective width still applies when larger |
+
+`ldmatrix` and `stmatrix` execute through the shared-memory LD/ST path.
+`-gpgpu_ldmatrix_min_dispatch_cycles` sets the LDMATRIX dispatch lower bound;
+the decoded aligned `.x1`, `.x2`, or `.x4` collective width may require more
+cycles. STMATRIX uses its decoded aligned collective width and is unaffected
+by this option.
 
 The public SM90 configuration also models asynchronous WGMMA execution. SS
 uses shared-memory operands for A and B; RS uses registers for A and shared
@@ -217,7 +243,7 @@ explicitly. When at least one anchor maps, covered PTX without guide evidence
 keeps its conservative crossing constraints; a mapped line with a missing or
 ambiguous primary SASS instruction remains fatal.
 
-### Memory-System Calibration
+### Memory-System Controls
 
 These controls describe architecture-specific memory locality and local
 interconnect behavior. They should be changed together with the corresponding
@@ -285,7 +311,7 @@ disables the additional byte-credit limiter instead of restricting service.
 | `-gpgpu_cp_async_request_granularity` | `32` | `32` | Bytes represented by one ordinary `cp.async` request |
 | `-gpgpu_cp_async_request_width` | `1` | `4` | Ordinary `cp.async` requests issued per SM and core tick |
 | `-gpgpu_cp_async_response_width` | `1` | `4` | Ordinary `cp.async` response tokens consumed per SM and core tick |
-| `-gpgpu_mbarrier_trywait_latency` | `32` | `32` | Provisional no-hint maximum suspension; an explicit PTX hint selects the deterministic hinted-wait policy |
+| `-gpgpu_mbarrier_trywait_latency` | `32` | `32` | No-hint maximum suspension; an explicit PTX hint selects the deterministic hinted-wait policy |
 | `-gpgpu_mbarrier_phase_wakeup_latency` | `0` | `110` | Additional aggregate wakeup delay after a phase notification makes a suspended successful `mbarrier.try_wait` ready |
 
 ### Experimental Controls
@@ -300,24 +326,11 @@ represent the calibrated default models.
 | `-gpgpu_cp_async_idealized_memory` | `0` | Complete ordinary `cp.async` requests immediately |
 | `-gpgpu_tensor_core_issue_queue_depth` | `0` | Add an ideal pre-functional-unit tensor-core queue; `0` disables it |
 | `-gpgpu_tensor_core_skip_writeback` | `0` | Complete tensor-core instructions without the register-file writeback path |
-| `-gpgpu_alu_scoreboard_forwarding` | `0` | Interpret ordinary ALU opcode latency as issue-to-dependent-ready; preserve extra execution queue delay and physical writeback occupancy |
 | `-gpgpu_tensor_core_units_per_sub_partition` | `1` | Tensor issue units sharing each ideal queue subpartition |
 | `-gpgpu_tma_request_bytes_per_cycle` | `0` | Apply a TMA request-side byte budget; `0` disables the budget |
 | `-gpgpu_dram_frfcfs_rowhit_first` | `0` | Prefer row-hit banks during FR-FCFS bank assignment |
 
 ## Custom Configurations
-
-ALU scoreboard forwarding applies to the PTX register dependency model. With
-forwarding enabled, a producer admitted to its execution unit at cycle `E`,
-issued at cycle `I`, and configured with latency `L` becomes dependency-ready
-at `max(I + L, E + max(L - 2, 0))`. The two-cycle term represents nominal
-issue/operand-collector transit. Additional collector or execution queue
-delays remain visible. The physical pipeline and writeback still run to
-completion; producer identities protect younger writes from older completion
-events. Memory, tensor-core, and asynchronous barrier results are excluded.
-Enabling this option changes the meaning of existing ALU latency settings;
-calibrate those settings with dependent chains before enabling it in a GPU
-configuration. The supported configurations currently keep it disabled.
 
 Create a custom configuration by copying the closest supported model as a
 complete directory:

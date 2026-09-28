@@ -1513,13 +1513,35 @@ void ptx_instruction::set_opcode_and_latency() {
     }
     case GRIDDEPCONTROL_OP:
     case ELECT_OP:
-    case LDMATRIX_OP:
-    case STMATRIX_OP:
     case WGMMA_FENCE_OP:
     case WGMMA_COMMIT_GROUP_OP:
     case WGMMA_WAIT_GROUP_OP:
     case SETMAXNREG_OP:
       break;
+    case LDMATRIX_OP: {
+      op = TENSOR_CORE_LOAD_OP;
+      m_space_spec = shared_space;
+      space.set_type(shared_space);
+      for (int option : get_options()) {
+        if (option == X1_OPTION) shared_mem_dispatch_cycles = 1;
+        if (option == X2_OPTION) shared_mem_dispatch_cycles = 2;
+        if (option == X4_OPTION) shared_mem_dispatch_cycles = 4;
+      }
+      assert(shared_mem_dispatch_cycles != 0);
+      break;
+    }
+    case STMATRIX_OP: {
+      op = TENSOR_CORE_STORE_OP;
+      m_space_spec = shared_space;
+      space.set_type(shared_space);
+      for (int option : get_options()) {
+        if (option == X1_OPTION) shared_mem_dispatch_cycles = 1;
+        if (option == X2_OPTION) shared_mem_dispatch_cycles = 2;
+        if (option == X4_OPTION) shared_mem_dispatch_cycles = 4;
+      }
+      assert(shared_mem_dispatch_cycles != 0);
+      break;
+    }
     case SST_OP:
       op = BARRIER_OP;
       break;
@@ -1897,6 +1919,20 @@ void ptx_instruction::pre_decode() {
   extra_out.clear();
   is_vectorin = 0;
   is_vectorout = 0;
+  vector_elements = 1;
+  switch (get_vector()) {
+    case V2_TYPE:
+      vector_elements = 2;
+      break;
+    case V3_TYPE:
+      vector_elements = 3;
+      break;
+    case V4_TYPE:
+      vector_elements = 4;
+      break;
+    default:
+      break;
+  }
   std::fill_n(arch_reg.src, MAX_REG_OPERANDS, -1);
   std::fill_n(arch_reg.dst, MAX_REG_OPERANDS, -1);
   pred = 0;
@@ -1938,6 +1974,12 @@ void ptx_instruction::pre_decode() {
     unsigned to_type = get_type();
     data_size = datatype2size(to_type);
     memory_op = has_memory_read() ? memory_load : memory_store;
+  }
+  if (m_opcode == LDMATRIX_OP || m_opcode == STMATRIX_OP) {
+    // PTX encodes `.shared` as a matrix opcode modifier instead of a generic
+    // load/store address-space operand.  Make the timing-space explicit.
+    space.set_type(shared_space);
+    data_size = 4;  // Each xN register contains two b16 values.
   }
 
   bool has_dst = false;
@@ -2793,7 +2835,8 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
     unsigned insn_data_size = 0;
     if (inst_opcode != CP_ASYNC_MBARRIER_ARRIVE_OP &&
         (pI->has_memory_read() || pI->has_memory_write())) {
-      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
+      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP ||
+             inst_opcode == LDMATRIX_OP || inst_opcode == STMATRIX_OP))) {
         insn_memaddr = last_eaddr();
         insn_space = last_space();
         if (pI->m_is_ldgsts) {
@@ -2908,7 +2951,8 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
 
     // "Return values"
     if (!skip) {
-      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
+      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP ||
+             inst_opcode == LDMATRIX_OP || inst_opcode == STMATRIX_OP))) {
         inst.space = insn_space;
         inst.set_addr(lane_id, insn_memaddr);
         if (pI->m_is_ldgsts) {

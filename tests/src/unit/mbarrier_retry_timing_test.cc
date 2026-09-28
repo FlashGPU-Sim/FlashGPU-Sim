@@ -33,4 +33,25 @@ TEST(MBarrierRetryTimingTest, DelaysOnlyNotifiedSuccessfulSuspendedWakeups) {
       flash_gpgpu_sim::mbarrier_should_delay_phase_wakeup(true, true, true, 0));
 }
 
+TEST(MBarrierRetryTimingTest, PredicateReadyLatencyStartsAtIssue) {
+  EXPECT_EQ(flash_gpgpu_sim::mbarrier_result_release_cycle(100, 100, 34, 0),
+            134UL);
+  EXPECT_EQ(flash_gpgpu_sim::mbarrier_result_release_cycle(100, 120, 34, 0),
+            134UL);
+}
+
+TEST(MBarrierRetryTimingTest, PredicateLatencyLatchesOnlyNoHintCalls) {
+  EXPECT_TRUE(flash_gpgpu_sim::mbarrier_latches_initial_predicate(false, 34));
+  EXPECT_FALSE(flash_gpgpu_sim::mbarrier_latches_initial_predicate(true, 34));
+  EXPECT_FALSE(flash_gpgpu_sim::mbarrier_latches_initial_predicate(false, 0));
+}
+
+TEST(MBarrierRetryTimingTest, PhaseWakeupAndPredicateReadinessComposeByMax) {
+  EXPECT_EQ(
+      flash_gpgpu_sim::mbarrier_result_release_cycle(100, 120, 34, 110),
+      230UL);
+  EXPECT_EQ(flash_gpgpu_sim::mbarrier_result_release_cycle(100, 120, 34, 8),
+            134UL);
+}
+
 }  // namespace

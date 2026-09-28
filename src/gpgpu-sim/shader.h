@@ -58,6 +58,7 @@
 #include "stack.h"
 #include "stats.h"
 #include "traffic_breakdown.h"
+#include "flash/tma_issue_timing.h"
 #include "flash/mbarrier.h"
 #include "flash/bulk_group.h"
 #include "flash/tcgen05/timing.h"
@@ -130,6 +131,8 @@ class shd_warp_t {
     m_membar = false;
     m_done_exit = true;
     m_last_fetch = 0;
+    m_tma_issue_timing.reset();
+    m_tensormap_issue_timing.reset();
     m_next = 0;
     m_streamID = (unsigned long long)-1;
 
@@ -165,6 +168,8 @@ class shd_warp_t {
     n_completed -= active.count();  // active threads are not yet completed
     m_active_threads = active;
     m_done_exit = false;
+    m_tma_issue_timing.reset();
+    m_tensormap_issue_timing.reset();
 
     // Jin: cdp support
     m_cdp_latency = 0;
@@ -218,6 +223,20 @@ class shd_warp_t {
   virtual address_type get_pc() const { return m_next_pc; }
   virtual kernel_info_t *get_kernel_info() const;
   void set_next_pc(address_type pc) { m_next_pc = pc; }
+  void begin_tma_issue_delay(unsigned long long issue_cycle,
+                             unsigned latency) {
+    m_tma_issue_timing.begin(issue_cycle, latency);
+  }
+  bool tma_issue_ready(unsigned long long cycle) const {
+    return m_tma_issue_timing.ready(cycle);
+  }
+  void begin_tensormap_issue_delay(unsigned long long issue_cycle,
+                                   unsigned latency) {
+    m_tensormap_issue_timing.begin(issue_cycle, latency);
+  }
+  bool tensormap_issue_ready(unsigned long long cycle) const {
+    return m_tensormap_issue_timing.ready(cycle);
+  }
 
   void store_info_of_last_inst_at_barrier(const warp_inst_t *pI) {
     m_inst_at_barrier = *pI;
@@ -324,6 +343,9 @@ class shd_warp_t {
                      // this warp
 
   unsigned long long m_last_fetch;
+
+  flash_gpgpu_sim::tma_issue_timing_t m_tma_issue_timing;
+  flash_gpgpu_sim::tma_issue_timing_t m_tensormap_issue_timing;
 
   unsigned m_stores_outstanding;  // number of store requests sent but not yet
                                   // acknowledged
@@ -1276,14 +1298,15 @@ class barrier_set_t {
     uint64_t issue_cycle = 0;
     uint64_t next_recheck_cycle = 0;
     bool phase_notification_pending = false;
-    bool phase_wakeup_delay_pending = false;
+    bool result_ready_delay_pending = false;
+    bool has_no_hint = false;
     bool suspended = false;
     const ptx_instruction *static_inst = nullptr;
     lane_wait_t lanes[MAX_WARP_SIZE];
   };
   std::map<unsigned, pending_mbarrier_wait_t> m_pending_mbarrier_waits;
 
-  // Delayed warp release queue used only by ordinary cp.async wait_group.
+  // Delayed warp release queue for cp.async wait_group and CTA barriers.
   struct pending_warp_release_t {
     unsigned remaining;
     int warp_id;
@@ -2207,6 +2230,9 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_tma_request_granularity;
   unsigned int gpgpu_tma_request_width;
   unsigned int gpgpu_tma_request_bytes_per_cycle;
+  // Minimum issue-to-next-instruction latency for an active regular TMA copy.
+  // This issue-side warp occupancy is independent of data completion.
+  unsigned int gpgpu_tma_issue_to_next_instruction_latency;
   unsigned int gpgpu_cp_async_max_inflight;
   unsigned int gpgpu_cp_async_request_width;
   unsigned int gpgpu_cp_async_response_width;
@@ -2221,6 +2247,9 @@ class shader_core_config : public core_config {
   // Maximum modeled suspension for a no-hint mbarrier.try_wait. The optional
   // PTX suspendTimeHint overrides this bound after ns-to-core-cycle conversion.
   unsigned int gpgpu_mbarrier_trywait_latency;
+  // Minimum issue-to-predicate-ready latency for a no-hint
+  // mbarrier.try_wait. Zero preserves the legacy immediate-result behavior.
+  unsigned int gpgpu_mbarrier_predicate_latency;
   // Additional delay after a phase-triggered recheck resolves every active
   // lane of a suspended mbarrier.try_wait true.
   unsigned int gpgpu_mbarrier_phase_wakeup_latency;
@@ -2283,6 +2312,7 @@ class shader_core_config : public core_config {
 
   unsigned smem_latency;
   unsigned gpgpu_smem_store_visibility_latency;
+  unsigned gpgpu_barrier_release_latency;
   unsigned gpgpu_named_barrier_arrive_latency;
   unsigned gpgpu_named_barrier_arrive_visibility_latency;
 

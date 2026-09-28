@@ -26,6 +26,12 @@ uint64_t mbarrier_wake_on_phase_notification(uint64_t scheduled_wake_cycle,
 bool mbarrier_should_delay_phase_wakeup(bool suspended,
                                         bool phase_notification_pending,
                                         bool all_true, unsigned latency);
+bool mbarrier_latches_initial_predicate(bool has_time_hint,
+                                        unsigned predicate_latency);
+uint64_t mbarrier_result_release_cycle(uint64_t issue_cycle,
+                                       uint64_t resolution_cycle,
+                                       unsigned predicate_latency,
+                                       unsigned phase_wakeup_latency);
 
 class mbarrier_manager_t {
 

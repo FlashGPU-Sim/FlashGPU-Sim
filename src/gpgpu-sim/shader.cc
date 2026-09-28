@@ -2334,7 +2334,20 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       // Regular TMA operation (load/store).
       m_tma->warp_reaches_tma(m_warp[warp_id]->get_cta_id(), warp_id,
                               dyn_inst);
+      m_warp[warp_id]->begin_tma_issue_delay(
+          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+          m_config->gpgpu_tma_issue_to_next_instruction_latency);
     }
+  } else if (next_inst->op == TENSOR_MAP_OP &&
+             (*pipe_reg)->get_active_mask().test(0)) {
+    // Descriptor operations lower to long SM120 helper/control sequences.
+    // Their PTX latency therefore also occupies the issuing warp; it is not
+    // merely a writeback latency on the otherwise output-less instruction.
+    // Charge the leader-containing fragment: SIMT reconvergence can split a
+    // warp-collective copy/fence into lane 0 and lanes 1..31 around the
+    // lane-0-only replace sequence, but native SASS runs one warp helper path.
+    m_warp[warp_id]->begin_tensormap_issue_delay(
+        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, next_inst->latency);
   } else if (next_inst->op == ASYNC_COPY_OP) {
     const ptx_instruction *static_inst =
         dynamic_cast<const ptx_instruction *>(next_inst);
@@ -2649,6 +2662,11 @@ void scheduler_unit::cycle() {
     SCHED_GPPRINTF("Testing (warp_id %u, dynamic_warp_id %u)\n",
                   (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
     unsigned warp_id = (*iter)->get_warp_id();
+    const unsigned long long now =
+        m_shader->m_gpu->gpu_tot_sim_cycle + m_shader->m_gpu->gpu_sim_cycle;
+    const bool tma_issue_hold = !warp(warp_id).tma_issue_ready(now);
+    const bool tensormap_issue_hold =
+        !warp(warp_id).tensormap_issue_ready(now);
     unsigned checked = 0;
     unsigned issued = 0;
     exec_unit_type_t previous_issued_inst_exec_type = exec_unit_type_t::NONE;
@@ -2671,7 +2689,21 @@ void scheduler_unit::cycle() {
           "barrier\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
 
-    while (!warp(warp_id).waiting() && !warp(warp_id).ibuffer_empty() &&
+    if (tma_issue_hold)
+      SCHED_GPPRINTF(
+          "Warp (warp_id %u, dynamic_warp_id %u) waits for TMA issue-side "
+          "dispatch\n",
+          (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+
+    if (tensormap_issue_hold)
+      SCHED_GPPRINTF(
+          "Warp (warp_id %u, dynamic_warp_id %u) waits for tensormap "
+          "descriptor dispatch\n",
+          (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+
+    while (!warp(warp_id).waiting() && warp(warp_id).tma_issue_ready(now) &&
+           warp(warp_id).tensormap_issue_ready(now) &&
+           !warp(warp_id).ibuffer_empty() &&
            (checked < max_issue) && (checked <= issued) &&
            (issued < max_issue)) {
       const warp_inst_t *pI = warp(warp_id).ibuffer_next_inst();
@@ -3127,6 +3159,14 @@ void scheduler_unit::cycle() {
         reason = STALL_NO_INSTRUCTION;  // all threads done, draining pipeline
       else
         reason = STALL_BARRIER;  // other waiting
+    } else if (!warp(wid).tma_issue_ready(
+                   m_shader->m_gpu->gpu_tot_sim_cycle +
+                   m_shader->m_gpu->gpu_sim_cycle)) {
+      reason = STALL_MIO_THROTTLE;
+    } else if (!warp(wid).tensormap_issue_ready(
+                   m_shader->m_gpu->gpu_tot_sim_cycle +
+                   m_shader->m_gpu->gpu_sim_cycle)) {
+      reason = STALL_MIO_THROTTLE;
     } else if (warp(wid).ibuffer_empty()) {
       reason = STALL_NO_INSTRUCTION;
     } else {
@@ -6267,8 +6307,18 @@ void barrier_set_t::clear_named_barrier_waiters(
     const warp_set_t &waiters) {
   for (unsigned warp_id = 0; warp_id < m_max_warps_per_core; warp_id++) {
     if (waiters.test(warp_id)) {
-      clear_warp_waiting(warp_id, BARRIER_WAIT_BAR_SYNC,
-                         "named barrier release");
+      const unsigned latency =
+          m_shader->get_config()->gpgpu_barrier_release_latency;
+      if (latency == 0) {
+        clear_warp_waiting(warp_id, BARRIER_WAIT_BAR_SYNC,
+                           "named barrier release");
+      } else {
+        pending_warp_release_t release;
+        release.remaining = latency;
+        release.warp_id = warp_id;
+        release.type = BARRIER_WAIT_BAR_SYNC;
+        m_pending_warp_releases.push_back(release);
+      }
     }
   }
 }

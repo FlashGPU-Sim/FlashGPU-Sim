@@ -488,6 +488,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "Shared-store dispatch completion to named-barrier "
                          "issue delay",
                          "0");
+  option_parser_register(
+      opp, "-gpgpu_barrier_release_latency", OPT_UINT32,
+      &gpgpu_barrier_release_latency,
+      "CTA bar.sync satisfaction-to-warp-release latency (default=0)", "0");
   option_parser_register(opp, "-gpgpu_named_barrier_arrive_latency", OPT_UINT32,
                          &gpgpu_named_barrier_arrive_latency,
                          "Named arrive issue to issuing-warp readiness", "0");
@@ -631,6 +635,18 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_shmem_limited_broadcast", OPT_BOOL, &shmem_limited_broadcast,
       "Limit shared memory to do one broadcast per cycle (default on)", "1");
+  option_parser_register(
+      opp, "-gpgpu_shmem_load_min_dispatch_cycles", OPT_UINT32,
+      &shmem_load_min_dispatch_cycles,
+      "Minimum shared-load dispatch service time per warp instruction in "
+      "core cycles",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_ldmatrix_min_dispatch_cycles", OPT_UINT32,
+      &ldmatrix_min_dispatch_cycles,
+      "Minimum LDMATRIX dispatch service time per warp instruction in core "
+      "cycles",
+      "1");
   option_parser_register(opp, "-gpgpu_shmem_warp_parts", OPT_INT32,
                          &mem_warp_parts,
                          "Number of portions a warp is divided into for shared "
@@ -856,6 +872,13 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "four cycles)",
       "0");
   option_parser_register(
+      opp, "-gpgpu_tma_issue_to_next_instruction_latency", OPT_UINT32,
+      &gpgpu_tma_issue_to_next_instruction_latency,
+      "Minimum cycles from an active regular TMA copy issue until that warp "
+      "may issue its next instruction; independent of asynchronous data "
+      "completion (default=0)",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_cp_async_max_inflight", OPT_UINT32,
       &gpgpu_cp_async_max_inflight,
       "Maximum in-flight ordinary cp.async memory requests per SM "
@@ -913,6 +936,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "no-hint mbarrier.try_wait; 0 returns false "
                          "immediately when incomplete (default=32)",
                          "32");
+  option_parser_register(
+      opp, "-gpgpu_mbarrier_predicate_latency", OPT_UINT32,
+      &gpgpu_mbarrier_predicate_latency,
+      "Minimum issue-to-predicate-ready latency (core cycles) for a no-hint "
+      "mbarrier.try_wait; 0 preserves immediate results (default=0)",
+      "0");
   option_parser_register(
       opp, "-gpgpu_mbarrier_phase_wakeup_latency", OPT_UINT32,
       &gpgpu_mbarrier_phase_wakeup_latency,
