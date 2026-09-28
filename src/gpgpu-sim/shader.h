@@ -58,6 +58,7 @@
 #include "stack.h"
 #include "stats.h"
 #include "traffic_breakdown.h"
+#include "flash/shared_store_timing.h"
 #include "flash/tma_issue_timing.h"
 #include "flash/mbarrier.h"
 #include "flash/bulk_group.h"
@@ -133,6 +134,8 @@ class shd_warp_t {
     m_last_fetch = 0;
     m_tma_issue_timing.reset();
     m_tensormap_issue_timing.reset();
+    m_shared_load_issue_timing.reset();
+    m_shared_store_issue_timing.reset();
     m_next = 0;
     m_streamID = (unsigned long long)-1;
 
@@ -170,6 +173,8 @@ class shd_warp_t {
     m_done_exit = false;
     m_tma_issue_timing.reset();
     m_tensormap_issue_timing.reset();
+    m_shared_load_issue_timing.reset();
+    m_shared_store_issue_timing.reset();
 
     // Jin: cdp support
     m_cdp_latency = 0;
@@ -236,6 +241,20 @@ class shd_warp_t {
   }
   bool tensormap_issue_ready(unsigned long long cycle) const {
     return m_tensormap_issue_timing.ready(cycle);
+  }
+  void begin_shared_load_issue_interval(unsigned long long issue_cycle,
+                                        unsigned issue_interval) {
+    m_shared_load_issue_timing.begin(issue_cycle, issue_interval);
+  }
+  bool shared_load_issue_ready(unsigned long long cycle) const {
+    return m_shared_load_issue_timing.ready(cycle);
+  }
+  void begin_shared_store_issue_interval(unsigned long long issue_cycle,
+                                         unsigned issue_interval) {
+    m_shared_store_issue_timing.begin(issue_cycle, issue_interval);
+  }
+  bool shared_store_issue_ready(unsigned long long cycle) const {
+    return m_shared_store_issue_timing.ready(cycle);
   }
 
   void store_info_of_last_inst_at_barrier(const warp_inst_t *pI) {
@@ -346,6 +365,8 @@ class shd_warp_t {
 
   flash_gpgpu_sim::tma_issue_timing_t m_tma_issue_timing;
   flash_gpgpu_sim::tma_issue_timing_t m_tensormap_issue_timing;
+  flash_gpgpu_sim::shared_load_issue_timing_t m_shared_load_issue_timing;
+  flash_gpgpu_sim::shared_store_issue_timing_t m_shared_store_issue_timing;
 
   unsigned m_stores_outstanding;  // number of store requests sent but not yet
                                   // acknowledged
@@ -1392,9 +1413,7 @@ class pipelined_simd_unit : public simd_function_unit {
   */
   // accessors
   virtual bool stallable() const { return false; }
-  virtual bool can_issue(const warp_inst_t &inst) const {
-    return simd_function_unit::can_issue(inst);
-  }
+  virtual bool can_issue(const warp_inst_t &inst) const;
   virtual bool is_issue_partitioned() = 0;
   unsigned get_issue_reg_id() { return m_issue_reg_id; }
   virtual void print(FILE *fp) const {
@@ -2233,6 +2252,16 @@ class shader_core_config : public core_config {
   // Minimum issue-to-next-instruction latency for an active regular TMA copy.
   // This issue-side warp occupancy is independent of data completion.
   unsigned int gpgpu_tma_issue_to_next_instruction_latency;
+  // Minimum issue-to-issue recurrence for ordinary shared loads/stores from
+  // one warp. Aggregate cross-warp service is modeled by the shared dispatcher.
+  unsigned int gpgpu_shmem_load_issue_interval;
+  unsigned int gpgpu_shmem_store_issue_interval;
+  // Minimum issue-to-issue recurrence for MIO-routed instructions across the
+  // entire SM.
+  unsigned int gpgpu_mio_issue_interval;
+  // Number of recurrent backend dispatches that the MIO frontend may queue.
+  // Zero preserves a strict frontend issue gate.
+  unsigned int gpgpu_mio_issue_queue_depth;
   unsigned int gpgpu_cp_async_max_inflight;
   unsigned int gpgpu_cp_async_request_width;
   unsigned int gpgpu_cp_async_response_width;
@@ -3175,6 +3204,11 @@ class shader_core_ctx : public core_t {
                                  const warp_inst_t *inst) const;
   bool tma_frontend_available(const warp_inst_t *inst,
                               const active_mask_t &active_mask) const;
+  bool mio_issue_ready(unsigned long long cycle) {
+    return m_mio_issue_timing.ready(
+        cycle, m_config->gpgpu_mio_issue_interval,
+        m_config->gpgpu_mio_issue_queue_depth);
+  }
   bool tcgen05_frontend_available(const warp_inst_t *inst,
                                   const active_mask_t &active_mask,
                                   uint64_t cycle);
@@ -3314,6 +3348,10 @@ class shader_core_ctx : public core_t {
   };
   std::multimap<unsigned long long, alu_forward_event_t> m_alu_forward_events;
   void process_alu_scoreboard_forwarding(unsigned long long cycle);
+  // Aggregate per-SM service model for instruction classes assigned to the
+  // simulator's MIO path. This is a calibration abstraction; it does not
+  // claim a physical queue topology or measured queue depth.
+  flash_gpgpu_sim::issue_service_queue_timing_t m_mio_issue_timing;
   struct shared_barrier_state {
     unsigned pending_stores = 0;
     unsigned pending_arrivals = 0;

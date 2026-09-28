@@ -642,6 +642,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "core cycles",
       "1");
   option_parser_register(
+      opp, "-gpgpu_shmem_store_min_dispatch_cycles", OPT_UINT32,
+      &shmem_store_min_dispatch_cycles,
+      "Minimum shared-store dispatch service time per warp instruction in "
+      "core cycles",
+      "1");
+  option_parser_register(
       opp, "-gpgpu_ldmatrix_min_dispatch_cycles", OPT_UINT32,
       &ldmatrix_min_dispatch_cycles,
       "Minimum LDMATRIX dispatch service time per warp instruction in core "
@@ -877,6 +883,30 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Minimum cycles from an active regular TMA copy issue until that warp "
       "may issue its next instruction; independent of asynchronous data "
       "completion (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_shmem_load_issue_interval", OPT_UINT32,
+      &gpgpu_shmem_load_issue_interval,
+      "Minimum cycles between ordinary shared-load issues from the same "
+      "warp; other instructions remain issuable (default=0, disabled)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_shmem_store_issue_interval", OPT_UINT32,
+      &gpgpu_shmem_store_issue_interval,
+      "Minimum cycles between ordinary shared-store issues from the same "
+      "warp; other instructions remain issuable (default=0, disabled)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_mio_issue_interval", OPT_UINT32,
+      &gpgpu_mio_issue_interval,
+      "Minimum cycles between recognized MIO-routed instruction issues "
+      "across the entire SM (default=0, disabled)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_mio_issue_queue_depth", OPT_UINT32,
+      &gpgpu_mio_issue_queue_depth,
+      "Frontend queue depth for recurrent aggregate MIO service; 0 uses a "
+      "strict issue gate (default=0)",
       "0");
   option_parser_register(
       opp, "-gpgpu_cp_async_max_inflight", OPT_UINT32,

@@ -113,10 +113,17 @@ from a supported configuration rather than constructing one field at a time.
 | `-gpgpu_non_power2_l2_slice_mapping` | Direct per-channel policy for a non-power-of-two L2-slice count under consecutive indexing: `0` plain quotient/remainder, `1` deterministic stable rotation |
 | `-gpgpu_dram_buswidth`, `-gpgpu_dram_burst_length` | DRAM interface width and burst length |
 | `-gpgpu_dram_timing_opt` | DRAM bank, row, column, and bus timing |
+| `-gpgpu_l2_rop_latency` | Fixed L2/ROP frontend delay in core cycles |
+| `-dram_latency` | Fixed internal DRAM delay in core cycles, calibrated for the configuration's core clock |
 | `-network_mode`, `-inter_config_file` | Interconnect backend and its optional configuration file |
 
 The number of channels, subpartitions, L2 geometry, address mapping, and
 interconnect endpoints form one model and should not be scaled independently.
+
+Latency values expressed in core cycles are calibration parameters for the
+configuration's clock domains. Recalibrate them when overriding the core
+clock; the SM120 RTX 5090 DRAM latency, for example, assumes a 2.58 GHz core
+clock.
 
 ## FlashGPU-Sim-Specific Parameters
 
@@ -158,6 +165,11 @@ inherit another limit.
 | `-gpgpu_mbarrier_phase_wakeup_latency` | `0` | default | default | Delay from a notified phase transition to a suspended successful `mbarrier.try_wait` resuming |
 | `-gpgpu_barrier_release_latency` | `0` | default | `20` | Delay from CTA `bar.sync` satisfaction to warp release |
 | `-gpgpu_shmem_load_min_dispatch_cycles` | `1` | default | `2` | Minimum ordinary shared-load dispatch service time per warp instruction; vector accesses still count every scalar element |
+| `-gpgpu_shmem_load_issue_interval` | `0` | default | `4` | Minimum issue-to-issue recurrence for ordinary shared loads from one warp; other instruction classes remain issuable |
+| `-gpgpu_shmem_store_min_dispatch_cycles` | `1` | default | `2` | Minimum aggregate ordinary shared-store dispatch service time per warp instruction |
+| `-gpgpu_shmem_store_issue_interval` | `0` | default | `4` | Minimum issue-to-issue recurrence for ordinary shared stores from one warp; other instruction classes remain issuable |
+| `-gpgpu_mio_issue_interval` | `0` | default | `2` | Aggregate service interval across one SM for instruction classes included in the simulator's MIO model |
+| `-gpgpu_mio_issue_queue_depth` | `0` | default | `16` | Modeled frontend run-ahead capacity for aggregate MIO service; `0` selects a strict issue gate |
 | `-gpgpu_shmem_per_block_optin` | `0` | default | `101376` | Opt-in shared-memory limit per CTA; `0` inherits `-gpgpu_shmem_per_block` |
 | `-gpgpu_max_dynamic_smem_prefer_occupancy_carveout` | `0` | `1` | default | Model the driver selecting an occupancy-oriented shared-memory/L1 carveout when no explicit preference is supplied |
 

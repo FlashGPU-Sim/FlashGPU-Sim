@@ -224,6 +224,7 @@ class core_config {
     num_shmem_bank = 16;
     shmem_limited_broadcast = false;
     shmem_load_min_dispatch_cycles = 1;
+    shmem_store_min_dispatch_cycles = 1;
     ldmatrix_min_dispatch_cycles = 1;
     gpgpu_shmem_sizeDefault = (unsigned)-1;
     gpgpu_shmem_sizePrefL1 = (unsigned)-1;
@@ -249,6 +250,7 @@ class core_config {
   }
   unsigned mem_warp_parts;
   unsigned shmem_load_min_dispatch_cycles;
+  unsigned shmem_store_min_dispatch_cycles;
   unsigned ldmatrix_min_dispatch_cycles;
   mutable unsigned gpgpu_shmem_size;
   char *gpgpu_shmem_option;
@@ -1066,6 +1068,7 @@ class warp_inst_t : public inst_t {
     m_empty = true;
     m_config = NULL;
     m_wgmma_warpgroup = false;
+    m_mio_service_cycle = 0;
     m_wgmma_warpgroup_size = 0;
     m_wgmma_warpgroup_base_warp_id = (unsigned)-1;
     for (unsigned i = 0; i < 4; ++i)
@@ -1093,6 +1096,7 @@ class warp_inst_t : public inst_t {
     m_is_cdp = 0;
     should_do_atomic = true;
     m_wgmma_warpgroup = false;
+    m_mio_service_cycle = 0;
     m_wgmma_warpgroup_size = 0;
     m_wgmma_warpgroup_base_warp_id = (unsigned)-1;
     for (unsigned i = 0; i < 4; ++i)
@@ -1271,6 +1275,12 @@ class warp_inst_t : public inst_t {
   void print(FILE *fout) const;
   unsigned get_uid() const { return m_uid; }
   unsigned long long get_issue_cycle() const { return issue_cycle; }
+  unsigned long long get_mio_service_cycle() const {
+    return m_mio_service_cycle;
+  }
+  void set_mio_service_cycle(unsigned long long cycle) {
+    m_mio_service_cycle = cycle;
+  }
   unsigned long long get_streamID() const { return m_streamID; }
   unsigned get_schd_id() const { return m_scheduler_id; }
   active_mask_t get_warp_active_mask() const { return m_warp_active_mask; }
@@ -1281,6 +1291,7 @@ class warp_inst_t : public inst_t {
   bool m_empty;
   bool m_cache_hit;
   unsigned long long issue_cycle;
+  unsigned long long m_mio_service_cycle;
   unsigned cycles;  // used for implementing initiation interval delay
   bool m_isatomic;
   bool should_do_atomic;

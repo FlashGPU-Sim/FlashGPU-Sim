@@ -60,6 +60,7 @@ void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
   m_warp_id = warp_id;
   m_dynamic_warp_id = dynamic_warp_id;
   issue_cycle = cycle;
+  m_mio_service_cycle = cycle;
   cycles = initiation_interval;
   m_cache_hit = false;
   m_empty = false;
@@ -343,6 +344,8 @@ void warp_inst_t::generate_mem_accesses() {
             cycles = std::max(cycles, m_config->ldmatrix_min_dispatch_cycles);
           }
           cycles = std::max(cycles, m_config->shmem_load_min_dispatch_cycles);
+        } else if (op == STORE_OP) {
+          cycles = std::max(cycles, m_config->shmem_store_min_dispatch_cycles);
         }
         m_config->gpgpu_ctx->stats->ptx_file_line_stats_add_smem_bank_conflict(
             pc, shared_mem_dispatch_cycles);
@@ -442,6 +445,8 @@ void warp_inst_t::generate_mem_accesses() {
                                 // initiation interval
       if (is_load()) {
         cycles = std::max(cycles, m_config->shmem_load_min_dispatch_cycles);
+      } else if (op == STORE_OP) {
+        cycles = std::max(cycles, m_config->shmem_store_min_dispatch_cycles);
       }
       m_config->gpgpu_ctx->stats->ptx_file_line_stats_add_smem_bank_conflict(
           pc, total_accesses);

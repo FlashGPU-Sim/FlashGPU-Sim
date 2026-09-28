@@ -61,6 +61,55 @@
 
 namespace {
 
+bool is_ordinary_shared_load(const warp_inst_t *inst) {
+  return inst != NULL && inst->op == LOAD_OP &&
+         inst->space.get_type() == shared_space;
+}
+
+bool is_ordinary_shared_store(const warp_inst_t *inst) {
+  return inst != NULL && inst->op == STORE_OP &&
+         inst->space.get_type() == shared_space;
+}
+
+bool is_mio_instruction(const warp_inst_t *inst) {
+  if (inst == NULL) return false;
+  switch (inst->op) {
+    case LOAD_OP:
+    case STORE_OP:
+    case MEMORY_BARRIER_OP:
+    case TENSOR_CORE_LOAD_OP:
+    case TENSOR_CORE_STORE_OP:
+    case TENSOR_MEMORY_ACCELERATOR_OP:
+    case ASYNC_COPY_OP:
+    case TENSOR_MAP_OP:
+      return true;
+    default:
+      break;
+  }
+  const ptx_instruction *ptx_inst =
+      dynamic_cast<const ptx_instruction *>(inst);
+  return ptx_inst != NULL && ptx_inst->get_opcode() == SHFL_OP;
+}
+
+// Classify only when the corresponding timing option is enabled, so disabled
+// configurations skip the per-candidate checks entirely.
+bool shared_load_recurrence_applies(const shader_core_config *config,
+                                    const warp_inst_t *inst) {
+  return config->gpgpu_shmem_load_issue_interval != 0 &&
+         is_ordinary_shared_load(inst);
+}
+
+bool shared_store_recurrence_applies(const shader_core_config *config,
+                                     const warp_inst_t *inst) {
+  return config->gpgpu_shmem_store_issue_interval != 0 &&
+         is_ordinary_shared_store(inst);
+}
+
+bool mio_service_applies(const shader_core_config *config,
+                         const warp_inst_t *inst) {
+  return config->gpgpu_mio_issue_interval != 0 && is_mio_instruction(inst);
+}
+
 struct issue_trace_state {
   bool initialized;
   bool enabled;
@@ -2236,6 +2285,15 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     }
   }
 
+  if (mio_service_applies(m_config, next_inst) &&
+      (*pipe_reg)->get_active_mask().any()) {
+    const unsigned long long now =
+        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+    (*pipe_reg)->set_mio_service_cycle(m_mio_issue_timing.begin(
+        now, m_config->gpgpu_mio_issue_interval,
+        m_config->gpgpu_mio_issue_queue_depth));
+  }
+
   // Add LDGSTS instructions into a buffer
   unsigned int ldgdepbar_id = m_warp[warp_id]->m_ldgdepbar_id;
   if (next_inst->m_is_ldgsts && next_inst->op != ASYNC_COPY_OP) {
@@ -2251,12 +2309,28 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     }
   }
 
-  // Use the post-execution mask/space: predication and generic-address
-  // resolution can change which shared stores actually entered the pipeline.
+  // Use the post-execution mask: predication can remove every active lane.
+  // The recurrences use the same static classification as the issue gate, so
+  // generic accesses that resolve to shared memory neither wait nor start one.
+  if (shared_load_recurrence_applies(m_config, next_inst) &&
+      (*pipe_reg)->get_active_mask().any()) {
+    m_warp[warp_id]->begin_shared_load_issue_interval(
+        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+        m_config->gpgpu_shmem_load_issue_interval);
+  }
+
   if ((*pipe_reg)->is_store() &&
       (*pipe_reg)->space.get_type() == shared_space &&
-      (*pipe_reg)->get_active_mask().any())
+      (*pipe_reg)->get_active_mask().any()) {
     ++m_shared_barrier_state[warp_id].pending_stores;
+    // Barrier visibility covers every dynamic shared store. The measured STS
+    // recurrence applies only to ordinary STORE_OP instructions.
+    if (shared_store_recurrence_applies(m_config, next_inst)) {
+      m_warp[warp_id]->begin_shared_store_issue_interval(
+          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+          m_config->gpgpu_shmem_store_issue_interval);
+    }
+  }
 
   if (next_inst->op == BARRIER_OP) {
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
@@ -2753,9 +2827,23 @@ void scheduler_unit::cycle() {
             fflush(stderr);
             abort();
           }
+          const bool shared_store_issue_ready =
+              !shared_store_recurrence_applies(m_shader->m_config, pI) ||
+              !m_shader->get_active_mask(warp_id, pI).any() ||
+              warp(warp_id).shared_store_issue_ready(now);
+          const bool shared_load_issue_ready =
+              !shared_load_recurrence_applies(m_shader->m_config, pI) ||
+              !m_shader->get_active_mask(warp_id, pI).any() ||
+              warp(warp_id).shared_load_issue_ready(now);
+          const bool mio_issue_ready =
+              !mio_service_applies(m_shader->m_config, pI) ||
+              !m_shader->get_active_mask(warp_id, pI).any() ||
+              m_shader->mio_issue_ready(now);
           if (!m_scoreboard->checkCollision(warp_id, pI) &&
               (pI->op != BARRIER_OP ||
-               m_shader->named_barrier_issue_ready(warp_id))) {
+               m_shader->named_barrier_issue_ready(warp_id)) &&
+              shared_load_issue_ready && shared_store_issue_ready &&
+              mio_issue_ready) {
             SCHED_GPPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
                 (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
@@ -3183,6 +3271,24 @@ void scheduler_unit::cycle() {
       // from this statistics-only pass.
       if (!current_inst) {
         reason = STALL_NO_INSTRUCTION;
+      } else if (shared_load_recurrence_applies(m_shader->m_config, pI) &&
+                 m_shader->get_active_mask(wid, pI).any() &&
+                 !warp(wid).shared_load_issue_ready(
+                     m_shader->m_gpu->gpu_tot_sim_cycle +
+                     m_shader->m_gpu->gpu_sim_cycle)) {
+        reason = STALL_MIO_THROTTLE;
+      } else if (shared_store_recurrence_applies(m_shader->m_config, pI) &&
+                 m_shader->get_active_mask(wid, pI).any() &&
+                 !warp(wid).shared_store_issue_ready(
+                     m_shader->m_gpu->gpu_tot_sim_cycle +
+                     m_shader->m_gpu->gpu_sim_cycle)) {
+        reason = STALL_MIO_THROTTLE;
+      } else if (mio_service_applies(m_shader->m_config, pI) &&
+                 m_shader->get_active_mask(wid, pI).any() &&
+                 !m_shader->mio_issue_ready(
+                     m_shader->m_gpu->gpu_tot_sim_cycle +
+                     m_shader->m_gpu->gpu_sim_cycle)) {
+        reason = STALL_MIO_THROTTLE;
       } else if (pI->op == BARRIER_OP &&
                  !m_shader->named_barrier_issue_ready(wid)) {
         reason = STALL_BARRIER;
@@ -4531,6 +4637,18 @@ pipelined_simd_unit::pipelined_simd_unit(register_set *result_port,
   m_core = core;
   m_issue_reg_id = issue_reg_id;
   active_insts_in_pipeline = 0;
+}
+
+// Units that forward here wait for the instruction's assigned MIO service
+// cycle. ldst_unit overrides can_issue without forwarding: LSU instructions
+// still occupy MIO queue entries, but their backend timing comes from the
+// shared-memory dispatch model.
+bool pipelined_simd_unit::can_issue(const warp_inst_t &inst) const {
+  const unsigned long long now =
+      m_core->get_gpu()->gpu_tot_sim_cycle +
+      m_core->get_gpu()->gpu_sim_cycle;
+  return now >= inst.get_mio_service_cycle() &&
+         simd_function_unit::can_issue(inst);
 }
 
 void pipelined_simd_unit::cycle() {
