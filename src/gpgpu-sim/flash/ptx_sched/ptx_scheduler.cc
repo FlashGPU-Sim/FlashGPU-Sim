@@ -708,6 +708,13 @@ sass_primary_rules_t parse_sass_primary_rules_from_file(const char *path) {
     rules.error = "SASS PTX-line guide requires policy fallback = disabled";
     return rules;
   }
+  std::map<std::string, std::string>::const_iterator zero_primary =
+      rules.policy.find("zero_primary_candidate");
+  if (zero_primary != rules.policy.end() && zero_primary->second != "fatal" &&
+      zero_primary->second != "plain") {
+    rules.error = "policy zero_primary_candidate must be 'fatal' or 'plain'";
+    return rules;
+  }
 
   rules.ok = true;
   return rules;
@@ -906,20 +913,14 @@ build_sass_ptxline_guide(const std::string &function_name,
 
   const std::map<unsigned, std::vector<ptxline_inst_ref_t>> ptx_by_line =
       build_ptxline_inst_refs(instructions);
-  std::map<unsigned, ptxline_build_state_t> states;
-
-  for (std::vector<sass_ptxline_inst_t>::const_iterator sass =
-           sass_func.insts.begin();
-       sass != sass_func.insts.end(); ++sass) {
-    std::map<unsigned, std::vector<ptxline_inst_ref_t>>::const_iterator
-        ptx_line = ptx_by_line.find(sass->ptx_line);
-    if (ptx_line == ptx_by_line.end())
-      continue;
-
+  std::map<unsigned, std::vector<ptxline_inst_ref_t>> ruled_ptx_by_line;
+  for (std::map<unsigned, std::vector<ptxline_inst_ref_t>>::const_iterator
+           line = ptx_by_line.begin();
+       line != ptx_by_line.end(); ++line) {
     std::vector<ptxline_inst_ref_t> ruled_ptx;
     for (std::vector<ptxline_inst_ref_t>::const_iterator ref =
-             ptx_line->second.begin();
-         ref != ptx_line->second.end(); ++ref) {
+             line->second.begin();
+         ref != line->second.end(); ++ref) {
       if (rules.primary_opcode.find(ref->ptx_opcode) !=
           rules.primary_opcode.end())
         ruled_ptx.push_back(*ref);
@@ -930,25 +931,49 @@ build_sass_ptxline_guide(const std::string &function_name,
       ptx_reorder_fatal(
           "function '%s' PTX line %u has %zu rule-covered PTX "
           "instructions; add a line-disambiguation rule before using it",
-          function_name.c_str(), sass->ptx_line, ruled_ptx.size());
+          function_name.c_str(), line->first, ruled_ptx.size());
     }
+    ruled_ptx_by_line[line->first] = ruled_ptx;
+  }
+  std::map<unsigned, ptxline_build_state_t> states;
+
+  for (std::vector<sass_ptxline_inst_t>::const_iterator sass =
+           sass_func.insts.begin();
+       sass != sass_func.insts.end(); ++sass) {
+    std::map<unsigned, std::vector<ptxline_inst_ref_t>>::const_iterator
+        ptx_line = ruled_ptx_by_line.find(sass->ptx_line);
+    if (ptx_line == ruled_ptx_by_line.end())
+      continue;
 
     ptxline_build_state_t &state = states[sass->ptx_line];
     if (!state.initialized) {
       state.initialized = true;
-      state.ref = ruled_ptx[0];
-    } else if (state.ref.original_index != ruled_ptx[0].original_index) {
+      state.ref = ptx_line->second[0];
+    } else if (state.ref.original_index != ptx_line->second[0].original_index) {
       ptx_reorder_fatal(
           "function '%s' PTX line %u maps to multiple PTX instructions "
           "(orig=%u and orig=%u)",
           function_name.c_str(), sass->ptx_line, state.ref.original_index,
-          ruled_ptx[0].original_index);
+          ptx_line->second[0].original_index);
     }
 
     const std::set<std::string> &primary =
         rules.primary_opcode.find(state.ref.ptx_opcode)->second;
     if (opcode_set_contains(primary, sass->opcode))
       state.primary_candidates.push_back(*sass);
+  }
+
+  // Plain fallback is valid only when the function has no rule-covered PTX.
+  // Once one anchor maps, other covered instructions without guide evidence
+  // retain the conservative crossing constraints exercised below.
+  if (states.empty() && !ruled_ptx_by_line.empty()) {
+    const std::map<unsigned, std::vector<ptxline_inst_ref_t>>::const_iterator
+        line = ruled_ptx_by_line.begin();
+    ptx_reorder_fatal(
+        "function '%s' rule-covered PTX line %u opcode '%s' has no SASS "
+        "PTX-line mapping in guide '%s'",
+        function_name.c_str(), line->first, line->second[0].ptx_opcode.c_str(),
+        sass_func.name.c_str());
   }
 
   ptxline_guide_t guide;
@@ -993,6 +1018,10 @@ build_sass_ptxline_guide(const std::string &function_name,
             });
 
   if (guide.items.empty()) {
+    const std::map<std::string, std::string>::const_iterator policy =
+        rules.policy.find("zero_primary_candidate");
+    if (policy != rules.policy.end() && policy->second == "plain")
+      return guide;
     ptx_reorder_fatal(
         "function '%s' matched SASS PTX-line guide '%s' but produced no "
         "primary guide items",
@@ -3824,17 +3853,23 @@ void run_ptx_reorder(function_info *func) {
     }
     sass_ptxline_guide_storage = build_sass_ptxline_guide(
         func->m_name, func->m_instructions, *sass_func, rules);
-    sass_ptxline_guide = &sass_ptxline_guide_storage;
-    stats.sass_guide_source = sass_ptxline_guide->source;
-    const unsigned guide_head_limit = std::min<unsigned>(
-        32, static_cast<unsigned>(sass_ptxline_guide->items.size()));
-    stats.sass_guide_head =
-        build_ptxline_guide_head(*sass_ptxline_guide, guide_head_limit);
-    printf("GPGPU-Sim PTX: SASS PTX-line guide function '%s': "
-           "anchors=%zu matched_lines=%u source=%s\n",
-           func->m_name.c_str(), sass_ptxline_guide->items.size(),
-           sass_ptxline_guide->matched_ptx_lines,
-           sass_ptxline_guide->source.c_str());
+    if (sass_ptxline_guide_storage.items.empty()) {
+      printf("GPGPU-Sim PTX: SASS PTX-line guide function '%s': no "
+             "rule-covered anchors; using plain reorder\n",
+             func->m_name.c_str());
+    } else {
+      sass_ptxline_guide = &sass_ptxline_guide_storage;
+      stats.sass_guide_source = sass_ptxline_guide->source;
+      const unsigned guide_head_limit = std::min<unsigned>(
+          32, static_cast<unsigned>(sass_ptxline_guide->items.size()));
+      stats.sass_guide_head =
+          build_ptxline_guide_head(*sass_ptxline_guide, guide_head_limit);
+      printf("GPGPU-Sim PTX: SASS PTX-line guide function '%s': "
+             "anchors=%zu matched_lines=%u source=%s\n",
+             func->m_name.c_str(), sass_ptxline_guide->items.size(),
+             sass_ptxline_guide->matched_ptx_lines,
+             sass_ptxline_guide->source.c_str());
+    }
   }
 
   const ptx_instruction *previous_boundary = NULL;

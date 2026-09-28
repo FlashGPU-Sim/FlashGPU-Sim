@@ -36,4 +36,9 @@ setp.eq.ftz.f32 = FSETP.NEU.FTZ.AND, FSETP.NE.FTZ.AND
 setp.equ.ftz.f32 = FSETP.NEU.FTZ.AND, FSETP.NE.FTZ.AND
 
 [policy]
+# Kernels without a covered PTX opcode still use conservative plain reorder.
+# Covered PTX with no mapped anchor at all is fatal. After one anchor maps,
+# covered PTX without guide evidence retains conservative crossing constraints;
+# a mapped line with no unique primary SASS candidate remains fatal.
+zero_primary_candidate = plain
 fallback = disabled

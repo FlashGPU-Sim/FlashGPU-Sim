@@ -30,6 +30,7 @@
 #include <dirent.h>
 #include <cerrno>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <fstream>
 #include <sstream>
@@ -300,7 +301,15 @@ std::string prepare_sass_ptxline_guide(gpgpu_context *ctx, const char *source,
       quote_guide_argument(input) + " " + quote_guide_argument(prefix) +
       " --ptxas " + quote_guide_argument(std::string(cuda) + "/bin/ptxas") +
       " --nvdisasm " + quote_guide_argument(std::string(cuda) + "/bin/nvdisasm");
-  if (system(command.c_str()) != 0) {
+  const int guide_status = system(command.c_str());
+  if (guide_status != -1 && WIFEXITED(guide_status) &&
+      WEXITSTATUS(guide_status) == 3) {
+    printf("GPGPU-Sim PTX: no function-body instructions in %s; "
+           "skipping SASS guide generation\n",
+           input.c_str());
+    return "";
+  }
+  if (guide_status != 0) {
     fprintf(stderr, "GPGPU-Sim PTX: SASS guide generation failed for %s\n",
             input.c_str());
     abort();

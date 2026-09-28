@@ -13,9 +13,20 @@ starting points for simulation and architecture studies.
 - **Compute capability:** 9.0
 - **Resources:** 132 SMs, 80 memory channels, and 160 L2/memory subpartitions
 - **Timing models:** TMA, ordinary `cp.async`, `mbarrier`, MMA, and WGMMA
-- **PTX transformation:** Register allocation and conservative instruction
-  reordering
+- **PTX transformation:** Register allocation and SASS-guided conservative
+  instruction reordering
 - **Clock domains (MHz):** `1500:1700:1700:2617`
+  (core:interconnect:L2:DRAM)
+
+### SM100_B200
+
+[`SM100_B200`](SM100_B200/gpgpusim.config) models a B200 GPU with:
+
+- **Compute capability:** 10.0
+- **Resources:** 148 SMs, 16 memory channels, and 192 L2/memory subpartitions
+- **Timing models:** TMA, ordinary `cp.async`, `mbarrier`, MMA, and TCGen05
+- **PTX transformation:** SASS-guided conservative instruction reordering
+- **Clock domains (MHz):** `1080:1080:1155:3996`
   (core:interconnect:L2:DRAM)
 
 ### SM120_RTX5090
@@ -25,13 +36,13 @@ starting points for simulation and architecture studies.
 - **Compute capability:** 12.0
 - **Resources:** 170 SMs, 16 memory channels, and 128 L2/memory subpartitions
 - **Timing models:** TMA, ordinary `cp.async`, `mbarrier`, MMA, and TensorMap
-- **PTX transformation:** Register allocation enabled; instruction reordering
-  disabled
+- **PTX transformation:** Register allocation and SASS-guided conservative
+  instruction reordering
 - **Clock domains (MHz):** `2580:2580:2580:14001`
   (core:interconnect:L2:DRAM)
 
-Both configuration directories include `sass_primary_hints.rules` for
-experiments that explicitly enable SASS-guided PTX reordering.
+All three configuration directories include `sass_primary_hints.rules` and
+enable SASS-guided PTX reordering.
 
 ### Legacy Configurations
 
@@ -190,16 +201,21 @@ the normal operand-collector read budget:
 
 ### PTX Transformation
 
-| Option | Code default | SM90_H100 | SM120_RTX5090 | Meaning |
-| --- | ---: | ---: | ---: | --- |
-| `-gpgpu_ptx_register_allocator` | `0` | `1` | `1` | Enable conservative PTX virtual-register aliasing |
-| `-gpgpu_ptx_register_allocator_stats` | `0` | `0` | `0` | Print register-allocation statistics |
-| `-gpgpu_ptx_reorder` | `0` | `1` | `0` | Enable conservative PTX instruction reordering |
-| `-gpgpu_ptx_reorder_sass_guided` | `0` | `0` | `0` | Guide PTX reordering with auto-extracted SASS/PTX-line anchors |
+| Option | Code default | SM90_H100 | SM100_B200 | SM120_RTX5090 | Meaning |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `-gpgpu_ptx_register_allocator` | `0` | `1` | `0` | `1` | Enable conservative PTX virtual-register aliasing |
+| `-gpgpu_ptx_register_allocator_stats` | `0` | `0` | `0` | `0` | Print register-allocation statistics |
+| `-gpgpu_ptx_reorder` | `0` | `1` | `1` | `1` | Enable conservative PTX instruction reordering |
+| `-gpgpu_ptx_reorder_sass_guided` | `0` | `1` | `1` | `1` | Guide PTX reordering with auto-extracted SASS/PTX-line anchors |
 
 When SASS-guided reordering is enabled, FlashGPU-Sim loads the single
-`*.rules` file in the run directory. The supplied configurations include
-`sass_primary_hints.rules`, but the feature remains opt-in.
+`*.rules` file in the run directory. The supplied SM90, SM100, and SM120
+configurations include `sass_primary_hints.rules` and enable the feature.
+Functions without a rule-covered PTX opcode use conservative plain reordering.
+A function that contains covered PTX but has no mapped SASS anchor fails
+explicitly. When at least one anchor maps, covered PTX without guide evidence
+keeps its conservative crossing constraints; a mapped line with a missing or
+ambiguous primary SASS instruction remains fatal.
 
 ### Memory-System Calibration
 

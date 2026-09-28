@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import unittest
 import tempfile
+import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 
-from generate_sass_ptxline_guide import add_line_markers, instruction_stream, normalize_ptx, generate_guide
+from generate_sass_ptxline_guide import (
+    NoFunctionBodyInstructions,
+    add_line_markers,
+    generate_guide,
+    instruction_stream,
+    normalize_ptx,
+)
 
 
 class AddLineMarkersTest(unittest.TestCase):
@@ -113,11 +120,38 @@ class AddLineMarkersTest(unittest.TestCase):
         self.assertEqual(add_line_markers(normalized, "input.ptx")[1], 2)
 
     def test_rejects_ptx_without_an_entry_instruction(self) -> None:
-        with self.assertRaisesRegex(ValueError, "no marked"):
+        with self.assertRaisesRegex(NoFunctionBodyInstructions, "no marked"):
             add_line_markers(".address_size 64\n", "empty.ptx")
 
 
 class GuideOutputTest(unittest.TestCase):
+    def test_cli_returns_skip_status_for_declaration_only_module(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ptx = root / "declarations.ptx"
+            ptx.write_text(
+                ".version 9.1\n.target sm_100a\n.address_size 64\n"
+                ".extern .func external();\n"
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parents[3]
+                        / "scripts/generate_sass_ptxline_guide.py"),
+                    str(ptx),
+                    str(root / "guide"),
+                    "--ptxas", sys.executable,
+                    "--nvdisasm", sys.executable,
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(result.returncode, 3, result.stderr)
+            self.assertIn("SKIP: PTX has no marked function-body instructions",
+                          result.stdout)
+
     def test_output_collision_does_not_modify_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             prefix = Path(directory) / "guide"

@@ -10,6 +10,10 @@ import tempfile
 from pathlib import Path
 
 
+class NoFunctionBodyInstructions(ValueError):
+    """The PTX module has declarations only and needs no scheduling guide."""
+
+
 # Match quoted strings first, so comment delimiters inside filenames remain
 # literal. Blank comments without removing newlines: .loc refers to the
 # original PTX's physical line numbers, including multiline comments.
@@ -111,7 +115,9 @@ def add_line_markers(source: str, source_name: str) -> tuple[str, int]:
     insertions = [(address.end(), f'\n.file {file_index} "{escaped_name}"\n')]
     spans = _instruction_spans(source)
     if not spans:
-        raise ValueError("PTX has no marked function-body instructions")
+        raise NoFunctionBodyInstructions(
+            "PTX has no marked function-body instructions"
+        )
     for start, end in spans:
         line_number = source.count("\n", 0, end - 1) + 1
         line_start = source.rfind("\n", 0, start) + 1
@@ -249,13 +255,17 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    result = generate_guide(
-        args.ptx,
-        args.output_prefix,
-        ptxas=args.ptxas,
-        nvdisasm=args.nvdisasm,
-        arch=args.arch,
-    )
+    try:
+        result = generate_guide(
+            args.ptx,
+            args.output_prefix,
+            ptxas=args.ptxas,
+            nvdisasm=args.nvdisasm,
+            arch=args.arch,
+        )
+    except NoFunctionBodyInstructions as error:
+        print(f"SKIP: {error}")
+        return 3
     print(result)
     return 0
 

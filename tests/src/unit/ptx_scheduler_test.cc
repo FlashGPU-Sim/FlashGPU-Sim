@@ -252,6 +252,24 @@ TEST_F(PtxSchedulerGuidedTest, WorkWithoutGuideEvidenceStaysBeforeAnchor) {
       "mbarrier.arrive.release.cta.shared::cta.b64 %state, [mb];\n", {9}),
       (std::vector<unsigned>{8, 9}));
 }
+
+TEST_F(PtxSchedulerGuidedTest, PlainFallbackWhenFunctionHasNoCoveredAnchor) {
+  std::ofstream(rules_path) <<
+      "[primary_opcode]\nex2.approx.ftz.f32 = MUFU.EX2\n"
+      "[policy]\nzero_primary_candidate = plain\nfallback = disabled\n";
+  EXPECT_EQ(schedule("guided_not_applicable",
+                     "mov.u32 %a, %b;\n", {8}),
+            (std::vector<unsigned>{8}));
+}
+
+TEST_F(PtxSchedulerGuidedTest, MissingCoveredPtxLineMappingIsFatal) {
+  EXPECT_DEATH(
+      (void)schedule("guided_missing_covered_line",
+                     "add.u32 %a, %b, 1;\n", {7}),
+      "rule-covered PTX line 8 opcode 'add.u32' has no SASS PTX-line "
+      "mapping");
+}
+
 TEST(PtxSchedulerGuideGeneratorTest, LineMappingAndDisassemblyParsing) {
   const char *root = getenv("GPGPUSIM_ROOT");
   ASSERT_NE(root, nullptr);
