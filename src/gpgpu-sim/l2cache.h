@@ -281,6 +281,7 @@ class rop_delay_output_queue {
 enum l2_multi_issue_data_work {
   L2_MULTI_ISSUE_HIT_DATA = 0,
   L2_MULTI_ISSUE_DIRTY_EVICTION,
+  L2_MULTI_ISSUE_MISS_READ,
 };
 
 enum class l2_port_model_kind {
@@ -318,6 +319,8 @@ struct l2_multi_issue_port_stats {
   unsigned long long data_port_accepted_sectors;
   unsigned long long data_port_hit_sectors;
   unsigned long long data_port_dirty_eviction_sectors;
+  unsigned long long data_port_fill_sectors;
+  unsigned long long data_port_miss_read_sectors;
   unsigned long long fill_port_accepted_sectors;
   unsigned long long lookup_width_stall_cycles;
   unsigned long long data_port_width_stall_cycles;
@@ -328,6 +331,8 @@ struct l2_multi_issue_port_stats {
         data_port_accepted_sectors(0),
         data_port_hit_sectors(0),
         data_port_dirty_eviction_sectors(0),
+        data_port_fill_sectors(0),
+        data_port_miss_read_sectors(0),
         fill_port_accepted_sectors(0),
         lookup_width_stall_cycles(0),
         data_port_width_stall_cycles(0),
@@ -338,6 +343,8 @@ struct l2_multi_issue_port_stats {
     data_port_accepted_sectors += rhs.data_port_accepted_sectors;
     data_port_hit_sectors += rhs.data_port_hit_sectors;
     data_port_dirty_eviction_sectors += rhs.data_port_dirty_eviction_sectors;
+    data_port_fill_sectors += rhs.data_port_fill_sectors;
+    data_port_miss_read_sectors += rhs.data_port_miss_read_sectors;
     fill_port_accepted_sectors += rhs.fill_port_accepted_sectors;
     lookup_width_stall_cycles += rhs.lookup_width_stall_cycles;
     data_port_width_stall_cycles += rhs.data_port_width_stall_cycles;
@@ -437,6 +444,7 @@ class l2_multi_issue_ports {
         m_data_cycle_period(1),
         m_data_fraction(0),
         m_fill_width(1),
+        m_fill_uses_data_port(false),
         m_lookup_remaining(1),
         m_data_remaining(1),
         m_fill_remaining(1),
@@ -445,7 +453,8 @@ class l2_multi_issue_ports {
         m_fill_stall_recorded(false) {}
 
   void configure(unsigned lookup_width, unsigned data_width,
-                 unsigned fill_width, unsigned data_cycle_period = 1) {
+                 unsigned fill_width, unsigned data_cycle_period = 1,
+                 bool fill_uses_data_port = false) {
     assert(lookup_width > 0);
     assert(data_width > 0);
     assert(fill_width > 0);
@@ -455,6 +464,7 @@ class l2_multi_issue_ports {
     m_data_cycle_period = data_cycle_period;
     m_data_fraction = 0;
     m_fill_width = fill_width;
+    m_fill_uses_data_port = fill_uses_data_port;
     begin_cycle();
   }
 
@@ -498,6 +508,8 @@ class l2_multi_issue_ports {
     m_stats.data_port_accepted_sectors += accepted;
     if (work == L2_MULTI_ISSUE_HIT_DATA)
       m_stats.data_port_hit_sectors += accepted;
+    else if (work == L2_MULTI_ISSUE_MISS_READ)
+      m_stats.data_port_miss_read_sectors += accepted;
     else
       m_stats.data_port_dirty_eviction_sectors += accepted;
     if (accepted < pending_sectors)
@@ -507,10 +519,20 @@ class l2_multi_issue_ports {
 
   unsigned accept_fill(unsigned pending_sectors) {
     assert(pending_sectors > 0);
-    const unsigned accepted = std::min(pending_sectors, m_fill_remaining);
+    const unsigned fill_eligible = std::min(pending_sectors, m_fill_remaining);
+    const unsigned accepted = m_fill_uses_data_port
+                                  ? std::min(fill_eligible, m_data_remaining)
+                                  : fill_eligible;
+    if (m_fill_uses_data_port) {
+      m_data_remaining -= accepted;
+      m_stats.data_port_accepted_sectors += accepted;
+      m_stats.data_port_fill_sectors += accepted;
+      if (accepted < fill_eligible)
+        record_once(m_stats.data_port_width_stall_cycles, m_data_stall_recorded);
+    }
     m_fill_remaining -= accepted;
     m_stats.fill_port_accepted_sectors += accepted;
-    if (accepted < pending_sectors)
+    if (fill_eligible < pending_sectors)
       record_once(m_stats.fill_port_width_stall_cycles, m_fill_stall_recorded);
     return accepted;
   }
@@ -532,6 +554,7 @@ class l2_multi_issue_ports {
   unsigned m_data_cycle_period;
   unsigned long long m_data_fraction;
   unsigned m_fill_width;
+  bool m_fill_uses_data_port;
   unsigned m_lookup_remaining;
   unsigned m_data_remaining;
   unsigned m_fill_remaining;

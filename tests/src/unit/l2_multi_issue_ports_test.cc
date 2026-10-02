@@ -294,3 +294,62 @@ TEST(L2MultiIssuePortsTest, AcceptedSectorStatisticsAreConservative) {
 }
 
 }  // namespace
+
+TEST(L2MultiIssuePortsTest, SharedArrayFillWaitsWithoutLosingFillCredit) {
+  l2_multi_issue_ports ports;
+  ports.configure(2, 4, 1, 1, true);
+  EXPECT_EQ(ports.accept_data(4, L2_MULTI_ISSUE_DIRTY_EVICTION), 4u);
+  EXPECT_EQ(ports.accept_fill(1), 0u);
+  EXPECT_EQ(ports.fill_remaining(), 1u);
+  EXPECT_EQ(ports.stats().data_port_width_stall_cycles, 1u);
+  EXPECT_EQ(ports.stats().fill_port_width_stall_cycles, 0u);
+  ports.begin_cycle();
+  EXPECT_EQ(ports.accept_fill(2), 1u);
+  EXPECT_EQ(ports.accept_data(4, L2_MULTI_ISSUE_HIT_DATA), 3u);
+  const auto &stats = ports.stats();
+  EXPECT_EQ(stats.data_port_accepted_sectors, 8u);
+  EXPECT_EQ(stats.data_port_fill_sectors, 1u);
+  EXPECT_EQ(stats.data_port_accepted_sectors,
+            stats.data_port_hit_sectors + stats.data_port_dirty_eviction_sectors +
+                stats.data_port_fill_sectors);
+}
+
+TEST(L2MultiIssuePortsTest, SharedArrayPartialFillResumesOnLaterTicks) {
+  l2_multi_issue_ports ports;
+  ports.configure(2, 1, 4, 2, true);
+  l2_multi_issue_pending_operation fill;
+  fill.start(2);
+  EXPECT_FALSE(fill.service_fill(ports));  // Fractional tick has no array slot.
+  ports.begin_cycle();
+  EXPECT_FALSE(fill.service_fill(ports));
+  EXPECT_EQ(fill.remaining_sectors(), 1u);
+  ports.begin_cycle();
+  EXPECT_FALSE(fill.service_fill(ports));
+  ports.begin_cycle();
+  EXPECT_TRUE(fill.service_fill(ports));
+  EXPECT_EQ(ports.stats().fill_port_accepted_sectors, 2u);
+  EXPECT_EQ(ports.stats().data_port_fill_sectors, 2u);
+}
+
+TEST(L2MultiIssuePortsTest, ColdReadChargesFillAndReadoutSeparately) {
+  mshr_table mshrs(1, 2);
+  unsigned long storage = 0;
+  mem_fetch *request = FakeRequest(storage);
+  mshrs.add(0x2000, request, false);
+  l2_multi_issue_ports ports;
+  ports.configure(2, 1, 1, 1, true);
+  EXPECT_EQ(ports.accept_fill(1), 1u);
+  bool has_atomic = false;
+  mshrs.mark_ready(0x2000, has_atomic);
+  EXPECT_EQ(mshrs.peek_next_access(), request);
+  EXPECT_FALSE(ports.data_port_has_capacity());
+  EXPECT_EQ(mshrs.peek_next_access(), request);
+  EXPECT_TRUE(mshrs.probe_ready(0x2000));
+  ports.begin_cycle();
+  EXPECT_EQ(ports.accept_data(1, L2_MULTI_ISSUE_MISS_READ), 1u);
+  EXPECT_EQ(mshrs.next_access(), request);
+  EXPECT_FALSE(mshrs.access_ready());
+  EXPECT_EQ(ports.stats().data_port_accepted_sectors, 2u);
+  EXPECT_EQ(ports.stats().data_port_fill_sectors, 1u);
+  EXPECT_EQ(ports.stats().data_port_miss_read_sectors, 1u);
+}

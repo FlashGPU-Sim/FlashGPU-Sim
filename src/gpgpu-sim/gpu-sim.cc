@@ -388,6 +388,11 @@ void memory_config::reg_options(class OptionParser *opp) {
       "in 32-byte sector work packages (used only when port model = 1)",
       "1");
   option_parser_register(
+      opp, "-gpgpu_l2_shared_data_array", OPT_BOOL,
+      &l2_shared_data_array,
+      "Charge L2 fills and miss read responses to the shared data-array budget "
+      "(multi-issue model only; default preserves independent ports)", "0");
+  option_parser_register(
       opp, "-gpgpu_l2_tma_request_coalescing", OPT_BOOL,
       &l2_tma_request_coalescing,
       "Coalesce identical outstanding TMA read sectors at each L2 "
@@ -2196,6 +2201,10 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
            l2_port_stats.data_port_accepted_sectors);
     printf("L2_multi_issue_data_port_hit_sectors = %llu\n",
            l2_port_stats.data_port_hit_sectors);
+    printf("L2_multi_issue_data_port_miss_read_sectors = %llu\n",
+           l2_port_stats.data_port_miss_read_sectors);
+    printf("L2_multi_issue_data_port_fill_sectors = %llu\n",
+           l2_port_stats.data_port_fill_sectors);
     printf("L2_multi_issue_data_port_dirty_eviction_sectors = %llu\n",
            l2_port_stats.data_port_dirty_eviction_sectors);
     printf("L2_multi_issue_fill_port_accepted_sectors = %llu\n",

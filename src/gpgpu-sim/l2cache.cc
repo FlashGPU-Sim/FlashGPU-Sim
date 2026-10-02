@@ -726,7 +726,8 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
     m_l2_multi_issue_ports.configure(m_config->l2_lookup_sectors_per_cycle,
                                      m_config->l2_data_port_sectors_per_cycle,
                                      m_config->l2_fill_port_sectors_per_cycle,
-                                     m_config->l2_data_port_cycle_period);
+                                     m_config->l2_data_port_cycle_period,
+                                     m_config->l2_shared_data_array);
   }
 
   assert(m_id < m_config->m_n_mem_sub_partition);
@@ -822,6 +823,20 @@ void memory_sub_partition::service_ready_l2_response() {
       m_L2_icnt_queue->full())
     return;
 
+  // A read miss writes the fill and subsequently reads the array for its
+  // response. Inspect without dequeuing so exhausted array credit retains
+  // MSHR ownership until the response can actually be serviced.
+  if (m_l2_port_model == l2_port_model_kind::multi_issue &&
+      m_config->l2_shared_data_array) {
+    mem_fetch *next = m_L2cache->peek_next_access();
+    if (!next->is_write() && next->get_access_type() != L2_WR_ALLOC_R) {
+      assert(next->get_data_size() == SECTOR_SIZE);
+      if (!m_l2_multi_issue_ports.data_port_has_capacity()) return;
+      const unsigned accepted =
+          m_l2_multi_issue_ports.accept_data(1, L2_MULTI_ISSUE_MISS_READ);
+      assert(accepted == 1);
+    }
+  }
   mem_fetch *mf = m_L2cache->next_access();
   if (mf->get_access_type() !=
       L2_WR_ALLOC_R) {  // Don't pass write allocate read request back to
@@ -1047,7 +1062,7 @@ void memory_sub_partition::cycle_legacy_l2_port_model() {
 }
 
 void memory_sub_partition::cycle_multi_issue_l2_port_model() {
-  m_l2_multi_issue_ports.begin_cycle();
+  if (!m_config->l2_shared_data_array) m_l2_multi_issue_ports.begin_cycle();
   service_dram_to_l2_multi_issue();
   if (!m_config->m_L2_config.disabled())
     m_L2cache->cycle_multi_issue_port_model();
@@ -1075,6 +1090,11 @@ void memory_sub_partition::enqueue_ready_rop(unsigned cycle) {
 }
 
 void memory_sub_partition::cache_cycle(unsigned cycle) {
+  // Shared-array mode needs fresh credit before ready miss responses compete
+  // with fills and hits. Preserve independent-port mode's ordering.
+  if (m_l2_port_model == l2_port_model_kind::multi_issue &&
+      m_config->l2_shared_data_array)
+    m_l2_multi_issue_ports.begin_cycle();
   service_ready_l2_response();
 
   switch (m_l2_port_model) {

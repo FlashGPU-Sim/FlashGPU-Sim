@@ -82,6 +82,14 @@ void mshr_table::mark_ready(new_addr_type block_addr, bool &has_atomic) {
   assert(m_current_response.size() <= m_data.size());
 }
 
+mem_fetch *mshr_table::peek_next_access() const {
+  assert(access_ready());
+  const auto entry = m_data.find(m_current_response.front());
+  assert(entry != m_data.end());
+  assert(!entry->second.m_list.empty());
+  return entry->second.m_list.front();
+}
+
 mem_fetch *mshr_table::next_access() {
   assert(access_ready());
   new_addr_type block_addr = m_current_response.front();

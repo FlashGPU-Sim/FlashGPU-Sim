@@ -76,6 +76,39 @@ class ConfiguredAddressMapping {
   linear_to_raw_address_translation mapping_;
 };
 
+// SM120 uses the same DRAM address map with three L2 slices per channel.
+// Check the combined channel hash/local-slice transform, including high address
+// bits, for aliases and sector placement rather than just counting endpoints.
+TEST(AddrdecL2SliceTest, ThreeSlicesWithIPolyAreBalancedAndAliasFree) {
+  ConfiguredAddressMapping mapping(
+      0, NON_POWER2_L2_SLICE_STABLE_ROTATION, 16, 3, 0, 0, 2);
+  std::unordered_set<unsigned long long> destinations;
+  for (new_addr_type base : {0ull, 1ull << 32, 1ull << 40}) {
+    std::array<unsigned, 48> counts{};
+    for (new_addr_type offset = 0; offset < 3ull * 1024 * 1024;
+         offset += 128) {
+      const new_addr_type addr = base + offset;
+      addrdec_t line{};
+      mapping->addrdec_tlx(addr, &line);
+      ASSERT_LT(line.sub_partition, 48u);
+      ASSERT_LT(line.bk, 16u);
+      EXPECT_EQ(line.sub_partition / 3, line.chip);
+      ++counts[line.sub_partition];
+      const new_addr_type local = mapping->partition_address(addr);
+      EXPECT_TRUE(destinations.insert((local << 6) | line.sub_partition).second);
+      for (unsigned sector = 32; sector < 128; sector += 32) {
+        addrdec_t part{};
+        mapping->addrdec_tlx(addr + sector, &part);
+        EXPECT_EQ(part.sub_partition, line.sub_partition);
+        EXPECT_EQ(mapping->partition_address(addr + sector), local + sector);
+      }
+    }
+    const auto limits = std::minmax_element(counts.begin(), counts.end());
+    EXPECT_GT(*limits.first, 0u);
+    EXPECT_LE(*limits.second - *limits.first, 2u);
+  }
+}
+
 TEST(AddrdecL2SliceTest, CheckedInMapReachesAll192Slices) {
   ConfiguredAddressMapping mapping(
       /*CONSECUTIVE=*/0, NON_POWER2_L2_SLICE_STABLE_ROTATION);
