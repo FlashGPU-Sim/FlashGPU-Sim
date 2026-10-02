@@ -17,6 +17,7 @@ TEST_GROUP_EXTRA_OBJECTS_sm100_unit := \
 	$(OBJ_DIR)/sm100/support/tcgen05/tmem.cu.o
 
 TEST_GROUP_EXTRA_OBJECTS_sm120_unit := \
+	$(OBJ_DIR)/sm120/support/instruction-stream-buffer.cc.o \
 	$(OBJ_DIR)/sm120/support/bulk_group.cu.o \
 	$(OBJ_DIR)/sm120/support/tma_reduction.cu.o \
 	$(OBJ_DIR)/sm120/support/local_interconnect.cc.o \
@@ -162,3 +163,17 @@ $(OBJ_DIR)/sm90/unit/mbarrier_retry_timing_test.cc.o \
 $(OBJ_DIR)/sm100/unit/mbarrier_retry_timing_test.cc.o \
 $(OBJ_DIR)/sm120/unit/mbarrier_retry_timing_test.cc.o: \
   $(SRC_DIR)/gpgpu-sim/flash/mbarrier.h
+
+# Instruction-front-end host tests and their production support object.
+$(OBJ_DIR)/sm120/unit/instruction_address_mapping_test.cc.o: \
+$(SRC_DIR)/gpgpu-sim/flash/instruction_cache/address_mapping.h
+
+$(OBJ_DIR)/sm120/unit/instruction_stream_buffer_test.cc.o: \
+$(SRC_DIR)/gpgpu-sim/flash/instruction_cache/stream_buffer.h
+
+$(OBJ_DIR)/sm120/support/instruction-stream-buffer.cc.o: \
+$(SRC_DIR)/gpgpu-sim/flash/instruction_cache/stream_buffer.cc \
+$(SRC_DIR)/gpgpu-sim/flash/instruction_cache/stream_buffer.h \
+$(TOP_MAKEFILE) $(UNIT_MK) arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
