@@ -223,6 +223,9 @@ class core_config {
     m_valid = false;
     num_shmem_bank = 16;
     shmem_limited_broadcast = false;
+    shmem_load_min_dispatch_cycles = 1;
+    shmem_store_min_dispatch_cycles = 1;
+    ldmatrix_min_dispatch_cycles = 1;
     gpgpu_shmem_sizeDefault = (unsigned)-1;
     gpgpu_shmem_sizePrefL1 = (unsigned)-1;
     gpgpu_shmem_sizePrefShared = (unsigned)-1;
@@ -246,6 +249,9 @@ class core_config {
     return ((addr / WORD_SIZE) % num_shmem_bank);
   }
   unsigned mem_warp_parts;
+  unsigned shmem_load_min_dispatch_cycles;
+  unsigned shmem_store_min_dispatch_cycles;
+  unsigned ldmatrix_min_dispatch_cycles;
   mutable unsigned gpgpu_shmem_size;
   char *gpgpu_shmem_option;
   std::vector<unsigned> shmem_opt_list;
@@ -827,6 +833,8 @@ class inst_t {
     initiation_interval = 1;
     wgmma_compute_latency = 0;
     wgmma_completion_tail_latency = 0;
+    shared_mem_dispatch_cycles = 0;
+    vector_elements = 1;
     for (unsigned i = 0; i < MAX_REG_OPERANDS; i++) {
       arch_reg.src[i] = -1;
       arch_reg.dst[i] = -1;
@@ -946,11 +954,15 @@ public:
     unsigned bar_id = (unsigned)-1;     // mbarrier address in shared memory
     unsigned bar_count = (unsigned)-1;  // expected count or arrival count
     bool bar_parity = false;            // parity for try_wait
-    
+    bool bar_has_time_hint = false;     // optional try_wait suspendTimeHint
+    uint32_t bar_time_hint_ns = 0;      // hint value in nanoseconds
+
     void reset() {
       bar_id = (unsigned)-1;
       bar_count = (unsigned)-1;
       bar_parity = false;
+      bar_has_time_hint = false;
+      bar_time_hint_ns = 0;
     }
   };
   void set_mbarrier_info(int laneid, const mbarrier_info_t &info) {
@@ -967,6 +979,24 @@ public:
 
 private:
   mbarrier_info_t mbarrier_info[MAX_WARP_SIZE];
+
+public:
+  struct tcgen05_dyn_info_t {
+    uint64_t mma_work = 0;
+  };
+  void set_tcgen05_dyn_info(int laneid, const tcgen05_dyn_info_t &info) {
+    tcgen05_dyn_info[laneid] = info;
+  }
+  const tcgen05_dyn_info_t &get_tcgen05_dyn_info(int laneid) const {
+    return tcgen05_dyn_info[laneid];
+  }
+  void reset_tcgen05_dyn_info() {
+    for (unsigned i = 0; i < MAX_WARP_SIZE; ++i)
+      tcgen05_dyn_info[i] = tcgen05_dyn_info_t();
+  }
+
+private:
+  tcgen05_dyn_info_t tcgen05_dyn_info[MAX_WARP_SIZE];
 
 public:
   types_of_operands oprnd_type;  // code (uarch visible) identify if the
@@ -988,6 +1018,10 @@ public:
   unsigned outcount;
   unsigned in[24];
   unsigned incount;
+  // Logical dependencies beyond the fixed operand-collector arrays. Wide
+  // register vectors must not lose RAW/WAW hazards at those array limits.
+  std::vector<unsigned> extra_out;
+  std::vector<unsigned> extra_in;
   unsigned char is_vectorin;
   unsigned char is_vectorout;
   int pred;  // predicate register number
@@ -1003,8 +1037,16 @@ public:
   unsigned initiation_interval;
   unsigned wgmma_compute_latency;
   unsigned wgmma_completion_tail_latency;
+  // Nonzero for collective shared-memory instructions whose aligned hardware
+  // operation has a fixed dispatch service time. Ordinary loads/stores
+  // continue to derive this value from their lane addresses.
+  unsigned shared_mem_dispatch_cycles;
 
   unsigned data_size;  // what is the size of the word being operated on?
+  // Number of scalar words encoded by a generic PTX vector load/store.  This
+  // is separate from collective matrix width, which uses the fixed dispatch
+  // field above.
+  unsigned vector_elements;
   memory_space_t space;
   cache_operator_type cache_op;
 
@@ -1026,6 +1068,7 @@ class warp_inst_t : public inst_t {
     m_empty = true;
     m_config = NULL;
     m_wgmma_warpgroup = false;
+    m_mio_service_cycle = 0;
     m_wgmma_warpgroup_size = 0;
     m_wgmma_warpgroup_base_warp_id = (unsigned)-1;
     for (unsigned i = 0; i < 4; ++i)
@@ -1053,6 +1096,7 @@ class warp_inst_t : public inst_t {
     m_is_cdp = 0;
     should_do_atomic = true;
     m_wgmma_warpgroup = false;
+    m_mio_service_cycle = 0;
     m_wgmma_warpgroup_size = 0;
     m_wgmma_warpgroup_base_warp_id = (unsigned)-1;
     for (unsigned i = 0; i < 4; ++i)
@@ -1230,6 +1274,13 @@ class warp_inst_t : public inst_t {
 
   void print(FILE *fout) const;
   unsigned get_uid() const { return m_uid; }
+  unsigned long long get_issue_cycle() const { return issue_cycle; }
+  unsigned long long get_mio_service_cycle() const {
+    return m_mio_service_cycle;
+  }
+  void set_mio_service_cycle(unsigned long long cycle) {
+    m_mio_service_cycle = cycle;
+  }
   unsigned long long get_streamID() const { return m_streamID; }
   unsigned get_schd_id() const { return m_scheduler_id; }
   active_mask_t get_warp_active_mask() const { return m_warp_active_mask; }
@@ -1240,6 +1291,7 @@ class warp_inst_t : public inst_t {
   bool m_empty;
   bool m_cache_hit;
   unsigned long long issue_cycle;
+  unsigned long long m_mio_service_cycle;
   unsigned cycles;  // used for implementing initiation interval delay
   bool m_isatomic;
   bool should_do_atomic;

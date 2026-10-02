@@ -1,0 +1,42 @@
+[arch]
+nvcc_target = "sm_100a"
+config = "SM100_B200"
+
+[workloads]
+sources = [
+  # Portable integration tests.
+  "integration/address_operand_test.cu",
+  "integration/vector_operand_test.cu",
+  "integration/integer_multiply_test.cu",
+  "integration/float_minmax_three_input_test.cu",
+  "integration/vector_add_test.cu",
+  "integration/shared_memory_optin_test.cu",
+  "barrier/named_barrier_test.cu",
+  "integration/ldst_matrix_test.cu",
+  "integration/ldst_multi_sector_test.cu",
+  "integration/cp_async_src_size_test.cu",
+  "integration/shared_atomic_address_test.cu",
+
+  # SM100 simulator TMA integration tests.
+  "tma/tma_test.cu",
+
+  # SM100 standalone calibration microbenchmarks.
+  "microbench/tma/tma_throughput_bench.cu",
+
+  # SM100 host-side component tests.
+  "unit/addrdec_l2_slice_test.cc",
+  "unit/dram_bandwidth_test.cc",
+  "unit/fa4_opaque_tensormap_test.cc",
+  "unit/l2_bandwidth_test.cc",
+  "unit/l2_multi_issue_ports_test.cc",
+  "unit/l2_tma_coalescing_test.cc",
+  "unit/local_interconnect_test.cc",
+  "unit/memory_transport_test.cc",
+  "unit/ptx_scheduler_test.cc",
+  "unit/register_view_reload_test.cc",
+  "unit/scoreboard_forwarding_test.cc",
+  "unit/mbarrier_retry_timing_test.cc",
+  "unit/rop_delay_output_test.cc",
+  "unit/tcgen05_tmem_test.cc",
+  "unit/tcgen05_timing_test.cc",
+]

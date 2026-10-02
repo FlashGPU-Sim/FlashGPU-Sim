@@ -27,7 +27,7 @@ architectures and AI workloads, built upon GPGPU-Sim.
 | --- | --- |
 | Architectures | Hopper/SM90 ([`SM90_H100`](configs/SM90_H100/gpgpusim.config)) and Blackwell/SM120 ([`SM120_RTX5090`](configs/SM120_RTX5090/gpgpusim.config)) configurations |
 | GPU features | TMA, `mbarrier`, `mma`, `wgmma`, `ldmatrix`/`stmatrix`, etc. |
-| Workload tooling | [TritonTrace](tools/README.md) kernel capture and standalone replay ([examples and validation](tests/triton_trace/README.md)) |
+| Workload tooling | [TritonTrace](tools/README.md) kernel capture and standalone replay ([examples and validation](tests/dsl/triton/README.md)) |
 | Simulation | Execution-driven functional simulation and cycle-level timing simulation |
 | Parallelism | OpenMP-based multi-threaded SM simulation |
 
@@ -337,20 +337,15 @@ statistics report or `--csv output.csv` to export the results.
 ## Citation
 
 We hope FlashGPU-Sim benefits your research! If you use it in your work, please cite our paper:
-
-```text
-Siying Yu, Yixun Hong, Guozhi Qiu, Feng Gu, Chenbo Geng, Zhengrong Wang, Chen Zhang, Bei Yu,
-FlashGPU-sim: Enabling GPU Modeling for Modern Architectures and AI Workloads,
-in 2026 IEEE/ACM 59th International Symposium on Microarchitecture (MICRO)
-```
+[FlashGPU-sim: Enabling GPU Modeling for Modern Architectures and AI Workloads](https://arxiv.org/abs/2609.15311v1)
 
 BibTeX:
 ```bibtex
 @inproceedings{flashgpusim,
-  author    = {Yu, Siying and Hong, Yixun and Qiu, Guozhi and Gu, Feng
+  author    = {Yu, Siying and Hong, Yixun and Qiu, Guozhi and Liu, Jingci and Gu, Feng
                and Geng, Chenbo and Wang, Zhengrong and Zhang, Chen and Yu, Bei},
   title     = {{FlashGPU-sim}: Enabling GPU Modeling for Modern Architectures and AI Workloads},
-  booktitle = {IEEE/ACM 59th International Symposium on Microarchitecture (MICRO)},
+  booktitle = {59th IEEE/ACM International Symposium on Microarchitecture (MICRO)},
   year      = {2026}
 }
 ```

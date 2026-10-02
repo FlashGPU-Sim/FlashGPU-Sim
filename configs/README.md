@@ -13,9 +13,20 @@ starting points for simulation and architecture studies.
 - **Compute capability:** 9.0
 - **Resources:** 132 SMs, 80 memory channels, and 160 L2/memory subpartitions
 - **Timing models:** TMA, ordinary `cp.async`, `mbarrier`, MMA, and WGMMA
-- **PTX transformation:** Register allocation and conservative instruction
-  reordering
+- **PTX transformation:** Register allocation and SASS-guided conservative
+  instruction reordering
 - **Clock domains (MHz):** `1500:1700:1700:2617`
+  (core:interconnect:L2:DRAM)
+
+### SM100_B200
+
+[`SM100_B200`](SM100_B200/gpgpusim.config) models a B200 GPU with:
+
+- **Compute capability:** 10.0
+- **Resources:** 148 SMs, 16 memory channels, and 192 L2/memory subpartitions
+- **Timing models:** TMA, ordinary `cp.async`, `mbarrier`, MMA, and TCGen05
+- **PTX transformation:** SASS-guided conservative instruction reordering
+- **Clock domains (MHz):** `1080:1080:1155:3996`
   (core:interconnect:L2:DRAM)
 
 ### SM120_RTX5090
@@ -25,13 +36,13 @@ starting points for simulation and architecture studies.
 - **Compute capability:** 12.0
 - **Resources:** 170 SMs, 16 memory channels, and 128 L2/memory subpartitions
 - **Timing models:** TMA, ordinary `cp.async`, `mbarrier`, MMA, and TensorMap
-- **PTX transformation:** Register allocation enabled; instruction reordering
-  disabled
+- **PTX transformation:** Register allocation and SASS-guided conservative
+  instruction reordering
 - **Clock domains (MHz):** `2580:2580:2580:14001`
   (core:interconnect:L2:DRAM)
 
-Both configuration directories include `sass_primary_hints.rules` for
-experiments that explicitly enable SASS-guided PTX reordering.
+All three configuration directories include `sass_primary_hints.rules` and
+enable SASS-guided PTX reordering.
 
 ### Legacy Configurations
 
@@ -78,6 +89,12 @@ option in each `gpgpusim.config`.
 | `-gpgpu_unified_l1d_size` | Unified L1 data cache and shared-memory capacity in KiB per SM |
 | `-gpgpu_cache:dl1` | L1 data-cache geometry, policy, MSHRs, queues, and data-port width |
 | `-gpgpu_cache:dl2` | L2 cache geometry and policy per subpartition |
+| `-gpgpu_l2_multi_issue_port_model` | Select `0` for the legacy single-request data/fill busy-delay model or `1` for independent multi-issue lookup, data, and fill sector ports |
+| `-gpgpu_l2_lookup_sectors_per_cycle` | Lookup width in 32-byte sector work packages when the multi-issue port model is enabled |
+| `-gpgpu_l2_data_port_sectors_per_cycle` | Data-port service numerator for hits and dirty-eviction reads, in 32-byte sector work packages |
+| `-gpgpu_l2_data_port_cycle_period` | L2 ticks per data-service numerator; default `1` preserves integer widths. Unused whole-sector service does not accumulate |
+| `-gpgpu_l2_fill_port_sectors_per_cycle` | Independent fill-port width in 32-byte sector work packages when the multi-issue model is enabled |
+| `-gpgpu_l2_rop_delay_output_sectors_per_cycle` | Ready ROP-delay output service width per L2 instance and L2 tick; `1` preserves the legacy one-item cadence |
 | `-gpgpu_shmem_size` | Shared-memory capacity in bytes per SM |
 | `-gpgpu_shmem_per_block` | Default shared-memory limit in bytes per CTA |
 | `-gpgpu_adaptive_cache_config` | Enable runtime selection among supported shared-memory/L1 carveouts |
@@ -93,12 +110,20 @@ from a supported configuration rather than constructing one field at a time.
 | `-gpgpu_n_sub_partition_per_mchannel` | L2/memory subpartitions per memory channel |
 | `-gpgpu_mem_addr_mapping` | Mapping from physical-address bits to channels, banks, rows, columns, and bursts |
 | `-gpgpu_memory_partition_indexing` | Memory-partition indexing policy |
+| `-gpgpu_non_power2_l2_slice_mapping` | Direct per-channel policy for a non-power-of-two L2-slice count under consecutive indexing: `0` plain quotient/remainder, `1` deterministic stable rotation |
 | `-gpgpu_dram_buswidth`, `-gpgpu_dram_burst_length` | DRAM interface width and burst length |
 | `-gpgpu_dram_timing_opt` | DRAM bank, row, column, and bus timing |
+| `-gpgpu_l2_rop_latency` | Fixed L2/ROP frontend delay in core cycles |
+| `-dram_latency` | Fixed internal DRAM delay in core cycles, calibrated for the configuration's core clock |
 | `-network_mode`, `-inter_config_file` | Interconnect backend and its optional configuration file |
 
 The number of channels, subpartitions, L2 geometry, address mapping, and
 interconnect endpoints form one model and should not be scaled independently.
+
+Latency values expressed in core cycles are calibration parameters for the
+configuration's clock domains. Recalibrate them when overriding the core
+clock; the SM120 RTX 5090 DRAM latency, for example, assumes a 2.58 GHz core
+clock.
 
 ## FlashGPU-Sim-Specific Parameters
 
@@ -114,12 +139,12 @@ inherit another limit.
 | Option | Code default | SM90_H100 | SM120_RTX5090 | Meaning |
 | --- | ---: | ---: | ---: | --- |
 | `-gpgpu_num_tma_units` | `0` | `1` | `1` | TMA execution units per SM; `0` disables the TMA pipeline |
-| `-gpgpu_tma_max_inflight` | `0` | `384` | `384` | Maximum in-flight TMA memory requests per SM; `0` is unlimited |
-| `-gpgpu_tma_tx_quota` | `0` | `48` | `48` | Base in-flight request quota per TMA transaction; `0` is unlimited |
-| `-gpgpu_tma_quota_segment_bytes` | `0` | default | `8192` | Scale the transaction quota by `ceil(transaction_bytes / segment_bytes)`; `0` disables scaling |
+| `-gpgpu_tma_transaction_slots` | `0` | default | `16` | Active TMA transactions accepted from warps per SM; a full table backpressures new TMA copies, and `0` is unlimited |
+| `-gpgpu_tma_max_inflight` | `0` | `384` | `1024` | Aggregate in-flight TMA request capacity per SM, shared by all TMA sources; `0` is unlimited |
 | `-gpgpu_tma_request_granularity` | `32` | `128` | `32` | Bytes represented by one TMA memory request |
 | `-gpgpu_tma_request_width` | `1` | default | default | TMA memory requests issued per TMA unit per cycle |
 | `-gpgpu_tma_response_width` | `1` | default | default | TMA response tokens accepted per SM per cycle |
+| `-gpgpu_tma_issue_to_next_instruction_latency` | `0` | default | `168` | Issue-side warp occupancy after an active regular TMA copy; independent of asynchronous data completion |
 | `-gpgpu_tma_oob_l2_traffic` | `1` | `1` | `1` | Route out-of-bounds TMA fill traffic through L2 |
 | `-ptx_opcode_latency_tma` | `33` | `32` | `32` | TMA instruction latency in SM cycles |
 | `-ptx_opcode_initiation_tma` | `33` | `32` | `32` | Minimum TMA issue interval in SM cycles |
@@ -133,11 +158,35 @@ inherit another limit.
 | `-ptx_opcode_latency_cp_async_commit`, `-ptx_opcode_initiation_cp_async_commit` | `7` | `7` | `7` | `cp.async.commit_group` latency and issue interval |
 | `-ptx_opcode_latency_cp_async_wait`, `-ptx_opcode_initiation_cp_async_wait` | `5` | `5` | `5` | `cp.async.wait_group` and `wait_all` latency and issue interval |
 | `-gpgpu_num_tensormap_units` | `0` | default | `1` | TensorMap descriptor execution units per SM |
-| `-ptx_opcode_latency_tensormap`, `-ptx_opcode_initiation_tensormap` | `1,1,1` | default | `1,1,1` | Latency and issue interval for replace, `cp_fenceproxy`, and TensorMap fence operations |
+| `-ptx_opcode_latency_tensormap`, `-ptx_opcode_initiation_tensormap` | `1,1,1` | default | `11,448,79` / `1,1,1` | Latency and issue interval for replace, `cp_fenceproxy`, and TensorMap fence operations; RTX 5090 timing is charged only to the active leader fragment |
 | `-gpgpu_mbarrier_arrive_latency` | `0` | `29` | `29` | Delay before an arrive operation updates the barrier |
-| `-gpgpu_mbarrier_trywait_latency` | `0` | `32` | `32` | Warp-release latency for `mbarrier.try_wait` |
+| `-gpgpu_mbarrier_trywait_latency` | `32` | `32` | `34` | Deterministic no-hint maximum suspension for `mbarrier.try_wait`; an explicit PTX hint overrides the bound |
+| `-gpgpu_mbarrier_predicate_latency` | `0` | default | `34` | Minimum issue-to-predicate-ready latency for no-hint `mbarrier.try_wait` |
+| `-gpgpu_mbarrier_phase_wakeup_latency` | `0` | default | default | Delay from a notified phase transition to a suspended successful `mbarrier.try_wait` resuming |
+| `-gpgpu_barrier_release_latency` | `0` | default | `20` | Delay from CTA `bar.sync` satisfaction to warp release |
+| `-gpgpu_shmem_load_min_dispatch_cycles` | `1` | default | `2` | Minimum ordinary shared-load dispatch service time per warp instruction; vector accesses still count every scalar element |
+| `-gpgpu_shmem_load_issue_interval` | `0` | default | `4` | Minimum issue-to-issue recurrence for ordinary shared loads from one warp; other instruction classes remain issuable |
+| `-gpgpu_shmem_store_min_dispatch_cycles` | `1` | default | `2` | Minimum aggregate ordinary shared-store dispatch service time per warp instruction |
+| `-gpgpu_shmem_store_issue_interval` | `0` | default | `4` | Minimum issue-to-issue recurrence for ordinary shared stores from one warp; other instruction classes remain issuable |
+| `-gpgpu_mio_issue_interval` | `0` | default | `2` | Aggregate service interval across one SM for instruction classes included in the simulator's MIO model |
+| `-gpgpu_mio_issue_queue_depth` | `0` | default | `16` | Modeled frontend run-ahead capacity for aggregate MIO service; `0` selects a strict issue gate |
 | `-gpgpu_shmem_per_block_optin` | `0` | default | `101376` | Opt-in shared-memory limit per CTA; `0` inherits `-gpgpu_shmem_per_block` |
 | `-gpgpu_max_dynamic_smem_prefer_occupancy_carveout` | `0` | `1` | default | Model the driver selecting an occupancy-oriented shared-memory/L1 carveout when no explicit preference is supplied |
+
+### Scalar Predicate Execution
+
+| Option | Code default | SM90_H100 | SM100_B200 | SM120_RTX5090 | Meaning |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `-ptx_opcode_latency_predicate` | `0` | default | `5` | `5` | Result latency for SETP and SELP; `0` preserves the legacy one-cycle ALU dependency behavior |
+| `-gpgpu_alu_scoreboard_forwarding` | `0` | default | `1` | `1` | Make ordinary ALU dependency readiness follow configured opcode latency while preserving physical pipeline and writeback timing |
+
+With ALU scoreboard forwarding enabled, a producer admitted to its execution
+unit at cycle `E`, issued at cycle `I`, and configured with latency `L` becomes
+dependency-ready at `max(I + L, E + max(L - 2, 0))`. Additional collector or
+execution-queue delays remain visible. The physical pipeline and writeback run
+to completion, and producer identities protect younger writes from older
+completion events. Memory, tensor-core, and asynchronous barrier results are
+excluded.
 
 ### Matrix Execution
 
@@ -146,11 +195,19 @@ inherit another limit.
 > order: `m16n8k16.f16`, `m16n8k8.tf32`, `m16n8k32.int8`, `m16n8k8.f16`,
 > `m16n8k8.bf16`, `m16n8k4.tf32`, and `m16n8k16.int8`.
 
-| Option | Code default | SM90_H100 | SM120_RTX5090 | Meaning |
-| --- | ---: | ---: | ---: | --- |
-| `-ptx_opcode_latency_tensor` | `64` | `22,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA result latency by shape and type |
-| `-ptx_opcode_initiation_tensor` | `64` | `6,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA issue interval by shape and type |
-| `-gpgpu_cta_load_balance` | `0` | `1` | `1` | Cap CTAs per SM for uniform kernels using `ceil(total_ctas / total_sms)` |
+| Option | Code default | SM90_H100 | SM100_B200 | SM120_RTX5090 | Meaning |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `-ptx_opcode_latency_tensor` | `64` | `22,32,19,32,32,32,19` | `34,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA result latency by shape and type |
+| `-ptx_opcode_initiation_tensor` | `64` | `6,32,19,32,32,32,19` | `34,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA issue interval by shape and type |
+| `-gpgpu_cta_load_balance` | `0` | `1` | `1` | `1` | Cap CTAs per SM for uniform kernels using `ceil(total_ctas / total_sms)` |
+| `-gpgpu_cta_replacement_latency` | `0` | default | `1200` | default | Per-SM hardware CTA slot transition after resource release; a never-used slot is immediately available and slots on different SMs transition in parallel |
+| `-gpgpu_ldmatrix_min_dispatch_cycles` | `1` | `4` | `4` | `4` | Minimum LDMATRIX dispatch service time per warp instruction; the decoded x1/x2/x4 collective width still applies when larger |
+
+`ldmatrix` and `stmatrix` execute through the shared-memory LD/ST path.
+`-gpgpu_ldmatrix_min_dispatch_cycles` sets the LDMATRIX dispatch lower bound;
+the decoded aligned `.x1`, `.x2`, or `.x4` collective width may require more
+cycles. STMATRIX uses its decoded aligned collective width and is unaffected
+by this option.
 
 The public SM90 configuration also models asynchronous WGMMA execution. SS
 uses shared-memory operands for A and B; RS uses registers for A and shared
@@ -182,18 +239,24 @@ the normal operand-collector read budget:
 
 ### PTX Transformation
 
-| Option | Code default | SM90_H100 | SM120_RTX5090 | Meaning |
-| --- | ---: | ---: | ---: | --- |
-| `-gpgpu_ptx_register_allocator` | `0` | `1` | `1` | Enable conservative PTX virtual-register aliasing |
-| `-gpgpu_ptx_register_allocator_stats` | `0` | `0` | `0` | Print register-allocation statistics |
-| `-gpgpu_ptx_reorder` | `0` | `1` | `0` | Enable conservative PTX instruction reordering |
-| `-gpgpu_ptx_reorder_sass_guided` | `0` | `0` | `0` | Guide PTX reordering with auto-extracted SASS/PTX-line anchors |
+| Option | Code default | SM90_H100 | SM100_B200 | SM120_RTX5090 | Meaning |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `-gpgpu_ptx_register_allocator` | `0` | `1` | `0` | `1` | Enable conservative PTX virtual-register aliasing |
+| `-gpgpu_ptx_register_allocator_stats` | `0` | `0` | `0` | `0` | Print register-allocation statistics |
+| `-gpgpu_ptx_reorder` | `0` | `1` | `1` | `1` | Enable conservative PTX instruction reordering |
+| `-gpgpu_ptx_reorder_sass_guided` | `0` | `1` | `1` | `1` | Guide PTX reordering with auto-extracted SASS/PTX-line anchors |
 
 When SASS-guided reordering is enabled, FlashGPU-Sim loads the single
-`*.rules` file in the run directory. The supplied configurations include
-`sass_primary_hints.rules`, but the feature remains opt-in.
+`*.rules` file in the run directory. The supplied SM90, SM100, and SM120
+configurations include `sass_primary_hints.rules` and enable the feature.
+Functions without a rule-covered PTX opcode use conservative plain reordering.
+A function that contains covered PTX but has no mapped SASS anchor fails
+explicitly. When at least one anchor maps, covered PTX without guide evidence
+keeps its conservative crossing constraints. Repeated copies of the same
+primary SASS opcode stay unanchored because they do not identify a unique
+position; missing candidates or different primary opcodes remain fatal.
 
-### Memory-System Calibration
+### Memory-System Controls
 
 These controls describe architecture-specific memory locality and local
 interconnect behavior. They should be changed together with the corresponding
@@ -208,6 +271,61 @@ topology and address mapping.
 | `-icnt_use_voq` | `0` | `1` | default | Use virtual output queues in the local crossbar |
 | `-icnt_multi_grant_request` | `0` | default | `1` | Permit one request-network input to grant multiple outputs per cycle |
 | `-icnt_multi_grant_reply` | `0` | default | `1` | Permit one reply-network input to grant multiple outputs per cycle |
+
+The B200 transport model uses the following independent integer service widths.
+For the sector-service options, `0` preserves the legacy packet-per-tick path;
+a positive value is a 32-byte sector budget for the stated local tick. The
+LD/ST request option follows the same convention: `0` preserves the
+legacy LD/ST-cycle path, while a positive value counts coalescer children.
+Under B200's `coalesce_arch=100`, every such child is one 32-byte sector.
+
+The B200 configurations leave `-gpgpu_mem_unit_ports` at its code default of
+one. Raising that older option repeats the complete LD/ST-unit cycle, including
+request generation, shared-memory and L1 cache activity, response handling,
+and writeback. The dedicated request width below drains multiple children only
+for global/local operations which already bypass L1D (`.cg`, no L1D,
+or the existing global skip-L1 policy); it does not repeat or widen an L1D
+access. These 32-byte `m_accessq` entries are internal sector children: one
+physical L2 request may cover one to four sectors of the same 128-byte line, so
+the model does not claim that each child is a distinct physical request.
+
+The dedicated LD/ST response width applies a sector budget only to
+global/local response staging and packet retirement. The final sector enqueues
+one instruction-level RF/scoreboard completion through the legacy writeback
+arbiter; shared, texture, constant, L1D, and writeback behavior keep their
+legacy cadence.
+
+TMA and ordinary `cp.async` keep their existing local producer and consumer
+limits rather than borrowing the LD/ST width. B200 makes their
+32-byte request granularity and width of four explicit, so either type can use
+the complete four-sector shared transport budget when it runs alone. A mixed
+response stream still shares the single cluster-dispatch budget shown below.
+`-gpgpu_tma_request_bytes_per_cycle` remains at its code default of `0`, which
+disables the additional byte-credit limiter instead of restricting service.
+
+| Option | Code default | SM100_B200 | Meaning |
+| --- | ---: | ---: | --- |
+| `-icnt_request_input_sectors_per_cycle` | `0` | `4` | Request sectors per local-xbar input and ICNT tick |
+| `-icnt_request_output_sectors_per_cycle` | `0` | `4` | Request sectors per local-xbar output and ICNT tick |
+| `-gpgpu_l2_request_ingress_sectors_per_cycle` | `0` | `4` | Request sectors entering each memory subpartition and L2 tick |
+| `-gpgpu_l2_rop_delay_output_sectors_per_cycle` | `1` | `3` | Ready 32-byte sector children leaving each ROP-delay queue per L2 instance and L2 tick |
+| `-gpgpu_l2_response_egress_sectors_per_cycle` | `0` | `4` | Response sectors leaving each memory subpartition and ICNT tick |
+| `-icnt_reply_input_sectors_per_cycle` | `0` | `4` | Reply sectors per local-xbar input and ICNT tick |
+| `-icnt_reply_output_sectors_per_cycle` | `0` | `4` | Reply sectors per local-xbar output and ICNT tick |
+| `-gpgpu_cluster_response_ingress_sectors_per_cycle` | `0` | `4` | Reply sectors entering a cluster FIFO per target SM and core tick |
+| `-gpgpu_cluster_response_dispatch_sectors_per_cycle` | `0` | `4` | Shared response sectors dispatched per target SM and core tick |
+| `-gpgpu_ldst_request_width` | `0` | `4` | Internal 32-byte global/local bypass children injected per SM and core tick; `0` preserves the legacy LD/ST-cycle path |
+| `-gpgpu_ldst_response_sectors_per_cycle` | `0` | `4` | LD/ST response sectors advanced per SM and core tick |
+| `-gpgpu_cta_replacement_latency` | `0` | `1200` | Per-SM hardware CTA slot transition after resource release; a never-used slot is immediately available and different SMs transition in parallel |
+| `-gpgpu_tma_max_inflight` | `0` | `3200` | Issued TMA child requests awaiting response per SM; `0` is unlimited. The full-model value covers the uniform 800-cycle DRAM approximation's bandwidth-delay product while response service width independently limits steady-state bandwidth |
+| `-gpgpu_tma_request_granularity` | `32` | `32` | Bytes represented by one TMA request |
+| `-gpgpu_tma_request_width` | `1` | `4` | TMA requests issued per TMA unit and core tick |
+| `-gpgpu_tma_response_width` | `1` | `4` | TMA response tokens consumed per SM and core tick |
+| `-gpgpu_cp_async_request_granularity` | `32` | `32` | Bytes represented by one ordinary `cp.async` request |
+| `-gpgpu_cp_async_request_width` | `1` | `4` | Ordinary `cp.async` requests issued per SM and core tick |
+| `-gpgpu_cp_async_response_width` | `1` | `4` | Ordinary `cp.async` response tokens consumed per SM and core tick |
+| `-gpgpu_mbarrier_trywait_latency` | `32` | `32` | No-hint maximum suspension; an explicit PTX hint selects the deterministic hinted-wait policy |
+| `-gpgpu_mbarrier_phase_wakeup_latency` | `0` | `110` | Additional aggregate wakeup delay after a phase notification makes a suspended successful `mbarrier.try_wait` ready |
 
 ### Experimental Controls
 

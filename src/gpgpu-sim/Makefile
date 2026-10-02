@@ -71,7 +71,7 @@ OEXT = o
 
 OUTPUT_DIR=$(SIM_OBJ_FILES_DIR)/gpgpu-sim
 
-SRCS = $(shell ls *.cc) $(shell ls flash/*.cc) $(shell ls flash/mma/*.cc) $(shell ls flash/wgmma/*.cc) $(shell ls flash/ptx_sched/*.cc)
+SRCS = $(shell ls *.cc) $(shell ls flash/*.cc) $(shell ls flash/mma/*.cc) $(shell ls flash/wgmma/*.cc) $(shell ls flash/ptx_sched/*.cc) $(shell ls flash/tcgen05/*.cc) $(shell ls flash/instruction_cache/*.cc)
 
 ifeq ($(FLASH_GEM_FORGE),1)
 SRCS += $(shell ls flash/gem5/*.cc)
@@ -97,11 +97,17 @@ $(OUTPUT_DIR)/flash:
 $(OUTPUT_DIR)/flash/mma:
 	mkdir -p $(OUTPUT_DIR)/flash/mma
 
+$(OUTPUT_DIR)/flash/instruction_cache:
+	mkdir -p $(OUTPUT_DIR)/flash/instruction_cache
+
 $(OUTPUT_DIR)/flash/wgmma:
 	mkdir -p $(OUTPUT_DIR)/flash/wgmma
 
 $(OUTPUT_DIR)/flash/ptx_sched:
 	mkdir -p $(OUTPUT_DIR)/flash/ptx_sched
+
+$(OUTPUT_DIR)/flash/tcgen05:
+	mkdir -p $(OUTPUT_DIR)/flash/tcgen05
 
 $(OUTPUT_DIR)/flash/gem5:
 	mkdir -p $(OUTPUT_DIR)/flash/gem5
@@ -124,12 +130,19 @@ $(OUTPUT_DIR)/flash/%.$(OEXT): flash/%.cc | $(OUTPUT_DIR)/flash
 $(OUTPUT_DIR)/flash/mma/%.$(OEXT): flash/mma/%.cc | $(OUTPUT_DIR)/flash/mma
 	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
 
+$(OUTPUT_DIR)/flash/instruction_cache/%.$(OEXT): flash/instruction_cache/%.cc | $(OUTPUT_DIR)/flash/instruction_cache
+	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
+
 # Specific rule for flash/wgmma subdirectory
 $(OUTPUT_DIR)/flash/wgmma/%.$(OEXT): flash/wgmma/%.cc | $(OUTPUT_DIR)/flash/wgmma
 	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
 
 # Specific rule for flash/ptx_sched subdirectory
 $(OUTPUT_DIR)/flash/ptx_sched/%.$(OEXT): flash/ptx_sched/%.cc | $(OUTPUT_DIR)/flash/ptx_sched
+	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
+
+# Specific rule for flash/tcgen05 subdirectory
+$(OUTPUT_DIR)/flash/tcgen05/%.$(OEXT): flash/tcgen05/%.cc | $(OUTPUT_DIR)/flash/tcgen05
 	$(CPP) $(OPTFLAGS) $(CXXFLAGS) $(POWER_FLAGS) -o $@ -c $<
 
 # Specific rule for flash/gem5 subdirectory

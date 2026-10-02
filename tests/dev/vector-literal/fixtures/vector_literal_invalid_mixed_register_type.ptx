@@ -1,0 +1,13 @@
+.version 9.2
+.target sm_100a
+.address_size 64
+.visible .entry invalid()
+{
+  .local .align 8 .b8 buf[8];
+  .reg .f32 %f<2>;
+  .reg .b64 %rd<2>;
+  mov.u64 %rd1, buf;
+  mov.f32 %f1, 0f00000000;
+  st.local.v2.b32 [%rd1], {%f1, 0};
+  ret;
+}
