@@ -20,8 +20,9 @@ python3 scripts/run_cluster_noc_demo.py
 # optional comparator: python3 scripts/compare_h200_calibration.py
 ```
 
-Functional cluster / DSM / TMA tests belong on
-`SM120_RTX5090_REDUCED_CLUSTER4x4` (and 2x1 / 2x2), not this preset.
+Functional cluster / DSM / TMA cases skip on `SM120_RTX5090` (one SM per
+GPC, DSM off). This preset can run them. It is slow and is not a default
+CI config. See [`tests.md`](tests.md).
 
 ---
 

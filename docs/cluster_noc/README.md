@@ -66,9 +66,6 @@ in that GPC.
 |--------|----------|-----|
 | `SM120_RTX5090` | 170 × 1 | Default Blackwell; cluster knobs off |
 | `SM90_H100` | 132 × 1 | Hopper FA / WGMMA; cluster knobs off |
-| `SM120_RTX5090_REDUCED_CLUSTER2x1` | 2 × 1 | Fast peer smoke; fabric on |
-| `SM120_RTX5090_REDUCED_CLUSTER2x2` | 2 × 2 | Multi-cluster isolation; fabric on |
-| `SM120_RTX5090_REDUCED_CLUSTER4x4` | 4 × 4 | Primary functional cluster / DSM / TMA |
 | `SM90_H200_CLUSTER132` | 6×16 + 2×18 = 132 | Only shipped H200 product packing; fabric on |
 
 ---

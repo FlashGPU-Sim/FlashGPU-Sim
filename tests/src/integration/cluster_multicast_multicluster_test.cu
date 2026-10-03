@@ -13,7 +13,8 @@
 // replicate TMA load data across its SMs without data leaking across cluster
 // boundaries (issue-order cluster_group matching).
 //
-// Requires a multi-cluster config (e.g., SM120_RTX5090_REDUCED_CLUSTER2x2).
+// Requires at least two GPCs. Skips on SM120_RTX5090.
+// SM90_H200_CLUSTER132 can run it.
 //
 // Note: plain grid launches only — validates multi-cluster topology + the
 // simulator's TMA multicast model, not CUDA cooperative cluster launch APIs.

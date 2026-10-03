@@ -3,12 +3,12 @@
  #include <vector>
 
  // Each thread writes a deterministic value derived from its block and thread
- // indices. With 2 blocks and a 2-SM-per-cluster reduced config, this exercises
+ // indices. With 2 blocks on a GPC that has two SMs, this exercises
  // round-robin CTA issuance across the two cores in the simt_core_cluster.
  //
  // Topology / scheduling only: plain <<<N, threads>>> launches — not CUDA
- // Thread Block Clusters (no cudaLaunchKernelEx / __cluster_dims__). Prefer
- // SM120_RTX5090_REDUCED_CLUSTER2x1 when running this test.
+ // Thread Block Clusters (no cudaLaunchKernelEx / __cluster_dims__).
+ // SM90_H200_CLUSTER132 has multiple SMs per GPC. SM120_RTX5090 does not.
  __global__ void clusterBasicKernel(int* output) {
    int idx = blockIdx.x * blockDim.x + threadIdx.x;
    output[idx] = blockIdx.x * 1000 + threadIdx.x;

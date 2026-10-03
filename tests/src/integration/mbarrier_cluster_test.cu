@@ -3,8 +3,8 @@
 // Owner CTA inits a local mbarrier; peer CTA maps the barrier address with
 // mapa.u64 and performs arrive / try_wait remotely.
 //
-// Requires: multi-SM cluster + DSM fabric + mbarrier cluster enable
-//   SM120_RTX5090_REDUCED_CLUSTER2x1 / 2x2 / 4x4
+// Requires a GPC with at least two SMs, DSM on, and cluster mbarrier on.
+// Those cases skip on SM120_RTX5090. SM90_H200_CLUSTER132 can run them.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>

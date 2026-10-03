@@ -5,14 +5,13 @@
 // Use with GTEST_SKIP() when a test requires multi-SM clusters or multi-cluster
 // isolation and would hang or give false failures on the wrong config.
 //
-// Documented skip matrix (which tests skip on REDUCED / CLUSTER2x1 / 2x2 / 4x4):
+// Documented skip matrix:
 //   docs/cluster_noc/tests.md
 //   docs/cluster_noc/programming_model.md
 //
-// Naming: physical packing is CLUSTERmxn (m = n_cores_per_cluster,
-// n = n_clusters). TB cluster size is a launch attribute, not the config name.
-// Reduced m>2: SM120_RTX5090_REDUCED_CLUSTER4x4 (m=4, n=4).
-// Full-chip H200: SM90_H200_CLUSTER132.
+// Naming: physical packing is m SMs per GPC by n GPCs. TB cluster size is a
+// launch attribute. SM120_RTX5090 is 170x1 with DSM off, so multi-SM cases
+// skip there. SM90_H200_CLUSTER132 is the shipped config that can run them.
 //
 // Note: some negative tests (e.g. cluster size > physical m) use a manual
 // GTEST_SKIP when m is *too large*, not these LT macros.
@@ -130,7 +129,7 @@ inline void warn_topology_skip(const std::string &msg) {
       std::ostringstream __skip;                                               \
       __skip << "Requires -gpgpu_n_cores_per_cluster >= " << (min_cores)       \
              << " (got " << __topo.n_cores_per_cluster                         \
-             << "). Use SM120_RTX5090_REDUCED_CLUSTER2x1 / 4x4.";              \
+             << "). Use SM90_H200_CLUSTER132.";                            \
       ::flash_test::warn_topology_skip(__skip.str());                          \
       GTEST_SKIP() << __skip.str();                                            \
     }                                                                          \
@@ -143,7 +142,7 @@ inline void warn_topology_skip(const std::string &msg) {
     if (__topo.found_config && !__topo.dsm_enable) {                           \
       std::ostringstream __skip;                                               \
       __skip << "Requires -gpgpu_dsm_enable 1. "                               \
-                "Use SM120_RTX5090_REDUCED_CLUSTER2x1 / 2x2 / 4x4.";           \
+                "Use SM90_H200_CLUSTER132.";                                   \
       ::flash_test::warn_topology_skip(__skip.str());                          \
       GTEST_SKIP() << __skip.str();                                            \
     }                                                                          \
@@ -175,8 +174,7 @@ inline void warn_topology_skip(const std::string &msg) {
       std::ostringstream __skip;                                               \
       __skip << "Requires -gpgpu_n_clusters >= " << (min_clusters)             \
              << " (got " << __topo.n_clusters                                  \
-             << "). Use SM120_RTX5090_REDUCED_CLUSTER2x2 / 4x4 "               \
-                "(or similar).";                                               \
+             << "). Use SM90_H200_CLUSTER132.";                            \
       ::flash_test::warn_topology_skip(__skip.str());                          \
       GTEST_SKIP() << __skip.str();                                            \
     }                                                                          \

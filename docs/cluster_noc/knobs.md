@@ -65,13 +65,13 @@ Target extras:
 
 ## 2. Cluster / mbarrier knobs
 
-Master switch: `-gpgpu_dsm_enable` (default 0; **1** on SM120 reduced cluster
-configs and `SM90_H200_CLUSTER132`). Remote DSM ld/st/atom and remote
+Master switch: `-gpgpu_dsm_enable` (default 0; **1** on
+`SM90_H200_CLUSTER132`). Remote DSM ld/st/atom and remote
 mbarrier abort if this is 0.
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `-gpgpu_mbarrier_cluster_enable` | 0 | Remote mbarrier addresses. **1** on SM120 reduced cluster configs and `SM90_H200_CLUSTER132` |
+| `-gpgpu_mbarrier_cluster_enable` | 0 | Remote mbarrier addresses. **1** on `SM90_H200_CLUSTER132` |
 | `-gpgpu_cluster_hang_watchdog` | 8192 | Abort bare spin / mixed bar+try_wait. `0` = off. Env `FLASHGPU_CLUSTER_HANG_WATCHDOG`. Ignored unless DSM or remote mbarrier is on |
 
 ---
@@ -82,7 +82,7 @@ GX port formula: `routes = gx_planes * lanes_per_cpc`. GPCARB still grants at mo
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `-gpgpu_dsm_enable` | 0 (1 on SM120 reduced cluster configs and `SM90_H200_CLUSTER132`) | Cluster ld/st/atom and remote mbarrier use the intra-GPC fabric. 0 = those remote ops abort. |
+| `-gpgpu_dsm_enable` | 0 (1 on `SM90_H200_CLUSTER132`) | Cluster ld/st/atom and remote mbarrier use the intra-GPC fabric. 0 = those remote ops abort. |
 | `-gpgpu_shmem_bytes_per_cycle` | 0 (unlimited) | Per-SM SRAM service byte budget for local LSU and DSM ingress (two-phase grant). |
 | `-gpgpu_tma_multicast_latency` | **0** | Fixed cycles added before multicast `complete_tx`; functional fan-out only, with no NoC/fabric traffic or contention. |
 | `-gpgpu_dsm_flit_payload_bytes` | **32** | Payload bytes per grant. Alias **`-gpgpu_dsm_flit_bytes`**. Header unmodeled |

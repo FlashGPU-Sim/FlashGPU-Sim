@@ -13,24 +13,30 @@ point at the CUDA toolkit (`/usr/local/cuda` on the usual machine).
 
 ---
 
-## Functional cluster / DSM / TMA (SM120 reduced, fabric on)
+## Functional cluster / DSM / TMA
+
+Unit tests build their own topology. The active GPU config does not matter:
 
 ```bash
-./tests/run_tests.py -c SM120_RTX5090_REDUCED_CLUSTER2x1 run --arch sm120 --group unit \
+./tests/run_tests.py -c SM120_RTX5090 run --arch sm120 --group unit \
   --gtest-filter 'GpuTopology*:DsmFabric*:DsmEndpoint*:Transport*:SmemService*:ClusterHang*:TbClusterAddr*'
+```
 
-./tests/run_tests.py -c SM120_RTX5090_REDUCED_CLUSTER4x4 run --arch sm120 --group integration \
-  --gtest-filter '*ClusterLaunch*:*ClusterBasic*:*ClusterReal*:*TMACluster*:*TmaMulticast*:*DsmTest*:*MbarrierCluster*'
+Integration cases skip on `SM120_RTX5090` (one SM per GPC, DSM off), except
+the launch that must fail when the cluster is larger than the GPC. The
+shipped config that can run the rest is `SM90_H200_CLUSTER132`. That run is
+slow and is not default CI. Set `FLASHGPU_ALLOW_CC_MISMATCH=1` when the host
+GPU is not CC 9.0.
 
-./tests/run_tests.py -c SM120_RTX5090_REDUCED_CLUSTER2x2 run --arch sm120 --group integration \
-  --gtest-filter '*MultiCluster*'
+```bash
+./tests/run_tests.py -c SM90_H200_CLUSTER132 run --arch sm90 --group integration \
+  --gtest-filter '*ClusterLaunch*:*ClusterBasic*:*ClusterReal*:*TMACluster*:*TmaMulticast*:*DsmTest*:*MbarrierCluster*:*MultiCluster*'
 ```
 
 Existing-feature regression (WGMMA / FA / MMA) is the `flash` PR CI gate, not
 this list. See `tests/ci/run_ci_tests.sh` (`sm120-core`, `sm90-core`,
 `sm90-fa2`, `sm90-fa3`).
 
-H200 `SM90_H200_CLUSTER132` is optional and slow. Do not put it in default CI.
 Hetero leftover-SM packing is CLUSTER132-only.
 
 ---

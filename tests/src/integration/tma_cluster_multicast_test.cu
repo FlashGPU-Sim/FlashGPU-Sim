@@ -7,7 +7,7 @@
 #include "common/gpgpusim_config_topology.h"
 
 // TMA cluster multicast integration tests.
-// Prefer config SM120_RTX5090_REDUCED_CLUSTER2x1 / 2x2 / 4x4.
+// Multi-SM cases skip on SM120_RTX5090. SM90_H200_CLUSTER132 can run them.
 //
 // Peer .shared::cluster multicast requires co-residency: multi-block cluster
 // cases use cudaLaunchKernelEx + clusterDim. Ordinary <<<>>> launches no
@@ -1201,7 +1201,7 @@ TEST_F(TMAClusterOneProducerTest, OneProducerPeerConsumers) {
     ASSERT_EQ(cudaMemset(d_ready, 0, sizeof(int)), cudaSuccess);
 
     // Explicit TB-cluster launch so both CTAs co-reside on one physical
-    // cluster even under multi-cluster RR configs (e.g. REDUCED_CLUSTER2x2).
+    // cluster when several GPCs are active (SM90_H200_CLUSTER132).
     int num_blocks = NUM_BLOCKS;
     void *launch_args[] = {&d_src, &d_dst, &d_ready, &num_blocks};
     ASSERT_EQ(flash_test::launch_kernel_with_cluster(

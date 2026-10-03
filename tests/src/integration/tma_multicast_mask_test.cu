@@ -3,10 +3,8 @@
 // Real CUDA: selective fan-out is cluster-level only (not shared::cta).
 // Mask bit i selects TB-cluster rank i for both data and mbarrier complete_tx.
 //
-// Prefer configs with m >= 4: SM120_RTX5090_REDUCED_CLUSTER4x4
-//
-//   ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER4x4 run test \
-//       --target sm120 --group integration "*MulticastMask*"
+// Mask cases that use four ranks need at least four SMs in the GPC.
+// They skip on SM120_RTX5090. SM90_H200_CLUSTER132 can run them.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>

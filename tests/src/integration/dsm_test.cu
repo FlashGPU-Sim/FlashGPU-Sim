@@ -1,9 +1,7 @@
 // Distributed shared memory (DSM) functional tests for intra-cluster NoC.
 //
-// Prefer multi-SM cluster configs with fabric on:
-//   SM120_RTX5090_REDUCED_CLUSTER2x1 / 2x2 / 4x4
-//
-//   ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER4x4 test "*Dsm*"
+// Requires a GPC with at least two SMs and -gpgpu_dsm_enable 1.
+// Those cases skip on SM120_RTX5090. SM90_H200_CLUSTER132 can run them.
 //
 // Cross-rank coordination uses mbarrier (not bare smem spin-waits). Under
 // PTX functional-first simulation, spinning on peer smem before the peer has

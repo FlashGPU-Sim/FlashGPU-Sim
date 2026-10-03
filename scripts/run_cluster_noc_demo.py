@@ -6,8 +6,8 @@ Kernels live in the git-ignored calibration/ tree. Populate with:
 
     bash scripts/sync_calibration_kernels.sh
 
-Functional cluster / DSM / TMA tests: ./test/run_tests.sh on
-SM120_RTX5090_REDUCED_CLUSTER4x4 (or 2x1 / 2x2).
+Functional cluster / DSM / TMA tests: see docs/cluster_noc/tests.md.
+They skip on SM120_RTX5090 and can run on SM90_H200_CLUSTER132.
 """
 
 from __future__ import annotations

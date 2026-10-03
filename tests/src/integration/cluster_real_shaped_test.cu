@@ -5,9 +5,8 @@
 // the result. This is the in-tree stand-in for a Triton/FA cluster kernel:
 // no cluster-enabled Triton launcher exists under test/triton_trace/.
 //
-// Run on SM120 reduced cluster configs (fabric on):
-//   ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER4x4 run test \
-//     --target sm120 --group integration "ClusterRealShaped*"
+// Needs at least two SMs in the GPC and DSM on. Skips on SM120_RTX5090.
+// SM90_H200_CLUSTER132 can run it. See docs/cluster_noc/tests.md.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>

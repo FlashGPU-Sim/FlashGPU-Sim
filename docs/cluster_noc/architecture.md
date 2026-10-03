@@ -43,7 +43,7 @@ gpgpu_sim
 - `-gpgpu_num_sms_per_gpc` is the **enabled** SM count (CUDA-visible SMs).
 - Remaining slots are **PG'd / floorswept**: they occupy a slot index in `gpu_topology_t`, they do not run a `shader_core_ctx`, they do not inject DSM flits, they do not consume traffic-control eligibility.
 
-Example: reduced functional GPC with 4 enabled SMs and 1 CPC → 6 slots, 2 PG'd.
+Example: a GPC with 4 enabled SMs and 1 CPC has 6 slots, 2 of them PG'd.
 
 All SM ↔ GPC ↔ slot conversion goes through `gpu_topology_t`. **No** `sid / n_cores` division or modulo outside that class (floorsweeping is not a regular grid).
 

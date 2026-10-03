@@ -2,15 +2,9 @@
 //   cudaLaunchKernelExC, cudaFuncSetAttribute(RequiredCluster*),
 //   co-residency under multi-cluster configs, and ordinary <<<>>> still valid.
 //
-// Prefer configs:
-//   SM120_RTX5090_REDUCED_CLUSTER2x1  (m=2, n=1)
-//   SM120_RTX5090_REDUCED_CLUSTER2x2  (m=2, n=2)
-//   SM120_RTX5090_REDUCED_CLUSTER4x4  (m=4, n=4)  -- primary m>2 multi-cluster
-//
-// Run:
-//   ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x1 test "*ClusterLaunch*"
-//   ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER2x2 test "*ClusterLaunch*"
-//   ./test/run_tests.sh -c SM120_RTX5090_REDUCED_CLUSTER4x4 test "*ClusterLaunch*"
+// Multi-SM cases skip on SM120_RTX5090 (one SM per GPC, DSM off).
+// The shipped config that can run them is SM90_H200_CLUSTER132.
+// The case that requires exactly one SM per GPC runs on SM120_RTX5090.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -230,7 +224,7 @@ TEST_F(ClusterLaunchApiTest, ExLaunch_MultiClusterConfig_TwoCtasComplete) {
   cudaFree(d_ready);
 }
 
-// --- m>2 packing (REDUCED_CLUSTER4x4) ---
+// --- four CTAs in one thread-block cluster ---
 
 TEST_F(ClusterLaunchApiTest, ExLaunch_ClusterDim4_Succeeds) {
   // Functional check: TB cluster size 4 issues and all CTAs complete when

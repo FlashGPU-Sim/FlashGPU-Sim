@@ -186,31 +186,20 @@ hardware fact. Detail is in [`evidence.md`](evidence.md) and
 
 ## Tests
 
-Functional cluster, DSM, and TMA cases run on the reduced SM120 presets
-(fabric on). Default CI uses `SM120_RTX5090`, which has one core per
-cluster, so those cases skip there. `SM90_H200_CLUSTER132` is optional and
-is not a default CI config.
+Default CI uses `SM120_RTX5090`, which has one core per cluster and DSM off,
+so the cluster integration cases skip there. The shipped config that can run
+them is `SM90_H200_CLUSTER132`. That run is optional and slow, and it is not
+a default CI config. Commands are in [`tests.md`](tests.md).
 
-```bash
-source ./setup_environment
+On commit `6e6e10ab` (2026-09-27) those cases were run on two SM120 presets
+that this branch no longer ships:
 
-./tests/run_tests.py -c SM120_RTX5090_REDUCED_CLUSTER4x4 run --arch sm120 --group integration \
-  --gtest-filter '*ClusterLaunch*:*ClusterBasic*:*ClusterReal*:*TMACluster*:*TmaMulticast*:*DsmTest*:*MbarrierCluster*'
-
-./tests/run_tests.py -c SM120_RTX5090_REDUCED_CLUSTER2x2 run --arch sm120 --group integration \
-  --gtest-filter '*MultiCluster*'
-```
-
-Suite list and skip macros: [`tests.md`](tests.md).
-
-On commit `6e6e10ab` (2026-09-27):
-
-| Config | Result |
+| Preset (removed) | Result |
 |--------|--------|
-| `SM120_RTX5090_REDUCED_CLUSTER4x4` | 66 tests, 62 passed, 4 skips |
-| `SM120_RTX5090_REDUCED_CLUSTER2x2` | 5 passed |
+| 4 SMs × 4 GPCs, fabric on | 66 tests, 62 passed, 4 skips |
+| 2 SMs × 2 GPCs, fabric on | 5 passed |
 
-The four skips are expected on that preset:
+The four skips are expected on the 4×4 preset:
 `ClusterLaunchApiTest.ExLaunch_ClusterLargerThanPhysical_Fails`,
 `ClusterLaunchApiTest.ExLaunch_HeteroGpc_ClusterDim2_ManyClustersSync`,
 `DsmTest.ScFenceWaitsForRemoteStore`, and
