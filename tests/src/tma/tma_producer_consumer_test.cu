@@ -72,12 +72,17 @@ protected:
 
     // Allocate device memory
     uint8_t *d_input = nullptr;
+    uint32_t *d_verified_data = nullptr;
     unsigned long long *d_output = nullptr;
 
     // Copy input data to device (cast to uint8_t)
     EXPECT_TRUE(cudaSafeMalloc((void **)&d_input, data_size_bytes));
     EXPECT_TRUE(cudaSafeMemcpy(d_input, h_input.data(), data_size_bytes,
                                cudaMemcpyHostToDevice));
+
+    EXPECT_TRUE(cudaSafeMalloc(reinterpret_cast<void **>(&d_verified_data),
+                               total_bytes));
+    EXPECT_EQ(cudaMemset(d_verified_data, 0, total_bytes), cudaSuccess);
 
     // Calculate shared memory size needed
     const size_t shared_mem_size = Config::stages * chunk_size_bytes;
@@ -96,9 +101,9 @@ protected:
                                sizeof(unsigned long long) * blocks));
 
     cp_bw_kernel<Config::stages, chunk_size_bytes, repeat,
-                 Config::num_producers, Config::num_consumers, Method>
+                 Config::num_producers, Config::num_consumers, Method, true>
         <<<blocks, threads_per_block, shared_mem_size>>>(d_input, d_output,
-                                                         total_bytes);
+                                                         total_bytes, d_verified_data);
 
     cudaError_t kernel_error = cudaGetLastError();
     EXPECT_EQ(kernel_error, cudaSuccess)
@@ -133,7 +138,16 @@ protected:
         << ", consumers=" << Config::num_consumers
         << ", chunk_size=" << Config::chunk_size;
 
+    std::vector<uint32_t> verified_data(num_elements);
+    EXPECT_TRUE(cudaSafeMemcpy(verified_data.data(), d_verified_data, total_bytes,
+                              cudaMemcpyDeviceToHost));
+    for (size_t word = 0; word < num_elements; ++word) {
+      EXPECT_EQ(verified_data[word], static_cast<uint32_t>(h_input[word]))
+          << "word=" << word << ", chunk=" << word / Config::chunk_size;
+    }
+
     // Cleanup
+    cudaSafeFree(d_verified_data);
     cudaSafeFree(d_input);
     cudaSafeFree(d_output);
 

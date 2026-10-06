@@ -40,7 +40,7 @@ tests = [
 arch = "sm90"
 tests = [
   { name = "forward-smoke", group = "fa3", profile = "smoke", gtest_filter = "Fa3PrefillFp16SmokeTest.*" },
-  { name = "fixed-forward", group = "fa3", profile = "smoke", gtest_filter = "Fa3FwdHdim128Fp16IntegrationTest.FixedForwardCase" },
+  { name = "fixed-forward", group = "fa3", profile = "smoke", gtest_filter = "Fa3FwdHdim128Fp16IntegrationTest.*" },
   { name = "backward-smoke", group = "fa3", profile = "smoke", gtest_filter = "Fa3PrefillFp16BackwardSmokeTest.*" },
   { name = "packgqa", group = "fa3", profile = "packgqa", gtest_filter = "Fa3FwdPackGqaFp16IntegrationTest.Smoke" },
 ]

@@ -223,6 +223,35 @@ TEST_F(Fa2PrefillFp16ConcurrencyTest, ShapeTableHas1ConcurrencyCase) {
 }
 #endif
 
+#if defined(FA2_PREFILL_GROUP_SMOKE)
+TEST_F(Fa2PrefillFp16SmokeTest, ReferenceRejectsNonfiniteOutputAndLse) {
+#ifndef __CUDA_ARCH__
+  std::vector<cutlass::half_t> q(4, cutlass::half_t(0.0f));
+  auto k = q;
+  std::vector<cutlass::half_t> v(4, cutlass::half_t(0.25f));
+  auto output = v;
+  std::vector<float> lse(1, 0.0f);
+  auto compare = [&]() {
+    return compute_fa2_reference_errors<4, false>(q, k, v, output, lse,
+                                                 1, 1, 1, 1);
+  };
+  EXPECT_EQ(compare().max_output_abs_error, 0.0f);
+  EXPECT_EQ(compare().max_lse_abs_error, 0.0f);
+  for (float value : {std::numeric_limits<float>::quiet_NaN(),
+                      std::numeric_limits<float>::infinity()}) {
+    output[2] = cutlass::half_t(value);
+    const auto bad_output = compare();
+    EXPECT_TRUE(std::isinf(bad_output.max_output_abs_error));
+    EXPECT_EQ(bad_output.max_output_abs_error_index, 2u);
+    output = v;
+    lse[0] = value;
+    EXPECT_TRUE(std::isinf(compare().max_lse_abs_error));
+    lse[0] = 0.0f;
+  }
+#endif
+}
+#endif
+
 #define FA2_PREFILL_TEST(name, batch, seqlen, heads, head_dim, causal) \
   TEST_F(Fa2PrefillFp16IntegrationTest, name) {                        \
     RunFa2PrefillCase(                                                 \

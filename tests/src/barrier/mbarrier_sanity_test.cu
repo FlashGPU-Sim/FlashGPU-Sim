@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -28,7 +29,6 @@ constexpr int kTmaTileElements = 16;
 constexpr int kTmaTileBytes = kTmaTileElements * static_cast<int>(sizeof(float));
 constexpr int kTmaScratchBytes = 256;
 constexpr uint32_t kCompletionWakeHintNs = 100000;
-constexpr uint32_t kCompletionWakeCycleLimit = 100000;
 
 // Capture existing simulator events without exposing simulator internals to
 // CUDA tests. Always restore stdout and the caller's tracing environment.
@@ -187,10 +187,8 @@ __global__ void mbarrier_hint_and_active_mask_kernel(uint32_t* output, uint32_t 
   if (threadIdx.x < 2) {
     bool value = threadIdx.x == 1;
     if (threadIdx.x == 0) {
-      const unsigned long long start = clock64();
-      value = mbarrier_try_wait_parity(&barrier, 0, hint_ns);
-      output[2] = static_cast<uint32_t>(clock64() - start);
-    }
+        value = mbarrier_try_wait_parity(&barrier, 0, hint_ns);
+      }
     output[threadIdx.x] = value ? 1u : 0u;
   }
 }
@@ -225,10 +223,8 @@ __global__ void mbarrier_completion_during_suspension_kernel(uint32_t* output) {
     consumer_started = 1;
     // The explicit bound is deliberately much longer than the producer's
     // delay. The producer's phase completion must wake the consumer early.
-    const unsigned long long start = clock64();
     output[0] =
         mbarrier_try_wait_parity(&barrier, 0, kCompletionWakeHintNs) ? 1u : 0u;
-    output[2] = static_cast<uint32_t>(clock64() - start);
   } else if (threadIdx.x == 32) {
     while (consumer_started == 0) {
     }
@@ -527,12 +523,26 @@ TEST_F(MBarrierSanityTest, CompletionDuringSuspension) {
   SynchronizeAndAssert();
   const std::string trace = capture.Finish();
 
-  const auto output = CopyOutput(3);
+  const auto output = CopyOutput(2);
   EXPECT_EQ(output[0], 1u)
       << "Completion during suspension should return true at a recheck";
   EXPECT_EQ(output[1], 1u)
       << "A producer warp must progress while the consumer warp sleeps";
   if (!flashgpu::test::running_on_native_gpu()) {
+    // Read the same run-directory config as the simulator. An omitted option
+    // retains the simulator's default of zero additional wakeup latency.
+    std::ifstream config("gpgpusim.config");
+    ASSERT_TRUE(config.is_open());
+    uint64_t phase_wakeup_latency = 0;
+    std::string line;
+    while (std::getline(config, line)) {
+      std::istringstream option(line.substr(0, line.find('#')));
+      std::string key;
+      if (option >> key && key == "-gpgpu_mbarrier_phase_wakeup_latency") {
+        ASSERT_TRUE(static_cast<bool>(option >> phase_wakeup_latency))
+            << "Invalid phase wakeup latency in gpgpusim.config";
+      }
+    }
     SCOPED_TRACE(trace);
     const auto sleeping = TraceEvents(trace, "state=sleeping next_recheck=");
     const auto notified = TraceEvents(trace, "event=phase_notification");
@@ -552,11 +562,10 @@ TEST_F(MBarrierSanityTest, CompletionDuringSuspension) {
     }
     EXPECT_LT(TraceNumber(completed[0], "cycle"),
               TraceNumber(completed[0], "deadline"));
-    EXPECT_LE(TraceNumber(completed[0], "cycle"),
+    EXPECT_LE(TraceNumber(rechecks[0], "cycle"),
               TraceNumber(notified[0], "cycle") + 1);
-    EXPECT_LT(output[2], kCompletionWakeCycleLimit)
-        << "The phase notification should wake the simulator well before the "
-           "explicit maximum wait";
+    EXPECT_EQ(TraceNumber(completed[0], "cycle"),
+              TraceNumber(rechecks[0], "cycle") + phase_wakeup_latency);
   }
 }
 

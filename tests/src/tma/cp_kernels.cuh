@@ -425,10 +425,11 @@ __device__ inline void cp_chunk(uint8_t *dst_slot, const uint8_t *src_chunk,
 
 // ---- cp Kernel with Multiple Producer Warps ----
 template <int Stages, int CHUNK_BYTES, int REPEAT, int NUM_PRODUCER_WARPS = 1,
-          int NUM_CONSUMER_WARPS = 1, CP_METHOD METHOD = CP_METHOD::CP_ASYNC>
+          int NUM_CONSUMER_WARPS = 1, CP_METHOD METHOD = CP_METHOD::CP_ASYNC,
+          bool VERIFY_DATA = false>
 __global__ void cp_bw_kernel(const uint8_t *__restrict__ src,
                              unsigned long long *__restrict__ sink,
-                             size_t total_bytes) {
+                             size_t total_bytes, uint32_t *verified_data = nullptr) {
   extern __shared__ __align__(16) uint8_t smem[];
 
   __shared__ unsigned long long fwd_bar[Stages];
@@ -599,6 +600,15 @@ __global__ void cp_bw_kernel(const uint8_t *__restrict__ src,
         auto value = *reinterpret_cast<const uint32_t *>(dst_slot);
         sum += value;
 
+        if constexpr (VERIFY_DATA) {
+          // Capture all words before the producer may reuse this slot.
+          const int chunk = (stage_idx * consumer_warp_chunk_idx_step +
+                             consumer_warp_chunk_idx_start) % total_chunks;
+          const uint32_t *words = reinterpret_cast<const uint32_t *>(dst_slot);
+          for (unsigned word = 0; word < CHUNK_BYTES / sizeof(uint32_t); ++word)
+            verified_data[chunk * (CHUNK_BYTES / sizeof(uint32_t)) + word] =
+                words[word];
+        }
         mbarrier_arrive(&bwd_bar[slot]);
       }
       // printf("block %d warp %d consumer_stages %d done.\n", blockIdx.x,

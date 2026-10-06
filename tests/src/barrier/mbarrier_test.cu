@@ -22,6 +22,7 @@ using flashgpu::test::ptx::mbarrier_arrive_count;
 using flashgpu::test::ptx::mbarrier_arrive_expect_tx;
 using flashgpu::test::ptx::mbarrier_init;
 using flashgpu::test::ptx::mbarrier_inval;
+using flashgpu::test::ptx::mbarrier_try_wait_parity;
 using flashgpu::test::ptx::mbarrier_wait_parity;
 
 // ============================================================================
@@ -479,9 +480,20 @@ __global__ void test_inval_thread_level(uint32_t *output) {
   }
   __syncwarp();
   
-  // Success marker
-  if (lane_id == 0) {
-    output[0] = 0xCAFEBABE;
+  // A completed barrier is at phase 1. Invalidation must let init create
+  // fresh phase-0 state, while barriers 1 and 3 retain their completed phase.
+  if (lane_id == 0 || lane_id == 2) {
+    mbarrier_init(&barriers[lane_id], 1);
+  }
+  __syncwarp();
+  if (lane_id < 4) {
+    output[lane_id] = mbarrier_try_wait_parity(&barriers[lane_id], 0, 0);
+  }
+  __syncwarp();
+  if (lane_id == 0 || lane_id == 2) {
+    mbarrier_arrive(&barriers[lane_id]);
+    mbarrier_wait_parity(&barriers[lane_id], 0);
+    output[4 + lane_id] = 1;
   }
 }
 
@@ -640,7 +652,12 @@ TEST_F(MBarrierThreadLevelTest, InvalThreadLevel) {
   ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
   
   auto output = getOutput();
-  EXPECT_EQ(output[0], 0xCAFEBABEu) << "Inval operations should complete";
+  EXPECT_EQ(output[0], 0u) << "Barrier 0 must start a fresh phase";
+  EXPECT_EQ(output[2], 0u) << "Barrier 2 must start a fresh phase";
+  EXPECT_EQ(output[1], 1u) << "Barrier 1 must remain completed";
+  EXPECT_EQ(output[3], 1u) << "Barrier 3 must remain completed";
+  EXPECT_EQ(output[4], 1u) << "Reinitialized barrier 0 must complete again";
+  EXPECT_EQ(output[6], 1u) << "Reinitialized barrier 2 must complete again";
 }
 
 // ============================================================================

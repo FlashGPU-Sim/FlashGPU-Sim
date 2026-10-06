@@ -17,6 +17,7 @@ sources = [
   "unit/mbarrier_retry_timing_test.cc",
   "unit/tma_issue_timing_test.cc",
   "unit/tma_reduction_test.cc",
+  "unit/trace_validation_test.cc",
 
   # Portable integration tests.
   "integration/address_operand_test.cu",
