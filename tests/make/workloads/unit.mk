@@ -40,6 +40,12 @@ $(OBJ_DIR)/sm120/unit/memory_transport_test.cc.o: \
 $(SRC_DIR)/gpgpu-sim/shader.h \
 $(SRC_DIR)/gpgpu-sim/mem_transport_budget.h
 
+$(OBJ_DIR)/sm120/unit/operand_collector_allocation_test.cc.o: \
+  INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
+$(OBJ_DIR)/sm120/unit/operand_collector_allocation_test.cc.o: \
+  $(SRC_DIR)/gpgpu-sim/shader.h $(SRC_DIR)/abstract_hardware_model.h \
+  $(UNIT_MK)
+
 $(OBJ_DIR)/sm100/unit/rop_delay_output_test.cc.o \
 $(OBJ_DIR)/sm120/unit/rop_delay_output_test.cc.o: \
 $(SRC_DIR)/gpgpu-sim/gpu-cache.h \

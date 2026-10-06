@@ -728,6 +728,7 @@ class swl_scheduler : public scheduler_unit {
 };
 
 class opndcoll_rfu_t {  // operand collector based register file unit
+  friend class OperandCollectorAllocationTest;
  public:
   // constructors
   opndcoll_rfu_t() {

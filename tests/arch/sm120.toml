@@ -12,6 +12,7 @@ sources = [
   "unit/local_interconnect_test.cc",
   "unit/memory_transport_test.cc",
   "unit/mshr_table_test.cc",
+  "unit/operand_collector_allocation_test.cc",
   "unit/register_view_reload_test.cc",
   "unit/mbarrier_retry_timing_test.cc",
   "unit/tma_issue_timing_test.cc",

@@ -7206,6 +7206,45 @@ void opndcoll_rfu_t::dispatch_ready_cu() {
 void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
   input_port_t &inp = m_in_ports[port_num];
   for (unsigned i = 0; i < inp.m_in.size(); i++) {
+    if (sub_core_model) {
+      // Collectors belong to individual schedulers. A full collector slice
+      // must not block another scheduler's ready instruction at this port.
+      collector_unit_t *selected_cu = NULL;
+      warp_inst_t **selected_inst = NULL;
+      for (unsigned j = 0; j < inp.m_cu_sets.size(); ++j) {
+        std::vector<collector_unit_t> &cu_set = m_cus[inp.m_cu_sets[j]];
+        assert(cu_set.size() % m_num_warp_scheds == 0 &&
+               cu_set.size() >= m_num_warp_scheds);
+        const unsigned cus_per_sched = cu_set.size() / m_num_warp_scheds;
+        for (unsigned sid = 0; sid < m_num_warp_scheds; ++sid) {
+          warp_inst_t **candidate = inp.m_in[i]->get_ready(true, sid);
+          if (candidate == NULL || (*candidate)->empty()) continue;
+
+          collector_unit_t *available_cu = NULL;
+          for (unsigned k = sid * cus_per_sched;
+               k < (sid + 1) * cus_per_sched; ++k) {
+            if (cu_set[k].is_free()) {
+              available_cu = &cu_set[k];
+              break;
+            }
+          }
+          if (available_cu != NULL &&
+              (selected_inst == NULL ||
+               (*candidate)->get_uid() < (*selected_inst)->get_uid())) {
+            selected_cu = available_cu;
+            selected_inst = candidate;
+          }
+        }
+        // Keep the input port's collector-set preference unchanged.
+        if (selected_cu != NULL) break;
+      }
+      if (selected_cu != NULL) {
+        const bool allocated = selected_cu->allocate(inp.m_in[i], inp.m_out[i]);
+        assert(allocated);
+        m_arbiter.add_read_requests(selected_cu);
+      }
+      continue;
+    }
     if ((*inp.m_in[i]).has_ready()) {
       // find a free cu
       for (unsigned j = 0; j < inp.m_cu_sets.size(); j++) {
@@ -7213,18 +7252,6 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
         bool allocated = false;
         unsigned cuLowerBound = 0;
         unsigned cuUpperBound = cu_set.size();
-        if (sub_core_model) {
-          // Sub core model only allocates on the subset of CUs assigned to the
-          // scheduler that issued
-          unsigned reg_id = (*inp.m_in[i]).get_ready_reg_id();
-          unsigned schd_id = (*inp.m_in[i]).get_schd_id(reg_id);
-          assert(cu_set.size() % m_num_warp_scheds == 0 &&
-                 cu_set.size() >= m_num_warp_scheds);
-          unsigned cusPerSched = cu_set.size() / m_num_warp_scheds;
-          cuLowerBound = schd_id * cusPerSched;
-          cuUpperBound = cuLowerBound + cusPerSched;
-          assert(0 <= cuLowerBound && cuUpperBound <= cu_set.size());
-        }
         for (unsigned k = cuLowerBound; k < cuUpperBound; k++) {
           if (cu_set[k].is_free()) {
             collector_unit_t *cu = &cu_set[k];
@@ -7367,8 +7394,10 @@ bool opndcoll_rfu_t::collector_unit_t::allocate(register_set *pipeline_reg_set,
   assert(m_not_ready.none());
   m_free = false;
   m_output_register = output_reg_set;
-  warp_inst_t **pipeline_reg = pipeline_reg_set->get_ready();
+  warp_inst_t **pipeline_reg =
+      pipeline_reg_set->get_ready(m_sub_core_model, m_reg_id);
   if ((pipeline_reg) and !((*pipeline_reg)->empty())) {
+    assert(!m_sub_core_model || (*pipeline_reg)->get_schd_id() == m_reg_id);
     m_warp_id = (*pipeline_reg)->warp_id();
     std::vector<int> prev_regs;  // remove duplicate regs within same instr
     for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
@@ -7390,7 +7419,7 @@ bool opndcoll_rfu_t::collector_unit_t::allocate(register_set *pipeline_reg_set,
         m_src_op[op] = op_t();
     }
     // move_warp(m_warp,*pipeline_reg);
-    pipeline_reg_set->move_out_to(m_warp);
+    pipeline_reg_set->move_out_to(m_sub_core_model, m_reg_id, m_warp);
     return true;
   }
   return false;
