@@ -18,7 +18,14 @@ starting points for simulation and architecture studies.
 - **Clock domains (MHz):** `1500:1700:1700:2617`
   (core:interconnect:L2:DRAM)
 
+The H100 L2 model represents 50 MiB with 160 service instances. This is a
+service/capacity abstraction. WGMMA register-file pressure uses traffic tokens
+sharing the operand-collector read budget; RF write bandwidth is not modeled
+separately.
+
 ### SM100_B200
+
+See the [B200 model notes](SM100_B200/README.md) for assumptions and limits.
 
 [`SM100_B200`](SM100_B200/gpgpusim.config) models a B200 GPU with:
 
@@ -31,14 +38,16 @@ starting points for simulation and architecture studies.
 
 ### SM120_RTX5090
 
+See the [RTX 5090 model notes](SM120_RTX5090/README.md) for assumptions and limits.
+
 [`SM120_RTX5090`](SM120_RTX5090/gpgpusim.config) models an RTX 5090 GPU with:
 
 - **Compute capability:** 12.0
-- **Resources:** 170 SMs, 16 memory channels, and 128 L2/memory subpartitions
+- **Resources:** 170 SMs, 16 memory channels, and 48 L2/memory subpartitions
 - **Timing models:** TMA, ordinary `cp.async`, `mbarrier`, MMA, and TensorMap
 - **PTX transformation:** Register allocation and SASS-guided conservative
   instruction reordering
-- **Clock domains (MHz):** `2580:2580:2580:14001`
+- **Clock domains (MHz):** `2580:2580:2317:14001`
   (core:interconnect:L2:DRAM)
 
 All three configuration directories include `sass_primary_hints.rules` and
@@ -162,7 +171,7 @@ inherit another limit.
 | `-gpgpu_mbarrier_arrive_latency` | `0` | `29` | `29` | Delay before an arrive operation updates the barrier |
 | `-gpgpu_mbarrier_trywait_latency` | `32` | `32` | `34` | Deterministic no-hint maximum suspension for `mbarrier.try_wait`; an explicit PTX hint overrides the bound |
 | `-gpgpu_mbarrier_predicate_latency` | `0` | default | `34` | Minimum issue-to-predicate-ready latency for no-hint `mbarrier.try_wait` |
-| `-gpgpu_mbarrier_phase_wakeup_latency` | `0` | default | default | Delay from a notified phase transition to a suspended successful `mbarrier.try_wait` resuming |
+| `-gpgpu_mbarrier_phase_wakeup_latency` | `0` | default | `110` | Delay from a notified phase transition to a suspended successful `mbarrier.try_wait` resuming |
 | `-gpgpu_barrier_release_latency` | `0` | default | `20` | Delay from CTA `bar.sync` satisfaction to warp release |
 | `-gpgpu_shmem_load_min_dispatch_cycles` | `1` | default | `2` | Minimum ordinary shared-load dispatch service time per warp instruction; vector accesses still count every scalar element |
 | `-gpgpu_shmem_load_issue_interval` | `0` | default | `4` | Minimum issue-to-issue recurrence for ordinary shared loads from one warp; other instruction classes remain issuable |
@@ -170,7 +179,7 @@ inherit another limit.
 | `-gpgpu_shmem_store_issue_interval` | `0` | default | `4` | Minimum issue-to-issue recurrence for ordinary shared stores from one warp; other instruction classes remain issuable |
 | `-gpgpu_mio_issue_interval` | `0` | default | `2` | Aggregate service interval across one SM for instruction classes included in the simulator's MIO model |
 | `-gpgpu_mio_issue_queue_depth` | `0` | default | `16` | Modeled frontend run-ahead capacity for aggregate MIO service; `0` selects a strict issue gate |
-| `-gpgpu_shmem_per_block_optin` | `0` | default | `101376` | Opt-in shared-memory limit per CTA; `0` inherits `-gpgpu_shmem_per_block` |
+| `-gpgpu_shmem_per_block_optin` | `0` | `232448` | `101376` | Opt-in shared-memory limit per CTA; `0` inherits `-gpgpu_shmem_per_block` |
 | `-gpgpu_max_dynamic_smem_prefer_occupancy_carveout` | `0` | `1` | default | Model the driver selecting an occupancy-oriented shared-memory/L1 carveout when no explicit preference is supplied |
 
 ### Scalar Predicate Execution
@@ -198,7 +207,7 @@ excluded.
 | Option | Code default | SM90_H100 | SM100_B200 | SM120_RTX5090 | Meaning |
 | --- | ---: | ---: | ---: | ---: | --- |
 | `-ptx_opcode_latency_tensor` | `64` | `22,32,19,32,32,32,19` | `34,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA result latency by shape and type |
-| `-ptx_opcode_initiation_tensor` | `64` | `6,32,19,32,32,32,19` | `34,32,19,32,32,32,19` | `34,32,16,32,32,32,16` | MMA issue interval by shape and type |
+| `-ptx_opcode_initiation_tensor` | `64` | `6,32,19,32,32,32,19` | `34,32,19,32,32,32,19` | `32,32,16,32,32,32,16` | MMA issue interval by shape and type |
 | `-gpgpu_cta_load_balance` | `0` | `1` | `1` | `1` | Cap CTAs per SM for uniform kernels using `ceil(total_ctas / total_sms)` |
 | `-gpgpu_cta_replacement_latency` | `0` | default | `1200` | default | Per-SM hardware CTA slot transition after resource release; a never-used slot is immediately available and slots on different SMs transition in parallel |
 | `-gpgpu_ldmatrix_min_dispatch_cycles` | `1` | `4` | `4` | `4` | Minimum LDMATRIX dispatch service time per warp instruction; the decoded x1/x2/x4 collective width still applies when larger |
@@ -268,7 +277,7 @@ topology and address mapping.
 | `-gpgpu_ipoly_channel_stable_l2slice` | `0` | `0` | default | Keep the decoded DRAM channel stable while hashing the L2 slice |
 | `-gpgpu_l2_partition_count` | `1` | `2` | default | Coarse L2/locality partitions; `1` disables remote-partition detection |
 | `-gpgpu_l2_partition_extra_latency` | `0` | `150` | default | Extra cycles for an access to a remote coarse L2 partition |
-| `-icnt_use_voq` | `0` | `1` | default | Use virtual output queues in the local crossbar |
+| `-icnt_use_voq` | `0` | `1` | `1` | Use virtual output queues in the local crossbar |
 | `-icnt_multi_grant_request` | `0` | default | `1` | Permit one request-network input to grant multiple outputs per cycle |
 | `-icnt_multi_grant_reply` | `0` | default | `1` | Permit one reply-network input to grant multiple outputs per cycle |
 
@@ -308,7 +317,7 @@ disables the additional byte-credit limiter instead of restricting service.
 | `-icnt_request_input_sectors_per_cycle` | `0` | `4` | Request sectors per local-xbar input and ICNT tick |
 | `-icnt_request_output_sectors_per_cycle` | `0` | `4` | Request sectors per local-xbar output and ICNT tick |
 | `-gpgpu_l2_request_ingress_sectors_per_cycle` | `0` | `4` | Request sectors entering each memory subpartition and L2 tick |
-| `-gpgpu_l2_rop_delay_output_sectors_per_cycle` | `1` | `3` | Ready 32-byte sector children leaving each ROP-delay queue per L2 instance and L2 tick |
+| `-gpgpu_l2_rop_delay_output_sectors_per_cycle` | `1` | `2` | Ready 32-byte sector children leaving each ROP-delay queue per L2 instance and L2 tick |
 | `-gpgpu_l2_response_egress_sectors_per_cycle` | `0` | `4` | Response sectors leaving each memory subpartition and ICNT tick |
 | `-icnt_reply_input_sectors_per_cycle` | `0` | `4` | Reply sectors per local-xbar input and ICNT tick |
 | `-icnt_reply_output_sectors_per_cycle` | `0` | `4` | Reply sectors per local-xbar output and ICNT tick |

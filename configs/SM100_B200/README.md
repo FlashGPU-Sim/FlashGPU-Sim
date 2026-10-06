@@ -34,22 +34,29 @@ timing, while initiation interval controls execution-unit issue spacing.
 | Instruction class | Latency | Initiation interval |
 | --- | --- | --- |
 | Scalar FP32 ADD / MUL / MAD | 4 | 1 |
-| FP32 MIN / MAX | 5 | 1 |
+| FP32 MIN / MAX | 5 | 2 |
+| 32-bit integer logic / shifts | 4 | 2 |
 | Packed `f32x2` arithmetic | Corresponding scalar FP latency | 2 |
 | Packed `cvt.f16x2.f32` | 4 | 2 |
 | EX2 | 18 | 8 |
 | Other instructions using generic SFU timing | 28 | 8 |
 | SETP / SELP | 5 | 1 |
 
-Packed conversion and predicate instructions use the INT execution path in
-this configuration. Packed arithmetic uses SP; EX2 uses SFU. No separate
-packed-conversion subpipeline is modeled.
+Scalar FP32 min/max, packed conversion, and predicate instructions use the
+INT execution path in this configuration. Packed arithmetic uses SP; EX2 uses
+SFU. No separate packed-conversion subpipeline is modeled.
 
 These values include Blackwell-family approximations informed by SM120
 measurements and SM100 compiler scheduling. They are not all direct B200
 measurements; compiler scheduling alone does not establish hardware latency.
 The common packed-arithmetic and conversion rules extend beyond individually
 measured variants, and FP min/max timing has limited independent validation.
+
+TCGen05 dense FP16 MMA service uses decoded `2*M*N*K` work at
+8192 FLOP/SM-cycle, with a one-cycle issue interval and a 160-cycle completion
+tail. The service rate is informed by B200 tensor-active counters; the tail
+is an effective completion overhead. The asynchronous queue is unlimited in
+this configuration, and its physical capacity is not modeled.
 
 ## Memory and synchronization model
 
@@ -82,6 +89,10 @@ timing approximations. They do not change the separate mbarrier/try-wait model.
 - The simple DRAM model is enabled. Its delay and service parameters model
   aggregate latency and bandwidth; detailed DRAM timing and physical bank
   mapping are not independently calibrated.
+  Service is 15/4 32-byte atoms per DRAM tick per controller, giving
+  7.67232 TB/s at the configured DRAM clock. Each controller permits 7220
+  outstanding requests, a capacity approximation covering the configured
+  fixed-delay bandwidth product with clock-quantization headroom.
 - Each L2 instance tracks up to 768 outstanding 32-byte sector misses. The
   12 instances per memory channel provide 9216 entries to cover the configured
   7220 DRAM in-flight requests and buffering. This is an effective capacity

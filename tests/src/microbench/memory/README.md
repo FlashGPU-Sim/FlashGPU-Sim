@@ -19,7 +19,7 @@ Build the B200 target with CUDA 12.8:
 make ARCH=sm_100a PTX_PROFILE=compute_100a hbm-bw
 ```
 
-Run the preserved 256 MiB calibration point:
+Run the default 256 MiB streaming workload:
 
 ```bash
 make ARCH=sm_100a PTX_PROFILE=compute_100a run-hbm-bw
@@ -44,16 +44,6 @@ must therefore be derived from simulated cycles or DRAM service statistics.
 The retained checksum, logical byte count, and 32-byte sector count remain the
 functional oracle in both environments.
 
-### Reference B200 simulation
-
-The preserved command was run against simulator source `c8666a3d` with the
-B200 normal clock tuple `1930:1930:1964:3996` MHz. The 256 MiB launch completed
-in 84,794 core cycles with a passing checksum and exactly 8,388,608 global-read
-32-byte sectors, all of which missed in L2.
-
-The complete launch averaged 6.109871 TB/s. Removing the configured fixed
-5,000-core-cycle launch delay gave a 6.492724 TB/s kernel-body average. The
-central service window, measured between 10% and 90% of cumulative DRAM issues,
-delivered 7.058447 TB/s. That central-window value describes sustained DRAM
-service after startup traffic has formed and before the final drain; it is a
-different scope from the complete-launch average.
+Compare complete-launch bandwidth separately from steady-state service bandwidth.
+A central service window excludes startup and drain; record the active clock
+domains and measurement window when comparing results.

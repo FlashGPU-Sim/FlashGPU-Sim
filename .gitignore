@@ -110,3 +110,8 @@ tests/build_sm120a/
 # Local Blackwell calibration planning
 /tests/dev/calibration-todo.md
 /tests/dev/calibration/
+
+# Generated parser and power-model reports
+/aerialvision/parser.out
+/src/accelwattch/results/
+/src/accelwattch/cacti/out_batch_test_result.csv
