@@ -43,7 +43,8 @@ Hetero leftover-SM packing is CLUSTER132-only.
 
 ## Topology skips
 
-Helpers: `tests/common/gpgpusim_config_topology.h`.
+Helpers: `tests/common/gpgpusim_config_topology.h`. Each skip prints
+`WARNING: skipped Suite.Test: ...` on stdout and stderr, then `GTEST_SKIP`.
 
 | Macro | Skip when |
 |-------|-----------|
@@ -76,8 +77,9 @@ TMA multicast is functional and has no DSM-fabric callsite
 
 ---
 
-## H200 calibration
+## H200 microbenchmarks
 
-See [`calibration.md`](calibration.md). Optional suite:
-`python3 scripts/run_cluster_noc_demo.py` (needs git-ignored `calibration/`
-kernels). Not default CI.
+See [`calibration.md`](calibration.md). Build them with
+`./tests/run_tests.py build --arch sm90 --group microbench --profile <name>`.
+Profiles: `dsm-bw`, `tma-bw`, `dsm-latency`, `tma-multicast`, `mbarrier-remote`,
+and gtest `tma-latency`. Not default CI.

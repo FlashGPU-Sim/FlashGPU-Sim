@@ -402,7 +402,8 @@ TEST_F(MbarrierClusterTest, DefaultTryWaitExpiresAndWakesEarly) {
       fields >> timeout_ns;
   }
   if (!getenv("FLASHGPU_SIM_CLOCK_FROM_PROP") || timeout_ns < 1000)
-    GTEST_SKIP() << "requires simulator bounded default timeout >= 1000 ns";
+    SKIP_WITH_REASON(
+        "requires simulator bounded default timeout >= 1000 ns");
   cudaDeviceProp prop{};
   ASSERT_EQ(cudaGetDeviceProperties(&prop, 0), cudaSuccess);
   const unsigned long long timeout_cycles =

@@ -107,7 +107,8 @@ TEST_F(ClusterLaunchApiTest, ExLaunch_ClusterLargerThanPhysical_Fails) {
   // On configs with n_cores_per_cluster == 1, cluster size 2 must fail.
   const auto topo = flash_test::read_gpgpusim_topology();
   if (!topo.found_config || topo.n_cores_per_cluster >= 2) {
-    GTEST_SKIP() << "Requires n_cores_per_cluster == 1 to test capacity error";
+    SKIP_WITH_REASON(
+        "Requires n_cores_per_cluster == 1 to test capacity error");
   }
 
   int *d_out = nullptr;
@@ -357,7 +358,7 @@ TEST_F(ClusterLaunchApiTest, ExLaunch_ClusterLargerThanPhysical_m_Fails) {
   // On any topology, product(clusterDim) > m must be rejected.
   const auto topo = flash_test::read_gpgpusim_topology();
   if (!topo.found_config) {
-    GTEST_SKIP() << "Could not parse gpgpusim.config topology";
+    SKIP_WITH_REASON("Could not parse gpgpusim.config topology");
   }
   const unsigned m = topo.n_cores_per_cluster;
   const unsigned bad = m + 1;

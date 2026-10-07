@@ -6,7 +6,7 @@ WORKLOAD_MANAGED_TEST_GROUPS_sm100 += microbench
 WORKLOAD_MANAGED_TEST_GROUPS_sm120 += microbench
 
 # Microbenchmark profiles retain their existing local source/build layouts.
-TEST_GROUP_PROFILES_sm90_microbench := cp-async mma tma wgmma
+TEST_GROUP_PROFILES_sm90_microbench := cp-async mma tma tma-latency wgmma dsm-bw tma-bw dsm-latency tma-multicast mbarrier-remote
 TEST_GROUP_BUILD_TARGET_sm90_microbench_cp-async := microbench-sm90-cp-async
 TEST_GROUP_BINARY_GROUP_sm90_microbench_cp-async := none
 TEST_GROUP_EXECUTOR_sm90_microbench_cp-async := build-only
@@ -19,6 +19,30 @@ TEST_GROUP_BUILD_TARGET_sm90_microbench_tma := microbench-sm90-tma
 TEST_GROUP_BINARY_GROUP_sm90_microbench_tma := none
 TEST_GROUP_EXECUTOR_sm90_microbench_tma := build-only
 TEST_GROUP_FILTER_sm90_microbench_tma := *
+TEST_GROUP_BUILD_TARGET_sm90_microbench_tma-latency := microbench-sm90-tma-latency
+TEST_GROUP_BINARY_GROUP_sm90_microbench_tma-latency := microbench-sm90-tma-latency
+TEST_GROUP_EXECUTOR_sm90_microbench_tma-latency := gtest-multi
+TEST_GROUP_FILTER_sm90_microbench_tma-latency := *
+TEST_GROUP_BUILD_TARGET_sm90_microbench_dsm-bw := microbench-sm90-dsm-bw
+TEST_GROUP_BINARY_GROUP_sm90_microbench_dsm-bw := none
+TEST_GROUP_EXECUTOR_sm90_microbench_dsm-bw := build-only
+TEST_GROUP_FILTER_sm90_microbench_dsm-bw := *
+TEST_GROUP_BUILD_TARGET_sm90_microbench_tma-bw := microbench-sm90-tma-bw
+TEST_GROUP_BINARY_GROUP_sm90_microbench_tma-bw := none
+TEST_GROUP_EXECUTOR_sm90_microbench_tma-bw := build-only
+TEST_GROUP_FILTER_sm90_microbench_tma-bw := *
+TEST_GROUP_BUILD_TARGET_sm90_microbench_dsm-latency := microbench-sm90-dsm-latency
+TEST_GROUP_BINARY_GROUP_sm90_microbench_dsm-latency := none
+TEST_GROUP_EXECUTOR_sm90_microbench_dsm-latency := build-only
+TEST_GROUP_FILTER_sm90_microbench_dsm-latency := *
+TEST_GROUP_BUILD_TARGET_sm90_microbench_tma-multicast := microbench-sm90-tma-multicast
+TEST_GROUP_BINARY_GROUP_sm90_microbench_tma-multicast := none
+TEST_GROUP_EXECUTOR_sm90_microbench_tma-multicast := build-only
+TEST_GROUP_FILTER_sm90_microbench_tma-multicast := *
+TEST_GROUP_BUILD_TARGET_sm90_microbench_mbarrier-remote := microbench-sm90-mbarrier-remote
+TEST_GROUP_BINARY_GROUP_sm90_microbench_mbarrier-remote := none
+TEST_GROUP_EXECUTOR_sm90_microbench_mbarrier-remote := build-only
+TEST_GROUP_FILTER_sm90_microbench_mbarrier-remote := *
 TEST_GROUP_BUILD_TARGET_sm90_microbench_wgmma := microbench-sm90-wgmma
 TEST_GROUP_BINARY_GROUP_sm90_microbench_wgmma := microbench-sm90-wgmma
 TEST_GROUP_EXECUTOR_sm90_microbench_wgmma := gtest-multi
@@ -44,9 +68,11 @@ MICROBENCH_SM120_GTEST_SOURCES = $(filter %_bench.cc,$(TEST_GROUP_SOURCES_sm120_
 MICROBENCH_SM90_GTEST_SOURCES = $(filter %_bench.cc,$(TEST_GROUP_SOURCES_sm90_microbench))
 MICROBENCH_SM120_MMA_SOURCES = $(filter $(TEST_SRC_DIR)/microbench/mma/%,$(MICROBENCH_SM120_GTEST_SOURCES))
 MICROBENCH_SM90_WGMMA_SOURCES = $(filter $(TEST_SRC_DIR)/microbench/wgmma/%,$(MICROBENCH_SM90_GTEST_SOURCES))
+MICROBENCH_SM90_TMA_LAT_SOURCES = $(filter $(TEST_SRC_DIR)/microbench/tma/%,$(MICROBENCH_SM90_GTEST_SOURCES))
 
 MICROBENCH_SM120_MMA_TARGETS = $(MICROBENCH_SM120_MMA_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/sm120/microbench/%_bench)
 MICROBENCH_SM90_WGMMA_TARGETS = $(MICROBENCH_SM90_WGMMA_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/sm90/microbench/%_bench)
+MICROBENCH_SM90_TMA_LAT_TARGETS = $(MICROBENCH_SM90_TMA_LAT_SOURCES:$(TEST_SRC_DIR)/microbench/%_bench.cc=$(BIN_DIR)/sm90/microbench/%_bench)
 MICROBENCH_SM120_GTEST_OBJECTS = $(MICROBENCH_SM120_GTEST_SOURCES:$(TEST_SRC_DIR)/microbench/%.cc=$(OBJ_DIR)/sm120/microbench/%.cu.o)
 MICROBENCH_SM90_GTEST_OBJECTS = $(MICROBENCH_SM90_GTEST_SOURCES:$(TEST_SRC_DIR)/microbench/%.cc=$(OBJ_DIR)/sm90/microbench/%.cu.o)
 MICROBENCH_SM120_ARCH_TAG = $(subst _,,$(ARCH_NVCC_TARGET_sm120))
@@ -54,15 +80,19 @@ MICROBENCH_SM90_ARCH_TAG = $(subst _,,$(ARCH_NVCC_TARGET_sm90))
 
 BINARY_GROUPS += \
 	microbench-sm120-mma \
-	microbench-sm90-wgmma
+	microbench-sm90-wgmma microbench-sm90-tma-latency
 BINARY_GROUP_BINARIES_microbench-sm120-mma = $(MICROBENCH_SM120_MMA_TARGETS)
 BINARY_GROUP_BINARIES_microbench-sm90-wgmma = $(MICROBENCH_SM90_WGMMA_TARGETS)
+BINARY_GROUP_BINARIES_microbench-sm90-tma-latency = $(MICROBENCH_SM90_TMA_LAT_TARGETS)
 
 .SECONDARY: $(MICROBENCH_SM120_GTEST_OBJECTS) $(MICROBENCH_SM90_GTEST_OBJECTS)
 
 .PHONY: microbench-sm120-mma \
 microbench-sm120-memory microbench-sm90-cp-async microbench-sm90-mma \
-microbench-sm90-tma microbench-sm90-wgmma microbench-sm100-tma
+microbench-sm90-tma microbench-sm90-tma-latency microbench-sm90-wgmma \
+microbench-sm100-tma \
+microbench-sm90-dsm-bw microbench-sm90-tma-bw microbench-sm90-dsm-latency \
+microbench-sm90-tma-multicast microbench-sm90-mbarrier-remote
 
 # The MMA group contains gtest timing probes plus standalone calibration binaries.
 microbench-sm120-mma: setup-gtest $(MICROBENCH_SM120_MMA_TARGETS)
@@ -95,6 +125,28 @@ microbench-sm90-tma:
 	$(MAKE) -C $(TEST_SRC_DIR)/microbench/tma \
 		ARCH=$(ARCH_NVCC_TARGET_sm90) PTX_PROFILE=$(ARCH_COMPUTE_TARGET_sm90) all
 
+microbench-sm90-tma-latency: setup-gtest $(MICROBENCH_SM90_TMA_LAT_TARGETS)
+
+microbench-sm90-dsm-bw:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/dsm_bw \
+		ARCH=$(ARCH_NVCC_TARGET_sm90) PTX_PROFILE=$(ARCH_COMPUTE_TARGET_sm90) all
+
+microbench-sm90-tma-bw:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/tma_bw \
+		ARCH=$(ARCH_NVCC_TARGET_sm90) PTX_PROFILE=$(ARCH_COMPUTE_TARGET_sm90) all
+
+microbench-sm90-dsm-latency:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/dsm_latency \
+		ARCH=$(ARCH_NVCC_TARGET_sm90) PTX_PROFILE=$(ARCH_COMPUTE_TARGET_sm90) all
+
+microbench-sm90-tma-multicast:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/tma_multicast \
+		ARCH=$(ARCH_NVCC_TARGET_sm90) PTX_PROFILE=$(ARCH_COMPUTE_TARGET_sm90) all
+
+microbench-sm90-mbarrier-remote:
+	$(MAKE) -C $(TEST_SRC_DIR)/microbench/mbarrier_remote \
+		ARCH=$(ARCH_NVCC_TARGET_sm90) PTX_PROFILE=$(ARCH_COMPUTE_TARGET_sm90) all
+
 microbench-sm90-wgmma: setup-gtest $(MICROBENCH_SM90_WGMMA_TARGETS)
 
 microbench-sm100-tma:
@@ -115,6 +167,13 @@ $(TOP_MAKEFILE) $(MICROBENCH_MK) arch/sm90.toml
 	$(NVCC) $(SM90_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) \
 		-c $< -o $@
 
+$(OBJ_DIR)/sm90/microbench/tma/%.cu.o: \
+$(TEST_SRC_DIR)/microbench/tma/%.cc $(TEST_HEADERS) \
+$(TOP_MAKEFILE) $(MICROBENCH_MK) arch/sm90.toml
+	@mkdir -p $(dir $@)
+	$(NVCC) $(SM90_NVCCFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) \
+		-c $< -o $@
+
 $(BIN_DIR)/sm120/microbench/%_bench: \
 $(OBJ_DIR)/sm120/microbench/%_bench.cu.o \
 $(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(MICROBENCH_MK) | $(BIN_DIR)
@@ -124,6 +183,13 @@ $(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(MICROBENCH_MK) | $(BIN_DIR)
 
 $(BIN_DIR)/sm90/microbench/wgmma/%_bench: \
 $(OBJ_DIR)/sm90/microbench/wgmma/%_bench.cu.o \
+$(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(MICROBENCH_MK) | $(BIN_DIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(filter-out $(TOP_MAKEFILE) $(MICROBENCH_MK),$^) \
+		-o $@ -lpthread $(CUDA_LIBS)
+
+$(BIN_DIR)/sm90/microbench/tma/%_bench: \
+$(OBJ_DIR)/sm90/microbench/tma/%_bench.cu.o \
 $(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(MICROBENCH_MK) | $(BIN_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out $(TOP_MAKEFILE) $(MICROBENCH_MK),$^) \

@@ -16,14 +16,11 @@
 //   - Subtract measured clock64 overhead from reported medians
 //
 // Run:
-//   # Real GPU (clean shell)
-//   ./run_tests.sh bench "TMALatency*"
+//   ./tests/run_tests.py run --arch sm90 --group microbench --profile tma-latency \
+//     -c SM90_H200_CLUSTER132 --gtest-filter 'TMALatencyTest.*'
 //
-//   # Simulator
-//   source setup.sh && source setup_environment
-//   ./run_tests.sh -c SM120_RTX5090_REDUCED bench "TMALatency*"
-//
-// CSV artifacts land in test/run/<config>/ when invoked via run_tests.sh.
+// Set FLASHGPU_ALLOW_CC_MISMATCH=1 when the host is not CC 9.0.
+// CSV artifacts land in tests/run/<config>/ when invoked via run_tests.py.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -36,7 +33,7 @@
 #include <string>
 #include <vector>
 
-#include "src/integration/cp_kernels.cuh"
+#include "src/tma/cp_kernels.cuh"
 
 namespace {
 

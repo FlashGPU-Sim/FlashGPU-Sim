@@ -13,8 +13,9 @@
 // launch attribute. SM120_RTX5090 is 170x1 with DSM off, so multi-SM cases
 // skip there. SM90_H200_CLUSTER132 is the shipped config that can run them.
 //
-// Note: some negative tests (e.g. cluster size > physical m) use a manual
-// GTEST_SKIP when m is *too large*, not these LT macros.
+// Every skip prints "WARNING: skipped Suite.Test: ..." on stdout and stderr
+// before GTEST_SKIP. GTEST's own [  SKIPPED ] line is easy to miss in a long
+// list. Negative tests call SKIP_WITH_REASON for the same line.
 
 #ifndef FLASH_TEST_GPGPUSIM_CONFIG_TOPOLOGY_H
 #define FLASH_TEST_GPGPUSIM_CONFIG_TOPOLOGY_H
@@ -104,8 +105,7 @@ inline GpgpuSimTopology read_gpgpusim_topology(
   return topo;
 }
 
-// Print to stdout and stderr so a topology skip is visible in suite logs
-// (GTEST_SKIP alone is easy to miss in a long [  SKIPPED ] list).
+// Print to stdout and stderr so a skip is visible in suite logs.
 inline void warn_topology_skip(const std::string &msg) {
   const char *suite = "?";
   const char *name = "?";
@@ -119,6 +119,14 @@ inline void warn_topology_skip(const std::string &msg) {
   std::fflush(stdout);
 }
 
+// Print the reason, then skip. message is a string expression.
+#define SKIP_WITH_REASON(message)                                              \
+  do {                                                                         \
+    const std::string __skip_msg = (message);                                  \
+    ::flash_test::warn_topology_skip(__skip_msg);                              \
+    GTEST_SKIP() << __skip_msg;                                                \
+  } while (0)
+
 // Skip if the active config has fewer than min_cores SMs per cluster.
 // One-producer cluster TMA and peer mbarrier complete require >= 2.
 #define SKIP_IF_N_CORES_PER_CLUSTER_LT(min_cores)                              \
@@ -130,8 +138,7 @@ inline void warn_topology_skip(const std::string &msg) {
       __skip << "Requires -gpgpu_n_cores_per_cluster >= " << (min_cores)       \
              << " (got " << __topo.n_cores_per_cluster                         \
              << "). Use SM90_H200_CLUSTER132.";                            \
-      ::flash_test::warn_topology_skip(__skip.str());                          \
-      GTEST_SKIP() << __skip.str();                                            \
+      SKIP_WITH_REASON(__skip.str());                                          \
     }                                                                          \
   } while (0)
 
@@ -143,8 +150,7 @@ inline void warn_topology_skip(const std::string &msg) {
       std::ostringstream __skip;                                               \
       __skip << "Requires -gpgpu_dsm_enable 1. "                               \
                 "Use SM90_H200_CLUSTER132.";                                   \
-      ::flash_test::warn_topology_skip(__skip.str());                          \
-      GTEST_SKIP() << __skip.str();                                            \
+      SKIP_WITH_REASON(__skip.str());                                          \
     }                                                                          \
   } while (0)
 #define SKIP_IF_NOT_CLUSTER_NOC() SKIP_IF_CLUSTER_NOC_OFF()
@@ -161,8 +167,7 @@ inline void warn_topology_skip(const std::string &msg) {
              << " sms=" << __topo.total_sms                                    \
              << " m=" << __topo.n_cores_per_cluster                            \
              << " n=" << __topo.n_clusters << ").";                            \
-      ::flash_test::warn_topology_skip(__skip.str());                          \
-      GTEST_SKIP() << __skip.str();                                            \
+      SKIP_WITH_REASON(__skip.str());                                          \
     }                                                                          \
   } while (0)
 
@@ -175,8 +180,7 @@ inline void warn_topology_skip(const std::string &msg) {
       __skip << "Requires -gpgpu_n_clusters >= " << (min_clusters)             \
              << " (got " << __topo.n_clusters                                  \
              << "). Use SM90_H200_CLUSTER132.";                            \
-      ::flash_test::warn_topology_skip(__skip.str());                          \
-      GTEST_SKIP() << __skip.str();                                            \
+      SKIP_WITH_REASON(__skip.str());                                          \
     }                                                                          \
   } while (0)
 

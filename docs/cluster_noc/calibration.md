@@ -9,16 +9,26 @@ fabric on, CUDA CC 9.0 occupancy 2048 threads / 32 blocks per SM. HBM geometry
 is datasheet-derived (94 simulated channels). IPOLY non-power-of-two mapping
 uses mode **3** (bijective rotation). H100 stays at mode **2**.
 
-Reproduce (slow, not default CI). Kernel snapshots live in git-ignored
-`calibration/` (populate with `bash scripts/sync_calibration_kernels.sh`;
-sibling `H200_profiling` / `NVIDIA-Hopper-Benchmark` trees are optional):
+Reproduce with the microbenchmark profiles (slow, not default CI). Build
+from the repository root:
 
 ```bash
-source ./setup_environment
-export OMP_NUM_THREADS=4
-python3 scripts/run_cluster_noc_demo.py
-# optional comparator: python3 scripts/compare_h200_calibration.py
+./tests/run_tests.py build --arch sm90 --group microbench --profile dsm-bw
+./tests/run_tests.py build --arch sm90 --group microbench --profile tma-bw
+./tests/run_tests.py build --arch sm90 --group microbench --profile dsm-latency
+./tests/run_tests.py build --arch sm90 --group microbench --profile tma-multicast
+./tests/run_tests.py build --arch sm90 --group microbench --profile mbarrier-remote
+./tests/run_tests.py run --arch sm90 --group microbench --profile tma-latency \
+  -c SM90_H200_CLUSTER132 --gtest-filter 'TMALatencyTest.*'
 ```
+
+`dsm-bw` and `tma-bw` are the `seanzw/random` suites (`4e8c4f91`).
+`dsm-latency` is the latency matrix, dependent remote-load round trip,
+store-visibility floor, and contention. `tma-multicast` is the size, skew,
+and fan-out sweep. `mbarrier-remote` is the remote arrive. The unicast /
+multicast / no-TMA GEMM comparison is not part of this runner. Set
+`FLASHGPU_ALLOW_CC_MISMATCH=1` when the host is not CC 9.0. Each bench README
+under `tests/src/microbench/` names its binary.
 
 Functional cluster / DSM / TMA cases skip on `SM120_RTX5090` (one SM per
 GPC, DSM off). This preset can run them. It is slow and is not a default

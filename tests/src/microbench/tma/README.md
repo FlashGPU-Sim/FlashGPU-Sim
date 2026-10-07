@@ -19,19 +19,19 @@ the same sequences to locate cycle undercount.
 ## Run
 
 ```bash
-cd test
+# Real GPU: a clean shell, setup_environment not sourced.
+./tests/run_tests.py run --arch sm90 --group microbench --profile tma-latency \
+  --gtest-filter 'TMALatencyTest.*'
 
-# --- Real GPU (clean shell, no setup_environment) ---
-./run_tests.sh bench "TMALatency*"
-
-# --- Simulator (source env first) ---
-source ../setup.sh && source ../setup_environment
-./run_tests.sh -c SM120_RTX5090_REDUCED bench "TMALatency*"
-# or full config (slower):
-./run_tests.sh -c SM120_RTX5090 bench "TMALatency*"
+# Simulator. DSM is off on SM90_H100. Use the H200 preset to measure the fabric.
+# Set FLASHGPU_ALLOW_CC_MISMATCH=1 when the host is not CC 9.0.
+./tests/run_tests.py run --arch sm90 --group microbench --profile tma-latency \
+  -c SM90_H200_CLUSTER132 --gtest-filter 'TMALatencyTest.*'
 ```
 
-CSVs are written under `test/run/<GPU_CONFIG>/` when using `run_tests.sh`.
+The three `.cu` benches in this directory stay on the build-only `tma` profile.
+`tma_latency_bench.cc` is the `tma-latency` profile. CSVs are written under
+`tests/run/<GPU_CONFIG>/`.
 
 ## How to interpret
 

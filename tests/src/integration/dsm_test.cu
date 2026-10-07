@@ -1002,7 +1002,8 @@ TEST_F(DsmTest, ScFenceWaitsForRemoteStore) {
     if (fields >> key && key == "-gpgpu_dsm_store_visibility_latency_cycles")
       fields >> floor;
   }
-  if (!floor) GTEST_SKIP() << "requires a nonzero DSM store visibility floor";
+  if (!floor)
+    SKIP_WITH_REASON("requires a nonzero DSM store visibility floor");
   unsigned long long *device = nullptr;
   ASSERT_EQ(cudaMalloc(&device, 2 * sizeof(*device)), cudaSuccess);
   void *args[] = {&device};

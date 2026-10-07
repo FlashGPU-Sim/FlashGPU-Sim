@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include "common/cluster_launch.h"
+#include "common/gpgpusim_config_topology.h"
 
 namespace {
 __global__ void event_clock_span(unsigned long long *span) {
@@ -19,7 +20,8 @@ __global__ void event_empty_kernel(unsigned long long *span) {
 
 TEST(CudaEventTiming, RepeatedSmallLaunchRetainsConfiguredDelay) {
   const char *expected = std::getenv("FLASHGPU_TEST_LAUNCH_LATENCY");
-  if (!expected) GTEST_SKIP() << "Set the simulator launch-delay expectation";
+  if (!expected)
+    SKIP_WITH_REASON("Set the simulator launch-delay expectation");
   const unsigned latency = std::strtoul(expected, nullptr, 10);
   ASSERT_GT(latency, 0u);
   cudaDeviceProp prop{};
