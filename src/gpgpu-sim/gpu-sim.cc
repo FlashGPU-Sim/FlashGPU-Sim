@@ -2964,7 +2964,7 @@ void sst_gpgpu_sim::SST_cycle() {
   // cout<<"Average pipeline duty cycle: "<<*average_pipeline_duty_cycle<<endl;
 
   if (g_single_step && ((gpu_sim_cycle + gpu_tot_sim_cycle) >= g_single_step)) {
-    asm("int $03");
+    raise(SIGTRAP);  // Debug breakpoint
   }
   gpu_sim_cycle++;
   if (g_interactive_debugger_enabled) gpgpu_debug();
