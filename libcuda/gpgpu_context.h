@@ -22,7 +22,6 @@ class gpgpu_context {
     g_ptx_cta_info_uid = 1;
     symbol_sm_next_uid = 1;
     function_info_sm_next_uid = 1;
-    debug_tensorcore = 0;
     ptx_register_allocator_enabled = false;
     ptx_register_allocator_stats = false;
     ptx_reorder_enabled = false;
@@ -48,7 +47,6 @@ class gpgpu_context {
   unsigned function_info_sm_next_uid;
   std::vector<ptx_instruction *>
       s_g_pc_to_insn;  // a direct mapping from PC to instruction
-  bool debug_tensorcore;
   bool ptx_register_allocator_enabled;
   bool ptx_register_allocator_stats;
   bool ptx_reorder_enabled;

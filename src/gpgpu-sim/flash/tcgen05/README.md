@@ -3,6 +3,13 @@
 This directory contains the functional and execution-driven TCGen05/TMEM
 support for Blackwell PTX execution.
 
+[`../tcgen05.cc`](../tcgen05.cc) implements PTX operand handling and functional
+execution, and adapts PTX instructions and shader configuration to timing
+operations. `src/cuda-sim/instructions.cc` retains the opcode entry wrappers.
+Descriptor interpretation, matrix computation, TMEM storage, and asynchronous
+timing remain in `descriptor`, `mma`, `tmem`, and `timing` respectively. Shader code
+owns the pipeline, barrier, and CTA lifecycle integration points.
+
 Current scope:
 
 - `cta_group::1` only.

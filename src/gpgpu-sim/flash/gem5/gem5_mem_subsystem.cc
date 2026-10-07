@@ -5,8 +5,7 @@
 
 #include "../../icnt_wrapper.h"
 
-#include <cstdlib>
-#include <cstring>
+#include "../../../trace.h"
 
 namespace flash_gpgpu_sim {
 
@@ -44,47 +43,6 @@ bool shouldSetGLC(mem_fetch *mf, bool gmem_skip_l1d) {
 
 bool shouldUseWriteThroughBypass(mem_fetch *mf) {
   return mf->get_access_type() == GLOBAL_ACC_W;
-}
-
-void gem5_mf_trace_emit(gem5::Tick tick, const char *event, mem_fetch *mf,
-                        unsigned input_port, unsigned output_port,
-                        size_t pending_queue) {
-  const char *path = std::getenv("FLASHGPU_GEM5_MF_TRACE_CSV");
-  if (path == nullptr || path[0] == '\0')
-    return;
-
-  const char *limit = std::getenv("FLASHGPU_GEM5_MF_TRACE_TICK_LIMIT");
-  if (limit != nullptr && limit[0] != '\0') {
-    unsigned long long limit_tick = std::strtoull(limit, nullptr, 0);
-    if (limit_tick != 0 && tick > limit_tick)
-      return;
-  }
-
-  static std::mutex trace_mutex;
-  static FILE *trace_file = nullptr;
-  static bool header_written = false;
-
-  std::lock_guard<std::mutex> lock(trace_mutex);
-  if (trace_file == nullptr) {
-    trace_file = std::strcmp(path, "-") == 0 ? stdout : std::fopen(path, "a");
-    if (trace_file == nullptr)
-      return;
-  }
-  if (!header_written) {
-    std::fprintf(trace_file,
-                 "tick,event,mf_uid,access_type,addr,access_size,data_size,"
-                 "is_write,input_port,output_port,pending_queue\n");
-    header_written = true;
-  }
-
-  std::fprintf(trace_file, "%llu,%s,%u,%d,0x%llx,%u,%u,%u,%u,%u,%zu\n",
-               static_cast<unsigned long long>(tick), event,
-               mf->get_request_uid(), static_cast<int>(mf->get_access_type()),
-               static_cast<unsigned long long>(mf->get_addr()),
-               mf->get_access_size(), mf->get_data_size(),
-               mf->get_is_write() ? 1 : 0, input_port, output_port,
-               pending_queue);
-  std::fflush(trace_file);
 }
 
 } // namespace
@@ -140,8 +98,8 @@ void Gem5MemSubsystem::pushMemFetch(GPGPUSimPortId input_port_id,
       new GPGPUSimSenderState(input_port_id, output_port_id, mf);
   {
     std::lock_guard<std::mutex> lock(push_mem_fetch_mutex);
-    gem5_mf_trace_emit(gem5::curTick(), "PUSH", mf, input_port_id,
-                       output_port_id, pending_mem_fetch_queue.size());
+    Trace::gem5_mem_fetch_event(gem5::curTick(), "PUSH", mf, input_port_id,
+                                output_port_id, pending_mem_fetch_queue.size());
     pending_mem_fetch_queue.push_back(sender_state);
   }
 }
@@ -155,10 +113,10 @@ void Gem5MemSubsystem::drainPendingMemFetches() {
     auto pkt = createGem5PacketForMemFetch(sender_state);
 
     auto requestor = getRequestorForGPUPort(sender_state->input_port_id);
-    gem5_mf_trace_emit(gem5::curTick(), "DRAIN_SEND", sender_state->mf,
-                       sender_state->input_port_id,
-                       sender_state->output_port_id,
-                       pending_mem_fetch_queue.size());
+    Trace::gem5_mem_fetch_event(gem5::curTick(), "DRAIN_SEND", sender_state->mf,
+                                sender_state->input_port_id,
+                                sender_state->output_port_id,
+                                pending_mem_fetch_queue.size());
     requestor->sendTimingReq(pkt);
   }
 }
@@ -243,8 +201,9 @@ mem_fetch *Gem5MemSubsystem::popMemFetch(GPGPUSimPortId output_port_id) {
   assert(sender_state->input_port_id == output_port_id);
 
   auto mf = sender_state->mf;
-  gem5_mf_trace_emit(gem5::curTick(), "POP", mf, sender_state->input_port_id,
-                     sender_state->output_port_id, 0);
+  Trace::gem5_mem_fetch_event(gem5::curTick(), "POP", mf,
+                              sender_state->input_port_id,
+                              sender_state->output_port_id, 0);
 
   // Update the mem_fetch type to reply before returning to GPGPUSim.
   // This converts READ_REQUEST -> READ_REPLY or WRITE_REQUEST -> WRITE_ACK.

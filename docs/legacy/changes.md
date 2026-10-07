@@ -33,7 +33,7 @@ Version 4.0.0 (development branch) versus 3.2.3
 1- Implemented bfe, d4pa, bfi and prmt instruction 
 2- Implemented wmma.load and wmma.store supporting all the layout configuration for TITANV GPU
 3- Implemented wmma.mma instructions supporting all of its 32 configuration for TITANV GPU
-4- debug support for wmma instruction using debug_tensorcore flag
+4- debug support for WMMA instructions (now managed by the MMA trace component)
 -GPU Core Performance Simulation:
 1- Fermi/Pascal coalescer: coalescing on 32-bytes sectors.
 2- Adding separate int and dp units pipeline.

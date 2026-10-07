@@ -157,10 +157,11 @@ typedef enum CUoutput_mode_enum {
 #include "../src/cuda-sim/ptx_ir.h"
 #include "../src/cuda-sim/ptx_loader.h"
 #include "../src/cuda-sim/ptx_parser.h"
+#include "../src/gpgpu-sim/flash/tensormap.h"
 #include "../src/gpgpu-sim/gpu-sim.h"
 #include "../src/gpgpusim_entrypoint.h"
 #include "../src/stream_manager.h"
-#include "../src/gpgpu-sim/flash/tensormap.h"
+#include "../src/trace.h"
 #include "cuda_api_object.h"
 #include "gpgpu_context.h"
 
@@ -995,14 +996,6 @@ void cudaRegisterVarInternal(
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  // printf(
-  //     "GPGPU-Sim PTX: __cudaRegisterVar: hostVar = %p; deviceAddress = %s; "
-  //     "deviceName = %s\n",
-  //     hostVar, deviceAddress, deviceName);
-  // printf(
-  //     "GPGPU-Sim PTX: __cudaRegisterVar: Registering const memory space of %d "
-  //     "bytes\n",
-  //     size);
   if (GPGPUSim_Context(ctx)
           ->get_device()
           ->get_gpgpu()
@@ -2741,7 +2734,6 @@ void SST_receive_mem_reply(unsigned core_id, void *mem_req) {
   CUctx_st *context = GPGPUSim_Context(GPGPU_Context());
   static_cast<sst_gpgpu_sim *>(context->get_device()->get_gpgpu())
       ->SST_receive_mem_reply(core_id, mem_req);
-  // printf("GPGPU-sim: Recived Request\n");
 }
 
 bool SST_gpu_core_cycle() { return SST_Cycle(); }
@@ -3505,10 +3497,6 @@ void cuda_runtime_api::extract_ptx_files_using_cuobjdump_internal(
     CUctx_st *context, std::string &app_binary) {
   char command[2048];
   char *pytorch_bin = getenv("PYTORCH_BIN");
-  const char *ptx_debug_env = getenv("GPGPUSIM_PTX_DEBUG");
-  const bool ptx_debug =
-      ptx_debug_env != NULL && ptx_debug_env[0] != '\0' &&
-      strcmp(ptx_debug_env, "0") != 0;
 
   char ptx_list_file_name[1024];
   snprintf(ptx_list_file_name, 1024, "_cuobjdump_list_ptx_XXXXXX");
@@ -3525,13 +3513,15 @@ void cuda_runtime_api::extract_ptx_files_using_cuobjdump_internal(
            "$CUDA_INSTALL_PATH/bin/cuobjdump -lptx %s  | cut -d \":\" -f 2 | "
            "awk '{$1=$1}1' > %s",
            app_binary.c_str(), ptx_list_file_name);
-  if (ptx_debug) {
+  if (GPTRACE(PTX_IR)) {
     char cwd_buf[4096];
-    const char *cwd =
+    [[maybe_unused]] const char *cwd =
         getcwd(cwd_buf, sizeof(cwd_buf)) ? cwd_buf : "<getcwd failed>";
-    printf("GPGPU-Sim PTX DEBUG: extract cwd=%s app_binary=%s list_file=%s\n",
-           cwd, app_binary.c_str(), ptx_list_file_name);
-    printf("GPGPU-Sim PTX DEBUG: extract command=%s\n", command);
+    GPPRINTF_GPU(context->get_device()->get_gpgpu(), PTX_IR,
+                 "PTX load: extract cwd=%s app_binary=%s list_file=%s\n", cwd,
+                 app_binary.c_str(), ptx_list_file_name);
+    GPPRINTF_GPU(context->get_device()->get_gpgpu(), PTX_IR,
+                 "PTX load: extract command=%s\n", command);
   }
   if (system(command) != 0) {
     printf("WARNING: Failed to execute cuobjdump to get list of ptx files \n");
@@ -4133,29 +4123,31 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
   const char *selected_ptx_override = getenv("GPGPUSIM_SELECTED_PTX_OVERRIDE");
   const bool use_selected_ptx_override =
       selected_ptx_override != NULL && strlen(selected_ptx_override) != 0;
-  const char *ptx_debug_env = getenv("GPGPUSIM_PTX_DEBUG");
-  const bool ptx_debug =
-      ptx_debug_env != NULL && ptx_debug_env[0] != '\0' &&
-      strcmp(ptx_debug_env, "0") != 0;
-  if (ptx_debug) {
+  if (GPTRACE(PTX_IR)) {
     char cwd_buf[4096];
-    const char *cwd =
+    [[maybe_unused]] const char *cwd =
         getcwd(cwd_buf, sizeof(cwd_buf)) ? cwd_buf : "<getcwd failed>";
-    printf("GPGPU-Sim PTX DEBUG: selected-file path cwd=%s fname=%s handle=%u\n",
-           cwd, fname.c_str(), handle);
-    printf("GPGPU-Sim PTX DEBUG: env GPGPUSIM_SELECTED_PTX_OVERRIDE=%s\n",
-           selected_ptx_override ? selected_ptx_override : "<unset>");
-    printf("GPGPU-Sim PTX DEBUG: env PTX_SIM_USE_PTX_FILE=%s\n",
-           getenv("PTX_SIM_USE_PTX_FILE") ? getenv("PTX_SIM_USE_PTX_FILE")
-                                          : "<unset>");
-    printf("GPGPU-Sim PTX DEBUG: env PTX_SIM_KERNELFILE=%s\n",
-           getenv("PTX_SIM_KERNELFILE") ? getenv("PTX_SIM_KERNELFILE")
-                                        : "<unset>");
-    printf("GPGPU-Sim PTX DEBUG: selected_files=%zu override_enabled=%d\n",
-           selected_files.size(), use_selected_ptx_override ? 1 : 0);
+    GPPRINTF_GPU(context->get_device()->get_gpgpu(), PTX_IR,
+                 "PTX load: selected-file path cwd=%s fname=%s handle=%u\n",
+                 cwd, fname.c_str(), handle);
+    GPPRINTF_GPU(context->get_device()->get_gpgpu(), PTX_IR,
+                 "PTX load: env GPGPUSIM_SELECTED_PTX_OVERRIDE=%s\n",
+                 selected_ptx_override ? selected_ptx_override : "<unset>");
+    GPPRINTF_GPU(context->get_device()->get_gpgpu(), PTX_IR,
+                 "PTX load: env PTX_SIM_USE_PTX_FILE=%s\n",
+                 getenv("PTX_SIM_USE_PTX_FILE") ? getenv("PTX_SIM_USE_PTX_FILE")
+                                                : "<unset>");
+    GPPRINTF_GPU(context->get_device()->get_gpgpu(), PTX_IR,
+                 "PTX load: env PTX_SIM_KERNELFILE=%s\n",
+                 getenv("PTX_SIM_KERNELFILE") ? getenv("PTX_SIM_KERNELFILE")
+                                              : "<unset>");
+    GPPRINTF_GPU(context->get_device()->get_gpgpu(), PTX_IR,
+                 "PTX load: selected_files=%zu override_enabled=%d\n",
+                 selected_files.size(), use_selected_ptx_override ? 1 : 0);
     for (size_t i = 0; i < selected_files.size(); ++i) {
-      printf("GPGPU-Sim PTX DEBUG: selected_files[%zu]=%s\n", i,
-             selected_files[i].c_str());
+      GPPRINTF_GPU(context->get_device()->get_gpgpu(), PTX_IR,
+                   "PTX load: selected_files[%zu]=%s\n", i,
+                   selected_files[i].c_str());
     }
   }
 
@@ -4166,9 +4158,10 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
       printf("GPGPU-Sim PTX: overriding selected PTX %s with %s\n",
              ptx_filename.c_str(), selected_ptx_override);
     }
-    if (ptx_debug) {
-      printf("GPGPU-Sim PTX DEBUG: parse selected=%s parse_filename=%s\n",
-             ptx_filename.c_str(), parse_filename);
+    if (GPTRACE(PTX_IR)) {
+      GPPRINTF_GPU(context->get_device()->get_gpgpu(), PTX_IR,
+                   "PTX load: parse selected=%s parse_filename=%s\n",
+                   ptx_filename.c_str(), parse_filename);
     }
     printf("GPGPU-Sim PTX: Parsing %s\n", parse_filename);
     symtab = gpgpu_ptx_sim_load_ptx_from_filename(parse_filename);
@@ -4188,11 +4181,14 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
       size_t dot_pos = ptx_filename.find('.', sm_pos);
       arch_str = ptx_filename.substr(sm_pos, dot_pos - sm_pos);
     }
-    const char *ptxinfo_filename =
-        use_selected_ptx_override ? selected_ptx_override : ptx_filename.c_str();
-    if (ptx_debug) {
-      printf("GPGPU-Sim PTX DEBUG: ptxinfo selected=%s ptxinfo_filename=%s arch=%s\n",
-             ptx_filename.c_str(), ptxinfo_filename, arch_str.c_str());
+    const char *ptxinfo_filename = use_selected_ptx_override
+                                       ? selected_ptx_override
+                                       : ptx_filename.c_str();
+    if (GPTRACE(PTX_IR)) {
+      GPPRINTF_GPU(
+          context->get_device()->get_gpgpu(), PTX_IR,
+          "PTX load: ptxinfo selected=%s ptxinfo_filename=%s arch=%s\n",
+          ptx_filename.c_str(), ptxinfo_filename, arch_str.c_str());
     }
     printf("GPGPU-Sim PTX: Loading PTXInfo from %s\n", ptxinfo_filename);
     gpgpu_ptx_info_load_from_filename(ptxinfo_filename, arch_str.c_str());
@@ -4247,9 +4243,6 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
     delete[] ptxplus_str;
   } else {
     symtab = gpgpu_ptx_sim_load_ptx_from_string(ptxcode, handle);
-    // if CUOBJDUMP_SIM_FILE is not set, ptx is NULL. So comment below.
-    // printf("Adding %s with cubin handle %u\n", ptx->getPTXfilename().c_str(),
-    // handle);
     context->add_binary(symtab, handle);
     gpgpu_ptxinfo_load_from_string(ptxcode, handle, max_capability,
                                    context->no_of_ptx);
@@ -4473,21 +4466,6 @@ cudaPointerGetAttributes(cudaPointerAttributes *attributes, const void *ptr) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-
-  // auto ctx = GPGPU_Context();
-  // auto context = GPGPUSim_Context(ctx);
-  // auto addr = reinterpret_cast<addr_t>(ptr);
-  // if (isspace_global(addr)) {
-  //   attributes->type = cudaMemoryTypeDevice;
-  //   attributes->device = context->get_device()->get_id();
-  //   attributes->devicePointer = const_cast<void *>(ptr);
-  //   attributes->hostPointer = nullptr;
-
-  //   printf("GPGPU-Sim PTX: cudaPointerGetAttributes on global ptr %p, device %d\n",
-  //     ptr, attributes->device);
-
-  //   return g_last_cudaError = cudaSuccess;
-  // }
 
   cuda_not_implemented(__my_func__, __LINE__);
   return g_last_cudaError = cudaErrorUnknown;

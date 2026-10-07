@@ -88,6 +88,7 @@ public:
     int hw_warp_id;
     int sw_cta_id;
     int sw_warp_id;
+    int sm_id = -1;
   };
 
   void init(gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr,

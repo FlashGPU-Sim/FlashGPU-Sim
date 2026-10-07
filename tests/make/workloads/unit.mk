@@ -2,6 +2,14 @@
 
 UNIT_MK := $(lastword $(MAKEFILE_LIST))
 
+$(OBJ_DIR)/sm90/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm100/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm100/unit/ptx_scheduler_test.cc.o: ../libcuda/gpgpu_context.h
+
+$(OBJ_DIR)/sm100/unit/trace_config_test.cc.o: \
+  $(SRC_DIR)/trace.h $(SRC_DIR)/trace_streams.tup
+
 $(OBJ_DIR)/sm100/unit/scoreboard_forwarding_test.cc.o: \
   $(SRC_DIR)/gpgpu-sim/scoreboard.h $(SRC_DIR)/abstract_hardware_model.h
 

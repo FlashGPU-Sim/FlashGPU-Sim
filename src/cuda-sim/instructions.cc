@@ -31,12 +31,13 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include "instructions.h"
+#include "../gpgpu-sim/flash/mma/mma_trace.h"
+#include "../gpgpu-sim/flash/mma/tensor_mma.h"
 #include "half.h"
 #include "half.hpp"
 #include "opcodes.h"
 #include "ptx_ir.h"
 #include "ptx_sim.h"
-#include "../gpgpu-sim/flash/mma/tensor_mma.h"
 typedef void *yyscan_t;
 class ptx_recognizer;
 #include <assert.h>
@@ -308,7 +309,6 @@ void ptx_thread_info::print_reg_thread(char *fname) {
       fprintf(fp, "%s %llu %s %d\n", name.c_str(), it->second.u64, dec.c_str(),
               size);
     }
-    // m_regs.pop_back();
   }
   fclose(fp);
 }
@@ -316,7 +316,6 @@ void ptx_thread_info::print_reg_thread(char *fname) {
 void ptx_thread_info::resume_reg_thread(char *fname, symbol_table *symtab) {
   FILE *fp2 = fopen(fname, "r");
   assert(fp2 != NULL);
-  // m_regs.push_back( reg_map_t() );
   char line[200];
   while (fgets(line, sizeof line, fp2) != NULL) {
     symbol *reg;
@@ -1678,7 +1677,6 @@ void atom_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   // get the memory address
   const operand_info &src1 = pI->src1();
-  // const operand_info &dst  = pI->dst();  // not needed for effective address
   // calculation
   unsigned i_type = pI->get_type();
   ptx_reg_t src1_data;
@@ -1852,521 +1850,48 @@ void stmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
   handle_stmatrix_inst(pI, core, inst);
 }
 
-static unsigned tcgen05_cta_group(const ptx_instruction *pI) {
-  std::list<int> options = pI->get_options();
-  for (std::list<int>::const_iterator i = options.begin(); i != options.end();
-       ++i) {
-    if (*i == TCGEN05_CTA_GROUP_1_OPTION) return 1;
-    if (*i == TCGEN05_CTA_GROUP_2_OPTION) return 2;
-  }
-  return 1;
-}
-
-static void tcgen05_assert_cta_group1(const ptx_instruction *pI) {
-  assert(tcgen05_cta_group(pI) == 1 &&
-         "TCGen05 cta_group::2 is parsed but not implemented");
-}
-
-static bool tcgen05_has_option(const ptx_instruction *pI, int option) {
-  std::list<int> options = pI->get_options();
-  for (std::list<int>::const_iterator i = options.begin(); i != options.end();
-       ++i) {
-    if (*i == option) return true;
-  }
-  return false;
-}
-
-static bool tcgen05_debug_enabled() {
-  const char *debug = getenv("TCGEN05_DEBUG");
-  return debug && strcmp(debug, "0") != 0;
-}
-
-static bool tcgen05_is_warp_leader(const ptx_thread_info *thread) {
-  return thread->get_laneid() == 0;
-}
-
-static flash_gpgpu_sim::tcgen05_tmem_scope_t tcgen05_tmem_scope(
-    const ptx_instruction *pI, const ptx_thread_info *thread) {
-  unsigned sm_id = thread->get_hw_sid();
-  if (sm_id == (unsigned)-1) sm_id = 0;
-
-  unsigned cta_id = thread->get_hw_ctaid();
-  if (cta_id == (unsigned)-1) cta_id = thread->get_flat_ctaid();
-
-  return flash_gpgpu_sim::tcgen05_tmem_scope_t{sm_id, cta_id,
-                                               tcgen05_cta_group(pI)};
-}
-
-static uint32_t tcgen05_apply_thread_lane(uint32_t address,
-                                          const ptx_thread_info *thread) {
-  flash_gpgpu_sim::tcgen05_tmem_address_t decoded =
-      flash_gpgpu_sim::tcgen05_decode_tmem_address(address);
-  return flash_gpgpu_sim::tcgen05_encode_tmem_address(
-      decoded.lane + thread->get_laneid(), decoded.column);
-}
-
-static ptx_reg_t tcgen05_read_operand(const ptx_instruction *pI,
-                                      ptx_thread_info *thread,
-                                      unsigned operand_index) {
-  assert(operand_index < pI->get_num_operands());
-  const operand_info &op = pI->operand_lookup(operand_index);
-  return thread->get_operand_value(op, op, B32_TYPE, thread, 1);
-}
-
-static ptx_reg_t tcgen05_read_u64_operand(const ptx_instruction *pI,
-                                          ptx_thread_info *thread,
-                                          unsigned operand_index) {
-  assert(operand_index < pI->get_num_operands());
-  const operand_info &op = pI->operand_lookup(operand_index);
-  return thread->get_operand_value(op, op, B64_TYPE, thread, 1);
-}
-
-static mem_addr_t tcgen05_eval_address(const operand_info &op,
-                                       ptx_thread_info *thread) {
-  ptx_reg_t addr = thread->get_operand_value(op, op, B32_TYPE, thread, 0);
-  return addr.u32;
-}
-
-static enum _memory_space_t tcgen05_effective_space(const operand_info &op) {
-  if (op.get_addr_space() != undefined_space) return op.get_addr_space();
-  if (op.is_shared()) return shared_space;
-  if (op.is_memory_operand() || op.get_type() == address_t ||
-      op.get_type() == symbolic_t) {
-    const symbol *sym = op.get_symbol();
-    if (sym->is_global()) return global_space;
-    if (sym->is_local()) return local_space;
-  }
-  return undefined_space;
-}
-
-static void tcgen05_write_u32_destination(const ptx_instruction *pI,
-                                          ptx_thread_info *thread,
-                                          const operand_info &dst,
-                                          uint32_t value,
-                                          enum _memory_space_t default_space =
-                                              undefined_space) {
-  ptx_reg_t data;
-  data.u32 = value;
-
-  if (dst.is_reg()) {
-    thread->set_operand_value(dst, data, B32_TYPE, thread, pI);
-    return;
-  }
-
-  enum _memory_space_t space = tcgen05_effective_space(dst);
-  if (space == undefined_space && default_space != undefined_space) {
-    space = default_space;
-  }
-  mem_addr_t addr = tcgen05_eval_address(dst, thread);
-  switch (space) {
-    case shared_space:
-      thread->m_shared_mem->write(addr, sizeof(uint32_t), &data.u128, thread,
-                                  pI);
-      thread->m_last_effective_address = addr;
-      thread->m_last_memory_space = shared_space;
-      return;
-    case global_space:
-      thread->get_global_memory()->write(addr, sizeof(uint32_t), &data.u128,
-                                         thread, pI);
-      thread->m_last_effective_address = addr;
-      thread->m_last_memory_space = global_space;
-      return;
-    case local_space:
-      thread->m_local_mem->write(addr, sizeof(uint32_t), &data.u128, thread,
-                                 pI);
-      thread->m_last_effective_address = addr;
-      thread->m_last_memory_space = local_space;
-      return;
-    default:
-      printf("GPGPU-Sim PTX: ERROR ** tcgen05.alloc destination is not a "
-             "supported b32 register or memory operand: %s\n",
-             dst.name().c_str());
-      abort();
-  }
-}
-
-static std::vector<uint32_t> tcgen05_read_vector_words(
-    const operand_info &src, ptx_thread_info *thread) {
-  assert(src.is_vector());
-  unsigned nelem = src.get_vect_nelem();
-  std::vector<uint32_t> values(nelem, 0);
-  for (unsigned i = 0; i < nelem; ++i) {
-    const symbol *sym = src.vec_symbol(i);
-    if (sym && strcmp(sym->name().c_str(), "_") != 0) {
-      values[i] = thread->get_reg(sym).u32;
-    }
-  }
-  return values;
-}
-
-static void tcgen05_write_vector_words(const operand_info &dst,
-                                       ptx_thread_info *thread,
-                                       const std::vector<uint32_t> &values) {
-  assert(dst.is_vector());
-  assert(dst.get_vect_nelem() == values.size());
-  for (unsigned i = 0; i < values.size(); ++i) {
-    const symbol *sym = dst.vec_symbol(i);
-    if (sym && strcmp(sym->name().c_str(), "_") != 0) {
-      ptx_reg_t value;
-      value.u32 = values[i];
-      thread->set_reg(sym, value);
-      if (i == 0) thread->m_last_set_operand_value = value;
-    }
-  }
-}
-
-static void tcgen05_set_commit_mbarrier_info(const ptx_instruction *pI,
-                                             ptx_thread_info *thread,
-                                             uint32_t addr) {
-  inst_t::mbarrier_info_t info;
-  if (tcgen05_is_warp_leader(thread)) {
-    info.bar_id = addr;
-    info.bar_count = 1;
-  }
-  const_cast<ptx_instruction *>(pI)->set_mbarrier_info(thread->get_laneid(),
-                                                       info);
-}
-
-static bool tcgen05_read_enable_input_d(const operand_info &op,
-                                        ptx_thread_info *thread) {
-  if (op.is_reg() && op.get_symbol() &&
-      op.get_symbol()->type()->get_key().scalar_type() == PRED_TYPE) {
-    ptx_reg_t predicate =
-        thread->get_operand_value(op, op, PRED_TYPE, thread, 1);
-    return (predicate.pred & 0x1) == 0;
-  }
-
-  ptx_reg_t value = thread->get_operand_value(op, op, B32_TYPE, thread, 1);
-  return value.u32 != 0;
-}
-
-static std::vector<uint16_t> tcgen05_read_shared_f16_linearized(
-    const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t nelem,
-    ptx_thread_info *thread) {
-  assert(!desc.leading_dimension_absolute &&
-         "TCGen05 MMA absolute leading-dimension mode is not implemented");
-
-  if (tcgen05_debug_enabled() && desc.swizzle_mode != 0) {
-    printf("TCGEN05_DEBUG shared_desc swizzle=%u linearized start=%u "
-           "nelem=%u\n",
-           desc.swizzle_mode, desc.start_address, nelem);
-    fflush(stdout);
-  }
-
-  // Minimal functional path for CuTeDSL-generated FA4 smoke. The detailed
-  // Blackwell shared-memory swizzle is not modeled yet.
-  std::vector<uint16_t> values(nelem, 0);
-  for (uint32_t i = 0; i < nelem; ++i) {
-    thread->m_shared_mem->read(desc.start_address + i * sizeof(uint16_t),
-                               sizeof(uint16_t), &values[i]);
-  }
-  return values;
-}
-
-static std::vector<uint32_t> tcgen05_read_shared_words_linearized(
-    const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t rows,
-    uint32_t words_per_row, ptx_thread_info *thread) {
-  assert(!desc.leading_dimension_absolute &&
-         "TCGen05 CP absolute leading-dimension mode is not implemented");
-
-  if (tcgen05_debug_enabled() && desc.swizzle_mode != 0) {
-    printf("TCGEN05_DEBUG cp shared_desc swizzle=%u linearized start=%u "
-           "rows=%u row_words=%u\n",
-           desc.swizzle_mode, desc.start_address, rows, words_per_row);
-    fflush(stdout);
-  }
-
-  std::vector<uint32_t> values(rows * words_per_row, 0);
-  for (uint32_t i = 0; i < values.size(); ++i) {
-    thread->m_shared_mem->read(desc.start_address + i * sizeof(uint32_t),
-                               sizeof(uint32_t), &values[i]);
-  }
-  return values;
-}
-
-static bool tcgen05_cp_shape_words(const ptx_instruction *pI, uint32_t *rows,
-                                   uint32_t *words_per_row) {
-  if (tcgen05_has_option(pI, TCGEN05_128X256B_OPTION)) {
-    *rows = 128;
-    *words_per_row = 8;
-    return true;
-  }
-  if (tcgen05_has_option(pI, TCGEN05_128X128B_OPTION)) {
-    *rows = 128;
-    *words_per_row = 4;
-    return true;
-  }
-  if (tcgen05_has_option(pI, TCGEN05_64X128B_OPTION)) {
-    *rows = 64;
-    *words_per_row = 4;
-    return true;
-  }
-  if (tcgen05_has_option(pI, TCGEN05_32X128B_OPTION)) {
-    *rows = 32;
-    *words_per_row = 4;
-    return true;
-  }
-  if (tcgen05_has_option(pI, TCGEN05_4X256B_OPTION)) {
-    *rows = 4;
-    *words_per_row = 8;
-    return true;
-  }
-  return false;
-}
-
-static void tcgen05_check_disable_output_lane_zero(const operand_info &op,
-                                                   ptx_thread_info *thread) {
-  assert(op.is_vector());
-  assert(op.get_vect_nelem() == 4 &&
-         "Only TCGen05 cta_group::1 disable-output-lane vectors are supported");
-
-  std::vector<uint32_t> lanes = tcgen05_read_vector_words(op, thread);
-  for (unsigned i = 0; i < lanes.size(); ++i) {
-    assert(lanes[i] == 0 &&
-           "TCGen05 MMA disable-output-lane masks are not implemented");
-  }
-}
-
 void tcgen05_alloc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  if (!tcgen05_is_warp_leader(thread)) return;
-  tcgen05_assert_cta_group1(pI);
-  assert(pI->get_num_operands() >= 2);
-
-  const operand_info &dst = pI->operand_lookup(0);
-  uint32_t ncols = tcgen05_read_operand(pI, thread, 1).u32;
-  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
-      thread->get_gpu()->get_tcgen05_tmem_manager();
-  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
-  uint32_t base = manager.alloc(scope, ncols);
-  if (tcgen05_debug_enabled()) {
-    printf("TCGEN05_DEBUG alloc line=%u tid=%u lane=%u scope=(%u,%u,%u) "
-           "base=%u ncols=%u\n",
-           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
-           scope.sm_id, scope.cta_id, scope.cta_group, base, ncols);
-    fflush(stdout);
-  }
-  tcgen05_write_u32_destination(pI, thread, dst, base, shared_space);
+  flash_gpgpu_sim::handle_tcgen05_alloc_inst(pI, thread);
 }
 
 void tcgen05_dealloc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  if (!tcgen05_is_warp_leader(thread)) return;
-  tcgen05_assert_cta_group1(pI);
-  assert(pI->get_num_operands() >= 2);
-
-  uint32_t base = tcgen05_read_operand(pI, thread, 0).u32;
-  uint32_t ncols = tcgen05_read_operand(pI, thread, 1).u32;
-  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
-      thread->get_gpu()->get_tcgen05_tmem_manager();
-  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
-  if (tcgen05_debug_enabled()) {
-    printf("TCGEN05_DEBUG dealloc line=%u tid=%u lane=%u scope=(%u,%u,%u) "
-           "base=%u ncols=%u\n",
-           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
-           scope.sm_id, scope.cta_id, scope.cta_group, base, ncols);
-    fflush(stdout);
-  }
-  manager.dealloc(scope, base, ncols);
+  flash_gpgpu_sim::handle_tcgen05_dealloc_inst(pI, thread);
 }
 
 void tcgen05_relinq_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  if (!tcgen05_is_warp_leader(thread)) return;
-  tcgen05_assert_cta_group1(pI);
-  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
-      thread->get_gpu()->get_tcgen05_tmem_manager();
-  manager.relinquish_alloc_permit(tcgen05_tmem_scope(pI, thread));
+  flash_gpgpu_sim::handle_tcgen05_relinq_inst(pI, thread);
 }
 
 void tcgen05_mma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  if (!tcgen05_is_warp_leader(thread)) return;
-  tcgen05_assert_cta_group1(pI);
-  assert(pI->get_num_operands() >= 5);
-  assert(tcgen05_has_option(pI, TCGEN05_KIND_F16_OPTION));
-
-  const operand_info &d_tmem = pI->operand_lookup(0);
-  const operand_info &a_desc_op = pI->operand_lookup(1);
-  unsigned enable_input_d_operand = 4;
-  if (pI->operand_lookup(4).is_vector()) {
-    assert(pI->get_num_operands() >= 6);
-    tcgen05_check_disable_output_lane_zero(pI->operand_lookup(4), thread);
-    enable_input_d_operand = 5;
-  }
-  const operand_info &enable_input_d_op =
-      pI->operand_lookup(enable_input_d_operand);
-
-  uint32_t d_address = tcgen05_eval_address(d_tmem, thread);
-  uint32_t a_tmem_address =
-      a_desc_op.is_memory_operand()
-          ? static_cast<uint32_t>(tcgen05_eval_address(a_desc_op, thread))
-          : 0;
-  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
-  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
-      thread->get_gpu()->get_tcgen05_tmem_manager();
-  if (tcgen05_debug_enabled()) {
-    printf("TCGEN05_DEBUG mma line=%u tid=%u lane=%u scope=(%u,%u,%u) "
-           "d=%u a_mem=%u\n",
-           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
-           scope.sm_id, scope.cta_id, scope.cta_group, d_address,
-           a_desc_op.is_memory_operand() ? 1 : 0);
-    fflush(stdout);
-  }
-  flash_gpgpu_sim::tcgen05_mma_descriptor_t mma_desc =
-      flash_gpgpu_sim::tcgen05_decode_f16_mma_descriptor(
-          tcgen05_read_operand(pI, thread, 3).u32, tcgen05_cta_group(pI));
-  inst_t::tcgen05_dyn_info_t perf_info;
-  perf_info.mma_work = 2ULL * mma_desc.m * mma_desc.n * mma_desc.k;
-  const_cast<ptx_instruction *>(pI)->set_tcgen05_dyn_info(
-      thread->get_laneid(), perf_info);
-  uint64_t a_desc_value = 0;
-  if (!a_desc_op.is_memory_operand()) {
-    a_desc_value = tcgen05_read_u64_operand(pI, thread, 1).u64;
-  }
-  uint64_t b_desc_value = tcgen05_read_u64_operand(pI, thread, 2).u64;
-  if (tcgen05_debug_enabled()) {
-    printf("TCGEN05_DEBUG mma_desc line=%u a=0x%016llx a_tmem=%u "
-           "b=0x%016llx idesc=0x%08x\n",
-           pI->source_line(), static_cast<unsigned long long>(a_desc_value),
-           a_tmem_address, static_cast<unsigned long long>(b_desc_value),
-           tcgen05_read_operand(pI, thread, 3).u32);
-    fflush(stdout);
-  }
-  flash_gpgpu_sim::tcgen05_shared_descriptor_t b_desc =
-      flash_gpgpu_sim::tcgen05_decode_shared_descriptor(b_desc_value);
-  bool enable_input_d = tcgen05_read_enable_input_d(enable_input_d_op, thread);
-
-  std::vector<uint16_t> a_values;
-  if (a_desc_op.is_memory_operand()) {
-    a_values = manager.read_matrix_packed_u16(scope, a_tmem_address, mma_desc.m,
-                                              mma_desc.k);
-  } else {
-    flash_gpgpu_sim::tcgen05_shared_descriptor_t a_desc =
-        flash_gpgpu_sim::tcgen05_decode_shared_descriptor(a_desc_value);
-    a_values = tcgen05_read_shared_f16_linearized(
-        a_desc, mma_desc.m * mma_desc.k, thread);
-  }
-  std::vector<uint16_t> b_values = tcgen05_read_shared_f16_linearized(
-      b_desc, mma_desc.k * mma_desc.n, thread);
-
-  std::vector<uint32_t> input_d;
-  if (enable_input_d) {
-    input_d = manager.read_matrix_words(scope, d_address, mma_desc.m,
-                                        mma_desc.n);
-  }
-
-  std::vector<uint32_t> output = flash_gpgpu_sim::tcgen05_mma_f16_compute_words(
-      mma_desc, a_values, b_values, input_d, enable_input_d);
-  manager.write_matrix_words(scope, d_address, output, mma_desc.m, mma_desc.n);
+  flash_gpgpu_sim::handle_tcgen05_mma_inst(pI, thread);
 }
 
 void tcgen05_commit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  tcgen05_assert_cta_group1(pI);
-  assert(pI->get_num_operands() >= 1);
-  assert(tcgen05_has_option(pI, TCGEN05_MBARRIER_ARRIVE_ONE_OPTION));
-
-  const operand_info &bar = pI->operand_lookup(0);
-  tcgen05_set_commit_mbarrier_info(pI, thread,
-                                   tcgen05_eval_address(bar, thread));
+  flash_gpgpu_sim::handle_tcgen05_commit_inst(pI, thread);
 }
 
 void tcgen05_ld_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  tcgen05_assert_cta_group1(pI);
-  assert(pI->get_num_operands() >= 2);
-
-  const operand_info &dst = pI->operand_lookup(0);
-  const operand_info &addr = pI->operand_lookup(1);
-  assert(dst.is_vector());
-
-  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
-      thread->get_gpu()->get_tcgen05_tmem_manager();
-  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
-  uint32_t raw_address = tcgen05_eval_address(addr, thread);
-  uint32_t address = tcgen05_apply_thread_lane(raw_address, thread);
-  if (tcgen05_debug_enabled()) {
-    printf("TCGEN05_DEBUG ld line=%u tid=%u lane=%u scope=(%u,%u,%u) "
-           "raw=%u addr=%u n=%u\n",
-           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
-           scope.sm_id, scope.cta_id, scope.cta_group, raw_address, address,
-           dst.get_vect_nelem());
-    fflush(stdout);
-  }
-  std::vector<uint32_t> values =
-      manager.read_words(scope, address, dst.get_vect_nelem());
-  tcgen05_write_vector_words(dst, thread, values);
+  flash_gpgpu_sim::handle_tcgen05_ld_inst(pI, thread);
 }
 
 void tcgen05_st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  tcgen05_assert_cta_group1(pI);
-  assert(pI->get_num_operands() >= 2);
-
-  const operand_info &addr = pI->operand_lookup(0);
-  const operand_info &src = pI->operand_lookup(1);
-  assert(src.is_vector());
-
-  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
-      thread->get_gpu()->get_tcgen05_tmem_manager();
-  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
-  uint32_t raw_address = tcgen05_eval_address(addr, thread);
-  uint32_t address = tcgen05_apply_thread_lane(raw_address, thread);
-  if (tcgen05_debug_enabled()) {
-    printf("TCGEN05_DEBUG st line=%u tid=%u lane=%u scope=(%u,%u,%u) "
-           "raw=%u addr=%u n=%u\n",
-           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
-           scope.sm_id, scope.cta_id, scope.cta_group, raw_address, address,
-           src.get_vect_nelem());
-    fflush(stdout);
-  }
-  manager.write_words(scope, address, tcgen05_read_vector_words(src, thread));
+  flash_gpgpu_sim::handle_tcgen05_st_inst(pI, thread);
 }
 
 void tcgen05_wait_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  tcgen05_assert_cta_group1(pI);
-  (void)pI;
-  (void)thread;
+  flash_gpgpu_sim::handle_tcgen05_wait_inst(pI, thread);
 }
 
 void tcgen05_cp_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  if (!tcgen05_is_warp_leader(thread)) return;
-  tcgen05_assert_cta_group1(pI);
-  assert(pI->get_num_operands() >= 2);
-
-  uint32_t rows = 0;
-  uint32_t words_per_row = 0;
-  assert(tcgen05_cp_shape_words(pI, &rows, &words_per_row) &&
-         "Unsupported TCGen05 CP tile shape");
-
-  const operand_info &dst_tmem = pI->operand_lookup(0);
-  uint32_t dst_address = static_cast<uint32_t>(tcgen05_eval_address(dst_tmem,
-                                                                    thread));
-  uint64_t src_desc_value = tcgen05_read_u64_operand(pI, thread, 1).u64;
-  flash_gpgpu_sim::tcgen05_shared_descriptor_t src_desc =
-      flash_gpgpu_sim::tcgen05_decode_shared_descriptor(src_desc_value);
-  std::vector<uint32_t> values =
-      tcgen05_read_shared_words_linearized(src_desc, rows, words_per_row,
-                                           thread);
-
-  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
-      thread->get_gpu()->get_tcgen05_tmem_manager();
-  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
-  if (tcgen05_debug_enabled()) {
-    printf("TCGEN05_DEBUG cp line=%u tid=%u lane=%u scope=(%u,%u,%u) "
-           "dst=%u rows=%u row_words=%u\n",
-           pI->source_line(), thread->get_tid().x, thread->get_laneid(),
-           scope.sm_id, scope.cta_id, scope.cta_group, dst_address, rows,
-           words_per_row);
-    fflush(stdout);
-  }
-  manager.write_matrix_words(scope, dst_address, values, rows, words_per_row);
+  flash_gpgpu_sim::handle_tcgen05_cp_inst(pI, thread);
 }
 
 void tcgen05_shift_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  if (!tcgen05_is_warp_leader(thread)) return;
-  tcgen05_assert_cta_group1(pI);
-  assert(pI->get_num_operands() >= 1);
-  (void)thread;
+  flash_gpgpu_sim::handle_tcgen05_shift_inst(pI, thread);
 }
 
 void tcgen05_fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  (void)pI;
-  (void)thread;
+  flash_gpgpu_sim::handle_tcgen05_fence_inst(pI, thread);
 }
 
 void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -2673,14 +2198,6 @@ unsigned trunc(unsigned num, unsigned precision) {
     data >>= 1;
   }
   if (latest_one >= precision) {
-    // round_up is 1 if the most significant truncated digit is a 1, otherwise
-    // it is 0
-    // int round_up = (num & (1 << (latest_one-precision))) >>
-    // (latest_one-precision); unsigned shifted_output = num >>
-    // (latest_one-precision+1);
-    // if shifted_output is a number like 1111, don't round up
-    // if (shifted_output == (pow(2,precision)-1)) round_up = 0;
-    // num = shifted_output + round_up;
     num >>= (latest_one - precision + 1);
   }
   return num;
@@ -2763,20 +2280,19 @@ void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
 
   for (thrd = 0; thrd < core->get_warp_size(); thrd++) {
     thread = core->get_thread_info()[tid + thrd];
-    if (core->get_gpu()->gpgpu_ctx->debug_tensorcore)
-      printf("THREAD=%d\n:", thrd);
+    MMA_TRACE_LANE(core, inst, thrd, { mma_trace.append("lane=%d\n", thrd); });
     for (int operand_num = 1; operand_num <= 3; operand_num++) {
       const operand_info &src_a = pI->operand_lookup(operand_num);
       unsigned nelem = src_a.get_vect_nelem();
       ptx_reg_t v[8];
       thread->get_vector_operand_values(src_a, v, nelem);
-      if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-        printf("Thread%d_Iteration=%d\n:", thrd, operand_num);
+      MMA_TRACE_LANE(core, inst, thrd, {
+        mma_trace.append("lane=%d operand=%d values: ", thrd, operand_num);
         for (k = 0; k < nelem; k++) {
-          printf("%llx ", v[k].u64);
+          mma_trace.append("%llx ", v[k].u64);
         }
-        printf("\n");
-      }
+        mma_trace.append("\n");
+      });
       ptx_reg_t nw_v[16];
       int hex_val;
 
@@ -2790,45 +2306,50 @@ void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
         }
       }
       if (!((operand_num == 3) && (type2 == F32_TYPE))) {
-        for (k = 0; k < 2 * nelem; k++) {
-          temp = nw_v[k].f16;
-          if (core->get_gpu()->gpgpu_ctx->debug_tensorcore)
-            printf("%.2f ", temp);
-        }
-        if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) printf("\n");
-      } else {
-        if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-          for (k = 0; k < 8; k++) {
-            printf("%.2f ", v[k].f32);
+        MMA_TRACE_LANE(core, inst, thrd, {
+          mma_trace.append("lane=%d operand=%d unpacked: ", thrd, operand_num);
+          for (k = 0; k < 2 * nelem; k++) {
+            mma_trace.append("%.2f ", static_cast<float>(nw_v[k].f16));
           }
-          printf("\n");
-        }
+          mma_trace.append("\n");
+        });
+      } else {
+        MMA_TRACE_LANE(core, inst, thrd, {
+          mma_trace.append("lane=%d operand=%d unpacked: ", thrd, operand_num);
+          for (k = 0; k < 8; k++) {
+            mma_trace.append("%.2f ", v[k].f32);
+          }
+          mma_trace.append("\n");
+        });
       }
       switch (operand_num) {
         case 1:  // operand 1
           for (k = 0; k < 8; k++) {
             mapping(thrd, LOAD_A, a_layout, F16_TYPE, k, 16, row, col, offset);
-            if (core->get_gpu()->gpgpu_ctx->debug_tensorcore)
-              printf("A:thread=%d,row=%d,col=%d,offset=%d\n", thrd, row, col,
-                     offset);
+            MMA_TRACE_LANE(core, inst, thrd, {
+              mma_trace.append("A:thread=%d,row=%d,col=%d,offset=%d\n", thrd,
+                               row, col, offset);
+            });
             matrix_a[row][col] = nw_v[offset];
           }
           break;
         case 2:  // operand 2
           for (k = 0; k < 8; k++) {
             mapping(thrd, LOAD_B, b_layout, F16_TYPE, k, 16, row, col, offset);
-            if (core->get_gpu()->gpgpu_ctx->debug_tensorcore)
-              printf("B:thread=%d,row=%d,col=%d,offset=%d\n", thrd, row, col,
-                     offset);
+            MMA_TRACE_LANE(core, inst, thrd, {
+              mma_trace.append("B:thread=%d,row=%d,col=%d,offset=%d\n", thrd,
+                               row, col, offset);
+            });
             matrix_b[row][col] = nw_v[offset];
           }
           break;
         case 3:  // operand 3
           for (k = 0; k < 8; k++) {
             mapping(thrd, LOAD_C, ROW, type2, k, 16, row, col, offset);
-            if (core->get_gpu()->gpgpu_ctx->debug_tensorcore)
-              printf("C:thread=%d,row=%d,col=%d,offset=%d\n", thrd, row, col,
-                     offset);
+            MMA_TRACE_LANE(core, inst, thrd, {
+              mma_trace.append("C:thread=%d,row=%d,col=%d,offset=%d\n", thrd,
+                               row, col, offset);
+            });
             if (type2 != F16_TYPE) {
               matrix_c[row][col] = v[offset];
             } else {
@@ -2840,37 +2361,36 @@ void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
           printf("Invalid Operand Index\n");
       }
     }
-    if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) printf("\n");
   }
-  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    printf("MATRIX_A\n");
+  MMA_TRACE(core, inst, {
+    mma_trace.append("MATRIX_A\n");
     for (i = 0; i < 16; i++) {
       for (j = 0; j < 16; j++) {
         temp = matrix_a[i][j].f16;
-        printf("%.2f ", temp);
+        mma_trace.append("%.2f ", temp);
       }
-      printf("\n");
+      mma_trace.append("\n");
     }
-    printf("MATRIX_B\n");
+    mma_trace.append("MATRIX_B\n");
     for (i = 0; i < 16; i++) {
       for (j = 0; j < 16; j++) {
         temp = matrix_b[i][j].f16;
-        printf("%.2f ", temp);
+        mma_trace.append("%.2f ", temp);
       }
-      printf("\n");
+      mma_trace.append("\n");
     }
-    printf("MATRIX_C\n");
+    mma_trace.append("MATRIX_C\n");
     for (i = 0; i < 16; i++) {
       for (j = 0; j < 16; j++) {
         if (type2 == F16_TYPE) {
           temp = matrix_c[i][j].f16;
-          printf("%.2f ", temp);
+          mma_trace.append("%.2f ", temp);
         } else
-          printf("%.2f ", matrix_c[i][j].f32);
+          mma_trace.append("%.2f ", matrix_c[i][j].f32);
       }
-      printf("\n");
+      mma_trace.append("\n");
     }
-  }
+  });
   for (i = 0; i < 16; i++) {
     for (j = 0; j < 16; j++) {
       matrix_d[i][j].f16 = 0;
@@ -2900,26 +2420,27 @@ void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
       }
     }
   }
-  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    printf("MATRIX_D\n");
+  MMA_TRACE(core, inst, {
+    mma_trace.append("MATRIX_D\n");
     for (i = 0; i < 16; i++) {
       for (j = 0; j < 16; j++) {
         if (type == F16_TYPE) {
           temp = matrix_d[i][j].f16;
-          printf("%.2f ", temp);
+          mma_trace.append("%.2f ", temp);
         } else
-          printf("%.2f ", matrix_d[i][j].f32);
+          mma_trace.append("%.2f ", matrix_d[i][j].f32);
       }
-      printf("\n");
+      mma_trace.append("\n");
     }
-  }
+  });
   for (thrd = 0; thrd < core->get_warp_size(); thrd++) {
     int row_t[8];
     int col_t[8];
     for (k = 0; k < 8; k++) {
       mapping(thrd, LOAD_C, ROW, type, k, 16, row_t[k], col_t[k], offset);
-      if (core->get_gpu()->gpgpu_ctx->debug_tensorcore)
-        printf("mma:store:row:%d,col%d\n", row_t[k], col_t[k]);
+      MMA_TRACE_LANE(core, inst, thrd, {
+        mma_trace.append("mma:store:row:%d,col%d\n", row_t[k], col_t[k]);
+      });
     }
     thread = core->get_thread_info()[tid + thrd];
 
@@ -2930,28 +2451,29 @@ void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
           matrix_d[row_t[4]][col_t[4]], matrix_d[row_t[5]][col_t[5]],
           matrix_d[row_t[6]][col_t[6]], matrix_d[row_t[7]][col_t[7]]);
 
-      if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-        printf("thread%d:", thrd);
+      MMA_TRACE_LANE(core, inst, thrd, {
+        mma_trace.append("thread%d:", thrd);
         for (k = 0; k < 8; k++) {
-          printf("%.2f ", matrix_d[row_t[k]][col_t[k]].f32);
+          mma_trace.append("%.2f ", matrix_d[row_t[k]][col_t[k]].f32);
         }
-        printf("\n");
-      }
+        mma_trace.append("\n");
+      });
     } else if (type == F16_TYPE) {
-      if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-        printf("thread%d:", thrd);
+      MMA_TRACE_LANE(core, inst, thrd, {
+        mma_trace.append("thread%d:", thrd);
         for (k = 0; k < 8; k++) {
           temp = matrix_d[row_t[k]][col_t[k]].f16;
-          printf("%.2f ", temp);
+          mma_trace.append("%.2f ", temp);
         }
-        printf("\n");
+        mma_trace.append("\n");
 
-        printf("thread%d:", thrd);
+        mma_trace.append("thread%d:", thrd);
         for (k = 0; k < 8; k++) {
-          printf("%x ", (unsigned int)matrix_d[row_t[k]][col_t[k]].f16);
+          mma_trace.append("%x ",
+                           (unsigned int)matrix_d[row_t[k]][col_t[k]].f16);
         }
-        printf("\n");
-      }
+        mma_trace.append("\n");
+      });
       ptx_reg_t nw_data1, nw_data2, nw_data3, nw_data4;
       nw_data1.s64 = ((matrix_d[row_t[0]][col_t[0]].s64 & 0xffff)) |
                      ((matrix_d[row_t[1]][col_t[1]].s64 & 0xffff) << 16);
@@ -2963,9 +2485,10 @@ void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
                      ((matrix_d[row_t[7]][col_t[7]].s64 & 0xffff) << 16);
       thread->set_vector_operand_values(dst, nw_data1, nw_data2, nw_data3,
                                         nw_data4);
-      if (core->get_gpu()->gpgpu_ctx->debug_tensorcore)
-        printf("thread%d=%llx,%llx,%llx,%llx", thrd, nw_data1.s64, nw_data2.s64,
-               nw_data3.s64, nw_data4.s64);
+      MMA_TRACE_LANE(core, inst, thrd, {
+        mma_trace.append("thread%d=%llx,%llx,%llx,%llx", thrd, nw_data1.s64,
+                         nw_data2.s64, nw_data3.s64, nw_data4.s64);
+      });
 
     } else {
       printf("wmma:mma:wrong type\n");
@@ -3263,7 +2786,6 @@ ptx_reg_t f2x(ptx_reg_t x, unsigned from_width, unsigned to_width, int to_sign,
               int rounding_mode, int saturation_mode) {
   half mytemp;
   half_float::half tmp_h;
-  // assert( from_width == 32);
 
   enum cudaRoundMode mode = cudaRoundZero;
   switch (rounding_mode) {
@@ -3878,8 +3400,6 @@ void cvt_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned rounding_mode = pI->rounding_mode();
   unsigned saturation_mode = pI->saturation_mode();
 
-  //   if ( to_type == F16_TYPE || from_type == F16_TYPE )
-  //      abort();
 
   int to_sign, from_sign;
   size_t from_width, to_width;
@@ -3898,10 +3418,6 @@ void cvt_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     ptx_reg_t src1_data = thread->get_operand_value(src1, dst, from_type, thread, 1);
     ptx_reg_t src2_data = thread->get_operand_value(src2, dst, from_type, thread, 1);
 
-    // GPPRINTF_INST_EXEC(
-    //     PTX_INST_EXEC,
-    //     "cvt.rn.f16x2.f32: src1 %f src2 %f rounding_mode %u inst %s\n",
-    //     src1_data.f32, src2_data.f32, rounding_mode, pI->to_string().c_str());
 
     // Convert each f32 to f16 using the specified rounding mode
     half_float::detail::uint16 f16_low, f16_high;
@@ -3992,9 +3508,6 @@ void cvt_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     data = result;
   }
 
-  // GPPRINTF_INST_EXEC(PTX_INST_EXEC, "cvt_impl: %s -> %s val %llu inst %s\n",
-  //                   decode_token(from_type), decode_token(to_type), data.u64,
-  //                   pI->to_string().c_str());
 
   thread->set_operand_value(dst, data, to_type, thread, pI);
 }
@@ -4386,8 +3899,9 @@ void mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
 
     memory_space *mem = NULL;
     // CRITICAL: Use 64-bit address (u64) for MMA store operations
-    // MMA instructions can access shared memory with generic addressing, and with
-    // large SM counts (e.g., 170 SMs), the generic address window exceeds 32-bit.
+    // MMA instructions can access shared memory with generic addressing, and
+    // with large SM counts (e.g., 170 SMs), the generic address window exceeds
+    // 32-bit.
     addr_t addr = addr_reg.u64;
 
     new_addr_type mem_txn_addr[MAX_ACCESSES_PER_INSN_PER_THREAD];
@@ -4401,9 +3915,10 @@ void mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
     decode_space(space, thread, src1, mem, addr);
 
     type_info_key::type_decode(type, size, t);
-    if (core->get_gpu()->gpgpu_ctx->debug_tensorcore)
-      printf("mma_st: thrd=%d, addr=%x, fp(size=%zu), stride=%d\n", thrd,
-             addr_reg.u32, size, src2_data.u32);
+    MMA_TRACE_LANE(core, inst, thrd, {
+      mma_trace.append("mma_st: thrd=%d, addr=%x, fp(size=%zu), stride=%d\n",
+                       thrd, addr_reg.u32, size, src2_data.u32);
+    });
     addr_t new_addr =
         addr + thread_group_offset(thrd, wmma_type, wmma_layout, type, stride) *
                    size / 8;
@@ -4419,43 +3934,41 @@ void mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
 
     for (k = 0; k < 8; k++) {
       if (type == F32_TYPE) {
-        // mem->write(new_addr+4*acc_float_offset(k,wmma_layout,stride),size/8,&v[k].s64,thread,pI);
         push_addr = new_addr + 4 * acc_float_offset(k, wmma_layout, stride);
         mem->write(push_addr, size / 8, &v[k].s64, thread, pI);
         mem_txn_addr[num_mem_txn++] = push_addr;
 
-        if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-          printf(
+        MMA_TRACE_LANE(core, inst, thrd, {
+          mma_trace.append(
               "wmma:store:thread%d=%llx,%llx,%llx,%llx,%llx,%llx,%llx,%llx\n",
               thrd, v[0].s64, v[1].s64, v[2].s64, v[3].s64, v[4].s64, v[5].s64,
               v[6].s64, v[7].s64);
           float temp;
           int l;
-          printf("thread=%d:", thrd);
+          mma_trace.append("thread=%d:", thrd);
           for (l = 0; l < 8; l++) {
             temp = v[l].f32;
-            printf("%.2f", temp);
+            mma_trace.append("%.2f", temp);
           }
-          printf("\n");
-        }
+          mma_trace.append("\n");
+        });
       } else if (type == F16_TYPE) {
         if (wmma_layout == ROW) {
-          // mem->write(new_addr+k*2,size/8,&nw_v[k].s64,thread,pI);
           push_addr = new_addr + k * 2;
           mem->write(push_addr, size / 8, &nw_v[k].s64, thread, pI);
           if (k % 2 == 0) mem_txn_addr[num_mem_txn++] = push_addr;
         } else if (wmma_layout == COL) {
-          // mem->write(new_addr+k*2*stride,size/8,&nw_v[k].s64,thread,pI);
           push_addr = new_addr + k * 2 * stride;
           mem->write(push_addr, size / 8, &nw_v[k].s64, thread, pI);
           mem_txn_addr[num_mem_txn++] = push_addr;
         }
 
-        if (core->get_gpu()->gpgpu_ctx->debug_tensorcore)
-          printf(
+        MMA_TRACE_LANE(core, inst, thrd, {
+          mma_trace.append(
               "wmma:store:thread%d=%llx,%llx,%llx,%llx,%llx,%llx,%llx,%llx\n",
               thrd, nw_v[0].s64, nw_v[1].s64, nw_v[2].s64, nw_v[3].s64,
               nw_v[4].s64, nw_v[5].s64, nw_v[6].s64, nw_v[7].s64);
+        });
       }
     }
 
@@ -4470,8 +3983,6 @@ void mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
       inst.data_size = 4;  // 4 byte transaction
 
     assert(inst.memory_op == insn_memory_op);
-    // thread->m_last_effective_address = addr;
-    // thread->m_last_memory_space = space;
   }
 }
 
@@ -4509,8 +4020,9 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
 
     memory_space *mem = NULL;
     // CRITICAL: Use 64-bit address (u64) for MMA load operations
-    // MMA instructions can access shared memory with generic addressing, and with
-    // large SM counts (e.g., 170 SMs), the generic address window exceeds 32-bit.
+    // MMA instructions can access shared memory with generic addressing, and
+    // with large SM counts (e.g., 170 SMs), the generic address window exceeds
+    // 32-bit.
     addr_t addr = src1_data.u64;
     smid = thread->get_hw_sid();
     if (whichspace(addr) == shared_space) {
@@ -4522,9 +4034,10 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
     type_info_key::type_decode(type, size, t);
 
     ptx_reg_t data[16];
-    if (core->get_gpu()->gpgpu_ctx->debug_tensorcore)
-      printf("mma_ld: thrd=%d,addr=%x, fpsize=%zu, stride=%d\n", thrd,
-             src1_data.u32, size, src2_data.u32);
+    MMA_TRACE_LANE(core, inst, thrd, {
+      mma_trace.append("mma_ld: thrd=%d,addr=%x, fpsize=%zu, stride=%d\n", thrd,
+                       src1_data.u32, size, src2_data.u32);
+    });
 
     addr_t new_addr =
         addr + thread_group_offset(thrd, wmma_type, wmma_layout, type, stride) *
@@ -4536,11 +4049,9 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
     if (wmma_type == LOAD_A) {
       for (i = 0; i < 16; i++) {
         if (wmma_layout == ROW) {
-          // mem->read(new_addr+2*i,size/8,&data[i].s64);
           fetch_addr = new_addr + 2 * i;
           mem->read(fetch_addr, size / 8, &data[i].s64);
         } else if (wmma_layout == COL) {
-          // mem->read(new_addr+2*(i%4)+2*stride*4*(i/4),size/8,&data[i].s64);
           fetch_addr = new_addr + 2 * (i % 4) + 2 * stride * 4 * (i / 4);
           mem->read(fetch_addr, size / 8, &data[i].s64);
         } else {
@@ -4552,11 +4063,9 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
     } else if (wmma_type == LOAD_B) {
       for (i = 0; i < 16; i++) {
         if (wmma_layout == COL) {
-          // mem->read(new_addr+2*i,size/8,&data[i].s64);
           fetch_addr = new_addr + 2 * i;
           mem->read(fetch_addr, size / 8, &data[i].s64);
         } else if (wmma_layout == ROW) {
-          // mem->read(new_addr+2*(i%4)+2*stride*4*(i/4),size/8,&data[i].s64);
           fetch_addr = new_addr + 2 * (i % 4) + 2 * stride * 4 * (i / 4);
           mem->read(fetch_addr, size / 8, &data[i].s64);
         } else {
@@ -4569,12 +4078,10 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
       for (i = 0; i < 8; i++) {
         if (type == F16_TYPE) {
           if (wmma_layout == ROW) {
-            // mem->read(new_addr+2*i,size/8,&data[i].s64);
             fetch_addr = new_addr + 2 * i;
             mem->read(fetch_addr, size / 8, &data[i].s64);
             if (i % 2 == 0) mem_txn_addr[num_mem_txn++] = fetch_addr;
           } else if (wmma_layout == COL) {
-            // mem->read(new_addr+2*stride*i,size/8,&data[i].s64);
             fetch_addr = new_addr + 2 * stride * i;
             mem->read(fetch_addr, size / 8, &data[i].s64);
             mem_txn_addr[num_mem_txn++] = fetch_addr;
@@ -4583,7 +4090,6 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
             abort();
           }
         } else if (type == F32_TYPE) {
-          // mem->read(new_addr+4*acc_float_offset(i,wmma_layout,stride),size/8,&data[i].s64);
           fetch_addr = new_addr + 4 * acc_float_offset(i, wmma_layout, stride);
           mem->read(fetch_addr, size / 8, &data[i].s64);
           mem_txn_addr[num_mem_txn++] = fetch_addr;
@@ -4609,34 +4115,34 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
       inst.data_size = 4;  // 4 byte transaction
     assert(inst.memory_op == insn_memory_op);
 
-    if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
+    MMA_TRACE_LANE(core, inst, thrd, {
       if (type == F16_TYPE) {
-        printf("\nmma_ld:thread%d= ", thrd);
+        mma_trace.append("\nmma_ld:thread%d= ", thrd);
         for (i = 0; i < 16; i++) {
-          printf("%llx ", data[i].u64);
+          mma_trace.append("%llx ", data[i].u64);
         }
-        printf("\n");
+        mma_trace.append("\n");
 
-        printf("\nmma_ld:thread%d= ", thrd);
+        mma_trace.append("\nmma_ld:thread%d= ", thrd);
         float temp;
         for (i = 0; i < 16; i++) {
           temp = data[i].f16;
-          printf("%.2f ", temp);
+          mma_trace.append("%.2f ", temp);
         }
-        printf("\n");
+        mma_trace.append("\n");
       } else {
-        printf("\nmma_ld:thread%d= ", thrd);
+        mma_trace.append("\nmma_ld:thread%d= ", thrd);
         for (i = 0; i < 8; i++) {
-          printf("%.2f ", data[i].f32);
+          mma_trace.append("%.2f ", data[i].f32);
         }
-        printf("\n");
-        printf("\nmma_ld:thread%d= ", thrd);
+        mma_trace.append("\n");
+        mma_trace.append("\nmma_ld:thread%d= ", thrd);
         for (i = 0; i < 8; i++) {
-          printf("%llx ", data[i].u64);
+          mma_trace.append("%llx ", data[i].u64);
         }
-        printf("\n");
+        mma_trace.append("\n");
       }
-    }
+    });
 
     if ((wmma_type == LOAD_C) && (type == F32_TYPE)) {
       thread->set_wmma_vector_operand_values(dst, data[0], data[1], data[2],
@@ -4663,41 +4169,39 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
         thread->set_wmma_vector_operand_values(
             dst, nw_data[0], nw_data[1], nw_data[2], nw_data[3], nw_data[4],
             nw_data[5], nw_data[6], nw_data[7]);
-      if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-        printf(
+      MMA_TRACE_LANE(core, inst, thrd, {
+        mma_trace.append(
             "mma_ld:data[0].s64=%llx,data[1].s64=%llx,new_data[0].s64=%llx\n",
             data[0].u64, data[1].u64, nw_data[0].u64);
-        printf(
+        mma_trace.append(
             "mma_ld:data[2].s64=%llx,data[3].s64=%llx,new_data[1].s64=%llx\n",
             data[2].u64, data[3].u64, nw_data[1].u64);
-        printf(
+        mma_trace.append(
             "mma_ld:data[4].s64=%llx,data[5].s64=%llx,new_data[2].s64=%llx\n",
             data[4].u64, data[5].u64, nw_data[2].u64);
-        printf(
+        mma_trace.append(
             "mma_ld:data[6].s64=%llx,data[7].s64=%llx,new_data[3].s64=%llx\n",
             data[6].u64, data[7].u64, nw_data[3].u64);
         if (wmma_type != LOAD_C) {
-          printf(
+          mma_trace.append(
               "mma_ld:data[8].s64=%llx,data[9].s64=%llx,new_data[4].s64=%llx\n",
               data[8].u64, data[9].u64, nw_data[4].s64);
-          printf(
+          mma_trace.append(
               "mma_ld:data[10].s64=%llx,data[11].s64=%llx,new_data[5].s64=%"
               "llx\n",
               data[10].u64, data[11].u64, nw_data[5].u64);
-          printf(
+          mma_trace.append(
               "mma_ld:data[12].s64=%llx,data[13].s64=%llx,new_data[6].s64=%"
               "llx\n",
               data[12].u64, data[13].u64, nw_data[6].u64);
-          printf(
+          mma_trace.append(
               "mma_ld:data[14].s64=%llx,data[15].s64=%llx,new_data[7].s64=%"
               "llx\n",
-              data[14].u64, data[15].u64, nw_data[3].u64);
+              data[14].u64, data[15].u64, nw_data[7].u64);
         }
-      }
+      });
     }
 
-    // thread->m_last_effective_address = addr;
-    // thread->m_last_memory_space = space;
   }
 }
 
@@ -4897,8 +4401,6 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
         assert(0);
       break;
     case F16_TYPE: {
-      // assert(0);
-      // break;
       assert(use_carry == false);
       int orig_rm = fegetround();
       switch (rounding_mode) {
@@ -4931,7 +4433,6 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
           fesetround(FE_TOWARDZERO);
           break;
         default:
-          // assert(0);
           break;
       }
       if (mul_type == F16_TYPE) {
@@ -5274,8 +4775,6 @@ void mul24_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   src1_data = thread->get_operand_value(src1, dst, i_type, thread, 1);
   src2_data = thread->get_operand_value(src2, dst, i_type, thread, 1);
 
-  // src1_data = srcOperandModifiers(src1_data, src1, dst, i_type, thread);
-  // src2_data = srcOperandModifiers(src2_data, src2, dst, i_type, thread);
 
   src1_data.mask_and(0, 0x00FFFFFF);
   src2_data.mask_and(0, 0x00FFFFFF);
@@ -5388,8 +4887,6 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
         assert(0);
       break;
     case F16_TYPE: {
-      // assert(0);
-      // break;
       int orig_rm = fegetround();
       switch (rounding_mode) {
         case RN_OPTION:
@@ -6891,8 +6388,6 @@ void sst_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void ssy_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  // printf("Execution Warning: unimplemented ssy instruction is treated as a
-  // nop\n");
   // TODO: add implementation
 }
 
@@ -7755,8 +7250,6 @@ void video_mem_instruction(const ptx_instruction *pI, ptx_thread_info *thread,
   c = thread->get_operand_value(src3, dst, i_type, thread, 1);
 
   // TODO: implement this
-  // ta = partSelectSignExtend( a, atype );
-  // tb = partSelectSignExtend( b, btype );
   ta = a;
   tb = b;
 

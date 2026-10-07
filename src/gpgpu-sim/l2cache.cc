@@ -83,110 +83,6 @@ const char *mem_sub_partition_full_stat_str(
 
 namespace {
 
-class l2_request_trace {
- public:
-  static l2_request_trace &instance() {
-    static l2_request_trace trace;
-    return trace;
-  }
-
-  bool cache_accept_enabled() const { return m_enabled && m_trace_cache_accept; }
-
-  void log(const char *event, unsigned long long cycle, unsigned subpart_id,
-           mem_fetch *mf, const char *status) {
-    if (!m_enabled || !mf || cycle > m_max_cycle) return;
-
-    const mem_access_type access_type = mf->get_access_type();
-    if (m_tma_only && access_type != TMA_ACC_R && access_type != TMA_ACC_W &&
-        access_type != CP_ASYNC_ACC_R)
-      return;
-
-    const mem_fetch *original_mf = mf->get_original_mf();
-    const unsigned original_uid =
-        original_mf ? original_mf->get_request_uid() : mf->get_request_uid();
-    const unsigned long sector_mask =
-        mf->get_access_sector_mask().to_ulong();
-
-    flockfile(m_file);
-    fprintf(m_file,
-            "%llu,%s,%u,%u,0x%llx,0x%llx,%u,%u,%u,%u,%u,%s,%u,%u,%u,0x%lx,%s\n",
-            cycle, event, subpart_id, mf->get_sub_partition_id(),
-            (unsigned long long)mf->get_addr(),
-            (unsigned long long)mf->get_partition_addr(), mf->get_sid(),
-            mf->get_tpc(), mf->get_wid(), mf->get_request_uid(), original_uid,
-            mem_access_type_str(access_type), mf->get_is_write(),
-            mf->get_data_size(), mf->get_access_size(), sector_mask, status);
-    ++m_lines;
-    if ((m_lines & ((1ULL << 20) - 1)) == 0) fflush(m_file);
-    funlockfile(m_file);
-  }
-
- private:
-  l2_request_trace()
-      : m_enabled(false),
-        m_trace_cache_accept(false),
-        m_tma_only(false),
-        m_max_cycle(ULLONG_MAX),
-        m_file(NULL),
-        m_buffer(NULL),
-        m_lines(0) {
-    const char *path = getenv("FLASHGPU_L2_TRACE_CSV");
-    if (!path || path[0] == '\0') return;
-
-    const char *max_cycle = getenv("FLASHGPU_L2_TRACE_MAX_CYCLE");
-    if (max_cycle && max_cycle[0] != '\0')
-      m_max_cycle = strtoull(max_cycle, NULL, 0);
-
-    const char *cache_accept = getenv("FLASHGPU_L2_TRACE_CACHE_ACCEPT");
-    m_trace_cache_accept =
-        cache_accept && cache_accept[0] != '\0' && strcmp(cache_accept, "0");
-
-    const char *tma_only = getenv("FLASHGPU_L2_TRACE_TMA_ONLY");
-    m_tma_only = tma_only && tma_only[0] != '\0' && strcmp(tma_only, "0");
-
-    m_file = fopen(path, "w");
-    if (!m_file) {
-      perror("FLASHGPU_L2_TRACE_CSV");
-      return;
-    }
-
-    m_buffer = (char *)malloc(16 * 1024 * 1024);
-    if (m_buffer) setvbuf(m_file, m_buffer, _IOFBF, 16 * 1024 * 1024);
-
-    fprintf(m_file,
-            "cycle,event,subpart,mf_subpart,addr,partition_addr,requestor_sm,"
-            "tpc,wid,uid,orig_uid,type,is_write,data_size,access_size,"
-            "sector_mask,status\n");
-    m_enabled = true;
-    printf("FLASHGPU_L2_TRACE_CSV enabled: path=%s max_cycle=%llu "
-           "tma_only=%u cache_accept=%u\n",
-           path, m_max_cycle, m_tma_only ? 1 : 0,
-           m_trace_cache_accept ? 1 : 0);
-  }
-
-  ~l2_request_trace() {
-    if (m_file) {
-      fflush(m_file);
-      fclose(m_file);
-    }
-    free(m_buffer);
-  }
-
-  bool m_enabled;
-  bool m_trace_cache_accept;
-  bool m_tma_only;
-  unsigned long long m_max_cycle;
-  FILE *m_file;
-  char *m_buffer;
-  unsigned long long m_lines;
-};
-
-static void trace_l2_event(const char *event, unsigned long long cycle,
-                           unsigned subpart_id, mem_fetch *mf,
-                           const char *status) {
-  l2_request_trace::instance().log(event, cycle, subpart_id, mf, status);
-}
-
 static unsigned coarse_l2_partition_id(unsigned id, unsigned total,
                                        unsigned partition_count) {
   assert(partition_count > 0);
@@ -768,11 +664,10 @@ memory_sub_partition::~memory_sub_partition() {
 void memory_sub_partition::process_l2_access_result(
     mem_fetch *mf, cache_request_status status,
     const std::list<cache_event> &events) {
-  if (status != RESERVATION_FAIL &&
-      l2_request_trace::instance().cache_accept_enabled()) {
-    trace_l2_event("CACHE_ACCEPT",
-                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, m_id, mf,
-                   cache_request_status_str(status));
+  if (status != RESERVATION_FAIL) {
+    Trace::l2_request_event("CACHE_ACCEPT",
+                            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
+                            m_id, mf, cache_request_status_str(status));
   }
   const bool write_sent = was_write_sent(events);
   const bool read_sent = was_read_sent(events);
@@ -1527,7 +1422,7 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
     for (unsigned i = 0; i < reqs.size(); ++i) {
       mem_fetch *req = reqs[i];
       m_request_tracker.insert(req);
-      trace_l2_event("REQ", cycle, m_id, req, "ICNT_TO_L2");
+      Trace::l2_request_event("REQ", cycle, m_id, req, "ICNT_TO_L2");
       const unsigned extra_latency = l2_partition_extra_latency(req);
       if (extra_latency > 0) {
         m_l2_partition_remote_accesses++;
@@ -1562,8 +1457,9 @@ mem_fetch *memory_sub_partition::pop(
     mf = NULL;
   }
   if (mf) {
-    trace_l2_event("RESP", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
-                   m_id, mf, "L2_TO_ICNT");
+    Trace::l2_request_event("RESP",
+                            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
+                            m_id, mf, "L2_TO_ICNT");
   }
   return mf;
 }

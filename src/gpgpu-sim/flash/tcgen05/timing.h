@@ -69,7 +69,7 @@ struct tcgen05_timing_stats_t {
 };
 
 // Per-SM TCGen05 asynchronous timing state. Functional data updates remain in
-// cuda-sim; this class only controls performance-visible completion.
+// the PTX adapter; this class only controls performance-visible completion.
 class tcgen05_unit_t {
 public:
   explicit tcgen05_unit_t(const tcgen05_timing_config_t &config);

@@ -433,4 +433,8 @@ From PTX ISA 9.1, Section 9.7.9.25:
 - `memory_space`: Global and shared memory simulation
 - L2 cache subsystem: Handles sector subdivision of large TMA requests
 
-**Trace Output**: Uses `GPPRINTF_INST_EXEC(TMA, ...)` and `GPPRINTF_TMA(TMA, ...)` for debug logging.
+**Trace Output**: Select the existing `TMA` component with `-trace_components`
+and enable `-trace_enabled`. Functional and timing diagnostics honor
+`-trace_sampling_core`. Transaction and mem_fetch events use stdout key/value
+records; the former `FLASHGPU_TMA_TRACE_*` environment variables and direct
+CSV output have been removed.

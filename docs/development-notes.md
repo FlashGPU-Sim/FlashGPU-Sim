@@ -115,6 +115,91 @@ written under `tests/logs/ci/xml/`. The workflow uploads the complete
 [PR workflow](../.github/workflows/pr-tests.yml) and CI runner are the
 authoritative sources for the current matrix layout and test scope.
 
+## Runtime Tracing
+
+Build with `TRACE=1` (the default) to include runtime diagnostics. Enable
+instruction issue diagnostics in the run directory's `gpgpusim.config`:
+
+```text
+-trace_enabled 1
+-trace_components INSTRUCTION_ISSUE
+-trace_sampling_core 0
+```
+
+Use `-trace_sampling_core -1` for all SMs. Components can be combined in a
+comma-separated list, for example `WARP_SCHEDULER,INSTRUCTION_ISSUE`.
+Component names match exactly; selecting `WGMMA_RF_TRAFFIC` does not enable
+`MMA`.
+Output goes to stdout and can be captured with the simulator log.
+
+`INSTRUCTION_ISSUE` records scheduler-observed `ISSUE`, `STALL_SCOREBOARD`,
+and `STALL_READY_NO_ISSUE` events, including warp identity, PC, instruction
+class/text, and the producer class for scoreboard stalls. It does not cover
+all stall causes or guarantee one record per instruction in a multi-issue
+iteration. The former `FGSIM_ISSUE_TRACE_*` environment variables are no
+longer used; select the component and core through the trace configuration.
+
+PTX extraction and selected-file diagnostics use `PTX_IR`, including the
+working directory, extraction command, selected files, and override state.
+Enable them with `-trace_enabled 1 -trace_components PTX_IR`; the former
+`GPGPUSIM_PTX_DEBUG` environment variable is no longer used. These are module
+loading records, so SM sampling does not apply. PTX override inputs and
+reorder reports retain their existing behavior.
+
+For MMA/WMMA functional diagnostics, select `MMA` in `-trace_components`.
+It reports instruction shapes and completion, plus the existing WMMA fragment
+values, lane mappings, matrices, and load/store details. Records include the
+cycle, SM, warp, and PC; lane-specific records identify the lane in the payload.
+The trace enable and core sampling options apply. Matrix and fragment dumps
+can produce substantial output. The former internal `debug_tensorcore` flag
+has been removed; no separate debug switch is needed.
+
+For WGMMA register-file traffic diagnostics, select `WGMMA_RF_TRAFFIC` in
+`-trace_components`. It reports token additions and collector drains with the
+cycle, core, byte counts, and remaining backlog. The existing trace enable and
+core sampling options apply. Combine it with other components, for example
+`WARP_SCHEDULER,WGMMA_RF_TRAFFIC`. The former
+`GPGPU_SIM_WGMMA_COLLECTOR_DEBUG` environment variable and its 128-message limit
+are no longer used.
+
+Barrier and TCGen05 diagnostics use the same configuration:
+
+- `NAMED_BARRIER`: named-barrier arrivals, release decisions, and delayed
+  warp releases.
+- `MBAR`: mbarrier operations and per-lane wait, recheck, completion, and
+  cancellation events.
+- `TCGEN05`: TMEM allocation/deallocation, MMA descriptors, shared descriptor
+  interpretation, and register/TMEM transfers.
+
+For example, select `-trace_components NAMED_BARRIER,MBAR,TCGEN05`. All three
+components honor `-trace_sampling_core`; use `-1` for all SMs. The former
+`FLASHGPU_SIM_BARRIER_TRACE`, `FLASHGPU_SIM_MBARRIER_TRACE`, and `TCGEN05_DEBUG`
+environment variables are no longer used.
+
+L2 request diagnostics use `MEMORY_SUBPARTITION_UNIT` and report `L2` events
+`REQ`, `CACHE_ACCEPT`, and `RESP`. They honor core sampling and
+`-trace_sampling_memory_partition` (the L2 subpartition ID).
+Request-network diagnostics use `INTERCONNECT` and report `NoC` events `PUSH`,
+`GRANT`, and `PRE_ARB`. `PRE_ARB` records outputs with at least two competing
+inputs; its request metadata identifies a representative request from the
+sampled core, while requester and queue counts include all contenders.
+
+Both use stdout key/value records with request/original UIDs, addresses,
+request types, sizes, and sector masks. NoC records use `icnt_cycle` for the
+network event and `gpu_push_cycle` for the request's status timestamp; L2
+records use GPU cycles. The former `FLASHGPU_L2_TRACE_*` and
+`FLASHGPU_REQ_NOC_TRACE_*` environment variables and direct CSV writers have
+been removed. Capture and post-process the simulator log for tabular analysis.
+
+TMA diagnostics use the existing `TMA` component, including transaction
+creation, mem_fetch issue/response, completion, and barrier arrival records.
+The existing functional and timing messages also honor core sampling.
+The gem5 bridge uses `INTERCONNECT` for `GEM5` mem_fetch events `PUSH`,
+`DRAIN_SEND`, and `POP`, with an explicit `gem5_tick` timestamp.
+Both use the trace enable/component/core gates and stdout. The former
+`FLASHGPU_TMA_TRACE_*` and `FLASHGPU_GEM5_MF_TRACE_*` environment variables and
+CSV writers have been removed.
+
 ## Repository Map
 
 - `src/cuda-sim/`: PTX loading, parsing, instruction representation, and
