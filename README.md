@@ -25,8 +25,8 @@ architectures and AI workloads, built upon GPGPU-Sim.
 
 | Area | Supported capabilities |
 | --- | --- |
-| Architectures | Hopper/SM90 ([`SM90_H100`](configs/SM90_H100/gpgpusim.config)) and Blackwell/SM120 ([`SM120_RTX5090`](configs/SM120_RTX5090/gpgpusim.config)) configurations |
-| GPU features | TMA, `mbarrier`, `mma`, `wgmma`, `ldmatrix`/`stmatrix`, etc. |
+| Architectures | Hopper: [`SM90_H100`](configs/SM90_H100/gpgpusim.config); Blackwell: [`SM100_B200`](configs/SM100_B200/gpgpusim.config), [`SM120_RTX5090`](configs/SM120_RTX5090/gpgpusim.config) |
+| GPU features | TMA, TMEM, `tcgen05`, `mbarrier`, `mma`, `wgmma`, `ldmatrix`/`stmatrix`, etc. |
 | Workload tooling | [TritonTrace](tools/README.md) kernel capture and standalone replay ([examples and validation](tests/dsl/triton/README.md)) |
 | Simulation | Execution-driven functional simulation and cycle-level timing simulation |
 | Parallelism | OpenMP-based multi-threaded SM simulation |
@@ -35,7 +35,6 @@ architectures and AI workloads, built upon GPGPU-Sim.
 
 | Direction | Status | Planned work |
 | --- | --- | --- |
-| Blackwell features | In progress | Extend the SM120/RTX 5090 model with features used by FlashAttention-4, including `tcgen05` |
 | Distributed shared memory | In progress | Model thread-block cluster features, such as remote shared-memory addressing |
 | gem5 integration | Experimental | Stabilize gem5 as an alternative memory-system backend |
 | Scale-up multi-GPU simulation | Planned | Model native remote-memory loads/stores, fabric transport, unified addressing, and memory consistency |
@@ -354,4 +353,4 @@ BibTeX:
 
 FlashGPU-Sim is built upon GPGPU-Sim. We retain their upstream copyright and license notices in
 [COPYRIGHT](COPYRIGHT), and thank their authors and contributors for their foundational work.
-The [archived upstream GPGPU-Sim documentation](docs/legacy/gpgpu-sim.md) is retained for historical reference.
+See [upstream project history and citations](docs/legacy/gpgpu-sim.md) for the inherited components.

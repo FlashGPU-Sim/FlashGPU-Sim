@@ -644,6 +644,7 @@ install_gpu_config() {
 
     cp "$GPU_CONFIG_DIR/gpgpusim.config" "$launcher_dir/"
     cp "$GPU_CONFIG_DIR/config_ampere_islip.icnt" "$launcher_dir/"
+    cp "$GPU_CONFIG_DIR/sass_primary_hints.rules" "$launcher_dir/"
 
     if [[ -n "$clock_domains" ]]; then
         if [[ ! "$clock_domains" =~ ^[0-9]+:[0-9]+:[0-9]+:[0-9]+$ ]]; then

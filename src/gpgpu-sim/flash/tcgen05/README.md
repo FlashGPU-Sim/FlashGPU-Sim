@@ -3,13 +3,6 @@
 This directory contains the functional and execution-driven TCGen05/TMEM
 support for Blackwell PTX execution.
 
-[`../tcgen05.cc`](../tcgen05.cc) implements PTX operand handling and functional
-execution, and adapts PTX instructions and shader configuration to timing
-operations. `src/cuda-sim/instructions.cc` retains the opcode entry wrappers.
-Descriptor interpretation, matrix computation, TMEM storage, and asynchronous
-timing remain in `descriptor`, `mma`, `tmem`, and `timing` respectively. Shader code
-owns the pipeline, barrier, and CTA lifecycle integration points.
-
 Current scope:
 
 - `cta_group::1` only.
@@ -25,17 +18,14 @@ Current scope:
   completion tail. These combine a counter-informed service rate with an
   effective completion overhead; they do not establish timing accuracy for
   every TCGen05 variant.
-- Optional inline-PTX surface validation through
-  `tests/dev/tcgen05/run_phase1_smoke.sh --check-inline`, which requires a
-  Blackwell-capable CUDA toolchain.
 
 Model limits:
 
 - MMA completion uses a fixed tail. The asynchronous queue depth is
   configurable; `0` leaves it unlimited, as in the B200 configuration.
-- CP/shift and vector-width-specific LD/ST latency/initiation tables; defaults
-  are one cycle until instruction-level B200 measurements are available.
-- TMEM banking and contention. LD/ST still share the existing tensor-pipeline
+- CP/shift and vector-width-specific LD/ST timing use configurable tables
+  with provisional one-cycle defaults.
+- TMEM banking and contention are not modeled. LD/ST share the tensor-pipeline
   and register-file infrastructure; there is no independent TMEM byte-rate
   knob.
 

@@ -2,7 +2,7 @@
 
 This directory contains examples and validation workloads for
 [TritonTrace](../../../tools/README.md). See the tool documentation for
-installation, capture internals, generated artifacts, standalone replay, and
+installation, capture modes, generated artifacts, standalone replay, and
 limitations.
 
 ## Layout
@@ -83,6 +83,10 @@ python3 validation/compare_cycles.py test_tma_gemm \
 # Copy the selected simulator config into existing launcher directories
 ./validation/sync_config.sh test_tma_gemm
 ```
+
+The sync command copies `gpgpusim.config`, the interconnect configuration and
+`sass_primary_hints.rules` from `SM120_RTX5090`. Keep the rules file in the
+execution directory when SASS-guided reordering is enabled.
 
 Validation outputs are stored under:
 

@@ -6,7 +6,7 @@ peak throughput, and instruction-latency calibration.
 There are two build paths:
 
 - gtest microbenchmarks (`inst_latency_bench.cc`, `mma_issue_bench.cc`) are
-  built through `microbench/sm120/mma`.
+  built with `--arch sm120 --group microbench --profile mma`.
 - standalone CUDA calibration binaries (`mma_accept_queue_bench.cu`,
   `mma_saturation_bench.cu`) are built by the same group or from this directory
   with the local Makefile.
@@ -14,7 +14,8 @@ There are two build paths:
 
 ## Supported Tests
 
-Run the gtest probes from `tests/` through `microbench/sm120/mma`.
+Run the gtest probes from `tests/` with the `sm120` architecture, `microbench`
+group and `mma` profile.
 
 | Test | Source | Description | Output |
 |------|--------|-------------|--------|
@@ -27,8 +28,7 @@ Run the gtest probes from `tests/` through `microbench/sm120/mma`.
 ## Variant Coverage
 
 `mma_issue_bench.cc` uses `TYPED_TEST_SUITE`, so the issue-gap benchmarks run
-for every supported MMA op in one build. There is no longer a manual
-`CurrentMmaOp` switch in the source.
+for the following MMA variants in one build.
 
 - `MmaOp_F16_M16N8K16`
 - `MmaOp_F16_M16N8K8`

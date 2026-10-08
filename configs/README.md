@@ -255,9 +255,16 @@ the normal operand-collector read budget:
 | `-gpgpu_ptx_reorder` | `0` | `1` | `1` | `1` | Enable conservative PTX instruction reordering |
 | `-gpgpu_ptx_reorder_sass_guided` | `0` | `1` | `1` | `1` | Guide PTX reordering with auto-extracted SASS/PTX-line anchors |
 
-When SASS-guided reordering is enabled, FlashGPU-Sim loads the single
-`*.rules` file in the run directory. The supplied SM90, SM100, and SM120
-configurations include `sass_primary_hints.rules` and enable the feature.
+When SASS-guided reordering is enabled, FlashGPU-Sim generates a guide for each
+PTX module at load time, before parsing and reordering. Generation uses
+`python3`, `ptxas`, and `nvdisasm`. The CUDA tools come from
+`PTXAS_CUDA_INSTALL_PATH`, falling back to `CUDA_INSTALL_PATH`. Select a toolkit
+compatible with the workload's PTX version and target architecture; it can
+differ from the toolkit used to build the simulator.
+
+FlashGPU-Sim also loads the single `*.rules` file in the run directory. The
+supplied SM90, SM100, and SM120 configurations include
+`sass_primary_hints.rules` and enable the feature.
 Functions without a rule-covered PTX opcode use conservative plain reordering.
 A function that contains covered PTX but has no mapped SASS anchor fails
 explicitly. When at least one anchor maps, covered PTX without guide evidence
@@ -351,6 +358,12 @@ represent the calibrated default models.
 | `-gpgpu_tensor_core_units_per_sub_partition` | `1` | Tensor issue units sharing each ideal queue subpartition |
 | `-gpgpu_tma_request_bytes_per_cycle` | `0` | Apply a TMA request-side byte budget; `0` disables the budget |
 | `-gpgpu_dram_frfcfs_rowhit_first` | `0` | Prefer row-hit banks during FR-FCFS bank assignment |
+
+## Runtime Tracing
+
+Use `-trace_enabled`, `-trace_components` and the sampling options to select
+stdout diagnostics. See the [runtime tracing guide](../docs/tracing.md) for
+component names, examples and timestamp meanings.
 
 ## Custom Configurations
 

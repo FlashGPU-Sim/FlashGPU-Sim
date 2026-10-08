@@ -2,12 +2,9 @@
 
 This directory contains the maintained test-side command-line tools.
 
-## Architecture manifest generation
+## Validate test selections
 
-`arch_manifests_to_make.py` validates architecture manifests and generates the
-Make variables used by the test build. `tests/Makefile` invokes it
-automatically when `tests/arch/*.toml` changes. Validate the manifests without
-building tests with:
+Validate the available architecture/test selections without building tests:
 
 ```bash
 python3 tests/scripts/arch_manifests_to_make.py validate
