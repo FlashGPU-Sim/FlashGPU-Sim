@@ -1,8 +1,8 @@
 # H200 CLUSTER132 calibration status
 
-Frozen snapshot for `configs/SM90_H200_CLUSTER132`. Numbers come from H200 job
-2119329 where noted. This is not a live agent log: do not treat `/tmp` paths
-or PIDs as current work.
+Frozen snapshot for `configs/SM90_H200_CLUSTER132`. Numbers come from one
+partial H200 hardware pass where noted. That pass did not finish the 4096³
+GEMM timed launch. Detail is in [`evidence.md`](evidence.md).
 
 Config: mixed GPC map `-gpgpu_gpc_sms 16,16,16,16,16,16,18,18` (132 SMs),
 fabric on, CUDA CC 9.0 occupancy 2048 threads / 32 blocks per SM. HBM geometry
@@ -41,11 +41,11 @@ CI config. See [`tests.md`](tests.md).
 | Path | Result vs H200 |
 |------|----------------|
 | Normal HBM load bandwidth | ~0% error (PASS, &lt;10%) |
-| DSM fabric bandwidth / hop shape | Mostly OK vs silicon (supervisor) |
+| DSM fabric bandwidth / hop shape | Mostly OK versus silicon |
 | Cluster launch, `mapa`, remote ld/st/`atom.add`, remote mbarrier | Functionally correct |
 
 Selected latency knobs on CLUSTER132 (arrive, try_wait, TMA multicast floor,
-DSM base / store-visibility) were fitted from accepted job-2119329 rows.
+DSM base / store-visibility) were fitted from that partial H200 hardware pass.
 Unmeasured fields use the H100 same-Hopper baseline and are labeled as such
 in the config comments (`measured` / `inferred`).
 
@@ -64,8 +64,8 @@ in the config comments (`measured` / `inferred`).
 TMA multicast is intentionally **not** on the DSM fabric. Do not treat a
 fixed `-gpgpu_tma_multicast_latency` as a multicast NoC.
 
-Job 2119329 is only a partial hardware pass (4096³ GEMM timed launch failed).
-Do not republish that job as a complete H200 golden set.
+Do not treat that partial pass as a complete H200 golden set. See
+[`evidence.md`](evidence.md).
 
 ---
 

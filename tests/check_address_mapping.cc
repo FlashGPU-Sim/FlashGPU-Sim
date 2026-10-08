@@ -1,7 +1,7 @@
 // Standalone regression using the actual decoder, without simulator startup.
 // From the repository root (choose a fresh output path):
 // g++ -std=c++17 -O2 -Isrc -I/usr/local/cuda/include \
-//   test/check_address_mapping.cc src/gpgpu-sim/addrdec.cc \
+//   tests/check_address_mapping.cc src/gpgpu-sim/addrdec.cc \
 //   src/gpgpu-sim/hashing.cc src/option_parser.cc -o /tmp/check_address_mapping
 // /tmp/check_address_mapping
 #include "gpgpu-sim/addrdec.h"

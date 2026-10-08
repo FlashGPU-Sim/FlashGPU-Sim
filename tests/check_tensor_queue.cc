@@ -4,7 +4,7 @@
 // sed -n '/^bool tensor_core::issue_queue_enabled_for(/,/^}/p' \
 //   src/gpgpu-sim/shader.cc | g++ -std=c++17 -O1 -g -fno-access-control \
 //   -fsanitize=address -fno-omit-frame-pointer -Isrc -I/usr/local/cuda/include \
-//   -include test/check_tensor_queue.cc -x c++ - -x none \
+//   -include tests/check_tensor_queue.cc -x c++ - -x none \
 //   /ABS/EXISTING/SIM/LIB/libcudart.so -Wl,-rpath,/ABS/EXISTING/SIM/LIB \
 //   -o /tmp/check_tensor_queue
 // LD_LIBRARY_PATH=/ABS/EXISTING/SIM/LIB ASAN_OPTIONS=detect_leaks=0 \

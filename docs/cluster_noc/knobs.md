@@ -18,7 +18,7 @@ distinct algorithms:
 path and takes precedence. Power-of-two mapping is unchanged. No setting
 here establishes NVIDIA's physical hash.
 
-Run the standalone regression documented in `test/check_address_mapping.cc`.
+Run the standalone regression documented in `tests/check_address_mapping.cc`.
 See `calibration.md` for failing-before evidence, build status, and the separate
 inherited row-capacity limitation. Recalibrate after rebuilding the decoder;
 old timing results are not acceptance evidence for the repaired mapping.
@@ -27,7 +27,7 @@ old timing results are not acceptance evidence for the repaired mapping.
 
 `-gpgpu_mbarrier_trywait_default_timeout_ns` defaults to **0** (legacy
 immediate polling, including unchanged H100). The H200 132SM candidate is
-**4320 ns**, inferred from job 2119329's vendor WaitFalse slope of 7755
+**4320 ns**, inferred from that partial H200 hardware pass: the vendor WaitFalse slope is 7755
 cycles/op after accounting for modeled release overhead. This is a bounded
 suspension limit, not successful-wait latency. Completion wakes the warp
 early; explicit PTX hints override the default and are also in ns. The default
@@ -120,11 +120,9 @@ Hang watchdog is independent of fabric hop timing.
 
 Cycle-accurate calibration (latency + slopes + GEMM), full-chip GPC packing, and sim tables: [`calibration.md`](calibration.md).
 
-The old H200 Slurm source is intentionally not retained as evidence. Job
-2119329 is the current, partially accepted source; its failed 4096^3 GEMM row
-is excluded. The vendor `dsm_bw` pin remains documented in
-[`evidence.md`](evidence.md); use [`calibration.md`](calibration.md) for the
-acceptance details.
+The partial H200 hardware pass is the current source. Its failed 4096^3 GEMM
+row is excluded. The vendor `dsm_bw` pin and the acceptance detail are in
+[`evidence.md`](evidence.md) and [`calibration.md`](calibration.md).
 
 | Provisional target | Former hop model | Fabric intent |
 |----------------|-----------------|---------------|
@@ -132,7 +130,7 @@ acceptance details.
 | Remote e2e ~193.41 | local + 2×hop | Fabric RTT + SRAM, **not** a baked issue stall |
 | One-way ~78 | former hop table | `base_latency` + serialization |
 | Stride ~1.001 | flat matrix | Hash should not invent multi-hop by rank |
-| TMA mcast−unicast robust median ~99 cycles | `gpgpu_tma_multicast_latency=100` | Fixed completion approximation; job 2119329 observed roughly 100–140 cycles normally |
+| TMA mcast−unicast robust median ~99 cycles | `gpgpu_tma_multicast_latency=100` | Fixed completion approximation; that partial H200 pass observed roughly 100–140 cycles normally |
 | ~21 B/cycle / SM | BPC unused (0) | Shaper 2/3 × 32 B payload |
 | SM120 product | NoC **off** | Keep functional-immediate until a SM120 fabric preset exists |
 
@@ -145,7 +143,7 @@ Policy: only `configs/SM90_H200_CLUSTER132` carries calibrated DSM timing today.
 Global-memory TMA multicast is functionally copied to every selected peer without entering
 `dsm_fabric_t`. Peer and selected-issuer `complete_tx` occurs
 after the TMA transaction plus `-gpgpu_tma_multicast_latency`; the H200
-full-chip preset uses 100 cycles from job 2119329. Zero adds no multicast
+full-chip preset uses 100 cycles from that partial H200 pass. Zero adds no multicast
 delay. No topology, bandwidth, routing, queue, SRAM-service, or contention
 model is attached to global-memory multicast. Mapped shared-to-shared TMA
 is different: it uses DSM transport and is the positive routing control.

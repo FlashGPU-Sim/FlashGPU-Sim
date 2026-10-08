@@ -549,7 +549,7 @@ void report(const char *name, const char *knob, const CycleStats &s,
 void run_tma_multicast_probes(const SuiteOptions &opt, MetricSink &sink) {
   std::printf("\n--- tma_multicast (simultaneity + size sweep) ---\n");
   print_kernel_source("src/probe_tma_multicast.cu",
-                      "H200_profiling (our own)",
+                      "TMA multicast size, skew, and fan-out",
                       "clock64 issue/e2e timing; globaltimer destination skew",
                       "TMA multicast latency and simultaneity");
   std::printf(
@@ -698,7 +698,7 @@ void run_tma_multicast_probes(const SuiteOptions &opt, MetricSink &sink) {
     std::fflush(stdout);
   }
 
-  // TODO §2.5: e2e size slope → BPC for unicast and mcast
+  // End-to-end size slope, then bytes per cycle, for unicast and multicast.
   if (fit_bytes.size() >= 2) {
     auto ls_slope = [](const std::vector<double> &x,
                        const std::vector<double> &y) -> double {

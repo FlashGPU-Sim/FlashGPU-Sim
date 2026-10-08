@@ -1,7 +1,7 @@
 // Native instruction timing regression; no GPU launch.
 // g++ -std=c++17 -O1 -fno-access-control -Isrc -I/ABS/SIM/BUILD/cuda-sim \
 //   -I/usr/local/cuda/include \
-//   test/check_int64_lowering.cc /ABS/SIM/LIB/libcudart.so \
+//   tests/check_int64_lowering.cc /ABS/SIM/LIB/libcudart.so \
 //   -Wl,-rpath,/ABS/SIM/LIB -o /tmp/check_int64_lowering
 // LD_LIBRARY_PATH=/ABS/SIM/LIB /tmp/check_int64_lowering
 #include "../libcuda/gpgpu_context.h"

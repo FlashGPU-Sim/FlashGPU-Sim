@@ -55,8 +55,6 @@ int run_suite(int argc, char **argv, const char *suite_name,
   SuiteOptions opt;
   bool emit_csv = true;
   std::string csv_file = std::string(suite_name) + ".csv";
-  std::string job_id = "local";
-  if (const char *e = std::getenv("SLURM_JOB_ID")) job_id = e;
 
   for (int i = 1; i < argc; ++i) {
     const char *a = argv[i];
@@ -104,9 +102,7 @@ int run_suite(int argc, char **argv, const char *suite_name,
   cudaDeviceProp prop{};
   CUDA_CHECK(cudaGetDeviceProperties(&prop, opt.device));
 
-  std::printf("=== H200 Latency Suite ===\n");
-  std::printf("job_id: %s\n", job_id.c_str());
-  std::printf("methodology: Luo et al. arXiv:2501.12084 + FlashGPU-Sim TODO\n");
+  std::printf("methodology: Luo et al. arXiv:2501.12084\n");
   std::printf("device_index: %d\n", opt.device);
   std::printf("device_name: %s\n", prop.name);
   std::printf("compute_capability: %d.%d\n", prop.major, prop.minor);

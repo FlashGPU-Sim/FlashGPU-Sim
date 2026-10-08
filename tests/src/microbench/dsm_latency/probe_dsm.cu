@@ -20,8 +20,6 @@ namespace {
 constexpr int kMaxCluster = 32;
 constexpr int kSmemElems = 256;
 constexpr int kChaseSteps = 64;
-constexpr int kBwSmemBytes = 16 * 1024;  // paper uses 16 KB per block
-constexpr int kBwIters = 64;
 
 // ---------------------------------------------------------------------------
 // Latency matrix (paper §7.1)
@@ -97,118 +95,6 @@ __global__ void dsm_matrix_kernel(uint64_t *latency_tot, uint32_t *smids,
 #endif
 }
 
-// ---------------------------------------------------------------------------
-// Stride topology latency: each rank times load from (rank+stride)%N
-// ---------------------------------------------------------------------------
-
-// out[sample * n + rank] = total cycles for kChaseSteps to dest (rank+stride)%n
-__global__ void dsm_stride_kernel(uint64_t *out, uint32_t *smids, int cluster_n,
-                                  int stride, int n_samples) {
-#if __CUDA_ARCH__ >= 900
-  cg::cluster_group cluster = cg::this_cluster();
-  const int rank = static_cast<int>(cluster.block_rank());
-  const int n = static_cast<int>(cluster.num_blocks());
-  if (n != cluster_n) return;
-
-  __shared__ int smem[kSmemElems];
-  for (int i = threadIdx.x; i < kSmemElems; i += blockDim.x) {
-    smem[i] = (i + 1) % kSmemElems;
-  }
-  if (threadIdx.x == 0) smids[rank] = smid_now();
-  cluster.sync();
-
-  const int dst = (rank + stride) % n;
-  // mapa outside timer (pure load chase).
-  int *remote = cluster.map_shared_rank(smem, dst);
-
-  // Warmup
-  if (threadIdx.x == 0) {
-    int idx = 0;
-    for (int i = 0; i < kChaseSteps * 4; ++i) idx = remote[idx % kSmemElems];
-    (void)idx;
-  }
-  cluster.sync();
-
-  for (int s = 0; s < n_samples; ++s) {
-    if (threadIdx.x == 0) {
-      int idx = 0;
-      asm volatile("" ::: "memory");
-      const uint64_t t0 = clock64_now();
-#pragma unroll 1
-      for (int i = 0; i < kChaseSteps; ++i) {
-        idx = remote[idx];
-      }
-      const uint64_t t1 = clock64_now();
-      out[static_cast<size_t>(s) * n + rank] = t1 - t0;
-      if (idx == 0x7fffffff) out[0] = 0;
-    }
-    cluster.sync();
-  }
-#else
-  (void)out;
-  (void)smids;
-  (void)cluster_n;
-  (void)stride;
-  (void)n_samples;
-#endif
-}
-
-// ---------------------------------------------------------------------------
-// Bandwidth kernels (paper §7.2 patterns)
-// pattern: 0=ring, 1=pair, 2=broadcast
-// ---------------------------------------------------------------------------
-
-__global__ void dsm_bw_kernel(int pattern, int iters, uint32_t *sink) {
-#if __CUDA_ARCH__ >= 900
-  cg::cluster_group cluster = cg::this_cluster();
-  const int rank = static_cast<int>(cluster.block_rank());
-  const int n = static_cast<int>(cluster.num_blocks());
-
-  extern __shared__ __align__(16) uint8_t smem_bytes[];
-  // Init local smem
-  for (int i = threadIdx.x; i < kBwSmemBytes / 4; i += blockDim.x) {
-    reinterpret_cast<uint32_t *>(smem_bytes)[i] =
-        static_cast<uint32_t>(rank * 131 + i);
-  }
-  cluster.sync();
-
-  int src_rank = 0;
-  if (pattern == 0) {
-    src_rank = (rank + 1) % n;  // ring
-  } else if (pattern == 1) {
-    src_rank = rank ^ 1;  // pair (butterfly step); if n odd, clamp
-    if (src_rank >= n) src_rank = rank;
-  } else {
-    src_rank = 0;  // broadcast from rank 0
-  }
-
-  const uint32_t *remote = reinterpret_cast<const uint32_t *>(
-      cluster.map_shared_rank(smem_bytes, src_rank));
-  uint32_t acc = 0;
-
-  // All threads participate (paper: large block size improves BW).
-#pragma unroll 1
-  for (int it = 0; it < iters; ++it) {
-    for (int i = threadIdx.x; i < kBwSmemBytes / 4; i += blockDim.x) {
-      acc += remote[i];
-    }
-    // Re-sync so remote smem is stable if someone were writing (read-only here).
-    cluster.sync();
-  }
-
-  // Reduce acc within CTA so compiler cannot drop loads.
-  __shared__ uint32_t red;
-  if (threadIdx.x == 0) red = 0;
-  __syncthreads();
-  atomicAdd(&red, acc);
-  __syncthreads();
-  if (threadIdx.x == 0) {
-    sink[blockIdx.x] = red;
-  }
-#else
-  if (threadIdx.x == 0) sink[blockIdx.x] = 0;
-#endif
-}
 
 // ---------------------------------------------------------------------------
 // Launch helpers
@@ -254,11 +140,6 @@ cudaError_t launch_dsm_matrix(uint64_t *d_lat, uint32_t *d_smids, int n,
   return launch_cluster_ex((const void *)dsm_matrix_kernel, args, n, 32, 0);
 }
 
-cudaError_t launch_dsm_stride(uint64_t *d_out, uint32_t *d_smids, int n,
-                              int stride, int n_samples) {
-  void *args[] = {&d_out, &d_smids, &n, &stride, &n_samples};
-  return launch_cluster_ex((const void *)dsm_stride_kernel, args, n, 32, 0);
-}
 
 int find_max_cluster_size(const void *fn, int dyn_smem) {
   cudaLaunchConfig_t cfg = {};
@@ -351,222 +232,21 @@ int launch_matrix_with_shrink(uint64_t *d_lat, uint32_t *d_smids, int n_want,
   return 0;
 }
 
-void run_stride_topology(const SuiteOptions &opt, MetricSink &sink, int n) {
-  std::printf("\n  --- stride topology latency (probe all-to-all vs tree) ---\n");
-  std::printf(
-      "  method: each rank pointer-chases smem of rank (r+stride)%%N\n");
-  std::printf(
-      "  interpret: flat NoC ⇒ latency ~const vs stride; tree ⇒ grows with "
-      "stride\n");
-
-  (void)configure_fn((const void *)dsm_stride_kernel, 0);
-
-  const size_t elems =
-      static_cast<size_t>(opt.samples) * static_cast<size_t>(n);
-  uint64_t *d_out = nullptr;
-  uint32_t *d_smids = nullptr;
-  CUDA_CHECK(cudaMalloc(&d_out, elems * sizeof(uint64_t)));
-  CUDA_CHECK(cudaMalloc(&d_smids, static_cast<size_t>(n) * sizeof(uint32_t)));
-
-  std::vector<double> stride_medians;
-  std::vector<int> strides;
-
-  for (int stride = 1; stride <= n / 2; stride *= 2) {
-    CUDA_CHECK(cudaMemset(d_out, 0, elems * sizeof(uint64_t)));
-    cudaError_t cerr =
-        launch_dsm_stride(d_out, d_smids, n, stride, opt.samples);
-    if (cerr != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
-      std::printf("  SKIP stride=%d: %s\n", stride, cudaGetErrorString(cerr));
-      (void)cudaGetLastError();
-      continue;
-    }
-    std::vector<uint64_t> h(elems);
-    CUDA_CHECK(cudaMemcpy(h.data(), d_out, elems * sizeof(uint64_t),
-                          cudaMemcpyDeviceToHost));
-
-    // Per-rank median cycles/load, then mean across ranks
-    std::vector<double> rank_med;
-    for (int r = 0; r < n; ++r) {
-      std::vector<double> ps;
-      for (int s = 0; s < opt.samples; ++s) {
-        double adj = static_cast<double>(
-                         h[static_cast<size_t>(s) * n + r]) -
-                     opt.clock64_overhead;
-        if (adj < 0) adj = 0;
-        ps.push_back(adj / kChaseSteps);
-      }
-      rank_med.push_back(median_of(ps));
-    }
-    const double med = median_of(rank_med);
-    const double mn =
-        *std::min_element(rank_med.begin(), rank_med.end());
-    const double mx =
-        *std::max_element(rank_med.begin(), rank_med.end());
-
-    std::printf("  stride=%-2d  median=%.1f  min=%.1f  max=%.1f  cycles/load\n",
-                stride, med, mn, mx);
-    char name[64];
-    std::snprintf(name, sizeof(name), "dsm_stride_%d_latency", stride);
-    char notes[96];
-    std::snprintf(notes, sizeof(notes),
-                  "cluster=%d; dest=(r+%d)%%N; min=%.1f max=%.1f", n, stride, mn,
-                  mx);
-    sink.add("dsm", name, "dsm_topology_stride", med, mx, med, "cycles/load",
-             notes);
-    stride_medians.push_back(med);
-    strides.push_back(stride);
-  }
-
-  if (stride_medians.size() >= 2) {
-    const double s1 = stride_medians.front();
-    const double smax = stride_medians.back();
-    const double ratio = (s1 > 0) ? smax / s1 : 0;
-    std::printf(
-        "  stride_latency_ratio (s_max/s_1)=%.3f  "
-        "(~1 ⇒ all-to-all/flat; ≫1 ⇒ multi-hop/tree-like)\n",
-        ratio);
-    sink.add("dsm", "dsm_stride_latency_ratio", "dsm_topology", ratio, ratio,
-             ratio, "ratio", "max_stride_lat / stride1_lat");
-  }
-
-  CUDA_CHECK(cudaFree(d_out));
-  CUDA_CHECK(cudaFree(d_smids));
-}
-
-// Launch many clusters so SM-to-SM network is saturated (paper §7.2).
-cudaError_t launch_bw_multi(int pattern, int iters, uint32_t *sink, int cs,
-                            int block_dim, int n_clusters, int dyn_smem) {
-  const int grid = cs * n_clusters;
-  cudaLaunchConfig_t cfg = {};
-  cfg.gridDim = dim3(grid, 1, 1);
-  cfg.blockDim = dim3(block_dim, 1, 1);
-  cfg.dynamicSmemBytes = static_cast<size_t>(dyn_smem);
-  cfg.stream = 0;
-  cudaLaunchAttribute attrs[2];
-  attrs[0].id = cudaLaunchAttributeClusterDimension;
-  attrs[0].val.clusterDim.x = cs;
-  attrs[0].val.clusterDim.y = 1;
-  attrs[0].val.clusterDim.z = 1;
-  attrs[1].id = cudaLaunchAttributeClusterSchedulingPolicyPreference;
-  attrs[1].val.clusterSchedulingPolicyPreference =
-      cudaClusterSchedulingPolicySpread;
-  cfg.attrs = attrs;
-  cfg.numAttrs = 2;
-  void *args[] = {&pattern, &iters, &sink};
-  return cudaLaunchKernelExC(&cfg, (const void *)dsm_bw_kernel, args);
-}
-
-void run_bandwidth(const SuiteOptions &opt, MetricSink &sink, int max_n) {
-  std::printf("\n  --- DSM bandwidth (paper §7.2 ring/pair/broadcast) ---\n");
-  std::printf("  smem=%d B/CTA  iters=%d  multi-cluster saturation\n",
-              kBwSmemBytes, kBwIters);
-
-  (void)configure_fn((const void *)dsm_bw_kernel, kBwSmemBytes);
-
-  cudaDeviceProp prop{};
-  CUDA_CHECK(cudaGetDeviceProperties(&prop, opt.device));
-  const int nsm = prop.multiProcessorCount;
-
-  const char *pat_names[] = {"ring", "pair", "bcast"};
-  const int block_sizes[] = {128, 256, 512};
-  const int cluster_sizes[] = {2, 4, 8, 16};
-
-  // sink[blockIdx.x] — size to max grid
-  const int max_grid = nsm * 4;
-  uint32_t *d_sink = nullptr;
-  CUDA_CHECK(cudaMalloc(&d_sink, sizeof(uint32_t) * max_grid));
-
-  for (int cs : cluster_sizes) {
-    if (cs > max_n) continue;
-    // Cover ~4× SM count with whole clusters (paper uses huge residency).
-    int n_clusters = std::max(1, (nsm * 4) / cs);
-    // Cap to keep launch legal / runtime bounded
-    if (n_clusters * cs > max_grid) n_clusters = max_grid / cs;
-    if (n_clusters < 1) n_clusters = 1;
-
-    for (int p = 0; p < 3; ++p) {
-      double best_gbs = 0;
-      int best_bs = 0;
-      for (int bs : block_sizes) {
-        auto try_once = [&]() -> bool {
-          cudaError_t e =
-              launch_bw_multi(p, kBwIters, d_sink, cs, bs, n_clusters,
-                              kBwSmemBytes);
-          if (e != cudaSuccess) {
-            (void)cudaGetLastError();
-            return false;
-          }
-          if (cudaDeviceSynchronize() != cudaSuccess) {
-            (void)cudaGetLastError();
-            return false;
-          }
-          return true;
-        };
-        if (!try_once()) continue;  // warmup attempt
-        if (!try_once()) continue;
-
-        cudaEvent_t start, stop;
-        CUDA_CHECK(cudaEventCreate(&start));
-        CUDA_CHECK(cudaEventCreate(&stop));
-        CUDA_CHECK(cudaEventRecord(start));
-        if (launch_bw_multi(p, kBwIters, d_sink, cs, bs, n_clusters,
-                            kBwSmemBytes) != cudaSuccess ||
-            cudaEventRecord(stop) != cudaSuccess ||
-            cudaEventSynchronize(stop) != cudaSuccess) {
-          (void)cudaGetLastError();
-          CUDA_CHECK(cudaEventDestroy(start));
-          CUDA_CHECK(cudaEventDestroy(stop));
-          continue;
-        }
-        float ms = 0.f;
-        CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
-        CUDA_CHECK(cudaEventDestroy(start));
-        CUDA_CHECK(cudaEventDestroy(stop));
-
-        // Each CTA reads kBwSmemBytes × iters from a peer (or self for bcast src).
-        const int grid = cs * n_clusters;
-        const double bytes =
-            static_cast<double>(grid) * kBwSmemBytes * kBwIters;
-        const double sec = ms * 1e-3;
-        const double gbs =
-            (sec > 0) ? (bytes / sec) / (1024.0 * 1024.0 * 1024.0) : 0;
-        if (gbs > best_gbs) {
-          best_gbs = gbs;
-          best_bs = bs;
-        }
-      }
-      char name[80];
-      std::snprintf(name, sizeof(name), "dsm_bw_%s_cs%d", pat_names[p], cs);
-      char notes[128];
-      std::snprintf(notes, sizeof(notes),
-                    "best_block=%d pattern=%s cluster=%d n_clusters=%d", best_bs,
-                    pat_names[p], cs, n_clusters);
-      std::printf("  %-44s %10.2f GB/s  (%s)\n", name, best_gbs, notes);
-      sink.add("dsm", name, "dsm_bandwidth", best_gbs, best_gbs, best_gbs,
-               "GB/s", notes);
-    }
-  }
-  CUDA_CHECK(cudaFree(d_sink));
-}
-
 }  // namespace
 
-// Implemented in probe_dsm_l23.cu (TODO §2.1–2.4)
+// Dependent load, store visibility, and contention live in probe_dsm_l23.cu.
 void run_dsm_l23_probes(const SuiteOptions &opt, MetricSink &sink,
-                        int max_cluster, bool include_bandwidth);
+                        int max_cluster);
 
 namespace {
 
-void run_dsm_probes_impl(const SuiteOptions &opt, MetricSink &sink,
-                         bool include_bandwidth) {
-  std::printf(include_bandwidth
-                  ? "\n--- dsm (latency matrix + bandwidth + stride topology) ---\n"
-                  : "\n--- dsm_calibration (latency/store/contention only) ---\n");
+void run_dsm_probes_impl(const SuiteOptions &opt, MetricSink &sink) {
+  std::printf("\n--- dsm_calibration (latency/store/contention only) ---\n");
   print_kernel_source("src/probe_dsm.cu + src/probe_dsm_l23.cu",
-                      "H200_profiling (our own cluster DSM kernels)",
-                      "clock64 device-side measurements and CUDA-event bandwidth",
-                      "dsm_sm_to_sm_latency / dsm_bandwidth");
-  std::printf("  methodology: Luo et al. arXiv:2501.12084 §7 + FlashGPU-Sim TODO\n");
+                      "DSM latency, store visibility, and contention",
+                      "clock64 device-side measurements",
+                      "dsm_sm_to_sm_latency");
+  std::printf("  methodology: Luo et al. arXiv:2501.12084 §7\n");
 
   int cluster_launch = 0;
   CUDA_CHECK(cudaDeviceGetAttribute(&cluster_launch, cudaDevAttrClusterLaunch,
@@ -723,21 +403,11 @@ void run_dsm_probes_impl(const SuiteOptions &opt, MetricSink &sink,
            hop_est, hop_est, hop_est, "cycles",
            "(dependent remote RTT - local service) / 2");
 
-  if (include_bandwidth) {
-    run_stride_topology(opt, sink, n);
-    run_bandwidth(opt, sink, n);
-  }
-
-  // FlashGPU-Sim TODO §2.1–2.4 (single-cluster BW, dep RTT, store, contention)
-  run_dsm_l23_probes(opt, sink, n, include_bandwidth);
+  run_dsm_l23_probes(opt, sink, n);
 }
 
 }  // namespace
 
-void run_dsm_probes(const SuiteOptions &opt, MetricSink &sink) {
-  run_dsm_probes_impl(opt, sink, true);
-}
-
 void run_dsm_calibration_probes(const SuiteOptions &opt, MetricSink &sink) {
-  run_dsm_probes_impl(opt, sink, false);
+  run_dsm_probes_impl(opt, sink);
 }

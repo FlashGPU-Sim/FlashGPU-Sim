@@ -177,7 +177,8 @@ same value as `flash`.
 | Blackwell DSM preset | Follow-up |
 | Delay-line hop matrix | Removed. The fabric is the only SM-to-SM DSM path |
 
-Job 2119329 is a partial hardware pass. Stamp config numbers as measured,
+The H200 numbers come from one partial hardware pass. The 4096³ GEMM timed
+launch in that pass failed. Stamp config numbers as measured,
 patent, inferred, or unresolved. Do not republish H200 figures as Blackwell
 hardware fact. Detail is in [`evidence.md`](evidence.md) and
 [`calibration.md`](calibration.md).

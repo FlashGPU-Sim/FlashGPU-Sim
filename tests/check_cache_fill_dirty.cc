@@ -1,7 +1,7 @@
 // Native tag-array regression; no GPU launch or simulator-library build.
 // From repo root, link an existing simulator library:
 // g++ -std=c++17 -O1 -g -fno-access-control -Isrc -I/usr/local/cuda/include \
-//   test/check_cache_fill_dirty.cc /ABS/SIM/LIB/libcudart.so \
+//   tests/check_cache_fill_dirty.cc /ABS/SIM/LIB/libcudart.so \
 //   -Wl,-rpath,/ABS/SIM/LIB -o /tmp/check_cache_fill_dirty
 // LD_LIBRARY_PATH=/ABS/SIM/LIB /tmp/check_cache_fill_dirty
 // To test current fill source against existing library constructors instead:
@@ -9,7 +9,7 @@
 //   -e '/^void tag_array::fill(unsigned index, unsigned time, mem_fetch \*mf)/,/^}/p' \
 //   src/gpgpu-sim/gpu-cache.cc | g++ -std=c++17 -O1 -g \
 //   -fno-access-control -Isrc -I/usr/local/cuda/include \
-//   -include test/check_cache_fill_dirty.cc -x c++ - -x none \
+//   -include tests/check_cache_fill_dirty.cc -x c++ - -x none \
 //   /ABS/SIM/LIB/libcudart.so -Wl,-rpath,/ABS/SIM/LIB \
 //   -o /tmp/check_cache_fill_dirty_source
 // Private access is only for checking the counter against real block state.
