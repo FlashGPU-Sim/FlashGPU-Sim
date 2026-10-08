@@ -49,6 +49,12 @@ enum reg_producer_t {
   PROD_OTHER,
 };
 
+// Interpret latency as issue-to-dependent-ready with a nominal two-cycle
+// issue/collector transit. Preserve any additional delay before FU admission.
+unsigned long long scoreboard_forward_ready_cycle(
+    unsigned long long issue_cycle, unsigned long long execute_cycle,
+    unsigned latency);
+
 class Scoreboard {
  public:
   Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t *gpu);
@@ -58,6 +64,8 @@ class Scoreboard {
   void reserveRegistersForWarp(const warp_inst_t *inst, unsigned warp_id);
   void releaseRegistersForWarp(const warp_inst_t *inst, unsigned warp_id);
   void releaseRegister(unsigned wid, unsigned regnum);
+  void markRegistersReadyForWarp(unsigned wid, unsigned inst_uid,
+                                const unsigned *outputs);
 
   bool checkCollision(unsigned wid, const inst_t *inst) const;
   reg_producer_t getCollisionType(unsigned wid, const inst_t *inst) const;
@@ -66,7 +74,8 @@ class Scoreboard {
   const bool islongop(unsigned warp_id, unsigned regnum);
 
  private:
-  void reserveRegister(unsigned wid, unsigned regnum);
+  void reserveRegister(unsigned wid, unsigned regnum, unsigned inst_uid);
+  void releaseRegisterIfOwner(unsigned wid, unsigned regnum, unsigned inst_uid);
   int get_sid() const { return m_sid; }
 
   unsigned m_sid;
@@ -74,6 +83,10 @@ class Scoreboard {
   // keeps track of pending writes to registers
   // indexed by warp id, reg_id => pending write count
   std::vector<std::set<unsigned> > reg_table;
+  // A forwarded result remains physically pending. A younger writer replaces
+  // its owner, so stale completion events cannot release the younger result.
+  std::vector<std::map<unsigned, unsigned> > reg_owner;
+  std::vector<std::set<unsigned> > ready_regs;
   // Register that depend on a long operation (global, local or tex memory)
   std::vector<std::set<unsigned> > longopregs;
   // Producer type for each pending register (NCU-style stall classification)

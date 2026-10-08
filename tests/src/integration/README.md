@@ -1,37 +1,32 @@
-# Portable Integration Tests
+# Integration Tests
 
-This directory aggregates self-contained CUDA GoogleTest translation units
-that can be compiled for every architecture supported by the test system.
+These CUDA/GoogleTest workloads validate PTX execution and CUDA runtime
+behavior across the architectures selected by the test runner.
 
-A test belongs here only when it:
+| Source | Coverage |
+| --- | --- |
+| `address_operand_test.cu` | 64-bit address operands and large offsets |
+| `vector_operand_test.cu` | Vector operands, compiler patterns and PTX transformations |
+| `vector_add_test.cu` | Allocation, kernel launch and memory copies |
+| `shared_memory_optin_test.cu` | Dynamic shared-memory opt-in |
+| `ldst_matrix_test.cu` | `ldmatrix`/`stmatrix` variants |
+| `ldst_multi_sector_test.cu` | Loads and stores spanning multiple memory sectors |
+| `cp_async_src_size_test.cu` | `cp.async` source-size forms |
+| `shared_atomic_address_test.cu` | Explicit shared addresses for atomic and ordinary accesses |
+| `integer_multiply_test.cu` | Integer multiplication |
+| `float_minmax_three_input_test.cu` | Three-input FP32 min/max |
 
-- consists of one ordinary `.cu` test source;
-- uses the shared GoogleTest/CUDA compile and link rules;
-- needs no test-specific flags or external dependencies;
-- compiles for every supported architecture without hiding its main body; and
-- safely links into the architecture's `integration_tests` binary.
+Architecture selections determine which cases run. The three-input FP32
+min/max case requires CUDA 12.9+ and an SM100+ compilation target; it reports
+a skip with older toolchains or targets.
 
-Architecture manifests still decide which cases run. Build portability does
-not imply that every architecture must execute every case.
-
-Current sources:
-
-- `address_operand_test.cu`: 64-bit PTX address operands and large offsets;
-- `vector_operand_test.cu`: PTX vector discard operands;
-- `vector_add_test.cu`: CUDA runtime allocation, launch, and copy coverage;
-- `shared_memory_optin_test.cu`: opt-in dynamic shared-memory behavior;
-- `ldst_matrix_test.cu`: `ldmatrix` and `stmatrix` variants;
-- `cp_async_src_size_test.cu`: `cp.async` source-size forms.
-- `shared_atomic_address_test.cu`: canonical explicit shared-memory addresses
-  across atomic and ordinary accesses.
-
-Run the test group with:
+From the repository root:
 
 ```bash
-tests/run_tests.py run --arch sm120 --group integration
-tests/run_tests.py run --arch sm90 --group integration CpAsyncSrcSizeTest
+./tests/run_tests.py list-cases --arch sm120 --group integration
+./tests/run_tests.py run --arch sm120 --group integration
+./tests/run_tests.py run --arch sm90 --group integration CpAsyncSrcSizeTest
 ```
 
-Feature families that require multiple sources, shared headers, special build
-flags, or architecture-restricted compilation use their own sibling test-group
-directory instead.
+See the [test guide](../../README.md) for configuration overrides, filters,
+other architectures and native-GPU validation.

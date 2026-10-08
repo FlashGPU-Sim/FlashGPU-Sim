@@ -13,8 +13,3 @@ Triton autotuning requires a physical GPU, so `capture.sh` remains the
 regeneration path for this bundle. `run.sh` copies the checked-in files into
 `run/tracking/`, builds the standalone launcher, and replays it with
 FlashGPU-Sim without running Triton or accessing a physical GPU.
-
-When refreshing the bundle, retain the launch-specific harness, Makefile, PTX,
-CUBIN, ptxinfo, captured inputs, and reference output. Generated executables,
-fatbins, simulator configuration files, logs, and unselected autotune
-candidates belong under `run/`.

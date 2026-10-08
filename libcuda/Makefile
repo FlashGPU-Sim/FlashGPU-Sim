@@ -92,6 +92,10 @@ CXX_SRCS =  cuda_runtime_api.cc
 LEX_SRCS = cuobjdump.l
 YACC_SRCS = cuobjdump.y
 CXXFLAGS += -DCUDART_VERSION=$(CUDART_VERSION)
+TRACE ?= 0
+ifeq ($(TRACE),1)
+CXXFLAGS += -DTRACING_ON=1
+endif
 LEX			= flex
 LEXFLAGS	= -B 
 YACC		= bison

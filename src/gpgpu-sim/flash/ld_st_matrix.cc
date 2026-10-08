@@ -40,6 +40,11 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
   constexpr bool is_load = (Direction == MatrixDirection::LOAD);
   const char *inst_name = is_load ? "ldmatrix" : "stmatrix";
 
+  // Matrix load/store encodes shared memory as an opcode modifier rather than
+  // through the generic memory operand. Ensure the dynamic instruction enters
+  // the shared-memory LD/ST timing path.
+  inst.space.set_type(shared_space);
+
   // We need the thread for DPRINTF.
   int tid_lane0 = (core->get_gpu()->is_functional_sim() ? inst.warp_id_func()
                                                         : inst.warp_id()) *

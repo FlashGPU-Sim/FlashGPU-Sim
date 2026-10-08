@@ -40,195 +40,9 @@
 #include <vector>
 #include <utility>
 
+#include "../trace.h"
 #include "local_interconnect.h"
 #include "mem_fetch.h"
-
-namespace {
-
-class req_noc_trace {
- public:
-  static req_noc_trace &instance() {
-    static req_noc_trace trace;
-    return trace;
-  }
-
-  bool enabled() const { return m_enabled; }
-  bool trace_push() const { return m_enabled && m_trace_push; }
-  bool trace_grant() const { return m_enabled && m_trace_grant; }
-  bool trace_prearb() const { return m_enabled && m_trace_prearb; }
-  unsigned min_requesters() const { return m_min_requesters; }
-  bool accepts(const mem_fetch *mf) const {
-    if (!mf) return false;
-    const mem_access_type access_type = mf->get_access_type();
-    return !m_tma_only || access_type == TMA_ACC_R || access_type == TMA_ACC_W ||
-           access_type == CP_ASYNC_ACC_R;
-  }
-
-  void log_packet(unsigned long long icnt_cycle, const char *event,
-                  unsigned input_node, unsigned output_node, unsigned subpart,
-                  unsigned requesters, unsigned queued_pkts, unsigned in_occ,
-                  unsigned out_occ, const mem_fetch *mf, unsigned packet_size,
-                  const char *status) {
-    if (!m_enabled || icnt_cycle > m_max_icnt_cycle) return;
-    if (!mf) return;
-
-    if (!accepts(mf)) return;
-    const mem_access_type access_type = mf->get_access_type();
-
-    mem_fetch *original_mf = const_cast<mem_fetch *>(mf)->get_original_mf();
-    const unsigned original_uid =
-        original_mf ? original_mf->get_request_uid() : mf->get_request_uid();
-    const unsigned long sector_mask =
-        mf->get_access_sector_mask().to_ulong();
-
-    flockfile(m_file);
-    fprintf(m_file,
-            "%llu,%llu,%s,%u,%u,%u,%u,%u,%u,%u,0x%llx,0x%llx,%u,%u,%u,%u,%u,"
-            "%s,%u,%u,%u,%u,0x%lx,%s\n",
-            icnt_cycle, mf->get_status_change(), event, input_node, output_node,
-            subpart, requesters, queued_pkts, in_occ, out_occ,
-            (unsigned long long)mf->get_addr(),
-            (unsigned long long)mf->get_partition_addr(), mf->get_sid(),
-            mf->get_tpc(), mf->get_wid(), mf->get_request_uid(), original_uid,
-            mem_access_type_str(access_type), mf->get_is_write(), packet_size,
-            mf->get_data_size(), mf->get_access_size(), sector_mask, status);
-    flush_periodically();
-    funlockfile(m_file);
-  }
-
-  void log_prearb(unsigned long long icnt_cycle, unsigned input_node,
-                  unsigned output_node, unsigned subpart, unsigned requesters,
-                  unsigned queued_pkts, const mem_fetch *front_mf) {
-    if (!m_enabled || !m_trace_prearb || icnt_cycle > m_max_icnt_cycle) return;
-    if (requesters < m_min_requesters) return;
-
-    if (front_mf && !accepts(front_mf)) return;
-
-    unsigned long long gpu_push_cycle = 0;
-    unsigned long long addr = 0;
-    unsigned long long partition_addr = 0;
-    unsigned requestor_sm = UINT_MAX;
-    unsigned tpc = UINT_MAX;
-    unsigned wid = UINT_MAX;
-    unsigned uid = 0;
-    unsigned orig_uid = 0;
-    const char *type = "NONE";
-    unsigned is_write = 0;
-    unsigned data_size = 0;
-    unsigned access_size = 0;
-    unsigned long sector_mask = 0;
-    if (front_mf) {
-      mem_fetch *original_mf =
-          const_cast<mem_fetch *>(front_mf)->get_original_mf();
-      gpu_push_cycle = front_mf->get_status_change();
-      addr = front_mf->get_addr();
-      partition_addr = front_mf->get_partition_addr();
-      requestor_sm = front_mf->get_sid();
-      tpc = front_mf->get_tpc();
-      wid = front_mf->get_wid();
-      uid = front_mf->get_request_uid();
-      orig_uid =
-          original_mf ? original_mf->get_request_uid() : front_mf->get_request_uid();
-      type = mem_access_type_str(front_mf->get_access_type());
-      is_write = front_mf->get_is_write();
-      data_size = front_mf->get_data_size();
-      access_size = front_mf->get_access_size();
-      sector_mask = front_mf->get_access_sector_mask().to_ulong();
-    }
-
-    flockfile(m_file);
-    fprintf(m_file,
-            "%llu,%llu,PRE_ARB,%u,%u,%u,%u,%u,0,0,0x%llx,0x%llx,%u,%u,%u,%u,"
-            "%u,%s,%u,0,%u,%u,0x%lx,%s\n",
-            icnt_cycle, gpu_push_cycle, input_node, output_node, subpart,
-            requesters, queued_pkts, addr, partition_addr, requestor_sm, tpc,
-            wid, uid, orig_uid, type, is_write, data_size, access_size,
-            sector_mask, "REQUESTERS");
-    flush_periodically();
-    funlockfile(m_file);
-  }
-
- private:
-  req_noc_trace()
-      : m_enabled(false),
-        m_trace_push(true),
-        m_trace_grant(true),
-        m_trace_prearb(true),
-        m_tma_only(false),
-        m_min_requesters(2),
-        m_max_icnt_cycle(ULLONG_MAX),
-        m_file(NULL),
-        m_buffer(NULL),
-        m_lines(0) {
-    const char *path = getenv("FLASHGPU_REQ_NOC_TRACE_CSV");
-    if (!path || path[0] == '\0') return;
-
-    const char *max_cycle = getenv("FLASHGPU_REQ_NOC_TRACE_MAX_ICNT_CYCLE");
-    if (max_cycle && max_cycle[0] != '\0')
-      m_max_icnt_cycle = strtoull(max_cycle, NULL, 0);
-
-    m_trace_push = env_flag_default("FLASHGPU_REQ_NOC_TRACE_PUSH", true);
-    m_trace_grant = env_flag_default("FLASHGPU_REQ_NOC_TRACE_GRANT", true);
-    m_trace_prearb = env_flag_default("FLASHGPU_REQ_NOC_TRACE_PREARB", true);
-    m_tma_only = env_flag_default("FLASHGPU_REQ_NOC_TRACE_TMA_ONLY", false);
-
-    const char *min_req = getenv("FLASHGPU_REQ_NOC_TRACE_MIN_REQUESTERS");
-    if (min_req && min_req[0] != '\0')
-      m_min_requesters = strtoul(min_req, NULL, 0);
-
-    m_file = fopen(path, "w");
-    if (!m_file) {
-      perror("FLASHGPU_REQ_NOC_TRACE_CSV");
-      return;
-    }
-
-    m_buffer = (char *)malloc(16 * 1024 * 1024);
-    if (m_buffer) setvbuf(m_file, m_buffer, _IOFBF, 16 * 1024 * 1024);
-
-    fprintf(m_file,
-            "icnt_cycle,gpu_push_cycle,event,input_node,output_node,subpart,"
-            "requesters,queued_pkts,in_occ,out_occ,addr,partition_addr,"
-            "requestor_sm,tpc,wid,uid,orig_uid,type,is_write,packet_size,"
-            "data_size,access_size,sector_mask,status\n");
-    m_enabled = true;
-    printf("FLASHGPU_REQ_NOC_TRACE_CSV enabled: path=%s max_icnt_cycle=%llu "
-           "tma_only=%u push=%u grant=%u prearb=%u min_requesters=%u\n",
-           path, m_max_icnt_cycle, m_tma_only ? 1 : 0, m_trace_push ? 1 : 0,
-           m_trace_grant ? 1 : 0, m_trace_prearb ? 1 : 0, m_min_requesters);
-  }
-
-  ~req_noc_trace() {
-    if (m_file) {
-      fflush(m_file);
-      fclose(m_file);
-    }
-    free(m_buffer);
-  }
-
-  static bool env_flag_default(const char *name, bool default_value) {
-    const char *value = getenv(name);
-    if (!value || value[0] == '\0') return default_value;
-    return strcmp(value, "0") != 0;
-  }
-
-  void flush_periodically() {
-    ++m_lines;
-    if ((m_lines & ((1ULL << 20) - 1)) == 0) fflush(m_file);
-  }
-
-  bool m_enabled;
-  bool m_trace_push;
-  bool m_trace_grant;
-  bool m_trace_prearb;
-  bool m_tma_only;
-  unsigned m_min_requesters;
-  unsigned long long m_max_icnt_cycle;
-  FILE *m_file;
-  char *m_buffer;
-  unsigned long long m_lines;
-};
-
-}  // namespace
 
 xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
                          unsigned n_shader, unsigned n_mem,
@@ -245,18 +59,37 @@ xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
   allow_multi_grant =
       m_type == REQ_NET ? m_localinct_config.multi_grant_request != 0
                         : m_localinct_config.multi_grant_reply != 0;
+  input_sector_width = m_type == REQ_NET
+                           ? m_localinct_config.request_input_sectors_per_cycle
+                           : m_localinct_config.reply_input_sectors_per_cycle;
+  output_sector_width =
+      m_type == REQ_NET ? m_localinct_config.request_output_sectors_per_cycle
+                        : m_localinct_config.reply_output_sectors_per_cycle;
+  tma_request_multicast =
+      m_type == REQ_NET && m_localinct_config.tma_request_multicast != 0;
+  tma_response_multicast =
+      m_type == REPLY_NET && m_localinct_config.tma_response_multicast != 0;
+  tma_multicast_master_sectors = 0;
+  tma_multicast_merged_sectors = 0;
+  tma_multicast_max_waiters = 0;
+  tma_response_multicast_masters = 0;
+  tma_response_multicast_waiters = 0;
+  tma_response_multicast_max_waiters = 0;
   in_buffers.resize(total_nodes);
   const unsigned queues_per_input = use_voq ? total_nodes : 1;
   for (unsigned i = 0; i < total_nodes; ++i) {
     in_buffers[i].resize(queues_per_input);
   }
   out_buffers.resize(total_nodes);
+  multicast_delivery_buffers.resize(total_nodes);
   in_buffer_occupancy.assign(total_nodes, 0);
   next_node.resize(total_nodes, 0);
+  next_output.resize(total_nodes, 0);
   in_buffer_limit = m_localinct_config.in_buffer_limit;
   out_buffer_limit = m_localinct_config.out_buffer_limit;
   arbit_type = m_localinct_config.arbiter_algo;
   next_node_id = 0;
+  next_output_id = 0;
   if (m_type == REQ_NET) {
     active_in_buffers = n_shader;
     active_out_buffers = n_mem;
@@ -287,43 +120,152 @@ xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
   output_full_events.assign(total_nodes, 0);
   max_input_occupancy.assign(total_nodes, 0);
   max_output_occupancy.assign(total_nodes, 0);
+  input_service_stats.resize(total_nodes);
+  output_service_stats.resize(total_nodes);
+  input_budgets.resize(total_nodes);
+  output_budgets.resize(total_nodes);
+  input_tick_service_slots.assign(total_nodes, 0);
+  output_tick_service_slots.assign(total_nodes, 0);
 }
 
 xbar_router::~xbar_router() {}
 
 void xbar_router::Push(unsigned input_deviceID, unsigned output_deviceID,
-                       void *data, unsigned int size) {
+                       void *data, unsigned int size, unsigned data_sectors) {
   assert(input_deviceID < total_nodes);
   assert(output_deviceID < total_nodes);
+  mem_fetch *mf = static_cast<mem_fetch *>(data);
+  if (tma_request_multicast) {
+    // Shader clusters inject concurrently under FLASH_GPGPU_SIM_OMP. The
+    // ordinary input queues are cluster-private, but multicast generations
+    // are shared across all request-network inputs.
+    std::lock_guard<std::mutex> lock(tma_multicast_mutex);
+    const unsigned long long sector_addr =
+        mf->get_addr() - (mf->get_addr() % SECTOR_SIZE);
+    if (!mf->get_is_write() && mf->get_access_type() == TMA_ACC_R &&
+        mf->get_data_size() == SECTOR_SIZE) {
+      unsigned long long waiter_count = 0;
+      if (!tma_multicast_groups.admit(sector_addr, data, waiter_count)) {
+        ++tma_multicast_merged_sectors;
+        tma_multicast_max_waiters =
+            std::max(tma_multicast_max_waiters, waiter_count);
+        return;
+      }
+      ++tma_multicast_master_sectors;
+    } else {
+      // A non-eligible access establishes an ordering boundary for this
+      // address. This includes writes, atomics, and non-sector TMA requests.
+      tma_multicast_groups.close_address(sector_addr);
+    }
+  }
   in_buffers[input_deviceID][InputQueueIndex(output_deviceID)].push_back(
-      Packet(data, output_deviceID, size));
+      Packet(data, output_deviceID, size, data_sectors));
   in_buffer_occupancy[input_deviceID]++;
   packets_num++;
   input_pushes[input_deviceID]++;
   output_pushes[output_deviceID]++;
-  max_input_occupancy[input_deviceID] =
-      std::max(max_input_occupancy[input_deviceID],
-               in_buffer_occupancy[input_deviceID]);
-  if (router_type == REQ_NET && req_noc_trace::instance().trace_push()) {
-    req_noc_trace::instance().log_packet(
+  max_input_occupancy[input_deviceID] = std::max(
+      max_input_occupancy[input_deviceID], in_buffer_occupancy[input_deviceID]);
+  if (router_type == REQ_NET && GPTRACE(INTERCONNECT)) {
+    Trace::request_noc_packet_event(
         cycles, "PUSH", input_deviceID, output_deviceID,
         output_deviceID - active_out_buffer_base, 0, 0,
-        in_buffer_occupancy[input_deviceID], out_buffers[output_deviceID].size(),
-        static_cast<mem_fetch *>(data), size, "IN_NOC");
+        in_buffer_occupancy[input_deviceID],
+        out_buffers[output_deviceID].size(), static_cast<mem_fetch *>(data),
+        size, "IN_NOC");
   }
+}
+
+void xbar_router::PushMulticast(
+    unsigned input_deviceID, unsigned output_deviceID, void *data,
+    unsigned int size, unsigned data_sectors,
+    const std::vector<std::pair<unsigned, void *> > &destinations) {
+  assert(tma_response_multicast);
+  assert(router_type == REPLY_NET);
+  assert(data != NULL);
+  {
+    std::lock_guard<std::mutex> lock(tma_multicast_mutex);
+    assert(tma_response_multicast_deliveries.find(data) ==
+           tma_response_multicast_deliveries.end());
+    std::deque<Packet> &deliveries = tma_response_multicast_deliveries[data];
+    for (std::vector<std::pair<unsigned, void *> >::const_iterator it =
+             destinations.begin();
+         it != destinations.end(); ++it) {
+      assert(it->first < total_nodes);
+      assert(it->second != NULL);
+      deliveries.push_back(Packet(it->second, it->first, size, data_sectors));
+    }
+    ++tma_response_multicast_masters;
+    tma_response_multicast_waiters += destinations.size();
+    tma_response_multicast_max_waiters =
+        std::max<unsigned long long>(tma_response_multicast_max_waiters,
+                                     destinations.size());
+  }
+  // Only the master occupies reply-network input and output bandwidth. The
+  // associated requester responses are materialized at their target xbar
+  // outputs when the master arrives there.
+  Push(input_deviceID, output_deviceID, data, size, data_sectors);
 }
 
 void *xbar_router::Pop(unsigned ouput_deviceID) {
   assert(ouput_deviceID < total_nodes);
-  void *data = NULL;
+  if (tma_request_multicast || tma_response_multicast) {
+    std::lock_guard<std::mutex> lock(tma_multicast_mutex);
+    if (!multicast_delivery_buffers[ouput_deviceID].empty()) {
+      const Packet packet = multicast_delivery_buffers[ouput_deviceID].front();
+      multicast_delivery_buffers[ouput_deviceID].pop_front();
+      return packet.data;
+    }
 
-  if (!out_buffers[ouput_deviceID].empty()) {
-    const Packet packet = out_buffers[ouput_deviceID].front();
-    data = packet.data;
-    out_buffers[ouput_deviceID].pop_front();
+    if (!out_buffers[ouput_deviceID].empty()) {
+      const Packet packet = out_buffers[ouput_deviceID].front();
+      out_buffers[ouput_deviceID].pop_front();
+      if (tma_request_multicast) {
+        std::deque<void *> waiters;
+        if (tma_multicast_groups.close_master(packet.data, waiters)) {
+          while (!waiters.empty()) {
+            multicast_delivery_buffers[ouput_deviceID].push_back(
+                Packet(waiters.front(), packet.output_deviceID, packet.size,
+                       packet.data_sectors));
+            waiters.pop_front();
+          }
+        }
+      }
+      if (tma_response_multicast) {
+        std::unordered_map<void *, std::deque<Packet> >::iterator deliveries =
+            tma_response_multicast_deliveries.find(packet.data);
+        if (deliveries != tma_response_multicast_deliveries.end()) {
+          while (!deliveries->second.empty()) {
+            const Packet waiter = deliveries->second.front();
+            deliveries->second.pop_front();
+            multicast_delivery_buffers[waiter.output_deviceID].push_back(
+                waiter);
+          }
+          tma_response_multicast_deliveries.erase(deliveries);
+        }
+      }
+      return packet.data;
+    }
+    return NULL;
   }
 
+  void *data = NULL;
+  if (!out_buffers[ouput_deviceID].empty()) {
+    data = out_buffers[ouput_deviceID].front().data;
+    out_buffers[ouput_deviceID].pop_front();
+  }
   return data;
+}
+
+void *xbar_router::Top(unsigned output_deviceID) const {
+  assert(output_deviceID < total_nodes);
+  if (tma_request_multicast || tma_response_multicast) {
+    std::lock_guard<std::mutex> lock(tma_multicast_mutex);
+    if (!multicast_delivery_buffers[output_deviceID].empty())
+      return multicast_delivery_buffers[output_deviceID].front().data;
+  }
+  if (out_buffers[output_deviceID].empty()) return NULL;
+  return out_buffers[output_deviceID].front().data;
 }
 
 bool xbar_router::Has_Buffer_In(unsigned input_deviceID, unsigned size,
@@ -345,12 +287,303 @@ bool xbar_router::Has_Buffer_Out(unsigned output_deviceID, unsigned size) {
 }
 
 void xbar_router::Advance() {
+  std::fill(input_tick_service_slots.begin(), input_tick_service_slots.end(), 0);
+  std::fill(output_tick_service_slots.begin(), output_tick_service_slots.end(),
+            0);
+  if (input_sector_width != 0 || output_sector_width != 0) {
+    NumericAdvance(arbit_type == iSLIP);
+    return;
+  }
   if (arbit_type == NAIVE_RR)
     RR_Advance();
   else if (arbit_type == iSLIP)
     iSLIP_Advance();
   else
     assert(0);
+  FinalizeLegacyServiceStats();
+}
+
+void xbar_router::NumericAdvance(bool is_islip) {
+  assert(arbit_type == NAIVE_RR || arbit_type == iSLIP);
+
+  bool active = false;
+  unsigned conflict_sub = 0;
+  unsigned reqs = 0;
+  CollectRequestStats(&active, &conflict_sub);
+
+  vector<unsigned> legacy_input_grants(total_nodes, 0);
+  vector<unsigned> legacy_output_grants(total_nodes, 0);
+  vector<vector<bool> > legacy_pairs;
+  if (input_sector_width == 0 && allow_multi_grant && is_islip)
+    legacy_pairs.assign(total_nodes, vector<bool>(total_nodes));
+  vector<bool> downstream_seen(total_nodes, false);
+  // A full destination is an input-side stall statistic, but it must not clear
+  // credit accumulated for an independent VOQ on the same input.
+  vector<bool> input_downstream_seen(total_nodes, false);
+  vector<bool> input_credit_reserved(total_nodes, false);
+  vector<bool> output_credit_reserved(total_nodes, false);
+
+  unsigned queued_packets = 0;
+  for (unsigned input = active_in_buffer_base;
+       input < active_in_buffer_base + active_in_buffers; ++input) {
+    input_budgets[input].begin_tick(input_sector_width);
+    queued_packets += in_buffer_occupancy[input];
+  }
+  for (unsigned output = active_out_buffer_base;
+       output < active_out_buffer_base + active_out_buffers; ++output) {
+    output_budgets[output].begin_tick(output_sector_width);
+  }
+
+  // Each round transfers at least one packet or terminates.  Bounding the
+  // rounds by the number present at tick start makes the arbitration finite
+  // without imposing a separate packet-count constant.
+  for (unsigned round = 0; round < queued_packets; ++round) {
+    bool progress = false;
+
+    if (is_islip) {
+      for (unsigned output_offset = 0; output_offset < active_out_buffers;
+           ++output_offset) {
+        const unsigned output =
+            active_out_buffer_base +
+            (output_offset + next_output_id + round) % active_out_buffers;
+        if (output_credit_reserved[output]) continue;
+
+        if (!Has_Buffer_Out(output, 1)) {
+          bool requested = false;
+          for (unsigned input = active_in_buffer_base;
+               input < active_in_buffer_base + active_in_buffers; ++input) {
+            if (InputHasPacketForOutput(input, output)) {
+              requested = true;
+              input_downstream_seen[input] = true;
+            }
+          }
+          if (requested && !downstream_seen[output]) {
+            downstream_seen[output] = true;
+            output_budgets[output].note_downstream_full();
+            ++out_buffer_full;
+            ++output_full_events[output];
+          }
+          continue;
+        }
+
+        for (unsigned input_offset = 0; input_offset < active_in_buffers;
+             ++input_offset) {
+          const unsigned input =
+              active_in_buffer_base +
+              (input_offset + next_node[output]) % active_in_buffers;
+          if (input_credit_reserved[input]) continue;
+          const Packet *packet = InputPacketForOutput(input, output);
+          if (!packet) continue;
+          const unsigned slots =
+              memory_transport_service_slots(packet->data_sectors);
+          const bool input_needs_credit =
+              input_sector_width != 0 && slots > input_sector_width &&
+              !input_budgets[input].can_accept(packet->data_sectors);
+          const bool output_needs_credit =
+              output_sector_width != 0 && slots > output_sector_width &&
+              !output_budgets[output].can_accept(packet->data_sectors);
+          if (input_needs_credit || output_needs_credit) {
+            if (input_needs_credit) {
+              input_budgets[input].note_width_limited(packet->data_sectors);
+              input_credit_reserved[input] = true;
+            }
+            if (output_needs_credit) {
+              output_budgets[output].note_width_limited(packet->data_sectors);
+              output_credit_reserved[output] = true;
+              break;
+            }
+            continue;
+          }
+          if (!InputCanGrant(input, output, *packet, legacy_input_grants,
+                             legacy_pairs) ||
+              !OutputCanGrant(output, *packet, legacy_output_grants)) {
+            continue;
+          }
+
+          if (input_sector_width != 0)
+            input_budgets[input].consume(packet->data_sectors);
+          if (output_sector_width != 0)
+            output_budgets[output].consume(packet->data_sectors);
+          TransferPacket(input, output);
+          ++legacy_input_grants[input];
+          ++legacy_output_grants[output];
+          if (!legacy_pairs.empty()) legacy_pairs[input][output] = true;
+          if (grant_cycles_count == 1)
+            next_node[output] =
+                (input - active_in_buffer_base + 1) % active_in_buffers;
+          ++reqs;
+          progress = true;
+          break;
+        }
+      }
+    } else {
+      for (unsigned input_offset = 0; input_offset < active_in_buffers;
+           ++input_offset) {
+        const unsigned input =
+            active_in_buffer_base +
+            (input_offset + next_node_id + round) % active_in_buffers;
+        if (input_credit_reserved[input]) continue;
+        if (!InputHasPackets(input)) continue;
+
+        for (unsigned output_offset = 0; output_offset < active_out_buffers;
+             ++output_offset) {
+          unsigned output = 0;
+          if (use_voq) {
+            output = active_out_buffer_base +
+                     (output_offset + next_output[input]) % active_out_buffers;
+          } else {
+            output = FirstReadyOutput(input);
+            if (output_offset != 0) break;
+          }
+
+          const Packet *packet = InputPacketForOutput(input, output);
+          if (!packet) continue;
+          if (output_credit_reserved[output]) continue;
+          if (!Has_Buffer_Out(output, 1)) {
+            input_downstream_seen[input] = true;
+            if (!downstream_seen[output]) {
+              downstream_seen[output] = true;
+              output_budgets[output].note_downstream_full();
+              ++out_buffer_full;
+              ++output_full_events[output];
+            }
+            continue;
+          }
+          const unsigned slots =
+              memory_transport_service_slots(packet->data_sectors);
+          const bool input_needs_credit =
+              input_sector_width != 0 && slots > input_sector_width &&
+              !input_budgets[input].can_accept(packet->data_sectors);
+          const bool output_needs_credit =
+              output_sector_width != 0 && slots > output_sector_width &&
+              !output_budgets[output].can_accept(packet->data_sectors);
+          if (input_needs_credit || output_needs_credit) {
+            if (input_needs_credit) {
+              input_budgets[input].note_width_limited(packet->data_sectors);
+              input_credit_reserved[input] = true;
+            }
+            if (output_needs_credit) {
+              output_budgets[output].note_width_limited(packet->data_sectors);
+              output_credit_reserved[output] = true;
+            }
+            // An output-only credit wait must not head-of-line block the
+            // input's other VOQs.  Input credit, in contrast, reserves the
+            // shared input budget and therefore stops this input for the tick.
+            if (input_needs_credit) break;
+            continue;
+          }
+          if (!InputCanGrant(input, output, *packet, legacy_input_grants,
+                             legacy_pairs) ||
+              !OutputCanGrant(output, *packet, legacy_output_grants)) {
+            continue;
+          }
+
+          if (input_sector_width != 0)
+            input_budgets[input].consume(packet->data_sectors);
+          if (output_sector_width != 0)
+            output_budgets[output].consume(packet->data_sectors);
+          TransferPacket(input, output);
+          ++legacy_input_grants[input];
+          ++legacy_output_grants[output];
+          if (!legacy_pairs.empty()) legacy_pairs[input][output] = true;
+          next_output[input] =
+              (output - active_out_buffer_base + 1) % active_out_buffers;
+          ++reqs;
+          progress = true;
+          break;
+        }
+      }
+    }
+
+    if (!progress) break;
+  }
+
+  // Identify resources whose remaining budget, rather than backpressure,
+  // leaves a packet queued.  The remaining credit is retained only in this
+  // case so an oversized head packet eventually advances.
+  for (unsigned input = active_in_buffer_base;
+       input < active_in_buffer_base + active_in_buffers; ++input) {
+    if (!InputHasPackets(input)) continue;
+    if (input_sector_width == 0) {
+      const bool one_grant_per_tick =
+          arbit_type == NAIVE_RR || !allow_multi_grant;
+      if ((one_grant_per_tick && legacy_input_grants[input] != 0) ||
+          (!one_grant_per_tick &&
+           legacy_input_grants[input] >= active_out_buffers))
+        input_budgets[input].note_width_limited(0);
+    } else if (use_voq) {
+      for (unsigned output = active_out_buffer_base;
+           output < active_out_buffer_base + active_out_buffers; ++output) {
+        const Packet *packet = InputPacketForOutput(input, output);
+        if (packet && (!input_budgets[input].can_accept(packet->data_sectors) ||
+                       memory_transport_service_slots(packet->data_sectors) >
+                           input_sector_width))
+          input_budgets[input].note_width_limited(packet->data_sectors);
+      }
+    } else {
+      const unsigned output = FirstReadyOutput(input);
+      const Packet *packet = InputPacketForOutput(input, output);
+      if (packet && (!input_budgets[input].can_accept(packet->data_sectors) ||
+                     memory_transport_service_slots(packet->data_sectors) >
+                         input_sector_width))
+        input_budgets[input].note_width_limited(packet->data_sectors);
+    }
+  }
+
+  for (unsigned output = active_out_buffer_base;
+       output < active_out_buffer_base + active_out_buffers; ++output) {
+    bool pending = false;
+    for (unsigned input = active_in_buffer_base;
+         input < active_in_buffer_base + active_in_buffers; ++input) {
+      const Packet *packet = InputPacketForOutput(input, output);
+      if (!packet) continue;
+      pending = true;
+      if (output_sector_width != 0 &&
+          (!output_budgets[output].can_accept(packet->data_sectors) ||
+           memory_transport_service_slots(packet->data_sectors) >
+               output_sector_width))
+        output_budgets[output].note_width_limited(packet->data_sectors);
+    }
+    if (pending && output_sector_width == 0 &&
+        legacy_output_grants[output] != 0)
+      output_budgets[output].note_width_limited(0);
+  }
+
+  for (unsigned input = active_in_buffer_base;
+       input < active_in_buffer_base + active_in_buffers; ++input) {
+    input_budgets[input].end_tick(&input_service_stats[input]);
+    if (input_sector_width == 0)
+      input_service_stats[input].record_tick_service(
+          input_tick_service_slots[input]);
+    if (input_downstream_seen[input])
+      ++input_service_stats[input].downstream_full_ticks;
+  }
+  for (unsigned output = active_out_buffer_base;
+       output < active_out_buffer_base + active_out_buffers; ++output) {
+    output_budgets[output].end_tick(&output_service_stats[output]);
+    if (output_sector_width == 0)
+      output_service_stats[output].record_tick_service(
+          output_tick_service_slots[output]);
+  }
+
+  next_node_id = (next_node_id + 1) % active_in_buffers;
+  next_output_id = (next_output_id + 1) % active_out_buffers;
+  conflicts += conflict_sub;
+  if (active) {
+    conflicts_util += conflict_sub;
+    ++cycles_util;
+    reqs_util += reqs;
+  }
+  if (active && grant_cycles_count == 1)
+    grant_cycles_count = grant_cycles;
+  else if (active)
+    --grant_cycles_count;
+
+  for (unsigned i = 0; i < total_nodes; ++i) {
+    in_buffer_util += in_buffer_occupancy[i];
+    out_buffer_util += out_buffers[i].size();
+  }
+  ++cycles;
 }
 
 void xbar_router::RR_Advance() {
@@ -532,6 +765,44 @@ unsigned xbar_router::InputQueueIndex(unsigned output_deviceID) const {
   return use_voq ? output_deviceID : 0;
 }
 
+const xbar_router::Packet *xbar_router::InputPacketForOutput(
+    unsigned input_deviceID, unsigned output_deviceID) const {
+  if (!InputHasPacketForOutput(input_deviceID, output_deviceID)) return NULL;
+  const deque<Packet> &queue =
+      in_buffers[input_deviceID][InputQueueIndex(output_deviceID)];
+  return &queue.front();
+}
+
+bool xbar_router::InputCanGrant(
+    unsigned input_deviceID, unsigned output_deviceID, const Packet &packet,
+    const std::vector<unsigned> &legacy_input_grants,
+    const std::vector<std::vector<bool> > &legacy_pairs) const {
+  if (input_sector_width != 0) {
+    if (input_budgets[input_deviceID].has_reserved_credit() &&
+        memory_transport_service_slots(packet.data_sectors) <=
+            input_sector_width)
+      return false;
+    return input_budgets[input_deviceID].can_accept(packet.data_sectors);
+  }
+  if (arbit_type == NAIVE_RR || !allow_multi_grant)
+    return legacy_input_grants[input_deviceID] == 0;
+  assert(!legacy_pairs.empty());
+  return !legacy_pairs[input_deviceID][output_deviceID];
+}
+
+bool xbar_router::OutputCanGrant(
+    unsigned output_deviceID, const Packet &packet,
+    const std::vector<unsigned> &legacy_output_grants) const {
+  if (output_sector_width != 0) {
+    if (output_budgets[output_deviceID].has_reserved_credit() &&
+        memory_transport_service_slots(packet.data_sectors) <=
+            output_sector_width)
+      return false;
+    return output_budgets[output_deviceID].can_accept(packet.data_sectors);
+  }
+  return legacy_output_grants[output_deviceID] == 0;
+}
+
 void xbar_router::TransferPacket(unsigned input_deviceID,
                                  unsigned output_deviceID) {
   assert(input_deviceID < total_nodes);
@@ -543,21 +814,109 @@ void xbar_router::TransferPacket(unsigned input_deviceID,
 
   Packet packet = input_queue.front();
   assert(packet.output_deviceID == output_deviceID);
-  if (router_type == REQ_NET && req_noc_trace::instance().trace_grant()) {
-    req_noc_trace::instance().log_packet(
+  if (router_type == REQ_NET && GPTRACE(INTERCONNECT)) {
+    Trace::request_noc_packet_event(
         cycles, "GRANT", input_deviceID, output_deviceID,
         output_deviceID - active_out_buffer_base, 0, input_queue.size(),
-        in_buffer_occupancy[input_deviceID], out_buffers[output_deviceID].size(),
+        in_buffer_occupancy[input_deviceID],
+        out_buffers[output_deviceID].size(),
         static_cast<mem_fetch *>(packet.data), packet.size, "TO_L2_OUTPUT");
   }
   out_buffers[output_deviceID].push_back(packet);
+  if (tma_response_multicast) {
+    std::lock_guard<std::mutex> lock(tma_multicast_mutex);
+    std::unordered_map<void *, std::deque<Packet> >::iterator deliveries =
+        tma_response_multicast_deliveries.find(packet.data);
+    if (deliveries != tma_response_multicast_deliveries.end()) {
+      std::deque<Packet> same_output;
+      while (!deliveries->second.empty()) {
+        const Packet waiter = deliveries->second.front();
+        deliveries->second.pop_front();
+        if (waiter.output_deviceID == output_deviceID)
+          same_output.push_back(waiter);
+        else
+          multicast_delivery_buffers[waiter.output_deviceID].push_back(
+              waiter);
+      }
+      if (same_output.empty()) {
+        tma_response_multicast_deliveries.erase(deliveries);
+      } else {
+        deliveries->second.swap(same_output);
+      }
+    }
+  }
   max_output_occupancy[output_deviceID] =
       std::max<unsigned>(max_output_occupancy[output_deviceID],
                          out_buffers[output_deviceID].size());
   input_grants[input_deviceID]++;
   output_grants[output_deviceID]++;
+  input_service_stats[input_deviceID].record_accept(packet.data_sectors);
+  output_service_stats[output_deviceID].record_accept(packet.data_sectors);
+  const unsigned service_slots =
+      memory_transport_service_slots(packet.data_sectors);
+  input_tick_service_slots[input_deviceID] += service_slots;
+  output_tick_service_slots[output_deviceID] += service_slots;
   input_queue.pop_front();
   in_buffer_occupancy[input_deviceID]--;
+}
+
+void xbar_router::FinalizeLegacyServiceStats() {
+  vector<bool> input_width_limited(total_nodes, false);
+  vector<bool> input_downstream_full(total_nodes, false);
+  vector<bool> output_width_limited(total_nodes, false);
+  vector<bool> output_downstream_full(total_nodes, false);
+
+  for (unsigned input = active_in_buffer_base;
+       input < active_in_buffer_base + active_in_buffers; ++input) {
+    if (!InputHasPackets(input)) continue;
+    if (use_voq) {
+      for (unsigned output = active_out_buffer_base;
+           output < active_out_buffer_base + active_out_buffers; ++output) {
+        if (!InputHasPacketForOutput(input, output)) continue;
+        if (Has_Buffer_Out(output, 1)) {
+          if ((arbit_type == NAIVE_RR || !allow_multi_grant) &&
+              input_tick_service_slots[input] != 0)
+            input_width_limited[input] = true;
+          if (output_tick_service_slots[output] != 0)
+            output_width_limited[output] = true;
+        } else {
+          input_downstream_full[input] = true;
+          output_downstream_full[output] = true;
+        }
+      }
+    } else {
+      const unsigned output = FirstReadyOutput(input);
+      if (Has_Buffer_Out(output, 1)) {
+        if ((arbit_type == NAIVE_RR || !allow_multi_grant) &&
+            input_tick_service_slots[input] != 0)
+          input_width_limited[input] = true;
+        if (output_tick_service_slots[output] != 0)
+          output_width_limited[output] = true;
+      } else {
+        input_downstream_full[input] = true;
+        output_downstream_full[output] = true;
+      }
+    }
+  }
+
+  for (unsigned input = active_in_buffer_base;
+       input < active_in_buffer_base + active_in_buffers; ++input) {
+    input_service_stats[input].record_tick_service(
+        input_tick_service_slots[input]);
+    if (input_width_limited[input])
+      ++input_service_stats[input].width_limited_ticks;
+    if (input_downstream_full[input])
+      ++input_service_stats[input].downstream_full_ticks;
+  }
+  for (unsigned output = active_out_buffer_base;
+       output < active_out_buffer_base + active_out_buffers; ++output) {
+    output_service_stats[output].record_tick_service(
+        output_tick_service_slots[output]);
+    if (output_width_limited[output])
+      ++output_service_stats[output].width_limited_ticks;
+    if (output_downstream_full[output])
+      ++output_service_stats[output].downstream_full_ticks;
+  }
 }
 
 void xbar_router::CollectRequestStats(bool *active,
@@ -576,7 +935,7 @@ void xbar_router::CollectRequestStats(bool *active,
       if (!requested_outputs.insert(packet.output_deviceID).second)
         (*conflicts)++;
     }
-    if (router_type == REQ_NET && req_noc_trace::instance().trace_prearb()) {
+    if (router_type == REQ_NET && GPTRACE(INTERCONNECT)) {
       for (unsigned output = active_out_buffer_base;
            output < active_out_buffer_base + active_out_buffers; ++output) {
         unsigned requesters = 0;
@@ -591,14 +950,15 @@ void xbar_router::CollectRequestStats(bool *active,
           requesters++;
           queued_pkts++;
           mem_fetch *mf = static_cast<mem_fetch *>(packet.data);
-          if (first_input == UINT_MAX && req_noc_trace::instance().accepts(mf)) {
+          if (first_input == UINT_MAX &&
+              Trace::request_noc_sample_accepts(mf)) {
             first_input = input;
             front_mf = mf;
           }
         }
-        req_noc_trace::instance().log_prearb(
-            cycles, first_input, output, output - active_out_buffer_base,
-            requesters, queued_pkts, front_mf);
+        Trace::request_noc_prearb_event(cycles, first_input, output,
+                                        output - active_out_buffer_base,
+                                        requesters, queued_pkts, front_mf);
       }
     }
     return;
@@ -624,18 +984,17 @@ void xbar_router::CollectRequestStats(bool *active,
         requesters++;
         queued_pkts += queue.size();
         mem_fetch *mf = static_cast<mem_fetch *>(queue.front().data);
-        if (first_input == UINT_MAX && req_noc_trace::instance().accepts(mf)) {
+        if (first_input == UINT_MAX && Trace::request_noc_sample_accepts(mf)) {
           first_input = input;
           front_mf = mf;
         }
       }
     }
-    if (requesters > 0)
-      *conflicts += requesters - 1;
-    if (router_type == REQ_NET && req_noc_trace::instance().trace_prearb()) {
-      req_noc_trace::instance().log_prearb(
-          cycles, first_input, output, output - active_out_buffer_base,
-          requesters, queued_pkts, front_mf);
+    if (requesters > 0) *conflicts += requesters - 1;
+    if (router_type == REQ_NET && GPTRACE(INTERCONNECT)) {
+      Trace::request_noc_prearb_event(cycles, first_input, output,
+                                      output - active_out_buffer_base,
+                                      requesters, queued_pkts, front_mf);
     }
   }
 }
@@ -659,6 +1018,18 @@ void xbar_router::DisplayStats(const char *name) const {
          (float)(out_buffer_full) / (cycles));
   printf("%s_Network_out_buffer_avg_util = %12.4f\n", name,
          ((float)(out_buffer_util) / (cycles) / active_out_buffers));
+  printf("%s_Network_tma_multicast_master_sectors = %llu\n", name,
+         tma_multicast_master_sectors);
+  printf("%s_Network_tma_multicast_merged_sectors = %llu\n", name,
+         tma_multicast_merged_sectors);
+  printf("%s_Network_tma_multicast_max_waiters = %llu\n", name,
+         tma_multicast_max_waiters);
+  printf("%s_Network_tma_response_multicast_masters = %llu\n", name,
+         tma_response_multicast_masters);
+  printf("%s_Network_tma_response_multicast_waiters = %llu\n", name,
+         tma_response_multicast_waiters);
+  printf("%s_Network_tma_response_multicast_max_waiters = %llu\n", name,
+         tma_response_multicast_max_waiters);
 
   auto print_top = [&](const char *label,
                        const std::vector<unsigned long long> &values,
@@ -718,6 +1089,19 @@ void xbar_router::DisplayStats(const char *name) const {
                      active_in_buffer_base, active_in_buffers);
   print_top_unsigned("max_output_occupancy", max_output_occupancy,
                      active_out_buffer_base, active_out_buffers);
+
+  memory_transport_service_stats input_total;
+  memory_transport_service_stats output_total;
+  for (unsigned input = active_in_buffer_base;
+       input < active_in_buffer_base + active_in_buffers; ++input)
+    input_total.add(input_service_stats[input]);
+  for (unsigned output = active_out_buffer_base;
+       output < active_out_buffer_base + active_out_buffers; ++output)
+    output_total.add(output_service_stats[output]);
+  std::string input_name = std::string(name) + "_input_transport";
+  std::string output_name = std::string(name) + "_output_transport";
+  input_total.print(stdout, input_name.c_str());
+  output_total.print(stdout, output_name.c_str());
 }
 
 bool xbar_router::Busy() const {
@@ -726,6 +1110,9 @@ bool xbar_router::Busy() const {
       return true;
 
     if (!out_buffers[i].empty())
+      return true;
+
+    if (!multicast_delivery_buffers[i].empty())
       return true;
   }
   return false;
@@ -793,7 +1180,25 @@ void LocalInterconnect::Push(unsigned input_deviceID, unsigned output_deviceID,
   // no flits are implemented
   assert(net[subnet]->Has_Buffer_In(input_deviceID, 1));
 
-  net[subnet]->Push(input_deviceID, output_deviceID, data, size);
+  assert(data != NULL);
+  const mem_fetch *mf = static_cast<const mem_fetch *>(data);
+  net[subnet]->Push(input_deviceID, output_deviceID, data, size,
+                    memory_transport_data_sectors(mf));
+}
+
+void LocalInterconnect::PushMulticast(
+    unsigned input_deviceID, unsigned output_deviceID, void *data,
+    unsigned int size,
+    const std::vector<std::pair<unsigned, void *> > &destinations) {
+  assert(n_subnets > REPLY_NET);
+  assert(input_deviceID >= n_shader);
+  assert(output_deviceID < n_shader);
+  assert(net[REPLY_NET]->Has_Buffer_In(input_deviceID, 1));
+  assert(data != NULL);
+  const mem_fetch *mf = static_cast<const mem_fetch *>(data);
+  net[REPLY_NET]->PushMulticast(input_deviceID, output_deviceID, data, size,
+                                memory_transport_data_sectors(mf),
+                                destinations);
 }
 
 void *LocalInterconnect::Pop(unsigned ouput_deviceID) {
@@ -803,6 +1208,11 @@ void *LocalInterconnect::Pop(unsigned ouput_deviceID) {
     subnet = 1;
 
   return net[subnet]->Pop(ouput_deviceID);
+}
+
+void *LocalInterconnect::Top(unsigned output_deviceID) const {
+  int subnet = output_deviceID < n_shader ? REPLY_NET : REQ_NET;
+  return net[subnet]->Top(output_deviceID);
 }
 
 void LocalInterconnect::Advance() {

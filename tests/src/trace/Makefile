@@ -13,6 +13,10 @@ DATA_ARCHIVE = $(TRACE_DIR)gpt2_trace_data.tar.gz
 # GPU config (set via run_tests.py -c or default)
 GPU_CONFIG ?= SM120_RTX5090
 CONFIGS_DIR = $(TRACE_DIR)../../../configs
+CONFIG_DIR = $(CONFIGS_DIR)/$(GPU_CONFIG)
+CONFIG_INPUTS = $(CONFIG_DIR)/gpgpusim.config \
+                $(wildcard $(CONFIG_DIR)/config_*.icnt) \
+                $(wildcard $(CONFIG_DIR)/*.rules)
 
 # Build output goes to tests/build/trace/
 BUILD_DIR ?= $(TRACE_DIR)../../build/trace
@@ -58,9 +62,10 @@ $(GPT2_DATA_DRIVEN_TEST): $(TRACE_DIR)gpt2_data_driven_test.cu $(TRACE_DIR)trace
 	$(NVCC) -arch=$(ARCH) -I$(TRACE_DIR) -o $@ $< $(CUDA_FLAGS)
 
 # Copy GPU config to bin directory
-$(CONFIG_STAMP): $(CONFIGS_DIR)/$(GPU_CONFIG)/gpgpusim.config | $(BIN_DIR)
-	cp $(CONFIGS_DIR)/$(GPU_CONFIG)/gpgpusim.config $(BIN_DIR)/
-	cp $(CONFIGS_DIR)/$(GPU_CONFIG)/config_*.icnt $(BIN_DIR)/ 2>/dev/null || true
+$(CONFIG_STAMP): $(CONFIG_INPUTS) $(TRACE_DIR)Makefile | $(BIN_DIR)
+	cp $(CONFIG_DIR)/gpgpusim.config $(BIN_DIR)/
+	cp $(CONFIG_DIR)/config_*.icnt $(BIN_DIR)/ 2>/dev/null || true
+	cp $(CONFIG_DIR)/*.rules $(BIN_DIR)/ 2>/dev/null || true
 	touch $@
 
 # Decompress trace data
