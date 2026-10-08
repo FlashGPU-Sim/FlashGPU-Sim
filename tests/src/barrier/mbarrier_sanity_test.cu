@@ -1,7 +1,6 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 #include <cstdint>
-#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -10,6 +9,15 @@
 #include "execution_mode.h"
 #include "ptx/mbarrier.cuh"
 #include "ptx/tma.cuh"
+#include "trace.h"
+
+// Resolve simulator trace controls when its runtime is loaded; native CUDA
+// builds retain no required dependency on simulator symbols.
+namespace Trace {
+extern bool enabled __attribute__((weak));
+extern int sampling_core __attribute__((weak));
+extern bool trace_streams_enabled[] __attribute__((weak));
+}
 
 namespace {
 
@@ -30,39 +38,51 @@ constexpr int kTmaTileBytes = kTmaTileElements * static_cast<int>(sizeof(float))
 constexpr int kTmaScratchBytes = 256;
 constexpr uint32_t kCompletionWakeHintNs = 100000;
 
-// Capture existing simulator events without exposing simulator internals to
-// CUDA tests. Always restore stdout and the caller's tracing environment.
+// Capture MBAR events and restore the caller's trace configuration.
 class ScopedMBarrierTrace {
  public:
   ScopedMBarrierTrace() : enabled_(!flashgpu::test::running_on_native_gpu()) {
     if (!enabled_) return;
-    const char* previous = std::getenv("FLASHGPU_SIM_MBARRIER_TRACE");
-    had_previous_ = previous != nullptr;
-    if (previous) previous_ = previous;
-    setenv("FLASHGPU_SIM_MBARRIER_TRACE", "1", 1);
+    if (&Trace::enabled == nullptr || &Trace::sampling_core == nullptr ||
+        Trace::trace_streams_enabled == nullptr) {
+      ADD_FAILURE() << "Simulator trace controls are unavailable";
+      enabled_ = false;
+      return;
+    }
+    previous_enabled_ = Trace::enabled;
+    previous_component_ = Trace::trace_streams_enabled[Trace::MBAR];
+    previous_core_ = Trace::sampling_core;
+    Trace::enabled = true;
+    Trace::trace_streams_enabled[Trace::MBAR] = true;
+    Trace::sampling_core = -1;
     ::testing::internal::CaptureStdout();
   }
   ~ScopedMBarrierTrace() {
     if (!finished_) Finish();
   }
   std::string Finish() {
+    if (finished_) return {};
     finished_ = true;
     if (!enabled_) return {};
     const std::string output = ::testing::internal::GetCapturedStdout();
-    if (had_previous_)
-      setenv("FLASHGPU_SIM_MBARRIER_TRACE", previous_.c_str(), 1);
-    else
-      unsetenv("FLASHGPU_SIM_MBARRIER_TRACE");
+    Trace::enabled = previous_enabled_;
+    Trace::trace_streams_enabled[Trace::MBAR] = previous_component_;
+    Trace::sampling_core = previous_core_;
     std::istringstream input(output);
     std::string line, events;
     while (std::getline(input, line)) {
-      if (line.rfind("MBAR_WAIT ", 0) == 0) events += line + "\n";
+      const auto marker = line.find(": MBAR - Core ");
+      if (line.rfind("GPGPU-Sim Cycle ", 0) == 0 &&
+          marker != std::string::npos &&
+          line.find(" - MBAR_WAIT ", marker) != std::string::npos)
+        events += line + "\n";
     }
     return events;
   }
  private:
-  bool enabled_, finished_ = false, had_previous_ = false;
-  std::string previous_;
+  bool enabled_, finished_ = false;
+  bool previous_enabled_ = false, previous_component_ = false;
+  int previous_core_ = 0;
 };
 
 std::vector<std::string> TraceEvents(const std::string& trace,
@@ -77,6 +97,9 @@ std::vector<std::string> TraceEvents(const std::string& trace,
 }
 
 uint64_t TraceNumber(const std::string& event, const std::string& key) {
+  const std::string cycle_prefix = "GPGPU-Sim Cycle ";
+  if (key == "cycle" && event.rfind(cycle_prefix, 0) == 0)
+    return std::stoull(event.substr(cycle_prefix.size()));
   std::istringstream input(event);
   std::string token;
   const std::string prefix = key + "=";

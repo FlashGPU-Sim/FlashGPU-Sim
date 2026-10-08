@@ -182,9 +182,10 @@ configured aggregate cost of notification-delayed successful wakeups.
 lane to return true; a logical wait with any timeout-false lane is classified
 under `timeout_false`. `rechecks` counts event/deadline-driven warp-level
 recheck stages (a stage may query multiple active lanes), and sleep cycles are
-counted once per logical warp instruction, not once per lane. Set
-`FLASHGPU_SIM_MBARRIER_TRACE=1` for
-per-transition and per-lane result records. Trace is disabled by default.
+counted once per logical warp instruction, not once per lane. Enable
+`-trace_enabled 1` and select `MBAR` in `-trace_components` for per-transition
+and per-lane result records. Core sampling applies; use
+`-trace_sampling_core -1` for all SMs. Trace is disabled by default.
 
 Integration coverage is located in:
 

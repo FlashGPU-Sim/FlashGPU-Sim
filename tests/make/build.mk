@@ -32,6 +32,9 @@ endef
 
 $(foreach arch,$(ARCHITECTURES),$(eval $(call REGISTER_ARCH_COMPILE_RULES,$(arch))))
 
+$(foreach arch,$(ARCHITECTURES),$(OBJ_DIR)/$(arch)/barrier/mbarrier_sanity_test.cu.o): \
+  $(SRC_DIR)/trace.h $(SRC_DIR)/trace_streams.tup
+
 define REGISTER_STANDARD_TEST_GROUP
 TEST_GROUP_OBJECTS_$(1)_$(2) := $$(call TEST_SOURCE_OBJECTS,$(1),$$(TEST_GROUP_SOURCES_$(1)_$(2)))
 TEST_GROUP_TARGET_$(1)_$(2) := $$(BIN_DIR)/$(1)/$(2)_tests
