@@ -10,8 +10,6 @@ Pinned reverse-engineering tree:
 - In-tree copy: `tests/src/microbench/dsm_bw/` (`tma_bw` is `tests/src/microbench/tma_bw/`)
 - Blog: https://seanzw.github.io/posts/gpu_dsm_bw/
 
-H200 cycle status (what matches, what fails): [`calibration.md`](calibration.md).
-
 Patent: US12248788B2, figures 21A–21D. TPCARB in those figures is **not** modeled; PG'd SM slots **are**.
 
 ---
@@ -109,9 +107,7 @@ From the blog’s “not bit accurate” list:
 | Remote load completion | Same **SMEM** scoreboard / LDST writeback as local `ld.shared` |
 | Cluster barriers | Timing state is held by the physical cluster and keyed by TB-cluster group |
 
-Implementation evidence from the 2026-08-31 bandwidth audit: PTX scope suffixes on ordinary memory instructions require explicit normalization of both `.shared::cta` and `.shared::cluster`; otherwise the parser's generic-space representation can incorrectly route a valid shared address to global memory. The upstream mixed load+TMA checksum exposed this distinction.
-
-Implementation evidence from the 2026-09-01 slope audit: multi-flit payloads must hash each 32-B cache-line grant rather than pin a whole TMA command to one route; otherwise per-SM TMA rate falls from about 21 B/cycle at two SMs to about 15 B/cycle at sixteen. Reverse read commands need head priority over queued request data, while request/response VCs still share the shaped physical sender. Cluster-barrier release must also wait for outstanding DSM transactions in every CTA in the TB-cluster group.
+Ordinary shared accesses must keep both `.shared::cta` and `.shared::cluster` in the shared address space. A multi-flit packet hashes each 32 B grant on its own route. A read command is placed ahead of queued request data. Request and response virtual channels still share one shaped sender. A cluster barrier does not release while any CTA in the group still has an outstanding DSM transaction.
 
 ---
 

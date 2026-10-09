@@ -6,7 +6,6 @@
 // isolation and would hang or give false failures on the wrong config.
 //
 // Documented skip matrix:
-//   docs/cluster_noc/tests.md
 //   docs/cluster_noc/programming_model.md
 //
 // Naming: physical packing is m SMs per GPC by n GPCs. TB cluster size is a

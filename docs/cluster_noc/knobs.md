@@ -18,10 +18,10 @@ distinct algorithms:
 path and takes precedence. Power-of-two mapping is unchanged. No setting
 here establishes NVIDIA's physical hash.
 
-Run the standalone regression documented in `tests/check_address_mapping.cc`.
-See `calibration.md` for failing-before evidence, build status, and the separate
-inherited row-capacity limitation. Recalibrate after rebuilding the decoder;
-old timing results are not acceptance evidence for the repaired mapping.
+The geometry check is `tests/check_address_mapping.cc`. Rebuilding the
+decoder changes which channel an address hits. Old timing results are not
+evidence for the repaired mapping. The row-capacity limit of the DRAM model
+is unchanged.
 
 ## Bounded local mbarrier wait
 
@@ -33,8 +33,7 @@ suspension limit, not successful-wait latency. Completion wakes the warp
 early; explicit PTX hints override the default and are also in ns. The default
 applies only to uniform local barrier/parity waits; nonuniform no-hint waits
 remain immediate queries because the current wakeup manager is warp-based.
-Mapped remote waits retain their existing protocol. See `calibration.md` for
-the expiry/early-wakeup regression and outstanding matched-probe/GEMM gates.
+Mapped remote waits retain their existing protocol.
 
 DSM SM↔SM timing is `dsm_fabric_t`. Do not reintroduce a hop CSV or scalar
 remote-hop bandwidth model.
@@ -118,11 +117,9 @@ Hang watchdog is independent of fabric hop timing.
 
 ## 4. Provisional H200 mapping
 
-Cycle-accurate calibration (latency + slopes + GEMM), full-chip GPC packing, and sim tables: [`calibration.md`](calibration.md).
-
-The partial H200 hardware pass is the current source. Its failed 4096^3 GEMM
-row is excluded. The vendor `dsm_bw` pin and the acceptance detail are in
-[`evidence.md`](evidence.md) and [`calibration.md`](calibration.md).
+Full-chip GPC packing is the `SM90_H200_CLUSTER132` config: six GPCs of 16
+SMs and two GPCs of 18. Which numbers are measured, taken from the patent, or
+inferred is in [`evidence.md`](evidence.md).
 
 | Provisional target | Former hop model | Fabric intent |
 |----------------|-----------------|---------------|

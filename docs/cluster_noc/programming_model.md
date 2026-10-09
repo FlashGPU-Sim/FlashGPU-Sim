@@ -6,7 +6,7 @@ How kernels are supposed to use this sim. Fabric internals: [`dsm_fabric.md`](ds
 
 ## 1. Launch so peers actually sit together
 
-Implemented in `libcuda/cuda_runtime_api.cc`. Test helper: `test/common/cluster_launch.h`.
+Implemented in `libcuda/cuda_runtime_api.cc`.
 
 | API | Status |
 |-----|--------|
@@ -26,7 +26,7 @@ Validation: dims ≥ 1; grid multiple of cluster dims; `product(clusterDim) ≤`
 | Cluster launch | All CTAs of one TB-cluster on **one** GPC / physical cluster, shared `cluster_group` + ranks |
 | Ordinary launch | Global round-robin; **each CTA its own group** (no false peers) |
 
-On a multi-cluster config, `<<<2,32>>>` can put two CTAs on **different** GPCs. Peer TMA/DSM then never happens and `try_wait` hangs. Tests use `flash_test::launch_kernel_with_cluster`.
+On a multi-cluster config, `<<<2,32>>>` can put two CTAs on **different** GPCs. Peer TMA/DSM then never happens and a bare `try_wait` hangs. Peers share a GPC only when the launch sets a cluster dimension.
 
 ### Special registers
 

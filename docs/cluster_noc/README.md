@@ -3,9 +3,6 @@
 Shipped design for Hopper Thread Block Clusters in FlashGPU-Sim. English only.
 Do not start a second design doc outside this directory.
 
-What this branch adds, what was measured, and what stays open:
-[`REPORT.md`](REPORT.md).
-
 | Feature | Functional | Timing |
 |---------|------------|--------|
 | Cluster launch (`cudaLaunchKernelExC` / required cluster dims) | Yes | Whole TB-cluster co-resident on one GPC |
@@ -16,19 +13,9 @@ What this branch adds, what was measured, and what stays open:
 | `barrier.cluster.arrive` / `wait` | Yes | Releases after every active warp in every CTA of the TB-cluster arrives |
 
 Remote DSM and remote mbarrier require `-gpgpu_dsm_enable 1`. Ordinary
-non-cluster kernels and DSM-off configs are unchanged. TMA multicast remains
-functional fan-out (known timing gap vs silicon).
-
-## Known timing gaps (frozen)
-
-- **TMA cluster multicast**: functional fan-out plus fixed
-  `-gpgpu_tma_multicast_latency` (100 cycles on CLUSTER132). No bandwidth,
-  route, queue, SRAM-service, or contention model.
-- **GEMM CUDA-event times** (unicast and multicast) are mostly **outside** the
-  10% H200 gate on CLUSTER132: small multicast ~−20%, K2K multicast ~+28%
-  (last measured; see [`calibration.md`](calibration.md)).
-- This PR does not close that gap; a dedicated multicast timing model is a
-  separate follow-up.
+non-cluster kernels and DSM-off configs are unchanged. Global-memory TMA
+multicast is a functional fan-out plus that fixed latency. It has no
+bandwidth, route, queue, or contention model. See [`knobs.md`](knobs.md).
 
 ---
 
@@ -37,15 +24,12 @@ functional fan-out (known timing gap vs silicon).
 | File | Contents |
 |------|----------|
 | **This file** | Status, configs, code map |
-| [`REPORT.md`](REPORT.md) | Feature summary, measurements, open limits |
 | [`architecture.md`](architecture.md) | GPC vs TB-cluster, two networks, cycle order |
 | [`dsm_fabric.md`](dsm_fabric.md) | Flits, VCs, GPCMMU, GX, shaper, ACK |
 | [`pipeline.md`](pipeline.md) | Remote load = local SMEM + fabric |
 | [`programming_model.md`](programming_model.md) | Launch, `mapa`, TMA, mbarrier, hang preventers |
 | [`knobs.md`](knobs.md) | Knobs that still exist |
-| [`tests.md`](tests.md) | How to run the functional filters |
 | [`evidence.md`](evidence.md) | Measured / patent / inferred labels |
-| [`calibration.md`](calibration.md) | Frozen H200 CLUSTER132 status |
 
 Physical path (patent US12248788B2 Figs. 21A–21D). **TPC / TPCARB are not
 modeled.** Power-gated SM slots **are**. Why DSM is not the memory xbar:

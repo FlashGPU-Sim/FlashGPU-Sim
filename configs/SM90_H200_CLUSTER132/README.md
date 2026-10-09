@@ -37,8 +37,8 @@ failed). Unmeasured fields use H100 same-Hopper baselines.
 This is the **only** shipped H200 product config, and the only shipped
 config with the DSM fabric on.
 
-Feature summary and known limits: `docs/cluster_noc/REPORT.md`. Calibration
-status: `docs/cluster_noc/calibration.md`.
+Model: `docs/cluster_noc/README.md`. Knob meanings:
+`docs/cluster_noc/knobs.md`.
 
 ## Usage
 
