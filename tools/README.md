@@ -1,5 +1,9 @@
 # TritonTrace
 
+The same tools distribution also provides [CutedslTrace](CutedslTrace/README.md)
+for offline CuTe DSL capture and replay. Its examples are in
+[tests/dsl/cutedsl](../tests/dsl/cutedsl/README.md).
+
 TritonTrace records Triton CUDA kernel compilation and launch state and generates standalone CUDA C++ harnesses. The generated harnesses can replay a captured launch on a compatible physical GPU or with FlashGPU-Sim. The public API is [`TritonTrace.Tracker`](TritonTrace/tracker.py).
 
 ## Package Structure
@@ -58,7 +62,9 @@ tracker = TritonTrace.Tracker(
 
 ### Online Capture
 
-Online mode lets Triton compile and execute normally. TritonTrace registers kernel-load, launch-enter, and launch-exit hooks, and observes the Python arguments and grid passed through `JITFunction.run`. Triton evaluates callable grids with its fully bound arguments, and TritonTrace records the resulting numeric grid.
+Online mode lets Triton compile and execute normally. TritonTrace records the
+selected kernel launch, its arguments and the numeric launch grid, including
+grids computed from callable expressions.
 
 ```python
 from pathlib import Path
@@ -153,7 +159,7 @@ At runtime, the harness resolves its own directory through `/proc/self/exe`, loa
 To replay through FlashGPU-Sim, place a matching simulator configuration in the generated `launchers/` directory and select the simulator CUDA runtime before running the executable:
 
 ```bash
-cp -a /path/to/flashgpu-sim/configs/SM90/. .
+cp -a /path/to/flashgpu-sim/configs/SM90_H100/. .
 source /path/to/flashgpu-sim/setup_environment
 ./kernel_name_launch1
 ```

@@ -648,11 +648,30 @@ FA3_STANDARD_MEDIUM_CASE_LIST(FA3_PREFILL_BWD_MEDIUM_TEST)
 #endif
 
 #if defined(FA3_STANDARD_FIXED_TESTS)
+TEST_F(Fa3FwdHdim128Fp16IntegrationTest, ReferenceRejectsCorruptedOutput) {
+#ifndef __CUDA_ARCH__
+  std::vector<cutlass::half_t> output(4, cutlass::half_t(0.0f));
+  std::vector<float> expected(4, 0.0f);
+  auto compare = [&]() {
+    return compare_fa3_tensor(output, expected, kFa3OutputAbsTolerance,
+                             kFa3OutputRelTolerance);
+  };
+  EXPECT_EQ(compare().worst_error_ratio, 0.0f);
+  output[2] = cutlass::half_t(1.0f);
+  const auto corrupted = compare();
+  EXPECT_GT(corrupted.worst_error_ratio, 1.0f);
+  EXPECT_EQ(corrupted.index, 2u);
+#endif
+}
+
 TEST_F(Fa3FwdHdim128Fp16IntegrationTest, FixedForwardCase) {
   Fa3RunResult result = run_fa3_fwd_hdim128_fp16();
 
   ASSERT_EQ(result.error, cudaSuccess)
       << result.where << " failed: " << cudaGetErrorString(result.error);
+  ASSERT_TRUE(result.reference_checked);
+  ExpectFa3TensorMatch("O", result.output_comparison);
+  ExpectFa3TensorMatch("LSE", result.lse_comparison);
 }
 #endif
 

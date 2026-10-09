@@ -31,13 +31,6 @@ From the repository root:
 The `sm120` manifest supplies the NVCC target and simulator configuration; no
 per-test configuration is required.
 
-## Adding coverage
-
-Add the CUDA source below this directory, register it in
-[`tests/arch/sm120.toml`](../../arch/sm120.toml), and implement a CPU reference
-that applies the input format's rounding and accumulation rules. Keep the
-fragment-to-lane mapping consistent with the PTX ISA definition.
-
 See the [test framework documentation](../../README.md), the
 [MMA implementation](../../../src/gpgpu-sim/flash/mma/), and NVIDIA's
 [PTX MMA instruction reference](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma).

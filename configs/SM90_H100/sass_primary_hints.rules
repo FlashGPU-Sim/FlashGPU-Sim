@@ -51,7 +51,13 @@ setp.equ.ftz.f32 = MOV, UIADD3, IADD3, IMAD, IMAD.IADD, IMAD.MOV.U32, ISETP.LT.O
 unknown_arch = fatal
 toolchain_mismatch = fatal
 missing_primary_rule = fatal
-zero_primary_candidate = fatal
+# Kernels without a covered PTX opcode still use conservative plain reorder.
+# Covered PTX with no mapped anchor at all is fatal. After one anchor maps,
+# covered PTX without guide evidence retains conservative crossing constraints;
+# repeated same-opcode SASS copies stay unanchored, while different primary
+# opcodes remain fatal.
+zero_primary_candidate = plain
+duplicate_identical_primary_candidates = plain
 multiple_primary_candidates_without_explicit_hint = fatal
 unexpected_attached_opcode = fatal
 fallback = disabled

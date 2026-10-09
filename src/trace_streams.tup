@@ -37,5 +37,10 @@ TS_TUP_BEGIN( trace_streams_type )
     TS_TUP( TMA ),
     TS_TUP( WIP ),
     TS_TUP( LIVENESS ),
+    TS_TUP( INSTRUCTION_ISSUE ),
+    TS_TUP( WGMMA_RF_TRAFFIC ),
+    TS_TUP( NAMED_BARRIER ),
+    TS_TUP( TCGEN05 ),
+    TS_TUP( MMA ),
     TS_TUP( NUM_TRACE_STREAMS )
 TS_TUP_END( trace_streams_type )

@@ -26,6 +26,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include "tensor_mma.h"
+#include "mma_trace.h"
 
 #include <cmath>
 #include <cstdint>
@@ -384,15 +385,16 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
     exit(1);
   }
 
-  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
+  MMA_TRACE(core, inst, {
     const char *type_str = is_f16_type    ? "F16"
                            : is_bf16_type ? "BF16"
                            : is_tf32_type ? "TF32"
                            : is_s8_type   ? "S8"
                                           : "UNKNOWN";
-    printf("GPGPU-Sim: tensor_mma_impl called for shape M%dN%dK%d, type=%s\n",
-           M, N, K, type_str);
-  }
+    mma_trace.append(
+        "GPGPU-Sim: tensor_mma_impl called for shape M%dN%dK%d, type=%s\n", M,
+        N, K, type_str);
+  });
 
   // Validate shape/type combination (from PTX ISA)
   // Shape/Type compatibility:
@@ -437,9 +439,9 @@ void tensor_mma_impl(const ptx_instruction *pI, core_t *core,
     tensor_mma_f16_impl(pI, core, inst, M, N, K, is_bf16_type, tid, dst);
     return;
   } else {
-    if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-      printf("GPGPU-Sim: tensor_mma_impl - unsupported data type for shape\n");
-    }
+    fprintf(
+        stderr,
+        "GPGPU-Sim: ERROR - tensor_mma_impl unsupported data type for shape\n");
     return;
   }
 }
@@ -495,9 +497,9 @@ void tensor_mma_ld_impl(const ptx_instruction *pI, core_t *core,
     }
   }
 
-  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    printf("GPGPU-Sim: tensor_mma_ld_impl completed for shape\n");
-  }
+  MMA_TRACE(core, inst, {
+    mma_trace.append("GPGPU-Sim: tensor_mma_ld_impl completed for shape\n");
+  });
 }
 
 void tensor_mma_st_impl(const ptx_instruction *pI, core_t *core,
@@ -542,9 +544,9 @@ void tensor_mma_st_impl(const ptx_instruction *pI, core_t *core,
     }
   }
 
-  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    printf("GPGPU-Sim: tensor_mma_st_impl completed for shape\n");
-  }
+  MMA_TRACE(core, inst, {
+    mma_trace.append("GPGPU-Sim: tensor_mma_st_impl completed for shape\n");
+  });
 }
 
 } // namespace flash_gpgpu_sim

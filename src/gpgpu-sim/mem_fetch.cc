@@ -50,6 +50,10 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
     assert(wid == m_inst.warp_id());
   }
   m_streamID = streamID;
+  m_is_instruction_prefetch = false;
+  m_instruction_prefetch_stream = 0;
+  m_instruction_prefetch_generation = 0;
+  m_instruction_prefetch_context = 0;
   m_data_size = access.get_size();
   m_ctrl_size = ctrl_size;
   m_sid = sid;

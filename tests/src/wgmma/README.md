@@ -28,24 +28,9 @@ coverage using the smallest documented `m64n8` shape for each type family:
 - `wgmma_s8_test.cu`: `m64n8k32.s32.s8/u8`
 - `wgmma_b1_test.cu`: `m64n8k256.s32.b1.b1.and.popc`
 
-## Test Organization
-
-This directory follows the data-type split used by `tests/src/mma`:
-
-- `wgmma_f16_test.cu` contains the current FP16-specific inline PTX
-  kernel, runner, and gtest cases.
-- `tensor_wgmma_test.cuh` contains shared WGMMA test utilities: the current
-  m64n8 shape constants, type dispatch, accumulator mapping,
-  shared-memory descriptor helpers, random input generation, CPU references,
-  CUDA kernel launchers, and common CUDA run result plumbing.
-
-New data types should use their own `wgmma_<type>_test.cu` file and reuse
-the common helpers where the layout matches. Implementation-side variant
-dispatch remains centralized in `src/gpgpu-sim/flash/wgmma/tensor_wgmma.cc`.
-
-The first tests use uniform input tiles, so every accumulator register should
-contain the same CPU reference value. This validates the instruction path before
-adding tests that depend on the full GMMA accumulator-to-matrix layout.
+Uniform-input cases compare every accumulator register with the same CPU
+reference. The data-type cases also exercise their respective operand formats
+and accumulation behavior.
 
 ## Running On Hopper
 

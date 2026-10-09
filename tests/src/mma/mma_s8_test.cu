@@ -1,5 +1,5 @@
 // CUDA kernel with inline PTX for mma.sync.aligned.m16n8k16/k32 with S8/U8 inputs
-// Tests INT8 inputs → INT32 output accumulation with saturation
+// Tests INT8 inputs → INT32 output accumulation
 // Following pattern from mma_f16_test.cu
 
 #include <gtest/gtest.h>
@@ -208,8 +208,8 @@ TEST_F(MMAS8M16N8K16IntegrationTest, AllOnesTest) {
     }
 }
 
-// Test 2: Saturation test with max values
-TEST_F(MMAS8M16N8K16IntegrationTest, SaturationTest) {
+// Test 2: Maximum positive S8 inputs; the result fits in S32.
+TEST_F(MMAS8M16N8K16IntegrationTest, MaxPositiveInputsTest) {
     // Use max S8 value (127)
     for (int i = 0; i < M * K; i++) h_A[i] = 127;
     for (int i = 0; i < K * N; i++) h_B[i] = 127;

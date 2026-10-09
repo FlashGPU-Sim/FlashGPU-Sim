@@ -25,9 +25,9 @@ architectures and AI workloads, built upon GPGPU-Sim.
 
 | Area | Supported capabilities |
 | --- | --- |
-| Architectures | Hopper/SM90 ([`SM90_H100`](configs/SM90_H100/gpgpusim.config)) and Blackwell/SM120 ([`SM120_RTX5090`](configs/SM120_RTX5090/gpgpusim.config)) configurations |
-| GPU features | TMA, `mbarrier`, `mma`, `wgmma`, `ldmatrix`/`stmatrix`, etc. |
-| Workload tooling | [TritonTrace](tools/README.md) kernel capture and standalone replay ([examples and validation](tests/triton_trace/README.md)) |
+| Architectures | Hopper: [`SM90_H100`](configs/SM90_H100/gpgpusim.config); Blackwell: [`SM100_B200`](configs/SM100_B200/gpgpusim.config), [`SM120_RTX5090`](configs/SM120_RTX5090/gpgpusim.config) |
+| GPU features | TMA, TMEM, `tcgen05`, `mbarrier`, `mma`, `wgmma`, `ldmatrix`/`stmatrix`, etc. |
+| Workload tooling | [TritonTrace](tools/README.md) kernel capture and standalone replay ([examples and validation](tests/dsl/triton/README.md)) |
 | Simulation | Execution-driven functional simulation and cycle-level timing simulation |
 | Parallelism | OpenMP-based multi-threaded SM simulation |
 
@@ -35,7 +35,6 @@ architectures and AI workloads, built upon GPGPU-Sim.
 
 | Direction | Status | Planned work |
 | --- | --- | --- |
-| Blackwell features | In progress | Extend the SM120/RTX 5090 model with features used by FlashAttention-4, including `tcgen05` |
 | Distributed shared memory | In progress | Model thread-block cluster features, such as remote shared-memory addressing |
 | gem5 integration | Experimental | Stabilize gem5 as an alternative memory-system backend |
 | Scale-up multi-GPU simulation | Planned | Model native remote-memory loads/stores, fabric transport, unified addressing, and memory consistency |
@@ -108,8 +107,8 @@ is calculated as `(Sim - NCU) / NCU`.
 
 | Config | Workload | Shape | NCU cycles | Sim cycles | Difference |
 | --- | --- | --- | ---: | ---: | ---: |
-| SM120_RTX5090 | Tutorial - CUDA Vector Add | 2,000,000 elements | 29,642.67 | 30,133 | +1.65% |
-| SM120_RTX5090 | Tutorial - Triton GEMM | `M=2560, N=64, K=2560` | 77,190.74 | 78,989 | +2.33% |
+| SM120_RTX5090 | Tutorial - CUDA Vector Add | 2,000,000 elements | 29,642.67 | 31,874 | +7.53% |
+| SM120_RTX5090 | Tutorial - Triton GEMM | `M=2560, N=64, K=2560` | 77,190.74 | 73,038 | -5.38% |
 
 > [!TIP]
 > We provide RTX 5090 Nsight Compute reports and CSVs for
@@ -337,20 +336,15 @@ statistics report or `--csv output.csv` to export the results.
 ## Citation
 
 We hope FlashGPU-Sim benefits your research! If you use it in your work, please cite our paper:
-
-```text
-Siying Yu, Yixun Hong, Guozhi Qiu, Feng Gu, Chenbo Geng, Zhengrong Wang, Chen Zhang, Bei Yu,
-FlashGPU-sim: Enabling GPU Modeling for Modern Architectures and AI Workloads,
-in 2026 IEEE/ACM 59th International Symposium on Microarchitecture (MICRO)
-```
+[FlashGPU-sim: Enabling GPU Modeling for Modern Architectures and AI Workloads](https://arxiv.org/abs/2609.15311v1)
 
 BibTeX:
 ```bibtex
 @inproceedings{flashgpusim,
-  author    = {Yu, Siying and Hong, Yixun and Qiu, Guozhi and Gu, Feng
+  author    = {Yu, Siying and Hong, Yixun and Qiu, Guozhi and Liu, Jingci and Gu, Feng
                and Geng, Chenbo and Wang, Zhengrong and Zhang, Chen and Yu, Bei},
   title     = {{FlashGPU-sim}: Enabling GPU Modeling for Modern Architectures and AI Workloads},
-  booktitle = {IEEE/ACM 59th International Symposium on Microarchitecture (MICRO)},
+  booktitle = {59th IEEE/ACM International Symposium on Microarchitecture (MICRO)},
   year      = {2026}
 }
 ```
@@ -359,4 +353,4 @@ BibTeX:
 
 FlashGPU-Sim is built upon GPGPU-Sim. We retain their upstream copyright and license notices in
 [COPYRIGHT](COPYRIGHT), and thank their authors and contributors for their foundational work.
-The [archived upstream GPGPU-Sim documentation](docs/legacy/gpgpu-sim.md) is retained for historical reference.
+See [upstream project history and citations](docs/legacy/gpgpu-sim.md) for the inherited components.

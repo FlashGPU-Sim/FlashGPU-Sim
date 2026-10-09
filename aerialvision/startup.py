@@ -240,7 +240,7 @@ def fileInput(cl_files=None):
     bClearEntryTEPTX = Tk.Button(addFileTEPTX, text = "Clear", command = (lambda: clearField(eAddFileTEPTX)))
     bClearEntryTEPTX.pack(side = Tk.LEFT)
     
-    bAddFileBrowseTEPTX = Tk.Button(addFileTEPTX, text = "Browse", command = (lambda: eAddFileTEPTX.insert(0,Fd.askopenfilename(initialdir=recentfile )))) #"/home/taamodt/fpga_simulation/run/"
+    bAddFileBrowseTEPTX = Tk.Button(addFileTEPTX, text = "Browse", command = (lambda: eAddFileTEPTX.insert(0,Fd.askopenfilename(initialdir=recentfile ))))
     bAddFileBrowseTEPTX.pack(side = Tk.LEFT)
     bAddFileRecentFilesTEPTX = Tk.Button(addFileTEPTX, text = "Recent Files", command = (lambda: loadRecentFile(eAddFileTEPTX)))
     bAddFileRecentFilesTEPTX.pack(side = Tk.LEFT)
@@ -260,7 +260,7 @@ def fileInput(cl_files=None):
     bClearEntryTEStat = Tk.Button(addFileTEStat, text = "Clear", command = (lambda: clearField(eAddFileTEStat)))
     bClearEntryTEStat.pack(side = Tk.LEFT)
     
-    bAddFileBrowseTEStat = Tk.Button(addFileTEStat, text = "Browse", command = (lambda: eAddFileTEStat.insert(0,Fd.askopenfilename(initialdir=recentfile )))) #"/home/taamodt/fpga_simulation/run/"
+    bAddFileBrowseTEStat = Tk.Button(addFileTEStat, text = "Browse", command = (lambda: eAddFileTEStat.insert(0,Fd.askopenfilename(initialdir=recentfile ))))
     bAddFileBrowseTEStat.pack(side = Tk.LEFT)
     bAddFileRecentFilesTEStat = Tk.Button(addFileTEStat, text = "Recent Files", command = (lambda: loadRecentFile(eAddFileTEStat)))
     bAddFileRecentFilesTEStat.pack(side = Tk.LEFT)

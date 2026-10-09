@@ -340,7 +340,9 @@ inline Fa2ReferenceStats compute_fa2_reference_errors(
         const float ref_lse = max_score + std::log(sum_exp);
         const size_t lse_idx = fa2_lse_index(b, h, m, seqlen_q, heads);
         if (lse_idx == 0) stats.lse0_ref = ref_lse;
-        const float lse_error = std::fabs(actual_lse[lse_idx] - ref_lse);
+        float lse_error = std::fabs(actual_lse[lse_idx] - ref_lse);
+        if (!std::isfinite(lse_error))
+          lse_error = std::numeric_limits<float>::infinity();
         if (lse_error > stats.max_lse_abs_error) {
           stats.max_lse_abs_error = lse_error;
           stats.max_lse_abs_error_index = lse_idx;
@@ -355,7 +357,9 @@ inline Fa2ReferenceStats compute_fa2_reference_errors(
           }
           const size_t o_idx = fa2_qkv_index(b, m, h, d, seqlen_q, heads, D);
           if (o_idx == 0) stats.output0_ref = ref;
-          const float output_error = std::fabs(float(actual_o[o_idx]) - ref);
+          float output_error = std::fabs(float(actual_o[o_idx]) - ref);
+          if (!std::isfinite(output_error))
+            output_error = std::numeric_limits<float>::infinity();
           if (output_error > stats.max_output_abs_error) {
             stats.max_output_abs_error = output_error;
             stats.max_output_abs_error_index = o_idx;
