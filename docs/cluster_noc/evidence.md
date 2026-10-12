@@ -7,7 +7,6 @@ Pinned reverse-engineering tree:
 - Commit `4e8c4f91dd7b00584efcb3ac4b602b33ce2631cd` (`Add standalone H200 DSM bandwidth benchmark`)
 - [ANALYSIS.md](https://github.com/seanzw/random/blob/4e8c4f91dd7b00584efcb3ac4b602b33ce2631cd/dsm_bw/ANALYSIS.md)
 - [benchmark](https://github.com/seanzw/random/tree/4e8c4f91dd7b00584efcb3ac4b602b33ce2631cd/dsm_bw)
-- In-tree copy: `tests/src/microbench/dsm_bw/` (`tma_bw` is `tests/src/microbench/tma_bw/`)
 - Blog: https://seanzw.github.io/posts/gpu_dsm_bw/
 
 Patent: US12248788B2, figures 21A–21D. TPCARB in those figures is **not** modeled; PG'd SM slots **are**.

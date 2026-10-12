@@ -1,72 +1,15 @@
-# TMA Latency Microbenchmarks
+# TMA microbenchmarks
 
-Device-side SM-cycle measurements around TMA-related command sequences, using
-`%clock64` / `clock64()`. Goal: compare **real GPU** vs **FlashGPU-Sim** on
-the same sequences to locate cycle undercount.
-
-## Cases
-
-| Test | Sequence timed |
-|------|----------------|
-| `TMALatencyTest.ClockOverhead` | empty `clock64(); clock64()` |
-| `TMALatencyTest.MBarrierOnly` | `arrive.expect_tx(0)` + `try_wait.parity` (no data) |
-| `TMALatencyTest.TMALoad{256B,1KB,4KB,16KB}` | `arrive.expect_tx` + `cp.async.bulk` load + `try_wait` |
-| `TMALatencyTest.TMALoad4KBWarm` | 8× load after prime (per-transfer median) |
-| `TMALatencyTest.TMAStore4KB` | store + `commit_group` + `wait_group(0)` |
-| `TMALatencyTest.GmemLoadBaseline4KB` | scalar `ld.global` 4KB (no TMA) |
-| `TMALatencyTest.SummaryTable` | one-shot table for log capture |
-
-## Run
+Build-only CUDA benches. The runner target is
 
 ```bash
-# Real GPU: a clean shell, setup_environment not sourced.
-./tests/run_tests.py run --arch sm90 --group microbench --profile tma-latency \
-  --gtest-filter 'TMALatencyTest.*'
-
-# Simulator. DSM is off on SM90_H100. Use the H200 preset to measure the fabric.
-# Set FLASHGPU_ALLOW_CC_MISMATCH=1 when the host is not CC 9.0.
-./tests/run_tests.py run --arch sm90 --group microbench --profile tma-latency \
-  -c SM90_H200_CLUSTER132 --gtest-filter 'TMALatencyTest.*'
+./tests/run_tests.py build --arch sm90 --group microbench --profile tma
 ```
 
-The three `.cu` benches in this directory stay on the build-only `tma` profile.
-`tma_latency_bench.cc` is the `tma-latency` profile. CSVs are written under
-`tests/run/<GPU_CONFIG>/`.
+| Source | What it times |
+|---|---|
+| `tma_completion_latency_bench.cu` | 2D tensor TMA load completion, fixed GEMM tile sizes |
+| `tma_descriptor_setup_bench.cu` | Tensor-map replace and publish |
+| `tma_fa3_m3_bench.cu` | 4D `shared::cluster` tensor load of an FA3-shaped tile |
 
-## How to interpret
-
-```
-TMA_data_path ≈ TMALoad(size) − MBarrierOnly
-size_scaling  ≈ TMALoad(16KB) − TMALoad(1KB)   # AGU issue + BW
-store_path    ≈ TMAStore4KB
-baseline      ≈ GmemLoadBaseline4KB vs TMALoad4KB
-```
-
-Compare each median **native vs sim**. Large relative gaps on a single case
-point to that subsystem (mbarrier fixed latency, TMA RTT, bulk wait_group, …).
-
-Sim config knobs (calibrated from this suite on RTX 5090, 2026-07):
-
-```
--ptx_opcode_latency_tma 32
--gpgpu_mbarrier_arrive_latency 200   # was 29; TMA complete_tx delay (end-to-end fit)
--gpgpu_mbarrier_trywait_latency 120  # was 32; also applied on immediate try_wait success
--gpgpu_l2_rop_latency 260
--dram_latency 254
-```
-
-These mbarrier knobs are **end-to-end TMA+mbarrier** fits (residual path
-folded into fixed latency), not pure hardware barrier cost. They are shared
-across all SM120 configs; pure mbarrier-only or non-TMA waiters may look slow.
-
-Code fix (minimal, flash-only): `src/gpgpu-sim/flash/mbarrier.cc` applies
-`trywait_latency` even when `try_wait` succeeds immediately (already-complete
-barrier). Without that, only opcode overhead (~15 cycles) was measured.
-
-## Notes
-
-- Uses **linear** `cp.async.bulk.shared::cta.global` (not tensor map 2D), so
-  results isolate bulk TMA + mbarrier without tensormap AGU complexity.
-- Single CTA / warp-leader issue, matching how TMA is typically elect'd.
-- Simulator `clock64` returns `gpu_sim_cycle` (see `ptx_sim.cc`).
-- Fewer iterations under simulator (auto-detected).
+The linear `clock64` bulk-copy gtest is not in this tree.
