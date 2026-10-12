@@ -62,8 +62,7 @@ BINARY_GROUP_BINARIES_microbench-sm90-wgmma = $(MICROBENCH_SM90_WGMMA_TARGETS)
 
 .PHONY: microbench-sm120-mma \
 microbench-sm120-memory microbench-sm90-cp-async microbench-sm90-mma \
-microbench-sm90-tma microbench-sm90-wgmma \
-microbench-sm100-tma
+microbench-sm90-tma microbench-sm90-wgmma microbench-sm100-tma
 
 # The MMA group contains gtest timing probes plus standalone calibration binaries.
 microbench-sm120-mma: setup-gtest $(MICROBENCH_SM120_MMA_TARGETS)
@@ -129,4 +128,3 @@ $(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(MICROBENCH_MK) | $(BIN_DIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(filter-out $(TOP_MAKEFILE) $(MICROBENCH_MK),$^) \
 		-o $@ -lpthread $(CUDA_LIBS)
-
