@@ -197,7 +197,8 @@ bool mbarrier_manager_t::try_wait(gpgpu_sim *gpu,
                                   const thread_index_t &thread_index,
                                   uint64_t addr, int parity,
                                   std::set<int> *released_on_advance) {
-  if (test_wait(gpu, thread_index, addr, parity)) return true;
+  if (test_wait(gpu, thread_index, addr, parity))
+    return true;
   auto *mbarrier = get_mbarrier(thread_index.sw_cta_id, addr);
   if (mbarrier && mbarrier->m_pending_arrival_count == 0 &&
       mbarrier->m_tx_count == 0 && (mbarrier->m_phase & 1) == parity) {
@@ -212,7 +213,8 @@ bool mbarrier_manager_t::try_wait(gpgpu_sim *gpu,
 void mbarrier_manager_t::enqueue_wait(const thread_index_t &thread_index,
                                       uint64_t addr) {
   auto *mbarrier = get_mbarrier(thread_index.sw_cta_id, addr);
-  if (!mbarrier) return;
+  if (!mbarrier)
+    return;
   mbarrier->m_waiting_warps.insert(thread_index.hw_warp_id);
 }
 
@@ -570,8 +572,7 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
   // Resolve mbarrier address: local smem offset, or remote via generic mapa
   // addr. Sets remote_* fields when the barrier lives on a peer CTA.
   auto resolve_and_fill_mbar_info = [&](uint64_t raw_addr, unsigned count,
-                                        bool parity,
-                                        bool has_time_hint = false,
+                                        bool parity, bool has_time_hint = false,
                                         uint32_t time_hint_ns = 0) {
     inst_t::mbarrier_info_t info;
     info.bar_count = count;
@@ -664,10 +665,10 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
         thread->get_gpu(), thread->get_hw_sid(), MBAR,
         "CTA %d Thread %d (lane %u) mbarrier.try_wait at address 0x%x "
         "with parity %u has_time_hint=%u time_hint_ns=%u\n",
-        ctaid, hw_tid, laneid, addr, parity, (unsigned)has_time_hint,
+        ctaid, hw_tid, laneid, addr32, parity, (unsigned)has_time_hint,
         time_hint_ns);
     // Set per-thread info
-    set_thread_mbarrier_info(addr, (unsigned)-1, parity, has_time_hint,
+    set_thread_mbarrier_info(addr32, (unsigned)-1, parity, has_time_hint,
                              time_hint_ns);
 
     // Predicate writeback is owned by barrier_set_t's initial test / pending
@@ -719,10 +720,12 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
           "CTA %d Thread %d (lane %u) mbarrier.arrive.expect_tx at "
           "address 0x%x "
           "with expected_tx_count %u\n",
-          ctaid, hw_tid, laneid, addr, expected_tx_count);
+          ctaid, hw_tid, laneid, static_cast<unsigned>(raw_addr),
+          expected_tx_count);
       // Set per-thread info (for arrive.expect_tx, store expected_tx_count in
       // bar_count)
-      set_thread_mbarrier_info(addr, expected_tx_count, false);
+      set_thread_mbarrier_info(static_cast<unsigned>(raw_addr),
+                               expected_tx_count, false);
 
     } else if (is_arrive) {
       assert(pI->get_num_operands() == 3 || pI->get_num_operands() == 2);
@@ -929,9 +932,15 @@ void barrier_set_t::finish_mbarrier_wait(unsigned warp_id, const char *reason) {
                                    warp_id);
   }
 
-  if (m_warp_at_barrier.test(warp_id)) {
+  if (m_warp_at_barrier.test(warp_id) &&
+      m_warp_barrier_type[warp_id] == BARRIER_WAIT_MBARRIER) {
     clear_warp_waiting(warp_id, BARRIER_WAIT_MBARRIER, reason);
   }
+  // A failed partial try_wait that will be retried must stay marked so a
+  // sibling bar.sync can still trip the mixed-wait watchdog. A completed
+  // wait is not that hang.
+  if (all_true)
+    m_mbar_partial_wait[warp_id] = false;
   m_shader->m_stats->mbarrier_sleep_cycles += now - wait.issue_cycle;
   if (!wait.suspended && all_true) {
     m_shader->m_stats->mbarrier_immediate_true++;
@@ -1055,18 +1064,45 @@ void barrier_set_t::cycle() {
                 : -1);
       }
       barrier_wait_type_t type = m_pending_warp_releases[i].type;
-      const char *reason = type == BARRIER_WAIT_BAR_SYNC
-                               ? "delayed CTA barrier release"
-                               : "delayed cp.async wait_group release";
-      assert(type == BARRIER_WAIT_BAR_SYNC ||
-             type == BARRIER_WAIT_CP_ASYNC_GROUP);
+      // A suspended try_wait is released by finish_mbarrier_wait. An arrive
+      // hold on this same type can be overtaken by a later bar.sync. Drop
+      // those mbarrier entries. Other delayed releases still clear the warp.
+      if (type == BARRIER_WAIT_MBARRIER) {
+        const bool live_trywait =
+            warp_id >= 0 && m_pending_mbarrier_waits.count((unsigned)warp_id);
+        const bool still_mbarrier =
+            warp_id >= 0 && (unsigned)warp_id < m_warp_barrier_type.size() &&
+            m_warp_at_barrier.test((unsigned)warp_id) &&
+            m_warp_barrier_type[(unsigned)warp_id] == BARRIER_WAIT_MBARRIER;
+        if (live_trywait || !still_mbarrier) {
+          m_pending_warp_releases.erase(m_pending_warp_releases.begin() + i);
+          continue;
+        }
+      }
+      const char *reason = nullptr;
+      switch (type) {
+      case BARRIER_WAIT_BAR_SYNC:
+        reason = "delayed CTA barrier release";
+        break;
+      case BARRIER_WAIT_CP_ASYNC_GROUP:
+        reason = "delayed cp.async wait_group release";
+        break;
+      case BARRIER_WAIT_MBARRIER:
+        reason = "delayed mbarrier release";
+        break;
+      case BARRIER_WAIT_BULK_GROUP:
+        reason = "delayed TMA issue release";
+        break;
+      default:
+        assert(false && "unexpected delayed barrier release type");
+        reason = "delayed warp release";
+        break;
+      }
       clear_warp_waiting(warp_id, type, reason);
       m_pending_warp_releases.erase(m_pending_warp_releases.begin() + i);
     }
   }
 
-  const uint64_t now = m_shader->get_gpu()->gpu_sim_cycle +
-                       m_shader->get_gpu()->gpu_tot_sim_cycle;
   std::vector<unsigned> due_warps;
   for (const auto &entry : m_pending_mbarrier_waits) {
     if (now >= entry.second.next_recheck_cycle) {
@@ -1554,12 +1590,14 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       m_warp_at_barrier.set(warp_id);
       m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
       m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+      m_mbar_partial_wait[warp_id] = active_mask.count() < m_warp_size;
       return;
     }
 
     m_warp_at_barrier.set(warp_id);
     m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
     m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+    m_mbar_partial_wait[warp_id] = active_mask.count() < m_warp_size;
     if (trace_mbarrier) {
       GPPRINTF_GPU_CORE(m_shader->get_gpu(), m_shader->get_sid(), MBAR,
                         "MBAR_WAIT hw_cta=%u sw_cta=%d warp=%u "

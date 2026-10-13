@@ -1333,11 +1333,10 @@ class barrier_set_t {
     assert_warp_waiting(warp_id, expected_type, reason);
     m_warp_at_barrier.reset(warp_id);
     m_warp_named_barrier_id[warp_id] = (unsigned)-1;
-    if (expected_type == BARRIER_WAIT_MBARRIER)
-      m_mbar_partial_wait[warp_id] = false;
   }
   // A phase update makes the pending wait eligible for an authoritative
   // recheck. The recheck, rather than the notification, owns predicate commit.
+  void release_warps(const std::set<int> &released_warps);
   void notify_mbarrier_phase_change(const std::set<int> &notified_warps);
   void finish_mbarrier_wait(unsigned warp_id, const char *reason);
   void cancel_mbarrier_wait(unsigned warp_id, const char *reason,

@@ -1491,7 +1491,7 @@ public:
     }
     // Warp cannot issue the next instruction until TMA issue occupancy elapses
     // (H200 pure cp.async.bulk is 44 cycles). Data movement is already queued.
-    if (active_lane_count > 0 && inst->latency > 1)
+    if (inst->get_active_mask().any() && inst->latency > 1)
       m_barriers->hold_warp(warp_id, inst->latency, BARRIER_WAIT_BULK_GROUP);
   }
 
@@ -1656,13 +1656,14 @@ public:
                                   tx.m_dyn_info.size_in_bytes);
         }
         tx.m_arch_arrive_done = true;
-        tma_trace_emit(
-            now, "ARCH_ARRIVE", entry.first, "READ", tx.m_static_info.tma_type,
-            tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id, tx.m_tid,
-            tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
-            tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0, 0, 0,
-            tx.m_mf_issued_count, tx.m_mf_received_count, tx.m_bytes_completed,
-            tx.m_mf_tx_inflight, m_mf_inflight, m_response_fifo.size());
+        Trace::tma_transaction_event(
+            now, m_shader_ctx->get_sid(), "ARCH_ARRIVE", entry.first, "READ",
+            tx.m_static_info.tma_type, tx.m_pc, tx.m_cta_id, tx.m_warp_id,
+            tx.m_lane_id, tx.m_tid, tx.m_dyn_info.src_addr,
+            tx.m_dyn_info.dst_addr, tx.m_dyn_info.size_in_bytes,
+            tx.m_dyn_info.mbar_addr, 0, 0, 0, tx.m_mf_issued_count,
+            tx.m_mf_received_count, tx.m_bytes_completed, m_mf_inflight,
+            m_response_fifo.size());
         if (tx.m_memory_complete)
           completed_arch_transactions.push_back(entry.first);
       }

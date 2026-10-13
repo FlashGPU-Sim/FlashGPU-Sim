@@ -194,6 +194,8 @@ $(OBJ_DIR)/sm120/support/instruction-stream-buffer.cc.o: \
 $(SRC_DIR)/gpgpu-sim/flash/instruction_cache/stream_buffer.cc \
 $(SRC_DIR)/gpgpu-sim/flash/instruction_cache/stream_buffer.h \
 $(TOP_MAKEFILE) $(UNIT_MK) arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
 $(OBJ_DIR)/sm120/support/gpu_topology.cu.o: $(SRC_DIR)/gpgpu-sim/gpu_topology.cc \
 $(SRC_DIR)/gpgpu-sim/gpu_topology.h $(TOP_MAKEFILE) $(UNIT_MK) \

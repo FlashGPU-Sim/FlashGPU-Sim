@@ -4287,18 +4287,6 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
     }
   }
 
-  if (ptx_reorder_sass_guided && !ptx_reorder_enabled) {
-    fprintf(stderr,
-            "GPGPU-Sim PTX: -gpgpu_ptx_reorder_sass_guided requires "
-            "-gpgpu_ptx_reorder\n");
-    std::abort();
-  }
-  if (ptx_reorder_sass_guided) {
-    std::string app_binary = api->app_binary_path;
-    if (app_binary.empty()) app_binary = get_app_binary();
-    api->ensure_sass_ptxline_guide(context, app_binary, selected_files);
-  }
-
   // Parse the selected files (if any)
   const char *selected_ptx_override = getenv("GPGPUSIM_SELECTED_PTX_OVERRIDE");
   const bool use_selected_ptx_override =

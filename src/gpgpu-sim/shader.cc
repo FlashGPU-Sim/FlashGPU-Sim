@@ -3385,7 +3385,7 @@ void shader_core_ctx::execute() {
       }
     }
   }
-  m_wgmma.cycle();
+  m_wgmma.cycle(m_sid, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
   const uint64_t tcgen05_now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
   m_tcgen05.cycle(tcgen05_now);
   const flash_gpgpu_sim::tcgen05_timing_stats_t &tcgen05_stats =
