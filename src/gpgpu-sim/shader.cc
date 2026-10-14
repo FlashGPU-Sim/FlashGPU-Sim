@@ -8543,7 +8543,9 @@ void simt_core_cluster::accumulate_response_transport_stats(
 void simt_core_cluster::accumulate_ldst_transport_stats(
     memory_transport_service_stats &ldst_request,
     memory_transport_service_stats &ldst_response) const {
-  for (unsigned cid = 0; cid < m_config->n_simt_cores_per_cluster; ++cid) {
+  // Power-gated CPC slots have no shader_core_ctx. n_simt_cores_per_cluster
+  // is the widest GPC, so a hetero GPC must stop at num_cores().
+  for (unsigned cid = 0; cid < num_cores(); ++cid) {
     m_core[cid]->accumulate_ldst_transport_stats(ldst_request, ldst_response);
   }
 }
@@ -8567,7 +8569,7 @@ void simt_core_cluster::get_L1I_sub_stats(struct cache_sub_stats &css) const {
 }
 void simt_core_cluster::get_instruction_prefetch_stats(
     flash_gpgpu_sim::instruction_stream_buffer_stats &stats) const {
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+  for (unsigned i = 0; i < num_cores(); ++i) {
     m_core[i]->get_instruction_prefetch_stats(stats);
   }
 }

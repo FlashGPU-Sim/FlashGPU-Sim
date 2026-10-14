@@ -40,7 +40,9 @@ __global__ void cluster_launch_two_cta_ping(int *flag) {
   } else {
     // Spin until producer wrote (cluster co-residency not required for this
     // simple flag; co-residency is validated via OneProducer TMA tests).
-    while (*flag != 42) {
+    // volatile keeps the load in the loop. A plain load is hoisted, and the
+    // remaining self-branch has no path to the kernel exit.
+    while (*reinterpret_cast<volatile int *>(flag) != 42) {
     }
   }
 }

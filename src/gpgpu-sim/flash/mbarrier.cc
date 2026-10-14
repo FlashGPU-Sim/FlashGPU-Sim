@@ -667,9 +667,10 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
         "with parity %u has_time_hint=%u time_hint_ns=%u\n",
         ctaid, hw_tid, laneid, addr32, parity, (unsigned)has_time_hint,
         time_hint_ns);
-    // Set per-thread info
-    set_thread_mbarrier_info(addr32, (unsigned)-1, parity, has_time_hint,
-                             time_hint_ns);
+    // Keep the full mapa pointer. A 32-bit truncation looks like a local
+    // offset and the wait is then looked up on the issuer CTA.
+    resolve_and_fill_mbar_info(raw_addr, (unsigned)-1, parity, has_time_hint,
+                               time_hint_ns);
 
     // Predicate writeback is owned by barrier_set_t's initial test / pending
     // wait state.  Writing a provisional value here would let functional and
@@ -724,8 +725,7 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
           expected_tx_count);
       // Set per-thread info (for arrive.expect_tx, store expected_tx_count in
       // bar_count)
-      set_thread_mbarrier_info(static_cast<unsigned>(raw_addr),
-                               expected_tx_count, false);
+      resolve_and_fill_mbar_info(raw_addr, expected_tx_count, false);
 
     } else if (is_arrive) {
       assert(pI->get_num_operands() == 3 || pI->get_num_operands() == 2);
@@ -1387,7 +1387,19 @@ void barrier_set_t::release_remote_waiter(unsigned warp_id) {
   if (warp_id >= m_max_warps_per_core)
     return;
   apply_trywait_pred(warp_id, /*phase_complete=*/true);
+  if (warp_id < m_mbar_trywait_has_timeout.size() &&
+      !m_mbar_trywait_has_timeout[warp_id])
+    m_mbar_trywait_inst[warp_id] = nullptr;
   // Pay trywait observation latency like a local successful try_wait.
+  // A zero latency has no delayed release, so drop the park here.
+  const unsigned lat = m_shader->get_config()->gpgpu_mbarrier_trywait_latency;
+  if (lat == 0 && m_warp_at_barrier.test(warp_id) &&
+      warp_id < m_warp_barrier_type.size() &&
+      m_warp_barrier_type[warp_id] == BARRIER_WAIT_MBARRIER) {
+    clear_warp_waiting(warp_id, BARRIER_WAIT_MBARRIER,
+                       "remote mbarrier try_wait");
+    return;
+  }
   release_warps({static_cast<int>(warp_id)});
 }
 
@@ -1496,6 +1508,39 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     assert(m_pending_mbarrier_waits.find(warp_id) ==
                m_pending_mbarrier_waits.end() &&
            "warp already has a pending mbarrier.try_wait");
+
+    // A mapa address lives on the owner CTA. Local test_wait keys by the
+    // issuer's CTA and would miss it. Register on the owner and park until
+    // WAIT_DONE writes the predicate.
+    inst_t::mbarrier_info_t remote_info;
+    bool any_remote = false;
+    for (unsigned lane = 0; lane < warp_size; ++lane) {
+      if (!active_mask.test(lane))
+        continue;
+      const auto &info = dynamic_inst->get_mbarrier_info(lane);
+      if (!is_valid_mbarrier_info(info) || !info.is_remote)
+        continue;
+      remote_info = info;
+      any_remote = true;
+      break;
+    }
+    if (any_remote && mbar_has_remote_path(m_shader)) {
+      const unsigned src_cid =
+          m_shader->get_config()->sid_to_cid(m_shader->get_sid());
+      inject_remote_mbar(m_shader, src_cid, remote_info.remote_cid,
+                         remote_info.remote_hw_cta, remote_info.bar_id,
+                         flash_gpgpu_sim::cluster_mbar_op::WAIT_REG, 0, cta_id,
+                         warp_id, remote_info.bar_parity);
+      if (warp_id < m_mbar_trywait_inst.size()) {
+        m_mbar_trywait_inst[warp_id] = pI;
+        m_mbar_trywait_mask[warp_id] = active_mask;
+      }
+      m_warp_at_barrier.set(warp_id);
+      m_warp_barrier_type[warp_id] = BARRIER_WAIT_MBARRIER;
+      m_warp_named_barrier_id[warp_id] = (unsigned)-1;
+      m_mbar_partial_wait[warp_id] = active_mask.count() < m_warp_size;
+      return;
+    }
 
     const uint64_t now = m_shader->get_gpu()->gpu_sim_cycle +
                          m_shader->get_gpu()->gpu_tot_sim_cycle;
