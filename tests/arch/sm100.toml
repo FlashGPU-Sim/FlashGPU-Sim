@@ -20,6 +20,7 @@ sources = [
   "integration/cluster_launch_api_test.cu",
   "integration/cluster_multicast_multicluster_test.cu",
   "integration/cluster_real_shaped_test.cu",
+  "integration/cluster_sreg_test.cu",
   "integration/cuda_event_timing_test.cu",
   "integration/dsm_test.cu",
   "integration/mbarrier_cluster_test.cu",

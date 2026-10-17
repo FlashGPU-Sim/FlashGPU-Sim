@@ -355,7 +355,9 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
       unsigned nrank = cdim.x * cdim.y * cdim.z;
       switch (builtin_id & 0xFFFF) {
         case IS_EXPLICIT_CLUSTER_REG:
-          return is_cluster ? 1 : 0;
+          // Predicate registers store true as 0. mov.pred / selp invert a
+          // nonzero value, so a C boolean here reads backwards.
+          return is_cluster ? 0u : 1u;
         case CLUSTER_CTA_RANK_REG:
           return is_cluster ? rank : 0;
         case CLUSTER_NCTARANK_REG:

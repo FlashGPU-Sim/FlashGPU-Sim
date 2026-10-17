@@ -22,9 +22,8 @@ __global__ void cluster_launch_write_blockidx(int *out, int n) {
   }
 }
 
-// Cluster-aware kernel: rank 0 writes a marker; every block records its
-// relative cluster rank via a host-visible side channel computed from blockIdx
-// (sreg path covered separately if PTX emits %cluster_ctarank).
+// Cluster-aware kernel: every block records that it ran. Rank and cluster
+// id registers are checked in cluster_sreg_test.cu.
 __global__ void cluster_launch_mark_ready(int *ready, int n) {
   if (threadIdx.x == 0 && blockIdx.x < n) {
     atomicAdd(ready, 1);
