@@ -5,8 +5,7 @@
 // Use with GTEST_SKIP() when a test requires multi-SM clusters or multi-cluster
 // isolation and would hang or give false failures on the wrong config.
 //
-// Documented skip matrix:
-//   docs/cluster_noc/programming_model.md
+// Skip rules: docs/cluster_noc/README.md
 //
 // Naming: physical packing is m SMs per GPC by n GPCs. TB cluster size is a
 // launch attribute. SM120_RTX5090 is 170x1 with DSM off, so multi-SM cases

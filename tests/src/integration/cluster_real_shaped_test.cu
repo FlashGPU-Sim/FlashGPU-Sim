@@ -6,7 +6,7 @@
 // no cluster-enabled Triton launcher exists under test/triton_trace/.
 //
 // Needs at least two SMs in the GPC and DSM on. Skips on SM120_RTX5090.
-// SM90_H200_CLUSTER132 can run it. See docs/cluster_noc/programming_model.md.
+// SM90_H200_CLUSTER132 can run it. See docs/cluster_noc/README.md.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>

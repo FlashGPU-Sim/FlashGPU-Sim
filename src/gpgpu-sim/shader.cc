@@ -6154,14 +6154,14 @@ void barrier_set_t::poll_hang_preventers() {
                                   m_hang_watch_cycles[w])) {
       printf("GPGPU-Sim ERROR: warp %u sat in a tight loop for %u cycles "
              "after a peer DSM/TMA access with no mbarrier wait registered "
-             "(docs/cluster_noc/programming_model.md hang rule 1). "
+             "(rule 1). "
              "Coordinate with mbarrier, not a bare spin.\n",
              w, m_hang_watch_cycles[w]);
       fflush(stdout);
       fprintf(stderr,
               "GPGPU-Sim ERROR: warp %u sat in a tight loop for %u cycles "
               "after a peer DSM/TMA access with no mbarrier wait registered "
-              "(docs/cluster_noc/programming_model.md hang rule 1). "
+              "(rule 1). "
               "Coordinate with mbarrier, not a bare spin.\n",
               w, m_hang_watch_cycles[w]);
       fflush(stderr);
@@ -6203,13 +6203,13 @@ void barrier_set_t::poll_hang_preventers() {
                                       m_hang_mix_cycles[cta])) {
       printf("GPGPU-Sim ERROR: CTA %u mixed bar.sync / __syncthreads with a "
              "single-thread mbarrier.try_wait for %u cycles "
-             "(docs/cluster_noc/programming_model.md hang rule 2).\n",
+             "(rule 2).\n",
              cta, m_hang_mix_cycles[cta]);
       fflush(stdout);
       fprintf(stderr,
               "GPGPU-Sim ERROR: CTA %u mixed bar.sync / __syncthreads with a "
               "single-thread mbarrier.try_wait for %u cycles "
-              "(docs/cluster_noc/programming_model.md hang rule 2).\n",
+              "(rule 2).\n",
               cta, m_hang_mix_cycles[cta]);
       fflush(stderr);
       abort();

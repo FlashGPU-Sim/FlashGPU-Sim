@@ -2437,7 +2437,7 @@ class shader_core_config : public core_config {
   bool gpgpu_mbarrier_cluster_enable;
   // 0 = off. Default is well above hop / try_wait latencies.
   unsigned int gpgpu_cluster_hang_watchdog;
-  // Intra-GPC DSM fabric (docs/cluster_noc/knobs.md §3). When set, cluster
+  // Intra-GPC DSM fabric (docs/cluster_noc/README.md). When set, cluster
   // ld/st/atom and remote mbarrier use fabric packets.
   bool gpgpu_dsm_enable;
   unsigned int gpgpu_dsm_flit_payload_bytes;
