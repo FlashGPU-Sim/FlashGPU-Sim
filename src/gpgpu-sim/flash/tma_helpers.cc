@@ -204,10 +204,30 @@ uint64_t global_to_tile_offset(uint64_t global_addr, uint64_t base_addr,
   return tile_offset;
 }
 
+bool tma_swizzle_supported(uint32_t swizzle_mode) {
+  switch (swizzle_mode) {
+  case TMA_SWIZZLE_NONE:
+  case TMA_SWIZZLE_32B:
+  case TMA_SWIZZLE_64B:
+  case TMA_SWIZZLE_128B:
+    return true;
+  default:
+    return false;
+  }
+}
+
 uint64_t apply_tma_swizzle(uint64_t linear_offset, uint32_t smem_base_addr,
                            uint32_t swizzle_mode, uint32_t row_bytes) {
   (void)smem_base_addr; // reserved for future use
   (void)row_bytes;      // reserved for future use
+
+  if (!tma_swizzle_supported(swizzle_mode)) {
+    if (swizzle_mode == TMA_SWIZZLE_96B)
+      printf("ERROR: TMA 96B swizzle mode is not yet implemented\n");
+    else
+      printf("ERROR: Unknown TMA swizzle mode %u\n", swizzle_mode);
+    abort();
+  }
 
   if (swizzle_mode == TMA_SWIZZLE_NONE)
     return linear_offset;
@@ -225,9 +245,6 @@ uint64_t apply_tma_swizzle(uint64_t linear_offset, uint32_t smem_base_addr,
   case TMA_SWIZZLE_32B:
     mask = 0x1;
     break;
-  case TMA_SWIZZLE_96B:
-    printf("ERROR: TMA 96B swizzle mode is not yet implemented\n");
-    abort();
   default:
     printf("ERROR: Unknown TMA swizzle mode %u\n", swizzle_mode);
     abort();

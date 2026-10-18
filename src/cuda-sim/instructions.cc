@@ -3831,6 +3831,11 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
                        core, thread->get_hw_ctaid(), owner_smid, &tgt)) {
         flash_gpgpu_sim::abort_tb_cluster_dead_owner(
             owner_smid, thread->get_hw_sid(), thread->get_hw_ctaid(), addr);
+        if (flash_gpgpu_sim::cluster_fatal_latched()) {
+          mem = thread->m_shared_mem;
+          addr = 0;
+          break;
+        }
       }
       mem = tgt.smem;
       addr = offset;
@@ -3882,6 +3887,11 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
                   flash_gpgpu_sim::abort_tb_cluster_dead_owner(
                       owner_smid, thread->get_hw_sid(), thread->get_hw_ctaid(),
                       addr);
+                  if (flash_gpgpu_sim::cluster_fatal_latched()) {
+                    mem = thread->m_shared_mem;
+                    addr = 0;
+                    break;
+                  }
                 }
                 mem = tgt.smem;
                 thread->m_dsm_remote = true;
@@ -4453,6 +4463,12 @@ void mapa_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
           core, thread->get_hw_ctaid(), target_rank, &tgt)) {
     flash_gpgpu_sim::abort_tb_cluster_dead_rank(target_rank, local_smid,
                                                thread->get_hw_ctaid());
+    if (flash_gpgpu_sim::cluster_fatal_latched()) {
+      ptx_reg_t result;
+      result.u64 = 0;
+      thread->set_operand_value(dst, result, i_type, thread, pI);
+      return;
+    }
   }
   found_sid = tgt.sm_id;
 

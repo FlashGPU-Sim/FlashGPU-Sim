@@ -1,4 +1,5 @@
 #include "tb_cluster.h"
+#include "cluster_fatal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,16 +102,49 @@ bool resolve_tb_cluster_owner_sm(shader_core_ctx *requester,
   return false;
 }
 
+namespace {
+cluster_fatal_observer_fn g_cluster_fatal_observer = nullptr;
+bool g_cluster_fatal_latched = false;
+} // namespace
+
+void set_cluster_fatal_observer(cluster_fatal_observer_fn observer) {
+  g_cluster_fatal_observer = observer;
+  g_cluster_fatal_latched = false;
+}
+
+bool cluster_fatal_latched() { return g_cluster_fatal_latched; }
+
+} // namespace flash_gpgpu_sim
+
+// Integration tests link the system libcudart and pick up this simulator
+// library only at run time. Keep a C name they can call as a weak symbol.
+extern "C" void flashgpu_set_cluster_fatal_observer(
+    flash_gpgpu_sim::cluster_fatal_observer_fn observer) {
+  flash_gpgpu_sim::set_cluster_fatal_observer(observer);
+}
+
+namespace flash_gpgpu_sim {
+
 void abort_tb_cluster_dead_rank(unsigned rank, unsigned issuer_sm,
                                 unsigned hw_cta) {
   const char *fmt =
       "GPGPU-Sim ERROR: mapa: cluster rank %u is not an active CTA "
       "(issuer smid=%u hw_cta=%u). The target CTA has exited or was "
       "never co-resident; refusing to alias the issuer's shared memory.\n";
-  printf(fmt, rank, issuer_sm, hw_cta);
-  fprintf(stderr, fmt, rank, issuer_sm, hw_cta);
+  char message[512];
+  snprintf(message, sizeof(message), fmt, rank, issuer_sm, hw_cta);
+  printf("%s", message);
+  fprintf(stderr, "%s", message);
   fflush(stdout);
   fflush(stderr);
+  // A death-test re-exec of the integration binary does not fit in the CI
+  // memory cgroup. Tests observe the same message. Do not throw: core_cycle
+  // runs inside an OpenMP region.
+  if (g_cluster_fatal_observer) {
+    g_cluster_fatal_latched = true;
+    g_cluster_fatal_observer(message);
+    return;
+  }
   abort();
 }
 

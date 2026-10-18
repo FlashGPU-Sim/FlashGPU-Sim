@@ -3000,6 +3000,8 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
                                               owner_smid, &target)) {
       abort_tb_cluster_dead_owner(owner_smid, thread->get_hw_sid(),
                                   thread->get_hw_ctaid(), mapped_dst);
+      if (cluster_fatal_latched())
+        return;
     }
     check_tma_alignment(dst_addr, src_addr, size_in_bytes);
     copy_mem(shared_mem, src_addr, target.smem, dst_addr, size_in_bytes, thread,

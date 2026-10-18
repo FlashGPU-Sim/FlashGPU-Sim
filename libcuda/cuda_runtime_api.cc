@@ -4172,6 +4172,32 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
                                        ->get_gpgpu()
                                        ->get_config()
                                        .get_forced_max_capability();
+  auto extract_kernel_name = [](const std::string &filename) -> std::string {
+    // cuobjdump writes either "<module>.sm_<arch>.ptx" or
+    // "<module>.<index>.sm_<arch>.ptx". <arch> is "90" or "90a".
+    const size_t sm_pos = filename.rfind("sm_");
+    if (sm_pos == std::string::npos || sm_pos == 0 ||
+        filename[sm_pos - 1] != '.')
+      return "";
+    const size_t dot_before_sm = sm_pos - 1;
+    if (dot_before_sm == 0) return "";
+    const size_t prev = filename.rfind('.', dot_before_sm - 1);
+    if (prev != std::string::npos) {
+      bool index = prev + 1 < dot_before_sm;
+      for (size_t k = prev + 1; index && k < dot_before_sm; ++k) {
+        if (!isdigit(static_cast<unsigned char>(filename[k]))) index = false;
+      }
+      if (index) return filename.substr(0, prev);
+    }
+    return filename.substr(0, dot_before_sm);
+  };
+  auto is_suffix_arch = [](const std::string &arch_part) -> bool {
+    for (size_t j = 0; j < arch_part.length(); j++) {
+      if (!isdigit(static_cast<unsigned char>(arch_part[j]))) return true;
+    }
+    return false;
+  };
+  std::set<std::string> kernels_with_suffix;
   if (!api->version_filename.empty()) {
     // pick selected_version: largest version <= forced_max_capability (or
     // largest available)
@@ -4191,30 +4217,9 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
     }
 
     // Determine which kernel names have suffix variants available.
-    // Naming convention: <kernel_name>.<file_index>.sm_<arch>[suffix].ptx
-    // Match on kernel_name so that files with different indices but the
-    // same kernel name are recognized as variants of each other.
-    auto extract_kernel_name = [](const std::string &filename) -> std::string {
-      // Find "sm_" to locate the arch portion
-      size_t sm_pos = filename.rfind("sm_");
-      if (sm_pos == std::string::npos) return "";
-      // Strip back past ".<N>.sm_": the kernel name is everything before
-      // the file-index dot.
-      size_t prefix_end = sm_pos - 1;  // position of '.' before sm_
-      if (prefix_end >= filename.size() || filename[prefix_end] != '.') return "";
-      size_t dot2 = filename.rfind('.', prefix_end - 1);
-      if (dot2 == std::string::npos) return "";
-      return filename.substr(0, dot2);
-    };
-
-    auto is_suffix_arch = [](const std::string &arch_part) -> bool {
-      for (size_t j = 0; j < arch_part.length(); j++) {
-        if (!isdigit(arch_part[j])) return true;
-      }
-      return false;
-    };
-
-    std::set<std::string> kernels_with_suffix;
+    // cuobjdump names are "<module>.sm_<arch>.ptx" or
+    // "<module>.<index>.sm_<arch>.ptx". Match on the module so a base
+    // image is skipped only when that same module has a suffix image.
     for (auto &check_name : api->version_filename[selected_version]) {
       size_t sm_pos = check_name.rfind("sm_");
       if (sm_pos != std::string::npos) {
@@ -4278,6 +4283,22 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
              n.compare(n.size() - want_arch.size(), want_arch.size(),
                        want_arch) != 0))
           continue;
+        // Do not put back a base image (sm_90) that the suffix pass skipped
+        // (sm_90a). Parsing both into one symbol table reprints every
+        // register declaration and the FA2 log never finishes.
+        {
+          const std::string kernel_name = extract_kernel_name(n);
+          if (!kernel_name.empty() &&
+              kernels_with_suffix.count(kernel_name) > 0) {
+            const size_t sm_pos = n.rfind("sm_");
+            const size_t dot_pos = n.find('.', sm_pos);
+            if (sm_pos != std::string::npos && dot_pos != std::string::npos) {
+              const std::string arch_part =
+                  n.substr(sm_pos + 3, dot_pos - sm_pos - 3);
+              if (!is_suffix_arch(arch_part)) continue;
+            }
+          }
+        }
         if (have.insert(n).second) {
           printf("GPGPU-Sim PTX: adding extracted module %s\n", n.c_str());
           selected_files.push_back(n);

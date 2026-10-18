@@ -17,11 +17,17 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <unistd.h>
 #include <vector>
 
 #include "common/cluster_launch.h"
 #include "common/gpgpusim_config_topology.h"
+
+// Defined by the simulator libcudart. The test binary links the system
+// libcudart, so this stays weak and binds when the simulator library loads.
+extern "C" __attribute__((weak)) void flashgpu_set_cluster_fatal_observer(
+    void (*observer)(const char *message));
 
 namespace {
 
@@ -808,18 +814,26 @@ __global__ void dsm_cross_gpc_kernel(unsigned n_sms_per_gpc) {
   (void)*p;
 }
 
-[[noreturn]] void run_cross_gpc_reject() {
+std::string g_cross_gpc_fatal;
+
+void note_cross_gpc_fatal(const char *message) {
+  g_cross_gpc_fatal = message ? message : "";
+}
+
+void run_cross_gpc_reject() {
   auto topo = flash_test::read_gpgpusim_topology();
   unsigned n = topo.n_cores_per_cluster ? topo.n_cores_per_cluster : 16;
   dim3 grid(1), block(32), cluster(1, 1, 1);
   void *args[] = {&n};
   if (flash_test::launch_kernel_with_cluster(
           (const void *)dsm_cross_gpc_kernel, grid, block, cluster, args) !=
-      cudaSuccess)
-    _exit(4);
-  cudaDeviceSynchronize();
-  std::fprintf(stderr, "ERROR: cross-GPC shared access did not abort\n");
-  _exit(0);
+      cudaSuccess) {
+    g_cross_gpc_fatal = "launch failed";
+    return;
+  }
+  if (cudaDeviceSynchronize() != cudaSuccess &&
+      g_cross_gpc_fatal.find("not an active CTA") == std::string::npos)
+    g_cross_gpc_fatal = "synchronize failed";
 }
 
 // Vector remote store/load: rank 0 writes a v2 word into rank 1; rank 1
@@ -884,8 +898,18 @@ TEST_F(DsmTest, VectorRemoteLdSt) {
 
 TEST_F(DsmTest, CrossGpcReject) {
   SKIP_IF_N_CLUSTERS_LT(2);
-  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
-  EXPECT_DEATH(run_cross_gpc_reject(), "not an active CTA");
+  // Death-test re-exec loads a second copy of this binary and is SIGKILLed
+  // in the CI memory cgroup. The observer records the same fatal message
+  // and the simulation thread retires the kernel instead of aborting.
+  g_cross_gpc_fatal.clear();
+  ASSERT_TRUE(flashgpu_set_cluster_fatal_observer != nullptr);
+  flashgpu_set_cluster_fatal_observer(note_cross_gpc_fatal);
+  struct ClearObserver {
+    ~ClearObserver() { flashgpu_set_cluster_fatal_observer(nullptr); }
+  } clear_observer;
+  run_cross_gpc_reject();
+  EXPECT_NE(g_cross_gpc_fatal.find("not an active CTA"), std::string::npos)
+      << g_cross_gpc_fatal;
 }
 
 // Remote ld then add on that dest: add must see the loaded word (scoreboard

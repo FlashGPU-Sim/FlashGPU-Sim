@@ -32,11 +32,13 @@ bool resolve_tb_cluster_owner_sm(shader_core_ctx *requester,
                                  unsigned owner_sm_id,
                                  tb_cluster_target_t *out);
 
-[[noreturn]] void abort_tb_cluster_dead_rank(unsigned rank, unsigned issuer_sm,
-                                             unsigned hw_cta);
-[[noreturn]] void abort_tb_cluster_dead_owner(unsigned owner_sm,
-                                              unsigned issuer_sm,
-                                              unsigned hw_cta, addr_t addr);
+// Production calls abort() and does not return. A test observer records the
+// message and returns so the caller can skip the remote access.
+void abort_tb_cluster_dead_rank(unsigned rank, unsigned issuer_sm,
+                                unsigned hw_cta);
+void abort_tb_cluster_dead_owner(unsigned owner_sm, unsigned issuer_sm,
+                                 unsigned hw_cta, addr_t addr);
+bool cluster_fatal_latched();
 [[noreturn]] void abort_dsm_disabled(const char *what, unsigned issuer_sm,
                                      addr_t addr);
 

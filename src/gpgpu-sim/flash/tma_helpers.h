@@ -60,7 +60,11 @@ private:
 uint64_t global_to_tile_offset(uint64_t global_addr, uint64_t base_addr,
                                const tensormap_descriptor_t &tensormap);
 
+// 32B, 64B, 128B, and none are implemented. 96B and unknown modes are not.
+bool tma_swizzle_supported(uint32_t swizzle_mode);
+
 // Apply TMA swizzle to a shared memory address.
+// Unsupported modes print an error and abort.
 uint64_t apply_tma_swizzle(uint64_t linear_offset, uint32_t smem_base_addr,
                            uint32_t swizzle_mode, uint32_t row_bytes);
 
