@@ -303,3 +303,10 @@ bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
 bool Scoreboard::pendingWrites(unsigned wid) const {
   return !reg_table[wid].empty();
 }
+
+void Scoreboard::clearWarp(unsigned warp_id) {
+  reg_table[warp_id].clear();
+  reg_owner[warp_id].clear();
+  ready_regs[warp_id].clear();
+  reg_producer[warp_id].clear();
+}

@@ -71,6 +71,7 @@ class Scoreboard {
   bool checkCollision(unsigned wid, const inst_t *inst) const;
   reg_producer_t getCollisionType(unsigned wid, const inst_t *inst) const;
   bool pendingWrites(unsigned wid) const;
+  void clearWarp(unsigned warp_id);
   void printContents() const;
   const bool islongop(unsigned warp_id, unsigned regnum);
 

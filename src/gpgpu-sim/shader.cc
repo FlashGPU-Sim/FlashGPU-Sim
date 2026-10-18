@@ -31,6 +31,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include "shader.h"
+#include "flash/cluster_fatal.h"
 #include <float.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -6152,19 +6153,19 @@ void barrier_set_t::poll_hang_preventers() {
     if (spin_watchdog_should_trip(enabled, thresh, at_recognized_wait,
                                   mbar_interest, peer_armed, unique,
                                   m_hang_watch_cycles[w])) {
-      printf("GPGPU-Sim ERROR: warp %u sat in a tight loop for %u cycles "
-             "after a peer DSM/TMA access with no mbarrier wait registered "
-             "(rule 1). "
-             "Coordinate with mbarrier, not a bare spin.\n",
-             w, m_hang_watch_cycles[w]);
+      char message[512];
+      snprintf(message, sizeof(message),
+               "GPGPU-Sim ERROR: warp %u sat in a tight loop for %u cycles "
+               "after a peer DSM/TMA access with no mbarrier wait registered "
+               "(rule 1). "
+               "Coordinate with mbarrier, not a bare spin.\n",
+               w, m_hang_watch_cycles[w]);
+      printf("%s", message);
       fflush(stdout);
-      fprintf(stderr,
-              "GPGPU-Sim ERROR: warp %u sat in a tight loop for %u cycles "
-              "after a peer DSM/TMA access with no mbarrier wait registered "
-              "(rule 1). "
-              "Coordinate with mbarrier, not a bare spin.\n",
-              w, m_hang_watch_cycles[w]);
+      fprintf(stderr, "%s", message);
       fflush(stderr);
+      if (flash_gpgpu_sim::observe_cluster_fatal(message))
+        return;
       abort();
     }
   }
@@ -6201,17 +6202,34 @@ void barrier_set_t::poll_hang_preventers() {
     if (mixed_bar_trywait_should_trip(enabled, thresh, partial_trywait,
                                       sibling_bar_sync,
                                       m_hang_mix_cycles[cta])) {
-      printf("GPGPU-Sim ERROR: CTA %u mixed bar.sync / __syncthreads with a "
-             "single-thread mbarrier.try_wait for %u cycles "
-             "(rule 2).\n",
-             cta, m_hang_mix_cycles[cta]);
+      char message[512];
+      snprintf(message, sizeof(message),
+               "GPGPU-Sim ERROR: CTA %u mixed bar.sync / __syncthreads with a "
+               "single-thread mbarrier.try_wait for %u cycles "
+               "(rule 2).\n",
+               cta, m_hang_mix_cycles[cta]);
+      printf("%s", message);
       fflush(stdout);
-      fprintf(stderr,
-              "GPGPU-Sim ERROR: CTA %u mixed bar.sync / __syncthreads with a "
-              "single-thread mbarrier.try_wait for %u cycles "
-              "(rule 2).\n",
-              cta, m_hang_mix_cycles[cta]);
+      fprintf(stderr, "%s", message);
       fflush(stderr);
+      if (flash_gpgpu_sim::observe_cluster_fatal(message)) {
+        // Retire the CTA. abort() here kills the CI process, and freeing the
+        // kernel while these warps are still issued use-after-frees.
+        const warp_set_t stuck = it->second;
+        m_warp_at_barrier &= ~stuck;
+        m_warp_active &= ~stuck;
+        for (unsigned bar = 0; bar < m_max_barriers_per_cta; ++bar)
+          m_bar_id_to_warps[bar] &= ~stuck;
+        for (unsigned w = 0; w < m_max_warps_per_core; ++w) {
+          if (!stuck.test(w))
+            continue;
+          m_warp_named_barrier_id[w] = (unsigned)-1;
+          cancel_mbarrier_wait(w, "hang prevent", false);
+          m_shader->abandon_warp(w);
+        }
+        m_hang_mix_cycles[cta] = 0;
+        return;
+      }
       abort();
     }
   }
@@ -6611,6 +6629,21 @@ void shader_core_ctx::process_named_arrivals(unsigned long long cycle) {
     m_warp[event.warp_id]->dec_inst_in_pipeline();
     if (state.pending_arrivals == 0 && m_warp[event.warp_id]->functional_done())
       warp_exit(event.warp_id);
+  }
+}
+
+void shader_core_ctx::abandon_warp(unsigned warp_id) {
+  shd_warp_t *warp = m_warp[warp_id];
+  if (!warp || warp->hardware_done())
+    return;
+  warp->abandon();
+  m_scoreboard->clearWarp(warp_id);
+  ptx_thread_info **threads = get_thread_info();
+  const unsigned base = warp_id * m_config->warp_size;
+  for (unsigned lane = 0; lane < m_config->warp_size; ++lane) {
+    ptx_thread_info *thread = threads[base + lane];
+    if (thread && !thread->is_done())
+      thread->set_done();
   }
 }
 

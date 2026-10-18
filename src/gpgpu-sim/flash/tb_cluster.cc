@@ -114,6 +114,14 @@ void set_cluster_fatal_observer(cluster_fatal_observer_fn observer) {
 
 bool cluster_fatal_latched() { return g_cluster_fatal_latched; }
 
+bool observe_cluster_fatal(const char *message) {
+  if (!g_cluster_fatal_observer)
+    return false;
+  g_cluster_fatal_latched = true;
+  g_cluster_fatal_observer(message ? message : "");
+  return true;
+}
+
 } // namespace flash_gpgpu_sim
 
 // Integration tests link the system libcudart and pick up this simulator

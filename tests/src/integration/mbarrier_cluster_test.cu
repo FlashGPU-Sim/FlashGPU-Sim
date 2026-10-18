@@ -12,8 +12,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <unistd.h>
 #include <vector>
+
+// Defined by the simulator libcudart. The test binary links the system
+// libcudart, so this stays weak and binds when the simulator library loads.
+extern "C" __attribute__((weak)) void flashgpu_set_cluster_fatal_observer(
+    void (*observer)(const char *message));
 
 #include "common/cluster_launch.h"
 #include "common/gpgpusim_config_topology.h"
@@ -559,22 +565,42 @@ __global__ void mixed_barsync_trywait_kernel() {
   __syncthreads();
 }
 
-[[noreturn]] void run_mixed_barsync_trywait() {
+std::string g_mixed_bar_fatal;
+
+void note_mixed_bar_fatal(const char *message) {
+  g_mixed_bar_fatal = message ? message : "";
+}
+
+void run_mixed_barsync_trywait() {
   setenv("FLASHGPU_CLUSTER_HANG_WATCHDOG", "256", 1);
   dim3 grid(1), block(64), cluster(1, 1, 1);
   void *args[] = {};
   if (flash_test::launch_kernel_with_cluster(
           (const void *)mixed_barsync_trywait_kernel, grid, block, cluster,
-          args) != cudaSuccess)
-    _exit(3);
-  cudaDeviceSynchronize();
-  std::fprintf(stderr, "ERROR: mixed bar.sync + try_wait did not abort\n");
-  _exit(0);
+          args) != cudaSuccess) {
+    g_mixed_bar_fatal = "launch failed";
+    return;
+  }
+  if (cudaDeviceSynchronize() != cudaSuccess &&
+      g_mixed_bar_fatal.find("rule 2") == std::string::npos)
+    g_mixed_bar_fatal = "synchronize failed";
 }
 
 TEST_F(MbarrierClusterTest, BarSyncThenSingleThreadTryWait_Aborts) {
-  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
-  EXPECT_DEATH(run_mixed_barsync_trywait(), "rule 2");
+  // Death-test re-exec is SIGKILLed in the 7 GiB CI cgroup, and abort()
+  // inside the OpenMP core loop kills this process before gtest records it.
+  g_mixed_bar_fatal.clear();
+  ASSERT_TRUE(flashgpu_set_cluster_fatal_observer != nullptr);
+  flashgpu_set_cluster_fatal_observer(note_mixed_bar_fatal);
+  struct ClearObserver {
+    ~ClearObserver() {
+      flashgpu_set_cluster_fatal_observer(nullptr);
+      unsetenv("FLASHGPU_CLUSTER_HANG_WATCHDOG");
+    }
+  } clear_observer;
+  run_mixed_barsync_trywait();
+  EXPECT_NE(g_mixed_bar_fatal.find("rule 2"), std::string::npos)
+      << g_mixed_bar_fatal;
 }
 
 // Full-warp try_wait after syncthreads is not the mixed hang.

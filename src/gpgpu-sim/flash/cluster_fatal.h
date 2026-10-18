@@ -13,6 +13,10 @@ void set_cluster_fatal_observer(cluster_fatal_observer_fn observer);
 // True after an observer accepted a fatal check in this process.
 bool cluster_fatal_latched();
 
+// Records the message and returns true when a test observer is installed.
+// Otherwise returns false and the caller abort()s.
+bool observe_cluster_fatal(const char *message);
+
 } // namespace flash_gpgpu_sim
 
 #endif
