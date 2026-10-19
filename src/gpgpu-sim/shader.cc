@@ -1464,6 +1464,10 @@ const active_mask_t &exec_shader_core_ctx::get_active_mask(
 
 void shader_core_ctx::decode() {
   if (m_inst_fetch_buffer.m_valid) {
+    if (m_warp[m_inst_fetch_buffer.m_warp_id]->functional_done()) {
+      m_inst_fetch_buffer.m_valid = false;
+      return;
+    }
     // decode 1 or 2 instructions and place them into ibuffer
     address_type pc = m_inst_fetch_buffer.m_pc;
     const warp_inst_t *pI1 = get_next_inst(m_inst_fetch_buffer.m_warp_id, pc);
@@ -1509,6 +1513,10 @@ void shader_core_ctx::fetch() {
         continue;
       }
       m_warp[mf->get_wid()]->clear_imiss_pending();
+      if (m_warp[mf->get_wid()]->functional_done()) {
+        delete mf;
+        continue;
+      }
       const flash_gpgpu_sim::instruction_address_mapper mapper(
           m_config->icache_address_scale,
           m_config->m_L1I_config.get_line_sz());
@@ -6637,13 +6645,20 @@ void shader_core_ctx::abandon_warp(unsigned warp_id) {
   if (!warp || warp->hardware_done())
     return;
   warp->abandon();
+  if (m_inst_fetch_buffer.m_valid &&
+      m_inst_fetch_buffer.m_warp_id == warp_id)
+    m_inst_fetch_buffer.m_valid = false;
   m_scoreboard->clearWarp(warp_id);
   ptx_thread_info **threads = get_thread_info();
   const unsigned base = warp_id * m_config->warp_size;
+  // set_done alone leaves the functional CTA occupied. The next kernel
+  // aborts when this SM slot is reused.
   for (unsigned lane = 0; lane < m_config->warp_size; ++lane) {
     ptx_thread_info *thread = threads[base + lane];
-    if (thread && !thread->is_done())
-      thread->set_done();
+    if (!thread || thread->is_done())
+      continue;
+    thread->set_done();
+    thread->registerExit();
   }
 }
 

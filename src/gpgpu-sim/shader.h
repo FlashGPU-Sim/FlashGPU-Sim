@@ -310,15 +310,13 @@ class shd_warp_t {
   void clear_imiss_pending() { m_imiss_pending = false; }
 
   bool stores_done() const { return m_stores_outstanding == 0; }
-  // Drop a warp that the hang preventer has already reported. Fetch then
-  // reclaims it through the normal hardware_done path.
+  // Mark the warp finished. In-flight ops still retire and decrement
+  // m_inst_in_pipeline; clearing that count asserts when this SM is reused.
   void abandon() {
     m_active_threads.reset();
     n_completed = m_warp_size;
-    m_inst_in_pipeline = 0;
-    m_stores_outstanding = 0;
-    for (unsigned i = 0; i < IBUFFER_SIZE; ++i)
-      m_ibuffer[i].m_valid = false;
+    ibuffer_flush();
+    clear_imiss_pending();
   }
   void inc_store_req() { m_stores_outstanding++; }
   void dec_store_req() {
