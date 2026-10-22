@@ -94,6 +94,9 @@ package.json
 package-lock.json
 calibration_results/
 
+# Local leftover kernel snapshots. Not part of the tree and not a test entry point.
+calibration/
+
 # Test logs produced by inst_latency_bench
 tests/logs/
 tests/*.log

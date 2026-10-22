@@ -178,6 +178,15 @@ unsigned bulk_group_manager_t::get_pending_group_count(unsigned cta_id,
   return it->second.get_pending_count();
 }
 
+bool bulk_group_manager_t::is_tx_committed(unsigned cta_id, unsigned warp_id,
+                                           unsigned tx_uid) const {
+  auto key = std::make_pair(cta_id, warp_id);
+  auto it = m_warp_bulk_info.find(key);
+  if (it == m_warp_bulk_info.end())
+    return false;
+  return it->second.tx_to_group.find(tx_uid) != it->second.tx_to_group.end();
+}
+
 } // namespace flash_gpgpu_sim
 
 //=============================================================================
@@ -221,6 +230,11 @@ void barrier_set_t::wait_bulk_group(unsigned cta_id, unsigned warp_id,
 
 void barrier_set_t::commit_bulk_group(unsigned cta_id, unsigned warp_id) {
   m_bulk_group_manager.commit_bulk_group(cta_id, warp_id);
+}
+
+bool barrier_set_t::is_bulk_tx_committed(unsigned cta_id, unsigned warp_id,
+                                         unsigned tx_uid) const {
+  return m_bulk_group_manager.is_tx_committed(cta_id, warp_id, tx_uid);
 }
 
 void barrier_set_t::cleanup_cta_bulk_groups(unsigned cta_id) {

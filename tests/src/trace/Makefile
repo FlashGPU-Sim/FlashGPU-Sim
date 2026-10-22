@@ -25,7 +25,7 @@ DATA_DIR = $(BUILD_DIR)/bin/data
 
 # Kernel PTX names (for fatbin compilation)
 KERNELS = embedding_kernel gelu_kernel flash_attn_kernel layernorm_kernel \
-          residual_add_kernel linear_kernel
+          residual_add_kernel linear_kernel tma_copy_kernel
 
 # Targets
 FATBINS = $(addprefix $(BIN_DIR)/, $(addsuffix .fatbin, $(KERNELS)))
@@ -33,6 +33,7 @@ FATBINS = $(addprefix $(BIN_DIR)/, $(addsuffix .fatbin, $(KERNELS)))
 # Two test binaries: gpt2_embedding (CPU reference) + gpt2_data_driven (all others)
 GPT2_EMBEDDING_TEST = $(BIN_DIR)/gpt2_embedding_test
 GPT2_DATA_DRIVEN_TEST = $(BIN_DIR)/gpt2_data_driven_test
+TMA_COPY_TEST = $(BIN_DIR)/tma_copy_test
 
 # Data-driven test names (passed as argv to data_driven_trace_test)
 DATA_DRIVEN_NAMES = gelu flash_attn layernorm residual_add linear
@@ -43,7 +44,7 @@ CONFIG_STAMP = $(BIN_DIR)/.config_$(GPU_CONFIG)
 
 .PHONY: all clean run
 
-all: $(FATBINS) $(GPT2_EMBEDDING_TEST) $(GPT2_DATA_DRIVEN_TEST) $(DATA_STAMP) $(CONFIG_STAMP)
+all: $(FATBINS) $(GPT2_EMBEDDING_TEST) $(GPT2_DATA_DRIVEN_TEST) $(TMA_COPY_TEST) $(DATA_STAMP) $(CONFIG_STAMP)
 
 # Create directories
 $(BIN_DIR) $(DATA_DIR):
@@ -59,6 +60,10 @@ $(GPT2_EMBEDDING_TEST): $(TRACE_DIR)gpt2_embedding_test.cu $(TRACE_DIR)trace_tes
 
 # Compile GPT-2 unified data-driven test
 $(GPT2_DATA_DRIVEN_TEST): $(TRACE_DIR)gpt2_data_driven_test.cu $(TRACE_DIR)trace_test_utils.h | $(BIN_DIR)
+	$(NVCC) -arch=$(ARCH) -I$(TRACE_DIR) -o $@ $< $(CUDA_FLAGS)
+
+# Compile Triton TMA 1D copy test
+$(TMA_COPY_TEST): $(TRACE_DIR)tma_copy_test.cu $(TRACE_DIR)trace_test_utils.h | $(BIN_DIR)
 	$(NVCC) -arch=$(ARCH) -I$(TRACE_DIR) -o $@ $< $(CUDA_FLAGS)
 
 # Copy GPU config to bin directory
@@ -79,6 +84,9 @@ run: all
 	@failed=0; \
 	echo "--- gpt2_embedding_test ---"; \
 	(cd $(BIN_DIR) && ./gpt2_embedding_test) || failed=$$((failed + 1)); \
+	echo ""; \
+	echo "--- tma_copy_test ---"; \
+	(cd $(BIN_DIR) && ./tma_copy_test) || failed=$$((failed + 1)); \
 	echo ""; \
 	for name in $(DATA_DRIVEN_NAMES); do \
 		echo "--- gpt2_data_driven_test $$name ---"; \

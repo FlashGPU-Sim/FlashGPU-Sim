@@ -53,6 +53,16 @@ See the [RTX 5090 model notes](SM120_RTX5090/README.md) for assumptions and limi
 All three configuration directories include `sass_primary_hints.rules` and
 enable SASS-guided PTX reordering.
 
+### Cluster and DSM presets
+
+Design: `docs/cluster_noc/README.md`. `SM120_RTX5090` and `SM90_H100` stay
+the flash defaults, with DSM off.
+
+| Config | Role |
+| --- | --- |
+| `SM90_H200_CLUSTER132` | H200 packing for calibration. DSM and remote mbarrier are on. Not a default CI config. |
+
+
 ### Legacy Configurations
 
 `tested-cfgs/` contains configurations validated by earlier GPGPU-Sim
@@ -407,3 +417,5 @@ When troubleshooting a custom configuration:
 - **Unexpected performance:** Compare the complete run directory with its base
   configuration and confirm that an automation script has not recopied the
   bundled default configuration over local edits.
+
+

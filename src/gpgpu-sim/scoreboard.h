@@ -66,10 +66,12 @@ class Scoreboard {
   void releaseRegister(unsigned wid, unsigned regnum);
   void markRegistersReadyForWarp(unsigned wid, unsigned inst_uid,
                                 const unsigned *outputs);
+  void reclassifyShared(const warp_inst_t *inst);
 
   bool checkCollision(unsigned wid, const inst_t *inst) const;
   reg_producer_t getCollisionType(unsigned wid, const inst_t *inst) const;
   bool pendingWrites(unsigned wid) const;
+  void clearWarp(unsigned warp_id);
   void printContents() const;
   const bool islongop(unsigned warp_id, unsigned regnum);
 

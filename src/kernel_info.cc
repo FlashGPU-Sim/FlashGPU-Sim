@@ -47,6 +47,12 @@ kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
 
   cache_config_set = false;
   m_dynamic_smem = 0;
+  m_is_cluster_launch = false;
+  m_cluster_dim = dim3(0, 0, 0);
+  m_ctas_per_cluster = 1;
+  m_open_tb_phys_cluster = (unsigned)-1;
+  m_open_tb_cluster_group = (unsigned)-1;
+  m_open_tb_remaining = 0;
 }
 
 /*A snapshot of the texture mappings needs to be stored in the kernel's info as
@@ -81,6 +87,12 @@ kernel_info_t::kernel_info_t(
   m_NameToCudaArray = nameToCudaArray;
   m_NameToTextureInfo = nameToTextureInfo;
   m_dynamic_smem = 0;
+  m_is_cluster_launch = false;
+  m_cluster_dim = dim3(0, 0, 0);
+  m_ctas_per_cluster = 1;
+  m_open_tb_phys_cluster = (unsigned)-1;
+  m_open_tb_cluster_group = (unsigned)-1;
+  m_open_tb_remaining = 0;
 }
 
 kernel_info_t::~kernel_info_t() {
