@@ -103,13 +103,14 @@ configured by `setup_environment`; avoid mixing native and simulator libraries.
 ## CI
 
 The [CI selections](ci/jobs.toml) and [PR workflow](../.github/workflows/pr-tests.yml)
-currently define five functional jobs:
+currently define six functional jobs:
 
 | Job | Coverage |
 | --- | --- |
 | `sm100-core` | Unit, integration, barrier and TMA |
 | `sm120-core` | Unit, integration, barrier, TMA, MMA and GPT-2 trace |
 | `sm90-core` | Unit, integration, barrier and WGMMA |
+| `sm90-cluster` | Cluster and DSM integration on `SM90_H200_CLUSTER132` |
 | `sm90-fa2` | Numerically checked forward smoke cases |
 | `sm90-fa3` | Forward/backward smoke, fixed forward and PackGQA |
 
@@ -119,6 +120,7 @@ Run a CI job locally:
 CI_JOB=sm100-core ./tests/ci/run_ci_tests.sh
 CI_JOB=sm120-core ./tests/ci/run_ci_tests.sh
 CI_JOB=sm90-core ./tests/ci/run_ci_tests.sh
+CI_JOB=sm90-cluster ./tests/ci/run_ci_tests.sh
 CI_JOB=sm90-fa2 ./tests/ci/run_ci_tests.sh
 CI_JOB=sm90-fa3 ./tests/ci/run_ci_tests.sh
 CI_JOB=all ./tests/ci/run_ci_tests.sh

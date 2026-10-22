@@ -36,6 +36,13 @@ tests = [
   { name = "smoke", group = "fa2", profile = "smoke", gtest_filter = "Fa2PrefillFp16SmokeTest.*" },
 ]
 
+[jobs.sm90-cluster]
+arch = "sm90"
+config = "SM90_H200_CLUSTER132"
+tests = [
+  { name = "integration", group = "integration", gtest_filter = "ClusterBasicTest.*:ClusterLaunchApiTest.*:ClusterRealShapedTest.*:ClusterSregTest.*:MultiCluster*:DsmTest.*:MbarrierClusterTest.*:TMACluster*:TmaMulticastMaskTest.*:-DsmTest.MapaAfterProducerExit_FailsLoud:MbarrierClusterTest.BarePeerSpin_Aborts" },
+]
+
 [jobs.sm90-fa3]
 arch = "sm90"
 tests = [
