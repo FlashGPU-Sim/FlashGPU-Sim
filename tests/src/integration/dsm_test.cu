@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -529,27 +530,48 @@ __global__ void dsm_mapa_after_peer_exit_kernel(volatile int *ready) {
   mbarrier_arrive_remote(remote_bar, 1);
 }
 
-[[noreturn]] void run_mapa_after_peer_exit() {
+std::string g_mapa_exit_fatal;
+
+void note_mapa_exit_fatal(const char *message) {
+  g_mapa_exit_fatal = message ? message : "";
+}
+
+void run_mapa_after_peer_exit() {
   int *d_ready = nullptr;
-  if (cudaMalloc(&d_ready, sizeof(int)) != cudaSuccess)
-    _exit(2);
-  if (cudaMemset(d_ready, 0, sizeof(int)) != cudaSuccess)
-    _exit(3);
+  if (cudaMalloc(&d_ready, sizeof(int)) != cudaSuccess) {
+    g_mapa_exit_fatal = "alloc failed";
+    return;
+  }
+  if (cudaMemset(d_ready, 0, sizeof(int)) != cudaSuccess) {
+    g_mapa_exit_fatal = "memset failed";
+    return;
+  }
   dim3 grid(2), block(32), cluster(2, 1, 1);
   void *args[] = {&d_ready};
   if (flash_test::launch_kernel_with_cluster(
           (const void *)dsm_mapa_after_peer_exit_kernel, grid, block, cluster,
-          args) != cudaSuccess)
-    _exit(4);
-  cudaDeviceSynchronize();
-  std::fprintf(stderr, "ERROR: mapa of exited rank did not abort\n");
-  _exit(0);
+          args) != cudaSuccess) {
+    g_mapa_exit_fatal = "launch failed";
+    return;
+  }
+  if (cudaDeviceSynchronize() != cudaSuccess &&
+      g_mapa_exit_fatal.find("not an active CTA") == std::string::npos)
+    g_mapa_exit_fatal = "synchronize failed";
+  cudaFree(d_ready);
 }
 
 TEST_F(DsmTest, MapaAfterProducerExit_FailsLoud) {
   SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
-  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
-  EXPECT_DEATH(run_mapa_after_peer_exit(), "not an active CTA");
+  // The observer checks the abort string. It does not prove abort() teardown.
+  g_mapa_exit_fatal.clear();
+  ASSERT_TRUE(flashgpu_set_cluster_fatal_observer != nullptr);
+  flashgpu_set_cluster_fatal_observer(note_mapa_exit_fatal);
+  struct ClearObserver {
+    ~ClearObserver() { flashgpu_set_cluster_fatal_observer(nullptr); }
+  } clear_observer;
+  run_mapa_after_peer_exit();
+  EXPECT_NE(g_mapa_exit_fatal.find("not an active CTA"), std::string::npos)
+      << g_mapa_exit_fatal;
 }
 
 // ---------------------------------------------------------------------------
@@ -1041,6 +1063,316 @@ TEST_F(DsmTest, ScFenceWaitsForRemoteStore) {
   ASSERT_EQ(cudaFree(device), cudaSuccess);
   EXPECT_EQ(result[1], 42u);
   EXPECT_GE(result[0], floor) << "fence retired before remote store delivery";
+}
+
+__device__ __forceinline__ void dsm_cluster_sync() {
+  asm volatile("barrier.cluster.arrive;\n");
+  asm volatile("barrier.cluster.wait;\n");
+}
+
+// grid (4,2,1) x cluster (2,2,1). Rank 0 of each cluster reads rank 2.
+// Cluster-major order puts (0,1) with (0,0), not the next x-row.
+__global__ void dsm_cluster_major_mapa_kernel(int *out) {
+  __shared__ int id;
+  if (threadIdx.x == 0)
+    id = static_cast<int>(blockIdx.x + gridDim.x * blockIdx.y);
+  dsm_cluster_sync();
+  unsigned rank = 0;
+  asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(rank));
+  if (threadIdx.x == 0 && rank == 0) {
+    const unsigned cluster_x = static_cast<unsigned>(blockIdx.x) / 2u;
+    int *peer = reinterpret_cast<int *>(mapa_u64(&id, 2));
+    out[cluster_x] = *peer;
+    out[2 + cluster_x] = id;
+  }
+  // Rank 2 must still be resident while rank 0 reads it.
+  dsm_cluster_sync();
+}
+
+TEST_F(DsmTest, ClusterMajor_MapaRank2) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(4);
+  int *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, 4 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0xFF, 4 * sizeof(int)), cudaSuccess);
+  void *args[] = {&d_out};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_cluster_major_mapa_kernel, dim3(4, 2, 1),
+                dim3(32), dim3(2, 2, 1), args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  int h[4] = {};
+  ASSERT_EQ(cudaMemcpy(h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  // Cluster 0 rank 2 is block (0,1) id 4. Cluster 1 rank 2 is block (2,1) id 6.
+  EXPECT_EQ(h[0], 4);
+  EXPECT_EQ(h[1], 6);
+  EXPECT_EQ(h[2], 0);
+  EXPECT_EQ(h[3], 2);
+}
+
+__global__ void dsm_lane_atomic_kernel(uint32_t *olds, uint32_t *mem,
+                                       volatile int *ready) {
+  __shared__ uint32_t slot[32];
+  __shared__ unsigned long long bar;
+  const int rank = blockIdx.x;
+  const int lane = threadIdx.x;
+  slot[lane] = 100u + static_cast<unsigned>(lane);
+  if (rank == 1) {
+    if (lane == 0) {
+      mbarrier_init_local(&bar, 1);
+      ready[0] = 1;
+      __threadfence_system();
+      mbarrier_try_wait_local(&bar, 0);
+      for (int i = 0; i < 32; i++) mem[32 + i] = slot[i];
+    }
+    return;
+  }
+  while (ready[0] == 0) {
+  }
+  uint32_t *remote = reinterpret_cast<uint32_t *>(mapa_u64(slot, 1));
+  olds[lane] = atomicAdd(slot + lane, 1u);
+  olds[32 + lane] = atomicAdd(remote + lane, 1u);
+  if (lane < 16)
+    olds[64 + lane] = atomicAdd(slot + lane, 5u);
+  else
+    olds[64 + lane] = atomicAdd(remote + lane, 7u);
+  if (lane < 16)
+    olds[96 + lane] = atomicAdd(slot + lane, 5u);
+  else
+    olds[96 + lane] = atomicAdd(remote + lane, 7u);
+  uint32_t pred_old = 0;
+  if (lane < 24) pred_old = atomicAdd(remote + lane, 1u);
+  olds[128 + lane] = pred_old;
+  if (lane == 0) {
+    for (int i = 0; i < 32; i++) mem[i] = slot[i];
+    mbarrier_arrive_remote(mapa_u64(&bar, 1), 1);
+  }
+}
+
+TEST_F(DsmTest, MixedWarpAtomicLanes) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  uint32_t *olds = nullptr;
+  uint32_t *mem = nullptr;
+  int *ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&olds, 160 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&mem, 64 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&ready, sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(olds, 0, 160 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(mem, 0, 64 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(ready, 0, sizeof(int)), cudaSuccess);
+  void *args[] = {&olds, &mem, &ready};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_lane_atomic_kernel, dim3(2), dim3(32),
+                dim3(2, 1, 1), args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  std::vector<uint32_t> h_old(160), h_mem(64);
+  ASSERT_EQ(cudaMemcpy(h_old.data(), olds, 160 * sizeof(uint32_t),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(h_mem.data(), mem, 64 * sizeof(uint32_t),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(olds);
+  cudaFree(mem);
+  cudaFree(ready);
+  for (int i = 0; i < 32; i++) {
+    EXPECT_EQ(h_old[i], 100u + i) << "all-local old " << i;
+    EXPECT_EQ(h_old[32 + i], 100u + i) << "all-remote old " << i;
+    const unsigned local_after_first = 101u + i;
+    const unsigned remote_after_first = 101u + i;
+    if (i < 16) {
+      EXPECT_EQ(h_old[64 + i], local_after_first) << "mixed local " << i;
+      EXPECT_EQ(h_old[96 + i], local_after_first + 5u) << "repeat local " << i;
+      EXPECT_EQ(h_mem[i], local_after_first + 10u) << "local mem " << i;
+      EXPECT_EQ(h_old[128 + i], remote_after_first) << "pred remote " << i;
+      EXPECT_EQ(h_mem[32 + i], remote_after_first + 1u);
+    } else {
+      EXPECT_EQ(h_old[64 + i], remote_after_first) << "mixed remote " << i;
+      EXPECT_EQ(h_old[96 + i], remote_after_first + 7u) << "repeat remote " << i;
+      EXPECT_EQ(h_mem[i], local_after_first) << "local untouched " << i;
+      const unsigned remote_after_mixed = remote_after_first + 14u;
+      if (i < 24) {
+        EXPECT_EQ(h_old[128 + i], remote_after_mixed);
+        EXPECT_EQ(h_mem[32 + i], remote_after_mixed + 1u);
+      } else {
+        EXPECT_EQ(h_old[128 + i], 0u);
+        EXPECT_EQ(h_mem[32 + i], remote_after_mixed);
+      }
+    }
+  }
+}
+
+__global__ void dsm_bad_exch_kernel(uint32_t *out, volatile int *ready) {
+  __shared__ uint32_t smem;
+  __shared__ unsigned long long bar;
+  if (threadIdx.x != 0) return;
+  if (blockIdx.x == 1) {
+    smem = 0x5a5a5a5au;
+    mbarrier_init_local(&bar, 1);
+    ready[0] = 1;
+    __threadfence_system();
+    mbarrier_try_wait_local(&bar, 0);
+    out[0] = smem;
+    return;
+  }
+  while (ready[0] == 0) {
+  }
+  uint32_t *remote = reinterpret_cast<uint32_t *>(mapa_u64(&smem, 1));
+  atomicExch(remote, 0x11111111u);
+  mbarrier_arrive_remote(mapa_u64(&bar, 1), 1);
+}
+
+__global__ void dsm_bad_float_add_kernel(uint32_t *out, volatile int *ready) {
+  __shared__ float smem;
+  __shared__ unsigned long long bar;
+  if (threadIdx.x != 0) return;
+  if (blockIdx.x == 1) {
+    smem = 1.0f;
+    mbarrier_init_local(&bar, 1);
+    ready[0] = 1;
+    __threadfence_system();
+    mbarrier_try_wait_local(&bar, 0);
+    out[0] = *reinterpret_cast<uint32_t *>(&smem);
+    return;
+  }
+  while (ready[0] == 0) {
+  }
+  float *remote = reinterpret_cast<float *>(mapa_u64(&smem, 1));
+  atomicAdd(remote, 2.0f);
+  mbarrier_arrive_remote(mapa_u64(&bar, 1), 1);
+}
+
+std::string g_bad_atom_fatal;
+
+void note_bad_atom_fatal(const char *message) {
+  if (message && message[0]) g_bad_atom_fatal += message;
+}
+
+TEST_F(DsmTest, RemoteAtomicExchAndFloatAdd_Rejected) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  g_bad_atom_fatal.clear();
+  ASSERT_TRUE(flashgpu_set_cluster_fatal_observer != nullptr);
+  flashgpu_set_cluster_fatal_observer(note_bad_atom_fatal);
+  struct ClearObserver {
+    ~ClearObserver() { flashgpu_set_cluster_fatal_observer(nullptr); }
+  } clear_observer;
+
+  uint32_t *out = nullptr;
+  int *ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&out, sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&ready, sizeof(int)), cudaSuccess);
+
+  ASSERT_EQ(cudaMemset(out, 0, sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(ready, 0, sizeof(int)), cudaSuccess);
+  void *exch_args[] = {&out, &ready};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_bad_exch_kernel, dim3(2), dim3(32),
+                dim3(2, 1, 1), exch_args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  uint32_t bits = 0;
+  ASSERT_EQ(cudaMemcpy(&bits, out, sizeof(bits), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(bits, 0x5a5a5a5au);
+  EXPECT_NE(g_bad_atom_fatal.find("exch"), std::string::npos) << g_bad_atom_fatal;
+
+  g_bad_atom_fatal.clear();
+  ASSERT_EQ(cudaMemset(out, 0, sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(ready, 0, sizeof(int)), cudaSuccess);
+  void *float_args[] = {&out, &ready};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_bad_float_add_kernel, dim3(2), dim3(32),
+                dim3(2, 1, 1), float_args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(&bits, out, sizeof(bits), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  float one = 1.0f;
+  uint32_t one_bits = 0;
+  memcpy(&one_bits, &one, sizeof(one_bits));
+  EXPECT_EQ(bits, one_bits);
+  EXPECT_NE(g_bad_atom_fatal.find("f32"), std::string::npos) << g_bad_atom_fatal;
+  cudaFree(out);
+  cudaFree(ready);
+}
+
+__device__ uint32_t ld_cluster_s16(unsigned long long addr) {
+  uint32_t v = 0;
+  asm volatile("ld.s16 %0, [%1];" : "=r"(v) : "l"(addr));
+  return v;
+}
+
+__device__ uint32_t ld_cluster_u16(unsigned long long addr) {
+  uint32_t v = 0;
+  asm volatile("ld.u16 %0, [%1];" : "=r"(v) : "l"(addr));
+  return v;
+}
+
+__device__ unsigned long long ld_cluster_s32_wide(unsigned long long addr) {
+  unsigned long long v = 0;
+  asm volatile("ld.s32 %0, [%1];" : "=l"(v) : "l"(addr));
+  return v;
+}
+
+__device__ unsigned long long ld_cluster_u32_wide(unsigned long long addr) {
+  unsigned long long v = 0;
+  asm volatile("ld.u32 %0, [%1];" : "=l"(v) : "l"(addr));
+  return v;
+}
+
+__global__ void dsm_signed_load_kernel(unsigned long long *out,
+                                       volatile int *ready) {
+  __shared__ uint16_t s16;
+  __shared__ uint16_t u16;
+  __shared__ int s32v;
+  __shared__ unsigned u32v;
+  __shared__ unsigned long long bar;
+  if (threadIdx.x != 0) return;
+  if (blockIdx.x == 1) {
+    s16 = 0xffffu;
+    u16 = 0xffffu;
+    s32v = -1;
+    u32v = 0xffffffffu;
+    mbarrier_init_local(&bar, 1);
+    ready[0] = 1;
+    __threadfence_system();
+    mbarrier_try_wait_local(&bar, 0);
+    return;
+  }
+  while (ready[0] == 0) {
+  }
+  out[0] = ld_cluster_s16(mapa_u64(&s16, 1));
+  out[1] = ld_cluster_u16(mapa_u64(&u16, 1));
+  out[2] = ld_cluster_s32_wide(mapa_u64(&s32v, 1));
+  out[3] = ld_cluster_u32_wide(mapa_u64(&u32v, 1));
+  mbarrier_arrive_remote(mapa_u64(&bar, 1), 1);
+}
+
+TEST_F(DsmTest, RemoteSignedLoadSignExtends) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  unsigned long long *out = nullptr;
+  int *ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&out, 4 * sizeof(unsigned long long)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&ready, sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(out, 0, 4 * sizeof(unsigned long long)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(ready, 0, sizeof(int)), cudaSuccess);
+  void *args[] = {&out, &ready};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_signed_load_kernel, dim3(2), dim3(32),
+                dim3(2, 1, 1), args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  unsigned long long h[4] = {};
+  ASSERT_EQ(cudaMemcpy(h, out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(out);
+  cudaFree(ready);
+  EXPECT_EQ(h[0], 0xffffffffull);
+  EXPECT_EQ(h[1], 0x0000ffffull);
+  EXPECT_EQ(h[2], 0xffffffffffffffffull);
+  EXPECT_EQ(h[3], 0x00000000ffffffffull);
 }
 
 }  // namespace

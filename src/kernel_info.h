@@ -35,8 +35,72 @@ struct dim3comp {
   }
 };
 
-// Function declaration
-void increment_x_then_y_then_z(dim3 &i, const dim3 &bound);
+// Linear CTA order: x, then y, then z. Past the last id, z == bound.z.
+inline void increment_x_then_y_then_z(dim3 &i, const dim3 &bound) {
+  i.x++;
+  if (i.x >= bound.x) {
+    i.x = 0;
+    i.y++;
+    if (i.y >= bound.y) {
+      i.y = 0;
+      if (i.z < bound.z) i.z++;
+    }
+  }
+}
+
+// Cluster launches walk the next rank inside the cluster (x, then y, then z),
+// then the next cluster the same way. A zero extent is 1. A grid that is not
+// a multiple of the cluster keeps the linear order. Past the last CTA, x ==
+// grid.x so no_more_ctas_to_run() is true. Host tests call this directly.
+inline void step_next_cta(dim3 &cta, const dim3 &grid, const dim3 &cluster,
+                          bool cluster_launch) {
+  const unsigned cx = cluster.x ? cluster.x : 1u;
+  const unsigned cy = cluster.y ? cluster.y : 1u;
+  const unsigned cz = cluster.z ? cluster.z : 1u;
+  const bool divisible = cluster_launch && grid.x && grid.y && grid.z &&
+                         (grid.x % cx) == 0 && (grid.y % cy) == 0 &&
+                         (grid.z % cz) == 0;
+  if (!divisible) {
+    increment_x_then_y_then_z(cta, grid);
+    return;
+  }
+  unsigned rx = cta.x % cx;
+  unsigned ry = cta.y % cy;
+  unsigned rz = cta.z % cz;
+  unsigned ox = cta.x - rx;
+  unsigned oy = cta.y - ry;
+  unsigned oz = cta.z - rz;
+  rx++;
+  if (rx >= cx) {
+    rx = 0;
+    ry++;
+    if (ry >= cy) {
+      ry = 0;
+      rz++;
+      if (rz >= cz) {
+        rz = 0;
+        ox += cx;
+        if (ox >= grid.x) {
+          ox = 0;
+          oy += cy;
+          if (oy >= grid.y) {
+            oy = 0;
+            oz += cz;
+            if (oz >= grid.z) {
+              cta.x = grid.x;
+              cta.y = 0;
+              cta.z = 0;
+              return;
+            }
+          }
+        }
+      }
+    }
+  }
+  cta.x = ox + rx;
+  cta.y = oy + ry;
+  cta.z = oz + rz;
+}
 
 /**
  * ! This is shared among all simulator threads and causes race conditions.
@@ -88,7 +152,7 @@ public:
   dim3 get_cta_dim() const { return m_block_dim; }
 
   void increment_cta_id() {
-    increment_x_then_y_then_z(m_next_cta, m_grid_dim);
+    step_next_cta(m_next_cta, m_grid_dim, m_cluster_dim, m_is_cluster_launch);
     m_next_tid.x = 0;
     m_next_tid.y = 0;
     m_next_tid.z = 0;

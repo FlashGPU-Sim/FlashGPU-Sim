@@ -1811,9 +1811,7 @@ void ptx_instruction::set_opcode_and_latency() {
           wgmma_compute_cycles(shape_n, shape_k, input_type,
                                wgmma_compute_throughput);
       wgmma_completion_tail_latency =
-          // Compute already scales with N. Do not multiply the final
-          // scoreboard/writeback tail again for wider instructions.
-          wgmma_latency_for_shape(std::min(shape_n, 64), wgmma_completion);
+          wgmma_latency_for_shape(shape_n, wgmma_completion);
       if (initiation_interval > latency) {
         printf("GPGPU-Sim PTX: ERROR WGMMA initiation interval (%u) exceeds "
                "pipe latency (%u) for m64n%dk%d\n",

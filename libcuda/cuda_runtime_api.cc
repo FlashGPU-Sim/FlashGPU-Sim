@@ -104,7 +104,7 @@
 
 #include <assert.h>
 #include <cctype>
-#include <dirent.h>
+#include "ptx_image_select.h"
 #include <elf.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -4172,32 +4172,7 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
                                        ->get_gpgpu()
                                        ->get_config()
                                        .get_forced_max_capability();
-  auto extract_kernel_name = [](const std::string &filename) -> std::string {
-    // cuobjdump writes either "<module>.sm_<arch>.ptx" or
-    // "<module>.<index>.sm_<arch>.ptx". <arch> is "90" or "90a".
-    const size_t sm_pos = filename.rfind("sm_");
-    if (sm_pos == std::string::npos || sm_pos == 0 ||
-        filename[sm_pos - 1] != '.')
-      return "";
-    const size_t dot_before_sm = sm_pos - 1;
-    if (dot_before_sm == 0) return "";
-    const size_t prev = filename.rfind('.', dot_before_sm - 1);
-    if (prev != std::string::npos) {
-      bool index = prev + 1 < dot_before_sm;
-      for (size_t k = prev + 1; index && k < dot_before_sm; ++k) {
-        if (!isdigit(static_cast<unsigned char>(filename[k]))) index = false;
-      }
-      if (index) return filename.substr(0, prev);
-    }
-    return filename.substr(0, dot_before_sm);
-  };
-  auto is_suffix_arch = [](const std::string &arch_part) -> bool {
-    for (size_t j = 0; j < arch_part.length(); j++) {
-      if (!isdigit(static_cast<unsigned char>(arch_part[j]))) return true;
-    }
-    return false;
-  };
-  std::set<std::string> kernels_with_suffix;
+  std::vector<std::string> version_files;
   if (!api->version_filename.empty()) {
     // pick selected_version: largest version <= forced_max_capability (or
     // largest available)
@@ -4216,95 +4191,16 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
       selected_version = api->version_filename.rbegin()->first;
     }
 
-    // Determine which kernel names have suffix variants available.
-    // cuobjdump names are "<module>.sm_<arch>.ptx" or
-    // "<module>.<index>.sm_<arch>.ptx". Match on the module so a base
-    // image is skipped only when that same module has a suffix image.
-    for (auto &check_name : api->version_filename[selected_version]) {
-      size_t sm_pos = check_name.rfind("sm_");
-      if (sm_pos != std::string::npos) {
-        size_t dot_pos = check_name.find('.', sm_pos);
-        if (dot_pos != std::string::npos) {
-          std::string arch_part =
-              check_name.substr(sm_pos + 3, dot_pos - sm_pos - 3);
-          if (is_suffix_arch(arch_part)) {
-            std::string kn = extract_kernel_name(check_name);
-            if (!kn.empty()) kernels_with_suffix.insert(kn);
-          }
-        }
-      }
-    }
-
-    for (auto &ptx_filename : api->version_filename[selected_version]) {
-      // Skip base version if a suffix version exists for the same kernel
-      std::string kernel_name = extract_kernel_name(ptx_filename);
-      if (!kernel_name.empty() && kernels_with_suffix.count(kernel_name) > 0) {
-        size_t sm_pos = ptx_filename.rfind("sm_");
-        if (sm_pos != std::string::npos) {
-          size_t dot_pos = ptx_filename.find('.', sm_pos);
-          if (dot_pos != std::string::npos) {
-            std::string arch_part =
-                ptx_filename.substr(sm_pos + 3, dot_pos - sm_pos - 3);
-            if (!is_suffix_arch(arch_part)) {
-              printf("GPGPU-Sim PTX: Skipping %s (suffix version available)\n",
-                     ptx_filename.c_str());
-              continue;
-            }
-          }
-        }
-      }
-      selected_files.push_back(ptx_filename);
-    }
+    version_files.assign(api->version_filename[selected_version].begin(),
+                         api->version_filename[selected_version].end());
   }
-
-  // cuobjdump writes one PTX per .cu; the version set can miss a module.
-  // Only pick up the same sm_* suffix already selected (do not also load
-  // sm_90 when sm_90a is the chosen image).
+  selected_files = drop_base_ptx_when_suffix_present(version_files);
   {
-    std::string want_arch;
-    if (!selected_files.empty()) {
-      const std::string &s0 = selected_files.front();
-      const size_t sm = s0.rfind("sm_");
-      if (sm != std::string::npos)
-        want_arch = s0.substr(sm);
-    }
-    DIR *dir = opendir(".");
-    if (dir) {
-      std::set<std::string> have(selected_files.begin(), selected_files.end());
-      struct dirent *ent;
-      while ((ent = readdir(dir)) != NULL) {
-        const std::string n = ent->d_name;
-        if (n.size() < 8 || n.compare(n.size() - 4, 4, ".ptx") != 0)
-          continue;
-        if (n.find("sm_") == std::string::npos)
-          continue;
-        if (!want_arch.empty() &&
-            (n.size() < want_arch.size() ||
-             n.compare(n.size() - want_arch.size(), want_arch.size(),
-                       want_arch) != 0))
-          continue;
-        // Do not put back a base image (sm_90) that the suffix pass skipped
-        // (sm_90a). Parsing both into one symbol table reprints every
-        // register declaration and the FA2 log never finishes.
-        {
-          const std::string kernel_name = extract_kernel_name(n);
-          if (!kernel_name.empty() &&
-              kernels_with_suffix.count(kernel_name) > 0) {
-            const size_t sm_pos = n.rfind("sm_");
-            const size_t dot_pos = n.find('.', sm_pos);
-            if (sm_pos != std::string::npos && dot_pos != std::string::npos) {
-              const std::string arch_part =
-                  n.substr(sm_pos + 3, dot_pos - sm_pos - 3);
-              if (!is_suffix_arch(arch_part)) continue;
-            }
-          }
-        }
-        if (have.insert(n).second) {
-          printf("GPGPU-Sim PTX: adding extracted module %s\n", n.c_str());
-          selected_files.push_back(n);
-        }
-      }
-      closedir(dir);
+    std::set<std::string> kept(selected_files.begin(), selected_files.end());
+    for (const auto &name : version_files) {
+      if (!kept.count(name))
+        printf("GPGPU-Sim PTX: Skipping %s (suffix version available)\n",
+               name.c_str());
     }
   }
 

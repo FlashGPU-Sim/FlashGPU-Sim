@@ -6,7 +6,6 @@
 #define FLASH_TEST_CLUSTER_LAUNCH_H
 
 #include <cuda_runtime.h>
-#include <cstdio>
 
 namespace flash_test {
 
@@ -34,32 +33,6 @@ inline cudaError_t launch_kernel_with_cluster(const void *func, dim3 grid,
   cfg.numAttrs = 1;
 
   return cudaLaunchKernelExC(&cfg, func, args);
-}
-
-// C++ convenience: pack kernel pointer + typed args into void* array.
-// Example:
-//   int *p; float f;
-//   launch_cluster(k, dim3(2), dim3(32), dim3(2,1,1), p, f);
-template <typename... Args>
-inline cudaError_t launch_cluster(const void *func, dim3 grid, dim3 block,
-                                  dim3 cluster_dim, Args... args) {
-  void *arg_ptrs[] = {static_cast<void *>(&args)..., nullptr};
-  // cudaLaunchKernelExC expects an array of pointers to arguments.
-  // When Args is empty, pass nullptr.
-  void **argv = sizeof...(Args) ? arg_ptrs : nullptr;
-  // Fix: for non-empty, we need pointers into a stable array of the args.
-  // The pack above is wrong for values. Prefer explicit void** from callers
-  // for integration tests. Keep this only for zero-arg kernels.
-  (void)argv;
-  if (sizeof...(Args) != 0) {
-    // Not supported safely without tuple storage; callers should use
-    // launch_kernel_with_cluster with an explicit void** args array.
-    fprintf(stderr,
-            "flash_test::launch_cluster: use launch_kernel_with_cluster "
-            "with an explicit args array for kernels with parameters\n");
-    return cudaErrorInvalidValue;
-  }
-  return launch_kernel_with_cluster(func, grid, block, cluster_dim, nullptr);
 }
 
 }  // namespace flash_test

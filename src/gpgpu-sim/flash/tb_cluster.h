@@ -39,6 +39,7 @@ void abort_tb_cluster_dead_rank(unsigned rank, unsigned issuer_sm,
 void abort_tb_cluster_dead_owner(unsigned owner_sm, unsigned issuer_sm,
                                  unsigned hw_cta, addr_t addr);
 bool cluster_fatal_latched();
+bool observe_cluster_fatal(const char *message);
 [[noreturn]] void abort_dsm_disabled(const char *what, unsigned issuer_sm,
                                      addr_t addr);
 
@@ -110,6 +111,7 @@ struct dsm_lane_op_t {
   ptx_thread_info *thread = nullptr;
   const ptx_instruction *pI = nullptr;
   unsigned type = 0;
+  unsigned lane = 0;
 };
 
 } // namespace flash_gpgpu_sim

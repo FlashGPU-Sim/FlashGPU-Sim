@@ -1018,9 +1018,6 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Additional delay (core cycles) after a phase notification makes a "
       "suspended mbarrier.try_wait succeed (default=0)",
       "0");
-  option_parser_register(opp, "-gpgpu_mbarrier_trywait_default_timeout_ns", OPT_UINT32,
-                         &gpgpu_mbarrier_trywait_default_timeout_ns,
-                         "Default suspension limit (ns) for uniform local try_wait without a hint; 0 preserves immediate polling", "0");
 
   option_parser_register(
       opp, "-gpgpu_tma_multicast_latency", OPT_UINT32,

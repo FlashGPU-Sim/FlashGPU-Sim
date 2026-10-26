@@ -135,6 +135,7 @@ class dsm_endpoint_protocol_t {
   unsigned ack_debt(unsigned sm) const;
   unsigned ack_debt(unsigned sm, unsigned requester) const;
   unsigned last_txid() const { return m_last_txid; }
+  unsigned payload_entries() const { return (unsigned)m_data.size(); }
   unsigned max_tx_age(unsigned long long now) const;
   bool write_unapplied(unsigned src, unsigned dst) const;
   void bump_cta_gen(unsigned local_sm, unsigned cta);

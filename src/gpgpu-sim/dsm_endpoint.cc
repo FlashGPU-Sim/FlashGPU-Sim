@@ -321,6 +321,7 @@ void dsm_endpoint_protocol_t::complete_stores(unsigned requester,
     m_store_q[requester][target].pop_front();
     m_tx[requester].erase(id);
     m_extra.erase(id);
+    m_data.erase(id);
     if (m_on_tx_done) m_on_tx_done(m_done_ctx, id);
   }
 }

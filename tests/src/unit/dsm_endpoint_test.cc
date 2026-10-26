@@ -487,3 +487,17 @@ TEST(DsmEndpoint, TmaDeliveryScalesWithFlitsNotHop) {
   // Extra delay is flit grants, not a 135-cycle multicast hop.
   EXPECT_LT(t128 - t32, 80u);
 }
+
+TEST(DsmEndpoint, StoreAndTmaPayloadsReleasedAfterDrain) {
+  EpEnv e(dsm_fabric_config_t{}, dsm_endpoint_config_t{});
+  uint32_t word = 0x11u;
+  for (unsigned i = 0; i < 4; i++) {
+    word = 0x10u + i;
+    ASSERT_TRUE(e.ep.issue_store(0, 1, 4, i * 4, 0, 0, &word));
+  }
+  std::vector<uint8_t> tile(16, 7);
+  ASSERT_TRUE(e.ep.issue_tma(0, 1, 16, 64, 0, 0, tile.data(), 0, 0));
+  EXPECT_GT(e.ep.payload_entries(), 0u);
+  ASSERT_TRUE(e.step_until_idle());
+  EXPECT_EQ(e.ep.payload_entries(), 0u);
+}

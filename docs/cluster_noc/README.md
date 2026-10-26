@@ -8,7 +8,7 @@ This branch adds cluster launch, DSM (`mapa` plus remote shared `ld` / `st` / `a
 |---------|----------|
 | Cluster launch (`cudaLaunchKernelExC`, required cluster dims) | Every CTA of one thread-block cluster is co-resident on one GPC |
 | `mapa` plus remote `ld` / `st` / `atom.add` | Intra-GPC fabric, `dsm_fabric_t`. A rank that is not resident aborts |
-| Remote `mbarrier` | Fabric request and completion. Needs DSM and `-gpgpu_mbarrier_cluster_enable` |
+| Remote `mbarrier` | Fabric request and completion. Needs DSM and `-gpgpu_mbarrier_cluster_enable`. `try_wait` on a `mapa` address is a uniform simulator extension; PTX `try_wait` is on the owner, and remote arrive plus local wait is the standard path |
 | `barrier.cluster.arrive` / `wait` | Releases after every active warp in every CTA of the cluster has arrived |
 | TMA `.shared::cluster` and `ctaMask` | Functional copy to the selected peers, then `-gpgpu_tma_multicast_latency`. No fabric traffic |
 
@@ -44,7 +44,6 @@ Registered in `shader_core_config::reg_options` (`src/gpgpu-sim/gpu-sim.cc`) unl
 | `-gpgpu_mbarrier_cluster_enable` | 0 | 1 | Allow `mbarrier` on a `mapa` address |
 | `-gpgpu_tma_multicast_latency` | 0 | 100 | Cycles added before a multicast `complete_tx` |
 | `-gpgpu_cluster_hang_watchdog` | 8192 | 8192 | Cycles before rule 1 or rule 2 aborts |
-| `-gpgpu_mbarrier_trywait_default_timeout_ns` | 0 | 4320 | No-hint local `try_wait` suspension cap, in ns. An explicit PTX hint overrides it. `0` polls |
 | `-gpgpu_n_clusters` | — | 8 | Number of GPCs. Alias `-gpgpu_num_gpcs`. Both set and disagreeing aborts at startup |
 | `-gpgpu_n_cores_per_cluster` | — | 18 | Max enabled SMs per GPC. Alias `-gpgpu_num_sms_per_gpc` |
 | `-gpgpu_gpc_sms` | empty | `16,16,16,16,16,16,18,18` | Enabled SMs in each GPC. Empty means every GPC uses the scalar count |

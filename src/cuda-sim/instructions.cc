@@ -104,6 +104,9 @@ static bool dsm_note_fabric(ptx_thread_info *thread, const ptx_instruction *pI,
   op.thread = thread;
   op.pI = pI;
   op.type = pI->get_type();
+  const unsigned warp_size =
+      core->get_config() ? core->get_config()->warp_size : 32;
+  op.lane = warp_size ? thread->get_hw_tid() % warp_size : 0;
   core->dsm_note_lane_op(std::move(op));
   return true;
 }
@@ -1731,6 +1734,38 @@ void atom_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     if (!flash_gpgpu_sim::dsm_fabric_enabled(atom_core)) {
       flash_gpgpu_sim::abort_dsm_disabled("atom.add", thread->get_hw_sid(),
                                           effective_address);
+    }
+    const unsigned atom_op = pI->get_atomic();
+    const bool integer_add =
+        atom_op == ATOMIC_ADD &&
+        (i_type == U32_TYPE || i_type == S32_TYPE || i_type == B32_TYPE ||
+         i_type == U64_TYPE || i_type == S64_TYPE || i_type == B64_TYPE);
+    if (!integer_add) {
+      const char *op_name = "other";
+      if (atom_op == ATOMIC_ADD) op_name = "add";
+      else if (atom_op == ATOMIC_EXCH) op_name = "exch";
+      else if (atom_op == ATOMIC_CAS) op_name = "cas";
+      const char *type_name = "other";
+      if (i_type == F32_TYPE) type_name = "f32";
+      else if (i_type == F64_TYPE) type_name = "f64";
+      else if (i_type == B32_TYPE) type_name = "b32";
+      else if (i_type == B64_TYPE) type_name = "b64";
+      else if (i_type == U32_TYPE || i_type == S32_TYPE) type_name = "32";
+      else if (i_type == U64_TYPE || i_type == S64_TYPE) type_name = "64";
+      else if (i_type == S16_TYPE || i_type == U16_TYPE) type_name = "16";
+      char message[256];
+      snprintf(message, sizeof(message),
+               "GPGPU-Sim ERROR: remote DSM atomic %s type %s is not "
+               "supported (only 32/64-bit integer atom.add).\n",
+               op_name, type_name);
+      printf("%s", message);
+      fprintf(stderr, "%s", message);
+      fflush(stdout);
+      fflush(stderr);
+      if (!flash_gpgpu_sim::observe_cluster_fatal(message)) abort();
+      thread->m_last_dram_callback.function = NULL;
+      thread->m_last_dram_callback.instruction = NULL;
+      return;
     }
     size_t at_size;
     int at_t;

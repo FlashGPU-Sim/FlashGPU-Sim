@@ -1102,6 +1102,7 @@ class warp_inst_t : public inst_t {
     m_smem_exposed = false;
     m_smem_got = 0;
     m_current_lane = 0;
+    m_dsm_atomic_lanes.reset();
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
@@ -1135,6 +1136,7 @@ class warp_inst_t : public inst_t {
     m_smem_exposed = false;
     m_smem_got = 0;
     m_current_lane = 0;
+    m_dsm_atomic_lanes.reset();
   }
   virtual ~warp_inst_t() {}
 
@@ -1143,6 +1145,10 @@ class warp_inst_t : public inst_t {
   void do_atomic(bool forceDo = false);
   void do_atomic(const active_mask_t &access_mask, bool forceDo = false);
   void skip_atomic_callback() { should_do_atomic = false; }
+  // Lanes whose atom was handed to the DSM endpoint. do_atomic skips them.
+  void note_dsm_atomic_lane(unsigned lane) {
+    if (lane < MAX_WARP_SIZE) m_dsm_atomic_lanes.set(lane);
+  }
   void clear() { m_empty = true; }
 
   void issue(const active_mask_t &mask, unsigned warp_id,
@@ -1330,6 +1336,7 @@ class warp_inst_t : public inst_t {
   unsigned cycles;  // used for implementing initiation interval delay
   bool m_isatomic;
   bool should_do_atomic;
+  active_mask_t m_dsm_atomic_lanes;
   bool m_is_printf;
   unsigned m_warp_id;
   unsigned m_dynamic_warp_id;

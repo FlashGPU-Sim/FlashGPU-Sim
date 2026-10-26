@@ -318,6 +318,18 @@ class shd_warp_t {
     ibuffer_flush();
     clear_imiss_pending();
   }
+  // Same as abandon, but leave the pipeline count for an in-flight load.
+  void stop_issuing() {
+    m_active_threads.reset();
+    n_completed = m_warp_size;
+    clear_imiss_pending();
+    for (unsigned i = 0; i < IBUFFER_SIZE; i++) {
+      if (m_ibuffer[i].m_valid && m_inst_in_pipeline > 0)
+        dec_inst_in_pipeline();
+      m_ibuffer[i].m_inst = NULL;
+      m_ibuffer[i].m_valid = false;
+    }
+  }
   void inc_store_req() { m_stores_outstanding++; }
   void dec_store_req() {
     assert(m_stores_outstanding > 0);
@@ -1292,6 +1304,11 @@ class barrier_set_t {
   void wait_cluster_barrier(unsigned warp_id);
   void release_cluster_barrier(unsigned warp_id);
   unsigned active_warps_in_cta(unsigned cta_id) const;
+  warp_set_t active_warp_mask(unsigned cta_id) const {
+    cta_to_warp_t::const_iterator it = m_cta_to_warps.find(cta_id);
+    if (it == m_cta_to_warps.end()) return warp_set_t();
+    return it->second & m_warp_active;
+  }
 
   void wait_tcgen05_warp(unsigned warp_id);
   void release_tcgen05_warp(unsigned warp_id);
@@ -1393,15 +1410,8 @@ class barrier_set_t {
   };
   std::vector<pending_warp_release_t> m_pending_warp_releases;
 
-  // try_wait with a timeout operand: expire and set dest pred false.
   void apply_trywait_pred(unsigned warp_id, bool phase_complete);
-  void arm_trywait_timeout(unsigned warp_id, unsigned timeout_hint,
-                           const ptx_instruction *static_inst,
-                           const active_mask_t &active_mask);
-  void clear_trywait_timeout(unsigned warp_id);
 
-  std::vector<bool> m_mbar_trywait_has_timeout;
-  std::vector<unsigned long long> m_mbar_timeout_cycle;
   std::vector<bool> m_mbar_partial_wait;
   std::vector<bool> m_hang_saw_peer;
   std::vector<unsigned long long> m_hang_peer_address;
@@ -2438,7 +2448,6 @@ class shader_core_config : public core_config {
   // Additional delay after a phase-triggered recheck resolves every active
   // lane of a suspended mbarrier.try_wait true.
   unsigned int gpgpu_mbarrier_phase_wakeup_latency;
-  unsigned int gpgpu_mbarrier_trywait_default_timeout_ns;
 
   // Fixed completion delay only; multicast does not use an on-chip network.
   unsigned int gpgpu_tma_multicast_latency;
@@ -2999,6 +3008,7 @@ class shader_core_ctx : public core_t {
   void cycle();
   shd_warp_t *get_shd_warp(unsigned warp_id) { return m_warp[warp_id]; }
   void abandon_warp(unsigned warp_id);
+  void stop_warp_after_fatal(unsigned warp_id);
   void note_peer_smem_access(unsigned warp_id, unsigned long long address) {
     m_barriers.note_peer_smem_access(warp_id, address);
   }
@@ -3114,6 +3124,9 @@ class shader_core_ctx : public core_t {
   }
   unsigned active_warps_in_cta(unsigned hw_cta_id) const {
     return m_barriers.active_warps_in_cta(hw_cta_id);
+  }
+  warp_set_t active_warp_mask(unsigned hw_cta_id) const {
+    return m_barriers.active_warp_mask(hw_cta_id);
   }
 
   void dsm_note_lane_op(flash_gpgpu_sim::dsm_lane_op_t op);
@@ -3784,16 +3797,13 @@ class simt_core_cluster {
   void release_ready_cluster_barriers();
   void dsm_on_tma_mbar(unsigned local_sm, unsigned cta, unsigned mbar_addr,
                        unsigned mbar_bytes);
-  // Delay issuer complete_tx until fabric+SRAM has landed one peer copy
-  // (source-expanded multicast). wait_peers==0 completes immediately.
-  void dsm_hold_issuer_mcast_mbar(unsigned issuer_cid, unsigned issuer_cta,
-                                  unsigned mbar_addr, unsigned mbar_bytes,
-                                  unsigned wait_peers);
   bool dsm_on_mbar_req(unsigned local_sm, unsigned cta, unsigned src,
                        unsigned mbar_addr, unsigned op, unsigned count,
                        unsigned req_cta, unsigned req_warp, int parity);
   void dsm_on_mbar_done(unsigned local_sm, unsigned req_warp);
+  void cluster_barrier_arrive(unsigned local_sm, unsigned cta, unsigned warp);
   void cluster_barrier_wait(unsigned local_sm, unsigned cta, unsigned warp);
+  void cluster_barrier_warp_exit(unsigned local_sm, unsigned warp);
 
   // for perfect memory interface (per-SM ejection buffer)
   bool response_queue_full(unsigned sid) const {
@@ -3952,14 +3962,6 @@ class simt_core_cluster {
   };
   std::deque<dsm_tma_retry_t> m_tma_retry;
   std::deque<dsm_mbar_retry_t> m_mbar_retry;
-  struct dsm_mcast_issuer_hold_t {
-    unsigned issuer_cid = 0;
-    unsigned issuer_cta = 0;
-    unsigned mbar_addr = 0;
-    unsigned mbar_bytes = 0;
-    unsigned remaining = 0;
-  };
-  std::deque<dsm_mcast_issuer_hold_t> m_mcast_issuer_holds;
   struct cluster_barrier_waiter_t {
     unsigned local_sm = 0;
     unsigned cta = 0;
@@ -3967,6 +3969,14 @@ class simt_core_cluster {
   };
   std::unordered_map<unsigned, std::vector<cluster_barrier_waiter_t>>
       m_cluster_barrier_waiters;
+  // Per issued warp. arrived advances once per phase; completed advances
+  // when that phase's wait releases. Key is (local_sm << 32) | warp.
+  struct cluster_bar_phase_t {
+    unsigned arrived = 0;
+    unsigned completed = 0;
+  };
+  std::unordered_map<unsigned long long, cluster_bar_phase_t>
+      m_cluster_bar_phase;
   std::unordered_map<unsigned, unsigned> m_tb_cluster_group_sizes;
   std::unordered_map<unsigned, unsigned> m_tb_cluster_group_issued;
   std::unordered_map<unsigned, unsigned> m_dsm_warp_pending;

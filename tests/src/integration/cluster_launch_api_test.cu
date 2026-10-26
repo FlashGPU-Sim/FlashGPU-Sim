@@ -377,3 +377,128 @@ TEST_F(ClusterLaunchApiTest, ExLaunch_ClusterLargerThanPhysical_m_Fails) {
   (void)cudaGetLastError();
   cudaFree(d_out);
 }
+
+__device__ __forceinline__ void cluster_bar_arrive() {
+  asm volatile("barrier.cluster.arrive;\n");
+}
+
+__device__ __forceinline__ void cluster_bar_wait() {
+  asm volatile("barrier.cluster.wait;\n");
+}
+
+// Rank 0 arrives and does not wait. Rank 1 arrives and waits. The wait must
+// release without rank 0 also waiting.
+__global__ void split_arrive_wait_kernel(volatile int *flag) {
+  if (blockIdx.x == 0) {
+    if (threadIdx.x == 0) flag[0] = 1;
+    cluster_bar_arrive();
+    if (threadIdx.x == 0) {
+      while (flag[1] == 0) {
+      }
+    }
+    return;
+  }
+  cluster_bar_arrive();
+  cluster_bar_wait();
+  if (threadIdx.x == 0) flag[1] = 1;
+}
+
+// Round 1 is a normal arrive+wait. Round 2 must not release on round 1's
+// arrival: rank 1 samples the release flag only after rank 0 has arrived
+// for round 2 and before rank 1 arrives again.
+__global__ void second_round_needs_new_arrive_kernel(volatile int *flag) {
+  cluster_bar_arrive();
+  cluster_bar_wait();
+  if (blockIdx.x == 0) {
+    cluster_bar_arrive();
+    if (threadIdx.x == 0) flag[0] = 1;
+    cluster_bar_wait();
+    if (threadIdx.x == 0) flag[1] = 1;
+    return;
+  }
+  if (threadIdx.x == 0) {
+    while (flag[0] == 0) {
+    }
+    // Rank 0 has arrived for round 2. A sticky round-1 arrival would let
+    // its wait finish during this local delay.
+    const unsigned long long start = clock64();
+    while (clock64() - start < 4000ull) {
+    }
+    flag[2] = flag[1];
+  }
+  cluster_bar_arrive();
+  cluster_bar_wait();
+}
+
+// Rank 1 is parked in wait. Rank 0 never arrives and then exits. The wait
+// must release.
+__global__ void peer_exit_unblocks_wait_kernel(volatile int *flag) {
+  if (blockIdx.x == 0) {
+    if (threadIdx.x == 0) {
+      const unsigned long long start = clock64();
+      while (clock64() - start < 20000ull) {
+      }
+    }
+    return;
+  }
+  cluster_bar_arrive();
+  cluster_bar_wait();
+  if (threadIdx.x == 0) flag[0] = 1;
+}
+
+TEST_F(ClusterLaunchApiTest, SplitArriveWait_ReleasesWithoutPeerWait) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  int *flag = nullptr;
+  ASSERT_EQ(cudaMalloc(&flag, 4 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(flag, 0, 4 * sizeof(int)), cudaSuccess);
+  void *args[] = {&flag};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)split_arrive_wait_kernel, dim3(2), dim3(32),
+                dim3(2, 1, 1), args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  int h[2] = {};
+  ASSERT_EQ(cudaMemcpy(h, flag, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(h[0], 1);
+  EXPECT_EQ(h[1], 1);
+  cudaFree(flag);
+}
+
+TEST_F(ClusterLaunchApiTest, SecondRoundWait_NeedsNewArrive) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  int *flag = nullptr;
+  ASSERT_EQ(cudaMalloc(&flag, 4 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(flag, 0, 4 * sizeof(int)), cudaSuccess);
+  void *args[] = {&flag};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)second_round_needs_new_arrive_kernel, dim3(2),
+                dim3(32), dim3(2, 1, 1), args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  int h[3] = {};
+  ASSERT_EQ(cudaMemcpy(h, flag, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(h[0], 1);
+  EXPECT_EQ(h[1], 1);
+  EXPECT_EQ(h[2], 0) << "round 2 released before the peer arrived again";
+  cudaFree(flag);
+}
+
+TEST_F(ClusterLaunchApiTest, PeerExit_UnblocksWaiter) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  int *flag = nullptr;
+  ASSERT_EQ(cudaMalloc(&flag, sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(flag, 0, sizeof(int)), cudaSuccess);
+  void *args[] = {&flag};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)peer_exit_unblocks_wait_kernel, dim3(2),
+                dim3(32), dim3(2, 1, 1), args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  int h = 0;
+  ASSERT_EQ(cudaMemcpy(&h, flag, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(h, 1);
+  cudaFree(flag);
+}

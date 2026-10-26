@@ -1655,7 +1655,6 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
     inst.set_dsm_remote(true, max_hop);
     note_peer_smem_access(inst.warp_id(), peer_address);
     const bool fabric = flash_gpgpu_sim::dsm_fabric_enabled(this);
-    if (fabric && inst.isatomic()) inst.skip_atomic_callback();
     inst.space = memory_space_t(shared_space);
     m_scoreboard->reclassifyShared(&inst);
   } else if (inst.is_load() || inst.is_store()) {
@@ -2082,10 +2081,12 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   if (next_inst->op == BARRIER_OP) {
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
     if (next_inst->cluster_barrier) {
-      if (next_inst->bar_type == SYNC)
-        m_cluster->cluster_barrier_wait(
-            m_config->sid_to_cid(m_sid), m_warp[warp_id]->get_cta_id(),
-            warp_id);
+      const unsigned local_sm = m_config->sid_to_cid(m_sid);
+      const unsigned cta = m_warp[warp_id]->get_cta_id();
+      if (next_inst->bar_type == ARRIVE)
+        m_cluster->cluster_barrier_arrive(local_sm, cta, warp_id);
+      else if (next_inst->bar_type == SYNC)
+        m_cluster->cluster_barrier_wait(local_sm, cta, warp_id);
     } else if ((*pipe_reg)->get_active_mask().any()) {
       if (next_inst->bar_type == ARRIVE)
         issue_named_arrival(warp_id, *next_inst);
@@ -5149,10 +5150,12 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
           "GPGPU-Sim uArch: CTA #%u threads exited with pending TMA/cp.async "
           "or DSM, delaying resource release.\n",
           cta_num);
+      if (m_cluster) m_cluster->release_ready_cluster_barriers();
       return;
     }
 
     release_finished_cta(cta_num, kernel);
+    if (m_cluster) m_cluster->release_ready_cluster_barriers();
   }
 }
 
@@ -6010,8 +6013,6 @@ barrier_set_t::barrier_set_t(shader_core_ctx *shader,
   m_warp_at_barrier.reset();
   m_warp_barrier_type.resize(max_warps_per_core, BARRIER_WAIT_BAR_SYNC);
   m_warp_named_barrier_id.resize(max_warps_per_core, (unsigned)-1);
-  m_mbar_trywait_has_timeout.assign(max_warps_per_core, false);
-  m_mbar_timeout_cycle.assign(max_warps_per_core, 0);
   m_mbar_trywait_inst.assign(max_warps_per_core, nullptr);
   m_mbar_trywait_mask.assign(max_warps_per_core, active_mask_t());
   m_mbar_partial_wait.assign(max_warps_per_core, false);
@@ -6172,8 +6173,12 @@ void barrier_set_t::poll_hang_preventers() {
       fflush(stdout);
       fprintf(stderr, "%s", message);
       fflush(stderr);
-      if (flash_gpgpu_sim::observe_cluster_fatal(message))
+      if (flash_gpgpu_sim::observe_cluster_fatal(message)) {
+        // abort() would kill the process. Retire this warp so the launch can
+        // return the message to the test.
+        m_shader->stop_warp_after_fatal(w);
         return;
+      }
       abort();
     }
   }
@@ -6662,6 +6667,23 @@ void shader_core_ctx::abandon_warp(unsigned warp_id) {
   }
 }
 
+void shader_core_ctx::stop_warp_after_fatal(unsigned warp_id) {
+  shd_warp_t *warp = m_warp[warp_id];
+  if (!warp || warp->functional_done()) return;
+  warp->stop_issuing();
+  m_barriers.warp_exit(warp_id);
+  if (m_inst_fetch_buffer.m_valid && m_inst_fetch_buffer.m_warp_id == warp_id)
+    m_inst_fetch_buffer.m_valid = false;
+  ptx_thread_info **threads = get_thread_info();
+  const unsigned base = warp_id * m_config->warp_size;
+  for (unsigned lane = 0; lane < m_config->warp_size; ++lane) {
+    ptx_thread_info *thread = threads[base + lane];
+    if (!thread || thread->is_done()) continue;
+    thread->set_done();
+    thread->registerExit();
+  }
+}
+
 void shader_core_ctx::warp_exit(unsigned warp_id) {
   bool done = true;
   for (unsigned i = warp_id * get_config()->warp_size;
@@ -6671,8 +6693,12 @@ void shader_core_ctx::warp_exit(unsigned warp_id) {
   }
   // An issued arrive must reach the barrier before the warp is removed from
   // its participants. Pending events also retain the warp's pipeline lifetime.
-  if (done && m_shared_barrier_state[warp_id].pending_arrivals == 0)
+  if (done && m_shared_barrier_state[warp_id].pending_arrivals == 0) {
     m_barriers.warp_exit(warp_id);
+    if (m_cluster)
+      m_cluster->cluster_barrier_warp_exit(m_config->sid_to_cid(m_sid),
+                                           warp_id);
+  }
 }
 
 bool shader_core_ctx::check_if_non_released_reduction_barrier(
@@ -7514,6 +7540,9 @@ void simt_core_cluster::dsm_on_load_data(unsigned txid, const uint8_t *p,
     dsm_commit_loads(it->second.sid, it->second.warp, it->second.pI);
 }
 
+// Defined in instructions.cc. S16/S32 into a wider register, same as ld_exec.
+void sign_extend(ptx_reg_t &data, unsigned src_size, const operand_info &dst);
+
 void simt_core_cluster::dsm_commit_loads(unsigned sid, unsigned warp,
                                          const warp_inst_t *inst) {
   for (auto it = m_dsm_loads.begin(); it != m_dsm_loads.end();) {
@@ -7545,7 +7574,15 @@ void simt_core_cluster::dsm_commit_loads(unsigned sid, unsigned warp,
       };
       if (!pI->get_vector()) {
         ptx_reg_t data = take(0);
-        thread->set_operand_value(pI->dst(), data, pI->get_type(), thread, pI);
+        const unsigned ld_type = pI->get_type();
+        // Same rule as ld_exec. Vector loads do not sign-extend locally.
+        if (ld_type == S16_TYPE || ld_type == S32_TYPE) {
+          size_t bits = 0;
+          int decoded = 0;
+          type_info_key::type_decode(ld_type, bits, decoded);
+          sign_extend(data, (unsigned)bits, pI->dst());
+        }
+        thread->set_operand_value(pI->dst(), data, ld_type, thread, pI);
       } else {
         ptx_reg_t d1 = take(0), d2 = take(1), d3 = take(2), d4 = take(3);
         thread->set_vector_operand_values(pI->dst(), d1, d2, d3, d4);
@@ -7657,6 +7694,10 @@ void shader_core_ctx::dsm_issue_lane_ops(warp_inst_t &inst) {
   m_cluster->dsm_note_warp_issue(m_sid, inst.warp_id(), n);
   m_cluster->dsm_note_cta_issue(m_sid, cta, n);
   for (auto &op : m_dsm_lane_ops) {
+    // Mark before the op is moved into the retry queue. A later do_atomic
+    // must skip this lane whether the endpoint accepted it or not.
+    if (op.kind == flash_gpgpu_sim::dsm_op_kind::atom_add)
+      inst.note_dsm_atomic_lane(op.lane);
     if (!m_cluster->dsm_try_issue(src, op, m_sid, inst.warp_id(), cta))
       m_cluster->dsm_queue_retry(src, std::move(op), m_sid, inst.warp_id(),
                                  cta);
@@ -7774,29 +7815,6 @@ void simt_core_cluster::dsm_retry_tma_mbar() {
   m_mbar_retry.swap(mkeep);
 }
 
-void simt_core_cluster::dsm_hold_issuer_mcast_mbar(unsigned issuer_cid,
-                                                   unsigned issuer_cta,
-                                                   unsigned mbar_addr,
-                                                   unsigned mbar_bytes,
-                                                   unsigned wait_peers) {
-  if (!wait_peers) {
-    if (issuer_cid < num_cores()) {
-      shader_core_ctx *core = get_core(issuer_cid);
-      if (core)
-        core->try_complete_cluster_peer_mbarrier(issuer_cta, mbar_addr,
-                                                 mbar_bytes);
-    }
-    return;
-  }
-  dsm_mcast_issuer_hold_t h;
-  h.issuer_cid = issuer_cid;
-  h.issuer_cta = issuer_cta;
-  h.mbar_addr = mbar_addr;
-  h.mbar_bytes = mbar_bytes;
-  h.remaining = wait_peers;
-  m_mcast_issuer_holds.push_back(h);
-}
-
 void simt_core_cluster::dsm_on_tma_mbar(unsigned local_sm, unsigned cta,
                                         unsigned mbar_addr,
                                         unsigned mbar_bytes) {
@@ -7804,19 +7822,42 @@ void simt_core_cluster::dsm_on_tma_mbar(unsigned local_sm, unsigned cta,
   shader_core_ctx *core = get_core(local_sm);
   if (core)
     core->try_complete_cluster_peer_mbarrier(cta, mbar_addr, mbar_bytes);
-  if (!m_mcast_issuer_holds.empty()) {
-    dsm_mcast_issuer_hold_t &h = m_mcast_issuer_holds.front();
-    if (h.remaining) h.remaining--;
-    if (!h.remaining) {
-      if (h.issuer_cid < num_cores()) {
-        shader_core_ctx *iss = get_core(h.issuer_cid);
-        if (iss)
-          iss->try_complete_cluster_peer_mbarrier(h.issuer_cta, h.mbar_addr,
-                                                  h.mbar_bytes);
-      }
-      m_mcast_issuer_holds.pop_front();
+}
+
+static unsigned long long cluster_bar_key(unsigned local_sm, unsigned warp) {
+  return (static_cast<unsigned long long>(local_sm) << 32) | warp;
+}
+
+void simt_core_cluster::cluster_barrier_arrive(unsigned local_sm, unsigned cta,
+                                               unsigned warp) {
+  (void)cta;
+  auto &phase = m_cluster_bar_phase[cluster_bar_key(local_sm, warp)];
+  // A second arrive before this phase's wait completes does not bump.
+  if (phase.arrived == phase.completed)
+    phase.arrived = phase.completed + 1;
+  release_ready_cluster_barriers();
+}
+
+void simt_core_cluster::cluster_barrier_warp_exit(unsigned local_sm,
+                                                  unsigned warp) {
+  m_cluster_bar_phase.erase(cluster_bar_key(local_sm, warp));
+  for (auto it = m_cluster_barrier_waiters.begin();
+       it != m_cluster_barrier_waiters.end();) {
+    auto &waiters = it->second;
+    std::vector<cluster_barrier_waiter_t> keep;
+    keep.reserve(waiters.size());
+    for (const auto &waiter : waiters) {
+      if (waiter.local_sm == local_sm && waiter.warp == warp) continue;
+      keep.push_back(waiter);
+    }
+    if (keep.empty())
+      it = m_cluster_barrier_waiters.erase(it);
+    else {
+      waiters.swap(keep);
+      ++it;
     }
   }
+  release_ready_cluster_barriers();
 }
 
 void simt_core_cluster::cluster_barrier_wait(unsigned local_sm, unsigned cta,
@@ -7839,8 +7880,12 @@ void simt_core_cluster::release_ready_cluster_barriers() {
   for (auto it = m_cluster_barrier_waiters.begin();
        it != m_cluster_barrier_waiters.end();) {
     const unsigned group = it->first;
-    const auto &waiters = it->second;
-    unsigned live_warps = 0;
+    auto &waiters = it->second;
+    struct live_warp_t {
+      unsigned sm;
+      unsigned warp;
+    };
+    std::vector<live_warp_t> live;
     unsigned live_ctas = 0;
     for (unsigned sm = 0; sm < num_cores(); sm++) {
       shader_core_ctx *core = get_core(sm);
@@ -7849,10 +7894,13 @@ void simt_core_cluster::release_ready_cluster_barriers() {
         if (!core->is_cta_slot_active(slot)) continue;
         if (core->get_cta_cluster_group(slot) != group) continue;
         live_ctas++;
-        live_warps += core->active_warps_in_cta(slot);
+        const warp_set_t mask = core->active_warp_mask(slot);
+        for (unsigned w = 0; w < mask.size(); w++) {
+          if (mask.test(w)) live.push_back({sm, w});
+        }
       }
     }
-    unsigned expected = live_warps;
+    unsigned expected = (unsigned)live.size();
     auto group_size = m_tb_cluster_group_sizes.find(group);
     auto issued_it = m_tb_cluster_group_issued.find(group);
     if (group_size != m_tb_cluster_group_sizes.end() && !waiters.empty()) {
@@ -7860,16 +7908,17 @@ void simt_core_cluster::release_ready_cluster_barriers() {
           issued_it != m_tb_cluster_group_issued.end() ? issued_it->second
                                                        : live_ctas;
       // Not-yet-issued partners must still arrive. Partners that already
-      // exited are not in live_warps and must not inflate expected.
+      // exited are not in live and must not inflate expected.
       if (issued < group_size->second) {
         shader_core_ctx *source = get_core(waiters.front().local_sm);
         const unsigned source_warps =
             source ? source->active_warps_in_cta(waiters.front().cta) : 0;
-        expected = live_warps + (group_size->second - issued) * source_warps;
+        expected = (unsigned)live.size() +
+                   (group_size->second - issued) * source_warps;
       }
     }
     bool dsm_busy = false;
-    if (expected && waiters.size() >= expected) {
+    if (expected && !waiters.empty()) {
       for (const auto &waiter : waiters) {
         shader_core_ctx *core = get_core(waiter.local_sm);
         if (core && dsm_cta_busy(core->get_sid(), waiter.cta)) {
@@ -7878,15 +7927,62 @@ void simt_core_cluster::release_ready_cluster_barriers() {
         }
       }
     }
-    if (!expected || waiters.size() < expected || dsm_busy) {
-      ++it;
-      continue;
+    auto phase_of = [this](unsigned sm, unsigned warp) {
+      auto found = m_cluster_bar_phase.find(cluster_bar_key(sm, warp));
+      return found == m_cluster_bar_phase.end() ? nullptr : &found->second;
+    };
+    struct ready_waiter_t {
+      cluster_barrier_waiter_t waiter;
+      unsigned required;
+    };
+    std::vector<ready_waiter_t> ready;
+    if (expected && !dsm_busy) {
+      for (const auto &waiter : waiters) {
+        const auto *phase = phase_of(waiter.local_sm, waiter.warp);
+        const unsigned required = (phase ? phase->completed : 0u) + 1u;
+        unsigned satisfied = 0;
+        for (const auto &lw : live) {
+          const auto *lp = phase_of(lw.sm, lw.warp);
+          if (lp && lp->arrived >= required) satisfied++;
+        }
+        // A wait without a prior arrive never releases: this warp's arrived
+        // is still behind required, so satisfied cannot cover every live warp.
+        if (satisfied >= expected) ready.push_back({waiter, required});
+      }
     }
-    for (const auto &waiter : waiters) {
-      shader_core_ctx *core = get_core(waiter.local_sm);
-      if (core) core->release_from_cluster_barrier(waiter.warp);
+    for (const auto &done : ready) {
+      // Advance only the warp that is leaving this phase. A peer that has
+      // arrived but not yet waited must keep its completed generation, or
+      // its own wait would ask for the next phase.
+      auto found = m_cluster_bar_phase.find(
+          cluster_bar_key(done.waiter.local_sm, done.waiter.warp));
+      if (found != m_cluster_bar_phase.end() &&
+          found->second.arrived >= done.required &&
+          found->second.completed < done.required)
+        found->second.completed = done.required;
+      shader_core_ctx *core = get_core(done.waiter.local_sm);
+      if (core) core->release_from_cluster_barrier(done.waiter.warp);
     }
-    it = m_cluster_barrier_waiters.erase(it);
+    if (!ready.empty()) {
+      std::vector<cluster_barrier_waiter_t> keep;
+      for (const auto &waiter : waiters) {
+        bool drop = false;
+        for (const auto &done : ready) {
+          if (done.waiter.local_sm == waiter.local_sm &&
+              done.waiter.warp == waiter.warp) {
+            drop = true;
+            break;
+          }
+        }
+        if (!drop) keep.push_back(waiter);
+      }
+      if (keep.empty()) {
+        it = m_cluster_barrier_waiters.erase(it);
+        continue;
+      }
+      waiters.swap(keep);
+    }
+    ++it;
   }
 }
 

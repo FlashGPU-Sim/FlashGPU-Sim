@@ -5,8 +5,10 @@
 #include "../cuda-sim/ptx_sim.h"
 #include "../gpu-sim.h"
 #include "../shader.h"
+#include "cluster_fatal.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 
@@ -837,46 +839,9 @@ void barrier_set_t::apply_trywait_pred(unsigned warp_id, bool phase_complete) {
   }
 }
 
-void barrier_set_t::arm_trywait_timeout(unsigned warp_id, unsigned timeout_hint,
-                                        const ptx_instruction *static_inst,
-                                        const active_mask_t &active_mask) {
-  if (warp_id >= m_mbar_trywait_has_timeout.size())
-    return;
-  m_mbar_trywait_has_timeout[warp_id] = true;
-  m_mbar_trywait_inst[warp_id] = static_inst;
-  m_mbar_trywait_mask[warp_id] = active_mask;
-  // PTX suspendTimeHint is in nanoseconds, shader_clock() in kHz. Round
-  // upward and retain a one-cycle minimum for a zero hint. Widen before
-  // multiplying: the full u32 nanosecond range exceeds u32 core cycles.
-  const unsigned long long delay =
-      std::max(1ULL, (static_cast<unsigned long long>(timeout_hint) *
-                          m_shader->get_gpu()->shader_clock() +
-                      999999ULL) /
-                         1000000ULL);
-  const unsigned long long now = m_shader->get_gpu()->gpu_sim_cycle +
-                                 m_shader->get_gpu()->gpu_tot_sim_cycle;
-  m_mbar_timeout_cycle[warp_id] = now + delay;
-}
-
-void barrier_set_t::clear_trywait_timeout(unsigned warp_id) {
-  if (warp_id >= m_mbar_trywait_has_timeout.size())
-    return;
-  m_mbar_trywait_has_timeout[warp_id] = false;
-  m_mbar_timeout_cycle[warp_id] = 0;
-  m_mbar_trywait_inst[warp_id] = nullptr;
-}
-
 void barrier_set_t::release_warps(const std::set<int> &released_warps) {
   if (released_warps.empty())
     return;
-  for (auto w : released_warps) {
-    if (w >= 0 && (unsigned)w < m_mbar_trywait_has_timeout.size() &&
-        m_mbar_trywait_has_timeout[w]) {
-      // Phase completed before the timeout expired.
-      apply_trywait_pred((unsigned)w, /*phase_complete=*/true);
-      clear_trywait_timeout((unsigned)w);
-    }
-  }
   unsigned trywait_latency =
       m_shader->get_config()->gpgpu_mbarrier_trywait_latency;
   const char *trace = getenv("FLASHGPU_SIM_BARRIER_TRACE");
@@ -1032,20 +997,6 @@ void barrier_set_t::hold_warp(unsigned warp_id, unsigned latency,
 void barrier_set_t::cycle() {
   const unsigned long long now = m_shader->get_gpu()->gpu_sim_cycle +
                                  m_shader->get_gpu()->gpu_tot_sim_cycle;
-  for (unsigned w = 0; w < m_max_warps_per_core; w++) {
-    if (!m_mbar_trywait_has_timeout[w])
-      continue;
-    if (!m_warp_at_barrier.test(w) ||
-        m_warp_barrier_type[w] != BARRIER_WAIT_MBARRIER)
-      continue;
-    if (now < m_mbar_timeout_cycle[w])
-      continue;
-    apply_trywait_pred(w, /*phase_complete=*/false);
-    clear_trywait_timeout(w);
-    m_mbarrier_manager.cancel_wait((int)w);
-    release_warps({static_cast<int>(w)});
-  }
-
   for (auto &entry : m_pending_warp_releases) {
     entry.remaining--;
   }
@@ -1387,8 +1338,7 @@ void barrier_set_t::release_remote_waiter(unsigned warp_id) {
   if (warp_id >= m_max_warps_per_core)
     return;
   apply_trywait_pred(warp_id, /*phase_complete=*/true);
-  if (warp_id < m_mbar_trywait_has_timeout.size() &&
-      !m_mbar_trywait_has_timeout[warp_id])
+  if (warp_id < m_mbar_trywait_inst.size())
     m_mbar_trywait_inst[warp_id] = nullptr;
   // Pay trywait observation latency like a local successful try_wait.
   // A zero latency has no delayed release, so drop the park here.
@@ -1511,20 +1461,48 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
 
     // A mapa address lives on the owner CTA. Local test_wait keys by the
     // issuer's CTA and would miss it. Register on the owner and park until
-    // WAIT_DONE writes the predicate.
+    // WAIT_DONE writes the predicate. Every active lane must name that same
+    // remote barrier; a mixed or split mask is rejected.
     inst_t::mbarrier_info_t remote_info;
     bool any_remote = false;
+    bool any_local = false;
+    bool uniform = true;
+    bool saw_remote = false;
     for (unsigned lane = 0; lane < warp_size; ++lane) {
       if (!active_mask.test(lane))
         continue;
       const auto &info = dynamic_inst->get_mbarrier_info(lane);
-      if (!is_valid_mbarrier_info(info) || !info.is_remote)
+      if (!is_valid_mbarrier_info(info) || !info.is_remote) {
+        any_local = true;
         continue;
-      remote_info = info;
+      }
+      if (!saw_remote) {
+        remote_info = info;
+        saw_remote = true;
+      } else if (info.bar_id != remote_info.bar_id ||
+                 info.bar_parity != remote_info.bar_parity ||
+                 info.remote_cid != remote_info.remote_cid ||
+                 info.remote_hw_cta != remote_info.remote_hw_cta) {
+        uniform = false;
+      }
       any_remote = true;
-      break;
     }
     if (any_remote && mbar_has_remote_path(m_shader)) {
+      if (any_local || !uniform) {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "GPGPU-Sim ERROR: remote mbarrier.try_wait requires every "
+                 "active lane to name the same mapa barrier "
+                 "(warp %u mixed=%d uniform=%d).\n",
+                 warp_id, any_local ? 1 : 0, uniform ? 1 : 0);
+        printf("%s", message);
+        fprintf(stderr, "%s", message);
+        fflush(stdout);
+        fflush(stderr);
+        if (!flash_gpgpu_sim::observe_cluster_fatal(message))
+          abort();
+        return;
+      }
       const unsigned src_cid =
           m_shader->get_config()->sid_to_cid(m_shader->get_sid());
       inject_remote_mbar(m_shader, src_cid, remote_info.remote_cid,

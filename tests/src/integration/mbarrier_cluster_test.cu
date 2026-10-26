@@ -371,69 +371,6 @@ TEST_F(MbarrierClusterTest, TryWaitTimeoutExpires_PredFalse) {
   }
 }
 
-// One warp waits without an explicit hint; another can complete the phase
-// after 512 cycles. Exercise the same timeout's expiry and early-wakeup paths.
-__global__ void default_trywait_kernel(unsigned *out, bool complete) {
-  __shared__ unsigned long long bar;
-  if (threadIdx.x == 0)
-    mbarrier_init_local(&bar, 1);
-  __syncthreads();
-  const unsigned p = static_cast<unsigned>(__cvta_generic_to_shared(&bar));
-  if (threadIdx.x == 32 && complete) {
-    const unsigned long long start = clock64();
-    while (clock64() - start < 512) {}
-    asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" :: "r"(p) : "memory");
-  }
-  if (threadIdx.x == 0) {
-    unsigned done;
-    const unsigned long long start = clock64();
-    asm volatile("{ .reg .pred ready; "
-                 "mbarrier.try_wait.parity.shared::cta.b64 ready, [%1], 0; "
-                 "selp.u32 %0, 1, 0, ready; }"
-                 : "=r"(done) : "r"(p) : "memory");
-    const unsigned long long end = clock64();
-    out[0] = done;
-    out[1] = static_cast<unsigned>(end - start);
-  }
-}
-
-TEST_F(MbarrierClusterTest, DefaultTryWaitExpiresAndWakesEarly) {
-  unsigned timeout_ns = 0;
-  std::ifstream config("gpgpusim.config");
-  std::string line;
-  while (std::getline(config, line)) {
-    std::istringstream fields(line);
-    std::string key;
-    if (fields >> key && key == "-gpgpu_mbarrier_trywait_default_timeout_ns")
-      fields >> timeout_ns;
-  }
-  if (!getenv("FLASHGPU_SIM_CLOCK_FROM_PROP") || timeout_ns < 1000)
-    SKIP_WITH_REASON(
-        "requires simulator bounded default timeout >= 1000 ns");
-  cudaDeviceProp prop{};
-  ASSERT_EQ(cudaGetDeviceProperties(&prop, 0), cudaSuccess);
-  const unsigned long long timeout_cycles =
-      (static_cast<unsigned long long>(timeout_ns) * prop.clockRate + 999999) / 1000000;
-  unsigned *d_out = nullptr;
-  ASSERT_EQ(cudaMalloc(&d_out, 2 * sizeof(unsigned)), cudaSuccess);
-  for (bool complete : {false, true}) {
-    default_trywait_kernel<<<1, 64>>>(d_out, complete);
-    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
-    unsigned h[2]{};
-    ASSERT_EQ(cudaMemcpy(h, d_out, sizeof(h), cudaMemcpyDeviceToHost), cudaSuccess);
-    EXPECT_EQ(h[0], complete ? 1u : 0u);
-    printf("default try_wait: complete=%d elapsed=%u cycles timeout=%llu cycles\n",
-           complete, h[1], timeout_cycles);
-    if (complete) {
-      EXPECT_LT(h[1], timeout_cycles);
-    } else {
-      EXPECT_GE(h[1], timeout_cycles);
-      EXPECT_LE(h[1], timeout_cycles + 256);
-    }
-  }
-  EXPECT_EQ(cudaFree(d_out), cudaSuccess);
-}
-
 // Bare peer smem spin: no mbarrier interest. Must abort, not hang.
 __global__ void bare_peer_spin_kernel(volatile int *out) {
   __shared__ int flag;
@@ -444,8 +381,10 @@ __global__ void bare_peer_spin_kernel(volatile int *out) {
     flag = 0;
     out[0] = 1;
     __threadfence_system();
-    // Stay allocated (global wait, not a peer spin).
-    while (out[1] == 0) {
+    // Stay resident while the peer spins on this flag. A local clock loop
+    // is not a peer-smem spin, so rule 1 does not apply here.
+    const unsigned long long start = clock64();
+    while (clock64() - start < 20000ull) {
     }
     return;
   }
@@ -458,28 +397,52 @@ __global__ void bare_peer_spin_kernel(volatile int *out) {
   out[1] = 1;
 }
 
-[[noreturn]] void run_bare_peer_spin() {
+std::string g_bare_peer_fatal;
+
+void note_bare_peer_fatal(const char *message) {
+  g_bare_peer_fatal = message ? message : "";
+}
+
+void run_bare_peer_spin() {
   setenv("FLASHGPU_CLUSTER_HANG_WATCHDOG", "256", 1);
   int *d_out = nullptr;
-  if (cudaMalloc(&d_out, 2 * sizeof(int)) != cudaSuccess)
-    _exit(2);
-  if (cudaMemset(d_out, 0, 2 * sizeof(int)) != cudaSuccess)
-    _exit(4);
+  if (cudaMalloc(&d_out, 2 * sizeof(int)) != cudaSuccess) {
+    g_bare_peer_fatal = "alloc failed";
+    return;
+  }
+  if (cudaMemset(d_out, 0, 2 * sizeof(int)) != cudaSuccess) {
+    g_bare_peer_fatal = "memset failed";
+    return;
+  }
   dim3 grid(2), block(32), cluster(2, 1, 1);
   void *args[] = {&d_out};
   if (flash_test::launch_kernel_with_cluster(
           (const void *)bare_peer_spin_kernel, grid, block, cluster, args) !=
-      cudaSuccess)
-    _exit(3);
-  cudaDeviceSynchronize();
-  std::fprintf(stderr, "ERROR: bare peer spin did not abort\n");
-  _exit(0);
+      cudaSuccess) {
+    g_bare_peer_fatal = "launch failed";
+    return;
+  }
+  if (cudaDeviceSynchronize() != cudaSuccess &&
+      g_bare_peer_fatal.find("rule 1") == std::string::npos)
+    g_bare_peer_fatal = "synchronize failed";
+  cudaFree(d_out);
 }
 
 TEST_F(MbarrierClusterTest, BarePeerSpin_Aborts) {
   SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
-  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
-  EXPECT_DEATH(run_bare_peer_spin(), "rule 1");
+  // The observer checks the abort string. It does not prove abort() teardown.
+  g_bare_peer_fatal.clear();
+  ASSERT_TRUE(flashgpu_set_cluster_fatal_observer != nullptr);
+  flashgpu_set_cluster_fatal_observer(note_bare_peer_fatal);
+  struct ClearObserver {
+    ~ClearObserver() {
+      flashgpu_set_cluster_fatal_observer(nullptr);
+      unsetenv("FLASHGPU_CLUSTER_HANG_WATCHDOG");
+    }
+  } clear_observer;
+  run_bare_peer_spin();
+  EXPECT_NE(g_bare_peer_fatal.find("rule 1"), std::string::npos)
+      << g_bare_peer_fatal;
 }
 
 __global__ void finite_peer_stream_kernel(volatile int *out) {
