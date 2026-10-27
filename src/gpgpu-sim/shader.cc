@@ -2080,13 +2080,16 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 
   if (next_inst->op == BARRIER_OP) {
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
+    // Predication has already cleared the mask. An empty mask did not execute.
     if (next_inst->cluster_barrier) {
-      const unsigned local_sm = m_config->sid_to_cid(m_sid);
-      const unsigned cta = m_warp[warp_id]->get_cta_id();
-      if (next_inst->bar_type == ARRIVE)
-        m_cluster->cluster_barrier_arrive(local_sm, cta, warp_id);
-      else if (next_inst->bar_type == SYNC)
-        m_cluster->cluster_barrier_wait(local_sm, cta, warp_id);
+      if ((*pipe_reg)->get_active_mask().any()) {
+        const unsigned local_sm = m_config->sid_to_cid(m_sid);
+        const unsigned cta = m_warp[warp_id]->get_cta_id();
+        if (next_inst->bar_type == ARRIVE)
+          m_cluster->cluster_barrier_arrive(local_sm, cta, warp_id);
+        else if (next_inst->bar_type == SYNC)
+          m_cluster->cluster_barrier_wait(local_sm, cta, warp_id);
+      }
     } else if ((*pipe_reg)->get_active_mask().any()) {
       if (next_inst->bar_type == ARRIVE)
         issue_named_arrival(warp_id, *next_inst);
@@ -6647,41 +6650,51 @@ void shader_core_ctx::process_named_arrivals(unsigned long long cycle) {
 
 void shader_core_ctx::abandon_warp(unsigned warp_id) {
   shd_warp_t *warp = m_warp[warp_id];
-  if (!warp || warp->hardware_done())
-    return;
-  warp->abandon();
-  if (m_inst_fetch_buffer.m_valid &&
-      m_inst_fetch_buffer.m_warp_id == warp_id)
-    m_inst_fetch_buffer.m_valid = false;
-  m_scoreboard->clearWarp(warp_id);
-  ptx_thread_info **threads = get_thread_info();
-  const unsigned base = warp_id * m_config->warp_size;
-  // set_done alone leaves the functional CTA occupied. The next kernel
-  // aborts when this SM slot is reused.
-  for (unsigned lane = 0; lane < m_config->warp_size; ++lane) {
-    ptx_thread_info *thread = threads[base + lane];
-    if (!thread || thread->is_done())
-      continue;
-    thread->set_done();
-    thread->registerExit();
+  if (warp && !warp->hardware_done()) {
+    warp->abandon();
+    if (m_inst_fetch_buffer.m_valid &&
+        m_inst_fetch_buffer.m_warp_id == warp_id)
+      m_inst_fetch_buffer.m_valid = false;
+    m_scoreboard->clearWarp(warp_id);
+    ptx_thread_info **threads = get_thread_info();
+    const unsigned base = warp_id * m_config->warp_size;
+    // set_done alone leaves the functional CTA occupied. The next kernel
+    // aborts when this SM slot is reused.
+    for (unsigned lane = 0; lane < m_config->warp_size; ++lane) {
+      ptx_thread_info *thread = threads[base + lane];
+      if (!thread || thread->is_done())
+        continue;
+      thread->set_done();
+      thread->registerExit();
+    }
   }
+  // Rule 2 clears the live mask before this call. Drop the phase too, or the
+  // next CTA on this warp slot waits for a generation its peers never reach.
+  if (m_cluster)
+    m_cluster->cluster_barrier_warp_exit(m_config->sid_to_cid(m_sid),
+                                         warp_id);
 }
 
 void shader_core_ctx::stop_warp_after_fatal(unsigned warp_id) {
   shd_warp_t *warp = m_warp[warp_id];
-  if (!warp || warp->functional_done()) return;
-  warp->stop_issuing();
-  m_barriers.warp_exit(warp_id);
-  if (m_inst_fetch_buffer.m_valid && m_inst_fetch_buffer.m_warp_id == warp_id)
-    m_inst_fetch_buffer.m_valid = false;
-  ptx_thread_info **threads = get_thread_info();
-  const unsigned base = warp_id * m_config->warp_size;
-  for (unsigned lane = 0; lane < m_config->warp_size; ++lane) {
-    ptx_thread_info *thread = threads[base + lane];
-    if (!thread || thread->is_done()) continue;
-    thread->set_done();
-    thread->registerExit();
+  if (warp && !warp->functional_done()) {
+    warp->stop_issuing();
+    // Leave the live mask before the phase erase rechecks waiters.
+    m_barriers.warp_exit(warp_id);
+    if (m_inst_fetch_buffer.m_valid && m_inst_fetch_buffer.m_warp_id == warp_id)
+      m_inst_fetch_buffer.m_valid = false;
+    ptx_thread_info **threads = get_thread_info();
+    const unsigned base = warp_id * m_config->warp_size;
+    for (unsigned lane = 0; lane < m_config->warp_size; ++lane) {
+      ptx_thread_info *thread = threads[base + lane];
+      if (!thread || thread->is_done()) continue;
+      thread->set_done();
+      thread->registerExit();
+    }
   }
+  if (m_cluster)
+    m_cluster->cluster_barrier_warp_exit(m_config->sid_to_cid(m_sid),
+                                         warp_id);
 }
 
 void shader_core_ctx::warp_exit(unsigned warp_id) {
@@ -7885,7 +7898,7 @@ void simt_core_cluster::release_ready_cluster_barriers() {
       unsigned sm;
       unsigned warp;
     };
-    std::vector<live_warp_t> live;
+    std::vector<live_warp_t> live_warps;
     unsigned live_ctas = 0;
     for (unsigned sm = 0; sm < num_cores(); sm++) {
       shader_core_ctx *core = get_core(sm);
@@ -7896,11 +7909,11 @@ void simt_core_cluster::release_ready_cluster_barriers() {
         live_ctas++;
         const warp_set_t mask = core->active_warp_mask(slot);
         for (unsigned w = 0; w < mask.size(); w++) {
-          if (mask.test(w)) live.push_back({sm, w});
+          if (mask.test(w)) live_warps.push_back({sm, w});
         }
       }
     }
-    unsigned expected = (unsigned)live.size();
+    unsigned expected = (unsigned)live_warps.size();
     auto group_size = m_tb_cluster_group_sizes.find(group);
     auto issued_it = m_tb_cluster_group_issued.find(group);
     if (group_size != m_tb_cluster_group_sizes.end() && !waiters.empty()) {
@@ -7908,12 +7921,12 @@ void simt_core_cluster::release_ready_cluster_barriers() {
           issued_it != m_tb_cluster_group_issued.end() ? issued_it->second
                                                        : live_ctas;
       // Not-yet-issued partners must still arrive. Partners that already
-      // exited are not in live and must not inflate expected.
+      // exited are not in live_warps and must not inflate expected.
       if (issued < group_size->second) {
         shader_core_ctx *source = get_core(waiters.front().local_sm);
         const unsigned source_warps =
             source ? source->active_warps_in_cta(waiters.front().cta) : 0;
-        expected = (unsigned)live.size() +
+        expected = (unsigned)live_warps.size() +
                    (group_size->second - issued) * source_warps;
       }
     }
@@ -7941,7 +7954,7 @@ void simt_core_cluster::release_ready_cluster_barriers() {
         const auto *phase = phase_of(waiter.local_sm, waiter.warp);
         const unsigned required = (phase ? phase->completed : 0u) + 1u;
         unsigned satisfied = 0;
-        for (const auto &lw : live) {
+        for (const auto &lw : live_warps) {
           const auto *lp = phase_of(lw.sm, lw.warp);
           if (lp && lp->arrived >= required) satisfied++;
         }

@@ -502,3 +502,95 @@ TEST_F(ClusterLaunchApiTest, PeerExit_UnblocksWaiter) {
   EXPECT_EQ(h, 1);
   cudaFree(flag);
 }
+
+// Runtime predicate. A literal-false C++ branch is deleted by nvcc and never
+// issues the barrier, so the empty mask would not be tested.
+__device__ __forceinline__ void cluster_bar_arrive_if(int cond) {
+  asm volatile(
+      "{\n\t"
+      ".reg .pred Poff;\n\t"
+      "setp.ne.s32 Poff, %0, 0;\n\t"
+      "@Poff barrier.cluster.arrive;\n\t"
+      "}\n" ::"r"(cond));
+}
+
+__device__ __forceinline__ void cluster_bar_wait_if(int cond) {
+  asm volatile(
+      "{\n\t"
+      ".reg .pred Poff;\n\t"
+      "setp.ne.s32 Poff, %0, 0;\n\t"
+      "@Poff barrier.cluster.wait;\n\t"
+      "}\n" ::"r"(cond));
+}
+
+// Rank 0's arrive is predicated off for every lane, then it delays, sets
+// flag[0], and does a real arrive+wait. Rank 1's wait must observe flag[0]
+// already set. An empty arrive that still credits the phase releases rank 1
+// during the delay, and flag[1] stays 0. Both sides still reach a real
+// arrive, so the launch returns either way.
+__global__ void pred_off_arrive_kernel(volatile int *flag, int cond) {
+  if (blockIdx.x == 0) {
+    cluster_bar_arrive_if(cond);
+    if (threadIdx.x == 0) {
+      const unsigned long long start = clock64();
+      while (clock64() - start < 8000ull) {
+      }
+      flag[0] = 1;
+    }
+    cluster_bar_arrive();
+    cluster_bar_wait();
+    return;
+  }
+  cluster_bar_arrive();
+  cluster_bar_wait();
+  if (threadIdx.x == 0) flag[1] = flag[0];
+}
+
+// An empty wait must not park. The flag store does not depend on that wait.
+// A later real barrier checks the warp can still arrive.
+__global__ void pred_off_wait_kernel(volatile int *flag, int cond) {
+  cluster_bar_wait_if(cond);
+  if (threadIdx.x == 0) flag[blockIdx.x] = 1;
+  cluster_bar_arrive();
+  cluster_bar_wait();
+}
+
+TEST_F(ClusterLaunchApiTest, PredOffArrive_DoesNotCreditPhase) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  int *flag = nullptr;
+  ASSERT_EQ(cudaMalloc(&flag, 2 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(flag, 0, 2 * sizeof(int)), cudaSuccess);
+  int cond = 0;
+  void *args[] = {&flag, &cond};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)pred_off_arrive_kernel, dim3(2), dim3(32),
+                dim3(2, 1, 1), args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  int h[2] = {};
+  ASSERT_EQ(cudaMemcpy(h, flag, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(h[0], 1);
+  EXPECT_EQ(h[1], 1) << "empty arrive released the peer before the real arrive";
+  cudaFree(flag);
+}
+
+TEST_F(ClusterLaunchApiTest, PredOffWait_FallsThrough) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  int *flag = nullptr;
+  ASSERT_EQ(cudaMalloc(&flag, 2 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(flag, 0, 2 * sizeof(int)), cudaSuccess);
+  int cond = 0;
+  void *args[] = {&flag, &cond};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)pred_off_wait_kernel, dim3(2), dim3(32),
+                dim3(2, 1, 1), args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  int h[2] = {};
+  ASSERT_EQ(cudaMemcpy(h, flag, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(h[0], 1);
+  EXPECT_EQ(h[1], 1);
+  cudaFree(flag);
+}
