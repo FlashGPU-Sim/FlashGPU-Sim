@@ -3799,6 +3799,28 @@ void isspacep_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   thread->set_reg(dst.get_symbol(), p);
 }
 
+namespace {
+
+// A latched dead-owner access must not touch the issuer CTA's smem. The
+// latch stays set for the kernel, so only this instruction uses the sink.
+struct dsm_refused_mem : memory_space {
+  void write(mem_addr_t, size_t, const void *, ptx_thread_info *,
+             const ptx_instruction *) override {}
+  void write_only(mem_addr_t, mem_addr_t, size_t, const void *) override {}
+  void read(mem_addr_t, size_t length, void *data) const override {
+    if (data && length) memset(data, 0, length);
+  }
+  void print(const char *, FILE *) const override {}
+  void set_watch(addr_t, unsigned) override {}
+};
+
+memory_space *dsm_refused_space() {
+  static dsm_refused_mem space;
+  return &space;
+}
+
+}  // namespace
+
 void decode_space(memory_space_t &space, ptx_thread_info *thread,
                   const operand_info &op, memory_space *&mem, addr_t &addr) {
   unsigned smid = thread->get_hw_sid();
@@ -3867,7 +3889,7 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
         flash_gpgpu_sim::abort_tb_cluster_dead_owner(
             owner_smid, thread->get_hw_sid(), thread->get_hw_ctaid(), addr);
         if (flash_gpgpu_sim::cluster_fatal_latched()) {
-          mem = thread->m_shared_mem;
+          mem = dsm_refused_space();
           addr = 0;
           break;
         }
@@ -3923,7 +3945,7 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
                       owner_smid, thread->get_hw_sid(), thread->get_hw_ctaid(),
                       addr);
                   if (flash_gpgpu_sim::cluster_fatal_latched()) {
-                    mem = thread->m_shared_mem;
+                    mem = dsm_refused_space();
                     addr = 0;
                     break;
                   }
@@ -6682,8 +6704,10 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     if (vector_spec == V3_TYPE) {
       ptx_reg_t *ptx_regs = new ptx_reg_t[3];
       thread->get_vector_operand_values(src1, ptx_regs, 3);
-      if (!try_dsm_store(&ptx_regs[0].s64, 3 * (size / 8))) {
-        // Note: multi-chunk vector may need contiguous snapshot; fall back.
+      uint8_t buf[3 * 8];
+      for (int i = 0; i < 3; i++)
+        memcpy(buf + i * (size / 8), &ptx_regs[i].s64, size / 8);
+      if (!try_dsm_store(buf, 3 * (size / 8))) {
         mem->write(addr, size / 8, &ptx_regs[0].s64, thread, pI);
         mem->write(addr + size / 8, size / 8, &ptx_regs[1].s64, thread, pI);
         mem->write(addr + 2 * size / 8, size / 8, &ptx_regs[2].s64, thread, pI);

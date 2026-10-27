@@ -10,6 +10,7 @@
 // Important: never mix __syncthreads with a single-thread try_wait in the
 // same CTA — other threads waiting at bar.sync deadlock with tid0 in try_wait.
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 #include <cooperative_groups.h>
 #include <gtest/gtest.h>
@@ -18,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -918,6 +920,110 @@ TEST_F(DsmTest, VectorRemoteLdSt) {
   EXPECT_EQ(h[1], 0x22222222u);
 }
 
+// ptxas rejects st.v3, so the remote v3 kernel lives in dsm_v3_remote.ptx and
+// is loaded through the simulator's cubin/PTX sidecar path.
+struct StV3Module {
+  std::string dir;
+  CUmodule module = nullptr;
+  CUfunction function = nullptr;
+  ~StV3Module() {
+    if (dir.empty()) return;
+    std::remove((dir + "/k.cubin").c_str());
+    std::remove((dir + "/k.ptx").c_str());
+    std::remove((dir + "/k.ptxinfo").c_str());
+    std::remove((dir + "/k.ptxas").c_str());
+    rmdir(dir.c_str());
+  }
+};
+
+bool load_st_v3_module(StV3Module *loaded, std::string *error) {
+  const char *root = std::getenv("GPGPUSIM_ROOT");
+  if (!root || !root[0]) {
+    *error = "GPGPUSIM_ROOT is not set";
+    return false;
+  }
+  const std::string src =
+      std::string(root) + "/tests/src/integration/dsm_v3_remote.ptx";
+  char tmpl[] = "/tmp/dsm-stv3-XXXXXX";
+  char *made = mkdtemp(tmpl);
+  if (!made) {
+    *error = "mkdtemp failed";
+    return false;
+  }
+  loaded->dir = made;
+  const std::string ptx_path = loaded->dir + "/k.ptx";
+  const std::string info_path = loaded->dir + "/k.ptxinfo";
+  const std::string cubin_path = loaded->dir + "/k.cubin";
+  {
+    std::ifstream in(src);
+    if (!in) {
+      *error = "missing " + src;
+      return false;
+    }
+    std::ofstream ptx(ptx_path);
+    ptx << in.rdbuf();
+    std::ofstream info(info_path);
+    info << "ptxas info    : 0 bytes gmem\n"
+            "ptxas info    : Compiling entry function 'dsm_v3_remote' for "
+            "'sm_90'\n"
+            "ptxas info    : Function properties for dsm_v3_remote\n"
+            "    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\n"
+            "ptxas info    : Used 40 registers, 128 bytes smem, 0 bytes "
+            "cmem[0], 0 bytes lmem\n";
+    std::ofstream cubin(cubin_path);
+    if (!ptx || !info || !cubin) {
+      *error = "failed to write sidecar PTX";
+      return false;
+    }
+  }
+  if (cuModuleLoad(&loaded->module, cubin_path.c_str()) != CUDA_SUCCESS) {
+    *error = "cuModuleLoad failed for " + cubin_path;
+    return false;
+  }
+  if (cuModuleGetFunction(&loaded->function, loaded->module,
+                          "dsm_v3_remote") != CUDA_SUCCESS) {
+    *error = "dsm_v3_remote was not in the loaded PTX";
+    return false;
+  }
+  return true;
+}
+
+TEST_F(DsmTest, VectorRemoteStV3) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  uint32_t *d_out = nullptr;
+  int *d_ready = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, 9 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_ready, 2 * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, 9 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_ready, 0, 2 * sizeof(int)), cudaSuccess);
+
+  StV3Module mod;
+  std::string error;
+  ASSERT_TRUE(load_st_v3_module(&mod, &error)) << error;
+
+  void *args[] = {&d_out, &d_ready};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)mod.function, dim3(2), dim3(32), dim3(2, 1, 1),
+                args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  uint32_t h[9] = {};
+  ASSERT_EQ(cudaMemcpy(h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  cudaFree(d_ready);
+  EXPECT_EQ(h[0], 0xA1A1A1A1u);
+  EXPECT_EQ(h[1], 0xB2B2B2B2u);
+  EXPECT_EQ(h[2], 0xC3C3C3C3u);
+  EXPECT_EQ(h[3], 0x11111111u);
+  EXPECT_EQ(h[4], 0x11111111u);
+  EXPECT_EQ(h[5], 0x22222222u);
+  EXPECT_EQ(h[6], 0x22222222u);
+  EXPECT_EQ(h[7], 0x33333333u);
+  EXPECT_EQ(h[8], 0x33333333u);
+}
+
 TEST_F(DsmTest, CrossGpcReject) {
   SKIP_IF_N_CLUSTERS_LT(2);
   // Death-test re-exec loads a second copy of this binary and is SIGKILLed
@@ -932,6 +1038,66 @@ TEST_F(DsmTest, CrossGpcReject) {
   run_cross_gpc_reject();
   EXPECT_NE(g_cross_gpc_fatal.find("not an active CTA"), std::string::npos)
       << g_cross_gpc_fatal;
+}
+
+// Dead-owner generic shared access must not read or write the issuer's smem.
+// The fatal latch stays set, so a later local load of that smem still has to
+// return the sentinel.
+__global__ void dsm_dead_owner_alias_kernel(unsigned n_sms_per_gpc,
+                                           uint32_t *out) {
+  __shared__ uint32_t smem[4];
+  if (threadIdx.x != 0)
+    return;
+  smem[0] = 0x11111111u;
+  smem[1] = 0x22222222u;
+  unsigned long long self = mapa_u64(smem, 0);
+  unsigned long long other =
+      self + (unsigned long long)n_sms_per_gpc * (1024ull * 1024ull);
+  volatile uint32_t *p = reinterpret_cast<volatile uint32_t *>(other);
+  uint32_t loaded = *p;
+  *p = 0xDEADBEEFu;
+  atomicAdd(reinterpret_cast<uint32_t *>(other), 1u);
+  asm volatile("" ::: "memory");
+  out[0] = loaded;
+  out[1] = smem[0];
+  out[2] = smem[1];
+}
+
+std::string g_dead_owner_fatal;
+
+void note_dead_owner_fatal(const char *message) {
+  if (message && message[0]) g_dead_owner_fatal += message;
+}
+
+TEST_F(DsmTest, DeadOwnerLoadStoreAtom_DoesNotAliasIssuerSmem) {
+  SKIP_IF_N_CLUSTERS_LT(2);
+  g_dead_owner_fatal.clear();
+  ASSERT_TRUE(flashgpu_set_cluster_fatal_observer != nullptr);
+  flashgpu_set_cluster_fatal_observer(note_dead_owner_fatal);
+  struct ClearObserver {
+    ~ClearObserver() { flashgpu_set_cluster_fatal_observer(nullptr); }
+  } clear_observer;
+
+  auto topo = flash_test::read_gpgpusim_topology();
+  unsigned n = topo.n_cores_per_cluster ? topo.n_cores_per_cluster : 16;
+  uint32_t *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_out, 3 * sizeof(uint32_t)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0, 3 * sizeof(uint32_t)), cudaSuccess);
+  void *args[] = {&n, &d_out};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)dsm_dead_owner_alias_kernel, dim3(1), dim3(32),
+                dim3(1, 1, 1), args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  uint32_t h[3] = {};
+  ASSERT_EQ(cudaMemcpy(h, d_out, sizeof(h), cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  cudaFree(d_out);
+  EXPECT_EQ(h[0], 0u);
+  EXPECT_EQ(h[1], 0x11111111u);
+  EXPECT_EQ(h[2], 0x22222222u);
+  EXPECT_NE(g_dead_owner_fatal.find("not an active CTA"), std::string::npos)
+      << g_dead_owner_fatal;
 }
 
 // Remote ld then add on that dest: add must see the loaded word (scoreboard
