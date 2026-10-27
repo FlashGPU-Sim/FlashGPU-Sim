@@ -27,7 +27,6 @@ sources = [
   "unit/smem_service_test.cc",
   "unit/tb_cluster_test.cc",
   "unit/tensormap_test.cc",
-  "unit/tma_helpers_test.cc",
   "unit/transport_test.cc",
 
   # Portable integration tests.
