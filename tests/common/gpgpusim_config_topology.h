@@ -9,7 +9,7 @@
 //
 // Naming: physical packing is m SMs per GPC by n GPCs. TB cluster size is a
 // launch attribute. SM120_RTX5090 is 170x1 with DSM off, so multi-SM cases
-// skip there. SM90_H200_CLUSTER132 is the shipped config that can run them.
+// skip there. SM90_H200 is the shipped config that can run them.
 //
 // Every skip prints "WARNING: skipped Suite.Test: ..." on stdout and stderr
 // before GTEST_SKIP. GTEST's own [  SKIPPED ] line is easy to miss in a long
@@ -135,7 +135,7 @@ inline void warn_topology_skip(const std::string &msg) {
       std::ostringstream __skip;                                               \
       __skip << "Requires -gpgpu_n_cores_per_cluster >= " << (min_cores)       \
              << " (got " << __topo.n_cores_per_cluster                         \
-             << "). Use SM90_H200_CLUSTER132.";                            \
+             << "). Use SM90_H200.";                            \
       SKIP_WITH_REASON(__skip.str());                                          \
     }                                                                          \
   } while (0)
@@ -147,7 +147,7 @@ inline void warn_topology_skip(const std::string &msg) {
     if (__topo.found_config && !__topo.dsm_enable) {                           \
       std::ostringstream __skip;                                               \
       __skip << "Requires -gpgpu_dsm_enable 1. "                               \
-                "Use SM90_H200_CLUSTER132.";                                   \
+                "Use SM90_H200.";                                   \
       SKIP_WITH_REASON(__skip.str());                                          \
     }                                                                          \
   } while (0)
@@ -159,7 +159,7 @@ inline void warn_topology_skip(const std::string &msg) {
     const auto __topo = ::flash_test::read_gpgpusim_topology();                \
     if (!__topo.hetero_gpc) {                                                  \
       std::ostringstream __skip;                                               \
-      __skip << "Requires mixed -gpgpu_gpc_sms. Use SM90_H200_CLUSTER132 "     \
+      __skip << "Requires mixed -gpgpu_gpc_sms. Use SM90_H200 "     \
                 "(found="                                                      \
              << __topo.found_config << " hetero=" << __topo.hetero_gpc         \
              << " sms=" << __topo.total_sms                                    \
@@ -177,7 +177,7 @@ inline void warn_topology_skip(const std::string &msg) {
       std::ostringstream __skip;                                               \
       __skip << "Requires -gpgpu_n_clusters >= " << (min_clusters)             \
              << " (got " << __topo.n_clusters                                  \
-             << "). Use SM90_H200_CLUSTER132.";                            \
+             << "). Use SM90_H200.";                            \
       SKIP_WITH_REASON(__skip.str());                                          \
     }                                                                          \
   } while (0)

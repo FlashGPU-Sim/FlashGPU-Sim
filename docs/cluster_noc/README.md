@@ -1,6 +1,6 @@
 # Thread Block Cluster and intra-GPC DSM
 
-This branch adds cluster launch, DSM (`mapa` plus remote shared `ld` / `st` / `atom.add`), remote `mbarrier`, and `barrier.cluster`. They stay off unless `-gpgpu_dsm_enable 1`. The only shipped preset that turns them on is `configs/SM90_H200_CLUSTER132`. `SM90_H100`, `SM100_B200`, and `SM120_RTX5090` match `flash`.
+This branch adds cluster launch, DSM (`mapa` plus remote shared `ld` / `st` / `atom.add`), remote `mbarrier`, and `barrier.cluster`. They stay off unless `-gpgpu_dsm_enable 1`. The only shipped preset that turns them on is `configs/SM90_H200`. `SM90_H100`, `SM100_B200`, and `SM120_RTX5090` match `flash`.
 
 ## What is modeled
 
@@ -14,7 +14,7 @@ This branch adds cluster launch, DSM (`mapa` plus remote shared `ld` / `st` / `a
 
 Not implemented: `red` / `red.async`, preferred cluster dimensions, and the cluster scheduling policy. DSM and TMA multicast stay inside one GPC. TPC / TPCARB are not in the model. Power-gated SM slots are. Global TMA multicast has no bandwidth, route, queue, or contention model.
 
-`product(clusterDim)` must be at most the number of enabled SMs on the GPC that receives the cluster. On `SM90_H200_CLUSTER132` the smallest GPC has 16 SMs.
+`product(clusterDim)` must be at most the number of enabled SMs on the GPC that receives the cluster. On `SM90_H200` the smallest GPC has 16 SMs.
 
 A bare spin on peer shared memory aborts (rule 1). Use `mbarrier`. Mixing `bar.sync` / `__syncthreads` with a single-thread `mbarrier.try_wait` in the same CTA also aborts (rule 2). `-gpgpu_cluster_hang_watchdog` applies only when DSM or remote mbarrier is on. `0` disables it. `FLASHGPU_CLUSTER_HANG_WATCHDOG` overrides the knob.
 
@@ -36,7 +36,7 @@ The memory crossbar (`local_interconnect`) is a separate network.
 
 ## Knobs
 
-Registered in `shader_core_config::reg_options` (`src/gpgpu-sim/gpu-sim.cc`) unless noted. The H200 column is what `configs/SM90_H200_CLUSTER132/gpgpusim.config` sets. Other configs keep the default.
+Registered in `shader_core_config::reg_options` (`src/gpgpu-sim/gpu-sim.cc`) unless noted. The H200 column is what `configs/SM90_H200/gpgpusim.config` sets. Other configs keep the default.
 
 | Knob | Default | H200_CLUSTER132 | Meaning |
 |------|---------|------|---------|

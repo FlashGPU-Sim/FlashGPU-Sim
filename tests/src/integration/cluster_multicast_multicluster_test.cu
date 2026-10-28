@@ -14,7 +14,7 @@
 // boundaries (issue-order cluster_group matching).
 //
 // Requires at least two GPCs. Skips on SM120_RTX5090.
-// SM90_H200_CLUSTER132 can run it.
+// SM90_H200 can run it.
 //
 // Note: plain grid launches only — validates multi-cluster topology + the
 // simulator's TMA multicast model, not CUDA cooperative cluster launch APIs.

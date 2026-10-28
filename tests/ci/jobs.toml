@@ -38,7 +38,7 @@ tests = [
 
 [jobs.sm90-cluster]
 arch = "sm90"
-config = "SM90_H200_CLUSTER132"
+config = "SM90_H200"
 tests = [
   { name = "integration", group = "integration", gtest_filter = "ClusterBasicTest.*:ClusterLaunchApiTest.*:ClusterRealShapedTest.*:ClusterSregTest.*:MultiCluster*:DsmTest.*:MbarrierClusterTest.*:TMACluster*:TmaMulticastMaskTest.*" },
 ]

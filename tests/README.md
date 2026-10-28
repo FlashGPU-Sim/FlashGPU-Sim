@@ -110,7 +110,7 @@ currently define six functional jobs:
 | `sm100-core` | Unit, integration, barrier and TMA |
 | `sm120-core` | Unit, integration, barrier, TMA, MMA and GPT-2 trace |
 | `sm90-core` | Unit, integration, barrier and WGMMA |
-| `sm90-cluster` | Cluster and DSM integration on `SM90_H200_CLUSTER132` |
+| `sm90-cluster` | Cluster and DSM integration on `SM90_H200` |
 | `sm90-fa2` | Numerically checked forward smoke cases |
 | `sm90-fa3` | Forward/backward smoke, fixed forward and PackGQA |
 

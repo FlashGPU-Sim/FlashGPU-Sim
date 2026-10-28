@@ -63,22 +63,6 @@ inline bool decode_shared_generic(addr_t addr, unsigned *out_smid,
   return true;
 }
 
-inline bool is_remote_shared_generic(unsigned local_smid, addr_t addr,
-                                     unsigned *out_owner_smid = nullptr,
-                                     addr_t *out_offset = nullptr) {
-  unsigned owner = 0;
-  addr_t off = 0;
-  if (!decode_shared_generic(addr, &owner, &off))
-    return false;
-  if (owner == local_smid)
-    return false;
-  if (out_owner_smid)
-    *out_owner_smid = owner;
-  if (out_offset)
-    *out_offset = off;
-  return true;
-}
-
 template <typename Fn>
 void for_each_tb_cluster_peer(shader_core_ctx *core, unsigned issuer_hw_cta,
                               Fn &&fn, bool include_issuer = false,

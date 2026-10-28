@@ -3,7 +3,7 @@
 //   co-residency under multi-cluster configs, and ordinary <<<>>> still valid.
 //
 // Multi-SM cases skip on SM120_RTX5090 (one SM per GPC, DSM off).
-// The shipped config that can run them is SM90_H200_CLUSTER132.
+// The shipped config that can run them is SM90_H200.
 // The case that requires exactly one SM per GPC runs on SM120_RTX5090.
 
 #include <cuda_runtime.h>

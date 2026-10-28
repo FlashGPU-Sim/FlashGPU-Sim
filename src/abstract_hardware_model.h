@@ -1098,7 +1098,6 @@ class warp_inst_t : public inst_t {
 
     m_depbar_group_no = 0;
     m_dsm_remote = false;
-    m_dsm_hop = 0;
     m_smem_exposed = false;
     m_smem_got = 0;
     m_current_lane = 0;
@@ -1132,7 +1131,6 @@ class warp_inst_t : public inst_t {
 
     m_depbar_group_no = 0;
     m_dsm_remote = false;
-    m_dsm_hop = 0;
     m_smem_exposed = false;
     m_smem_got = 0;
     m_current_lane = 0;
@@ -1144,7 +1142,6 @@ class warp_inst_t : public inst_t {
   void broadcast_barrier_reduction(const active_mask_t &access_mask);
   void do_atomic(bool forceDo = false);
   void do_atomic(const active_mask_t &access_mask, bool forceDo = false);
-  void skip_atomic_callback() { should_do_atomic = false; }
   // Lanes whose atom was handed to the DSM endpoint. do_atomic skips them.
   void note_dsm_atomic_lane(unsigned lane) {
     if (lane < MAX_WARP_SIZE) m_dsm_atomic_lanes.set(lane);
@@ -1305,12 +1302,6 @@ class warp_inst_t : public inst_t {
 
   bool has_dispatch_delay() { return cycles > 0; }
 
-  // Arm shared-unit dispatch delay (e.g. DSM hop). Max with existing cycles.
-  void set_issue_cycle_delay(unsigned n) {
-    if (n > cycles)
-      cycles = n;
-  }
-
   void print(FILE *fout) const;
   unsigned get_uid() const { return m_uid; }
   unsigned long long get_issue_cycle() const { return issue_cycle; }
@@ -1388,17 +1379,12 @@ class warp_inst_t : public inst_t {
 
   unsigned int m_depbar_group_no;
 
-  // Intra-cluster DSM: hop latency for remote shared accesses (cycles).
+  // Remote shared accesses are tracked by the DSM endpoint.
   bool m_dsm_remote;
-  unsigned m_dsm_hop;
   bool m_smem_exposed;
   unsigned m_smem_got;
   bool is_dsm_remote() const { return m_dsm_remote; }
-  unsigned dsm_hop() const { return m_dsm_hop; }
-  void set_dsm_remote(bool remote, unsigned hop) {
-    m_dsm_remote = remote;
-    m_dsm_hop = hop;
-  }
+  void set_dsm_remote(bool remote) { m_dsm_remote = remote; }
 };
 
 #ifdef FLASH_GPGPU_SIM

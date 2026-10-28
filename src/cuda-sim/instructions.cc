@@ -3827,7 +3827,6 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
   unsigned hwtid = thread->get_hw_tid();
   // Each decode starts local; remote generic shared sets this again below.
   thread->m_dsm_remote = false;
-  thread->m_dsm_hop = 0;
 
   if (space == param_space_unclassified) {
     // need to op to determine whether it refers to a kernel param or local
@@ -3925,7 +3924,6 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
           case shared_space: {
             // Local or remote (DSM via mapa) shared window.
             thread->m_dsm_remote = false;
-            thread->m_dsm_hop = 0;
             unsigned owner_smid = smid;
             addr_t offset = 0;
             if (flash_gpgpu_sim::decode_shared_generic(addr, &owner_smid,

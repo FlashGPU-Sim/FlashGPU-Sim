@@ -1,7 +1,7 @@
 // Distributed shared memory (DSM) functional tests for intra-cluster NoC.
 //
 // Requires a GPC with at least two SMs and -gpgpu_dsm_enable 1.
-// Those cases skip on SM120_RTX5090. SM90_H200_CLUSTER132 can run them.
+// Those cases skip on SM120_RTX5090. SM90_H200 can run them.
 //
 // Cross-rank coordination uses mbarrier (not bare smem spin-waits). Under
 // PTX functional-first simulation, spinning on peer smem before the peer has
@@ -1299,14 +1299,12 @@ __global__ void dsm_lane_atomic_kernel(uint32_t *olds, uint32_t *mem,
   uint32_t *remote = reinterpret_cast<uint32_t *>(mapa_u64(slot, 1));
   olds[lane] = atomicAdd(slot + lane, 1u);
   olds[32 + lane] = atomicAdd(remote + lane, 1u);
-  if (lane < 16)
-    olds[64 + lane] = atomicAdd(slot + lane, 5u);
-  else
-    olds[64 + lane] = atomicAdd(remote + lane, 7u);
-  if (lane < 16)
-    olds[96 + lane] = atomicAdd(slot + lane, 5u);
-  else
-    olds[96 + lane] = atomicAdd(remote + lane, 7u);
+  // Select the address before the atomic so one dynamic instruction has both
+  // local and remote active lanes. Branch-local atomics do not exercise this.
+  uint32_t *mixed_target = lane < 16 ? slot + lane : remote + lane;
+  const uint32_t mixed_addend = lane < 16 ? 5u : 7u;
+  olds[64 + lane] = atomicAdd(mixed_target, mixed_addend);
+  olds[96 + lane] = atomicAdd(mixed_target, mixed_addend);
   uint32_t pred_old = 0;
   if (lane < 24) pred_old = atomicAdd(remote + lane, 1u);
   olds[128 + lane] = pred_old;

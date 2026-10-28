@@ -60,7 +60,7 @@ the flash defaults, with DSM off.
 
 | Config | Role |
 | --- | --- |
-| `SM90_H200_CLUSTER132` | H200 packing for calibration. DSM and remote mbarrier are on. Not a default CI config. |
+| `SM90_H200` | H200 packing for calibration. DSM and remote mbarrier are on. Not a default CI config. |
 
 
 ### Legacy Configurations

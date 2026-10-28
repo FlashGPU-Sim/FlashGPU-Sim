@@ -4,7 +4,7 @@
 // mapa.u64 and performs arrive / try_wait remotely.
 //
 // Requires a GPC with at least two SMs, DSM on, and cluster mbarrier on.
-// Those cases skip on SM120_RTX5090. SM90_H200_CLUSTER132 can run them.
+// Those cases skip on SM120_RTX5090. SM90_H200 can run them.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>

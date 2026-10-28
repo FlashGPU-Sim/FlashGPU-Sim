@@ -1636,7 +1636,6 @@ void shader_core_ctx::fetch() {
 void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
   execute_warp_inst_t(inst);
   dsm_issue_lane_ops(inst);
-  unsigned max_hop = 0;
   bool any_remote = false;
   unsigned long long peer_address = 0;
   if (inst.is_load() || inst.is_store() || inst.isatomic()) {
@@ -1647,14 +1646,12 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
       if (thd && thd->m_dsm_remote) {
         if (!any_remote) peer_address = inst.get_addr(t);
         any_remote = true;
-        if (thd->m_dsm_hop > max_hop) max_hop = thd->m_dsm_hop;
       }
     }
   }
   if (any_remote) {
-    inst.set_dsm_remote(true, max_hop);
+    inst.set_dsm_remote(true);
     note_peer_smem_access(inst.warp_id(), peer_address);
-    const bool fabric = flash_gpgpu_sim::dsm_fabric_enabled(this);
     inst.space = memory_space_t(shared_space);
     m_scoreboard->reclassifyShared(&inst);
   } else if (inst.is_load() || inst.is_store()) {

@@ -10,7 +10,7 @@
 // An ordinary launch reports a 1-CTA cluster whose id is the block index.
 // An explicit cluster launch reports rank and cluster id from blockIdx and
 // the launch cluster dim. Multi-SM cases skip when a GPC has too few SMs.
-// SM90_H200_CLUSTER132 can run them.
+// SM90_H200 can run them.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>

@@ -8,7 +8,7 @@
  //
  // Topology / scheduling only: plain <<<N, threads>>> launches — not CUDA
  // Thread Block Clusters (no cudaLaunchKernelEx / __cluster_dims__).
- // SM90_H200_CLUSTER132 has multiple SMs per GPC. SM120_RTX5090 does not.
+ // SM90_H200 has multiple SMs per GPC. SM120_RTX5090 does not.
  __global__ void clusterBasicKernel(int* output) {
    int idx = blockIdx.x * blockDim.x + threadIdx.x;
    output[idx] = blockIdx.x * 1000 + threadIdx.x;
