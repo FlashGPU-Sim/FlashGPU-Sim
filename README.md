@@ -25,17 +25,18 @@ architectures and AI workloads, built upon GPGPU-Sim.
 
 | Area | Supported capabilities |
 | --- | --- |
-| Architectures | Hopper: [`SM90_H100`](configs/SM90_H100/gpgpusim.config); Blackwell: [`SM100_B200`](configs/SM100_B200/gpgpusim.config), [`SM120_RTX5090`](configs/SM120_RTX5090/gpgpusim.config) |
-| GPU features | TMA, TMEM, `tcgen05`, `mbarrier`, `mma`, `wgmma`, `ldmatrix`/`stmatrix`, etc. |
+| Architectures | Hopper: [`SM90_H100`](configs/SM90_H100/gpgpusim.config), [`SM90_H200`](configs/SM90_H200/gpgpusim.config); Blackwell: [`SM100_B200`](configs/SM100_B200/gpgpusim.config), [`SM120_RTX5090`](configs/SM120_RTX5090/gpgpusim.config) |
+| GPU features | TMA, TMEM, DSM, `tcgen05`, `mbarrier`, `mma`, `wgmma`, `ldmatrix`/`stmatrix`, etc. |
 | Workload tooling | [TritonTrace](tools/README.md) kernel capture and standalone replay ([examples and validation](tests/dsl/triton/README.md)) |
 | Simulation | Execution-driven functional simulation and cycle-level timing simulation |
 | Parallelism | OpenMP-based multi-threaded SM simulation |
+
+DSM is currently enabled only in `SM90_H200`. DSM support for other presets and H200 timing calibration for general workloads are under development.
 
 ## Roadmap
 
 | Direction | Status | Planned work |
 | --- | --- | --- |
-| Distributed shared memory | In progress | Model thread-block cluster features, such as remote shared-memory addressing |
 | gem5 integration | Experimental | Stabilize gem5 as an alternative memory-system backend |
 | Scale-up multi-GPU simulation | Planned | Model native remote-memory loads/stores, fabric transport, unified addressing, and memory consistency |
 
