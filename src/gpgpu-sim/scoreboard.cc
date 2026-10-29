@@ -184,6 +184,18 @@ void Scoreboard::reserveRegistersForWarp(const class warp_inst_t* inst,
   }
 }
 
+void Scoreboard::reclassifyShared(const class warp_inst_t* inst) {
+  if (!inst) return;
+  unsigned warp_id = inst->warp_id();
+  for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+    if (inst->out[r] > 0 &&
+        reg_table[warp_id].find(inst->out[r]) != reg_table[warp_id].end()) {
+      reg_producer[warp_id][inst->out[r]] = PROD_MEM_SHARED;
+      longopregs[warp_id].erase(inst->out[r]);
+    }
+  }
+}
+
 // Release registers for an instruction
 void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
   releaseRegistersForWarp(inst, inst->warp_id());
@@ -290,4 +302,11 @@ bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
 
 bool Scoreboard::pendingWrites(unsigned wid) const {
   return !reg_table[wid].empty();
+}
+
+void Scoreboard::clearWarp(unsigned warp_id) {
+  reg_table[warp_id].clear();
+  reg_owner[warp_id].clear();
+  ready_regs[warp_id].clear();
+  reg_producer[warp_id].clear();
 }

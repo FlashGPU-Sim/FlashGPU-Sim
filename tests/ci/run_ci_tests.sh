@@ -177,6 +177,12 @@ echo "  LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
 for arch in "${SELECTED_ARCHITECTURES[@]}"; do
   echo "$arch configuration: $(architecture_config "$arch")"
 done
+while IFS='|' read -r _job _arch _name _group _profile _mode _filter _post gpu_config; do
+  if [ -n "$gpu_config" ]; then
+    echo "GPU config override: $gpu_config"
+    break
+  fi
+done <<< "$PLANNED_TESTS"
 
 # CI containers always rebuild with their own glibc and CUDA toolchain.
 if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
@@ -201,12 +207,17 @@ run_ci_test() {
   local mode="$6"
   local gtest_filter="$7"
   local post_check="$8"
+  local gpu_config="$9"
   local config=""
   local label="$job_name-$test_name"
   local post_name=""
   local -a selectors=(--arch "$arch" --group "$test_group")
 
-  config="$(architecture_config "$arch")"
+  if [ -n "$gpu_config" ]; then
+    config="$gpu_config"
+  else
+    config="$(architecture_config "$arch")"
+  fi
   if [ -n "$profile" ]; then
     selectors+=(--profile "$profile")
   fi
@@ -231,9 +242,9 @@ run_ci_test() {
 }
 
 while IFS='|' read -r job_name arch test_name test_group profile mode \
-  gtest_filter post_check; do
+  gtest_filter post_check gpu_config; do
   run_ci_test "$job_name" "$arch" "$test_name" "$test_group" "$profile" \
-    "$mode" "$gtest_filter" "$post_check"
+    "$mode" "$gtest_filter" "$post_check" "$gpu_config"
 done <<< "$PLANNED_TESTS"
 
 echo "CI tests completed successfully!"

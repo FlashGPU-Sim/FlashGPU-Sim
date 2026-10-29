@@ -36,6 +36,7 @@ from runner.selection import SelectionResolver  # noqa: E402
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 ARCH_RE = re.compile(r"^sm[0-9]+$")
+CONFIG_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 GROUP_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 SELECTOR_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
 TRANSPORT_DELIMITER = "|"
@@ -61,6 +62,7 @@ class CiJob:
     arch: str
     pre_checks: tuple[str, ...]
     tests: tuple[CiTest, ...]
+    config: str = ""
 
 
 def _check_exact_keys(
@@ -76,6 +78,24 @@ def _check_exact_keys(
             f"{JOBS_FILE}: {label} keys do not match the schema "
             f"(missing: {missing_text}; extra: {extra_text})"
         )
+
+
+def _job_config(table: dict[str, Any], label: str) -> str:
+    config = _string(table, "config", label)
+    if not config:
+        return ""
+    if not CONFIG_RE.fullmatch(config):
+        raise CiPlanError(
+            f"{JOBS_FILE}: {label}.config must use uppercase letters, digits, "
+            "and underscores"
+        )
+    config_file = REPO_ROOT / "configs" / config / "gpgpusim.config"
+    if not config_file.is_file():
+        raise CiPlanError(
+            f"{JOBS_FILE}: {label}.config has no simulator configuration at "
+            f"{config_file}"
+        )
+    return config
 
 
 def _string(table: dict[str, Any], key: str, label: str) -> str:
@@ -168,11 +188,12 @@ def load_jobs(path: Path = JOBS_FILE) -> tuple[CiJob, ...]:
                 raise CiPlanError(f"{path}: {label} must be a table")
             _check_exact_keys(
                 raw_job,
-                {"arch", "pre_checks", "tests"},
+                {"arch", "pre_checks", "tests", "config"},
                 {"arch", "tests"},
                 label,
             )
             arch = _string(raw_job, "arch", label)
+            config = _job_config(raw_job, label)
             if not NAME_RE.fullmatch(name):
                 raise CiPlanError(f"{path}: job key must use lowercase kebab-case: {name}")
             if not ARCH_RE.fullmatch(arch):
@@ -194,6 +215,7 @@ def load_jobs(path: Path = JOBS_FILE) -> tuple[CiJob, ...]:
                     arch=arch,
                     pre_checks=_string_list(raw_job, "pre_checks", label),
                     tests=tests,
+                    config=config,
                 )
             )
         return tuple(jobs)
@@ -253,6 +275,7 @@ def _print_plan(jobs: tuple[CiJob, ...]) -> None:
                         test.mode,
                         test.gtest_filter,
                         test.post_check,
+                        job.config,
                     )
                 )
             )

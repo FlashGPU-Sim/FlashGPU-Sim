@@ -1,0 +1,84 @@
+//
+.version 8.7
+.target sm_120a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry tma_copy_kernel(
+	.param .u64 .ptr .global .align 8 tma_copy_kernel_param_0,
+	.param .u64 .ptr .global .align 8 tma_copy_kernel_param_1,
+	.param .u32 tma_copy_kernel_param_2
+)
+.reqntid 128
+{
+	.reg .pred 	%p<8>;
+	.reg .b16 	%rs<2>;
+	.reg .b32 	%r<19>;
+	.reg .b64 	%rd<7>;
+
+	ld.param.u64 	%rd1, [tma_copy_kernel_param_0];
+	ld.param.u64 	%rd2, [tma_copy_kernel_param_1];
+	// begin inline asm
+	mov.u32 %r1, %ctaid.x;
+	// end inline asm
+	shl.b32 	%r5, %r1, 6;
+	// begin inline asm
+	mov.u32 %r12, %tid.x;
+	// end inline asm
+	setp.eq.s32 	%p1, %r12, 0;
+	mov.u32 	%r11, global_smem;
+	add.s32 	%r2, %r11, 128;
+	// begin inline asm
+	@%p1 mbarrier.init.shared::cta.b64 [%r2], 1;
+	// end inline asm
+	bar.sync 	0;
+	// begin inline asm
+	@%p1 mbarrier.arrive.expect_tx.shared.b64 _, [%r2], 128;
+	// end inline asm
+	shr.u32 	%r13, %r12, 5;
+	shfl.sync.idx.b32	%r14, %r13, 0, 31, -1;
+	// begin inline asm
+	elect.sync _|%p3, 0xffffffff;
+	// end inline asm
+	setp.lt.u32 	%p7, %r12, 32;
+	and.pred  	%p4, %p7, %p3;
+	// begin inline asm
+@%p4 cp.async.bulk.tensor.1d.shared::cta.global.mbarrier::complete_tx::bytes [%r11], [%rd1, {%r5}], [%r2];
+	// end inline asm
+	mov.b32 	%r8, 0;
+	// begin inline asm
+	{                                                          
+	.reg .pred P1;                                             
+	waitLoop:                                                  
+	mbarrier.try_wait.parity.shared.b64 P1, [%r2], %r8;         
+	@!P1 bra.uni waitLoop;                                     
+	}                                                          
+	
+	// end inline asm
+	bar.sync 	0;
+	// begin inline asm
+	@%p1 mbarrier.inval.shared::cta.b64 [%r2];
+	// end inline asm
+	and.b32  	%r15, %r12, 63;
+	shl.b32 	%r16, %r15, 1;
+	add.s32 	%r17, %r11, %r16;
+	ld.shared.b16 	%rs1, [%r17];
+	bar.sync 	0;
+	st.shared.b16 	[%r17], %rs1;
+	// begin inline asm
+	fence.proxy.async.shared::cta;
+	// end inline asm
+	bar.sync 	0;
+	shfl.sync.idx.b32	%r18, %r13, 0, 31, -1;
+	// begin inline asm
+	@%p4 cp.async.bulk.tensor.1d.global.shared::cta.bulk_group [%rd2, {%r5}], [%r11];
+	// end inline asm
+	// begin inline asm
+	cp.async.bulk.commit_group ;
+	// end inline asm
+	// begin inline asm
+	cp.async.bulk.wait_group.read 0x0;
+	// end inline asm
+	ret;
+}

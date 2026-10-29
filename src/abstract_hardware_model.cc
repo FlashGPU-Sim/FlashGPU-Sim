@@ -65,6 +65,9 @@ void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
   m_cache_hit = false;
   m_empty = false;
   m_scheduler_id = sch_id;
+  // The pipe register is a copy of the static instruction. Drop any lane
+  // mask that copy carried; func_exec records this issue's DSM atoms.
+  m_dsm_atomic_lanes.reset();
 }
 
 checkpoint::checkpoint() {
@@ -267,10 +270,9 @@ void warp_inst_t::do_atomic(const active_mask_t &access_mask, bool forceDo) {
   assert(m_isatomic && (!m_empty || forceDo));
   if (!should_do_atomic) return;
   for (unsigned i = 0; i < m_config->warp_size; i++) {
-    if (access_mask.test(i)) {
-      dram_callback_t &cb = m_per_scalar_thread[i].callback;
-      if (cb.thread) cb.function(cb.instruction, cb.thread);
-    }
+    if (!access_mask.test(i) || m_dsm_atomic_lanes.test(i)) continue;
+    dram_callback_t &cb = m_per_scalar_thread[i].callback;
+    if (cb.thread && cb.function) cb.function(cb.instruction, cb.thread);
   }
 }
 
@@ -1055,10 +1057,15 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
 }
 
 void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
+  if (warpId == (unsigned)-1)
+    warpId = inst.warp_id();
+  else
+    inst.set_warp_id_func(warpId);
+
   for (unsigned t = 0; t < m_warp_size; t++) {
     if (inst.active(t)) {
-      if (warpId == (unsigned(-1))) warpId = inst.warp_id();
       unsigned tid = m_warp_size * warpId + t;
+      inst.set_current_lane(t);
       m_thread[tid]->ptx_exec_inst(inst, t);
 
       // virtual function

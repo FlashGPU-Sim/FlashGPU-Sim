@@ -82,8 +82,13 @@ class BuildManager:
             )
 
         destination.parent.mkdir(parents=True, exist_ok=True)
+        # Previous runs leave cuobjdump PTX in this directory. The simulator
+        # parses every one of those files at process start, which makes
+        # --gtest_list_tests fail or never return.
+        if destination.exists():
+            shutil.rmtree(destination)
         self.ui.warning(f"⚡ Running: cp -r {source} {destination.parent}/")
-        shutil.copytree(source, destination, dirs_exist_ok=True)
+        shutil.copytree(source, destination)
         self.ui.success(f"Synced {config_name} configuration to run directory")
 
     def setup_environment(self) -> None:

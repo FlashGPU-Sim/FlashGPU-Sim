@@ -77,10 +77,10 @@ ifeq ($(FLASH_GEM_FORGE),1)
 SRCS += $(shell ls flash/gem5/*.cc)
 endif
 
-EXCLUDES = 
-
 ifeq ($(GPGPUSIM_POWER_MODEL), )
-EXCLUDES += power_interface.cc
+EXCLUDES = power_interface.cc
+else
+EXCLUDES =
 endif
 
 CSRCS = $(filter-out $(EXCLUDES), $(SRCS))
