@@ -342,11 +342,15 @@ We hope FlashGPU-Sim benefits your research! If you use it in your work, please 
 BibTeX:
 ```bibtex
 @inproceedings{flashgpusim,
-  author    = {Yu, Siying and Hong, Yixun and Qiu, Guozhi and Liu, Jingci and Gu, Feng
-               and Geng, Chenbo and Wang, Zhengrong and Zhang, Chen and Yu, Bei},
-  title     = {{FlashGPU-sim}: Enabling GPU Modeling for Modern Architectures and AI Workloads},
+  author    = {Yu, Siying and Hong, Yixun and Qiu, Guozhi and Liu, Jingci and
+               Gu, Feng and Geng, Chenbo and Wang, Zhengrong and Zhang, Chen and Yu, Bei},
+  title     = {{FlashGPU-sim}: Enabling {GPU} Modeling for Modern Architectures
+               and {AI} Workloads},
   booktitle = {59th IEEE/ACM International Symposium on Microarchitecture (MICRO)},
-  year      = {2026}
+  year      = {2026},
+  publisher = {IEEE},
+  pages     = {989--1005},
+  doi       = {10.1109/MICRO67795.2026.00079}
 }
 ```
 
