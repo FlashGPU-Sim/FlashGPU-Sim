@@ -221,3 +221,7 @@ $(SRC_DIR)/gpgpu-sim/dsm_endpoint.h $(SRC_DIR)/gpgpu-sim/dsm_fabric.h \
 $(TOP_MAKEFILE) $(UNIT_MK) arch/sm120.toml $(ARCH_MANIFEST_SCRIPT)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
+
+$(OBJ_DIR)/sm100/unit/cache_invalidation_test.cc.o: \
+  $(wildcard ../libcuda/*.h) $(wildcard ../src/gpgpu-sim/*.h) \
+  ../src/abstract_hardware_model.h $(UNIT_MK)

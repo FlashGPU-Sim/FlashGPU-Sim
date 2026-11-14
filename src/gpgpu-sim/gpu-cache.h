@@ -1346,7 +1346,7 @@ class baseline_cache : public cache_t {
   mem_fetch *peek_next_access() const { return m_mshrs.peek_next_access(); }
   // flash invalidate all entries in cache
   void flush() { m_tag_array->flush(); }
-  void invalidate() { m_tag_array->invalidate(); }
+  void invalidate();
   void print(FILE *fp, unsigned &accesses, unsigned &misses) const;
   void display_state(FILE *fp) const;
 
@@ -1439,6 +1439,7 @@ class baseline_cache : public cache_t {
                          : 0;
     }
     bool m_valid;
+    bool m_fill_invalidated = false;
     new_addr_type m_block_addr;
     new_addr_type m_addr;
     unsigned m_cache_index;
