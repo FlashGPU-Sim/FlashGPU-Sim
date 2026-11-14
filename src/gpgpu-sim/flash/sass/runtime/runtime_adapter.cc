@@ -82,8 +82,8 @@ public:
         indirect_parameter_size_(arch == architecture::kSm90 ? parameter_size
                                                              : 0),
         constant_header_(parameter_base),
-        shared_memory_("sass_shared", 64 * 1024),
-        local_memory_("sass_local", 64 * 1024) {
+        // These are hash bucket counts, not byte capacities. Grow on demand.
+        shared_memory_("sass_shared", 32), local_memory_("sass_local", 32) {
     if (parameter_memory_ == nullptr || global_memory_ == nullptr)
       panic("SASS launch is missing simulator memory");
     if (parameter_base_ < minimum_launch_header(arch))
