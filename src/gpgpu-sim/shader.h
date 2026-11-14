@@ -1123,19 +1123,40 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     void init(bool sub_core_model, unsigned num_warp_scheds) {
       m_sub_core_model = sub_core_model;
       m_num_warp_scheds = num_warp_scheds;
+      if (m_sub_core_model) {
+        assert(num_warp_scheds && m_num_collectors >= num_warp_scheds &&
+               m_num_collectors % num_warp_scheds == 0);
+        m_next_local_cu.assign(num_warp_scheds, 0);
+      }
     }
 
     collector_unit_t *find_ready() {
-      // With sub-core enabled round robin starts with the next cu assigned to a
-      // different sub-core than the one that dispatched last
-      unsigned cusPerSched = m_num_collectors / m_num_warp_scheds;
-      unsigned rr_increment =
-          m_sub_core_model ? cusPerSched - (m_last_cu % cusPerSched) : 1;
-      for (unsigned n = 0; n < m_num_collectors; n++) {
-        unsigned c = (m_last_cu + n + rr_increment) % m_num_collectors;
-        if ((*m_collector_units)[c].ready()) {
-          m_last_cu = c;
-          return &((*m_collector_units)[c]);
+      if (m_sub_core_model) {
+        // Rotate both between subcores and within each subcore. Restarting
+        // each partition at its first slot can starve continuously ready
+        // higher slots when the low slot is repeatedly replenished.
+        const unsigned width = m_num_collectors / m_num_warp_scheds;
+        const unsigned first_partition = (m_last_cu / width + 1) % m_num_warp_scheds;
+        for (unsigned p = 0; p < m_num_warp_scheds; ++p) {
+          const unsigned partition = (first_partition + p) % m_num_warp_scheds;
+          for (unsigned n = 0; n < width; ++n) {
+            const unsigned local = (m_next_local_cu[partition] + n) % width;
+            const unsigned c = partition * width + local;
+            if ((*m_collector_units)[c].ready()) {
+              m_last_cu = c;
+              m_next_local_cu[partition] = (local + 1) % width;
+              return &((*m_collector_units)[c]);
+            }
+          }
+        }
+      } else {
+        // Preserve the non-partitioned round-robin order.
+        for (unsigned n = 0; n < m_num_collectors; ++n) {
+          const unsigned c = (m_last_cu + n + 1) % m_num_collectors;
+          if ((*m_collector_units)[c].ready()) {
+            m_last_cu = c;
+            return &((*m_collector_units)[c]);
+          }
         }
       }
       return NULL;
@@ -1148,6 +1169,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     unsigned m_next_cu;  // for initialization
     bool m_sub_core_model;
     unsigned m_num_warp_scheds;
+    std::vector<unsigned> m_next_local_cu;
   };
 
   // opndcoll_rfu_t data members
