@@ -37,6 +37,7 @@ sources = [
   "unit/sass/runtime/launch_geometry_test.cc",
   "unit/sass/functional/address_evaluation_test.cc",
   "unit/sass/functional/integer_boundary_test.cc",
+  "unit/sass/functional/backport_test.cc",
   "unit/tma_store_source_test.cc",
   "unit/tma_reduction_test.cc",
   "unit/trace_validation_test.cc",
