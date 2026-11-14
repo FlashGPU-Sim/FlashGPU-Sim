@@ -43,7 +43,7 @@ class AtomicResponseLsu : public ldst_unit {
 };
 
 enum class Scenario { kReusedAddress, kReset, kDistinctAddress, kSameLaunch,
-                      kModuleGlobals, kSharedGlobal, kGlobalSizeConflict,
+                      kModuleGlobals, kStaticGlobalAllocation, kSharedGlobal, kGlobalSizeConflict,
                       kGlobalModuleConflict, kIdentity, kAtomic, kPredicatedAtomic,
                       kPtxNamedBarrier, kNativeNamedBarrier,
                       kPtxExitBarrier, kNativeExitBarrier,
@@ -97,6 +97,22 @@ void CheckFrontend(Scenario scenario, unsigned lanes = 1) {
       barriers.cycle();
       ok &= barriers.warp_waiting_at_barrier(0) == (i < latency);
     }
+    std::exit(ok ? 0 : 1);
+  }
+  if (scenario == Scenario::kStaticGlobalAllocation) {
+    using namespace flash_gpgpu_sim::sass;
+    const auto before = reinterpret_cast<uint64_t>(gpu.gpu_malloc(256));
+    uint64_t first = 0, second = 0;
+    register_runtime_device_global(98780, &first, "first", 8, &gpu);
+    register_runtime_device_global(98781, &second, "second", 512, &gpu);
+    const auto a = runtime_device_global_address(&first, 8, 0);
+    const auto b = runtime_device_global_address(&second, 512, 0);
+    const auto after = reinterpret_cast<uint64_t>(gpu.gpu_malloc(256));
+    // Native static symbols belong to global static memory, not cudaMalloc's
+    // heap. Header-only globals must not shift every workload tensor address.
+    const bool ok = after == before + 256 && a < STATIC_ALLOC_LIMIT &&
+        b < STATIC_ALLOC_LIMIT && a >= (1ull << 32) && b >= (1ull << 32) &&
+        a % 256 == 0 && b % 256 == 0 && (a + 8 <= b || b + 512 <= a);
     std::exit(ok ? 0 : 1);
   }
   if (scenario == Scenario::kGlobalSizeConflict ||
@@ -432,4 +448,8 @@ TEST(SassFrontendLifecycleTest, PtxWarpExitKeepsUpstreamBarrierReleaseLatency) {
 }
 TEST(SassFrontendLifecycleTest, NativeWarpExitKeepsCalibratedBarrierReleaseLatency) {
   ASSERT_EXIT(CheckFrontend(Scenario::kNativeExitBarrier), testing::ExitedWithCode(0), "");
+}
+
+TEST(SassFrontendLifecycleTest, NativeGlobalsDoNotConsumeDynamicHeap) {
+  ASSERT_EXIT(CheckFrontend(Scenario::kStaticGlobalAllocation), testing::ExitedWithCode(0), "");
 }
