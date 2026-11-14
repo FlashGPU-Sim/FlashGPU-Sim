@@ -330,7 +330,7 @@ TEST(SassFunctionalTest, ExecutesIntegerPredicateShiftAndMultiplyForms) {
       official_instruction(0x2a0, "SGXT", "R27,R26,0x1"),
       official_instruction(0x2b0, "MOV", "R28,0x2"),
       official_instruction(0x2c0, "SGXT", "R29,R28,0x2"),
-      // Carry must use the old source when destination and source overlap.
+      // The shift drops high bits; carry comes only from the low-word add.
       official_instruction(0x2d0, "MOV", "R30,0x80000000"),
       official_instruction(0x2e0, "LEA", "R30,P5,R30,RZ,0x1"),
       official_instruction(0x2f0, "UMOV", "UR24,0x80000000"),
@@ -367,7 +367,7 @@ TEST(SassFunctionalTest, ExecutesIntegerPredicateShiftAndMultiplyForms) {
     EXPECT_EQ(state.read_register(lane, 27), 0xffffffffu);
     EXPECT_EQ(state.read_register(lane, 29), 0xfffffffeu);
     EXPECT_EQ(state.read_register(lane, 30), 0u);
-    EXPECT_TRUE(state.read_predicate(lane, 5));
+    EXPECT_FALSE(state.read_predicate(lane, 5));
     EXPECT_TRUE(state.read_predicate(lane, 0));
     EXPECT_FALSE(state.read_predicate(lane, 1));
     EXPECT_TRUE(state.read_predicate(lane, 2));
@@ -383,14 +383,14 @@ TEST(SassFunctionalTest, ExecutesIntegerPredicateShiftAndMultiplyForms) {
   EXPECT_EQ(state.read_uniform_register(13), 0u);
   EXPECT_EQ(state.read_uniform_register(14), 5u);
   EXPECT_EQ(state.read_uniform_register(17), 0xffffffffu);
-  EXPECT_EQ(state.read_uniform_register(18), 10u);
+  EXPECT_EQ(state.read_uniform_register(18), 9u);
   EXPECT_EQ(state.read_uniform_register(20), 2u);
   EXPECT_EQ(state.read_uniform_register(21), 1u);
   EXPECT_EQ(state.read_uniform_register(22), 1u);
-  EXPECT_EQ(state.read_uniform_register(23), 3u);
+  EXPECT_EQ(state.read_uniform_register(23), 2u);
   EXPECT_EQ(state.read_uniform_register(24), 0u);
-  EXPECT_TRUE(state.read_uniform_predicate(3));
-  EXPECT_TRUE(state.read_uniform_predicate(0));
+  EXPECT_FALSE(state.read_uniform_predicate(3));
+  EXPECT_FALSE(state.read_uniform_predicate(0));
   EXPECT_TRUE(state.read_uniform_predicate(2));
 }
 

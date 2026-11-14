@@ -22,7 +22,8 @@ TEST(SassCtaExecutorTest, DefersFourWarpsAtReusableBarrier) {
     ASSERT_EQ(cta.step().status, step_status::kAdvanced);
     EXPECT_EQ(cta.warp(arrival).pc, 0x10u);
     EXPECT_FALSE(cta.warp(arrival).waiting_at_cta_barrier);
-    EXPECT_EQ(cta.warp(arrival).deferred_cta_barrier_pending[0], arrival != 3);
+    // All arrivals retain the generation until the timing handoff.
+    EXPECT_TRUE(cta.warp(arrival).deferred_cta_barrier_pending[0]);
   }
 
   step_result result;

@@ -26,7 +26,7 @@ class TestGpu : public exec_gpgpu_sim {
 };
 
 enum class Scenario { kReusedAddress, kReset, kDistinctAddress, kSameLaunch,
-                      kIdentity, kAtomic, kPredicatedAtomic, kNativeTma, kPtxTma, kMaskedTma, kFastTma };
+                      kModuleGlobals, kIdentity, kAtomic, kPredicatedAtomic, kNativeTma, kPtxTma, kMaskedTma, kFastTma };
 
 void CheckFrontend(Scenario scenario, unsigned lanes = 1) {
   gpgpu_context ctx;
@@ -45,6 +45,49 @@ void CheckFrontend(Scenario scenario, unsigned lanes = 1) {
   TestGpu gpu(config, &ctx);
   gpu.init();
   auto *core = gpu.core();
+  if (scenario == Scenario::kModuleGlobals) {
+    using namespace flash_gpgpu_sim::sass;
+    constexpr unsigned module = 98763;
+    uint64_t host_symbol = 0;
+    bind_runtime_device(module, &gpu);
+    register_runtime_device_global(module, &host_symbol, "state", 16, &gpu);
+    const auto address = runtime_device_global_address(&host_symbol, 8, 8);
+    uint64_t value = 99;
+    gpu.get_global_memory()->read(address, sizeof(value), &value);
+    bool ok = value == 0;
+    char path[] = "/tmp/flashgpu-global-reloc-XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) std::exit(2);
+    close(fd);
+    setenv("FLASHGPU_SASS_IR", path, 1);
+    ok &= runtime_sassir_path("first", module) == path;
+    kernel image;
+    image.constant_banks.push_back({4, std::vector<uint8_t>(16)});
+    image.constant_globals.push_back({4, 0, 16, 8, "state", {}});
+    image.constant_globals.push_back({4, 8, 4, 0, "local", {42, 0, 0, 0}});
+    relocate_runtime_kernel_globals(image, path);
+    auto pointer = [&](unsigned offset) {
+      uint64_t p = 0;
+      for (unsigned i = 0; i < 8; ++i)
+        p |= uint64_t(image.constant_banks[0].data[offset + i]) << (8 * i);
+      return p;
+    };
+    ok &= pointer(0) == address;
+    const auto local = pointer(8);
+    uint32_t initialized = 0;
+    gpu.get_global_memory()->read(local, 4, &initialized);
+    ok &= initialized == 42;
+    initialized = 71;
+    gpu.get_global_memory()->write(local, 4, &initialized, nullptr, nullptr);
+    image.name = "second";
+    relocate_runtime_kernel_globals(image, path);
+    initialized = 0;
+    gpu.get_global_memory()->read(local, 4, &initialized);
+    ok &= pointer(0) == address && pointer(8) == local && initialized == 71;
+    std::remove(path);
+    std::exit(ok ? 0 : 1);
+  }
+
   if (scenario == Scenario::kNativeTma || scenario == Scenario::kPtxTma ||
       scenario == Scenario::kMaskedTma || scenario == Scenario::kFastTma) {
     kernel_info_t launch(dim3(1), dim3(32), "tma_issue", &ctx, 0, 98762);
@@ -207,4 +250,8 @@ TEST(SassFrontendLifecycleTest, MaskedTmaDoesNotHoldWarp) {
 }
 TEST(SassFrontendLifecycleTest, SingleCycleTmaDoesNotHoldWarp) {
   ASSERT_EXIT(CheckFrontend(Scenario::kFastTma), testing::ExitedWithCode(0), "");
+}
+
+TEST(SassFrontendLifecycleTest, ModuleGlobalsRelocateAndInitializeOnlyOnce) {
+  ASSERT_EXIT(CheckFrontend(Scenario::kModuleGlobals), testing::ExitedWithCode(0), "");
 }

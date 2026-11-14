@@ -297,7 +297,7 @@ TEST(SassFunctionalTest, TmaLoadAndStoreHonorNonzeroSwizzleBasePhase) {
     image.arch = architecture::kSm120;
     image.instruction_bytes = 16;
     image.instructions = {
-        official_instruction(0, "UTMALDG.2D", "[UR4][UR12],desc[URZ]"),
+        official_instruction(0, "UTMALDG.2D", "[UR4][UR12]"),
         official_instruction(16, "UTMASTG.2D", "[UR20][UR14]")};
     frontend sass;
     sass.add_kernel(std::move(image));
@@ -363,4 +363,459 @@ TEST(SassFunctionalTest, LastDeferredArriverRetainsTimingHandoff) {
     EXPECT_EQ(state.deferred_cta_barrier_generation[1], 0u);
   }
   EXPECT_EQ(cta.generation(1), 1u);
+}
+
+TEST(SassFunctionalTest, ReconvergesThreeLaneIndirectBranchTargets) {
+  kernel image;
+  image.name = "divergent_brx";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "BSSY.RECONVERGENT", "B0,0x90"),
+      official_instruction(0x10, "BRX", "R4,-0x20"),
+      official_instruction(0x20, "MOV", "R0,0x11"),
+      official_instruction(0x30, "BRA", "0x80"),
+      official_instruction(0x40, "MOV", "R0,0x22"),
+      official_instruction(0x50, "BRA", "0x80"),
+      official_instruction(0x60, "MOV", "R0,0x33"),
+      official_instruction(0x70, "BRA", "0x80"),
+      official_instruction(0x80, "BSYNC.RECONVERGENT", "B0"),
+      official_instruction(0x90, "EXIT"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 0xf;
+  const uint32_t targets[] = {0x40, 0x20, 0x60, 0x40};
+  for (unsigned lane = 0; lane < 4; ++lane) {
+    state.write_register(lane, 4, targets[lane]);
+    state.write_register(lane, 5, 0);
+  }
+  // An inactive lane must not create a fourth (invalid) path.
+  state.write_register(4, 4, 3);
+  execution_context context;
+  bool exited = false;
+  for (unsigned step = 0; step < 32; ++step) {
+    const auto result = sass.step("divergent_brx", state, context);
+    ASSERT_NE(result.status, step_status::kUnsupported) << result.detail;
+    ASSERT_NE(result.status, step_status::kMissingPc) << result.detail;
+    if (result.status == step_status::kExited) {
+      exited = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(exited);
+  EXPECT_EQ(state.read_register(0, 0), 0x22u);
+  EXPECT_EQ(state.read_register(1, 0), 0x11u);
+  EXPECT_EQ(state.read_register(2, 0), 0x33u);
+  EXPECT_EQ(state.read_register(3, 0), 0x22u);
+  EXPECT_TRUE(state.reconvergence_stack.empty());
+}
+
+TEST(SassFunctionalTest, GuardedVoteuConvergedExecutionPreservesSkippedResult) {
+  for (const char* guard : {"@!P1", "@!UP1"}) {
+    kernel image;
+    image.name = "guarded_vote";
+    image.arch = architecture::kSm120;
+    image.instruction_bytes = 16;
+    image.instructions = {official_instruction(0, "VOTEU.ANY", "UP2,P0", guard)};
+    frontend sass;
+    sass.add_kernel(std::move(image));
+    register_sm120_functional_semantics(sass);
+    for (bool skip : {false, true}) for (bool initial : {false, true}) {
+      warp_state state;
+      state.active_mask = 0x55;
+      state.write_uniform_predicate(1, skip);
+      state.write_uniform_predicate(2, initial);
+      for(unsigned lane=0;lane<32;++lane){
+        state.write_predicate(lane,1,skip);
+        state.write_predicate(lane,0,lane==2);
+      }
+      execution_context context;
+      auto result=sass.step("guarded_vote",state,context);
+      ASSERT_EQ(result.status,step_status::kAdvanced)<<result.detail;
+      EXPECT_EQ(state.read_uniform_predicate(2),skip ? initial : true);
+    }
+    if (std::string(guard)=="@!P1") {
+      warp_state state;
+      state.write_predicate(3,1,true);
+      state.write_uniform_predicate(2,true);
+      execution_context context;
+      EXPECT_EQ(sass.step("guarded_vote",state,context).status,step_status::kUnsupported);
+      EXPECT_TRUE(state.read_uniform_predicate(2));
+    }
+  }
+}
+
+TEST(SassFunctionalTest, MatchAnySnapshotsAliasedValuesAndIgnoresInactiveLanes) {
+  kernel image;
+  image.name = "match";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "MATCH.ANY", "R4,R4"),
+      official_instruction(16, "REDUX.OR", "UR4,R4"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 0x800001abu;
+  for (unsigned lane = 0; lane < 32; ++lane)
+    state.write_register(lane, 4, lane % 3);
+  execution_context context;
+  auto result = sass.step("match", state, context);
+  ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    uint32_t expected = lane % 3;
+    if (state.active_mask & (1u << lane)) {
+      expected = 0;
+      for (unsigned peer = 0; peer < 32; ++peer)
+        if ((state.active_mask & (1u << peer)) && peer % 3 == lane % 3)
+          expected |= 1u << peer;
+    }
+    EXPECT_EQ(state.read_register(lane, 4), expected);
+  }
+  result = sass.step("match", state, context);
+  ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+  EXPECT_EQ(state.read_uniform_register(4), state.active_mask);
+}
+
+TEST(SassFunctionalTest, ConvergenceBranchQualifiesOnlyUniformGuards) {
+  kernel image;
+  image.name = "guarded_div";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "BRA.DIV", "UR4,0x20", "@!P0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (unsigned mask : {0u, 3u, 1u}) {
+    warp_state state;
+    state.active_mask = 3;
+    state.write_uniform_register(4, 0xff);
+    for (unsigned lane = 0; lane < 2; ++lane)
+      state.write_predicate(lane, 0, (mask & (1u << lane)) == 0);
+    execution_context context;
+    auto result = sass.step("guarded_div", state, context);
+    EXPECT_EQ(result.status, mask == 1 ? step_status::kUnsupported : step_status::kAdvanced);
+    EXPECT_EQ(state.pc, mask == 0 ? 16u : mask == 3 ? 32u : 0u);
+  }
+}
+
+TEST(SassFunctionalTest, ExitRetiresOnlyItsPathInsideBssy) {
+  // Mode0: fallthrough exits before its pending sibling runs.
+  // Mode1: fallthrough waits at BSYNC, then the pending sibling exits.
+  // Mode2: only some fallthrough lanes exit; they must not return at BSYNC.
+  for (unsigned mode : {0u, 1u, 2u}) {
+    kernel image;
+    image.name = "bssy_exit";
+    image.arch = architecture::kSm120;
+    image.instruction_bytes = 16;
+    image.instructions = {
+      official_instruction(0x00,"BSSY.RECONVERGENT","B0,0x80"),
+      official_instruction(0x10,"BRA","0x50","@P0"),
+      official_instruction(0x20,mode==1?"NOP":"EXIT","",mode==2?"@P1":""),
+      official_instruction(0x30,"MOV","R1,0x11"),
+      official_instruction(0x40,"BRA","0x70"),
+      official_instruction(0x50,mode==1?"EXIT":"MOV",mode==1?"":"R1,0x22"),
+      official_instruction(0x60,"BRA","0x70"),
+      official_instruction(0x70,"BSYNC.RECONVERGENT","B0"),
+      official_instruction(0x80,"MOV","R2,0x33"),
+      official_instruction(0x90,"EXIT"),
+    };
+    frontend sass; sass.add_kernel(std::move(image));
+    register_sm120_functional_semantics(sass);
+    warp_state state;
+    for(unsigned lane=0;lane<32;++lane) {
+      state.write_predicate(lane,0,lane%2==0);
+      state.write_predicate(lane,1,lane%4==1);
+    }
+    execution_context context;
+    uint32_t retired=0;
+    step_result result;
+    do {
+      const auto *inst=sass.fetch("bssy_exit",state.pc);
+      ASSERT_NE(inst,nullptr);
+      const bool exit=inst->opcode=="EXIT";
+      const uint32_t before=state.active_mask;
+      result=sass.step("bssy_exit",state,context);
+      ASSERT_NE(result.status,step_status::kUnsupported)<<result.detail;
+      ASSERT_NE(result.status,step_status::kMissingPc)<<result.detail;
+      if(exit) retired|=before & ~state.active_mask;
+      EXPECT_EQ(state.active_mask & retired,0u);
+      ASSERT_LT(context.instructions_executed,32u);
+    } while(result.status!=step_status::kExited);
+    EXPECT_EQ(retired,0xffffffffu);
+    for(unsigned lane=0;lane<32;++lane) {
+      bool survivor=mode==0?lane%2==0:mode==1?lane%2!=0:lane%4!=1;
+      EXPECT_EQ(state.read_register(lane,2),survivor?0x33u:0u)<<mode<<":"<<lane;
+      EXPECT_EQ(state.read_register(lane,1),survivor?(lane%2==0?0x22u:0x11u):0u);
+    }
+    EXPECT_TRUE(state.reconvergence_stack.empty());
+    EXPECT_FALSE(state.reconvergence[0].valid);
+  }
+}
+
+TEST(SassFunctionalTest, ExitUnwindsEmptyInnerRegionBeforeOuterSibling) {
+  kernel image; image.name="nested_exit";
+  image.arch=architecture::kSm120; image.instruction_bytes=16;
+  image.instructions={
+    official_instruction(0x00,"BSSY","B0,0x80"),
+    official_instruction(0x10,"BRA","0x60","@P0"),
+    official_instruction(0x20,"BSSY","B1,0x50"),
+    official_instruction(0x30,"EXIT"),
+    official_instruction(0x40,"BSYNC","B1"),
+    official_instruction(0x50,"MOV","R3,0xbad"),
+    official_instruction(0x60,"MOV","R1,0x22"),
+    official_instruction(0x70,"BSYNC","B0"),
+    official_instruction(0x80,"EXIT"),
+  };
+  frontend sass; sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  for(unsigned lane=0;lane<32;++lane)state.write_predicate(lane,0,lane%2==0);
+  execution_context context; step_result result;
+  do {
+    result=sass.step("nested_exit",state,context);
+    ASSERT_NE(result.status,step_status::kUnsupported)<<result.detail;
+    ASSERT_NE(result.status,step_status::kMissingPc)<<result.detail;
+    ASSERT_LT(context.instructions_executed,20u);
+  }while(result.status!=step_status::kExited);
+  for(unsigned lane=0;lane<32;++lane) {
+    EXPECT_EQ(state.read_register(lane,1),lane%2==0?0x22u:0u);
+    EXPECT_EQ(state.read_register(lane,3),0u);
+  }
+  EXPECT_TRUE(state.reconvergence_stack.empty());
+  EXPECT_FALSE(state.reconvergence[0].valid);
+  EXPECT_FALSE(state.reconvergence[1].valid);
+}
+
+TEST(SassFunctionalTest, FullCollectiveEntryRejectsDivergence) {
+ kernel image;image.name="collective_all";image.arch=architecture::kSm120;image.instruction_bytes=16;
+ image.instructions={official_instruction(0,"WARPSYNC.COLLECTIVE.ALL","0x30"),official_instruction(16,"ENDCOLLECTIVE","")};
+ frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);execution_context context;
+ warp_state state;EXPECT_EQ(sass.step("collective_all",state,context).status,step_status::kAdvanced);
+ EXPECT_EQ(state.pc,16u);EXPECT_EQ(sass.step("collective_all",state,context).status,step_status::kAdvanced);
+ state.pc=0;state.active_mask=0xffff;EXPECT_EQ(sass.step("collective_all",state,context).status,step_status::kUnsupported);
+}
+
+TEST(SassFunctionalTest, ReconvergesSamePcFullCollective) {
+  kernel image;
+  image.name = "warpsync_reconvergence";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0x00, "BRA", "0x40", "@P0"),
+      official_instruction(0x10, "MOV", "R1,0x2a"),
+      official_instruction(0x20, "BRA", "0x40"),
+      official_instruction(0x30, "NOP"),
+      official_instruction(0x40, "WARPSYNC.COLLECTIVE.ALL", "0x60"),
+      official_instruction(0x50, "EXIT"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  for (unsigned lane = 0; lane < 32; ++lane)
+    state.write_predicate(lane, 0, lane % 2 == 0);
+  execution_context context;
+
+  step_result result;
+  do {
+    result = sass.step("warpsync_reconvergence", state, context);
+    ASSERT_NE(result.status, step_status::kUnsupported) << result.detail;
+    ASSERT_NE(result.status, step_status::kMissingPc) << result.detail;
+    ASSERT_LT(context.instructions_executed, 16u);
+  } while (result.status != step_status::kExited);
+
+  EXPECT_TRUE(state.warp_sync_stack.empty());
+  for (unsigned lane = 0; lane < 32; ++lane)
+    EXPECT_EQ(state.read_register(lane, 1), lane % 2 == 0 ? 0u : 42u);
+}
+
+TEST(SassFunctionalTest, DisparatePcCollectiveRestoresNestedBssyPaths) {
+  kernel image;
+  image.name = "disparate_collective";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0x00, "BSSY", "B1,0x180"),
+      official_instruction(0x10, "BRA", "0xa0", "@P0"),
+      official_instruction(0x20, "BSSY", "B0,0x80"),
+      official_instruction(0x30, "MOV", "R1,1"),
+      official_instruction(0x40, "WARPSYNC.COLLECTIVE.ALL", "0x70"),
+      official_instruction(0x50, "IADD3", "R1,R1,10,RZ"),
+      official_instruction(0x60, "ENDCOLLECTIVE"),
+      official_instruction(0x70, "BSYNC", "B0"),
+      official_instruction(0x80, "MOV", "R2,11"),
+      official_instruction(0x90, "BRA", "0x170"),
+      official_instruction(0xa0, "BSSY", "B0,0x110"),
+      official_instruction(0xb0, "MOV", "R1,2"),
+      official_instruction(0xc0, "WARPSYNC.COLLECTIVE.ALL", "0xf0"),
+      official_instruction(0xd0, "IADD3", "R1,R1,20,RZ"),
+      official_instruction(0xe0, "ENDCOLLECTIVE"),
+      official_instruction(0xf0, "BSYNC", "B0"),
+      official_instruction(0x110, "MOV", "R2,22"),
+      official_instruction(0x120, "BRA", "0x170"),
+      official_instruction(0x170, "BSYNC", "B1"),
+      official_instruction(0x180, "EXIT"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  execution_context context;
+  warp_state state;
+  for (unsigned lane = 0; lane < 32; ++lane)
+    state.write_predicate(lane, 0, lane != 0);
+  step_result result;
+  do {
+    result = sass.step("disparate_collective", state, context);
+    ASSERT_NE(result.status, step_status::kUnsupported) << result.detail;
+    ASSERT_NE(result.status, step_status::kMissingPc) << result.detail;
+    ASSERT_LT(context.instructions_executed, 40u);
+  } while (result.status != step_status::kExited);
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    EXPECT_EQ(state.read_register(lane, 1), lane ? 22u : 21u);
+    EXPECT_EQ(state.read_register(lane, 2), lane ? 22u : 11u);
+  }
+  EXPECT_TRUE(state.reconvergence_stack.empty());
+}
+
+TEST(SassFunctionalTest, PackedRegisterBarrierUsesHighCountAndLowId) {
+  kernel image;
+  image.name = "packed_barrier";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "BAR.SYNC.DEFER_BLOCKING", "R3,R3")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  cta_execution_state cta(12);
+  execution_context context;
+  context.cta = &cta;
+  for (unsigned warp = 0; warp < 12; ++warp) {
+    warp_state state;
+    context.warp_id = warp;
+    for (unsigned lane = 0; lane < 32; ++lane)
+      state.write_register(lane, 3, (384u << 16) | 13);
+    auto result = sass.step("packed_barrier", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    EXPECT_EQ(context.named_barrier_effect.id, 13u);
+    EXPECT_EQ(context.named_barrier_effect.participant_count, 384u);
+    EXPECT_EQ(cta.generation(13), warp == 11 ? 1u : 0u);
+    // Last arriver must retain the same deferred generation for timing's
+    // release-delay gate, even though functional completion is already true.
+    EXPECT_TRUE(state.deferred_cta_barrier_pending[13]);
+    EXPECT_EQ(state.deferred_cta_barrier_generation[13], 0u);
+    EXPECT_EQ(state.read_register(0, 3), (384u << 16) | 13);
+  }
+  warp_state invalid;
+  for (unsigned lane = 0; lane < 32; ++lane)
+    invalid.write_register(lane, 3, (33u << 16) | 13);
+  EXPECT_EQ(sass.step("packed_barrier", invalid, context).status,
+            step_status::kUnsupported);
+  EXPECT_EQ(cta.generation(13), 1u);
+}
+
+TEST(SassFunctionalTest, NativeUniformBranchWithLaneAndUniformPredicates) {
+  kernel image;image.name="two_predicates";image.arch=architecture::kSm120;image.instruction_bytes=16;
+  image.instructions={official_instruction(0,"BRA.U","!P0,UP1,0x20")};
+  frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+  execution_context context;
+  for(bool lane_value:{false,true})for(bool uniform:{false,true}) {
+    warp_state state;state.active_mask=2;
+    state.write_predicate(0,0,!lane_value);
+    state.write_predicate(1,0,lane_value);
+    state.write_uniform_predicate(1,uniform);
+    ASSERT_EQ(sass.step("two_predicates",state,context).status,step_status::kAdvanced);
+    EXPECT_EQ(state.pc,(!lane_value&&uniform)?0x20u:0x10u);
+    EXPECT_EQ(state.active_mask,2u);
+  }
+}
+
+TEST(SassFunctionalTest, NativeNotTid0BranchMatchesB200Masks) {
+  kernel image;
+  image.name = "not_tid0";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "BRA.U.NOT_TID0", "0x20")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (unsigned cta : {0u, 1u}) {
+    for (unsigned warp = 0; warp < 16; ++warp) {
+      for (uint32_t mask : {0xffffffffu, 0xfffffffeu, 1u, 2u,
+                            0x80000000u, 0x80000001u}) {
+        warp_state state;
+        state.active_mask = mask;
+        execution_context context;
+        context.cta_id_x = cta;
+        context.warp_id = warp;
+        const auto result = sass.step("not_tid0", state, context);
+        ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+        EXPECT_EQ(state.pc, warp == 0 && (mask & 1u) ? 0x10u : 0x20u);
+        EXPECT_EQ(state.active_mask, mask);
+      }
+    }
+  }
+}
+
+TEST(SassFunctionalTest, NotTid0RejectsUnqualifiedGuard) {
+  kernel image;
+  image.name = "guarded_not_tid0";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "BRA.U.NOT_TID0", "0x20", "@P0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  execution_context context;
+  const auto result = sass.step("guarded_not_tid0", state, context);
+  EXPECT_NE(result.status, step_status::kAdvanced);
+  EXPECT_NE(result.detail.find("unqualified"), std::string::npos);
+}
+
+TEST(SassFunctionalTest, MlaVoteAllUsesOriginalAliasedPredicatesAndActiveMask) {
+  kernel image;
+  image.name = "vote_all";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "VOTE.ALL", "P1,!P1")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (bool one_true : {false, true}) {
+    warp_state state;
+    state.active_mask = 0x5;
+    state.write_predicate(0, 1, false);
+    state.write_predicate(1, 1, true); // inactive, must not affect result
+    state.write_predicate(2, 1, one_true);
+    execution_context context;
+    ASSERT_EQ(sass.step("vote_all", state, context).status, step_status::kAdvanced);
+    EXPECT_EQ(state.read_predicate(0, 1), !one_true);
+    EXPECT_EQ(state.read_predicate(2, 1), !one_true);
+    EXPECT_TRUE(state.read_predicate(1, 1));
+  }
+}
+
+TEST(SassTimingProjectionTest, MatchAndReduxRetainTheirSourceDependencies) {
+  timing_profile profile;
+  profile.integer_latency[5] = 17;
+  profile.integer_initiation[5] = 3;
+  for (const auto &source : {
+           official_instruction(0, "MATCH.ANY", "R8,R4"),
+           official_instruction(0, "REDUX.OR", "UR8,R4")}) {
+    timing_instruction inst(source, profile);
+    EXPECT_EQ(inst.outcount, 1u);
+    ASSERT_EQ(inst.incount, 1u);
+    EXPECT_EQ(inst.arch_reg.src[0], 5);
+    EXPECT_EQ(inst.latency, 17u);
+    EXPECT_EQ(inst.initiation_interval, 3u);
+    ASSERT_EQ(inst.get_register_file_source_count(), 1u);
+    EXPECT_EQ(inst.get_register_file_source(0).reg, 4u);
+  }
 }

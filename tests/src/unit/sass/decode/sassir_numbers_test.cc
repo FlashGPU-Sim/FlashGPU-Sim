@@ -82,3 +82,32 @@ TEST(FlashPanicDeathTest, RestoresContextAfterNormalReturn) {
   EXPECT_EQ(flash_gpgpu_sim::panic_context::current(), nullptr);
 }
 }  // namespace
+
+TEST_F(SassirNumbersTest, InitializedLocalGlobalCarriesExactBytes) {
+  {
+    std::ofstream out(path);
+    out << "SASSIR\t4\nDECODER\ttest\t1\tfixture\nKERNEL\tk\tsm120\t16\nRESOURC"
+           "ES\t8\t0\t0\t0\n"
+           "CONSTBANK\t4\t0000000000000000\n"
+           "CONSTGLOBAL_INIT\t4\t0\tlocal_string\t4\t1\t41424300\n"
+           "ENDKERNEL\n";
+  }
+  const auto image =
+      flash_gpgpu_sim::sass::sassir_decoder{}.decode_kernel(path, "k");
+  ASSERT_EQ(image.constant_globals.size(), 1u);
+  EXPECT_EQ(image.constant_globals[0].addend, 1u);
+  EXPECT_EQ(image.constant_globals[0].initial_data,
+            (std::vector<uint8_t>{65, 66, 67, 0}));
+}
+
+TEST_F(SassirNumbersTest, RejectsTruncatedLocalGlobalInitializer) {
+  {
+    std::ofstream out(path);
+    out << "SASSIR\t4\nDECODER\ttest\t1\tfixture\nKERNEL\tk\tsm120\t16\nRESOURC"
+           "ES\t8\t0\t0\t0\n"
+           "CONSTGLOBAL_INIT\t4\t0\tlocal_string\t4\t0\t4142\n"
+           "ENDKERNEL\n";
+  }
+  EXPECT_DEATH(flash_gpgpu_sim::sass::sassir_decoder{}.decode_kernel(path, "k"),
+               "initializer size mismatch");
+}

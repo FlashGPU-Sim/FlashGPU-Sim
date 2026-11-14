@@ -439,3 +439,11 @@ $(OBJ_DIR)/sm120/core/predicated_atomic_test.cc.o \
 $(OBJ_DIR)/sm120/core/sass_frontend_lifecycle_test.cc.o: \
   $(wildcard ../libcuda/*.h) $(wildcard ../src/gpgpu-sim/*.h) \
   ../src/abstract_hardware_model.h $(UNIT_MK)
+
+# SASS tests embed kernel/warp_state by value. Recompile their callers whenever
+# the frontend ABI changes, not only when a test-local header changes.
+SASS_HOST_HEADERS := $(wildcard $(SRC_DIR)/gpgpu-sim/flash/sass/*.h) \
+  $(wildcard $(SRC_DIR)/gpgpu-sim/flash/sass/*/*.h)
+$(patsubst $(TEST_SRC_DIR)/%.cc,$(OBJ_DIR)/sm120/%.cc.o,\
+  $(wildcard $(TEST_SRC_DIR)/unit/sass/*/*.cc)) \
+$(OBJ_DIR)/sm120/core/sass_frontend_lifecycle_test.cc.o: $(SASS_HOST_HEADERS)
