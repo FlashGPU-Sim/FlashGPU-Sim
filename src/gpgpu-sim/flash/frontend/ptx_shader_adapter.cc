@@ -157,7 +157,9 @@ public:
   }
 
   void complete_lane(warp_inst_t &inst, unsigned t, unsigned tid) override {
-
+    // The functional handler clears lanes whose PTX predicate is false.
+    if (!inst.active(t))
+      return;
     if (inst.isatomic())
       core_.m_warp[inst.warp_id()]->inc_n_atomic();
     if (inst.space.is_local() && (inst.is_load() || inst.is_store())) {
