@@ -18,6 +18,7 @@ int main(int argc, char **argv) {
   CUDA(cudaFuncSetAttribute(read_globals, cudaFuncAttributePreferredSharedMemoryCarveout, 50));
   if (cudaFuncSetAttribute(write_globals, cudaFuncAttributeMaxDynamicSharedMemorySize, -1) != cudaErrorInvalidValue) return 3;
   if (cudaFuncSetAttribute(read_globals, cudaFuncAttributePreferredSharedMemoryCarveout, 101) != cudaErrorInvalidValue) return 4;
+  if (cudaFuncSetAttribute(static_cast<const void *>(nullptr), attr, 0) != cudaErrorInvalidDeviceFunction) return 5;
   cudaGetLastError();
   unsigned long long input=11, out[4]={}, zero=99;
   CUDA(cudaMemcpyToSymbol(values,&input,sizeof(input),sizeof(input)));

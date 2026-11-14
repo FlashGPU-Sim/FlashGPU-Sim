@@ -4864,6 +4864,8 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
   std::string kernel_name;
   unsigned kernel_static_smem = 0;
   if (sass_functional) {
+    if (!context->has_sass_function((const char *)func))
+      return g_last_cudaError = cudaErrorInvalidDeviceFunction;
     kernel_name = context->get_sass_kernel_name((const char *)func);
     const unsigned fatbin_handle =
         context->get_sass_fatbin_handle((const char *)func);
@@ -4880,7 +4882,8 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
   }
 
   if (attr == cudaFuncAttributeMaxDynamicSharedMemorySize) {
-    if (!entry) return g_last_cudaError = cudaErrorInvalidDeviceFunction;
+    if (!sass_functional && !entry)
+      return g_last_cudaError = cudaErrorInvalidDeviceFunction;
     if (value < 0) return g_last_cudaError = cudaErrorInvalidValue;
     unsigned static_smem;
     unsigned max_per_block_optin;
@@ -4903,7 +4906,8 @@ cudaError_t CUDARTAPI cudaFuncSetAttribute(const void *func,
   }
 
   if (attr == cudaFuncAttributePreferredSharedMemoryCarveout) {
-    if (!entry) return g_last_cudaError = cudaErrorInvalidDeviceFunction;
+    if (!sass_functional && !entry)
+      return g_last_cudaError = cudaErrorInvalidDeviceFunction;
     if (value != cudaSharedmemCarveoutDefault &&
         (value < 0 || value > 100)) {
       return g_last_cudaError = cudaErrorInvalidValue;

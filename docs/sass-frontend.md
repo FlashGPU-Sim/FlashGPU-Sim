@@ -364,3 +364,12 @@ custom-executable workflow above. Two kernels must produce
 simulation. The core suite separately checks initialized local state survives a
 second kernel relocation. These are semantic checks, not a new calibration or
 full FA3/DSV4 performance sweep.
+
+The runtime attribute probe also covers native `cudaFuncSetAttribute` calls for
+maximum dynamic shared memory and preferred carveout, including invalid values
+and an unregistered function. Both attributes previously returned error 98 for
+valid SASS kernels because a PTX-only `function_info` check followed native
+resource lookup. This explains the inspected prior FA3 medium CI launch failure
+at `flash_fwd_launch_template.h:200`; it occurred before kernel simulation.
+Native registration is now checked through the SASS registry. Both standalone
+attribute variants pass; the full medium jobs require a fresh CI run.
