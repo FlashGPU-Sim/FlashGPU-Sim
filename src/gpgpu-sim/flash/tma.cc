@@ -1590,9 +1590,10 @@ public:
                      tma_static_info.tma_type);
       }
     }
-    // Warp cannot issue the next instruction until TMA issue occupancy elapses
-    // (H200 pure cp.async.bulk is 44 cycles). Data movement is already queued.
-    if (inst->get_active_mask().any() && inst->latency > 1)
+    // PTX needs an issue-occupancy proxy. Native SASS already carries its
+    // dependency/control timing; do not suspend that warp a second time.
+    if (!inst->has_explicit_dependency_control() &&
+        inst->get_active_mask().any() && inst->latency > 1)
       m_barriers->hold_warp(warp_id, inst->latency, BARRIER_WAIT_BULK_GROUP);
   }
 

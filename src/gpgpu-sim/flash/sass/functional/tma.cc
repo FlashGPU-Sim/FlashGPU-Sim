@@ -343,7 +343,10 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
          offset += kSwizzleGranularity) {
       const size_t bytes = std::min(kSwizzleGranularity, tile.size() - offset);
       const uint64_t swizzled_offset =
-          offset ^ (((static_cast<uint64_t>(offset) >> 7) & mask) << 4);
+          offset ^
+          ((((static_cast<uint64_t>(offset) >> 7) + (shared_address >> 7)) &
+            mask)
+           << 4);
       if (swizzled_offset > tile.size() ||
           bytes > tile.size() - swizzled_offset)
         return unsupported(inst, "TMA swizzle escapes the shared tile");
@@ -532,7 +535,10 @@ step_result execute_utmastg(const instruction &inst, warp_state &state,
          offset += kSwizzleGranularity) {
       const size_t bytes = std::min(kSwizzleGranularity, tile.size() - offset);
       const uint64_t swizzled_offset =
-          offset ^ (((static_cast<uint64_t>(offset) >> 7) & mask) << 4);
+          offset ^
+          ((((static_cast<uint64_t>(offset) >> 7) + (shared_address >> 7)) &
+            mask)
+           << 4);
       if (swizzled_offset > shared_tile.size() ||
           bytes > shared_tile.size() - swizzled_offset)
         return unsupported(inst, "TMA swizzle escapes the shared tile");
