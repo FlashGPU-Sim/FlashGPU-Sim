@@ -57,7 +57,7 @@ class GTest:
         environment = os.environ.copy()
         environment.pop("GTEST_OUTPUT", None)
         environment.pop("LD_PRELOAD", None)
-        if binary.name == "unit_tests":
+        if binary.name in ("unit_tests", "core_tests"):
             # Host component tests now link production simulator symbols
             # (Trace, PTX loader, TCGen05), so the toolkit libcudart cannot
             # replace that library even during test discovery.
