@@ -4,6 +4,8 @@ config = "SM120_RTX5090"
 
 [workloads]
 sources = [
+  "core/sass_frontend_lifecycle_test.cc",
+  "core/predicated_atomic_test.cc",
   # Host-side simulator component tests.
   "unit/bulk_group_test.cc",
   "unit/issue_interval_timing_test.cc",

@@ -7,6 +7,104 @@
 namespace {
 using namespace flash_gpgpu_sim::sass;
 
+TEST(SassIntegerBoundaryTest, SubtractZeroPreservesNoBorrow) {
+  for (bool uniform : {false, true}) {
+    frontend source;
+    register_sm120_functional_semantics(source);
+    kernel image;
+    image.name = "subtract_zero";
+    image.arch = architecture::kSm120;
+    image.instruction_bytes = kInstructionBytes;
+    instruction inst;
+    inst.decoded = true;
+    inst.opcode = uniform ? "UIADD3" : "IADD3";
+    inst.operand_text = uniform ? "UR14,UP0,UPT,-UR13,UR2,URZ"
+                                : "R14,P0,PT,-R13,R2,RZ";
+    parse_instruction_operands(inst);
+    image.instructions.push_back(inst);
+    source.add_kernel(std::move(image));
+    for (uint32_t subtrahend : {0u, 1u, 4095u, 4096u}) {
+      warp_state state;
+      state.active_mask = 1;
+      state.write_register(0, 2, 4095);
+      state.write_register(0, 13, subtrahend);
+      state.write_uniform_register(2, 4095);
+      state.write_uniform_register(13, subtrahend);
+      execution_context context;
+      ASSERT_EQ(source.step("subtract_zero", state, context).status,
+                step_status::kAdvanced);
+      EXPECT_EQ(uniform ? state.read_uniform_register(14)
+                        : state.read_register(0, 14), 4095u - subtrahend);
+      EXPECT_EQ(uniform ? state.read_uniform_predicate(0)
+                        : state.read_predicate(0, 0), subtrahend <= 4095u);
+    }
+  }
+}
+
+TEST(SassIntegerBoundaryTest, FullWidthShiftsMatchNativeBoundaryProbe) {
+  for (const char *opcode :
+       {"SHF.L.U32", "SHF.L.U64.HI", "SHF.R.U64", "SHF.R.U32.HI",
+        "USHF.L.U64.HI"}) {
+    const std::string op(opcode);
+    const bool uniform = op[0] == 'U';
+    frontend source;
+    register_sm120_functional_semantics(source);
+    kernel image;
+    image.name = "shift_boundary";
+    image.arch = architecture::kSm120;
+    image.instruction_bytes = kInstructionBytes;
+    instruction inst;
+    inst.pc = 0;
+    inst.decoded = true;
+    inst.opcode = op;
+    inst.operand_text = uniform ? "UR0,UR1,UR3,UR2" : "R0,R1,R3,R2";
+    parse_instruction_operands(inst);
+    ASSERT_TRUE(inst.operands_structured);
+    image.instructions.push_back(inst);
+    source.add_kernel(std::move(image));
+    for (uint64_t value :
+         {1ull, 0x1234567887654321ull, 0xfedcba9876543210ull, ~0ull}) {
+      for (unsigned shift = 0; shift < 128; ++shift) {
+        SCOPED_TRACE(::testing::Message()
+                     << op << " value=" << value << " shift=" << shift);
+        warp_state state;
+        state.active_mask = 1;
+        execution_context context;
+        uint32_t low = value, high = value >> 32;
+        if (op == "SHF.L.U32") high = 0;
+        if (op == "SHF.R.U32.HI") low = 0;
+        if (uniform) {
+          state.write_uniform_register(1, low);
+          state.write_uniform_register(2, high);
+          state.write_uniform_register(3, shift);
+        } else {
+          state.write_register(0, 1, low);
+          state.write_register(0, 2, high);
+          state.write_register(0, 3, shift);
+        }
+        uint32_t expected = 0;
+        if (op == "SHF.L.U32")
+          expected = shift < 32 ? uint32_t(value) << shift : 0;
+        else if (op == "SHF.R.U32.HI")
+          expected = shift < 32 ? uint32_t(value >> 32) >> shift : 0;
+        else if (op == "SHF.L.U32.HI")
+          expected = uint32_t((value << std::min(shift, 32u)) >> 32);
+        else if (op == "SHF.L.W.U32.HI")
+          expected = uint32_t((value << (shift & 31)) >> 32);
+        else if (op.find(".L.") != std::string::npos)
+          expected = shift < 64 ? uint32_t((value << shift) >> 32) : 0;
+        else
+          expected = shift < 64 ? uint32_t(value >> shift) : 0;
+        auto result = source.step("shift_boundary", state, context);
+        ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+        EXPECT_EQ(uniform ? state.read_uniform_register(0)
+                          : state.read_register(0, 0),
+                  expected);
+      }
+    }
+  }
+}
+
 void check_signed_high_lea(bool uniform) {
   for (const auto arch : {architecture::kSm90, architecture::kSm120}) {
     frontend source;

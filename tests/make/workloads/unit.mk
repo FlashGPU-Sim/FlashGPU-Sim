@@ -424,3 +424,18 @@ $(OBJ_DIR)/sm120/unit/kernel_info_frontend_test.cc.o: \
 $(OBJ_DIR)/sm100/unit/kernel_info_frontend_test.cc.o \
 $(OBJ_DIR)/sm120/unit/kernel_info_frontend_test.cc.o: \
   GPGPUSIM_FLAGS += -DFLASH_GPGPU_SIM_OMP
+
+# Real-core regressions run separately from CUDA-bearing component tests:
+# their subprocesses own a small GPU and the interconnect globals.
+$(BIN_DIR)/sm120/core_tests: \
+  CUDA_LIBS = $(UNIT_SIM_LIB_DIR)/libcudart.so -Wl,-rpath,$(UNIT_SIM_LIB_DIR)
+$(BIN_DIR)/sm120/core_tests: $(UNIT_SIM_LIB_DIR)/libcudart.so $(UNIT_MK)
+$(BIN_DIR)/sm120/core_tests: \
+  GPGPUSIM_FLAGS += -DFLASH_GPGPU_SIM -DFLASH_GPGPU_SIM_OMP
+$(OBJ_DIR)/sm120/core/predicated_atomic_test.cc.o \
+$(OBJ_DIR)/sm120/core/sass_frontend_lifecycle_test.cc.o: \
+  INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
+$(OBJ_DIR)/sm120/core/predicated_atomic_test.cc.o \
+$(OBJ_DIR)/sm120/core/sass_frontend_lifecycle_test.cc.o: \
+  $(wildcard ../libcuda/*.h) $(wildcard ../src/gpgpu-sim/*.h) \
+  ../src/abstract_hardware_model.h $(UNIT_MK)
