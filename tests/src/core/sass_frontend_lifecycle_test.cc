@@ -13,6 +13,7 @@
 #include "gpgpu-sim/flash/frontend/execution_frontend.h"
 #include "gpgpu-sim/flash/sass/runtime/runtime_adapter.h"
 #include "kernel_info.h"
+#include "gpgpu-sim/flash/tma.h"
 #include "option_parser.h"
 
 namespace {
@@ -25,7 +26,7 @@ class TestGpu : public exec_gpgpu_sim {
 };
 
 enum class Scenario { kReusedAddress, kReset, kDistinctAddress, kSameLaunch,
-                      kIdentity, kAtomic, kPredicatedAtomic };
+                      kIdentity, kAtomic, kPredicatedAtomic, kNativeTma, kPtxTma, kMaskedTma, kFastTma };
 
 void CheckFrontend(Scenario scenario, unsigned lanes = 1) {
   gpgpu_context ctx;
@@ -44,6 +45,41 @@ void CheckFrontend(Scenario scenario, unsigned lanes = 1) {
   TestGpu gpu(config, &ctx);
   gpu.init();
   auto *core = gpu.core();
+  if (scenario == Scenario::kNativeTma || scenario == Scenario::kPtxTma ||
+      scenario == Scenario::kMaskedTma || scenario == Scenario::kFastTma) {
+    kernel_info_t launch(dim3(1), dim3(32), "tma_issue", &ctx, 0, 98762);
+    core->set_kernel(&launch);
+    barrier_set_t barriers(core, 64, 32, 16, 32);
+    warp_set_t warps; warps.set(0);
+    barriers.allocate_barrier(0, warps);
+    flash_gpgpu_sim::tma_unit_t tma(core, &barriers, nullptr, nullptr);
+    active_mask_t active;
+    if (scenario != Scenario::kMaskedTma) active.set(0);
+    warp_inst_t inst(gpu.getShaderCoreConfig());
+    inst.issue(active, 0, 0, 0, 0, 0);
+    inst.latency = scenario == Scenario::kFastTma ? 1 : 44;
+    if (scenario == Scenario::kNativeTma) inst.set_dependency_control({});
+    inst_t::tma_static_info_t info;
+    info.tma_type = inst_t::tma_static_info_t::TMA_NORMAL;
+    info.src_space = inst_t::tma_static_info_t::TMA_GLOBAL;
+    info.dst_space = inst_t::tma_static_info_t::TMA_SHARED_CTA;
+    inst.set_tma_static_info(info);
+    if (active.any()) {
+      inst_t::tma_dyn_info_t dynamic;
+      dynamic.src_addr = 0x200000;
+      dynamic.dst_addr = 0x400;
+      dynamic.mbar_addr = 0x80;
+      dynamic.size_in_bytes = 128;
+      inst.set_tma_dyn_info(0, dynamic);
+    }
+    // Admit a real transaction, but do not advance the asynchronous engine:
+    // the issue-side warp hold is independent of data completion.
+    tma.warp_reaches_tma(0, 0, &inst);
+    const bool expected = scenario == Scenario::kPtxTma;
+    const bool held = barriers.warp_waiting_at_barrier(0);
+    if (held != expected) fprintf(stderr, "TMA held=%d expected=%d\n", held, expected);
+    std::exit(held == expected ? 0 : 1);
+  }
   const uint64_t address = reinterpret_cast<uint64_t>(gpu.gpu_malloc(4));
   const uint32_t initial = 7;
   gpu.get_global_memory()->write(address, 4, &initial, nullptr, nullptr);
@@ -159,3 +195,16 @@ TEST(SassFrontendLifecycleTest, PredicatedOffAtomicAccounting) {
   ASSERT_EXIT(CheckFrontend(Scenario::kPredicatedAtomic), testing::ExitedWithCode(0), "");
 }
 }  // namespace
+
+TEST(SassFrontendLifecycleTest, NativeTmaAvoidsPtxProxyHold) {
+  ASSERT_EXIT(CheckFrontend(Scenario::kNativeTma), testing::ExitedWithCode(0), "");
+}
+TEST(SassFrontendLifecycleTest, PtxTmaKeepsProxyHold) {
+  ASSERT_EXIT(CheckFrontend(Scenario::kPtxTma), testing::ExitedWithCode(0), "");
+}
+TEST(SassFrontendLifecycleTest, MaskedTmaDoesNotHoldWarp) {
+  ASSERT_EXIT(CheckFrontend(Scenario::kMaskedTma), testing::ExitedWithCode(0), "");
+}
+TEST(SassFrontendLifecycleTest, SingleCycleTmaDoesNotHoldWarp) {
+  ASSERT_EXIT(CheckFrontend(Scenario::kFastTma), testing::ExitedWithCode(0), "");
+}
