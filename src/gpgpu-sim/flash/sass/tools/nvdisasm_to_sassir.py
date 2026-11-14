@@ -117,7 +117,7 @@ def find_kernel_section(sections: list[ElfSection], kernel_name: str) -> ElfSect
 def find_kernel_constant_banks(
     data: bytes, sections: list[ElfSection], kernel_name: str
 ) -> list[KernelConstantBank]:
-    pattern = re.compile(rf"\.nv\.constant([0-9]+)\.{re.escape(kernel_name)}")
+    pattern = re.compile(rf"\.nv\.constant([0-9]+)(?:\.{re.escape(kernel_name)})?")
     banks: dict[int, bytes] = {}
     for section in sections:
         match = pattern.fullmatch(section.name)
@@ -135,6 +135,75 @@ def find_kernel_constant_banks(
             )
         banks[index] = data[section.offset : section.offset + section.size]
     return [KernelConstantBank(index, banks[index]) for index in sorted(banks)]
+
+
+def constant_global_relocations(data, sections, kernel_name):
+    """Export CUDA R_CUDA_64 pointers to device globals.
+
+    Other relocation targets/types fail explicitly rather than exporting stale
+    addresses. Initialized local objects carry their exact initial bytes.
+    """
+    table = struct.unpack_from("<Q", data, 0x28)[0]
+    stride = struct.unpack_from("<H", data, 0x3A)[0]
+    headers = [struct.unpack_from("<IIQQQQIIQQ", data, table + i * stride)
+               for i in range(len(sections))]
+    pattern = re.compile(rf"\.nv\.constant([0-9]+)(?:\.{re.escape(kernel_name)})?")
+    for h in headers:
+        if h[1] not in (4, 9):
+            continue
+        if h[7] >= len(sections):
+            raise ValueError("invalid relocation target section")
+        match = pattern.fullmatch(sections[h[7]].name)
+        if match is None or int(match[1]) == 0 or h[5] == 0:
+            continue
+        if h[1] != 4 or h[9] != 24 or h[5] % 24 or h[6] >= len(headers):
+            raise ValueError("unsupported constant-bank relocation table")
+        symtab = headers[h[6]]
+        if symtab[1] != 2 or symtab[9] != 24 or symtab[6] >= len(headers):
+            raise ValueError("invalid relocation symbol table")
+        strings = headers[symtab[6]]
+        names = data[strings[4]:strings[4] + strings[5]]
+        for pos in range(h[4], h[4] + h[5], 24):
+            offset, info, addend = struct.unpack_from("<QQq", data, pos)
+            index = info >> 32
+            if info & 0xffffffff != 2 or (index + 1) * 24 > symtab[5]:
+                raise ValueError("unsupported constant-bank CUDA relocation")
+            name, flags, _, section, value, size = struct.unpack_from(
+                "<IBBHQQ", data, symtab[4] + index * 24)
+            name = _c_string(names, name)
+            if (name and flags & 15 == 2 and section == 0
+                    and value == 0 and size == 0 and addend == 0
+                    and offset + 8 <= headers[h[7]][5]):
+                # This is an unresolved external function, not a data object.
+                # Keep its null link placeholder. Executing the corresponding
+                # CALL.ABS instruction is unsupported and still fails closed;
+                # merely sharing its module must not reject unrelated kernels.
+                start = headers[h[7]][4] + offset
+                if data[start:start + 8] != bytes(8):
+                    raise ValueError("non-null unresolved external function pointer")
+                continue
+            if (section >= len(headers) or not name
+                    or flags & 15 != 1 or size == 0
+                    or value + size > headers[section][5]
+                    or addend < 0 or addend > size
+                    or offset + 8 > headers[h[7]][5]):
+                raise ValueError(f"unsupported device-global relocation: {name}")
+            relocation = (int(match[1]), offset, name, size, addend)
+            if headers[section][1] == SHT_NOBITS and sections[section].name == ".nv.global":
+                yield relocation
+            elif (headers[section][1] == 1 and sections[section].name == ".nv.global.init"
+                  and flags >> 4 == 0):
+                # Local initialized objects (not host-registered mutable globals).
+                # Nested relocations need a separate initializer relocation ABI.
+                if any(x[1] in (4, 9) and x[7] == section and x[5] for x in headers):
+                    raise ValueError("relocated device-global initializer unsupported")
+                start = headers[section][4] + value
+                initial = data[start:start + size]
+                if len(initial) != size:
+                    raise ValueError("truncated device-global initializer")
+                yield relocation + (initial.hex(),)
+            else:
+                raise ValueError(f"unsupported device-global relocation: {name}")
 
 
 def raw_instructions(
@@ -453,6 +522,10 @@ def export_kernel(
         )
     for bank in find_kernel_constant_banks(raw_data, sections, kernel_name):
         write_record(output, "CONSTBANK", bank.index, bank.data.hex())
+
+    for relocation in constant_global_relocations(raw_data, sections, kernel_name):
+        record = "CONSTGLOBAL_INIT" if len(relocation) == 6 else "CONSTGLOBAL"
+        write_record(output, record, *relocation)
 
     decoded_count = 0
     unknown_count = 0

@@ -163,6 +163,13 @@ struct kernel_constant_bank {
   std::vector<uint8_t> data;
 };
 
+struct kernel_constant_global {
+  uint32_t bank = 0;
+  uint64_t offset = 0, size = 0, addend = 0;
+  std::string name;
+  std::vector<uint8_t> initial_data;
+};
+
 struct kernel {
   std::string name;
   std::string decoder_name;
@@ -175,6 +182,7 @@ struct kernel {
   uint32_t parameter_size = 0;
   std::vector<kernel_parameter> parameters;
   std::vector<kernel_constant_bank> constant_banks;
+  std::vector<kernel_constant_global> constant_globals;
   bool has_resources = false;
   kernel_resources resources;
   std::vector<instruction> instructions;
