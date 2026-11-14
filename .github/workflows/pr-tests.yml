@@ -28,6 +28,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Check SASS medium regression gate
+        run: python3 -m unittest discover -s tests/runner/tests -p test_sass_medium_gate.py -v
+
       - name: Read CI job manifests
         id: matrix
         run: |

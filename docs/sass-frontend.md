@@ -285,10 +285,16 @@ to build a package, collect native/NCU results, and run `--profile medium` or
 together: rebuilding a cubin can change instruction scheduling. The queue
 runs four jobs with four physical cores each, in ascending S order.
 
-The [immutable baseline](../tests/baselines/fa3-sass-ccd2-20260914/README.md)
-and [medium checker](../tests/ci/check_sass_medium.py) remain unchanged.
+The [immutable hardware/historical baseline](../tests/baselines/fa3-sass-ccd2-20260914/README.md)
+remains unchanged. Following the public-upstream rebase, the
+[medium checker](../tests/ci/check_sass_medium.py) uses a separate
+[versioned cycle reference](../tests/baselines/fa3-sass-upstream-20261114/README.md),
+with the same numerical checks and +/-0.5% regression threshold. Its provenance
+records isolated controls for the collector, barrier, crossbar and shared-memory
+service changes, including residual drift and comparison to historical NCU.
 Use medium for iterative changes and rerun large for final PR validation;
-never refresh the baseline merely to make a regression pass.
+large has not been requalified by this update. Never refresh a reference merely
+to make a regression pass.
 
 ## Frontend correctness follow-up (2026-11-14)
 
@@ -376,4 +382,10 @@ valid SASS kernels because a PTX-only `function_info` check followed native
 resource lookup. This explains the inspected prior FA3 medium CI launch failure
 at `flash_fwd_launch_template.h:200`; it occurred before kernel simulation.
 Native registration is now checked through the SASS registry. Both standalone
-attribute variants pass; the full medium jobs require a fresh CI run.
+attribute variants pass. Subsequent medium runs exposed cross-fatbin global
+identity, WGMMA metadata downcasts, and native atomic retirement failures;
+production-core reproducers now cover their fixes. The PTX named-barrier delay
+also retains its upstream configuration separately from the native delay.
+After these repairs, all four medium O/LSE checks and 30 production-core tests
+pass. The versioned cycle reference linked above records the separate timing
+model investigation; hosted status is reported on PR #39.

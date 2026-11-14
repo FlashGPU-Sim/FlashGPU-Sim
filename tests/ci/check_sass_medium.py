@@ -7,9 +7,11 @@ import re
 import sys
 
 
-def check(log: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
-    baseline = root / "tests/baselines/fa3-sass-ccd2-20260914/results.csv"
+BASELINE = (Path(__file__).resolve().parents[2] /
+            "tests/baselines/fa3-sass-upstream-20261114/results.csv")
+
+
+def check(log: Path, *, baseline: Path = BASELINE) -> None:
     with baseline.open() as source:
         expected = {
             row["case"]: int(row["sim_cycles"])
@@ -33,7 +35,8 @@ def check(log: Path) -> None:
     actual = int(cycles[0])
     frozen = expected[case]
     drift = 100.0 * (actual - frozen) / frozen
-    print(f"{case}: frozen={frozen} current={actual} drift={drift:+.4f}%")
+    print(f"reference={baseline.parent.name} {case}: frozen={frozen} "
+          f"current={actual} drift={drift:+.4f}%")
     if abs(drift) > 0.5:
         raise SystemExit("FAIL: cycle drift exceeds 0.5%; baseline unchanged")
     print("PASS: O/LSE reference comparison and SASS cycle drift <= 0.5%")
