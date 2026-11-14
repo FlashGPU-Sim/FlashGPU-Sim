@@ -343,7 +343,11 @@ The next audit batch adds these qualified native behaviors:
 - Module-level constant banks and R_CUDA_64 device-global relocations, including
   zero initialization, runtime symbol copy offsets, and exact initialized local
   object bytes. Objects are shared across kernels in one module and initialized
-  once. Unsupported relocation types, nested initializer relocations, and
+  once. Cross-fatbin weak/inline registrations share storage by host identity,
+  even when their device symbol names differ. Native static allocations grow
+  downwards from `STATIC_ALLOC_LIMIT`, above the PTX symbol allocator's 32-bit
+  range; they do not consume the dynamic `cudaMalloc` heap. Unsupported
+  relocation types, nested initializer relocations, and
   host-registered constant/extern/initialized globals remain unsupported.
   Unresolved external function pointers retain null placeholders; this does not
   enable executing CALL.ABS.

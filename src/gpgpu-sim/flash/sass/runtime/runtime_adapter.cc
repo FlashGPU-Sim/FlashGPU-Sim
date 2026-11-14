@@ -440,6 +440,7 @@ struct global_registry {
   std::unordered_map<unsigned, global_module> modules;
   std::unordered_map<const void *, host_global> hosts;
   std::unordered_map<std::string, unsigned> paths;
+  std::unordered_map<::gpgpu_t *, uint64_t> static_next;
 };
 global_registry &device_globals() {
   static global_registry r;
@@ -455,8 +456,22 @@ device_global ensure_global(global_module &module, const std::string &name,
   }
   if (!module.gpu || !size || size > SIZE_MAX)
     panic("device-global allocation unavailable: " + name);
-  device_global symbol{reinterpret_cast<uint64_t>(module.gpu->gpu_malloc(size)),
-                       size};
+  // PTX's symbol table allocates static objects using a 32-bit cursor. Put
+  // native static objects above that range, below the generic local-memory
+  // window, and grow downwards. In particular, registration of unused CUDA
+  // header globals must not consume cudaMalloc space and shift all tensors.
+  constexpr uint64_t lower = uint64_t{1} << 32;
+  static_assert(STATIC_ALLOC_LIMIT > lower, "native static address space");
+  auto &cursors = device_globals().static_next;
+  auto inserted = cursors.emplace(module.gpu, STATIC_ALLOC_LIMIT);
+  auto &next = inserted.first->second;
+  if (size > next - lower)
+    panic("native static device-global address space exhausted: " + name);
+  const uint64_t address = (next - size) & ~uint64_t{255};
+  if (address < lower)
+    panic("native static device-global alignment overflow: " + name);
+  next = address;
+  device_global symbol{address, size};
   module.gpu->gpu_memset(symbol.address, 0, size);
   module.symbols.emplace(name, symbol);
   return symbol;
