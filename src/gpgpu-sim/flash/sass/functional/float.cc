@@ -213,6 +213,37 @@ step_result execute_f2fp_pack_ab(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
+// FP32 products are exact in FP64. TwoSum retains the addition residual,
+// including tiny addends lost by a plain double sum. No host rounding-mode
+// mutation is needed, so concurrent simulator threads remain independent.
+float directed_fma(float a, float b, float c, const std::string &opcode) {
+  if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c))
+    return std::fma(a, b, c);
+  const double product = static_cast<double>(a) * b;
+  const double sum = product + static_cast<double>(c);
+  const double recovered = sum - product;
+  const double residual = (product - (sum - recovered)) + (c - recovered);
+  const bool down = opcode == "FFMA.RM" || opcode == "FFMA.FTZ.RM";
+  const bool up = opcode == "FFMA.RP";
+  if (sum == 0.0 && residual == 0.0) {
+    const bool product_negative = std::signbit(a) != std::signbit(b);
+    const bool both_zero = product == 0.0 && c == 0.0f;
+    const bool negative = both_zero && product_negative == std::signbit(c)
+                              ? product_negative
+                              : down;
+    return negative ? -0.0f : 0.0f;
+  }
+  float result = static_cast<float>(sum);
+  const double rounded = result;
+  const bool above = rounded > sum || (rounded == sum && residual < 0.0);
+  const bool below = rounded < sum || (rounded == sum && residual > 0.0);
+  if ((down && above) || (up && below))
+    result = std::nextafter(result, down ? -INFINITY : INFINITY);
+  else if (!down && !up && ((sum > 0 && above) || (sum < 0 && below)))
+    result = std::nextafter(result, 0.0f);
+  return result;
+}
+
 step_result execute_ffma(const instruction &inst, warp_state &state,
                          execution_context &) {
   const bool uniform = inst.opcode.rfind("UFFMA", 0) == 0;
@@ -239,7 +270,10 @@ step_result execute_ffma(const instruction &inst, warp_state &state,
       b = flush_subnormal(b);
       c = flush_subnormal(c);
     }
-    float result = std::fma(a, b, c);
+    const bool directed = inst.opcode == "FFMA.RM" ||
+                          inst.opcode == "FFMA.RP" || inst.opcode == "FFMA.RZ";
+    float result =
+        directed ? directed_fma(a, b, c, inst.opcode) : std::fma(a, b, c);
     if (ftz)
       result = flush_subnormal(result);
     result_bits = float_bits(result);
@@ -631,6 +665,9 @@ void register_float_semantics(frontend &target) {
   target.register_semantics("UF2I.FTZ.U32.TRUNC.NTZ", execute_f2i);
   target.register_semantics("F2FP.F16.F32.PACK_AB", execute_f2fp_pack_ab);
   target.register_semantics("FFMA", execute_ffma);
+  target.register_semantics("FFMA.RM", execute_ffma);
+  target.register_semantics("FFMA.RP", execute_ffma);
+  target.register_semantics("FFMA.RZ", execute_ffma);
   target.register_semantics("FFMA.FTZ", execute_ffma);
   target.register_semantics("UFFMA.FTZ", execute_ffma);
   target.register_semantics("HFMA2", execute_hfma2);

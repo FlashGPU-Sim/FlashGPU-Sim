@@ -231,7 +231,7 @@ unsigned tensor_dimension(const std::string &opcode) {
 }
 
 unsigned integer_profile_index(const std::string &base) {
-  if (base == "SHFL")
+  if (base == "SHFL" || base == "MATCH" || base == "REDUX")
     return 5;
   if (base == "IMAD" || base == "UIMAD")
     return 3;
@@ -685,6 +685,7 @@ void classify(const instruction &source, const timing_profile &profile,
              base == "VOTEU" || base == "VIMNMX" || base == "UVIMNMX" ||
              base == "IADD" || base == "VIADD" || base == "VIADDMNMX" ||
              base == "SGXT" || base == "USGXT" || base == "SHFL" ||
+             source.opcode == "MATCH.ANY" || source.opcode == "REDUX.OR" ||
              base == "DEPBAR" || base == "CCTL" || base == "UTMACCTL" ||
              base == "USETMAXREG" || source.opcode == "WARPGROUP.ARRIVE" ||
              base == "YIELD") {
@@ -1064,8 +1065,24 @@ timing_instruction::timing_instruction(const instruction &source,
   initialize(source, profile);
 }
 
-void timing_instruction::initialize(const instruction &source,
+void timing_instruction::initialize(const instruction &native,
                                     const timing_profile &profile) {
+  instruction source = native;
+  // Wide comparisons omit pair-width suffixes in nvdisasm operands.
+  // Both words must participate in scoreboard and register-file dependencies.
+  const auto base = base_opcode(source.opcode);
+  if ((base == "ISETP" || base == "UISETP") &&
+      (source.opcode.find(".U64.") != std::string::npos ||
+       source.opcode.find(".S64.") != std::string::npos) &&
+      source.operands.size() >= 4) {
+    for (unsigned i : {2u, 3u}) {
+      auto &value = source.operands[i];
+      if ((value.kind == operand_kind::kRegister ||
+           value.kind == operand_kind::kUniformRegister) &&
+          canonical_register(value.kind, value.index) != 0)
+        value.wide = true;
+    }
+  }
   const bool resolved_symbol_call =
       source.opcode == "CALL.REL.NOINC" && source.operands.size() == 1 &&
       std::any_of(source.attributes.begin(), source.attributes.end(),

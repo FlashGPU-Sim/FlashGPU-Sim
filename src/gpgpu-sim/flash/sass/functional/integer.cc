@@ -92,7 +92,16 @@ step_result execute_iadd3(const instruction &inst, warp_state &state,
 
 step_result execute_iadd3x(const instruction &inst, warp_state &state,
                            execution_context &) {
-  if (!has_typed_operands(inst, 6) ||
+  // Blackwell disassembly spells out discarded carry destinations. Keep
+  // live carry outputs unsupported until their semantics have a test oracle.
+  const bool discarded_outputs =
+      has_typed_operands(inst, 8) &&
+      inst.operands[1].kind == operand_kind::kPredicate &&
+      inst.operands[1].index == 7 &&
+      inst.operands[2].kind == operand_kind::kPredicate &&
+      inst.operands[2].index == 7;
+  const unsigned source = discarded_outputs ? 3 : 1;
+  if ((!has_typed_operands(inst, 6) && !discarded_outputs) ||
       inst.operands[0].kind != operand_kind::kRegister)
     return unsupported(inst, "unsupported IADD3.X operand form");
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
@@ -104,11 +113,12 @@ step_result execute_iadd3x(const instruction &inst, warp_state &state,
     uint32_t c = 0;
     bool carry0 = false;
     bool carry1 = false;
-    if (!read_u32_operand(inst.operands[1], state, lane, a) ||
-        !read_u32_operand(inst.operands[2], state, lane, b) ||
-        !read_u32_operand(inst.operands[3], state, lane, c) ||
-        !read_predicate_operand(inst.operands[4], state, lane, carry0) ||
-        !read_predicate_operand(inst.operands[5], state, lane, carry1))
+    if (!read_u32_operand(inst.operands[source], state, lane, a) ||
+        !read_u32_operand(inst.operands[source + 1], state, lane, b) ||
+        !read_u32_operand(inst.operands[source + 2], state, lane, c) ||
+        !read_predicate_operand(inst.operands[source + 3], state, lane,
+                                carry0) ||
+        !read_predicate_operand(inst.operands[source + 4], state, lane, carry1))
       return unsupported(inst, "unsupported IADD3.X source");
     state.write_register(lane, inst.operands[0].index,
                          a + b + c + static_cast<uint32_t>(carry0) +
@@ -742,9 +752,13 @@ step_result execute_isetp(const instruction &inst, warp_state &state,
     return unsupported(
         inst, "only ISETP AND/OR/XOR with a discarded second output is "
               "implemented");
-  const bool wide_compare = inst.opcode.find(".U64.") != std::string::npos;
-  const bool unsigned_compare =
-      wide_compare || inst.opcode.find(".U32.") != std::string::npos;
+  const bool signed_wide = inst.opcode.find(".S64.") != std::string::npos;
+  const bool wide_compare =
+      signed_wide || inst.opcode.find(".U64.") != std::string::npos;
+  if (wide_compare && extended)
+    return unsupported(inst, "extended 64-bit ISETP is not implemented");
+  const bool unsigned_compare = (wide_compare && !signed_wide) ||
+                                inst.opcode.find(".U32.") != std::string::npos;
   enum class comparison { kEq, kNe, kLt, kLe, kGt, kGe };
   comparison operation;
   if (inst.opcode.find(".EQ.") != std::string::npos)
@@ -778,7 +792,7 @@ step_result execute_isetp(const instruction &inst, warp_state &state,
     if (wide_compare) {
       if (!read_u64_operand(inst.operands[2], state, lane, a) ||
           !read_u64_operand(inst.operands[3], state, lane, b))
-        return unsupported(inst, "unsupported ISETP.U64 source");
+        return unsupported(inst, "unsupported 64-bit ISETP source");
     } else {
       uint32_t a32 = 0;
       uint32_t b32 = 0;
@@ -788,6 +802,10 @@ step_result execute_isetp(const instruction &inst, warp_state &state,
       a = a32;
       b = b32;
     }
+    const int64_t signed_a =
+        signed_wide ? static_cast<int64_t>(a) : static_cast<int32_t>(a);
+    const int64_t signed_b =
+        signed_wide ? static_cast<int64_t>(b) : static_cast<int32_t>(b);
     bool compared = false;
     if (operation == comparison::kEq)
       compared = a == b;
@@ -802,13 +820,13 @@ step_result execute_isetp(const instruction &inst, warp_state &state,
     else if (unsigned_compare && operation == comparison::kGe)
       compared = a >= b;
     else if (operation == comparison::kLt)
-      compared = static_cast<int32_t>(a) < static_cast<int32_t>(b);
+      compared = signed_a < signed_b;
     else if (operation == comparison::kLe)
-      compared = static_cast<int32_t>(a) <= static_cast<int32_t>(b);
+      compared = signed_a <= signed_b;
     else if (operation == comparison::kGt)
-      compared = static_cast<int32_t>(a) > static_cast<int32_t>(b);
+      compared = signed_a > signed_b;
     else
-      compared = static_cast<int32_t>(a) >= static_cast<int32_t>(b);
+      compared = signed_a >= signed_b;
     if (extended &&
         !extend_comparison(inst, a, b, unsigned_compare, extension, compared))
       return unsupported(inst, "unsupported extended ISETP comparison");
@@ -1008,7 +1026,12 @@ step_result execute_lea(const instruction &inst, warp_state &state,
           return unsupported(inst, "unsupported ULEA carry output");
         const unsigned amount =
             static_cast<unsigned>(inst.operands[4].immediate);
-        const uint64_t wide = (static_cast<uint64_t>(a) << amount) + b;
+        // LEA carry is the low-word addition carry, not bits shifted out
+        // of A (the high instruction accounts for those separately). Negated
+        // zero must retain the +1 of two's complement for a no-borrow result.
+        const uint64_t wide =
+            carry_addend(inst.operands[2], uint32_t(a << amount)) +
+            carry_addend(inst.operands[3], b);
         state.write_uniform_predicate(carry->index, (wide >> 32) != 0);
       }
       state.write_uniform_register(inst.operands[0].index, result);
@@ -1031,7 +1054,12 @@ step_result execute_lea(const instruction &inst, warp_state &state,
           return unsupported(inst, "unsupported LEA carry output");
         const unsigned amount =
             static_cast<unsigned>(inst.operands[4].immediate);
-        const uint64_t wide = (static_cast<uint64_t>(a) << amount) + b;
+        // LEA carry is the low-word addition carry, not bits shifted out
+        // of A (the high instruction accounts for those separately). Negated
+        // zero must retain the +1 of two's complement for a no-borrow result.
+        const uint64_t wide =
+            carry_addend(inst.operands[2], uint32_t(a << amount)) +
+            carry_addend(inst.operands[3], b);
         state.write_predicate(lane, carry->index, (wide >> 32) != 0);
       }
       state.write_register(lane, inst.operands[0].index, result);
@@ -1348,6 +1376,9 @@ void register_integer_semantics(frontend &target) {
   target.register_semantics("ISETP.NE.AND.EX", execute_isetp);
   target.register_semantics("ISETP.NE.U32.AND.EX", execute_isetp);
   target.register_semantics("ISETP.EQ.OR.EX", execute_isetp);
+  target.register_semantics("ISETP.EQ.U64.AND", execute_isetp);
+  target.register_semantics("ISETP.EQ.U64.OR", execute_isetp);
+  target.register_semantics("ISETP.GE.S64.AND", execute_isetp);
   target.register_semantics("ISETP.NE.U64.AND", execute_isetp);
   target.register_semantics("ISETP.GE.U64.AND", execute_isetp);
   target.register_semantics("ISETP.LT.U32.AND", execute_isetp);
@@ -1381,6 +1412,7 @@ void register_integer_semantics(frontend &target) {
   target.register_semantics("UISETP.GT.U32.OR", execute_uisetp);
   target.register_semantics("UISETP.GT.AND", execute_uisetp);
   target.register_semantics("UISETP.GE.AND", execute_uisetp);
+  target.register_semantics("UISETP.GE.AND.EX", execute_uisetp);
   target.register_semantics("UISETP.GE.U32.AND", execute_uisetp);
   target.register_semantics("UISETP.GE.U64.AND", execute_uisetp);
   target.register_semantics("LEA", execute_lea);
