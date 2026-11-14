@@ -322,3 +322,45 @@ Run the lifecycle/atomic group with:
 ```bash
 python3 tests/run_tests.py -c SM120_RTX5090 run --arch sm120 --group core
 ```
+
+### Additional semantic backports (2026-11-14)
+
+The next audit batch adds these qualified native behaviors:
+
+- LEA/ULEA low-word addition carry (excluding bits shifted out), the discarded
+  carry-output IADD3.X form, signed/unsigned 64-bit comparisons with paired
+  register dependencies, and directed FFMA rounding without changing the
+  host rounding mode.
+- Divergent BRX within BSSY, partial EXIT unwinding, converged guarded VOTEU,
+  aliased VOTE/MATCH inputs, REDUX.OR, full-warp collective rendezvous with
+  separate return paths, packed named-barrier operands, and the measured
+  BRA.U.NOT_TID0 condition. Unqualified divergent guards still fail explicitly.
+- Deferred barrier generations remain pending for the timing handoff even on
+  the last arriving warp. Global consumers participate in deferred ordering.
+- TMA shared-memory swizzling includes the destination base phase. Native
+  instructions carrying explicit dependency controls do not receive the PTX
+  issue-occupancy warp hold a second time. The PTX hold is unchanged.
+- Module-level constant banks and R_CUDA_64 device-global relocations, including
+  zero initialization, runtime symbol copy offsets, and exact initialized local
+  object bytes. Objects are shared across kernels in one module and initialized
+  once. Unsupported relocation types, nested initializer relocations, and
+  host-registered constant/extern/initialized globals remain unsupported.
+  Unresolved external function pointers retain null placeholders; this does not
+  enable executing CALL.ABS.
+
+Local validation: 502 SM120 component tests, 20 production-core tests and 18
+Python runner/exporter tests pass. The component set retains the CUDA 13.3
+`trace_validation_test.cc` exclusion described above. Ten initial component
+failures and thirteen additional control-flow failures were reproduced before
+repair; the native TMA hold regression also failed while its PTX/masked controls
+passed. Existing LEA and last-arriver expectations were updated to the corrected
+semantics. Tests now depend on SASS headers so changed kernel/warp layouts do not
+leave stale test objects after an incremental build.
+
+`tests/src/unit/fixtures/sass_device_globals.cu` is a small standalone runtime
+regression: build it with `nvcc -arch=sm_120a --cudart shared`, then use the
+custom-executable workflow above. Two kernels must produce
+`values=0,11,18,54 observed=0` and `mismatches=0`; this passes in native SASS timing
+simulation. The core suite separately checks initialized local state survives a
+second kernel relocation. These are semantic checks, not a new calibration or
+full FA3/DSV4 performance sweep.
