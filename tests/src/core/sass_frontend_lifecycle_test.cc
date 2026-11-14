@@ -14,6 +14,8 @@
 #include "gpgpu-sim/flash/sass/runtime/runtime_adapter.h"
 #include "kernel_info.h"
 #include "gpgpu-sim/flash/tma.h"
+#include "gpgpu-sim/flash/wgmma/tensor_wgmma.h"
+#include "gpgpu-sim/mem_fetch.h"
 #include "option_parser.h"
 
 namespace {
@@ -25,8 +27,27 @@ class TestGpu : public exec_gpgpu_sim {
   }
 };
 
+// Exercise the actual legacy bypass response path without issuing a second
+// functional atomic or requiring a complete memory-system simulation.
+class AtomicResponseLsu : public ldst_unit {
+ public:
+  AtomicResponseLsu(shader_core_ctx *core, const shader_core_config *config,
+                    const memory_config *memory)
+      : ldst_unit(nullptr, nullptr, core, nullptr, nullptr, config, memory,
+                  nullptr, 0, 0, static_cast<l1_cache *>(nullptr)) {}
+  void retire(mem_fetch *response) {
+    m_next_global = response;
+    writeback();
+    m_next_wb.clear();
+  }
+};
+
 enum class Scenario { kReusedAddress, kReset, kDistinctAddress, kSameLaunch,
-                      kModuleGlobals, kIdentity, kAtomic, kPredicatedAtomic, kNativeTma, kPtxTma, kMaskedTma, kFastTma };
+                      kModuleGlobals, kSharedGlobal, kGlobalSizeConflict,
+                      kGlobalModuleConflict, kIdentity, kAtomic, kPredicatedAtomic,
+                      kPtxNamedBarrier, kNativeNamedBarrier,
+                      kPtxExitBarrier, kNativeExitBarrier,
+                      kNativeTma, kPtxTma, kMaskedTma, kFastTma };
 
 void CheckFrontend(Scenario scenario, unsigned lanes = 1) {
   gpgpu_context ctx;
@@ -41,10 +62,93 @@ void CheckFrontend(Scenario scenario, unsigned lanes = 1) {
   const char *args[] = {"frontend-test", "-gpgpu_n_clusters", "1",
                         "-gpgpu_n_cores_per_cluster", "1", "-network_mode", "2"};
   option_parser_cmdline(options, 7, args);
+  const bool named_barrier = scenario == Scenario::kPtxNamedBarrier ||
+      scenario == Scenario::kNativeNamedBarrier ||
+      scenario == Scenario::kPtxExitBarrier || scenario == Scenario::kNativeExitBarrier;
+  if (named_barrier) {
+    const char *latency_args[] = {"barrier-test", "-gpgpu_barrier_release_latency",
+                                  "7", "-gpgpu_cta_barrier_release_latency", "3"};
+    option_parser_cmdline(options, 5, latency_args);
+  }
   config.init();
   TestGpu gpu(config, &ctx);
   gpu.init();
   auto *core = gpu.core();
+  if (named_barrier) {
+    const bool native = scenario == Scenario::kNativeNamedBarrier ||
+                        scenario == Scenario::kNativeExitBarrier;
+    const bool exit = scenario == Scenario::kNativeExitBarrier ||
+                      scenario == Scenario::kPtxExitBarrier;
+    barrier_set_t barriers(core, 64, 32, 16, 32);
+    warp_set_t warps; warps.set(0); warps.set(1);
+    barriers.allocate_barrier(0, warps);
+    warp_inst_t inst(gpu.getShaderCoreConfig());
+    inst.op = BARRIER_OP;
+    inst.bar_type = SYNC;
+    inst.set_bar_id(0);
+    inst.set_bar_count(static_cast<unsigned>(-1));
+    if (native) inst.set_dependency_control({});
+    barriers.warp_reaches_barrier(0, 0, &inst);
+    if (exit) barriers.warp_exit(1);
+    else barriers.warp_reaches_barrier(0, 1, &inst);
+    const unsigned latency = native ? 3 : 7;
+    bool ok = barriers.warp_waiting_at_barrier(0);
+    for (unsigned i = 1; i <= latency; ++i) {
+      barriers.cycle();
+      ok &= barriers.warp_waiting_at_barrier(0) == (i < latency);
+    }
+    std::exit(ok ? 0 : 1);
+  }
+  if (scenario == Scenario::kGlobalSizeConflict ||
+      scenario == Scenario::kGlobalModuleConflict) {
+    using namespace flash_gpgpu_sim::sass;
+    uint64_t host_symbol = 0, unrelated_symbol = 0;
+    register_runtime_device_global(98770, &host_symbol, "shared", 8, &gpu);
+    if (scenario == Scenario::kGlobalModuleConflict)
+      register_runtime_device_global(98771, &unrelated_symbol, "shared", 8, &gpu);
+    register_runtime_device_global(98771, &host_symbol, "shared",
+        scenario == Scenario::kGlobalSizeConflict ? 16 : 8, &gpu);
+    std::exit(0);
+  }
+  if (scenario == Scenario::kSharedGlobal) {
+    using namespace flash_gpgpu_sim::sass;
+    // Header-defined inline/weak CUDA variables have one host identity but
+    // registrations in every translation unit's fatbin.
+    uint64_t host_symbol = 0, unrelated_symbol = 0;
+    register_runtime_device_global(98770, &host_symbol, "shared", 8, &gpu);
+    const auto address = runtime_device_global_address(&host_symbol, 8, 0);
+    uint64_t value = 123;
+    gpu.get_global_memory()->write(address, 8, &value, nullptr, nullptr);
+    register_runtime_device_global(98771, &host_symbol, "other_TU_shared", 8, &gpu);
+    register_runtime_device_global(98771, &host_symbol, "other_TU_shared", 8, &gpu);
+    register_runtime_device_global(98772, &unrelated_symbol, "shared", 8, &gpu);
+    bool ok = runtime_device_global_address(&host_symbol, 8, 0) == address;
+    const auto unrelated = runtime_device_global_address(&unrelated_symbol, 8, 0);
+    ok &= unrelated != address;
+    gpu.get_global_memory()->read(address, 8, &value);
+    ok &= value == 123;
+    gpu.get_global_memory()->read(unrelated, 8, &value);
+    ok &= value == 0;
+    for (unsigned module : {98770u, 98771u}) {
+      char path[] = "/tmp/flashgpu-shared-global-XXXXXX";
+      int fd = mkstemp(path);
+      if (fd < 0) std::exit(2);
+      close(fd);
+      setenv("FLASHGPU_SASS_IR", path, 1);
+      ok &= runtime_sassir_path("reader", module) == path;
+      kernel image;
+      image.constant_banks.push_back({4, std::vector<uint8_t>(8)});
+      image.constant_globals.push_back({4, 0, 8, 0,
+          module == 98770 ? "shared" : "other_TU_shared", {}});
+      relocate_runtime_kernel_globals(image, path);
+      uint64_t pointer = 0;
+      for (unsigned i = 0; i < 8; ++i)
+        pointer |= uint64_t(image.constant_banks[0].data[i]) << (8 * i);
+      ok &= pointer == address;
+      std::remove(path);
+    }
+    std::exit(ok ? 0 : 1);
+  }
   if (scenario == Scenario::kModuleGlobals) {
     using namespace flash_gpgpu_sim::sass;
     constexpr unsigned module = 98763;
@@ -164,10 +268,12 @@ void CheckFrontend(Scenario scenario, unsigned lanes = 1) {
   if (scenario == Scenario::kAtomic || scenario == Scenario::kPredicatedAtomic) {
     active_mask_t mask;
     for (unsigned lane = 0; lane < lanes; ++lane) mask.set(lane);
+    warp_inst_t issued(gpu.getShaderCoreConfig());
     for (unsigned pc = 0; pc <= 48; pc += 16) {
       warp_inst_t dynamic = *frontend->fetch(0, pc);
       dynamic.issue(mask, 0, pc, 0, 0, 0);
       frontend->execute(dynamic);
+      if (pc == 48) issued = dynamic;
     }
     uint32_t value = 0;
     gpu.get_global_memory()->read(address, 4, &value);
@@ -176,7 +282,20 @@ void CheckFrontend(Scenario scenario, unsigned lanes = 1) {
     ok = actual == expected && value == (expected ? 42u : initial);
     if (!ok) fprintf(stderr, "atomic count=%u expected=%u value=%u\n",
                      actual, expected, value);
-    if (ok) core->decrement_atomic_count(0, expected);
+    if (ok) {
+      AtomicResponseLsu lsu(core, gpu.getShaderCoreConfig(), gpu.getMemoryConfig());
+      while (!issued.accessq_empty()) {
+        auto *response = new mem_fetch(issued.accessq_back(), &issued, 0, 8,
+                                      0, 0, 0, gpu.getMemoryConfig(), 0);
+        issued.accessq_pop_back();
+        lsu.retire(response);
+      }
+      ok &= core->get_shd_warp(0)->get_n_atomic() == 0;
+      gpu.get_global_memory()->read(address, 4, &value);
+      ok &= value == (expected ? 42u : initial);
+      if (!ok) fprintf(stderr, "atomic response left count=%u value=%u\n",
+                       core->get_shd_warp(0)->get_n_atomic(), value);
+    }
   } else if (scenario == Scenario::kIdentity) {
     core->get_shd_warp(0)->set_done_exit();
     ok &= frontend->logical_cta_id(0) == 37 && frontend->cta_warp_id(0) == 0;
@@ -254,4 +373,63 @@ TEST(SassFrontendLifecycleTest, SingleCycleTmaDoesNotHoldWarp) {
 
 TEST(SassFrontendLifecycleTest, ModuleGlobalsRelocateAndInitializeOnlyOnce) {
   ASSERT_EXIT(CheckFrontend(Scenario::kModuleGlobals), testing::ExitedWithCode(0), "");
+}
+
+TEST(SassFrontendLifecycleTest, SharedHostGlobalRelocatesAcrossFatbins) {
+  ASSERT_EXIT(CheckFrontend(Scenario::kSharedGlobal), testing::ExitedWithCode(0), "");
+}
+
+TEST(SassFrontendLifecycleTest, SharedHostGlobalRejectsSizeConflict) {
+  ASSERT_DEATH(CheckFrontend(Scenario::kGlobalSizeConflict),
+               "conflicting device-global host registration");
+}
+
+TEST(SassFrontendLifecycleTest, SharedHostGlobalRejectsModuleConflict) {
+  ASSERT_DEATH(CheckFrontend(Scenario::kGlobalModuleConflict),
+               "conflicting device-global module registration");
+}
+
+TEST(SassFrontendLifecycleTest, NativeWgmmaWaitUsesProjectedMetadata) {
+  warp_inst_t inst;
+  inst_t::wgmma_static_info_t info;
+  info.operation = inst_t::wgmma_static_info_t::WGMMA_WAIT_GROUP;
+  info.wait_group_num = 1;
+  inst.set_wgmma_static_info(info);
+  EXPECT_EQ(flash_gpgpu_sim::wgmma_wait_group_num_from_inst(&inst), 1u);
+}
+
+TEST(SassFrontendLifecycleTest, NativeWgmmaTrafficUsesProjectedMetadata) {
+  shader_core_config config(nullptr);
+  config.warp_size = 32;
+  config.gpgpu_wgmma_rf_traffic_enable = true;
+  config.gpgpu_wgmma_rf_traffic_assume_accumulate = false;
+  config.gpgpu_wgmma_rf_traffic_include_rs_a = false;
+  warp_inst_t inst;
+  inst_t::wgmma_static_info_t info;
+  info.operation = inst_t::wgmma_static_info_t::WGMMA_MMA_ASYNC;
+  info.accumulator_bytes_per_thread = 128;
+  info.register_a_registers_per_thread = 4;
+  inst.set_wgmma_static_info(info);
+  EXPECT_EQ(flash_gpgpu_sim::wgmma_collector_token_bytes_from_inst(&inst, &config),
+            16384u);
+  config.gpgpu_wgmma_rf_traffic_assume_accumulate = true;
+  config.gpgpu_wgmma_rf_traffic_include_rs_a = true;
+  EXPECT_EQ(flash_gpgpu_sim::wgmma_collector_token_bytes_from_inst(&inst, &config),
+            34816u);
+  config.gpgpu_wgmma_rf_traffic_enable = false;
+  EXPECT_EQ(flash_gpgpu_sim::wgmma_collector_token_bytes_from_inst(&inst, &config),
+            0u);
+}
+
+TEST(SassFrontendLifecycleTest, PtxNamedBarrierKeepsUpstreamReleaseLatency) {
+  ASSERT_EXIT(CheckFrontend(Scenario::kPtxNamedBarrier), testing::ExitedWithCode(0), "");
+}
+TEST(SassFrontendLifecycleTest, NativeNamedBarrierKeepsCalibratedReleaseLatency) {
+  ASSERT_EXIT(CheckFrontend(Scenario::kNativeNamedBarrier), testing::ExitedWithCode(0), "");
+}
+TEST(SassFrontendLifecycleTest, PtxWarpExitKeepsUpstreamBarrierReleaseLatency) {
+  ASSERT_EXIT(CheckFrontend(Scenario::kPtxExitBarrier), testing::ExitedWithCode(0), "");
+}
+TEST(SassFrontendLifecycleTest, NativeWarpExitKeepsCalibratedBarrierReleaseLatency) {
+  ASSERT_EXIT(CheckFrontend(Scenario::kNativeExitBarrier), testing::ExitedWithCode(0), "");
 }
