@@ -1446,6 +1446,7 @@ class barrier_set_t {
   warp_set_t m_warp_at_barrier;
   std::vector<barrier_wait_type_t> m_warp_barrier_type;
   std::vector<unsigned> m_warp_named_barrier_id;
+  std::vector<unsigned> m_warp_named_barrier_release_latency;
   warp_set_t named_barrier_waiters(unsigned bar_id,
                                    const warp_set_t &participants) const;
   void release_named_barrier_waiters(const warp_set_t &waiters);

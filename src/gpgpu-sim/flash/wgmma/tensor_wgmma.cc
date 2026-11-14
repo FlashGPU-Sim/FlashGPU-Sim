@@ -313,17 +313,13 @@ wgmma_collector_token_bytes_from_inst(const warp_inst_t *inst,
                                       const shader_core_config *config) {
   if (!config->gpgpu_wgmma_rf_traffic_enable)
     return 0;
-  if (!is_wgmma_mma_async_opcode(wgmma_opcode(inst)))
+  const auto &info = inst->get_wgmma_static_info();
+  if (!info.is_mma_async())
     return 0;
 
-  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
   const unsigned long long warpgroup_threads =
       static_cast<unsigned long long>(WGMMA_WARPGROUP_SIZE) * config->warp_size;
-  const unsigned accumulator_type =
-      static_cast<unsigned>(wgmma_scalar_type_at(ptx_inst, 0, F32_TYPE));
-  const unsigned accumulator_bytes =
-      wgmma_accumulator_regs_per_thread(ptx_inst) *
-      scalar_type_bytes(accumulator_type);
+  const unsigned accumulator_bytes = info.accumulator_bytes_per_thread;
 
   unsigned long long tokens = warpgroup_threads * accumulator_bytes;
   if (config->gpgpu_wgmma_rf_traffic_assume_accumulate)
@@ -331,23 +327,19 @@ wgmma_collector_token_bytes_from_inst(const warp_inst_t *inst,
 
   if (config->gpgpu_wgmma_rf_traffic_include_rs_a) {
     // Register A operands are PTX registers, so count 32-bit register reads.
-    tokens += warpgroup_threads *
-              static_cast<unsigned long long>(
-                  wgmma_register_a_regs_per_thread(ptx_inst)) *
-              4ULL;
+    tokens +=
+        warpgroup_threads *
+        static_cast<unsigned long long>(info.register_a_registers_per_thread) *
+        4ULL;
   }
 
   return tokens;
 }
 
 unsigned wgmma_wait_group_num_from_inst(const warp_inst_t *inst) {
-  assert(wgmma_opcode(inst) == WGMMA_WAIT_GROUP_OP);
-  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
-  if (ptx_inst->get_num_operands() == 0)
-    return 0;
-  const operand_info &op = ptx_inst->operand_lookup(0);
-  assert(op.is_literal());
-  return static_cast<unsigned>(op.get_literal_value().u64);
+  const auto &info = inst->get_wgmma_static_info();
+  assert(info.operation == inst_t::wgmma_static_info_t::WGMMA_WAIT_GROUP);
+  return info.wait_group_num;
 }
 
 unsigned wgmma_thread_count(core_t *core, const warp_inst_t &inst) {

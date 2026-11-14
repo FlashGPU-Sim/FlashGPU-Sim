@@ -615,10 +615,6 @@ void shader_core_ctx::create_exec_pipeline() {
       in_ports.push_back(&m_pipeline_reg[ID_OC_TENSOR_CORE]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_TENSOR_CORE]);
     }
-    if (m_config->gpgpu_num_tma_units > 0) {
-      in_ports.push_back(&m_pipeline_reg[ID_OC_TMA]);
-      out_ports.push_back(&m_pipeline_reg[OC_EX_TMA]);
-    }
     if (m_config->gpgpu_num_dp_units > 0) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_DP]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_DP]);
@@ -1931,39 +1927,6 @@ static bool wgmma_collector_debug_take_slot() {
     return false;
   prints++;
   return true;
-}
-
-static unsigned long long wgmma_collector_token_bytes_from_inst(
-    const warp_inst_t *inst, const shader_core_config *config) {
-  if (!config->gpgpu_wgmma_rf_traffic_enable)
-    return 0;
-  const inst_t::wgmma_static_info_t &info = wgmma_info(inst);
-  if (!info.is_mma_async())
-    return 0;
-
-  const unsigned long long warpgroup_threads =
-      static_cast<unsigned long long>(WGMMA_WARPGROUP_SIZE) * config->warp_size;
-  const unsigned accumulator_bytes = info.accumulator_bytes_per_thread;
-
-  unsigned long long tokens = warpgroup_threads * accumulator_bytes;
-  if (config->gpgpu_wgmma_rf_traffic_assume_accumulate)
-    tokens += warpgroup_threads * accumulator_bytes;
-
-  if (config->gpgpu_wgmma_rf_traffic_include_rs_a) {
-    // Register A operands are PTX registers, so count 32-bit register reads.
-    tokens += warpgroup_threads *
-              static_cast<unsigned long long>(
-                  info.register_a_registers_per_thread) *
-              4ULL;
-  }
-
-  return tokens;
-}
-
-static unsigned wgmma_wait_group_num_from_inst(const warp_inst_t *inst) {
-  const inst_t::wgmma_static_info_t &info = wgmma_info(inst);
-  assert(info.operation == inst_t::wgmma_static_info_t::WGMMA_WAIT_GROUP);
-  return info.wait_group_num;
 }
 
 bool shader_core_ctx::can_issue_wgmma_warpgroup(
@@ -5755,7 +5718,10 @@ void ldst_unit::writeback() {
         } else if (m_next_global) {
           m_next_wb = m_next_global->get_inst();
       m_next_wb_is_retired_global_response = false;
-          if (m_next_global->get_inst().executes_atomic_callback()) {
+          // SASS atomics apply their RMW at functional issue, so no PTX
+          // callback is needed. Their outstanding timing request still retires
+          // here, exactly like a PTX atomic response.
+          if (m_next_global->isatomic()) {
             m_core->decrement_atomic_count(
                 m_next_global->get_wid(),
                 m_next_global->get_access_warp_mask().count());
@@ -7053,6 +7019,7 @@ barrier_set_t::barrier_set_t(shader_core_ctx *shader,
   m_warp_at_barrier.reset();
   m_warp_barrier_type.resize(max_warps_per_core, BARRIER_WAIT_BAR_SYNC);
   m_warp_named_barrier_id.resize(max_warps_per_core, (unsigned)-1);
+  m_warp_named_barrier_release_latency.resize(max_warps_per_core, 0);
   m_mbar_trywait_inst.assign(max_warps_per_core, nullptr);
   m_mbar_trywait_mask.assign(max_warps_per_core, active_mask_t());
   m_mbar_partial_wait.assign(max_warps_per_core, false);
@@ -7340,10 +7307,9 @@ warp_set_t barrier_set_t::named_barrier_waiters(
 
 void barrier_set_t::release_named_barrier_waiters(
     const warp_set_t &waiters) {
-  const unsigned latency =
-      m_shader->get_config()->gpgpu_cta_barrier_release_latency;
   for (unsigned warp_id = 0; warp_id < m_max_warps_per_core; warp_id++) {
     if (!waiters.test(warp_id)) continue;
+    const unsigned latency = m_warp_named_barrier_release_latency[warp_id];
     if (latency != 0)
       m_pending_warp_releases.push_back(
           {latency, static_cast<int>(warp_id), BARRIER_WAIT_BAR_SYNC});
@@ -7387,6 +7353,12 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
     m_warp_at_barrier.set(warp_id);
     m_warp_barrier_type[warp_id] = BARRIER_WAIT_BAR_SYNC;
     m_warp_named_barrier_id[warp_id] = bar_id;
+    // Remember the issuing instruction's model, including when another warp
+    // exits and satisfies this barrier without an instruction of its own.
+    m_warp_named_barrier_release_latency[warp_id] =
+        inst->has_explicit_dependency_control()
+            ? m_shader->get_config()->gpgpu_cta_barrier_release_latency
+            : m_shader->get_config()->gpgpu_barrier_release_latency;
   }
   warp_set_t warps_in_cta = w->second;
   warp_set_t at_barrier = warps_in_cta & m_bar_id_to_warps[bar_id];

@@ -431,10 +431,14 @@ struct global_module {
   std::unordered_map<std::string, device_global> symbols;
   std::unordered_map<std::string, std::vector<uint8_t>> local_initializers;
 };
+struct host_global {
+  device_global symbol;
+  ::gpgpu_t *gpu;
+};
 struct global_registry {
   std::mutex mutex;
   std::unordered_map<unsigned, global_module> modules;
-  std::unordered_map<const void *, device_global> hosts;
+  std::unordered_map<const void *, host_global> hosts;
   std::unordered_map<std::string, unsigned> paths;
 };
 global_registry &device_globals() {
@@ -478,11 +482,25 @@ void register_runtime_device_global(unsigned fatbin, const void *host,
       (module.gpu && module.gpu != gpu))
     panic("invalid device-global registration");
   module.gpu = gpu;
-  auto symbol = ensure_global(module, name, size);
-  auto old = r.hosts.find(host);
-  if (old != r.hosts.end() && old->second.address != symbol.address)
-    panic("conflicting device-global host registration");
-  r.hosts[host] = symbol;
+  const auto old = r.hosts.find(host);
+  if (old != r.hosts.end()) {
+    // The host linker coalesces inline/weak CUDA globals across translation
+    // units, but each fatbin still registers the same host symbol. Reuse its
+    // allocation in every module so both host copies and cubin relocations
+    // see the same state. Device spellings may differ (CUDA's _INTERNAL_
+    // prefix includes the translation unit). Conversely, unrelated modules
+    // may have distinct static variables with identical names.
+    const auto &shared = old->second;
+    if (shared.symbol.size != size || shared.gpu != gpu)
+      panic("conflicting device-global host registration: " + name);
+    const auto inserted = module.symbols.emplace(name, shared.symbol);
+    if (!inserted.second &&
+        inserted.first->second.address != shared.symbol.address)
+      panic("conflicting device-global module registration: " + name);
+    return;
+  }
+  const auto symbol = ensure_global(module, name, size);
+  r.hosts.emplace(host, host_global{symbol, gpu});
 }
 
 uint64_t runtime_device_global_address(const void *host, size_t count,
@@ -492,7 +510,7 @@ uint64_t runtime_device_global_address(const void *host, size_t count,
   const auto found = r.hosts.find(host);
   if (found == r.hosts.end())
     panic("unregistered SASS device-global host symbol");
-  const auto &s = found->second;
+  const auto &s = found->second.symbol;
   if (offset > s.size || count > s.size - offset)
     panic("device-global copy out of bounds");
   return s.address + offset;
