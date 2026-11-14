@@ -289,3 +289,36 @@ The [immutable baseline](../tests/baselines/fa3-sass-ccd2-20260914/README.md)
 and [medium checker](../tests/ci/check_sass_medium.py) remain unchanged.
 Use medium for iterative changes and rerun large for final PR validation;
 never refresh the baseline merely to make a regression pass.
+
+## Frontend correctness follow-up (2026-11-14)
+
+The audit follow-up keeps launch lifetime and native atomic accounting inside
+the frontend. Timing image reuse now requires the cached launch UID as well as
+the kernel object address and global-memory identity. A retired warp retains
+its CTA identity until CTA release; an unbound warp returns -1. Native atomics
+increment the outstanding count for executing lanes while retaining exactly-once
+functional RMW execution.
+
+The scalar backport clamps the existing SHF/USHF forms at their operand width
+and preserves IADD3/UIADD3 no-borrow carry when subtracting zero. CTA shared/local
+memory maps start with 32 hash buckets and grow; the previous 64K constructor
+argument reserved buckets, not bytes.
+
+The equivalent predicated-off PTX lane guard is also present in the PTX adapter.
+Its independent public implementation and regression are tracked in
+[PR #49](https://github.com/FlashGPU-Sim/FlashGPU-Sim/pull/49).
+
+Validation on CUDA 13.3: release build, 15 isolated production-core regressions,
+475 SM120 component tests, and 14 runner tests passed. The component build
+excluded the unchanged `trace_validation_test.cc`, whose helper uses the old
+CUDA `cuCtxCreate` signature. The tests-first core run failed eight cases and
+passed seven controls; the two new integer boundary tests also failed before
+the fix. An older shift test's wrap-at-36 expectation was corrected to clamp,
+matching the boundary semantics. This follow-up does not claim a fresh FA3 or
+DSV4/DeepInfer workload performance regression.
+
+Run the lifecycle/atomic group with:
+
+```bash
+python3 tests/run_tests.py -c SM120_RTX5090 run --arch sm120 --group core
+```
