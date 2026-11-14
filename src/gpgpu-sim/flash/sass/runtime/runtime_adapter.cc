@@ -16,6 +16,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "../../../../abstract_hardware_model.h"
 #include "../../../../cuda-sim/memory.h"
 #include "../../../../kernel_info.h"
 #include "../../../../option_parser.h"
@@ -421,6 +422,122 @@ bool runtime_timing_requested() {
   return runtime_functional_requested() && configured("FLASHGPU_SASS_TIMING");
 }
 
+namespace {
+struct device_global {
+  uint64_t address, size;
+};
+struct global_module {
+  ::gpgpu_t *gpu = nullptr;
+  std::unordered_map<std::string, device_global> symbols;
+  std::unordered_map<std::string, std::vector<uint8_t>> local_initializers;
+};
+struct global_registry {
+  std::mutex mutex;
+  std::unordered_map<unsigned, global_module> modules;
+  std::unordered_map<const void *, device_global> hosts;
+  std::unordered_map<std::string, unsigned> paths;
+};
+global_registry &device_globals() {
+  static global_registry r;
+  return r;
+}
+device_global ensure_global(global_module &module, const std::string &name,
+                            uint64_t size) {
+  const auto found = module.symbols.find(name);
+  if (found != module.symbols.end()) {
+    if (found->second.size != size)
+      panic("inconsistent device-global size: " + name);
+    return found->second;
+  }
+  if (!module.gpu || !size || size > SIZE_MAX)
+    panic("device-global allocation unavailable: " + name);
+  device_global symbol{reinterpret_cast<uint64_t>(module.gpu->gpu_malloc(size)),
+                       size};
+  module.gpu->gpu_memset(symbol.address, 0, size);
+  module.symbols.emplace(name, symbol);
+  return symbol;
+}
+} // namespace
+
+void bind_runtime_device(unsigned fatbin, ::gpgpu_t *gpu) {
+  auto &r = device_globals();
+  std::lock_guard<std::mutex> lock(r.mutex);
+  auto &module = r.modules[fatbin];
+  if (!fatbin || !gpu || (module.gpu && module.gpu != gpu))
+    panic("invalid SASS module device binding");
+  module.gpu = gpu;
+}
+
+void register_runtime_device_global(unsigned fatbin, const void *host,
+                                    const std::string &name, size_t size,
+                                    ::gpgpu_t *gpu) {
+  auto &r = device_globals();
+  std::lock_guard<std::mutex> lock(r.mutex);
+  auto &module = r.modules[fatbin];
+  if (!fatbin || !host || name.empty() || !gpu ||
+      (module.gpu && module.gpu != gpu))
+    panic("invalid device-global registration");
+  module.gpu = gpu;
+  auto symbol = ensure_global(module, name, size);
+  auto old = r.hosts.find(host);
+  if (old != r.hosts.end() && old->second.address != symbol.address)
+    panic("conflicting device-global host registration");
+  r.hosts[host] = symbol;
+}
+
+uint64_t runtime_device_global_address(const void *host, size_t count,
+                                       size_t offset) {
+  auto &r = device_globals();
+  std::lock_guard<std::mutex> lock(r.mutex);
+  const auto found = r.hosts.find(host);
+  if (found == r.hosts.end())
+    panic("unregistered SASS device-global host symbol");
+  const auto &s = found->second;
+  if (offset > s.size || count > s.size - offset)
+    panic("device-global copy out of bounds");
+  return s.address + offset;
+}
+
+void relocate_runtime_kernel_globals(kernel &image, const std::string &path) {
+  if (image.constant_globals.empty())
+    return;
+  auto &r = device_globals();
+  std::lock_guard<std::mutex> lock(r.mutex);
+  const auto module_id = r.paths.find(path);
+  if (module_id == r.paths.end())
+    panic("missing SASS module identity for globals");
+  auto &module = r.modules[module_id->second];
+  for (const auto &rel : image.constant_globals) {
+    auto bank = std::find_if(
+        image.constant_banks.begin(), image.constant_banks.end(),
+        [&](const kernel_constant_bank &b) { return b.index == rel.bank; });
+    if (bank == image.constant_banks.end() || rel.offset > bank->data.size() ||
+        bank->data.size() - rel.offset < 8 || rel.addend > rel.size)
+      panic("device-global relocation out of bounds");
+    const bool is_new = module.symbols.find(rel.name) == module.symbols.end();
+    const auto symbol = ensure_global(module, rel.name, rel.size);
+    if (!rel.initial_data.empty()) {
+      if (rel.initial_data.size() != rel.size)
+        panic("device-global initializer size mismatch");
+      const auto previous = module.local_initializers.find(rel.name);
+      if (previous == module.local_initializers.end()) {
+        if (!is_new)
+          panic("initialized local object already registered without "
+                "initializer");
+        module.gpu->get_global_memory()->write(symbol.address, rel.size,
+                                               rel.initial_data.data(), nullptr,
+                                               nullptr);
+        module.local_initializers.emplace(rel.name, rel.initial_data);
+      } else if (previous->second != rel.initial_data) {
+        panic("inconsistent local device-global initializer");
+      }
+    }
+    const uint64_t address = symbol.address + rel.addend;
+    for (unsigned i = 0; i < 8; ++i)
+      bank->data[rel.offset + i] = static_cast<uint8_t>(address >> (8 * i));
+  }
+}
+
 void register_runtime_binary(unsigned fatbin_handle,
                              const std::string &binary_path) {
   if (fatbin_handle == 0 || binary_path.empty())
@@ -444,11 +561,18 @@ void register_runtime_binary(unsigned fatbin_handle,
 std::string runtime_sassir_path(const std::string &kernel_name,
                                 unsigned fatbin_handle) {
   const char *sassir = std::getenv("FLASHGPU_SASS_IR");
-  if (sassir != nullptr && *sassir != '\0')
-    return sassir;
   if (!runtime_functional_requested())
     panic("SASS functional mode is not configured");
-  return automatic_sassir_path(kernel_name, fatbin_handle);
+  const std::string path =
+      sassir && *sassir ? sassir
+                        : automatic_sassir_path(kernel_name, fatbin_handle);
+  auto &r = device_globals();
+  std::lock_guard<std::mutex> lock(r.mutex);
+  const auto found = r.paths.find(path);
+  if (found != r.paths.end() && found->second != fatbin_handle)
+    panic("ambiguous SASS module identity");
+  r.paths[path] = fatbin_handle;
+  return path;
 }
 
 runtime_kernel_abi load_runtime_kernel_abi(const std::string &sassir_path,
@@ -502,6 +626,7 @@ execute_runtime_functional_grid(kernel_info_t &launch,
   sassir_decoder decoder;
   frontend sass_frontend;
   kernel decoded_kernel = decoder.decode_kernel(sassir_path, launch.name());
+  relocate_runtime_kernel_globals(decoded_kernel, sassir_path);
   const std::string kernel_name = decoded_kernel.name;
   sass_frontend.add_kernel(std::move(decoded_kernel));
   const kernel *image = sass_frontend.find_kernel(kernel_name);

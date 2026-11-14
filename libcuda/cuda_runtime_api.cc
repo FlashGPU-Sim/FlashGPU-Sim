@@ -987,6 +987,8 @@ void cudaRegisterFunctionInternal(void **fatCubinHandle, const char *hostFun,
       "fat_cubin_handle = %u\n",
       deviceFun, hostFun, fat_cubin_handle);
   if (flash_gpgpu_sim::sass::runtime_functional_requested()) {
+    flash_gpgpu_sim::sass::bind_runtime_device(
+        fat_cubin_handle, context->get_device()->get_gpgpu());
     context->register_sass_function(fat_cubin_handle, hostFun, deviceFun);
     return;
   }
@@ -1020,10 +1022,11 @@ void cudaRegisterVarInternal(
   //     "bytes\n",
   //     size);
   if (flash_gpgpu_sim::sass::runtime_functional_requested()) {
-    printf(
-        "FlashGPU-Sim SASS: deferred device variable '%s' (%d bytes); "
-        "PTX symbols were not parsed.\n",
-        deviceName != NULL ? deviceName : "<unnamed>", size);
+    if (constant || global || ext || size <= 0 || deviceName == nullptr)
+      cuda_not_implemented(__my_func__, __LINE__);
+    flash_gpgpu_sim::sass::register_runtime_device_global(
+        (unsigned)(unsigned long long)fatCubinHandle, hostVar, deviceName, size,
+        GPGPUSim_Context(ctx)->get_device()->get_gpgpu());
     return;
   }
   if (GPGPUSim_Context(ctx)
@@ -1732,6 +1735,12 @@ __host__ cudaError_t CUDARTAPI cudaMemcpyToSymbolInternal(
   }
   // CUctx_st *context = GPGPUSim_Context();
   assert(kind == cudaMemcpyHostToDevice);
+  if (flash_gpgpu_sim::sass::runtime_functional_requested()) {
+    const uint64_t address = flash_gpgpu_sim::sass::runtime_device_global_address(
+        symbol, count, offset);
+    return cudaMemcpyInternal(reinterpret_cast<void *>(address), src, count,
+                              kind, ctx);
+  }
   printf("GPGPU-Sim PTX: cudaMemcpyToSymbol: symbol = %p\n", symbol);
   // stream_operation( const char *symbol, const void *src, size_t count, size_t
   // offset )
@@ -1756,6 +1765,12 @@ __host__ cudaError_t CUDARTAPI cudaMemcpyFromSymbolInternal(
   }
   // CUctx_st *context = GPGPUSim_Context();
   assert(kind == cudaMemcpyDeviceToHost);
+  if (flash_gpgpu_sim::sass::runtime_functional_requested()) {
+    const uint64_t address = flash_gpgpu_sim::sass::runtime_device_global_address(
+        symbol, count, offset);
+    return cudaMemcpyInternal(dst, reinterpret_cast<const void *>(address), count,
+                              kind, ctx);
+  }
   printf("GPGPU-Sim PTX: cudaMemcpyFromSymbol: symbol = %p\n", symbol);
   ctx->the_gpgpusim->g_stream_manager->push(
       stream_operation(symbol, dst, count, offset, 0));
@@ -5761,6 +5776,8 @@ CUresult CUDAAPI cuModuleLoad(CUmodule *module, const char *fname) {
   printf("cuModuleLoad: Allocated module handle %u\n", module_handle);
 
   if (flash_gpgpu_sim::sass::runtime_functional_requested()) {
+    flash_gpgpu_sim::sass::bind_runtime_device(
+        module_handle, context->get_device()->get_gpgpu());
     flash_gpgpu_sim::sass::register_runtime_binary(module_handle, fname);
     context->register_sass_module(module_handle, fname);
     *module = (CUmodule)(unsigned long long)module_handle;

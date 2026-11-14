@@ -361,6 +361,29 @@ kernel sassir_decoder::decode_kernel(const std::string &sassir_path,
         parameter.size = parse_u32(columns[3], "parameter size");
         result.parameters.push_back(parameter);
       }
+    } else if (record == "CONSTGLOBAL" || record == "CONSTGLOBAL_INIT") {
+      require_columns(columns, record == "CONSTGLOBAL_INIT" ? 7 : 6,
+                      record.c_str());
+      if (!in_kernel || in_instruction || format_version < 4)
+        panic("CONSTGLOBAL outside a SASSIR v4 kernel");
+      if (wanted_kernel) {
+        kernel_constant_global global;
+        global.bank = parse_u32(columns[1], "global pointer bank");
+        global.offset = parse_u64(columns[2], "global pointer offset");
+        global.name = unescape(columns[3]);
+        global.size = parse_u64(columns[4], "global symbol size");
+        global.addend = parse_u64(columns[5], "global pointer addend");
+        if (record == "CONSTGLOBAL_INIT") {
+          global.initial_data =
+              parse_hex_bytes(columns[6], "global initial data");
+          if (global.initial_data.size() != global.size)
+            panic("device-global initializer size mismatch");
+        }
+        if (!global.bank || global.name.empty() || !global.size ||
+            global.addend > global.size)
+          panic("invalid device-global relocation");
+        result.constant_globals.push_back(std::move(global));
+      }
     } else if (record == "CONSTBANK") {
       require_columns(columns, 3, "CONSTBANK");
       if (!in_kernel || in_instruction || format_version < 4)

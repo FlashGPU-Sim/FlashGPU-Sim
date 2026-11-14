@@ -136,6 +136,7 @@ public:
     }
     sassir_decoder decoder;
     kernel decoded = decoder.decode_kernel(sassir_path, kernel_name);
+    relocate_runtime_kernel_globals(decoded, sassir_path);
     frontend_.add_kernel(std::move(decoded));
     image_ = frontend_.find_kernel(kernel_name);
     if (image_ == nullptr || image_->instructions.empty())

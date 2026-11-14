@@ -8,6 +8,7 @@
 
 #include "../ir.h"
 
+class gpgpu_t;
 class kernel_info_t;
 class memory_space;
 class OptionParser;
@@ -61,6 +62,13 @@ bool runtime_functional_requested();
 bool runtime_timing_requested();
 // Associate a Driver API module handle with the exact file passed to
 // cuModuleLoad. Runtime API fatbins continue to use FLASHGPU_SASS_BINARY.
+void bind_runtime_device(unsigned fatbin, ::gpgpu_t *gpu);
+void register_runtime_device_global(unsigned fatbin, const void *host,
+                                    const std::string &name, size_t size,
+                                    ::gpgpu_t *gpu);
+uint64_t runtime_device_global_address(const void *host, size_t count,
+                                       size_t offset);
+void relocate_runtime_kernel_globals(kernel &image, const std::string &path);
 void register_runtime_binary(unsigned fatbin_handle,
                              const std::string &binary_path);
 std::string runtime_sassir_path(const std::string &kernel_name,
