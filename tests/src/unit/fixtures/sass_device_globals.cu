@@ -9,7 +9,16 @@ __device__ unsigned long long observed;
   std::fprintf(stderr,"%s: %s\n",#call,cudaGetErrorString(e)); std::exit(2); } } while(0)
 __global__ void write_globals() { if (threadIdx.x != 0) return; observed = values[0]; values[2] = values[1] + 7; }
 __global__ void read_globals() { if (threadIdx.x != 0) return; values[3] = values[2] * 3; }
-int main() {
+int main(int argc, char **argv) {
+  const auto attr = argc > 1 && argv[1][0] == 'c'
+      ? cudaFuncAttributePreferredSharedMemoryCarveout
+      : cudaFuncAttributeMaxDynamicSharedMemorySize;
+  CUDA(cudaFuncSetAttribute(write_globals, attr,
+      attr == cudaFuncAttributeMaxDynamicSharedMemorySize ? 4096 : 100));
+  CUDA(cudaFuncSetAttribute(read_globals, cudaFuncAttributePreferredSharedMemoryCarveout, 50));
+  if (cudaFuncSetAttribute(write_globals, cudaFuncAttributeMaxDynamicSharedMemorySize, -1) != cudaErrorInvalidValue) return 3;
+  if (cudaFuncSetAttribute(read_globals, cudaFuncAttributePreferredSharedMemoryCarveout, 101) != cudaErrorInvalidValue) return 4;
+  cudaGetLastError();
   unsigned long long input=11, out[4]={}, zero=99;
   CUDA(cudaMemcpyToSymbol(values,&input,sizeof(input),sizeof(input)));
   write_globals<<<1,32>>>();
