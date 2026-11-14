@@ -3765,7 +3765,7 @@ void gpgpu_sim::dump_pipeline(int mask, int s, int m) const {
 
   printf("Dumping pipeline state...\n");
   if (!mask) mask = 0xFFFFFFFF;
-  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+  for (unsigned i = 0; i < m_shader_config->num_shader(); i++) {
     if (s != -1) {
       i = s;
     }
