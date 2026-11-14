@@ -817,6 +817,7 @@ class gpgpu_sim : public gpgpu_t {
   std::vector<memory_transport_service_stats> m_l2_response_egress_stats;
   class gpgpu_sim_wrapper *m_gpgpusim_wrapper;
   unsigned long long last_gpu_sim_insn;
+  unsigned long long last_gpu_async_progress;
 
   unsigned long long last_liveness_message_time;
 

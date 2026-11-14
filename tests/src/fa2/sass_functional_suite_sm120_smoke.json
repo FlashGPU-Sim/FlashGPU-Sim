@@ -1,0 +1,24 @@
+{
+  "architecture": "sm120",
+  "group": "fa2",
+  "profile": "smoke",
+  "expected_tests": 5,
+  "cases": [
+    {
+      "gtest_filter": "Fa2PrefillFp16SmokeTest.H32D64FullB2S128:Fa2FwdFp16SmokeIntegrationTest.SmallForwardCase",
+      "expected_tests": 2
+    },
+    {
+      "gtest_filter": "Fa2PrefillFp16SmokeTest.H32D64CausalB2S128",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "Fa2PrefillFp16SmokeTest.H1D128FullB1S256",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "Fa2PrefillFp16SmokeTest.H16D128CausalB2S128",
+      "expected_tests": 1
+    }
+  ]
+}

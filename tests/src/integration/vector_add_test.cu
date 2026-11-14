@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
+#include <cstdlib>
 #include <vector>
 #include <random>
 #include <chrono>
@@ -24,6 +25,13 @@ protected:
     void SetUp() override {
         // 1MB of data = 1024*1024 bytes / 4 bytes per float = 262,144 elements
         num_elements = 262144;  // 1MB of float data
+        if (const char* override_elements =
+                std::getenv("FLASHGPU_VECTOR_ADD_ELEMENTS")) {
+            char* end = nullptr;
+            const long parsed = std::strtol(override_elements, &end, 10);
+            if (end != override_elements && *end == '\0' && parsed > 0)
+                num_elements = static_cast<int>(parsed);
+        }
         data_size_bytes = num_elements * sizeof(float);
         
         // Allocate host memory

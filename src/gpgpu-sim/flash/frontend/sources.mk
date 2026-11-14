@@ -1,0 +1,2 @@
+FRONTEND_SOURCE_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
+FRONTEND_SRCS := $(wildcard $(FRONTEND_SOURCE_DIR)*.cc)

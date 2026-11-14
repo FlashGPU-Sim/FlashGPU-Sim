@@ -100,6 +100,7 @@ int main(int argc, char** argv) {
 
     cuCtxSynchronize();
     printf("Kernel execution completed successfully\n");
+{{ARG_DUMP_CALLS}}
 {{VALIDATION_CODE}}
 
     // Cleanup

@@ -1,0 +1,24 @@
+{
+  "architecture": "sm120",
+  "group": "fa2",
+  "profile": "medium",
+  "expected_tests": 4,
+  "cases": [
+    {
+      "gtest_filter": "Fa2PrefillFp16MediumTest.H32D64FullB16S512",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "Fa2PrefillFp16MediumTest.H32D64CausalB16S512",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "Fa2PrefillFp16MediumTest.H16D128FullB16S512",
+      "expected_tests": 1
+    },
+    {
+      "gtest_filter": "Fa2PrefillFp16MediumTest.H16D128CausalB16S512",
+      "expected_tests": 1
+    }
+  ]
+}

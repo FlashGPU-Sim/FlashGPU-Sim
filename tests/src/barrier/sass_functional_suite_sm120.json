@@ -1,0 +1,15 @@
+{
+  "architecture": "sm120",
+  "group": "barrier",
+  "expected_tests": 17,
+  "cases": [
+    {
+      "gtest_filter": "MBarrierThreadLevelTest.*",
+      "expected_tests": 13
+    },
+    {
+      "gtest_filter": "MBarrierSanityTest.*",
+      "expected_tests": 4
+    }
+  ]
+}

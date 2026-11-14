@@ -259,6 +259,7 @@ class HarnessGenerator:
         loading_calls = []
         argument_pointers = []
         validation_calls = []
+        dump_calls = []
         cleanup = []
 
         for argument in launch.args_info:
@@ -286,6 +287,9 @@ class HarnessGenerator:
                 if argument.size_bytes > 0:
                     loading_calls.append(f"    if (!d_arg{index}) return 1;")
                 argument_pointers.append(f"&d_arg{index}")
+                dump_calls.append(
+                    f"    maybe_dump_u64_arg(d_arg{index}, arg{index}_size, {index});"
+                )
                 cleanup.append(f"    cudaFree(d_arg{index});")
 
                 if validate_outputs and argument.output_file:
@@ -373,6 +377,7 @@ class HarnessGenerator:
                 BLOCK_Y=launch.block[1],
                 BLOCK_Z=launch.block[2],
                 VALIDATION_CODE=validation_code,
+                ARG_DUMP_CALLS="\n".join(dump_calls),
                 ARG_CLEANUP="\n".join(cleanup),
                 SCRATCH_CLEANUP=self._scratch_cleanup_code(launch),
             )

@@ -73,3 +73,7 @@ summaries. An existing queue root requires `--resume` (skip completed jobs) or
 `--overwrite` (replace queue-managed output). `Ctrl+C` stops dispatch,
 terminates active job process groups, records unfinished jobs as interrupted,
 and returns 130; a second `Ctrl+C` escalates to `SIGKILL`.
+
+## SASS FA-3 validation
+
+See `../src/fa3/README.md` and `../run_sass_suite.py` for the native SASS validation workflow.
