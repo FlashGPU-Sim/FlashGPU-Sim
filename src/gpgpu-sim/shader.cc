@@ -8526,6 +8526,9 @@ void simt_core_cluster::icnt_cycle() {
           if (dispatch_width != 0) {
             m_response_dispatch_budgets[cid].consume(sectors);
             m_response_dispatch_stats[cid].record_accept(sectors);
+            // An explicit sector budget may admit more than one LSU reply.
+            // Recheck both the budget and the destination FIFO on each turn.
+            continue;
           }
         }
       }
@@ -8571,6 +8574,9 @@ void simt_core_cluster::icnt_cycle() {
       if (ingress_width != 0) {
         m_response_ingress_budgets[cid].consume(sectors);
         m_response_ingress_stats[cid].record_accept(sectors);
+        // This is the transport budget. TMA/cp.async consumer limits remain
+        // enforced at dispatch; legacy ingress packet caps apply only at 0.
+        continue;
       }
       if (mf->get_access_type() == TMA_ACC_R ||
           mf->get_access_type() == TMA_ACC_W ||
