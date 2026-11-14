@@ -1269,7 +1269,15 @@ void baseline_cache::advance_miss_queue() {
   }
 }
 
-/// Interface for response from lower memory level (model bandwidth restictions
+void baseline_cache::invalidate() {
+  // Outstanding fetches retain their MSHRs, but no longer own a tag reservation.
+  // A late fill must not modify a tag reused by a post-invalidation request.
+  for (auto &entry : m_extra_mf_fields)
+    entry.second.m_fill_invalidated = true;
+  m_tag_array->invalidate();
+}
+
+/// Interface for response from lower memory level (model bandwidth restrictions
 /// in caller)
 void baseline_cache::fill(mem_fetch *mf, unsigned time) {
   mem_fetch *filled_mf = fill_cache_state(mf, time);
@@ -1300,15 +1308,17 @@ mem_fetch *baseline_cache::fill_cache_state(mem_fetch *mf, unsigned time) {
   assert(e->second.m_valid);
   mf->set_data_size(e->second.m_data_size);
   mf->set_addr(e->second.m_addr);
-  if (m_config.m_alloc_policy == ON_MISS)
-    m_tag_array->fill(e->second.m_cache_index, time, mf);
-  else if (m_config.m_alloc_policy == ON_FILL) {
-    m_tag_array->fill(e->second.m_block_addr, time, mf, mf->is_write());
-  } else
-    abort();
+  if (!e->second.m_fill_invalidated) {
+    if (m_config.m_alloc_policy == ON_MISS)
+      m_tag_array->fill(e->second.m_cache_index, time, mf);
+    else if (m_config.m_alloc_policy == ON_FILL)
+      m_tag_array->fill(e->second.m_block_addr, time, mf, mf->is_write());
+    else
+      abort();
+  }
   bool has_atomic = false;
   m_mshrs.mark_ready(e->second.m_block_addr, has_atomic);
-  if (has_atomic) {
+  if (has_atomic && !e->second.m_fill_invalidated) {
     assert(m_config.m_alloc_policy == ON_MISS);
     cache_block_t *block = m_tag_array->get_block(e->second.m_cache_index);
     if (!block->is_modified_line()) {
@@ -1417,10 +1427,16 @@ void baseline_cache::send_read_request(new_addr_type addr,
     m_stats.inc_stats(mf->get_access_type(), MSHR_HIT, mf->get_streamID());
     do_miss = true;
   } else if (mshr_hit && mshr_avail) {
-    if (read_only)
-      m_tag_array->access(block_addr, time, cache_index, mf);
-    else
-      m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+    // A merge has no lower-level fetch of its own. After invalidation, it
+    // must not allocate a second reservation that no response will fill.
+    const auto tag_status =
+        m_tag_array->probe(block_addr, cache_index, mf, mf->is_write());
+    if (tag_status == HIT || tag_status == HIT_RESERVED) {
+      if (read_only)
+        m_tag_array->access(block_addr, time, cache_index, mf);
+      else
+        m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+    }
 
     m_mshrs.add(mshr_addr, mf, mf->isatomic());
     m_stats.inc_stats(mf->get_access_type(), MSHR_HIT, mf->get_streamID());

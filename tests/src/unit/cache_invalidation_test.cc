@@ -20,10 +20,10 @@ class InspectableCache : public data_cache {
 };
 
 class CacheInvalidationTest
-    : public testing::TestWithParam<std::tuple<char, bool>> {};
+    : public testing::TestWithParam<std::tuple<char, bool, bool>> {};
 
 TEST_P(CacheInvalidationTest, OutstandingFillDoesNotOwnReusedTag) {
-  const auto [type, replace_with_store] = GetParam();
+  const auto [type, replace_with_store, invalidate] = GetParam();
   gpgpu_context context;
   memory_config memory(&context);
   memory.SST_mode = true;
@@ -60,15 +60,16 @@ TEST_P(CacheInvalidationTest, OutstandingFillDoesNotOwnReusedTag) {
   };
   auto *a = request(0x1000, 1);
   // Another warp finishes a GPU-scope fence while A is still outstanding.
-  cache.invalidate();
-  auto *b = request(0x2000, 2, replace_with_store);  // Reuses A's tag.
+  if (invalidate) cache.invalidate();
+  // With invalidation, B reuses A's former tag; otherwise it gets the other way.
+  auto *b = request(0x2000, 2, replace_with_store);
   request(0x1000, 3);  // Merges into A's existing MSHR.
   a->set_reply();
   cache.fill(a, 4);
-  // A's stale index must not complete B's reservation or resurrect A.
+  // An invalidated A must not complete B's reservation or resurrect its tag.
   const bool old_fill_safe =
       probe(0x2000) == (replace_with_store ? HIT : HIT_RESERVED) &&
-      probe(0x1000) == MISS;
+      probe(0x1000) == (invalidate ? MISS : HIT);
   if (!replace_with_store) {
     b->set_reply();
     cache.fill(b, 5);
@@ -95,5 +96,5 @@ TEST_P(CacheInvalidationTest, OutstandingFillDoesNotOwnReusedTag) {
 
 INSTANTIATE_TEST_SUITE_P(NormalAndSector, CacheInvalidationTest,
                          testing::Combine(testing::Values('N', 'S'),
-                                          testing::Bool()));
+                                          testing::Bool(), testing::Bool()));
 }  // namespace
