@@ -42,6 +42,7 @@ public:
   const timing_instruction *fetch(unsigned hardware_warp_id, uint64_t pc) const;
   uint64_t pc(unsigned hardware_warp_id) const;
   uint32_t active_mask(unsigned hardware_warp_id) const;
+  bool has_warp(unsigned hardware_warp_id) const;
   uint64_t linear_cta_id(unsigned hardware_warp_id) const;
   unsigned local_warp_id(unsigned hardware_warp_id) const;
   bool deferred_barrier_can_issue(unsigned hardware_warp_id,

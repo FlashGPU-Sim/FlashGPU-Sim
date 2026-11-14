@@ -424,6 +424,7 @@ public:
   unsigned shader_id_ = 0;
   unsigned named_barrier_release_latency_ = 0;
   kernel_info_t *launch_ = nullptr;
+  unsigned launch_uid_ = 0;
   ::memory_space *global_memory_ = nullptr;
   std::shared_ptr<const timing_kernel_image> image_;
   std::unordered_map<unsigned, std::unique_ptr<timing_cta_state>> ctas_;
@@ -439,7 +440,10 @@ void timing_runtime::bind(kernel_info_t &launch,
                           ::memory_space *global_memory) {
   if (global_memory == nullptr)
     panic("SASS timing launch has no global memory");
-  if (impl_->launch_ == &launch)
+  // The allocator can reuse a destroyed kernel_info_t address for a new
+  // launch. Cache the UID separately; never dereference the old pointer.
+  if (impl_->launch_ == &launch && impl_->launch_uid_ == launch.get_uid() &&
+      impl_->global_memory_ == global_memory)
     return;
   if (!impl_->ctas_.empty())
     panic("cannot replace an active SASS timing kernel");
@@ -450,6 +454,7 @@ void timing_runtime::bind(kernel_info_t &launch,
   impl_->image_ = load_timing_image(sassir, launch.name(), impl_->config_);
   timing_debug("static kernel image is ready");
   impl_->launch_ = &launch;
+  impl_->launch_uid_ = launch.get_uid();
   impl_->global_memory_ = global_memory;
 }
 
@@ -492,6 +497,7 @@ void timing_runtime::reset() {
   impl_->warp_to_cta_.clear();
   impl_->ctas_.clear();
   impl_->launch_ = nullptr;
+  impl_->launch_uid_ = 0;
   impl_->global_memory_ = nullptr;
   impl_->image_.reset();
 }
@@ -510,6 +516,11 @@ uint64_t timing_runtime::pc(unsigned hardware_warp_id) const {
 uint32_t timing_runtime::active_mask(unsigned hardware_warp_id) const {
   timing_cta_state &cta = impl_->cta_for_warp(hardware_warp_id);
   return cta.warps[cta.local_warp(hardware_warp_id)].active_mask;
+}
+
+bool timing_runtime::has_warp(unsigned hardware_warp_id) const {
+  return impl_->warp_to_cta_.find(hardware_warp_id) !=
+         impl_->warp_to_cta_.end();
 }
 
 uint64_t timing_runtime::linear_cta_id(unsigned hardware_warp_id) const {

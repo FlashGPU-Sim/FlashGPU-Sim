@@ -113,6 +113,12 @@ public:
     }
     if (inst.is_load() || inst.is_store())
       inst.generate_mem_accesses();
+    // Functional SASS execution already applied the RMW. Its timing response
+    // still retires an outstanding atomic for each executing lane.
+    if (inst.isatomic())
+      for (unsigned lane = 0; lane < core_.m_config->warp_size; ++lane)
+        if (inst.active(lane))
+          core_.m_warp[inst.warp_id()]->inc_n_atomic();
     return;
   }
 
@@ -169,7 +175,8 @@ public:
   void complete_lane(warp_inst_t &, unsigned, unsigned) override {}
 
   int logical_cta_id(unsigned warp_id) const override {
-
+    if (!runtime_.has_warp(warp_id))
+      return -1;
     const uint64_t cta_id = runtime_.linear_cta_id(warp_id);
     if (cta_id > INT_MAX)
       flash_gpgpu_sim::panic("SASS logical CTA id exceeds timing backend ABI");
@@ -177,7 +184,8 @@ public:
   }
 
   int cta_warp_id(unsigned warp_id) const override {
-
+    if (!runtime_.has_warp(warp_id))
+      return -1;
     const unsigned local_warp = runtime_.local_warp_id(warp_id);
     if (local_warp > INT_MAX)
       flash_gpgpu_sim::panic("SASS CTA warp id exceeds timing backend ABI");
