@@ -423,7 +423,8 @@ TEST(SassFunctionalTest, ExecutesRegisterSelectedFunnelShifts) {
 
   for (unsigned lane = 0; lane < 32; ++lane)
     EXPECT_EQ(state.read_register(lane, 2), 0x08000000u);
-  EXPECT_EQ(state.read_uniform_register(2), 0x08000000u);
+  // No .W qualifier: a shift of 36 clamps, rather than wrapping to four.
+  EXPECT_EQ(state.read_uniform_register(2), 0u);
 }
 
 TEST(SassFunctionalTest, CombinesIntegerComparisonWithPredicateOr) {

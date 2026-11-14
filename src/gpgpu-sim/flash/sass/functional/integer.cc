@@ -29,6 +29,13 @@ step_result execute_iadd(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
+// Preserve the carry from two's-complement negation of zero. The 32-bit
+// operand reader necessarily drops it, but an IADD3 subtraction uses it as
+// the no-borrow predicate for the high-half instruction.
+uint64_t carry_addend(const operand &op, uint32_t value) {
+  return op.negated && value == 0 ? (uint64_t{1} << 32) : uint64_t{value};
+}
+
 step_result execute_iadd3(const instruction &inst, warp_state &state,
                           execution_context &) {
   const bool hopper_compact = has_typed_operands(inst, 4);
@@ -64,10 +71,12 @@ step_result execute_iadd3(const instruction &inst, warp_state &state,
         !read_u32_operand(inst.operands[first_source + 1], state, lane, b) ||
         !read_u32_operand(inst.operands[first_source + 2], state, lane, c))
       return unsupported(inst, "unsupported IADD3 source");
-    const uint64_t first_sum = static_cast<uint64_t>(a) + b;
-    const uint64_t second_sum =
-        static_cast<uint32_t>(first_sum) + static_cast<uint64_t>(c);
-    const uint64_t sum = static_cast<uint64_t>(a) + b + c;
+    const uint64_t wide_a = carry_addend(inst.operands[first_source], a);
+    const uint64_t wide_b = carry_addend(inst.operands[first_source + 1], b);
+    const uint64_t wide_c = carry_addend(inst.operands[first_source + 2], c);
+    const uint64_t first_sum = wide_a + wide_b;
+    const uint64_t second_sum = static_cast<uint32_t>(first_sum) + wide_c;
+    const uint64_t sum = wide_a + wide_b + wide_c;
     state.write_register(lane, destination->index, static_cast<uint32_t>(sum));
     if (carry_output0 != nullptr)
       state.write_predicate(lane, carry_output0->index,
@@ -156,14 +165,15 @@ step_result execute_uiadd3(const instruction &inst, warp_state &state,
           !read_u32_operand(inst.operands[first_source + 1], state, 0, b) ||
           !read_u32_operand(inst.operands[first_source + 2], state, 0, c))
         return unsupported(inst, "unsupported UIADD3 source");
-      const uint64_t first_sum = static_cast<uint64_t>(a) + b;
-      const uint64_t second_sum =
-          static_cast<uint32_t>(first_sum) + static_cast<uint64_t>(c);
+      const uint64_t wide_a = carry_addend(inst.operands[first_source], a);
+      const uint64_t wide_b = carry_addend(inst.operands[first_source + 1], b);
+      const uint64_t wide_c = carry_addend(inst.operands[first_source + 2], c);
+      const uint64_t first_sum = wide_a + wide_b;
+      const uint64_t second_sum = static_cast<uint32_t>(first_sum) + wide_c;
       state.write_uniform_register(destination->index, a + b + c);
       if (hopper_single_carry)
-        state.write_uniform_predicate(
-            carry_output0->index,
-            ((static_cast<uint64_t>(a) + b + c) >> 32) != 0);
+        state.write_uniform_predicate(carry_output0->index,
+                                      ((wide_a + wide_b + wide_c) >> 32) != 0);
       else if (carry_output0 != nullptr)
         state.write_uniform_predicate(carry_output0->index,
                                       (first_sum >> 32) != 0);
@@ -233,7 +243,7 @@ step_result execute_shf(const instruction &inst, warp_state &state,
     return unsupported(inst, "expected four typed operands");
   const operand &shift = inst.operands[2];
   if (shift.kind == operand_kind::kImmediate &&
-      (shift.immediate < 0 || shift.immediate >= 32))
+      (shift.immediate < 0 || shift.immediate > UINT32_MAX))
     return unsupported(inst, "invalid SHF shift amount");
   const bool uniform = inst.opcode.rfind("USHF.", 0) == 0;
   if ((uniform && inst.operands[0].kind != operand_kind::kUniformRegister) ||
@@ -253,26 +263,31 @@ step_result execute_shf(const instruction &inst, warp_state &state,
         !read_u32_operand(shift, state, lane, shift_value) ||
         !read_u32_operand(inst.operands[3], state, lane, high))
       return false;
-    const unsigned amount = shift_value & 31u;
+    // These forms do not have .W: clamp the count at the operand width.
+    const unsigned amount = std::min(shift_value, 32u);
     if (inst.opcode == "SHF.L.U32" || inst.opcode == "USHF.L.U32") {
-      result = amount == 0 ? low : (low << amount) | (high >> (32 - amount));
+      result = amount == 32 ? 0 : low << amount;
     } else if (inst.opcode == "SHF.R.S32.HI" ||
                inst.opcode == "USHF.R.S32.HI") {
       if (low != 0)
         return false;
-      result = static_cast<uint32_t>(static_cast<int32_t>(high) >> amount);
+      result = static_cast<uint32_t>(static_cast<int32_t>(high) >>
+                                     std::min(amount, 31u));
     } else if (inst.opcode == "SHF.R.U32.HI" ||
                inst.opcode == "USHF.R.U32.HI") {
       if (low != 0)
         return false;
-      result = high >> amount;
+      result = amount == 32 ? 0 : high >> amount;
     } else if (inst.opcode == "SHF.R.U64") {
       const uint64_t pair = (static_cast<uint64_t>(high) << 32) | low;
-      result = static_cast<uint32_t>(pair >> amount);
+      result =
+          shift_value >= 64 ? 0 : static_cast<uint32_t>(pair >> shift_value);
     } else if (inst.opcode == "SHF.L.U64.HI" ||
                inst.opcode == "USHF.L.U64.HI") {
       const uint64_t pair = (static_cast<uint64_t>(high) << 32) | low;
-      result = static_cast<uint32_t>((pair << amount) >> 32);
+      result = shift_value >= 64
+                   ? 0
+                   : static_cast<uint32_t>((pair << shift_value) >> 32);
     } else {
       return false;
     }
