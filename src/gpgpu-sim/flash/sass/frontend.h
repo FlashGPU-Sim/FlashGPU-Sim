@@ -41,6 +41,15 @@ struct reconvergence_state {
   std::vector<reconvergence_path> escaped_paths;
 };
 
+// A divergent collective suspends path-local BSSY frames while another arm
+// runs. Registers remain shared architectural state; only control is saved.
+struct collective_return_path {
+  uint64_t pc = 0;
+  uint32_t active_mask = 0;
+  std::vector<unsigned> common_stack;
+  std::vector<std::pair<unsigned, reconvergence_state>> local_frames;
+};
+
 enum class mbarrier_try_wait_state : uint8_t {
   kNone,
   kFunctionalComplete,
@@ -60,6 +69,10 @@ struct warp_state {
   std::vector<unsigned> reconvergence_stack;
   std::vector<reconvergence_state> warp_sync_stack;
   std::vector<reconvergence_path> independent_paths;
+  std::vector<collective_return_path> collective_waiting;
+  std::vector<collective_return_path> collective_returns;
+  uint32_t collective_executing_mask = 0;
+  uint64_t collective_return_pc = 0;
   bool waiting_at_cta_barrier = false;
   unsigned cta_barrier_id = 0;
   uint64_t cta_barrier_generation = 0;

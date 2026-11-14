@@ -27,6 +27,68 @@ uint64_t read_clock(const execution_context &context, bool global_timer) {
   return cycle;
 }
 
+step_result execute_redux_sum(const instruction &inst, warp_state &state,
+                              execution_context &) {
+  // Observed Blackwell form: reduce participating lanes into one UR. Accumulate
+  // unsigned bits so signed overflow implements the hardware's modulo-2^32 sum.
+  if (!has_typed_operands(inst, 2) ||
+      inst.operands[0].kind != operand_kind::kUniformRegister ||
+      inst.operands[1].kind != operand_kind::kRegister)
+    return unsupported(inst, "unsupported REDUX.SUM.S32 operand form");
+  const bool bitwise_and = inst.opcode == "REDUX";
+  const bool bitwise_or = inst.opcode == "REDUX.OR";
+  const bool minimum = inst.opcode == "CREDUX.MIN.S32";
+  uint32_t sum = minimum ? 0x7fffffffu : bitwise_and ? 0xffffffffu : 0;
+  bool participating = false;
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if ((state.active_mask & (1u << lane)) &&
+        lane_executes(inst, state, lane)) {
+      if (minimum)
+        sum = static_cast<uint32_t>(std::min(
+            static_cast<int32_t>(sum), static_cast<int32_t>(state.read_register(
+                                           lane, inst.operands[1].index))));
+      else if (bitwise_or)
+        sum |= state.read_register(lane, inst.operands[1].index);
+      else if (bitwise_and)
+        sum &= state.read_register(lane, inst.operands[1].index);
+      else
+        sum += state.read_register(lane, inst.operands[1].index);
+      participating = true;
+    }
+  }
+  if (participating)
+    state.write_uniform_register(inst.operands[0].index, sum);
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
+step_result execute_match_any(const instruction &inst, warp_state &state,
+                              execution_context &) {
+  if (!has_typed_operands(inst, 2) || inst.has_guard)
+    return unsupported(inst, "MATCH.ANY requires unguarded register operands");
+  for (const auto &op : inst.operands)
+    if (op.kind != operand_kind::kRegister || op.negated || op.absolute ||
+        op.bitwise_complement || op.wide ||
+        op.half_selection != operand_half_selection::kNone ||
+        op.matrix_layout != operand_matrix_layout::kNone)
+      return unsupported(inst, "unqualified MATCH.ANY operand modifier");
+  // Snapshot first: destination may alias the value register.
+  std::array<uint32_t, kWarpLanes> values{};
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane)
+    values[lane] = state.read_register(lane, inst.operands[1].index);
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)))
+      continue;
+    uint32_t matches = 0;
+    for (unsigned peer = 0; peer < kWarpLanes; ++peer)
+      if ((state.active_mask & (1u << peer)) && values[peer] == values[lane])
+        matches |= 1u << peer;
+    state.write_register(lane, inst.operands[0].index, matches);
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
 step_result execute_move(const instruction &inst, warp_state &state,
                          execution_context &) {
   if (!has_typed_operands(inst, 2))
@@ -311,6 +373,8 @@ step_result execute_shfl(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_data_movement_semantics(frontend &target) {
+  target.register_semantics("REDUX.OR", execute_redux_sum);
+  target.register_semantics("MATCH.ANY", execute_match_any);
   target.register_semantics("MOV", execute_move);
   target.register_semantics("MOV.64", execute_move);
   target.register_semantics("UMOV", execute_move);
