@@ -69,7 +69,7 @@ uint64_t mbarrier_result_release_cycle(uint64_t issue_cycle,
 
 void mbarrier_manager_t::init(gpgpu_sim *gpu,
                               const thread_index_t &thread_index, uint64_t addr,
-                              int expected_count) {
+                              int expected_count, bool initial_parity) {
   auto key = std::make_pair(thread_index.sw_cta_id, addr);
   auto existing = addr_to_mbarrier_map.find(key);
   if (existing != addr_to_mbarrier_map.end()) {
@@ -80,7 +80,7 @@ void mbarrier_manager_t::init(gpgpu_sim *gpu,
     mbarrier->m_expected_count = expected_count;
     mbarrier->m_pending_arrival_count = expected_count;
     mbarrier->m_tx_count = 0;
-    mbarrier->m_phase = 0;
+    mbarrier->m_phase = initial_parity;
     mbarrier->m_waiting_warps.clear();
     mbarrier->m_remote_waiters.clear();
     GPPRINTF_GPU(gpu, MBAR,
@@ -97,6 +97,7 @@ void mbarrier_manager_t::init(gpgpu_sim *gpu,
                                         thread_index.sw_cta_id, addr,
                                         expected_count));
   assert(ret.second && "mbarrier at the same address already exists");
+  ret.first->second->m_phase = initial_parity;
 
   GPPRINTF_GPU_CORE(
       gpu, thread_index.sm_id, MBAR,
@@ -1916,8 +1917,8 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
       auto expected_count = mbar_info.bar_count;
 
       m_mbarrier_manager.init(m_shader->get_gpu(), thread_index, addr,
-                              expected_count);
-      trace_state("init", addr, expected_count, false);
+                              expected_count, mbar_info.bar_parity);
+      trace_state("init", addr, expected_count, mbar_info.bar_parity);
     }
     return;
 
@@ -1970,6 +1971,20 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
   } else if (static_info.operation ==
              inst_t::mbarrier_static_info_t::MBARRIER_COMPLETE_TX) {
 
+    if (static_info.per_lane_complete_tx) {
+      for (unsigned lane = 0; lane < warp_size; ++lane) {
+        if (!active_mask.test(lane))
+          continue;
+        const auto &info = inst.get_mbarrier_info(lane);
+        if (!is_valid_mbarrier_info(info))
+          continue;
+        auto released = m_mbarrier_manager.complete_tx(
+            m_shader->get_gpu(), thread_index, info.bar_id, info.bar_count);
+        trace_state("complete_tx", info.bar_id, info.bar_count, false);
+        release_warps(released);
+      }
+      return;
+    }
     inst_t::mbarrier_info_t mbar_info;
     unsigned lane = 0;
     if (!get_uniform_mbarrier_info(mbar_info, lane))
@@ -2045,4 +2060,19 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
   }
 
   assert(false && "mbarrier in barrier_set_t not implemented");
+}
+
+// The native frontend can decode an opaque initialization store on first use.
+// Import it before the consuming operation reaches timing, without resetting a
+// barrier that was already initialized by an earlier timing instruction.
+void barrier_set_t::initialize_native_stored_barrier(unsigned cta_id,
+                                                     unsigned warp_id,
+                                                     unsigned address,
+                                                     unsigned count,
+                                                     bool parity) {
+  flash_gpgpu_sim::mbarrier_manager_t::thread_index_t index{
+      (int)cta_id, (int)warp_id, m_shader->get_logical_cta_id(warp_id),
+      m_shader->get_cta_warp_id(warp_id), (int)m_shader->get_sid()};
+  if (!m_mbarrier_manager.get_mbarrier(index.sw_cta_id, address))
+    m_mbarrier_manager.init(m_shader->get_gpu(), index, address, count, parity);
 }

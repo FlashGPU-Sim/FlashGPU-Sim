@@ -389,3 +389,30 @@ also retains its upstream configuration separately from the native delay.
 After these repairs, all four medium O/LSE checks and 30 production-core tests
 pass. The versioned cycle reference linked above records the separate timing
 model investigation; hosted status is reported on PR #39.
+
+### Additional barrier and operand qualification (2026-11-15)
+
+`SYNCS.ARRIVE.TRANS64.RED.A0TX` contributes completion bytes from each
+executing lane, including different local barrier addresses. The timing
+projection marks this explicitly; the existing uniform completion path and
+PTX dispatch retain their behavior. `SYNCS.CCTL.IV` permits independent barrier
+addresses across lanes and rejects concurrent invalidation of the same object.
+
+Initial barrier parity is preserved by explicit exchange initialization and by
+importing opaque initialization stores from shared memory. Imported state is
+forwarded to timing before its first consumer. Native TMA and bulk loads may
+complete before `arrive.expect_tx`; functional completion credit is matched by
+later expected bytes without advancing the phase early or leaking credit into
+the next phase. The common timing manager retains its signed transaction counter.
+
+Operand coverage now includes signed `QNAN` literals, `UIADD3.X` with discarded
+carry outputs, and descriptor-addressed 4/8/16-byte `LDGSTS` forms, including
+zero-fill and `LTC128B`. Copy width is reflected in both functional accesses and
+timing metadata; discarded carry outputs are excluded from source counts.
+
+Focused regressions reproduce the seven original gaps before the fixes. The
+component tests additionally cover early tensor/bulk loads, guard masks,
+completion-credit boundaries, copy boundaries and effect reset. Real-core
+regressions verify waiter release, both initial-parity paths, and unchanged
+uniform completion behavior. This qualification does not add SM100/SM107
+architecture support or change timing references/calibration.

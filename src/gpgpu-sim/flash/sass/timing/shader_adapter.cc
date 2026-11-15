@@ -71,6 +71,10 @@ public:
         inst.warp_id(), inst,
         core_.m_gpu->gpu_tot_sim_cycle + core_.m_gpu->gpu_sim_cycle,
         core_.m_gpu->get_config().get_core_freq());
+    for (const auto &initial : inst.native_mbarrier_initializations)
+      core_.m_barriers.initialize_native_stored_barrier(
+          core_.m_warp[inst.warp_id()]->get_cta_id(), inst.warp_id(),
+          initial.bar_id, initial.bar_count, initial.bar_parity);
     if (result.instruction_refill_delay != 0) {
       // A target can be fetched two cycles before issue. Start the refill
       // after the native control delay so the configured value remains an

@@ -266,10 +266,8 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   if (tile_bytes == 0 || tile_bytes > UINT32_MAX ||
       shared_address > std::numeric_limits<uint64_t>::max() - (tile_bytes - 1))
     return unsupported(inst, "invalid TMA shared-memory tile range");
-  if (!context.cta->mbarrier_initialized(mbarrier_address) ||
-      context.cta->mbarrier_pending_transaction_bytes(mbarrier_address) <
-          tile_bytes)
-    return unsupported(inst, "TMA bytes are not pending on its mbarrier");
+  if (!ensure_mbarrier_imported(mbarrier_address, context))
+    return unsupported(inst, "TMA references uninitialized mbarrier");
 
   std::vector<uint8_t> tile(tile_bytes, 0);
   for (uint64_t element = 0; element < box_elements; ++element) {
@@ -371,8 +369,8 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   if (!record_uniform_tma_effect(inst, state, context,
                                  std::move(timing_effect)))
     return unsupported(inst, "executing TMA load has no issuing lane");
-  if (!context.cta->complete_mbarrier_transaction(mbarrier_address,
-                                                  tile.size()))
+  if (!context.cta->complete_mbarrier_transaction(mbarrier_address, tile.size(),
+                                                  true))
     return unsupported(inst, "mbarrier transaction state changed during TMA");
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -809,9 +807,8 @@ step_result execute_ublkcp_shared_global(const instruction &inst,
   const size_t bytes = static_cast<size_t>(size_units * 16);
   if ((global_address % 16) != 0 || (shared_address % 16) != 0)
     return unsupported(inst, "UBLKCP addresses must be 16-byte aligned");
-  if (!context.cta->mbarrier_initialized(mbarrier_address) ||
-      context.cta->mbarrier_pending_transaction_bytes(mbarrier_address) < bytes)
-    return unsupported(inst, "UBLKCP bytes are not pending on its mbarrier");
+  if (!ensure_mbarrier_imported(mbarrier_address, context))
+    return unsupported(inst, "UBLKCP references uninitialized mbarrier");
 
   std::vector<uint8_t> payload(bytes);
   if (!context.memory->read(memory_space::kGlobal, global_address,
@@ -830,7 +827,8 @@ step_result execute_ublkcp_shared_global(const instruction &inst,
   if (!record_uniform_tma_effect(inst, state, context,
                                  std::move(timing_effect)))
     return unsupported(inst, "executing uniform bulk load has no issuing lane");
-  if (!context.cta->complete_mbarrier_transaction(mbarrier_address, bytes))
+  if (!context.cta->complete_mbarrier_transaction(mbarrier_address, bytes,
+                                                  true))
     return unsupported(inst, "mbarrier state changed during UBLKCP");
   advance(inst, state);
   return {step_status::kAdvanced, {}};

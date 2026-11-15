@@ -821,17 +821,20 @@ TEST(SassTimingProjectionTest, MatchAndReduxRetainTheirSourceDependencies) {
 }
 
 namespace {
-TEST(SassOperandTest, SignedQuietNanLiteralsAreStructuredWithoutDoubleNegation) {
+TEST(SassOperandTest,
+     SignedQuietNanLiteralsAreStructuredWithoutDoubleNegation) {
   for (const char *text : {"QNAN", "+QNAN", "-QNAN", " -QNAN "}) {
     const auto op = flash_gpgpu_sim::sass::parse_operand(text);
     ASSERT_EQ(op.kind, operand_kind::kFloatImmediate);
     EXPECT_TRUE(std::isnan(op.float_immediate));
-    EXPECT_EQ(std::signbit(op.float_immediate), std::string(text).find('-') != std::string::npos);
+    EXPECT_EQ(std::signbit(op.float_immediate),
+              std::string(text).find('-') != std::string::npos);
     EXPECT_FALSE(op.negated);
   }
   for (const char *text : {"QNANjunk", "-QNAN.H1", "SNAN", "nan(payload)"})
-    EXPECT_EQ(flash_gpgpu_sim::sass::parse_operand(text).kind, operand_kind::kOpaque);
-  const auto inst=official_instruction(0,"MUFU.RSQ","R9,-QNAN");
+    EXPECT_EQ(flash_gpgpu_sim::sass::parse_operand(text).kind,
+              operand_kind::kOpaque);
+  const auto inst = official_instruction(0, "MUFU.RSQ", "R9,-QNAN");
   EXPECT_TRUE(inst.operands_structured);
 }
 
@@ -840,8 +843,8 @@ TEST(SassFunctionalTest, UniformExtendedAddDiscardedOutputs) {
   image.name = "uniform_extended_add";
   image.arch = architecture::kSm120;
   image.instruction_bytes = 16;
-  image.instructions = {official_instruction(0, "UIADD3.X",
-      "UR5,UPT,UPT,URZ,UR5,URZ,UP0,!UPT")};
+  image.instructions = {
+      official_instruction(0, "UIADD3.X", "UR5,UPT,UPT,URZ,UR5,URZ,UP0,!UPT")};
   frontend sass;
   sass.add_kernel(std::move(image));
   register_sm120_functional_semantics(sass);
@@ -863,8 +866,8 @@ TEST(SassFunctionalTest, NarrowLdGstsZeroFillRespectsCopyWidth) {
     image.name = "narrow_zfill";
     image.arch = architecture::kSm120;
     image.instruction_bytes = 16;
-    image.instructions = {official_instruction(0, opcode,
-        "[R2],desc[UR4][R4.64+0x3],P0")};
+    image.instructions = {
+        official_instruction(0, opcode, "[R2],desc[UR4][R4.64+0x3],P0")};
     frontend sass;
     sass.add_kernel(std::move(image));
     register_sm120_functional_semantics(sass);
@@ -886,7 +889,8 @@ TEST(SassFunctionalTest, NarrowLdGstsZeroFillRespectsCopyWidth) {
     ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
     EXPECT_EQ(memory.inspect<uint32_t>(memory_space::kShared, 0x200), 0xabu);
     EXPECT_EQ(memory.inspect<uint32_t>(memory_space::kShared, 0x204), 0u);
-    EXPECT_EQ(memory.inspect<uint32_t>(memory_space::kShared, 0x208), 0xcafebabeu);
+    EXPECT_EQ(memory.inspect<uint32_t>(memory_space::kShared, 0x208),
+              0xcafebabeu);
     ASSERT_EQ(context.memory_accesses[0].size(), 1u);
     EXPECT_EQ(context.memory_accesses[0][0].bytes, 1u);
     EXPECT_TRUE(context.memory_accesses[1].empty());
@@ -917,39 +921,54 @@ TEST(SassFunctionalTest, InvalidatesIndependentMbarriersAcrossLanes) {
   EXPECT_TRUE(cta.invalidate_mbarrier(0x110));
 }
 
-TEST(SassFunctionalTest, NativeMbarrierInitialParityIsPreservedThroughCompletion) {
- for(bool parity:{false,true}) {
-  kernel image;image.name="phase_init";image.arch=architecture::kSm120;image.instruction_bytes=16;
-  image.instructions={official_instruction(0,"SYNCS.EXCH.64","URZ[UR4],UR8")};
-  frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
-  mapped_functional_memory memory;memory.map(memory_space::kShared,0x100,8,true);
-  cta_execution_state cta(1);execution_context context{&memory};context.cta=&cta;
-  warp_state state;state.write_uniform_register(4,0x100);state.write_uniform_register(8,0x1ffffc);
-  state.write_uniform_register(9,parity?0xfffff000:0x7ffff000);
-  auto result=sass.step("phase_init",state,context);ASSERT_EQ(result.status,step_status::kAdvanced)<<result.detail;
-  EXPECT_EQ(cta.mbarrier_phase(0x100),unsigned(parity));
-  EXPECT_EQ(cta.mbarrier_pending_arrivals(0x100),2u);
-  EXPECT_EQ(context.mbarrier_effects[0].parity,parity);
-  ASSERT_TRUE(cta.arrive_mbarrier(0x100,2,64));
-  EXPECT_EQ(cta.mbarrier_phase(0x100),unsigned(parity));
-  ASSERT_TRUE(cta.complete_mbarrier_transaction(0x100,64));
-  EXPECT_EQ(cta.mbarrier_phase(0x100),unsigned(parity)+1);
- }
+TEST(SassFunctionalTest,
+     NativeMbarrierInitialParityIsPreservedThroughCompletion) {
+  for (bool parity : {false, true}) {
+    kernel image;
+    image.name = "phase_init";
+    image.arch = architecture::kSm120;
+    image.instruction_bytes = 16;
+    image.instructions = {
+        official_instruction(0, "SYNCS.EXCH.64", "URZ[UR4],UR8")};
+    frontend sass;
+    sass.add_kernel(std::move(image));
+    register_sm120_functional_semantics(sass);
+    mapped_functional_memory memory;
+    memory.map(memory_space::kShared, 0x100, 8, true);
+    cta_execution_state cta(1);
+    execution_context context{&memory};
+    context.cta = &cta;
+    warp_state state;
+    state.write_uniform_register(4, 0x100);
+    state.write_uniform_register(8, 0x1ffffc);
+    state.write_uniform_register(9, parity ? 0xfffff000 : 0x7ffff000);
+    auto result = sass.step("phase_init", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    EXPECT_EQ(cta.mbarrier_phase(0x100), unsigned(parity));
+    EXPECT_EQ(cta.mbarrier_pending_arrivals(0x100), 2u);
+    EXPECT_EQ(context.mbarrier_effects[0].parity, parity);
+    ASSERT_TRUE(cta.arrive_mbarrier(0x100, 2, 64));
+    EXPECT_EQ(cta.mbarrier_phase(0x100), unsigned(parity));
+    ASSERT_TRUE(cta.complete_mbarrier_transaction(0x100, 64));
+    EXPECT_EQ(cta.mbarrier_phase(0x100), unsigned(parity) + 1);
+  }
 }
-} // namespace
+}  // namespace
 
 namespace {
 TEST(SassFunctionalTest, CompletionAccountsForEachPredicatedLane) {
   for (auto arch : {architecture::kSm90, architecture::kSm120}) {
     frontend sass;
-    if (arch == architecture::kSm90) register_sm90_functional_semantics(sass);
-    else register_sm120_functional_semantics(sass);
+    if (arch == architecture::kSm90)
+      register_sm90_functional_semantics(sass);
+    else
+      register_sm120_functional_semantics(sass);
     kernel image;
     image.name = "lane_completion";
     image.arch = arch;
     image.instruction_bytes = 16;
-    image.instructions = {official_instruction(0,
-        "SYNCS.ARRIVE.TRANS64.RED.A0TX", "RZ[R2],R4", "@P0")};
+    image.instructions = {official_instruction(
+        0, "SYNCS.ARRIVE.TRANS64.RED.A0TX", "RZ[R2],R4", "@P0")};
     sass.add_kernel(std::move(image));
     cta_execution_state cta(1);
     ASSERT_TRUE(cta.initialize_mbarrier(0x100, 1));
@@ -982,48 +1001,187 @@ TEST(SassFunctionalTest, CompletionAccountsForEachPredicatedLane) {
 }
 
 TEST(SassFunctionalTest, BulkLoadBeforeExpectTxRetainsCompletionCredit) {
-  for (bool stored : {false, true}) {
+  for (bool tensor : {false, true})
+    for (bool stored : {false, true}) {
+      frontend sass;
+      register_sm90_functional_semantics(sass);
+      kernel image;
+      image.name = "early_bulk";
+      image.arch = architecture::kSm90;
+      image.instruction_bytes = 16;
+      image.instructions = {
+          tensor
+              ? official_instruction(0, "UTMALDG.2D", "[UR4][UR8]")
+              : official_instruction(0, "UBLKCP.S.G", "[UR4][UR6],UR8"),
+          official_instruction(16, "SYNCS.ARRIVE.TRANS64", "RZ[R2],R4", "@P0")};
+      sass.add_kernel(std::move(image));
+      mapped_functional_memory memory;
+      memory.map(memory_space::kGlobal, 0x1000, 64, false);
+      memory.map(memory_space::kShared, 0x100, 0x200, true);
+      for (unsigned i = 0; i < 16; ++i)
+        memory.initialize<uint32_t>(memory_space::kGlobal, 0x1000 + 4 * i,
+                                    i + 42);
+      cta_execution_state cta(1);
+      if (stored)
+        memory.initialize<uint64_t>(memory_space::kShared, 0x100,
+                                    0x7ffff800001ffffeull);
+      else
+        ASSERT_TRUE(cta.initialize_mbarrier(0x100, 1));
+      execution_context context{&memory};
+      context.cta = &cta;
+      warp_state state;
+      state.active_mask = 1;
+      state.write_uniform_register(4, 0x200);
+      state.write_uniform_register(5, 0x100);
+      state.write_uniform_register(6, tensor ? 0 : 0x1000);
+      state.write_uniform_register(8, tensor ? 0x2000 : 4);
+      if (tensor) {
+        functional_tensor_map_2d map;
+        map.global_address = 0x1000;
+        map.global_dim = {16, 1};
+        map.row_stride_bytes = 64;
+        map.box_dim = {16, 1};
+        map.element_bytes = 4;
+        ASSERT_TRUE(cta.register_tensor_map_2d(0x2000, map));
+      }
+      auto r = sass.step("early_bulk", state, context);
+      ASSERT_EQ(r.status, step_status::kAdvanced) << r.detail;
+      EXPECT_EQ(cta.mbarrier_phase(0x100), 0u);
+      EXPECT_FALSE(cta.invalidate_mbarrier(0x100));
+      for (unsigned i = 0; i < 16; ++i)
+        EXPECT_EQ(
+            memory.inspect<uint32_t>(memory_space::kShared, 0x200 + 4 * i),
+            i + 42);
+      state.write_register(0, 2, 0x100);
+      state.write_register(0, 4, 64);
+      state.write_predicate(0, 0, true);
+      r = sass.step("early_bulk", state, context);
+      ASSERT_EQ(r.status, step_status::kAdvanced) << r.detail;
+      EXPECT_EQ(cta.mbarrier_phase(0x100), 1u);
+      ASSERT_TRUE(cta.arrive_mbarrier(0x100, 1, 32));
+      EXPECT_EQ(cta.mbarrier_phase(0x100), 1u);
+    }
+}
+}  // namespace
+
+namespace {
+TEST(SassTimingProjectionTest, NarrowAsyncCopiesKeepWidthAndBarrierEffects) {
+  for (const char *opcode :
+       {"LDGSTS.E", "LDGSTS.E.64", "LDGSTS.E.128", "LDGSTS.E.LTC128B",
+        "LDGSTS.E.LTC128B.64.ZFILL", "LDGSTS.E.BYPASS.128.ZFILL"}) {
+    const auto inst =
+        official_instruction(0, opcode, "[R2],desc[UR4][R4.64],P0");
+    timing_instruction projected(inst);
+    const unsigned bytes =
+        std::string(opcode).find(".128") != std::string::npos  ? 16
+        : std::string(opcode).find(".64") != std::string::npos ? 8
+                                                               : 4;
+    EXPECT_EQ(projected.data_size, bytes);
+    EXPECT_TRUE(projected.m_is_ldgsts);
+  }
+  timing_instruction complete(
+      official_instruction(0, "SYNCS.ARRIVE.TRANS64.RED.A0TX", "RZ[R2],R4"));
+  EXPECT_TRUE(complete.get_mbarrier_static_info().per_lane_complete_tx);
+  EXPECT_FALSE(inst_t::mbarrier_static_info_t{}.per_lane_complete_tx);
+  execution_context context;
+  context.imported_mbarriers.push_back({true, 0x100, 3, true});
+  project_mbarrier_effects(context, complete);
+  ASSERT_EQ(complete.native_mbarrier_initializations.size(), 1u);
+  EXPECT_EQ(complete.native_mbarrier_initializations[0].bar_count, 3u);
+  EXPECT_TRUE(complete.native_mbarrier_initializations[0].bar_parity);
+  context.clear_instruction_effects();
+  project_mbarrier_effects(context, complete);
+  EXPECT_TRUE(complete.native_mbarrier_initializations.empty());
+}
+
+TEST(SassFunctionalTest, NarrowAsyncCopiesWriteOnlyTheirWidth) {
+  for (const char *opcode : {"LDGSTS.E", "LDGSTS.E.64", "LDGSTS.E.128"}) {
     frontend sass;
-    register_sm90_functional_semantics(sass);
+    register_sm120_functional_semantics(sass);
     kernel image;
-    image.name = "early_bulk";
-    image.arch = architecture::kSm90;
+    image.name = "narrow_copy";
+    image.arch = architecture::kSm120;
     image.instruction_bytes = 16;
     image.instructions = {
-        official_instruction(0, "UBLKCP.S.G", "[UR4][UR6],UR8"),
-        official_instruction(16, "SYNCS.ARRIVE.TRANS64", "RZ[R2],R4", "@P0")};
+        official_instruction(0, opcode, "[R2],desc[UR4][R4.64]")};
     sass.add_kernel(std::move(image));
+    const unsigned bytes =
+        std::string(opcode).find(".128") != std::string::npos  ? 16
+        : std::string(opcode).find(".64") != std::string::npos ? 8
+                                                               : 4;
     mapped_functional_memory memory;
-    memory.map(memory_space::kGlobal, 0x1000, 64, false);
-    memory.map(memory_space::kShared, 0x100, 0x200, true);
-    for (unsigned i = 0; i < 16; ++i)
-      memory.initialize<uint32_t>(memory_space::kGlobal, 0x1000 + 4 * i, i + 42);
-    cta_execution_state cta(1);
-    if (stored)
-      memory.initialize<uint64_t>(memory_space::kShared, 0x100, 0x7ffff800001ffffeull);
-    else ASSERT_TRUE(cta.initialize_mbarrier(0x100, 1));
-    execution_context context{&memory};
-    context.cta = &cta;
+    memory.map(memory_space::kGlobal, 0x1000, bytes, false);
+    memory.map(memory_space::kShared, 0x100, bytes + 4, true);
+    for (unsigned i = 0; i < bytes / 4; ++i)
+      memory.initialize<uint32_t>(memory_space::kGlobal, 0x1000 + i * 4,
+                                  100 + i);
+    memory.initialize<uint32_t>(memory_space::kShared, 0x100 + bytes,
+                                0xdeadbeef);
     warp_state state;
     state.active_mask = 1;
-    state.write_uniform_register(4, 0x200);
-    state.write_uniform_register(5, 0x100);
-    state.write_uniform_register(6, 0x1000);
-    state.write_uniform_register(8, 4);
-    auto r = sass.step("early_bulk", state, context);
-    ASSERT_EQ(r.status, step_status::kAdvanced) << r.detail;
-    EXPECT_EQ(cta.mbarrier_phase(0x100), 0u);
-    EXPECT_FALSE(cta.invalidate_mbarrier(0x100));
-    for (unsigned i = 0; i < 16; ++i)
-      EXPECT_EQ(memory.inspect<uint32_t>(memory_space::kShared, 0x200 + 4 * i), i + 42);
     state.write_register(0, 2, 0x100);
-    state.write_register(0, 4, 64);
-    state.write_predicate(0, 0, true);
-    r = sass.step("early_bulk", state, context);
+    state.write_register(0, 4, 0x1000);
+    execution_context context{&memory};
+    auto r = sass.step("narrow_copy", state, context);
     ASSERT_EQ(r.status, step_status::kAdvanced) << r.detail;
-    EXPECT_EQ(cta.mbarrier_phase(0x100), 1u);
-    ASSERT_TRUE(cta.arrive_mbarrier(0x100, 1, 32));
-    EXPECT_EQ(cta.mbarrier_phase(0x100), 1u);
+    for (unsigned i = 0; i < bytes / 4; ++i)
+      EXPECT_EQ(memory.inspect<uint32_t>(memory_space::kShared, 0x100 + 4 * i),
+                100 + i);
+    EXPECT_EQ(memory.inspect<uint32_t>(memory_space::kShared, 0x100 + bytes),
+              0xdeadbeefu);
+    ASSERT_EQ(context.memory_accesses[0].size(), 1u);
+    EXPECT_EQ(context.memory_accesses[0][0].bytes, bytes);
   }
 }
-} // namespace
+}  // namespace
+
+namespace {
+TEST(SassFunctionalTest, EarlyTmaCompletionWaitsForExpectedBytesAndArrivals) {
+  cta_execution_state cta(32);
+  ASSERT_TRUE(cta.initialize_mbarrier(0x100, 2));
+  EXPECT_FALSE(cta.complete_mbarrier_transaction(0x100, 64));
+  ASSERT_TRUE(cta.complete_mbarrier_transaction(0x100, 128, true));
+  EXPECT_EQ(cta.mbarrier_phase(0x100), 0u);
+  EXPECT_FALSE(cta.invalidate_mbarrier(0x100));
+  ASSERT_TRUE(cta.arrive_mbarrier(0x100, 1, 64));
+  EXPECT_EQ(cta.mbarrier_phase(0x100), 0u);
+  EXPECT_EQ(cta.mbarrier_pending_transaction_bytes(0x100), 0u);
+  ASSERT_TRUE(cta.arrive_mbarrier(0x100, 1, 64));
+  EXPECT_EQ(cta.mbarrier_phase(0x100), 1u);
+  EXPECT_EQ(cta.mbarrier_pending_arrivals(0x100), 2u);
+  // Credit must not leak into the next phase.
+  ASSERT_TRUE(cta.arrive_mbarrier(0x100, 2, 32));
+  EXPECT_EQ(cta.mbarrier_phase(0x100), 1u);
+  ASSERT_TRUE(cta.complete_mbarrier_transaction(0x100, 32));
+  EXPECT_EQ(cta.mbarrier_phase(0x100), 2u);
+  EXPECT_TRUE(cta.invalidate_mbarrier(0x100));
+}
+TEST(SassFunctionalTest, EarlyTmaCompletionHandlesPartialAndOverflowCredit) {
+  cta_execution_state cta(32);
+  ASSERT_TRUE(cta.initialize_mbarrier(0x100, 1));
+  ASSERT_TRUE(cta.complete_mbarrier_transaction(0x100, 32, true));
+  ASSERT_TRUE(cta.arrive_mbarrier(0x100, 1, 64));
+  EXPECT_EQ(cta.mbarrier_phase(0x100), 0u);
+  EXPECT_EQ(cta.mbarrier_pending_transaction_bytes(0x100), 32u);
+  ASSERT_TRUE(cta.complete_mbarrier_transaction(0x100, 32));
+  EXPECT_EQ(cta.mbarrier_phase(0x100), 1u);
+  ASSERT_TRUE(cta.complete_mbarrier_transaction(0x100, UINT64_MAX, true));
+  EXPECT_FALSE(cta.complete_mbarrier_transaction(0x100, 1, true));
+  EXPECT_EQ(cta.mbarrier_phase(0x100), 1u);
+}
+}  // namespace
+
+namespace {
+TEST(SassTimingProjectionTest, UniformDiscardedCarryOutputsAreNotInputs) {
+  timing_instruction compact(
+      official_instruction(0, "UIADD3.X", "UR5,URZ,UR5,URZ,UP0,!UPT"));
+  timing_instruction explicit_outputs(
+      official_instruction(0, "UIADD3.X", "UR5,UPT,UPT,URZ,UR5,URZ,UP0,!UPT"));
+  EXPECT_EQ(explicit_outputs.get_num_operands(), compact.get_num_operands());
+  EXPECT_EQ(explicit_outputs.get_num_regs(), compact.get_num_regs());
+  EXPECT_EQ(explicit_outputs.incount, compact.incount);
+  EXPECT_EQ(explicit_outputs.outcount, compact.outcount);
+  for (unsigned i = 0; i < compact.incount; ++i)
+    EXPECT_EQ(explicit_outputs.arch_reg.src[i], compact.arch_reg.src[i]);
+}
+}  // namespace

@@ -17,27 +17,38 @@ bool decode_initial_mbarrier(uint64_t value, uint32_t &expected_arrivals) {
   const uint32_t low = static_cast<uint32_t>(value);
   const uint32_t high = static_cast<uint32_t>(value >> 32);
   const uint32_t encoded_pending = low >> 1;
-  if ((low & 1u) != 0 || high != (encoded_pending << 11) ||
+  if ((low & 1u) != 0 || (high & 0x7fffffffu) != (encoded_pending << 11) ||
       encoded_pending >= (uint32_t{1} << 20))
     return false;
   expected_arrivals = (uint32_t{1} << 20) - encoded_pending;
   return expected_arrivals != 0 && expected_arrivals < (uint32_t{1} << 20);
 }
 
+} // namespace
+
 bool ensure_mbarrier_imported(uint64_t location, execution_context &context) {
-  if (context.cta == nullptr)
+  if (!context.cta)
     return false;
   if (context.cta->mbarrier_initialized(location))
     return true;
-  if (context.memory == nullptr)
-    return false;
   uint64_t value = 0;
-  uint32_t expected_arrivals = 0;
-  return context.memory->read(memory_space::kShared, location, &value,
-                              sizeof(value)) &&
-         decode_initial_mbarrier(value, expected_arrivals) &&
-         context.cta->initialize_mbarrier(location, expected_arrivals);
+  uint32_t count = 0;
+  if (!context.memory || location > UINT32_MAX ||
+      !context.memory->read(memory_space::kShared, location, &value,
+                            sizeof(value)) ||
+      !decode_initial_mbarrier(value, count) ||
+      !context.cta->initialize_mbarrier(location, count, value >> 63))
+    return false;
+  functional_mbarrier_effect initial;
+  initial.valid = true;
+  initial.address = static_cast<uint32_t>(location);
+  initial.count = count;
+  initial.parity = value >> 63;
+  context.imported_mbarriers.push_back(initial);
+  return true;
 }
+
+namespace {
 
 bool record_uniform_mbarrier_effect(const instruction &inst,
                                     const warp_state &state,
@@ -90,13 +101,15 @@ step_result execute_syncs_exchange(const instruction &inst, warp_state &state,
     return memory_fault(inst, memory_space::kShared, location,
                         sizeof(uint64_t));
   write_uniform_register_pair(state, address->prefix_index, old_value);
-  if (!context.cta->initialize_mbarrier(location, expected_arrivals))
+  if (!context.cta->initialize_mbarrier(location, expected_arrivals,
+                                        new_value >> 63))
     return unsupported(inst, "mbarrier initialization state changed");
   if (location > UINT32_MAX)
     return unsupported(inst, "mbarrier address exceeds timing ABI");
   functional_mbarrier_effect timing_effect;
   timing_effect.address = static_cast<uint32_t>(location);
   timing_effect.count = expected_arrivals;
+  timing_effect.parity = new_value >> 63;
   if (!record_uniform_mbarrier_effect(inst, state, context, timing_effect))
     return unsupported(inst, "executing mbarrier init has no issuing lane");
 
@@ -117,50 +130,28 @@ step_result execute_syncs_arrive(const instruction &inst, warp_state &state,
   if (context.cta == nullptr)
     return unsupported(inst, "SYNCS arrival requires CTA state");
 
-  // mbarrier.complete_tx.shared::cluster lowers to RED.A0TX: it contributes
-  // no arrival (A0) and subtracts the register byte count (TX) from the
-  // outstanding transaction bytes.  RED is warp-uniform at the timing ABI,
-  // so perform one completion after verifying every executing lane names the
-  // same barrier and byte count.
+  // RED discards the result, not the other lanes' completion contributions.
   if (inst.opcode == "SYNCS.ARRIVE.TRANS64.RED.A0TX") {
-    bool found = false;
-    unsigned issuing_lane = 0;
-    uint64_t location = 0;
-    uint64_t transaction_bytes = 0;
     for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-      if ((state.active_mask & (1u << lane)) == 0 ||
+      if (!(state.active_mask & (1u << lane)) ||
           !lane_executes(inst, state, lane))
         continue;
-      uint64_t lane_location = 0;
-      if (!evaluate_shared_address(*address, state, lane, lane_location) ||
-          (lane_location % alignof(uint64_t)) != 0)
+      uint64_t location = 0;
+      if (!evaluate_shared_address(*address, state, lane, location) ||
+          location % alignof(uint64_t) || location > UINT32_MAX)
         return unsupported(inst, "invalid aligned SYNCS completion address");
-      const uint64_t lane_bytes = state.read_register(lane, count->index);
-      if (!found) {
-        found = true;
-        issuing_lane = lane;
-        location = lane_location;
-        transaction_bytes = lane_bytes;
-      } else if (lane_location != location || lane_bytes != transaction_bytes) {
-        return unsupported(inst, "non-uniform SYNCS completion operands");
-      }
+      if (!ensure_mbarrier_imported(location, context))
+        return unsupported(inst,
+                           "completion references invalid mbarrier state");
+      const uint32_t bytes = state.read_register(lane, count->index);
+      if (!context.cta->complete_mbarrier_transaction(location, bytes, true))
+        return unsupported(inst, "invalid mbarrier transaction completion");
+      functional_mbarrier_effect effect;
+      effect.valid = true;
+      effect.address = static_cast<uint32_t>(location);
+      effect.count = bytes;
+      context.record_mbarrier_effect(lane, effect);
     }
-    if (!found) {
-      advance(inst, state);
-      return {step_status::kAdvanced, {}};
-    }
-    if (!ensure_mbarrier_imported(location, context))
-      return unsupported(inst, "completion references invalid mbarrier state");
-    if (location > UINT32_MAX || transaction_bytes > UINT32_MAX)
-      return unsupported(inst, "mbarrier completion operand exceeds 32 bits");
-    functional_mbarrier_effect timing_effect;
-    timing_effect.valid = true;
-    timing_effect.address = static_cast<uint32_t>(location);
-    timing_effect.count = static_cast<uint32_t>(transaction_bytes);
-    context.record_mbarrier_effect(issuing_lane, timing_effect);
-    if (!context.cta->complete_mbarrier_transaction(location,
-                                                    transaction_bytes))
-      return unsupported(inst, "invalid mbarrier transaction completion");
     advance(inst, state);
     return {step_status::kAdvanced, {}};
   }
@@ -334,25 +325,34 @@ step_result execute_syncs_invalidate(const instruction &inst, warp_state &state,
     advance(inst, state);
     return {step_status::kAdvanced, {}};
   }
-  if ((executing_lanes & (executing_lanes - 1)) != 0)
-    return unsupported(inst, "mbarrier invalidate requires one lane");
   if (context.cta == nullptr)
     return unsupported(inst, "mbarrier invalidate requires CTA state");
 
-  const unsigned lane = static_cast<unsigned>(__builtin_ctz(executing_lanes));
-  uint64_t location = 0;
-  if (!evaluate_shared_address(*address, state, lane, location) ||
-      (location % alignof(uint64_t)) != 0)
-    return unsupported(inst, "invalid aligned mbarrier invalidate address");
-  if (!ensure_mbarrier_imported(location, context) ||
-      !context.cta->invalidate_mbarrier(location))
-    return unsupported(inst, "mbarrier is uninitialized or still pending");
-  if (location > UINT32_MAX)
-    return unsupported(inst, "mbarrier address exceeds timing ABI");
-  functional_mbarrier_effect timing_effect;
-  timing_effect.valid = true;
-  timing_effect.address = static_cast<uint32_t>(location);
-  context.record_mbarrier_effect(lane, timing_effect);
+  std::vector<std::pair<unsigned, uint64_t>> locations;
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(executing_lanes & (1u << lane)))
+      continue;
+    uint64_t location = 0;
+    if (!evaluate_shared_address(*address, state, lane, location) ||
+        (location % alignof(uint64_t)) != 0 || location > UINT32_MAX)
+      return unsupported(inst, "invalid aligned mbarrier invalidate address");
+    for (const auto &previous : locations)
+      if (previous.second == location)
+        return unsupported(inst,
+                           "concurrent invalidation of the same mbarrier");
+    locations.emplace_back(lane, location);
+  }
+  for (const auto &entry : locations) {
+    const unsigned lane = entry.first;
+    const uint64_t location = entry.second;
+    if (!ensure_mbarrier_imported(location, context) ||
+        !context.cta->invalidate_mbarrier(location))
+      return unsupported(inst, "mbarrier is uninitialized or still pending");
+    functional_mbarrier_effect timing_effect;
+    timing_effect.valid = true;
+    timing_effect.address = static_cast<uint32_t>(location);
+    context.record_mbarrier_effect(lane, timing_effect);
+  }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
 }

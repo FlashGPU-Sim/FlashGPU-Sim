@@ -1328,6 +1328,9 @@ class barrier_set_t {
   // cleanup mbarriers for a CTA when it completes
   void cleanup_cta_mbarriers(unsigned cta_id);
 
+  void initialize_native_stored_barrier(unsigned cta_id, unsigned warp_id,
+                                        unsigned address, unsigned count,
+                                        bool parity);
   void reset_mbarrier();
 
   typedef std::map<unsigned, warp_set_t> cta_to_warp_t;

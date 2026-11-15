@@ -198,13 +198,20 @@ step_result execute_uiadd3(const instruction &inst, warp_state &state,
 
 step_result execute_uiadd3x(const instruction &inst, warp_state &state,
                             execution_context &) {
-  if (!has_typed_operands(inst, 6) ||
+  const bool discarded_outputs =
+      has_typed_operands(inst, 8) &&
+      inst.operands[1].kind == operand_kind::kUniformPredicate &&
+      inst.operands[1].index == kTruePredicate &&
+      inst.operands[2].kind == operand_kind::kUniformPredicate &&
+      inst.operands[2].index == kTruePredicate;
+  const unsigned source = discarded_outputs ? 3 : 1;
+  if ((!has_typed_operands(inst, 6) && !discarded_outputs) ||
       inst.operands[0].kind != operand_kind::kUniformRegister ||
-      inst.operands[1].kind == operand_kind::kRegister ||
-      inst.operands[2].kind == operand_kind::kRegister ||
-      inst.operands[3].kind == operand_kind::kRegister ||
-      inst.operands[4].kind != operand_kind::kUniformPredicate ||
-      inst.operands[5].kind != operand_kind::kUniformPredicate ||
+      inst.operands[source].kind == operand_kind::kRegister ||
+      inst.operands[source + 1].kind == operand_kind::kRegister ||
+      inst.operands[source + 2].kind == operand_kind::kRegister ||
+      inst.operands[source + 3].kind != operand_kind::kUniformPredicate ||
+      inst.operands[source + 4].kind != operand_kind::kUniformPredicate ||
       (inst.has_guard && inst.guard.kind != operand_kind::kUniformPredicate))
     return unsupported(inst, "unsupported UIADD3.X operand form");
   if (any_lane_executes(inst, state)) {
@@ -213,11 +220,11 @@ step_result execute_uiadd3x(const instruction &inst, warp_state &state,
     uint32_t c = 0;
     bool carry0 = false;
     bool carry1 = false;
-    if (!read_u32_operand(inst.operands[1], state, 0, a) ||
-        !read_u32_operand(inst.operands[2], state, 0, b) ||
-        !read_u32_operand(inst.operands[3], state, 0, c) ||
-        !read_predicate_operand(inst.operands[4], state, 0, carry0) ||
-        !read_predicate_operand(inst.operands[5], state, 0, carry1))
+    if (!read_u32_operand(inst.operands[source], state, 0, a) ||
+        !read_u32_operand(inst.operands[source + 1], state, 0, b) ||
+        !read_u32_operand(inst.operands[source + 2], state, 0, c) ||
+        !read_predicate_operand(inst.operands[source + 3], state, 0, carry0) ||
+        !read_predicate_operand(inst.operands[source + 4], state, 0, carry1))
       return unsupported(inst, "unsupported UIADD3.X source");
     state.write_uniform_register(inst.operands[0].index,
                                  a + b + c + static_cast<uint32_t>(carry0) +

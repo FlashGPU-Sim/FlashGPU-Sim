@@ -437,6 +437,14 @@ operand parse_operand(const std::string &input) {
     result.immediate = immediate;
     return result;
   }
+  if (text == "QNAN" || text == "+QNAN" || text == "-QNAN") {
+    result = operand{};
+    result.kind = operand_kind::kFloatImmediate;
+    result.text = text;
+    result.float_immediate = std::copysign(
+        std::numeric_limits<double>::quiet_NaN(), text[0] == '-' ? -1.0 : 1.0);
+    return result;
+  }
   errno = 0;
   char *end = nullptr;
   const double floating = std::strtod(text.c_str(), &end);

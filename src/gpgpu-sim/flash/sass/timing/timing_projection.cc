@@ -435,7 +435,9 @@ void classify(const instruction &source, const timing_profile &profile,
     target.op = ASYNC_COPY_OP;
     target.op_pipe = CP_ASYNC__OP;
     target.memory_op = memory_load;
-    target.data_size = 16;
+    target.data_size = source.opcode.find(".128") != std::string::npos  ? 16
+                       : source.opcode.find(".64") != std::string::npos ? 8
+                                                                        : 4;
     target.space = memory_space_t(global_space);
     target.cache_op = CACHE_ALL;
     target.latency = profile.cp_async_latency;
@@ -602,6 +604,7 @@ void classify(const instruction &source, const timing_profile &profile,
       info.operation = inst_t::mbarrier_static_info_t::MBARRIER_TRY_WAIT;
     } else if (source.opcode == "SYNCS.ARRIVE.TRANS64.RED.A0TX") {
       info.operation = inst_t::mbarrier_static_info_t::MBARRIER_COMPLETE_TX;
+      info.per_lane_complete_tx = true;
     } else if (source.opcode.find(".ARRIVE.") != std::string::npos) {
       info.operation =
           inst_t::mbarrier_static_info_t::MBARRIER_ARRIVE_EXPECT_TX;
@@ -783,6 +786,14 @@ void populate_registers(const instruction &source, timing_instruction &target) {
     source_begin = 1;
     ++logical_source_operands;
     ++logical_register_operands;
+  } else if (source.operands_structured && source.opcode == "UIADD3.X" &&
+             source.operands.size() == 8 &&
+             source.operands[1].kind == operand_kind::kUniformPredicate &&
+             source.operands[1].index == kTruePredicate &&
+             source.operands[2].kind == operand_kind::kUniformPredicate &&
+             source.operands[2].index == kTruePredicate) {
+    append_source_registers(destinations, source.operands[0]);
+    source_begin = 3; // Two discarded carry outputs are not source operands.
   } else if (source.operands_structured && !source.operands.empty() &&
              has_destination(base)) {
     const operand &destination = source.operands.front();
@@ -944,6 +955,14 @@ void populate_register_file_destinations(const instruction &source,
 void project_mbarrier_effects(const execution_context &context,
                               warp_inst_t &target) {
   target.reset_mbarrier_info();
+  target.native_mbarrier_initializations.clear();
+  for (const auto &initial : context.imported_mbarriers) {
+    inst_t::mbarrier_info_t info;
+    info.bar_id = initial.address;
+    info.bar_count = initial.count;
+    info.bar_parity = initial.parity;
+    target.native_mbarrier_initializations.push_back(info);
+  }
   const bool try_wait = target.get_mbarrier_static_info().operation ==
                         inst_t::mbarrier_static_info_t::MBARRIER_TRY_WAIT;
   const functional_mbarrier_effect *representative = nullptr;

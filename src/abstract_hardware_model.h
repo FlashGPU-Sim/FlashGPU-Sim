@@ -953,6 +953,7 @@ public:
     operation_t operation = MBARRIER_INVALID;
     bool arrive = false;
     bool expect_tx = false;
+    bool per_lane_complete_tx = false;
   };
   void set_mbarrier_static_info(const mbarrier_static_info_t &info) {
     mbarrier_static_info = info;
@@ -1161,6 +1162,8 @@ public:
   const mbarrier_info_t &get_mbarrier_info(int laneid) const {
     return mbarrier_info[laneid];
   }
+  // Initial state decoded from a native shared-memory barrier store.
+  std::vector<mbarrier_info_t> native_mbarrier_initializations;
   void reset_mbarrier_info() {
     for (unsigned i = 0; i < MAX_WARP_SIZE; i++) {
       mbarrier_info[i].reset();

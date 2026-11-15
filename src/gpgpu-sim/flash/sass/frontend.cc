@@ -223,12 +223,13 @@ bool deferred_cta_barriers_released(warp_state &warp,
 }
 
 bool cta_execution_state::initialize_mbarrier(uint64_t address,
-                                              uint32_t expected_arrivals) {
+                                              uint32_t expected_arrivals,
+                                              bool initial_parity) {
   if (expected_arrivals == 0 || expected_arrivals >= (uint32_t{1} << 20))
     return false;
   return mbarriers_
-      .emplace(address,
-               mbarrier_state{expected_arrivals, expected_arrivals, 0, 0})
+      .emplace(address, mbarrier_state{expected_arrivals, expected_arrivals, 0,
+                                       static_cast<uint64_t>(initial_parity)})
       .second;
 }
 
@@ -246,7 +247,12 @@ bool cta_execution_state::arrive_mbarrier(uint64_t address, uint32_t arrivals,
   mbarrier_state &barrier = found->second;
   barrier.pending_arrivals -= arrivals;
   barrier.pending_transaction_bytes += transaction_bytes;
-  if (barrier.pending_arrivals == 0 && barrier.pending_transaction_bytes == 0) {
+  const uint64_t matched = std::min(barrier.pending_transaction_bytes,
+                                    barrier.early_completed_bytes);
+  barrier.pending_transaction_bytes -= matched;
+  barrier.early_completed_bytes -= matched;
+  if (barrier.pending_arrivals == 0 && barrier.pending_transaction_bytes == 0 &&
+      barrier.early_completed_bytes == 0) {
     barrier.pending_arrivals = barrier.expected_arrivals;
     ++barrier.phase;
   }
@@ -254,14 +260,22 @@ bool cta_execution_state::arrive_mbarrier(uint64_t address, uint32_t arrivals,
 }
 
 bool cta_execution_state::complete_mbarrier_transaction(
-    uint64_t address, uint64_t transaction_bytes) {
+    uint64_t address, uint64_t transaction_bytes, bool allow_early_completion) {
   const auto found = mbarriers_.find(address);
   if (found == mbarriers_.end() || transaction_bytes == 0 ||
-      transaction_bytes > found->second.pending_transaction_bytes)
+      (!allow_early_completion &&
+       transaction_bytes > found->second.pending_transaction_bytes))
     return false;
   mbarrier_state &barrier = found->second;
-  barrier.pending_transaction_bytes -= transaction_bytes;
-  if (barrier.pending_arrivals == 0 && barrier.pending_transaction_bytes == 0) {
+  const uint64_t matched =
+      std::min(barrier.pending_transaction_bytes, transaction_bytes);
+  const uint64_t early = transaction_bytes - matched;
+  if (UINT64_MAX - barrier.early_completed_bytes < early)
+    return false;
+  barrier.pending_transaction_bytes -= matched;
+  barrier.early_completed_bytes += early;
+  if (barrier.pending_arrivals == 0 && barrier.pending_transaction_bytes == 0 &&
+      barrier.early_completed_bytes == 0) {
     barrier.pending_arrivals = barrier.expected_arrivals;
     ++barrier.phase;
   }
@@ -272,6 +286,7 @@ bool cta_execution_state::invalidate_mbarrier(uint64_t address) {
   const auto found = mbarriers_.find(address);
   if (found == mbarriers_.end() ||
       found->second.pending_transaction_bytes != 0 ||
+      found->second.early_completed_bytes != 0 ||
       found->second.pending_arrivals != found->second.expected_arrivals)
     return false;
   mbarriers_.erase(found);
@@ -326,6 +341,7 @@ void execution_context::clear_instruction_effects() {
     lane_accesses.clear();
   tma_effects.fill({});
   mbarrier_effects.fill({});
+  imported_mbarriers.clear();
   named_barrier_effect = {};
 }
 

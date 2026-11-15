@@ -483,6 +483,9 @@ step_result execute_ldgsts(const instruction &inst, warp_state &state,
     return unsupported(inst, "no functional memory is attached");
   const bool zero_fill = inst.opcode.find(".ZFILL") != std::string::npos;
   (void)state.read_uniform_register(source->descriptor_register);
+  const size_t copy_bytes = inst.opcode.find(".128") != std::string::npos  ? 16
+                            : inst.opcode.find(".64") != std::string::npos ? 8
+                                                                           : 4;
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
     if ((state.active_mask & (1u << lane)) == 0 ||
         !lane_executes(inst, state, lane))
@@ -499,9 +502,10 @@ step_result execute_ldgsts(const instruction &inst, warp_state &state,
         !read_predicate_operand(*copy_enable, state, lane, enabled))
       return unsupported(inst, "unsupported LDGSTS copy-enable predicate");
     if (enabled) {
-      const uint64_t source_offset = zero_fill ? global_address & 0xfu : 0;
+      const uint64_t source_offset =
+          zero_fill ? global_address & (copy_bytes - 1) : 0;
       const uint64_t aligned_address = global_address - source_offset;
-      const size_t bytes = sizeof(value) - source_offset;
+      const size_t bytes = copy_bytes - source_offset;
       if (!context.memory->read(memory_space::kGlobal, aligned_address,
                                 value.data(), bytes))
         return memory_fault(inst, memory_space::kGlobal, aligned_address,
@@ -510,9 +514,9 @@ step_result execute_ldgsts(const instruction &inst, warp_state &state,
                                    bytes, false);
     }
     if (!context.memory->write(memory_space::kShared, shared_address,
-                               value.data(), sizeof(value)))
+                               value.data(), copy_bytes))
       return memory_fault(inst, memory_space::kShared, shared_address,
-                          sizeof(value));
+                          copy_bytes);
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -761,6 +765,12 @@ step_result execute_functional_fence(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_memory_semantics(frontend &target) {
+  for (const char *opcode :
+       {"LDGSTS.E", "LDGSTS.E.64", "LDGSTS.E.128", "LDGSTS.E.ZFILL",
+        "LDGSTS.E.64.ZFILL", "LDGSTS.E.128.ZFILL", "LDGSTS.E.LTC128B",
+        "LDGSTS.E.LTC128B.64", "LDGSTS.E.LTC128B.128", "LDGSTS.E.LTC128B.ZFILL",
+        "LDGSTS.E.LTC128B.64.ZFILL", "LDGSTS.E.LTC128B.128.ZFILL"})
+    target.register_semantics(opcode, execute_ldgsts);
   target.register_semantics("LDS", execute_lds);
   target.register_semantics("LDS.U8", execute_lds);
   target.register_semantics("LDS.U16", execute_lds);

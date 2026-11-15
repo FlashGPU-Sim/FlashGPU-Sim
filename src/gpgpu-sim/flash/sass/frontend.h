@@ -217,12 +217,14 @@ public:
               unsigned expected_warp_count = 0);
   void retire_warp(unsigned warp_id);
   bool released(unsigned barrier_id, uint64_t generation) const;
-  bool initialize_mbarrier(uint64_t address, uint32_t expected_arrivals);
+  bool initialize_mbarrier(uint64_t address, uint32_t expected_arrivals,
+                           bool initial_parity = false);
   bool mbarrier_initialized(uint64_t address) const;
   bool arrive_mbarrier(uint64_t address, uint32_t arrivals,
                        uint64_t transaction_bytes);
   bool complete_mbarrier_transaction(uint64_t address,
-                                     uint64_t transaction_bytes);
+                                     uint64_t transaction_bytes,
+                                     bool allow_early_completion = false);
   bool invalidate_mbarrier(uint64_t address);
   uint32_t mbarrier_pending_arrivals(uint64_t address) const;
   uint64_t mbarrier_pending_transaction_bytes(uint64_t address) const;
@@ -248,6 +250,7 @@ private:
     uint32_t pending_arrivals = 0;
     uint64_t pending_transaction_bytes = 0;
     uint64_t phase = 0;
+    uint64_t early_completed_bytes = 0;
   };
 
   unsigned warp_count_ = 0;
@@ -307,6 +310,7 @@ struct execution_context {
   std::array<std::vector<functional_memory_access>, kWarpLanes> memory_accesses;
   std::array<functional_tma_effect, kWarpLanes> tma_effects{};
   std::array<functional_mbarrier_effect, kWarpLanes> mbarrier_effects{};
+  std::vector<functional_mbarrier_effect> imported_mbarriers;
   functional_named_barrier_effect named_barrier_effect;
 
   void clear_instruction_effects();

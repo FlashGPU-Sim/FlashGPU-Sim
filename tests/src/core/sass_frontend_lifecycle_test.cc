@@ -453,3 +453,94 @@ TEST(SassFrontendLifecycleTest, NativeWarpExitKeepsCalibratedBarrierReleaseLaten
 TEST(SassFrontendLifecycleTest, NativeGlobalsDoNotConsumeDynamicHeap) {
   ASSERT_EXIT(CheckFrontend(Scenario::kStaticGlobalAllocation), testing::ExitedWithCode(0), "");
 }
+
+namespace {
+void CheckNativeBarrierEffects(bool per_lane, bool parity, bool imported) {
+  gpgpu_context ctx;
+  gpgpu_sim_config config(&ctx);
+  auto *options = option_parser_create();
+  ctx.ptx_reg_options(options);
+  ctx.instruction_timing.reg_options(options);
+  icnt_reg_options(options);
+  config.reg_options(options);
+  option_parser_cfgfile(options, "gpgpusim.config");
+  const char *args[] = {"barrier-test",
+                        "-gpgpu_n_clusters",
+                        "1",
+                        "-gpgpu_n_cores_per_cluster",
+                        "1",
+                        "-network_mode",
+                        "2"};
+  option_parser_cmdline(options, 7, args);
+  config.init();
+  TestGpu gpu(config, &ctx);
+  gpu.init();
+  auto *core = gpu.core();
+  active_mask_t mask;
+  mask.set(0);
+  mask.set(1);
+  core->get_shd_warp(0)->init(0, 0, 0, mask, 0, 0);
+  barrier_set_t barriers(core, 64, 32, 16, 32);
+  warp_set_t warps;
+  warps.set(0);
+  barriers.allocate_barrier(0, warps);
+  warp_inst_t inst(gpu.getShaderCoreConfig());
+  inst.op = MBARRIER_OP;
+  inst.set_dependency_control({});
+  inst.issue(mask, 0, 0, 0, 0, 0);
+  inst_t::mbarrier_static_info_t op;
+  inst_t::mbarrier_info_t info;
+  info.bar_id = 0x100;
+  info.bar_count = 1;
+  info.bar_parity = parity;
+  if (imported) {
+    barriers.initialize_native_stored_barrier(0, 0, 0x100, 1, parity);
+  } else {
+    op.operation = inst_t::mbarrier_static_info_t::MBARRIER_INIT;
+    inst.set_mbarrier_static_info(op);
+    inst.set_mbarrier_info(0, info);
+    barriers.warp_reaches_mbarrier(0, 0, inst, mask, nullptr, 0);
+  }
+  op.operation = inst_t::mbarrier_static_info_t::MBARRIER_ARRIVE_EXPECT_TX;
+  op.arrive = true;
+  op.expect_tx = true;
+  inst.set_mbarrier_static_info(op);
+  info.bar_count = per_lane ? 12 : 6;
+  inst.set_mbarrier_info(0, info);
+  barriers.warp_reaches_mbarrier(0, 0, inst, mask, nullptr, 0);
+  // Try-wait must park on the requested initial phase until both lane
+  // completions arrive. The legacy uniform form contributes only once.
+  op.operation = inst_t::mbarrier_static_info_t::MBARRIER_TRY_WAIT;
+  inst.set_mbarrier_static_info(op);
+  barriers.warp_reaches_mbarrier(0, 0, inst, mask, nullptr, 0);
+  if (!barriers.warp_waiting_at_barrier(0)) std::exit(3);
+  op.operation = inst_t::mbarrier_static_info_t::MBARRIER_COMPLETE_TX;
+  op.per_lane_complete_tx = per_lane;
+  inst.set_mbarrier_static_info(op);
+  info.bar_count = 6;
+  inst.set_mbarrier_info(0, info);
+  inst.set_mbarrier_info(1, info);
+  barriers.warp_reaches_mbarrier(0, 0, inst, mask, nullptr, 0);
+  for (unsigned i = 0; i < 256; ++i) {
+    barriers.cycle();
+    ++gpu.gpu_sim_cycle;
+  }
+  std::exit(barriers.warp_waiting_at_barrier(0) ? 4 : 0);
+}
+TEST(SassBarrierTimingTest, PerLaneCompletionReleasesWaiter) {
+  ASSERT_EXIT(CheckNativeBarrierEffects(true, false, false),
+              testing::ExitedWithCode(0), "");
+}
+TEST(SassBarrierTimingTest, LegacyUniformCompletionStillCountsOnce) {
+  ASSERT_EXIT(CheckNativeBarrierEffects(false, false, false),
+              testing::ExitedWithCode(0), "");
+}
+TEST(SassBarrierTimingTest, ExplicitInitialParityReachesTiming) {
+  ASSERT_EXIT(CheckNativeBarrierEffects(true, true, false),
+              testing::ExitedWithCode(0), "");
+}
+TEST(SassBarrierTimingTest, StoredInitialParityReachesTiming) {
+  ASSERT_EXIT(CheckNativeBarrierEffects(true, true, true),
+              testing::ExitedWithCode(0), "");
+}
+}  // namespace
