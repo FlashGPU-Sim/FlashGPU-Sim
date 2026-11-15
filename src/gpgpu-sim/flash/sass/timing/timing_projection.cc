@@ -1,5 +1,6 @@
 #include "timing_projection.h"
 #include "../../panic.h"
+#include "../decode/fp32x2_operand.h"
 #include "../decode/operand_parser.h"
 #include "../decode/wgmma_instruction.h"
 
@@ -250,6 +251,8 @@ unsigned destination_width(const instruction &source) {
   if (base == "LD" || base == "LDG" || base == "LDS" || base == "LDL" ||
       base == "LDC" || base == "LDCU" || base == "ULDC")
     return std::max(1u, memory_width(source.opcode) / 4);
+  if (!source.operands.empty() && source.operands.front().wide)
+    return 2;
   return 1;
 }
 
@@ -285,11 +288,13 @@ unsigned integer_profile_index(const std::string &base) {
 }
 
 unsigned fp32_profile_index(const std::string &base) {
-  if (base == "FMNMX")
+  if (base == "FMNMX" || base == "FMNMX3" || base == "HMNMX2" ||
+      base == "VHMNMX")
     return 1;
-  if (base == "FMUL" || base == "UFMUL")
+  if (base == "FMUL" || base == "UFMUL" || base == "FMUL2" || base == "HMUL2")
     return 2;
-  if (base == "FFMA" || base == "UFFMA" || base == "HFMA2")
+  if (base == "FFMA" || base == "UFFMA" || base == "HFMA2" || base == "FFMA2" ||
+      base == "FHFMA")
     return 3;
   return 0;
 }
@@ -462,7 +467,7 @@ void classify(const instruction &source, const timing_profile &profile,
       base == "UISETP" || base == "UFSETP" || base == "UFSEL" ||
       base == "ULEA" || base == "ULOP3" || base == "UPLOP3" || base == "UMOV" ||
       base == "UPRMT" || base == "USEL" || base == "USGXT" || base == "USHF" ||
-      base == "UVIMNMX";
+      base == "UVIMNMX" || base == "UFLO" || base == "UBREV";
   const bool uniform_data_movement = base == "UP2UR";
   target.op = ALU_OP;
   target.oprnd_type = INT_OP;
@@ -592,15 +597,24 @@ void classify(const instruction &source, const timing_profile &profile,
     info.bulk_wait_num = target.m_depbar_group_no;
     target.set_tma_static_info(info);
   } else if (base == "FADD" || base == "FMUL" || base == "FFMA" ||
-             base == "FMNMX" || base == "FSET" || base == "FSETP" ||
-             base == "UFSETP" || base == "FSEL" || base == "UFSEL" ||
-             base == "F2F" || base == "F2FP" || base == "F2I" ||
-             base == "I2F" || base == "I2FP" || base == "UF2I" ||
-             base == "UI2F" || base == "UFADD" || base == "UFMUL" ||
-             base == "UFFMA" || base == "HADD2" || base == "HFMA2") {
+             base == "FADD2" || base == "FMUL2" || base == "FFMA2" ||
+             base == "FMNMX" || base == "FMNMX3" || base == "FSET" ||
+             base == "FSETP" || base == "FCHK" || base == "UFSETP" ||
+             base == "FSEL" || base == "UFSEL" || base == "F2F" ||
+             base == "F2FP" || base == "F2I" || base == "I2F" ||
+             base == "I2FP" || base == "UF2I" || base == "UI2F" ||
+             base == "UFADD" || base == "UFMUL" || base == "UFFMA" ||
+             base == "HADD2" || base == "HFMA2" ||
+             source.opcode == "HMUL2.BF16_V2" ||
+             source.opcode == "HMNMX2.BF16_V2" ||
+             source.opcode == "VHMNMX.BF16_V2" ||
+             source.opcode == "FHFMA.BF16" || source.opcode == "FHADD.BF16") {
     target.op = SP_OP;
     target.oprnd_type = FP_OP;
-    target.sp_op = (base == "FMUL" || base == "UFMUL") ? FP_MUL_OP : FP__OP;
+    target.sp_op = (base == "FMUL" || base == "UFMUL" || base == "FMUL2" ||
+                    base == "HMUL2")
+                       ? FP_MUL_OP
+                       : FP__OP;
     target.op_pipe = SP__OP;
     const unsigned fp32_index = fp32_profile_index(base);
     target.latency = profile.fp32_latency[fp32_index];
@@ -786,19 +800,20 @@ void classify(const instruction &source, const timing_profile &profile,
              base == "SHF" || base == "PRMT" || base == "SEL" ||
              base == "PLOP3" || base == "VOTE" || base == "LEA" ||
              base == "IABS" || base == "FLO" || base == "POPC" ||
+             base == "BREV" || base == "UBREV" || base == "UFLO" ||
              base == "UIADD3" || base == "UIMAD" || base == "UISETP" ||
              base == "UFSETP" || base == "UFSEL" || base == "ULEA" ||
              base == "ULOP3" || base == "UPLOP3" || base == "UMOV" ||
              base == "UPRMT" || base == "USEL" || base == "USHF" ||
              base == "R2UR" || base == "UP2UR" || base == "R2P" ||
              base == "P2R" || base == "LEPC" || base == "ELECT" ||
-             base == "VOTEU" || base == "VIMNMX" || base == "UVIMNMX" ||
-             base == "IADD" || base == "VIADD" || base == "VIADDMNMX" ||
-             base == "SGXT" || base == "USGXT" || base == "SHFL" ||
-             source.opcode == "MATCH.ANY" || source.opcode == "REDUX.OR" ||
-             base == "DEPBAR" || base == "CCTL" || base == "UTMACCTL" ||
-             base == "USETMAXREG" || source.opcode == "WARPGROUP.ARRIVE" ||
-             base == "YIELD") {
+             base == "VOTEU" || base == "VIMNMX" || base == "VIMNMX3" ||
+             base == "UVIMNMX" || base == "IADD" || base == "VIADD" ||
+             base == "VIADDMNMX" || base == "SGXT" || base == "USGXT" ||
+             base == "SHFL" || source.opcode == "MATCH.ANY" ||
+             source.opcode == "REDUX.OR" || base == "DEPBAR" ||
+             base == "CCTL" || base == "UTMACCTL" || base == "USETMAXREG" ||
+             source.opcode == "WARPGROUP.ARRIVE" || base == "YIELD") {
     // Default integer/ALU classification above is intentional.
   } else {
     panic("unsupported SASS timing projection for opcode " + source.opcode);
@@ -1175,6 +1190,53 @@ void timing_instruction::initialize(const instruction &native,
        !normalize_r2p_operands(source, byte_selector)))
     panic("Invalid SASS operand normalization at PC " +
           std::to_string(source.pc));
+  // Wide comparisons omit pair-width suffixes in nvdisasm operands.
+  // Both words must participate in scoreboard and register-file dependencies.
+  const auto base = base_opcode(source.opcode);
+  if ((source.opcode == "FHFMA.BF16" && source.operands.size() == 4) ||
+      (source.opcode == "FHADD.BF16" && source.operands.size() == 3)) {
+    for (unsigned i = 1; i <= (source.opcode == "FHADD.BF16" ? 1u : 2u); ++i) {
+      auto text = source.operands[i].text;
+      if (text.size() > 3 && text.compare(text.size() - 3, 3, ".H1") == 0)
+        source.operands[i] = parse_operand(text.substr(0, text.size() - 3));
+    }
+    source.operands_structured = std::all_of(
+        source.operands.begin(), source.operands.end(),
+        [](const operand &o) { return o.kind != operand_kind::kOpaque; });
+  }
+  if (source.opcode == "FFMA2" || source.opcode == "FADD2" ||
+      source.opcode == "FMUL2" || source.opcode == "FFMA2.FTZ" ||
+      source.opcode == "FADD2.FTZ" || source.opcode == "FMUL2.FTZ") {
+    const unsigned expected = base == "FFMA2" ? 4 : 3;
+    if (source.operands.size() != expected ||
+        source.operands[0].kind != operand_kind::kRegister ||
+        source.operands[0].index >= kZeroRegister - 1)
+      panic("invalid FP32x2 timing operands");
+    source.operands[0].wide = true;
+    for (unsigned i = 1; i < expected; ++i) {
+      fp32x2_source decoded;
+      if (!decode_fp32x2_source(source.operands[i].text, decoded))
+        panic("invalid FP32x2 timing source");
+      decoded.value.wide = decoded.paired;
+      source.operands[i] = decoded.value;
+    }
+    source.operands_structured = true;
+  }
+
+  if ((base == "ISETP" || base == "UISETP") &&
+      (source.opcode.find(".U64.") != std::string::npos ||
+       source.opcode.find(".S64.") != std::string::npos) &&
+      source.operands.size() >= 4) {
+    for (unsigned i : {2u, 3u}) {
+      auto &value = source.operands[i];
+      if ((value.kind == operand_kind::kRegister ||
+           value.kind == operand_kind::kUniformRegister) &&
+          canonical_register(value.kind, value.index) != 0)
+        value.wide = true;
+    }
+  }
+  if (source.opcode == "F2I.U64.TRUNC" && !source.operands.empty())
+    source.operands[0].wide = true;
   const bool resolved_symbol_call =
       source.opcode == "CALL.REL.NOINC" && source.operands.size() == 1 &&
       std::any_of(source.attributes.begin(), source.attributes.end(),

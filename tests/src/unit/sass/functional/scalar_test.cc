@@ -1535,3 +1535,1785 @@ TEST(SassFunctionalTest, R2pByteSelectorsPreserveMaskAndInactiveLanes) {
 }
 
 }  // namespace
+
+#include "../quantization_reference.h"
+namespace {
+TEST(SassFunctionalTest, DeepInferFp8BfloatUnpackRetainsExactImmediateBits) {
+  kernel image;
+  image.name = "fp8_unpack";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "F2FP.BF16.E4M3.UNPACK_B",
+                           "R8,R2,4.5736980577097704378e-41,H0"),
+      official_instruction(16, "F2FP.BF16.E4M3.UNPACK_B",
+                           "R9,R2.reuse.H1,R3,H0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 3;
+  state.write_register(0, 2, 0x40384038);
+  state.write_register(0, 3, 0x7e80);
+  state.write_register(1, 2, 0x7f008000);
+  state.write_register(1, 3, 0x7f7f);
+  execution_context context;
+  auto r = sass.step("fp8_unpack", state, context);
+  ASSERT_EQ(r.status, step_status::kAdvanced) << r.detail;
+  EXPECT_EQ(state.read_register(0, 8), 0x40003f80u);
+  EXPECT_EQ(state.read_register(1, 8), 0x80000000u);
+  r = sass.step("fp8_unpack", state, context);
+  ASSERT_EQ(r.status, step_status::kAdvanced) << r.detail;
+  EXPECT_EQ(state.read_register(0, 9), 0x3f804000u);
+  EXPECT_EQ(state.read_register(1, 9), 0x7fff0000u);
+}
+
+TEST(SassFunctionalTest, ConvertsFiniteF32ToUnsigned64Pair) {
+  kernel image;
+  image.name = "f2i_u64";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "F2I.U64.TRUNC", "R4,R4")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 3;
+  state.write_register(0, 4, 0x3fe00000); // 1.75 -> 1
+  state.write_register(1, 4, 0x53800000); // 2^40 -> high word 256
+  state.write_register(2, 4, 0x7fc00000); // inactive NaN must not execute
+  state.write_register(2, 5, 99);
+  execution_context context;
+  ASSERT_EQ(sass.step("f2i_u64", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 4), 1u);
+  EXPECT_EQ(state.read_register(0, 5), 0u);
+  EXPECT_EQ(state.read_register(1, 4), 0u);
+  EXPECT_EQ(state.read_register(1, 5), 256u);
+  EXPECT_EQ(state.read_register(2, 4), 0x7fc00000u);
+  EXPECT_EQ(state.read_register(2, 5), 99u);
+  state.pc = 0;
+  state.active_mask = 1;
+  state.write_register(0, 4, 0x5f800000); // 2^64 is unqualified, not a C++ cast
+  EXPECT_EQ(sass.step("f2i_u64", state, context).status, step_status::kUnsupported);
+}
+
+TEST(SassFunctionalTest, NativeUniformSignedGeOrPredicate) {
+  kernel image;
+  image.name = "uniform_ge_or";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "UISETP.GE.OR", "UP0,UPT,UR0,UR1,!UP1")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (int32_t a : {-1, 2, 3}) {
+    for (bool gate : {false, true}) {
+      warp_state state;
+      state.write_uniform_register(0, uint32_t(a));
+      state.write_uniform_register(1, 2);
+      state.write_uniform_predicate(1, gate);
+      execution_context context;
+      ASSERT_EQ(sass.step("uniform_ge_or", state, context).status, step_status::kAdvanced);
+      EXPECT_EQ(state.read_uniform_predicate(0), a >= 2 || !gate);
+    }
+  }
+}
+
+TEST(SassFunctionalTest, NativeSignedMinMaxWithDiscardedPredicateOutputs) {
+  kernel image;
+  image.name = "signed_minmax";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "VIMNMX", "R0,PT,PT,R1,R2,PT"),
+      official_instruction(16, "VIMNMX.S32", "R3,PT,PT,R1,R2,!PT"),
+      official_instruction(32, "VIMNMX", "R4,P0,PT,R1,R2,PT")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 1;
+  state.write_register(0, 1, uint32_t(-7));
+  state.write_register(0, 2, 4);
+  state.write_register(1, 0, 99);
+  execution_context context;
+  ASSERT_EQ(sass.step("signed_minmax", state, context).status,
+            step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 0), uint32_t(-7));
+  EXPECT_EQ(state.read_register(1, 0), 99u);
+  ASSERT_EQ(sass.step("signed_minmax", state, context).status,
+            step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 3), 4u);
+  EXPECT_EQ(sass.step("signed_minmax", state, context).status,
+            step_status::kUnsupported);
+}
+
+TEST(SassFunctionalTest, BlackwellMinMaxDiscardedPredicateOutputs) {
+  kernel image;
+  image.name = "vimnmx_discard";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "VIMNMX.U32", "R0,PT,PT,R1,0x2,PT")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (uint32_t value : {0u, 1u, 2u, 0xffffffffu}) {
+    warp_state state;
+    state.active_mask = 1;
+    state.write_register(0, 1, value);
+    execution_context context;
+    ASSERT_EQ(sass.step("vimnmx_discard", state, context).status, step_status::kAdvanced);
+    EXPECT_EQ(state.read_register(0, 0), std::min(value, 2u));
+  }
+}
+
+TEST(SassFunctionalTest, BlackwellFfma2BroadcastAndAliasedPairs) {
+  kernel image;
+  image.name = "ffma2";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "FFMA2", "R2,R0.reuse.F32,R2.F32x2.HI_LO,R4.F32x2.HI_LO", "@P0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 3;
+  for (unsigned lane = 0; lane < 2; ++lane) {
+    state.write_register(lane, 0, 0x40000000u); // 2
+    state.write_register(lane, 2, 0x40400000u); // 3
+    state.write_register(lane, 3, 0xc0800000u); // -4
+    state.write_register(lane, 4, 0x3f800000u); // 1
+    state.write_register(lane, 5, 0x3f000000u); // .5
+    state.write_predicate(lane, 0, lane == 0);
+  }
+  execution_context context;
+  const auto result = sass.step("ffma2", state, context);
+  ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+  EXPECT_EQ(state.read_register(0, 2), 0x40e00000u); // 7
+  EXPECT_EQ(state.read_register(0, 3), 0xc0f00000u); // -7.5
+  EXPECT_EQ(state.read_register(1, 2), 0x40400000u);
+  EXPECT_EQ(state.read_register(1, 3), 0xc0800000u);
+}
+
+TEST(SassFunctionalTest, CutlassUnsignedUniformLessAndFloatEqualityFtz) {
+  kernel image;
+  image.name = "cutlass_compare";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0,"UISETP.LT.U32.AND","UP0,UPT,UR0,UR1,UPT"),
+      official_instruction(16,"FSETP.EQ.FTZ.AND","P0,PT,R0,RZ,PT")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for(uint32_t a : {0u,1u,0xffffffffu}) for(uint32_t b : {0u,1u,0x80000000u}) {
+    warp_state state;
+    state.active_mask=1;
+    state.write_uniform_register(0,a);
+    state.write_uniform_register(1,b);
+    execution_context context;
+    ASSERT_EQ(sass.step("cutlass_compare",state,context).status,step_status::kAdvanced);
+    EXPECT_EQ(state.read_uniform_predicate(0),a<b);
+  }
+  for(uint32_t bits : {0u,1u,0x80000001u,0x00800000u,0x7fc00000u}) {
+    warp_state state;
+    state.pc=16; state.active_mask=1;
+    state.write_register(0,0,bits);
+    execution_context context;
+    ASSERT_EQ(sass.step("cutlass_compare",state,context).status,step_status::kAdvanced);
+    EXPECT_EQ(state.read_predicate(0,0),(bits&0x7fffffffu)<0x00800000u);
+  }
+}
+
+TEST(SassFunctionalTest, CutlassExtendedEqualityWithUnsignedHighWord) {
+  kernel image;
+  image.name = "eq_u32_ex";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "ISETP.EQ.U32.OR.EX", "P6,PT,R3,RZ,!P3,P0"),
+      official_instruction(16, "ISETP.EQ.U32.AND.EX", "P6,PT,R3,RZ,!P3,P0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (uint32_t high : {0u, 1u, 0x80000000u})
+    for (bool low_equal : {false, true}) for (bool force : {false, true}) {
+      warp_state state;
+      state.active_mask = 1;
+      state.write_register(0, 3, high);
+      state.write_predicate(0, 0, low_equal);
+      state.write_predicate(0, 3, !force);
+      execution_context context;
+      ASSERT_EQ(sass.step("eq_u32_ex", state, context).status, step_status::kAdvanced);
+      EXPECT_EQ(state.read_predicate(0, 6), (high == 0 && low_equal) || force);
+      ASSERT_EQ(sass.step("eq_u32_ex", state, context).status, step_status::kAdvanced);
+      EXPECT_EQ(state.read_predicate(0, 6), high == 0 && low_equal && force);
+    }
+}
+
+TEST(SassFunctionalTest, BlackwellFfma2RejectsUnqualifiedSelectors) {
+  for (const char* operands : {"R2,R0.F32,R2.F32x2.HI_HI,R4.F32x2.HI_LO",
+                               "R2,R0,R2,R4", "R254,R0.F32,R2.F32x2.HI_LO,R4.F32x2.HI_LO"}) {
+    kernel image;
+    image.name = "bad_ffma2";
+    image.arch = architecture::kSm120;
+    image.instruction_bytes = 16;
+    image.instructions = {official_instruction(0, "FFMA2", operands)};
+    frontend sass;
+    sass.add_kernel(std::move(image));
+    register_sm120_functional_semantics(sass);
+    warp_state state;
+    execution_context context;
+    EXPECT_EQ(sass.step("bad_ffma2", state, context).status, step_status::kUnsupported);
+  }
+}
+
+TEST(SassFunctionalTest, BlackwellFfma2MlaPairWithUniformAndScalarBroadcasts) {
+  kernel image;
+  image.name = "mla_ffma2";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(
+      0, "FFMA2", "R4,R4.F32x2.HI_LO,UR10.F32,R71.reuse.F32")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 1;
+  state.write_register(0, 4, 0x40400000); // 3
+  state.write_register(0, 5, 0xc0800000); // -4
+  state.write_uniform_register(10, 0x40000000); // 2
+  state.write_register(0, 71, 0x3f800000); // 1
+  execution_context context;
+  ASSERT_EQ(sass.step("mla_ffma2", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 4), 0x40e00000u); // 7
+  EXPECT_EQ(state.read_register(0, 5), 0xc0e00000u); // -7
+}
+
+TEST(SassFunctionalTest, BlackwellMlaGreaterUnorderedPredicate) {
+  kernel image;
+  image.name = "gtu";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "FSETP.GTU.AND", "P0,PT,R1,R2,P1")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  const float values[] = {-1, 0, 1, std::numeric_limits<float>::quiet_NaN()};
+  for (float a : values) for (float b : values) for (bool enable : {false, true}) {
+    warp_state state;
+    state.active_mask = 1;
+    uint32_t bits;
+    std::memcpy(&bits, &a, 4); state.write_register(0, 1, bits);
+    std::memcpy(&bits, &b, 4); state.write_register(0, 2, bits);
+    state.write_predicate(0, 1, enable);
+    execution_context context;
+    ASSERT_EQ(sass.step("gtu", state, context).status, step_status::kAdvanced);
+    EXPECT_EQ(state.read_predicate(0, 0), enable && (std::isnan(a) || std::isnan(b) || a > b));
+  }
+}
+
+TEST(SassFunctionalTest, BlackwellFadd2PairsAndZeroBroadcast) {
+  kernel image;
+  image.name = "add_pair";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "FADD2", "R4,R4.F32x2.HI_LO,RZ.F32"),
+      official_instruction(16, "FADD2", "R4,R4.F32x2.HI_LO,R6.F32x2.HI_LO"),
+      official_instruction(32, "FMUL2", "R4,R4.F32x2.HI_LO,R7.F32")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 1;
+  state.write_register(0, 4, 0x40400000); // 3
+  state.write_register(0, 5, 0xc0800000); // -4
+  state.write_register(0, 6, 0x3f800000); // 1
+  state.write_register(0, 7, 0x3f000000); // .5
+  execution_context context;
+  ASSERT_EQ(sass.step("add_pair", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 4), 0x40400000u);
+  EXPECT_EQ(state.read_register(0, 5), 0xc0800000u);
+  ASSERT_EQ(sass.step("add_pair", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 4), 0x40800000u); // 4
+  EXPECT_EQ(state.read_register(0, 5), 0xc0600000u); // -3.5
+  ASSERT_EQ(sass.step("add_pair", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 4), 0x40000000u); // 2
+  EXPECT_EQ(state.read_register(0, 5), 0xbfe00000u); // -1.75
+}
+
+TEST(SassFunctionalTest, BlackwellUniformSigned64ShiftLowWord) {
+  kernel image;
+  image.name = "ushf_s64";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "USHF.R.S64", "UR4,UR4,UR6,UR5")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (unsigned amount : {0u, 7u, 31u, 32u, 47u, 63u, 64u, 127u, UINT32_MAX}) {
+    warp_state state;
+    state.write_uniform_register(4, 0x12345678);
+    state.write_uniform_register(5, 0x87654321);
+    state.write_uniform_register(6, amount);
+    execution_context context;
+    const auto result = sass.step("ushf_s64", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    EXPECT_EQ(
+        state.read_uniform_register(4),
+        uint32_t(int64_t(0x8765432112345678ull) >> std::min(amount, 63u)));
+  }
+}
+
+TEST(SassFunctionalTest, BlackwellUniformUnsigned64ShiftLowWord) {
+  kernel image;
+  image.name = "ushf_u64";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "USHF.R.U64", "UR4,UR4,UR6,UR5")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (unsigned amount : {0u, 7u, 31u, 32u, 47u, 63u, 64u, 127u, UINT32_MAX}) {
+    warp_state state;
+    state.write_uniform_register(4, 0x12345678);
+    state.write_uniform_register(5, 0x87654321);
+    state.write_uniform_register(6, amount);
+    execution_context context;
+    const auto result = sass.step("ushf_u64", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    EXPECT_EQ(state.read_uniform_register(4),
+              amount >= 64 ? 0u : uint32_t(0x8765432112345678ull >> amount));
+  }
+}
+
+TEST(SassFunctionalTest, BlackwellUniformLeaHighCarryOutputAndAlias) {
+  kernel image;
+  image.name = "ulea_hi_carry";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "ULEA.HI", "UR4,UP0,UR4,UR6,URZ,0x7")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (uint32_t a : {0u, 0xffffffffu}) for (uint32_t b : {0u, 0xffffffffu}) {
+    warp_state state;
+    state.write_uniform_register(4, a);
+    state.write_uniform_register(6, b);
+    execution_context context;
+    const auto result = sass.step("ulea_hi_carry", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    const uint64_t expected = uint64_t(a >> 25) + b;
+    EXPECT_EQ(state.read_uniform_register(4), uint32_t(expected));
+    EXPECT_EQ(state.read_uniform_predicate(0), bool(expected >> 32));
+  }
+}
+
+TEST(SassFunctionalTest, BlackwellUnsignedLessEqualAndPredicate) {
+  kernel image;
+  image.name = "le_unsigned";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "ISETP.LE.U32.AND", "P1,PT,R0,0x1,P0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (uint32_t a : {0u, 1u, 0xffffffffu}) for (bool input : {false, true}) {
+    warp_state state;
+    state.active_mask = 1;
+    state.write_register(0, 0, a);
+    state.write_predicate(0, 0, input);
+    execution_context context;
+    ASSERT_EQ(sass.step("le_unsigned", state, context).status, step_status::kAdvanced);
+    EXPECT_EQ(state.read_predicate(0, 1), a <= 1 && input);
+  }
+}
+
+TEST(SassFunctionalTest, BlackwellFp8PackingRoundingSaturationAndAlias) {
+  kernel image;
+  image.name = "fp8_pack";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "F2FP.SATFINITE.E4M3.F32.PACK_AB_MERGE_C", "R0,R0,R1,RZ")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  std::vector<float> values = {0.f, -0.f, 448.f, 1000.f, INFINITY, -INFINITY, NAN};
+  for (unsigned code = 0; code < 126; ++code) {
+    const double lo = moe_quant_reference::positive_value(code);
+    const double hi = moe_quant_reference::positive_value(code + 1);
+    values.push_back(float(lo));
+    values.push_back(float((lo + hi) / 2)); // exact RNE halfway cases
+    values.push_back(std::nextafter(float((lo + hi) / 2), float(lo)));
+    values.push_back(std::nextafter(float((lo + hi) / 2), float(hi)));
+  }
+  for (float value : values) {
+    warp_state state;
+    state.active_mask = 1;
+    uint32_t a, b;
+    const float negative = -value;
+    std::memcpy(&a, &value, 4); std::memcpy(&b, &negative, 4);
+    state.write_register(0, 0, a); state.write_register(0, 1, b);
+    execution_context context;
+    const auto result = sass.step("fp8_pack", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    EXPECT_EQ(state.read_register(0, 0),
+              (uint32_t(moe_quant_reference::encode(value)) << 8) |
+              moe_quant_reference::encode(negative)) << value;
+  }
+}
+
+TEST(SassFunctionalTest, BlackwellFp8MergesLowHalfAndAllowsDestinationAlias) {
+  kernel image;
+  image.name = "fp8_merge";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "F2FP.SATFINITE.E4M3.F32.PACK_AB_MERGE_C", "R3,R1,R2,R3")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  execution_context context;
+  for(unsigned lane=0;lane<32;++lane) {
+    state.write_register(lane,1,0x3f800000); // 1 -> 0x38
+    state.write_register(lane,2,0xc0000000); // -2 -> 0xc0
+    state.write_register(lane,3,0xa5f01234u ^ (lane*0x01010101u));
+  }
+  ASSERT_EQ(sass.step("fp8_merge", state, context).status, step_status::kAdvanced);
+  for(unsigned lane=0;lane<32;++lane)
+    EXPECT_EQ(state.read_register(lane,3),
+              ((0xa5f01234u ^ (lane*0x01010101u))<<16)|0x38c0u);
+}
+
+TEST(SassFunctionalTest, BlackwellUnsignedComparisonsCombineOrPredicate) {
+  kernel image;
+  image.name = "compare_or";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "ISETP.LT.U32.OR", "P1,PT,R0,R1,P0"),
+      official_instruction(16, "ISETP.GE.U32.OR", "P2,PT,R0,R1,P0"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (uint32_t value : {0u, 1u, 0xffffffffu}) for (bool input : {false, true}) {
+    warp_state state;
+    state.active_mask = 1;
+    state.write_register(0, 0, value);
+    state.write_register(0, 1, 1);
+    state.write_predicate(0, 0, input);
+    execution_context context;
+    ASSERT_EQ(sass.step("compare_or", state, context).status, step_status::kAdvanced);
+    ASSERT_EQ(sass.step("compare_or", state, context).status, step_status::kAdvanced);
+    EXPECT_EQ(state.read_predicate(0, 1), value < 1 || input);
+    EXPECT_EQ(state.read_predicate(0, 2), value >= 1 || input);
+  }
+}
+
+TEST(SassFunctionalTest, BlackwellTernaryFloatMinMaxAndNanPredicate) {
+  kernel image;
+  image.name = "quant_float";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "FMNMX3.FTZ", "R4,|R0|,R1,R2,!PT"),
+      official_instruction(16, "FMNMX3.FTZ", "R5,|R0|,R1,R2,PT"),
+      official_instruction(32, "FSETP.NAN.FTZ.AND", "P1,PT,R0,R3,P0"),
+      official_instruction(48, "FSETP.GT.FTZ.AND", "P2,PT,R1,RZ,PT"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    state.write_register(lane, 0, 0xc0000000u); // -2
+    state.write_register(lane, 1, 1); // positive subnormal, flushed to zero
+    state.write_register(lane, 2, 0x40400000u); // 3
+    state.write_register(lane, 3, lane % 2 ? 0x7fc00000u : 0x3f800000u);
+    state.write_predicate(lane, 0, lane < 16);
+  }
+  execution_context context;
+  for (unsigned i = 0; i < 4; ++i)
+    ASSERT_EQ(sass.step("quant_float", state, context).status, step_status::kAdvanced);
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    EXPECT_EQ(state.read_register(lane, 4), 0x40400000u);
+    EXPECT_EQ(state.read_register(lane, 5), 0u);
+    EXPECT_EQ(state.read_predicate(lane, 1), lane % 2 && lane < 16);
+    EXPECT_FALSE(state.read_predicate(lane, 2));
+  }
+}
+
+TEST(SassFunctionalTest, BfloatFmaImmediateHasHighThenLowMultiplier) {
+  kernel image;
+  image.name = "bf16_fma_literal";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "HFMA2.BF16_V2", "R2,R0,2,0.5,R1")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 1;
+  state.write_register(0, 0, 0xc0004080u); // high=-2, low=4
+  state.write_register(0, 1, 0x3f80bf80u); // high=1, low=-1
+  execution_context context;
+  ASSERT_EQ(sass.step("bf16_fma_literal", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 2), 0xc0403f80u); // high=-3, low=1
+}
+
+TEST(SassFunctionalTest, SignedExtendedGeUsesSignedHighAndLowPredicate) {
+  kernel image;
+  image.name = "signed_ge_extended";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "ISETP.GE.AND.EX", "P0,PT,R0,R1,PT,P1")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (int high : {-1, 0, 1}) for (bool low_ge : {false, true}) {
+    warp_state state;
+    state.active_mask = 1;
+    state.write_register(0, 0, uint32_t(high)); state.write_register(0, 1, 0);
+    state.write_predicate(0, 1, low_ge);
+    execution_context context;
+    ASSERT_EQ(sass.step("signed_ge_extended", state, context).status, step_status::kAdvanced);
+    EXPECT_EQ(state.read_predicate(0, 0), high > 0 || (high == 0 && low_ge));
+  }
+}
+
+TEST(SassFunctionalTest, UniformSignedExtendedGeUsesSignedHighAndLowPredicate) {
+  kernel image;
+  image.name = "uniform_signed_ge_extended";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "UISETP.GE.AND.EX", "UP0,UPT,UR0,UR1,UPT,UP1")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (int high : {-1, 0, 1}) for (bool low_ge : {false, true}) {
+    warp_state state;
+    state.active_mask = 1;
+    state.write_uniform_register(0, uint32_t(high)); state.write_uniform_register(1, 0);
+    state.write_uniform_predicate(1, low_ge);
+    execution_context context;
+    ASSERT_EQ(sass.step("uniform_signed_ge_extended", state, context).status, step_status::kAdvanced);
+    EXPECT_EQ(state.read_uniform_predicate(0), high > 0 || (high == 0 && low_ge));
+  }
+}
+
+TEST(SassFunctionalTest, SignedExtendedGtUsesSignedHighAndLowPredicate) {
+  kernel image;
+  image.name = "signed_gt_extended";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "ISETP.GT.AND.EX", "P0,PT,R0,R1,PT,P1")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (int high : {-1, 0, 1}) for (bool low_gt : {false, true}) {
+    warp_state state;
+    state.active_mask = 1;
+    state.write_register(0, 0, uint32_t(high)); state.write_register(0, 1, 0);
+    state.write_predicate(0, 1, low_gt);
+    execution_context context;
+    ASSERT_EQ(sass.step("signed_gt_extended", state, context).status, step_status::kAdvanced);
+    EXPECT_EQ(state.read_predicate(0, 0), high > 0 || (high == 0 && low_gt));
+  }
+}
+
+TEST(SassFunctionalTest, BlackwellBfloatAddRoundsAtEachInstruction) {
+  kernel image;
+  image.name = "bf16_add";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "HADD2.BF16_V2", "R2,R0,R1"),
+      official_instruction(0x10, "HADD2.BF16_V2", "R2,R2,R1"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 1;
+  state.write_register(0, 0, 0xc0003f80u); // {-2, 1}
+  state.write_register(0, 1, 0x3f803b80u); // {1, 1/256}: tie at 1 rounds even.
+  execution_context context;
+  ASSERT_EQ(sass.step("bf16_add", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 2), 0xbf803f80u);
+  ASSERT_EQ(sass.step("bf16_add", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 2), 0x00003f80u);
+}
+
+TEST(SassFunctionalTest, TanhHandlesSignedZeroInfinityAndPredicate) {
+  kernel image;
+  image.name = "tanh";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "MUFU.TANH", "R1,R0", "@P0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 31;
+  const uint32_t inputs[] = {0, 0x80000000u, 0x7f800000u, 0xff800000u, 0};
+  const uint32_t expected[] = {0, 0x80000000u, 0x3f800000u, 0xbf800000u, 99};
+  for (unsigned i = 0; i < 5; ++i) {
+    state.write_register(i, 0, inputs[i]); state.write_register(i, 1, 99);
+    state.write_predicate(i, 0, i != 4);
+  }
+  execution_context context;
+  ASSERT_EQ(sass.step("tanh", state, context).status, step_status::kAdvanced);
+  for (unsigned i = 0; i < 5; ++i) EXPECT_EQ(state.read_register(i, 1), expected[i]);
+}
+
+TEST(SassFunctionalTest, BlackwellBfloatPackOrderAndTiesToEven) {
+  kernel image;
+  image.name = "bf16_pack";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "F2FP.BF16.F32.PACK_AB", "R2,R0,R1")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  const uint32_t a[] = {0x3f800000, 0x3f808000, 0x3f818000, 0x80000000, 0x7f800000};
+  const uint32_t b[] = {0xc0000000, 0xbf808000, 0xbf818000, 0, 0xff800000};
+  const uint32_t expected[] = {0x3f80c000, 0x3f80bf80, 0x3f82bf82, 0x80000000, 0x7f80ff80};
+  warp_state state;
+  state.active_mask = 31;
+  for (unsigned i = 0; i < 5; ++i) {
+    state.write_register(i, 0, a[i]);
+    state.write_register(i, 1, b[i]);
+  }
+  execution_context context;
+  ASSERT_EQ(sass.step("bf16_pack", state, context).status, step_status::kAdvanced);
+  for (unsigned i = 0; i < 5; ++i) EXPECT_EQ(state.read_register(i, 2), expected[i]);
+}
+
+TEST(SassFunctionalTest, BlackwellUniformExtendedAddDiscardedOutputs) {
+  kernel image;
+  image.name = "uniform_extended_add";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "UIADD3.X",
+      "UR5,UPT,UPT,URZ,UR5,URZ,UP0,!UPT")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (bool carry : {false, true}) {
+    warp_state state;
+    state.active_mask = 1;
+    state.write_uniform_register(5, 0xffffffffu);
+    state.write_uniform_predicate(0, carry);
+    execution_context context;
+    ASSERT_EQ(sass.step("uniform_extended_add", state, context).status,
+              step_status::kAdvanced);
+    EXPECT_EQ(state.read_uniform_register(5), carry ? 0u : 0xffffffffu);
+  }
+}
+
+TEST(SassFunctionalTest, ReciprocalSquareRootNormalAndSpecialValues) {
+  kernel image;
+  image.name = "rsq";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "MUFU.RSQ", "R1,R0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  const float inputs[] = {4.0f, 16.0f, 0.0f, -0.0f, -1.0f,
+                         std::numeric_limits<float>::infinity()};
+  warp_state state;
+  state.active_mask = 63;
+  for (unsigned lane = 0; lane < 6; ++lane) {
+    uint32_t bits;
+    std::memcpy(&bits, &inputs[lane], 4);
+    state.write_register(lane, 0, bits);
+  }
+  state.write_register(6, 1, 123);
+  execution_context context;
+  ASSERT_EQ(sass.step("rsq", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 1), 0x3f000000u);
+  EXPECT_EQ(state.read_register(1, 1), 0x3e800000u);
+  EXPECT_EQ(state.read_register(2, 1), 0x7f800000u);
+  EXPECT_EQ(state.read_register(3, 1), 0xff800000u);
+  const uint32_t nan_bits = state.read_register(4, 1);
+  EXPECT_EQ(nan_bits & 0x7f800000u, 0x7f800000u);
+  EXPECT_NE(nan_bits & 0x007fffffu, 0u);
+  EXPECT_EQ(state.read_register(5, 1), 0u);
+  EXPECT_EQ(state.read_register(6, 1), 123u);
+}
+
+TEST(SassFunctionalTest, BlackwellExtendedUniformNotEqual) {
+  kernel image;
+  image.name = "blackwell_pointer_compare";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "UISETP.NE.U32.AND.EX",
+                           "UP0,UPT,UR5,URZ,UP1,UP0"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (unsigned high : {0u, 1u, 0x80000000u})
+    for (bool low_ne : {false, true})
+      for (bool guard : {false, true}) {
+        warp_state state;
+        state.active_mask = 1;
+        state.write_uniform_register(5, high);
+        state.write_uniform_predicate(0, low_ne);
+        state.write_uniform_predicate(1, guard);
+        execution_context context;
+        const auto result = sass.step("blackwell_pointer_compare", state, context);
+        ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+        EXPECT_EQ(state.read_uniform_predicate(0), (high != 0 || low_ne) && guard);
+      }
+}
+
+TEST(SassFunctionalTest, BlackwellIadd3xDiscardedCarryOutputs) {
+  for (auto arch : {architecture::kSm120, architecture::kSm120}) {
+    kernel image;
+    image.name = "blackwell_subtract";
+    image.arch = arch;
+    image.instruction_bytes = 16;
+    image.instructions = {
+        official_instruction(0, "IADD3.X", "R9,PT,PT,~R3,R7,RZ,P0,!PT"),
+    };
+    frontend sass;
+    sass.add_kernel(std::move(image));
+    register_sm120_functional_semantics(sass);
+    warp_state state;
+    state.active_mask = 3;
+    for (unsigned lane = 0; lane < 2; ++lane) {
+      state.write_register(lane, 3, 10);
+      state.write_register(lane, 7, 17);
+      state.write_predicate(lane, 0, lane == 0);
+    }
+    state.write_register(2, 9, 123);
+    execution_context context;
+    const auto result = sass.step("blackwell_subtract", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    EXPECT_EQ(state.read_register(0, 9), 7u);
+    EXPECT_EQ(state.read_register(1, 9), 6u);
+    EXPECT_EQ(state.read_register(2, 9), 123u);
+  }
+}
+
+TEST(SassFunctionalTest, BlackwellIadd3xRejectsUnverifiedLiveCarryOutputs) {
+  kernel image;
+  image.name = "blackwell_live_carry";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "IADD3.X", "R9,P1,P2,R3,R7,RZ,P0,!PT"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 1;
+  state.write_register(0, 9, 123);
+  execution_context context;
+  EXPECT_EQ(sass.step("blackwell_live_carry", state, context).status,
+            step_status::kUnsupported);
+  EXPECT_EQ(state.read_register(0, 9), 123u);
+}
+
+TEST(SassFunctionalTest, CombinesUnsignedEqualityWithPredicateXor) {
+  kernel image;
+  image.name = "isetp_eq_u32_xor";
+  image.arch = architecture::kSm90;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "ISETP.EQ.U32.XOR", "P1,PT,R2,0x80,!P0"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm90_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 0xf;
+  for (unsigned lane = 0; lane < 4; ++lane) {
+    state.write_register(lane, 2, lane % 2 ? 0x81 : 0x80);
+    state.write_predicate(lane, 0, lane < 2);
+  }
+  execution_context context;
+  const auto result = sass.step("isetp_eq_u32_xor", state, context);
+  ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+  EXPECT_TRUE(state.read_predicate(0, 1));
+  EXPECT_FALSE(state.read_predicate(1, 1));
+  EXPECT_FALSE(state.read_predicate(2, 1));
+  EXPECT_TRUE(state.read_predicate(3, 1));
+}
+
+TEST(SassFunctionalTest, CombinesUniformEqualityWithPredicateXor) {
+  kernel image;
+  image.name = "uisetp_eq_u32_xor";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "UISETP.EQ.U32.XOR", "UP1,UPT,UR2,0x80,!UP0"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  execution_context context;
+  for (unsigned condition = 0; condition < 4; ++condition) {
+    warp_state state;
+    // A uniform instruction must also work when lane zero is inactive.
+    state.active_mask = 0x80000000u;
+    state.write_uniform_register(2, condition % 2 ? 0x81 : 0x80);
+    state.write_uniform_predicate(0, condition < 2);
+    const auto result = sass.step("uisetp_eq_u32_xor", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    EXPECT_EQ(state.read_uniform_predicate(1), condition == 0 || condition == 3);
+  }
+}
+
+TEST(SassFunctionalTest, PreservesNoBorrowWhenSubtractingZero) {
+  for (bool uniform : {false, true}) {
+    kernel image;
+    image.name = "subtract_zero_carry";
+    image.arch = architecture::kSm120;
+    image.instruction_bytes = 16;
+    image.instructions = {
+        official_instruction(0, uniform ? "UIADD3" : "IADD3",
+            uniform ? "UR14,UP0,UPT,-UR13,UR2,URZ"
+                    : "R14,P0,PT,-R13,R2,RZ"),
+        official_instruction(0x10, "IMAD.X", "R6,R11,0x1,~R6,P0"),
+    };
+    frontend sass;
+    sass.add_kernel(std::move(image));
+    register_sm120_functional_semantics(sass);
+    for (uint32_t subtrahend : {0u, 1u, 4095u, 4096u}) {
+      warp_state state;
+      state.active_mask = 1;
+      state.write_register(0, 2, 4095);
+      state.write_register(0, 13, subtrahend);
+      state.write_register(0, 11, 0);
+      state.write_register(0, 6, 0);
+      state.write_uniform_register(2, 4095);
+      state.write_uniform_register(13, subtrahend);
+      execution_context context;
+      ASSERT_EQ(sass.step("subtract_zero_carry", state, context).status,
+                step_status::kAdvanced);
+      EXPECT_EQ(uniform ? state.read_uniform_register(14) : state.read_register(0, 14),
+                4095u - subtrahend);
+      EXPECT_EQ(uniform ? state.read_uniform_predicate(0) : state.read_predicate(0, 0),
+                subtrahend <= 4095u);
+      if (!uniform) {
+        ASSERT_EQ(sass.step("subtract_zero_carry", state, context).status,
+                  step_status::kAdvanced);
+        EXPECT_EQ(state.read_register(0, 6), subtrahend <= 4095u ? 0u : 0xffffffffu);
+      }
+    }
+  }
+}
+
+TEST(SassFunctionalTest, ComparesSigned64PairsWithUniformSources) {
+  kernel image;
+  image.name = "isetp_s64";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "ISETP.GE.S64.AND", "P0,PT,R0,R2,PT"),
+      official_instruction(0x10, "ISETP.GE.S64.AND", "P1,PT,R0,UR4,PT"),
+      official_instruction(0x20, "ISETP.GE.S64.AND", "P2,PT,R0,UR4,!PT"),
+      official_instruction(0x30, "EXIT"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  // Check upper-word ordering, negative versus positive, signed extrema and
+  // equality; the uniform operand is 2^32, so reading UR4 alone is wrong.
+  const std::array<int64_t, 8> a = {
+      int64_t{1} << 32, (int64_t{1} << 32) - 1, -1, 0,
+      std::numeric_limits<int64_t>::min(),
+      std::numeric_limits<int64_t>::max(), -(int64_t{1} << 32), -1};
+  const std::array<int64_t, 8> b = {
+      (int64_t{1} << 32) - 1, int64_t{1} << 32, 0, -1,
+      std::numeric_limits<int64_t>::max(),
+      std::numeric_limits<int64_t>::min(), -1, -1};
+  warp_state state;
+  state.active_mask = 0xff;
+  state.write_uniform_register(4, 0);
+  state.write_uniform_register(5, 1);
+  for (unsigned lane = 0; lane < a.size(); ++lane) {
+    state.write_register(lane, 0, static_cast<uint64_t>(a[lane]));
+    state.write_register(lane, 1, static_cast<uint64_t>(a[lane]) >> 32);
+    state.write_register(lane, 2, static_cast<uint64_t>(b[lane]));
+    state.write_register(lane, 3, static_cast<uint64_t>(b[lane]) >> 32);
+    state.write_predicate(lane, 2, true);
+  }
+  execution_context context;
+  for (unsigned step = 0; step < 4; ++step) {
+    const auto result = sass.step("isetp_s64", state, context);
+    ASSERT_EQ(result.status, step == 3 ? step_status::kExited
+                                      : step_status::kAdvanced) << result.detail;
+  }
+  for (unsigned lane = 0; lane < a.size(); ++lane) {
+    EXPECT_EQ(state.read_predicate(lane, 0), a[lane] >= b[lane]) << lane;
+    EXPECT_EQ(state.read_predicate(lane, 1), a[lane] >= (int64_t{1} << 32)) << lane;
+    EXPECT_FALSE(state.read_predicate(lane, 2)) << lane;
+  }
+}
+
+TEST(SassFunctionalTest, ComparesUnsigned64EqualityAndCombinesPredicate) {
+  kernel image;
+  image.name = "u64_eq";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "ISETP.EQ.U64.AND", "P0,PT,R4,UR4,PT"),
+      official_instruction(16, "ISETP.EQ.U64.OR", "P1,PT,R4,RZ,!P2"),
+  };
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 7;
+  state.write_uniform_register(4, 0);
+  state.write_uniform_register(5, 1);
+  for (unsigned lane = 0; lane < 3; ++lane) {
+    state.write_register(lane, 4, 0);
+    state.write_register(lane, 5, lane);
+    state.write_predicate(lane, 2, lane != 2);
+  }
+  execution_context context;
+  ASSERT_EQ(sass.step("u64_eq", state, context).status, step_status::kAdvanced);
+  ASSERT_EQ(sass.step("u64_eq", state, context).status, step_status::kAdvanced);
+  for (unsigned lane = 0; lane < 3; ++lane) {
+    EXPECT_EQ(state.read_predicate(lane, 0), lane == 1);
+    EXPECT_EQ(state.read_predicate(lane, 1), lane == 0 || lane == 2);
+  }
+}
+
+TEST(SassFunctionalTest, Dsv4DirectedAddPreservesTinyNegativeResidual) {
+  kernel image;
+  image.name = "rz_add";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "FADD.FTZ.RZ", "R0,R1,R2")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  // Tiny opposite-sign normals are lost in double precision too. RZ must
+  // nevertheless choose the adjacent float toward zero. Include FTZ and
+  // overflow.
+  const uint32_t inputs[][3] = {{0x3f800000, 0x8d800000, 0x3f7fffff},
+                                {0xbf800000, 0x0d800000, 0xbf7fffff},
+                                {0x3f800000, 0x00000001, 0x3f800000},
+                                {0x7f7fffff, 0x7f7fffff, 0x7f7fffff},
+                                {0x3f800000, 0xbf800000, 0}};
+  for (auto &v : inputs) {
+    warp_state state;
+    state.active_mask = 1;
+    state.write_register(0, 1, v[0]);
+    state.write_register(0, 2, v[1]);
+    execution_context context;
+    ASSERT_EQ(sass.step("rz_add", state, context).status,
+              step_status::kAdvanced);
+    EXPECT_EQ(state.read_register(0, 0), v[2]);
+  }
+}
+
+TEST(SassFunctionalTest, Dsv4BfloatMinMaxHalfReplicationAndPredicate) {
+  kernel image;
+  image.name = "bfmin";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "HMNMX2.BF16_V2", "R0,R1,R2.reuse.H0_H0,PT"),
+      official_instruction(16, "HMNMX2.BF16_V2", "R3,R1,R2.H1_H1,!PT")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 1;
+  execution_context context;
+  state.write_register(0, 1, 0xc0404080);  // low=4, high=-3
+  state.write_register(0, 2, 0xc0004000);  // low=2, high=-2
+  state.write_register(1, 0, 123);
+  ASSERT_EQ(sass.step("bfmin", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 0), 0xc0404000u);
+  EXPECT_EQ(state.read_register(1, 0), 123u);
+  ASSERT_EQ(sass.step("bfmin", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 3), 0xc0004080u);
+}
+
+TEST(SassFunctionalTest, Dsv4Signed64ShiftLowWordAndClampedBoundary) {
+  kernel image;
+  image.name = "s64shift";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "SHF.R.S64", "R0,R1,R2,R3")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  for (unsigned amount : {0u, 24u, 31u, 32u, 63u, 64u, 127u}) {
+    warp_state state;
+    state.active_mask = 1;
+    execution_context ctx;
+    state.write_register(0, 1, 0x12345678);
+    state.write_register(0, 2, amount);
+    state.write_register(0, 3, 0xabcdef00);
+    auto result = sass.step("s64shift", state, ctx);
+    ASSERT_EQ(result.status, step_status::kAdvanced);
+    EXPECT_EQ(
+        state.read_register(0, 0),
+        uint32_t(int64_t(0xabcdef0012345678ull) >> std::min(amount, 63u)));
+  }
+}
+
+TEST(SassFunctionalTest, Dsv4SqrtFlushesSubnormalAndPreservesNegativeZero) {
+  kernel image;
+  image.name = "sqrt";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "MUFU.SQRT", "R0,R1")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  const uint32_t v[][2] = {{0x40800000, 0x40000000},
+                           {1, 0},
+                           {0x80000001, 0x80000000},
+                           {0x80000000, 0x80000000},
+                           {0x7f800000, 0x7f800000}};
+  for (auto &x : v) {
+    warp_state state;
+    state.active_mask = 1;
+    state.write_register(0, 1, x[0]);
+    execution_context ctx;
+    ASSERT_EQ(sass.step("sqrt", state, ctx).status, step_status::kAdvanced);
+    EXPECT_EQ(state.read_register(0, 0), x[1]);
+  }
+}
+
+TEST(SassFunctionalTest, Dsv4BfloatMinMaxNativeNanAndSignedZeroOracle) {
+  kernel image;
+  image.name = "bfedge";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "HMNMX2.BF16_V2", "R0,R1,R2,PT"),
+      official_instruction(16, "HMNMX2.BF16_V2", "R3,R1,R2,!PT")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  const uint32_t cases[][4] = {
+      {0x80000000, 0x00008000, 0x80008000, 0},
+      {0x7fc07fc0, 0x3f80bf80, 0x3f80bf80, 0x3f80bf80}};
+  for (auto &v : cases) {
+    warp_state state;
+    state.active_mask = 1;
+    state.write_register(0, 1, v[0]);
+    state.write_register(0, 2, v[1]);
+    execution_context ctx;
+    ASSERT_EQ(sass.step("bfedge", state, ctx).status, step_status::kAdvanced);
+    EXPECT_EQ(state.read_register(0, 0), v[2]);
+    ASSERT_EQ(sass.step("bfedge", state, ctx).status, step_status::kAdvanced);
+    EXPECT_EQ(state.read_register(0, 3), v[3]);
+  }
+}
+
+TEST(SassFunctionalTest, Dsv4FiniteWarpMaxAndScalarHalf) {
+  kernel image;
+  image.name = "dsv4_quant_reduce";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "CREDUX.MAX.F32", "UR4,R2"),
+      official_instruction(16, "F2F.F16.F32", "R3,R2")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 3;
+  state.write_register(0, 2, 0x3f800000); // 1
+  state.write_register(1, 2, 0x40000000); // 2
+  state.write_register(2, 2, 0x42c80000); // inactive 100
+  state.write_register(0, 3, 0xffffffff);
+  execution_context context;
+  ASSERT_EQ(sass.step("dsv4_quant_reduce", state, context).status,
+            step_status::kAdvanced);
+  EXPECT_EQ(state.read_uniform_register(4), 0x40000000u);
+  ASSERT_EQ(sass.step("dsv4_quant_reduce", state, context).status,
+            step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 3), 0x3c00u);
+  EXPECT_EQ(state.read_register(1, 3), 0x4000u);
+}
+
+TEST(SassFunctionalTest, Ue8m0PackNativeBoundariesAndMergeAliasing) {
+  kernel image;
+  image.name = "ue8_pack";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "F2FP.SATFINITE.E8.F32.PACK_AB_MERGE_C.RP",
+                           "R3,R1,R2,R3", "@P0"),
+      official_instruction(16, "F2FP.SATFINITE.E8.F32.PACK_AB_MERGE_C.RP",
+                           "R1,R1,R2,RZ", "@P0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  const uint32_t bits[] = {
+      0, 0x80000000, 1, 0x003fffff, 0x00400000, 0x00400001,
+      0x007fffff, 0x00800000, 0x00800001, 0x3f800000, 0x3f800001,
+      0xbf800000, 0x80000001, 0x7f000000, 0x7f000001, 0x7f7fffff,
+      0x7f800000, 0xff800000, 0x7fc12345, 0xff812345};
+  const uint32_t code[] = {0, 0, 0, 0, 0, 1, 1, 1, 2, 127, 128,
+                           127, 0, 254, 254, 254, 254, 254, 255, 255};
+  for (unsigned i = 0; i < 20; ++i) {
+    warp_state state;
+    state.active_mask = 3;
+    state.write_predicate(0, 0, true);
+    state.write_predicate(1, 0, false);
+    state.write_register(0, 1, bits[i]);
+    state.write_register(0, 2, bits[19 - i]);
+    state.write_register(0, 3, 0xbeefa59c);
+    state.write_register(1, 3, 0x12345678);
+    execution_context context;
+    ASSERT_EQ(sass.step("ue8_pack", state, context).status,
+              step_status::kAdvanced);
+    const uint32_t packed = (code[i] << 8) | code[19 - i];
+    EXPECT_EQ(state.read_register(0, 3), 0xa59c0000u | packed);
+    EXPECT_EQ(state.read_register(1, 3), 0x12345678u);
+    ASSERT_EQ(sass.step("ue8_pack", state, context).status,
+              step_status::kAdvanced);
+    EXPECT_EQ(state.read_register(0, 1), packed);
+  }
+}
+
+TEST(SassFunctionalTest, Fp4ScaledBfloatUnpackNativeBoundaries) {
+  kernel image;
+  image.name = "fp4_unpack";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(
+      0, "F2FP.BF16.E2M1.UNPACK_B", "R1,R1,R2.reuse.H0", "@P0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  const uint32_t cases[][3] = {
+      {0x80, 0x7f7f, 0x80000000}, {0xf7, 0x0000, 0x81400140},
+      {0x31, 0x0101, 0x00c00040}, {0xf7, 0xfefe, 0xff807f80},
+      {0x00, 0xffff, 0x7fff7fff}, {0x72, 0x7f7f, 0x40c03f80},
+      {0x22, 0x807f, 0x40003f80}};
+  for (const auto &test : cases) {
+    warp_state state;
+    state.active_mask = 3;
+    state.write_predicate(0, 0, true);
+    state.write_predicate(1, 0, false);
+    state.write_register(0, 1, test[0]);
+    state.write_register(0, 2, test[1]);
+    state.write_register(1, 1, 0x12345678);
+    execution_context context;
+    ASSERT_EQ(sass.step("fp4_unpack", state, context).status,
+              step_status::kAdvanced);
+    EXPECT_EQ(state.read_register(0, 1), test[2]);
+    EXPECT_EQ(state.read_register(1, 1), 0x12345678u);
+  }
+}
+
+TEST(SassFunctionalTest, Fp4BroadcastUnpackAllByteSelectors) {
+  kernel image;
+  image.name = "fp4_broadcast";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  for (unsigned payload = 0; payload < 4; ++payload)
+    for (unsigned scale = 0; scale < 4; ++scale)
+      image.instructions.push_back(official_instruction(
+          (payload * 4 + scale) * 16, "F2FP.BF16.E2M1.UNPACK_B",
+          "R4,R1.reuse.B" + std::to_string(payload) + ",R2.reuse.B" +
+              std::to_string(scale)));
+  image.instructions.push_back(official_instruction(
+      256, "F2FP.BF16.E2M1.UNPACK_B", "R4,R1.B4,R2.B0"));
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  const uint32_t expected[4][4] = {
+      {0x00400040u, 0x3f803f80u, 0x7f007f00u, 0x7fff7fffu},
+      {0x80000000u, 0x80000000u, 0x80000000u, 0x7fff7fffu},
+      {0x00600020u, 0x3fc03f00u, 0x7f407e80u, 0x7fff7fffu},
+      {0x81400140u, 0xc0c040c0u, 0xff807f80u, 0x7fff7fffu}};
+  warp_state state;
+  state.active_mask = 1;
+  state.write_register(0, 1, 0xf7318022);
+  state.write_register(0, 2, 0xfffe7f00);
+  execution_context context;
+  for (unsigned payload = 0; payload < 4; ++payload)
+    for (unsigned scale = 0; scale < 4; ++scale) {
+      ASSERT_EQ(sass.step("fp4_broadcast", state, context).status,
+                step_status::kAdvanced);
+      EXPECT_EQ(state.read_register(0, 4), expected[payload][scale]);
+    }
+  EXPECT_EQ(sass.step("fp4_broadcast", state, context).status,
+            step_status::kUnsupported);
+  EXPECT_EQ(state.read_register(0, 4), expected[3][3]);
+}
+
+TEST(SassFunctionalTest, Dsv4VoteReturnsBallotAndAny) {
+  kernel image;
+  image.name = "dsv4_vote";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "VOTE.ANY", "R2,P1,P0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 7;
+  state.write_predicate(1, 0, true);
+  state.write_predicate(3, 0, true); // inactive lane must not enter ballot
+  execution_context context;
+  ASSERT_EQ(sass.step("dsv4_vote", state, context).status, step_status::kAdvanced);
+  for (unsigned lane = 0; lane < 3; ++lane) {
+    EXPECT_EQ(state.read_register(lane, 2), 2u);
+    EXPECT_TRUE(state.read_predicate(lane, 1));
+  }
+}
+
+TEST(SassFunctionalTest, Dsv4Fp8UnpackSpecialValuesAndInactiveLanes) {
+  kernel image;
+  image.name = "dsv4_fp8_unpack";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "F2FP.F16.E4M3.UNPACK_B", "R2,R1", "@P0"),
+      official_instruction(16, "F2FP.F16.E4M3.UNPACK_B", "R3,R1.H1", "@P0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 7;
+  for (unsigned lane = 0; lane < 4; ++lane) {
+    state.write_predicate(lane, 0, lane != 2);
+    state.write_register(lane, 1, lane == 0 ? 0xff7f8000u : 0xfe7e8101u);
+    state.write_register(lane, 2, 0xdeadbeefu);
+    state.write_register(lane, 3, 0xdeadbeefu);
+  }
+  execution_context context;
+  ASSERT_EQ(sass.step("dsv4_fp8_unpack", state, context).status, step_status::kAdvanced);
+  ASSERT_EQ(sass.step("dsv4_fp8_unpack", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 2), 0x80000000u); // +0, -0
+  EXPECT_EQ(state.read_register(0, 3), 0x7fff7fffu); // both NaN signs
+  EXPECT_EQ(state.read_register(1, 2), 0x98001800u); // +/- 2^-9
+  EXPECT_EQ(state.read_register(1, 3), 0xdf005f00u); // +/- 448
+  for (unsigned lane : {2u, 3u}) {
+    EXPECT_EQ(state.read_register(lane, 2), 0xdeadbeefu);
+    EXPECT_EQ(state.read_register(lane, 3), 0xdeadbeefu);
+  }
+}
+
+TEST(SassFunctionalTest, ScalarBfloatConversionRoundsTiesToEvenAndClearsHighBits) {
+  kernel image;
+  image.name = "scalar_bfloat";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "F2F.BF16.F32", "R2,R1")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 15;
+  const unsigned inputs[] = {0x3f808000, 0x3f818000, 0x80000000, 0x7f800000};
+  const unsigned expected[] = {0x3f80, 0x3f82, 0x8000, 0x7f80};
+  for (unsigned lane = 0; lane < 4; ++lane) {
+    state.write_register(lane, 1, inputs[lane]);
+    state.write_register(lane, 2, 0xdeadbeef);
+  }
+  execution_context context;
+  ASSERT_EQ(sass.step("scalar_bfloat", state, context).status, step_status::kAdvanced);
+  for (unsigned lane = 0; lane < 4; ++lane)
+    EXPECT_EQ(state.read_register(lane, 2), expected[lane]);
+}
+
+TEST(SassFunctionalTest, FchkDivisionRangeBoundariesAndGuard) {
+  kernel image;
+  image.name="fchk"; image.arch=architecture::kSm120; image.instruction_bytes=16;
+  image.instructions={official_instruction(0,"FCHK","P0,R0,R1","@P1"),
+                      official_instruction(16,"FCHK","P0,R0,28672")};
+  frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+  struct Case { unsigned a,b;bool slow; };
+  for(auto c : {Case{24,100,true},Case{25,100,false},Case{254,128,false},
+       Case{255,128,true},Case{127,1,true},Case{127,2,false},Case{127,251,false},
+       Case{127,252,true},Case{25,149,false},Case{25,150,true},Case{129,2,true},
+       Case{128,2,false},Case{0,127,true},Case{127,0,true}}) {
+    warp_state state;execution_context context;
+    for(unsigned lane=0;lane<32;++lane){
+      state.write_register(lane,0,(c.a<<23)|(lane&1 ? 0x807fffff : 0));
+      state.write_register(lane,1,(c.b<<23)|(lane&2 ? 0x803fffff : 0));
+      state.write_predicate(lane,0,!c.slow);state.write_predicate(lane,1,lane<16);
+    }
+    ASSERT_EQ(sass.step("fchk",state,context).status,step_status::kAdvanced);
+    for(unsigned lane=0;lane<32;++lane)EXPECT_EQ(state.read_predicate(lane,0),lane<16?c.slow:!c.slow);
+  }
+  warp_state state;execution_context context;state.pc=16;
+  for(unsigned lane=0;lane<32;++lane)state.write_register(lane,0,0x3f800000);
+  ASSERT_EQ(sass.step("fchk",state,context).status,step_status::kAdvanced);
+  EXPECT_FALSE(state.read_predicate(0,0));
+}
+
+TEST(SassFunctionalTest, FfmaSaturatesNaNAndSignedZeroToPositiveZero) {
+  kernel image;image.name="fma_sat";image.arch=architecture::kSm120;image.instruction_bytes=16;
+  image.instructions={official_instruction(0,"FFMA.SAT","R0,R0,R1,R2")};
+  frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+  const unsigned values[]={0,0x80000000u,1,0x3f000000u,0xbf800000u,0x40000000u,0x7fc12345u,0x7f800000u};
+  const unsigned expected[]={0,0,1,0x3f000000u,0,0x3f800000u,0,0x3f800000u};
+  warp_state state;execution_context context;
+  for(unsigned lane=0;lane<32;++lane){state.write_register(lane,0,values[lane%8]);state.write_register(lane,1,0x3f800000);state.write_register(lane,2,0x80000000);}
+  ASSERT_EQ(sass.step("fma_sat",state,context).status,step_status::kAdvanced);
+  for(unsigned lane=0;lane<32;++lane)EXPECT_EQ(state.read_register(lane,0),expected[lane%8]);
+}
+
+TEST(SassFunctionalTest, FaddFtzSatHandlesBoundsNaNAndSubnormals) {
+  kernel image; image.name="add_sat"; image.arch=architecture::kSm120; image.instruction_bytes=16;
+  image.instructions={official_instruction(0,"FADD.FTZ.SAT","R0,R0,R1")};
+  frontend sass; sass.add_kernel(std::move(image)); register_sm120_functional_semantics(sass);
+  const unsigned values[]={0,0x80000000u,1,0x3f000000u,0xbf800000u,0x40000000u,0x7fc12345u,0x7f800000u};
+  const unsigned expected[]={0,0,0,0x3f000000u,0,0x3f800000u,0,0x3f800000u};
+  warp_state state; execution_context context;
+  for(unsigned lane=0;lane<32;++lane) {
+    state.write_register(lane,0,values[lane%8]);state.write_register(lane,1,0x80000000u);
+  }
+  ASSERT_EQ(sass.step("add_sat",state,context).status,step_status::kAdvanced);
+  for(unsigned lane=0;lane<32;++lane) EXPECT_EQ(state.read_register(lane,0),expected[lane%8]);
+}
+
+TEST(SassFunctionalTest, DirectedFtzFmaFlushesInputsAndResultsAndRoundsDown) {
+  const unsigned inputs[][3] = {
+      {0x3f800000, 0x3f800000, 0x8d800000}, // Tiny normal residual affects RM.
+      {1, 0x7f000000, 0},                 // Subnormal input is flushed first.
+      {0x00800000, 0x3f000000, 0},        // Subnormal result is flushed.
+      {0x80800000, 0x3f000000, 0x80000000},
+      {0x3f800000, 0x3f800000, 0xbf800000},
+      {0x7f7fffff, 0x40000000, 0}};
+  const unsigned expected[] = {0x3f7fffff, 0, 0, 0x80000000, 0x80000000, 0x7f7fffff};
+  kernel image; image.name="directed_ftz"; image.arch=architecture::kSm120; image.instruction_bytes=16;
+  image.instructions={official_instruction(0,"FFMA.FTZ.RM","R0,R0,R1,R2")};
+  frontend sass; sass.add_kernel(std::move(image)); register_sm120_functional_semantics(sass);
+  warp_state state; execution_context context;
+  for (unsigned lane=0; lane<32; ++lane)
+    for (unsigned j=0; j<3; ++j) state.write_register(lane,j,inputs[lane%6][j]);
+  ASSERT_EQ(sass.step("directed_ftz",state,context).status,step_status::kAdvanced);
+  for (unsigned lane=0; lane<32; ++lane) EXPECT_EQ(state.read_register(lane,0),expected[lane%6]);
+}
+
+TEST(SassFunctionalTest, BfloatThreeWayMinmaxReadsBothHalvesBeforeAliasedWrite) {
+  for(bool minimum : {false,true}) {
+    kernel image;image.name="bf16minmax3";image.arch=architecture::kSm120;image.instruction_bytes=16;
+    image.instructions={official_instruction(0,"VHMNMX.BF16_V2",minimum?"R4,R4,R5,R6,PT":"R4,R4,R5,R6,!PT")};
+    frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+    warp_state state;state.active_mask=1;
+    state.write_register(0,4,0x80003f80);state.write_register(0,5,0x4000bf80);state.write_register(0,6,0x00004040);
+    execution_context context;auto result=sass.step("bf16minmax3",state,context);
+    ASSERT_EQ(result.status,step_status::kAdvanced)<<result.detail;
+    EXPECT_EQ(state.read_register(0,4),minimum?0x8000bf80u:0x40004040u);
+  }
+}
+
+TEST(SassFunctionalTest, BfloatRegisterFmaModifiersAliasingAndSingleRounding) {
+  kernel image;
+  image.name = "bf16_register_fma";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "HFMA2.BF16_V2", "R0,-RZ.H0_H0,RZ.H0_H0,|R0|"),
+      official_instruction(16, "HFMA2.BF16_V2", "R1,-R0.H1_H1,R2.H0_H0,R1"),
+      official_instruction(32, "HFMA2.BF16_V2", "R3,R3,R4,R5")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 1;
+  state.write_register(0, 0, 0xc0008000u); // (-2,-0) -> (2,+0)
+  state.write_register(0, 1, 0x40803f80u); // (4,1)
+  state.write_register(0, 2, 0x00003f00u); // low = .5
+  // 1.5*(1+1/128) = a BF16 midpoint. Tiny +epsilon must round up,
+  // whereas FP32 intermediate rounding followed by BF16 rounds down.
+  state.write_register(0, 3, 0xbfc03fc0u);
+  state.write_register(0, 4, 0x3f813f81u);
+  state.write_register(0, 5, 0x80010001u);
+  execution_context context;
+  ASSERT_EQ(sass.step("bf16_register_fma", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 0), 0x40000000u);
+  ASSERT_EQ(sass.step("bf16_register_fma", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 1), 0x40400000u);
+  ASSERT_EQ(sass.step("bf16_register_fma", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 3), 0xbfc23fc2u);
+}
+
+TEST(SassFunctionalTest, BfloatMinmaxImmediateOrderAndFp8MergeAliasing) {
+  kernel image;
+  image.name = "bf16_quant";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+    official_instruction(0, "HMNMX2.BF16_V2", "R0,R0,224,448,PT"),
+    official_instruction(16, "HMNMX2.BF16_V2", "R1,R1,-224,-448,!PT"),
+    official_instruction(32, "F2FP.SATFINITE.E4M3.BF16.UNPACK_B_MERGE_C", "R0,R0,R2"),
+    official_instruction(48, "F2FP.SATFINITE.E4M3.BF16.UNPACK_B_MERGE_C", "R0,R1,R0")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 3;
+  state.write_register(0,0,0x44004400u); // 512 in both halves
+  state.write_register(0,1,0xc400c400u); // -512 in both halves
+  state.write_register(0,2,0xbeef1234u);
+  state.write_register(1,0,0xff887f81u); // signaling NaNs, both signs
+  state.write_register(1,1,0x7f81ff88u);
+  state.write_register(1,2,0xbeef1234u);
+  execution_context context;
+  ASSERT_EQ(sass.step("bf16_quant",state,context).status,step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0,0),0x436043e0u);
+  EXPECT_EQ(state.read_register(1,0),0x436043e0u);
+  ASSERT_EQ(sass.step("bf16_quant",state,context).status,step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0,1),0xc360c3e0u);
+  EXPECT_EQ(state.read_register(1,1),0xc360c3e0u);
+  ASSERT_EQ(sass.step("bf16_quant",state,context).status,step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0,0),0x1234767eu);
+  EXPECT_EQ(state.read_register(1,0),0x1234767eu);
+  ASSERT_EQ(sass.step("bf16_quant",state,context).status,step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0,0),0x767ef6feu);
+  EXPECT_EQ(state.read_register(1,0),0x767ef6feu);
+}
+
+TEST(SassFunctionalTest, GreaterEqualUnorderedFlushesBeforePredicateAnd) {
+  kernel image;
+  image.name = "geu_ftz";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "FSETP.GEU.FTZ.AND", "P0,PT,R0,R1,P1")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  struct Case { uint32_t a, b; bool expected; };
+  const Case cases[] = {{0x80000001,0,true}, {0,1,true},
+    {0x7fc00000,0,true}, {0,0x7fc00000,true}, {0xbf800000,0,false},
+    {0x3f800000,0x3f800000,true}, {0x7f800000,0x3f800000,true}};
+  for (const auto &test : cases) {
+    for (bool gate : {false,true}) {
+      warp_state state;
+      state.active_mask = 1;
+      state.write_register(0,0,test.a);state.write_register(0,1,test.b);
+      state.write_predicate(0,1,gate);
+      state.write_predicate(1,0,true);
+      execution_context context;
+      auto result = sass.step("geu_ftz",state,context);
+      ASSERT_EQ(result.status,step_status::kAdvanced) << result.detail;
+      EXPECT_EQ(state.read_predicate(0,0),test.expected && gate);
+      EXPECT_TRUE(state.read_predicate(1,0));
+    }
+  }
+}
+
+TEST(SassFunctionalTest, LeaHighCarryOutputPreservesAliasedSources) {
+  kernel image;
+  image.name="lea_high_output";image.arch=architecture::kSm120;image.instruction_bytes=16;
+  image.instructions={official_instruction(0,"LEA.HI","R1,P0,R0,R1,R2,0x1d")};
+  frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+  struct Case {uint32_t a,b,c;};
+  for(const auto &v: {Case{0,0,0},Case{0xffffffffu,0xffffffffu,0xffffffffu},
+                     Case{8,0xffffffffu,0},Case{7,0xffffffffu,0},Case{0,0xffffffffu,1}}) {
+    warp_state state;state.active_mask=1;
+    state.write_register(0,0,v.a);state.write_register(0,1,v.b);state.write_register(0,2,v.c);
+    state.write_register(1,1,0xdeadbeef);state.write_predicate(1,0,true);
+    execution_context context;
+    auto result=sass.step("lea_high_output",state,context);
+    ASSERT_EQ(result.status,step_status::kAdvanced)<<result.detail;
+    const uint64_t joined=(uint64_t(v.c)<<32)|v.a;
+    uint64_t sum=uint64_t(uint32_t((joined<<29)>>32))+v.b;
+    EXPECT_EQ(state.read_register(0,1),uint32_t(sum));
+    EXPECT_EQ(state.read_predicate(0,0),(sum>>32)!=0);
+    EXPECT_EQ(state.read_register(1,1),0xdeadbeefu);EXPECT_TRUE(state.read_predicate(1,0));
+  }
+}
+
+TEST(SassFunctionalTest, BfloatSatfinitePackClampsOverflowAndKeepsNan) {
+  kernel image;image.name="bf16_sat";image.arch=architecture::kSm120;image.instruction_bytes=16;
+  image.instructions={official_instruction(0,"F2FP.SATFINITE.BF16.F32.PACK_AB","R0,R0,R1")};
+  frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+  const uint32_t input[]={0,0x80000000,1,0x80000001,0x7fff,0x8000,0x8001,0x18000,
+    0x3f808000,0x3f818000,0x7f7f0000,0x7f7f7fff,0x7f7f8000,0x7f800000,
+    0xff7fffff,0xff800000,0x7fc12345,0xff812345};
+  const uint32_t half[]={0,0x8000,0,0x8000,0,0,1,2,0x3f80,0x3f82,
+    0x7f7f,0x7f7f,0x7f7f,0x7f7f,0xff7f,0xff7f,0x7fff,0x7fff};
+  warp_state state;state.active_mask=(1u<<18)-1;
+  for(unsigned i=0;i<18;++i){state.write_register(i,0,input[i]);state.write_register(i,1,input[17-i]);}
+  state.write_register(31,0,0xdeadbeef);
+  execution_context context;auto result=sass.step("bf16_sat",state,context);
+  ASSERT_EQ(result.status,step_status::kAdvanced)<<result.detail;
+  for(unsigned i=0;i<18;++i)EXPECT_EQ(state.read_register(i,0),(half[i]<<16)|half[17-i]);
+  EXPECT_EQ(state.read_register(31,0),0xdeadbeefu);
+}
+
+TEST(SassFunctionalTest, SignedLessEqualOrReadsAliasedNegatedPredicate) {
+  kernel image;image.name="le_or";image.arch=architecture::kSm120;image.instruction_bytes=16;
+  image.instructions={official_instruction(0,"ISETP.LE.OR","P1,PT,R0,UR29,!P1","@P2")};
+  frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+  const uint32_t values[]={0x80000000u,0xffffffffu,0,1,0x7fffffffu};
+  warp_state state;state.active_mask=0xffff;state.write_uniform_register(29,0);
+  for(unsigned lane=0;lane<32;++lane) {
+    state.write_register(lane,0,values[lane%5]);state.write_predicate(lane,1,lane%2==0);
+    state.write_predicate(lane,2,lane%3!=0);
+  }
+  execution_context context;auto result=sass.step("le_or",state,context);
+  ASSERT_EQ(result.status,step_status::kAdvanced)<<result.detail;
+  for(unsigned lane=0;lane<32;++lane) {
+    bool old=lane%2==0;
+    bool expected=lane<16&&lane%3!=0 ? (lane%5<=2)||!old : old;
+    EXPECT_EQ(state.read_predicate(lane,1),expected)<<lane;
+  }
+}
+
+TEST(SassFunctionalTest, WrappedLeftFunnelUsesHighWordAndModulo32Count) {
+  for(unsigned shift:{0u,1u,8u,31u,32u,33u,63u,255u,0xffffffffu}) {
+    for(bool immediate:{false,true}) {
+      kernel image;image.name="shf_wrap";image.arch=architecture::kSm120;image.instruction_bytes=16;
+      image.instructions={official_instruction(0,"SHF.L.W.U32.HI","R1,R1.reuse,"+(immediate?std::to_string(shift):"R3")+",R2")};
+      frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+      warp_state state;state.active_mask=1;state.write_register(0,1,0x12345678);state.write_register(0,2,0xfedcba98);state.write_register(0,3,shift);
+      execution_context context;auto result=sass.step("shf_wrap",state,context);ASSERT_EQ(result.status,step_status::kAdvanced)<<result.detail;
+      unsigned n=shift&31;uint32_t expected=n?(0xfedcba98u<<n)|(0x12345678u>>(32-n)):0xfedcba98u;
+      EXPECT_EQ(state.read_register(0,1),expected);
+    }
+  }
+}
+
+TEST(SassFunctionalTest, UniformSignedGreaterOrHandlesSignBoundaryAndNegatedPredicate) {
+  for(uint32_t a:{0u,31u,32u,0x7fffffffu,0x80000000u,0xffffffffu})
+  for(uint32_t b:{0u,31u,0x7fffffffu,0x80000000u,0xffffffffu})
+  for(bool input:{false,true}) {
+    kernel image;image.name="uisetp_gt_or";image.arch=architecture::kSm120;image.instruction_bytes=16;
+    image.instructions={official_instruction(0,"UISETP.GT.OR","UP1,UPT,UR11,UR12,!UP1")};
+    frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+    warp_state state;state.write_uniform_register(11,a);state.write_uniform_register(12,b);state.write_uniform_predicate(1,input);
+    execution_context context;auto result=sass.step("uisetp_gt_or",state,context);ASSERT_EQ(result.status,step_status::kAdvanced)<<result.detail;
+    EXPECT_EQ(state.read_uniform_predicate(1),(static_cast<int32_t>(a)>static_cast<int32_t>(b))||!input);
+  }
+  kernel image;image.name="uisetp_immediate";image.arch=architecture::kSm120;image.instruction_bytes=16;
+  image.instructions={official_instruction(0,"UISETP.GT.OR","UP0,UPT,UR11,0x1f,!UP1")};
+  frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+  warp_state state;state.write_uniform_register(11,32);state.write_uniform_predicate(1,true);
+  execution_context context;ASSERT_EQ(sass.step("uisetp_immediate",state,context).status,step_status::kAdvanced);
+  EXPECT_TRUE(state.read_uniform_predicate(0));
+}
+
+TEST(SassFunctionalTest, NativeFp32PairsSupportAbsBroadcastAndReversedSources) {
+  kernel image; image.name="native_pairs"; image.arch=architecture::kSm120; image.instruction_bytes=16;
+  image.instructions={
+    official_instruction(0,"FADD2","R4,R4.F32x2.HI_LO,|R4|.F32x2.HI_LO"),
+    official_instruction(16,"FMUL2","R6,R4.F32x2.HI_LO,-1"),
+    official_instruction(32,"FADD2","R8,R4.F32x2.HI_LO,R6.F32x2.LO_HI"),
+    official_instruction(48,"FMUL2","R10,R8.F32x2.HI_LO,0.00390625")};
+  frontend sass; sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+  warp_state state;state.active_mask=1;
+  state.write_register(0,4,0xc0000000);state.write_register(0,5,0x40400000);
+  execution_context context;
+  for(unsigned i=0;i<4;++i){auto r=sass.step("native_pairs",state,context);ASSERT_EQ(r.status,step_status::kAdvanced)<<r.detail;}
+  EXPECT_EQ(state.read_register(0,4),0u);EXPECT_EQ(state.read_register(0,5),0x40c00000u);
+  EXPECT_EQ(state.read_register(0,8),0xc0c00000u);EXPECT_EQ(state.read_register(0,9),0x40c00000u);
+  EXPECT_EQ(state.read_register(0,10),0xbcc00000u);EXPECT_EQ(state.read_register(0,11),0x3cc00000u);
+}
+
+
+TEST(SassFunctionalTest, NativeUniformArithmeticAliasesPreserveWrapAndSignedComparison) {
+ kernel image;image.name="aliases";image.arch=architecture::kSm120;image.instruction_bytes=16;
+ image.instructions={official_instruction(0,"UIMAD.U32","UR4,UR2,0x8,UR3"),
+  official_instruction(16,"IMAD.SHL","R4,R2,0x8,RZ"),
+  official_instruction(32,"UISETP.EQ.OR","UP0,UPT,UR4,0x1,!UPT"),
+  official_instruction(48,"UISETP.LT.OR","UP1,UPT,UR2,0x0,!UPT")};
+ frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+ warp_state state;state.active_mask=1;state.write_uniform_register(2,0xffffffff);state.write_uniform_register(3,9);state.write_register(0,2,0xffffffff);
+ execution_context context;
+ for(unsigned i=0;i<4;++i){auto r=sass.step("aliases",state,context);ASSERT_EQ(r.status,step_status::kAdvanced)<<r.detail;}
+ EXPECT_EQ(state.read_uniform_register(4),1u);EXPECT_EQ(state.read_register(0,4),0xfffffff8u);
+ EXPECT_TRUE(state.read_uniform_predicate(0));EXPECT_TRUE(state.read_uniform_predicate(1));
+}
+
+TEST(SassFunctionalTest, Lop3PandReadsAliasedPredicateBeforeWritingIt) {
+ kernel image;image.name="pand";image.arch=architecture::kSm120;image.instruction_bytes=16;
+ image.instructions={official_instruction(0,"LOP3.LUT.PAND","P0,R4,R1,R2,RZ,0x30,P0")};
+ frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+ warp_state state;state.active_mask=15;
+ for(unsigned lane=0;lane<4;++lane){state.write_register(lane,1,lane&1?8:0);state.write_register(lane,2,0);state.write_predicate(lane,0,lane&2);}
+ execution_context context;auto r=sass.step("pand",state,context);ASSERT_EQ(r.status,step_status::kAdvanced)<<r.detail;
+ for(unsigned lane=0;lane<4;++lane){EXPECT_EQ(state.read_register(lane,4),lane&1?8u:0u);EXPECT_EQ(state.read_predicate(lane,0),lane==3);}
+}
+
+TEST(SassFunctionalTest, NumericReductionsOrderInfinitiesAndStillRejectNan) {
+  kernel image;
+  image.name = "infinite_reduce";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "CREDUX.MAX.F32", "UR4,R2"),
+      official_instruction(16, "VHMNMX.BF16_V2", "R4,R4,R5,R6,PT"),
+      official_instruction(32, "VHMNMX.BF16_V2", "R7,R4,R5,R6,!PT")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 3;
+  state.write_register(0, 2, 0xff800000u);
+  state.write_register(1, 2, 0x7f800000u);
+  state.write_register(2, 2, 0x7fc00000u); // inactive NaN
+  for (unsigned lane = 0; lane < 2; ++lane) {
+    state.write_register(lane, 4, 0xff807f80u);
+    state.write_register(lane, 5, 0x7f80ff80u);
+    state.write_register(lane, 6, 0x3f803f80u);
+  }
+  execution_context context;
+  ASSERT_EQ(sass.step("infinite_reduce", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_uniform_register(4), 0x7f800000u);
+  ASSERT_EQ(sass.step("infinite_reduce", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 4), 0xff80ff80u);
+  ASSERT_EQ(sass.step("infinite_reduce", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_register(0, 7), 0x7f803f80u);
+  state.pc = 0;
+  state.write_register(0, 2, 0x7fc01234u);
+  EXPECT_EQ(sass.step("infinite_reduce", state, context).status, step_status::kUnsupported);
+  state.pc = 16;
+  state.write_register(0, 4, 0x7fc1u);
+  EXPECT_EQ(sass.step("infinite_reduce", state, context).status, step_status::kUnsupported);
+}
+
+TEST(SassFunctionalTest, DeepInferFp4PackRoundsTiesAndMergesBytes) {
+  kernel image;
+  image.name = "fp4_pack";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "F2FP.SATFINITE.E2M1.F32.PACK_AB_MERGE_C",
+                           "R8,R2,R3,R4"),
+      official_instruction(16, "F2FP.SATFINITE.E2M1.BF16.UNPACK_B_MERGE_C",
+                           "R9,R5,R4")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 3;
+  state.write_register(0, 2, 0x3f400000);  // 0.75 -> 1 (even code 2)
+  state.write_register(0, 3, 0xbfa00000);  // -1.25 -> -1 (even code 10)
+  state.write_register(0, 4, 0x12345678);
+  state.write_register(0, 5, 0x3f40bfa0);
+  state.write_register(1, 2, 0x7fc00000);
+  state.write_register(1, 3, 0xff800000);
+  state.write_register(1, 4, 0);
+  state.write_register(1, 5, 0x7fc0ff80);
+  execution_context context;
+  auto r = sass.step("fp4_pack", state, context);
+  ASSERT_EQ(r.status, step_status::kAdvanced) << r.detail;
+  EXPECT_EQ(state.read_register(0, 8), 0x3456782au);
+  EXPECT_EQ(state.read_register(1, 8), 0x7fu);
+  r = sass.step("fp4_pack", state, context);
+  ASSERT_EQ(r.status, step_status::kAdvanced) << r.detail;
+  EXPECT_EQ(state.read_register(0, 9), 0x3456782au);
+  EXPECT_EQ(state.read_register(1, 9), 0x7fu);
+}
+
+TEST(SassFunctionalTest, DeepInferHalfFmaFp4ImmediateAndBfloatNegation) {
+  kernel image;
+  image.name = "mixed_half";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "FHFMA.BF16", "R8,R2.H1,R3.H1,R4"),
+      official_instruction(16, "F2FP.BF16.E2M1.UNPACK_B",
+                           "R9,R5,4.5736980577097704378e-41,H0"),
+      official_instruction(32, "HADD2.BF16_V2", "R10,-R3.H1_H1,R2.H0_H0"),
+      official_instruction(48, "BREV", "R11,R6"),
+      official_instruction(64, "R2P", "R6.B1,0xf")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 1;
+  state.write_register(0, 2, 0x40003f80);
+  state.write_register(0, 3, 0x40403f00);
+  state.write_register(0, 4, 0x3f800000);
+  state.write_register(0, 5, 0xc2);
+  state.write_register(0, 6, 0x500);
+  execution_context context;
+  for (unsigned i = 0; i < 5; ++i) {
+    auto r = sass.step("mixed_half", state, context);
+    ASSERT_EQ(r.status, step_status::kAdvanced) << r.detail;
+  }
+  EXPECT_EQ(state.read_register(0, 8), 0x40e00000u);
+  EXPECT_EQ(state.read_register(0, 9), 0xc0003f80u);
+  EXPECT_EQ(state.read_register(0, 10), 0xc000c000u);
+  EXPECT_EQ(state.read_register(0, 11), 0xa00000u);
+  EXPECT_TRUE(state.read_predicate(0, 0));
+  EXPECT_FALSE(state.read_predicate(0, 1));
+  EXPECT_TRUE(state.read_predicate(0, 2));
+  EXPECT_FALSE(state.read_predicate(0, 3));
+}
+
+TEST(SassFunctionalTest, DeepInferTopkMaskUnorderedComparisonAndPredicateByte) {
+  kernel image;
+  image.name = "topk_scalar";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "FSET.BF.GT.AND", "R8,R2,R3,PT"),
+      official_instruction(16, "FSET.BF.EQ.AND", "R9,R2,R3,PT"),
+      official_instruction(32, "FSETP.LEU.AND", "P0,PT,R2,R3,PT"),
+      official_instruction(48, "FSETP.NEU.OR", "P1,PT,R2,R3,PT"),
+      official_instruction(64, "P2R.B1", "R10,R4,0x3"),
+      official_instruction(80, "FLO.U32.SH", "R11,R5"),
+      official_instruction(96, "F2FP.RELU.BF16.F32.PACK_AB", "R12,R3,R2")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 3;
+  for (unsigned l = 0; l < 2; ++l) {
+    state.write_register(l, 2, l ? 0x7fffffff : 0x3f800000);
+    state.write_register(l, 3, 0xbf800000);
+    state.write_register(l, 4, 0xa5a504ff);
+    state.write_register(l, 5, 0x100);
+  }
+  execution_context context;
+  for (unsigned i = 0; i < 7; ++i) {
+    auto r = sass.step("topk_scalar", state, context);
+    ASSERT_EQ(r.status, step_status::kAdvanced) << r.detail;
+  }
+  EXPECT_EQ(state.read_register(0, 8), 0xffffffffu);
+  EXPECT_EQ(state.read_register(1, 8), 0u);
+  EXPECT_EQ(state.read_register(0, 9), 0u);
+  EXPECT_EQ(state.read_register(1, 9), 0u);
+  EXPECT_FALSE(state.read_predicate(0, 0));
+  EXPECT_TRUE(state.read_predicate(1, 0));
+  EXPECT_EQ(state.read_register(0, 10), 0xa5a506ffu);
+  EXPECT_EQ(state.read_register(1, 10), 0xa5a507ffu);
+  EXPECT_EQ(state.read_register(0, 11), 23u);
+  EXPECT_EQ(state.read_register(0, 12), 0x3f80u);
+}
+
+TEST(SassFunctionalTest, DeepInferUniformBitOpsAndScalarBfloatAdd) {
+  kernel image;
+  image.name = "uniform_bits";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {official_instruction(0, "UBREV", "UR4,UR6"),
+                        official_instruction(16, "UFLO.U32.SH", "UR5,UR6"),
+                        official_instruction(32, "FHADD.BF16", "R8,R2.H1,R3")};
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.write_uniform_register(6, 0x100);
+  state.write_register(0, 2, 0x40003f80);
+  state.write_register(0, 3, 0x40400000);
+  execution_context context;
+  for (unsigned i = 0; i < 3; ++i) {
+    auto r = sass.step("uniform_bits", state, context);
+    ASSERT_EQ(r.status, step_status::kAdvanced) << r.detail;
+  }
+  EXPECT_EQ(state.read_uniform_register(4), 0x800000u);
+  EXPECT_EQ(state.read_uniform_register(5), 23u);
+  EXPECT_EQ(state.read_register(0, 8), 0x40a00000u);
+}
+}

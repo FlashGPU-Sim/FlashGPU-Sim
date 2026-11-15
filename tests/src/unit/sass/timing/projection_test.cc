@@ -1138,3 +1138,43 @@ TEST(SassTimingProjectionTest,
 }
 
 }  // namespace
+
+namespace {
+TEST(SassTimingProjectionTest, TernaryFp32MaxUsesMaxProfileAndAllInputs) {
+  timing_profile profile;
+  profile.fp32_latency[1] = 7;
+  const timing_instruction projected(official_instruction(
+      0, "FMNMX3.FTZ", "R20,|R9|,|R8|,R20,!PT"), profile);
+  EXPECT_EQ(projected.op, SP_OP);
+  EXPECT_EQ(projected.latency, 7u);
+  EXPECT_EQ(projected.outcount, 1u);
+  EXPECT_EQ(projected.incount, 3u);
+  EXPECT_EQ(projected.get_register_file_source_count(), 3u);
+}
+
+TEST(SassTimingProjectionTest, BlackwellFp32PairTracksBothHalves) {
+  for (const char* opcode : {"FFMA2", "FFMA2.FTZ"}) {
+  timing_profile profile;
+  profile.fp32_latency[3] = 6;
+  const timing_instruction projected(official_instruction(
+      0x110, opcode, "R4,R6.F32x2.HI_LO,UR10.F32,R12.F32x2.HI_LO"), profile);
+  EXPECT_EQ(projected.op, SP_OP);
+  EXPECT_EQ(projected.latency, 6u);
+  EXPECT_EQ(projected.outcount, 2u);
+  EXPECT_EQ(projected.incount, 5u);
+  EXPECT_EQ(projected.arch_reg.dst[0], 5);
+  EXPECT_EQ(projected.arch_reg.dst[1], 6);
+  EXPECT_EQ(projected.get_register_file_source_count(), 4u);
+  EXPECT_EQ(projected.get_register_file_destination_count(), 2u);
+  }
+}
+
+TEST(SassTimingProjectionTest, NativeFp32PairsTrackReversedAndImmediateOperands) {
+  const timing_instruction imm(official_instruction(0,"FMUL2","R6,R4.F32x2.HI_LO,-1"));
+  EXPECT_EQ(imm.outcount,2u);EXPECT_EQ(imm.incount,2u);
+  const timing_instruction rev(official_instruction(16,"FADD2","R8,R4.F32x2.HI_LO,R6.F32x2.LO_HI"));
+  EXPECT_EQ(rev.outcount,2u);EXPECT_EQ(rev.incount,4u);
+  const timing_instruction abs(official_instruction(32,"FADD2","R4,R4.F32x2.HI_LO,|R4|.F32x2.HI_LO"));
+  EXPECT_EQ(abs.outcount,2u);EXPECT_EQ(abs.incount,2u);
+}
+}
