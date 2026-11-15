@@ -1066,3 +1066,36 @@ TEST(SassFunctionalTest, Gather4KeepsRowOrderAndCreditsAllFourRows) {
   }
 }
 }
+
+namespace {
+TEST(SassFunctionalTest, Gather4RejectsUnqualifiedMapsWithoutWritingOrCompleting) {
+  for (unsigned invalid=0;invalid<5;++invalid) {
+    kernel image; image.name="bad_gather";image.arch=architecture::kSm100;image.instruction_bytes=16;
+    image.instructions={official_instruction(0,"UTMALDG.2D.GATHER4","[UR4][UR12]")};
+    frontend sass;sass.add_kernel(std::move(image));register_sm100_functional_semantics(sass);
+    mapped_functional_memory memory;
+    memory.map(memory_space::kGlobal,0x10000,4096,true);
+    memory.map(memory_space::kShared,0,4096,true);
+    memory.initialize<uint32_t>(memory_space::kShared,1024,0xdeadbeef);
+    functional_tensor_map_2d map;
+    map.global_address=0x10000;map.element_bytes=4;map.global_dim={{128,8}};
+    map.box_dim={{32,1}};map.row_stride_bytes=512;
+    if(invalid==0)map.swizzle_bytes=128;
+    if(invalid==1)map.element_type=tensor_map_element_type::kFloat32Ftz;
+    if(invalid==2)map.element_stride[0]=2;
+    if(invalid==3)map.box_dim[1]=2;
+    if(invalid==4)map.oob_zero=false;
+    cta_execution_state cta(1);
+    ASSERT_TRUE(cta.register_tensor_map_2d(0x20000,map));
+    ASSERT_TRUE(cta.initialize_mbarrier(0,1));
+    ASSERT_TRUE(cta.arrive_mbarrier(0,1,512));
+    warp_state state;state.active_mask=1;
+    state.write_uniform_register(4,1024);state.write_uniform_register(12,0x20000);
+    execution_context context{&memory};context.cta=&cta;
+    EXPECT_EQ(sass.step("bad_gather",state,context).status,step_status::kUnsupported) << invalid;
+    EXPECT_EQ(memory.inspect<uint32_t>(memory_space::kShared,1024),0xdeadbeefu);
+    EXPECT_EQ(cta.mbarrier_pending_transaction_bytes(0),512u);
+    EXPECT_EQ(cta.mbarrier_phase(0),0u);
+  }
+}
+}

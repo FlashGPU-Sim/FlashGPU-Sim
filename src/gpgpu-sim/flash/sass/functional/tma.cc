@@ -258,7 +258,8 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
     return unsupported(inst, "unsupported shared-memory TMA swizzle");
 
   if (gather4) {
-    if (tensor_map.swizzle_bytes != 0 || tensor_map.box_dim[1] != 1 ||
+    if (tensor_map.element_type == tensor_map_element_type::kFloat32Ftz ||
+        tensor_map.swizzle_bytes != 0 || tensor_map.box_dim[1] != 1 ||
         tensor_map.element_stride[0] != 1 ||
         tensor_map.element_stride[1] != 1 || !tensor_map.oob_zero ||
         (tensor_map.element_bytes != 1 && tensor_map.element_bytes != 2 &&
