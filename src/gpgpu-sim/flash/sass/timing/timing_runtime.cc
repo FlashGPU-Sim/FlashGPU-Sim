@@ -145,6 +145,9 @@ public:
       panic("SASS timing kernel has no parameter ABI");
     if (image_->arch == architecture::kSm90)
       register_sm90_functional_semantics(frontend_);
+    else if (image_->arch == architecture::kSm100 ||
+             image_->arch == architecture::kSm103)
+      register_sm100_functional_semantics(frontend_);
     else if (image_->arch == architecture::kSm120)
       register_sm120_functional_semantics(frontend_);
     else

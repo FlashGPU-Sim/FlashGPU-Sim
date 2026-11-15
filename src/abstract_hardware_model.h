@@ -1006,6 +1006,7 @@ public:
     space_t dst_space = TMA_SPACE_INVALID;
     space_t src_space = TMA_SPACE_INVALID;
     unsigned tensor_dim = 0;
+    bool tensor_gather4 = false;
     unsigned bulk_wait_num = 0;  // For TMA_BULK_WAIT: number of recent groups to wait for
     bool bulk_wait_read_only = false;
     // PTX .multicast::cluster (cluster-level selective destination only).

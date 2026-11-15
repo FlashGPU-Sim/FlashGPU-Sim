@@ -1735,6 +1735,7 @@ ptx_instruction::ptx_instruction(
       case DIM_4D_OPTION: 
       case DIM_5D_OPTION: 
       case REPLACE_OPTION:
+      case GATHER4_OPTION:
       case TILE_OPTION:
       case GLOBAL_ADDRESS_OPTION:
       case RANK_OPTION:

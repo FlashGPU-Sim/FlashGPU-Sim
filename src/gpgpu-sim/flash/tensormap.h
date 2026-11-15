@@ -77,6 +77,7 @@ typedef union __attribute__((aligned(128))) tensormap_descriptor_t {
     case TMA_DTYPE_U32:
       return 4;
     case TMA_DTYPE_U64:
+    case TMA_DTYPE_S64:
       return 8;
     case TMA_DTYPE_F16:
       return 2;

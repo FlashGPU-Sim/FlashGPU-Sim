@@ -198,8 +198,11 @@ void validate_control(const instruction &inst, architecture arch) {
 }
 
 void validate_kernel(const kernel &result) {
-  if (result.arch != architecture::kSm90 && result.arch != architecture::kSm120)
-    panic("only sm90 and sm120 sassirs are supported");
+  if (result.arch != architecture::kSm90 &&
+      result.arch != architecture::kSm120 &&
+      result.arch != architecture::kSm100 &&
+      result.arch != architecture::kSm103)
+    panic("unsupported SASS architecture");
   if (result.instruction_bytes != kInstructionBytes)
     panic("SASS instruction size must be 16 bytes");
 
@@ -319,6 +322,8 @@ kernel sassir_decoder::decode_kernel(const std::string &sassir_path,
         result.decoder_version = decoder_version;
         result.decoder_schema = decoder_schema;
         result.arch = columns[2] == "sm90"    ? architecture::kSm90
+                      : columns[2] == "sm100" ? architecture::kSm100
+                      : columns[2] == "sm103" ? architecture::kSm103
                       : columns[2] == "sm120" ? architecture::kSm120
                                               : architecture::kUnknown;
         result.instruction_bytes = parse_u32(columns[3], "instruction size");

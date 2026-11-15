@@ -2,6 +2,8 @@
 #include "panic.h"
 #include "tb_cluster.h"
 #include "tensormap.h"
+#include "tma_agu.h"
+#include "tma_gather4.h"
 #include "tma_opaque_tensormap.h"
 #include "tma_reduction.h"
 #include "tma_store_source.h"
@@ -599,240 +601,6 @@ cache_tensormap_descriptor(inst_t::tma_dyn_info_t &tma_dyn_info,
 // Performance Simulation: TMA AGU (Address Generation Unit)
 //=============================================================================
 
-struct tma_agu_state_t {
-  // Mode and completion state
-  bool is_tensor = false;       // true=tensor mode, false=linear mode
-  bool done = true;             // true=iteration complete
-  bool is_fill_request = false; // true=current request is OOB fill
-
-  // Tensor mode state (multi-dimensional tile traversal)
-  uint32_t num_dims = 0;            // Number of dimensions (1-5)
-  uint32_t elem_size = 0;           // Element size in bytes
-  uint32_t box_dim[5] = {0};        // Tile dimensions [d0, d1, d2, d3, d4]
-  uint32_t global_dim[5] = {0};     // Global tensor dimensions
-  int32_t start_coords[5] = {0};    // Starting coordinates of this tile
-  uint64_t global_strides[5] = {0}; // Strides for each dimension
-  uint32_t tile_coords[5] = {0};    // Current position within tile (odometer)
-  uint64_t curr_row_addr = 0;       // Base physical address of current row
-  uint32_t offset_in_row = 0;       // Byte offset within current row
-  uint32_t row_bytes = 0;           // Total bytes in a row (dim0 extent)
-
-  // Cached OOB state (avoids per-sector dimension traversal)
-  bool row_is_oob = false;            // Higher-dim OOB: entire row is fill
-  uint32_t valid_row_start_bytes = 0; // First valid dim0 byte in the tile row
-  uint32_t valid_row_end_bytes = 0;   // One-past-last valid dim0 byte
-
-  // Linear mode state (simple 1D address range)
-  uint64_t linear_addr = 0;      // Current address
-  uint32_t linear_remaining = 0; // Remaining bytes
-};
-
-class tma_agu_unit_t {
-public:
-  void init_tensor(tma_agu_state_t &state, const tensormap_descriptor_t &tm,
-                   const int32_t start_coords[5]) {
-
-    if (!tm.is_valid()) {
-      assert(false && "TMA AGU ERROR: Invalid tensormap in init_tensor");
-    }
-
-    state = tma_agu_state_t(); // Reset to defaults
-    state.is_tensor = true;
-    state.num_dims = tm.num_dims();
-    state.elem_size = tm.get_element_size();
-
-    // Cache box dimensions and global dimensions
-    for (uint32_t d = 0; d < state.num_dims; d++) {
-      state.box_dim[d] = tm.fields.boxDim[d];
-      state.global_dim[d] = tm.fields.globalDim[d];
-      state.start_coords[d] = start_coords[d];
-    }
-
-    // Calculate strides: stride[0] = elem_size, stride[i] = globalStrides[i-1]
-    state.global_strides[0] = state.elem_size;
-    for (uint32_t d = 1; d < state.num_dims; d++) {
-      state.global_strides[d] = tm.fields.globalStrides[d - 1];
-    }
-
-    // Initialize tile coordinates to (0,0,...,0)
-    for (int i = 0; i < 5; i++) {
-      state.tile_coords[i] = 0;
-    }
-
-    // Calculate initial row address using signed coordinates.  OOB requests
-    // may precede the tensor base when OOB L2 traffic is enabled.
-    int64_t byte_offset = 0;
-    for (uint32_t d = 0; d < state.num_dims; d++) {
-      byte_offset += static_cast<int64_t>(start_coords[d]) *
-                     static_cast<int64_t>(state.global_strides[d]);
-    }
-    if (byte_offset < 0) {
-      state.curr_row_addr =
-          tm.fields.globalAddress - static_cast<uint64_t>(-byte_offset);
-    } else {
-      state.curr_row_addr =
-          tm.fields.globalAddress + static_cast<uint64_t>(byte_offset);
-    }
-
-    state.row_bytes = state.box_dim[0] * state.elem_size;
-    state.offset_in_row = 0;
-    state.done = false;
-
-    // Precompute the dim0 intersection with the tensor.  Both boundaries are
-    // tile-relative so a negative start coordinate produces leading fill
-    // bytes followed by valid data.
-    const int64_t row_start = start_coords[0];
-    const int64_t row_end = row_start + state.box_dim[0];
-    const int64_t valid_start = std::max<int64_t>(row_start, 0);
-    const int64_t valid_end = std::min<int64_t>(row_end, state.global_dim[0]);
-    if (valid_start < valid_end) {
-      state.valid_row_start_bytes =
-          static_cast<uint32_t>(valid_start - row_start) * state.elem_size;
-      state.valid_row_end_bytes =
-          static_cast<uint32_t>(valid_end - row_start) * state.elem_size;
-    } else {
-      state.valid_row_start_bytes = state.row_bytes;
-      state.valid_row_end_bytes = state.row_bytes;
-    }
-
-    // Precompute higher-dim OOB for first row (tile_coords all zero)
-    state.row_is_oob = false;
-    for (uint32_t d = 1; d < state.num_dims; d++) {
-      if (start_coords[d] < 0 ||
-          static_cast<uint32_t>(start_coords[d]) >= state.global_dim[d]) {
-        state.row_is_oob = true;
-        break;
-      }
-    }
-  }
-
-  void init_linear(tma_agu_state_t &state, uint64_t start_addr,
-                   uint32_t total_bytes) {
-    state = tma_agu_state_t(); // Reset to defaults
-    state.is_tensor = false;
-    state.linear_addr = start_addr;
-    state.linear_remaining = total_bytes;
-    state.done = (total_bytes == 0);
-  }
-
-  /**
-   * Generate next memory request using AGU
-   *
-   * For tensor mode:
-   *   - Traverses tile in row-major order
-   *   - Skips OOB coordinates (zero-padding)
-   *   - Breaks rows into configured request-granularity chunks
-   *
-   * For linear mode:
-   *   - Simple sequential address generation
-   *   - Aligns to configured request-granularity boundaries
-   */
-  bool gen_next_req(tma_agu_state_t &state, uint64_t &out_addr,
-                    uint32_t &out_size, uint32_t request_granularity) {
-    if (state.done)
-      return false;
-
-    if (!state.is_tensor) {
-      // Linear mode: simple sequential address generation
-      if (state.linear_remaining == 0) {
-        state.done = true;
-        return false;
-      }
-
-      state.is_fill_request = false; // Linear mode never fills
-      out_addr = state.linear_addr;
-      uint32_t to_boundary =
-          request_granularity - (state.linear_addr % request_granularity);
-      out_size =
-          std::min({request_granularity, state.linear_remaining, to_boundary});
-
-      state.linear_addr += out_size;
-      state.linear_remaining -= out_size;
-
-      if (state.linear_remaining == 0) {
-        state.done = true;
-      }
-
-    } else {
-      // Tensor mode: odometer-style multi-dimensional traversal
-      // OOB check using cached state (no per-sector dimension traversal)
-      if (state.row_is_oob) {
-        state.is_fill_request = true; // Higher-dim OOB: entire row is fill
-      } else {
-        state.is_fill_request =
-            state.offset_in_row < state.valid_row_start_bytes ||
-            state.offset_in_row >= state.valid_row_end_bytes;
-      }
-
-      // Calculate address: current_row_base + offset_within_row
-      out_addr = state.curr_row_addr + state.offset_in_row;
-
-      // Never mix fill and valid bytes in one request.
-      uint32_t row_remaining = state.row_bytes - state.offset_in_row;
-      if (!state.row_is_oob) {
-        if (state.offset_in_row < state.valid_row_start_bytes) {
-          row_remaining = std::min(row_remaining, state.valid_row_start_bytes -
-                                                      state.offset_in_row);
-        } else if (state.offset_in_row < state.valid_row_end_bytes) {
-          row_remaining = std::min(row_remaining, state.valid_row_end_bytes -
-                                                      state.offset_in_row);
-        }
-      }
-      uint32_t to_boundary =
-          request_granularity - (out_addr % request_granularity);
-      out_size = std::min({request_granularity, row_remaining, to_boundary});
-
-      // Advance position within row
-      state.offset_in_row += out_size;
-
-      // If row complete, advance to next row (odometer increment)
-      if (state.offset_in_row >= state.row_bytes) {
-        advance_to_next_row(state);
-      }
-    }
-
-    return true;
-  }
-
-private:
-  // Advance to next row using odometer-style increment of higher dimensions.
-  // Updates row_is_oob cache after advancing.
-  void advance_to_next_row(tma_agu_state_t &state) {
-    state.offset_in_row = 0;
-
-    // Increment coordinates starting from dimension 1 (dimension 0 is row)
-    bool carried_all = true;
-    for (uint32_t d = 1; d < state.num_dims; d++) {
-      state.tile_coords[d]++;
-      state.curr_row_addr += state.global_strides[d];
-
-      if (state.tile_coords[d] < state.box_dim[d]) {
-        carried_all = false;
-        break; // No carry - done advancing
-      }
-
-      // Carry to next dimension: reset this dimension
-      state.curr_row_addr -= state.box_dim[d] * state.global_strides[d];
-      state.tile_coords[d] = 0;
-    }
-
-    if (carried_all) {
-      state.done = true;
-      return;
-    }
-
-    // Recompute higher-dim OOB for new row (once per row, not per sector)
-    state.row_is_oob = false;
-    for (uint32_t d = 1; d < state.num_dims; d++) {
-      const int64_t coord =
-          static_cast<int64_t>(state.start_coords[d]) + state.tile_coords[d];
-      if (coord < 0 || coord >= state.global_dim[d]) {
-        state.row_is_oob = true;
-        break;
-      }
-    }
-  }
-};
 //=============================================================================
 // Performance Simulation: TMA Unit
 //=============================================================================
@@ -1498,7 +1266,11 @@ public:
             fflush(stdout);
             exit(1);
           }
-          m_agu.init_tensor(tx.agu_state, tensormap, tma_dyn_info.coords);
+          if (tma_static_info.tensor_gather4)
+            m_agu.init_tensor_gather4(tx.agu_state, tensormap,
+                                      tma_dyn_info.coords);
+          else
+            m_agu.init_tensor(tx.agu_state, tensormap, tma_dyn_info.coords);
 
         } else {
           // For linear mode, AGU generates global memory addresses
@@ -3397,6 +3169,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
   int dim_option = 0;
   int completion_option = 0;
   bool multicast_cluster = false;
+  bool gather4 = false;
   std::vector<int> space_options;
   for (auto op : options) {
     switch (op) {
@@ -3420,6 +3193,9 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
       multicast_cluster = true;
       break;
     case TENSOR_OPTION:
+    case GATHER4_OPTION:
+      gather4 = true;
+      break;
     case TILE_OPTION:
     case L2_CACHE_HINT_OPTION:
     case ATOMIC_ADD:
@@ -3453,6 +3229,11 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
   memory_space *shared_mem = thread->m_shared_mem;
   memory_space *global_mem = thread->get_global_memory();
   unsigned inst_dim = compute_inst_dim(dim_option);
+  if (gather4 &&
+      (inst_dim != 2 || src_option != GLOBAL_OPTION ||
+       completion_option != TMA_MBAR_COMPLETE_BYTES || multicast_cluster))
+    reject_unsupported_tma(
+        "gather4 requires qualified non-multicast 2D global load", pI);
 
   if ((dst_option == CTA_OPTION || dst_option == CLUSTER_OPTION) &&
       src_option == GLOBAL_OPTION &&
@@ -3487,6 +3268,13 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
                      pI->get_operands()[2], thread, tensormap, coords,
                      size_in_bytes);
+    if (gather4) {
+      if (!pI->get_operands()[2].is_vector() ||
+          pI->get_operands()[2].get_vect_nelem() != 5 ||
+          !tma_gather4_supported(tensormap))
+        reject_unsupported_tma("invalid gather4 coordinates or tensor map", pI);
+      size_in_bytes *= 4;
+    }
 
     bool is_cluster = (dst_option == CLUSTER_OPTION);
     if (multicast_cluster && !is_cluster) {
@@ -3518,6 +3306,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
                                 : inst_t::tma_static_info_t::TMA_SHARED_CTA,
         .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
         .tensor_dim = inst_dim,
+        .tensor_gather4 = gather4,
         .bulk_wait_num = 0,
         .bulk_wait_read_only = false,
         .multicast_cluster = multicast_cluster,
@@ -3546,11 +3335,21 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     const bool multicast_to_issuer =
         multicast_cluster && rank_in_cta_mask(issuer_rank, cta_mask);
 
-    if (!multicast_cluster || multicast_to_issuer) {
-      do_tma_transfer(tensormap, coords,
-                      multicast_cluster ? shared_mem : destination.memory,
-                      global_mem, dst_addr, thread, pI, true);
-    }
+    auto transfer = [&](memory_space *destination) {
+      if (!gather4) {
+        do_tma_transfer(tensormap, coords, destination, global_mem, dst_addr,
+                        thread, pI, true);
+        return;
+      }
+      const uint32_t row_bytes = size_in_bytes / 4;
+      for (unsigned slot = 0; slot < 4; ++slot) {
+        const auto row = tma_gather4_row(coords, slot);
+        do_tma_transfer(tensormap, row.data(), destination, global_mem,
+                        dst_addr + slot * row_bytes, thread, pI, true);
+      }
+    };
+    if (!multicast_cluster || multicast_to_issuer)
+      transfer(multicast_cluster ? shared_mem : destination.memory);
 
     if (multicast_to_issuer && core) {
       multicast_smem_to_cluster(shared_mem, dst_addr, size_in_bytes, thread, pI,
@@ -3562,8 +3361,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
             memory_space *peer_smem = peer_core->get_cta_smem(peer_slot);
             if (!peer_smem)
               return;
-            do_tma_transfer(tensormap, coords, peer_smem, global_mem, dst_addr,
-                            thread, pI, true);
+            transfer(peer_smem);
           },
           /*include_issuer=*/false, /*use_mask=*/true, cta_mask);
     }

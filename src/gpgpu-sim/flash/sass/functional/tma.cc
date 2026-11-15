@@ -1,6 +1,7 @@
 #include "internal.h"
 
 #include "../../tensormap.h"
+#include "../../tma_gather4.h"
 #include "../../tma_reduction.h"
 #include "../runtime/tensor_map.h"
 
@@ -110,7 +111,13 @@ step_result execute_utmapf(const instruction &inst, warp_state &state,
 
 step_result execute_utmaldg(const instruction &inst, warp_state &state,
                             execution_context &context) {
-  const unsigned rank = inst.opcode == "UTMALDG.1D"   ? 1
+  const bool gather4 = inst.opcode == "UTMALDG.2D.GATHER4";
+  if (gather4 && (!context.kernel_image ||
+                  (context.kernel_image->arch != architecture::kSm100 &&
+                   context.kernel_image->arch != architecture::kSm103)))
+    return unsupported(inst, "gather4 requires SM100/SM103");
+  const unsigned rank = gather4                       ? 2
+                        : inst.opcode == "UTMALDG.1D" ? 1
                         : inst.opcode == "UTMALDG.2D" ? 2
                         : inst.opcode == "UTMALDG.3D" ? 3
                         : inst.opcode == "UTMALDG.4D" ? 4
@@ -140,7 +147,7 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
       descriptor_term.kind != address_term_kind::kUniformRegister ||
       state_term.wide || descriptor_term.wide || state_term.negated ||
       descriptor_term.negated ||
-      state_term.index > kUniformRegisters - (rank + 2) ||
+      state_term.index > kUniformRegisters - (gather4 ? 7 : rank + 2) ||
       descriptor_term.index > kUniformRegisters - 2)
     return unsupported(inst, "unsupported TMA uniform-register convention");
 
@@ -161,7 +168,7 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   const uint64_t shared_address = state.read_uniform_register(state_base);
   const uint64_t mbarrier_address = state.read_uniform_register(state_base + 1);
   std::array<int64_t, 5> coordinates{};
-  for (unsigned dimension = 0; dimension < rank; ++dimension)
+  for (unsigned dimension = 0; dimension < (gather4 ? 5u : rank); ++dimension)
     coordinates[dimension] = static_cast<int32_t>(
         state.read_uniform_register(state_base + 2 + dimension));
   const uint64_t descriptor_address =
@@ -229,7 +236,7 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
       tensor_map_decode_result decoded =
           rank == 1 ? decode_sm120_tensor_map_1d(raw_words)
                     : decode_sm120_tensor_map_2d(raw_words);
-      if (!decoded.supported && rank == 1) {
+      if (!decoded.supported) {
         std::array<uint64_t, 16> host_words{};
         std::copy(raw_words.begin(), raw_words.end(), host_words.begin());
         if (!context.memory->read(
@@ -238,7 +245,8 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
           return memory_fault(inst, descriptor_space,
                               descriptor_address + sizeof(raw_words),
                               sizeof(raw_words));
-        decoded = decode_flashgpu_host_tensor_map_1d(host_words);
+        decoded = rank == 1 ? decode_flashgpu_host_tensor_map_1d(host_words)
+                            : decode_flashgpu_host_tensor_map_2d(host_words);
       }
       if (!decoded.supported)
         return unsupported(inst, decoded.detail);
@@ -249,6 +257,18 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
       tensor_map.swizzle_bytes != 64 && tensor_map.swizzle_bytes != 128)
     return unsupported(inst, "unsupported shared-memory TMA swizzle");
 
+  if (gather4) {
+    if (tensor_map.swizzle_bytes != 0 || tensor_map.box_dim[1] != 1 ||
+        tensor_map.element_stride[0] != 1 ||
+        tensor_map.element_stride[1] != 1 || !tensor_map.oob_zero ||
+        (tensor_map.element_bytes != 1 && tensor_map.element_bytes != 2 &&
+         tensor_map.element_bytes != 4 && tensor_map.element_bytes != 8))
+      return unsupported(inst, "unsupported gather4 tensor layout");
+    tensor_map.box_dim[1] = 4;
+  }
+  int32_t gather_coordinates[5];
+  for (unsigned i = 0; i < 5; ++i)
+    gather_coordinates[i] = coordinates[i];
   uint64_t box_elements = 1;
   for (unsigned dimension = 0; dimension < rank; ++dimension) {
     if (tensor_map.box_dim[dimension] == 0 ||
@@ -292,7 +312,9 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
         break;
       }
       const int64_t global_coordinate =
-          coordinates[dimension] + static_cast<int64_t>(delta);
+          gather4 && dimension == 1
+              ? tma_gather4_row(gather_coordinates, local_coordinate)[1]
+              : coordinates[dimension] + static_cast<int64_t>(delta);
       if (global_coordinate < 0 || static_cast<uint64_t>(global_coordinate) >=
                                        tensor_map.global_dim[dimension]) {
         in_bounds = false;
@@ -362,9 +384,11 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   timing_effect.source_address = descriptor_address;
   timing_effect.size_bytes = static_cast<uint32_t>(tile_bytes);
   timing_effect.mbarrier_address = static_cast<uint32_t>(mbarrier_address);
-  for (unsigned dimension = 0; dimension < rank; ++dimension)
+  for (unsigned dimension = 0; dimension < (gather4 ? 5u : rank); ++dimension)
     timing_effect.coordinates[dimension] =
         static_cast<int32_t>(coordinates[dimension]);
+  if (gather4)
+    tensor_map.box_dim[1] = 1;
   timing_effect.tensor_map = tensor_map;
   if (!record_uniform_tma_effect(inst, state, context,
                                  std::move(timing_effect)))
@@ -847,6 +871,7 @@ void register_tma_semantics(frontend &target) {
   target.register_semantics("UTMAPF.L2.4D", execute_utmapf);
   target.register_semantics("UTMALDG.1D", execute_utmaldg);
   target.register_semantics("UTMALDG.2D", execute_utmaldg);
+  target.register_semantics("UTMALDG.2D.GATHER4", execute_utmaldg);
   target.register_semantics("UTMALDG.3D", execute_utmaldg);
   target.register_semantics("UTMALDG.4D", execute_utmaldg);
   target.register_semantics("UTMALDG.5D", execute_utmaldg);

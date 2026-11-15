@@ -772,6 +772,7 @@ void classify(const instruction &source, const timing_profile &profile,
     inst_t::tma_static_info_t info;
     info.tma_type = inst_t::tma_static_info_t::TMA_TENSOR;
     info.tensor_dim = dimension;
+    info.tensor_gather4 = has_modifier(source.opcode, "GATHER4");
     info.dst_space = base == "UTMALDG"
                          ? inst_t::tma_static_info_t::TMA_SHARED_CTA
                          : inst_t::tma_static_info_t::TMA_GLOBAL;

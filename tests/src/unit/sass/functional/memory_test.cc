@@ -1016,3 +1016,53 @@ TEST(SassFunctionalTest, DirectGlobalLoadKeepsPairAndLanePredication) {
 }
 
 }  // namespace
+
+namespace {
+TEST(SassFunctionalTest, Gather4KeepsRowOrderAndCreditsAllFourRows) {
+  for (unsigned width : {1u, 2u, 4u, 8u}) {
+    kernel image; image.name = "gather"; image.arch = architecture::kSm100; image.instruction_bytes = 16;
+    image.instructions = {official_instruction(0, "UTMALDG.2D.GATHER4", "[UR4][UR12]")};
+    frontend sass; sass.add_kernel(std::move(image));
+    flash_gpgpu_sim::sass::register_sm100_functional_semantics(sass);
+    mapped_functional_memory memory;
+    memory.map(memory_space::kGlobal, 0x10000, 8 * 128 * width, true);
+    memory.map(memory_space::kShared, 0, 8192, true);
+    std::vector<uint8_t> input(8 * 128 * width);
+    for (unsigned i = 0; i < input.size(); ++i) input[i] = (i * 37 + i / 128) & 255;
+    ASSERT_TRUE(memory.write(memory_space::kGlobal, 0x10000, input.data(), input.size()));
+    cta_execution_state cta(1);
+    functional_tensor_map_2d map;
+    map.global_address = 0x10000; map.element_bytes = width;
+    map.global_dim = {{128, 8}}; map.box_dim = {{64, 1}};
+    map.row_stride_bytes = 128 * width;
+    ASSERT_TRUE(cta.register_tensor_map_2d(0x20000, map));
+    ASSERT_TRUE(cta.initialize_mbarrier(0, 1));
+    ASSERT_TRUE(cta.arrive_mbarrier(0, 1, 4 * 64 * width));
+    warp_state state; state.active_mask = 1;
+    state.write_uniform_register(4, 1024); state.write_uniform_register(5, 0);
+    state.write_uniform_register(6, 96);
+    const int rows[] = {5, -1, 5, 8};
+    for (unsigned i=0; i<4; ++i) state.write_uniform_register(7+i, rows[i]);
+    state.write_uniform_register(12, 0x20000); state.write_uniform_register(13, 0);
+    execution_context context{&memory}; context.cta = &cta;
+    auto result = sass.step("gather", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    std::vector<uint8_t> output(4 * 64 * width, 0xff);
+    ASSERT_TRUE(memory.read(memory_space::kShared, 1024, output.data(), output.size()));
+    for (unsigned slot=0; slot<4; ++slot)
+      for (unsigned i=0; i<64*width; ++i) {
+        const unsigned column = 96 + i / width;
+        const uint8_t expected = rows[slot] < 0 || rows[slot] >= 8 || column >= 128
+            ? 0 : input[rows[slot]*128*width + 96*width+i];
+        EXPECT_EQ(output[slot*64*width+i], expected);
+      }
+    EXPECT_EQ(cta.mbarrier_pending_transaction_bytes(0), 0u);
+    EXPECT_EQ(cta.mbarrier_phase(0), 1u);
+    EXPECT_EQ(context.tma_effects[0].size_bytes, 4*64*width);
+    EXPECT_EQ(context.tma_effects[0].tensor_map.box_dim[1], 1u);
+    for (unsigned i=0; i<4; ++i) EXPECT_EQ(context.tma_effects[0].coordinates[1+i], rows[i]);
+    timing_instruction projected(official_instruction(0,"UTMALDG.2D.GATHER4","[UR4][UR12]"));
+    EXPECT_TRUE(projected.get_tma_static_info().tensor_gather4);
+  }
+}
+}

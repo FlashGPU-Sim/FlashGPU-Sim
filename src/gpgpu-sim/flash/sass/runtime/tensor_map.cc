@@ -151,24 +151,27 @@ decode_flashgpu_host_tensor_map_2d(const std::array<uint64_t, 16> &words) {
     return rejected("host tensor map has non-unit element strides");
 
   const uint32_t data_type = packed_u32(words, 112);
-  if ((data_type != TMA_DTYPE_F32 && data_type != TMA_DTYPE_F32_FTZ) ||
+  const uint32_t swizzle = packed_u32(words, 120);
+  if (data_type > TMA_DTYPE_F32_FTZ ||
       packed_u32(words, 116) != TMA_INTERLEAVE_NONE ||
-      packed_u32(words, 120) != TMA_SWIZZLE_NONE ||
-      packed_u32(words, 124) != TMA_OOB_ZERO)
-    return rejected("host tensor map is not an unswizzled rank-2 F32 form");
-
+      swizzle > TMA_SWIZZLE_128B || packed_u32(words, 124) != TMA_OOB_ZERO)
+    return rejected("host tensor map has unsupported rank-2 format controls");
+  tensormap_descriptor_t map{};
+  map.fields.tensorDataType = data_type;
   tensor_map_decode_result result;
   result.supported = true;
   result.descriptor.global_address = words[0];
-  result.descriptor.element_bytes = 4;
-  result.descriptor.element_type = data_type == TMA_DTYPE_F32_FTZ
-                                       ? tensor_map_element_type::kFloat32Ftz
-                                       : tensor_map_element_type::kFloat32;
+  result.descriptor.element_bytes = map.get_element_size();
+  result.descriptor.element_type =
+      data_type == TMA_DTYPE_F32_FTZ ? tensor_map_element_type::kFloat32Ftz
+      : data_type == TMA_DTYPE_F32   ? tensor_map_element_type::kFloat32
+      : data_type == TMA_DTYPE_U32   ? tensor_map_element_type::kUnsigned32
+                                     : tensor_map_element_type::kUnknown;
   result.descriptor.global_dim = global_dim;
   result.descriptor.box_dim = box_dim;
   result.descriptor.row_stride_bytes = row_stride;
   result.descriptor.element_stride = {{1, 1}};
-  result.descriptor.swizzle_bytes = 0;
+  result.descriptor.swizzle_bytes = swizzle == 0 ? 0 : (16u << swizzle);
   result.descriptor.oob_zero = true;
   return result;
 }

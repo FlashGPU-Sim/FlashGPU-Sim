@@ -320,3 +320,57 @@ TEST_F(TensorMapLayoutTest, SizeIs128) {
 TEST_F(TensorMapLayoutTest, AlignmentIs128) {
   EXPECT_EQ(alignof(tensormap_descriptor_t), 128u);
 }
+
+#include "gpgpu-sim/flash/tma_agu.h"
+
+TEST(TensorMapGather4, AgreesWithIndependentAddressOracleAcrossWidthsAndPackets) {
+  for (unsigned dtype : {TMA_DTYPE_U8, TMA_DTYPE_U16, TMA_DTYPE_U32,
+                         TMA_DTYPE_S64, TMA_DTYPE_F16, TMA_DTYPE_BF16}) {
+    auto tm = make_2d(0x10000, dtype, 64, 1, 128, 8, 1024);
+    tm.fields.elementStrides[0] = tm.fields.elementStrides[1] = 1;
+    const unsigned bytes = tm.get_element_size();
+    for (unsigned packet : {16u, 32u, 64u, 128u}) {
+      for (int x : {-16, 0, 112, 144}) {
+        const int32_t coords[5] = {x, 5, -1, 5, 8};
+        flash_gpgpu_sim::tma_agu_unit_t agu;
+        flash_gpgpu_sim::tma_agu_state_t state;
+        agu.init_tensor_gather4(state, tm, coords);
+        uint64_t address; uint32_t size; unsigned offset = 0;
+        while (agu.gen_next_req(state, address, size, packet)) {
+          ASSERT_GT(size, 0u); ASSERT_LE(size, packet);
+          const unsigned slot = offset / (64 * bytes);
+          const unsigned within = offset % (64 * bytes);
+          ASSERT_LT(slot, 4u);
+          const int64_t row = coords[slot + 1];
+          EXPECT_EQ(address, uint64_t(0x10000 + row * 1024 + int64_t(x) * bytes + within));
+          EXPECT_LE(address % packet + size, packet);
+          for (unsigned i = 0; i < size; i += bytes) {
+            const int column = x + (within + i) / bytes;
+            EXPECT_EQ(state.is_fill_request, row < 0 || row >= 8 || column < 0 || column >= 128);
+          }
+          offset += size;
+        }
+        EXPECT_EQ(offset, 4 * 64 * bytes);
+        EXPECT_TRUE(state.done);
+      }
+    }
+  }
+}
+
+TEST(TensorMapGather4, RejectsUnsupportedDescriptors) {
+  auto tm = make_2d(0x10000, TMA_DTYPE_F16, 64, 1, 128, 8, 256);
+  tm.fields.elementStrides[0] = tm.fields.elementStrides[1] = 1;
+  EXPECT_TRUE(flash_gpgpu_sim::tma_gather4_supported(tm));
+  auto bad = tm; bad.fields.boxDim[1] = 2;
+  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_supported(bad));
+  bad = tm; bad.fields.interleave = TMA_INTERLEAVE_16B;
+  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_supported(bad));
+  bad = tm; bad.fields.elementStrides[0] = 2;
+  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_supported(bad));
+  bad = tm; bad.fields.tensorDataType = TMA_DTYPE_TF32;
+  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_supported(bad));
+  bad = tm; bad.fields.swizzle = TMA_SWIZZLE_128B;
+  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_supported(bad));
+  bad = tm; bad.fields.boxDim[0] = UINT32_MAX;
+  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_supported(bad));
+}

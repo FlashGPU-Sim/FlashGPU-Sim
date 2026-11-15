@@ -24,6 +24,12 @@ void register_sm90_functional_semantics(frontend &target) {
   functional_detail::register_wgmma_semantics(target);
 }
 
+void register_sm100_functional_semantics(frontend &target) {
+  register_common_functional_semantics(target);
+  functional_detail::register_tma_semantics(target);
+  functional_detail::register_mma_semantics(target);
+}
+
 void register_sm120_functional_semantics(frontend &target) {
   register_common_functional_semantics(target);
   functional_detail::register_tma_semantics(target);
