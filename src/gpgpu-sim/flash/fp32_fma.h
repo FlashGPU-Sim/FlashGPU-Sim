@@ -13,4 +13,4 @@ inline float rounded_f32_fma(float a, float b, float c, int rounding,
   std::fesetround(saved);
   return saturate ? (!(result > 0.0f) ? 0.0f : std::min(result, 1.0f)) : result;
 }
-}
+} // namespace flash_gpgpu_sim
