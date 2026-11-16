@@ -35,6 +35,7 @@ sources = [
 
   # SM90 correctness groups.
   "barrier/named_barrier_test.cu",
+  "barrier/cta_reduction_test.cu",
   "wgmma/wgmma_b1_test.cu",
   "wgmma/wgmma_bf16_test.cu",
   "wgmma/wgmma_f16_test.cu",
