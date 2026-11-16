@@ -416,3 +416,20 @@ completion-credit boundaries, copy boundaries and effect reset. Real-core
 regressions verify waiter release, both initial-parity paths, and unchanged
 uniform completion behavior. This qualification does not add SM100/SM107
 architecture support or change timing references/calibration.
+
+### Shared native operand normalization (2026-11-16)
+
+Direct `LDG.E` operands now retain the complete address register pair,
+including the captured `RZ.U32+URn` uniform-base spelling. Functional execution
+and timing projection share normalization, so the same high address word is
+used for the load and included in scoreboard dependencies. `R2P` similarly
+shares optional `PR` and `.B0`–`.B3` normalization; byte selection preserves
+predicate masks and inactive lanes.
+
+Direct-address `LDGSTS` uses the existing copy implementation for 4/8/16-byte
+copies, predication and zero-fill. `ATOMS.POPC.INC.32` retains per-lane shared
+memory events while aggregating the functional increments by address.
+
+Eight targeted regressions fail on the prior frontend and pass after these
+repairs. These operand adapters do not enable SM100/SM107 or add TCGen05/cluster
+barrier consumers; those remain in the separate feature series.

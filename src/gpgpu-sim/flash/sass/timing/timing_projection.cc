@@ -1,5 +1,6 @@
 #include "timing_projection.h"
 #include "../../panic.h"
+#include "../decode/operand_parser.h"
 #include "../decode/wgmma_instruction.h"
 
 #include <algorithm>
@@ -1087,6 +1088,13 @@ timing_instruction::timing_instruction(const instruction &source,
 void timing_instruction::initialize(const instruction &native,
                                     const timing_profile &profile) {
   instruction source = native;
+  unsigned byte_selector = 0;
+  if ((base_opcode(source.opcode) == "LDG" &&
+       !normalize_ldg_operands(source)) ||
+      (source.opcode == "R2P" &&
+       !normalize_r2p_operands(source, byte_selector)))
+    panic("Invalid SASS operand normalization at PC " +
+          std::to_string(source.pc));
   // Wide comparisons omit pair-width suffixes in nvdisasm operands.
   // Both words must participate in scoreboard and register-file dependencies.
   const auto base = base_opcode(source.opcode);

@@ -1,5 +1,7 @@
 #include "operand_parser.h"
 
+#include "../frontend.h"
+
 #include <cctype>
 #include <cerrno>
 #include <cmath>
@@ -266,7 +268,8 @@ bool parse_address_expression(const std::string &text,
     if (token.empty())
       return false;
     address_term term;
-    const operand parsed = parse_register_like(token);
+    const operand parsed =
+        parse_register_like(token == "RZ.U32" ? "RZ" : token);
     if (has_unrepresented_value_modifier(parsed)) {
       return false;
     } else if (parsed.kind == operand_kind::kRegister) {
@@ -277,7 +280,7 @@ bool parse_address_expression(const std::string &text,
     } else if (parsed.kind == operand_kind::kUniformRegister) {
       term.kind = address_term_kind::kUniformRegister;
       term.index = parsed.index;
-      term.wide = parsed.wide;
+      term.wide = parsed.wide || text.rfind("RZ.U32+UR", 0) == 0;
       term.negated = negate || parsed.negated;
     } else {
       int64_t immediate = 0;
@@ -486,6 +489,80 @@ void parse_instruction_operands(instruction &inst) {
     if (inst.auxiliary_predicate.kind == operand_kind::kOpaque)
       inst.operands_structured = false;
   }
+}
+
+bool normalize_ldg_operands(instruction &inst) {
+  // Do not accidentally accept a new two-operand direct-address spelling
+  // without applying the register-pair rules below.
+  if (inst.operands.size() == 2 &&
+      inst.operands[1].kind == operand_kind::kMemoryAddress)
+    return false;
+  if (inst.operands.size() != 1 ||
+      inst.operands[0].kind != operand_kind::kMemoryAddress ||
+      !inst.operands[0].has_prefix ||
+      inst.operands[0].prefix_kind != operand_kind::kRegister)
+    return true; // Descriptor operands are already canonical.
+  operand address = inst.operands[0];
+  if (address.address_groups.size() != 1)
+    return false;
+  operand destination;
+  destination.kind = operand_kind::kRegister;
+  destination.index = address.prefix_index;
+  address.has_prefix = false;
+  unsigned bases = 0;
+  for (auto &term : address.address_groups[0].terms) {
+    if (term.kind == address_term_kind::kRegister) {
+      if (term.index == kZeroRegister && !term.wide && !term.negated)
+        continue;
+      if (term.index >= kZeroRegister - 1 || term.negated)
+        return false;
+      term.wide = true; // LDG.E uses a pair even when .64 is omitted.
+      ++bases;
+    } else if (term.kind == address_term_kind::kUniformRegister) {
+      if (!term.wide || term.negated || term.index >= kZeroUniformRegister - 1)
+        return false;
+      ++bases;
+    } else if (term.kind != address_term_kind::kImmediate) {
+      return false;
+    }
+  }
+  if (bases != 1)
+    return false;
+  inst.operands = {destination, address};
+  return true;
+}
+
+bool normalize_r2p_operands(instruction &inst, unsigned &byte_selector) {
+  byte_selector = 0;
+  if (inst.operands.size() == 2)
+    inst.operands.insert(inst.operands.begin(), parse_operand("PR"));
+  if (inst.operands.size() != 3)
+    return false;
+  const std::string text = inst.operands[1].text;
+  if (text.size() > 3 && text[text.size() - 3] == '.' &&
+      text[text.size() - 2] == 'B' && text.back() >= '0' &&
+      text.back() <= '3') {
+    byte_selector = text.back() - '0';
+    inst.operands[1] = parse_operand(text.substr(0, text.size() - 3));
+  }
+  const auto &value = inst.operands[1];
+  if (inst.operands[0].kind != operand_kind::kPredicateRegisterFile ||
+      value.kind != operand_kind::kRegister || value.negated || value.wide ||
+      has_unrepresented_value_modifier(value) ||
+      inst.operands[2].kind != operand_kind::kImmediate ||
+      inst.operands[2].immediate < 0 || inst.operands[2].immediate > 0x7f)
+    return false;
+  inst.operands_structured = true;
+  // Preserve the decoder's rejection of malformed guards.
+  if (inst.has_guard &&
+      ((inst.guard.kind != operand_kind::kPredicate &&
+        inst.guard.kind != operand_kind::kUniformPredicate) ||
+       inst.guard.wide || has_unrepresented_value_modifier(inst.guard)))
+    inst.operands_structured = false;
+  if (inst.has_auxiliary_predicate &&
+      inst.auxiliary_predicate.kind == operand_kind::kOpaque)
+    inst.operands_structured = false;
+  return inst.operands_structured;
 }
 
 } // namespace sass

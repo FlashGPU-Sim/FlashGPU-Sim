@@ -1,3 +1,4 @@
+#include "../decode/operand_parser.h"
 #include "internal.h"
 
 #include <algorithm>
@@ -1240,20 +1241,19 @@ step_result execute_p2r(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
-step_result execute_r2p(const instruction &inst, warp_state &state,
+step_result execute_r2p(const instruction &native, warp_state &state,
                         execution_context &) {
-  if (!has_typed_operands(inst, 3) ||
-      inst.operands[0].kind != operand_kind::kPredicateRegisterFile ||
-      inst.operands[1].kind != operand_kind::kRegister ||
-      inst.operands[2].kind != operand_kind::kImmediate ||
-      inst.operands[2].immediate < 0 || inst.operands[2].immediate > 0x7f)
+  instruction inst = native;
+  unsigned byte = 0;
+  if (!normalize_r2p_operands(inst, byte))
     return unsupported(inst, "unsupported R2P operand form");
   const uint32_t mask = static_cast<uint32_t>(inst.operands[2].immediate);
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
     if ((state.active_mask & (1u << lane)) == 0 ||
         !lane_executes(inst, state, lane))
       continue;
-    const uint32_t value = state.read_register(lane, inst.operands[1].index);
+    const uint32_t value =
+        state.read_register(lane, inst.operands[1].index) >> (byte * 8);
     for (unsigned predicate = 0; predicate < 7; ++predicate) {
       const uint32_t bit = 1u << predicate;
       if ((mask & bit) != 0)

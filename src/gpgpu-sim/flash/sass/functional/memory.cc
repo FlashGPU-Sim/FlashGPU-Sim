@@ -1,3 +1,4 @@
+#include "../decode/operand_parser.h"
 #include "internal.h"
 
 #include <algorithm>
@@ -288,18 +289,25 @@ step_result execute_ldcu(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
-step_result execute_ldg(const instruction &inst, warp_state &state,
+step_result execute_ldg(const instruction &native, warp_state &state,
                         execution_context &context) {
+  instruction inst = native;
+  if (!normalize_ldg_operands(inst))
+    return unsupported(inst, "invalid direct LDG address");
   if (!has_typed_operands(inst, 2))
     return unsupported(inst, "expected two typed operands");
   const operand *destination = get_operand(inst, 0, operand_kind::kRegister);
   const operand *address =
       get_operand(inst, 1, operand_kind::kDescriptorAddress);
+  const bool direct = inst.operands[1].kind == operand_kind::kMemoryAddress;
+  if (direct)
+    address = &inst.operands[1];
   if (destination == nullptr || address == nullptr)
     return unsupported(inst, "unsupported global-load operand form");
   if (context.memory == nullptr)
     return unsupported(inst, "no functional memory is attached");
-  (void)state.read_uniform_register(address->descriptor_register);
+  if (!direct)
+    (void)state.read_uniform_register(address->descriptor_register);
   const bool u8 = inst.opcode == "LDG.E.U8";
   const bool u16 =
       inst.opcode == "LDG.E.U16" || inst.opcode == "LDG.E.U16.CONSTANT";
@@ -317,9 +325,14 @@ step_result execute_ldg(const instruction &inst, warp_state &state,
     if ((state.active_mask & (1u << lane)) == 0 ||
         !lane_executes(inst, state, lane))
       continue;
-    const uint64_t location =
-        read_register_pair(state, lane, address->address_register) +
-        static_cast<uint64_t>(address->address_offset);
+    uint64_t location = 0;
+    if (direct) {
+      if (!evaluate_address(*address, state, lane, location))
+        return unsupported(inst, "invalid direct global-load address");
+    } else {
+      location = read_register_pair(state, lane, address->address_register) +
+                 static_cast<uint64_t>(address->address_offset);
+    }
     context.record_memory_access(lane, memory_space::kGlobal, location, bytes,
                                  false);
     std::array<uint32_t, 4> value{};
@@ -464,14 +477,28 @@ step_result execute_generic_memory(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
-step_result execute_ldgsts(const instruction &inst, warp_state &state,
+step_result execute_ldgsts(const instruction &native, warp_state &state,
                            execution_context &context) {
+  instruction inst = native;
+  bool direct = false;
+  if (!inst.operands.empty() &&
+      inst.operands[0].kind == operand_kind::kMemoryAddress &&
+      !inst.operands[0].has_prefix &&
+      inst.operands[0].address_groups.size() == 2) {
+    auto shared = inst.operands[0], global = inst.operands[0];
+    shared.address_groups = {shared.address_groups[0]};
+    global.address_groups = {global.address_groups[1]};
+    inst.operands[0] = shared;
+    inst.operands.insert(inst.operands.begin() + 1, global);
+    direct = true;
+  }
   if (!has_typed_operands(inst, 2) && !has_typed_operands(inst, 3))
     return unsupported(inst, "expected shared and global address operands");
   const operand *destination =
       get_operand(inst, 0, operand_kind::kMemoryAddress);
-  const operand *source =
-      get_operand(inst, 1, operand_kind::kDescriptorAddress);
+  const operand *source = get_operand(
+      inst, 1,
+      direct ? operand_kind::kMemoryAddress : operand_kind::kDescriptorAddress);
   if (destination == nullptr || destination->has_prefix || source == nullptr)
     return unsupported(inst, "unsupported LDGSTS operand form");
   const operand *copy_enable =
@@ -482,7 +509,8 @@ step_result execute_ldgsts(const instruction &inst, warp_state &state,
   if (context.memory == nullptr)
     return unsupported(inst, "no functional memory is attached");
   const bool zero_fill = inst.opcode.find(".ZFILL") != std::string::npos;
-  (void)state.read_uniform_register(source->descriptor_register);
+  if (!direct)
+    (void)state.read_uniform_register(source->descriptor_register);
   const size_t copy_bytes = inst.opcode.find(".128") != std::string::npos  ? 16
                             : inst.opcode.find(".64") != std::string::npos ? 8
                                                                            : 4;
@@ -493,9 +521,15 @@ step_result execute_ldgsts(const instruction &inst, warp_state &state,
     uint64_t shared_address = 0;
     if (!evaluate_shared_address(*destination, state, lane, shared_address))
       return unsupported(inst, "unsupported LDGSTS shared address");
-    const uint64_t global_address =
-        read_register_pair(state, lane, source->address_register) +
-        static_cast<uint64_t>(source->address_offset);
+    uint64_t global_address = 0;
+    if (direct) {
+      if (!evaluate_address(*source, state, lane, global_address))
+        return unsupported(inst, "invalid direct LDGSTS global address");
+    } else {
+      global_address =
+          read_register_pair(state, lane, source->address_register) +
+          static_cast<uint64_t>(source->address_offset);
+    }
     std::array<uint32_t, 4> value{};
     bool enabled = true;
     if (copy_enable != nullptr &&
@@ -675,6 +709,8 @@ step_result execute_atoms_popc_increment(const instruction &inst,
     if (!evaluate_shared_address(*address, state, lane, location) ||
         (location % alignof(uint32_t)) != 0)
       return unsupported(inst, "invalid ATOMS.POPC shared address");
+    context.record_memory_access(lane, memory_space::kShared, location,
+                                 sizeof(uint32_t), false);
     ++increments[location];
   }
   for (const auto &increment : increments) {
