@@ -1498,4 +1498,40 @@ TEST(SassFunctionalTest, ExecutesAttentionFloatAndWarpReductionForms) {
   }
 }
 
+TEST(SassFunctionalTest, R2pByteSelectorsPreserveMaskAndInactiveLanes) {
+  for (unsigned byte = 0; byte < 4; ++byte) {
+    for (bool explicit_pr : {false, true}) {
+      kernel image;
+      image.name = "r2p_bytes";
+      image.arch = architecture::kSm120;
+      image.instruction_bytes = 16;
+      const std::string operands = std::string(explicit_pr ? "PR," : "") +
+                                   "R6.B" + std::to_string(byte) + ",0x3";
+      image.instructions = {
+          official_instruction(0, "R2P", operands.c_str(), "@P6")};
+      frontend sass;
+      sass.add_kernel(std::move(image));
+      register_sm120_functional_semantics(sass);
+      warp_state state;
+      state.active_mask = 3;
+      for (unsigned lane = 0; lane < 3; ++lane) {
+        state.write_register(lane, 6, 0x01020300);
+        for (unsigned pred = 0; pred < 7; ++pred)
+          state.write_predicate(lane, pred, true);
+      }
+      state.write_predicate(1, 6, false);
+      execution_context context;
+      const auto result = sass.step("r2p_bytes", state, context);
+      ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+      const unsigned value = (0x01020300u >> (byte * 8));
+      for (unsigned pred = 0; pred < 7; ++pred) {
+        EXPECT_EQ(state.read_predicate(0, pred),
+                  pred < 2 ? bool(value & (1u << pred)) : true);
+        EXPECT_EQ(state.read_predicate(1, pred), pred != 6);
+        EXPECT_TRUE(state.read_predicate(2, pred));
+      }
+    }
+  }
+}
+
 }  // namespace

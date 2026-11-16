@@ -865,4 +865,30 @@ TEST(SassTimingProjectionTest, ProjectsEveryRealLlamaResidualInstruction) {
   }
 }
 
+TEST(SassTimingProjectionTest, RoutingPredicateByteSelectorsKeepDependencies) {
+  for (const char *operands : {"PR,R19.B1,0xf", "R19.B3,0xf"}) {
+    const auto source = official_instruction(0xba0, "R2P", operands);
+    const timing_instruction projected(source, timing_profile{});
+    EXPECT_TRUE(projected.valid());
+    ASSERT_EQ(projected.incount, 1u);
+    EXPECT_EQ(projected.arch_reg.src[0], 20);
+    EXPECT_EQ(projected.outcount, 7u);
+  }
+}
+
+TEST(SassTimingProjectionTest,
+     DirectGlobalLoadKeepsAddressAndDestinationPairs) {
+  for (const char *address : {"R28[R2+0x8]", "R28[RZ.U32+UR6+0x8]"}) {
+    const auto source = official_instruction(0, "LDG.E.64", address);
+    const timing_instruction projected(source, timing_profile{});
+    EXPECT_TRUE(projected.valid());
+    ASSERT_EQ(projected.outcount, 2u);
+    EXPECT_EQ(projected.arch_reg.dst[0], 29);
+    EXPECT_EQ(projected.arch_reg.dst[1], 30);
+    ASSERT_EQ(projected.incount, 2u);
+    EXPECT_EQ(projected.arch_reg.src[1], projected.arch_reg.src[0] + 1);
+    EXPECT_EQ(projected.data_size, 8u);
+  }
+}
+
 }  // namespace

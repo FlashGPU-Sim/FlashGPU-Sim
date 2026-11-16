@@ -180,6 +180,19 @@ TEST(SassFunctionalTest, AggregatesPopcAtomicIncrementBySharedAddress) {
   state.write_predicate(2, 0, true);
   execution_context context{&memory};
 
+  ASSERT_EQ(sass.step("atoms_popc_increment", state, context).status,
+            step_status::kAdvanced);
+  for (unsigned lane = 0; lane < 3; ++lane) {
+    ASSERT_EQ(context.memory_accesses[lane].size(), 1u);
+    const auto &access = context.memory_accesses[lane][0];
+    EXPECT_EQ(access.space, memory_space::kShared);
+    EXPECT_EQ(access.address, lane < 2 ? 0x100u : 0x104u);
+    EXPECT_EQ(access.bytes, 4u);
+    EXPECT_FALSE(access.write);  // shared atomic return/completion path
+  }
+  for (unsigned lane = 3; lane < 32; ++lane)
+    EXPECT_TRUE(context.memory_accesses[lane].empty());
+
   step_result result;
   do {
     result = sass.step("atoms_popc_increment", state, context);
@@ -875,6 +888,131 @@ TEST(SassFunctionalTest, ExecutesGlobalAtomicAddWithReturnedOldValue) {
                                                        address), 512u);
   EXPECT_EQ(old_sums[0] + old_sums[1] + old_sums[2] + old_sums[3],
             uint64_t{512} * 511 / 2);
+}
+
+TEST(SassFunctionalTest, CapturedUniformPairGlobalLoadKeepsHighAddressBits) {
+  kernel image;
+  image.name = "uniform_pair_ldg";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "LDG.E.64", "R28[RZ.U32+UR6+0x8]"),
+      official_instruction(16, "EXIT"),
+  };
+  constexpr uint64_t address = 0x12300000008ull;
+  mapped_functional_memory memory;
+  memory.map(memory_space::kGlobal, address, 8, true);
+  memory.initialize<uint64_t>(memory_space::kGlobal, address,
+                              0xabcdef0123456789ull);
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 1;
+  state.write_uniform_register(6, uint32_t(address - 8));
+  state.write_uniform_register(7, uint32_t(address >> 32));
+  execution_context context{&memory};
+  auto result = sass.step("uniform_pair_ldg", state, context);
+  ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+  EXPECT_EQ(state.read_register(0, 28), 0x23456789u);
+  EXPECT_EQ(state.read_register(0, 29), 0xabcdef01u);
+}
+
+TEST(SassFunctionalTest, DirectLdGstsPreservesWidthPredicationAndZeroFill) {
+  for (unsigned bytes : {4u, 8u, 16u}) {
+    for (bool partial : {false, true}) {
+      SCOPED_TRACE(bytes);
+      SCOPED_TRACE(partial);
+      const std::string opcode = std::string("LDGSTS.E.LTC128B") +
+                                 (bytes == 4   ? ""
+                                  : bytes == 8 ? ".64"
+                                               : ".128") +
+                                 (partial ? ".ZFILL" : "");
+      kernel image;
+      image.name = "direct_ldgsts";
+      image.arch = architecture::kSm120;
+      image.instruction_bytes = 16;
+      image.instructions = {official_instruction(
+          0, opcode.c_str(), "[R2+UR8+0x20][R4.64+UR4],P0", "@P1")};
+      frontend sass;
+      sass.add_kernel(std::move(image));
+      register_sm120_functional_semantics(sass);
+      mapped_functional_memory memory;
+      memory.map(memory_space::kGlobal, 0x100000000ull, 16, false);
+      memory.map(memory_space::kShared, 0x220, 48, true);
+      for (unsigned word = 0; word < 4; ++word)
+        memory.initialize<uint32_t>(memory_space::kGlobal,
+                                    0x100000000ull + word * 4,
+                                    0x12345678u + word);
+      for (unsigned offset = 0; offset < 48; offset += 4)
+        memory.initialize<uint32_t>(memory_space::kShared, 0x220 + offset,
+                                    0xdeadbeefu);
+      warp_state state;
+      state.active_mask = 7;
+      state.write_uniform_register(4, 16);
+      state.write_uniform_register(8, 16);
+      for (unsigned lane = 0; lane < 3; ++lane) {
+        state.write_register(lane, 2, 0x1f0 + lane * 16);
+        // Uniform offset carries into the high 32 address bits. Disabled
+        // lanes point outside mapped global memory and must not read it.
+        state.write_register(
+            lane, 4, lane ? 0 : 0xfffffff0u + (partial ? bytes - 4 : 0));
+        state.write_register(lane, 5, 0);
+        state.write_predicate(lane, 0, lane != 1);
+        state.write_predicate(lane, 1, lane != 2);
+      }
+      execution_context context{&memory};
+      const auto result = sass.step("direct_ldgsts", state, context);
+      ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+      for (unsigned offset = 0; offset < 16; offset += 4) {
+        EXPECT_EQ(
+            memory.inspect<uint32_t>(memory_space::kShared, 0x220 + offset),
+            offset >= bytes          ? 0xdeadbeefu
+            : partial && offset >= 4 ? 0u
+                                     : 0x12345678u + offset / 4);
+        EXPECT_EQ(
+            memory.inspect<uint32_t>(memory_space::kShared, 0x230 + offset),
+            offset < bytes ? 0u : 0xdeadbeefu);
+        EXPECT_EQ(
+            memory.inspect<uint32_t>(memory_space::kShared, 0x240 + offset),
+            0xdeadbeefu);
+      }
+    }
+  }
+}
+
+TEST(SassFunctionalTest, DirectGlobalLoadKeepsPairAndLanePredication) {
+  kernel image;
+  image.name = "direct_ldg";
+  image.arch = architecture::kSm120;
+  image.instruction_bytes = 16;
+  image.instructions = {
+      official_instruction(0, "LDG.E.128", "R8[R2+0x10]", "@P0")};
+  mapped_functional_memory memory;
+  constexpr uint64_t address = 0x12300000010ull;
+  memory.map(memory_space::kGlobal, address, 16, false);
+  for (unsigned i = 0; i < 4; ++i)
+    memory.initialize<uint32_t>(memory_space::kGlobal, address + 4 * i,
+                                100 + i);
+  frontend sass;
+  sass.add_kernel(std::move(image));
+  register_sm120_functional_semantics(sass);
+  warp_state state;
+  state.active_mask = 3;
+  state.write_register(0, 2, uint32_t(address - 16));
+  state.write_register(0, 3, uint32_t(address >> 32));
+  state.write_predicate(0, 0, true);
+  state.write_predicate(1, 0, false);
+  state.write_register(1, 8, 0xdeadbeef);
+  execution_context context{&memory};
+  const auto result = sass.step("direct_ldg", state, context);
+  ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+  for (unsigned i = 0; i < 4; ++i)
+    EXPECT_EQ(state.read_register(0, 8 + i), 100 + i);
+  EXPECT_EQ(state.read_register(1, 8), 0xdeadbeefu);
+  ASSERT_EQ(context.memory_accesses[0].size(), 1u);
+  EXPECT_EQ(context.memory_accesses[0][0].bytes, 16u);
+  EXPECT_TRUE(context.memory_accesses[1].empty());
 }
 
 }  // namespace
