@@ -330,7 +330,7 @@ symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_string(
     fprintf(fp, "%s", p);
     fclose(fp);
   }
-  symbol_table *symtab = init_parser(buf);
+  symbol_table *symtab = init_parser(buf, false);
   ptx_lex_init(&(ptx_parser->scanner));
   ptx__scan_string(p, ptx_parser->scanner);
   int errors = ptx_parse(ptx_parser->scanner, ptx_parser);
