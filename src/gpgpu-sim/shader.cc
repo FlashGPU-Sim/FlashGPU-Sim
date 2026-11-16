@@ -7812,6 +7812,8 @@ void shader_core_ctx::broadcast_barrier_reduction(unsigned cta_id,
           inst->get_active_mask());
     }
   }
+  // All waiting lanes have consumed this generation before a new one begins.
+  reset_reduction(cta_id, bar_id);
 }
 
 bool shader_core_ctx::tma_response_buffer_full() const {
