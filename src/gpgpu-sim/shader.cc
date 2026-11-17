@@ -8482,54 +8482,54 @@ void simt_core_cluster::icnt_cycle() {
   for (unsigned cid = 0; cid < n; cid++) {
     unsigned tma_responses_accepted = 0;
     unsigned cp_async_responses_accepted = 0;
+    auto &budget = m_response_dispatch_budgets[cid];
+    auto *core = m_core[cid];
     while (!m_response_fifo.empty(cid)) {
       mem_fetch *mf = m_response_fifo.front(cid);
+      const auto type = mf->get_access_type();
+      const bool is_cp_async = type == CP_ASYNC_ACC_R;
+      const bool is_async =
+          is_cp_async || type == TMA_ACC_R || type == TMA_ACC_W;
+      const bool is_instruction = type == INST_ACC_R;
+      unsigned &async_accepted =
+          is_cp_async ? cp_async_responses_accepted : tma_responses_accepted;
+      const unsigned async_width =
+          is_cp_async ? cp_async_response_width : tma_response_width;
+
+      const bool downstream_full = is_async ? core->tma_response_buffer_full()
+                                   : is_instruction
+                                       ? core->fetch_unit_response_buffer_full()
+                                       : core->ldst_unit_response_buffer_full();
+      // A reply can only earn credit on ticks when its consumer could accept
+      // it.
+      if (downstream_full) {
+        if (dispatch_width != 0) budget.note_downstream_full();
+        break;
+      }
+      if (is_async && async_accepted >= async_width) break;
+
       const unsigned sectors = memory_transport_data_sectors(mf);
-      if (dispatch_width != 0 &&
-          !m_response_dispatch_budgets[cid].can_accept(sectors)) {
-        m_response_dispatch_budgets[cid].note_width_limited(sectors);
+      if (dispatch_width != 0 && !budget.can_accept(sectors)) {
+        budget.note_width_limited(sectors);
         break;
       }
-      if (mf->get_access_type() == TMA_ACC_R ||
-          mf->get_access_type() == TMA_ACC_W ||
-          mf->get_access_type() == CP_ASYNC_ACC_R) {
-        bool is_cp_async = mf->get_access_type() == CP_ASYNC_ACC_R;
-        unsigned &accepted =
-            is_cp_async ? cp_async_responses_accepted : tma_responses_accepted;
-        unsigned width =
-            is_cp_async ? cp_async_response_width : tma_response_width;
-        if (accepted < width && !m_core[cid]->tma_response_buffer_full()) {
-          m_response_fifo.pop(cid);
-          m_core[cid]->accept_tma_response(mf);
-          accepted++;
-          if (dispatch_width != 0) {
-            m_response_dispatch_budgets[cid].consume(sectors);
-            m_response_dispatch_stats[cid].record_accept(sectors);
-          }
-          continue;
-        }
-        break;
-      } else if (mf->get_access_type() == INST_ACC_R) {
-        if (!m_core[cid]->fetch_unit_response_buffer_full()) {
-          m_response_fifo.pop(cid);
-          m_core[cid]->accept_fetch_response(mf);
-          if (dispatch_width != 0) {
-            m_response_dispatch_budgets[cid].consume(sectors);
-            m_response_dispatch_stats[cid].record_accept(sectors);
-          }
-        }
+
+      m_response_fifo.pop(cid);
+      if (is_async) {
+        core->accept_tma_response(mf);
+        ++async_accepted;
+      } else if (is_instruction) {
+        core->accept_fetch_response(mf);
       } else {
-        if (!m_core[cid]->ldst_unit_response_buffer_full()) {
-          m_response_fifo.pop(cid);
-          m_mem_stats->get_stats()->memlatstat_read_done(mf);
-          m_core[cid]->accept_ldst_unit_response(mf);
-          if (dispatch_width != 0) {
-            m_response_dispatch_budgets[cid].consume(sectors);
-            m_response_dispatch_stats[cid].record_accept(sectors);
-          }
-        }
+        m_mem_stats->get_stats()->memlatstat_read_done(mf);
+        core->accept_ldst_unit_response(mf);
       }
-      break;
+      if (dispatch_width != 0) {
+        budget.consume(sectors);
+        m_response_dispatch_stats[cid].record_accept(sectors);
+      }
+      // Keep one instruction fill per tick and the legacy LSU dispatch limit.
+      if (is_instruction || (!is_async && dispatch_width == 0)) break;
     }
   }
   if (dispatch_width != 0) {
@@ -8571,6 +8571,9 @@ void simt_core_cluster::icnt_cycle() {
       if (ingress_width != 0) {
         m_response_ingress_budgets[cid].consume(sectors);
         m_response_ingress_stats[cid].record_accept(sectors);
+        // This is the transport budget. TMA/cp.async consumer limits remain
+        // enforced at dispatch; legacy ingress packet caps apply only at 0.
+        continue;
       }
       if (mf->get_access_type() == TMA_ACC_R ||
           mf->get_access_type() == TMA_ACC_W ||
@@ -8764,6 +8767,9 @@ void simt_core_cluster::get_L1T_sub_stats(struct cache_sub_stats &css) const {
 void exec_shader_core_ctx::checkExecutionStatusAndUpdate(warp_inst_t &inst,
                                                          unsigned t,
                                                          unsigned tid) {
+  // ptx_exec_inst may have disabled this lane after evaluating its predicate.
+  // Only lanes that actually executed have memory operations to retire.
+  if (!inst.active(t)) return;
   if (inst.isatomic()) m_warp[inst.warp_id()]->inc_n_atomic();
   if (inst.space.is_local() && (inst.is_load() || inst.is_store())) {
     new_addr_type localaddrs[MAX_ACCESSES_PER_INSN_PER_THREAD];

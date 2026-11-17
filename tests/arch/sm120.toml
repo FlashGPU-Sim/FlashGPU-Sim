@@ -4,6 +4,7 @@ config = "SM120_RTX5090"
 
 [workloads]
 sources = [
+  "core/predicated_atomic_test.cc",
   # Host-side simulator component tests.
   "unit/bulk_group_test.cc",
   "unit/issue_interval_timing_test.cc",
@@ -11,8 +12,10 @@ sources = [
   "unit/instruction_stream_buffer_test.cc",
   "unit/local_interconnect_test.cc",
   "unit/memory_transport_test.cc",
+  "core/cluster_response_width_test.cc",
   "unit/mshr_table_test.cc",
   "unit/operand_collector_allocation_test.cc",
+  "core/pipeline_dump_test.cc",
   "unit/register_view_reload_test.cc",
   "unit/mbarrier_retry_timing_test.cc",
   "unit/tma_issue_timing_test.cc",
