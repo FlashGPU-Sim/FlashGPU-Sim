@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <deque>
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -19,6 +19,15 @@ class ResponseTestGpu : public exec_gpgpu_sim {
   simt_core_cluster *cluster() { return m_cluster[0]; }
 };
 
+class ResponseTestCore : public shader_core_ctx {
+ public:
+  static void cycle_lsu(shader_core_ctx &core) {
+    auto *lsu = core.*(&ResponseTestCore::m_ldst_unit);
+    lsu->cycle();
+    lsu->end_memory_transport_cycle();
+  }
+};
+
 struct ResponseCase {
   const char *name;
   bool ingress;
@@ -28,11 +37,9 @@ struct ResponseCase {
   unsigned accepted;
 };
 
-// Exercise the actual cluster loop, real per-SM queues and real LSU/TMA
-// consumers. Only the interconnect producer is replaced with a deterministic
-// queue. Each subprocess creates two SMs, so per-SM rather than per-GPC budget
-// accounting is also checked. No simulated core cycles consume the replies.
-void CheckResponse(const ResponseCase &test) {
+template <typename Check>
+void RunWithResponseTestGpu(bool ingress, unsigned width, unsigned capacity,
+                            Check check) {
   gpgpu_context ctx;
   gpgpu_sim_config config(&ctx);
   auto *options = option_parser_create();
@@ -46,30 +53,45 @@ void CheckResponse(const ResponseCase &test) {
       "-gpgpu_memlatency_stat 0 -gpgpu_tma_response_width 1 "
       "-gpgpu_cp_async_response_width 1 "
       "-gpgpu_cluster_response_ingress_sectors_per_cycle " +
-      std::to_string(test.ingress ? test.width : 0) +
+      std::to_string(ingress ? width : 0) +
       " -gpgpu_cluster_response_dispatch_sectors_per_cycle " +
-      std::to_string(test.ingress ? 0 : test.width) +
+      std::to_string(ingress ? 0 : width) +
       " -gpgpu_n_cluster_ejection_buffer_size " +
-      std::to_string(test.ingress ? test.capacity : 32) +
+      std::to_string(ingress ? capacity : 32) +
       " -gpgpu_n_ldst_response_buffer_size " +
-      std::to_string(test.ingress ? 32 : test.capacity);
+      std::to_string(ingress ? 32 : capacity);
   option_parser_delimited_string(options, overrides.c_str(), " ");
   config.init();
   ResponseTestGpu gpu(config, &ctx);
   gpu.init();
+  check(gpu, ctx);
+  // Each subprocess owns its GPU, interconnect globals and queued replies.
+  std::exit(testing::Test::HasFailure() ? 1 : 0);
+}
+
+mem_fetch *MakeReply(gpgpu_context &ctx, const memory_config *memory,
+                     unsigned sid, mem_access_type type, new_addr_type addr,
+                     unsigned sectors) {
+  const bool write = type == GLOBAL_ACC_W;
+  mem_access_t access(type, addr, sectors * SECTOR_SIZE, write, &ctx);
+  auto *mf = new mem_fetch(access, nullptr, 0, 8, 0, sid, 0, memory, 0);
+  mf->set_reply();
+  mf->set_return_timestamp(0);
+  return mf;
+}
+
+// Exercise the production cluster loop and per-SM queues using a deterministic
+// interconnect producer. Consumers do not retire replies in these cases.
+void CheckResponse(ResponseTestGpu &gpu, gpgpu_context &ctx,
+                   const ResponseCase &test) {
   const auto *shader = gpu.getShaderCoreConfig();
   const auto *memory = gpu.getMemoryConfig();
   std::vector<std::deque<mem_fetch *>> incoming(2);
   std::vector<std::vector<mem_fetch *>> packets(2);
   for (unsigned sid = 0; sid < 2; ++sid) {
     for (unsigned i = 0; i < test.types.size(); ++i) {
-      const auto type = test.types[i];
-      const bool write = type == GLOBAL_ACC_W;
-      const unsigned bytes = test.sectors[i] * SECTOR_SIZE;
-      mem_access_t access(type, 0x1000 + i * 128, bytes, write, &ctx);
-      auto *mf = new mem_fetch(access, nullptr, 0, 8, 0, sid, 0, memory, 0);
-      mf->set_reply();
-      mf->set_return_timestamp(0);
+      auto *mf = MakeReply(ctx, memory, sid, test.types[i], 0x1000 + i * 128,
+                           test.sectors[i]);
       packets[sid].push_back(mf);
       if (test.ingress) incoming[sid].push_back(mf);
       else {
@@ -104,12 +126,10 @@ void CheckResponse(const ResponseCase &test) {
       accepted += moved;
     }
     EXPECT_EQ(accepted, test.accepted) << test.name << " SM=" << sid;
-    if (test.ingress)
+    if (test.ingress) {
       EXPECT_EQ(incoming[sid].size(), packets[sid].size() - test.accepted);
+    }
   }
-  // Subprocess ownership ends here; queued replies intentionally remain in
-  // their real consumer queues. No kernel or global simulator thread started.
-  std::exit(testing::Test::HasFailure() ? 1 : 0);
 }
 
 void PrintTo(const ResponseCase &test, std::ostream *out) {
@@ -119,7 +139,67 @@ void PrintTo(const ResponseCase &test, std::ostream *out) {
 
 class ClusterResponseWidthTest : public testing::TestWithParam<ResponseCase> {};
 TEST_P(ClusterResponseWidthTest, HonorsBudgetAndBackpressure) {
-  ASSERT_EXIT(CheckResponse(GetParam()), testing::ExitedWithCode(0), "");
+  const auto &test = GetParam();
+  ASSERT_EXIT(
+      RunWithResponseTestGpu(test.ingress, test.width, test.capacity,
+                             [&](ResponseTestGpu &gpu, gpgpu_context &ctx) {
+                               CheckResponse(gpu, ctx, test);
+                             }),
+      testing::ExitedWithCode(0), "");
+}
+
+void CheckOversizedDispatch(unsigned capacity, unsigned expected_tick) {
+  RunWithResponseTestGpu(
+      false, 3, capacity, [&](ResponseTestGpu &gpu, gpgpu_context &ctx) {
+        auto *cluster = gpu.cluster();
+        const auto *memory = gpu.getMemoryConfig();
+        std::vector<mem_fetch *> oversized;
+        for (unsigned sid = 0; sid < cluster->num_cores(); ++sid) {
+          // An ACK uses one dispatch slot and can retire through the real LSU
+          // without creating a load instruction or a pending cache miss.
+          cluster->get_core(sid)->inc_store_req(0);
+          auto *ack = MakeReply(ctx, memory, sid, GLOBAL_ACC_W, 0x1000, 1);
+          auto *load = MakeReply(ctx, memory, sid, GLOBAL_ACC_R, 0x1080, 4);
+          for (auto *reply : {ack, load}) {
+            reply->set_status(IN_CLUSTER_TO_SHADER_QUEUE, 0);
+            cluster->push_response_fifo(reply);
+          }
+          oversized.push_back(load);
+        }
+
+        for (unsigned tick = 1; tick <= 3; ++tick) {
+          gpu.gpu_sim_cycle = tick;
+          cluster->icnt_cycle();
+          for (unsigned sid = 0; sid < oversized.size(); ++sid) {
+            const auto expected = tick < expected_tick
+                                      ? IN_CLUSTER_TO_SHADER_QUEUE
+                                      : IN_SHADER_LDST_RESPONSE_FIFO;
+            const auto actual = oversized[sid]->get_status();
+            if (actual != expected) {
+              std::fprintf(stderr,
+                           "SM %u tick %u: oversized reply in LSU FIFO=%d, "
+                           "expected dispatch on tick %u\n",
+                           sid, tick, actual == IN_SHADER_LDST_RESPONSE_FIFO,
+                           expected_tick);
+              ADD_FAILURE();
+            }
+            if (tick == 1) {
+              auto &core = *cluster->get_core(sid);
+              ASSERT_EQ(core.ldst_unit_response_buffer_full(), capacity == 1);
+              ResponseTestCore::cycle_lsu(core);
+              ASSERT_FALSE(core.ldst_unit_response_buffer_full());
+            }
+          }
+        }
+      });
+}
+
+TEST(ClusterResponseDispatchCreditTest, FullLsuFifoPreventsCarry) {
+  ASSERT_EXIT(CheckOversizedDispatch(1, 3), testing::ExitedWithCode(0), "");
+}
+
+TEST(ClusterResponseDispatchCreditTest, AvailableLsuFifoAllowsCarry) {
+  ASSERT_EXIT(CheckOversizedDispatch(2, 2), testing::ExitedWithCode(0), "");
 }
 
 std::vector<ResponseCase> Cases() {
