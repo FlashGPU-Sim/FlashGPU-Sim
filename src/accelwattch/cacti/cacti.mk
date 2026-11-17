@@ -18,19 +18,22 @@ ifeq ($(TAG),dbg)
   OPT = -ggdb -g -O0 -DNTHREADS=1  -gstabs+
 else
   DBG = 
-  OPT = -O3 -msse2 -mfpmath=sse -DNTHREADS=$(NTHREADS)
+  OPT = -O3 $(ARCH_SIMD_FLAGS) -DNTHREADS=$(NTHREADS)
 endif
 
 #CXXFLAGS = -Wall -Wno-unknown-pragmas -Winline $(DBG) $(OPT) 
 CXXFLAGS = -Wno-unknown-pragmas $(DBG) $(OPT) 
 
-ifeq ($(shell getconf LONG_BIT),64) 
-	CXX = g++ -m64
-	CC  = gcc -m64
-else 
-	CXX = g++ -m32
-	CC  = gcc -m32
-endif 
+ifeq ($(shell uname -m),x86_64)
+  ARCH_BIT_FLAG = -m$(shell getconf LONG_BIT)
+  ARCH_SIMD_FLAGS = -msse2 -mfpmath=sse
+else
+  ARCH_BIT_FLAG =
+  ARCH_SIMD_FLAGS =
+endif
+
+CXX = g++ $(ARCH_BIT_FLAG)
+CC  = gcc $(ARCH_BIT_FLAG)
 
 
 SRCS  = area.cc bank.cc mat.cc main.cc Ucache.cc io.cc technology.cc basic_circuit.cc parameter.cc \

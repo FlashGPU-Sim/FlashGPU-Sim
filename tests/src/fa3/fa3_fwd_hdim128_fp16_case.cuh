@@ -1484,6 +1484,13 @@ inline Fa3RunResult run_fa3_fwd_hdim128_fp16() {
 
   result.output0 = float(h_o[0]);
   result.lse0 = h_lse[0];
+  const auto reference = compute_fa3_forward_reference<128, false>(
+      h_q, h_k, h_v, B, M, N, H);
+  result.reference_checked = true;
+  result.output_comparison = compare_fa3_tensor(
+      h_o, reference.output, kFa3OutputAbsTolerance, kFa3OutputRelTolerance);
+  result.lse_comparison = compare_fa3_tensor(
+      h_lse, reference.lse, kFa3LseAbsTolerance, kFa3LseRelTolerance);
   return finish(cudaSuccess, "success");
 
 #undef FA3_RETURN_IF_CUDA_ERROR

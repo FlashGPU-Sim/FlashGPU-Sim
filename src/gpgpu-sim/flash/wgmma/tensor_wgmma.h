@@ -16,6 +16,20 @@ struct warp_inst_t;
 
 namespace flash_gpgpu_sim {
 
+// WGMMA instruction decoding and register-file traffic estimation.
+int wgmma_opcode(const warp_inst_t *inst);
+bool is_wgmma_mma_async_opcode(int opcode);
+bool is_wgmma_async_group_control_opcode(int opcode);
+bool is_wgmma_warpgroup_opcode(int opcode);
+unsigned wgmma_wait_group_num_from_inst(const warp_inst_t *inst);
+unsigned long long
+wgmma_collector_token_bytes_from_inst(const warp_inst_t *inst,
+                                      const shader_core_config *config);
+// Opt-in, bounded diagnostic only; cycles are cumulative SM/core cycles.
+void trace_wgmma_lifecycle(const char *event, unsigned uid, unsigned sid,
+                           unsigned long long cycle, unsigned compute = 0,
+                           unsigned tail = 0);
+
 // WGMMA functional entry and data-type dispatch.
 void tensor_wgmma_impl(const ptx_instruction *pI, core_t *core,
                        warp_inst_t &inst);
@@ -80,7 +94,7 @@ public:
   void wait_group(unsigned cta_id, unsigned warpgroup_id,
                   unsigned max_pending_groups, const unsigned *warp_ids,
                   unsigned count);
-  void cycle();
+  void cycle(unsigned sid, unsigned long long cycle);
   void cleanup_cta(unsigned cta_id);
 
 private:

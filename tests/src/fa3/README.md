@@ -1,7 +1,7 @@
 # FA3 Forward and Backward Cases
 
 This directory contains standalone FlashAttention-3 Hopper forward and
-backward tests for GPGPU-Sim bring-up.
+backward validation workloads for FlashGPU-Sim.
 
 The test wrapper is local, while FA3 kernel headers come from the shared
 checkout under `tests/third_party/flash-attention/`. FA3 builds prepare the
@@ -29,18 +29,8 @@ against a CPU attention reference: forward validates output and LSE, while
 backward validates dQ, dK, and dV. The `S=256` cases exercise multi-tile
 launches. CI also runs the fixed forward case above and the PackGQA smoke case.
 
-## Files
-
-- `fa3_fwd_hdim128_fp16_test.cu` - shared Google Test registration and workload
-  wrapper
-- `fa3_{fwd,bwd}_d{64,128}_{noncausal,causal}_test.cu` - thin, uniquely named
-  standard-build wrappers for one kernel specialization each
-- `fa3_fwd_hdim128_fp16_case.cuh` - shared CUDA workload implementation
-- `fa3_fwd_packgqa_{case.cuh,test.cu}` - one-tile GQA forward case that
-  validates the default and `.noinc` `cp.async.mbarrier.arrive` forms
-
-The shared checkout, preparation script, pinned revisions, and patch bundle are
-documented in `tests/third_party/flash-attention/README.md`.
+The pinned dependency and patch bundle are documented in the
+[FlashAttention dependency guide](../../third_party/flash-attention/README.md).
 
 ## Build
 
@@ -57,13 +47,7 @@ From `tests/`; the first FA3 build prepares the shared dependency automatically:
 ./run_tests.py build --arch sm90 --group fa3 --profile concurrency --mode all
 ```
 
-The generated kernel targets `sm_90a`. It is for GPGPU-Sim/PTX bring-up and
-Hopper inspection; it is not expected to run on non-Hopper hardware.
-
-The standard wrappers compile serially and link into
-`tests/build/bin/sm90/fa3/standard_tests`. The split bounds NVCC memory and
-gives every fatbin a unique source-derived PTX name, which GPGPU-Sim requires
-when loading multiple embedded PTX images.
+The kernels target `sm_90a`; native execution requires Hopper hardware.
 
 Smoke, packgqa, size, and sensitivity profiles are all exposed through the
 `sm90/fa3` test group. A filter can select an individual GoogleTest case
@@ -71,5 +55,5 @@ without escaping the selected profile.
 
 ## Notes
 
-This fixed workload intentionally uses `ClusterM = 1`, so GPGPU-Sim bring-up can
-treat cluster-scope spellings as the local-CTA degenerate case.
+The fixed workload uses `ClusterM = 1` and exercises the local-CTA case of
+cluster-scoped operations.

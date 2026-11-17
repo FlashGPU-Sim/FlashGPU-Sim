@@ -33,6 +33,7 @@
 #include <bitset>
 #include "../abstract_hardware_model.h"
 #include "addrdec.h"
+#include "gpu_topology.h"
 
 enum mf_type {
   READ_REQUEST = 0,
@@ -94,8 +95,14 @@ class mem_fetch {
   unsigned get_sub_partition_id() const { return m_raw_addr.sub_partition; }
   bool get_is_write() const { return m_access.is_write(); }
   unsigned get_request_uid() const { return m_request_uid; }
-  unsigned get_sid() const { return m_sid; }
-  unsigned get_tpc() const { return m_tpc; }
+  unsigned get_requester_sm_id() const { return m_requester_sm_id; }
+  // Deprecated: requester SM. Use get_requester_sm_id().
+  unsigned get_sid() const { return m_requester_sm_id; }
+  // Deprecated: GPC id of the requester. Not a global interconnect node.
+  unsigned get_tpc() const {
+    if (m_requester_sm_id == (unsigned)-1) return (unsigned)-1;
+    return gpu_topology_live().gpc_id_of_sm(m_requester_sm_id);
+  }
   unsigned get_wid() const { return m_wid; }
   bool istexture() const;
   bool isconst() const;
@@ -108,6 +115,24 @@ class mem_fetch {
   unsigned get_return_timestamp() const { return m_timestamp2; }
   unsigned get_icnt_receive_time() const { return m_icnt_receive_time; }
   unsigned long long get_streamID() const { return m_streamID; }
+
+  void set_instruction_prefetch(unsigned stream, uint64_t generation,
+                                uint64_t context) {
+    m_is_instruction_prefetch = true;
+    m_instruction_prefetch_stream = stream;
+    m_instruction_prefetch_generation = generation;
+    m_instruction_prefetch_context = context;
+  }
+  bool is_instruction_prefetch() const { return m_is_instruction_prefetch; }
+  unsigned get_instruction_prefetch_stream() const {
+    return m_instruction_prefetch_stream;
+  }
+  uint64_t get_instruction_prefetch_generation() const {
+    return m_instruction_prefetch_generation;
+  }
+  uint64_t get_instruction_prefetch_context() const {
+    return m_instruction_prefetch_context;
+  }
 
   enum mem_access_type get_access_type() const { return m_access.get_type(); }
   unsigned long long get_status_change() const { return m_status_change; }
@@ -135,8 +160,7 @@ class mem_fetch {
  private:
   // request source information
   unsigned m_request_uid;
-  unsigned m_sid;
-  unsigned m_tpc;
+  unsigned m_requester_sm_id;
   unsigned m_wid;
 
   // where is this request now?
@@ -168,6 +192,11 @@ class mem_fetch {
   warp_inst_t m_inst;
 
   unsigned long long m_streamID;
+
+  bool m_is_instruction_prefetch;
+  unsigned m_instruction_prefetch_stream;
+  uint64_t m_instruction_prefetch_generation;
+  uint64_t m_instruction_prefetch_context;
 
   static std::atomic<unsigned int> sm_next_mf_request_uid;
 

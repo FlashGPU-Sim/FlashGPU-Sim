@@ -35,8 +35,72 @@ struct dim3comp {
   }
 };
 
-// Function declaration
-void increment_x_then_y_then_z(dim3 &i, const dim3 &bound);
+// Linear CTA order: x, then y, then z. Past the last id, z == bound.z.
+inline void increment_x_then_y_then_z(dim3 &i, const dim3 &bound) {
+  i.x++;
+  if (i.x >= bound.x) {
+    i.x = 0;
+    i.y++;
+    if (i.y >= bound.y) {
+      i.y = 0;
+      if (i.z < bound.z) i.z++;
+    }
+  }
+}
+
+// Cluster launches walk the next rank inside the cluster (x, then y, then z),
+// then the next cluster the same way. A zero extent is 1. A grid that is not
+// a multiple of the cluster keeps the linear order. Past the last CTA, x ==
+// grid.x so no_more_ctas_to_run() is true. Host tests call this directly.
+inline void step_next_cta(dim3 &cta, const dim3 &grid, const dim3 &cluster,
+                          bool cluster_launch) {
+  const unsigned cx = cluster.x ? cluster.x : 1u;
+  const unsigned cy = cluster.y ? cluster.y : 1u;
+  const unsigned cz = cluster.z ? cluster.z : 1u;
+  const bool divisible = cluster_launch && grid.x && grid.y && grid.z &&
+                         (grid.x % cx) == 0 && (grid.y % cy) == 0 &&
+                         (grid.z % cz) == 0;
+  if (!divisible) {
+    increment_x_then_y_then_z(cta, grid);
+    return;
+  }
+  unsigned rx = cta.x % cx;
+  unsigned ry = cta.y % cy;
+  unsigned rz = cta.z % cz;
+  unsigned ox = cta.x - rx;
+  unsigned oy = cta.y - ry;
+  unsigned oz = cta.z - rz;
+  rx++;
+  if (rx >= cx) {
+    rx = 0;
+    ry++;
+    if (ry >= cy) {
+      ry = 0;
+      rz++;
+      if (rz >= cz) {
+        rz = 0;
+        ox += cx;
+        if (ox >= grid.x) {
+          ox = 0;
+          oy += cy;
+          if (oy >= grid.y) {
+            oy = 0;
+            oz += cz;
+            if (oz >= grid.z) {
+              cta.x = grid.x;
+              cta.y = 0;
+              cta.z = 0;
+              return;
+            }
+          }
+        }
+      }
+    }
+  }
+  cta.x = ox + rx;
+  cta.y = oy + ry;
+  cta.z = oz + rz;
+}
 
 /**
  * ! This is shared among all simulator threads and causes race conditions.
@@ -88,7 +152,7 @@ public:
   dim3 get_cta_dim() const { return m_block_dim; }
 
   void increment_cta_id() {
-    increment_x_then_y_then_z(m_next_cta, m_grid_dim);
+    step_next_cta(m_next_cta, m_grid_dim, m_cluster_dim, m_is_cluster_launch);
     m_next_tid.x = 0;
     m_next_tid.y = 0;
     m_next_tid.z = 0;
@@ -209,6 +273,52 @@ public:
   // Dynamic shared memory per CTA (specified at launch)
   void set_dynamic_smem(unsigned bytes) { m_dynamic_smem = bytes; }
   unsigned get_dynamic_smem() const { return m_dynamic_smem; }
+
+  // Thread Block Cluster launch metadata (Hopper/Blackwell cooperative clusters).
+  // Non-cluster launches leave m_is_cluster_launch=false and m_ctas_per_cluster=1.
+  void set_cluster_launch(dim3 cluster_dim) {
+    m_is_cluster_launch = true;
+    m_cluster_dim = cluster_dim;
+    unsigned prod = cluster_dim.x * cluster_dim.y * cluster_dim.z;
+    m_ctas_per_cluster = prod > 0 ? prod : 1;
+  }
+  void clear_cluster_launch() {
+    m_is_cluster_launch = false;
+    m_cluster_dim = dim3(0, 0, 0);
+    m_ctas_per_cluster = 1;
+  }
+  bool is_cluster_launch() const { return m_is_cluster_launch; }
+  dim3 get_cluster_dim() const { return m_cluster_dim; }
+  unsigned get_ctas_per_cluster() const { return m_ctas_per_cluster; }
+
+  // Pending TB-cluster co-residency while issuing CTAs of one cluster.
+  // When open, subsequent CTAs of this TB cluster must go to m_open_tb_phys_cluster.
+  bool has_open_tb_cluster() const { return m_open_tb_remaining > 0; }
+  unsigned open_tb_phys_cluster() const { return m_open_tb_phys_cluster; }
+  unsigned open_tb_cluster_group() const { return m_open_tb_cluster_group; }
+  unsigned open_tb_remaining() const { return m_open_tb_remaining; }
+  void open_tb_cluster(unsigned phys_cluster, unsigned group,
+                       unsigned remaining) {
+    m_open_tb_phys_cluster = phys_cluster;
+    m_open_tb_cluster_group = group;
+    m_open_tb_remaining = remaining;
+  }
+  void consume_open_tb_cta() {
+    if (m_open_tb_remaining > 0) m_open_tb_remaining--;
+  }
+  void clear_open_tb_cluster() {
+    m_open_tb_remaining = 0;
+    m_open_tb_phys_cluster = (unsigned)-1;
+    m_open_tb_cluster_group = (unsigned)-1;
+  }
+
+private:
+  bool m_is_cluster_launch;
+  dim3 m_cluster_dim;
+  unsigned m_ctas_per_cluster;
+  unsigned m_open_tb_phys_cluster;
+  unsigned m_open_tb_cluster_group;
+  unsigned m_open_tb_remaining;
 };
 
 #endif // #ifndef KERNEL_INFO_INCLUDED

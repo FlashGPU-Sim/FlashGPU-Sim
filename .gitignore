@@ -5,7 +5,6 @@
 _cuobjdump_*
 _app_cuda_version_*
 
-tests/triton_trace/triton_kernel_tracking/*
 __pycache__
 *.egg-info/
 
@@ -95,6 +94,9 @@ package.json
 package-lock.json
 calibration_results/
 
+# Local leftover kernel snapshots. Not part of the tree and not a test entry point.
+calibration/
+
 # Test logs produced by inst_latency_bench
 tests/logs/
 tests/*.log
@@ -107,3 +109,12 @@ tests/src/microbench/tma/run_*/
 tests/src/microbench/tma/gem5_pair48_*_20*/
 tests/src/microbench/tma/results/*_rerun_*.csv
 tests/build_sm120a/
+
+# Local Blackwell calibration planning
+/tests/dev/calibration-todo.md
+/tests/dev/calibration/
+
+# Generated parser and power-model reports
+/aerialvision/parser.out
+/src/accelwattch/results/
+/src/accelwattch/cacti/out_batch_test_result.csv

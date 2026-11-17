@@ -25,6 +25,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
+#include "mma_trace.h"
 #include "tensor_mma.h"
 
 #include <cstdint>
@@ -74,10 +75,11 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
   for (int i = 0; i < M * N; i++)
     C_mat[i] = 0.0f;
 
-  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    printf("GPGPU-Sim: tensor_mma_f16_impl M=%d N=%d K=%d is_bf16=%d\n", M, N,
-           K, is_bf16);
-  }
+  MMA_TRACE(core, inst, {
+    mma_trace.append(
+        "GPGPU-Sim: tensor_mma_f16_impl M=%d N=%d K=%d is_bf16=%d\n", M, N, K,
+        is_bf16);
+  });
 
   const operand_info &src_a = pI->operand_lookup(1);
   const operand_info &src_b = pI->operand_lookup(2);
@@ -227,9 +229,9 @@ void tensor_mma_f16_impl(const ptx_instruction *pI, core_t *core,
                                       d_regs[3]);
   }
 
-  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    printf("GPGPU-Sim: tensor_mma_impl completed for M16N8K8\n");
-  }
+  MMA_TRACE(core, inst, {
+    mma_trace.append("GPGPU-Sim: tensor_mma_impl completed for M16N8K8\n");
+  });
 }
 
 // F16/BF16 M8N8K4 specialized implementation with 4-computation decomposition
@@ -393,10 +395,11 @@ void tensor_mma_f16_m8n8k4_impl(const ptx_instruction *pI, core_t *core,
                                            d_regs[6], d_regs[7]);
   }
 
-  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    printf("GPGPU-Sim: tensor_mma_f16_m8n8k4_impl completed (4-computation "
-           "decomposition)\n");
-  }
+  MMA_TRACE(core, inst, {
+    mma_trace.append(
+        "GPGPU-Sim: tensor_mma_f16_m8n8k4_impl completed (4-computation "
+        "decomposition)\n");
+  });
 }
 
 } // namespace flash_gpgpu_sim

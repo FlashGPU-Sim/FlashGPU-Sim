@@ -192,7 +192,7 @@ bool stream_operation::do_operation(gpgpu_sim *gpu) {
     case stream_event: {
       printf("event update\n");
       time_t wallclock = time((time_t *)NULL);
-      m_event->update(gpu->gpu_tot_sim_cycle, wallclock);
+      m_event->update(gpu->gpu_tot_sim_cycle + gpu->gpu_sim_cycle, wallclock);
       m_stream->record_next_done();
     } break;
     case stream_wait_event:

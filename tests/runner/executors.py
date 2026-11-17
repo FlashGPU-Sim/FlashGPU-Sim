@@ -328,12 +328,19 @@ class TestExecutors:
         self.ui.info("Running trace tests...")
         binary_dir = self.test_dir / "build" / "trace" / "bin"
         tests: list[tuple[str, list[str]]] = []
-        if not test_name or test_name in "embedding":
+        def selected(name: str) -> bool:
+            if not test_name or test_name == "*":
+                return True
+            return test_name in name
+
+        if selected("embedding"):
             tests.append(
                 ("gpt2_embedding", [str(binary_dir / "gpt2_embedding_test")])
             )
+        if selected("tma_copy"):
+            tests.append(("tma_copy", [str(binary_dir / "tma_copy_test")]))
         for name in ("gelu", "flash_attn", "layernorm", "residual_add", "linear"):
-            if test_name and test_name not in name:
+            if not selected(name):
                 continue
             tests.append(
                 (

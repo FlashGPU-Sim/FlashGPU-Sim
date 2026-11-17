@@ -62,6 +62,7 @@ class ptx_recognizer {
     g_entry_func_param_index = 0;
     g_func_info = NULL;
     g_debug_ir_generation = false;
+    g_vector_operand_start = -1;
     gpgpu_ctx = ctx;
   }
   // global list
@@ -108,6 +109,7 @@ class ptx_recognizer {
   function_info *g_func_info;
   operand_info g_return_var;
   bool g_debug_ir_generation;
+  int g_vector_operand_start;
   int g_entry_point;
   const struct core_config *g_shader_core_config;
   std::map<std::string, std::map<unsigned, const ptx_instruction *> >
@@ -144,6 +146,8 @@ class ptx_recognizer {
                            const char *d4, const char *d5, const char *d6,
                            const char *d7, const char *d8);
   void add_vector_operand(const std::vector<const char *> &components);
+  void begin_vector_operand();
+  void end_vector_operand();
   void add_option(int option);
   void add_wmma_option(int option);
   void add_mma_option(int option);
@@ -185,6 +189,8 @@ class ptx_recognizer {
   void set_immediate_operand_type();
   void version_header(double a);
   void maxnt_id(int x, int y, int z);
+  void set_explicit_cluster();
+  void set_req_cluster_dim(int x, int y, int z);
   void parse_error_impl(const char *file, unsigned line, const char *msg, ...);
   void parse_assert_impl(int test_value, const char *file, unsigned line,
                          const char *msg, ...);

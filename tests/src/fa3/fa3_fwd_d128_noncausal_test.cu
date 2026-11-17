@@ -2,4 +2,5 @@
 #define FA3_STANDARD_HEAD_DIM 128
 #define FA3_STANDARD_CAUSAL 0
 #define FA3_STANDARD_FIXED_TESTS
+#define FA3_STANDARD_FIXED_TESTS
 #include "fa3_fwd_hdim128_fp16_test.cu"

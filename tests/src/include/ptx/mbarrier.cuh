@@ -67,6 +67,22 @@ __device__ __forceinline__ bool mbarrier_try_wait_parity(T* bar_addr,
 }
 
 template <typename T>
+__device__ __forceinline__ bool mbarrier_try_wait_parity(
+    T* bar_addr, uint32_t parity, uint32_t suspend_time_hint_ns) {
+  const uint32_t bar_ptr = smem_u32_addr(bar_addr);
+  uint32_t complete = 0;
+  asm volatile(
+      "{\n"
+      ".reg .pred p;\n"
+      "mbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2, %3;\n"
+      "selp.u32 %0, 1, 0, p;\n"
+      "}\n"
+      : "=r"(complete)
+      : "r"(bar_ptr), "r"(parity), "r"(suspend_time_hint_ns));
+  return complete != 0;
+}
+
+template <typename T>
 __device__ __forceinline__ void mbarrier_wait_parity(T* bar_addr,
                                                      uint32_t parity) {
   const uint32_t bar_ptr = smem_u32_addr(bar_addr);

@@ -13,6 +13,10 @@ DATA_ARCHIVE = $(TRACE_DIR)gpt2_trace_data.tar.gz
 # GPU config (set via run_tests.py -c or default)
 GPU_CONFIG ?= SM120_RTX5090
 CONFIGS_DIR = $(TRACE_DIR)../../../configs
+CONFIG_DIR = $(CONFIGS_DIR)/$(GPU_CONFIG)
+CONFIG_INPUTS = $(CONFIG_DIR)/gpgpusim.config \
+                $(wildcard $(CONFIG_DIR)/config_*.icnt) \
+                $(wildcard $(CONFIG_DIR)/*.rules)
 
 # Build output goes to tests/build/trace/
 BUILD_DIR ?= $(TRACE_DIR)../../build/trace
@@ -21,7 +25,7 @@ DATA_DIR = $(BUILD_DIR)/bin/data
 
 # Kernel PTX names (for fatbin compilation)
 KERNELS = embedding_kernel gelu_kernel flash_attn_kernel layernorm_kernel \
-          residual_add_kernel linear_kernel
+          residual_add_kernel linear_kernel tma_copy_kernel
 
 # Targets
 FATBINS = $(addprefix $(BIN_DIR)/, $(addsuffix .fatbin, $(KERNELS)))
@@ -29,6 +33,7 @@ FATBINS = $(addprefix $(BIN_DIR)/, $(addsuffix .fatbin, $(KERNELS)))
 # Two test binaries: gpt2_embedding (CPU reference) + gpt2_data_driven (all others)
 GPT2_EMBEDDING_TEST = $(BIN_DIR)/gpt2_embedding_test
 GPT2_DATA_DRIVEN_TEST = $(BIN_DIR)/gpt2_data_driven_test
+TMA_COPY_TEST = $(BIN_DIR)/tma_copy_test
 
 # Data-driven test names (passed as argv to data_driven_trace_test)
 DATA_DRIVEN_NAMES = gelu flash_attn layernorm residual_add linear
@@ -39,7 +44,7 @@ CONFIG_STAMP = $(BIN_DIR)/.config_$(GPU_CONFIG)
 
 .PHONY: all clean run
 
-all: $(FATBINS) $(GPT2_EMBEDDING_TEST) $(GPT2_DATA_DRIVEN_TEST) $(DATA_STAMP) $(CONFIG_STAMP)
+all: $(FATBINS) $(GPT2_EMBEDDING_TEST) $(GPT2_DATA_DRIVEN_TEST) $(TMA_COPY_TEST) $(DATA_STAMP) $(CONFIG_STAMP)
 
 # Create directories
 $(BIN_DIR) $(DATA_DIR):
@@ -57,10 +62,15 @@ $(GPT2_EMBEDDING_TEST): $(TRACE_DIR)gpt2_embedding_test.cu $(TRACE_DIR)trace_tes
 $(GPT2_DATA_DRIVEN_TEST): $(TRACE_DIR)gpt2_data_driven_test.cu $(TRACE_DIR)trace_test_utils.h | $(BIN_DIR)
 	$(NVCC) -arch=$(ARCH) -I$(TRACE_DIR) -o $@ $< $(CUDA_FLAGS)
 
+# Compile Triton TMA 1D copy test
+$(TMA_COPY_TEST): $(TRACE_DIR)tma_copy_test.cu $(TRACE_DIR)trace_test_utils.h | $(BIN_DIR)
+	$(NVCC) -arch=$(ARCH) -I$(TRACE_DIR) -o $@ $< $(CUDA_FLAGS)
+
 # Copy GPU config to bin directory
-$(CONFIG_STAMP): $(CONFIGS_DIR)/$(GPU_CONFIG)/gpgpusim.config | $(BIN_DIR)
-	cp $(CONFIGS_DIR)/$(GPU_CONFIG)/gpgpusim.config $(BIN_DIR)/
-	cp $(CONFIGS_DIR)/$(GPU_CONFIG)/config_*.icnt $(BIN_DIR)/ 2>/dev/null || true
+$(CONFIG_STAMP): $(CONFIG_INPUTS) $(TRACE_DIR)Makefile | $(BIN_DIR)
+	cp $(CONFIG_DIR)/gpgpusim.config $(BIN_DIR)/
+	cp $(CONFIG_DIR)/config_*.icnt $(BIN_DIR)/ 2>/dev/null || true
+	cp $(CONFIG_DIR)/*.rules $(BIN_DIR)/ 2>/dev/null || true
 	touch $@
 
 # Decompress trace data
@@ -74,6 +84,9 @@ run: all
 	@failed=0; \
 	echo "--- gpt2_embedding_test ---"; \
 	(cd $(BIN_DIR) && ./gpt2_embedding_test) || failed=$$((failed + 1)); \
+	echo ""; \
+	echo "--- tma_copy_test ---"; \
+	(cd $(BIN_DIR) && ./tma_copy_test) || failed=$$((failed + 1)); \
 	echo ""; \
 	for name in $(DATA_DRIVEN_NAMES); do \
 		echo "--- gpt2_data_driven_test $$name ---"; \

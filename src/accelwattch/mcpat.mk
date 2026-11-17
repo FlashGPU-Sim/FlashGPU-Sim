@@ -16,20 +16,25 @@ INCS = -lm
 CC=
 CXX=
 
-ifeq ($(shell getconf LONG_BIT),64) 
-	CXX = g++ -m64
-	CC  = gcc -m64
-else 
-	CXX = g++ -m32
-	CC  = gcc -m32
-endif 
+# -m32/-m64 and the SSE flags are x86-specific: non-x86 hosts (e.g. aarch64)
+# reject them outright, so apply them only on x86.
+ifeq ($(shell uname -m),x86_64)
+  ARCH_BIT_FLAG = -m$(shell getconf LONG_BIT)
+  ARCH_SIMD_FLAGS = -msse2 -mfpmath=sse
+else
+  ARCH_BIT_FLAG =
+  ARCH_SIMD_FLAGS =
+endif
+
+CXX = g++ $(ARCH_BIT_FLAG)
+CC  = gcc $(ARCH_BIT_FLAG)
 
 ifeq ($(TAG),dbg)
   DBG = -Wall 
   OPT = -ggdb -fPIC -g -O0 -DNTHREADS=1 -Icacti -lz
 else
   DBG = 
-  OPT = -O3 -fPIC -msse2 -mfpmath=sse -DNTHREADS=$(NTHREADS) -Icacti -lz
+  OPT = -O3 -fPIC $(ARCH_SIMD_FLAGS) -DNTHREADS=$(NTHREADS) -Icacti -lz
   #OPT = -O0 -DNTHREADS=$(NTHREADS)
 endif
 

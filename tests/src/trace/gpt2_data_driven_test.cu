@@ -177,7 +177,7 @@ static int run_test(const struct trace_test_config* t) {
     if (!module) return 1;
     CUfunction func = get_kernel(module, t->kernel_name);
     if (!func) return 1;
-    set_shared_mem(func, t->smem);
+    if (set_shared_mem(func, t->smem)) return 1;
 
     // Load pointer args from .bin files
     void* d_ptrs[8] = {};
@@ -192,6 +192,7 @@ static int run_test(const struct trace_test_config* t) {
 
     // Triton scratch buffers
     void* global_scratch = alloc_gpu(8192);
+    if (!global_scratch) return 1;
     void* profile_scratch = NULL;
 
     // Build args array: [ptr_args..., scalar_args..., global_scratch, profile_scratch]

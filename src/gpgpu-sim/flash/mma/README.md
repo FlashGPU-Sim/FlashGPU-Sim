@@ -1,73 +1,41 @@
-# MMA Implementation
+# Warp-Level MMA Support
 
-Per-data-type implementation files for PTX MMA (Matrix Multiply-Accumulate) instructions.
+FlashGPU-Sim functionally simulates `mma.sync` register-fragment operations
+and applies the selected configuration's tensor-core timing model. This
+instruction family is separate from WMMA, WGMMA and TCGen05.
 
-## Purpose
+## Validated Variants
 
-This subdirectory contains the split implementation of MMA tensor core operations, organized by data type for improved maintainability and clarity. Each file focuses on a specific data type's implementation, while shared helpers and the main dispatcher remain in `tensor_mma.cc`.
+The SM120 integration suite checks these input formats and shapes against CPU
+references:
 
-## Files
+| Input type | Shapes |
+| --- | --- |
+| F16 | `m16n8k8`, `m16n8k16`, `m8n8k4` |
+| BF16 | `m16n8k8`, `m16n8k16` |
+| TF32 | `m16n8k4`, `m16n8k8` |
+| S8 | `m16n8k16`, `m16n8k32`, `m8n8k16` |
 
-### Interface and Documentation
+The functional implementation also contains U8 and additional F16 shape paths;
+the table above identifies the integration-tested scope. FP64, S4/U4 and B1
+MMA execution are not implemented in this path. A shape or type recognized by
+the parser may still lack functional execution support.
 
-- **`tensor_mma.h`** - Public interface for all MMA operations
-  - Function declarations for MMA compute, load, and store operations
-  - Enum definitions for shapes (M16N8K8, M16N8K4, etc.) and layouts (ROW_COL, etc.)
-  - Helper function prototypes for type conversion and saturation
+Floating-point results use the simulator's format conversions and accumulation
+model. See [numerical behavior](tensor_mma.md) for precision limitations and
+[matrix execution controls](../../../../configs/README.md#matrix-execution)
+for timing settings. Functional correctness checks do not establish timing
+accuracy for every shape.
 
-- **`tensor_mma.md`** - Interface documentation
-  - Detailed API documentation for all public functions
-  - Fragment distribution patterns for each MMA shape
-  - Type conversion specifications
-  - Usage examples and integration notes
+## Validate
 
-### Implementation Files
+From the repository root:
 
-- **`tensor_mma.cc`** (520 LOC) - Main dispatcher and shared helpers
-  - `tensor_mma_impl()` - Main dispatcher routing to type-specific implementations
-  - `tensor_mma_ld_impl()` - Load matrix fragments from memory
-  - `tensor_mma_st_impl()` - Store matrix fragments to memory
-  - Shared helper functions:
-    - Type conversions: `mma_f16_to_f32()`, `mma_bf16_to_f32()`, `mma_tf32_round()`
-    - Saturation: `mma_saturate_s8()`, `mma_saturate_u8()`, `mma_saturate_s4()`, `mma_saturate_u4()`
-    - Thread mapping: `mma_thread_to_element_offset()`
-
-- **`mma_f16.cc`** (382 LOC) - F16/BF16 floating-point implementations
-  - `tensor_mma_f16_impl()` - F16/BF16 MMA for M16N8K8/K16 shapes
-  - `tensor_mma_f16_m8n8k4_impl()` - Specialized F16 M8N8K4 implementation (4-computation architecture)
-
-- **`mma_tf32.cc`** (178 LOC) - TF32 floating-point implementation
-  - `tensor_mma_tf32_impl()` - TensorFloat-32 MMA for M16N8K4/K8 shapes
-
-- **`mma_s8.cc`** (399 LOC) - S8/U8 integer implementations
-  - `tensor_mma_s8_impl()` - Signed/unsigned 8-bit integer MMA for M16N8K16/K32 shapes
-  - `tensor_mma_s8_m8n8k16_impl()` - Specialized S8/U8 M8N8K16 implementation
-
-## Integration
-
-This implementation integrates with the GPGPU-Sim PTX parser and execution pipeline:
-
-1. **PTX Parser** (`src/cuda-sim/`) recognizes `mma.sync.aligned` instructions
-2. **Opcode Dispatcher** routes `TENSOR_MMA_OP` to `flash_gpgpu_sim::tensor_mma_impl()`
-3. **Type Dispatcher** (`tensor_mma.cc`) routes to appropriate type-specific function
-4. **Type Implementation** (this directory) performs functional simulation
-
-## Testing
-
-Integration tests are located in `tests/src/mma/`:
-- F16 tests: `mma_f16_test.cu`
-- BF16 tests: `mma_bf16_test.cu`
-- TF32 tests: `mma_tf32_test.cu`
-- S8/U8 tests: `mma_s8_test.cu`
-
-Run MMA tests with:
 ```bash
-./tests/run_tests.py -c SM120_RTX5090 run \
-  --arch sm120 --group mma "*MMA*"
+./tests/run_tests.py list-cases --arch sm120 --group mma
+./tests/run_tests.py run --arch sm120 --group mma
 ```
 
-## References
-
-- Parent directory documentation: `../README.md`
-- Integration tests: `../../../../tests/src/mma/README.md`
-- PTX ISA: [MMA Instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-for-mma)
+See the [MMA test guide](../../../../tests/src/mma/README.md) for individual
+case selection and reference checks, and [runtime tracing](../../../../docs/tracing.md)
+for the `MMA` component.

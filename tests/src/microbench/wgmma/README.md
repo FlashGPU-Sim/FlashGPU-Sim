@@ -19,13 +19,17 @@ Build examples from `tests/`:
   WgmmaN16Chain
 ```
 
+The direct binary examples below also run from `tests/`. Use a clean native
+CUDA shell on Hopper for hardware measurements and NCU; source
+`setup_environment` for simulator runs.
+
 FP16 WGMMA core sweep:
 
 ```bash
-make -j6 wgmma-fp16-core
+./run_tests.py build --arch sm90 --group microbench --profile wgmma
 
 WGMMA_FP16_SWEEP_OUT_PREFIX=/tmp/wgmma_fp16_ss_g1 \
-  ./build/bin/wgmma/wgmma_fp16_ss_g1_bench \
+  ./build/bin/sm90/microbench/wgmma/wgmma_fp16_ss_g1_bench \
   --gtest_filter=WgmmaFp16CoreSweep.Selected
 ```
 
@@ -53,18 +57,18 @@ batch, for example:
 
 ```bash
 WGMMA_FP16_SWEEP_FILTER=n128_g1_o16_same \
-  ./build/bin/wgmma/wgmma_fp16_ss_g1_bench \
+  ./build/bin/sm90/microbench/wgmma/wgmma_fp16_ss_g1_bench \
   --gtest_filter=WgmmaFp16CoreSweep.Selected
 ```
 
 Focused WGMMA/softmax mixing probe:
 
 ```bash
-make -j4 wgmma-softmax-mix
+./run_tests.py build --arch sm90 --group microbench --profile wgmma
 
 WGMMA_SOFTMAX_MIX_ROUNDS=4096 \
 WGMMA_SOFTMAX_MIX_OUT_PREFIX=/tmp/wgmma_softmax_mix \
-  ./build/bin/wgmma/wgmma_softmax_mix_bench \
+  ./build/bin/sm90/microbench/wgmma/wgmma_softmax_mix_bench \
   --gtest_filter=WgmmaSoftmaxMixBench.Sweep
 ```
 
@@ -77,7 +81,7 @@ WGMMA_SOFTMAX_MIX_ROUNDS=4096 \
 WGMMA_SOFTMAX_MIX_WARMUP=0 \
 ncu --set full --target-processes all --force-overwrite \
   -o ncu_wgmma_softmax_qk_wait_math_pv_m1 \
-  ./build/bin/wgmma/wgmma_softmax_mix_bench \
+  ./build/bin/sm90/microbench/wgmma/wgmma_softmax_mix_bench \
   --gtest_filter=WgmmaSoftmaxMixBench.Selected
 ```
 
@@ -94,7 +98,7 @@ WGMMA_SOFTMAX_MIX_QK_OPS=1 \
 WGMMA_SOFTMAX_MIX_ROUNDS=4096 \
 WGMMA_SOFTMAX_MIX_WARMUP=0 \
 WGMMA_SOFTMAX_MIX_OUT_PREFIX=/tmp/wgmma_local_overlap \
-  ./build/bin/wgmma/wgmma_softmax_mix_bench \
+  ./build/bin/sm90/microbench/wgmma/wgmma_softmax_mix_bench \
   --gtest_filter=WgmmaSoftmaxMixBench.LocalOverlapSweep
 ```
 
@@ -105,7 +109,7 @@ WGMMA_SOFTMAX_MIX_QK_OPS=8 \
 WGMMA_SOFTMAX_MIX_ROUNDS=8192 \
 WGMMA_SOFTMAX_MIX_WARMUP=0 \
 WGMMA_SOFTMAX_MIX_OUT_PREFIX=$HOME/wgmma_fine_math \
-  ./build/bin/wgmma/wgmma_softmax_mix_bench \
+  ./build/bin/sm90/microbench/wgmma/wgmma_softmax_mix_bench \
   --gtest_filter=WgmmaSoftmaxMixBench.FineMathSweep
 ```
 
@@ -128,7 +132,7 @@ WGMMA_SOFTMAX_MIX_QK_OPS=8 \
 WGMMA_SOFTMAX_MIX_ROUNDS=8192 \
 WGMMA_SOFTMAX_MIX_WARMUP=0 \
 WGMMA_SOFTMAX_MIX_OUT_PREFIX=$HOME/wgmma_overlap_model_dense \
-  ./build/bin/wgmma/wgmma_softmax_mix_bench \
+  ./build/bin/sm90/microbench/wgmma/wgmma_softmax_mix_bench \
   --gtest_filter=WgmmaSoftmaxMixBench.FineOverlapModelDenseSweep
 ```
 
@@ -151,7 +155,7 @@ instructions, use:
 WGMMA_SOFTMAX_MIX_ROUNDS=8192 \
 WGMMA_SOFTMAX_MIX_WARMUP=0 \
 WGMMA_SOFTMAX_MIX_OUT_PREFIX=$HOME/wgmma_qk_ops_model \
-  ./build/bin/wgmma/wgmma_softmax_mix_bench \
+  ./build/bin/sm90/microbench/wgmma/wgmma_softmax_mix_bench \
   --gtest_filter=WgmmaSoftmaxMixBench.FineQkOpsModelSweep
 ```
 
@@ -170,6 +174,6 @@ WGMMA_SOFTMAX_MIX_MATH_ITERS=16 \
 WGMMA_SOFTMAX_MIX_QK_OPS=8 \
 WGMMA_SOFTMAX_MIX_ROUNDS=8192 \
 WGMMA_SOFTMAX_MIX_WARMUP=0 \
-  ./build/bin/wgmma/wgmma_softmax_mix_bench \
+  ./build/bin/sm90/microbench/wgmma/wgmma_softmax_mix_bench \
   --gtest_filter=WgmmaSoftmaxMixBench.Selected
 ```

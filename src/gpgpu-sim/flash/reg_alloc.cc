@@ -85,7 +85,7 @@ void collect_operand_liveness_regs(const operand_info &op,
                                    reg_symbol_set &regs) {
   if (op.is_vector()) {
     for (unsigned i = 0; i < op.get_vect_nelem(); ++i) {
-      add_liveness_reg(regs, op.vec_symbol(i));
+      add_liveness_reg(regs, op.vec_symbol_or_null(i));
     }
     return;
   }
@@ -127,6 +127,25 @@ void collect_inst_liveness_regs(const ptx_instruction *inst,
       }
     }
   }
+}
+
+void canonicalize_compiler_view_regs(const function_info *func,
+                                     reg_symbol_set &regs) {
+  if (func == NULL || regs.empty())
+    return;
+  reg_symbol_set canonical;
+  for (reg_symbol_set::const_iterator reg = regs.begin(); reg != regs.end();
+       ++reg) {
+    const symbol *low = NULL;
+    const symbol *high = NULL;
+    if (func->expand_compiler_register_pack(*reg, &low, &high)) {
+      canonical.insert(func->canonicalize_compiler_register_view(low));
+      canonical.insert(func->canonicalize_compiler_register_view(high));
+    } else {
+      canonical.insert(func->canonicalize_compiler_register_view(*reg));
+    }
+  }
+  regs.swap(canonical);
 }
 
 int reg_alloc_group(const symbol *sym) {
@@ -290,6 +309,8 @@ void run_ptx_register_allocation(function_info *func) {
       reg_symbol_set uses;
       reg_symbol_set defs;
       collect_inst_liveness_regs(inst, uses, defs);
+      canonicalize_compiler_view_regs(func, uses);
+      canonicalize_compiler_view_regs(func, defs);
       if (!inst->is_label())
         ++real_inst_count;
 
@@ -385,6 +406,8 @@ void run_ptx_register_allocation(function_info *func) {
       reg_symbol_set uses;
       reg_symbol_set defs;
       collect_inst_liveness_regs(inst, uses, defs);
+      canonicalize_compiler_view_regs(func, uses);
+      canonicalize_compiler_view_regs(func, defs);
       for (reg_symbol_set::const_iterator d = defs.begin(); d != defs.end();
            ++d) {
         live.erase(*d);

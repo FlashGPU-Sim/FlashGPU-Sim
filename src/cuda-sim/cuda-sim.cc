@@ -147,6 +147,11 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
       "Opcode latencies for integers <ADD,MAX,MUL,MAD,DIV,SHFL>"
       "Default 1,1,19,25,145,32",
       "1,1,19,25,145,32");
+  option_parser_register(
+      opp, "-ptx_int64_add_lowering_factor", OPT_UINT32,
+      &int64_add_lowering_factor,
+      "Scale integer ADD/SUB latency and initiation for 64-bit PTX lowering",
+      "1");
   option_parser_register(opp, "-ptx_opcode_latency_fp", OPT_CSTR,
                          &opcode_latency_fp,
                          "Opcode latencies for single precision floating "
@@ -164,6 +169,36 @@ void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
                          "Opcode latencies for SFU instructions"
                          "Default 8",
                          "8");
+  option_parser_register(opp, "-ptx_opcode_latency_ex2", OPT_UINT32,
+                         &opcode_latency_ex2,
+                         "EX2 latency; 0 inherits SFU latency", "0");
+  option_parser_register(opp, "-ptx_opcode_latency_predicate", OPT_UINT32,
+                         &opcode_latency_predicate,
+                         "SETP/SELP latency; 0 preserves legacy one-cycle ALU", "0");
+  option_parser_register(opp, "-ptx_opcode_latency_int_logic", OPT_UINT32,
+                         &opcode_latency_int_logic,
+                         "32-bit AND/OR/XOR/NOT/SHL/SHR result latency", "1");
+  option_parser_register(opp, "-ptx_opcode_initiation_int_logic", OPT_UINT32,
+                         &opcode_initiation_int_logic,
+                         "32-bit AND/OR/XOR/NOT/SHL/SHR initiation interval", "1");
+  option_parser_register(opp, "-ptx_opcode_f32_minmax_use_int", OPT_BOOL,
+                         &opcode_f32_minmax_use_int,
+                         "Route scalar FP32 MIN/MAX through the integer ALU; "
+                         "retain FP MIN/MAX latency and initiation settings", "0");
+  option_parser_register(opp, "-ptx_opcode_latency_f32x2", OPT_UINT32,
+                         &opcode_latency_f32x2,
+                         "Packed f32x2 arithmetic latency; 0 inherits scalar FP",
+                         "0");
+  option_parser_register(opp, "-ptx_opcode_initiation_f32x2", OPT_UINT32,
+                         &opcode_initiation_f32x2,
+                         "Packed f32x2 arithmetic initiation; 0 inherits scalar FP",
+                         "0");
+  option_parser_register(opp, "-ptx_opcode_latency_cvt_f16x2_f32", OPT_UINT32,
+                         &opcode_latency_cvt_f16x2_f32,
+                         "Packed f32 to f16x2 conversion latency", "1");
+  option_parser_register(opp, "-ptx_opcode_initiation_cvt_f16x2_f32", OPT_UINT32,
+                         &opcode_initiation_cvt_f16x2_f32,
+                         "Packed f32 to f16x2 conversion initiation", "1");
   option_parser_register(opp, "-ptx_opcode_latency_tensor", OPT_CSTR,
                          &opcode_latency_tensor,
                          "Opcode latencies for Tensor instructions"
@@ -482,6 +517,12 @@ unsigned function_info::find_label(symbol_table *symtab, const std::string &name
   abort();
 }
 
+ptx_instruction *function_info::instr_mem_at(unsigned index) const {
+  if (!m_instr_mem) return NULL;
+  while (index < m_n && m_instr_mem[index] == NULL) ++index;
+  return (index < m_n) ? m_instr_mem[index] : NULL;
+}
+
 void function_info::recognize_dynamic_shared_mem() {
 
   /**
@@ -545,7 +586,6 @@ void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
            m_local_dyn_shared_mem_symbol->name().c_str(), addr + addr_pad,
            addr + addr_pad + shared_mem_size, shared_mem_size);
     m_local_dyn_shared_mem_symbol->set_address(addr + addr_pad);
-    symtab->alloc_shared(shared_mem_size + addr_pad);
     // Print the dynamic allocation and the resulting total shared mem for this
     // kernel. `m_kernel_info.smem` is the declared (static) smem size parsed
     // at assembly time; `shared_mem_size` is the per-launch dynamic size.
@@ -555,10 +595,12 @@ void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
       "GPGPU-Sim PTX: Kernel '%s' : smem(static)=%u, smem(dynamic)=%d, total_smem=%u\n",
       m_name.c_str(), declared_smem, shared_mem_size, total_smem);
   } else {
-    symtab->dump_until_top();
-    printf("GPGPU-Sim PTX: Error -- dynamic shared memory size specified "
-           "but no local dynamic shared memory symbol found in kernel\n");
-    abort();
+    // CUDA permits a launch to reserve dynamic shared memory even when the
+    // selected kernel specialization does not reference its extern symbol.
+    // The grid still records the reservation for resource accounting.
+    printf("GPGPU-Sim PTX: No referenced dynamic shared memory symbol; "
+           "reserving %d bytes for the launch only\n",
+           shared_mem_size);
   }
 }
 
@@ -568,9 +610,15 @@ void function_info::ptx_assemble() {
   }
 
   // get the instructions into instruction memory...
+  // The same function can be assembled again when both the embedded sm_90
+  // image and the sm_90a image are loaded. Label indices are offsets into
+  // this array, so a stale map sends branches at the previous image's slots.
+  labels.clear();
+  delete[] m_instr_mem;
+  m_instr_mem = NULL;
   unsigned num_inst = m_instructions.size();
   m_instr_mem_size = MAX_INST_SIZE * (num_inst + 1);
-  m_instr_mem = new ptx_instruction *[m_instr_mem_size];
+  m_instr_mem = new ptx_instruction *[m_instr_mem_size]();
 
   printf("GPGPU-Sim PTX: instruction assembly for function \'%s\'... ",
          m_name.c_str());
@@ -623,9 +671,17 @@ void function_info::ptx_assemble() {
     }
   }
   gpgpu_ctx->func_sim->g_assemble_code_next_pc = PC;
-  for (unsigned ii = 0; ii < n;
-       ii += m_instr_mem[ii]->inst_size()) {  // handle branch instructions
+  m_n = n;
+  // Multi-byte instructions leave NULL padding in m_instr_mem. Skip those
+  // slots. Trailing labels (index == n) keep PC just past the last
+  // instruction so PDOM can edge to the exit block instead of NULL-deref.
+  for (unsigned ii = 0; ii < n; ) {
     ptx_instruction *pI = m_instr_mem[ii];
+    if (!pI) {
+      ii++;
+      continue;
+    }
+    const unsigned inst_bytes = pI->inst_size() ? pI->inst_size() : 1;
     if (pI->get_opcode() == BRA_OP || pI->get_opcode() == BREAKADDR_OP ||
         pI->get_opcode() == CALLP_OP) {
       operand_info &target = pI->dst();  // get operand, e.g. target name
@@ -639,11 +695,13 @@ void function_info::ptx_assemble() {
       // }
       // unsigned index = labels[target.name()];  // determine address from name
       unsigned index = find_label(pI->get_symbol_table(), target.name());
-      unsigned PC = m_instr_mem[index]->get_PC();
+      ptx_instruction *tgt = instr_mem_at(index);
+      const unsigned target_pc = tgt ? tgt->get_PC() : (m_start_PC + n);
       GPPRINTF_NoGPU(PTX_IR,
-              "  handling branch inst %s resolving label %s to inst %s PC 0x%x\n",
+              "  handling branch inst %s resolving label %s to %s PC 0x%x\n",
               pI->to_string().c_str(), target.name().c_str(),
-              m_instr_mem[index]->to_string().c_str(), PC);
+              tgt ? tgt->to_string().c_str() : "<end of function>",
+              target_pc);
       /**
        * WZR: Not sure why we need to set this target address here.
        * If this is for lookup later, the current symbol_table::lookup()
@@ -655,11 +713,12 @@ void function_info::ptx_assemble() {
        * scope if needed.
        */
       // m_symtab->set_label_address(target.get_symbol(), PC);
-      pI->get_symbol_table()->set_label_address(target.get_symbol(), PC);
+      pI->get_symbol_table()->set_label_address(target.get_symbol(),
+                                                target_pc);
       target.set_type(label_t);
     }
+    ii += inst_bytes;
   }
-  m_n = n;
   printf("  done.\n");
   fflush(stdout);
 
@@ -731,8 +790,16 @@ memory_space_t whichspace(addr_t addr) {
 }
 
 addr_t generic_to_shared(unsigned smid, addr_t addr) {
-  assert(isspace_shared(smid, addr));
-  return addr - (SHARED_GENERIC_START + smid * SHARED_MEM_SIZE_MAX);
+  if (isspace_shared(smid, addr))
+    return addr - (SHARED_GENERIC_START + smid * SHARED_MEM_SIZE_MAX);
+  if ((addr >> 32) != 0)
+    addr = static_cast<uint32_t>(addr);
+  if (addr < SHARED_MEM_SIZE_MAX)
+    return addr;
+  const unsigned owner = static_cast<unsigned>(addr / SHARED_MEM_SIZE_MAX);
+  if (owner >= 1 && owner - 1 == smid)
+    return addr % SHARED_MEM_SIZE_MAX;
+  return static_cast<uint32_t>(addr) % SHARED_MEM_SIZE_MAX;
 }
 
 addr_t local_to_generic(unsigned smid, unsigned hwtid, addr_t addr) {
@@ -898,11 +965,18 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == WGMMA_FENCE_OP) ||
       (m_opcode == WGMMA_COMMIT_GROUP_OP) || (m_opcode == WGMMA_WAIT_GROUP_OP) ||
       (m_opcode == SETMAXNREG_OP) || (m_opcode == PREFETCH_OP) ||
-      (m_opcode == PREFETCHU_OP)) {
+      (m_opcode == PREFETCHU_OP) ||
+      (m_opcode == TCGEN05_ALLOC_OP) || (m_opcode == TCGEN05_DEALLOC_OP) ||
+      (m_opcode == TCGEN05_RELINQUISH_ALLOC_PERMIT_OP) ||
+      (m_opcode == TCGEN05_MMA_OP) || (m_opcode == TCGEN05_COMMIT_OP) ||
+      (m_opcode == TCGEN05_LD_OP) || (m_opcode == TCGEN05_ST_OP) ||
+      (m_opcode == TCGEN05_WAIT_OP) || (m_opcode == TCGEN05_CP_OP) ||
+      (m_opcode == TCGEN05_SHIFT_OP) || (m_opcode == TCGEN05_FENCE_OP)) {
     // do nothing
   } else if ((m_opcode == CVT_OP || m_opcode == SET_OP ||
               m_opcode == SLCT_OP)) {
     if (get_type2() == F16_TYPE || get_type2() == F32_TYPE ||
+        get_type2() == F32X2_TYPE ||
         get_type2() == F64_TYPE || get_type2() == FF64_TYPE) {
       oprnd_type = FP_OP;
     } else
@@ -910,6 +984,7 @@ void ptx_instruction::set_fp_or_int_archop() {
 
   } else {
     if (get_type() == F16_TYPE || get_type() == F32_TYPE ||
+        get_type() == F32X2_TYPE ||
         get_type() == F64_TYPE || get_type() == FF64_TYPE) {
       oprnd_type = FP_OP;
     } else
@@ -931,7 +1006,13 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != WGMMA_FENCE_OP) &&
       (m_opcode != WGMMA_COMMIT_GROUP_OP) && (m_opcode != WGMMA_WAIT_GROUP_OP) &&
       (m_opcode != SETMAXNREG_OP) && (m_opcode != PREFETCH_OP) &&
-      (m_opcode != PREFETCHU_OP)) {
+      (m_opcode != PREFETCHU_OP) &&
+      (m_opcode != TCGEN05_ALLOC_OP) && (m_opcode != TCGEN05_DEALLOC_OP) &&
+      (m_opcode != TCGEN05_RELINQUISH_ALLOC_PERMIT_OP) &&
+      (m_opcode != TCGEN05_MMA_OP) && (m_opcode != TCGEN05_COMMIT_OP) &&
+      (m_opcode != TCGEN05_LD_OP) && (m_opcode != TCGEN05_ST_OP) &&
+      (m_opcode != TCGEN05_WAIT_OP) && (m_opcode != TCGEN05_CP_OP) &&
+      (m_opcode != TCGEN05_SHIFT_OP) && (m_opcode != TCGEN05_FENCE_OP)) {
     if (get_type() == F64_TYPE || get_type() == FF64_TYPE) {
       switch (get_opcode()) {
         case MUL_OP:
@@ -974,7 +1055,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
           if ((op == DP_OP) || (op == ALU_OP)) sp_op = DP___OP;
           break;
       }
-    } else if (get_type() == F16_TYPE || get_type() == F32_TYPE) {
+    } else if (get_type() == F16_TYPE || get_type() == F32_TYPE ||
+               get_type() == F32X2_TYPE) {
       switch (get_opcode()) {
         case MUL_OP:
         case MAD_OP:
@@ -1054,12 +1136,19 @@ void ptx_instruction::set_mul_div_or_other_archop() {
 
 void ptx_instruction::set_bar_type() {
   if (m_opcode == BAR_OP) {
+    const auto &options = get_options();
+    cluster_barrier =
+        std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
+        options.end();
     switch (m_barrier_op) {
       case SYNC_OPTION:
         bar_type = SYNC;
         break;
       case ARRIVE_OPTION:
         bar_type = ARRIVE;
+        break;
+      case WAIT_OPTION:
+        bar_type = SYNC;
         break;
       case RED_OPTION:
         bar_type = RED;
@@ -1313,7 +1402,41 @@ void ptx_instruction::set_opcode_and_latency() {
   op = ALU_OP;
   mem_op = NOT_TEX;
   initiation_interval = latency = 1;
+  bool packed_timing = false;
+  bool int_logic_timing = false;
   switch (m_opcode) {
+    case AND_OP:
+    case OR_OP:
+    case XOR_OP:
+    case NOT_OP:
+    case SHL_OP:
+    case SHR_OP:
+      if (get_type() == B32_TYPE || get_type() == U32_TYPE ||
+          get_type() == S32_TYPE) {
+        latency = gpgpu_ctx->func_sim->opcode_latency_int_logic;
+        initiation_interval =
+            gpgpu_ctx->func_sim->opcode_initiation_int_logic;
+        if (latency != 1 || initiation_interval != 1) op = INTP_OP;
+        int_logic_timing = true;
+      }
+      break;
+    case SETP_OP:
+    case SELP_OP:
+      if (gpgpu_ctx->func_sim->opcode_latency_predicate) {
+        latency = gpgpu_ctx->func_sim->opcode_latency_predicate;
+        initiation_interval = 1;
+        op = INTP_OP;
+      }
+      break;
+    case CVT_OP:
+      if (m_scalar_type.size() == 2 && get_type() == F16X2_TYPE &&
+          get_type2() == F32_TYPE) {
+        latency = gpgpu_ctx->func_sim->opcode_latency_cvt_f16x2_f32;
+        initiation_interval =
+            gpgpu_ctx->func_sim->opcode_initiation_cvt_f16x2_f32;
+        packed_timing = true;
+      }
+      break;
     case MOV_OP:
       assert(!(has_memory_read() && has_memory_write()));
       if (has_memory_read()) op = LOAD_OP;
@@ -1386,6 +1509,30 @@ void ptx_instruction::set_opcode_and_latency() {
       // but use default latency (lightweight control instructions)
       break;
     }
+    case TCGEN05_MMA_OP:
+      op = TENSOR_CORE_OP;
+      sp_op = TENSOR__OP;
+      break;
+    case TCGEN05_LD_OP:
+      op = TENSOR_CORE_OP;
+      sp_op = TENSOR__OP;
+      break;
+    case TCGEN05_ST_OP:
+      op = TENSOR_CORE_OP;
+      sp_op = TENSOR__OP;
+      break;
+    case TCGEN05_CP_OP:
+    case TCGEN05_SHIFT_OP:
+      op = TENSOR_CORE_OP;
+      sp_op = TENSOR__OP;
+      break;
+    case TCGEN05_ALLOC_OP:
+    case TCGEN05_DEALLOC_OP:
+    case TCGEN05_RELINQUISH_ALLOC_PERMIT_OP:
+    case TCGEN05_COMMIT_OP:
+    case TCGEN05_WAIT_OP:
+    case TCGEN05_FENCE_OP:
+      break;
     case TENSORMAP_OP: {
       op = TENSOR_MAP_OP;
       const auto &opts = get_options();
@@ -1405,18 +1552,42 @@ void ptx_instruction::set_opcode_and_latency() {
         op = TENSOR_MAP_OP;
         latency = tensormap_latency[2];
         initiation_interval = tensormap_init[2];
+      } else if (std::find(opts.begin(), opts.end(), SC_OPTION) != opts.end()) {
+        op = MEMORY_BARRIER_OP;
       }
       break;
     }
     case GRIDDEPCONTROL_OP:
     case ELECT_OP:
-    case LDMATRIX_OP:
-    case STMATRIX_OP:
     case WGMMA_FENCE_OP:
     case WGMMA_COMMIT_GROUP_OP:
     case WGMMA_WAIT_GROUP_OP:
     case SETMAXNREG_OP:
       break;
+    case LDMATRIX_OP: {
+      op = TENSOR_CORE_LOAD_OP;
+      m_space_spec = shared_space;
+      space.set_type(shared_space);
+      for (int option : get_options()) {
+        if (option == X1_OPTION) shared_mem_dispatch_cycles = 1;
+        if (option == X2_OPTION) shared_mem_dispatch_cycles = 2;
+        if (option == X4_OPTION) shared_mem_dispatch_cycles = 4;
+      }
+      assert(shared_mem_dispatch_cycles != 0);
+      break;
+    }
+    case STMATRIX_OP: {
+      op = TENSOR_CORE_STORE_OP;
+      m_space_spec = shared_space;
+      space.set_type(shared_space);
+      for (int option : get_options()) {
+        if (option == X1_OPTION) shared_mem_dispatch_cycles = 1;
+        if (option == X2_OPTION) shared_mem_dispatch_cycles = 2;
+        if (option == X4_OPTION) shared_mem_dispatch_cycles = 4;
+      }
+      assert(shared_mem_dispatch_cycles != 0);
+      break;
+    }
     case SST_OP:
       op = BARRIER_OP;
       break;
@@ -1449,6 +1620,7 @@ void ptx_instruction::set_opcode_and_latency() {
       // ADD,SUB latency
       switch (get_type()) {
         case F32_TYPE:
+        case F32X2_TYPE:
           latency = fp_latency[0];
           initiation_interval = fp_init[0];
           op = SP_OP;
@@ -1459,6 +1631,20 @@ void ptx_instruction::set_opcode_and_latency() {
           initiation_interval = dp_init[0];
           op = DP_OP;
           break;
+        case B64_TYPE:
+        case U64_TYPE:
+        case S64_TYPE: {
+          // A 64-bit integer address add lowers to low/high integer
+          // instructions on Hopper. Keep the factor opt-in so existing
+          // architecture presets retain their established behavior.
+          const unsigned lowering_factor =
+              std::max(1u, gpgpu_ctx->func_sim->int64_add_lowering_factor);
+          latency = int_latency[0] * lowering_factor;
+          initiation_interval =
+              int_init[0] * lowering_factor;
+          op = INTP_OP;
+          break;
+        }
         case B32_TYPE:
         case U32_TYPE:
         case S32_TYPE:
@@ -1474,6 +1660,11 @@ void ptx_instruction::set_opcode_and_latency() {
       // MAX,MIN latency
       switch (get_type()) {
         case F32_TYPE:
+          latency = fp_latency[1];
+          initiation_interval = fp_init[1];
+          op = gpgpu_ctx->func_sim->opcode_f32_minmax_use_int ? INTP_OP : SP_OP;
+          break;
+        case F32X2_TYPE:
           latency = fp_latency[1];
           initiation_interval = fp_init[1];
           op = SP_OP;
@@ -1498,6 +1689,7 @@ void ptx_instruction::set_opcode_and_latency() {
       // MUL latency
       switch (get_type()) {
         case F32_TYPE:
+        case F32X2_TYPE:
           latency = fp_latency[2];
           initiation_interval = fp_init[2];
           op = SP_OP;
@@ -1525,6 +1717,7 @@ void ptx_instruction::set_opcode_and_latency() {
       // MAD latency
       switch (get_type()) {
         case F32_TYPE:
+        case F32X2_TYPE:
           latency = fp_latency[3];
           initiation_interval = fp_init[3];
           op = SP_OP;
@@ -1589,6 +1782,8 @@ void ptx_instruction::set_opcode_and_latency() {
     case RSQRT_OP:
     case RCP_OP:
       latency = sfu_latency;
+      if (m_opcode == EX2_OP && gpgpu_ctx->func_sim->opcode_latency_ex2)
+        latency = gpgpu_ctx->func_sim->opcode_latency_ex2;
       initiation_interval = sfu_init;
       op = SFU_OP;
       break;
@@ -1679,6 +1874,47 @@ void ptx_instruction::set_opcode_and_latency() {
     default:
       break;
   }
+  if (!m_scalar_type.empty() && get_type() == F32X2_TYPE) {
+    switch (m_opcode) {
+      case ADD_OP:
+      case SUB_OP:
+      case MAX_OP:
+      case MIN_OP:
+      case MUL_OP:
+      case MAD_OP:
+      case FMA_OP:
+        if (gpgpu_ctx->func_sim->opcode_latency_f32x2)
+          latency = gpgpu_ctx->func_sim->opcode_latency_f32x2;
+        if (gpgpu_ctx->func_sim->opcode_initiation_f32x2)
+          initiation_interval = gpgpu_ctx->func_sim->opcode_initiation_f32x2;
+        packed_timing = true;
+        break;
+      default:
+        break;
+    }
+  }
+  // The pipeline indexes latency - initiation_interval and reserves a result
+  // bus slot at latency. Reject invalid overrides before either operation.
+  if (int_logic_timing &&
+      (initiation_interval == 0 || latency < initiation_interval ||
+       latency >= simd_function_unit::MAX_ALU_LATENCY)) {
+    fprintf(stderr, "GPGPU-Sim PTX: invalid integer logic timing\n");
+    abort();
+  }
+  if (packed_timing &&
+      (initiation_interval == 0 || latency < initiation_interval ||
+       latency >= simd_function_unit::MAX_ALU_LATENCY)) {
+    fprintf(stderr,
+            "GPGPU-Sim PTX: invalid packed timing: latency=%u initiation=%u\n",
+            latency, initiation_interval);
+    abort();
+  }
+  if ((m_opcode == EX2_OP || m_opcode == SETP_OP || m_opcode == SELP_OP) &&
+      (initiation_interval == 0 || latency < initiation_interval ||
+       latency >= simd_function_unit::MAX_ALU_LATENCY)) {
+    fprintf(stderr, "GPGPU-Sim PTX: invalid EX2/predicate timing\n");
+    abort();
+  }
   set_fp_or_int_archop();
   set_mul_div_or_other_archop();
 }
@@ -1739,8 +1975,24 @@ void ptx_instruction::pre_decode() {
   }
   incount = 0;
   outcount = 0;
+  extra_in.clear();
+  extra_out.clear();
   is_vectorin = 0;
   is_vectorout = 0;
+  vector_elements = 1;
+  switch (get_vector()) {
+    case V2_TYPE:
+      vector_elements = 2;
+      break;
+    case V3_TYPE:
+      vector_elements = 3;
+      break;
+    case V4_TYPE:
+      vector_elements = 4;
+      break;
+    default:
+      break;
+  }
   std::fill_n(arch_reg.src, MAX_REG_OPERANDS, -1);
   std::fill_n(arch_reg.dst, MAX_REG_OPERANDS, -1);
   pred = 0;
@@ -1782,6 +2034,12 @@ void ptx_instruction::pre_decode() {
     unsigned to_type = get_type();
     data_size = datatype2size(to_type);
     memory_op = has_memory_read() ? memory_load : memory_store;
+  }
+  if (m_opcode == LDMATRIX_OP || m_opcode == STMATRIX_OP) {
+    // PTX encodes `.shared` as a matrix opcode modifier instead of a generic
+    // load/store address-space operand.  Make the timing-space explicit.
+    space.set_type(shared_space);
+    data_size = 4;  // Each xN register contains two b16 values.
   }
 
   bool has_dst = false;
@@ -1845,6 +2103,14 @@ void ptx_instruction::pre_decode() {
   set_bar_type();
   // Get register operands
   int n = 0, m = 0;
+  auto add_input = [&](unsigned reg, int arch) {
+    if (m < MAX_INPUT_VALUES)
+      in[m] = reg;
+    else
+      extra_in.push_back(reg);
+    if (m < MAX_REG_OPERANDS) arch_reg.src[m] = arch;
+    ++m;
+  };
   ptx_instruction::const_iterator opr = op_iter_begin();
   for (; opr != op_iter_end(); opr++, n++) {  // process operands
     const operand_info &o = *opr;
@@ -1856,59 +2122,50 @@ void ptx_instruction::pre_decode() {
       } else if (o.is_vector()) {
         is_vectorin = 1;
         unsigned num_elem = o.get_vect_nelem();
-        if (num_elem >= 1) out[0] = o.reg1_num();
-        if (num_elem >= 2) out[1] = o.reg2_num();
-        if (num_elem >= 3) out[2] = o.reg3_num();
-        if (num_elem >= 4) out[3] = o.reg4_num();
-        if (num_elem >= 5) out[4] = o.reg5_num();
-        if (num_elem >= 6) out[5] = o.reg6_num();
-        if (num_elem >= 7) out[6] = o.reg7_num();
-        if (num_elem >= 8) out[7] = o.reg8_num();
+        for (unsigned i = 0; i < num_elem; ++i) {
+          const symbol *component = o.vec_symbol_or_null(i);
+          if (component == NULL || component->is_non_arch_reg()) continue;
+          if (i < MAX_OUTPUT_VALUES)
+            out[i] = component->reg_num();
+          else
+            extra_out.push_back(component->reg_num());
+        }
         for (unsigned i = 0; i < num_elem && i < MAX_REG_OPERANDS; i++)
           arch_reg.dst[i] = o.arch_reg_num(i);
       }
     } else {
       if (o.is_reg() && !o.is_non_arch_reg()) {
-        int reg_num = o.reg_num();
-        arch_reg.src[m] = o.arch_reg_num();
-        switch (m) {
-          case 0:
-            in[0] = reg_num;
-            break;
-          case 1:
-            in[1] = reg_num;
-            break;
-          case 2:
-            in[2] = reg_num;
-            break;
-          default:
-            break;
+        const symbol *pack_low = NULL;
+        const symbol *pack_high = NULL;
+        const symbol *logical_reg = o.get_symbol();
+        function_info *owner =
+            logical_reg == NULL ? NULL : logical_reg->get_pc();
+        if (owner != NULL && owner->expand_compiler_register_pack(
+                                 logical_reg, &pack_low, &pack_high)) {
+          const symbol *pack_sources[2] = {pack_low, pack_high};
+          for (unsigned lane = 0; lane < 2; ++lane) {
+            const symbol *source = pack_sources[lane];
+            assert(source != NULL && !source->is_non_arch_reg());
+            // A brace pack may broadcast one 32-bit register into both lanes.
+            // The compiled packed operation reads that scalar once and applies
+            // it to both lanes, so do not create a duplicate collector input.
+            if (lane != 0 && source == pack_sources[0]) continue;
+            add_input(source->reg_num(), source->arch_reg_num());
+          }
+          continue;
         }
-        m++;
+        add_input(o.reg_num(), o.arch_reg_num());
       } else if (o.is_vector()) {
         // assert(m == 0); //only support 1 vector operand (for textures) right
         // now
         is_vectorout = 1;
         unsigned num_elem = o.get_vect_nelem();
-        if (num_elem >= 1 && m + 0 < MAX_INPUT_VALUES)
-          in[m + 0] = o.reg1_num();
-        if (num_elem >= 2 && m + 1 < MAX_INPUT_VALUES)
-          in[m + 1] = o.reg2_num();
-        if (num_elem >= 3 && m + 2 < MAX_INPUT_VALUES)
-          in[m + 2] = o.reg3_num();
-        if (num_elem >= 4 && m + 3 < MAX_INPUT_VALUES)
-          in[m + 3] = o.reg4_num();
-        if (num_elem >= 5 && m + 4 < MAX_INPUT_VALUES)
-          in[m + 4] = o.reg5_num();
-        if (num_elem >= 6 && m + 5 < MAX_INPUT_VALUES)
-          in[m + 5] = o.reg6_num();
-        if (num_elem >= 7 && m + 6 < MAX_INPUT_VALUES)
-          in[m + 6] = o.reg7_num();
-        if (num_elem >= 8 && m + 7 < MAX_INPUT_VALUES)
-          in[m + 7] = o.reg8_num();
-        for (int i = 0; i < num_elem && m + i < MAX_REG_OPERANDS; i++)
-          arch_reg.src[m + i] = o.arch_reg_num(i);
-        m += num_elem;
+        for (unsigned i = 0; i < num_elem; ++i) {
+          if (o.vec_is_literal(i)) continue;
+          const symbol *component = o.vec_symbol_or_null(i);
+          if (component == NULL || component->is_non_arch_reg()) continue;
+          add_input(component->reg_num(), component->arch_reg_num());
+        }
       }
     }
   }
@@ -2597,6 +2854,13 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
             exit(1);
         }
       }
+      // bar_impl writes the id onto the shared per-PC dyn instruction.
+      // The pipe copy may already hold the previous warp's id, so always
+      // refresh it from this warp's functional result.
+      if (inst_opcode == BAR_OP) {
+        inst.set_bar_id(pI->bar_id);
+        inst.set_bar_count(pI->bar_count);
+      }
       delete pJ;
       pI = pI_saved;
 
@@ -2638,7 +2902,8 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
     unsigned insn_data_size = 0;
     if (inst_opcode != CP_ASYNC_MBARRIER_ARRIVE_OP &&
         (pI->has_memory_read() || pI->has_memory_write())) {
-      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
+      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP ||
+             inst_opcode == LDMATRIX_OP || inst_opcode == STMATRIX_OP))) {
         insn_memaddr = last_eaddr();
         insn_space = last_space();
         if (pI->m_is_ldgsts) {
@@ -2753,7 +3018,8 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
 
     // "Return values"
     if (!skip) {
-      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
+      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP ||
+             inst_opcode == LDMATRIX_OP || inst_opcode == STMATRIX_OP))) {
         inst.space = insn_space;
         inst.set_addr(lane_id, insn_memaddr);
         if (pI->m_is_ldgsts) {

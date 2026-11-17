@@ -60,10 +60,14 @@ void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
   m_warp_id = warp_id;
   m_dynamic_warp_id = dynamic_warp_id;
   issue_cycle = cycle;
+  m_mio_service_cycle = cycle;
   cycles = initiation_interval;
   m_cache_hit = false;
   m_empty = false;
   m_scheduler_id = sch_id;
+  // The pipe register is a copy of the static instruction. Drop any lane
+  // mask that copy carried; func_exec records this issue's DSM atoms.
+  m_dsm_atomic_lanes.reset();
 }
 
 checkpoint::checkpoint() {
@@ -266,10 +270,9 @@ void warp_inst_t::do_atomic(const active_mask_t &access_mask, bool forceDo) {
   assert(m_isatomic && (!m_empty || forceDo));
   if (!should_do_atomic) return;
   for (unsigned i = 0; i < m_config->warp_size; i++) {
-    if (access_mask.test(i)) {
-      dram_callback_t &cb = m_per_scalar_thread[i].callback;
-      if (cb.thread) cb.function(cb.instruction, cb.thread);
-    }
+    if (!access_mask.test(i) || m_dsm_atomic_lanes.test(i)) continue;
+    dram_callback_t &cb = m_per_scalar_thread[i].callback;
+    if (cb.thread && cb.function) cb.function(cb.instruction, cb.thread);
   }
 }
 
@@ -296,8 +299,12 @@ void warp_inst_t::generate_mem_accesses() {
 
   assert(is_load() || is_store());
 
-  // if((space.get_type() != tex_space) && (space.get_type() != const_space))
-  assert(m_per_scalar_thread_valid);  // need address information per thread
+  const bool fixed_shared_dispatch =
+      (space.get_type() == shared_space || space.get_type() == sstarr_space) &&
+      shared_mem_dispatch_cycles != 0;
+  // Ordinary accesses need per-lane addresses. Matrix collectives use their
+  // decoded aligned dispatch width and do not derive timing from lane banks.
+  assert(fixed_shared_dispatch || m_per_scalar_thread_valid);
 
   bool is_write = is_store();
 
@@ -332,6 +339,20 @@ void warp_inst_t::generate_mem_accesses() {
   switch (space.get_type()) {
     case shared_space:
     case sstarr_space: {
+      if (fixed_shared_dispatch) {
+        cycles = shared_mem_dispatch_cycles;
+        if (is_load()) {
+          if (op == TENSOR_CORE_LOAD_OP) {
+            cycles = std::max(cycles, m_config->ldmatrix_min_dispatch_cycles);
+          }
+          cycles = std::max(cycles, m_config->shmem_load_min_dispatch_cycles);
+        } else if (op == STORE_OP) {
+          cycles = std::max(cycles, m_config->shmem_store_min_dispatch_cycles);
+        }
+        m_config->gpgpu_ctx->stats->ptx_file_line_stats_add_smem_bank_conflict(
+            pc, shared_mem_dispatch_cycles);
+        break;
+      }
       unsigned subwarp_size = m_config->warp_size / m_config->mem_warp_parts;
       unsigned total_accesses = 0;
       for (unsigned subwarp = 0; subwarp < m_config->mem_warp_parts;
@@ -344,13 +365,18 @@ void warp_inst_t::generate_mem_accesses() {
         for (unsigned thread = subwarp * subwarp_size;
              thread < (subwarp + 1) * subwarp_size; thread++) {
           if (!active(thread)) continue;
-          new_addr_type addr = m_per_scalar_thread[thread].memreqaddr[0];
-          // FIXME: deferred allocation of shared memory should not accumulate
-          // across kernel launches assert( addr < m_config->gpgpu_shmem_size );
-          unsigned bank = m_config->shmem_bank_func(addr);
-          new_addr_type word =
-              line_size_based_tag_func(addr, m_config->WORD_SIZE);
-          bank_accs[bank][word]++;
+          const new_addr_type base_addr =
+              m_per_scalar_thread[thread].memreqaddr[0];
+          for (unsigned element = 0; element < vector_elements; ++element) {
+            const new_addr_type addr = base_addr + element * data_size;
+            // FIXME: deferred allocation of shared memory should not
+            // accumulate across kernel launches assert( addr <
+            // m_config->gpgpu_shmem_size );
+            unsigned bank = m_config->shmem_bank_func(addr);
+            new_addr_type word =
+                line_size_based_tag_func(addr, m_config->WORD_SIZE);
+            bank_accs[bank][word]++;
+          }
         }
 
         if (m_config->shmem_limited_broadcast) {
@@ -415,9 +441,15 @@ void warp_inst_t::generate_mem_accesses() {
           total_accesses += max_bank_accesses;
         }
       }
-      assert(total_accesses > 0 && total_accesses <= m_config->warp_size);
+      assert(total_accesses > 0 &&
+             total_accesses <= m_config->warp_size * vector_elements);
       cycles = total_accesses;  // shared memory conflicts modeled as larger
                                 // initiation interval
+      if (is_load()) {
+        cycles = std::max(cycles, m_config->shmem_load_min_dispatch_cycles);
+      } else if (op == STORE_OP) {
+        cycles = std::max(cycles, m_config->shmem_store_min_dispatch_cycles);
+      }
       m_config->gpgpu_ctx->stats->ptx_file_line_stats_add_smem_bank_conflict(
           pc, total_accesses);
       break;
@@ -1025,10 +1057,15 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
 }
 
 void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
+  if (warpId == (unsigned)-1)
+    warpId = inst.warp_id();
+  else
+    inst.set_warp_id_func(warpId);
+
   for (unsigned t = 0; t < m_warp_size; t++) {
     if (inst.active(t)) {
-      if (warpId == (unsigned(-1))) warpId = inst.warp_id();
       unsigned tid = m_warp_size * warpId + t;
+      inst.set_current_lane(t);
       m_thread[tid]->ptx_exec_inst(inst, t);
 
       // virtual function

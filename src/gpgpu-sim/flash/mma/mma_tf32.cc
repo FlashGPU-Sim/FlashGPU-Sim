@@ -25,6 +25,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
+#include "mma_trace.h"
 #include "tensor_mma.h"
 
 #include <cstdio>
@@ -175,9 +176,10 @@ void tensor_mma_tf32_impl(const ptx_instruction *pI, core_t *core,
                                       d_regs[3]);
   }
 
-  if (core->get_gpu()->gpgpu_ctx->debug_tensorcore) {
-    printf("GPGPU-Sim: tensor_mma_tf32_impl completed for M16N8K%d\n", K);
-  }
+  MMA_TRACE(core, inst, {
+    mma_trace.append("GPGPU-Sim: tensor_mma_tf32_impl completed for M16N8K%d\n",
+                     K);
+  });
 }
 
 } // namespace flash_gpgpu_sim

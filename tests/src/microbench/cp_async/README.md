@@ -17,7 +17,7 @@ make all ptx-bench
 Or from `tests/`:
 
 ```bash
-make cp-async-bench
+./run_tests.py build --arch sm90 --group microbench --profile cp-async
 ```
 
 Generated binaries are placed under `tests/build/bin/microbench/cp_async/`.
@@ -30,5 +30,3 @@ Useful overrides:
 make ARCH=sm_90a PTX_PROFILE=compute_90a all ptx-bench
 make ARCH=sm_120a PTX_PROFILE=compute_120a all ptx-bench
 ```
-
-Keep final reports outside the source tree.

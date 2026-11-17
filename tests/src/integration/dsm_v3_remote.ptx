@@ -1,0 +1,130 @@
+// Remote st.v3.b32 / st.v3.b64. ptxas rejects .v3, so this is loaded
+// by the simulator PTX parser (DsmTest.VectorRemoteStV3).
+.version 8.7
+.target sm_90
+.address_size 64
+
+	// .globl	dsm_v3_remote
+// _ZZ10dsm_v3_refPjPViE4smem has been demoted
+// _ZZ10dsm_v3_refPjPViE3bar has been demoted
+
+.visible .entry dsm_v3_remote(
+	.param .u64 dsm_v3_remote_param_0,
+	.param .u64 dsm_v3_remote_param_1
+)
+{
+	.reg .pred 	%p<8>;
+	.reg .b32 	%r<26>;
+	.reg .b64 	%rd<21>;
+	// demoted variable
+	.shared .align 16 .b8 _ZZ10dsm_v3_refPjPViE4smem[64];
+	// demoted variable
+	.shared .align 8 .u64 _ZZ10dsm_v3_refPjPViE3bar;
+
+	ld.param.u64 	%rd2, [dsm_v3_remote_param_0];
+	ld.param.u64 	%rd3, [dsm_v3_remote_param_1];
+	cvta.to.global.u64 	%rd1, %rd3;
+	mov.u32 	%r1, %ctaid.x;
+	mov.u32 	%r2, %tid.x;
+	setp.ne.s32 	%p1, %r2, 0;
+	@%p1 bra 	$L__BB0_2;
+
+	mov.u32 	%r3, 0;
+	st.shared.u32 	[_ZZ10dsm_v3_refPjPViE4smem+8], %r3;
+	st.shared.v2.u32 	[_ZZ10dsm_v3_refPjPViE4smem], {%r3, %r3};
+	st.shared.v2.u32 	[_ZZ10dsm_v3_refPjPViE4smem+32], {%r3, %r3};
+	st.shared.v4.u32 	[_ZZ10dsm_v3_refPjPViE4smem+16], {%r3, %r3, %r3, %r3};
+
+$L__BB0_2:
+	setp.ne.s32 	%p3, %r1, 1;
+	or.pred  	%p4, %p3, %p1;
+	@%p4 bra 	$L__BB0_4;
+
+	cvta.to.global.u64 	%rd4, %rd2;
+	mov.u32 	%r4, _ZZ10dsm_v3_refPjPViE3bar;
+	mov.u32 	%r5, 1;
+	// begin inline asm
+	mbarrier.init.shared::cta.b64 [%r4], %r5;
+
+	// end inline asm
+	st.volatile.global.u32 	[%rd1], %r5;
+	membar.sys;
+	mov.u32 	%r7, 0;
+	// begin inline asm
+	{
+.reg .pred P1;
+LAB_WAIT:
+mbarrier.try_wait.parity.shared::cta.b64 P1, [%r4], %r7;
+@!P1 bra.uni LAB_WAIT;
+}
+
+	// end inline asm
+	.pragma "used_bytes_mask 4095";
+	ld.shared.v4.u32 	{%r8, %r9, %r10, %r11}, [_ZZ10dsm_v3_refPjPViE4smem];
+	st.global.u32 	[%rd4], %r8;
+	st.global.u32 	[%rd4+4], %r9;
+	st.global.u32 	[%rd4+8], %r10;
+	ld.shared.v2.u64 	{%rd5, %rd6}, [_ZZ10dsm_v3_refPjPViE4smem+16];
+	st.global.u32 	[%rd4+12], %rd5;
+	shr.u64 	%rd9, %rd5, 32;
+	st.global.u32 	[%rd4+16], %rd9;
+	st.global.u32 	[%rd4+20], %rd6;
+	shr.u64 	%rd10, %rd6, 32;
+	st.global.u32 	[%rd4+24], %rd10;
+	ld.shared.u64 	%rd11, [_ZZ10dsm_v3_refPjPViE4smem+32];
+	st.global.u32 	[%rd4+28], %rd11;
+	shr.u64 	%rd12, %rd11, 32;
+	st.global.u32 	[%rd4+32], %rd12;
+	st.volatile.global.u32 	[%rd1+4], %r5;
+	membar.sys;
+
+$L__BB0_4:
+	or.b32  	%r15, %r1, %r2;
+	setp.ne.s32 	%p5, %r15, 0;
+	@%p5 bra 	$L__BB0_8;
+
+$L__BB0_5:
+	ld.volatile.global.u32 	%r16, [%rd1];
+	setp.eq.s32 	%p6, %r16, 0;
+	@%p6 bra 	$L__BB0_5;
+
+	mov.u32 	%r20, _ZZ10dsm_v3_refPjPViE4smem;
+	{ .reg .b64 %tmp;
+	  cvt.u64.u32 	%tmp, %r20;
+	  cvta.shared.u64 	%rd14, %tmp; }
+	mov.u32 	%r19, 1;
+	// begin inline asm
+	mapa.u64 %rd13, %rd14, %r19;
+
+	// end inline asm
+	mov.u32 	%r21, 0xA1A1A1A1;
+	mov.u32 	%r22, 0xB2B2B2B2;
+	mov.u32 	%r23, 0xC3C3C3C3;
+	st.v3.b32 	[%rd13], {%r21, %r22, %r23};
+	mov.u64 	%rd18, 0x1111111111111111;
+	mov.u64 	%rd19, 0x2222222222222222;
+	mov.u64 	%rd20, 0x3333333333333333;
+	st.v3.b64 	[%rd13+16], {%rd18, %rd19, %rd20};
+	mov.u32 	%r24, _ZZ10dsm_v3_refPjPViE3bar;
+	{ .reg .b64 %tmp;
+	  cvt.u64.u32 	%tmp, %r24;
+	  cvta.shared.u64 	%rd16, %tmp; }
+	// begin inline asm
+	mapa.u64 %rd15, %rd16, %r19;
+
+	// end inline asm
+	// begin inline asm
+	mbarrier.arrive.shared::cta.b64 _, [%rd15], %r19;
+
+	// end inline asm
+
+$L__BB0_7:
+	ld.volatile.global.u32 	%r25, [%rd1+4];
+	setp.eq.s32 	%p7, %r25, 0;
+	@%p7 bra 	$L__BB0_7;
+
+$L__BB0_8:
+	ret;
+
+}
+

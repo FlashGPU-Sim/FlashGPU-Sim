@@ -42,7 +42,7 @@ jobs:
 
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 100
 
     permissions:
       contents: read
@@ -70,7 +70,7 @@ jobs:
 
       - name: Run simulation tests in container
         id: tests
-        timeout-minutes: 50
+        timeout-minutes: 80
         run: |
           docker run --rm \
             --memory=7g \

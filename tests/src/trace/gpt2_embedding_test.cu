@@ -34,13 +34,15 @@ int main() {
     if (!module) return 1;
     CUfunction func = get_kernel(module, "embedding_kernel");
     if (!func) return 1;
-    set_shared_mem(func, 2056);
+    if (set_shared_mem(func, 2056)) return 1;
 
     // Generate random test data on host
     srand(42);
     int32_t* h_tokens = (int32_t*)malloc(tokens_size);
     uint16_t* h_tok_emb = (uint16_t*)malloc(tok_emb_size);
     uint16_t* h_pos_emb = (uint16_t*)malloc(pos_emb_size);
+
+    if (!h_tokens || !h_tok_emb || !h_pos_emb) return 1;
 
     for (int i = 0; i < T; i++)
         h_tokens[i] = rand() % V;
@@ -53,6 +55,7 @@ int main() {
 
     // CPU reference: out[t,c] = tok_emb[tokens[t], c] + pos_emb[t, c]
     uint16_t* h_expected = (uint16_t*)malloc(out_size);
+    if (!h_expected) return 1;
     for (int t = 0; t < T; t++) {
         int tok_id = h_tokens[t];
         for (int c = 0; c < C; c++) {
@@ -64,21 +67,23 @@ int main() {
 
     // Upload to GPU
     void* d_tokens;
-    cudaMalloc(&d_tokens, tokens_size);
-    cudaMemcpy(d_tokens, h_tokens, tokens_size, cudaMemcpyHostToDevice);
+    if (cudaMalloc(&d_tokens, tokens_size) != cudaSuccess) return 1;
+    if (cudaMemcpy(d_tokens, h_tokens, tokens_size, cudaMemcpyHostToDevice) != cudaSuccess) return 1;
 
     void* d_tok_emb;
-    cudaMalloc(&d_tok_emb, tok_emb_size);
-    cudaMemcpy(d_tok_emb, h_tok_emb, tok_emb_size, cudaMemcpyHostToDevice);
+    if (cudaMalloc(&d_tok_emb, tok_emb_size) != cudaSuccess) return 1;
+    if (cudaMemcpy(d_tok_emb, h_tok_emb, tok_emb_size, cudaMemcpyHostToDevice) != cudaSuccess) return 1;
 
     void* d_pos_emb;
-    cudaMalloc(&d_pos_emb, pos_emb_size);
-    cudaMemcpy(d_pos_emb, h_pos_emb, pos_emb_size, cudaMemcpyHostToDevice);
+    if (cudaMalloc(&d_pos_emb, pos_emb_size) != cudaSuccess) return 1;
+    if (cudaMemcpy(d_pos_emb, h_pos_emb, pos_emb_size, cudaMemcpyHostToDevice) != cudaSuccess) return 1;
 
     void* d_out = alloc_gpu(out_size);
+    if (!d_out) return 1;
 
     // Triton runtime scratch buffers
     void* global_scratch = alloc_gpu(2048);
+    if (!global_scratch) return 1;
     void* profile_scratch = NULL;
 
     // Kernel args: tokens, tok_emb, pos_emb, out, T, C, V, global_scratch, profile_scratch

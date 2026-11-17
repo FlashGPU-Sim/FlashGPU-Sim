@@ -8,18 +8,6 @@
 #include "gpgpu-sim/gpu-sim.h"
 #include "stream_manager.h"
 
-void increment_x_then_y_then_z(dim3 &i, const dim3 &bound) {
-  i.x++;
-  if (i.x >= bound.x) {
-    i.x = 0;
-    i.y++;
-    if (i.y >= bound.y) {
-      i.y = 0;
-      if (i.z < bound.z) i.z++;
-    }
-  }
-}
-
 kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
                              class function_info *entry,
                              unsigned long long streamID) {
@@ -47,6 +35,12 @@ kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
 
   cache_config_set = false;
   m_dynamic_smem = 0;
+  m_is_cluster_launch = false;
+  m_cluster_dim = dim3(0, 0, 0);
+  m_ctas_per_cluster = 1;
+  m_open_tb_phys_cluster = (unsigned)-1;
+  m_open_tb_cluster_group = (unsigned)-1;
+  m_open_tb_remaining = 0;
 }
 
 /*A snapshot of the texture mappings needs to be stored in the kernel's info as
@@ -81,6 +75,12 @@ kernel_info_t::kernel_info_t(
   m_NameToCudaArray = nameToCudaArray;
   m_NameToTextureInfo = nameToTextureInfo;
   m_dynamic_smem = 0;
+  m_is_cluster_launch = false;
+  m_cluster_dim = dim3(0, 0, 0);
+  m_ctas_per_cluster = 1;
+  m_open_tb_phys_cluster = (unsigned)-1;
+  m_open_tb_cluster_group = (unsigned)-1;
+  m_open_tb_remaining = 0;
 }
 
 kernel_info_t::~kernel_info_t() {

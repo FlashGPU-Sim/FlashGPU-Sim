@@ -40,6 +40,7 @@
 #include "zlib.h"
 
 #include "dram.h"
+#include "dsm_endpoint.h"
 #include "mem_fetch.h"
 #include "shader.h"
 #include "shader_trace.h"
@@ -261,6 +262,24 @@ void memory_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_simple_dram_model", OPT_BOOL,
                          &simple_dram_model,
                          "simple_dram_model with fixed latency and BW", "0");
+  option_parser_register(
+      opp, "-gpgpu_simple_dram_service_rate_num", OPT_UINT32,
+      &simple_dram_service_rate_num,
+      "simple DRAM service-rate numerator in DRAM atoms per partition per "
+      "DRAM tick",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_simple_dram_service_rate_den", OPT_UINT32,
+      &simple_dram_service_rate_den,
+      "simple DRAM service-rate denominator in DRAM atoms per partition per "
+      "DRAM tick",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_simple_dram_max_inflight", OPT_UINT32,
+      &simple_dram_max_inflight,
+      "maximum in-flight requests per memory partition in the simple DRAM "
+      "model (0 derives the limit from detailed DRAM queue sizes)",
+      "0");
   option_parser_register(opp, "-gpgpu_dram_scheduler", OPT_INT32,
                          &scheduler_type, "0 = fifo, 1 = FR-FCFS (defaul)",
                          "1");
@@ -323,6 +342,12 @@ void memory_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_l2_rop_latency", OPT_UINT32, &rop_latency,
                          "ROP queue latency (default 85)", "85");
   option_parser_register(
+      opp, "-gpgpu_l2_rop_delay_output_sectors_per_cycle", OPT_UINT32,
+      &l2_rop_delay_output_sectors_per_cycle,
+      "Ready ROP-delay output service per memory subpartition and L2 tick, "
+      "in 32-byte sector work packages (default 1 preserves legacy)",
+      "1");
+  option_parser_register(
       opp, "-gpgpu_l2_partition_count", OPT_UINT32, &l2_partition_count,
       "Number of coarse L2/NOC locality partitions used for remote L2 latency "
       "modeling. 1 disables remote partition detection.",
@@ -332,6 +357,47 @@ void memory_config::reg_options(class OptionParser *opp) {
       &l2_partition_extra_latency,
       "Extra cycles charged when an SM accesses a remote coarse L2 partition "
       "(default 0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_l2_multi_issue_port_model", OPT_UINT32,
+      &l2_multi_issue_port_model,
+      "L2 internal port model: 0 = legacy single-request busy-delay data/fill "
+      "ports, 1 = independent multi-issue lookup/data/fill sector ports",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_l2_lookup_sectors_per_cycle", OPT_UINT32,
+      &l2_lookup_sectors_per_cycle,
+      "Multi-issue L2 tag lookup width per memory subpartition and L2 cycle, "
+      "in 32-byte sector work packages (used only when port model = 1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_data_port_sectors_per_cycle", OPT_UINT32,
+      &l2_data_port_sectors_per_cycle,
+      "Multi-issue L2 data-port service numerator per memory subpartition, "
+      "in 32-byte sector work packages (used only when port model = 1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_data_port_cycle_period", OPT_UINT32,
+      &l2_data_port_cycle_period,
+      "L2 ticks per data-port service numerator (default 1 preserves integer "
+      "widths; unused whole-sector slots do not accumulate)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_fill_port_sectors_per_cycle", OPT_UINT32,
+      &l2_fill_port_sectors_per_cycle,
+      "Multi-issue L2 fill-port width per memory subpartition and L2 cycle, "
+      "in 32-byte sector work packages (used only when port model = 1)",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_l2_shared_data_array", OPT_BOOL,
+      &l2_shared_data_array,
+      "Charge L2 fills and miss read responses to the shared data-array budget "
+      "(multi-issue model only; default preserves independent ports)", "0");
+  option_parser_register(
+      opp, "-gpgpu_l2_tma_request_coalescing", OPT_BOOL,
+      &l2_tma_request_coalescing,
+      "Coalesce identical outstanding TMA read sectors at each L2 "
+      "subpartition while retaining one response per requester (default=0)",
       "0");
   option_parser_register(opp, "-dram_latency", OPT_UINT32, &dram_latency,
                          "DRAM latency (default 30)", "30");
@@ -358,10 +424,27 @@ void memory_config::reg_options(class OptionParser *opp) {
       "elimnate_rw_turnaround i.e set tWTR and tRTW = 0", "0");
   option_parser_register(opp, "-icnt_flit_size", OPT_UINT32, &icnt_flit_size,
                          "icnt_flit_size", "32");
+  option_parser_register(
+      opp, "-gpgpu_l2_request_ingress_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_l2_request_ingress_sectors_per_cycle,
+      "Request sector slots entering each L2 subpartition per L2 tick "
+      "(0=legacy)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_l2_response_egress_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_l2_response_egress_sectors_per_cycle,
+      "Response sector slots leaving each L2 subpartition per ICNT tick "
+      "(0=legacy)",
+      "0");
   // SST mode activate
   option_parser_register(opp, "-SST_mode", OPT_BOOL, &SST_mode, "SST mode",
                          "0");
   m_address_mapping.addrdec_setoption(opp);
+}
+
+void shader_core_config::apply_gpc_knob_aliases() {
+  gpc_apply_topology_aliases(m_opp, &n_simt_clusters, &n_simt_cores_per_cluster,
+                             &num_gpcs_alias, &num_sms_per_gpc_alias);
 }
 
 void shader_core_config::reg_options(class OptionParser *opp) {
@@ -411,6 +494,22 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &m_L1D_config.l1_latency, "L1 Hit Latency", "1");
   option_parser_register(opp, "-gpgpu_smem_latency", OPT_UINT32, &smem_latency,
                          "smem Latency", "3");
+  option_parser_register(opp, "-gpgpu_smem_store_visibility_latency",
+                         OPT_UINT32, &gpgpu_smem_store_visibility_latency,
+                         "Shared-store dispatch completion to named-barrier "
+                         "issue delay",
+                         "0");
+  option_parser_register(
+      opp, "-gpgpu_barrier_release_latency", OPT_UINT32,
+      &gpgpu_barrier_release_latency,
+      "CTA bar.sync satisfaction-to-warp-release latency (default=0)", "0");
+  option_parser_register(opp, "-gpgpu_named_barrier_arrive_latency", OPT_UINT32,
+                         &gpgpu_named_barrier_arrive_latency,
+                         "Named arrive issue to issuing-warp readiness", "0");
+  option_parser_register(opp, "-gpgpu_named_barrier_arrive_visibility_latency",
+                         OPT_UINT32,
+                         &gpgpu_named_barrier_arrive_visibility_latency,
+                         "Named arrive issue to waiter-visible arrival", "0");
   option_parser_register(opp, "-gpgpu_cache:dl1PrefL1", OPT_CSTR,
                          &m_L1D_config.m_config_stringPrefL1,
                          "per-shader L1 data cache config "
@@ -465,11 +564,34 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_num_cta_barriers", OPT_UINT32, &max_barriers_per_cta,
       "Maximum number of named barriers per CTA (default 16)", "16");
+  m_opp = opp;
   option_parser_register(opp, "-gpgpu_n_clusters", OPT_UINT32, &n_simt_clusters,
-                         "number of processing clusters", "10");
+                         "number of processing clusters (GPC count; alias of "
+                         "-gpgpu_num_gpcs)",
+                         "10");
+  option_parser_register(opp, "-gpgpu_num_gpcs", OPT_UINT32, &num_gpcs_alias,
+                         "number of GPCs (alias of -gpgpu_n_clusters)", "0");
   option_parser_register(opp, "-gpgpu_n_cores_per_cluster", OPT_UINT32,
                          &n_simt_cores_per_cluster,
-                         "number of simd cores per cluster", "3");
+                         "enabled SMs per GPC (alias of -gpgpu_num_sms_per_gpc)",
+                         "3");
+  option_parser_register(opp, "-gpgpu_num_sms_per_gpc", OPT_UINT32,
+                         &num_sms_per_gpc_alias,
+                         "enabled SMs per GPC (alias of "
+                         "-gpgpu_n_cores_per_cluster)",
+                         "0");
+  option_parser_register(
+      opp, "-gpgpu_gpc_sms", OPT_CSTR, &gpgpu_gpc_sms,
+      "per-GPC enabled SM counts, comma-separated (e.g. "
+      "16,16,16,16,16,16,18,18). Empty = uniform num_sms_per_gpc. inferred "
+      "H200 packing: 6x16+2x18=132. Omit scalar sms-per-gpc or set it to the "
+      "max.",
+      "");
+  option_parser_register(opp, "-gpgpu_dsm_cpcs_per_gpc", OPT_UINT32,
+                         &dsm_cpcs_per_gpc,
+                         "CPCs per GPC (each CPC has 6 SM slots; extra slots "
+                         "are PG'd)",
+                         "3");
   option_parser_register(opp, "-gpgpu_n_cluster_ejection_buffer_size",
                          OPT_UINT32, &n_simt_ejection_buffer_size,
                          "number of packets in ejection buffer", "8");
@@ -477,6 +599,30 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_n_ldst_response_buffer_size", OPT_UINT32,
       &ldst_unit_response_queue_size,
       "number of response packets in ld/st unit ejection buffer", "2");
+  option_parser_register(
+      opp, "-gpgpu_cluster_response_ingress_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_cluster_response_ingress_sectors_per_cycle,
+      "Reply sectors ejected into the cluster per target SM and core tick "
+      "(0=legacy)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_cluster_response_dispatch_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_cluster_response_dispatch_sectors_per_cycle,
+      "Shared response sectors dispatched per target SM and core tick "
+      "(0=legacy)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_ldst_request_width", OPT_UINT32,
+      &gpgpu_ldst_request_width,
+      "Global/local coalescer children injected per SM and core tick; "
+      "on sector-coalescing architectures each child is 32 bytes (0=legacy)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_ldst_response_sectors_per_cycle", OPT_UINT32,
+      &gpgpu_ldst_response_sectors_per_cycle,
+      "LD/ST response sectors advanced per SM and core tick "
+      "(0=legacy)",
+      "0");
   option_parser_register(
       opp, "-gpgpu_shmem_per_block", OPT_UINT32, &gpgpu_shmem_per_block,
       "Size of shared memory per thread block or CTA (default 48kB)", "49152");
@@ -521,8 +667,32 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Number of banks in the shared memory in each shader core (default 16)",
       "16");
   option_parser_register(
+      opp, "-gpgpu_shmem_bytes_per_cycle", OPT_UINT32,
+      &gpgpu_shmem_bytes_per_cycle,
+      "Per-SM shared-memory service byte budget (0=unlimited; local LSU, "
+      "TMA landing, and DSM ingress share it)",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_shmem_limited_broadcast", OPT_BOOL, &shmem_limited_broadcast,
       "Limit shared memory to do one broadcast per cycle (default on)", "1");
+  option_parser_register(
+      opp, "-gpgpu_shmem_load_min_dispatch_cycles", OPT_UINT32,
+      &shmem_load_min_dispatch_cycles,
+      "Minimum shared-load dispatch service time per warp instruction in "
+      "core cycles",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_shmem_store_min_dispatch_cycles", OPT_UINT32,
+      &shmem_store_min_dispatch_cycles,
+      "Minimum shared-store dispatch service time per warp instruction in "
+      "core cycles",
+      "1");
+  option_parser_register(
+      opp, "-gpgpu_ldmatrix_min_dispatch_cycles", OPT_UINT32,
+      &ldmatrix_min_dispatch_cycles,
+      "Minimum LDMATRIX dispatch service time per warp instruction in core "
+      "cycles",
+      "1");
   option_parser_register(opp, "-gpgpu_shmem_warp_parts", OPT_INT32,
                          &mem_warp_parts,
                          "Number of portions a warp is divided into for shared "
@@ -698,6 +868,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Ideal tensor-core pre-FU issue queue depth. 0 disables the queue.",
       "0");
   option_parser_register(
+      opp, "-gpgpu_alu_scoreboard_forwarding", OPT_BOOL,
+      &gpgpu_alu_scoreboard_forwarding,
+      "Expose ALU results before physical writeback using opcode latency as "
+      "issue-to-dependent-ready with execution queue delays preserved",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_tensor_core_skip_writeback", OPT_BOOL,
       &gpgpu_tensor_core_skip_writeback,
       "Complete tensor-core instructions without using the register-file "
@@ -713,19 +889,15 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &gpgpu_num_tensormap_units,
                          "Number of tensor-map descriptor units (default=0)",
                          "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_transaction_slots", OPT_UINT32,
+      &gpgpu_tma_transaction_slots,
+      "Max active TMA transactions accepted from warps per SM "
+      "(default=0, 0=unlimited)",
+      "0");
   option_parser_register(opp, "-gpgpu_tma_max_inflight", OPT_UINT32,
                          &gpgpu_tma_max_inflight,
                          "Max in-flight TMA mem_fetch requests per SM (default=0, 0=unlimited)", "0");
-  option_parser_register(opp, "-gpgpu_tma_tx_quota", OPT_UINT32,
-                         &gpgpu_tma_tx_quota,
-                         "Max in-flight mem_fetch per TMA transaction (default=0, 0=unlimited)", "0");
-  option_parser_register(
-      opp, "-gpgpu_tma_quota_segment_bytes", OPT_UINT32,
-      &gpgpu_tma_quota_segment_bytes,
-      "Scale the base per-transaction quota by ceil(transaction bytes / "
-      "segment bytes), modeling independently credited internal transfer "
-      "segments (default=0, 0=disabled)",
-      "0");
   option_parser_register(opp, "-gpgpu_tma_response_width", OPT_UINT32,
                          &gpgpu_tma_response_width,
                          "TMA response tokens accepted per SM per cycle (default=1)", "1");
@@ -744,6 +916,37 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "TMA request-side byte issue budget per TMA unit per cycle "
       "(default=0, disabled; e.g. 32 makes one 128B coalesced request consume "
       "four cycles)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_issue_to_next_instruction_latency", OPT_UINT32,
+      &gpgpu_tma_issue_to_next_instruction_latency,
+      "Minimum cycles from an active regular TMA copy issue until that warp "
+      "may issue its next instruction; independent of asynchronous data "
+      "completion (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_shmem_load_issue_interval", OPT_UINT32,
+      &gpgpu_shmem_load_issue_interval,
+      "Minimum cycles between ordinary shared-load issues from the same "
+      "warp; other instructions remain issuable (default=0, disabled)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_shmem_store_issue_interval", OPT_UINT32,
+      &gpgpu_shmem_store_issue_interval,
+      "Minimum cycles between ordinary shared-store issues from the same "
+      "warp; other instructions remain issuable (default=0, disabled)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_mio_issue_interval", OPT_UINT32,
+      &gpgpu_mio_issue_interval,
+      "Minimum cycles between recognized MIO-routed instruction issues "
+      "across the entire SM (default=0, disabled)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_mio_issue_queue_depth", OPT_UINT32,
+      &gpgpu_mio_issue_queue_depth,
+      "Frontend queue depth for recurrent aggregate MIO service; 0 uses a "
+      "strict issue gate (default=0)",
       "0");
   option_parser_register(
       opp, "-gpgpu_cp_async_max_inflight", OPT_UINT32,
@@ -782,6 +985,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cta_load_balance", OPT_BOOL,
                          &gpgpu_cta_load_balance,
                          "Cap CTAs per core to ceil(total_ctas/n_cores) for load balancing (default=0)", "0");
+  option_parser_register(
+      opp, "-gpgpu_cta_replacement_latency", OPT_UINT32,
+      &gpgpu_cta_replacement_latency,
+      "Per-SM hardware CTA slot transition latency after resource release; "
+      "a never-used slot is immediately available (default=0)",
+      "0");
   option_parser_register(opp, "-gpgpu_tma_idealized_memory", OPT_UINT32,
                          &gpgpu_tma_idealized_memory,
                          "Idealized TMA memory: all requests complete instantly (default=0)", "0");
@@ -793,7 +1002,142 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "Latency (cycles) for arrive_tx shared memory write before mbarrier update (default=0)", "0");
   option_parser_register(opp, "-gpgpu_mbarrier_trywait_latency", OPT_UINT32,
                          &gpgpu_mbarrier_trywait_latency,
-                         "Latency (cycles) for mbarrier.try_wait polling before warp release (default=0)", "0");
+                         "Maximum modeled suspension (core cycles) for a "
+                         "no-hint mbarrier.try_wait; 0 returns false "
+                         "immediately when incomplete (default=32)",
+                         "32");
+  option_parser_register(
+      opp, "-gpgpu_mbarrier_predicate_latency", OPT_UINT32,
+      &gpgpu_mbarrier_predicate_latency,
+      "Minimum issue-to-predicate-ready latency (core cycles) for a no-hint "
+      "mbarrier.try_wait; 0 preserves immediate results (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_mbarrier_phase_wakeup_latency", OPT_UINT32,
+      &gpgpu_mbarrier_phase_wakeup_latency,
+      "Additional delay (core cycles) after a phase notification makes a "
+      "suspended mbarrier.try_wait succeed (default=0)",
+      "0");
+
+  option_parser_register(
+      opp, "-gpgpu_tma_multicast_latency", OPT_UINT32,
+      &gpgpu_tma_multicast_latency,
+      "Fixed TMA multicast completion latency; no network or contention "
+      "is modeled (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_cluster_hang_watchdog", OPT_UINT32,
+      &gpgpu_cluster_hang_watchdog,
+      "Abort after this many cycles of a bare peer spin or mixed "
+      "bar.sync+single-thread try_wait (0=off; default 8192). Ignored "
+      "unless -gpgpu_dsm_enable or -gpgpu_mbarrier_cluster_enable, or "
+      "FLASHGPU_CLUSTER_HANG_WATCHDOG is set",
+      "8192");
+  option_parser_register(opp, "-gpgpu_mbarrier_cluster_enable", OPT_BOOL,
+                         &gpgpu_mbarrier_cluster_enable,
+                         "Allow mbarrier ops on remote (DSM-mapped) shared addresses (default=0)",
+                         "0");
+  option_parser_register(
+      opp, "-gpgpu_dsm_enable", OPT_BOOL, &gpgpu_dsm_enable,
+      "Use intra-GPC fabric for cluster ld/st/atom and remote "
+      "mbarrier (default=0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_dsm_flit_payload_bytes", OPT_UINT32,
+      &gpgpu_dsm_flit_payload_bytes,
+      "DSM fabric payload bytes per grant (default=32; header unmodeled)",
+      "32");
+  option_parser_register(
+      opp, "-gpgpu_dsm_flit_bytes", OPT_UINT32, &gpgpu_dsm_flit_payload_bytes,
+      "Alias of -gpgpu_dsm_flit_payload_bytes", "32");
+  option_parser_register(opp, "-gpgpu_dsm_lanes_per_cpc", OPT_UINT32,
+                         &gpgpu_dsm_lanes_per_cpc,
+                         "GPCARB outputs per CPC (default=4)", "4");
+  option_parser_register(
+      opp, "-gpgpu_dsm_gx_planes", OPT_UINT32, &gpgpu_dsm_gx_planes,
+      "Parallel GX switch planes (default=2; not request/response VCs). "
+      "Routes = gx_planes * lanes_per_cpc; GPCARB still grants at most "
+      "lanes_per_cpc per CPC per cycle",
+      "2");
+  option_parser_register(
+      opp, "-gpgpu_dsm_shaper", OPT_CSTR, &gpgpu_dsm_shaper,
+      "SM send shaper: skip_mod | fixed_tdm | hard_rate_cap (default skip_mod)",
+      "skip_mod");
+  option_parser_register(opp, "-gpgpu_dsm_shaper_period", OPT_UINT32,
+                         &gpgpu_dsm_shaper_period,
+                         "Shaper period for skip_mod (default=3)", "3");
+  option_parser_register(
+      opp, "-gpgpu_dsm_shaper_index", OPT_CSTR, &gpgpu_dsm_shaper_index,
+      "skip_mod index: sm_id or cpc_slot (default sm_id)", "sm_id");
+  option_parser_register(
+      opp, "-gpgpu_dsm_request_vc_flits", OPT_UINT32,
+      &gpgpu_dsm_request_vc_flits,
+      "Request VC ingress depth in payload flits (default=64)", "64");
+  option_parser_register(
+      opp, "-gpgpu_dsm_response_vc_flits", OPT_UINT32,
+      &gpgpu_dsm_response_vc_flits,
+      "Response VC ingress depth in payload flits (default=64)", "64");
+  option_parser_register(
+      opp, "-gpgpu_dsm_ejection_vc_flits", OPT_UINT32,
+      &gpgpu_dsm_ejection_vc_flits,
+      "Per-dest ejection depth in payload flits (default=64)", "64");
+  option_parser_register(
+      opp, "-gpgpu_dsm_vc_arbiter", OPT_CSTR, &gpgpu_dsm_vc_arbiter,
+      "VC select: bounded_response_priority (default)",
+      "bounded_response_priority");
+  option_parser_register(
+      opp, "-gpgpu_dsm_route_policy", OPT_CSTR, &gpgpu_dsm_route_policy,
+      "GPCMMU hash: deterministic_hash (default)", "deterministic_hash");
+  option_parser_register(opp, "-gpgpu_dsm_route_seed", OPT_UINT32,
+                         &gpgpu_dsm_route_seed, "GPCMMU hash seed (default=0)",
+                         "0");
+  option_parser_register(
+      opp, "-gpgpu_dsm_max_outstanding_per_sm", OPT_UINT32,
+      &gpgpu_dsm_max_outstanding_per_sm,
+      "Endpoint outstanding transaction window per SM (default=16; not a "
+      "VC/link credit)",
+      "16");
+  option_parser_register(
+      opp, "-gpgpu_dsm_ack_coalesce_threshold", OPT_UINT32,
+      &gpgpu_dsm_ack_coalesce_threshold,
+      "Store/TMA completions per coalesced write_ack (default=4)", "4");
+  option_parser_register(
+      opp, "-gpgpu_dsm_ack_timeout_cycles", OPT_UINT32,
+      &gpgpu_dsm_ack_timeout_cycles,
+      "Flush remaining ACK debt after this many cycles (default=64)", "64");
+  option_parser_register(
+      opp, "-gpgpu_dsm_base_latency_cycles", OPT_UINT32,
+      &gpgpu_dsm_base_latency_cycles,
+      "DSM fabric pipeline floor in addition to flit grants (default=0). "
+      "A packet is visible at dest at max(tail_arrival, injected+floor). "
+      "Does not add flit occupancy.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_dsm_store_visibility_latency_cycles", OPT_UINT32,
+      &gpgpu_dsm_store_visibility_latency_cycles,
+      "Remote DSM store visibility floor from injection (default=0 means "
+      "use the generic fabric floor).",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_load_completion_base_cycles", OPT_UINT32,
+      &gpgpu_tma_load_completion_base_cycles,
+      "Architectural non-cluster TMA load completion cycles from transaction "
+      "creation, before the size term (default=0 disables).",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_load_completion_cycles_per_kib", OPT_UINT32,
+      &gpgpu_tma_load_completion_cycles_per_kib,
+      "Architectural non-cluster TMA load completion size term (default=0).",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_cluster_load_completion_base_cycles", OPT_UINT32,
+      &gpgpu_tma_cluster_load_completion_base_cycles,
+      "Cluster global-to-shared TMA completion floor from creation; actual "
+      "memory completion is also required (default=0 disables).", "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_cluster_load_completion_cycles_per_kib", OPT_UINT32,
+      &gpgpu_tma_cluster_load_completion_cycles_per_kib,
+      "Cluster global-to-shared TMA completion floor size term (default=0).", "0");
   option_parser_register(
       opp, "-gpgpu_wgmma_issue_chain_ss", OPT_CSTR,
       &gpgpu_wgmma_issue_chain_ss,
@@ -836,6 +1180,58 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "WGMMA (default=0)",
       "0");
   option_parser_register(
+      opp, "-ptx_opcode_tcgen05_mma_issue_interval", OPT_UINT32,
+      &ptx_opcode_tcgen05_mma_issue_interval,
+      "Minimum cycles between accepted TCGen05 FP16 MMA operations", "1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_mma_completion_tail_latency", OPT_UINT32,
+      &ptx_opcode_tcgen05_mma_completion_tail_latency,
+      "Fixed TCGen05 MMA completion tail in cycles", "0");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_mma_f16_flops_per_cycle", OPT_UINT32,
+      &ptx_opcode_tcgen05_mma_f16_flops_per_cycle,
+      "Per-SM dense FP16 TCGen05 backend throughput in FLOP/cycle", "1");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_async_queue_depth", OPT_UINT32,
+      &gpgpu_tcgen05_async_queue_depth,
+      "Maximum per-SM outstanding TCGen05 operations (0=unlimited)", "0");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_cp_completion_latency", OPT_CSTR,
+      &ptx_opcode_tcgen05_cp_completion_latency,
+      "TCGen05 CP completion cycles for "
+      "<128x256b,128x128b,64x128b,32x128b,4x256b>",
+      "1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_cp_initiation_interval", OPT_CSTR,
+      &ptx_opcode_tcgen05_cp_initiation_interval,
+      "TCGen05 CP initiation intervals for "
+      "<128x256b,128x128b,64x128b,32x128b,4x256b>",
+      "1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_ld_completion_latency", OPT_CSTR,
+      &ptx_opcode_tcgen05_ld_completion_latency,
+      "TCGen05 LD completion cycles for <x1,x2,x4,x8,x16,x32,x64,x128>",
+      "1,1,1,1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_ld_initiation_interval", OPT_CSTR,
+      &ptx_opcode_tcgen05_ld_initiation_interval,
+      "TCGen05 LD initiation intervals for <x1,x2,x4,x8,x16,x32,x64,x128>",
+      "1,1,1,1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_st_completion_latency", OPT_CSTR,
+      &ptx_opcode_tcgen05_st_completion_latency,
+      "TCGen05 ST completion cycles for <x1,x2,x4,x8,x16,x32,x64,x128>",
+      "1,1,1,1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_st_initiation_interval", OPT_CSTR,
+      &ptx_opcode_tcgen05_st_initiation_interval,
+      "TCGen05 ST initiation intervals for <x1,x2,x4,x8,x16,x32,x64,x128>",
+      "1,1,1,1,1,1,1,1");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_shift_latency", OPT_UINT32,
+      &ptx_opcode_tcgen05_shift_latency,
+      "TCGen05 shift completion latency in cycles", "1");
+  option_parser_register(
       opp, "-gpgpu_num_mem_units", OPT_UINT32, &gpgpu_num_mem_units,
       "Number if ldst units (default=1) WARNING: not hooked up to anything",
       "1");
@@ -859,8 +1255,40 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "const hits in the cache(default = disabled)",
                          "0");
   option_parser_register(
+      opp, "-gpgpu_perfect_inst_cache", OPT_INT32,
+      &perfect_inst_cache_override,
+      "Override perfect instruction cache mode only (-1 inherits "
+      "gpgpu_perfect_inst_const_cache)",
+      "-1");
+  option_parser_register(
       opp, "-gpgpu_inst_fetch_throughput", OPT_INT32, &inst_fetch_throughput,
       "the number of fetched intruction per warp each cycle", "1");
+  option_parser_register(
+      opp, "-gpgpu_icache_address_scale", OPT_UINT32, &icache_address_scale,
+      "Scale PTX byte PCs when addressing the instruction cache", "1");
+  option_parser_register(
+      opp, "-gpgpu_icache_prefetch_enable", OPT_BOOL,
+      &icache_prefetch_enable,
+      "Enable bounded instruction stream-buffer prefetching", "0");
+  option_parser_register(
+      opp, "-gpgpu_icache_prefetch_streams", OPT_UINT32,
+      &icache_prefetch_streams, "Instruction prefetch streams per SM", "1");
+  option_parser_register(
+      opp, "-gpgpu_icache_prefetch_depth", OPT_UINT32,
+      &icache_prefetch_depth,
+      "Instruction cache lines kept ahead of each demand stream", "4");
+  option_parser_register(
+      opp, "-gpgpu_icache_prefetch_issue_width", OPT_UINT32,
+      &icache_prefetch_issue_width,
+      "Maximum instruction prefetch attempts per SM fetch invocation", "1");
+  option_parser_register(
+      opp, "-gpgpu_icache_gcc_preload_lines", OPT_UINT32,
+      &icache_gcc_preload_lines,
+      "Instruction lines in the launch-time GCC preload window", "0");
+  option_parser_register(
+      opp, "-gpgpu_icache_gcc_hit_latency", OPT_UINT32,
+      &icache_gcc_hit_latency,
+      "Cycles from a GCC preload hit to ICC fill", "16");
   option_parser_register(opp, "-gpgpu_reg_file_port_throughput", OPT_INT32,
                          &reg_file_port_throughput,
                          "the number ports of the register file", "1");
@@ -930,6 +1358,18 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
                          "Clock Domain Frequencies in MhZ {<Core Clock>:<ICNT "
                          "Clock>:<L2 Clock>:<DRAM Clock>}",
                          "500.0:2000.0:2000.0:2000.0");
+  option_parser_register(
+      opp, "-gpgpu_l2_expected_bandwidth_TBp", OPT_DOUBLE,
+      &l2_expected_bandwidth_tbps,
+      "Nominal L2 bandwidth validation target in TB/s; parsed as config "
+      "metadata and unused by the simulator timing model",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_dram_expected_bandwidth_TBp", OPT_DOUBLE,
+      &dram_expected_bandwidth_tbps,
+      "Nominal DRAM bandwidth validation target in TB/s; parsed as config "
+      "metadata and unused by the simulator timing model",
+      "0");
   option_parser_register(
       opp, "-gpgpu_max_concurrent_kernel", OPT_INT32, &max_concurrent_kernel,
       "maximum kernels that can run concurrently on GPU, set this value "
@@ -1173,6 +1613,13 @@ unsigned gpgpu_sim::finished_kernel() {
 }
 
 void gpgpu_sim::set_kernel_done(kernel_info_t *kernel) {
+  // Idle SMs can be pre-bound without ever receiving a CTA (notably during
+  // cluster dispatch). They never execute the last-CTA release path. Clear
+  // these bindings before stream retirement deletes the kernel; allocator
+  // reuse otherwise lets a later launch bypass select_kernel's latency gate.
+  for (unsigned gpc = 0; gpc < m_shader_config->n_simt_clusters; ++gpc)
+    for (unsigned core = 0; core < m_cluster[gpc]->num_cores(); ++core)
+      m_cluster[gpc]->get_core(core)->clear_kernel_binding(kernel);
   unsigned uid = kernel->get_uid();
   last_uid = uid;
   unsigned long long streamID = kernel->get_streamID();
@@ -1214,6 +1661,8 @@ void sst_gpgpu_sim::createSIMTCluster() {
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
     m_cluster[i] = new sst_simt_core_cluster(
         this, i, m_shader_config, m_memory_config, m_shader_stats, m_mem_stats);
+  // SST still indexes one shader port per GPC. Unsupported until a per-SM
+  // adapter exists.
   SST_gpgpu_reply_buffer.resize(m_shader_config->n_simt_clusters);
 }
 
@@ -1247,6 +1696,8 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   gpu_tot_issued_cta = 0;
   gpu_completed_cta = 0;
   m_total_cta_launched = 0;
+  m_stuck_cta_dump_done = false;
+  m_stuck_cta_dump_last_completed = ~(0ull);
   gpu_deadlock = false;
 
   gpu_stall_dramfull = 0;
@@ -1259,6 +1710,10 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   gpu_tot_sim_cycle_parition_util = 0;
   partiton_replys_in_parallel = 0;
   partiton_replys_in_parallel_total = 0;
+  m_l2_request_ingress_budgets.resize(m_memory_config->m_n_mem_sub_partition);
+  m_l2_response_egress_budgets.resize(m_memory_config->m_n_mem_sub_partition);
+  m_l2_request_ingress_stats.resize(m_memory_config->m_n_mem_sub_partition);
+  m_l2_response_egress_stats.resize(m_memory_config->m_n_mem_sub_partition);
   last_streamID = -1;
 
   gpu_kernel_time.clear();
@@ -1283,7 +1738,7 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
     }
 
     icnt_wrapper_init();
-    icnt_create(m_shader_config->n_simt_clusters,
+    icnt_create(m_shader_config->num_shader(),
                 m_memory_config->m_n_mem_sub_partition);
   }
 
@@ -1499,6 +1954,8 @@ void gpgpu_sim::init() {
   last_gpu_sim_insn = 0;
   m_total_cta_launched = 0;
   gpu_completed_cta = 0;
+  m_stuck_cta_dump_done = false;
+  m_stuck_cta_dump_last_completed = ~(0ull);
   partiton_reqs_in_parallel = 0;
   partiton_replys_in_parallel = 0;
   partiton_reqs_in_parallel_util = 0;
@@ -1558,6 +2015,8 @@ void gpgpu_sim::update_stats() {
   gpu_sim_insn = 0;
   m_total_cta_launched = 0;
   gpu_completed_cta = 0;
+  m_stuck_cta_dump_done = false;
+  m_stuck_cta_dump_last_completed = ~(0ull);
   gpu_occupancy = occupancy_stats();
 }
 
@@ -1568,6 +2027,18 @@ PowerscalingCoefficients *gpgpu_sim::get_scaling_coeffs() {
 void gpgpu_sim::print_stats(unsigned long long streamID) {
   gpgpu_ctx->stats->ptx_file_line_stats_write_file();
   gpu_print_stat(streamID);
+
+  const char *dsm_stats = getenv("FLASHGPU_DSM_STATS");
+  if (dsm_stats && dsm_stats[0] && dsm_stats[0] != '0') {
+    printf("DSM_ROUTE_STATS_BEGIN clusters=%u enabled=%u\n", m_config.num_cluster(),
+           m_shader_config->gpgpu_dsm_enable ? 1u : 0u);
+    for (unsigned i = 0; i < m_config.num_cluster(); ++i) {
+      printf("DSM_ROUTE_STATS_CLUSTER id=%u\n", i);
+      if (auto *endpoint = m_cluster[i]->get_dsm_endpoint())
+        endpoint->display_state(stdout);
+    }
+    printf("DSM_ROUTE_STATS_END\n");
+  }
 
   if (g_network_mode) {
     printf(
@@ -1611,7 +2082,7 @@ void gpgpu_sim::deadlock_check() {
         } else if (num_cores >= 8) {
           printf(" + others ... ");
         }
-        num_cores += m_shader_config->n_simt_cores_per_cluster;
+        num_cores += m_cluster[i]->num_cores();
       }
     }
     printf("\n");
@@ -1623,13 +2094,6 @@ void gpgpu_sim::deadlock_check() {
     if (icnt_busy()) {
       printf("GPGPU-Sim uArch DEADLOCK:  iterconnect contains traffic\n");
       icnt_display_state(stdout);
-    }
-    const char *deadlock_dump = getenv("FLASHGPU_SIM_DEADLOCK_DUMP");
-    if (deadlock_dump != NULL && deadlock_dump[0] != '\0' &&
-        deadlock_dump[0] != '0') {
-      printf("GPGPU-Sim uArch DEADLOCK: dumping shader pipeline for core %u\n",
-             gpu_sim_insn_last_update_sid);
-      dump_pipeline(1, gpu_sim_insn_last_update_sid, 0);
     }
     printf(
         "\nRe-run the simulator in gdb and use debug routines in .gdbinit to "
@@ -1931,16 +2395,82 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
                static_cast<mem_sub_partition_full_stat>(i)),
            mem_sub_part_full_stats[i]);
   }
+  if (l2_multi_issue_port_model_enabled(
+          m_memory_config->l2_multi_issue_port_model)) {
+    l2_multi_issue_port_stats l2_port_stats;
+    for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
+      m_memory_sub_partition[i]->accumulate_l2_multi_issue_port_stats(
+          l2_port_stats);
+    }
+    printf("L2_multi_issue_lookup_accepted_sectors = %llu\n",
+           l2_port_stats.lookup_accepted_sectors);
+    printf("L2_multi_issue_data_port_accepted_sectors = %llu\n",
+           l2_port_stats.data_port_accepted_sectors);
+    printf("L2_multi_issue_data_port_hit_sectors = %llu\n",
+           l2_port_stats.data_port_hit_sectors);
+    printf("L2_multi_issue_data_port_miss_read_sectors = %llu\n",
+           l2_port_stats.data_port_miss_read_sectors);
+    printf("L2_multi_issue_data_port_fill_sectors = %llu\n",
+           l2_port_stats.data_port_fill_sectors);
+    printf("L2_multi_issue_data_port_dirty_eviction_sectors = %llu\n",
+           l2_port_stats.data_port_dirty_eviction_sectors);
+    printf("L2_multi_issue_fill_port_accepted_sectors = %llu\n",
+           l2_port_stats.fill_port_accepted_sectors);
+    printf("L2_multi_issue_lookup_width_stall_cycles = %llu\n",
+           l2_port_stats.lookup_width_stall_cycles);
+    printf("L2_multi_issue_data_port_width_stall_cycles = %llu\n",
+           l2_port_stats.data_port_width_stall_cycles);
+    printf("L2_multi_issue_fill_port_width_stall_cycles = %llu\n",
+           l2_port_stats.fill_port_width_stall_cycles);
+  }
   unsigned long long l2_partition_remote_accesses = 0;
   unsigned long long l2_partition_extra_latency_cycles = 0;
+  rop_delay_output_service_stats rop_delay_output_total;
   for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
     m_memory_sub_partition[i]->accumulate_l2_partition_stats(
         l2_partition_remote_accesses, l2_partition_extra_latency_cycles);
+    m_memory_sub_partition[i]->accumulate_rop_delay_output_stats(
+        rop_delay_output_total);
   }
   printf("l2_partition_remote_accesses = %llu\n",
          l2_partition_remote_accesses);
   printf("l2_partition_extra_latency_cycles = %llu\n",
          l2_partition_extra_latency_cycles);
+  rop_delay_output_total.print(statfout, "gpgpu_l2_rop_delay_output");
+  memory_transport_service_stats l2_request_ingress_total;
+  memory_transport_service_stats l2_response_egress_total;
+  memory_transport_service_stats cluster_response_ingress_total;
+  memory_transport_service_stats cluster_response_dispatch_total;
+  memory_transport_service_stats ldst_request_total;
+  memory_transport_service_stats ldst_response_total;
+  for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; ++i) {
+    l2_request_ingress_total.add(m_l2_request_ingress_stats[i]);
+    l2_response_egress_total.add(m_l2_response_egress_stats[i]);
+  }
+  l2_request_ingress_total.print(statfout,
+                                 "gpgpu_l2_request_ingress_transport");
+  l2_response_egress_total.print(statfout,
+                                 "gpgpu_l2_response_egress_transport");
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i) {
+    m_cluster[i]->accumulate_response_transport_stats(
+        cluster_response_ingress_total, cluster_response_dispatch_total);
+    m_cluster[i]->accumulate_ldst_transport_stats(ldst_request_total,
+                                                  ldst_response_total);
+  }
+  cluster_response_ingress_total.print(
+      statfout, "gpgpu_cluster_response_ingress_transport");
+  cluster_response_dispatch_total.print(
+      statfout, "gpgpu_cluster_response_dispatch_transport");
+  ldst_request_total.print(statfout,
+                           "gpgpu_ldst_ordinary_request_transport");
+  ldst_response_total.print(statfout,
+                            "gpgpu_ldst_ordinary_response_transport");
+  auto tma_progress = flash_gpgpu_sim::get_global_tma_progress_counters();
+  printf("tma_max_active_transactions = %llu\n",
+         tma_progress.max_active_transactions);
+  printf("tma_max_mf_inflight = %llu\n", tma_progress.max_mf_inflight);
+  printf("tma_issue_blocked_inflight_cycles = %llu\n",
+         tma_progress.issue_blocked_inflight_cycles);
   auto cp_async_debug = flash_gpgpu_sim::get_global_cp_async_debug_counters();
   printf("cp_async_debug_tx_started = %llu\n", cp_async_debug.tx_started);
   printf("cp_async_debug_tx_completed = %llu\n", cp_async_debug.tx_completed);
@@ -2003,14 +2533,24 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   // printf("partiton_replys_in_parallel = %lld\n",
   // partiton_replys_in_parallel); printf("partiton_replys_in_parallel_total =
   // %lld\n", partiton_replys_in_parallel_total );
+  l2_tma_request_coalescing_stats tma_coalescing;
+  for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; ++i)
+    m_memory_sub_partition[i]->accumulate_l2_tma_request_coalescing_stats(
+        tma_coalescing);
+  printf("L2_tma_coalescing_master_sectors = %llu\n",
+         tma_coalescing.master_sectors);
+  printf("L2_tma_coalescing_merged_sectors = %llu\n",
+         tma_coalescing.merged_sectors);
+  printf("L2_tma_coalescing_max_waiters = %llu\n",
+         tma_coalescing.max_waiters);
   printf("L2_BW  = %12.4f GB/Sec\n",
-         ((float)(partiton_replys_in_parallel * 32) /
+         ((float)(partiton_replys_in_parallel * SECTOR_SIZE) /
           (gpu_sim_cycle * m_config.core_period)) /
              1000000000);
   printf("L2_BW_total  = %12.4f GB/Sec\n",
          ((float)((partiton_replys_in_parallel +
                    partiton_replys_in_parallel_total) *
-                  32) /
+                  SECTOR_SIZE) /
           ((gpu_tot_sim_cycle + gpu_sim_cycle) * m_config.core_period)) /
              1000000000);
 
@@ -2108,7 +2648,9 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
       printf("L2_total_cache_reservation_fail_breakdown:\n");
       l2_stats.print_aggregate_fail_stats(stdout,
                                           "L2_cache_stats_fail_breakdown");
-      total_l2_css.print_port_stats(stdout, "L2_cache");
+      if (!l2_multi_issue_port_model_enabled(
+              m_memory_config->l2_multi_issue_port_model))
+        total_l2_css.print_port_stats(stdout, "L2_cache");
     }
   }
 
@@ -2189,7 +2731,36 @@ void shader_core_ctx::mem_instruction_stats(const warp_inst_t &inst) {
       abort();
   }
 }
+
+bool shader_core_ctx::cta_context_ready(unsigned hw_cta_id) const {
+  if (m_cta_status[hw_cta_id] != 0 ||
+      m_pending_tma_cta_releases.find(hw_cta_id) !=
+          m_pending_tma_cta_releases.end()) {
+    return false;
+  }
+
+  const cta_lifecycle_state_t &lifecycle = m_cta_lifecycle[hw_cta_id];
+  if (!lifecycle.ever_used) return true;
+
+  const unsigned long long now =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  return now >= lifecycle.replacement_ready_cycle;
+}
+
 bool shader_core_ctx::can_issue_1block(kernel_info_t &kernel) {
+  const unsigned max_cta_per_core = m_config->gpgpu_concurrent_kernel_sm
+                                        ? m_config->max_cta_per_core
+                                        : m_config->max_cta(kernel);
+  assert(max_cta_per_core <= MAX_CTA_PER_SHADER);
+  bool has_ready_cta_context = false;
+  for (unsigned i = 0; i < max_cta_per_core; ++i) {
+    if (cta_context_ready(i)) {
+      has_ready_cta_context = true;
+      break;
+    }
+  }
+  if (!has_ready_cta_context) return false;
+
   // Jin: concurrent kernels on one SM
   if (m_config->gpgpu_concurrent_kernel_sm) {
     if (m_config->max_cta(kernel) < 1) return false;
@@ -2331,10 +2902,9 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
     max_cta_per_core = kernel_max_cta_per_shader;
   else
     max_cta_per_core = m_config->max_cta_per_core;
+  assert(max_cta_per_core <= MAX_CTA_PER_SHADER);
   for (unsigned i = 0; i < max_cta_per_core; i++) {
-    if (m_cta_status[i] == 0 &&
-        m_pending_tma_cta_releases.find(i) ==
-            m_pending_tma_cta_releases.end()) {
+    if (cta_context_ready(i)) {
       free_cta_hw_id = i;
       break;
     }
@@ -2378,6 +2948,30 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   function_info *kernel_func_info = kernel.entry();
   symbol_table *symtab = kernel_func_info->get_symtab();
   unsigned ctaid = kernel.get_next_cta_id_single();
+  const unsigned long long admit_cycle =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  cta_lifecycle_state_t &lifecycle = m_cta_lifecycle[free_cta_hw_id];
+  assert(!lifecycle.active);
+  const bool slot_reuse = lifecycle.ever_used;
+  const unsigned long long release_to_admit =
+      slot_reuse ? admit_cycle - lifecycle.last_release_cycle : 0;
+  lifecycle.active = true;
+  lifecycle.ever_used = true;
+  lifecycle.threads_exited = false;
+  lifecycle.pending_tma = false;
+  lifecycle.kernel_uid = kernel.get_uid();
+  lifecycle.logical_cta_id = ctaid;
+  lifecycle.generation++;
+  lifecycle.admit_cycle = admit_cycle;
+  lifecycle.threads_exit_cycle = 0;
+  SHADER_GPPRINTF(LIVENESS,
+                  "CTA_LIFECYCLE event=admit kernel_uid=%u sid=%u hw_cta=%u "
+                  "logical_cta=%u generation=%u cycle=%llu slot_reuse=%u "
+                  "previous_release=%llu release_to_admit=%llu\n",
+                  lifecycle.kernel_uid, m_sid, free_cta_hw_id,
+                  lifecycle.logical_cta_id, lifecycle.generation, admit_cycle,
+                  slot_reuse ? 1 : 0, lifecycle.last_release_cycle,
+                  release_to_admit);
   checkpoint *g_checkpoint = new checkpoint();
   for (unsigned i = start_thread; i < end_thread; i++) {
     m_threadState[i].m_cta_id = free_cta_hw_id;
@@ -2407,6 +3001,40 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
              m_config->n_thread_per_shader);  // should be at least one, but
                                               // less than max
   m_cta_status[free_cta_hw_id] = nthreads_in_block;
+
+  // Cache the CTA's shared memory pointer for TMA cluster multicast.
+  m_cta_smem[free_cta_hw_id] = m_thread[start_thread]->m_shared_mem;
+  // Cluster group for peer matching: explicit TB-cluster group when set by
+  // co-resident issuer, else per-CTA groups for ordinary launches.
+  {
+    unsigned force_group = m_cluster->pending_issue_cluster_group();
+    unsigned group_size = m_cluster->pending_issue_group_size();
+    set_cta_cluster_group(
+        free_cta_hw_id,
+        m_cluster->allocate_cta_cluster_group(group_size, force_group));
+    // TB-cluster relative rank for .multicast::cluster ctaMask (bit = rank).
+    // Matches %cluster_ctarank: rank within product(clusterDim).
+    // `ctaid` was captured before sim_init_thread advanced the next-CTA cursor.
+    unsigned rank = 0;
+    if (kernel.is_cluster_launch()) {
+      dim3 cdim = kernel.get_cluster_dim();
+      if (cdim.x == 0) cdim.x = 1;
+      if (cdim.y == 0) cdim.y = 1;
+      if (cdim.z == 0) cdim.z = 1;
+      unsigned gx = kernel.get_grid_dim().x;
+      unsigned gy = kernel.get_grid_dim().y;
+      if (gx == 0) gx = 1;
+      if (gy == 0) gy = 1;
+      unsigned cx = ctaid % gx;
+      unsigned cy = (ctaid / gx) % gy;
+      unsigned cz = ctaid / (gx * gy);
+      unsigned rel_x = cx % cdim.x;
+      unsigned rel_y = cy % cdim.y;
+      unsigned rel_z = cz % cdim.z;
+      rank = rel_x + cdim.x * (rel_y + cdim.y * rel_z);
+    }
+    set_cta_cluster_rank(free_cta_hw_id, rank);
+  }
 
   if (m_gpu->resume_option == 1 && kernel.get_uid() == m_gpu->resume_kernel &&
       ctaid >= m_gpu->resume_CTA && ctaid < m_gpu->checkpoint_CTA_t) {
@@ -2470,6 +3098,68 @@ int gpgpu_sim::next_clock_domain(void) {
 }
 
 void gpgpu_sim::issue_block2core() {
+  // 1) Co-resident issue for Thread Block Cluster launches.
+  // Prefer completing an open TB cluster, else start a new one on a physical
+  // cluster that can fit the whole TB cluster (never split across physical
+  // clusters).
+  kernel_info_t *ckernel = select_kernel();
+  if (ckernel && ckernel->is_cluster_launch() &&
+      kernel_more_cta_left(ckernel)) {
+    unsigned ctas_per = ckernel->get_ctas_per_cluster();
+    if (ctas_per == 0) ctas_per = 1;
+
+    if (ckernel->has_open_tb_cluster()) {
+      unsigned phys = ckernel->open_tb_phys_cluster();
+      unsigned group = ckernel->open_tb_cluster_group();
+      if (phys < m_shader_config->n_simt_clusters) {
+        unsigned issued = 0;
+        while (ckernel->has_open_tb_cluster()) {
+          unsigned num =
+              m_cluster[phys]->issue_block2core_for_kernel(ckernel, group);
+          if (!num) break;
+          issued += num;
+          ckernel->consume_open_tb_cta();
+        }
+        if (issued) {
+          m_last_cluster_issue = phys;
+          m_total_cta_launched += issued;
+        }
+      }
+    } else {
+      // Start a new TB cluster: find a physical cluster with enough free slots.
+      unsigned last_issued = m_last_cluster_issue;
+      for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+        unsigned idx =
+            (i + last_issued + 1) % m_shader_config->n_simt_clusters;
+        if (m_cluster[idx]->count_free_cta_slots(*ckernel) < ctas_per) {
+          continue;
+        }
+        // Reserve one unique group id for the whole TB cluster.
+        unsigned group =
+            m_cluster[idx]->allocate_cta_cluster_group(ctas_per, (unsigned)-1);
+        unsigned issued = 0;
+        while (issued < ctas_per) {
+          unsigned num =
+              m_cluster[idx]->issue_block2core_for_kernel(ckernel, group);
+          if (!num) break;
+          issued += num;
+        }
+        if (!issued) {
+          // Slot count can disagree with can_issue (pending TMA, kernel bind).
+          // Do not stick on this GPC; try the next one that has room.
+          continue;
+        }
+        if (issued < ctas_per) {
+          ckernel->open_tb_cluster(idx, group, ctas_per - issued);
+        }
+        m_last_cluster_issue = idx;
+        m_total_cta_launched += issued;
+        break;
+      }
+    }
+  }
+
+  // 2) Ordinary (non-cluster) launch path: RR across physical clusters.
   unsigned last_issued = m_last_cluster_issue;
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
     unsigned idx = (i + last_issued + 1) % m_shader_config->n_simt_clusters;
@@ -2479,6 +3169,43 @@ void gpgpu_sim::issue_block2core() {
       m_total_cta_launched += num;
     }
   }
+}
+
+void gpgpu_sim::maybe_dump_stuck_cluster_ctas(
+    unsigned long long cta_launched, unsigned long long cta_completed,
+    unsigned long long tma_tx_started, unsigned long long tma_tx_completed,
+    unsigned long long tma_bytes_issued, unsigned long long tma_bytes_completed) {
+  if (m_stuck_cta_dump_done) return;
+  const bool tma_idle = (tma_tx_started == tma_tx_completed) &&
+                        (tma_bytes_issued == tma_bytes_completed);
+  const bool no_cta_retire =
+      cta_launched > cta_completed &&
+      m_stuck_cta_dump_last_completed == cta_completed;
+  m_stuck_cta_dump_last_completed = cta_completed;
+  if (!tma_idle || !no_cta_retire) return;
+
+  unsigned live = 0;
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
+    live += m_cluster[i]->get_not_completed();
+  if (!live) return;
+
+  m_stuck_cta_dump_done = true;
+  printf("GPGPU-Sim uArch: STUCK-CTA dump: TMA idle, no CTA retire, "
+         "launched=%llu completed=%llu live_threads=%u cycle=%llu\n",
+         cta_launched, cta_completed, live,
+         (unsigned long long)(gpu_sim_cycle + gpu_tot_sim_cycle));
+  for (kernel_info_t *kernel : m_running_kernels) {
+    if (!kernel) continue;
+    printf("  kernel uid=%u open_tb_remaining=%u phys=%u group=%u\n",
+           kernel->get_uid(), kernel->open_tb_remaining(),
+           kernel->has_open_tb_cluster() ? kernel->open_tb_phys_cluster()
+                                         : (unsigned)-1,
+           kernel->has_open_tb_cluster() ? kernel->open_tb_cluster_group()
+                                         : (unsigned)-1);
+  }
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
+    m_cluster[i]->dump_live_cta_waits(stdout);
+  fflush(stdout);
 }
 
 unsigned long long g_single_step =
@@ -2514,25 +3241,125 @@ void gpgpu_sim::cycle() {
 
   if (clock_mask & ICNT && !gem5_integrated) {
     profiler.start_step();
+    const bool tma_response_multicast =
+        icnt_tma_response_multicast_enabled();
     // pop from memory controller to interconnect
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
-      mem_fetch *mf = m_memory_sub_partition[i]->top();
-      if (mf) {
-        unsigned response_size =
-            mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
-        if (::icnt_has_buffer(m_shader_config->mem2device(i), response_size)) {
-          // if (!mf->get_is_write())
-          mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
-          mf->set_status(IN_ICNT_TO_SHADER, gpu_sim_cycle + gpu_tot_sim_cycle);
-          ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
-                      response_size);
-          m_memory_sub_partition[i]->pop();
-          partiton_replys_in_parallel_per_cycle++;
-        } else {
-          gpu_stall_icnt2sh++;
+      const unsigned width =
+          m_memory_config->gpgpu_l2_response_egress_sectors_per_cycle;
+      if (width == 0) {
+        mem_fetch *mf = m_memory_sub_partition[i]->top();
+        if (mf) {
+          unsigned response_size =
+              mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
+          if (::icnt_has_buffer(m_shader_config->mem2device(i),
+                                response_size)) {
+            std::deque<mem_fetch *> multicast_waiters;
+            if (tma_response_multicast) {
+              mem_fetch *popped =
+                  m_memory_sub_partition[i]->pop(&multicast_waiters);
+              assert(popped == mf);
+            }
+            mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
+            mf->set_status(IN_ICNT_TO_SHADER,
+                           gpu_sim_cycle + gpu_tot_sim_cycle);
+            std::vector<std::pair<unsigned, void *> > destinations;
+            for (std::deque<mem_fetch *>::iterator it =
+                     multicast_waiters.begin();
+                 it != multicast_waiters.end(); ++it) {
+              mem_fetch *waiter = *it;
+              waiter->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
+              waiter->set_status(IN_ICNT_TO_SHADER,
+                                 gpu_sim_cycle + gpu_tot_sim_cycle);
+              destinations.push_back(std::make_pair(
+                  m_shader_config->topology().global_sm_node_id(
+                      waiter->get_requester_sm_id()),
+                  (void *)waiter));
+            }
+            if (!destinations.empty())
+              ::icnt_push_multicast(
+                  m_shader_config->mem2device(i),
+                  m_shader_config->topology().global_sm_node_id(
+                      mf->get_requester_sm_id()),
+                  mf, response_size, destinations);
+            else
+              ::icnt_push(m_shader_config->mem2device(i),
+                          m_shader_config->topology().global_sm_node_id(
+                              mf->get_requester_sm_id()),
+                          mf, response_size);
+            if (!tma_response_multicast)
+              m_memory_sub_partition[i]->pop();
+            const unsigned sectors = memory_transport_data_sectors(mf);
+            m_l2_response_egress_stats[i].record_accept(sectors);
+            m_l2_response_egress_stats[i].record_tick_service(
+                memory_transport_service_slots(sectors));
+            partiton_replys_in_parallel_per_cycle += sectors;
+          } else {
+            gpu_stall_icnt2sh++;
+            ++m_l2_response_egress_stats[i].downstream_full_ticks;
+          }
         }
       } else {
-        m_memory_sub_partition[i]->pop();
+        memory_transport_service_budget &budget =
+            m_l2_response_egress_budgets[i];
+        memory_transport_service_stats &stats = m_l2_response_egress_stats[i];
+        budget.begin_tick(width);
+        while (true) {
+          mem_fetch *mf = m_memory_sub_partition[i]->top();
+          // top() already consumes internal writeback entries.  Unlike the
+          // legacy path, do not pop a second entry after that null return.
+          if (!mf) break;
+          const unsigned sectors = memory_transport_data_sectors(mf);
+          if (!budget.can_accept(sectors)) {
+            budget.note_width_limited(sectors);
+            break;
+          }
+          const unsigned response_size =
+              mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
+          if (!::icnt_has_buffer(m_shader_config->mem2device(i),
+                                 response_size)) {
+            budget.note_downstream_full();
+            ++gpu_stall_icnt2sh;
+            break;
+          }
+
+          mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
+          mf->set_status(IN_ICNT_TO_SHADER, gpu_sim_cycle + gpu_tot_sim_cycle);
+          std::deque<mem_fetch *> multicast_waiters;
+          mem_fetch *popped = tma_response_multicast
+                                  ? m_memory_sub_partition[i]->pop(
+                                        &multicast_waiters)
+                                  : m_memory_sub_partition[i]->pop();
+          assert(popped == mf);
+          std::vector<std::pair<unsigned, void *> > destinations;
+          for (std::deque<mem_fetch *>::iterator it =
+                   multicast_waiters.begin();
+               it != multicast_waiters.end(); ++it) {
+            mem_fetch *waiter = *it;
+            waiter->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
+            waiter->set_status(IN_ICNT_TO_SHADER,
+                               gpu_sim_cycle + gpu_tot_sim_cycle);
+            destinations.push_back(std::make_pair(
+                m_shader_config->topology().global_sm_node_id(
+                    waiter->get_requester_sm_id()),
+                (void *)waiter));
+          }
+          if (!destinations.empty())
+            ::icnt_push_multicast(
+                m_shader_config->mem2device(i),
+                m_shader_config->topology().global_sm_node_id(
+                    mf->get_requester_sm_id()),
+                mf, response_size, destinations);
+          else
+            ::icnt_push(m_shader_config->mem2device(i),
+                        m_shader_config->topology().global_sm_node_id(
+                            mf->get_requester_sm_id()),
+                        mf, response_size);
+          budget.consume(sectors);
+          stats.record_accept(sectors);
+          partiton_replys_in_parallel_per_cycle += sectors;
+        }
+        budget.end_tick(&stats);
       }
     }
     profiler.end_step(profiler.total_mem_to_icnt_time);
@@ -2572,13 +3399,56 @@ void gpgpu_sim::cycle() {
       // backed up) Note:This needs to be called in DRAM clock domain if there
       // is no L2 cache in the system In the worst case, we may need to push
       // SECTOR_CHUNCK_SIZE requests, so ensure you have enough buffer for them
-      if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
-        gpu_stall_dramfull++;
-        m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE);
+      const unsigned width =
+          m_memory_config->gpgpu_l2_request_ingress_sectors_per_cycle;
+      if (width == 0) {
+        const mem_fetch *request =
+            (mem_fetch *)icnt_top(m_shader_config->mem2device(i));
+        if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE, request)) {
+          gpu_stall_dramfull++;
+          ++m_l2_request_ingress_stats[i].downstream_full_ticks;
+          m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE, request);
+        } else {
+          mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
+          m_memory_sub_partition[i]->push(mf,
+                                          gpu_sim_cycle + gpu_tot_sim_cycle);
+          if (mf) {
+            const unsigned sectors = memory_transport_data_sectors(mf);
+            m_l2_request_ingress_stats[i].record_accept(sectors);
+            m_l2_request_ingress_stats[i].record_tick_service(
+                memory_transport_service_slots(sectors));
+            partiton_reqs_in_parallel_per_cycle++;
+          }
+        }
       } else {
-        mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
-        m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
-        if (mf) partiton_reqs_in_parallel_per_cycle++;
+        memory_transport_service_budget &budget =
+            m_l2_request_ingress_budgets[i];
+        memory_transport_service_stats &stats = m_l2_request_ingress_stats[i];
+        budget.begin_tick(width);
+        while (true) {
+          mem_fetch *mf = (mem_fetch *)icnt_top(m_shader_config->mem2device(i));
+          if (!mf) break;
+          const unsigned sectors = memory_transport_data_sectors(mf);
+          if (!budget.can_accept(sectors)) {
+            budget.note_width_limited(sectors);
+            break;
+          }
+          if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE, mf)) {
+            ++gpu_stall_dramfull;
+            budget.note_downstream_full();
+            m_memory_sub_partition[i]->record_full_state(SECTOR_CHUNCK_SIZE, mf);
+            break;
+          }
+          mem_fetch *popped =
+              (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
+          assert(popped == mf);
+          m_memory_sub_partition[i]->push(mf,
+                                          gpu_sim_cycle + gpu_tot_sim_cycle);
+          budget.consume(sectors);
+          stats.record_accept(sectors);
+          ++partiton_reqs_in_parallel_per_cycle;
+        }
+        budget.end_tick(&stats);
       }
       m_memory_sub_partition[i]->cache_cycle(gpu_sim_cycle + gpu_tot_sim_cycle);
       if (m_config.g_power_simulation_enabled) {
@@ -2630,6 +3500,7 @@ void gpgpu_sim::cycle() {
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
+        m_cluster[i]->dsm_cycle();
         active_sms_local += m_cluster[i]->get_n_active_sms();
       }
     }
@@ -2651,6 +3522,7 @@ void gpgpu_sim::cycle() {
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
+        m_cluster[i]->dsm_cycle();
         *active_sms += m_cluster[i]->get_n_active_sms();
       }
       // Update core icnt/cache stats for AccelWattch
@@ -2727,7 +3599,7 @@ void gpgpu_sim::cycle() {
         printf("Flushed L2 caches...\n");
         if (m_memory_config->m_L2_config.get_num_lines()) {
           int dlc = 0;
-          for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
+          for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
             dlc = m_memory_sub_partition[i]->flushL2();
             assert(dlc == 0);  // TODO: need to model actual writes to DRAM here
             printf("Dirty lines flushed from L2 %d is %d\n", i, dlc);
@@ -2832,6 +3704,10 @@ void gpgpu_sim::cycle() {
       progress.tma_write_mf_responses = tma_progress.write_mf_responses;
       progress.tma_bytes_issued = tma_progress.bytes_issued;
       progress.tma_bytes_completed = tma_progress.bytes_completed;
+      maybe_dump_stuck_cluster_ctas(
+          progress.cta_launched, progress.cta_completed,
+          progress.tma_tx_started, progress.tma_tx_completed,
+          progress.tma_bytes_issued, progress.tma_bytes_completed);
       profiler.increment_and_check(&progress);
     } else {
       profiler.increment_and_check();
@@ -2858,8 +3734,9 @@ void gpgpu_sim::perf_memcpy_to_gpu(size_t dst_start_addr, size_t count) {
     // 32
     //== 0);
 
-    for (unsigned counter = 0; counter < count; counter += 32) {
-      const unsigned wr_addr = dst_start_addr + counter;
+    // CUDA allocations start above 4 GiB; preserve the caller's address width.
+    for (size_t counter = 0; counter < count; counter += 32) {
+      const size_t wr_addr = dst_start_addr + counter;
       addrdec_t raw_addr;
       mem_access_sector_mask_t mask;
       mask.set(wr_addr % 128 / 32);
@@ -2925,6 +3802,8 @@ const memory_config *gpgpu_sim::getMemoryConfig() { return m_memory_config; }
 simt_core_cluster *gpgpu_sim::getSIMTCluster() { return *m_cluster; }
 
 void sst_gpgpu_sim::SST_gpgpusim_numcores_equal_check(unsigned sst_numcores) {
+  // SST still treats one shader port per GPC. Unsupported until a per-SM
+  // adapter exists.
   if (m_shader_config->n_simt_clusters != sst_numcores) {
     assert(
         "\nSST core is not equal the GPGPU-sim cores. Open gpgpu-sim.config "
@@ -2964,7 +3843,7 @@ void sst_gpgpu_sim::SST_cycle() {
   // cout<<"Average pipeline duty cycle: "<<*average_pipeline_duty_cycle<<endl;
 
   if (g_single_step && ((gpu_sim_cycle + gpu_tot_sim_cycle) >= g_single_step)) {
-    asm("int $03");
+    raise(SIGTRAP);  // Debug breakpoint
   }
   gpu_sim_cycle++;
   if (g_interactive_debugger_enabled) gpgpu_debug();

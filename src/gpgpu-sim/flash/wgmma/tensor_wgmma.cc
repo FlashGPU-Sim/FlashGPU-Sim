@@ -4,8 +4,10 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <list>
 #include <map>
+#include <mutex>
 #include <set>
 #include <utility>
 #include <vector>
@@ -21,6 +23,56 @@ typedef void *yyscan_t;
 #include "ptx.tab.h"
 
 namespace flash_gpgpu_sim {
+
+int wgmma_opcode(const warp_inst_t *inst) {
+  assert(inst != NULL);
+  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
+  return ptx_inst->get_opcode();
+}
+
+bool is_wgmma_mma_async_opcode(int opcode) {
+  return opcode == WGMMA_MMA_ASYNC_OP || opcode == WGMMA_MMA_ASYNC_SP_OP;
+}
+
+bool is_wgmma_async_group_control_opcode(int opcode) {
+  return opcode == WGMMA_COMMIT_GROUP_OP || opcode == WGMMA_WAIT_GROUP_OP;
+}
+
+bool is_wgmma_warpgroup_opcode(int opcode) {
+  return is_wgmma_mma_async_opcode(opcode) ||
+         is_wgmma_async_group_control_opcode(opcode);
+}
+
+void trace_wgmma_lifecycle(const char *event, unsigned uid, unsigned sid,
+                           unsigned long long cycle, unsigned compute,
+                           unsigned tail) {
+  static const bool enabled =
+      getenv("GPGPU_SIM_WGMMA_COLLECTOR_DEBUG") != nullptr;
+  if (!enabled)
+    return;
+  static const unsigned selected_sm = [] {
+    const char *value = getenv("GPGPU_SIM_WGMMA_LIFECYCLE_SM");
+    return value ? static_cast<unsigned>(strtoul(value, nullptr, 10)) : 0u;
+  }();
+  static const unsigned long long min_cycle = [] {
+    const char *value = getenv("GPGPU_SIM_WGMMA_LIFECYCLE_MIN_CYCLE");
+    return value ? strtoull(value, nullptr, 10) : 0ull;
+  }();
+  if (sid != selected_sm)
+    return;
+  static std::mutex mutex;
+  static std::set<unsigned> selected;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (strcmp(event, "REGISTER") == 0 && cycle >= min_cycle &&
+      selected.size() < 16)
+    selected.insert(uid);
+  if (!selected.count(uid))
+    return;
+  fprintf(stdout,
+          "WGMMA_LIFECYCLE event=%s uid=%u sm=%u cycle=%llu "
+          "compute=%u tail=%u\n",
+          event, uid, sid, cycle, compute, tail);
+}
 
 namespace {
 
@@ -49,14 +101,28 @@ int wgmma_scalar_type_at(const ptx_instruction *pI, unsigned index,
   return *it;
 }
 
-int wgmma_opcode(const warp_inst_t *inst) {
-  assert(inst != NULL);
-  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
-  return ptx_inst->get_opcode();
+unsigned scalar_type_bytes(int type) {
+  size_t bits = 0;
+  int basic_type = 0;
+  type_info_key::type_decode(type, bits, basic_type);
+  return static_cast<unsigned>(std::max<size_t>(1, (bits + 7) / 8));
 }
 
-bool is_wgmma_mma_async_opcode(int opcode) {
-  return opcode == WGMMA_MMA_ASYNC_OP || opcode == WGMMA_MMA_ASYNC_SP_OP;
+unsigned wgmma_accumulator_regs_per_thread(const ptx_instruction *ptx_inst) {
+  if (ptx_inst->get_num_operands() > 0) {
+    const operand_info &dst = ptx_inst->operand_lookup(0);
+    if (dst.is_vector())
+      return dst.get_vect_nelem();
+  }
+  const int n = ptx_inst->get_wgmma_shape_n();
+  return n > 0 ? static_cast<unsigned>(n / 2) : 0;
+}
+
+unsigned wgmma_register_a_regs_per_thread(const ptx_instruction *ptx_inst) {
+  if (ptx_inst->get_num_operands() < 2)
+    return 0;
+  const operand_info &src_a = ptx_inst->operand_lookup(1);
+  return src_a.is_vector() ? src_a.get_vect_nelem() : 0;
 }
 
 bool wgmma_uses_register_a_operand(const warp_inst_t *inst) {
@@ -231,6 +297,48 @@ void wgmma_group_manager_t::cleanup_cta(unsigned cta_id) {
 }
 
 } // namespace
+
+unsigned long long
+wgmma_collector_token_bytes_from_inst(const warp_inst_t *inst,
+                                      const shader_core_config *config) {
+  if (!config->gpgpu_wgmma_rf_traffic_enable)
+    return 0;
+  if (!is_wgmma_mma_async_opcode(wgmma_opcode(inst)))
+    return 0;
+
+  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
+  const unsigned long long warpgroup_threads =
+      static_cast<unsigned long long>(WGMMA_WARPGROUP_SIZE) * config->warp_size;
+  const unsigned accumulator_type =
+      static_cast<unsigned>(wgmma_scalar_type_at(ptx_inst, 0, F32_TYPE));
+  const unsigned accumulator_bytes =
+      wgmma_accumulator_regs_per_thread(ptx_inst) *
+      scalar_type_bytes(accumulator_type);
+
+  unsigned long long tokens = warpgroup_threads * accumulator_bytes;
+  if (config->gpgpu_wgmma_rf_traffic_assume_accumulate)
+    tokens += warpgroup_threads * accumulator_bytes;
+
+  if (config->gpgpu_wgmma_rf_traffic_include_rs_a) {
+    // Register A operands are PTX registers, so count 32-bit register reads.
+    tokens += warpgroup_threads *
+              static_cast<unsigned long long>(
+                  wgmma_register_a_regs_per_thread(ptx_inst)) *
+              4ULL;
+  }
+
+  return tokens;
+}
+
+unsigned wgmma_wait_group_num_from_inst(const warp_inst_t *inst) {
+  assert(wgmma_opcode(inst) == WGMMA_WAIT_GROUP_OP);
+  const ptx_instruction *ptx_inst = static_cast<const ptx_instruction *>(inst);
+  if (ptx_inst->get_num_operands() == 0)
+    return 0;
+  const operand_info &op = ptx_inst->operand_lookup(0);
+  assert(op.is_literal());
+  return static_cast<unsigned>(op.get_literal_value().u64);
+}
 
 unsigned wgmma_thread_count(core_t *core, const warp_inst_t &inst) {
   if (inst.is_wgmma_warpgroup())
@@ -534,7 +642,7 @@ public:
   void wait_group(unsigned cta_id, unsigned warpgroup_id,
                   unsigned max_pending_groups, const unsigned *warp_ids,
                   unsigned count);
-  void cycle();
+  void cycle(unsigned sid, unsigned long long cycle);
   void cleanup_cta(unsigned cta_id);
 
 private:
@@ -679,7 +787,7 @@ void wgmma_unit_t::impl_t::wait_group(unsigned cta_id, unsigned warpgroup_id,
     m_barriers->set_wgmma_waiting_warps(warp_ids, count);
 }
 
-void wgmma_unit_t::impl_t::cycle() {
+void wgmma_unit_t::impl_t::cycle(unsigned sid, unsigned long long cycle) {
   wgmma_group_manager_t::wait_result_t result;
   for (std::vector<pending_completion_t>::iterator it =
            m_pending_completions.begin();
@@ -695,6 +803,8 @@ void wgmma_unit_t::impl_t::cycle() {
     if (m_pending_completions[i].remaining != 0 ||
         m_pending_completions[i].rf_traffic_remaining != 0)
       continue;
+    trace_wgmma_lifecycle("ASYNC_COMPLETE", m_pending_completions[i].op_uid,
+                          sid, cycle);
     wgmma_group_manager_t::wait_result_t completed =
         m_group_manager.complete_op(m_pending_completions[i].key.first,
                                     m_pending_completions[i].key.second,
@@ -764,7 +874,9 @@ void wgmma_unit_t::wait_group(unsigned cta_id, unsigned warpgroup_id,
   m_impl->wait_group(cta_id, warpgroup_id, max_pending_groups, warp_ids, count);
 }
 
-void wgmma_unit_t::cycle() { m_impl->cycle(); }
+void wgmma_unit_t::cycle(unsigned sid, unsigned long long cycle) {
+  m_impl->cycle(sid, cycle);
+}
 
 void wgmma_unit_t::cleanup_cta(unsigned cta_id) { m_impl->cleanup_cta(cta_id); }
 
