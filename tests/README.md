@@ -162,3 +162,8 @@ expects 32 read sectors and 32 write sectors. The host checks exercise both
 store values, load values and byte masks for first/middle/last/multiple sinks.
 Build the simulator with the default `FLASH=1` and source `setup_environment`
 before building this group, which links the simulator for those host checks.
+The launcher uses an isolated copy of the selected configuration with SASS-guided
+PTX reordering disabled: CI's CUDA 12.8 assembler cannot compile these PTX 8.8
+fixtures. Ordinary PTX reordering remains configured as before, and subsequent
+test groups retain the original configuration. Failed-run artifacts are retained
+at the path printed by the launcher.
