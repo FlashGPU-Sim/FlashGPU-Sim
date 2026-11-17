@@ -308,3 +308,14 @@ offline validation after building FlashGPU-Sim, run:
 bash tutorials/triton-flash-attention/capture.sh
 bash tutorials/triton-flash-attention/run.sh
 ```
+
+### PTX 256-bit vector-memory regression
+
+The `sm120/blackwell` group runs the aligned `.v8.b32` fixture and host-side
+checks of the production PTX execution/coalescing path. Each fixture lane
+accesses its own 32-byte-aligned input and output vector; the traffic post-check
+expects 32 read sectors and 32 write sectors. The host checks exercise both
+`.v8.b32` and `.v4.b64` sink operands, checking actual memory callbacks, preserved
+store values, load values and byte masks for first/middle/last/multiple sinks.
+Build the simulator with the default `FLASH=1` and source `setup_environment`
+before building this group, which links the simulator for those host checks.

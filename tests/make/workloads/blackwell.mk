@@ -9,7 +9,14 @@ TEST_GROUP_EXECUTOR_sm120_blackwell := gtest-single
 TEST_GROUP_FILTER_sm120_blackwell := *
 
 BLACKWELL_SM120_OBJECTS := $(patsubst $(TEST_SRC_DIR)/%.cu,\
-	$(OBJ_DIR)/sm120/%.cu.o,$(TEST_GROUP_SOURCES_sm120_blackwell))
+	$(OBJ_DIR)/sm120/%.cu.o,$(filter %.cu,$(TEST_GROUP_SOURCES_sm120_blackwell))) \
+	$(patsubst $(TEST_SRC_DIR)/%.cc,$(OBJ_DIR)/sm120/%.cc.o,\
+	$(filter %.cc,$(TEST_GROUP_SOURCES_sm120_blackwell)))
+BLACKWELL_SIM_RUNTIME := ../lib/$(GPGPUSIM_CONFIG)/libcudart.so
+
+# Match the simulator ABI, including kernel_info_t and memory-space locks.
+$(OBJ_DIR)/sm120/blackwell/vector_memory_semantics_test.cc.o: CXXFLAGS += -DFLASH_GPGPU_SIM_OMP
+
 BLACKWELL_SM120_BINARY := $(BIN_DIR)/sm120/blackwell_tests.bin
 BLACKWELL_SM120_LAUNCHER := $(BIN_DIR)/sm120/blackwell_tests
 BLACKWELL_SM120_LAUNCHER_SOURCE := \
@@ -30,11 +37,11 @@ $(BLACKWELL_SM120_OBJECTS): NVCC_COMPILE_FLAGS = $(BASE_NVCCFLAGS) \
 build-sm120-blackwell: setup-gtest $(BLACKWELL_SM120_LAUNCHER)
 
 $(BLACKWELL_SM120_BINARY): $(BLACKWELL_SM120_OBJECTS) \
-$(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(BLACKWELL_MK) arch/sm120.toml \
+$(BLACKWELL_SIM_RUNTIME) $(OBJ_DIR)/gtest_main.a $(TOP_MAKEFILE) $(BLACKWELL_MK) arch/sm120.toml \
 $(ARCH_MANIFEST_SCRIPT)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(BLACKWELL_SM120_OBJECTS) $(OBJ_DIR)/gtest_main.a \
-		-o $@ -lpthread $(CUDA_LIBS)
+		-o $@ -lpthread $(CUDA_LIBS) $(BLACKWELL_SIM_RUNTIME)
 
 $(BLACKWELL_SM120_PTX): $(BLACKWELL_SM120_PTX_SOURCE) $(BLACKWELL_MK)
 	@mkdir -p $(dir $@)

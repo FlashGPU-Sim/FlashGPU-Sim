@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 EXPECTED = {
-    "GLOBAL_ACC_R": 5,
+    "GLOBAL_ACC_R": 32,
     "GLOBAL_ACC_W": 32,
 }
 

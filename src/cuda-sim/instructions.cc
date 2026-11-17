@@ -3715,6 +3715,7 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
     ptx_reg_t values[8] = {};
     const size_t element_bytes = size / 8;
     for (unsigned i = 0; i < vector_width; ++i) {
+      if (dst.vector_element_is_sink(i)) continue;
       mem->read(addr + i * element_bytes, element_bytes, &values[i].s64);
     }
     thread->set_vector_operand_values(dst, values, vector_width);
@@ -6271,6 +6272,7 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     thread->get_vector_operand_values(src1, values, vector_width);
     const size_t element_bytes = size / 8;
     for (unsigned i = 0; i < vector_width; ++i) {
+      if (src1.vector_element_is_sink(i)) continue;
       mem->write(addr + i * element_bytes, element_bytes, &values[i].s64,
                  thread, pI);
     }

@@ -19,7 +19,7 @@ namespace {
 TEST(BlackwellVectorLdstIntegrationTest,
      GlobalV8B32MovesAllEightWordsPerThread) {
   constexpr unsigned kThreads = 32;
-  constexpr unsigned kInputWords = kThreads + 7;
+  constexpr unsigned kInputWords = 8 * kThreads;
   constexpr unsigned kOutputWords = 8 * kThreads;
   std::vector<uint32_t> input(kInputWords);
   std::vector<uint32_t> output(kOutputWords, 0);
@@ -47,7 +47,7 @@ TEST(BlackwellVectorLdstIntegrationTest,
   for (unsigned lane = 0; lane < kThreads; ++lane) {
     for (unsigned i = 0; i < 8; ++i) {
       const unsigned index = 8 * lane + i;
-      EXPECT_EQ(output[index], input[lane + i] ^ (0xa5a50000U + 17U * i))
+      EXPECT_EQ(output[index], input[8 * lane + i] ^ (0xa5a50000U + 17U * i))
           << "lane " << lane << ", element " << i;
     }
   }

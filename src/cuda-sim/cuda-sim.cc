@@ -2767,8 +2767,25 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
           if (pI->get_vector() == V4_TYPE) vector_width = 4;
           if (pI->get_vector() == V8_TYPE) vector_width = 8;
           assert(vector_width != 0);
-          inst.set_per_thread_memory_access_size(lane_id,
-                                                 insn_data_size * vector_width);
+          const operand_info &vector =
+              pI->has_memory_read() ? pI->dst() : pI->src1();
+          new_addr_type addresses[MAX_ACCESSES_PER_INSN_PER_THREAD] = {};
+          unsigned live_elements = 0;
+          for (unsigned i = 0; i < vector_width; ++i) {
+            if (!vector.vector_element_is_sink(i))
+              addresses[live_elements++] = insn_memaddr + i * insn_data_size;
+          }
+          if (live_elements != vector_width) {
+            // Sparse vectors retain their original element offsets. Reuse
+            // the existing multi-address coalescer instead of representing
+            // sinks as zero-filled data or counting their bytes as accessed.
+            inst.set_addr(lane_id, addresses, MAX_ACCESSES_PER_INSN_PER_THREAD);
+            inst.set_per_thread_memory_access_size(
+                lane_id, live_elements ? insn_data_size : 0);
+          } else {
+            inst.set_per_thread_memory_access_size(
+                lane_id, insn_data_size * vector_width);
+          }
         }
         inst.data_size = insn_data_size;  // simpleAtomicIntrinsics
         assert(inst.memory_op == insn_memory_op);

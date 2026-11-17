@@ -20,6 +20,7 @@ sources = [
 
   # Blackwell vector-memory forms emitted by native kernels.
   "blackwell/vector_ldst_v8_test.cu",
+  "blackwell/vector_memory_semantics_test.cc",
 
   # SM120 correctness groups.
   "barrier/mbarrier_test.cu",

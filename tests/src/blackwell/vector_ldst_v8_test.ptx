@@ -13,7 +13,8 @@
     ld.param.b64 %rd3, [vector_ldst_v8_kernel_param_0];
     ld.param.b64 %rd4, [vector_ldst_v8_kernel_param_1];
     mov.u32 %r17, %tid.x;
-    mul.wide.u32 %rd5, %r17, 4;
+    // Every lane accesses its own naturally aligned 32-byte vector.
+    mul.wide.u32 %rd5, %r17, 32;
     add.s64 %rd1, %rd3, %rd5;
 
     ld.global.v8.b32 {%r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8}, [%rd1];

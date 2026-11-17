@@ -773,6 +773,10 @@ class operand_info {
     return result;
   }
 
+  bool vector_element_is_sink(unsigned idx) const {
+    return vec_symbol(idx)->name() == "_";
+  }
+
   const std::string &vec_name1() const {
     assert(m_type == vector_t);
     return m_value.m_vector_symbolic[0]->name();
