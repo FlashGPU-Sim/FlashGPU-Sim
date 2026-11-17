@@ -344,7 +344,8 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
 enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
                                             unsigned &idx, bool &wb,
                                             evicted_block_info &evicted,
-                                            mem_fetch *mf) {
+                                            mem_fetch *mf,
+                                            bool allocate_on_miss) {
   m_access++;
   is_used = true;
   shader_cache_access_log(m_core_id, m_type_id, 0);  // log accesses to cache
@@ -358,7 +359,7 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
     case MISS:
       m_miss++;
       shader_cache_access_log(m_core_id, m_type_id, 1);  // log cache misses
-      if (m_config.m_alloc_policy == ON_MISS) {
+      if (m_config.m_alloc_policy == ON_MISS && allocate_on_miss) {
         if (m_lines[idx]->is_modified_line()) {
           wb = true;
           // m_lines[idx]->set_byte_mask(mf);
@@ -376,7 +377,7 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
       assert(m_config.m_cache_type == SECTOR);
       m_sector_miss++;
       shader_cache_access_log(m_core_id, m_type_id, 1);  // log cache misses
-      if (m_config.m_alloc_policy == ON_MISS) {
+      if (m_config.m_alloc_policy == ON_MISS && allocate_on_miss) {
         bool before = m_lines[idx]->is_modified_line();
         ((sector_cache_block *)m_lines[idx])
             ->allocate_sector(time, mf->get_access_sector_mask());
@@ -1427,16 +1428,10 @@ void baseline_cache::send_read_request(new_addr_type addr,
     m_stats.inc_stats(mf->get_access_type(), MSHR_HIT, mf->get_streamID());
     do_miss = true;
   } else if (mshr_hit && mshr_avail) {
-    // A merge has no lower-level fetch of its own. After invalidation, it
-    // must not allocate a second reservation that no response will fill.
-    const auto tag_status =
-        m_tag_array->probe(block_addr, cache_index, mf, mf->is_write());
-    if (tag_status == HIT || tag_status == HIT_RESERVED) {
-      if (read_only)
-        m_tag_array->access(block_addr, time, cache_index, mf);
-      else
-        m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
-    }
+    // Count the tag lookup and update hits, but a merge has no new lower-level
+    // fetch to complete a reservation created after invalidation.
+    m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf,
+                        /*allocate_on_miss=*/false);
 
     m_mshrs.add(mshr_addr, mf, mf->isatomic());
     m_stats.inc_stats(mf->get_access_type(), MSHR_HIT, mf->get_streamID());
@@ -1729,6 +1724,13 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
   } else {
     bool mshr_hit = m_mshrs.probe(mshr_addr);
     bool mshr_avail = !m_mshrs.full(mshr_addr);
+    // A partial store needs the outstanding fill's tag reservation to retain
+    // its dirty bytes. If invalidation removed it, retry after the MSHR drains.
+    if (mshr_hit && status != HIT_RESERVED) {
+      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENRTY_FAIL,
+                             mf->get_streamID());
+      return RESERVATION_FAIL;
+    }
     if (miss_queue_full(1) ||
         (!(mshr_hit && mshr_avail) &&
          !(!mshr_hit && mshr_avail &&

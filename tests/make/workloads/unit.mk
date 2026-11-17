@@ -233,11 +233,13 @@ $(BIN_DIR)/sm120/core_tests: \
 $(BIN_DIR)/sm120/core_tests: $(UNIT_SIM_LIB_DIR)/libcudart.so $(UNIT_MK)
 $(BIN_DIR)/sm120/core_tests: \
   GPGPUSIM_FLAGS += -DFLASH_GPGPU_SIM -DFLASH_GPGPU_SIM_OMP
+$(OBJ_DIR)/sm120/core/cache_partial_store_test.cc.o \
 $(OBJ_DIR)/sm120/core/cluster_response_width_test.cc.o \
 $(OBJ_DIR)/sm120/core/predicated_atomic_test.cc.o \
 $(OBJ_DIR)/sm120/core/pipeline_dump_test.cc.o: \
   INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
 
+$(OBJ_DIR)/sm120/core/cache_partial_store_test.cc.o \
 $(OBJ_DIR)/sm120/core/cluster_response_width_test.cc.o \
 $(OBJ_DIR)/sm120/core/predicated_atomic_test.cc.o \
 $(OBJ_DIR)/sm120/core/pipeline_dump_test.cc.o: \

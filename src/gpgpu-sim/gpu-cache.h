@@ -964,7 +964,8 @@ class tag_array {
                                    unsigned &idx, mem_fetch *mf);
   enum cache_request_status access(new_addr_type addr, unsigned time,
                                    unsigned &idx, bool &wb,
-                                   evicted_block_info &evicted, mem_fetch *mf);
+                                   evicted_block_info &evicted, mem_fetch *mf,
+                                   bool allocate_on_miss = true);
 
   void fill(new_addr_type addr, unsigned time, mem_fetch *mf, bool is_write);
   void fill(unsigned idx, unsigned time, mem_fetch *mf);

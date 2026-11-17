@@ -3,6 +3,7 @@
 #include "gpgpu-sim/gpu-sim.h"
 
 #include <cstdio>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -97,4 +98,60 @@ TEST_P(CacheInvalidationTest, OutstandingFillDoesNotOwnReusedTag) {
 INSTANTIATE_TEST_SUITE_P(NormalAndSector, CacheInvalidationTest,
                          testing::Combine(testing::Values('N', 'S'),
                                           testing::Bool(), testing::Bool()));
+
+class CacheMergeStatsTest
+    : public testing::TestWithParam<std::tuple<char, char>> {};
+
+TEST_P(CacheMergeStatsTest, CountsBothReadsSharingOneOutstandingMiss) {
+  const auto [type, allocation] = GetParam();
+  gpgpu_context context;
+  memory_config memory(&context);
+  memory.SST_mode = true;
+  memory.icnt_flit_size = 32;
+
+  cache_config config;
+  char options[80];
+  std::snprintf(options, sizeof(options), "%c:1:128:2,L:L:%c:N:L,A:8:8,8:8,32",
+                type, allocation);
+  config.init(options, FuncCachePreferNone);
+  TestPort port;
+  InspectableCache cache("merge-stats", config, 0, 0, &port, nullptr,
+                         IN_L1D_MISS_QUEUE, L1_WR_ALLOC_R, L1_WRBK_ACC, nullptr,
+                         L1_GPU_CACHE);
+  mem_access_sector_mask_t sector;
+  sector.set(0);
+  mem_access_byte_mask_t bytes;
+  for (unsigned i = 0; i < 32; ++i) bytes.set(i);
+  mem_access_t access(GLOBAL_ACC_R, 0x1000, 32, false, active_mask_t().set(),
+                      bytes, sector, &context);
+  mem_fetch first(access, nullptr, 0, 8, 0, 0, 0, &memory, 1);
+  mem_fetch merged(access, nullptr, 0, 8, 0, 0, 0, &memory, 2);
+  std::list<cache_event> events;
+  ASSERT_EQ(cache.access(0x1000, &first, 1, events), MISS);
+  cache.cycle();
+  ASSERT_EQ(cache.access(0x1000, &merged, 2, events), MISS);
+  cache.cycle();
+  ASSERT_EQ(port.sent.size(), 1u);
+
+  first.set_reply();
+  cache.fill(&first, 3);
+  ASSERT_TRUE(cache.access_ready());
+  EXPECT_EQ(cache.next_access(), &first);
+  ASSERT_TRUE(cache.access_ready());
+  EXPECT_EQ(cache.next_access(), &merged);
+  EXPECT_FALSE(cache.access_ready());
+
+  unsigned accesses, misses, pending_hits, reservation_failures;
+  cache.tags()->get_stats(accesses, misses, pending_hits, reservation_failures);
+  // ON_FILL has no tag until the response arrives. Both requests still count
+  // as tag accesses and misses even though the MSHR sends only one fetch.
+  EXPECT_EQ(accesses, 2u);
+  EXPECT_EQ(misses, allocation == 'f' ? 2u : 1u);
+  EXPECT_EQ(pending_hits, allocation == 'f' ? 0u : 1u);
+  EXPECT_EQ(reservation_failures, 0u);
+}
+
+INSTANTIATE_TEST_SUITE_P(NormalAndSector, CacheMergeStatsTest,
+                         testing::Combine(testing::Values('N', 'S'),
+                                          testing::Values('m', 'f')));
 }  // namespace
