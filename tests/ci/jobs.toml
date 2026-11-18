@@ -42,7 +42,7 @@ tests = [
 arch = "sm90"
 config = "SM90_H200"
 tests = [
-  { name = "integration", group = "integration", gtest_filter = "ClusterBasicTest.*:ClusterLaunchApiTest.*:ClusterRealShapedTest.*:ClusterSregTest.*:MultiCluster*:DsmTest.*:MbarrierClusterTest.*:TMACluster*:TmaMulticastMaskTest.*" },
+  { name = "integration", group = "integration", gtest_filter = "ClusterBasicTest.*:ClusterLaunchApiTest.*:ClusterRealShapedTest.*:ClusterSregTest.*:MultiCluster*:DsmTest.*:MbarrierClusterTest.*:TMACluster*:*/TMAClusterAddressTest.*:TmaMulticastMaskTest.*" },
 ]
 
 [jobs.sm90-fa3]

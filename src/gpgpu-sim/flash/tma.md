@@ -94,6 +94,24 @@ phases and distinct per-CTA data. Run the size-two cases on `SM90_H200`.
 This follows the explicit multicast and `ctaMask` semantics in the
 [PTX ISA](https://docs.nvidia.com/cuda/archive/12.8.1/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-cp-async-bulk).
 
+The `TMAClusterAddressTest` matrix uses five representative shapes: 1D sizes
+1, 2, 8, and 16, plus a 4x2x2 cluster to check 3D rank mapping. Each shape
+runs bulk/tensor loads with local `.shared::cta`, local `.shared::cluster`,
+remote unicast, and explicit multicast in two independent clusters. Together
+with five boundary cases, this gives 45 tests without sweeping every size.
+Mask rounds select all ranks, the highest rank, all except the issuer, and
+alternating ranks. Sentinel regions check both non-receivers and the bytes
+surrounding each destination tile.
+Boundary tests also cover 1 KiB transfers at size 16 and launch rejection above
+the portable/opt-in limits. The boundary test expects at most 8 CTAs by
+default, or 16 with `cudaFuncAttributeNonPortableClusterSizeAllowed`, also
+bounded by the configured physical capacity.
+
+The kernel also prints per-CTA `clock64` wait intervals as `TMA_TIMING`; these are diagnostic
+measurements, not a calibrated hardware-cycle oracle. Timing accuracy against
+hardware and other instruction variants such as `.cta_group::2` are outside
+this matrix's claim.
+
 Cluster multicast is a functional fan-out plus a fixed latency knob, not a
 bandwidth or contention model. See `docs/cluster_noc/README.md`.
 
