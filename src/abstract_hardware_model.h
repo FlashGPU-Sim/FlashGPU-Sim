@@ -925,6 +925,7 @@ public:
     uint8_t tensormap_descriptor[TMA_DESCRIPTOR_BYTES] = {};
     bool has_tensormap_descriptor = false;
     // 16-bit CTA rank mask for .multicast::cluster (bit i = cluster rank i).
+    // Also routes a remote unicast barrier completion to one rank.
     // Without a mask, completion targets the issuing CTA.
     uint16_t cta_mask = 0xFFFF;
     bool has_cta_mask = false;

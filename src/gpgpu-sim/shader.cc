@@ -5083,9 +5083,9 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
 
   // Jin: for concurrent kernels on sm
   release_shader_resource_1block(cta_num, *kernel);
-  kernel->dec_running();
+  const bool last_running_cta = kernel->dec_running();
   if (!m_gpu->kernel_more_cta_left(kernel)) {
-    if (!kernel->running()) {
+    if (last_running_cta) {
       SHADER_GPPRINTF(LIVENESS,
                      "GPGPU-Sim uArch: GPU detected kernel %u \'%s\' "
                      "finished on shader %u.\n",

@@ -439,6 +439,13 @@ TEST(TMAClusterAddressBoundaryTest, RejectsBeyondPortableAndOptInLimits) {
                                                    dim3(17), nullptr),
             cudaSuccess);
   cudaGetLastError();
+  // The product wraps to zero in 32 bits. Reject before dispatching any CTA.
+  const dim3 overflowing_cluster(1u << 30, 4, 1);
+  EXPECT_NE(flash_test::launch_kernel_with_cluster(
+                kernel, overflowing_cluster, dim3(32), overflowing_cluster,
+                nullptr),
+            cudaSuccess);
+  cudaGetLastError();
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
 }
 }  // namespace
