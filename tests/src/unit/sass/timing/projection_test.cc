@@ -2,6 +2,160 @@
 
 namespace {
 
+TEST(SassTimingProjectionTest, PreservesSubwordMemoryWidths) {
+  struct memory_case {
+    const char *opcode;
+    const char *operands;
+    unsigned bytes;
+  };
+  const memory_case cases[] = {
+      {"LDG.E.U8", "R8,desc[UR4][R2.64]", 1},
+      {"LDG.E.U16", "R8,desc[UR4][R2.64]", 2},
+      {"LDG.E.U16.CONSTANT", "R8,desc[UR4][R2.64]", 2},
+      {"STG.E.U16", "desc[UR4][R2.64],R8", 2},
+      {"LDS.U8", "R8[R2]", 1},
+      {"LDS.U16", "R8[R2]", 2},
+      {"STS.U8", "[R2],R8", 1},
+      {"STS.U16", "[R2],R8", 2},
+      {"LDC.U8", "R8,c[0x0][0x100]", 1},
+      {"LDC.U16", "R8,c[0x0][0x100]", 2},
+      {"ULDC.U8", "UR8,c[0x0][0x100]", 1},
+      {"LDCU.U8", "UR8,c[0x0][0x100]", 1},
+      {"LD.E.U16.STRONG.SYS", "R8[R2.64]", 2},
+      {"LDG.E", "R8,desc[UR4][R2.64]", 4},
+      {"LDG.E.64", "R8,desc[UR4][R2.64]", 8},
+      {"LDG.E.128", "R8,desc[UR4][R2.64]", 16},
+  };
+  for (const auto &entry : cases) {
+    SCOPED_TRACE(entry.opcode);
+    const timing_instruction projected(
+        official_instruction(0, entry.opcode, entry.operands));
+    EXPECT_EQ(projected.data_size, entry.bytes);
+  }
+}
+
+TEST(SassTimingProjectionTest, IncludesShuffleValueInRegisterWriteback) {
+  for (const char *opcode : {"SHFL.IDX", "SHFL.BFLY"}) {
+    for (const char *predicate : {"P0", "PT"}) {
+      SCOPED_TRACE(std::string(opcode) + " " + predicate);
+      const timing_instruction projected(official_instruction(
+          0, opcode, std::string(predicate) + ",R8,R9,0x1,0x1f"));
+      ASSERT_EQ(projected.get_register_file_destination_count(), 1u);
+      EXPECT_EQ(projected.get_register_file_destination(0).reg, 8u);
+      ASSERT_EQ(projected.get_register_file_source_count(), 1u);
+      EXPECT_EQ(projected.get_register_file_source(0).reg, 9u);
+    }
+    const timing_instruction discarded(
+        official_instruction(0, opcode, "P0,RZ,R9,0x1,0x1f"));
+    EXPECT_EQ(discarded.get_register_file_destination_count(), 0u);
+  }
+}
+
+TEST(SassTimingProjectionTest, IncludesBothSpecialRegisterResultWords) {
+  for (const char *base : {"CS2R", "CS2UR"}) {
+    const bool uniform = std::string(base) == "CS2UR";
+    for (bool narrow : {false, true}) {
+      const std::string opcode = std::string(base) + (narrow ? ".32" : "");
+      SCOPED_TRACE(opcode);
+      const timing_instruction projected(official_instruction(
+          0, opcode, uniform ? "UR8,SR_CLOCKLO" : "R8,SR_CLOCKLO"));
+      const unsigned words = narrow ? 1 : 2;
+      ASSERT_EQ(projected.outcount, words);
+      const int first = uniform ? 1 + flash_gpgpu_sim::sass::kVectorRegisters + 8
+                                : 9;
+      for (unsigned word = 0; word < words; ++word)
+        EXPECT_EQ(projected.arch_reg.dst[word], first + word);
+      ASSERT_EQ(projected.get_register_file_destination_count(),
+                uniform ? 0u : words);
+      if (!uniform)
+        for (unsigned word = 0; word < words; ++word)
+          EXPECT_EQ(projected.get_register_file_destination(word).reg, 8u + word);
+    }
+  }
+}
+
+TEST(SassTimingProjectionTest, PreservesImplicitWideSourceRegisters) {
+  struct source_case {
+    const char *opcode;
+    const char *operands;
+    std::vector<unsigned> words;
+    std::vector<unsigned> slots;
+  };
+  const source_case cases[] = {
+      {"MOV.64", "R8,R12.reuse", {12, 13}, {0, 0}},
+      {"IADD.64", "R8,R12,R16", {12, 13, 16, 17}, {0, 0, 1, 1}},
+      {"SEL.64", "R8,R12,R16,P0", {12, 13, 16, 17}, {0, 0, 1, 1}},
+      {"IMAD.WIDE.U32", "R8,R12,R16,R20.reuse", {12, 16, 20, 21},
+       {0, 1, 2, 2}},
+      {"IMAD.HI.U32", "R8,R12,R16,R20", {12, 16, 20, 21}, {0, 1, 2, 2}},
+      {"ISETP.GE.U64.AND", "P0,PT,R12,R16,PT", {12, 13, 16, 17},
+       {0, 0, 1, 1}},
+      {"ISETP.GE.S64.AND", "P0,PT,R12,R16,PT", {12, 13, 16, 17},
+       {0, 0, 1, 1}},
+      {"STS.64", "[R2],R12", {12, 13}, {0, 0}},
+      {"STS.128", "[R2],R12", {12, 13, 14, 15}, {0, 0, 0, 0}},
+      {"STG.E.128", "desc[UR4][R2.64],R12", {12, 13, 14, 15}, {0, 0, 0, 0}},
+      {"STL.64", "[R2],R12", {12, 13}, {0, 0}},
+      {"STSM.16.M88.4", "[R2],R12", {12, 13, 14, 15}, {0, 0, 0, 0}},
+  };
+  for (const auto &entry : cases) {
+    SCOPED_TRACE(entry.opcode);
+    const timing_instruction projected(
+        official_instruction(0, entry.opcode, entry.operands));
+    ASSERT_EQ(projected.get_register_file_source_count(), entry.words.size());
+    for (unsigned i = 0; i < entry.words.size(); ++i) {
+      const auto &source = projected.get_register_file_source(i);
+      EXPECT_EQ(source.reg, entry.words[i]);
+      EXPECT_EQ(source.slot, entry.slots[i]);
+      EXPECT_NE(std::find(projected.arch_reg.src,
+                          projected.arch_reg.src + projected.incount,
+                          static_cast<int>(entry.words[i] + 1)),
+                projected.arch_reg.src + projected.incount);
+      if (std::string(entry.opcode) == "MOV.64" ||
+          (std::string(entry.opcode) == "IMAD.WIDE.U32" && i >= 2))
+        EXPECT_TRUE(source.retain);
+    }
+  }
+  for (const char *opcode : {"MOV.64", "UMOV.64", "UIADD3.64", "USEL.64",
+                             "UIMAD.WIDE.U32", "UIMAD.HI.U32",
+                             "UISETP.GE.U64.AND"}) {
+    SCOPED_TRACE(opcode);
+    std::string operands = "UR8,UR12";
+    if (std::string(opcode) == "MOV.64") operands = "R8,UR12";
+    if (std::string(opcode) == "UIADD3.64") operands = "UR8,UR12,URZ,URZ";
+    if (std::string(opcode) == "USEL.64") operands = "UR8,UR12,URZ,UP0";
+    if (std::string(opcode).find("UIMAD") == 0)
+      operands = "UR8,URZ,URZ,UR12";
+    if (std::string(opcode).find("UISETP") == 0)
+      operands = "UP0,UPT,UR12,URZ,UPT";
+    const timing_instruction projected(official_instruction(0, opcode, operands));
+    const int high = 1 + flash_gpgpu_sim::sass::kVectorRegisters + 13;
+    EXPECT_NE(std::find(projected.arch_reg.src,
+                        projected.arch_reg.src + projected.incount, high),
+              projected.arch_reg.src + projected.incount);
+    EXPECT_EQ(projected.get_register_file_source_count(), 0u);
+  }
+  for (const char *opcode : {"MOV.64", "STS.128"}) {
+    const timing_instruction zero(official_instruction(
+        0, opcode, std::string(opcode) == "MOV.64" ? "R8,RZ" : "[UR4],RZ"));
+    EXPECT_EQ(zero.get_register_file_source_count(), 0u);
+    EXPECT_LE(zero.incount, 1u);  // Only the uniform store address may remain.
+  }
+}
+
+TEST(SassTimingProjectionTest, PreservesWideAddAndSelectDestinations) {
+  for (const char *opcode : {"IADD.64", "SEL.64", "USEL.64"}) {
+    const bool uniform = std::string(opcode) == "USEL.64";
+    const char *operands = uniform ? "UR8,UR12,UR16,UP0"
+                           : std::string(opcode) == "SEL.64" ? "R8,R12,R16,P0"
+                                                            : "R8,R12,R16";
+    const timing_instruction projected(official_instruction(0, opcode, operands));
+    SCOPED_TRACE(opcode);
+    EXPECT_EQ(projected.outcount, 2u);
+    EXPECT_EQ(projected.get_register_file_destination_count(), uniform ? 0u : 2u);
+  }
+}
+
 TEST(SassTimingProjectionTest, ProjectsVectorAddDependencyControl) {
   instruction source = official_instruction(0x110, "FADD", "R9,R2.reuse,R5");
   source.control.stall = 5;
@@ -271,7 +425,7 @@ TEST(SassTimingProjectionTest, SelectsNativeExecutionPipelineClass) {
   const timing_instruction warpgroup_wait(
       official_instruction(0x38, "WARPGROUP.DEPBAR.LE", "gsb0,0x1"), profile);
   const timing_instruction shuffle(
-      official_instruction(0x10, "SHFL.IDX", "R2,P0,R3,R4,R5"), profile);
+      official_instruction(0x10, "SHFL.IDX", "P0,R2,R3,R4,R5"), profile);
   const timing_instruction multiply(
       official_instruction(0x20, "FMUL", "R2,R3,R4"), profile);
   const timing_instruction fma(
@@ -736,9 +890,11 @@ TEST(SassTimingProjectionTest, ProjectsWideConstantLoadAndStore) {
   EXPECT_EQ(imad_wide.outcount, 2u);
   EXPECT_EQ(imad_wide.arch_reg.dst[0], 3);
   EXPECT_EQ(imad_wide.arch_reg.dst[1], 4);
-  EXPECT_EQ(imad_wide.incount, 2u);
+  // R9 and the implicit 64-bit addend R2:R3 are all read.
+  ASSERT_EQ(imad_wide.incount, 3u);
   EXPECT_EQ(imad_wide.arch_reg.src[0], 10);
   EXPECT_EQ(imad_wide.arch_reg.src[1], 3);
+  EXPECT_EQ(imad_wide.arch_reg.src[2], 4);
   EXPECT_EQ(imad_wide.get_num_operands(), 3u);
   EXPECT_EQ(imad_wide.get_num_regs(), 2u);
 

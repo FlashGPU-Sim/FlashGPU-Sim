@@ -201,11 +201,28 @@ unsigned memory_width(const std::string &opcode) {
     return 16;
   if (has_modifier(opcode, "64"))
     return 8;
-  if (has_modifier(opcode, "16"))
+  if (has_modifier(opcode, "16") || has_modifier(opcode, "U16"))
     return 2;
-  if (has_modifier(opcode, "8"))
+  if (has_modifier(opcode, "8") || has_modifier(opcode, "U8"))
     return 1;
   return 4;
+}
+
+// Use the same destination width for dependency metadata and physical RF
+// writes. CS2R/CS2UR are 64-bit by default; their narrow form is explicit.
+unsigned destination_width(const instruction &source) {
+  const std::string base = base_opcode(source.opcode);
+  if (base == "CS2R" || base == "CS2UR")
+    return has_modifier(source.opcode, "32") ? 1 : 2;
+  if (has_modifier(source.opcode, "WIDE") ||
+      ((base == "MOV" || base == "UMOV" || base == "UIADD3" || base == "IADD" ||
+        base == "SEL" || base == "USEL") &&
+       has_modifier(source.opcode, "64")))
+    return 2;
+  if (base == "LD" || base == "LDG" || base == "LDS" || base == "LDL" ||
+      base == "LDC" || base == "LDCU" || base == "ULDC")
+    return std::max(1u, memory_width(source.opcode) / 4);
+  return 1;
 }
 
 unsigned matrix_count(const std::string &opcode) {
@@ -272,6 +289,51 @@ std::array<unsigned, 3> hmma_source_widths(const std::string &opcode) {
       has_modifier(opcode, "16816") ||
       (has_modifier(opcode, "1688") && has_modifier(opcode, "TF32"));
   return {{wide ? 4u : 2u, wide ? 2u : 1u, 4u}};
+}
+
+// Several native instructions print only the low register of an implicit pair
+// or vector. Preserve every word in both dependency and RF-read metadata;
+// all words of an operand retain its single logical reuse-cache slot.
+unsigned source_width(const instruction &source, size_t index) {
+  const std::string base = base_opcode(source.opcode);
+  if (base == "HMMA" && index >= 1 && index <= 3)
+    return hmma_source_widths(source.opcode)[index - 1];
+  if (has_modifier(source.opcode, "64") &&
+      (((base == "MOV" || base == "UMOV") && index == 1) ||
+       ((base == "IADD" || base == "SEL" || base == "USEL") &&
+        (index == 1 || index == 2)) ||
+       (base == "UIADD3" && index > 0)))
+    return 2;
+  if ((base == "IMAD" || base == "UIMAD") && index == 3 &&
+      (has_modifier(source.opcode, "WIDE") ||
+       has_modifier(source.opcode, "HI")))
+    return 2;
+  if ((base == "ISETP" || base == "UISETP") && (index == 2 || index == 3) &&
+      (has_modifier(source.opcode, "U64") ||
+       has_modifier(source.opcode, "S64")))
+    return 2;
+  if ((base == "ST" || base == "STG" || base == "STS" || base == "STL") &&
+      index == 1)
+    return std::max(1u, memory_width(source.opcode) / 4);
+  if (base == "STSM" && index == 1)
+    return matrix_count(source.opcode);
+  return source.operands[index].wide ? 2 : 1;
+}
+
+void append_instruction_source(std::vector<unsigned> &registers,
+                               const instruction &source, size_t index) {
+  const operand &value = source.operands[index];
+  if (value.kind != operand_kind::kRegister &&
+      value.kind != operand_kind::kUniformRegister) {
+    append_source_registers(registers, value);
+    return;
+  }
+  // RZ/URZ supplies zero for the entire pair/vector, not a fictitious register
+  // after the architectural zero register.
+  if (canonical_register(value.kind, value.index) == 0)
+    return;
+  for (unsigned word = 0; word < source_width(source, index); ++word)
+    append_register(registers, value.kind, value.index + word, false);
 }
 
 struct wgmma_shape {
@@ -802,19 +864,11 @@ void populate_registers(const instruction &source, timing_instruction &target) {
              has_destination(base)) {
     const operand &destination = source.operands.front();
     append_source_registers(destinations, destination);
-    const bool memory_load = base == "LD" || base == "LDG" || base == "LDS" ||
-                             base == "LDL" || base == "LDC" || base == "LDCU" ||
-                             base == "ULDC";
-    const unsigned bytes =
-        has_modifier(source.opcode, "WIDE") ||
-                ((base == "MOV" || base == "UMOV" || base == "UIADD3") &&
-                 has_modifier(source.opcode, "64"))
-            ? 8
-            : (memory_load ? memory_width(source.opcode) : 4);
-    if (bytes > 4 && destinations.size() == 1 &&
+    const unsigned width = destination_width(source);
+    if (width > 1 && destinations.size() == 1 &&
         (destination.kind == operand_kind::kRegister ||
          destination.kind == operand_kind::kUniformRegister)) {
-      for (unsigned word = 1; word < bytes / 4; ++word)
+      for (unsigned word = 1; word < width; ++word)
         append_register(destinations, destination.kind,
                         destination.index + word, false);
     }
@@ -822,7 +876,7 @@ void populate_registers(const instruction &source, timing_instruction &target) {
   }
 
   for (size_t index = source_begin; index < source.operands.size(); ++index) {
-    append_source_registers(sources, source.operands[index]);
+    append_instruction_source(sources, source, index);
     ++logical_source_operands;
     if (reads_register_file(source.operands[index]))
       ++logical_register_operands;
@@ -895,12 +949,8 @@ void populate_register_file_sources(const instruction &source,
     if (value.kind != operand_kind::kRegister)
       continue;
 
-    unsigned width = 0;
-    if (base == "HMMA") {
-      const unsigned source_index = index - source_begin;
-      width = hmma_source_widths(source.opcode)[source_index];
-    }
-    append_register_file_operand(target, value, regular_slot, width);
+    append_register_file_operand(target, value, regular_slot,
+                                 source_width(source, index));
     ++regular_slot;
   }
 }
@@ -923,10 +973,13 @@ void populate_register_file_destinations(const instruction &source,
   if (!has_destination(base))
     return;
 
-  const bool atomic_has_return_value =
-      base == "ATOMG" && source.operands.size() >= 4;
+  // SHFL has a predicate result before its regular-register result, just as
+  // descriptor-form ATOMG puts an auxiliary predicate before its old value.
+  const bool value_is_second =
+      (base == "ATOMG" && source.operands.size() >= 4) ||
+      (base == "SHFL" && source.operands.size() >= 2);
   const operand &destination =
-      atomic_has_return_value ? source.operands[1] : source.operands.front();
+      value_is_second ? source.operands[1] : source.operands.front();
   if ((base == "LDS" || base == "LDL" || base == "LDSM" || base == "SYNCS" ||
        base == "ATOMS") &&
       destination.kind == operand_kind::kMemoryAddress &&
@@ -937,19 +990,7 @@ void populate_register_file_destinations(const instruction &source,
     return;
   }
 
-  unsigned width = 1;
-  if (base == "HMMA")
-    width = 4;
-  else if (has_modifier(source.opcode, "WIDE") ||
-           ((base == "MOV" || base == "UMOV" || base == "UIADD3") &&
-            has_modifier(source.opcode, "64")) ||
-           ((base == "LD" || base == "LDG" || base == "LDL" || base == "LDC" ||
-             base == "LDCU" || base == "ULDC") &&
-            memory_width(source.opcode) > 4))
-    width = (base == "LD" || base == "LDG" || base == "LDL" || base == "LDC" ||
-             base == "LDCU" || base == "ULDC")
-                ? memory_width(source.opcode) / 4
-                : 2;
+  const unsigned width = base == "HMMA" ? 4 : destination_width(source);
   append_register_file_destination(target, destination.kind, destination.index,
                                    width);
 }
