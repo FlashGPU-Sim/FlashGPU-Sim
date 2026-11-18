@@ -10,7 +10,7 @@ This branch adds cluster launch, DSM (`mapa` plus remote shared `ld` / `st` / `a
 | `mapa` plus remote `ld` / `st` / `atom.add` | Intra-GPC fabric, `dsm_fabric_t`. A rank that is not resident aborts |
 | Remote `mbarrier` | Fabric request and completion. Needs DSM and `-gpgpu_mbarrier_cluster_enable`. `try_wait` on a `mapa` address is a uniform simulator extension; PTX `try_wait` is on the owner, and remote arrive plus local wait is the standard path |
 | `barrier.cluster.arrive` / `wait` | Releases after every active warp in every CTA of the cluster has arrived |
-| TMA `.shared::cluster` and `ctaMask` | Functional copy to the selected peers, then `-gpgpu_tma_multicast_latency`. No fabric traffic |
+| TMA `.multicast::cluster` and `ctaMask` | Functional copy to the selected peers, then `-gpgpu_tma_multicast_latency`. No fabric traffic. Bare `.shared::cluster` with local addresses remains unicast |
 
 Not implemented: `red` / `red.async`, preferred cluster dimensions, and the cluster scheduling policy. DSM and TMA multicast stay inside one GPC. TPC / TPCARB are not in the model. Power-gated SM slots are. Global TMA multicast has no bandwidth, route, queue, or contention model.
 

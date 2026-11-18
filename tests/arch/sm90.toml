@@ -28,6 +28,7 @@ sources = [
   "integration/dsm_test.cu",
   "integration/mbarrier_cluster_test.cu",
   "integration/tma_cluster_multicast_test.cu",
+  "integration/tma_cluster_unicast_test.cu",
   "integration/tma_multicast_mask_test.cu",
   "integration/tma_store_test.cu",
 

@@ -74,6 +74,26 @@ See [`tma_test.cu`](../../../tests/src/tma/tma_test.cu) and
 selected functional and synchronization checks, and the
 [mbarrier model](mbarrier.md) for phase-completion semantics.
 
+Global-to-shared loads using `.shared::cluster` with local addresses are
+unicast unless `.multicast::cluster` is present. Only explicit multicast
+replicates data and mbarrier completion to the `ctaMask` destinations.
+Cluster launch dimensions alone do not enable multicast. The
+completion floor uses the cluster setting for multi-CTA cluster launches or
+explicit multicast, and the non-cluster setting otherwise. Only explicit
+multicast adds the multicast latency to global-to-shared loads.
+
+The `TMAClusterUnicastTest` integration cases check bulk and tensor loads with
+ordinary launches and cluster sizes one and two, including repeated barrier
+phases and distinct per-CTA data. Run the size-two cases on `SM90_H200`.
+
+```bash
+./tests/run_tests.py run --arch sm90 --group integration -c SM90_H200 \
+  --gtest-filter 'TMAClusterUnicastTest.*:TmaMulticastMaskTest.*'
+```
+
+This follows the explicit multicast and `ctaMask` semantics in the
+[PTX ISA](https://docs.nvidia.com/cuda/archive/12.8.1/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-cp-async-bulk).
+
 Cluster multicast is a functional fan-out plus a fixed latency knob, not a
 bandwidth or contention model. See `docs/cluster_noc/README.md`.
 
