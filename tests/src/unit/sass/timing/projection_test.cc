@@ -287,7 +287,8 @@ TEST(SassTimingProjectionTest, SelectsNativeExecutionPipelineClass) {
   const timing_instruction stsm(
       official_instruction(0x5c, "STSM.16.M88.4", "[R2],R8"), profile);
   const timing_instruction lds(official_instruction(0x5e, "LDS.128", "R8[R2]"),
-                               profile);
+                                profile);
+  EXPECT_TRUE(lds.uses_physical_shared_transactions());
   ASSERT_EQ(lds.outcount, 4u);
   ASSERT_EQ(lds.get_register_file_destination_count(), 4u);
   for (unsigned word = 0; word < 4; ++word) {
@@ -644,6 +645,7 @@ TEST(SassTimingProjectionTest, ProjectsLdGstsAsyncCopyPipeline) {
       official_instruction(0x11a0, "DEPBAR.LE", "SB0,0x2"), profile);
   EXPECT_EQ(wait.op, ASYNC_COPY_OP);
   EXPECT_TRUE(wait.m_is_depbar);
+  EXPECT_TRUE(wait.get_async_copy_static_info().shares_bulk_wait_scoreboard);
   EXPECT_EQ(wait.m_depbar_group_no, 2u);
   EXPECT_EQ(wait.latency, 6u);
   EXPECT_EQ(wait.initiation_interval, 1u);

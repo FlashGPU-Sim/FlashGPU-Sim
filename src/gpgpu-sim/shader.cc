@@ -2864,9 +2864,11 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       m_tma->commit_cp_async_group(cta_id, warp_id);
     } else if (next_inst->m_is_depbar) {
       m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
-      // SASS uses DEPBAR.LE for both ordinary cp.async and TMA store bulk
-      // groups. Prefer a live TMA group; otherwise preserve cp.async behavior.
-      if (m_barriers.has_pending_bulk_group(cta_id, warp_id)) {
+      // Only instructions explicitly decoded as sharing a bulk scoreboard
+      // may select that queue. PTX cp.async.wait_group always names ordinary
+      // copies, even when the same warp has an outstanding TMA store.
+      if (next_inst->get_async_copy_static_info().shares_bulk_wait_scoreboard &&
+          m_barriers.has_pending_bulk_group(cta_id, warp_id)) {
         m_barriers.wait_bulk_group(cta_id, warp_id,
                                    next_inst->m_depbar_group_no);
       } else {

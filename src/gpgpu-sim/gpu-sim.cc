@@ -1215,7 +1215,7 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "Idealized TMA memory: all requests complete instantly (default=0)", "0");
   option_parser_register(opp, "-gpgpu_tma_oob_l2_traffic", OPT_BOOL,
                          &gpgpu_tma_oob_l2_traffic,
-                         "Send OOB fill requests through L2 (default=0)", "0");
+                         "Send OOB fill requests through L2 (default=1)", "1");
   option_parser_register(opp, "-gpgpu_mbarrier_arrive_latency", OPT_UINT32,
                          &gpgpu_mbarrier_arrive_latency,
                          "Latency (cycles) for arrive_tx shared memory write before mbarrier update (default=0)", "0");

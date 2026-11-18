@@ -664,3 +664,47 @@ TEST_F(TMAStoreTest, WaitGroupSeesCommittedStore) {
   EXPECT_EQ(h[0], 0xA5A5A5A5u);
   EXPECT_EQ(h[1], 0xA5A5A5A5u + 15u);
 }
+
+// Ordinary cp.async groups and TMA bulk groups are independent wait domains.
+// Keep a large store pending while waiting on an empty ordinary-copy group.
+__global__ void tma_store_ordinary_wait_isolation_kernel(
+    uint32_t *dst, unsigned long long *timings) {
+  __shared__ __align__(16) uint32_t shared[8192];
+  for (unsigned i = threadIdx.x; i < 8192; i += blockDim.x)
+    shared[i] = i;
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    tma_store_fence_proxy_async();
+    tma_store_cp_async_bulk<32768>(dst, shared);
+    tma_store_commit_group();
+    asm volatile("cp.async.commit_group;" ::: "memory");
+    const auto start = clock64();
+    asm volatile("cp.async.wait_group 0;" ::: "memory");
+    const auto ordinary_done = clock64();
+    tma_store_wait_group<0>();
+    const auto bulk_done = clock64();
+    timings[0] = ordinary_done - start;
+    timings[1] = bulk_done - ordinary_done;
+  }
+}
+
+TEST_F(TMAStoreTest, OrdinaryCopyWaitDoesNotConsumePendingBulkWait) {
+  uint32_t *dst = nullptr;
+  unsigned long long *timings = nullptr;
+  ASSERT_EQ(cudaMalloc(&dst, 32768), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&timings, 2 * sizeof(*timings)), cudaSuccess);
+  tma_store_ordinary_wait_isolation_kernel<<<1, 32>>>(dst, timings);
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  unsigned long long observed[2] = {};
+  uint32_t tail = 0;
+  ASSERT_EQ(cudaMemcpy(observed, timings, sizeof(observed),
+                       cudaMemcpyDeviceToHost), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(&tail, dst + 8191, sizeof(tail),
+                       cudaMemcpyDeviceToHost), cudaSuccess);
+  EXPECT_EQ(tail, 8191u);
+  EXPECT_LT(observed[0], observed[1])
+      << "empty ordinary-copy wait blocked on the bulk-store group";
+  EXPECT_EQ(cudaFree(timings), cudaSuccess);
+  EXPECT_EQ(cudaFree(dst), cudaSuccess);
+}

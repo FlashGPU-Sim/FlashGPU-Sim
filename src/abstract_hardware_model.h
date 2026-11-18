@@ -966,6 +966,9 @@ public:
     bool has_source_size = false;
     unsigned source_size = 0;
     bool mbarrier_increment_pending = true;
+    // Ordinary PTX waits name the cp.async group explicitly. Some machine
+    // instructions instead share a scoreboard with bulk-store groups.
+    bool shares_bulk_wait_scoreboard = false;
   };
   void set_async_copy_static_info(const async_copy_static_info_t &info) {
     async_copy_static_info = info;
@@ -1092,6 +1095,14 @@ public:
     assert(index < register_file_destination_count);
     return register_file_destinations[index];
   }
+  // Select a physical bank-width transaction model explicitly. The default
+  // retains the public PTX subwarp/vector service model.
+  void set_physical_shared_transactions(bool value = true) {
+    physical_shared_transactions = value;
+  }
+  bool uses_physical_shared_transactions() const {
+    return physical_shared_transactions;
+  }
   void set_mio_client(bool value = true) { mio_client = value; }
   bool is_mio_client() const { return mio_client; }
   void set_async_proxy_fence(bool value = true) {
@@ -1117,6 +1128,7 @@ private:
   tma_static_info_t tma_static_info;
   dependency_control_t dependency_control;
   bool explicit_dependency_control = false;
+  bool physical_shared_transactions = false;
   register_file_source_t register_file_sources[MAX_REG_OPERANDS];
   unsigned register_file_source_count = 0;
   register_file_destination_t register_file_destinations[MAX_REG_OPERANDS];

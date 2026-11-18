@@ -340,6 +340,9 @@ void warp_inst_t::generate_mem_accesses() {
   switch (space.get_type()) {
     case shared_space:
     case sstarr_space: {
+      // Preserve the public PTX stall counters, including dispatch floors and
+      // fixed-width matrix accesses, unless physical transactions are selected.
+      m_shared_dispatch_bank_conflict = !uses_physical_shared_transactions();
       if (fixed_shared_dispatch) {
         cycles = shared_mem_dispatch_cycles;
         if (is_load()) {
@@ -404,95 +407,120 @@ void warp_inst_t::generate_mem_accesses() {
         return max_bank_accesses;
       };
 
-      for (unsigned access = 0; access < access_phases; ++access) {
-        unsigned phase_accesses = 0;
-        unsigned phase_access_bytes = 0;
-        for (unsigned thread = 0; thread < m_config->warp_size; ++thread) {
-          if (!active(thread) ||
-              access >= m_per_scalar_thread[thread].memreqaddr_count)
-            continue;
-          const unsigned thread_access_bytes =
-              m_per_scalar_thread[thread].memory_access_size_valid
-                  ? m_per_scalar_thread[thread].memory_access_size
-                  : std::max(1u, vector_elements) * data_size;
-          if (phase_access_bytes == 0)
-            phase_access_bytes = thread_access_bytes;
-          else
-            assert(thread_access_bytes == phase_access_bytes);
-        }
-        assert(phase_access_bytes > 0);
-        const unsigned bank_word_bytes =
-            static_cast<unsigned>(m_config->WORD_SIZE);
-        const unsigned words_per_thread =
-            std::max(1u, (phase_access_bytes + bank_word_bytes - 1) /
-                             bank_word_bytes);
-        const unsigned lanes_per_transaction =
-            std::max(1u, m_config->num_shmem_bank / words_per_thread);
-
+      if (!uses_physical_shared_transactions()) {
+        // Public PTX model: aggregate vector elements within each subwarp.
+        // Changing its granularity is a separate timing-model change, not a
+        // consequence of adding another execution frontend.
         for (unsigned subwarp = 0; subwarp < m_config->mem_warp_parts;
-             subwarp++) {
-          const unsigned subwarp_begin = subwarp * subwarp_size;
-          const unsigned subwarp_end = (subwarp + 1) * subwarp_size;
-          // A wide per-lane access is split into bank-width transactions. For
-          // example, LDS.128 uses four 8-lane transactions; grouping all lane
-          // word zeroes together would manufacture false 4-way conflicts.
-          for (unsigned group_begin = subwarp_begin;
-               group_begin < subwarp_end;
-               group_begin += lanes_per_transaction) {
-            const unsigned group_end =
-                std::min(subwarp_end, group_begin + lanes_per_transaction);
-            bank_access_map bank_accs;
-            for (unsigned thread = group_begin; thread < group_end; ++thread) {
-              if (!active(thread) ||
-                  access >= m_per_scalar_thread[thread].memreqaddr_count)
-                continue;
-              const new_addr_type base_addr =
-                  m_per_scalar_thread[thread].memreqaddr[access];
-              for (unsigned word_index = 0; word_index < words_per_thread;
-                   ++word_index) {
-                const new_addr_type addr =
-                    base_addr + word_index * m_config->WORD_SIZE;
-                const unsigned bank = m_config->shmem_bank_func(addr);
-                const new_addr_type word =
-                    line_size_based_tag_func(addr, m_config->WORD_SIZE);
-                bank_accs[bank][word]++;
-              }
+             ++subwarp) {
+          bank_access_map bank_accs;
+          for (unsigned thread = subwarp * subwarp_size;
+               thread < (subwarp + 1) * subwarp_size; ++thread) {
+            if (!active(thread)) continue;
+            const new_addr_type base_addr =
+                m_per_scalar_thread[thread].memreqaddr[0];
+            for (unsigned element = 0; element < vector_elements; ++element) {
+              const new_addr_type addr = base_addr + element * data_size;
+              bank_accs[m_config->shmem_bank_func(addr)]
+                       [line_size_based_tag_func(addr, m_config->WORD_SIZE)]++;
             }
-            const unsigned transaction_cycles =
-                bank_conflict_cycles(bank_accs);
-            phase_accesses += transaction_cycles;
-            longest_transaction_cycles =
-                std::max(longest_transaction_cycles, transaction_cycles);
           }
+          total_accesses += bank_conflict_cycles(bank_accs);
         }
-        total_accesses += phase_accesses;
+        assert(total_accesses > 0 &&
+               total_accesses <= m_config->warp_size * vector_elements);
+        cycles = total_accesses;
+      } else {
+        for (unsigned access = 0; access < access_phases; ++access) {
+          unsigned phase_accesses = 0;
+          unsigned phase_access_bytes = 0;
+          for (unsigned thread = 0; thread < m_config->warp_size; ++thread) {
+            if (!active(thread) ||
+                access >= m_per_scalar_thread[thread].memreqaddr_count)
+              continue;
+            const unsigned thread_access_bytes =
+                m_per_scalar_thread[thread].memory_access_size_valid
+                    ? m_per_scalar_thread[thread].memory_access_size
+                    : std::max(1u, vector_elements) * data_size;
+            if (phase_access_bytes == 0)
+              phase_access_bytes = thread_access_bytes;
+            else
+              assert(thread_access_bytes == phase_access_bytes);
+          }
+          assert(phase_access_bytes > 0);
+          const unsigned bank_word_bytes =
+              static_cast<unsigned>(m_config->WORD_SIZE);
+          const unsigned words_per_thread =
+              std::max(1u, (phase_access_bytes + bank_word_bytes - 1) /
+                               bank_word_bytes);
+          const unsigned lanes_per_transaction =
+              std::max(1u, m_config->num_shmem_bank / words_per_thread);
+
+          for (unsigned subwarp = 0; subwarp < m_config->mem_warp_parts;
+               subwarp++) {
+            const unsigned subwarp_begin = subwarp * subwarp_size;
+            const unsigned subwarp_end = (subwarp + 1) * subwarp_size;
+            // A wide per-lane access is split into bank-width transactions. For
+            // example, LDS.128 uses four 8-lane transactions; grouping all lane
+            // word zeroes together would manufacture false 4-way conflicts.
+            for (unsigned group_begin = subwarp_begin;
+                 group_begin < subwarp_end;
+                 group_begin += lanes_per_transaction) {
+              const unsigned group_end =
+                  std::min(subwarp_end, group_begin + lanes_per_transaction);
+              bank_access_map bank_accs;
+              for (unsigned thread = group_begin; thread < group_end; ++thread) {
+                if (!active(thread) ||
+                    access >= m_per_scalar_thread[thread].memreqaddr_count)
+                  continue;
+                const new_addr_type base_addr =
+                    m_per_scalar_thread[thread].memreqaddr[access];
+                for (unsigned word_index = 0; word_index < words_per_thread;
+                     ++word_index) {
+                  const new_addr_type addr =
+                      base_addr + word_index * m_config->WORD_SIZE;
+                  const unsigned bank = m_config->shmem_bank_func(addr);
+                  const new_addr_type word =
+                      line_size_based_tag_func(addr, m_config->WORD_SIZE);
+                  bank_accs[bank][word]++;
+                }
+              }
+              const unsigned transaction_cycles =
+                  bank_conflict_cycles(bank_accs);
+              phase_accesses += transaction_cycles;
+              longest_transaction_cycles =
+                  std::max(longest_transaction_cycles, transaction_cycles);
+            }
+          }
+          total_accesses += phase_accesses;
+        }
+        assert(total_accesses > 0);
+        assert(m_config->shmem_data_wavefronts_per_cycle > 0);
+        unsigned data_wavefronts_per_cycle =
+            m_config->shmem_data_wavefronts_per_cycle;
+        if (op == TENSOR_CORE_STORE_OP &&
+            m_config->shmem_matrix_store_data_wavefronts_per_cycle > 0) {
+          data_wavefronts_per_cycle =
+              m_config->shmem_matrix_store_data_wavefronts_per_cycle;
+        }
+        const unsigned bandwidth_cycles =
+            (total_accesses + data_wavefronts_per_cycle - 1) /
+            data_wavefronts_per_cycle;
+        // Independent matrix/vector transactions can occupy distinct
+        // shared-data paths. Accesses caused by a bank conflict within one
+        // transaction cannot, so preserve that conflict as a lower bound.
+        cycles = std::max(longest_transaction_cycles, bandwidth_cycles);
+        // Shared loads use the SM-wide MIO admission/return path in addition to
+        // the banked data path.  A narrow request may therefore occupy the load
+        // service port longer than its single data wavefront, while wide LDS or
+        // LDSM requests remain limited by their transaction wavefront count.
+        if (space.get_type() == shared_space && is_load())
+          cycles = std::max(cycles,
+                            m_config->shmem_mio_load_initiation_interval);
+        m_shared_dispatch_bank_conflict =
+            longest_transaction_cycles > 1 &&
+            longest_transaction_cycles >= bandwidth_cycles;
       }
-      assert(total_accesses > 0);
-      assert(m_config->shmem_data_wavefronts_per_cycle > 0);
-      unsigned data_wavefronts_per_cycle =
-          m_config->shmem_data_wavefronts_per_cycle;
-      if (op == TENSOR_CORE_STORE_OP &&
-          m_config->shmem_matrix_store_data_wavefronts_per_cycle > 0) {
-        data_wavefronts_per_cycle =
-            m_config->shmem_matrix_store_data_wavefronts_per_cycle;
-      }
-      const unsigned bandwidth_cycles =
-          (total_accesses + data_wavefronts_per_cycle - 1) /
-          data_wavefronts_per_cycle;
-      // Independent matrix/vector transactions can occupy distinct
-      // shared-data paths. Accesses caused by a bank conflict within one
-      // transaction cannot, so preserve that conflict as a lower bound.
-      cycles = std::max(longest_transaction_cycles, bandwidth_cycles);
-      // Shared loads use the SM-wide MIO admission/return path in addition to
-      // the banked data path.  A narrow request may therefore occupy the load
-      // service port longer than its single data wavefront, while wide LDS or
-      // LDSM requests remain limited by their transaction wavefront count.
-      if (space.get_type() == shared_space && is_load())
-        cycles = std::max(cycles,
-                          m_config->shmem_mio_load_initiation_interval);
-      m_shared_dispatch_bank_conflict =
-          longest_transaction_cycles > 1 &&
-          longest_transaction_cycles >= bandwidth_cycles;
       if (is_load()) {
         cycles = std::max(cycles, m_config->shmem_load_min_dispatch_cycles);
       } else if (op == STORE_OP) {

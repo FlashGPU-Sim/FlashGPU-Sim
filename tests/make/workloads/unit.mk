@@ -463,3 +463,10 @@ SASS_HOST_HEADERS := $(wildcard $(SRC_DIR)/gpgpu-sim/flash/sass/*.h) \
 $(patsubst $(TEST_SRC_DIR)/%.cc,$(OBJ_DIR)/sm120/%.cc.o,\
   $(wildcard $(TEST_SRC_DIR)/unit/sass/*/*.cc)) \
 $(OBJ_DIR)/sm120/core/sass_frontend_lifecycle_test.cc.o: $(SASS_HOST_HEADERS)
+
+# Shared timing isolation tests use production configuration and instruction ABI.
+$(OBJ_DIR)/sm90/unit/ptx_timing_isolation_test.cc.o \
+$(OBJ_DIR)/sm100/unit/ptx_timing_isolation_test.cc.o \
+$(OBJ_DIR)/sm120/unit/ptx_timing_isolation_test.cc.o: \
+  $(wildcard ../libcuda/*.h) $(wildcard ../src/gpgpu-sim/*.h) \
+  ../src/abstract_hardware_model.h $(UNIT_MK)

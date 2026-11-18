@@ -1590,11 +1590,11 @@ public:
                      tma_static_info.tma_type);
       }
     }
-    // PTX needs an issue-occupancy proxy. Native SASS already carries its
-    // dependency/control timing; do not suspend that warp a second time.
-    if (!inst->has_explicit_dependency_control() &&
-        inst->get_active_mask().any() && inst->latency > 1)
-      m_barriers->hold_warp(warp_id, inst->latency, BARRIER_WAIT_BULK_GROUP);
+    // The caller applies gpgpu_tma_issue_to_next_instruction_latency. Do not
+    // additionally turn execution latency into a warp hold here. Public PTX
+    // passed a per-PC metadata object with an empty active mask, so its old
+    // conditional hold was never charged. Passing the real dynamic mask must
+    // not silently activate a new timing model during frontend extraction.
   }
 
   void warp_reaches_cp_async(unsigned cta_id, unsigned warp_id,
@@ -2160,10 +2160,9 @@ public:
             }
             tx.m_mf_issued_count++;
 
-            // Determine if this OOB request should skip L2. Writes must never
-            // escape the tensor bounds. For reads, the default models the
-            // zero-fill path locally; the compatibility option can still route
-            // those requests through the memory hierarchy.
+            // Writes must never escape tensor bounds. Reads retain the public
+            // default of issuing OOB fill traffic through L2; configurations
+            // can explicitly select local zero-fill with oob_l2_traffic=0.
             bool skip_l2 =
                 tx.agu_state.is_fill_request && (is_write || !oob_l2);
 

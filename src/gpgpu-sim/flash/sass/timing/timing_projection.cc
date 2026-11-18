@@ -477,6 +477,9 @@ void classify(const instruction &source, const timing_profile &profile,
     target.latency = profile.cp_async_wait_latency;
     target.initiation_interval = profile.cp_async_wait_initiation;
     target.m_is_depbar = true;
+    inst_t::async_copy_static_info_t wait_info;
+    wait_info.shares_bulk_wait_scoreboard = true;
+    target.set_async_copy_static_info(wait_info);
     target.m_depbar_group_no =
         static_cast<unsigned>(source.operands[1].immediate);
     // Native DEPBAR is shared by ordinary cp.async and TMA store bulk groups.
@@ -1138,6 +1141,7 @@ void timing_instruction::initialize(const instruction &native,
     native_text_ += ' ';
     native_text_ += source.operand_text;
   }
+  set_physical_shared_transactions();
   classify(source, profile, *this);
   populate_registers(source, *this);
   populate_register_file_sources(source, *this);
