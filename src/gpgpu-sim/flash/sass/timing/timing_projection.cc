@@ -348,9 +348,22 @@ unsigned source_width(const instruction &source, size_t index) {
   return source.operands[index].wide ? 2 : 1;
 }
 
+void append_predicate_mask(std::vector<unsigned> &registers, operand_kind kind,
+                           unsigned mask) {
+  for (unsigned bit = 0; bit < kTruePredicate; ++bit)
+    if (mask & (1u << bit))
+      append_register(registers, kind, bit, false);
+}
+
 void append_instruction_source(std::vector<unsigned> &registers,
                                const instruction &source, size_t index) {
   const operand &value = source.operands[index];
+  if (source.opcode == "UP2UR" && index == 1 && source.operands.size() == 4 &&
+      value.kind == operand_kind::kUniformPredicateRegisterFile) {
+    append_predicate_mask(registers, operand_kind::kUniformPredicate,
+                          source.operands[3].immediate);
+    return;
+  }
   if (value.kind != operand_kind::kRegister &&
       value.kind != operand_kind::kUniformRegister) {
     append_source_registers(registers, value);
@@ -875,7 +888,12 @@ void populate_registers(const instruction &source, timing_instruction &target) {
     source_begin = leading_destination_count(source);
     for (size_t index = 0; index < source_begin; ++index) {
       const operand &destination = source.operands[index];
-      append_source_registers(destinations, destination);
+      if (source.opcode == "R2P" &&
+          destination.kind == operand_kind::kPredicateRegisterFile)
+        append_predicate_mask(destinations, operand_kind::kPredicate,
+                              source.operands[2].immediate);
+      else
+        append_source_registers(destinations, destination);
       if ((destination.kind == operand_kind::kRegister ||
            destination.kind == operand_kind::kUniformRegister) &&
           canonical_register(destination.kind, destination.index) != 0) {
@@ -892,6 +910,13 @@ void populate_registers(const instruction &source, timing_instruction &target) {
     if (reads_register_file(source.operands[index]))
       ++logical_register_operands;
   }
+  // P2R's predicate file is implicit in the supported three-operand form.
+  if (source.opcode == "P2R" && source.operands.size() == 3) {
+    append_predicate_mask(sources, operand_kind::kPredicate,
+                          source.operands[2].immediate);
+    if (source.operands[2].immediate != 0)
+      ++logical_source_operands;
+  }
   // R2UR.OR accumulates status into its predicate destination.
   if (source.opcode == "R2UR.OR" && source.operands.size() == 3) {
     append_source_registers(sources, source.operands[0]);
@@ -905,7 +930,9 @@ void populate_registers(const instruction &source, timing_instruction &target) {
     if (reads_register_file(source.guard))
       ++logical_register_operands;
   }
-  if (source.has_auxiliary_predicate) {
+  if (source.has_auxiliary_predicate &&
+      !(source.opcode == "P2R" && source.auxiliary_predicate.kind ==
+                                      operand_kind::kPredicateRegisterFile)) {
     append_source_registers(sources, source.auxiliary_predicate);
     ++logical_source_operands;
     if (reads_register_file(source.auxiliary_predicate))

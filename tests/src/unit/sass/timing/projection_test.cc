@@ -2,6 +2,43 @@
 
 namespace {
 
+TEST(SassTimingProjectionTest, PredicateTransfersRespectSelectedBits) {
+  for (unsigned mask : {0u, 1u, 0x41u, 0x7fu}) {
+    SCOPED_TRACE(mask);
+    std::vector<int> predicates, uniform_predicates;
+    for (unsigned bit = 0; bit < 7; ++bit) {
+      if (mask & (1u << bit)) {
+        predicates.push_back(513 + bit);
+        uniform_predicates.push_back(521 + bit);
+      }
+    }
+    const auto suffix = std::to_string(mask);
+    const timing_instruction r2p(
+        official_instruction(0, "R2P", "PR,R12," + suffix));
+    EXPECT_EQ(
+        std::vector<int>(r2p.arch_reg.dst, r2p.arch_reg.dst + r2p.outcount),
+        predicates);
+    for (const char *auxiliary : {"", "PR"}) {
+      const timing_instruction p2r(
+          official_instruction(0, "P2R", "R8,R12," + suffix, auxiliary));
+      std::vector<int> inputs{13};
+      inputs.insert(inputs.end(), predicates.begin(), predicates.end());
+      EXPECT_EQ(
+          std::vector<int>(p2r.arch_reg.src, p2r.arch_reg.src + p2r.incount),
+          inputs);
+      ASSERT_EQ(p2r.get_register_file_source_count(), 1u);
+      EXPECT_EQ(p2r.get_register_file_source(0).reg, 12u);
+    }
+    const timing_instruction up2ur(
+        official_instruction(0, "UP2UR", "UR8,UPR,UR12," + suffix));
+    uniform_predicates.push_back(269);
+    EXPECT_EQ(std::vector<int>(up2ur.arch_reg.src,
+                               up2ur.arch_reg.src + up2ur.incount),
+              uniform_predicates);
+    EXPECT_EQ(up2ur.get_register_file_source_count(), 0u);
+  }
+}
+
 TEST(SassTimingProjectionTest, SeparatesMultipleResultsFromInputs) {
   // Canonical dependency indices are R+1, UR+257, P+513 and UP+521.
   struct role_case {
@@ -619,11 +656,9 @@ TEST(SassTimingProjectionTest, ProjectsUniformPredicateRegisterPacking) {
   EXPECT_EQ(projected.op, SPECIALIZED_UNIT_1_OP);
   EXPECT_EQ(projected.op_pipe, SPECIALIZED__OP);
   EXPECT_EQ(projected.outcount, 1u);
-  EXPECT_EQ(projected.incount, 7u);
+  ASSERT_EQ(projected.incount, 1u);
   EXPECT_EQ(projected.arch_reg.dst[0], 302);
-  for (unsigned predicate = 0; predicate < 7; ++predicate)
-    EXPECT_EQ(projected.arch_reg.src[predicate],
-              521 + static_cast<int>(predicate));
+  EXPECT_EQ(projected.arch_reg.src[0], 521);  // mask 0x1 reads UP0 only.
 }
 
 TEST(SassTimingProjectionTest, ProjectsDescriptorGlobalLoadRegisters) {
@@ -1081,7 +1116,9 @@ TEST(SassTimingProjectionTest, RoutingPredicateByteSelectorsKeepDependencies) {
     EXPECT_TRUE(projected.valid());
     ASSERT_EQ(projected.incount, 1u);
     EXPECT_EQ(projected.arch_reg.src[0], 20);
-    EXPECT_EQ(projected.outcount, 7u);
+    ASSERT_EQ(projected.outcount, 4u);
+    for (unsigned bit = 0; bit < 4; ++bit)
+      EXPECT_EQ(projected.arch_reg.dst[bit], 513 + bit);
   }
 }
 
