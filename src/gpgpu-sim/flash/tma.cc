@@ -1936,6 +1936,17 @@ public:
 
       bool is_write = is_write_transaction(tx);
       unsigned long long response_cycle = current_cycle();
+      if (GPTRACE_CORE(TMA, m_shader_ctx->get_sid())) {
+        Trace::tma_transaction_event(
+            response_cycle, m_shader_ctx->get_sid(), "MF_RESPONSE", tx_uid,
+            is_write ? "WRITE" : "READ", tx.m_static_info.tma_type, tx.m_pc,
+            tx.m_cta_id, tx.m_warp_id, tx.m_lane_id, tx.m_tid,
+            tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+            tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, parent_uid,
+            parent_mf->get_addr(), mf->get_data_size(), tx.m_mf_issued_count,
+            tx.m_mf_received_count, tx.m_bytes_completed, m_mf_inflight,
+            m_response_fifo.size());
+      }
       if (tma_trace_mf_enabled(response_cycle)) {
         tma_trace_emit(response_cycle, "MF_RESPONSE", tx_uid,
                        is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
@@ -1949,6 +1960,15 @@ public:
       }
       if (tx.m_first_response_cycle == 0) {
         tx.m_first_response_cycle = response_cycle;
+        Trace::tma_transaction_event(
+            tx.m_first_response_cycle, m_shader_ctx->get_sid(),
+            "FIRST_RESPONSE", tx_uid, is_write ? "WRITE" : "READ",
+            tx.m_static_info.tma_type, tx.m_pc, tx.m_cta_id, tx.m_warp_id,
+            tx.m_lane_id, tx.m_tid, tx.m_dyn_info.src_addr,
+            tx.m_dyn_info.dst_addr, tx.m_dyn_info.size_in_bytes,
+            tx.m_dyn_info.mbar_addr, parent_uid, parent_mf->get_addr(),
+            mf->get_data_size(), tx.m_mf_issued_count, tx.m_mf_received_count,
+            tx.m_bytes_completed, m_mf_inflight, m_response_fifo.size());
         tma_trace_emit(tx.m_first_response_cycle, "FIRST_RESPONSE", tx_uid,
                        is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
                        tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
@@ -2215,6 +2235,17 @@ public:
             m_mf_pending_bytes.emplace(mf->get_request_uid(), size);
 
             unsigned long long issue_cycle = current_cycle();
+            if (GPTRACE_CORE(TMA, m_shader_ctx->get_sid())) {
+              Trace::tma_transaction_event(
+                  issue_cycle, m_shader_ctx->get_sid(), "MF_ISSUE", tx_uid,
+                  is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                  tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id, tx.m_tid,
+                  tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                  tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+                  mf->get_request_uid(), addr, size, tx.m_mf_issued_count,
+                  tx.m_mf_received_count, tx.m_bytes_completed, m_mf_inflight,
+                  m_response_fifo.size());
+            }
             if (tma_trace_mf_enabled(issue_cycle)) {
               tma_trace_emit(
                   issue_cycle, "MF_ISSUE", tx_uid, is_write ? "WRITE" : "READ",
@@ -2228,6 +2259,15 @@ public:
             }
             if (first_request) {
               tx.m_first_issue_cycle = issue_cycle;
+              Trace::tma_transaction_event(
+                  issue_cycle, m_shader_ctx->get_sid(), "FIRST_MF_ISSUE",
+                  tx_uid, is_write ? "WRITE" : "READ",
+                  tx.m_static_info.tma_type, tx.m_pc, tx.m_cta_id, tx.m_warp_id,
+                  tx.m_lane_id, tx.m_tid, tx.m_dyn_info.src_addr,
+                  tx.m_dyn_info.dst_addr, tx.m_dyn_info.size_in_bytes,
+                  tx.m_dyn_info.mbar_addr, mf->get_request_uid(), addr, size,
+                  tx.m_mf_issued_count, tx.m_mf_received_count,
+                  tx.m_bytes_completed, m_mf_inflight, m_response_fifo.size());
               tma_trace_emit(
                   issue_cycle, "FIRST_MF_ISSUE", tx_uid,
                   is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
