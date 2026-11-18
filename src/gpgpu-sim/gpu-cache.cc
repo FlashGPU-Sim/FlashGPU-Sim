@@ -344,7 +344,8 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
 enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
                                             unsigned &idx, bool &wb,
                                             evicted_block_info &evicted,
-                                            mem_fetch *mf) {
+                                            mem_fetch *mf,
+                                            bool allocate_on_miss) {
   m_access++;
   is_used = true;
   shader_cache_access_log(m_core_id, m_type_id, 0);  // log accesses to cache
@@ -358,7 +359,7 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
     case MISS:
       m_miss++;
       shader_cache_access_log(m_core_id, m_type_id, 1);  // log cache misses
-      if (m_config.m_alloc_policy == ON_MISS) {
+      if (m_config.m_alloc_policy == ON_MISS && allocate_on_miss) {
         if (m_lines[idx]->is_modified_line()) {
           wb = true;
           // m_lines[idx]->set_byte_mask(mf);
@@ -376,7 +377,7 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
       assert(m_config.m_cache_type == SECTOR);
       m_sector_miss++;
       shader_cache_access_log(m_core_id, m_type_id, 1);  // log cache misses
-      if (m_config.m_alloc_policy == ON_MISS) {
+      if (m_config.m_alloc_policy == ON_MISS && allocate_on_miss) {
         bool before = m_lines[idx]->is_modified_line();
         ((sector_cache_block *)m_lines[idx])
             ->allocate_sector(time, mf->get_access_sector_mask());
@@ -1269,7 +1270,15 @@ void baseline_cache::advance_miss_queue() {
   }
 }
 
-/// Interface for response from lower memory level (model bandwidth restictions
+void baseline_cache::invalidate() {
+  // Outstanding fetches retain their MSHRs, but no longer own a tag reservation.
+  // A late fill must not modify a tag reused by a post-invalidation request.
+  for (auto &entry : m_extra_mf_fields)
+    entry.second.m_fill_invalidated = true;
+  m_tag_array->invalidate();
+}
+
+/// Interface for response from lower memory level (model bandwidth restrictions
 /// in caller)
 void baseline_cache::fill(mem_fetch *mf, unsigned time) {
   mem_fetch *filled_mf = fill_cache_state(mf, time);
@@ -1300,15 +1309,17 @@ mem_fetch *baseline_cache::fill_cache_state(mem_fetch *mf, unsigned time) {
   assert(e->second.m_valid);
   mf->set_data_size(e->second.m_data_size);
   mf->set_addr(e->second.m_addr);
-  if (m_config.m_alloc_policy == ON_MISS)
-    m_tag_array->fill(e->second.m_cache_index, time, mf);
-  else if (m_config.m_alloc_policy == ON_FILL) {
-    m_tag_array->fill(e->second.m_block_addr, time, mf, mf->is_write());
-  } else
-    abort();
+  if (!e->second.m_fill_invalidated) {
+    if (m_config.m_alloc_policy == ON_MISS)
+      m_tag_array->fill(e->second.m_cache_index, time, mf);
+    else if (m_config.m_alloc_policy == ON_FILL)
+      m_tag_array->fill(e->second.m_block_addr, time, mf, mf->is_write());
+    else
+      abort();
+  }
   bool has_atomic = false;
   m_mshrs.mark_ready(e->second.m_block_addr, has_atomic);
-  if (has_atomic) {
+  if (has_atomic && !e->second.m_fill_invalidated) {
     assert(m_config.m_alloc_policy == ON_MISS);
     cache_block_t *block = m_tag_array->get_block(e->second.m_cache_index);
     if (!block->is_modified_line()) {
@@ -1417,10 +1428,10 @@ void baseline_cache::send_read_request(new_addr_type addr,
     m_stats.inc_stats(mf->get_access_type(), MSHR_HIT, mf->get_streamID());
     do_miss = true;
   } else if (mshr_hit && mshr_avail) {
-    if (read_only)
-      m_tag_array->access(block_addr, time, cache_index, mf);
-    else
-      m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+    // Count the tag lookup and update hits, but a merge has no new lower-level
+    // fetch to complete a reservation created after invalidation.
+    m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf,
+                        /*allocate_on_miss=*/false);
 
     m_mshrs.add(mshr_addr, mf, mf->isatomic());
     m_stats.inc_stats(mf->get_access_type(), MSHR_HIT, mf->get_streamID());
@@ -1713,6 +1724,13 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
   } else {
     bool mshr_hit = m_mshrs.probe(mshr_addr);
     bool mshr_avail = !m_mshrs.full(mshr_addr);
+    // A partial store needs the outstanding fill's tag reservation to retain
+    // its dirty bytes. If invalidation removed it, retry after the MSHR drains.
+    if (mshr_hit && status != HIT_RESERVED) {
+      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENRTY_FAIL,
+                             mf->get_streamID());
+      return RESERVATION_FAIL;
+    }
     if (miss_queue_full(1) ||
         (!(mshr_hit && mshr_avail) &&
          !(!mshr_hit && mshr_avail &&

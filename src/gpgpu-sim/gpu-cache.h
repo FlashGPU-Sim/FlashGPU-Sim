@@ -964,7 +964,8 @@ class tag_array {
                                    unsigned &idx, mem_fetch *mf);
   enum cache_request_status access(new_addr_type addr, unsigned time,
                                    unsigned &idx, bool &wb,
-                                   evicted_block_info &evicted, mem_fetch *mf);
+                                   evicted_block_info &evicted, mem_fetch *mf,
+                                   bool allocate_on_miss = true);
 
   void fill(new_addr_type addr, unsigned time, mem_fetch *mf, bool is_write);
   void fill(unsigned idx, unsigned time, mem_fetch *mf);
@@ -1346,7 +1347,7 @@ class baseline_cache : public cache_t {
   mem_fetch *peek_next_access() const { return m_mshrs.peek_next_access(); }
   // flash invalidate all entries in cache
   void flush() { m_tag_array->flush(); }
-  void invalidate() { m_tag_array->invalidate(); }
+  void invalidate();
   void print(FILE *fp, unsigned &accesses, unsigned &misses) const;
   void display_state(FILE *fp) const;
 
@@ -1439,6 +1440,7 @@ class baseline_cache : public cache_t {
                          : 0;
     }
     bool m_valid;
+    bool m_fill_invalidated = false;
     new_addr_type m_block_addr;
     new_addr_type m_addr;
     unsigned m_cache_index;
