@@ -45,6 +45,7 @@ tests = [
   { name = "unit", group = "unit" },
   { name = "core-regressions", group = "core" },
   { name = "integration", group = "integration" },
+  { name = "blackwell", group = "blackwell", gtest_filter = "BlackwellVectorLdstIntegrationTest.*", post_check = "tests/scripts/check_vector_v8_transactions.py" },
   { name = "barrier", group = "barrier" },
   { name = "tma", group = "tma", gtest_filter = "*-*CPAsyncMethod*" },
   { name = "mma", group = "mma" },

@@ -781,6 +781,11 @@ class operand_info {
     return result;
   }
 
+  bool vector_element_is_sink(unsigned idx) const {
+    const symbol *value = vec_symbol_or_null(idx);
+    return value != NULL && value->name() == "_";
+  }
+
   const symbol *vec_symbol_or_null(int idx) const {
     assert(idx >= 0 && (unsigned)idx < m_vector_nelem);
     return m_value.m_vector_symbolic[idx];

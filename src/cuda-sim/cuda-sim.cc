@@ -1924,16 +1924,19 @@ void ptx_instruction::pre_decode() {
       } else if (o.is_vector()) {
         is_vectorin = 1;
         unsigned num_elem = o.get_vect_nelem();
+        unsigned output = 0;
         for (unsigned i = 0; i < num_elem; ++i) {
           const symbol *component = o.vec_symbol_or_null(i);
           if (component == NULL || component->is_non_arch_reg()) continue;
-          if (i < MAX_OUTPUT_VALUES)
-            out[i] = component->reg_num();
+          // Scoreboard consumers inspect the first outcount entries.
+          if (output < MAX_OUTPUT_VALUES)
+            out[output] = component->reg_num();
           else
             extra_out.push_back(component->reg_num());
+          if (output < MAX_REG_OPERANDS)
+            arch_reg.dst[output] = component->arch_reg_num();
+          ++output;
         }
-        for (unsigned i = 0; i < num_elem && i < MAX_REG_OPERANDS; i++)
-          arch_reg.dst[i] = o.arch_reg_num(i);
       }
     } else {
       if (o.is_reg() && !o.is_non_arch_reg()) {
@@ -1991,6 +1994,10 @@ void ptx_instruction::pre_decode() {
   //  and maximum of two address registers for one memory operand.
   if (has_memory_read() || has_memory_write() ||
       m_opcode == CP_ASYNC_MBARRIER_ARRIVE_OP) {
+    // Keep the legacy address slots for short operands. Wider vector stores
+    // already occupy those slots with data sources.
+    const unsigned address_input = std::max(m, 4);
+    assert(address_input < MAX_REG_OPERANDS);
     ptx_instruction::const_iterator op = op_iter_begin();
     for (; op != op_iter_end(); op++, n++) {  // process operands
       const operand_info &o = *op;
@@ -2007,7 +2014,7 @@ void ptx_instruction::pre_decode() {
           if (o.get_double_operand_type() == 0 ||
               o.get_double_operand_type() == 3) {
             ar1 = o.reg_num();
-            arch_reg.src[4] = o.arch_reg_num();
+            arch_reg.src[address_input] = o.arch_reg_num();
             // TODO: address register in $r2+=0x4 should be an output register
             // as well
           }
@@ -2016,9 +2023,10 @@ void ptx_instruction::pre_decode() {
           else if (o.get_double_operand_type() == 1 ||
                    o.get_double_operand_type() == 2) {
             ar1 = o.reg1_num();
-            arch_reg.src[4] = o.arch_reg_num();
+            arch_reg.src[address_input] = o.arch_reg_num();
             ar2 = o.reg2_num();
-            arch_reg.src[5] = o.arch_reg_num();
+            assert(address_input + 1 < MAX_REG_OPERANDS);
+            arch_reg.src[address_input + 1] = o.arch_reg_num();
             // TODO: first address register in $r1+=$r2 should be an output
             // register as well
           }
@@ -2030,7 +2038,7 @@ void ptx_instruction::pre_decode() {
                      ->get_key()
                      .is_reg()) {  // Memory operand contains a register
           ar1 = o.reg_num();
-          arch_reg.src[4] = o.arch_reg_num();
+          arch_reg.src[address_input] = o.arch_reg_num();
         }
       }
     }
@@ -2930,6 +2938,33 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
         if (pI->m_is_ldgsts) {
           inst.set_per_thread_memory_access_size(
               lane_id, last_memory_access_size());
+        } else if (pI->get_vector() != 0 &&
+                   (pI->has_memory_read() || pI->has_memory_write())) {
+          unsigned vector_width = 0;
+          if (pI->get_vector() == V2_TYPE) vector_width = 2;
+          if (pI->get_vector() == V3_TYPE) vector_width = 3;
+          if (pI->get_vector() == V4_TYPE) vector_width = 4;
+          if (pI->get_vector() == V8_TYPE) vector_width = 8;
+          assert(vector_width != 0);
+          const operand_info &vector =
+              pI->has_memory_read() ? pI->dst() : pI->src1();
+          new_addr_type addresses[MAX_ACCESSES_PER_INSN_PER_THREAD] = {};
+          unsigned live_elements = 0;
+          for (unsigned i = 0; i < vector_width; ++i) {
+            if (!vector.vector_element_is_sink(i))
+              addresses[live_elements++] = insn_memaddr + i * insn_data_size;
+          }
+          if (live_elements != vector_width) {
+            // Sparse vectors retain their original element offsets. Reuse
+            // the existing multi-address coalescer instead of representing
+            // sinks as zero-filled data or counting their bytes as accessed.
+            inst.set_addr(lane_id, addresses, MAX_ACCESSES_PER_INSN_PER_THREAD);
+            inst.set_per_thread_memory_access_size(
+                lane_id, live_elements ? insn_data_size : 0);
+          } else {
+            inst.set_per_thread_memory_access_size(
+                lane_id, insn_data_size * vector_width);
+          }
         }
         inst.data_size = insn_data_size;  // simpleAtomicIntrinsics
         assert(inst.memory_op == insn_memory_op);
