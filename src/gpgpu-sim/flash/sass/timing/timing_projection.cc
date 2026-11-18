@@ -188,12 +188,40 @@ bool has_destination(const std::string &base) {
          base != "STSM" && base != "BRA" && base != "BRX" && base != "BSSY" &&
          base != "BSYNC" && base != "BREAK" && base != "BRXU" &&
          base != "WARPSYNC" && base != "CALL" && base != "EXIT" &&
-         base != "RET" && base != "NOP" && base != "YIELD" && base != "BAR" &&
-         base != "MEMBAR" && base != "DEPBAR" && base != "CCTL" &&
-         base != "UTMACCTL" && base != "UTMACMDFLUSH" && base != "FENCE" &&
-         base != "UTMALDG" && base != "UTMASTG" && base != "UTMAPF" &&
+         base != "RET" && base != "NOP" && base != "NANOSLEEP" &&
+         base != "YIELD" && base != "BAR" && base != "MEMBAR" &&
+         base != "DEPBAR" && base != "CCTL" && base != "UTMACCTL" &&
+         base != "UTMACMDFLUSH" && base != "FENCE" && base != "UTMALDG" &&
+         base != "UTMASTG" && base != "UTMAREDG" && base != "UTMAPF" &&
          base != "UBLKCP" && base != "UBLKRED" && base != "LDGSTS" &&
          base != "LDGDEPBAR";
+}
+
+// Native output lists can contain a value and carry/status predicates. Keep
+// the split in one place so dependency and physical RF projections agree.
+size_t leading_destination_count(const instruction &source) {
+  const std::string base = base_opcode(source.opcode);
+  const size_t size = source.operands.size();
+  if (size == 0 || !has_destination(base))
+    return 0;
+  if (base == "SHFL" || base == "PLOP3" || base == "UPLOP3" ||
+      base == "ISETP" || base == "UISETP" || base == "FSETP" ||
+      base == "UFSETP")
+    return std::min<size_t>(2, size);
+  if (((base == "LOP3" || base == "ULOP3") && size == 7) ||
+      ((base == "R2UR" || base == "VOTE" || base == "VOTEU" ||
+        base == "ELECT") &&
+       size == 3) ||
+      ((source.opcode == "LEA" || source.opcode == "ULEA") && size == 5) ||
+      (base == "ATOMG" && size >= 4))
+    return 2;
+  if (base == "IADD3" || base == "UIADD3") {
+    if (has_modifier(source.opcode, "X"))
+      return size == 8 ? 3 : 1;
+    if (size >= 4 && size <= 6)
+      return size - 3;
+  }
+  return 1;
 }
 
 unsigned memory_width(const std::string &opcode) {
@@ -834,16 +862,6 @@ void populate_registers(const instruction &source, timing_instruction &target) {
     } else {
       source_begin = 1;
     }
-  } else if (source.operands_structured && source.operands.size() >= 2 &&
-             base == "SHFL") {
-    for (size_t index = 0; index < 2; ++index)
-      append_source_registers(destinations, source.operands[index]);
-    source_begin = 2;
-  } else if (source.operands_structured && source.operands.size() >= 2 &&
-             (base == "PLOP3" || base == "UPLOP3")) {
-    append_source_registers(destinations, source.operands[0]);
-    append_source_registers(destinations, source.operands[1]);
-    source_begin = 2;
   } else if (source.operands_structured && !source.operands.empty() &&
              base == "BRXU" &&
              source.operands[0].kind == operand_kind::kUniformRegister) {
@@ -852,33 +870,33 @@ void populate_registers(const instruction &source, timing_instruction &target) {
     source_begin = 1;
     ++logical_source_operands;
     ++logical_register_operands;
-  } else if (source.operands_structured && source.opcode == "UIADD3.X" &&
-             source.operands.size() == 8 &&
-             source.operands[1].kind == operand_kind::kUniformPredicate &&
-             source.operands[1].index == kTruePredicate &&
-             source.operands[2].kind == operand_kind::kUniformPredicate &&
-             source.operands[2].index == kTruePredicate) {
-    append_source_registers(destinations, source.operands[0]);
-    source_begin = 3; // Two discarded carry outputs are not source operands.
   } else if (source.operands_structured && !source.operands.empty() &&
              has_destination(base)) {
-    const operand &destination = source.operands.front();
-    append_source_registers(destinations, destination);
-    const unsigned width = destination_width(source);
-    if (width > 1 && destinations.size() == 1 &&
-        (destination.kind == operand_kind::kRegister ||
-         destination.kind == operand_kind::kUniformRegister)) {
-      for (unsigned word = 1; word < width; ++word)
-        append_register(destinations, destination.kind,
-                        destination.index + word, false);
+    source_begin = leading_destination_count(source);
+    for (size_t index = 0; index < source_begin; ++index) {
+      const operand &destination = source.operands[index];
+      append_source_registers(destinations, destination);
+      if ((destination.kind == operand_kind::kRegister ||
+           destination.kind == operand_kind::kUniformRegister) &&
+          canonical_register(destination.kind, destination.index) != 0) {
+        for (unsigned word = 1; word < destination_width(source); ++word)
+          append_register(destinations, destination.kind,
+                          destination.index + word, false);
+      }
     }
-    source_begin = 1;
   }
 
   for (size_t index = source_begin; index < source.operands.size(); ++index) {
     append_instruction_source(sources, source, index);
     ++logical_source_operands;
     if (reads_register_file(source.operands[index]))
+      ++logical_register_operands;
+  }
+  // R2UR.OR accumulates status into its predicate destination.
+  if (source.opcode == "R2UR.OR" && source.operands.size() == 3) {
+    append_source_registers(sources, source.operands[0]);
+    ++logical_source_operands;
+    if (reads_register_file(source.operands[0]))
       ++logical_register_operands;
   }
   if (source.has_guard) {
@@ -936,12 +954,7 @@ void populate_register_file_sources(const instruction &source,
   if (!source.operands_structured)
     return;
 
-  const std::string base = base_opcode(source.opcode);
-  size_t source_begin = has_destination(base) ? 1 : 0;
-  if (base == "SHFL")
-    source_begin = std::min<size_t>(2, source.operands.size());
-  else if (base == "ATOMG")
-    source_begin = source.operands.size() >= 4 ? 2 : 1;
+  const size_t source_begin = leading_destination_count(source);
 
   unsigned regular_slot = 0;
   for (size_t index = source_begin; index < source.operands.size(); ++index) {
@@ -973,13 +986,7 @@ void populate_register_file_destinations(const instruction &source,
   if (!has_destination(base))
     return;
 
-  // SHFL has a predicate result before its regular-register result, just as
-  // descriptor-form ATOMG puts an auxiliary predicate before its old value.
-  const bool value_is_second =
-      (base == "ATOMG" && source.operands.size() >= 4) ||
-      (base == "SHFL" && source.operands.size() >= 2);
-  const operand &destination =
-      value_is_second ? source.operands[1] : source.operands.front();
+  const operand &destination = source.operands.front();
   if ((base == "LDS" || base == "LDL" || base == "LDSM" || base == "SYNCS" ||
        base == "ATOMS") &&
       destination.kind == operand_kind::kMemoryAddress &&
@@ -991,8 +998,10 @@ void populate_register_file_destinations(const instruction &source,
   }
 
   const unsigned width = base == "HMMA" ? 4 : destination_width(source);
-  append_register_file_destination(target, destination.kind, destination.index,
-                                   width);
+  for (size_t index = 0; index < leading_destination_count(source); ++index) {
+    const operand &output = source.operands[index];
+    append_register_file_destination(target, output.kind, output.index, width);
+  }
 }
 
 } // namespace
@@ -1139,21 +1148,6 @@ void timing_instruction::initialize(const instruction &native,
        !normalize_r2p_operands(source, byte_selector)))
     panic("Invalid SASS operand normalization at PC " +
           std::to_string(source.pc));
-  // Wide comparisons omit pair-width suffixes in nvdisasm operands.
-  // Both words must participate in scoreboard and register-file dependencies.
-  const auto base = base_opcode(source.opcode);
-  if ((base == "ISETP" || base == "UISETP") &&
-      (source.opcode.find(".U64.") != std::string::npos ||
-       source.opcode.find(".S64.") != std::string::npos) &&
-      source.operands.size() >= 4) {
-    for (unsigned i : {2u, 3u}) {
-      auto &value = source.operands[i];
-      if ((value.kind == operand_kind::kRegister ||
-           value.kind == operand_kind::kUniformRegister) &&
-          canonical_register(value.kind, value.index) != 0)
-        value.wide = true;
-    }
-  }
   const bool resolved_symbol_call =
       source.opcode == "CALL.REL.NOINC" && source.operands.size() == 1 &&
       std::any_of(source.attributes.begin(), source.attributes.end(),

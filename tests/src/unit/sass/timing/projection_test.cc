@@ -2,6 +2,57 @@
 
 namespace {
 
+TEST(SassTimingProjectionTest, SeparatesMultipleResultsFromInputs) {
+  // Canonical dependency indices are R+1, UR+257, P+513 and UP+521.
+  struct role_case {
+    const char *opcode;
+    const char *operands;
+    std::vector<int> outputs;
+    std::vector<int> inputs;
+    std::vector<unsigned> rf_outputs;
+    std::vector<unsigned> rf_inputs;
+  };
+  const role_case cases[] = {
+      {"LOP3.LUT", "P0,R8,R12,R16,R20,0x96,!PT", {513, 9}, {13, 17, 21},
+       {8}, {12, 16, 20}},
+      {"ULOP3.LUT", "UP0,UR8,UR12,UR16,UR20,0x96,!UPT", {521, 265},
+       {269, 273, 277}, {}, {}},
+      {"R2UR", "P0,UR8,R12", {513, 265}, {13}, {}, {12}},
+      {"R2UR.OR", "P0,UR8,R12", {513, 265}, {13, 513}, {}, {12}},
+      {"IADD3", "R8,P0,P1,R12,R16,R20", {9, 513, 514}, {13, 17, 21},
+       {8}, {12, 16, 20}},
+      {"IADD3", "R8,P0,R12,R16,R20", {9, 513}, {13, 17, 21},
+       {8}, {12, 16, 20}},
+      {"IADD3.X", "R8,PT,PT,R12,R16,R20,P0,P1", {9}, {13, 17, 21, 513, 514},
+       {8}, {12, 16, 20}},
+      {"IADD3.X", "R8,R12,R16,R20,P0,P1", {9}, {13, 17, 21, 513, 514},
+       {8}, {12, 16, 20}},
+      {"UIADD3", "UR8,UP0,UP1,UR12,UR16,UR20", {265, 521, 522},
+       {269, 273, 277}, {}, {}},
+      {"LEA", "R8,P0,R12,R16,0x2", {9, 513}, {13, 17}, {8}, {12, 16}},
+      {"VOTE.ANY", "R8,P0,P1", {9, 513}, {514}, {8}, {}},
+      {"VOTEU.ALL", "UR8,UP0,P1", {265, 521}, {514}, {}, {}},
+      {"ELECT", "P0,UR8,P1", {513, 265}, {514}, {}, {}},
+      {"NANOSLEEP", "R12", {}, {13}, {}, {12}},
+  };
+  for (const auto &entry : cases) {
+    SCOPED_TRACE(std::string(entry.opcode) + " " + entry.operands);
+    const timing_instruction inst(official_instruction(0, entry.opcode, entry.operands));
+    EXPECT_EQ(std::vector<int>(inst.arch_reg.dst, inst.arch_reg.dst + inst.outcount),
+              entry.outputs);
+    EXPECT_EQ(std::vector<int>(inst.arch_reg.src, inst.arch_reg.src + inst.incount),
+              entry.inputs);
+    ASSERT_EQ(inst.get_register_file_destination_count(), entry.rf_outputs.size());
+    for (unsigned i = 0; i < entry.rf_outputs.size(); ++i)
+      EXPECT_EQ(inst.get_register_file_destination(i).reg, entry.rf_outputs[i]);
+    ASSERT_EQ(inst.get_register_file_source_count(), entry.rf_inputs.size());
+    for (unsigned i = 0; i < entry.rf_inputs.size(); ++i) {
+      EXPECT_EQ(inst.get_register_file_source(i).reg, entry.rf_inputs[i]);
+      EXPECT_EQ(inst.get_register_file_source(i).slot, i);
+    }
+  }
+}
+
 TEST(SassTimingProjectionTest, PreservesSubwordMemoryWidths) {
   struct memory_case {
     const char *opcode;
