@@ -143,7 +143,7 @@ void RunPartialStore(char type, bool invalidate) {
   gpgpu_sim_config config(&context);
   auto *options = option_parser_create();
   context.ptx_reg_options(options);
-  context.func_sim->ptx_opcocde_latency_options(options);
+  context.instruction_timing.reg_options(options);
   icnt_reg_options(options);
   config.reg_options(options);
   option_parser_cfgfile(options, "gpgpusim.config");

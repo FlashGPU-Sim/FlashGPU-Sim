@@ -44,7 +44,7 @@ void RunWithResponseTestGpu(bool ingress, unsigned width, unsigned capacity,
   gpgpu_sim_config config(&ctx);
   auto *options = option_parser_create();
   ctx.ptx_reg_options(options);
-  ctx.func_sim->ptx_opcocde_latency_options(options);
+  ctx.instruction_timing.reg_options(options);
   icnt_reg_options(options);
   config.reg_options(options);
   option_parser_cfgfile(options, "gpgpusim.config");
