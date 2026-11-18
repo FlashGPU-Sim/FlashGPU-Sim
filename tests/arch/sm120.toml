@@ -56,6 +56,10 @@ sources = [
   "integration/tma_multicast_mask_test.cu",
   "integration/tma_store_test.cu",
 
+  # Blackwell vector-memory forms emitted by native kernels.
+  "blackwell/vector_ldst_v8_test.cu",
+  "blackwell/vector_memory_semantics_test.cc",
+
   # SM120 correctness groups.
   "barrier/mbarrier_test.cu",
   "barrier/mbarrier_sanity_test.cu",

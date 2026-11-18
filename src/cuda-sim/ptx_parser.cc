@@ -832,6 +832,7 @@ unsigned vector_width_from_options(const std::list<int> &options) {
     if (option == V2_TYPE) candidate = 2;
     if (option == V3_TYPE) candidate = 3;
     if (option == V4_TYPE) candidate = 4;
+    if (option == V8_TYPE) candidate = 8;
     if (candidate != 0) {
       assert(width == 0 || width == candidate);
       width = candidate;

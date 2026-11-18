@@ -440,6 +440,9 @@ class ptx_thread_info {
   void get_vector_operand_values(const operand_info &op, ptx_reg_t *ptx_regs,
                                  unsigned num_elements);
   void set_vector_operand_values(const operand_info &dst,
+                                 const ptx_reg_t *values,
+                                 unsigned num_elements);
+  void set_vector_operand_values(const operand_info &dst,
                                  const ptx_reg_t &data1, const ptx_reg_t &data2,
                                  const ptx_reg_t &data3,
                                  const ptx_reg_t &data4);
