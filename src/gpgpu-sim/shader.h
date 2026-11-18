@@ -2649,6 +2649,7 @@ class shader_core_config : public core_config {
   bool gpgpu_wgmma_rf_traffic_enable;
   unsigned int gpgpu_wgmma_rf_traffic_bytes_per_cycle;
   bool gpgpu_wgmma_rf_traffic_share_read_budget;
+  bool gpgpu_wgmma_rf_ordinary_read_priority = false;
   bool gpgpu_wgmma_rf_traffic_assume_accumulate;
   bool gpgpu_wgmma_rf_traffic_include_rs_a;
   unsigned int ptx_opcode_tcgen05_mma_issue_interval;

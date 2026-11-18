@@ -1437,6 +1437,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "bandwidth budget (default=0)",
       "0");
   option_parser_register(
+      opp, "-gpgpu_wgmma_rf_ordinary_read_priority", OPT_BOOL,
+      &gpgpu_wgmma_rf_ordinary_read_priority,
+      "Serve ordinary operand reads before asynchronous WGMMA RF traffic; "
+      "0 preserves public WGMMA-first arbitration (default=0)", "0");
+  option_parser_register(
       opp, "-gpgpu_wgmma_rf_traffic_assume_accumulate", OPT_BOOL,
       &gpgpu_wgmma_rf_traffic_assume_accumulate,
       "Include accumulator reads in WGMMA RF traffic tokens (default=1)", "1");

@@ -4123,6 +4123,10 @@ void swl_scheduler::order_warps() {
 
 void shader_core_ctx::read_operands() {
   m_operand_collector.begin_cycle();
+  // Keep public PTX arbitration by default. Native calibration can explicitly
+  // select ordinary reads first without changing the shared backend's default.
+  if (!m_config->gpgpu_wgmma_rf_ordinary_read_priority)
+    drain_wgmma_rf_traffic();
   for (unsigned int i = 0; i < m_config->reg_file_port_throughput; ++i)
     m_operand_collector.step();
   // Ordinary warp operand reads win arbitration over asynchronous WGMMA
@@ -4130,7 +4134,8 @@ void shader_core_ctx::read_operands() {
   // sustained consumer leaves almost the entire pre-existing WGMMA wait tail
   // outstanding, so draining WGMMA first gives the async path the opposite
   // priority from hardware.
-  drain_wgmma_rf_traffic();
+  if (m_config->gpgpu_wgmma_rf_ordinary_read_priority)
+    drain_wgmma_rf_traffic();
 }
 
 address_type coalesced_segment(address_type addr,

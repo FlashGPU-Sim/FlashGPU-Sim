@@ -88,4 +88,17 @@ TEST(PtxTimingIsolationTest, TmaOobTrafficDefaultsOnAndRemainsConfigurable) {
   EXPECT_TRUE(config.gpgpu_tma_oob_l2_traffic);
   option_parser_destroy(options);
 }
+TEST(PtxTimingIsolationTest, WgmmaRfPriorityPreservesPublicDefault) {
+  shader_core_config config(GPGPU_Context());
+  option_parser_t options = option_parser_create();
+  config.reg_options(options);
+  EXPECT_FALSE(config.gpgpu_wgmma_rf_ordinary_read_priority);
+  const char *on[] = {"test", "-gpgpu_wgmma_rf_ordinary_read_priority", "1"};
+  option_parser_cmdline(options, 3, on);
+  EXPECT_TRUE(config.gpgpu_wgmma_rf_ordinary_read_priority);
+  const char *off[] = {"test", "-gpgpu_wgmma_rf_ordinary_read_priority", "0"};
+  option_parser_cmdline(options, 3, off);
+  EXPECT_FALSE(config.gpgpu_wgmma_rf_ordinary_read_priority);
+  option_parser_destroy(options);
+}
 }  // namespace
