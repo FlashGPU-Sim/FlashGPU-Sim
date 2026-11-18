@@ -9,11 +9,21 @@ from unittest.mock import patch
 from runner.executors import TestExecutors
 from runner.cli import load_settings, parse_arguments
 from runner.model import Settings
-from runner.gtest import GTest
+from runner.gtest import GTest, parse_gtest_list
 from runner.errors import DiscoveryError
 
 
 class FrontendEnvironmentTest(unittest.TestCase):
+    def test_discovery_ignores_simulator_initialization_messages(self):
+        self.assertEqual(parse_gtest_list(
+            "GPGPU-Sim uArch: performance model initialization complete.\n"
+            "  done.\n"
+            "VectorMemory.\n  Load\n"
+            "TypedSuite/0.  # TypeParam = unsigned int\n  Store\n"
+            "Instantiation/Suite.\n  Case/0  # GetParam() = 4\n"
+            "GPGPU-Sim: exit detected\n  finished\n"), [
+                "VectorMemory.Load", "TypedSuite/0.Store", "Instantiation/Suite.Case/0"])
+
     def test_discovery_driver_stub_is_local_and_errors_are_visible(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -43,25 +53,27 @@ class FrontendEnvironmentTest(unittest.TestCase):
                     GTest(None, 10).list_cases(binary, root)
                 self.assertNotIn('LD_PRELOAD', run.call_args.kwargs['env'])
 
-    def test_host_unit_discovery_preserves_simulator_library(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            binary = root / "unit_tests"
-            binary.touch(mode=0o755)
-            with patch.dict(os.environ, {
-                "CUDA_INSTALL_PATH": str(root / "cuda"),
-                "GPGPUSIM_ROOT": str(root),
-                "LD_LIBRARY_PATH": str(root / "lib/release"),
-                "FLASHGPU_SASS_AUTO": "1",
-            }, clear=True), patch("runner.gtest.subprocess.run") as run:
-                run.return_value = SimpleNamespace(
-                    returncode=0, stdout="Suite.\n  Case\n", stderr="")
-                self.assertEqual(GTest(None, 10).list_cases(binary, root),
-                                 ["Suite.Case"])
-                env = run.call_args.kwargs["env"]
-                self.assertEqual(env["LD_LIBRARY_PATH"], str(root / "lib/release"))
-                self.assertNotIn("LD_PRELOAD", env)
-                self.assertNotIn("FLASHGPU_SASS_AUTO", env)
+    def test_host_component_discovery_preserves_simulator_library(self):
+        for name in ("unit_tests", "core_tests", "blackwell_tests", "blackwell_tests.bin"):
+            with self.subTest(binary=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    binary = root / name
+                    binary.touch(mode=0o755)
+                    with patch.dict(os.environ, {
+                        "CUDA_INSTALL_PATH": str(root / "cuda"),
+                        "GPGPUSIM_ROOT": str(root),
+                        "LD_LIBRARY_PATH": str(root / "lib/release"),
+                        "FLASHGPU_SASS_AUTO": "1",
+                    }, clear=True), patch("runner.gtest.subprocess.run") as run:
+                        run.return_value = SimpleNamespace(
+                            returncode=0, stdout="Suite.\n  Case\n", stderr="")
+                        self.assertEqual(GTest(None, 10).list_cases(binary, root),
+                                         ["Suite.Case"])
+                        env = run.call_args.kwargs["env"]
+                        self.assertEqual(env["LD_LIBRARY_PATH"], str(root / "lib/release"))
+                        self.assertNotIn("LD_PRELOAD", env)
+                        self.assertNotIn("FLASHGPU_SASS_AUTO", env)
 
     def executor(self, root, settings):
         return TestExecutors(root / 'tests', settings, None, None, None, None)

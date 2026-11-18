@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -22,10 +23,9 @@ def parse_gtest_list(output: str) -> list[str]:
         if not line:
             continue
         if not raw_line.startswith((" ", "\t")):
-            if line.endswith("."):
-                suite = line[:-1]
+            suite = line[:-1] if re.fullmatch(r"[A-Za-z0-9_/]+\.", line) else ""
             continue
-        if suite:
+        if suite and re.fullmatch(r"[A-Za-z0-9_/]+", line):
             cases.append(f"{suite}.{line}")
     return cases
 
@@ -57,9 +57,11 @@ class GTest:
         environment = os.environ.copy()
         environment.pop("GTEST_OUTPUT", None)
         environment.pop("LD_PRELOAD", None)
-        if binary.name in ("unit_tests", "core_tests"):
+        if binary.name in ("unit_tests", "core_tests",
+                           "blackwell_tests", "blackwell_tests.bin"):
             # Host component tests now link production simulator symbols
-            # (Trace, PTX loader, TCGen05), so the toolkit libcudart cannot
+            # (Trace, PTX loader, TCGen05, vector-memory semantics), so the
+            # toolkit libcudart cannot
             # replace that library even during test discovery.
             environment = {
                 key: value for key, value in environment.items()
