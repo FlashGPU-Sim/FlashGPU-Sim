@@ -306,7 +306,9 @@ void ptx_recognizer::set_variable_type() {
 }
 
 bool ptx_recognizer::check_for_duplicates(const char *identifier) {
-  const symbol *s = g_current_symbol_table->lookup(identifier);
+  // Declarations may shadow an enclosing scope. Only declarations in this
+  // scope are duplicates; operand lookup still searches the parent chain.
+  const symbol *s = g_current_symbol_table->lookup_local(identifier);
   return (s != NULL);
 }
 
