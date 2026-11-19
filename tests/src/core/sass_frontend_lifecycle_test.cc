@@ -236,9 +236,11 @@ void CheckFrontend(Scenario scenario, unsigned lanes = 1) {
       inst.set_tma_dyn_info(0, dynamic);
     }
     // Admit a real transaction, but do not advance the asynchronous engine:
-    // the issue-side warp hold is independent of data completion.
+    // neither frontend adds an execution-latency hold at this boundary.
+    // The caller accounts for the configured issue-to-next-instruction delay;
+    // this asynchronous submission must not charge that delay again.
     tma.warp_reaches_tma(0, 0, &inst);
-    const bool expected = scenario == Scenario::kPtxTma;
+    const bool expected = false;
     const bool held = barriers.warp_waiting_at_barrier(0);
     if (held != expected) fprintf(stderr, "TMA held=%d expected=%d\n", held, expected);
     std::exit(held == expected ? 0 : 1);
@@ -374,10 +376,10 @@ TEST(SassFrontendLifecycleTest, PredicatedOffAtomicAccounting) {
 }
 }  // namespace
 
-TEST(SassFrontendLifecycleTest, NativeTmaAvoidsPtxProxyHold) {
+TEST(SassFrontendLifecycleTest, NativeTmaDoesNotAddExecutionLatencyHold) {
   ASSERT_EXIT(CheckFrontend(Scenario::kNativeTma), testing::ExitedWithCode(0), "");
 }
-TEST(SassFrontendLifecycleTest, PtxTmaKeepsProxyHold) {
+TEST(SassFrontendLifecycleTest, PtxTmaPreservesAsynchronousSubmission) {
   ASSERT_EXIT(CheckFrontend(Scenario::kPtxTma), testing::ExitedWithCode(0), "");
 }
 TEST(SassFrontendLifecycleTest, MaskedTmaDoesNotHoldWarp) {
