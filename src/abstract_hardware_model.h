@@ -226,6 +226,7 @@ class core_config {
     shmem_load_min_dispatch_cycles = 1;
     shmem_store_min_dispatch_cycles = 1;
     ldmatrix_min_dispatch_cycles = 1;
+    gpgpu_shmem_reserved_per_block = 0;
     gpgpu_shmem_sizeDefault = (unsigned)-1;
     gpgpu_shmem_sizePrefL1 = (unsigned)-1;
     gpgpu_shmem_sizePrefShared = (unsigned)-1;
@@ -252,6 +253,8 @@ class core_config {
   unsigned shmem_load_min_dispatch_cycles;
   unsigned shmem_store_min_dispatch_cycles;
   unsigned ldmatrix_min_dispatch_cycles;
+  // Driver-reserved shared memory charged to each CTA for SM occupancy.
+  unsigned gpgpu_shmem_reserved_per_block;
   mutable unsigned gpgpu_shmem_size;
   char *gpgpu_shmem_option;
   std::vector<unsigned> shmem_opt_list;

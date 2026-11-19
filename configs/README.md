@@ -50,8 +50,22 @@ See the [RTX 5090 model notes](SM120_RTX5090/README.md) for assumptions and limi
 - **Clock domains (MHz):** `2580:2580:2317:14001`
   (core:interconnect:L2:DRAM)
 
-All three configuration directories include `sass_primary_hints.rules` and
-enable SASS-guided PTX reordering.
+The H100, B200, RTX 5090, and RTX 4060 configurations include
+`sass_primary_hints.rules` and enable SASS-guided PTX reordering.
+
+### SM89_RTX4060
+
+See the [RTX 4060 model notes](SM89_RTX4060/README.md).
+
+[`SM89_RTX4060`](SM89_RTX4060/gpgpusim.config) is a bootstrap SM89 model for the measured RTX 4060 SKU:
+
+- **Compute capability:** 8.9
+- **Resources:** 24 SMs, 8 memory channels, and 16 memory subpartitions
+- **Timing models:** FP16 MMA and ordinary `cp.async`; TMA and TensorMap are disabled
+- **PTX transformation:** SASS-guided conservative instruction reordering
+- **Clock domains (MHz):** `1809:1200:1200:4250.5` (core:interconnect:L2:DRAM)
+
+The clock tuple and cache/memory service parameters are approximations. See the model notes for scope and measured workload results.
 
 ### Cluster and DSM presets
 
@@ -116,6 +130,7 @@ option in each `gpgpusim.config`.
 | `-gpgpu_l2_rop_delay_output_sectors_per_cycle` | Ready ROP-delay output service width per L2 instance and L2 tick; `1` preserves the legacy one-item cadence |
 | `-gpgpu_shmem_size` | Shared-memory capacity in bytes per SM |
 | `-gpgpu_shmem_per_block` | Default shared-memory limit in bytes per CTA |
+| `-gpgpu_shmem_reserved_per_block` | Driver-reserved shared memory charged per CTA when calculating and accounting SM occupancy; defaults to `0` |
 | `-gpgpu_adaptive_cache_config` | Enable runtime selection among supported shared-memory/L1 carveouts |
 
 Cache configuration strings encode several mutually dependent fields. Start
@@ -353,7 +368,7 @@ disables the additional byte-credit limiter instead of restricting service.
 | `-gpgpu_mbarrier_trywait_latency` | `32` | `32` | No-hint maximum suspension; an explicit PTX hint selects the deterministic hinted-wait policy |
 | `-gpgpu_mbarrier_phase_wakeup_latency` | `0` | `110` | Additional aggregate wakeup delay after a phase notification makes a suspended successful `mbarrier.try_wait` ready |
 
-### Experimental Controls
+### Sensitivity Controls
 
 The supported configurations leave the following sensitivity controls at
 their code defaults. They are useful for isolating bottlenecks, but do not

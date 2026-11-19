@@ -1,0 +1,29 @@
+[metadata]
+rule_version = 1
+arch = sm_89
+gpu = RTX4060
+toolchain = cuda_12_8
+nvcc_version = 12.8.93
+nvdisasm_version = 12.8.90
+
+[primary_opcode]
+ldmatrix.sync.aligned.x4.m8n8.shared.b16 = LDSM.16.M88.4
+ldmatrix.sync.aligned.x4.trans.m8n8.shared.b16 = LDSM.16.MT88.4
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 = HMMA.16816.F32
+cvt.rn.f16x2.f32 = F2FP.F16.F32.PACK_AB
+
+[attached_opcode_allowlist]
+ldmatrix.sync.aligned.x4.m8n8.shared.b16 = UIADD3, IADD3
+ldmatrix.sync.aligned.x4.trans.m8n8.shared.b16 = UIADD3, MOV, IADD3
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 = UIADD3, NOP, MOV, LDL.LU, STL
+cvt.rn.f16x2.f32 = MOV, STL, LDL.LU, UIADD3
+
+[policy]
+unknown_arch = fatal
+toolchain_mismatch = fatal
+missing_primary_rule = fatal
+zero_primary_candidate = plain
+duplicate_identical_primary_candidates = plain
+multiple_primary_candidates_without_explicit_hint = fatal
+unexpected_attached_opcode = fatal
+fallback = disabled

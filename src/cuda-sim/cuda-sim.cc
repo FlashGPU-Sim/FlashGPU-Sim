@@ -3484,14 +3484,16 @@ unsigned max_cta(const struct gpgpu_ptx_sim_info *kernel_info,
                  unsigned int gpgpu_shmem_size,
                  unsigned int gpgpu_shader_registers,
                  unsigned int max_cta_per_core,
-                 unsigned int dynamic_smem) {
+                 unsigned int dynamic_smem,
+                 unsigned int reserved_smem_per_cta) {
   unsigned int padded_cta_size = threads_per_cta;
   if (padded_cta_size % warp_size)
     padded_cta_size = ((padded_cta_size / warp_size) + 1) * (warp_size);
   unsigned int result_thread = n_thread_per_shader / padded_cta_size;
 
   unsigned int result_shmem = (unsigned)-1;
-  unsigned int block_smem = kernel_info->smem + dynamic_smem;
+  unsigned int block_smem =
+      kernel_info->smem + dynamic_smem + reserved_smem_per_cta;
   if (block_smem > 0)
     result_shmem = gpgpu_shmem_size / block_smem;
   unsigned int result_regs = (unsigned)-1;
@@ -3559,7 +3561,9 @@ void cuda_sim::gpgpu_cuda_ptx_sim_main_func(kernel_info_t &kernel,
           ->gpgpu_shader_registers,
         gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()
           ->max_cta_per_core,
-        kernel.get_dynamic_smem());
+        kernel.get_dynamic_smem(),
+      gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()
+          ->gpgpu_shmem_reserved_per_block);
   printf("Max CTA : %d\n", max_cta_tot);
 
   int cp_op = gpgpu_ctx->the_gpgpusim->g_the_gpu->checkpoint_option;
