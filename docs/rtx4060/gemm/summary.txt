@@ -1,4 +1,0 @@
-completed=40/40
-reserved1k_fullset_mape=14.676212%
-baseline_fullset_mape=14.817352%
-dtype=fp16
