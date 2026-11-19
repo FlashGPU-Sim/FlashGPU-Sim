@@ -420,3 +420,56 @@ TEST_F(PtxSchedulerGuidedTest, GeneratesDistinctGuidesForFileAndStringModules) {
   }
 }
 }  // namespace
+
+TEST_F(PtxSchedulerGuidedTest, NestedAndSiblingRegistersHaveDistinctSymbols) {
+  ctx->ptx_reorder_enabled = false;
+  const auto insts = fusion("register_shadowing", R"ptx(
+.reg .b32 r;
+.reg .pred p;
+mov.b32 r, 1;
+setp.eq.u32 p, 1, 1;
+{
+  .reg .b32 r;
+  .reg .pred p;
+  mov.b32 r, 2;
+  setp.eq.u32 p, 1, 0;
+  {
+    .reg .b64 r;
+    .reg .pred p;
+    mov.b64 r, 3;
+    setp.eq.u32 p, 0, 0;
+  }
+  mov.b32 r, 4;
+  setp.eq.u32 p, 0, 1;
+}
+{
+  .reg .b32 r;
+  .reg .pred p;
+  mov.b32 r, 5;
+  setp.eq.u32 p, 1, 1;
+}
+mov.b32 r, 6;
+setp.eq.u32 p, 1, 0;
+)ptx");
+  ASSERT_EQ(insts.size(), 12u);
+  // Leaving a scope restores the enclosing declaration.
+  for (unsigned offset : {0u, 1u}) {
+    EXPECT_EQ(insts[offset]->dst().get_symbol(),
+              insts[10 + offset]->dst().get_symbol());
+    EXPECT_EQ(insts[2 + offset]->dst().get_symbol(),
+              insts[6 + offset]->dst().get_symbol());
+    // Outer, inner, nested and sibling declarations are distinct, including
+    // their timing-register IDs, even though they share the same PTX name.
+    for (unsigned i : {0u, 2u, 4u, 8u}) {
+      for (unsigned j : {0u, 2u, 4u, 8u}) {
+        if (i >= j) continue;
+        const auto *a = insts[i + offset]->dst().get_symbol();
+        const auto *b = insts[j + offset]->dst().get_symbol();
+        EXPECT_NE(a, b);
+        EXPECT_NE(a->reg_num(), b->reg_num());
+      }
+    }
+  }
+  EXPECT_EQ(insts[0]->dst().get_symbol()->get_size_in_bytes(), 4u);
+  EXPECT_EQ(insts[4]->dst().get_symbol()->get_size_in_bytes(), 8u);
+}
