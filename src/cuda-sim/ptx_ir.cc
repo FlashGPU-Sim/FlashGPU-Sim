@@ -818,6 +818,27 @@ void function_info::find_dominators() {
   }
 }
 
+address_type function_info::common_postdominator(const addr_vector_t &pcs) const {
+  assert(!pcs.empty());
+  const auto *first = gpgpu_ctx->pc_to_instruction(pcs.front());
+  auto *candidate = first->get_bb();
+  for (auto pc : pcs) {
+    const auto *inst = gpgpu_ctx->pc_to_instruction(pc);
+    const auto *block = inst->get_bb();
+    while (!candidate->pdom(block)) {
+      const int parent = candidate->immediatepostdominator_id;
+      if (parent < 0) return (address_type)-1;
+      candidate = m_basic_blocks[parent];
+    }
+  }
+  if (!candidate->ptx_begin) return (address_type)-1;
+  address_type join = candidate->ptx_begin->get_PC();
+  for (auto pc : pcs)
+    if (gpgpu_ctx->pc_to_instruction(pc)->get_bb() == candidate)
+      join = std::max(join, pc);
+  return join;
+}
+
 void function_info::find_postdominators() {
   // find postdominators using algorithm of Muchnick's Adv. Compiler Design &
   // Implemmntation Fig 7.14

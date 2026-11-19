@@ -289,7 +289,13 @@ class simt_stack {
   void update(simt_mask_t &thread_done, addr_vector_t &next_pc,
               address_type recvg_pc, op_type next_inst_op,
               unsigned next_inst_size, address_type next_inst_pc);
+  void reconverge_barrier(const simt_mask_t &thread_done,
+                          const addr_vector_t &next_pc,
+                          class ptx_thread_info *const *threads);
 
+  bool signals_barrier() const {
+    return m_stack.back().m_type != STACK_ENTRY_TYPE_BARRIER_FRAGMENT;
+  }
   const simt_mask_t &get_active_mask() const;
   void get_pdom_stack_top_info(unsigned *pc, unsigned *rpc) const;
   unsigned get_rp() const;
@@ -301,7 +307,12 @@ class simt_stack {
   unsigned m_warp_id;
   unsigned m_warp_size;
 
-  enum stack_entry_type { STACK_ENTRY_TYPE_NORMAL = 0, STACK_ENTRY_TYPE_CALL };
+  enum stack_entry_type {
+    STACK_ENTRY_TYPE_NORMAL = 0,
+    STACK_ENTRY_TYPE_CALL,
+    STACK_ENTRY_TYPE_BARRIER_FRAGMENT,
+    STACK_ENTRY_TYPE_BARRIER_ARRIVAL
+  };
 
   struct simt_stack_entry {
     address_type m_pc;

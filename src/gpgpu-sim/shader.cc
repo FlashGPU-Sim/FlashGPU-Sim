@@ -2075,7 +2075,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     }
   }
 
-  if (next_inst->op == BARRIER_OP) {
+  if (next_inst->op == BARRIER_OP && m_simt_stack[warp_id]->signals_barrier()) {
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
     // Predication has already cleared the mask. An empty mask did not execute.
     if (next_inst->cluster_barrier) {

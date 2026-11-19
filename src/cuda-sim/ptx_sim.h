@@ -421,6 +421,8 @@ class ptx_thread_info {
   }
 
   void ptx_fetch_inst(inst_t &inst) const;
+  std::pair<unsigned, unsigned> cta_barrier_operands(const ptx_instruction &inst);
+  bool predicate_allows(const ptx_instruction &inst);
   void ptx_exec_inst(warp_inst_t &inst, unsigned lane_id);
 
   const ptx_version &get_ptx_version() const;
