@@ -5612,7 +5612,8 @@ unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
 
   // Limit by shmem/shader (account for dynamic smem set at launch)
   unsigned int result_shmem = (unsigned)-1;
-  unsigned int block_smem = kernel_info->smem + k.get_dynamic_smem();
+  unsigned int block_smem = kernel_info->smem + k.get_dynamic_smem() +
+                            gpgpu_shmem_reserved_per_block;
   if (block_smem > 0)
     result_shmem = gpgpu_shmem_size / block_smem;
 

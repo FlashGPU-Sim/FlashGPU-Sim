@@ -1,0 +1,4 @@
+case,ncu_sm_cycles_median,sim_cycles,signed_error_pct,ncu_frequency_ghz_median,output_pass
+square_512,33488.0,37227,11.165,1.82758,True
+tall_2048_128_512,34330.667,38695,12.713,1.8265,True
+wide_128_2048_512,33530.667,38166,13.824,1.82693,True

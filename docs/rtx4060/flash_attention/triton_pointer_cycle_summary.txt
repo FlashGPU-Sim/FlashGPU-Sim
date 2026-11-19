@@ -1,0 +1,6 @@
+cases=8
+full_set_count=8
+full_set_mape_pct=10.157663
+full_set_signed_mean_pct=1.016879
+full_set_min_abs_error_pct=7.864746
+full_set_max_abs_error_pct=15.268769

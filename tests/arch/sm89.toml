@@ -1,0 +1,21 @@
+[arch]
+nvcc_target = "sm_89"
+config = "SM89_RTX4060"
+
+[workloads]
+sources = [
+  # The manifest validator requires every architecture to include these
+  # portable integration tests; FA2 is the architecture-specific target here.
+  "integration/address_operand_test.cu",
+  "integration/cp_async_src_size_test.cu",
+  "integration/float_minmax_three_input_test.cu",
+  "integration/integer_multiply_test.cu",
+  "integration/ldst_matrix_test.cu",
+  "integration/ldst_multi_sector_test.cu",
+  "integration/shared_atomic_address_test.cu",
+  "integration/shared_memory_optin_test.cu",
+  "integration/vector_add_test.cu",
+  "integration/vector_operand_test.cu",
+  # Official CUDA/CUTLASS FlashAttention-2 forward test path.
+  "fa2/fa2_fwd_fp16_test.cu",
+]

@@ -1,0 +1,25 @@
+# Experimental RTX 4060 (SM 8.9) configuration
+
+This is an **experimental FP16 GEMM candidate**, not general validation of Ada, every RTX 4060 SKU, or FlashAttention. The measured device reports `NVIDIA GeForce RTX 4060`, CUDA capability 8.9, 24 SMs, and PCI device ID `0x2808`. Nsight Compute identifies the chip as AD106; do not assume the same topology or timing on another product with a similar marketing name.
+
+The configuration fixes reported resource limits where available and approximates undocumented timing, memory partition topology, cache service capacity, and some clock domains. The modeled SM clock of 1809 MHz was chosen for the NCU base-clock protocol; it is not a claim that application clocks are fixed. Ordinary `cp.async` is enabled; TMA and TensorMap are disabled.
+
+## FP16 GEMM evidence
+
+Six shapes in [gemm_fp16_guided_validation.csv](gemm_fp16_guided_validation.csv) were pre-registered after freezing this candidate. Their simulator-versus-NCU cycle MAPE was **5.672%**; the worst individual error was +10.155%. All recorded outputs passed numerical validation. A separate full end-to-end rerun of the same six shapes, using five new NCU samples each, produced 5.789% MAPE; the results are in [gemm_fp16_workflow_repeat.csv](gemm_fp16_workflow_repeat.csv). The repeat is a reproducibility check of the same shapes, not a second independent holdout. The same candidate also ran three previously examined larger diagnostic shapes with errors of +8.80%, +2.65%, and +11.07%; those cases were used to choose this candidate and are not independent validation.
+
+For context, [gemm_fp16_validation.csv](gemm_fp16_validation.csv) and [gemm_fp16_large_diagnostic.csv](gemm_fp16_large_diagnostic.csv) document an earlier configuration without PTX reorder, not the current candidate. Its independently selected six-shape MAPE was 8.284%, while its three larger diagnostic cases had 12.567% MAPE. Independent global-load, scalar shared-memory, `cp.async`, MMA single-chain and integer microbenchmarks still show timing mismatches. Neither the independent holdout nor these diagnostics establish accuracy for arbitrary GEMM dimensions, other tile choices, other dtypes, or other kernels.
+
+The computation was row-major `C = A @ B` with FP16 inputs/output, FP32 accumulation, no transpose or activation, `alpha=1`, and `beta=0`. All reported guided cases use tile 64×64×32, four warps and three stages. Inputs were generated on CPU using PyTorch seed `20261024`, uniformly in `[-0.5, 0.5)`, then cast to FP16. Triton output was checked against `(A.float() @ B.float()).half()` with `rtol=0.01` and `atol=0.01`; simulator output was checked against the recorded GPU output.
+
+TritonTrace saved PTX, cubin, arguments and a standalone launcher. Each real-GPU case was measured in Nsight Compute using `--clock-control base`, `--cache-control all`, and a single pass collecting `sm__cycles_elapsed.avg`, its frequency, GPU duration and L2 read hit/miss counters. The CSV reports the median of five SM-cycle values; signed error is `(gpu_tot_sim_cycle - median_sm_cycles) / median_sm_cycles`. The GPU and simulator cycle counter boundaries are not proven identical. These measurements used driver 610.88, CUDA 12.8, PyTorch 2.9.0+cu128 and Triton 3.5.0. NCU base-clock control does not prove application clocks are fixed.
+
+## PTX scheduling and reproduction status
+
+This candidate uses the existing SASS-guided conservative PTX scheduler and the adjacent experimental `sass_primary_hints.rules`. Only the listed FP16 GEMM mappings have been examined. The simulator generates a guide by recompiling the captured PTX; for the captured GEMM the 472 disassembled instruction lines matched the recorded cubin, although the binary hashes differed. Each of the six validation runs reported two guided segments and zero guided fallbacks. Other Triton versions, compilation options or kernels can produce different code, fail the hints policy, or fall back; this candidate does not establish their support.
+
+The frozen tested config had SHA-256 `a7d1a913e3efecd91fc9813988ed6ac7117fb1bc11cf4b4caab94b63f73b53fd`; this candidate differs in a header comment only and all option lines were compared. The tested rules had SHA-256 `42aebdf380c26dd959d8704026b7678be537d3fe66f4db4e6324ff0787346c93` and must be copied alongside the config for guided replay.
+
+This configuration also depends on the compact pipeline-width parser fix in this development branch. Small LDSM regression cases had identical outputs and cycles on reference and development builds for H100, B200 and RTX 5090 configs. This is a limited compatibility check, not proof of full TMA, WGMMA or FlashAttention compatibility.
+
+A fixed-case [capture, profiling and simulation workflow](../../tests/triton_trace/calibration/README.md) is included and has been smoke-tested. Raw traces, NCU reports, frozen configs and chronological experiment records remain local artifacts. Before an upstream PR, preserve reviewable provenance, expand functional and timing coverage, and resolve or clearly document the remaining microbenchmark mismatches.

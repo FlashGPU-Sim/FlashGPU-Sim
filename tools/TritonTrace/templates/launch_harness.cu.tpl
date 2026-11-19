@@ -83,6 +83,8 @@ int main(int argc, char** argv) {
     // Setup kernel arguments (user args + Triton runtime args)
     void* args[] = { {{ARG_POINTERS}}, &global_scratch, &profile_scratch };
 
+    int validation_failed = 0;
+
     // Launch kernel
     printf("\nLaunching kernel...\n");
     CUresult launch_result = cuLaunchKernel(
@@ -110,5 +112,5 @@ int main(int argc, char** argv) {
     cuCtxDestroy(context);
 
     printf("Done!\n");
-    return 0;
+    return validation_failed ? 1 : 0;
 }
