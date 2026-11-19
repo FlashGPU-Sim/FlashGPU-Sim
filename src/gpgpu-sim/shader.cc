@@ -2075,7 +2075,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     }
   }
 
-  if (next_inst->op == BARRIER_OP) {
+  if (next_inst->op == BARRIER_OP && m_simt_stack[warp_id]->signals_barrier()) {
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
     // Predication has already cleared the mask. An empty mask did not execute.
     if (next_inst->cluster_barrier) {
@@ -5083,9 +5083,9 @@ void shader_core_ctx::release_finished_cta(unsigned cta_num,
 
   // Jin: for concurrent kernels on sm
   release_shader_resource_1block(cta_num, *kernel);
-  kernel->dec_running();
+  const bool last_running_cta = kernel->dec_running();
   if (!m_gpu->kernel_more_cta_left(kernel)) {
-    if (!kernel->running()) {
+    if (last_running_cta) {
       SHADER_GPPRINTF(LIVENESS,
                      "GPGPU-Sim uArch: GPU detected kernel %u \'%s\' "
                      "finished on shader %u.\n",

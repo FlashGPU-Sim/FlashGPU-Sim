@@ -69,9 +69,6 @@ static void maybe_warn_multicast_cluster_on_sm120(ptx_thread_info *thread) {
 // handlers).
 static void issue_mapped_shared_copy(shader_core_ctx *core, unsigned cta,
                                      const inst_t::tma_dyn_info_t &info);
-static void complete_cluster_peer_mbarriers(
-    shader_core_ctx *core, unsigned issuer_hw_cta, uint32_t mbar_addr,
-    uint32_t size_in_bytes, bool use_mask = false, uint16_t cta_mask = 0xFFFF);
 static void complete_mapped_cluster_peer_mbarrier(shader_core_ctx *core,
                                                   unsigned issuer_hw_cta,
                                                   uint32_t mbar_addr,
@@ -82,12 +79,10 @@ static void complete_cluster_mbarriers_masked(shader_core_ctx *core,
                                               uint32_t mbar_addr,
                                               uint32_t size_in_bytes,
                                               uint16_t cta_mask);
-static void multicast_smem_to_cluster(memory_space *src_smem,
-                                      uint32_t smem_addr,
-                                      uint32_t size_in_bytes,
-                                      ptx_thread_info *thread,
-                                      const ptx_instruction *pI, bool use_mask,
-                                      uint16_t cta_mask);
+static void
+multicast_smem_to_cluster(memory_space *src_smem, uint32_t smem_addr,
+                          uint32_t size_in_bytes, ptx_thread_info *thread,
+                          const ptx_instruction *pI, uint16_t cta_mask);
 
 namespace flash_gpgpu_sim {
 
@@ -968,8 +963,8 @@ private:
     uint32_t size_in_bytes;
     bool is_write;
     unsigned tx_uid;      // for bulk_group (write path)
-    bool is_cluster_read; // also complete peer mbarriers for .shared::cluster
-    bool has_cta_mask;    // PTX .multicast::cluster selective destinations
+    bool is_cluster_read; // explicit multicast (not a remote unicast)
+    bool has_cta_mask;    // Completion routing: multicast or remote unicast
     uint16_t cta_mask;
     bool mapped_cluster_copy;
     uint32_t smem_dst_addr; // for NoC peer data payload after tx erase
@@ -987,6 +982,8 @@ private:
     if (lhs.dst_addr != rhs.dst_addr || lhs.src_addr != rhs.src_addr ||
         lhs.size_in_bytes != rhs.size_in_bytes ||
         lhs.mbar_addr != rhs.mbar_addr ||
+        lhs.has_cta_mask != rhs.has_cta_mask || lhs.cta_mask != rhs.cta_mask ||
+        lhs.mapped_cluster_copy != rhs.mapped_cluster_copy ||
         lhs.has_tensormap_descriptor != rhs.has_tensormap_descriptor)
       return false;
 
@@ -1043,10 +1040,7 @@ private:
     // For TMA read, notify mbarrier of completion
     // For TMA write, use bulk_group completion mechanism
     const bool is_cluster_read =
-        !is_write &&
-        (tx.m_static_info.dst_space ==
-             inst_t::tma_static_info_t::TMA_SHARED_CLUSTER ||
-         tx.m_static_info.multicast_cluster || tx.m_dyn_info.has_cta_mask);
+        !is_write && tx.m_static_info.multicast_cluster;
     const bool has_cta_mask = tx.m_dyn_info.has_cta_mask;
     const uint16_t cta_mask = tx.m_dyn_info.cta_mask;
     unsigned arrive_latency =
@@ -1082,11 +1076,6 @@ private:
         } else {
           m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
                                   tx.m_dyn_info.size_in_bytes);
-          if (is_cluster_read) {
-            complete_cluster_peer_mbarriers(m_shader_ctx, cta_id,
-                                            tx.m_dyn_info.mbar_addr,
-                                            tx.m_dyn_info.size_in_bytes);
-          }
         }
       } else {
         m_barriers->complete_bulk_tx(cta_id, warp_id, tx_uid);
@@ -1368,10 +1357,10 @@ public:
         unsigned cluster_size = cluster_dim.x * cluster_dim.y * cluster_dim.z;
         if (kernel_info_t *kernel = m_shader_ctx->get_kernel())
           cluster_size = std::max(cluster_size, kernel->get_ctas_per_cluster());
-        const bool multicast =
-            tma_static_info.multicast_cluster || tma_dyn_info.has_cta_mask ||
-            tma_static_info.dst_space ==
-                inst_t::tma_static_info_t::TMA_SHARED_CLUSTER;
+        // The shared::cluster address space does not imply multicast.
+        // Unicast still uses the cluster launch's completion floor, but
+        // only explicit multicast adds the fan-out latency.
+        const bool multicast = tma_static_info.multicast_cluster;
         const bool cluster_load = cluster_size > 1 || multicast;
         const unsigned base =
             cluster_load ? config->gpgpu_tma_cluster_load_completion_base_cycles
@@ -1636,11 +1625,7 @@ public:
       // consumer before the actual L2/HBM responses have completed.
       if (tx.m_memory_complete && !tx.m_arch_arrive_done &&
           tx.m_arch_arrive_cycle && now >= tx.m_arch_arrive_cycle) {
-        const bool cluster_read =
-            tx.m_static_info.dst_space ==
-                inst_t::tma_static_info_t::TMA_SHARED_CLUSTER ||
-            tx.m_static_info.multicast_cluster || tx.m_dyn_info.has_cta_mask;
-        if (cluster_read) {
+        if (tx.m_dyn_info.has_cta_mask) {
           if (tx.m_dyn_info.mapped_cluster_copy) {
             complete_mapped_cluster_peer_mbarrier(
                 m_shader_ctx, tx.m_cta_id, tx.m_dyn_info.mbar_addr,
@@ -1748,11 +1733,6 @@ public:
             } else {
               m_barriers->complete_tx(entry.cta_id, entry.warp_id,
                                       entry.mbar_addr, entry.size_in_bytes);
-              if (entry.is_cluster_read) {
-                complete_cluster_peer_mbarriers(m_shader_ctx, entry.cta_id,
-                                                entry.mbar_addr,
-                                                entry.size_in_bytes);
-              }
             }
           } else {
             m_barriers->complete_bulk_tx(entry.cta_id, entry.warp_id,
@@ -1864,11 +1844,9 @@ public:
         // Validate destination space
         if (tx.m_static_info.dst_space ==
             inst_t::tma_static_info_t::TMA_SHARED_CLUSTER) {
-          // TMA cluster multicast: functional sim already replicated data to
-          // peer CTAs in the same cluster_group. Timing deliberately matches
-          // TMA_SHARED_CTA (one L2/TMA stream; no DSM hop / peer mem_fetches).
-          // Peer mbarriers get try_complete_tx_if_pending on finalize.
-          // TODO: not a full DSM model.
+          // Both unicast and explicit multicast use one L2/TMA stream.
+          // Only explicit multicast replicated data to peer CTAs during
+          // functional execution and completes their mask-selected barriers.
         } else if (tx.m_static_info.dst_space !=
                    inst_t::tma_static_info_t::TMA_SHARED_CTA) {
           assert(false && "Unrecognized TMA destination space");
@@ -2682,15 +2660,13 @@ for_each_cluster_peer_cta(shader_core_ctx *core, unsigned issuer_hw_cta,
 }
 
 // Multicast: copy data from the issuing CTA's shared memory to peer CTAs.
-// Legacy (use_mask=false): all peers in cluster_group (bare .shared::cluster).
-// With use_mask=true: only ranks selected by ctaMask (PTX .multicast::cluster).
+// Only ranks selected by ctaMask (PTX .multicast::cluster) are destinations.
 // Issuer smem must already be populated by the caller when the issuer rank is
 // a destination; this function only replicates to *other* CTAs.
 static void
 multicast_smem_to_cluster(memory_space *src_smem, uint32_t smem_addr,
                           uint32_t size_in_bytes, ptx_thread_info *thread,
-                          const ptx_instruction *pI, bool use_mask = false,
-                          uint16_t cta_mask = 0xFFFF) {
+                          const ptx_instruction *pI, uint16_t cta_mask) {
   auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
   if (!core)
     return;
@@ -2707,35 +2683,18 @@ multicast_smem_to_cluster(memory_space *src_smem, uint32_t smem_addr,
                  thread, pI);
         any_peer = true;
       },
-      /*include_issuer=*/false, use_mask, cta_mask);
+      /*include_issuer=*/false, /*use_mask=*/true, cta_mask);
 
   if (!any_peer) {
     // Not fatal: partial occupancy, mask empty of peers, or single-CTA.
     GPPRINTF_INST_EXEC(TMA,
                        "TMA cluster multicast: no peer CTA found for "
                        "sid=%u hw_cta=%u cluster_group=%u mask=0x%x "
-                       "use_mask=%d (skipped)\n",
+                       "(skipped)\n",
                        core->get_sid(), issuer_hw_cta,
                        core->get_cta_cluster_group(issuer_hw_cta),
-                       (unsigned)cta_mask, (int)use_mask);
+                       (unsigned)cta_mask);
   }
-}
-
-// Notify peer CTAs' initialized mbarriers exactly once per cluster TMA load.
-// Early completions are retained until the peer executes expect_tx.
-// With use_mask=true, only mask-selected destinations get complete_tx (PTX).
-static void complete_cluster_peer_mbarriers(shader_core_ctx *core,
-                                            unsigned issuer_hw_cta,
-                                            uint32_t mbar_addr,
-                                            uint32_t size_in_bytes,
-                                            bool use_mask, uint16_t cta_mask) {
-  for_each_cluster_peer_cta(
-      core, issuer_hw_cta,
-      [&](shader_core_ctx *peer_core, unsigned peer_slot) {
-        peer_core->try_complete_cluster_peer_mbarrier(peer_slot, mbar_addr,
-                                                      size_in_bytes);
-      },
-      /*include_issuer=*/false, use_mask, cta_mask);
 }
 
 static void issue_mapped_shared_copy(shader_core_ctx *core, unsigned cta,
@@ -2826,7 +2785,43 @@ setup_tensor_tma(memory_space *global_mem, uint64_t tensormap_addr,
   parse_tensor_coords(thread, coord_operand, out_coords);
 }
 
-// Handle TMA linear copy instruction (non-tensor)
+// Resolved shared-memory destination or completion-barrier address.
+struct tma_shared_target_t {
+  memory_space *memory;
+  uint32_t offset;
+  unsigned rank;
+  bool remote;
+};
+
+// mapa.shared::cluster encodes an owner SM as well as a CTA-relative offset.
+// Decode it before touching memory; the same rule applies to the mbarrier.
+static tma_shared_target_t resolve_tma_shared_target(ptx_thread_info *thread,
+                                                     uint32_t address,
+                                                     bool cluster_space) {
+  using namespace flash_gpgpu_sim;
+  auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+  unsigned rank = core ? core->get_cta_cluster_rank(thread->get_hw_ctaid()) : 0;
+  if (address < SHARED_MEM_SIZE_MAX)
+    return {thread->m_shared_mem, address, rank, false};
+  unsigned owner = address / SHARED_MEM_SIZE_MAX - 1;
+  tb_cluster_target_t target;
+  if (!core || !resolve_tb_cluster_owner_sm(core, thread->get_hw_ctaid(), owner,
+                                            &target)) {
+    abort_tb_cluster_dead_owner(owner, thread->get_hw_sid(),
+                                thread->get_hw_ctaid(), address);
+    abort();
+  }
+  bool remote =
+      target.core != core || target.cta_slot != thread->get_hw_ctaid();
+  if (!cluster_space && remote) {
+    fprintf(stderr, "TMA ERROR: shared::cta address targets a peer CTA\n");
+    abort();
+  }
+  return {target.smem, static_cast<uint32_t>(address % SHARED_MEM_SIZE_MAX),
+          target.core->get_cta_cluster_rank(target.cta_slot), remote};
+}
+
+// Handle TMA linear copy instruction (non-tensor).
 static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
   using namespace flash_gpgpu_sim;
 
@@ -2881,7 +2876,7 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
       completion_option == TMA_MBAR_COMPLETE_BYTES) {
     // shared::cta/shared::cluster <- global with MBAR completion.
     // .multicast::cluster + ctaMask: selective destinations (PTX-accurate).
-    // Bare .shared::cluster without multicast: legacy all-peer fan-out.
+    // Bare .shared::cluster with a local address is a unicast load.
     auto dst_addr = get_operand_u32(thread, pI->dst());
     auto src_addr = get_operand_u64(thread, pI->src1());
     auto size_in_bytes = get_operand_u32(thread, pI->src2());
@@ -2912,6 +2907,21 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
     if (multicast_cluster)
       maybe_warn_multicast_cluster_on_sm120(thread);
 
+    const auto destination =
+        resolve_tma_shared_target(thread, dst_addr, is_cluster);
+    const auto barrier =
+        resolve_tma_shared_target(thread, mbar_addr, is_cluster);
+    // Preserve the owner in unicast transaction identity: different target
+    // CTAs may use the same offset and notify the same completion barrier.
+    const uint32_t transaction_dst_addr =
+        multicast_cluster ? destination.offset : dst_addr;
+    dst_addr = destination.offset;
+    mbar_addr = barrier.offset;
+    if (!multicast_cluster && barrier.remote) {
+      cta_mask = static_cast<uint16_t>(1u << barrier.rank);
+      has_cta_mask = true;
+    }
+
     inst_t::tma_static_info_t tma_static_info{
         .tma_type = inst_t::tma_static_info_t::TMA_NORMAL,
         .dst_space = is_cluster ? inst_t::tma_static_info_t::TMA_SHARED_CLUSTER
@@ -2925,7 +2935,7 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
     pI->set_tma_static_info(tma_static_info);
 
     inst_t::tma_dyn_info_t tma_dyn_info{
-        .dst_addr = dst_addr,
+        .dst_addr = transaction_dst_addr,
         .src_addr = src_addr,
         .size_in_bytes = size_in_bytes,
         .mbar_addr = mbar_addr,
@@ -2940,24 +2950,22 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
     auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
     unsigned issuer_rank =
         core ? core->get_cta_cluster_rank(thread->get_hw_ctaid()) : 0;
-    // PTX: data lands only in destinations selected by ctaMask.
-    const bool write_issuer =
-        !has_cta_mask || rank_in_cta_mask(issuer_rank, cta_mask);
-    if (write_issuer) {
-      copy_mem(global_mem, src_addr, shared_mem, dst_addr, size_in_bytes,
-               thread, pI);
+    // A unicast always writes its resolved destination. Only multicast
+    // uses the mask to decide whether the issuer receives a local copy.
+    const bool multicast_to_issuer =
+        multicast_cluster && rank_in_cta_mask(issuer_rank, cta_mask);
+    if (!multicast_cluster || multicast_to_issuer) {
+      copy_mem(global_mem, src_addr,
+               multicast_cluster ? shared_mem : destination.memory, dst_addr,
+               size_in_bytes, thread, pI);
     }
 
-    // Peer fan-out: legacy all peers, or mask-selected peers only.
-    if (is_cluster && write_issuer) {
-      // Need issuer smem as source of truth for peer copies. If issuer is not
-      // a destination, use a temporary path: copy into issuer first for
-      // replication then... PTX does not write non-destinations. Peers still
-      // need data from global. When issuer not in mask, load global→peer
-      // directly per selected peer.
+    // Only explicit multicast copies data to peer CTAs.
+    if (multicast_to_issuer) {
+      // The issuer received a copy, so its smem can supply selected peers.
       multicast_smem_to_cluster(shared_mem, dst_addr, size_in_bytes, thread, pI,
-                                has_cta_mask, cta_mask);
-    } else if (is_cluster && has_cta_mask && !write_issuer && core) {
+                                cta_mask);
+    } else if (multicast_cluster && !multicast_to_issuer && core) {
       // Issuer is not a destination; copy global data directly to mask peers.
       for_each_cluster_peer_cta(
           core, thread->get_hw_ctaid(),
@@ -2971,14 +2979,15 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
           /*include_issuer=*/false, /*use_mask=*/true, cta_mask);
     }
 
-    GPPRINTF_INST_EXEC(
-        TMA,
-        "Functional Sim: "
-        "TMA shared::%s <- global dst=0x%x, src=0x%llx, "
-        "size_in_bytes=%u, mbar=0x%x multicast=%d mask=0x%x write_issuer=%d\n",
-        is_cluster ? "cluster" : "cta", dst_addr, (unsigned long long)src_addr,
-        size_in_bytes, mbar_addr, (int)multicast_cluster, (unsigned)cta_mask,
-        (int)write_issuer);
+    GPPRINTF_INST_EXEC(TMA,
+                       "Functional Sim: "
+                       "TMA shared::%s <- global dst=0x%x, src=0x%llx, "
+                       "size_in_bytes=%u, mbar=0x%x multicast=%d mask=0x%x "
+                       "multicast_to_issuer=%d\n",
+                       is_cluster ? "cluster" : "cta", dst_addr,
+                       (unsigned long long)src_addr, size_in_bytes, mbar_addr,
+                       (int)multicast_cluster, (unsigned)cta_mask,
+                       (int)multicast_to_issuer);
 
   } else if (dst_option == CLUSTER_OPTION && src_option == CTA_OPTION &&
              completion_option == TMA_MBAR_COMPLETE_BYTES) {
@@ -3246,6 +3255,21 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     if (multicast_cluster)
       maybe_warn_multicast_cluster_on_sm120(thread);
 
+    const auto destination =
+        resolve_tma_shared_target(thread, dst_addr, is_cluster);
+    const auto barrier =
+        resolve_tma_shared_target(thread, mbar_addr, is_cluster);
+    // Preserve the owner in unicast transaction identity: different target
+    // CTAs may use the same offset and notify the same completion barrier.
+    const uint32_t transaction_dst_addr =
+        multicast_cluster ? destination.offset : dst_addr;
+    dst_addr = destination.offset;
+    mbar_addr = barrier.offset;
+    if (!multicast_cluster && barrier.remote) {
+      cta_mask = static_cast<uint16_t>(1u << barrier.rank);
+      has_cta_mask = true;
+    }
+
     inst_t::tma_static_info_t tma_static_info{
         .tma_type = inst_t::tma_static_info_t::TMA_TENSOR,
         .dst_space = is_cluster ? inst_t::tma_static_info_t::TMA_SHARED_CLUSTER
@@ -3259,7 +3283,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     pI->set_tma_static_info(tma_static_info);
 
     inst_t::tma_dyn_info_t tma_dyn_info{
-        .dst_addr = dst_addr,
+        .dst_addr = transaction_dst_addr,
         .src_addr = tensormap_addr,
         .size_in_bytes = size_in_bytes,
         .mbar_addr = mbar_addr,
@@ -3277,18 +3301,19 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
     unsigned issuer_rank =
         core ? core->get_cta_cluster_rank(thread->get_hw_ctaid()) : 0;
-    const bool write_issuer =
-        !has_cta_mask || rank_in_cta_mask(issuer_rank, cta_mask);
+    const bool multicast_to_issuer =
+        multicast_cluster && rank_in_cta_mask(issuer_rank, cta_mask);
 
-    if (write_issuer) {
-      do_tma_transfer(tensormap, coords, shared_mem, global_mem, dst_addr,
-                      thread, pI, true);
+    if (!multicast_cluster || multicast_to_issuer) {
+      do_tma_transfer(tensormap, coords,
+                      multicast_cluster ? shared_mem : destination.memory,
+                      global_mem, dst_addr, thread, pI, true);
     }
 
-    if (is_cluster && write_issuer && core) {
+    if (multicast_to_issuer && core) {
       multicast_smem_to_cluster(shared_mem, dst_addr, size_in_bytes, thread, pI,
-                                has_cta_mask, cta_mask);
-    } else if (is_cluster && has_cta_mask && !write_issuer && core) {
+                                cta_mask);
+    } else if (multicast_cluster && !multicast_to_issuer && core) {
       for_each_cluster_peer_cta(
           core, thread->get_hw_ctaid(),
           [&](shader_core_ctx *peer_core, unsigned peer_slot) {

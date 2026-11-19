@@ -74,6 +74,58 @@ See [`tma_test.cu`](../../../tests/src/tma/tma_test.cu) and
 selected functional and synchronization checks, and the
 [mbarrier model](mbarrier.md) for phase-completion semantics.
 
+Global-to-shared loads using `.shared::cluster` are unicast unless
+`.multicast::cluster` is present. A unicast destination may be local or a
+`mapa`-derived address in another CTA of the same cluster. Its mbarrier address
+is resolved independently; a remote barrier is notified on its owning CTA.
+For tensor loads with the default CTA group, destination and mbarrier must
+belong to the same CTA. `.shared::cta` restricts the destination to the issuer.
+Only explicit multicast replicates data and mbarrier completion to the
+`ctaMask` destinations.
+Cluster launch dimensions alone do not enable multicast. The
+completion floor uses the cluster setting for multi-CTA cluster launches or
+explicit multicast, and the non-cluster setting otherwise. Only explicit
+multicast adds the multicast latency to global-to-shared loads.
+
+The `TMAClusterUnicastTest` integration cases check bulk and tensor loads with
+ordinary launches and cluster sizes one and two, including repeated barrier
+phases and distinct per-CTA data. Run the size-two cases on `SM90_H200`.
+
+```bash
+./tests/run_tests.py run --arch sm90 --group integration -c SM90_H200 \
+  --gtest-filter 'TMAClusterUnicastTest.*:TmaMulticastMaskTest.*'
+```
+
+This follows the explicit multicast and `ctaMask` semantics in the
+[PTX ISA](https://docs.nvidia.com/cuda/archive/12.8.1/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-cp-async-bulk).
+
+The `TMAClusterAddressTest` matrix uses five representative shapes: 1D sizes
+1, 2, 8, and 16, plus a 4x2x2 cluster to check 3D rank mapping. Each shape
+runs bulk/tensor loads with local `.shared::cta`, local `.shared::cluster`,
+remote unicast, and explicit multicast in two independent clusters. Together
+with five boundary cases, this gives 45 tests without sweeping every size.
+Mask rounds select all ranks, the highest rank, all except the issuer, and
+alternating ranks. Sentinel regions check both non-receivers and the bytes
+surrounding each destination tile.
+Boundary tests also cover 1 KiB transfers at size 16 and launch rejection above
+the portable/opt-in limits. The runtime caps cluster launches at 8 CTAs, or 16
+with `cudaFuncAttributeNonPortableClusterSizeAllowed`, and at the configured
+physical capacity. Its occupancy query reports this capacity bound; it does
+not yet calculate a kernel-specific register/shared-memory occupancy limit.
+
+The kernel also prints per-CTA `clock64` wait intervals as `TMA_TIMING`; these
+are diagnostic measurements, not a calibrated hardware-cycle oracle.
+Global-to-shared remote unicast currently uses the issuing TMA stream and
+completion floor; it has no separately calibrated destination-routing or
+remote shared-memory contention latency. Timing accuracy against hardware
+and other instruction variants such as `.cta_group::2` are outside this
+matrix's claim.
+
+The simultaneous completion of CTAs in different GPCs also exercises kernel
+retirement. `KernelRetirementTest` verifies that the live-CTA decrement elects
+one retirement owner under the same lock; checking the live count afterward
+allows multiple host simulation threads to retire the same kernel.
+
 Cluster multicast is a functional fan-out plus a fixed latency knob, not a
 bandwidth or contention model. See `docs/cluster_noc/README.md`.
 

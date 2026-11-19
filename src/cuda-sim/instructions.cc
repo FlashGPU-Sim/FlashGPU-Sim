@@ -1772,6 +1772,15 @@ void atom_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   thread->m_last_dram_callback.instruction = pI;
 }
 
+std::pair<unsigned, unsigned> ptx_thread_info::cta_barrier_operands(
+    const ptx_instruction &inst) {
+  const auto &id = inst.dst();
+  const unsigned barrier = get_operand_value(id, id, U32_TYPE, this, 1).u32;
+  if (inst.get_num_operands() == 1) return {barrier, (unsigned)-1};
+  const auto &count = inst.src1();
+  return {barrier, get_operand_value(count, count, U32_TYPE, this, 1).u32};
+}
+
 void bar_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
   ptx_instruction *pI = const_cast<ptx_instruction *>(pIin);
   const auto &options = pI->get_options();
@@ -1787,21 +1796,9 @@ void bar_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
 
   switch (bar_op) {
     case SYNC_OPTION: {
-      if (pI->get_num_operands() > 1) {
-        const operand_info &op0 = pI->dst();
-        const operand_info &op1 = pI->src1();
-        ptx_reg_t op0_data;
-        ptx_reg_t op1_data;
-        op0_data = thread->get_operand_value(op0, op0, U32_TYPE, thread, 1);
-        op1_data = thread->get_operand_value(op1, op1, U32_TYPE, thread, 1);
-        pI->set_bar_id(op0_data.u32);
-        pI->set_bar_count(op1_data.u32);
-      } else {
-        const operand_info &op0 = pI->dst();
-        ptx_reg_t op0_data;
-        op0_data = thread->get_operand_value(op0, op0, U32_TYPE, thread, 1);
-        pI->set_bar_id(op0_data.u32);
-      }
+      const auto [id, count] = thread->cta_barrier_operands(*pI);
+      pI->set_bar_id(id);
+      pI->set_bar_count(count);
       break;
     }
     case ARRIVE_OPTION: {

@@ -1282,7 +1282,7 @@ class ptx_instruction : public warp_inst_t {
   {
     m_basic_block = basic_block;
   }
-  basic_block_t *get_bb() { return m_basic_block; }
+  basic_block_t *get_bb() const { return m_basic_block; }
   void set_m_instr_mem_index(unsigned index) { m_instr_mem_index = index; }
   void set_PC(addr_t PC) { m_PC = PC; }
   addr_t get_PC() const { return m_PC; }
@@ -1542,6 +1542,7 @@ class function_info {
   // finding immediate postdominator blocks, using algorithm of
   // Muchnick's Adv. Compiler Design & Implemmntation Fig 7.15
   void find_ipostdominators();
+  address_type common_postdominator(const addr_vector_t &pcs) const;
   void print_ipostdominators();
   void do_pdom();  // function to call pdom analysis
 

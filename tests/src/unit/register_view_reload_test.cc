@@ -119,3 +119,70 @@ TEST(RegisterViewReloadTest, RestoresScalarCopyRegisterIds) {
     EXPECT_EQ(func->get_compiler_register_view(copy, nullptr, nullptr), optimized);
   }
 }
+
+TEST(RegisterAllocationTest, TmaDestinationRemainsLiveAcrossLoop) {
+  gpgpu_context *ctx = GPGPU_Context();
+  GPGPUSim_Context(ctx);
+  const bool allocator = ctx->ptx_register_allocator_enabled;
+  const bool reorder = ctx->ptx_reorder_enabled;
+  const bool guided = ctx->ptx_reorder_sass_guided;
+  struct Restore {
+    gpgpu_context *ctx;
+    bool allocator, reorder, guided;
+    ~Restore() {
+      ctx->ptx_register_allocator_enabled = allocator;
+      ctx->ptx_reorder_enabled = reorder;
+      ctx->ptx_reorder_sass_guided = guided;
+    }
+  } restore{ctx, allocator, reorder, guided};
+  ctx->ptx_register_allocator_enabled = true;
+  ctx->ptx_reorder_sass_guided = false;
+  const char *copies[] = {
+      "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes "
+      "[%dst], [%src], 128, [%bar];\n",
+      "cp.async.bulk.tensor.1d.shared::cluster.global."
+      "mbarrier::complete_tx::bytes [%dst], [%src, {%coord}], [%bar];\n"};
+  for (bool schedule : {false, true}) {
+    ctx->ptx_reorder_enabled = schedule;
+    for (unsigned kind = 0; kind < 2; ++kind) {
+      SCOPED_TRACE(::testing::Message() << "tensor=" << kind
+                                      << " reorder=" << schedule);
+      const std::string name = "tma_live_destination_" +
+                               std::to_string(schedule) + "_" +
+                               std::to_string(kind);
+      const std::string path = name + ".ptx";
+      {
+        std::ofstream fixture(path);
+        fixture << ".version 8.7\n.target sm_90\n.address_size 64\n"
+                   ".visible .entry " << name << "() {\n"
+                   ".reg .b32 %dst, %bar, %iteration, %scratch, %coord;\n"
+                   ".reg .b64 %src, %out;\n.reg .pred %again;\n"
+                   "mov.u32 %dst, 128;\nmov.u32 %bar, 0;\n"
+                   "mov.u64 %src, 4096;\nmov.u64 %out, 8192;\n"
+                   "mov.u32 %coord, 0;\nmov.u32 %iteration, 0;\nLOOP:\n"
+                << copies[kind] <<
+                   "add.u32 %scratch, %iteration, 7;\n"
+                   "st.global.u32 [%out], %scratch;\n"
+                   "add.u32 %iteration, %iteration, 1;\n"
+                   "setp.lt.u32 %again, %iteration, 2;\n"
+                   "@%again bra LOOP;\nret;\n}\n";
+        ASSERT_TRUE(fixture.good());
+      }
+      auto *symbols = ctx->gpgpu_ptx_sim_load_ptx_from_filename(path.c_str());
+      std::remove(path.c_str());
+      ASSERT_NE(symbols, nullptr);
+      auto *func = symbols->lookup_function(name.c_str());
+      ASSERT_NE(func, nullptr);
+      func->do_pdom();
+      func->set_pdom();
+      const auto *dst = func->get_symtab()->lookup("%dst");
+      const auto *scratch = func->get_symtab()->lookup("%scratch");
+      ASSERT_NE(dst, nullptr);
+      ASSERT_NE(scratch, nullptr);
+      // The next iteration still reads the original destination address.
+      // Reusing its storage for the loop's scratch value corrupts that address.
+      EXPECT_NE(func->canonicalize_register(dst),
+                func->canonicalize_register(scratch));
+    }
+  }
+}

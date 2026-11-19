@@ -74,9 +74,10 @@ __global__ void cluster_tma_accumulate_kernel(const uint8_t *g_src,
     asm volatile("cvta.to.global.u64 %0, %1;" : "=l"(src_g) : "l"(g_src));
     asm volatile("cvta.to.shared.u64 %0, %1;" : "=l"(bar_s) : "l"(&bar));
     asm volatile(
-        "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes "
-        "[%0], [%1], %3, [%2];" ::"l"(dst_s),
-        "l"(src_g), "l"(bar_s), "n"(BYTES));
+        "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes."
+        "multicast::cluster [%0], [%1], %3, [%2], %4;" ::"l"(dst_s),
+        "l"(src_g), "l"(bar_s), "n"(BYTES),
+        "h"(static_cast<uint16_t>((1u << n_ranks) - 1)) : "memory");
   }
 
   if (tid == 0)

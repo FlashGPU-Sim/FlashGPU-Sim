@@ -115,7 +115,9 @@ inline void step_next_cta(dim3 &cta, const dim3 &grid, const dim3 &cluster,
  * ! shader_core_ctx::register_cta_thread_exit() ->
  * ! kernel->dec_running()
  *
- * ! Our solution so far is to use a mutex in dec_running()...
+ * ! dec_running() elects the last exiting CTA while holding the mutex.
+ * ! Checking running() after releasing it would let several exits observe
+ * ! zero and retire the same kernel more than once.
  */
 class kernel_info_t {
 public:
@@ -128,12 +130,13 @@ public:
   ~kernel_info_t();
 
   void inc_running() { m_num_cores_running++; }
-  void dec_running() {
+  bool dec_running() {
 #ifdef FLASH_GPGPU_SIM_OMP
     std::unique_lock<std::shared_mutex> lock(m_mutex);
 #endif
     assert(m_num_cores_running > 0);
     m_num_cores_running--;
+    return m_num_cores_running == 0;
   }
   bool running() const { return m_num_cores_running > 0; }
   bool done() const { return no_more_ctas_to_run() && !running(); }

@@ -216,6 +216,141 @@ void check_named_barrier_publish() {
   ASSERT_EQ(cudaSuccess, cudaFree(errors));
 }
 
+enum class CtaSync { Block, Predicated, Counted, Unaligned, DeviceCall };
+
+__device__ __noinline__ void sync_in_device_function() { __syncthreads(); }
+
+// The exit edge prevents the compiler's static control-flow graph from
+// making the barrier the branch's postdominator. Each warp's lane 0 must
+// publish before either warp can consume, even if lane 1 exits.
+template <CtaSync Form>
+__global__ void divergent_cta_barrier_kernel(unsigned *output, bool exit_lane) {
+  __shared__ unsigned published[2];
+  unsigned lane = threadIdx.x % warpSize;
+  unsigned warp = threadIdx.x / warpSize;
+  if (lane == 0) published[warp] = 0;
+  __syncthreads();
+  unsigned sum = 0;
+  for (unsigned round = 1; round <= 3; ++round) {
+    asm volatile("{ .reg .pred skip, leave, enabled;\n\t"
+                 "setp.ge.u32 enabled, %0, 0;\n\t"
+                 "setp.gt.u32 skip, %0, 1;\n\t"
+                 "@skip bra JOIN%=;\n\t"
+                 "setp.eq.u32 leave, %0, %1;\n\t"
+                 "@leave exit;\n\t"
+                 "setp.ne.u32 skip, %0, 0;\n\t"
+                 "@skip bra JOIN%=;\n\t"
+                 "@!enabled bar.sync 1;\n\t"  // Always skipped.
+                 "st.shared.u32 [%2], %3;\n\t"
+                 "JOIN%=: }"
+                 :: "r"(lane), "r"(exit_lane ? 1u : ~0u),
+                    "r"(smem_addr(&published[warp])), "r"(round)
+                 : "memory");
+    if constexpr (Form == CtaSync::Predicated) {
+      asm volatile("{ .reg .pred enabled; setp.ge.u32 enabled, %0, 0; "
+                   "@enabled bar.sync 0; }" :: "r"(lane) : "memory");
+    } else if constexpr (Form == CtaSync::Counted) {
+      asm volatile("bar.sync 0, 64;" ::: "memory");
+    } else if constexpr (Form == CtaSync::Unaligned) {
+      asm volatile("barrier.sync 0;" ::: "memory");
+    } else if constexpr (Form == CtaSync::DeviceCall) {
+      sync_in_device_function();
+    } else {
+      __syncthreads();
+    }
+    sum += published[1 - warp];
+    __syncthreads();
+  }
+  output[threadIdx.x] = sum;
+}
+
+__global__ void independent_named_barriers(unsigned *output) {
+  __shared__ volatile unsigned values[32];
+  const unsigned warp = threadIdx.x / warpSize;
+  const unsigned lane = threadIdx.x % warpSize;
+  if (warp == 0) values[lane] = 0;
+  __syncthreads();
+  if (warp == 0) {
+    asm volatile("barrier.sync 1, 64;" ::: "memory");
+    output[lane] = values[lane];
+  } else {
+    asm volatile("barrier.sync 2, 64;" ::: "memory");
+    if (warp == 2) {
+      values[lane] = lane + 123;
+      asm volatile("barrier.sync 1, 64;" ::: "memory");
+    }
+  }
+}
+
+__device__ __forceinline__ void predicated_barrier_body(unsigned *output) {
+  __shared__ unsigned data[64];
+  unsigned tid = threadIdx.x;
+  data[tid] = 0;
+  __syncthreads();
+  unsigned result = 0;
+  unsigned address = __cvta_generic_to_shared(data + tid);
+  unsigned peer = __cvta_generic_to_shared(data + (tid ^ 33));
+  asm volatile(
+      "{ .reg .pred odd; .reg .b32 parity; and.b32 parity, %1, 1; setp.ne.u32 "
+      "odd, parity, 0;\n"
+      "@odd barrier.sync 1, 64;\n"
+      "bra.uni AFTER%=;\n AFTER%=: \n"
+      "@odd ld.shared.u32 %0, [%4];\n"
+      "@!odd st.shared.u32 [%2], %3;\n"
+      "@!odd barrier.sync 1, 64; }"
+      : "+r"(result)
+      : "r"(tid), "r"(address), "r"(tid + 123), "r"(peer)
+      : "memory");
+  output[tid] = __ballot_sync(0xffffffff, tid & 1) == 0xaaaaaaaa
+                    ? result : ~0u;
+}
+
+__global__ void predicated_barrier_kernel(unsigned *output) {
+  predicated_barrier_body(output);
+}
+
+__global__ void divergent_arrival_kernel(unsigned *output) {
+  __shared__ volatile unsigned payload[32];
+  unsigned tid = threadIdx.x, lane = tid % 32, warp = tid / 32;
+  if (warp == 0) payload[lane] = 0;
+  __syncthreads();
+  if (warp == 0) {
+    if (lane & 1) {
+      asm volatile("barrier.arrive 1, 96; mov.u32 %0, 34;"
+                   : "=r"(tid)::"memory");
+    } else {
+      asm volatile("barrier.arrive 1, 96; mov.u32 %0, 35;"
+                   : "=r"(tid)::"memory");
+    }
+    asm volatile("barrier.sync 2, 64;" ::: "memory");
+    output[32 + lane] = tid;
+  } else if (warp == 1) {
+    asm volatile("barrier.sync 1, 96;" ::: "memory");
+    output[lane] = payload[lane];
+  } else {
+    asm volatile("barrier.sync 2, 64;" ::: "memory");
+    payload[lane] = 123 + lane;
+    asm volatile("barrier.arrive 1, 96;" ::: "memory");
+  }
+}
+
+template <CtaSync Form>
+void check_divergent_cta_barrier(unsigned threads, bool exit_lane) {
+  SCOPED_TRACE(::testing::Message() << "threads=" << threads
+                                    << " exit_lane=" << exit_lane);
+  unsigned *output = nullptr;
+  std::vector<unsigned> result(threads);
+  const size_t bytes = threads * sizeof(unsigned);
+  ASSERT_EQ(cudaSuccess, cudaMalloc(&output, bytes));
+  ASSERT_EQ(cudaSuccess, cudaMemset(output, 0, bytes));
+  divergent_cta_barrier_kernel<Form><<<1, threads>>>(output, exit_lane);
+  ASSERT_EQ(cudaSuccess, cudaMemcpy(result.data(), output, bytes,
+                                    cudaMemcpyDeviceToHost));
+  EXPECT_EQ(cudaSuccess, cudaFree(output));
+  for (unsigned tid = 0; tid < threads; ++tid)
+    EXPECT_EQ(result[tid], exit_lane && tid % 32 == 1 ? 0u : 6u) << tid;
+}
+
 }  // namespace
 
 TEST(NamedBarrierIntegrationTest, ArrivalSurvivesProducerExit) {
@@ -261,4 +396,62 @@ TEST(MixedBarrierIntegrationTest, BulkCompletionDoesNotReleaseMbarrierWaiter) {
 
   ASSERT_EQ(cudaSuccess, cudaFree(d_store));
   ASSERT_EQ(cudaSuccess, cudaFree(d_early_release));
+}
+
+TEST(NamedBarrierIntegrationTest, CtaSyncWaitsForDivergentLiveLanes) {
+  for (bool exit_lane : {false, true}) {
+    check_divergent_cta_barrier<CtaSync::Block>(48, exit_lane);
+    check_divergent_cta_barrier<CtaSync::Predicated>(48, exit_lane);
+  }
+}
+
+TEST(NamedBarrierIntegrationTest, CountedSyncWaitsForDivergentLiveLanes) {
+  check_divergent_cta_barrier<CtaSync::Counted>(64, false);
+}
+
+TEST(NamedBarrierIntegrationTest, UnalignedSyncWaitsForDivergentLiveLanes) {
+  check_divergent_cta_barrier<CtaSync::Unaligned>(64, false);
+}
+
+TEST(NamedBarrierIntegrationTest, DeviceCallSyncWaitsForDivergentLiveLanes) {
+  for (bool exit_lane : {false, true})
+    check_divergent_cta_barrier<CtaSync::DeviceCall>(64, exit_lane);
+}
+
+TEST(NamedBarrierIntegrationTest, CountedBarrierReleasesOnlyItsWaiters) {
+  unsigned result[32];
+  unsigned *output = nullptr;
+  ASSERT_EQ(cudaSuccess, cudaMalloc(&output, sizeof(result)));
+  independent_named_barriers<<<1, 96>>>(output);
+  ASSERT_EQ(cudaSuccess, cudaMemcpy(result, output, sizeof(result),
+                                    cudaMemcpyDeviceToHost));
+  EXPECT_EQ(cudaSuccess, cudaFree(output));
+  for (unsigned lane = 0; lane < 32; ++lane)
+    EXPECT_EQ(result[lane], lane + 123) << lane;
+}
+
+TEST(NamedBarrierIntegrationTest, PredicatedLanesWaitForTheirPeers) {
+  unsigned *output = nullptr;
+  unsigned result[64];
+  ASSERT_EQ(cudaSuccess, cudaMalloc(&output, sizeof(result)));
+  predicated_barrier_kernel<<<1, 64>>>(output);
+  ASSERT_EQ(cudaSuccess, cudaMemcpy(result, output, sizeof(result),
+                                    cudaMemcpyDeviceToHost));
+  EXPECT_EQ(cudaSuccess, cudaFree(output));
+  for (unsigned tid = 0; tid < 64; ++tid)
+    EXPECT_EQ(result[tid], tid & 1 ? (tid ^ 33) + 123 : 0) << tid;
+}
+
+TEST(NamedBarrierIntegrationTest, DivergentArrivalsCountWarpOnce) {
+  unsigned *output = nullptr;
+  unsigned result[64];
+  ASSERT_EQ(cudaSuccess, cudaMalloc(&output, sizeof(result)));
+  divergent_arrival_kernel<<<1, 96>>>(output);
+  ASSERT_EQ(cudaSuccess, cudaMemcpy(result, output, sizeof(result),
+                                    cudaMemcpyDeviceToHost));
+  EXPECT_EQ(cudaSuccess, cudaFree(output));
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    EXPECT_EQ(result[lane], 123 + lane) << lane;
+    EXPECT_EQ(result[lane + 32], lane & 1 ? 34 : 35) << lane;
+  }
 }

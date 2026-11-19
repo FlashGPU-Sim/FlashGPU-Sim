@@ -18,6 +18,7 @@ sources = [
   "unit/operand_collector_allocation_test.cc",
   "core/pipeline_dump_test.cc",
   "unit/register_view_reload_test.cc",
+  "unit/kernel_retirement_test.cc",
   "unit/mbarrier_retry_timing_test.cc",
   "unit/tma_issue_timing_test.cc",
   "unit/tma_reduction_test.cc",
@@ -53,6 +54,7 @@ sources = [
   "integration/dsm_test.cu",
   "integration/mbarrier_cluster_test.cu",
   "integration/tma_cluster_multicast_test.cu",
+  "integration/tma_cluster_unicast_test.cu",
   "integration/tma_multicast_mask_test.cu",
   "integration/tma_store_test.cu",
 
