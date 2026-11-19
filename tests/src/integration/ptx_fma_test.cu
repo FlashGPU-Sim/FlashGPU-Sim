@@ -2,6 +2,11 @@
 #include <cuda_runtime.h>
 #include <vector>
 
+#if defined(__CUDA_ARCH_LIST__) && __CUDA_ARCH_LIST__ >= 1000
+#define TEST_PACKED_FMA 1
+#endif
+
+#if defined(TEST_PACKED_FMA)
 __global__ void packed_fma_single_round(unsigned long long *out) {
   const unsigned long long a=0x3f8000013f800001ull;
   const unsigned long long b=0x3f7ffffe3f7ffffeull;
@@ -10,7 +15,10 @@ __global__ void packed_fma_single_round(unsigned long long *out) {
   asm volatile("fma.rn.f32x2 %0,%1,%2,%3;" : "=l"(d) : "l"(a),"l"(b),"l"(c));
   out[threadIdx.x]=d;
 }
+#endif
+
 TEST(PtxFma, PackedFmaUsesOneRoundingStep) {
+#if defined(TEST_PACKED_FMA)
   unsigned long long *dst=nullptr;
   ASSERT_EQ(cudaMalloc(&dst,32*8),cudaSuccess);
   packed_fma_single_round<<<1,32>>>(dst);
@@ -20,6 +28,9 @@ TEST(PtxFma, PackedFmaUsesOneRoundingStep) {
   // (1+2^-23)*(1-2^-23)-1 = -2^-46 exactly; two roundings produce zero.
   for (auto value:values) EXPECT_EQ(value,0xa8800000a8800000ull);
   ASSERT_EQ(cudaFree(dst),cudaSuccess);
+#else
+  GTEST_SKIP() << "Packed FP32 FMA requires SM100+.";
+#endif
 }
 
 __global__ void scalar_fma_single_round(unsigned *out) {
