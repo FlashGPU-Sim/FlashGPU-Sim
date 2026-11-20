@@ -35,6 +35,7 @@
 #include "cuda-sim/ptx_parser.h"
 #include "gpgpu-sim/gpu-sim.h"
 #include "gpgpu-sim/icnt_wrapper.h"
+#include "gpgpu-sim/flash/sass/runtime/runtime_adapter.h"
 #include "option_parser.h"
 #include "stream_manager.h"
 
@@ -309,7 +310,8 @@ gpgpu_sim *gpgpu_context::gpgpu_ptx_sim_init_perf() {
   option_parser_t opp = option_parser_create();
 
   ptx_reg_options(opp);
-  func_sim->ptx_opcocde_latency_options(opp);
+  flash_gpgpu_sim::sass::register_runtime_options(opp);
+  instruction_timing.reg_options(opp);
 
   icnt_reg_options(opp);
   the_gpgpusim->g_the_gpu_config = new gpgpu_sim_config(this);
@@ -317,6 +319,7 @@ gpgpu_sim *gpgpu_context::gpgpu_ptx_sim_init_perf() {
       opp);  // register GPU microrachitecture options
 
   option_parser_cmdline(opp, sg_argc, sg_argv);  // parse configuration options
+  flash_gpgpu_sim::sass::finalize_runtime_options();
   fprintf(stdout, "GPGPU-Sim: Configuration options:\n\n");
   option_parser_print(opp, stdout);
   // Set the Numeric locale to a standard locale where a decimal point is a

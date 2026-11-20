@@ -1,0 +1,19 @@
+{
+  "architecture": "sm90",
+  "config": "SM90_H100_SASS_FRONTEND",
+  "group": "fa3",
+  "profile": "packgqa",
+  "expected_tests": 2,
+  "cases": [
+    {
+      "binary": "packgqa_default_tests",
+      "gtest_filter": "Fa3FwdPackGqaFp16IntegrationTest.Smoke",
+      "expected_tests": 1
+    },
+    {
+      "binary": "packgqa_noinc_tests",
+      "gtest_filter": "Fa3FwdPackGqaFp16IntegrationTest.Smoke",
+      "expected_tests": 1
+    }
+  ]
+}

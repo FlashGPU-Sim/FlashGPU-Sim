@@ -4,6 +4,7 @@ config = "SM90_H100"
 
 [workloads]
 sources = [
+  "unit/ptx_timing_isolation_test.cc",
   # Host-side simulator regression.
   "unit/register_view_reload_test.cc",
   "unit/mbarrier_retry_timing_test.cc",

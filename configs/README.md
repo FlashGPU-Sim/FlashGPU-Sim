@@ -35,6 +35,16 @@ See the [B200 model notes](SM100_B200/README.md) for assumptions and limits.
 - **PTX transformation:** SASS-guided conservative instruction reordering
 - **Clock domains (MHz):** `1080:1080:1155:3996`
   (core:interconnect:L2:DRAM)
+### SM90_H100_SASS_FRONTEND
+
+[`SM90_H100_SASS_FRONTEND`](SM90_H100_SASS_FRONTEND/gpgpusim.config) is the
+frozen H100 baseline for FA-3 SASS-frontend validation. It uses the current
+SM90 core timing model but retains the historical memory/SoC behavior from
+before the experimental partition-mapping changes. It is intended for SASS
+functionality and accuracy regressions, not general H100 architecture studies.
+
+The exact frozen differences and maintenance rules are documented in its
+[`README`](SM90_H100_SASS_FRONTEND/README.md).
 
 ### SM120_RTX5090
 
@@ -62,6 +72,11 @@ the flash defaults, with DSM off.
 | --- | --- |
 | `SM90_H200` | H200 packing for calibration. DSM and remote mbarrier are on. Not a default CI config. |
 
+
+The separate [SM120_RTX5090_SASS_FRONTEND](SM120_RTX5090_SASS_FRONTEND/README.md)
+selects SASS timing with the local 1800 MHz SM120 calibration. Use it explicitly
+with `--config SM120_RTX5090_SASS_FRONTEND --sass-timing`; the original
+SM120 configuration remains the PTX baseline.
 
 ### Legacy Configurations
 
@@ -234,8 +249,8 @@ memory for B. SM120 does not set the WGMMA-specific options.
 
 | Option | Code default | SM90_H100 | Meaning |
 | --- | ---: | ---: | --- |
-| `-ptx_opcode_latency_wgmma_ss`, `-ptx_opcode_initiation_wgmma_ss` | `4,4,4,4` | `4,4,4,4` | Non-overlappable SS tensor-pipe latency and issue interval for N = 8, 16, 32, and 64 |
-| `-ptx_opcode_latency_wgmma_rs`, `-ptx_opcode_initiation_wgmma_rs` | `12,12,12,12` | `3,3,3,3` | Non-overlappable RS tensor-pipe latency and issue interval |
+| `-ptx_opcode_latency_wgmma_ss`, `-ptx_opcode_initiation_wgmma_ss` | `4,4,4,4` | `17,17,17,17` | Non-overlappable SS tensor-pipe latency and issue interval for N = 8, 16, 32, and 64 |
+| `-ptx_opcode_latency_wgmma_rs`, `-ptx_opcode_initiation_wgmma_rs` | `12,12,12,12` | `17,17,17,17` | Non-overlappable RS tensor-pipe latency and issue interval |
 | `-ptx_opcode_completion_wgmma_ss` | `66,66,66,66` | `66,66,66,66` | Overlappable SS completion tail |
 | `-ptx_opcode_completion_wgmma_rs` | `64,65,64,64` | `64,65,64,64` | Overlappable RS completion tail |
 | `-ptx_opcode_completion_wgmma_int_ss` | `64,64,64,64` | `64,64,64,64` | Overlappable INT/B1 SS completion tail |
@@ -243,6 +258,8 @@ memory for B. SM120 does not set the WGMMA-specific options.
 | `-ptx_opcode_compute_throughput_wgmma` | `4096,2048,8192,8192,65536` | `4096,2048,8192,8192,65536` | Per-SM work/cycle for FP16/BF16, TF32, FP8, INT8, and B1 |
 | `-gpgpu_wgmma_issue_chain_ss` | `0,0,0,0,64` | `7,0,4,20,64` | SS issue-chain throttle encoded as `depth,startup_gap,fast_gap,slow_gap,reset_gap`; depth `0` disables it |
 | `-gpgpu_wgmma_issue_chain_rs` | `0,0,0,0,64` | `7,0,3,13,64` | RS issue-chain throttle using the same encoding |
+| `-gpgpu_wgmma_admission_queue_depth_ss` | `0` | `6` | Per-SM SS operations admitted but not yet consumed by the tensor backend; `0` disables it |
+| `-gpgpu_wgmma_admission_queue_depth_rs` | `0` | `5` | Per-SM RS operations admitted but not yet consumed by the tensor backend; `0` disables it |
 
 WGMMA register-file pressure is represented by pending traffic tokens sharing
 the normal operand-collector read budget:
@@ -290,8 +307,9 @@ topology and address mapping.
 
 | Option | Code default | SM90_H100 | SM120_RTX5090 | Meaning |
 | --- | ---: | ---: | ---: | --- |
-| `-gpgpu_ipoly_non_power2_balanced` | `0` | `2` | default | Balance IPOLY mapping for non-power-of-two memory-channel counts |
+| `-gpgpu_ipoly_non_power2_balanced` | `0` | `2` | default | Non-power-of-two IPOLY policy; mode `3` uses a bijective cyclic rotation; mode `7` independently hashes channel/slice; mode `4` rotates each decoded stripe; mode `5` keeps one channel rotation for an entire decoded DRAM bank-row; mode `6` keeps mode `5`'s channel mapping and independently hashes only the local L2 slice |
 | `-gpgpu_ipoly_channel_stable_l2slice` | `0` | `0` | default | Keep the decoded DRAM channel stable while hashing the L2 slice |
+| L2 data-port width | cache-line width | `32 B/cycle` | `32 B/cycle` | Per-subpartition bandwidth; H100 has 160 subpartitions, giving 7.68 TB/s at 1.5 GHz |
 | `-gpgpu_l2_partition_count` | `1` | `2` | default | Coarse L2/locality partitions; `1` disables remote-partition detection |
 | `-gpgpu_l2_partition_extra_latency` | `0` | `150` | default | Extra cycles for an access to a remote coarse L2 partition |
 | `-icnt_use_voq` | `0` | `1` | `1` | Use virtual output queues in the local crossbar |
@@ -364,6 +382,7 @@ represent the calibrated default models.
 | `-gpgpu_tma_idealized_memory` | `0` | Complete TMA memory requests immediately |
 | `-gpgpu_cp_async_idealized_memory` | `0` | Complete ordinary `cp.async` requests immediately |
 | `-gpgpu_tensor_core_issue_queue_depth` | `0` | Add an ideal pre-functional-unit tensor-core queue; `0` disables it |
+| `-gpgpu_mio_queue_depth` | `0` | Per-scheduler admission depth for instructions explicitly marked as MIO clients; `0` disables it |
 | `-gpgpu_tensor_core_skip_writeback` | `0` | Complete tensor-core instructions without the register-file writeback path |
 | `-gpgpu_tensor_core_units_per_sub_partition` | `1` | Tensor issue units sharing each ideal queue subpartition |
 | `-gpgpu_tma_request_bytes_per_cycle` | `0` | Apply a TMA request-side byte budget; `0` disables the budget |

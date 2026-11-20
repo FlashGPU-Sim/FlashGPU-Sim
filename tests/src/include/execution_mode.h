@@ -6,6 +6,13 @@
 
 namespace flashgpu::test {
 
+inline bool running_with_sass_frontend() {
+  const char* manifest = std::getenv("FLASHGPU_SASS_IR");
+  const char* automatic = std::getenv("FLASHGPU_SASS_AUTO");
+  return (manifest != nullptr && manifest[0] != '\0') ||
+         (automatic != nullptr && automatic[0] != '\0');
+}
+
 inline bool running_on_native_gpu() {
   const char* sim_env = std::getenv("GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN");
   if (sim_env != nullptr && sim_env[0] != '\0') {

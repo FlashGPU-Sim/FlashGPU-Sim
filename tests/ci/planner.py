@@ -63,6 +63,8 @@ class CiJob:
     pre_checks: tuple[str, ...]
     tests: tuple[CiTest, ...]
     config: str = ""
+    frontend: str = "ptx"
+    cuda: str = ""
 
 
 def _check_exact_keys(
@@ -188,12 +190,21 @@ def load_jobs(path: Path = JOBS_FILE) -> tuple[CiJob, ...]:
                 raise CiPlanError(f"{path}: {label} must be a table")
             _check_exact_keys(
                 raw_job,
-                {"arch", "pre_checks", "tests", "config"},
+                {"arch", "pre_checks", "tests", "config", "frontend", "cuda"},
                 {"arch", "tests"},
                 label,
             )
             arch = _string(raw_job, "arch", label)
             config = _job_config(raw_job, label)
+            frontend = _string(raw_job, "frontend", label) or "ptx"
+            cuda = _string(raw_job, "cuda", label)
+            if config and (not SELECTOR_RE.fullmatch(config) or
+                           not (REPO_ROOT / "configs" / config).is_dir()):
+                raise CiPlanError(f"{label}: invalid config {config}")
+            if frontend not in ("ptx", "sass-functional", "sass-timing"):
+                raise CiPlanError(f"{label}: invalid frontend {frontend}")
+            if cuda not in ("", "12.8", "13.3"):
+                raise CiPlanError(f"{label}: unsupported CI CUDA version {cuda}")
             if not NAME_RE.fullmatch(name):
                 raise CiPlanError(f"{path}: job key must use lowercase kebab-case: {name}")
             if not ARCH_RE.fullmatch(arch):
@@ -216,6 +227,8 @@ def load_jobs(path: Path = JOBS_FILE) -> tuple[CiJob, ...]:
                     pre_checks=_string_list(raw_job, "pre_checks", label),
                     tests=tests,
                     config=config,
+                    frontend=frontend,
+                    cuda=cuda,
                 )
             )
         return tuple(jobs)
@@ -276,6 +289,8 @@ def _print_plan(jobs: tuple[CiJob, ...]) -> None:
                         test.gtest_filter,
                         test.post_check,
                         job.config,
+                        job.frontend,
+                        job.cuda,
                     )
                 )
             )
@@ -313,7 +328,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 json.dumps(
                     {
                         "include": [
-                            {"job": job.name, "label": _matrix_label(job)}
+                            {"job": job.name, "label": _matrix_label(job),
+                             "cuda": job.cuda or "12.8"}
                             for job in jobs
                         ]
                     },

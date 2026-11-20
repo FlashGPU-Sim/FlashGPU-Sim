@@ -1,0 +1,5 @@
+profile,case,sim_cycles
+medium,H32D64FullB16S512,177209
+medium,H32D64CausalB16S512,122647
+medium,H16D128FullB16S512,118460
+medium,H16D128CausalB16S512,97073

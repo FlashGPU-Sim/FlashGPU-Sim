@@ -1,0 +1,53 @@
+{
+  "architecture": "sm90",
+  "group": "fa2",
+  "profile": "breakdown",
+  "expected_tests": 9,
+  "cases": [
+    {
+      "mode": "baseline",
+      "gtest_filter": "Fa2PrefillFp16BreakdownTest.H1D128FullB1S256",
+      "expected_tests": 1
+    },
+    {
+      "mode": "skip_cp_async",
+      "gtest_filter": "Fa2PrefillFp16BreakdownTest.H1D128FullB1S256",
+      "expected_tests": 1
+    },
+    {
+      "mode": "skip_mma",
+      "gtest_filter": "Fa2PrefillFp16BreakdownTest.H1D128FullB1S256",
+      "expected_tests": 1
+    },
+    {
+      "mode": "skip_softmax",
+      "gtest_filter": "Fa2PrefillFp16BreakdownTest.H1D128FullB1S256",
+      "expected_tests": 1
+    },
+    {
+      "mode": "fma_softmax",
+      "gtest_filter": "Fa2PrefillFp16BreakdownTest.H1D128FullB1S256",
+      "expected_tests": 1
+    },
+    {
+      "mode": "only_mma",
+      "gtest_filter": "Fa2PrefillFp16BreakdownTest.H1D128FullB1S256",
+      "expected_tests": 1
+    },
+    {
+      "mode": "only_cp_async",
+      "gtest_filter": "Fa2PrefillFp16BreakdownTest.H1D128FullB1S256",
+      "expected_tests": 1
+    },
+    {
+      "mode": "only_softmax",
+      "gtest_filter": "Fa2PrefillFp16BreakdownTest.H1D128FullB1S256",
+      "expected_tests": 1
+    },
+    {
+      "mode": "nothing",
+      "gtest_filter": "Fa2PrefillFp16BreakdownTest.H1D128FullB1S256",
+      "expected_tests": 1
+    }
+  ]
+}

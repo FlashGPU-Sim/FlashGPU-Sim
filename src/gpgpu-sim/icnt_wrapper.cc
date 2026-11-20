@@ -215,6 +215,9 @@ void icnt_reg_options(class OptionParser* opp) {
       opp, "-icnt_reply_input_sectors_per_cycle", OPT_UINT32,
       &g_inct_config.reply_input_sectors_per_cycle,
       "Reply-network sector slots per input and ICNT tick (0=legacy)", "0");
+  option_parser_register(opp, "-icnt_reply_output_grants_per_cycle", OPT_UINT32,
+                         &g_inct_config.reply_output_grants_per_cycle,
+                         "Reply output packet grants per cycle when sector width is zero", "1");
   option_parser_register(
       opp, "-icnt_reply_output_sectors_per_cycle", OPT_UINT32,
       &g_inct_config.reply_output_sectors_per_cycle,
