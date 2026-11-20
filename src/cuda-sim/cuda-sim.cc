@@ -1351,7 +1351,7 @@ void ptx_instruction::set_opcode_and_latency() {
         op = TENSOR_MAP_OP;
         latency = tensormap_latency[2];
         initiation_interval = tensormap_init[2];
-      } else if (std::find(opts.begin(), opts.end(), SC_OPTION) != opts.end()) {
+      } else if (std::find(opts.begin(), opts.end(), PROXY_OPTION) == opts.end()) {
         op = MEMORY_BARRIER_OP;
       }
       break;
