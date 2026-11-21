@@ -796,11 +796,9 @@ step_result execute_isetp(const instruction &inst, warp_state &state,
   const bool combine_or = inst.opcode.find(".OR") != std::string::npos;
   const bool combine_xor = inst.opcode.find(".XOR") != std::string::npos;
   if (destination == nullptr || second_destination == nullptr ||
-      second_destination->index != kTruePredicate ||
       (!combine_and && !combine_or && !combine_xor))
-    return unsupported(
-        inst, "only ISETP AND/OR/XOR with a discarded second output is "
-              "implemented");
+    return unsupported(inst, "ISETP AND/OR/XOR operand form is "
+                             "implemented");
   const bool signed_wide = inst.opcode.find(".S64.") != std::string::npos;
   const bool wide_compare =
       signed_wide || inst.opcode.find(".U64.") != std::string::npos;
@@ -883,6 +881,10 @@ step_result execute_isetp(const instruction &inst, warp_state &state,
                         : combine_or ? compared || input
                                      : compared && input;
     state.write_predicate(lane, destination->index, result);
+    state.write_predicate(lane, second_destination->index,
+                          combine_xor  ? (!compared != input)
+                          : combine_or ? (!compared || input)
+                                       : (!compared && input));
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -915,7 +917,6 @@ step_result execute_uisetp(const instruction &inst, warp_state &state,
   if (!has_typed_operands(inst, extended ? 6 : 5) ||
       inst.operands[0].kind != operand_kind::kUniformPredicate ||
       inst.operands[1].kind != operand_kind::kUniformPredicate ||
-      inst.operands[1].index != kTruePredicate ||
       (inst.opcode.find(".AND") == std::string::npos && !combine_or &&
        !combine_xor) ||
       (inst.has_guard && inst.guard.kind != operand_kind::kUniformPredicate))
@@ -971,6 +972,10 @@ step_result execute_uisetp(const instruction &inst, warp_state &state,
                                   combine_xor  ? compared != input
                                   : combine_or ? compared || input
                                                : compared && input);
+    state.write_uniform_predicate(inst.operands[1].index,
+                                  combine_xor  ? (!compared != input)
+                                  : combine_or ? (!compared || input)
+                                               : (!compared && input));
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -1445,6 +1450,15 @@ step_result execute_sel(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_integer_semantics(frontend &target) {
+  for (const std::string base : {"ISETP", "UISETP"})
+    for (const std::string cmp : {"EQ", "NE", "LT", "LE", "GT", "GE"})
+      for (const std::string type : {"", ".U32"})
+        for (const std::string combine : {"AND", "OR", "XOR"})
+          for (const std::string extended : {"", ".EX"})
+            target.register_semantics(
+                base + "." + cmp + type + "." + combine + extended,
+                base == "ISETP" ? execute_isetp : execute_uisetp);
+
   target.register_semantics("IADD", execute_iadd);
   target.register_semantics("VIADD", execute_iadd);
   target.register_semantics("IADD3", execute_iadd3);
@@ -1502,74 +1516,12 @@ void register_integer_semantics(frontend &target) {
   target.register_semantics("FLO.U32.SH", execute_flo);
   target.register_semantics("UFLO.U32", execute_flo);
   target.register_semantics("UFLO.U32.SH", execute_flo);
-  target.register_semantics("ISETP.EQ.AND", execute_isetp);
-  target.register_semantics("ISETP.EQ.OR", execute_isetp);
-  target.register_semantics("ISETP.EQ.U32.AND", execute_isetp);
-  target.register_semantics("ISETP.EQ.U32.OR", execute_isetp);
-  target.register_semantics("ISETP.EQ.U32.XOR", execute_isetp);
-  target.register_semantics("ISETP.NE.U32.AND", execute_isetp);
-  target.register_semantics("ISETP.NE.AND", execute_isetp);
-  target.register_semantics("ISETP.NE.XOR", execute_isetp);
-  target.register_semantics("ISETP.NE.AND.EX", execute_isetp);
-  target.register_semantics("ISETP.NE.U32.AND.EX", execute_isetp);
-  target.register_semantics("ISETP.EQ.OR.EX", execute_isetp);
-  target.register_semantics("ISETP.EQ.U32.OR.EX", execute_isetp);
-  target.register_semantics("ISETP.EQ.U32.AND.EX", execute_isetp);
   target.register_semantics("ISETP.EQ.U64.AND", execute_isetp);
   target.register_semantics("ISETP.EQ.U64.OR", execute_isetp);
   target.register_semantics("ISETP.NE.U64.AND", execute_isetp);
   target.register_semantics("ISETP.GE.U64.AND", execute_isetp);
   target.register_semantics("ISETP.GE.S64.AND", execute_isetp);
-  target.register_semantics("ISETP.LT.U32.AND", execute_isetp);
-  target.register_semantics("ISETP.LT.U32.AND.EX", execute_isetp);
-  target.register_semantics("ISETP.LT.U32.OR", execute_isetp);
-  target.register_semantics("ISETP.LT.AND", execute_isetp);
-  target.register_semantics("ISETP.LE.AND", execute_isetp);
-  target.register_semantics("ISETP.LE.U32.AND", execute_isetp);
-  target.register_semantics("ISETP.LE.U32.OR", execute_isetp);
-  target.register_semantics("ISETP.GT.U32.AND", execute_isetp);
-  target.register_semantics("ISETP.GT.U32.AND.EX", execute_isetp);
-  target.register_semantics("ISETP.GT.AND", execute_isetp);
-  target.register_semantics("ISETP.GT.AND.EX", execute_isetp);
-  target.register_semantics("ISETP.GE.U32.AND", execute_isetp);
-  target.register_semantics("ISETP.GE.U32.OR", execute_isetp);
-  target.register_semantics("ISETP.GE.U32.AND.EX", execute_isetp);
-  target.register_semantics("ISETP.GE.AND", execute_isetp);
-  target.register_semantics("ISETP.GE.AND.EX", execute_isetp);
-  target.register_semantics("ISETP.GE.OR", execute_isetp);
-  target.register_semantics("ISETP.GT.OR", execute_isetp);
-  target.register_semantics("ISETP.LT.OR", execute_isetp);
-  target.register_semantics("ISETP.LE.OR", execute_isetp);
-  target.register_semantics("ISETP.LT.U32.OR.EX", execute_isetp);
-  target.register_semantics("ISETP.NE.OR", execute_isetp);
-  target.register_semantics("ISETP.GT.U32.OR", execute_isetp);
-  target.register_semantics("ISETP.NE.U32.OR", execute_isetp);
-  target.register_semantics("UISETP.NE.U32.AND", execute_uisetp);
   target.register_semantics("UISETP.NE.U64.AND", execute_uisetp);
-  target.register_semantics("UISETP.NE.AND", execute_uisetp);
-  target.register_semantics("UISETP.NE.AND.EX", execute_uisetp);
-  target.register_semantics("UISETP.NE.U32.AND.EX", execute_uisetp);
-  target.register_semantics("UISETP.EQ.OR.EX", execute_uisetp);
-  target.register_semantics("UISETP.EQ.OR", execute_uisetp);
-  target.register_semantics("UISETP.LT.OR", execute_uisetp);
-  target.register_semantics("UISETP.LT.U32.OR", execute_uisetp);
-  target.register_semantics("UISETP.NE.OR", execute_uisetp);
-  target.register_semantics("UISETP.NE.U32.OR", execute_uisetp);
-  target.register_semantics("UISETP.EQ.AND", execute_uisetp);
-  target.register_semantics("UISETP.EQ.U32.AND", execute_uisetp);
-  target.register_semantics("UISETP.EQ.U32.OR", execute_uisetp);
-  target.register_semantics("UISETP.EQ.U32.XOR", execute_uisetp);
-  target.register_semantics("UISETP.LT.AND", execute_uisetp);
-  target.register_semantics("UISETP.LT.U32.AND", execute_uisetp);
-  target.register_semantics("UISETP.GE.U32.AND.EX", execute_uisetp);
-  target.register_semantics("UISETP.GT.U32.AND", execute_uisetp);
-  target.register_semantics("UISETP.GT.U32.OR", execute_uisetp);
-  target.register_semantics("UISETP.GT.AND", execute_uisetp);
-  target.register_semantics("UISETP.GT.OR", execute_uisetp);
-  target.register_semantics("UISETP.GE.AND", execute_uisetp);
-  target.register_semantics("UISETP.GE.AND.EX", execute_uisetp);
-  target.register_semantics("UISETP.GE.OR", execute_uisetp);
-  target.register_semantics("UISETP.GE.U32.AND", execute_uisetp);
   target.register_semantics("UISETP.GE.U64.AND", execute_uisetp);
   target.register_semantics("LEA", execute_lea);
   target.register_semantics("LEA.HI", execute_lea);

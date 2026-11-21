@@ -1,3 +1,4 @@
+#include "../../fp32_fma.h"
 #include "../decode/fp32x2_operand.h"
 #include "../decode/operand_parser.h"
 #include "internal.h"
@@ -789,35 +790,16 @@ step_result execute_fchk(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
-// FP32 products are exact in FP64. TwoSum retains the addition residual,
-// including tiny addends lost by a plain double sum. No host rounding-mode
-// mutation is needed, so concurrent simulator threads remain independent.
-float directed_fma(float a, float b, float c, const std::string &opcode) {
-  if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c))
-    return std::fma(a, b, c);
-  const double product = static_cast<double>(a) * b;
-  const double sum = product + static_cast<double>(c);
-  const double recovered = sum - product;
-  const double residual = (product - (sum - recovered)) + (c - recovered);
-  const bool down = opcode == "FFMA.RM" || opcode == "FFMA.FTZ.RM";
-  const bool up = opcode == "FFMA.RP";
-  if (sum == 0.0 && residual == 0.0) {
-    const bool product_negative = std::signbit(a) != std::signbit(b);
-    const bool both_zero = product == 0.0 && c == 0.0f;
-    const bool negative = both_zero && product_negative == std::signbit(c)
-                              ? product_negative
-                              : down;
-    return negative ? -0.0f : 0.0f;
-  }
-  float result = static_cast<float>(sum);
-  const double rounded = result;
-  const bool above = rounded > sum || (rounded == sum && residual < 0.0);
-  const bool below = rounded < sum || (rounded == sum && residual > 0.0);
-  if ((down && above) || (up && below))
-    result = std::nextafter(result, down ? -INFINITY : INFINITY);
-  else if (!down && !up && ((sum > 0 && above) || (sum < 0 && below)))
-    result = std::nextafter(result, 0.0f);
-  return result;
+// Use the same rounding primitive as PTX. fesetround is thread-local and
+// the helper restores the caller's mode before returning.
+int fp32_rounding(const instruction &inst) {
+  if (inst.opcode.find(".RM") != std::string::npos)
+    return FE_DOWNWARD;
+  if (inst.opcode.find(".RP") != std::string::npos)
+    return FE_UPWARD;
+  if (inst.opcode.find(".RZ") != std::string::npos)
+    return FE_TOWARDZERO;
+  return FE_TONEAREST;
 }
 
 step_result execute_ffma(const instruction &inst, warp_state &state,
@@ -846,14 +828,10 @@ step_result execute_ffma(const instruction &inst, warp_state &state,
       b = flush_subnormal(b);
       c = flush_subnormal(c);
     }
-    const bool directed = inst.opcode == "FFMA.RM" ||
-                          inst.opcode == "FFMA.FTZ.RM" ||
-                          inst.opcode == "FFMA.RP" || inst.opcode == "FFMA.RZ";
-    float result =
-        directed ? directed_fma(a, b, c, inst.opcode) : std::fma(a, b, c);
+    float result = rounded_f32_fma(a, b, c, fp32_rounding(inst), false);
     if (ftz)
       result = flush_subnormal(result);
-    if (inst.opcode == "FFMA.SAT")
+    if (inst.opcode.find(".SAT") != std::string::npos)
       result = !(result > 0.0f) ? 0.0f : std::min(result, 1.0f);
     result_bits = float_bits(result);
     return true;
@@ -1280,26 +1258,13 @@ step_result execute_binary_float(const instruction &inst, warp_state &state,
     float result = 0.0f;
     const bool multiply =
         inst.opcode.rfind("FMUL", 0) == 0 || inst.opcode.rfind("UFMUL", 0) == 0;
-    if (inst.opcode.find(".RZ") != std::string::npos) {
-      const double x = a, y = b;
-      const double exact = multiply ? x * y : x + y;
-      // TwoSum retains the sign of a tiny addend lost even in double. This
-      // matters for directed rounding, e.g. 1 + (-2^-100) must round below 1.
-      const double recovered_y = exact - x;
-      const double error =
-          multiply ? 0.0 : (x - (exact - recovered_y)) + (y - recovered_y);
-      result = static_cast<float>(exact);
-      if (std::isfinite(exact) &&
-          (std::fabs(static_cast<double>(result)) > std::fabs(exact) ||
-           (static_cast<double>(result) == exact &&
-            ((exact > 0 && error < 0) || (exact < 0 && error > 0)))))
-        result = std::nextafter(result, 0.0f);
-    } else {
-      result = multiply ? a * b : a + b;
-    }
+    // A same-sign zero preserves FMUL's signed zero through the FMA helper.
+    result = multiply ? rounded_f32_fma(a, b, std::copysign(0.0f, a * b),
+                                        fp32_rounding(inst), false)
+                      : rounded_f32_fma(a, 1.0f, b, fp32_rounding(inst), false);
     if (ftz)
       result = flush_subnormal(result);
-    if (inst.opcode == "FADD.FTZ.SAT")
+    if (inst.opcode.find(".SAT") != std::string::npos)
       result = !(result > 0.0f) ? 0.0f : std::min(result, 1.0f);
     result_bits = float_bits(result);
     return true;
@@ -1407,6 +1372,51 @@ step_result execute_fsel(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
+// Comparison and Boolean combination are shared by FSET and FSETP.
+bool fp_compare(const instruction &inst, float a, float b) {
+  if (inst.opcode.find(".FTZ") != std::string::npos) {
+    a = flush_subnormal(a);
+    b = flush_subnormal(b);
+  }
+  const bool nan = std::isnan(a) || std::isnan(b);
+  const auto has = [&](const char *cmp) {
+    return inst.opcode.find(std::string(".") + cmp + ".") != std::string::npos;
+  };
+  if (has("NAN"))
+    return nan;
+  if (has("NUM"))
+    return !nan;
+  if (has("LTU"))
+    return nan || a < b;
+  if (has("LEU"))
+    return nan || a <= b;
+  if (has("GTU"))
+    return nan || a > b;
+  if (has("GEU"))
+    return nan || a >= b;
+  if (has("EQU"))
+    return nan || a == b;
+  if (has("NEU"))
+    return nan || a != b;
+  if (has("LT"))
+    return !nan && a < b;
+  if (has("LE"))
+    return !nan && a <= b;
+  if (has("GT"))
+    return !nan && a > b;
+  if (has("GE"))
+    return !nan && a >= b;
+  if (has("EQ"))
+    return !nan && a == b;
+  return !nan && a != b; // NE, qualified by registration
+}
+bool fp_combine(const instruction &inst, bool cmp, bool input) {
+  if (inst.opcode.find(".XOR") != std::string::npos)
+    return cmp != input;
+  if (inst.opcode.find(".OR") != std::string::npos)
+    return cmp || input;
+  return cmp && input;
+}
 step_result execute_fset_mask(const instruction &inst, warp_state &state,
                               execution_context &) {
   if (!has_typed_operands(inst, 4) ||
@@ -1423,84 +1433,46 @@ step_result execute_fset_mask(const instruction &inst, warp_state &state,
         !read_f32_operand(inst.operands[2], state, lane, b) ||
         !read_predicate_operand(inst.operands[3], state, lane, input))
       return unsupported(inst, "unsupported mask comparison source");
-    bool cmp = inst.opcode == "FSET.BF.EQ.AND" ? a == b : a > b;
-    state.write_register(lane, inst.operands[0].index,
-                         cmp && input ? 0xffffffffu : 0u);
+    state.write_register(
+        lane, inst.operands[0].index,
+        fp_combine(inst, fp_compare(inst, a, b), input) ? 0xffffffffu : 0u);
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
 }
-
 step_result execute_fsetp(const instruction &inst, warp_state &state,
                           execution_context &) {
   const bool uniform = inst.opcode.rfind("UFSETP.", 0) == 0;
-  if (!has_typed_operands(inst, 5) ||
-      inst.operands[0].kind != (uniform ? operand_kind::kUniformPredicate
-                                        : operand_kind::kPredicate) ||
-      inst.operands[1].kind != (uniform ? operand_kind::kUniformPredicate
-                                        : operand_kind::kPredicate) ||
-      inst.operands[1].index != kTruePredicate ||
-      (inst.opcode.find(".AND") == std::string::npos &&
-       inst.opcode.find(".OR") == std::string::npos) ||
-      (uniform && inst.has_guard &&
-       inst.guard.kind != operand_kind::kUniformPredicate))
+  const auto kind =
+      uniform ? operand_kind::kUniformPredicate : operand_kind::kPredicate;
+  if (!has_typed_operands(inst, 5) || inst.operands[0].kind != kind ||
+      inst.operands[1].kind != kind ||
+      (uniform && (inst.operands[2].kind == operand_kind::kRegister ||
+                   inst.operands[3].kind == operand_kind::kRegister ||
+                   inst.operands[4].kind != operand_kind::kUniformPredicate ||
+                   (inst.has_guard &&
+                    inst.guard.kind != operand_kind::kUniformPredicate))))
     return unsupported(inst, "unsupported FSETP operand form");
-
-  const auto compare = [&](unsigned lane, bool &result) {
-    float a = 0.0f;
-    float b = 0.0f;
-    bool input = false;
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    float a, b;
+    bool input;
     if (!read_f32_operand(inst.operands[2], state, lane, a) ||
         !read_f32_operand(inst.operands[3], state, lane, b) ||
         !read_predicate_operand(inst.operands[4], state, lane, input))
-      return false;
-    if (inst.opcode.find(".FTZ") != std::string::npos) {
-      a = flush_subnormal(a);
-      b = flush_subnormal(b);
+      return unsupported(inst, "unsupported FSETP source");
+    const bool cmp = fp_compare(inst, a, b);
+    const bool first = fp_combine(inst, cmp, input),
+               second = fp_combine(inst, !cmp, input);
+    if (uniform) {
+      state.write_uniform_predicate(inst.operands[0].index, first);
+      state.write_uniform_predicate(inst.operands[1].index, second);
+      break;
     }
-    bool compared = false;
-    if (inst.opcode.find(".NAN.") != std::string::npos)
-      compared = std::isnan(a) || std::isnan(b);
-    else if (inst.opcode.find(".GEU.") != std::string::npos)
-      compared = std::isnan(a) || std::isnan(b) || a >= b;
-    else if (inst.opcode.find(".GTU.") != std::string::npos)
-      compared = std::isnan(a) || std::isnan(b) || a > b;
-    else if (inst.opcode.find(".LEU.") != std::string::npos)
-      compared = std::isnan(a) || std::isnan(b) || a <= b;
-    else if (inst.opcode.find(".NEU.") != std::string::npos)
-      compared = std::isnan(a) || std::isnan(b) || a != b;
-    else if (inst.opcode.find(".NE.") != std::string::npos)
-      compared = !std::isnan(a) && !std::isnan(b) && a != b;
-    else if (inst.opcode.find(".GT.") != std::string::npos)
-      compared = !std::isnan(a) && !std::isnan(b) && a > b;
-    else if (inst.opcode.find(".GE.") != std::string::npos)
-      compared = !std::isnan(a) && !std::isnan(b) && a >= b;
-    else if (inst.opcode.find(".EQ.") != std::string::npos)
-      compared = a == b;
-    else
-      return false;
-    result = inst.opcode.find(".OR") != std::string::npos ? compared || input
-                                                          : compared && input;
-    return true;
-  };
-
-  if (uniform) {
-    if (any_lane_executes(inst, state)) {
-      bool result = false;
-      if (!compare(0, result))
-        return unsupported(inst, "unsupported UFSETP source or comparison");
-      state.write_uniform_predicate(inst.operands[0].index, result);
-    }
-  } else {
-    for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-      if ((state.active_mask & (1u << lane)) == 0 ||
-          !lane_executes(inst, state, lane))
-        continue;
-      bool result = false;
-      if (!compare(lane, result))
-        return unsupported(inst, "unsupported FSETP source or comparison");
-      state.write_predicate(lane, inst.operands[0].index, result);
-    }
+    state.write_predicate(lane, inst.operands[0].index, first);
+    state.write_predicate(lane, inst.operands[1].index, second);
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -1607,6 +1579,26 @@ step_result execute_mufu_lg2(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_float_semantics(frontend &target) {
+  for (const std::string base : {"FSETP", "UFSETP", "FSET.BF"})
+    for (const std::string cmp :
+         {"LT", "LE", "GT", "GE", "EQ", "NE", "LTU", "LEU", "GTU", "GEU", "EQU",
+          "NEU", "NUM", "NAN"})
+      for (const std::string ftz : {"", ".FTZ"})
+        for (const std::string combine : {"AND", "OR", "XOR"})
+          target.register_semantics(base + "." + cmp + ftz + "." + combine,
+                                    base == "FSET.BF" ? execute_fset_mask
+                                                      : execute_fsetp);
+
+  for (const std::string base :
+       {"FADD", "FMUL", "FFMA", "UFADD", "UFMUL", "UFFMA"})
+    for (const std::string ftz : {"", ".FTZ"})
+      for (const std::string round : {"", ".RM", ".RP", ".RZ"})
+        for (const std::string sat : {"", ".SAT"})
+          target.register_semantics(base + ftz + round + sat,
+                                    base.find("FFMA") != std::string::npos
+                                        ? execute_ffma
+                                        : execute_binary_float);
+
   target.register_semantics("I2F.RP", execute_i2f);
   target.register_semantics("I2F.U8", execute_i2f);
   target.register_semantics("I2F.U16", execute_i2f);
@@ -1654,23 +1646,12 @@ void register_float_semantics(frontend &target) {
   target.register_semantics("F2FP.SATFINITE.E8.F32.PACK_AB_MERGE_C.RP",
                             execute_f2fp_ue8m0);
   target.register_semantics("FCHK", execute_fchk);
-  target.register_semantics("FFMA", execute_ffma);
-  target.register_semantics("FFMA.RM", execute_ffma);
-  target.register_semantics("FFMA.RP", execute_ffma);
-  target.register_semantics("FFMA.RZ", execute_ffma);
   target.register_semantics("FFMA2", execute_fp32x2);
   target.register_semantics("FFMA2.FTZ", execute_fp32x2);
   target.register_semantics("FADD2", execute_fp32x2);
   target.register_semantics("FADD2.FTZ", execute_fp32x2);
   target.register_semantics("FMUL2", execute_fp32x2);
   target.register_semantics("FMUL2.FTZ", execute_fp32x2);
-  target.register_semantics("FFMA.FTZ", execute_ffma);
-  target.register_semantics("FFMA.SAT", execute_ffma);
-  target.register_semantics("FFMA.RM", execute_ffma);
-  target.register_semantics("FFMA.FTZ.RM", execute_ffma);
-  target.register_semantics("FFMA.RP", execute_ffma);
-  target.register_semantics("FFMA.RZ", execute_ffma);
-  target.register_semantics("UFFMA.FTZ", execute_ffma);
   target.register_semantics("HFMA2", execute_hfma2);
   target.register_semantics("HFMA2.MMA", execute_hfma2);
   target.register_semantics("HADD2", execute_hadd2);
@@ -1680,51 +1661,14 @@ void register_float_semantics(frontend &target) {
   target.register_semantics("VHMNMX.BF16_V2", execute_bfloat_minmax2);
   target.register_semantics("HFMA2.BF16_V2", execute_bfloat_fma_immediate);
   target.register_semantics("HADD2.F32", execute_hadd2_f32_conversion);
-  target.register_semantics("FMUL", execute_binary_float);
-  target.register_semantics("FMUL.FTZ", execute_binary_float);
-  target.register_semantics("FMUL.RZ", execute_binary_float);
-  target.register_semantics("UFMUL", execute_binary_float);
-  target.register_semantics("UFMUL.FTZ", execute_binary_float);
-  target.register_semantics("UFADD", execute_binary_float);
-  target.register_semantics("UFADD.FTZ", execute_binary_float);
-  target.register_semantics("FADD", execute_binary_float);
-  target.register_semantics("FADD.RZ", execute_binary_float);
-  target.register_semantics("FADD.FTZ", execute_binary_float);
-  target.register_semantics("FADD.FTZ.SAT", execute_binary_float);
-  target.register_semantics("FADD.FTZ.RZ", execute_binary_float);
   target.register_semantics("FMNMX", execute_fmnmx);
   target.register_semantics("FMNMX.FTZ", execute_fmnmx);
   target.register_semantics("FMNMX3.FTZ", execute_fmnmx);
   target.register_semantics("FMNMX3", execute_fmnmx);
   target.register_semantics("FMNMX3.NAN", execute_fmnmx);
-  target.register_semantics("FSETP.EQ.AND", execute_fsetp);
-  target.register_semantics("FSET.BF.EQ.AND", execute_fset_mask);
-  target.register_semantics("FSET.BF.GT.AND", execute_fset_mask);
-  target.register_semantics("FSETP.LEU.AND", execute_fsetp);
-  target.register_semantics("FSETP.NEU.OR", execute_fsetp);
   target.register_semantics("F2FP.RELU.BF16.F32.PACK_AB", execute_f2fp_pack_ab);
-  target.register_semantics("FSETP.NAN.FTZ.AND", execute_fsetp);
-  target.register_semantics("FSETP.NAN.AND", execute_fsetp);
   target.register_semantics("FSEL", execute_fsel);
   target.register_semantics("UFSEL", execute_fsel);
-  target.register_semantics("FSETP.GEU.AND", execute_fsetp);
-  target.register_semantics("FSETP.GEU.FTZ.AND", execute_fsetp);
-  target.register_semantics("FSETP.GTU.AND", execute_fsetp);
-  target.register_semantics("FSETP.GTU.FTZ.AND", execute_fsetp);
-  target.register_semantics("FSETP.GE.FTZ.AND", execute_fsetp);
-  target.register_semantics("FSETP.GE.AND", execute_fsetp);
-  target.register_semantics("FSETP.EQ.FTZ.AND", execute_fsetp);
-  target.register_semantics("FSETP.NEU.AND", execute_fsetp);
-  target.register_semantics("FSETP.NEU.FTZ.AND", execute_fsetp);
-  target.register_semantics("FSETP.NE.AND", execute_fsetp);
-  target.register_semantics("FSETP.NE.FTZ.AND", execute_fsetp);
-  target.register_semantics("FSETP.GT.AND", execute_fsetp);
-  target.register_semantics("FSETP.GT.FTZ.AND", execute_fsetp);
-  target.register_semantics("UFSETP.GEU.AND", execute_fsetp);
-  target.register_semantics("UFSETP.NEU.AND", execute_fsetp);
-  target.register_semantics("UFSETP.NEU.FTZ.AND", execute_fsetp);
-  target.register_semantics("UFSETP.NE.FTZ.AND", execute_fsetp);
-  target.register_semantics("UFSETP.GT.AND", execute_fsetp);
   target.register_semantics("MUFU.EX2", execute_mufu_ex2);
   target.register_semantics("MUFU.LG2", execute_mufu_lg2);
   target.register_semantics("MUFU.RSQ", execute_mufu_rsq);

@@ -1,6 +1,6 @@
 # Experimental native scalar coverage
 
-Base: SASS frontend `59734bc5`. Private preparation branch:
+Base: public `01bdef86` (merged experimental SASS frontend). Private preparation branch:
 `feature/sass-scalar-coverage`. No public PR or default config change.
 
 This change adds integer comparison/shift/bit-reversal forms, FP32 pair
@@ -18,12 +18,25 @@ qualification. The private source test oracles are retained; tests running
 under the SM120 common registration are semantic tests, not a claim that
 ptxas emits every added spelling for SM120.
 
-Validation: 587 component tests pass (514 base + 73 additional functional and
-timing cases). Includes an independent enumeration-based FP8 oracle, NaN/
-infinity/subnormal, directed rounding, predicate and register-pair checks.
+Modifier coverage added in this revision:
+
+- FP32 FADD/FMUL/FFMA and uniform counterparts: implicit RN, RM, RP, RZ,
+  each with and without FTZ and SAT. PTX add/mul/fma use the same rounded
+  FP32 arithmetic helper as SASS; PTX multiply no longer asserts on RM/RP.
+- FSETP/UFSETP and FSET.BF: ordered and unordered comparisons, NUM/NAN,
+  AND/OR/XOR, FTZ, and both predicate destinations for predicate forms.
+- ISETP/UISETP: signed/U32 comparisons, AND/OR/XOR, EX comparison chaining,
+  and both predicate destinations. Existing 64-bit forms are unchanged.
+
+Validation: 665 component tests pass, including modifier-product tests with
+NaN/subnormal, saturation, directed rounding, predicate and uniform-register
+checks. The real CUDA `ScalarModifiers.*` fixture covers 48 combinations of
+PTX FP32 add/multiply/FMA in one binary and passes both PTX and native SASS
+replay. Host SFU approximations are intentionally not bit-exact GPU models.
 Local CUDA 13.3 component invocation excludes the pre-existing
 `trace_validation_test.cc` legacy cuCtxCreate signature; no test assertion or
-performance gate was relaxed. Release build is required separately.
+performance gate was relaxed. Evidence: workspace
+`runs/feature-expansion-20261121`, including `scalar-cuda-r2/report.json`.
 
 Remaining scope: native direct-address memory forms, warp collectives, and
 architecture-specific tensor/cluster instructions are separate changes.

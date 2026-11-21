@@ -3317,3 +3317,93 @@ TEST(SassFunctionalTest, DeepInferUniformBitOpsAndScalarBfloatAdd) {
   EXPECT_EQ(state.read_register(0, 8), 0x40a00000u);
 }
 }
+
+namespace {
+TEST(SassFunctionalTest, Fp32RoundingFtzSaturationModifierProduct) {
+  for (const std::string base : {"FADD", "FMUL", "FFMA"})
+    for (bool uniform : {false, true})
+      for (bool ftz : {false, true})
+        for (bool sat : {false, true})
+          for (const std::string rounding : {"", ".RM", ".RP", ".RZ"})
+            for (unsigned sample = 0; sample < 3; ++sample) {
+              const bool mul = base == "FMUL", fma = base == "FFMA";
+              uint32_t a = mul ? 0x3f800001u : 0x3f800000u;
+              uint32_t b = mul ? 0x3f800001u : fma ? 0x3f800000u : 0x33000000u;
+              uint32_t c = 0x33000000u;
+              uint32_t expected = mul ? 0x3f800002u : 0x3f800000u;
+              if (rounding == ".RP") ++expected;
+              if (sat) expected = 0x3f800000u;
+              if (sample == 1) {
+                a = 0xbf800000u; b = (mul || fma) ? 0x3f800000u : 0;
+                c = 0; expected = sat ? 0 : 0xbf800000u;
+              } else if (sample == 2) {
+                a = 1; b = (mul || fma) ? 0x3f800000u : 0;
+                c = 0; expected = ftz ? 0 : 1;
+              }
+              const std::string opcode = (uniform ? "U" : "") + base +
+                  (ftz ? ".FTZ" : "") + rounding + (sat ? ".SAT" : "");
+              const std::string r = uniform ? "UR" : "R";
+              kernel image; image.name="modifier_product";
+              image.arch=architecture::kSm120; image.instruction_bytes=16;
+              image.instructions={official_instruction(0,opcode,r+"8,"+r+"2,"+r+"3"+(fma?","+r+"4":""))};
+              frontend sass; sass.add_kernel(std::move(image));
+              register_sm120_functional_semantics(sass);
+              warp_state state; state.active_mask=1;
+              state.write_register(0,2,a);state.write_register(0,3,b);state.write_register(0,4,c);
+              state.write_uniform_register(2,a);state.write_uniform_register(3,b);state.write_uniform_register(4,c);
+              execution_context context;
+              const auto result=sass.step("modifier_product",state,context);
+              ASSERT_EQ(result.status,step_status::kAdvanced)<<opcode<<": "<<result.detail;
+              EXPECT_EQ(uniform?state.read_uniform_register(8):state.read_register(0,8),expected)<<opcode<<" sample="<<sample;
+            }
+}
+
+TEST(SassFunctionalTest, FloatingPredicateProductWritesBothOutputs) {
+  const std::array<std::string,14> comparisons={"LT","LE","GT","GE","EQ","NE","LTU","LEU","GTU","GEU","EQU","NEU","NUM","NAN"};
+  const std::array<bool,14> finite={true,true,false,false,false,true,true,true,false,false,false,true,true,false};
+  for(unsigned cmp=0;cmp<comparisons.size();++cmp)
+    for(bool uniform:{false,true}) for(bool ftz:{false,true})
+      for(bool nan:{false,true}) for(bool input:{false,true})
+        for(const std::string boolean:{"AND","OR","XOR"}) {
+          const std::string op=(uniform?"UFSETP.":"FSETP.")+comparisons[cmp]+(ftz?".FTZ":"")+"."+boolean;
+          const std::string p=uniform?"UP":"P",r=uniform?"UR":"R";
+          kernel image;image.name="compare_product";image.arch=architecture::kSm120;image.instruction_bytes=16;
+          image.instructions={official_instruction(0,op,p+"0,"+p+"1,"+r+"2,"+r+"3,"+p+"2")};
+          frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+          warp_state state;state.active_mask=1;
+          state.write_register(0,2,nan?0x7fc00000u:0x3f800000u);state.write_register(0,3,0x40000000u);
+          state.write_uniform_register(2,nan?0x7fc00000u:0x3f800000u);state.write_uniform_register(3,0x40000000u);
+          state.write_predicate(0,2,input);state.write_uniform_predicate(2,input);
+          execution_context context;const auto result=sass.step("compare_product",state,context);
+          ASSERT_EQ(result.status,step_status::kAdvanced)<<op<<result.detail;
+          const bool value=nan?(cmp>=6&&cmp!=12):finite[cmp];
+          auto combine=[&](bool v){return boolean=="AND"?v&&input:boolean=="OR"?v||input:v!=input;};
+          EXPECT_EQ(uniform?state.read_uniform_predicate(0):state.read_predicate(0,0),combine(value))<<op;
+          EXPECT_EQ(uniform?state.read_uniform_predicate(1):state.read_predicate(0,1),combine(!value))<<op;
+        }
+}
+
+TEST(SassFunctionalTest, IntegerCompareModifierProductAndDualOutputs) {
+  const std::array<std::string,6> comparisons={"LT","LE","GT","GE","EQ","NE"};
+  for(unsigned cmp=0;cmp<6;++cmp) for(bool uniform:{false,true})
+    for(bool unsign:{false,true}) for(bool extended:{false,true})
+      for(bool extension:{false,true}) for(bool input:{false,true})
+        for(const std::string boolean:{"AND","OR","XOR"}) {
+          const std::string op=(uniform?"UISETP.":"ISETP.")+comparisons[cmp]+(unsign?".U32":"")+"."+boolean+(extended?".EX":"");
+          const std::string p=uniform?"UP":"P",r=uniform?"UR":"R";
+          kernel image;image.name="integer_product";image.arch=architecture::kSm120;image.instruction_bytes=16;
+          image.instructions={official_instruction(0,op,p+"0,"+p+"1,"+r+"2,"+r+"3,"+p+"2"+(extended?","+p+"3":""))};
+          frontend sass;sass.add_kernel(std::move(image));register_sm120_functional_semantics(sass);
+          warp_state state;state.active_mask=1;
+          const uint32_t a=0xffffffffu,b=extended?a:1;
+          state.write_register(0,2,a);state.write_register(0,3,b);state.write_uniform_register(2,a);state.write_uniform_register(3,b);
+          state.write_predicate(0,2,input);state.write_predicate(0,3,extension);state.write_uniform_predicate(2,input);state.write_uniform_predicate(3,extension);
+          execution_context context;const auto result=sass.step("integer_product",state,context);
+          ASSERT_EQ(result.status,step_status::kAdvanced)<<op<<result.detail;
+          const bool value=extended?extension:cmp<2?!unsign:cmp<4?unsign:cmp==5;
+          auto combine=[&](bool v){return boolean=="AND"?v&&input:boolean=="OR"?v||input:v!=input;};
+          EXPECT_EQ(uniform?state.read_uniform_predicate(0):state.read_predicate(0,0),combine(value))<<op;
+          EXPECT_EQ(uniform?state.read_uniform_predicate(1):state.read_predicate(0,1),combine(!value))<<op;
+        }
+}
+}
