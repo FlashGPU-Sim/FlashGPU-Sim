@@ -15,7 +15,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include "../cuda-sim/ptx_ir.h"
+#include "../../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
 #include "../shader.h"
 

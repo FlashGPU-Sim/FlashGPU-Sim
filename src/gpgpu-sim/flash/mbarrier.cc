@@ -1,8 +1,8 @@
 #include "mbarrier.h"
 #include "tb_cluster.h"
 
-#include "../cuda-sim/ptx_ir.h"
-#include "../cuda-sim/ptx_sim.h"
+#include "../../cuda-sim/ptx_ir.h"
+#include "../../cuda-sim/ptx_sim.h"
 #include "../gpu-sim.h"
 #include "../shader.h"
 #include "cluster_fatal.h"
