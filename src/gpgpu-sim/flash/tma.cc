@@ -3192,10 +3192,10 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     case MULTICAST_CLUSTER_OPTION:
       multicast_cluster = true;
       break;
-    case TENSOR_OPTION:
     case GATHER4_OPTION:
       gather4 = true;
       break;
+    case TENSOR_OPTION:
     case TILE_OPTION:
     case L2_CACHE_HINT_OPTION:
     case ATOMIC_ADD:
