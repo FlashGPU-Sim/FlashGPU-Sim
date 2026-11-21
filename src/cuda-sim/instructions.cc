@@ -1354,14 +1354,16 @@ void andn_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void bar_callback(const inst_t *inst, ptx_thread_info *thread) {
-  unsigned ctaid = thread->get_cta_uid();
+  unsigned ctaid = thread->get_hw_ctaid();
   unsigned barid = inst->bar_id;
   unsigned value = thread->get_reduction_value(ctaid, barid);
   const ptx_instruction *pI = dynamic_cast<const ptx_instruction *>(inst);
   const operand_info &dst = pI->dst();
   ptx_reg_t data;
-  data.u32 = value;
-  thread->set_operand_value(dst, value, U32_TYPE, thread, pI);
+  // PTX predicate registers encode true as a cleared low bit.
+  if (pI->get_type() == PRED_TYPE) data.pred = !value;
+  else data.u32 = value;
+  thread->set_operand_value(dst, data, pI->get_type(), thread, pI);
 }
 
 void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
@@ -1784,7 +1786,7 @@ void bar_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
   }
   unsigned bar_op = pI->barrier_op();
   unsigned red_op = pI->get_atomic();
-  unsigned ctaid = thread->get_cta_uid();
+  unsigned ctaid = thread->get_hw_ctaid();
 
   switch (bar_op) {
     case SYNC_OPTION: {

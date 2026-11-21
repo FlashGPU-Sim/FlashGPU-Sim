@@ -1652,6 +1652,7 @@ class core_t {
     for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) {
       for (unsigned j = 0; j < MAX_BARRIERS_PER_CTA; j++) {
         reduction_storage[i][j] = 0;
+        reduction_active[i][j] = false;
       }
     }
   }
@@ -1673,15 +1674,31 @@ class core_t {
   class ptx_thread_info **get_thread_info() { return m_thread; }
   unsigned get_warp_size() const { return m_warp_size; }
   void and_reduction(unsigned ctaid, unsigned barid, bool value) {
+    begin_reduction(ctaid, barid, 1);
     reduction_storage[ctaid][barid] &= value;
   }
   void or_reduction(unsigned ctaid, unsigned barid, bool value) {
+    begin_reduction(ctaid, barid, 0);
     reduction_storage[ctaid][barid] |= value;
   }
   void popc_reduction(unsigned ctaid, unsigned barid, bool value) {
+    begin_reduction(ctaid, barid, 0);
     reduction_storage[ctaid][barid] += value;
   }
+  void begin_reduction(unsigned ctaid, unsigned barid, unsigned identity) {
+    assert(ctaid < MAX_CTA_PER_SHADER && barid < MAX_BARRIERS_PER_CTA);
+    if (!reduction_active[ctaid][barid]) {
+      reduction_storage[ctaid][barid] = identity;
+      reduction_active[ctaid][barid] = true;
+    }
+  }
+  void reset_reduction(unsigned ctaid, unsigned barid) {
+    assert(ctaid < MAX_CTA_PER_SHADER && barid < MAX_BARRIERS_PER_CTA);
+    reduction_active[ctaid][barid] = false;
+  }
   unsigned get_reduction_value(unsigned ctaid, unsigned barid) {
+    assert(ctaid < MAX_CTA_PER_SHADER && barid < MAX_BARRIERS_PER_CTA);
+    assert(reduction_active[ctaid][barid]);
     return reduction_storage[ctaid][barid];
   }
 
@@ -1693,6 +1710,7 @@ class core_t {
   unsigned m_warp_size;
   unsigned m_warp_count;
   unsigned reduction_storage[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
+  bool reduction_active[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
 };
 
 // register that can hold multiple instructions.
