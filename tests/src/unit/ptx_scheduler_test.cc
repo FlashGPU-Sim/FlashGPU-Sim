@@ -495,3 +495,75 @@ setp.eq.u32 p, 1, 0;
   EXPECT_EQ(insts[0]->dst().get_symbol()->get_size_in_bytes(), 4u);
   EXPECT_EQ(insts[4]->dst().get_symbol()->get_size_in_bytes(), 8u);
 }
+
+// Real nvcc-generated DeepGEMM PTX uses the one-dimensional .maxntid form.
+// File and embedded-string loading must both reject partially parsed modules.
+namespace {
+class PtxModuleLoadingTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    ctx = GPGPU_Context();
+    GPGPUSim_Context(ctx);
+    guided = ctx->ptx_reorder_sass_guided;
+    ctx->ptx_reorder_sass_guided = false;
+    const char *value = getenv("GPGPUSIM_SASS_PTXLINE_GUIDE");
+    had_override = value != nullptr;
+    if (value) override_value = value;
+    unsetenv("GPGPUSIM_SASS_PTXLINE_GUIDE");
+    cwd = std::filesystem::current_path();
+    char dir[] = "/tmp/ptx-module-test-XXXXXX";
+    ASSERT_NE(mkdtemp(dir), nullptr);
+    work = dir;
+    std::filesystem::current_path(work);
+  }
+  void TearDown() override {
+    ctx->ptx_reorder_sass_guided = guided;
+    if (had_override)
+      setenv("GPGPUSIM_SASS_PTXLINE_GUIDE", override_value.c_str(), 1);
+    std::filesystem::current_path(cwd);
+    std::filesystem::remove_all(work);
+  }
+  gpgpu_context *ctx = nullptr;
+  bool guided = false, had_override = false;
+  std::string override_value;
+  std::filesystem::path cwd, work;
+};
+
+TEST_F(PtxModuleLoadingTest, MaxntidOneTwoAndThreeDimensions) {
+  std::ofstream("bounds.ptx") <<
+      ".version 8.0\n.target sm_90\n.address_size 64\n"
+      ".entry bounds1() .maxntid 512 .minnctapersm 1 { ret; }\n"
+      ".entry bounds2() .maxntid 32, 4 { ret; }\n"
+      ".entry bounds3() .maxntid 16, 4, 2 { ret; }\n";
+  auto *symbols = ctx->gpgpu_ptx_sim_load_ptx_from_filename("bounds.ptx");
+  ASSERT_NE(symbols, nullptr);
+  for (auto name : {"bounds1", "bounds2", "bounds3"})
+    ASSERT_NE(symbols->lookup_function(name), nullptr);
+  EXPECT_EQ(symbols->lookup_function("bounds1")->get_maxnt_id(), 512u);
+  EXPECT_EQ(symbols->lookup_function("bounds2")->get_maxnt_id(), 128u);
+  EXPECT_EQ(symbols->lookup_function("bounds3")->get_maxnt_id(), 128u);
+}
+
+TEST_F(PtxModuleLoadingTest, FileSyntaxErrorCannotReturnPartialEntry) {
+  std::ofstream("invalid.ptx") <<
+      ".version 8.0\n.target sm_90\n.address_size 64\n"
+      ".entry partial_entry() .maxntid 32, { ret; }\n";
+  EXPECT_DEATH(ctx->gpgpu_ptx_sim_load_ptx_from_filename("invalid.ptx"),
+               "refusing partial module");
+}
+
+TEST_F(PtxModuleLoadingTest, MissingFileIsNotAnEmptyModule) {
+  EXPECT_DEATH(ctx->gpgpu_ptx_sim_load_ptx_from_filename("absent.ptx"),
+               "cannot open PTX file");
+}
+
+TEST_F(PtxModuleLoadingTest, EmbeddedInputDoesNotParseStaleSyntheticFile) {
+  std::ofstream("_98765.ptx") << "invalid stale data";
+  auto *symbols = ctx->gpgpu_ptx_sim_load_ptx_from_string(
+      ".version 8.0\n.target sm_90\n.address_size 64\n"
+      ".entry embedded_only() .maxntid 32 { ret; }\n", 98765);
+  ASSERT_NE(symbols, nullptr);
+  ASSERT_NE(symbols->lookup_function("embedded_only"), nullptr);
+  EXPECT_EQ(symbols->lookup_function("embedded_only")->get_maxnt_id(), 32u);
+}
+}  // namespace

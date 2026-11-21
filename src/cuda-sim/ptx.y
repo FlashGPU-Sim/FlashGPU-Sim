@@ -350,7 +350,14 @@ function_defn: function_decl { recognizer->set_symtab($1); recognizer->func_head
 	| function_decl { recognizer->set_symtab($1); } block_spec_list { recognizer->func_header(".skip"); } statement_block { recognizer->end_function(); }
 	;
 
-block_spec: MAXNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND {recognizer->func_header_info_int(".maxntid", $2);
+block_spec: MAXNTID_DIRECTIVE INT_OPERAND {
+                    recognizer->func_header_info_int(".maxntid", $2);
+                    recognizer->maxnt_id($2, 1, 1); }
+	| MAXNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND {
+                    recognizer->func_header_info_int(".maxntid", $2);
+                    recognizer->func_header_info_int(",", $4);
+                    recognizer->maxnt_id($2, $4, 1); }
+	| MAXNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND {recognizer->func_header_info_int(".maxntid", $2);
 										recognizer->func_header_info_int(",", $4);
 										recognizer->func_header_info_int(",", $6);
                                                                                 recognizer->maxnt_id($2, $4, $6);}
