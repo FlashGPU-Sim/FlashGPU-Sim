@@ -4,6 +4,7 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "integration/scalar_modifiers_test.cu",
   "unit/ptx_timing_isolation_test.cc",
   # Portable integration tests.
   "integration/address_operand_test.cu",

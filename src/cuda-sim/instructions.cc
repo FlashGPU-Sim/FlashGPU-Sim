@@ -1279,11 +1279,14 @@ void add_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       data.u64 = ((uint64_t)rhi_b << 32) | (uint64_t)rlo_b;
       break;
     }
-    case F32_TYPE:
-      data.f32 = src1_data.f32 + src2_data.f32;
-      GPPRINTF_INST_EXEC(PTX_INST_EXEC, "%.3f = %.3f + %.3f\n", data.f32, src1_data.f32,
-                         src2_data.f32);
+    case F32_TYPE: {
+      const auto &options = pI->get_options();
+      const bool ftz = std::find(options.begin(), options.end(), FTZ_OPTION) != options.end();
+      const auto flush = [ftz](float x) { return ftz && std::fpclassify(x) == FP_SUBNORMAL ? std::copysign(0.0f,x) : x; };
+      data.f32 = flush(flash_gpgpu_sim::rounded_f32_fma(flush(src1_data.f32), 1.0f,
+                        flush(src2_data.f32), fegetround(), pI->saturation_mode()));
       break;
+    }
     case F64_TYPE:
     case FF64_TYPE:
       data.f64 = src1_data.f64 + src2_data.f64;
@@ -5168,30 +5171,15 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       break;
     }
     case F32_TYPE: {
-      int orig_rm = fegetround();
-      switch (rounding_mode) {
-        case RN_OPTION:
-          break;
-        case RZ_OPTION:
-          fesetround(FE_TOWARDZERO);
-          break;
-        default:
-          assert(0);
-          break;
-      }
-
-      d.f32 = a.f32 * b.f32;
-      // Preserve the original rounded product and +0 subtraction, including
-      // signed zero. Negating an input would change these semantics.
+      const auto &options = pI->get_options();
+      const bool ftz = std::find(options.begin(), options.end(), FTZ_OPTION) != options.end();
+      const auto flush = [ftz](float x) { return ftz && std::fpclassify(x) == FP_SUBNORMAL ? std::copysign(0.0f,x) : x; };
+      const int rounding = rounding_mode == RM_OPTION ? FE_DOWNWARD : rounding_mode == RP_OPTION ? FE_UPWARD : rounding_mode == RZ_OPTION ? FE_TOWARDZERO : FE_TONEAREST;
+      const float x=flush(a.f32), y=flush(b.f32);
+      d.f32=flush(flash_gpgpu_sim::rounded_f32_fma(x,y,std::copysign(0.0f,x*y),rounding,false));
+      // Preserve the compiler's explicit +0 subtraction, including signed zero.
       if (pI->is_compiler_negated_mul()) d.f32 = 0.0f - d.f32;
-
-      if (pI->saturation_mode()) {
-        if (d.f32 < 0)
-          d.f32 = 0;
-        else if (d.f32 > 1.0f)
-          d.f32 = 1.0f;
-      }
-      fesetround(orig_rm);
+      if (pI->saturation_mode()) d.f32=!(d.f32>0.0f)?0.0f:std::min(d.f32,1.0f);
       break;
     }
     case F32X2_TYPE: {
