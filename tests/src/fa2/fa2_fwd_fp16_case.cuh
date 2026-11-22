@@ -5,12 +5,10 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <cstddef>
 #include <limits>
-#include <string>
 #include <vector>
 
 #include "flash.h"
@@ -226,8 +224,6 @@ struct Fa2RunResult {
   float max_lse_abs_error = 0.0f;
   size_t max_output_abs_error_index = 0;
   size_t max_lse_abs_error_index = 0;
-  bool replay_output_checked = false;
-  float replay_output_max_abs_error = 0.0f;
 };
 
 inline Fa2RunResult make_fa2_invalid_result(const char *where) {
@@ -613,46 +609,6 @@ inline Fa2RunResult run_fa2_fwd_fp16_typed(int batch, int seqlen_q,
   FA2_RETURN_IF_CUDA_ERROR(cudaMemcpy(&result.lse0, d_lse, sizeof(float),
                                       cudaMemcpyDeviceToHost));
   result.output0 = float(output0);
-
-  const char *save_output_path = std::getenv("FA2_SAVE_OUTPUT");
-  const char *compare_output_path = std::getenv("FA2_COMPARE_OUTPUT");
-  if ((save_output_path != nullptr && save_output_path[0] != '\0') ||
-      (compare_output_path != nullptr && compare_output_path[0] != '\0')) {
-    std::vector<cutlass::half_t> h_o(o_elems);
-    FA2_RETURN_IF_CUDA_ERROR(cudaMemcpy(h_o.data(), d_o,
-                                        o_elems * sizeof(cutlass::half_t),
-                                        cudaMemcpyDeviceToHost));
-    if (save_output_path != nullptr && save_output_path[0] != '\0') {
-      std::ofstream output(save_output_path, std::ios::binary);
-      output.write(reinterpret_cast<const char *>(h_o.data()),
-                   static_cast<std::streamsize>(h_o.size() *
-                                                sizeof(cutlass::half_t)));
-      if (!output) return finish(cudaErrorUnknown, "write FA2 output reference");
-      std::printf("FA2_OUTPUT_SAVED=%s\n", save_output_path);
-    }
-    if (compare_output_path != nullptr && compare_output_path[0] != '\0') {
-      std::vector<cutlass::half_t> reference(o_elems);
-      std::ifstream input(compare_output_path, std::ios::binary);
-      input.read(reinterpret_cast<char *>(reference.data()),
-                 static_cast<std::streamsize>(reference.size() *
-                                              sizeof(cutlass::half_t)));
-      if (!input || input.peek() != std::char_traits<char>::eof()) {
-        return finish(cudaErrorUnknown, "read FA2 output reference");
-      }
-      for (size_t i = 0; i < o_elems; ++i) {
-        result.replay_output_max_abs_error = std::max(
-            result.replay_output_max_abs_error,
-            std::abs(float(h_o[i]) - float(reference[i])));
-      }
-      result.replay_output_checked = true;
-      std::printf("FA2_REPLAY_OUTPUT_MAX_ABS_ERROR=%.8f tolerance=0.05000000\n",
-                  result.replay_output_max_abs_error);
-      if (!(result.replay_output_max_abs_error <= 5.0e-2f)) {
-        return finish(cudaErrorUnknown, "FA2 replay output validation");
-      }
-      std::puts("FA2_REPLAY_OUTPUT_VALIDATION=PASS");
-    }
-  }
 
   if (validate_reference) {
 #ifndef __CUDA_ARCH__
