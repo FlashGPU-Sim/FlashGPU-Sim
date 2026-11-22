@@ -1,24 +1,44 @@
+#include <cuda_runtime_api.h>
 #include <gtest/gtest.h>
 
+#include <unistd.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <new>
 #include <string>
-#include <unistd.h>
 
-#include "libcuda/gpgpu_context.h"
-#include "gpgpu-sim/gpu-sim.h"
-#include "gpgpu-sim/icnt_wrapper.h"
 #include "gpgpu-sim/flash/frontend/execution_frontend.h"
 #include "gpgpu-sim/flash/sass/runtime/runtime_adapter.h"
-#include "kernel_info.h"
 #include "gpgpu-sim/flash/tma.h"
 #include "gpgpu-sim/flash/wgmma/tensor_wgmma.h"
+#include "gpgpu-sim/gpu-sim.h"
+#include "gpgpu-sim/icnt_wrapper.h"
 #include "gpgpu-sim/mem_fetch.h"
+#include "kernel_info.h"
+#include "libcuda/gpgpu_context.h"
 #include "option_parser.h"
 
 namespace {
+class BarrierIssueCore : public exec_shader_core_ctx {
+ public:
+  static void issue(exec_shader_core_ctx &core, const warp_inst_t *inst,
+                    const active_mask_t &mask, unsigned warp) {
+    register_set pipe(1, "native-barrier-test");
+    // Native issue must not depend on any PTX control-flow state. Make an
+    // accidental stack access deterministic rather than reading an empty deque.
+    auto &stack = (core.*(&BarrierIssueCore::m_simt_stack))[warp];
+    auto *saved = stack;
+    stack = nullptr;
+    (core.*(&BarrierIssueCore::issue_warp))(pipe, inst, mask, warp, 0);
+    stack = saved;
+  }
+  static void cycle_barriers(exec_shader_core_ctx &core) {
+    (core.*(&BarrierIssueCore::m_barriers)).cycle();
+  }
+};
+
 class TestGpu : public exec_gpgpu_sim {
  public:
   using exec_gpgpu_sim::exec_gpgpu_sim;
@@ -26,6 +46,164 @@ class TestGpu : public exec_gpgpu_sim {
     return static_cast<exec_shader_core_ctx *>(m_cluster[0]->get_core(0));
   }
 };
+
+void CheckNativeBarrierIssue(bool masked) {
+  gpgpu_context ctx;
+  gpgpu_sim_config config(&ctx);
+  auto *options = option_parser_create();
+  ctx.ptx_reg_options(options);
+  ctx.instruction_timing.reg_options(options);
+  flash_gpgpu_sim::sass::register_runtime_options(options);
+  icnt_reg_options(options);
+  config.reg_options(options);
+  option_parser_cfgfile(options, "gpgpusim.config");
+  const char *args[] = {"barrier-issue-test",
+                        "-gpgpu_n_clusters",
+                        "1",
+                        "-gpgpu_n_cores_per_cluster",
+                        "1",
+                        "-network_mode",
+                        "2",
+                        "-gpgpu_named_barrier_arrive_latency",
+                        "7",
+                        "-gpgpu_named_barrier_arrive_visibility_latency",
+                        "0"};
+  option_parser_cmdline(options, sizeof(args) / sizeof(args[0]), args);
+  config.init();
+  TestGpu gpu(config, &ctx);
+  gpu.init();
+  char path[] = "/tmp/flashgpu-native-barrier-XXXXXX";
+  const int fd = mkstemp(path);
+  if (fd < 0) std::exit(2);
+  close(fd);
+  std::ofstream f(path);
+  f << "SASSIR\t3\nDECODER\tnvdisasm\tversion\t1.0.0\n"
+       "KERNEL\tbarrier_issue\tsm120\t16\nRESOURCES\t16\t0\t0\t0\n"
+       "PARAMBANK\t0x380\t0x0\n"
+       "INST\t0\t0\t0\t1\tnvdisasm\t"
+    << (masked ? "@!PT" : "")
+    << "\tBAR.SYNC.DEFER_BLOCKING\t0x0,0x40\t0\t1\t0\t0\t0\t0\nENDINST\n"
+       "INST\t16\t0\t0\t1\tnvdisasm\t\tBAR.SYNC.DEFER_BLOCKING\t0x0,"
+       "0x40\t0\t1\t0\t0\t0\t0\n"
+       "ENDINST\nENDKERNEL\n";
+  f.close();
+  setenv("FLASHGPU_SASS_IR", path, 1);
+  setenv("FLASHGPU_SASS_TIMING", "1", 1);
+  kernel_info_t kernel(dim3(1), dim3(64), "barrier_issue", &ctx, 0, 98764);
+  kernel.set_resource_usage({16, 0, 0, 0});
+  auto *core = gpu.core();
+  core->set_kernel(&kernel);
+  core->issue_block2core(kernel);
+  for (unsigned warp = 0; warp < 2; ++warp) {
+    const auto *inst = core->get_next_inst(warp, 0);
+    const auto mask = core->get_active_mask(warp, inst);
+    BarrierIssueCore::issue(*core, inst, mask, warp);
+    EXPECT_EQ(core->named_arrive_warp_ready(warp), masked);
+    if (warp == 0) EXPECT_EQ(core->frontend_instruction_can_issue(0), masked);
+  }
+  for (unsigned tick = 0; tick < 256; ++tick) {
+    ++gpu.gpu_sim_cycle;
+    BarrierIssueCore::cycle_barriers(*core);
+  }
+  EXPECT_FALSE(core->warp_waiting_at_barrier(0));
+  EXPECT_FALSE(core->warp_waiting_at_barrier(1));
+  EXPECT_TRUE(core->frontend_instruction_can_issue(0));
+  EXPECT_TRUE(core->frontend_instruction_can_issue(1));
+  unsigned pc, rpc;
+  core->get_pdom_stack_top_info(0, nullptr, &pc, &rpc);
+  EXPECT_EQ(pc, 16u);
+  std::remove(path);
+  std::exit(testing::Test::HasFailure() ? 1 : 0);
+}
+
+void CheckClusterSizeQuery(bool native, bool timing, unsigned sms) {
+  auto *ctx = GPGPU_Context();
+  gpgpu_sim_config config(ctx);
+  auto *options = option_parser_create();
+  ctx->ptx_reg_options(options);
+  ctx->instruction_timing.reg_options(options);
+  flash_gpgpu_sim::sass::register_runtime_options(options);
+  icnt_reg_options(options);
+  config.reg_options(options);
+  option_parser_cfgfile(options, "gpgpusim.config");
+  const std::string count = std::to_string(sms);
+  const char *args[] = {"cluster-query-test",
+                        "-gpgpu_n_clusters",
+                        "1",
+                        "-gpgpu_n_cores_per_cluster",
+                        count.c_str(),
+                        "-network_mode",
+                        "2"};
+  option_parser_cmdline(options, 7, args);
+  config.init();
+  TestGpu gpu(config, ctx);
+  // Bind the API to this subprocess's GPU without starting a simulation thread.
+  auto *state = ctx->the_gpgpusim;
+  state->g_the_gpu = &gpu;
+  state->g_the_gpu_config = &config;
+  state->the_cude_device = new _cuda_device_id(&gpu);
+  state->the_context = new CUctx_st(state->the_cude_device);
+  state->g_sim_done = false;
+  char host_function;
+  function_info function(1, ctx);
+  if (native) {
+    setenv("FLASHGPU_SASS_AUTO", "1", 1);
+    setenv("FLASHGPU_SASS_TIMING", timing ? "1" : "", 1);
+    state->the_context->register_sass_function(98765, &host_function,
+                                               "cluster_query");
+  } else {
+    unsetenv("FLASHGPU_SASS_IR");
+    unsetenv("FLASHGPU_SASS_AUTO");
+    unsetenv("FLASHGPU_SASS_TIMING");
+    state->the_context->register_hostFun_function(&host_function, &function);
+  }
+  cudaLaunchConfig_t launch{};
+  launch.gridDim = dim3(32);
+  launch.blockDim = dim3(32);
+  int size = -1;
+  if (native) {
+    EXPECT_EQ(
+        cudaOccupancyMaxPotentialClusterSize(&size, &host_function, &launch),
+        cudaErrorNotSupported);
+    EXPECT_EQ(size, -1);
+  } else {
+    for (bool opt_in : {false, true}) {
+      function.set_nonportable_cluster_size_allowed(opt_in);
+      EXPECT_EQ(
+          cudaOccupancyMaxPotentialClusterSize(&size, &host_function, &launch),
+          cudaSuccess);
+      EXPECT_EQ(size, static_cast<int>(std::min(sms, opt_in ? 16u : 8u)));
+    }
+  }
+  EXPECT_EQ(
+      cudaOccupancyMaxPotentialClusterSize(nullptr, &host_function, &launch),
+      cudaErrorInvalidValue);
+  std::exit(testing::Test::HasFailure() ? 1 : 0);
+}
+
+TEST(SassFrontendLifecycleTest, NativeBarrierIssueDoesNotReadPtxStack) {
+  ASSERT_EXIT(CheckNativeBarrierIssue(false), testing::ExitedWithCode(0), "");
+}
+TEST(SassFrontendLifecycleTest, MaskedNativeBarrierDoesNotParkWarp) {
+  ASSERT_EXIT(CheckNativeBarrierIssue(true), testing::ExitedWithCode(0), "");
+}
+TEST(SassFrontendLifecycleTest, FunctionalClusterQueryReportsUnsupported) {
+  ASSERT_EXIT(CheckClusterSizeQuery(true, false, 1), testing::ExitedWithCode(0),
+              "");
+}
+TEST(SassFrontendLifecycleTest, TimingClusterQueryReportsUnsupported) {
+  ASSERT_EXIT(CheckClusterSizeQuery(true, true, 1), testing::ExitedWithCode(0),
+              "");
+}
+TEST(SassFrontendLifecycleTest,
+     PtxClusterQueryPreservesPortableAndOptInLimits) {
+  ASSERT_EXIT(CheckClusterSizeQuery(false, false, 18),
+              testing::ExitedWithCode(0), "");
+}
+TEST(SassFrontendLifecycleTest, PtxClusterQueryRespectsPhysicalCapacity) {
+  ASSERT_EXIT(CheckClusterSizeQuery(false, false, 1),
+              testing::ExitedWithCode(0), "");
+}
 
 // Exercise the actual legacy bypass response path without issuing a second
 // functional atomic or requiring a complete memory-system simulation.

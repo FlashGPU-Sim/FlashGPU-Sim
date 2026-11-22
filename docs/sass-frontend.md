@@ -178,6 +178,12 @@ or arbitrary CUDA binary runs through SASS. Backward kernels and additional
 datatypes have individual support but are not covered by the forward tables
 below. SM100 and arbitrary future SASS encodings are not validated here.
 
+Thread-block clusters are not supported by the SASS frontend.
+`cudaOccupancyMaxPotentialClusterSize` returns `cudaErrorNotSupported` in
+both SASS functional and timing modes. It leaves the output unchanged;
+a null output pointer returns `cudaErrorInvalidValue`. The PTX query retains
+its portable/opt-in limit bounded by the configured physical capacity.
+
 Native control fields are reverse-engineered and opcode-dependent. Functional
 support does not imply precise timing calibration for every instruction mix.
 For example, `ATOMS.ADD` updates shared memory functionally but currently uses

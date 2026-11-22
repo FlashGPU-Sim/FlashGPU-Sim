@@ -3229,6 +3229,10 @@ __host__ cudaError_t CUDARTAPI cudaOccupancyMaxPotentialClusterSize(
     int *clusterSize, const void *func, const cudaLaunchConfig_t *config) {
   (void)config;
   if (!clusterSize) return g_last_cudaError = cudaErrorInvalidValue;
+  // Native cluster support is not implemented. SASS-only registrations have
+  // no PTX function_info, and get_kernel() would abort rather than return null.
+  if (flash_gpgpu_sim::sass::runtime_functional_requested())
+    return g_last_cudaError = cudaErrorNotSupported;
   gpgpu_context *ctx = GPGPU_Context();
   _cuda_device_id *dev = ctx->GPGPUSim_Init();
   unsigned sms_per_gpc = 16;
