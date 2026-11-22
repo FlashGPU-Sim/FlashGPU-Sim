@@ -110,7 +110,7 @@ public:
   };
 
   void init(gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr,
-            int expected_count);
+            int expected_count, bool initial_parity = false);
   void inval(gpgpu_sim *gpu, const thread_index_t &thread_index, uint64_t addr);
 
   /** Query the current phase without registering or changing barrier state. */

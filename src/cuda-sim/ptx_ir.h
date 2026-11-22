@@ -349,6 +349,7 @@ class symbol_table {
   void set_ptx_version(float ver, unsigned ext);
   void set_sm_target(const char *target, const char *ext, const char *ext2);
   symbol *lookup(const char *identifier);
+  symbol *lookup_local(const char *identifier);
   symbol *lookup_by_addr(addr_t addr);
   std::string get_scope_name() const { return m_scope_name; }
   symbol *add_symbol(const symbol &sym);

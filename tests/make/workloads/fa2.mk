@@ -17,7 +17,7 @@ FA2_CONCURRENCY_MODES = only_cp_async only_cp_async_bhhalf qk_softmax_pv_only qk
 FA2_ARCHITECTURES := $(foreach arch,$(ARCHITECTURES),$(if $(filter fa2,$(ARCH_TEST_GROUPS_$(arch))),$(arch)))
 $(foreach arch,$(FA2_ARCHITECTURES),\
   $(eval WORKLOAD_MANAGED_TEST_GROUPS_$(arch) += fa2))
-FA2_NVCCFLAGS = $(BASE_NVCCFLAGS) -arch=$(ARCH_NVCC_TARGET_$(FA2_TARGET_ARCH))
+FA2_NVCCFLAGS = $(BASE_NVCCFLAGS) $(call ARCH_NVCCFLAGS,$(FA2_TARGET_ARCH))
 
 define FA2_STANDARD_OBJECTS_FOR
 $(foreach variant,$(FA2_VARIANTS),$(OBJ_DIR)/$(1)/fa2/$(2)_$(variant)/fa2_fwd_fp16_test.cu.o)

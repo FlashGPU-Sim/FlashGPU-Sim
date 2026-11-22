@@ -30,3 +30,19 @@ From the repository root:
 
 See the [test guide](../../README.md) for configuration overrides, filters,
 other architectures and native-GPU validation.
+Run all 23 original integration assertions through strict execution-driven
+SASS with:
+
+```bash
+./tests/run_sass_suite.py tests/src/integration/sass_functional_suite.json
+```
+
+Each case decodes the exact cubin registered by `integration_tests` with
+NVIDIA `nvdisasm`/`cuobjdump` into the ignored content-addressed cache. The
+suite stores filters and expected test counts only; it has no generated
+manifest or kernel-name mapping. Unsupported decode or semantics fail closed
+without PTX functional fallback.
+
+Feature families that require multiple sources, shared headers, special build
+flags, or architecture-restricted compilation use their own sibling test-group
+directory instead.

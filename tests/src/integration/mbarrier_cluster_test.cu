@@ -365,9 +365,9 @@ TEST_F(MbarrierClusterTest, TryWaitTimeoutExpires_PredFalse) {
   // Simulator policy honors the hint; PTX permits hardware to treat it as a
   // hint rather than an exact duration. Only assert this policy in the sim.
   if (getenv("FLASHGPU_SIM_CLOCK_FROM_PROP")) {
-    cudaDeviceProp prop{};
-    ASSERT_EQ(cudaGetDeviceProperties(&prop, 0), cudaSuccess);
-    const unsigned hint_cycles = (prop.clockRate + 999) / 1000;
+    int clock_rate_khz = 0;
+    ASSERT_EQ(cudaDeviceGetAttribute(&clock_rate_khz, cudaDevAttrClockRate, 0), cudaSuccess);
+    const unsigned hint_cycles = (clock_rate_khz + 999) / 1000;
     EXPECT_GE(h[1], hint_cycles);
     EXPECT_LE(h[1], hint_cycles + 256u);
   }

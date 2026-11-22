@@ -420,3 +420,150 @@ TEST_F(PtxSchedulerGuidedTest, GeneratesDistinctGuidesForFileAndStringModules) {
   }
 }
 }  // namespace
+
+TEST(PtxFenceTiming, DefaultAndScUseMemoryOrderingPath) {
+  auto *ctx = GPGPU_Context(); GPGPUSim_Context(ctx);
+  const bool reorder=ctx->ptx_reorder_enabled, guide=ctx->ptx_reorder_sass_guided;
+  ctx->ptx_reorder_enabled = ctx->ptx_reorder_sass_guided = false;
+  const char *file = "ordinary_fence_timing.ptx";
+  std::ofstream(file) << ".version 8.0\n.target sm_90\n.address_size 64\n"
+      ".entry ordinary_fences() { fence.cta; fence.gpu; fence.sys; "
+      "fence.sc.cta; fence.sc.gpu; fence.sc.sys; ret; }\n";
+  auto *symbols = ctx->gpgpu_ptx_sim_load_ptx_from_filename(file);
+  std::filesystem::remove(file);
+  auto *func = symbols->lookup_function("ordinary_fences");
+  ASSERT_NE(func, nullptr); func->do_pdom(); func->set_pdom();
+  unsigned pc=func->get_start_PC();
+  for (unsigned i=0;i<6;++i) {
+    const auto *inst=func->get_dyn_inst(pc);
+    ASSERT_NE(inst,nullptr); ASSERT_EQ(inst->get_opcode(),FENCE_OP);
+    EXPECT_EQ(inst->op,MEMORY_BARRIER_OP) << inst->to_string();
+    pc+=inst->inst_size();
+  }
+  ctx->ptx_reorder_enabled=reorder; ctx->ptx_reorder_sass_guided=guide;
+}
+
+TEST_F(PtxSchedulerGuidedTest, NestedAndSiblingRegistersHaveDistinctSymbols) {
+  ctx->ptx_reorder_enabled = false;
+  const auto insts = fusion("register_shadowing", R"ptx(
+.reg .b32 r;
+.reg .pred p;
+mov.b32 r, 1;
+setp.eq.u32 p, 1, 1;
+{
+  .reg .b32 r;
+  .reg .pred p;
+  mov.b32 r, 2;
+  setp.eq.u32 p, 1, 0;
+  {
+    .reg .b64 r;
+    .reg .pred p;
+    mov.b64 r, 3;
+    setp.eq.u32 p, 0, 0;
+  }
+  mov.b32 r, 4;
+  setp.eq.u32 p, 0, 1;
+}
+{
+  .reg .b32 r;
+  .reg .pred p;
+  mov.b32 r, 5;
+  setp.eq.u32 p, 1, 1;
+}
+mov.b32 r, 6;
+setp.eq.u32 p, 1, 0;
+)ptx");
+  ASSERT_EQ(insts.size(), 12u);
+  // Leaving a scope restores the enclosing declaration.
+  for (unsigned offset : {0u, 1u}) {
+    EXPECT_EQ(insts[offset]->dst().get_symbol(),
+              insts[10 + offset]->dst().get_symbol());
+    EXPECT_EQ(insts[2 + offset]->dst().get_symbol(),
+              insts[6 + offset]->dst().get_symbol());
+    // Outer, inner, nested and sibling declarations are distinct, including
+    // their timing-register IDs, even though they share the same PTX name.
+    for (unsigned i : {0u, 2u, 4u, 8u}) {
+      for (unsigned j : {0u, 2u, 4u, 8u}) {
+        if (i >= j) continue;
+        const auto *a = insts[i + offset]->dst().get_symbol();
+        const auto *b = insts[j + offset]->dst().get_symbol();
+        EXPECT_NE(a, b);
+        EXPECT_NE(a->reg_num(), b->reg_num());
+      }
+    }
+  }
+  EXPECT_EQ(insts[0]->dst().get_symbol()->get_size_in_bytes(), 4u);
+  EXPECT_EQ(insts[4]->dst().get_symbol()->get_size_in_bytes(), 8u);
+}
+
+// Real nvcc-generated DeepGEMM PTX uses the one-dimensional .maxntid form.
+// File and embedded-string loading must both reject partially parsed modules.
+namespace {
+class PtxModuleLoadingTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    ctx = GPGPU_Context();
+    GPGPUSim_Context(ctx);
+    guided = ctx->ptx_reorder_sass_guided;
+    ctx->ptx_reorder_sass_guided = false;
+    const char *value = getenv("GPGPUSIM_SASS_PTXLINE_GUIDE");
+    had_override = value != nullptr;
+    if (value) override_value = value;
+    unsetenv("GPGPUSIM_SASS_PTXLINE_GUIDE");
+    cwd = std::filesystem::current_path();
+    char dir[] = "/tmp/ptx-module-test-XXXXXX";
+    ASSERT_NE(mkdtemp(dir), nullptr);
+    work = dir;
+    std::filesystem::current_path(work);
+  }
+  void TearDown() override {
+    ctx->ptx_reorder_sass_guided = guided;
+    if (had_override)
+      setenv("GPGPUSIM_SASS_PTXLINE_GUIDE", override_value.c_str(), 1);
+    std::filesystem::current_path(cwd);
+    std::filesystem::remove_all(work);
+  }
+  gpgpu_context *ctx = nullptr;
+  bool guided = false, had_override = false;
+  std::string override_value;
+  std::filesystem::path cwd, work;
+};
+
+TEST_F(PtxModuleLoadingTest, MaxntidOneTwoAndThreeDimensions) {
+  std::ofstream("bounds.ptx") <<
+      ".version 8.0\n.target sm_90\n.address_size 64\n"
+      ".entry bounds1() .maxntid 512 .minnctapersm 1 { ret; }\n"
+      ".entry bounds2() .maxntid 32, 4 { ret; }\n"
+      ".entry bounds3() .maxntid 16, 4, 2 { ret; }\n";
+  auto *symbols = ctx->gpgpu_ptx_sim_load_ptx_from_filename("bounds.ptx");
+  ASSERT_NE(symbols, nullptr);
+  for (auto name : {"bounds1", "bounds2", "bounds3"})
+    ASSERT_NE(symbols->lookup_function(name), nullptr);
+  EXPECT_EQ(symbols->lookup_function("bounds1")->get_maxnt_id(), 512u);
+  EXPECT_EQ(symbols->lookup_function("bounds2")->get_maxnt_id(), 128u);
+  EXPECT_EQ(symbols->lookup_function("bounds3")->get_maxnt_id(), 128u);
+}
+
+TEST_F(PtxModuleLoadingTest, FileSyntaxErrorCannotReturnPartialEntry) {
+  std::ofstream("invalid.ptx") <<
+      ".version 8.0\n.target sm_90\n.address_size 64\n"
+      ".entry partial_entry() .maxntid 32, { ret; }\n";
+  EXPECT_DEATH(ctx->gpgpu_ptx_sim_load_ptx_from_filename("invalid.ptx"),
+               "refusing partial module");
+}
+
+TEST_F(PtxModuleLoadingTest, MissingFileIsNotAnEmptyModule) {
+  EXPECT_DEATH(ctx->gpgpu_ptx_sim_load_ptx_from_filename("absent.ptx"),
+               "cannot open PTX file");
+}
+
+TEST_F(PtxModuleLoadingTest, EmbeddedInputDoesNotParseStaleSyntheticFile) {
+  std::ofstream("_98765.ptx") << "invalid stale data";
+  auto *symbols = ctx->gpgpu_ptx_sim_load_ptx_from_string(
+      ".version 8.0\n.target sm_90\n.address_size 64\n"
+      ".entry embedded_only() .maxntid 32 { ret; }\n", 98765);
+  ASSERT_NE(symbols, nullptr);
+  ASSERT_NE(symbols->lookup_function("embedded_only"), nullptr);
+  EXPECT_EQ(symbols->lookup_function("embedded_only")->get_maxnt_id(), 32u);
+}
+}  // namespace

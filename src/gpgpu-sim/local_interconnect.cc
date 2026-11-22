@@ -62,6 +62,8 @@ xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
   input_sector_width = m_type == REQ_NET
                            ? m_localinct_config.request_input_sectors_per_cycle
                            : m_localinct_config.reply_input_sectors_per_cycle;
+  output_grants_per_cycle = (m_type == REQ_NET) ? 1 :
+      std::max(1u, m_localinct_config.reply_output_grants_per_cycle);
   output_sector_width =
       m_type == REQ_NET ? m_localinct_config.request_output_sectors_per_cycle
                         : m_localinct_config.reply_output_sectors_per_cycle;
@@ -290,7 +292,7 @@ void xbar_router::Advance() {
   std::fill(input_tick_service_slots.begin(), input_tick_service_slots.end(), 0);
   std::fill(output_tick_service_slots.begin(), output_tick_service_slots.end(),
             0);
-  if (input_sector_width != 0 || output_sector_width != 0) {
+  if (input_sector_width != 0 || output_sector_width != 0 || output_grants_per_cycle > 1) {
     NumericAdvance(arbit_type == iSLIP);
     return;
   }
@@ -545,7 +547,7 @@ void xbar_router::NumericAdvance(bool is_islip) {
         output_budgets[output].note_width_limited(packet->data_sectors);
     }
     if (pending && output_sector_width == 0 &&
-        legacy_output_grants[output] != 0)
+        legacy_output_grants[output] >= output_grants_per_cycle)
       output_budgets[output].note_width_limited(0);
   }
 
@@ -804,7 +806,7 @@ bool xbar_router::OutputCanGrant(
       return false;
     return output_budgets[output_deviceID].can_accept(packet.data_sectors);
   }
-  return legacy_output_grants[output_deviceID] == 0;
+  return legacy_output_grants[output_deviceID] < output_grants_per_cycle;
 }
 
 void xbar_router::TransferPacket(unsigned input_deviceID,

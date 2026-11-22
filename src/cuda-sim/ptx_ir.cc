@@ -132,16 +132,14 @@ void symbol_table::set_sm_target(const char *target, const char *ext,
   m_ptx_version.set_target(target, ext, ext2);
 }
 
+symbol *symbol_table::lookup_local(const char *identifier) {
+  const auto i = m_symbols.find(identifier);
+  return i != m_symbols.end() ? i->second : nullptr;
+}
+
 symbol *symbol_table::lookup(const char *identifier) {
-  std::string key(identifier);
-  std::map<std::string, symbol *>::iterator i = m_symbols.find(key);
-  if (i != m_symbols.end()) {
-    return i->second;
-  }
-  if (m_parent) {
-    return m_parent->lookup(identifier);
-  }
-  return NULL;
+  if (symbol *s = lookup_local(identifier)) return s;
+  return m_parent ? m_parent->lookup(identifier) : nullptr;
 }
 
 symbol *symbol_table::lookup_by_addr(addr_t addr) {

@@ -1,0 +1,16 @@
+{
+  "freeze_head": "4257879ef7986f6bb9fb9b0b46c216e5dc8352db",
+  "logged_builds": [
+    "flashgpu-sim_git-commit-4d21bfc8_modified_7.0"
+  ],
+  "simulator_snapshot_sha256": "6cffa235e28ea678766b117b18764a8c1a396bec85e8a4f16e974eacd5ee14e9",
+  "simulator_snapshot_mtime": 1789272001.173599,
+  "original_build_identity_caveat": "Build logs report a modified source tree. Snapshot library is the on-disk library at freeze time, not a retrospectively proven per-run hash.",
+  "frontend": "execution-driven SASS timing",
+  "core_mhz": 1500,
+  "threads_per_job": 4,
+  "scope": "uninstrumented full forward, TMA enabled",
+  "medium_gate": "all four medium cases: exact kernel-cycle equality for behavior-preserving changes; investigate any delta, do not silently refresh",
+  "pre_pr_gate": "rerun all twenty large forward cases",
+  "evidence": "tests/run/fa3-sass-ccd2-20260914-evidence"
+}

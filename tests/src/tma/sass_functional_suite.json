@@ -1,0 +1,47 @@
+{
+  "architecture": "sm120",
+  "group": "tma",
+  "expected_tests": 37,
+  "cases": [
+    {
+      "gtest_filter": "HostTensorMapTest.*",
+      "expected_tests": 3
+    },
+    {
+      "gtest_filter": "TMA1DTest.*",
+      "expected_tests": 3
+    },
+    {
+      "gtest_filter": "TMA2DTest.*",
+      "expected_tests": 3
+    },
+    {
+      "gtest_filter": "TMA3DTest.*",
+      "expected_tests": 4
+    },
+    {
+      "gtest_filter": "TMA4DTest.*",
+      "expected_tests": 3
+    },
+    {
+      "gtest_filter": "TMA5DTest.*",
+      "expected_tests": 3
+    },
+    {
+      "gtest_filter": "TmaTensorReduceTest.*",
+      "expected_tests": 2
+    },
+    {
+      "gtest_filter": "BulkGroupIntegrationTest.*",
+      "expected_tests": 5
+    },
+    {
+      "gtest_filter": "CudaTMATest.*",
+      "expected_tests": 10
+    },
+    {
+      "gtest_filter": "TmaEdgeCasesTest.*",
+      "expected_tests": 1
+    }
+  ]
+}

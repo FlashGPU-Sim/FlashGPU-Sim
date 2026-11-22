@@ -1,3 +1,4 @@
+#include "../gpgpu-sim/flash/fp32_fma.h"
 // Copyright (c) 2009-2021, Tor M. Aamodt, Wilson W.L. Fung, Ali Bakhoda,
 // Jimmy Kwa, George L. Yuan, Vijay Kandiah, Nikos Hardavellas,
 // Mahmoud Khairy, Junrui Pan, Timothy G. Rogers
@@ -1353,14 +1354,16 @@ void andn_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void bar_callback(const inst_t *inst, ptx_thread_info *thread) {
-  unsigned ctaid = thread->get_cta_uid();
+  unsigned ctaid = thread->get_hw_ctaid();
   unsigned barid = inst->bar_id;
   unsigned value = thread->get_reduction_value(ctaid, barid);
   const ptx_instruction *pI = dynamic_cast<const ptx_instruction *>(inst);
   const operand_info &dst = pI->dst();
   ptx_reg_t data;
-  data.u32 = value;
-  thread->set_operand_value(dst, value, U32_TYPE, thread, pI);
+  // PTX predicate registers encode true as a cleared low bit.
+  if (pI->get_type() == PRED_TYPE) data.pred = !value;
+  else data.u32 = value;
+  thread->set_operand_value(dst, data, pI->get_type(), thread, pI);
 }
 
 void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
@@ -1792,7 +1795,7 @@ void bar_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
   }
   unsigned bar_op = pI->barrier_op();
   unsigned red_op = pI->get_atomic();
-  unsigned ctaid = thread->get_cta_uid();
+  unsigned ctaid = thread->get_hw_ctaid();
 
   switch (bar_op) {
     case SYNC_OPTION: {
@@ -3752,6 +3755,27 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
              bool use_carry = false);
 
 void fma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const auto types = pI->get_scalar_type();
+  if (types.size() == 1 && pI->get_type() == F32_TYPE) {
+    bool ftz = false;
+    for (int option : pI->get_options()) ftz |= option == FTZ_OPTION;
+    const auto flush = [ftz](float value) {
+      return ftz && std::fpclassify(value) == FP_SUBNORMAL
+                 ? std::copysign(0.0f, value) : value;
+    };
+    const auto a = thread->get_operand_value(pI->src1(), pI->dst(), F32_TYPE, thread, 1);
+    const auto b = thread->get_operand_value(pI->src2(), pI->dst(), F32_TYPE, thread, 1);
+    const auto c = thread->get_operand_value(pI->src3(), pI->dst(), F32_TYPE, thread, 1);
+    const unsigned mode = pI->rounding_mode();
+    const int rounding = mode == RZ_OPTION ? FE_TOWARDZERO :
+        mode == RM_OPTION ? FE_DOWNWARD : mode == RP_OPTION ? FE_UPWARD : FE_TONEAREST;
+    ptx_reg_t result;
+    result.f32 = flush(flash_gpgpu_sim::rounded_f32_fma(
+        flush(a.f32), flush(b.f32), flush(c.f32), rounding, pI->saturation_mode()));
+    thread->set_operand_value(pI->dst(), result, F32_TYPE, thread, pI);
+    return;
+  }
+
   mad_def(pI, thread);
 }
 
@@ -4729,8 +4753,8 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
       memcpy(&fa_lo, &alo, 4); memcpy(&fa_hi, &ahi, 4);
       memcpy(&fb_lo, &blo, 4); memcpy(&fb_hi, &bhi, 4);
       memcpy(&fc_lo, &clo, 4); memcpy(&fc_hi, &chi, 4);
-      float rlo = fa_lo * fb_lo + fc_lo;
-      float rhi = fa_hi * fb_hi + fc_hi;
+      float rlo = pI->get_opcode() == FMA_OP ? std::fma(fa_lo, fb_lo, fc_lo) : fa_lo * fb_lo + fc_lo;
+      float rhi = pI->get_opcode() == FMA_OP ? std::fma(fa_hi, fb_hi, fc_hi) : fa_hi * fb_hi + fc_hi;
       if (pI->saturation_mode()) {
         rlo = (rlo < 0) ? 0 : (rlo > 1.0f) ? 1.0f : rlo;
         rhi = (rhi < 0) ? 0 : (rhi > 1.0f) ? 1.0f : rhi;

@@ -1,8 +1,10 @@
 #include "tma.h"
+#include "panic.h"
 #include "tb_cluster.h"
 #include "tensormap.h"
 #include "tma_opaque_tensormap.h"
 #include "tma_reduction.h"
+#include "tma_store_source.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdarg>
@@ -13,7 +15,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include "../cuda-sim/ptx_ir.h"
+#include "../../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
 #include "../shader.h"
 
@@ -258,6 +260,69 @@ static void record_tma_bytes_completed(unsigned bytes) {
   g_tma_bytes_completed.fetch_add(bytes, std::memory_order_relaxed);
 }
 
+static void tma_trace_emit(
+    unsigned long long cycle, const char *event, unsigned tx_uid,
+    const char *kind, unsigned tma_type, unsigned long long pc, unsigned cta_id,
+    unsigned warp_id, unsigned lane_id, unsigned tid, unsigned long long src,
+    unsigned long long dst, unsigned size, unsigned mbar, unsigned mf_uid,
+    unsigned long long mf_addr, unsigned mf_size, unsigned issued_mf,
+    unsigned received_mf, unsigned bytes_completed, unsigned tx_inflight,
+    unsigned global_inflight, unsigned response_fifo, unsigned sid) {
+  const char *path = std::getenv("FLASHGPU_TMA_TRACE_CSV");
+  if (path == nullptr || path[0] == '\0')
+    return;
+
+  const char *limit = std::getenv("FLASHGPU_TMA_TRACE_CYCLE_LIMIT");
+  if (limit != nullptr && limit[0] != '\0') {
+    unsigned long long limit_cycle = std::strtoull(limit, nullptr, 0);
+    if (limit_cycle != 0 && cycle > limit_cycle)
+      return;
+  }
+
+  static std::mutex trace_mutex;
+  static FILE *trace_file = nullptr;
+  static bool header_written = false;
+
+  std::lock_guard<std::mutex> lock(trace_mutex);
+  if (trace_file == nullptr) {
+    trace_file = std::strcmp(path, "-") == 0 ? stdout : std::fopen(path, "a");
+    if (trace_file == nullptr)
+      return;
+  }
+  if (!header_written) {
+    std::fprintf(trace_file,
+                 "cycle,event,tx_uid,kind,tma_type,pc,cta,warp,lane,tid,"
+                 "src,dst,size,mbar,mf_uid,mf_addr,mf_size,issued_mf,"
+                 "received_mf,bytes_completed,tx_inflight,global_inflight,"
+                 "response_fifo,sid\n");
+    header_written = true;
+  }
+
+  std::fprintf(trace_file,
+               "%llu,%s,%u,%s,%u,0x%llx,%u,%u,%u,%u,0x%llx,0x%llx,%u,"
+               "0x%x,%u,0x%llx,%u,%u,%u,%u,%u,%u,%u,%u\n",
+               cycle, event, tx_uid, kind, tma_type, pc, cta_id, warp_id,
+               lane_id, tid, src, dst, size, mbar, mf_uid, mf_addr, mf_size,
+               issued_mf, received_mf, bytes_completed, tx_inflight,
+               global_inflight, response_fifo, sid);
+  std::fflush(trace_file);
+}
+
+static bool tma_trace_mf_enabled(unsigned long long cycle) {
+  const char *enabled = std::getenv("FLASHGPU_TMA_TRACE_MF");
+  if (enabled == nullptr || enabled[0] == '\0' ||
+      std::strcmp(enabled, "0") == 0)
+    return false;
+
+  const char *limit = std::getenv("FLASHGPU_TMA_TRACE_MF_CYCLE_LIMIT");
+  if (limit != nullptr && limit[0] != '\0') {
+    unsigned long long limit_cycle = std::strtoull(limit, nullptr, 0);
+    if (limit_cycle != 0 && cycle > limit_cycle)
+      return false;
+  }
+  return true;
+}
+
 //=============================================================================
 // Shared Helper Functions
 //=============================================================================
@@ -398,9 +463,9 @@ static uint64_t get_operand_u64(ptx_thread_info *thread,
 }
 
 [[noreturn]] static void reject_unsupported_tma(const char *reason,
-                                                const ptx_instruction *pI) {
+                                                const inst_t *inst) {
   fprintf(stderr, "TMA ERROR: %s\n", reason);
-  pI->print_insn(stderr);
+  inst->print_insn(stderr);
   fflush(stderr);
   abort();
 }
@@ -778,7 +843,10 @@ public:
                   mem_fetch_interface *icnt,
                   shader_core_mem_fetch_allocator *mf_allocator)
       : m_shader_ctx(shader_ctx), m_barriers(barriers), m_icnt(icnt),
-        m_mf_allocator(mf_allocator) {}
+        m_mf_allocator(mf_allocator),
+        m_store_source(
+            shader_ctx->get_config()->gpgpu_tma_store_source_bytes_per_cycle,
+            shader_ctx->get_config()->gpgpu_tma_store_source_fixed_latency) {}
 
 private:
   shader_core_ctx *m_shader_ctx;
@@ -787,7 +855,9 @@ private:
   shader_core_mem_fetch_allocator *m_mf_allocator;
 
   tma_agu_unit_t m_agu;
+  tma_store_source_tracker_t m_store_source;
   unsigned m_mf_inflight = 0; // Actual mem_fetch in L2 pipeline (not skips)
+  uint64_t m_mf_inflight_bytes = 0;
   unsigned m_request_byte_credit = 0;
 
   unsigned long long current_cycle() const {
@@ -796,8 +866,6 @@ private:
   }
 
   struct tma_transaction_t {
-    ptx_thread_info *m_thread = nullptr;
-    ptx_instruction *m_inst = nullptr;
     inst_t::tma_static_info_t m_static_info;
     inst_t::tma_dyn_info_t m_dyn_info;
     unsigned m_cta_id = 0;
@@ -813,16 +881,18 @@ private:
     unsigned long long m_arch_arrive_cycle = 0;
     bool m_arch_arrive_done = false;
     bool m_memory_complete = false;
+    unsigned long long m_store_source_release_cycle = 0;
     uint32_t m_bytes_completed = 0;
+    bool m_store_source_released = false;
     tma_agu_state_t agu_state; // AGU state for this transaction
 
     // Debug counters
     uint32_t m_mf_issued_count = 0;   // Number of mem_fetch requests issued
     uint32_t m_mf_received_count = 0; // Number of mem_fetch responses received
+    uint32_t m_mf_tx_inflight = 0; // Currently in-flight for this transaction
+    uint64_t m_mf_tx_inflight_bytes = 0;
 
     void reset() {
-      m_thread = nullptr;
-      m_inst = nullptr;
       m_cta_id = 0;
       m_warp_id = 0;
       m_lane_id = 0;
@@ -836,13 +906,15 @@ private:
       m_arch_arrive_cycle = 0;
       m_arch_arrive_done = false;
       m_memory_complete = false;
+      m_store_source_release_cycle = 0;
       m_bytes_completed = 0;
+      m_store_source_released = false;
       agu_state = tma_agu_state_t(); // Reset to default state
       m_mf_issued_count = 0;
       m_mf_received_count = 0;
+      m_mf_tx_inflight = 0;
+      m_mf_tx_inflight_bytes = 0;
     }
-
-    bool is_valid() const { return m_thread != nullptr; }
   };
   std::unordered_map<unsigned, tma_transaction_t> m_transactions;
 
@@ -1000,6 +1072,21 @@ private:
     return true;
   }
 
+  void release_store_source(unsigned tx_uid, tma_transaction_t &tx) {
+    if (tx.m_store_source_released)
+      return;
+    tx.m_store_source_released = true;
+    m_barriers->complete_bulk_tx(tx.m_cta_id, tx.m_warp_id, tx_uid);
+    tma_trace_emit(current_cycle(), "SOURCE_RELEASE", tx_uid, "WRITE",
+                   tx.m_static_info.tma_type, tx.m_pc, tx.m_cta_id,
+                   tx.m_warp_id, tx.m_lane_id, tx.m_tid, tx.m_dyn_info.src_addr,
+                   tx.m_dyn_info.dst_addr, tx.m_dyn_info.size_in_bytes,
+                   tx.m_dyn_info.mbar_addr, 0, 0, 0, tx.m_mf_issued_count,
+                   tx.m_mf_received_count, tx.m_bytes_completed,
+                   tx.m_mf_tx_inflight, m_mf_inflight, m_response_fifo.size(),
+                   m_shader_ctx->get_sid());
+  }
+
   // Helper function to finalize a completed transaction
   void finalize_transaction(unsigned tx_uid) {
     auto it = m_transactions.find(tx_uid);
@@ -1020,6 +1107,14 @@ private:
         tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0, 0, 0,
         tx.m_mf_issued_count, tx.m_mf_received_count, tx.m_bytes_completed,
         m_mf_inflight, m_response_fifo.size());
+    tma_trace_emit(tx.m_complete_cycle, "COMPLETE", tx_uid,
+                   is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                   tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id, tx.m_tid,
+                   tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                   tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0, 0,
+                   0, tx.m_mf_issued_count, tx.m_mf_received_count,
+                   tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                   m_response_fifo.size(), m_shader_ctx->get_sid());
     m_shader_ctx->inc_tma_tx_completed(is_write);
     record_tma_tx_completed(is_write);
     GPPRINTF_TMA(
@@ -1044,7 +1139,9 @@ private:
     const bool has_cta_mask = tx.m_dyn_info.has_cta_mask;
     const uint16_t cta_mask = tx.m_dyn_info.cta_mask;
     unsigned arrive_latency =
-        m_shader_ctx->get_config()->gpgpu_mbarrier_arrive_latency;
+        is_write && m_store_source.enabled()
+            ? 0
+            : m_shader_ctx->get_config()->gpgpu_mbarrier_arrive_latency;
     if (is_cluster_read && !tx.m_arch_arrive_cycle)
       arrive_latency += m_shader_ctx->get_config()->gpgpu_tma_multicast_latency;
     if (!is_write && tx.m_arch_arrive_cycle) {
@@ -1077,6 +1174,8 @@ private:
           m_barriers->complete_tx(cta_id, warp_id, tx.m_dyn_info.mbar_addr,
                                   tx.m_dyn_info.size_in_bytes);
         }
+      } else if (m_store_source.enabled()) {
+        release_store_source(tx_uid, tx);
       } else {
         m_barriers->complete_bulk_tx(cta_id, warp_id, tx_uid);
       }
@@ -1263,13 +1362,7 @@ public:
   void warp_reaches_tma(unsigned cta_id, unsigned warp_id, warp_inst_t *inst) {
     assert(can_accept_transaction() &&
            "TMA transaction reached a full front-end slot table");
-    ptx_instruction *pI = dynamic_cast<ptx_instruction *>(inst);
-    if (pI == nullptr) {
-      printf("Error: TMA inst is not a ptx_inst\n");
-      abort();
-    }
-
-    const auto &tma_static_info = pI->get_tma_static_info();
+    const auto &tma_static_info = inst->get_tma_static_info();
 
     // Regular TMA copy instruction - queue for async processing
     const auto warp_size = m_shader_ctx->get_warp_size();
@@ -1279,7 +1372,7 @@ public:
     int canonical_lane = -1;
     const inst_t::tma_dyn_info_t *canonical_tma_dyn_info = nullptr;
     for (unsigned laneid = 0; laneid < warp_size; laneid++) {
-      const auto &tma_dyn_info = pI->get_tma_dyn_info(laneid);
+      const auto &tma_dyn_info = inst->get_tma_dyn_info(laneid);
       if (!tma_dyn_info.is_valid())
         continue;
 
@@ -1292,8 +1385,7 @@ public:
       if (!same_tma_dyn_info(*canonical_tma_dyn_info, tma_dyn_info)) {
         printf("Error: non-uniform active lanes for one TMA instruction are "
                "not supported: canonical_lane=%d lane=%u pc=0x%llx inst=%s\n",
-               canonical_lane, laneid, (unsigned long long)pI->get_PC(),
-               pI->to_string().c_str());
+               canonical_lane, laneid, (unsigned long long)inst->pc, "TMA");
         printf("  canonical dst=0x%llx src=0x%llx size=%u mbar=0x%x "
                "coords=[%d,%d,%d,%d,%d]\n",
                (unsigned long long)canonical_tma_dyn_info->dst_addr,
@@ -1321,10 +1413,9 @@ public:
       if (canonical_lane >= 0 && (int)laneid != canonical_lane)
         continue;
 
-      const auto &tma_dyn_info = pI->get_tma_dyn_info(laneid);
+      const auto &tma_dyn_info = inst->get_tma_dyn_info(laneid);
       if (tma_dyn_info.is_valid()) {
         unsigned tid = warp_size * warp_id + laneid;
-        auto thread = m_shader_ctx->get_thread_info()[tid];
 
         // shared::cluster <- shared::cta is a DSM transfer, not a global
         // TMA multicast. Its payload and completion share DSM contention.
@@ -1339,21 +1430,22 @@ public:
 
         // Create a TMA transaction for this thread.
         tma_transaction_t tx{
-            .m_thread = thread,
-            .m_inst = pI,
             .m_static_info = tma_static_info,
             .m_dyn_info = tma_dyn_info,
             .m_cta_id = cta_id,
             .m_warp_id = warp_id,
             .m_lane_id = laneid,
             .m_tid = tid,
-            .m_pc = pI->get_PC(),
+            .m_pc = inst->pc,
             .m_create_cycle = current_cycle(),
             .m_bytes_completed = 0,
         };
 
         const auto *config = m_shader_ctx->get_config();
-        const dim3 cluster_dim = thread->get_kernel().get_cluster_dim();
+        ptx_thread_info *thread = m_shader_ctx->get_thread_info()[tid];
+        const dim3 cluster_dim =
+            thread != nullptr ? thread->get_kernel().get_cluster_dim()
+                              : m_shader_ctx->get_kernel()->get_cluster_dim();
         unsigned cluster_size = cluster_dim.x * cluster_dim.y * cluster_dim.z;
         if (kernel_info_t *kernel = m_shader_ctx->get_kernel())
           cluster_size = std::max(cluster_size, kernel->get_ctas_per_cluster());
@@ -1382,8 +1474,6 @@ public:
 
         // Initialize address generator
         if (tma_static_info.tma_type == inst_t::tma_static_info_t::TMA_TENSOR) {
-
-          memory_space *global_mem = thread->get_global_memory();
           tensormap_descriptor_t tensormap;
           // For reads (shared <- global): tensormap is at src_addr
           // For writes (global <- shared): tensormap is at dst_addr
@@ -1391,14 +1481,13 @@ public:
                               inst_t::tma_static_info_t::TMA_GLOBAL);
           uint64_t tensormap_addr =
               is_write_op ? tma_dyn_info.dst_addr : tma_dyn_info.src_addr;
-          if (tma_dyn_info.has_tensormap_descriptor) {
-            memcpy(tensormap.raw_bytes, tma_dyn_info.tensormap_descriptor,
-                   TENSORMAP_DESCRIPTOR_SIZE);
-          } else {
-            read_tensormap_descriptor(global_mem, thread->get_param_memory(),
-                                      tensormap_addr,
-                                      tma_static_info.tensor_dim, tensormap);
+          if (!tma_dyn_info.has_tensormap_descriptor) {
+            reject_unsupported_tma(
+                "tensor TMA frontend did not provide a tensor-map descriptor",
+                inst);
           }
+          memcpy(tensormap.raw_bytes, tma_dyn_info.tensormap_descriptor,
+                 TENSORMAP_DESCRIPTOR_SIZE);
           if (tma_static_info.tensor_dim != 0) {
             validate_tensormap(tensormap_addr, tensormap,
                                tma_static_info.tensor_dim);
@@ -1441,6 +1530,13 @@ public:
             tma_dyn_info.src_addr, tma_dyn_info.dst_addr,
             tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr, 0, 0, 0, 0, 0,
             0, m_mf_inflight, m_response_fifo.size());
+        tma_trace_emit(tx.m_create_cycle, "NEW", tx_uid,
+                       is_write_op ? "WRITE" : "READ", tma_static_info.tma_type,
+                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                       tx.m_tid, tma_dyn_info.src_addr, tma_dyn_info.dst_addr,
+                       tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr, 0, 0,
+                       0, 0, 0, 0, 0, m_mf_inflight, m_response_fifo.size(),
+                       m_shader_ctx->get_sid());
 
         bool idealized =
             m_shader_ctx->get_config()->gpgpu_tma_idealized_memory != 0;
@@ -1448,6 +1544,12 @@ public:
         // For TMA write operations, add transaction to bulk group
         if (is_write_op) {
           m_barriers->add_bulk_tx(cta_id, warp_id, tx_uid);
+          const auto transaction = m_transactions.find(tx_uid);
+          if (transaction == m_transactions.end())
+            flash_gpgpu_sim::panic("missing TMA store transaction");
+          transaction->second.m_store_source_release_cycle =
+              m_store_source.schedule(tx.m_create_cycle,
+                                      tma_dyn_info.size_in_bytes);
         }
 
         if (idealized && is_write_op) {
@@ -1459,43 +1561,39 @@ public:
           issue_queue.push_back(tx_uid);
         }
 
-        GPPRINTF_THREAD_CORE(
-            TMA, thread,
+        GPPRINTF_TMA(
+            TMA,
             "[TMA START] cta_id=%u, warp_id=%u, lane=%d, tid=%u, tx_uid=%u, "
             "dst=0x%llx, src=0x%llx, size=%u, mbar=0x%x\n",
-            thread->get_hw_ctaid(), warp_id, laneid, tid, tx_uid,
+            cta_id, warp_id, laneid, tid, tx_uid,
             (unsigned long long)tma_dyn_info.dst_addr,
             (unsigned long long)tma_dyn_info.src_addr,
             tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr);
 
-        GPPRINTF_THREAD_CORE(
-            TMA, thread,
-            "Start transaction dst=0x%llx, tensormap at 0x%llx, "
-            "size_in_bytes=%u, mbar=0x%x, tx_uid=%u, tma_type=%d\n",
-            (unsigned long long)tma_dyn_info.dst_addr,
-            (unsigned long long)tma_dyn_info.src_addr,
-            tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr, tx_uid,
-            tma_static_info.tma_type);
+        GPPRINTF_TMA(TMA,
+                     "Start transaction dst=0x%llx, tensormap at 0x%llx, "
+                     "size_in_bytes=%u, mbar=0x%x, tx_uid=%u, tma_type=%d\n",
+                     (unsigned long long)tma_dyn_info.dst_addr,
+                     (unsigned long long)tma_dyn_info.src_addr,
+                     tma_dyn_info.size_in_bytes, tma_dyn_info.mbar_addr, tx_uid,
+                     tma_static_info.tma_type);
       }
     }
-    // Warp cannot issue the next instruction until TMA issue occupancy elapses
-    // (H200 pure cp.async.bulk is 44 cycles). Data movement is already queued.
-    if (inst->get_active_mask().any() && inst->latency > 1)
-      m_barriers->hold_warp(warp_id, inst->latency, BARRIER_WAIT_BULK_GROUP);
+    // The caller applies gpgpu_tma_issue_to_next_instruction_latency. Do not
+    // additionally turn execution latency into a warp hold here. Public PTX
+    // passed a per-PC metadata object with an empty active mask, so its old
+    // conditional hold was never charged. Passing the real dynamic mask must
+    // not silently activate a new timing model during frontend extraction.
   }
 
   void warp_reaches_cp_async(unsigned cta_id, unsigned warp_id,
-                             const warp_inst_t &inst,
-                             const ptx_instruction *static_inst) {
+                             const warp_inst_t &inst) {
     unsigned cp_size = inst.data_size ? inst.data_size : 16;
     unsigned src_size = cp_size;
-    if (static_inst != nullptr) {
-      const operand_info *src_size_op =
-          static_inst->cp_async_source_control_operand();
-      if (src_size_op != nullptr && src_size_op->is_literal()) {
-        src_size = (unsigned)src_size_op->get_literal_value().u64;
-      }
-    }
+    const inst_t::async_copy_static_info_t &async_info =
+        inst.get_async_copy_static_info();
+    if (async_info.has_source_size)
+      src_size = async_info.source_size;
     if (src_size > cp_size)
       src_size = cp_size;
     if (src_size == 0)
@@ -1542,15 +1640,10 @@ public:
     }
   }
 
-  void
-  warp_reaches_cp_async_mbarrier_arrive(unsigned cta_id, unsigned warp_id,
-                                        const warp_inst_t &inst,
-                                        const ptx_instruction &dynamic_inst) {
-    bool increment_pending = true;
-    for (int option : dynamic_inst.get_options()) {
-      if (option == NOINC_OPTION)
-        increment_pending = false;
-    }
+  void warp_reaches_cp_async_mbarrier_arrive(unsigned cta_id, unsigned warp_id,
+                                             const warp_inst_t &inst) {
+    const bool increment_pending =
+        inst.get_async_copy_static_info().mbarrier_increment_pending;
 
     const active_mask_t &active_mask = inst.get_active_mask();
     const unsigned warp_size = m_shader_ctx->get_warp_size();
@@ -1558,7 +1651,7 @@ public:
       if (!active_mask.test(lane))
         continue;
 
-      const auto &mbarrier_info = dynamic_inst.get_mbarrier_info(lane);
+      const auto &mbarrier_info = inst.get_mbarrier_info(lane);
       assert(mbarrier_info.bar_id != (unsigned)-1);
       const uint32_t mbarrier_addr = mbarrier_info.bar_id;
       m_barriers->prepare_mbarrier_async_arrival(cta_id, warp_id, mbarrier_addr,
@@ -1587,7 +1680,10 @@ public:
                                       std::move(pending_tx_uids)});
       assert(inserted.second);
       for (unsigned tx_uid : inserted.first->second.pending_tx_uids) {
-        m_cp_transactions.at(tx_uid).dependent_arrival_uids.insert(arrival_uid);
+        const auto transaction = m_cp_transactions.find(tx_uid);
+        if (transaction == m_cp_transactions.end())
+          flash_gpgpu_sim::panic("missing cp.async mbarrier transaction");
+        transaction->second.dependent_arrival_uids.insert(arrival_uid);
       }
     }
   }
@@ -1685,6 +1781,16 @@ public:
           std::min(m_request_byte_credit + request_bytes_per_cycle, credit_cap);
     }
 
+    if (m_store_source.enabled()) {
+      const unsigned long long now = current_cycle();
+      for (auto &entry : m_transactions) {
+        auto &tx = entry.second;
+        if (is_write_transaction(tx) && !tx.m_store_source_released &&
+            tx.m_store_source_release_cycle <= now)
+          release_store_source(entry.first, tx);
+      }
+    }
+
     // Process delayed arrive_tx notifications
     if (!m_pending_arrives.empty()) {
       for (auto &entry : m_pending_arrives) {
@@ -1721,6 +1827,12 @@ public:
               entry.warp_id, 0, 0, 0, 0, entry.size_in_bytes, entry.mbar_addr,
               0, 0, 0, 0, 0, entry.size_in_bytes, m_mf_inflight,
               m_response_fifo.size());
+          tma_trace_emit(current_cycle(), "ARRIVE", entry.tx_uid,
+                         entry.is_write ? "WRITE" : "READ", 0, 0, entry.cta_id,
+                         entry.warp_id, 0, 0, 0, 0, entry.size_in_bytes,
+                         entry.mbar_addr, 0, 0, 0, 0, 0, entry.size_in_bytes, 0,
+                         m_mf_inflight, m_response_fifo.size(),
+                         m_shader_ctx->get_sid());
           if (!entry.is_write) {
             if (entry.mapped_cluster_copy) {
               complete_mapped_cluster_peer_mbarrier(
@@ -1815,6 +1927,17 @@ public:
             tx.m_mf_received_count, tx.m_bytes_completed, m_mf_inflight,
             m_response_fifo.size());
       }
+      if (tma_trace_mf_enabled(response_cycle)) {
+        tma_trace_emit(response_cycle, "MF_RESPONSE", tx_uid,
+                       is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                       tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                       tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+                       parent_uid, parent_mf->get_addr(), mf->get_data_size(),
+                       tx.m_mf_issued_count, tx.m_mf_received_count,
+                       tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                       m_response_fifo.size(), m_shader_ctx->get_sid());
+      }
       if (tx.m_first_response_cycle == 0) {
         tx.m_first_response_cycle = response_cycle;
         Trace::tma_transaction_event(
@@ -1826,6 +1949,15 @@ public:
             tx.m_dyn_info.mbar_addr, parent_uid, parent_mf->get_addr(),
             mf->get_data_size(), tx.m_mf_issued_count, tx.m_mf_received_count,
             tx.m_bytes_completed, m_mf_inflight, m_response_fifo.size());
+        tma_trace_emit(tx.m_first_response_cycle, "FIRST_RESPONSE", tx_uid,
+                       is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                       tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                       tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+                       parent_uid, parent_mf->get_addr(), mf->get_data_size(),
+                       tx.m_mf_issued_count, tx.m_mf_received_count,
+                       tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                       m_response_fifo.size(), m_shader_ctx->get_sid());
       }
 
       GPPRINTF_TMA(TMA,
@@ -1863,8 +1995,15 @@ public:
       auto pending_it = m_mf_pending_bytes.find(parent_uid);
       assert(pending_it != m_mf_pending_bytes.end());
       if (bytes_to_add >= pending_it->second) {
+        const unsigned parent_bytes = parent_mf->get_data_size();
         assert(m_mf_inflight > 0);
         m_mf_inflight--;
+        assert(m_mf_inflight_bytes >= parent_bytes);
+        m_mf_inflight_bytes -= parent_bytes;
+        assert(tx.m_mf_tx_inflight > 0);
+        tx.m_mf_tx_inflight--;
+        assert(tx.m_mf_tx_inflight_bytes >= parent_bytes);
+        tx.m_mf_tx_inflight_bytes -= parent_bytes;
         m_mf_pending_bytes.erase(pending_it);
         m_mf_to_tx.erase(parent_uid);
         parent_complete = true;
@@ -1892,20 +2031,82 @@ public:
       // entries are only bulk-erased on finalize, so it over-counts.
       unsigned max_inflight =
           m_shader_ctx->get_config()->gpgpu_tma_max_inflight;
-      if (max_inflight > 0 && m_mf_inflight >= max_inflight) {
+      const unsigned max_inflight_bytes =
+          m_shader_ctx->get_config()->gpgpu_tma_max_inflight_bytes;
+      if ((max_inflight > 0 && m_mf_inflight >= max_inflight) ||
+          (max_inflight_bytes > 0 &&
+           m_mf_inflight_bytes >= max_inflight_bytes)) {
         g_tma_issue_blocked_inflight_cycles.fetch_add(
             1, std::memory_order_relaxed);
         return;
       }
 
-      const unsigned tx_uid = issue_queue.front();
-      auto it = m_transactions.find(tx_uid);
-      assert(it != m_transactions.end());
-      auto &tx = it->second;
+      const unsigned tx_quota = m_shader_ctx->get_config()->gpgpu_tma_tx_quota;
+      const unsigned tx_quota_bytes =
+          m_shader_ctx->get_config()->gpgpu_tma_tx_quota_bytes;
+      const unsigned quota_segment_bytes =
+          m_shader_ctx->get_config()->gpgpu_tma_quota_segment_bytes;
+      const auto effective_tx_quota = [tx_quota, quota_segment_bytes](
+                                          const tma_transaction_t &candidate) {
+        if (tx_quota == 0 || quota_segment_bytes == 0)
+          return tx_quota;
+        const unsigned segments = std::max(
+            1u, (candidate.m_dyn_info.size_in_bytes + quota_segment_bytes - 1) /
+                    quota_segment_bytes);
+        return tx_quota * segments;
+      };
+      const auto effective_tx_quota_bytes =
+          [tx_quota_bytes, quota_segment_bytes](
+              const tma_transaction_t &candidate) -> uint64_t {
+        if (tx_quota_bytes == 0 || quota_segment_bytes == 0)
+          return tx_quota_bytes;
+        const uint64_t segments = std::max<uint64_t>(
+            1, (candidate.m_dyn_info.size_in_bytes + quota_segment_bytes - 1) /
+                   quota_segment_bytes);
+        return static_cast<uint64_t>(tx_quota_bytes) * segments;
+      };
+      bool borrowing_quota = false;
+      unsigned tx_uid = 0;
+      tma_transaction_t *selected_tx = nullptr;
+      const unsigned num_candidates = issue_queue.size();
+
+      for (unsigned attempt = 0; attempt < num_candidates; ++attempt) {
+        tx_uid = issue_queue.front();
+        auto it = m_transactions.find(tx_uid);
+        assert(it != m_transactions.end());
+        auto &candidate = it->second;
+
+        const bool over_quota =
+            tx_quota_bytes > 0
+                ? candidate.m_mf_tx_inflight_bytes >=
+                      effective_tx_quota_bytes(candidate)
+                : (tx_quota > 0 &&
+                   candidate.m_mf_tx_inflight >= effective_tx_quota(candidate));
+        if (over_quota) {
+          issue_queue.pop_front();
+          issue_queue.push_back(tx_uid);
+          continue;
+        }
+        selected_tx = &candidate;
+        break;
+      }
+
+      if (selected_tx == nullptr) {
+        // A zero segment size keeps the historical soft fairness quota.
+        if (quota_segment_bytes > 0)
+          return;
+        borrowing_quota = true;
+        tx_uid = issue_queue.front();
+        auto it = m_transactions.find(tx_uid);
+        assert(it != m_transactions.end());
+        selected_tx = &it->second;
+      }
+      auto &tx = *selected_tx;
 
       bool is_write =
           (tx.m_static_info.dst_space == inst_t::tma_static_info_t::TMA_GLOBAL);
       unsigned packet_size = is_write ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
+      bool made_progress = false;
       bool transaction_finalized = false;
 
       if (!m_icnt->full(packet_size, is_write)) {
@@ -1921,11 +2122,22 @@ public:
         // Loop: batch-consume consecutive skip-OOB requests in one cycle,
         // then issue up to request_width mem_fetches to L2 before breaking.
         while (issued_requests < request_width && !transaction_finalized) {
-          if (max_inflight > 0 && m_mf_inflight >= max_inflight &&
-              !tx.agu_state.done) {
-            g_tma_issue_blocked_inflight_cycles.fetch_add(
-                1, std::memory_order_relaxed);
+          if ((max_inflight > 0 && m_mf_inflight >= max_inflight) ||
+              (max_inflight_bytes > 0 &&
+               m_mf_inflight_bytes >= max_inflight_bytes)) {
+            if (!tx.agu_state.done)
+              g_tma_issue_blocked_inflight_cycles.fetch_add(
+                  1, std::memory_order_relaxed);
             break;
+          }
+          if (!borrowing_quota) {
+            const bool over_quota =
+                tx_quota_bytes > 0
+                    ? tx.m_mf_tx_inflight_bytes >= effective_tx_quota_bytes(tx)
+                    : (tx_quota > 0 &&
+                       tx.m_mf_tx_inflight >= effective_tx_quota(tx));
+            if (over_quota)
+              break;
           }
           if (m_icnt->full(packet_size, is_write))
             break;
@@ -1936,6 +2148,7 @@ public:
           bool issued_this_iteration = false;
           while (m_agu.gen_next_req(tx.agu_state, addr, size,
                                     request_granularity)) {
+            made_progress = true;
             bool first_request = tx.m_mf_issued_count == 0;
             if (first_request) {
               GPPRINTF_TMA(TMA,
@@ -1945,9 +2158,9 @@ public:
             }
             tx.m_mf_issued_count++;
 
-            // Determine if this OOB request should skip L2:
-            //   - Writes: always skip OOB (must not write beyond tensor bounds)
-            //   - Reads:  skip OOB only when gpgpu_tma_oob_l2_traffic is off
+            // Writes must never escape tensor bounds. Reads retain the public
+            // default of issuing OOB fill traffic through L2; configurations
+            // can explicitly select local zero-fill with oob_l2_traffic=0.
             bool skip_l2 =
                 tx.agu_state.is_fill_request && (is_write || !oob_l2);
 
@@ -1967,9 +2180,6 @@ public:
             }
 
             // Issue mem_fetch to interconnect -> L2.
-            // For OOB fill requests with gpgpu_tma_oob_l2_traffic=1:
-            // Real HW TMA sends full-tile requests to L2 unconditionally,
-            // then zero-fills OOB data after response.
             mem_access_byte_mask_t byte_mask;
             mem_access_sector_mask_t sector_mask;
 
@@ -2014,6 +2224,17 @@ public:
                   tx.m_mf_received_count, tx.m_bytes_completed, m_mf_inflight,
                   m_response_fifo.size());
             }
+            if (tma_trace_mf_enabled(issue_cycle)) {
+              tma_trace_emit(
+                  issue_cycle, "MF_ISSUE", tx_uid, is_write ? "WRITE" : "READ",
+                  tx.m_static_info.tma_type, tx.m_pc, tx.m_cta_id, tx.m_warp_id,
+                  tx.m_lane_id, tx.m_tid, tx.m_dyn_info.src_addr,
+                  tx.m_dyn_info.dst_addr, tx.m_dyn_info.size_in_bytes,
+                  tx.m_dyn_info.mbar_addr, mf->get_request_uid(), addr, size,
+                  tx.m_mf_issued_count, tx.m_mf_received_count,
+                  tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                  m_response_fifo.size(), m_shader_ctx->get_sid());
+            }
             if (first_request) {
               tx.m_first_issue_cycle = issue_cycle;
               Trace::tma_transaction_event(
@@ -2025,12 +2246,25 @@ public:
                   tx.m_dyn_info.mbar_addr, mf->get_request_uid(), addr, size,
                   tx.m_mf_issued_count, tx.m_mf_received_count,
                   tx.m_bytes_completed, m_mf_inflight, m_response_fifo.size());
+              tma_trace_emit(
+                  issue_cycle, "FIRST_MF_ISSUE", tx_uid,
+                  is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                  tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id, tx.m_tid,
+                  tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                  tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr,
+                  mf->get_request_uid(), addr, size, tx.m_mf_issued_count,
+                  tx.m_mf_received_count, tx.m_bytes_completed,
+                  tx.m_mf_tx_inflight, m_mf_inflight, m_response_fifo.size(),
+                  m_shader_ctx->get_sid());
             }
             tx.m_last_issue_cycle = issue_cycle;
 
             m_icnt->push(mf);
             m_mf_inflight++;
             atomic_update_max(g_tma_max_mf_inflight, m_mf_inflight);
+            m_mf_inflight_bytes += size;
+            tx.m_mf_tx_inflight++;
+            tx.m_mf_tx_inflight_bytes += size;
             record_tma_mf_issued(is_write, size);
             if (request_bytes_per_cycle > 0)
               m_request_byte_credit -=
@@ -2057,12 +2291,23 @@ public:
             tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0, 0, 0,
             tx.m_mf_issued_count, tx.m_mf_received_count, tx.m_bytes_completed,
             m_mf_inflight, m_response_fifo.size());
+        tma_trace_emit(current_cycle(), "ISSUE_DONE", tx_uid,
+                       is_write ? "WRITE" : "READ", tx.m_static_info.tma_type,
+                       tx.m_pc, tx.m_cta_id, tx.m_warp_id, tx.m_lane_id,
+                       tx.m_tid, tx.m_dyn_info.src_addr, tx.m_dyn_info.dst_addr,
+                       tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.mbar_addr, 0,
+                       0, 0, tx.m_mf_issued_count, tx.m_mf_received_count,
+                       tx.m_bytes_completed, tx.m_mf_tx_inflight, m_mf_inflight,
+                       m_response_fifo.size(), m_shader_ctx->get_sid());
         GPPRINTF_TMA(TMA,
                      "[TMA AGU DONE] tx_uid=%u issued %u %s mem_fetch requests "
                      "(total bytes: %u)\n",
                      tx_uid, tx.m_mf_issued_count, is_write ? "WRITE" : "READ",
                      tx.m_dyn_info.size_in_bytes);
         issue_queue.pop_front();
+      } else if (borrowing_quota && made_progress) {
+        issue_queue.pop_front();
+        issue_queue.push_back(tx_uid);
       }
     }
   }
@@ -2138,16 +2383,13 @@ bool tma_unit_t::can_accept_transaction() const {
 }
 
 void tma_unit_t::warp_reaches_cp_async(unsigned cta_id, unsigned warp_id,
-                                       const warp_inst_t &inst,
-                                       const ptx_instruction *static_inst) {
-  m_impl->warp_reaches_cp_async(cta_id, warp_id, inst, static_inst);
+                                       const warp_inst_t &inst) {
+  m_impl->warp_reaches_cp_async(cta_id, warp_id, inst);
 }
 
 void tma_unit_t::warp_reaches_cp_async_mbarrier_arrive(
-    unsigned cta_id, unsigned warp_id, const warp_inst_t &inst,
-    const ptx_instruction &dynamic_inst) {
-  m_impl->warp_reaches_cp_async_mbarrier_arrive(cta_id, warp_id, inst,
-                                                dynamic_inst);
+    unsigned cta_id, unsigned warp_id, const warp_inst_t &inst) {
+  m_impl->warp_reaches_cp_async_mbarrier_arrive(cta_id, warp_id, inst);
 }
 
 void tma_unit_t::commit_cp_async_group(unsigned cta_id, unsigned warp_id) {

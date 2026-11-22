@@ -1,0 +1,23 @@
+{
+  "architecture": "sm120",
+  "group": "mma",
+  "expected_tests": 29,
+  "cases": [
+    {
+      "gtest_filter": "MMAF16*.*",
+      "expected_tests": 8
+    },
+    {
+      "gtest_filter": "MMABF16*.*",
+      "expected_tests": 5
+    },
+    {
+      "gtest_filter": "MMATF32*.*",
+      "expected_tests": 8
+    },
+    {
+      "gtest_filter": "MMAS8*.*",
+      "expected_tests": 8
+    }
+  ]
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 
 from .build import BuildManager
 from .errors import RunnerError
@@ -41,13 +42,71 @@ class TestExecutors:
         for binary in binaries:
             path = Path(binary)
             paths.append(path if path.is_absolute() else self.test_dir / path)
+        if self.settings.binary:
+            selected = [
+                path for path in paths if path.name == self.settings.binary
+            ]
+            if not selected:
+                available = " ".join(path.name for path in paths) or "<none>"
+                raise RunnerError(
+                    f"Binary '{self.settings.binary}' is not in group "
+                    f"'{binary_group}'\nAvailable binaries: {available}"
+                )
+            return selected
         return paths
 
-    def _gtest_environment(self, **updates: str) -> dict[str, str]:
-        environment = os.environ.copy()
+    def _gtest_environment(
+        self,
+        selection: Selection,
+        binary: Path,
+        **updates: str,
+    ) -> dict[str, str]:
+        # Reconstruct frontend selection for this invocation; a previous
+        # shell experiment must not silently select a different frontend.
+        environment = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith("FLASHGPU_SASS_")
+        }
+        environment.pop("PTX_SIM_MODE_FUNC", None)
         environment["GTEST_COLOR"] = "yes"
         if self.settings.verbose == 2:
             environment["GTEST_VERBOSITY"] = "1"
+        if self.settings.sassir:
+            environment["FLASHGPU_SASS_IR"] = self.settings.sassir
+        elif self.settings.sass_auto:
+            cuda_root = environment.get("CUDA_INSTALL_PATH")
+            if not cuda_root:
+                raise RunnerError(
+                    "--sass requires CUDA_INSTALL_PATH for nvdisasm and cuobjdump"
+                )
+            cuda_bin = Path(cuda_root) / "bin"
+            nvdisasm = cuda_bin / "nvdisasm"
+            cuobjdump = cuda_bin / "cuobjdump"
+            decode_tool = (
+                self.test_dir.parent
+                / "src/gpgpu-sim/flash/sass/tools/dump_kernel_sassir.py"
+            )
+            for label, path in (
+                ("nvdisasm", nvdisasm),
+                ("cuobjdump", cuobjdump),
+                ("SASS decode tool", decode_tool),
+            ):
+                if not path.is_file():
+                    raise RunnerError(f"{label} not found: {path}")
+            environment.pop("FLASHGPU_SASS_IR", None)
+            environment.update(
+                {
+                    "FLASHGPU_SASS_AUTO": "1",
+                    "FLASHGPU_SASS_BINARY": str(binary.resolve()),
+                    "FLASHGPU_SASS_ARCH": selection.architecture.name,
+                    "FLASHGPU_SASS_DECODE_TOOL": str(decode_tool.resolve()),
+                    "FLASHGPU_SASS_PYTHON": str(Path(sys.executable).resolve()),
+                    "FLASHGPU_SASS_NVDISASM": str(nvdisasm.resolve()),
+                    "FLASHGPU_SASS_CUOBJDUMP": str(cuobjdump.resolve()),
+                }
+            )
+        if self.settings.sass_timing:
+            environment["FLASHGPU_SASS_TIMING"] = "1"
         environment.update(updates)
         return environment
 
@@ -159,11 +218,24 @@ class TestExecutors:
             f"Running {selection.label}: {shown_filter} "
             f"(config: {self.settings.gpu_config})"
         )
+        if self.settings.sass_timing:
+            self.ui.info(
+                "Requested SASS timing (explicit config mode takes precedence)"
+            )
+        elif self.settings.sass_auto:
+            self.ui.info(
+                "Requested SASS functional (explicit config mode takes precedence)"
+            )
+        elif self.settings.sassir:
+            self.ui.info(
+                "Requested SASSIR debug image (explicit config mode takes precedence): "
+                f"{self.settings.sassir}"
+            )
         return_code = self.gtest.run_binary(
             binary,
             self.builder.config_dir,
             gtest_filter,
-            env=self._gtest_environment(),
+            env=self._gtest_environment(selection, binary),
         )
         if return_code == 0:
             self.ui.success(f"✓ {selection.label} passed!")
@@ -246,7 +318,7 @@ class TestExecutors:
                 binary,
                 self.builder.config_dir,
                 gtest_filter,
-                env=self._gtest_environment(),
+                env=self._gtest_environment(selection, binary),
             )
             if return_code != 0:
                 exit_code = return_code
@@ -302,11 +374,21 @@ class TestExecutors:
                 f"Running {selection.label}: {binary.name} "
                 f"(config: {self.settings.gpu_config})"
             )
+            if self.settings.sass_timing:
+                self.ui.info(
+                    "Requested SASS timing (explicit config mode takes precedence)"
+                )
+            elif self.settings.sass_auto:
+                self.ui.info(
+                    "Requested SASS functional (explicit config mode takes precedence)"
+                )
             return_code = self.gtest.run_binary(
                 binary,
                 self.builder.config_dir,
                 gtest_filter,
                 env=self._gtest_environment(
+                    selection,
+                    binary,
                     FA3_H1D128_PROFILE_CASE_LIST=selection.case_list
                 ),
             )

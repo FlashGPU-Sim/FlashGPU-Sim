@@ -103,7 +103,7 @@ void ptx_recognizer::init_instruction_state() {
   init_directive_state();
 }
 
-symbol_table *gpgpu_context::init_parser(const char *ptx_filename) {
+symbol_table *gpgpu_context::init_parser(const char *ptx_filename, bool parse_file) {
   g_filename = strdup(ptx_filename);
   if (g_global_allfiles_symbol_table == NULL) {
     g_global_allfiles_symbol_table =
@@ -138,13 +138,29 @@ symbol_table *gpgpu_context::init_parser(const char *ptx_filename) {
   ptx_parser->init_directive_state();
   ptx_parser->init_instruction_state();
 
+  // String loading initializes parser state here and supplies its own buffer.
+  // Do not accidentally parse a stale file with the synthetic source name.
+  if (!parse_file) {
+    ptx_lex_destroy(ptx_parser->scanner);
+    return ptx_parser->g_global_symbol_table;
+  }
+
   FILE *ptx_in;
   ptx_in = fopen(ptx_filename, "r");
+  if (ptx_in == nullptr) {
+    fprintf(stderr, "GPGPU-Sim PTX: cannot open PTX file %s\n", ptx_filename);
+    abort();
+  }
   ptx_set_in(ptx_in, ptx_parser->scanner);
-  ptx_parse(ptx_parser->scanner, ptx_parser);
+  const int errors = ptx_parse(ptx_parser->scanner, ptx_parser);
   ptx_in = ptx_get_in(ptx_parser->scanner);
   ptx_lex_destroy(ptx_parser->scanner);
   fclose(ptx_in);
+  if (errors) {
+    fprintf(stderr, "GPGPU-Sim PTX: parser error in %s; refusing partial module\n",
+            ptx_filename);
+    abort();
+  }
   return ptx_parser->g_global_symbol_table;
 }
 
@@ -306,7 +322,9 @@ void ptx_recognizer::set_variable_type() {
 }
 
 bool ptx_recognizer::check_for_duplicates(const char *identifier) {
-  const symbol *s = g_current_symbol_table->lookup(identifier);
+  // Declarations may shadow an enclosing scope. Only declarations in this
+  // scope are duplicates; operand lookup still searches the parent chain.
+  const symbol *s = g_current_symbol_table->lookup_local(identifier);
   return (s != NULL);
 }
 

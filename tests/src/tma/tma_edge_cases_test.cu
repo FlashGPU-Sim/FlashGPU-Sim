@@ -61,9 +61,9 @@ __device__ void initialize_1d_tensor_map(uint8_t *tensor_map,
       : : "l"(tensor_map_addr));
 }
 
-__global__ void tma_negative_coordinate_kernel(const uint32_t *input,
-                                                uint32_t *output,
-                                                uint8_t *global_tensor_map) {
+extern "C" __global__ void
+tma_negative_coordinate_kernel(const uint32_t *input, uint32_t *output,
+                               uint8_t *global_tensor_map) {
   extern __shared__ __align__(128) uint8_t shared[];
   uint8_t *tensor_map = shared;
   uint32_t *tile =
@@ -77,10 +77,20 @@ __global__ void tma_negative_coordinate_kernel(const uint32_t *input,
 
   if (threadIdx.x == 0) {
     initialize_1d_tensor_map(tensor_map, input, 8);
+  }
+  __syncthreads();
+
+  // The .sync.aligned tensor-map copy must execute convergently. On SM120,
+  // ptxas distributes its 128-byte payload as one 32-bit ATOMG per warp lane.
+  if (threadIdx.x < 32) {
     tensormap_cp_fenceproxy(reinterpret_cast<uint64_t>(global_tensor_map),
                             smem_u64_addr(tensor_map));
     fence_proxy_tensormap_acquire(
         reinterpret_cast<uint64_t>(global_tensor_map));
+  }
+  __syncthreads();
+
+  if (threadIdx.x == 0) {
     mbarrier_init(barrier, 1);
     mbarrier_arrive_expect_tx(barrier, kTileBytes);
   }
@@ -88,9 +98,9 @@ __global__ void tma_negative_coordinate_kernel(const uint32_t *input,
   __syncthreads();
 
   if (threadIdx.x == 0) {
-    cp_async_bulk_tensor_1d_load(
-        smem_u32_addr(tile), reinterpret_cast<uint64_t>(global_tensor_map), -2,
-        smem_u32_addr(barrier));
+    cp_async_bulk_tensor_1d_load(smem_u32_addr(tile),
+                                 reinterpret_cast<uint64_t>(global_tensor_map),
+                                 -2, smem_u32_addr(barrier));
     mbarrier_wait_parity(barrier, 0);
     mbarrier_inval(barrier);
   }

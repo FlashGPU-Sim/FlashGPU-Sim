@@ -1,0 +1,73 @@
+{
+  "d64f": {
+    "cycles": 177209,
+    "O_LSE_pass": true,
+    "log_sha256": "ebdf08e2dc2505784b60a4b53571b10af9c5f2e04f884842168516fa155bad14",
+    "path": "runs/public-ci-repair-20261114/medium-d64f-ci-r7/run.log"
+  },
+  "d64c": {
+    "cycles": 122647,
+    "O_LSE_pass": true,
+    "log_sha256": "c4fb5d43951fce46e8d29dbea4cd715e94ce3f67ee971f89e2f6af0cbaf61d18",
+    "path": "runs/public-ci-repair-20261114/medium-d64c-ci-r7/run.log"
+  },
+  "d128f": {
+    "cycles": 118460,
+    "O_LSE_pass": true,
+    "log_sha256": "2390f0c74e52ab4ddf3b9bad8c81d5bb7f05d3daac22db959839ed267b8c87f7",
+    "path": "runs/public-ci-repair-20261114/medium-d128f-ci-r7/run.log"
+  },
+  "d128c": {
+    "cycles": 97073,
+    "O_LSE_pass": true,
+    "log_sha256": "00938e6d89d979c266a48f4ff40607a0659ff5318c0588fd06606dbc00abe0c8",
+    "path": "runs/public-ci-repair-20261114/medium-d128c-ci-r7/run.log"
+  },
+  "binary": {
+    "path": "runs/public-ci-repair-20261114/sass-ci-tests/bin/sm90/fa3/forward_tests",
+    "sha256": "ca4a19439d8f5c84a78c7ae5ea7d62d3ff42eddc88cbb547e8a08e1d5a8aab71"
+  },
+  "library": {
+    "path": "integration-sass/lib/gcc-11.4.0/cuda-13030/release/libcudart.so",
+    "sha256": "76b59295a51c30ce953eac7b9143963e449678812beb5e0be36e2a1ace890b36"
+  },
+  "config": {
+    "path": "integration-sass/configs/SM90_H100_SASS_FRONTEND/gpgpusim.config",
+    "sha256": "3331c669338685d1baecab2024a8c5fd32385fa87f2f400b0cae81856596f49c"
+  },
+  "implementation_revision": "bf79e42033e4c12f8de4eedf91de98be7b006869",
+  "public_base_revision": "c330bb3b01132b2d114771928ee319fa82ce75bd",
+  "toolchain": "docker/Dockerfile.ci-sass: CUDA 13.3, GCC 11.4",
+  "threads": 4,
+  "core_mhz": 1500,
+  "historical_record": "../fa3-sass-ccd2-20260914/results.csv (unchanged)",
+  "legacy_behavior_control_revision": "b343810a",
+  "legacy_behavior_full_controls": {
+    "H32D64FullB16S512": {
+      "cycles": 177866,
+      "drift_pct": -0.3155,
+      "O_LSE_pass": true,
+      "log_sha256": "6bc923f11fbddcb16edc217373ca47c6039009ec1fc2959bd695bb3f0b123c0e"
+    },
+    "H32D64CausalB16S512": {
+      "cycles": 122966,
+      "drift_pct": 0.1213,
+      "O_LSE_pass": true,
+      "log_sha256": "481bdd030fe279256d8278ebbd183617ef86be5c93b35d447c835058bf4e4975"
+    },
+    "H16D128FullB16S512": {
+      "cycles": 116419,
+      "drift_pct": 0.2316,
+      "O_LSE_pass": true,
+      "log_sha256": "d2eec94c9c32e1116183c06eb4189b6e3090fce167485c9fca279dd6686f04c3"
+    },
+    "H16D128CausalB16S512": {
+      "cycles": 98314,
+      "drift_pct": 0.4413,
+      "O_LSE_pass": true,
+      "log_sha256": "7d2b623ec9543a8d4035a209a9203413f0f8b4366ee47e8114cf489118c029e7"
+    }
+  },
+  "scope": "medium only; no large or new hardware measurements",
+  "gate_drift_pct": 0.5
+}
