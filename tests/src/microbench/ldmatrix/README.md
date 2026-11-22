@@ -1,6 +1,6 @@
-# Experimental LDMATRIX probe
+# LDMATRIX microbenchmark
 
-This standalone probe measures a loop using `ldmatrix.sync.aligned.m8n8.x4[.trans].shared.b16` followed by integer accumulation. It was used as one constraint when exploring an experimental RTX 4060 GEMM model. Its per-loop slope includes the loop, instructions that consume the loaded registers, scheduling, and timing overhead. It is neither a direct single-instruction latency measurement nor a complete bandwidth test.
+This standalone probe measures a loop using `ldmatrix.sync.aligned.m8n8.x4[.trans].shared.b16` followed by integer accumulation. It was used as one constraint when calibrating the RTX 4060 GEMM model. Its per-loop slope includes the loop, instructions that consume the loaded registers, scheduling, and timing overhead. It is neither a direct single-instruction latency measurement nor a complete bandwidth test.
 
 Build with CUDA 12.8, then execute one example on an appropriate SM 8.9 GPU:
 
