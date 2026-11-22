@@ -145,7 +145,6 @@ option in each `gpgpusim.config`.
 | `-gpgpu_l2_rop_delay_output_sectors_per_cycle` | Ready ROP-delay output service width per L2 instance and L2 tick; `1` preserves the legacy one-item cadence |
 | `-gpgpu_shmem_size` | Shared-memory capacity in bytes per SM |
 | `-gpgpu_shmem_per_block` | Default shared-memory limit in bytes per CTA |
-| `-gpgpu_shmem_reserved_per_block` | Driver-reserved shared memory charged per CTA when calculating and accounting SM occupancy; defaults to `0` |
 | `-gpgpu_adaptive_cache_config` | Enable runtime selection among supported shared-memory/L1 carveouts |
 
 Cache configuration strings encode several mutually dependent fields. Start

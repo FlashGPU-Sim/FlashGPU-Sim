@@ -16,7 +16,7 @@ PTX execution-driven configuration for the measured GeForce RTX 4060 (`sm_89`, A
 | Memory interface | 128-bit GDDR6, 272 GB/s nominal bandwidth |
 | Core / interconnect / L2 / DRAM clocks | 1809 / 1200 / 1200 / 4250.5 MHz |
 
-The measured device reports PCI ID `0x2808`. The 1809 MHz core setting follows the NCU base-clock protocol; it does not mean the physical application clock was locked. L2 topology, service capacity, and several timing values are model assumptions. The config sets `-gpgpu_shmem_reserved_per_block 1024`; this is an occupancy-accounting parameter in the simulator, not a claim that the physical GPU reserves exactly 1 KiB per CTA.
+The measured device reports PCI ID `0x2808`. The 1809 MHz core setting follows the NCU base-clock protocol; it does not mean the physical application clock was locked. L2 topology, service capacity, and several timing values are model assumptions.
 
 ## Model scope
 
@@ -26,7 +26,7 @@ FP16 MMA and ordinary `cp.async` are enabled. TMA and TensorMap are disabled. De
 
 | Workload | Cases | Output validation | Cycle MAPE |
 |---|---:|---:|---:|
-| Paper GEMM shapes, FP16, fixed 64×64×32 tile, current config | 40 | 40/40 pass | 14.676% |
+| Paper GEMM shapes, FP16, fixed 64×64×32 tile, current config | 40 | 40/40 pass | 14.817% |
 | Triton pointer-load FlashAttention forward | 8 | 8/8 pass | 10.158% |
 | Official FA1 + FA2 forward, B=8 and S=128/256 | 16 | 16/16 pass | 16.382% combined (FA1 22.904%, FA2 9.859%) |
 

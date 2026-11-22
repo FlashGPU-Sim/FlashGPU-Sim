@@ -680,11 +680,6 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "-gpgpu_shmem_per_block (default 0)",
       "0");
   option_parser_register(
-      opp, "-gpgpu_shmem_reserved_per_block", OPT_UINT32,
-      &gpgpu_shmem_reserved_per_block,
-      "Driver-reserved shared memory charged to each CTA for SM occupancy",
-      "0");
-  option_parser_register(
       opp, "-gpgpu_shmem_size", OPT_UINT32, &gpgpu_shmem_size,
       "Size of shared memory per shader core (default 16kB)", "16384");
   option_parser_register(opp, "-gpgpu_shmem_option", OPT_CSTR,
@@ -3113,8 +3108,7 @@ bool shader_core_ctx::occupy_shader_resource_1block(kernel_info_t &k,
 
   const unsigned static_smem = k.static_shared_memory();
   const unsigned registers = k.registers_per_thread();
-  const unsigned block_smem = static_smem + k.get_dynamic_smem() +
-                              m_config->gpgpu_shmem_reserved_per_block;
+  const unsigned block_smem = static_smem + k.get_dynamic_smem();
   if (m_occupied_shmem + block_smem > m_config->gpgpu_shmem_size)
     return false;
 
@@ -3160,8 +3154,7 @@ void shader_core_ctx::release_shader_resource_1block(unsigned hw_ctaid,
     m_occupied_cta_to_hwtid.erase(hw_ctaid);
 
     const unsigned registers = k.registers_per_thread();
-    unsigned int total_smem = k.static_shared_memory() + k.get_dynamic_smem() +
-                              m_config->gpgpu_shmem_reserved_per_block;
+    unsigned int total_smem = k.static_shared_memory() + k.get_dynamic_smem();
     assert(m_occupied_shmem >= total_smem);
     m_occupied_shmem -= total_smem;
 
