@@ -2663,6 +2663,16 @@ int tensorcore_op(int inst_opcode) {
   else
     return 0;
 }
+
+bool ptx_thread_info::predicate_allows(const ptx_instruction &inst) {
+  if (!inst.has_pred()) return true;
+  const operand_info &pred = inst.get_pred();
+  const auto value = get_operand_value(pred, pred, PRED_TYPE, this, 0).pred;
+  if (inst.get_pred_mod() == -1)
+    return !((value & 1) ^ inst.get_pred_neg());  // PTXPlus zero flag
+  return pred_lookup(inst.get_pred_mod(), value & 0xf);
+}
+
 void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
   bool skip = false;
   int op_classification = 0;
@@ -2694,19 +2704,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       }
     }
 
-    if (pI->has_pred()) {
-      const operand_info &pred = pI->get_pred();
-      ptx_reg_t pred_value = get_operand_value(pred, pred, PRED_TYPE, this, 0);
-      if (pI->get_pred_mod() == -1) {
-        skip = (pred_value.pred & 0x0001) ^
-               pI->get_pred_neg();  // ptxplus inverts the zero flag
-      } else {
-        skip = !pred_lookup(pI->get_pred_mod(), pred_value.pred & 0x000F);
-      }
-      // printf("inst %s pred_mode %d pred_neg %d pred=%x skip=%d\n",
-      //        pI->to_string().c_str(),
-      //        pI->get_pred_mod(), pI->get_pred_neg(), pred_value.pred, skip);
-    }
+    skip = !predicate_allows(*pI);
     int inst_opcode = pI->get_opcode();
 
     if (skip) {
@@ -3583,7 +3581,7 @@ void functionalCoreSim::initializeCTA(unsigned ctaid_cp) {
   symbol_table *symtab = m_kernel->entry()->get_symtab();
 
   for (int i = 0; i < m_warp_count; i++) {
-    m_warpAtBarrier[i] = false;
+    m_waiting_at[i] = runnable;
     m_liveThreadCount[i] = 0;
   }
   for (int i = 0; i < m_warp_count * m_warp_size; i++) m_thread[i] = NULL;
@@ -3659,7 +3657,8 @@ void functionalCoreSim::execute(int inst_count, unsigned ctaid_cp) {
     }
     if (!someOneLive) break;
     if (allAtBarrier) {
-      for (unsigned i = 0; i < m_warp_count; i++) m_warpAtBarrier[i] = false;
+      for (auto &wait : m_waiting_at)
+        if (wait == collective_wait) wait = runnable;
     }
   }
 
@@ -3705,18 +3704,53 @@ void functionalCoreSim::execute(int inst_count, unsigned ctaid_cp) {
   }
 }
 
+void functionalCoreSim::release_ready_named_barriers() {
+  for (auto it = m_named_barriers.begin(); it != m_named_barriers.end();) {
+    const auto &barrier = it->second;
+    bool ready = barrier.arrived.size() * m_warp_size >= barrier.count;
+    if (barrier.count == (unsigned)-1) {
+      ready = true;
+      for (unsigned warp = 0; warp < m_warp_count; ++warp)
+        if (m_liveThreadCount[warp] && !barrier.arrived.count(warp)) {
+          ready = false;
+          break;
+        }
+    }
+    if (ready) {
+      for (auto &wait : m_waiting_at)
+        if (wait == static_cast<int>(it->first)) wait = runnable;
+      it = m_named_barriers.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 void functionalCoreSim::executeWarp(unsigned i, bool &allAtBarrier,
                                     bool &someOneLive) {
-  if (!m_warpAtBarrier[i] && m_liveThreadCount[i] != 0) {
+  if (m_waiting_at[i] == runnable && m_liveThreadCount[i] != 0) {
     warp_inst_t inst = getExecuteWarp(i);
     execute_warp_inst_t(inst, i);
     if (inst.isatomic()) inst.do_atomic(true);
-    if (inst.op == BARRIER_OP || inst.op == MEMORY_BARRIER_OP)
-      m_warpAtBarrier[i] = true;
+    if ((inst.op == BARRIER_OP || inst.op == MEMORY_BARRIER_OP) &&
+        inst.get_active_mask().any() && m_simt_stack[i]->signals_barrier()) {
+      const auto *ptx = m_gpu->gpgpu_ctx->pc_to_instruction(inst.pc);
+      if (ptx->get_opcode() == BAR_OP && !inst.cluster_barrier) {
+        auto &barrier = m_named_barriers[inst.bar_id];
+        barrier.count = inst.bar_count;
+        barrier.arrived.insert(i);
+        if (inst.bar_type != ARRIVE) m_waiting_at[i] = inst.bar_id;
+        release_ready_named_barriers();
+      } else {
+        m_waiting_at[i] = collective_wait;
+      }
+    }
     updateSIMTStack(i, &inst);
+    if (!m_liveThreadCount[i]) release_ready_named_barriers();
   }
   if (m_liveThreadCount[i] > 0) someOneLive = true;
-  if (!m_warpAtBarrier[i] && m_liveThreadCount[i] > 0) allAtBarrier = false;
+  if (m_waiting_at[i] == runnable && m_liveThreadCount[i] > 0)
+    allAtBarrier = false;
 }
 
 unsigned gpgpu_context::translate_pc_to_ptxlineno(unsigned pc) {

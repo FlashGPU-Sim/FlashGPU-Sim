@@ -739,7 +739,18 @@ __global__ void phase_slot_touch_kernel() {}
 __global__ void phase_reissue_kernel(int *smid, int *flag) {
   if (threadIdx.x == 0) smid[blockIdx.x] = read_smid();
   cluster_phase_arrive_wait();
-  if (threadIdx.x == 0) flag[blockIdx.x] = 1;
+  if (threadIdx.x == 0) {
+    const unsigned rank = blockIdx.x;
+    atomicExch(&flag[rank], 1);
+    // Keep both warps live until both have passed this barrier. Exiting
+    // early would let a stale generation release against a single live warp.
+    for (unsigned poll = 0; poll < 256; ++poll) {
+      if (atomicAdd(&flag[1 - rank], 0)) {
+        atomicExch(&flag[rank], 2);
+        break;
+      }
+    }
+  }
 }
 
 struct SmSlot {
@@ -809,9 +820,9 @@ bool launch_fillers(unsigned count) {
 }
 
 // Fatal kernel retires rank 1 on some SM. The next visit to that GPC starts
-// just after that SM. A cluster of (sms-1) walks every other SM and leaves
-// the cursor on the predecessor, so the following cluster-2 starts on the
-// retired SM. Fillers rotate the GPC cursor without touching that GPC.
+// just after that SM. Walk (sms-1) slots in portable clusters of at most 8
+// CTAs, leaving the cursor on the predecessor so the following cluster-2
+// starts on the retired SM. Fillers return to that GPC between each launch.
 bool expect_same_slot_phase_releases(const char *rule, const void *fatal,
                                     unsigned fatal_threads) {
   const auto topo = flash_test::read_gpgpusim_topology();
@@ -848,10 +859,17 @@ bool expect_same_slot_phase_releases(const char *rule, const void *fatal,
   }
 
   const unsigned turn = topo.n_clusters - 1;
-  if (!launch_fillers(turn) ||
-      !launch_one_cluster((const void *)phase_slot_touch_kernel, slot.sms - 1,
-                          32, nullptr) ||
-      !launch_fillers(turn)) {
+  for (unsigned remaining = slot.sms - 1; remaining > 0;) {
+    const unsigned batch = remaining > 8 ? 8 : remaining;
+    if (!launch_fillers(turn) ||
+        !launch_one_cluster((const void *)phase_slot_touch_kernel, batch, 32,
+                            nullptr)) {
+      cudaFree(smid);
+      return false;
+    }
+    remaining -= batch;
+  }
+  if (!launch_fillers(turn)) {
     cudaFree(smid);
     return false;
   }
@@ -896,12 +914,12 @@ bool expect_same_slot_phase_releases(const char *rule, const void *fatal,
       match ? 1 : 0, done[0], done[1]);
   std::fflush(stdout);
   EXPECT_TRUE(match) << "probe did not reissue the retired SM";
-  EXPECT_EQ(done[0], 1);
-  EXPECT_EQ(done[1], 1);
+  EXPECT_EQ(done[0], 2) << "rank 0 did not observe rank 1 pass the barrier";
+  EXPECT_EQ(done[1], 2) << "rank 1 did not observe rank 0 pass the barrier";
   cudaFree(smid);
   cudaFree(probe_smid);
   cudaFree(flag);
-  return match && done[0] == 1 && done[1] == 1;
+  return match && done[0] == 2 && done[1] == 2;
 }
 
 TEST_F(MbarrierClusterTest, Rule1Retire_SameSlotNextPhaseReleases) {

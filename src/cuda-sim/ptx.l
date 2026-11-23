@@ -507,7 +507,6 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.warpx4 TC; return TCGEN05_WARPX4_OPTION;
 \.warpx2::02_13 TC; return TCGEN05_WARPX2_02_13_OPTION;
 \.warpx2::01_23 TC; return TCGEN05_WARPX2_01_23_OPTION;
-\.multicast::cluster TC; return TCGEN05_MULTICAST_CLUSTER_OPTION;
 \.pack::16b TC; return TCGEN05_PACK_16B_OPTION;
 \.unpack::16b TC; return TCGEN05_UNPACK_16B_OPTION;
 ::before_thread_sync TC; return TCGEN05_BEFORE_THREAD_SYNC_OPTION;

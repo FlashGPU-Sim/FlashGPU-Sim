@@ -470,3 +470,11 @@ $(OBJ_DIR)/sm100/unit/ptx_timing_isolation_test.cc.o \
 $(OBJ_DIR)/sm120/unit/ptx_timing_isolation_test.cc.o: \
   $(wildcard ../libcuda/*.h) $(wildcard ../src/gpgpu-sim/*.h) \
   ../src/abstract_hardware_model.h $(UNIT_MK)
+
+# The kernel retirement test uses the production kernel object layout and mutex.
+$(foreach arch,sm90 sm100 sm120,$(OBJ_DIR)/$(arch)/unit/kernel_retirement_test.cc.o): \
+  INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
+$(foreach arch,sm90 sm100 sm120,$(OBJ_DIR)/$(arch)/unit/kernel_retirement_test.cc.o): \
+  GPGPUSIM_FLAGS += -DFLASH_GPGPU_SIM -DFLASH_GPGPU_SIM_OMP
+$(foreach arch,sm90 sm100 sm120,$(OBJ_DIR)/$(arch)/unit/kernel_retirement_test.cc.o): \
+  ../src/kernel_info.h ../libcuda/gpgpu_context.h $(UNIT_MK)

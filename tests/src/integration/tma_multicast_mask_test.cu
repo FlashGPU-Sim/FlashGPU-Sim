@@ -52,12 +52,12 @@ __device__ inline void mbarrier_try_wait_impl(unsigned long long *bar,
 
 // One-producer: rank 0 issues .multicast::cluster load with ctaMask.
 // Selected ranks wait on mbarrier and copy smem → out[rank * kChunk].
-// Non-selected ranks leave out[] as prefill (0xAB).
+// Non-selected ranks retain the shared-memory sentinel (0x5A).
 template <int BYTES>
 __global__ void multicast_mask_one_producer_kernel(const uint8_t *g_src,
                                                     uint8_t *g_out,
                                                     uint16_t cta_mask) {
-  __shared__ uint8_t smem[BYTES + 64];
+  __shared__ __align__(16) uint8_t smem[BYTES + 64];
   __shared__ unsigned long long bar;
 
   int tid = threadIdx.x;
@@ -79,6 +79,10 @@ __global__ void multicast_mask_one_producer_kernel(const uint8_t *g_src,
   }
   __syncthreads();
 
+  asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+  asm volatile("barrier.cluster.arrive.aligned;" ::: "memory");
+  asm volatile("barrier.cluster.wait.aligned;" ::: "memory");
+
   if (rank == 0 && tid == 0) {
     unsigned long long dst_s, src_g, bar_s;
     asm volatile("cvta.to.shared.u64 %0, %1;" : "=l"(dst_s) : "l"(smem));
@@ -93,7 +97,7 @@ __global__ void multicast_mask_one_producer_kernel(const uint8_t *g_src,
         "  cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes."
         "multicast::cluster [%0], [%1], %3, [%2], mymask;\n"
         "}\n" ::"l"(dst_s),
-        "l"(src_g), "l"(bar_s), "n"(BYTES), "h"(cta_mask));
+        "l"(src_g), "l"(bar_s), "n"(BYTES), "h"(cta_mask) : "memory");
   }
   __syncthreads();
 
@@ -103,31 +107,38 @@ __global__ void multicast_mask_one_producer_kernel(const uint8_t *g_src,
       mbarrier_try_wait_impl(&bar, 0);
     }
     __syncthreads();
-    for (int i = tid; i < BYTES; i += blockDim.x) {
-      g_out[rank * BYTES + i] = smem[i];
-    }
   }
-  // Non-selected ranks do not wait (would hang) and do not write g_out.
+  // Keep every CTA alive until selected destinations have completed.
+  asm volatile("barrier.cluster.arrive.aligned;" ::: "memory");
+  asm volatile("barrier.cluster.wait.aligned;" ::: "memory");
+  for (int i = tid; i < BYTES; i += blockDim.x) {
+    g_out[rank * BYTES + i] = smem[i];
+  }
 }
 
-// Legacy bare .shared::cluster (no .multicast::cluster): all co-resident peers
-// still receive the tile (compat with existing multicast model).
+// Bare .shared::cluster with local addresses must leave peer shared memory
+// untouched. Cluster barriers keep peers alive until the unicast is complete.
 template <int BYTES>
-__global__ void legacy_shared_cluster_all_peers_kernel(const uint8_t *g_src,
+__global__ void unicast_shared_cluster_only_issuer_kernel(const uint8_t *g_src,
                                                         uint8_t *g_out) {
-  __shared__ uint8_t smem[BYTES + 64];
+  __shared__ __align__(16) uint8_t smem[BYTES + 64];
   __shared__ unsigned long long bar;
   int tid = threadIdx.x;
   int rank = (int)blockIdx.x;
 
+  for (int i = tid; i < BYTES; i += blockDim.x) smem[i] = 0x5A;
   if (tid == 0) {
     mbarrier_init_impl(&bar, 1);
   }
   __syncthreads();
-  if (tid == 0) {
+  if (rank == 0 && tid == 0) {
     mbarrier_arrive_expect_tx_impl(&bar, BYTES);
   }
   __syncthreads();
+
+  asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+  asm volatile("barrier.cluster.arrive.aligned;" ::: "memory");
+  asm volatile("barrier.cluster.wait.aligned;" ::: "memory");
 
   if (rank == 0 && tid == 0) {
     unsigned long long dst_s, src_g, bar_s;
@@ -137,13 +148,15 @@ __global__ void legacy_shared_cluster_all_peers_kernel(const uint8_t *g_src,
     asm volatile(
         "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes "
         "[%0], [%1], %3, [%2];" ::"l"(dst_s),
-        "l"(src_g), "l"(bar_s), "n"(BYTES));
+        "l"(src_g), "l"(bar_s), "n"(BYTES) : "memory");
   }
   __syncthreads();
-  if (tid == 0) {
+  if (rank == 0 && tid == 0) {
     mbarrier_try_wait_impl(&bar, 0);
   }
   __syncthreads();
+  asm volatile("barrier.cluster.arrive.aligned;" ::: "memory");
+  asm volatile("barrier.cluster.wait.aligned;" ::: "memory");
   for (int i = tid; i < BYTES; i += blockDim.x) {
     g_out[rank * BYTES + i] = smem[i];
   }
@@ -225,7 +238,7 @@ TEST_F(TmaMulticastMaskTest, Mask_Subset_Ranks0And1) {
       if (r == 0 || r == 1) {
         EXPECT_EQ(got, h_in[i]) << "selected rank " << r << " i " << i;
       } else {
-        EXPECT_EQ(got, 0xAB) << "non-selected rank " << r << " i " << i;
+        EXPECT_EQ(got, 0x5A) << "non-selected rank " << r << " i " << i;
       }
     }
   }
@@ -258,13 +271,44 @@ TEST_F(TmaMulticastMaskTest, Mask_SingleRank0) {
             cudaSuccess);
   for (int i = 0; i < kChunk; i++) {
     EXPECT_EQ(h_out[i], h_in[i]) << "rank0 i " << i;
-    EXPECT_EQ(h_out[kChunk + i], 0xAB) << "rank1 i " << i;
+    EXPECT_EQ(h_out[kChunk + i], 0x5A) << "rank1 i " << i;
   }
   cudaFree(d_src);
   cudaFree(d_out);
 }
 
-TEST_F(TmaMulticastMaskTest, NoMask_SharedCluster_LegacyAllPeers) {
+TEST_F(TmaMulticastMaskTest, Mask_PeerOnly) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  constexpr int N = 2;
+  constexpr uint16_t mask = 0x2;  // issuer rank 0 is not a destination
+
+  uint8_t *d_src = nullptr, *d_out = nullptr;
+  ASSERT_EQ(cudaMalloc(&d_src, kChunk), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_out, N * kChunk), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(d_src, h_in.data(), kChunk, cudaMemcpyHostToDevice),
+            cudaSuccess);
+  ASSERT_EQ(cudaMemset(d_out, 0xAB, N * kChunk), cudaSuccess);
+
+  uint16_t mask_host = mask;
+  void *args[] = {&d_src, &d_out, &mask_host};
+  ASSERT_EQ(flash_test::launch_kernel_with_cluster(
+                (const void *)multicast_mask_one_producer_kernel<kChunk>,
+                dim3(N), dim3(kThreads), dim3(N, 1, 1), args),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  std::vector<uint8_t> h_out(N * kChunk, 0);
+  ASSERT_EQ(cudaMemcpy(h_out.data(), d_out, N * kChunk, cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  for (int i = 0; i < kChunk; i++) {
+    EXPECT_EQ(h_out[i], 0x5A) << "rank0 i " << i;
+    EXPECT_EQ(h_out[kChunk + i], h_in[i]) << "rank1 i " << i;
+  }
+  cudaFree(d_src);
+  cudaFree(d_out);
+}
+
+TEST_F(TmaMulticastMaskTest, NoMask_SharedCluster_OnlyIssuer) {
   SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
   constexpr int N = 2;
 
@@ -277,7 +321,7 @@ TEST_F(TmaMulticastMaskTest, NoMask_SharedCluster_LegacyAllPeers) {
 
   void *args[] = {&d_src, &d_out};
   ASSERT_EQ(flash_test::launch_kernel_with_cluster(
-                (const void *)legacy_shared_cluster_all_peers_kernel<kChunk>,
+                (const void *)unicast_shared_cluster_only_issuer_kernel<kChunk>,
                 dim3(N), dim3(kThreads), dim3(N, 1, 1), args),
             cudaSuccess);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
@@ -287,7 +331,8 @@ TEST_F(TmaMulticastMaskTest, NoMask_SharedCluster_LegacyAllPeers) {
             cudaSuccess);
   for (int r = 0; r < N; r++) {
     for (int i = 0; i < kChunk; i++) {
-      EXPECT_EQ(h_out[r * kChunk + i], h_in[i]) << "rank " << r << " i " << i;
+      EXPECT_EQ(h_out[r * kChunk + i], r == 0 ? h_in[i] : 0x5A)
+          << "rank " << r << " i " << i;
     }
   }
   cudaFree(d_src);

@@ -1275,8 +1275,9 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
       ctx->api->g_cuda_launch_stack.pop_back();
       return g_last_cudaError = cudaErrorInvalidClusterSize;
     }
-    // Capacity: TB cluster size must fit physical cluster packing
-    // (n_cores_per_cluster).
+    // A GPC's SM count is physical capacity, not the architectural CTA
+    // cluster limit. TMA rank masks cover at most 16 CTAs; sizes above the
+    // portable limit of 8 require an explicit opt-in.
     gpgpu_sim *gpu_for_check =
         context->get_device()->get_gpgpu();
     unsigned n_cores = 1;
@@ -1285,12 +1286,19 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
                     ->n_simt_cores_per_cluster;
       if (n_cores == 0) n_cores = 1;
     }
-    unsigned ctas = cluster_dim.x * cluster_dim.y * cluster_dim.z;
-    if (ctas > n_cores) {
+    const unsigned architecture_limit =
+        entry_for_cluster && entry_for_cluster->nonportable_cluster_size_allowed()
+            ? 16 : 8;
+    const unsigned limit = std::min(n_cores, architecture_limit);
+    // Bound each dimension before multiplying: three unsigned dimensions
+    // can otherwise wrap to a small value and bypass the cluster limit.
+    if (cluster_dim.x > limit || cluster_dim.y > limit ||
+        cluster_dim.z > limit ||
+        cluster_dim.x * cluster_dim.y * cluster_dim.z > limit) {
       printf(
-          "GPGPU-Sim PTX: ERROR ** cluster size %u exceeds "
-          "n_cores_per_cluster %u (config capacity)\n",
-          ctas, n_cores);
+          "GPGPU-Sim PTX: ERROR ** cluster dimensions (%u,%u,%u) exceed "
+          "supported limit %u (config capacity %u)\n",
+          cluster_dim.x, cluster_dim.y, cluster_dim.z, limit, n_cores);
       ctx->api->g_cuda_launch_stack.pop_back();
       return g_last_cudaError = cudaErrorInvalidClusterSize;
     }
@@ -3219,16 +3227,21 @@ __host__ cudaError_t CUDARTAPI cudaOccupancyMaxActiveClusters(
 
 __host__ cudaError_t CUDARTAPI cudaOccupancyMaxPotentialClusterSize(
     int *clusterSize, const void *func, const cudaLaunchConfig_t *config) {
-  (void)func;
   (void)config;
   if (!clusterSize) return g_last_cudaError = cudaErrorInvalidValue;
+  // Native cluster support is not implemented. SASS-only registrations have
+  // no PTX function_info, and get_kernel() would abort rather than return null.
+  if (flash_gpgpu_sim::sass::runtime_functional_requested())
+    return g_last_cudaError = cudaErrorNotSupported;
   gpgpu_context *ctx = GPGPU_Context();
   _cuda_device_id *dev = ctx->GPGPUSim_Init();
   unsigned sms_per_gpc = 16;
   if (dev->get_gpgpu() && dev->get_gpgpu()->getShaderCoreConfig())
     sms_per_gpc =
         dev->get_gpgpu()->getShaderCoreConfig()->n_simt_cores_per_cluster;
-  *clusterSize = (int)sms_per_gpc;
+  function_info *entry = GPGPUSim_Context(ctx)->get_kernel((const char *)func);
+  unsigned limit = entry && entry->nonportable_cluster_size_allowed() ? 16 : 8;
+  *clusterSize = (int)std::min(sms_per_gpc, limit);
   return g_last_cudaError = cudaSuccess;
 }
 #endif

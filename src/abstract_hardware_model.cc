@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <iostream>
 #include <sstream>
+#include <tuple>
 #include "../libcuda/gpgpu_context.h"
 #include "cuda-sim/cuda-sim.h"
 #include "cuda-sim/memory.h"
@@ -919,10 +920,7 @@ void simt_stack::resume(char *fname) {
     pch = strtok(NULL, " ");
     new_stack_entry.m_branch_div_cycle = atoi(pch);
     pch = strtok(NULL, " ");
-    if (pch[0] == '0')
-      new_stack_entry.m_type = STACK_ENTRY_TYPE_NORMAL;
-    else
-      new_stack_entry.m_type = STACK_ENTRY_TYPE_CALL;
+    new_stack_entry.m_type = static_cast<stack_entry_type>(atoi(pch));
     m_stack.push_back(new_stack_entry);
   }
   fclose(fp2);
@@ -1132,6 +1130,184 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
   }
 }
 
+void simt_stack::reconverge_barrier(const simt_mask_t &thread_done,
+                                    const addr_vector_t &next_pc,
+                                    ptx_thread_info *const *threads) {
+  for (;;) {
+    // A saved join or caller can become active after some lanes have exited.
+    while (!m_stack.empty()) {
+      auto &mask = m_stack.back().m_active_mask;
+      mask &= ~thread_done;
+      if (mask.any()) break;
+      m_stack.pop_back();
+    }
+    if (m_stack.empty() ||
+        m_stack.back().m_type == STACK_ENTRY_TYPE_BARRIER_FRAGMENT ||
+        m_stack.back().m_type == STACK_ENTRY_TYPE_BARRIER_ARRIVAL)
+      return;
+
+    const auto sync_at = [this](address_type pc) -> const ptx_instruction * {
+      const auto *inst = m_gpu->gpgpu_ctx->pc_to_instruction(pc);
+      if (!inst) return nullptr;
+      return inst->get_opcode() == BAR_OP &&
+                     (inst->bar_type == SYNC || inst->bar_type == ARRIVE) &&
+                     !inst->cluster_barrier ? inst : nullptr;
+    };
+    const auto *top = sync_at(m_stack.back().m_pc);
+    if (!top) return;
+    const simt_mask_t required = ~thread_done;
+
+    std::map<address_type, simt_mask_t> sites;
+    simt_mask_t waiting;
+    for (unsigned lane = 0; lane < m_warp_size; ++lane) {
+      if (!required.test(lane)) continue;
+      const auto *inst = sync_at(next_pc[lane]);
+      if (inst && inst->get_opcode() == top->get_opcode() &&
+          threads[lane]->predicate_allows(*inst)) {
+        sites[next_pc[lane]].set(lane);
+        waiting.set(lane);
+      }
+    }
+    if ((m_stack.back().m_active_mask & waiting).none()) return;
+    // A full execution mask can still contain predicated-off lanes.
+    if (m_stack.back().m_active_mask == waiting && waiting == required)
+      return;
+
+    if (waiting != required) {
+      // Give the unfinished paths the top of the stack. Keep every enclosing
+      // join and call in each projection so each lane retains its ancestry.
+      std::deque<simt_stack_entry> paths;
+      for (auto lanes : {waiting, ~(required | thread_done), required & ~waiting}) {
+        for (auto entry : m_stack) {
+          entry.m_active_mask &= lanes;
+          if (entry.m_active_mask.any()) paths.push_back(entry);
+        }
+      }
+      m_stack.swap(paths);
+      // Returned lanes can be needed by peers still waiting in the callee.
+      // Their saved caller points at call, while their thread PC is after it.
+      for (unsigned lane = 0; lane < m_warp_size; ++lane) {
+        if (thread_done.test(lane) || waiting.test(lane)) continue;
+        auto leaf = std::find_if(m_stack.rbegin(), m_stack.rend(),
+                                 [lane](const simt_stack_entry &e) {
+                                   return e.m_active_mask.test(lane);
+                                 });
+        if (leaf == m_stack.rend() || leaf->m_pc == next_pc[lane]) continue;
+        const auto *inst = m_gpu->gpgpu_ctx->pc_to_instruction(leaf->m_pc);
+        if (inst->op != CALL_OPS) continue;
+        auto resumed = *leaf;
+        resumed.m_pc = next_pc[lane];
+        resumed.m_active_mask.reset();
+        resumed.m_active_mask.set(lane);
+        leaf->m_active_mask.reset(lane);
+        m_stack.push_back(resumed);
+      }
+      // The newly exposed path can itself be a different collective.
+      continue;
+    }
+
+    // Reunite the stack projections at each common ancestor, including joins
+    // shared by only a subset of the warp. Lexicographic ordering places every
+    // caller/join below its descendants on the reconstructed stack.
+    using frame_key = std::tuple<address_type, address_type, stack_entry_type>;
+    std::map<std::vector<frame_key>, simt_stack_entry> continuations;
+    std::set<std::vector<frame_key>> resume_paths;
+    std::vector<frame_key> path;
+    for (unsigned lane = 0; lane < m_warp_size; ++lane) {
+      if (thread_done.test(lane)) continue;
+      path.clear();
+      const auto pc = next_pc[lane];
+      auto leaf = std::find_if(m_stack.rbegin(), m_stack.rend(),
+                               [lane](const simt_stack_entry &e) {
+                                 return e.m_active_mask.test(lane);
+                               });
+      assert(leaf != m_stack.rend());
+      assert(!waiting.test(lane) || leaf->m_pc == pc);
+      for (auto it = m_stack.begin(); it != leaf.base(); ++it) {
+        if (!it->m_active_mask.test(lane)) continue;
+        const bool at_barrier = waiting.test(lane) && &*it == &*leaf;
+        const auto after = at_barrier ? pc + sync_at(pc)->inst_size() : it->m_pc;
+        if (at_barrier && after == it->m_recvg_pc &&
+            it->m_type != STACK_ENTRY_TYPE_CALL) break;
+        const auto resume_pc = at_barrier ? after : it->m_pc;
+        path.emplace_back(resume_pc, it->m_recvg_pc, it->m_type);
+        auto [pos, inserted] = continuations.try_emplace(path, *it);
+        auto &frame = pos->second;
+        if (inserted) {
+          frame.m_pc = resume_pc;
+          frame.m_active_mask.reset();
+        }
+        frame.m_active_mask.set(lane);
+        if (at_barrier) resume_paths.insert(path);
+      }
+    }
+    // Predication can split paths across basic blocks without a branch join.
+    // Use their common postdominator while retaining the dynamic caller chain.
+    using sibling_key = std::pair<
+        std::vector<frame_key>,
+        std::tuple<function_info *, stack_entry_type, address_type>>;
+    std::map<sibling_key, std::vector<std::vector<frame_key>>> siblings;
+    for (const auto &key : resume_paths) {
+      const auto &frame = continuations.at(key);
+      auto parent = key;
+      parent.pop_back();
+      unsigned lane = 0;
+      while (!frame.m_active_mask.test(lane)) ++lane;
+      siblings[{parent, {threads[lane]->get_finfo(), frame.m_type, frame.m_recvg_pc}}]
+          .push_back(key);
+    }
+    for (const auto &[group, keys] : siblings) {
+      if (keys.size() < 2) continue;
+      addr_vector_t pcs;
+      for (const auto &key : keys) pcs.push_back(continuations.at(key).m_pc);
+      const auto join_pc = std::get<0>(group.second)->common_postdominator(pcs);
+      if (join_pc == (address_type)-1) continue;
+      auto join = continuations.at(keys.front());
+      if (join_pc == join.m_recvg_pc) continue;
+      join.m_pc = join_pc;
+      join.m_active_mask.reset();
+      auto join_key = group.first;
+      join_key.emplace_back(join_pc, join.m_recvg_pc, join.m_type);
+      for (const auto &key : keys) {
+        auto frame = continuations.at(key);
+        join.m_active_mask |= frame.m_active_mask;
+        continuations.erase(key);
+        if (frame.m_pc == join_pc) continue;
+        frame.m_recvg_pc = join_pc;
+        // The shared join owns the call boundary. Individual paths converge
+        // there before the function can return to its caller.
+        frame.m_type = STACK_ENTRY_TYPE_NORMAL;
+        auto child_key = join_key;
+        child_key.emplace_back(frame.m_pc, frame.m_recvg_pc, frame.m_type);
+        continuations.emplace(child_key, frame);
+      }
+      continuations[join_key] = join;
+    }
+    m_stack.clear();
+    for (const auto &path_frame : continuations)
+      m_stack.push_back(path_frame.second);
+
+    // Issue each static instruction before any continuation. Only the last
+    // issue for a named barrier registers the warp with the CTA barrier unit.
+    std::set<std::pair<unsigned, unsigned>> arrivals;
+    for (const auto &[pc, lanes] : sites) {
+      const auto *inst = sync_at(pc);
+      unsigned lane = 0;
+      while (!lanes.test(lane)) ++lane;
+      const auto resource = threads[lane]->cta_barrier_operands(*inst);
+      simt_stack_entry issue;
+      issue.m_pc = pc;
+      issue.m_recvg_pc = pc + inst->inst_size();
+      issue.m_active_mask = lanes;
+      issue.m_type = arrivals.insert(resource).second
+                         ? STACK_ENTRY_TYPE_BARRIER_ARRIVAL
+                         : STACK_ENTRY_TYPE_BARRIER_FRAGMENT;
+      m_stack.push_back(issue);
+    }
+    return;
+  }
+}
+
 void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
   if (warpId == (unsigned)-1)
     warpId = inst.warp_id();
@@ -1171,6 +1347,8 @@ void core_t::updateSIMTStack(unsigned warpId, warp_inst_t *inst) {
   }
   m_simt_stack[warpId]->update(thread_done, next_pc, inst->reconvergence_pc,
                                inst->op, inst->isize, inst->pc);
+  m_simt_stack[warpId]->reconverge_barrier(thread_done, next_pc,
+                                           m_thread + wtid);
 }
 
 //! Get the warp to be executed using the data taken form the SIMT stack

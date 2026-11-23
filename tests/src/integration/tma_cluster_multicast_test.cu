@@ -9,7 +9,9 @@
 // TMA cluster multicast integration tests.
 // Multi-SM cases skip on SM120_RTX5090. SM90_H200 can run them.
 //
-// Peer .shared::cluster multicast requires co-residency: multi-block cluster
+// Most historical "ClusterMulticast" cases below issue one unicast load per
+// CTA using .shared::cluster. Only OneProducer uses explicit multicast.
+// Peer multicast requires co-residency: multi-block cluster
 // cases use cudaLaunchKernelEx + clusterDim. Ordinary <<<>>> launches no
 // longer form issue-order peer groups (each CTA is its own group) so
 // independent multi-issuer kernels are not falsely coupled on m>1 packs.
@@ -60,7 +62,7 @@ __device__ inline void cp_async_bulk_cta(void *smem_dst,
       ::"l"(dst_s), "l"(src_g), "l"(bar_s), "n"(bytes));
 }
 
-// TMA cluster multicast: shared::cluster <- global.
+// TMA unicast with a cluster shared-memory address.
 template <int bytes>
 __device__ inline void cp_async_bulk_cluster(void *smem_dst,
                                               const void *global_src,
@@ -1052,7 +1054,7 @@ __global__ void tma_stress_kernel(const uint8_t *global_src, uint8_t *global_dst
     }
 }
 
-// One-producer multi-consumer: only block 0 issues .shared::cluster TMA;
+// One-producer multi-consumer: only block 0 issues explicit multicast TMA;
 // all blocks wait on their local mbarrier (peer complete_tx must wake them)
 // and write the same tile to their output region.
 template <int CHUNK_BYTES>
@@ -1075,7 +1077,14 @@ __global__ void tma_one_producer_cluster_kernel(const uint8_t *global_src,
             // spin until every CTA has armed expect_tx
         }
         if (bid == 0) {
-            cp_async_bulk_cluster<CHUNK_BYTES>(data_buf, global_src, &bar);
+            const uint16_t mask = static_cast<uint16_t>((1u << num_blocks) - 1);
+            asm volatile(
+                "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes."
+                "multicast::cluster [%0], [%1], %2, [%3], %4;"
+                :: "r"(static_cast<uint32_t>(__cvta_generic_to_shared(data_buf))),
+                   "l"(global_src), "n"(CHUNK_BYTES),
+                   "r"(static_cast<uint32_t>(__cvta_generic_to_shared(&bar))),
+                   "h"(mask) : "memory");
         }
         mbarrier_try_wait_impl(&bar, 0);
     }

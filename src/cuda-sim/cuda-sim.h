@@ -31,6 +31,7 @@
 
 #include <stdlib.h>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 #include "../abstract_hardware_model.h"
@@ -67,19 +68,18 @@ class functionalCoreSim : public core_t {
  public:
   functionalCoreSim(kernel_info_t *kernel, gpgpu_sim *g, unsigned warp_size)
       : core_t(g, kernel, warp_size, kernel->threads_per_cta()) {
-    m_warpAtBarrier = new bool[m_warp_count];
+    m_waiting_at.resize(m_warp_count, runnable);
     m_liveThreadCount = new unsigned[m_warp_count];
   }
   virtual ~functionalCoreSim() {
     warp_exit(0);
     delete[] m_liveThreadCount;
-    delete[] m_warpAtBarrier;
   }
   //! executes all warps till completion
   void execute(int inst_count, unsigned ctaid_cp);
   virtual void warp_exit(unsigned warp_id);
   virtual bool warp_waiting_at_barrier(unsigned warp_id) const {
-    return (m_warpAtBarrier[warp_id] || !(m_liveThreadCount[warp_id] > 0));
+    return m_waiting_at[warp_id] != runnable || m_liveThreadCount[warp_id] == 0;
   }
 
  private:
@@ -98,7 +98,14 @@ class functionalCoreSim : public core_t {
 
   // each warp live thread count and barrier indicator
   unsigned *m_liveThreadCount;
-  bool *m_warpAtBarrier;
+  enum { runnable = -1, collective_wait = -2 };
+  std::vector<int> m_waiting_at;
+  struct named_barrier {
+    unsigned count;
+    std::set<unsigned> arrived;
+  };
+  std::map<unsigned, named_barrier> m_named_barriers;
+  void release_ready_named_barriers();
 };
 
 #define RECONVERGE_RETURN_PC ((address_type) - 2)
