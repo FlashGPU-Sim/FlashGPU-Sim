@@ -16,6 +16,18 @@ sources = [
   "integration/shared_memory_optin_test.cu",
   "integration/vector_add_test.cu",
   "integration/vector_operand_test.cu",
+  "integration/cluster_basic_test.cu",
+  "integration/cluster_launch_api_test.cu",
+  "integration/cluster_multicast_multicluster_test.cu",
+  "integration/cluster_real_shaped_test.cu",
+  "integration/cluster_sreg_test.cu",
+  "integration/cuda_event_timing_test.cu",
+  "integration/dsm_test.cu",
+  "integration/mbarrier_cluster_test.cu",
+  "integration/ptx_fma_test.cu",
+  "integration/tma_cluster_multicast_test.cu",
+  "integration/tma_multicast_mask_test.cu",
+  "integration/tma_store_test.cu",
   # Official CUDA/CUTLASS FlashAttention-2 forward test path.
   "fa2/fa2_fwd_fp16_test.cu",
 ]
