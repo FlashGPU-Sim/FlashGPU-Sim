@@ -76,6 +76,13 @@ tests = [
   { name = "smoke", group = "fa2", profile = "smoke", gtest_filter = "Fa2PrefillFp16SmokeTest.*" },
 ]
 
+[jobs.sm89-fa2]
+arch = "sm89"
+config = "SM89_RTX4060"
+tests = [
+  { name = "smoke", group = "fa2", profile = "smoke", gtest_filter = "Fa2PrefillFp16SmokeTest.*" },
+]
+
 [jobs.sm90-cluster]
 arch = "sm90"
 config = "SM90_H200"
