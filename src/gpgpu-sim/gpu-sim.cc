@@ -1898,6 +1898,13 @@ void gpgpu_sim::set_kernel_done(kernel_info_t *kernel) {
   last_streamID = streamID;
   gpu_kernel_time.at(streamID).at(uid).end_cycle =
       gpu_tot_sim_cycle + gpu_sim_cycle;
+  const kernel_time_t &kernel_time = gpu_kernel_time.at(streamID).at(uid);
+  fprintf(stdout,
+          "kernel_sim_timing uid=%u name=%s start_cycle=%llu end_cycle=%llu "
+          "elapsed_cycles=%llu\n",
+          uid, kernel->name().c_str(), kernel_time.start_cycle,
+          kernel_time.end_cycle,
+          kernel_time.end_cycle - kernel_time.start_cycle);
   m_finished_kernel.push_back(uid);
   std::vector<kernel_info_t *>::iterator k;
   for (k = m_running_kernels.begin(); k != m_running_kernels.end(); k++) {
@@ -3101,8 +3108,8 @@ bool shader_core_ctx::occupy_shader_resource_1block(kernel_info_t &k,
 
   const unsigned static_smem = k.static_shared_memory();
   const unsigned registers = k.registers_per_thread();
-  if (m_occupied_shmem + static_smem + k.get_dynamic_smem() >
-      m_config->gpgpu_shmem_size)
+  const unsigned block_smem = static_smem + k.get_dynamic_smem();
+  if (m_occupied_shmem + block_smem > m_config->gpgpu_shmem_size)
     return false;
 
   unsigned int used_regs = padded_cta_size * ((registers + 3) & ~3);
@@ -3113,7 +3120,7 @@ bool shader_core_ctx::occupy_shader_resource_1block(kernel_info_t &k,
 
   if (occupy) {
     m_occupied_n_threads += padded_cta_size;
-    m_occupied_shmem += static_smem + k.get_dynamic_smem();
+    m_occupied_shmem += block_smem;
     m_occupied_regs += used_regs;
     m_occupied_ctas++;
 

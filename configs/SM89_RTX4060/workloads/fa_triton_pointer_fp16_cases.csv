@@ -1,0 +1,9 @@
+case_id,batch,seq_len,heads,head_dim,dtype,causal,layout,scale,block_m,block_n,num_warps,num_stages,input_seed,implementation
+smoke_h32d64_b2_s128_full,2,128,32,64,fp16,false,BHSD,1/sqrt(head_dim),64,64,4,3,20261117,triton_pointer_online_softmax_no_tma
+smoke_h32d64_b2_s128_causal,2,128,32,64,fp16,true,BHSD,1/sqrt(head_dim),64,64,4,3,20261117,triton_pointer_online_softmax_no_tma
+smoke_h16d128_b2_s128_full,2,128,16,128,fp16,false,BHSD,1/sqrt(head_dim),64,64,4,3,20261117,triton_pointer_online_softmax_no_tma
+smoke_h16d128_b2_s128_causal,2,128,16,128,fp16,true,BHSD,1/sqrt(head_dim),64,64,4,3,20261117,triton_pointer_online_softmax_no_tma
+medium_h32d64_b4_s256_full,4,256,32,64,fp16,false,BHSD,1/sqrt(head_dim),64,64,4,3,20261117,triton_pointer_online_softmax_no_tma
+medium_h32d64_b4_s256_causal,4,256,32,64,fp16,true,BHSD,1/sqrt(head_dim),64,64,4,3,20261117,triton_pointer_online_softmax_no_tma
+medium_h16d128_b2_s256_full,2,256,16,128,fp16,false,BHSD,1/sqrt(head_dim),64,64,4,3,20261117,triton_pointer_online_softmax_no_tma
+medium_h16d128_b2_s256_causal,2,256,16,128,fp16,true,BHSD,1/sqrt(head_dim),64,64,4,3,20261117,triton_pointer_online_softmax_no_tma

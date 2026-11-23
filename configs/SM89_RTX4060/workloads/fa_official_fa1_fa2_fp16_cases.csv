@@ -1,0 +1,17 @@
+case_id,implementation,batch,seqlen_q,seqlen_k,heads,head_dim,input_dtype,output_dtype,accum_dtype,mask,dropout_p,softmax_scale,layout,input_pattern,qkv_shared_across_fa1_fa2
+fa1_b8_s128_h32_d64_full,FA1,8,128,128,32,64,fp16,fp16,fp32,full,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa2_b8_s128_h32_d64_full,FA2,8,128,128,32,64,fp16,fp16,fp32,full,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa1_b8_s128_h32_d64_causal,FA1,8,128,128,32,64,fp16,fp16,fp32,causal,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa2_b8_s128_h32_d64_causal,FA2,8,128,128,32,64,fp16,fp16,fp32,causal,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa1_b8_s256_h32_d64_full,FA1,8,256,256,32,64,fp16,fp16,fp32,full,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa2_b8_s256_h32_d64_full,FA2,8,256,256,32,64,fp16,fp16,fp32,full,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa1_b8_s256_h32_d64_causal,FA1,8,256,256,32,64,fp16,fp16,fp32,causal,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa2_b8_s256_h32_d64_causal,FA2,8,256,256,32,64,fp16,fp16,fp32,causal,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa1_b8_s128_h16_d128_full,FA1,8,128,128,16,128,fp16,fp16,fp32,full,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa2_b8_s128_h16_d128_full,FA2,8,128,128,16,128,fp16,fp16,fp32,full,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa1_b8_s128_h16_d128_causal,FA1,8,128,128,16,128,fp16,fp16,fp32,causal,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa2_b8_s128_h16_d128_causal,FA2,8,128,128,16,128,fp16,fp16,fp32,causal,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa1_b8_s256_h16_d128_full,FA1,8,256,256,16,128,fp16,fp16,fp32,full,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa2_b8_s256_h16_d128_full,FA2,8,256,256,16,128,fp16,fp16,fp32,full,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa1_b8_s256_h16_d128_causal,FA1,8,256,256,16,128,fp16,fp16,fp32,causal,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
+fa2_b8_s256_h16_d128_causal,FA2,8,256,256,16,128,fp16,fp16,fp32,causal,0,1/sqrt(head_dim),contiguous_BSHD,sin(i%251*0.013)*scale_qkv_0.25_0.20_0.30,yes
