@@ -1,3 +1,4 @@
+#include "../../tma_cluster_targets.h"
 #include "../decode/tma_load_operand.h"
 #include "internal.h"
 
@@ -104,16 +105,26 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   const bool gather4 = inst.opcode.rfind("UTMALDG.2D.GATHER4", 0) == 0;
   const bool multicast = inst.opcode.find(".MULTICAST") != std::string::npos;
   const bool paired = inst.opcode.find(".2CTA") != std::string::npos;
-  if (gather4 && (!context.kernel_image ||
-                  (context.kernel_image->arch != architecture::kSm100 &&
-                   context.kernel_image->arch != architecture::kSm103)))
-    return unsupported(inst, "gather4 requires SM100/SM103");
-  const unsigned rank = gather4                       ? 2
-                        : inst.opcode == "UTMALDG.1D" ? 1
-                        : inst.opcode == "UTMALDG.2D" ? 2
-                        : inst.opcode == "UTMALDG.3D" ? 3
-                        : inst.opcode == "UTMALDG.4D" ? 4
-                        : inst.opcode == "UTMALDG.5D" ? 5
+  const bool blackwell = context.kernel_image &&
+                         (context.kernel_image->arch == architecture::kSm100 ||
+                          context.kernel_image->arch == architecture::kSm103);
+  const bool cluster_targets =
+      gather4 || paired || multicast ||
+      (blackwell && context.cluster && context.cluster->ctas.size() > 1);
+  if ((gather4 || paired) &&
+      (!context.kernel_image ||
+       (context.kernel_image->arch != architecture::kSm100 &&
+        context.kernel_image->arch != architecture::kSm103)))
+    return unsupported(inst, "gather4/paired TMA requires SM100/SM103");
+  std::string base_opcode = inst.opcode;
+  const auto modifier = base_opcode.find('.', 8);
+  if (modifier != std::string::npos)
+    base_opcode.resize(modifier);
+  const unsigned rank = base_opcode == "UTMALDG.1D"   ? 1
+                        : base_opcode == "UTMALDG.2D" ? 2
+                        : base_opcode == "UTMALDG.3D" ? 3
+                        : base_opcode == "UTMALDG.4D" ? 4
+                        : base_opcode == "UTMALDG.5D" ? 5
                                                       : 0;
   if (rank == 0)
     return unsupported(inst, "unsupported TMA load rank");
@@ -144,14 +155,14 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   uint16_t destinations = uint16_t(1u << context.cga_cta_id);
   uint32_t completions = 0;
   const unsigned size = context.cluster ? context.cluster->ctas.size() : 1;
-  if (gather4) {
+  if (cluster_targets) {
     // CUDA 13.3 encodes the absolute cluster rank in shared address bits
     // 24..27 (including rank zero), and multicast masks in bits 16..31.
     unsigned destination = shared_address >> 24;
     unsigned owner = mbarrier_address >> 24;
     if (!size || size > 16 || destination >= size || owner >= size)
       return unsupported(inst,
-                         "gather4 shared address has an invalid cluster rank");
+                         "TMA shared address has an invalid cluster rank");
     if (multicast) {
       uint32_t mask = 0;
       if (!read_u32_operand(inst.operands[extra], state, 0, mask) ||
@@ -160,16 +171,16 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
       destinations = uint16_t(mask >> 16);
     } else
       destinations = uint16_t(1u << destination);
-    if (!tma_gather4_completion_targets(size, destinations, owner, paired,
-                                        multicast, completions))
-      return unsupported(inst, "invalid gather4 CTA targets");
+    if (!tma_completion_targets(size, destinations, owner, paired, multicast,
+                                completions))
+      return unsupported(inst, "invalid TMA CTA targets");
     shared_address &= 0xffffffu;
     mbarrier_address &= 0xffffffu;
     for (unsigned rank = 0; rank < size; ++rank)
       if ((destinations | completions | (completions >> 16)) & (1u << rank)) {
         if (context.cluster &&
             (!context.cluster->ctas[rank] || !context.cluster->memories[rank]))
-          return unsupported(inst, "gather4 target CTA is not resident");
+          return unsupported(inst, "TMA target CTA is not resident");
         if (completions & (1u << rank)) {
           execution_context owner_context = context;
           if (context.cluster) {
@@ -177,8 +188,7 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
             owner_context.memory = context.cluster->memories[rank];
           }
           if (!ensure_mbarrier_imported(mbarrier_address, owner_context))
-            return unsupported(inst,
-                               "gather4 target mbarrier is uninitialized");
+            return unsupported(inst, "TMA target mbarrier is uninitialized");
         }
       }
   }
@@ -314,7 +324,7 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   if (tile_bytes == 0 || tile_bytes > UINT32_MAX ||
       shared_address > std::numeric_limits<uint64_t>::max() - (tile_bytes - 1))
     return unsupported(inst, "invalid TMA shared-memory tile range");
-  if (!gather4 && !ensure_mbarrier_imported(mbarrier_address, context))
+  if (!cluster_targets && !ensure_mbarrier_imported(mbarrier_address, context))
     return unsupported(inst, "TMA references uninitialized mbarrier");
 
   std::vector<uint8_t> tile(tile_bytes, 0);
@@ -428,10 +438,16 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
       }
       shared_data = shared_tile.data();
     }
-    if (!context.memory->write(memory_space::kShared, shared_address,
-                               shared_data, tile.size()))
-      return memory_fault(inst, memory_space::kShared, shared_address,
-                          tile.size());
+    for (unsigned target = 0; target < size; ++target)
+      if (destinations & (1u << target)) {
+        auto *memory = cluster_targets && context.cluster
+                           ? context.cluster->memories[target]
+                           : context.memory;
+        if (!memory->write(memory_space::kShared, shared_address, shared_data,
+                           tile.size()))
+          return memory_fault(inst, memory_space::kShared, shared_address,
+                              tile.size());
+      }
   }
   functional_tma_effect timing_effect;
   timing_effect.destination_address = shared_address;
@@ -440,7 +456,7 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
                                  ? 4 * tma_gather4_gmem_row_bytes(gather_map)
                                  : static_cast<uint32_t>(tile_bytes);
   timing_effect.mbarrier_address = static_cast<uint32_t>(mbarrier_address);
-  if (gather4) {
+  if (cluster_targets) {
     timing_effect.explicit_cluster_targets = size > 1 || multicast || paired;
     timing_effect.destination_mask = destinations;
     timing_effect.completion_mask = completions;
@@ -454,15 +470,17 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   if (!record_uniform_tma_effect(inst, state, context,
                                  std::move(timing_effect)))
     return unsupported(inst, "executing TMA load has no issuing lane");
-  if (gather4) {
+  if (cluster_targets) {
     for (unsigned bit = 0; bit < 32; ++bit)
       if (completions & (1u << bit)) {
         auto *owner =
             context.cluster ? context.cluster->ctas[bit % 16] : context.cta;
         if (!owner->complete_mbarrier_transaction(
-                mbarrier_address, 4 * tma_gather4_gmem_row_bytes(gather_map),
+                mbarrier_address,
+                gather4 ? 4 * tma_gather4_gmem_row_bytes(gather_map)
+                        : tile_bytes,
                 true))
-          return unsupported(inst, "gather4 completion state changed");
+          return unsupported(inst, "TMA completion state changed");
       }
   } else if (!context.cta->complete_mbarrier_transaction(mbarrier_address,
                                                          tile.size(), true))
@@ -963,6 +981,10 @@ void register_tma_semantics(frontend &target) {
   target.register_semantics("UTMALDG.3D", execute_utmaldg);
   target.register_semantics("UTMALDG.4D", execute_utmaldg);
   target.register_semantics("UTMALDG.5D", execute_utmaldg);
+  for (unsigned rank = 1; rank <= 5; ++rank)
+    for (const std::string suffix : {".2CTA", ".MULTICAST", ".MULTICAST.2CTA"})
+      target.register_semantics(
+          "UTMALDG." + std::to_string(rank) + "D" + suffix, execute_utmaldg);
   target.register_semantics("UTMASTG.1D", execute_utmastg);
   target.register_semantics("UTMASTG.2D", execute_utmastg);
   target.register_semantics("UTMASTG.4D", execute_utmastg);

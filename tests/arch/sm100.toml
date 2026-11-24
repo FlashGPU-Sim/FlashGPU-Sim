@@ -4,7 +4,9 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "unit/tma_cluster_targets_test.cc",
   "driver_tma/launch_test.cu",
+  "driver_tma/cluster_test.cu",
   "clc/b128_test.cu",
   "clc/launch_queue_test.cu",
   "unit/clc_queue_test.cc",

@@ -3,4 +3,4 @@
 from tcgen05_dual import run_suite
 
 if __name__ == "__main__":
-    run_suite("DriverTma.*", 5, 12, cluster_validation=True, group="driver_tma")
+    run_suite("DriverTma.*:TmaTensorCluster.*", 8, 32, cluster_validation=True, group="driver_tma")

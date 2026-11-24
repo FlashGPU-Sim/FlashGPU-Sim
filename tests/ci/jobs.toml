@@ -126,5 +126,5 @@ tests = [
 arch = "sm100"
 cuda = "13.3"
 tests = [
-  { name = "driver-maps-and-dual-launch", group = "unit", gtest_filter = "DriverTensorMap.*:Fa4OpaqueTensorMapTest.*:SassParameterAlias.*", post_check = "tests/ci/check_driver_tma_dual.py" },
+  { name = "driver-maps-and-dual-launch", group = "unit", gtest_filter = "DriverTensorMap.*:Fa4OpaqueTensorMapTest.*:SassParameterAlias.*:TmaClusterTargets.*", post_check = "tests/ci/check_driver_tma_dual.py" },
 ]

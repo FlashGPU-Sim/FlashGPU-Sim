@@ -464,21 +464,3 @@ TEST(TensorMapGather4, PackedAddressGeneratorUsesPhysicalBytes) {
       }
   }
 }
-
-TEST(TensorMapGather4, CompletionMaskValidatesPairsAndCountsDuplicateOwners) {
-  uint32_t owners = 0;
-  EXPECT_TRUE(flash_gpgpu_sim::tma_gather4_completion_targets(4, 15, 1, true,
-                                                              true, owners));
-  EXPECT_EQ(owners, 0xa000au);
-  EXPECT_TRUE(flash_gpgpu_sim::tma_gather4_completion_targets(4, 15, 0, true,
-                                                              true, owners));
-  EXPECT_EQ(owners, 0x50005u);
-  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_completion_targets(4, 1, 2, true,
-                                                               false, owners));
-  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_completion_targets(4, 1, 1, false,
-                                                               false, owners));
-  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_completion_targets(3, 4, 1, true,
-                                                               true, owners));
-  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_completion_targets(2, 4, 0, false,
-                                                               true, owners));
-}

@@ -3,6 +3,7 @@
 #include "tb_cluster.h"
 #include "tensormap.h"
 #include "tma_agu.h"
+#include "tma_cluster_targets.h"
 #include "tma_gather4.h"
 #include "tma_opaque_tensormap.h"
 #include "tma_reduction.h"
@@ -83,7 +84,7 @@ static void complete_cluster_mbarriers_masked(shader_core_ctx *core,
                                               uint32_t mbar_addr,
                                               uint32_t size_in_bytes,
                                               uint16_t cta_mask);
-static void complete_gather_mbarriers(shader_core_ctx *core, unsigned cta,
+static void complete_tensor_mbarriers(shader_core_ctx *core, unsigned cta,
                                       uint32_t bar, uint32_t bytes,
                                       uint32_t targets) {
   complete_cluster_mbarriers_masked(core, cta, bar, bytes, uint16_t(targets));
@@ -943,7 +944,7 @@ private:
     } else {
       if (!is_write) {
         if (tx.m_dyn_info.has_completion_mask) {
-          complete_gather_mbarriers(
+          complete_tensor_mbarriers(
               m_shader_ctx, cta_id, tx.m_dyn_info.mbar_addr,
               tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.completion_mask);
         } else if (tx.m_dyn_info.mapped_cluster_copy) {
@@ -1511,7 +1512,7 @@ public:
       if (tx.m_memory_complete && !tx.m_arch_arrive_done &&
           tx.m_arch_arrive_cycle && now >= tx.m_arch_arrive_cycle) {
         if (tx.m_dyn_info.has_completion_mask) {
-          complete_gather_mbarriers(
+          complete_tensor_mbarriers(
               m_shader_ctx, tx.m_cta_id, tx.m_dyn_info.mbar_addr,
               tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.completion_mask);
         } else if (tx.m_dyn_info.has_cta_mask) {
@@ -1628,7 +1629,7 @@ public:
                          m_shader_ctx->get_sid());
           if (!entry.is_write) {
             if (entry.has_completion_mask) {
-              complete_gather_mbarriers(m_shader_ctx, entry.cta_id,
+              complete_tensor_mbarriers(m_shader_ctx, entry.cta_id,
                                         entry.mbar_addr, entry.size_in_bytes,
                                         entry.completion_mask);
             } else if (entry.mapped_cluster_copy) {
@@ -3336,25 +3337,24 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     const auto destination =
         resolve_tma_shared_target(thread, dst_addr, is_cluster);
     const auto barrier =
-        resolve_tma_shared_target(thread, mbar_addr, is_cluster);
+        resolve_tma_shared_target(thread, mbar_addr, is_cluster || paired);
     // Preserve the owner in unicast transaction identity: different target
     // CTAs may use the same offset and notify the same completion barrier.
     const uint32_t transaction_dst_addr =
         multicast_cluster ? destination.offset : dst_addr;
     dst_addr = destination.offset;
     mbar_addr = barrier.offset;
-    uint32_t gather_completions = 0;
-    if (gather4) {
+    uint32_t tensor_completions = 0;
+    if (gather4 || paired) {
       const auto shape = thread->get_kernel().get_cluster_dim();
       const unsigned cluster_size = std::max(1u, shape.x * shape.y * shape.z);
       if (!multicast_cluster)
         cta_mask = uint16_t(1u << destination.rank);
       has_cta_mask = is_cluster || multicast_cluster || paired;
-      if (!tma_gather4_completion_targets(cluster_size, cta_mask, barrier.rank,
-                                          paired, multicast_cluster,
-                                          gather_completions))
+      if (!tma_completion_targets(cluster_size, cta_mask, barrier.rank, paired,
+                                  multicast_cluster, tensor_completions))
         reject_unsupported_tma(
-            "invalid gather4 destination/completion CTA relationship", pI);
+            "invalid tensor destination/completion CTA relationship", pI);
     } else if (!multicast_cluster && barrier.remote) {
       cta_mask = static_cast<uint16_t>(1u << barrier.rank);
       has_cta_mask = true;
@@ -3387,9 +3387,9 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     for (unsigned i = 0; i < 5; ++i)
       tma_dyn_info.coords[i] = coords[i];
     cache_tensormap_descriptor(tma_dyn_info, tensormap);
-    if (gather4) {
+    if (gather4 || paired) {
       tma_dyn_info.has_completion_mask = true;
-      tma_dyn_info.completion_mask = gather_completions;
+      tma_dyn_info.completion_mask = tensor_completions;
     }
     pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
 
