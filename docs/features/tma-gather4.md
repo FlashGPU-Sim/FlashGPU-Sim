@@ -95,3 +95,38 @@ functional CUDA control regression remains part of the integration suite.
 The gather transfer/layout/format implementation remains shared by PTX and
 SASS through `flash/tma_gather4.h`; the SASS adapter supplies decoded addresses
 and CTA state. Follow-up evidence: workspace `runs/feature-fixes-20261124`.
+
+## B200 TMA service calibration
+
+The standard `configs/SM100_B200` preset uses a 4-cycle SM-wide TMA service
+interval (`ptx_opcode_initiation_tma`) with its existing 32-cycle pipeline
+latency. Both PTX and SASS use this shared execution unit. This is a device
+configuration correction, not a gather4-only timing override; it also affects
+ordinary TMA. SASS control instructions and dependency fields retain their
+existing timing. Other GPU presets and code fallback values are unchanged.
+
+The merged experimental SASS frontend retained the old B200 32/32 preset;
+the earlier private calibration was not included in that configuration.
+Replaying the retained B200 FP16 gather4 binary (one CTA, 256 measured
+iterations, 16 warmup iterations) gives aggregate issue-window p50 cycles:
+
+| Producer warps × gathers per warp | Native | Interval 32 | Interval 4 | Error at 4 |
+| --- | ---: | ---: | ---: | ---: |
+| 1 × 8 | 359 | 354 | 354 | -1.39% |
+| 4 × 4 | 188 | 288 | 189 | +0.53% |
+| 8 × 4 | 217 | 831 | 215 | -0.92% |
+
+The issue window includes compiler-generated control/address instructions;
+it does not measure a unique physical four-cycle hardware interval. Changing
+pipeline latency from 32 to 50 at interval 4 leaves these issue/completion
+medians unchanged. Full completion-window discrepancies remain +26.12%,
++16.49%, and +28.35%; this is not completion-latency or multicast performance
+qualification. Native clock64 and unlocked NCU captures are separate runs;
+the latter observed approximately 1.95–1.99 GHz versus the 1.08 GHz public
+simulation preset, so completion-cycle differences are not an isolated,
+frequency-matched memory timing comparison.
+
+Workspace evidence: `runs/gather4-feature-calibration-20261124`, with original
+native binary SHA256
+`bd47cd110e970ae831efff4523607dd327dee3a06dac8768640f11e305ad554d`, native logs,
+NCU full reports, frozen simulator library, configs, and replay results.
