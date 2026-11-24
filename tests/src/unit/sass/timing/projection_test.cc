@@ -1308,3 +1308,15 @@ TEST(SassTcgenTiming, PreservesWideTmemDependenciesAcrossPipelineCopies) {
 }
 
 }  // namespace
+
+TEST(SassTimingProjectionTest, TmemCopyUsesCommonShapeTimingIndices) {
+  const char *opcodes[] = {
+      "UTCCP.T.S", "UTCCP.T.S.128dp128bit", "UTCCP.T.S.2x64dp128bit_lw02_lw13",
+      "UTCCP.T.S.2x64dp128bit_lw01_lw23", "UTCCP.T.S.4x32dp128bit"};
+  const unsigned expected[] = {0, 1, 2, 2, 3};
+  for (unsigned i = 0; i < 5; ++i) {
+    const timing_instruction projected(
+        official_instruction(0, opcodes[i], "tmem[UR0],gdesc[UR2]"));
+    EXPECT_EQ(projected.tcgen05_info.timing_index, expected[i]) << opcodes[i];
+  }
+}

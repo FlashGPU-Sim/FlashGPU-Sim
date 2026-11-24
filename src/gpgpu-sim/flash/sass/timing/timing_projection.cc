@@ -492,7 +492,7 @@ void classify(const instruction &source, const timing_profile &profile,
       target.tcgen05_info.timing_index =
           has_modifier(source.opcode, "128dp128bit")                ? 1
           : source.opcode.find("2x64dp128bit") != std::string::npos ? 2
-          : has_modifier(source.opcode, "4x32dp128bit")             ? 4
+          : has_modifier(source.opcode, "4x32dp128bit")             ? 3
                                                                     : 0;
       target.op = TENSOR_CORE_OP;
       target.sp_op = TENSOR__OP;
