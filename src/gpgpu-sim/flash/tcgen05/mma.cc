@@ -441,12 +441,13 @@ std::vector<uint32_t> tcgen05_mma_f16_tmem_a_compute_words(
     const tcgen05_mma_descriptor_t &desc,
     const std::vector<std::vector<uint16_t>> &physical_a,
     const std::vector<uint16_t> &b, const std::vector<uint32_t> &input,
-    bool accumulate, bool folded) {
+    bool accumulate, bool folded, unsigned lane_origin) {
   const unsigned group = physical_a.size();
   const unsigned m = desc.m, n = desc.n;
   assert((group == 1 || group == 2) && desc.k == 16 && !desc.transpose_a);
   const unsigned local_m = m / group;
-  assert(local_m == (folded ? 64u : 128u));
+  assert(folded ? local_m == 64 : (local_m == 64 || local_m == 128));
+  assert(lane_origin == 0 || (!folded && local_m == 64 && lane_origin == 16));
   assert(n && n % (folded ? 2u : 1u) == 0);
   assert(b.size() == n * 16 && (!accumulate || input.size() == m * n));
   for (const auto &image : physical_a)
@@ -462,7 +463,12 @@ std::vector<uint32_t> tcgen05_mma_f16_tmem_a_compute_words(
       for (unsigned row = 0; row < local_m; ++row)
         for (unsigned k = 0; k < 16; ++k)
           a[(rank * local_m + row) * 16 + k] =
-              physical_a[rank][(row + part * 64) * 16 + k];
+              physical_a[rank][(folded ? row + part * 64
+                                : local_m == 64
+                                    ? (row / 16) * 32 + row % 16 + lane_origin
+                                    : row) *
+                                   16 +
+                               k];
     std::vector<uint16_t> part_b(part_n * 16);
     for (unsigned col = 0; col < part_n; ++col)
       for (unsigned k = 0; k < 16; ++k)

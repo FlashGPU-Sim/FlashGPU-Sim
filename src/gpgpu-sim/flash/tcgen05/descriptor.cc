@@ -231,6 +231,15 @@ tcgen05_mma_descriptor_t tcgen05_decode_fp8_mma_descriptor(uint32_t idesc) {
   return d;
 }
 
+bool tcgen05_mma_tmem_alignment_supported(unsigned local_m, bool folded,
+                                          uint32_t d, bool tmem_a, uint32_t a) {
+  const unsigned lane = d >> 16;
+  const bool half_datapaths = local_m == 64 && !folded;
+  if (lane != 0 && !(half_datapaths && lane == 16))
+    return false;
+  return !tmem_a || ((a >> 16) == lane && (a & 7) == 0);
+}
+
 bool tcgen05_f16_descriptor_supported(uint32_t idesc, unsigned group, bool ws) {
   if (group != 1 && group != 2)
     return false;

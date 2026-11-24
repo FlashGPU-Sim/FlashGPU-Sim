@@ -82,6 +82,10 @@ tcgen05_mxf8f6f4_shared_location(uint32_t logical_k, uint8_t format);
 bool tcgen05_mxf8f6f4_dense_shape_supported(uint32_t m, uint32_t n, uint32_t k,
                                             unsigned cta_group);
 tcgen05_mma_descriptor_t tcgen05_decode_fp8_mma_descriptor(uint32_t idesc);
+// Datapath alignment for dense A/D: Layout F can start at lane 0 or 16;
+// full and folded layouts start at lane 0. TMEM A and D must agree.
+bool tcgen05_mma_tmem_alignment_supported(unsigned local_m, bool folded,
+                                          uint32_t d, bool tmem_a, uint32_t a);
 bool tcgen05_f16_descriptor_supported(uint32_t idesc, unsigned cta_group,
                                       bool ws = false);
 tcgen05_mma_descriptor_t tcgen05_decode_f16_mma_descriptor(uint32_t idesc,

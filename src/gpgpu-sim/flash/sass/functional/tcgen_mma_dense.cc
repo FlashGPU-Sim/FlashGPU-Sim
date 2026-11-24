@@ -123,9 +123,10 @@ step_result half_mma(const instruction &inst, warp_state &state,
     return unsupported(inst, "unqualified half MMA shared descriptor");
   const unsigned local_m = m / group, local_n = n / group;
   const bool folded = (group == 2 && m == 128) || ws;
-  if (tmem_a && ((!ws && group != 2) || n % 32 || desc.transpose_a ||
-                 (a_address >> 16) || (a_address & 7)))
-    return unsupported(inst, "unqualified paired TMEM-A layout");
+  if (!tcgen05_mma_tmem_alignment_supported(local_m, folded, destination,
+                                            tmem_a, a_address) ||
+      (tmem_a && (desc.transpose_a || (folded && n % 32))))
+    return unsupported(inst, "unqualified dense TMEM operand alignment");
   functional_tcgen_state *tmem[2] = {nullptr, nullptr};
   functional_memory *memories[2] = {nullptr, nullptr};
   for (unsigned rank = 0; rank < group; ++rank) {
@@ -141,7 +142,7 @@ step_result half_mma(const instruction &inst, warp_state &state,
     tmem[rank] = cta->tcgen.get();
     if (tmem_a)
       for (unsigned row = 0; row < 128; ++row)
-        if (!tmem[rank]->contains(a_address + (row << 16), 8))
+        if (!tmem[rank]->contains((a_address & 0xffff) + (row << 16), 8))
           return unsupported(inst, "half MMA TMEM-A exceeds allocation");
     for (unsigned row = 0; row < (folded ? 128u : local_m); ++row) {
       const unsigned physical_row =
@@ -184,10 +185,10 @@ step_result half_mma(const instruction &inst, warp_state &state,
   } else {
     std::vector<std::vector<uint16_t>> physical_a(group);
     for (unsigned rank = 0; rank < group; ++rank)
-      physical_a[rank] =
-          tmem[rank]->memory.read_matrix_packed_u16({0, 0}, a_address, 128, 16);
-    output = tcgen05_mma_f16_tmem_a_compute_words(desc, physical_a, b, input,
-                                                  accumulate, folded);
+      physical_a[rank] = tmem[rank]->memory.read_matrix_packed_u16(
+          {0, 0}, a_address & 0xffff, 128, 16);
+    output = tcgen05_mma_f16_tmem_a_compute_words(
+        desc, physical_a, b, input, accumulate, folded, a_address >> 16);
   }
   for (unsigned rank = 0; rank < group; ++rank) {
     const auto begin = output.begin() + rank * local_m * n;

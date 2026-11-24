@@ -34,7 +34,7 @@ std::vector<uint32_t> tcgen05_mma_f16_tmem_a_compute_words(
     const tcgen05_mma_descriptor_t &desc,
     const std::vector<std::vector<uint16_t>> &physical_a,
     const std::vector<uint16_t> &b, const std::vector<uint32_t> &input_d,
-    bool enable_input_d, bool folded);
+    bool enable_input_d, bool folded, unsigned lane_origin = 0);
 
 std::vector<uint32_t> tcgen05_mma_mxf4_compute_words(
     const tcgen05_mma_descriptor_t &desc, const std::vector<uint8_t> &a,

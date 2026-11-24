@@ -59,6 +59,20 @@ PTX and SASS share descriptor validation, folded accumulator addressing and
 the physical TMEM-A arithmetic helper. No duplicate WS math implementation
 was introduced.
 
+The dense-forms follow-up adds six tests / sixteen launches: ordinary
+FP16/BF16 TMEM-A at M64/M128, both M64 datapath origins, F16 output in shared-A,
+TMEM-A and WS forms, and A/B transpose combinations with negation. Layout F
+uses sixteen datapaths per warp partition; TMEM A and D must use the same
+origin (0 or 16). Both adapters use the common alignment gate and physical-A
+mapper. F16-output fixtures load the low half of each 32-bit TMEM column and
+check two accumulated MMAs against the selected per-instruction RN model.
+This does not claim GPU bit-exact reduction order.
+
+The expanded local gate comprises 65 component tests and 18 numerical tests /
+36 launches per frontend. Unsupported `scale-input-d` operands are rejected
+rather than silently ignored. Extra scale/mask/collector variants remain
+separate qualification work.
+
 A component fixture was updated from K-by-N B storage to the common backend's
 non-transposed N-by-K representation. Its expected results were not relaxed.
 The complete-launch nonuniform F16/BF16 cases independently check that contract.
@@ -72,11 +86,11 @@ unchanged. Local CI evidence must not be described as hosted CI success.
 ## Remaining before public readiness
 
 - Audit and qualify the remaining native/PTX asymmetries, particularly non-default WS,
-  ordinary TMEM-A half forms, transpose/negation combinations and scaled variants beyond
-  the recorded matrix. Native registration is not numerical acceptance.
-- Audit malformed descriptor/modifier gates and add rejection cases.
-- Qualify F16-output launches. The RN conversion correction belongs with this
-  added output path: at public base `b3378cb9`, the helper is called only by
+  shared-memory swizzle variants and scaled forms beyond the recorded matrix. Native registration is not numerical acceptance.
+- Complete the malformed descriptor/modifier audit. The native MMA adapter
+  rejects swizzle mode 1 while generic PTX shared decoding accepts it; unify
+  that MMA gate and qualify swizzled launches before public readiness.
+- The RN conversion correction belongs with the added F16-output path: at public base `b3378cb9`, the helper is called only by
   unit fixtures and the runtime supports F32 output only. Other conversion
   implementations were not changed. This is not a public runtime regression.
 - Qualify paired CTA in its own functional unit, then CLC and Rubin, and rerun

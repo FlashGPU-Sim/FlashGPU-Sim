@@ -5,11 +5,27 @@
 #include <cstring>
 #include <vector>
 namespace {
+enum PatternFlags : unsigned {
+  kTransposeA = 1,
+  kTransposeB = 2,
+  kHalfOutput = 4,
+  kUpperDatapaths = 8,
+  kNegateB = 16
+};
+float pattern_a(unsigned row, unsigned k, bool half_output) {
+  float value = float((row % 3 + 1 + row / 64) * (k % 2 + 1));
+  if (half_output)
+    value = __half2float(__float2half(value + float(k % 3) / 64));
+  return value;
+}
 template <unsigned Kind, unsigned M, unsigned N = 16, bool WS = false,
-          bool TmemA = false>
+          bool TmemA = false, unsigned Flags = 0>
 __global__ void dense_patterns(const unsigned char *input, float *output) {
   constexpr unsigned K = Kind < 2 ? 16 : 32;
-  constexpr unsigned ARows = TmemA ? 128 : M, Alloc = WS ? 256 : 32;
+  constexpr unsigned ARows = TmemA ? 128 : M, Alloc = (WS || TmemA) ? 256 : 32;
+  constexpr unsigned Origin = Flags & kUpperDatapaths ? 16 : 0;
+  static_assert(!TmemA || !(Flags & kTransposeA));
+  static_assert(!Origin || (M == 64 && !WS));
   __shared__ __align__(128) unsigned char a[ARows * 32], b[N * 32];
   __shared__ unsigned base;
   __shared__ unsigned long long bar;
@@ -41,6 +57,7 @@ __global__ void dense_patterns(const unsigned char *input, float *output) {
     __syncthreads();
     asm volatile("tcgen05.fence::after_thread_sync;" ::: "memory");
   }
+  const unsigned destination = base + (Origin << 16);
   asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
   if (t == 0) {
     const unsigned long long ad = ((unsigned)__cvta_generic_to_shared(a) >> 4) |
@@ -48,13 +65,17 @@ __global__ void dense_patterns(const unsigned char *input, float *output) {
     const unsigned long long bd = ((unsigned)__cvta_generic_to_shared(b) >> 4) |
                                   (8ull << 16) | (16ull << 32) | (1ull << 46);
     constexpr unsigned format = Kind % 2;
-    const unsigned desc = ((M / 16) << 24) | ((N / 8) << 17) | 0x10 |
-                          (format << 7) | (format << 10) | (1u << 13);
+    const unsigned desc = ((M / 16) << 24) | ((N / 8) << 17) |
+                          (Flags & kHalfOutput ? 0 : 0x10) | (format << 7) |
+                          (format << 10) | (1u << 13) |
+                          ((Flags & kTransposeA ? 1u : 0u) << 15) |
+                          ((Flags & kTransposeB ? 1u : 0u) << 16) |
+                          ((Flags & kNegateB ? 1u : 0u) << 14);
 #define DENSE_MMA(KIND)                                                      \
   asm volatile(                                                              \
       "{ .reg .pred p; mov.pred p,0; tcgen05.mma.cta_group::1.kind::" KIND   \
       " [%0],%1,%2,%3,p; mov.pred p,1; tcgen05.mma.cta_group::1.kind::" KIND \
-      " [%0],%1,%2,%3,p; }" ::"r"(base),                                     \
+      " [%0],%1,%2,%3,p; }" ::"r"(destination),                              \
       "l"(ad), "l"(bd), "r"(desc)                                            \
       : "memory")
     if constexpr (WS) {
@@ -64,8 +85,8 @@ __global__ void dense_patterns(const unsigned char *input, float *output) {
             "tcgen05.mma.ws.cta_group::1.kind::f16 [%0],[%1],%2,%3,p; "
             "mov.pred p,1; "
             "tcgen05.mma.ws.cta_group::1.kind::f16 [%0],[%1],%2,%3,p; }" ::"r"(
-                base),
-            "r"(base + 128), "l"(bd), "r"(desc)
+                destination),
+            "r"(base + 128 + (Origin << 16)), "l"(bd), "r"(desc)
             : "memory");
       } else {
         asm volatile(
@@ -73,10 +94,19 @@ __global__ void dense_patterns(const unsigned char *input, float *output) {
             "tcgen05.mma.ws.cta_group::1.kind::f16 [%0],%1,%2,%3,p; "
             "mov.pred p,1; "
             "tcgen05.mma.ws.cta_group::1.kind::f16 [%0],%1,%2,%3,p; }" ::"r"(
-                base),
+                destination),
             "l"(ad), "l"(bd), "r"(desc)
             : "memory");
       }
+    } else if constexpr (TmemA) {
+      asm volatile(
+          "{ .reg .pred p; mov.pred p,0; "
+          "tcgen05.mma.cta_group::1.kind::f16 [%0],[%1],%2,%3,p; "
+          "mov.pred p,1; "
+          "tcgen05.mma.cta_group::1.kind::f16 [%0],[%1],%2,%3,p; }" ::"r"(
+              destination),
+          "r"(base + 128 + (Origin << 16)), "l"(bd), "r"(desc)
+          : "memory");
     } else if constexpr (Kind < 2) {
       DENSE_MMA("f16");
     } else {
@@ -98,12 +128,14 @@ __global__ void dense_patterns(const unsigned char *input, float *output) {
                  : "=r"(value)
                  : "r"(base + col));
     asm volatile("tcgen05.wait::ld.sync.aligned;" ::: "memory");
+    const float result = Flags & kHalfOutput
+                             ? __half2float(__ushort_as_half(value & 0xffff))
+                             : __uint_as_float(value);
     if constexpr (WS) {
-      output[(blockIdx.x * M + t % 64) * N + (t / 64) * (N / 2) + col] =
-          __uint_as_float(value);
-    } else if (M == 128 || t % 32 < 16) {
-      const unsigned row = M == 128 ? t : (t / 32) * 16 + t % 32;
-      output[(blockIdx.x * M + row) * N + col] = __uint_as_float(value);
+      output[(blockIdx.x * M + t % 64) * N + (t / 64) * (N / 2) + col] = result;
+    } else if (M == 128 || (t % 32 >= Origin && t % 32 < Origin + 16)) {
+      const unsigned row = M == 128 ? t : (t / 32) * 16 + t % 32 - Origin;
+      output[(blockIdx.x * M + row) * N + col] = result;
     }
   }
   __syncthreads();
@@ -117,7 +149,7 @@ __global__ void dense_patterns(const unsigned char *input, float *output) {
   }
 }
 template <unsigned Kind, unsigned M, unsigned N = 16, bool WS = false,
-          bool TmemA = false>
+          bool TmemA = false, unsigned Flags = 0>
 void check_dense() {
   constexpr unsigned K = Kind < 2 ? 16 : 32, bytes = Kind < 2 ? 2 : 1;
   constexpr unsigned ARows = TmemA ? 128 : M;
@@ -126,7 +158,7 @@ void check_dense() {
     for (unsigned r = 0; r < rows; ++r)
       for (unsigned k = 0; k < K; ++k) {
         float value = is_b ? float(int((r + k) % 5) - 2)
-                           : float((r % 3 + 1 + r / 64) * (k % 2 + 1));
+                           : pattern_a(r, k, Flags & kHalfOutput);
         unsigned bits = 0;
         if constexpr (Kind == 0) {
           __half h = __float2half(value);
@@ -139,8 +171,12 @@ void check_dense() {
         if constexpr (Kind >= 2)
           bits = __nv_cvt_float_to_fp8(value, __NV_SATFINITE,
                                        Kind == 2 ? __NV_E4M3 : __NV_E5M2);
-        unsigned offset = start + (r / 8) * 256 + (r % 8) * 16 +
-                          (k * bytes / 16) * 128 + (k * bytes % 16);
+        const bool transpose = is_b ? Flags & kTransposeB : Flags & kTransposeA;
+        const unsigned offset =
+            start + (transpose ? (r / 8) * 256 + (r % 8) * 2 + (k / 8) * 128 +
+                                     (k % 8) * 16
+                               : (r / 8) * 256 + (r % 8) * 16 +
+                                     (k * bytes / 16) * 128 + (k * bytes % 16));
         std::memcpy(input.data() + offset, &bits, bytes);
       }
   };
@@ -152,7 +188,7 @@ void check_dense() {
   ASSERT_EQ(cudaMalloc(&out, 2 * M * N * 4), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(in, input.data(), input.size(), cudaMemcpyHostToDevice),
             cudaSuccess);
-  dense_patterns<Kind, M, N, WS, TmemA><<<2, 128>>>(in, out);
+  dense_patterns<Kind, M, N, WS, TmemA, Flags><<<2, 128>>>(in, out);
   ASSERT_EQ(cudaGetLastError(), cudaSuccess);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   std::vector<float> output(2 * M * N);
@@ -163,10 +199,20 @@ void check_dense() {
     for (unsigned r = 0; r < M; ++r)
       for (unsigned n = 0; n < N; ++n) {
         float expected = 0;
-        const unsigned ar = TmemA ? r + (n / (N / 2)) * 64 : r;
+        const unsigned ar = !TmemA    ? r
+                            : WS      ? r + (n / (N / 2)) * 64
+                            : M == 64 ? (r / 16) * 32 + r % 16 +
+                                            (Flags & kUpperDatapaths ? 16 : 0)
+                                      : r;
+        float dot = 0;
         for (unsigned k = 0; k < K; ++k)
-          expected -= 2 * float((ar % 3 + 1 + ar / 64) * (k % 2 + 1)) *
-                      float(int((n + k) % 5) - 2);
+          dot += (Flags & kNegateB ? 1 : -1) *
+                 pattern_a(ar, k, Flags & kHalfOutput) *
+                 float(int((n + k) % 5) - 2);
+        expected = Flags & kHalfOutput
+                       ? __half2float(__float2half(
+                             __half2float(__float2half(dot)) + dot))
+                       : 2 * dot;
         ASSERT_EQ(output[(cta * M + r) * N + n], expected)
             << Kind << ':' << r << ':' << n;
       }
@@ -198,5 +244,33 @@ TEST(Tcgen05Mma, WsSharedBf16PatternsAndAccumulation) {
 }
 TEST(Tcgen05Mma, WsTmemBf16PatternsAndAccumulation) {
   check_dense<1, 64, 128, true, true>();
+}
+TEST(Tcgen05Mma, OrdinaryTmemF16LayoutsAndAccumulation) {
+  check_dense<0, 64, 16, false, true>();
+  check_dense<0, 64, 16, false, true, kUpperDatapaths>();
+  check_dense<0, 128, 16, false, true>();
+}
+TEST(Tcgen05Mma, OrdinaryTmemBf16LayoutsAndAccumulation) {
+  check_dense<1, 64, 16, false, true>();
+  check_dense<1, 128, 16, false, true>();
+}
+TEST(Tcgen05Mma, F16OutputAndAccumulation) {
+  check_dense<0, 64, 16, false, false, kHalfOutput>();
+  check_dense<0, 128, 16, false, true, kHalfOutput>();
+  check_dense<0, 64, 64, true, true, kHalfOutput>();
+}
+TEST(Tcgen05Mma, F16SharedTransposeCombinations) {
+  check_dense<0, 64, 16, false, false, kTransposeA>();
+  check_dense<0, 128, 16, false, false, kTransposeB>();
+  check_dense<0, 64, 16, false, false, kTransposeA | kTransposeB | kNegateB>();
+}
+TEST(Tcgen05Mma, Bf16SharedTransposeCombinations) {
+  check_dense<1, 128, 16, false, false, kTransposeA>();
+  check_dense<1, 64, 16, false, false, kTransposeB>();
+  check_dense<1, 128, 16, false, false, kTransposeA | kTransposeB | kNegateB>();
+}
+TEST(Tcgen05Mma, TmemATransposeBAndNegation) {
+  check_dense<0, 128, 16, false, true, kTransposeB | kNegateB>();
+  check_dense<1, 64, 64, true, true, kTransposeB>();
 }
 }  // namespace

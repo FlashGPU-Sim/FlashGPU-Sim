@@ -304,9 +304,11 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   const operand_info &a_desc_op = pI->operand_lookup(1);
   unsigned enable_input_d_operand = 4;
   if (pI->operand_lookup(4).is_vector()) {
-    assert(pI->get_num_operands() >= 6);
+    assert(pI->get_num_operands() == 6 && "MMA scale-input-d is not qualified");
     tcgen05_check_disable_output_lane_zero(pI->operand_lookup(4), thread);
     enable_input_d_operand = 5;
+  } else {
+    assert(pI->get_num_operands() == 5 && "MMA scale-input-d is not qualified");
   }
   const operand_info &enable_input_d_op =
       pI->operand_lookup(enable_input_d_operand);
@@ -355,11 +357,11 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
 
   const unsigned local_m = mma_desc.m / group;
   const bool folded = (group == 2 && mma_desc.m == 128) || ws;
-  if ((group == 2 || ws) && a_desc_op.is_memory_operand()) {
-    assert(mma_desc.n % 32 == 0 && !mma_desc.transpose_a &&
-           !(a_tmem_address >> 16) && !(a_tmem_address & 7) &&
-           "unqualified paired TMEM-A layout");
-  }
+  assert(tcgen05_mma_tmem_alignment_supported(local_m, folded, d_address,
+                                              a_desc_op.is_memory_operand(),
+                                              a_tmem_address));
+  if (a_desc_op.is_memory_operand())
+    assert(!mma_desc.transpose_a && (!folded || mma_desc.n % 32 == 0));
   auto target_scope = [&](unsigned rank) {
     return tcgen05_tmem_scope_t{targets[rank].sm_id, targets[rank].cta_slot,
                                 group};
@@ -377,11 +379,7 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
     return values;
   };
   std::vector<uint16_t> a_values;
-  if (a_desc_op.is_memory_operand()) {
-    if (group == 1 && !ws)
-      a_values = manager.read_matrix_packed_u16(scope, a_tmem_address,
-                                                mma_desc.m, mma_desc.k);
-  } else {
+  if (!a_desc_op.is_memory_operand()) {
     const auto a_desc = tcgen05_decode_shared_descriptor(a_desc_value);
     a_values = gather_shared(a_desc, mma_desc.m, mma_desc.transpose_a);
   }
@@ -395,13 +393,14 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
     }
   }
   std::vector<uint32_t> output;
-  if ((group == 2 || ws) && a_desc_op.is_memory_operand()) {
+  if (a_desc_op.is_memory_operand()) {
     std::vector<std::vector<uint16_t>> physical_a(group);
     for (unsigned rank = 0; rank < group; ++rank)
       physical_a[rank] = manager.read_matrix_packed_u16(
-          target_scope(rank), a_tmem_address, 128, mma_desc.k);
+          target_scope(rank), a_tmem_address & 0xffff, 128, mma_desc.k);
     output = tcgen05_mma_f16_tmem_a_compute_words(
-        mma_desc, physical_a, b_values, input_d, enable_input_d, folded);
+        mma_desc, physical_a, b_values, input_d, enable_input_d, folded,
+        a_tmem_address >> 16);
   } else {
     output = tcgen05_mma_f16_compute_words(mma_desc, a_values, b_values,
                                            input_d, enable_input_d);

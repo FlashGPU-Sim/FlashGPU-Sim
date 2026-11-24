@@ -621,3 +621,23 @@ TEST(Tcgen05Mma, DenseDescriptorValidationIsSharedAcrossFrontends) {
   EXPECT_FALSE(
       tcgen05_f16_descriptor_supported(make_f16_idesc(128, 16) | (2u << 7), 1));
 }
+
+TEST(Tcgen05Mma, DenseTmemDatapathAlignment) {
+  for (unsigned lane : {0u, 16u}) {
+    const auto base = lane << 16;
+    EXPECT_TRUE(tcgen05_mma_tmem_alignment_supported(64, false, base, true,
+                                                     base + 128));
+    EXPECT_TRUE(
+        tcgen05_mma_tmem_alignment_supported(64, false, base, false, 0));
+    EXPECT_FALSE(tcgen05_mma_tmem_alignment_supported(
+        64, false, base, true, ((16 - lane) << 16) + 128));
+    EXPECT_FALSE(tcgen05_mma_tmem_alignment_supported(64, false, base, true,
+                                                      base + 129));
+  }
+  EXPECT_FALSE(
+      tcgen05_mma_tmem_alignment_supported(64, false, 1u << 16, false, 0));
+  EXPECT_FALSE(
+      tcgen05_mma_tmem_alignment_supported(128, false, 16u << 16, false, 0));
+  EXPECT_FALSE(
+      tcgen05_mma_tmem_alignment_supported(64, true, 16u << 16, false, 0));
+}
