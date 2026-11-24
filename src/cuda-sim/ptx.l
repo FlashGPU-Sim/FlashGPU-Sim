@@ -100,6 +100,7 @@ cp\.async\.wait_all TC; yylval->int_value = CP_ASYNC_WAIT_OP; return OPCODE;
 cp\.async 		TC; yylval->int_value = CP_ASYNC_OP; return OPCODE;
 bfe     TC; yylval->int_value = BFE_OP; return OPCODE;
 bfi     TC; yylval->int_value = BFI_OP; return OPCODE;
+fns     TC; yylval->int_value = FNS_OP; return OPCODE;
 bfind   TC; yylval->int_value = BFIND_OP; return OPCODE;
 bra     TC; yylval->int_value = BRA_OP; return OPCODE;
 brx     TC; yylval->int_value = BRX_OP; return OPCODE;

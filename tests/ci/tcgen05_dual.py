@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 
-def run_suite(test_filter, tests, launches, timeout=300, cluster_validation=False, group="tcgen05"):
+def run_suite(test_filter, tests, launches, timeout=300, cluster_validation=False, group="tcgen05", frontends=("ptx", "sass-timing")):
     root = Path(__file__).resolve().parents[2]
     subprocess.run(["make", "-C", str(root / "tests"), f"build-sm100-{group}",
                     "-j" + os.environ.get("CI_BUILD_JOBS", "2")], check=True)
@@ -30,9 +30,9 @@ def run_suite(test_filter, tests, launches, timeout=300, cluster_validation=Fals
         "--filter", test_filter, "--expected-tests", str(tests),
         "--threads", os.environ.get("OMP_NUM_THREADS", "4"),
         "--timeout", str(timeout),
-    ] + (["--cluster-validation"] if cluster_validation else []), check=True)
+    ] + ["--frontends", *frontends] + (["--cluster-validation"] if cluster_validation else []), check=True)
     report = json.loads((output / "report.json").read_text())
-    for frontend in ("ptx", "sass-timing"):
+    for frontend in frontends:
         assert report["runs"][frontend]["passed"]
         assert len(report["runs"][frontend]["gpu_sim_cycle"]) == launches
     print(f"PASS: identical executable, {tests} numerical tests / {launches} launches per frontend")

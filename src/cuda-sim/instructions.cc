@@ -2243,6 +2243,32 @@ void bfi_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
   thread->set_operand_value(dst, data, i_type, thread, pI);
 }
+// PTX ISA 9.5: offset is signed, and the base bit participates in either
+// direction. Use 64-bit magnitude so INT_MIN cannot overflow abs().
+void fns_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  assert(pI->get_num_operands() == 4 && pI->get_type() == B32_TYPE);
+  const auto &dst = pI->dst();
+  const uint32_t mask = thread->get_operand_value(pI->src1(), dst, B32_TYPE, thread, 1).u32;
+  const uint32_t base = thread->get_operand_value(pI->src2(), dst, B32_TYPE, thread, 1).u32;
+  const int64_t offset = thread->get_operand_value(pI->src3(), dst, S32_TYPE, thread, 1).s32;
+  assert(base <= 31 && "fns base outside the defined ISA range");
+  ptx_reg_t result;
+  result.u32 = UINT32_MAX;
+  if (!offset) {
+    if (mask & (uint32_t{1} << base)) result.u32 = base;
+  } else {
+    uint64_t remaining = offset < 0 ? -offset : offset;
+    for (int pos = base; pos >= 0 && pos < 32; pos += offset > 0 ? 1 : -1) {
+      if ((mask & (uint32_t{1} << pos)) && --remaining == 0) {
+        result.u32 = pos;
+        break;
+      }
+    }
+  }
+  thread->set_operand_value(dst, result, B32_TYPE, thread, pI);
+}
+
+
 void bfind_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();

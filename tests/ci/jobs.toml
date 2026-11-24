@@ -184,3 +184,10 @@ cuda = "13.3"
 tests = [
   { name = "cached-load-completion-dual-launch", group = "unit", gtest_filter = "MemoryTransportTest.DistinctLoadProducersCompleteIndependently", post_check = "tests/ci/check_cached_completion_dual.py" },
 ]
+
+[jobs.sm100-bit-search]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "bit-search-dual-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_bit_search_dual.py" },
+]
