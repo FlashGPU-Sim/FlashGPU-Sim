@@ -3901,6 +3901,9 @@ class shader_core_ctx : public core_t {
     unsigned pending_arrivals = 0;
     unsigned long long stores_visible = 0;
     unsigned long long arrive_ready = 0;
+    bool stores_ready(unsigned long long cycle) const {
+      return pending_stores == 0 && stores_visible <= cycle;
+    }
   };
   std::vector<shared_barrier_state> m_shared_barrier_state;
   struct named_arrival_event {

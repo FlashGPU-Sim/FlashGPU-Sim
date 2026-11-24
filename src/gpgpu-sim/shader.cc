@@ -7684,9 +7684,8 @@ bool shader_core_ctx::named_barrier_issue_ready(unsigned warp_id) const {
   const auto &state = m_shared_barrier_state[warp_id];
   // Preserve barrier order while ordinary instructions may resume before
   // a previous nonblocking arrive becomes visible.
-  return state.pending_stores == 0 && state.pending_arrivals == 0 &&
-         state.stores_visible <=
-             m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+  return state.pending_arrivals == 0 &&
+         state.stores_ready(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
 }
 
 bool shader_core_ctx::named_arrive_warp_ready(unsigned warp_id) const {
@@ -7832,6 +7831,8 @@ bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {
   if (!m_warp[warp_id]->get_membar()) return false;
   if (!m_scoreboard->pendingWrites(warp_id) &&
       m_warp[warp_id]->stores_done() &&
+      m_shared_barrier_state[warp_id].stores_ready(
+          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle) &&
       (!m_cluster || !m_cluster->dsm_warp_busy(m_sid, warp_id))) {
     m_warp[warp_id]->clear_membar();
     if (m_gpu->get_config().flush_l1()) {

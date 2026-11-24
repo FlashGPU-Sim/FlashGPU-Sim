@@ -4,6 +4,7 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "fence_visibility/launch_test.cu",
   "unit/sass/functional/bit_scan_test.cc",
   "leading_bit/launch_test.cu",
   "leading_bit_base/launch_test.cu",
