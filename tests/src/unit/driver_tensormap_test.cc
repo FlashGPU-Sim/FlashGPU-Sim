@@ -79,8 +79,8 @@ TEST(DriverTensorMap, RejectionPreservesDestinationAndDoesNotAliasRank) {
   stride.raw_u64[1] &= UINT32_MAX;
   EXPECT_FALSE(decode_sm100_driver_tensormap(stride, 2, d));
 }
-TEST(DriverTensorMap, PackedAndTf32RequireTheirOwnPayloadSemantics) {
-  for (uint32_t control : {0x264590u, 0x276390u, 0x266630u, 0x2763a0u}) {
+TEST(DriverTensorMap, PackedRequiresItsOwnPayloadSemantics) {
+  for (uint32_t control : {0x264590u, 0x266630u}) {
     auto encoded = byte2;
     encoded.raw_u64[1] = (encoded.raw_u64[1] & 0xffffffff00000000ull) | control;
     tensormap_descriptor_t d{};
@@ -97,3 +97,24 @@ TEST(DriverTensorMap, PtxOpaqueEntryUsesSameCanonicalFields) {
   }
 }
 }  // namespace
+
+TEST(DriverTensorMap, CapturedTf32FormatsAndDestinationPreservation) {
+  for (unsigned rank : {2u, 3u}) {
+    // MHC's retained 3D TF32 descriptor; only the address is anonymized.
+    auto encoded = map({0x400000, 0x1c00002763a0, 0x700, 0, 0x1700001bff, 3,
+                        0x1f00000000000000, 0x317, 0x3000, 0x400});
+    if (rank == 2) {
+      encoded = byte2;
+      encoded.raw_u64[1] = ((byte2.raw_u64[1] >> 32) * 4 << 32) | 0x276390;
+      encoded.raw_u64[8] *= 4;
+    }
+    tensormap_descriptor_t d{};
+    ASSERT_TRUE(decode_sm100_driver_tensormap(encoded, rank, d));
+    EXPECT_EQ(d.fields.tensorDataType, TMA_DTYPE_TF32);
+    EXPECT_EQ(d.get_element_size(), 4u);
+    const auto saved = d;
+    encoded.raw_u64[8] ^= 1;
+    EXPECT_FALSE(decode_sm100_driver_tensormap(encoded, rank, d));
+    EXPECT_EQ(std::memcmp(&d, &saved, sizeof(d)), 0);
+  }
+}

@@ -5,6 +5,7 @@
 
 #include "../../tensormap.h"
 #include "../../tma_gather4.h"
+#include "../../tma_load_convert.h"
 #include "../../tma_reduction.h"
 #include "../runtime/tensor_map.h"
 
@@ -293,10 +294,11 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
 
   tensormap_descriptor_t gather_map{};
   if (!gather4 &&
-      ((tensor_map.data_type >= TMA_DTYPE_TF32 &&
+      ((tensor_map.data_type >= TMA_DTYPE_16U4_ALIGN8B &&
         tensor_map.data_type <= TMA_DTYPE_16U6_ALIGN16B) ||
        (tensor_map.swizzle_mode != UINT32_MAX && tensor_map.swizzle_mode > 3) ||
-       !tensor_map.oob_zero || tensor_map.element_stride[1] != 1))
+       (!tensor_map.oob_zero && !tma_float_conversion(tensor_map.data_type)) ||
+       tensor_map.element_stride[1] != 1))
     return unsupported(
         inst, "extended tensor layouts are qualified for gather4 only");
   if (gather4) {
@@ -382,8 +384,12 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
       global_offset += dimension_offset;
     }
     if (!in_bounds) {
-      if (!tensor_map.oob_zero)
-        return unsupported(inst, "out-of-bounds TMA coordinate");
+      if (!tensor_map.oob_zero) {
+        if (!tma_float_conversion(tensor_map.data_type))
+          return unsupported(inst, "out-of-bounds TMA coordinate");
+        const auto bits = tma_float_oob_bits(tensor_map.data_type);
+        std::memcpy(tile.data() + element * 4, &bits, 4);
+      }
       continue;
     }
     if (tensor_map.global_address >
@@ -397,6 +403,8 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
                               tensor_map.element_bytes))
       return memory_fault(inst, memory_space::kGlobal, global_address,
                           tensor_map.element_bytes);
+    convert_tma_load(tensor_map.data_type, tile.data() + tile_offset,
+                     tensor_map.element_bytes);
   }
 
   if (gather4) {

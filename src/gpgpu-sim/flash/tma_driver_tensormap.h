@@ -5,8 +5,8 @@
 
 namespace flash_gpgpu_sim {
 // Captured CUDA Driver SM100 descriptors, not a documented portable ABI.
-// Only observed dense controls are accepted. TF32 conversion and packed
-// sub-byte payloads require separate transfer semantics and remain rejected.
+// Only observed dense/TF32 controls are accepted. Packed sub-byte payloads
+// require separate transfer semantics and remain rejected.
 inline bool sm100_driver_tma_format(uint32_t control, unsigned rank,
                                     uint32_t &dtype, uint32_t &swizzle) {
   swizzle = (control >> 13) & 3;
@@ -20,6 +20,9 @@ inline bool sm100_driver_tma_format(uint32_t control, unsigned rank,
     case 0x66510:
     case 0x266510:
       dtype = TMA_DTYPE_BF16;
+      return true;
+    case 0x276390:
+      dtype = TMA_DTYPE_TF32;
       return true;
     case 0x266390:
     case 0x264390:
@@ -60,6 +63,9 @@ inline bool sm100_driver_tma_format(uint32_t control, unsigned rank,
     case 0x66520:
     case 0x266520:
       dtype = TMA_DTYPE_BF16;
+      return true;
+    case 0x2763a0:
+      dtype = TMA_DTYPE_TF32;
       return true;
     case 0x663a0:
     case 0x2663a0:

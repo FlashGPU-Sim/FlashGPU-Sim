@@ -1,4 +1,5 @@
 #include "../../tma_driver_tensormap.h"
+#include "../../tma_load_convert.h"
 #include "internal.h"
 #include <algorithm>
 
@@ -12,7 +13,10 @@ step_result read_driver_tensor_map(const instruction &inst,
                                    bool &recognized,
                                    functional_tensor_map_view &view) {
   uint32_t dtype, swizzle;
-  recognized = sm100_driver_tma_format(uint32_t(raw[1]), rank, dtype, swizzle);
+  const bool host_candidate =
+      rank >= 1 && rank <= 5 && uint32_t(raw[1]) == rank - 1;
+  recognized = host_candidate ||
+               sm100_driver_tma_format(uint32_t(raw[1]), rank, dtype, swizzle);
   if (!recognized)
     return {step_status::kAdvanced, {}};
   tensormap_descriptor_t encoded{}, decoded{};
@@ -21,10 +25,18 @@ step_result read_driver_tensor_map(const instruction &inst,
                             encoded.raw_u64 + raw.size(), sizeof(raw)))
     return memory_fault(inst, memory_space::kGlobal, address + sizeof(raw),
                         sizeof(raw));
-  if (!decode_sm100_driver_tensormap(encoded, rank, decoded))
+  if (host_candidate) {
+    if (!decode_tma_float_host(encoded, rank, decoded)) {
+      recognized = false;
+      return {step_status::kAdvanced, {}};
+    }
+    dtype = decoded.fields.tensorDataType;
+    swizzle = decoded.fields.swizzle;
+  } else if (!decode_sm100_driver_tensormap(encoded, rank, decoded))
     return unsupported(inst, "unqualified SM100 Driver tensor-map fields");
   functional_tensor_map_view result;
   result.rank = rank;
+  result.oob_zero = decoded.fields.oobFill == TMA_OOB_ZERO;
   result.global_address = decoded.fields.globalAddress;
   result.data_type = dtype;
   result.element_bytes = decoded.get_element_size();

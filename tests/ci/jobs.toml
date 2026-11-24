@@ -275,3 +275,10 @@ cuda = "13.3"
 tests = [
   { name = "tensor-map-bounded-diagnostics", group = "unit", gtest_filter = "TensorMapDiagnostics.*" },
 ]
+
+[jobs.sm100-tma-float-loads]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "floating-tma-and-dual-launch", group = "unit", gtest_filter = "DriverTensorMap.*", post_check = "tests/ci/check_tma_float_dual.py" },
+]

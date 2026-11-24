@@ -20,9 +20,10 @@ integer, BF16 and F32 transfers preserve the original payload bits.
 
 The accepted encoding controls come from retained B200 descriptors and the
 previous private implementation. CUDA does not specify their byte layout.
-This is deliberately not a general CUDA Driver ABI claim. TF32 conversion and
-packed FP4 controls are rejected until their payload/completion semantics are
-qualified; simply treating them as dense bytes would be incorrect.
+This is deliberately not a general CUDA Driver ABI claim. The subsequent
+[floating-load extension](blackwell-tma-floating-loads.md) qualifies TF32
+conversion for observed 2D/3D controls. Packed FP4 controls remain rejected;
+simply treating them as dense bytes would be incorrect.
 
 ## Separate prerequisites
 
@@ -37,7 +38,7 @@ requested immutable runtime. Without `libcudart.so.13`, an unversioned-only
 snapshot could fall through to the mutable build directory. This is a test
 harness correction, independent of simulated ISA behavior.
 
-## Acceptance and remaining work
+## Initial extraction evidence (historical)
 
 The local `sm100-driver-tma` job selects 15 component tests and five numerical
 launch tests (twelve launches per frontend). The CUDA fixture passes opaque

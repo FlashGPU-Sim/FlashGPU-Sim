@@ -1,5 +1,6 @@
 #pragma once
 #include "tensormap.h"
+#include "tma_load_convert.h"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -62,19 +63,6 @@ inline uint64_t tma_gather4_shared_offset(uint64_t offset, uint32_t base,
   if (swizzle == 6)
     return offset ^ ((row & 1) << 6);
   return offset ^ ((row & ((1u << swizzle) - 1)) << 4);
-}
-inline uint32_t tma_gather4_convert(uint32_t bits, unsigned type) {
-  const uint32_t mag = bits & 0x7fffffffu;
-  if ((type == TMA_DTYPE_F32_FTZ || type == TMA_DTYPE_TF32_FTZ) &&
-      mag < 0x800000u)
-    return bits & 0x80000000u;
-  if (type != TMA_DTYPE_TF32 && type != TMA_DTYPE_TF32_FTZ)
-    return bits;
-  if (mag > 0x7f800000u)
-    return 0x7fffe000u;
-  if (mag == 0x7f800000u)
-    return bits;
-  return (bits + 0xfffu + ((bits >> 13) & 1u)) & ~0x1fffu;
 }
 // Architectural payload staging is shared by both frontends. No destination
 // or barrier changes occur until every source read succeeds. Cache policy is
@@ -152,7 +140,7 @@ bool tma_gather4_load(const tensormap_descriptor_t &tm, const int32_t coords[5],
       if (bytes == 4) {
         uint32_t bits;
         std::memcpy(&bits, out, 4);
-        bits = tma_gather4_convert(bits, tm.fields.tensorDataType);
+        bits = tma_convert_float_bits(bits, tm.fields.tensorDataType);
         std::memcpy(out, &bits, 4);
       }
     }

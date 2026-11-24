@@ -5,6 +5,7 @@
 #include "tma_agu.h"
 #include "tma_cluster_targets.h"
 #include "tma_gather4.h"
+#include "tma_load_convert.h"
 #include "tma_opaque_tensormap.h"
 #include "tma_reduction.h"
 #include "tma_store_source.h"
@@ -2431,9 +2432,12 @@ public:
       // NaN pattern (depends on dtype)
       nan_supported[dtype] = false;
       switch (dtype) {
-      case TMA_DTYPE_F32: {
+      case TMA_DTYPE_F32:
+      case TMA_DTYPE_F32_FTZ:
+      case TMA_DTYPE_TF32:
+      case TMA_DTYPE_TF32_FTZ: {
         nan_supported[dtype] = true;
-        uint32_t nan_val = 0x7FFFFFFF;
+        uint32_t nan_val = flash_gpgpu_sim::tma_float_oob_bits(dtype);
         for (uint32_t i = 0; i < CHUNK_SIZE / sizeof(uint32_t); i++) {
           memcpy(patterns[TMA_OOB_NAN][dtype] + i * sizeof(uint32_t), &nan_val,
                  sizeof(uint32_t));
@@ -2544,6 +2548,8 @@ static void do_tma_transfer(
     if (is_load) {
       // Load: global -> shared
       global_mem->read(global_req_addr, req_size, data_buffer);
+      flash_gpgpu_sim::convert_tma_load(tensormap.fields.tensorDataType,
+                                        data_buffer, req_size);
 
       GPPRINTF_THREAD_CORE(
           TMA, thread,
@@ -3453,6 +3459,9 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
                      pI->get_operands()[1], thread, tensormap, coords,
                      size_in_bytes);
+    if (tensormap.fields.tensorDataType == TMA_DTYPE_TF32 ||
+        tensormap.fields.tensorDataType == TMA_DTYPE_TF32_FTZ)
+      reject_unsupported_tma("TF32 tensor stores are not qualified", pI);
     if (tma_gather4_packed(tensormap) || tensormap.fields.swizzle > 3)
       reject_unsupported_tma(
           "extended packed/swizzle layouts are qualified for gather4 only", pI);
