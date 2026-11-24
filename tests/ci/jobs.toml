@@ -247,3 +247,10 @@ cuda = "13.3"
 tests = [
   { name = "byte-matrix-components-and-dual-launch", group = "unit", gtest_filter = "ByteMatrixNative.*", post_check = "tests/ci/check_byte_matrix_dual.py" },
 ]
+
+[jobs.sm100-mixed-arithmetic]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "mixed-arithmetic-components-and-dual-launch", group = "unit", gtest_filter = "MixedArithmeticNative.*:MixedArithmeticCommon.*:MixedArithmeticPtx.*", post_check = "tests/ci/check_mixed_arithmetic_dual.py" },
+]

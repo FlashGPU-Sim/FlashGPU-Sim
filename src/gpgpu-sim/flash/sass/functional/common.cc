@@ -1,4 +1,5 @@
 #include "../../bfloat_conversion.h"
+#include "../../fp16_conversion.h"
 #include "internal.h"
 
 #include <cmath>
@@ -297,20 +298,7 @@ float bits_float(uint32_t bits) {
   return value;
 }
 
-float half_float(uint16_t bits) {
-  const uint32_t sign = static_cast<uint32_t>(bits & 0x8000u) << 16;
-  const uint32_t exponent = (bits >> 10) & 0x1fu;
-  const uint32_t mantissa = bits & 0x3ffu;
-  if (exponent == 0) {
-    if (mantissa == 0)
-      return bits_float(sign);
-    const float magnitude = std::ldexp(static_cast<float>(mantissa), -24);
-    return sign == 0 ? magnitude : -magnitude;
-  }
-  if (exponent == 0x1f)
-    return bits_float(sign | 0x7f800000u | (mantissa << 13));
-  return bits_float(sign | ((exponent + 112u) << 23) | (mantissa << 13));
-}
+float half_float(uint16_t bits) { return fp16_to_f32(bits); }
 
 float bfloat_float(uint16_t bits) {
   return bits_float(static_cast<uint32_t>(bits) << 16);

@@ -64,6 +64,7 @@ void register_data_movement_semantics(frontend &target);
 void register_integer_semantics(frontend &target);
 float flush_subnormal(float value);
 uint16_t float_bfloat_rn(float value);
+void register_mixed_precision_semantics(frontend &target);
 void register_float_conversion_semantics(frontend &target);
 void register_float_semantics(frontend &target);
 void register_control_semantics(frontend &target);

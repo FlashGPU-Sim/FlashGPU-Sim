@@ -37,6 +37,7 @@
 #include "instructions.h"
 #include "../gpgpu-sim/flash/ptx_cluster_store.h"
 #include "../gpgpu-sim/flash/ptx_bfloat_arithmetic.h"
+#include "../gpgpu-sim/flash/ptx_mixed_arithmetic.h"
 #include "../gpgpu-sim/flash/ptx_bfloat_conversion.h"
 #include "../gpgpu-sim/flash/ptx_narrow_conversion.h"
 #include "../gpgpu-sim/flash/ptx_warp_reduce.h"
@@ -1211,6 +1212,7 @@ void addp_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void add_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (flash_gpgpu_sim::execute_ptx_mixed_arithmetic(pI, thread)) return;
   if (flash_gpgpu_sim::execute_ptx_bfloat_arithmetic(pI, thread)) return;
   ptx_reg_t src1_data, src2_data, data;
   int overflow = 0;
@@ -3895,6 +3897,7 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
              bool use_carry = false);
 
 void fma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (flash_gpgpu_sim::execute_ptx_mixed_arithmetic(pI, thread)) return;
   if (flash_gpgpu_sim::execute_ptx_bfloat_arithmetic(pI, thread)) return;
   const auto types = pI->get_scalar_type();
   if (types.size() == 1 && pI->get_type() == F32_TYPE) {
@@ -6887,6 +6890,7 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void sub_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (flash_gpgpu_sim::execute_ptx_mixed_arithmetic(pI, thread)) return;
   if (flash_gpgpu_sim::execute_ptx_bfloat_arithmetic(pI, thread)) return;
   ptx_reg_t data;
   int overflow = 0;

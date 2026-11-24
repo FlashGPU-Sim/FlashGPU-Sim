@@ -41,64 +41,6 @@ step_result execute_mufu_rcp(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
-// PTX fma.rn.f32.bf16: scalar low BF16 inputs, FP32 accumulator/result.
-step_result execute_fhadd_bfloat(const instruction &inst, warp_state &state,
-                                 execution_context &) {
-  if (inst.operands.size() != 3 ||
-      inst.operands[0].kind != operand_kind::kRegister)
-    return unsupported(inst, "invalid BF16-to-FP32 add operands");
-  operand src;
-  unsigned shift = 0;
-  if (!decode_halfword_source(inst.operands[1], src, shift))
-    return unsupported(inst, "invalid BF16 add source");
-  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-    if (!(state.active_mask & (1u << lane)) ||
-        !lane_executes(inst, state, lane))
-      continue;
-    float b;
-    if (!read_f32_operand(inst.operands[2], state, lane, b))
-      return unsupported(inst, "invalid FP32 add source");
-    const float a =
-        bfloat_float((state.read_register(lane, src.index) >> shift) & 0xffff);
-    state.write_register(lane, inst.operands[0].index, float_bits(a + b));
-  }
-  advance(inst, state);
-  return {step_status::kAdvanced, {}};
-}
-
-step_result execute_fhfma_bfloat(const instruction &native, warp_state &state,
-                                 execution_context &) {
-  instruction inst = native;
-  unsigned shifts[2] = {};
-  if (inst.operands.size() != 4 ||
-      inst.operands[0].kind != operand_kind::kRegister)
-    return unsupported(inst, "unsupported BF16-to-FP32 FMA form");
-  for (unsigned i : {1u, 2u}) {
-    operand value;
-    if (!decode_halfword_source(inst.operands[i], value, shifts[i - 1]))
-      return unsupported(inst, "invalid BF16 FMA source");
-    inst.operands[i] = value;
-  }
-  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-    if (!(state.active_mask & (1u << lane)) ||
-        !lane_executes(inst, state, lane))
-      continue;
-    float c;
-    if (!read_f32_operand(inst.operands[3], state, lane, c))
-      return unsupported(inst, "invalid FMA accumulator");
-    const float a = bfloat_float(
-        (state.read_register(lane, inst.operands[1].index) >> shifts[0]) &
-        0xffff);
-    const float b = bfloat_float(
-        (state.read_register(lane, inst.operands[2].index) >> shifts[1]) &
-        0xffff);
-    state.write_register(lane, inst.operands[0].index,
-                         float_bits(std::fma(a, b, c)));
-  }
-  advance(inst, state);
-  return {step_status::kAdvanced, {}};
-}
-
 step_result execute_fp32x2(const instruction &inst, warp_state &state,
                            execution_context &) {
   // Keep these native type selectors opaque to ordinary scalar handlers.
@@ -965,8 +907,7 @@ void register_float_semantics(frontend &target) {
 
   target.register_semantics("MUFU.RCP", execute_mufu_rcp);
 
-  target.register_semantics("FHFMA.BF16", execute_fhfma_bfloat);
-  target.register_semantics("FHADD.BF16", execute_fhadd_bfloat);
+  register_mixed_precision_semantics(target);
 
   target.register_semantics("FCHK", execute_fchk);
   target.register_semantics("FFMA2", execute_fp32x2);

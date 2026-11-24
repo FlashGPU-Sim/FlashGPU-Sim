@@ -1335,6 +1335,24 @@ static std::list<operand_info> check_operands(
     int opcode, const std::list<int> &scalar_type,
     const std::list<operand_info> &operands, gpgpu_context *ctx) {
   static int g_warn_literal_operands_two_type_inst;
+  // Scalar mixed arithmetic has 16-bit input bits but a 32-bit accumulator.
+  // Keep the legacy single-type literal conversion path unchanged.
+  const bool mixed = scalar_type.size() == 2 && scalar_type.front() == F32_TYPE &&
+      (scalar_type.back() == F16_TYPE || scalar_type.back() == BF16_TYPE) &&
+      (opcode == ADD_OP || opcode == SUB_OP || opcode == FMA_OP);
+  if (mixed) {
+    std::list<operand_info> result;
+    unsigned index = 0;
+    for (const auto &operand : operands) {
+      const bool fp32 = index == 0 || index == (opcode == FMA_OP ? 3u : 2u);
+      if (fp32 && operand.is_literal() && operand.get_type() == double_op_t)
+        result.emplace_back(static_cast<float>(operand.get_literal_value().f64), ctx);
+      else
+        result.push_back(operand);
+      ++index;
+    }
+    return result;
+  }
   if ((opcode == CLC_QUERY_CANCEL_OP) || (opcode == CVT_OP) ||
       (opcode == SET_OP) || (opcode == SLCT_OP) || (opcode == TEX_OP) ||
       (opcode == MMA_OP) || (opcode == TENSOR_MMA_OP) || (opcode == FMA_OP) ||

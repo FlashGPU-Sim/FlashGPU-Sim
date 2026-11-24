@@ -1,6 +1,7 @@
 #include "timing_projection.h"
 #include "../../panic.h"
 #include "../decode/fp32x2_operand.h"
+#include "../decode/mixed_precision_operand.h"
 #include "../decode/operand_parser.h"
 #include "../decode/scaled_unpack_operand.h"
 #include "../decode/tma_load_operand.h"
@@ -678,8 +679,8 @@ void classify(const instruction &source, const timing_profile &profile,
              base == "HADD2" || base == "HFMA2" ||
              source.opcode == "HMUL2.BF16_V2" ||
              source.opcode == "HMNMX2.BF16_V2" ||
-             source.opcode == "VHMNMX.BF16_V2" ||
-             source.opcode == "FHFMA.BF16" || source.opcode == "FHADD.BF16") {
+             source.opcode == "VHMNMX.BF16_V2" || base == "FHFMA" ||
+             base == "FHADD") {
     target.op = SP_OP;
     target.oprnd_type = FP_OP;
     target.sp_op = (base == "FMUL" || base == "UFMUL" || base == "FMUL2" ||
@@ -1359,18 +1360,19 @@ void timing_instruction::initialize(const instruction &native,
   // Wide comparisons omit pair-width suffixes in nvdisasm operands.
   // Both words must participate in scoreboard and register-file dependencies.
   const auto base = base_opcode(source.opcode);
-  if (source.opcode == "FHFMA.BF16" || source.opcode == "FHADD.BF16" ||
-      source.opcode == "F2FP.BF16.E8.UNPACK_B" ||
+  mixed_scalar_opcode mixed;
+  const bool mixed_scalar = decode_mixed_scalar_opcode(source.opcode, mixed);
+  if (mixed_scalar || source.opcode == "F2FP.BF16.E8.UNPACK_B" ||
       source.opcode == "F2FP.F16.E4M3.UNPACK_B") {
-    const unsigned count = source.opcode == "FHFMA.BF16"   ? 4
-                           : source.opcode == "FHADD.BF16" ? 3
-                                                           : 2;
+    const unsigned count = mixed_scalar ? (mixed.fused ? 4 : 3) : 2;
     if (source.operands.size() != count)
       panic("Invalid halfword instruction operand count");
     for (unsigned i = 1; i <= (count == 4 ? 2u : 1u); ++i) {
       operand value;
       unsigned shift;
-      if (!decode_halfword_source(source.operands[i], value, shift))
+      if (!(mixed_scalar
+                ? decode_mixed_half_source(source.operands[i], value, shift)
+                : decode_halfword_source(source.operands[i], value, shift)))
         panic("Invalid halfword instruction source");
       source.operands[i] = value;
     }
