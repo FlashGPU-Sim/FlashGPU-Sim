@@ -4,6 +4,7 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "unit/ptx_integer_literal_test.cc",
   "unit/sass/functional/mixed_arithmetic_test.cc",
   "mixed_arithmetic/launch_test.cu",
   "unit/sass/functional/byte_matrix_test.cc",
