@@ -518,3 +518,8 @@ $(OBJ_DIR)/sm120/support/sass_functional_integer.cc.o: \
 $(OBJ_DIR)/sm100/warp_reduce/launch_test.cu.o: src/funnel_shift/launch_test.cu
 
 $(OBJ_DIR)/sm100/unit/memory_transport_test.cc.o: ../src/gpgpu-sim/flash/load_response_counter.h
+
+$(OBJ_DIR)/sm100/unit/bfloat_arithmetic_test.cc.o \
+$(OBJ_DIR)/sm100/support/sass_functional_float.cc.o: \
+  ../src/gpgpu-sim/flash/bfloat_arithmetic.h \
+  ../src/gpgpu-sim/flash/bfloat_conversion.h

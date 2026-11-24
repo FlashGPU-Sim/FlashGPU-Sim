@@ -4,6 +4,8 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "bfloat_arithmetic/launch_test.cu",
+  "unit/bfloat_arithmetic_test.cc",
   "bit_search/launch_test.cu",
   "cached_completion/launch_test.cu",
   "funnel_shift/launch_test.cu",

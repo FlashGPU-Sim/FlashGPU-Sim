@@ -1,3 +1,4 @@
+#include "../../bfloat_arithmetic.h"
 #include "../../fp32_fma.h"
 #include "../decode/fp32x2_operand.h"
 #include "../decode/operand_parser.h"
@@ -319,25 +320,6 @@ step_result execute_hadd2(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
-// BF16 inputs have exact FP64 products. Correct the rare FP32 midpoint
-// before BF16 rounding so a tiny addend cannot produce double rounding.
-uint16_t bfloat_fma_rn(float a, float b, float c) {
-  float rounded = std::fma(a, b, c);
-  if (std::isfinite(a) && std::isfinite(b) && std::isfinite(c) &&
-      std::isfinite(rounded) && (float_bits(rounded) & 0xffff) == 0x8000) {
-    const double product = double(a) * double(b);
-    const double sum = product + double(c);
-    const double recovered = sum - product;
-    const double residual =
-        (product - (sum - recovered)) + (double(c) - recovered);
-    const double difference = sum - double(rounded);
-    const double direction = difference != 0 ? difference : residual;
-    if (direction != 0)
-      rounded = std::nextafter(rounded, direction > 0 ? INFINITY : -INFINITY);
-  }
-  return float_bfloat_rn(rounded);
-}
-
 step_result execute_bfloat_fma_register(const instruction &inst,
                                         warp_state &state) {
   if (!has_typed_operands(inst, 4))
@@ -372,7 +354,7 @@ step_result execute_bfloat_fma_register(const instruction &inst,
           value = -value;
         values[i] = value;
       }
-      result |= uint32_t(bfloat_fma_rn(values[0], values[1], values[2]))
+      result |= uint32_t(bf16_fma_rn(values[0], values[1], values[2]))
                 << (16 * half);
     }
     state.write_register(lane, inst.operands[0].index, result);
@@ -409,10 +391,10 @@ step_result execute_bfloat_fma_immediate(const instruction &inst,
       return unsupported(inst, "invalid packed FMA literals");
     const uint32_t a = state.read_register(lane, inst.operands[1].index);
     const uint32_t c = state.read_register(lane, inst.operands[4].index);
-    const uint32_t lo = float_bfloat_rn(
-        std::fma(bfloat_float(a & 0xffff), low, bfloat_float(c & 0xffff)));
-    const uint32_t hi = float_bfloat_rn(
-        std::fma(bfloat_float(a >> 16), high, bfloat_float(c >> 16)));
+    const uint32_t lo =
+        bf16_fma_rn(bfloat_float(a & 0xffff), low, bfloat_float(c & 0xffff));
+    const uint32_t hi =
+        bf16_fma_rn(bfloat_float(a >> 16), high, bfloat_float(c >> 16));
     state.write_register(lane, inst.operands[0].index, lo | (hi << 16));
   }
   advance(inst, state);
@@ -539,7 +521,7 @@ step_result execute_bfloat_mul2(const instruction &inst, warp_state &state,
           value = -value;
         values[i] = value;
       }
-      result |= uint32_t(float_bfloat_rn(values[0] * values[1])) << (half * 16);
+      result |= uint32_t(bf16_mul_rn(values[0], values[1])) << (half * 16);
     }
     state.write_register(lane, inst.operands[0].index, result);
   }
@@ -580,7 +562,7 @@ step_result execute_bfloat_add2(const instruction &inst, warp_state &state,
           value = -value;
         values[i] = value;
       }
-      result |= uint32_t(float_bfloat_rn(values[0] + values[1])) << (16 * half);
+      result |= uint32_t(bf16_add_rn(values[0], values[1])) << (16 * half);
     }
     state.write_register(lane, inst.operands[0].index, result);
   }

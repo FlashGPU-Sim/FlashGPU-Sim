@@ -191,3 +191,10 @@ cuda = "13.3"
 tests = [
   { name = "bit-search-dual-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_bit_search_dual.py" },
 ]
+
+[jobs.sm100-bfloat-arithmetic]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "bfloat-arithmetic-components-and-dual-launch", group = "unit", gtest_filter = "BfloatArithmetic.*:BfloatBits.*", post_check = "tests/ci/check_bfloat_arithmetic_dual.py" },
+]
