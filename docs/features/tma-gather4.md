@@ -79,3 +79,19 @@ Reference: [NVIDIA PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-executi
 13.3 `cuTensorMapEncodeTiled` format/alignment contracts. PTX specifies the
 operation, while the native operand conventions are checked against CUDA 13.3
 ptxas/nvdisasm output retained with the test evidence.
+
+
+## Native implicit operand dependencies
+
+`decode/tma_load_operand.h` decodes the joined or split state/map operands
+for both functional execution and timing dependency projection. Gather loads
+read seven consecutive state URs; gather prefetch reads five. The tensor-map
+address and optional address-space/cache qualifier each occupy a UR pair.
+Multicast masks remain ordinary explicit sources. Projection tests cover both
+text forms, prefetch, paired loads, multicast and the optional qualifier.
+The common decoder also validates ordinary TMA load/prefetch operands; their
+functional CUDA control regression remains part of the integration suite.
+
+The gather transfer/layout/format implementation remains shared by PTX and
+SASS through `flash/tma_gather4.h`; the SASS adapter supplies decoded addresses
+and CTA state. Follow-up evidence: workspace `runs/feature-fixes-20261124`.

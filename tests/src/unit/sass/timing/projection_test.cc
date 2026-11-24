@@ -1138,3 +1138,29 @@ TEST(SassTimingProjectionTest,
 }
 
 }  // namespace
+
+namespace {
+TEST(SassTimingProjectionTest, GatherImplicitRegisterSpans) {
+  for (const char *opcode : {"UTMALDG.2D.GATHER4", "UTMALDG.2D.GATHER4.2CTA",
+                              "UTMAPF.L2.2D.GATHER4"}) {
+    const bool prefetch = std::string(opcode).find("UTMAPF") == 0;
+    for (const char *operands : {"[UR4][UR12]", "[UR4], [UR12]"}) {
+      const timing_instruction inst(official_instruction(0, opcode, operands));
+      std::vector<int> expected;
+      for (unsigned word = 0; word < (prefetch ? 5u : 7u); ++word)
+        expected.push_back(261 + word);
+      expected.insert(expected.end(), {269, 270});
+      EXPECT_EQ(std::vector<int>(inst.arch_reg.src, inst.arch_reg.src + inst.incount), expected);
+      EXPECT_EQ(inst.outcount, 0u);
+    }
+  }
+  for (const char *operands : {"[UR4][UR12],UR16,desc[UR20]",
+                                "[UR4],[UR12],UR16,desc[UR20]"}) {
+    const timing_instruction inst(official_instruction(
+        0, "UTMALDG.2D.GATHER4.MULTICAST", operands));
+    std::vector<int> sources(inst.arch_reg.src, inst.arch_reg.src + inst.incount);
+    std::sort(sources.begin(), sources.end());
+    EXPECT_EQ(sources, (std::vector<int>{261,262,263,264,265,266,267,269,270,273,277,278}));
+  }
+}
+} // namespace

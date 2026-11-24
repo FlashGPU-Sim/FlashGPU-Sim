@@ -1,3 +1,4 @@
+#include "../decode/tma_load_operand.h"
 #include "internal.h"
 
 #include "../../tensormap.h"
@@ -89,24 +90,8 @@ step_result execute_utmapf(const instruction &inst, warp_state &state,
                   (context.kernel_image->arch != architecture::kSm100 &&
                    context.kernel_image->arch != architecture::kSm103))))
     return unsupported(inst, "unsupported TMA prefetch architecture/rank");
-  const auto *first = get_operand(inst, 0, operand_kind::kMemoryAddress);
-  const bool split = first && first->address_groups.size() == 1;
-  const auto *second =
-      split ? get_operand(inst, 1, operand_kind::kMemoryAddress) : first;
-  if (!has_typed_operands(inst, split ? 2 : 1) || !first || !second ||
-      first->has_prefix || second->has_prefix ||
-      second->address_groups.size() != (split ? 1u : 2u))
-    return unsupported(inst,
-                       "expected prefetch coordinates and tensor-map address");
-  const auto &a = first->address_groups[0],
-             &b = second->address_groups[split ? 0 : 1];
-  if (a.terms.size() != 1 || b.terms.size() != 1)
-    return unsupported(inst, "invalid prefetch address expressions");
-  const auto &x = a.terms[0], &y = b.terms[0];
-  if (x.kind != address_term_kind::kUniformRegister ||
-      y.kind != address_term_kind::kUniformRegister || x.wide || y.wide ||
-      x.negated || y.negated || x.index > kUniformRegisters - registers ||
-      y.index > kUniformRegisters - 2)
+  tma_load_operands decoded;
+  if (!decode_tma_load_operands(inst, registers, false, false, decoded))
     return unsupported(inst, "invalid prefetch register spans");
   // Non-binding cache hint: as with the PTX prefetch path, this model may
   // discard it. It has issue latency but no payload or mbarrier side effect.
@@ -132,36 +117,13 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
                                                       : 0;
   if (rank == 0)
     return unsupported(inst, "unsupported TMA load rank");
-  const auto *addresses = get_operand(inst, 0, operand_kind::kMemoryAddress);
-  const bool split = addresses && addresses->address_groups.size() == 1;
-  const auto *second =
-      split ? get_operand(inst, 1, operand_kind::kMemoryAddress) : addresses;
-  const unsigned extra = split ? 2 : 1;
-  const unsigned descriptor_index = extra + (multicast ? 1 : 0);
-  const operand *address_descriptor =
-      inst.operands.size() == descriptor_index + 1
-          ? get_operand(inst, descriptor_index,
-                        operand_kind::kTensorMapDescriptor)
-          : nullptr;
-  if (!inst.operands_structured || !addresses || !second ||
-      addresses->has_prefix || second->has_prefix ||
-      second->address_groups.size() != (split ? 1u : 2u) ||
-      inst.operands.size() != descriptor_index + (address_descriptor ? 1 : 0))
-    return unsupported(inst, "expected TMA state/map and optional multicast "
-                             "mask or cache descriptor");
-  const auto &state_group = addresses->address_groups[0];
-  const auto &descriptor_group = second->address_groups[split ? 0 : 1];
-  if (state_group.terms.size() != 1 || descriptor_group.terms.size() != 1)
-    return unsupported(inst, "TMA addresses must each be one uniform register");
-  const address_term &state_term = state_group.terms[0];
-  const address_term &descriptor_term = descriptor_group.terms[0];
-  if (state_term.kind != address_term_kind::kUniformRegister ||
-      descriptor_term.kind != address_term_kind::kUniformRegister ||
-      state_term.wide || descriptor_term.wide || state_term.negated ||
-      descriptor_term.negated ||
-      state_term.index > kUniformRegisters - (gather4 ? 7 : rank + 2) ||
-      descriptor_term.index > kUniformRegisters - 2)
-    return unsupported(inst, "unsupported TMA uniform-register convention");
+  tma_load_operands decoded;
+  if (!decode_tma_load_operands(inst, gather4 ? 7 : rank + 2, multicast, true,
+                                decoded))
+    return unsupported(inst,
+                       "invalid TMA state/map register spans or qualifier");
+  const unsigned extra = decoded.extra_begin;
+  const operand *address_descriptor = decoded.cache_descriptor;
 
   if (!any_lane_executes(inst, state)) {
     advance(inst, state);
@@ -176,7 +138,7 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   // The target Blackwell forms' canonical nvdisasm text elides consecutive
   // state registers: URbase is the shared destination, URbase+1 is the
   // mbarrier, and the following rank registers are signed coordinates.
-  const unsigned state_base = state_term.index;
+  const unsigned state_base = decoded.state_base;
   uint64_t shared_address = state.read_uniform_register(state_base);
   uint64_t mbarrier_address = state.read_uniform_register(state_base + 1);
   uint16_t destinations = uint16_t(1u << context.cga_cta_id);
@@ -225,7 +187,7 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
     coordinates[dimension] = static_cast<int32_t>(
         state.read_uniform_register(state_base + 2 + dimension));
   const uint64_t descriptor_address =
-      read_uniform_register_pair(state, descriptor_term.index);
+      read_uniform_register_pair(state, decoded.map_base);
   const memory_space descriptor_space = memory_space::kGlobal;
   if (address_descriptor != nullptr) {
     if (address_descriptor->descriptor_register > kUniformRegisters - 2)

@@ -1,6 +1,7 @@
 #include "timing_projection.h"
 #include "../../panic.h"
 #include "../decode/operand_parser.h"
+#include "../decode/tma_load_operand.h"
 #include "../decode/wgmma_instruction.h"
 
 #include <algorithm>
@@ -908,6 +909,30 @@ void populate_registers(const instruction &source, timing_instruction &target) {
           append_register(destinations, destination.kind,
                           destination.index + word, false);
       }
+    }
+  }
+
+  if ((base == "UTMALDG" || base == "UTMAPF") &&
+      has_modifier(source.opcode, "GATHER4")) {
+    const bool prefetch = base == "UTMAPF";
+    const unsigned words = prefetch ? 5 : 7;
+    tma_load_operands decoded;
+    if (!decode_tma_load_operands(source, words,
+                                  has_modifier(source.opcode, "MULTICAST"),
+                                  !prefetch, decoded))
+      panic("Invalid gather4 register spans for " + source.opcode);
+    for (unsigned word = 0; word < words; ++word)
+      append_register(sources, operand_kind::kUniformRegister,
+                      decoded.state_base + word, false);
+    append_register(sources, operand_kind::kUniformRegister, decoded.map_base,
+                    true);
+    source_begin = decoded.extra_begin;
+    logical_source_operands += 2;
+    logical_register_operands += 2;
+    if (decoded.cache_descriptor) {
+      // Tensor-map address qualifiers are also 64-bit UR pairs.
+      append_register(sources, operand_kind::kUniformRegister,
+                      decoded.cache_descriptor->descriptor_register, true);
     }
   }
 
