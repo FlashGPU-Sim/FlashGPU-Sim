@@ -64,6 +64,8 @@ uint64_t minimum_launch_header(architecture arch) {
   switch (arch) {
   case architecture::kSm90:
     return kSm90MinimumLaunchHeader;
+  case architecture::kSm100:
+  case architecture::kSm103:
   case architecture::kSm120:
     return kSm120MinimumLaunchHeader;
   case architecture::kUnknown:
@@ -668,6 +670,9 @@ execute_runtime_functional_grid(kernel_info_t &launch,
     panic("SASS runtime kernel has no parameter bank");
   if (image->arch == architecture::kSm90)
     register_sm90_functional_semantics(sass_frontend);
+  else if (image->arch == architecture::kSm100 ||
+           image->arch == architecture::kSm103)
+    register_sm100_functional_semantics(sass_frontend);
   else
     register_sm120_functional_semantics(sass_frontend);
 

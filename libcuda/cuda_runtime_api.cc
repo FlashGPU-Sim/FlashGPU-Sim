@@ -5381,8 +5381,7 @@ extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
   }
 
   // Enum range checks
-  if (swizzle > CU_TENSOR_MAP_SWIZZLE_128B_ATOM_32B)
-    return CUDA_ERROR_INVALID_VALUE;
+  if (static_cast<unsigned>(swizzle) > 6) return CUDA_ERROR_INVALID_VALUE;
   if (interleave > CU_TENSOR_MAP_INTERLEAVE_32B)
     return CUDA_ERROR_INVALID_VALUE;
 
@@ -5433,27 +5432,48 @@ extern "C" CUresult CUDAAPI cuTensorMapEncodeTiled(
     case CU_TENSOR_MAP_DATA_TYPE_TFLOAT32_FTZ:
       desc.fields.tensorDataType = TMA_DTYPE_TF32_FTZ;
       break;
+    case static_cast<CUtensorMapDataType>(13):
+    case static_cast<CUtensorMapDataType>(14):
+    case static_cast<CUtensorMapDataType>(15):
+      desc.fields.tensorDataType = static_cast<unsigned>(tensorDataType);
+      break;
     default:
       printf("WARNING: cuTensorMapEncodeTiled: unsupported tensorDataType %d\n",
              (int)tensorDataType);
       return CUDA_ERROR_INVALID_VALUE;
   }
 
-  // When interleave is NONE, boxDim[0] * elementSize must be a multiple of 16
-  if (interleave == CU_TENSOR_MAP_INTERLEAVE_NONE) {
-    uint32_t elemSize = desc.get_element_size();
-    if ((boxDim[0] * elemSize) % 16 != 0) {
-      printf("WARNING: cuTensorMapEncodeTiled: boxDim[0]=%u * elemSize=%u = %u "
-             "is not a multiple of 16\n",
-             boxDim[0], elemSize, boxDim[0] * elemSize);
+  const bool packed = desc.fields.tensorDataType >= TMA_DTYPE_16U4_ALIGN8B;
+  const bool expanded = desc.fields.tensorDataType >= TMA_DTYPE_16U4_ALIGN16B;
+  const unsigned bits = desc.fields.tensorDataType == TMA_DTYPE_16U6_ALIGN16B
+                            ? 6
+                        : packed ? 4
+                                 : 8 * desc.get_element_size();
+  if (interleave == CU_TENSOR_MAP_INTERLEAVE_NONE &&
+      (boxDim[0] * bits) % 128 != 0)
+    return CUDA_ERROR_INVALID_VALUE;
+  if (packed) {
+    if (interleave != CU_TENSOR_MAP_INTERLEAVE_NONE ||
+        oobFill != CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE ||
+        globalDim[0] % (expanded ? 128 : 2))
       return CUDA_ERROR_INVALID_VALUE;
+    if (expanded) {
+      if (reinterpret_cast<uint64_t>(globalAddress) % 32 || boxDim[0] != 128 ||
+          (swizzle != 0 && swizzle != 3 && swizzle != 4 &&
+           !(desc.fields.tensorDataType == TMA_DTYPE_16U6_ALIGN16B &&
+             swizzle == 6)))
+        return CUDA_ERROR_INVALID_VALUE;
+      for (unsigned i = 0; i + 1 < tensorRank; ++i)
+        if (globalStrides[i] % 32) return CUDA_ERROR_INVALID_VALUE;
     }
   }
-
   for (cuuint32_t i = 0; i < tensorRank; i++) {
     desc.fields.globalDim[i] = static_cast<uint32_t>(globalDim[i]);
     desc.fields.boxDim[i] = boxDim[i];
-    desc.fields.elementStrides[i] = elementStrides[i];
+    desc.fields.elementStrides[i] =
+        i == 0 && interleave == CU_TENSOR_MAP_INTERLEAVE_NONE
+            ? 1
+            : elementStrides[i];
   }
   for (cuuint32_t i = 0; i < tensorRank - 1; i++) {
     desc.fields.globalStrides[i] = globalStrides[i];
@@ -8799,8 +8819,10 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernelExC(
 
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
-  function_info *entry = context->get_kernel((const char *)func);
-  if (!entry) {
+  const bool native = flash_gpgpu_sim::sass::runtime_functional_requested();
+  function_info *entry =
+      native ? nullptr : context->get_kernel((const char *)func);
+  if (native ? !context->has_sass_function((const char *)func) : !entry) {
     printf(
         "GPGPU-Sim PTX: ERROR cudaLaunchKernelExC -- no PTX implementation "
         "found for %p\n",
@@ -8828,8 +8850,9 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernelExC(
         break;
       case cudaLaunchAttributeClusterSchedulingPolicyPreference:
         // Stored on function for issuer; no full spread model yet.
-        entry->set_cluster_sched_policy(
-            (int)attr.val.clusterSchedulingPolicyPreference);
+        if (entry)
+          entry->set_cluster_sched_policy(
+              (int)attr.val.clusterSchedulingPolicyPreference);
         break;
       case cudaLaunchAttributePreferredClusterDimension:
         printf(
@@ -8846,7 +8869,7 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernelExC(
   }
 
   // Fall back to required cluster dims on the function if no launch attr.
-  if (!have_cluster_attr && entry->has_explicit_cluster()) {
+  if (!have_cluster_attr && entry && entry->has_explicit_cluster()) {
     have_cluster_attr = true;
     cluster_dim = entry->get_req_cluster_dim();
   }
@@ -8859,14 +8882,11 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernelExC(
   }
   ctx->api->g_cuda_launch_stack.push_back(kcfg);
 
-  for (unsigned i = 0; i < entry->num_args(); i++) {
-    std::pair<size_t, unsigned> p = entry->get_param_config(i);
-    if (args && args[i]) {
-      cudaSetupArgumentInternal(args[i], p.first, p.second, ctx);
-    }
-  }
-
-  return cudaLaunchInternal((const char *)func, ctx);
+  // Use the same ABI packing path as ordinary launches. Strict native mode
+  // has no PTX function_info; cluster metadata stays on the pushed frame.
+  return cudaLaunchKernelInternal((const char *)func, gridDim, blockDim,
+                                  const_cast<const void **>(args), sharedMem,
+                                  stream, ctx);
 }
 
 __host__ cudaError_t CUDARTAPI _cudaLaunchKernelEx(

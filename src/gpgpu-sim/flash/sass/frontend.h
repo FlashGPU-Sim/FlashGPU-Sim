@@ -154,6 +154,7 @@ public:
 struct functional_tensor_map_2d {
   uint64_t global_address = 0;
   uint32_t element_bytes = 0;
+  uint32_t data_type = UINT32_MAX; // explicit common tensor-map tag, if known
   // Equal-width formats can still require different reduction arithmetic.
   tensor_map_element_type element_type = tensor_map_element_type::kUnknown;
   std::array<uint32_t, 2> global_dim{};
@@ -161,6 +162,7 @@ struct functional_tensor_map_2d {
   uint64_t row_stride_bytes = 0;
   std::array<uint32_t, 2> element_stride{{1, 1}};
   uint32_t swizzle_bytes = 0;
+  uint32_t swizzle_mode = UINT32_MAX;
   bool oob_zero = true;
 };
 
@@ -171,12 +173,14 @@ struct functional_tensor_map_view {
   unsigned rank = 0;
   uint64_t global_address = 0;
   uint32_t element_bytes = 0;
+  uint32_t data_type = UINT32_MAX; // explicit common tensor-map tag, if known
   tensor_map_element_type element_type = tensor_map_element_type::kUnknown;
   std::array<uint32_t, 5> global_dim{{1, 1, 1, 1, 1}};
   std::array<uint32_t, 5> box_dim{{1, 1, 1, 1, 1}};
   std::array<uint64_t, 5> global_stride_bytes{};
   std::array<uint32_t, 5> element_stride{{1, 1, 1, 1, 1}};
   uint32_t swizzle_bytes = 0;
+  uint32_t swizzle_mode = UINT32_MAX;
   bool oob_zero = true;
 };
 
@@ -186,6 +190,9 @@ struct functional_tma_effect {
   uint64_t source_address = 0;
   uint32_t size_bytes = 0;
   uint32_t mbarrier_address = UINT32_MAX;
+  uint16_t destination_mask = 0;
+  uint32_t completion_mask = 0;
+  bool explicit_cluster_targets = false;
   std::array<int32_t, 5> coordinates{};
   functional_tensor_map_view tensor_map;
 };
@@ -276,6 +283,13 @@ bool orders_deferred_cta_barrier(const instruction &inst, architecture arch);
 bool deferred_cta_barriers_released(warp_state &warp,
                                     const cta_execution_state &cta);
 
+// TMA endpoints within a concurrently resident CTA cluster. The runtime owns
+// these objects until every member retires; frontend effects use rank masks.
+struct functional_cluster_state {
+  std::vector<cta_execution_state *> ctas;
+  std::vector<functional_memory *> memories;
+};
+
 struct execution_context {
   struct functional_memory_access {
     memory_space space = memory_space::kGlobal;
@@ -306,6 +320,7 @@ struct execution_context {
   bool architectural_cycle_valid = false;
   uint32_t virtual_smid = 0;
   cta_execution_state *cta = nullptr;
+  functional_cluster_state *cluster = nullptr;
   unsigned warp_id = 0;
   std::array<std::vector<functional_memory_access>, kWarpLanes> memory_accesses;
   std::array<functional_tma_effect, kWarpLanes> tma_effects{};

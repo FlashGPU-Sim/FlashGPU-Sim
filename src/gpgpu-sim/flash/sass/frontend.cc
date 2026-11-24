@@ -186,21 +186,25 @@ bool orders_deferred_cta_barrier(const instruction &inst, architecture arch) {
   const std::string base = inst.opcode.substr(0, separator);
   // Deferred CTA synchronization orders global memory as well as shared.
   if (base == "LDG" || base == "STG" || base == "ATOMG" || base == "REDG")
-    return arch == architecture::kSm90 || arch == architecture::kSm120;
+    return arch == architecture::kSm90 || arch == architecture::kSm120 ||
+           arch == architecture::kSm100 || arch == architecture::kSm103;
   if (base == "BAR")
-    return arch == architecture::kSm90 || arch == architecture::kSm120;
+    return arch == architecture::kSm90 || arch == architecture::kSm120 ||
+           arch == architecture::kSm100 || arch == architecture::kSm103;
   // Publishing an mbarrier arrival/completion is a shared-state side effect.
   // In particular, FA3's no-TMA path completes Q immediately after QueryEmpty;
   // letting this cross an unfinished deferred barrier can lap the consumer's
   // parity wait. Independent phase polling below remains architecture-specific.
   if (inst.opcode.rfind("SYNCS.ARRIVE", 0) == 0)
-    return arch == architecture::kSm90 || arch == architecture::kSm120;
+    return arch == architecture::kSm90 || arch == architecture::kSm120 ||
+           arch == architecture::kSm100 || arch == architecture::kSm103;
   // A TMA store/reduction consumes shared data. FA3's epilogue follows its
   // deferred O-ready barrier directly with UTMASTG, without an intervening
   // LDS/STS. Do not snapshot the reused shared buffer before its writers
   // arrive. This does not change SM90 TMA-load issue penetration.
   if (base == "UTMASTG" || base == "UTMAREDG")
-    return arch == architecture::kSm90 || arch == architecture::kSm120;
+    return arch == architecture::kSm90 || arch == architecture::kSm120 ||
+           arch == architecture::kSm100 || arch == architecture::kSm103;
   if (arch == architecture::kSm120)
     return inst.opcode.rfind("SYNCS.PHASECHK", 0) == 0 ||
            inst.opcode.rfind("UTMA", 0) == 0;
@@ -399,9 +403,12 @@ void frontend::add_kernel(kernel decoded_kernel) {
   if (decoded_kernel.name.empty())
     panic("cannot add an unnamed SASS kernel");
   if ((decoded_kernel.arch != architecture::kSm90 &&
-       decoded_kernel.arch != architecture::kSm120) ||
+       decoded_kernel.arch != architecture::kSm120 &&
+       decoded_kernel.arch != architecture::kSm100 &&
+       decoded_kernel.arch != architecture::kSm103) ||
       decoded_kernel.instruction_bytes != kInstructionBytes)
-    panic("frontend currently accepts only 16-byte SM90/SM120 SASS");
+    panic("frontend requires a supported architecture and 16-byte SASS "
+          "instructions");
   std::sort(decoded_kernel.instructions.begin(),
             decoded_kernel.instructions.end(),
             [](const instruction &left, const instruction &right) {

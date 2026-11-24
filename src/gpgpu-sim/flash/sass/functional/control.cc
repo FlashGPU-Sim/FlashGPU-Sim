@@ -18,6 +18,16 @@ namespace {
 
 // PTX ISA 9.7.13 plus warp/CTA control operations.
 
+step_result execute_gather_cluster_barrier(const instruction &inst,
+                                           warp_state &state,
+                                           execution_context &context) {
+  if (!has_typed_operands(inst, 0) || inst.has_guard || !context.cluster ||
+      !context.architectural_cycle_valid)
+    return unsupported(inst, "cluster barrier requires common timing runtime");
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
 step_result execute_nop(const instruction &inst, warp_state &state,
                         execution_context &) {
   if (!has_typed_operands(inst, 0))
@@ -1069,6 +1079,9 @@ step_result execute_exit(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_control_semantics(frontend &target) {
+  target.register_semantics("UCGABAR_ARV", execute_gather_cluster_barrier);
+  target.register_semantics("UCGABAR_WAIT", execute_gather_cluster_barrier);
+
   target.register_semantics("NOP", execute_nop);
   target.register_semantics("YIELD", execute_nop);
   target.register_semantics("NANOSLEEP", execute_nanosleep);

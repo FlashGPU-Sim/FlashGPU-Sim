@@ -529,6 +529,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.5d	TC; return DIM_5D_OPTION;
 
 \.replace TC; return REPLACE_OPTION;
+\.tile::gather4 TC; return GATHER4_OPTION;
 \.tile TC; return TILE_OPTION;
 \.global_address TC; return GLOBAL_ADDRESS_OPTION;
 \.rank TC; return RANK_OPTION;

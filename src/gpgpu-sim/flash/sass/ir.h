@@ -11,7 +11,7 @@ namespace sass {
 constexpr uint32_t kInstructionBytes = 16;
 constexpr uint8_t kNoScoreboardBarrier = 7;
 
-enum class architecture { kUnknown, kSm90, kSm120 };
+enum class architecture { kUnknown, kSm90, kSm100, kSm103, kSm120 };
 
 enum class operand_kind {
   kOpaque,

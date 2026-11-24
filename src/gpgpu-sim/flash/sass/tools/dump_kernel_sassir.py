@@ -165,7 +165,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--kernel", required=True)
     parser.add_argument("--fatbin-handle", required=True, type=int)
-    parser.add_argument("--arch", required=True, choices=("sm90", "sm120"))
+    parser.add_argument("--arch", required=True, choices=("sm90", "sm100", "sm103", "sm120"))
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--nvdisasm", required=True, type=Path)
     parser.add_argument("--cuobjdump", required=True, type=Path)

@@ -1,6 +1,8 @@
+#include "../decode/tma_load_operand.h"
 #include "internal.h"
 
 #include "../../tensormap.h"
+#include "../../tma_gather4.h"
 #include "../../tma_reduction.h"
 #include "../runtime/tensor_map.h"
 
@@ -38,6 +40,7 @@ functional_tensor_map_view load_view(const functional_tensor_map_2d &descriptor,
   result.rank = rank;
   result.global_address = descriptor.global_address;
   result.element_bytes = descriptor.element_bytes;
+  result.data_type = descriptor.data_type;
   result.element_type = descriptor.element_type;
   result.global_dim[0] = descriptor.global_dim[0];
   result.global_dim[1] = descriptor.global_dim[1];
@@ -48,6 +51,7 @@ functional_tensor_map_view load_view(const functional_tensor_map_2d &descriptor,
   result.element_stride[0] = descriptor.element_stride[0];
   result.element_stride[1] = descriptor.element_stride[1];
   result.swizzle_bytes = descriptor.swizzle_bytes;
+  result.swizzle_mode = descriptor.swizzle_mode;
   result.oob_zero = descriptor.oob_zero;
   return result;
 }
@@ -60,6 +64,7 @@ load_view(const functional_tensor_map_nd<Rank> &descriptor) {
   result.rank = Rank;
   result.global_address = descriptor.global_address;
   result.element_bytes = descriptor.element_bytes;
+  result.data_type = descriptor.data_type;
   result.element_type = descriptor.element_type;
   std::copy(descriptor.global_dim.begin(), descriptor.global_dim.end(),
             result.global_dim.begin());
@@ -71,46 +76,40 @@ load_view(const functional_tensor_map_nd<Rank> &descriptor) {
   std::copy(descriptor.element_stride.begin(), descriptor.element_stride.end(),
             result.element_stride.begin());
   result.swizzle_bytes = descriptor.swizzle_bytes;
+  result.swizzle_mode = descriptor.swizzle_mode;
   result.oob_zero = descriptor.oob_zero;
   return result;
 }
 
 step_result execute_utmapf(const instruction &inst, warp_state &state,
-                           execution_context &) {
-  const unsigned rank = inst.opcode == "UTMAPF.L2.4D" ? 4 : 0;
-  if (rank == 0)
-    return unsupported(inst, "unsupported TMA prefetch rank or cache level");
-  const operand *addresses = get_operand(inst, 0, operand_kind::kMemoryAddress);
-  if (!has_typed_operands(inst, 1) || addresses == nullptr ||
-      addresses->has_prefix || addresses->address_groups.size() != 2)
-    return unsupported(inst, "expected [URcoordinates][URdescriptor] operands");
-
-  const address_expression &coordinates = addresses->address_groups[0];
-  const address_expression &descriptor = addresses->address_groups[1];
-  if (coordinates.terms.size() != 1 || descriptor.terms.size() != 1)
-    return unsupported(
-        inst, "TMA prefetch operands must each be one uniform register");
-  const address_term &coordinate_term = coordinates.terms[0];
-  const address_term &descriptor_term = descriptor.terms[0];
-  if (coordinate_term.kind != address_term_kind::kUniformRegister ||
-      descriptor_term.kind != address_term_kind::kUniformRegister ||
-      coordinate_term.wide || descriptor_term.wide || coordinate_term.negated ||
-      descriptor_term.negated ||
-      coordinate_term.index > kUniformRegisters - rank ||
-      descriptor_term.index > kUniformRegisters - 2)
-    return unsupported(inst,
-                       "unsupported TMA prefetch uniform-register convention");
-
-  // UTMAPF only changes cache residency.  Functional execution validates the
-  // coordinate/descriptor register convention, while the later timing
-  // adapter is responsible for modeling the L2 prefetch itself.
+                           execution_context &context) {
+  const bool gather = inst.opcode == "UTMAPF.L2.2D.GATHER4";
+  const unsigned registers = gather ? 5 : inst.opcode == "UTMAPF.L2.4D" ? 4 : 0;
+  if (!registers ||
+      (gather && (!context.kernel_image ||
+                  (context.kernel_image->arch != architecture::kSm100 &&
+                   context.kernel_image->arch != architecture::kSm103))))
+    return unsupported(inst, "unsupported TMA prefetch architecture/rank");
+  tma_load_operands decoded;
+  if (!decode_tma_load_operands(inst, registers, false, false, decoded))
+    return unsupported(inst, "invalid prefetch register spans");
+  // Non-binding cache hint: as with the PTX prefetch path, this model may
+  // discard it. It has issue latency but no payload or mbarrier side effect.
   advance(inst, state);
   return {step_status::kAdvanced, {}};
 }
 
 step_result execute_utmaldg(const instruction &inst, warp_state &state,
                             execution_context &context) {
-  const unsigned rank = inst.opcode == "UTMALDG.1D"   ? 1
+  const bool gather4 = inst.opcode.rfind("UTMALDG.2D.GATHER4", 0) == 0;
+  const bool multicast = inst.opcode.find(".MULTICAST") != std::string::npos;
+  const bool paired = inst.opcode.find(".2CTA") != std::string::npos;
+  if (gather4 && (!context.kernel_image ||
+                  (context.kernel_image->arch != architecture::kSm100 &&
+                   context.kernel_image->arch != architecture::kSm103)))
+    return unsupported(inst, "gather4 requires SM100/SM103");
+  const unsigned rank = gather4                       ? 2
+                        : inst.opcode == "UTMALDG.1D" ? 1
                         : inst.opcode == "UTMALDG.2D" ? 2
                         : inst.opcode == "UTMALDG.3D" ? 3
                         : inst.opcode == "UTMALDG.4D" ? 4
@@ -118,31 +117,13 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
                                                       : 0;
   if (rank == 0)
     return unsupported(inst, "unsupported TMA load rank");
-  const operand *addresses = get_operand(inst, 0, operand_kind::kMemoryAddress);
-  const operand *address_descriptor =
-      inst.operands.size() == 2
-          ? get_operand(inst, 1, operand_kind::kTensorMapDescriptor)
-          : nullptr;
-  if ((!has_typed_operands(inst, 1) && !has_typed_operands(inst, 2)) ||
-      addresses == nullptr || addresses->has_prefix ||
-      addresses->address_groups.size() != 2)
-    return unsupported(inst, "expected [URbase][URdescriptor] operands");
-  if (inst.operands.size() == 2 && address_descriptor == nullptr)
-    return unsupported(inst, "invalid TMA address-space descriptor");
-
-  const address_expression &state_group = addresses->address_groups[0];
-  const address_expression &descriptor_group = addresses->address_groups[1];
-  if (state_group.terms.size() != 1 || descriptor_group.terms.size() != 1)
-    return unsupported(inst, "TMA addresses must each be one uniform register");
-  const address_term &state_term = state_group.terms[0];
-  const address_term &descriptor_term = descriptor_group.terms[0];
-  if (state_term.kind != address_term_kind::kUniformRegister ||
-      descriptor_term.kind != address_term_kind::kUniformRegister ||
-      state_term.wide || descriptor_term.wide || state_term.negated ||
-      descriptor_term.negated ||
-      state_term.index > kUniformRegisters - (rank + 2) ||
-      descriptor_term.index > kUniformRegisters - 2)
-    return unsupported(inst, "unsupported TMA uniform-register convention");
+  tma_load_operands decoded;
+  if (!decode_tma_load_operands(inst, gather4 ? 7 : rank + 2, multicast, true,
+                                decoded))
+    return unsupported(inst,
+                       "invalid TMA state/map register spans or qualifier");
+  const unsigned extra = decoded.extra_begin;
+  const operand *address_descriptor = decoded.cache_descriptor;
 
   if (!any_lane_executes(inst, state)) {
     advance(inst, state);
@@ -157,15 +138,56 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   // The target Blackwell forms' canonical nvdisasm text elides consecutive
   // state registers: URbase is the shared destination, URbase+1 is the
   // mbarrier, and the following rank registers are signed coordinates.
-  const unsigned state_base = state_term.index;
-  const uint64_t shared_address = state.read_uniform_register(state_base);
-  const uint64_t mbarrier_address = state.read_uniform_register(state_base + 1);
+  const unsigned state_base = decoded.state_base;
+  uint64_t shared_address = state.read_uniform_register(state_base);
+  uint64_t mbarrier_address = state.read_uniform_register(state_base + 1);
+  uint16_t destinations = uint16_t(1u << context.cga_cta_id);
+  uint32_t completions = 0;
+  const unsigned size = context.cluster ? context.cluster->ctas.size() : 1;
+  if (gather4) {
+    // CUDA 13.3 encodes the absolute cluster rank in shared address bits
+    // 24..27 (including rank zero), and multicast masks in bits 16..31.
+    unsigned destination = shared_address >> 24;
+    unsigned owner = mbarrier_address >> 24;
+    if (!size || size > 16 || destination >= size || owner >= size)
+      return unsupported(inst,
+                         "gather4 shared address has an invalid cluster rank");
+    if (multicast) {
+      uint32_t mask = 0;
+      if (!read_u32_operand(inst.operands[extra], state, 0, mask) ||
+          (mask & 0xffffu))
+        return unsupported(inst, "invalid multicast mask");
+      destinations = uint16_t(mask >> 16);
+    } else
+      destinations = uint16_t(1u << destination);
+    if (!tma_gather4_completion_targets(size, destinations, owner, paired,
+                                        multicast, completions))
+      return unsupported(inst, "invalid gather4 CTA targets");
+    shared_address &= 0xffffffu;
+    mbarrier_address &= 0xffffffu;
+    for (unsigned rank = 0; rank < size; ++rank)
+      if ((destinations | completions | (completions >> 16)) & (1u << rank)) {
+        if (context.cluster &&
+            (!context.cluster->ctas[rank] || !context.cluster->memories[rank]))
+          return unsupported(inst, "gather4 target CTA is not resident");
+        if (completions & (1u << rank)) {
+          execution_context owner_context = context;
+          if (context.cluster) {
+            owner_context.cta = context.cluster->ctas[rank];
+            owner_context.memory = context.cluster->memories[rank];
+          }
+          if (!ensure_mbarrier_imported(mbarrier_address, owner_context))
+            return unsupported(inst,
+                               "gather4 target mbarrier is uninitialized");
+        }
+      }
+  }
   std::array<int64_t, 5> coordinates{};
-  for (unsigned dimension = 0; dimension < rank; ++dimension)
+  for (unsigned dimension = 0; dimension < (gather4 ? 5u : rank); ++dimension)
     coordinates[dimension] = static_cast<int32_t>(
         state.read_uniform_register(state_base + 2 + dimension));
   const uint64_t descriptor_address =
-      read_uniform_register_pair(state, descriptor_term.index);
+      read_uniform_register_pair(state, decoded.map_base);
   const memory_space descriptor_space = memory_space::kGlobal;
   if (address_descriptor != nullptr) {
     if (address_descriptor->descriptor_register > kUniformRegisters - 2)
@@ -175,7 +197,7 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
     // narrow until another address-space form is validated.
     const uint64_t qualifier = read_uniform_register_pair(
         state, address_descriptor->descriptor_register);
-    if (qualifier != 0x1000000000000000ull &&
+    if (!gather4 && qualifier != 0x1000000000000000ull &&
         qualifier != 0x12f0000000000000ull &&
         qualifier != 0x14f0000000000000ull) {
       std::ostringstream detail;
@@ -229,7 +251,7 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
       tensor_map_decode_result decoded =
           rank == 1 ? decode_sm120_tensor_map_1d(raw_words)
                     : decode_sm120_tensor_map_2d(raw_words);
-      if (!decoded.supported && rank == 1) {
+      if (!decoded.supported) {
         std::array<uint64_t, 16> host_words{};
         std::copy(raw_words.begin(), raw_words.end(), host_words.begin());
         if (!context.memory->read(
@@ -238,7 +260,8 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
           return memory_fault(inst, descriptor_space,
                               descriptor_address + sizeof(raw_words),
                               sizeof(raw_words));
-        decoded = decode_flashgpu_host_tensor_map_1d(host_words);
+        decoded = rank == 1 ? decode_flashgpu_host_tensor_map_1d(host_words)
+                            : decode_flashgpu_host_tensor_map_2d(host_words);
       }
       if (!decoded.supported)
         return unsupported(inst, decoded.detail);
@@ -249,6 +272,23 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
       tensor_map.swizzle_bytes != 64 && tensor_map.swizzle_bytes != 128)
     return unsupported(inst, "unsupported shared-memory TMA swizzle");
 
+  tensormap_descriptor_t gather_map{};
+  if (!gather4 &&
+      ((tensor_map.data_type >= TMA_DTYPE_TF32 &&
+        tensor_map.data_type <= TMA_DTYPE_16U6_ALIGN16B) ||
+       (tensor_map.swizzle_mode != UINT32_MAX && tensor_map.swizzle_mode > 3) ||
+       !tensor_map.oob_zero || tensor_map.element_stride[1] != 1))
+    return unsupported(
+        inst, "extended tensor layouts are qualified for gather4 only");
+  if (gather4) {
+    gather_map = backend_tensor_map(tensor_map);
+    if (!tma_gather4_supported(gather_map))
+      return unsupported(inst, "unsupported gather4 tensor layout");
+    tensor_map.box_dim[1] = 4;
+  }
+  int32_t gather_coordinates[5];
+  for (unsigned i = 0; i < 5; ++i)
+    gather_coordinates[i] = coordinates[i];
   uint64_t box_elements = 1;
   for (unsigned dimension = 0; dimension < rank; ++dimension) {
     if (tensor_map.box_dim[dimension] == 0 ||
@@ -266,11 +306,22 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   if (tile_bytes == 0 || tile_bytes > UINT32_MAX ||
       shared_address > std::numeric_limits<uint64_t>::max() - (tile_bytes - 1))
     return unsupported(inst, "invalid TMA shared-memory tile range");
-  if (!ensure_mbarrier_imported(mbarrier_address, context))
+  if (!gather4 && !ensure_mbarrier_imported(mbarrier_address, context))
     return unsupported(inst, "TMA references uninitialized mbarrier");
 
   std::vector<uint8_t> tile(tile_bytes, 0);
-  for (uint64_t element = 0; element < box_elements; ++element) {
+  if (gather4) {
+    if (!tma_gather4_load(
+            gather_map, gather_coordinates,
+            [&](uint64_t addr, void *data, size_t bytes) {
+              return context.memory->read(memory_space::kGlobal, addr, data,
+                                          bytes);
+            },
+            tile))
+      return unsupported(inst,
+                         "gather4 payload address is invalid or unmapped");
+  }
+  for (uint64_t element = 0; !gather4 && element < box_elements; ++element) {
     uint64_t remaining = element;
     uint64_t global_offset = 0;
     bool in_bounds = true;
@@ -329,48 +380,84 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
                           tensor_map.element_bytes);
   }
 
-  std::vector<uint8_t> shared_tile;
-  const uint8_t *shared_data = tile.data();
-  if (tensor_map.swizzle_bytes != 0) {
-    shared_tile.resize(tile.size(), 0);
-    const uint64_t mask = tensor_map.swizzle_bytes == 128  ? 0x7
-                          : tensor_map.swizzle_bytes == 64 ? 0x3
-                                                           : 0x1;
-    constexpr size_t kSwizzleGranularity = 16;
-    for (size_t offset = 0; offset < tile.size();
-         offset += kSwizzleGranularity) {
-      const size_t bytes = std::min(kSwizzleGranularity, tile.size() - offset);
-      const uint64_t swizzled_offset =
-          offset ^
-          ((((static_cast<uint64_t>(offset) >> 7) + (shared_address >> 7)) &
-            mask)
-           << 4);
-      if (swizzled_offset > tile.size() ||
-          bytes > tile.size() - swizzled_offset)
-        return unsupported(inst, "TMA swizzle escapes the shared tile");
-      std::memcpy(shared_tile.data() + swizzled_offset, tile.data() + offset,
-                  bytes);
+  if (gather4) {
+    for (unsigned rank = 0; rank < size; ++rank)
+      if (destinations & (1u << rank)) {
+        auto *memory =
+            context.cluster ? context.cluster->memories[rank] : context.memory;
+        for (size_t offset = 0; offset < tile.size(); offset += 8) {
+          const auto addr = shared_address + tma_gather4_shared_offset(
+                                                 offset, shared_address,
+                                                 gather_map.fields.swizzle);
+          if (!memory->write(memory_space::kShared, addr, tile.data() + offset,
+                             8))
+            return memory_fault(inst, memory_space::kShared, addr, 8);
+        }
+      }
+  } else {
+    std::vector<uint8_t> shared_tile;
+    const uint8_t *shared_data = tile.data();
+    if (tensor_map.swizzle_bytes != 0) {
+      shared_tile.resize(tile.size(), 0);
+      const uint64_t mask = tensor_map.swizzle_bytes == 128  ? 0x7
+                            : tensor_map.swizzle_bytes == 64 ? 0x3
+                                                             : 0x1;
+      constexpr size_t kSwizzleGranularity = 16;
+      for (size_t offset = 0; offset < tile.size();
+           offset += kSwizzleGranularity) {
+        const size_t bytes =
+            std::min(kSwizzleGranularity, tile.size() - offset);
+        const uint64_t swizzled_offset =
+            offset ^
+            ((((static_cast<uint64_t>(offset) >> 7) + (shared_address >> 7)) &
+              mask)
+             << 4);
+        if (swizzled_offset > tile.size() ||
+            bytes > tile.size() - swizzled_offset)
+          return unsupported(inst, "TMA swizzle escapes the shared tile");
+        std::memcpy(shared_tile.data() + swizzled_offset, tile.data() + offset,
+                    bytes);
+      }
+      shared_data = shared_tile.data();
     }
-    shared_data = shared_tile.data();
+    if (!context.memory->write(memory_space::kShared, shared_address,
+                               shared_data, tile.size()))
+      return memory_fault(inst, memory_space::kShared, shared_address,
+                          tile.size());
   }
-  if (!context.memory->write(memory_space::kShared, shared_address, shared_data,
-                             tile.size()))
-    return memory_fault(inst, memory_space::kShared, shared_address,
-                        tile.size());
   functional_tma_effect timing_effect;
   timing_effect.destination_address = shared_address;
   timing_effect.source_address = descriptor_address;
-  timing_effect.size_bytes = static_cast<uint32_t>(tile_bytes);
+  timing_effect.size_bytes = gather4
+                                 ? 4 * tma_gather4_gmem_row_bytes(gather_map)
+                                 : static_cast<uint32_t>(tile_bytes);
   timing_effect.mbarrier_address = static_cast<uint32_t>(mbarrier_address);
-  for (unsigned dimension = 0; dimension < rank; ++dimension)
+  if (gather4) {
+    timing_effect.explicit_cluster_targets = size > 1 || multicast || paired;
+    timing_effect.destination_mask = destinations;
+    timing_effect.completion_mask = completions;
+  }
+  for (unsigned dimension = 0; dimension < (gather4 ? 5u : rank); ++dimension)
     timing_effect.coordinates[dimension] =
         static_cast<int32_t>(coordinates[dimension]);
+  if (gather4)
+    tensor_map.box_dim[1] = 1;
   timing_effect.tensor_map = tensor_map;
   if (!record_uniform_tma_effect(inst, state, context,
                                  std::move(timing_effect)))
     return unsupported(inst, "executing TMA load has no issuing lane");
-  if (!context.cta->complete_mbarrier_transaction(mbarrier_address, tile.size(),
-                                                  true))
+  if (gather4) {
+    for (unsigned bit = 0; bit < 32; ++bit)
+      if (completions & (1u << bit)) {
+        auto *owner =
+            context.cluster ? context.cluster->ctas[bit % 16] : context.cta;
+        if (!owner->complete_mbarrier_transaction(
+                mbarrier_address, 4 * tma_gather4_gmem_row_bytes(gather_map),
+                true))
+          return unsupported(inst, "gather4 completion state changed");
+      }
+  } else if (!context.cta->complete_mbarrier_transaction(mbarrier_address,
+                                                         tile.size(), true))
     return unsupported(inst, "mbarrier transaction state changed during TMA");
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -488,6 +575,12 @@ step_result execute_utmastg(const instruction &inst, warp_state &state,
       tensor_map = load_view(decoded.descriptor, rank);
     }
   }
+  if ((tensor_map.data_type >= TMA_DTYPE_TF32 &&
+       tensor_map.data_type <= TMA_DTYPE_16U6_ALIGN16B) ||
+      (tensor_map.swizzle_mode != UINT32_MAX && tensor_map.swizzle_mode > 3) ||
+      !tensor_map.oob_zero || tensor_map.element_stride[1] != 1)
+    return unsupported(
+        inst, "extended tensor layouts are qualified for gather4 only");
   if (tensor_map.swizzle_bytes != 0 && tensor_map.swizzle_bytes != 32 &&
       tensor_map.swizzle_bytes != 64 && tensor_map.swizzle_bytes != 128)
     return unsupported(inst, "unsupported shared-memory TMA swizzle");
@@ -845,8 +938,12 @@ void register_bulk_copy_semantics(frontend &target) {
 
 void register_tma_semantics(frontend &target) {
   target.register_semantics("UTMAPF.L2.4D", execute_utmapf);
+  target.register_semantics("UTMAPF.L2.2D.GATHER4", execute_utmapf);
   target.register_semantics("UTMALDG.1D", execute_utmaldg);
   target.register_semantics("UTMALDG.2D", execute_utmaldg);
+  for (const std::string suffix :
+       {"", ".2CTA", ".MULTICAST", ".MULTICAST.2CTA"})
+    target.register_semantics("UTMALDG.2D.GATHER4" + suffix, execute_utmaldg);
   target.register_semantics("UTMALDG.3D", execute_utmaldg);
   target.register_semantics("UTMALDG.4D", execute_utmaldg);
   target.register_semantics("UTMALDG.5D", execute_utmaldg);
