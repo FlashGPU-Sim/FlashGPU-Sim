@@ -1,7 +1,7 @@
 # Experimental native scalar coverage
 
-Base: public `01bdef86` (merged experimental SASS frontend). Private preparation branch:
-`feature/sass-scalar-coverage`. No public PR or default config change.
+Base: public `b3378cb9` (merged experimental SASS frontend). Private preparation branch:
+`feature/sass-scalar-coverage`. No default config change.
 
 This change adds integer comparison/shift/bit-reversal forms, FP32 pair
 arithmetic, BF16 arithmetic, low-precision pack/unpack, and additional FP32
