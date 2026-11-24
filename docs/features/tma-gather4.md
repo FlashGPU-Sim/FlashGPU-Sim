@@ -2,7 +2,8 @@
 
 Private branch: `feature/tma-gather4`, directly based on public `01bdef86`.
 It does **not** depend on `feature/sass-scalar-coverage`. SASS stays experimental
-and opt-in; default configurations are unchanged. No public PR is created.
+and opt-in. The B200 TMA service interval is calibrated to 4 cycles as
+described below; other device presets are unchanged. No public PR is created.
 
 ## Instruction and descriptor coverage
 
