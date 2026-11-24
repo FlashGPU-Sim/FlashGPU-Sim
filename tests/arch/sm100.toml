@@ -4,6 +4,7 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+    "clc/b128_test.cu",
   "tcgen05/mma_commit_test.cu",
   "tcgen05/mma_dense_test.cu",
   "tcgen05/mma_pair_test.cu",

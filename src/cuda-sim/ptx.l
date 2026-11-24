@@ -388,6 +388,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.b64  TC;  return B64_TYPE;
 \.bb64  TC;  return BB64_TYPE;
 \.bb128  TC;  return BB128_TYPE;
+\.b128 TC; return BB128_TYPE;
 \.pred TC;  return PRED_TYPE;
 
 \.texref TC; BEGIN(NOT_OPCODE); return TEXREF_TYPE;

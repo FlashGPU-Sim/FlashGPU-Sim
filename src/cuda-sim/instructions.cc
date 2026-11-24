@@ -458,6 +458,7 @@ ptx_reg_t ptx_thread_info::get_operand_value(const operand_info &op,
   if (op.get_double_operand_type() == 0) {
     if (((opType != BB128_TYPE) && (opType != BB64_TYPE) &&
          (opType != FF64_TYPE)) ||
+        (opType == BB128_TYPE && !op.is_vector()) ||
         (op.get_addr_space() != undefined_space)) {
       if (op.is_reg()) {
         result = get_reg(op.get_symbol());
@@ -559,8 +560,15 @@ ptx_reg_t ptx_thread_info::get_operand_value(const operand_info &op,
         result.u64 = result.u64 & 0xFFFF;
       else if (op.get_operand_lohi() == 2)
         result.u64 = (result.u64 >> 16) & 0xFFFF;
+    } else if (opType == BB128_TYPE && op.get_vect_nelem() == 2) {
+      const auto lo = get_reg(op.vec_symbol(0)).u64;
+      const auto hi = get_reg(op.vec_symbol(1)).u64;
+      result.u128.lowest = lo;
+      result.u128.low = lo >> 32;
+      result.u128.high = hi;
+      result.u128.highest = hi >> 32;
     } else if (opType == BB128_TYPE) {
-      // b128
+      assert(op.get_vect_nelem() == 4);
       result.u128.lowest = get_reg(op.vec_symbol(0)).u32;
       result.u128.low = get_reg(op.vec_symbol(1)).u32;
       result.u128.high = get_reg(op.vec_symbol(2)).u32;
@@ -812,8 +820,7 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
 
   /*complete this section for other cases*/
   if (dst.get_addr_space() == undefined_space) {
-    ptx_reg_t setValue;
-    setValue.u64 = data.u64;
+    ptx_reg_t setValue = data;
 
     // Double destination in set instruction ($p0|$p1) - second is negation of
     // first
@@ -907,8 +914,17 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
 
       set_reg(predName, predValue);
       set_reg(regName, setValue);
-    } else if (type == BB128_TYPE) {
-      // b128 stuff here.
+    } else if (type == BB128_TYPE && dst.is_vector() &&
+               dst.get_vect_nelem() == 2) {
+      ptx_reg_t lo, hi;
+      lo.u64 = uint64_t(data.u128.lowest) | (uint64_t(data.u128.low) << 32);
+      hi.u64 = uint64_t(data.u128.high) | (uint64_t(data.u128.highest) << 32);
+      set_reg(dst.vec_symbol(0), lo);
+      set_reg(dst.vec_symbol(1), hi);
+    } else if (type == BB128_TYPE && dst.is_vector()) {
+      assert(dst.get_vect_nelem() == 4);
+      // Legacy PTXPlus .bb128 uses four 32-bit registers; PTX .b128
+      // uses one scalar register containing the full ptx_reg_t below.
       ptx_reg_t setValue2, setValue3, setValue4;
       setValue.u64 = 0;
       setValue2.u64 = 0;
