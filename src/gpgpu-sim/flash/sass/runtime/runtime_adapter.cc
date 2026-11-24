@@ -82,8 +82,11 @@ public:
       const std::vector<kernel_constant_bank> &constant_banks)
       : parameter_memory_(launch.get_param_memory()),
         global_memory_(global_memory), parameter_base_(parameter_base),
-        indirect_parameter_size_(arch == architecture::kSm90 ? parameter_size
-                                                             : 0),
+        indirect_parameter_size_((arch == architecture::kSm90 ||
+                                  arch == architecture::kSm100 ||
+                                  arch == architecture::kSm103)
+                                     ? parameter_size
+                                     : 0),
         constant_header_(parameter_base),
         // These are hash bucket counts, not byte capacities. Grow on demand.
         shared_memory_("sass_shared", 32), local_memory_("sass_local", 32) {
@@ -119,6 +122,10 @@ public:
       store_constant(constant_header_, 0x198, kSm90IndirectParameterBase);
       store_constant(constant_header_, 0x208, descriptor_base);
     } else {
+      // SM100/103 by-value tensor maps use the same parameter backing as
+      // constant loads, reached through this launch-header pointer.
+      if (arch == architecture::kSm100 || arch == architecture::kSm103)
+        store_constant(constant_header_, 0x348, kSm90IndirectParameterBase);
       store_constant(constant_header_, 0x358, descriptor_base);
       store_constant(constant_header_, 0x360, block.x);
       store_constant(constant_header_, 0x364, block.y);

@@ -431,13 +431,16 @@ arch/sm120.toml $(ARCH_SASSIR_SCRIPT)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
+$(OBJ_DIR)/sm100/unit/sass/runtime/parameter_alias_test.cc.o \
 $(OBJ_DIR)/sm100/unit/kernel_info_frontend_test.cc.o \
 $(OBJ_DIR)/sm120/unit/kernel_info_frontend_test.cc.o: \
   INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
+$(OBJ_DIR)/sm100/unit/sass/runtime/parameter_alias_test.cc.o \
 $(OBJ_DIR)/sm100/unit/kernel_info_frontend_test.cc.o \
 $(OBJ_DIR)/sm120/unit/kernel_info_frontend_test.cc.o: \
   ../src/kernel_info.h ../libcuda/gpgpu_context.h $(UNIT_MK)
 
+$(OBJ_DIR)/sm100/unit/sass/runtime/parameter_alias_test.cc.o \
 $(OBJ_DIR)/sm100/unit/kernel_info_frontend_test.cc.o \
 $(OBJ_DIR)/sm120/unit/kernel_info_frontend_test.cc.o: \
   GPGPUSIM_FLAGS += -DFLASH_GPGPU_SIM_OMP

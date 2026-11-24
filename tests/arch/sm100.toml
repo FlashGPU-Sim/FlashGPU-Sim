@@ -4,6 +4,7 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "unit/sass/runtime/parameter_alias_test.cc",
   "clc/b128_test.cu",
   "clc/launch_queue_test.cu",
   "unit/clc_queue_test.cc",
