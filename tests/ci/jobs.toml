@@ -135,3 +135,10 @@ cuda = "13.3"
 tests = [
   { name = "bfloat-components-and-dual-launch", group = "unit", gtest_filter = "BfloatBits.*:SassBfloatConversion.*", post_check = "tests/ci/check_bfloat_dual.py" },
 ]
+
+[jobs.sm100-ws-collectors]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "ws-collectors-and-dual-launch", group = "unit", gtest_filter = "Tcgen05Collector.*", post_check = "tests/ci/check_ws_collectors_dual.py" },
+]

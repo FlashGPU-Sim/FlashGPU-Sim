@@ -19,6 +19,16 @@ bool is_power_of_two(uint32_t value) {
 
 } // namespace
 
+bool tcgen05_tmem_manager_t::ws_half_b(const tcgen05_tmem_scope_t &scope,
+                                       unsigned owner,
+                                       tcgen05_ws_collector_control control,
+                                       tcgen05_ws_half_signature signature,
+                                       std::vector<uint16_t> &values) {
+  std::lock_guard<tcgen05_tmem_spinlock_t> guard(m_mutex);
+  return get_or_create_scope(scope).ws_collectors.apply(owner, control,
+                                                        signature, values);
+}
+
 tcgen05_tmem_address_t tcgen05_decode_tmem_address(uint32_t address) {
   return tcgen05_tmem_address_t{address >> kTcgen05TmemLaneShift,
                                 address & kTcgen05TmemColumnMask};

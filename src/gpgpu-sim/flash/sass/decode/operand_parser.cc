@@ -1,4 +1,5 @@
 #include "operand_parser.h"
+#include "tcgen_collector.h"
 
 #include "../frontend.h"
 
@@ -496,7 +497,19 @@ void parse_instruction_operands(instruction &inst) {
   inst.operands.clear();
   inst.operands_structured = true;
   for (const std::string &text : split_operand_text(inst.operand_text)) {
-    inst.operands.push_back(parse_operand(text));
+    operand parsed = parse_operand(text);
+    if (parsed.kind == operand_kind::kOpaque && inst.opcode == "UTCHMMA.WS" &&
+        inst.operands.size() == 1) {
+      auto base = text;
+      tcgen05_ws_collector_control control;
+      if (decode_ws_collector_operand(base, control)) {
+        parsed = parse_operand(base);
+        if (parsed.kind != operand_kind::kGmmaDescriptor)
+          parsed = {};
+        parsed.text = text;
+      }
+    }
+    inst.operands.push_back(parsed);
     if (inst.operands.back().kind == operand_kind::kOpaque)
       inst.operands_structured = false;
   }

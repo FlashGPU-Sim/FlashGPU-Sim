@@ -61,8 +61,10 @@ hosted CI or real-GPU qualification.
 
 ## Remaining qualification
 
-- Non-default WS collectors/masks, other WS types and scaled forms beyond the
-  recorded matrix; unqualified extra `scale-input-d` operands are rejected.
+- Numbered F16/BF16 WS collectors are qualified by the subsequent
+  [WS collector extension](blackwell-ws-collectors.md). Zero-column masks, other
+  WS types and scaled forms beyond the recorded matrix remain pending;
+  unqualified extra `scale-input-d` operands are rejected.
 - Remaining modifier gates, nonzero pattern-base-offset fields and absolute
   leading-address forms. The shifted-start tests above use base-offset field 0.
 - Paired CTA as a functional unit, followed by CLC and Rubin; then retained

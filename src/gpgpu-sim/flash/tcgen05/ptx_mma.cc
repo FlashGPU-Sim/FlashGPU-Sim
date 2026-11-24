@@ -6,6 +6,29 @@ class ptx_recognizer;
 typedef void *yyscan_t;
 #include "ptx.tab.h"
 namespace flash_gpgpu_sim {
+static tcgen05_ws_collector_control
+ws_collector_control(const ptx_instruction *inst) {
+  constexpr int first = TCGEN05_COLLECTOR_B0_DISCARD_OPTION;
+  constexpr int last = TCGEN05_COLLECTOR_B3_LASTUSE_OPTION;
+  static_assert(last - first == 15, "WS parser options must stay contiguous");
+  static const tcgen05_collector_op operations[] = {
+      tcgen05_collector_op::discard, tcgen05_collector_op::fill,
+      tcgen05_collector_op::use, tcgen05_collector_op::lastuse};
+  tcgen05_ws_collector_control result;
+  unsigned count = 0;
+  for (int option : inst->get_options()) {
+    if (option >= first && option <= last) {
+      ++count;
+      const unsigned index = option - first;
+      result = {index / 4, operations[index % 4]};
+    }
+  }
+  assert(count <= 1 && "Only one WS collector modifier is permitted");
+  assert((!count || tcgen05_has_option(inst, TCGEN05_WS_OPTION)) &&
+         "Numbered B collectors require WS MMA");
+  return result;
+}
+
 static bool tcgen05_read_enable_input_d(const operand_info &op,
                                         ptx_thread_info *thread) {
   if (op.is_reg() && op.get_symbol() &&
@@ -266,6 +289,7 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
     return;
   assert(pI->get_num_operands() >= 5);
   const bool ws = tcgen05_has_option(pI, TCGEN05_WS_OPTION);
+  const auto collector = ws_collector_control(pI);
   assert((!ws || tcgen05_has_option(pI, TCGEN05_KIND_F16_OPTION)) &&
          "Only F16/BF16 WS MMA has been qualified");
   if (ws)
@@ -377,7 +401,20 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
         a_desc_value, mma_desc.transpose_a);
     a_values = gather_shared(a_desc, mma_desc.m, mma_desc.transpose_a);
   }
-  const auto b_values = gather_shared(b_desc, mma_desc.n, mma_desc.transpose_b);
+  std::vector<uint16_t> b_values;
+  if (!ws || !collector.reuses())
+    b_values = gather_shared(b_desc, mma_desc.n, mma_desc.transpose_b);
+  if (ws) {
+    const bool valid = manager.ws_half_b(
+        scope,
+        thread->get_tid().x +
+            thread->get_ntid().x * (thread->get_tid().y +
+                                    thread->get_ntid().y * thread->get_tid().z),
+        collector,
+        {mma_desc.n, mma_desc.k, mma_desc.b_type, mma_desc.transpose_b},
+        b_values);
+    assert(valid && "WS B reuse requires a compatible prior fill");
+  }
   std::vector<uint32_t> input_d;
   if (enable_input_d) {
     for (unsigned rank = 0; rank < group; ++rank) {

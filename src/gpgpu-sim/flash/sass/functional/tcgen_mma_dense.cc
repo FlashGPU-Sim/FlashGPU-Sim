@@ -1,3 +1,4 @@
+#include "../decode/tcgen_collector.h"
 #include "tcgen_mma_internal.h"
 namespace flash_gpgpu_sim {
 namespace sass {
@@ -89,6 +90,9 @@ step_result half_mma(const instruction &inst, warp_state &state,
     return unsupported(inst, "paired half MMA requires two resident CTAs");
   operand ar, br, dr, metadata;
   operand b_operand = inst.operands[1];
+  tcgen05_ws_collector_control collector;
+  if (ws && !decode_ws_collector_operand(b_operand.text, collector))
+    return unsupported(inst, "invalid WS B collector control");
   uint32_t destination = 0, a_address = 0;
   const bool tmem_a = tmem_address(inst.operands[0], state, a_address);
   if ((!tmem_a && !wrapped_uniform(inst.operands[0], "gdesc", ar)) ||
@@ -167,8 +171,21 @@ step_result half_mma(const instruction &inst, warp_state &state,
   };
   if (!tmem_a && !gather(ad, m, desc.transpose_a, a))
     return unsupported(inst, "half MMA input is outside mapped shared memory");
-  if (!gather(bd, n, desc.transpose_b, b))
+  if ((!ws || !collector.reuses()) && !gather(bd, n, desc.transpose_b, b))
     return unsupported(inst, "half MMA B is outside mapped shared memory");
+  if (ws) {
+    unsigned owner = context.warp_id * kWarpLanes;
+    for (unsigned lane = 0; lane < kWarpLanes; ++lane)
+      if ((state.active_mask & (1u << lane)) &&
+          lane_executes(inst, state, lane)) {
+        owner += lane;
+        break;
+      }
+    if (!tmem[0]->memory.ws_half_b({0, 0}, owner, collector,
+                                   {n, desc.k, desc.b_type, desc.transpose_b},
+                                   b))
+      return unsupported(inst, "WS B reuse requires a compatible prior fill");
+  }
   const auto &predicate = inst.operands[5];
   const bool accumulate =
       state.read_uniform_predicate(predicate.index) != predicate.negated;
@@ -198,11 +215,13 @@ step_result half_mma(const instruction &inst, warp_state &state,
   }
   context.tcgen_mma_effect = {true, false, desc.m, desc.n, desc.k, group};
   context.tcgen_mma_effect.shared_reads = std::move(shared_reads.reads);
-  // Default-discard WS: charge each shared operand once, not per FMA.
+  // Reused B comes from the collector; it produces no shared-memory reads.
   context.tcgen_mma_effect.ws = ws;
   context.tcgen_mma_effect.tmem_a = tmem_a;
   context.tcgen_mma_effect.shared_operand_bytes =
-      ws ? ((tmem_a ? 0 : desc.m) + desc.n) * desc.k * 2 : 0;
+      ws ? ((tmem_a ? 0 : desc.m) + (collector.reuses() ? 0 : desc.n)) *
+               desc.k * 2
+         : 0;
   advance(inst, state);
   return {step_status::kAdvanced, {}};
 }

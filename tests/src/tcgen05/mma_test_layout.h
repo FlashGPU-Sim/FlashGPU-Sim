@@ -17,7 +17,7 @@ struct MmaTestLayout {
             : (Transpose ? (Rows + MnAtom - 1) / MnAtom * K * Width
                          : Rows * Width) +
                   1024;
-  static unsigned offset(unsigned row, unsigned k) {
+  __host__ __device__ static unsigned offset(unsigned row, unsigned k) {
     unsigned address;
     if (!Mode) {
       address = Transpose ? (row / 8) * 256 + (row % 8) * Bytes +

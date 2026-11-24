@@ -1,6 +1,7 @@
 #ifndef FLASH_GPGPU_SIM_TCGEN05_TMEM_H
 #define FLASH_GPGPU_SIM_TCGEN05_TMEM_H
 
+#include "collector.h"
 #include <atomic>
 #include <cstdint>
 #include <map>
@@ -107,11 +108,17 @@ public:
                          const std::vector<uint32_t> &values, unsigned rows,
                          unsigned columns, bool folded);
 
+  bool ws_half_b(const tcgen05_tmem_scope_t &scope, unsigned owner,
+                 tcgen05_ws_collector_control control,
+                 tcgen05_ws_half_signature signature,
+                 std::vector<uint16_t> &values);
+
   void clear_cta(unsigned sm_id, unsigned cta_id);
   void reset();
 
 private:
   struct scope_state_t {
+    tcgen05_ws_half_collectors ws_collectors;
     uint32_t next_base = 0;
     uint32_t last_allocation_ncols = 0;
     bool permit_relinquished = false;
