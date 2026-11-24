@@ -98,40 +98,6 @@ step_result execute_fhfma_bfloat(const instruction &native, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
-// Numeric warp maximum (including infinities) used by DSV4 KV quantization.
-step_result execute_credux_max(const instruction &inst, warp_state &state,
-                               execution_context &) {
-  if (!has_typed_operands(inst, 2) ||
-      inst.operands[0].kind != operand_kind::kUniformRegister ||
-      inst.operands[1].kind != operand_kind::kRegister)
-    return unsupported(inst, "unsupported CREDUX.MAX.F32 form");
-  float result = -std::numeric_limits<float>::infinity();
-  bool participating = false;
-  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-    if (!(state.active_mask & (1u << lane)) ||
-        !lane_executes(inst, state, lane))
-      continue;
-    float value;
-    if (!read_f32_operand(inst.operands[1], state, lane, value))
-      return unsupported(inst, "unsupported CREDUX.MAX.F32 source");
-    if (std::isnan(value)) {
-      std::ostringstream detail;
-      detail << "unqualified CREDUX NaN at lane " << lane << ": bits=0x"
-             << std::hex << float_bits(value);
-      return unsupported(inst, detail.str());
-    }
-    if (result == 0 && value == 0)
-      result = std::signbit(result) && std::signbit(value) ? -0.0f : 0.0f;
-    else
-      result = std::fmax(result, value);
-    participating = true;
-  }
-  if (participating)
-    state.write_uniform_register(inst.operands[0].index, float_bits(result));
-  advance(inst, state);
-  return {step_status::kAdvanced, {}};
-}
-
 step_result execute_fp32x2(const instruction &inst, warp_state &state,
                            execution_context &) {
   // Keep these native type selectors opaque to ordinary scalar handlers.
@@ -1019,8 +985,6 @@ void register_float_semantics(frontend &target) {
 
   target.register_semantics("FHFMA.BF16", execute_fhfma_bfloat);
   target.register_semantics("FHADD.BF16", execute_fhadd_bfloat);
-
-  target.register_semantics("CREDUX.MAX.F32", execute_credux_max);
 
   target.register_semantics("FCHK", execute_fchk);
   target.register_semantics("FFMA2", execute_fp32x2);

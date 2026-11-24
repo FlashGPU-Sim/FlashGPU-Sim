@@ -1,3 +1,4 @@
+#include "../../warp_reduce.h"
 #include "internal.h"
 
 #include <algorithm>
@@ -27,37 +28,109 @@ uint64_t read_clock(const execution_context &context, bool global_timer) {
   return cycle;
 }
 
-step_result execute_redux_sum(const instruction &inst, warp_state &state,
-                              execution_context &) {
-  // Observed Blackwell form: reduce participating lanes into one UR. Accumulate
-  // unsigned bits so signed overflow implements the hardware's modulo-2^32 sum.
+// Non-exclusive masked synchronization emitted around a predicated redux.
+// Qualify already-co-issued participants; do not invent divergent rendezvous.
+step_result execute_warpsync_mask(const instruction &inst, warp_state &state,
+                                  execution_context &) {
+  if (!has_typed_operands(inst, 1) || inst.has_guard)
+    return unsupported(inst, "masked WARPSYNC requires one unguarded mask");
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    if (!(state.active_mask & (1u << lane)))
+      continue;
+    uint32_t mask;
+    if (!read_u32_operand(inst.operands[0], state, lane, mask) ||
+        mask != state.active_mask)
+      return unsupported(inst,
+                         "masked WARPSYNC requires all members co-issued");
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
+// CUDA 13.3 lowers variable redux member masks to an exclusive region inside
+// BSSY/BSYNC. Serialize disjoint groups so each consumes its own uniform result
+// before the next group overwrites it; BSYNC restores the parent active mask.
+step_result execute_warpsync_exclusive(const instruction &inst,
+                                       warp_state &state, execution_context &) {
+  if (!has_typed_operands(inst, 1) || inst.has_guard)
+    return unsupported(inst, "WARPSYNC.EXCLUSIVE requires one unguarded mask");
+  reconvergence_state *frame =
+      state.reconvergence_stack.empty()
+          ? nullptr
+          : &state.reconvergence[state.reconvergence_stack.back()];
+  if (frame && (!frame->valid || frame->reliable))
+    return unsupported(inst, "invalid exclusive convergence region");
+  uint32_t masks[32]{}, values[32]{}, unused[32]{};
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    if (!(state.active_mask & (1u << lane)))
+      continue;
+    if (!read_u32_operand(inst.operands[0], state, lane, masks[lane]))
+      return unsupported(inst, "invalid exclusive member mask");
+  }
+  if (!reduce32_groups({reduce32_kind::add}, state.active_mask, values, masks,
+                       unused))
+    return unsupported(inst,
+                       "exclusive masks must partition co-issued active lanes");
+  uint32_t remaining = state.active_mask;
+  if (remaining) {
+    const uint32_t first = masks[__builtin_ctz(remaining)];
+    remaining &= ~first;
+    while (remaining) {
+      const uint32_t group = masks[__builtin_ctz(remaining)];
+      // ptxas omits BSSY/BSYNC for a terminal exclusive region. EXIT resumes
+      // these independent sibling groups through the normal control path.
+      auto &paths = frame ? frame->pending_paths : state.independent_paths;
+      paths.push_back({inst.pc + kInstructionBytes, group});
+      remaining &= ~group;
+    }
+    state.active_mask = first;
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
+step_result execute_redux(const instruction &inst, warp_state &state,
+                          execution_context &) {
   if (!has_typed_operands(inst, 2) ||
       inst.operands[0].kind != operand_kind::kUniformRegister ||
       inst.operands[1].kind != operand_kind::kRegister)
-    return unsupported(inst, "unsupported REDUX.SUM.S32 operand form");
-  const bool bitwise_and = inst.opcode == "REDUX";
-  const bool bitwise_or = inst.opcode == "REDUX.OR";
-  const bool minimum = inst.opcode == "CREDUX.MIN.S32";
-  uint32_t sum = minimum ? 0x7fffffffu : bitwise_and ? 0xffffffffu : 0;
-  bool participating = false;
-  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-    if ((state.active_mask & (1u << lane)) &&
-        lane_executes(inst, state, lane)) {
-      if (minimum)
-        sum = static_cast<uint32_t>(std::min(
-            static_cast<int32_t>(sum), static_cast<int32_t>(state.read_register(
-                                           lane, inst.operands[1].index))));
-      else if (bitwise_or)
-        sum |= state.read_register(lane, inst.operands[1].index);
-      else if (bitwise_and)
-        sum &= state.read_register(lane, inst.operands[1].index);
-      else
-        sum += state.read_register(lane, inst.operands[1].index);
-      participating = true;
-    }
+    return unsupported(inst, "unsupported REDUX/CREDUX operands");
+  const auto &src = inst.operands[1];
+  if (src.negated || src.absolute || src.bitwise_complement || src.wide ||
+      src.half_selection != operand_half_selection::kNone ||
+      src.matrix_layout != operand_matrix_layout::kNone)
+    return unsupported(inst, "unsupported reduction source modifier");
+  reduce32_operation op{reduce32_kind::add};
+  const bool minimum = inst.opcode.find(".MIN") != std::string::npos;
+  if (inst.opcode == "REDUX")
+    op.kind = reduce32_kind::bit_and;
+  else if (inst.opcode == "REDUX.OR")
+    op.kind = reduce32_kind::bit_or;
+  else if (inst.opcode == "REDUX.XOR")
+    op.kind = reduce32_kind::bit_xor;
+  else if (inst.opcode.rfind("CREDUX.", 0) == 0) {
+    if (inst.opcode.find(".F32") != std::string::npos) {
+      op.kind = minimum ? reduce32_kind::min_f : reduce32_kind::max_f;
+      op.absolute = inst.opcode.find("ABS") != std::string::npos;
+      op.propagate_nan = inst.opcode.find(".NAN") != std::string::npos;
+    } else if (inst.opcode.find(".S32") != std::string::npos)
+      op.kind = minimum ? reduce32_kind::min_s : reduce32_kind::max_s;
+    else
+      op.kind = minimum ? reduce32_kind::min_u : reduce32_kind::max_u;
   }
-  if (participating)
-    state.write_uniform_register(inst.operands[0].index, sum);
+  uint32_t active = 0, values[32]{}, masks[32]{}, result[32]{};
+  for (unsigned lane = 0; lane < 32; ++lane)
+    if ((state.active_mask & (1u << lane)) && lane_executes(inst, state, lane))
+      active |= 1u << lane;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    values[lane] = state.read_register(lane, src.index);
+    masks[lane] = active;
+  }
+  if (!reduce32_groups(op, active, values, masks, result))
+    return unsupported(inst, "invalid reduction mask");
+  if (active)
+    state.write_uniform_register(inst.operands[0].index,
+                                 result[__builtin_ctz(active)]);
   advance(inst, state);
   return {step_status::kAdvanced, {}};
 }
@@ -373,9 +446,16 @@ step_result execute_shfl(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_data_movement_semantics(frontend &target) {
-  target.register_semantics("REDUX.OR", execute_redux_sum);
-  target.register_semantics("REDUX", execute_redux_sum);
+  for (const char *opcode :
+       {"REDUX", "REDUX.OR", "REDUX.XOR", "REDUX.SUM", "REDUX.SUM.S32",
+        "CREDUX.MIN", "CREDUX.MAX", "CREDUX.MIN.S32", "CREDUX.MAX.S32",
+        "CREDUX.MIN.F32", "CREDUX.MAX.F32", "CREDUX.MINABS.F32",
+        "CREDUX.MAXABS.F32", "CREDUX.MIN.F32.NAN", "CREDUX.MAX.F32.NAN",
+        "CREDUX.MINABS.F32.NAN", "CREDUX.MAXABS.F32.NAN"})
+    target.register_semantics(opcode, execute_redux);
   target.register_semantics("MATCH.ANY", execute_match_any);
+  target.register_semantics("WARPSYNC.EXCLUSIVE", execute_warpsync_exclusive);
+  target.register_semantics("WARPSYNC", execute_warpsync_mask);
   target.register_semantics("MOV", execute_move);
   target.register_semantics("MOV.64", execute_move);
   target.register_semantics("UMOV", execute_move);

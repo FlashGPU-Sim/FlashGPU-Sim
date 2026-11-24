@@ -36,6 +36,7 @@
 #include "instructions.h"
 #include "../gpgpu-sim/flash/ptx_bfloat_conversion.h"
 #include "../gpgpu-sim/flash/ptx_narrow_conversion.h"
+#include "../gpgpu-sim/flash/ptx_warp_reduce.h"
 #include "../gpgpu-sim/flash/mma/mma_trace.h"
 #include "../gpgpu-sim/flash/mma/tensor_mma.h"
 #include "half.h"
@@ -1931,6 +1932,10 @@ void fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 void griddepcontrol_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   (void)pI;
   (void)thread;
+}
+
+void redux_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
+  flash_gpgpu_sim::execute_ptx_redux(pI, core, inst);
 }
 
 void elect_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {

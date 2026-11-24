@@ -7,6 +7,8 @@ sources = [
   "cached_completion/launch_test.cu",
   "funnel_shift/launch_test.cu",
   "unit/sass/functional/warp_shift_test.cc",
+  "warp_reduce/launch_test.cu",
+  "unit/warp_reduce_test.cc",
   "mov_pack/launch_test.cu",
   "unit/narrow_conversion_test.cc",
   "unit/sass/functional/scalar_conversion_test.cc",

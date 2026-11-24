@@ -295,7 +295,7 @@ unsigned tensor_dimension(const std::string &opcode) {
 }
 
 unsigned integer_profile_index(const std::string &base) {
-  if (base == "SHFL" || base == "MATCH" || base == "REDUX")
+  if (base == "SHFL" || base == "MATCH" || base == "REDUX" || base == "CREDUX")
     return 5;
   if (base == "IMAD" || base == "UIMAD")
     return 3;
@@ -895,8 +895,8 @@ void classify(const instruction &source, const timing_profile &profile,
              base == "VIMNMX3" || base == "UVIMNMX" || base == "IADD" ||
              base == "VIADD" || base == "VIADDMNMX" || base == "SGXT" ||
              base == "USGXT" || base == "SHFL" ||
-             source.opcode == "MATCH.ANY" || source.opcode == "REDUX.OR" ||
-             source.opcode == "REDUX" || source.opcode == "BPT.TRAP" ||
+             source.opcode == "MATCH.ANY" || base == "REDUX" ||
+             base == "CREDUX" || source.opcode == "BPT.TRAP" ||
              base == "DEPBAR" || base == "CCTL" || base == "UTMACCTL" ||
              base == "USETMAXREG" || source.opcode == "WARPGROUP.ARRIVE" ||
              base == "YIELD") {

@@ -192,6 +192,7 @@ tex	TC; BEGIN(NOT_OPCODE); yylval->int_value = TEX_OP; return OPCODE;
 txq	TC; yylval->int_value = TEX_OP; return OPCODE;
 tensormap	TC; yylval->int_value = TENSORMAP_OP; return OPCODE;
 fence	TC; yylval->int_value = FENCE_OP; return OPCODE;
+redux	TC; yylval->int_value = REDUX_OP; return OPCODE;
 elect	TC; yylval->int_value = ELECT_OP; return OPCODE;
 ldmatrix	TC; yylval->int_value = LDMATRIX_OP; return OPCODE;
 stmatrix	TC; yylval->int_value = STMATRIX_OP; return OPCODE;
@@ -418,7 +419,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.gtu	TC; return GTU_OPTION;
 \.geu	TC; return GEU_OPTION;
 \.num	TC; return NUM_OPTION;
-\.nan	TC; return NAN_OPTION;
+\.(nan|NaN)	TC; return NAN_OPTION;
 
 \.relu TC; return RELU_OPTION;
 \.satfinite	TC; return SATFINITE_OPTION;

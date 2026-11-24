@@ -164,6 +164,13 @@ tests = [
   { name = "literal-mov-pack-dual-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_mov_pack_dual.py" },
 ]
 
+[jobs.sm100-warp-reduce]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "warp-reduce-components-and-dual-launch", group = "unit", gtest_filter = "WarpReduce.*:WarpShift.*:SassReduction.*:MemoryTransportTest.DistinctLoadProducersCompleteIndependently", post_check = "tests/ci/check_warp_reduce_dual.py" },
+]
+
 [jobs.sm100-funnel-shift]
 arch = "sm100"
 cuda = "13.3"

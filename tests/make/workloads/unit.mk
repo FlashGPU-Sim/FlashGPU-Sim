@@ -506,8 +506,15 @@ $(OBJ_DIR)/sm100/unit/shared_bulk_test.cc.o: \
 $(OBJ_DIR)/sm100/unit/narrow_conversion_test.cc.o: \
   ../src/gpgpu-sim/flash/narrow_conversion.h ../src/gpgpu-sim/flash/bfloat_conversion.h
 
+$(OBJ_DIR)/sm100/unit/warp_reduce_test.cc.o \
+$(OBJ_DIR)/sm100/support/sass_functional_data_movement.cc.o \
+$(OBJ_DIR)/sm120/support/sass_functional_data_movement.cc.o: \
+  ../src/gpgpu-sim/flash/warp_reduce.h
+
 $(OBJ_DIR)/sm100/support/sass_functional_integer.cc.o \
 $(OBJ_DIR)/sm120/support/sass_functional_integer.cc.o: \
   ../src/gpgpu-sim/flash/funnel_shift.h
+
+$(OBJ_DIR)/sm100/warp_reduce/launch_test.cu.o: src/funnel_shift/launch_test.cu
 
 $(OBJ_DIR)/sm100/unit/memory_transport_test.cc.o: ../src/gpgpu-sim/flash/load_response_counter.h

@@ -32,8 +32,9 @@ candidate for separate public-main qualification; no public PR is opened here.
 
 Evidence and version receipts: `runs/narrow-conversions-20261125` and
 `runs/CURRENT.json` outside this git worktree. Real C4 PTX now parses and starts
-execution but reaches the unsupported `mul_impl` type branch; its PTX contains
-`mul.f32x2`, which is absent from that dispatch. Full C4 numerical acceptance and
+execution but reaches an unsupported `mul.bf16x2` in `mul_impl`, confirmed
+with the clean runtime and a debugger at PTX line 9906. The previous FP32x2
+diagnosis was incorrect; FP32x2 dispatch already exists. Full C4 numerical acceptance and
 full DeepInfer acceptance remain pending. MegaMoE still needs `redux.sync`.
 
 Reference: [NVIDIA PTX cvt](https://docs.nvidia.com/cuda/parallel-thread-execution/#data-movement-and-conversion-instructions-cvt).

@@ -41,3 +41,33 @@ TEST(SassReduction, AddReusesAtomicRmwWithoutAnOutputRegister) {
   }
 }
 }  // namespace
+
+TEST(SassReduction,NativeReduxTimingForAllOperations) {
+  for (const char *opcode : {"REDUX.SUM", "REDUX.SUM.S32", "REDUX", "REDUX.OR", "REDUX.XOR",
+      "CREDUX.MIN", "CREDUX.MAX", "CREDUX.MIN.S32", "CREDUX.MAX.S32", "CREDUX.MIN.F32", "CREDUX.MAX.F32",
+      "CREDUX.MINABS.F32", "CREDUX.MAXABS.F32", "CREDUX.MIN.F32.NAN", "CREDUX.MAX.F32.NAN",
+      "CREDUX.MINABS.F32.NAN", "CREDUX.MAXABS.F32.NAN"}) {
+    auto inst=official_instruction(0,opcode,"UR6,R2");
+    timing_profile profile;profile.integer_latency[5]=13;profile.integer_initiation[5]=4;
+    const timing_instruction timing(inst,profile);
+    EXPECT_EQ(timing.latency,13u) << opcode;
+    EXPECT_EQ(timing.initiation_interval,4u) << opcode;
+    EXPECT_EQ(timing.outcount,1u) << opcode;
+    EXPECT_EQ(timing.incount,1u) << opcode;
+  }
+}
+
+TEST(SassReduction,PredicateMaskAndEmptyParticipation) {
+  kernel image; image.name="reduce";image.arch=architecture::kSm100;image.instruction_bytes=16;
+  image.instructions={official_instruction(0,"REDUX.SUM.S32","UR6,R2","@P0")};
+  frontend sass;sass.add_kernel(std::move(image));register_sm100_functional_semantics(sass);
+  execution_context ctx;warp_state state;state.active_mask=0xff;
+  for(unsigned lane=0;lane<32;++lane) {state.write_register(lane,2,lane+1);state.write_predicate(lane,0,lane&1);}
+  auto result=sass.step("reduce",state,ctx);
+  ASSERT_EQ(result.status,step_status::kAdvanced) << result.detail;
+  EXPECT_EQ(state.read_uniform_register(6),20u);
+  state.pc=0;for(unsigned lane=0;lane<32;++lane) state.write_predicate(lane,0,false);
+  result=sass.step("reduce",state,ctx);
+  ASSERT_EQ(result.status,step_status::kAdvanced) << result.detail;
+  EXPECT_EQ(state.read_uniform_register(6),20u);
+}

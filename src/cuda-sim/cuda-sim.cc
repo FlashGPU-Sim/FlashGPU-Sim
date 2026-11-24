@@ -1671,6 +1671,7 @@ void ptx_instruction::set_opcode_and_latency() {
         op = TENSOR_CORE_OP;
       }
       break;
+    case REDUX_OP:
     case SHFL_OP:
       latency = int_latency[5];
       initiation_interval = int_init[5];
@@ -2742,8 +2743,17 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       // Tensorcore is warp synchronous operation. So these instructions needs
       // to be executed only once. To make the simulation faster removing the
       // redundant tensorcore operation
-      if (!tensorcore_op(inst_opcode) ||
-          ((tensorcore_op(inst_opcode)) && (lane_id == 0))) {
+      // Redux writes all participating destinations from one source snapshot.
+      // Select the first predicated-on lane, not necessarily lane zero.
+      unsigned redux_leader = 0;
+      if (inst_opcode == REDUX_OP) {
+        auto peers = get_core()->get_thread_info() + inst.warp_id_func() * MAX_WARP_SIZE;
+        while (redux_leader < MAX_WARP_SIZE &&
+               (!inst.get_active_mask().test(redux_leader) ||
+                !peers[redux_leader]->predicate_allows(*pI))) ++redux_leader;
+      }
+      if ((inst_opcode != REDUX_OP || lane_id == redux_leader) &&
+          (!tensorcore_op(inst_opcode) || lane_id == 0)) {
         switch (inst_opcode) {
 #define OP_DEF(OP, FUNC, STR, DST, CLASSIFICATION) \
   case OP:                                         \
