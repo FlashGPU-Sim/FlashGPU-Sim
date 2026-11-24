@@ -353,6 +353,18 @@ uint16_t float_half_rn(uint32_t bits) {
          static_cast<uint16_t>(rounded);
 }
 
+float flush_subnormal(float value) {
+  return std::fpclassify(value) == FP_SUBNORMAL ? std::copysign(0.0f, value)
+                                                : value;
+}
+
+uint16_t float_bfloat_rn(float value) {
+  if (std::isnan(value))
+    return 0x7fff;
+  const uint32_t bits = float_bits(value);
+  return static_cast<uint16_t>((bits + 0x7fff + ((bits >> 16) & 1)) >> 16);
+}
+
 } // namespace functional_detail
 } // namespace sass
 } // namespace flash_gpgpu_sim

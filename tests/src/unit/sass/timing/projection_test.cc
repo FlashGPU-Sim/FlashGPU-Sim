@@ -1,4 +1,5 @@
 #include "../test_support.h"
+#include "gpgpu-sim/flash/sass/decode/scaled_unpack_operand.h"
 
 namespace {
 
@@ -18,9 +19,10 @@ TEST(SassTimingProjectionTest, PredicateTransfersRespectSelectedBits) {
     EXPECT_EQ(
         std::vector<int>(r2p.arch_reg.dst, r2p.arch_reg.dst + r2p.outcount),
         predicates);
+    for (const char *opcode : {"P2R", "P2R.B1"})
     for (const char *auxiliary : {"", "PR"}) {
       const timing_instruction p2r(
-          official_instruction(0, "P2R", "R8,R12," + suffix, auxiliary));
+          official_instruction(0, opcode, "R8,R12," + suffix, auxiliary));
       std::vector<int> inputs{13};
       inputs.insert(inputs.end(), predicates.begin(), predicates.end());
       EXPECT_EQ(
@@ -67,6 +69,12 @@ TEST(SassTimingProjectionTest, SeparatesMultipleResultsFromInputs) {
       {"UIADD3", "UR8,UP0,UP1,UR12,UR16,UR20", {265, 521, 522},
        {269, 273, 277}, {}, {}},
       {"LEA", "R8,P0,R12,R16,0x2", {9, 513}, {13, 17}, {8}, {12, 16}},
+      {"LEA.HI", "R8,P0,R12,R16,R20,0x2", {9, 513}, {13, 17, 21},
+       {8}, {12, 16, 20}},
+      {"ULEA.HI", "UR8,UP0,UR12,UR16,UR20,0x2", {265, 521},
+       {269, 273, 277}, {}, {}},
+      {"LEA.HI.X", "R8,R12,R16,R20,0x2,P0", {9}, {13, 17, 21, 513},
+       {8}, {12, 16, 20}},
       {"VOTE.ANY", "R8,P0,P1", {9, 513}, {514}, {8}, {}},
       {"VOTEU.ALL", "UR8,UP0,P1", {265, 521}, {514}, {}, {}},
       {"ELECT", "P0,UR8,P1", {513, 265}, {514}, {}, {}},
@@ -1138,3 +1146,118 @@ TEST(SassTimingProjectionTest,
 }
 
 }  // namespace
+
+namespace {
+TEST(SassTimingProjectionTest, TernaryFp32MaxUsesMaxProfileAndAllInputs) {
+  timing_profile profile;
+  profile.fp32_latency[1] = 7;
+  const timing_instruction projected(official_instruction(
+      0, "FMNMX3.FTZ", "R20,|R9|,|R8|,R20,!PT"), profile);
+  EXPECT_EQ(projected.op, SP_OP);
+  EXPECT_EQ(projected.latency, 7u);
+  EXPECT_EQ(projected.outcount, 1u);
+  EXPECT_EQ(projected.incount, 3u);
+  EXPECT_EQ(projected.get_register_file_source_count(), 3u);
+}
+
+TEST(SassTimingProjectionTest, BlackwellFp32PairTracksBothHalves) {
+  for (const char* opcode : {"FFMA2", "FFMA2.FTZ"}) {
+  timing_profile profile;
+  profile.fp32_latency[3] = 6;
+  const timing_instruction projected(official_instruction(
+      0x110, opcode, "R4,R6.F32x2.HI_LO,UR10.F32,R12.F32x2.HI_LO"), profile);
+  EXPECT_EQ(projected.op, SP_OP);
+  EXPECT_EQ(projected.latency, 6u);
+  EXPECT_EQ(projected.outcount, 2u);
+  EXPECT_EQ(projected.incount, 5u);
+  EXPECT_EQ(projected.arch_reg.dst[0], 5);
+  EXPECT_EQ(projected.arch_reg.dst[1], 6);
+  EXPECT_EQ(projected.get_register_file_source_count(), 4u);
+  EXPECT_EQ(projected.get_register_file_destination_count(), 2u);
+  }
+}
+
+TEST(SassTimingProjectionTest, NativeFp32PairsTrackReversedAndImmediateOperands) {
+  const timing_instruction imm(official_instruction(0,"FMUL2","R6,R4.F32x2.HI_LO,-1"));
+  EXPECT_EQ(imm.outcount,2u);EXPECT_EQ(imm.incount,2u);
+  const timing_instruction rev(official_instruction(16,"FADD2","R8,R4.F32x2.HI_LO,R6.F32x2.LO_HI"));
+  EXPECT_EQ(rev.outcount,2u);EXPECT_EQ(rev.incount,4u);
+  const timing_instruction abs(official_instruction(32,"FADD2","R4,R4.F32x2.HI_LO,|R4|.F32x2.HI_LO"));
+  EXPECT_EQ(abs.outcount,2u);EXPECT_EQ(abs.incount,2u);
+}
+}
+
+namespace {
+TEST(SassTimingProjectionTest, ScaledUnpackSharesFunctionalOperandDecoding) {
+  // Cover nvdisasm's trailing H selector as well as attached .reuse.Hn/.Bn.
+  for (bool fp4 : {false, true}) {
+    for (unsigned selector = 0; selector < (fp4 ? 4u : 2u); ++selector) {
+      for (bool immediate : {false, true}) {
+        const std::string scale = immediate ? "4.5736980577097704378e-41" : "R4";
+        const std::string payload = "R2.reuse." + std::string(fp4 ? "B" : "H") +
+                                    std::to_string(selector);
+        for (const std::string &suffix : fp4
+                 ? std::vector<std::string>{".H0", ".H1", ".B0", ".B1", ".B2", ".B3", ",H0", ",H1"}
+                 : std::vector<std::string>{",H0", ",H1"}) {
+          const auto inst = official_instruction(
+              0, fp4 ? "F2FP.BF16.E2M1.UNPACK_B" : "F2FP.BF16.E4M3.UNPACK_B",
+              "R8," + payload + "," + scale + suffix);
+          SCOPED_TRACE(inst.opcode + " " + payload + "," + scale + suffix);
+          kernel image;
+          image.name = "unpack";
+          image.arch = architecture::kSm120;
+          image.instruction_bytes = 16;
+          image.instructions = {inst};
+          frontend sass;
+          sass.add_kernel(std::move(image));
+          register_sm120_functional_semantics(sass);
+          warp_state state;
+          state.active_mask = 1;
+          state.write_register(0, 2, fp4 ? 0x72727272 : 0x40384038);
+          state.write_register(0, 4, 0x7f7f7f7f);
+          execution_context context;
+          ASSERT_EQ(sass.step("unpack", state, context).status, step_status::kAdvanced);
+          if (!immediate)
+            EXPECT_EQ(state.read_register(0, 8), fp4 ? 0x40c03f80u : 0x40003f80u);
+          const timing_instruction projected(inst);
+          EXPECT_EQ(std::vector<int>(projected.arch_reg.src,
+                                     projected.arch_reg.src + projected.incount),
+                    (immediate ? std::vector<int>{3} : std::vector<int>{3, 5}));
+          EXPECT_EQ(projected.get_register_file_source_count(), immediate ? 1u : 2u);
+          EXPECT_EQ(projected.get_register_file_source(0).reg, 2u);
+        }
+      }
+    }
+  }
+}
+} // namespace
+
+namespace {
+TEST(SassTimingProjectionTest, PackedUnpackHalfwordSources) {
+  for (const char *opcode : {"F2FP.BF16.E8.UNPACK_B", "F2FP.F16.E4M3.UNPACK_B"})
+    for (const char *suffix : {"", ".H0", ".H1", ".reuse.H1"}) {
+      const timing_instruction inst(official_instruction(0, opcode, std::string("R8,R2") + suffix));
+      EXPECT_EQ(std::vector<int>(inst.arch_reg.src, inst.arch_reg.src + inst.incount),
+                (std::vector<int>{3}));
+      ASSERT_EQ(inst.get_register_file_source_count(), 1u);
+      EXPECT_EQ(inst.get_register_file_source(0).reg, 2u);
+    }
+}
+} // namespace
+
+namespace {
+TEST(SassTimingProjectionTest, UnpackDecoderRejectsInvalidSelectors) {
+  flash_gpgpu_sim::sass::scaled_unpack_operands decoded;
+  for (const char *operands : {"R8,R2.B4,R4.H0", "R8,R2,R4.H2",
+                                "R8,R2,R4", "R8,-R2,R4.H0"})
+    EXPECT_FALSE(flash_gpgpu_sim::sass::decode_scaled_unpack(
+        official_instruction(0, "F2FP.BF16.E2M1.UNPACK_B", operands), decoded));
+  for (const char *scale : {"UR4", "0x7f7f"}) {
+    const timing_instruction inst(official_instruction(
+        0, "F2FP.BF16.E4M3.UNPACK_B", std::string("R8,R2,") + scale + ",H0"));
+    const std::vector<int> expected = std::string(scale) == "UR4"
+                                        ? std::vector<int>{3,261} : std::vector<int>{3};
+    EXPECT_EQ(std::vector<int>(inst.arch_reg.src, inst.arch_reg.src + inst.incount), expected);
+  }
+}
+} // namespace
