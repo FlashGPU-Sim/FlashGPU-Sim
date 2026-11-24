@@ -74,6 +74,13 @@ void register_clc_semantics(frontend &target);
 void register_cluster_store_semantics(frontend &target);
 void register_tmem_semantics(frontend &target);
 void register_tcgen_mma_semantics(frontend &target);
+step_result read_driver_tensor_map(const instruction &inst,
+                                   execution_context &context, uint64_t address,
+                                   unsigned rank,
+                                   const std::array<uint64_t, 8> &raw,
+                                   bool &recognized,
+                                   functional_tensor_map_view &view);
+
 void register_tma_semantics(frontend &target);
 void register_mma_semantics(frontend &target);
 void register_wgmma_semantics(frontend &target);

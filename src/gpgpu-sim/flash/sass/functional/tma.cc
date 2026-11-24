@@ -218,54 +218,62 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
                               raw_words.data(), sizeof(raw_words)))
       return memory_fault(inst, descriptor_space, descriptor_address,
                           sizeof(raw_words));
-    if (rank == 5) {
-      const tensor_map_5d_decode_result decoded =
-          decode_sm120_tensor_map_5d(raw_words);
-      if (!decoded.supported)
-        return unsupported(inst, decoded.detail);
-      tensor_map = load_view(decoded.descriptor);
-    } else if (rank == 4) {
-      std::array<uint64_t, 16> host_words{};
-      std::copy(raw_words.begin(), raw_words.end(), host_words.begin());
-      tensor_map_4d_decode_result decoded =
-          decode_sm120_tensor_map_4d(raw_words);
-      if (!decoded.supported && address_descriptor != nullptr) {
-        if (!context.memory->read(
-                descriptor_space, descriptor_address + sizeof(raw_words),
-                host_words.data() + raw_words.size(), sizeof(raw_words)))
-          return memory_fault(inst, descriptor_space,
-                              descriptor_address + sizeof(raw_words),
-                              sizeof(raw_words));
-        decoded = decode_flashgpu_host_tensor_map_4d(host_words);
-      }
-      if (!decoded.supported)
-        return unsupported(inst, decoded.detail);
-      tensor_map = load_view(decoded.descriptor);
-    } else if (rank == 3) {
-      const tensor_map_3d_decode_result decoded =
-          decode_sm120_tensor_map_3d(raw_words);
-      if (!decoded.supported)
-        return unsupported(inst, decoded.detail);
-      tensor_map = load_view(decoded.descriptor);
-    } else {
-      tensor_map_decode_result decoded =
-          rank == 1 ? decode_sm120_tensor_map_1d(raw_words)
-                    : decode_sm120_tensor_map_2d(raw_words);
-      if (!decoded.supported) {
+    bool driver_map = false;
+    const auto driver_result =
+        read_driver_tensor_map(inst, context, descriptor_address, rank,
+                               raw_words, driver_map, tensor_map);
+    if (driver_result.status != step_status::kAdvanced)
+      return driver_result;
+    if (!driver_map) {
+      if (rank == 5) {
+        const tensor_map_5d_decode_result decoded =
+            decode_sm120_tensor_map_5d(raw_words);
+        if (!decoded.supported)
+          return unsupported(inst, decoded.detail);
+        tensor_map = load_view(decoded.descriptor);
+      } else if (rank == 4) {
         std::array<uint64_t, 16> host_words{};
         std::copy(raw_words.begin(), raw_words.end(), host_words.begin());
-        if (!context.memory->read(
-                descriptor_space, descriptor_address + sizeof(raw_words),
-                host_words.data() + raw_words.size(), sizeof(raw_words)))
-          return memory_fault(inst, descriptor_space,
-                              descriptor_address + sizeof(raw_words),
-                              sizeof(raw_words));
-        decoded = rank == 1 ? decode_flashgpu_host_tensor_map_1d(host_words)
-                            : decode_flashgpu_host_tensor_map_2d(host_words);
+        tensor_map_4d_decode_result decoded =
+            decode_sm120_tensor_map_4d(raw_words);
+        if (!decoded.supported && address_descriptor != nullptr) {
+          if (!context.memory->read(
+                  descriptor_space, descriptor_address + sizeof(raw_words),
+                  host_words.data() + raw_words.size(), sizeof(raw_words)))
+            return memory_fault(inst, descriptor_space,
+                                descriptor_address + sizeof(raw_words),
+                                sizeof(raw_words));
+          decoded = decode_flashgpu_host_tensor_map_4d(host_words);
+        }
+        if (!decoded.supported)
+          return unsupported(inst, decoded.detail);
+        tensor_map = load_view(decoded.descriptor);
+      } else if (rank == 3) {
+        const tensor_map_3d_decode_result decoded =
+            decode_sm120_tensor_map_3d(raw_words);
+        if (!decoded.supported)
+          return unsupported(inst, decoded.detail);
+        tensor_map = load_view(decoded.descriptor);
+      } else {
+        tensor_map_decode_result decoded =
+            rank == 1 ? decode_sm120_tensor_map_1d(raw_words)
+                      : decode_sm120_tensor_map_2d(raw_words);
+        if (!decoded.supported) {
+          std::array<uint64_t, 16> host_words{};
+          std::copy(raw_words.begin(), raw_words.end(), host_words.begin());
+          if (!context.memory->read(
+                  descriptor_space, descriptor_address + sizeof(raw_words),
+                  host_words.data() + raw_words.size(), sizeof(raw_words)))
+            return memory_fault(inst, descriptor_space,
+                                descriptor_address + sizeof(raw_words),
+                                sizeof(raw_words));
+          decoded = rank == 1 ? decode_flashgpu_host_tensor_map_1d(host_words)
+                              : decode_flashgpu_host_tensor_map_2d(host_words);
+        }
+        if (!decoded.supported)
+          return unsupported(inst, decoded.detail);
+        tensor_map = load_view(decoded.descriptor, rank);
       }
-      if (!decoded.supported)
-        return unsupported(inst, decoded.detail);
-      tensor_map = load_view(decoded.descriptor, rank);
     }
   }
   if (tensor_map.swizzle_bytes != 0 && tensor_map.swizzle_bytes != 32 &&
@@ -520,59 +528,67 @@ step_result execute_utmastg(const instruction &inst, warp_state &state,
                               raw_words.data(), sizeof(raw_words)))
       return memory_fault(inst, memory_space::kGlobal, descriptor_address,
                           sizeof(raw_words));
-    if (rank == 5) {
-      tensor_map_5d_decode_result decoded =
-          decode_sm120_tensor_map_5d(raw_words);
-      std::array<uint64_t, 16> host_words{};
-      if (!decoded.supported) {
-        std::copy(raw_words.begin(), raw_words.end(), host_words.begin());
-        if (!context.memory->read(
-                memory_space::kGlobal, descriptor_address + sizeof(raw_words),
-                host_words.data() + raw_words.size(), sizeof(raw_words)))
-          return memory_fault(inst, memory_space::kGlobal,
-                              descriptor_address + sizeof(raw_words),
-                              sizeof(raw_words));
-        decoded = decode_flashgpu_host_tensor_map_5d(host_words);
-      }
-      if (!decoded.supported)
-        return unsupported(inst, decoded.detail);
-      tensor_map = load_view(decoded.descriptor);
-    } else if (rank == 4) {
-      tensor_map_4d_decode_result decoded =
-          decode_sm120_tensor_map_4d(raw_words);
-      if (!decoded.supported) {
+    bool driver_map = false;
+    const auto driver_result =
+        read_driver_tensor_map(inst, context, descriptor_address, rank,
+                               raw_words, driver_map, tensor_map);
+    if (driver_result.status != step_status::kAdvanced)
+      return driver_result;
+    if (!driver_map) {
+      if (rank == 5) {
+        tensor_map_5d_decode_result decoded =
+            decode_sm120_tensor_map_5d(raw_words);
         std::array<uint64_t, 16> host_words{};
-        std::copy(raw_words.begin(), raw_words.end(), host_words.begin());
-        if (!context.memory->read(
-                memory_space::kGlobal, descriptor_address + sizeof(raw_words),
-                host_words.data() + raw_words.size(), sizeof(raw_words)))
-          return memory_fault(inst, memory_space::kGlobal,
-                              descriptor_address + sizeof(raw_words),
-                              sizeof(raw_words));
-        decoded = decode_flashgpu_host_tensor_map_4d(host_words);
+        if (!decoded.supported) {
+          std::copy(raw_words.begin(), raw_words.end(), host_words.begin());
+          if (!context.memory->read(
+                  memory_space::kGlobal, descriptor_address + sizeof(raw_words),
+                  host_words.data() + raw_words.size(), sizeof(raw_words)))
+            return memory_fault(inst, memory_space::kGlobal,
+                                descriptor_address + sizeof(raw_words),
+                                sizeof(raw_words));
+          decoded = decode_flashgpu_host_tensor_map_5d(host_words);
+        }
+        if (!decoded.supported)
+          return unsupported(inst, decoded.detail);
+        tensor_map = load_view(decoded.descriptor);
+      } else if (rank == 4) {
+        tensor_map_4d_decode_result decoded =
+            decode_sm120_tensor_map_4d(raw_words);
+        if (!decoded.supported) {
+          std::array<uint64_t, 16> host_words{};
+          std::copy(raw_words.begin(), raw_words.end(), host_words.begin());
+          if (!context.memory->read(
+                  memory_space::kGlobal, descriptor_address + sizeof(raw_words),
+                  host_words.data() + raw_words.size(), sizeof(raw_words)))
+            return memory_fault(inst, memory_space::kGlobal,
+                                descriptor_address + sizeof(raw_words),
+                                sizeof(raw_words));
+          decoded = decode_flashgpu_host_tensor_map_4d(host_words);
+        }
+        if (!decoded.supported)
+          return unsupported(inst, decoded.detail);
+        tensor_map = load_view(decoded.descriptor);
+      } else {
+        tensor_map_decode_result decoded =
+            rank == 1 ? decode_sm120_tensor_map_1d(raw_words)
+                      : decode_sm120_tensor_map_2d(raw_words);
+        if (!decoded.supported) {
+          std::array<uint64_t, 16> host_words{};
+          std::copy(raw_words.begin(), raw_words.end(), host_words.begin());
+          if (!context.memory->read(
+                  memory_space::kGlobal, descriptor_address + sizeof(raw_words),
+                  host_words.data() + raw_words.size(), sizeof(raw_words)))
+            return memory_fault(inst, memory_space::kGlobal,
+                                descriptor_address + sizeof(raw_words),
+                                sizeof(raw_words));
+          decoded = rank == 1 ? decode_flashgpu_host_tensor_map_1d(host_words)
+                              : decode_flashgpu_host_tensor_map_2d(host_words);
+        }
+        if (!decoded.supported)
+          return unsupported(inst, decoded.detail);
+        tensor_map = load_view(decoded.descriptor, rank);
       }
-      if (!decoded.supported)
-        return unsupported(inst, decoded.detail);
-      tensor_map = load_view(decoded.descriptor);
-    } else {
-      tensor_map_decode_result decoded =
-          rank == 1 ? decode_sm120_tensor_map_1d(raw_words)
-                    : decode_sm120_tensor_map_2d(raw_words);
-      if (!decoded.supported) {
-        std::array<uint64_t, 16> host_words{};
-        std::copy(raw_words.begin(), raw_words.end(), host_words.begin());
-        if (!context.memory->read(
-                memory_space::kGlobal, descriptor_address + sizeof(raw_words),
-                host_words.data() + raw_words.size(), sizeof(raw_words)))
-          return memory_fault(inst, memory_space::kGlobal,
-                              descriptor_address + sizeof(raw_words),
-                              sizeof(raw_words));
-        decoded = rank == 1 ? decode_flashgpu_host_tensor_map_1d(host_words)
-                            : decode_flashgpu_host_tensor_map_2d(host_words);
-      }
-      if (!decoded.supported)
-        return unsupported(inst, decoded.detail);
-      tensor_map = load_view(decoded.descriptor, rank);
     }
   }
   if ((tensor_map.data_type >= TMA_DTYPE_TF32 &&

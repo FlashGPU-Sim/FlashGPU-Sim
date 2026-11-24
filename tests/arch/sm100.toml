@@ -4,7 +4,7 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
-  "unit/sass/runtime/parameter_alias_test.cc",
+  "driver_tma/launch_test.cu",
   "clc/b128_test.cu",
   "clc/launch_queue_test.cu",
   "unit/clc_queue_test.cc",
@@ -59,6 +59,8 @@ sources = [
   "unit/cache_invalidation_test.cc",
   "unit/dram_bandwidth_test.cc",
   "unit/fa4_opaque_tensormap_test.cc",
+  "unit/driver_tensormap_test.cc",
+  "unit/sass/runtime/parameter_alias_test.cc",
   "unit/l2_bandwidth_test.cc",
   "unit/l2_multi_issue_ports_test.cc",
   "unit/l2_tma_coalescing_test.cc",

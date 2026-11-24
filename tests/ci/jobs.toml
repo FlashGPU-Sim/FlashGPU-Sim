@@ -121,3 +121,10 @@ cuda = "13.3"
 tests = [
   { name = "clc-components-and-dual-launch", group = "unit", gtest_filter = "Clc*:KernelInfoFrontend.*:SassReduction.*", post_check = "tests/ci/check_clc_dual.py" },
 ]
+
+[jobs.sm100-driver-tma]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "driver-maps-and-dual-launch", group = "unit", gtest_filter = "DriverTensorMap.*:Fa4OpaqueTensorMapTest.*:SassParameterAlias.*", post_check = "tests/ci/check_driver_tma_dual.py" },
+]
