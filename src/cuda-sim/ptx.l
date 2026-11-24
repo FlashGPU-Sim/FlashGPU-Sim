@@ -590,6 +590,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.cp_fenceproxy TC; return CP_FENCEPROXY_OPTION;
 \.release TC; return RELEASE_OPTION;
 \.relaxed TC; return RELAXED_OPTION;
+\.acq_rel TC; return ACQ_REL_OPTION;
 \.acquire TC; return ACQUIRE_OPTION;
 \.gpu TC; return GPU_OPTION;
 \.L2::(64|128|256)B TC; return L2_OPTION;

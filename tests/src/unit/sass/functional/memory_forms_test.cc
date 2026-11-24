@@ -92,3 +92,46 @@ TEST(SassGlobal256, RejectsUnqualifiedMaskedForm) {
   EXPECT_EQ(sass.step("masked_load",state,context).status,step_status::kUnsupported);
 }
 } // namespace
+
+namespace {
+TEST(SassStrongGlobal, WidthScopePredicationAndMemoryExtent) {
+  for (const bool wide : {false, true}) for (const char *scope : {"GPU", "SYS"}) {
+    const std::string suffix = std::string(wide ? ".64.STRONG." : ".STRONG.") + scope;
+    const auto load = official_instruction(0, "LDG.E" + suffix,
+                                          "R8,desc[UR4][R2.64]", "@P0");
+    const auto store = official_instruction(16, "STG.E" + suffix,
+                                           "desc[UR4][R2.64+0x10],R8", "@P0");
+    kernel image; image.name = "strong_global"; image.arch = architecture::kSm100;
+    image.instruction_bytes = 16; image.instructions = {load, store};
+    frontend sass; sass.add_kernel(std::move(image)); register_sm100_functional_semantics(sass);
+    mapped_functional_memory memory; memory.map(memory_space::kGlobal, 0x100, 64, true);
+    for (unsigned i = 0; i < 16; ++i)
+      memory.initialize<uint32_t>(memory_space::kGlobal, 0x100 + 4*i, 0x12345600 + i);
+    warp_state state; state.active_mask = 3;
+    for (unsigned lane = 0; lane < 2; ++lane) {
+      state.write_register(lane, 2, 0x100); state.write_register(lane, 3, 0);
+      state.write_register(lane, 8, 0xdead); state.write_register(lane, 9, 0xbeef);
+      state.write_predicate(lane, 0, lane == 0);
+    }
+    execution_context context{&memory};
+    auto result = sass.step("strong_global", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    EXPECT_EQ(state.read_register(0, 8), 0x12345600u);
+    EXPECT_EQ(state.read_register(0, 9), wide ? 0x12345601u : 0xbeefu);
+    ASSERT_EQ(context.memory_accesses[0].size(), 1u);
+    EXPECT_EQ(context.memory_accesses[0][0].bytes, wide ? 8u : 4u);
+    EXPECT_TRUE(context.memory_accesses[1].empty());
+    EXPECT_EQ(state.read_register(1, 8), 0xdeadu);
+    result = sass.step("strong_global", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    for (unsigned i = 0; i < 16; ++i)
+      EXPECT_EQ(memory.inspect<uint32_t>(memory_space::kGlobal, 0x100 + 4*i),
+                i == 4 ? 0x12345600u : (wide && i == 5) ? 0x12345601u : 0x12345600u+i);
+    const timing_instruction timing_load(load), timing_store(store);
+    EXPECT_EQ(timing_load.data_size, wide ? 8u : 4u);
+    EXPECT_EQ(timing_store.data_size, wide ? 8u : 4u);
+    EXPECT_EQ(timing_load.cache_op, std::string(scope) == "SYS" ? CACHE_VOLATILE : CACHE_GLOBAL);
+    EXPECT_EQ(timing_load.get_register_file_destination_count(), wide ? 2u : 1u);
+  }
+}
+} // namespace

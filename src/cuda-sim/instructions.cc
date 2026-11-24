@@ -1929,7 +1929,8 @@ void tensormap_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void fence_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  // fence.sc.* ordering is enforced by the timing memory-barrier path.
+  // Ordinary fence.sc.* and fence.acq_rel.* ordering is enforced by the
+  // common timing memory-barrier path. Omitted semantics default to acq_rel.
   // Proxy/tensormap fences retain their separate timing classification.
 }
 

@@ -1695,6 +1695,13 @@ ptx_instruction::ptx_instruction(
       case SYS_OPTION:
         m_membar_level = SYS_OPTION;
         break;
+      case ACQ_REL_OPTION:
+        if (opcode != FENCE_OP ||
+            std::find(options.begin(), options.end(), PROXY_OPTION) != options.end()) {
+          fprintf(stderr, "PTX .acq_rel is only qualified on ordinary fence\n");
+          abort();
+        }
+        break;
       case SC_OPTION:
         // fence.sc.* : sequential-consistency order; scope is a later option.
         break;

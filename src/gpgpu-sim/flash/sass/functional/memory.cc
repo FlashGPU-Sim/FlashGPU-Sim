@@ -363,7 +363,9 @@ step_result execute_ldg(const instruction &native, warp_state &state,
   const bool u8 = inst.opcode == "LDG.E.U8";
   const bool u16 =
       inst.opcode == "LDG.E.U16" || inst.opcode == "LDG.E.U16.CONSTANT";
-  const bool wide = inst.opcode == "LDG.E.64";
+  const bool wide = inst.opcode == "LDG.E.64" ||
+                    inst.opcode == "LDG.E.64.STRONG.GPU" ||
+                    inst.opcode == "LDG.E.64.STRONG.SYS";
   const bool vector128 =
       inst.opcode == "LDG.E.128" || inst.opcode == "LDG.E.128.CONSTANT";
   if (wide && destination->index != kZeroRegister &&
@@ -429,7 +431,9 @@ step_result execute_stg(const instruction &inst, warp_state &state,
     return unsupported(inst, "no functional memory is attached");
   (void)state.read_uniform_register(address->descriptor_register);
   const bool vector128 = inst.opcode == "STG.E.128";
-  const bool wide = inst.opcode == "STG.E.64";
+  const bool wide = inst.opcode == "STG.E.64" ||
+                    inst.opcode == "STG.E.64.STRONG.GPU" ||
+                    inst.opcode == "STG.E.64.STRONG.SYS";
   const bool u16 = inst.opcode == "STG.E.U16";
   if (vector128 && source->index != kZeroRegister &&
       source->index > kZeroRegister - 3)
@@ -872,7 +876,8 @@ step_result execute_functional_fence(const instruction &inst, warp_state &state,
            inst.opcode == "FENCE.VIEW.ASYNC.T")
     valid = has_typed_operands(inst, 0);
   else if (inst.opcode == "MEMBAR.ALL.CTA" || inst.opcode == "MEMBAR.ALL.GPU" ||
-           inst.opcode == "MEMBAR.SC.CTA")
+           inst.opcode == "MEMBAR.SC.CTA" || inst.opcode == "MEMBAR.ALL.SYS" ||
+           inst.opcode == "MEMBAR.SC.GPU" || inst.opcode == "MEMBAR.SC.SYS")
     valid = has_typed_operands(inst, 0);
   else if (inst.opcode == "LDGDEPBAR")
     valid = has_typed_operands(inst, 0);
@@ -929,6 +934,9 @@ void register_memory_semantics(frontend &target) {
     target.register_semantics(opcode, execute_ldg);
   target.register_semantics("LDG.E", execute_ldg);
   target.register_semantics("LDG.E.STRONG.GPU", execute_ldg);
+  target.register_semantics("LDG.E.STRONG.SYS", execute_ldg);
+  target.register_semantics("LDG.E.64.STRONG.GPU", execute_ldg);
+  target.register_semantics("LDG.E.64.STRONG.SYS", execute_ldg);
   target.register_semantics("LDG.E.CONSTANT", execute_ldg);
   target.register_semantics("LDG.E.U8", execute_ldg);
   target.register_semantics("LDG.E.U16", execute_ldg);
@@ -937,6 +945,10 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("LDG.E.128", execute_ldg);
   target.register_semantics("LDG.E.128.CONSTANT", execute_ldg);
   target.register_semantics("STG.E", execute_stg);
+  target.register_semantics("STG.E.STRONG.GPU", execute_stg);
+  target.register_semantics("STG.E.STRONG.SYS", execute_stg);
+  target.register_semantics("STG.E.64.STRONG.GPU", execute_stg);
+  target.register_semantics("STG.E.64.STRONG.SYS", execute_stg);
   target.register_semantics("STG.E.U16", execute_stg);
   target.register_semantics("STG.E.64", execute_stg);
   target.register_semantics("STG.E.128", execute_stg);
@@ -971,6 +983,9 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("MEMBAR.ALL.CTA", execute_functional_fence);
   target.register_semantics("MEMBAR.ALL.GPU", execute_functional_fence);
   target.register_semantics("MEMBAR.SC.CTA", execute_functional_fence);
+  target.register_semantics("MEMBAR.ALL.SYS", execute_functional_fence);
+  target.register_semantics("MEMBAR.SC.GPU", execute_functional_fence);
+  target.register_semantics("MEMBAR.SC.SYS", execute_functional_fence);
   target.register_semantics("LDGDEPBAR", execute_functional_fence);
   target.register_semantics("ACQBULK", execute_functional_fence);
 }
