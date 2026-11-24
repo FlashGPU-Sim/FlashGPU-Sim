@@ -1,9 +1,9 @@
 # Experimental Blackwell gather4
 
-Private branch: `feature/tma-gather4`, directly based on public `01bdef86`.
+Private branch: `feature/tma-gather4`, directly based on public `b3378cb9`.
 It does **not** depend on `feature/sass-scalar-coverage`. SASS stays experimental
 and opt-in. The B200 TMA service interval is calibrated to 4 cycles as
-described below; other device presets are unchanged. No public PR is created.
+described below; other device presets are unchanged.
 
 ## Instruction and descriptor coverage
 
@@ -131,3 +131,24 @@ Workspace evidence: `runs/gather4-feature-calibration-20261124`, with original
 native binary SHA256
 `bd47cd110e970ae831efff4523607dd327dee3a06dac8768640f11e305ad554d`, native logs,
 NCU full reports, frozen simulator library, configs, and replay results.
+
+## Integration with public cluster fixes
+
+The feature is rebased onto public `b3378cb9`, including PR #51. Ordinary
+unicast retains the resolved destination memory and encoded destination
+identity; its completion barrier is resolved independently. Gather4 reuses
+the same PTX shared-address resolver, adds its format/swizzle payload handling
+and completion masks, and does not restore the removed multicast token alias.
+
+Post-rebase validation: 605 component tests, 114 numerical kernel launches
+through each frontend, 36 native lifecycle/stream-ID tests, and all 11 selected
+PR #51 unicast/address-boundary tests through PTX passed. The last group includes
+16-CTA remote and multicast transfers; its rejected-launch case runs no kernel.
+Local component selection retains the documented CUDA 13.3 legacy trace-test
+exclusion. Evidence: workspace `runs/feature-pr-submit-20261124`.
+
+Ordinary SASS `UBLKCP.S.G` cluster address decoding is not added by this feature.
+`TMAClusterUnicastTest.BulkClusterSizeTwo` still reports an uninitialized
+mbarrier through that path, reproducibly with the pre-rebase frozen library as
+well. The PTX pass above does not imply native coverage of the entire PR #51
+matrix. The native cluster qualification here covers the six gather4 launches.

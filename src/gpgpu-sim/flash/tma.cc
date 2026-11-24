@@ -2893,7 +2893,6 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
     case CLUSTER_OPTION:
       space_options.push_back(op);
       break;
-    case TCGEN05_MULTICAST_CLUSTER_OPTION:
     case MULTICAST_CLUSTER_OPTION:
       multicast_cluster = true;
       break;
@@ -3232,7 +3231,6 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     case BULK_GROUP_OPTION:
       completion_option = op;
       break;
-    case TCGEN05_MULTICAST_CLUSTER_OPTION:
     case MULTICAST_CLUSTER_OPTION:
       multicast_cluster = true;
       break;
