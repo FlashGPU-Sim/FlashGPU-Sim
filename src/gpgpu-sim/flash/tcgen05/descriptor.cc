@@ -14,6 +14,7 @@ uint32_t decode_matrix_descriptor_field(uint64_t desc, unsigned shift) {
 
 uint32_t tcgen05_swizzle_bytes(uint8_t swizzle_mode) {
   switch (swizzle_mode) {
+  case 1:
   case 2:
     return 128;
   case 4:
@@ -26,18 +27,21 @@ uint32_t tcgen05_swizzle_bytes(uint8_t swizzle_mode) {
 }
 
 uint64_t apply_tcgen05_swizzle(uint64_t base, uint64_t byte_offset,
-                               uint32_t swizzle_bytes) {
+                               uint32_t swizzle_bytes, bool atom32 = false) {
   if (swizzle_bytes == 0)
     return base + byte_offset;
 
-  const uint64_t period = static_cast<uint64_t>(swizzle_bytes) * 8;
+  const uint64_t period =
+      static_cast<uint64_t>(swizzle_bytes) * (atom32 ? 4 : 8);
   const uint64_t period_base = base & ~(period - 1);
   const uint64_t unswizzled = (base - period_base) + byte_offset;
-  const unsigned swizzle_bits = swizzle_bytes == 128  ? 3
-                                : swizzle_bytes == 64 ? 2
-                                                      : 1;
+  const unsigned swizzle_bits = atom32                 ? 2
+                                : swizzle_bytes == 128 ? 3
+                                : swizzle_bytes == 64  ? 2
+                                                       : 1;
   const uint64_t row_mask = ((1ull << swizzle_bits) - 1) << 7;
-  return period_base + (unswizzled ^ ((unswizzled & row_mask) >> 3));
+  return period_base +
+         (unswizzled ^ ((unswizzled & row_mask) >> (atom32 ? 2 : 3)));
 }
 
 } // namespace
@@ -61,6 +65,22 @@ tcgen05_shared_descriptor_t tcgen05_decode_shared_descriptor(uint64_t desc) {
           decoded.swizzle_mode == 6) &&
          "TCGen05 shared descriptor swizzle mode is invalid");
   return decoded;
+}
+
+bool tcgen05_mma_shared_descriptor_supported(uint64_t raw, bool mn_major) {
+  const unsigned mode = raw >> 61;
+  // 14-bit address/stride fields on Blackwell, not Rubin's widened fields.
+  const uint64_t reserved = (3ull << 14) | (3ull << 30) | (0xffull << 53);
+  return !(raw & reserved) && ((raw >> 46) & 7) == 1 && !((raw >> 52) & 1) &&
+         (mode == 0 || mode == 2 || mode == 4 || mode == 6 ||
+          (mode == 1 && mn_major));
+}
+
+tcgen05_shared_descriptor_t
+tcgen05_decode_mma_shared_descriptor(uint64_t raw, bool mn_major) {
+  assert(tcgen05_mma_shared_descriptor_supported(raw, mn_major) &&
+         "Unsupported Blackwell MMA shared descriptor");
+  return tcgen05_decode_shared_descriptor(raw);
 }
 
 uint32_t tcgen05_shared_k_major_packed_byte_address(
@@ -110,8 +130,6 @@ tcgen05_shared_mn_major_byte_address(const tcgen05_shared_descriptor_t &desc,
                                      uint32_t default_mn_elements_per_row) {
   assert(!desc.leading_dimension_absolute &&
          "TCGen05 absolute leading dimension is only valid for K-major");
-  assert(desc.swizzle_mode != 1 &&
-         "TCGen05 MN-major does not support 128B/32B-atomic swizzle");
   assert(element_size > 0 && 16 % element_size == 0);
   assert(default_mn_elements_per_row > 0);
 
@@ -135,8 +153,11 @@ tcgen05_shared_mn_major_byte_address(const tcgen05_shared_descriptor_t &desc,
       swizzle_bytes == 0 ? elements_per_128_bits : swizzle_bytes / element_size;
   const uint64_t mn_group = matrix_mn / mn_per_group;
   const uint32_t mn_in_group = matrix_mn % mn_per_group;
-  const uint64_t k_group = matrix_k / 8;
-  const uint32_t k_in_group = matrix_k % 8;
+  // CUTLASS UMMA::make_umma_desc uses four K rows for SW128_BASE32B,
+  // eight otherwise. Swizzle<2,5,2> preserves each 32-byte atom.
+  const unsigned k_atom = desc.swizzle_mode == 1 ? 4 : 8;
+  const uint64_t k_group = matrix_k / k_atom;
+  const uint32_t k_in_group = matrix_k % k_atom;
 
   uint64_t offset = 0;
   if (swizzle_bytes == 0) {
@@ -150,8 +171,8 @@ tcgen05_shared_mn_major_byte_address(const tcgen05_shared_descriptor_t &desc,
              k_group * desc.stride_dimension_byte_offset +
              static_cast<uint64_t>(k_in_group) * swizzle_bytes;
   }
-  return static_cast<uint32_t>(
-      apply_tcgen05_swizzle(desc.start_address, offset, swizzle_bytes));
+  return static_cast<uint32_t>(apply_tcgen05_swizzle(
+      desc.start_address, offset, swizzle_bytes, desc.swizzle_mode == 1));
 }
 
 bool tcgen05_mxf4_dense_shape_supported(uint32_t m, uint32_t n, uint32_t k,

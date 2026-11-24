@@ -641,3 +641,38 @@ TEST(Tcgen05Mma, DenseTmemDatapathAlignment) {
   EXPECT_FALSE(
       tcgen05_mma_tmem_alignment_supported(64, true, 16u << 16, false, 0));
 }
+
+TEST(Tcgen05Mma, SharedDescriptorGateIsCommonAndLayoutAware) {
+  for (unsigned mode : {0u, 2u, 4u, 6u}) {
+    const auto raw = make_shared_desc(0x400, 16, 1024, mode);
+    EXPECT_TRUE(tcgen05_mma_shared_descriptor_supported(raw));
+    EXPECT_TRUE(tcgen05_mma_shared_descriptor_supported(raw, true));
+    for (unsigned bit : {14u, 15u, 30u, 31u, 47u, 48u, 52u, 53u, 54u, 60u})
+      EXPECT_FALSE(
+          tcgen05_mma_shared_descriptor_supported(raw | (1ull << bit), true));
+    EXPECT_FALSE(
+        tcgen05_mma_shared_descriptor_supported(raw & ~(1ull << 46), true));
+  }
+  const auto atom32 = make_shared_desc(0x400, 2048, 512, 1);
+  EXPECT_FALSE(tcgen05_mma_shared_descriptor_supported(atom32));
+  EXPECT_TRUE(tcgen05_mma_shared_descriptor_supported(atom32, true));
+  for (unsigned mode : {3u, 5u, 7u})
+    EXPECT_FALSE(tcgen05_mma_shared_descriptor_supported(
+        make_shared_desc(0x400, 16, 1024, mode), true));
+}
+TEST(Tcgen05Mma, MnMajor32ByteAtomsKeepAdjacentHalvesTogether) {
+  auto d = tcgen05_decode_mma_shared_descriptor(
+      make_shared_desc(0x400, 2048, 512, 1), true);
+  auto address = [&](unsigned row, unsigned k) {
+    return tcgen05_shared_mn_major_byte_address(d, row, k, 2, 128);
+  };
+  EXPECT_EQ(address(0, 0), 0x400u);
+  EXPECT_EQ(address(0, 1), 0x4a0u);
+  EXPECT_EQ(address(8, 1), 0x4b0u);
+  EXPECT_EQ(address(16, 0), 0x420u);
+  EXPECT_EQ(address(32, 1), 0x4e0u);
+  EXPECT_EQ(address(0, 4), 0x600u);
+  EXPECT_EQ(address(64, 0), 0xc00u);
+  d.start_address += 128;
+  EXPECT_EQ(address(0, 0), 0x4a0u);
+}

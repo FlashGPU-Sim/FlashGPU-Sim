@@ -65,6 +65,11 @@ struct tcgen05_mxf8f6f4_shared_location_t {
 };
 
 tcgen05_shared_descriptor_t tcgen05_decode_shared_descriptor(uint64_t desc);
+// Blackwell relative-address MMA descriptors. The 32B atom is MN-major only.
+bool tcgen05_mma_shared_descriptor_supported(uint64_t desc,
+                                             bool mn_major = false);
+tcgen05_shared_descriptor_t
+tcgen05_decode_mma_shared_descriptor(uint64_t desc, bool mn_major = false);
 uint32_t tcgen05_shared_k_major_packed_byte_address(
     const tcgen05_shared_descriptor_t &desc, uint32_t matrix_row,
     uint32_t packed_k, uint32_t default_packed_k_per_row);

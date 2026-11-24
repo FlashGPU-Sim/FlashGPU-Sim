@@ -117,9 +117,9 @@ step_result half_mma(const instruction &inst, warp_state &state,
   tcgen05_shared_descriptor_t ad, bd;
   if ((!tmem_a &&
        !shared_descriptor(read_uniform_register_pair(state, ar.index), ad,
-                          context)) ||
+                          context, desc.transpose_a)) ||
       !shared_descriptor(read_uniform_register_pair(state, br.index), bd,
-                         context))
+                         context, desc.transpose_b))
     return unsupported(inst, "unqualified half MMA shared descriptor");
   const unsigned local_m = m / group, local_n = n / group;
   const bool folded = (group == 2 && m == 128) || ws;

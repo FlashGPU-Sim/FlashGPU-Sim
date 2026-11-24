@@ -4,13 +4,19 @@
 #include <gtest/gtest.h>
 #include <cstring>
 #include <vector>
+#include "mma_test_layout.h"
 namespace {
 enum PatternFlags : unsigned {
   kTransposeA = 1,
   kTransposeB = 2,
   kHalfOutput = 4,
   kUpperDatapaths = 8,
-  kNegateB = 16
+  kNegateB = 16,
+  kSwizzle32 = 32,
+  kSwizzle64 = 64,
+  kSwizzle128 = 96,
+  kSwizzle128Atom32 = 128,
+  kShiftBase = 256
 };
 float pattern_a(unsigned row, unsigned k, bool half_output) {
   float value = float((row % 3 + 1 + row / 64) * (k % 2 + 1));
@@ -18,6 +24,20 @@ float pattern_a(unsigned row, unsigned k, bool half_output) {
     value = __half2float(__float2half(value + float(k % 3) / 64));
   return value;
 }
+template <unsigned Kind, unsigned M, unsigned N, bool TmemA, unsigned Flags>
+struct PatternLayouts {
+  static constexpr unsigned Mode = (Flags & 224) == kSwizzle32          ? 6
+                                   : (Flags & 224) == kSwizzle64        ? 4
+                                   : (Flags & 224) == kSwizzle128       ? 2
+                                   : (Flags & 224) == kSwizzle128Atom32 ? 1
+                                                                        : 0;
+  static constexpr unsigned Prefix = Flags & kShiftBase ? 128 : 0;
+  using A = MmaTestLayout < TmemA ? 0 : Mode,
+        bool(Flags &kTransposeA), TmemA ? 128 : M, Kind < 2 ? 16 : 32,
+        Kind<2 ? 2 : 1, TmemA ? 0 : Prefix>;
+  using B = MmaTestLayout < Mode, bool(Flags &kTransposeB), N,
+        Kind < 2 ? 16 : 32, Kind<2 ? 2 : 1, Prefix>;
+};
 template <unsigned Kind, unsigned M, unsigned N = 16, bool WS = false,
           bool TmemA = false, unsigned Flags = 0>
 __global__ void dense_patterns(const unsigned char *input, float *output) {
@@ -26,12 +46,15 @@ __global__ void dense_patterns(const unsigned char *input, float *output) {
   constexpr unsigned Origin = Flags & kUpperDatapaths ? 16 : 0;
   static_assert(!TmemA || !(Flags & kTransposeA));
   static_assert(!Origin || (M == 64 && !WS));
-  __shared__ __align__(128) unsigned char a[ARows * 32], b[N * 32];
+  using Layouts = PatternLayouts<Kind, M, N, TmemA, Flags>;
+  using A = typename Layouts::A;
+  using B = typename Layouts::B;
+  __shared__ __align__(1024) unsigned char a[A::Storage], b[B::Storage];
   __shared__ unsigned base;
   __shared__ unsigned long long bar;
   const unsigned t = threadIdx.x;
-  for (unsigned i = t; i < ARows * 32; i += 128) a[i] = input[i];
-  for (unsigned i = t; i < N * 32; i += 128) b[i] = input[ARows * 32 + i];
+  for (unsigned i = t; i < A::Storage; i += 128) a[i] = input[i];
+  for (unsigned i = t; i < B::Storage; i += 128) b[i] = input[A::Storage + i];
   const unsigned bp = (unsigned)__cvta_generic_to_shared(&bar);
   if (t == 0)
     asm volatile("mbarrier.init.shared::cta.b64 [%0],1;" ::"r"(bp) : "memory");
@@ -60,10 +83,16 @@ __global__ void dense_patterns(const unsigned char *input, float *output) {
   const unsigned destination = base + (Origin << 16);
   asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
   if (t == 0) {
-    const unsigned long long ad = ((unsigned)__cvta_generic_to_shared(a) >> 4) |
-                                  (8ull << 16) | (16ull << 32) | (1ull << 46);
-    const unsigned long long bd = ((unsigned)__cvta_generic_to_shared(b) >> 4) |
-                                  (8ull << 16) | (16ull << 32) | (1ull << 46);
+    const unsigned long long ad = (((unsigned)__cvta_generic_to_shared(a) +
+                                    (TmemA ? 0 : Layouts::Prefix)) >>
+                                   4) |
+                                  (uint64_t(A::Lbo / 16) << 16) |
+                                  (uint64_t(A::Sbo / 16) << 32) | (1ull << 46) |
+                                  (uint64_t(TmemA ? 0 : Layouts::Mode) << 61);
+    const unsigned long long bd =
+        (((unsigned)__cvta_generic_to_shared(b) + Layouts::Prefix) >> 4) |
+        (uint64_t(B::Lbo / 16) << 16) | (uint64_t(B::Sbo / 16) << 32) |
+        (1ull << 46) | (uint64_t(Layouts::Mode) << 61);
     constexpr unsigned format = Kind % 2;
     const unsigned desc = ((M / 16) << 24) | ((N / 8) << 17) |
                           (Flags & kHalfOutput ? 0 : 0x10) | (format << 7) |
@@ -153,7 +182,10 @@ template <unsigned Kind, unsigned M, unsigned N = 16, bool WS = false,
 void check_dense() {
   constexpr unsigned K = Kind < 2 ? 16 : 32, bytes = Kind < 2 ? 2 : 1;
   constexpr unsigned ARows = TmemA ? 128 : M;
-  std::vector<unsigned char> input((ARows + N) * 32);
+  using Layouts = PatternLayouts<Kind, M, N, TmemA, Flags>;
+  using A = typename Layouts::A;
+  using B = typename Layouts::B;
+  std::vector<unsigned char> input(A::Storage + B::Storage);
   auto fill = [&](unsigned rows, unsigned start, bool is_b) {
     for (unsigned r = 0; r < rows; ++r)
       for (unsigned k = 0; k < K; ++k) {
@@ -171,17 +203,13 @@ void check_dense() {
         if constexpr (Kind >= 2)
           bits = __nv_cvt_float_to_fp8(value, __NV_SATFINITE,
                                        Kind == 2 ? __NV_E4M3 : __NV_E5M2);
-        const bool transpose = is_b ? Flags & kTransposeB : Flags & kTransposeA;
         const unsigned offset =
-            start + (transpose ? (r / 8) * 256 + (r % 8) * 2 + (k / 8) * 128 +
-                                     (k % 8) * 16
-                               : (r / 8) * 256 + (r % 8) * 16 +
-                                     (k * bytes / 16) * 128 + (k * bytes % 16));
+            start + (is_b ? B::offset(r, k) : A::offset(r, k));
         std::memcpy(input.data() + offset, &bits, bytes);
       }
   };
   fill(ARows, 0, false);
-  fill(N, ARows * 32, true);
+  fill(N, A::Storage, true);
   unsigned char *in = nullptr;
   float *out = nullptr;
   ASSERT_EQ(cudaMalloc(&in, input.size()), cudaSuccess);
@@ -272,5 +300,34 @@ TEST(Tcgen05Mma, Bf16SharedTransposeCombinations) {
 TEST(Tcgen05Mma, TmemATransposeBAndNegation) {
   check_dense<0, 128, 16, false, true, kTransposeB | kNegateB>();
   check_dense<1, 64, 64, true, true, kTransposeB>();
+}
+TEST(Tcgen05Mma, SwizzledKMajorSharedOperands) {
+  check_dense<0, 64, 16, false, false, kSwizzle32>();
+  check_dense<1, 128, 16, false, false, kSwizzle64>();
+  check_dense<0, 128, 16, false, false, kSwizzle128>();
+}
+TEST(Tcgen05Mma, SwizzledMnMajorSharedOperands) {
+  check_dense<0, 64, 16, false, false,
+              kSwizzle32 | kTransposeA | kTransposeB>();
+  check_dense<1, 128, 16, false, false,
+              kSwizzle64 | kTransposeA | kTransposeB>();
+  check_dense<0, 128, 16, false, false,
+              kSwizzle128 | kTransposeA | kTransposeB>();
+}
+TEST(Tcgen05Mma, SwizzledNonPeriodAlignedStart) {
+  check_dense<0, 64, 16, false, false, kSwizzle128 | kShiftBase>();
+  check_dense<1, 128, 16, false, false,
+              kSwizzle64 | kTransposeA | kTransposeB | kShiftBase>();
+}
+TEST(Tcgen05Mma, MnMajor128BWith32BAtoms) {
+  check_dense<0, 64, 16, false, false,
+              kSwizzle128Atom32 | kTransposeA | kTransposeB>();
+  check_dense<1, 128, 16, false, false,
+              kSwizzle128Atom32 | kTransposeA | kTransposeB | kShiftBase>();
+}
+TEST(Tcgen05Mma, SwizzledTmemAAndWs) {
+  check_dense<0, 128, 16, false, true, kSwizzle128>();
+  check_dense<1, 64, 64, true, false, kSwizzle64>();
+  check_dense<0, 64, 64, true, true, kSwizzle128Atom32 | kTransposeB>();
 }
 }  // namespace

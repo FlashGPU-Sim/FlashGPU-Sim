@@ -71,7 +71,7 @@ static void tcgen05_mma_mixed_ptx(const ptx_instruction *inst,
       tcgen05_read_enable_input_d(inst->operand_lookup(6), thread);
   auto read_input = [&](unsigned operand, unsigned rows, uint8_t format,
                         unsigned rank) {
-    const auto sd = tcgen05_decode_shared_descriptor(
+    const auto sd = tcgen05_decode_mma_shared_descriptor(
         tcgen05_read_u64_operand(inst, thread, operand).u64);
     std::vector<uint8_t> values(rows * desc.k);
     const bool ok = tcgen05_gather_mixed_partition(
@@ -139,7 +139,7 @@ static void tcgen05_mma_mxf4_ptx(const ptx_instruction *inst,
   const bool accumulate =
       tcgen05_read_enable_input_d(inst->operand_lookup(6), thread);
   auto read = [&](unsigned operand, unsigned rows) {
-    const auto sd = tcgen05_decode_shared_descriptor(
+    const auto sd = tcgen05_decode_mma_shared_descriptor(
         tcgen05_read_u64_operand(inst, thread, operand).u64);
     std::vector<uint8_t> values;
     const bool ok = tcgen05_gather_fp4(
@@ -195,7 +195,7 @@ static void tcgen05_mma_tf32_ptx(const ptx_instruction *inst,
   const uint32_t dst = tcgen05_eval_address(inst->operand_lookup(0), thread);
   const uint32_t aptr = tcgen05_eval_address(inst->operand_lookup(1), thread);
   assert(!(aptr >> 16) && !(aptr & 7) && !(dst >> 16));
-  const auto bd = tcgen05_decode_shared_descriptor(
+  const auto bd = tcgen05_decode_mma_shared_descriptor(
       tcgen05_read_u64_operand(inst, thread, 2).u64);
   assert(!bd.base_offset);
   std::vector<uint32_t> a, b(n * 8), input;
@@ -243,7 +243,7 @@ static void tcgen05_mma_fp8_ptx(const ptx_instruction *inst,
   const bool accumulate =
       tcgen05_read_enable_input_d(inst->operand_lookup(4), thread);
   auto gather = [&](unsigned operand, unsigned rows) {
-    const auto sd = tcgen05_decode_shared_descriptor(
+    const auto sd = tcgen05_decode_mma_shared_descriptor(
         tcgen05_read_u64_operand(inst, thread, operand).u64);
     std::vector<uint8_t> values;
     const bool ok = tcgen05_gather_shared(
@@ -352,7 +352,8 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
         tcgen05_read_operand(pI, thread, 3).u32);
   }
   flash_gpgpu_sim::tcgen05_shared_descriptor_t b_desc =
-      flash_gpgpu_sim::tcgen05_decode_shared_descriptor(b_desc_value);
+      flash_gpgpu_sim::tcgen05_decode_mma_shared_descriptor(
+          b_desc_value, mma_desc.transpose_b);
   bool enable_input_d = tcgen05_read_enable_input_d(enable_input_d_op, thread);
 
   const unsigned local_m = mma_desc.m / group;
@@ -380,7 +381,8 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   };
   std::vector<uint16_t> a_values;
   if (!a_desc_op.is_memory_operand()) {
-    const auto a_desc = tcgen05_decode_shared_descriptor(a_desc_value);
+    const auto a_desc = tcgen05_decode_mma_shared_descriptor(
+        a_desc_value, mma_desc.transpose_a);
     a_values = gather_shared(a_desc, mma_desc.m, mma_desc.transpose_a);
   }
   const auto b_values = gather_shared(b_desc, mma_desc.n, mma_desc.transpose_b);

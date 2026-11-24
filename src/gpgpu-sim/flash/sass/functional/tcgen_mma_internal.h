@@ -6,12 +6,11 @@ namespace flash_gpgpu_sim {
 namespace sass {
 namespace functional_detail {
 inline bool shared_descriptor(uint64_t raw, tcgen05_shared_descriptor_t &desc,
-                              const execution_context &) {
-  const unsigned swizzle = raw >> 61;
-  if (((raw >> 46) & 7) != 1 || ((raw >> 52) & 1) ||
-      (swizzle != 0 && swizzle != 2 && swizzle != 4 && swizzle != 6))
+                              const execution_context &,
+                              bool mn_major = false) {
+  if (!tcgen05_mma_shared_descriptor_supported(raw, mn_major))
     return false;
-  desc = tcgen05_decode_shared_descriptor(raw);
+  desc = tcgen05_decode_mma_shared_descriptor(raw, mn_major);
   return true;
 }
 
