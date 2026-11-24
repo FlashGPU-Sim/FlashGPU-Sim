@@ -4,6 +4,7 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "shared_address/launch_test.cu",
   "unit/bfloat_conversion_test.cc",
   "unit/sass/functional/bfloat_conversion_test.cc",
   "conversion/bfloat_test.cu",

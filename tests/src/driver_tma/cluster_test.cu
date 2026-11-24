@@ -17,7 +17,8 @@ __global__ void tensor_cluster(const CUtensorMap *map, unsigned *out) {
   constexpr bool Multicast = Mode < 2 || Mode == 5;
   constexpr unsigned Mask = Mode == 5 ? 2 : 3;
   constexpr unsigned Destination = Mode == 4 || Mode >= 6 ? 1 : 0;
-  constexpr unsigned Owner = Paired || Mode == 4 || Mode >= 6 ? 1 : 0;
+  constexpr unsigned Owner =
+      Mode == 8 ? 0 : (Paired || Mode == 4 || Mode >= 6 ? 1 : 0);
   constexpr unsigned Issuer = Mode >= 2 ? 1 : 0;
   unsigned rank;
   asm("mov.u32 %0, %%cluster_ctarank;" : "=r"(rank));
@@ -44,7 +45,9 @@ __global__ void tensor_cluster(const CUtensorMap *map, unsigned *out) {
         asm volatile("mapa.shared::cluster.u32 %0, %1, %2;"
                      : "=r"(dst)
                      : "r"(dst), "r"(Destination));
-      if constexpr (Paired || !Multicast)
+      if constexpr (Mode == 8)
+        bar &= ~(1u << 24);  // Compiler idiom: peer rank 1 completes at rank 0.
+      else if constexpr (Paired || !Multicast)
         asm volatile("mapa.shared::cluster.u32 %0, %1, %2;"
                      : "=r"(bar)
                      : "r"(bar), "r"(Owner));
@@ -184,6 +187,9 @@ TEST(TmaTensorCluster, MulticastAndPairedMulticast) {
   check_cluster<2, 5>();
   check_cluster<2, 6>();
   check_cluster<2, 7>();
+}
+TEST(TmaTensorCluster, PairedCompletionWithRankBitMask) {
+  check_cluster<2, 8>();
 }
 TEST(TmaTensorCluster, PairedRanks) {
   check_cluster<1, 3>();

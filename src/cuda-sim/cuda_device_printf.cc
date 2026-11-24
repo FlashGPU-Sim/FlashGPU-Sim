@@ -30,7 +30,8 @@
 #include "ptx_ir.h"
 
 void decode_space(memory_space_t &space, ptx_thread_info *thread,
-                  const operand_info &op, memory_space *&mem, addr_t &addr);
+                  const operand_info &op, memory_space *&mem, addr_t &addr,
+                  bool cluster_scope = false);
 
 void my_cuda_printf(const char *fmtstr, const char *arg_list) {
   FILE *fp = stdout;

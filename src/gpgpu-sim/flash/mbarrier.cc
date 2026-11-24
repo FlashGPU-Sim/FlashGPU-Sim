@@ -525,21 +525,23 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
   };
 
   // Shared operands may be local offsets, mapa.u64 generic pointers, or
-  // mapa.u32/cvta.to.shared compact owner/offset values.
+  // mapa.u32/cvta.to.shared cluster rank/offset values.
   auto decode_mbar_address = [&](uint64_t raw, unsigned *owner, addr_t *off) {
     if (flash_gpgpu_sim::decode_shared_generic(raw, owner, off))
       return true;
-    if (raw < SHARED_MEM_SIZE_MAX) {
+    *off = flash_gpgpu_sim::shared_cluster_offset(raw);
+    if (pI->membar_level() != CLUSTER_OPTION) {
       *owner = thread->get_hw_sid();
-      *off = raw;
       return true;
     }
-    auto *core = static_cast<shader_core_ctx *>(thread->get_core());
-    if (core && raw / SHARED_MEM_SIZE_MAX <= core->get_config()->num_shader()) {
-      *owner = raw / SHARED_MEM_SIZE_MAX - 1;
-      *off = raw % SHARED_MEM_SIZE_MAX;
+    flash_gpgpu_sim::tb_cluster_target_t target;
+    if (flash_gpgpu_sim::decode_ptx_shared_cluster(thread, raw, &target)) {
+      *owner = target.sm_id;
       return true;
     }
+    flash_gpgpu_sim::abort_tb_cluster_dead_rank(
+        flash_gpgpu_sim::shared_cluster_rank(raw), thread->get_hw_sid(),
+        thread->get_hw_ctaid());
     return false;
   };
 
@@ -553,8 +555,10 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
                      (pI->get_space() == shared_space);
 
     if (is_shared && addr != nullptr) {
-      // Convert relative shared memory offset to absolute generic address
-      addr_t absolute_addr = shared_to_generic(thread->get_hw_sid(), *addr);
+      if (pI->membar_level() != CLUSTER_OPTION)
+        *addr = flash_gpgpu_sim::shared_cluster_offset(*addr);
+      addr_t absolute_addr = shared_to_generic(
+          thread->get_hw_sid(), flash_gpgpu_sim::shared_cluster_offset(*addr));
       if (!isspace_shared(thread->get_hw_sid(), absolute_addr)) {
         // Remote DSM mbarrier: allowed when cluster mbarrier is enabled.
         unsigned owner = 0;

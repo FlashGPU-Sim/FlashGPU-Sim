@@ -218,6 +218,7 @@ static void tcgen05_write_u32_destination(
   mem_addr_t addr = tcgen05_eval_address(dst, thread);
   switch (space) {
   case shared_space:
+    addr = shared_cluster_offset(addr);
     assert(addr < SHARED_MEM_SIZE_MAX &&
            "TCGen05 allocation destination must be local shared memory");
     thread->m_shared_mem->write(addr, sizeof(uint32_t), &data.u128, thread, pI);
@@ -348,7 +349,8 @@ void handle_tcgen05_commit_inst(const ptx_instruction *pI,
   if (tcgen05_cta_group(pI) == 2)
     (void)tcgen05_ptx_targets(pI, thread);
   inst_t::mbarrier_info_t info;
-  info.bar_id = tcgen05_eval_address(pI->operand_lookup(0), thread);
+  info.bar_id = shared_cluster_offset(
+      tcgen05_eval_address(pI->operand_lookup(0), thread));
   info.bar_count = 1;
   assert(info.bar_id < SHARED_MEM_SIZE_MAX && !(info.bar_id % 8) &&
          "TCGen05 commit currently requires a local shared offset");

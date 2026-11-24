@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "../../abstract_hardware_model.h"
+#include "shared_address.h"
 
 class memory_space;
 class shader_core_ctx;
@@ -20,6 +21,12 @@ struct tb_cluster_target_t {
   unsigned cta_slot = 0;
   memory_space *smem = nullptr;
 };
+
+// PTX shared-state addresses carry rank bits; generic pointers retain the
+// simulator's owner-SM window. Conversions must not conflate the two forms.
+uint32_t ptx_local_shared_address(ptx_thread_info *thread, uint32_t offset);
+bool decode_ptx_shared_cluster(ptx_thread_info *thread, uint32_t address,
+                               tb_cluster_target_t *target);
 
 // One TB-cluster lookup: active CTA, same group, same GPC, smem object.
 // Rank form is used by mapa / TMA / mbarrier peer walks. Owner-SM form is

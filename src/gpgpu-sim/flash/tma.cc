@@ -2856,25 +2856,20 @@ static tma_shared_target_t resolve_tma_shared_target(ptx_thread_info *thread,
                                                      bool cluster_space) {
   using namespace flash_gpgpu_sim;
   auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
-  unsigned rank = core ? core->get_cta_cluster_rank(thread->get_hw_ctaid()) : 0;
-  if (address < SHARED_MEM_SIZE_MAX)
-    return {thread->m_shared_mem, address, rank, false};
-  unsigned owner = address / SHARED_MEM_SIZE_MAX - 1;
+  const unsigned local_rank =
+      core ? core->get_cta_cluster_rank(thread->get_hw_ctaid()) : 0;
+  const uint32_t offset = shared_cluster_offset(address);
+  if (!cluster_space)
+    return {thread->m_shared_mem, offset, local_rank, false};
   tb_cluster_target_t target;
-  if (!core || !resolve_tb_cluster_owner_sm(core, thread->get_hw_ctaid(), owner,
-                                            &target)) {
-    abort_tb_cluster_dead_owner(owner, thread->get_hw_sid(),
-                                thread->get_hw_ctaid(), address);
+  if (!decode_ptx_shared_cluster(thread, address, &target)) {
+    abort_tb_cluster_dead_rank(shared_cluster_rank(address),
+                               thread->get_hw_sid(), thread->get_hw_ctaid());
     abort();
   }
-  bool remote =
+  const bool remote =
       target.core != core || target.cta_slot != thread->get_hw_ctaid();
-  if (!cluster_space && remote) {
-    fprintf(stderr, "TMA ERROR: shared::cta address targets a peer CTA\n");
-    abort();
-  }
-  return {target.smem, static_cast<uint32_t>(address % SHARED_MEM_SIZE_MAX),
-          target.core->get_cta_cluster_rank(target.cta_slot), remote};
+  return {target.smem, offset, shared_cluster_rank(address), remote};
 }
 
 // Handle TMA linear copy instruction (non-tensor).
@@ -3048,23 +3043,19 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
   } else if (dst_option == CLUSTER_OPTION && src_option == CTA_OPTION &&
              completion_option == TMA_MBAR_COMPLETE_BYTES) {
     auto mapped_dst = get_operand_u32(thread, pI->dst());
-    auto src_addr = get_operand_u32(thread, pI->src1());
+    auto src_addr = shared_cluster_offset(get_operand_u32(thread, pI->src1()));
     auto size_in_bytes = get_operand_u32(thread, pI->src2());
     auto mapped_mbar = get_operand_u32(thread, pI->src3());
-    if (mapped_dst < SHARED_MEM_SIZE_MAX || mapped_mbar < SHARED_MEM_SIZE_MAX) {
-      printf("TMA ERROR: shared::cluster destination is not mapa-derived\n");
-      pI->print_insn();
-      abort();
-    }
-    const unsigned owner_smid = mapped_dst / SHARED_MEM_SIZE_MAX - 1;
-    const uint32_t dst_addr = mapped_dst % SHARED_MEM_SIZE_MAX;
-    const uint32_t mbar_addr = mapped_mbar % SHARED_MEM_SIZE_MAX;
+    const uint32_t dst_addr = shared_cluster_offset(mapped_dst);
+    const uint32_t mbar_addr = shared_cluster_offset(mapped_mbar);
+    if (shared_cluster_rank(mapped_dst) != shared_cluster_rank(mapped_mbar))
+      reject_unsupported_tma(
+          "shared copy destination and barrier owners differ", pI);
     auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
     tb_cluster_target_t target;
-    if (!core || !resolve_tb_cluster_owner_sm(core, thread->get_hw_ctaid(),
-                                              owner_smid, &target)) {
-      abort_tb_cluster_dead_owner(owner_smid, thread->get_hw_sid(),
-                                  thread->get_hw_ctaid(), mapped_dst);
+    if (!decode_ptx_shared_cluster(thread, mapped_dst, &target)) {
+      abort_tb_cluster_dead_rank(shared_cluster_rank(mapped_dst),
+                                 thread->get_hw_sid(), thread->get_hw_ctaid());
       if (cluster_fatal_latched())
         return;
     }
@@ -3101,7 +3092,7 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
              completion_option == BULK_GROUP_OPTION) {
     // global <- shared::cta with bulk group completion
     auto dst_addr = get_operand_u64(thread, pI->dst());
-    auto src_addr = get_operand_u32(thread, pI->src1());
+    auto src_addr = shared_cluster_offset(get_operand_u32(thread, pI->src1()));
     auto size_in_bytes = get_operand_u32(thread, pI->src2());
     auto laneid = thread->get_laneid();
 
@@ -3454,7 +3445,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
            "cp.async.bulk.tensor.Nd.shared::cta.global");
 
     auto tensormap_addr = get_operand_u64(thread, pI->dst());
-    auto src_addr = get_operand_u32(thread, pI->src2());
+    auto src_addr = shared_cluster_offset(get_operand_u32(thread, pI->src2()));
 
     tensormap_descriptor_t tensormap;
     int32_t coords[5];

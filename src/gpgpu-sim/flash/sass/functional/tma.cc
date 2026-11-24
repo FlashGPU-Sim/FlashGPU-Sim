@@ -1,3 +1,4 @@
+#include "../../shared_address.h"
 #include "../../tma_cluster_targets.h"
 #include "../decode/tma_load_operand.h"
 #include "internal.h"
@@ -158,8 +159,8 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   if (cluster_targets) {
     // CUDA 13.3 encodes the absolute cluster rank in shared address bits
     // 24..27 (including rank zero), and multicast masks in bits 16..31.
-    unsigned destination = shared_address >> 24;
-    unsigned owner = mbarrier_address >> 24;
+    unsigned destination = shared_cluster_rank(shared_address);
+    unsigned owner = shared_cluster_rank(mbarrier_address);
     if (!size || size > 16 || destination >= size || owner >= size)
       return unsupported(inst,
                          "TMA shared address has an invalid cluster rank");
@@ -174,8 +175,8 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
     if (!tma_completion_targets(size, destinations, owner, paired, multicast,
                                 completions))
       return unsupported(inst, "invalid TMA CTA targets");
-    shared_address &= 0xffffffu;
-    mbarrier_address &= 0xffffffu;
+    shared_address = shared_cluster_offset(shared_address);
+    mbarrier_address = shared_cluster_offset(mbarrier_address);
     for (unsigned rank = 0; rank < size; ++rank)
       if ((destinations | completions | (completions >> 16)) & (1u << rank)) {
         if (context.cluster &&

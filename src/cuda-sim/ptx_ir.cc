@@ -1680,6 +1680,9 @@ ptx_instruction::ptx_instruction(
       case CTA_OPTION:
         m_membar_level = CTA_OPTION;
         break;
+      case CLUSTER_OPTION:
+        m_membar_level = CLUSTER_OPTION;
+        break;
       case SYS_OPTION:
         m_membar_level = SYS_OPTION;
         break;
@@ -1771,7 +1774,6 @@ ptx_instruction::ptx_instruction(
       case TENSORMAP_OPTION:
       case READ_OPTION:
       case BULK_GROUP_OPTION:
-      case CLUSTER_OPTION:
       case CLC_MULTICAST_ALL_OPTION:
       case CLC_IS_CANCELED_OPTION:
       case CLC_GET_X_OPTION:

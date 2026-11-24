@@ -1,4 +1,5 @@
 #include "tensormap.h"
+#include "shared_address.h"
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -261,7 +262,8 @@ void handle_tensormap_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
     // or tensormap.replace.tile.<field> [dst], dim_idx, value
 
     // Get destination address (tensormap address in shared memory)
-    uint32_t tensormap_addr = get_operand_u32(thread, pI->dst());
+    uint32_t tensormap_addr =
+        shared_cluster_offset(get_operand_u32(thread, pI->dst()));
 
     // Read existing descriptor, modify field, write back
     tensormap_descriptor_t desc =
@@ -380,7 +382,8 @@ void handle_tensormap_inst(const ptx_instruction *pI, ptx_thread_info *thread) {
 
     // TODO: Add option check
     uint64_t dst_addr = get_operand_u64(thread, pI->dst());
-    uint32_t src_addr = get_operand_u32(thread, pI->src1());
+    uint32_t src_addr =
+        shared_cluster_offset(get_operand_u32(thread, pI->src1()));
     uint32_t size_in_bytes = get_operand_u32(thread, pI->src2());
 
     memory_space *global_mem = thread->get_global_memory();

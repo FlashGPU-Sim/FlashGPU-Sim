@@ -1,4 +1,5 @@
 #include "ld_st_matrix.h"
+#include "shared_address.h"
 
 #include "../../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
@@ -147,7 +148,7 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
 
   auto get_u32_value = [](ptx_thread_info *thread, const operand_info &op) {
     ptx_reg_t reg = thread->get_operand_value(op, op, U32_TYPE, thread, 0);
-    return reg.u32;
+    return flash_gpgpu_sim::shared_cluster_offset(reg.u32);
   };
 
   // Get the address operand reference based on direction

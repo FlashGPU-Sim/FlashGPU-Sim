@@ -80,7 +80,7 @@ using half_float::half;
 
 static void normalize_scoped_shared_space(memory_space_t &space,
                                           const ptx_instruction *pI) {
-  if (space != generic_space) return;
+  if (space != generic_space && space != undefined_space) return;
   const auto &options = pI->get_options();
   if (std::find(options.begin(), options.end(), CTA_OPTION) != options.end() ||
       std::find(options.begin(), options.end(), CLUSTER_OPTION) !=
@@ -217,7 +217,8 @@ int acc_float_offset(int index, int wmma_layout, int stride) {
 
 void inst_not_implemented(const ptx_instruction *pI);
 void decode_space(memory_space_t &space, ptx_thread_info *thread,
-                  const operand_info &op, memory_space *&mem, addr_t &addr);
+                  const operand_info &op, memory_space *&mem, addr_t &addr,
+                  bool cluster_scope = false);
 ptx_reg_t srcOperandModifiers(ptx_reg_t opData, operand_info opInfo,
                               operand_info dstInfo, unsigned type,
                               ptx_thread_info *thread);
@@ -499,7 +500,8 @@ ptx_reg_t ptx_thread_info::get_operand_value(const operand_info &op,
           if (name->is_reg())
             result.u64 = get_reg(name).u64 + op.get_addr_offset();
           else
-            result.u64 = name->get_address() + op.get_addr_offset();
+            result.u64 = flash_gpgpu_sim::ptx_local_shared_address(
+                thread, name->get_address() + op.get_addr_offset());
         } else if (op.is_sstarr()) {
           const symbol *name = op.get_symbol();
           if (name->is_reg())
@@ -524,7 +526,9 @@ ptx_reg_t ptx_thread_info::get_operand_value(const operand_info &op,
         result.u64 = op.get_symbol()->get_address();
       } else if (op.is_shared()) {
         const symbol *name = op.get_symbol();
-        result.u64 = name->is_reg() ? get_reg(name).u64 : name->get_address();
+        result.u64 = name->is_reg() ? get_reg(name).u64
+                                    : flash_gpgpu_sim::ptx_local_shared_address(
+                                          thread, name->get_address());
       } else if (op.is_sstarr()) {
         const symbol *name = op.get_symbol();
         result.u64 = name->is_reg() ? get_reg(name).u64 : name->get_address();
@@ -634,6 +638,7 @@ ptx_reg_t ptx_thread_info::get_operand_value(const operand_info &op,
     // shared memory - s[4], s[$r0]
     mem = thread->m_shared_mem;
     type_info_key::type_decode(opType, size, t);
+    result.u32 = flash_gpgpu_sim::shared_cluster_offset(result.u32);
     mem->read(result.u32, size / 8, &finalResult.u128);
     thread->m_last_effective_address = result.u32;
     thread->m_last_memory_space = shared_space;
@@ -994,6 +999,7 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
     mem = thread->m_shared_mem;
     type_info_key::type_decode(type, size, t);
 
+    dstData.u32 = flash_gpgpu_sim::shared_cluster_offset(dstData.u32);
     mem->write(dstData.u32, size / 8, &data.u128, thread, pI);
     thread->m_last_effective_address = dstData.u32;
     thread->m_last_memory_space = shared_space;
@@ -1428,7 +1434,8 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
   if (space == shared_space && effective_address < SHARED_GENERIC_START)
     effective_address &= 0x00000000FFFFFFFFULL;
   memory_space *mem = NULL;
-  decode_space(space, thread, src1, mem, effective_address);
+  decode_space(space, thread, src1, mem, effective_address,
+               pI->membar_level() == CLUSTER_OPTION);
   assert(mem);
   assert(space == global_space || space == shared_space);
 
@@ -1736,7 +1743,8 @@ void atom_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (space == shared_space && effective_address < SHARED_GENERIC_START)
     effective_address &= 0x00000000FFFFFFFFULL;
   memory_space *mem = NULL;
-  decode_space(space, thread, src1, mem, effective_address);
+  decode_space(space, thread, src1, mem, effective_address,
+               pI->membar_level() == CLUSTER_OPTION);
   (void)mem;
   assert(space == global_space || space == shared_space);
 
@@ -1953,6 +1961,7 @@ void clc_try_cancel_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
             .u64;
     if (!has(CTA_OPTION) && pI->get_space() != shared_space)
       raw = generic_to_shared(thread->get_hw_sid(), raw);
+    raw = flash_gpgpu_sim::shared_cluster_offset(raw);
     assert(raw < SHARED_MEM_SIZE_MAX &&
            "CLC operands must be local shared offsets");
     address[i] = raw;
@@ -2052,7 +2061,7 @@ void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     const uint32_t addr =
         thread->get_operand_value(addr_op, addr_op, U32_TYPE, thread, 0).u32;
     inst_t::mbarrier_info_t info;
-    info.bar_id = addr;
+    info.bar_id = flash_gpgpu_sim::shared_cluster_offset(addr);
     const_cast<ptx_instruction *>(pI)->set_mbarrier_info(
         thread->get_laneid(), info);
     return;
@@ -2071,7 +2080,7 @@ void cp_async_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       thread->get_operand_value(dst, dst, U64_TYPE, thread, 1).u64;
   addr_t gmem_addr =
       thread->get_operand_value(src, dst, U64_TYPE, thread, 1).u64;
-  smem_addr &= 0x00000000FFFFFFFFULL;
+  smem_addr = flash_gpgpu_sim::shared_cluster_offset(smem_addr);
 
   unsigned cp_size = 16;
   const operand_info &cp_size_op = pI->src2();
@@ -3667,6 +3676,7 @@ void cvta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();
   memory_space_t space = pI->get_space();
+  normalize_scoped_shared_space(space, pI);
   bool to_non_generic = pI->is_to();
 
   unsigned i_type = pI->get_type();
@@ -3683,14 +3693,23 @@ void cvta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
         addr_t offset = 0;
         if (flash_gpgpu_sim::decode_shared_generic(from_addr_hw, &owner_smid,
                                                    &offset)) {
-          // PTX shared addresses are opaque values.  Keep the owner SM in the
-          // high part of that value so a mapa-produced peer address survives
-          // cvta.to.shared and can be decoded by ld/st.shared::cluster.
-          to_addr_hw = owner_smid == smid
-                           ? offset
-                           : (owner_smid + 1) * SHARED_MEM_SIZE_MAX + offset;
+          auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+          flash_gpgpu_sim::tb_cluster_target_t target;
+          if (owner_smid == smid) {
+            to_addr_hw =
+                flash_gpgpu_sim::ptx_local_shared_address(thread, offset);
+          } else if (flash_gpgpu_sim::resolve_tb_cluster_owner_sm(
+                         core, thread->get_hw_ctaid(), owner_smid, &target)) {
+            to_addr_hw =
+                (target.core->get_cta_cluster_rank(target.cta_slot) << 24) |
+                offset;
+          } else {
+            flash_gpgpu_sim::abort_tb_cluster_dead_owner(
+                owner_smid, smid, thread->get_hw_ctaid(), from_addr_hw);
+          }
         } else {
-          to_addr_hw = generic_to_shared(smid, from_addr_hw);
+          to_addr_hw = flash_gpgpu_sim::ptx_local_shared_address(
+              thread, generic_to_shared(smid, from_addr_hw));
         }
         break;
       }
@@ -3709,9 +3728,30 @@ void cvta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     }
   } else {
     switch (space.get_type()) {
-      case shared_space:
-        to_addr_hw = shared_to_generic(smid, from_addr_hw);
+      case shared_space: {
+        // Functional-only execution has no timing CTA-slot registry. Preserve
+        // ordinary local cvta; clustered/remote pointers still need ownership.
+        const auto cluster = thread->get_kernel().get_cluster_dim();
+        if (thread->get_core()->get_gpu()->is_functional_sim() &&
+            (!thread->get_kernel().is_cluster_launch() ||
+             cluster.x * cluster.y * cluster.z == 1) &&
+            flash_gpgpu_sim::shared_cluster_rank(from_addr_hw) == 0) {
+          to_addr_hw = shared_to_generic(
+              smid, flash_gpgpu_sim::shared_cluster_offset(from_addr_hw));
+          break;
+        }
+        flash_gpgpu_sim::tb_cluster_target_t target;
+        if (!flash_gpgpu_sim::decode_ptx_shared_cluster(thread, from_addr_hw,
+                                                        &target)) {
+          flash_gpgpu_sim::abort_tb_cluster_dead_rank(
+              flash_gpgpu_sim::shared_cluster_rank(from_addr_hw), smid,
+              thread->get_hw_ctaid());
+          break;
+        }
+        to_addr_hw = shared_to_generic(
+            target.sm_id, flash_gpgpu_sim::shared_cluster_offset(from_addr_hw));
         break;
+      }
       case local_space:
         to_addr_hw = local_to_generic(smid, hwtid, from_addr_hw) +
                      thread->get_local_mem_stack_pointer();
@@ -3917,7 +3957,8 @@ memory_space *dsm_refused_space() {
 }  // namespace
 
 void decode_space(memory_space_t &space, ptx_thread_info *thread,
-                  const operand_info &op, memory_space *&mem, addr_t &addr) {
+                  const operand_info &op, memory_space *&mem, addr_t &addr,
+                  bool cluster_scope) {
   unsigned smid = thread->get_hw_sid();
   unsigned hwtid = thread->get_hw_tid();
   // Each decode starts local; remote generic shared sets this again below.
@@ -3962,31 +4003,30 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
       mem = thread->get_param_memory();
       break;
     case shared_space: {
-      // Explicit shared offsets are 32-bit. Compact cluster addresses
-      // (mapa) also fit in 32 bits; bits above that are carry garbage.
-      if (addr < SHARED_GENERIC_START)
-        addr &= 0x00000000FFFFFFFFULL;
-      const bool mapped_cluster_address = addr >= SHARED_MEM_SIZE_MAX;
-      const unsigned owner_smid = mapped_cluster_address
-                                      ? addr / SHARED_MEM_SIZE_MAX - 1
-                                      : smid;
-      const addr_t offset = addr % SHARED_MEM_SIZE_MAX;
-      if (owner_smid == smid) {
+      const addr_t offset = flash_gpgpu_sim::shared_cluster_offset(addr);
+      auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+      flash_gpgpu_sim::tb_cluster_target_t tgt;
+      if (!cluster_scope) {
         mem = thread->m_shared_mem;
         addr = offset;
         break;
       }
-      auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
-      flash_gpgpu_sim::tb_cluster_target_t tgt;
-      if (!core || !flash_gpgpu_sim::resolve_tb_cluster_owner_sm(
-                       core, thread->get_hw_ctaid(), owner_smid, &tgt)) {
-        flash_gpgpu_sim::abort_tb_cluster_dead_owner(
-            owner_smid, thread->get_hw_sid(), thread->get_hw_ctaid(), addr);
+      if (!flash_gpgpu_sim::decode_ptx_shared_cluster(
+              thread, static_cast<uint32_t>(addr), &tgt)) {
+        flash_gpgpu_sim::abort_tb_cluster_dead_rank(
+            flash_gpgpu_sim::shared_cluster_rank(addr), smid,
+            thread->get_hw_ctaid());
         if (flash_gpgpu_sim::cluster_fatal_latched()) {
           mem = dsm_refused_space();
           addr = 0;
           break;
         }
+      }
+      const unsigned owner_smid = tgt.sm_id;
+      if (owner_smid == smid && tgt.cta_slot == thread->get_hw_ctaid()) {
+        mem = thread->m_shared_mem;
+        addr = offset;
+        break;
       }
       mem = tgt.smem;
       addr = offset;
@@ -4090,7 +4130,8 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   // truncate addresses and cause incorrect memory accesses.
   addr_t addr = src1_data.u64;
 
-  decode_space(space, thread, src1, mem, addr);
+  decode_space(space, thread, src1, mem, addr,
+               pI->membar_level() == CLUSTER_OPTION);
 
   size_t size;
   int t;
@@ -4201,7 +4242,8 @@ void mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
       addr = generic_to_shared(smid, addr);
       space = shared_space;
     }
-    decode_space(space, thread, src1, mem, addr);
+    decode_space(space, thread, src1, mem, addr,
+                 pI->membar_level() == CLUSTER_OPTION);
 
     type_info_key::type_decode(type, size, t);
     MMA_TRACE_LANE(core, inst, thrd, {
@@ -4319,7 +4361,8 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
       space = shared_space;
     }
 
-    decode_space(space, thread, src1, mem, addr);
+    decode_space(space, thread, src1, mem, addr,
+                 pI->membar_level() == CLUSTER_OPTION);
     type_info_key::type_decode(type, size, t);
 
     ptx_reg_t data[16];
@@ -4593,20 +4636,19 @@ void mapa_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const unsigned target_rank = b.u32;
   const unsigned local_smid = thread->get_hw_sid();
 
-  // Resolve local shared offset from operand a.
-  addr_t local_offset = 0;
-  addr_t a_addr = (i_type == U64_TYPE || i_type == B64_TYPE) ? a.u64 : a.u32;
-  unsigned owner = 0;
-  addr_t off = 0;
-  if (flash_gpgpu_sim::decode_shared_generic(a_addr, &owner, &off) &&
-      owner == local_smid) {
-    local_offset = off;
-  } else if (a_addr < SHARED_MEM_SIZE_MAX) {
-    // Shared-relative address (mapa.shared::cluster.u32 form).
-    local_offset = a_addr;
-  } else {
-    // Treat as local shared offset truncated (legacy).
-    local_offset = a_addr & (SHARED_MEM_SIZE_MAX - 1);
+  const addr_t a_addr =
+      (i_type == U64_TYPE || i_type == B64_TYPE) ? a.u64 : a.u32;
+  memory_space_t space = pI->get_space();
+  normalize_scoped_shared_space(space, pI);
+  const bool shared_state = space == shared_space;
+  addr_t local_offset = flash_gpgpu_sim::shared_cluster_offset(a_addr);
+  if (!shared_state) {
+    unsigned owner;
+    if (!flash_gpgpu_sim::decode_shared_generic(a_addr, &owner,
+                                                &local_offset)) {
+      fprintf(stderr, "mapa generic source is not a shared pointer\n");
+      abort();
+    }
   }
 
   auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
@@ -4626,12 +4668,9 @@ void mapa_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   found_sid = tgt.sm_id;
 
   ptx_reg_t result;
-  if (i_type == U32_TYPE || i_type == B32_TYPE) {
-    // Use the same compact owner/offset encoding as cvta.to.shared, not a
-    // truncated generic pointer whose owner bits live above bit 31.
-    result.u64 = (static_cast<uint64_t>(found_sid) + 1) *
-                     SHARED_MEM_SIZE_MAX + local_offset;
-    assert(result.u64 <= UINT32_MAX);
+  if (shared_state) {
+    result.u64 =
+        flash_gpgpu_sim::shared_cluster_address(target_rank, local_offset);
   } else {
     result.u64 = shared_to_generic(found_sid, local_offset);
   }
@@ -6639,7 +6678,8 @@ void sst_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       src2_data.u32 * 4;  // this assumes sstarr memory starts at address 0
   ptx_cta_info *cta_info = thread->m_cta_info;
 
-  decode_space(space, thread, src1, mem, addr);
+  decode_space(space, thread, src1, mem, addr,
+               pI->membar_level() == CLUSTER_OPTION);
 
   size_t size;
   int t;
@@ -6678,7 +6718,8 @@ void sst_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     mem = NULL;
     addr = src1_data.u32;
     space.set_type(global_space);
-    decode_space(space, thread, src1, mem, addr);
+    decode_space(space, thread, src1, mem, addr,
+                 pI->membar_level() == CLUSTER_OPTION);
     // store nonzero entries and indices
     for (int tid = 0; tid < NUM_THREADS; tid++) {
       if (sstarr_fdata[tid] != 0) {
@@ -6728,7 +6769,8 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // truncate addresses and cause incorrect memory accesses.
   addr_t addr = addr_reg.u64;
 
-  decode_space(space, thread, dst, mem, addr);
+  decode_space(space, thread, dst, mem, addr,
+               pI->membar_level() == CLUSTER_OPTION);
 
   size_t size;
   int t;
