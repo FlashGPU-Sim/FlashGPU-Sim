@@ -1322,7 +1322,10 @@ class ptx_instruction : public warp_inst_t {
 
   int membar_level() const { return m_membar_level; }
 
+  bool is_cluster_async_store() const;
+
   bool has_memory_read() const {
+    if (is_cluster_async_store()) return false;
     if (m_opcode == PREFETCH_OP || m_opcode == PREFETCHU_OP) return false;
     if (m_opcode == LD_OP || m_opcode == LDU_OP || m_opcode == TEX_OP ||
         m_opcode == MMA_LD_OP)
@@ -1338,6 +1341,7 @@ class ptx_instruction : public warp_inst_t {
     return false;
   }
   bool has_memory_write() const {
+    if (is_cluster_async_store()) return false;
     if (m_opcode == PREFETCH_OP || m_opcode == PREFETCHU_OP) return false;
     if (m_opcode == ST_OP || m_opcode == ST_BULK_OP || m_opcode == MMA_ST_OP) return true;
     // Check PTXPlus operand type below

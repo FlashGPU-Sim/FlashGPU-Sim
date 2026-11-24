@@ -1825,7 +1825,8 @@ void barrier_set_t::warp_reaches_mbarrier(
     const active_mask_t &input_active_mask, const ptx_instruction *static_inst,
     unsigned dynamic_warp_id) {
   active_mask_t active_mask = input_active_mask;
-  if (static_inst != nullptr) {
+  if (static_inst != nullptr &&
+      !inst.get_mbarrier_static_info().per_lane_complete_tx) {
     warp_reaches_mbarrier_ptx(cta_id, warp_id, static_inst, &inst, active_mask,
                               dynamic_warp_id);
     return;

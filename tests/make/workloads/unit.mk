@@ -493,11 +493,14 @@ $(foreach arch,sm90 sm100 sm120,$(OBJ_DIR)/$(arch)/unit/kernel_retirement_test.c
   ../src/kernel_info.h ../libcuda/gpgpu_context.h $(UNIT_MK)
 
 # Shared bulk and cache-hint predecode must match the simulator ABI.
-$(OBJ_DIR)/sm100/unit/ptx_memory_forms_test.cc.o: \
+$(OBJ_DIR)/sm100/unit/ptx_memory_forms_test.cc.o \
+$(OBJ_DIR)/sm100/unit/cluster_store_test.cc.o: \
   INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
-$(OBJ_DIR)/sm100/unit/ptx_memory_forms_test.cc.o: \
+$(OBJ_DIR)/sm100/unit/ptx_memory_forms_test.cc.o \
+$(OBJ_DIR)/sm100/unit/cluster_store_test.cc.o: \
   CXXFLAGS += -DFLASH_GPGPU_SIM_OMP
-$(OBJ_DIR)/sm100/unit/ptx_memory_forms_test.cc.o: \
+$(OBJ_DIR)/sm100/unit/ptx_memory_forms_test.cc.o \
+$(OBJ_DIR)/sm100/unit/cluster_store_test.cc.o: \
   ../libcuda/gpgpu_context.h $(UNIT_SIM_BUILD_DIR)/cuda-sim/ptx.tab.h \
   ../src/cuda-sim/ptx_ir.h $(UNIT_MK)
 $(OBJ_DIR)/sm100/unit/shared_bulk_test.cc.o: \
@@ -523,3 +526,8 @@ $(OBJ_DIR)/sm100/unit/bfloat_arithmetic_test.cc.o \
 $(OBJ_DIR)/sm100/support/sass_functional_float.cc.o: \
   ../src/gpgpu-sim/flash/bfloat_arithmetic.h \
   ../src/gpgpu-sim/flash/bfloat_conversion.h
+
+$(OBJ_DIR)/sm100/unit/cluster_store_test.cc.o \
+$(OBJ_DIR)/sm100/support/sass_functional_cluster_store.cc.o: \
+  ../src/gpgpu-sim/flash/cluster_store.h \
+  ../src/gpgpu-sim/flash/shared_address.h

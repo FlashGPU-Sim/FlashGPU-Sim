@@ -750,6 +750,12 @@ std::string cuda_sim::ptx_get_insn_str(address_type pc) {
   return finfo->get_insn_str(pc);
 }
 
+bool ptx_instruction::is_cluster_async_store() const {
+  return m_opcode == ST_OP &&
+      std::find(m_options.begin(), m_options.end(), ASYNC_OPTION) != m_options.end() &&
+      std::find(m_options.begin(), m_options.end(), TMA_MBAR_COMPLETE_BYTES) != m_options.end();
+}
+
 void ptx_instruction::set_fp_or_int_archop() {
   oprnd_type = UN_OP;
   if ((m_opcode == TRAP_OP) || (m_opcode == BRKPT_OP) || (m_opcode == ST_BULK_OP) ||
@@ -1271,7 +1277,7 @@ void ptx_instruction::set_opcode_and_latency() {
       initiation_interval = cp_async_wait_init_val;
       break;
     case ST_OP:
-      op = STORE_OP;
+      op = is_cluster_async_store() ? MBARRIER_OP : STORE_OP;
       break;
     case ST_BULK_OP:
       op = STORE_OP;
@@ -1949,7 +1955,10 @@ void ptx_instruction::pre_decode() {
         }
       }
     } else {
-      if (o.is_reg() && !o.is_non_arch_reg()) {
+      if (is_cluster_async_store() && o.is_memory_operand() &&
+          o.get_symbol() && o.get_symbol()->type()->get_key().is_reg()) {
+        add_input(o.reg_num(), o.arch_reg_num());
+      } else if (o.is_reg() && !o.is_non_arch_reg()) {
         const symbol *pack_low = NULL;
         const symbol *pack_high = NULL;
         const symbol *logical_reg = o.get_symbol();
@@ -2140,6 +2149,10 @@ void ptx_instruction::pre_decode() {
       default:
         break;
     }
+  }
+  if (is_cluster_async_store()) {
+    mbarrier_static_info.operation = inst_t::mbarrier_static_info_t::MBARRIER_COMPLETE_TX;
+    mbarrier_static_info.per_lane_complete_tx = true;
   }
   set_mbarrier_static_info(mbarrier_static_info);
 

@@ -1782,6 +1782,7 @@ ptx_instruction::ptx_instruction(
       case GENERIC_OPTION:
       case PROXY_OPTION:
       case ASYNC_OPTION:
+      case WEAK_DIRECTIVE:
       case TENSORMAP_OPTION:
       case READ_OPTION:
       case BULK_GROUP_OPTION:

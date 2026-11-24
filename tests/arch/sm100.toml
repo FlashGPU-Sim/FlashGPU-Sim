@@ -4,6 +4,8 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "cluster_store/launch_test.cu",
+  "unit/cluster_store_test.cc",
   "vector_order/launch_test.cu",
   "bfloat_arithmetic/launch_test.cu",
   "unit/bfloat_arithmetic_test.cc",

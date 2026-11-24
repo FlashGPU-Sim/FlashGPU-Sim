@@ -781,6 +781,7 @@ option: type_spec
 	| GENERIC_OPTION { recognizer->add_option(GENERIC_OPTION); }
 	| PROXY_OPTION { recognizer->add_option(PROXY_OPTION); }
 	| ASYNC_OPTION { recognizer->add_option(ASYNC_OPTION); }
+	| WEAK_DIRECTIVE { recognizer->add_option(WEAK_DIRECTIVE); }
 	| TENSORMAP_OPTION { recognizer->add_option(TENSORMAP_OPTION); }
 	| READ_OPTION { recognizer->add_option(READ_OPTION); }
 	| BULK_GROUP_OPTION { recognizer->add_option(BULK_GROUP_OPTION); }

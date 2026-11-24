@@ -205,3 +205,10 @@ cuda = "13.3"
 tests = [
   { name = "vector-type-order-dual-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_vector_order_dual.py" },
 ]
+
+[jobs.sm100-cluster-store]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "cluster-store-components-and-dual-launch", group = "unit", gtest_filter = "ClusterStoreContract.*", post_check = "tests/ci/check_cluster_store_dual.py" },
+]

@@ -1,3 +1,4 @@
+#include "../../cluster_store.h"
 #include "internal.h"
 #include <array>
 #include <map>
@@ -44,11 +45,12 @@ step_result execute_stas(const instruction &inst, warp_state &state,
     if (!evaluate_address(inst.operands[0], state, lane, packed))
       return unsupported(inst, "invalid STAS address bundle");
     const uint32_t destination = packed, barrier = packed >> 32;
-    const unsigned owner = destination >> 24;
-    if (owner >= context.cluster->ctas.size() ||
-        owner >= context.cluster->memories.size() || (barrier >> 24) != owner ||
-        destination % bytes || barrier % 8)
+    cluster_store_request decoded;
+    if (!decode_cluster_store(destination, barrier, bytes,
+                              context.cluster->ctas.size(), decoded) ||
+        decoded.owner >= context.cluster->memories.size())
       return unsupported(inst, "unaligned or mismatched STAS owners");
+    const unsigned owner = decoded.owner;
     auto *target = context.cluster->ctas[owner];
     auto *memory = context.cluster->memories[owner];
     if (!memory || !target ||

@@ -34,6 +34,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include "instructions.h"
+#include "../gpgpu-sim/flash/ptx_cluster_store.h"
 #include "../gpgpu-sim/flash/ptx_bfloat_arithmetic.h"
 #include "../gpgpu-sim/flash/ptx_bfloat_conversion.h"
 #include "../gpgpu-sim/flash/ptx_narrow_conversion.h"
@@ -6821,6 +6822,7 @@ void st_bulk_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (flash_gpgpu_sim::execute_ptx_cluster_store(pI, thread)) return;
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();  // may be scalar or vector of regs
   unsigned type = pI->get_type();
