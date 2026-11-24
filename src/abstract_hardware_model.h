@@ -1027,6 +1027,8 @@ public:
     uint16_t cta_mask = 0xFFFF;
     bool has_cta_mask = false;
     bool mapped_cluster_copy = false;
+    bool has_completion_mask = false;
+    uint32_t completion_mask = 0;
     bool is_valid() const {
       return mbar_addr != (uint32_t)-1 || size_in_bytes > 0;
     }

@@ -47,7 +47,8 @@ uint64_t evaluate_address_terms(const address_expression &address,
 bool evaluate_address(const operand &address, const warp_state &state,
                       unsigned lane, uint64_t &value);
 bool evaluate_shared_address(const operand &address, const warp_state &state,
-                             unsigned lane, uint64_t &value);
+                             unsigned lane, uint64_t &value,
+                             const execution_context *context = nullptr);
 bool read_special_register(const operand &source,
                            const execution_context &context, unsigned lane,
                            uint32_t &value);

@@ -6,10 +6,75 @@
 #include <cstdint>
 #include <string>
 
+#include "../../tensormap.h"
 #include "../frontend.h"
 
 namespace flash_gpgpu_sim {
 namespace sass {
+
+inline uint32_t backend_tensor_dtype(const functional_tensor_map_view &view) {
+  if (view.data_type != UINT32_MAX)
+    return view.data_type;
+  switch (view.element_type) {
+  case tensor_map_element_type::kUnsigned32:
+    return TMA_DTYPE_U32;
+  case tensor_map_element_type::kFloat16:
+    return TMA_DTYPE_F16;
+  case tensor_map_element_type::kFloat32:
+    return TMA_DTYPE_F32;
+  case tensor_map_element_type::kFloat32Ftz:
+    return TMA_DTYPE_F32_FTZ;
+  case tensor_map_element_type::kUnknown:
+    if (view.element_bytes == 1)
+      return TMA_DTYPE_U8;
+    if (view.element_bytes == 2)
+      return TMA_DTYPE_U16;
+    if (view.element_bytes == 4)
+      return TMA_DTYPE_U32;
+    if (view.element_bytes == 8)
+      return TMA_DTYPE_U64;
+    break;
+  }
+  return UINT32_MAX;
+}
+
+inline uint32_t backend_tensor_swizzle(uint32_t bytes) {
+  switch (bytes) {
+  case 0:
+    return TMA_SWIZZLE_NONE;
+  case 32:
+    return TMA_SWIZZLE_32B;
+  case 64:
+    return TMA_SWIZZLE_64B;
+  case 128:
+    return TMA_SWIZZLE_128B;
+  default:
+    return UINT32_MAX;
+  }
+}
+
+inline tensormap_descriptor_t
+backend_tensor_map(const functional_tensor_map_view &view) {
+  tensormap_descriptor_t descriptor{};
+  descriptor.fields.globalAddress = view.global_address;
+  descriptor.fields.tensorRank = view.rank - 1;
+  for (unsigned dimension = 0; dimension < view.rank; ++dimension) {
+    descriptor.fields.boxDim[dimension] = view.box_dim[dimension];
+    descriptor.fields.globalDim[dimension] = view.global_dim[dimension];
+    descriptor.fields.elementStrides[dimension] =
+        view.element_stride[dimension];
+    if (dimension != 0)
+      descriptor.fields.globalStrides[dimension - 1] =
+          view.global_stride_bytes[dimension];
+  }
+  descriptor.fields.tensorDataType = backend_tensor_dtype(view);
+  descriptor.fields.interleave = TMA_INTERLEAVE_NONE;
+  descriptor.fields.swizzle = view.swizzle_mode == UINT32_MAX
+                                  ? backend_tensor_swizzle(view.swizzle_bytes)
+                                  : view.swizzle_mode;
+  descriptor.fields.oobFill = view.oob_zero ? TMA_OOB_ZERO : TMA_OOB_NAN;
+  return descriptor;
+}
 
 // Result of decoding the compact hardware tensor-map payload consumed by TMA
 // load/store. This is intentionally separate from the expanded PTX functional
@@ -23,12 +88,14 @@ struct tensor_map_decode_result {
 template <size_t Rank> struct functional_tensor_map_nd {
   uint64_t global_address = 0;
   uint32_t element_bytes = 0;
+  uint32_t data_type = UINT32_MAX; // explicit common tensor-map tag, if known
   tensor_map_element_type element_type = tensor_map_element_type::kUnknown;
   std::array<uint32_t, Rank> global_dim{};
   std::array<uint32_t, Rank> box_dim{};
   std::array<uint64_t, Rank> global_stride_bytes{};
   std::array<uint32_t, Rank> element_stride{};
   uint32_t swizzle_bytes = 0;
+  uint32_t swizzle_mode = UINT32_MAX;
   bool oob_zero = true;
 
   functional_tensor_map_nd() { element_stride.fill(1); }

@@ -83,6 +83,14 @@ static void complete_cluster_mbarriers_masked(shader_core_ctx *core,
                                               uint32_t mbar_addr,
                                               uint32_t size_in_bytes,
                                               uint16_t cta_mask);
+static void complete_gather_mbarriers(shader_core_ctx *core, unsigned cta,
+                                      uint32_t bar, uint32_t bytes,
+                                      uint32_t targets) {
+  complete_cluster_mbarriers_masked(core, cta, bar, bytes, uint16_t(targets));
+  if (targets >> 16)
+    complete_cluster_mbarriers_masked(core, cta, bar, bytes,
+                                      uint16_t(targets >> 16));
+}
 static void
 multicast_smem_to_cluster(memory_space *src_smem, uint32_t smem_addr,
                           uint32_t size_in_bytes, ptx_thread_info *thread,
@@ -810,6 +818,8 @@ private:
     uint32_t smem_dst_addr; // for NoC peer data payload after tx erase
     bool sram_armed = false;
     unsigned sram_got = 0;
+    bool has_completion_mask = false;
+    uint32_t completion_mask = 0;
   };
   std::vector<pending_arrive_t> m_pending_arrives;
 
@@ -824,6 +834,8 @@ private:
         lhs.mbar_addr != rhs.mbar_addr ||
         lhs.has_cta_mask != rhs.has_cta_mask || lhs.cta_mask != rhs.cta_mask ||
         lhs.mapped_cluster_copy != rhs.mapped_cluster_copy ||
+        lhs.has_completion_mask != rhs.has_completion_mask ||
+        lhs.completion_mask != rhs.completion_mask ||
         lhs.has_tensormap_descriptor != rhs.has_tensormap_descriptor)
       return false;
 
@@ -926,10 +938,15 @@ private:
           {arrive_latency, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
            tx.m_dyn_info.size_in_bytes, is_write, tx_uid, is_cluster_read,
            has_cta_mask, cta_mask, tx.m_dyn_info.mapped_cluster_copy,
-           (uint32_t)tx.m_dyn_info.dst_addr});
+           (uint32_t)tx.m_dyn_info.dst_addr, false, 0,
+           tx.m_dyn_info.has_completion_mask, tx.m_dyn_info.completion_mask});
     } else {
       if (!is_write) {
-        if (tx.m_dyn_info.mapped_cluster_copy) {
+        if (tx.m_dyn_info.has_completion_mask) {
+          complete_gather_mbarriers(
+              m_shader_ctx, cta_id, tx.m_dyn_info.mbar_addr,
+              tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.completion_mask);
+        } else if (tx.m_dyn_info.mapped_cluster_copy) {
           complete_mapped_cluster_peer_mbarrier(
               m_shader_ctx, cta_id, tx.m_dyn_info.mbar_addr,
               tx.m_dyn_info.size_in_bytes, cta_mask);
@@ -1493,7 +1510,11 @@ public:
       // consumer before the actual L2/HBM responses have completed.
       if (tx.m_memory_complete && !tx.m_arch_arrive_done &&
           tx.m_arch_arrive_cycle && now >= tx.m_arch_arrive_cycle) {
-        if (tx.m_dyn_info.has_cta_mask) {
+        if (tx.m_dyn_info.has_completion_mask) {
+          complete_gather_mbarriers(
+              m_shader_ctx, tx.m_cta_id, tx.m_dyn_info.mbar_addr,
+              tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.completion_mask);
+        } else if (tx.m_dyn_info.has_cta_mask) {
           if (tx.m_dyn_info.mapped_cluster_copy) {
             complete_mapped_cluster_peer_mbarrier(
                 m_shader_ctx, tx.m_cta_id, tx.m_dyn_info.mbar_addr,
@@ -1606,7 +1627,11 @@ public:
                          m_mf_inflight, m_response_fifo.size(),
                          m_shader_ctx->get_sid());
           if (!entry.is_write) {
-            if (entry.mapped_cluster_copy) {
+            if (entry.has_completion_mask) {
+              complete_gather_mbarriers(m_shader_ctx, entry.cta_id,
+                                        entry.mbar_addr, entry.size_in_bytes,
+                                        entry.completion_mask);
+            } else if (entry.mapped_cluster_copy) {
               complete_mapped_cluster_peer_mbarrier(
                   m_shader_ctx, entry.cta_id, entry.mbar_addr,
                   entry.size_in_bytes, entry.cta_mask);
@@ -2755,13 +2780,29 @@ static void complete_cluster_mbarriers_masked(shader_core_ctx *core,
                                               uint32_t mbar_addr,
                                               uint32_t size_in_bytes,
                                               uint16_t cta_mask) {
-  for_each_cluster_peer_cta(
-      core, issuer_hw_cta,
-      [&](shader_core_ctx *peer_core, unsigned peer_slot) {
-        peer_core->try_complete_cluster_peer_mbarrier(peer_slot, mbar_addr,
-                                                      size_in_bytes);
-      },
-      /*include_issuer=*/true, /*use_mask=*/true, cta_mask);
+  // Timing barriers belong to resident CTAs, independently of the frontend's
+  // functional shared-memory representation. Native SASS has no ptx_thread_info
+  // shared pointer, so the payload-oriented peer resolver cannot be used here.
+  const unsigned group = core->get_cta_cluster_group(issuer_hw_cta);
+  if (group == unsigned(-1)) {
+    if (cta_mask & 1)
+      core->try_complete_cluster_peer_mbarrier(issuer_hw_cta, mbar_addr,
+                                               size_in_bytes);
+    return;
+  }
+  auto *cluster = core->get_cluster();
+  for (unsigned cid = 0; cid < cluster->num_cores(); ++cid) {
+    auto *peer = cluster->get_core(cid);
+    for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; ++slot) {
+      if (!peer->cta_slot_has_threads(slot) ||
+          peer->get_cta_cluster_group(slot) != group)
+        continue;
+      const unsigned rank = peer->get_cta_cluster_rank(slot);
+      if (rank < 16 && (cta_mask & (1u << rank)))
+        peer->try_complete_cluster_peer_mbarrier(slot, mbar_addr,
+                                                 size_in_bytes);
+    }
+  }
 }
 
 static bool rank_in_cta_mask(unsigned rank, uint16_t cta_mask) {
@@ -2852,6 +2893,7 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
     case CLUSTER_OPTION:
       space_options.push_back(op);
       break;
+    case TCGEN05_MULTICAST_CLUSTER_OPTION:
     case MULTICAST_CLUSTER_OPTION:
       multicast_cluster = true;
       break;
@@ -3170,6 +3212,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
   int completion_option = 0;
   bool multicast_cluster = false;
   bool gather4 = false;
+  bool paired = false;
   std::vector<int> space_options;
   for (auto op : options) {
     switch (op) {
@@ -3189,11 +3232,15 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     case BULK_GROUP_OPTION:
       completion_option = op;
       break;
+    case TCGEN05_MULTICAST_CLUSTER_OPTION:
     case MULTICAST_CLUSTER_OPTION:
       multicast_cluster = true;
       break;
     case GATHER4_OPTION:
       gather4 = true;
+      break;
+    case TCGEN05_CTA_GROUP_2_OPTION:
+      paired = true;
       break;
     case TENSOR_OPTION:
     case TILE_OPTION:
@@ -3229,11 +3276,10 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
   memory_space *shared_mem = thread->m_shared_mem;
   memory_space *global_mem = thread->get_global_memory();
   unsigned inst_dim = compute_inst_dim(dim_option);
-  if (gather4 &&
-      (inst_dim != 2 || src_option != GLOBAL_OPTION ||
-       completion_option != TMA_MBAR_COMPLETE_BYTES || multicast_cluster))
+  if (gather4 && (inst_dim != 2 || src_option != GLOBAL_OPTION ||
+                  completion_option != TMA_MBAR_COMPLETE_BYTES))
     reject_unsupported_tma(
-        "gather4 requires qualified non-multicast 2D global load", pI);
+        "gather4 requires a 2D global load with byte completion", pI);
 
   if ((dst_option == CTA_OPTION || dst_option == CLUSTER_OPTION) &&
       src_option == GLOBAL_OPTION &&
@@ -3268,12 +3314,16 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
                      pI->get_operands()[2], thread, tensormap, coords,
                      size_in_bytes);
+    if (!gather4 &&
+        (tma_gather4_packed(tensormap) || tensormap.fields.swizzle > 3))
+      reject_unsupported_tma(
+          "extended packed/swizzle layouts are qualified for gather4 only", pI);
     if (gather4) {
       if (!pI->get_operands()[2].is_vector() ||
           pI->get_operands()[2].get_vect_nelem() != 5 ||
           !tma_gather4_supported(tensormap))
         reject_unsupported_tma("invalid gather4 coordinates or tensor map", pI);
-      size_in_bytes *= 4;
+      size_in_bytes = 4 * tma_gather4_gmem_row_bytes(tensormap);
     }
 
     bool is_cluster = (dst_option == CLUSTER_OPTION);
@@ -3295,7 +3345,19 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
         multicast_cluster ? destination.offset : dst_addr;
     dst_addr = destination.offset;
     mbar_addr = barrier.offset;
-    if (!multicast_cluster && barrier.remote) {
+    uint32_t gather_completions = 0;
+    if (gather4) {
+      const auto shape = thread->get_kernel().get_cluster_dim();
+      const unsigned cluster_size = std::max(1u, shape.x * shape.y * shape.z);
+      if (!multicast_cluster)
+        cta_mask = uint16_t(1u << destination.rank);
+      has_cta_mask = is_cluster || multicast_cluster || paired;
+      if (!tma_gather4_completion_targets(cluster_size, cta_mask, barrier.rank,
+                                          paired, multicast_cluster,
+                                          gather_completions))
+        reject_unsupported_tma(
+            "invalid gather4 destination/completion CTA relationship", pI);
+    } else if (!multicast_cluster && barrier.remote) {
       cta_mask = static_cast<uint16_t>(1u << barrier.rank);
       has_cta_mask = true;
     }
@@ -3327,6 +3389,10 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     for (unsigned i = 0; i < 5; ++i)
       tma_dyn_info.coords[i] = coords[i];
     cache_tensormap_descriptor(tma_dyn_info, tensormap);
+    if (gather4) {
+      tma_dyn_info.has_completion_mask = true;
+      tma_dyn_info.completion_mask = gather_completions;
+    }
     pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
 
     auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
@@ -3341,29 +3407,46 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
                         thread, pI, true);
         return;
       }
-      const uint32_t row_bytes = size_in_bytes / 4;
-      for (unsigned slot = 0; slot < 4; ++slot) {
-        const auto row = tma_gather4_row(coords, slot);
-        do_tma_transfer(tensormap, row.data(), destination, global_mem,
-                        dst_addr + slot * row_bytes, thread, pI, true);
-      }
+      std::vector<uint8_t> tile;
+      if (!tma_gather4_load(
+              tensormap, coords,
+              [&](uint64_t addr, void *data, size_t bytes) {
+                global_mem->read(addr, bytes, data);
+                return true;
+              },
+              tile))
+        reject_unsupported_tma("invalid gather4 payload address", pI);
+      for (size_t offset = 0; offset < tile.size(); offset += 8)
+        destination->write(
+            dst_addr + tma_gather4_shared_offset(offset, dst_addr,
+                                                 tensormap.fields.swizzle),
+            8, tile.data() + offset, thread, pI);
     };
-    if (!multicast_cluster || multicast_to_issuer)
-      transfer(multicast_cluster ? shared_mem : destination.memory);
-
-    if (multicast_to_issuer && core) {
-      multicast_smem_to_cluster(shared_mem, dst_addr, size_in_bytes, thread, pI,
-                                cta_mask);
-    } else if (multicast_cluster && !multicast_to_issuer && core) {
+    if (gather4) {
       for_each_cluster_peer_cta(
           core, thread->get_hw_ctaid(),
-          [&](shader_core_ctx *peer_core, unsigned peer_slot) {
-            memory_space *peer_smem = peer_core->get_cta_smem(peer_slot);
-            if (!peer_smem)
-              return;
-            transfer(peer_smem);
+          [&](shader_core_ctx *peer, unsigned slot) {
+            transfer(peer->get_cta_smem(slot));
           },
-          /*include_issuer=*/false, /*use_mask=*/true, cta_mask);
+          true, true, cta_mask);
+    } else {
+      if (!multicast_cluster || multicast_to_issuer)
+        transfer(multicast_cluster ? shared_mem : destination.memory);
+
+      if (multicast_to_issuer && core) {
+        multicast_smem_to_cluster(shared_mem, dst_addr, size_in_bytes, thread,
+                                  pI, cta_mask);
+      } else if (multicast_cluster && !multicast_to_issuer && core) {
+        for_each_cluster_peer_cta(
+            core, thread->get_hw_ctaid(),
+            [&](shader_core_ctx *peer_core, unsigned peer_slot) {
+              memory_space *peer_smem = peer_core->get_cta_smem(peer_slot);
+              if (!peer_smem)
+                return;
+              transfer(peer_smem);
+            },
+            /*include_issuer=*/false, /*use_mask=*/true, cta_mask);
+      }
     }
 
   } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION) {
@@ -3381,6 +3464,9 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
                      pI->get_operands()[1], thread, tensormap, coords,
                      size_in_bytes);
+    if (tma_gather4_packed(tensormap) || tensormap.fields.swizzle > 3)
+      reject_unsupported_tma(
+          "extended packed/swizzle layouts are qualified for gather4 only", pI);
     if (reduction_op != tma_reduction_op_t::NONE &&
         !tma_tensor_reduction_supported(reduction_op,
                                         tensormap.fields.tensorDataType)) {

@@ -93,8 +93,10 @@ TEST(SassTensorMapTest, DecodesHostTwoDimensionalF32AndFtzForms) {
     ASSERT_TRUE(decoded.supported) << decoded.detail;
     EXPECT_EQ(decoded.descriptor.element_bytes,sizes[type]);
   }
-  words[14]=11; // TF32 conversion is not a raw byte copy.
-  EXPECT_FALSE(decode_flashgpu_host_tensor_map_2d(words).supported);
+  words[14] = 11;  // Preserve TF32 conversion semantics through metadata.
+  EXPECT_TRUE(decode_flashgpu_host_tensor_map_2d(words).supported);
+  EXPECT_EQ(decode_flashgpu_host_tensor_map_2d(words).descriptor.data_type,
+            TMA_DTYPE_TF32);
   words[14]=(1ull<<32)|2; // Interleave is not qualified.
   EXPECT_FALSE(decode_flashgpu_host_tensor_map_2d(words).supported);
 }

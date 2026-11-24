@@ -685,6 +685,10 @@ void classify(const instruction &source, const timing_profile &profile,
     target.op = CALL_OPS;
   } else if (base == "EXIT") {
     target.op = EXIT_OPS;
+  } else if (base == "UCGABAR_ARV" || base == "UCGABAR_WAIT") {
+    target.op = BARRIER_OP;
+    target.cluster_barrier = true;
+    target.bar_type = base == "UCGABAR_ARV" ? ARRIVE : SYNC;
   } else if (base == "BAR") {
     target.op = BARRIER_OP;
     target.bar_type =
@@ -773,6 +777,7 @@ void classify(const instruction &source, const timing_profile &profile,
     info.tma_type = inst_t::tma_static_info_t::TMA_TENSOR;
     info.tensor_dim = dimension;
     info.tensor_gather4 = has_modifier(source.opcode, "GATHER4");
+    info.multicast_cluster = has_modifier(source.opcode, "MULTICAST");
     info.dst_space = base == "UTMALDG"
                          ? inst_t::tma_static_info_t::TMA_SHARED_CTA
                          : inst_t::tma_static_info_t::TMA_GLOBAL;
@@ -780,22 +785,23 @@ void classify(const instruction &source, const timing_profile &profile,
                          ? inst_t::tma_static_info_t::TMA_GLOBAL
                          : inst_t::tma_static_info_t::TMA_SHARED_CTA;
     target.set_tma_static_info(info);
-  } else if (base == "NOP" || base == "NANOSLEEP" || base == "S2R" ||
-             base == "S2UR" || base == "CS2R" || base == "CS2UR" ||
-             base == "MOV" || base == "MOVM" || base == "IMAD" ||
-             base == "IADD3" || base == "ISETP" || base == "LOP3" ||
-             base == "SHF" || base == "PRMT" || base == "SEL" ||
-             base == "PLOP3" || base == "VOTE" || base == "LEA" ||
-             base == "IABS" || base == "FLO" || base == "POPC" ||
-             base == "UIADD3" || base == "UIMAD" || base == "UISETP" ||
-             base == "UFSETP" || base == "UFSEL" || base == "ULEA" ||
-             base == "ULOP3" || base == "UPLOP3" || base == "UMOV" ||
-             base == "UPRMT" || base == "USEL" || base == "USHF" ||
-             base == "R2UR" || base == "UP2UR" || base == "R2P" ||
-             base == "P2R" || base == "LEPC" || base == "ELECT" ||
-             base == "VOTEU" || base == "VIMNMX" || base == "UVIMNMX" ||
-             base == "IADD" || base == "VIADD" || base == "VIADDMNMX" ||
-             base == "SGXT" || base == "USGXT" || base == "SHFL" ||
+  } else if (base == "ERRBAR" || base == "CGAERRBAR" || base == "NOP" ||
+             base == "NANOSLEEP" || base == "S2R" || base == "S2UR" ||
+             base == "CS2R" || base == "CS2UR" || base == "MOV" ||
+             base == "MOVM" || base == "IMAD" || base == "IADD3" ||
+             base == "ISETP" || base == "LOP3" || base == "SHF" ||
+             base == "PRMT" || base == "SEL" || base == "PLOP3" ||
+             base == "VOTE" || base == "LEA" || base == "IABS" ||
+             base == "FLO" || base == "POPC" || base == "UIADD3" ||
+             base == "UIMAD" || base == "UISETP" || base == "UFSETP" ||
+             base == "UFSEL" || base == "ULEA" || base == "ULOP3" ||
+             base == "UPLOP3" || base == "UMOV" || base == "UPRMT" ||
+             base == "USEL" || base == "USHF" || base == "R2UR" ||
+             base == "UP2UR" || base == "R2P" || base == "P2R" ||
+             base == "LEPC" || base == "ELECT" || base == "VOTEU" ||
+             base == "VIMNMX" || base == "UVIMNMX" || base == "IADD" ||
+             base == "VIADD" || base == "VIADDMNMX" || base == "SGXT" ||
+             base == "USGXT" || base == "SHFL" ||
              source.opcode == "MATCH.ANY" || source.opcode == "REDUX.OR" ||
              base == "DEPBAR" || base == "CCTL" || base == "UTMACCTL" ||
              base == "USETMAXREG" || source.opcode == "WARPGROUP.ARRIVE" ||

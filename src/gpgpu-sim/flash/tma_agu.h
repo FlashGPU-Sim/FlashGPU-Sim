@@ -122,18 +122,28 @@ public:
                            const tensormap_descriptor_t &tm,
                            const int32_t coords[5]) {
     assert(tm.num_dims() == 2 && tm.fields.boxDim[1] == 1);
-    assert(tm.fields.elementStrides[0] == 1 &&
-           tm.fields.elementStrides[1] == 1);
+    assert(tm.fields.elementStrides[0] == 1);
     assert(tma_gather4_supported(tm));
-    const int32_t first[5] = {coords[0], coords[1], 0, 0, 0};
-    init_tensor(state, tm, first);
+    auto memory_map = tm;
+    int32_t first[5] = {coords[0], coords[1], 0, 0, 0};
+    if (tma_gather4_packed(tm)) {
+      const unsigned bits =
+          tm.fields.tensorDataType == TMA_DTYPE_16U6_ALIGN16B ? 6 : 4;
+      const int64_t bit_origin = int64_t(coords[0]) * bits;
+      const unsigned bit_offset = (bit_origin % 8 + 8) % 8;
+      memory_map.fields.tensorDataType = TMA_DTYPE_U8;
+      memory_map.fields.boxDim[0] =
+          (tm.fields.boxDim[0] * bits + bit_offset + 7) / 8;
+      memory_map.fields.globalDim[0] =
+          uint64_t(tm.fields.globalDim[0]) * bits / 8;
+      first[0] = (bit_origin - bit_offset) / 8;
+    }
+    init_tensor(state, memory_map, first);
     state.is_gather4 = true;
     state.box_dim[1] = 4;
     state.start_coords[1] = 0;
     state.gather4_column_base =
-        tm.fields.globalAddress +
-        static_cast<uint64_t>(static_cast<int64_t>(coords[0]) *
-                              state.elem_size);
+        tm.fields.globalAddress + int64_t(first[0]) * state.elem_size;
     for (unsigned row = 0; row < 4; ++row)
       state.gather4_rows[row] = coords[row + 1];
     set_gather4_row(state);

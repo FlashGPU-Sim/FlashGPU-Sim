@@ -21,7 +21,9 @@ __global__ void gather_four(const CUtensorMap *map, unsigned *output, int x,
                  ::"r"(shared),"l"(map),"r"(x),"r"(y0),"r"(y1),"r"(y2),"r"(y3),"r"(bar):"memory");
   }
   wait(&barrier, 0);
-  for (unsigned i=threadIdx.x; i<128; i+=blockDim.x) output[i]=tile[i];
+#pragma unroll
+  for (unsigned i = 0; i < 4; ++i)
+    output[threadIdx.x + i * 32] = tile[threadIdx.x + i * 32];
 }
 
 TEST(TmaGather4Integration, RepeatedPermutedAndOutOfBoundsRows) {

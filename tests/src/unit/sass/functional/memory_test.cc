@@ -1080,8 +1080,8 @@ TEST(SassFunctionalTest, Gather4RejectsUnqualifiedMapsWithoutWritingOrCompleting
     functional_tensor_map_2d map;
     map.global_address=0x10000;map.element_bytes=4;map.global_dim={{128,8}};
     map.box_dim={{32,1}};map.row_stride_bytes=512;
-    if(invalid==0)map.swizzle_bytes=128;
-    if(invalid==1)map.element_type=tensor_map_element_type::kFloat32Ftz;
+    if (invalid == 0) map.swizzle_bytes = 256;
+    if (invalid == 1) map.data_type = 99;
     if(invalid==2)map.element_stride[0]=2;
     if(invalid==3)map.box_dim[1]=2;
     if(invalid==4)map.oob_zero=false;
@@ -1099,3 +1099,75 @@ TEST(SassFunctionalTest, Gather4RejectsUnqualifiedMapsWithoutWritingOrCompleting
   }
 }
 }
+namespace {
+TEST(SassFunctionalTest, Gather4MulticastAndPairedCompletionAreIndependent) {
+  for (bool paired : {false, true})
+    for (unsigned mask : {1u, 2u, 3u}) {
+      SCOPED_TRACE(::testing::Message() << paired << "," << mask);
+      kernel image;
+      image.name = "cluster_gather";
+      image.arch = architecture::kSm100;
+      image.instruction_bytes = 16;
+      image.instructions = {
+          official_instruction(0,
+                               paired ? "UTMALDG.2D.GATHER4.MULTICAST.2CTA"
+                                      : "UTMALDG.2D.GATHER4.MULTICAST",
+                               "[UR4], [UR12], UR16")};
+      frontend sass;
+      sass.add_kernel(std::move(image));
+      flash_gpgpu_sim::sass::register_sm100_functional_semantics(sass);
+      mapped_functional_memory a, b;
+      a.map(memory_space::kGlobal, 0x10000, 4096, true);
+      a.map(memory_space::kShared, 0, 4096, true);
+      b.map(memory_space::kShared, 0, 4096, true);
+      std::vector<unsigned> input(1024);
+      for (unsigned i = 0; i < input.size(); ++i) input[i] = i + 17;
+      ASSERT_TRUE(a.write(memory_space::kGlobal, 0x10000, input.data(), 4096));
+      cta_execution_state ca(1), cb(1);
+      flash_gpgpu_sim::sass::functional_cluster_state cluster;
+      cluster.ctas = {&ca, &cb};
+      cluster.memories = {&a, &b};
+      functional_tensor_map_2d map;
+      map.global_address = 0x10000;
+      map.element_bytes = 4;
+      map.global_dim = {{128, 8}};
+      map.box_dim = {{32, 1}};
+      map.row_stride_bytes = 512;
+      ASSERT_TRUE(ca.register_tensor_map_2d(0x20000, map));
+      for (unsigned rank = 0; rank < 2; ++rank) {
+        auto *cta = cluster.ctas[rank];
+        ASSERT_TRUE(cta->initialize_mbarrier(0, 1));
+        const unsigned count = paired
+                                   ? (rank == 1 ? __builtin_popcount(mask) : 0)
+                                   : ((mask >> rank) & 1);
+        ASSERT_TRUE(cta->arrive_mbarrier(0, 1, count * 512));
+      }
+      warp_state state;
+      state.active_mask = 1;
+      state.write_uniform_register(4, 1024);
+      state.write_uniform_register(5, paired ? 1u << 24 : 0);
+      state.write_uniform_register(6, 0);
+      for (unsigned i = 0; i < 4; ++i) state.write_uniform_register(7 + i, i);
+      state.write_uniform_register(12, 0x20000);
+      state.write_uniform_register(16, mask << 16);
+      execution_context ctx{&a};
+      ctx.cta = &ca;
+      ctx.cluster = &cluster;
+      auto result = sass.step("cluster_gather", state, ctx);
+      ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+      for (unsigned rank = 0; rank < 2; ++rank) {
+        EXPECT_EQ(cluster.ctas[rank]->mbarrier_pending_transaction_bytes(0),
+                  0u);
+        std::array<unsigned, 128> out{};
+        ASSERT_TRUE(cluster.memories[rank]->read(memory_space::kShared, 1024,
+                                                 out.data(), 512));
+        for (unsigned i = 0; i < 128; ++i)
+          EXPECT_EQ(out[i],
+                    mask & (1u << rank) ? input[(i / 32) * 128 + i % 32] : 0u);
+      }
+      EXPECT_EQ(ctx.tma_effects[0].destination_mask, mask);
+      if (paired && mask == 3)
+        EXPECT_EQ(ctx.tma_effects[0].completion_mask, 0x20002u);
+    }
+}
+}  // namespace

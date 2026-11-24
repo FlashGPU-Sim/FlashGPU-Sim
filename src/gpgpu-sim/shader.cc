@@ -1069,8 +1069,7 @@ void shader_core_ctx::set_cta_cluster_rank(unsigned hw_cta_id, unsigned rank) {
 
 void shader_core_ctx::try_complete_cluster_peer_mbarrier(
     unsigned hw_cta_id, uint32_t mbarrier_addr, uint32_t completed_tx_count) {
-  if (!is_cta_slot_active(hw_cta_id))
-    return;
+  if (!cta_slot_has_threads(hw_cta_id)) return;
   m_barriers.try_complete_tx_if_pending(hw_cta_id, mbarrier_addr,
                                         completed_tx_count);
 }

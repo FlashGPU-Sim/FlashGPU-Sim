@@ -50,6 +50,19 @@ bool ensure_mbarrier_imported(uint64_t location, execution_context &context) {
 
 namespace {
 
+bool local_barrier_address(const operand &address, const warp_state &state,
+                           unsigned lane, uint64_t &value,
+                           const execution_context &context) {
+  if (!evaluate_shared_address(address, state, lane, value))
+    return false;
+  if (context.cluster) {
+    if ((value >> 24) != context.cga_cta_id)
+      return false;
+    value &= 0xffffffu;
+  }
+  return true;
+}
+
 bool record_uniform_mbarrier_effect(const instruction &inst,
                                     const warp_state &state,
                                     execution_context &context,
@@ -83,7 +96,7 @@ step_result execute_syncs_exchange(const instruction &inst, warp_state &state,
     return unsupported(inst, "SYNCS exchange requires CTA memory and state");
 
   uint64_t location = 0;
-  if (!evaluate_shared_address(*address, state, 0, location) ||
+  if (!local_barrier_address(*address, state, 0, location, context) ||
       (location % alignof(uint64_t)) != 0)
     return unsupported(inst, "invalid aligned SYNCS exchange address");
   const uint64_t new_value = read_uniform_register_pair(state, source->index);
@@ -137,7 +150,7 @@ step_result execute_syncs_arrive(const instruction &inst, warp_state &state,
           !lane_executes(inst, state, lane))
         continue;
       uint64_t location = 0;
-      if (!evaluate_shared_address(*address, state, lane, location) ||
+      if (!local_barrier_address(*address, state, lane, location, context) ||
           location % alignof(uint64_t) || location > UINT32_MAX)
         return unsupported(inst, "invalid aligned SYNCS completion address");
       if (!ensure_mbarrier_imported(location, context))
@@ -161,7 +174,7 @@ step_result execute_syncs_arrive(const instruction &inst, warp_state &state,
         !lane_executes(inst, state, lane))
       continue;
     uint64_t location = 0;
-    if (!evaluate_shared_address(*address, state, lane, location) ||
+    if (!local_barrier_address(*address, state, lane, location, context) ||
         (location % alignof(uint64_t)) != 0)
       return unsupported(inst, "invalid aligned SYNCS arrival address");
     if (!ensure_mbarrier_imported(location, context))
@@ -223,7 +236,7 @@ step_result execute_arrives_ldgstsbar(const instruction &inst,
         !lane_executes(inst, state, lane))
       continue;
     uint64_t location = 0;
-    if (!evaluate_shared_address(*address, state, lane, location) ||
+    if (!local_barrier_address(*address, state, lane, location, context) ||
         (location % alignof(uint64_t)) != 0)
       return unsupported(inst, "invalid aligned LDGSTSBAR arrival address");
     if (!ensure_mbarrier_imported(location, context))
@@ -261,7 +274,7 @@ step_result execute_syncs_try_wait_parity(const instruction &inst,
         !lane_executes(inst, state, lane))
       continue;
     uint64_t location = 0;
-    if (!evaluate_shared_address(*address, state, lane, location) ||
+    if (!local_barrier_address(*address, state, lane, location, context) ||
         (location % alignof(uint64_t)) != 0)
       return unsupported(inst, "invalid aligned SYNCS try-wait address");
     if (!ensure_mbarrier_imported(location, context)) {
@@ -333,7 +346,7 @@ step_result execute_syncs_invalidate(const instruction &inst, warp_state &state,
     if (!(executing_lanes & (1u << lane)))
       continue;
     uint64_t location = 0;
-    if (!evaluate_shared_address(*address, state, lane, location) ||
+    if (!local_barrier_address(*address, state, lane, location, context) ||
         (location % alignof(uint64_t)) != 0 || location > UINT32_MAX)
       return unsupported(inst, "invalid aligned mbarrier invalidate address");
     for (const auto &previous : locations)

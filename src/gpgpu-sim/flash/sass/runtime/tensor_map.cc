@@ -147,14 +147,15 @@ decode_flashgpu_host_tensor_map_2d(const std::array<uint64_t, 16> &words) {
     if (packed_u64(words, 52 + stride * sizeof(uint64_t)) != 0)
       return rejected("rank-2 host tensor map has higher-rank strides");
   }
-  if (packed_u32(words, 92) != 1 || packed_u32(words, 96) != 1)
+  if (packed_u32(words, 92) != 1 ||
+      (packed_u32(words, 96) < 1 || packed_u32(words, 96) > 8))
     return rejected("host tensor map has non-unit element strides");
 
   const uint32_t data_type = packed_u32(words, 112);
   const uint32_t swizzle = packed_u32(words, 120);
-  if (data_type > TMA_DTYPE_F32_FTZ ||
-      packed_u32(words, 116) != TMA_INTERLEAVE_NONE ||
-      swizzle > TMA_SWIZZLE_128B || packed_u32(words, 124) != TMA_OOB_ZERO)
+  if (data_type > TMA_DTYPE_16U6_ALIGN16B ||
+      packed_u32(words, 116) != TMA_INTERLEAVE_NONE || swizzle > 6 ||
+      packed_u32(words, 124) > TMA_OOB_NAN)
     return rejected("host tensor map has unsupported rank-2 format controls");
   tensormap_descriptor_t map{};
   map.fields.tensorDataType = data_type;
@@ -170,9 +171,13 @@ decode_flashgpu_host_tensor_map_2d(const std::array<uint64_t, 16> &words) {
   result.descriptor.global_dim = global_dim;
   result.descriptor.box_dim = box_dim;
   result.descriptor.row_stride_bytes = row_stride;
-  result.descriptor.element_stride = {{1, 1}};
-  result.descriptor.swizzle_bytes = swizzle == 0 ? 0 : (16u << swizzle);
-  result.descriptor.oob_zero = true;
+  result.descriptor.element_stride = {{1, packed_u32(words, 96)}};
+  result.descriptor.swizzle_bytes = swizzle == 0   ? 0
+                                    : swizzle >= 3 ? 128
+                                                   : (16u << swizzle);
+  result.descriptor.swizzle_mode = swizzle;
+  result.descriptor.oob_zero = packed_u32(words, 124) == TMA_OOB_ZERO;
+  result.descriptor.data_type = data_type;
   return result;
 }
 
