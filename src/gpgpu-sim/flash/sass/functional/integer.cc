@@ -1,3 +1,4 @@
+#include "../../bit_scan.h"
 #include "../../funnel_shift.h"
 #include "../decode/operand_parser.h"
 #include "internal.h"
@@ -731,11 +732,8 @@ step_result execute_flo(const instruction &inst, warp_state &state,
       (uniform && inst.has_guard))
     return unsupported(inst, "unsupported FLO.U32 operand form");
   const auto find_leading_one = [&](uint32_t source) {
-    if (inst.opcode == "FLO.U32.SH" || inst.opcode == "UFLO.U32.SH")
-      return source == 0 ? 0xffffffffu
-                         : static_cast<uint32_t>(__builtin_clz(source));
-    return source == 0 ? 0xffffffffu
-                       : 31u - static_cast<uint32_t>(__builtin_clz(source));
+    return flash_gpgpu_sim::find_non_sign_bit(
+        source, 32, false, inst.opcode.find(".SH") != std::string::npos);
   };
   if (uniform) {
     uint32_t source = 0;

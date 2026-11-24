@@ -531,3 +531,7 @@ $(OBJ_DIR)/sm100/unit/cluster_store_test.cc.o \
 $(OBJ_DIR)/sm100/support/sass_functional_cluster_store.cc.o: \
   ../src/gpgpu-sim/flash/cluster_store.h \
   ../src/gpgpu-sim/flash/shared_address.h
+
+$(OBJ_DIR)/sm100/unit/bit_scan_test.cc.o: $(SRC_DIR)/gpgpu-sim/flash/bit_scan.h
+$(OBJ_DIR)/sm100/support/sass_functional_integer.cc.o \
+$(OBJ_DIR)/sm120/support/sass_functional_integer.cc.o: $(SRC_DIR)/gpgpu-sim/flash/bit_scan.h

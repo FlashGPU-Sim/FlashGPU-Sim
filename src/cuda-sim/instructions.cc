@@ -1,3 +1,4 @@
+#include "../gpgpu-sim/flash/bit_scan.h"
 #include "../gpgpu-sim/flash/shared_bulk.h"
 #include "../gpgpu-sim/flash/funnel_shift.h"
 #include "../gpgpu-sim/flash/fp32_fma.h"
@@ -2279,40 +2280,12 @@ void bfind_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   const ptx_reg_t src1_data =
       thread->get_operand_value(src1, dst, i_type, thread, 1);
-  const int msb = (i_type == U32_TYPE || i_type == S32_TYPE) ? 31 : 63;
-
-  unsigned long a = 0;
-  switch (i_type) {
-    case S32_TYPE:
-      a = src1_data.s32;
-      break;
-    case U32_TYPE:
-      a = src1_data.u32;
-      break;
-    case S64_TYPE:
-      a = src1_data.s64;
-      break;
-    case U64_TYPE:
-      a = src1_data.u64;
-      break;
-    default:
-      assert(false);
-      abort();
-  }
-
-  // negate negative signed inputs
-  if ((i_type == S32_TYPE || i_type == S64_TYPE) && (a & (1 << msb))) {
-    a = ~a;
-  }
-  uint32_t d_data = 0xffffffff;
-  for (uint32_t i = msb; i >= 0; i--) {
-    if (a & (1 << i)) {
-      d_data = i;
-      break;
-    }
-  }
-
-  // if (.shiftamt && d != 0xffffffff)  { d = msb - d; }
+  const unsigned bits = (i_type == U32_TYPE || i_type == S32_TYPE) ? 32 : 64;
+  assert(i_type == U32_TYPE || i_type == S32_TYPE || i_type == U64_TYPE ||
+         i_type == S64_TYPE);
+  const uint64_t value = bits == 32 ? src1_data.u32 : src1_data.u64;
+  const uint32_t d_data = flash_gpgpu_sim::find_non_sign_bit(
+      value, bits, i_type == S32_TYPE || i_type == S64_TYPE, false);
 
   // store d
   thread->set_operand_value(dst, d_data, U32_TYPE, thread, pI);

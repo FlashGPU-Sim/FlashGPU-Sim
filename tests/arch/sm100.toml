@@ -4,6 +4,8 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "leading_bit_base/launch_test.cu",
+  "unit/bit_scan_test.cc",
   "cluster_store/launch_test.cu",
   "unit/cluster_store_test.cc",
   "vector_order/launch_test.cu",
