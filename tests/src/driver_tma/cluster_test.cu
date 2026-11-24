@@ -9,7 +9,7 @@
 namespace {
 // Two clusters and two barrier phases. Modes select multicast, paired
 // completion, remote destination, and shared::cta with local completion.
-template <int Mode, int Rank = 2>
+template <int Mode, int Rank = 2, bool LongSuspend = false>
 __global__ void tensor_cluster(const CUtensorMap *map, unsigned *out) {
   __shared__ __align__(128) unsigned tile[128];
   __shared__ __align__(8) unsigned long long barrier;
@@ -90,7 +90,17 @@ __global__ void tensor_cluster(const CUtensorMap *map, unsigned *out) {
 #undef SHAPE
 #undef COPY
     }
-    wait(&barrier, phase);
+    if constexpr (LongSuspend) {
+      const unsigned bar = __cvta_generic_to_shared(&barrier);
+      // A completion must notify a sleeping waiter, not wait for this hint
+      // to expire. Short polling intervals otherwise conceal a missing wake.
+      asm volatile("{ .reg .pred done; retry: "
+                   "mbarrier.try_wait.parity.shared::cta.b64 "
+                   "done, [%0], %1, 10000000; "
+                   "@!done bra retry; }" :: "r"(bar), "r"(phase) : "memory");
+    } else {
+      wait(&barrier, phase);
+    }
     asm volatile("barrier.cluster.arrive.aligned;" ::: "memory");
     asm volatile("barrier.cluster.wait.aligned;" ::: "memory");
 #pragma unroll
@@ -100,7 +110,7 @@ __global__ void tensor_cluster(const CUtensorMap *map, unsigned *out) {
                (Rank >= 3 ? (((threadIdx.x + i * 32) >> 5) & 7) * 4 : 0)];
   }
 }
-template <int Rank, int Mode>
+template <int Rank, int Mode, bool LongSuspend = false>
 void check_cluster() {
   SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
   SKIP_IF_CLUSTER_NOC_OFF();
@@ -157,7 +167,7 @@ void check_cluster() {
   config.attrs = &attr;
   config.numAttrs = 1;
   constexpr unsigned mode = Mode;
-  ASSERT_EQ(cudaLaunchKernelEx(&config, tensor_cluster<Mode, Rank>, dm, out),
+  ASSERT_EQ(cudaLaunchKernelEx(&config, tensor_cluster<Mode, Rank, LongSuspend>, dm, out),
             cudaSuccess);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   std::array<unsigned, 1024> result{};
@@ -190,6 +200,10 @@ TEST(TmaTensorCluster, MulticastAndPairedMulticast) {
 }
 TEST(TmaTensorCluster, PairedCompletionWithRankBitMask) {
   check_cluster<2, 8>();
+}
+TEST(TmaTensorCluster, CompletionWakesLongSuspendedWaiter) {
+  check_cluster<2, 2, true>();  // Ordinary remote TMA, no TCGen05 dependency.
+  check_cluster<2, 8, true>();  // Paired completion into the masked rank owner.
 }
 TEST(TmaTensorCluster, PairedRanks) {
   check_cluster<1, 3>();

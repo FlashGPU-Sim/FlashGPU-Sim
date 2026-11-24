@@ -1283,7 +1283,9 @@ void barrier_set_t::try_complete_tx_if_pending(unsigned cta_id,
 
   auto released_warps = m_mbarrier_manager.try_complete_tx_if_pending(
       m_shader->get_gpu(), thread_index, mbarrier_addr, completed_tx_count);
-  release_warps(released_warps);
+  // Suspended PTX waits must recheck the phase and write their predicate.
+  // Native waits use the release fallback inside this notification helper.
+  notify_mbarrier_phase_change(released_warps);
   notify_remote_waiters(cta_id, mbarrier_addr);
 }
 
@@ -1321,7 +1323,7 @@ void barrier_set_t::remote_arrive(unsigned cta_id, uint32_t mbarrier_addr,
     return;
   auto released = m_mbarrier_manager.arrive(m_shader->get_gpu(), thread_index,
                                             mbarrier_addr, (int)arrival_count);
-  release_warps(released);
+  notify_mbarrier_phase_change(released);
   notify_remote_waiters(cta_id, mbarrier_addr);
 }
 
@@ -2058,7 +2060,7 @@ void barrier_set_t::warp_reaches_mbarrier(
         auto released = m_mbarrier_manager.complete_tx(
             m_shader->get_gpu(), thread_index, info.bar_id, info.bar_count);
         trace_state("complete_tx", info.bar_id, info.bar_count, false);
-        release_warps(released);
+        notify_mbarrier_phase_change(released);
       }
       return;
     }
@@ -2073,7 +2075,7 @@ void barrier_set_t::warp_reaches_mbarrier(
     auto released_warps = m_mbarrier_manager.complete_tx(
         m_shader->get_gpu(), thread_index, addr, completed_tx_count);
     trace_state("complete_tx", addr, completed_tx_count, false);
-    release_warps(released_warps);
+    notify_mbarrier_phase_change(released_warps);
 
     return;
   } else if (static_info.operation ==
