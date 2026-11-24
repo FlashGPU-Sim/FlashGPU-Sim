@@ -1,3 +1,4 @@
+#include "../../funnel_shift.h"
 #include "../decode/operand_parser.h"
 #include "internal.h"
 
@@ -285,10 +286,16 @@ step_result execute_shf(const instruction &inst, warp_state &state,
     // their word width. Wrapping a 64-bit readiness bitmap's index at 32
     // aliases its high bits onto low bits, and XOR notifications cancel.
     const unsigned amount = std::min(shift_value, 32u);
-    if (inst.opcode == "USHF.R.U32" || inst.opcode == "SHF.R.U32") {
-      if (high != 0)
+    if (inst.opcode == "SHF.R.W.U32") {
+      result = funnel_shift32(low, high, shift_value, false, true);
+    } else if (inst.opcode == "SHF.R.W.U32.HI") {
+      // Qualified compiler lowering of a wrapping scalar bit-test. Other
+      // source forms need a separate native probe before accepting them.
+      if (low != 0)
         return false;
-      result = amount == 32 ? 0 : low >> amount;
+      result = high >> (shift_value & 31u);
+    } else if (inst.opcode == "USHF.R.U32" || inst.opcode == "SHF.R.U32") {
+      result = funnel_shift32(low, high, shift_value, false, false);
     } else if (inst.opcode == "SHF.L.U32" || inst.opcode == "USHF.L.U32") {
       result = amount == 32 ? 0 : low << amount;
     } else if (inst.opcode == "SHF.R.S32.HI" ||
@@ -1469,6 +1476,8 @@ void register_integer_semantics(frontend &target) {
   target.register_semantics("UIADD3.X", execute_uiadd3x);
   target.register_semantics("SHF.L.U32", execute_shf);
   target.register_semantics("SHF.R.U32", execute_shf);
+  target.register_semantics("SHF.R.W.U32", execute_shf);
+  target.register_semantics("SHF.R.W.U32.HI", execute_shf);
   target.register_semantics("SHF.L.W.U32.HI", execute_shf);
   target.register_semantics("SHF.R.S32.HI", execute_shf);
   target.register_semantics("SHF.R.U32.HI", execute_shf);

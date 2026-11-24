@@ -4,6 +4,8 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "funnel_shift/launch_test.cu",
+  "unit/sass/functional/warp_shift_test.cc",
   "mov_pack/launch_test.cu",
   "unit/narrow_conversion_test.cc",
   "unit/sass/functional/scalar_conversion_test.cc",

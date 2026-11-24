@@ -505,3 +505,7 @@ $(OBJ_DIR)/sm100/unit/shared_bulk_test.cc.o: \
 
 $(OBJ_DIR)/sm100/unit/narrow_conversion_test.cc.o: \
   ../src/gpgpu-sim/flash/narrow_conversion.h ../src/gpgpu-sim/flash/bfloat_conversion.h
+
+$(OBJ_DIR)/sm100/support/sass_functional_integer.cc.o \
+$(OBJ_DIR)/sm120/support/sass_functional_integer.cc.o: \
+  ../src/gpgpu-sim/flash/funnel_shift.h
