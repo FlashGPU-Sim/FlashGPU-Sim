@@ -42,7 +42,10 @@ static uint64_t get_operand_u64(ptx_thread_info *thread,
 void tensormap_descriptor_t::print() const {
   char buf[2048];
   size_t pos = 0;
-  uint32_t dims = num_dims();
+  // This printer is also called on rejected opaque descriptors. Do not use an
+  // untrusted rank as an array bound, or call derived-size helpers with it.
+  const bool valid_rank = fields.tensorRank < 5;
+  const uint32_t dims = valid_rank ? num_dims() : 5;
 
   auto append_checked = [&](const char *fmt, ...) {
     if (pos >= sizeof(buf))
@@ -67,7 +70,10 @@ void tensormap_descriptor_t::print() const {
   append_checked("TensorMap Descriptor:\n");
   append_checked("  global_address: 0x%llx\n",
                  (unsigned long long)fields.globalAddress);
-  append_checked("  rank: %u (num_dims=%u)\n", fields.tensorRank, dims);
+  append_checked(
+      "  rank: %u (num_dims=%llu)%s\n", fields.tensorRank,
+      static_cast<unsigned long long>(fields.tensorRank) + 1,
+      valid_rank ? "" : " -- invalid rank; fields limited to 5 dimensions");
   append_checked("  elemtype: %u (size=%u bytes)\n", fields.tensorDataType,
                  get_element_size());
 
@@ -150,7 +156,10 @@ void tensormap_descriptor_t::print() const {
                  swizzle_to_string(fields.swizzle), fields.swizzle,
                  oobfill_to_string(fields.oobFill), fields.oobFill);
 
-  append_checked("  tile_size_bytes: %u\n", get_tile_size_bytes());
+  if (valid_rank)
+    append_checked("  tile_size_bytes: %u\n", get_tile_size_bytes());
+  else
+    append_checked("  tile_size_bytes: unavailable (invalid rank)\n");
   append_checked("  raw_u64:");
   for (uint32_t i = 0; i < 16; i++) {
     if (i % 4 == 0)
