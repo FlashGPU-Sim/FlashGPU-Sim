@@ -615,6 +615,7 @@ void warp_inst_t::memory_coalescing_arch(bool is_write,
     case 4:
     case 8:
     case 16:
+    case 32:  // Native 256-bit per-lane load/store; retain sector coalescing.
       segment_size = sector_segment_size ? 32 : 128;
       break;
   }

@@ -5,8 +5,52 @@
 #include <vector>
 
 #include "../../../src/gpgpu-sim/shader.h"
+#include "../../../libcuda/gpgpu_context.h"
 
 namespace {
+
+struct CoalescingTestConfig : core_config {
+  CoalescingTestConfig() : core_config(GPGPU_Context()) {
+    warp_size = 32;
+    mem_warp_parts = 1;
+    gpgpu_coalesce_arch = 100;
+    gmem_skip_L1D = false;
+  }
+  void init() override {}
+};
+
+TEST(MemoryTransportTest, WidePerLaneAccessesKeepSectorRequestsAndCoalescing) {
+  CoalescingTestConfig config;
+  for (bool store : {false, true}) {
+    for (bool broadcast : {false, true}) {
+      SCOPED_TRACE(store);
+      SCOPED_TRACE(broadcast);
+      warp_inst_t instruction(&config);
+      instruction.op = store ? STORE_OP : LOAD_OP;
+      instruction.space = global_space;
+      instruction.cache_op = CACHE_ALL;
+      instruction.data_size = 32;  // LDG/STG.256, not a 256-byte request.
+      instruction.initiation_interval = 1;
+      active_mask_t active;
+      for (unsigned lane = 0; lane < 32; lane += 2) {
+        active.set(lane);
+        instruction.set_addr(lane, 0x1000 + (broadcast ? 0 : lane * 32));
+      }
+      instruction.issue(active, 0, 0, 0, 0, 0);
+      instruction.generate_mem_accesses();
+      ASSERT_EQ(instruction.accessq_count(), broadcast ? 1u : 16u);
+      while (!instruction.accessq_empty()) {
+        const auto &access = instruction.accessq_back();
+        EXPECT_EQ(access.get_size(), 32u);
+        EXPECT_EQ(access.get_sector_mask().count(), 1u);
+        EXPECT_EQ(access.get_byte_mask().count(), 32u);
+        EXPECT_EQ(access.get_warp_mask().count(), broadcast ? 16u : 1u);
+        EXPECT_EQ(access.get_addr() % 32, 0u);
+        instruction.accessq_pop_back();
+      }
+    }
+  }
+}
 
 TEST(MemoryTransportTest, ChargesDataSectorsAndControlSlots) {
   EXPECT_EQ(memory_transport_data_sectors(READ_REQUEST, SECTOR_SIZE), 1u);
