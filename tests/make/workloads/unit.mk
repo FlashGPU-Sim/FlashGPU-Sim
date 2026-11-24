@@ -32,8 +32,11 @@ SASS_UNIT_SASSIRS := \
 	$(SASS_UNIT_LLAMA_RESIDUAL_SASSIR)
 
 $(OBJ_DIR)/sm90/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm90/unit/ptx_control_predecode_test.cc.o \
 $(OBJ_DIR)/sm100/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm100/unit/ptx_control_predecode_test.cc.o \
 $(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm120/unit/ptx_control_predecode_test.cc.o \
 $(OBJ_DIR)/sm100/unit/ptx_scheduler_test.cc.o: ../libcuda/gpgpu_context.h
 
 $(OBJ_DIR)/sm100/unit/trace_config_test.cc.o: \
@@ -254,15 +257,21 @@ $(OBJ_DIR)/sm90/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm100/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm120/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm90/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm90/unit/ptx_control_predecode_test.cc.o \
 $(OBJ_DIR)/sm100/unit/register_view_reload_test.cc.o \
-$(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o: \
+$(OBJ_DIR)/sm100/unit/ptx_control_predecode_test.cc.o \
+$(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm120/unit/ptx_control_predecode_test.cc.o: \
   INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
 $(OBJ_DIR)/sm90/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm100/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm120/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm90/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm90/unit/ptx_control_predecode_test.cc.o \
 $(OBJ_DIR)/sm100/unit/register_view_reload_test.cc.o \
-$(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o: \
+$(OBJ_DIR)/sm100/unit/ptx_control_predecode_test.cc.o \
+$(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm120/unit/ptx_control_predecode_test.cc.o: \
   $(UNIT_MK) $(wildcard ../libcuda/*.h) $(wildcard ../src/cuda-sim/*.h) \
   $(wildcard ../src/gpgpu-sim/*.h) ../src/abstract_hardware_model.h \
   $(UNIT_SIM_BUILD_DIR)/cuda-sim/ptx.tab.h
