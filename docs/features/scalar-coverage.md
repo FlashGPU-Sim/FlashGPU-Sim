@@ -43,3 +43,24 @@ architecture-specific tensor/cluster instructions are separate changes.
 Nonuniform R2UR execution remains rejected; the private workload-specific
 look-ahead exception is deliberately not imported here. SFU functions retain
 functional host-math approximations, not bit-exact GPU polynomial models.
+
+
+## Operand dependency review
+
+The 2026-11-24 follow-up fixes carry-output roles for LEA.HI/ULEA.HI and
+selected predicate inputs for P2R.B1, including auxiliary PR syntax. Packed
+unpack half/byte selectors use `decode/scaled_unpack_operand.h` in both
+functional execution and timing projection; selector text is not treated as
+an opaque operand or as a separate register dependency. Coverage includes
+FP4/FP8 scaled unpack, UE8M0/FP8 unscaled unpack, high halves, byte broadcasts,
+register reuse annotations, invalid selectors, and physical RF source roles.
+
+Numeric conversion semantics now live in `functional/float_conversion.cc`;
+`float.cc` retains arithmetic, comparisons and SFU operations. Shared BF16
+rounding and subnormal helpers remain in `functional/common.cc`. The former
+3,409-line scalar functional test file is divided by responsibility into
+scalar, integer, predicate, floating-point and conversion tests. All 111
+original tests and explicit conversion/arithmetic opcode registrations are
+preserved. This does not add a second PTX numerical implementation.
+
+Follow-up validation evidence: workspace `runs/feature-fixes-20261124`.

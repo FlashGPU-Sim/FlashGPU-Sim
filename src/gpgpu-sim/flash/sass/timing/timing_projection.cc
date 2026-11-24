@@ -2,6 +2,7 @@
 #include "../../panic.h"
 #include "../decode/fp32x2_operand.h"
 #include "../decode/operand_parser.h"
+#include "../decode/scaled_unpack_operand.h"
 #include "../decode/wgmma_instruction.h"
 
 #include <algorithm>
@@ -214,6 +215,8 @@ size_t leading_destination_count(const instruction &source) {
         base == "ELECT") &&
        size == 3) ||
       ((source.opcode == "LEA" || source.opcode == "ULEA") && size == 5) ||
+      ((source.opcode == "LEA.HI" || source.opcode == "ULEA.HI") &&
+       size == 6) ||
       (base == "ATOMG" && size >= 4))
     return 2;
   if (base == "IADD3" || base == "UIADD3") {
@@ -926,7 +929,7 @@ void populate_registers(const instruction &source, timing_instruction &target) {
       ++logical_register_operands;
   }
   // P2R's predicate file is implicit in the supported three-operand form.
-  if (source.opcode == "P2R" && source.operands.size() == 3) {
+  if (base == "P2R" && source.operands.size() == 3) {
     append_predicate_mask(sources, operand_kind::kPredicate,
                           source.operands[2].immediate);
     if (source.operands[2].immediate != 0)
@@ -946,8 +949,8 @@ void populate_registers(const instruction &source, timing_instruction &target) {
       ++logical_register_operands;
   }
   if (source.has_auxiliary_predicate &&
-      !(source.opcode == "P2R" && source.auxiliary_predicate.kind ==
-                                      operand_kind::kPredicateRegisterFile)) {
+      !(base == "P2R" && source.auxiliary_predicate.kind ==
+                             operand_kind::kPredicateRegisterFile)) {
     append_source_registers(sources, source.auxiliary_predicate);
     ++logical_source_operands;
     if (reads_register_file(source.auxiliary_predicate))
@@ -1190,15 +1193,32 @@ void timing_instruction::initialize(const instruction &native,
        !normalize_r2p_operands(source, byte_selector)))
     panic("Invalid SASS operand normalization at PC " +
           std::to_string(source.pc));
+  if (source.opcode == "F2FP.BF16.E4M3.UNPACK_B" ||
+      source.opcode == "F2FP.BF16.E2M1.UNPACK_B") {
+    scaled_unpack_operands decoded;
+    if (!decode_scaled_unpack(source, decoded))
+      panic("Invalid scaled unpack operands at PC " +
+            std::to_string(source.pc));
+    source.operands = {source.operands[0], decoded.payload, decoded.scale};
+    source.operands_structured = true;
+  }
   // Wide comparisons omit pair-width suffixes in nvdisasm operands.
   // Both words must participate in scoreboard and register-file dependencies.
   const auto base = base_opcode(source.opcode);
-  if ((source.opcode == "FHFMA.BF16" && source.operands.size() == 4) ||
-      (source.opcode == "FHADD.BF16" && source.operands.size() == 3)) {
-    for (unsigned i = 1; i <= (source.opcode == "FHADD.BF16" ? 1u : 2u); ++i) {
-      auto text = source.operands[i].text;
-      if (text.size() > 3 && text.compare(text.size() - 3, 3, ".H1") == 0)
-        source.operands[i] = parse_operand(text.substr(0, text.size() - 3));
+  if (source.opcode == "FHFMA.BF16" || source.opcode == "FHADD.BF16" ||
+      source.opcode == "F2FP.BF16.E8.UNPACK_B" ||
+      source.opcode == "F2FP.F16.E4M3.UNPACK_B") {
+    const unsigned count = source.opcode == "FHFMA.BF16"   ? 4
+                           : source.opcode == "FHADD.BF16" ? 3
+                                                           : 2;
+    if (source.operands.size() != count)
+      panic("Invalid halfword instruction operand count");
+    for (unsigned i = 1; i <= (count == 4 ? 2u : 1u); ++i) {
+      operand value;
+      unsigned shift;
+      if (!decode_halfword_source(source.operands[i], value, shift))
+        panic("Invalid halfword instruction source");
+      source.operands[i] = value;
     }
     source.operands_structured = std::all_of(
         source.operands.begin(), source.operands.end(),
