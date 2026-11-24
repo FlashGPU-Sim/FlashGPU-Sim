@@ -1,3 +1,4 @@
+#include "../gpgpu-sim/flash/ptx_ternary_logic.h"
 #include "../gpgpu-sim/flash/bit_scan.h"
 #include "../gpgpu-sim/flash/shared_bulk.h"
 #include "../gpgpu-sim/flash/funnel_shift.h"
@@ -1335,6 +1336,10 @@ void add_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
 void addc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   inst_not_implemented(pI);
+}
+
+void lop3_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  flash_gpgpu_sim::execute_ptx_ternary_logic(pI, thread);
 }
 
 void and_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

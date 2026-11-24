@@ -1212,6 +1212,7 @@ void ptx_instruction::set_opcode_and_latency() {
   bool packed_timing = false;
   bool int_logic_timing = false;
   switch (m_opcode) {
+    case LOP3_OP:
     case AND_OP:
     case OR_OP:
     case XOR_OP:

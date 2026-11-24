@@ -155,6 +155,7 @@ isspacep TC; yylval->int_value = ISSPACEP_OP; return OPCODE;
 ld      TC; yylval->int_value = LD_OP; return OPCODE;
 ld.volatile TC; yylval->int_value = LD_OP; return OPCODE;
 ldu     TC; yylval->int_value = LDU_OP; return OPCODE;
+lop3 TC; yylval->int_value = LOP3_OP; return OPCODE;
 lg2	TC; yylval->int_value = LG2_OP; return OPCODE;
 griddepcontrol TC; yylval->int_value = GRIDDEPCONTROL_OP; return OPCODE;
 mad24   TC; yylval->int_value = MAD24_OP; return OPCODE;

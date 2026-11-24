@@ -1,5 +1,6 @@
 #include "../../bit_scan.h"
 #include "../../funnel_shift.h"
+#include "../../ternary_logic.h"
 #include "../decode/operand_parser.h"
 #include "internal.h"
 
@@ -387,7 +388,7 @@ step_result execute_lop3(const instruction &inst, warp_state &state,
   if (destination == nullptr || lut == nullptr || predicate == nullptr ||
       (predicate_output && output_predicate == nullptr) ||
       (predicate_and && !predicate_output) ||
-      (!predicate_and &&
+      (!predicate_output &&
        (predicate->index != kTruePredicate || !predicate->negated)) ||
       lut->immediate < 0 || lut->immediate > 0xff ||
       (uniform &&
@@ -405,12 +406,7 @@ step_result execute_lop3(const instruction &inst, warp_state &state,
         !read_u32_operand(inst.operands[first_source + 1], state, lane, bv) ||
         !read_u32_operand(inst.operands[first_source + 2], state, lane, cv))
       return false;
-    value = 0;
-    for (unsigned bit = 0; bit < 32; ++bit) {
-      const unsigned index = (((av >> bit) & 1u) << 2) |
-                             (((bv >> bit) & 1u) << 1) | ((cv >> bit) & 1u);
-      value |= ((static_cast<uint64_t>(lut->immediate) >> index) & 1u) << bit;
-    }
+    value = ternary_logic(av, bv, cv, static_cast<uint8_t>(lut->immediate));
     return true;
   };
   if (uniform) {
@@ -419,8 +415,14 @@ step_result execute_lop3(const instruction &inst, warp_state &state,
       if (!compute(0, value))
         return unsupported(inst, "unsupported ULOP3.LUT source");
       state.write_uniform_register(destination->index, value);
-      if (predicate_output)
-        state.write_uniform_predicate(output_predicate->index, value != 0);
+      if (predicate_output) {
+        bool input = false;
+        if (!read_predicate_operand(*predicate, state, 0, input))
+          return unsupported(inst, "invalid ULOP3 predicate input");
+        state.write_uniform_predicate(
+            output_predicate->index,
+            ternary_logic_predicate(value, input, false));
+      }
     }
   } else {
     for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
@@ -432,12 +434,12 @@ step_result execute_lop3(const instruction &inst, warp_state &state,
         return unsupported(inst, "unsupported LOP3.LUT source");
       state.write_register(lane, destination->index, value);
       if (predicate_output) {
-        bool input = true;
-        if (predicate_and &&
-            !read_predicate_operand(*predicate, state, lane, input))
+        bool input = false;
+        if (!read_predicate_operand(*predicate, state, lane, input))
           return unsupported(inst, "invalid LOP3 predicate input");
-        state.write_predicate(lane, output_predicate->index,
-                              value != 0 && input);
+        state.write_predicate(
+            lane, output_predicate->index,
+            ternary_logic_predicate(value, input, predicate_and));
       }
     }
   }
