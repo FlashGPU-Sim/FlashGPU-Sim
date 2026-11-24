@@ -754,7 +754,16 @@ step_result execute_atoms_add(const instruction &inst, warp_state &state,
                               sizeof(value)))
       return memory_fault(inst, memory_space::kShared, location, sizeof(value));
     const uint32_t old_value = value;
-    value += state.read_register(lane, source->index);
+    if (inst.opcode == "ATOMS.OR")
+      value |= state.read_register(lane, source->index);
+    else if (inst.opcode == "ATOMS.AND")
+      value &= state.read_register(lane, source->index);
+    else if (inst.opcode == "ATOMS.XOR")
+      value ^= state.read_register(lane, source->index);
+    else if (inst.opcode == "ATOMS.EXCH")
+      value = state.read_register(lane, source->index);
+    else
+      value += state.read_register(lane, source->index);
     if (!context.memory->write(memory_space::kShared, location, &value,
                                sizeof(value)))
       return memory_fault(inst, memory_space::kShared, location, sizeof(value));
@@ -785,7 +794,8 @@ step_result execute_functional_fence(const instruction &inst, warp_state &state,
   else if (inst.opcode == "ERRBAR" || inst.opcode == "CGAERRBAR" ||
            inst.opcode == "CCTL.IVALL")
     valid = has_typed_operands(inst, 0);
-  else if (inst.opcode == "FENCE.VIEW.ASYNC.S")
+  else if (inst.opcode == "FENCE.VIEW.ASYNC.S" ||
+           inst.opcode == "FENCE.VIEW.ASYNC.T")
     valid = has_typed_operands(inst, 0);
   else if (inst.opcode == "MEMBAR.ALL.CTA" || inst.opcode == "MEMBAR.ALL.GPU" ||
            inst.opcode == "MEMBAR.SC.CTA")
@@ -803,6 +813,7 @@ step_result execute_functional_fence(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_memory_semantics(frontend &target) {
+  target.register_semantics("FENCE.VIEW.ASYNC.T", execute_functional_fence);
   for (const char *opcode :
        {"LDGSTS.E", "LDGSTS.E.64", "LDGSTS.E.128", "LDGSTS.E.ZFILL",
         "LDGSTS.E.64.ZFILL", "LDGSTS.E.128.ZFILL", "LDGSTS.E.LTC128B",
@@ -863,6 +874,10 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("ATOMG.E.ADD.STRONG.GPU", execute_atomg_add);
   target.register_semantics("ATOMS.POPC.INC.32", execute_atoms_popc_increment);
   target.register_semantics("ATOMS.ADD", execute_atoms_add);
+  target.register_semantics("ATOMS.OR", execute_atoms_add);
+  target.register_semantics("ATOMS.AND", execute_atoms_add);
+  target.register_semantics("ATOMS.XOR", execute_atoms_add);
+  target.register_semantics("ATOMS.EXCH", execute_atoms_add);
   target.register_semantics("ERRBAR", execute_functional_fence);
   target.register_semantics("CGAERRBAR", execute_functional_fence);
   target.register_semantics("DEPBAR", execute_functional_fence);

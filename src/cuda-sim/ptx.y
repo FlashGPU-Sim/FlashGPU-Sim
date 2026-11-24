@@ -295,6 +295,9 @@ class ptx_recognizer;
 %token	X4_OPTION;
 %token	X16_OPTION;
 %token	X32_OPTION;
+%token	X8_OPTION;
+%token	X64_OPTION;
+%token	X128_OPTION;
 %token	TCGEN05_CTA_GROUP_1_OPTION;
 %token	TCGEN05_CTA_GROUP_2_OPTION;
 %token	TCGEN05_KIND_F16_OPTION;
@@ -747,6 +750,9 @@ option: type_spec
 	| X4_OPTION { recognizer->add_option(X4_OPTION); }
 	| X16_OPTION { recognizer->add_option(X16_OPTION); }
 	| X32_OPTION { recognizer->add_option(X32_OPTION); }
+	| X8_OPTION { recognizer->add_option(X8_OPTION); }
+	| X64_OPTION { recognizer->add_option(X64_OPTION); }
+	| X128_OPTION { recognizer->add_option(X128_OPTION); }
 	| TCGEN05_CTA_GROUP_1_OPTION { recognizer->add_option(TCGEN05_CTA_GROUP_1_OPTION); }
 	| TCGEN05_CTA_GROUP_2_OPTION { recognizer->add_option(TCGEN05_CTA_GROUP_2_OPTION); }
 	| TCGEN05_KIND_F16_OPTION { recognizer->add_option(TCGEN05_KIND_F16_OPTION); }

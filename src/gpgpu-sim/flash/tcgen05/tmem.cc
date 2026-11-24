@@ -32,6 +32,53 @@ uint32_t tcgen05_encode_tmem_address(uint32_t lane, uint32_t column) {
   return (lane << kTcgen05TmemLaneShift) | column;
 }
 
+uint32_t tcgen05_tmem_register_address(uint32_t base_address,
+                                       uint32_t warp_lane, uint32_t shape_lanes,
+                                       uint32_t shape_bits,
+                                       uint32_t register_index, bool packed) {
+  assert((shape_lanes == 16 || shape_lanes == 32) &&
+         "TCGen05 TMEM register movement supports 16 or 32 lanes");
+  assert(warp_lane < 32 && "TCGen05 TMEM warp lane must be in [0, 31]");
+
+  tcgen05_tmem_address_t decoded = tcgen05_decode_tmem_address(base_address);
+  uint32_t lane_offset = 0;
+  uint32_t column_offset = 0;
+  if (shape_lanes == 32 && shape_bits == 32) {
+    lane_offset = warp_lane;
+    column_offset = register_index;
+  } else if (shape_lanes == 16 && shape_bits == 32) {
+    assert(warp_lane < 16 &&
+           "A 16x32b half-split access uses one half-warp per base");
+    lane_offset = warp_lane;
+    column_offset = register_index;
+  } else if (shape_lanes == 16 && shape_bits == 64) {
+    lane_offset = warp_lane / 4 + (warp_lane % 2) * 8;
+    column_offset = (warp_lane % 4) / 2 + register_index * 2;
+  } else if (shape_lanes == 16 && shape_bits == 128) {
+    lane_offset = warp_lane / 4 + (register_index % 2) * 8;
+    column_offset = warp_lane % 4 + (register_index / 2) * 4;
+  } else if (shape_lanes == 16 && shape_bits == 256) {
+    lane_offset = warp_lane / 4 + ((register_index % 4) / 2) * 8;
+    column_offset =
+        (warp_lane % 4) * 2 + register_index % 2 + (register_index / 4) * 8;
+  } else {
+    assert(false && "Unsupported TCGen05 TMEM register movement shape");
+  }
+  return tcgen05_encode_tmem_address(decoded.lane + lane_offset,
+                                     decoded.column +
+                                         column_offset * (packed ? 2 : 1));
+}
+
+void tcgen05_tmem_manager_t::init_native_backing(
+    const tcgen05_tmem_scope_t &scope, uint32_t ncols) {
+  std::lock_guard<tcgen05_tmem_spinlock_t> lock(m_mutex);
+  auto &state = get_or_create_scope(scope);
+  assert(state.allocations.empty() && state.words.empty());
+  assert(ncols == 512);
+  state.allocations.emplace(0, allocation_t{0, ncols});
+  state.next_base = ncols;
+}
+
 uint32_t tcgen05_tmem_manager_t::alloc(const tcgen05_tmem_scope_t &scope,
                                        uint32_t ncols) {
   std::lock_guard<tcgen05_tmem_spinlock_t> lock(m_mutex);

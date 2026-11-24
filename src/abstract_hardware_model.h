@@ -1086,21 +1086,29 @@ public:
     unsigned reg = 0;
   };
   void add_register_file_source(unsigned reg, unsigned slot, bool retain) {
-    assert(register_file_source_count < MAX_REG_OPERANDS);
-    register_file_sources[register_file_source_count++] =
-        register_file_source_t{reg, static_cast<uint8_t>(slot), retain};
+    const register_file_source_t value{reg, static_cast<uint8_t>(slot), retain};
+    if (register_file_source_count < MAX_REG_OPERANDS)
+      register_file_sources[register_file_source_count] = value;
+    else
+      extra_register_file_sources.push_back(value);
+    ++register_file_source_count;
   }
   unsigned get_register_file_source_count() const {
     return register_file_source_count;
   }
   const register_file_source_t &get_register_file_source(unsigned index) const {
     assert(index < register_file_source_count);
-    return register_file_sources[index];
+    return index < MAX_REG_OPERANDS
+               ? register_file_sources[index]
+               : extra_register_file_sources[index - MAX_REG_OPERANDS];
   }
   void add_register_file_destination(unsigned reg) {
-    assert(register_file_destination_count < MAX_REG_OPERANDS);
-    register_file_destinations[register_file_destination_count++] =
-        register_file_destination_t{reg};
+    const register_file_destination_t value{reg};
+    if (register_file_destination_count < MAX_REG_OPERANDS)
+      register_file_destinations[register_file_destination_count] = value;
+    else
+      extra_register_file_destinations.push_back(value);
+    ++register_file_destination_count;
   }
   unsigned get_register_file_destination_count() const {
     return register_file_destination_count;
@@ -1108,7 +1116,9 @@ public:
   const register_file_destination_t &
   get_register_file_destination(unsigned index) const {
     assert(index < register_file_destination_count);
-    return register_file_destinations[index];
+    return index < MAX_REG_OPERANDS
+               ? register_file_destinations[index]
+               : extra_register_file_destinations[index - MAX_REG_OPERANDS];
   }
   // Select a physical bank-width transaction model explicitly. The default
   // retains the public PTX subwarp/vector service model.
@@ -1148,6 +1158,8 @@ private:
   unsigned register_file_source_count = 0;
   register_file_destination_t register_file_destinations[MAX_REG_OPERANDS];
   unsigned register_file_destination_count = 0;
+  std::vector<register_file_source_t> extra_register_file_sources;
+  std::vector<register_file_destination_t> extra_register_file_destinations;
   // Frontend-neutral marker for instructions admitted through the SM's
   // memory-input/output queue. Frontends classify ISA opcodes; the timing
   // backend models only the shared hardware resource.
@@ -1201,6 +1213,25 @@ private:
   mbarrier_info_t mbarrier_info[MAX_WARP_SIZE];
 
 public:
+ // ISA-neutral asynchronous operation. Native adapters populate this before
+ // issue; PTX is normalized by flash/tcgen05 alongside its option decoder.
+ struct tcgen05_static_info_t {
+   enum operation_t {
+     NONE,
+     MMA,
+     COPY,
+     SHIFT,
+     LOAD,
+     STORE,
+     COMMIT,
+     WAIT_LD,
+     WAIT_ST
+   };
+   operation_t operation = NONE;
+   unsigned cta_group = 1;
+   unsigned timing_index = 0;
+ } tcgen05_info;
+
   struct tcgen05_dyn_info_t {
     uint64_t mma_work = 0;
   };

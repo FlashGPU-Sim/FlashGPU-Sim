@@ -191,6 +191,13 @@ bool orders_deferred_cta_barrier(const instruction &inst, architecture arch) {
   if (base == "BAR")
     return arch == architecture::kSm90 || arch == architecture::kSm120 ||
            arch == architecture::kSm100 || arch == architecture::kSm103;
+  const bool blackwell =
+      arch == architecture::kSm100 || arch == architecture::kSm103;
+  // TMEM consumers and barrier polling must observe the CTA producer epoch.
+  if (blackwell && (base == "LDTM" || base == "STTM" || base == "UTCATOMSWS" ||
+                    base == "UTCCP" || base == "UTCBAR" ||
+                    inst.opcode.rfind("SYNCS.PHASECHK", 0) == 0))
+    return true;
   // Publishing an mbarrier arrival/completion is a shared-state side effect.
   // In particular, FA3's no-TMA path completes Q immediately after QueryEmpty;
   // letting this cross an unfinished deferred barrier can lap the consumer's

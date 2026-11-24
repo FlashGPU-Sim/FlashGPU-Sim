@@ -91,3 +91,12 @@ tests = [
   { name = "backward-smoke", group = "fa3", profile = "smoke", gtest_filter = "Fa3PrefillFp16BackwardSmokeTest.*" },
   { name = "packgqa", group = "fa3", profile = "packgqa", gtest_filter = "Fa3FwdPackGqaFp16IntegrationTest.Smoke" },
 ]
+
+# The post-check builds one fixture binary and executes it through both
+# frontends with isolated scratch configurations; SASS remains opt-in.
+[jobs.sm100-tmem]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "tmem-components-and-dual-launch", group = "unit", gtest_filter = "Tcgen05*", post_check = "tests/ci/check_tmem_dual.py" },
+]

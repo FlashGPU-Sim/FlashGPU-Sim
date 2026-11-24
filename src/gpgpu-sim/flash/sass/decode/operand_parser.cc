@@ -411,6 +411,25 @@ operand parse_operand(const std::string &input) {
   const std::string text = trim(input);
   if (text.empty())
     return operand{};
+  if (text.back() == ']' && text.rfind("tmem[", 0) == 0) {
+    operand address = parse_memory_address(text.substr(4));
+    if (address.kind == operand_kind::kMemoryAddress && !address.has_prefix &&
+        address.address_groups.size() == 1) {
+      bool valid = true;
+      for (const auto &term : address.address_groups[0].terms)
+        valid &= !term.wide && !term.negated &&
+                 (term.kind == address_term_kind::kUniformRegister ||
+                  term.kind == address_term_kind::kImmediate);
+      if (valid) {
+        // Retain common address terms for dependency projection.
+        address.text = text;
+        return address;
+      }
+    }
+    operand invalid;
+    invalid.text = text;
+    return invalid;
+  }
   operand result = parse_constant(text);
   if (result.kind != operand_kind::kOpaque)
     return result;

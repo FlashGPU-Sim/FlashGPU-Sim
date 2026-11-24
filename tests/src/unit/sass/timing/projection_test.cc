@@ -1284,3 +1284,27 @@ TEST(SassTimingProjectionTest, GatherImplicitRegisterSpans) {
   }
 }
 } // namespace
+
+namespace {
+TEST(SassTcgenTiming, PreservesWideTmemDependenciesAcrossPipelineCopies) {
+  for (unsigned width : {4u, 16u, 32u, 64u, 128u}) {
+    timing_instruction load(official_instruction(
+        0, "LDTM.x" + std::to_string(width), "R8,tmem[UR4]"));
+    timing_instruction store(official_instruction(
+        16, "STTM.x" + std::to_string(width), "tmem[UR4+0x10],R8"));
+    const warp_inst_t copied_load = load, copied_store = store;
+    EXPECT_EQ(copied_load.outcount + copied_load.extra_out.size(), width);
+    EXPECT_EQ(copied_store.incount + copied_store.extra_in.size(), width + 1);
+    ASSERT_EQ(copied_load.get_register_file_destination_count(), width);
+    ASSERT_EQ(copied_store.get_register_file_source_count(), width);
+    for (unsigned i = 0; i < width; ++i) {
+      EXPECT_EQ(copied_load.get_register_file_destination(i).reg, 8 + i);
+      EXPECT_EQ(copied_store.get_register_file_source(i).reg, 8 + i);
+    }
+    EXPECT_EQ(load.tcgen05_info.operation, inst_t::tcgen05_static_info_t::LOAD);
+    EXPECT_EQ(store.tcgen05_info.operation,
+              inst_t::tcgen05_static_info_t::STORE);
+  }
+}
+
+}  // namespace

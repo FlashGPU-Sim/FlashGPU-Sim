@@ -374,6 +374,7 @@ step_result execute_shfl(const instruction &inst, warp_state &state,
 
 void register_data_movement_semantics(frontend &target) {
   target.register_semantics("REDUX.OR", execute_redux_sum);
+  target.register_semantics("REDUX", execute_redux_sum);
   target.register_semantics("MATCH.ANY", execute_match_any);
   target.register_semantics("MOV", execute_move);
   target.register_semantics("MOV.64", execute_move);

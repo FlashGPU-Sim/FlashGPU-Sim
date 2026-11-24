@@ -4,6 +4,7 @@
 #include "../decode/operand_parser.h"
 #include "../decode/scaled_unpack_operand.h"
 #include "../decode/tma_load_operand.h"
+#include "../decode/tmem_instruction.h"
 #include "../decode/wgmma_instruction.h"
 
 #include <algorithm>
@@ -196,8 +197,9 @@ bool has_destination(const std::string &base) {
          base != "DEPBAR" && base != "CCTL" && base != "UTMACCTL" &&
          base != "UTMACMDFLUSH" && base != "FENCE" && base != "UTMALDG" &&
          base != "UTMASTG" && base != "UTMAREDG" && base != "UTMAPF" &&
-         base != "UBLKCP" && base != "UBLKRED" && base != "LDGSTS" &&
-         base != "LDGDEPBAR";
+         base != "UBLKCP" && base != "UBLKRED" && base != "UTCCP" &&
+         base != "UTCBAR" && base != "STTM" && base != "UVIRTCOUNT" &&
+         base != "LDGSTS" && base != "LDGDEPBAR";
 }
 
 // Native output lists can contain a value and carry/status predicates. Keep
@@ -481,8 +483,41 @@ void classify(const instruction &source, const timing_profile &profile,
   target.latency = profile.integer_latency[integer_index];
   target.initiation_interval = profile.integer_initiation[integer_index];
 
-  if (base == "LD" || base == "LDG" || base == "LDS" || base == "LDL" ||
-      base == "LDC" || base == "LDCU" || base == "ULDC") {
+  using tcinfo = inst_t::tcgen05_static_info_t;
+  if (base == "UTCCP" || base == "UTCBAR") {
+    target.tcgen05_info.operation =
+        base == "UTCCP" ? tcinfo::COPY : tcinfo::COMMIT;
+    target.tcgen05_info.cta_group = 1;
+    if (base == "UTCCP") {
+      target.tcgen05_info.timing_index =
+          has_modifier(source.opcode, "128dp128bit")                ? 1
+          : source.opcode.find("2x64dp128bit") != std::string::npos ? 2
+          : has_modifier(source.opcode, "4x32dp128bit")             ? 4
+                                                                    : 0;
+      target.op = TENSOR_CORE_OP;
+      target.sp_op = TENSOR__OP;
+      target.op_pipe = TENSOR_CORE__OP;
+    }
+    target.latency = target.initiation_interval = 1;
+  } else if (base == "LDTM" || base == "STTM") {
+    unsigned words = tmem_transfer_words(source.opcode);
+    if (!words)
+      panic("unqualified native TMEM transfer");
+    target.tcgen05_info.operation =
+        base == "LDTM" ? tcinfo::LOAD : tcinfo::STORE;
+    for (; words > 1; words >>= 1)
+      ++target.tcgen05_info.timing_index;
+    target.op = TENSOR_CORE_OP;
+    target.sp_op = TENSOR__OP;
+    target.op_pipe = TENSOR_CORE__OP;
+    target.latency = target.initiation_interval = 1;
+  } else if (source.opcode == "FENCE.VIEW.ASYNC.T") {
+    target.tcgen05_info.operation = tcinfo::WAIT_ST;
+    target.latency = target.initiation_interval = 1;
+  } else if (base == "UTCATOMSWS") {
+    target.latency = target.initiation_interval = 1;
+  } else if (base == "LD" || base == "LDG" || base == "LDS" || base == "LDL" ||
+             base == "LDC" || base == "LDCU" || base == "ULDC") {
     target.op = LOAD_OP;
     target.op_pipe = MEM__OP;
     target.memory_op = memory_load;
@@ -527,7 +562,10 @@ void classify(const instruction &source, const timing_profile &profile,
     // Matrix shared-memory operations enter through the MIO frontend before
     // consuming the SM-wide shared data path.
     target.set_mio_client();
-  } else if (base == "ATOMG" || source.opcode == "ATOMS.ADD") {
+  } else if (base == "ATOMG" ||
+             (source.opcode == "ATOMS.ADD" || source.opcode == "ATOMS.OR" ||
+              source.opcode == "ATOMS.AND" || source.opcode == "ATOMS.XOR" ||
+              source.opcode == "ATOMS.EXCH")) {
     target.op = LOAD_OP;
     target.op_pipe = MEM__OP;
     target.memory_op = memory_load;
@@ -803,27 +841,30 @@ void classify(const instruction &source, const timing_profile &profile,
                          ? inst_t::tma_static_info_t::TMA_GLOBAL
                          : inst_t::tma_static_info_t::TMA_SHARED_CTA;
     target.set_tma_static_info(info);
-  } else if (base == "ERRBAR" || base == "CGAERRBAR" || base == "NOP" || base == "NANOSLEEP" || base == "S2R" ||
-             base == "S2UR" || base == "CS2R" || base == "CS2UR" ||
-             base == "MOV" || base == "MOVM" || base == "IMAD" ||
-             base == "IADD3" || base == "ISETP" || base == "LOP3" ||
-             base == "SHF" || base == "PRMT" || base == "SEL" ||
-             base == "PLOP3" || base == "VOTE" || base == "LEA" ||
-             base == "IABS" || base == "FLO" || base == "POPC" ||
-             base == "BREV" || base == "UBREV" || base == "UFLO" ||
-             base == "UIADD3" || base == "UIMAD" || base == "UISETP" ||
-             base == "UFSETP" || base == "UFSEL" || base == "ULEA" ||
-             base == "ULOP3" || base == "UPLOP3" || base == "UMOV" ||
-             base == "UPRMT" || base == "USEL" || base == "USHF" ||
-             base == "R2UR" || base == "UP2UR" || base == "R2P" ||
-             base == "P2R" || base == "LEPC" || base == "ELECT" ||
-             base == "VOTEU" || base == "VIMNMX" || base == "VIMNMX3" ||
-             base == "UVIMNMX" || base == "IADD" || base == "VIADD" ||
-             base == "VIADDMNMX" || base == "SGXT" || base == "USGXT" ||
-             base == "SHFL" || source.opcode == "MATCH.ANY" ||
-             source.opcode == "REDUX.OR" || base == "DEPBAR" ||
-             base == "CCTL" || base == "UTMACCTL" || base == "USETMAXREG" ||
-             source.opcode == "WARPGROUP.ARRIVE" || base == "YIELD") {
+  } else if (source.opcode == "UVIRTCOUNT.DEALLOC.SMPOOL" || base == "ERRBAR" ||
+             base == "CGAERRBAR" || base == "NOP" || base == "NANOSLEEP" ||
+             base == "S2R" || base == "S2UR" || base == "CS2R" ||
+             base == "CS2UR" || base == "MOV" || base == "MOVM" ||
+             base == "IMAD" || base == "IADD3" || base == "ISETP" ||
+             base == "LOP3" || base == "SHF" || base == "PRMT" ||
+             base == "SEL" || base == "PLOP3" || base == "VOTE" ||
+             base == "LEA" || base == "IABS" || base == "FLO" ||
+             base == "POPC" || base == "BREV" || base == "UBREV" ||
+             base == "UFLO" || base == "UIADD3" || base == "UIMAD" ||
+             base == "UISETP" || base == "UFSETP" || base == "UFSEL" ||
+             base == "ULEA" || base == "ULOP3" || base == "UPLOP3" ||
+             base == "UMOV" || base == "UPRMT" || base == "USEL" ||
+             base == "USHF" || base == "R2UR" || base == "UP2UR" ||
+             base == "R2P" || base == "P2R" || base == "LEPC" ||
+             base == "ELECT" || base == "VOTEU" || base == "VIMNMX" ||
+             base == "VIMNMX3" || base == "UVIMNMX" || base == "IADD" ||
+             base == "VIADD" || base == "VIADDMNMX" || base == "SGXT" ||
+             base == "USGXT" || base == "SHFL" ||
+             source.opcode == "MATCH.ANY" || source.opcode == "REDUX.OR" ||
+             source.opcode == "REDUX" || source.opcode == "BPT.TRAP" ||
+             base == "DEPBAR" || base == "CCTL" || base == "UTMACCTL" ||
+             base == "USETMAXREG" || source.opcode == "WARPGROUP.ARRIVE" ||
+             base == "YIELD") {
     // Default integer/ALU classification above is intentional.
   } else {
     panic("unsupported SASS timing projection for opcode " + source.opcode);
@@ -848,10 +889,21 @@ void populate_registers(const instruction &source, timing_instruction &target) {
   unsigned logical_register_operands = 0;
 
   if (source.operands_structured && !source.operands.empty() &&
-      (base == "LDS" || base == "LDL" || base == "LDSM" || base == "SYNCS" ||
-       base == "ATOMS") &&
-      source.operands.front().kind == operand_kind::kMemoryAddress &&
-      source.operands.front().has_prefix) {
+      base == "LDTM") {
+    const auto &dst = source.operands[0];
+    for (unsigned word = 0; word < tmem_transfer_words(source.opcode); ++word)
+      append_register(destinations, dst.kind, dst.index + word, false);
+    source_begin = 1;
+  } else if (source.operands_structured && source.operands.size() == 3 &&
+             base == "UTCATOMSWS") {
+    append_source_registers(destinations, source.operands[0]);
+    append_source_registers(destinations, source.operands[1]);
+    source_begin = 2;
+  } else if (source.operands_structured && !source.operands.empty() &&
+             (base == "LDS" || base == "LDL" || base == "LDSM" ||
+              base == "SYNCS" || base == "ATOMS") &&
+             source.operands.front().kind == operand_kind::kMemoryAddress &&
+             source.operands.front().has_prefix) {
     const operand &combined = source.operands.front();
     const unsigned width = combined_destination_width(source);
     append_register(destinations, combined.prefix_kind, combined.prefix_index,
@@ -955,6 +1007,16 @@ void populate_registers(const instruction &source, timing_instruction &target) {
 
   for (size_t index = source_begin; index < source.operands.size(); ++index) {
     append_instruction_source(sources, source, index);
+    if (base == "UTCCP" && index == 1 &&
+        source.operands[index].descriptor_register != kZeroUniformRegister)
+      append_register(sources, operand_kind::kUniformRegister,
+                      source.operands[index].descriptor_register + 1, false);
+    if (base == "STTM" && index == 1 &&
+        source.operands[index].index != kZeroRegister)
+      for (unsigned word = 1; word < tmem_transfer_words(source.opcode); ++word)
+        append_register(sources, operand_kind::kRegister,
+                        source.operands[index].index + word, false);
+
     ++logical_source_operands;
     if (reads_register_file(source.operands[index]))
       ++logical_register_operands;
@@ -988,20 +1050,24 @@ void populate_registers(const instruction &source, timing_instruction &target) {
       ++logical_register_operands;
   }
 
-  if (destinations.size() > std::size(target.arch_reg.dst) ||
-      sources.size() > std::size(target.arch_reg.src))
-    panic("too many SASS timing register operands for " + source.opcode);
-
   for (size_t index = 0; index < destinations.size(); ++index) {
-    target.out[index] = destinations[index];
-    target.arch_reg.dst[index] = static_cast<int>(destinations[index]);
+    if (index < std::size(target.out))
+      target.out[index] = destinations[index];
+    else
+      target.extra_out.push_back(destinations[index]);
+    if (index < std::size(target.arch_reg.dst))
+      target.arch_reg.dst[index] = destinations[index];
   }
   for (size_t index = 0; index < sources.size(); ++index) {
-    target.in[index] = sources[index];
-    target.arch_reg.src[index] = static_cast<int>(sources[index]);
+    if (index < std::size(target.in))
+      target.in[index] = sources[index];
+    else
+      target.extra_in.push_back(sources[index]);
+    if (index < std::size(target.arch_reg.src))
+      target.arch_reg.src[index] = sources[index];
   }
-  target.outcount = destinations.size();
-  target.incount = sources.size();
+  target.outcount = std::min(destinations.size(), std::size(target.out));
+  target.incount = std::min(sources.size(), std::size(target.in));
   target.set_num_regs(logical_register_operands);
   target.set_num_operands(logical_source_operands);
 }
@@ -1039,7 +1105,9 @@ void populate_register_file_sources(const instruction &source,
       continue;
 
     append_register_file_operand(target, value, regular_slot,
-                                 source_width(source, index));
+                                 base_opcode(source.opcode) == "STTM"
+                                     ? tmem_transfer_words(source.opcode)
+                                     : source_width(source, index));
     ++regular_slot;
   }
 }
@@ -1073,7 +1141,9 @@ void populate_register_file_destinations(const instruction &source,
     return;
   }
 
-  const unsigned width = base == "HMMA" ? 4 : destination_width(source);
+  const unsigned width = base == "LDTM"   ? tmem_transfer_words(source.opcode)
+                         : base == "HMMA" ? 4
+                                          : destination_width(source);
   for (size_t index = 0; index < leading_destination_count(source); ++index) {
     const operand &output = source.operands[index];
     append_register_file_destination(target, output.kind, output.index, width);

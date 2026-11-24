@@ -48,6 +48,7 @@ TEST_GROUP_EXTRA_OBJECTS_sm100_unit := \
 	$(OBJ_DIR)/sm100/support/local_interconnect.cc.o \
 	$(OBJ_DIR)/sm100/support/mshr-table.cc.o \
 	$(OBJ_DIR)/sm100/support/option_parser.cc.o \
+	$(OBJ_DIR)/sm100/support/tcgen05/copy.cu.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/descriptor.cu.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/mma.cu.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/timing.cu.o \

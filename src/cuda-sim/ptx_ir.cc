@@ -1772,6 +1772,9 @@ ptx_instruction::ptx_instruction(
       case X4_OPTION:
       case X16_OPTION:
       case X32_OPTION:
+      case X8_OPTION:
+      case X64_OPTION:
+      case X128_OPTION:
       case TCGEN05_CTA_GROUP_1_OPTION:
       case TCGEN05_CTA_GROUP_2_OPTION:
       case TCGEN05_KIND_F16_OPTION:

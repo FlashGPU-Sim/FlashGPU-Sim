@@ -4,6 +4,8 @@ config = "SM120_RTX5090"
 
 [workloads]
 sources = [
+  "unit/sass/functional/tmem_test.cc",
+  "unit/tcgen05_copy_test.cc",
   "integration/scalar_modifiers_test.cu",
   "unit/ptx_timing_isolation_test.cc",
   "core/sass_frontend_lifecycle_test.cc",

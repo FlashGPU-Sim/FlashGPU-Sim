@@ -19,8 +19,8 @@ bool tcgen05_has_option(const ptx_instruction *inst, int option);
 bool is_tcgen05_timing_data_op(int opcode);
 tcgen05_op_kind_t tcgen05_timing_kind(int opcode);
 tcgen05_timing_config_t tcgen05_timing_config(const shader_core_config *config);
-tcgen05_op_t tcgen05_timing_op(const ptx_instruction *inst,
-                               const ptx_instruction *dynamic_inst,
+tcgen05_op_t tcgen05_timing_op(const warp_inst_t *inst,
+                               const warp_inst_t *dynamic_inst,
                                const shader_core_config *config);
 
 // PTX functional execution handlers.

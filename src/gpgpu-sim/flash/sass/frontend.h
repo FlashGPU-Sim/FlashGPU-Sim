@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -14,6 +15,8 @@
 
 namespace flash_gpgpu_sim {
 namespace sass {
+
+struct functional_tcgen_state;
 
 constexpr unsigned kWarpLanes = 32;
 constexpr unsigned kVectorRegisters = 256;
@@ -216,6 +219,7 @@ struct functional_named_barrier_effect {
 // live here.
 class cta_execution_state {
 public:
+  std::shared_ptr<functional_tcgen_state> tcgen;
   explicit cta_execution_state(unsigned warp_count);
 
   unsigned warp_count() const { return warp_count_; }

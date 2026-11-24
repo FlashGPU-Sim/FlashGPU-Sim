@@ -35,6 +35,17 @@ struct tcgen05_tmem_address_t {
 tcgen05_tmem_address_t tcgen05_decode_tmem_address(uint32_t address);
 uint32_t tcgen05_encode_tmem_address(uint32_t lane, uint32_t column);
 
+// Register transfers select their warp's fixed quarter, even when all warps
+// use the same allocated base. Row bits 5:6 cannot select another quarter.
+inline uint32_t tcgen05_tmem_warp_base(uint32_t base, unsigned warp) {
+  return (base & ~0x00600000u) | ((warp % 4) << 21);
+}
+uint32_t tcgen05_tmem_register_address(uint32_t base_address,
+                                       uint32_t warp_lane, uint32_t shape_lanes,
+                                       uint32_t shape_bits,
+                                       uint32_t register_index,
+                                       bool packed = false);
+
 struct tcgen05_tmem_scope_t {
   unsigned sm_id;
   unsigned cta_id;
@@ -56,6 +67,7 @@ public:
     uint32_t ncols;
   };
 
+  void init_native_backing(const tcgen05_tmem_scope_t &scope, uint32_t ncols);
   uint32_t alloc(const tcgen05_tmem_scope_t &scope, uint32_t ncols);
   void dealloc(const tcgen05_tmem_scope_t &scope, uint32_t base,
                uint32_t ncols);
