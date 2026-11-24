@@ -71,5 +71,6 @@ sources = [
   "unit/tcgen05_mma_test.cc",
   "unit/tcgen05_copy_test.cc",
   "unit/tcgen05_timing_test.cc",
+    "unit/sass/functional/reduction_test.cc",
   "unit/sass/functional/tcgen_pair_test.cc",
 ]

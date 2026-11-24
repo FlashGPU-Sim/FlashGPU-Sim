@@ -645,17 +645,22 @@ step_result execute_atomg_exchange(const instruction &inst, warp_state &state,
 
 step_result execute_atomg_add(const instruction &inst, warp_state &state,
                               execution_context &context) {
-  if (!has_typed_operands(inst, 4))
-    return unsupported(inst, "expected predicate, old value, address, source");
-  const operand *predicate = get_operand(inst, 0, operand_kind::kPredicate);
-  const operand *destination = get_operand(inst, 1, operand_kind::kRegister);
+  const bool reduction = inst.opcode.rfind("REDG.", 0) == 0;
+  if (!has_typed_operands(inst, reduction ? 2 : 4))
+    return unsupported(inst,
+                       "expected atomic add or discarded-result add operands");
+  const operand *predicate =
+      reduction ? nullptr : get_operand(inst, 0, operand_kind::kPredicate);
+  const operand *destination =
+      reduction ? nullptr : get_operand(inst, 1, operand_kind::kRegister);
   const operand *address =
-      get_operand(inst, 2, operand_kind::kDescriptorAddress);
-  const operand *source = get_operand(inst, 3, operand_kind::kRegister);
-  if (predicate == nullptr || predicate->index != kTruePredicate ||
-      predicate->negated || destination == nullptr || address == nullptr ||
-      source == nullptr || address->address_register >= kVectorRegisters - 1)
-    return unsupported(inst, "unsupported ATOMG.ADD operand form");
+      get_operand(inst, reduction ? 0 : 2, operand_kind::kDescriptorAddress);
+  const operand *source =
+      get_operand(inst, reduction ? 1 : 3, operand_kind::kRegister);
+  if ((!reduction && (!predicate || predicate->index != kTruePredicate ||
+                      predicate->negated || !destination)) ||
+      !address || !source || address->address_register >= kVectorRegisters - 1)
+    return unsupported(inst, "unsupported ATOMG/REDG.ADD operand form");
   if (context.memory == nullptr)
     return unsupported(inst, "no functional memory is attached");
   (void)state.read_uniform_register(address->descriptor_register);
@@ -682,7 +687,8 @@ step_result execute_atomg_add(const instruction &inst, warp_state &state,
                                sizeof(new_value)))
       return memory_fault(inst, memory_space::kGlobal, location,
                           sizeof(new_value));
-    state.write_register(lane, destination->index, old_value);
+    if (destination)
+      state.write_register(lane, destination->index, old_value);
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -872,6 +878,8 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("LDGSTS.E.BYPASS.128.ZFILL", execute_ldgsts);
   target.register_semantics("ATOMG.E.EXCH.STRONG.GPU", execute_atomg_exchange);
   target.register_semantics("ATOMG.E.ADD.STRONG.GPU", execute_atomg_add);
+  target.register_semantics("REDG.E.ADD.STRONG.GPU", execute_atomg_add);
+  target.register_semantics("REDG.E.ADD.S32.STRONG.GPU", execute_atomg_add);
   target.register_semantics("ATOMS.POPC.INC.32", execute_atoms_popc_increment);
   target.register_semantics("ATOMS.ADD", execute_atoms_add);
   target.register_semantics("ATOMS.OR", execute_atoms_add);

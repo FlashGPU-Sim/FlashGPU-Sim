@@ -188,19 +188,20 @@ bool reads_register_file(const operand &value) {
 }
 
 bool has_destination(const std::string &base) {
-  return base != "ST" && base != "STG" && base != "STS" && base != "STL" &&
-         base != "STSM" && base != "BRA" && base != "BRX" && base != "BSSY" &&
-         base != "BSYNC" && base != "BREAK" && base != "BRXU" &&
-         base != "WARPSYNC" && base != "CALL" && base != "EXIT" &&
-         base != "RET" && base != "NOP" && base != "NANOSLEEP" &&
-         base != "YIELD" && base != "BAR" && base != "MEMBAR" &&
-         base != "DEPBAR" && base != "CCTL" && base != "UTMACCTL" &&
-         base != "UTMACMDFLUSH" && base != "FENCE" && base != "UTMALDG" &&
-         base != "UTMASTG" && base != "UTMAREDG" && base != "UTMAPF" &&
-         base != "UBLKCP" && base != "UBLKRED" && base != "UTCCP" &&
-         base != "UTCHMMA" && base != "UTCQMMA" && base != "UTCOMMA" &&
-         base != "UTCBAR" && base != "STTM" && base != "UVIRTCOUNT" &&
-         base != "LDGSTS" && base != "LDGDEPBAR" && base != "STAS";
+  return base != "REDG" && base != "ST" && base != "STG" && base != "STS" &&
+         base != "STL" && base != "STSM" && base != "BRA" && base != "BRX" &&
+         base != "BSSY" && base != "BSYNC" && base != "BREAK" &&
+         base != "BRXU" && base != "WARPSYNC" && base != "CALL" &&
+         base != "EXIT" && base != "RET" && base != "NOP" &&
+         base != "NANOSLEEP" && base != "YIELD" && base != "BAR" &&
+         base != "MEMBAR" && base != "DEPBAR" && base != "CCTL" &&
+         base != "UTMACCTL" && base != "UTMACMDFLUSH" && base != "FENCE" &&
+         base != "UTMALDG" && base != "UTMASTG" && base != "UTMAREDG" &&
+         base != "UTMAPF" && base != "UBLKCP" && base != "UBLKRED" &&
+         base != "UTCCP" && base != "UTCHMMA" && base != "UTCQMMA" &&
+         base != "UTCOMMA" && base != "UTCBAR" && base != "STTM" &&
+         base != "UVIRTCOUNT" && base != "LDGSTS" && base != "LDGDEPBAR" &&
+         base != "STAS";
 }
 
 // Native output lists can contain a value and carry/status predicates. Keep
@@ -569,7 +570,7 @@ void classify(const instruction &source, const timing_profile &profile,
     // Matrix shared-memory operations enter through the MIO frontend before
     // consuming the SM-wide shared data path.
     target.set_mio_client();
-  } else if (base == "ATOMG" ||
+  } else if (base == "ATOMG" || base == "REDG" ||
              (source.opcode == "ATOMS.ADD" || source.opcode == "ATOMS.OR" ||
               source.opcode == "ATOMS.AND" || source.opcode == "ATOMS.XOR" ||
               source.opcode == "ATOMS.EXCH")) {
