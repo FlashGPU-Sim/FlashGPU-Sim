@@ -1775,6 +1775,7 @@ ptx_instruction::ptx_instruction(
       case X8_OPTION:
       case X64_OPTION:
       case X128_OPTION:
+      case TCGEN05_WS_OPTION:
       case TCGEN05_BLOCK_SCALE_OPTION:
       case TCGEN05_BLOCK32_OPTION:
       case TCGEN05_SCALE_VEC_1X_OPTION:

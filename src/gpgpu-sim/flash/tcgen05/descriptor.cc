@@ -231,8 +231,26 @@ tcgen05_mma_descriptor_t tcgen05_decode_fp8_mma_descriptor(uint32_t idesc) {
   return d;
 }
 
-tcgen05_mma_descriptor_t tcgen05_decode_f16_mma_descriptor(uint32_t idesc,
-                                                           unsigned cta_group) {
+bool tcgen05_f16_descriptor_supported(uint32_t idesc, unsigned group, bool ws) {
+  if (group != 1 && group != 2)
+    return false;
+  const unsigned m = ((idesc >> 24) & 31) * 16;
+  const unsigned n = ((idesc >> 17) & 63) * 8;
+  const unsigned a = (idesc >> 7) & 7, b = (idesc >> 10) & 7;
+  const unsigned d = (idesc >> 4) & 3;
+  if ((idesc & 0xe080004fu) || d > 1 || a > 1 || b > 1 ||
+      (d == 0 && (a != 0 || b != 0)))
+    return false;
+  if (ws)
+    return group == 1 && m == 64 && (n == 64 || n == 128 || n == 256);
+  return (group == 1 ? (m == 64 || m == 128) : (m == 128 || m == 256)) &&
+         n >= 8 * group && n <= 256 && n % (8 * group) == 0;
+}
+
+tcgen05_mma_descriptor_t
+tcgen05_decode_f16_mma_descriptor(uint32_t idesc, unsigned cta_group, bool ws) {
+  assert(tcgen05_f16_descriptor_supported(idesc, cta_group, ws) &&
+         "Unsupported dense F16/BF16 instruction descriptor");
   tcgen05_mma_descriptor_t decoded = {};
   decoded.sparsity_selector = idesc & 0x3;
   decoded.sparse = ((idesc >> 2) & 0x1) != 0;
@@ -247,40 +265,6 @@ tcgen05_mma_descriptor_t tcgen05_decode_f16_mma_descriptor(uint32_t idesc,
   decoded.m = ((idesc >> 24) & 0x1f) << 4;
   decoded.k = decoded.sparse ? 32 : 16;
 
-  assert((cta_group == 1 || cta_group == 2) &&
-         "TCGen05 cta_group must be ::1 or ::2");
-  assert(!decoded.sparse && "Sparse TCGen05 f16 MMA is not supported");
-  assert(((idesc >> 3) & 0x1) == 0 &&
-         "TCGen05 f16 MMA saturate bit must be zero");
-  assert(((idesc >> 6) & 0x1) == 0 &&
-         "TCGen05 f16 MMA reserved bit 6 must be zero");
-  assert(((idesc >> 23) & 0x1) == 0 &&
-         "TCGen05 f16 MMA reserved bit 23 must be zero");
-  assert(((idesc >> 29) & 0x1) == 0 &&
-         "TCGen05 f16 MMA reserved bit 29 must be zero");
-  assert((decoded.d_type == TCGEN05_MMA_TYPE_FIELD_ONE ||
-          (decoded.d_type == TCGEN05_MMA_TYPE_FIELD_F16 &&
-           decoded.a_type == TCGEN05_MMA_TYPE_FIELD_F16 &&
-           decoded.b_type == TCGEN05_MMA_TYPE_FIELD_F16)) &&
-         "TCGen05 supports F32 D or F16 D with F16 inputs");
-  assert((decoded.a_type == TCGEN05_MMA_TYPE_FIELD_F16 ||
-          decoded.a_type == TCGEN05_MMA_TYPE_FIELD_ONE) &&
-         "Only TCGen05 f16/BF16 A input is supported");
-  assert((decoded.b_type == TCGEN05_MMA_TYPE_FIELD_F16 ||
-          decoded.b_type == TCGEN05_MMA_TYPE_FIELD_ONE) &&
-         "Only TCGen05 f16/BF16 B input is supported");
-  if (cta_group == 1) {
-    assert((decoded.m == 64 || decoded.m == 128) &&
-           "TCGen05 f16 dense cta_group::1 supports M=64 or M=128");
-    assert(decoded.n >= 8 && decoded.n <= 256 && decoded.n % 8 == 0 &&
-           "TCGen05 f16 dense cta_group::1 supports N in steps of 8");
-  } else {
-    // A CTA pair covers M=128 or M=256 in steps of 16 along N.
-    assert((decoded.m == 128 || decoded.m == 256) &&
-           "TCGen05 f16 dense cta_group::2 supports M=128 or M=256");
-    assert(decoded.n >= 16 && decoded.n <= 256 && decoded.n % 16 == 0 &&
-           "TCGen05 f16 dense cta_group::2 supports N in steps of 16");
-  }
   return decoded;
 }
 

@@ -110,17 +110,10 @@ step_result half_mma(const instruction &inst, warp_state &state,
     return tf32_tmem_mma(inst, state, context, idesc, a_address, destination,
                          br);
   }
-  constexpr uint32_t unsupported_bits = 0xe080004fu;
-  const unsigned dtype = (idesc >> 4) & 3;
-  if ((idesc & unsupported_bits) || dtype > 1 ||
-      (dtype == 0 && (af != 0 || bf != 0)) || af > 1 || bf > 1 ||
-      (group == 1 ? (m != 64 && m != 128) : (m != 128 && m != 256)) ||
-      n < 8 * group || n > 256 || n % (8 * group))
+  if (!tcgen05_f16_descriptor_supported(idesc, group, ws))
     return unsupported(inst,
                        "unqualified dense F16/BF16 instruction descriptor");
-  if (ws && (m != 64 || (n != 64 && n != 128 && n != 256)))
-    return unsupported(inst, "unqualified WS half MMA shape or A storage");
-  const auto desc = tcgen05_decode_f16_mma_descriptor(idesc, group);
+  const auto desc = tcgen05_decode_f16_mma_descriptor(idesc, group, ws);
   tcgen05_shared_descriptor_t ad, bd;
   if ((!tmem_a &&
        !shared_descriptor(read_uniform_register_pair(state, ar.index), ad,

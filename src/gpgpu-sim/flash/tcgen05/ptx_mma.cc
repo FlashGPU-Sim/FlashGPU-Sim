@@ -274,6 +274,12 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   if (!tcgen05_is_warp_leader(thread))
     return;
   assert(pI->get_num_operands() >= 5);
+  const bool ws = tcgen05_has_option(pI, TCGEN05_WS_OPTION);
+  assert((!ws || tcgen05_has_option(pI, TCGEN05_KIND_F16_OPTION)) &&
+         "Only F16/BF16 WS MMA has been qualified");
+  if (ws)
+    assert(pI->get_num_operands() == 5 &&
+           "WS zero-column masks are not qualified");
   if (tcgen05_has_option(pI, TCGEN05_KIND_F8F6F4_OPTION)) {
     tcgen05_mma_fp8_ptx(pI, thread);
     return;
@@ -324,7 +330,7 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   }
   flash_gpgpu_sim::tcgen05_mma_descriptor_t mma_desc =
       flash_gpgpu_sim::tcgen05_decode_f16_mma_descriptor(
-          tcgen05_read_operand(pI, thread, 3).u32, tcgen05_cta_group(pI));
+          tcgen05_read_operand(pI, thread, 3).u32, tcgen05_cta_group(pI), ws);
   inst_t::tcgen05_dyn_info_t perf_info;
   perf_info.mma_work = 2ULL * mma_desc.m * mma_desc.n * mma_desc.k;
   const_cast<ptx_instruction *>(pI)->set_tcgen05_dyn_info(thread->get_laneid(),
@@ -348,8 +354,8 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   bool enable_input_d = tcgen05_read_enable_input_d(enable_input_d_op, thread);
 
   const unsigned local_m = mma_desc.m / group;
-  const bool folded = group == 2 && mma_desc.m == 128;
-  if (group == 2 && a_desc_op.is_memory_operand()) {
+  const bool folded = (group == 2 && mma_desc.m == 128) || ws;
+  if ((group == 2 || ws) && a_desc_op.is_memory_operand()) {
     assert(mma_desc.n % 32 == 0 && !mma_desc.transpose_a &&
            !(a_tmem_address >> 16) && !(a_tmem_address & 7) &&
            "unqualified paired TMEM-A layout");
@@ -372,7 +378,7 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   };
   std::vector<uint16_t> a_values;
   if (a_desc_op.is_memory_operand()) {
-    if (group == 1)
+    if (group == 1 && !ws)
       a_values = manager.read_matrix_packed_u16(scope, a_tmem_address,
                                                 mma_desc.m, mma_desc.k);
   } else {
@@ -389,7 +395,7 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
     }
   }
   std::vector<uint32_t> output;
-  if (group == 2 && a_desc_op.is_memory_operand()) {
+  if ((group == 2 || ws) && a_desc_op.is_memory_operand()) {
     std::vector<std::vector<uint16_t>> physical_a(group);
     for (unsigned rank = 0; rank < group; ++rank)
       physical_a[rank] = manager.read_matrix_packed_u16(

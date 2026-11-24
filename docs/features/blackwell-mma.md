@@ -45,6 +45,20 @@ conversions, swizzled shared layouts, scale-byte selection and accumulator
 mapping. This is broader than the complete-launch matrix; it is not a claim
 that every ISA modifier/shape is qualified end to end.
 
+The WS follow-up adds four numerical tests / eight launches per frontend:
+FP16 M64 N64/N128/N256 with either shared-A or TMEM-A, and BF16 with both A
+storage kinds. Two successive MMAs test accumulation. The TMEM-A fixtures
+intentionally populate different values in the upper/lower physical halves,
+then check every output against an independent host reference. CUDA 13.3
+emits `UTCHMMA.WS` for these fixtures. The expanded MMA CI gate contains
+12 numerical tests / 20 launches per frontend and 64 component tests.
+
+WS uses the default collector-discard form. Explicit collector fill/use,
+zero-column masks, WS TF32/FP8 and integer WS are not qualified by this gate.
+PTX and SASS share descriptor validation, folded accumulator addressing and
+the physical TMEM-A arithmetic helper. No duplicate WS math implementation
+was introduced.
+
 A component fixture was updated from K-by-N B storage to the common backend's
 non-transposed N-by-K representation. Its expected results were not relaxed.
 The complete-launch nonuniform F16/BF16 cases independently check that contract.
@@ -57,13 +71,14 @@ unchanged. Local CI evidence must not be described as hosted CI success.
 
 ## Remaining before public readiness
 
-- Audit and qualify the remaining native/PTX asymmetries, particularly WS,
-  TMEM-A half forms, transpose/negation combinations and scaled variants beyond
+- Audit and qualify the remaining native/PTX asymmetries, particularly non-default WS,
+  ordinary TMEM-A half forms, transpose/negation combinations and scaled variants beyond
   the recorded matrix. Native registration is not numerical acceptance.
 - Audit malformed descriptor/modifier gates and add rejection cases.
-- Separate any generic fixes that should not depend on this feature. The old
-  private stack includes an F32-to-F16 rounding correction that needs this
-  review before publication.
+- Qualify F16-output launches. The RN conversion correction belongs with this
+  added output path: at public base `b3378cb9`, the helper is called only by
+  unit fixtures and the runtime supports F32 output only. Other conversion
+  implementations were not changed. This is not a public runtime regression.
 - Qualify paired CTA in its own functional unit, then CLC and Rubin, and rerun
   the retained DeepInfer acceptance cases on the assembled stack.
 - No new GPU timing measurements, full DeepInfer acceptance, private research

@@ -599,3 +599,25 @@ TEST(Tcgen05Tmem, DensePhysicalAImagesShareNumericsAcrossLayouts) {
           }
         }
 }
+
+TEST(Tcgen05Mma, DenseDescriptorValidationIsSharedAcrossFrontends) {
+  for (unsigned n : {64u, 128u, 256u}) {
+    const auto raw = make_f16_idesc(64, n);
+    EXPECT_TRUE(tcgen05_f16_descriptor_supported(raw, 1, true));
+    EXPECT_FALSE(tcgen05_f16_descriptor_supported(raw, 2, true));
+    for (unsigned bit : {0u, 1u, 2u, 3u, 6u, 23u, 29u, 30u, 31u})
+      EXPECT_FALSE(
+          tcgen05_f16_descriptor_supported(raw | (1u << bit), 1, true));
+    for (unsigned modifiers = 0; modifiers < 16; ++modifiers)
+      EXPECT_TRUE(
+          tcgen05_f16_descriptor_supported(raw | (modifiers << 13), 1, true));
+  }
+  EXPECT_FALSE(
+      tcgen05_f16_descriptor_supported(make_f16_idesc(64, 32), 1, true));
+  EXPECT_FALSE(
+      tcgen05_f16_descriptor_supported(make_f16_idesc(128, 64), 1, true));
+  EXPECT_TRUE(tcgen05_f16_descriptor_supported(make_f16_idesc(128, 16), 1));
+  EXPECT_FALSE(tcgen05_f16_descriptor_supported(make_f16_idesc(128, 16), 0));
+  EXPECT_FALSE(
+      tcgen05_f16_descriptor_supported(make_f16_idesc(128, 16) | (2u << 7), 1));
+}

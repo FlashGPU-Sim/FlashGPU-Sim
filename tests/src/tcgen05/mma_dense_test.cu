@@ -5,24 +5,42 @@
 #include <cstring>
 #include <vector>
 namespace {
-template <unsigned Kind, unsigned M>
+template <unsigned Kind, unsigned M, unsigned N = 16, bool WS = false,
+          bool TmemA = false>
 __global__ void dense_patterns(const unsigned char *input, float *output) {
-  constexpr unsigned N = 16, K = Kind < 2 ? 16 : 32;
-  __shared__ __align__(128) unsigned char a[M * 32], b[N * 32];
+  constexpr unsigned K = Kind < 2 ? 16 : 32;
+  constexpr unsigned ARows = TmemA ? 128 : M, Alloc = WS ? 256 : 32;
+  __shared__ __align__(128) unsigned char a[ARows * 32], b[N * 32];
   __shared__ unsigned base;
   __shared__ unsigned long long bar;
   const unsigned t = threadIdx.x;
-  for (unsigned i = t; i < M * 32; i += 128) a[i] = input[i];
-  for (unsigned i = t; i < N * 32; i += 128) b[i] = input[M * 32 + i];
+  for (unsigned i = t; i < ARows * 32; i += 128) a[i] = input[i];
+  for (unsigned i = t; i < N * 32; i += 128) b[i] = input[ARows * 32 + i];
   const unsigned bp = (unsigned)__cvta_generic_to_shared(&bar);
   if (t == 0)
     asm volatile("mbarrier.init.shared::cta.b64 [%0],1;" ::"r"(bp) : "memory");
   if (t < 32)
     asm volatile(
-        "tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%0],32;" ::
-            "r"((unsigned)__cvta_generic_to_shared(&base))
+        "tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%0],%1;" ::
+            "r"((unsigned)__cvta_generic_to_shared(&base)),
+        "n"(Alloc)
         : "memory");
   __syncthreads();
+  if constexpr (TmemA) {
+    // Populate every physical row, with distinct values in the two N halves.
+    for (unsigned k = 0; k < 8; ++k) {
+      const unsigned offset =
+          (t / 8) * 256 + (t % 8) * 16 + (k / 4) * 128 + (k % 4) * 4;
+      const unsigned word = *reinterpret_cast<const unsigned *>(a + offset);
+      asm volatile("tcgen05.st.sync.aligned.32x32b.x1.b32 [%0],{%1};" ::"r"(
+                       base + 128 + k),
+                   "r"(word)
+                   : "memory");
+    }
+    asm volatile("tcgen05.wait::st.sync.aligned;" ::: "memory");
+    __syncthreads();
+    asm volatile("tcgen05.fence::after_thread_sync;" ::: "memory");
+  }
   asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
   if (t == 0) {
     const unsigned long long ad = ((unsigned)__cvta_generic_to_shared(a) >> 4) |
@@ -39,7 +57,27 @@ __global__ void dense_patterns(const unsigned char *input, float *output) {
       " [%0],%1,%2,%3,p; }" ::"r"(base),                                     \
       "l"(ad), "l"(bd), "r"(desc)                                            \
       : "memory")
-    if constexpr (Kind < 2) {
+    if constexpr (WS) {
+      if constexpr (TmemA) {
+        asm volatile(
+            "{ .reg .pred p; mov.pred p,0; "
+            "tcgen05.mma.ws.cta_group::1.kind::f16 [%0],[%1],%2,%3,p; "
+            "mov.pred p,1; "
+            "tcgen05.mma.ws.cta_group::1.kind::f16 [%0],[%1],%2,%3,p; }" ::"r"(
+                base),
+            "r"(base + 128), "l"(bd), "r"(desc)
+            : "memory");
+      } else {
+        asm volatile(
+            "{ .reg .pred p; mov.pred p,0; "
+            "tcgen05.mma.ws.cta_group::1.kind::f16 [%0],%1,%2,%3,p; "
+            "mov.pred p,1; "
+            "tcgen05.mma.ws.cta_group::1.kind::f16 [%0],%1,%2,%3,p; }" ::"r"(
+                base),
+            "l"(ad), "l"(bd), "r"(desc)
+            : "memory");
+      }
+    } else if constexpr (Kind < 2) {
       DENSE_MMA("f16");
     } else {
       DENSE_MMA("f8f6f4");
@@ -54,13 +92,16 @@ __global__ void dense_patterns(const unsigned char *input, float *output) {
       "p,[%0],0; @!p bra wait; }" ::"r"(bp)
       : "memory");
   asm volatile("tcgen05.fence::after_thread_sync;" ::: "memory");
-  for (unsigned col = 0; col < N; ++col) {
+  for (unsigned col = 0; col < (WS ? N / 2 : N); ++col) {
     unsigned value;
     asm volatile("tcgen05.ld.sync.aligned.32x32b.x1.b32 {%0},[%1];"
                  : "=r"(value)
                  : "r"(base + col));
     asm volatile("tcgen05.wait::ld.sync.aligned;" ::: "memory");
-    if (M == 128 || t % 32 < 16) {
+    if constexpr (WS) {
+      output[(blockIdx.x * M + t % 64) * N + (t / 64) * (N / 2) + col] =
+          __uint_as_float(value);
+    } else if (M == 128 || t % 32 < 16) {
       const unsigned row = M == 128 ? t : (t / 32) * 16 + t % 32;
       output[(blockIdx.x * M + row) * N + col] = __uint_as_float(value);
     }
@@ -70,19 +111,22 @@ __global__ void dense_patterns(const unsigned char *input, float *output) {
     asm volatile("tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;" ::
                      : "memory");
     asm volatile(
-        "tcgen05.dealloc.cta_group::1.sync.aligned.b32 %0,32;" ::"r"(base)
+        "tcgen05.dealloc.cta_group::1.sync.aligned.b32 %0,%1;" ::"r"(base),
+        "n"(Alloc)
         : "memory");
   }
 }
-template <unsigned Kind, unsigned M>
+template <unsigned Kind, unsigned M, unsigned N = 16, bool WS = false,
+          bool TmemA = false>
 void check_dense() {
-  constexpr unsigned N = 16, K = Kind < 2 ? 16 : 32, bytes = Kind < 2 ? 2 : 1;
-  std::vector<unsigned char> input((M + N) * 32);
+  constexpr unsigned K = Kind < 2 ? 16 : 32, bytes = Kind < 2 ? 2 : 1;
+  constexpr unsigned ARows = TmemA ? 128 : M;
+  std::vector<unsigned char> input((ARows + N) * 32);
   auto fill = [&](unsigned rows, unsigned start, bool is_b) {
     for (unsigned r = 0; r < rows; ++r)
       for (unsigned k = 0; k < K; ++k) {
         float value = is_b ? float(int((r + k) % 5) - 2)
-                           : float((r % 3 + 1) * (k % 2 + 1));
+                           : float((r % 3 + 1 + r / 64) * (k % 2 + 1));
         unsigned bits = 0;
         if constexpr (Kind == 0) {
           __half h = __float2half(value);
@@ -100,15 +144,15 @@ void check_dense() {
         std::memcpy(input.data() + offset, &bits, bytes);
       }
   };
-  fill(M, 0, false);
-  fill(N, M * 32, true);
+  fill(ARows, 0, false);
+  fill(N, ARows * 32, true);
   unsigned char *in = nullptr;
   float *out = nullptr;
   ASSERT_EQ(cudaMalloc(&in, input.size()), cudaSuccess);
   ASSERT_EQ(cudaMalloc(&out, 2 * M * N * 4), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(in, input.data(), input.size(), cudaMemcpyHostToDevice),
             cudaSuccess);
-  dense_patterns<Kind, M><<<2, 128>>>(in, out);
+  dense_patterns<Kind, M, N, WS, TmemA><<<2, 128>>>(in, out);
   ASSERT_EQ(cudaGetLastError(), cudaSuccess);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   std::vector<float> output(2 * M * N);
@@ -119,8 +163,9 @@ void check_dense() {
     for (unsigned r = 0; r < M; ++r)
       for (unsigned n = 0; n < N; ++n) {
         float expected = 0;
+        const unsigned ar = TmemA ? r + (n / (N / 2)) * 64 : r;
         for (unsigned k = 0; k < K; ++k)
-          expected -= 2 * float((r % 3 + 1) * (k % 2 + 1)) *
+          expected -= 2 * float((ar % 3 + 1 + ar / 64) * (k % 2 + 1)) *
                       float(int((n + k) % 5) - 2);
         ASSERT_EQ(output[(cta * M + r) * N + n], expected)
             << Kind << ':' << r << ':' << n;
@@ -138,4 +183,20 @@ TEST(Tcgen05Mma, DenseBf16PatternsAndAccumulation) {
 }
 TEST(Tcgen05Mma, DenseE4M3PatternsAndAccumulation) { check_dense<2, 128>(); }
 TEST(Tcgen05Mma, DenseE5M2PatternsAndAccumulation) { check_dense<3, 128>(); }
+TEST(Tcgen05Mma, WsSharedF16ShapesAndAccumulation) {
+  check_dense<0, 64, 64, true>();
+  check_dense<0, 64, 128, true>();
+  check_dense<0, 64, 256, true>();
+}
+TEST(Tcgen05Mma, WsTmemF16ShapesAndAccumulation) {
+  check_dense<0, 64, 64, true, true>();
+  check_dense<0, 64, 128, true, true>();
+  check_dense<0, 64, 256, true, true>();
+}
+TEST(Tcgen05Mma, WsSharedBf16PatternsAndAccumulation) {
+  check_dense<1, 64, 64, true>();
+}
+TEST(Tcgen05Mma, WsTmemBf16PatternsAndAccumulation) {
+  check_dense<1, 64, 128, true, true>();
+}
 }  // namespace

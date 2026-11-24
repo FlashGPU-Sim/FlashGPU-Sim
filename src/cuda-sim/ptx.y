@@ -298,6 +298,7 @@ class ptx_recognizer;
 %token	X8_OPTION;
 %token	X64_OPTION;
 %token	X128_OPTION;
+%token	TCGEN05_WS_OPTION;
 %token	TCGEN05_BLOCK_SCALE_OPTION;
 %token	TCGEN05_BLOCK32_OPTION;
 %token	TCGEN05_SCALE_VEC_1X_OPTION;
@@ -759,6 +760,7 @@ option: type_spec
 	| X8_OPTION { recognizer->add_option(X8_OPTION); }
 	| X64_OPTION { recognizer->add_option(X64_OPTION); }
 	| X128_OPTION { recognizer->add_option(X128_OPTION); }
+	| TCGEN05_WS_OPTION { recognizer->add_option(TCGEN05_WS_OPTION); }
 	| TCGEN05_BLOCK_SCALE_OPTION { recognizer->add_option(TCGEN05_BLOCK_SCALE_OPTION); }
 	| TCGEN05_BLOCK32_OPTION { recognizer->add_option(TCGEN05_BLOCK32_OPTION); }
 	| TCGEN05_SCALE_VEC_1X_OPTION { recognizer->add_option(TCGEN05_SCALE_VEC_1X_OPTION); }

@@ -82,8 +82,11 @@ tcgen05_mxf8f6f4_shared_location(uint32_t logical_k, uint8_t format);
 bool tcgen05_mxf8f6f4_dense_shape_supported(uint32_t m, uint32_t n, uint32_t k,
                                             unsigned cta_group);
 tcgen05_mma_descriptor_t tcgen05_decode_fp8_mma_descriptor(uint32_t idesc);
+bool tcgen05_f16_descriptor_supported(uint32_t idesc, unsigned cta_group,
+                                      bool ws = false);
 tcgen05_mma_descriptor_t tcgen05_decode_f16_mma_descriptor(uint32_t idesc,
-                                                           unsigned cta_group);
+                                                           unsigned cta_group,
+                                                           bool ws = false);
 tcgen05_mma_descriptor_t tcgen05_decode_mxf4_mma_descriptor(uint32_t idesc,
                                                             unsigned cta_group,
                                                             bool sm107 = false);

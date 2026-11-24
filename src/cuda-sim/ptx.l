@@ -487,6 +487,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.x8 TC; return X8_OPTION;
 \.x64 TC; return X64_OPTION;
 \.x128 TC; return X128_OPTION;
+\.ws TC; return TCGEN05_WS_OPTION;
 \.block_scale TC; return TCGEN05_BLOCK_SCALE_OPTION;
 \.block32 TC; return TCGEN05_BLOCK32_OPTION;
 \.scale_vec::1X TC; return TCGEN05_SCALE_VEC_1X_OPTION;
