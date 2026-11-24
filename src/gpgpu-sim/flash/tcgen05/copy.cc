@@ -21,8 +21,12 @@ bool tcgen05_copy_addresses(uint64_t raw, tcgen05_copy_shape shape,
     if (start % (4 * words) ||
         (swizzle ? lbo != 16 || sbo != 8 * swizzle : lbo != 2048 || sbo != 128))
       return false;
-  } else if (raw != (uint64_t(1) << 46 | (start >> 4))) {
-    return false;
+  } else {
+    // Broadcast scale copies use a contiguous 16-byte row. Retain the zero
+    // stride encoding and accept the explicit eight-row (128B) stride emitted
+    // by DeepGEMM. Other strides/swizzles still require layout qualification.
+    if (mode != 0 || lbo != 0 || (sbo != 0 && sbo != 128))
+      return false;
   }
   out.reserve(128 * words);
   for (unsigned row = 0; row < 128; ++row) {

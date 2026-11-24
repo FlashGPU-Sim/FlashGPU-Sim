@@ -68,3 +68,7 @@ and dependencies, and over-completion rejection before architectural stores.
   work. Historical private-stack results are not acceptance for this branch.
 
 Reference: [NVIDIA PTX TCGen05](https://docs.nvidia.com/cuda/parallel-thread-execution/#tcgen05-instructions).
+
+The explicit contiguous scale-stride follow-up adds a paired block-scaled MMA
+fixture. The paired CI gate now requires 5 tests / 15 launches per frontend;
+PTX and SASS reuse the common copy descriptor decoder.

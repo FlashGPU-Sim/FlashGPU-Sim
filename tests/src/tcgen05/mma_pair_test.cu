@@ -286,6 +286,7 @@ TEST(Tcgen05Pair, DenseTmemAHalfAndBfloatPhysicalImages) {
   check_paired_tmem_a<256, 64, true>();
 }
 
+template <bool ExplicitStride = false>
 __global__ void __cluster_dims__(2, 1, 1) paired_mma_commit(float *out) {
   __shared__ __align__(16) unsigned short a[128 * 16], b[8 * 16];
   __shared__ __align__(8) unsigned long long barrier;
@@ -321,13 +322,15 @@ __global__ void __cluster_dims__(2, 1, 1) paired_mma_commit(float *out) {
     const unsigned long long bd = ((unsigned)__cvta_generic_to_shared(b) >> 4) |
                                   (8ull << 16) | (16ull << 32) | (1ull << 46);
     const unsigned long long sd =
-        ((unsigned)__cvta_generic_to_shared(scales_a) >> 4) | (1ull << 46);
+        ((unsigned)__cvta_generic_to_shared(scales_a) >> 4) | (1ull << 46) |
+        (ExplicitStride ? 8ull << 32 : 0);
     asm volatile(
         "tcgen05.cp.cta_group::2.32x128b.warpx4 [%0],%1;" ::"r"(tmem + 16),
         "l"(sd)
         : "memory");
     const unsigned long long sbd =
-        ((unsigned)__cvta_generic_to_shared(scales_b) >> 4) | (1ull << 46);
+        ((unsigned)__cvta_generic_to_shared(scales_b) >> 4) | (1ull << 46) |
+        (ExplicitStride ? 8ull << 32 : 0);
     asm volatile(
         "tcgen05.cp.cta_group::2.32x128b.warpx4 [%0],%1;" ::"r"(tmem + 20),
         "l"(sbd)
@@ -373,6 +376,7 @@ __global__ void __cluster_dims__(2, 1, 1) paired_mma_commit(float *out) {
         : "memory");
   }
 }
+template <bool ExplicitStride = false>
 void check_paired_mma(unsigned blocks) {
   float *device = nullptr;
   std::vector<float> result(blocks * 128 * 16);
@@ -385,7 +389,7 @@ void check_paired_mma(unsigned blocks) {
   attr.val.clusterDim = {2, 1, 1};
   config.attrs = &attr;
   config.numAttrs = 1;
-  ASSERT_EQ(cudaLaunchKernelEx(&config, paired_mma_commit, device),
+  ASSERT_EQ(cudaLaunchKernelEx(&config, paired_mma_commit<ExplicitStride>, device),
             cudaSuccess);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(result.data(), device, result.size() * sizeof(float),
@@ -406,3 +410,5 @@ TEST(Tcgen05Pair, BlockScaledFp4Fp8MulticastCommit) { check_paired_mma(2); }
 TEST(Tcgen05Pair, MulticastAndTmemStayWithinEachCluster) {
   check_paired_mma(4);
 }
+
+TEST(Tcgen05Pair, ExplicitContiguousScaleStride) { check_paired_mma<true>(4); }

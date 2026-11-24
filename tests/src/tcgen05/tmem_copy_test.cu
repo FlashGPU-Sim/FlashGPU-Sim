@@ -3,7 +3,7 @@
 #include <vector>
 
 namespace {
-template <int Shape, int Swizzle = 0>
+template <int Shape, int Swizzle = 0, bool ExplicitStride = false>
 __global__ void copy_tile(unsigned *out) {
   __shared__ __align__(1024) unsigned input[4096];
   __shared__ __align__(8) unsigned long long barrier;
@@ -33,6 +33,7 @@ __global__ void copy_tile(unsigned *out) {
                                                  : 0)
             << 61;
   }
+  if constexpr (ExplicitStride) desc |= 8ull << 32;
   asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
   if (tid == 0) {
     if constexpr (Shape == 0)
@@ -88,13 +89,13 @@ __global__ void copy_tile(unsigned *out) {
         : "memory");
   }
 }
-template <int Shape, int Swizzle = 0>
+template <int Shape, int Swizzle = 0, bool ExplicitStride = false>
 void check_copy() {
   constexpr unsigned words = Shape == 0 ? 8 : 4;
   unsigned *device = nullptr;
   std::vector<unsigned> result(2 * 128 * words);
   ASSERT_EQ(cudaMalloc(&device, result.size() * 4), cudaSuccess);
-  copy_tile<Shape, Swizzle><<<2, 128>>>(device);
+  copy_tile<Shape, Swizzle, ExplicitStride><<<2, 128>>>(device);
   ASSERT_EQ(cudaGetLastError(), cudaSuccess);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(result.data(), device, result.size() * 4,
@@ -127,4 +128,7 @@ TEST(Tcgen05Copy, FourWayBroadcast) { check_copy<4>(); }
 TEST(Tcgen05Copy, Swizzle32) { check_copy<0, 32>(); }
 TEST(Tcgen05Copy, Swizzle64) { check_copy<0, 64>(); }
 TEST(Tcgen05Copy, Swizzle128) { check_copy<0, 128>(); }
+TEST(Tcgen05Copy, ExplicitContiguousBroadcastStride) {
+  check_copy<2,0,true>(); check_copy<3,0,true>(); check_copy<4,0,true>();
+}
 }  // namespace

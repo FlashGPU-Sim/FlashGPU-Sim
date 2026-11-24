@@ -47,3 +47,15 @@ TEST(Tcgen05CopyLayout, SwizzledCopyIsPermutationAndKeepsRowWidths) {
     EXPECT_LT(*unique.rbegin(), 0x800u + 128 * width);
   }
 }
+
+TEST(Tcgen05CopyLayout, ExplicitContiguousStrideMatchesBroadcastImage) {
+  for (auto shape :
+       {tcgen05_copy_shape::warpx4, tcgen05_copy_shape::warpx2_02_13,
+        tcgen05_copy_shape::warpx2_01_23}) {
+    std::vector<uint32_t> implicit, explicit_stride;
+    ASSERT_TRUE(tcgen05_copy_addresses(0x400000003140ull, shape, implicit));
+    ASSERT_TRUE(
+        tcgen05_copy_addresses(0x400800003140ull, shape, explicit_stride));
+    EXPECT_EQ(implicit, explicit_stride);
+  }
+}
