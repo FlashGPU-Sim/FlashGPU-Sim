@@ -142,3 +142,10 @@ cuda = "13.3"
 tests = [
   { name = "ws-collectors-and-dual-launch", group = "unit", gtest_filter = "Tcgen05Collector.*", post_check = "tests/ci/check_ws_collectors_dual.py" },
 ]
+
+[jobs.sm100-memory-forms]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "memory-forms-and-dual-launch", group = "unit", gtest_filter = "SharedBulk.*:SassSharedBulk.*:SassGlobal256.*:PtxMemoryForms.*:MemoryTransportTest.WidePerLaneAccessesKeepSectorRequestsAndCoalescing", post_check = "tests/ci/check_memory_forms_dual.py" },
+]

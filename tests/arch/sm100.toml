@@ -4,6 +4,10 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "memory_forms/launch_test.cu",
+  "unit/shared_bulk_test.cc",
+  "unit/sass/functional/memory_forms_test.cc",
+  "unit/ptx_memory_forms_test.cc",
   "shared_address/launch_test.cu",
   "unit/bfloat_conversion_test.cc",
   "unit/sass/functional/bfloat_conversion_test.cc",

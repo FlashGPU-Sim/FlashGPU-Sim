@@ -1740,6 +1740,11 @@ ptx_instruction::ptx_instruction(
       case PRMT_RC16_MODE:
         m_prmt_op = last_ptx_inst_option;
         break;
+      case L1_NO_ALLOCATE_OPTION:
+        // Replacement hint, not .cg: retain the original cache operator.
+        // L1 allocation/replacement policy is not calibrated here.
+        assert(opcode == LD_OP || opcode == ST_OP);
+        break;
       case TENSOR_OPTION:
       case DIM_1D_OPTION: 
       case DIM_2D_OPTION: 
@@ -1870,7 +1875,7 @@ ptx_instruction::ptx_instruction(
 
   m_space_spec = space_spec;
   m_space_spec2 = space_spec2;
-  if ((opcode == ST_OP || opcode == LD_OP || opcode == LDU_OP) &&
+  if ((opcode == ST_OP || opcode == ST_BULK_OP || opcode == LD_OP || opcode == LDU_OP) &&
       (space_spec == undefined_space)) {
     m_space_spec = generic_space;
   }

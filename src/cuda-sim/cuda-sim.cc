@@ -752,7 +752,7 @@ std::string cuda_sim::ptx_get_insn_str(address_type pc) {
 
 void ptx_instruction::set_fp_or_int_archop() {
   oprnd_type = UN_OP;
-  if ((m_opcode == TRAP_OP) || (m_opcode == BRKPT_OP) ||
+  if ((m_opcode == TRAP_OP) || (m_opcode == BRKPT_OP) || (m_opcode == ST_BULK_OP) ||
       (m_opcode == MEMBAR_OP) || (m_opcode == SSY_OP) || (m_opcode == BRA_OP) ||
       (m_opcode == BAR_OP) || (m_opcode == RET_OP) || (m_opcode == RETP_OP) ||
       (m_opcode == NOP_OP) || (m_opcode == EXIT_OP) || (m_opcode == CALLP_OP) ||
@@ -794,7 +794,7 @@ void ptx_instruction::set_fp_or_int_archop() {
 
 void ptx_instruction::set_mul_div_or_other_archop() {
   sp_op = OTHER_OP;
-  if ((m_opcode != TRAP_OP) && (m_opcode != BRKPT_OP) &&
+  if ((m_opcode != TRAP_OP) && (m_opcode != BRKPT_OP) && (m_opcode != ST_BULK_OP) &&
       (m_opcode != MEMBAR_OP) && (m_opcode != SSY_OP) && (m_opcode != BRA_OP) &&
       (m_opcode != BAR_OP) && (m_opcode != EXIT_OP) && (m_opcode != NOP_OP) &&
       (m_opcode != RETP_OP) && (m_opcode != RET_OP) && (m_opcode != CALLP_OP) &&
@@ -1271,6 +1271,9 @@ void ptx_instruction::set_opcode_and_latency() {
       initiation_interval = cp_async_wait_init_val;
       break;
     case ST_OP:
+      op = STORE_OP;
+      break;
+    case ST_BULK_OP:
       op = STORE_OP;
       break;
     case MMA_ST_OP:
@@ -1834,6 +1837,10 @@ void ptx_instruction::pre_decode() {
         data_size = (unsigned)src2().get_literal_value().u64;
       }
     }
+  } else if (m_opcode == ST_BULK_OP) {
+    data_size = 8;
+    memory_op = memory_store;
+    space.set_type(shared_space);
   } else if (has_memory_read() || has_memory_write()) {
     unsigned to_type = get_type();
     data_size = datatype2size(to_type);
@@ -2819,7 +2826,7 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
              inst_opcode == LDMATRIX_OP || inst_opcode == STMATRIX_OP))) {
         insn_memaddr = last_eaddr();
         insn_space = last_space();
-        if (pI->m_is_ldgsts) {
+        if (pI->m_is_ldgsts || inst_opcode == ST_BULK_OP) {
           insn_data_size = pI->data_size;
         } else {
           unsigned to_type = pI->get_type();
@@ -2935,7 +2942,7 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
              inst_opcode == LDMATRIX_OP || inst_opcode == STMATRIX_OP))) {
         inst.space = insn_space;
         inst.set_addr(lane_id, insn_memaddr);
-        if (pI->m_is_ldgsts) {
+        if (pI->m_is_ldgsts || inst_opcode == ST_BULK_OP) {
           inst.set_per_thread_memory_access_size(
               lane_id, last_memory_access_size());
         } else if (pI->get_vector() != 0 &&
@@ -2966,6 +2973,8 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
                 lane_id, insn_data_size * vector_width);
           }
         }
+        if (inst_opcode == ST_BULK_OP && last_memory_access_size() == 0)
+          inst.set_not_active(lane_id);
         inst.data_size = insn_data_size;  // simpleAtomicIntrinsics
         assert(inst.memory_op == insn_memory_op);
       }

@@ -1,3 +1,4 @@
+#include "../gpgpu-sim/flash/shared_bulk.h"
 #include "../gpgpu-sim/flash/fp32_fma.h"
 // Copyright (c) 2009-2021, Tor M. Aamodt, Wilson W.L. Fung, Ali Bakhoda,
 // Jimmy Kwa, George L. Yuan, Vijay Kandiah, Nikos Hardavellas,
@@ -6750,6 +6751,45 @@ void sst_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
 void ssy_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // TODO: add implementation
+}
+
+void st_bulk_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const auto &dst = pI->dst();
+  if (pI->get_num_operands() != 3 || !pI->src2().is_literal() ||
+      pI->src2().get_literal_value().u64 != 0) {
+    fprintf(stderr, "st.bulk requires [address], byte count, literal zero\n");
+    abort();
+  }
+  const auto &size_op = pI->src1();
+  unsigned size_type = U64_TYPE;
+  if (size_op.is_reg())
+    size_type = size_op.get_symbol()->type()->get_key().scalar_type();
+  if (size_type != U64_TYPE && size_type != B64_TYPE &&
+      size_type != U32_TYPE && size_type != B32_TYPE) {
+    fprintf(stderr, "st.bulk size must be a 32- or 64-bit integer\n");
+    abort();
+  }
+  auto size_value = thread->get_operand_value(size_op, size_op, size_type, thread, 0);
+  const uint64_t bytes = (size_type == U32_TYPE || size_type == B32_TYPE)
+                            ? size_value.u32 : size_value.u64;
+  auto address = thread->get_operand_value(dst, dst, U64_TYPE, thread, 1).u64;
+  memory_space_t space = pI->get_space();
+  normalize_scoped_shared_space(space, pI);
+  memory_space *mem = nullptr;
+  decode_space(space, thread, dst, mem, address, pI->membar_level() == CLUSTER_OPTION);
+  if (space != shared_space || thread->m_dsm_remote ||
+      !flash_gpgpu_sim::valid_shared_bulk_extent(address, bytes)) {
+    fprintf(stderr, "st.bulk requires an aligned local shared extent\n");
+    abort();
+  }
+  flash_gpgpu_sim::zero_shared_bulk(address, bytes,
+      [&](uint64_t at, const void *data, size_t n) {
+        mem->write(at, n, data, thread, pI);
+        return true;
+      });
+  thread->m_last_effective_address = address;
+  thread->m_last_memory_space = space;
+  thread->m_last_memory_access_size = bytes;
 }
 
 void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

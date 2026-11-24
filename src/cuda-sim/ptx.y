@@ -279,6 +279,7 @@ class ptx_recognizer;
 %token	GPU_OPTION;
 %token	L2_CACHE_HINT_OPTION;
 %token	L2_OPTION;
+%token L1_NO_ALLOCATE_OPTION;
 %token	ALIGNED_OPTION;
 %token	B1024_TYPE;
 %token	GENERIC_OPTION;
@@ -769,6 +770,7 @@ option: type_spec
 	| GPU_OPTION { recognizer->add_option(GPU_OPTION); }
 	| L2_CACHE_HINT_OPTION { recognizer->add_option(L2_CACHE_HINT_OPTION); }
 	| L2_OPTION { recognizer->add_option(L2_OPTION); }
+	| L1_NO_ALLOCATE_OPTION { recognizer->add_option(L1_NO_ALLOCATE_OPTION); }
 	| ALIGNED_OPTION { recognizer->add_option(ALIGNED_OPTION); }
 	| B1024_TYPE { recognizer->add_option(B1024_TYPE); }
 	| GENERIC_OPTION { recognizer->add_option(GENERIC_OPTION); }

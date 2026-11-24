@@ -1,3 +1,4 @@
+#include "../../shared_bulk.h"
 #include "../decode/operand_parser.h"
 #include "internal.h"
 
@@ -19,6 +20,43 @@ bool evaluate_constant_address(const address_expression &address,
                                uint64_t &value) {
   value = evaluate_address_terms(address, state, lane);
   return !address.terms.empty();
+}
+
+// ptxas lowers st.bulk.shared to UMEMSETS.64 with size in 8-byte words
+// (the emitted USHF right-shifts the PTX byte count by three). The prefix
+// in nvdisasm's structured spelling is the zero fill value, not a result.
+step_result execute_umemsets(const instruction &inst, warp_state &state,
+                             execution_context &context) {
+  if (!has_typed_operands(inst, 2) || !context.memory ||
+      inst.operands[0].kind != operand_kind::kMemoryAddress ||
+      !inst.operands[0].has_prefix ||
+      inst.operands[0].prefix_kind != operand_kind::kUniformRegister ||
+      inst.operands[0].prefix_index != kZeroUniformRegister ||
+      inst.operands[1].kind != operand_kind::kUniformRegister)
+    return unsupported(inst, "expected zero-filled uniform shared bulk store");
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    uint64_t address = 0;
+    const uint64_t bytes =
+        uint64_t(state.read_uniform_register(inst.operands[1].index)) * 8;
+    if (!evaluate_shared_address(inst.operands[0], state, lane, address) ||
+        address % 8 || bytes > 16777216)
+      return unsupported(inst, "invalid shared bulk store extent");
+    if (!flash_gpgpu_sim::zero_shared_bulk(
+            address, bytes, [&](uint64_t at, const void *data, size_t size) {
+              return context.memory->write(memory_space::kShared, at, data,
+                                           size);
+            }))
+      return memory_fault(inst, memory_space::kShared, address, bytes);
+    if (bytes)
+      context.record_memory_access(lane, memory_space::kShared, address, bytes,
+                                   true);
+    break; // One uniform operation, irrespective of the active lane count.
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
 }
 
 step_result execute_lds(const instruction &inst, warp_state &state,
@@ -294,16 +332,30 @@ step_result execute_ldg(const instruction &native, warp_state &state,
   instruction inst = native;
   if (!normalize_ldg_operands(inst))
     return unsupported(inst, "invalid direct LDG address");
-  if (!has_typed_operands(inst, 2))
-    return unsupported(inst, "expected two typed operands");
+  const bool vector256 = inst.opcode.find(".256") != std::string::npos;
+  if (!has_typed_operands(inst, vector256 ? 3 : 2))
+    return unsupported(inst, "invalid global-load operand count");
   const operand *destination = get_operand(inst, 0, operand_kind::kRegister);
+  const unsigned address_index = vector256 ? 2 : 1;
   const operand *address =
-      get_operand(inst, 1, operand_kind::kDescriptorAddress);
-  const bool direct = inst.operands[1].kind == operand_kind::kMemoryAddress;
+      get_operand(inst, address_index, operand_kind::kDescriptorAddress);
+  const bool direct =
+      !vector256 && inst.operands[1].kind == operand_kind::kMemoryAddress;
   if (direct)
     address = &inst.operands[1];
   if (destination == nullptr || address == nullptr)
     return unsupported(inst, "unsupported global-load operand form");
+  const operand *low_group =
+      vector256 ? get_operand(inst, 1, operand_kind::kRegister) : destination;
+  if (!low_group)
+    return unsupported(inst, "missing lower global256 register group");
+  if (vector256)
+    for (const auto *group : {destination, low_group})
+      if (group->negated || group->absolute || group->bitwise_complement ||
+          group->wide ||
+          group->half_selection != operand_half_selection::kNone ||
+          (group->index != kZeroRegister && group->index > kZeroRegister - 4))
+        return unsupported(inst, "invalid global256 register group");
   if (context.memory == nullptr)
     return unsupported(inst, "no functional memory is attached");
   if (!direct)
@@ -320,7 +372,12 @@ step_result execute_ldg(const instruction &native, warp_state &state,
   if (vector128 && destination->index != kZeroRegister &&
       destination->index > kZeroRegister - 3)
     return unsupported(inst, "LDG.E.128 register range is out of bounds");
-  const size_t bytes = vector128 ? 16 : wide ? 8 : u16 ? 2 : u8 ? 1 : 4;
+  const size_t bytes = vector256   ? 32
+                       : vector128 ? 16
+                       : wide      ? 8
+                       : u16       ? 2
+                       : u8        ? 1
+                                   : 4;
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
     if ((state.active_mask & (1u << lane)) == 0 ||
         !lane_executes(inst, state, lane))
@@ -333,16 +390,27 @@ step_result execute_ldg(const instruction &native, warp_state &state,
       location = read_register_pair(state, lane, address->address_register) +
                  static_cast<uint64_t>(address->address_offset);
     }
+    if (vector256 && location % 32)
+      return unsupported(inst, "global256 requires 32-byte alignment");
     context.record_memory_access(lane, memory_space::kGlobal, location, bytes,
                                  false);
-    std::array<uint32_t, 4> value{};
+    std::array<uint32_t, 8> value{};
     if (!context.memory->read(memory_space::kGlobal, location, value.data(),
                               bytes))
       return memory_fault(inst, memory_space::kGlobal, location, bytes);
-    const unsigned words = vector128 ? 4 : wide ? 2 : 1;
-    if (destination->index != kZeroRegister)
-      for (unsigned word = 0; word < words; ++word)
-        state.write_register(lane, destination->index + word, value[word]);
+    if (vector256) {
+      // nvdisasm lists the upper 128-bit destination group first.
+      for (unsigned word = 0; word < 8; ++word) {
+        const unsigned base = word < 4 ? low_group->index : destination->index;
+        if (base != kZeroRegister)
+          state.write_register(lane, base + word % 4, value[word]);
+      }
+    } else {
+      const unsigned words = vector128 ? 4 : wide ? 2 : 1;
+      if (destination->index != kZeroRegister)
+        for (unsigned word = 0; word < words; ++word)
+          state.write_register(lane, destination->index + word, value[word]);
+    }
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -819,6 +887,7 @@ step_result execute_functional_fence(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_memory_semantics(frontend &target) {
+  target.register_semantics("UMEMSETS.64", execute_umemsets);
   target.register_semantics("FENCE.VIEW.ASYNC.T", execute_functional_fence);
   for (const char *opcode :
        {"LDGSTS.E", "LDGSTS.E.64", "LDGSTS.E.128", "LDGSTS.E.ZFILL",
@@ -854,6 +923,10 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("ULDC.64", execute_ldcu);
   target.register_semantics("ULDC.128", execute_ldcu);
   target.register_semantics("ULDC.U8", execute_ldcu);
+  for (const char *opcode :
+       {"LDG.E.NA.EFL2.LTC256B.256.CONSTANT", "LDG.E.NA.ENL2.LTC64B.256",
+        "LDG.E.ENL2.LTC128B.256.STRONG.GPU"})
+    target.register_semantics(opcode, execute_ldg);
   target.register_semantics("LDG.E", execute_ldg);
   target.register_semantics("LDG.E.STRONG.GPU", execute_ldg);
   target.register_semantics("LDG.E.CONSTANT", execute_ldg);

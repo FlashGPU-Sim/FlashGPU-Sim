@@ -196,9 +196,9 @@ bool orders_deferred_cta_barrier(const instruction &inst, architecture arch) {
   // TMEM consumers and barrier polling must observe the CTA producer epoch.
   if (blackwell &&
       (base == "UGETNEXTWORKID" || base == "LDTM" || base == "STTM" ||
-       base == "UTCATOMSWS" || base == "UTCCP" || base == "UTCBAR" ||
-       base == "UTCHMMA" || base == "UTCQMMA" || base == "UTCOMMA" ||
-       inst.opcode.rfind("SYNCS.PHASECHK", 0) == 0))
+       base == "UMEMSETS" || base == "UTCATOMSWS" || base == "UTCCP" ||
+       base == "UTCBAR" || base == "UTCHMMA" || base == "UTCQMMA" ||
+       base == "UTCOMMA" || inst.opcode.rfind("SYNCS.PHASECHK", 0) == 0))
     return true;
   // Publishing an mbarrier arrival/completion is a shared-state side effect.
   // In particular, FA3's no-TMA path completes Q immediately after QueryEmpty;

@@ -188,11 +188,11 @@ bool reads_register_file(const operand &value) {
 }
 
 bool has_destination(const std::string &base) {
-  return base != "REDG" && base != "ST" && base != "STG" && base != "STS" &&
-         base != "STL" && base != "STSM" && base != "BRA" && base != "BRX" &&
-         base != "BSSY" && base != "BSYNC" && base != "BREAK" &&
-         base != "BRXU" && base != "WARPSYNC" && base != "CALL" &&
-         base != "EXIT" && base != "RET" && base != "NOP" &&
+  return base != "UMEMSETS" && base != "REDG" && base != "ST" &&
+         base != "STG" && base != "STS" && base != "STL" && base != "STSM" &&
+         base != "BRA" && base != "BRX" && base != "BSSY" && base != "BSYNC" &&
+         base != "BREAK" && base != "BRXU" && base != "WARPSYNC" &&
+         base != "CALL" && base != "EXIT" && base != "RET" && base != "NOP" &&
          base != "NANOSLEEP" && base != "UGETNEXTWORKID" && base != "YIELD" &&
          base != "BAR" && base != "MEMBAR" && base != "DEPBAR" &&
          base != "CCTL" && base != "UTMACCTL" && base != "UTMACMDFLUSH" &&
@@ -211,6 +211,8 @@ size_t leading_destination_count(const instruction &source) {
   const size_t size = source.operands.size();
   if (size == 0 || !has_destination(base))
     return 0;
+  if (base == "LDG" && has_modifier(source.opcode, "256"))
+    return 2;
   if (base == "SHFL" || base == "PLOP3" || base == "UPLOP3" ||
       base == "ISETP" || base == "UISETP" || base == "FSETP" ||
       base == "UFSETP")
@@ -234,6 +236,8 @@ size_t leading_destination_count(const instruction &source) {
 }
 
 unsigned memory_width(const std::string &opcode) {
+  if (has_modifier(opcode, "256"))
+    return 32;
   if (has_modifier(opcode, "128"))
     return 16;
   if (has_modifier(opcode, "64"))
@@ -249,6 +253,9 @@ unsigned memory_width(const std::string &opcode) {
 // writes. CS2R/CS2UR are 64-bit by default; their narrow form is explicit.
 unsigned destination_width(const instruction &source) {
   const std::string base = base_opcode(source.opcode);
+  if (base == "LDG" && has_modifier(source.opcode, "256"))
+    return 4; // Two independently located 128-bit register groups.
+
   if (base == "CS2R" || base == "CS2UR")
     return has_modifier(source.opcode, "32") ? 1 : 2;
   if (has_modifier(source.opcode, "WIDE") ||
@@ -558,6 +565,14 @@ void classify(const instruction &source, const timing_profile &profile,
     target.initiation_interval = 1;
     if (base == "STS")
       target.set_mio_client();
+  } else if (source.opcode == "UMEMSETS.64") {
+    target.op = STORE_OP;
+    target.op_pipe = MEM__OP;
+    target.memory_op = memory_store;
+    target.data_size = 8;
+    target.space = memory_space_t(shared_space);
+    target.cache_op = CACHE_UNDEFINED;
+    target.latency = target.initiation_interval = 1;
   } else if (base == "LDSM" || base == "STSM") {
     target.op = base == "LDSM" ? TENSOR_CORE_LOAD_OP : TENSOR_CORE_STORE_OP;
     target.op_pipe = MEM__OP;
