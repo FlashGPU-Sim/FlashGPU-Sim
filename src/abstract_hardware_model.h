@@ -1006,6 +1006,7 @@ public:
     space_t dst_space = TMA_SPACE_INVALID;
     space_t src_space = TMA_SPACE_INVALID;
     unsigned tensor_dim = 0;
+    bool tensor_gather4 = false;
     unsigned bulk_wait_num = 0;  // For TMA_BULK_WAIT: number of recent groups to wait for
     bool bulk_wait_read_only = false;
     // PTX .multicast::cluster (cluster-level selective destination only).
@@ -1026,6 +1027,8 @@ public:
     uint16_t cta_mask = 0xFFFF;
     bool has_cta_mask = false;
     bool mapped_cluster_copy = false;
+    bool has_completion_mask = false;
+    uint32_t completion_mask = 0;
     bool is_valid() const {
       return mbar_addr != (uint32_t)-1 || size_in_bytes > 0;
     }

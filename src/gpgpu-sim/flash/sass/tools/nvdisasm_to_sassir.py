@@ -50,7 +50,7 @@ class KernelConstantBank(NamedTuple):
     data: bytes
 
 
-PARAMETER_BASE = {"sm90": 0x210, "sm120": 0x380}
+PARAMETER_BASE = {"sm90": 0x210, "sm100": 0x380, "sm103": 0x380, "sm120": 0x380}
 SHT_NOBITS = 8
 
 
@@ -594,7 +594,7 @@ def export(
     sm_version = sm["version"]
     if arch not in PARAMETER_BASE:
         raise RuntimeError(f"unsupported SASS architecture: {arch}")
-    expected_sm = {"sm90": (9, 0), "sm120": (12, 0)}[arch]
+    expected_sm = {"sm90": (9, 0), "sm100": (10, 0), "sm103": (10, 3), "sm120": (12, 0)}[arch]
     if (sm_version.get("major"), sm_version.get("minor")) != expected_sm:
         raise RuntimeError(
             f"requested {arch} but nvdisasm reported "

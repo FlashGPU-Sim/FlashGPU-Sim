@@ -257,6 +257,7 @@ class ptx_recognizer;
 %token	DIM_4D_OPTION;
 %token	DIM_5D_OPTION;
 %token	REPLACE_OPTION;
+%token GATHER4_OPTION;
 %token	TILE_OPTION;
 %token	GLOBAL_ADDRESS_OPTION;
 %token	RANK_OPTION;
@@ -707,6 +708,7 @@ option: type_spec
 	| LEFT_OPTION { recognizer->add_option(LEFT_OPTION); }
 	| RIGHT_OPTION { recognizer->add_option(RIGHT_OPTION); }
 	| REPLACE_OPTION { recognizer->add_option(REPLACE_OPTION); }
+	| GATHER4_OPTION { recognizer->add_option(GATHER4_OPTION); }
 	| TILE_OPTION { recognizer->add_option(TILE_OPTION); }
 	| GLOBAL_ADDRESS_OPTION { recognizer->add_option(GLOBAL_ADDRESS_OPTION); }
 	| RANK_OPTION { recognizer->add_option(RANK_OPTION); }

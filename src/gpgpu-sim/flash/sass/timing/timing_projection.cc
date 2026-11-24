@@ -3,6 +3,7 @@
 #include "../decode/fp32x2_operand.h"
 #include "../decode/operand_parser.h"
 #include "../decode/scaled_unpack_operand.h"
+#include "../decode/tma_load_operand.h"
 #include "../decode/wgmma_instruction.h"
 
 #include <algorithm>
@@ -702,6 +703,10 @@ void classify(const instruction &source, const timing_profile &profile,
     target.op = CALL_OPS;
   } else if (base == "EXIT") {
     target.op = EXIT_OPS;
+  } else if (base == "UCGABAR_ARV" || base == "UCGABAR_WAIT") {
+    target.op = BARRIER_OP;
+    target.cluster_barrier = true;
+    target.bar_type = base == "UCGABAR_ARV" ? ARRIVE : SYNC;
   } else if (base == "BAR") {
     target.op = BARRIER_OP;
     target.bar_type =
@@ -789,6 +794,8 @@ void classify(const instruction &source, const timing_profile &profile,
     inst_t::tma_static_info_t info;
     info.tma_type = inst_t::tma_static_info_t::TMA_TENSOR;
     info.tensor_dim = dimension;
+    info.tensor_gather4 = has_modifier(source.opcode, "GATHER4");
+    info.multicast_cluster = has_modifier(source.opcode, "MULTICAST");
     info.dst_space = base == "UTMALDG"
                          ? inst_t::tma_static_info_t::TMA_SHARED_CTA
                          : inst_t::tma_static_info_t::TMA_GLOBAL;
@@ -796,7 +803,7 @@ void classify(const instruction &source, const timing_profile &profile,
                          ? inst_t::tma_static_info_t::TMA_GLOBAL
                          : inst_t::tma_static_info_t::TMA_SHARED_CTA;
     target.set_tma_static_info(info);
-  } else if (base == "NOP" || base == "NANOSLEEP" || base == "S2R" ||
+  } else if (base == "ERRBAR" || base == "CGAERRBAR" || base == "NOP" || base == "NANOSLEEP" || base == "S2R" ||
              base == "S2UR" || base == "CS2R" || base == "CS2UR" ||
              base == "MOV" || base == "MOVM" || base == "IMAD" ||
              base == "IADD3" || base == "ISETP" || base == "LOP3" ||
@@ -919,6 +926,30 @@ void populate_registers(const instruction &source, timing_instruction &target) {
           append_register(destinations, destination.kind,
                           destination.index + word, false);
       }
+    }
+  }
+
+  if ((base == "UTMALDG" || base == "UTMAPF") &&
+      has_modifier(source.opcode, "GATHER4")) {
+    const bool prefetch = base == "UTMAPF";
+    const unsigned words = prefetch ? 5 : 7;
+    tma_load_operands decoded;
+    if (!decode_tma_load_operands(source, words,
+                                  has_modifier(source.opcode, "MULTICAST"),
+                                  !prefetch, decoded))
+      panic("Invalid gather4 register spans for " + source.opcode);
+    for (unsigned word = 0; word < words; ++word)
+      append_register(sources, operand_kind::kUniformRegister,
+                      decoded.state_base + word, false);
+    append_register(sources, operand_kind::kUniformRegister, decoded.map_base,
+                    true);
+    source_begin = decoded.extra_begin;
+    logical_source_operands += 2;
+    logical_register_operands += 2;
+    if (decoded.cache_descriptor) {
+      // Tensor-map address qualifiers are also 64-bit UR pairs.
+      append_register(sources, operand_kind::kUniformRegister,
+                      decoded.cache_descriptor->descriptor_register, true);
     }
   }
 

@@ -55,9 +55,9 @@ step_result execute_ldsm_stsm_m88(const instruction &inst, warp_state &state,
         uint64_t row0_address = 0;
         uint64_t row1_address = 0;
         if (!evaluate_shared_address(*address, state, matrix * 8 + row0,
-                                     row0_address) ||
+                                     row0_address, &context) ||
             !evaluate_shared_address(*address, state, matrix * 8 + row1,
-                                     row1_address) ||
+                                     row1_address, &context) ||
             row0_address > std::numeric_limits<uint64_t>::max() -
                                column * sizeof(uint16_t) ||
             row1_address > std::numeric_limits<uint64_t>::max() -
@@ -87,8 +87,8 @@ step_result execute_ldsm_stsm_m88(const instruction &inst, warp_state &state,
       }
       const unsigned address_lane = matrix * 8 + matrix_row;
       uint64_t row_address = 0;
-      if (!evaluate_shared_address(*address, state, address_lane,
-                                   row_address) ||
+      if (!evaluate_shared_address(*address, state, address_lane, row_address,
+                                   &context) ||
           row_address > std::numeric_limits<uint64_t>::max() -
                             matrix_column * sizeof(uint16_t))
         return unsupported(inst, "invalid M88 shared-memory address");

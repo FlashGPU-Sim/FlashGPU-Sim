@@ -84,8 +84,21 @@ TEST(SassTensorMapTest, DecodesHostTwoDimensionalF32AndFtzForms) {
 
   words[14] = 2;
   decoded = decode_flashgpu_host_tensor_map_2d(words);
-  EXPECT_FALSE(decoded.supported);
-  EXPECT_NE(decoded.detail.find("rank-2 F32"), std::string::npos);
+  ASSERT_TRUE(decoded.supported) << decoded.detail;
+  EXPECT_EQ(decoded.descriptor.element_type, tensor_map_element_type::kUnsigned32);
+  const unsigned sizes[] = {1,2,4,4,8,8,2,4,8,2,4};
+  for (unsigned type=0;type<11;++type) {
+    words[14]=type;
+    decoded=decode_flashgpu_host_tensor_map_2d(words);
+    ASSERT_TRUE(decoded.supported) << decoded.detail;
+    EXPECT_EQ(decoded.descriptor.element_bytes,sizes[type]);
+  }
+  words[14] = 11;  // Preserve TF32 conversion semantics through metadata.
+  EXPECT_TRUE(decode_flashgpu_host_tensor_map_2d(words).supported);
+  EXPECT_EQ(decode_flashgpu_host_tensor_map_2d(words).descriptor.data_type,
+            TMA_DTYPE_TF32);
+  words[14]=(1ull<<32)|2; // Interleave is not qualified.
+  EXPECT_FALSE(decode_flashgpu_host_tensor_map_2d(words).supported);
 }
 
 TEST(SassTensorMapTest, DecodesValidatedDeviceThreeDimensionalF32Form) {

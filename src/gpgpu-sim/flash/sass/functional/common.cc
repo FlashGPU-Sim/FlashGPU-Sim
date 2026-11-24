@@ -229,10 +229,15 @@ bool evaluate_address(const operand &address, const warp_state &state,
 }
 
 bool evaluate_shared_address(const operand &address, const warp_state &state,
-                             unsigned lane, uint64_t &value) {
+                             unsigned lane, uint64_t &value,
+                             const execution_context *context) {
   if (!evaluate_address(address, state, lane, value))
     return false;
   value = static_cast<uint32_t>(value);
+  // LDS/STS address the issuer CTA. ptxas may retain its cluster rank bits
+  // in a cvta-derived pointer; they are not part of the local byte offset.
+  if (context && context->cluster)
+    value &= 0xffffffu;
   return true;
 }
 
@@ -264,6 +269,8 @@ bool read_special_register(const operand &source,
     value = context.cta_id_y;
   else if (source.text == "SR_CTAID.Z")
     value = context.cta_id_z;
+  else if (source.text == "SR_CgaCtaId")
+    value = context.cga_cta_id;
   else if (source.text == "SR_CgaCtaId")
     value = context.cga_cta_id;
   else if (source.text == "SR_VIRTUALSMID")

@@ -60,6 +60,13 @@ this configuration, and its physical capacity is not modeled.
 
 ## Memory and synchronization model
 
+TMA uses a 32-cycle pipeline latency and a **4-cycle SM-wide service
+interval**, shared by PTX and SASS. The former 32-cycle interval serialized
+independent producer warps too aggressively. B200 gather4 issue-window replay
+aligns within 1.5% for the measured 1/4/8-warp probes; completion latency and
+other variants are not thereby calibrated. See the
+[TMA calibration evidence](../../docs/features/tma-gather4.md#b200-tma-service-calibration).
+
 Shared loads use a 19-cycle shared-memory pipeline. A named barrier waits for
 earlier shared stores from its warp to leave LD/ST dispatch plus four core
 cycles. This is a timing fence; functional shared-memory updates occur at

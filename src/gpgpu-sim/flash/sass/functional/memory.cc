@@ -45,7 +45,7 @@ step_result execute_lds(const instruction &inst, warp_state &state,
                          : u8                       ? 1
                          : inst.opcode == "LDS.U16" ? 2
                                                     : 4;
-    if (!evaluate_shared_address(*address, state, lane, location))
+    if (!evaluate_shared_address(*address, state, lane, location, &context))
       return unsupported(inst, "unsupported shared-load address");
     context.record_memory_access(lane, memory_space::kShared, location, bytes,
                                  false);
@@ -82,7 +82,7 @@ step_result execute_sts(const instruction &inst, warp_state &state,
         !lane_executes(inst, state, lane))
       continue;
     uint64_t location = 0;
-    if (!evaluate_shared_address(*address, state, lane, location))
+    if (!evaluate_shared_address(*address, state, lane, location, &context))
       return unsupported(inst, "unsupported shared-store address");
     context.record_memory_access(lane, memory_space::kShared, location, bytes,
                                  true);
@@ -519,7 +519,8 @@ step_result execute_ldgsts(const instruction &native, warp_state &state,
         !lane_executes(inst, state, lane))
       continue;
     uint64_t shared_address = 0;
-    if (!evaluate_shared_address(*destination, state, lane, shared_address))
+    if (!evaluate_shared_address(*destination, state, lane, shared_address,
+                                 &context))
       return unsupported(inst, "unsupported LDGSTS shared address");
     uint64_t global_address = 0;
     if (direct) {
@@ -706,7 +707,7 @@ step_result execute_atoms_popc_increment(const instruction &inst,
         !lane_executes(inst, state, lane))
       continue;
     uint64_t location = 0;
-    if (!evaluate_shared_address(*address, state, lane, location) ||
+    if (!evaluate_shared_address(*address, state, lane, location, &context) ||
         (location % alignof(uint32_t)) != 0)
       return unsupported(inst, "invalid ATOMS.POPC shared address");
     context.record_memory_access(lane, memory_space::kShared, location,
@@ -745,7 +746,7 @@ step_result execute_atoms_add(const instruction &inst, warp_state &state,
         !lane_executes(inst, state, lane))
       continue;
     uint64_t location = 0;
-    if (!evaluate_shared_address(*address, state, lane, location) ||
+    if (!evaluate_shared_address(*address, state, lane, location, &context) ||
         (location % alignof(uint32_t)) != 0)
       return unsupported(inst, "invalid ATOMS.ADD shared address");
     uint32_t value = 0;
@@ -781,7 +782,8 @@ step_result execute_functional_fence(const instruction &inst, warp_state &state,
            inst.opcode == "UTMACCTL.IV" || inst.opcode == "UTMACCTL.PF")
     valid = has_typed_operands(inst, 1) &&
             inst.operands[0].kind == operand_kind::kMemoryAddress;
-  else if (inst.opcode == "CCTL.IVALL")
+  else if (inst.opcode == "ERRBAR" || inst.opcode == "CGAERRBAR" ||
+           inst.opcode == "CCTL.IVALL")
     valid = has_typed_operands(inst, 0);
   else if (inst.opcode == "FENCE.VIEW.ASYNC.S")
     valid = has_typed_operands(inst, 0);
@@ -852,6 +854,7 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("LD.E.U16.STRONG.SYS", execute_generic_memory);
   target.register_semantics("LD.E.128", execute_generic_memory);
   target.register_semantics("ST.E", execute_generic_memory);
+  target.register_semantics("ST.E.STRONG.SYS", execute_generic_memory);
   target.register_semantics("ST.E.128", execute_generic_memory);
   target.register_semantics("LDGSTS.E.BYPASS.LTC128B.128", execute_ldgsts);
   target.register_semantics("LDGSTS.E.BYPASS.128", execute_ldgsts);
@@ -860,6 +863,8 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("ATOMG.E.ADD.STRONG.GPU", execute_atomg_add);
   target.register_semantics("ATOMS.POPC.INC.32", execute_atoms_popc_increment);
   target.register_semantics("ATOMS.ADD", execute_atoms_add);
+  target.register_semantics("ERRBAR", execute_functional_fence);
+  target.register_semantics("CGAERRBAR", execute_functional_fence);
   target.register_semantics("DEPBAR", execute_functional_fence);
   target.register_semantics("DEPBAR.LE", execute_functional_fence);
   target.register_semantics("CCTL.E.C.LDCU.IV.DEEP", execute_functional_fence);
