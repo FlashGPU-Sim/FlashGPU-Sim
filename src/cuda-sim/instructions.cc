@@ -2284,8 +2284,11 @@ void bfind_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   assert(i_type == U32_TYPE || i_type == S32_TYPE || i_type == U64_TYPE ||
          i_type == S64_TYPE);
   const uint64_t value = bits == 32 ? src1_data.u32 : src1_data.u64;
+  const auto options = pI->get_options();
+  const bool shift = std::find(options.begin(), options.end(),
+                               SHIFTAMT_OPTION) != options.end();
   const uint32_t d_data = flash_gpgpu_sim::find_non_sign_bit(
-      value, bits, i_type == S32_TYPE || i_type == S64_TYPE, false);
+      value, bits, i_type == S32_TYPE || i_type == S64_TYPE, shift);
 
   // store d
   thread->set_operand_value(dst, d_data, U32_TYPE, thread, pI);

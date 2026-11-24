@@ -724,8 +724,9 @@ step_result execute_popc(const instruction &inst, warp_state &state,
 
 step_result execute_flo(const instruction &inst, warp_state &state,
                         execution_context &) {
-  const bool uniform =
-      inst.opcode == "UFLO.U32" || inst.opcode == "UFLO.U32.SH";
+  const bool uniform = inst.opcode == "UFLO" || inst.opcode == "UFLO.SH" ||
+                       inst.opcode == "UFLO.U32" ||
+                       inst.opcode == "UFLO.U32.SH";
   if (!has_typed_operands(inst, 2) ||
       (uniform && inst.operands[0].kind != operand_kind::kUniformRegister) ||
       (!uniform && inst.operands[0].kind != operand_kind::kRegister) ||
@@ -733,7 +734,8 @@ step_result execute_flo(const instruction &inst, warp_state &state,
     return unsupported(inst, "unsupported FLO.U32 operand form");
   const auto find_leading_one = [&](uint32_t source) {
     return flash_gpgpu_sim::find_non_sign_bit(
-        source, 32, false, inst.opcode.find(".SH") != std::string::npos);
+        source, 32, inst.opcode.find(".U32") == std::string::npos,
+        inst.opcode.find(".SH") != std::string::npos);
   };
   if (uniform) {
     uint32_t source = 0;
@@ -1519,6 +1521,10 @@ void register_integer_semantics(frontend &target) {
   target.register_semantics("POPC", execute_popc);
   target.register_semantics("BREV", execute_popc);
   target.register_semantics("UBREV", execute_popc);
+  target.register_semantics("FLO", execute_flo);
+  target.register_semantics("FLO.SH", execute_flo);
+  target.register_semantics("UFLO", execute_flo);
+  target.register_semantics("UFLO.SH", execute_flo);
   target.register_semantics("FLO.U32", execute_flo);
   target.register_semantics("FLO.U32.SH", execute_flo);
   target.register_semantics("UFLO.U32", execute_flo);

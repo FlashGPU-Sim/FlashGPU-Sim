@@ -250,6 +250,7 @@ class ptx_recognizer;
 %token	PRMT_RC16_MODE;
 %token	PRMT_ECL_MODE;
 %token	PRMT_ECR_MODE;
+%token	SHIFTAMT_OPTION;
 %token	WRAP_OPTION;
 %token	CLAMP_OPTION;
 %token	LEFT_OPTION;
@@ -750,6 +751,7 @@ option: type_spec
 	| DOWN_OPTION { recognizer->add_option(DOWN_OPTION); }
 	| BFLY_OPTION { recognizer->add_option(BFLY_OPTION); }
 	| IDX_OPTION { recognizer->add_option(IDX_OPTION); }
+	| SHIFTAMT_OPTION { recognizer->add_option(SHIFTAMT_OPTION); }
 	| WRAP_OPTION { recognizer->add_option(WRAP_OPTION); }
 	| CLAMP_OPTION { recognizer->add_option(CLAMP_OPTION); }
 	| LEFT_OPTION { recognizer->add_option(LEFT_OPTION); }

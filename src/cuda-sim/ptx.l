@@ -469,6 +469,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.complete_tx TC; return COMPLETE_TX_OPTION;
 \.red TC; return RED_OPTION;
 
+\.shiftamt TC; return SHIFTAMT_OPTION;
 \.clamp	TC; return CLAMP_OPTION;
 \.wrap	TC; return WRAP_OPTION;
 

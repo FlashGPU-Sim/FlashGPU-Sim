@@ -1600,6 +1600,9 @@ ptx_instruction::ptx_instruction(
         if (m_is_mma_instruction) m_mma_saturate = true;
         if (m_is_wgmma_instruction) m_wgmma_saturate = true;
         break;
+      case SHIFTAMT_OPTION:
+        assert(opcode == BFIND_OP && "shiftamt requires bfind");
+        break;
       case WRAP_OPTION:
         m_clamp_mode = 0;
         break;

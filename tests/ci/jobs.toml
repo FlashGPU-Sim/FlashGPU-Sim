@@ -219,3 +219,10 @@ cuda = "13.3"
 tests = [
   { name = "leading-bit-boundaries", group = "unit", gtest_filter = "BitScan.*", post_check = "tests/ci/check_leading_bit_base_dual.py" },
 ]
+
+[jobs.sm100-leading-bit]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "leading-bit-components-and-dual-launch", group = "unit", gtest_filter = "BitScan.*:NativeBitScan.*", post_check = "tests/ci/check_leading_bit_dual.py" },
+]

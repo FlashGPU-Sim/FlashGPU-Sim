@@ -13,3 +13,16 @@ runtime inputs and an independent repeated-division oracle. This is functional
 qualification, not new timing calibration.
 
 Semantics: [NVIDIA PTX bfind](https://docs.nvidia.com/cuda/parallel-thread-execution/#integer-arithmetic-instructions-bfind).
+
+The follow-up feature connects `.shiftamt` in PTX and signed native `FLO` /
+`FLO.SH` / `UFLO` / `UFLO.SH` to the same primitive. `CI_JOB=sm100-leading-bit`
+adds five numerical launches covering all four PTX types with and without
+`.shiftamt`, plus immediate operands, predication and destination/source aliasing.
+The native component test directly exercises all eight signed/unsigned,
+index/shift, warp/uniform opcode combinations, including source aliasing and a
+nonzero first active lane. CUDA lowers 64-bit search to a native sequence;
+there is no invented 64-bit FLO opcode.
+
+The basic PTX fix remains a separate commit for independent review. Public-main
+cherry-pick qualification and full DeepInfer numerical acceptance are separate
+from this focused instruction suite.
