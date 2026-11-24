@@ -854,6 +854,7 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("LD.E.U16.STRONG.SYS", execute_generic_memory);
   target.register_semantics("LD.E.128", execute_generic_memory);
   target.register_semantics("ST.E", execute_generic_memory);
+  target.register_semantics("ST.E.STRONG.SYS", execute_generic_memory);
   target.register_semantics("ST.E.128", execute_generic_memory);
   target.register_semantics("LDGSTS.E.BYPASS.LTC128B.128", execute_ldgsts);
   target.register_semantics("LDGSTS.E.BYPASS.128", execute_ldgsts);

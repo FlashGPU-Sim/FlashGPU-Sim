@@ -148,6 +148,36 @@ TEST(SassFunctionalTest, ExecutesGenericSharedAndGlobalAccesses) {
   EXPECT_EQ(state.read_register(0, 20), 0u);
 }
 
+TEST(SassFunctionalTest, ExecutesStrongSystemGenericStore) {
+  for (bool shared : {false, true}) {
+    SCOPED_TRACE(shared);
+    kernel image;
+    image.name = "generic_strong_store";
+    image.arch = architecture::kSm100;
+    image.instruction_bytes = 16;
+    image.instructions = {
+        official_instruction(0, "ST.E.STRONG.SYS", "desc[UR4][R2.64+0x4],R5"),
+        official_instruction(0x10, "EXIT"),
+    };
+    mapped_functional_memory memory;
+    const auto space = shared ? memory_space::kShared : memory_space::kGlobal;
+    memory.map(space, 0x100, 8, true);
+    frontend sass;
+    sass.add_kernel(std::move(image));
+    register_sm120_functional_semantics(sass);
+    warp_state state;
+    state.active_mask = 1;
+    state.write_uniform_register(4, shared ? 0 : 1);
+    state.write_register(0, 2, 0x100);
+    state.write_register(0, 3, 0);
+    state.write_register(0, 5, 0x12345678);
+    execution_context context{&memory};
+    const auto result = sass.step("generic_strong_store", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    EXPECT_EQ(memory.inspect<uint32_t>(space, 0x104), 0x12345678u);
+  }
+}
+
 TEST(SassFunctionalTest, AggregatesPopcAtomicIncrementBySharedAddress) {
   kernel image;
   image.name = "atoms_popc_increment";
