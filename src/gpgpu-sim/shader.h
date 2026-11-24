@@ -79,6 +79,7 @@
 #include "flash/instruction_cache/instruction_cache.h"
 #include "flash/cta_barrier_timing.h"
 #include "flash/instruction_dependency_tracker.h"
+#include "flash/load_response_counter.h"
 #include "flash/mio_ldsm_timing.h"
 #include "flash/native_register_file_timing.h"
 #include "flash/shared_proxy_timing.h"
@@ -2057,6 +2058,9 @@ class ldst_unit : public pipelined_simd_unit {
   std::map<unsigned /*warp_id*/,
            std::map<unsigned /*regnum*/, unsigned /*count*/>>
       m_pending_writes;
+  // Completion tokens belong to dynamic instructions, not destination registers.
+  bool uses_cached_load_completion(const warp_inst_t &inst) const;
+  flash_gpgpu_sim::load_response_counter m_cached_load_responses;
   std::list<mem_fetch *> m_response_fifo;
   opndcoll_rfu_t *m_operand_collector;
   Scoreboard *m_scoreboard;

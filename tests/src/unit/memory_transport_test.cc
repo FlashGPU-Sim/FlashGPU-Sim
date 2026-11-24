@@ -404,3 +404,13 @@ TEST(MemoryTransportTest,
 }
 
 }  // namespace
+
+#include "gpgpu-sim/flash/load_response_counter.h"
+TEST(MemoryTransportTest,DistinctLoadProducersCompleteIndependently) {
+  flash_gpgpu_sim::load_response_counter count;
+  count.expect(1,2);count.expect(2,1);count.expect(3,2);
+  EXPECT_FALSE(count.retire(1));EXPECT_TRUE(count.retire(2));
+  EXPECT_TRUE(count.pending(1));EXPECT_FALSE(count.pending(2));
+  EXPECT_FALSE(count.retire(3));EXPECT_TRUE(count.retire(1));EXPECT_TRUE(count.retire(3));
+  EXPECT_FALSE(count.pending(1));EXPECT_FALSE(count.pending(3));
+}

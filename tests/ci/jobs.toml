@@ -170,3 +170,10 @@ cuda = "13.3"
 tests = [
   { name = "funnel-shift-dual-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_funnel_shift_dual.py" },
 ]
+
+[jobs.sm100-cached-completion]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "cached-load-completion-dual-launch", group = "unit", gtest_filter = "MemoryTransportTest.DistinctLoadProducersCompleteIndependently", post_check = "tests/ci/check_cached_completion_dual.py" },
+]

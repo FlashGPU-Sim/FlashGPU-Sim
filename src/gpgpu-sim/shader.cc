@@ -4610,6 +4610,10 @@ mem_stage_stall_type ldst_unit::process_cache_access(
       for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++)
         if (inst.out[r] > 0) m_pending_writes[inst.warp_id()][inst.out[r]]--;
 
+      if (uses_cached_load_completion(inst) &&
+          m_cached_load_responses.retire(inst.get_uid()))
+        m_core->warp_inst_complete(inst);
+
       // release LDGSTS
       if (inst.m_is_ldgsts) {
         if (dec_pending_ldgsts(inst) == 0) {
@@ -4769,9 +4773,14 @@ void ldst_unit::L1_latency_queue_cycle() {
                     mf_next->get_inst().out[r]);
                 m_scoreboard->releaseRegister(mf_next->get_inst().warp_id(),
                                               mf_next->get_inst().out[r]);
-                m_core->warp_inst_complete(mf_next->get_inst());
+                if (!uses_cached_load_completion(mf_next->get_inst()))
+                  m_core->warp_inst_complete(mf_next->get_inst());
               }
             }
+
+          if (uses_cached_load_completion(mf_next->get_inst()) &&
+              m_cached_load_responses.retire(mf_next->get_inst().get_uid()))
+            m_core->warp_inst_complete(mf_next->get_inst());
 
           // release LDGSTS
           if (mf_next->get_inst().m_is_ldgsts) {
@@ -5552,6 +5561,20 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
        mem_config, stats, sid, tpc);
 }
 
+bool ldst_unit::uses_cached_load_completion(const warp_inst_t &inst) const {
+  if (!inst.is_load() || inst.isatomic() || inst.m_is_ldgsts ||
+      inst.active_count() == 0 || !m_L1D || inst.cache_op == CACHE_GLOBAL)
+    return false;
+  if (inst.space.get_type() != global_space &&
+      inst.space.get_type() != local_space &&
+      inst.space.get_type() != param_space_local) return false;
+  if (inst.space.is_global() && m_core->get_config()->gmem_skip_L1D &&
+      inst.cache_op != CACHE_L1) return false;
+  for (unsigned r=0;r<MAX_OUTPUT_VALUES;++r)
+    if (inst.out[r]>0) return true;
+  return false;
+}
+
 void ldst_unit::issue(register_set &reg_set) {
   warp_inst_t *inst = *(reg_set.get_ready());
 
@@ -5572,6 +5595,8 @@ void ldst_unit::issue(register_set &reg_set) {
   if (inst->is_load() and inst->space.get_type() != shared_space) {
     unsigned warp_id = inst->warp_id();
     unsigned n_accesses = inst->accessq_count();
+    if (uses_cached_load_completion(*inst))
+      m_cached_load_responses.expect(inst->get_uid(), n_accesses);
     for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
       unsigned reg_id = inst->out[r];
       if (reg_id > 0) {
@@ -5696,6 +5721,8 @@ void ldst_unit::writeback() {
           }
         }
       }
+      if (uses_cached_load_completion(m_next_wb))
+        insn_completed = m_cached_load_responses.retire(m_next_wb.get_uid());
       if (insn_completed) {
         m_core->warp_inst_complete(m_next_wb);
         if (m_next_wb.m_is_ldgsts && m_next_wb.active_count() > 0) {
@@ -5983,7 +6010,8 @@ void ldst_unit::cycle() {
           }
         }
         if (!pending_requests) {
-          m_core->warp_inst_complete(*m_dispatch_reg);
+          if (!uses_cached_load_completion(*m_dispatch_reg))
+            m_core->warp_inst_complete(*m_dispatch_reg);
           m_scoreboard->releaseRegisters(m_dispatch_reg);
 
           // release LDGSTS
