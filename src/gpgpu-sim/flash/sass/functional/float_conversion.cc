@@ -444,7 +444,7 @@ step_result execute_fp4_bfloat_unpack(const instruction &native,
   return {step_status::kAdvanced, {}};
 }
 
-// Scalar FP32 -> FP16/BF16 conversion writes a zero-extended half word.
+// Scalar FP32 -> FP16 conversion writes a zero-extended half word.
 step_result execute_f2f_half(const instruction &inst, warp_state &state,
                              execution_context &) {
   if (!has_typed_operands(inst, 2) ||
@@ -458,9 +458,7 @@ step_result execute_f2f_half(const instruction &inst, warp_state &state,
     if (!read_f32_operand(inst.operands[1], state, lane, value))
       return unsupported(inst, "unsupported scalar half source");
     state.write_register(lane, inst.operands[0].index,
-                         inst.opcode == "F2F.BF16.F32"
-                             ? float_bfloat_rn(value)
-                             : float_half_rn(float_bits(value)));
+                         float_half_rn(float_bits(value)));
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -485,18 +483,6 @@ step_result execute_f2fp_pack_ab(const instruction &inst, warp_state &state,
     // PACK_AB places B in the low halfword and A in the high halfword.
     const auto convert = [&](float value) -> uint16_t {
       const uint32_t bits = float_bits(value);
-      if (inst.opcode == "F2FP.BF16.F32.PACK_AB" ||
-          inst.opcode == "F2FP.SATFINITE.BF16.F32.PACK_AB" ||
-          inst.opcode == "F2FP.RELU.BF16.F32.PACK_AB") {
-        if (inst.opcode == "F2FP.RELU.BF16.F32.PACK_AB" && !std::isnan(value) &&
-            value < 0)
-          value = 0;
-        const uint16_t rounded = float_bfloat_rn(value);
-        if (inst.opcode == "F2FP.SATFINITE.BF16.F32.PACK_AB" &&
-            (rounded & 0x7fff) == 0x7f80)
-          return (rounded & 0x8000) | 0x7f7f;
-        return rounded;
-      }
       return float_half_rn(bits);
     };
     const uint32_t packed =
@@ -543,16 +529,12 @@ void register_float_conversion_semantics(frontend &target) {
   target.register_semantics("F2FP.SATFINITE.E2M1.F32.PACK_AB_MERGE_C",
                             execute_f2fp_e4m3);
   target.register_semantics("F2F.F16.F32", execute_f2f_half);
-  target.register_semantics("F2F.BF16.F32", execute_f2f_half);
+  register_bfloat_conversion_semantics(target);
   target.register_semantics("F2FP.F16.F32.PACK_AB", execute_f2fp_pack_ab);
-  target.register_semantics("F2FP.BF16.F32.PACK_AB", execute_f2fp_pack_ab);
-  target.register_semantics("F2FP.SATFINITE.BF16.F32.PACK_AB",
-                            execute_f2fp_pack_ab);
   target.register_semantics("F2FP.SATFINITE.E4M3.F32.PACK_AB_MERGE_C",
                             execute_f2fp_e4m3);
   target.register_semantics("F2FP.SATFINITE.E8.F32.PACK_AB_MERGE_C.RP",
                             execute_f2fp_ue8m0);
-  target.register_semantics("F2FP.RELU.BF16.F32.PACK_AB", execute_f2fp_pack_ab);
 }
 
 } // namespace functional_detail

@@ -1,3 +1,4 @@
+#include "../../bfloat_conversion.h"
 #include "internal.h"
 
 #include <cmath>
@@ -365,12 +366,7 @@ float flush_subnormal(float value) {
                                                 : value;
 }
 
-uint16_t float_bfloat_rn(float value) {
-  if (std::isnan(value))
-    return 0x7fff;
-  const uint32_t bits = float_bits(value);
-  return static_cast<uint16_t>((bits + 0x7fff + ((bits >> 16) & 1)) >> 16);
-}
+uint16_t float_bfloat_rn(float value) { return f32_to_bf16_rn(value); }
 
 } // namespace functional_detail
 } // namespace sass

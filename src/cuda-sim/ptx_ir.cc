@@ -1162,6 +1162,10 @@ unsigned type_info_key::type_decode(int type, size_t &size, int &basic_type) {
       size = 16;
       basic_type = -1;
       return 8;
+    case BF16X2_TYPE:
+      size = 32;
+      basic_type = -1;
+      return 24;
     case BF16_TYPE:
       size = 16;
       basic_type = -1;
@@ -1681,6 +1685,12 @@ ptx_instruction::ptx_instruction(
         break;
       case SC_OPTION:
         // fence.sc.* : sequential-consistency order; scope is a later option.
+        break;
+      case RELU_OPTION:
+        if (opcode != CVT_OP) {
+          fprintf(stderr, "PTX .relu is only qualified on cvt\n");
+          abort();
+        }
         break;
       case FTZ_OPTION:
         break;

@@ -59,6 +59,7 @@ float bfloat_float(uint16_t bits);
 float tf32_float(uint32_t bits);
 uint16_t float_half_rn(uint32_t bits);
 
+void register_bfloat_conversion_semantics(frontend &target);
 void register_data_movement_semantics(frontend &target);
 void register_integer_semantics(frontend &target);
 float flush_subnormal(float value);

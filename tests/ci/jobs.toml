@@ -128,3 +128,10 @@ cuda = "13.3"
 tests = [
   { name = "driver-maps-and-dual-launch", group = "unit", gtest_filter = "DriverTensorMap.*:Fa4OpaqueTensorMapTest.*:SassParameterAlias.*:TmaClusterTargets.*", post_check = "tests/ci/check_driver_tma_dual.py" },
 ]
+
+[jobs.sm100-bfloat]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "bfloat-components-and-dual-launch", group = "unit", gtest_filter = "BfloatBits.*:SassBfloatConversion.*", post_check = "tests/ci/check_bfloat_dual.py" },
+]

@@ -1288,6 +1288,7 @@ bool has_floating_scalar_type(const ptx_instruction *inst) {
     case F16_TYPE:
     case F16X2_TYPE:
     case BF16_TYPE:
+    case BF16X2_TYPE:
     case TF32_TYPE:
     case E4M3_TYPE:
     case E5M2_TYPE:
