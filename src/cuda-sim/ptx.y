@@ -301,6 +301,7 @@ class ptx_recognizer;
 %token CLC_GET_XYZ_OPTION;
 %token	INVAL_OPTION;
 %token	MBARRIER_INIT_OPTION;
+%token	M16N8_OPTION;
 %token	M8N8_OPTION;
 %token	TRANS_OPTION;
 %token	X1_OPTION;
@@ -799,6 +800,7 @@ option: type_spec
 	| CLC_GET_XYZ_OPTION { recognizer->add_option(CLC_GET_XYZ_OPTION); }
 	| INVAL_OPTION { recognizer->add_option(INVAL_OPTION); }
 	| MBARRIER_INIT_OPTION { recognizer->add_option(MBARRIER_INIT_OPTION); }
+	| M16N8_OPTION { recognizer->add_option(M16N8_OPTION); }
 	| M8N8_OPTION { recognizer->add_option(M8N8_OPTION); }
 	| TRANS_OPTION { recognizer->add_option(TRANS_OPTION); }
 	| X1_OPTION { recognizer->add_option(X1_OPTION); }

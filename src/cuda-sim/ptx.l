@@ -490,6 +490,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 
 \.init  TC; return INIT_OPTION;
 \.inval TC; return INVAL_OPTION;
+\.m16n8 TC; return M16N8_OPTION;
 \.m8n8 TC; return M8N8_OPTION;
 \.trans TC; return TRANS_OPTION;
 \.x1 TC; return X1_OPTION;

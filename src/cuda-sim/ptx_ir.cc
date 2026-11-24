@@ -1803,6 +1803,7 @@ ptx_instruction::ptx_instruction(
       case CLC_GET_Z_OPTION:
       case CLC_GET_XYZ_OPTION:
       case MULTICAST_CLUSTER_OPTION:
+      case M16N8_OPTION:
       case M8N8_OPTION:
       case MBARRIER_INIT_OPTION:
       case TRANS_OPTION:

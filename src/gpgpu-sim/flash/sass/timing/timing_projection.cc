@@ -577,7 +577,9 @@ void classify(const instruction &source, const timing_profile &profile,
     target.op = base == "LDSM" ? TENSOR_CORE_LOAD_OP : TENSOR_CORE_STORE_OP;
     target.op_pipe = MEM__OP;
     target.memory_op = base == "LDSM" ? memory_load : memory_store;
-    target.data_size = has_modifier(source.opcode, "MT88") ? 2 : 4;
+    target.data_size = has_modifier(source.opcode, "MT168")  ? 1
+                       : has_modifier(source.opcode, "MT88") ? 2
+                                                             : 4;
     target.space = memory_space_t(shared_space);
     target.cache_op = CACHE_UNDEFINED;
     target.latency = 1;

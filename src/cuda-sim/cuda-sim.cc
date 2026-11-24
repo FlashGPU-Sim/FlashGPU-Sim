@@ -1388,7 +1388,12 @@ void ptx_instruction::set_opcode_and_latency() {
     }
     case STMATRIX_OP: {
       op = TENSOR_CORE_STORE_OP;
-      m_space_spec = shared_space;
+      // Preserve the operand's state space for byte-matrix generic addressing.
+      // The dynamic timing operation below always accesses shared memory.
+      const auto &options = get_options();
+      const bool byte_matrix =
+          std::find(options.begin(), options.end(), M16N8_OPTION) != options.end();
+      if (!byte_matrix) m_space_spec = shared_space;
       space.set_type(shared_space);
       for (int option : get_options()) {
         if (option == X1_OPTION) shared_mem_dispatch_cycles = 1;
@@ -1396,6 +1401,9 @@ void ptx_instruction::set_opcode_and_latency() {
         if (option == X4_OPTION) shared_mem_dispatch_cycles = 4;
       }
       assert(shared_mem_dispatch_cycles != 0);
+      // New byte forms provide all disjoint byte accesses, like native STSM;
+      // use the common shared-memory transaction path for both frontends.
+      if (byte_matrix) shared_mem_dispatch_cycles = 0;
       break;
     }
     case SST_OP:

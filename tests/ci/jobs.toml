@@ -240,3 +240,10 @@ cuda = "13.3"
 tests = [
   { name = "ordinary-fence-forms-and-publication", group = "unit", gtest_filter = "PtxFenceTiming.*:SassStrongGlobal.*", post_check = "tests/ci/check_acq_rel_fence_dual.py" },
 ]
+
+[jobs.sm100-byte-matrix]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "byte-matrix-components-and-dual-launch", group = "unit", gtest_filter = "ByteMatrixNative.*", post_check = "tests/ci/check_byte_matrix_dual.py" },
+]
