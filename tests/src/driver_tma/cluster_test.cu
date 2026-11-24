@@ -8,7 +8,7 @@
 #include "common/gpgpusim_config_topology.h"
 namespace {
 // Two clusters and two barrier phases. Modes select multicast, paired
-// completion, remote destination, and shared::cta with peer completion.
+// completion, remote destination, and shared::cta with local completion.
 template <int Mode, int Rank = 2>
 __global__ void tensor_cluster(const CUtensorMap *map, unsigned *out) {
   __shared__ __align__(128) unsigned tile[128];
@@ -68,7 +68,7 @@ __global__ void tensor_cluster(const CUtensorMap *map, unsigned *out) {
   } else {                                      \
     COPY("5d", "{%3,%4,%3,%3,%3}", MODS, MASK); \
   }
-      if constexpr (Mode == 6 || Mode == 7) {
+      if constexpr (Mode == 7) {
         asm volatile(
             "cp.async.bulk.tensor.2d.shared::cta.global."
             "mbarrier::complete_tx::bytes.cta_group::2 "

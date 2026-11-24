@@ -18,9 +18,8 @@ Native CUDA 13.3 SM100/103 `UTMALDG.{1D..5D}` supports `.2CTA`, `.MULTICAST`, an
 for the unmodified opcode: rank zero is a real destination, not an alias for the
 issuing CTA. Non-cluster ordinary loads retain their previous path.
 
-PTX also permits a peer completion barrier with a `shared::cta` destination and
-`.cta_group::2`. Only the barrier resolver allows that peer; the destination
-retains its CTA-local restriction.
+PTX requires `shared::cluster` when the completion barrier is remote, even with
+`.cta_group::2`. `shared::cta` fixtures use a local completion barrier.
 
 Reference: [NVIDIA PTX tensor asynchronous copy semantics](https://docs.nvidia.com/cuda/parallel-thread-execution/#data-movement-and-conversion-instructions-cp-async-bulk-tensor).
 

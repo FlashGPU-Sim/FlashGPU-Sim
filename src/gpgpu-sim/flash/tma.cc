@@ -3337,7 +3337,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     const auto destination =
         resolve_tma_shared_target(thread, dst_addr, is_cluster);
     const auto barrier =
-        resolve_tma_shared_target(thread, mbar_addr, is_cluster || paired);
+        resolve_tma_shared_target(thread, mbar_addr, is_cluster);
     // Preserve the owner in unicast transaction identity: different target
     // CTAs may use the same offset and notify the same completion barrier.
     const uint32_t transaction_dst_addr =
