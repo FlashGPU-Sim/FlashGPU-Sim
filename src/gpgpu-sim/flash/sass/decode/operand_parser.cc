@@ -430,6 +430,17 @@ operand parse_operand(const std::string &input) {
     invalid.text = text;
     return invalid;
   }
+  if (text.back() == ']' && text.rfind("idesc[", 0) == 0) {
+    operand reg = parse_register_like(text.substr(6, text.size() - 7));
+    if (reg.kind == operand_kind::kUniformRegister && !reg.negated &&
+        !has_unrepresented_value_modifier(reg) && !reg.wide) {
+      reg.text = text;
+      return reg;
+    }
+    operand invalid;
+    invalid.text = text;
+    return invalid;
+  }
   operand result = parse_constant(text);
   if (result.kind != operand_kind::kOpaque)
     return result;

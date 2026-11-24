@@ -32,6 +32,7 @@
 
 #include "tcgen05.h"
 #include "tcgen05/copy.h"
+#include "tcgen05/ptx_internal.h"
 
 #include "../../cuda-sim/ptx_ir.h"
 #include "../../cuda-sim/ptx_sim.h"
@@ -52,7 +53,7 @@ typedef void *yyscan_t;
 
 namespace flash_gpgpu_sim {
 
-static unsigned tcgen05_cta_group(const ptx_instruction *pI) {
+unsigned tcgen05_cta_group(const ptx_instruction *pI) {
   std::list<int> options = pI->get_options();
   for (std::list<int>::const_iterator i = options.begin(); i != options.end();
        ++i) {
@@ -64,7 +65,7 @@ static unsigned tcgen05_cta_group(const ptx_instruction *pI) {
   return 1;
 }
 
-static void tcgen05_assert_cta_group1(const ptx_instruction *pI) {
+void tcgen05_assert_cta_group1(const ptx_instruction *pI) {
   assert(tcgen05_cta_group(pI) == 1 &&
          "TCGen05 cta_group::2 is parsed but not implemented");
 }
@@ -79,11 +80,11 @@ bool tcgen05_has_option(const ptx_instruction *pI, int option) {
   return false;
 }
 
-static bool tcgen05_is_warp_leader(const ptx_thread_info *thread) {
+bool tcgen05_is_warp_leader(const ptx_thread_info *thread) {
   return thread->get_laneid() == 0;
 }
 
-static flash_gpgpu_sim::tcgen05_tmem_scope_t
+flash_gpgpu_sim::tcgen05_tmem_scope_t
 tcgen05_tmem_scope(const ptx_instruction *pI, const ptx_thread_info *thread) {
   unsigned sm_id = thread->get_hw_sid();
   if (sm_id == (unsigned)-1)
@@ -134,24 +135,24 @@ static uint32_t tcgen05_register_address(const ptx_instruction *inst,
           tcgen05_has_option(inst, TCGEN05_UNPACK_16B_OPTION));
 }
 
-static ptx_reg_t tcgen05_read_operand(const ptx_instruction *pI,
-                                      ptx_thread_info *thread,
-                                      unsigned operand_index) {
+ptx_reg_t tcgen05_read_operand(const ptx_instruction *pI,
+                               ptx_thread_info *thread,
+                               unsigned operand_index) {
   assert(operand_index < pI->get_num_operands());
   const operand_info &op = pI->operand_lookup(operand_index);
   return thread->get_operand_value(op, op, B32_TYPE, thread, 1);
 }
 
-static ptx_reg_t tcgen05_read_u64_operand(const ptx_instruction *pI,
-                                          ptx_thread_info *thread,
-                                          unsigned operand_index) {
+ptx_reg_t tcgen05_read_u64_operand(const ptx_instruction *pI,
+                                   ptx_thread_info *thread,
+                                   unsigned operand_index) {
   assert(operand_index < pI->get_num_operands());
   const operand_info &op = pI->operand_lookup(operand_index);
   return thread->get_operand_value(op, op, B64_TYPE, thread, 1);
 }
 
-static mem_addr_t tcgen05_eval_address(const operand_info &op,
-                                       ptx_thread_info *thread) {
+mem_addr_t tcgen05_eval_address(const operand_info &op,
+                                ptx_thread_info *thread) {
   ptx_reg_t addr = thread->get_operand_value(op, op, B32_TYPE, thread, 0);
   return addr.u32;
 }
@@ -213,8 +214,8 @@ static void tcgen05_write_u32_destination(
   }
 }
 
-static std::vector<uint32_t>
-tcgen05_read_vector_words(const operand_info &src, ptx_thread_info *thread) {
+std::vector<uint32_t> tcgen05_read_vector_words(const operand_info &src,
+                                                ptx_thread_info *thread) {
   assert(src.is_vector());
   unsigned nelem = src.get_vect_nelem();
   std::vector<uint32_t> values(nelem, 0);
@@ -254,55 +255,6 @@ static void tcgen05_set_commit_mbarrier_info(const ptx_instruction *pI,
   }
   const_cast<ptx_instruction *>(pI)->set_mbarrier_info(thread->get_laneid(),
                                                        info);
-}
-
-static bool tcgen05_read_enable_input_d(const operand_info &op,
-                                        ptx_thread_info *thread) {
-  if (op.is_reg() && op.get_symbol() &&
-      op.get_symbol()->type()->get_key().scalar_type() == PRED_TYPE) {
-    ptx_reg_t predicate =
-        thread->get_operand_value(op, op, PRED_TYPE, thread, 1);
-    return (predicate.pred & 0x1) == 0;
-  }
-
-  ptx_reg_t value = thread->get_operand_value(op, op, B32_TYPE, thread, 1);
-  return value.u32 != 0;
-}
-
-static std::vector<uint16_t> tcgen05_read_shared_f16_linearized(
-    const flash_gpgpu_sim::tcgen05_shared_descriptor_t &desc, uint32_t nelem,
-    ptx_thread_info *thread) {
-  assert(!desc.leading_dimension_absolute &&
-         "TCGen05 MMA absolute leading-dimension mode is not implemented");
-
-  if (GPTRACE_CORE(TCGEN05, thread->get_hw_sid()) && desc.swizzle_mode != 0) {
-    GPPRINTF_GPU_CORE(thread->get_gpu(), thread->get_hw_sid(), TCGEN05,
-                      "shared_desc swizzle=%u linearized start=%u "
-                      "nelem=%u\n",
-                      desc.swizzle_mode, desc.start_address, nelem);
-  }
-
-  // Minimal functional path for CuTeDSL-generated FA4 smoke. The detailed
-  // Blackwell shared-memory swizzle is not modeled yet.
-  std::vector<uint16_t> values(nelem, 0);
-  for (uint32_t i = 0; i < nelem; ++i) {
-    thread->m_shared_mem->read(desc.start_address + i * sizeof(uint16_t),
-                               sizeof(uint16_t), &values[i]);
-  }
-  return values;
-}
-
-static void tcgen05_check_disable_output_lane_zero(const operand_info &op,
-                                                   ptx_thread_info *thread) {
-  assert(op.is_vector());
-  assert(op.get_vect_nelem() == 4 &&
-         "Only TCGen05 cta_group::1 disable-output-lane vectors are supported");
-
-  std::vector<uint32_t> lanes = tcgen05_read_vector_words(op, thread);
-  for (unsigned i = 0; i < lanes.size(); ++i) {
-    assert(lanes[i] == 0 &&
-           "TCGen05 MMA disable-output-lane masks are not implemented");
-  }
 }
 
 void handle_tcgen05_alloc_inst(const ptx_instruction *pI,
@@ -360,91 +312,6 @@ void handle_tcgen05_relinq_inst(const ptx_instruction *pI,
   flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
       thread->get_gpu()->get_tcgen05_tmem_manager();
   manager.relinquish_alloc_permit(tcgen05_tmem_scope(pI, thread));
-}
-
-void handle_tcgen05_mma_inst(const ptx_instruction *pI,
-                             ptx_thread_info *thread) {
-  if (!tcgen05_is_warp_leader(thread))
-    return;
-  tcgen05_assert_cta_group1(pI);
-  assert(pI->get_num_operands() >= 5);
-  assert(tcgen05_has_option(pI, TCGEN05_KIND_F16_OPTION));
-
-  const operand_info &d_tmem = pI->operand_lookup(0);
-  const operand_info &a_desc_op = pI->operand_lookup(1);
-  unsigned enable_input_d_operand = 4;
-  if (pI->operand_lookup(4).is_vector()) {
-    assert(pI->get_num_operands() >= 6);
-    tcgen05_check_disable_output_lane_zero(pI->operand_lookup(4), thread);
-    enable_input_d_operand = 5;
-  }
-  const operand_info &enable_input_d_op =
-      pI->operand_lookup(enable_input_d_operand);
-
-  uint32_t d_address = tcgen05_eval_address(d_tmem, thread);
-  uint32_t a_tmem_address =
-      a_desc_op.is_memory_operand()
-          ? static_cast<uint32_t>(tcgen05_eval_address(a_desc_op, thread))
-          : 0;
-  flash_gpgpu_sim::tcgen05_tmem_scope_t scope = tcgen05_tmem_scope(pI, thread);
-  flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
-      thread->get_gpu()->get_tcgen05_tmem_manager();
-  if (GPTRACE_CORE(TCGEN05, thread->get_hw_sid())) {
-    GPPRINTF_GPU_CORE(thread->get_gpu(), thread->get_hw_sid(), TCGEN05,
-                      "mma line=%u tid=%u lane=%u scope=(%u,%u,%u) "
-                      "d=%u a_mem=%u\n",
-                      pI->source_line(), thread->get_tid().x,
-                      thread->get_laneid(), scope.sm_id, scope.cta_id,
-                      scope.cta_group, d_address,
-                      a_desc_op.is_memory_operand() ? 1 : 0);
-  }
-  flash_gpgpu_sim::tcgen05_mma_descriptor_t mma_desc =
-      flash_gpgpu_sim::tcgen05_decode_f16_mma_descriptor(
-          tcgen05_read_operand(pI, thread, 3).u32, tcgen05_cta_group(pI));
-  inst_t::tcgen05_dyn_info_t perf_info;
-  perf_info.mma_work = 2ULL * mma_desc.m * mma_desc.n * mma_desc.k;
-  const_cast<ptx_instruction *>(pI)->set_tcgen05_dyn_info(thread->get_laneid(),
-                                                          perf_info);
-  uint64_t a_desc_value = 0;
-  if (!a_desc_op.is_memory_operand()) {
-    a_desc_value = tcgen05_read_u64_operand(pI, thread, 1).u64;
-  }
-  uint64_t b_desc_value = tcgen05_read_u64_operand(pI, thread, 2).u64;
-  if (GPTRACE_CORE(TCGEN05, thread->get_hw_sid())) {
-    GPPRINTF_GPU_CORE(
-        thread->get_gpu(), thread->get_hw_sid(), TCGEN05,
-        "mma_desc line=%u a=0x%016llx a_tmem=%u "
-        "b=0x%016llx idesc=0x%08x\n",
-        pI->source_line(), static_cast<unsigned long long>(a_desc_value),
-        a_tmem_address, static_cast<unsigned long long>(b_desc_value),
-        tcgen05_read_operand(pI, thread, 3).u32);
-  }
-  flash_gpgpu_sim::tcgen05_shared_descriptor_t b_desc =
-      flash_gpgpu_sim::tcgen05_decode_shared_descriptor(b_desc_value);
-  bool enable_input_d = tcgen05_read_enable_input_d(enable_input_d_op, thread);
-
-  std::vector<uint16_t> a_values;
-  if (a_desc_op.is_memory_operand()) {
-    a_values = manager.read_matrix_packed_u16(scope, a_tmem_address, mma_desc.m,
-                                              mma_desc.k);
-  } else {
-    flash_gpgpu_sim::tcgen05_shared_descriptor_t a_desc =
-        flash_gpgpu_sim::tcgen05_decode_shared_descriptor(a_desc_value);
-    a_values = tcgen05_read_shared_f16_linearized(
-        a_desc, mma_desc.m * mma_desc.k, thread);
-  }
-  std::vector<uint16_t> b_values = tcgen05_read_shared_f16_linearized(
-      b_desc, mma_desc.k * mma_desc.n, thread);
-
-  std::vector<uint32_t> input_d;
-  if (enable_input_d) {
-    input_d =
-        manager.read_matrix_words(scope, d_address, mma_desc.m, mma_desc.n);
-  }
-
-  std::vector<uint32_t> output = flash_gpgpu_sim::tcgen05_mma_f16_compute_words(
-      mma_desc, a_values, b_values, input_d, enable_input_d);
-  manager.write_matrix_words(scope, d_address, output, mma_desc.m, mma_desc.n);
 }
 
 void handle_tcgen05_commit_inst(const ptx_instruction *pI,

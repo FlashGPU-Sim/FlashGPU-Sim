@@ -195,7 +195,8 @@ bool orders_deferred_cta_barrier(const instruction &inst, architecture arch) {
       arch == architecture::kSm100 || arch == architecture::kSm103;
   // TMEM consumers and barrier polling must observe the CTA producer epoch.
   if (blackwell && (base == "LDTM" || base == "STTM" || base == "UTCATOMSWS" ||
-                    base == "UTCCP" || base == "UTCBAR" ||
+                    base == "UTCCP" || base == "UTCBAR" || base == "UTCHMMA" ||
+                    base == "UTCQMMA" || base == "UTCOMMA" ||
                     inst.opcode.rfind("SYNCS.PHASECHK", 0) == 0))
     return true;
   // Publishing an mbarrier arrival/completion is a shared-state side effect.

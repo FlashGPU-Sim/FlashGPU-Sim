@@ -4,6 +4,8 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "tcgen05/mma_commit_test.cu",
+  "tcgen05/mma_dense_test.cu",
   "tcgen05/tmem_fragments_test.cu",
   "tcgen05/tmem_packing_test.cu",
   "tcgen05/tmem_copy_test.cu",
@@ -65,6 +67,7 @@ sources = [
   "unit/mbarrier_retry_timing_test.cc",
   "unit/rop_delay_output_test.cc",
   "unit/tcgen05_tmem_test.cc",
+  "unit/tcgen05_mma_test.cc",
   "unit/tcgen05_copy_test.cc",
   "unit/tcgen05_timing_test.cc",
 ]

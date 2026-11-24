@@ -198,6 +198,7 @@ bool has_destination(const std::string &base) {
          base != "UTMACMDFLUSH" && base != "FENCE" && base != "UTMALDG" &&
          base != "UTMASTG" && base != "UTMAREDG" && base != "UTMAPF" &&
          base != "UBLKCP" && base != "UBLKRED" && base != "UTCCP" &&
+         base != "UTCHMMA" && base != "UTCQMMA" && base != "UTCOMMA" &&
          base != "UTCBAR" && base != "STTM" && base != "UVIRTCOUNT" &&
          base != "LDGSTS" && base != "LDGDEPBAR";
 }
@@ -484,9 +485,11 @@ void classify(const instruction &source, const timing_profile &profile,
   target.initiation_interval = profile.integer_initiation[integer_index];
 
   using tcinfo = inst_t::tcgen05_static_info_t;
-  if (base == "UTCCP" || base == "UTCBAR") {
-    target.tcgen05_info.operation =
-        base == "UTCCP" ? tcinfo::COPY : tcinfo::COMMIT;
+  if (base == "UTCHMMA" || base == "UTCQMMA" || base == "UTCOMMA" ||
+      base == "UTCCP" || base == "UTCBAR") {
+    target.tcgen05_info.operation = base == "UTCCP"    ? tcinfo::COPY
+                                    : base == "UTCBAR" ? tcinfo::COMMIT
+                                                       : tcinfo::MMA;
     target.tcgen05_info.cta_group = 1;
     if (base == "UTCCP") {
       target.tcgen05_info.timing_index =
@@ -494,6 +497,8 @@ void classify(const instruction &source, const timing_profile &profile,
           : source.opcode.find("2x64dp128bit") != std::string::npos ? 2
           : has_modifier(source.opcode, "4x32dp128bit")             ? 3
                                                                     : 0;
+    }
+    if (base != "UTCBAR") {
       target.op = TENSOR_CORE_OP;
       target.sp_op = TENSOR__OP;
       target.op_pipe = TENSOR_CORE__OP;
@@ -1007,10 +1012,20 @@ void populate_registers(const instruction &source, timing_instruction &target) {
 
   for (size_t index = source_begin; index < source.operands.size(); ++index) {
     append_instruction_source(sources, source, index);
-    if (base == "UTCCP" && index == 1 &&
+    if ((base == "UTCCP" || base == "UTCHMMA" || base == "UTCQMMA" ||
+         base == "UTCOMMA") &&
+        source.operands[index].kind == operand_kind::kGmmaDescriptor &&
         source.operands[index].descriptor_register != kZeroUniformRegister)
       append_register(sources, operand_kind::kUniformRegister,
                       source.operands[index].descriptor_register + 1, false);
+    // Block-scaled MMA encodes SFA/SFB as an implicit uniform-register pair.
+    if ((base == "UTCQMMA" || base == "UTCOMMA") && index == 5)
+      for (const auto &group : source.operands[index].address_groups)
+        for (const auto &term : group.terms)
+          if (term.kind == address_term_kind::kUniformRegister &&
+              term.index != kZeroUniformRegister)
+            append_register(sources, operand_kind::kUniformRegister,
+                            term.index + 1, false);
     if (base == "STTM" && index == 1 &&
         source.operands[index].index != kZeroRegister)
       for (unsigned word = 1; word < tmem_transfer_words(source.opcode); ++word)

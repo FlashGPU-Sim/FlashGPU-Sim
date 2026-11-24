@@ -1309,6 +1309,27 @@ TEST(SassTcgenTiming, PreservesWideTmemDependenciesAcrossPipelineCopies) {
 
 }  // namespace
 
+TEST(SassTimingProjectionTest, TcgenMmaReadsAllDescriptorAndScaleRegisters) {
+  for (const char *op : {"UTCQMMA", "UTCOMMA"}) {
+    const auto inst = official_instruction(
+        0, op,
+        "gdesc[UR2],gdesc[UR4],tmem[UR6],tmem[URZ],idesc[UR8],tmem[UR10],UP0");
+    ASSERT_TRUE(inst.operands_structured);
+    const timing_instruction projected(inst);
+    EXPECT_EQ(projected.outcount, 0u);
+    std::vector<unsigned> sources;
+    for (unsigned i = 0; i < projected.incount; ++i)
+      sources.push_back(projected.arch_reg.src[i]);
+    for (unsigned reg : {2u, 3u, 4u, 5u, 6u, 8u, 10u, 11u})
+      EXPECT_NE(std::find(sources.begin(), sources.end(), 257u + reg),
+                sources.end())
+          << reg;
+    EXPECT_EQ(projected.tcgen05_info.operation,
+              inst_t::tcgen05_static_info_t::MMA);
+    EXPECT_EQ(projected.op, TENSOR_CORE_OP);
+  }
+}
+
 TEST(SassTimingProjectionTest, TmemCopyUsesCommonShapeTimingIndices) {
   const char *opcodes[] = {
       "UTCCP.T.S", "UTCCP.T.S.128dp128bit", "UTCCP.T.S.2x64dp128bit_lw02_lw13",

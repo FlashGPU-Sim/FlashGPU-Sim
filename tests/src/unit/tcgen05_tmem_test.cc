@@ -319,7 +319,8 @@ TEST(Tcgen05TmemTest, MmaF16KnownPatternNoAccum) {
   std::vector<uint16_t> b(desc.k * desc.n);
   for (uint32_t k = 0; k < desc.k; ++k) {
     for (uint32_t n = 0; n < desc.n; ++n) {
-      b[k * desc.n + n] = tcgen05_f32_to_f16(static_cast<float>(n + 1));
+      // A non-transposed B descriptor is N rows of K elements.
+      b[n * desc.k + k] = tcgen05_f32_to_f16(static_cast<float>(n + 1));
     }
   }
 

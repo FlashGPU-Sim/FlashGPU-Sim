@@ -690,6 +690,13 @@ timing_step_result timing_runtime::step(
   }
 
   project_mbarrier_effects(context, dynamic_instruction);
+  dynamic_instruction.reset_tcgen05_dyn_info();
+  if (context.tcgen_mma_effect.valid) {
+    const auto &mma = context.tcgen_mma_effect;
+    inst_t::tcgen05_dyn_info_t effect;
+    effect.mma_work = 2ull * mma.m * mma.n * mma.k;
+    dynamic_instruction.set_tcgen05_dyn_info(0, effect);
+  }
   dynamic_instruction.reset_tma_dyn_info();
   if (context.named_barrier_effect.valid) {
     dynamic_instruction.set_bar_id(context.named_barrier_effect.id);

@@ -93,6 +93,21 @@ public:
   read_matrix_packed_u16(const tcgen05_tmem_scope_t &scope, uint32_t address,
                          uint32_t rows, uint32_t columns) const;
 
+  std::vector<uint8_t> read_mxf4_scale_matrix(const tcgen05_tmem_scope_t &scope,
+                                              uint32_t address,
+                                              uint32_t logical_rows,
+                                              uint32_t scales_per_row,
+                                              uint8_t scale_factor_id) const;
+
+  // Logical accumulator layout shared by PTX and SASS adapters. Layout B
+  // folds CTA2 M128 across the upper datapaths; layout F spaces M64 rows.
+  std::vector<uint32_t> read_accumulator(const tcgen05_tmem_scope_t &scope,
+                                         uint32_t base, unsigned rows,
+                                         unsigned columns, bool folded) const;
+  void write_accumulator(const tcgen05_tmem_scope_t &scope, uint32_t base,
+                         const std::vector<uint32_t> &values, unsigned rows,
+                         unsigned columns, bool folded);
+
   void clear_cta(unsigned sm_id, unsigned cta_id);
   void reset();
 

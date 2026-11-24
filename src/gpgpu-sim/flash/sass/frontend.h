@@ -207,6 +207,21 @@ struct functional_mbarrier_effect {
   bool parity = false;
 };
 
+struct functional_tcgen_shared_read {
+  uint32_t address;
+  unsigned bytes, rank;
+};
+
+struct functional_tcgen_mma_effect {
+  bool valid = false;
+  bool mixed = false;
+  unsigned m = 0, n = 0, k = 0, cta_group = 1;
+  bool mxf4 = false;
+  bool ws = false, tmem_a = false;
+  unsigned shared_operand_bytes = 0;
+  std::vector<functional_tcgen_shared_read> shared_reads;
+};
+
 struct functional_named_barrier_effect {
   bool valid = false;
   uint32_t id = UINT32_MAX;
@@ -331,6 +346,7 @@ struct execution_context {
   std::array<functional_mbarrier_effect, kWarpLanes> mbarrier_effects{};
   std::vector<functional_mbarrier_effect> imported_mbarriers;
   functional_named_barrier_effect named_barrier_effect;
+  functional_tcgen_mma_effect tcgen_mma_effect;
 
   void clear_instruction_effects();
   bool decode_local_memory_offset(unsigned lane, uint64_t address,

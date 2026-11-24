@@ -298,6 +298,12 @@ class ptx_recognizer;
 %token	X8_OPTION;
 %token	X64_OPTION;
 %token	X128_OPTION;
+%token	TCGEN05_BLOCK_SCALE_OPTION;
+%token	TCGEN05_BLOCK32_OPTION;
+%token	TCGEN05_SCALE_VEC_1X_OPTION;
+%token	TCGEN05_SCALE_VEC_2X_OPTION;
+%token	TCGEN05_SCALE_VEC_4X_OPTION;
+%token	TCGEN05_BLOCK16_OPTION;
 %token	TCGEN05_CTA_GROUP_1_OPTION;
 %token	TCGEN05_CTA_GROUP_2_OPTION;
 %token	TCGEN05_KIND_F16_OPTION;
@@ -753,6 +759,12 @@ option: type_spec
 	| X8_OPTION { recognizer->add_option(X8_OPTION); }
 	| X64_OPTION { recognizer->add_option(X64_OPTION); }
 	| X128_OPTION { recognizer->add_option(X128_OPTION); }
+	| TCGEN05_BLOCK_SCALE_OPTION { recognizer->add_option(TCGEN05_BLOCK_SCALE_OPTION); }
+	| TCGEN05_BLOCK32_OPTION { recognizer->add_option(TCGEN05_BLOCK32_OPTION); }
+	| TCGEN05_SCALE_VEC_1X_OPTION { recognizer->add_option(TCGEN05_SCALE_VEC_1X_OPTION); }
+	| TCGEN05_SCALE_VEC_2X_OPTION { recognizer->add_option(TCGEN05_SCALE_VEC_2X_OPTION); }
+	| TCGEN05_SCALE_VEC_4X_OPTION { recognizer->add_option(TCGEN05_SCALE_VEC_4X_OPTION); }
+	| TCGEN05_BLOCK16_OPTION { recognizer->add_option(TCGEN05_BLOCK16_OPTION); }
 	| TCGEN05_CTA_GROUP_1_OPTION { recognizer->add_option(TCGEN05_CTA_GROUP_1_OPTION); }
 	| TCGEN05_CTA_GROUP_2_OPTION { recognizer->add_option(TCGEN05_CTA_GROUP_2_OPTION); }
 	| TCGEN05_KIND_F16_OPTION { recognizer->add_option(TCGEN05_KIND_F16_OPTION); }

@@ -289,6 +289,106 @@ std::vector<uint16_t> tcgen05_tmem_manager_t::read_matrix_packed_u16(
   return result;
 }
 
+std::vector<uint32_t>
+tcgen05_tmem_manager_t::read_accumulator(const tcgen05_tmem_scope_t &scope,
+                                         uint32_t base, unsigned rows,
+                                         unsigned n, bool folded) const {
+  // PTX data-path Layout F: M64/non-WS occupies sixteen datapaths in each
+  // warp's 32-row partition. The other sixteen can hold another accumulator.
+  if (!folded && rows == 64) {
+    std::vector<uint32_t> logical(rows * n);
+    for (unsigned r = 0; r < rows; ++r) {
+      const auto values =
+          read_words(scope, base + (((r / 16) * 32 + r % 16) << 16), n);
+      std::copy(values.begin(), values.end(), logical.begin() + r * n);
+    }
+    return logical;
+  }
+  if (!folded)
+    return read_matrix_words(scope, base, rows, n);
+  const auto physical = read_matrix_words(scope, base, 128, n / 2);
+  std::vector<uint32_t> logical(rows * n);
+  for (unsigned r = 0; r < rows; ++r)
+    for (unsigned c = 0; c < n; ++c)
+      logical[r * n + c] =
+          physical[(r + (c / (n / 2)) * 64) * (n / 2) + c % (n / 2)];
+  return logical;
+}
+
+void tcgen05_tmem_manager_t::write_accumulator(
+    const tcgen05_tmem_scope_t &scope, uint32_t base,
+    const std::vector<uint32_t> &logical, unsigned rows, unsigned n,
+    bool folded) {
+  if (!folded && rows == 64) {
+    for (unsigned r = 0; r < rows; ++r)
+      write_words(scope, base + (((r / 16) * 32 + r % 16) << 16),
+                  std::vector<uint32_t>(logical.begin() + r * n,
+                                        logical.begin() + (r + 1) * n));
+    return;
+  }
+  if (!folded) {
+    write_matrix_words(scope, base, logical, rows, n);
+    return;
+  }
+  std::vector<uint32_t> physical(rows * n);
+  for (unsigned r = 0; r < rows; ++r)
+    for (unsigned c = 0; c < n; ++c)
+      physical[(r + (c / (n / 2)) * 64) * (n / 2) + c % (n / 2)] =
+          logical[r * n + c];
+  write_matrix_words(scope, base, physical, 128, n / 2);
+}
+
+std::vector<uint8_t> tcgen05_tmem_manager_t::read_mxf4_scale_matrix(
+    const tcgen05_tmem_scope_t &scope, uint32_t address, uint32_t logical_rows,
+    uint32_t scales_per_row, uint8_t scale_factor_id) const {
+  constexpr uint32_t kTmemDataPaths = 128;
+  constexpr uint32_t kDataPathsPerSubpartition = 32;
+  constexpr uint32_t kScaleBytesPerWord = 4;
+  assert(logical_rows > 0 && scales_per_row > 0 &&
+         "TCGen05 MXFP4 scale matrix read must be non-empty");
+  // SFA_ID/SFB_ID are instruction-descriptor fields that select a byte
+  // sub-column within each TMEM word.  The PTX scale-address operand names
+  // the containing TMEM matrix; it does not have to repeat the selected ID
+  // in its two most-significant bits.  CUTLASS can derive the descriptor ID
+  // from those bits as a convenience, while DeepGEMM deliberately keeps the
+  // address fixed and changes the descriptor ID for consecutive K slices.
+  assert(scale_factor_id + scales_per_row <= kScaleBytesPerWord &&
+         "TCGen05 MXFP4 scale factors cross a TMEM word");
+
+  std::lock_guard<tcgen05_tmem_spinlock_t> lock(m_mutex);
+  const scope_state_t *state = find_scope(scope);
+  assert(state && "TCGen05 MXFP4 scale read from unknown scope");
+  tcgen05_tmem_address_t base =
+      tcgen05_decode_tmem_address(address & 0x00ffffff);
+  uint32_t word_columns = (logical_rows + kDataPathsPerSubpartition - 1) /
+                          kDataPathsPerSubpartition;
+  assert(find_accessible_allocation_containing(
+             *state, tcgen05_encode_tmem_address(base.lane, base.column),
+             word_columns) != nullptr &&
+         "TCGen05 MXFP4 scale read outside allocation");
+
+  std::vector<uint8_t> result(logical_rows * scales_per_row, 0);
+  for (uint32_t row = 0; row < logical_rows; ++row) {
+    // Compact scale-factor rows use 32 data paths per subpartition. Rows
+    // beyond the first 32 advance the column; warpx4 leaves equivalent
+    // replicas in the other three subpartitions.
+    uint32_t data_path = base.lane + row % kDataPathsPerSubpartition;
+    assert(data_path < kTmemDataPaths &&
+           "TCGen05 MXFP4 scale TMEM data path is out of range");
+    uint32_t column = base.column + row / kDataPathsPerSubpartition;
+    uint32_t word = 0;
+    auto it = state->words.find(tcgen05_encode_tmem_address(data_path, column));
+    if (it != state->words.end())
+      word = it->second;
+    for (uint32_t scale = 0; scale < scales_per_row; ++scale) {
+      uint32_t byte = scale_factor_id + scale;
+      result[row * scales_per_row + scale] =
+          static_cast<uint8_t>((word >> (byte * 8)) & 0xff);
+    }
+  }
+  return result;
+}
+
 void tcgen05_tmem_manager_t::clear_cta(unsigned sm_id, unsigned cta_id) {
   std::lock_guard<tcgen05_tmem_spinlock_t> lock(m_mutex);
   for (auto it = m_scopes.begin(); it != m_scopes.end();) {

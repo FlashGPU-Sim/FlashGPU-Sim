@@ -71,6 +71,7 @@ bool ensure_mbarrier_imported(uint64_t location, execution_context &context);
 void register_mbarrier_semantics(frontend &target);
 void register_bulk_copy_semantics(frontend &target);
 void register_tmem_semantics(frontend &target);
+void register_tcgen_mma_semantics(frontend &target);
 void register_tma_semantics(frontend &target);
 void register_mma_semantics(frontend &target);
 void register_wgmma_semantics(frontend &target);
