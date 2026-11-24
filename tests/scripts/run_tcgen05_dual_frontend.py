@@ -38,6 +38,24 @@ def main():
         p.error('--runtime-library-dir must contain libcudart.so')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    # CUDA fixtures normally request the versioned SONAME (e.g. libcudart.so.13),
+    # not libcudart.so. A snapshot containing only the latter would silently
+    # fall through to the mutable build directory for the versioned library.
+    runtime_aliases = None
+    if library:
+        runtime_aliases = output / 'runtime-library-aliases'
+        runtime_aliases.mkdir(exist_ok=True)
+        for name in ('libcudart.so', 'libcudart.so.11.0', 'libcudart.so.12',
+                     'libcudart.so.13', 'libcudart_mod.so', 'libcuda.so', 'libcuda.so.1'):
+            alias = runtime_aliases / name
+            target = library / 'libcudart.so'
+            if alias.is_symlink():
+                if alias.resolve() != target.resolve():
+                    raise RuntimeError(f'Conflicting runtime alias: {alias}')
+            elif alias.exists():
+                raise RuntimeError(f'Refusing to replace runtime artifact: {alias}')
+            else:
+                alias.symlink_to(target)
     config = (args.config_dir / 'gpgpusim.config').read_text()
     if args.disable_ptx_reorder:
         config += '\n-gpgpu_ptx_reorder 0\n-gpgpu_ptx_reorder_sass_guided 0\n'
@@ -47,6 +65,7 @@ def main():
               'config_sha256': hashlib.sha256(config.encode()).hexdigest(), 'runs': {}}
     if library:
         report['runtime_library_dir'] = str(library)
+        report['runtime_alias_dir'] = str(runtime_aliases)
         report['runtime_sha256'] = hashlib.sha256((library / 'libcudart.so').read_bytes()).hexdigest()
     report['timing_marker'] = args.timing_marker
     report['threads'] = args.threads
@@ -65,7 +84,7 @@ def main():
                if not k.startswith(('FLASHGPU_SASS_', 'PTX_SIM_'))}
         env.pop('GTEST_OUTPUT', None)
         env.update(CUDA_INSTALL_PATH=str(cuda), OMP_NUM_THREADS=str(args.threads),
-                   FLASHGPU_TEST_LIBRARY_DIR=str(library) if library else '')
+                   FLASHGPU_TEST_LIBRARY_DIR=str(runtime_aliases) if runtime_aliases else '')
         if frontend == 'ptx':
             subprocess.run([str(cuda / 'bin/cuobjdump'), '-xptx', 'all', str(binary)],
                            cwd=work, check=True, stdout=subprocess.DEVNULL)
