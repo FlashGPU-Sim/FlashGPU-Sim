@@ -75,7 +75,7 @@ step_result tf32_tmem_mma(const instruction &inst, warp_state &state,
 step_result half_mma(const instruction &inst, warp_state &state,
                      execution_context &context) {
   const bool ws = inst.opcode == "UTCHMMA.WS";
-  const unsigned group = 1;
+  const unsigned group = inst.opcode == "UTCHMMA.2CTA" ? 2 : 1;
   if (inst.operands.size() != 6 || !context.cta || !context.memory)
     return unsupported(inst, "half MMA requires six operands and CTA memory");
   if (!any_lane_executes(inst, state)) {

@@ -1814,11 +1814,11 @@ void barrier_set_t::warp_reaches_mbarrier_ptx(unsigned cta_id, unsigned warp_id,
   assert(false && "mbarrier in barrier_set_t not implemented");
 }
 
-void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
-                                          const warp_inst_t &inst,
-                                          const active_mask_t &active_mask,
-                                          const ptx_instruction *static_inst,
-                                          unsigned dynamic_warp_id) {
+void barrier_set_t::warp_reaches_mbarrier(
+    unsigned cta_id, unsigned warp_id, const warp_inst_t &inst,
+    const active_mask_t &input_active_mask, const ptx_instruction *static_inst,
+    unsigned dynamic_warp_id) {
+  active_mask_t active_mask = input_active_mask;
   if (static_inst != nullptr) {
     warp_reaches_mbarrier_ptx(cta_id, warp_id, static_inst, &inst, active_mask,
                               dynamic_warp_id);
@@ -1835,6 +1835,79 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
 
   const inst_t::mbarrier_static_info_t &static_info =
       inst.get_mbarrier_static_info();
+
+  // Shared addresses were normalized by the frontend adapter. Use the
+  // same DSM messages as PTX; never apply a remote update to the issuer CTA.
+  // Validate all destinations before sending anything. A warp-level completion
+  // cannot silently combine different peer barriers (or local and remote ones).
+  if (static_info.operation ==
+          inst_t::mbarrier_static_info_t::MBARRIER_COMPLETE_TX &&
+      !static_info.per_lane_complete_tx) {
+    const inst_t::mbarrier_info_t *first = nullptr;
+    for (unsigned lane = 0; lane < m_shader->get_config()->warp_size; ++lane) {
+      if (!active_mask.test(lane))
+        continue;
+      const auto &info = inst.get_mbarrier_info(lane);
+      if (!is_valid_mbarrier_info(info))
+        continue;
+      if (first == nullptr) {
+        first = &info;
+        continue;
+      }
+      if (info.bar_id != first->bar_id || info.bar_count != first->bar_count ||
+          info.bar_parity != first->bar_parity ||
+          info.is_remote != first->is_remote ||
+          (info.is_remote && (info.remote_cid != first->remote_cid ||
+                              info.remote_hw_cta != first->remote_hw_cta))) {
+        fprintf(stderr,
+                "non-uniform native mbarrier completion destinations\n");
+        abort();
+      }
+    }
+  }
+  bool uniform_remote_completion_sent = false;
+  for (unsigned lane = 0; lane < m_shader->get_config()->warp_size; ++lane) {
+    if (!active_mask.test(lane))
+      continue;
+    const auto &info = inst.get_mbarrier_info(lane);
+    if (!is_valid_mbarrier_info(info) || !info.is_remote)
+      continue;
+    if (!mbar_has_remote_path(m_shader))
+      flash_gpgpu_sim::abort_dsm_disabled("native mbarrier",
+                                          m_shader->get_sid(), info.bar_id);
+    const unsigned src =
+        m_shader->get_config()->sid_to_cid(m_shader->get_sid());
+    auto send = [&](flash_gpgpu_sim::cluster_mbar_op op, unsigned count) {
+      if (mbarrier_trace_enabled(m_shader->get_sid()))
+        fprintf(stderr,
+                "NATIVE_MBAR_SEND sm=%u dst=%u cta=%u addr=0x%x op=%u count=%u "
+                "pc=0x%llx\n",
+                m_shader->get_sid(), info.remote_cid, info.remote_hw_cta,
+                info.bar_id, unsigned(op), count, (unsigned long long)inst.pc);
+      inject_remote_mbar(m_shader, src, info.remote_cid, info.remote_hw_cta,
+                         info.bar_id, op, count);
+    };
+    if (static_info.operation ==
+        inst_t::mbarrier_static_info_t::MBARRIER_ARRIVE_EXPECT_TX) {
+      if (static_info.expect_tx)
+        send(flash_gpgpu_sim::cluster_mbar_op::EXPECT_TX, info.bar_count);
+      if (static_info.arrive)
+        send(flash_gpgpu_sim::cluster_mbar_op::ARRIVE,
+             static_info.expect_tx ? 1 : info.bar_count);
+    } else if (static_info.operation ==
+               inst_t::mbarrier_static_info_t::MBARRIER_COMPLETE_TX) {
+      if (static_info.per_lane_complete_tx || !uniform_remote_completion_sent)
+        send(flash_gpgpu_sim::cluster_mbar_op::COMPLETE_TX, info.bar_count);
+      uniform_remote_completion_sent = true;
+    } else {
+      fprintf(stderr, "unsupported native remote mbarrier operation %d\n",
+              static_info.operation);
+      abort();
+    }
+    active_mask.reset(lane);
+  }
+  if (active_mask.none())
+    return;
 
   unsigned warp_size = m_shader->get_config()->warp_size;
   const bool trace_mbarrier = mbarrier_trace_enabled(m_shader->get_sid());

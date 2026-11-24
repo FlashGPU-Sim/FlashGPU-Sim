@@ -191,7 +191,8 @@ step_result execute_syncs_arrive(const instruction &inst, warp_state &state,
     uint64_t transaction_bytes = 0;
     if (inst.opcode == "SYNCS.ARRIVE.TRANS64.ART0")
       arrivals = state.read_register(lane, count->index);
-    else if (inst.opcode == "SYNCS.ARRIVE.TRANS64")
+    else if (inst.opcode == "SYNCS.ARRIVE.TRANS64" ||
+             inst.opcode == "SYNCS.ARRIVE.TRANS64.RED")
       transaction_bytes = state.read_register(lane, count->index);
     else if (inst.opcode != "SYNCS.ARRIVE.TRANS64.A1T0" &&
              inst.opcode != "SYNCS.ARRIVE.TRANS64.RED.A1T0")
@@ -206,8 +207,11 @@ step_result execute_syncs_arrive(const instruction &inst, warp_state &state,
     // operand is the transaction-byte count even when that count is zero;
     // substituting the implicit arrival count would create a transaction that
     // can never complete in an empty measurement.
-    timing_effect.count = static_cast<uint32_t>(
-        inst.opcode == "SYNCS.ARRIVE.TRANS64" ? transaction_bytes : arrivals);
+    timing_effect.count =
+        static_cast<uint32_t>((inst.opcode == "SYNCS.ARRIVE.TRANS64" ||
+                               inst.opcode == "SYNCS.ARRIVE.TRANS64.RED")
+                                  ? transaction_bytes
+                                  : arrivals);
     context.record_mbarrier_effect(lane, timing_effect);
 
     if (!context.cta->arrive_mbarrier(location, arrivals, transaction_bytes))
@@ -382,26 +386,89 @@ step_result execute_syncs_invalidate_all(const instruction &inst,
 } // namespace
 
 void register_mbarrier_semantics(frontend &target) {
-  target.register_semantics("SYNCS.EXCH.64", execute_syncs_exchange);
-  target.register_semantics("SYNCS.ARRIVE.TRANS64", execute_syncs_arrive);
-  target.register_semantics("SYNCS.ARRIVE.TRANS64.A1T0", execute_syncs_arrive);
-  target.register_semantics("SYNCS.ARRIVE.TRANS64.RED.A1T0",
-                            execute_syncs_arrive);
-  target.register_semantics("SYNCS.ARRIVE.TRANS64.RED.A0T1",
-                            execute_syncs_arrive);
-  target.register_semantics("SYNCS.ARRIVE.TRANS64.RED.A0TX",
-                            execute_syncs_arrive);
-  target.register_semantics("SYNCS.ARRIVE.TRANS64.ART0", execute_syncs_arrive);
-  target.register_semantics("ARRIVES.LDGSTSBAR.64.ARVCNT",
-                            execute_arrives_ldgstsbar);
-  target.register_semantics("ARRIVES.LDGSTSBAR.64.TRANSCNT",
-                            execute_arrives_ldgstsbar);
-  target.register_semantics("SYNCS.PHASECHK.TRANS64.TRYWAIT",
-                            execute_syncs_try_wait_parity);
-  target.register_semantics("SYNCS.PHASECHK.TRANS64",
-                            execute_syncs_try_wait_parity);
-  target.register_semantics("SYNCS.CCTL.IV", execute_syncs_invalidate);
-  target.register_semantics("SYNCS.CCTL.IVALL", execute_syncs_invalidate_all);
+  auto install = [&](const char *opcode, semantic_handler handler) {
+    target.register_semantics(opcode, [handler](const instruction &inst,
+                                                warp_state &state,
+                                                execution_context &context) {
+      if (!context.cluster || !any_lane_executes(inst, state))
+        return handler(inst, state, context);
+      const operand *address = nullptr;
+      for (const auto &op : inst.operands)
+        if (op.kind == operand_kind::kMemoryAddress) {
+          address = &op;
+          break;
+        }
+      if (!address)
+        return handler(inst, state, context);
+      const unsigned size = context.cluster->ctas.size();
+      std::vector<uint32_t> masks(size, 0);
+      unsigned owners = 0;
+      for (unsigned lane = 0; lane < 32; ++lane) {
+        if (!(state.active_mask & (1u << lane)) ||
+            !lane_executes(inst, state, lane))
+          continue;
+        uint64_t loc;
+        if (!evaluate_shared_address(*address, state, lane, loc) ||
+            (loc >> 24) >= size)
+          return unsupported(inst, "invalid cluster mbarrier owner");
+        unsigned rank = loc >> 24;
+        if (!masks[rank])
+          ++owners;
+        masks[rank] |= 1u << lane;
+        if (!context.cluster->ctas[rank] ||
+            rank >= context.cluster->memories.size() ||
+            !context.cluster->memories[rank])
+          return unsupported(inst, "cluster mbarrier owner is not resident");
+      }
+      if (owners > 1 && inst.opcode.find("SYNCS.ARRIVE.TRANS64") != 0)
+        return unsupported(inst, "mixed-owner wait/init is not qualified");
+      auto *saved_cta = context.cta;
+      auto *saved_mem = context.memory;
+      const auto saved_rank = context.cga_cta_id;
+      const auto saved_mask = state.active_mask;
+      const auto saved_pc = state.pc;
+      step_result result{step_status::kAdvanced, {}};
+      for (unsigned rank = 0; rank < size; ++rank) {
+        if (!masks[rank])
+          continue;
+        context.cta = context.cluster->ctas[rank];
+        context.memory = context.cluster->memories[rank];
+        context.cga_cta_id = rank;
+        state.active_mask = masks[rank];
+        state.pc = saved_pc;
+        const auto imported = context.imported_mbarriers.size();
+        result = handler(inst, state, context);
+        for (unsigned lane = 0; lane < 32; ++lane)
+          if ((masks[rank] & (1u << lane)) &&
+              context.mbarrier_effects[lane].valid)
+            context.mbarrier_effects[lane].address |= rank << 24;
+        for (unsigned i = imported; i < context.imported_mbarriers.size(); ++i)
+          context.imported_mbarriers[i].address |= rank << 24;
+        if (result.status != step_status::kAdvanced)
+          break;
+      }
+      context.cta = saved_cta;
+      context.memory = saved_mem;
+      context.cga_cta_id = saved_rank;
+      state.active_mask = saved_mask;
+      return result;
+    });
+  };
+  install("SYNCS.ARRIVE.TRANS64.RED", execute_syncs_arrive);
+
+  install("SYNCS.EXCH.64", execute_syncs_exchange);
+  install("SYNCS.ARRIVE.TRANS64", execute_syncs_arrive);
+  install("SYNCS.ARRIVE.TRANS64.A1T0", execute_syncs_arrive);
+  install("SYNCS.ARRIVE.TRANS64.RED.A1T0", execute_syncs_arrive);
+  install("SYNCS.ARRIVE.TRANS64.RED.A0T1", execute_syncs_arrive);
+  install("SYNCS.ARRIVE.TRANS64.RED.A0TX", execute_syncs_arrive);
+  install("SYNCS.ARRIVE.TRANS64.ART0", execute_syncs_arrive);
+  install("ARRIVES.LDGSTSBAR.64.ARVCNT", execute_arrives_ldgstsbar);
+  install("ARRIVES.LDGSTSBAR.64.TRANSCNT", execute_arrives_ldgstsbar);
+  install("SYNCS.PHASECHK.TRANS64.TRYWAIT", execute_syncs_try_wait_parity);
+  install("SYNCS.PHASECHK.TRANS64", execute_syncs_try_wait_parity);
+  install("SYNCS.CCTL.IV", execute_syncs_invalidate);
+  install("SYNCS.CCTL.IVALL", execute_syncs_invalidate_all);
 }
 
 } // namespace functional_detail

@@ -85,7 +85,10 @@ load_runtime_kernel_resources(const std::string &sassir_path,
 std::unique_ptr<functional_memory> make_runtime_functional_memory(
     kernel_info_t &launch, ::memory_space *global_memory, architecture arch,
     uint32_t parameter_base, uint32_t parameter_size,
-    const std::vector<kernel_constant_bank> &constant_banks);
+    const std::vector<kernel_constant_bank> &constant_banks,
+    unsigned native_cluster_rank = UINT32_MAX);
+
+::memory_space *runtime_shared_memory(functional_memory &memory);
 
 functional_grid_summary
 execute_runtime_functional_grid(kernel_info_t &launch,

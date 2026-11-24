@@ -54,6 +54,7 @@ struct tcgen05_completion_event_t {
   unsigned hw_cta_id = 0;
   unsigned warp_id = 0;
   uint32_t mbarrier_addr = 0;
+  uint16_t multicast_mask = 0;
 };
 
 struct tcgen05_timing_stats_t {
@@ -80,8 +81,8 @@ public:
   uint64_t enqueue_warp_mem_op(const tcgen05_warp_stream_key_t &stream,
                                const tcgen05_op_t &op, uint64_t cycle);
 
-  void commit(const tcgen05_thread_stream_key_t &stream,
-              uint32_t mbarrier_addr);
+  void commit(const tcgen05_thread_stream_key_t &stream, uint32_t mbarrier_addr,
+              uint16_t multicast_mask = 0);
   bool wait_ld(const tcgen05_warp_stream_key_t &stream);
   bool wait_st(const tcgen05_warp_stream_key_t &stream);
 
@@ -107,6 +108,7 @@ private:
     tcgen05_thread_stream_key_t stream;
     uint64_t cutoff = 0;
     uint32_t mbarrier_addr = 0;
+    uint16_t multicast_mask = 0;
   };
 
   struct pending_wait_t {

@@ -349,3 +349,23 @@ TEST(Tcgen05TmemTest, MmaF16KnownPatternWithAccum) {
   EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result[0]), 18.5f);
   EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.back()), 18.5f);
 }
+
+TEST(Tcgen05TmemTest, GroupMetadataAliasesOnePhysicalCtaStorage) {
+  tcgen05_tmem_manager_t manager;
+  const unsigned base = manager.alloc(kScopeGroup2, 64);
+  manager.write_words(kScopeGroup2, base, {7, 11, 13, 17});
+  EXPECT_EQ(manager.read_words(kScope0, base, 4),
+            std::vector<uint32_t>({7, 11, 13, 17}));
+  manager.write_words(kScope0, base + 2, {19});
+  EXPECT_EQ(manager.read_words(kScopeGroup2, base + 2, 1),
+            std::vector<uint32_t>({19}));
+  const unsigned peer = manager.alloc(kScope1, 64);
+  manager.write_words(kScope1, peer, {23});
+  EXPECT_EQ(manager.read_words(kScopeGroup2, base, 1),
+            std::vector<uint32_t>({7}));
+  manager.relinquish_alloc_permit(kScopeGroup2);
+  EXPECT_TRUE(manager.permit_relinquished(kScope0));
+  EXPECT_FALSE(manager.permit_relinquished(kScope1));
+  manager.dealloc(kScope0, base, 64);
+  EXPECT_FALSE(manager.has_allocation(kScopeGroup2, base));
+}

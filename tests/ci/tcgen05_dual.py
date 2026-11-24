@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 
-def run_suite(test_filter, tests, launches, timeout=300):
+def run_suite(test_filter, tests, launches, timeout=300, cluster_validation=False):
     root = Path(__file__).resolve().parents[2]
     subprocess.run(["make", "-C", str(root / "tests"), "build-sm100-tcgen05",
                     "-j" + os.environ.get("CI_BUILD_JOBS", "2")], check=True)
@@ -30,7 +30,7 @@ def run_suite(test_filter, tests, launches, timeout=300):
         "--filter", test_filter, "--expected-tests", str(tests),
         "--threads", os.environ.get("OMP_NUM_THREADS", "4"),
         "--timeout", str(timeout),
-    ], check=True)
+    ] + (["--cluster-validation"] if cluster_validation else []), check=True)
     report = json.loads((output / "report.json").read_text())
     for frontend in ("ptx", "sass-timing"):
         assert report["runs"][frontend]["passed"]

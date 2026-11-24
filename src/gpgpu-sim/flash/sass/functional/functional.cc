@@ -25,6 +25,7 @@ void register_sm90_functional_semantics(frontend &target) {
 }
 
 void register_sm100_functional_semantics(frontend &target) {
+  functional_detail::register_cluster_store_semantics(target);
   functional_detail::register_tmem_semantics(target);
   functional_detail::register_tcgen_mma_semantics(target);
   register_common_functional_semantics(target);

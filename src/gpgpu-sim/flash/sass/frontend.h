@@ -205,6 +205,7 @@ struct functional_mbarrier_effect {
   uint32_t address = UINT32_MAX;
   uint32_t count = UINT32_MAX;
   bool parity = false;
+  uint16_t multicast_mask = 0;
 };
 
 struct functional_tcgen_shared_read {

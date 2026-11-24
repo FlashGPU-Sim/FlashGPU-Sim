@@ -115,11 +115,12 @@ tcgen05_unit_t::enqueue_warp_mem_op(const tcgen05_warp_stream_key_t &stream,
 }
 
 void tcgen05_unit_t::commit(const tcgen05_thread_stream_key_t &stream,
-                            uint32_t mbarrier_addr) {
+                            uint32_t mbarrier_addr, uint16_t multicast_mask) {
   pending_commit_t commit;
   commit.stream = stream;
   commit.cutoff = m_thread_next_sequence[stream];
   commit.mbarrier_addr = mbarrier_addr;
+  commit.multicast_mask = multicast_mask;
   m_pending_commits.push_back(commit);
   resolve_controls();
 }
@@ -191,6 +192,7 @@ void tcgen05_unit_t::resolve_controls() {
     event.hw_cta_id = it->stream.hw_cta_id;
     event.warp_id = it->stream.warp_id;
     event.mbarrier_addr = it->mbarrier_addr;
+    event.multicast_mask = it->multicast_mask;
     m_completion_events.push_back(event);
     it = m_pending_commits.erase(it);
   }

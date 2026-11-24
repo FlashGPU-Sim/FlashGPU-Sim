@@ -38,6 +38,7 @@
 #include "../../cuda-sim/ptx_sim.h"
 #include "../../trace.h"
 #include "../gpu-sim.h"
+#include "../shader.h"
 
 #include <cassert>
 #include <cstdint>
@@ -96,6 +97,32 @@ tcgen05_tmem_scope(const ptx_instruction *pI, const ptx_thread_info *thread) {
 
   return flash_gpgpu_sim::tcgen05_tmem_scope_t{sm_id, cta_id,
                                                tcgen05_cta_group(pI)};
+}
+
+// Peer ownership comes from the common cluster scheduler, never an inferred
+// SM number or an address alias. Both CTAs must already be co-resident.
+std::vector<tb_cluster_target_t>
+tcgen05_ptx_targets(const ptx_instruction *inst, ptx_thread_info *thread) {
+  const unsigned group = tcgen05_cta_group(inst);
+  if (group == 1) {
+    tb_cluster_target_t local;
+    local.sm_id = thread->get_hw_sid();
+    local.cta_slot = thread->get_hw_ctaid();
+    local.smem = thread->m_shared_mem;
+    return {local};
+  }
+  auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+  assert(core && "TCGen05 CTA pairs require the cluster timing runtime");
+  const unsigned first =
+      group == 2 ? core->get_cta_cluster_rank(thread->get_hw_ctaid()) & ~1u
+                 : core->get_cta_cluster_rank(thread->get_hw_ctaid());
+  std::vector<tb_cluster_target_t> targets(group);
+  for (unsigned rank = 0; rank < group; ++rank)
+    if (!resolve_tb_cluster_rank(core, thread->get_hw_ctaid(), first + rank,
+                                 &targets[rank]))
+      abort_tb_cluster_dead_rank(first + rank, core->get_sid(),
+                                 thread->get_hw_ctaid());
+  return targets;
 }
 
 static uint32_t tcgen05_register_address(const ptx_instruction *inst,
@@ -191,6 +218,8 @@ static void tcgen05_write_u32_destination(
   mem_addr_t addr = tcgen05_eval_address(dst, thread);
   switch (space) {
   case shared_space:
+    assert(addr < SHARED_MEM_SIZE_MAX &&
+           "TCGen05 allocation destination must be local shared memory");
     thread->m_shared_mem->write(addr, sizeof(uint32_t), &data.u128, thread, pI);
     thread->m_last_effective_address = addr;
     thread->m_last_memory_space = shared_space;
@@ -245,23 +274,12 @@ static void tcgen05_write_vector_words(const operand_info &dst,
   }
 }
 
-static void tcgen05_set_commit_mbarrier_info(const ptx_instruction *pI,
-                                             ptx_thread_info *thread,
-                                             uint32_t addr) {
-  inst_t::mbarrier_info_t info;
-  if (tcgen05_is_warp_leader(thread)) {
-    info.bar_id = addr;
-    info.bar_count = 1;
-  }
-  const_cast<ptx_instruction *>(pI)->set_mbarrier_info(thread->get_laneid(),
-                                                       info);
-}
-
 void handle_tcgen05_alloc_inst(const ptx_instruction *pI,
                                ptx_thread_info *thread) {
   if (!tcgen05_is_warp_leader(thread))
     return;
-  tcgen05_assert_cta_group1(pI);
+  if (tcgen05_cta_group(pI) == 2)
+    (void)tcgen05_ptx_targets(pI, thread);
   assert(pI->get_num_operands() >= 2);
 
   const operand_info &dst = pI->operand_lookup(0);
@@ -285,7 +303,8 @@ void handle_tcgen05_dealloc_inst(const ptx_instruction *pI,
                                  ptx_thread_info *thread) {
   if (!tcgen05_is_warp_leader(thread))
     return;
-  tcgen05_assert_cta_group1(pI);
+  if (tcgen05_cta_group(pI) == 2)
+    (void)tcgen05_ptx_targets(pI, thread);
   assert(pI->get_num_operands() >= 2);
 
   uint32_t base = tcgen05_read_operand(pI, thread, 0).u32;
@@ -308,7 +327,8 @@ void handle_tcgen05_relinq_inst(const ptx_instruction *pI,
                                 ptx_thread_info *thread) {
   if (!tcgen05_is_warp_leader(thread))
     return;
-  tcgen05_assert_cta_group1(pI);
+  if (tcgen05_cta_group(pI) == 2)
+    (void)tcgen05_ptx_targets(pI, thread);
   flash_gpgpu_sim::tcgen05_tmem_manager_t &manager =
       thread->get_gpu()->get_tcgen05_tmem_manager();
   manager.relinquish_alloc_permit(tcgen05_tmem_scope(pI, thread));
@@ -316,13 +336,38 @@ void handle_tcgen05_relinq_inst(const ptx_instruction *pI,
 
 void handle_tcgen05_commit_inst(const ptx_instruction *pI,
                                 ptx_thread_info *thread) {
-  tcgen05_assert_cta_group1(pI);
-  assert(pI->get_num_operands() >= 1);
   assert(tcgen05_has_option(pI, TCGEN05_MBARRIER_ARRIVE_ONE_OPTION));
-
-  const operand_info &bar = pI->operand_lookup(0);
-  tcgen05_set_commit_mbarrier_info(pI, thread,
-                                   tcgen05_eval_address(bar, thread));
+  const bool multicast = tcgen05_has_option(pI, MULTICAST_CLUSTER_OPTION);
+  assert(pI->get_num_operands() == (multicast ? 2 : 1));
+  // Static PTX metadata is reused by multiple warps/CTAs. Nonleaders must
+  // clear any previous lane contribution before the elected lane commits.
+  const_cast<ptx_instruction *>(pI)->set_mbarrier_info(
+      thread->get_laneid(), inst_t::mbarrier_info_t{});
+  if (!tcgen05_is_warp_leader(thread))
+    return;
+  if (tcgen05_cta_group(pI) == 2)
+    (void)tcgen05_ptx_targets(pI, thread);
+  inst_t::mbarrier_info_t info;
+  info.bar_id = tcgen05_eval_address(pI->operand_lookup(0), thread);
+  info.bar_count = 1;
+  assert(info.bar_id < SHARED_MEM_SIZE_MAX && !(info.bar_id % 8) &&
+         "TCGen05 commit currently requires a local shared offset");
+  if (multicast) {
+    const unsigned mask = tcgen05_read_operand(pI, thread, 1).u32;
+    assert(mask && !(mask >> 16) &&
+           "TCGen05 multicast requires a nonempty mask");
+    auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+    for (unsigned rank = 0; rank < 16; ++rank) {
+      if (!(mask & (1u << rank)))
+        continue;
+      tb_cluster_target_t target;
+      assert(
+          resolve_tb_cluster_rank(core, thread->get_hw_ctaid(), rank, &target));
+    }
+    info.tcgen_multicast_mask = mask;
+  }
+  const_cast<ptx_instruction *>(pI)->set_mbarrier_info(thread->get_laneid(),
+                                                       info);
 }
 
 void handle_tcgen05_ld_inst(const ptx_instruction *pI,
@@ -406,11 +451,11 @@ void handle_tcgen05_cp_inst(const ptx_instruction *pI,
                             ptx_thread_info *thread) {
   if (!tcgen05_is_warp_leader(thread))
     return;
-  tcgen05_assert_cta_group1(pI);
   assert(pI->get_num_operands() == 2);
   // Preserve the public PTX-only 4x256b path until it is qualified together
   // with its MMA consumer. It is not part of the new dual-frontend layouts.
   if (tcgen05_has_option(pI, TCGEN05_4X256B_OPTION)) {
+    tcgen05_assert_cta_group1(pI);
     const auto desc = tcgen05_decode_shared_descriptor(
         tcgen05_read_u64_operand(pI, thread, 1).u64);
     assert(!desc.leading_dimension_absolute);
@@ -442,13 +487,19 @@ void handle_tcgen05_cp_inst(const ptx_instruction *pI,
   const uint64_t descriptor = tcgen05_read_u64_operand(pI, thread, 1).u64;
   const bool valid = tcgen05_copy_addresses(descriptor, shape, addresses);
   assert(valid && "unsupported TMEM copy descriptor");
-  std::vector<uint32_t> words(addresses.size());
-  for (unsigned i = 0; i < words.size(); ++i)
-    thread->m_shared_mem->read(addresses[i], 4, &words[i]);
+  const auto targets = tcgen05_ptx_targets(pI, thread);
+  std::vector<std::vector<uint32_t>> images(targets.size());
+  for (unsigned rank = 0; rank < targets.size(); ++rank) {
+    images[rank].resize(addresses.size());
+    for (unsigned i = 0; i < addresses.size(); ++i)
+      targets[rank].smem->read(addresses[i], 4, &images[rank][i]);
+  }
   const unsigned base = tcgen05_eval_address(pI->operand_lookup(0), thread);
-  assert((base >> 16) == 0 && base % (words.size() / 128) == 0);
-  thread->get_gpu()->get_tcgen05_tmem_manager().write_matrix_words(
-      tcgen05_tmem_scope(pI, thread), base, words, 128, words.size() / 128);
+  assert((base >> 16) == 0 && base % (addresses.size() / 128) == 0);
+  for (unsigned rank = 0; rank < targets.size(); ++rank)
+    thread->get_gpu()->get_tcgen05_tmem_manager().write_matrix_words(
+        {targets[rank].sm_id, targets[rank].cta_slot}, base, images[rank], 128,
+        addresses.size() / 128);
 }
 
 void handle_tcgen05_shift_inst(const ptx_instruction *pI,

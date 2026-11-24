@@ -36,6 +36,8 @@ public:
   void bind(kernel_info_t &launch, ::memory_space *global_memory);
   void start_cta(unsigned hardware_cta_id, unsigned first_hardware_warp,
                  unsigned warp_count, uint64_t linear_cta_id);
+  bool uses_paired_allocator() const;
+  ::memory_space *shared_memory(unsigned hardware_cta_id);
   void release_cta(unsigned hardware_cta_id);
   void reset();
 

@@ -3319,6 +3319,16 @@ class shader_core_ctx : public core_t {
   // Cluster TMA multicast: return shared memory of a CTA running on this SM.
   // Returns nullptr if the CTA slot is not currently occupied.
   class memory_space *get_cta_smem(unsigned hw_cta_id) const;
+  void bind_frontend_shared_memory(unsigned cta_id, memory_space *memory) {
+    assert(cta_id < MAX_CTA_PER_SHADER && memory);
+    assert(!m_cta_smem[cta_id] || m_cta_smem[cta_id] == memory);
+    m_cta_smem[cta_id] = memory;
+  }
+  void initialize_stored_mbarrier(unsigned cta, unsigned warp, unsigned address,
+                                  unsigned count, bool parity) {
+    m_barriers.initialize_native_stored_barrier(cta, warp, address, count,
+                                                parity);
+  }
 
   // Cluster membership for TMA multicast peer matching (issue-order group
   // within this simt_core_cluster; size = n_cores_per_cluster CTAs per group).

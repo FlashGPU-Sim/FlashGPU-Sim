@@ -15,6 +15,7 @@ namespace flash_gpgpu_sim {
 
 // Adapt PTX instructions and shader configuration to the timing model.
 int tcgen05_opcode(const warp_inst_t *inst);
+unsigned tcgen05_cta_group(const ptx_instruction *inst);
 bool tcgen05_has_option(const ptx_instruction *inst, int option);
 bool is_tcgen05_timing_data_op(int opcode);
 tcgen05_op_kind_t tcgen05_timing_kind(int opcode);

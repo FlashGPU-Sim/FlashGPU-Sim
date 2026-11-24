@@ -1180,6 +1180,7 @@ public:
     bool bar_has_time_hint = false;     // optional try_wait suspendTimeHint
     uint32_t bar_time_hint_ns = 0;      // hint value in nanoseconds
     // Remote (mapa / DSM) target; when is_remote, bar_id is offset on owner CTA.
+    uint16_t tcgen_multicast_mask = 0;  // Zero means local TCGen05 commit.
     bool is_remote = false;
     unsigned remote_cid = 0;
     unsigned remote_hw_cta = 0;
@@ -1190,6 +1191,7 @@ public:
       bar_parity = false;
       bar_has_time_hint = false;
       bar_time_hint_ns = 0;
+      tcgen_multicast_mask = 0;
       is_remote = false;
       remote_cid = 0;
       remote_hw_cta = 0;

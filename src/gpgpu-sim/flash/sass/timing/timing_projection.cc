@@ -200,7 +200,7 @@ bool has_destination(const std::string &base) {
          base != "UBLKCP" && base != "UBLKRED" && base != "UTCCP" &&
          base != "UTCHMMA" && base != "UTCQMMA" && base != "UTCOMMA" &&
          base != "UTCBAR" && base != "STTM" && base != "UVIRTCOUNT" &&
-         base != "LDGSTS" && base != "LDGDEPBAR";
+         base != "LDGSTS" && base != "LDGDEPBAR" && base != "STAS";
 }
 
 // Native output lists can contain a value and carry/status predicates. Keep
@@ -336,6 +336,8 @@ std::array<unsigned, 3> hmma_source_widths(const std::string &opcode) {
 // all words of an operand retain its single logical reuse-cache slot.
 unsigned source_width(const instruction &source, size_t index) {
   const std::string base = base_opcode(source.opcode);
+  if (base == "STAS" && index == 1)
+    return memory_width(source.opcode) / 4;
   if (base == "HMMA" && index >= 1 && index <= 3)
     return hmma_source_widths(source.opcode)[index - 1];
   if (has_modifier(source.opcode, "64") &&
@@ -490,7 +492,7 @@ void classify(const instruction &source, const timing_profile &profile,
     target.tcgen05_info.operation = base == "UTCCP"    ? tcinfo::COPY
                                     : base == "UTCBAR" ? tcinfo::COMMIT
                                                        : tcinfo::MMA;
-    target.tcgen05_info.cta_group = 1;
+    target.tcgen05_info.cta_group = has_modifier(source.opcode, "2CTA") ? 2 : 1;
     if (base == "UTCCP") {
       target.tcgen05_info.timing_index =
           has_modifier(source.opcode, "128dp128bit")                ? 1
@@ -767,6 +769,14 @@ void classify(const instruction &source, const timing_profile &profile,
     target.op = MEMORY_BARRIER_OP;
     if (source.opcode == "FENCE.VIEW.ASYNC.S")
       target.set_async_proxy_fence();
+  } else if (base == "STAS") {
+    // Architectural payload is synchronous; completion uses the common DSM
+    // mbarrier transport. No calibrated payload-bandwidth claim is made.
+    target.op = MBARRIER_OP;
+    inst_t::mbarrier_static_info_t info;
+    info.operation = inst_t::mbarrier_static_info_t::MBARRIER_COMPLETE_TX;
+    info.per_lane_complete_tx = true;
+    target.set_mbarrier_static_info(info);
   } else if (base == "SYNCS") {
     target.op = MBARRIER_OP;
     inst_t::mbarrier_static_info_t info;
@@ -1026,6 +1036,11 @@ void populate_registers(const instruction &source, timing_instruction &target) {
               term.index != kZeroUniformRegister)
             append_register(sources, operand_kind::kUniformRegister,
                             term.index + 1, false);
+    if (base == "STAS" && index == 1 &&
+        source.operands[index].index != kZeroRegister)
+      for (unsigned word = 1; word < memory_width(source.opcode) / 4; ++word)
+        append_register(sources, operand_kind::kRegister,
+                        source.operands[index].index + word, false);
     if (base == "STTM" && index == 1 &&
         source.operands[index].index != kZeroRegister)
       for (unsigned word = 1; word < tmem_transfer_words(source.opcode); ++word)
@@ -1201,6 +1216,7 @@ void project_mbarrier_effects(const execution_context &context,
     info.bar_id = effect.address;
     info.bar_count = effect.count;
     info.bar_parity = effect.parity;
+    info.tcgen_multicast_mask = effect.multicast_mask;
     target.set_mbarrier_info(lane, info);
     representative = &effect;
   }

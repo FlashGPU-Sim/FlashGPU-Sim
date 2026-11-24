@@ -155,6 +155,8 @@ public:
       panic("unsupported SASS timing architecture");
 
     for (const instruction &source : image_->instructions) {
+      if (source.opcode == "UTCATOMSWS.2CTA.FIND_AND_SET.ALIGN")
+        uses_paired_allocator_ = true;
       auto projected =
           std::make_unique<timing_instruction>(source, *config, profile_);
       const bool inserted =
@@ -169,6 +171,7 @@ public:
     return found == instructions_.end() ? nullptr : found->second.get();
   }
 
+  bool uses_paired_allocator() const { return uses_paired_allocator_; }
   uint64_t start_pc() const { return image_->instructions.front().pc; }
   architecture arch() const { return image_->arch; }
   uint32_t parameter_base() const { return image_->parameter_base; }
@@ -186,6 +189,7 @@ public:
   }
 
 private:
+  bool uses_paired_allocator_ = false;
   timing_profile profile_;
   frontend frontend_;
   const kernel *image_ = nullptr;
@@ -230,7 +234,14 @@ struct timing_cta_state {
                      image.profile().async_proxy_fence_dirty_initiation_stall}),
         memory(make_runtime_functional_memory(
             launch, global_memory, image.arch(), image.parameter_base(),
-            image.parameter_size(), image.constant_banks())) {
+            image.parameter_size(), image.constant_banks(),
+            launch.is_cluster_launch()
+                ? (cta_id.x % launch.get_cluster_dim().x +
+                   launch.get_cluster_dim().x *
+                       (cta_id.y % launch.get_cluster_dim().y +
+                        launch.get_cluster_dim().y *
+                            (cta_id.z % launch.get_cluster_dim().z)))
+                : UINT32_MAX)) {
     const dim3 block = launch.get_cta_dim();
     const uint64_t threads = launch.threads_per_cta();
     for (unsigned local_warp = 0; local_warp < count; ++local_warp) {
@@ -408,6 +419,11 @@ timing_runtime::timing_runtime(const core_config *config, unsigned shader_id)
 
 timing_runtime::~timing_runtime() { reset(); }
 
+bool timing_runtime::uses_paired_allocator() const {
+  return impl_->launch_ && impl_->launch_->is_cluster_launch() &&
+         impl_->image_ && impl_->image_->uses_paired_allocator();
+}
+
 void timing_runtime::bind(kernel_info_t &launch,
                           ::memory_space *global_memory) {
   if (global_memory == nullptr)
@@ -476,6 +492,10 @@ void timing_runtime::start_cta(unsigned hardware_cta_id,
       context.cga_cta_id = rank;
     }
   }
+  if (uses_paired_allocator()) {
+    const auto rank = cta->contexts[0].cga_cta_id;
+    cta->cta.initialize_mbarrier(0x48, 1, !(rank & 1));
+  }
   for (unsigned local_warp = 0; local_warp < warp_count; ++local_warp) {
     const unsigned hardware_warp = first_hardware_warp + local_warp;
     if (!impl_->warp_to_cta_.emplace(hardware_warp, hardware_cta_id).second)
@@ -483,6 +503,10 @@ void timing_runtime::start_cta(unsigned hardware_cta_id,
   }
   impl_->ctas_.emplace(hardware_cta_id, std::move(cta));
   timing_debug("CTA architectural state is ready");
+}
+
+::memory_space *timing_runtime::shared_memory(unsigned hardware_cta_id) {
+  return runtime_shared_memory(*impl_->ctas_.at(hardware_cta_id)->memory);
 }
 
 void timing_runtime::release_cta(unsigned hardware_cta_id) {

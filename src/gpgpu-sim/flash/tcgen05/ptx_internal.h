@@ -1,9 +1,11 @@
 #pragma once
 #include "../../../cuda-sim/ptx_ir.h"
 #include "../../../cuda-sim/ptx_sim.h"
+#include "../tb_cluster.h"
 #include "../tcgen05.h"
 namespace flash_gpgpu_sim {
-unsigned tcgen05_cta_group(const ptx_instruction *);
+std::vector<tb_cluster_target_t> tcgen05_ptx_targets(const ptx_instruction *,
+                                                     ptx_thread_info *);
 void tcgen05_assert_cta_group1(const ptx_instruction *);
 bool tcgen05_is_warp_leader(const ptx_thread_info *);
 tcgen05_tmem_scope_t tcgen05_tmem_scope(const ptx_instruction *,

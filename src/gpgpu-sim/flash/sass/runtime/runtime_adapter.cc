@@ -156,6 +156,8 @@ public:
       global_memory_->read(address, bytes, data);
       return true;
     case sass::memory_space::kShared:
+      if (!local_shared_offset(address, bytes))
+        return false;
       shared_memory_.read(address, bytes, data);
       return true;
     case sass::memory_space::kLocal:
@@ -178,6 +180,8 @@ public:
       global_memory_->write(address, bytes, data, nullptr, nullptr);
       return true;
     case sass::memory_space::kShared:
+      if (!local_shared_offset(address, bytes))
+        return false;
       shared_memory_.write(address, bytes, data, nullptr, nullptr);
       return true;
     case sass::memory_space::kLocal:
@@ -201,7 +205,24 @@ public:
     return true;
   }
 
+  void set_native_cluster_rank(unsigned rank, architecture arch) {
+    native_rank_ = rank;
+    if (arch == architecture::kSm100 || arch == architecture::kSm103)
+      store_constant(constant_header_, 0x36c, uint32_t{1});
+  }
+  ::memory_space *shared_backing() { return &shared_memory_; }
+
 private:
+  unsigned native_rank_ = UINT32_MAX;
+  bool local_shared_offset(uint64_t &address, size_t bytes) const {
+    if (native_rank_ == UINT32_MAX)
+      return true;
+    const unsigned owner = address >> 24;
+    if (owner && owner != native_rank_)
+      return false;
+    address &= 0xffffff;
+    return bytes <= 0x1000000 - address;
+  }
   bool is_indirect_parameter_access(uint64_t address, size_t bytes) const {
     if (indirect_parameter_size_ == 0 || address < kSm90IndirectParameterBase)
       return false;
@@ -641,10 +662,21 @@ load_runtime_kernel_resources(const std::string &sassir_path,
 std::unique_ptr<functional_memory> make_runtime_functional_memory(
     kernel_info_t &launch, ::memory_space *global_memory, architecture arch,
     uint32_t parameter_base, uint32_t parameter_size,
-    const std::vector<kernel_constant_bank> &constant_banks) {
-  return std::make_unique<simulator_functional_memory>(
+    const std::vector<kernel_constant_bank> &constant_banks,
+    unsigned native_cluster_rank) {
+  auto memory = std::make_unique<simulator_functional_memory>(
       launch, global_memory, arch, parameter_base, parameter_size,
       constant_banks);
+  if (native_cluster_rank != UINT32_MAX)
+    memory->set_native_cluster_rank(native_cluster_rank, arch);
+  return memory;
+}
+
+::memory_space *runtime_shared_memory(functional_memory &memory) {
+  auto *runtime = dynamic_cast<simulator_functional_memory *>(&memory);
+  if (!runtime)
+    panic("native timing requires runtime shared memory backing");
+  return runtime->shared_backing();
 }
 
 functional_grid_summary

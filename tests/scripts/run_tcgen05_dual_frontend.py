@@ -29,6 +29,7 @@ def main():
     p.add_argument('--filter', default='Tcgen05*')
     p.add_argument('--expected-tests', type=int, default=12)
     p.add_argument('--timing-marker', default='gpu_sim_cycle =')
+    p.add_argument('--cluster-validation', action='store_true', help='Use a small 2-GPC x 4-SM topology with DSM for cluster semantics')
     p.add_argument('--disable-ptx-reorder', action='store_true', help='Use PTX source order for semantic fixtures without SASS line anchors')
     args = p.parse_args()
     root, binary, cuda = args.root.resolve(), args.binary.resolve(), args.cuda.resolve()
@@ -40,6 +41,8 @@ def main():
     config = (args.config_dir / 'gpgpusim.config').read_text()
     if args.disable_ptx_reorder:
         config += '\n-gpgpu_ptx_reorder 0\n-gpgpu_ptx_reorder_sass_guided 0\n'
+    if args.cluster_validation:
+        config += '\n-gpgpu_n_clusters 2\n-gpgpu_n_cores_per_cluster 4\n-gpgpu_dsm_enable 1\n'
     report = {'binary': str(binary), 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'config_sha256': hashlib.sha256(config.encode()).hexdigest(), 'runs': {}}
     if library:

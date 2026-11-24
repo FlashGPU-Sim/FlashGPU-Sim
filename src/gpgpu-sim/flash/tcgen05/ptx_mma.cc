@@ -6,16 +6,6 @@ class ptx_recognizer;
 typedef void *yyscan_t;
 #include "ptx.tab.h"
 namespace flash_gpgpu_sim {
-struct tcgen05_local_target {
-  unsigned sm_id, cta_slot;
-  memory_space *smem;
-};
-static std::vector<tcgen05_local_target>
-tcgen05_ptx_targets(const ptx_instruction *inst, ptx_thread_info *thread) {
-  tcgen05_assert_cta_group1(inst);
-  return {{thread->get_hw_sid(), thread->get_hw_ctaid(), thread->m_shared_mem}};
-}
-
 static bool tcgen05_read_enable_input_d(const operand_info &op,
                                         ptx_thread_info *thread) {
   if (op.is_reg() && op.get_symbol() &&
@@ -30,10 +20,11 @@ static bool tcgen05_read_enable_input_d(const operand_info &op,
 }
 
 static void tcgen05_check_disable_output_lane_zero(const operand_info &op,
-                                                   ptx_thread_info *thread) {
+                                                   ptx_thread_info *thread,
+                                                   unsigned group) {
   assert(op.is_vector());
-  assert(op.get_vect_nelem() == 4 &&
-         "Only TCGen05 cta_group::1 disable-output-lane vectors are supported");
+  assert(op.get_vect_nelem() == 4 * group &&
+         "Disable-output-lane vector size must match the CTA group");
 
   std::vector<uint32_t> lanes = tcgen05_read_vector_words(op, thread);
   for (unsigned i = 0; i < lanes.size(); ++i) {
@@ -184,7 +175,7 @@ static void tcgen05_mma_tf32_ptx(const ptx_instruction *inst,
   unsigned enable = 4;
   if (inst->operand_lookup(4).is_vector()) {
     assert(inst->get_num_operands() == 6);
-    tcgen05_check_disable_output_lane_zero(inst->operand_lookup(4), thread);
+    tcgen05_check_disable_output_lane_zero(inst->operand_lookup(4), thread, 1);
     enable = 5;
   } else
     assert(inst->get_num_operands() == 5);
@@ -305,7 +296,8 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   unsigned enable_input_d_operand = 4;
   if (pI->operand_lookup(4).is_vector()) {
     assert(pI->get_num_operands() == 6 && "MMA scale-input-d is not qualified");
-    tcgen05_check_disable_output_lane_zero(pI->operand_lookup(4), thread);
+    tcgen05_check_disable_output_lane_zero(pI->operand_lookup(4), thread,
+                                           group);
     enable_input_d_operand = 5;
   } else {
     assert(pI->get_num_operands() == 5 && "MMA scale-input-d is not qualified");

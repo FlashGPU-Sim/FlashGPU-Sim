@@ -107,3 +107,10 @@ cuda = "13.3"
 tests = [
   { name = "mma-components-and-dual-launch", group = "unit", gtest_filter = "Tcgen05*", post_check = "tests/ci/check_mma_dual.py" },
 ]
+
+[jobs.sm100-pair]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "pair-components-and-dual-launch", group = "unit", gtest_filter = "Tcgen05*", post_check = "tests/ci/check_pair_dual.py" },
+]

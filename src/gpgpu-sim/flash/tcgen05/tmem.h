@@ -49,14 +49,13 @@ uint32_t tcgen05_tmem_register_address(uint32_t base_address,
 struct tcgen05_tmem_scope_t {
   unsigned sm_id;
   unsigned cta_id;
-  unsigned cta_group;
+  unsigned cta_group = 1;
 
   bool operator<(const tcgen05_tmem_scope_t &other) const {
     if (sm_id != other.sm_id)
       return sm_id < other.sm_id;
-    if (cta_id != other.cta_id)
-      return cta_id < other.cta_id;
-    return cta_group < other.cta_group;
+    // One physical TMEM per CTA: ld/st have no cta_group qualifier.
+    return cta_id < other.cta_id;
   }
 };
 

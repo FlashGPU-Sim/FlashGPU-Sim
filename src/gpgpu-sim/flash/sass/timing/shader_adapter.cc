@@ -34,6 +34,7 @@
 #include "../../../shader.h"
 #include "../../frontend/execution_frontend.h"
 #include "../../panic.h"
+#include "../../tb_cluster.h"
 #include "../runtime/runtime_adapter.h"
 #include "timing_runtime.h"
 #include <climits>
@@ -71,10 +72,49 @@ public:
         inst.warp_id(), inst,
         core_.m_gpu->gpu_tot_sim_cycle + core_.m_gpu->gpu_sim_cycle,
         core_.m_gpu->get_config().get_core_freq());
-    for (const auto &initial : inst.native_mbarrier_initializations)
-      core_.m_barriers.initialize_native_stored_barrier(
-          core_.m_warp[inst.warp_id()]->get_cta_id(), inst.warp_id(),
-          initial.bar_id, initial.bar_count, initial.bar_parity);
+    const unsigned own_cta = core_.m_warp[inst.warp_id()]->get_cta_id();
+    const bool cluster = core_.get_kernel()->is_cluster_launch();
+    auto target_for = [&](uint32_t &address) {
+      flash_gpgpu_sim::tb_cluster_target_t target;
+      if (cluster) {
+        const unsigned rank = address >> 24;
+        if (!flash_gpgpu_sim::resolve_tb_cluster_rank(&core_, own_cta, rank,
+                                                      &target))
+          panic("native mbarrier owner is not an admitted cluster rank");
+        address &= 0xffffff;
+      } else {
+        target.core = &core_;
+        target.cta_slot = own_cta;
+        target.local_sm = core_.m_config->sid_to_cid(core_.m_sid);
+      }
+      return target;
+    };
+    for (auto initial : inst.native_mbarrier_initializations) {
+      const auto target = target_for(initial.bar_id);
+      const auto warps = target.core->active_warp_mask(target.cta_slot);
+      unsigned owner_warp = 0;
+      while (owner_warp < warps.size() && !warps.test(owner_warp))
+        ++owner_warp;
+      if (owner_warp == warps.size())
+        panic("native barrier owner has no active warp");
+      target.core->initialize_stored_mbarrier(target.cta_slot, owner_warp,
+                                              initial.bar_id, initial.bar_count,
+                                              initial.bar_parity);
+    }
+    for (unsigned lane = 0; lane < core_.m_config->warp_size; ++lane) {
+      auto info = inst.get_mbarrier_info(lane);
+      if (info.bar_id == unsigned(-1))
+        continue;
+      const auto target = target_for(info.bar_id);
+      info.is_remote = target.core != &core_ || target.cta_slot != own_cta;
+      info.remote_cid = target.local_sm;
+      info.remote_hw_cta = target.cta_slot;
+      if (inst.tcgen05_info.operation ==
+              inst_t::tcgen05_static_info_t::COMMIT &&
+          info.is_remote && !info.tcgen_multicast_mask)
+        panic("remote unicast native TCGen05 commit is not qualified");
+      inst.set_mbarrier_info(lane, info);
+    }
     if (result.instruction_refill_delay != 0) {
       // A target can be fetched two cycles before issue. Start the refill
       // after the native control delay so the configured value remains an
@@ -154,6 +194,7 @@ public:
     const unsigned warp_count = end_warp - start_warp;
     runtime_.bind(kernel, core_.m_cluster->get_gpu()->get_global_memory());
     runtime_.start_cta(cta_id, start_warp, warp_count, ctaid);
+    core_.bind_frontend_shared_memory(cta_id, runtime_.shared_memory(cta_id));
 
     for (unsigned warp_id = start_warp; warp_id < end_warp; ++warp_id) {
       core_.reset_shared_proxy_warp(warp_id);
@@ -174,6 +215,10 @@ public:
       core_.m_not_completed += n_active;
       ++core_.m_active_warps;
     }
+    if (runtime_.uses_paired_allocator())
+      core_.m_barriers.initialize_native_stored_barrier(
+          cta_id, start_warp, 0x48, 1,
+          !(core_.get_cta_cluster_rank(cta_id) & 1));
   }
 
   void complete_lane(warp_inst_t &, unsigned, unsigned) override {}

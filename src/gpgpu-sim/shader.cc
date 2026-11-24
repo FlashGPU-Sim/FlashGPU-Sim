@@ -2703,7 +2703,9 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       if (!next_ptx_inst)
         while (!(*pipe_reg)->get_active_mask().test(stream.lane_id))
           ++stream.lane_id;
-      stream.cta_group = 1;
+      stream.cta_group = next_ptx_inst
+                             ? flash_gpgpu_sim::tcgen05_cta_group(next_ptx_inst)
+                             : next_inst->tcgen05_info.cta_group;
       m_tcgen05.enqueue_thread_op(stream, op, now);
     }
   }
@@ -2790,8 +2792,10 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       stream.hw_cta_id = m_warp[warp_id]->get_cta_id();
       stream.warp_id = warp_id;
       stream.lane_id = lane;
-      stream.cta_group = 1;
-      m_tcgen05.commit(stream, info.bar_id);
+      stream.cta_group = next_ptx_inst
+                             ? flash_gpgpu_sim::tcgen05_cta_group(next_ptx_inst)
+                             : next_inst->tcgen05_info.cta_group;
+      m_tcgen05.commit(stream, info.bar_id, info.tcgen_multicast_mask);
     }
   } else if (flash_gpgpu_sim::tcgen05_opcode(next_inst) == TCGEN05_WAIT_OP) {
     if ((*pipe_reg)->get_active_mask().any()) {
@@ -4297,8 +4301,26 @@ void shader_core_ctx::execute() {
        it != events.end(); ++it) {
     if (it->kind ==
         flash_gpgpu_sim::tcgen05_completion_event_t::MBARRIER_ARRIVAL) {
-      m_barriers.arrive_mbarrier_async(it->hw_cta_id, it->warp_id,
-                                       it->mbarrier_addr);
+      if (it->multicast_mask) {
+        for (unsigned rank = 0; rank < 16; ++rank) {
+          if (!(it->multicast_mask & (1u << rank))) continue;
+          flash_gpgpu_sim::tb_cluster_target_t target;
+          if (!flash_gpgpu_sim::resolve_tb_cluster_rank(this, it->hw_cta_id,
+                                                        rank, &target))
+            flash_gpgpu_sim::abort_tb_cluster_dead_rank(rank, m_sid,
+                                                        it->hw_cta_id);
+          const auto warps = target.core->active_warp_mask(target.cta_slot);
+          unsigned peer_warp = 0;
+          while (peer_warp < warps.size() && !warps.test(peer_warp))
+            ++peer_warp;
+          assert(peer_warp < warps.size());
+          target.core->m_barriers.arrive_mbarrier_async(
+              target.cta_slot, peer_warp, it->mbarrier_addr);
+        }
+      } else {
+        m_barriers.arrive_mbarrier_async(it->hw_cta_id, it->warp_id,
+                                         it->mbarrier_addr);
+      }
     } else {
       m_barriers.release_tcgen05_warp(it->warp_id);
     }

@@ -171,7 +171,7 @@ step_result mixed_mma(const instruction &inst, warp_state &state,
                       execution_context &context) {
   if (inst.operands.size() == 6)
     return dense_fp8_mma(inst, state, context);
-  const unsigned group = 1;
+  const unsigned group = inst.opcode == "UTCQMMA.2CTA" ? 2 : 1;
   if (inst.operands.size() != 7 || !context.cta || !context.memory)
     return unsupported(inst,
                        "mixed MMA requires seven operands and CTA memory");

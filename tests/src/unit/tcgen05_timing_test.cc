@@ -156,3 +156,30 @@ TEST(Tcgen05TimingTest, CleanupCtaPreservesOtherCtas) {
   EXPECT_EQ(unit.queue_occupancy(), 1u);
   EXPECT_FALSE(unit.wait_st(warp_stream(1)));
 }
+
+TEST(Tcgen05TimingTest, MulticastCommitRetainsMaskAndCtaGroupCutoff) {
+  tcgen05_unit_t unit(config());
+  auto pair = thread_stream(2, 4, 0);
+  pair.cta_group = 2;
+  unit.enqueue_thread_op(pair, memory_op(TCGEN05_TIMING_CP, 9), 0);
+  unit.commit(pair, 0x180, 0x30);
+  auto single = pair;
+  single.cta_group = 1;
+  unit.commit(single, 0x188);
+  unit.cycle(1);
+  auto events = unit.take_completion_events();
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].mbarrier_addr, 0x188u);
+  EXPECT_EQ(events[0].multicast_mask, 0u);
+  unit.cycle(8);
+  EXPECT_TRUE(unit.take_completion_events().empty());
+  unit.cycle(9);
+  events = unit.take_completion_events();
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].multicast_mask, 0x30u);
+  EXPECT_EQ(events[0].hw_cta_id, 2u);
+  EXPECT_EQ(events[0].warp_id, 4u);
+  EXPECT_EQ(events[0].mbarrier_addr, 0x180u);
+  unit.cycle(10);
+  EXPECT_TRUE(unit.take_completion_events().empty());
+}

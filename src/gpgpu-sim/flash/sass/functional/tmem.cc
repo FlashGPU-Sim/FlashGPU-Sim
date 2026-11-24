@@ -23,64 +23,124 @@ step_result copy_shared(const instruction &inst, warp_state &state,
       source.index + 1 >= kUniformRegisters)
     return unsupported(inst, "invalid TMEM copy operands");
   auto shape = tcgen05_copy_shape::warpx4;
-  if (inst.opcode == "UTCCP.T.S")
+  const bool paired = inst.opcode.find(".2CTA") != std::string::npos;
+  std::string opcode = inst.opcode;
+  if (paired)
+    opcode.erase(opcode.find(".2CTA"), 5);
+  if (opcode == "UTCCP.T.S")
     shape = tcgen05_copy_shape::rows128_bits256;
-  else if (inst.opcode == "UTCCP.T.S.128dp128bit")
+  else if (opcode == "UTCCP.T.S.128dp128bit")
     shape = tcgen05_copy_shape::rows128_bits128;
-  else if (inst.opcode == "UTCCP.T.S.2x64dp128bit_lw02_lw13")
+  else if (opcode == "UTCCP.T.S.2x64dp128bit_lw02_lw13")
     shape = tcgen05_copy_shape::warpx2_02_13;
-  else if (inst.opcode == "UTCCP.T.S.2x64dp128bit_lw01_lw23")
+  else if (opcode == "UTCCP.T.S.2x64dp128bit_lw01_lw23")
     shape = tcgen05_copy_shape::warpx2_01_23;
   std::vector<uint32_t> addresses;
   if (!tcgen05_copy_addresses(read_uniform_register_pair(state, source.index),
                               shape, addresses))
     return unsupported(inst, "unsupported TMEM copy descriptor");
   const unsigned width = addresses.size() / 128;
-  auto &tm = storage(context);
   if (base % width)
     return unsupported(inst, "unaligned TMEM copy");
-  for (unsigned row = 0; row < 128; ++row)
-    if (!tm.contains(base + (row << 16), width))
-      return unsupported(inst, "TMEM copy exceeds a live allocation");
-  std::vector<uint32_t> values(addresses.size());
-  for (unsigned i = 0; i < addresses.size(); ++i)
-    if (!context.memory->read(memory_space::kShared, addresses[i], &values[i],
-                              4))
-      return memory_fault(inst, memory_space::kShared, addresses[i], 4);
-  tm.memory.write_matrix_words({0, 0}, base, values, 128, width);
+  const unsigned first = context.cga_cta_id & ~1u;
+  if (paired && (!context.cluster || context.cluster->ctas.size() < first + 2 ||
+                 context.cluster->memories.size() < first + 2))
+    return unsupported(inst, "paired copy requires two resident CTAs");
+  const unsigned count = paired ? 2 : 1;
+  functional_tcgen_state *targets[2] = {};
+  std::vector<uint32_t> images[2];
+  for (unsigned rank = 0; rank < count; ++rank) {
+    auto *cta = paired ? context.cluster->ctas[first + rank] : context.cta;
+    auto *mem =
+        paired ? context.cluster->memories[first + rank] : context.memory;
+    if (!cta || !cta->tcgen || !mem)
+      return unsupported(inst, "TMEM copy requires live peer storage");
+    targets[rank] = cta->tcgen.get();
+    for (unsigned row = 0; row < 128; ++row)
+      if (!targets[rank]->contains(base + (row << 16), width))
+        return unsupported(inst, "TMEM copy exceeds a live allocation");
+    images[rank].resize(addresses.size());
+    for (unsigned i = 0; i < addresses.size(); ++i)
+      if (!mem->read(memory_space::kShared, addresses[i], &images[rank][i], 4))
+        return memory_fault(inst, memory_space::kShared, addresses[i], 4);
+  }
+  // Validate and gather both halves before publishing either image.
+  for (unsigned rank = 0; rank < count; ++rank)
+    targets[rank]->memory.write_matrix_words({0, 0}, base, images[rank], 128,
+                                             width);
   advance(inst, state);
   return {step_status::kAdvanced, {}};
 }
 
 step_result commit(const instruction &inst, warp_state &state,
                    execution_context &context) {
-  if (!has_typed_operands(inst, 2) || !context.cta ||
+  const bool multicast = inst.opcode.find(".MULTICAST") != std::string::npos;
+  const bool paired = inst.opcode.find(".2CTA") != std::string::npos;
+  if (!has_typed_operands(inst, multicast ? 3 : 2) || !context.cta ||
       inst.operands[0].kind != operand_kind::kMemoryAddress ||
       inst.operands[1].kind != operand_kind::kUniformRegister ||
-      inst.operands[1].index != kZeroUniformRegister)
+      inst.operands[1].index != kZeroUniformRegister ||
+      (multicast && inst.operands[2].kind != operand_kind::kUniformRegister))
     return unsupported(inst, "unqualified UTCBAR operand form");
-  if (any_lane_executes(inst, state)) {
-    uint64_t address = 0;
-    if (!evaluate_shared_address(inst.operands[0], state, 0, address) ||
-        address % 8)
-      return unsupported(inst, "unaligned UTCBAR address");
-    if (!ensure_mbarrier_imported(address, context) ||
-        !context.cta->arrive_mbarrier(address, 1, 0))
-      return unsupported(
-          inst, "UTCBAR requires a pending initialized local mbarrier");
-    // All qualified TCGEN operations execute synchronously in functional mode.
-    // This arrival is after their data effects; no timing latency is implied.
-    functional_mbarrier_effect effect;
-    effect.valid = true;
-    effect.address = static_cast<uint32_t>(address);
-    effect.count = 1;
-    for (unsigned lane = 0; lane < kWarpLanes; ++lane)
-      if ((state.active_mask & (1u << lane)) &&
-          lane_executes(inst, state, lane)) {
-        context.record_mbarrier_effect(lane, effect);
-        break;
-      }
+  if (!any_lane_executes(inst, state)) {
+    advance(inst, state);
+    return {step_status::kAdvanced, {}};
   }
+  uint64_t address = 0;
+  if (!evaluate_shared_address(inst.operands[0], state, 0, address) ||
+      address % 8)
+    return unsupported(inst, "unaligned UTCBAR address");
+  const unsigned owner = context.cluster ? address >> 24 : 0;
+  const uint32_t local = context.cluster ? address & 0xffffff : address;
+  const unsigned size = context.cluster ? context.cluster->ctas.size() : 1;
+  if (owner >= size || size > 16)
+    return unsupported(inst, "invalid UTCBAR cluster owner");
+  const unsigned mask =
+      multicast ? state.read_uniform_register(inst.operands[2].index)
+                : 1u << owner;
+  if (owner >= size || !mask || size > 16 || (mask >> size) ||
+      (paired && (!context.cluster || size < (context.cga_cta_id & ~1u) + 2)))
+    return unsupported(inst, "invalid UTCBAR cluster destinations");
+  if (!multicast && context.cluster && owner != context.cga_cta_id)
+    return unsupported(inst, "remote unicast UTCBAR is not qualified");
+  for (unsigned rank = 0; rank < size; ++rank) {
+    if (!(mask & (1u << rank)))
+      continue;
+    auto *cta = context.cluster ? context.cluster->ctas[rank] : context.cta;
+    auto *mem =
+        context.cluster ? context.cluster->memories[rank] : context.memory;
+    if (!cta || !mem)
+      return unsupported(inst, "UTCBAR target is not resident");
+    auto *saved_cta = context.cta;
+    auto *saved_mem = context.memory;
+    const auto imported = context.imported_mbarriers.size();
+    context.cta = cta;
+    context.memory = mem;
+    const bool valid = ensure_mbarrier_imported(local, context) &&
+                       cta->mbarrier_pending_arrivals(local);
+    context.cta = saved_cta;
+    context.memory = saved_mem;
+    if (context.cluster)
+      for (unsigned i = imported; i < context.imported_mbarriers.size(); ++i)
+        context.imported_mbarriers[i].address |= rank << 24;
+    if (!valid)
+      return unsupported(inst, "UTCBAR requires pending initialized targets");
+  }
+  for (unsigned rank = 0; rank < size; ++rank)
+    if (mask & (1u << rank))
+      (context.cluster ? context.cluster->ctas[rank] : context.cta)
+          ->arrive_mbarrier(local, 1, 0);
+  functional_mbarrier_effect effect;
+  effect.valid = true;
+  effect.address = address;
+  effect.count = 1;
+  effect.multicast_mask = multicast ? mask : 0;
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane)
+    if ((state.active_mask & (1u << lane)) &&
+        lane_executes(inst, state, lane)) {
+      context.record_mbarrier_effect(lane, effect);
+      break;
+    }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
 }
@@ -93,7 +153,8 @@ step_result allocate(const instruction &inst, warp_state &state,
     return unsupported(inst, "unsupported native TMEM allocation form");
   if (any_lane_executes(inst, state)) {
     const uint32_t blocks = state.read_uniform_register(inst.operands[2].index);
-    const bool full = inst.opcode == "UTCATOMSWS.FIND_AND_SET";
+    const bool full = inst.opcode == "UTCATOMSWS.FIND_AND_SET" ||
+                      inst.opcode == "UTCATOMSWS.2CTA.FIND_AND_SET";
     if (!blocks || blocks > 16 || (blocks & (blocks - 1)))
       return unsupported(inst, "invalid native TMEM allocation block count");
     if (full &&
@@ -101,10 +162,25 @@ step_result allocate(const instruction &inst, warp_state &state,
       return unsupported(inst, "unqualified non-ALIGN allocation form");
     const uint32_t mask = (1u << blocks) - 1;
     auto &tmem = storage(context);
+    functional_tcgen_state *peer = nullptr;
+    if (inst.opcode.find(".2CTA") != std::string::npos) {
+      if (!context.cluster || (context.cga_cta_id & 1) ||
+          context.cluster->ctas.size() <= (context.cga_cta_id ^ 1u) ||
+          !context.cluster->ctas[context.cga_cta_id ^ 1u])
+        return unsupported(
+            inst,
+            "paired physical allocation requires even CTA and resident peer");
+      auto &p = context.cluster->ctas[context.cga_cta_id ^ 1u]->tcgen;
+      if (!p)
+        p = std::make_shared<functional_tcgen_state>();
+      peer = p.get();
+    }
     bool found = false;
     for (unsigned base = 0; base + blocks <= 16; base += blocks) {
-      if (!(tmem.allocated & (mask << base))) {
+      if (!((tmem.allocated | (peer ? peer->allocated : 0)) & (mask << base))) {
         tmem.allocated |= mask << base;
+        if (peer)
+          peer->allocated |= mask << base;
         state.write_uniform_register(inst.operands[1].index, base);
         found = true;
         break;
@@ -246,6 +322,16 @@ step_result relinquish_pool(const instruction &inst, warp_state &state,
 } // namespace
 void register_tmem_semantics(frontend &target) {
   target.register_semantics("UTCBAR", commit);
+  target.register_semantics("UTCBAR.MULTICAST", commit);
+  target.register_semantics("UTCBAR.2CTA", commit);
+  target.register_semantics("UTCBAR.2CTA.MULTICAST", commit);
+  for (const char *op :
+       {"UTCCP.T.S.2CTA", "UTCCP.T.S.2CTA.128dp128bit",
+        "UTCCP.T.S.2CTA.2x64dp128bit_lw02_lw13",
+        "UTCCP.T.S.2CTA.2x64dp128bit_lw01_lw23", "UTCCP.T.S.2CTA.4x32dp128bit"})
+    target.register_semantics(op, copy_shared);
+  target.register_semantics("UTCATOMSWS.2CTA.FIND_AND_SET.ALIGN", allocate);
+  target.register_semantics("UTCATOMSWS.2CTA.FIND_AND_SET", allocate);
   for (const char *op :
        {"UTCCP.T.S", "UTCCP.T.S.128dp128bit", "UTCCP.T.S.4x32dp128bit",
         "UTCCP.T.S.2x64dp128bit_lw02_lw13", "UTCCP.T.S.2x64dp128bit_lw01_lw23"})
