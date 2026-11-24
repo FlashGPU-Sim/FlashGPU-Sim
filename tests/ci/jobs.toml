@@ -198,3 +198,10 @@ cuda = "13.3"
 tests = [
   { name = "bfloat-arithmetic-components-and-dual-launch", group = "unit", gtest_filter = "BfloatArithmetic.*:BfloatBits.*", post_check = "tests/ci/check_bfloat_arithmetic_dual.py" },
 ]
+
+[jobs.sm100-vector-order]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "vector-type-order-dual-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_vector_order_dual.py" },
+]
