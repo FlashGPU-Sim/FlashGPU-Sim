@@ -1216,6 +1216,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_tma_oob_l2_traffic", OPT_BOOL,
                          &gpgpu_tma_oob_l2_traffic,
                          "Send OOB fill requests through L2 (default=1)", "1");
+  option_parser_register(
+      opp, "-gpgpu_clc_latency", OPT_UINT32, &gpgpu_clc_latency,
+      "CLC response latency after serial arbitration (uncalibrated)", "0");
   option_parser_register(opp, "-gpgpu_mbarrier_arrive_latency", OPT_UINT32,
                          &gpgpu_mbarrier_arrive_latency,
                          "Latency (cycles) for arrive_tx shared memory write before mbarrier update (default=0)", "0");
@@ -3823,6 +3826,13 @@ void gpgpu_sim::cycle() {
           gpu_occupancy.aggregate_theoretical_warp_slots);
     }
 #endif
+    const uint64_t clc_now = gpu_tot_sim_cycle + gpu_sim_cycle;
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i)
+      for (unsigned j = 0; j < m_cluster[i]->num_cores(); ++j)
+        m_cluster[i]->get_core(j)->arbitrate_clc(clc_now);
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i)
+      for (unsigned j = 0; j < m_cluster[i]->num_cores(); ++j)
+        m_cluster[i]->get_core(j)->deliver_clc(clc_now);
     profiler.end_step(profiler.total_core_cycle_time);
     
     profiler.start_step();
@@ -4123,6 +4133,13 @@ void sst_gpgpu_sim::SST_cycle() {
     m_cluster[i]->get_cache_stats(
         m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX]);
   }
+  const uint64_t clc_now = gpu_tot_sim_cycle + gpu_sim_cycle;
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i)
+    for (unsigned j = 0; j < m_cluster[i]->num_cores(); ++j)
+      m_cluster[i]->get_core(j)->arbitrate_clc(clc_now);
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i)
+    for (unsigned j = 0; j < m_cluster[i]->num_cores(); ++j)
+      m_cluster[i]->get_core(j)->deliver_clc(clc_now);
   float temp = 0;
   for (unsigned i = 0; i < m_shader_config->num_shader(); i++) {
     temp += m_shader_stats->m_pipeline_duty_cycle[i];

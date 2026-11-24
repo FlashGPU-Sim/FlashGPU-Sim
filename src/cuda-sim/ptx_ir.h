@@ -1703,6 +1703,8 @@ class function_info {
     m_req_cluster_dim.z = z;
   }
   void set_explicit_cluster(bool v) { m_explicit_cluster = v; }
+  void set_max_cluster_rank(unsigned rank) { m_max_cluster_rank = rank; }
+  unsigned get_max_cluster_rank() const { return m_max_cluster_rank; }
   bool has_explicit_cluster() const { return m_explicit_cluster; }
   dim3 get_req_cluster_dim() const { return m_req_cluster_dim; }
   unsigned get_req_ctas_per_cluster() const {
@@ -1732,6 +1734,7 @@ class function_info {
   unsigned maxnt_id;
   bool m_explicit_cluster;
   dim3 m_req_cluster_dim;
+  unsigned m_max_cluster_rank = 0;
   bool m_cluster_dim_must_be_set;
   bool m_nonportable_cluster_size_allowed;
   int m_cluster_sched_policy;

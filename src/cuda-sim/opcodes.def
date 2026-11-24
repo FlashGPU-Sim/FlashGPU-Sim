@@ -172,3 +172,6 @@ OP_DEF(TCGEN05_WAIT_OP,tcgen05_wait_impl,"tcgen05.wait::st",0,10)
 OP_DEF(TCGEN05_CP_OP,tcgen05_cp_impl,"tcgen05.cp",0,10)
 OP_DEF(TCGEN05_SHIFT_OP,tcgen05_shift_impl,"tcgen05.shift",0,10)
 OP_DEF(TCGEN05_FENCE_OP,tcgen05_fence_impl,"tcgen05.fence",0,10)
+
+OP_DEF(CLC_TRY_CANCEL_OP,clc_try_cancel_impl,"clusterlaunchcontrol.try_cancel",0,1)
+OP_DEF(CLC_QUERY_CANCEL_OP,clc_query_cancel_impl,"clusterlaunchcontrol.query_cancel",1,1)

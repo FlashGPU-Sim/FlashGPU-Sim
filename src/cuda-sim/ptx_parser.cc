@@ -659,16 +659,17 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
                     g_ptx_token_decode[type_spec].c_str());
   g_scalar_type.push_back(type_spec);
   if (g_scalar_type.size() > 1) {
-    parse_assert(
-        (g_opcode == -1) || (g_opcode == CVT_OP) || (g_opcode == SET_OP) ||
-            (g_opcode == SLCT_OP) || (g_opcode == TEX_OP) ||
-            (g_opcode == MMA_OP) || (g_opcode == TENSOR_MMA_OP) ||
-            (g_opcode == FMA_OP) ||
-            (g_opcode == WGMMA_MMA_ASYNC_OP) ||
-            (g_opcode == WGMMA_MMA_ASYNC_SP_OP) ||
-            (g_opcode == DP4A_OP) || (g_opcode == VMIN_OP) || (g_opcode == VMAX_OP),
-        "only cvt, set, slct, tex, mma, fma, wgmma, vmin, vmax and dp4a can have "
-        "more than one type specifier.");
+    parse_assert((g_opcode == -1) || (g_opcode == CLC_QUERY_CANCEL_OP) ||
+                     (g_opcode == CVT_OP) || (g_opcode == SET_OP) ||
+                     (g_opcode == SLCT_OP) || (g_opcode == TEX_OP) ||
+                     (g_opcode == MMA_OP) || (g_opcode == TENSOR_MMA_OP) ||
+                     (g_opcode == FMA_OP) || (g_opcode == WGMMA_MMA_ASYNC_OP) ||
+                     (g_opcode == WGMMA_MMA_ASYNC_SP_OP) ||
+                     (g_opcode == DP4A_OP) || (g_opcode == VMIN_OP) ||
+                     (g_opcode == VMAX_OP),
+                 "only cvt, set, slct, tex, mma, fma, wgmma, vmin, vmax dp4a "
+                 "and CLC query can have "
+                 "more than one type specifier.");
   }
   g_scalar_type_spec = type_spec;
 }
@@ -1263,6 +1264,11 @@ void ptx_recognizer::maxnt_id(int x, int y, int z) {
 
 void ptx_recognizer::set_explicit_cluster() {
   if (g_func_info) g_func_info->set_explicit_cluster(true);
+}
+
+void ptx_recognizer::set_max_cluster_rank(unsigned rank) {
+  parse_assert(rank > 0, ".maxclusterrank requires a positive CTA count");
+  if (g_func_info) g_func_info->set_max_cluster_rank(rank);
 }
 
 void ptx_recognizer::set_req_cluster_dim(int x, int y, int z) {

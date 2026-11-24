@@ -25,3 +25,24 @@ TEST(KernelInfoFrontend, NativeLaunchStartsWithoutClusterState) {
     kernel->~kernel_info_t();
   }
 }
+
+TEST(KernelInfoFrontend, ClcCancellationAdvancesTheSharedAdmissionCursor) {
+  kernel_info_t kernel(dim3(4, 2, 1), dim3(32, 1, 1), "clc_queue",
+                       GPGPU_Context(), 0, 1);
+  kernel.set_cluster_launch(dim3(2, 1, 1));
+  dim3 canceled(99, 98, 97);
+  kernel.increment_cta_id();  // First member of the pair has been admitted.
+  EXPECT_FALSE(kernel.try_cancel_pending_cluster(canceled));
+  EXPECT_EQ(canceled.x, 99u);
+  EXPECT_EQ(kernel.get_next_cta_id().x, 1u);
+  kernel.increment_cta_id();
+  ASSERT_TRUE(kernel.try_cancel_pending_cluster(canceled));
+  EXPECT_EQ(canceled.x, 2u);
+  EXPECT_EQ(canceled.y, 0u);
+  EXPECT_EQ(kernel.get_next_cta_id().x, 0u);
+  EXPECT_EQ(kernel.get_next_cta_id().y, 1u);
+  ASSERT_TRUE(kernel.try_cancel_pending_cluster(canceled));
+  ASSERT_TRUE(kernel.try_cancel_pending_cluster(canceled));
+  EXPECT_TRUE(kernel.no_more_ctas_to_run());
+  EXPECT_FALSE(kernel.try_cancel_pending_cluster(canceled));
+}

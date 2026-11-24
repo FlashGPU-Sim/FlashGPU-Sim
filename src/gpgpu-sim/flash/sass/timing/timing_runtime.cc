@@ -253,6 +253,7 @@ struct timing_cta_state {
       execution_context &context = contexts[local_warp];
       context.memory = memory.get();
       context.cta = &cta;
+      context.clc_service_available = true;
       context.warp_id = local_warp;
       context.virtual_smid = virtual_smid;
       context.cta_id_x = cta_id.x;
@@ -635,6 +636,12 @@ bool timing_runtime::deferred_barrier_can_issue(unsigned hardware_warp_id,
   return false;
 }
 
+void timing_runtime::complete_clc(unsigned hardware_cta, uint32_t barrier) {
+  auto &cta = *impl_->ctas_.at(hardware_cta);
+  if (!cta.cta.complete_mbarrier_transaction(barrier, 16, true))
+    panic("CLC response has no initialized native barrier");
+}
+
 mbarrier_try_wait_state
 timing_runtime::complete_mbarrier_try_wait(unsigned hardware_warp_id) {
   timing_cta_state &cta = impl_->cta_for_warp(hardware_warp_id);
@@ -684,6 +691,7 @@ timing_step_result timing_runtime::step(
   result.executed_mask = instruction_execution_mask(*source, warp);
   result.frontend_result = impl_->image_->functional_frontend().step(
       impl_->image_->name(), warp, context);
+  result.clc = context.clc_effect;
   if (context.named_barrier_effect.valid) {
     const unsigned id = context.named_barrier_effect.id;
     const uint64_t generation = cta.cta.generation(id);

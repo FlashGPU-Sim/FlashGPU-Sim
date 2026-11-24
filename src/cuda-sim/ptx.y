@@ -77,6 +77,7 @@ class ptx_recognizer;
 %token  REQNTID_DIRECTIVE
 %token  EXPLICITCLUSTER_DIRECTIVE
 %token  REQNCTAPERCLUSTER_DIRECTIVE
+%token  MAXCLUSTERRANK_DIRECTIVE
 %token  SECTION_DIRECTIVE
 %token  DEBUG_DIRECTIVE
 %token  SHARED_DIRECTIVE
@@ -286,6 +287,12 @@ class ptx_recognizer;
 %token	BULK_GROUP_OPTION;
 %token	CLUSTER_OPTION;
 %token	MULTICAST_CLUSTER_OPTION;
+%token CLC_MULTICAST_ALL_OPTION;
+%token CLC_IS_CANCELED_OPTION;
+%token CLC_GET_X_OPTION;
+%token CLC_GET_Y_OPTION;
+%token CLC_GET_Z_OPTION;
+%token CLC_GET_XYZ_OPTION;
 %token	INVAL_OPTION;
 %token	MBARRIER_INIT_OPTION;
 %token	M8N8_OPTION;
@@ -376,6 +383,10 @@ block_spec: MAXNTID_DIRECTIVE INT_OPERAND {
 	| REQNTID_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".reqntid", $2); printf("GPGPU-Sim PTX: Warning: .reqntid ignored. \n"); }
 	| REQNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND { recognizer->func_header_info_int(".reqntid", $2); printf("GPGPU-Sim PTX: Warning: .reqntid ignored. \n"); }
 	| EXPLICITCLUSTER_DIRECTIVE { recognizer->func_header_info(".explicitcluster"); recognizer->set_explicit_cluster(); }
+	| MAXCLUSTERRANK_DIRECTIVE INT_OPERAND {
+	    recognizer->func_header_info_int(".maxclusterrank", $2);
+	    recognizer->set_max_cluster_rank($2);
+	  }
 	| REQNCTAPERCLUSTER_DIRECTIVE INT_OPERAND {
 	    recognizer->func_header_info_int(".reqnctapercluster", $2);
 	    recognizer->set_req_cluster_dim($2, 1, 1);
@@ -748,6 +759,12 @@ option: type_spec
 	| BULK_GROUP_OPTION { recognizer->add_option(BULK_GROUP_OPTION); }
 	| CLUSTER_OPTION { recognizer->add_option(CLUSTER_OPTION); }
 	| MULTICAST_CLUSTER_OPTION { recognizer->add_option(MULTICAST_CLUSTER_OPTION); }
+	| CLC_MULTICAST_ALL_OPTION { recognizer->add_option(CLC_MULTICAST_ALL_OPTION); }
+	| CLC_IS_CANCELED_OPTION { recognizer->add_option(CLC_IS_CANCELED_OPTION); }
+	| CLC_GET_X_OPTION { recognizer->add_option(CLC_GET_X_OPTION); }
+	| CLC_GET_Y_OPTION { recognizer->add_option(CLC_GET_Y_OPTION); }
+	| CLC_GET_Z_OPTION { recognizer->add_option(CLC_GET_Z_OPTION); }
+	| CLC_GET_XYZ_OPTION { recognizer->add_option(CLC_GET_XYZ_OPTION); }
 	| INVAL_OPTION { recognizer->add_option(INVAL_OPTION); }
 	| MBARRIER_INIT_OPTION { recognizer->add_option(MBARRIER_INIT_OPTION); }
 	| M8N8_OPTION { recognizer->add_option(M8N8_OPTION); }

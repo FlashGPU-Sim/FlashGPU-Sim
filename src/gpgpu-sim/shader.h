@@ -38,7 +38,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <vector>
 #include <algorithm>
 #include <bitset>
 #include <deque>
@@ -49,6 +48,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "flash/clc.h"
 
 // Complete type required for std::unique_ptr destructor of dsm_fabric_t /
 // dsm_endpoint_protocol_t.
@@ -2594,6 +2594,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_tma_idealized_memory;
   bool gpgpu_tma_oob_l2_traffic;
   unsigned int gpgpu_mbarrier_arrive_latency;
+  unsigned gpgpu_clc_latency = 0;
   // Maximum modeled suspension for a no-hint mbarrier.try_wait. The optional
   // PTX suspendTimeHint overrides this bound after ns-to-core-cycle conversion.
   unsigned int gpgpu_mbarrier_trywait_latency;
@@ -3193,6 +3194,12 @@ class shader_core_ctx : public core_t {
   void issue_block2core(class kernel_info_t &kernel);
   void release_finished_cta(unsigned cta_num, kernel_info_t *kernel);
   void release_pending_tma_ctas();
+  void enqueue_clc(unsigned warp, uint32_t response, uint32_t barrier,
+                   bool broadcast);
+  void arbitrate_clc(uint64_t now);
+  void deliver_clc(uint64_t now);
+  bool clc_pending_for_cta(unsigned cta) const;
+  virtual void complete_clc_architectural(unsigned cta, uint32_t barrier) {}
 
   void cache_flush();
   void cache_invalidate();
@@ -3837,6 +3844,7 @@ class shader_core_ctx : public core_t {
   unsigned m_cta_status[MAX_CTA_PER_SHADER];  // CTAs status
   cta_lifecycle_state_t m_cta_lifecycle[MAX_CTA_PER_SHADER];
   std::map<unsigned, kernel_info_t *> m_pending_tma_cta_releases;
+  std::vector<flash_gpgpu_sim::clc_request> m_clc_requests;
   unsigned m_not_completed;  // number of threads to be completed (==0 when all
                              // thread on this core completed)
   std::bitset<MAX_THREAD_PER_SM> m_active_threads;
@@ -4006,6 +4014,7 @@ class exec_shader_core_ctx : public shader_core_ctx {
   int get_logical_cta_id(unsigned warp_id) const override;
   int get_cta_warp_id(unsigned warp_id) const override;
   void complete_mbarrier_try_wait(unsigned warp_id) override;
+  void complete_clc_architectural(unsigned cta, uint32_t barrier) override;
 
  private:
   // The adapters alone bridge legacy architectural state to this SIMT core.

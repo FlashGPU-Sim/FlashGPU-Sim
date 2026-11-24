@@ -1248,6 +1248,15 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
     cluster_launch = true;
     cluster_dim = entry_for_cluster->get_req_cluster_dim();
   }
+  if (entry_for_cluster && entry_for_cluster->get_max_cluster_rank() &&
+      cluster_launch &&
+      uint64_t(cluster_dim.x) * cluster_dim.y * cluster_dim.z >
+          entry_for_cluster->get_max_cluster_rank()) {
+    printf("GPGPU-Sim PTX: cluster launch exceeds .maxclusterrank %u\n",
+           entry_for_cluster->get_max_cluster_rank());
+    ctx->api->g_cuda_launch_stack.pop_back();
+    return g_last_cudaError = cudaErrorInvalidConfiguration;
+  }
   if (entry_for_cluster && entry_for_cluster->cluster_dim_must_be_set() &&
       !cluster_launch) {
     printf(

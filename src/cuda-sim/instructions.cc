@@ -1933,6 +1933,70 @@ void stmatrix_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
   handle_stmatrix_inst(pI, core, inst);
 }
 
+// Both ISA adapters enqueue into the same serial launch-distributor service.
+void clc_try_cancel_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const auto &options = pI->get_options();
+  auto has = [&](int option) {
+    return std::find(options.begin(), options.end(), option) != options.end();
+  };
+  assert(pI->get_num_operands() == 2 && has(ASYNC_OPTION) &&
+         has(TMA_MBAR_COMPLETE_BYTES) && pI->get_type() == BB128_TYPE);
+  auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+  assert(core && "CLC requires a timing launch queue");
+  uint32_t address[2];
+  for (unsigned i = 0; i < 2; ++i) {
+    uint64_t raw =
+        thread
+            ->get_operand_value(pI->operand_lookup(i), pI->operand_lookup(i),
+                                U64_TYPE, thread, 1)
+            .u64;
+    if (!has(CTA_OPTION) && pI->get_space() != shared_space)
+      raw = generic_to_shared(thread->get_hw_sid(), raw);
+    assert(raw < SHARED_MEM_SIZE_MAX &&
+           "CLC operands must be local shared offsets");
+    address[i] = raw;
+  }
+  core->enqueue_clc(thread->get_hw_wid(), address[0], address[1],
+                    has(CLC_MULTICAST_ALL_OPTION));
+}
+
+void clc_query_cancel_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  assert(pI->get_num_operands() == 2 && pI->get_type2() == BB128_TYPE);
+  const auto response =
+      thread->get_operand_value(pI->src1(), pI->dst(), BB128_TYPE, thread, 1);
+  const auto &options = pI->get_options();
+  auto has = [&](int option) {
+    return std::find(options.begin(), options.end(), option) != options.end();
+  };
+  ptx_reg_t value;
+  if (has(CLC_IS_CANCELED_OPTION)) {
+    assert(pI->get_type() == PRED_TYPE && !pI->dst().is_vector());
+    value.pred = (response.u128.high & 1) ? 0 : 1;
+    thread->set_operand_value(pI->dst(), value, PRED_TYPE, thread, pI);
+    return;
+  }
+  assert(pI->get_type() == B32_TYPE);
+  assert((response.u128.high & 1) && "cannot query failed CLC coordinates");
+  ptx_reg_t coordinates[4];
+  coordinates[0].u32 = response.u128.lowest;
+  coordinates[1].u32 = response.u128.low & 0xffff;
+  coordinates[2].u32 = response.u128.low >> 16;
+  coordinates[3].u32 = 0;
+  if (has(CLC_GET_XYZ_OPTION)) {
+    assert(pI->dst().is_vector() && pI->dst().get_vect_nelem() == 4);
+    thread->set_vector_operand_values(pI->dst(), coordinates[0], coordinates[1],
+                                      coordinates[2], coordinates[3]);
+    return;
+  }
+  const unsigned dimension = has(CLC_GET_X_OPTION)   ? 0
+                             : has(CLC_GET_Y_OPTION) ? 1
+                                                     : 2;
+  assert(has(CLC_GET_X_OPTION) || has(CLC_GET_Y_OPTION) ||
+         has(CLC_GET_Z_OPTION));
+  thread->set_operand_value(pI->dst(), coordinates[dimension], U32_TYPE, thread,
+                            pI);
+}
+
 void tcgen05_alloc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   flash_gpgpu_sim::handle_tcgen05_alloc_inst(pI, thread);
 }

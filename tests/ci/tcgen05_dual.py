@@ -12,17 +12,17 @@ import subprocess
 import sys
 import tempfile
 
-def run_suite(test_filter, tests, launches, timeout=300, cluster_validation=False):
+def run_suite(test_filter, tests, launches, timeout=300, cluster_validation=False, group="tcgen05"):
     root = Path(__file__).resolve().parents[2]
-    subprocess.run(["make", "-C", str(root / "tests"), "build-sm100-tcgen05",
+    subprocess.run(["make", "-C", str(root / "tests"), f"build-sm100-{group}",
                     "-j" + os.environ.get("CI_BUILD_JOBS", "2")], check=True)
-    parent = root / "tests/logs/ci/tmem"
+    parent = root / "tests/logs/ci" / ("tmem" if group == "tcgen05" else group)
     parent.mkdir(parents=True, exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="dual-", dir=parent))
     subprocess.run([
         sys.executable, str(root / "tests/scripts/run_tcgen05_dual_frontend.py"),
         "--root", str(root),
-        "--binary", str(root / "tests/build/bin/sm100/tcgen05_tests"),
+        "--binary", str(root / f"tests/build/bin/sm100/{group}_tests"),
         "--config-dir", str(root / "configs/SM100_B200"),
         "--cuda", os.environ["CUDA_INSTALL_PATH"],
         "--output", str(output), "--disable-ptx-reorder",

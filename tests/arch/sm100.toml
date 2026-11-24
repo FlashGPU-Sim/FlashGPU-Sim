@@ -4,7 +4,10 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
-    "clc/b128_test.cu",
+  "clc/b128_test.cu",
+  "clc/launch_queue_test.cu",
+  "unit/clc_queue_test.cc",
+  "unit/sass/functional/clc_test.cc",
   "tcgen05/mma_commit_test.cu",
   "tcgen05/mma_dense_test.cu",
   "tcgen05/mma_pair_test.cu",
@@ -72,6 +75,6 @@ sources = [
   "unit/tcgen05_mma_test.cc",
   "unit/tcgen05_copy_test.cc",
   "unit/tcgen05_timing_test.cc",
-    "unit/sass/functional/reduction_test.cc",
+  "unit/sass/functional/reduction_test.cc",
   "unit/sass/functional/tcgen_pair_test.cc",
 ]

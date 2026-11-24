@@ -15,6 +15,7 @@ namespace sass {
 
 struct timing_step_result {
   step_result frontend_result;
+  functional_clc_effect clc;
   uint32_t active_before = 0;
   uint32_t executed_mask = 0;
   uint32_t active_after = 0;
@@ -39,6 +40,7 @@ public:
   bool uses_paired_allocator() const;
   ::memory_space *shared_memory(unsigned hardware_cta_id);
   void release_cta(unsigned hardware_cta_id);
+  void complete_clc(unsigned hardware_cta_id, uint32_t barrier);
   void reset();
 
   const timing_instruction *fetch(unsigned hardware_warp_id, uint64_t pc) const;

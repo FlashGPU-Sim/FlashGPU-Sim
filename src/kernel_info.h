@@ -5,6 +5,7 @@
 #include <list>
 #include <map>
 #include <string>
+#include "gpgpu-sim/flash/clc_queue.h"
 #include "gpgpu-sim/flash/frontend/launch_types.h"
 
 #ifdef FLASH_GPGPU_SIM_OMP
@@ -176,6 +177,28 @@ public:
   bool no_more_ctas_to_run() const {
     return (m_next_cta.x >= m_grid_dim.x || m_next_cta.y >= m_grid_dim.y ||
             m_next_cta.z >= m_grid_dim.z);
+  }
+
+  // Shared launch-queue operation for PTX and SASS adapters. Like ordinary
+  // admission, it must run in the serial work-distributor phase. A lock inside
+  // a parallel core callback would prevent duplicates but not deterministic
+  // request ordering. Both ISA adapters use the same serial service.
+  bool try_cancel_pending_cluster(dim3 &canceled) {
+    const dim3 shape = is_cluster_launch() ? get_cluster_dim() : dim3(1, 1, 1);
+    std::array<uint32_t, 3> next{{m_next_cta.x, m_next_cta.y, m_next_cta.z}};
+    std::array<uint32_t, 3> result{};
+    if (!flash_gpgpu_sim::cancel_pending_clc_cluster(
+            {{m_grid_dim.x, m_grid_dim.y, m_grid_dim.z}},
+            {{shape.x, shape.y, shape.z}}, next, result))
+      return false;
+    canceled = dim3(result[0], result[1], result[2]);
+    m_next_cta = dim3(next[0], next[1], next[2]);
+    m_next_tid = dim3(0, 0, 0);
+    return true;
+  }
+  bool try_cancel_pending_single_cta(dim3 &canceled) {
+    assert(!is_cluster_launch());
+    return try_cancel_pending_cluster(canceled);
   }
 
   void increment_thread_id() {

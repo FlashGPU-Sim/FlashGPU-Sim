@@ -72,6 +72,9 @@ public:
         inst.warp_id(), inst,
         core_.m_gpu->gpu_tot_sim_cycle + core_.m_gpu->gpu_sim_cycle,
         core_.m_gpu->get_config().get_core_freq());
+    if (result.clc.valid)
+      core_.enqueue_clc(inst.warp_id(), result.clc.response_address,
+                        result.clc.barrier_address, result.clc.broadcast);
     const unsigned own_cta = core_.m_warp[inst.warp_id()]->get_cta_id();
     const bool cluster = core_.get_kernel()->is_cluster_launch();
     auto target_for = [&](uint32_t &address) {
@@ -250,6 +253,10 @@ public:
       return false;
     text = inst->native_text();
     return true;
+  }
+
+  void complete_clc(unsigned cta, uint32_t barrier) override {
+    runtime_.complete_clc(cta, barrier);
   }
 
   void complete_barrier_wait(unsigned warp_id) override {

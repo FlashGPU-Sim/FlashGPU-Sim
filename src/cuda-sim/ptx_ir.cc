@@ -1325,11 +1325,10 @@ static std::list<operand_info> check_operands(
     int opcode, const std::list<int> &scalar_type,
     const std::list<operand_info> &operands, gpgpu_context *ctx) {
   static int g_warn_literal_operands_two_type_inst;
-  if ((opcode == CVT_OP) || (opcode == SET_OP) || (opcode == SLCT_OP) ||
-      (opcode == TEX_OP) || (opcode == MMA_OP) || (opcode == TENSOR_MMA_OP) ||
-      (opcode == FMA_OP) ||
-      (opcode == WGMMA_MMA_ASYNC_OP) ||
-      (opcode == WGMMA_MMA_ASYNC_SP_OP) ||
+  if ((opcode == CLC_QUERY_CANCEL_OP) || (opcode == CVT_OP) ||
+      (opcode == SET_OP) || (opcode == SLCT_OP) || (opcode == TEX_OP) ||
+      (opcode == MMA_OP) || (opcode == TENSOR_MMA_OP) || (opcode == FMA_OP) ||
+      (opcode == WGMMA_MMA_ASYNC_OP) || (opcode == WGMMA_MMA_ASYNC_SP_OP) ||
       (opcode == DP4A_OP) || (opcode == VMIN_OP) || (opcode == VMAX_OP)) {
     // just make sure these do not have have const operands...
     if (!g_warn_literal_operands_two_type_inst) {
@@ -1763,6 +1762,12 @@ ptx_instruction::ptx_instruction(
       case READ_OPTION:
       case BULK_GROUP_OPTION:
       case CLUSTER_OPTION:
+      case CLC_MULTICAST_ALL_OPTION:
+      case CLC_IS_CANCELED_OPTION:
+      case CLC_GET_X_OPTION:
+      case CLC_GET_Y_OPTION:
+      case CLC_GET_Z_OPTION:
+      case CLC_GET_XYZ_OPTION:
       case MULTICAST_CLUSTER_OPTION:
       case M8N8_OPTION:
       case MBARRIER_INIT_OPTION:

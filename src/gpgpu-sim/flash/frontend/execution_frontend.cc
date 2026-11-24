@@ -36,6 +36,11 @@ int exec_shader_core_ctx::get_cta_warp_id(unsigned warp_id) const {
                   : shader_core_ctx::get_cta_warp_id(warp_id);
 }
 
+void exec_shader_core_ctx::complete_clc_architectural(unsigned cta,
+                                                      uint32_t barrier) {
+  m_frontend->complete_clc(cta, barrier);
+}
+
 void exec_shader_core_ctx::complete_mbarrier_try_wait(unsigned warp_id) {
   m_frontend->complete_barrier_wait(warp_id);
 }

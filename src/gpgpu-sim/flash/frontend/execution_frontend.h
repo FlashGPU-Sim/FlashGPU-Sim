@@ -42,6 +42,7 @@ public:
   virtual void complete_lane(warp_inst_t &inst, unsigned lane,
                              unsigned tid) = 0;
   virtual void complete_barrier_wait(unsigned warp) = 0;
+  virtual void complete_clc(unsigned cta, uint32_t barrier) {}
   virtual int logical_cta_id(unsigned warp) const = 0;
   virtual int cta_warp_id(unsigned warp) const = 0;
   // Optional diagnostic; false requests the caller's existing fallback.

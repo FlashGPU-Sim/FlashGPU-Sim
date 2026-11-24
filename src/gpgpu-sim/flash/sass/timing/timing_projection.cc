@@ -193,15 +193,15 @@ bool has_destination(const std::string &base) {
          base != "BSSY" && base != "BSYNC" && base != "BREAK" &&
          base != "BRXU" && base != "WARPSYNC" && base != "CALL" &&
          base != "EXIT" && base != "RET" && base != "NOP" &&
-         base != "NANOSLEEP" && base != "YIELD" && base != "BAR" &&
-         base != "MEMBAR" && base != "DEPBAR" && base != "CCTL" &&
-         base != "UTMACCTL" && base != "UTMACMDFLUSH" && base != "FENCE" &&
-         base != "UTMALDG" && base != "UTMASTG" && base != "UTMAREDG" &&
-         base != "UTMAPF" && base != "UBLKCP" && base != "UBLKRED" &&
-         base != "UTCCP" && base != "UTCHMMA" && base != "UTCQMMA" &&
-         base != "UTCOMMA" && base != "UTCBAR" && base != "STTM" &&
-         base != "UVIRTCOUNT" && base != "LDGSTS" && base != "LDGDEPBAR" &&
-         base != "STAS";
+         base != "NANOSLEEP" && base != "UGETNEXTWORKID" && base != "YIELD" &&
+         base != "BAR" && base != "MEMBAR" && base != "DEPBAR" &&
+         base != "CCTL" && base != "UTMACCTL" && base != "UTMACMDFLUSH" &&
+         base != "FENCE" && base != "UTMALDG" && base != "UTMASTG" &&
+         base != "UTMAREDG" && base != "UTMAPF" && base != "UBLKCP" &&
+         base != "UBLKRED" && base != "UTCCP" && base != "UTCHMMA" &&
+         base != "UTCQMMA" && base != "UTCOMMA" && base != "UTCBAR" &&
+         base != "STTM" && base != "UVIRTCOUNT" && base != "LDGSTS" &&
+         base != "LDGDEPBAR" && base != "STAS";
 }
 
 // Native output lists can contain a value and carry/status predicates. Keep
@@ -590,6 +590,10 @@ void classify(const instruction &source, const timing_profile &profile,
     target.set_atomic(false);
     target.latency = 1;
     target.initiation_interval = 1;
+  } else if (base == "UGETNEXTWORKID") {
+    target.op = INTP_OP;
+    target.op_pipe = INTP__OP;
+    target.latency = target.initiation_interval = 1;
   } else if (base == "LDGSTS") {
     target.op = ASYNC_COPY_OP;
     target.op_pipe = CP_ASYNC__OP;

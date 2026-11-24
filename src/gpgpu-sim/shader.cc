@@ -904,6 +904,7 @@ void shader_core_ctx::reinit(unsigned start_thread, unsigned end_thread,
     m_occupied_cta_to_hwtid.clear();
     m_active_warps = 0;
     m_pending_tma_cta_releases.clear();
+    m_clc_requests.clear();
     std::fill(m_mio_queue_occupancy.begin(), m_mio_queue_occupancy.end(), 0);
     for (auto &release_cycles : m_mio_queue_release_cycles)
       release_cycles.clear();
@@ -6150,7 +6151,9 @@ void shader_core_ctx::release_pending_tma_ctas() {
     const bool cluster_peer_busy =
         m_cluster && m_cluster->tb_cluster_group_has_live_threads(
                          m_config->sid_to_cid(m_sid), entry.first);
-    if (!tma_busy && !dsm_busy && !cluster_peer_busy) ready.push_back(entry);
+    if (!tma_busy && !dsm_busy && !cluster_peer_busy &&
+        !clc_pending_for_cta(entry.first))
+      ready.push_back(entry);
   }
 
   for (const auto &entry : ready) {
@@ -6171,6 +6174,7 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
     lifecycle.threads_exit_cycle =
         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
     lifecycle.pending_tma =
+        clc_pending_for_cta(cta_num) ||
         (m_tma != nullptr && m_tma->has_pending_for_cta(cta_num)) ||
         (m_cluster && m_cluster->dsm_cta_busy(m_sid, cta_num)) ||
         (m_cluster && m_cluster->tb_cluster_group_has_live_threads(

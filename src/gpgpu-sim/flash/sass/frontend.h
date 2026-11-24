@@ -310,6 +310,11 @@ struct functional_cluster_state {
   std::vector<functional_memory *> memories;
 };
 
+struct functional_clc_effect {
+  bool valid = false, broadcast = false;
+  uint32_t response_address = 0, barrier_address = 0;
+};
+
 struct execution_context {
   struct functional_memory_access {
     memory_space space = memory_space::kGlobal;
@@ -348,6 +353,8 @@ struct execution_context {
   std::vector<functional_mbarrier_effect> imported_mbarriers;
   functional_named_barrier_effect named_barrier_effect;
   functional_tcgen_mma_effect tcgen_mma_effect;
+  functional_clc_effect clc_effect;
+  bool clc_service_available = false;
 
   void clear_instruction_effects();
   bool decode_local_memory_offset(unsigned lane, uint64_t address,

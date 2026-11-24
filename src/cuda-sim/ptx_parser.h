@@ -190,6 +190,7 @@ class ptx_recognizer {
   void version_header(double a);
   void maxnt_id(int x, int y, int z);
   void set_explicit_cluster();
+  void set_max_cluster_rank(unsigned rank);
   void set_req_cluster_dim(int x, int y, int z);
   void parse_error_impl(const char *file, unsigned line, const char *msg, ...);
   void parse_assert_impl(int test_value, const char *file, unsigned line,
