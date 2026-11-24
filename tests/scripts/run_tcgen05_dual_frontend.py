@@ -38,6 +38,21 @@ def main():
         p.error('--runtime-library-dir must contain libcudart.so')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    # Native decoding opens the executable again for every launched kernel.
+    # Freeze it before either frontend starts: a concurrent rebuild must not
+    # replace the cubin underneath an already registered host kernel symbol.
+    binary_source = binary
+    source_hash = hashlib.sha256(binary_source.read_bytes()).hexdigest()
+    binary = output / 'fixture' / binary_source.name
+    binary.parent.mkdir(exist_ok=True)
+    if binary.exists():
+        if hashlib.sha256(binary.read_bytes()).hexdigest() != source_hash:
+            raise RuntimeError('Refusing to replace a different frozen fixture')
+    else:
+        shutil.copy2(binary_source, binary)
+    if (hashlib.sha256(binary.read_bytes()).hexdigest() != source_hash or
+            hashlib.sha256(binary_source.read_bytes()).hexdigest() != source_hash):
+        raise RuntimeError('Fixture binary changed while creating the snapshot')
     # CUDA fixtures normally request the versioned SONAME (e.g. libcudart.so.13),
     # not libcudart.so. A snapshot containing only the latter would silently
     # fall through to the mutable build directory for the versioned library.
@@ -61,7 +76,7 @@ def main():
         config += '\n-gpgpu_ptx_reorder 0\n-gpgpu_ptx_reorder_sass_guided 0\n'
     if args.cluster_validation:
         config += '\n-gpgpu_n_clusters 2\n-gpgpu_n_cores_per_cluster 4\n-gpgpu_dsm_enable 1\n'
-    report = {'binary': str(binary), 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+    report = {'binary': str(binary), 'binary_source': str(binary_source), 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'config_sha256': hashlib.sha256(config.encode()).hexdigest(), 'runs': {}}
     if library:
         report['runtime_library_dir'] = str(library)
