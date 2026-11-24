@@ -36,7 +36,7 @@ replay. Host SFU approximations are intentionally not bit-exact GPU models.
 Local CUDA 13.3 component invocation excludes the pre-existing
 `trace_validation_test.cc` legacy cuCtxCreate signature; no test assertion or
 performance gate was relaxed. Evidence: workspace
-`runs/feature-expansion-20261121`, including `scalar-cuda-r2/report.json`.
+`runs/feature-expansion-20261121`, including `scalar-cuda-final/report.json`.
 
 Remaining scope: native direct-address memory forms, warp collectives, and
 architecture-specific tensor/cluster instructions are separate changes.
