@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <array>
 #include <vector>
+#include "common/gpgpusim_config_topology.h"
 #include "cp_kernels.cuh"
 namespace {
 template <int Mode>
@@ -81,6 +82,8 @@ __global__ void gather_cluster(const CUtensorMap *map, unsigned *out) {
     out[rank * 128 + threadIdx.x + i * 32] = tile[threadIdx.x + i * 32];
 }
 TEST(TmaGather4Cluster, MulticastAndPairedMulticast) {
+  SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
+  SKIP_IF_CLUSTER_NOC_OFF();
   unsigned *input, *out;
   CUtensorMap *dm;
   std::vector<unsigned> data(128 * 8);
