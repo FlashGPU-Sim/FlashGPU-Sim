@@ -150,6 +150,13 @@ tests = [
   { name = "memory-forms-and-dual-launch", group = "unit", gtest_filter = "SharedBulk.*:SassSharedBulk.*:SassGlobal256.*:PtxMemoryForms.*:MemoryTransportTest.WidePerLaneAccessesKeepSectorRequestsAndCoalescing", post_check = "tests/ci/check_memory_forms_dual.py" },
 ]
 
+[jobs.sm100-narrow-conversion]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "narrow-conversion-and-dual-launch", group = "unit", gtest_filter = "NarrowConversion.*:SassFunctionalTest.DeepInferFp8*:SassFunctionalTest.BlackwellFp8*:SassFunctionalTest.Ue8m0Pack*:SassFunctionalTest.Dsv4Fp8Unpack*:SassFunctionalTest.DeepInferFp4Pack*", post_check = "tests/ci/check_narrow_conversion_dual.py" },
+]
+
 [jobs.sm100-mov-pack]
 arch = "sm100"
 cuda = "13.3"

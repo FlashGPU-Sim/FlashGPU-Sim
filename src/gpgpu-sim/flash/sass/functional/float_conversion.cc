@@ -1,3 +1,4 @@
+#include "../../narrow_conversion.h"
 #include "../decode/scaled_unpack_operand.h"
 #include "internal.h"
 
@@ -187,48 +188,6 @@ step_result execute_f2i(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
-uint8_t float_e4m3_satfinite_rn(float value) {
-  if (std::isnan(value))
-    return 0x7f;
-  const uint8_t sign = std::signbit(value) ? 0x80 : 0;
-  const float magnitude = std::fabs(value);
-  if (magnitude >= 448.0f)
-    return sign | 0x7e;
-  if (magnitude == 0)
-    return sign;
-  // Quantize in units of the current exponent's ULP, including subnormals.
-  int exponent = 0;
-  std::frexp(magnitude, &exponent);
-  const int encoded_exponent = std::max(0, exponent + 6);
-  const float scaled =
-      std::ldexp(magnitude, 10 - std::max(1, encoded_exponent));
-  unsigned rounded = static_cast<unsigned>(scaled);
-  const float remainder = scaled - rounded;
-  if (remainder > 0.5f || (remainder == 0.5f && (rounded & 1)))
-    ++rounded;
-  const unsigned encoded =
-      encoded_exponent ? (encoded_exponent - 1) * 8 + rounded : rounded;
-  return sign | static_cast<uint8_t>(encoded);
-}
-
-uint8_t float_e2m1_satfinite_rn(float value) {
-  // CUDA's FP4 reference conversion: NaN saturates to positive MAXNORM.
-  if (std::isnan(value))
-    return 7;
-  const uint8_t sign = std::signbit(value) ? 8 : 0;
-  const float magnitude = std::fabs(value);
-  constexpr float levels[] = {0, 0.5f, 1, 1.5f, 2, 3, 4, 6};
-  unsigned code = 7;
-  for (unsigned i = 0; i < 7; ++i) {
-    const float midpoint = (levels[i] + levels[i + 1]) * 0.5f;
-    if (magnitude < midpoint || (magnitude == midpoint && !(i & 1))) {
-      code = i;
-      break;
-    }
-  }
-  return sign | code;
-}
-
 step_result execute_f2fp_e4m3(const instruction &inst, warp_state &state,
                               execution_context &) {
   if (!has_typed_operands(inst, 4) ||
@@ -252,7 +211,7 @@ step_result execute_f2fp_e4m3(const instruction &inst, warp_state &state,
       return unsupported(inst, "unsupported FP8 packed source");
     const bool fp4 = inst.opcode == "F2FP.SATFINITE.E2M1.F32.PACK_AB_MERGE_C";
     const auto convert =
-        fp4 ? float_e2m1_satfinite_rn : float_e4m3_satfinite_rn;
+        fp4 ? f32_to_e2m1_satfinite_rn : f32_to_e4m3_satfinite_rn;
     state.write_register(
         lane, inst.operands[0].index,
         (state.read_register(lane, merge.index) << (fp4 ? 8 : 16)) |
@@ -263,16 +222,6 @@ step_result execute_f2fp_e4m3(const instruction &inst, warp_state &state,
 }
 
 // Native UE8M0 conversion encodes the magnitude, including negative inputs.
-uint8_t float_ue8m0_satfinite_rp(float value) {
-  const uint32_t bits = float_bits(value) & 0x7fffffff;
-  const unsigned exponent = bits >> 23, fraction = bits & 0x7fffff;
-  if (exponent == 255)
-    return fraction ? 255 : 254;
-  if (exponent == 0)
-    return fraction > 0x400000 ? 1 : 0;
-  return std::min(254u, exponent + (fraction != 0));
-}
-
 step_result execute_f2fp_ue8m0(const instruction &inst, warp_state &state,
                                execution_context &) {
   if (!has_typed_operands(inst, 4) ||
@@ -294,8 +243,8 @@ step_result execute_f2fp_ue8m0(const instruction &inst, warp_state &state,
         !read_f32_operand(inst.operands[2], state, lane, b))
       return unsupported(inst, "unqualified UE8M0 conversion source");
     const uint32_t result = (state.read_register(lane, merge.index) << 16) |
-                            (uint32_t(float_ue8m0_satfinite_rp(a)) << 8) |
-                            float_ue8m0_satfinite_rp(b);
+                            (uint32_t(f32_to_ue8m0_satfinite_rp(a)) << 8) |
+                            f32_to_ue8m0_satfinite_rp(b);
     state.write_register(lane, inst.operands[0].index, result);
   }
   advance(inst, state);
@@ -322,7 +271,7 @@ step_result execute_bfloat_to_e4m3(const instruction &inst, warp_state &state,
     const uint32_t merge = state.read_register(lane, inst.operands[2].index);
     const bool fp4 = inst.opcode == "F2FP.SATFINITE.E2M1.BF16.UNPACK_B_MERGE_C";
     const auto convert =
-        fp4 ? float_e2m1_satfinite_rn : float_e4m3_satfinite_rn;
+        fp4 ? f32_to_e2m1_satfinite_rn : f32_to_e4m3_satfinite_rn;
     const uint32_t low = convert(bfloat_float(source & 0xffff));
     const uint32_t high = convert(bfloat_float(source >> 16));
     state.write_register(lane, inst.operands[0].index,
@@ -347,14 +296,8 @@ step_result execute_packed_unpack(const instruction &inst, warp_state &state,
   const bool fp8 = inst.opcode == "F2FP.F16.E4M3.UNPACK_B";
   const auto unpack = [fp8](unsigned x) -> uint32_t {
     if (!fp8)
-      return x == 255 ? 0x7fffu : x == 0 ? 0x40u : x << 7;
-    const unsigned magnitude = x & 127, exponent = magnitude >> 3;
-    if (magnitude == 127)
-      return 0x7fff; // canonical half NaN, either sign
-    const uint32_t sign = (x & 128) << 8;
-    if (exponent)
-      return sign | ((exponent + 8) << 10) | ((x & 7) << 7);
-    return sign | float_half_rn(float_bits(std::ldexp(float(x & 7), -9)));
+      return ue8m0_to_bf16(x);
+    return e4m3_to_f16(x);
   };
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
     if (!(state.active_mask & (1u << lane)) ||
@@ -391,15 +334,7 @@ step_result execute_fp8_bfloat_unpack(const instruction &inst,
     for (unsigned half = 0; half < 2; ++half) {
       const unsigned code = (packed >> (8 * half)) & 255,
                      factor = (scale >> (8 * half)) & 255;
-      const unsigned mag = code & 127, exp = mag >> 3;
-      float value = exp ? std::ldexp(float(8 + (mag & 7)), int(exp) - 10)
-                        : std::ldexp(float(mag & 7), -9);
-      if (code & 128)
-        value = -value;
-      const uint16_t bits =
-          (mag == 127 || factor == 255)
-              ? 0x7fff
-              : float_bfloat_rn(std::ldexp(value, int(factor) - 127));
+      const uint16_t bits = e4m3_scaled_to_bf16(code, factor);
       result |= uint32_t(bits) << (16 * half);
     }
     state.write_register(lane, inst.operands[0].index, result);

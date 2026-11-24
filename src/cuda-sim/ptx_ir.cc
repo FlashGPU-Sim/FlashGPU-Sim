@@ -1162,6 +1162,12 @@ unsigned type_info_key::type_decode(int type, size_t &size, int &basic_type) {
       size = 16;
       basic_type = -1;
       return 8;
+    case E4M3X2_TYPE:
+      size = 16; basic_type = -1; return 25;
+    case UE8M0X2_TYPE:
+      size = 16; basic_type = -1; return 26;
+    case E2M1X2_TYPE:
+      size = 8; basic_type = -1; return 27;
     case BF16X2_TYPE:
       size = 32;
       basic_type = -1;

@@ -34,6 +34,7 @@
 
 #include "instructions.h"
 #include "../gpgpu-sim/flash/ptx_bfloat_conversion.h"
+#include "../gpgpu-sim/flash/ptx_narrow_conversion.h"
 #include "../gpgpu-sim/flash/mma/mma_trace.h"
 #include "../gpgpu-sim/flash/mma/tensor_mma.h"
 #include "half.h"
@@ -3551,6 +3552,7 @@ void ptx_saturate(ptx_reg_t &data, int saturation_mode, int type) {
 }
 
 void cvt_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (flash_gpgpu_sim::execute_ptx_narrow_cvt(pI, thread)) return;
   if (flash_gpgpu_sim::execute_ptx_bfloat_cvt(pI, thread)) return;
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();

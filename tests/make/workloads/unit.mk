@@ -502,3 +502,6 @@ $(OBJ_DIR)/sm100/unit/ptx_memory_forms_test.cc.o: \
   ../src/cuda-sim/ptx_ir.h $(UNIT_MK)
 $(OBJ_DIR)/sm100/unit/shared_bulk_test.cc.o: \
   ../src/gpgpu-sim/flash/shared_bulk.h
+
+$(OBJ_DIR)/sm100/unit/narrow_conversion_test.cc.o: \
+  ../src/gpgpu-sim/flash/narrow_conversion.h ../src/gpgpu-sim/flash/bfloat_conversion.h

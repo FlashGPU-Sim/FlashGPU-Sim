@@ -624,6 +624,7 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
     case U8_TYPE:
     case E4M3_TYPE:
     case E5M2_TYPE:
+    case E2M1X2_TYPE:
       g_size = 1;
       break;
     case B16_TYPE:
@@ -631,6 +632,8 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
     case U16_TYPE:
     case F16_TYPE:
     case BF16_TYPE:
+    case E4M3X2_TYPE:
+    case UE8M0X2_TYPE:
       g_size = 2;
       break;
     case B32_TYPE:

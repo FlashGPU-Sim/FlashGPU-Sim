@@ -5,6 +5,9 @@ config = "SM100_B200"
 [workloads]
 sources = [
   "mov_pack/launch_test.cu",
+  "unit/narrow_conversion_test.cc",
+  "unit/sass/functional/scalar_conversion_test.cc",
+  "narrow_conversion/launch_test.cu",
   "memory_forms/launch_test.cu",
   "unit/shared_bulk_test.cc",
   "unit/sass/functional/memory_forms_test.cc",
