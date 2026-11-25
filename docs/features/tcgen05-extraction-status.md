@@ -106,9 +106,9 @@ A read-only check against public `flash` at `b3378cb9` confirms that the
 production patches for the following candidates apply without the TCGen05
 feature stack: signed-byte load extension (`7638a273`), aliased shuffle source
 snapshot (`58c96a6f`), negated CTA reduction predicates (`c0122c3d`), and suspended
-barrier wakeup (`55178b4e`). This proves patch applicability only. Each still
-needs its own reproducer, before/after execution and CI on the public base.
-Their existing integration fixtures must not be presented as public-main tests.
+barrier wakeup (`55178b4e`). Applicability alone is not qualification; the
+independent public-base results below supply separate before/after evidence.
+Private integration fixtures must not be presented as public-main tests.
 
 Signed-byte loads now have independent public-base evidence: private branch
 `fix/ptx-signed-byte-load-public` contains a test-only commit `6cae27c3` and
@@ -132,6 +132,16 @@ Negated CTA reduction predicates now have independent public-base evidence on
 and pass after using the same executable, with unchanged cycles (5482, 5367).
 The fixtures exercise popc/and/or and all/none/partial predicates. Evidence is
 under `runs/public-cta-reduction-20261125/`; only local SM100 is qualified.
+
+Asynchronous barrier wakeup is qualified on private branch
+`fix/ptx-mbarrier-async-wakeup-public`: test-only commits `6885d9c1` and
+`ff6830bb`, fix `56051b88`. Remote bulk and tensor TMA each complete all initial
+transactions but deadlock with the public baseline's sleeping owner warp.
+The same executable/configuration passes all eight transfer rounds after the
+fix, in 10491 and 10453 cycles. Two local CTA controls pass before and after.
+These tests use ordinary TMA, with no TCGen05 dependency. Evidence:
+`runs/public-mbarrier-wakeup-20261125/qualification.json`. Existing SM90 cluster
+CI selects the new remote tests; only local SM100 execution is qualified here.
 
 Tensor-coordinate literals (`85f3e067`) need an explicit port: the private
 parser context includes the separate narrow mov-pack extension, and its rank
