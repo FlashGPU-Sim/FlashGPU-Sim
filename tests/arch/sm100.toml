@@ -4,6 +4,7 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "signed_load/launch_test.cu",
   "unit/sass/timing/shared_atomic_test.cc",
   "shared_popc/launch_test.cu",
   "unit/native_cluster_metadata_test.cc",

@@ -324,3 +324,10 @@ cuda = "13.3"
 tests = [
   { name = "shared-popc-dual-launch", group = "unit", gtest_filter = "SassTimingProjectionTest.ProjectsPopcIncrementWithSharedAtomicProxy", post_check = "tests/ci/check_shared_popc_dual.py" },
 ]
+
+[jobs.sm100-signed-byte-load]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "signed-byte-load-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_signed_load.py" },
+]
