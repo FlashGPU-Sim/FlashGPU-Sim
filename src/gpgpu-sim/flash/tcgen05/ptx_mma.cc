@@ -35,7 +35,7 @@ static bool tcgen05_read_enable_input_d(const operand_info &op,
       op.get_symbol()->type()->get_key().scalar_type() == PRED_TYPE) {
     ptx_reg_t predicate =
         thread->get_operand_value(op, op, PRED_TYPE, thread, 1);
-    return (predicate.pred & 0x1) == 0;
+    return ((predicate.pred & 0x1) == 0) != op.is_neg_pred();
   }
 
   ptx_reg_t value = thread->get_operand_value(op, op, B32_TYPE, thread, 1);

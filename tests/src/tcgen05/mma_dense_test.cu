@@ -16,7 +16,8 @@ enum PatternFlags : unsigned {
   kSwizzle64 = 64,
   kSwizzle128 = 96,
   kSwizzle128Atom32 = 128,
-  kShiftBase = 256
+  kShiftBase = 256,
+  kNegatedAccumulatorPredicate = 512
 };
 float pattern_a(unsigned row, unsigned k, bool half_output) {
   float value = float((row % 3 + 1 + row / 64) * (k % 2 + 1));
@@ -107,7 +108,15 @@ __global__ void dense_patterns(const unsigned char *input, float *output) {
       " [%0],%1,%2,%3,p; }" ::"r"(destination),                              \
       "l"(ad), "l"(bd), "r"(desc)                                            \
       : "memory")
-    if constexpr (WS) {
+    if constexpr (Flags & kNegatedAccumulatorPredicate) {
+      static_assert(Kind < 2 && !WS && !TmemA);
+      asm volatile(
+          "{ .reg .pred p; mov.pred p,1; "
+          "tcgen05.mma.cta_group::1.kind::f16 [%0],%1,%2,%3,!p; "
+          "mov.pred p,0; "
+          "tcgen05.mma.cta_group::1.kind::f16 [%0],%1,%2,%3,!p; }"
+          :: "r"(destination), "l"(ad), "l"(bd), "r"(desc) : "memory");
+    } else if constexpr (WS) {
       if constexpr (TmemA) {
         asm volatile(
             "{ .reg .pred p; mov.pred p,0; "
@@ -246,6 +255,10 @@ void check_dense() {
       }
   EXPECT_EQ(cudaFree(in), cudaSuccess);
   EXPECT_EQ(cudaFree(out), cudaSuccess);
+}
+TEST(Tcgen05Mma, NegatedAccumulatorPredicate) {
+  check_dense<0, 64, 16, false, false, kNegatedAccumulatorPredicate>();
+  check_dense<1, 128, 16, false, false, kNegatedAccumulatorPredicate>();
 }
 TEST(Tcgen05Mma, DenseF16PatternsAndAccumulation) {
   check_dense<0, 64>();
