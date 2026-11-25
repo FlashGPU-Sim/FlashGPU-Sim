@@ -181,7 +181,7 @@ an applicable patch is not a public-base test result.
 | Dynamic cached-load dependency tokens | `4a8c7b28` | Patch applies; independent qualification pending |
 | Leading-bit boundaries | `94ec143f` | Separate common arithmetic from native adapter additions |
 | Shared-store visibility at fences | `413e4c56` | Patch applies; independent qualification pending |
-| Typeless trap/brkpt predecode | `b4a45d47` | Public-base reproducer preparation underway |
+| Typeless trap/brkpt predecode | `b4a45d47` | Qualified independently at `0ca9132d` |
 | Vector modifier order | `8b716c37` | Patch applies; independent qualification pending |
 | Full-width integer constants | `0b9b4586` | Patch applies; independent qualification pending |
 | Invalid tensor-map diagnostic bounds | `0c2dd8ae` | Patch applies; independent qualification pending |
@@ -189,6 +189,12 @@ an applicable patch is not a public-base test result.
 
 The patch checks and touched files are recorded in workspace
 `runs/tcgen-functional-branches-20261125/additional-public-fix-audit.json`.
+The typeless-control candidate is now qualified on
+`fix/ptx-typeless-control-public`: both unexecuted control-opcode fixtures assert
+on public main and pass predecode with the same binary after the correction.
+Actual trap execution behavior is unchanged. Evidence:
+`runs/public-typeless-control-20261125/qualification.json`. The remaining nine
+candidates still require independent qualification or a narrower public port.
 
 The negated accumulator predicate correction (`987680ef`) is different: it is
 inside the new TCGen05 MMA adapter and has already been folded into the MMA
