@@ -1233,6 +1233,8 @@ public:
  // ISA-neutral asynchronous operation. Native adapters populate this before
  // issue; PTX is normalized by flash/tcgen05 alongside its option decoder.
  struct tcgen05_static_info_t {
+   bool pipeline_tmem_load =
+       false;  // Dynamic issue: completes via FU writeback.
    enum operation_t {
      NONE,
      MMA,

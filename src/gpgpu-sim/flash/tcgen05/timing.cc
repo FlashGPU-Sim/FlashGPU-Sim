@@ -199,7 +199,8 @@ tcgen05_unit_t::schedule_mma(const tcgen05_thread_stream_key_t &stream,
 
 uint64_t
 tcgen05_unit_t::enqueue_warp_mem_op(const tcgen05_warp_stream_key_t &stream,
-                                    const tcgen05_op_t &op, uint64_t cycle) {
+                                    const tcgen05_op_t &op, uint64_t cycle,
+                                    uint64_t pipeline_completion_tag) {
   assert(op.kind == TCGEN05_TIMING_LD || op.kind == TCGEN05_TIMING_ST);
   assert(op.completion_latency > 0 && op.initiation_interval > 0);
   assert(
@@ -212,7 +213,10 @@ tcgen05_unit_t::enqueue_warp_mem_op(const tcgen05_warp_stream_key_t &stream,
   pending.warp_stream = stream;
   pending.kind = op.kind;
   pending.sequence = ++sequences[stream];
-  pending.backend_done_cycle = cycle + op.completion_latency;
+  pending.pipeline_completion_tag = pipeline_completion_tag;
+  pending.backend_done_cycle = pipeline_completion_tag
+                                   ? std::numeric_limits<uint64_t>::max()
+                                   : cycle + op.completion_latency;
   pending.completion_cycle = pending.backend_done_cycle;
   if (op.partitioned_mem)
     m_mem_next_issue[stream.partition] = cycle + op.initiation_interval;
@@ -223,6 +227,18 @@ tcgen05_unit_t::enqueue_warp_mem_op(const tcgen05_warp_stream_key_t &stream,
   m_stats.max_queue_occupancy =
       std::max<unsigned>(m_stats.max_queue_occupancy, m_pending_ops.size());
   return pending.sequence;
+}
+
+void tcgen05_unit_t::complete_warp_mem_op(uint64_t tag, uint64_t cycle) {
+  assert(tag != 0);
+  for (auto &pending : m_pending_ops) {
+    if (!pending.thread_scoped && pending.pipeline_completion_tag == tag) {
+      assert(pending.completion_cycle == std::numeric_limits<uint64_t>::max());
+      pending.backend_done_cycle = pending.completion_cycle = cycle;
+      return;
+    }
+  }
+  assert(false && "TMEM pipeline completion must match a pending operation");
 }
 
 void tcgen05_unit_t::commit(const tcgen05_thread_stream_key_t &stream,

@@ -2318,6 +2318,18 @@ class shader_core_config : public core_config {
           tcgen05_st_completion_latency[i] == 0 ||
           tcgen05_st_initiation_interval[i] == 0)
         abort();
+      if (gpgpu_tmem_b200_load_timing) {
+        if (tcgen05_ld_initiation_interval[i] >
+                tcgen05_ld_completion_latency[i] ||
+            tcgen05_ld_completion_latency[i] >= 512) {
+          fprintf(stderr,
+                  "Invalid TMEM pipeline timing: require 0 < II <= latency < "
+                  "512\n");
+          abort();
+        }
+        max_tensor_core_latency =
+            std::max(max_tensor_core_latency, tcgen05_ld_completion_latency[i]);
+      }
     }
 
     // CRITICAL: Validate number of SMs against MAX_STREAMING_MULTIPROCESSORS

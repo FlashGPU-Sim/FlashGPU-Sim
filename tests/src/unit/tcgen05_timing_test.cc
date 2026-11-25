@@ -376,3 +376,42 @@ TEST(Tcgen05TimingTest, PairedBusyAccountingDoesNotDependOnSmCycleOrder) {
   EXPECT_EQ(a.stats().backend_busy_cycles, 10u);
   EXPECT_EQ(b.stats().backend_busy_cycles, 10u);
 }
+
+TEST(Tcgen05TimingTest, PipelineTmemWaitCannotCompleteAtSchedulerDeadline) {
+  tcgen05_unit_t unit(config());
+  const auto s = warp_stream();
+  unit.enqueue_warp_mem_op(s, memory_op(TCGEN05_TIMING_LD, 11), 100, 1);
+  EXPECT_FALSE(unit.wait_ld(s));
+  unit.cycle(
+      111);  // Original scheduler-relative completion would be premature.
+  EXPECT_TRUE(unit.take_completion_events().empty());
+  unit.complete_warp_mem_op(
+      1, 116);  // Actual operand/execute/writeback completion.
+  unit.cycle(116);
+  ASSERT_EQ(unit.take_completion_events().size(), 1u);
+  EXPECT_EQ(unit.stats().completed[TCGEN05_TIMING_LD], 1u);
+}
+
+TEST(Tcgen05TimingTest, PipelineTmemCompletionPreservesWarpAndWaitCutoff) {
+  tcgen05_unit_t unit(config());
+  const auto a = warp_stream(0, 0), b = warp_stream(0, 1);
+  unit.enqueue_warp_mem_op(a, memory_op(TCGEN05_TIMING_LD, 11), 0, 10);
+  EXPECT_FALSE(unit.wait_ld(a));
+  unit.enqueue_warp_mem_op(a, memory_op(TCGEN05_TIMING_LD, 11), 1, 11);
+  unit.enqueue_warp_mem_op(b, memory_op(TCGEN05_TIMING_LD, 11), 2, 12);
+  EXPECT_FALSE(unit.wait_ld(b));
+  unit.complete_warp_mem_op(11,
+                            16);  // Out of order completion cannot release a.
+  unit.cycle(16);
+  EXPECT_TRUE(unit.take_completion_events().empty());
+  unit.complete_warp_mem_op(10, 17);
+  unit.cycle(17);
+  auto events = unit.take_completion_events();
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].warp_id, 0u);
+  unit.complete_warp_mem_op(12, 18);
+  unit.cycle(18);
+  events = unit.take_completion_events();
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].warp_id, 1u);
+}

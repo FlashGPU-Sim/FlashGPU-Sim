@@ -97,7 +97,9 @@ public:
                              tcgen05_unit_t *peer = nullptr,
                              std::function<uint64_t(uint64_t)> feed = {});
   uint64_t enqueue_warp_mem_op(const tcgen05_warp_stream_key_t &stream,
-                               const tcgen05_op_t &op, uint64_t cycle);
+                               const tcgen05_op_t &op, uint64_t cycle,
+                               uint64_t pipeline_completion_tag = 0);
+  void complete_warp_mem_op(uint64_t pipeline_completion_tag, uint64_t cycle);
 
   void commit(const tcgen05_thread_stream_key_t &stream, uint32_t mbarrier_addr,
               uint16_t multicast_mask = 0);
@@ -120,6 +122,7 @@ private:
     uint64_t sequence = 0;
     uint64_t backend_done_cycle = 0;
     uint64_t completion_cycle = 0;
+    uint64_t pipeline_completion_tag = 0;
   };
 
   struct pending_commit_t {
