@@ -12,6 +12,11 @@ void check_literals(const std::vector<std::pair<std::string, unsigned long long>
                     const char *name) {
   auto *ctx = GPGPU_Context();
   GPGPUSim_Context(ctx);
+  // Exercise our lexer, including invalid input, before any external assembler.
+  const bool reorder = ctx->ptx_reorder_enabled;
+  const bool guided = ctx->ptx_reorder_sass_guided;
+  ctx->ptx_reorder_enabled = false;
+  ctx->ptx_reorder_sass_guided = false;
   const std::string path = std::string(name) + ".ptx";
   {
     std::ofstream f(path);
@@ -22,6 +27,8 @@ void check_literals(const std::vector<std::pair<std::string, unsigned long long>
     ASSERT_TRUE(f.good());
   }
   auto *symbols = ctx->gpgpu_ptx_sim_load_ptx_from_filename(path.c_str());
+  ctx->ptx_reorder_enabled = reorder;
+  ctx->ptx_reorder_sass_guided = guided;
   std::remove(path.c_str());
   ASSERT_NE(symbols, nullptr);
   auto *func = symbols->lookup_function(name);
