@@ -9,6 +9,7 @@ sources = [
   # Portable integration tests.
   "integration/address_operand_test.cu",
   "integration/vector_operand_test.cu",
+  "integration/call_ownership_test.cu",
   "integration/integer_multiply_test.cu",
   "integration/float_minmax_three_input_test.cu",
   "integration/vector_add_test.cu",
