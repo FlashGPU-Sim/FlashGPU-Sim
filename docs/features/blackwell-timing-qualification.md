@@ -58,7 +58,8 @@ Each run records frozen runtime/configuration and executable provenance.
   reproduced PTX lane-1 hang.
 * Initial integration: 50 numerical tests / 91 launches per frontend pass
   (TMEM 14/18, MMA 25/52, paired CTA 5/15, collectors 6/6).
-* Host timing tests cover exact type lookup, unknown-profile fallback, owner
+* 172 focused host component tests pass, including 19 timing tests. They cover
+  exact type lookup, unknown-profile fallback, owner
   admission, peer reservation, overlap, partition-local TMEM, packed-byte
   accounting and shared-half contention.
 * Archived mixed FP4 x FP8 and compact FP4 probes reproduce the measured
@@ -69,14 +70,19 @@ Each run records frozen runtime/configuration and executable provenance.
   binaries exactly. Whole ELF hashes differ because of build metadata.
 * Ordinary TMEM dependent-loop slopes for x1/x8/x32/x64 are 39/42/54/70,
   versus hardware 44/47/59/75. Width-dependent increments agree; a fixed
-  five-cycle loop/control difference remains. Do not hide it in a new
-  transfer-specific latency adjustment.
+  five-cycle dependent-loop difference remains. The old fit measures execution
+  pipeline latency, while this engine schedules asynchronous completion from
+  frontend issue; the timing origins need further isolation before refitting.
 * CLC successful response is 277 cycles versus hardware 289.9 (-4.45%);
   zero added delay gives 64 cycles. This is not the old private 289-cycle
-  result. Failed/concurrent CLC responses are not independently calibrated.
+  result. A controlled override of the old `gpgpu_mbarrier_trywait_latency=44`
+  (current preset: 32) restores **289 cycles**, locating the 12-cycle difference
+  in barrier/control timing rather than the CLC delivery setting. No unrelated
+  barrier default is changed. Failed/concurrent responses remain uncalibrated.
 * All 12 shared experiments pass numerics after fixing duplicated LDS service.
-  Mixed LDS worker durations are within 1% of the retained native same-half
-  and opposite-half measurements. Pure MMA QK/PV still differs by roughly
+  Mixed LDS worker durations (sim/native): QK same-half 49191/49370,
+  QK opposite-half 32838/33044, PV same-half 90161/90394, PV opposite-half
+  49224/49412; errors range from -0.62% to -0.26%. Pure MMA QK/PV still differs by roughly
   -15%/-7%; successful read-port calibration does not remove that separate gap.
   The final-head numerical gates are recorded separately in the evidence report.
 
