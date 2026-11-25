@@ -1,5 +1,10 @@
 # WS B zero-column mask and shift qualification
 
+The [2026-11-25 B200 capture](blackwell-ws-native-validation.md) supersedes
+the historical hardware-pending statements below. It also corrects the
+out-of-span start-count oracle. Earlier simulator-only gates remain recorded
+with their original scope and counts.
+
 This follow-up on `feature/blackwell-timing-qualification` extends Blackwell
 M64, K16, single-CTA FP16/BF16 WS MMA. It does not enable Rubin collectors or
 claim support for every WS datatype and layout. Public PRs remain unsubmitted.
