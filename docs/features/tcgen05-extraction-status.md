@@ -176,11 +176,11 @@ an applicable patch is not a public-base test result.
 
 | Candidate | Integration commit | Public-base preparation |
 |---|---|---|
-| 32-byte per-lane coalescing | `957a0caa` | Patch applies; independent qualification pending |
-| Funnel-shift boundaries | `ee68caee` | Separate common arithmetic from native adapter additions |
+| 32-byte per-lane coalescing | `957a0caa` | Feature-owned prerequisite in `feature/blackwell-memory-forms` |
+| Funnel-shift boundaries | `ee68caee` | Public PTX/common primitive qualified at `ce1e3aee`; new SASS forms stay in feature |
 | Dynamic cached-load dependency tokens | `4a8c7b28` | Patch applies; independent qualification pending |
 | Leading-bit boundaries | `94ec143f` | Separate common arithmetic from native adapter additions |
-| Shared-store visibility at fences | `413e4c56` | Patch applies; independent qualification pending |
+| Shared-store visibility at fences | `413e4c56` | Qualified independently at `53225c29` |
 | Typeless trap/brkpt predecode | `b4a45d47` | Qualified independently at `0ca9132d` |
 | Vector modifier order | `8b716c37` | Qualified independently at `1da2dcef` |
 | Full-width integer constants | `0b9b4586` | Qualified independently at `7463cec0` |
@@ -193,8 +193,8 @@ The typeless-control candidate is now qualified on
 `fix/ptx-typeless-control-public`: both unexecuted control-opcode fixtures assert
 on public main and pass predecode with the same binary after the correction.
 Actual trap execution behavior is unchanged. Evidence:
-`runs/public-typeless-control-20261125/qualification.json`. The remaining five
-candidates still require independent qualification or a narrower public port.
+`runs/public-typeless-control-20261125/qualification.json`. Two candidates (leading-bit boundaries and cached-load completion) still
+require independent qualification; the coalescer extension belongs to its feature.
 
 Two parser candidates are now independently qualified against public main:
 `fix/ptx-integer-literals-public` (`7463cec0`) fixes full-width decimal
@@ -219,6 +219,28 @@ and three PTX isolation tests pass. Evidence is under
 `runs/public-tensormap-diagnostic-20261125/`. Both are pushed privately.
 The independently qualified public-fix set is now eleven; five candidates
 remain, and hosted CI/public PR preparation is not claimed complete.
+
+The latest independent set contains thirteen fixes. Funnel-shift boundary
+handling is qualified at `ce1e3aee`: four existing PTX forms across counts
+0..127 check all 512 output words; the same executable fails before and passes
+after. New SASS registrations are excluded from that public fix, while their
+feature adapter uses the same primitive. Shared-store fence visibility is
+qualified at `53225c29`: ordinary and SC CTA fences prematurely pass in 9 cycles
+under an artificial 512-cycle visibility setting, then respect the bound after
+the fix. Three ordinary PTX controls retain cycles 5317/5323/5331. A dedicated
+CI post-check runs the real numerical timing tests without allowing skips;
+that post-check, not hosted CI, passed locally. Evidence is under
+`runs/public-funnel-shift-20261125/` and `runs/public-shared-fence-20261125/`.
+Both independent branches are pushed to private dev only.
+
+The 32-byte coalescer extension is not an independently reproduced public
+frontend defect. Public PTX vector extents remain separate from scalar
+`data_size`, and the public native timing adapter has no `.256` width case.
+The new native `.256` memory forms require `data_size=32` and already contain
+this extension with component and dual-launch tests. It remains with
+`feature/blackwell-memory-forms`; a synthetic 32-byte instantiation alone does
+not justify labeling it a public frontend regression. See
+`runs/tcgen-functional-branches-20261125/coalescer-feature-ownership.json`.
 
 The negated accumulator predicate correction (`987680ef`) is different: it is
 inside the new TCGen05 MMA adapter and has already been folded into the MMA
