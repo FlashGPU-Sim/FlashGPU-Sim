@@ -77,10 +77,10 @@ recorded in `runs/feature-series-20261115/deepinfer-dual-frontend-manifest-v13.j
 |---|---:|---|
 | Strict GPU equality | 67 | Full retained checker passes |
 | Unchanged prior numerical residual | 46 | Complete sparse GPU difference equals the prior accepted residual |
-| Reviewed dispatch permutation | 3 | PTX L2/L3 and SASS L3; proof described below |
-| Still running | 1 | SASS L2 MoE; not accepted yet |
+| Reviewed dispatch permutation | 4 | PTX and SASS L2/L3; proof described below |
+| Running / unresolved new failures | 0 | All selected results completed and reviewed |
 
-For the three reviewed MoEs, final output/statistics and all eight remote
+For the four reviewed MoEs, final output/statistics and all eight remote
 combine buffers are byte-identical to the retained reference. All 3072
 expert/source-rank token lists preserve their multisets. Aligning active rows
 by `(source rank, token, topk)` within each expert makes token data, routing
@@ -144,13 +144,19 @@ The initial SM100 decoder rejection in the latter audit occurred before kernel
 execution and is excluded from bug evidence. Ownership records are in
 `additional-public-fix-audit.json` and the candidate-specific reports.
 
-## Remaining before submission
+## Preparation completion and later submission
 
-1. Finish SASS L2 MoE and review its full numerical result.
-2. Use each functional branch's exact dependency and qualification matrix when
-   preparing a PR; do not import unrelated private research configurations.
-3. If production code changes, rerun the affected complete-launch gates and
-   appropriate ordinary PTX isolation checks. Current documentation-only commits
-   retain verified identity with the qualified source/test/config trees.
-4. Obtain user instruction before publishing these prepared PRs. This work only
-   organizes and validates the private branches.
+Private preparation is complete for the functional units and qualification
+matrix above. The final SASS L2 MoE has the same verified dispatch-permutation
+classification: 1,408,315 changed tracked words are fully classified, final and
+remote-combine outputs are unchanged, and all active intermediates match after
+metadata alignment. No selected acceptance entry remains running or unreviewed.
+The acceptance still uses frozen repair runtimes, retains the original GPU
+residuals, and excludes the unavailable internal SGEMM PTX entry.
+
+Before a later public submission, use each functional branch's exact dependency
+and qualification matrix; do not import unrelated research configurations. If
+production code changes, rerun the affected complete-launch gates and appropriate
+ordinary PTX isolation checks. Current documentation-only commits retain verified
+identity with the qualified source/test/config trees. Public submission and
+hosted PR CI remain separate future actions; no PR is opened by this preparation.
