@@ -3,6 +3,6 @@
 from tcgen05_dual import run_suite
 
 if __name__ == "__main__":
-    run_suite("DriverTma.*:TmaTensorCluster.*", 10, 35, cluster_validation=True, group="driver_tma")
+    run_suite("DriverTma.*:TmaTensorCluster.*", 11, 38, cluster_validation=True, group="driver_tma")
 
     run_suite("SharedAddress.*", 1, 1, cluster_validation=True, group="shared_address")

@@ -66,6 +66,13 @@ __global__ void driver_map_copy(const __grid_constant__ DriverMap source,
             "[%0,{x,y}],[%1]; }" ::"l"(&destination),
             "r"(smem)
             : "memory");
+      if constexpr (Rank == 3)
+        asm volatile(
+            "{ .reg .b32 x,y; mov.u32 x,0; mov.u32 y,1; "
+            "cp.async.bulk.tensor.3d.global.shared::cta.bulk_group "
+            "[%0,{x,y,y}],[%1]; }" ::"l"(&destination),
+            "r"(smem)
+            : "memory");
       if constexpr (Rank == 4)
         asm volatile(
             "{ .reg .b32 x,y; mov.u32 x,0; mov.u32 y,1; "
@@ -166,4 +173,12 @@ TEST(DriverTma, StoreRoundtrip) {
   check_driver<2, true>(0x264510, 2, 64);
   check_driver<4, true>(0x266030, 1, 128);
   check_driver<5, true>(0x2663c0, 4, 128);
+}
+
+TEST(DriverTma, Store3DRoundtrip) {
+  // Byte/halfword/word elements, distinct source/destination, nonzero 3D
+  // origin and untouched output guards. Swizzled and linear shared layouts.
+  check_driver<3, true>(0x240020, 1, 0);
+  check_driver<3, true>(0x266520, 2, 128);
+  check_driver<3, true>(0x2663a0, 4, 128);
 }

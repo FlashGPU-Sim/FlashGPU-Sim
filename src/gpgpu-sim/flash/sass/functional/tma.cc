@@ -503,6 +503,7 @@ step_result execute_utmastg(const instruction &inst, warp_state &state,
   const bool reduce_add = inst.opcode == "UTMAREDG.2D.ADD";
   const unsigned rank = inst.opcode == "UTMASTG.1D"   ? 1
                         : inst.opcode == "UTMASTG.2D" ? 2
+                        : inst.opcode == "UTMASTG.3D" ? 3
                         : inst.opcode == "UTMASTG.4D" ? 4
                         : inst.opcode == "UTMASTG.5D" ? 5
                         : reduce_add                  ? 2
@@ -593,6 +594,11 @@ step_result execute_utmastg(const instruction &inst, warp_state &state,
                                 sizeof(raw_words));
           decoded = decode_flashgpu_host_tensor_map_4d(host_words);
         }
+        if (!decoded.supported)
+          return unsupported(inst, decoded.detail);
+        tensor_map = load_view(decoded.descriptor);
+      } else if (rank == 3) {
+        const auto decoded = decode_sm120_tensor_map_3d(raw_words);
         if (!decoded.supported)
           return unsupported(inst, decoded.detail);
         tensor_map = load_view(decoded.descriptor);
@@ -996,6 +1002,7 @@ void register_tma_semantics(frontend &target) {
           "UTMALDG." + std::to_string(rank) + "D" + suffix, execute_utmaldg);
   target.register_semantics("UTMASTG.1D", execute_utmastg);
   target.register_semantics("UTMASTG.2D", execute_utmastg);
+  target.register_semantics("UTMASTG.3D", execute_utmastg);
   target.register_semantics("UTMASTG.4D", execute_utmastg);
   target.register_semantics("UTMASTG.5D", execute_utmastg);
   target.register_semantics("UTMAREDG.2D.ADD", execute_utmastg);
