@@ -125,6 +125,9 @@ _llama3_layer_matmul_residual_tile))
 
 TEST_GROUP_EXTRA_PREREQUISITES_sm100_unit := $(UNIT_MK)
 
+$(OBJ_DIR)/sm100/unit/tcgen05_collector_test.cc.o: \
+  $(SRC_DIR)/gpgpu-sim/flash/tcgen05/ws_mask.h
+
 # These host tests include simulator headers outside TEST_HEADERS. Keep their
 # object layouts in lockstep with the production types they exercise so an
 # incremental build cannot link stale test objects.

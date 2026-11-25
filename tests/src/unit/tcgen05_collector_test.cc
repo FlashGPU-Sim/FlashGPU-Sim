@@ -182,3 +182,23 @@ TEST(Tcgen05WsMask, RejectionDoesNotAlterOperandOrCollector) {
   ASSERT_TRUE(state.apply(0, {0, Op::use}, shape, values));
   EXPECT_EQ(values, previous);
 }
+
+TEST(Tcgen05WsMask, B200StartCountSaturatesWithinFirstSpan) {
+  // Apply the native B200 first-span clamp to unequal skip/use spans.
+  // First span is one column; subsequent spans retain their full length.
+  const char *bits[] = {"01110000000111", "10000000111000"};
+  for (unsigned m : {32u, 64u, 128u}) {
+    const unsigned width = 128 / (128 / m);
+    for (unsigned fs : {0u, 1u}) {
+      for (unsigned start : {7u, 63u, 64u, 254u, 255u}) {
+        uint64_t raw = (1ull << 39) | (2ull << 40) | (6ull << 48);
+        for (unsigned part = 0; part < 128 / m; ++part)
+          raw |= (uint64_t(start) << (8 * part)) | (uint64_t(fs) << (32 + part));
+        for (unsigned part = 0; part < 128 / m; ++part)
+          for (unsigned col = 0; col < 14; ++col)
+            EXPECT_EQ(tcgen05_ws_zero_column(raw, m, 128, part * width + col),
+                      bits[fs][col] == '1');
+      }
+    }
+  }
+}

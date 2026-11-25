@@ -20,12 +20,12 @@ is still required. The collector neither sets application clocks nor shuts down
 the server. Native samples use the current GPU clock policy; NCU explicitly uses
 `--clock-control base`. NCU replay timestamps never enter native timing summaries.
 
-Numerics run first: eleven tests, FP16/BF16, N64/128/256, shared/TMEM A,
+Numerics run first: twelve tests, FP16/BF16, N64/128/256, shared/TMEM A,
 transposed B, masks changed after fill, 8/16/32-column shifts, all four collector
 slots, two CTAs and two rounds. CUTLASS SW128 descriptors/layouts replace the
 hand-written nonswizzled test layout. Entire shared allocations are initialized.
 The oracle evaluates logical A/B independently of either simulator or CUTLASS
-address arithmetic. All eleven must pass before performance collection starts.
+address arithmetic. All twelve must pass before performance collection starts.
 This is a separately built native fixture, not the old CI cubin.
 
 Timing fixes M64/N128/K16 BF16, K-major B, one owner, one accumulator. Matrix:
@@ -46,9 +46,14 @@ burst one contains only a fill. Each timing run checks all 8192 output values.
 No claim is made about cold collector latency, multiple independent owners,
 other N/type timing, or contention with ordinary TMEM traffic.
 
-All 48 burst-128 cases get NCU `--set full` with eight retained rounds; the eleven
+All 48 burst-128 cases get NCU `--set full` with eight retained rounds; the twelve
 numerical kernels get another full report. Raw logs, commands, `.ncu-rep`, CSV,
 GPU state, binaries and source hashes are retained. `timing.csv` and `slopes.json`
 use only numerically passing, unprofiled samples. The 32-to-128 slope divides by
 96 actual MMA instructions. An unsuccessful native validation is a failure,
 not a timing result. Use `--dry-run` to inspect the complete matrix without GPU.
+
+B200 start-count boundary: the first span retains at least one column; an
+out-of-span start does not wrap into the opposite span. The native boundary
+case covers unequal spans, both initial bits, shared/TMEM A and N128/256.
+This behavior was measured on B200; PTX's examples only specify in-span starts.

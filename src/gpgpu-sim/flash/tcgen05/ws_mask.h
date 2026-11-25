@@ -30,7 +30,12 @@ inline bool tcgen05_ws_zero_column(uint64_t raw, unsigned m, unsigned n,
   const bool first_zero = (raw >> (32 + segment)) & 1;
   const unsigned zeros = ((raw >> 40) & 255) + 1;
   const unsigned uses = ((raw >> 48) & 255) + 1;
-  const unsigned position = (col % width + start) % (zeros + uses);
+  // B200 clamps an oversized start count within the first span: at least
+  // one column of that span remains. It does not wrap the start through
+  // the whole pattern (native WS mask/collector boundary probes).
+  const unsigned last_in_first = (first_zero ? zeros : uses) - 1;
+  const unsigned offset = start < last_in_first ? start : last_in_first;
+  const unsigned position = (col % width + offset) % (zeros + uses);
   return first_zero ? position < zeros : position >= uses;
 }
 // Collector storage retains the unmodified N+max_shift source columns.

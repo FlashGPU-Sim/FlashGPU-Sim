@@ -147,8 +147,16 @@ __global__ void ws_collectors(float *out, unsigned long long mask0 = 0,
 bool zero_column(unsigned long long mask, unsigned col, unsigned n) {
   if (!(mask & (1ull << 39))) return false;
   const unsigned part = col / (n / 2);
-  unsigned skip = ((mask >> (8 * part)) & 255) + col % (n / 2);
+  const unsigned start = (mask >> (8 * part)) & 255;
   bool zero = (mask >> (32 + part)) & 1;
+  const unsigned first_run = ((mask >> (zero ? 40 : 48)) & 255) + 1;
+  // B200 preserves at least one column of the first span, even when the
+  // start-count exceeds it. It does not skip into subsequent spans.
+  unsigned remaining = col % (n / 2);
+  const unsigned initial = start < first_run ? first_run - start : 1;
+  if (remaining < initial) return zero;
+  unsigned skip = remaining - initial;
+  zero = !zero;
   for (;;) {
     const unsigned run = ((mask >> (zero ? 40 : 48)) & 255) + 1;
     if (skip < run) return zero;

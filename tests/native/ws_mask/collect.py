@@ -39,7 +39,7 @@ def main():
     a = ap.parse_args()
     plan = matrix()
     if a.dry_run:
-        print(json.dumps(dict(numerical_tests=11, timing_cases=len(plan),
+        print(json.dumps(dict(numerical_tests=12, timing_cases=len(plan),
                               ncu_timing_cases=sum(c['profile'] for c in plan),
                               plan=plan), indent=2))
         return
@@ -83,8 +83,8 @@ def main():
         if not a.skip_ncu:
             run([a.ncu, '--version'], out / 'ncu-version.log')
         run([str(package / 'bin/ws_numerics')], out / 'numerics.log', 180)
-        if '[  PASSED  ] 11 tests.' not in (out / 'numerics.log').read_text():
-            raise RuntimeError('all eleven numerical cases must pass before timing')
+        if '[  PASSED  ] 12 tests.' not in (out / 'numerics.log').read_text():
+            raise RuntimeError('all twelve numerical cases must pass before timing')
         state['numerical_pass'] = True
         if not a.skip_ncu:
             nd = out / 'numerics-ncu'
