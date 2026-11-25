@@ -143,12 +143,18 @@ These tests use ordinary TMA, with no TCGen05 dependency. Evidence:
 `runs/public-mbarrier-wakeup-20261125/qualification.json`. Existing SM90 cluster
 CI selects the new remote tests; only local SM100 execution is qualified here.
 
-Tensor-coordinate literals (`85f3e067`) need an explicit port: the private
-parser context includes the separate narrow mov-pack extension, and its rank
-validation references `GATHER4_OPTION`, which is absent from this public base.
-A public ordinary-TMA fix must preserve public mov-pack behavior and qualify
-ordinary rank-1..5 coordinates; gather4 validation belongs in the dependent
-feature. Do not transplant the integration parser hunk wholesale.
+Tensor-coordinate literals now have an explicit public-base port on
+`fix/ptx-tensor-coordinate-literals-public`: test-only commits `6610e2bb` and
+`904c5e6e`, fix `45737136`. The original integration patch (`85f3e067`) cannot
+be transplanted wholesale: its context includes narrow mov-pack support and
+gather4 validation absent from public main. The isolated port retains public
+mov.b64 behavior and handles ordinary tensor rank-1..5 coordinates. Two host
+tests cover ten load/store forms plus invalid operands; a CUDA tensor load and
+three vector/pack controls pass. Frozen positive fixtures abort on the public
+baseline and pass after the fix. Gather4 validation stays in its dependent
+feature. Evidence: `runs/public-tensor-coordinates-20261125/qualification.json`.
+All five independent public fixes are prepared privately; no new public PR or
+hosted CI qualification is claimed.
 
 The negated accumulator predicate correction (`987680ef`) is different: it is
 inside the new TCGen05 MMA adapter and has already been folded into the MMA
