@@ -77,7 +77,11 @@ targets to the existing shared TMA backend. An eight-combination owner fixture
 fails with the frozen pre-fix runtime; the repaired local CI passes four unit
 tests and five numerical launches per frontend, including cluster size two.
 Full MoE numerical acceptance remains pending. Evidence is under
-`runs/native-bulk-cluster-20261125/`. One debugger-invoked pipeline dump crashed
+`runs/native-bulk-cluster-20261125/`. The same correction is also folded into
+its owning `feature/native-linear-bulk-descriptors` branch at `8ec82c76`;
+that branch independently passed its four host tests and five numerical
+launches per frontend. See `functional-unit-qualification.json` in that evidence
+directory. One debugger-invoked pipeline dump crashed
 on a null PTX thread; this diagnostic failure is recorded separately from the
 original stall. Evidence is indexed by
 `tcgen_extracted_sass_moe_stall_20261125` in `runs/CURRENT.json`. The residual
@@ -153,8 +157,38 @@ tests cover ten load/store forms plus invalid operands; a CUDA tensor load and
 three vector/pack controls pass. Frozen positive fixtures abort on the public
 baseline and pass after the fix. Gather4 validation stays in its dependent
 feature. Evidence: `runs/public-tensor-coordinates-20261125/qualification.json`.
-All five independent public fixes are prepared privately; no new public PR or
-hosted CI qualification is claimed.
+These five independent public fixes are prepared privately; this is a selected
+set, not an assertion that every common fix in the extraction history has been
+qualified on public main. No new public PR or hosted CI qualification is claimed.
+
+The diagnostic crash additionally has an independent public-base fix on
+`fix/pipeline-dump-empty-threads-public` (`bc1918de`). A real pipeline dump on
+an idle PTX core reproduces the null thread-slot dereference; both diagnostic
+masks pass with the same executable after the guard. It does not change
+simulation timing or SASS lifecycle behavior. Evidence:
+`runs/public-pipeline-dump-20261125/qualification.json`.
+
+## Additional common-fix candidates
+
+A complete extraction-history audit identified these additional candidates.
+They remain outside the qualified public-fix set until independently exercised;
+an applicable patch is not a public-base test result.
+
+| Candidate | Integration commit | Public-base preparation |
+|---|---|---|
+| 32-byte per-lane coalescing | `957a0caa` | Patch applies; independent qualification pending |
+| Funnel-shift boundaries | `ee68caee` | Separate common arithmetic from native adapter additions |
+| Dynamic cached-load dependency tokens | `4a8c7b28` | Patch applies; independent qualification pending |
+| Leading-bit boundaries | `94ec143f` | Separate common arithmetic from native adapter additions |
+| Shared-store visibility at fences | `413e4c56` | Patch applies; independent qualification pending |
+| Typeless trap/brkpt predecode | `b4a45d47` | Public-base reproducer preparation underway |
+| Vector modifier order | `8b716c37` | Patch applies; independent qualification pending |
+| Full-width integer constants | `0b9b4586` | Patch applies; independent qualification pending |
+| Invalid tensor-map diagnostic bounds | `0c2dd8ae` | Patch applies; independent qualification pending |
+| Device-call argument ownership | `04cc4765` | Patch applies; independent qualification pending |
+
+The patch checks and touched files are recorded in workspace
+`runs/tcgen-functional-branches-20261125/additional-public-fix-audit.json`.
 
 The negated accumulator predicate correction (`987680ef`) is different: it is
 inside the new TCGen05 MMA adapter and has already been folded into the MMA
