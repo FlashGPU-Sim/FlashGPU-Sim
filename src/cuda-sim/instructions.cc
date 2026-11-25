@@ -1,6 +1,7 @@
 #include "../gpgpu-sim/flash/bit_scan.h"
 #include "../gpgpu-sim/flash/fp32_fma.h"
 #include "../gpgpu-sim/flash/funnel_shift.h"
+#include "../gpgpu-sim/flash/warp_shuffle.h"
 #include "../gpgpu-sim/flash/ptx_global_reduce.h"
 #include "../gpgpu-sim/flash/ptx_ternary_logic.h"
 #include "../gpgpu-sim/flash/shared_bulk.h"
@@ -6365,39 +6366,20 @@ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
   const operand_info &src3 = pI->src3();
   int bval = (thread->get_operand_value(src2, dst, i_type, thread, 1)).u32;
   int cval = (thread->get_operand_value(src3, dst, i_type, thread, 1)).u32;
-  int mask = cval >> 8;
-  bval &= 0x1F;
-  cval &= 0x1F;
-
-  int maxLane = (lane & mask) | (cval & ~mask);
-  int minLane = lane & mask;
-
-  int src_idx;
-  unsigned p;
+  using flash_gpgpu_sim::shuffle_mode;
+  shuffle_mode mode;
   switch (pI->shfl_op()) {
-    case UP_OPTION:
-      src_idx = lane - bval;
-      p = (src_idx >= maxLane);
-      break;
-    case DOWN_OPTION:
-      src_idx = lane + bval;
-      p = (src_idx <= maxLane);
-      break;
-    case BFLY_OPTION:
-      src_idx = lane ^ bval;
-      p = (src_idx <= maxLane);
-      break;
-    case IDX_OPTION:
-      src_idx = minLane | (bval & ~mask);
-      p = (src_idx <= maxLane);
-      break;
+    case UP_OPTION: mode = shuffle_mode::up; break;
+    case DOWN_OPTION: mode = shuffle_mode::down; break;
+    case BFLY_OPTION: mode = shuffle_mode::butterfly; break;
+    case IDX_OPTION: mode = shuffle_mode::index; break;
     default:
       printf("GPGPU-Sim PTX: ERROR: Invalid shfl option\n");
-      assert(0);
-      break;
+      abort();
   }
-  // copy from own lane
-  if (!p) src_idx = lane;
+  const auto selected = flash_gpgpu_sim::select_shuffle_lane(mode, lane, bval, cval);
+  const unsigned src_idx = selected.lane;
+  const unsigned p = selected.in_bounds;
 
   // copy input from lane src_idx
   ptx_reg_t data;

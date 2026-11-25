@@ -1,4 +1,5 @@
 #include "../../warp_reduce.h"
+#include "../../warp_shuffle.h"
 #include "internal.h"
 
 #include <algorithm>
@@ -430,8 +431,16 @@ step_result execute_shfl(const instruction &inst, warp_state &state,
       inst.operands[1].kind != operand_kind::kRegister ||
       inst.operands[2].kind != operand_kind::kRegister)
     return unsupported(inst, "unsupported SHFL operand form");
-  const bool butterfly = inst.opcode == "SHFL.BFLY";
-  if (!butterfly && inst.opcode != "SHFL.IDX")
+  shuffle_mode mode;
+  if (inst.opcode == "SHFL.UP")
+    mode = shuffle_mode::up;
+  else if (inst.opcode == "SHFL.DOWN")
+    mode = shuffle_mode::down;
+  else if (inst.opcode == "SHFL.BFLY")
+    mode = shuffle_mode::butterfly;
+  else if (inst.opcode == "SHFL.IDX")
+    mode = shuffle_mode::index;
+  else
     return unsupported(inst, "unsupported SHFL mode");
   std::array<uint32_t, kWarpLanes> source{};
   for (unsigned lane = 0; lane < kWarpLanes; ++lane)
@@ -445,17 +454,11 @@ step_result execute_shfl(const instruction &inst, warp_state &state,
     if (!read_u32_operand(inst.operands[3], state, lane, lane_selector) ||
         !read_u32_operand(inst.operands[4], state, lane, configuration))
       return unsupported(inst, "unsupported SHFL lane selector");
-    const unsigned segment_mask = (configuration >> 8) & 0x1f;
-    const unsigned clamp = configuration & 0x1f;
-    const unsigned min_lane = lane & segment_mask;
-    const unsigned max_lane = (lane & segment_mask) | (clamp & ~segment_mask);
-    unsigned source_lane =
-        butterfly
-            ? lane ^ (lane_selector & 0x1f)
-            : (lane & segment_mask) | (lane_selector & 0x1f & ~segment_mask);
-    const bool valid = source_lane >= min_lane && source_lane <= max_lane &&
-                       source_lane < kWarpLanes &&
-                       (state.active_mask & (1u << source_lane)) != 0;
+    const auto selected =
+        select_shuffle_lane(mode, lane, lane_selector, configuration);
+    unsigned source_lane = selected.lane;
+    const bool valid =
+        selected.in_bounds && (state.active_mask & (1u << source_lane)) != 0;
     if (!valid)
       source_lane = lane;
     state.write_register(lane, inst.operands[1].index, source[source_lane]);
@@ -496,6 +499,8 @@ void register_data_movement_semantics(frontend &target) {
   target.register_semantics("CS2UR.32", execute_cs2ur);
   target.register_semantics("SHFL.BFLY", execute_shfl);
   target.register_semantics("SHFL.IDX", execute_shfl);
+  target.register_semantics("SHFL.UP", execute_shfl);
+  target.register_semantics("SHFL.DOWN", execute_shfl);
 }
 
 } // namespace functional_detail

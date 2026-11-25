@@ -366,3 +366,10 @@ cuda = "13.3"
 tests = [
   { name = "shuffle-snapshot-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_ptx_shuffle.py" },
 ]
+
+[jobs.sm100-warp-shuffle]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "shuffle-components-and-dual-launch", group = "unit", gtest_filter = "SassShuffle.*", post_check = "tests/ci/check_warp_shuffle_dual.py" },
+]
