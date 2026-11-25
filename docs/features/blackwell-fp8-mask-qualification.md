@@ -21,6 +21,7 @@ the two adapters. Truncated register spans are rejected before side effects.
 
 This follows the [PTX output-lane mask semantics](https://docs.nvidia.com/cuda/parallel-thread-execution/#tcgen05-mma).
 It does **not** implement the different 64-bit WS B zero-column descriptor.
+That descriptor is covered by the later [WS follow-up](blackwell-ws-mask-qualification.md).
 Paired FP8, TMEM-A FP8, other unqualified formats and extra scale-input-d
 forms remain outside the qualified subset. No Rubin feature or timing
 constant is added.

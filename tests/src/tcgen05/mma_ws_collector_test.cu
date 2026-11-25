@@ -14,10 +14,14 @@ __device__ unsigned short encode(float x) {
 
 // Four independent B buffers. Change backing memory after fill, so treating
 // use/lastuse as an ordinary shared read cannot pass the numerical oracle.
-template <bool BF16, unsigned N, bool TmemA>
-__global__ void ws_collectors(float *out, unsigned long long zero_mask = 0) {
+template <bool BF16, unsigned N, bool TmemA, unsigned MaxShift = 0,
+          bool TransposeB = false>
+__global__ void ws_collectors(float *out, unsigned long long mask0 = 0,
+                              unsigned long long mask1 = 0,
+                              unsigned long long mask2 = 0,
+                              unsigned long long mask3 = 0) {
   using A = MmaTestLayout<0, false, 128, 16, 2>;
-  using B = MmaTestLayout<0, false, N, 16, 2>;
+  using B = MmaTestLayout<0, TransposeB, N + MaxShift, 16, 2>;
   __shared__ __align__(128) unsigned char a[A::Storage], b[4][B::Storage];
   __shared__ unsigned base;
   __shared__ unsigned long long bar;
@@ -53,7 +57,7 @@ __global__ void ws_collectors(float *out, unsigned long long zero_mask = 0) {
   for (unsigned round = 0; round < 2; ++round) {
     for (unsigned stage = 0; stage < 2; ++stage) {
       for (unsigned s = 0; s < 4; ++s)
-        for (unsigned i = t; i < N * 16; i += 128) {
+        for (unsigned i = t; i < (N + MaxShift) * 16; i += 128) {
           const unsigned col = i / 16, k = i % 16;
           const float value = (s + 1) * (col % 3 + 1) + k % 2 + round * 3 +
                               blockIdx.x + stage * 10;
@@ -72,7 +76,10 @@ __global__ void ws_collectors(float *out, unsigned long long zero_mask = 0) {
                   (uint64_t(B::Lbo / 16) << 16) |
                   (uint64_t(B::Sbo / 16) << 32) | (1ull << 46);
         constexpr unsigned desc = (4u << 24) | ((N / 8) << 17) | 0x10 |
-                                  (BF16 ? (1u << 7) | (1u << 10) : 0);
+                                  (BF16 ? (1u << 7) | (1u << 10) : 0) |
+                                  (TransposeB ? 1u << 16 : 0) |
+                                  ((MaxShift == 8 ? 1u : MaxShift == 16 ? 2u :
+                                     MaxShift == 32 ? 3u : 0u) << 30);
 #define ISSUE(S, OP, ACC)                                                \
   if constexpr (TmemA) {                                                 \
     asm volatile("{.reg .pred p; mov.pred p," #ACC                       \
@@ -91,10 +98,13 @@ __global__ void ws_collectors(float *out, unsigned long long zero_mask = 0) {
   }
 #define ALL(OP) ISSUE(0, OP, 1) ISSUE(1, OP, 1) ISSUE(2, OP, 1) ISSUE(3, OP, 1)
         if (stage == 0) {
+          const auto zero_mask = mask0;
           ISSUE(0, "fill", 0)
           ISSUE(1, "fill", 1) ISSUE(2, "fill", 1) ISSUE(3, "fill", 1)
         } else {
-          ALL("use") ALL("lastuse") ALL("discard")
+          { const auto zero_mask = mask1; ALL("use") }
+          { const auto zero_mask = mask2; ALL("lastuse") }
+          { const auto zero_mask = mask3; ALL("discard") }
         }
 #undef ALL
 #undef ISSUE
@@ -132,12 +142,41 @@ __global__ void ws_collectors(float *out, unsigned long long zero_mask = 0) {
   }
 }
 
-template <bool BF16, unsigned N, bool TmemA>
-void check() {
+// Independent host oracle: consume explicit alternating runs, not the
+// simulator's modulo/position implementation. M64 has two independent masks.
+bool zero_column(unsigned long long mask, unsigned col, unsigned n) {
+  if (!(mask & (1ull << 39))) return false;
+  const unsigned part = col / (n / 2);
+  unsigned skip = ((mask >> (8 * part)) & 255) + col % (n / 2);
+  bool zero = (mask >> (32 + part)) & 1;
+  for (;;) {
+    const unsigned run = ((mask >> (zero ? 40 : 48)) & 255) + 1;
+    if (skip < run) return zero;
+    skip -= run;
+    zero = !zero;
+  }
+}
+constexpr unsigned long long mask(unsigned skip, unsigned use, unsigned fs,
+                                  unsigned sc0, unsigned sc1,
+                                  unsigned shift = 0, bool enabled = true) {
+  return sc0 | (static_cast<unsigned long long>(sc1) << 8) |
+         (static_cast<unsigned long long>(fs) << 32) |
+         (static_cast<unsigned long long>(enabled) << 39) |
+         (static_cast<unsigned long long>(skip - 1) << 40) |
+         (static_cast<unsigned long long>(use - 1) << 48) |
+         (static_cast<unsigned long long>(shift) << 56);
+}
+
+template <bool BF16, unsigned N, bool TmemA, unsigned MaxShift = 0,
+          bool TransposeB = false>
+void check(unsigned long long mask0 = 0, unsigned long long mask1 = 0,
+           unsigned long long mask2 = 0, unsigned long long mask3 = 0) {
   float *device;
   std::vector<float> out(2 * 2 * 64 * N);
   ASSERT_EQ(cudaMalloc(&device, out.size() * sizeof(float)), cudaSuccess);
-  ws_collectors<BF16, N, TmemA><<<2, 128>>>(device);
+  const unsigned long long masks[] = {mask0, mask1, mask2, mask3};
+  ws_collectors<BF16, N, TmemA, MaxShift, TransposeB><<<2, 128>>>(
+      device, mask0, mask1, mask2, mask3);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(out.data(), device, out.size() * sizeof(float),
                        cudaMemcpyDeviceToHost),
@@ -150,10 +189,14 @@ void check() {
           for (unsigned slot = 0; slot < 4; ++slot)
             for (unsigned k = 0; k < 16; ++k) {
               const float a = int(row % 5) - 2 + int(k % 3);
-              const float b =
-                  (slot + 1) * (col % 3 + 1) + k % 2 + round * 3 + cta;
-              expected +=
-                  a * (4 * b + 10);  // fill + use + lastuse + fresh discard
+              for (unsigned op = 0; op < 4; ++op) {
+                const auto mask = masks[op];
+                if (zero_column(mask, col, N)) continue;
+                const unsigned src = col + ((mask >> 56) & 63);
+                const float b = (slot + 1) * (src % 3 + 1) + k % 2 +
+                                round * 3 + cta + (op == 3 ? 10 : 0);
+                expected += a * b;
+              }
             }
           ASSERT_EQ(out[((cta * 2 + round) * 64 + row) * N + col], expected)
               << cta << '/' << round << '/' << row << '/' << col;
@@ -166,4 +209,24 @@ TEST(Tcgen05WsCollectors, HalfTmem) { check<false, 128, true>(); }
 TEST(Tcgen05WsCollectors, BfloatTmem) { check<true, 64, true>(); }
 TEST(Tcgen05WsCollectors, HalfSharedWide) { check<false, 256, false>(); }
 TEST(Tcgen05WsCollectors, BfloatTmemWide) { check<true, 256, true>(); }
+TEST(Tcgen05WsCollectors, ZeroMaskChangesAcrossReuse) {
+  check<false, 64, false>(mask(256, 1, 3, 0, 0), 0,
+                         mask(3, 4, 1, 1, 2), mask(1, 256, 0, 0, 0));
+}
+TEST(Tcgen05WsCollectors, ZeroMaskTmemAndBfloat) {
+  check<true, 128, true>(mask(3, 4, 1, 0, 2), mask(1, 1, 2, 255, 254),
+                        0, mask(256, 1, 3, 0, 0));
+}
+TEST(Tcgen05WsCollectors, Shift8AndDisabledMask) {
+  check<false, 64, false, 8>(mask(3, 4, 1, 1, 2, 2),
+      mask(1, 1, 3, 255, 254, 8, false), mask(3, 4, 2, 2, 1, 1), 0);
+}
+TEST(Tcgen05WsCollectors, Shift16TransposedB) {
+  check<true, 128, false, 16, true>(mask(3, 4, 1, 0, 2, 16),
+      mask(3, 4, 2, 2, 0, 5), mask(2, 3, 3, 1, 0, 8), 0);
+}
+TEST(Tcgen05WsCollectors, Shift32TmemWide) {
+  check<false, 256, true, 32>(mask(3, 4, 1, 1, 2, 32),
+      mask(1, 1, 2, 255, 254, 8), mask(3, 4, 2, 2, 1, 16), 0);
+}
 }  // namespace

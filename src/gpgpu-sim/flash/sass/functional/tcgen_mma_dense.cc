@@ -1,3 +1,4 @@
+#include "../../tcgen05/ws_mask.h"
 #include "../decode/tcgen_collector.h"
 #include "tcgen_mma_internal.h"
 namespace flash_gpgpu_sim {
@@ -39,6 +40,7 @@ step_result half_mma(const instruction &inst, warp_state &state,
   if (state.read_uniform_register(metadata.index) != 0)
     return unsupported(inst, "half MMA sparse/masked metadata is unqualified");
   std::vector<uint32_t> disable_lanes(4 * group, 0);
+  uint64_t ws_mask = 0;
   if (inst.operands.size() == 7) {
     const auto &mask = inst.operands[5];
     const unsigned words = ws ? 2 : disable_lanes.size();
@@ -47,12 +49,7 @@ step_result half_mma(const instruction &inst, warp_state &state,
          mask.index + words > kZeroUniformRegister))
       return unsupported(inst, "invalid MMA mask register group");
     if (ws) {
-      // WS takes a different, 64-bit B zero-column descriptor. Only the
-      // explicitly empty descriptor is qualified here; never treat it as D's
-      // disable-output-lane mask or silently ignore a nonempty descriptor.
-      if (read_uniform_register_pair(state, mask.index) != 0)
-        return unsupported(inst,
-                           "nonzero WS zero-column descriptor is unqualified");
+      ws_mask = read_uniform_register_pair(state, mask.index);
     } else if (!read_output_lane_mask(mask, state, disable_lanes)) {
       return unsupported(inst, "invalid MMA output-lane mask");
     }
@@ -68,6 +65,9 @@ step_result half_mma(const instruction &inst, warp_state &state,
     return unsupported(inst,
                        "unqualified dense F16/BF16 instruction descriptor");
   const auto desc = tcgen05_decode_f16_mma_descriptor(idesc, group, ws);
+  const unsigned max_shift = ws ? tcgen05_ws_max_shift(idesc) : 0;
+  if (ws && !tcgen05_ws_mask_supported(ws_mask, m, n, max_shift))
+    return unsupported(inst, "invalid WS B zero-column descriptor");
   tcgen05_shared_descriptor_t ad, bd;
   if ((!tmem_a &&
        !shared_descriptor(read_uniform_register_pair(state, ar.index), ad,
@@ -121,7 +121,8 @@ step_result half_mma(const instruction &inst, warp_state &state,
   };
   if (!tmem_a && !gather(ad, m, desc.transpose_a, a))
     return unsupported(inst, "half MMA input is outside mapped shared memory");
-  if ((!ws || !collector.reuses()) && !gather(bd, n, desc.transpose_b, b))
+  if ((!ws || !collector.reuses()) &&
+      !gather(bd, n + max_shift, desc.transpose_b, b))
     return unsupported(inst, "half MMA B is outside mapped shared memory");
   if (ws) {
     unsigned owner = context.warp_id * kWarpLanes;
@@ -131,10 +132,13 @@ step_result half_mma(const instruction &inst, warp_state &state,
         owner += lane;
         break;
       }
-    if (!tmem[0]->memory.ws_half_b({0, 0}, owner, collector,
-                                   {n, desc.k, desc.b_type, desc.transpose_b},
-                                   b))
+    if (!tmem[0]->memory.ws_half_b(
+            {0, 0}, owner, collector,
+            {n, desc.k, desc.b_type, desc.transpose_b, max_shift}, b))
       return unsupported(inst, "WS B reuse requires a compatible prior fill");
+    if (!tcgen05_ws_select_b(ws_mask, m, n, desc.k, max_shift, desc.transpose_b,
+                             b))
+      return unsupported(inst, "invalid WS B collector window");
   }
   const auto &predicate = inst.operands.back();
   const bool accumulate =
@@ -171,7 +175,8 @@ step_result half_mma(const instruction &inst, warp_state &state,
   context.tcgen_mma_effect.ws = ws;
   context.tcgen_mma_effect.tmem_a = tmem_a;
   context.tcgen_mma_effect.shared_operand_bytes =
-      ws ? ((tmem_a ? 0 : desc.m) + (collector.reuses() ? 0 : desc.n)) *
+      ws ? ((tmem_a ? 0 : desc.m) +
+            (collector.reuses() ? 0 : desc.n + max_shift)) *
                desc.k * 2
          : 0;
   advance(inst, state);

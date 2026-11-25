@@ -141,7 +141,7 @@ TEST(Tcgen05PairAdapter, ClusterStoreProjectsAllPayloadDependencies) {
 }
 }  // namespace
 
-TEST(Tcgen05PairAdapter, MmaRejectsTruncatedMaskAndNonemptyWsDescriptor) {
+TEST(Tcgen05PairAdapter, MmaRejectsTruncatedMaskAndReservedWsDescriptor) {
   for (const char *op : {"UTCHMMA", "UTCHMMA.2CTA", "UTCHMMA.WS"}) {
     const auto mask =
         std::to_string(flash_gpgpu_sim::sass::kZeroUniformRegister - 1);
@@ -157,11 +157,12 @@ TEST(Tcgen05PairAdapter, MmaRejectsTruncatedMaskAndNonemptyWsDescriptor) {
   PairFixture f(
       "UTCHMMA.WS",
       "gdesc[UR0],gdesc[UR2],tmem[UR4],tmem[UR5],idesc[UR6],UR12,!UP0");
+  f.state.write_uniform_register(6, (4u << 24) | (8u << 17) | 0x10);
   f.state.write_uniform_register(
-      13, 1u << 7);  // Descriptor bit 39 enables masking.
+      13, 1u << 4);  // Descriptor bit 36 is reserved.
   auto result = f.run();
   EXPECT_EQ(result.status, step_status::kUnsupported);
-  EXPECT_NE(result.detail.find("nonzero WS zero-column descriptor"),
+  EXPECT_NE(result.detail.find("invalid WS B zero-column descriptor"),
             std::string::npos);
 }
 

@@ -9,7 +9,7 @@ to mean buffer 0 discard. It does not enable Rubin ordinary-MMA B collectors.
 `tcgen05/collector.h` owns four logical B slots per issuing thread. The shared
 TMEM manager places those banks in a CTA scope and clears them on CTA retirement
 or reset. Each slot holds raw logical half/BF16 values, tagged with N, K, input
-format and transpose layout. Negation and accumulation remain in the existing
+format, transpose layout and maximum column shift. Negation and accumulation remain in the existing
 common MMA arithmetic, rather than being applied to cached B values.
 
 Fill reads B and replaces the selected slot. Use reads the retained values;
@@ -26,7 +26,7 @@ same backend bank operations as PTX and omits shared B reads on reuse.
 
 ## Numerical acceptance
 
-`sm100-ws-collectors` runs the shared-state/decoder checks and six complete
+`sm100-ws-collectors` runs the shared-state/decoder checks and eleven complete
 numerical launches through both frontends. The CUDA fixtures cover FP16/BF16,
 shared/TMEM A, N64/N128/N256, all four slots and all four control operations.
 Each launch uses two CTAs and repeats the sequence twice. TMEM-A fixtures issue
@@ -47,8 +47,13 @@ cannot replace cubins partway through a multi-kernel test.
 ## Boundaries
 
 This extension qualifies existing M64, K16 F16/BF16 WS shapes. Other WS types,
-M32/M128 layouts, sparse MMA, zero-column masks and cross-thread collector
+M32/M128 layouts, sparse MMA and cross-thread collector
 handoff are not qualified here. Invalid extra forms remain rejected.
+
+The subsequent [WS mask qualification](blackwell-ws-mask-qualification.md)
+adds nonzero B zero-column masks and 8/16/32-column maximum shifts to the
+same M64 subset. Its five additional launches change masks and shifts between
+fill/use/lastuse/discard; masking never modifies the saved collector bank.
 
 The common timing backend continues to charge the configured MMA work/recurrence.
 Native functional shared-read metadata reflects reuse, but this extraction does

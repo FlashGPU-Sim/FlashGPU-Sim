@@ -2,4 +2,4 @@
 """Validate numbered WS B collectors with mutated shared-memory backing."""
 from tcgen05_dual import run_suite
 if __name__ == "__main__":
-    run_suite("Tcgen05WsCollectors.*", 6, 6, timeout=240)
+    run_suite("Tcgen05WsCollectors.*", 11, 11, timeout=480)

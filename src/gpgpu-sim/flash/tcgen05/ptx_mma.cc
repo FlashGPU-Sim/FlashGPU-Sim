@@ -2,6 +2,7 @@
 #include "../../gpu-sim.h"
 #include "operands.h"
 #include "ptx_internal.h"
+#include "ws_mask.h"
 class ptx_recognizer;
 typedef void *yyscan_t;
 #include "ptx.tab.h"
@@ -310,12 +311,11 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   const auto collector = ws_collector_control(pI);
   assert((!ws || tcgen05_has_option(pI, TCGEN05_KIND_F16_OPTION)) &&
          "Only F16/BF16 WS MMA has been qualified");
-  if (ws) {
+  if (ws)
     assert(pI->get_num_operands() == 5 || pI->get_num_operands() == 6);
-    if (pI->get_num_operands() == 6)
-      assert(tcgen05_read_u64_operand(pI, thread, 5).u64 == 0 &&
-             "Nonzero WS zero-column descriptors are not qualified");
-  }
+  const uint64_t ws_mask = ws && pI->get_num_operands() == 6
+                               ? tcgen05_read_u64_operand(pI, thread, 5).u64
+                               : 0;
   if (tcgen05_has_option(pI, TCGEN05_KIND_F8F6F4_OPTION)) {
     tcgen05_mma_fp8_ptx(pI, thread);
     return;
@@ -372,6 +372,11 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   flash_gpgpu_sim::tcgen05_mma_descriptor_t mma_desc =
       flash_gpgpu_sim::tcgen05_decode_f16_mma_descriptor(
           tcgen05_read_operand(pI, thread, 3).u32, tcgen05_cta_group(pI), ws);
+  const unsigned max_shift =
+      ws ? tcgen05_ws_max_shift(tcgen05_read_operand(pI, thread, 3).u32) : 0;
+  assert((!ws || tcgen05_ws_mask_supported(ws_mask, mma_desc.m, mma_desc.n,
+                                           max_shift)) &&
+         "Invalid WS B zero-column descriptor");
   tcgen05_shared_reads shared_reads;
   inst_t::tcgen05_dyn_info_t perf_info;
   perf_info.mma_work = 2ULL * mma_desc.m * mma_desc.n * mma_desc.k;
@@ -428,7 +433,8 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   }
   std::vector<uint16_t> b_values;
   if (!ws || !collector.reuses())
-    b_values = gather_shared(b_desc, mma_desc.n, mma_desc.transpose_b);
+    b_values =
+        gather_shared(b_desc, mma_desc.n + max_shift, mma_desc.transpose_b);
   if (ws) {
     const bool valid = manager.ws_half_b(
         scope,
@@ -436,9 +442,14 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
             thread->get_ntid().x * (thread->get_tid().y +
                                     thread->get_ntid().y * thread->get_tid().z),
         collector,
-        {mma_desc.n, mma_desc.k, mma_desc.b_type, mma_desc.transpose_b},
+        {mma_desc.n, mma_desc.k, mma_desc.b_type, mma_desc.transpose_b,
+         max_shift},
         b_values);
     assert(valid && "WS B reuse requires a compatible prior fill");
+    const bool selected =
+        tcgen05_ws_select_b(ws_mask, mma_desc.m, mma_desc.n, mma_desc.k,
+                            max_shift, mma_desc.transpose_b, b_values);
+    assert(selected);
   }
   std::vector<uint32_t> input_d;
   if (enable_input_d) {

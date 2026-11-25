@@ -19,9 +19,10 @@ struct tcgen05_ws_collector_control {
 struct tcgen05_ws_half_signature {
   unsigned n, k, format;
   bool transpose;
+  unsigned max_shift = 0;
   bool operator==(const tcgen05_ws_half_signature &other) const {
     return n == other.n && k == other.k && format == other.format &&
-           transpose == other.transpose;
+           transpose == other.transpose && max_shift == other.max_shift;
   }
 };
 
@@ -47,7 +48,8 @@ public:
         entry = {};
       return true;
     }
-    if (values.size() != std::size_t(signature.n) * signature.k)
+    if (values.size() !=
+        std::size_t(signature.n + signature.max_shift) * signature.k)
       return false;
     if (control.op == tcgen05_collector_op::fill) {
       banks_[owner][control.slot] = {true, signature, values};

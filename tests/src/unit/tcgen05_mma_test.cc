@@ -605,7 +605,7 @@ TEST(Tcgen05Mma, DenseDescriptorValidationIsSharedAcrossFrontends) {
     const auto raw = make_f16_idesc(64, n);
     EXPECT_TRUE(tcgen05_f16_descriptor_supported(raw, 1, true));
     EXPECT_FALSE(tcgen05_f16_descriptor_supported(raw, 2, true));
-    for (unsigned bit : {0u, 1u, 2u, 3u, 6u, 23u, 29u, 30u, 31u})
+    for (unsigned bit : {0u, 1u, 2u, 3u, 6u, 23u, 29u})
       EXPECT_FALSE(
           tcgen05_f16_descriptor_supported(raw | (1u << bit), 1, true));
     for (unsigned modifiers = 0; modifiers < 16; ++modifiers)
@@ -755,4 +755,13 @@ TEST(Tcgen05Mma, DenseFp8DescriptorBoundaryIsSharedByFrontends) {
   EXPECT_FALSE(tcgen05_fp8_descriptor_supported((8u << 24) | (1u << 17) | 0x10));
   EXPECT_FALSE(tcgen05_fp8_descriptor_supported((8u << 24) | (2u << 17)));
   EXPECT_FALSE(tcgen05_fp8_descriptor_supported((8u << 24) | (2u << 17) | 0x110));
+}
+
+TEST(Tcgen05Mma, WsMaximumShiftDoesNotEnableOrdinaryMmaBits) {
+  const uint32_t base = (4u << 24) | (8u << 17) | 0x10;
+  for (unsigned code = 1; code <= 3; ++code) {
+    EXPECT_TRUE(tcgen05_f16_descriptor_supported(base | (code << 30), 1, true));
+    EXPECT_FALSE(tcgen05_f16_descriptor_supported(base | (code << 30), 1, false));
+    EXPECT_FALSE(tcgen05_f16_descriptor_supported(base | (code << 30) | (1u << 29), 1, true));
+  }
 }

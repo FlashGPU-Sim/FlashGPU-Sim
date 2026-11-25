@@ -299,7 +299,7 @@ bool tcgen05_f16_descriptor_supported(uint32_t idesc, unsigned group, bool ws) {
   const unsigned n = ((idesc >> 17) & 63) * 8;
   const unsigned a = (idesc >> 7) & 7, b = (idesc >> 10) & 7;
   const unsigned d = (idesc >> 4) & 3;
-  if ((idesc & 0xe080004fu) || d > 1 || a > 1 || b > 1 ||
+  if ((idesc & (ws ? 0x2080004fu : 0xe080004fu)) || d > 1 || a > 1 || b > 1 ||
       (d == 0 && (a != 0 || b != 0)))
     return false;
   if (ws)
