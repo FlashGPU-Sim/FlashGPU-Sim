@@ -244,6 +244,15 @@ arch/sm120.toml $(ARCH_SASSIR_SCRIPT)
 # Register-view and guided-reorder regressions call the production PTX loader.
 UNIT_SIM_LIB_DIR := $(abspath ../lib/$(GPGPUSIM_CONFIG))
 UNIT_SIM_BUILD_DIR := $(abspath ../build/$(GPGPUSIM_CONFIG))
+
+$(OBJ_DIR)/sm90/unit/argument_buffer_ownership_test.cc.o \
+$(OBJ_DIR)/sm100/unit/argument_buffer_ownership_test.cc.o \
+$(OBJ_DIR)/sm120/unit/argument_buffer_ownership_test.cc.o: \
+  INCLUDES += -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
+$(OBJ_DIR)/sm90/unit/argument_buffer_ownership_test.cc.o \
+$(OBJ_DIR)/sm100/unit/argument_buffer_ownership_test.cc.o \
+$(OBJ_DIR)/sm120/unit/argument_buffer_ownership_test.cc.o: \
+  $(SRC_DIR)/cuda-sim/ptx_ir.h $(UNIT_SIM_BUILD_DIR)/cuda-sim/ptx.tab.h
 $(BIN_DIR)/sm90/unit_tests $(BIN_DIR)/sm100/unit_tests $(BIN_DIR)/sm120/unit_tests: \
   CUDA_LIBS = -L$(CUDA_INSTALL_PATH)/lib64 -lcudart -lcuda \
     $(UNIT_SIM_LIB_DIR)/libcudart.so -Wl,-rpath,$(UNIT_SIM_LIB_DIR)
