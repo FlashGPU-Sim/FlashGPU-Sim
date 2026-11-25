@@ -35,15 +35,21 @@ qualification within each functional unit. No public PR has been opened.
 | MMA | `d88e6f5a` | TMEM | negated PTX accumulator predicate; 24 tests / 51 launches per frontend |
 | Paired CTA | `40267f1b` | MMA | explicit contiguous scale copy feeding paired MMA |
 | CLC | `c866f925` | paired CTA, scalar b128, discarded-result global add | inherited corrected TCGen05 backend |
-| Numbered WS collectors | `df0493ac` | MMA | same six numerical fixtures, without unrelated CLC/TMA/conversion prerequisites |
+| Numbered WS collectors | `250b577a` | MMA | same six numerical fixtures, without unrelated CLC/TMA/conversion prerequisites |
 
 The WS branch is a sibling of paired CTA, not a descendant of the whole
 integration stack. Conflict resolution retains the single-CTA target adapter;
-collector state and arithmetic are unchanged. Ordinary PTX defaults are retained.
+collector state and arithmetic are unchanged. The WS fixture generates the same
+exact BF16 inputs from raw bits, with host equivalence checks, so its input
+construction does not require the separate scalar conversion feature. All six
+collector cases and their output oracles are retained. Ordinary PTX defaults
+are retained.
 
 TMEM's refreshed head passed its local CI (13 numerical tests / 17 launches per
-frontend) and three PTX timing isolation checks. Other refreshed branch gates
-are pending at this documentation checkpoint. Exact heads, logs and final gate
+frontend) and three PTX timing isolation checks. MMA and paired CTA local CI also passed. CLC passed after rebuilding stale
+generated BookSim dependencies; no CLC source fix was needed. WS is retrying its
+independent input fixture. The final all-branch isolation sweep is still pending
+at this documentation checkpoint. Exact heads, logs and final gate
 outcomes are recorded under `runs/tcgen-functional-branches-20261125/` in the
 workspace, indexed by `runs/CURRENT.json`. Historical integration acceptance
 below does not replace these final-branch gates.
