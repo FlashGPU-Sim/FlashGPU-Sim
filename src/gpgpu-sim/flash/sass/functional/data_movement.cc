@@ -162,12 +162,26 @@ step_result execute_match_any(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
+bool plain_spill_fill_operand(const operand &value) {
+  return !value.negated && !value.absolute && !value.bitwise_complement &&
+         !value.wide && value.half_selection == operand_half_selection::kNone &&
+         value.matrix_layout == operand_matrix_layout::kNone;
+}
+
 step_result execute_move(const instruction &inst, warp_state &state,
                          execution_context &) {
   if (!has_typed_operands(inst, 2))
     return unsupported(inst, "expected two typed operands");
   const operand &destination = inst.operands[0];
   const operand &source = inst.operands[1];
+  if (inst.opcode == "MOV.SPILL" &&
+      ((state.active_mask != 0xffffffffu &&
+        __builtin_popcount(state.active_mask) != 1) ||
+       inst.has_guard || source.kind != operand_kind::kUniformRegister ||
+       !plain_spill_fill_operand(source) ||
+       !plain_spill_fill_operand(destination)))
+    return unsupported(inst, "MOV.SPILL requires an unguarded full warp or "
+                             "single lane and uniform source");
 
   if (inst.opcode == "UMOV" || inst.opcode == "UMOV.64") {
     if (destination.kind != operand_kind::kUniformRegister ||
@@ -217,6 +231,14 @@ step_result execute_move(const instruction &inst, warp_state &state,
 
 step_result execute_r2ur(const instruction &inst, warp_state &state,
                          execution_context &) {
+  if (inst.opcode == "R2UR.FILL" &&
+      ((state.active_mask != 0xffffffffu &&
+        __builtin_popcount(state.active_mask) != 1) ||
+       inst.has_guard || inst.operands.size() != 2 ||
+       !plain_spill_fill_operand(inst.operands[0]) ||
+       !plain_spill_fill_operand(inst.operands[1])))
+    return unsupported(inst, "R2UR.FILL requires an unguarded full warp or "
+                             "single lane and two operands");
   const bool reports_nonuniform = inst.operands.size() == 3;
   if (!has_typed_operands(inst, reports_nonuniform ? 3 : 2))
     return unsupported(inst, "expected two or three typed operands");
@@ -456,6 +478,8 @@ void register_data_movement_semantics(frontend &target) {
   target.register_semantics("MATCH.ANY", execute_match_any);
   target.register_semantics("WARPSYNC.EXCLUSIVE", execute_warpsync_exclusive);
   target.register_semantics("WARPSYNC", execute_warpsync_mask);
+  target.register_semantics("MOV.SPILL", execute_move);
+  target.register_semantics("R2UR.FILL", execute_r2ur);
   target.register_semantics("MOV", execute_move);
   target.register_semantics("MOV.64", execute_move);
   target.register_semantics("UMOV", execute_move);

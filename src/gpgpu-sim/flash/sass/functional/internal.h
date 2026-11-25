@@ -71,6 +71,7 @@ void register_float_semantics(frontend &target);
 void register_control_semantics(frontend &target);
 void register_memory_semantics(frontend &target);
 void register_global_reduce_semantics(frontend &target);
+void register_global_memory_semantics(frontend &target);
 bool ensure_mbarrier_imported(uint64_t location, execution_context &context);
 void register_mbarrier_semantics(frontend &target);
 void register_bulk_copy_semantics(frontend &target);

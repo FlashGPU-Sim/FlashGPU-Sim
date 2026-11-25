@@ -325,6 +325,13 @@ tests = [
   { name = "shared-popc-dual-launch", group = "unit", gtest_filter = "SassTimingProjectionTest.ProjectsPopcIncrementWithSharedAtomicProxy", post_check = "tests/ci/check_shared_popc_dual.py" },
 ]
 
+[jobs.sm100-native-data-movement]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "native-data-movement-dual-launch", group = "unit", gtest_filter = "SassNativeDataMovement.*:SassGlobal256.*:SassStrongGlobal.*", post_check = "tests/ci/check_native_data_movement_dual.py" },
+]
+
 [jobs.sm100-signed-byte-load]
 arch = "sm100"
 cuda = "13.3"

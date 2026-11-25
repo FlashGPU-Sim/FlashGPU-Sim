@@ -246,7 +246,8 @@ unsigned memory_width(const std::string &opcode) {
     return 8;
   if (has_modifier(opcode, "16") || has_modifier(opcode, "U16"))
     return 2;
-  if (has_modifier(opcode, "8") || has_modifier(opcode, "U8"))
+  if (has_modifier(opcode, "8") || has_modifier(opcode, "U8") ||
+      has_modifier(opcode, "S8"))
     return 1;
   return 4;
 }
@@ -367,6 +368,9 @@ unsigned source_width(const instruction &source, size_t index) {
       (has_modifier(source.opcode, "U64") ||
        has_modifier(source.opcode, "S64")))
     return 2;
+  if (base == "STG" && has_modifier(source.opcode, "256") &&
+      (index == 1 || index == 2))
+    return 4;
   if ((base == "ST" || base == "STG" || base == "STS" || base == "STL") &&
       index == 1)
     return std::max(1u, memory_width(source.opcode) / 4);
