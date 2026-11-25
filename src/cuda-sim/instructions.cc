@@ -1,3 +1,4 @@
+#include "../gpgpu-sim/flash/funnel_shift.h"
 #include "../gpgpu-sim/flash/fp32_fma.h"
 // Copyright (c) 2009-2021, Tor M. Aamodt, Wilson W.L. Fung, Ali Bakhoda,
 // Jimmy Kwa, George L. Yuan, Vijay Kandiah, Nikos Hardavellas,
@@ -6304,18 +6305,8 @@ void shf_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (i_type != B32_TYPE)
     printf("Only the b32 data_type is allowed per the ISA\n");
 
-  unsigned clamp_mode = pI->clamp_mode();
-  unsigned n = c.u32 & 0x1f;
-  if (clamp_mode) {
-    if (c.u32 < 32)
-      n = c;
-    else
-      n = 32;
-  }
-  if (pI->left_mode())
-    d.u32 = (b.u32 << n) | (a.u32 >> (32 - n));
-  else
-    d.u32 = (b.u32 << (32 - n)) | (a.u32 >> n);
+  d.u32 = flash_gpgpu_sim::funnel_shift32(a.u32, b.u32, c.u32,
+                                        pI->left_mode(), !pI->clamp_mode());
 
   thread->set_operand_value(dst, d, i_type, thread, pI);
 }
