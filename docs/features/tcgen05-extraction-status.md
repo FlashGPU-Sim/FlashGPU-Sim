@@ -23,6 +23,31 @@ The later contiguous-copy fix adds a TMEM launch and a paired-MMA launch.
 The negated accumulator predicate fix adds two MMA launches. These newer
 qualifications must not be attributed to an older pinned branch.
 
+## Refreshed functional branches
+
+The following private branch heads replace the pinned checkpoints above for
+submission preparation. They retain full backend + PTX/SASS + CUDA launch
+qualification within each functional unit. No public PR has been opened.
+
+| Unit | Refreshed head | Immediate dependency | New coverage folded in |
+|---|---|---|---|
+| TMEM | `2560b425` | reviewed scalar/gather4 prerequisites | explicit contiguous broadcast stride; immutable fixture/runtime selection |
+| MMA | `d88e6f5a` | TMEM | negated PTX accumulator predicate; 24 tests / 51 launches per frontend |
+| Paired CTA | `40267f1b` | MMA | explicit contiguous scale copy feeding paired MMA |
+| CLC | `c866f925` | paired CTA, scalar b128, discarded-result global add | inherited corrected TCGen05 backend |
+| Numbered WS collectors | `df0493ac` | MMA | same six numerical fixtures, without unrelated CLC/TMA/conversion prerequisites |
+
+The WS branch is a sibling of paired CTA, not a descendant of the whole
+integration stack. Conflict resolution retains the single-CTA target adapter;
+collector state and arithmetic are unchanged. Ordinary PTX defaults are retained.
+
+TMEM's refreshed head passed its local CI (13 numerical tests / 17 launches per
+frontend) and three PTX timing isolation checks. Other refreshed branch gates
+are pending at this documentation checkpoint. Exact heads, logs and final gate
+outcomes are recorded under `runs/tcgen-functional-branches-20261125/` in the
+workspace, indexed by `runs/CURRENT.json`. Historical integration acceptance
+below does not replace these final-branch gates.
+
 ## Integration prerequisites and fixes
 
 The retained DeepInfer operators also require ordinary conversions, memory
