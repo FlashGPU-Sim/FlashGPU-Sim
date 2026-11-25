@@ -66,7 +66,14 @@ Exact heads, frozen runtimes, logs, isolation results and private push evidence
 are under `runs/tcgen-functional-branches-20261125/`, indexed by
 `runs/CURRENT.json`. These gates do not replace the retained DeepInfer acceptance:
 at this checkpoint 67 entries match GPU strictly and 46 retain the prior accepted
-numerical residual; four large MoE entries remain running or queued. The residual
+numerical residual. Two PTX MoE entries remain running or queued. Two SASS MoE
+entries stopped making work progress after about 130,000 cycles and need a
+separate diagnosis; they are not acceptance passes. Their read-only snapshots
+show matching functional/timing mbarrier state and a global counter read of 96
+against an expected 128. One subsequent debugger-invoked pipeline dump crashed
+on a null PTX thread; this diagnostic failure is recorded separately from the
+original stall. Evidence is indexed by
+`tcgen_extracted_sass_moe_stall_20261125` in `runs/CURRENT.json`. The residual
 classification does not prove rounding or strict GPU agreement.
 
 ## Integration prerequisites and fixes
@@ -95,6 +102,15 @@ snapshot (`58c96a6f`), negated CTA reduction predicates (`c0122c3d`), and suspen
 barrier wakeup (`55178b4e`). This proves patch applicability only. Each still
 needs its own reproducer, before/after execution and CI on the public base.
 Their existing integration fixtures must not be presented as public-main tests.
+
+Signed-byte loads now have independent public-base evidence: private branch
+`fix/ptx-signed-byte-load-public` contains a test-only commit `6cae27c3` and
+fix `b9430be0`, both based on public `b3378cb9`. Exhaustive scalar global/shared
+byte loads fail before and pass after using the same executable; both per-test
+cycle counts are unchanged. The tests are wired into existing SM90/100/120
+integration CI, but only local SM100 execution has been qualified so far. This
+is not a hosted CI pass or a new public PR. Evidence:
+`runs/public-signed-byte-20261125/`.
 
 Tensor-coordinate literals (`85f3e067`) need an explicit port: the private
 parser context includes the separate narrow mov-pack extension, and its rank
