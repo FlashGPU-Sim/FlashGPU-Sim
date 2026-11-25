@@ -126,6 +126,13 @@ five cycle counts unchanged. Coverage includes up/down/bfly/idx, segmented
 widths, and repeated predicated execution. Local SM100 evidence is under
 `runs/public-shuffle-20261125/`; hosted CI and public submission remain pending.
 
+Negated CTA reduction predicates now have independent public-base evidence on
+`fix/ptx-cta-reduction-negation-public`: test-only commit `3654d264`, fix
+`0c5fd996`. Both implicit-count and explicit-count numerical tests fail before
+and pass after using the same executable, with unchanged cycles (5482, 5367).
+The fixtures exercise popc/and/or and all/none/partial predicates. Evidence is
+under `runs/public-cta-reduction-20261125/`; only local SM100 is qualified.
+
 Tensor-coordinate literals (`85f3e067`) need an explicit port: the private
 parser context includes the separate narrow mov-pack extension, and its rank
 validation references `GATHER4_OPTION`, which is absent from this public base.
