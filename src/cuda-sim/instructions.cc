@@ -40,6 +40,7 @@
 #include "../gpgpu-sim/flash/ptx_cluster_store.h"
 #include "../gpgpu-sim/flash/ptx_bfloat_arithmetic.h"
 #include "../gpgpu-sim/flash/ptx_half_sign.h"
+#include "../gpgpu-sim/flash/ptx_bfloat_minmax.h"
 #include "../gpgpu-sim/flash/ptx_mixed_arithmetic.h"
 #include "../gpgpu-sim/flash/ptx_bfloat_conversion.h"
 #include "../gpgpu-sim/flash/ptx_narrow_conversion.h"
@@ -4939,6 +4940,7 @@ static ptx_reg_t minmax_f32_pair(ptx_reg_t a, ptx_reg_t b, bool maximum) {
 }
 
 void max_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (flash_gpgpu_sim::execute_ptx_bfloat_minmax(pI, thread)) return;
   ptx_reg_t a, b, d;
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();
@@ -4993,6 +4995,7 @@ void membar_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void min_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (flash_gpgpu_sim::execute_ptx_bfloat_minmax(pI, thread)) return;
   ptx_reg_t a, b, d;
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();

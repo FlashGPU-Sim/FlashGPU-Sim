@@ -303,3 +303,10 @@ cuda = "13.3"
 tests = [
   { name = "half-unary-sign-dual-launch", group = "half_sign", gtest_filter = "HalfSign.*", post_check = "tests/ci/check_half_sign_dual.py" },
 ]
+
+[jobs.sm100-bfloat-minmax]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "bfloat-minmax-dual-launch", group = "bfloat_minmax", gtest_filter = "BfloatMinMax.*", post_check = "tests/ci/check_bfloat_minmax_dual.py" },
+]

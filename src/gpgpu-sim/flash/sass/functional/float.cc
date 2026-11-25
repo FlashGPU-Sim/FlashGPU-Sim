@@ -1,4 +1,5 @@
 #include "../../bfloat_arithmetic.h"
+#include "../../bfloat_minmax.h"
 #include "../../fp32_fma.h"
 #include "../../half_sign.h"
 #include "../decode/fp32x2_operand.h"
@@ -411,25 +412,10 @@ step_result execute_bfloat_minmax2(const instruction &inst, warp_state &state,
         }
         values[i] = value;
       }
-      float value = values[0];
-      for (unsigned i = 1; i < sources; ++i) {
-        // CUDA min/max orders -0 below +0 irrespective of operand order.
-        if (value == 0 && values[i] == 0) {
-          const bool negative =
-              minimum ? (std::signbit(value) || std::signbit(values[i]))
-                      : (std::signbit(value) && std::signbit(values[i]));
-          value = negative ? -0.0f : 0.0f;
-        } else {
-          // Host fmin/fmax may propagate signaling NaNs. Native min/max
-          // without .NaN selects the numeric operand for either NaN kind.
-          if (std::isnan(value))
-            value = values[i];
-          else if (!std::isnan(values[i]))
-            value = minimum ? std::fmin(value, values[i])
-                            : std::fmax(value, values[i]);
-        }
-      }
-      result |= uint32_t(float_bfloat_rn(value)) << (half * 16);
+      uint16_t value = float_bfloat_rn(values[0]);
+      for (unsigned i = 1; i < sources; ++i)
+        value = bf16_minmax(value, float_bfloat_rn(values[i]), minimum);
+      result |= uint32_t(value) << (half * 16);
     }
     state.write_register(lane, inst.operands[0].index, result);
   }
