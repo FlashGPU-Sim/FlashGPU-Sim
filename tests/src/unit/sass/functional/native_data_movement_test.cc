@@ -11,6 +11,58 @@ frontend image_for(std::vector<instruction> instructions) {
   register_sm100_functional_semantics(f);
   return f;
 }
+TEST(SassNativeDataMovement, DirectLoadWithUniformOffsetUsesOneAddressPair) {
+  for (const char *operands : {"R4[R2.64+UR10+0x80]", "R4[R2+UR10+0x80]"}) {
+    auto f = image_for({official_instruction(0, "LDG.E.LTC128B", operands, "@P0")});
+    mapped_functional_memory memory;
+    constexpr uint64_t base = 0x100000100ull;
+    constexpr uint64_t offset = 0xfffffff0ull;
+    const auto address = base + offset + 0x80;
+    memory.map(memory_space::kGlobal, address, 8, true);
+    memory.initialize<uint32_t>(memory_space::kGlobal, address, 42);
+    memory.initialize<uint32_t>(memory_space::kGlobal, address + 4, 73);
+    warp_state state;
+    state.active_mask = 7;
+    state.write_uniform_register(10, offset);
+    state.write_uniform_register(11, 0x12345678); // Must not form a UR pair.
+    for (unsigned lane = 0; lane < 3; ++lane) {
+      state.write_register(lane, 2, uint32_t(base) + 4 * lane);
+      state.write_register(lane, 3, base >> 32);
+      state.write_register(lane, 4, 999);
+      state.write_predicate(lane, 0, lane != 2);
+    }
+    execution_context context{&memory};
+    const auto result = f.step("test", state, context);
+    ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+    EXPECT_EQ(state.read_register(0, 4), 42u);
+    EXPECT_EQ(state.read_register(1, 4), 73u);
+    EXPECT_EQ(state.read_register(2, 4), 999u);
+    EXPECT_EQ(context.memory_accesses[0][0].address, address);
+    EXPECT_EQ(context.memory_accesses[1][0].address, address + 4);
+    EXPECT_TRUE(context.memory_accesses[2].empty());
+  }
+}
+TEST(SassNativeDataMovement, DirectUniformOffsetTimingKeepsThreeSources) {
+  auto inst = official_instruction(0, "LDG.E.LTC128B", "R4[R2.64+UR10+0x80]");
+  ASSERT_TRUE(flash_gpgpu_sim::sass::normalize_ldg_operands(inst));
+  const timing_instruction timing(official_instruction(0, "LDG.E.LTC128B", "R4[R2.64+UR10+0x80]"));
+  EXPECT_EQ(timing.incount, 3u);
+  EXPECT_EQ(timing.outcount, 1u);
+  EXPECT_EQ(timing.data_size, 4u);
+  ASSERT_EQ(inst.operands.size(), 2u);
+  const auto &terms = inst.operands[1].address_groups[0].terms;
+  EXPECT_TRUE(terms[0].wide);
+  EXPECT_FALSE(terms[1].wide);
+}
+TEST(SassNativeDataMovement, DirectUniformOffsetRejectsUnqualifiedAddresses) {
+  for (const char *operands : {"R4[UR10]", "R4[R2.64+R6.64+UR10]",
+                              "R4[R2.64-UR10]", "R4[R2.64+UR10+UR12]", "R4[R2.64+UR256]"}) {
+    auto inst = official_instruction(0, "LDG.E.LTC128B", operands);
+    EXPECT_FALSE(inst.operands_structured &&
+                 flash_gpgpu_sim::sass::normalize_ldg_operands(inst)) << operands;
+    EXPECT_EQ(inst.operands.size(), 1u);
+  }
+}
 TEST(SassNativeDataMovement, UniformSpillFillRoundtripAndLaneGuards) {
   auto f = image_for({official_instruction(0, "MOV.SPILL", "R5,UR6"),
                       official_instruction(16, "R2UR.FILL", "UR6,R5")});

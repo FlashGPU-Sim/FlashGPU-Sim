@@ -552,7 +552,7 @@ bool normalize_ldg_operands(instruction &inst) {
   destination.kind = operand_kind::kRegister;
   destination.index = address.prefix_index;
   address.has_prefix = false;
-  unsigned bases = 0;
+  unsigned bases = 0, register_bases = 0, uniform_offsets = 0;
   for (auto &term : address.address_groups[0].terms) {
     if (term.kind == address_term_kind::kRegister) {
       if (term.index == kZeroRegister && !term.wide && !term.negated)
@@ -561,15 +561,25 @@ bool normalize_ldg_operands(instruction &inst) {
         return false;
       term.wide = true; // LDG.E uses a pair even when .64 is omitted.
       ++bases;
+      ++register_bases;
     } else if (term.kind == address_term_kind::kUniformRegister) {
-      if (!term.wide || term.negated || term.index >= kZeroUniformRegister - 1)
+      if (term.negated || term.index > kZeroUniformRegister)
         return false;
-      ++bases;
+      if (term.wide) {
+        if (term.index >= kZeroUniformRegister - 1)
+          return false;
+        ++bases;
+      } else {
+        // Legacy LDG lowering can add a 32-bit uniform byte offset to the
+        // lane's 64-bit base. Keep it narrow for address and dependency reads.
+        ++uniform_offsets;
+      }
     } else if (term.kind != address_term_kind::kImmediate) {
       return false;
     }
   }
-  if (bases != 1)
+  if (bases != 1 || uniform_offsets > 1 ||
+      (uniform_offsets && register_bases != 1))
     return false;
   inst.operands = {destination, address};
   return true;
