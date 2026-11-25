@@ -94,4 +94,31 @@ TEST(WarpShuffle, PredicatedAliasingAndRepeatedInstruction) {
   EXPECT_EQ(cudaFree(in), cudaSuccess);
   EXPECT_EQ(cudaFree(out), cudaSuccess);
 }
+
+__global__ void shuffle_participants_only(unsigned *out) {
+  const unsigned lane = threadIdx.x;
+  unsigned value = 0;
+  // Nonparticipants intentionally never initialize r. They must not read it.
+  asm volatile("{.reg .b32 r; .reg .pred p; setp.ne.u32 p,%1,0; "
+               "@p mov.b32 r,%2; "
+               "@p shfl.sync.up.b32 r,r,2,0,0xaaaaaaaa; "
+               "@p mov.b32 %0,r;}"
+               : "+r"(value) : "r"(lane & 1), "r"(100 + lane));
+  out[lane] = value;
+}
+TEST(WarpShuffle, PredicatedOffLanesDoNotReadUndefinedSources) {
+  unsigned *out;
+  ASSERT_EQ(cudaMalloc(&out, 32 * sizeof(unsigned)), cudaSuccess);
+  testing::internal::CaptureStdout();
+  shuffle_participants_only<<<1,32>>>(out);
+  const auto status = cudaDeviceSynchronize();
+  const auto output = testing::internal::GetCapturedStdout();
+  ASSERT_EQ(status, cudaSuccess);
+  EXPECT_EQ(output.find("reading undefined register"), std::string::npos);
+  unsigned values[32];
+  ASSERT_EQ(cudaMemcpy(values, out, sizeof(values), cudaMemcpyDeviceToHost), cudaSuccess);
+  for (unsigned lane = 0; lane < 32; ++lane)
+    EXPECT_EQ(values[lane], (lane & 1) ? 100 + (lane > 1 ? lane - 2 : lane) : 0u);
+  EXPECT_EQ(cudaFree(out), cudaSuccess);
+}
 }  // namespace
