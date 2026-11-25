@@ -184,8 +184,8 @@ an applicable patch is not a public-base test result.
 | Typeless trap/brkpt predecode | `b4a45d47` | Qualified independently at `0ca9132d` |
 | Vector modifier order | `8b716c37` | Qualified independently at `1da2dcef` |
 | Full-width integer constants | `0b9b4586` | Qualified independently at `7463cec0` |
-| Invalid tensor-map diagnostic bounds | `0c2dd8ae` | Patch applies; independent qualification pending |
-| Device-call argument ownership | `04cc4765` | Patch applies; independent qualification pending |
+| Invalid tensor-map diagnostic bounds | `0c2dd8ae` | Qualified independently at `3902d5eb` |
+| Device-call argument ownership | `04cc4765` | Qualified independently at `b2e3c9a0` |
 
 The patch checks and touched files are recorded in workspace
 `runs/tcgen-functional-branches-20261125/additional-public-fix-audit.json`.
@@ -193,7 +193,7 @@ The typeless-control candidate is now qualified on
 `fix/ptx-typeless-control-public`: both unexecuted control-opcode fixtures assert
 on public main and pass predecode with the same binary after the correction.
 Actual trap execution behavior is unchanged. Evidence:
-`runs/public-typeless-control-20261125/qualification.json`. The remaining seven
+`runs/public-typeless-control-20261125/qualification.json`. The remaining five
 candidates still require independent qualification or a narrower public port.
 
 Two parser candidates are now independently qualified against public main:
@@ -206,6 +206,19 @@ runtimes. Evidence: `runs/public-integer-literals-20261125/qualification.json`
 and `runs/public-vector-order-20261125/qualification.json`. Their initial
 setup-error logs are excluded from regression qualification. These bring the
 independently qualified public-fix set to nine, without opening public PRs.
+
+Two further common fixes are qualified without TCGen05 dependencies.
+`fix/ptx-call-argument-ownership-public` (`b2e3c9a0`) replaces shallow-owned
+parameter bytes with value-owned storage: a complete 32-lane, three-call
+aggregate argument/return regression double-frees on public main and passes
+with the same executable after the fix. `fix/tensormap-diagnostic-bounds-public`
+(`3902d5eb`) bounds diagnostic reads for invalid ranks: the guard-page test
+reproduces SIGSEGV, then passes; all five valid-rank printouts are unchanged
+and three PTX isolation tests pass. Evidence is under
+`runs/public-call-ownership-20261125/` and
+`runs/public-tensormap-diagnostic-20261125/`. Both are pushed privately.
+The independently qualified public-fix set is now eleven; five candidates
+remain, and hosted CI/public PR preparation is not claimed complete.
 
 The negated accumulator predicate correction (`987680ef`) is different: it is
 inside the new TCGen05 MMA adapter and has already been folded into the MMA
@@ -225,6 +238,22 @@ that all entries have run at the latest commit. Strict GPU equality and complete
 sparse-diff equality to a previously accepted residual are separate outcomes.
 The latter does not establish GPU bit-exactness or prove rounding as the cause.
 Running/queued entries remain unverified.
+
+The extracted PTX L3 MoE completed in 893395 cycles (previously 893485).
+Its complete sparse GPU-checker residual changed, so it was separately audited:
+final `out`/`stats` and all eight remote combine contribution buffers are
+bitwise identical to the previous result. All 3072 expert/source-rank token
+lists preserve their multisets. Aligning the 3081 active rank-zero tokens by
+(source rank, token, topk) within each expert makes L1 token data, L1 scale,
+routing weights, L2 token data and L2 scale byte-identical. Changes are dispatch
+permutations and intermediate layout variation, not a new numerical output
+regression. The previous GPU residual remains (relative L2 0.0001883973562);
+this is not strict GPU equality. The collector preserves the raw NEEDS_REVIEW
+classification and uses a distinct `RETAINED_SEMANTICS_DISPATCH_PERMUTATION`
+category, bound to hashed evidence in
+`runs/native-final-audit-20261125/manual-reviews.json`. At this checkpoint,
+three other MoE entries remain running. These results use frozen runtimes,
+not the documentation-only latest integration head.
 
 Static opcode registration is only a diagnostic. The remaining generic
 conversion branches in the PyTorch copy kernel are not exercised by its retained
