@@ -67,10 +67,17 @@ are under `runs/tcgen-functional-branches-20261125/`, indexed by
 `runs/CURRENT.json`. These gates do not replace the retained DeepInfer acceptance:
 at this checkpoint 67 entries match GPU strictly and 46 retain the prior accepted
 numerical residual. Two PTX MoE entries remain running or queued. Two SASS MoE
-entries stopped making work progress after about 130,000 cycles and need a
-separate diagnosis; they are not acceptance passes. Their read-only snapshots
-show matching functional/timing mbarrier state and a global counter read of 96
-against an expected 128. One subsequent debugger-invoked pipeline dump crashed
+entries stopped making work progress after about 130,000 cycles; they are not
+acceptance passes. Rank-zero snapshots initially showed matching mbarrier state
+and a global counter of 96 against an expected 128. Rank-one snapshots then
+identified the cause: UBLKCP.S.G credited an encoded cluster address as a local
+barrier key, separate from the canonical key used by arrival and wait. The fix
+resolves payload and completion owners independently and forwards explicit
+targets to the existing shared TMA backend. An eight-combination owner fixture
+fails with the frozen pre-fix runtime; the repaired local CI passes four unit
+tests and five numerical launches per frontend, including cluster size two.
+Full MoE numerical acceptance remains pending. Evidence is under
+`runs/native-bulk-cluster-20261125/`. One debugger-invoked pipeline dump crashed
 on a null PTX thread; this diagnostic failure is recorded separately from the
 original stall. Evidence is indexed by
 `tcgen_extracted_sass_moe_stall_20261125` in `runs/CURRENT.json`. The residual
@@ -111,6 +118,13 @@ cycle counts are unchanged. The tests are wired into existing SM90/100/120
 integration CI, but only local SM100 execution has been qualified so far. This
 is not a hosted CI pass or a new public PR. Evidence:
 `runs/public-signed-byte-20261125/`.
+
+Aliased shuffle inputs also have public-base evidence on private branch
+`fix/ptx-shuffle-source-public`: test-only commit `71a64db9`, fix `39c27501`.
+The same executable has three failures before and five passes after, with all
+five cycle counts unchanged. Coverage includes up/down/bfly/idx, segmented
+widths, and repeated predicated execution. Local SM100 evidence is under
+`runs/public-shuffle-20261125/`; hosted CI and public submission remain pending.
 
 Tensor-coordinate literals (`85f3e067`) need an explicit port: the private
 parser context includes the separate narrow mov-pack extension, and its rank

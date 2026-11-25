@@ -735,6 +735,11 @@ timing_step_result timing_runtime::step(
     dynamic_instruction.set_bar_count(
         context.named_barrier_effect.participant_count);
   }
+  if (source->opcode == "UBLKCP.S.G" && context.cluster) {
+    auto info = dynamic_instruction.get_tma_static_info();
+    info.dst_space = inst_t::tma_static_info_t::TMA_SHARED_CLUSTER;
+    dynamic_instruction.set_tma_static_info(info);
+  }
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
     if (context.tma_effects[lane].valid)
       dynamic_instruction.set_tma_dyn_info(

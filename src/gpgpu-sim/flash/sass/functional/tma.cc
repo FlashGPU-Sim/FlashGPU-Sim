@@ -972,8 +972,8 @@ step_result execute_ublkcp_shared_global(const instruction &inst,
   if (context.memory == nullptr || context.cta == nullptr)
     return unsupported(inst, "UBLKCP.S.G requires CTA memory and state");
 
-  const uint64_t shared_address = state.read_uniform_register(state_term.index);
-  const uint64_t mbarrier_address =
+  const uint64_t encoded_shared = state.read_uniform_register(state_term.index);
+  const uint64_t encoded_barrier =
       state.read_uniform_register(state_term.index + 1);
   const uint64_t global_address =
       read_uniform_register_pair(state, global_term.index);
@@ -981,29 +981,64 @@ step_result execute_ublkcp_shared_global(const instruction &inst,
   if (size_units == 0 || size_units > std::numeric_limits<size_t>::max() / 16)
     return unsupported(inst, "invalid UBLKCP transfer size");
   const size_t bytes = static_cast<size_t>(size_units * 16);
+  uint64_t shared_address = encoded_shared, mbarrier_address = encoded_barrier;
+  functional_memory *destination_memory = context.memory;
+  functional_memory *barrier_memory = context.memory;
+  cta_execution_state *barrier_cta = context.cta;
+  unsigned destination_rank = 0, barrier_rank = 0;
+  if (context.cluster) {
+    const unsigned count = context.cluster->ctas.size();
+    destination_rank = shared_cluster_rank(encoded_shared);
+    barrier_rank = shared_cluster_rank(encoded_barrier);
+    if (!count || count > 16 || context.cluster->memories.size() != count ||
+        destination_rank >= count || barrier_rank >= count ||
+        !context.cluster->memories[destination_rank] ||
+        !context.cluster->memories[barrier_rank] ||
+        !context.cluster->ctas[barrier_rank])
+      return unsupported(inst, "bulk load target CTA is not resident");
+    shared_address = shared_cluster_offset(encoded_shared);
+    mbarrier_address = shared_cluster_offset(encoded_barrier);
+    destination_memory = context.cluster->memories[destination_rank];
+    barrier_memory = context.cluster->memories[barrier_rank];
+    barrier_cta = context.cluster->ctas[barrier_rank];
+  }
   if ((global_address % 16) != 0 || (shared_address % 16) != 0)
     return unsupported(inst, "UBLKCP addresses must be 16-byte aligned");
-  if (!ensure_mbarrier_imported(mbarrier_address, context))
+  execution_context owner_context{barrier_memory};
+  owner_context.cta = barrier_cta;
+  if (!ensure_mbarrier_imported(mbarrier_address, owner_context))
     return unsupported(inst, "UBLKCP references uninitialized mbarrier");
+  for (auto initial : owner_context.imported_mbarriers) {
+    if (context.cluster)
+      initial.address |= barrier_rank << 24;
+    context.imported_mbarriers.push_back(initial);
+  }
 
   std::vector<uint8_t> payload(bytes);
   if (!context.memory->read(memory_space::kGlobal, global_address,
                             payload.data(), payload.size()))
     return memory_fault(inst, memory_space::kGlobal, global_address,
                         payload.size());
-  if (!context.memory->write(memory_space::kShared, shared_address,
-                             payload.data(), payload.size()))
+  if (!destination_memory->write(memory_space::kShared, shared_address,
+                                 payload.data(), payload.size()))
     return memory_fault(inst, memory_space::kShared, shared_address,
                         payload.size());
   functional_tma_effect timing_effect;
-  timing_effect.destination_address = shared_address;
+  // Keep destination identity in the linear transaction, even when two CTAs
+  // use the same offset and notify the same completion owner.
+  timing_effect.destination_address = encoded_shared;
   timing_effect.source_address = global_address;
   timing_effect.size_bytes = static_cast<uint32_t>(bytes);
   timing_effect.mbarrier_address = static_cast<uint32_t>(mbarrier_address);
+  if (context.cluster) {
+    timing_effect.explicit_cluster_targets = true;
+    timing_effect.destination_mask = uint16_t(1u << destination_rank);
+    timing_effect.completion_mask = uint32_t(1u << barrier_rank);
+  }
   if (!record_uniform_tma_effect(inst, state, context,
                                  std::move(timing_effect)))
     return unsupported(inst, "executing uniform bulk load has no issuing lane");
-  if (!context.cta->complete_mbarrier_transaction(mbarrier_address, bytes,
+  if (!barrier_cta->complete_mbarrier_transaction(mbarrier_address, bytes,
                                                   true))
     return unsupported(inst, "mbarrier state changed during UBLKCP");
   advance(inst, state);
