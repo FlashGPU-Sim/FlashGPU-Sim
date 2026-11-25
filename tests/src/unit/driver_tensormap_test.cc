@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "sass/test_support.h"
 #include <array>
 #include <cstring>
 #include "gpgpu-sim/flash/tma_opaque_tensormap.h"
@@ -116,5 +117,57 @@ TEST(DriverTensorMap, CapturedTf32FormatsAndDestinationPreservation) {
     encoded.raw_u64[8] ^= 1;
     EXPECT_FALSE(decode_sm100_driver_tensormap(encoded, rank, d));
     EXPECT_EQ(std::memcmp(&d, &saved, sizeof(d)), 0);
+  }
+}
+
+TEST(DriverTensorMap, Native3DStoreAddressFormsAndQualifierGuards) {
+  for (const char *operands : {"[UR4][UR8]", "[UR4],[UR8]",
+                              "[UR4][UR8],desc[UR12]",
+                              "[UR4],[UR8],desc[UR12]"}) {
+    for (const uint64_t qualifier : {0x1000000000000000ull,
+                                     0x12f0000000000000ull,
+                                     0x14f0000000000000ull, 1ull}) {
+      const bool qualified = std::strstr(operands, "desc") != nullptr;
+      const bool valid = !qualified || qualifier != 1;
+      const auto inst = official_instruction(0, "UTMASTG.3D", operands);
+      kernel image;
+      image.name = "store3d";
+      image.arch = architecture::kSm100;
+      image.instruction_bytes = 16;
+      image.instructions = {inst};
+      frontend sass;
+      sass.add_kernel(std::move(image));
+      register_sm100_functional_semantics(sass);
+      mapped_functional_memory memory;
+      memory.map(flash_gpgpu_sim::sass::memory_space::kGlobal, 0x1000, 128, true);
+      memory.map(flash_gpgpu_sim::sass::memory_space::kGlobal, 0x2000, 128, true);
+      memory.map(flash_gpgpu_sim::sass::memory_space::kShared, 0, 32, true);
+      const uint64_t words[16] = {0x2000, 0x100240020ull, 4, 0,
+          0x30000000full, 1, 0x0f00000000000000ull, 1, 32, 0x10};
+      ASSERT_TRUE(memory.write(flash_gpgpu_sim::sass::memory_space::kGlobal, 0x1000, words, sizeof(words)));
+      for (unsigned i = 0; i < 128; ++i)
+        memory.initialize<uint8_t>(flash_gpgpu_sim::sass::memory_space::kGlobal, 0x2000+i, 0xa5);
+      for (unsigned i = 0; i < 32; ++i)
+        memory.initialize<uint8_t>(flash_gpgpu_sim::sass::memory_space::kShared, i, i+1);
+      cta_execution_state cta(32);
+      execution_context context{&memory};
+      context.cta = &cta;
+      warp_state state;
+      state.active_mask = 1u << 7;
+      state.write_uniform_register(4, 0);
+      state.write_uniform_register(5, 0);
+      state.write_uniform_register(6, 1);
+      state.write_uniform_register(7, 1);
+      state.write_uniform_register(8, 0x1000);
+      state.write_uniform_register(9, 0);
+      state.write_uniform_register(12, qualifier);
+      state.write_uniform_register(13, qualifier >> 32);
+      const auto result = sass.step("store3d", state, context);
+      if (valid) ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+      else EXPECT_NE(result.status, step_status::kAdvanced);
+      for (unsigned i = 0; i < 128; ++i)
+        EXPECT_EQ(memory.inspect<uint8_t>(flash_gpgpu_sim::sass::memory_space::kGlobal, 0x2000+i),
+                  valid && i >= 80 && i < 112 ? i-79 : 0xa5) << operands << ":" << i;
+    }
   }
 }

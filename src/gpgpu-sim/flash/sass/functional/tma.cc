@@ -510,24 +510,11 @@ step_result execute_utmastg(const instruction &inst, warp_state &state,
                                                       : 0;
   if (rank == 0)
     return unsupported(inst, "unsupported TMA store rank");
-  const operand *addresses = get_operand(inst, 0, operand_kind::kMemoryAddress);
-  if (!has_typed_operands(inst, 1) || addresses == nullptr ||
-      addresses->has_prefix || addresses->address_groups.size() != 2)
-    return unsupported(inst, "expected [URbase][URdescriptor] operands");
-
-  const address_expression &state_group = addresses->address_groups[0];
-  const address_expression &descriptor_group = addresses->address_groups[1];
-  if (state_group.terms.size() != 1 || descriptor_group.terms.size() != 1)
-    return unsupported(inst, "TMA addresses must each be one uniform register");
-  const address_term &state_term = state_group.terms[0];
-  const address_term &descriptor_term = descriptor_group.terms[0];
-  if (state_term.kind != address_term_kind::kUniformRegister ||
-      descriptor_term.kind != address_term_kind::kUniformRegister ||
-      state_term.wide || descriptor_term.wide || state_term.negated ||
-      descriptor_term.negated ||
-      state_term.index > kUniformRegisters - (rank + 1) ||
-      descriptor_term.index > kUniformRegisters - 2)
-    return unsupported(inst, "unsupported TMA uniform-register convention");
+  // Stores use the same combined/split address grammar as loads, with one
+  // fewer state register because there is no mbarrier operand.
+  tma_load_operands decoded;
+  if (!decode_tma_load_operands(inst, rank + 1, false, true, decoded))
+    return unsupported(inst, "invalid TMA store state/map spans or qualifier");
   if (!any_lane_executes(inst, state)) {
     advance(inst, state);
     return {step_status::kAdvanced, {}};
@@ -535,16 +522,25 @@ step_result execute_utmastg(const instruction &inst, warp_state &state,
   if (context.memory == nullptr || context.cta == nullptr)
     return unsupported(inst, "UTMASTG requires CTA memory and state");
 
+  if (decoded.cache_descriptor) {
+    const auto qualifier = read_uniform_register_pair(
+        state, decoded.cache_descriptor->descriptor_register);
+    if (qualifier != 0x1000000000000000ull &&
+        qualifier != 0x12f0000000000000ull &&
+        qualifier != 0x14f0000000000000ull)
+      return unsupported(inst, "unvalidated TMA store address qualifier");
+  }
+
   // Store state has no mbarrier: URbase is the shared source and the following
   // rank uniform registers are the signed tensor coordinates.
-  const unsigned state_base = state_term.index;
+  const unsigned state_base = decoded.state_base;
   const uint64_t shared_address = state.read_uniform_register(state_base);
   std::array<int64_t, 5> coordinates{};
   for (unsigned dimension = 0; dimension < rank; ++dimension)
     coordinates[dimension] = static_cast<int32_t>(
         state.read_uniform_register(state_base + 1 + dimension));
   const uint64_t descriptor_address =
-      read_uniform_register_pair(state, descriptor_term.index);
+      read_uniform_register_pair(state, decoded.map_base);
   functional_tensor_map_view tensor_map;
   const functional_tensor_map_2d *registered_tensor_map =
       rank <= 2 ? context.cta->find_tensor_map_2d(descriptor_address) : nullptr;

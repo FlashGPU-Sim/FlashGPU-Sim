@@ -13,3 +13,9 @@ form; the native handler and regression coverage were missing.
 
 This slice does not add packed/sub-byte store formats, reduce operations, or
 new tensor-map encodings.
+
+The native adapter also accepts combined `[URstate][URmap]` and split
+`[URstate],[URmap]` operands, with the retained optional `desc[UR]` qualifier.
+It reuses the load operand decoder with the store-specific register span.
+Functional tests check all accepted qualifier values and ensure rejected
+values do not write memory. Unknown qualifiers remain unsupported.
