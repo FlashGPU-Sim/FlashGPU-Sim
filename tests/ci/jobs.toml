@@ -282,3 +282,10 @@ cuda = "13.3"
 tests = [
   { name = "floating-tma-and-dual-launch", group = "unit", gtest_filter = "DriverTensorMap.*", post_check = "tests/ci/check_tma_float_dual.py" },
 ]
+
+[jobs.sm100-ptx-call-ownership]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "ptx-call-argument-ownership", group = "call_ownership", gtest_filter = "PtxCallOwnership.*", post_check = "tests/ci/check_call_ownership.py" },
+]
