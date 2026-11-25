@@ -65,6 +65,7 @@ sources = [
   "integration/address_operand_test.cu",
   "integration/vector_operand_test.cu",
   "integration/call_ownership_test.cu",
+  "integration/dynamic_shared_alignment_test.cu",
   "integration/ptx_fma_test.cu",
   "integration/integer_multiply_test.cu",
   "integration/float_minmax_three_input_test.cu",
