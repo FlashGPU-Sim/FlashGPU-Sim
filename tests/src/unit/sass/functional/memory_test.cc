@@ -148,6 +148,39 @@ TEST(SassFunctionalTest, ExecutesGenericSharedAndGlobalAccesses) {
   EXPECT_EQ(state.read_register(0, 20), 0u);
 }
 
+TEST(SassFunctionalTest, NarrowGenericStoresPreserveAdjacentBytes) {
+  for (bool shared : {false, true}) {
+    for (unsigned bytes : {1u, 2u}) {
+      SCOPED_TRACE(shared);
+      SCOPED_TRACE(bytes);
+      kernel image;
+      image.name = "narrow_generic_store";
+      image.arch = architecture::kSm100;
+      image.instruction_bytes = 16;
+      image.instructions = {official_instruction(
+          0, bytes == 1 ? "ST.E.U8" : "ST.E.U16", "desc[UR4][R2.64],R5")};
+      const auto space = shared ? memory_space::kShared : memory_space::kGlobal;
+      mapped_functional_memory memory;
+      memory.map(space, 0x100, 4, true);
+      memory.initialize<uint32_t>(space, 0x100, 0xaabbccdd);
+      frontend sass;
+      sass.add_kernel(std::move(image));
+      register_sm120_functional_semantics(sass);
+      warp_state state;
+      state.active_mask = 1;
+      state.write_uniform_register(4, shared ? 0 : 1);
+      state.write_register(0, 2, 0x100);
+      state.write_register(0, 3, 0);
+      state.write_register(0, 5, 0x12345678);
+      execution_context context{&memory};
+      const auto result = sass.step("narrow_generic_store", state, context);
+      ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+      EXPECT_EQ(memory.inspect<uint32_t>(space, 0x100),
+                bytes == 1 ? 0xaabbcc78u : 0xaabb5678u);
+    }
+  }
+}
+
 TEST(SassFunctionalTest, ExecutesStrongSystemGenericStore) {
   for (bool shared : {false, true}) {
     SCOPED_TRACE(shared);
@@ -243,9 +276,10 @@ TEST(SassFunctionalTest, ReturnsSharedAtomicOldValueWithoutGlobalMemoryAccess) {
       image.arch = arch;
       image.instruction_bytes = 16;
       const std::string reg = destination == zero_register
-                                  ? "RZ" : "R" + std::to_string(destination);
-      image.instructions = {official_instruction(
-          0, "ATOMS.ADD", reg + "[R0+URZ],R1", "@P0")};
+                                  ? "RZ"
+                                  : "R" + std::to_string(destination);
+      image.instructions = {
+          official_instruction(0, "ATOMS.ADD", reg + "[R0+URZ],R1", "@P0")};
       mapped_functional_memory memory;
       memory.map(memory_space::kShared, 0x100, sizeof(uint32_t), true);
       memory.initialize<uint32_t>(memory_space::kShared, 0x100, 0xfffffffeu);
@@ -273,7 +307,8 @@ TEST(SassFunctionalTest, ReturnsSharedAtomicOldValueWithoutGlobalMemoryAccess) {
       EXPECT_EQ(memory.global_reads, 0u);
       for (unsigned lane = 0; lane < 2; ++lane) {
         ASSERT_EQ(context.memory_accesses[lane].size(), 1u);
-        EXPECT_EQ(context.memory_accesses[lane][0].space, memory_space::kShared);
+        EXPECT_EQ(context.memory_accesses[lane][0].space,
+                  memory_space::kShared);
         EXPECT_EQ(context.memory_accesses[lane][0].address, 0x100u);
         EXPECT_FALSE(context.memory_accesses[lane][0].write);
       }
@@ -915,7 +950,8 @@ TEST(SassFunctionalTest, ExecutesGlobalAtomicAddWithReturnedOldValue) {
   }
   for (auto &worker : workers) worker.join();
   EXPECT_EQ(concurrent_memory.storage.inspect<uint32_t>(memory_space::kGlobal,
-                                                       address), 512u);
+                                                        address),
+            512u);
   EXPECT_EQ(old_sums[0] + old_sums[1] + old_sums[2] + old_sums[3],
             uint64_t{512} * 511 / 2);
 }
@@ -1050,85 +1086,120 @@ TEST(SassFunctionalTest, DirectGlobalLoadKeepsPairAndLanePredication) {
 namespace {
 TEST(SassFunctionalTest, Gather4KeepsRowOrderAndCreditsAllFourRows) {
   for (unsigned width : {1u, 2u, 4u, 8u}) {
-    kernel image; image.name = "gather"; image.arch = architecture::kSm100; image.instruction_bytes = 16;
-    image.instructions = {official_instruction(0, "UTMALDG.2D.GATHER4", "[UR4][UR12]")};
-    frontend sass; sass.add_kernel(std::move(image));
+    kernel image;
+    image.name = "gather";
+    image.arch = architecture::kSm100;
+    image.instruction_bytes = 16;
+    image.instructions = {
+        official_instruction(0, "UTMALDG.2D.GATHER4", "[UR4][UR12]")};
+    frontend sass;
+    sass.add_kernel(std::move(image));
     flash_gpgpu_sim::sass::register_sm100_functional_semantics(sass);
     mapped_functional_memory memory;
     memory.map(memory_space::kGlobal, 0x10000, 8 * 128 * width, true);
     memory.map(memory_space::kShared, 0, 8192, true);
     std::vector<uint8_t> input(8 * 128 * width);
-    for (unsigned i = 0; i < input.size(); ++i) input[i] = (i * 37 + i / 128) & 255;
-    ASSERT_TRUE(memory.write(memory_space::kGlobal, 0x10000, input.data(), input.size()));
+    for (unsigned i = 0; i < input.size(); ++i)
+      input[i] = (i * 37 + i / 128) & 255;
+    ASSERT_TRUE(memory.write(memory_space::kGlobal, 0x10000, input.data(),
+                             input.size()));
     cta_execution_state cta(1);
     functional_tensor_map_2d map;
-    map.global_address = 0x10000; map.element_bytes = width;
-    map.global_dim = {{128, 8}}; map.box_dim = {{64, 1}};
+    map.global_address = 0x10000;
+    map.element_bytes = width;
+    map.global_dim = {{128, 8}};
+    map.box_dim = {{64, 1}};
     map.row_stride_bytes = 128 * width;
     ASSERT_TRUE(cta.register_tensor_map_2d(0x20000, map));
     ASSERT_TRUE(cta.initialize_mbarrier(0, 1));
     ASSERT_TRUE(cta.arrive_mbarrier(0, 1, 4 * 64 * width));
-    warp_state state; state.active_mask = 1;
-    state.write_uniform_register(4, 1024); state.write_uniform_register(5, 0);
+    warp_state state;
+    state.active_mask = 1;
+    state.write_uniform_register(4, 1024);
+    state.write_uniform_register(5, 0);
     state.write_uniform_register(6, 96);
     const int rows[] = {5, -1, 5, 8};
-    for (unsigned i=0; i<4; ++i) state.write_uniform_register(7+i, rows[i]);
-    state.write_uniform_register(12, 0x20000); state.write_uniform_register(13, 0);
-    execution_context context{&memory}; context.cta = &cta;
+    for (unsigned i = 0; i < 4; ++i)
+      state.write_uniform_register(7 + i, rows[i]);
+    state.write_uniform_register(12, 0x20000);
+    state.write_uniform_register(13, 0);
+    execution_context context{&memory};
+    context.cta = &cta;
     auto result = sass.step("gather", state, context);
     ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
     std::vector<uint8_t> output(4 * 64 * width, 0xff);
-    ASSERT_TRUE(memory.read(memory_space::kShared, 1024, output.data(), output.size()));
-    for (unsigned slot=0; slot<4; ++slot)
-      for (unsigned i=0; i<64*width; ++i) {
+    ASSERT_TRUE(
+        memory.read(memory_space::kShared, 1024, output.data(), output.size()));
+    for (unsigned slot = 0; slot < 4; ++slot)
+      for (unsigned i = 0; i < 64 * width; ++i) {
         const unsigned column = 96 + i / width;
-        const uint8_t expected = rows[slot] < 0 || rows[slot] >= 8 || column >= 128
-            ? 0 : input[rows[slot]*128*width + 96*width+i];
-        EXPECT_EQ(output[slot*64*width+i], expected);
+        const uint8_t expected =
+            rows[slot] < 0 || rows[slot] >= 8 || column >= 128
+                ? 0
+                : input[rows[slot] * 128 * width + 96 * width + i];
+        EXPECT_EQ(output[slot * 64 * width + i], expected);
       }
     EXPECT_EQ(cta.mbarrier_pending_transaction_bytes(0), 0u);
     EXPECT_EQ(cta.mbarrier_phase(0), 1u);
-    EXPECT_EQ(context.tma_effects[0].size_bytes, 4*64*width);
+    EXPECT_EQ(context.tma_effects[0].size_bytes, 4 * 64 * width);
     EXPECT_EQ(context.tma_effects[0].tensor_map.box_dim[1], 1u);
-    for (unsigned i=0; i<4; ++i) EXPECT_EQ(context.tma_effects[0].coordinates[1+i], rows[i]);
-    timing_instruction projected(official_instruction(0,"UTMALDG.2D.GATHER4","[UR4][UR12]"));
+    for (unsigned i = 0; i < 4; ++i)
+      EXPECT_EQ(context.tma_effects[0].coordinates[1 + i], rows[i]);
+    timing_instruction projected(
+        official_instruction(0, "UTMALDG.2D.GATHER4", "[UR4][UR12]"));
     EXPECT_TRUE(projected.get_tma_static_info().tensor_gather4);
   }
 }
-}
+}  // namespace
 
 namespace {
-TEST(SassFunctionalTest, Gather4RejectsUnqualifiedMapsWithoutWritingOrCompleting) {
-  for (unsigned invalid=0;invalid<5;++invalid) {
-    kernel image; image.name="bad_gather";image.arch=architecture::kSm100;image.instruction_bytes=16;
-    image.instructions={official_instruction(0,"UTMALDG.2D.GATHER4","[UR4][UR12]")};
-    frontend sass;sass.add_kernel(std::move(image));register_sm100_functional_semantics(sass);
+TEST(SassFunctionalTest,
+     Gather4RejectsUnqualifiedMapsWithoutWritingOrCompleting) {
+  for (unsigned invalid = 0; invalid < 5; ++invalid) {
+    kernel image;
+    image.name = "bad_gather";
+    image.arch = architecture::kSm100;
+    image.instruction_bytes = 16;
+    image.instructions = {
+        official_instruction(0, "UTMALDG.2D.GATHER4", "[UR4][UR12]")};
+    frontend sass;
+    sass.add_kernel(std::move(image));
+    register_sm100_functional_semantics(sass);
     mapped_functional_memory memory;
-    memory.map(memory_space::kGlobal,0x10000,4096,true);
-    memory.map(memory_space::kShared,0,4096,true);
-    memory.initialize<uint32_t>(memory_space::kShared,1024,0xdeadbeef);
+    memory.map(memory_space::kGlobal, 0x10000, 4096, true);
+    memory.map(memory_space::kShared, 0, 4096, true);
+    memory.initialize<uint32_t>(memory_space::kShared, 1024, 0xdeadbeef);
     functional_tensor_map_2d map;
-    map.global_address=0x10000;map.element_bytes=4;map.global_dim={{128,8}};
-    map.box_dim={{32,1}};map.row_stride_bytes=512;
+    map.global_address = 0x10000;
+    map.element_bytes = 4;
+    map.global_dim = {{128, 8}};
+    map.box_dim = {{32, 1}};
+    map.row_stride_bytes = 512;
     if (invalid == 0) map.swizzle_bytes = 256;
     if (invalid == 1) map.data_type = 99;
-    if(invalid==2)map.element_stride[0]=2;
-    if(invalid==3)map.box_dim[1]=2;
-    if(invalid==4)map.oob_zero=false;
+    if (invalid == 2) map.element_stride[0] = 2;
+    if (invalid == 3) map.box_dim[1] = 2;
+    if (invalid == 4) map.oob_zero = false;
     cta_execution_state cta(1);
-    ASSERT_TRUE(cta.register_tensor_map_2d(0x20000,map));
-    ASSERT_TRUE(cta.initialize_mbarrier(0,1));
-    ASSERT_TRUE(cta.arrive_mbarrier(0,1,512));
-    warp_state state;state.active_mask=1;
-    state.write_uniform_register(4,1024);state.write_uniform_register(12,0x20000);
-    execution_context context{&memory};context.cta=&cta;
-    EXPECT_EQ(sass.step("bad_gather",state,context).status,step_status::kUnsupported) << invalid;
-    EXPECT_EQ(memory.inspect<uint32_t>(memory_space::kShared,1024),0xdeadbeefu);
-    EXPECT_EQ(cta.mbarrier_pending_transaction_bytes(0),512u);
-    EXPECT_EQ(cta.mbarrier_phase(0),0u);
+    ASSERT_TRUE(cta.register_tensor_map_2d(0x20000, map));
+    ASSERT_TRUE(cta.initialize_mbarrier(0, 1));
+    ASSERT_TRUE(cta.arrive_mbarrier(0, 1, 512));
+    warp_state state;
+    state.active_mask = 1;
+    state.write_uniform_register(4, 1024);
+    state.write_uniform_register(12, 0x20000);
+    execution_context context{&memory};
+    context.cta = &cta;
+    EXPECT_EQ(sass.step("bad_gather", state, context).status,
+              step_status::kUnsupported)
+        << invalid;
+    EXPECT_EQ(memory.inspect<uint32_t>(memory_space::kShared, 1024),
+              0xdeadbeefu);
+    EXPECT_EQ(cta.mbarrier_pending_transaction_bytes(0), 512u);
+    EXPECT_EQ(cta.mbarrier_phase(0), 0u);
   }
 }
-}
+}  // namespace
 namespace {
 TEST(SassFunctionalTest, Gather4MulticastAndPairedCompletionAreIndependent) {
   for (bool paired : {false, true})

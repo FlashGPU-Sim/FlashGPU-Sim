@@ -296,6 +296,8 @@ void register_global_memory_semantics(frontend &target) {
   target.register_semantics("LD.E.U16.STRONG.SYS", execute_generic_memory);
   target.register_semantics("LD.E.128", execute_generic_memory);
   target.register_semantics("ST.E", execute_generic_memory);
+  target.register_semantics("ST.E.U16", execute_generic_memory);
+  target.register_semantics("ST.E.U8", execute_generic_memory);
   target.register_semantics("ST.E.STRONG.SYS", execute_generic_memory);
   target.register_semantics("ST.E.128", execute_generic_memory);
   target.register_semantics("LDG.E.ENL2.256", execute_ldg);
