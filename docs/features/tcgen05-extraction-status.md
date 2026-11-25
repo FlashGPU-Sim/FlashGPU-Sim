@@ -1,341 +1,150 @@
 # TCGen05 private extraction status
 
-Each functional unit includes its common backend, PTX/SASS operand adapters,
-and complete numerical CUDA launch tests. The obsolete split between a
-standalone common backend and a later native adapter is not the submission
-plan. No new public PR is authorized by this preparation.
+The preparation consists of independently testable functional units. Each unit
+includes its common backend, PTX/SASS operand adapters, and complete numerical
+CUDA launches. A backend-only PR followed by a separate native-adapter PR is
+not the plan. All branches below are in the private dev repository; no public
+PR has been opened for this preparation.
 
-## Pinned functional branches
+## Current functional branches
 
-These are historical extraction checkpoints, not aliases for the latest
-integration worktree. Later corrections must be included before submission.
+| Unit | Private branch | Current head | Qualified code head | Tests / launches per frontend |
+|---|---|---|---|---:|
+| Single-CTA TMEM | `feature/blackwell-tmem` | `2560b425` | `2560b425` | 13 / 17 |
+| MMA | `feature/blackwell-mma` | `d68f7c69` | `d88e6f5a` | 24 / 51 |
+| Paired CTA | `feature/blackwell-paired-cta` | `217bf7f5` | `40267f1b` | 5 / 15 |
+| CLC | `feature/blackwell-clc` | `4be6ee02` | `c866f925` | 7 / 13 |
+| Numbered Blackwell WS collectors | `feature/blackwell-ws-collectors` | `44fa16cd` | `250b577a` | 6 / 6 |
 
-| Unit | Private branch / checkpoint | Pinned launch qualification per frontend |
+Changes after the qualified code heads are documentation only. Current private
+remote refs, unchanged source/test/config content, frozen runtime and executable
+hashes, numerical logs and PTX-isolation logs were checked in
+`runs/tcgen-functional-branches-20261125/branch-closure-audit.json`.
+The canonical gate index is `report.json` in the same directory. The original
+`private-publish.json` records an earlier push, not these later documentation heads.
+
+The dependency structure is:
+
+- TMEM builds on reviewed scalar/gather4 prerequisites at `c6549df8`.
+- MMA builds on TMEM; paired CTA and numbered WS collectors both build on MMA.
+  WS is a sibling of paired CTA, not a descendant of the entire integration stack.
+- CLC builds on paired CTA and includes scalar `.b128` and discarded-result
+  global-add prerequisites needed by its complete CUDA fixtures.
+
+All five passed their own local CI and three host PTX timing-isolation checks.
+Every numerical launch runs through both frontends, synchronizes, copies back
+results, and checks them. No production config differs from the reviewed
+scalar/gather4 prerequisite. That prerequisite already includes the reviewed
+B200 TMA service-interval change; this is not a claim of no changes versus
+public main. SASS remains opt-in. Local gates are not hosted CI or hardware
+calibration, and do not qualify every ISA modifier.
+
+## Backend ownership and supported scope
+
+| Unit | Shared implementation | Adapter and qualification boundary |
 |---|---|---|
-| Single-CTA TMEM | `feature/blackwell-tmem`, `b2613ce2` | 12 tests / 14 launches; storage, allocation, LD/ST/CP and completion |
-| MMA | `feature/blackwell-mma`, `17a48226` | 23 / 49; dense/scaled arithmetic, TMEM-A, WS default-discard and swizzles |
-| Paired CTA | `feature/blackwell-paired-cta`, `efa6866c` | 4 / 14; peer ownership, allocation, MMA and multicast completion |
-| CLC | `feature/blackwell-clc`, `0745991b` | 7 / 13; common cancellation service and full launch work accounting |
-| Numbered Blackwell WS collectors | `feature/blackwell-ws-collectors`, `c07ebf23` | 6 / 6; fill/use/lastuse/discard, all four slots, shared/TMEM A |
+| TMEM | `tcgen05/tmem.*`, `copy.*`, common timing engine | PTX `tcgen05.cc`, native `tmem.*`; allocation, register fragments, shared copies, waits and commit |
+| MMA | `descriptor.*`, `mma.*`, `operands.h`, TMEM accumulator storage | PTX `ptx_mma.cc`, native `tcgen_mma_dense.cc` / `tcgen_mma_scaled.cc`; dense/scaled arithmetic and layouts |
+| Paired CTA | Same arithmetic/storage/copy backend and common cluster ownership | Peer allocation/operands, paired MMA/copy, multicast completion and native allocator lowering |
+| CLC | `flash/clc.cc`, ordinary kernel admission cursor | PTX cancellation and native `UGETNEXTWORKID` share one asynchronous service |
+| WS collectors | `tcgen05/collector.h`, CTA-scoped banks in the common TMEM manager | Numbered Blackwell WS B fill/use/lastuse/discard; no duplicate native collector state |
 
-Detailed scope and limitations live in the corresponding feature documents.
-The later contiguous-copy fix adds a TMEM launch and a paired-MMA launch.
-The negated accumulator predicate fix adds two MMA launches. These newer
-qualifications must not be attributed to an older pinned branch.
+The explicit contiguous broadcast-copy stride fix is present in TMEM and its
+paired scale-copy consumer. The negated PTX accumulator predicate fix is in
+MMA. WS BF16 fixture inputs are constructed from equivalent raw bits, avoiding
+an incidental dependency on the separate scalar-conversion feature.
 
-## Refreshed functional branches
+Detailed matrices and exclusions are in [TMEM](blackwell-tmem.md),
+[MMA](blackwell-mma.md), [paired CTA](blackwell-paired-cta.md),
+[CLC](blackwell-clc.md), and [WS collectors](blackwell-ws-collectors.md).
+Rubin/SM107, research placement, ideal-memory experiments and unqualified ISA
+modifiers stay separate. Pair/collector throughput and arbitration timing have
+not been newly calibrated by these functional gates.
 
-The following private branch heads replace the pinned checkpoints above for
-submission preparation. They retain full backend + PTX/SASS + CUDA launch
-qualification within each functional unit. No public PR has been opened.
+## Retained DeepInfer acceptance
 
-| Unit | Refreshed head | Immediate dependency | New coverage folded in |
-|---|---|---|---|
-| TMEM | `2560b425` | reviewed scalar/gather4 prerequisites | explicit contiguous broadcast stride; immutable fixture/runtime selection |
-| MMA | `d88e6f5a` | TMEM | negated PTX accumulator predicate; 24 tests / 51 launches per frontend |
-| Paired CTA | `40267f1b` | MMA | explicit contiguous scale copy feeding paired MMA |
-| CLC | `c866f925` | paired CTA, scalar b128, discarded-result global add | inherited corrected TCGen05 backend |
-| Numbered WS collectors | `250b577a` | MMA | same six numerical fixtures, without unrelated CLC/TMA/conversion prerequisites |
+The full queue contains 59 captured SASS entries and 58 recoverable PTX entries.
+Current cumulative results are selected from frozen repair runtimes; they are
+not a fresh sweep of the latest integration head.
 
-The WS branch is a sibling of paired CTA, not a descendant of the whole
-integration stack. Conflict resolution retains the single-CTA target adapter;
-collector state and arithmetic are unchanged. The WS fixture generates the same
-exact BF16 inputs from raw bits, with host equivalence checks, so its input
-construction does not require the separate scalar conversion feature. All six
-collector cases and their output oracles are retained. Ordinary PTX defaults
-are retained.
+| Result | Entries | Interpretation |
+|---|---:|---|
+| Strict GPU equality | 67 | Full retained checker passes |
+| Unchanged prior numerical residual | 46 | Complete sparse GPU difference equals the prior accepted residual |
+| Reviewed dispatch permutation | 3 | PTX L2/L3 and SASS L3; proof described below |
+| Still running | 1 | SASS L2 MoE; not accepted yet |
 
-All five refreshed heads passed their own local CI and three ordinary PTX
-timing-isolation checks each. Complete CUDA launch qualification per frontend:
+For the three reviewed MoEs, final output/statistics and all eight remote
+combine buffers are byte-identical to the retained reference. All 3072
+expert/source-rank token lists preserve their multisets. Aligning active rows
+by `(source rank, token, topk)` within each expert makes token data, routing
+weights, scales and L2 intermediates byte-identical. Every changed tracked
+word is classified as workspace/intermediate data. The separate acceptance
+category preserves the raw `NEEDS_REVIEW` result and is bound to hashed
+receipts. It does not imply GPU bit-exactness or prove rounding as the cause of
+an existing residual.
 
-| Unit | Numerical tests | Launches |
-|---|---:|---:|
-| TMEM | 13 | 17 |
-| MMA | 24 | 51 |
-| Paired CTA | 5 | 15 |
-| CLC | 7 | 13 |
-| Numbered WS collectors | 6 | 6 |
+Authoritative evidence: `runs/native-final-audit-20261125/cumulative-acceptance.json`,
+`manual-reviews.json`, and `moe-{l2,l3}-{ptx,sass}-*.json`, indexed by
+`runs/CURRENT.json`. `collect_acceptance.py` verifies review receipts rather than
+modifying the original checker or queue reports.
 
-CLC required rebuilding stale generated BookSim dependencies, without a source
-change. The isolated WS input fixture passed both frontends. All five qualified
-heads are pushed to the private dev repository; no public PR was opened. The
-GitHub Actions matrix planner includes each feature's CUDA 13.3 job, but hosted
-CI has not been qualified by these local runs.
+The earlier native MoE stall was fixed in its owning
+`feature/native-linear-bulk-descriptors` branch (`8ec82c76`): encoded cluster
+payload and completion-barrier owners are resolved independently before entering
+the existing shared TMA backend. Four host tests and five launches per frontend
+passed, including cluster size two. Evidence:
+`runs/native-bulk-cluster-20261125/functional-unit-qualification.json`.
+This is an ordinary memory/control prerequisite, not new MMA arithmetic.
 
-Exact heads, frozen runtimes, logs, isolation results and private push evidence
-are under `runs/tcgen-functional-branches-20261125/`, indexed by
-`runs/CURRENT.json`. These gates do not replace the retained DeepInfer acceptance:
-at this checkpoint 67 entries match GPU strictly and 46 retain the prior accepted
-numerical residual. Two PTX MoE entries remain running or queued. Two SASS MoE
-entries stopped making work progress after about 130,000 cycles; they are not
-acceptance passes. Rank-zero snapshots initially showed matching mbarrier state
-and a global counter of 96 against an expected 128. Rank-one snapshots then
-identified the cause: UBLKCP.S.G credited an encoded cluster address as a local
-barrier key, separate from the canonical key used by arrival and wait. The fix
-resolves payload and completion owners independently and forwards explicit
-targets to the existing shared TMA backend. An eight-combination owner fixture
-fails with the frozen pre-fix runtime; the repaired local CI passes four unit
-tests and five numerical launches per frontend, including cluster size two.
-Full MoE numerical acceptance remains pending. Evidence is under
-`runs/native-bulk-cluster-20261125/`. The same correction is also folded into
-its owning `feature/native-linear-bulk-descriptors` branch at `8ec82c76`;
-that branch independently passed its four host tests and five numerical
-launches per frontend. See `functional-unit-qualification.json` in that evidence
-directory. One debugger-invoked pipeline dump crashed
-on a null PTX thread; this diagnostic failure is recorded separately from the
-original stall. Evidence is indexed by
-`tcgen_extracted_sass_moe_stall_20261125` in `runs/CURRENT.json`. The residual
-classification does not prove rounding or strict GPU agreement.
+## Independent common fixes
 
-## Integration prerequisites and fixes
+Fourteen private branches are based directly on public `b3378cb9`, independently
+of the TCGen05 stack. Each has public-base reproduction evidence and a passing
+local result after the fix. Exact test scope, unchanged-binary checks and limits
+remain in the individual reports indexed by
+`runs/tcgen-functional-branches-20261125/public-fix-index.json`.
+No hosted CI or public PR is claimed.
 
-The retained DeepInfer operators also require ordinary conversions, memory
-forms, tensor descriptors, cluster metadata and control instructions. Those
-are separate commits with their own tests, not additional MMA arithmetic.
-Direct global loads/stores share their native address normalization and retain
-the common memory request path. These routing prerequisites are not TCGen05
-arithmetic features. For example, CTA reductions share the numerical fold but keep each frontend's
-existing arrival/completion interface; native B2R consumes the published result.
-
-Recent independent common fixes include signed-byte load extension, integer
-literal tensor coordinates, aliased shuffle source snapshots, and negated CTA
-reduction predicates. Their private branches preserve extraction history;
-public-main applicability and CI must be verified independently before a public
-PR. A private green integration test is not evidence of public-main qualification.
-The TCGen05 accumulator predicate correction instead belongs to MMA.
-
-## Public-fix dependency audit
-
-A read-only check against public `flash` at `b3378cb9` confirms that the
-production patches for the following candidates apply without the TCGen05
-feature stack: signed-byte load extension (`7638a273`), aliased shuffle source
-snapshot (`58c96a6f`), negated CTA reduction predicates (`c0122c3d`), and suspended
-barrier wakeup (`55178b4e`). Applicability alone is not qualification; the
-independent public-base results below supply separate before/after evidence.
-Private integration fixtures must not be presented as public-main tests.
-
-Signed-byte loads now have independent public-base evidence: private branch
-`fix/ptx-signed-byte-load-public` contains a test-only commit `6cae27c3` and
-fix `b9430be0`, both based on public `b3378cb9`. Exhaustive scalar global/shared
-byte loads fail before and pass after using the same executable; both per-test
-cycle counts are unchanged. The tests are wired into existing SM90/100/120
-integration CI, but only local SM100 execution has been qualified so far. This
-is not a hosted CI pass or a new public PR. Evidence:
-`runs/public-signed-byte-20261125/`.
-
-Aliased shuffle inputs also have public-base evidence on private branch
-`fix/ptx-shuffle-source-public`: test-only commit `71a64db9`, fix `39c27501`.
-The same executable has three failures before and five passes after, with all
-five cycle counts unchanged. Coverage includes up/down/bfly/idx, segmented
-widths, and repeated predicated execution. Local SM100 evidence is under
-`runs/public-shuffle-20261125/`; hosted CI and public submission remain pending.
-
-Negated CTA reduction predicates now have independent public-base evidence on
-`fix/ptx-cta-reduction-negation-public`: test-only commit `3654d264`, fix
-`0c5fd996`. Both implicit-count and explicit-count numerical tests fail before
-and pass after using the same executable, with unchanged cycles (5482, 5367).
-The fixtures exercise popc/and/or and all/none/partial predicates. Evidence is
-under `runs/public-cta-reduction-20261125/`; only local SM100 is qualified.
-
-Asynchronous barrier wakeup is qualified on private branch
-`fix/ptx-mbarrier-async-wakeup-public`: test-only commits `6885d9c1` and
-`ff6830bb`, fix `56051b88`. Remote bulk and tensor TMA each complete all initial
-transactions but deadlock with the public baseline's sleeping owner warp.
-The same executable/configuration passes all eight transfer rounds after the
-fix, in 10491 and 10453 cycles. Two local CTA controls pass before and after.
-These tests use ordinary TMA, with no TCGen05 dependency. Evidence:
-`runs/public-mbarrier-wakeup-20261125/qualification.json`. Existing SM90 cluster
-CI selects the new remote tests; only local SM100 execution is qualified here.
-
-Tensor-coordinate literals now have an explicit public-base port on
-`fix/ptx-tensor-coordinate-literals-public`: test-only commits `6610e2bb` and
-`904c5e6e`, fix `45737136`. The original integration patch (`85f3e067`) cannot
-be transplanted wholesale: its context includes narrow mov-pack support and
-gather4 validation absent from public main. The isolated port retains public
-mov.b64 behavior and handles ordinary tensor rank-1..5 coordinates. Two host
-tests cover ten load/store forms plus invalid operands; a CUDA tensor load and
-three vector/pack controls pass. Frozen positive fixtures abort on the public
-baseline and pass after the fix. Gather4 validation stays in its dependent
-feature. Evidence: `runs/public-tensor-coordinates-20261125/qualification.json`.
-These five independent public fixes are prepared privately; this is a selected
-set, not an assertion that every common fix in the extraction history has been
-qualified on public main. No new public PR or hosted CI qualification is claimed.
-
-The diagnostic crash additionally has an independent public-base fix on
-`fix/pipeline-dump-empty-threads-public` (`bc1918de`). A real pipeline dump on
-an idle PTX core reproduces the null thread-slot dereference; both diagnostic
-masks pass with the same executable after the guard. It does not change
-simulation timing or SASS lifecycle behavior. Evidence:
-`runs/public-pipeline-dump-20261125/qualification.json`.
-
-## Additional common-fix candidates
-
-A complete extraction-history audit identified these additional candidates.
-They remain outside the qualified public-fix set until independently exercised;
-an applicable patch is not a public-base test result.
-
-| Candidate | Integration commit | Public-base preparation |
+| Private branch (`fix/…-public`) | Fix head | Scope |
 |---|---|---|
-| 32-byte per-lane coalescing | `957a0caa` | Feature-owned prerequisite in `feature/blackwell-memory-forms` |
-| Funnel-shift boundaries | `ee68caee` | Public PTX/common primitive qualified at `ce1e3aee`; new SASS forms stay in feature |
-| Dynamic cached-load dependency tokens | `4a8c7b28` | Public ordinary-load control passes; retain with warp-reduction feature pending independent reproduction |
-| Leading-bit boundaries | `94ec143f` | Existing PTX/common primitive qualified at `9ff0a6a0`; native adapter additions stay in feature |
-| Shared-store visibility at fences | `413e4c56` | Qualified independently at `53225c29` |
-| Typeless trap/brkpt predecode | `b4a45d47` | Qualified independently at `0ca9132d` |
-| Vector modifier order | `8b716c37` | Qualified independently at `1da2dcef` |
-| Full-width integer constants | `0b9b4586` | Qualified independently at `7463cec0` |
-| Invalid tensor-map diagnostic bounds | `0c2dd8ae` | Qualified independently at `3902d5eb` |
-| Device-call argument ownership | `04cc4765` | Qualified independently at `b2e3c9a0` |
+| `ptx-signed-byte-load` | `b9430be0` | Scalar signed-byte extension |
+| `ptx-shuffle-source` | `39c27501` | Snapshot aliased shuffle sources |
+| `ptx-cta-reduction-negation` | `0c5fd996` | Negated reduction predicates |
+| `ptx-mbarrier-async-wakeup` | `56051b88` | Wake suspended remote bulk/tensor-TMA barrier owner |
+| `ptx-tensor-coordinate-literals` | `45737136` | Ordinary rank-1..5 tensor-coordinate literals; no gather4 expansion |
+| `pipeline-dump-empty-threads` | `bc1918de` | Null idle-thread diagnostic guard |
+| `ptx-typeless-control` | `0ca9132d` | Trap/brkpt predecode; execution behavior unchanged |
+| `ptx-integer-literals` | `7463cec0` | Full-width integer parsing and range checks |
+| `ptx-vector-modifier-order` | `1da2dcef` | Valid scalar/vector modifier ordering |
+| `ptx-call-argument-ownership` | `b2e3c9a0` | Value-owned device-call argument buffers |
+| `tensormap-diagnostic-bounds` | `3902d5eb` | Invalid-rank diagnostic bounds |
+| `ptx-funnel-shift-boundaries` | `ce1e3aee` | Existing PTX shift forms and common primitive |
+| `shared-store-fence-visibility` | `53225c29` | Fence waits for queued shared-store visibility |
+| `ptx-leading-bit-boundaries` | `9ff0a6a0` | Existing signed/unsigned 32/64-bit bfind boundaries |
 
-The patch checks and touched files are recorded in workspace
-`runs/tcgen-functional-branches-20261125/additional-public-fix-audit.json`.
-The typeless-control candidate is now qualified on
-`fix/ptx-typeless-control-public`: both unexecuted control-opcode fixtures assert
-on public main and pass predecode with the same binary after the correction.
-Actual trap execution behavior is unchanged. Evidence:
-`runs/public-typeless-control-20261125/qualification.json`. The leading-bit candidate is now independently qualified. The cached-load
-completion change remains with its feature; it is not a qualified public fix.
-The coalescer extension also belongs to its feature.
+Two other candidates remain with their owning features:
 
-Two parser candidates are now independently qualified against public main:
-`fix/ptx-integer-literals-public` (`7463cec0`) fixes full-width decimal
-saturation and adds checked radix/suffix handling; four regressions and three
-existing PTX isolation tests pass. `fix/ptx-vector-modifier-order-public`
-(`1da2dcef`) fixes scalar-before-vector parsing; its CUDA launch checks all 256
-output words. Both use identical before/after test executables and frozen
-runtimes. Evidence: `runs/public-integer-literals-20261125/qualification.json`
-and `runs/public-vector-order-20261125/qualification.json`. Their initial
-setup-error logs are excluded from regression qualification. These bring the
-independently qualified public-fix set to nine, without opening public PRs.
+- `957a0caa`: 32-byte-per-lane coalescing is required by the new native `.256`
+  memory forms, not an independently demonstrated public-frontend bug.
+- `4a8c7b28`: cached-load completion by dynamic instruction. The ordinary
+  predicated-load control passes public PTX and SM120 SASS without the patch.
+  The existing failure uses the new `WARPSYNC.EXCLUSIVE` grouping behavior;
+  keep the correction with warp reductions until a public-only failing launch
+  is demonstrated. Passing this control does not prove all cached-load schedules
+  correct. The test-only branch is `audit/cached-load-public-controls`.
 
-Two further common fixes are qualified without TCGen05 dependencies.
-`fix/ptx-call-argument-ownership-public` (`b2e3c9a0`) replaces shallow-owned
-parameter bytes with value-owned storage: a complete 32-lane, three-call
-aggregate argument/return regression double-frees on public main and passes
-with the same executable after the fix. `fix/tensormap-diagnostic-bounds-public`
-(`3902d5eb`) bounds diagnostic reads for invalid ranks: the guard-page test
-reproduces SIGSEGV, then passes; all five valid-rank printouts are unchanged
-and three PTX isolation tests pass. Evidence is under
-`runs/public-call-ownership-20261125/` and
-`runs/public-tensormap-diagnostic-20261125/`. Both are pushed privately.
-The independently qualified public-fix set is now eleven; five candidates
-remain, and hosted CI/public PR preparation is not claimed complete.
+The initial SM100 decoder rejection in the latter audit occurred before kernel
+execution and is excluded from bug evidence. Ownership records are in
+`additional-public-fix-audit.json` and the candidate-specific reports.
 
-The latest independent set contains thirteen fixes. Funnel-shift boundary
-handling is qualified at `ce1e3aee`: four existing PTX forms across counts
-0..127 check all 512 output words; the same executable fails before and passes
-after. New SASS registrations are excluded from that public fix, while their
-feature adapter uses the same primitive. Shared-store fence visibility is
-qualified at `53225c29`: ordinary and SC CTA fences prematurely pass in 9 cycles
-under an artificial 512-cycle visibility setting, then respect the bound after
-the fix. Three ordinary PTX controls retain cycles 5317/5323/5331. A dedicated
-CI post-check runs the real numerical timing tests without allowing skips;
-that post-check, not hosted CI, passed locally. Evidence is under
-`runs/public-funnel-shift-20261125/` and `runs/public-shared-fence-20261125/`.
-Both independent branches are pushed to private dev only.
+## Remaining before submission
 
-The 32-byte coalescer extension is not an independently reproduced public
-frontend defect. Public PTX vector extents remain separate from scalar
-`data_size`, and the public native timing adapter has no `.256` width case.
-The new native `.256` memory forms require `data_size=32` and already contain
-this extension with component and dual-launch tests. It remains with
-`feature/blackwell-memory-forms`; a synthetic 32-byte instantiation alone does
-not justify labeling it a public frontend regression. See
-`runs/tcgen-functional-branches-20261125/coalescer-feature-ownership.json`.
-
-The negated accumulator predicate correction (`987680ef`) is different: it is
-inside the new TCGen05 MMA adapter and has already been folded into the MMA
-functional unit. It is not an independent public-main fix.
-
-## Acceptance evidence boundaries
-
-The original combined private stack and this extracted stack are different
-artifacts. Fresh extracted acceptance covers 59 retained SASS entries and 58
-recoverable PTX entries. The missing PTX entry is the archived internal cuBLAS
-routing SGEMM; its original SASS remains available. Results are indexed by
-kernel and frontend, with frozen runtime, executable and captured inputs.
-
-The workspace `runs/CURRENT.json` points to current reports. A cumulative
-report across repair rounds preserves each runtime boundary; it does not claim
-that all entries have run at the latest commit. Strict GPU equality and complete
-sparse-diff equality to a previously accepted residual are separate outcomes.
-The latter does not establish GPU bit-exactness or prove rounding as the cause.
-Running/queued entries remain unverified.
-
-The extracted PTX L3 MoE completed in 893395 cycles (previously 893485).
-Its complete sparse GPU-checker residual changed, so it was separately audited:
-final `out`/`stats` and all eight remote combine contribution buffers are
-bitwise identical to the previous result. All 3072 expert/source-rank token
-lists preserve their multisets. Aligning the 3081 active rank-zero tokens by
-(source rank, token, topk) within each expert makes L1 token data, L1 scale,
-routing weights, L2 token data and L2 scale byte-identical. Changes are dispatch
-permutations and intermediate layout variation, not a new numerical output
-regression. The previous GPU residual remains (relative L2 0.0001883973562);
-this is not strict GPU equality. The collector preserves the raw NEEDS_REVIEW
-classification and uses a distinct `RETAINED_SEMANTICS_DISPATCH_PERMUTATION`
-category, bound to hashed evidence in
-`runs/native-final-audit-20261125/manual-reviews.json`. At this checkpoint,
-three other MoE entries remain running. These results use frozen runtimes,
-not the documentation-only latest integration head.
-
-Static opcode registration is only a diagnostic. The remaining generic
-conversion branches in the PyTorch copy kernel are not exercised by its retained
-input type, and assert call/trap paths are not successful computation paths.
-Their presence in a cubin does not invalidate a completed numerical replay;
-neither does that replay qualify those unexecuted forms. They remain unsupported,
-not silently emulated as no-ops.
-
-## Before submission
-
-1. Finish the extracted real-operator queue and review every new discrepancy.
-2. Fold feature-owned follow-ups into their functional units without importing
-   the private research configurations or unrelated instruction extensions.
-3. Qualify independent common fixes against public main and document dependencies.
-4. Re-run each final branch's own complete-launch gate and ordinary PTX isolation
-   checks at its final head. Local CI is not hosted CI or hardware calibration.
-
-Rubin/SM107, research placement, ideal-memory experiments, and unqualified ISA
-modifiers remain separate. Production defaults stay opt-in for SASS. The stack
-inherits the reviewed gather4 prerequisite's B200 TMA service interval change;
-there is no claim that every configuration file in the entire stack is unchanged.
-
-## Latest qualification checkpoint
-
-Fourteen independent public-base fixes are now qualified locally. The latest,
-`fix/ptx-leading-bit-boundaries-public` (`9ff0a6a0`), repairs existing
-`bfind.u32/s32/u64/s64`: the old 64-bit nonzero fixture returns incorrect bits,
-and zero/all-sign boundaries hang in the unsigned decrement loop. All five
-fixtures (1280 output words) pass with the same executable after the correction.
-Three ordinary PTX controls retain identical cycle counts. Evidence:
-`runs/public-leading-bit-20261125/qualification.json`. This does not add native
-FLO modifiers, claim complete bfind modifier coverage, or claim hosted CI.
-
-The cached-load candidate was explicitly tested against public main using its
-supported SM120 frontend. The standalone predicated-load fixture passes both
-PTX and SASS before any production change; its compiler-generated loads wait
-on their reused dependency token. The existing failing feature fixture instead
-uses `WARPSYNC.EXCLUSIVE`, which public main does not register, to issue four
-disjoint dynamic loads at one PC before their results are consumed. Thus
-`4a8c7b28` stays with `feature/blackwell-warp-reductions`; an independent public
-fix requires an actual public-only failing launch. This control does not prove
-all ordinary cached-load schedules correct. The test-only preparation is
-`audit/cached-load-public-controls`, with evidence in
-`runs/public-cached-completion-20261125/qualification.json`. The initial SM100
-decoder rejection occurred before execution and is excluded from bug evidence.
-
-The SASS L3 MoE retry also completed. Compared with the retained PTX reference,
-final output/statistics and all eight remote combine buffers are byte-identical;
-all source token multisets are preserved, and active intermediate token, scale
-and routing-weight data match after per-expert token metadata alignment. Its
-1,014,088 changed tracked words are entirely classified intermediate/workspace
-changes. It receives the same separate dispatch-permutation acceptance category
-as PTX L3, without waiving the original GPU residual. Evidence is under
-`runs/native-final-audit-20261125/moe-l3-sass-*.json` and hashed in
-`manual-reviews.json`. PTX L2 also completed with the same proof: all final/remote-combine bytes
-unchanged, source token multisets preserved, and all active intermediate values
-identical after metadata alignment (3153 tokens). Its 1,487,777 changed tracked
-words are fully classified workspace/intermediate changes. Evidence is in
-`moe-l2-ptx-*.json` with a separate hashed receipt. Current cumulative status:
-67 strict GPU passes, 46 unchanged prior residuals, three reviewed dispatch
-permutations, and only the SASS L2 MoE entry still running. These are frozen-runtime repair results, not
-a full sweep of the latest integration head. No public PR has been created.
+1. Finish SASS L2 MoE and review its full numerical result.
+2. Use each functional branch's exact dependency and qualification matrix when
+   preparing a PR; do not import unrelated private research configurations.
+3. If production code changes, rerun the affected complete-launch gates and
+   appropriate ordinary PTX isolation checks. Current documentation-only commits
+   retain verified identity with the qualified source/test/config trees.
+4. Obtain user instruction before publishing these prepared PRs. This work only
+   organizes and validates the private branches.

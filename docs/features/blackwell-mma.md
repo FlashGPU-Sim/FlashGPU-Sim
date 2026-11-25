@@ -35,6 +35,7 @@ launches through each frontend:
 | Default-discard WS | 4 / 8 | FP16 M64 N64/N128/N256, shared-A and TMEM-A; BF16 with both A storage kinds; two accumulated MMAs |
 | Dense layouts and output forms | 6 / 16 | Ordinary FP16/BF16 TMEM-A M64/M128, both M64 datapath origins; F16 output in shared-A/TMEM-A/WS; A/B transpose combinations and negation |
 | Shared swizzles | 5 / 13 | K-major/MN-major 32/64/128B; starts offset within the swizzle period; shared-A/TMEM-A/WS; MN-major 128B with 32-byte atoms |
+| Negated accumulator predicate | 1 / 2 | Two-MMA FP16/BF16 accumulation with nonuniform inputs and PTX `!p` |
 
 TMEM-A fixtures populate different values in the physical halves, exposing
 incorrect continuous-row or folded mappings. Layout F uses sixteen datapaths
@@ -53,7 +54,8 @@ Component tests additionally cover mixed-format arithmetic pairs, narrow
 conversions, scale-byte selection, malformed descriptors and physical layouts.
 They do not imply complete-launch acceptance for every ISA modifier.
 
-The inherited `sm100-tmem` gate retains its separate 12 tests / 14 launches.
+The inherited `sm100-tmem` gate retains its separate 13 tests / 17 launches,
+including the explicit contiguous broadcast-copy descriptor cases.
 Both gates use `tests/ci/tcgen05_dual.py`; MMA permits 600 seconds per frontend.
 Scratch configs disable PTX guided reordering for inline-PTX fixtures and select
 an explicit frontend. Shipped configs are unchanged. Local CI success is not

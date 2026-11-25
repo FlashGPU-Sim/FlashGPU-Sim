@@ -29,8 +29,8 @@ This branch does not introduce Rubin or change production presets.
 ## Numerical acceptance
 
 `tests/src/tcgen05/mma_pair_test.cu` embeds PTX and sm_100a code in one executable.
-The `sm100-pair` CI job runs component tests, then four numerical tests with
-14 complete launches through each frontend:
+The `sm100-pair` CI job runs component tests, then five numerical tests with
+15 complete launches through each frontend:
 
 | Family | Launches per frontend | Coverage |
 |---|---:|---|
@@ -38,6 +38,7 @@ The `sm100-pair` CI job runs component tests, then four numerical tests with
 | TMEM-A dense | 8 | FP16/BF16, M128/M256, N32/N64, nonzero TMEM base and distinct physical halves |
 | Block-scaled | 1 | FP4 x FP8, distinct A/B values and scale factors, multicast completion |
 | Cluster isolation | 1 | Two independent CTA pairs in one launch |
+| Explicit contiguous scale copy | 1 | Broadcast-copy stride feeding paired block-scaled MMA |
 
 SFB is the complete N-wide image replicated in both CTAs, not two scale halves
 concatenated from the CTAs. The mixed fixture checks distinct column scales in
