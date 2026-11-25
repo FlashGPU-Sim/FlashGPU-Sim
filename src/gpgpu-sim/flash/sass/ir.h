@@ -1,6 +1,7 @@
 #ifndef FLASH_GPGPU_SIM_SASS_IR_H_
 #define FLASH_GPGPU_SIM_SASS_IR_H_
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -185,6 +186,7 @@ struct kernel {
   std::vector<kernel_constant_global> constant_globals;
   bool has_resources = false;
   kernel_resources resources;
+  std::array<uint32_t, 3> required_cluster{};
   std::vector<instruction> instructions;
 };
 

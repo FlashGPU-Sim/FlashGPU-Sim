@@ -310,3 +310,10 @@ cuda = "13.3"
 tests = [
   { name = "bfloat-minmax-dual-launch", group = "bfloat_minmax", gtest_filter = "BfloatMinMax.*", post_check = "tests/ci/check_bfloat_minmax_dual.py" },
 ]
+
+[jobs.sm100-compiled-cluster]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "compiled-cluster-dual-launch", group = "unit", gtest_filter = "NativeClusterMetadata.*", post_check = "tests/ci/check_compiled_cluster_dual.py" },
+]

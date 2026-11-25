@@ -45,6 +45,7 @@ struct runtime_kernel_resources {
   uint32_t static_shared = 0;
   uint32_t local_memory = 0;
   uint32_t stack_size = 0;
+  std::array<uint32_t, 3> required_cluster{};
 };
 
 // A non-empty FLASHGPU_SASS_IR or FLASHGPU_SASS_AUTO selects strict SASS

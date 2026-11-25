@@ -4,6 +4,8 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "unit/native_cluster_metadata_test.cc",
+  "compiled_cluster/launch_test.cu",
   "bfloat_minmax/launch_test.cu",
   "half_sign/launch_test.cu",
   "call_ownership/launch_test.cu",

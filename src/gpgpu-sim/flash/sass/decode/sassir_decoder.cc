@@ -342,6 +342,24 @@ kernel sassir_decoder::decode_kernel(const std::string &sassir_path,
         result.resources.local_memory = parse_u32(columns[3], "local memory");
         result.resources.stack_size = parse_u32(columns[4], "stack size");
       }
+    } else if (record == "CLUSTERDIMS") {
+      require_columns(columns, 4, "CLUSTERDIMS");
+      if (!in_kernel || in_instruction || format_version < 3)
+        panic("misplaced CLUSTERDIMS record");
+      if (wanted_kernel) {
+        if (result.required_cluster[0])
+          panic("duplicate CLUSTERDIMS record");
+        uint64_t size = 1;
+        for (unsigned axis = 0; axis < 3; ++axis) {
+          const auto dim = parse_u32(columns[axis + 1], "cluster dimension");
+          if (!dim)
+            panic("zero required cluster dimension");
+          if (size > UINT32_MAX / dim)
+            panic("required cluster rank count overflows");
+          size *= dim;
+          result.required_cluster[axis] = dim;
+        }
+      }
     } else if (record == "PARAMBANK") {
       require_columns(columns, 3, "PARAMBANK");
       if (!in_kernel || in_instruction)

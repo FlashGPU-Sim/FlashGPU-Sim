@@ -1243,6 +1243,18 @@ cudaError_t cudaLaunchInternal(const char *hostFun,
       sass_functional ? nullptr : context->get_kernel(hostFun);
   bool cluster_launch = config.is_cluster_launch();
   dim3 cluster_dim = config.cluster_dim();
+  // Native metadata supplies the same launch dimensions as a PTX declaration;
+  // residency, grid validation, and scheduling below remain frontend-neutral.
+  if (sass_functional && sass_resources.required_cluster[0]) {
+    const auto &required = sass_resources.required_cluster;
+    if (cluster_launch && (cluster_dim.x != required[0] ||
+        cluster_dim.y != required[1] || cluster_dim.z != required[2])) {
+      ctx->api->g_cuda_launch_stack.pop_back();
+      return g_last_cudaError = cudaErrorInvalidConfiguration;
+    }
+    cluster_launch = true;
+    cluster_dim = dim3(required[0], required[1], required[2]);
+  }
   if (!cluster_launch && entry_for_cluster &&
       entry_for_cluster->has_explicit_cluster()) {
     cluster_launch = true;

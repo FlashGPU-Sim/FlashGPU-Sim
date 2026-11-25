@@ -663,7 +663,8 @@ load_runtime_kernel_resources(const std::string &sassir_path,
   if (!image.has_resources)
     panic("SASS sassir has no kernel resource metadata");
   return {image.resources.registers, image.resources.static_shared,
-          image.resources.local_memory, image.resources.stack_size};
+          image.resources.local_memory, image.resources.stack_size,
+          image.required_cluster};
 }
 
 std::unique_ptr<functional_memory> make_runtime_functional_memory(
