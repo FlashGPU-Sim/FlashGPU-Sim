@@ -530,6 +530,7 @@ addressable_spec: CONST_DIRECTIVE {  recognizer->add_space_spec(const_space,$1);
 
 type_spec: scalar_type 
 	|  vector_spec scalar_type 
+	|  scalar_type vector_spec
 	;
 
 vector_spec:  V2_TYPE {  recognizer->add_option(V2_TYPE); recognizer->func_header_info(".v2");}
