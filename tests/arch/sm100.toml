@@ -6,6 +6,7 @@ config = "SM100_B200"
 sources = [
   "unit/ptx_timing_isolation_test.cc",
   "unit/pipeline_dump_empty_threads_test.cc",
+  "unit/tensormap_diagnostic_test.cc",
   # Portable integration tests.
   "integration/address_operand_test.cu",
   "integration/vector_operand_test.cu",

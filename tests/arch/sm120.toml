@@ -6,6 +6,7 @@ config = "SM120_RTX5090"
 sources = [
   "unit/ptx_timing_isolation_test.cc",
   "unit/pipeline_dump_empty_threads_test.cc",
+  "unit/tensormap_diagnostic_test.cc",
   "core/sass_frontend_lifecycle_test.cc",
   "core/predicated_atomic_test.cc",
   "core/kernel_stream_id_test.cc",
