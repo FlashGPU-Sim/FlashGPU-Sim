@@ -296,3 +296,10 @@ cuda = "13.3"
 tests = [
   { name = "ptx-call-argument-ownership", group = "call_ownership", gtest_filter = "PtxCallOwnership.*", post_check = "tests/ci/check_call_ownership.py" },
 ]
+
+[jobs.sm100-half-sign]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "half-unary-sign-dual-launch", group = "half_sign", gtest_filter = "HalfSign.*", post_check = "tests/ci/check_half_sign_dual.py" },
+]

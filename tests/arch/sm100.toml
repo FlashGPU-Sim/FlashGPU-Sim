@@ -4,6 +4,7 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "half_sign/launch_test.cu",
   "call_ownership/launch_test.cu",
   "global_reduce/launch_test.cu",
   "unit/global_reduce_test.cc",

@@ -39,6 +39,7 @@
 #include "instructions.h"
 #include "../gpgpu-sim/flash/ptx_cluster_store.h"
 #include "../gpgpu-sim/flash/ptx_bfloat_arithmetic.h"
+#include "../gpgpu-sim/flash/ptx_half_sign.h"
 #include "../gpgpu-sim/flash/ptx_mixed_arithmetic.h"
 #include "../gpgpu-sim/flash/ptx_bfloat_conversion.h"
 #include "../gpgpu-sim/flash/ptx_narrow_conversion.h"
@@ -1079,6 +1080,7 @@ void ptx_thread_info::set_wmma_vector_operand_values(
 #define MY_EXCH(a, b) b
 
 void abs_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (flash_gpgpu_sim::execute_ptx_half_sign(pI, thread)) return;
   ptx_reg_t a, d;
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();
@@ -5388,6 +5390,7 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void neg_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (flash_gpgpu_sim::execute_ptx_half_sign(pI, thread)) return;
   ptx_reg_t src1_data, src2_data, data;
 
   const operand_info &dst = pI->dst();

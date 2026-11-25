@@ -1,5 +1,6 @@
 #include "../../bfloat_arithmetic.h"
 #include "../../fp32_fma.h"
+#include "../../half_sign.h"
 #include "../decode/fp32x2_operand.h"
 #include "../decode/operand_parser.h"
 #include "../decode/scaled_unpack_operand.h"
@@ -183,7 +184,8 @@ step_result execute_ffma(const instruction &inst, warp_state &state,
 }
 
 bool read_half2_operand(const operand &source, const warp_state &state,
-                        unsigned lane, float &low, float &high) {
+                        unsigned lane, float &low, float &high,
+                        bool ftz = false) {
   uint32_t packed = 0;
   if (source.kind == operand_kind::kRegister)
     packed = state.read_register(lane, source.index);
@@ -193,16 +195,22 @@ bool read_half2_operand(const operand &source, const warp_state &state,
     packed = static_cast<uint32_t>(source.immediate);
   else
     return false;
-  low = half_float(static_cast<uint16_t>(packed));
-  high = half_float(static_cast<uint16_t>(packed >> 16));
-  if (source.absolute) {
-    low = std::fabs(low);
-    high = std::fabs(high);
-  }
-  if (source.negated) {
-    low = -low;
-    high = -high;
-  }
+  if (source.wide || source.bitwise_complement)
+    return false;
+  auto extract = [&](unsigned half) {
+    const auto selected =
+        source.half_selection == operand_half_selection::kLowReplicate ? 0
+        : source.half_selection == operand_half_selection::kHighReplicate
+            ? 1
+            : half;
+    auto bits = half_sign_bits(packed >> (16 * selected), source.absolute,
+                               source.negated);
+    if (ftz)
+      bits = half_flush_subnormal(bits);
+    return half_float(bits);
+  };
+  low = extract(0);
+  high = extract(1);
   return true;
 }
 
@@ -242,6 +250,7 @@ step_result execute_hadd2(const instruction &inst, warp_state &state,
   if (!has_typed_operands(inst, 3) ||
       inst.operands[0].kind != operand_kind::kRegister)
     return unsupported(inst, "unsupported packed FP16 add operand form");
+  const bool ftz = inst.opcode == "HADD2.FTZ";
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
     if ((state.active_mask & (1u << lane)) == 0 ||
         !lane_executes(inst, state, lane))
@@ -250,11 +259,16 @@ step_result execute_hadd2(const instruction &inst, warp_state &state,
     float a_high = 0.0f;
     float b_low = 0.0f;
     float b_high = 0.0f;
-    if (!read_half2_operand(inst.operands[1], state, lane, a_low, a_high) ||
-        !read_half2_operand(inst.operands[2], state, lane, b_low, b_high))
+    if (!read_half2_operand(inst.operands[1], state, lane, a_low, a_high,
+                            ftz) ||
+        !read_half2_operand(inst.operands[2], state, lane, b_low, b_high, ftz))
       return unsupported(inst, "unsupported packed FP16 add source");
-    const uint16_t low = float_half_rn(float_bits(a_low + b_low));
-    const uint16_t high = float_half_rn(float_bits(a_high + b_high));
+    uint16_t low = float_half_rn(float_bits(a_low + b_low));
+    uint16_t high = float_half_rn(float_bits(a_high + b_high));
+    if (ftz) {
+      low = half_flush_subnormal(low);
+      high = half_flush_subnormal(high);
+    }
     state.write_register(lane, inst.operands[0].index,
                          low | (static_cast<uint32_t>(high) << 16));
   }
@@ -288,12 +302,9 @@ step_result execute_bfloat_fma_register(const instruction &inst,
             : op.half_selection == operand_half_selection::kHighReplicate
                 ? 1
                 : half;
-        float value = bfloat_float(
-            (state.read_register(lane, op.index) >> (16 * selected)) & 0xffff);
-        if (op.absolute)
-          value = std::fabs(value);
-        if (op.negated)
-          value = -value;
+        const float value = bfloat_float(half_sign_bits(
+            state.read_register(lane, op.index) >> (16 * selected), op.absolute,
+            op.negated));
         values[i] = value;
       }
       result |= uint32_t(bf16_fma_rn(values[0], values[1], values[2]))
@@ -388,12 +399,9 @@ step_result execute_bfloat_minmax2(const instruction &inst, warp_state &state,
             : op.half_selection == operand_half_selection::kHighReplicate
                 ? 1
                 : half;
-        float value = bfloat_float(
-            (state.read_register(lane, op.index) >> (16 * selected)) & 0xffff);
-        if (op.absolute)
-          value = std::fabs(value);
-        if (op.negated)
-          value = -value;
+        const float value = bfloat_float(half_sign_bits(
+            state.read_register(lane, op.index) >> (16 * selected), op.absolute,
+            op.negated));
         if (sources == 3 && std::isnan(value)) {
           std::ostringstream detail;
           detail << "unqualified three-input BF16 NaN at lane " << lane
@@ -455,12 +463,9 @@ step_result execute_bfloat_mul2(const instruction &inst, warp_state &state,
             : op.half_selection == operand_half_selection::kHighReplicate
                 ? 1
                 : half;
-        float value = bfloat_float(
-            (state.read_register(lane, op.index) >> (16 * selected)) & 0xffff);
-        if (op.absolute)
-          value = std::fabs(value);
-        if (op.negated)
-          value = -value;
+        const float value = bfloat_float(half_sign_bits(
+            state.read_register(lane, op.index) >> (16 * selected), op.absolute,
+            op.negated));
         values[i] = value;
       }
       result |= uint32_t(bf16_mul_rn(values[0], values[1])) << (half * 16);
@@ -496,12 +501,9 @@ step_result execute_bfloat_add2(const instruction &inst, warp_state &state,
             : op.half_selection == operand_half_selection::kHighReplicate
                 ? 1
                 : half;
-        float value = bfloat_float(
-            (state.read_register(lane, op.index) >> (16 * selected)) & 0xffff);
-        if (op.absolute)
-          value = std::fabs(value);
-        if (op.negated)
-          value = -value;
+        const float value = bfloat_float(half_sign_bits(
+            state.read_register(lane, op.index) >> (16 * selected), op.absolute,
+            op.negated));
         values[i] = value;
       }
       result |= uint32_t(bf16_add_rn(values[0], values[1])) << (16 * half);
@@ -919,6 +921,7 @@ void register_float_semantics(frontend &target) {
   target.register_semantics("HFMA2", execute_hfma2);
   target.register_semantics("HFMA2.MMA", execute_hfma2);
   target.register_semantics("HADD2", execute_hadd2);
+  target.register_semantics("HADD2.FTZ", execute_hadd2);
   target.register_semantics("HADD2.BF16_V2", execute_bfloat_add2);
   target.register_semantics("HMUL2.BF16_V2", execute_bfloat_mul2);
   target.register_semantics("HMNMX2.BF16_V2", execute_bfloat_minmax2);
