@@ -28,7 +28,9 @@ qualifications must not be attributed to an older pinned branch.
 The retained DeepInfer operators also require ordinary conversions, memory
 forms, tensor descriptors, cluster metadata and control instructions. Those
 are separate commits with their own tests, not additional MMA arithmetic.
-For example, CTA reductions share the numerical fold but keep each frontend's
+Direct global loads/stores share their native address normalization and retain
+the common memory request path. These routing prerequisites are not TCGen05
+arithmetic features. For example, CTA reductions share the numerical fold but keep each frontend's
 existing arrival/completion interface; native B2R consumes the published result.
 
 Recent independent common fixes include signed-byte load extension, integer

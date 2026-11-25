@@ -116,20 +116,25 @@ step_result execute_ldg(const instruction &native, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
-step_result execute_stg(const instruction &inst, warp_state &state,
+step_result execute_stg(const instruction &native, warp_state &state,
                         execution_context &context) {
+  instruction inst = native;
   if (inst.opcode.find(".256") != std::string::npos)
     return execute_global256(inst, state, context);
-  if (!has_typed_operands(inst, 2))
+  if (!normalize_stg_operands(inst) || !has_typed_operands(inst, 2))
     return unsupported(inst, "expected two typed operands");
   const operand *address =
       get_operand(inst, 0, operand_kind::kDescriptorAddress);
+  const bool direct = inst.operands[0].kind == operand_kind::kMemoryAddress;
+  if (direct)
+    address = &inst.operands[0];
   const operand *source = get_operand(inst, 1, operand_kind::kRegister);
   if (address == nullptr || source == nullptr)
     return unsupported(inst, "unsupported global-store operand form");
   if (context.memory == nullptr)
     return unsupported(inst, "no functional memory is attached");
-  (void)state.read_uniform_register(address->descriptor_register);
+  if (!direct)
+    (void)state.read_uniform_register(address->descriptor_register);
   const bool vector128 =
       inst.opcode == "STG.E.128" || inst.opcode == "STG.E.NA.128";
   const bool wide = inst.opcode == "STG.E.64" ||
@@ -144,9 +149,14 @@ step_result execute_stg(const instruction &inst, warp_state &state,
     if ((state.active_mask & (1u << lane)) == 0 ||
         !lane_executes(inst, state, lane))
       continue;
-    const uint64_t location =
-        read_register_pair(state, lane, address->address_register) +
-        static_cast<uint64_t>(address->address_offset);
+    uint64_t location = 0;
+    if (direct) {
+      if (!evaluate_address(*address, state, lane, location))
+        return unsupported(inst, "invalid direct global-store address");
+    } else {
+      location = read_register_pair(state, lane, address->address_register) +
+                 static_cast<uint64_t>(address->address_offset);
+    }
     std::array<uint32_t, 4> value{};
     const unsigned words = vector128 ? 4 : wide ? 2 : 1;
     for (unsigned word = 0; word < words; ++word)

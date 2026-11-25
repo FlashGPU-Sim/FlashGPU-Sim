@@ -1398,6 +1398,8 @@ void timing_instruction::initialize(const instruction &native,
   unsigned byte_selector = 0;
   if ((base_opcode(source.opcode) == "LDG" &&
        !normalize_ldg_operands(source)) ||
+      (base_opcode(source.opcode) == "STG" &&
+       !normalize_stg_operands(source)) ||
       (source.opcode == "R2P" &&
        !normalize_r2p_operands(source, byte_selector)))
     panic("Invalid SASS operand normalization at PC " +

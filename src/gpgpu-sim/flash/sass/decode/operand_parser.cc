@@ -534,24 +534,10 @@ void parse_instruction_operands(instruction &inst) {
   }
 }
 
-bool normalize_ldg_operands(instruction &inst) {
-  // Do not accidentally accept a new two-operand direct-address spelling
-  // without applying the register-pair rules below.
-  if (inst.operands.size() == 2 &&
-      inst.operands[1].kind == operand_kind::kMemoryAddress)
+namespace {
+bool normalize_direct_global_address(operand &address) {
+  if (address.has_prefix || address.address_groups.size() != 1)
     return false;
-  if (inst.operands.size() != 1 ||
-      inst.operands[0].kind != operand_kind::kMemoryAddress ||
-      !inst.operands[0].has_prefix ||
-      inst.operands[0].prefix_kind != operand_kind::kRegister)
-    return true; // Descriptor operands are already canonical.
-  operand address = inst.operands[0];
-  if (address.address_groups.size() != 1)
-    return false;
-  operand destination;
-  destination.kind = operand_kind::kRegister;
-  destination.index = address.prefix_index;
-  address.has_prefix = false;
   unsigned bases = 0, register_bases = 0, uniform_offsets = 0;
   for (auto &term : address.address_groups[0].terms) {
     if (term.kind == address_term_kind::kRegister) {
@@ -559,7 +545,8 @@ bool normalize_ldg_operands(instruction &inst) {
         continue;
       if (term.index >= kZeroRegister - 1 || term.negated)
         return false;
-      term.wide = true; // LDG.E uses a pair even when .64 is omitted.
+      term.wide =
+          true; // Extended global addresses use a pair even without .64.
       ++bases;
       ++register_bases;
     } else if (term.kind == address_term_kind::kUniformRegister) {
@@ -581,7 +568,42 @@ bool normalize_ldg_operands(instruction &inst) {
   if (bases != 1 || uniform_offsets > 1 ||
       (uniform_offsets && register_bases != 1))
     return false;
+  return true;
+}
+} // namespace
+
+bool normalize_ldg_operands(instruction &inst) {
+  // Do not accidentally accept a new two-operand direct-address spelling
+  // without applying the register-pair rules below.
+  if (inst.operands.size() == 2 &&
+      inst.operands[1].kind == operand_kind::kMemoryAddress)
+    return false;
+  if (inst.operands.size() != 1 ||
+      inst.operands[0].kind != operand_kind::kMemoryAddress ||
+      !inst.operands[0].has_prefix ||
+      inst.operands[0].prefix_kind != operand_kind::kRegister)
+    return true; // Descriptor operands are already canonical.
+  operand address = inst.operands[0];
+  if (address.address_groups.size() != 1)
+    return false;
+  operand destination;
+  destination.kind = operand_kind::kRegister;
+  destination.index = address.prefix_index;
+  address.has_prefix = false;
+  if (!normalize_direct_global_address(address))
+    return false;
   inst.operands = {destination, address};
+  return true;
+}
+
+bool normalize_stg_operands(instruction &inst) {
+  if (inst.operands.size() != 2 ||
+      inst.operands[0].kind != operand_kind::kMemoryAddress)
+    return true; // Descriptor operands retain their existing path.
+  operand address = inst.operands[0];
+  if (!normalize_direct_global_address(address))
+    return false;
+  inst.operands[0] = std::move(address);
   return true;
 }
 
