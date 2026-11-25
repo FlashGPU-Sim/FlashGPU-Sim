@@ -53,9 +53,8 @@ step_result half_mma(const instruction &inst, warp_state &state,
       if (read_uniform_register_pair(state, mask.index) != 0)
         return unsupported(inst,
                            "nonzero WS zero-column descriptor is unqualified");
-    } else if (mask.index != kZeroUniformRegister) {
-      for (unsigned i = 0; i < disable_lanes.size(); ++i)
-        disable_lanes[i] = state.read_uniform_register(mask.index + i);
+    } else if (!read_output_lane_mask(mask, state, disable_lanes)) {
+      return unsupported(inst, "invalid MMA output-lane mask");
     }
   }
   const uint32_t idesc = state.read_uniform_register(dr.index);

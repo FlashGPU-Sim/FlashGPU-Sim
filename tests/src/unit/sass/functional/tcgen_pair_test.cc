@@ -196,3 +196,16 @@ TEST(Tcgen05PairAdapter, MmaRejectsPatternBaseBeforeWritingAccumulator) {
     EXPECT_FALSE(f.context.tcgen_mma_effect.valid);
   }
 }
+
+TEST(Tcgen05PairAdapter, Fp8RejectsTruncatedMaskBeforeSideEffects) {
+  const auto operands =
+      "gdesc[UR0],gdesc[UR2],tmem[UR4],tmem[UR5],idesc[UR6],UR" +
+      std::to_string(flash_gpgpu_sim::sass::kZeroUniformRegister - 2) + ",UP0";
+  PairFixture f("UTCQMMA", operands.c_str());
+  const auto result = f.run();
+  EXPECT_EQ(result.status, step_status::kUnsupported);
+  EXPECT_NE(result.detail.find("invalid dense FP8 output-lane mask"),
+            std::string::npos);
+  EXPECT_EQ(f.state.pc, 0u);
+  EXPECT_FALSE(f.context.tcgen_mma_effect.valid);
+}

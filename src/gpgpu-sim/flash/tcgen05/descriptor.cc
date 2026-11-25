@@ -251,6 +251,14 @@ bool tcgen05_mxf8f6f4_dense_shape_supported(uint32_t m, uint32_t n, uint32_t k,
          n <= 256 && n % 16 == 0;
 }
 
+bool tcgen05_fp8_descriptor_supported(uint32_t idesc) {
+  const unsigned m = ((idesc >> 24) & 31) * 16;
+  const unsigned n = ((idesc >> 17) & 63) * 8;
+  return !(idesc & 0xe081804fu) && ((idesc >> 4) & 3) == 1 &&
+         ((idesc >> 7) & 7) <= 1 && ((idesc >> 10) & 7) <= 1 && m == 128 &&
+         n >= 16 && n <= 256 && n % 16 == 0;
+}
+
 tcgen05_mma_descriptor_t tcgen05_decode_fp8_mma_descriptor(uint32_t idesc) {
   tcgen05_mma_descriptor_t d{};
   d.m = ((idesc >> 24) & 31) * 16;
@@ -259,9 +267,7 @@ tcgen05_mma_descriptor_t tcgen05_decode_fp8_mma_descriptor(uint32_t idesc) {
   d.a_type = (idesc >> 7) & 7;
   d.b_type = (idesc >> 10) & 7;
   d.d_type = (idesc >> 4) & 3;
-  assert(!(idesc & 0xe081804fu) && d.d_type == 1 && d.a_type <= 1 &&
-         d.b_type <= 1 && d.m == 128 && d.n >= 16 && d.n <= 256 &&
-         d.n % 16 == 0);
+  assert(tcgen05_fp8_descriptor_supported(idesc));
   d.negate_a = idesc & (1u << 13);
   d.negate_b = idesc & (1u << 14);
   d.scale_format = TCGEN05_SCALE_FORMAT_UE8M0;

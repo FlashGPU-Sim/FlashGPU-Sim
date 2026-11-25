@@ -256,7 +256,12 @@ static void tcgen05_mma_fp8_ptx(const ptx_instruction *inst,
                                 ptx_thread_info *thread) {
   tcgen05_shared_reads shared_reads;
   tcgen05_assert_cta_group1(inst);
-  assert(inst->get_num_operands() == 5);
+  const bool masked = inst->operand_lookup(4).is_vector();
+  assert(inst->get_num_operands() == (masked ? 6u : 5u) &&
+         "FP8 MMA scale-input-d is not qualified");
+  const auto disable_lanes = masked ? tcgen05_read_disable_output_lanes(
+                                          inst->operand_lookup(4), thread, 1)
+                                    : std::vector<uint32_t>(4, 0);
   assert(!inst->operand_lookup(1).is_memory_operand());
   const auto desc = tcgen05_decode_fp8_mma_descriptor(
       tcgen05_read_operand(inst, thread, 3).u32);
@@ -265,7 +270,7 @@ static void tcgen05_mma_fp8_ptx(const ptx_instruction *inst,
   const uint32_t destination =
       tcgen05_eval_address(inst->operand_lookup(0), thread);
   const bool accumulate =
-      tcgen05_read_enable_input_d(inst->operand_lookup(4), thread);
+      tcgen05_read_enable_input_d(inst->operand_lookup(masked ? 5 : 4), thread);
   auto gather = [&](unsigned operand, unsigned rows) {
     shared_reads.begin_operand();
     const auto sd = tcgen05_decode_mma_shared_descriptor(
@@ -288,7 +293,8 @@ static void tcgen05_mma_fp8_ptx(const ptx_instruction *inst,
   const auto output = tcgen05_mma_mxf8f6f4_compute_words(
       desc, a, b, std::vector<uint8_t>(desc.m, 127),
       std::vector<uint8_t>(desc.n, 127), input, accumulate);
-  tm.write_matrix_words(scope, destination, output, desc.m, desc.n);
+  tm.write_accumulator(scope, destination, output, desc.m, desc.n, false,
+                       disable_lanes.data());
   inst_t::tcgen05_dyn_info_t timing;
   timing.mma_work = 2ull * desc.m * desc.n * desc.k;
   timing.mma = tcgen05_metadata(tcgen05_mma_kind::fp8, desc);

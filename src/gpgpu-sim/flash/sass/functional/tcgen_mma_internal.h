@@ -14,6 +14,19 @@ inline bool shared_descriptor(uint64_t raw, tcgen05_shared_descriptor_t &desc,
   return true;
 }
 
+inline bool read_output_lane_mask(const operand &mask, const warp_state &state,
+                                  std::vector<uint32_t> &words) {
+  if (mask.kind != operand_kind::kUniformRegister ||
+      (mask.index != kZeroUniformRegister &&
+       mask.index + words.size() > kZeroUniformRegister))
+    return false;
+  for (unsigned i = 0; i < words.size(); ++i)
+    words[i] = mask.index == kZeroUniformRegister
+                   ? 0
+                   : state.read_uniform_register(mask.index + i);
+  return true;
+}
+
 using mma_shared_reads = tcgen05_shared_reads;
 
 inline std::vector<uint32_t> read_accumulator(functional_tcgen_state &tm,

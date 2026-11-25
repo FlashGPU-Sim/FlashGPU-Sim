@@ -1103,7 +1103,10 @@ void populate_registers(const instruction &source, timing_instruction &target) {
       append_register(sources, operand_kind::kUniformRegister,
                       source.operands[index].descriptor_register + 1, false);
     // Dense MMA's optional mask is an implicit group of four words per CTA.
-    if (base == "UTCHMMA" && source.operands.size() == 7 && index == 5) {
+    if ((base == "UTCHMMA" ||
+         (base == "UTCQMMA" &&
+          source.operands[index].kind == operand_kind::kUniformRegister)) &&
+        source.operands.size() == 7 && index == 5) {
       const auto &mask = source.operands[index];
       const unsigned words = source.opcode == "UTCHMMA.WS"         ? 2
                              : has_modifier(source.opcode, "2CTA") ? 8

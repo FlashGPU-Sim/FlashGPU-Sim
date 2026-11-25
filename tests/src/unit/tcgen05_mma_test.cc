@@ -735,3 +735,24 @@ TEST(Tcgen05Mma, MixedExecutionGateIsSharedAndNarrowerThanIsaDecoder) {
   EXPECT_FALSE(tcgen05_blackwell_mixed_descriptor_supported(raw, 0));
   EXPECT_FALSE(tcgen05_blackwell_mixed_descriptor_supported(raw, 3));
 }
+
+TEST(Tcgen05Mma, DenseFp8DescriptorBoundaryIsSharedByFrontends) {
+  for (unsigned a : {0u, 1u})
+    for (unsigned b : {0u, 1u})
+      for (unsigned n : {16u, 32u, 64u, 128u, 256u}) {
+        const uint32_t idesc = (8u << 24) | ((n / 8) << 17) | 0x10 |
+                               (a << 7) | (b << 10);
+        ASSERT_TRUE(tcgen05_fp8_descriptor_supported(idesc));
+        const auto d = tcgen05_decode_fp8_mma_descriptor(idesc);
+        EXPECT_EQ(d.m, 128u);
+        EXPECT_EQ(d.n, n);
+        EXPECT_EQ(d.k, 32u);
+        for (unsigned bit : {0u, 1u, 2u, 3u, 6u, 15u, 16u, 23u, 29u, 30u, 31u})
+          EXPECT_FALSE(tcgen05_fp8_descriptor_supported(idesc | (1u << bit)));
+        EXPECT_TRUE(tcgen05_fp8_descriptor_supported(idesc | (3u << 13)));
+      }
+  EXPECT_FALSE(tcgen05_fp8_descriptor_supported((4u << 24) | (2u << 17) | 0x10));
+  EXPECT_FALSE(tcgen05_fp8_descriptor_supported((8u << 24) | (1u << 17) | 0x10));
+  EXPECT_FALSE(tcgen05_fp8_descriptor_supported((8u << 24) | (2u << 17)));
+  EXPECT_FALSE(tcgen05_fp8_descriptor_supported((8u << 24) | (2u << 17) | 0x110));
+}

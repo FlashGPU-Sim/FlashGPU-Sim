@@ -1,4 +1,5 @@
 #include <cuda_fp16.h>
+#include <cuda_fp8.h>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 #include <cstring>
@@ -11,7 +12,8 @@ namespace {
 template <unsigned Kind, unsigned M, bool TmemA, unsigned Mode = 0>
 __global__ void masked_mma(const unsigned char *input, float *output,
                            unsigned m0, unsigned m1, unsigned m2, unsigned m3) {
-  constexpr unsigned K = Kind == 2 ? 8 : 16, Bytes = Kind == 2 ? 4 : 2;
+  constexpr unsigned K = Kind >= 3 ? 32 : Kind == 2 ? 8 : 16;
+  constexpr unsigned Bytes = Kind >= 3 ? 1 : Kind == 2 ? 4 : 2;
   using A = MmaTestLayout<Mode, false, TmemA ? 128 : M, K, Bytes>;
   using B = MmaTestLayout<Mode, false, 16, K, Bytes>;
   __shared__ __align__(1024) unsigned char a[A::Storage], b[B::Storage];
@@ -57,7 +59,8 @@ __global__ void masked_mma(const unsigned char *input, float *output,
                                   (uint64_t(B::Sbo / 16) << 32) | (1ull << 46) |
                                   (uint64_t(Mode) << 61);
     const unsigned desc =
-        ((M / 16) << 24) | (2u << 17) | 0x10 | (Kind << 7) | (Kind << 10);
+        ((M / 16) << 24) | (2u << 17) | 0x10 | ((Kind >= 3 ? Kind - 3 : Kind) << 7) |
+        ((Kind >= 3 ? Kind - 3 : Kind) << 10);
 #define MASKED(KIND, AOPERAND, CONSTRAINT, AVALUE)                           \
   asm volatile(                                                              \
       "{ .reg .pred p; mov.pred p,0; "                                       \
@@ -68,7 +71,10 @@ __global__ void masked_mma(const unsigned char *input, float *output,
       CONSTRAINT(AVALUE), "l"(bd), "r"(desc), "r"(m0), "r"(m1), "r"(m2),     \
       "r"(m3)                                                                \
       : "memory")
-    if constexpr (Kind == 2) {
+    if constexpr (Kind >= 3) {
+      static_assert(!TmemA && M == 128, "Qualified dense FP8 shape");
+      MASKED("f8f6f4", "%1", "l", ad);
+    } else if constexpr (Kind == 2) {
       if constexpr (TmemA) {
         MASKED("tf32", "[%1]", "r", base + 32);
       } else {
@@ -111,7 +117,8 @@ __global__ void masked_mma(const unsigned char *input, float *output,
 
 template <unsigned Kind, unsigned M, bool TmemA, unsigned Mode = 0>
 void check_mask(unsigned m0, unsigned m1, unsigned m2, unsigned m3) {
-  constexpr unsigned K = Kind == 2 ? 8 : 16, Bytes = Kind == 2 ? 4 : 2;
+  constexpr unsigned K = Kind >= 3 ? 32 : Kind == 2 ? 8 : 16;
+  constexpr unsigned Bytes = Kind >= 3 ? 1 : Kind == 2 ? 4 : 2;
   using A = MmaTestLayout<Mode, false, TmemA ? 128 : M, K, Bytes>;
   using B = MmaTestLayout<Mode, false, 16, K, Bytes>;
   std::vector<unsigned char> input(A::Storage + B::Storage);
@@ -119,11 +126,14 @@ void check_mask(unsigned m0, unsigned m1, unsigned m2, unsigned m3) {
     for (unsigned row = 0; row < rows; ++row)
       for (unsigned k = 0; k < K; ++k) {
         float f = is_b ? float(int((row + k) % 5) - 2)
-                       : float((row % 7 + 1) * (k % 3 + 1));
+                       : float((row % (Kind >= 3 ? 2 : 7) + 1) * (k % 3 + 1));
         unsigned bits;
         std::memcpy(&bits, &f, 4);
         if constexpr (Kind == 0) bits = __half_as_ushort(__float2half(f));
         if constexpr (Kind == 1) bits >>= 16;
+        if constexpr (Kind >= 3)
+          bits = __nv_cvt_float_to_fp8(
+              f, __NV_SATFINITE, Kind == 3 ? __NV_E4M3 : __NV_E5M2);
         auto offset = is_b ? A::Storage + B::offset(row, k) : A::offset(row, k);
         std::memcpy(input.data() + offset, &bits, Bytes);
       }
@@ -153,7 +163,7 @@ void check_mask(unsigned m0, unsigned m1, unsigned m2, unsigned m3) {
             TmemA || M == 128 ? lane : (lane / 32) * 16 + lane % 32;
         expected = 0;
         for (unsigned k = 0; k < K; ++k)
-          expected += 2 * float((row % 7 + 1) * (k % 3 + 1)) *
+          expected += 2 * float((row % (Kind >= 3 ? 2 : 7) + 1) * (k % 3 + 1)) *
                       float(int((col + k) % 5) - 2);
       }
       ASSERT_EQ(actual[lane * 16 + col], expected) << lane << ':' << col;
@@ -178,5 +188,15 @@ TEST(Tcgen05Mma, Tf32SharedSwizzles) {
   check_mask<2, 128, false, 6>(0, 0, 0, 0);
   check_mask<2, 64, false, 4>(0x80000001, 0x00008002, 0xffffffff, 0);
   check_mask<2, 128, false, 2>(0, 0, 0, 0);
+}
+TEST(Tcgen05Mma, OutputMaskFp8E4M3) {
+  check_mask<3, 128, false>(0x80000001, 0x00008002, 0xffffffff, 0);
+  check_mask<3, 128, false>(0, 0, 0, 0);
+  check_mask<3, 128, false>(0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff);
+}
+TEST(Tcgen05Mma, OutputMaskFp8E5M2Swizzles) {
+  check_mask<4, 128, false, 6>(0x80000001, 0x00008002, 0xffffffff, 0);
+  check_mask<4, 128, false, 4>(0x80000001, 0x00008002, 0xffffffff, 0);
+  check_mask<4, 128, false, 2>(0x80000001, 0x00008002, 0xffffffff, 0);
 }
 }  // namespace

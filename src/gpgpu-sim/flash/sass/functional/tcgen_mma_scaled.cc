@@ -4,8 +4,9 @@ namespace sass {
 namespace functional_detail {
 step_result dense_fp8_mma(const instruction &inst, warp_state &state,
                           execution_context &context) {
-  if (inst.opcode != "UTCQMMA" || inst.operands.size() != 6 || !context.cta ||
-      !context.memory)
+  if (inst.opcode != "UTCQMMA" ||
+      (inst.operands.size() != 6 && inst.operands.size() != 7) ||
+      !context.cta || !context.memory)
     return unsupported(inst, "unqualified dense FP8 MMA CTA/operand form");
   if (!any_lane_executes(inst, state)) {
     advance(inst, state);
@@ -20,15 +21,17 @@ step_result dense_fp8_mma(const instruction &inst, warp_state &state,
       !wrapped_uniform(inst.operands[4], "idesc", dr) ||
       ar.index >= kZeroUniformRegister - 1 ||
       br.index >= kZeroUniformRegister - 1 ||
-      inst.operands[5].kind != operand_kind::kUniformPredicate ||
+      inst.operands.back().kind != operand_kind::kUniformPredicate ||
       state.read_uniform_register(metadata.index) != 0 || (destination >> 16))
     return unsupported(inst, "unqualified dense FP8 MMA operands");
+  std::vector<uint32_t> disable_lanes(4, 0);
+  if (inst.operands.size() == 7 &&
+      !read_output_lane_mask(inst.operands[5], state, disable_lanes))
+    return unsupported(inst, "invalid dense FP8 output-lane mask");
   const uint32_t idesc = state.read_uniform_register(dr.index);
   const unsigned m = ((idesc >> 24) & 31) * 16;
   const unsigned n = ((idesc >> 17) & 63) * 8;
-  const unsigned af = (idesc >> 7) & 7, bf = (idesc >> 10) & 7;
-  if ((idesc & 0xe081804fu) || ((idesc >> 4) & 3) != 1 || af > 1 || bf > 1 ||
-      m != 128 || n < 16 || n > 256 || n % 16)
+  if (!tcgen05_fp8_descriptor_supported(idesc))
     return unsupported(inst, "unqualified dense K-major FP8 descriptor");
   tcgen05_shared_descriptor_t ad, bd;
   if (!shared_descriptor(read_uniform_register_pair(state, ar.index), ad,
@@ -59,7 +62,7 @@ step_result dense_fp8_mma(const instruction &inst, warp_state &state,
     return unsupported(inst,
                        "dense FP8 operand is outside mapped shared memory");
   const auto desc = tcgen05_decode_fp8_mma_descriptor(idesc);
-  const auto &predicate = inst.operands[5];
+  const auto &predicate = inst.operands.back();
   const bool accumulate =
       state.read_uniform_predicate(predicate.index) != predicate.negated;
   const auto input =
@@ -70,7 +73,7 @@ step_result dense_fp8_mma(const instruction &inst, warp_state &state,
   const auto output = tcgen05_mma_mxf8f6f4_compute_words(
       desc, a, b, std::vector<uint8_t>(m, 127), std::vector<uint8_t>(n, 127),
       input, accumulate);
-  tm.memory.write_matrix_words({0, 0}, destination, output, m, n);
+  write_accumulator(tm, destination, output, m, n, false, disable_lanes.data());
   context.tcgen_mma_effect = {true, true, m, n, 32, 1};
   context.tcgen_mma_effect.timing =
       tcgen05_metadata(tcgen05_mma_kind::fp8, desc);
@@ -173,7 +176,11 @@ step_result fp4_mma(const instruction &inst, warp_state &state,
 
 step_result mixed_mma(const instruction &inst, warp_state &state,
                       execution_context &context) {
-  if (inst.operands.size() == 6)
+  // Dense output masks are a bare register group; block-scaled MMA uses
+  // a tmem[...] scale-address pair in the same operand position.
+  if (inst.operands.size() == 6 ||
+      (inst.operands.size() == 7 &&
+       inst.operands[5].kind == operand_kind::kUniformRegister))
     return dense_fp8_mma(inst, state, context);
   const unsigned group = inst.opcode == "UTCQMMA.2CTA" ? 2 : 1;
   if (inst.operands.size() != 7 || !context.cta || !context.memory)

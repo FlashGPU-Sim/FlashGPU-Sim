@@ -1359,3 +1359,18 @@ TEST(SassTimingProjectionTest, DenseMmaProjectsWholeOutputMaskGroup) {
               sources.end());
   }
 }
+
+TEST(SassTimingProjectionTest, Fp8MaskAndBlockScaleHaveDifferentRegisterSpans) {
+  for (const auto &mask : {std::string("UR12"), std::string("URZ"),
+                           std::string("tmem[UR12]")}) {
+    const timing_instruction inst(official_instruction(
+        0, "UTCQMMA",
+        "gdesc[UR0],gdesc[UR2],tmem[UR4],tmem[UR5],idesc[UR6]," + mask + ",UP1"));
+    const std::vector<int> sources(inst.arch_reg.src,
+                                  inst.arch_reg.src + inst.incount);
+    const unsigned words = mask == "UR12" ? 4 : mask == "URZ" ? 0 : 2;
+    for (unsigned i = 0; i < 5; ++i)
+      EXPECT_EQ(std::find(sources.begin(), sources.end(), 257 + 12 + i) !=
+                    sources.end(), i < words) << mask << ':' << i;
+  }
+}
