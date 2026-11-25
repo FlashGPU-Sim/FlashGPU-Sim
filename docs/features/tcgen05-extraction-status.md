@@ -182,8 +182,8 @@ an applicable patch is not a public-base test result.
 | Leading-bit boundaries | `94ec143f` | Separate common arithmetic from native adapter additions |
 | Shared-store visibility at fences | `413e4c56` | Patch applies; independent qualification pending |
 | Typeless trap/brkpt predecode | `b4a45d47` | Qualified independently at `0ca9132d` |
-| Vector modifier order | `8b716c37` | Patch applies; independent qualification pending |
-| Full-width integer constants | `0b9b4586` | Patch applies; independent qualification pending |
+| Vector modifier order | `8b716c37` | Qualified independently at `1da2dcef` |
+| Full-width integer constants | `0b9b4586` | Qualified independently at `7463cec0` |
 | Invalid tensor-map diagnostic bounds | `0c2dd8ae` | Patch applies; independent qualification pending |
 | Device-call argument ownership | `04cc4765` | Patch applies; independent qualification pending |
 
@@ -193,8 +193,19 @@ The typeless-control candidate is now qualified on
 `fix/ptx-typeless-control-public`: both unexecuted control-opcode fixtures assert
 on public main and pass predecode with the same binary after the correction.
 Actual trap execution behavior is unchanged. Evidence:
-`runs/public-typeless-control-20261125/qualification.json`. The remaining nine
+`runs/public-typeless-control-20261125/qualification.json`. The remaining seven
 candidates still require independent qualification or a narrower public port.
+
+Two parser candidates are now independently qualified against public main:
+`fix/ptx-integer-literals-public` (`7463cec0`) fixes full-width decimal
+saturation and adds checked radix/suffix handling; four regressions and three
+existing PTX isolation tests pass. `fix/ptx-vector-modifier-order-public`
+(`1da2dcef`) fixes scalar-before-vector parsing; its CUDA launch checks all 256
+output words. Both use identical before/after test executables and frozen
+runtimes. Evidence: `runs/public-integer-literals-20261125/qualification.json`
+and `runs/public-vector-order-20261125/qualification.json`. Their initial
+setup-error logs are excluded from regression qualification. These bring the
+independently qualified public-fix set to nine, without opening public PRs.
 
 The negated accumulator predicate correction (`987680ef`) is different: it is
 inside the new TCGen05 MMA adapter and has already been folded into the MMA
