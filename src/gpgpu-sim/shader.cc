@@ -6446,7 +6446,7 @@ void shader_core_ctx::display_simt_state(FILE *fout, int mask) const {
         unsigned tid = i * m_config->warp_size + j;
         int done = ptx_thread_done(tid);
         nactive += (ptx_thread_done(tid) ? 0 : 1);
-        if (done && (mask & 8)) {
+        if (done && (mask & 8) && m_thread[tid] != nullptr) {
           unsigned done_cycle = m_thread[tid]->donecycle();
           if (done_cycle) {
             printf("\n w%02u:t%03u: done @ cycle %u", i, tid, done_cycle);
