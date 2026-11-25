@@ -107,6 +107,55 @@ uint64_t cta_execution_state::generation(unsigned barrier_id) const {
   return barriers_[barrier_id].generation;
 }
 
+bool cta_execution_state::can_record_barrier_reduction(
+    unsigned id, uint64_t generation, unsigned warp,
+    cta_reduction_op op) const {
+  if (id >= kCtaBarrierSlots || warp >= warp_count_)
+    return false;
+  const auto &r = reductions_[id];
+  return r.generation != generation ||
+         (r.op == op && !(r.warps & (1u << warp)));
+}
+
+void cta_execution_state::record_barrier_reduction(unsigned id,
+                                                   uint64_t generation,
+                                                   unsigned warp,
+                                                   uint32_t value,
+                                                   cta_reduction_op op) {
+  if (!can_record_barrier_reduction(id, generation, warp, op))
+    panic("inconsistent or duplicate CTA reduction arrival");
+  auto &r = reductions_[id];
+  if (r.generation != generation) {
+    r = {};
+    r.generation = generation;
+    r.op = op;
+  }
+  r.accumulator.accumulate(op, value);
+  r.warps |= 1u << warp;
+  publish_barrier_reduction(id);
+}
+
+void cta_execution_state::publish_barrier_reduction(unsigned id) {
+  auto &r = reductions_[id];
+  if (!r.warps || r.published || !released(id, r.generation))
+    return;
+  // A fast warp starting the next generation must not erase a slow peer's
+  // completed result. Publication happens only once per generation.
+  for (unsigned w = 0; w < warp_count_; ++w)
+    if (r.warps & (1u << w))
+      reduction_results_[w] = {true, r.accumulator.value(), r.op};
+  r.published = true;
+}
+
+bool cta_execution_state::read_barrier_reduction(unsigned warp, uint32_t &value,
+                                                 cta_reduction_op &op) const {
+  if (warp >= warp_count_ || !reduction_results_[warp].ready)
+    return false;
+  value = reduction_results_[warp].value;
+  op = reduction_results_[warp].op;
+  return true;
+}
+
 bool cta_execution_state::arrive(unsigned barrier_id, unsigned warp_id,
                                  unsigned expected_warp_count) {
   if (barrier_id >= kCtaBarrierSlots)
@@ -164,6 +213,8 @@ void cta_execution_state::retire_warp(unsigned warp_id) {
       ++barrier.generation;
     }
   }
+  for (unsigned id = 0; id < kCtaBarrierSlots; ++id)
+    publish_barrier_reduction(id);
 }
 
 bool cta_execution_state::released(unsigned barrier_id,
@@ -189,7 +240,7 @@ bool orders_deferred_cta_barrier(const instruction &inst, architecture arch) {
       base == "UREDGR")
     return arch == architecture::kSm90 || arch == architecture::kSm120 ||
            arch == architecture::kSm100 || arch == architecture::kSm103;
-  if (base == "BAR")
+  if (base == "BAR" || base == "B2R")
     return arch == architecture::kSm90 || arch == architecture::kSm120 ||
            arch == architecture::kSm100 || arch == architecture::kSm103;
   const bool blackwell =

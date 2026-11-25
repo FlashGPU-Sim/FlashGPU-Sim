@@ -31,6 +31,7 @@
 
 #ifndef ABSTRACT_HARDWARE_MODEL_INCLUDED
 #define ABSTRACT_HARDWARE_MODEL_INCLUDED
+#include "gpgpu-sim/flash/cta_reduction.h"
 
 // Forward declarations
 class gpgpu_sim;
@@ -1715,8 +1716,7 @@ class core_t {
 
     for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) {
       for (unsigned j = 0; j < MAX_BARRIERS_PER_CTA; j++) {
-        reduction_storage[i][j] = 0;
-        reduction_active[i][j] = false;
+        reduction_storage[i][j].reset();
       }
     }
   }
@@ -1745,31 +1745,30 @@ class core_t {
   void mark_shuffle_sources_valid() { m_shuffle_sources_valid = true; }
   void and_reduction(unsigned ctaid, unsigned barid, bool value) {
     begin_reduction(ctaid, barid, 1);
-    reduction_storage[ctaid][barid] &= value;
+    reduction_storage[ctaid][barid].accumulate(
+        flash_gpgpu_sim::cta_reduction_op::bit_and, value);
   }
   void or_reduction(unsigned ctaid, unsigned barid, bool value) {
     begin_reduction(ctaid, barid, 0);
-    reduction_storage[ctaid][barid] |= value;
+    reduction_storage[ctaid][barid].accumulate(
+        flash_gpgpu_sim::cta_reduction_op::bit_or, value);
   }
   void popc_reduction(unsigned ctaid, unsigned barid, bool value) {
     begin_reduction(ctaid, barid, 0);
-    reduction_storage[ctaid][barid] += value;
+    reduction_storage[ctaid][barid].accumulate(
+        flash_gpgpu_sim::cta_reduction_op::popcount, value);
   }
   void begin_reduction(unsigned ctaid, unsigned barid, unsigned identity) {
     assert(ctaid < MAX_CTA_PER_SHADER && barid < MAX_BARRIERS_PER_CTA);
-    if (!reduction_active[ctaid][barid]) {
-      reduction_storage[ctaid][barid] = identity;
-      reduction_active[ctaid][barid] = true;
-    }
+    reduction_storage[ctaid][barid].begin(identity);
   }
   void reset_reduction(unsigned ctaid, unsigned barid) {
     assert(ctaid < MAX_CTA_PER_SHADER && barid < MAX_BARRIERS_PER_CTA);
-    reduction_active[ctaid][barid] = false;
+    reduction_storage[ctaid][barid].reset();
   }
   unsigned get_reduction_value(unsigned ctaid, unsigned barid) {
     assert(ctaid < MAX_CTA_PER_SHADER && barid < MAX_BARRIERS_PER_CTA);
-    assert(reduction_active[ctaid][barid]);
-    return reduction_storage[ctaid][barid];
+    return reduction_storage[ctaid][barid].value();
   }
 
  protected:
@@ -1781,8 +1780,8 @@ class core_t {
   unsigned m_warp_count;
   uint32_t m_shuffle_sources[MAX_WARP_SIZE]{};
   bool m_shuffle_sources_valid = false;
-  unsigned reduction_storage[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
-  bool reduction_active[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
+  flash_gpgpu_sim::cta_reduction_accumulator
+      reduction_storage[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
 };
 
 // register that can hold multiple instructions.

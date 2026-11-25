@@ -213,6 +213,8 @@ size_t leading_destination_count(const instruction &source) {
   const size_t size = source.operands.size();
   if (size == 0 || !has_destination(base))
     return 0;
+  if (source.opcode == "B2R.RESULT")
+    return size;
   if (base == "LDG" && has_modifier(source.opcode, "256"))
     return 2;
   if (base == "SHFL" || base == "PLOP3" || base == "UPLOP3" ||
@@ -893,24 +895,25 @@ void classify(const instruction &source, const timing_profile &profile,
                          : inst_t::tma_static_info_t::TMA_SHARED_CTA;
     target.set_tma_static_info(info);
   } else if (source.opcode == "UVIRTCOUNT.DEALLOC.SMPOOL" || base == "ERRBAR" ||
-             base == "CGAERRBAR" || base == "NOP" || base == "PREEXIT" ||
-             base == "NANOSLEEP" || base == "S2R" || base == "S2UR" ||
-             base == "CS2R" || base == "CS2UR" || base == "MOV" ||
-             base == "MOVM" || base == "IMAD" || base == "IADD3" ||
-             base == "ISETP" || base == "LOP3" || base == "SHF" ||
-             base == "PRMT" || base == "SEL" || base == "PLOP3" ||
-             base == "VOTE" || base == "LEA" || base == "IABS" ||
-             base == "FLO" || base == "POPC" || base == "BREV" ||
-             base == "UBREV" || base == "UFLO" || base == "UIADD3" ||
-             base == "UIMAD" || base == "UISETP" || base == "UFSETP" ||
-             base == "UFSEL" || base == "ULEA" || base == "ULOP3" ||
-             base == "UPLOP3" || base == "UMOV" || base == "UPRMT" ||
-             base == "USEL" || base == "USHF" || base == "R2UR" ||
-             base == "UP2UR" || base == "R2P" || base == "P2R" ||
-             base == "LEPC" || base == "ELECT" || base == "VOTEU" ||
-             base == "VIMNMX" || base == "VIMNMX3" || base == "UVIMNMX" ||
-             base == "IADD" || base == "VIADD" || base == "VIADDMNMX" ||
-             base == "SGXT" || base == "USGXT" || base == "SHFL" ||
+             source.opcode == "B2R.RESULT" || base == "CGAERRBAR" ||
+             base == "NOP" || base == "PREEXIT" || base == "NANOSLEEP" ||
+             base == "S2R" || base == "S2UR" || base == "CS2R" ||
+             base == "CS2UR" || base == "MOV" || base == "MOVM" ||
+             base == "IMAD" || base == "IADD3" || base == "ISETP" ||
+             base == "LOP3" || base == "SHF" || base == "PRMT" ||
+             base == "SEL" || base == "PLOP3" || base == "VOTE" ||
+             base == "LEA" || base == "IABS" || base == "FLO" ||
+             base == "POPC" || base == "BREV" || base == "UBREV" ||
+             base == "UFLO" || base == "UIADD3" || base == "UIMAD" ||
+             base == "UISETP" || base == "UFSETP" || base == "UFSEL" ||
+             base == "ULEA" || base == "ULOP3" || base == "UPLOP3" ||
+             base == "UMOV" || base == "UPRMT" || base == "USEL" ||
+             base == "USHF" || base == "R2UR" || base == "UP2UR" ||
+             base == "R2P" || base == "P2R" || base == "LEPC" ||
+             base == "ELECT" || base == "VOTEU" || base == "VIMNMX" ||
+             base == "VIMNMX3" || base == "UVIMNMX" || base == "IADD" ||
+             base == "VIADD" || base == "VIADDMNMX" || base == "SGXT" ||
+             base == "USGXT" || base == "SHFL" ||
              source.opcode == "MATCH.ANY" || base == "REDUX" ||
              base == "CREDUX" || source.opcode == "BPT.TRAP" ||
              base == "DEPBAR" || base == "CCTL" || base == "UTMACCTL" ||

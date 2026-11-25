@@ -374,6 +374,13 @@ tests = [
   { name = "shuffle-components-and-dual-launch", group = "unit", gtest_filter = "SassShuffle.*", post_check = "tests/ci/check_warp_shuffle_dual.py" },
 ]
 
+[jobs.sm100-cta-reduction]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "cta-reduction-components-and-dual-launch", group = "unit", gtest_filter = "SassCtaReduction.*", post_check = "tests/ci/check_cta_reduction_dual.py" },
+]
+
 [jobs.sm100-ptx-cta-reduction]
 arch = "sm100"
 cuda = "13.3"

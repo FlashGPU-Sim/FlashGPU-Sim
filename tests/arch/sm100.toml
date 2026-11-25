@@ -4,6 +4,7 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "unit/sass/functional/cta_reduction_test.cc",
   "unit/sass/functional/shuffle_test.cc",
   "warp_shuffle/launch_test.cu",
   "unit/sass/functional/preexit_test.cc",

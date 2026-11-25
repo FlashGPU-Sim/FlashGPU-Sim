@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../cta_reduction.h"
 #include "decode/decoder.h"
 
 namespace flash_gpgpu_sim {
@@ -244,6 +245,12 @@ public:
               unsigned expected_warp_count = 0);
   void retire_warp(unsigned warp_id);
   bool released(unsigned barrier_id, uint64_t generation) const;
+  bool can_record_barrier_reduction(unsigned id, uint64_t generation,
+                                    unsigned warp, cta_reduction_op op) const;
+  void record_barrier_reduction(unsigned id, uint64_t generation, unsigned warp,
+                                uint32_t value, cta_reduction_op op);
+  bool read_barrier_reduction(unsigned warp, uint32_t &value,
+                              cta_reduction_op &op) const;
   bool initialize_mbarrier(uint64_t address, uint32_t expected_arrivals,
                            bool initial_parity = false);
   bool mbarrier_initialized(uint64_t address) const;
@@ -279,6 +286,22 @@ private:
     uint64_t phase = 0;
     uint64_t early_completed_bytes = 0;
   };
+
+  void publish_barrier_reduction(unsigned id);
+  struct reduction_state {
+    uint64_t generation = UINT64_MAX;
+    uint32_t warps = 0;
+    bool published = false;
+    cta_reduction_op op = cta_reduction_op::bit_or;
+    cta_reduction_accumulator accumulator;
+  };
+  struct reduction_result {
+    bool ready = false;
+    uint32_t value = 0;
+    cta_reduction_op op = cta_reduction_op::bit_or;
+  };
+  std::array<reduction_state, kCtaBarrierSlots> reductions_{};
+  std::array<reduction_result, kMaxCtaWarps> reduction_results_{};
 
   unsigned warp_count_ = 0;
   uint32_t expected_warps_ = 0;
