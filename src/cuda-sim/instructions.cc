@@ -6352,6 +6352,9 @@ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
       core->shuffle_sources()[source_lane] = 0;
       if (!inst.active(source_lane)) continue;
       auto *source = core->get_thread_info()[tid + source_lane];
+      // Later lanes have not passed ptx_exec_inst's predicate check yet.
+      // Do not read an operand belonging to a nonparticipating lane.
+      if (!source->predicate_allows(*pI)) continue;
       core->shuffle_sources()[source_lane] =
           source->get_operand_value(pI->src1(), pI->dst(), i_type, source, 1).u32;
     }
