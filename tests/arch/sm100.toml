@@ -29,6 +29,7 @@ sources = [
   "integration/tma_cluster_multicast_test.cu",
   "integration/ptx_fma_test.cu",
   "integration/tma_cluster_unicast_test.cu",
+  "integration/tensor_coordinate_literal_test.cu",
   "integration/tma_multicast_mask_test.cu",
   "integration/tma_store_test.cu",
 
