@@ -2,16 +2,21 @@
 #define FLASH_GPGPU_SIM_TMA_DRIVER_TENSORMAP_H
 
 #include "tensormap.h"
+#include "tma_packed.h"
 
 namespace flash_gpgpu_sim {
 // Captured CUDA Driver SM100 descriptors, not a documented portable ABI.
-// Only observed dense/TF32 controls are accepted. Packed sub-byte payloads
-// require separate transfer semantics and remain rejected.
+// Only observed controls are accepted; packed loads use a separate shared
+// payload layout while retaining the ordinary common TMA transaction engine.
 inline bool sm100_driver_tma_format(uint32_t control, unsigned rank,
                                     uint32_t &dtype, uint32_t &swizzle) {
   swizzle = (control >> 13) & 3;
   if (rank == 2) {
     switch (control) {
+    case 0x64590:
+    case 0x264590:
+      dtype = TMA_DTYPE_16U4_ALIGN8B;
+      return true;
     case 0x60510:
     case 0x62510:
     case 0x264510:
@@ -54,6 +59,9 @@ inline bool sm100_driver_tma_format(uint32_t control, unsigned rank,
   }
   if (rank == 3) {
     switch (control) {
+    case 0x2645a0:
+      dtype = TMA_DTYPE_16U4_ALIGN8B;
+      return true;
     case 0x40020:
     case 0x240020:
     case 0x66020:
@@ -75,8 +83,8 @@ inline bool sm100_driver_tma_format(uint32_t control, unsigned rank,
       return false;
     }
   }
-  if (rank == 4 && control == 0x266030) {
-    dtype = TMA_DTYPE_U8;
+  if (rank == 4 && (control == 0x266030 || control == 0x266630)) {
+    dtype = control == 0x266630 ? TMA_DTYPE_16U4_ALIGN16B : TMA_DTYPE_U8;
     return true;
   }
   if (rank == 5 && (control == 0x266540 || control == 0x2663c0)) {
@@ -133,7 +141,10 @@ inline bool decode_sm100_driver_tensormap(const tensormap_descriptor_t &encoded,
     bytes *= result.fields.boxDim[i];
   }
   const uint64_t swizzle_bytes = swizzle ? 16u << swizzle : 0;
-  if (w[8] != bytes || w[9] != (swizzle ? swizzle_bytes * 8 : 0x10))
+  if (result.is_packed_u4() && !tma_packed4_supported(result))
+    return false;
+  if (w[8] != (result.is_packed_u4() ? 0 : bytes) ||
+      w[9] != (swizzle ? swizzle_bytes * 8 : 0x10))
     return false;
   decoded = result;
   return true;

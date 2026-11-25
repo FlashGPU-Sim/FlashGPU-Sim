@@ -22,8 +22,10 @@ The accepted encoding controls come from retained B200 descriptors and the
 previous private implementation. CUDA does not specify their byte layout.
 This is deliberately not a general CUDA Driver ABI claim. The subsequent
 [floating-load extension](blackwell-tma-floating-loads.md) qualifies TF32
-conversion for observed 2D/3D controls. Packed FP4 controls remain rejected;
-simply treating them as dense bytes would be incorrect.
+conversion for observed 2D/3D controls. The subsequent
+[packed U4 extension](blackwell-packed-tma.md) separates packed global bytes
+from expanded shared containers for the retained FP4 controls; treating them
+as dense bytes would be incorrect.
 
 ## Separate prerequisites
 

@@ -26,7 +26,10 @@ step_result read_driver_tensor_map(const instruction &inst,
     return memory_fault(inst, memory_space::kGlobal, address + sizeof(raw),
                         sizeof(raw));
   if (host_candidate) {
-    if (!decode_tma_float_host(encoded, rank, decoded)) {
+    if (encoded.is_packed_u4() && encoded.num_dims() == rank &&
+        tma_packed4_supported(encoded)) {
+      decoded = encoded;
+    } else if (!decode_tma_float_host(encoded, rank, decoded)) {
       recognized = false;
       return {step_status::kAdvanced, {}};
     }

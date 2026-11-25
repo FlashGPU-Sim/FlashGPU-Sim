@@ -41,6 +41,21 @@ public:
   void init_tensor(tma_agu_state_t &state, const tensormap_descriptor_t &tm,
                    const int32_t start_coords[5]) {
 
+    if (tm.is_packed_u4()) {
+      // Traverse global bytes, independently of expanded shared containers.
+      // The ordinary packed-load adapter qualifies aligned element groups.
+      assert(start_coords[0] % 16 == 0);
+      auto byte_map = tm;
+      byte_map.fields.tensorDataType = TMA_DTYPE_U8;
+      byte_map.fields.boxDim[0] /= 2;
+      byte_map.fields.globalDim[0] /= 2;
+      int32_t byte_coords[5];
+      std::copy_n(start_coords, 5, byte_coords);
+      byte_coords[0] /= 2;
+      init_tensor(state, byte_map, byte_coords);
+      return;
+    }
+
     if (!tm.is_valid()) {
       assert(false && "TMA AGU ERROR: Invalid tensormap in init_tensor");
     }

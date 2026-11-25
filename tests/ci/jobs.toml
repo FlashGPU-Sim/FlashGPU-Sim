@@ -129,6 +129,13 @@ tests = [
   { name = "driver-maps-and-dual-launch", group = "unit", gtest_filter = "DriverTensorMap.*:Fa4OpaqueTensorMapTest.*:SassParameterAlias.*:TmaClusterTargets.*", post_check = "tests/ci/check_driver_tma_dual.py" },
 ]
 
+[jobs.sm100-packed-tma]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "packed-tma-dual-launch", group = "unit", gtest_filter = "TmaPacked4.*:DriverTensorMap.*:PtxTensorCoordinates.*", post_check = "tests/ci/check_packed_tma_dual.py" },
+]
+
 [jobs.sm100-bfloat]
 arch = "sm100"
 cuda = "13.3"

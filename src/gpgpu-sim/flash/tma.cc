@@ -7,6 +7,7 @@
 #include "tma_gather4.h"
 #include "tma_load_convert.h"
 #include "tma_opaque_tensormap.h"
+#include "tma_packed.h"
 #include "tma_reduction.h"
 #include "tma_store_source.h"
 #include <algorithm>
@@ -2510,6 +2511,23 @@ static void do_tma_transfer(
     memory_space *shared_mem, memory_space *global_mem, uint32_t smem_addr,
     ptx_thread_info *thread, const ptx_instruction *pI, bool is_load,
     tma_reduction_op_t reduction_op = tma_reduction_op_t::NONE) {
+  if (tensormap.is_packed_u4()) {
+    std::vector<uint8_t> tile;
+    if (!is_load || !flash_gpgpu_sim::tma_packed4_load(
+                        tensormap, coords,
+                        [&](uint64_t address, void *data, size_t bytes) {
+                          global_mem->read(address, bytes, data);
+                          return true;
+                        },
+                        tile))
+      flash_gpgpu_sim::panic("unsupported packed U4 tensor transfer");
+    for (size_t offset = 0; offset < tile.size(); offset += 8)
+      shared_mem->write(smem_addr +
+                            flash_gpgpu_sim::tma_gather4_shared_offset(
+                                offset, smem_addr, tensormap.fields.swizzle),
+                        8, tile.data() + offset, thread, pI);
+    return;
+  }
   // For load operations, pre-fill the entire tile in shared memory with OOB
   // fill value
   if (is_load) {
@@ -3310,8 +3328,11 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
                      pI->get_operands()[2], thread, tensormap, coords,
                      size_in_bytes);
-    if (!gather4 &&
-        (tma_gather4_packed(tensormap) || tensormap.fields.swizzle > 3))
+    const bool packed = !gather4 && tensormap.is_packed_u4();
+    if (packed && (!tma_packed4_supported(tensormap) || coords[0] % 16))
+      reject_unsupported_tma("unsupported packed U4 tensor geometry", pI);
+    if (!gather4 && ((!packed && tma_gather4_packed(tensormap)) ||
+                     tensormap.fields.swizzle > 3))
       reject_unsupported_tma(
           "extended packed/swizzle layouts are qualified for gather4 only", pI);
     if (gather4) {
@@ -3429,7 +3450,8 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
         transfer(multicast_cluster ? shared_mem : destination.memory);
 
       if (multicast_to_issuer && core) {
-        multicast_smem_to_cluster(shared_mem, dst_addr, size_in_bytes, thread,
+        multicast_smem_to_cluster(shared_mem, dst_addr,
+                                  tensormap.get_tile_smem_size_bytes(), thread,
                                   pI, cta_mask);
       } else if (multicast_cluster && !multicast_to_issuer && core) {
         for_each_cluster_peer_cta(

@@ -6,6 +6,7 @@
 #include "../../tensormap.h"
 #include "../../tma_gather4.h"
 #include "../../tma_load_convert.h"
+#include "../../tma_packed.h"
 #include "../../tma_reduction.h"
 #include "../runtime/tensor_map.h"
 
@@ -293,8 +294,12 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
     return unsupported(inst, "unsupported shared-memory TMA swizzle");
 
   tensormap_descriptor_t gather_map{};
+  const auto ordinary_map = backend_tensor_map(tensor_map);
+  const bool packed = !gather4 && ordinary_map.is_packed_u4();
+  if (packed && (!tma_packed4_supported(ordinary_map) || coordinates[0] % 16))
+    return unsupported(inst, "unsupported packed U4 tensor geometry");
   if (!gather4 &&
-      ((tensor_map.data_type >= TMA_DTYPE_16U4_ALIGN8B &&
+      ((!packed && tensor_map.data_type >= TMA_DTYPE_16U4_ALIGN8B &&
         tensor_map.data_type <= TMA_DTYPE_16U6_ALIGN16B) ||
        (tensor_map.swizzle_mode != UINT32_MAX && tensor_map.swizzle_mode > 3) ||
        (!tensor_map.oob_zero && !tma_float_conversion(tensor_map.data_type)) ||
@@ -323,7 +328,12 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
           std::numeric_limits<size_t>::max() / tensor_map.element_bytes)
     return unsupported(inst, "TMA tile byte count overflows host size_t");
   const size_t tile_bytes =
-      static_cast<size_t>(box_elements * tensor_map.element_bytes);
+      packed ? ordinary_map.get_tile_smem_size_bytes()
+             : static_cast<size_t>(box_elements * tensor_map.element_bytes);
+  const uint32_t completion_bytes =
+      gather4  ? 4 * tma_gather4_gmem_row_bytes(gather_map)
+      : packed ? ordinary_map.get_tile_size_bytes()
+               : tile_bytes;
   if (tile_bytes == 0 || tile_bytes > UINT32_MAX ||
       shared_address > std::numeric_limits<uint64_t>::max() - (tile_bytes - 1))
     return unsupported(inst, "invalid TMA shared-memory tile range");
@@ -331,6 +341,14 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
     return unsupported(inst, "TMA references uninitialized mbarrier");
 
   std::vector<uint8_t> tile(tile_bytes, 0);
+  if (packed && !tma_packed4_load(
+                    ordinary_map, gather_coordinates,
+                    [&](uint64_t addr, void *data, size_t bytes) {
+                      return context.memory->read(memory_space::kGlobal, addr,
+                                                  data, bytes);
+                    },
+                    tile))
+    return unsupported(inst, "invalid or unmapped packed U4 tensor payload");
   if (gather4) {
     if (!tma_gather4_load(
             gather_map, gather_coordinates,
@@ -342,7 +360,8 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
       return unsupported(inst,
                          "gather4 payload address is invalid or unmapped");
   }
-  for (uint64_t element = 0; !gather4 && element < box_elements; ++element) {
+  for (uint64_t element = 0; !gather4 && !packed && element < box_elements;
+       ++element) {
     uint64_t remaining = element;
     uint64_t global_offset = 0;
     bool in_bounds = true;
@@ -407,15 +426,18 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
                      tensor_map.element_bytes);
   }
 
-  if (gather4) {
+  if (gather4 || packed) {
     for (unsigned rank = 0; rank < size; ++rank)
       if (destinations & (1u << rank)) {
-        auto *memory =
-            context.cluster ? context.cluster->memories[rank] : context.memory;
+        auto *memory = cluster_targets && context.cluster
+                           ? context.cluster->memories[rank]
+                           : context.memory;
         for (size_t offset = 0; offset < tile.size(); offset += 8) {
-          const auto addr = shared_address + tma_gather4_shared_offset(
-                                                 offset, shared_address,
-                                                 gather_map.fields.swizzle);
+          const auto addr =
+              shared_address +
+              tma_gather4_shared_offset(offset, shared_address,
+                                        packed ? ordinary_map.fields.swizzle
+                                               : gather_map.fields.swizzle);
           if (!memory->write(memory_space::kShared, addr, tile.data() + offset,
                              8))
             return memory_fault(inst, memory_space::kShared, addr, 8);
@@ -461,9 +483,7 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
   functional_tma_effect timing_effect;
   timing_effect.destination_address = shared_address;
   timing_effect.source_address = descriptor_address;
-  timing_effect.size_bytes = gather4
-                                 ? 4 * tma_gather4_gmem_row_bytes(gather_map)
-                                 : static_cast<uint32_t>(tile_bytes);
+  timing_effect.size_bytes = completion_bytes;
   timing_effect.mbarrier_address = static_cast<uint32_t>(mbarrier_address);
   if (cluster_targets) {
     timing_effect.explicit_cluster_targets = size > 1 || multicast || paired;
@@ -484,15 +504,12 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
       if (completions & (1u << bit)) {
         auto *owner =
             context.cluster ? context.cluster->ctas[bit % 16] : context.cta;
-        if (!owner->complete_mbarrier_transaction(
-                mbarrier_address,
-                gather4 ? 4 * tma_gather4_gmem_row_bytes(gather_map)
-                        : tile_bytes,
-                true))
+        if (!owner->complete_mbarrier_transaction(mbarrier_address,
+                                                  completion_bytes, true))
           return unsupported(inst, "TMA completion state changed");
       }
-  } else if (!context.cta->complete_mbarrier_transaction(mbarrier_address,
-                                                         tile.size(), true))
+  } else if (!context.cta->complete_mbarrier_transaction(
+                 mbarrier_address, completion_bytes, true))
     return unsupported(inst, "mbarrier transaction state changed during TMA");
   advance(inst, state);
   return {step_status::kAdvanced, {}};
