@@ -65,6 +65,27 @@ public-main applicability and CI must be verified independently before a public
 PR. A private green integration test is not evidence of public-main qualification.
 The TCGen05 accumulator predicate correction instead belongs to MMA.
 
+## Public-fix dependency audit
+
+A read-only check against public `flash` at `b3378cb9` confirms that the
+production patches for the following candidates apply without the TCGen05
+feature stack: signed-byte load extension (`7638a273`), aliased shuffle source
+snapshot (`58c96a6f`), negated CTA reduction predicates (`c0122c3d`), and suspended
+barrier wakeup (`55178b4e`). This proves patch applicability only. Each still
+needs its own reproducer, before/after execution and CI on the public base.
+Their existing integration fixtures must not be presented as public-main tests.
+
+Tensor-coordinate literals (`85f3e067`) need an explicit port: the private
+parser context includes the separate narrow mov-pack extension, and its rank
+validation references `GATHER4_OPTION`, which is absent from this public base.
+A public ordinary-TMA fix must preserve public mov-pack behavior and qualify
+ordinary rank-1..5 coordinates; gather4 validation belongs in the dependent
+feature. Do not transplant the integration parser hunk wholesale.
+
+The negated accumulator predicate correction (`987680ef`) is different: it is
+inside the new TCGen05 MMA adapter and has already been folded into the MMA
+functional unit. It is not an independent public-main fix.
+
 ## Acceptance evidence boundaries
 
 The original combined private stack and this extracted stack are different
