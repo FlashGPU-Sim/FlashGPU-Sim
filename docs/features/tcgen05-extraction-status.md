@@ -178,8 +178,8 @@ an applicable patch is not a public-base test result.
 |---|---|---|
 | 32-byte per-lane coalescing | `957a0caa` | Feature-owned prerequisite in `feature/blackwell-memory-forms` |
 | Funnel-shift boundaries | `ee68caee` | Public PTX/common primitive qualified at `ce1e3aee`; new SASS forms stay in feature |
-| Dynamic cached-load dependency tokens | `4a8c7b28` | Patch applies; independent qualification pending |
-| Leading-bit boundaries | `94ec143f` | Separate common arithmetic from native adapter additions |
+| Dynamic cached-load dependency tokens | `4a8c7b28` | Public ordinary-load control passes; retain with warp-reduction feature pending independent reproduction |
+| Leading-bit boundaries | `94ec143f` | Existing PTX/common primitive qualified at `9ff0a6a0`; native adapter additions stay in feature |
 | Shared-store visibility at fences | `413e4c56` | Qualified independently at `53225c29` |
 | Typeless trap/brkpt predecode | `b4a45d47` | Qualified independently at `0ca9132d` |
 | Vector modifier order | `8b716c37` | Qualified independently at `1da2dcef` |
@@ -193,8 +193,9 @@ The typeless-control candidate is now qualified on
 `fix/ptx-typeless-control-public`: both unexecuted control-opcode fixtures assert
 on public main and pass predecode with the same binary after the correction.
 Actual trap execution behavior is unchanged. Evidence:
-`runs/public-typeless-control-20261125/qualification.json`. Two candidates (leading-bit boundaries and cached-load completion) still
-require independent qualification; the coalescer extension belongs to its feature.
+`runs/public-typeless-control-20261125/qualification.json`. The leading-bit candidate is now independently qualified. The cached-load
+completion change remains with its feature; it is not a qualified public fix.
+The coalescer extension also belongs to its feature.
 
 Two parser candidates are now independently qualified against public main:
 `fix/ptx-integer-literals-public` (`7463cec0`) fixes full-width decimal
@@ -297,3 +298,44 @@ Rubin/SM107, research placement, ideal-memory experiments, and unqualified ISA
 modifiers remain separate. Production defaults stay opt-in for SASS. The stack
 inherits the reviewed gather4 prerequisite's B200 TMA service interval change;
 there is no claim that every configuration file in the entire stack is unchanged.
+
+## Latest qualification checkpoint
+
+Fourteen independent public-base fixes are now qualified locally. The latest,
+`fix/ptx-leading-bit-boundaries-public` (`9ff0a6a0`), repairs existing
+`bfind.u32/s32/u64/s64`: the old 64-bit nonzero fixture returns incorrect bits,
+and zero/all-sign boundaries hang in the unsigned decrement loop. All five
+fixtures (1280 output words) pass with the same executable after the correction.
+Three ordinary PTX controls retain identical cycle counts. Evidence:
+`runs/public-leading-bit-20261125/qualification.json`. This does not add native
+FLO modifiers, claim complete bfind modifier coverage, or claim hosted CI.
+
+The cached-load candidate was explicitly tested against public main using its
+supported SM120 frontend. The standalone predicated-load fixture passes both
+PTX and SASS before any production change; its compiler-generated loads wait
+on their reused dependency token. The existing failing feature fixture instead
+uses `WARPSYNC.EXCLUSIVE`, which public main does not register, to issue four
+disjoint dynamic loads at one PC before their results are consumed. Thus
+`4a8c7b28` stays with `feature/blackwell-warp-reductions`; an independent public
+fix requires an actual public-only failing launch. This control does not prove
+all ordinary cached-load schedules correct. The test-only preparation is
+`audit/cached-load-public-controls`, with evidence in
+`runs/public-cached-completion-20261125/qualification.json`. The initial SM100
+decoder rejection occurred before execution and is excluded from bug evidence.
+
+The SASS L3 MoE retry also completed. Compared with the retained PTX reference,
+final output/statistics and all eight remote combine buffers are byte-identical;
+all source token multisets are preserved, and active intermediate token, scale
+and routing-weight data match after per-expert token metadata alignment. Its
+1,014,088 changed tracked words are entirely classified intermediate/workspace
+changes. It receives the same separate dispatch-permutation acceptance category
+as PTX L3, without waiving the original GPU residual. Evidence is under
+`runs/native-final-audit-20261125/moe-l3-sass-*.json` and hashed in
+`manual-reviews.json`. PTX L2 also completed with the same proof: all final/remote-combine bytes
+unchanged, source token multisets preserved, and all active intermediate values
+identical after metadata alignment (3153 tokens). Its 1,487,777 changed tracked
+words are fully classified workspace/intermediate changes. Evidence is in
+`moe-l2-ptx-*.json` with a separate hashed receipt. Current cumulative status:
+67 strict GPU passes, 46 unchanged prior residuals, three reviewed dispatch
+permutations, and only the SASS L2 MoE entry still running. These are frozen-runtime repair results, not
+a full sweep of the latest integration head. No public PR has been created.
