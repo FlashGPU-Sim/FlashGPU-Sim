@@ -917,11 +917,46 @@ void ptx_recognizer::end_vector_operand() {
     const bool is_mov_pack = g_opcode == MOV_OP && g_vector_operand_start == 1 &&
         (g_scalar_type_spec == B16_TYPE || g_scalar_type_spec == B32_TYPE ||
          g_scalar_type_spec == B64_TYPE);
-    parse_assert(is_store_source || is_mov_pack,
+    const bool is_tensor_coordinates = g_opcode == TMA_OP &&
+        std::find(g_options.begin(), g_options.end(), TENSOR_OPTION) != g_options.end() &&
+        (g_vector_operand_start == 1 || g_vector_operand_start == 2);
+    parse_assert(is_store_source || is_mov_pack || is_tensor_coordinates,
                  "literal vector operands are only valid as store sources "
-                 "or mov.b16/b32/b64 pack sources.");
+                 "or mov pack sources or tensor coordinates.");
 
-    if (is_mov_pack) {
+    if (is_tensor_coordinates) {
+      unsigned expected = 0;
+      for (int option : g_options) {
+        switch (option) {
+        case DIM_1D_OPTION: expected = 1; break;
+        case DIM_2D_OPTION: expected = 2; break;
+        case DIM_3D_OPTION: expected = 3; break;
+        case DIM_4D_OPTION: expected = 4; break;
+        case DIM_5D_OPTION: expected = 5; break;
+        default: break;
+        }
+      }
+      if (std::find(g_options.begin(), g_options.end(), GATHER4_OPTION) != g_options.end())
+        expected = 5;
+      parse_assert(expected != 0 && components.size() == expected,
+                   "tensor coordinate count does not match instruction rank.");
+      for (const operand_info &component : components) {
+        if (component.is_literal()) {
+          parse_assert(component.get_type() == int_t || component.get_type() == unsigned_t,
+                       "tensor coordinate literals must be integers.");
+          const auto value = component.get_literal_value();
+          parse_assert(value.u64 <= UINT32_MAX ||
+                           (value.s64 >= INT32_MIN && value.s64 < 0),
+                       "tensor coordinate literal exceeds 32 bits.");
+        } else {
+          const auto *symbol = component.get_symbol();
+          const int type = symbol->type()->get_key().scalar_type();
+          parse_assert(scalar_type_bits(type) == 32 &&
+                           (is_bit_scalar_type(type) || is_integer_scalar_type(type)),
+                       "tensor coordinate registers must be 32-bit integers.");
+        }
+      }
+    } else if (is_mov_pack) {
       const unsigned total_bits = scalar_type_bits(g_scalar_type_spec);
       parse_assert(components.size() == 2 || components.size() == 4,
                    "mov pack source requires two or four components.");

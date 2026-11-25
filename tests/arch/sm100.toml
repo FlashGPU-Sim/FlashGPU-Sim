@@ -4,6 +4,7 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "unit/ptx_tensor_coords_test.cc",
   "signed_load/launch_test.cu",
   "unit/sass/functional/native_data_movement_test.cc",
   "native_data_movement/launch_test.cu",

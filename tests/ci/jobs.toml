@@ -338,3 +338,10 @@ cuda = "13.3"
 tests = [
   { name = "signed-byte-load-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_signed_load.py" },
 ]
+
+[jobs.sm100-tensor-coordinates]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "tensor-coordinate-parser", group = "unit", gtest_filter = "PtxTensorCoordinates.*" },
+]
