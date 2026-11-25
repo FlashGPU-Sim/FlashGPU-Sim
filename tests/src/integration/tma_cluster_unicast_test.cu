@@ -18,6 +18,20 @@ constexpr int kTile = 32;
 constexpr int kIterations = 32;
 constexpr int kBlocks = 4;  // Two independent clusters when clusterDim.x == 2.
 
+template <bool LongSuspend>
+__device__ void wait_for_completion(uint64_t *bar, unsigned phase) {
+  if constexpr (LongSuspend) {
+    // A completion must wake the waiter before this long suspend hint ends.
+    asm volatile("{ .reg .pred ready; retry: "
+                 "mbarrier.try_wait.parity.shared::cta.b64 "
+                 "ready, [%0], %1, 10000000; "
+                 "@!ready bra retry; }" :: "r"(smem_u32_addr(bar)),
+                 "r"(phase) : "memory");
+  } else {
+    mbarrier_wait_parity(bar, phase);
+  }
+}
+
 // Issue #44: shared::cluster is also the destination space of *unicast*
 // loads. Every CTA owns a distinct tile and a barrier at the same local offset.
 // Reuse the barrier so stray peer completions cannot hide after one phase.
@@ -49,16 +63,7 @@ __global__ void cluster_unicast_kernel(
                "n"(sizeof(tile)), "r"(smem_u32_addr(&bar)) : "memory");
       }
     }
-    if constexpr (LongSuspend) {
-      // A completion must wake the waiter before this long suspend hint ends.
-      asm volatile("{ .reg .pred ready; retry: "
-                   "mbarrier.try_wait.parity.shared::cta.b64 "
-                   "ready, [%0], %1, 10000000; "
-                   "@!ready bra retry; }" :: "r"(smem_u32_addr(&bar)),
-                   "r"(iteration & 1) : "memory");
-    } else {
-      mbarrier_wait_parity(&bar, iteration & 1);
-    }
+    wait_for_completion<LongSuspend>(&bar, iteration & 1);
     output[offset + threadIdx.x] = tile[threadIdx.x];
     __syncthreads();  // All consumers finish before reusing this tile.
   }
@@ -159,7 +164,7 @@ __host__ __device__ uint16_t destinations(int size, int round) {
   }
 }
 
-template <bool Tensor, Mode AddressMode, int Tile>
+template <bool Tensor, Mode AddressMode, int Tile, bool LongSuspend = false>
 __global__ void address_kernel(const __grid_constant__ CUtensorMap map,
                                const uint32_t *input, uint32_t *output,
                                unsigned long long *elapsed, int size) {
@@ -246,7 +251,7 @@ __global__ void address_kernel(const __grid_constant__ CUtensorMap map,
       for (int r = 0; r < round; ++r)
         phase += AddressMode != Multicast ||
                  (destinations(size, r) & (1u << rank)) != 0;
-      mbarrier_wait_parity(&bar, phase & 1);
+      wait_for_completion<LongSuspend>(&bar, phase & 1);
       elapsed[bid * kRounds + round] = clock64() - begin;
     }
     __syncthreads();
@@ -266,7 +271,7 @@ struct Shape {
 
 // Native hardware may support fewer ranks than the simulator preset. Query
 // the actual device/kernel limit, and report unsupported native sizes as skips.
-template <bool Tensor, Mode AddressMode, int Tile = 32>
+template <bool Tensor, Mode AddressMode, int Tile = 32, bool LongSuspend = false>
 void run_address(Shape shape) {
   auto topology = flash_test::read_gpgpusim_topology();
   if (topology.found_config &&
@@ -296,7 +301,7 @@ void run_address(Shape shape) {
           steps, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
           CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE),
       CUDA_SUCCESS);
-  auto kernel = address_kernel<Tensor, AddressMode, Tile>;
+  auto kernel = address_kernel<Tensor, AddressMode, Tile, LongSuspend>;
   ASSERT_EQ(cudaFuncSetAttribute(
                 kernel, cudaFuncAttributeNonPortableClusterSizeAllowed, 1),
             cudaSuccess);
@@ -366,6 +371,13 @@ void run_address(Shape shape) {
   EXPECT_EQ(cudaFree(src), cudaSuccess);
   EXPECT_EQ(cudaFree(dst), cudaSuccess);
   EXPECT_EQ(cudaFree(elapsed), cudaSuccess);
+}
+
+TEST(TMAClusterWakeupTest, BulkRemoteCompletionWakesLongSuspendedWaiter) {
+  run_address<false, Remote, 32, true>({2, dim3(2)});
+}
+TEST(TMAClusterWakeupTest, TensorRemoteCompletionWakesLongSuspendedWaiter) {
+  run_address<true, Remote, 32, true>({2, dim3(2)});
 }
 
 class TMAClusterAddressTest : public ::testing::TestWithParam<Shape> {};
