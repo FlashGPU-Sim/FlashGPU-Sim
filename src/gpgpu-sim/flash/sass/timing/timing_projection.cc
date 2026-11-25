@@ -593,9 +593,7 @@ void classify(const instruction &source, const timing_profile &profile,
     // consuming the SM-wide shared data path.
     target.set_mio_client();
   } else if (base == "ATOMG" || base == "REDG" || base == "UREDGR" ||
-             (source.opcode == "ATOMS.ADD" || source.opcode == "ATOMS.OR" ||
-              source.opcode == "ATOMS.AND" || source.opcode == "ATOMS.XOR" ||
-              source.opcode == "ATOMS.EXCH")) {
+             uses_shared_atomic_timing_proxy(source)) {
     target.op = LOAD_OP;
     target.op_pipe = MEM__OP;
     target.memory_op = memory_load;
@@ -1218,6 +1216,12 @@ void populate_register_file_destinations(const instruction &source,
 }
 
 } // namespace
+
+bool uses_shared_atomic_timing_proxy(const instruction &source) {
+  return source.opcode == "ATOMS.ADD" || source.opcode == "ATOMS.OR" ||
+         source.opcode == "ATOMS.AND" || source.opcode == "ATOMS.XOR" ||
+         source.opcode == "ATOMS.EXCH" || source.opcode == "ATOMS.POPC.INC.32";
+}
 
 void project_mbarrier_effects(const execution_context &context,
                               warp_inst_t &target) {

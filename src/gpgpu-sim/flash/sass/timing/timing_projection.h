@@ -10,6 +10,9 @@
 namespace flash_gpgpu_sim {
 namespace sass {
 
+// Keep static classification and dynamic address remapping in agreement.
+bool uses_shared_atomic_timing_proxy(const instruction &source);
+
 // Latency policy is supplied by the GPU configuration rather than embedded in
 // the ISA decoder.  The arrays preserve the same operation classes as the
 // backend configuration instead of collapsing unrelated native instructions

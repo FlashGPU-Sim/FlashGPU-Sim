@@ -742,10 +742,7 @@ timing_step_result timing_runtime::step(
   }
   const bool generic_memory = source->opcode.rfind("LD.E", 0) == 0 ||
                               source->opcode.rfind("ST.E", 0) == 0;
-  const bool shared_atomic_proxy =
-      (source->opcode == "ATOMS.ADD" || source->opcode == "ATOMS.OR" ||
-       source->opcode == "ATOMS.AND" || source->opcode == "ATOMS.XOR" ||
-       source->opcode == "ATOMS.EXCH");
+  const bool shared_atomic_proxy = uses_shared_atomic_timing_proxy(*source);
   bool generic_space_resolved = false;
   if (timing_debug_enabled()) {
     std::fprintf(stderr,

@@ -63,3 +63,13 @@ checks all four loaded words and predicated one-byte writes with untouched
 neighboring bytes. The `NA` cache hint has the same qualification boundary as
 the earlier 256-bit forms: decoding it does not introduce a hardware-calibrated
 L1 eviction policy.
+
+## Native shared atomic population increment
+
+`ATOMS.POPC.INC.32` now uses the same static timing classification and dynamic
+shared-address proxy selection as the existing shared atomics. The functional
+per-address population increment already existed; it is not performed again by
+a timing callback. The CUDA fixture checks predicated multiwarp increments,
+multiple addresses, unsigned wraparound, untouched neighbors and CTA isolation
+through both frontends. This retains the existing coarse L2 timing proxy for
+shared atomics; it does not claim hardware-calibrated shared-atomic throughput.
