@@ -62,3 +62,23 @@ not establish another independent public bug. The four previously prepared
 public-fix bundles remain separate. This qualification is not a full DeepInfer
 sweep, a GPU measurement, or hosted CI. Individual feature-owner branches
 still need redistribution of integration-branch follow-ups before publication.
+
+## Prepared B200 hardware probe
+
+`tests/native/ws_mask/` builds a separate native numerical and timing package
+with CUDA 13.3 and pinned CUTLASS SW128 layouts. It has eleven numerical cases
+and a 176-case timing matrix (48 selected timing cases with NCU full). Shared-A,
+TMEM-A, shifted B windows, masks changed after fill, transposed B, four collector
+slots and wide N are included in the numerical fixture.
+
+The locally built package passed all eleven numerical tests through each of
+PTX and SASS. Four timing-fixture cases per frontend also passed their output
+checks, including zero burst, discard, masked reuse and TMEM fill/lastuse.
+These are simulator launch qualifications, not fresh hardware measurements.
+The deployed collector checks native numerical results before timing; it uses
+NCU base clock control and does not shut down the server.
+
+Evidence: `runs/tcgen-final-integration-20261125/native-package.json` in the
+experiment workspace. The separately compiled fixture exposed a public dynamic
+shared alignment defect; its repair is prepared in the independent runtime-safety
+bundle. The original inline-PTX CI fixture remains distinct from this package.
