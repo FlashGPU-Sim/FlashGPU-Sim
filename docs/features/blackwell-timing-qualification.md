@@ -1,5 +1,9 @@
 # Blackwell timing qualification (private integration)
 
+Follow-up: [mask/TF32 coverage and corrected TMEM timing](blackwell-timing-gap-closure.md)
+supersedes the mask rejection and fixed five-cycle gap below. These original
+measurements remain recorded as the pre-fix baseline.
+
 The integration branch `feature/blackwell-timing-qualification` adds timing to
 previously extracted functional TCGen05 support. PTX and native SASS publish the
 same typed operation metadata and use `tcgen05/timing.*`. This is not a claim
