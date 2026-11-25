@@ -21,7 +21,7 @@ constexpr int kBlocks = 4;  // Two independent clusters when clusterDim.x == 2.
 // Issue #44: shared::cluster is also the destination space of *unicast*
 // loads. Every CTA owns a distinct tile and a barrier at the same local offset.
 // Reuse the barrier so stray peer completions cannot hide after one phase.
-template <bool Tensor>
+template <bool Tensor, bool LongSuspend = false>
 __global__ void cluster_unicast_kernel(
     const __grid_constant__ CUtensorMap map, const uint32_t *input,
     uint32_t *output) {
@@ -49,14 +49,23 @@ __global__ void cluster_unicast_kernel(
                "n"(sizeof(tile)), "r"(smem_u32_addr(&bar)) : "memory");
       }
     }
-    mbarrier_wait_parity(&bar, iteration & 1);
+    if constexpr (LongSuspend) {
+      // A completion must wake the waiter before this long suspend hint ends.
+      asm volatile("{ .reg .pred ready; retry: "
+                   "mbarrier.try_wait.parity.shared::cta.b64 "
+                   "ready, [%0], %1, 10000000; "
+                   "@!ready bra retry; }" :: "r"(smem_u32_addr(&bar)),
+                   "r"(iteration & 1) : "memory");
+    } else {
+      mbarrier_wait_parity(&bar, iteration & 1);
+    }
     output[offset + threadIdx.x] = tile[threadIdx.x];
     __syncthreads();  // All consumers finish before reusing this tile.
   }
   if (threadIdx.x == 0) mbarrier_inval(&bar);
 }
 
-template <bool Tensor>
+template <bool Tensor, bool LongSuspend = false>
 void run_unicast(int cluster_size) {
   if (cluster_size > 1) {
     SKIP_IF_N_CORES_PER_CLUSTER_LT(2);
@@ -83,13 +92,13 @@ void run_unicast(int cluster_size) {
         CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE), CUDA_SUCCESS);
   }
   if (cluster_size == 0) {
-    cluster_unicast_kernel<Tensor><<<kBlocks, kTile>>>(
+    cluster_unicast_kernel<Tensor, LongSuspend><<<kBlocks, kTile>>>(
         map, device_input, device_output);
     ASSERT_EQ(cudaGetLastError(), cudaSuccess);
   } else {
     void *args[] = {&map, &device_input, &device_output};
     ASSERT_EQ(flash_test::launch_kernel_with_cluster(
-        (const void *)cluster_unicast_kernel<Tensor>, dim3(kBlocks), dim3(kTile),
+        (const void *)cluster_unicast_kernel<Tensor, LongSuspend>, dim3(kBlocks), dim3(kTile),
         dim3(cluster_size, 1, 1), args), cudaSuccess);
   }
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
@@ -106,6 +115,13 @@ TEST(TMAClusterUnicastTest, BulkClusterSizeTwo) { run_unicast<false>(2); }
 TEST(TMAClusterUnicastTest, TensorOrdinaryLaunch) { run_unicast<true>(0); }
 TEST(TMAClusterUnicastTest, TensorClusterSizeOne) { run_unicast<true>(1); }
 TEST(TMAClusterUnicastTest, TensorClusterSizeTwo) { run_unicast<true>(2); }
+
+TEST(TMAClusterUnicastTest, BulkCompletionWakesLongSuspendedWaiter) {
+  run_unicast<false, true>(0);
+}
+TEST(TMAClusterUnicastTest, TensorCompletionWakesLongSuspendedWaiter) {
+  run_unicast<true, true>(0);
+}
 
 // Extended address-space and cluster-size coverage.
 constexpr int kRounds = 8;
