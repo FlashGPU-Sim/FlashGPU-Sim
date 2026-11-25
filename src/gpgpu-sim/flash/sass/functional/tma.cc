@@ -22,6 +22,27 @@ namespace sass {
 namespace functional_detail {
 namespace {
 
+bool qualified_global_qualifier(uint64_t value) {
+  return value == 0x1000000000000000ull || value == 0x12f0000000000000ull ||
+         value == 0x14f0000000000000ull;
+}
+
+bool qualified_bulk_address_space(const instruction &inst,
+                                  const warp_state &state) {
+  if (inst.operands.size() == 2)
+    return true;
+  const auto *descriptor =
+      get_operand(inst, 2, operand_kind::kTensorMapDescriptor);
+  if (!descriptor)
+    return false;
+  if (descriptor->descriptor_register == kZeroUniformRegister)
+    return true;
+  if (descriptor->descriptor_register > kUniformRegisters - 2)
+    return false;
+  return qualified_global_qualifier(
+      read_uniform_register_pair(state, descriptor->descriptor_register));
+}
+
 // PTX ISA 9.7.9.26.5: tensor-memory asynchronous copies.
 
 bool record_uniform_tma_effect(const instruction &inst, const warp_state &state,
@@ -210,9 +231,7 @@ step_result execute_utmaldg(const instruction &inst, warp_state &state,
     // narrow until another address-space form is validated.
     const uint64_t qualifier = read_uniform_register_pair(
         state, address_descriptor->descriptor_register);
-    if (!gather4 && qualifier != 0x1000000000000000ull &&
-        qualifier != 0x12f0000000000000ull &&
-        qualifier != 0x14f0000000000000ull) {
+    if (!gather4 && !qualified_global_qualifier(qualifier)) {
       std::ostringstream detail;
       detail << "unvalidated Hopper TMA address qualifier 0x" << std::hex
              << qualifier;
@@ -542,9 +561,7 @@ step_result execute_utmastg(const instruction &inst, warp_state &state,
   if (decoded.cache_descriptor) {
     const auto qualifier = read_uniform_register_pair(
         state, decoded.cache_descriptor->descriptor_register);
-    if (qualifier != 0x1000000000000000ull &&
-        qualifier != 0x12f0000000000000ull &&
-        qualifier != 0x14f0000000000000ull)
+    if (!qualified_global_qualifier(qualifier))
       return unsupported(inst, "unvalidated TMA store address qualifier");
   }
 
@@ -790,8 +807,9 @@ step_result execute_ublkcp_global_shared(const instruction &inst,
                                          execution_context &context) {
   const operand *addresses = get_operand(inst, 0, operand_kind::kMemoryAddress);
   const operand *size = get_operand(inst, 1, operand_kind::kUniformRegister);
-  if (!has_typed_operands(inst, 2) || addresses == nullptr || size == nullptr ||
-      addresses->has_prefix || addresses->address_groups.size() != 2)
+  if ((!has_typed_operands(inst, 2) && !has_typed_operands(inst, 3)) ||
+      addresses == nullptr || size == nullptr || addresses->has_prefix ||
+      addresses->address_groups.size() != 2)
     return unsupported(inst, "expected [URglobal][URshared], URsize operands");
   const address_expression &global_group = addresses->address_groups[0];
   const address_expression &shared_group = addresses->address_groups[1];
@@ -808,6 +826,8 @@ step_result execute_ublkcp_global_shared(const instruction &inst,
     advance(inst, state);
     return {step_status::kAdvanced, {}};
   }
+  if (!qualified_bulk_address_space(inst, state))
+    return unsupported(inst, "unqualified bulk-copy address-space descriptor");
   if (context.memory == nullptr)
     return unsupported(inst, "UBLKCP requires functional memory");
 
@@ -876,9 +896,7 @@ step_result execute_ublkred_global_shared_add_f32(const instruction &inst,
 
   const uint64_t qualifier = read_uniform_register_pair(
       state, address_descriptor->descriptor_register);
-  if (qualifier != 0x1000000000000000ull &&
-      qualifier != 0x12f0000000000000ull &&
-      qualifier != 0x14f0000000000000ull) {
+  if (!qualified_global_qualifier(qualifier)) {
     std::ostringstream detail;
     detail << "unvalidated Hopper bulk-reduction address qualifier 0x"
            << std::hex << qualifier;
@@ -929,8 +947,9 @@ step_result execute_ublkcp_shared_global(const instruction &inst,
                                          execution_context &context) {
   const operand *addresses = get_operand(inst, 0, operand_kind::kMemoryAddress);
   const operand *size = get_operand(inst, 1, operand_kind::kUniformRegister);
-  if (!has_typed_operands(inst, 2) || addresses == nullptr || size == nullptr ||
-      addresses->has_prefix || addresses->address_groups.size() != 2)
+  if ((!has_typed_operands(inst, 2) && !has_typed_operands(inst, 3)) ||
+      addresses == nullptr || size == nullptr || addresses->has_prefix ||
+      addresses->address_groups.size() != 2)
     return unsupported(inst, "expected [URstate][URglobal], URsize operands");
   const address_expression &state_group = addresses->address_groups[0];
   const address_expression &global_group = addresses->address_groups[1];
@@ -948,6 +967,8 @@ step_result execute_ublkcp_shared_global(const instruction &inst,
     advance(inst, state);
     return {step_status::kAdvanced, {}};
   }
+  if (!qualified_bulk_address_space(inst, state))
+    return unsupported(inst, "unqualified bulk-copy address-space descriptor");
   if (context.memory == nullptr || context.cta == nullptr)
     return unsupported(inst, "UBLKCP.S.G requires CTA memory and state");
 

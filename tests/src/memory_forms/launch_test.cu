@@ -126,3 +126,70 @@ TEST(CacheHintLaunch, NoAllocate128AndPredicatedByteStore) {
   EXPECT_EQ(cudaFree(bytes),cudaSuccess);
 }
 }
+
+namespace {
+// CUDA 13.3 SM100 qualifier encodings, matching the retained DeepGEMM hints.
+// Policy construction is independent of the bulk-copy operand adapter.
+template <bool Hint>
+__global__ void linear_bulk_roundtrip(const unsigned *input, unsigned *output) {
+  __shared__ __align__(16) unsigned data[32];
+  __shared__ unsigned long long barrier;
+  const unsigned sp = (unsigned)__cvta_generic_to_shared(data);
+  const unsigned bp = (unsigned)__cvta_generic_to_shared(&barrier);
+  if (threadIdx.x == 0) {
+    asm volatile("mbarrier.init.shared::cta.b64 [%0],1;" :: "r"(bp) : "memory");
+    asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _,[%0],128;"
+                 :: "r"(bp) : "memory");
+  }
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    if constexpr (Hint) {
+      asm volatile(
+          "{ .reg .b64 policy; mov.b64 policy,0x12f0000000000000; "
+          "cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes.L2::cache_hint "
+          "[%0],[%1],128,[%2],policy; }"
+          :: "r"(sp), "l"(input + blockIdx.x * 32), "r"(bp) : "memory");
+    } else {
+      asm volatile("cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes "
+                   "[%0],[%1],128,[%2];"
+                   :: "r"(sp), "l"(input + blockIdx.x * 32), "r"(bp) : "memory");
+    }
+  }
+  asm volatile("{ .reg .pred p; wait: mbarrier.try_wait.parity.shared::cta.b64 p,[%0],0; "
+               "@!p bra wait; }" :: "r"(bp) : "memory");
+  __syncthreads();
+  data[threadIdx.x] += 1;
+  __syncthreads();
+  asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+  if (threadIdx.x == 0) {
+    if constexpr (Hint) {
+      asm volatile(
+          "{ .reg .b64 policy; mov.b64 policy,0x14f0000000000000; "
+          "cp.async.bulk.global.shared::cta.bulk_group.L2::cache_hint "
+          "[%0],[%1],128,policy; }"
+          :: "l"(output + blockIdx.x * 32), "r"(sp) : "memory");
+    } else {
+      asm volatile("cp.async.bulk.global.shared::cta.bulk_group [%0],[%1],128;"
+                   :: "l"(output + blockIdx.x * 32), "r"(sp) : "memory");
+    }
+    asm volatile("cp.async.bulk.commit_group; cp.async.bulk.wait_group 0;" ::: "memory");
+  }
+  __syncthreads();
+}
+template <bool Hint> void check_linear_bulk() {
+  std::array<unsigned,64> input{}, output{};
+  for (unsigned i=0;i<input.size();++i) input[i]=0x10000000u+37*i;
+  unsigned *in, *out;
+  ASSERT_EQ(cudaMalloc(&in,sizeof(input)),cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&out,sizeof(output)),cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(in,input.data(),sizeof(input),cudaMemcpyHostToDevice),cudaSuccess);
+  linear_bulk_roundtrip<Hint><<<2,32>>>(in,out);
+  ASSERT_EQ(cudaDeviceSynchronize(),cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(output.data(),out,sizeof(output),cudaMemcpyDeviceToHost),cudaSuccess);
+  for (unsigned i=0;i<input.size();++i) EXPECT_EQ(output[i],input[i]+1)<<i;
+  EXPECT_EQ(cudaFree(in),cudaSuccess);
+  EXPECT_EQ(cudaFree(out),cudaSuccess);
+}
+TEST(LinearBulkLaunch, PlainGlobalSharedRoundtrip) { check_linear_bulk<false>(); }
+TEST(LinearBulkLaunch, HintedGlobalSharedRoundtrip) { check_linear_bulk<true>(); }
+} // namespace

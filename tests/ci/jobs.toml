@@ -387,3 +387,10 @@ cuda = "13.3"
 tests = [
   { name = "cta-reduction-negated-predicates", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_ptx_cta_reduction.py" },
 ]
+
+[jobs.sm100-bulk-descriptor]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "linear-bulk-descriptors-and-dual-launch", group = "unit", gtest_filter = "SassBulkDescriptor.*", post_check = "tests/ci/check_linear_bulk_dual.py" },
+]

@@ -1067,6 +1067,24 @@ void populate_registers(const instruction &source, timing_instruction &target) {
 
   for (size_t index = source_begin; index < source.operands.size(); ++index) {
     append_instruction_source(sources, source, index);
+    if (base == "UBLKCP" || base == "UBLKRED") {
+      const auto &value = source.operands[index];
+      // A load's first pair holds shared destination + mbarrier; its second
+      // pair is the global pointer. Stores/reductions have only the first pair.
+      for (size_t group = 0; group < value.address_groups.size(); ++group) {
+        if (source.opcode != "UBLKCP.S.G" && group != 0)
+          continue;
+        for (const auto &term : value.address_groups[group].terms)
+          if (term.kind == address_term_kind::kUniformRegister &&
+              term.index != kZeroUniformRegister)
+            append_register(sources, operand_kind::kUniformRegister,
+                            term.index + 1, false);
+      }
+      if (value.kind == operand_kind::kTensorMapDescriptor &&
+          value.descriptor_register != kZeroUniformRegister)
+        append_register(sources, operand_kind::kUniformRegister,
+                        value.descriptor_register + 1, false);
+    }
     if (base == "UREDGR") {
       for (const auto &group : source.operands[index].address_groups)
         for (const auto &term : group.terms)
