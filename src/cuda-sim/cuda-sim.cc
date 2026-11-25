@@ -752,7 +752,8 @@ std::string cuda_sim::ptx_get_insn_str(address_type pc) {
 
 void ptx_instruction::set_fp_or_int_archop() {
   oprnd_type = UN_OP;
-  if ((m_opcode == MEMBAR_OP) || (m_opcode == SSY_OP) || (m_opcode == BRA_OP) ||
+  if ((m_opcode == TRAP_OP) || (m_opcode == BRKPT_OP) ||
+      (m_opcode == MEMBAR_OP) || (m_opcode == SSY_OP) || (m_opcode == BRA_OP) ||
       (m_opcode == BAR_OP) || (m_opcode == RET_OP) || (m_opcode == RETP_OP) ||
       (m_opcode == NOP_OP) || (m_opcode == EXIT_OP) || (m_opcode == CALLP_OP) ||
       (m_opcode == CALL_OP) || (m_opcode == TENSORMAP_OP) || (m_opcode == FENCE_OP) ||
@@ -793,7 +794,8 @@ void ptx_instruction::set_fp_or_int_archop() {
 
 void ptx_instruction::set_mul_div_or_other_archop() {
   sp_op = OTHER_OP;
-  if ((m_opcode != MEMBAR_OP) && (m_opcode != SSY_OP) && (m_opcode != BRA_OP) &&
+  if ((m_opcode != TRAP_OP) && (m_opcode != BRKPT_OP) &&
+      (m_opcode != MEMBAR_OP) && (m_opcode != SSY_OP) && (m_opcode != BRA_OP) &&
       (m_opcode != BAR_OP) && (m_opcode != EXIT_OP) && (m_opcode != NOP_OP) &&
       (m_opcode != RETP_OP) && (m_opcode != RET_OP) && (m_opcode != CALLP_OP) &&
       (m_opcode != CALL_OP) && (m_opcode != TENSORMAP_OP) && (m_opcode != FENCE_OP) &&
