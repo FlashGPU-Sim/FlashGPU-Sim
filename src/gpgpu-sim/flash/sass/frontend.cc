@@ -185,7 +185,8 @@ bool orders_deferred_cta_barrier(const instruction &inst, architecture arch) {
   const size_t separator = inst.opcode.find('.');
   const std::string base = inst.opcode.substr(0, separator);
   // Deferred CTA synchronization orders global memory as well as shared.
-  if (base == "LDG" || base == "STG" || base == "ATOMG" || base == "REDG")
+  if (base == "LDG" || base == "STG" || base == "ATOMG" || base == "REDG" ||
+      base == "UREDGR")
     return arch == architecture::kSm90 || arch == architecture::kSm120 ||
            arch == architecture::kSm100 || arch == architecture::kSm103;
   if (base == "BAR")

@@ -1,6 +1,7 @@
 #ifndef FLASH_GPGPU_SIM_SASS_FUNCTIONAL_INTERNAL_H
 #define FLASH_GPGPU_SIM_SASS_FUNCTIONAL_INTERNAL_H
 
+#include "../../integer_rmw.h"
 #include "functional.h"
 
 #include <cstddef>
@@ -14,7 +15,7 @@ namespace functional_detail {
 
 // Shared across CTA adapters and scalar/TMA global RMW implementations.
 // Host synchronization only: this does not model GPU timing resources.
-extern std::mutex global_atomic_mutex;
+using flash_gpgpu_sim::global_rmw_mutex;
 
 step_result unsupported(const instruction &inst, const std::string &reason);
 step_result memory_fault(const instruction &inst, memory_space space,
@@ -69,6 +70,7 @@ void register_float_conversion_semantics(frontend &target);
 void register_float_semantics(frontend &target);
 void register_control_semantics(frontend &target);
 void register_memory_semantics(frontend &target);
+void register_global_reduce_semantics(frontend &target);
 bool ensure_mbarrier_imported(uint64_t location, execution_context &context);
 void register_mbarrier_semantics(frontend &target);
 void register_bulk_copy_semantics(frontend &target);

@@ -5,6 +5,8 @@ config = "SM100_B200"
 [workloads]
 sources = [
   "call_ownership/launch_test.cu",
+  "global_reduce/launch_test.cu",
+  "unit/global_reduce_test.cc",
   "tma_float/launch_test.cu",
   "unit/tensormap_diagnostic_test.cc",
   "unit/sass/functional/ternary_logic_test.cc",

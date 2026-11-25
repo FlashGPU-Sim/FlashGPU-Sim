@@ -189,20 +189,21 @@ bool reads_register_file(const operand &value) {
 }
 
 bool has_destination(const std::string &base) {
-  return base != "UMEMSETS" && base != "REDG" && base != "ST" &&
-         base != "STG" && base != "STS" && base != "STL" && base != "STSM" &&
-         base != "BRA" && base != "BRX" && base != "BSSY" && base != "BSYNC" &&
-         base != "BREAK" && base != "BRXU" && base != "WARPSYNC" &&
-         base != "CALL" && base != "EXIT" && base != "RET" && base != "NOP" &&
-         base != "NANOSLEEP" && base != "UGETNEXTWORKID" && base != "YIELD" &&
-         base != "BAR" && base != "MEMBAR" && base != "DEPBAR" &&
-         base != "CCTL" && base != "UTMACCTL" && base != "UTMACMDFLUSH" &&
-         base != "FENCE" && base != "UTMALDG" && base != "UTMASTG" &&
-         base != "UTMAREDG" && base != "UTMAPF" && base != "UBLKCP" &&
-         base != "UBLKRED" && base != "UTCCP" && base != "UTCHMMA" &&
-         base != "UTCQMMA" && base != "UTCOMMA" && base != "UTCBAR" &&
-         base != "STTM" && base != "UVIRTCOUNT" && base != "LDGSTS" &&
-         base != "LDGDEPBAR" && base != "STAS";
+  return base != "UMEMSETS" && base != "UREDGR" && base != "REDG" &&
+         base != "ST" && base != "STG" && base != "STS" && base != "STL" &&
+         base != "STSM" && base != "BRA" && base != "BRX" && base != "BSSY" &&
+         base != "BSYNC" && base != "BREAK" && base != "BRXU" &&
+         base != "WARPSYNC" && base != "CALL" && base != "EXIT" &&
+         base != "RET" && base != "NOP" && base != "NANOSLEEP" &&
+         base != "UGETNEXTWORKID" && base != "YIELD" && base != "BAR" &&
+         base != "MEMBAR" && base != "DEPBAR" && base != "CCTL" &&
+         base != "UTMACCTL" && base != "UTMACMDFLUSH" && base != "FENCE" &&
+         base != "UTMALDG" && base != "UTMASTG" && base != "UTMAREDG" &&
+         base != "UTMAPF" && base != "UBLKCP" && base != "UBLKRED" &&
+         base != "UTCCP" && base != "UTCHMMA" && base != "UTCQMMA" &&
+         base != "UTCOMMA" && base != "UTCBAR" && base != "STTM" &&
+         base != "UVIRTCOUNT" && base != "LDGSTS" && base != "LDGDEPBAR" &&
+         base != "STAS";
 }
 
 // Native output lists can contain a value and carry/status predicates. Keep
@@ -345,6 +346,9 @@ std::array<unsigned, 3> hmma_source_widths(const std::string &opcode) {
 // all words of an operand retain its single logical reuse-cache slot.
 unsigned source_width(const instruction &source, size_t index) {
   const std::string base = base_opcode(source.opcode);
+  if ((base == "REDG" || base == "UREDGR") && index == 1 &&
+      has_modifier(source.opcode, "64"))
+    return 2;
   if (base == "STAS" && index == 1)
     return memory_width(source.opcode) / 4;
   if (base == "HMMA" && index >= 1 && index <= 3)
@@ -588,14 +592,16 @@ void classify(const instruction &source, const timing_profile &profile,
     // Matrix shared-memory operations enter through the MIO frontend before
     // consuming the SM-wide shared data path.
     target.set_mio_client();
-  } else if (base == "ATOMG" || base == "REDG" ||
+  } else if (base == "ATOMG" || base == "REDG" || base == "UREDGR" ||
              (source.opcode == "ATOMS.ADD" || source.opcode == "ATOMS.OR" ||
               source.opcode == "ATOMS.AND" || source.opcode == "ATOMS.XOR" ||
               source.opcode == "ATOMS.EXCH")) {
     target.op = LOAD_OP;
     target.op_pipe = MEM__OP;
     target.memory_op = memory_load;
-    target.data_size = 4;
+    target.data_size = has_modifier(source.opcode, "64") ? 8 : 4;
+    target.set_release_memory(base == "UREDGR");
+    target.set_async_reduction(base == "UREDGR");
     target.space = memory_space_t(global_space);
     // Global atomics are serviced below L1. The SASS functional frontend has
     // already performed the architectural RMW, so this is a timing-only
@@ -1045,6 +1051,14 @@ void populate_registers(const instruction &source, timing_instruction &target) {
 
   for (size_t index = source_begin; index < source.operands.size(); ++index) {
     append_instruction_source(sources, source, index);
+    if (base == "UREDGR") {
+      for (const auto &group : source.operands[index].address_groups)
+        for (const auto &term : group.terms)
+          if (term.kind == address_term_kind::kUniformRegister &&
+              term.index != kZeroUniformRegister)
+            append_register(sources, operand_kind::kUniformRegister,
+                            term.index + 1, false);
+    }
     if ((base == "UTCCP" || base == "UTCHMMA" || base == "UTCQMMA" ||
          base == "UTCOMMA") &&
         source.operands[index].kind == operand_kind::kGmmaDescriptor &&

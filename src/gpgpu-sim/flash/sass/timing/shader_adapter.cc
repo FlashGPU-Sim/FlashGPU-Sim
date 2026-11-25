@@ -165,7 +165,7 @@ public:
     if (inst.isatomic())
       for (unsigned lane = 0; lane < core_.m_config->warp_size; ++lane)
         if (inst.active(lane))
-          core_.m_warp[inst.warp_id()]->inc_n_atomic();
+          core_.m_warp[inst.warp_id()]->inc_n_atomic(inst.is_async_reduction());
     return;
   }
 

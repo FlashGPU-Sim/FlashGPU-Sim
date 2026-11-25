@@ -256,6 +256,7 @@ void warp_inst_t::set_active(const active_mask_t &active) {
   if (m_isatomic && m_per_scalar_thread_valid) {
     for (unsigned i = 0; i < m_config->warp_size; i++) {
       if (!m_warp_active_mask.test(i)) {
+        m_per_scalar_thread[i].callback.action.reset();
         m_per_scalar_thread[i].callback.function = NULL;
         m_per_scalar_thread[i].callback.instruction = NULL;
         m_per_scalar_thread[i].callback.thread = NULL;
@@ -274,7 +275,10 @@ void warp_inst_t::do_atomic(const active_mask_t &access_mask, bool forceDo) {
   for (unsigned i = 0; i < m_config->warp_size; i++) {
     if (!access_mask.test(i) || m_dsm_atomic_lanes.test(i)) continue;
     dram_callback_t &cb = m_per_scalar_thread[i].callback;
-    if (cb.thread && cb.function) cb.function(cb.instruction, cb.thread);
+    if (cb.action)
+      cb.action->execute();
+    else if (cb.thread && cb.function)
+      cb.function(cb.instruction, cb.thread);
   }
 }
 

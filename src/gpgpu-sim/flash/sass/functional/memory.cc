@@ -703,64 +703,13 @@ step_result execute_atomg_exchange(const instruction &inst, warp_state &state,
     const uint32_t value = state.read_register(lane, source->index);
     context.record_memory_access(lane, memory_space::kGlobal, location,
                                  sizeof(value), false);
-    std::lock_guard<std::mutex> lock(global_atomic_mutex);
+    std::lock_guard<std::mutex> lock(global_rmw_mutex());
     if (!context.memory->read(memory_space::kGlobal, location, &discarded,
                               sizeof(discarded)) ||
         !context.memory->write(memory_space::kGlobal, location, &value,
                                sizeof(value)))
       return memory_fault(inst, memory_space::kGlobal, location,
                           sizeof(uint32_t));
-  }
-  advance(inst, state);
-  return {step_status::kAdvanced, {}};
-}
-
-step_result execute_atomg_add(const instruction &inst, warp_state &state,
-                              execution_context &context) {
-  const bool reduction = inst.opcode.rfind("REDG.", 0) == 0;
-  if (!has_typed_operands(inst, reduction ? 2 : 4))
-    return unsupported(inst,
-                       "expected atomic add or discarded-result add operands");
-  const operand *predicate =
-      reduction ? nullptr : get_operand(inst, 0, operand_kind::kPredicate);
-  const operand *destination =
-      reduction ? nullptr : get_operand(inst, 1, operand_kind::kRegister);
-  const operand *address =
-      get_operand(inst, reduction ? 0 : 2, operand_kind::kDescriptorAddress);
-  const operand *source =
-      get_operand(inst, reduction ? 1 : 3, operand_kind::kRegister);
-  if ((!reduction && (!predicate || predicate->index != kTruePredicate ||
-                      predicate->negated || !destination)) ||
-      !address || !source || address->address_register >= kVectorRegisters - 1)
-    return unsupported(inst, "unsupported ATOMG/REDG.ADD operand form");
-  if (context.memory == nullptr)
-    return unsupported(inst, "no functional memory is attached");
-  (void)state.read_uniform_register(address->descriptor_register);
-  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-    if ((state.active_mask & (1u << lane)) == 0 ||
-        !lane_executes(inst, state, lane))
-      continue;
-    const uint64_t location =
-        read_register_pair(state, lane, address->address_register) +
-        static_cast<uint64_t>(address->address_offset);
-    if ((location % alignof(uint32_t)) != 0)
-      return unsupported(inst, "ATOMG.ADD address must be 4-byte aligned");
-    std::lock_guard<std::mutex> lock(global_atomic_mutex);
-    uint32_t old_value = 0;
-    if (!context.memory->read(memory_space::kGlobal, location, &old_value,
-                              sizeof(old_value)))
-      return memory_fault(inst, memory_space::kGlobal, location,
-                          sizeof(old_value));
-    const uint32_t new_value =
-        old_value + state.read_register(lane, source->index);
-    context.record_memory_access(lane, memory_space::kGlobal, location,
-                                 sizeof(new_value), false);
-    if (!context.memory->write(memory_space::kGlobal, location, &new_value,
-                               sizeof(new_value)))
-      return memory_fault(inst, memory_space::kGlobal, location,
-                          sizeof(new_value));
-    if (destination)
-      state.write_register(lane, destination->index, old_value);
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -962,9 +911,7 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("LDGSTS.E.BYPASS.128", execute_ldgsts);
   target.register_semantics("LDGSTS.E.BYPASS.128.ZFILL", execute_ldgsts);
   target.register_semantics("ATOMG.E.EXCH.STRONG.GPU", execute_atomg_exchange);
-  target.register_semantics("ATOMG.E.ADD.STRONG.GPU", execute_atomg_add);
-  target.register_semantics("REDG.E.ADD.STRONG.GPU", execute_atomg_add);
-  target.register_semantics("REDG.E.ADD.S32.STRONG.GPU", execute_atomg_add);
+  register_global_reduce_semantics(target);
   target.register_semantics("ATOMS.POPC.INC.32", execute_atoms_popc_increment);
   target.register_semantics("ATOMS.ADD", execute_atoms_add);
   target.register_semantics("ATOMS.OR", execute_atoms_add);

@@ -100,6 +100,7 @@ enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 
 #include <stdio.h>
 #include <string.h>
+#include <memory>
 #include <set>
 
 typedef unsigned long long new_addr_type;
@@ -809,6 +810,11 @@ class mem_fetch_allocator {
 // instruction
 #define MAX_REG_OPERANDS 32
 
+struct atomic_callback_action {
+  virtual ~atomic_callback_action() = default;
+  virtual void execute() const = 0;
+};
+
 struct dram_callback_t {
   dram_callback_t() {
     function = NULL;
@@ -819,6 +825,7 @@ struct dram_callback_t {
 
   const class inst_t *instruction;
   class ptx_thread_info *thread;
+  std::shared_ptr<const atomic_callback_action> action;
 };
 
 class inst_t {
@@ -1128,6 +1135,10 @@ public:
   bool uses_physical_shared_transactions() const {
     return physical_shared_transactions;
   }
+  void set_async_reduction(bool value = true) { async_reduction = value; }
+  bool is_async_reduction() const { return async_reduction; }
+  void set_release_memory(bool value = true) { release_memory = value; }
+  bool is_release_memory() const { return release_memory; }
   void set_mio_client(bool value = true) { mio_client = value; }
   bool is_mio_client() const { return mio_client; }
   void set_async_proxy_fence(bool value = true) {
@@ -1164,6 +1175,8 @@ private:
   // memory-input/output queue. Frontends classify ISA opcodes; the timing
   // backend models only the shared hardware resource.
   bool mio_client = false;
+  bool release_memory = false;
+  bool async_reduction = false;
   // Frontend-neutral marker for a fence that orders shared-memory writes with
   // the asynchronous proxy. Other memory barriers do not consume this path.
   bool async_proxy_fence = false;
@@ -1490,7 +1503,8 @@ class warp_inst_t : public inst_t {
                     void (*function)(const class inst_t *,
                                      class ptx_thread_info *),
                     const inst_t *inst, class ptx_thread_info *thread,
-                    bool atomic) {
+                    bool atomic,
+                    std::shared_ptr<const atomic_callback_action> action = {}) {
     if (!m_per_scalar_thread_valid) {
       m_per_scalar_thread.resize(m_config->warp_size);
       m_per_scalar_thread_valid = true;
@@ -1499,6 +1513,7 @@ class warp_inst_t : public inst_t {
     m_per_scalar_thread[lane_id].callback.function = function;
     m_per_scalar_thread[lane_id].callback.instruction = inst;
     m_per_scalar_thread[lane_id].callback.thread = thread;
+    m_per_scalar_thread[lane_id].callback.action = std::move(action);
   }
   void set_active(const active_mask_t &active);
 

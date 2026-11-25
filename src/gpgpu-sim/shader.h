@@ -158,6 +158,7 @@ class shd_warp_t {
     m_dynamic_warp_id = (unsigned)-1;
     n_completed = m_warp_size;
     m_n_atomic = 0;
+    m_n_async_atomic = 0;
     m_membar = false;
     m_done_exit = true;
     m_last_fetch = 0;
@@ -259,8 +260,19 @@ class shd_warp_t {
 
   unsigned get_n_atomic() const { return m_n_atomic; }
   bool is_waiting_ldgsts() const { return m_waiting_ldgsts; }
-  void inc_n_atomic() { m_n_atomic++; }
-  void dec_n_atomic(unsigned n) { m_n_atomic -= n; }
+  unsigned blocking_atomics() const { return m_n_atomic - m_n_async_atomic; }
+  void inc_n_atomic(bool async = false) {
+    ++m_n_atomic;
+    if (async) ++m_n_async_atomic;
+  }
+  void dec_n_atomic(unsigned n, bool async = false) {
+    assert(m_n_atomic >= n);
+    m_n_atomic -= n;
+    if (async) {
+      assert(m_n_async_atomic >= n);
+      m_n_async_atomic -= n;
+    }
+  }
 
   void set_membar() { m_membar = true; }
   void clear_membar() { m_membar = false; }
@@ -460,6 +472,7 @@ class shd_warp_t {
   ibuffer_entry m_ibuffer[IBUFFER_SIZE];
   unsigned m_next;
 
+  unsigned m_n_async_atomic;
   unsigned m_n_atomic;  // number of outstanding atomic operations
   bool m_membar;        // if true, warp is waiting at memory barrier
 
@@ -3287,13 +3300,14 @@ class shader_core_ctx : public core_t {
   // used by pipeline timing model components:
   // modifiers
   void mem_instruction_stats(const warp_inst_t &inst);
-  void decrement_atomic_count(unsigned wid, unsigned n);
+  void decrement_atomic_count(unsigned wid, unsigned n, bool async = false);
   void inc_store_req(unsigned warp_id) { m_warp[warp_id]->inc_store_req(); }
   void dec_inst_in_pipeline(unsigned warp_id) {
     m_warp[warp_id]->dec_inst_in_pipeline();
   }  // also used in writeback()
   void store_ack(class mem_fetch *mf);
   bool warp_waiting_at_mem_barrier(unsigned warp_id);
+  bool prior_memory_complete(unsigned warp_id) const;
   void set_max_cta(const kernel_info_t &kernel);
   void warp_inst_complete(const warp_inst_t &inst);
   void warp_inst_operands_read(const warp_inst_t &inst);

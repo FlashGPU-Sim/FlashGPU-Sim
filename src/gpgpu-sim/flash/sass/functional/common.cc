@@ -10,8 +10,6 @@ namespace flash_gpgpu_sim {
 namespace sass {
 namespace functional_detail {
 
-std::mutex global_atomic_mutex;
-
 step_result unsupported(const instruction &inst, const std::string &reason) {
   std::ostringstream detail;
   detail << "unsupported " << inst.opcode << " at 0x" << std::hex << inst.pc

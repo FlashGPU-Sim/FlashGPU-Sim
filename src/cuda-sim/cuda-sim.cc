@@ -1296,6 +1296,14 @@ void ptx_instruction::set_opcode_and_latency() {
       op = LOAD_OP;
       mem_op = TEX;
       break;
+    case RED_OP: {
+      const auto options = get_options();
+      set_async_reduction(std::find(options.begin(), options.end(),
+                                    ASYNC_OPTION) != options.end());
+      set_release_memory(std::find(options.begin(), options.end(),
+                                   RELEASE_OPTION) != options.end());
+      [[fallthrough]];
+    }
     case ATOM_OP:
       op = LOAD_OP;
       break;
@@ -1921,7 +1929,7 @@ void ptx_instruction::pre_decode() {
       // else if( m_opcode == ST_OP )
       else if (m_opcode == MMA_ST_OP || m_opcode == ST_OP)
         cache_op = CACHE_WRITE_BACK;
-      else if (m_opcode == ATOM_OP)
+      else if (m_opcode == ATOM_OP || m_opcode == RED_OP)
         cache_op = CACHE_GLOBAL;
       break;
   }
@@ -2874,11 +2882,13 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
                         false /*not atomic*/);
     }
 
-    if (pI->get_opcode() == ATOM_OP) {
+    if (pI->get_opcode() == ATOM_OP || pI->get_opcode() == RED_OP) {
       insn_memaddr = last_eaddr();
       insn_space = last_space();
-      inst.add_callback(lane_id, last_callback().function,
-                        last_callback().instruction, this, true /*atomic*/);
+      inst.add_callback(
+          lane_id, last_callback().function, last_callback().instruction, this,
+          true /*atomic*/,
+          pI->get_opcode() == RED_OP ? last_callback().action : nullptr);
       unsigned to_type = pI->get_type();
       insn_data_size = datatype2size(to_type);
     }

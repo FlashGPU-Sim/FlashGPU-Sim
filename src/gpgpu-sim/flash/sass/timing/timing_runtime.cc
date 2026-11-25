@@ -777,7 +777,8 @@ timing_step_result timing_runtime::step(
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
     const auto &accesses = context.memory_accesses[lane];
     if (accesses.empty()) {
-      if (source->opcode == "UMEMSETS.64")
+      if (source->opcode == "UMEMSETS.64" ||
+          source->opcode.rfind("UREDGR.", 0) == 0)
         dynamic_instruction.set_not_active(lane);
       // A false LDGSTS copy-enable predicate zero-fills shared memory without
       // issuing a global-memory request. Keep the lane in the instruction so

@@ -12,3 +12,7 @@ covers multiple lanes, negative increments, unchanged input registers and
 projection dependencies. Full CLC launch acceptance additionally exercises
 concurrent discarded additions across SMs. Other REDG operations, widths and
 memory scopes are not enabled by this change.
+
+The subsequent [global reduction extraction](blackwell-global-integer-reductions.md)
+adds the qualified 64-bit and uniform asynchronous forms through the shared
+backend. The original 32-bit returned/discarded ADD regression remains enabled.

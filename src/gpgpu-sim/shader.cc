@@ -3296,6 +3296,10 @@ void scheduler_unit::cycle() {
           const uint64_t issue_cycle =
               m_shader->m_gpu->gpu_tot_sim_cycle +
               m_shader->m_gpu->gpu_sim_cycle;
+          const bool release_memory_ready =
+              !pI->is_release_memory() ||
+              !m_shader->get_active_mask(warp_id, pI).any() ||
+              m_shader->prior_memory_complete(warp_id);
           const bool dependency_ready =
               warp(warp_id).instruction_dependency_ready(*pI, issue_cycle);
           const bool scoreboard_ready =
@@ -3313,12 +3317,12 @@ void scheduler_unit::cycle() {
               !frontend_ready || !native_register_file_ready ||
               m_shader->wgmma_result_dispatch_can_issue(pI, issue_cycle,
                                                         m_id);
-          if (dependency_ready &&
-              scoreboard_ready && frontend_ready &&
-              native_register_file_ready &&
+          if (dependency_ready && release_memory_ready && scoreboard_ready &&
+              frontend_ready && native_register_file_ready &&
               wgmma_result_dispatch_ready && shared_load_issue_ready &&
               shared_store_issue_ready && mio_issue_ready &&
-              (pI->op != BARRIER_OP || m_shader->named_barrier_issue_ready(warp_id))) {
+              (pI->op != BARRIER_OP ||
+               m_shader->named_barrier_issue_ready(warp_id))) {
             SCHED_GPPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
                 (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
@@ -3840,7 +3844,7 @@ void scheduler_unit::cycle() {
         reason = STALL_MEMBAR;
       else if (warp(wid).is_waiting_ldgsts())
         reason = STALL_WAIT_TMA;
-      else if (warp(wid).get_n_atomic() > 0)
+      else if (warp(wid).blocking_atomics() > 0)
         reason = STALL_ATOMIC;
       else if (warp(wid).functional_done())
         reason = STALL_NO_INSTRUCTION;  // all threads done, draining pipeline
@@ -3888,6 +3892,9 @@ void scheduler_unit::cycle() {
                      m_shader->m_gpu->gpu_tot_sim_cycle +
                      m_shader->m_gpu->gpu_sim_cycle)) {
         reason = STALL_MIO_THROTTLE;
+      } else if (pI->is_release_memory() &&
+                 !m_shader->prior_memory_complete(wid)) {
+        reason = STALL_MEMBAR;
       } else if (pI->op == BARRIER_OP &&
                  !m_shader->named_barrier_issue_ready(wid)) {
         reason = STALL_BARRIER;
@@ -5662,7 +5669,8 @@ void ldst_unit::retire_bypass_response(mem_fetch *mf) {
 
   if (mf->isatomic()) {
     m_core->decrement_atomic_count(mf->get_wid(),
-                                   mf->get_access_warp_mask().count());
+                                   mf->get_access_warp_mask().count(),
+                                   mf->get_inst().is_async_reduction());
   }
   delete mf;
 }
@@ -5749,7 +5757,8 @@ void ldst_unit::writeback() {
           if (m_next_wb.executes_atomic_callback()) {
             m_next_wb.do_atomic();
             m_core->decrement_atomic_count(m_next_wb.warp_id(),
-                                           m_next_wb.active_count());
+                                           m_next_wb.active_count(),
+                                           m_next_wb.is_async_reduction());
           }
           m_core->dec_inst_in_pipeline(m_pipeline_reg[0]->warp_id());
           m_pipeline_reg[0]->clear();
@@ -5789,7 +5798,8 @@ void ldst_unit::writeback() {
           if (m_next_global->isatomic()) {
             m_core->decrement_atomic_count(
                 m_next_global->get_wid(),
-                m_next_global->get_access_warp_mask().count());
+                m_next_global->get_access_warp_mask().count(),
+                m_next_global->get_inst().is_async_reduction());
           }
           delete m_next_global;
           m_next_global = NULL;
@@ -7827,12 +7837,20 @@ barrier_wait_type_t shader_core_ctx::get_warp_barrier_type(
   return m_barriers.get_warp_barrier_type(warp_id);
 }
 
+bool shader_core_ctx::prior_memory_complete(unsigned warp_id) const {
+  return !m_scoreboard->pendingWrites(warp_id) &&
+         m_warp[warp_id]->stores_done() && !m_warp[warp_id]->get_n_atomic() &&
+         m_shared_barrier_state[warp_id].stores_ready(m_gpu->gpu_tot_sim_cycle +
+                                                      m_gpu->gpu_sim_cycle) &&
+         (!m_cluster || !m_cluster->dsm_warp_busy(m_sid, warp_id));
+}
+
 bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {
   if (!m_warp[warp_id]->get_membar()) return false;
   if (!m_scoreboard->pendingWrites(warp_id) &&
-      m_warp[warp_id]->stores_done() &&
-      m_shared_barrier_state[warp_id].stores_ready(
-          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle) &&
+      !m_warp[warp_id]->get_n_atomic() && m_warp[warp_id]->stores_done() &&
+      m_shared_barrier_state[warp_id].stores_ready(m_gpu->gpu_tot_sim_cycle +
+                                                   m_gpu->gpu_sim_cycle) &&
       (!m_cluster || !m_cluster->dsm_warp_busy(m_sid, warp_id))) {
     m_warp[warp_id]->clear_membar();
     if (m_gpu->get_config().flush_l1()) {
@@ -7859,9 +7877,10 @@ void shader_core_ctx::set_max_cta(const kernel_info_t &kernel) {
           : gpu_cta_size;
 }
 
-void shader_core_ctx::decrement_atomic_count(unsigned wid, unsigned n) {
+void shader_core_ctx::decrement_atomic_count(unsigned wid, unsigned n,
+                                             bool async) {
   assert(m_warp[wid]->get_n_atomic() >= n);
-  m_warp[wid]->dec_n_atomic(n);
+  m_warp[wid]->dec_n_atomic(n, async);
 }
 
 void shader_core_ctx::broadcast_barrier_reduction(unsigned cta_id,
@@ -7969,7 +7988,8 @@ bool shd_warp_t::functional_done() const {
 }
 
 bool shd_warp_t::hardware_done() const {
-  return functional_done() && stores_done() && !inst_in_pipeline();
+  return functional_done() && stores_done() && !inst_in_pipeline() &&
+         !m_n_atomic;
 }
 
 bool shd_warp_t::waiting() {
@@ -7984,7 +8004,7 @@ bool shd_warp_t::waiting() {
   } else if (m_shader->warp_waiting_at_mem_barrier(m_warp_id)) {
     // waiting for memory barrier
     return true;
-  } else if (m_n_atomic > 0) {
+  } else if (blocking_atomics() > 0) {
     // waiting for atomic operation to complete at memory:
     // this stall is not required for accurate timing model, but rather we
     // stall here since if a call/return instruction occurs in the meantime

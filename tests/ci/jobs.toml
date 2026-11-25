@@ -283,6 +283,13 @@ tests = [
   { name = "floating-tma-and-dual-launch", group = "unit", gtest_filter = "DriverTensorMap.*", post_check = "tests/ci/check_tma_float_dual.py" },
 ]
 
+[jobs.sm100-global-reductions]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "global-integer-reduction", group = "unit", gtest_filter = "GlobalReduction.*", post_check = "tests/ci/check_global_reduce_dual.py" },
+]
+
 [jobs.sm100-ptx-call-ownership]
 arch = "sm100"
 cuda = "13.3"

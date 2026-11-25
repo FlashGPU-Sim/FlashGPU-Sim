@@ -727,7 +727,7 @@ step_result execute_utmastg(const instruction &inst, warp_state &state,
     const size_t tile_offset =
         static_cast<size_t>(element * tensor_map.element_bytes);
     if (reduce_add) {
-      std::lock_guard<std::mutex> lock(global_atomic_mutex);
+      std::lock_guard<std::mutex> lock(global_rmw_mutex());
       std::array<uint8_t, sizeof(float)> destination{};
       if (!context.memory->read(memory_space::kGlobal, global_address,
                                 destination.data(), destination.size()))
@@ -882,7 +882,7 @@ step_result execute_ublkred_global_shared_add_f32(const instruction &inst,
                             source.data(), source.size()))
     return memory_fault(inst, memory_space::kShared, shared_address,
                         source.size());
-  std::lock_guard<std::mutex> lock(global_atomic_mutex);
+  std::lock_guard<std::mutex> lock(global_rmw_mutex());
   if (!context.memory->read(memory_space::kGlobal, global_address,
                             destination.data(), destination.size()))
     return memory_fault(inst, memory_space::kGlobal, global_address,
