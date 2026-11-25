@@ -1314,6 +1314,7 @@ void simt_stack::reconverge_barrier(const simt_mask_t &thread_done,
 }
 
 void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
+  m_shuffle_sources_valid = false;
   if (warpId == (unsigned)-1)
     warpId = inst.warp_id();
   else

@@ -359,3 +359,10 @@ cuda = "13.3"
 tests = [
   { name = "preexit-functional-and-timing", group = "unit", gtest_filter = "SassPreexit.*" },
 ]
+
+[jobs.sm100-ptx-shuffle]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "shuffle-snapshot-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_ptx_shuffle.py" },
+]

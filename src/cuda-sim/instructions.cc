@@ -6343,11 +6343,24 @@ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
   else
     tid = inst.warp_id() * core->get_warp_size();
 
+  // Snapshot once, before any lane writes the aliased destination. Each lane
+  // still writes its own result in the original dispatch order; predicates,
+  // instruction accounting, PC advancement and timing are unchanged.
+  if (!core->shuffle_sources_valid()) {
+    for (unsigned source_lane = 0; source_lane < core->get_warp_size(); ++source_lane) {
+      core->shuffle_sources()[source_lane] = 0;
+      if (!inst.active(source_lane)) continue;
+      auto *source = core->get_thread_info()[tid + source_lane];
+      core->shuffle_sources()[source_lane] =
+          source->get_operand_value(pI->src1(), pI->dst(), i_type, source, 1).u32;
+    }
+    core->mark_shuffle_sources_valid();
+  }
+
   int lane = inst.current_lane();
   ptx_thread_info *thread = core->get_thread_info()[tid + lane];
 
   const operand_info &dst = pI->dst();
-  const operand_info &src1 = pI->src1();
   const operand_info &src2 = pI->src2();
   const operand_info &src3 = pI->src3();
   int bval = (thread->get_operand_value(src2, dst, i_type, thread, 1)).u32;
@@ -6389,8 +6402,7 @@ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
   // copy input from lane src_idx
   ptx_reg_t data;
   if (inst.active(src_idx)) {
-    ptx_thread_info *source = core->get_thread_info()[tid + src_idx];
-    data = source->get_operand_value(src1, dst, i_type, source, 1);
+    data.u32 = core->shuffle_sources()[src_idx];
   } else {
     printf(
         "GPGPU-Sim PTX: WARNING: shfl input value unpredictable for inactive "
