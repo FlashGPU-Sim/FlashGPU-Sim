@@ -1,5 +1,8 @@
 # Blackwell TCGen05: mask, TF32 and TMEM timing closure
 
+Integration follow-up: [dense FP8 output-mask qualification](blackwell-fp8-mask-qualification.md).
+The original gate counts below describe the earlier checkpoint.
+
 This continues [timing qualification](blackwell-timing-qualification.md).
 Workspace evidence is `runs/tcgen-gap-closure-20261125/`; original measurements,
 failed attempts and previous frozen runtimes are retained. This is a private

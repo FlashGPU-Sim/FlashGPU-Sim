@@ -1,5 +1,8 @@
 # Blackwell MMA extraction (private draft)
 
+Integration follow-up: [dense FP8 output-mask qualification](blackwell-fp8-mask-qualification.md).
+The original gate counts below describe the earlier checkpoint.
+
 `feature/blackwell-mma` extends the independently qualified TMEM feature. It
 moves arithmetic, operand layouts and scale/accumulator storage together with
 PTX/SASS adapters and complete CUDA launch fixtures. No public PR is open.
