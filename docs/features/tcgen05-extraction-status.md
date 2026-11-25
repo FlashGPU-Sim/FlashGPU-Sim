@@ -67,6 +67,12 @@ The full queue contains 59 captured SASS entries and 58 recoverable PTX entries.
 Current cumulative results are selected from frozen repair runtimes; they are
 not a fresh sweep of the latest integration head.
 
+The SASS-only entry is `pro-hash-routing-k001`, an internal cuBLAS SGEMM.
+Its exact entry is absent from the archived cuBLAS/cuBLASLt embedded PTX dumps.
+The original cubin passes SASS numerical checking; no substitute GEMM or guessed
+parameter ABI is counted as PTX acceptance. This source-availability limit is
+recorded in `runs/feature-series-20261115/deepinfer-dual-frontend-manifest-v13.json`.
+
 | Result | Entries | Interpretation |
 |---|---:|---|
 | Strict GPU equality | 67 | Full retained checker passes |
