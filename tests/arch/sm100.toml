@@ -78,6 +78,7 @@ sources = [
   "tcgen05/tmem_packing_test.cu",
   "tcgen05/tmem_copy_test.cu",
   "tcgen05/tmem_wide_test.cu",
+  "integration/dynamic_shared_alignment_test.cu",
   "integration/scalar_modifiers_test.cu",
   "unit/ptx_timing_isolation_test.cc",
   # Portable integration tests.
