@@ -7,6 +7,7 @@ sources = [
   "unit/ptx_timing_isolation_test.cc",
   "unit/ptx_tensor_coords_test.cc",
   "unit/ptx_control_predecode_test.cc",
+  "unit/ptx_integer_literal_test.cc",
   # Portable integration tests.
   "integration/address_operand_test.cu",
   "integration/vector_operand_test.cu",
