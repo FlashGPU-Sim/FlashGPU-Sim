@@ -366,8 +366,9 @@ step_result execute_ldg(const instruction &native, warp_state &state,
   const bool wide = inst.opcode == "LDG.E.64" ||
                     inst.opcode == "LDG.E.64.STRONG.GPU" ||
                     inst.opcode == "LDG.E.64.STRONG.SYS";
-  const bool vector128 =
-      inst.opcode == "LDG.E.128" || inst.opcode == "LDG.E.128.CONSTANT";
+  const bool vector128 = inst.opcode == "LDG.E.128" ||
+                         inst.opcode == "LDG.E.128.CONSTANT" ||
+                         inst.opcode == "LDG.E.NA.128";
   if (wide && destination->index != kZeroRegister &&
       destination->index > kZeroRegister - 1)
     return unsupported(inst, "LDG.E.64 register range is out of bounds");
@@ -435,6 +436,7 @@ step_result execute_stg(const instruction &inst, warp_state &state,
                     inst.opcode == "STG.E.64.STRONG.GPU" ||
                     inst.opcode == "STG.E.64.STRONG.SYS";
   const bool u16 = inst.opcode == "STG.E.U16";
+  const bool u8 = inst.opcode == "STG.E.U8";
   if (vector128 && source->index != kZeroRegister &&
       source->index > kZeroRegister - 3)
     return unsupported(inst, "STG.E.128 register range is out of bounds");
@@ -451,7 +453,7 @@ step_result execute_stg(const instruction &inst, warp_state &state,
       value[word] = source->index == kZeroRegister
                         ? 0
                         : state.read_register(lane, source->index + word);
-    const size_t bytes = u16 ? 2 : words * sizeof(uint32_t);
+    const size_t bytes = u8 ? 1 : u16 ? 2 : words * sizeof(uint32_t);
     context.record_memory_access(lane, memory_space::kGlobal, location, bytes,
                                  true);
     if (!context.memory->write(memory_space::kGlobal, location, value.data(),
@@ -892,6 +894,7 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("LDG.E.U16.CONSTANT", execute_ldg);
   target.register_semantics("LDG.E.64", execute_ldg);
   target.register_semantics("LDG.E.128", execute_ldg);
+  target.register_semantics("LDG.E.NA.128", execute_ldg);
   target.register_semantics("LDG.E.128.CONSTANT", execute_ldg);
   target.register_semantics("STG.E", execute_stg);
   target.register_semantics("STG.E.STRONG.GPU", execute_stg);
@@ -899,6 +902,7 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("STG.E.64.STRONG.GPU", execute_stg);
   target.register_semantics("STG.E.64.STRONG.SYS", execute_stg);
   target.register_semantics("STG.E.U16", execute_stg);
+  target.register_semantics("STG.E.U8", execute_stg);
   target.register_semantics("STG.E.64", execute_stg);
   target.register_semantics("STG.E.128", execute_stg);
   target.register_semantics("LD.E", execute_generic_memory);

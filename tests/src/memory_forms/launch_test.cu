@@ -88,3 +88,41 @@ TEST(CacheHintLaunch, NoncoherentNoAllocate256) { check_load<0>(); }
 TEST(CacheHintLaunch, CacheAllNoAllocate64) { check_load<1>(); }
 TEST(CacheHintLaunch, CacheGlobal128) { check_load<2>(); }
 } // namespace
+
+namespace {
+__global__ void load128_store8(const unsigned *input, unsigned *out,
+                              unsigned char *bytes) {
+  const unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+  unsigned a,b,c,d;
+  asm volatile("ld.global.L1::no_allocate.v4.u32 {%0,%1,%2,%3},[%4];"
+               : "=r"(a), "=r"(b), "=r"(c), "=r"(d) : "l"(input + i*4) : "memory");
+  asm volatile("st.global.v4.u32 [%0],{%1,%2,%3,%4};" :: "l"(out+i*4),
+               "r"(a),"r"(b),"r"(c),"r"(d) : "memory");
+  if ((i & 1) == 0)
+    asm volatile("st.global.u8 [%0],%1;" :: "l"(bytes+i*2+1),"r"(a) : "memory");
+}
+TEST(CacheHintLaunch, NoAllocate128AndPredicatedByteStore) {
+  std::array<unsigned,256> input{},actual{};
+  for(unsigned i=0;i<input.size();++i) input[i]=0xabc00000u+i*37+11;
+  unsigned *in,*out;
+  unsigned char *bytes;
+  ASSERT_EQ(cudaMalloc(&in,sizeof(input)),cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&out,sizeof(actual)),cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&bytes,128),cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(in,input.data(),sizeof(input),cudaMemcpyHostToDevice),cudaSuccess);
+  ASSERT_EQ(cudaMemset(bytes,0xa5,128),cudaSuccess);
+  load128_store8<<<2,32>>>(in,out,bytes);
+  ASSERT_EQ(cudaDeviceSynchronize(),cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(actual.data(),out,sizeof(actual),cudaMemcpyDeviceToHost),cudaSuccess);
+  EXPECT_EQ(actual,input);
+  std::array<unsigned char,128> result;
+  ASSERT_EQ(cudaMemcpy(result.data(),bytes,result.size(),cudaMemcpyDeviceToHost),cudaSuccess);
+  for(unsigned i=0;i<64;++i) {
+    EXPECT_EQ(result[i*2],0xa5);
+    EXPECT_EQ(result[i*2+1],i%2==0 ? (input[i*4]&255) : 0xa5);
+  }
+  EXPECT_EQ(cudaFree(in),cudaSuccess);
+  EXPECT_EQ(cudaFree(out),cudaSuccess);
+  EXPECT_EQ(cudaFree(bytes),cudaSuccess);
+}
+}

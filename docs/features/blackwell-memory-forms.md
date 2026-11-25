@@ -54,3 +54,12 @@ ISA references:
 - [PTX st.bulk](https://docs.nvidia.com/cuda/parallel-thread-execution/#data-movement-and-conversion-instructions-st-bulk)
 - [PTX ld.global.nc](https://docs.nvidia.com/cuda/parallel-thread-execution/#data-movement-and-conversion-instructions-ld-global-nc)
 - [Cache eviction hints](https://docs.nvidia.com/cuda/parallel-thread-execution/#cache-eviction-priority-hints)
+
+## Retained 128-bit no-allocate loads and byte stores
+
+The native `LDG.E.NA.128` and `STG.E.U8` forms use the existing global
+load/store functional adapter and LSU timing path. A same-binary PTX/SASS test
+checks all four loaded words and predicated one-byte writes with untouched
+neighboring bytes. The `NA` cache hint has the same qualification boundary as
+the earlier 256-bit forms: decoding it does not introduce a hardware-calibrated
+L1 eviction policy.
