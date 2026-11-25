@@ -255,6 +255,9 @@ unsigned memory_width(const std::string &opcode) {
 // Use the same destination width for dependency metadata and physical RF
 // writes. CS2R/CS2UR are 64-bit by default; their narrow form is explicit.
 unsigned destination_width(const instruction &source) {
+  if (base_opcode(source.opcode) == "ATOMG" &&
+      has_modifier(source.opcode, "64"))
+    return 2;
   const std::string base = base_opcode(source.opcode);
   if (base == "LDG" && has_modifier(source.opcode, "256"))
     return 4; // Two independently located 128-bit register groups.
@@ -347,6 +350,8 @@ std::array<unsigned, 3> hmma_source_widths(const std::string &opcode) {
 // all words of an operand retain its single logical reuse-cache slot.
 unsigned source_width(const instruction &source, size_t index) {
   const std::string base = base_opcode(source.opcode);
+  if (base == "ATOMG" && index == 3 && has_modifier(source.opcode, "64"))
+    return 2;
   if ((base == "REDG" || base == "UREDGR") && index == 1 &&
       has_modifier(source.opcode, "64"))
     return 2;
@@ -994,6 +999,12 @@ void populate_registers(const instruction &source, timing_instruction &target) {
     // 1 and has no architectural destination.
     if (source.operands.size() >= 4) {
       append_source_registers(destinations, source.operands[1]);
+      const auto &output = source.operands[1];
+      if (output.kind == operand_kind::kRegister &&
+          output.index != kZeroRegister)
+        for (unsigned word = 1; word < destination_width(source); ++word)
+          append_register(destinations, output.kind, output.index + word,
+                          false);
       source_begin = 2;
     } else {
       source_begin = 1;

@@ -1,9 +1,65 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <vector>
 namespace {
+template <bool System>
+__global__ void atomic64_return(unsigned long long *counter,
+                                unsigned long long *old) {
+  unsigned long long value;
+  const unsigned index = blockIdx.x * blockDim.x + threadIdx.x;
+  // Keep the increment runtime-dependent so ptxas cannot replace the test
+  // with an aggregated warp operation and unrelated uniform instructions.
+  const unsigned long long increment =
+      static_cast<volatile unsigned long long *>(old)[index];
+  if constexpr (System)
+    asm volatile("atom.relaxed.sys.global.add.u64 %0,[%1],%2;"
+                 : "=l"(value)
+                 : "l"(counter), "l"(increment)
+                 : "memory");
+  else
+    asm volatile("atom.relaxed.gpu.global.add.u64 %0,[%1],%2;"
+                 : "=l"(value)
+                 : "l"(counter), "l"(increment)
+                 : "memory");
+  old[index] = value;
+}
+template <bool System>
+void check_atomic64() {
+  unsigned long long *counter, *old;
+  ASSERT_EQ(cudaMalloc(&counter, 24), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&old, 128 * 8), cudaSuccess);
+  std::array<unsigned long long, 3> values{
+      0x123456789abcdef0ull, 0xfffffff000000000ull, 0xabcdef1234567890ull};
+  const auto initial = values;
+  std::vector<unsigned long long> increments(128, 0x100000003ull);
+  ASSERT_EQ(cudaMemcpy(old, increments.data(), 128 * 8, cudaMemcpyHostToDevice),
+            cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(counter, values.data(), 24, cudaMemcpyHostToDevice),
+            cudaSuccess);
+  atomic64_return<System><<<4, 32>>>(counter + 1, old);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(values.data(), counter, 24, cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  std::vector<unsigned long long> returned(128), expected(128);
+  ASSERT_EQ(cudaMemcpy(returned.data(), old, 128 * 8, cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  for (unsigned i = 0; i < 128; ++i)
+    expected[i] = initial[1] + i * 0x100000003ull;
+  std::sort(returned.begin(), returned.end());
+  std::sort(expected.begin(), expected.end());
+  EXPECT_EQ(returned, expected);
+  EXPECT_EQ(values[0], initial[0]);
+  EXPECT_EQ(values[1], initial[1] + 128 * 0x100000003ull);
+  EXPECT_EQ(values[2], initial[2]);
+  EXPECT_EQ(cudaFree(counter), cudaSuccess);
+  EXPECT_EQ(cudaFree(old), cudaSuccess);
+}
+TEST(GlobalReduce, Atomic64GpuReturnedValues) { check_atomic64<false>(); }
+TEST(GlobalReduce, Atomic64SysReturnedValues) { check_atomic64<true>(); }
+
 template <unsigned Mode>
 __global__ void reduce(unsigned long long *wide, unsigned *narrow) {
   const unsigned i = blockIdx.x * blockDim.x + threadIdx.x;

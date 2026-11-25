@@ -25,6 +25,15 @@ step_result execute_atomg_add(const instruction &inst, warp_state &state,
     return unsupported(inst, "unsupported ATOMG/REDG.ADD operand form");
   if (context.memory == nullptr)
     return unsupported(inst, "no functional memory is attached");
+  if (wide)
+    for (const operand *value : {source, destination})
+      if (value &&
+          (value->negated || value->absolute || value->bitwise_complement ||
+           value->wide ||
+           value->half_selection != operand_half_selection::kNone ||
+           value->matrix_layout != operand_matrix_layout::kNone ||
+           (value->index != kZeroRegister && value->index > kZeroRegister - 2)))
+        return unsupported(inst, "invalid global atomic register pair");
   (void)state.read_uniform_register(address->descriptor_register);
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
     if ((state.active_mask & (1u << lane)) == 0 ||
@@ -56,8 +65,12 @@ step_result execute_atomg_add(const instruction &inst, warp_state &state,
       return memory_fault(inst, memory_space::kGlobal, location, bytes);
     context.record_memory_access(lane, memory_space::kGlobal, location, bytes,
                                  false);
-    if (destination)
-      state.write_register(lane, destination->index, old_value);
+    if (destination) {
+      if (wide)
+        write_register_pair(state, lane, destination->index, old_value);
+      else
+        state.write_register(lane, destination->index, old_value);
+    }
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -112,6 +125,8 @@ step_result execute_uniform_reduce(const instruction &inst, warp_state &state,
 } // namespace
 void register_global_reduce_semantics(frontend &target) {
   target.register_semantics("ATOMG.E.ADD.STRONG.GPU", execute_atomg_add);
+  target.register_semantics("ATOMG.E.ADD.64.STRONG.GPU", execute_atomg_add);
+  target.register_semantics("ATOMG.E.ADD.64.STRONG.SYS", execute_atomg_add);
   for (const char *op :
        {"REDG.E.ADD.STRONG.GPU", "REDG.E.ADD.S32.STRONG.GPU",
         "REDG.E.ADD.64.STRONG.GPU", "REDG.E.XOR.64.STRONG.GPU"})

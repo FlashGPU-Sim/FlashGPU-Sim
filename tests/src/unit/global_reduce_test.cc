@@ -4,6 +4,103 @@
 #include "sass/test_support.h"
 CUctx_st *GPGPUSim_Context(gpgpu_context *ctx);
 namespace {
+using flash_gpgpu_sim::sass::kZeroRegister;
+TEST(GlobalReduction, Atomic64ReturnedPairsPredicationAndDependencies) {
+  for (const char *scope : {"GPU", "SYS"})
+    for (const char *destination : {"R2", "R4", "R8", "RZ"}) {
+      const auto inst = official_instruction(
+          0, std::string("ATOMG.E.ADD.64.STRONG.") + scope,
+          std::string("PT,") + destination + ",desc[UR8][R2.64],R4", "@P0");
+      kernel image;
+      image.name = "atomic64";
+      image.arch = architecture::kSm100;
+      image.instruction_bytes = 16;
+      image.instructions = {inst};
+      frontend sass;
+      sass.add_kernel(std::move(image));
+      register_sm100_functional_semantics(sass);
+      mapped_functional_memory memory;
+      constexpr uint64_t at = 0x200000100ull, initial = 0xfffffffeffffffffull;
+      memory.map(memory_space::kGlobal, at, 16, true);
+      memory.initialize<uint64_t>(memory_space::kGlobal, at, initial);
+      memory.initialize<uint64_t>(memory_space::kGlobal, at + 8,
+                                  0xabcdefff12345678ull);
+      execution_context context{&memory};
+      warp_state state;
+      state.active_mask = 7;
+      for (unsigned lane = 0; lane < 3; ++lane) {
+        state.write_register(lane, 2, uint32_t(at));
+        state.write_register(lane, 3, at >> 32);
+        state.write_register(lane, 4, 3);
+        state.write_register(lane, 5, 1);
+        state.write_register(lane, 8, 99);
+        state.write_register(lane, 9, 100);
+        state.write_predicate(lane, 0, lane != 1);
+      }
+      const auto result = sass.step("atomic64", state, context);
+      ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+      EXPECT_EQ(memory.inspect<uint64_t>(memory_space::kGlobal, at),
+                initial + 2 * 0x100000003ull);
+      EXPECT_EQ(memory.inspect<uint64_t>(memory_space::kGlobal, at + 8),
+                0xabcdefff12345678ull);
+      EXPECT_TRUE(context.memory_accesses[1].empty());
+      EXPECT_EQ(context.memory_accesses[0][0].bytes, 8u);
+      EXPECT_EQ(state.read_register(1, 2), uint32_t(at));
+      EXPECT_EQ(state.read_register(1, 4), 3u);
+      EXPECT_EQ(state.read_register(1, 8), 99u);
+      const unsigned dst = inst.operands[1].index;
+      if (dst != kZeroRegister) {
+        EXPECT_EQ(uint64_t(state.read_register(0, dst)) |
+                      (uint64_t(state.read_register(0, dst + 1)) << 32),
+                  initial);
+        EXPECT_EQ(uint64_t(state.read_register(2, dst)) |
+                      (uint64_t(state.read_register(2, dst + 1)) << 32),
+                  initial + 0x100000003ull);
+      }
+      timing_instruction projected(inst);
+      EXPECT_EQ(projected.data_size, 8u);
+      EXPECT_TRUE(projected.isatomic());
+      EXPECT_EQ(projected.outcount, dst == kZeroRegister ? 0u : 2u);
+      ASSERT_EQ(projected.get_register_file_destination_count(),
+                dst == kZeroRegister ? 0u : 2u);
+      if (dst != kZeroRegister) {
+        EXPECT_EQ(projected.get_register_file_destination(0).reg, dst);
+        EXPECT_EQ(projected.get_register_file_destination(1).reg, dst + 1);
+      }
+      std::vector<unsigned> sources;
+      for (unsigned i = 0; i < projected.get_register_file_source_count(); ++i)
+        sources.push_back(projected.get_register_file_source(i).reg);
+      EXPECT_NE(std::find(sources.begin(), sources.end(), 4u), sources.end());
+      EXPECT_NE(std::find(sources.begin(), sources.end(), 5u), sources.end());
+    }
+}
+TEST(GlobalReduction, Atomic64RejectsInvalidPairsBeforeMemoryMutation) {
+  for (const char *operands :
+       {"PT,R254,desc[UR8][R2.64],R4", "PT,R8,desc[UR8][R2.64],R254",
+        "PT,R8,desc[UR8][R2.64],-R4"}) {
+    kernel image;
+    image.name = "bad64";
+    image.arch = architecture::kSm100;
+    image.instruction_bytes = 16;
+    image.instructions = {
+        official_instruction(0, "ATOMG.E.ADD.64.STRONG.GPU", operands)};
+    frontend sass;
+    sass.add_kernel(std::move(image));
+    register_sm100_functional_semantics(sass);
+    mapped_functional_memory memory;
+    memory.map(memory_space::kGlobal, 256, 8, true);
+    memory.initialize<uint64_t>(memory_space::kGlobal, 256, 17);
+    execution_context context{&memory};
+    warp_state state;
+    state.active_mask = 1;
+    state.write_register(0, 2, 256);
+    EXPECT_EQ(sass.step("bad64", state, context).status,
+              step_status::kUnsupported);
+    EXPECT_EQ(memory.inspect<uint64_t>(memory_space::kGlobal, 256), 17u);
+    EXPECT_TRUE(context.memory_accesses[0].empty());
+  }
+}
+
 TEST(GlobalReduction, UniformWidthsScopesMasksAndDependencies) {
   for (const bool wide : {false, true})
     for (const char *scope : {"GPU", "SYS"})
