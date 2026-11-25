@@ -8,6 +8,7 @@ sources = [
   # Portable integration tests.
   "integration/address_operand_test.cu",
   "integration/vector_operand_test.cu",
+  "integration/funnel_shift_test.cu",
   "integration/integer_multiply_test.cu",
   "integration/signed_byte_load_test.cu",
   "integration/warp_shuffle_alias_test.cu",
