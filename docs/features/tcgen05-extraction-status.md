@@ -45,14 +45,29 @@ construction does not require the separate scalar conversion feature. All six
 collector cases and their output oracles are retained. Ordinary PTX defaults
 are retained.
 
-TMEM's refreshed head passed its local CI (13 numerical tests / 17 launches per
-frontend) and three PTX timing isolation checks. MMA and paired CTA local CI also passed. CLC passed after rebuilding stale
-generated BookSim dependencies; no CLC source fix was needed. WS is retrying its
-independent input fixture. The final all-branch isolation sweep is still pending
-at this documentation checkpoint. Exact heads, logs and final gate
-outcomes are recorded under `runs/tcgen-functional-branches-20261125/` in the
-workspace, indexed by `runs/CURRENT.json`. Historical integration acceptance
-below does not replace these final-branch gates.
+All five refreshed heads passed their own local CI and three ordinary PTX
+timing-isolation checks each. Complete CUDA launch qualification per frontend:
+
+| Unit | Numerical tests | Launches |
+|---|---:|---:|
+| TMEM | 13 | 17 |
+| MMA | 24 | 51 |
+| Paired CTA | 5 | 15 |
+| CLC | 7 | 13 |
+| Numbered WS collectors | 6 | 6 |
+
+CLC required rebuilding stale generated BookSim dependencies, without a source
+change. The isolated WS input fixture passed both frontends. All five qualified
+heads are pushed to the private dev repository; no public PR was opened. The
+GitHub Actions matrix planner includes each feature's CUDA 13.3 job, but hosted
+CI has not been qualified by these local runs.
+
+Exact heads, frozen runtimes, logs, isolation results and private push evidence
+are under `runs/tcgen-functional-branches-20261125/`, indexed by
+`runs/CURRENT.json`. These gates do not replace the retained DeepInfer acceptance:
+at this checkpoint 67 entries match GPU strictly and 46 retain the prior accepted
+numerical residual; four large MoE entries remain running or queued. The residual
+classification does not prove rounding or strict GPU agreement.
 
 ## Integration prerequisites and fixes
 
