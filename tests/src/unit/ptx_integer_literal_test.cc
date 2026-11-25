@@ -64,4 +64,12 @@ TEST(PtxIntegerLiteral, RejectOverflowInsteadOfSaturating) {
   EXPECT_DEATH(check_literals({{"18446744073709551616U", 0}}, "literal_overflow_decimal"), "integer literal out of range");
   EXPECT_DEATH(check_literals({{"0x10000000000000000U", 0}}, "literal_overflow_hex"), "integer literal out of range");
 }
+TEST(PtxIntegerLiteral, RejectInvalidOctalAndNegativeOverflow) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(check_literals({{"08", 0}}, "literal_invalid_octal"),
+               "integer literal out of range");
+  EXPECT_DEATH(check_literals({{"-18446744073709551616", 0}},
+                              "literal_negative_overflow"),
+               "integer literal out of range");
+}
 }  // namespace

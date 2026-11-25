@@ -64,6 +64,22 @@ void reject_coords(const char *name, const std::string &body) {
   if (dup2(STDERR_FILENO, STDOUT_FILENO) < 0) std::abort();
   parse_coords(name, body);
 }
+TEST(PtxTensorCoordinates, IntegerRadicesComposeWithCoordinateValidation) {
+  auto *f = parse_coords("tensor_coordinate_radices",
+      "cp.async.bulk.tensor.5d.shared::cta.global.mbarrier::complete_tx::bytes "
+      "[x],[a,{0b10U,010U,-0x2,0xffffffffU,x}],[b];");
+  const auto &v = f->get_dyn_inst(f->get_start_PC())->get_operands()[2];
+  ASSERT_EQ(v.get_vect_nelem(), 5u);
+  EXPECT_EQ(v.vec_literal_value(0).u32, 2u);
+  EXPECT_EQ(v.vec_literal_value(1).u32, 8u);
+  EXPECT_EQ(v.vec_literal_value(2).s32, -2);
+  EXPECT_EQ(v.vec_literal_value(3).u32, UINT32_MAX);
+  EXPECT_FALSE(v.vec_is_literal(4));
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(reject_coords("tensor_hex_overflow",
+      "cp.async.bulk.tensor.1d.shared::cta.global.mbarrier::complete_tx::bytes "
+      "[x],[a,{0x100000000U}],[b];"), "tensor coordinate literal exceeds 32 bits");
+}
 TEST(PtxTensorCoordinates, RejectsFloatWidthAndCoordinateCount) {
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
   EXPECT_DEATH(
