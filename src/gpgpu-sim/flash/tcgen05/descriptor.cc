@@ -71,7 +71,9 @@ bool tcgen05_mma_shared_descriptor_supported(uint64_t raw, bool mn_major) {
   const unsigned mode = raw >> 61;
   // 14-bit address/stride fields on Blackwell, not Rubin's widened fields.
   const uint64_t reserved = (3ull << 14) | (3ull << 30) | (0xffull << 53);
-  return !(raw & reserved) && ((raw >> 46) & 7) == 1 && !((raw >> 52) & 1) &&
+  // Pattern-base offsets are not implemented by the address helpers below.
+  // Reject them in both adapters rather than silently using pattern base zero.
+  return !(raw & reserved) && ((raw >> 46) & 7) == 1 && !((raw >> 49) & 0xf) &&
          (mode == 0 || mode == 2 || mode == 4 || mode == 6 ||
           (mode == 1 && mn_major));
 }
@@ -198,6 +200,20 @@ bool tcgen05_mxf8f6f4_format_supported(uint8_t format) {
   default:
     return false;
   }
+}
+
+bool tcgen05_blackwell_mixed_descriptor_supported(uint32_t idesc,
+                                                  unsigned group) {
+  // This is the execution subset, not the full ISA decoder below. Both
+  // adapters currently gather padded K-major operands only; accepting the
+  // otherwise legal eight-bit transpose would feed a different layout to MMA.
+  constexpr uint32_t unsupported =
+      (1u << 31) | (7u << 24) | (3u << 15) | (1u << 6) | 0xfu;
+  return !(idesc & unsupported) && (idesc & (1u << 23)) &&
+         tcgen05_mxf8f6f4_format_supported((idesc >> 7) & 7) &&
+         tcgen05_mxf8f6f4_format_supported((idesc >> 10) & 7) &&
+         tcgen05_mxf8f6f4_dense_shape_supported(
+             ((idesc >> 27) & 3) * 128, ((idesc >> 17) & 63) * 8, 32, group);
 }
 
 uint32_t tcgen05_mxf8f6f4_format_bits(uint8_t format) {

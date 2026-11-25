@@ -81,6 +81,9 @@ tcgen05_shared_mn_major_byte_address(const tcgen05_shared_descriptor_t &desc,
 bool tcgen05_mxf4_dense_shape_supported(uint32_t m, uint32_t n, uint32_t k,
                                         unsigned cta_group);
 bool tcgen05_mxf8f6f4_format_supported(uint8_t format);
+// Qualified shared-A, padded K32 execution subset for both frontends.
+bool tcgen05_blackwell_mixed_descriptor_supported(uint32_t idesc,
+                                                  unsigned cta_group);
 uint32_t tcgen05_mxf8f6f4_format_bits(uint8_t format);
 tcgen05_mxf8f6f4_shared_location_t
 tcgen05_mxf8f6f4_shared_location(uint32_t logical_k, uint8_t format);

@@ -63,9 +63,11 @@ static void tcgen05_mma_mixed_ptx(const ptx_instruction *inst,
          "MXF8F6F4 TMEM-A is not qualified yet");
   const unsigned group = tcgen05_cta_group(inst);
   const auto targets = tcgen05_ptx_targets(inst, thread);
-  const auto desc = tcgen05_decode_mxf8f6f4_mma_descriptor(
-      tcgen05_read_operand(inst, thread, 3).u32, group);
-  assert(desc.k == 32 && "SM107 mixed MMA requires architecture qualification");
+  const auto idesc = tcgen05_read_operand(inst, thread, 3).u32;
+  assert(tcgen05_blackwell_mixed_descriptor_supported(idesc, group) &&
+         "Unqualified Blackwell mixed MMA descriptor (requires dense K-major "
+         "K32)");
+  const auto desc = tcgen05_decode_mxf8f6f4_mma_descriptor(idesc, group);
   const unsigned local_m = desc.m / group, local_n = desc.n / group;
   const bool folded = group == 2 && desc.m == 128;
   auto scope = [&](unsigned rank) {

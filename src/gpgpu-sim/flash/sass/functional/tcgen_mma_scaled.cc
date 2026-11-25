@@ -35,7 +35,7 @@ step_result dense_fp8_mma(const instruction &inst, warp_state &state,
                          context) ||
       !shared_descriptor(read_uniform_register_pair(state, br.index), bd,
                          context) ||
-      ad.base_offset || bd.base_offset || !context.cta->tcgen)
+      !context.cta->tcgen)
     return unsupported(
         inst, "dense FP8 requires qualified shared operands and live TMEM");
   auto &tm = *context.cta->tcgen;
@@ -209,17 +209,7 @@ step_result mixed_mma(const instruction &inst, warp_state &state,
   const unsigned n = ((idesc >> 17) & 63) * 8;
   const unsigned af = (idesc >> 7) & 7, bf = (idesc >> 10) & 7;
   const unsigned mma_k = (idesc & 0x80000000u) ? 64 : 32;
-  if (mma_k != 32)
-    return unsupported(inst, "MXF8F6F4 K64 requires SM107");
-  // Reject sparse/reserved/transpose bits before calling the ISA-neutral
-  // decoder, whose internal assertions are not a malformed-input boundary.
-  constexpr uint32_t unsupported_descriptor_bits =
-      (7u << 24) | (3u << 15) | (1u << 6) | 0xfu;
-  if ((idesc & unsupported_descriptor_bits) || !(idesc & (1u << 23)) ||
-      !tcgen05_mxf8f6f4_format_supported(af) ||
-      !tcgen05_mxf8f6f4_format_supported(bf) ||
-      !tcgen05_mxf8f6f4_dense_shape_supported(m, n, mma_k, group) ||
-      (mma_k == 64 && (idesc & ((1u << 29) | (1u << 4)))))
+  if (!tcgen05_blackwell_mixed_descriptor_supported(idesc, group))
     return unsupported(inst, "unqualified dense K-major MXF8F6F4 descriptor");
   const auto desc = tcgen05_decode_mxf8f6f4_mma_descriptor(idesc, group);
   tcgen05_shared_descriptor_t ad, bd;

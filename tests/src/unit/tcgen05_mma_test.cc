@@ -693,3 +693,45 @@ TEST(Tcgen05Mma, Tf32DescriptorAcceptsDenseKMajorAndRejectsOtherForms) {
   EXPECT_FALSE(
       tcgen05_tf32_descriptor_supported((16u << 24) | (8u << 17) | 0x910));
 }
+
+TEST(Tcgen05Mma, NonzeroSwizzlePatternBaseIsNotSilentlyIgnored) {
+  for (unsigned mode : {0u, 1u, 2u, 4u, 6u})
+    for (unsigned base = 1; base < 8; ++base) {
+      const auto raw =
+          make_shared_desc(0x480, 16, 1024, mode) | (uint64_t(base) << 49);
+      EXPECT_FALSE(tcgen05_mma_shared_descriptor_supported(raw, true))
+          << "mode=" << mode << " base=" << base;
+    }
+  const auto raw = make_shared_desc(0x480, 16, 1024, 2) | (1ull << 49);
+  EXPECT_DEATH(tcgen05_decode_mma_shared_descriptor(raw, true),
+               "Unsupported Blackwell MMA shared descriptor");
+}
+
+TEST(Tcgen05Mma, MixedExecutionGateIsSharedAndNarrowerThanIsaDecoder) {
+  for (unsigned group : {1u, 2u})
+    for (unsigned m : {128u, 256u})
+      for (unsigned n = 8; n <= 256; n += 8)
+        for (unsigned a : {0u, 1u, 3u, 4u, 5u})
+          for (unsigned b : {0u, 1u, 3u, 4u, 5u}) {
+            const auto raw = make_mxf8f6f4_idesc(n, a, b, 3, 2, m, true, true);
+            EXPECT_EQ(tcgen05_blackwell_mixed_descriptor_supported(raw, group),
+                      (group == 1 ? m == 128 : n % 16 == 0));
+          }
+  const auto raw = make_mxf8f6f4_idesc(32, 0, 1);
+  // Transposed FP8 is a valid ISA descriptor; the current operand gather is
+  // K-major only. The PTX execution path must not equate these two gates.
+  for (unsigned transpose : {1u << 15, 1u << 16, 3u << 15}) {
+    const auto decoded =
+        tcgen05_decode_mxf8f6f4_mma_descriptor(raw | transpose, 1);
+    EXPECT_TRUE(decoded.transpose_a || decoded.transpose_b);
+    EXPECT_FALSE(
+        tcgen05_blackwell_mixed_descriptor_supported(raw | transpose, 1));
+  }
+  for (unsigned bit : {0u, 1u, 2u, 3u, 6u, 24u, 25u, 26u, 31u})
+    EXPECT_FALSE(
+        tcgen05_blackwell_mixed_descriptor_supported(raw | (1u << bit), 1));
+  EXPECT_FALSE(
+      tcgen05_blackwell_mixed_descriptor_supported(raw & ~(1u << 23), 1));
+  EXPECT_FALSE(tcgen05_blackwell_mixed_descriptor_supported(raw, 0));
+  EXPECT_FALSE(tcgen05_blackwell_mixed_descriptor_supported(raw, 3));
+}

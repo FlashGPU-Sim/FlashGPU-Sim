@@ -158,3 +158,7 @@ Later source edits are formatting/documentation and additional host tests.
   not completed by the existing read-side half-region model.
 - This is focused TCGen05 qualification, not another full DeepInfer sweep.
 - Feature owner branches and public PRs still need integration after review.
+
+Follow-up: [descriptor execution-boundary audit](blackwell-descriptor-boundary-audit.md)
+fixes silent acceptance of two unimplemented layouts; the small timing residuals
+above are deferred.

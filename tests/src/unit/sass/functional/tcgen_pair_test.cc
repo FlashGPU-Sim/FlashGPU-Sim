@@ -164,3 +164,35 @@ TEST(Tcgen05PairAdapter, MmaRejectsTruncatedMaskAndNonemptyWsDescriptor) {
   EXPECT_NE(result.detail.find("nonzero WS zero-column descriptor"),
             std::string::npos);
 }
+
+TEST(Tcgen05PairAdapter, MmaRejectsPatternBaseBeforeWritingAccumulator) {
+  for (unsigned kind = 0; kind < 4; ++kind) {
+    PairFixture f(
+        kind < 2    ? "UTCHMMA"
+        : kind == 2 ? "UTCQMMA"
+                    : "UTCOMMA",
+        kind < 2 ? "gdesc[UR0],gdesc[UR2],tmem[UR4],tmem[UR5],idesc[UR6],UP0"
+                 : "gdesc[UR0],gdesc[UR2],tmem[UR4],tmem[UR5],idesc[UR6],tmem["
+                   "UR8],UP0");
+    f.cta[0].tcgen->allocated = 0xffff;
+    const uint64_t ad = (6ull << 61) | (1ull << 49) | (1ull << 46) |
+                        (16ull << 32) | (1ull << 16) | 8;
+    const uint64_t bd = (1ull << 46) | (16ull << 32) | (8ull << 16) | 256;
+    f.state.write_uniform_register(0, static_cast<uint32_t>(ad));
+    f.state.write_uniform_register(1, ad >> 32);
+    f.state.write_uniform_register(2, static_cast<uint32_t>(bd));
+    f.state.write_uniform_register(3, bd >> 32);
+    uint32_t idesc = (8u << 24) | (2u << 17) | 0x10;
+    if (kind == 1) idesc |= (2u << 7) | (2u << 10);
+    if (kind >= 2) idesc = (1u << 27) | (1u << 23) | (2u << 17);
+    if (kind == 3) idesc |= (1u << 7) | (1u << 10);
+    f.state.write_uniform_register(6, idesc);
+    f.state.write_uniform_register(8, 64);
+    f.state.write_uniform_register(9, 68);
+    f.cta[0].tcgen->memory.write_words({0, 0}, 0, {0x12345678});
+    EXPECT_EQ(f.run().status, step_status::kUnsupported) << kind;
+    EXPECT_EQ(f.cta[0].tcgen->memory.read_words({0, 0}, 0, 1)[0], 0x12345678u);
+    EXPECT_EQ(f.state.pc, 0u);
+    EXPECT_FALSE(f.context.tcgen_mma_effect.valid);
+  }
+}
