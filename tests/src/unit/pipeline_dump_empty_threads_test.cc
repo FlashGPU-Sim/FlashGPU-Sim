@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 #include <string>
 
-#include "libcuda/gpgpu_context.h"
-#include "src/gpgpu-sim/gpu-sim.h"
+#include "../../../libcuda/gpgpu_context.h"
+#include "gpgpu-sim/gpu-sim.h"
 
 CUctx_st *GPGPUSim_Context(gpgpu_context *ctx);
 
