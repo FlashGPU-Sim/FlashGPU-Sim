@@ -379,6 +379,13 @@ void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
         (shared_mem_size & (shared_mem_size - 1)) == 0) {
       alignto = shared_mem_size;
     }
+    // The launch byte count is not the symbol's alignment requirement.
+    // Preserve the legacy minimum while honoring explicit PTX .align,
+    // including zero-byte launches that still form the shared address.
+    const int declared_alignment =
+        m_local_dyn_shared_mem_symbol->type()->get_key().get_alignment_spec();
+    if (declared_alignment > 0)
+      alignto = std::max(alignto, static_cast<unsigned>(declared_alignment));
     addr_t addr_pad = alignto ? ((alignto - (addr % alignto)) % alignto) : 0;
         printf("GPGPU-Sim PTX: Allocating local dyn shared mem symbol %s from "
           "0x%llx to 0x%llx (size %d)\n",
