@@ -140,3 +140,27 @@ TEST(Tcgen05PairAdapter, ClusterStoreProjectsAllPayloadDependencies) {
   }
 }
 }  // namespace
+
+TEST(Tcgen05PairAdapter, MmaRejectsTruncatedMaskAndNonemptyWsDescriptor) {
+  for (const char *op : {"UTCHMMA", "UTCHMMA.2CTA", "UTCHMMA.WS"}) {
+    const auto mask =
+        std::to_string(flash_gpgpu_sim::sass::kZeroUniformRegister - 1);
+    const auto operands =
+        "gdesc[UR0],gdesc[UR2],tmem[UR4],tmem[UR5],idesc[UR6],UR" + mask +
+        ",!UP0";
+    PairFixture f(op, operands.c_str());
+    auto result = f.run();
+    EXPECT_EQ(result.status, step_status::kUnsupported);
+    EXPECT_NE(result.detail.find("invalid MMA mask register group"),
+              std::string::npos);
+  }
+  PairFixture f(
+      "UTCHMMA.WS",
+      "gdesc[UR0],gdesc[UR2],tmem[UR4],tmem[UR5],idesc[UR6],UR12,!UP0");
+  f.state.write_uniform_register(
+      13, 1u << 7);  // Descriptor bit 39 enables masking.
+  auto result = f.run();
+  EXPECT_EQ(result.status, step_status::kUnsupported);
+  EXPECT_NE(result.detail.find("nonzero WS zero-column descriptor"),
+            std::string::npos);
+}

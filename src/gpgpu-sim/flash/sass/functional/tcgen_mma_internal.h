@@ -23,10 +23,16 @@ inline std::vector<uint32_t> read_accumulator(functional_tcgen_state &tm,
 }
 inline void write_accumulator(functional_tcgen_state &tm, uint32_t base,
                               const std::vector<uint32_t> &values,
-                              unsigned rows, unsigned n, bool folded) {
-  tm.memory.write_accumulator({0, 0}, base, values, rows, n, folded);
+                              unsigned rows, unsigned n, bool folded,
+                              const uint32_t *disable_lanes = nullptr) {
+  tm.memory.write_accumulator({0, 0}, base, values, rows, n, folded,
+                              disable_lanes);
 }
 
+step_result tf32_mma(const instruction &, warp_state &, execution_context &,
+                     uint32_t idesc, bool tmem_a, uint32_t a_address,
+                     uint32_t destination, const operand &ar, const operand &br,
+                     const uint32_t *disable_lanes);
 step_result half_mma(const instruction &, warp_state &, execution_context &);
 step_result mixed_mma(const instruction &, warp_state &, execution_context &);
 step_result fp4_mma(const instruction &, warp_state &, execution_context &);

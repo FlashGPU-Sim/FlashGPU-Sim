@@ -91,6 +91,7 @@ tcgen05_mma_descriptor_t tcgen05_decode_fp8_mma_descriptor(uint32_t idesc);
 // full and folded layouts start at lane 0. TMEM A and D must agree.
 bool tcgen05_mma_tmem_alignment_supported(unsigned local_m, bool folded,
                                           uint32_t d, bool tmem_a, uint32_t a);
+bool tcgen05_tf32_descriptor_supported(uint32_t idesc);
 bool tcgen05_f16_descriptor_supported(uint32_t idesc, unsigned cta_group,
                                       bool ws = false);
 tcgen05_mma_descriptor_t tcgen05_decode_f16_mma_descriptor(uint32_t idesc,

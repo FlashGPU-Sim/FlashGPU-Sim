@@ -261,6 +261,15 @@ bool tcgen05_mma_tmem_alignment_supported(unsigned local_m, bool folded,
   return !tmem_a || ((a >> 16) == lane && (a & 7) == 0);
 }
 
+bool tcgen05_tf32_descriptor_supported(uint32_t idesc) {
+  const unsigned m = ((idesc >> 24) & 31) * 16;
+  const unsigned n = ((idesc >> 17) & 63) * 8;
+  // Qualified dense CTA1 K-major TF32 -> F32 forms (shared or TMEM A).
+  return !(idesc & 0xe081804fu) && ((idesc >> 4) & 3) == 1 &&
+         ((idesc >> 7) & 7) == 2 && ((idesc >> 10) & 7) == 2 &&
+         (m == 64 || m == 128) && n >= 8 && n <= 256 && n % 8 == 0;
+}
+
 bool tcgen05_f16_descriptor_supported(uint32_t idesc, unsigned group, bool ws) {
   if (group != 1 && group != 2)
     return false;

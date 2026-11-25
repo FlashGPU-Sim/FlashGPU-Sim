@@ -42,18 +42,13 @@ static bool tcgen05_read_enable_input_d(const operand_info &op,
   return value.u32 != 0;
 }
 
-static void tcgen05_check_disable_output_lane_zero(const operand_info &op,
-                                                   ptx_thread_info *thread,
-                                                   unsigned group) {
+static std::vector<uint32_t>
+tcgen05_read_disable_output_lanes(const operand_info &op,
+                                  ptx_thread_info *thread, unsigned group) {
   assert(op.is_vector());
   assert(op.get_vect_nelem() == 4 * group &&
          "Disable-output-lane vector size must match the CTA group");
-
-  std::vector<uint32_t> lanes = tcgen05_read_vector_words(op, thread);
-  for (unsigned i = 0; i < lanes.size(); ++i) {
-    assert(lanes[i] == 0 &&
-           "TCGen05 MMA disable-output-lane masks are not implemented");
-  }
+  return tcgen05_read_vector_words(op, thread);
 }
 
 static void tcgen05_mma_mixed_ptx(const ptx_instruction *inst,
@@ -192,24 +187,22 @@ static void tcgen05_mma_mxf4_ptx(const ptx_instruction *inst,
       thread->get_laneid(), timing);
 }
 
-// PTX adapter for the same qualified TF32 TS forms as native UTCHMMA.
+// TF32 shares descriptor, layout, arithmetic and masked writeback with SASS.
 static void tcgen05_mma_tf32_ptx(const ptx_instruction *inst,
                                  ptx_thread_info *thread) {
   tcgen05_shared_reads shared_reads;
   tcgen05_assert_cta_group1(inst);
-  assert(inst->operand_lookup(1).is_memory_operand() &&
-         "TF32 shared-A form has not been qualified");
+  const bool tmem_a = inst->operand_lookup(1).is_memory_operand();
   const uint32_t idesc = tcgen05_read_operand(inst, thread, 3).u32;
+  assert(tcgen05_tf32_descriptor_supported(idesc));
   const unsigned m = ((idesc >> 24) & 31) * 16;
   const unsigned n = ((idesc >> 17) & 63) * 8;
-  assert(!(idesc & 0xe080004fu) && ((idesc >> 4) & 3) == 1 &&
-         ((idesc >> 7) & 7) == 2 && ((idesc >> 10) & 7) == 2 &&
-         !(idesc & (3u << 15)) && (m == 64 || m == 128) && n >= 8 && n <= 256 &&
-         n % 8 == 0);
   unsigned enable = 4;
+  std::vector<uint32_t> disable_lanes(4, 0);
   if (inst->operand_lookup(4).is_vector()) {
     assert(inst->get_num_operands() == 6);
-    tcgen05_check_disable_output_lane_zero(inst->operand_lookup(4), thread, 1);
+    disable_lanes =
+        tcgen05_read_disable_output_lanes(inst->operand_lookup(4), thread, 1);
     enable = 5;
   } else
     assert(inst->get_num_operands() == 5);
@@ -218,37 +211,32 @@ static void tcgen05_mma_tf32_ptx(const ptx_instruction *inst,
   const auto scope = tcgen05_tmem_scope(inst, thread);
   auto &tm = thread->get_gpu()->get_tcgen05_tmem_manager();
   const uint32_t dst = tcgen05_eval_address(inst->operand_lookup(0), thread);
-  const uint32_t aptr = tcgen05_eval_address(inst->operand_lookup(1), thread);
+  const uint32_t aptr =
+      tmem_a ? tcgen05_eval_address(inst->operand_lookup(1), thread) : 0;
   assert(!(aptr >> 16) && !(aptr & 7) && !(dst >> 16));
-  const auto bd = tcgen05_decode_mma_shared_descriptor(
-      tcgen05_read_u64_operand(inst, thread, 2).u64);
-  assert(!bd.base_offset);
-  std::vector<uint32_t> a, b(n * 8), input;
-  for (unsigned row = 0; row < m; ++row) {
-    const unsigned physical = m == 64 ? (row / 16) * 32 + row % 16 : row;
-    const unsigned offset = physical << 16;
-    const auto values = tm.read_words(scope, aptr + offset, 8);
-    a.insert(a.end(), values.begin(), values.end());
-    if (accumulate) {
-      const auto values = tm.read_words(scope, dst + offset, n);
-      input.insert(input.end(), values.begin(), values.end());
-    }
-  }
-  for (unsigned col = 0; col < n; ++col)
-    for (unsigned k = 0; k < 8; ++k) {
-      const auto address =
-          tcgen05_shared_k_major_packed_byte_address(bd, col, k * 4, 32);
-      shared_reads.add(address, 4);
-      thread->m_shared_mem->read(address, 4, &b[col * 8 + k]);
-    }
+  auto gather = [&](unsigned operand, unsigned rows) {
+    const auto sd = tcgen05_decode_mma_shared_descriptor(
+        tcgen05_read_u64_operand(inst, thread, operand).u64);
+    shared_reads.begin_operand();
+    std::vector<uint32_t> values;
+    const bool ok = tcgen05_gather_shared(
+        sd, rows, 8, 1, false, values,
+        [&](unsigned, uint32_t address, void *value, unsigned bytes) {
+          shared_reads.add(address, bytes);
+          thread->m_shared_mem->read(address, bytes, value);
+          return true;
+        });
+    assert(ok);
+    return values;
+  };
+  const auto a =
+      tmem_a ? tm.read_accumulator(scope, aptr, m, 8, false) : gather(1, m);
+  const auto b = gather(2, n);
+  const auto input = accumulate ? tm.read_accumulator(scope, dst, m, n, false)
+                                : std::vector<uint32_t>{};
   const auto out = tcgen05_mma_tf32_compute_words(
       m, n, a, b, input, accumulate, idesc & (1u << 13), idesc & (1u << 14));
-  for (unsigned row = 0; row < m; ++row) {
-    const unsigned physical = m == 64 ? (row / 16) * 32 + row % 16 : row;
-    tm.write_words(scope, dst + (physical << 16),
-                   std::vector<uint32_t>(out.begin() + row * n,
-                                         out.begin() + (row + 1) * n));
-  }
+  tm.write_accumulator(scope, dst, out, m, n, false, disable_lanes.data());
   inst_t::tcgen05_dyn_info_t timing;
   timing.mma_work = 2ull * m * n * 8;
   tcgen05_mma_descriptor_t desc{};
@@ -256,7 +244,7 @@ static void tcgen05_mma_tf32_ptx(const ptx_instruction *inst,
   desc.n = n;
   desc.k = 8;
   desc.d_type = 1;
-  timing.mma = tcgen05_metadata(tcgen05_mma_kind::tf32, desc, 1, true);
+  timing.mma = tcgen05_metadata(tcgen05_mma_kind::tf32, desc, 1, tmem_a);
   tcgen05_account_shared(timing.mma, shared_reads.reads);
   const_cast<ptx_instruction *>(inst)->set_tcgen05_dyn_info(
       thread->get_laneid(), timing);
@@ -314,9 +302,12 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   const auto collector = ws_collector_control(pI);
   assert((!ws || tcgen05_has_option(pI, TCGEN05_KIND_F16_OPTION)) &&
          "Only F16/BF16 WS MMA has been qualified");
-  if (ws)
-    assert(pI->get_num_operands() == 5 &&
-           "WS zero-column masks are not qualified");
+  if (ws) {
+    assert(pI->get_num_operands() == 5 || pI->get_num_operands() == 6);
+    if (pI->get_num_operands() == 6)
+      assert(tcgen05_read_u64_operand(pI, thread, 5).u64 == 0 &&
+             "Nonzero WS zero-column descriptors are not qualified");
+  }
   if (tcgen05_has_option(pI, TCGEN05_KIND_F8F6F4_OPTION)) {
     tcgen05_mma_fp8_ptx(pI, thread);
     return;
@@ -340,13 +331,15 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   const operand_info &d_tmem = pI->operand_lookup(0);
   const operand_info &a_desc_op = pI->operand_lookup(1);
   unsigned enable_input_d_operand = 4;
+  std::vector<uint32_t> disable_lanes(4 * group, 0);
   if (pI->operand_lookup(4).is_vector()) {
     assert(pI->get_num_operands() == 6 && "MMA scale-input-d is not qualified");
-    tcgen05_check_disable_output_lane_zero(pI->operand_lookup(4), thread,
-                                           group);
+    disable_lanes =
+        tcgen05_read_disable_output_lanes(pI->operand_lookup(4), thread, group);
     enable_input_d_operand = 5;
   } else {
-    assert(pI->get_num_operands() == 5 && "MMA scale-input-d is not qualified");
+    assert((pI->get_num_operands() == 5 || ws) &&
+           "MMA scale-input-d is not qualified");
   }
   const operand_info &enable_input_d_op =
       pI->operand_lookup(enable_input_d_operand);
@@ -465,7 +458,7 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
     manager.write_accumulator(
         target_scope(rank), d_address,
         std::vector<uint32_t>(begin, begin + local_m * mma_desc.n), local_m,
-        mma_desc.n, folded);
+        mma_desc.n, folded, disable_lanes.data() + rank * 4);
   }
   perf_info.mma =
       tcgen05_metadata(tcgen05_mma_kind::half, mma_desc, group,

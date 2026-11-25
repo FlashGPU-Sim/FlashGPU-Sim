@@ -71,6 +71,7 @@ sources = [
   "unit/sass/functional/clc_test.cc",
   "tcgen05/mma_commit_test.cu",
   "tcgen05/mma_dense_test.cu",
+  "tcgen05/mma_mask_test.cu",
   "tcgen05/mma_ws_collector_test.cu",
   "tcgen05/mma_pair_test.cu",
   "tcgen05/tmem_fragments_test.cu",

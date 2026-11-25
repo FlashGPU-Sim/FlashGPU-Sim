@@ -15,7 +15,7 @@ __device__ unsigned short encode(float x) {
 // Four independent B buffers. Change backing memory after fill, so treating
 // use/lastuse as an ordinary shared read cannot pass the numerical oracle.
 template <bool BF16, unsigned N, bool TmemA>
-__global__ void ws_collectors(float *out) {
+__global__ void ws_collectors(float *out, unsigned long long zero_mask = 0) {
   using A = MmaTestLayout<0, false, 128, 16, 2>;
   using B = MmaTestLayout<0, false, N, 16, 2>;
   __shared__ __align__(128) unsigned char a[A::Storage], b[4][B::Storage];
@@ -78,15 +78,15 @@ __global__ void ws_collectors(float *out) {
     asm volatile("{.reg .pred p; mov.pred p," #ACC                       \
                  "; "                                                    \
                  "tcgen05.mma.ws.cta_group::1.kind::f16.collector::b" #S \
-                 "::" OP " [%0],[%1],%2,%3,p;}" ::"r"(base),             \
-                 "r"(base + 128), "l"(bd[S]), "r"(desc)                  \
+                 "::" OP " [%0],[%1],%2,%3,p,%4;}" ::"r"(base),             \
+                 "r"(base + 128), "l"(bd[S]), "r"(desc), "l"(zero_mask)                  \
                  : "memory");                                            \
   } else {                                                               \
     asm volatile("{.reg .pred p; mov.pred p," #ACC                       \
                  "; "                                                    \
                  "tcgen05.mma.ws.cta_group::1.kind::f16.collector::b" #S \
-                 "::" OP " [%0],%1,%2,%3,p;}" ::"r"(base),               \
-                 "l"(ad), "l"(bd[S]), "r"(desc)                          \
+                 "::" OP " [%0],%1,%2,%3,p,%4;}" ::"r"(base),               \
+                 "l"(ad), "l"(bd[S]), "r"(desc), "l"(zero_mask)                          \
                  : "memory");                                            \
   }
 #define ALL(OP) ISSUE(0, OP, 1) ISSUE(1, OP, 1) ISSUE(2, OP, 1) ISSUE(3, OP, 1)

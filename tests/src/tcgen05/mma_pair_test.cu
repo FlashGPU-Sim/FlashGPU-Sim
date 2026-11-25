@@ -3,8 +3,8 @@
 #include <gtest/gtest.h>
 #include <vector>
 
-template <unsigned M, bool Bf16>
-__global__ __cluster_dims__(2, 1, 1) void paired_dense_mma(float *out) {
+template <unsigned M, bool Bf16, bool Masked = false>
+__global__ __cluster_dims__(2, 1, 1) void paired_dense_mma(float *out, unsigned lane_mask = 0) {
   __shared__ __align__(16) unsigned short a[M / 2 * 16], b[8 * 16];
   __shared__ __align__(8) unsigned long long barrier;
   __shared__ unsigned tmem;
@@ -52,6 +52,14 @@ __global__ __cluster_dims__(2, 1, 1) void paired_dense_mma(float *out) {
             "[%0],%1,%2,%3,p; }" ::"r"(tmem),
             "l"(ad), "l"(bd), "r"(desc)
             : "memory");
+      } else if constexpr (Masked) {
+        // Different words in the two CTA halves catch accidental rank aliasing.
+        asm volatile(
+            "{ .reg .pred p; mov.pred p,1; tcgen05.mma.cta_group::2.kind::f16 "
+            "[%0],%1,%2,%3,{%4,%5,%6,%7,%7,%6,%5,%4},p; }"
+            :: "r"(tmem), "l"(ad), "l"(bd), "r"(desc),
+               "r"(lane_mask), "r"(lane_mask << 1),
+               "r"(lane_mask << 2), "r"(lane_mask << 3) : "memory");
       } else {
         // DeepInfer attention spells the optional pair mask as eight words.
         asm volatile(
@@ -117,16 +125,16 @@ TEST(Tcgen05Pair, DenseHalfAndBfloatFoldedAndFullLayouts) {
       cfg.attrs = &attr;
       cfg.numAttrs = 1;
       if (m == 128 && bf)
-        ASSERT_EQ(cudaLaunchKernelEx(&cfg, paired_dense_mma<128, true>, dst),
+        ASSERT_EQ(cudaLaunchKernelEx(&cfg, paired_dense_mma<128, true>, dst, 0u),
                   cudaSuccess);
       if (m == 128 && !bf)
-        ASSERT_EQ(cudaLaunchKernelEx(&cfg, paired_dense_mma<128, false>, dst),
+        ASSERT_EQ(cudaLaunchKernelEx(&cfg, paired_dense_mma<128, false>, dst, 0u),
                   cudaSuccess);
       if (m == 256 && bf)
-        ASSERT_EQ(cudaLaunchKernelEx(&cfg, paired_dense_mma<256, true>, dst),
+        ASSERT_EQ(cudaLaunchKernelEx(&cfg, paired_dense_mma<256, true>, dst, 0u),
                   cudaSuccess);
       if (m == 256 && !bf)
-        ASSERT_EQ(cudaLaunchKernelEx(&cfg, paired_dense_mma<256, false>, dst),
+        ASSERT_EQ(cudaLaunchKernelEx(&cfg, paired_dense_mma<256, false>, dst, 0u),
                   cudaSuccess);
       ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
       std::vector<float> values(2 * m * 16);
@@ -139,6 +147,38 @@ TEST(Tcgen05Pair, DenseHalfAndBfloatFoldedAndFullLayouts) {
                                                 (row % 4 + 1) * (col / 8 + 1))
               << m << "," << bf << "," << row << "," << col;
     }
+  ASSERT_EQ(cudaFree(dst), cudaSuccess);
+}
+
+TEST(Tcgen05Pair, OutputMasksUseBothCtasPhysicalLaneGroups) {
+  float *dst = nullptr;
+  ASSERT_EQ(cudaMalloc(&dst, 256 * 16 * 4), cudaSuccess);
+  for (unsigned m : {128u, 256u}) {
+    cudaLaunchConfig_t cfg{};
+    cfg.gridDim = dim3(2, 1, 1);
+    cfg.blockDim = dim3(128, 1, 1);
+    cudaLaunchAttribute attr{};
+    attr.id = cudaLaunchAttributeClusterDimension;
+    attr.val.clusterDim = {2, 1, 1};
+    cfg.attrs = &attr;
+    cfg.numAttrs = 1;
+    if (m == 128)
+      ASSERT_EQ(cudaLaunchKernelEx(&cfg, paired_dense_mma<128, true, true>, dst, 1u), cudaSuccess);
+    else
+      ASSERT_EQ(cudaLaunchKernelEx(&cfg, paired_dense_mma<256, false, true>, dst, 1u), cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    std::vector<float> values(m * 16);
+    ASSERT_EQ(cudaMemcpy(values.data(), dst, values.size() * 4, cudaMemcpyDeviceToHost), cudaSuccess);
+    for (unsigned row = 0; row < m; ++row)
+      for (unsigned col = 0; col < 16; ++col) {
+        const unsigned rank = row / (m / 2);
+        const unsigned lane = m == 128 ? row % 64 + (col / 8) * 64 : row % 128;
+        const unsigned mask_bit = rank ? 3 - lane / 32 : lane / 32;
+        const bool masked = lane % 32 == mask_bit;
+        const float dot = 40.0f * (rank + 1) * (row % 4 + 1) * (col / 8 + 1);
+        EXPECT_EQ(values[row * 16 + col], (masked ? 1 : 2) * dot) << m << ':' << row << ':' << col;
+      }
+  }
   ASSERT_EQ(cudaFree(dst), cudaSuccess);
 }
 

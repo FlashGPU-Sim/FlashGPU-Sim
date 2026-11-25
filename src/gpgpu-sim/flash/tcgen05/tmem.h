@@ -106,7 +106,8 @@ public:
                                          unsigned columns, bool folded) const;
   void write_accumulator(const tcgen05_tmem_scope_t &scope, uint32_t base,
                          const std::vector<uint32_t> &values, unsigned rows,
-                         unsigned columns, bool folded);
+                         unsigned columns, bool folded,
+                         const uint32_t *disable_lanes = nullptr);
 
   bool ws_half_b(const tcgen05_tmem_scope_t &scope, unsigned owner,
                  tcgen05_ws_collector_control control,

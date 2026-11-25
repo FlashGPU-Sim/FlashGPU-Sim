@@ -328,24 +328,26 @@ tcgen05_tmem_manager_t::read_accumulator(const tcgen05_tmem_scope_t &scope,
 void tcgen05_tmem_manager_t::write_accumulator(
     const tcgen05_tmem_scope_t &scope, uint32_t base,
     const std::vector<uint32_t> &logical, unsigned rows, unsigned n,
-    bool folded) {
-  if (!folded && rows == 64) {
-    for (unsigned r = 0; r < rows; ++r)
-      write_words(scope, base + (((r / 16) * 32 + r % 16) << 16),
-                  std::vector<uint32_t>(logical.begin() + r * n,
-                                        logical.begin() + (r + 1) * n));
-    return;
+    bool folded, const uint32_t *disable_lanes) {
+  // Masks select physical TMEM datapaths, not logical matrix rows. In Layout
+  // B, the two N halves occupy different datapaths; in Layout F, rows skip
+  // sixteen datapaths in each partition. Suppressed writes preserve D even
+  // when enable-input-d is false.
+  assert(logical.size() == rows * n);
+  const unsigned columns = folded ? n / 2 : n;
+  const unsigned physical_rows = folded ? 128 : rows;
+  for (unsigned r = 0; r < physical_rows; ++r) {
+    const unsigned lane = !folded && rows == 64 ? (r / 16) * 32 + r % 16 : r;
+    const unsigned absolute_lane = (base >> 16) + lane;
+    assert(absolute_lane < 128);
+    if (disable_lanes &&
+        (disable_lanes[absolute_lane / 32] & (1u << (absolute_lane % 32))))
+      continue;
+    const unsigned offset = folded ? (r % 64) * n + (r / 64) * columns : r * n;
+    write_words(scope, base + (lane << 16),
+                std::vector<uint32_t>(logical.begin() + offset,
+                                      logical.begin() + offset + columns));
   }
-  if (!folded) {
-    write_matrix_words(scope, base, logical, rows, n);
-    return;
-  }
-  std::vector<uint32_t> physical(rows * n);
-  for (unsigned r = 0; r < rows; ++r)
-    for (unsigned c = 0; c < n; ++c)
-      physical[(r + (c / (n / 2)) * 64) * (n / 2) + c % (n / 2)] =
-          logical[r * n + c];
-  write_matrix_words(scope, base, physical, 128, n / 2);
 }
 
 std::vector<uint8_t> tcgen05_tmem_manager_t::read_mxf4_scale_matrix(

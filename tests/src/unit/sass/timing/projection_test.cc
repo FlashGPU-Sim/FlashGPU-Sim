@@ -1341,3 +1341,21 @@ TEST(SassTimingProjectionTest, TmemCopyUsesCommonShapeTimingIndices) {
     EXPECT_EQ(projected.tcgen05_info.timing_index, expected[i]) << opcodes[i];
   }
 }
+
+TEST(SassTimingProjectionTest, DenseMmaProjectsWholeOutputMaskGroup) {
+  for (unsigned words : {2u, 4u, 8u}) {
+    const timing_instruction inst(official_instruction(
+        0,
+        words == 2   ? "UTCHMMA.WS"
+        : words == 8 ? "UTCHMMA.2CTA"
+                     : "UTCHMMA",
+        "gdesc[UR0],gdesc[UR2],tmem[UR4],tmem[UR5],idesc[UR6],UR12,!UP1"));
+    const std::vector<int> sources(inst.arch_reg.src,
+                                   inst.arch_reg.src + inst.incount);
+    for (unsigned i = 0; i < words; ++i)
+      EXPECT_NE(std::find(sources.begin(), sources.end(), 257 + 12 + i),
+                sources.end());
+    EXPECT_EQ(std::find(sources.begin(), sources.end(), 257 + 12 + words),
+              sources.end());
+  }
+}

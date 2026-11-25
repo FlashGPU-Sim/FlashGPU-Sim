@@ -676,3 +676,20 @@ TEST(Tcgen05Mma, MnMajor32ByteAtomsKeepAdjacentHalvesTogether) {
   d.start_address += 128;
   EXPECT_EQ(address(0, 0), 0x4a0u);
 }
+
+TEST(Tcgen05Mma, Tf32DescriptorAcceptsDenseKMajorAndRejectsOtherForms) {
+  for (unsigned m : {64u, 128u})
+    for (unsigned n : {8u, 64u, 256u}) {
+      const uint32_t raw =
+          ((m / 16) << 24) | ((n / 8) << 17) | 0x10 | (2u << 7) | (2u << 10);
+      EXPECT_TRUE(tcgen05_tf32_descriptor_supported(raw));
+      EXPECT_TRUE(tcgen05_tf32_descriptor_supported(raw | (3u << 13)));
+      for (unsigned bit : {0u, 2u, 3u, 6u, 15u, 16u, 23u, 29u, 30u, 31u})
+        EXPECT_FALSE(tcgen05_tf32_descriptor_supported(raw | (1u << bit)))
+            << bit;
+      EXPECT_FALSE(tcgen05_tf32_descriptor_supported(raw & ~(3u << 4)));
+      EXPECT_FALSE(tcgen05_tf32_descriptor_supported(raw & ~(7u << 7)));
+    }
+  EXPECT_FALSE(
+      tcgen05_tf32_descriptor_supported((16u << 24) | (8u << 17) | 0x910));
+}

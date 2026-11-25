@@ -1102,6 +1102,21 @@ void populate_registers(const instruction &source, timing_instruction &target) {
         source.operands[index].descriptor_register != kZeroUniformRegister)
       append_register(sources, operand_kind::kUniformRegister,
                       source.operands[index].descriptor_register + 1, false);
+    // Dense MMA's optional mask is an implicit group of four words per CTA.
+    if (base == "UTCHMMA" && source.operands.size() == 7 && index == 5) {
+      const auto &mask = source.operands[index];
+      const unsigned words = source.opcode == "UTCHMMA.WS"         ? 2
+                             : has_modifier(source.opcode, "2CTA") ? 8
+                                                                   : 4;
+      if (mask.kind != operand_kind::kUniformRegister ||
+          (mask.index != kZeroUniformRegister &&
+           mask.index + words > kZeroUniformRegister))
+        panic("Invalid MMA output-lane mask register span");
+      if (mask.index != kZeroUniformRegister)
+        for (unsigned word = 1; word < words; ++word)
+          append_register(sources, operand_kind::kUniformRegister,
+                          mask.index + word, false);
+    }
     // Block-scaled MMA encodes SFA/SFB as an implicit uniform-register pair.
     if ((base == "UTCQMMA" || base == "UTCOMMA") && index == 5)
       for (const auto &group : source.operands[index].address_groups)
