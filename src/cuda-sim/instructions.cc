@@ -4026,7 +4026,8 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
     flash_gpgpu_sim::abort_dsm_disabled("load", thread->get_hw_sid(), addr);
   if (!vector_spec) {
     mem->read(addr, size / 8, &data.s64);
-    if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
+    if (type == S8_TYPE || type == S16_TYPE || type == S32_TYPE)
+      sign_extend(data, size, dst);
     thread->set_operand_value(dst, data, type, thread, pI);
 
     if (type == F32_TYPE) {
