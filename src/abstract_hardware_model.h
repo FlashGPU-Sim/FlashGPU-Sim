@@ -32,6 +32,7 @@
 #ifndef ABSTRACT_HARDWARE_MODEL_INCLUDED
 #define ABSTRACT_HARDWARE_MODEL_INCLUDED
 #include "gpgpu-sim/flash/cta_reduction.h"
+#include "gpgpu-sim/flash/tcgen05/timing_metadata.h"
 
 // Forward declarations
 class gpgpu_sim;
@@ -1246,10 +1247,12 @@ public:
    operation_t operation = NONE;
    unsigned cta_group = 1;
    unsigned timing_index = 0;
+   bool ordinary_tmem_load = false;
  } tcgen05_info;
 
   struct tcgen05_dyn_info_t {
     uint64_t mma_work = 0;
+    flash_gpgpu_sim::tcgen05_mma_metadata mma;
   };
   void set_tcgen05_dyn_info(int laneid, const tcgen05_dyn_info_t &info) {
     tcgen05_dyn_info[laneid] = info;
@@ -1353,6 +1356,7 @@ class warp_inst_t : public inst_t {
     m_dsm_remote = false;
     m_smem_exposed = false;
     m_smem_got = 0;
+    m_smem_region_got[0] = m_smem_region_got[1] = 0;
     m_current_lane = 0;
     m_dsm_atomic_lanes.reset();
   }
@@ -1387,6 +1391,7 @@ class warp_inst_t : public inst_t {
     m_dsm_remote = false;
     m_smem_exposed = false;
     m_smem_got = 0;
+    m_smem_region_got[0] = m_smem_region_got[1] = 0;
     m_current_lane = 0;
     m_dsm_atomic_lanes.reset();
   }
@@ -1663,6 +1668,7 @@ class warp_inst_t : public inst_t {
   bool m_dsm_remote;
   bool m_smem_exposed;
   unsigned m_smem_got;
+  unsigned m_smem_region_got[2];
   bool is_dsm_remote() const { return m_dsm_remote; }
   void set_dsm_remote(bool remote) { m_dsm_remote = remote; }
 };

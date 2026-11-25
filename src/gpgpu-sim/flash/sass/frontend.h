@@ -1,6 +1,7 @@
 #ifndef FLASH_GPGPU_SIM_SASS_FRONTEND_H_
 #define FLASH_GPGPU_SIM_SASS_FRONTEND_H_
 
+#include "../tcgen05/timing_metadata.h"
 #include <array>
 #include <bitset>
 #include <cstddef>
@@ -209,10 +210,7 @@ struct functional_mbarrier_effect {
   uint16_t multicast_mask = 0;
 };
 
-struct functional_tcgen_shared_read {
-  uint32_t address;
-  unsigned bytes, rank;
-};
+using functional_tcgen_shared_read = tcgen05_shared_read;
 
 struct functional_tcgen_mma_effect {
   bool valid = false;
@@ -222,6 +220,7 @@ struct functional_tcgen_mma_effect {
   bool ws = false, tmem_a = false;
   unsigned shared_operand_bytes = 0;
   std::vector<functional_tcgen_shared_read> shared_reads;
+  tcgen05_mma_metadata timing;
 };
 
 struct functional_named_barrier_effect {

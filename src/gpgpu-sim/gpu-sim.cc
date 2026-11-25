@@ -1454,6 +1454,78 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Include register-A operand reads in WGMMA RF traffic tokens for RS "
       "WGMMA (default=0)",
       "0");
+  option_parser_register(opp, "-gpgpu_tcgen05_precision_timing", OPT_BOOL,
+                         &gpgpu_tcgen05_precision_timing,
+                         "Enable typed MMA service and paired-SM reservations",
+                         "0");
+  option_parser_register(opp, "-gpgpu_tcgen05_recurrence_b200", OPT_BOOL,
+                         &gpgpu_tcgen05_recurrence_b200,
+                         "Exact measured B200 owner recurrence; unknown forms "
+                         "use explicit fallback",
+                         "0");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_shared_operand_model", OPT_BOOL,
+      &gpgpu_tcgen05_shared_operand_model,
+      "Reserve TC read ports per 128KiB region; ordinary shared loads contend",
+      "0");
+  option_parser_register(opp, "-gpgpu_tmem_b200_load_timing", OPT_BOOL,
+                         &gpgpu_tmem_b200_load_timing,
+                         "Apply LD tables only to ordinary 32dp TMEM reads "
+                         "with SMSP-local service",
+                         "0");
+  option_parser_register(opp, "-ptx_opcode_tcgen05_mma_half_flops_per_cycle",
+                         OPT_UINT32, &tcgen05_mma_rates[0],
+                         "Half MMA rate, zero inherits legacy FP16", "0");
+  option_parser_register(opp, "-ptx_opcode_tcgen05_mma_tf32_flops_per_cycle",
+                         OPT_UINT32, &tcgen05_mma_rates[1],
+                         "TF32 MMA rate, zero inherits legacy FP16", "0");
+  option_parser_register(opp, "-ptx_opcode_tcgen05_mma_fp8_flops_per_cycle",
+                         OPT_UINT32, &tcgen05_mma_rates[2],
+                         "Dense FP8 MMA rate, zero inherits legacy FP16", "0");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_mma_mixed_flops_per_cycle", OPT_UINT32,
+      &tcgen05_mma_rates[3],
+      "Mixed block-scaled MMA rate, zero inherits legacy FP16", "0");
+  option_parser_register(opp, "-ptx_opcode_tcgen05_mma_fp4_flops_per_cycle",
+                         OPT_UINT32, &tcgen05_mma_rates[4],
+                         "Compact FP4 MMA rate, zero inherits legacy FP16",
+                         "0");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_owner_recurrence", OPT_UINT32,
+      &tcgen05_owner_recurrence[0],
+      "Unmeasured single-CTA owner recurrence fallback, zero disables", "0");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_owner_recurrence_cta2", OPT_UINT32,
+      &tcgen05_owner_recurrence[1],
+      "Unmeasured paired-CTA owner recurrence fallback, zero disables", "0");
+  option_parser_register(opp, "-gpgpu_tcgen05_owner_startup", OPT_UINT32,
+                         &tcgen05_owner_startup[0],
+                         "Single-CTA first owner completion startup", "0");
+  option_parser_register(opp, "-gpgpu_tcgen05_owner_startup_cta2", OPT_UINT32,
+                         &tcgen05_owner_startup[1],
+                         "Paired-CTA first owner completion startup", "0");
+  option_parser_register(opp, "-gpgpu_tcgen05_owner_issue_interval", OPT_UINT32,
+                         &tcgen05_owner_issue_interval,
+                         "Per-owner MMA admission interval", "0");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_owner_queue_depth", OPT_UINT32,
+      &tcgen05_owner_queue_depth[0],
+      "Single-CTA per-owner outstanding MMA limit, zero unlimited", "0");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_owner_queue_depth_cta2", OPT_UINT32,
+      &tcgen05_owner_queue_depth[1],
+      "Paired-CTA per-owner outstanding MMA limit, zero unlimited", "0");
+  option_parser_register(opp, "-gpgpu_tcgen05_shared_bytes_per_cycle",
+                         OPT_UINT32, &tcgen05_shared_bytes_per_cycle,
+                         "TC shared read path bytes per cycle", "128");
+  option_parser_register(opp, "-gpgpu_tcgen05_shared_bank_bytes_per_cycle",
+                         OPT_UINT32, &tcgen05_shared_bank_bytes_per_cycle,
+                         "Shared read bytes per cycle per 128KiB region",
+                         "128");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_ws_tmem_a_service_cycles", OPT_UINT32,
+      &tcgen05_ws_tmem_a_service_cycles,
+      "WS TMEM-A effective feed charge; not a general TMEM rate", "0");
   option_parser_register(
       opp, "-ptx_opcode_tcgen05_mma_issue_interval", OPT_UINT32,
       &ptx_opcode_tcgen05_mma_issue_interval,

@@ -727,6 +727,8 @@ timing_step_result timing_runtime::step(
     const auto &mma = context.tcgen_mma_effect;
     inst_t::tcgen05_dyn_info_t effect;
     effect.mma_work = 2ull * mma.m * mma.n * mma.k;
+    effect.mma = mma.timing;
+    tcgen05_account_shared(effect.mma, mma.shared_reads);
     dynamic_instruction.set_tcgen05_dyn_info(0, effect);
   }
   dynamic_instruction.reset_tma_dyn_info();

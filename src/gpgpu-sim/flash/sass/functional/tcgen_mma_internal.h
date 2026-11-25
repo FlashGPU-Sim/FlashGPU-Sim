@@ -14,26 +14,7 @@ inline bool shared_descriptor(uint64_t raw, tcgen05_shared_descriptor_t &desc,
   return true;
 }
 
-// Record physical shared addresses while the functional gather decodes the
-// descriptor. Coalesce adjacent bytes; packed FP4/FP6 overlapping scalar
-// reads must not double-charge the bytes shared by neighboring elements.
-struct mma_shared_reads {
-  std::vector<functional_tcgen_shared_read> reads;
-  bool new_operand = true;
-  void begin_operand() { new_operand = true; }
-  void add(uint32_t address, unsigned bytes, unsigned rank = 0) {
-    if (!new_operand && !reads.empty()) {
-      auto &last = reads.back();
-      if (last.rank == rank && address >= last.address &&
-          uint64_t(address) <= uint64_t(last.address) + last.bytes) {
-        last.bytes = std::max(last.bytes, address - last.address + bytes);
-        return;
-      }
-    }
-    new_operand = false;
-    reads.push_back({address, bytes, rank});
-  }
-};
+using mma_shared_reads = tcgen05_shared_reads;
 
 inline std::vector<uint32_t> read_accumulator(functional_tcgen_state &tm,
                                               uint32_t base, unsigned rows,

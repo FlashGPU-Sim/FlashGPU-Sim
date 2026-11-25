@@ -1261,6 +1261,11 @@ void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, in
     tcgen05_completed[i] += other.tcgen05_completed[i];
   }
   accumulate(tcgen05_backend_busy_cycles);
+  accumulate(tcgen05_recurrence_table_ops);
+  accumulate(tcgen05_recurrence_fallback_ops);
+  accumulate(tcgen05_shared_read_bytes);
+  accumulate(tcgen05_shared_read_cycles);
+  accumulate(tcgen05_lsu_read_denied_bytes);
   accumulate(tcgen05_queue_full_stall_cycles);
   accumulate(tcgen05_issue_interval_stall_cycles);
   accumulate(tcgen05_commit_wait_cycles);
@@ -1369,6 +1374,11 @@ void shader_core_stats::clear_accumulator() {
     tcgen05_completed[i] = 0;
   }
   accumulate(tcgen05_backend_busy_cycles);
+  accumulate(tcgen05_recurrence_table_ops);
+  accumulate(tcgen05_recurrence_fallback_ops);
+  accumulate(tcgen05_shared_read_bytes);
+  accumulate(tcgen05_shared_read_cycles);
+  accumulate(tcgen05_lsu_read_denied_bytes);
   accumulate(tcgen05_queue_full_stall_cycles);
   accumulate(tcgen05_issue_interval_stall_cycles);
   accumulate(tcgen05_commit_wait_cycles);
@@ -1519,6 +1529,14 @@ void shader_core_stats::print(FILE *fout) const {
             tcgen05_completed[i]);
   }
   fprintf(fout, "  backend_busy_cycles = %llu\n", tcgen05_backend_busy_cycles);
+  fprintf(fout, "  recurrence_table_ops = %llu\n",
+          tcgen05_recurrence_table_ops);
+  fprintf(fout, "  recurrence_fallback_ops = %llu\n",
+          tcgen05_recurrence_fallback_ops);
+  fprintf(fout, "  shared_read_bytes = %llu\n", tcgen05_shared_read_bytes);
+  fprintf(fout, "  shared_read_cycles = %llu\n", tcgen05_shared_read_cycles);
+  fprintf(fout, "  lsu_read_denied_bytes = %llu\n",
+          tcgen05_lsu_read_denied_bytes);
   fprintf(fout, "  queue_full_stall_cycles = %llu\n",
           tcgen05_queue_full_stall_cycles);
   fprintf(fout, "  issue_interval_stall_cycles = %llu\n",
@@ -1895,12 +1913,31 @@ static unsigned long long all_scheduler_issue_mask(unsigned num_sched) {
 }
 
 bool shader_core_ctx::tcgen05_frontend_available(
-    const warp_inst_t *inst, const active_mask_t &active_mask, uint64_t cycle) {
+    const warp_inst_t *inst, const active_mask_t &active_mask, uint64_t cycle,
+    unsigned warp_id, unsigned partition) {
   const int opcode = flash_gpgpu_sim::tcgen05_opcode(inst);
   if (!flash_gpgpu_sim::is_tcgen05_timing_data_op(opcode)) return true;
   if (!active_mask.any()) return true;
-  return m_tcgen05.can_enqueue(flash_gpgpu_sim::tcgen05_timing_kind(opcode),
-                              cycle);
+  if (opcode == TCGEN05_LD_OP || opcode == TCGEN05_ST_OP) {
+    const auto op = flash_gpgpu_sim::tcgen05_timing_op(inst, nullptr, m_config);
+    return m_tcgen05.can_enqueue(op.kind, cycle,
+                                 op.partitioned_mem ? partition : ~0u);
+  }
+  flash_gpgpu_sim::tcgen05_thread_stream_key_t owner;
+  owner.hw_cta_id = m_warp[warp_id]->get_cta_id();
+  owner.warp_id = warp_id;
+  const auto *ptx = dynamic_cast<const ptx_instruction *>(inst);
+  owner.cta_group = ptx ? flash_gpgpu_sim::tcgen05_cta_group(ptx)
+                        : inst->tcgen05_info.cta_group;
+  for (unsigned lane = 0; lane < m_config->warp_size; ++lane) {
+    if (!active_mask.test(lane)) continue;
+    owner.lane_id = lane;
+    if (!m_tcgen05.can_enqueue(flash_gpgpu_sim::tcgen05_timing_kind(opcode),
+                               cycle, ~0u, &owner))
+      return false;
+    if (!ptx) break;
+  }
+  return true;
 }
 
 static const inst_t::wgmma_static_info_t &wgmma_info(
@@ -2689,6 +2726,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       stream.warp_id = warp_id;
       const auto op = flash_gpgpu_sim::tcgen05_timing_op(
           next_inst, *pipe_reg, m_config);
+      stream.partition = sch_id;
       m_tcgen05.enqueue_warp_mem_op(stream, op, now);
       if (!next_ptx_inst)
         m_warp[warp_id]->instruction_dependency_hold_write_barrier_until(
@@ -2709,7 +2747,42 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
         const auto op = flash_gpgpu_sim::tcgen05_timing_op(
             next_inst, next_ptx_inst ? tcgen05_dyn_inst : *pipe_reg,
             m_config, next_ptx_inst ? lane : 0);
-        m_tcgen05.enqueue_thread_op(stream, op, now);
+        shader_core_ctx *peer = nullptr;
+        if (op.kind == flash_gpgpu_sim::TCGEN05_TIMING_MMA &&
+            stream.cta_group == 2 && m_config->gpgpu_tcgen05_precision_timing) {
+          flash_gpgpu_sim::tb_cluster_target_t target;
+          const unsigned rank = get_cta_cluster_rank(cta_id) ^ 1u;
+          if (!flash_gpgpu_sim::resolve_tb_cluster_rank(this, cta_id, rank,
+                                                        &target))
+            flash_gpgpu_sim::abort_tb_cluster_dead_rank(rank, m_sid, cta_id);
+          peer = target.core;
+          assert(peer != this && peer->get_cluster() == m_cluster);
+        }
+        std::function<uint64_t(uint64_t)> feed;
+        if (op.kind == flash_gpgpu_sim::TCGEN05_TIMING_MMA &&
+            m_config->gpgpu_tcgen05_shared_operand_model) {
+          feed = [&, peer](uint64_t start) {
+            uint64_t done = start;
+            shader_core_ctx *cores[2] = {this, peer};
+            for (unsigned r = 0; r < stream.cta_group; ++r) {
+              const unsigned rank =
+                  stream.cta_group == 2
+                      ? r ^ (get_cta_cluster_rank(cta_id) & 1u)
+                      : 0;
+              const auto finish = cores[r]->m_tc_shared_calendar.reserve(
+                  start,
+                  {op.mma.shared_bytes[rank][0], op.mma.shared_bytes[rank][1]},
+                  m_config->tcgen05_shared_bytes_per_cycle,
+                  m_config->tcgen05_shared_bank_bytes_per_cycle);
+              done = std::max<uint64_t>(done, finish);
+            }
+            if (op.mma.ws && op.mma.tmem_a)
+              done += m_config->tcgen05_ws_tmem_a_service_cycles;
+            return done;
+          };
+        }
+        m_tcgen05.enqueue_thread_op(stream, op, now,
+                                    peer ? &peer->m_tcgen05 : nullptr, feed);
         if (!next_ptx_inst) break;
       }
     }
@@ -3556,7 +3629,9 @@ void scheduler_unit::cycle() {
                   bool tensor_core_pipe_avail =
                       (m_shader->m_config->gpgpu_num_tensor_core_units > 0) &&
                       m_tensor_core_out->has_free(
-                          m_shader->m_config->sub_core_model, m_id) && m_shader->tcgen05_frontend_available(pI, active_mask, issue_cycle);
+                          m_shader->m_config->sub_core_model, m_id) &&
+                      m_shader->tcgen05_frontend_available(
+                          pI, active_mask, issue_cycle, warp_id, m_id);
                   const bool tensor_scheduler_avail =
                       m_shader->tensor_core_scheduler_can_issue(*pI, m_id,
                                                                 issue_cycle);
@@ -4296,6 +4371,8 @@ void shader_core_ctx::execute() {
 #define ACCUMULATE_TCGEN05_STAT(name) \
   m_stats->tcgen05_##name += tcgen05_stats.name - m_tcgen05_last_stats.name
   ACCUMULATE_TCGEN05_STAT(backend_busy_cycles);
+  ACCUMULATE_TCGEN05_STAT(recurrence_table_ops);
+  ACCUMULATE_TCGEN05_STAT(recurrence_fallback_ops);
   ACCUMULATE_TCGEN05_STAT(queue_full_stall_cycles);
   ACCUMULATE_TCGEN05_STAT(issue_interval_stall_cycles);
   ACCUMULATE_TCGEN05_STAT(commit_wait_cycles);
@@ -4562,7 +4639,10 @@ bool ldst_unit::shared_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
     m_stats->gpgpu_n_shmem_bank_access[m_sid]++;
   }
 
-  bool stall = inst.dispatch_delay();
+  const bool tc_ports =
+      m_core->get_config()->gpgpu_tcgen05_shared_operand_model &&
+      inst.is_load() && !inst.isatomic() && !inst.is_dsm_remote();
+  bool stall = tc_ports ? false : inst.dispatch_delay();
   if (!stall && !inst.empty() && inst.is_dsm_remote() &&
       m_core->get_config()->gpgpu_dsm_enable && m_core->get_cluster() &&
       m_core->get_cluster()->dsm_warp_busy(m_core->get_sid(), inst.warp_id()))
@@ -4571,17 +4651,43 @@ bool ldst_unit::shared_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
     unsigned bytes =
         inst.active_count() * (inst.data_size ? inst.data_size : 4u);
     if (!bytes) bytes = 4;
-    auto &svc = m_core->smem_service();
-    if (!inst.m_smem_exposed) {
-      svc.expose(shared_memory_service_t::LSU, bytes);
-      inst.m_smem_exposed = true;
-      stall = true;
+    if (tc_ports) {
+      unsigned regions[2] = {};
+      for (unsigned lane = 0; lane < 32; ++lane)
+        if (inst.active(lane)) {
+          const auto part = flash_gpgpu_sim::shared_bandwidth_t::split(
+              inst.get_addr(lane), inst.data_size ? inst.data_size : 4,
+              128 * 1024);
+          for (unsigned half = 0; half < 2; ++half) regions[half] += part[half];
+        }
+      unsigned granted = 0;
+      for (unsigned half = 0; half < 2; ++half) {
+        const unsigned need = regions[half] - inst.m_smem_region_got[half];
+        const unsigned part = m_core->consume_tc_shared_read(half, need);
+        inst.m_smem_region_got[half] += part;
+        granted += part;
+        if (inst.m_smem_region_got[half] < regions[half]) stall = true;
+      }
+      // Bank/data dispatch and byte supply describe the same transfer.
+      // Do not charge wide LDS wavefronts a second time after dispatch.
+      // A fully denied transfer cannot advance a data-service cycle.
+      if (granted || !stall) {
+        const bool dispatch_pending = inst.dispatch_delay();
+        stall = stall || dispatch_pending;
+      }
     } else {
-      unsigned need = bytes - inst.m_smem_got;
-      inst.m_smem_got += svc.take(shared_memory_service_t::LSU, need);
-      if (inst.m_smem_got < bytes) {
-        svc.expose(shared_memory_service_t::LSU, bytes - inst.m_smem_got);
+      auto &svc = m_core->smem_service();
+      if (!inst.m_smem_exposed) {
+        svc.expose(shared_memory_service_t::LSU, bytes);
+        inst.m_smem_exposed = true;
         stall = true;
+      } else {
+        unsigned need = bytes - inst.m_smem_got;
+        inst.m_smem_got += svc.take(shared_memory_service_t::LSU, need);
+        if (inst.m_smem_got < bytes) {
+          svc.expose(shared_memory_service_t::LSU, bytes - inst.m_smem_got);
+          stall = true;
+        }
       }
     }
   }
@@ -8566,6 +8672,38 @@ void simt_core_cluster::aggregate_stats() {
                                       m_cluster_id);
   m_aggregate_stats->aggregate(*m_stats, sm_lhs, sm_rhs);
 #endif
+}
+
+void shader_core_ctx::smem_cycle() {
+  m_smem.cycle();
+  m_tc_shared_ports.reset();
+  if (m_config->gpgpu_tcgen05_shared_operand_model) {
+    const auto bytes = m_tc_shared_calendar.take(m_gpu->gpu_tot_sim_cycle +
+                                                 m_gpu->gpu_sim_cycle);
+    m_stats->tcgen05_shared_read_bytes += bytes[0] + bytes[1];
+    m_stats->tcgen05_shared_read_cycles += bool(bytes[0] || bytes[1]);
+    const bool ok = m_tc_shared_ports.consume(
+        flash_gpgpu_sim::shared_bandwidth_t::TC, false, bytes,
+        m_config->tcgen05_shared_bytes_per_cycle,
+        m_config->tcgen05_shared_bank_bytes_per_cycle);
+    assert(ok);
+  }
+}
+unsigned shader_core_ctx::consume_tc_shared_read(unsigned half,
+                                                 unsigned bytes) {
+  using budget = flash_gpgpu_sim::shared_bandwidth_t;
+  const unsigned path_cap = m_config->gpgpu_shmem_bytes_per_cycle;
+  const unsigned bank_cap = m_config->tcgen05_shared_bank_bytes_per_cycle;
+  const unsigned without_port_limit = std::min(
+      bytes, std::min(budget::remaining(path_cap,
+                                        m_tc_shared_ports.paths[budget::LSU]),
+                      bank_cap ? bank_cap : ~0u));
+  const unsigned grant = m_tc_shared_ports.consume_up_to(
+      budget::LSU, false, half, bytes, path_cap, bank_cap);
+  // Per-attempt service lost to the shared read-port limit, not unique
+  // payload bytes. Includes earlier LSU use as well as TC reservations.
+  m_stats->tcgen05_lsu_read_denied_bytes += without_port_limit - grant;
+  return grant;
 }
 
 void simt_core_cluster::core_cycle() {

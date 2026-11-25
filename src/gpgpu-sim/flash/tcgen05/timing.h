@@ -1,7 +1,10 @@
 #ifndef FLASH_GPGPU_SIM_TCGEN05_TIMING_H
 #define FLASH_GPGPU_SIM_TCGEN05_TIMING_H
 
+#include "timing_metadata.h"
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <limits>
 #include <map>
 #include <vector>
@@ -29,6 +32,7 @@ struct tcgen05_thread_stream_key_t {
 struct tcgen05_warp_stream_key_t {
   unsigned hw_cta_id = 0;
   unsigned warp_id = 0;
+  unsigned partition = 0;
 
   bool operator<(const tcgen05_warp_stream_key_t &other) const;
 };
@@ -38,6 +42,13 @@ struct tcgen05_timing_config_t {
   unsigned mma_completion_tail_latency = 0;
   unsigned mma_f16_flops_per_cycle = 1;
   unsigned async_queue_depth = 0;
+  bool mma_precision_timing = false;
+  bool b200_recurrence = false;
+  unsigned mma_rates[5] = {}; // zero inherits the legacy FP16 rate
+  unsigned owner_recurrence[2] = {};
+  unsigned owner_startup[2] = {};
+  unsigned owner_issue_interval = 0;
+  unsigned owner_queue_depth[2] = {};
 };
 
 struct tcgen05_op_t {
@@ -45,6 +56,8 @@ struct tcgen05_op_t {
   uint64_t work = 0;
   unsigned completion_latency = 1;
   unsigned initiation_interval = 1;
+  bool partitioned_mem = false;
+  tcgen05_mma_metadata mma;
 };
 
 struct tcgen05_completion_event_t {
@@ -67,6 +80,7 @@ struct tcgen05_timing_stats_t {
   uint64_t ld_wait_cycles = 0;
   uint64_t st_wait_cycles = 0;
   unsigned max_queue_occupancy = 0;
+  uint64_t recurrence_table_ops = 0, recurrence_fallback_ops = 0;
 };
 
 // Per-SM TCGen05 asynchronous timing state. Functional data updates remain in
@@ -75,9 +89,13 @@ class tcgen05_unit_t {
 public:
   explicit tcgen05_unit_t(const tcgen05_timing_config_t &config);
 
-  bool can_enqueue(tcgen05_op_kind_t kind, uint64_t cycle);
+  bool can_enqueue(tcgen05_op_kind_t kind, uint64_t cycle,
+                   unsigned partition = ~0u,
+                   const tcgen05_thread_stream_key_t *owner = nullptr);
   uint64_t enqueue_thread_op(const tcgen05_thread_stream_key_t &stream,
-                             const tcgen05_op_t &op, uint64_t cycle);
+                             const tcgen05_op_t &op, uint64_t cycle,
+                             tcgen05_unit_t *peer = nullptr,
+                             std::function<uint64_t(uint64_t)> feed = {});
   uint64_t enqueue_warp_mem_op(const tcgen05_warp_stream_key_t &stream,
                                const tcgen05_op_t &op, uint64_t cycle);
 
@@ -125,6 +143,16 @@ private:
                               tcgen05_op_kind_t kind) const;
   void resolve_controls();
 
+  uint64_t schedule_mma(const tcgen05_thread_stream_key_t &,
+                        const tcgen05_op_t &, uint64_t cycle,
+                        tcgen05_unit_t *peer,
+                        const std::function<uint64_t(uint64_t)> &feed);
+  void reserve_compute(uint64_t start, uint64_t compute_done,
+                       uint64_t service_done, uint64_t issue_cycle);
+  uint64_t m_last_cycle_tick = ~uint64_t(0);
+  std::deque<std::pair<uint64_t, uint64_t>> m_compute_windows;
+  std::map<tcgen05_thread_stream_key_t, uint64_t> m_owner_done, m_owner_issue;
+  std::map<unsigned, uint64_t> m_mem_next_issue;
   tcgen05_timing_config_t m_config;
   std::vector<pending_op_t> m_pending_ops;
   std::vector<pending_commit_t> m_pending_commits;

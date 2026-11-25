@@ -522,6 +522,17 @@ tcgen05_timing_config(const shader_core_config *config) {
   result.mma_f16_flops_per_cycle =
       config->ptx_opcode_tcgen05_mma_f16_flops_per_cycle;
   result.async_queue_depth = config->gpgpu_tcgen05_async_queue_depth;
+  result.mma_precision_timing = config->gpgpu_tcgen05_precision_timing;
+  result.b200_recurrence = config->gpgpu_tcgen05_recurrence_b200;
+  std::copy(config->tcgen05_mma_rates, config->tcgen05_mma_rates + 5,
+            result.mma_rates);
+  std::copy(config->tcgen05_owner_recurrence,
+            config->tcgen05_owner_recurrence + 2, result.owner_recurrence);
+  std::copy(config->tcgen05_owner_startup, config->tcgen05_owner_startup + 2,
+            result.owner_startup);
+  std::copy(config->tcgen05_owner_queue_depth,
+            config->tcgen05_owner_queue_depth + 2, result.owner_queue_depth);
+  result.owner_issue_interval = config->tcgen05_owner_issue_interval;
   return result;
 }
 
@@ -615,6 +626,7 @@ tcgen05_op_t tcgen05_timing_op(const warp_inst_t *inst,
   if (opcode == TCGEN05_MMA_OP) {
     assert(dynamic_inst != NULL);
     op.work = dynamic_inst->get_tcgen05_dyn_info(lane).mma_work;
+    op.mma = dynamic_inst->get_tcgen05_dyn_info(lane).mma;
     assert(op.work != 0);
   } else if (opcode == TCGEN05_CP_OP) {
     const unsigned index =
@@ -637,6 +649,15 @@ tcgen05_op_t tcgen05_timing_op(const warp_inst_t *inst,
     if (opcode == TCGEN05_LD_OP) {
       op.completion_latency = config->tcgen05_ld_completion_latency[index];
       op.initiation_interval = config->tcgen05_ld_initiation_interval[index];
+      if (config->gpgpu_tmem_b200_load_timing) {
+        const bool ordinary =
+            ptx ? tcgen05_has_option(ptx, TCGEN05_32X32B_OPTION) &&
+                      !tcgen05_has_option(ptx, TCGEN05_PACK_16B_OPTION)
+                : inst->tcgen05_info.ordinary_tmem_load;
+        op.partitioned_mem = ordinary;
+        if (!ordinary)
+          op.completion_latency = op.initiation_interval = 1;
+      }
     } else {
       op.completion_latency = config->tcgen05_st_completion_latency[index];
       op.initiation_interval = config->tcgen05_st_initiation_interval[index];

@@ -532,6 +532,9 @@ void classify(const instruction &source, const timing_profile &profile,
     target.latency = target.initiation_interval = 1;
   } else if (base == "LDTM" || base == "STTM") {
     unsigned words = tmem_transfer_words(source.opcode);
+    target.tcgen05_info.ordinary_tmem_load =
+        source.opcode == "LDTM" ||
+        source.opcode == "LDTM.x" + std::to_string(words);
     if (!words)
       panic("unqualified native TMEM transfer");
     target.tcgen05_info.operation =

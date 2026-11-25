@@ -72,6 +72,8 @@ step_result dense_fp8_mma(const instruction &inst, warp_state &state,
       input, accumulate);
   tm.memory.write_matrix_words({0, 0}, destination, output, m, n);
   context.tcgen_mma_effect = {true, true, m, n, 32, 1};
+  context.tcgen_mma_effect.timing =
+      tcgen05_metadata(tcgen05_mma_kind::fp8, desc);
   context.tcgen_mma_effect.shared_reads = std::move(shared_reads.reads);
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -162,6 +164,8 @@ step_result fp4_mma(const instruction &inst, warp_state &state,
                                             input, accumulate);
   tm.memory.write_matrix_words({0, 0}, destination, out, m, n);
   context.tcgen_mma_effect = {true, true, m, n, mma_k, 1, true};
+  context.tcgen_mma_effect.timing =
+      tcgen05_metadata(tcgen05_mma_kind::fp4, desc);
   context.tcgen_mma_effect.shared_reads = std::move(shared_reads.reads);
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -307,6 +311,8 @@ step_result mixed_mma(const instruction &inst, warp_state &state,
                       local_m, n, folded);
   }
   context.tcgen_mma_effect = {true, true, desc.m, desc.n, desc.k, group};
+  context.tcgen_mma_effect.timing =
+      tcgen05_metadata(tcgen05_mma_kind::mixed, desc, group);
   context.tcgen_mma_effect.shared_reads = std::move(shared_reads.reads);
   advance(inst, state);
   return {step_status::kAdvanced, {}};

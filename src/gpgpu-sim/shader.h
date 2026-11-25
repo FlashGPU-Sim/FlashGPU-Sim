@@ -49,6 +49,7 @@
 #include <utility>
 #include <vector>
 #include "flash/clc.h"
+#include "flash/shared_bandwidth.h"
 
 // Complete type required for std::unique_ptr destructor of dsm_fabric_t /
 // dsm_endpoint_protocol_t.
@@ -2255,6 +2256,11 @@ class shader_core_config : public core_config {
              "<depth,startup_gap,fast_gap,slow_gap,reset_gap>\n");
       abort();
     }
+    if (gpgpu_tcgen05_shared_operand_model && !gpgpu_tcgen05_precision_timing) {
+      fprintf(stderr,
+              "TCGen05 shared operand timing requires precision timing\n");
+      abort();
+    }
     int tcgen05_cp_latency_ntok = sscanf(
         ptx_opcode_tcgen05_cp_completion_latency, "%u,%u,%u,%u,%u",
         &tcgen05_cp_completion_latency[0], &tcgen05_cp_completion_latency[1],
@@ -2670,6 +2676,13 @@ class shader_core_config : public core_config {
   bool gpgpu_wgmma_rf_ordinary_read_priority = false;
   bool gpgpu_wgmma_rf_traffic_assume_accumulate;
   bool gpgpu_wgmma_rf_traffic_include_rs_a;
+  bool gpgpu_tcgen05_precision_timing, gpgpu_tcgen05_recurrence_b200;
+  bool gpgpu_tcgen05_shared_operand_model, gpgpu_tmem_b200_load_timing;
+  unsigned tcgen05_mma_rates[5];
+  unsigned tcgen05_owner_recurrence[2], tcgen05_owner_startup[2];
+  unsigned tcgen05_owner_issue_interval, tcgen05_owner_queue_depth[2];
+  unsigned tcgen05_shared_bytes_per_cycle, tcgen05_shared_bank_bytes_per_cycle;
+  unsigned tcgen05_ws_tmem_a_service_cycles;
   unsigned int ptx_opcode_tcgen05_mma_issue_interval;
   unsigned int ptx_opcode_tcgen05_mma_completion_tail_latency;
   unsigned int ptx_opcode_tcgen05_mma_f16_flops_per_cycle;
@@ -2898,6 +2911,11 @@ struct shader_core_stats_pod {
   unsigned long long tcgen05_issued[flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT];
   unsigned long long tcgen05_completed[flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT];
   unsigned long long tcgen05_backend_busy_cycles;
+  unsigned long long tcgen05_recurrence_table_ops;
+  unsigned long long tcgen05_recurrence_fallback_ops;
+  unsigned long long tcgen05_shared_read_bytes;
+  unsigned long long tcgen05_shared_read_cycles;
+  unsigned long long tcgen05_lsu_read_denied_bytes;
   unsigned long long tcgen05_queue_full_stall_cycles;
   unsigned long long tcgen05_issue_interval_stall_cycles;
   unsigned long long tcgen05_commit_wait_cycles;
@@ -3382,7 +3400,8 @@ class shader_core_ctx : public core_t {
   void dsm_note_lane_op(flash_gpgpu_sim::dsm_lane_op_t op);
   void dsm_issue_lane_ops(warp_inst_t &inst);
   shared_memory_service_t &smem_service() { return m_smem; }
-  void smem_cycle() { m_smem.cycle(); }
+  void smem_cycle();
+  unsigned consume_tc_shared_read(unsigned half, unsigned bytes);
 
   // Complete pending mbarrier tx on this SM's CTA if armed (cluster peer path).
   void try_complete_cluster_peer_mbarrier(unsigned hw_cta_id,
@@ -3754,7 +3773,8 @@ class shader_core_ctx : public core_t {
   }
   bool tcgen05_frontend_available(const warp_inst_t *inst,
                                   const active_mask_t &active_mask,
-                                  uint64_t cycle);
+                                  uint64_t cycle, unsigned warp_id,
+                                  unsigned partition);
   unsigned wgmma_cta_warpgroup_id(unsigned warp_id) const;
   bool wgmma_issued_this_cycle() const { return m_wgmma_issued_this_cycle; }
   void mark_scheduler_issued(unsigned sch_id);
@@ -3961,6 +3981,8 @@ class shader_core_ctx : public core_t {
 
   // TMA support.
   flash_gpgpu_sim::tma_unit_t *m_tma = nullptr;
+  flash_gpgpu_sim::shared_bandwidth_t m_tc_shared_ports;
+  flash_gpgpu_sim::tc_shared_calendar_t m_tc_shared_calendar;
   shared_memory_service_t m_smem;
 
   // used for local address mapping with single kernel launch

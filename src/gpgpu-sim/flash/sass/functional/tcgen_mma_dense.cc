@@ -67,6 +67,13 @@ step_result tf32_tmem_mma(const instruction &inst, warp_state &state,
         std::vector<uint32_t>(output.begin() + row * n,
                               output.begin() + (row + 1) * n));
   context.tcgen_mma_effect = {true, false, m, n, 8, 1};
+  tcgen05_mma_descriptor_t timing_desc{};
+  timing_desc.m = m;
+  timing_desc.n = n;
+  timing_desc.k = 8;
+  timing_desc.d_type = 1;
+  context.tcgen_mma_effect.timing =
+      tcgen05_metadata(tcgen05_mma_kind::tf32, timing_desc, 1, true);
   context.tcgen_mma_effect.tmem_a = true;
   context.tcgen_mma_effect.shared_reads = std::move(shared_reads.reads);
   advance(inst, state);
@@ -214,6 +221,8 @@ step_result half_mma(const instruction &inst, warp_state &state,
                       local_m, n, folded);
   }
   context.tcgen_mma_effect = {true, false, desc.m, desc.n, desc.k, group};
+  context.tcgen_mma_effect.timing = tcgen05_metadata(
+      tcgen05_mma_kind::half, desc, group, tmem_a, ws, collector.reuses());
   context.tcgen_mma_effect.shared_reads = std::move(shared_reads.reads);
   // Reused B comes from the collector; it produces no shared-memory reads.
   context.tcgen_mma_effect.ws = ws;

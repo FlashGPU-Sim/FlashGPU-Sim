@@ -58,6 +58,7 @@ static void tcgen05_check_disable_output_lane_zero(const operand_info &op,
 
 static void tcgen05_mma_mixed_ptx(const ptx_instruction *inst,
                                   ptx_thread_info *thread) {
+  tcgen05_shared_reads shared_reads;
   assert(inst->get_num_operands() == 7);
   assert(tcgen05_has_option(inst, TCGEN05_BLOCK_SCALE_OPTION));
   assert(!tcgen05_has_option(inst, TCGEN05_BLOCK16_OPTION) &&
@@ -85,12 +86,14 @@ static void tcgen05_mma_mixed_ptx(const ptx_instruction *inst,
       tcgen05_read_enable_input_d(inst->operand_lookup(6), thread);
   auto read_input = [&](unsigned operand, unsigned rows, uint8_t format,
                         unsigned rank) {
+    shared_reads.begin_operand();
     const auto sd = tcgen05_decode_mma_shared_descriptor(
         tcgen05_read_u64_operand(inst, thread, operand).u64);
     std::vector<uint8_t> values(rows * desc.k);
     const bool ok = tcgen05_gather_mixed_partition(
         sd, rows, desc.k, format, false, 0, values,
         [&](unsigned, uint32_t address, void *dst, unsigned bytes) {
+          shared_reads.add(address, bytes, rank);
           targets[rank].smem->read(address, bytes, dst);
           return true;
         });
@@ -126,6 +129,8 @@ static void tcgen05_mma_mixed_ptx(const ptx_instruction *inst,
   }
   inst_t::tcgen05_dyn_info_t timing;
   timing.mma_work = 2ull * desc.m * desc.n * desc.k;
+  timing.mma = tcgen05_metadata(tcgen05_mma_kind::mixed, desc, group);
+  tcgen05_account_shared(timing.mma, shared_reads.reads);
   const_cast<ptx_instruction *>(inst)->set_tcgen05_dyn_info(
       thread->get_laneid(), timing);
 }
@@ -134,6 +139,7 @@ static void tcgen05_mma_mixed_ptx(const ptx_instruction *inst,
 // numerical backend as native UTCOMMA. SM107 and CTA2 stay separately gated.
 static void tcgen05_mma_mxf4_ptx(const ptx_instruction *inst,
                                  ptx_thread_info *thread) {
+  tcgen05_shared_reads shared_reads;
   tcgen05_assert_cta_group1(inst);
   assert(inst->get_num_operands() == 7 &&
          tcgen05_has_option(inst, TCGEN05_BLOCK_SCALE_OPTION) &&
@@ -153,12 +159,14 @@ static void tcgen05_mma_mxf4_ptx(const ptx_instruction *inst,
   const bool accumulate =
       tcgen05_read_enable_input_d(inst->operand_lookup(6), thread);
   auto read = [&](unsigned operand, unsigned rows) {
+    shared_reads.begin_operand();
     const auto sd = tcgen05_decode_mma_shared_descriptor(
         tcgen05_read_u64_operand(inst, thread, operand).u64);
     std::vector<uint8_t> values;
     const bool ok = tcgen05_gather_fp4(
         sd, rows, desc.k, values,
         [&](unsigned, uint32_t address, void *dst, unsigned bytes) {
+          shared_reads.add(address, bytes);
           thread->m_shared_mem->read(address, bytes, dst);
           return true;
         });
@@ -178,6 +186,8 @@ static void tcgen05_mma_mxf4_ptx(const ptx_instruction *inst,
   manager.write_matrix_words(scope, dst, output, desc.m, desc.n);
   inst_t::tcgen05_dyn_info_t timing;
   timing.mma_work = 2ull * desc.m * desc.n * desc.k;
+  timing.mma = tcgen05_metadata(tcgen05_mma_kind::fp4, desc);
+  tcgen05_account_shared(timing.mma, shared_reads.reads);
   const_cast<ptx_instruction *>(inst)->set_tcgen05_dyn_info(
       thread->get_laneid(), timing);
 }
@@ -185,6 +195,7 @@ static void tcgen05_mma_mxf4_ptx(const ptx_instruction *inst,
 // PTX adapter for the same qualified TF32 TS forms as native UTCHMMA.
 static void tcgen05_mma_tf32_ptx(const ptx_instruction *inst,
                                  ptx_thread_info *thread) {
+  tcgen05_shared_reads shared_reads;
   tcgen05_assert_cta_group1(inst);
   assert(inst->operand_lookup(1).is_memory_operand() &&
          "TF32 shared-A form has not been qualified");
@@ -227,6 +238,7 @@ static void tcgen05_mma_tf32_ptx(const ptx_instruction *inst,
     for (unsigned k = 0; k < 8; ++k) {
       const auto address =
           tcgen05_shared_k_major_packed_byte_address(bd, col, k * 4, 32);
+      shared_reads.add(address, 4);
       thread->m_shared_mem->read(address, 4, &b[col * 8 + k]);
     }
   const auto out = tcgen05_mma_tf32_compute_words(
@@ -239,12 +251,20 @@ static void tcgen05_mma_tf32_ptx(const ptx_instruction *inst,
   }
   inst_t::tcgen05_dyn_info_t timing;
   timing.mma_work = 2ull * m * n * 8;
+  tcgen05_mma_descriptor_t desc{};
+  desc.m = m;
+  desc.n = n;
+  desc.k = 8;
+  desc.d_type = 1;
+  timing.mma = tcgen05_metadata(tcgen05_mma_kind::tf32, desc, 1, true);
+  tcgen05_account_shared(timing.mma, shared_reads.reads);
   const_cast<ptx_instruction *>(inst)->set_tcgen05_dyn_info(
       thread->get_laneid(), timing);
 }
 
 static void tcgen05_mma_fp8_ptx(const ptx_instruction *inst,
                                 ptx_thread_info *thread) {
+  tcgen05_shared_reads shared_reads;
   tcgen05_assert_cta_group1(inst);
   assert(inst->get_num_operands() == 5);
   assert(!inst->operand_lookup(1).is_memory_operand());
@@ -257,12 +277,14 @@ static void tcgen05_mma_fp8_ptx(const ptx_instruction *inst,
   const bool accumulate =
       tcgen05_read_enable_input_d(inst->operand_lookup(4), thread);
   auto gather = [&](unsigned operand, unsigned rows) {
+    shared_reads.begin_operand();
     const auto sd = tcgen05_decode_mma_shared_descriptor(
         tcgen05_read_u64_operand(inst, thread, operand).u64);
     std::vector<uint8_t> values;
     const bool ok = tcgen05_gather_shared(
         sd, rows, 32, 1, false, values,
         [&](unsigned, uint32_t address, void *dst, unsigned bytes) {
+          shared_reads.add(address, bytes);
           thread->m_shared_mem->read(address, bytes, dst);
           return true;
         });
@@ -279,6 +301,8 @@ static void tcgen05_mma_fp8_ptx(const ptx_instruction *inst,
   tm.write_matrix_words(scope, destination, output, desc.m, desc.n);
   inst_t::tcgen05_dyn_info_t timing;
   timing.mma_work = 2ull * desc.m * desc.n * desc.k;
+  timing.mma = tcgen05_metadata(tcgen05_mma_kind::fp8, desc);
+  tcgen05_account_shared(timing.mma, shared_reads.reads);
   const_cast<ptx_instruction *>(inst)->set_tcgen05_dyn_info(
       thread->get_laneid(), timing);
 }
@@ -347,10 +371,10 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   flash_gpgpu_sim::tcgen05_mma_descriptor_t mma_desc =
       flash_gpgpu_sim::tcgen05_decode_f16_mma_descriptor(
           tcgen05_read_operand(pI, thread, 3).u32, tcgen05_cta_group(pI), ws);
+  tcgen05_shared_reads shared_reads;
   inst_t::tcgen05_dyn_info_t perf_info;
   perf_info.mma_work = 2ULL * mma_desc.m * mma_desc.n * mma_desc.k;
-  const_cast<ptx_instruction *>(pI)->set_tcgen05_dyn_info(thread->get_laneid(),
-                                                          perf_info);
+
   uint64_t a_desc_value = 0;
   if (!a_desc_op.is_memory_operand()) {
     a_desc_value = tcgen05_read_u64_operand(pI, thread, 1).u64;
@@ -383,10 +407,12 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
   };
   auto gather_shared = [&](const tcgen05_shared_descriptor_t &sd, unsigned rows,
                            bool transpose) {
+    shared_reads.begin_operand();
     std::vector<uint16_t> values;
     const bool ok = tcgen05_gather_shared(
         sd, rows, mma_desc.k, group, transpose, values,
         [&](unsigned rank, uint32_t address, void *dst, unsigned bytes) {
+          shared_reads.add(address, bytes, rank);
           targets[rank].smem->read(address, bytes, dst);
           return true;
         });
@@ -441,6 +467,12 @@ void handle_tcgen05_mma_inst(const ptx_instruction *pI,
         std::vector<uint32_t>(begin, begin + local_m * mma_desc.n), local_m,
         mma_desc.n, folded);
   }
+  perf_info.mma =
+      tcgen05_metadata(tcgen05_mma_kind::half, mma_desc, group,
+                       a_desc_op.is_memory_operand(), ws, collector.reuses());
+  tcgen05_account_shared(perf_info.mma, shared_reads.reads);
+  const_cast<ptx_instruction *>(pI)->set_tcgen05_dyn_info(thread->get_laneid(),
+                                                          perf_info);
 }
 
 } // namespace flash_gpgpu_sim

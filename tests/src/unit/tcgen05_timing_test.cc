@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "gpgpu-sim/flash/shared_bandwidth.h"
 #include "gpgpu-sim/flash/tcgen05/timing.h"
 
 using namespace flash_gpgpu_sim;
@@ -182,4 +183,196 @@ TEST(Tcgen05TimingTest, MulticastCommitRetainsMaskAndCtaGroupCutoff) {
   EXPECT_EQ(events[0].mbarrier_addr, 0x180u);
   unit.cycle(10);
   EXPECT_TRUE(unit.take_completion_events().empty());
+}
+
+namespace {
+tcgen05_timing_config_t b200_timing() {
+  tcgen05_timing_config_t c;
+  c.mma_precision_timing = true;
+  c.b200_recurrence = true;
+  c.mma_f16_flops_per_cycle = 8192;
+  unsigned rates[] = {8192, 4096, 16384, 16384, 32768};
+  std::copy(rates, rates + 5, c.mma_rates);
+  return c;
+}
+tcgen05_op_t measured_mma(tcgen05_mma_kind kind, tcgen05_native_profile profile,
+                          unsigned k, unsigned n = 64) {
+  auto op = mma(2ull * 128 * n * k);
+  op.mma.kind = kind;
+  op.mma.profile = profile;
+  op.mma.m = 128;
+  op.mma.n = n;
+  op.mma.k = k;
+  return op;
+}
+uint64_t completion(tcgen05_unit_t &u, uint64_t from = 0) {
+  for (uint64_t c = from; c < 100000; ++c) {
+    u.cycle(c);
+    if (!u.take_completion_events().empty()) return c;
+  }
+  return ~uint64_t(0);
+}
+}  // namespace
+TEST(Tcgen05TimingTest, MeasuredDatatypeChainsShareTheFortyEightCyclePeriod) {
+  using K = tcgen05_mma_kind;
+  using P = tcgen05_native_profile;
+  for (const auto &op : {measured_mma(K::half, P::bf16_f32, 16),
+                         measured_mma(K::tf32, P::tf32_f32, 8),
+                         measured_mma(K::mixed, P::e2m1_e4m3_f32_block32, 32),
+                         measured_mma(K::fp4, P::e2m1_f32_block32, 64)}) {
+    tcgen05_unit_t u(b200_timing());
+    auto s = thread_stream();
+    for (unsigned i = 0; i < 8; ++i) u.enqueue_thread_op(s, op, i);
+    u.commit(s, 0x40);
+    EXPECT_EQ(completion(u, 8), 8u * 48);
+    EXPECT_EQ(u.stats().recurrence_table_ops, 8u);
+  }
+}
+TEST(Tcgen05TimingTest, UnknownTypeDoesNotAliasBf16AndTailIsNotRecurrence) {
+  auto cfg = b200_timing();
+  cfg.mma_completion_tail_latency = 7;
+  tcgen05_unit_t u(cfg);
+  auto op =
+      measured_mma(tcgen05_mma_kind::half, tcgen05_native_profile::unknown, 16);
+  auto s = thread_stream();
+  u.enqueue_thread_op(s, op, 0);
+  u.enqueue_thread_op(s, op, 1);
+  u.commit(s, 0x40);
+  EXPECT_EQ(completion(u, 2), 71u);  // 2*32 compute, one final visibility tail
+  EXPECT_EQ(u.stats().recurrence_fallback_ops, 2u);
+}
+TEST(Tcgen05TimingTest, PairedMmaReservesBothSmBudgets) {
+  auto cfg = b200_timing();
+  cfg.b200_recurrence = false;
+  tcgen05_unit_t a(cfg), b(cfg);
+  auto s = thread_stream();
+  s.cta_group = 2;
+  auto op = mma(8192 * 20);
+  a.enqueue_thread_op(s, op, 0, &b);  // ten cycles on each SM
+  b.enqueue_thread_op(thread_stream(), mma(8192 * 3), 1);
+  b.commit(thread_stream(), 0x40);
+  EXPECT_EQ(completion(b, 1), 13u);
+  a.commit(s, 0x40);
+  EXPECT_EQ(completion(a), 10u);
+}
+TEST(Tcgen05TimingTest, SharedSupplyOverlapsComputeAndHoldsPairedResources) {
+  auto cfg = b200_timing();
+  cfg.b200_recurrence = false;
+  tcgen05_unit_t a(cfg), b(cfg);
+  auto s = thread_stream();
+  s.cta_group = 2;
+  a.enqueue_thread_op(s, mma(8192 * 8), 0, &b,
+                      [](uint64_t start) { return start + 12; });
+  a.commit(s, 0x40);
+  EXPECT_EQ(completion(a), 13u);  // max(4,12), not 4+12
+  b.enqueue_thread_op(thread_stream(), mma(8192 * 2), 1);
+  b.commit(thread_stream(), 0x48);
+  EXPECT_EQ(completion(b, 1), 15u);
+}
+TEST(Tcgen05TimingTest, TmemReadServiceIsPartitionLocal) {
+  tcgen05_unit_t u(config());
+  auto op = memory_op(TCGEN05_TIMING_LD, 26, 16);
+  op.partitioned_mem = true;
+  auto s = warp_stream();
+  s.partition = 0;
+  u.enqueue_warp_mem_op(s, op, 0);
+  EXPECT_FALSE(u.can_enqueue(TCGEN05_TIMING_LD, 1, 0));
+  EXPECT_TRUE(u.can_enqueue(TCGEN05_TIMING_LD, 1, 1));
+  s.warp_id = 2;
+  s.partition = 1;
+  u.enqueue_warp_mem_op(s, op, 1);
+  EXPECT_FALSE(u.wait_ld(s));
+  u.cycle(26);
+  EXPECT_TRUE(u.take_completion_events().empty());
+  u.cycle(27);
+  EXPECT_EQ(u.take_completion_events().size(), 1u);
+}
+TEST(Tcgen05TimingTest, OwnerAdmissionLimitsDoNotBlockIndependentOwners) {
+  auto cfg = b200_timing();
+  cfg.owner_queue_depth[0] = 1;
+  cfg.owner_issue_interval = 8;
+  tcgen05_unit_t u(cfg);
+  auto a = thread_stream(), b = thread_stream(1);
+  u.enqueue_thread_op(a,
+                      measured_mma(tcgen05_mma_kind::half,
+                                   tcgen05_native_profile::bf16_f32, 16),
+                      0);
+  EXPECT_FALSE(u.can_enqueue(TCGEN05_TIMING_MMA, 8, ~0u, &a));
+  EXPECT_TRUE(u.can_enqueue(TCGEN05_TIMING_MMA, 8, ~0u, &b));
+  u.cycle(48);
+  EXPECT_TRUE(u.can_enqueue(TCGEN05_TIMING_MMA, 48, ~0u, &a));
+}
+TEST(Tcgen05TimingTest, CollectorAndTransposeDoNotBorrowDefaultRecurrence) {
+  tcgen05_mma_descriptor_t d{};
+  d.m = 64;
+  d.n = 64;
+  d.k = 16;
+  d.d_type = 1;
+  d.a_type = d.b_type = 1;
+  EXPECT_EQ(tcgen05_metadata(tcgen05_mma_kind::half, d).profile,
+            tcgen05_native_profile::bf16_f32);
+  EXPECT_EQ(
+      tcgen05_metadata(tcgen05_mma_kind::half, d, 1, false, true, true).profile,
+      tcgen05_native_profile::unknown);
+  d.transpose_b = true;
+  EXPECT_EQ(tcgen05_metadata(tcgen05_mma_kind::half, d).profile,
+            tcgen05_native_profile::unknown);
+}
+TEST(Tcgen05TimingTest, PackedSharedReadsAndRegionsAreAccountedOncePerOperand) {
+  tcgen05_shared_reads r;
+  r.add(131070, 2);
+  r.add(131071, 2);
+  r.add(131072, 2);
+  r.begin_operand();
+  r.add(131070, 2);
+  tcgen05_mma_metadata m;
+  tcgen05_account_shared(m, r.reads);
+  EXPECT_EQ(m.shared_bytes[0][0], 4u);
+  EXPECT_EQ(m.shared_bytes[0][1], 2u);
+}
+
+TEST(Tcgen05TimingTest,
+     SharedReadContentionIsPerHalfAndWriteDirectionIndependent) {
+  tc_shared_calendar_t calendar;
+  EXPECT_EQ(calendar.reserve(10, {256, 0}, 128, 128), 12u);
+  shared_bandwidth_t ports;
+  EXPECT_TRUE(ports.consume(shared_bandwidth_t::TC, false, calendar.take(10),
+                            128, 128));
+  EXPECT_EQ(
+      ports.consume_up_to(shared_bandwidth_t::LSU, false, 0, 128, 128, 128),
+      0u);
+  EXPECT_EQ(
+      ports.consume_up_to(shared_bandwidth_t::LSU, false, 1, 128, 128, 128),
+      128u);
+  EXPECT_EQ(
+      ports.consume_up_to(shared_bandwidth_t::TMA, true, 0, 128, 128, 128),
+      128u);
+  ports.reset();
+  EXPECT_TRUE(ports.consume(shared_bandwidth_t::TC, false, calendar.take(11),
+                            128, 128));
+  EXPECT_EQ(
+      ports.consume_up_to(shared_bandwidth_t::LSU, false, 0, 128, 128, 128),
+      0u);
+  ports.reset();
+  EXPECT_TRUE(ports.consume(shared_bandwidth_t::TC, false, calendar.take(12),
+                            128, 128));
+  EXPECT_EQ(
+      ports.consume_up_to(shared_bandwidth_t::LSU, false, 0, 128, 128, 128),
+      128u);
+}
+TEST(Tcgen05TimingTest, PairedBusyAccountingDoesNotDependOnSmCycleOrder) {
+  auto cfg = b200_timing();
+  cfg.b200_recurrence = false;
+  tcgen05_unit_t a(cfg), b(cfg);
+  a.cycle(0);  // issuer already cycled, peer has not
+  auto s = thread_stream();
+  s.cta_group = 2;
+  a.enqueue_thread_op(s, mma(8192 * 20), 0, &b);
+  b.cycle(0);
+  for (unsigned c = 1; c <= 10; ++c) {
+    b.cycle(c);
+    a.cycle(c);
+  }
+  EXPECT_EQ(a.stats().backend_busy_cycles, 10u);
+  EXPECT_EQ(b.stats().backend_busy_cycles, 10u);
 }
