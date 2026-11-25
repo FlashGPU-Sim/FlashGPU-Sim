@@ -12,6 +12,7 @@ sources = [
 
   # Portable integration tests.
   "integration/address_operand_test.cu",
+  "integration/leading_bit_test.cu",
   "integration/vector_operand_test.cu",
   "integration/funnel_shift_test.cu",
   "integration/ptx_fma_test.cu",
