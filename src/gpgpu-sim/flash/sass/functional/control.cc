@@ -1083,6 +1083,8 @@ void register_control_semantics(frontend &target) {
   target.register_semantics("UCGABAR_WAIT", execute_gather_cluster_barrier);
 
   target.register_semantics("NOP", execute_nop);
+  // PREEXIT prepares exit but must not retire lanes or bypass the final EXIT.
+  target.register_semantics("PREEXIT", execute_nop);
   target.register_semantics("YIELD", execute_nop);
   target.register_semantics("NANOSLEEP", execute_nanosleep);
   target.register_semantics("NANOSLEEP.SYNCS", execute_nanosleep);

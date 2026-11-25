@@ -352,3 +352,10 @@ cuda = "13.3"
 tests = [
   { name = "tensor-coordinate-parser", group = "unit", gtest_filter = "PtxTensorCoordinates.*" },
 ]
+
+[jobs.sm100-native-exit]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "preexit-functional-and-timing", group = "unit", gtest_filter = "SassPreexit.*" },
+]

@@ -4,6 +4,7 @@ config = "SM100_B200"
 
 [workloads]
 sources = [
+  "unit/sass/functional/preexit_test.cc",
   "unit/ptx_tensor_coords_test.cc",
   "unit/tma_packed_test.cc",
   "packed_tma/launch_test.cu",

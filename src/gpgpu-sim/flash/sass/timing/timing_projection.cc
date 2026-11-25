@@ -194,16 +194,16 @@ bool has_destination(const std::string &base) {
          base != "STSM" && base != "BRA" && base != "BRX" && base != "BSSY" &&
          base != "BSYNC" && base != "BREAK" && base != "BRXU" &&
          base != "WARPSYNC" && base != "CALL" && base != "EXIT" &&
-         base != "RET" && base != "NOP" && base != "NANOSLEEP" &&
-         base != "UGETNEXTWORKID" && base != "YIELD" && base != "BAR" &&
-         base != "MEMBAR" && base != "DEPBAR" && base != "CCTL" &&
-         base != "UTMACCTL" && base != "UTMACMDFLUSH" && base != "FENCE" &&
-         base != "UTMALDG" && base != "UTMASTG" && base != "UTMAREDG" &&
-         base != "UTMAPF" && base != "UBLKCP" && base != "UBLKRED" &&
-         base != "UTCCP" && base != "UTCHMMA" && base != "UTCQMMA" &&
-         base != "UTCOMMA" && base != "UTCBAR" && base != "STTM" &&
-         base != "UVIRTCOUNT" && base != "LDGSTS" && base != "LDGDEPBAR" &&
-         base != "STAS";
+         base != "RET" && base != "NOP" && base != "PREEXIT" &&
+         base != "NANOSLEEP" && base != "UGETNEXTWORKID" && base != "YIELD" &&
+         base != "BAR" && base != "MEMBAR" && base != "DEPBAR" &&
+         base != "CCTL" && base != "UTMACCTL" && base != "UTMACMDFLUSH" &&
+         base != "FENCE" && base != "UTMALDG" && base != "UTMASTG" &&
+         base != "UTMAREDG" && base != "UTMAPF" && base != "UBLKCP" &&
+         base != "UBLKRED" && base != "UTCCP" && base != "UTCHMMA" &&
+         base != "UTCQMMA" && base != "UTCOMMA" && base != "UTCBAR" &&
+         base != "STTM" && base != "UVIRTCOUNT" && base != "LDGSTS" &&
+         base != "LDGDEPBAR" && base != "STAS";
 }
 
 // Native output lists can contain a value and carry/status predicates. Keep
@@ -893,24 +893,24 @@ void classify(const instruction &source, const timing_profile &profile,
                          : inst_t::tma_static_info_t::TMA_SHARED_CTA;
     target.set_tma_static_info(info);
   } else if (source.opcode == "UVIRTCOUNT.DEALLOC.SMPOOL" || base == "ERRBAR" ||
-             base == "CGAERRBAR" || base == "NOP" || base == "NANOSLEEP" ||
-             base == "S2R" || base == "S2UR" || base == "CS2R" ||
-             base == "CS2UR" || base == "MOV" || base == "MOVM" ||
-             base == "IMAD" || base == "IADD3" || base == "ISETP" ||
-             base == "LOP3" || base == "SHF" || base == "PRMT" ||
-             base == "SEL" || base == "PLOP3" || base == "VOTE" ||
-             base == "LEA" || base == "IABS" || base == "FLO" ||
-             base == "POPC" || base == "BREV" || base == "UBREV" ||
-             base == "UFLO" || base == "UIADD3" || base == "UIMAD" ||
-             base == "UISETP" || base == "UFSETP" || base == "UFSEL" ||
-             base == "ULEA" || base == "ULOP3" || base == "UPLOP3" ||
-             base == "UMOV" || base == "UPRMT" || base == "USEL" ||
-             base == "USHF" || base == "R2UR" || base == "UP2UR" ||
-             base == "R2P" || base == "P2R" || base == "LEPC" ||
-             base == "ELECT" || base == "VOTEU" || base == "VIMNMX" ||
-             base == "VIMNMX3" || base == "UVIMNMX" || base == "IADD" ||
-             base == "VIADD" || base == "VIADDMNMX" || base == "SGXT" ||
-             base == "USGXT" || base == "SHFL" ||
+             base == "CGAERRBAR" || base == "NOP" || base == "PREEXIT" ||
+             base == "NANOSLEEP" || base == "S2R" || base == "S2UR" ||
+             base == "CS2R" || base == "CS2UR" || base == "MOV" ||
+             base == "MOVM" || base == "IMAD" || base == "IADD3" ||
+             base == "ISETP" || base == "LOP3" || base == "SHF" ||
+             base == "PRMT" || base == "SEL" || base == "PLOP3" ||
+             base == "VOTE" || base == "LEA" || base == "IABS" ||
+             base == "FLO" || base == "POPC" || base == "BREV" ||
+             base == "UBREV" || base == "UFLO" || base == "UIADD3" ||
+             base == "UIMAD" || base == "UISETP" || base == "UFSETP" ||
+             base == "UFSEL" || base == "ULEA" || base == "ULOP3" ||
+             base == "UPLOP3" || base == "UMOV" || base == "UPRMT" ||
+             base == "USEL" || base == "USHF" || base == "R2UR" ||
+             base == "UP2UR" || base == "R2P" || base == "P2R" ||
+             base == "LEPC" || base == "ELECT" || base == "VOTEU" ||
+             base == "VIMNMX" || base == "VIMNMX3" || base == "UVIMNMX" ||
+             base == "IADD" || base == "VIADD" || base == "VIADDMNMX" ||
+             base == "SGXT" || base == "USGXT" || base == "SHFL" ||
              source.opcode == "MATCH.ANY" || base == "REDUX" ||
              base == "CREDUX" || source.opcode == "BPT.TRAP" ||
              base == "DEPBAR" || base == "CCTL" || base == "UTMACCTL" ||
