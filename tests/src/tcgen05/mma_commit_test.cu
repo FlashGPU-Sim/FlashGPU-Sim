@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace {
-template <bool Mixed, unsigned Compact = 0>
+template <bool Mixed, unsigned Compact = 0, unsigned Issuer = 0>
 __global__ void mma_commit(float *out) {
   __shared__ __align__(16) unsigned short a[128 * 16], b[8 * 16];
   __shared__ __align__(8) unsigned long long barrier;
@@ -41,7 +41,7 @@ __global__ void mma_commit(float *out) {
     __syncthreads();
   }
   asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
-  if (t == 0) {
+  if (t == Issuer) {
     // Canonical interleaved K-major, 16-byte atoms, eight rows per atom.
     const unsigned long long ad = ((unsigned)__cvta_generic_to_shared(a) >> 4) |
                                   (8ull << 16) | (16ull << 32) | (1ull << 46);
@@ -109,6 +109,20 @@ TEST(Tcgen05Mma, SharedOperandsCommitAndWarpPartitionLoad) {
   std::vector<float> result(128 * 8);
   ASSERT_EQ(cudaMalloc(&device, result.size() * sizeof(float)), cudaSuccess);
   mma_commit<false><<<1, 128>>>(device);
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(result.data(), device, result.size() * sizeof(float),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  for (unsigned i = 0; i < result.size(); ++i)
+    ASSERT_EQ(result[i], -32.0f) << i;
+  ASSERT_EQ(cudaFree(device), cudaSuccess);
+}
+TEST(Tcgen05Mma, NonzeroIssuingLane) {
+  float *device = nullptr;
+  std::vector<float> result(128 * 8);
+  ASSERT_EQ(cudaMalloc(&device, result.size() * sizeof(float)), cudaSuccess);
+  mma_commit<false, 0, 7><<<1, 128>>>(device);
   ASSERT_EQ(cudaGetLastError(), cudaSuccess);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   ASSERT_EQ(cudaMemcpy(result.data(), device, result.size() * sizeof(float),

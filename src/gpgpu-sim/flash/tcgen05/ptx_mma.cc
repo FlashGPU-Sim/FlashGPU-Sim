@@ -285,8 +285,6 @@ static void tcgen05_mma_fp8_ptx(const ptx_instruction *inst,
 
 void handle_tcgen05_mma_inst(const ptx_instruction *pI,
                              ptx_thread_info *thread) {
-  if (!tcgen05_is_warp_leader(thread))
-    return;
   assert(pI->get_num_operands() >= 5);
   const bool ws = tcgen05_has_option(pI, TCGEN05_WS_OPTION);
   const auto collector = ws_collector_control(pI);

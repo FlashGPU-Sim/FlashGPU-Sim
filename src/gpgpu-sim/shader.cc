@@ -1899,9 +1899,6 @@ bool shader_core_ctx::tcgen05_frontend_available(
   const int opcode = flash_gpgpu_sim::tcgen05_opcode(inst);
   if (!flash_gpgpu_sim::is_tcgen05_timing_data_op(opcode)) return true;
   if (!active_mask.any()) return true;
-  if (dynamic_cast<const ptx_instruction *>(inst) && opcode != TCGEN05_LD_OP &&
-      opcode != TCGEN05_ST_OP && !active_mask.test(0))
-    return true;
   return m_tcgen05.can_enqueue(flash_gpgpu_sim::tcgen05_timing_kind(opcode),
                               cycle);
 }
@@ -2683,8 +2680,6 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       (*pipe_reg)->get_active_mask().any()) {
     const int opcode = flash_gpgpu_sim::tcgen05_opcode(next_inst);
     const uint64_t now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
-    const flash_gpgpu_sim::tcgen05_op_t op = flash_gpgpu_sim::tcgen05_timing_op(
-        next_inst, next_ptx_inst ? tcgen05_dyn_inst : *pipe_reg, m_config);
     const unsigned cta_id = m_warp[warp_id]->get_cta_id();
     if (opcode == TCGEN05_LD_OP || opcode == TCGEN05_ST_OP) {
       assert((*pipe_reg)->get_active_mask().count() == m_config->warp_size &&
@@ -2692,22 +2687,31 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       flash_gpgpu_sim::tcgen05_warp_stream_key_t stream;
       stream.hw_cta_id = cta_id;
       stream.warp_id = warp_id;
+      const auto op = flash_gpgpu_sim::tcgen05_timing_op(
+          next_inst, *pipe_reg, m_config);
       m_tcgen05.enqueue_warp_mem_op(stream, op, now);
       if (!next_ptx_inst)
         m_warp[warp_id]->instruction_dependency_hold_write_barrier_until(
             **pipe_reg, now + op.completion_latency);
-    } else if (!next_ptx_inst || (*pipe_reg)->get_active_mask().test(0)) {
-      flash_gpgpu_sim::tcgen05_thread_stream_key_t stream;
-      stream.hw_cta_id = cta_id;
-      stream.warp_id = warp_id;
-      stream.lane_id = 0;
-      if (!next_ptx_inst)
-        while (!(*pipe_reg)->get_active_mask().test(stream.lane_id))
-          ++stream.lane_id;
-      stream.cta_group = next_ptx_inst
-                             ? flash_gpgpu_sim::tcgen05_cta_group(next_ptx_inst)
-                             : next_inst->tcgen05_info.cta_group;
-      m_tcgen05.enqueue_thread_op(stream, op, now);
+    } else {
+      // MMA/CP/SHIFT have single-thread semantics, unlike collective LD/ST.
+      // PTX contributes one operation per active thread; a native uniform
+      // instruction contributes one operation owned by its elected lane.
+      for (unsigned lane = 0; lane < m_config->warp_size; ++lane) {
+        if (!(*pipe_reg)->get_active_mask().test(lane)) continue;
+        flash_gpgpu_sim::tcgen05_thread_stream_key_t stream;
+        stream.hw_cta_id = cta_id;
+        stream.warp_id = warp_id;
+        stream.lane_id = lane;
+        stream.cta_group = next_ptx_inst
+            ? flash_gpgpu_sim::tcgen05_cta_group(next_ptx_inst)
+            : next_inst->tcgen05_info.cta_group;
+        const auto op = flash_gpgpu_sim::tcgen05_timing_op(
+            next_inst, next_ptx_inst ? tcgen05_dyn_inst : *pipe_reg,
+            m_config, next_ptx_inst ? lane : 0);
+        m_tcgen05.enqueue_thread_op(stream, op, now);
+        if (!next_ptx_inst) break;
+      }
     }
   }
 
@@ -2784,8 +2788,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   } else if (is_tcgen05_commit) {
     const warp_inst_t *effects = next_ptx_inst ? mbarrier_dyn_inst : *pipe_reg;
     for (unsigned lane = 0; lane < m_config->warp_size; ++lane) {
-      if (!(*pipe_reg)->get_active_mask().test(lane) ||
-          (next_ptx_inst && lane != 0))
+      if (!(*pipe_reg)->get_active_mask().test(lane))
         continue;
       const auto &info = effects->get_mbarrier_info(lane);
       if (info.bar_id == (unsigned)-1) continue;

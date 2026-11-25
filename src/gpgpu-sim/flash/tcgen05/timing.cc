@@ -50,7 +50,10 @@ tcgen05_unit_t::enqueue_thread_op(const tcgen05_thread_stream_key_t &stream,
                                   const tcgen05_op_t &op, uint64_t cycle) {
   assert(op.kind == TCGEN05_TIMING_MMA || op.kind == TCGEN05_TIMING_CP ||
          op.kind == TCGEN05_TIMING_SHIFT);
-  assert(can_enqueue(op.kind, cycle));
+  // Admission is checked once before the warp executes. Several PTX lanes
+  // may contribute distinct single-thread operations in that same issue.
+  // Serialize their front-end service without dropping a lane's operation.
+  cycle = std::max(cycle, m_next_issue_cycle[op.kind]);
 
   pending_op_t pending;
   pending.thread_scoped = true;

@@ -340,12 +340,10 @@ void handle_tcgen05_commit_inst(const ptx_instruction *pI,
   assert(tcgen05_has_option(pI, TCGEN05_MBARRIER_ARRIVE_ONE_OPTION));
   const bool multicast = tcgen05_has_option(pI, MULTICAST_CLUSTER_OPTION);
   assert(pI->get_num_operands() == (multicast ? 2 : 1));
-  // Static PTX metadata is reused by multiple warps/CTAs. Nonleaders must
-  // clear any previous lane contribution before the elected lane commits.
+  // Static PTX metadata is reused by multiple warps/CTAs. Reset this
+  // issuing thread before publishing its own commit contribution.
   const_cast<ptx_instruction *>(pI)->set_mbarrier_info(
       thread->get_laneid(), inst_t::mbarrier_info_t{});
-  if (!tcgen05_is_warp_leader(thread))
-    return;
   if (tcgen05_cta_group(pI) == 2)
     (void)tcgen05_ptx_targets(pI, thread);
   inst_t::mbarrier_info_t info;
@@ -451,8 +449,6 @@ void handle_tcgen05_wait_inst(const ptx_instruction *pI,
 
 void handle_tcgen05_cp_inst(const ptx_instruction *pI,
                             ptx_thread_info *thread) {
-  if (!tcgen05_is_warp_leader(thread))
-    return;
   assert(pI->get_num_operands() == 2);
   // Preserve the public PTX-only 4x256b path until it is qualified together
   // with its MMA consumer. It is not part of the new dual-frontend layouts.
@@ -506,8 +502,6 @@ void handle_tcgen05_cp_inst(const ptx_instruction *pI,
 
 void handle_tcgen05_shift_inst(const ptx_instruction *pI,
                                ptx_thread_info *thread) {
-  if (!tcgen05_is_warp_leader(thread))
-    return;
   tcgen05_assert_cta_group1(pI);
   assert(pI->get_num_operands() >= 1);
   (void)thread;
@@ -612,14 +606,15 @@ static unsigned tcgen05_vector_width_index(unsigned width) {
 
 tcgen05_op_t tcgen05_timing_op(const warp_inst_t *inst,
                                const warp_inst_t *dynamic_inst,
-                               const shader_core_config *config) {
+                               const shader_core_config *config,
+                               unsigned lane) {
   tcgen05_op_t op;
   const auto *ptx = dynamic_cast<const ptx_instruction *>(inst);
   const int opcode = tcgen05_opcode(inst);
   op.kind = tcgen05_timing_kind(opcode);
   if (opcode == TCGEN05_MMA_OP) {
     assert(dynamic_inst != NULL);
-    op.work = dynamic_inst->get_tcgen05_dyn_info(0).mma_work;
+    op.work = dynamic_inst->get_tcgen05_dyn_info(lane).mma_work;
     assert(op.work != 0);
   } else if (opcode == TCGEN05_CP_OP) {
     const unsigned index =

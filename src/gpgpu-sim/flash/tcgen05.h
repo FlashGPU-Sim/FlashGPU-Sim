@@ -22,7 +22,8 @@ tcgen05_op_kind_t tcgen05_timing_kind(int opcode);
 tcgen05_timing_config_t tcgen05_timing_config(const shader_core_config *config);
 tcgen05_op_t tcgen05_timing_op(const warp_inst_t *inst,
                                const warp_inst_t *dynamic_inst,
-                               const shader_core_config *config);
+                               const shader_core_config *config,
+                               unsigned lane = 0);
 
 // PTX functional execution handlers.
 
