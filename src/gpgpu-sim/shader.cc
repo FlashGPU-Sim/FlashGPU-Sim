@@ -1264,6 +1264,8 @@ void shader_core_stats::aggregate(const shader_core_stats &other, int sm_lhs, in
   accumulate(tcgen05_recurrence_table_ops);
   accumulate(tcgen05_recurrence_fallback_ops);
   accumulate(tcgen05_shared_read_bytes);
+  accumulate(tma_shared_write_bytes);
+  accumulate(lsu_shared_write_denied_bytes);
   accumulate(tcgen05_shared_read_cycles);
   accumulate(tcgen05_lsu_read_denied_bytes);
   accumulate(tcgen05_queue_full_stall_cycles);
@@ -1377,6 +1379,8 @@ void shader_core_stats::clear_accumulator() {
   accumulate(tcgen05_recurrence_table_ops);
   accumulate(tcgen05_recurrence_fallback_ops);
   accumulate(tcgen05_shared_read_bytes);
+  accumulate(tma_shared_write_bytes);
+  accumulate(lsu_shared_write_denied_bytes);
   accumulate(tcgen05_shared_read_cycles);
   accumulate(tcgen05_lsu_read_denied_bytes);
   accumulate(tcgen05_queue_full_stall_cycles);
@@ -1534,6 +1538,9 @@ void shader_core_stats::print(FILE *fout) const {
   fprintf(fout, "  recurrence_fallback_ops = %llu\n",
           tcgen05_recurrence_fallback_ops);
   fprintf(fout, "  shared_read_bytes = %llu\n", tcgen05_shared_read_bytes);
+  fprintf(fout, "  tma_shared_write_bytes = %llu\n", tma_shared_write_bytes);
+  fprintf(fout, "  lsu_shared_write_denied_bytes = %llu\n",
+          lsu_shared_write_denied_bytes);
   fprintf(fout, "  shared_read_cycles = %llu\n", tcgen05_shared_read_cycles);
   fprintf(fout, "  lsu_read_denied_bytes = %llu\n",
           tcgen05_lsu_read_denied_bytes);
@@ -4658,8 +4665,10 @@ bool ldst_unit::shared_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
   }
 
   const bool tc_ports =
-      m_core->get_config()->gpgpu_tcgen05_shared_operand_model &&
-      inst.is_load() && !inst.isatomic() && !inst.is_dsm_remote();
+      ((m_core->get_config()->gpgpu_tcgen05_shared_operand_model && inst.is_load()) ||
+       (m_core->get_config()->gpgpu_shared_region_write_model &&
+        (inst.is_load() || inst.is_store()))) &&
+      !inst.isatomic() && !inst.is_dsm_remote();
   bool stall = tc_ports ? false : inst.dispatch_delay();
   if (!stall && !inst.empty() && inst.is_dsm_remote() &&
       m_core->get_config()->gpgpu_dsm_enable && m_core->get_cluster() &&
@@ -4681,13 +4690,15 @@ bool ldst_unit::shared_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
       unsigned granted = 0;
       for (unsigned half = 0; half < 2; ++half) {
         const unsigned need = regions[half] - inst.m_smem_region_got[half];
-        const unsigned part = m_core->consume_tc_shared_read(half, need);
+        const unsigned part = inst.is_store()
+            ? m_core->consume_region_shared_write(half, need)
+            : m_core->consume_tc_shared_read(half, need);
         inst.m_smem_region_got[half] += part;
         granted += part;
         if (inst.m_smem_region_got[half] < regions[half]) stall = true;
       }
       // Bank/data dispatch and byte supply describe the same transfer.
-      // Do not charge wide LDS wavefronts a second time after dispatch.
+      // Do not charge wide LDS/STS wavefronts a second time after dispatch.
       // A fully denied transfer cannot advance a data-service cycle.
       if (granted || !stall) {
         const bool dispatch_pending = inst.dispatch_delay();
@@ -8707,6 +8718,32 @@ void shader_core_ctx::smem_cycle() {
         m_config->tcgen05_shared_bank_bytes_per_cycle);
     assert(ok);
   }
+  if (m_config->gpgpu_shared_region_write_model) {
+    const auto bytes = m_tma_shared_write_calendar.take(
+        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+    m_stats->tma_shared_write_bytes += bytes[0] + bytes[1];
+    const bool ok = m_tc_shared_ports.consume(
+        flash_gpgpu_sim::shared_bandwidth_t::TMA, true, bytes,
+        m_config->gpgpu_shmem_bytes_per_cycle,
+        m_config->tcgen05_shared_bank_bytes_per_cycle);
+    assert(ok);
+  }
+}
+uint64_t shader_core_ctx::reserve_tma_shared_write(
+    uint64_t start, flash_gpgpu_sim::shared_bandwidth_t::bytes_t bytes) {
+  return m_tma_shared_write_calendar.reserve(
+      start, bytes, m_config->gpgpu_shmem_bytes_per_cycle,
+      m_config->tcgen05_shared_bank_bytes_per_cycle);
+}
+unsigned shader_core_ctx::consume_region_shared_write(unsigned half,
+                                                       unsigned bytes) {
+  using budget = flash_gpgpu_sim::shared_bandwidth_t;
+  const unsigned path_cap = m_config->gpgpu_shmem_bytes_per_cycle;
+  const unsigned bank_cap = m_config->tcgen05_shared_bank_bytes_per_cycle;
+  const unsigned grant = m_tc_shared_ports.consume_up_to(
+      budget::LSU, true, half, bytes, path_cap, bank_cap);
+  m_stats->lsu_shared_write_denied_bytes += bytes - grant;
+  return grant;
 }
 unsigned shader_core_ctx::consume_tc_shared_read(unsigned half,
                                                  unsigned bytes) {

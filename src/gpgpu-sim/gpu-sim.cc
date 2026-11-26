@@ -1473,6 +1473,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "Apply LD tables only to ordinary 32dp TMEM reads "
                          "with SMSP-local service",
                          "0");
+  option_parser_register(opp, "-gpgpu_shared_region_write_model", OPT_BOOL,
+                         &gpgpu_shared_region_write_model,
+                         "Share per-128KiB write ports between aligned local "
+                         "TMA landing and STS; retain independent read ports", "0");
   option_parser_register(opp, "-gpgpu_tmem_b200_transfer_timing", OPT_BOOL,
                          &gpgpu_tmem_b200_transfer_timing,
                          "B200 ordinary stores and qualified 16dp transfers: "

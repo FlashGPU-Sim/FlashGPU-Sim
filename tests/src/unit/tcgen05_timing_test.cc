@@ -442,3 +442,37 @@ TEST(Tcgen05TimingTest, TmemStoreServiceAndCompletionArePartitionLocal) {
   ASSERT_EQ(events.size(), 1u);
   EXPECT_EQ(events[0].warp_id, 0u);
 }
+
+TEST(Tcgen05TimingTest, TmaLandingSharesWriteHalfButNotLsuReadPort) {
+  tc_shared_calendar_t landing;
+  const auto span = shared_bandwidth_t::split(128 * 1024 - 64, 256, 128 * 1024);
+  EXPECT_EQ(span[0], 64u);
+  EXPECT_EQ(span[1], 192u);
+  // Completion is exclusive of the last SRAM service cycle.
+  EXPECT_EQ(landing.reserve(10, span, 128, 128), 12u);
+  shared_bandwidth_t ports;
+  EXPECT_TRUE(ports.consume(shared_bandwidth_t::TMA, true, landing.take(10),
+                           128, 128));
+  EXPECT_EQ(ports.consume_up_to(shared_bandwidth_t::LSU, true, 0, 128, 128, 128), 64u);
+  // LSU read/write share the same path even when SRAM directions differ.
+  EXPECT_EQ(ports.consume_up_to(shared_bandwidth_t::LSU, false, 1, 128, 128, 128), 64u);
+  ports.reset();
+  EXPECT_TRUE(ports.consume(shared_bandwidth_t::TMA, true, landing.take(11),
+                           128, 128));
+  EXPECT_EQ(ports.consume_up_to(shared_bandwidth_t::LSU, true, 1, 128, 128, 128), 0u);
+  EXPECT_EQ(ports.consume_up_to(shared_bandwidth_t::LSU, true, 0, 128, 128, 128), 128u);
+  ports.reset();
+  EXPECT_TRUE(ports.consume(shared_bandwidth_t::TMA, true, landing.take(12),
+                           128, 128));
+  EXPECT_EQ(ports.consume_up_to(shared_bandwidth_t::LSU, true, 1, 128, 128, 128), 128u);
+}
+
+TEST(Tcgen05TimingTest, MultipleTmaReturnsCannotOverbookLandingCycles) {
+  tc_shared_calendar_t landing;
+  EXPECT_EQ(landing.reserve(3, {256, 0}, 128, 128), 5u);
+  EXPECT_EQ(landing.reserve(3, {0, 128}, 128, 128), 6u);
+  EXPECT_EQ(landing.take(3), (shared_bandwidth_t::bytes_t{128, 0}));
+  EXPECT_EQ(landing.take(4), (shared_bandwidth_t::bytes_t{128, 0}));
+  EXPECT_EQ(landing.take(5), (shared_bandwidth_t::bytes_t{0, 128}));
+  EXPECT_EQ(landing.take(6), (shared_bandwidth_t::bytes_t{}));
+}

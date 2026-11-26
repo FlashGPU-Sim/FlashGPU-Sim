@@ -2694,6 +2694,7 @@ class shader_core_config : public core_config {
   bool gpgpu_tcgen05_precision_timing, gpgpu_tcgen05_recurrence_b200;
   bool gpgpu_tcgen05_shared_operand_model, gpgpu_tmem_b200_load_timing;
   bool gpgpu_tmem_b200_transfer_timing;
+  bool gpgpu_shared_region_write_model;
   unsigned tcgen05_mma_rates[5];
   unsigned tcgen05_owner_recurrence[2], tcgen05_owner_startup[2];
   unsigned tcgen05_owner_issue_interval, tcgen05_owner_queue_depth[2];
@@ -2930,6 +2931,8 @@ struct shader_core_stats_pod {
   unsigned long long tcgen05_recurrence_table_ops;
   unsigned long long tcgen05_recurrence_fallback_ops;
   unsigned long long tcgen05_shared_read_bytes;
+  unsigned long long tma_shared_write_bytes;
+  unsigned long long lsu_shared_write_denied_bytes;
   unsigned long long tcgen05_shared_read_cycles;
   unsigned long long tcgen05_lsu_read_denied_bytes;
   unsigned long long tcgen05_queue_full_stall_cycles;
@@ -3418,6 +3421,9 @@ class shader_core_ctx : public core_t {
   shared_memory_service_t &smem_service() { return m_smem; }
   void smem_cycle();
   unsigned consume_tc_shared_read(unsigned half, unsigned bytes);
+  unsigned consume_region_shared_write(unsigned half, unsigned bytes);
+  uint64_t reserve_tma_shared_write(uint64_t start,
+      flash_gpgpu_sim::shared_bandwidth_t::bytes_t bytes);
 
   // Complete pending mbarrier tx on this SM's CTA if armed (cluster peer path).
   void try_complete_cluster_peer_mbarrier(unsigned hw_cta_id,
@@ -3999,6 +4005,7 @@ class shader_core_ctx : public core_t {
   flash_gpgpu_sim::tma_unit_t *m_tma = nullptr;
   flash_gpgpu_sim::shared_bandwidth_t m_tc_shared_ports;
   flash_gpgpu_sim::tc_shared_calendar_t m_tc_shared_calendar;
+  flash_gpgpu_sim::tc_shared_calendar_t m_tma_shared_write_calendar;
   shared_memory_service_t m_smem;
 
   // used for local address mapping with single kernel launch

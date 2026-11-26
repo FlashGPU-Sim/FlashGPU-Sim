@@ -662,6 +662,9 @@ private:
     bool m_memory_complete = false;
     unsigned long long m_store_source_release_cycle = 0;
     uint32_t m_bytes_completed = 0;
+    uint32_t m_generated_bytes = 0;
+    uint32_t m_shared_tile_bytes = 0;
+    uint64_t m_shared_landing_done = 0;
     bool m_store_source_released = false;
     tma_agu_state_t agu_state; // AGU state for this transaction
 
@@ -687,6 +690,9 @@ private:
       m_memory_complete = false;
       m_store_source_release_cycle = 0;
       m_bytes_completed = 0;
+      m_generated_bytes = 0;
+      m_shared_tile_bytes = 0;
+      m_shared_landing_done = 0;
       m_store_source_released = false;
       agu_state = tma_agu_state_t(); // Reset to default state
       m_mf_issued_count = 0;
@@ -700,6 +706,38 @@ private:
   std::list<unsigned> issue_queue;
   std::unordered_map<unsigned, unsigned> m_mf_to_tx;
   std::unordered_map<unsigned, uint32_t> m_mf_pending_bytes;
+  std::unordered_map<unsigned, uint32_t> m_mf_tile_offset;
+
+  bool models_shared_landing(const tma_transaction_t &tx) const {
+    // Cluster/DSM landing retains its existing transport/service model.
+    // Qualified swizzles permute within 128B blocks; an aligned tile base
+    // therefore preserves the 128KiB region of each logical destination byte.
+    return m_shader_ctx->get_config()->gpgpu_shared_region_write_model &&
+           !m_shader_ctx->get_config()->gpgpu_dsm_enable &&
+           !is_write_transaction(tx) && !tx.m_static_info.multicast_cluster &&
+           !tx.m_dyn_info.mapped_cluster_copy &&
+           !tx.m_dyn_info.has_completion_mask && !tx.m_arch_arrive_cycle &&
+           tx.m_dyn_info.dst_addr % 128 == 0;
+  }
+
+  void reserve_shared_landing(tma_transaction_t &tx, uint32_t offset,
+                              uint32_t bytes) {
+    if (!models_shared_landing(tx) || !bytes)
+      return;
+    const uint64_t input = tx.m_dyn_info.size_in_bytes;
+    assert(input && uint64_t(offset) + bytes <= input);
+    // Include expanded packed-element padding in SRAM traffic. The AGU walks
+    // the logical tile in order; each parent request retains its tile offset,
+    // so out-of-order sector returns never change the destination region.
+    const uint64_t begin = uint64_t(offset) * tx.m_shared_tile_bytes / input;
+    const uint64_t end =
+        (uint64_t(offset) + bytes) * tx.m_shared_tile_bytes / input;
+    const auto regions = flash_gpgpu_sim::shared_bandwidth_t::split(
+        tx.m_dyn_info.dst_addr + begin, end - begin, 128 * 1024);
+    tx.m_shared_landing_done = std::max(
+        tx.m_shared_landing_done,
+        m_shader_ctx->reserve_tma_shared_write(current_cycle() + 1, regions));
+  }
 
   // Idealized TMA stores: do not complete at issue. Wait until the warp
   // commits the tx, then finish on a later cycle so wait_group can park.
@@ -927,6 +965,8 @@ private:
             : m_shader_ctx->get_config()->gpgpu_mbarrier_arrive_latency;
     if (is_cluster_read && !tx.m_arch_arrive_cycle)
       arrive_latency += m_shader_ctx->get_config()->gpgpu_tma_multicast_latency;
+    if (!is_write && tx.m_shared_landing_done > current_cycle())
+      arrive_latency += tx.m_shared_landing_done - current_cycle();
     if (!is_write && tx.m_arch_arrive_cycle) {
       tx.m_memory_complete = true;
       // Preserve the multicast penalty even when memory service exceeds
@@ -984,6 +1024,7 @@ private:
     // Remove all mappings for this transaction
     for (auto map_it = m_mf_to_tx.begin(); map_it != m_mf_to_tx.end();) {
       if (map_it->second == tx_uid) {
+        m_mf_tile_offset.erase(map_it->first);
         map_it = m_mf_to_tx.erase(map_it);
       } else {
         ++map_it;
@@ -1260,6 +1301,7 @@ public:
               (multicast ? config->gpgpu_tma_multicast_latency : 0);
         }
 
+        tx.m_shared_tile_bytes = tx.m_dyn_info.size_in_bytes;
         // Initialize address generator
         if (tma_static_info.tma_type == inst_t::tma_static_info_t::TMA_TENSOR) {
           tensormap_descriptor_t tensormap;
@@ -1286,6 +1328,10 @@ public:
             fflush(stdout);
             exit(1);
           }
+          tx.m_shared_tile_bytes =
+              tma_static_info.tensor_gather4
+                  ? 4 * tma_gather4_smem_row_bytes(tensormap)
+                  : tensormap.get_tile_smem_size_bytes();
           if (tma_static_info.tensor_gather4)
             m_agu.init_tensor_gather4(tx.agu_state, tensormap,
                                       tma_dyn_info.coords);
@@ -1348,6 +1394,8 @@ public:
           m_deferred_idealized_writes.push_back(
               {tx_uid, cta_id, warp_id, /*commit_cycle=*/0});
         } else if (idealized) {
+          reserve_shared_landing(m_transactions.at(tx_uid), 0,
+                                 tx.m_dyn_info.size_in_bytes);
           finalize_transaction(tx_uid);
         } else {
           issue_queue.push_back(tx_uid);
@@ -1788,6 +1836,13 @@ public:
       // L2 returns whole sectors, but edge sectors can contain fewer valid
       // bytes than their 32-byte packet size.
       unsigned bytes_to_add = response_payload_bytes(mf, parent_mf);
+      if (!is_write && models_shared_landing(tx)) {
+        const uint64_t relative = mf->get_addr() > parent_mf->get_addr()
+                                      ? mf->get_addr() - parent_mf->get_addr()
+                                      : 0;
+        reserve_shared_landing(tx, m_mf_tile_offset.at(parent_uid) + relative,
+                               bytes_to_add);
+      }
       tx.m_bytes_completed += bytes_to_add;
       record_tma_mf_response(is_write, bytes_to_add);
 
@@ -1805,6 +1860,7 @@ public:
         assert(tx.m_mf_tx_inflight_bytes >= parent_bytes);
         tx.m_mf_tx_inflight_bytes -= parent_bytes;
         m_mf_pending_bytes.erase(pending_it);
+        m_mf_tile_offset.erase(parent_uid);
         m_mf_to_tx.erase(parent_uid);
         parent_complete = true;
       } else {
@@ -1949,6 +2005,8 @@ public:
           while (m_agu.gen_next_req(tx.agu_state, addr, size,
                                     request_granularity)) {
             made_progress = true;
+            const uint32_t tile_offset = tx.m_generated_bytes;
+            tx.m_generated_bytes += size;
             bool first_request = tx.m_mf_issued_count == 0;
             if (first_request) {
               GPPRINTF_TMA(TMA,
@@ -1969,6 +2027,8 @@ public:
               if (request_bytes_per_cycle > 0)
                 m_request_byte_credit -= std::min<unsigned>(
                     m_request_byte_credit, std::max(size, request_granularity));
+              if (!is_write)
+                reserve_shared_landing(tx, tile_offset, size);
               tx.m_bytes_completed += size;
               record_tma_bytes_completed(size);
               if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
@@ -2010,6 +2070,8 @@ public:
                 (unsigned long long)-1);
 
             m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
+            if (models_shared_landing(tx))
+              m_mf_tile_offset.emplace(mf->get_request_uid(), tile_offset);
             m_mf_pending_bytes.emplace(mf->get_request_uid(), size);
 
             unsigned long long issue_cycle = current_cycle();

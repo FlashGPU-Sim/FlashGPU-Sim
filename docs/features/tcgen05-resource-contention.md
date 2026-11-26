@@ -184,3 +184,45 @@ For 128x256b, single-copy/group-of-four/wait-each loops are respectively
 The measured tuples, before/after cycles and exact case identifiers are in
 `data/calibration/b200-tcgen05-copy-20261126.csv`. The same immutable native
 archive and corrected stride package identified above supply the reference.
+
+
+## Experimental shared write landing model (not a calibrated default)
+
+`-gpgpu_shared_region_write_model 1` connects ordinary STS and aligned local
+TMA landing to the common per-128KiB write budgets. LSU loads and stores share
+one issue-side byte budget; TMA has its own path. Read and write SRAM budgets
+are distinct. No bandwidth constant is fitted: the B200 experiment retains
+128 B/cycle per path and per region/direction. Future TMA landing reservations
+receive service first; STS consumes the remainder. Completion notifications
+wait until all reserved write service has finished. Ideal global memory still
+pays shared landing service.
+
+This option is default **off**, including the B200 preset. DSM, multicast,
+mapped peer copies, completion-mask/fixed architectural-latency paths and
+unaligned destinations retain their existing timing. Region placement is based
+on CTA-local addresses, not physical placement across CTAs. Out-of-order memory
+responses carry their logical tile offsets; packed expansion charges the shared
+footprint, and OOB fill also charges writes. There is no new functional copy.
+
+The 168 exact SASS shared-pair runs and 168 PTX/SASS numerical smokes pass
+numerical checks. They do **not** pass
+timing qualification. LDS/TMA and split STS/TMA improve, but same-half STS/TMA
+still has opposing per-worker errors: STS is about 39% fast and TMA 55-56% slow
+in the 32KiB control. A wall-time error near 5% hides this failure. The 64KiB
+cross-boundary control has a TMA error up to 75.5%. STS/STS retains a 15.3%
+fast outlier; TMA/TMA one-slot tests remain unsaturated.
+
+The next diagnostic separates TMA control instruction delivery from byte
+landing. The actual loop reloads its descriptor pointer through LDCU; currently
+constant and shared operations enter the same LSU dispatch path. Per-warp
+issue/operand/retirement traces must establish where that delay occurs before
+changing frontend queues or enabling this model in a preset. A larger shared
+bandwidth or a workload-specific delay would not establish the missing cause.
+
+The first issue traces (`tma-control-trace-analysis.json` in the workspace
+receipt) narrow this further: the same-half TMA warp adds about 76k ready-but-
+blocked samples, mainly on integer/control operations. Once admitted, its two
+loop LDCU sites average only 4.69 and 3.78 cycles versus 2 cycles alone.
+Thus constant-load execution alone does not account for the gap. A dedicated
+integer-collector control is needed to distinguish common collector blockage
+from the shared-memory write service itself.

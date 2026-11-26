@@ -57,10 +57,10 @@ struct shared_bandwidth_t {
     return n;
   }
 };
-// TC gets first service on read ports, consistent with the measured near-zero
-// QK slowdown and LDS losing essentially one cycle per TC wavefront. Reserve
-// only future cycles: scheduler issue runs after the current cycle's LSU.
-// Other clients spend the remaining per-half budget when that cycle executes.
+// Future service reservations for TC reads and (in a separate instance) TMA
+// writes. These clients receive first service; LSU spends the remaining budget.
+// Reserve only future cycles: issue/response handling runs after the current
+// cycle's port reset. The result is the first cycle after all bytes are served.
 class tc_shared_calendar_t {
 public:
   using cycle_t = unsigned long long;
