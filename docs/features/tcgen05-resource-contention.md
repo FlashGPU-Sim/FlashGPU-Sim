@@ -91,3 +91,33 @@ deferred; no parameter was introduced to fit it. Future collection must retain
 raw clocks, full `.ncu-rep`/CSV, executable/source/configuration provenance,
 GPU state and hashes in `data/hardware/b200/resource-contention-20261126/`.
 There is no automatic shutdown command.
+
+## B200 collection: broadcast descriptor correction
+
+The 2026-11-26 native smoke gate found a functional error before collecting
+transfer timings: the broadcast-copy fixture omitted the shared descriptor's
+eight-row stride, while the common backend treated zero as implicit contiguous
+storage. B200 instead repeats the first eight rows. Dumps of all 128 destination
+rows confirm this for both `64x128b` selectors and `32x128b.warpx4`.
+This follows the K-major eight-row stride described in the
+[PTX matrix descriptor](https://docs.nvidia.com/cuda/parallel-thread-execution/#tcgen05-matrix-descriptor).
+
+The backend now honors the qualified zero and 128B strides. The performance
+fixture uses explicit 128B stride; zero-stride semantic tests retain zero and
+check the repeated rows. The paired block-scaled MMA oracle also accounts for
+the resulting repeated scale rows. No timing constants change.
+
+Validation: the host regression fails before the correction and passes after
+it; all 661 host tests pass; 13 copy/paired-MMA tests pass on B200 and in each
+frontend; the corrected transfer package passes all 63 smoke configurations in
+each frontend (126 runs). The ad-hoc first cluster replay omitted DSM and is
+retained as a configuration failure; the qualifying rerun uses the existing
+2-GPC x 4-SM cluster-validation setup with DSM enabled.
+
+The original failed hardware smoke and its package are preserved. Independent
+MMA, solo-TMEM and shared-competition families retain their original binaries.
+Only the transfer family uses the versioned
+`resource-contention-20261126-cp-stride-v2` package. Native timing and NCU
+collection status are tracked separately in the workspace hardware manifest;
+these functional passes do not assert that resource-contention calibration is
+complete.

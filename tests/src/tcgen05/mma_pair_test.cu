@@ -437,11 +437,13 @@ void check_paired_mma(unsigned blocks) {
             cudaSuccess);
   for (unsigned row = 0; row < blocks * 128; ++row)
     for (unsigned col = 0; col < 16; ++col)
+      // Zero stride repeats the first eight scale rows, so the second N half
+      // keeps unit scale. Explicit stride reaches the scale-two rows instead.
       ASSERT_EQ(
           result[row * 16 + col],
           32.0f *
               (row / 256 ? (row / 128 % 2 ? 12 : 4) : (row / 128 % 2 ? 4 : 1)) *
-              (col < 8 ? 1 : 4))
+              (col < 8 ? 1 : (ExplicitStride ? 4 : 2)))
           << row << "," << col;
   ASSERT_EQ(cudaFree(device), cudaSuccess);
 }

@@ -99,7 +99,9 @@ template<int Kind,int F,int Depth> __global__ void probe(unsigned* out,unsigned 
   } else {
     if(tid==0) {
       unsigned long long desc=(__cvta_generic_to_shared(input)>>4)|(1ull<<46);
-      if constexpr(F<2) desc|=128ull<<16|8ull<<32;
+      // Every copy shape uses the matrix descriptor strides, including broadcast.
+      desc|=8ull<<32;
+      if constexpr(F<2) desc|=128ull<<16;
       unsigned parity=0;
       begin=clock64();
 #pragma unroll 1

@@ -22,9 +22,9 @@ bool tcgen05_copy_addresses(uint64_t raw, tcgen05_copy_shape shape,
         (swizzle ? lbo != 16 || sbo != 8 * swizzle : lbo != 2048 || sbo != 128))
       return false;
   } else {
-    // Broadcast scale copies use a contiguous 16-byte row. Retain the zero
-    // stride encoding and accept the explicit eight-row (128B) stride emitted
-    // by DeepGEMM. Other strides/swizzles still require layout qualification.
+    // Broadcast copies still use the descriptor's eight-row stride. B200
+    // repeats the first eight rows when this field is zero; it is not an
+    // implicit contiguous layout. Keep the qualified zero/128B encodings.
     if (mode != 0 || lbo != 0 || (sbo != 0 && sbo != 128))
       return false;
   }
@@ -40,7 +40,8 @@ bool tcgen05_copy_addresses(uint64_t raw, tcgen05_copy_shape shape,
     for (unsigned col = 0; col < words; ++col) {
       unsigned address;
       if (!wide)
-        address = start + source_row * 16 + col * 4;
+        address =
+            start + (source_row / 8) * sbo + (source_row % 8) * 16 + col * 4;
       else if (!swizzle)
         address = start + (row / 8) * sbo + (row % 8) * 16 + (col / 4) * lbo +
                   (col % 4) * 4;

@@ -7,7 +7,8 @@ TEST(Tcgen05CopyLayout, BroadcastSelectorsCoverAllDatapaths) {
        {tcgen05_copy_shape::warpx4, tcgen05_copy_shape::warpx2_02_13,
         tcgen05_copy_shape::warpx2_01_23}) {
     std::vector<uint32_t> addresses;
-    ASSERT_TRUE(tcgen05_copy_addresses((1ull << 46) | 0x40, shape, addresses));
+    ASSERT_TRUE(tcgen05_copy_addresses((1ull << 46) | (8ull << 32) | 0x40,
+                                      shape, addresses));
     ASSERT_EQ(addresses.size(), 512u);
     for (unsigned row = 0; row < 128; ++row)
       for (unsigned col = 0; col < 4; ++col) {
@@ -48,14 +49,21 @@ TEST(Tcgen05CopyLayout, SwizzledCopyIsPermutationAndKeepsRowWidths) {
   }
 }
 
-TEST(Tcgen05CopyLayout, ExplicitContiguousStrideMatchesBroadcastImage) {
+TEST(Tcgen05CopyLayout, ZeroStrideRepeatsEightRowsInsteadOfContiguousImage) {
   for (auto shape :
        {tcgen05_copy_shape::warpx4, tcgen05_copy_shape::warpx2_02_13,
         tcgen05_copy_shape::warpx2_01_23}) {
-    std::vector<uint32_t> implicit, explicit_stride;
-    ASSERT_TRUE(tcgen05_copy_addresses(0x400000003140ull, shape, implicit));
+    std::vector<uint32_t> zero_stride, explicit_stride;
+    ASSERT_TRUE(tcgen05_copy_addresses(0x400000003140ull, shape, zero_stride));
     ASSERT_TRUE(
         tcgen05_copy_addresses(0x400800003140ull, shape, explicit_stride));
-    EXPECT_EQ(implicit, explicit_stride);
+    EXPECT_NE(zero_stride, explicit_stride);
+    ASSERT_EQ(zero_stride.size(), 512u);
+    for (unsigned row = 0; row < 128; ++row)
+      for (unsigned col = 0; col < 4; ++col)
+        EXPECT_EQ(zero_stride[row * 4 + col],
+                  0x31400u + (row % 8) * 16 + col * 4);
+    EXPECT_EQ(std::set<uint32_t>(zero_stride.begin(), zero_stride.end()).size(),
+              32u);
   }
 }

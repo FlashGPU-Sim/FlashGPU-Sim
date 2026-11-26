@@ -109,6 +109,8 @@ void check_copy() {
                               : Shape == 3 ? (row / 64) * 32 + row % 32
                                            : row;
         unsigned offset = source_row * 16 + col * 4;
+        if constexpr (Shape >= 2 && !ExplicitStride)
+          offset = (source_row % 8) * 16 + col * 4;
         if (Shape < 2) {
           offset = Swizzle ? row * Swizzle + col * 4
                            : row * 16 + (col / 4) * 2048 + (col % 4) * 4;
