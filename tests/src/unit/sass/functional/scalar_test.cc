@@ -213,8 +213,11 @@ TEST(SassFunctionalTest, ShufflesWithinImmediateAndRegisterSelectedSegments) {
   ASSERT_EQ(sass.step("shuffle_index", state, context).status,
             step_status::kAdvanced);
   for (unsigned lane = 0; lane < 32; ++lane) {
-    EXPECT_EQ(state.read_register(lane, 9), 100 + lane);
-    EXPECT_FALSE(state.read_predicate(lane, 3));
+    // BFLY checks the upper clamp only. Lanes 8..15 and 24..31
+    // may select below their segment; there is no additional lower clamp.
+    const bool valid = (lane & 8) != 0;
+    EXPECT_EQ(state.read_register(lane, 9), 100 + (valid ? lane ^ 8 : lane));
+    EXPECT_EQ(state.read_predicate(lane, 3), valid);
   }
 }
 
@@ -364,7 +367,7 @@ TEST(SassFunctionalTest, NativeFp32PairsSupportAbsBroadcastAndReversedSources) {
   EXPECT_EQ(state.read_register(0,10),0xbcc00000u);EXPECT_EQ(state.read_register(0,11),0x3cc00000u);
 }
 
-TEST(SassFunctionalTest, NumericReductionsOrderInfinitiesAndStillRejectNan) {
+TEST(SassFunctionalTest, NumericReductionsHandleNanAndBfloatMinmaxStaysChecked) {
   kernel image;
   image.name = "infinite_reduce";
   image.arch = architecture::kSm120;
@@ -395,7 +398,10 @@ TEST(SassFunctionalTest, NumericReductionsOrderInfinitiesAndStillRejectNan) {
   EXPECT_EQ(state.read_register(0, 7), 0x7f803f80u);
   state.pc = 0;
   state.write_register(0, 2, 0x7fc01234u);
-  EXPECT_EQ(sass.step("infinite_reduce", state, context).status, step_status::kUnsupported);
+  // The shared reduction backend implements non-propagating MIN/MAX:
+  // a numeric operand wins over NaN without the .NAN modifier.
+  EXPECT_EQ(sass.step("infinite_reduce", state, context).status, step_status::kAdvanced);
+  EXPECT_EQ(state.read_uniform_register(4), 0x7f800000u);
   state.pc = 16;
   state.write_register(0, 4, 0x7fc1u);
   EXPECT_EQ(sass.step("infinite_reduce", state, context).status, step_status::kUnsupported);
