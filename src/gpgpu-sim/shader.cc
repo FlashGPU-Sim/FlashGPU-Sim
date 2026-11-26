@@ -3510,6 +3510,11 @@ void scheduler_unit::cycle() {
                     m_int_out->has_free(m_shader->m_config->sub_core_model,
                                         m_id);
 
+                if (cta_barrier_available &&
+                    m_shader->m_config->gpgpu_num_int_units > 0 &&
+                    !int_pipe_avail && pI->op != SP_OP)
+                  ready_no_issue_reason = "INT_PIPE";
+
                 // if INT unit pipline exist, then execute ALU and INT
                 // operations on INT unit and SP-FPU on SP unit (like in Volta)
                 // if INT unit pipline does not exist, then execute all ALU, INT

@@ -241,3 +241,64 @@ TMEM service within 3.58% of native, including concurrent MMA. MMA itself retain
 its previous roughly 6-17% fast residual; this change does not qualify a new MMA
 recurrence or shared-write model. Per-phase runtime/config hashes and rejected
 controls remain in `qualification-summary.json` under the workspace receipt.
+
+## STS/TMA causal diagnosis: transaction service versus replenishment
+
+The follow-up uses the same immutable 32KiB, two-slot cubin and exact 8MiB
+arguments, runtime-v4, and the experimental shared-write option. Four traced
+runs (TMA alone/mixed, same/opposite half) all pass numerically. The 16 warmup
+transactions are excluded from the following averages; 256 timed transactions
+remain. These are **simulator stage times**, not hardware transaction latency
+measurements. Events and receipts are under `tma-transaction-diagnostic` in the
+resource-model evidence root.
+
+| Simulated stage, core cycles | TMA alone | STS + TMA, same half | STS + TMA, opposite halves |
+| --- | ---: | ---: | ---: |
+| Transaction creation to final memory response | 524.41 | 525.22 | 524.26 |
+| Final response to mbarrier notification | 31.00 | 31.00 | 31.00 |
+| Slot notification to next creation using that slot | 54.00 | 534.25 | 330.39 |
+| Average consecutive transaction creation interval | 304.30 | 543.90 | 441.89 |
+| No live transaction, fraction of timed transaction window | 0.00% | 28.07% | 9.68% |
+
+Transaction service is virtually unchanged. Replenishment is delayed, leaving
+write bandwidth available to STS. This explains why the simulated mixed STS
+worker is too fast while the TMA worker is too slow. It is not evidence for a
+slower L2 response path or a need to increase shared write bandwidth. Whole
+kernel wall time masks the opposing worker errors. These occupancy fractions
+cover the full timed transaction window, including any tail after STS finishes;
+they are not overlap-only occupancy or physical GPU utilization.
+
+A trace-only build adds explicit `INT_PIPE` classification and captures eleven
+blocked pipeline snapshots between cycles 20000 and 20200. It produces exactly
+the same stream/wall cycles as runtime-v4. Nine snapshots have all 16 generic collectors occupied by STS; the other
+two have 15 occupied. The four `OC_EX_MEM` slots are also occupied; the LSU is
+servicing STS, including a `DATA_PORT_STALL` snapshot. Register-bank request
+queues and all four INT execution input slots are empty. SMSP 0's integer
+input slot is occupied by an earlier STS-worker control instruction. The TMA
+warp cannot enter that input: the execution unit is idle, but memory pressure
+has filled the shared operand-collection resources upstream. The measured TMA
+loop has 76204 `INT_PIPE` ready-but-blocked samples.
+
+The dedicated-INT diagnostic does remove this particular input blockage, but
+TMA still uses generic collectors. It leaves 63977 dependency-stall samples at
+`R2UR` PC 0x27d0 waiting for read barrier bit 0x4. This is the **SASS operand read
+barrier of the previous UTMALDG**, not the shared-memory completion mbarrier.
+For example, the consumer waits from cycle 13151, UTMALDG finally finishes
+operand collection at 13250, and the consumer proceeds at 13252. Constant loads
+also retain the shared memory-input path. Thus the earlier negative dedicated-
+INT result does not rule out collector pressure: protecting only INT moves the
+bottleneck to TMA operand delivery.
+
+The concrete remaining modeling gap is memory backpressure spilling into the
+control/TMA operand-delivery path. Hardware mixed-worker measurements do not
+show this degree of TMA slowdown. They do not uniquely identify the hardware's
+collector partitioning or queue depths. A fix should test resource isolation or
+admission/backpressure behavior across the entire shared matrix, not add a
+case-specific TMA latency or simply increase byte bandwidth. Neither dedicated
+INT nor the rejected arbitration patch is enabled in a preset. Snapshot hooks
+exist only in the frozen diagnostic runtime/patch; production retains only the
+more precise `INT_PIPE` trace label, with no timing change.
+
+The independent collector-set initialization fix `f9658cc0` remains queued for
+extraction onto public main with its reproducer. It is not the above performance
+modeling change and has no SASS-frontend dependency.
