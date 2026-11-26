@@ -37,16 +37,38 @@ class OperandCollectorAllocationTest : public ::testing::Test {
     rfu_.m_num_banks_per_sched = 4;
     rfu_.add_cu_set(0, 16, 0);
     if (second_set) rfu_.add_cu_set(1, 16, 0);
-    for (auto &entry : rfu_.m_cus) {
-      for (unsigned k = 0; k < entry.second.size(); ++k) {
-        entry.second[k].init(k, 16, &config_, &rfu_, partitioned, k / 4, 4);
-      }
-    }
+    rfu_.init_collector_units(&config_);
     rfu_.m_arbiter.init(rfu_.m_cu.size(), 16);
     opndcoll_rfu_t::port_vector_t inputs{&input_}, outputs{&output_};
     opndcoll_rfu_t::uint_vector_t sets{0};
     if (second_set) sets.push_back(1);
     rfu_.add_port(inputs, outputs, sets);
+  }
+
+  void CheckUnequalSets(bool partitioned) {
+    rfu_.sub_core_model = partitioned;
+    rfu_.m_num_warp_scheds = 4;
+    rfu_.m_num_banks = 16;
+    rfu_.m_num_banks_per_sched = 4;
+    // Deliberately register in a different order from the map's key order.
+    rfu_.add_cu_set(9, 16, 0);
+    rfu_.add_cu_set(2, 4, 0);
+    rfu_.add_cu_set(5, 0, 0);
+    rfu_.init_collector_units(&config_);
+    for (unsigned global = 0; global < rfu_.m_cu.size(); ++global)
+      EXPECT_EQ(rfu_.m_cu[global]->get_id(), global);
+    for (auto &entry : rfu_.m_cus) {
+      if (entry.second.empty()) continue;
+      const unsigned width = entry.second.size() / 4;
+      for (unsigned sid = 0; sid < 4; ++sid) {
+        register_set in(4, "partition input");
+        Put(in, sid, sid + 1, sid, partitioned);
+        auto &cu = entry.second[sid * width];
+        EXPECT_TRUE(cu.allocate(&in, &output_)) << "set=" << entry.first << " sid=" << sid;
+        EXPECT_EQ(cu.get_warp_id(), sid + 1);
+        EXPECT_FALSE(in.has_ready());
+      }
+    }
   }
 
   void Put(register_set &regs, unsigned slot, unsigned uid, unsigned scheduler,
@@ -198,4 +220,11 @@ TEST_F(OperandCollectorAllocationTest, DispatchNonPartitionedKeepsLegacyOrder) {
   ASSERT_EQ(selected.size(), 32u);
   for (unsigned i = 0; i < selected.size(); ++i)
     EXPECT_EQ(selected[i], (i + 1) % 16);
+}
+
+TEST_F(OperandCollectorAllocationTest, UnequalSetsKeepLocalSchedulerOwnership) {
+  CheckUnequalSets(true);
+}
+TEST_F(OperandCollectorAllocationTest, NonPartitionedUnequalSetsKeepArbiterIds) {
+  CheckUnequalSets(false);
 }
