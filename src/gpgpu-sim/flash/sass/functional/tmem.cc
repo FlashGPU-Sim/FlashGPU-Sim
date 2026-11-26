@@ -222,15 +222,14 @@ step_result transfer(const instruction &inst, warp_state &state,
   const bool store = inst.opcode.rfind("STTM", 0) == 0;
   const bool packed = tmem_packed_transfer_words(inst.opcode) != 0;
   const int half = tmem_transfer_half(inst.opcode);
-  const bool shape16 =
-      (!packed && half < 0 && inst.opcode.rfind("LDTM.16dp", 0) == 0) ||
-      inst.opcode.rfind("STTM.16dp256bit", 0) == 0;
-  const unsigned shape_bits = inst.opcode == "LDTM.16dp64bit.x4" ? 64
-                              : (inst.opcode == "LDTM.16dp128bit.x4" ||
-                                 inst.opcode == "LDTM.16dp128bit.x2")
-                                  ? 128
-                              : shape16 ? 256
-                                        : 32;
+  const bool shape16 = !packed && half < 0 &&
+                       (inst.opcode.rfind("LDTM.16dp", 0) == 0 ||
+                        inst.opcode.rfind("STTM.16dp", 0) == 0);
+  const unsigned shape_bits =
+      inst.opcode.find(".16dp64bit.") != std::string::npos    ? 64
+      : inst.opcode.find(".16dp128bit.") != std::string::npos ? 128
+      : shape16                                               ? 256
+                                                              : 32;
   const unsigned words = tmem_transfer_words(inst.opcode);
   if (words == 0)
     return unsupported(inst, "unqualified TMEM transfer width");
@@ -337,6 +336,9 @@ void register_tmem_semantics(frontend &target) {
         "UTCCP.T.S.2x64dp128bit_lw02_lw13", "UTCCP.T.S.2x64dp128bit_lw01_lw23"})
     target.register_semantics(op, copy_shared);
   target.register_semantics("LDTM.16dp128bit.x2", transfer);
+  target.register_semantics("STTM.16dp64bit.x4", transfer);
+  target.register_semantics("STTM.16dp128bit.x2", transfer);
+  target.register_semantics("STTM.16dp128bit.x4", transfer);
   for (const char *shape : {"", ".16dp32bit_t0_t15", ".16dp32bit_t16_t31"})
     for (unsigned words = 1; words <= 64; words *= 2) {
       const std::string width = words == 1 ? "" : ".x" + std::to_string(words);

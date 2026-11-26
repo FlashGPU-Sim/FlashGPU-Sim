@@ -383,6 +383,7 @@ arch/sm120.toml $(ARCH_SASSIR_SCRIPT)
 $(OBJ_DIR)/sm120/support/sass_timing_projection.cc.o: \
 $(SRC_DIR)/gpgpu-sim/flash/sass/timing/timing_projection.cc \
 $(SRC_DIR)/gpgpu-sim/flash/sass/timing/timing_projection.h \
+$(SRC_DIR)/gpgpu-sim/flash/sass/decode/tmem_instruction.h \
 $(SRC_DIR)/gpgpu-sim/flash/sass/frontend.h \
 $(SRC_DIR)/gpgpu-sim/flash/sass/decode/wgmma_instruction.h \
 $(SRC_DIR)/gpgpu-sim/flash/sass/ir.h \

@@ -1,6 +1,53 @@
 #include "../test_support.h"
 #include "gpgpu-sim/flash/sass/functional/tmem.h"
 namespace {
+TEST(SassFunctionalTest, Narrow16DpStoresUseTheSharedFragmentMapping) {
+  for (unsigned bits : {64u, 128u})
+    for (unsigned words : {4u, 8u}) {
+      if (bits == 64 && words == 8) continue;
+      const std::string shape = ".16dp" + std::to_string(bits) +
+          "bit.x" + std::to_string(words * 32 / (bits / 2));
+      for (unsigned warp = 0; warp < 4; ++warp) {
+        kernel image;
+        image.name = "narrow16";
+        image.arch = architecture::kSm100;
+        image.instruction_bytes = 16;
+        image.instructions = {
+            official_instruction(0, "STTM" + shape, "tmem[UR0],R8"),
+            official_instruction(16, "LDTM" + shape, "R32,tmem[UR0]")};
+        frontend sass;
+        sass.add_kernel(std::move(image));
+        register_sm100_functional_semantics(sass);
+        cta_execution_state cta(4);
+        cta.tcgen = std::make_shared<flash_gpgpu_sim::sass::functional_tcgen_state>();
+        cta.tcgen->allocated = 1;
+        execution_context context;
+        context.cta = &cta;
+        context.warp_id = warp;
+        warp_state state;
+        state.write_uniform_register(0, 8);
+        std::vector<uint32_t> expected(128 * 32, 0);
+        for (unsigned lane = 0; lane < 32; ++lane)
+          for (unsigned w = 0; w < words; ++w) {
+            const auto value = 0x89abcdefu + lane * 67 + w;
+            state.write_register(lane, 8 + w, value);
+            const unsigned row = warp * 32 + lane / 4 +
+                (bits == 64 ? lane % 2 : w % 2) * 8;
+            const unsigned col = 8 + (bits == 64 ? lane % 4 / 2 + w * 2
+                                                              : lane % 4 + w / 2 * 4);
+            expected[row * 32 + col] = value;
+          }
+        auto result = sass.step("narrow16", state, context);
+        ASSERT_EQ(result.status, step_status::kAdvanced) << result.detail;
+        EXPECT_EQ(cta.tcgen->memory.read_matrix_words({0, 0}, 0, 128, 32), expected);
+        ASSERT_EQ(sass.step("narrow16", state, context).status, step_status::kAdvanced);
+        for (unsigned lane = 0; lane < 32; ++lane)
+          for (unsigned w = 0; w < words; ++w)
+            EXPECT_EQ(state.read_register(lane, 32 + w), state.read_register(lane, 8 + w));
+      }
+    }
+}
+
 TEST(SassFunctionalTest, NativeTmemStore32WritesEveryWord) {
   kernel image;
   image.name = "store32";

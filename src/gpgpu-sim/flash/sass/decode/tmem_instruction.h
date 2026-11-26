@@ -45,11 +45,11 @@ inline unsigned tmem_transfer_words(const std::string &opcode) {
   if (opcode == "LDTM.x16" || opcode == "STTM.x16" ||
       opcode == "LDTM.16dp256bit.x4" || opcode == "STTM.16dp256bit.x4")
     return 16;
-  if (opcode == "LDTM.16dp128bit.x4")
+  if (opcode == "LDTM.16dp128bit.x4" || opcode == "STTM.16dp128bit.x4")
     return 8;
-  if (opcode == "LDTM.16dp128bit.x2")
+  if (opcode == "LDTM.16dp128bit.x2" || opcode == "STTM.16dp128bit.x2")
     return 4;
-  if (opcode == "LDTM.16dp64bit.x4")
+  if (opcode == "LDTM.16dp64bit.x4" || opcode == "STTM.16dp64bit.x4")
     return 4;
   if (opcode == "LDTM.x8" || opcode == "STTM.x8" ||
       opcode == "LDTM.16dp256bit.x2" || opcode == "STTM.16dp256bit.x2")

@@ -1307,6 +1307,20 @@ TEST(SassTcgenTiming, PreservesWideTmemDependenciesAcrossPipelineCopies) {
   }
 }
 
+TEST(SassTcgenTiming, Narrow16DpStoresPreservePayloadAndTimingClass) {
+  for (const auto &shape : {".16dp64bit.x4", ".16dp128bit.x2", ".16dp128bit.x4"}) {
+    const unsigned words = std::string(shape) == ".16dp128bit.x4" ? 8 : 4;
+    timing_instruction store(official_instruction(
+        0, "STTM" + std::string(shape), "tmem[UR4],R8"));
+    EXPECT_EQ(store.tcgen05_info.operation, inst_t::tcgen05_static_info_t::STORE);
+    EXPECT_EQ(store.tcgen05_info.timing_index, words == 8 ? 3 : 2);
+    EXPECT_EQ(store.incount + store.extra_in.size(), words + 1);
+    ASSERT_EQ(store.get_register_file_source_count(), words);
+    for (unsigned i = 0; i < words; ++i)
+      EXPECT_EQ(store.get_register_file_source(i).reg, 8 + i);
+  }
+}
+
 }  // namespace
 
 TEST(SassTimingProjectionTest, TcgenMmaReadsAllDescriptorAndScaleRegisters) {
