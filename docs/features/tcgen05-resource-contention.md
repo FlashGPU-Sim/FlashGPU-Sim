@@ -160,3 +160,27 @@ they are not single-instruction latencies. Workspace receipts are under
 `runs/CURRENT.json` -> `tcgen_resource_model_fix_20261126`.
 This closes neither CP service timing nor shared write contention, which are
 tracked separately. It is not a full DSV4 timing requalification.
+
+
+## B200 single-CTA CP effective service
+
+The B200 preset now uses the existing common CP pipeline controls: completion
+192 cycles and initiation 64 cycles for 128x256b, 128x128b, 64x128b and
+32x128b. The unmeasured 4x256b entry retains legacy timing. No global mbarrier
+latency or PTX/SASS-specific completion bypass is added.
+
+This is a conservative effective asynchronous service model: finite acceptance
+and completion, with overlapping copies. The measurements include election,
+commit, polling and notification; they do not uniquely separate those costs
+from the copy engine. In particular, 192 must not be presented as a measured
+physical SRAM latency, nor 64 as a measured byte-bandwidth limit. The five
+measured forms have nearly identical loops despite different source sizes.
+Paired-CTA CP and CP/MMA port contention remain unqualified.
+
+All 30 exact timing configurations and 30 dual-frontend numerical smokes pass.
+Across the 15 two-length slopes, the largest absolute error is 13.17%.
+For 128x256b, single-copy/group-of-four/wait-each loops are respectively
+335/585/1010 cycles on hardware and 291/523/1143 in simulation.
+The measured tuples, before/after cycles and exact case identifiers are in
+`data/calibration/b200-tcgen05-copy-20261126.csv`. The same immutable native
+archive and corrected stride package identified above supply the reference.
