@@ -662,6 +662,40 @@ tcgen05_op_t tcgen05_timing_op(const warp_inst_t *inst,
       op.completion_latency = config->tcgen05_st_completion_latency[index];
       op.initiation_interval = config->tcgen05_st_initiation_interval[index];
     }
+    // Effective execution-stage timing after operand collection, not a raw
+    // SRAM latency. Qualified on B200 using matched 1/4-warp, burst/drain and
+    // dependent roundtrip probes (2026-11-26). Keep packed/half-split forms on
+    // the legacy path: functional support does not imply timing qualification.
+    if (config->gpgpu_tmem_b200_transfer_timing) {
+      using info = inst_t::tcgen05_static_info_t;
+      auto shape = inst->tcgen05_info.transfer_shape;
+      if (ptx) {
+        if (tcgen05_has_option(ptx, TCGEN05_32X32B_OPTION) &&
+            !tcgen05_has_option(ptx, TCGEN05_PACK_16B_OPTION) &&
+            !tcgen05_has_option(ptx, TCGEN05_UNPACK_16B_OPTION))
+          shape = info::ROWS32;
+        else if (tcgen05_has_option(ptx, TCGEN05_16X64B_OPTION))
+          shape = info::ROWS16_64B;
+        else if (tcgen05_has_option(ptx, TCGEN05_16X128B_OPTION))
+          shape = info::ROWS16_128B;
+        else if (tcgen05_has_option(ptx, TCGEN05_16X256B_OPTION))
+          shape = info::ROWS16_256B;
+      }
+      const unsigned words = 1u << index;
+      if (shape == info::ROWS32 && opcode == TCGEN05_ST_OP) {
+        op.partitioned_mem = true;
+        op.initiation_interval =
+            words >= 16 ? words / 2 - 4 : std::max(1u, words / 2);
+        op.completion_latency = std::max(6u, op.initiation_interval);
+      } else if (shape != info::UNQUALIFIED && shape != info::ROWS32) {
+        op.partitioned_mem = true;
+        op.initiation_interval = words * (shape == info::ROWS16_256B ? 2 : 1);
+        op.completion_latency =
+            (opcode == TCGEN05_ST_OP ? 10 : 6) + op.initiation_interval;
+        if (opcode == TCGEN05_ST_OP)
+          op.initiation_interval = op.completion_latency;
+      }
+    }
   } else {
     assert(opcode == TCGEN05_SHIFT_OP);
     op.completion_latency = config->ptx_opcode_tcgen05_shift_latency;

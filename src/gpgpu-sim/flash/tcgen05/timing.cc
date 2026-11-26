@@ -71,9 +71,11 @@ bool tcgen05_unit_t::can_enqueue(tcgen05_op_kind_t kind, uint64_t cycle,
     }
     return false;
   }
-  const uint64_t next = (kind == TCGEN05_TIMING_LD && partition != ~0u)
-                            ? m_mem_next_issue[partition]
-                            : m_next_issue_cycle[kind];
+  const uint64_t next =
+      ((kind == TCGEN05_TIMING_LD || kind == TCGEN05_TIMING_ST) &&
+       partition != ~0u)
+          ? m_mem_next_issue[{kind, partition}]
+          : m_next_issue_cycle[kind];
   if (cycle < next) {
     if (cycle != m_last_issue_interval_stall_cycle) {
       ++m_stats.issue_interval_stall_cycles;
@@ -219,7 +221,8 @@ tcgen05_unit_t::enqueue_warp_mem_op(const tcgen05_warp_stream_key_t &stream,
                                    : cycle + op.completion_latency;
   pending.completion_cycle = pending.backend_done_cycle;
   if (op.partitioned_mem)
-    m_mem_next_issue[stream.partition] = cycle + op.initiation_interval;
+    m_mem_next_issue[{op.kind, stream.partition}] =
+        cycle + op.initiation_interval;
   else
     m_next_issue_cycle[op.kind] = cycle + op.initiation_interval;
   m_pending_ops.push_back(pending);

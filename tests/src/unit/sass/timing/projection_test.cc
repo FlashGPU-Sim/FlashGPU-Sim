@@ -1388,3 +1388,20 @@ TEST(SassTimingProjectionTest, Fp8MaskAndBlockScaleHaveDifferentRegisterSpans) {
                     sources.end(), i < words) << mask << ':' << i;
   }
 }
+
+TEST(SassTcgenTiming, TransferGeometrySurvivesPipelineCopy) {
+  using info = inst_t::tcgen05_static_info_t;
+  for (const char *base : {"LDTM", "STTM"}) {
+    for (const auto &entry : {
+             std::make_pair(".x32", info::ROWS32),
+             std::make_pair(".16dp64bit.x4", info::ROWS16_64B),
+             std::make_pair(".16dp128bit.x2", info::ROWS16_128B),
+             std::make_pair(".16dp256bit.x2", info::ROWS16_256B)}) {
+      timing_instruction inst(official_instruction(
+          0, std::string(base) + entry.first,
+          std::string(base) == "LDTM" ? "R8,tmem[UR4]" : "tmem[UR4],R8"));
+      warp_inst_t copied = inst;
+      EXPECT_EQ(copied.tcgen05_info.transfer_shape, entry.second);
+    }
+  }
+}

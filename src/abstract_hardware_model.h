@@ -1233,7 +1233,7 @@ public:
  // ISA-neutral asynchronous operation. Native adapters populate this before
  // issue; PTX is normalized by flash/tcgen05 alongside its option decoder.
  struct tcgen05_static_info_t {
-   bool pipeline_tmem_load =
+   bool pipeline_tmem_transfer =
        false;  // Dynamic issue: completes via FU writeback.
    enum operation_t {
      NONE,
@@ -1250,6 +1250,9 @@ public:
    unsigned cta_group = 1;
    unsigned timing_index = 0;
    bool ordinary_tmem_load = false;
+   // Geometry is normalized by either frontend; timing lives in the backend.
+   enum transfer_shape_t { UNQUALIFIED, ROWS32, ROWS16_64B, ROWS16_128B, ROWS16_256B };
+   transfer_shape_t transfer_shape = UNQUALIFIED;
  } tcgen05_info;
 
   struct tcgen05_dyn_info_t {

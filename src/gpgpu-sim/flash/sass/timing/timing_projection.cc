@@ -537,6 +537,15 @@ void classify(const instruction &source, const timing_profile &profile,
         source.opcode == "LDTM.x" + std::to_string(words);
     if (!words)
       panic("unqualified native TMEM transfer");
+    if (source.opcode == base ||
+        source.opcode == base + ".x" + std::to_string(words))
+      target.tcgen05_info.transfer_shape = tcinfo::ROWS32;
+    else if (source.opcode.find(".16dp64bit") != std::string::npos)
+      target.tcgen05_info.transfer_shape = tcinfo::ROWS16_64B;
+    else if (source.opcode.find(".16dp128bit") != std::string::npos)
+      target.tcgen05_info.transfer_shape = tcinfo::ROWS16_128B;
+    else if (source.opcode.find(".16dp256bit") != std::string::npos)
+      target.tcgen05_info.transfer_shape = tcinfo::ROWS16_256B;
     target.tcgen05_info.operation =
         base == "LDTM" ? tcinfo::LOAD : tcinfo::STORE;
     for (; words > 1; words >>= 1)

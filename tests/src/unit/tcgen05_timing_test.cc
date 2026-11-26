@@ -415,3 +415,30 @@ TEST(Tcgen05TimingTest, PipelineTmemCompletionPreservesWarpAndWaitCutoff) {
   ASSERT_EQ(events.size(), 1u);
   EXPECT_EQ(events[0].warp_id, 1u);
 }
+
+TEST(Tcgen05TimingTest, TmemStoreServiceAndCompletionArePartitionLocal) {
+  tcgen05_unit_t unit(config());
+  auto op = memory_op(TCGEN05_TIMING_ST, 28, 28);
+  op.partitioned_mem = true;
+  auto first = warp_stream(0, 0), other = warp_stream(0, 1);
+  other.partition = 1;
+  unit.enqueue_warp_mem_op(first, op, 0, 100);
+  EXPECT_FALSE(unit.can_enqueue(TCGEN05_TIMING_ST, 1, 0));
+  EXPECT_TRUE(unit.can_enqueue(TCGEN05_TIMING_ST, 1, 1));
+  unit.enqueue_warp_mem_op(other, op, 1, 101);
+  EXPECT_FALSE(unit.wait_st(first));
+  EXPECT_FALSE(unit.wait_st(other));
+  unit.cycle(28);
+  EXPECT_TRUE(unit.take_completion_events().empty());
+  unit.complete_warp_mem_op(101, 35);
+  unit.cycle(35);
+  auto events = unit.take_completion_events();
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].kind, tcgen05_completion_event_t::RELEASE_ST_WAIT);
+  EXPECT_EQ(events[0].warp_id, 1u);
+  unit.complete_warp_mem_op(100, 36);
+  unit.cycle(36);
+  events = unit.take_completion_events();
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].warp_id, 0u);
+}

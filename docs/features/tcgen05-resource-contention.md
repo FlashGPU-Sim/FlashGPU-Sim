@@ -121,3 +121,42 @@ Only the transfer family uses the versioned
 collection status are tracked separately in the workspace hardware manifest;
 these functional passes do not assert that resource-contention calibration is
 complete.
+
+## Collected B200 evidence and transfer timing
+
+The complete collection passed 270 native numerical smokes, 792 timing cases
+with three repetitions, and 297 full NCU captures. The raw evidence archive is
+`resource-contention-b200-20261126-145240.tar.zst`, SHA256
+`e7627d6225f7c66018f19d1f608eee8e0b609bb149d4169d9c5b4550c2798e93`.
+It contains both versioned packages, the original failed broadcast smoke,
+corrected native results, NCU reports/CSV and immutable simulator comparisons.
+
+`-gpgpu_tmem_b200_transfer_timing` is opt-in (default off, enabled in B200).
+It qualifies ordinary 32dp stores and the 16dp 64/128/256-bit transfer family.
+Both adapters normalize geometry into the common backend; stores and reads
+use partition-local admission and wait for actual execution retirement.
+Independent read/write admission does not assert independent physical SRAM
+ports under arbitrary MMA traffic. Packed and half-warp-split forms retain
+legacy timing and are not qualified by these measurements.
+
+The effective FU timing includes a width-dependent service cost after operand
+collection. For ordinary stores the service is `max(1,W/2)` below W=16 and
+`W/2-4` above, with completion at least six cycles. The negative intercept is
+an effective pipeline residual, not negative physical memory latency.
+For the qualified 16dp family, the service extent is W for 64/128-bit forms and
+2W for 256-bit forms; load completion adds six cycles, store completion adds
+ten. The narrow store initiation equals completion: the per-instruction and
+per-group drain measurements do not support the formerly unrestricted overlap.
+These are first-order effective service models, not inferred physical bank
+wiring. Native measured widths are ordinary x4/x32/x64 and narrow forms
+16x64b.x4, 16x128b.x2, 16x256b.x1/x2; other legal widths are extrapolations.
+
+On 144 exact SASS timing configurations, every numerical check passes and all
+72 two-length loop slopes are within 14.59% of native. Previously the worst
+error exceeded 65%. Ordinary 32dp loads remain unchanged; the three ordinary
+store per-instruction-drain slopes now match exactly. Burst stores and dependent
+roundtrips retain up to 14.59% residual error. Slopes include loop/drain costs;
+they are not single-instruction latencies. Workspace receipts are under
+`runs/CURRENT.json` -> `tcgen_resource_model_fix_20261126`.
+This closes neither CP service timing nor shared write contention, which are
+tracked separately. It is not a full DSV4 timing requalification.

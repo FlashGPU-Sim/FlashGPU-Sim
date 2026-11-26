@@ -155,7 +155,7 @@ private:
   uint64_t m_last_cycle_tick = ~uint64_t(0);
   std::deque<std::pair<uint64_t, uint64_t>> m_compute_windows;
   std::map<tcgen05_thread_stream_key_t, uint64_t> m_owner_done, m_owner_issue;
-  std::map<unsigned, uint64_t> m_mem_next_issue;
+  std::map<std::pair<unsigned, unsigned>, uint64_t> m_mem_next_issue;
   tcgen05_timing_config_t m_config;
   std::vector<pending_op_t> m_pending_ops;
   std::vector<pending_commit_t> m_pending_commits;

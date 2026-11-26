@@ -2332,6 +2332,9 @@ class shader_core_config : public core_config {
       }
     }
 
+    if (gpgpu_tmem_b200_transfer_timing)
+      max_tensor_core_latency = std::max(max_tensor_core_latency, 270u);
+
     // CRITICAL: Validate number of SMs against MAX_STREAMING_MULTIPROCESSORS
     // This check prevents address space overflow in generic addressing mode.
     // With GLOBAL_HEAP_START = 0xC00000000, exceeding MAX_STREAMING_MULTIPROCESSORS
@@ -2690,6 +2693,7 @@ class shader_core_config : public core_config {
   bool gpgpu_wgmma_rf_traffic_include_rs_a;
   bool gpgpu_tcgen05_precision_timing, gpgpu_tcgen05_recurrence_b200;
   bool gpgpu_tcgen05_shared_operand_model, gpgpu_tmem_b200_load_timing;
+  bool gpgpu_tmem_b200_transfer_timing;
   unsigned tcgen05_mma_rates[5];
   unsigned tcgen05_owner_recurrence[2], tcgen05_owner_startup[2];
   unsigned tcgen05_owner_issue_interval, tcgen05_owner_queue_depth[2];

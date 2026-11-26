@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,6 +26,8 @@ def main():
     p.add_argument('--workers', type=int, default=3)
     p.add_argument('--family', choices=('all', 'mma', 'shared', 'solo', 'transfer'), default='all')
     p.add_argument('--frontends', nargs='+', choices=('ptx', 'sass-timing'), default=['sass-timing'])
+    p.add_argument('--case-regex', help='Select named cases before smoke deduplication')
+    p.add_argument('--config-override', action='append', default=[], help='Append one explicit simulator configuration line; recorded in each frozen config')
     p.add_argument('--timing-matrix', action='store_true', help='Replay exact native timing arguments instead of reduced numerical smoke loops')
     p.add_argument('--full-topology', action='store_true', help='Retain all B200 SMs; default numerical smoke uses one SM for these one-CTA probes')
     a = p.parse_args()
@@ -32,6 +35,10 @@ def main():
     out.mkdir(parents=True, exist_ok=False)
     cuda = Path('/usr/local/cuda-13.3')
     rows = [r for r in cases() if a.family == 'all' or r['family'] == a.family]
+    if a.case_regex:
+        rows = [r for r in rows if re.search(a.case_regex, r['name'])]
+    if not rows:
+        p.error('case selection is empty')
     if not a.timing_matrix:
         rows = list(smoke_cases(rows))
     jobs = [(f, r) for f in a.frontends for r in rows]
@@ -53,6 +60,9 @@ def main():
                 shutil.copy2(f, work / f.name)
         cfg = work / 'gpgpusim.config'
         cfg.write_text(cfg.read_text() + '\n-gpgpu_ptx_reorder 0\n-gpgpu_ptx_reorder_sass_guided 0\n-gpgpu_execution_frontend ' + frontend + '\n-gpgpu_max_cycle 3000000\n')
+        if a.config_override:
+            with cfg.open('a') as stream:
+                stream.write('\n'.join(a.config_override) + '\n')
         if not a.full_topology:
             with cfg.open('a') as stream:
                 stream.write('-gpgpu_n_clusters 1\n-gpgpu_n_cores_per_cluster 1\n')

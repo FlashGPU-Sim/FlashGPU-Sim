@@ -2654,15 +2654,17 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   assert(next_inst->valid());
   // ! zhengrong: Note here GPGPU-Sim creates a copy of next_inst.
   **pipe_reg = *next_inst;  // static instruction information
-  // The measured ordinary TMEM table is execution-pipeline latency, not
-  // scheduler-issue latency. Both frontends use the same operand collection,
+  // Qualified TMEM transfer timing is execution-pipeline latency, not a
+  // scheduler-issue deadline. Both frontends use the same operand collection,
   // execution and writeback path; async waits complete at actual retirement.
-  if (m_config->gpgpu_tmem_b200_load_timing &&
-      flash_gpgpu_sim::tcgen05_opcode(next_inst) == TCGEN05_LD_OP) {
+  if ((m_config->gpgpu_tmem_b200_load_timing ||
+       m_config->gpgpu_tmem_b200_transfer_timing) &&
+      (flash_gpgpu_sim::tcgen05_opcode(next_inst) == TCGEN05_LD_OP ||
+       flash_gpgpu_sim::tcgen05_opcode(next_inst) == TCGEN05_ST_OP)) {
     const auto timing =
         flash_gpgpu_sim::tcgen05_timing_op(next_inst, nullptr, m_config);
     if (timing.partitioned_mem) {
-      (*pipe_reg)->tcgen05_info.pipeline_tmem_load = true;
+      (*pipe_reg)->tcgen05_info.pipeline_tmem_transfer = true;
       (*pipe_reg)->latency = timing.completion_latency;
       (*pipe_reg)->initiation_interval = timing.initiation_interval;
     }
@@ -4490,8 +4492,7 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
                   "COMPLETE", "-");
   const uint64_t complete_cycle =
       m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
-  if (m_config->gpgpu_tmem_b200_load_timing && inst.active_count() &&
-      inst.tcgen05_info.pipeline_tmem_load)
+  if (inst.active_count() && inst.tcgen05_info.pipeline_tmem_transfer)
     m_tcgen05.complete_warp_mem_op(inst.get_uid(), complete_cycle);
   if (inst.is_wgmma_warpgroup()) {
     for (unsigned i = 0; i < inst.wgmma_warpgroup_size(); ++i)
@@ -5187,7 +5188,7 @@ tensor_core::tensor_core(register_set *result_port,
 
 bool tensor_core::issue_queue_enabled_for(const warp_inst_t &inst) const {
   if (m_config->gpgpu_tensor_core_issue_queue_depth == 0) return false;
-  if (inst.op != TENSOR_CORE_OP || inst.tcgen05_info.pipeline_tmem_load)
+  if (inst.op != TENSOR_CORE_OP || inst.tcgen05_info.pipeline_tmem_transfer)
     return false;
 
   // The queue idealizes classic warp-level MMA. WGMMA has separate warpgroup
