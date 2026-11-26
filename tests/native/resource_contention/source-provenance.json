@@ -1,0 +1,45 @@
+{
+  "origin_head": "7610af96f90d8b4921c7107df75bfe8ea551ce5b",
+  "files": [
+    {
+      "file": "sources/mma.cu",
+      "origin": "b300/tests/src/microbench/shared/mma_memory_contention/probe.cu",
+      "original_sha256": "0607da68ce3f3c84bd7095691e1303c3af00bcb84b22d38549193b381ecf1990"
+    },
+    {
+      "file": "sources/mma_audit.py",
+      "origin": "b300/tests/src/microbench/shared/mma_memory_contention/audit.py",
+      "original_sha256": "ad0b21a39b140a92e33decb5f630501cf83b3d61db19f604b033759486489748"
+    },
+    {
+      "file": "sources/tmem_solo.cu",
+      "origin": "b300/tests/src/microbench/shared/tmem_shared_calibration/probe.cu",
+      "original_sha256": "f1eb7e1cc25a56fce843af0e1f85c3756378304b170a36dcc3798205bac76636"
+    },
+    {
+      "file": "sources/tmem_ops.cuh",
+      "origin": "b300/tests/src/microbench/shared/tmem_shared_calibration/tmem_ops.cuh",
+      "original_sha256": "3db999ad8603c6a3191aeb24a7448c4d6f79a0e911b360343f16727d45382b74"
+    },
+    {
+      "file": "sources/shared_pair.cu",
+      "origin": "b300/tests/src/microbench/shared/shared_matrix/pair.cu",
+      "original_sha256": "88e459631e652f6eaa58094a021597a9c28abce67af7c80a4cb6a95ad6c190e7"
+    },
+    {
+      "file": "sources/tma_helpers.cuh",
+      "origin": "b300/tests/src/microbench/shared/address_shape/tma_address_64k_sides.cu",
+      "original_sha256": "972a98bfac23017f1bc427d8a41c89d9fbd635a9fc2b510cd1ac4f263dc8eb57",
+      "derivation": "Only shared TMA/barrier/descriptor helpers retained; tile size is a compile-time option. Original standalone kernels excluded."
+    },
+    {
+      "file": "sources/tma_helpers.cuh",
+      "origin": "b300/tests/src/microbench/shared/address_shape/tma_address_32k.cu",
+      "original_sha256": "f4575fe7688d04d0704e8caed4b6ea866d8cd919150db008690fd18520589366",
+      "derivation": "Only shared TMA/barrier/descriptor helpers retained; tile size is a compile-time option. Original standalone kernels excluded."
+    }
+  ],
+  "new_files": [
+    "sources/transfers.cu"
+  ]
+}
