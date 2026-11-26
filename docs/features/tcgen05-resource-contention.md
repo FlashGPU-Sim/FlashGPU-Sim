@@ -302,3 +302,31 @@ more precise `INT_PIPE` trace label, with no timing change.
 The independent collector-set initialization fix `f9658cc0` remains queued for
 extraction onto public main with its reproducer. It is not the above performance
 modeling change and has no SASS-frontend dependency.
+
+## Shared-model history and feature closeout boundary
+
+Do not interpret the new write-side option's default-off state as meaning the
+private shared-region model was never enabled. The retained private B200 NCU
+preset (`b300/configs/SM100_B200_NCU_TWOLEVEL/gpgpusim.config` in the umbrella
+workspace) explicitly sets `gpgpu_shmem_two_level 1`, with 128 B/cycle LSU/TMA
+paths and per-half read/write service. Its README records the October 1
+integration. Research 3D presets also use that private model. These are distinct
+branch/configuration versions, not the current extraction preset.
+
+The current extraction B200 preset enables the per-region MMA/LDS **read**
+model (`gpgpu_tcgen05_shared_operand_model 1`). The new STS/TMA **write** landing
+extension (`gpgpu_shared_region_write_model`) remains optional and off. Both
+retain value; numerical support and timing qualification are separate claims.
+
+For the declared functional scope, the selected DeepInfer acceptance has no
+unresolved new numerical failures, and the later resource smoke passed 270
+launches in each frontend. The DeepInfer result is cumulative across frozen
+repair runtimes, not a new latest-head sweep. Do not extend feature closeout
+into an open-ended resource-model redesign. Remaining STS/TMA delivery
+contention, MMA timing residuals, unqualified transfer/copy timing forms and
+the previously deferred SHIFT boundary are documented follow-ups, not newly
+discovered functional blockers. No supported scope is broadened by this status.
+Before submission, reconcile accepted fixes into their owning branches, extract
+independent public fixes, and run the affected branch gates and PTX isolation
+checks. This is release integration work; no new hardware session is required
+by the evidence currently available.
