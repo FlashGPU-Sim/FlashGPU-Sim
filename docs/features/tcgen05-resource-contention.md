@@ -226,3 +226,18 @@ loop LDCU sites average only 4.69 and 3.78 cycles versus 2 cycles alone.
 Thus constant-load execution alone does not account for the gap. A dedicated
 integer-collector control is needed to distinguish common collector blockage
 from the shared-memory write service itself.
+
+The follow-up controls did not close this gap: reserving only INT collectors
+leaves same-half TMA 61.2% slow, and a temporary oldest-input arbitration patch
+leaves it 53.5% slow. The latter patch is retained only in experiment evidence
+and removed from the production source. Neither diagnostic configuration is
+enabled. Collector-set scheduler initialization did expose an independent
+correctness bug; see `../bugs/operand-collector-set-partition.md`.
+
+After the accepted TMEM/CP changes and collector initialization fix, the current
+B200 preset passes the complete 270-case resource numerical smoke in each
+frontend (540/540). The additional 108 exact MMA/TMEM timing runs put background
+TMEM service within 3.58% of native, including concurrent MMA. MMA itself retains
+its previous roughly 6-17% fast residual; this change does not qualify a new MMA
+recurrence or shared-write model. Per-phase runtime/config hashes and rejected
+controls remain in `qualification-summary.json` under the workspace receipt.
