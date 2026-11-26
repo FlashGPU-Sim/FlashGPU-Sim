@@ -8019,16 +8019,25 @@ void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
   m_initialized = true;
 }
 
-// Extract the existing production initialization unchanged so tests exercise it.
+// Allocation and dispatch partition each collector SET independently. Keep
+// initialization consistent even when generic and specialized sets differ in
+// size; the flattened vector defines arbiter IDs, not scheduler ownership.
 void opndcoll_rfu_t::init_collector_units(const core_config *config) {
-  unsigned reg_id = 0;
-  for (unsigned j = 0; j < m_cu.size(); j++) {
-    if (sub_core_model) {
-      unsigned cusPerSched = m_cu.size() / m_num_warp_scheds;
-      reg_id = j / cusPerSched;
+  for (auto &entry : m_cus) {
+    auto &set = entry.second;
+    if (set.empty()) continue;
+    assert(!sub_core_model ||
+           (m_num_warp_scheds && set.size() % m_num_warp_scheds == 0 &&
+            set.size() >= m_num_warp_scheds));
+    const unsigned per_scheduler = sub_core_model
+        ? set.size() / m_num_warp_scheds : set.size();
+    for (unsigned local = 0; local < set.size(); ++local) {
+      const auto global = std::find(m_cu.begin(), m_cu.end(), &set[local]);
+      assert(global != m_cu.end());
+      set[local].init(global - m_cu.begin(), m_num_banks, config, this,
+                      sub_core_model, sub_core_model ? local / per_scheduler : 0,
+                      m_num_banks_per_sched);
     }
-    m_cu[j]->init(j, m_num_banks, config, this, sub_core_model,
-                  reg_id, m_num_banks_per_sched);
   }
 }
 
