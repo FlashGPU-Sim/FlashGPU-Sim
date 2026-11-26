@@ -1,8 +1,5 @@
 # Blackwell MMA extraction (private draft)
 
-Integration follow-up: [dense FP8 output-mask qualification](blackwell-fp8-mask-qualification.md).
-The original gate counts below describe the earlier checkpoint.
-
 `feature/blackwell-mma` extends the independently qualified TMEM feature. It
 moves arithmetic, operand layouts and scale/accumulator storage together with
 PTX/SASS adapters and complete CUDA launch fixtures. No public PR is open.
@@ -14,7 +11,8 @@ PTX/SASS adapters and complete CUDA launch fixtures. No public PR is open.
   physical accumulator layouts. Both frontends use these implementations.
 - `tcgen05/ptx_mma.cc` adapts PTX operands; `ptx_internal.h` shares operand access
   helpers with the other TCGen05 operations.
-- Native `tcgen_mma_dense.cc` and `tcgen_mma_scaled.cc` adapt native operands.
+- Native `tcgen_mma_dense.cc`, `tcgen_mma_scaled.cc` and `tcgen_mma_tf32.cc`
+  adapt native operands.
   `tmem_internal.h` shares address wrappers with the TMEM adapter.
 - Both frontends publish work and completion into the existing TCGen05 timing
   engine. Native descriptor pairs and implicit SFA/SFB registers are dependency
@@ -29,7 +27,7 @@ new shared bandwidth or recurrence calibration.
 
 The same executable embeds PTX and sm_100a cubins. Each launch synchronizes,
 copies results back, and checks every output against a host reference. The
-`sm100-mma` local gate runs 67 component tests and 23 numerical tests / 49
+`sm100-mma` local gate requires 31 numerical tests / 68
 launches through each frontend:
 
 | Family | Tests / launches per frontend | Checks |
@@ -39,6 +37,8 @@ launches through each frontend:
 | Dense layouts and output forms | 6 / 16 | Ordinary FP16/BF16 TMEM-A M64/M128, both M64 datapath origins; F16 output in shared-A/TMEM-A/WS; A/B transpose combinations and negation |
 | Shared swizzles | 5 / 13 | K-major/MN-major 32/64/128B; starts offset within the swizzle period; shared-A/TMEM-A/WS; MN-major 128B with 32-byte atoms |
 | Negated accumulator predicate | 1 / 2 | Two-MMA FP16/BF16 accumulation with nonuniform inputs and PTX `!p` |
+| Nonzero issuer | 1 / 1 | Lane-7 MMA and commit |
+| Output masks and shared TF32 | 6 / 16 | FP16/BF16/FP8 physical lane masks; shared/TMEM TF32, shared swizzles and preserved masked accumulators |
 
 TMEM-A fixtures populate different values in the physical halves, exposing
 incorrect continuous-row or folded mappings. Layout F uses sixteen datapaths
@@ -57,7 +57,7 @@ Component tests additionally cover mixed-format arithmetic pairs, narrow
 conversions, scale-byte selection, malformed descriptors and physical layouts.
 They do not imply complete-launch acceptance for every ISA modifier.
 
-The inherited `sm100-tmem` gate retains its separate 13 tests / 17 launches,
+The inherited `sm100-tmem` gate retains its separate 14 tests / 18 launches,
 including the explicit contiguous broadcast-copy descriptor cases.
 Both gates use `tests/ci/tcgen05_dual.py`; MMA permits 600 seconds per frontend.
 Scratch configs disable PTX guided reordering for inline-PTX fixtures and select
@@ -66,10 +66,8 @@ hosted CI or real-GPU qualification.
 
 ## Remaining qualification
 
-- Numbered F16/BF16 WS collectors are qualified by the subsequent
-  [WS collector extension](blackwell-ws-collectors.md). Zero-column masks, other
-  WS types and scaled forms beyond the recorded matrix remain pending;
-  unqualified extra `scale-input-d` operands are rejected.
+- Non-default WS collectors/masks, other WS types and scaled forms beyond the
+  recorded matrix; unqualified extra `scale-input-d` operands are rejected.
 - Remaining modifier gates, nonzero pattern-base-offset fields and absolute
   leading-address forms. The shifted-start tests above use base-offset field 0.
 - Paired CTA as a functional unit, followed by CLC and Rubin; then retained
@@ -82,3 +80,23 @@ supports F32 output only. Other conversion implementations were not changed.
 
 References: [NVIDIA PTX TCGen05](https://docs.nvidia.com/cuda/parallel-thread-execution/#tcgen05-instructions)
 and [CUTLASS UMMA descriptors](https://github.com/NVIDIA/cutlass/blob/main/include/cute/arch/mma_sm100_desc.hpp).
+
+The standalone branch includes the negated accumulator predicate correction:
+PTX `!p` is evaluated before the common backend chooses whether to accumulate.
+The complete-launch gate checks two-MMA accumulation for FP16 and BF16 with
+nonuniform inputs; SASS consumes its own predicate spelling into that same
+backend control. See `docs/fixes/tcgen05-accumulator-predicate.md`.
+
+## Current owner refresh
+
+The functional branch inherits TMEM's nonzero CP/commit issuer correction and
+allows a nonzero PTX MMA issuer. It now owns the integration-qualified output
+lane masks, shared-A TF32, dense FP8 masks and consistent descriptor rejection.
+The adapters share descriptor validation, operand gathering, arithmetic and
+masked accumulator writeback. Native mask register dependencies are retained;
+no calibrated recurrence table or production preset changes are imported.
+
+The current local gate is 31 tests / 68 launches per frontend. Its evidence is
+recorded in `/home/wzr/flashgpu-feature-closeout-20261126`. That exact-head gate
+supersedes the earlier owner-refresh counts; integration timing and retained
+DeepInfer results remain separate qualifications.

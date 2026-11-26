@@ -61,7 +61,7 @@ Run `tests/scripts/run_tcgen05_dual_frontend.py` with `--binary`, `--config-dir`
 
 The `sm100-tmem` CI job runs component tests, then
 `tests/ci/check_tmem_dual.py` runs the exact same CUDA executable through PTX and
-SASS timing, requiring 13 numerical tests / 17 launches for each. Its temporary
+SASS timing, requiring 14 numerical tests / 18 launches for each. Its temporary
 configs override frontend selection and disable PTX reordering. The synthetic
 inline-PTX kernels do not supply complete SASS line anchors, so the shipped
 SASS-guided scheduling mode is not a valid test harness for these cases.
@@ -93,18 +93,29 @@ These are simulator qualification results; no new GPU measurements were made.
 The CUDA 13.3 host sweep omits the existing trace-validation test whose driver
 context-creation API belongs to the older-toolkit CI configuration.
 
-## Explicit contiguous copy descriptors
+## Broadcast-copy descriptor semantics
 
-The shared copy decoder also accepts a 128-byte eight-row stride for the
-unswizzled 32/64-row broadcast forms. DeepGEMM's retained SM100 projection uses
-`0x400800003140` (start `0x31400`, LBO zero, SBO 128); the initial extraction
-incorrectly required SBO zero. Both encodings produce the same contiguous image.
-The implementation is shared by PTX and SASS. Noncanonical strides, nonzero LBO
-and broadcast swizzles remain unqualified and are rejected.
+The shared copy decoder accepts zero and explicit 128-byte eight-row strides
+for unswizzled 32/64-row broadcast forms. They are **not equivalent**: zero
+stride repeats the eight-row source group, while stride 128 advances to the
+next group and produces the contiguous image. Both frontends use the same
+implementation. Other strides, nonzero LBO and broadcast swizzles remain
+unqualified and rejected.
 
-Acceptance includes all three broadcast selectors, plus paired scale copy
-feeding a block-scaled MMA across two independent clusters. The retained SASS
-`projection-index-q` now completes: its complete 159-byte mismatch evidence is
-identical to the already-reviewed combined private stack. This preserves the
-prior numerical qualification; it is not bit-exact agreement with hardware.
-PTX acceptance of that real operator still needs the packed conversion feature.
+The complete-launch fixtures use explicit stride 128 when expecting contiguous
+source rows. Native-qualified transfer probes separately check both encodings
+and all three broadcast selectors. The 2026-11-26 owner refresh also includes
+native 16dp64/128-bit stores and their shared fragment/dependency checks.
+Paired scale copies and retained DeepInfer operators are qualified on their
+respective dependent branches, not by the TMEM-only gate.
+
+## Nonzero issuing threads
+
+The owner refresh ports the qualified CP/commit single-thread correction from
+`88a6401d` into this foundation branch. PTX CP and commit preserve the actual
+issuing lane; native uniform operations still have one elected owner. LD/ST
+remain warp collective. The independent lane-1 copy/commit regression now joins
+the base gate: fourteen tests and eighteen launches per frontend pass locally.
+MMA-specific handler changes belong to the dependent MMA branch. This does not
+import the calibrated timing model or change production configurations. Evidence:
+`runs/tcgen-owner-refresh-20261125/tmem-dual-r1/report.json`.

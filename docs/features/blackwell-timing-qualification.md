@@ -1,5 +1,13 @@
 # Blackwell timing qualification (private integration)
 
+This document preserves the original checkpoint and its limitations. Current
+functional ownership and validation are in [the extraction status](tcgen05-extraction-status.md).
+Subsequent work supports nonzero WS masks, dense FP8/output masks, shared-A TF32
+and narrow TMEM stores; the updated TMEM/CP calibration and experimental shared
+write boundary are in [resource qualification](tcgen05-resource-contention.md).
+An unsupported/unmeasured form stated below describes this earlier checkpoint,
+not the latest owner branches.
+
 Follow-up: [mask/TF32 coverage and corrected TMEM timing](blackwell-timing-gap-closure.md)
 supersedes the mask rejection and fixed five-cycle gap below. These original
 measurements remain recorded as the pre-fix baseline.

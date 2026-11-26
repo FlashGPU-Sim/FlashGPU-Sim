@@ -5,7 +5,8 @@ the historical hardware-pending statements below. It also corrects the
 out-of-span start-count oracle. Earlier simulator-only gates remain recorded
 with their original scope and counts.
 
-This follow-up on `feature/blackwell-timing-qualification` extends Blackwell
+This follow-up originated on `feature/blackwell-timing-qualification` and is
+now owned by `feature/blackwell-ws-collectors`. It extends Blackwell
 M64, K16, single-CTA FP16/BF16 WS MMA. It does not enable Rubin collectors or
 claim support for every WS datatype and layout. Public PRs remain unsubmitted.
 
@@ -65,8 +66,18 @@ No production config or timing constant changes.
 These changes belong to the WS feature and shared TCGen05 backend. They do
 not establish another independent public bug. The four previously prepared
 public-fix bundles remain separate. This qualification is not a full DeepInfer
-sweep, a GPU measurement, or hosted CI. Individual feature-owner branches
-still need redistribution of integration-branch follow-ups before publication.
+sweep, a GPU measurement, or hosted CI. The functional fixes have now been redistributed to their owner branches;
+exact-head gates are in `/home/wzr/flashgpu-feature-closeout-20261126`.
+
+## Native-qualified start-count boundary
+
+The owner branch includes the subsequent hardware-qualified clamp: a segment
+start count beyond the active window is clamped before alternating spans are
+walked. Both frontends and the independent fixture oracle use the corrected
+semantics. The older 2026-11-25 report above predates this fix; the current
+eleven-launch gate and host collector checks qualify the corrected version.
+Shift-window timing remains a deferred calibration question, not a mask
+correctness failure or a reason to enable the experimental shared-write model.
 
 ## Prepared B200 hardware probe
 

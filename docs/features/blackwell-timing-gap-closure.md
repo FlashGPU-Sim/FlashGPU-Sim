@@ -1,5 +1,13 @@
 # Blackwell TCGen05: mask, TF32 and TMEM timing closure
 
+This document preserves the original checkpoint and its limitations. Current
+functional ownership and validation are in [the extraction status](tcgen05-extraction-status.md).
+Subsequent work supports nonzero WS masks, dense FP8/output masks, shared-A TF32
+and narrow TMEM stores; the updated TMEM/CP calibration and experimental shared
+write boundary are in [resource qualification](tcgen05-resource-contention.md).
+An unsupported/unmeasured form stated below describes this earlier checkpoint,
+not the latest owner branches.
+
 Integration follow-up: [dense FP8 output-mask qualification](blackwell-fp8-mask-qualification.md).
 The original gate counts below describe the earlier checkpoint.
 

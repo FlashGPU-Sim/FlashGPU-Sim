@@ -63,3 +63,16 @@ are unchanged. Local simulator acceptance is separate from native-GPU testing
 and full DeepInfer acceptance.
 
 Reference: [NVIDIA PTX tcgen05.mma.ws](https://docs.nvidia.com/cuda/parallel-thread-execution/#tcgen05-mma-ws).
+
+## Independent input fixture
+
+The standalone WS branch depends on MMA, not the separate scalar BF16
+conversion feature. Its six existing numerical cases retain exactly the same
+input values, shared layouts, collector sequence, dimensions and output oracle.
+BF16 inputs are generated as their raw 16-bit encodings: every generated value
+is an integer in [-2, 27] with zero low FP32 mantissa bits. Each BF16 host test
+checks the full input domain against CUDA's host BF16 conversion before launch.
+This removes incidental device `cvt.rn.bf16.f32` from input construction; it does
+not add that conversion instruction to the WS feature or qualify it here.
+The pre-isolation fixture exposed this missing prerequisite on PTX while all
+six SASS cases passed. New fixture cycles are not compared as same-binary timing.

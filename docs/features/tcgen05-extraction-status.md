@@ -8,20 +8,26 @@ PR has been opened for this preparation.
 
 ## Current functional branches
 
-| Unit | Private branch | Current head | Qualified code head | Tests / launches per frontend |
+| Unit | Private branch | Local head | Qualified code head | Tests / launches per frontend |
 |---|---|---|---|---:|
-| Single-CTA TMEM | `feature/blackwell-tmem` | `2560b425` | `2560b425` | 13 / 17 |
-| MMA | `feature/blackwell-mma` | `d68f7c69` | `d88e6f5a` | 24 / 51 |
-| Paired CTA | `feature/blackwell-paired-cta` | `217bf7f5` | `40267f1b` | 5 / 15 |
-| CLC | `feature/blackwell-clc` | `4be6ee02` | `c866f925` | 7 / 13 |
-| Numbered Blackwell WS collectors | `feature/blackwell-ws-collectors` | `44fa16cd` | `250b577a` | 6 / 6 |
+| Single-CTA TMEM | `feature/blackwell-tmem` | `a403abda` | `ace09f0c` | 14 / 18 |
+| MMA | `feature/blackwell-mma` | `2343730e` | `bc04128a` | 31 / 68 |
+| Paired CTA | `feature/blackwell-paired-cta` | `a95069e7` | `5b3981f6` | 7 / 18 |
+| CLC | `feature/blackwell-clc` | `c95d1273` | `93bbda30` | 7 / 13 |
+| Numbered Blackwell WS collectors | `feature/blackwell-ws-collectors` | `76c5c3b7` | `efdb755f` | 11 / 11 |
 
-Changes after the qualified code heads are documentation only. Current private
-remote refs, unchanged source/test/config content, frozen runtime and executable
-hashes, numerical logs and PTX-isolation logs were checked in
-`runs/tcgen-functional-branches-20261125/branch-closure-audit.json`.
-The canonical gate index is `report.json` in the same directory. The original
-`private-publish.json` records an earlier push, not these later documentation heads.
+The 2026-11-26 refresh redistributes the native-qualified narrow TMEM stores,
+physical copy stride, MMA masks/shared TF32/descriptor checks and WS mask/shift
+semantics from integration to their functional owners. It leaves calibrated
+B200 timing/config changes in the separate qualification layer. Current heads
+are local preparation heads, not a claim that remote refs or hosted CI match.
+Changes after each code head are documentation only; source, tests and configs
+were compared explicitly.
+
+Current evidence: `/home/wzr/flashgpu-feature-closeout-20261126/final-report.json`,
+indexed by `runs/CURRENT.json`. It records local CI, complete PTX/SASS launches,
+PTX timing isolation, frozen runtime hashes and historical failing attempts.
+Older `runs/tcgen-functional-branches-20261125` reports remain historical evidence.
 
 The dependency structure is:
 
@@ -49,8 +55,9 @@ calibration, and do not qualify every ISA modifier.
 | CLC | `flash/clc.cc`, ordinary kernel admission cursor | PTX cancellation and native `UGETNEXTWORKID` share one asynchronous service |
 | WS collectors | `tcgen05/collector.h`, CTA-scoped banks in the common TMEM manager | Numbered Blackwell WS B fill/use/lastuse/discard; no duplicate native collector state |
 
-The explicit contiguous broadcast-copy stride fix is present in TMEM and its
-paired scale-copy consumer. The negated PTX accumulator predicate fix is in
+The broadcast-copy stride fix is present in TMEM and its paired scale-copy
+consumer: zero stride repeats eight rows; explicit stride 128 advances to the
+next group. The encodings are not interchangeable. The negated PTX accumulator predicate fix is in
 MMA. WS BF16 fixture inputs are constructed from equivalent raw bits, avoiding
 an incidental dependency on the separate scalar-conversion feature.
 
@@ -60,6 +67,31 @@ Detailed matrices and exclusions are in [TMEM](blackwell-tmem.md),
 Rubin/SM107, research placement, ideal-memory experiments and unqualified ISA
 modifiers stay separate. Pair/collector throughput and arbitration timing have
 not been newly calibrated by these functional gates.
+
+## Separate timing qualification layer
+
+`feature/blackwell-timing-qualification` retains the assembled implementation
+and hardware-calibrated performance layer. It is not a minimal functional PR.
+Its model includes typed MMA rates and shape-dependent B200 recurrence, TMEM
+LD/ST service and completion widths, CP service, ownership and queueing, and
+MMA shared-operand read contention. Both frontends feed common timing metadata.
+Ordinary public PTX defaults are not silently replaced by B200 parameters.
+
+The 2026-11-26 retained resource qualification records 540/540 dual-frontend
+numerical checks, 144 TMEM timing cases and 30 copy timing cases. Maximum
+absolute two-length slope errors are 14.59% and 13.17%, respectively. Mixed
+MMA/TMEM numerical checks pass but MMA retains up to about 17% timing residual.
+These results belong to frozen integration runtimes, not the owner gate above.
+Evidence: `/home/wzr/flashgpu-hardware/b200/resource-model-fix-20261126/qualification-summary.json`.
+
+The existing B200 MMA/LDS regional shared-read model is enabled in integration.
+The newer STS/TMA regional write extension remains **experimental and OFF**.
+It does not yet reproduce shared-control/operand-delivery contention. It must
+not be presented as calibrated simply because its numerical checks pass.
+Packed/half-warp TMEM, paired copy/contention timing and SHIFT-window boundaries
+remain explicitly unqualified or deferred. These are bounded timing follow-ups,
+not a commitment to fit every error before publishing the functional features.
+Rubin/SM107 and 3D placement/NoC configurations are outside this series.
 
 ## Retained DeepInfer acceptance
 
@@ -105,12 +137,16 @@ This is an ordinary memory/control prerequisite, not new MMA arithmetic.
 
 ## Independent common fixes
 
-Fourteen private branches are based directly on public `b3378cb9`, independently
+Fifteen independent fix branches are based directly on public `b3378cb9`, independently
 of the TCGen05 stack. Each has public-base reproduction evidence and a passing
 local result after the fix. Exact test scope, unchanged-binary checks and limits
 remain in the individual reports indexed by
 `runs/tcgen-functional-branches-20261125/public-fix-index.json`.
-No hosted CI or public PR is claimed.
+The additional collector ownership fix is indexed by
+`/home/wzr/flashgpu-feature-closeout-20261126/public-collector-reproduction.json`.
+Its production-helper reproducer fails before the fix, then all eleven
+collector tests and three PTX isolation tests pass. No hosted CI or public PR
+is claimed.
 
 | Private branch (`fix/…-public`) | Fix head | Scope |
 |---|---|---|
@@ -128,6 +164,7 @@ No hosted CI or public PR is claimed.
 | `ptx-funnel-shift-boundaries` | `ce1e3aee` | Existing PTX shift forms and common primitive |
 | `shared-store-fence-visibility` | `53225c29` | Fence waits for queued shared-store visibility |
 | `ptx-leading-bit-boundaries` | `9ff0a6a0` | Existing signed/unsigned 32/64-bit bfind boundaries |
+| `collector-set-ownership` | `ce26c9cc` | Scheduler ownership uses each collector set’s local index, preserving global arbiter IDs |
 
 Two other candidates remain with their owning features:
 

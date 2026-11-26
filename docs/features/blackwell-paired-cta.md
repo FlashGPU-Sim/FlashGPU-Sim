@@ -29,8 +29,8 @@ This branch does not introduce Rubin or change production presets.
 ## Numerical acceptance
 
 `tests/src/tcgen05/mma_pair_test.cu` embeds PTX and sm_100a code in one executable.
-The `sm100-pair` CI job runs component tests, then five numerical tests with
-15 complete launches through each frontend:
+The `sm100-pair` CI job runs component tests, then seven numerical tests with
+18 complete launches through each frontend:
 
 | Family | Launches per frontend | Coverage |
 |---|---:|---|
@@ -39,6 +39,8 @@ The `sm100-pair` CI job runs component tests, then five numerical tests with
 | Block-scaled | 1 | FP4 x FP8, distinct A/B values and scale factors, multicast completion |
 | Cluster isolation | 1 | Two independent CTA pairs in one launch |
 | Explicit contiguous scale copy | 1 | Broadcast-copy stride feeding paired block-scaled MMA |
+| Nonzero issuer | 1 | Lane-7 CP/MMA/multicast commit across two clusters |
+| Output masks | 2 | Distinct nonzero physical lane masks in both CTAs, FP16/BF16 |
 
 SFB is the complete N-wide image replicated in both CTAs, not two scale halves
 concatenated from the CTAs. The mixed fixture checks distinct column scales in
@@ -70,6 +72,8 @@ and dependencies, and over-completion rejection before architectural stores.
 
 Reference: [NVIDIA PTX TCGen05](https://docs.nvidia.com/cuda/parallel-thread-execution/#tcgen05-instructions).
 
-The explicit contiguous scale-stride follow-up adds a paired block-scaled MMA
-fixture. The paired CI gate now requires 5 tests / 15 launches per frontend;
-PTX and SASS reuse the common copy descriptor decoder.
+The current gate requires 7 tests / 18 launches per frontend, including the
+nonzero issuer and both CTAs' nonzero output masks. The scale-copy fixture uses
+explicit stride 128 for contiguous source rows; stride zero repeats eight-row
+groups. PTX and SASS reuse the common copy decoder and masked writeback.
+Exact-head evidence is in `/home/wzr/flashgpu-feature-closeout-20261126`.
