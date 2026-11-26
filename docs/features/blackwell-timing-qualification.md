@@ -109,3 +109,7 @@ PTX and SASS share the new engine; they do not have identical instruction mixes
 or identical total kernel cycles. This integration has not repeated all 117
 DeepInfer acceptance entries or made a full-workload accuracy claim. Feature
 owner branches and public PRs must be updated only after this qualification.
+
+The original capture acceptance was subsequently closed under its recorded
+frozen per-entry runtimes; see [resource preparation and acceptance closeout](tcgen05-resource-contention.md).
+That closeout is separate from a full timing-accuracy sweep on this latest head.

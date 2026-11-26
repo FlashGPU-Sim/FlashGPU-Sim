@@ -59,6 +59,13 @@ was changed for these two corrections. **All 661 host tests pass.**
 
 Workspace receipts live at `runs/tcgen-closeout-20261126/`; consult
 `runs/CURRENT.json` for final completion status and package/archive paths.
+The prepared package passed **270 SASS and 270 PTX numerical smoke runs**.
+Its compressed archive is
+`/home/wzr/flashgpu-native-packages/resource-contention-20261126-final.tar.zst`
+(3,563,469 bytes; SHA256
+`f9d1ade5bcea5220d512775ba49eb76ebad88da130a2c76defefbb80149b1df1`).
+All 92 manifest entries were checked against the archived contents. The
+archive contains prepared workloads and local validation, not new GPU results.
 `qualify.py` joins local replay evidence by exact binary hash and arguments,
 verifies configuration/log receipts, and requires both frontends for every
 packaged numerical smoke configuration. One-CTA numerical smoke may use one
@@ -70,6 +77,12 @@ permutations must preserve all source-token multisets, final outputs, remote
 combine contributions, and active intermediates after alignment by
 `(source rank, token, topk)`. An accepted permutation does not mean bit-exact
 agreement with the original GPU run or erase previously accepted residuals.
+The interrupted PTX L2 replay completed at 969,950 cycles. All four outstanding
+MoE entries passed the complete permutation checks. The **117-entry capture
+acceptance is closed**: 67 strict GPU passes, 46 unchanged accepted numerical
+residuals, and four byte-proven dispatch permutations. This covers 59 captured
+SASS entries and 58 available PTX entries under the recorded frozen runtimes;
+it is not a new same-head timing-accuracy sweep.
 
 No new hardware contention results are claimed here. Paired-CTA port behavior,
 copy/MMA contention, and a complete physical TMEM/shared write model remain
