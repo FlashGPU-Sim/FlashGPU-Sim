@@ -8004,7 +8004,6 @@ void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
 
   sub_core_model = shader->get_config()->sub_core_model;
   m_num_warp_scheds = shader->get_config()->gpgpu_num_sched_per_core;
-  unsigned reg_id = 0;
   if (sub_core_model) {
     assert(num_banks % shader->get_config()->gpgpu_num_sched_per_core == 0);
     assert(m_num_warp_scheds <= m_cu.size() &&
@@ -8013,18 +8012,24 @@ void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
   m_num_banks_per_sched =
       num_banks / shader->get_config()->gpgpu_num_sched_per_core;
 
+  init_collector_units(shader->get_config());
+  for (unsigned j = 0; j < m_dispatch_units.size(); j++) {
+    m_dispatch_units[j].init(sub_core_model, m_num_warp_scheds);
+  }
+  m_initialized = true;
+}
+
+// Extract the existing production initialization unchanged so tests exercise it.
+void opndcoll_rfu_t::init_collector_units(const core_config *config) {
+  unsigned reg_id = 0;
   for (unsigned j = 0; j < m_cu.size(); j++) {
     if (sub_core_model) {
       unsigned cusPerSched = m_cu.size() / m_num_warp_scheds;
       reg_id = j / cusPerSched;
     }
-    m_cu[j]->init(j, num_banks, shader->get_config(), this, sub_core_model,
+    m_cu[j]->init(j, m_num_banks, config, this, sub_core_model,
                   reg_id, m_num_banks_per_sched);
   }
-  for (unsigned j = 0; j < m_dispatch_units.size(); j++) {
-    m_dispatch_units[j].init(sub_core_model, m_num_warp_scheds);
-  }
-  m_initialized = true;
 }
 
 unsigned register_bank(int regnum, int wid, unsigned num_banks,
