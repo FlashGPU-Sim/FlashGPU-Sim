@@ -13,6 +13,10 @@ python3 /new/package/summarize.py /new/results
 uses one simulated SM to avoid processing idle cores; `--full-topology` retains
 the full B200 preset. Each run freezes its config, runtime and executable hash.
 Neither smoke variant establishes native throughput or cross-CTA contention.
+Use `run_sim.py --timing-matrix --family solo` (or `transfer`, `mma`, `shared`)
+to replay the exact native timing loop lengths. These runs use a frozen runtime
+and per-case configurations just like smoke runs; compare their measured clock
+intervals to the corresponding native cases, not their whole-kernel duration.
 
 All binaries retain both sm100a cubins and PTX. `source-provenance.json` records
 retained private probes and their original hashes; build receipts record the

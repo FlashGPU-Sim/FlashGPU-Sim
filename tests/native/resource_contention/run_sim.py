@@ -25,19 +25,23 @@ def main():
     p.add_argument('--workers', type=int, default=3)
     p.add_argument('--family', choices=('all', 'mma', 'shared', 'solo', 'transfer'), default='all')
     p.add_argument('--frontends', nargs='+', choices=('ptx', 'sass-timing'), default=['sass-timing'])
+    p.add_argument('--timing-matrix', action='store_true', help='Replay exact native timing arguments instead of reduced numerical smoke loops')
     p.add_argument('--full-topology', action='store_true', help='Retain all B200 SMs; default numerical smoke uses one SM for these one-CTA probes')
     a = p.parse_args()
     root, package, runtime, out = (x.resolve() for x in (a.root, a.package, a.runtime, a.out))
     out.mkdir(parents=True, exist_ok=False)
     cuda = Path('/usr/local/cuda-13.3')
-    rows = list(smoke_cases([r for r in cases() if a.family == 'all' or r['family'] == a.family]))
+    rows = [r for r in cases() if a.family == 'all' or r['family'] == a.family]
+    if not a.timing_matrix:
+        rows = list(smoke_cases(rows))
     jobs = [(f, r) for f in a.frontends for r in rows]
     # This can run concurrently with long acceptance work. Never rebuild or
     # replace either library or fixture underneath these launches.
     library = runtime / 'libcudart.so'
     report = dict(status='RUNNING', runtime=str(library), runtime_sha256=sha(library),
                   workers=a.workers, threads_per_job=1, total=len(jobs), runs=[],
-                  numerical_smoke=True, full_topology=a.full_topology)
+                  numerical_smoke=not a.timing_matrix, full_topology=a.full_topology,
+                  timing_matrix=a.timing_matrix)
     binary_hashes = {r['binary']: sha(package / 'bin' / r['binary']) for r in rows}
 
     def run(item):
