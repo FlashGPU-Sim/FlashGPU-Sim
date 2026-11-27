@@ -34,6 +34,7 @@
 
 #include "instructions.h"
 #include "ptx_ir.h"
+#include "../gpgpu-sim/flash/ptx_sched/ptx_scheduler.h"
 class ptx_recognizer;
 typedef void *yyscan_t;
 #include <stdio.h>
@@ -431,6 +432,7 @@ void function_info::ptx_assemble() {
 
   recognize_dynamic_shared_mem();
   flash_gpgpu_sim::run_ptx_reorder(this);
+  flash_gpgpu_sim::mark_explicit_elected_tma_regions(m_instructions);
 
   fflush(stdout);
   std::list<ptx_instruction *>::iterator i;
@@ -1800,6 +1802,17 @@ static unsigned datatype2size(unsigned data_type) {
 }
 
 void ptx_instruction::pre_decode() {
+  tma_issue_form = tma_issue_form_t::NONE;
+  if (m_opcode == TMA_OP) {
+    bool group_control = false, paired = false;
+    for (int option : get_options()) {
+      group_control |= option == COMMIT_GROUP_OPTION || option == WAIT_GROUP_OPTION;
+      paired |= option == TCGEN05_CTA_GROUP_2_OPTION;
+    }
+    if (!group_control)
+      tma_issue_form = paired ? tma_issue_form_t::EXPLICIT
+                              : tma_issue_form_t::IMPLICIT;
+  }
   pc = m_PC;
   isize = m_inst_size;
   for (unsigned i = 0; i < MAX_OUTPUT_VALUES; i++) {

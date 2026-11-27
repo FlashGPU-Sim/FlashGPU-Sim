@@ -891,6 +891,7 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
 void shader_core_ctx::reinit(unsigned start_thread, unsigned end_thread,
                              bool reset_not_completed) {
   if (reset_not_completed) {
+    m_next_cta_admission_cycle = 0;
     reset_frontend();
     m_not_completed = 0;
     m_active_threads.reset();
@@ -2296,6 +2297,18 @@ void shader_core_ctx::issue_wgmma_warpgroup(register_set &pipe_reg_set,
     unsigned warp_id = warp_ids[i];
     if (warp_id == representative_warp_id) {
       func_exec_inst(**pipe_reg);
+  if (m_config->gpgpu_tma_instruction_issue_hold && (*pipe_reg)->get_active_mask().any() &&
+      next_inst->tma_issue_form == inst_t::tma_issue_form_t::IMPLICIT &&
+      !(next_inst->tma_explicit_elected_region && (*pipe_reg)->active_count() == 1)) {
+    m_warp[warp_id]->tma_instruction_issue_hold().note_issue(
+        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+        m_config->gpgpu_tma_ptx_issue_hold_latency
+            ? m_config->gpgpu_tma_ptx_issue_hold_latency : next_inst->latency,
+        m_config->gpgpu_tma_ptx_issue_hold_interval
+            ? m_config->gpgpu_tma_ptx_issue_hold_interval : next_inst->initiation_interval);
+  }
+
+
       updateSIMTStack(warp_id, *pipe_reg);
     } else {
       warp_inst_t participant_inst = *next_inst;
@@ -3379,6 +3392,17 @@ void scheduler_unit::cycle() {
                 static_cast<unsigned long long>(pI->pc));
             fflush(stderr);
             abort();
+          }
+          const auto &active_mask = m_shader->get_active_mask(warp_id, pI);
+          if (m_shader->m_config->gpgpu_tma_instruction_issue_hold &&
+              !pI->has_explicit_dependency_control() &&
+              !(pI->tma_explicit_elected_region && active_mask.count() == 1) &&
+              warp(warp_id).tma_instruction_issue_hold().stalls(
+                  now, pI->tma_issue_form != inst_t::tma_issue_form_t::NONE)) {
+            issue_trace_log(m_shader, m_id, warp_id,
+                            (*iter)->get_dynamic_warp_id(), pI,
+                            "STALL_TMA_ISSUE_HOLD", "TMA");
+            break;
           }
           const bool shared_store_issue_ready =
               !shared_store_recurrence_applies(m_shader->m_config, pI) ||
@@ -9596,11 +9620,11 @@ unsigned simt_core_cluster::issue_block2core_for_kernel(
   return num_blocks_issued;
 }
 
-unsigned simt_core_cluster::issue_block2core() {
+unsigned simt_core_cluster::issue_block2core(unsigned max_admissions) {
   unsigned num_blocks_issued = 0;
   const unsigned n = num_cores();
   const unsigned rr_start = m_cta_issue_next_core;
-  for (unsigned i = 0; i < n; i++) {
+  for (unsigned i = 0; i < n && num_blocks_issued < max_admissions; i++) {
     unsigned core = gpc_cta_issue_visit(i, rr_start, n);
 
     kernel_info_t *kernel;

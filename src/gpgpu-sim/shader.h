@@ -164,6 +164,7 @@ class shd_warp_t {
     m_done_exit = true;
     m_last_fetch = 0;
     m_tma_issue_timing.reset();
+    m_tma_instruction_issue_hold.reset();
     m_tensormap_issue_timing.reset();
     m_shared_load_issue_timing.reset();
     m_shared_store_issue_timing.reset();
@@ -206,6 +207,7 @@ class shd_warp_t {
     m_active_threads = active;
     m_done_exit = false;
     m_tma_issue_timing.reset();
+    m_tma_instruction_issue_hold.reset();
     m_tensormap_issue_timing.reset();
     m_shared_load_issue_timing.reset();
     m_shared_store_issue_timing.reset();
@@ -281,6 +283,9 @@ class shd_warp_t {
   virtual address_type get_pc() const { return m_next_pc; }
   virtual kernel_info_t *get_kernel_info() const;
   void set_next_pc(address_type pc) { m_next_pc = pc; }
+  flash_gpgpu_sim::tma_instruction_issue_hold_t &tma_instruction_issue_hold() {
+    return m_tma_instruction_issue_hold;
+  }
   void begin_tma_issue_delay(unsigned long long issue_cycle,
                              unsigned latency) {
     m_tma_issue_timing.begin(issue_cycle, latency);
@@ -400,7 +405,8 @@ class shd_warp_t {
 
   bool instruction_dependency_ready(const inst_t &inst,
                                     uint64_t cycle) {
-    return m_instruction_dependencies.ready(inst.get_dependency_control(),
+    return m_instruction_dependencies.register_results_ready(inst, cycle) &&
+           m_instruction_dependencies.ready(inst.get_dependency_control(),
                                             cycle, inst.op);
   }
   bool instruction_control_delay_ready(uint64_t cycle) const {
@@ -413,6 +419,8 @@ class shd_warp_t {
   }
   void instruction_dependency_issue(const warp_inst_t &inst,
                                     uint64_t cycle) {
+    m_instruction_dependencies.issue_register_results(
+        inst, inst.get_active_mask().any(), cycle);
     m_instruction_dependencies.issue(inst.get_dependency_control(),
                                      inst.get_uid(),
                                      inst.get_active_mask().any(), cycle);
@@ -483,6 +491,7 @@ class shd_warp_t {
   unsigned long long m_last_fetch;
   uint64_t m_instruction_fetch_ready_cycle;
 
+  flash_gpgpu_sim::tma_instruction_issue_hold_t m_tma_instruction_issue_hold;
   flash_gpgpu_sim::tma_issue_timing_t m_tma_issue_timing;
   flash_gpgpu_sim::tma_issue_timing_t m_tensormap_issue_timing;
   flash_gpgpu_sim::shared_load_issue_timing_t m_shared_load_issue_timing;
@@ -2609,6 +2618,9 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_tma_request_bytes_per_cycle;
   // Minimum issue-to-next-instruction latency for an active regular TMA copy.
   // This issue-side warp occupancy is independent of data completion.
+  bool gpgpu_tma_instruction_issue_hold = false;
+  unsigned gpgpu_tma_ptx_issue_hold_latency = 0;
+  unsigned gpgpu_tma_ptx_issue_hold_interval = 0;
   unsigned int gpgpu_tma_issue_to_next_instruction_latency;
   // Minimum issue-to-issue recurrence for ordinary shared loads/stores from
   // one warp. Aggregate cross-warp service is modeled by the shared dispatcher.
@@ -2630,6 +2642,14 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_cp_async_wait_release_latency;
   bool gpgpu_cta_load_balance;
   unsigned int gpgpu_cta_replacement_latency;
+  unsigned gpgpu_cta_dispatch_width = 0;
+  unsigned gpgpu_cta_dispatch_per_gpc = 0;
+  unsigned gpgpu_cta_dispatch_interval = 0;
+  bool gpgpu_native_imad_on_sp = false;
+  bool gpgpu_native_fp32_aux_paths = false;
+  unsigned gpgpu_native_imad_wide_initiation = 0;
+  unsigned gpgpu_native_imad_wide_min_issue_interval = 0;
+  unsigned gpgpu_native_imad_wide_result_latency = 0;
   unsigned int gpgpu_tma_idealized_memory;
   bool gpgpu_tma_oob_l2_traffic;
   unsigned int gpgpu_mbarrier_arrive_latency;
@@ -3878,6 +3898,7 @@ class shader_core_ctx : public core_t {
   unsigned m_tpc;  // texture processor cluster id (aka, node id when using
                    // interconnect concentration)
   unsigned m_total_ctas_issued = 0;  // CTAs issued for current kernel
+  unsigned long long m_next_cta_admission_cycle = 0;
   const shader_core_config *m_config;
   const memory_config *m_memory_config;
   class simt_core_cluster *m_cluster;
@@ -4104,7 +4125,7 @@ class simt_core_cluster {
   void dsm_cycle();
 
   void reinit();
-  unsigned issue_block2core();
+  unsigned issue_block2core(unsigned max_admissions = ~0u);
   void cache_flush();
   void cache_invalidate();
   bool icnt_injection_buffer_full(unsigned sm_id, unsigned size, bool write);

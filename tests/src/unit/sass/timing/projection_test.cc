@@ -1405,3 +1405,69 @@ TEST(SassTcgenTiming, TransferGeometrySurvivesPipelineCopy) {
     }
   }
 }
+
+TEST(SassTimingProjectionTest, NativeImadFmaRoutingAndWideIssueOverrides) {
+  timing_profile profile;
+  profile.integer_latency.fill(4);
+  profile.integer_initiation.fill(2);
+  profile.imad_on_sp = true;
+  profile.imad_wide_initiation = 4;
+  profile.imad_wide_min_issue_interval = 6;
+  profile.imad_wide_result_latency = 9;
+  auto source = official_instruction(0x20, "IMAD.WIDE.U32", "R2,R4,R5,RZ");
+  source.control.stall = 6;
+  timing_instruction wide(source, profile);
+  EXPECT_EQ(wide.op, SP_OP);
+  EXPECT_EQ(wide.oprnd_type, INT_OP);
+  EXPECT_EQ(wide.initiation_interval, 4u);
+  EXPECT_EQ(wide.get_dependency_control().stall_cycles, 6u);
+  EXPECT_EQ(wide.get_native_result_visibility_latency(), 9u);
+  timing_instruction regular(official_instruction(0x30, "IMAD", "R2,R3,R4,R5"), profile);
+  EXPECT_EQ(regular.op, SP_OP);
+  EXPECT_EQ(regular.initiation_interval, 2u);
+  timing_instruction alu(official_instruction(0x40, "IADD3", "R2,R3,R4,R5"), profile);
+  EXPECT_EQ(alu.op, ALU_OP);
+  timing_instruction address(official_instruction(0x50, "IMAD.WIDE.U32", "R2,R4,0x10,R6"), profile);
+  EXPECT_EQ(address.get_native_result_visibility_latency(), 0u);
+  EXPECT_EQ(address.initiation_interval, 2u);
+  profile.imad_on_sp = false;
+  profile.imad_wide_initiation = 0;
+  profile.imad_wide_min_issue_interval = 0;
+  profile.imad_wide_result_latency = 0;
+  timing_instruction legacy(source, profile);
+  EXPECT_EQ(legacy.op, ALU_OP);
+  EXPECT_EQ(legacy.get_dependency_control().stall_cycles, 6u);
+}
+
+
+TEST(SassTimingProjectionTest, QualifiedFp32AuxPathsDoNotRedirectWideConversions) {
+  timing_profile profile;
+  profile.fp32_aux_paths = true;
+  profile.integer_latency[0] = 4;
+  profile.integer_initiation[0] = 2;
+  profile.sfu_latency = 12;
+  profile.sfu_initiation = 8;
+  for (auto pair : {std::make_pair("F2FP.BF16.F32.PACK_AB", "R4,R6,R7"),
+                    std::make_pair("FSETP.GEU.AND", "P0,PT,R4,R5,PT")}) {
+    const auto source = official_instruction(0, pair.first, pair.second);
+    const timing_instruction inst(source, profile), legacy(source);
+    EXPECT_EQ(inst.op, ALU_OP);
+    EXPECT_EQ(inst.oprnd_type, FP_OP);
+    EXPECT_EQ(inst.initiation_interval, 2u);
+    EXPECT_EQ(legacy.op, SP_OP);
+  }
+  for (auto pair : {std::make_pair("I2F.U32.RP", "R0,UR7"),
+                    std::make_pair("F2I.FTZ.U32.TRUNC.NTZ", "R3,R2")}) {
+    const auto source = official_instruction(0, pair.first, pair.second);
+    const timing_instruction inst(source, profile), legacy(source);
+    EXPECT_EQ(inst.op, SFU_OP);
+    EXPECT_TRUE(inst.is_mio_client());
+    EXPECT_EQ(inst.latency, 12u);
+    EXPECT_EQ(inst.initiation_interval, 8u);
+    EXPECT_EQ(legacy.op, SP_OP);
+  }
+  const timing_instruction wide(
+      official_instruction(0, "F2I.U64.TRUNC", "R12,R12"), profile);
+  EXPECT_EQ(wide.op, SP_OP);
+  EXPECT_FALSE(wide.is_mio_client());
+}

@@ -715,6 +715,7 @@ class memory_partition_unit {
 
   void visualizer_print(gzFile visualizer_file) const;
   void print_stat(FILE *fp) const;
+  void print_locality_stat(FILE *fp) const;
   void visualize() const { m_dram->visualize(); }
   void print(FILE *fp) const;
   void handle_memcpy_to_gpu(size_t dst_start_addr, unsigned subpart_id,
@@ -786,6 +787,10 @@ class memory_partition_unit {
   // aggregate service rate.
   simple_dram_service_budget m_simple_dram_issue_budget;
   simple_dram_service_budget m_simple_dram_return_budget;
+  // Fixed-latency aggregate-service state. Credits are represented in units
+  // of the configured service-rate denominator to avoid floating-point drift.
+  unsigned long long m_simple_dram_local_reads;
+  unsigned long long m_simple_dram_remote_reads;
   unsigned long long m_simple_dram_cycles;
   unsigned long long m_simple_dram_issue_requests;
   unsigned long long m_simple_dram_issue_atoms;

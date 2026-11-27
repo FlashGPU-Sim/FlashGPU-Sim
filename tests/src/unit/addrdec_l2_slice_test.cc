@@ -150,14 +150,14 @@ TEST(AddrdecL2SliceTest, EveryTwelveLineWindowIsABalancedPermutation) {
   }
 }
 
-TEST(AddrdecL2SliceTest, IPolyChannelHashSpreadsTmaRowStrideWithoutAliasing) {
+void CheckChannelHash(unsigned mode) {
   ConfiguredAddressMapping decoded(
       /*CONSECUTIVE=*/0, NON_POWER2_L2_SLICE_STABLE_ROTATION);
   ConfiguredAddressMapping hashed(
       /*CONSECUTIVE=*/0, NON_POWER2_L2_SLICE_STABLE_ROTATION, kChannels,
       kSlicesPerChannel, /*ipoly_non_power2_balanced=*/0,
       /*ipoly_channel_stable_l2slice=*/0,
-      /*non_power2_l2_channel_indexing=*/2);
+      /*non_power2_l2_channel_indexing=*/mode);
   std::array<unsigned long long, kChannels> decoded_channels{};
   std::array<unsigned long long, kChannels> hashed_channels{};
   std::unordered_set<unsigned long long> destinations;
@@ -229,6 +229,13 @@ TEST(AddrdecL2SliceTest, IPolyChannelHashSpreadsTmaRowStrideWithoutAliasing) {
       }
     }
   }
+}
+
+TEST(AddrdecL2SliceTest, IPolyChannelHashSpreadsTmaRowStrideWithoutAliasing) {
+  CheckChannelHash(2);
+}
+TEST(AddrdecL2SliceTest, XorChannelHashSpreadsTmaRowStrideWithoutAliasing) {
+  CheckChannelHash(1);
 }
 
 TEST(AddrdecL2SliceTest, CheckedInMapIsStableAndKeepsEachLineOnOneSlice) {

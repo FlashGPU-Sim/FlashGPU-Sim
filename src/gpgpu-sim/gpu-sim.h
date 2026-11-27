@@ -233,6 +233,7 @@ class memory_config {
     assert(gpgpu_dram_timing_opt);
     assert(l2_multi_issue_port_model <= 1);
     assert(l2_rop_delay_output_sectors_per_cycle > 0);
+    assert(l2_mshr_release_requests_per_cycle > 0);
     if (l2_multi_issue_port_model == 1) {
       assert(l2_lookup_sectors_per_cycle > 0);
       assert(l2_data_port_sectors_per_cycle > 0);
@@ -386,7 +387,11 @@ class memory_config {
   unsigned l2_fill_port_sectors_per_cycle;
   bool l2_shared_data_array;
   bool l2_tma_request_coalescing;
+  unsigned l2_mshr_release_requests_per_cycle;
   unsigned dram_latency;
+  unsigned simple_dram_local_read_latency;
+  unsigned simple_dram_remote_read_latency;
+  unsigned simple_dram_locality_stripe_bytes;
 
   // DRAM parameters
 

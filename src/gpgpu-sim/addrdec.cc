@@ -140,7 +140,7 @@ void linear_to_raw_address_translation::addrdec_setoption(option_parser_t opp) {
       opp, "-gpgpu_non_power2_l2_channel_indexing", OPT_UINT32,
       &non_power2_l2_channel_indexing,
       "Channel indexing used with a non-power-of-two per-channel L2-slice "
-      "count: 0 = decoded channel, 2 = 16-way IPOLY channel hash. The local-slice policy "
+      "count: 0 = decoded channel, 1 = high-bit XOR folding, 2 = IPOLY channel hash. The local-slice policy "
       "remains independently selected.",
       "0");
   option_parser_register(
@@ -235,7 +235,15 @@ void linear_to_raw_address_translation::addrdec_tlx(new_addr_type addr,
            "-gpgpu_memory_partition_indexing 0; select their mapping with "
            "-gpgpu_non_power2_l2_slice_mapping");
     const new_addr_type local_address = channel_address(addr);
-    if (non_power2_l2_channel_indexing == 2) {
+    if (non_power2_l2_channel_indexing == 1 && m_n_channel > 1) {
+      // The channel-local address excludes the channel seed. XOR with a
+      // fixed fold is a permutation, preserving DRAM coordinates and aliases.
+      new_addr_type high = local_address >> ADDR_CHIP_S;
+      while (high) {
+        tlx->chip ^= static_cast<unsigned>(high & (m_n_channel - 1));
+        high >>= log2channel;
+      }
+    } else if (non_power2_l2_channel_indexing == 2) {
       tlx->chip = ipoly_hash_function(local_address >> ADDR_CHIP_S, tlx->chip,
                                       m_n_channel);
     }
@@ -548,8 +556,7 @@ void linear_to_raw_address_translation::init(
   assert(n_sub_partition_in_channel > 0);
   assert(non_power2_l2_slice_mapping >= NON_POWER2_L2_SLICE_PLAIN &&
          non_power2_l2_slice_mapping <= NON_POWER2_L2_SLICE_STABLE_ROTATION);
-  assert(non_power2_l2_channel_indexing == 0 ||
-         non_power2_l2_channel_indexing == 2);
+  assert(non_power2_l2_channel_indexing <= 2);
   assert((non_power2_l2_channel_indexing == 0 ||
           l2_slice_mapping::is_power_of_two(n_channel)) &&
          "Hashed L2 channel indexing requires a power-of-two channel count");

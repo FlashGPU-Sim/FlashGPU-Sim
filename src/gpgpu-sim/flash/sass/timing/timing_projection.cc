@@ -491,6 +491,20 @@ unsigned wgmma_compute_cycles(const wgmma_shape &shape,
       1, (work + work_per_cycle - 1) / work_per_cycle));
 }
 
+// The recovered throughput/chain matrix covers vector-register multiply with
+// zero addend. Immediate/uniform multiply and nonzero-addend address forms are
+// separate native probes; do not transfer their extra issue hold by opcode
+// alone.
+bool measured_register_wide_multiply(const instruction &source) {
+  return base_opcode(source.opcode) == "IMAD" &&
+         has_modifier(source.opcode, "WIDE") &&
+         has_modifier(source.opcode, "U32") && source.operands.size() == 4 &&
+         source.operands[1].kind == operand_kind::kRegister &&
+         source.operands[2].kind == operand_kind::kRegister &&
+         source.operands[3].kind == operand_kind::kRegister &&
+         source.operands[3].index == kZeroRegister;
+}
+
 void classify(const instruction &source, const timing_profile &profile,
               timing_instruction &target) {
   const std::string base = base_opcode(source.opcode);
@@ -936,6 +950,23 @@ void classify(const instruction &source, const timing_profile &profile,
     panic("unsupported SASS timing projection for opcode " + source.opcode);
   }
 
+  if (profile.fp32_aux_paths &&
+      (source.opcode == "F2FP.BF16.F32.PACK_AB" || base == "FSETP")) {
+    target.op = ALU_OP;
+    target.op_pipe = INTP__OP;
+    target.latency = profile.integer_latency[0];
+    target.initiation_interval = profile.integer_initiation[0];
+  } else if (profile.fp32_aux_paths && (base == "I2F" || base == "F2I") &&
+             (has_modifier(source.opcode, "U32") ||
+              has_modifier(source.opcode, "S32")) &&
+             !has_modifier(source.opcode, "F64")) {
+    target.op = SFU_OP;
+    target.op_pipe = SFU__OP;
+    target.latency = profile.sfu_latency;
+    target.initiation_interval = profile.sfu_initiation;
+    target.set_mio_client();
+  }
+
   if ((uniform_arithmetic || uniform_data_movement) &&
       profile.uniform_unit_index >= 0) {
     target.op =
@@ -944,6 +975,15 @@ void classify(const instruction &source, const timing_profile &profile,
     target.latency = profile.uniform_latency;
     target.initiation_interval = profile.uniform_initiation;
   }
+  if (base == "IMAD" && profile.imad_on_sp) {
+    target.op = SP_OP;
+    target.op_pipe = SP__OP;
+    // Operand/power classification remains integer; functional ISA is
+    // unchanged.
+  }
+  if (measured_register_wide_multiply(source) &&
+      profile.imad_wide_initiation != 0)
+    target.initiation_interval = profile.imad_wide_initiation;
 }
 
 void populate_registers(const instruction &source, timing_instruction &target) {
@@ -1535,6 +1575,14 @@ void timing_instruction::initialize(const instruction &native,
 
   inst_t::dependency_control_t dependency;
   dependency.stall_cycles = source.control.stall;
+  if (measured_register_wide_multiply(source)) {
+    if (profile.imad_wide_min_issue_interval > 255u)
+      panic(
+          "IMAD.WIDE issue interval exceeds dependency-control representation");
+    dependency.stall_cycles = std::max<unsigned>(
+        dependency.stall_cycles, profile.imad_wide_min_issue_interval);
+    set_native_result_visibility_latency(profile.imad_wide_result_latency);
+  }
   dependency.yield = source.control.yield_flag;
   dependency.write_barrier = source.control.write_barrier;
   dependency.read_barrier = source.control.read_barrier;

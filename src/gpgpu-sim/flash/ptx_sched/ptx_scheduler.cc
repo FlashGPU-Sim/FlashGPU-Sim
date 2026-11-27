@@ -4061,4 +4061,10 @@ void run_ptx_reorder(function_info *func) {
          guide_total);
 }
 
+void detail::collect_ptx_registers(const ptx_instruction *inst,
+                                   std::set<const symbol *> &uses,
+                                   std::set<const symbol *> &defs) {
+  collect_inst_regs(inst, uses, defs);
+}
+
 } // namespace flash_gpgpu_sim

@@ -336,12 +336,14 @@ $(OBJ_DIR)/sm100/unit/cache_invalidation_test.cc.o: \
   $(wildcard ../libcuda/*.h) $(wildcard ../src/gpgpu-sim/*.h) \
   ../src/abstract_hardware_model.h $(UNIT_MK)
 
+$(OBJ_DIR)/sm120/core/b200_system_timing_test.cc.o \
 $(OBJ_DIR)/sm120/core/cache_partial_store_test.cc.o \
 $(OBJ_DIR)/sm120/core/cluster_response_width_test.cc.o \
 $(OBJ_DIR)/sm120/core/predicated_atomic_test.cc.o \
 $(OBJ_DIR)/sm120/core/pipeline_dump_test.cc.o: \
   INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
 
+$(OBJ_DIR)/sm120/core/b200_system_timing_test.cc.o \
 $(OBJ_DIR)/sm120/core/cache_partial_store_test.cc.o \
 $(OBJ_DIR)/sm120/core/cluster_response_width_test.cc.o \
 $(OBJ_DIR)/sm120/core/predicated_atomic_test.cc.o \
@@ -548,3 +550,7 @@ $(OBJ_DIR)/sm100/support/sass_functional_cluster_store.cc.o: \
 $(OBJ_DIR)/sm100/unit/bit_scan_test.cc.o: $(SRC_DIR)/gpgpu-sim/flash/bit_scan.h
 $(OBJ_DIR)/sm100/support/sass_functional_integer.cc.o \
 $(OBJ_DIR)/sm120/support/sass_functional_integer.cc.o: $(SRC_DIR)/gpgpu-sim/flash/bit_scan.h
+
+# Frontend timing annotations change instruction objects embedded in host tests.
+$(SASS_UNIT_TEST_OBJECTS) $(TEST_GROUP_EXTRA_OBJECTS_sm120_unit) \
+$(TEST_GROUP_EXTRA_OBJECTS_sm100_unit): $(SRC_DIR)/abstract_hardware_model.h

@@ -1143,6 +1143,12 @@ public:
   bool is_release_memory() const { return release_memory; }
   void set_mio_client(bool value = true) { mio_client = value; }
   bool is_mio_client() const { return mio_client; }
+  void set_native_result_visibility_latency(unsigned value) {
+    native_result_visibility_latency = value;
+  }
+  unsigned get_native_result_visibility_latency() const {
+    return native_result_visibility_latency;
+  }
   void set_async_proxy_fence(bool value = true) {
     async_proxy_fence = value;
   }
@@ -1182,6 +1188,14 @@ private:
   // Frontend-neutral marker for a fence that orders shared-memory writes with
   // the asynchronous proxy. Other memory barriers do not consume this path.
   bool async_proxy_fence = false;
+  unsigned native_result_visibility_latency = 0;
+ public:
+  // PTX helper expansion is distinct from backend TMA service. Native SASS
+  // contains the helper/control instructions already and leaves this NONE.
+  enum class tma_issue_form_t { NONE, IMPLICIT, EXPLICIT };
+  tma_issue_form_t tma_issue_form = tma_issue_form_t::NONE;
+  bool tma_explicit_elected_region = false;
+ private:
   tma_dyn_info_t tma_dyn_info[MAX_WARP_SIZE];
 
 public:

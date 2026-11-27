@@ -39,3 +39,17 @@ TEST(TmaIssueTimingTest, CycleAdditionSaturates) {
 }
 
 }  // namespace
+
+TEST(TmaInstructionIssueHoldTest, DistinguishesNextTransferFromOtherInstruction) {
+  flash_gpgpu_sim::tma_instruction_issue_hold_t hold;
+  hold.note_issue(100, 50, 44);
+  EXPECT_TRUE(hold.stalls(143, true));
+  EXPECT_FALSE(hold.stalls(144, true));
+  EXPECT_TRUE(hold.stalls(149, false));
+  EXPECT_FALSE(hold.stalls(150, false));
+  hold.reset();
+  EXPECT_FALSE(hold.stalls(0, false));
+  hold.note_issue(10, 0, 0);
+  EXPECT_FALSE(hold.stalls(10, true));
+  EXPECT_FALSE(hold.stalls(10, false));
+}

@@ -309,4 +309,37 @@ TEST(TimingMetadataTest, CarriesFrontendNeutralHardwareSemantics) {
   EXPECT_FALSE(inst.get_async_copy_static_info().mbarrier_increment_pending);
 }
 
+TEST(InstructionDependencyTrackerTest, FixedResultDelayOnlyBlocksDependentRegisters) {
+  instruction_dependency_tracker tracker;
+  inst_t producer, dependent, independent, overwrite;
+  for (auto *inst : {&producer, &dependent, &independent, &overwrite})
+    inst->incount = inst->outcount = 0;
+  producer.outcount = 2; producer.out[0] = 6; producer.out[1] = 7;
+  producer.set_native_result_visibility_latency(9);
+  dependent.incount = 1; dependent.in[0] = 7;
+  independent.incount = 1; independent.in[0] = 8;
+  overwrite.outcount = 1; overwrite.out[0] = 6;
+  tracker.issue_register_results(producer, true, 100);
+  EXPECT_FALSE(tracker.register_results_ready(dependent, 108));
+  EXPECT_FALSE(tracker.register_results_ready(overwrite, 108));
+  EXPECT_TRUE(tracker.register_results_ready(independent, 101));
+  EXPECT_TRUE(tracker.register_results_ready(dependent, 109));
+  // Querying a future visibility boundary cannot retire live state early.
+  EXPECT_FALSE(tracker.register_results_ready(dependent, 108));
+  tracker.reset();
+  tracker.issue_register_results(producer, false, 200);
+  EXPECT_TRUE(tracker.register_results_ready(dependent, 200));
+}
+
 }  // namespace
+
+TEST(TimingMetadataTest, NativeTmaDoesNotChargePtxExpansion) {
+  inst_t native;
+  EXPECT_EQ(native.tma_issue_form, inst_t::tma_issue_form_t::NONE);
+  EXPECT_FALSE(native.tma_explicit_elected_region);
+  native.tma_issue_form = inst_t::tma_issue_form_t::EXPLICIT;
+  native.tma_explicit_elected_region = true;
+  inst_t copied = native;
+  EXPECT_EQ(copied.tma_issue_form, inst_t::tma_issue_form_t::EXPLICIT);
+  EXPECT_TRUE(copied.tma_explicit_elected_region);
+}

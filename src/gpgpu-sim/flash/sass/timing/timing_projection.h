@@ -21,6 +21,13 @@ struct timing_profile {
   // integer: ADD/MAX/MUL/MAD/DIV/SHFL
   std::array<unsigned, 6> integer_latency{{1, 1, 1, 1, 1, 1}};
   std::array<unsigned, 6> integer_initiation{{1, 1, 1, 1, 1, 1}};
+  // Native integer multiply shares the FMA execution path on measured SM100.
+  // Zero-valued wide overrides preserve the legacy profile on other configs.
+  bool imad_on_sp = false;
+  bool fp32_aux_paths = false;
+  unsigned imad_wide_initiation = 0;
+  unsigned imad_wide_min_issue_interval = 0;
+  unsigned imad_wide_result_latency = 0;
   // fp32: ADD/MAX/MUL/MAD/DIV
   std::array<unsigned, 5> fp32_latency{{1, 1, 1, 1, 1}};
   std::array<unsigned, 5> fp32_initiation{{1, 1, 1, 1, 1}};

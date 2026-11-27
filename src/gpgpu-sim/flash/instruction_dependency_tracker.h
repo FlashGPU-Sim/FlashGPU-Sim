@@ -27,6 +27,39 @@ public:
     return cycle >= next_issue_cycle_;
   }
 
+  bool register_results_ready(const inst_t &consumer, uint64_t cycle) const {
+    if (register_ready_cycles_.empty())
+      return true;
+    auto ready = [&](unsigned reg) {
+      const auto found = register_ready_cycles_.find(reg);
+      return found == register_ready_cycles_.end() || cycle >= found->second;
+    };
+    for (unsigned i = 0; i < consumer.incount; ++i)
+      if (!ready(consumer.in[i]))
+        return false;
+    // Prevent a younger write overtaking an outstanding calibrated result.
+    for (unsigned i = 0; i < consumer.outcount; ++i)
+      if (!ready(consumer.out[i]))
+        return false;
+    return true;
+  }
+
+  void issue_register_results(const inst_t &producer, bool executes,
+                              uint64_t cycle) {
+    for (auto it = register_ready_cycles_.begin();
+         it != register_ready_cycles_.end();) {
+      if (it->second <= cycle)
+        it = register_ready_cycles_.erase(it);
+      else
+        ++it;
+    }
+    const auto latency = producer.get_native_result_visibility_latency();
+    if (!executes || !latency)
+      return;
+    for (unsigned i = 0; i < producer.outcount; ++i)
+      register_ready_cycles_[producer.out[i]] = cycle + latency;
+  }
+
   uint8_t pending_wait_mask(const inst_t::dependency_control_t &control,
                             uint64_t cycle, op_type consumer_op = NO_OP) {
     advance(cycle);
@@ -118,6 +151,7 @@ public:
       owners.clear();
     pending_releases_.clear();
     sp_forwarding_ready_cycles_.clear();
+    register_ready_cycles_.clear();
   }
 
   uint64_t next_issue_cycle() const { return next_issue_cycle_; }
@@ -182,6 +216,7 @@ private:
     }
   }
 
+  std::map<unsigned, uint64_t> register_ready_cycles_{};
   uint64_t next_issue_cycle_ = 0;
   std::array<std::map<uint64_t, uint8_t>, 6> barrier_owners_{};
   std::vector<pending_release> pending_releases_{};

@@ -93,6 +93,14 @@ timing_profile profile_from_config(const core_config *config) {
   const shader_core_config *shader_config =
       dynamic_cast<const shader_core_config *>(config);
   if (shader_config != nullptr) {
+    profile.imad_on_sp = shader_config->gpgpu_native_imad_on_sp;
+    profile.fp32_aux_paths = shader_config->gpgpu_native_fp32_aux_paths;
+    profile.imad_wide_initiation =
+        shader_config->gpgpu_native_imad_wide_initiation;
+    profile.imad_wide_min_issue_interval =
+        shader_config->gpgpu_native_imad_wide_min_issue_interval;
+    profile.imad_wide_result_latency =
+        shader_config->gpgpu_native_imad_wide_result_latency;
     profile.async_proxy_fence_extra_stall =
         shader_config->gpgpu_async_proxy_fence_extra_stall;
     profile.async_proxy_fence_dirty_extra_stall =

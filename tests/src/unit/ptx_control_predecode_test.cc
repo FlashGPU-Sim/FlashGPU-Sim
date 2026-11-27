@@ -56,3 +56,44 @@ TEST(PtxControlPredecode, UnexecutedBreakpointNeedsNoScalarType) {
   check_typeless_control("brkpt", BRKPT_OP);
 }
 }  // namespace
+
+TEST(PtxControlPredecode, TmaExpansionTracksElectionWithoutRewritingCode) {
+  auto *ctx = GPGPU_Context();
+  GPGPUSim_Context(ctx);
+  const char *root = std::getenv("GPGPUSIM_ROOT");
+  ASSERT_NE(root, nullptr);
+  const auto path = std::string(root) + "/tests/src/unit/fixtures/ptx_tma_election.ptx";
+  const bool enabled = ctx->ptx_reorder_enabled;
+  const bool guided = ctx->ptx_reorder_sass_guided;
+  ctx->ptx_reorder_sass_guided = false;
+  ctx->ptx_reorder_enabled = false;
+  auto *symbols = ctx->gpgpu_ptx_sim_load_ptx_from_filename(path.c_str());
+  ctx->ptx_reorder_enabled = enabled;
+  ctx->ptx_reorder_sass_guided = guided;
+  ASSERT_NE(symbols, nullptr);
+  struct Case { const char *name; unsigned transfers, marked; };
+  for (const Case &test : {
+      Case{"explicit_elected_tma_region_smoke", 2, 2},
+      Case{"implicit_lane0_tma_region_smoke", 2, 0},
+      Case{"deepgemm_elected_tma_region_smoke", 1, 1},
+      Case{"external_entry_elected_tma_smoke", 1, 0},
+      Case{"external_suffix_elected_tma_smoke", 2, 1}}) {
+    auto *func = symbols->lookup_function(test.name);
+    ASSERT_NE(func, nullptr);
+    func->do_pdom();
+    unsigned transfers = 0, marked = 0;
+    for (unsigned pc = func->get_start_PC(), i = 0; i < 64; ++i) {
+      const auto *inst = func->get_dyn_inst(pc);
+      ASSERT_NE(inst, nullptr);
+      if (inst->get_opcode() == TMA_OP) {
+        ++transfers;
+        marked += inst->tma_explicit_elected_region;
+        EXPECT_EQ(inst->tma_issue_form, inst_t::tma_issue_form_t::IMPLICIT);
+      }
+      if (inst->get_opcode() == RET_OP) break;
+      pc += inst->inst_size();
+    }
+    EXPECT_EQ(transfers, test.transfers) << test.name;
+    EXPECT_EQ(marked, test.marked) << test.name;
+  }
+}
