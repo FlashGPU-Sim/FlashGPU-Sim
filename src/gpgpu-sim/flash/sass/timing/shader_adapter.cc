@@ -146,8 +146,7 @@ public:
       core_.m_barriers.warp_exit(inst.warp_id());
     }
     if (inst.space.is_local() && (inst.is_load() || inst.is_store())) {
-      const unsigned num_shader = core_.m_config->n_simt_clusters *
-                                  core_.m_config->n_simt_cores_per_cluster;
+      const unsigned num_shader = core_.m_config->num_shader();
       for (unsigned lane = 0; lane < core_.m_config->warp_size; ++lane) {
         if (!inst.active(lane))
           continue;
