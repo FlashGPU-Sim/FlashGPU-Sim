@@ -2437,6 +2437,12 @@ class shader_core_config : public core_config {
   }
   void reg_options(class OptionParser *opp);
   unsigned max_cta(const kernel_info_t &k) const;
+  // Charge driver storage to residency without extending kernel-visible memory.
+  uint64_t shared_memory_per_cta(unsigned static_smem,
+                                 unsigned dynamic_smem) const {
+    return static_cast<uint64_t>(static_smem) + dynamic_smem +
+           gpgpu_shmem_reserved_per_block;
+  }
   unsigned num_shader() const {
     if (m_topology.num_sms() > 0) return m_topology.num_sms();
     return n_simt_clusters * n_simt_cores_per_cluster;
@@ -2482,6 +2488,7 @@ class shader_core_config : public core_config {
   char *gpgpu_scheduler_string;
   unsigned gpgpu_shmem_per_block;
   unsigned gpgpu_shmem_per_block_optin;
+  unsigned gpgpu_shmem_reserved_per_block = 0;
   unsigned gpgpu_registers_per_block;
   char *pipeline_widths_string;
   int pipe_widths[N_PIPELINE_STAGES];

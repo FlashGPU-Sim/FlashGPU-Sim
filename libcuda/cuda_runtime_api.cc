@@ -2368,7 +2368,7 @@ cudaDeviceGetAttributeInternal(int *value, enum cudaDeviceAttr attr, int device,
         *value = 0;
         break;
       case 111:  // cudaDevAttrReservedSharedMemoryPerBlock
-        *value = 0;
+        *value = dev->get_gpgpu()->shared_mem_reserved_per_block();
         break;
       case 112:  // cudaDevAttrSparseCudaArraySupported
         *value = 0;

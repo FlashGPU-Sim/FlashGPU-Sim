@@ -6629,7 +6629,8 @@ unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
 
   // Limit by shmem/shader (account for dynamic smem set at launch)
   unsigned int result_shmem = (unsigned)-1;
-  unsigned int block_smem = static_smem + k.get_dynamic_smem();
+  const uint64_t block_smem =
+      shared_memory_per_cta(static_smem, k.get_dynamic_smem());
   if (block_smem > 0)
     result_shmem = gpgpu_shmem_size / block_smem;
 
@@ -6682,8 +6683,8 @@ unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
   if (adaptive_cache_config && !k.cache_config_set) {
     // For more info about adaptive cache, see
     // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory-7-x
-    unsigned total_shmem = block_smem * result;
-    assert(total_shmem >= 0 && total_shmem <= shmem_opt_list.back());
+    const uint64_t total_shmem = block_smem * result;
+    assert(total_shmem <= shmem_opt_list.back());
 
     // Unified cache config is in KB. Converting to B
     unsigned total_unified = m_L1D_config.m_unified_cache_size * 1024;
