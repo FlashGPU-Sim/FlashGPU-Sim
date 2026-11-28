@@ -1685,6 +1685,12 @@ class core_t {
   kernel_info_t *get_kernel_info() { return m_kernel; }
   class ptx_thread_info **get_thread_info() { return m_thread; }
   unsigned get_warp_size() const { return m_warp_size; }
+  // PTX lanes execute serially on the host. SHFL must read the pre-instruction
+  // source image even when destination and source alias. Scratch is per core,
+  // reset for each warp instruction, and never shared between host workers.
+  bool shuffle_sources_valid() const { return m_shuffle_sources_valid; }
+  uint32_t *shuffle_sources() { return m_shuffle_sources; }
+  void mark_shuffle_sources_valid() { m_shuffle_sources_valid = true; }
   void and_reduction(unsigned ctaid, unsigned barid, bool value) {
     begin_reduction(ctaid, barid, 1);
     reduction_storage[ctaid][barid] &= value;
@@ -1721,6 +1727,8 @@ class core_t {
   class ptx_thread_info **m_thread;
   unsigned m_warp_size;
   unsigned m_warp_count;
+  uint32_t m_shuffle_sources[MAX_WARP_SIZE]{};
+  bool m_shuffle_sources_valid = false;
   unsigned reduction_storage[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
   bool reduction_active[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
 };

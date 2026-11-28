@@ -1,3 +1,5 @@
+#include "../gpgpu-sim/flash/funnel_shift.h"
+#include "../gpgpu-sim/flash/bit_scan.h"
 #include "../gpgpu-sim/flash/fp32_fma.h"
 // Copyright (c) 2009-2021, Tor M. Aamodt, Wilson W.L. Fung, Ali Bakhoda,
 // Jimmy Kwa, George L. Yuan, Vijay Kandiah, Nikos Hardavellas,
@@ -1826,7 +1828,7 @@ void bar_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
         op1_data = thread->get_operand_value(op1, op1, U32_TYPE, thread, 1);
         op2_data = thread->get_operand_value(op2, op2, U32_TYPE, thread, 1);
         op3_data = thread->get_operand_value(op3, op3, PRED_TYPE, thread, 1);
-        op3_data.u32 = !(op3_data.pred & 0x0001);
+        op3_data.u32 = (!(op3_data.pred & 0x0001)) ^ op3.is_neg_pred();
         pI->set_bar_id(op1_data.u32);
         pI->set_bar_count(op2_data.u32);
         switch (red_op) {
@@ -1850,7 +1852,7 @@ void bar_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
         ptx_reg_t op2_data;
         op1_data = thread->get_operand_value(op1, op1, U32_TYPE, thread, 1);
         op2_data = thread->get_operand_value(op2, op2, PRED_TYPE, thread, 1);
-        op2_data.u32 = !(op2_data.pred & 0x0001);
+        op2_data.u32 = (!(op2_data.pred & 0x0001)) ^ op2.is_neg_pred();
         pI->set_bar_id(op1_data.u32);
         pI->set_bar_count(thread->get_ntid().x * thread->get_ntid().y *
                           thread->get_ntid().z);
@@ -2149,40 +2151,12 @@ void bfind_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   const ptx_reg_t src1_data =
       thread->get_operand_value(src1, dst, i_type, thread, 1);
-  const int msb = (i_type == U32_TYPE || i_type == S32_TYPE) ? 31 : 63;
-
-  unsigned long a = 0;
-  switch (i_type) {
-    case S32_TYPE:
-      a = src1_data.s32;
-      break;
-    case U32_TYPE:
-      a = src1_data.u32;
-      break;
-    case S64_TYPE:
-      a = src1_data.s64;
-      break;
-    case U64_TYPE:
-      a = src1_data.u64;
-      break;
-    default:
-      assert(false);
-      abort();
-  }
-
-  // negate negative signed inputs
-  if ((i_type == S32_TYPE || i_type == S64_TYPE) && (a & (1 << msb))) {
-    a = ~a;
-  }
-  uint32_t d_data = 0xffffffff;
-  for (uint32_t i = msb; i >= 0; i--) {
-    if (a & (1 << i)) {
-      d_data = i;
-      break;
-    }
-  }
-
-  // if (.shiftamt && d != 0xffffffff)  { d = msb - d; }
+  const unsigned bits = (i_type == U32_TYPE || i_type == S32_TYPE) ? 32 : 64;
+  assert(i_type == U32_TYPE || i_type == S32_TYPE || i_type == U64_TYPE ||
+         i_type == S64_TYPE);
+  const uint64_t value = bits == 32 ? src1_data.u32 : src1_data.u64;
+  const uint32_t d_data = flash_gpgpu_sim::find_non_sign_bit(
+      value, bits, i_type == S32_TYPE || i_type == S64_TYPE, false);
 
   // store d
   thread->set_operand_value(dst, d_data, U32_TYPE, thread, pI);
@@ -4026,7 +4000,8 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
     flash_gpgpu_sim::abort_dsm_disabled("load", thread->get_hw_sid(), addr);
   if (!vector_spec) {
     mem->read(addr, size / 8, &data.s64);
-    if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
+    if (type == S8_TYPE || type == S16_TYPE || type == S32_TYPE)
+      sign_extend(data, size, dst);
     thread->set_operand_value(dst, data, type, thread, pI);
 
     if (type == F32_TYPE) {
@@ -6201,11 +6176,27 @@ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
   else
     tid = inst.warp_id() * core->get_warp_size();
 
+  // Snapshot once, before any lane writes the aliased destination. Each lane
+  // still writes its own result in the original dispatch order; predicates,
+  // instruction accounting, PC advancement and timing are unchanged.
+  if (!core->shuffle_sources_valid()) {
+    for (unsigned source_lane = 0; source_lane < core->get_warp_size(); ++source_lane) {
+      core->shuffle_sources()[source_lane] = 0;
+      if (!inst.active(source_lane)) continue;
+      auto *source = core->get_thread_info()[tid + source_lane];
+      // Later lanes have not passed ptx_exec_inst's predicate check yet.
+      // Do not read an operand belonging to a nonparticipating lane.
+      if (!source->predicate_allows(*pI)) continue;
+      core->shuffle_sources()[source_lane] =
+          source->get_operand_value(pI->src1(), pI->dst(), i_type, source, 1).u32;
+    }
+    core->mark_shuffle_sources_valid();
+  }
+
   int lane = inst.current_lane();
   ptx_thread_info *thread = core->get_thread_info()[tid + lane];
 
   const operand_info &dst = pI->dst();
-  const operand_info &src1 = pI->src1();
   const operand_info &src2 = pI->src2();
   const operand_info &src3 = pI->src3();
   int bval = (thread->get_operand_value(src2, dst, i_type, thread, 1)).u32;
@@ -6247,8 +6238,7 @@ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
   // copy input from lane src_idx
   ptx_reg_t data;
   if (inst.active(src_idx)) {
-    ptx_thread_info *source = core->get_thread_info()[tid + src_idx];
-    data = source->get_operand_value(src1, dst, i_type, source, 1);
+    data.u32 = core->shuffle_sources()[src_idx];
   } else {
     printf(
         "GPGPU-Sim PTX: WARNING: shfl input value unpredictable for inactive "
@@ -6291,18 +6281,8 @@ void shf_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (i_type != B32_TYPE)
     printf("Only the b32 data_type is allowed per the ISA\n");
 
-  unsigned clamp_mode = pI->clamp_mode();
-  unsigned n = c.u32 & 0x1f;
-  if (clamp_mode) {
-    if (c.u32 < 32)
-      n = c;
-    else
-      n = 32;
-  }
-  if (pI->left_mode())
-    d.u32 = (b.u32 << n) | (a.u32 >> (32 - n));
-  else
-    d.u32 = (b.u32 << (32 - n)) | (a.u32 >> n);
+  d.u32 = flash_gpgpu_sim::funnel_shift32(a.u32, b.u32, c.u32,
+                                        pI->left_mode(), !pI->clamp_mode());
 
   thread->set_operand_value(dst, d, i_type, thread, pI);
 }

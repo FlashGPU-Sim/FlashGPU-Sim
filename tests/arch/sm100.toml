@@ -6,9 +6,14 @@ config = "SM100_B200"
 sources = [
   "unit/ptx_timing_isolation_test.cc",
   # Portable integration tests.
+  "integration/leading_bit_test.cu",
   "integration/address_operand_test.cu",
   "integration/vector_operand_test.cu",
+  "integration/funnel_shift_test.cu",
   "integration/integer_multiply_test.cu",
+  "integration/signed_byte_load_test.cu",
+  "integration/warp_shuffle_alias_test.cu",
+  "integration/cta_reduction_negation_test.cu",
   "integration/float_minmax_three_input_test.cu",
   "integration/vector_add_test.cu",
   "integration/shared_memory_optin_test.cu",
