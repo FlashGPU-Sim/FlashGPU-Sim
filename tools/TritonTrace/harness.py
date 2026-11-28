@@ -301,9 +301,9 @@ class HarnessGenerator:
                     except Exception:
                         relative_output_path = argument.output_file
                     validation_calls.append(
-                        f'    validate_tensor_output(d_arg{index}, exe_path, '
+                        f'    validation_failed |= (validate_tensor_output(d_arg{index}, exe_path, '
                         f'"{relative_output_path}", arg{index}_size, {index}, '
-                        f'"{argument.dtype}");'
+                        f'"{argument.dtype}") != 0);'
                     )
             elif argument.arg_type == "scalar":
                 c_type = {
