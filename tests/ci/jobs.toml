@@ -91,3 +91,9 @@ tests = [
   { name = "backward-smoke", group = "fa3", profile = "smoke", gtest_filter = "Fa3PrefillFp16BackwardSmokeTest.*" },
   { name = "packgqa", group = "fa3", profile = "packgqa", gtest_filter = "Fa3FwdPackGqaFp16IntegrationTest.Smoke" },
 ]
+
+[jobs.sm100-shared-fence-visibility]
+arch = "sm100"
+tests = [
+  { name = "shared-store-visibility", group = "integration", gtest_filter = "SharedFenceVisibility.*", post_check = "tests/ci/check_shared_fence_visibility.py" },
+]
