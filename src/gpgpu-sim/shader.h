@@ -877,6 +877,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
  private:
   void process_banks() { m_arbiter.reset_alloction(); }
 
+  void init_collector_units(const core_config *config);
   void dispatch_ready_cu();
   void allocate_cu(unsigned port);
   void allocate_reads();

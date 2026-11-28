@@ -8004,7 +8004,6 @@ void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
 
   sub_core_model = shader->get_config()->sub_core_model;
   m_num_warp_scheds = shader->get_config()->gpgpu_num_sched_per_core;
-  unsigned reg_id = 0;
   if (sub_core_model) {
     assert(num_banks % shader->get_config()->gpgpu_num_sched_per_core == 0);
     assert(m_num_warp_scheds <= m_cu.size() &&
@@ -8013,18 +8012,33 @@ void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
   m_num_banks_per_sched =
       num_banks / shader->get_config()->gpgpu_num_sched_per_core;
 
-  for (unsigned j = 0; j < m_cu.size(); j++) {
-    if (sub_core_model) {
-      unsigned cusPerSched = m_cu.size() / m_num_warp_scheds;
-      reg_id = j / cusPerSched;
-    }
-    m_cu[j]->init(j, num_banks, shader->get_config(), this, sub_core_model,
-                  reg_id, m_num_banks_per_sched);
-  }
+  init_collector_units(shader->get_config());
   for (unsigned j = 0; j < m_dispatch_units.size(); j++) {
     m_dispatch_units[j].init(sub_core_model, m_num_warp_scheds);
   }
   m_initialized = true;
+}
+
+// Allocation and dispatch partition each collector SET independently. Keep
+// initialization consistent even when generic and specialized sets differ in
+// size; the flattened vector defines arbiter IDs, not scheduler ownership.
+void opndcoll_rfu_t::init_collector_units(const core_config *config) {
+  for (auto &entry : m_cus) {
+    auto &set = entry.second;
+    if (set.empty()) continue;
+    assert(!sub_core_model ||
+           (m_num_warp_scheds && set.size() % m_num_warp_scheds == 0 &&
+            set.size() >= m_num_warp_scheds));
+    const unsigned per_scheduler = sub_core_model
+        ? set.size() / m_num_warp_scheds : set.size();
+    for (unsigned local = 0; local < set.size(); ++local) {
+      const auto global = std::find(m_cu.begin(), m_cu.end(), &set[local]);
+      assert(global != m_cu.end());
+      set[local].init(global - m_cu.begin(), m_num_banks, config, this,
+                      sub_core_model, sub_core_model ? local / per_scheduler : 0,
+                      m_num_banks_per_sched);
+    }
+  }
 }
 
 unsigned register_bank(int regnum, int wid, unsigned num_banks,
