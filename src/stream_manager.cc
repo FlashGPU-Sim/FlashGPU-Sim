@@ -166,7 +166,7 @@ bool stream_operation::do_operation(gpgpu_sim *gpu) {
                  m_kernel->get_uid(), m_kernel->name().c_str());
           m_kernel->print_parent_info();
         }
-        gpu->set_cache_config(m_kernel->name());
+        gpu->set_cache_config(*m_kernel);
         gpu->functional_launch(m_kernel);
       } else {  // Performance Sim
         if (gpu->can_start_kernel() && m_kernel->m_launch_latency == 0) {
@@ -175,7 +175,7 @@ bool stream_operation::do_operation(gpgpu_sim *gpu) {
                    m_kernel->get_uid(), m_kernel->name().c_str());
             m_kernel->print_parent_info();
           }
-          gpu->set_cache_config(m_kernel->name());
+          gpu->set_cache_config(*m_kernel);
           gpu->launch(m_kernel);
         } else {
           if (m_kernel->m_launch_latency) m_kernel->m_launch_latency--;

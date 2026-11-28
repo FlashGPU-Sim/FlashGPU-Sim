@@ -672,6 +672,7 @@ class gpgpu_sim : public gpgpu_t {
   int shared_mem_size() const;
   int shared_mem_per_block() const;
   int shared_mem_per_block_optin() const;
+  unsigned shared_mem_reserved_per_block() const;
   int compute_capability_major() const;
   int compute_capability_minor() const;
   int num_registers_per_core() const;
@@ -875,12 +876,12 @@ class gpgpu_sim : public gpgpu_t {
   void set_cache_config(std::string kernel_name, FuncCache cacheConfig);
   bool has_special_cache_config(std::string kernel_name);
   void change_cache_config(FuncCache cache_config);
-  void set_cache_config(std::string kernel_name);
+  void set_cache_config(const kernel_info_t &kernel);
   void set_kernel_max_dynamic_smem(std::string kernel_name, unsigned bytes,
                                    unsigned static_smem = 0);
   bool has_kernel_max_dynamic_smem(std::string kernel_name);
   unsigned get_kernel_max_dynamic_smem(std::string kernel_name);
-  void apply_kernel_max_dynamic_smem(std::string kernel_name);
+  void apply_kernel_shared_memory_requirement(const kernel_info_t &kernel);
   void set_kernel_preferred_shared_carveout(std::string kernel_name,
                                             int carveout);
   bool has_kernel_preferred_shared_carveout(std::string kernel_name);

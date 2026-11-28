@@ -33,6 +33,7 @@
 #include "gpu-sim.h"
 
 #include <algorithm>
+#include <limits>
 #include "flash/panic.h"
 #include <math.h>
 #include <signal.h>
@@ -678,6 +679,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       &gpgpu_shmem_per_block_optin,
       "Maximum opt-in shared memory per thread block or CTA; 0 inherits "
       "-gpgpu_shmem_per_block (default 0)",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_shmem_reserved_per_block", OPT_UINT32,
+      &gpgpu_shmem_reserved_per_block,
+      "Driver-reserved shared memory charged per resident CTA in bytes",
       "0");
   option_parser_register(
       opp, "-gpgpu_shmem_size", OPT_UINT32, &gpgpu_shmem_size,
@@ -2112,6 +2118,10 @@ int gpgpu_sim::shared_mem_per_block_optin() const {
   return optin == 0 ? shared_mem_per_block() : optin;
 }
 
+unsigned gpgpu_sim::shared_mem_reserved_per_block() const {
+  return m_shader_config->gpgpu_shmem_reserved_per_block;
+}
+
 int gpgpu_sim::num_registers_per_core() const {
   return m_shader_config->gpgpu_shader_registers;
 }
@@ -2475,8 +2485,14 @@ unsigned gpgpu_sim::get_kernel_max_dynamic_smem(std::string kernel_name) {
   return it->second;
 }
 
-void gpgpu_sim::apply_kernel_max_dynamic_smem(std::string kernel_name) {
-  if (!has_kernel_max_dynamic_smem(kernel_name)) return;
+void gpgpu_sim::apply_kernel_shared_memory_requirement(
+    const kernel_info_t &kernel) {
+  const std::string kernel_name = kernel.name();
+  const bool opted_in = has_kernel_max_dynamic_smem(kernel_name);
+  const bool account_reservation = shared_mem_reserved_per_block() != 0;
+  const bool adaptive = m_shader_config->adaptive_cache_config &&
+                        !m_shader_config->shmem_opt_list.empty();
+  if (!opted_in && !(account_reservation && adaptive)) return;
 
   unsigned requested = get_kernel_max_dynamic_smem(kernel_name);
   unsigned required = requested;
@@ -2485,25 +2501,32 @@ void gpgpu_sim::apply_kernel_max_dynamic_smem(std::string kernel_name) {
   if (required_it != m_kernel_min_smem_for_max_dynamic.end()) {
     required = std::max(required, required_it->second);
   }
-  unsigned target = std::max(m_shader_config->gpgpu_shmem_size, required);
+  uint64_t block_smem = required;
+  if (account_reservation) {
+    block_smem = std::max(
+        m_shader_config->shared_memory_per_cta(required, 0),
+        m_shader_config->shared_memory_per_cta(kernel.static_shared_memory(),
+                                              kernel.get_dynamic_smem()));
+  }
+  if (!opted_in && block_smem <= m_shader_config->gpgpu_shmem_size) return;
+
+  uint64_t target =
+      std::max<uint64_t>(m_shader_config->gpgpu_shmem_size, block_smem);
   bool applied_occupancy_policy = false;
   bool has_explicit_carveout =
       has_kernel_preferred_shared_carveout(kernel_name) &&
       get_kernel_preferred_shared_carveout(kernel_name) >= 0;
 
   if (m_shader_config->max_dynamic_smem_prefer_occupancy_carveout &&
-      !has_explicit_carveout && required > 0 &&
-      m_shader_config->adaptive_cache_config &&
-      !m_shader_config->shmem_opt_list.empty()) {
+      !has_explicit_carveout && opted_in && block_smem > 0 && adaptive) {
     unsigned max_carveout = m_shader_config->shmem_opt_list.back();
-    unsigned target_ctas = max_carveout / required;
+    unsigned target_ctas = max_carveout / block_smem;
     if (target_ctas == 0) target_ctas = 1;
-    target = std::max(target, target_ctas * required);
+    target = std::max(target, target_ctas * block_smem);
     applied_occupancy_policy = true;
   }
 
-  if (m_shader_config->adaptive_cache_config &&
-      !m_shader_config->shmem_opt_list.empty()) {
+  if (adaptive) {
     std::vector<unsigned>::const_iterator it = std::lower_bound(
         m_shader_config->shmem_opt_list.begin(),
         m_shader_config->shmem_opt_list.end(), target);
@@ -2513,20 +2536,26 @@ void gpgpu_sim::apply_kernel_max_dynamic_smem(std::string kernel_name) {
       target = m_shader_config->shmem_opt_list.back();
     }
   }
+  // The configured capacity is an unsigned value. Leave an oversized
+  // requirement to the occupancy check rather than wrapping the capacity.
+  if (target > std::numeric_limits<unsigned>::max()) return;
+  const unsigned shmem_size = static_cast<unsigned>(target);
 
-  if (target != m_shader_config->gpgpu_shmem_size) {
+  if (shmem_size != m_shader_config->gpgpu_shmem_size) {
     if (applied_occupancy_policy) {
       printf("GPGPU-Sim: Apply max dynamic shared memory occupancy carveout "
-             "policy for '%s': requested=%u, required_block_smem=%u, "
+             "policy for '%s': requested=%u, required_block_smem=%llu, "
              "shmem_size=%u\n",
-             kernel_name.c_str(), requested, required, target);
+             kernel_name.c_str(), requested,
+             static_cast<unsigned long long>(block_smem), shmem_size);
     } else {
-      printf("GPGPU-Sim: Apply kernel max dynamic shared memory opt-in for "
-             "'%s': requested=%u, required_block_smem=%u, shmem_size=%u\n",
-             kernel_name.c_str(), requested, required, target);
+      printf("GPGPU-Sim: Apply kernel shared memory requirement for "
+             "'%s': requested=%u, required_block_smem=%llu, shmem_size=%u\n",
+             kernel_name.c_str(), requested,
+             static_cast<unsigned long long>(block_smem), shmem_size);
     }
   }
-  m_shader_config->gpgpu_shmem_size = target;
+  m_shader_config->gpgpu_shmem_size = shmem_size;
 }
 
 void gpgpu_sim::set_kernel_preferred_shared_carveout(std::string kernel_name,
@@ -2582,14 +2611,15 @@ void gpgpu_sim::apply_kernel_preferred_shared_carveout(
   m_shader_config->gpgpu_shmem_size = target;
 }
 
-void gpgpu_sim::set_cache_config(std::string kernel_name) {
+void gpgpu_sim::set_cache_config(const kernel_info_t &kernel) {
+  const std::string kernel_name = kernel.name();
   if (has_special_cache_config(kernel_name)) {
     change_cache_config(get_cache_config(kernel_name));
   } else {
     change_cache_config(FuncCachePreferNone);
   }
   apply_kernel_preferred_shared_carveout(kernel_name);
-  apply_kernel_max_dynamic_smem(kernel_name);
+  apply_kernel_shared_memory_requirement(kernel);
 }
 
 void gpgpu_sim::change_cache_config(FuncCache cache_config) {
@@ -3099,10 +3129,10 @@ bool shader_core_ctx::occupy_shader_resource_1block(kernel_info_t &k,
 
   if (find_available_hwtid(padded_cta_size, false) == -1) return false;
 
-  const unsigned static_smem = k.static_shared_memory();
+  const uint64_t block_smem = m_config->shared_memory_per_cta(
+      k.static_shared_memory(), k.get_dynamic_smem());
   const unsigned registers = k.registers_per_thread();
-  if (m_occupied_shmem + static_smem + k.get_dynamic_smem() >
-      m_config->gpgpu_shmem_size)
+  if (m_occupied_shmem + block_smem > m_config->gpgpu_shmem_size)
     return false;
 
   unsigned int used_regs = padded_cta_size * ((registers + 3) & ~3);
@@ -3113,7 +3143,7 @@ bool shader_core_ctx::occupy_shader_resource_1block(kernel_info_t &k,
 
   if (occupy) {
     m_occupied_n_threads += padded_cta_size;
-    m_occupied_shmem += static_smem + k.get_dynamic_smem();
+    m_occupied_shmem += block_smem;
     m_occupied_regs += used_regs;
     m_occupied_ctas++;
 
@@ -3147,7 +3177,8 @@ void shader_core_ctx::release_shader_resource_1block(unsigned hw_ctaid,
     m_occupied_cta_to_hwtid.erase(hw_ctaid);
 
     const unsigned registers = k.registers_per_thread();
-    unsigned int total_smem = k.static_shared_memory() + k.get_dynamic_smem();
+    const uint64_t total_smem = m_config->shared_memory_per_cta(
+        k.static_shared_memory(), k.get_dynamic_smem());
     assert(m_occupied_shmem >= total_smem);
     m_occupied_shmem -= total_smem;
 
