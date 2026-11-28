@@ -1,0 +1,129 @@
+{
+  "status": "QUALIFIED_BASELINE_WITH_KNOWN_TIMING_LIMITATIONS",
+  "qualified_at_unix": 1795836270.774986,
+  "scope": "Final B200 SASS profile: transport optimizations off, GTO, calibrated L2 MSHR release width 2. Complete 59-workload validation.",
+  "source_head": "f34fd18c6c277ad64170b75dd2572f68d33e5037",
+  "runtime_sha256": "0f2e4cba6d2e0b2855bcb766ff07b8573b700f50c3dca434e4a499efac3a5377",
+  "configuration_files_sha256": {
+    "gpgpusim.config": "89751e6205313f5925908710fda78dfc78ab33f13ec30787d8335e3a9635f26d",
+    "config_ampere_islip.icnt": "a39d5f32ae7ad43350c9b03f34a7efd41a480f6aecbca5f50c00e91797ae67e1",
+    "sass_primary_hints.rules": "7418a0ea2330b6ccd25a9b90b5c3169a96ec027561e45405a2b43c48ef25dbe1"
+  },
+  "materialized_replay_config_sha256": "9c1948cf0c2d8e142485d37ebebebb87cc995952ccb8eb3683cd9467e7ea8ddd",
+  "completed_workloads": 59,
+  "numeric_counts": {
+    "IDENTICAL_TO_REVIEWED_REFERENCE": 23,
+    "PASS_STRICT": 34,
+    "REVIEWED_MOE_ROUTING_PERMUTATION": 2
+  },
+  "median_abs_cycle_error_pct": 9.392786103972517,
+  "within_15pct": 48,
+  "timing_exceptions_over_15pct": [
+    {
+      "case": "pro-hash-routing",
+      "index": 1,
+      "cycles": 115327,
+      "native_us": 144.352,
+      "sim_us": 106.78425925925926,
+      "cycle_error_pct": -29.022619804908988,
+      "time_error_pct": -26.025091956287927
+    },
+    {
+      "case": "pro-projection-compress-c4-fp32",
+      "index": 0,
+      "cycles": 38017,
+      "native_us": 33.088,
+      "sim_us": 35.20092592592592,
+      "cycle_error_pct": 17.739058260966512,
+      "time_error_pct": 6.385777097213263
+    },
+    {
+      "case": "pro-projection-compress-c128-fp32",
+      "index": 0,
+      "cycles": 34485,
+      "native_us": 28.704,
+      "sim_us": 31.930555555555557,
+      "cycle_error_pct": 17.237499001347967,
+      "time_error_pct": 11.240787191874158
+    },
+    {
+      "case": "mega-gate-b512",
+      "index": 0,
+      "cycles": 26066,
+      "native_us": 28.288,
+      "sim_us": 24.135185185185186,
+      "cycle_error_pct": -16.495863235947084,
+      "time_error_pct": -14.680482235629288
+    },
+    {
+      "case": "wo-b-input-fp8",
+      "index": 0,
+      "cycles": 15167,
+      "native_us": 9.824,
+      "sim_us": 14.04351851851852,
+      "cycle_error_pct": 30.641770050845807,
+      "time_error_pct": 42.95112498491977
+    },
+    {
+      "case": "first-input-norm-fp8",
+      "index": 0,
+      "cycles": 15226,
+      "native_us": 11.552,
+      "sim_us": 14.098148148148148,
+      "cycle_error_pct": 21.283956281698035,
+      "time_error_pct": 22.04075613009131
+    },
+    {
+      "case": "pro-hash-routing",
+      "index": 2,
+      "cycles": 18310,
+      "native_us": 10.88,
+      "sim_us": 16.953703703703702,
+      "cycle_error_pct": 44.539128581408846,
+      "time_error_pct": 55.824482570806076
+    },
+    {
+      "case": "indexer-topk-b512",
+      "index": 0,
+      "cycles": 14681,
+      "native_us": 8.64,
+      "sim_us": 13.593518518518518,
+      "cycle_error_pct": 56.74781123211616,
+      "time_error_pct": 57.332390260630994
+    },
+    {
+      "case": "swa-kv-norm-rope-store",
+      "index": 0,
+      "cycles": 10147,
+      "native_us": 8.32,
+      "sim_us": 9.39537037037037,
+      "cycle_error_pct": 20.66445720020882,
+      "time_error_pct": 12.925124643874653
+    },
+    {
+      "case": "pro-compressed-norm-rope-store-c4-d128",
+      "index": 1,
+      "cycles": 7448,
+      "native_us": 6.4,
+      "sim_us": 6.896296296296296,
+      "cycle_error_pct": 16.21284676225203,
+      "time_error_pct": 7.754629629629628
+    },
+    {
+      "case": "indexer-schedule",
+      "index": 0,
+      "cycles": 11285,
+      "native_us": 10.368,
+      "sim_us": 10.449074074074074,
+      "cycle_error_pct": -15.2293464960086,
+      "time_error_pct": 0.7819644490169253
+    }
+  ],
+  "qualification_root": "/data/wzr/flashgpu-sim-blackwell/runs/b200-production-config-qualification-r2-20261128",
+  "report_sha256": "1a3dddf6a0224d57c72614a1678903ed45bf19aaed66d7206d62e5545518d221",
+  "review_sha256": "5a39fb535d0c71e98a550e98785090fd40be204762e89746b4e26a69ba26e7a5",
+  "all_kernel_numeric_bit_exact": false,
+  "ptx_performance_qualified": false,
+  "all_kernel_timing_within_15pct": false,
+  "note": "Freeze as the current B200 SASS production baseline. No universal accuracy claim. Preserves calibrated private MSHR release width 2 and four transport options off + GTO. Remaining discrepancies are documented, not masked by per-kernel settings."
+}
