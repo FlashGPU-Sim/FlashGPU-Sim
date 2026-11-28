@@ -2184,30 +2184,38 @@ class shader_core_config : public core_config {
       abort();
     }
 
-    char *toks = new char[100];
+    // The compact form omits disabled optional pairs; the full form has all
+    // N_PIPELINE_STAGES entries. Map compact tokens to their actual stage IDs.
+    char *toks = new char[strlen(pipeline_widths_string) + 1];
     char *tokd = toks;
     strcpy(toks, pipeline_widths_string);
-
-    toks = strtok(toks, ",");
-
-    /*	Removing the tensorcore pipeline while reading the config files if the
-       tensor core is not available. If we won't remove it, old regression will
-       be broken. So to support the legacy config files it's best to handle in
-       this way.
-     */
-    int num_config_to_read = N_PIPELINE_STAGES - 2 * (!gpgpu_tensor_core_avail) -
-                             2 * (!gpgpu_num_tma_units) -
-                             2 * (!gpgpu_num_cp_async_units) -
-                             2 * (!gpgpu_num_tensormap_units);
-
-    for (int i = 0; i < num_config_to_read; i++) {
-      assert(toks);
-      ntok = sscanf(toks, "%d", &pipe_widths[i]);
+    std::vector<int> widths;
+    for (char *token = strtok(toks, ","); token; token = strtok(NULL, ",")) {
+      int width = 0;
+      ntok = sscanf(token, "%d", &width);
       assert(ntok == 1);
-      toks = strtok(NULL, ",");
+      widths.push_back(width);
     }
-
     delete[] tokd;
+
+    const unsigned compact_count = N_PIPELINE_STAGES -
+        2 * (!gpgpu_tensor_core_avail) - 2 * (!gpgpu_num_tma_units) -
+        2 * (!gpgpu_num_cp_async_units) - 2 * (!gpgpu_num_tensormap_units);
+    if (widths.size() != N_PIPELINE_STAGES && widths.size() != compact_count) {
+      fprintf(stderr, "Invalid pipeline width count: %zu (expected %u or %u)\n",
+              widths.size(), compact_count, (unsigned)N_PIPELINE_STAGES);
+      abort();
+    }
+    const bool full_widths = widths.size() == N_PIPELINE_STAGES;
+    unsigned cursor = 0;
+    for (unsigned stage = 0; stage < N_PIPELINE_STAGES; ++stage) {
+      const bool enabled =
+          (stage != ID_OC_TENSOR_CORE && stage != OC_EX_TENSOR_CORE || gpgpu_tensor_core_avail) &&
+          (stage != ID_OC_TMA && stage != OC_EX_TMA || gpgpu_num_tma_units) &&
+          (stage != ID_OC_CP_ASYNC && stage != OC_EX_CP_ASYNC || gpgpu_num_cp_async_units) &&
+          (stage != ID_OC_TENSOR_MAP && stage != OC_EX_TENSOR_MAP || gpgpu_num_tensormap_units);
+      pipe_widths[stage] = (full_widths || enabled) ? widths[cursor++] : 0;
+    }
 
     if (n_thread_per_shader > MAX_THREAD_PER_SM) {
       printf(
