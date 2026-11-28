@@ -1804,29 +1804,13 @@ class arg_buffer_t {
   arg_buffer_t(gpgpu_context *ctx) : m_src_op(ctx) {
     m_is_reg = false;
     m_is_param = false;
-    m_param_value = NULL;
     m_reg_value = ptx_reg_t();
   }
-  arg_buffer_t(const arg_buffer_t &another, gpgpu_context *ctx)
-      : m_src_op(ctx) {
-    make_copy(another);
-  }
-  void make_copy(const arg_buffer_t &another) {
-    m_dst = another.m_dst;
-    m_src_op = another.m_src_op;
-    m_is_reg = another.m_is_reg;
-    m_is_param = another.m_is_param;
-    m_reg_value = another.m_reg_value;
-    m_param_bytes = another.m_param_bytes;
-    if (m_is_param) {
-      m_param_value = malloc(m_param_bytes);
-      memcpy(m_param_value, another.m_param_value, m_param_bytes);
-    }
-  }
-  void operator=(const arg_buffer_t &another) { make_copy(another); }
-  ~arg_buffer_t() {
-    if (m_is_param) free(m_param_value);
-  }
+  // Value ownership is required by std::list insertion and call-frame return
+  // assignment. The two-argument constructor is not a C++ copy constructor.
+  arg_buffer_t(const arg_buffer_t &another, gpgpu_context *)
+      : arg_buffer_t(another) {}
+  void make_copy(const arg_buffer_t &another) { *this = another; }
   arg_buffer_t(const symbol *dst_sym, const operand_info &src_op,
                ptx_reg_t source_value)
       : m_src_op(src_op) {
@@ -1840,9 +1824,9 @@ class arg_buffer_t {
     } else {
       m_is_param = true;
       m_is_reg = false;
-      m_param_value = calloc(sizeof(ptx_reg_t), 1);
+      m_param_value.resize(sizeof(ptx_reg_t));
       // new (m_param_value) ptx_reg_t(source_value);
-      memcpy(m_param_value, &source_value, sizeof(ptx_reg_t));
+      memcpy(m_param_value.data(), &source_value, sizeof(ptx_reg_t));
       m_param_bytes = sizeof(ptx_reg_t);
     }
   }
@@ -1878,9 +1862,9 @@ class arg_buffer_t {
       // param
       m_is_param = true;
       m_is_reg = false;
-      m_param_value = calloc(array_size, 1);
+      m_param_value.resize(array_size);
       m_param_bytes = array_size;
-      memcpy(m_param_value, source_param_value_array, array_size);
+      memcpy(m_param_value.data(), source_param_value_array, array_size);
     }
   }
 
@@ -1892,7 +1876,7 @@ class arg_buffer_t {
 
   const void *get_param_buffer() const {
     assert(m_is_param);
-    return m_param_value;
+    return m_param_value.data();
   }
   size_t get_param_buffer_size() const {
     assert(m_is_param);
@@ -1903,7 +1887,7 @@ class arg_buffer_t {
 
  private:
   // destination of copy
-  const symbol *m_dst;
+  const symbol *m_dst = nullptr;
 
   // source operand
   operand_info m_src_op;
@@ -1913,11 +1897,11 @@ class arg_buffer_t {
   bool m_is_param;
 
   // source is register
-  ptx_reg_t m_reg_value;
+  ptx_reg_t m_reg_value = ptx_reg_t();
 
   // source is param
-  void *m_param_value;
-  unsigned m_param_bytes;
+  std::vector<unsigned char> m_param_value;
+  unsigned m_param_bytes = 0;
 };
 
 typedef std::list<arg_buffer_t> arg_buffer_list_t;
