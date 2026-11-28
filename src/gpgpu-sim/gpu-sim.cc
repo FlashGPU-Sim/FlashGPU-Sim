@@ -2492,7 +2492,12 @@ void gpgpu_sim::apply_kernel_shared_memory_requirement(
   const bool account_reservation = shared_mem_reserved_per_block() != 0;
   const bool adaptive = m_shader_config->adaptive_cache_config &&
                         !m_shader_config->shmem_opt_list.empty();
-  if (!opted_in && !(account_reservation && adaptive)) return;
+  if (!adaptive && account_reservation) {
+    // A reservation must fit in the fixed SM capacity. Leave the capacity in
+    // place so the CTA resource check can reject an oversized allocation.
+    return;
+  }
+  if (!opted_in && !account_reservation) return;
 
   unsigned requested = get_kernel_max_dynamic_smem(kernel_name);
   unsigned required = requested;
