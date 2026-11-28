@@ -174,26 +174,41 @@ class TrackingSession:
         self.compiled_kernels[hash_val] = kernel_info
         return kernel_info, True
 
+    @staticmethod
+    def _tensor_payload(tensor) -> bytes:
+        """Return the exact storage bytes for a dense PyTorch tensor.
+
+        Going through NumPy's dtype conversion rejects several PyTorch dtypes
+        (for example bfloat16 and float8). Reinterpreting a contiguous tensor
+        as uint8 preserves its representation and keeps dtype semantics in the
+        launch metadata.
+        """
+        if tensor.layout != torch.strided:
+            raise TypeError(
+                f"TritonTrace can only serialize dense strided tensors, got {tensor.layout}"
+            )
+        cpu_tensor = tensor.detach().cpu().contiguous()
+        try:
+            return cpu_tensor.reshape(-1).view(torch.uint8).numpy().tobytes()
+        except (RuntimeError, TypeError) as error:
+            raise TypeError(
+                f"TritonTrace cannot serialize tensor dtype {tensor.dtype} as raw bytes"
+            ) from error
+
     def _serialize_tensor(self, tensor, launch_id: int, arg_idx: int, kernel_name: str):
         if not HAS_TORCH or not isinstance(tensor, torch.Tensor):
             return None, {}
 
+        payload = self._tensor_payload(tensor)
         cpu_tensor = tensor.detach().cpu()
-        # NumPy does not support PyTorch's bfloat16 dtype in the versions used
-        # by our CUDA containers. Store the raw 16-bit payload and retain the
-        # semantic dtype in metadata so replay can reconstruct the tensor.
         dtype_name = str(cpu_tensor.dtype).removeprefix("torch.")
-        if cpu_tensor.dtype == torch.bfloat16:
-            np_array = cpu_tensor.view(torch.uint16).numpy()
-        else:
-            np_array = cpu_tensor.numpy()
         tensor_path = self.data_dir / f"{kernel_name}_launch{launch_id}_arg{arg_idx}.bin"
-        np_array.tofile(str(tensor_path))
+        tensor_path.write_bytes(payload)
 
         metadata = {
-            "shape": list(np_array.shape),
+            "shape": list(cpu_tensor.shape),
             "dtype": dtype_name,
-            "size_bytes": np_array.nbytes,
+            "size_bytes": len(payload),
             "device": str(tensor.device),
             "requires_grad": tensor.requires_grad,
         }
@@ -334,16 +349,12 @@ class TrackingSession:
                     f"{launch_info.kernel_name}_launch{launch_info.launch_id}_"
                     f"arg{idx}_output.bin"
                 )
-                cpu_tensor = arg.detach().cpu()
-                if cpu_tensor.dtype == torch.bfloat16:
-                    np_array = cpu_tensor.view(torch.uint16).numpy()
-                else:
-                    np_array = cpu_tensor.numpy()
-                np_array.tofile(str(output_path))
+                payload = self._tensor_payload(arg)
+                output_path.write_bytes(payload)
                 arg_info.output_file = str(output_path)
                 print(
-                    f"    Saved OUTPUT arg[{idx}]: shape={list(np_array.shape)}, "
-                    f"dtype={arg.dtype}, size={np_array.nbytes} bytes"
+                    f"    Saved OUTPUT arg[{idx}]: shape={list(arg.shape)}, "
+                    f"dtype={arg.dtype}, size={len(payload)} bytes"
                 )
             else:
                 print(f"    Skipped arg[{idx}]: unchanged (input-only)")
